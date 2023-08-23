@@ -15,16 +15,19 @@
 
 ## Introduction
 
-Kuintessence is an advanced computing orchestration system designed to revolutionize HPC workload and cluster management. Its primary goal is to empower HPC users by allowing them to concentrate on their scientific ideas rather than getting bogged down by HPC environment complications. By doing so, Kuintessence enhances research productivity to its fullest potential.
+Kuintessence is an advanced computing orchestration system aimed at transforming the landscape of HPC workload and cluster management. It empowers HPC users by enabling them to focus on their scientific concepts, instead of grappling with the intricacies of the HPC environment. It heightens research efficiency to its maximum potential.
 
 ## Features
+- **Automated Task Scheduling**: Intelligently arrange tasks according to resource availability and priority.
+- **User-friendly Interface**: Easily submit, monitor and manage tasks.
+- **Optimized Resource Utilization**: Ensure the maximum utilization of HPC for peak efficiency.
+- **Enhanced Security**: Implement user authentication and permission management to ensure the cluster security.
+- **Scalability**: Support a range of cluster management software, such as SLURM, PBS, SGE, etc.
+- **Easy To Access**: Bypass the need for cluster configuration adjustments—configure with ease for straightforward access.
 
-- **Automated task scheduling**: schedule tasks intelligently based on resources and priorities.
-- **User-friendly interface**: easily submit, monitor and manage tasks.
-- **Optimized resource utilization**: ensure the maximum utilization of HPC resources.
-- **Security**: provide user authentication and permission management to ensure the security of the cluster.
-- **Scalability**: support a variety of cluster management software, such as SLURM, PBS, SGE, etc.
-- **Easy to access**: no need to modify the cluster configuration, just configure it simply to access.
+## Demo site
+
+Coming Soon!
 
 ## Quick Start
 
@@ -46,9 +49,17 @@ docker-compose up -d
 
 [kuintessence docs](https://docs.kuintessence.com)
 
-## Contributing
+## Contribution
 
-We welcome any contributions from the community! Please refer to our [contributing guide](contributing.md) to learn how to get started.
+We welcome any contributions from the community! Kindly consult our [contributing guide](contributing.md) to initiate your journey!
+
+## Get involved
+
+please feel free to contact us directly:
+
+- esr@suan.wang
+
+
 
 ## License
 

@@ -26,6 +26,10 @@
 - **可扩展性**：支持多种集群管理软件，如 SLURM、PBS、SGE 等。
 - **接入简单**：无需修改集群配置，只需简单配置即可接入。
 
+## 演示网站
+
+近期上线
+
 ## 快速开始
 
 1. 克隆此仓库
@@ -46,6 +50,11 @@ docker-compose up -d
 
 [kuintessence 文档](https://docs.kuintessence.com)
 
+## 参与
+
+如果您有任何相关问题，请直接联系我们：
+
+- 邮箱：esr@suan.wang
 ## 贡献
 
 我们欢迎社区的任何贡献！请参考我们的 [贡献指南](contributing.md) 以了解如何开始。
