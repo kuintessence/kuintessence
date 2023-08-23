@@ -2,7 +2,7 @@
   <a href="https://github.com/nsccjn/kuintessence"><img src="https://drawing-bed.dev.supercomputing.link/i/2023/08/23/nk4a6n.png" alt="kuintessence" /></a>
 </p>
 
-<h3 align="center">Open Source HPC Computing System</h3>
+<h3 align="center">Open Source HPC Computing Orchestration System</h3>
 
 <p align="center">
   <a href="https://www.gnu.org/licenses/agpl-3.0.html"><img src="https://img.shields.io/badge/licenses-AGPLv3-orange" alt="License: AGPLv3"></a>
