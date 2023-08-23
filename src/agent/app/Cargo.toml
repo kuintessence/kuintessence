@@ -1,0 +1,54 @@
+[package]
+name = "agent"
+version = "0.1.0"
+edition = "2021"
+[toolchain]
+targets = [ "x86_64-unknown-linux-gnu" ]
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+[dependencies]
+alice-architecture = { workspace = true }
+alice-infrastructure = { workspace = true, features = [ "telemetry" ] }
+alice-di = { workspace = true }
+agent-core = { workspace = true }
+config = { workspace = true, features = [ "yaml" ] }
+# tokio
+tokio = { workspace = true, features = [ "full" ] }
+bytes = { workspace = true }
+tracing = { workspace = true }
+reqwest = { workspace = true, features = [ "json", "multipart", "stream", "rustls-tls" ] }
+# date and time
+chrono = { workspace = true, features = [ "serde" ] }
+# async
+async-trait = { workspace = true }
+# kafka
+rdkafka = { workspace = true }
+# log
+log = { workspace = true }
+# Error Implement
+anyhow = { workspace = true }
+sea-orm = { workspace = true, features = [ "runtime-actix-rustls", "sqlx-postgres" ] }
+derive_builder = { workspace = true }
+colored = { workspace = true }
+serde = { workspace = true, features = [ "derive" ] }
+serde_json = { workspace = true }
+csv = { workspace = true }
+# futures
+futures = { workspace = true }
+uuid = { workspace = true }
+notify = { workspace = true, features = [ "macos_fsevent" ] }
+flume = { workspace = true }
+ctrlc = { workspace = true }
+blake3 = { workspace = true }
+url = { workspace = true }
+regex = { workspace = true }
+rand = { workspace = true }
+mockall = { workspace = true }
+crossterm = "0.27"
+base64-url = "2.0"
+bytesize = { version = "1.2", features = [ "serde" ] }
+rustix = { version = "0.38", default-features = false, features = [ "fs" ] }
+thiserror = "1.0"
+[dev-dependencies]
+indoc = "2"
+[build-dependencies]
+cmake = { workspace = true }

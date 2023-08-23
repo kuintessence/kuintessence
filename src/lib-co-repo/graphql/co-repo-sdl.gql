@@ -1,0 +1,1279 @@
+type Query {
+  flows(
+    filter: flows_filter
+    sort: [String]
+    limit: Int
+    offset: Int
+    page: Int
+    search: String
+  ): [flows]
+  flows_by_id(id: ID!): flows
+  flows_aggregated(
+    groupBy: [String]
+    filter: flows_filter
+    limit: Int
+    search: String
+    sort: [String]
+  ): [flows_aggregated]
+  content_repos(
+    filter: content_repos_filter
+    sort: [String]
+    limit: Int
+    offset: Int
+    page: Int
+    search: String
+  ): [content_repos]
+  content_repos_by_id(id: ID!): content_repos
+  content_repos_aggregated(
+    groupBy: [String]
+    filter: content_repos_filter
+    limit: Int
+    search: String
+    sort: [String]
+  ): [content_repos_aggregated]
+  content_entity_versions(
+    filter: content_entity_versions_filter
+    sort: [String]
+    limit: Int
+    offset: Int
+    page: Int
+    search: String
+  ): [content_entity_versions]
+  content_entity_versions_by_id(id: ID!): content_entity_versions
+  content_entity_versions_aggregated(
+    groupBy: [String]
+    filter: content_entity_versions_filter
+    limit: Int
+    search: String
+    sort: [String]
+  ): [content_entity_versions_aggregated]
+  fake_user(
+    filter: fake_user_filter
+    sort: [String]
+    limit: Int
+    offset: Int
+    page: Int
+    search: String
+  ): [fake_user]
+  fake_user_by_id(id: ID!): fake_user
+  content_entities(
+    filter: content_entities_filter
+    sort: [String]
+    limit: Int
+    offset: Int
+    page: Int
+    search: String
+  ): [content_entities]
+  content_entities_by_id(id: ID!): content_entities
+}
+
+type flows {
+  uuid: ID
+  sort: Int
+
+  """
+  内容仓库用于外部展示、调用的唯一标识
+  """
+  system_name: String
+  display_name: String!
+  is_featured: Boolean
+  is_official: Boolean
+  logo: String
+  description: String
+  spec: JSON
+  spec_func: count_functions
+}
+
+"""
+The `JSON` scalar type represents JSON values as specified by [ECMA-404](http://www.ecma-international.org/publications/files/ECMA-ST/ECMA-404.pdf).
+"""
+scalar JSON
+
+type count_functions {
+  count: Int
+}
+
+input flows_filter {
+  uuid: string_filter_operators
+  sort: number_filter_operators
+  system_name: string_filter_operators
+  display_name: string_filter_operators
+  is_featured: boolean_filter_operators
+  is_official: boolean_filter_operators
+  logo: string_filter_operators
+  description: string_filter_operators
+  spec: string_filter_operators
+  spec_func: count_function_filter_operators
+  _and: [flows_filter]
+  _or: [flows_filter]
+}
+
+input string_filter_operators {
+  _eq: String
+  _neq: String
+  _contains: String
+  _ncontains: String
+  _starts_with: String
+  _nstarts_with: String
+  _ends_with: String
+  _nends_with: String
+  _in: [String]
+  _nin: [String]
+  _null: Boolean
+  _nnull: Boolean
+  _empty: Boolean
+  _nempty: Boolean
+}
+
+input number_filter_operators {
+  _eq: Float
+  _neq: Float
+  _in: [Float]
+  _nin: [Float]
+  _gt: Float
+  _gte: Float
+  _lt: Float
+  _lte: Float
+  _null: Boolean
+  _nnull: Boolean
+}
+
+input boolean_filter_operators {
+  _eq: Boolean
+  _neq: Boolean
+  _null: Boolean
+  _nnull: Boolean
+}
+
+input count_function_filter_operators {
+  count: number_filter_operators
+}
+
+type flows_aggregated {
+  group: JSON
+  avg: flows_aggregated_fields
+  sum: flows_aggregated_fields
+  count: flows_aggregated_fields
+  countDistinct: flows_aggregated_fields
+  avgDistinct: flows_aggregated_fields
+  sumDistinct: flows_aggregated_fields
+  min: flows_aggregated_fields
+  max: flows_aggregated_fields
+}
+
+type flows_aggregated_fields {
+  sort: Float
+}
+
+type content_repos {
+  uuid: ID
+
+  """
+  用于排序的字段
+  """
+  sort: Int
+  user_created(
+    filter: directus_users_filter
+    sort: [String]
+    limit: Int
+    offset: Int
+    page: Int
+    search: String
+  ): directus_users
+
+  """
+  内容创建时间
+  """
+  date_created: Date
+  date_created_func: datetime_functions
+  user_updated(
+    filter: directus_users_filter
+    sort: [String]
+    limit: Int
+    offset: Int
+    page: Int
+    search: String
+  ): directus_users
+  date_updated: Date
+  date_updated_func: datetime_functions
+  img_logo(
+    filter: directus_files_filter
+    sort: [String]
+    limit: Int
+    offset: Int
+    page: Int
+    search: String
+  ): directus_files
+
+  """
+  内容仓库用于外部展示、调用的唯一标识
+  """
+  system_name: String
+
+  """
+  通过json语言描述其他元数据，用于外部服务处理
+  """
+  metadata: JSON
+  metadata_func: count_functions
+
+  """
+  展示名字
+  """
+  display_name: String
+  description: String
+  available_users(
+    filter: fake_user_filter
+    sort: [String]
+    limit: Int
+    offset: Int
+    page: Int
+    search: String
+  ): fake_user
+  repo_dependency(
+    filter: content_repos_filter
+    sort: [String]
+    limit: Int
+    offset: Int
+    page: Int
+    search: String
+  ): content_repos
+  repo_dependency_required: Boolean
+  content_entities(
+    filter: content_entities_filter
+    sort: [String]
+    limit: Int
+    offset: Int
+    page: Int
+    search: String
+  ): [content_entities]
+  content_entities_func: count_functions
+}
+
+type directus_users {
+  id: ID
+  first_name: String
+  last_name: String
+  email: String
+  password: String
+  location: String
+  title: String
+  description: String
+  tags: JSON
+  tags_func: count_functions
+  avatar(
+    filter: directus_files_filter
+    sort: [String]
+    limit: Int
+    offset: Int
+    page: Int
+    search: String
+  ): directus_files
+  language: String
+  theme: String
+  tfa_secret: String
+  status: String!
+  role(
+    filter: directus_roles_filter
+    sort: [String]
+    limit: Int
+    offset: Int
+    page: Int
+    search: String
+  ): directus_roles
+  token: String
+  last_access: Date
+  last_access_func: datetime_functions
+  last_page: String
+  provider: String!
+  external_identifier: String
+  auth_data: JSON
+  auth_data_func: count_functions
+  email_notifications: Boolean
+}
+
+type directus_files {
+  id: ID
+  storage: String!
+  filename_disk: String
+  filename_download: String!
+  title: String
+  type: String
+  folder(
+    filter: directus_folders_filter
+    sort: [String]
+    limit: Int
+    offset: Int
+    page: Int
+    search: String
+  ): directus_folders
+  uploaded_by(
+    filter: directus_users_filter
+    sort: [String]
+    limit: Int
+    offset: Int
+    page: Int
+    search: String
+  ): directus_users
+  uploaded_on: Date!
+  uploaded_on_func: datetime_functions
+  modified_by(
+    filter: directus_users_filter
+    sort: [String]
+    limit: Int
+    offset: Int
+    page: Int
+    search: String
+  ): directus_users
+  modified_on: Date!
+  modified_on_func: datetime_functions
+  charset: String
+  filesize: String
+  width: Int
+  height: Int
+  duration: Int
+  embed: String
+  description: String
+  location: String
+  tags: JSON
+  tags_func: count_functions
+  metadata: JSON
+  metadata_func: count_functions
+}
+
+type directus_folders {
+  id: ID
+  name: String!
+  parent(
+    filter: directus_folders_filter
+    sort: [String]
+    limit: Int
+    offset: Int
+    page: Int
+    search: String
+  ): directus_folders
+}
+
+input directus_folders_filter {
+  id: string_filter_operators
+  name: string_filter_operators
+  parent: directus_folders_filter
+  _and: [directus_folders_filter]
+  _or: [directus_folders_filter]
+}
+
+input directus_users_filter {
+  id: string_filter_operators
+  first_name: string_filter_operators
+  last_name: string_filter_operators
+  email: string_filter_operators
+  password: string_filter_operators
+  location: string_filter_operators
+  title: string_filter_operators
+  description: string_filter_operators
+  tags: string_filter_operators
+  tags_func: count_function_filter_operators
+  avatar: directus_files_filter
+  language: string_filter_operators
+  theme: string_filter_operators
+  tfa_secret: string_filter_operators
+  status: string_filter_operators
+  role: directus_roles_filter
+  token: string_filter_operators
+  last_access: date_filter_operators
+  last_access_func: datetime_function_filter_operators
+  last_page: string_filter_operators
+  provider: string_filter_operators
+  external_identifier: string_filter_operators
+  auth_data: string_filter_operators
+  auth_data_func: count_function_filter_operators
+  email_notifications: boolean_filter_operators
+  _and: [directus_users_filter]
+  _or: [directus_users_filter]
+}
+
+input directus_files_filter {
+  id: string_filter_operators
+  storage: string_filter_operators
+  filename_disk: string_filter_operators
+  filename_download: string_filter_operators
+  title: string_filter_operators
+  type: string_filter_operators
+  folder: directus_folders_filter
+  uploaded_by: directus_users_filter
+  uploaded_on: date_filter_operators
+  uploaded_on_func: datetime_function_filter_operators
+  modified_by: directus_users_filter
+  modified_on: date_filter_operators
+  modified_on_func: datetime_function_filter_operators
+  charset: string_filter_operators
+  filesize: string_filter_operators
+  width: number_filter_operators
+  height: number_filter_operators
+  duration: number_filter_operators
+  embed: string_filter_operators
+  description: string_filter_operators
+  location: string_filter_operators
+  tags: string_filter_operators
+  tags_func: count_function_filter_operators
+  metadata: string_filter_operators
+  metadata_func: count_function_filter_operators
+  _and: [directus_files_filter]
+  _or: [directus_files_filter]
+}
+
+input date_filter_operators {
+  _eq: String
+  _neq: String
+  _gt: String
+  _gte: String
+  _lt: String
+  _lte: String
+  _null: Boolean
+  _nnull: Boolean
+}
+
+input datetime_function_filter_operators {
+  year: number_filter_operators
+  month: number_filter_operators
+  week: number_filter_operators
+  day: number_filter_operators
+  weekday: number_filter_operators
+  hour: number_filter_operators
+  minute: number_filter_operators
+  second: number_filter_operators
+}
+
+input directus_roles_filter {
+  id: string_filter_operators
+  name: string_filter_operators
+  icon: string_filter_operators
+  description: string_filter_operators
+  ip_access: string_filter_operators
+  enforce_tfa: boolean_filter_operators
+  admin_access: boolean_filter_operators
+  app_access: boolean_filter_operators
+  users: directus_users_filter
+  users_func: count_function_filter_operators
+  _and: [directus_roles_filter]
+  _or: [directus_roles_filter]
+}
+
+"""
+ISO8601 Date values
+"""
+scalar Date
+
+type datetime_functions {
+  year: Int
+  month: Int
+  week: Int
+  day: Int
+  weekday: Int
+  hour: Int
+  minute: Int
+  second: Int
+}
+
+type directus_roles {
+  id: ID
+  name: String!
+  icon: String!
+  description: String
+  ip_access: [String]
+  enforce_tfa: Boolean!
+  admin_access: Boolean!
+  app_access: Boolean!
+  users(
+    filter: directus_users_filter
+    sort: [String]
+    limit: Int
+    offset: Int
+    page: Int
+    search: String
+  ): [directus_users]
+  users_func: count_functions
+}
+
+type fake_user {
+  uuid: ID
+  name: String
+}
+
+input fake_user_filter {
+  uuid: string_filter_operators
+  name: string_filter_operators
+  _and: [fake_user_filter]
+  _or: [fake_user_filter]
+}
+
+input content_repos_filter {
+  uuid: string_filter_operators
+  sort: number_filter_operators
+  user_created: directus_users_filter
+  date_created: date_filter_operators
+  date_created_func: datetime_function_filter_operators
+  user_updated: directus_users_filter
+  date_updated: date_filter_operators
+  date_updated_func: datetime_function_filter_operators
+  img_logo: directus_files_filter
+  system_name: string_filter_operators
+  metadata: string_filter_operators
+  metadata_func: count_function_filter_operators
+  display_name: string_filter_operators
+  description: string_filter_operators
+  available_users: fake_user_filter
+  repo_dependency: content_repos_filter
+  repo_dependency_required: boolean_filter_operators
+  content_entities: content_entities_filter
+  content_entities_func: count_function_filter_operators
+  _and: [content_repos_filter]
+  _or: [content_repos_filter]
+}
+
+input content_entities_filter {
+  uuid: string_filter_operators
+  status: string_filter_operators
+  user_created: directus_users_filter
+  date_created: date_filter_operators
+  date_created_func: datetime_function_filter_operators
+  user_updated: directus_users_filter
+  date_updated: date_filter_operators
+  date_updated_func: datetime_function_filter_operators
+  content_repo: content_repos_filter
+  system_name: string_filter_operators
+  metadata: string_filter_operators
+  metadata_func: count_function_filter_operators
+  display_name: string_filter_operators
+  img_logo: directus_files_filter
+  is_featured: boolean_filter_operators
+  is_official: boolean_filter_operators
+  entity_dependency: content_entities_filter
+  author: fake_user_filter
+  logo: string_filter_operators
+  description: string_filter_operators
+  content_entity_versions: content_entity_versions_filter
+  content_entity_versions_func: count_function_filter_operators
+  _and: [content_entities_filter]
+  _or: [content_entities_filter]
+}
+
+input content_entity_versions_filter {
+  uuid: string_filter_operators
+  status: string_filter_operators
+  sort: number_filter_operators
+  user_created: directus_users_filter
+  date_created: date_filter_operators
+  date_created_func: datetime_function_filter_operators
+  user_updated: directus_users_filter
+  date_updated: date_filter_operators
+  date_updated_func: datetime_function_filter_operators
+  tag: string_filter_operators
+  data: directus_files_filter
+  content_entity: content_entities_filter
+  tag_dependency: string_filter_operators
+  _and: [content_entity_versions_filter]
+  _or: [content_entity_versions_filter]
+}
+
+type content_entities {
+  uuid: ID
+  status: String!
+  user_created(
+    filter: directus_users_filter
+    sort: [String]
+    limit: Int
+    offset: Int
+    page: Int
+    search: String
+  ): directus_users
+  date_created: Date
+  date_created_func: datetime_functions
+  user_updated(
+    filter: directus_users_filter
+    sort: [String]
+    limit: Int
+    offset: Int
+    page: Int
+    search: String
+  ): directus_users
+  date_updated: Date
+  date_updated_func: datetime_functions
+  content_repo(
+    filter: content_repos_filter
+    sort: [String]
+    limit: Int
+    offset: Int
+    page: Int
+    search: String
+  ): content_repos
+
+  """
+  内容仓库用于外部展示、调用的唯一标识
+  """
+  system_name: String
+  metadata: JSON
+  metadata_func: count_functions
+  display_name: String!
+  img_logo(
+    filter: directus_files_filter
+    sort: [String]
+    limit: Int
+    offset: Int
+    page: Int
+    search: String
+  ): directus_files
+  is_featured: Boolean
+  is_official: Boolean
+  entity_dependency(
+    filter: content_entities_filter
+    sort: [String]
+    limit: Int
+    offset: Int
+    page: Int
+    search: String
+  ): content_entities
+  author(
+    filter: fake_user_filter
+    sort: [String]
+    limit: Int
+    offset: Int
+    page: Int
+    search: String
+  ): fake_user
+  logo: String
+  description: String
+  content_entity_versions(
+    filter: content_entity_versions_filter
+    sort: [String]
+    limit: Int
+    offset: Int
+    page: Int
+    search: String
+  ): [content_entity_versions]
+  content_entity_versions_func: count_functions
+}
+
+type content_entity_versions {
+  uuid: ID
+  status: String!
+  sort: Int
+  user_created(
+    filter: directus_users_filter
+    sort: [String]
+    limit: Int
+    offset: Int
+    page: Int
+    search: String
+  ): directus_users
+  date_created: Date
+  date_created_func: datetime_functions
+  user_updated(
+    filter: directus_users_filter
+    sort: [String]
+    limit: Int
+    offset: Int
+    page: Int
+    search: String
+  ): directus_users
+  date_updated: Date
+  date_updated_func: datetime_functions
+
+  """
+  用于标记数据的标签
+  """
+  tag: String!
+  data(
+    filter: directus_files_filter
+    sort: [String]
+    limit: Int
+    offset: Int
+    page: Int
+    search: String
+  ): directus_files
+  content_entity(
+    filter: content_entities_filter
+    sort: [String]
+    limit: Int
+    offset: Int
+    page: Int
+    search: String
+  ): content_entities
+
+  """
+  对依赖的目标实体的标签进行约束
+  """
+  tag_dependency: String
+}
+
+type content_repos_aggregated {
+  group: JSON
+  avg: content_repos_aggregated_fields
+  sum: content_repos_aggregated_fields
+  count: content_repos_aggregated_fields
+  countDistinct: content_repos_aggregated_fields
+  avgDistinct: content_repos_aggregated_fields
+  sumDistinct: content_repos_aggregated_fields
+  min: content_repos_aggregated_fields
+  max: content_repos_aggregated_fields
+}
+
+type content_repos_aggregated_fields {
+  """
+  用于排序的字段
+  """
+  sort: Float
+}
+
+type content_entity_versions_aggregated {
+  group: JSON
+  avg: content_entity_versions_aggregated_fields
+  sum: content_entity_versions_aggregated_fields
+  count: content_entity_versions_aggregated_fields
+  countDistinct: content_entity_versions_aggregated_fields
+  avgDistinct: content_entity_versions_aggregated_fields
+  sumDistinct: content_entity_versions_aggregated_fields
+  min: content_entity_versions_aggregated_fields
+  max: content_entity_versions_aggregated_fields
+}
+
+type content_entity_versions_aggregated_fields {
+  sort: Float
+}
+
+type Mutation {
+  create_flows_items(
+    filter: flows_filter
+    sort: [String]
+    limit: Int
+    offset: Int
+    page: Int
+    search: String
+    data: [create_flows_input!]
+  ): [flows]
+  create_flows_item(data: create_flows_input!): flows
+  create_content_repos_items(
+    filter: content_repos_filter
+    sort: [String]
+    limit: Int
+    offset: Int
+    page: Int
+    search: String
+    data: [create_content_repos_input!]
+  ): [content_repos]
+  create_content_repos_item(data: create_content_repos_input!): content_repos
+  create_content_entity_versions_items(
+    filter: content_entity_versions_filter
+    sort: [String]
+    limit: Int
+    offset: Int
+    page: Int
+    search: String
+    data: [create_content_entity_versions_input!]
+  ): [content_entity_versions]
+  create_content_entity_versions_item(
+    data: create_content_entity_versions_input!
+  ): content_entity_versions
+  create_fake_user_items(
+    filter: fake_user_filter
+    sort: [String]
+    limit: Int
+    offset: Int
+    page: Int
+    search: String
+    data: [create_fake_user_input!]
+  ): [fake_user]
+  create_fake_user_item(data: create_fake_user_input!): fake_user
+  create_content_entities_items(
+    filter: content_entities_filter
+    sort: [String]
+    limit: Int
+    offset: Int
+    page: Int
+    search: String
+    data: [create_content_entities_input!]
+  ): [content_entities]
+  create_content_entities_item(
+    data: create_content_entities_input!
+  ): content_entities
+  update_flows_items(
+    filter: flows_filter
+    sort: [String]
+    limit: Int
+    offset: Int
+    page: Int
+    search: String
+    ids: [ID]!
+    data: update_flows_input!
+  ): [flows]
+  update_flows_item(id: ID!, data: update_flows_input!): flows
+  update_content_repos_items(
+    filter: content_repos_filter
+    sort: [String]
+    limit: Int
+    offset: Int
+    page: Int
+    search: String
+    ids: [ID]!
+    data: update_content_repos_input!
+  ): [content_repos]
+  update_content_repos_item(
+    id: ID!
+    data: update_content_repos_input!
+  ): content_repos
+  update_content_entity_versions_items(
+    filter: content_entity_versions_filter
+    sort: [String]
+    limit: Int
+    offset: Int
+    page: Int
+    search: String
+    ids: [ID]!
+    data: update_content_entity_versions_input!
+  ): [content_entity_versions]
+  update_content_entity_versions_item(
+    id: ID!
+    data: update_content_entity_versions_input!
+  ): content_entity_versions
+  update_fake_user_items(
+    filter: fake_user_filter
+    sort: [String]
+    limit: Int
+    offset: Int
+    page: Int
+    search: String
+    ids: [ID]!
+    data: update_fake_user_input!
+  ): [fake_user]
+  update_fake_user_item(id: ID!, data: update_fake_user_input!): fake_user
+  update_content_entities_items(
+    filter: content_entities_filter
+    sort: [String]
+    limit: Int
+    offset: Int
+    page: Int
+    search: String
+    ids: [ID]!
+    data: update_content_entities_input!
+  ): [content_entities]
+  update_content_entities_item(
+    id: ID!
+    data: update_content_entities_input!
+  ): content_entities
+  delete_flows_items(ids: [ID]!): delete_many
+  delete_flows_item(id: ID!): delete_one
+  delete_content_repos_items(ids: [ID]!): delete_many
+  delete_content_repos_item(id: ID!): delete_one
+  delete_content_entity_versions_items(ids: [ID]!): delete_many
+  delete_content_entity_versions_item(id: ID!): delete_one
+  delete_fake_user_items(ids: [ID]!): delete_many
+  delete_fake_user_item(id: ID!): delete_one
+  delete_content_entities_items(ids: [ID]!): delete_many
+  delete_content_entities_item(id: ID!): delete_one
+}
+
+input create_flows_input {
+  uuid: ID
+  sort: Int
+
+  """
+  内容仓库用于外部展示、调用的唯一标识
+  """
+  system_name: String
+  display_name: String!
+  is_featured: Boolean
+  is_official: Boolean
+  logo: String
+  description: String
+  spec: JSON
+  spec_func: count_functionsInput
+}
+
+input count_functionsInput {
+  count: Int
+}
+
+input create_content_repos_input {
+  uuid: ID
+
+  """
+  用于排序的字段
+  """
+  sort: Int
+  user_created: create_directus_users_input
+
+  """
+  内容创建时间
+  """
+  date_created: Date
+  date_created_func: datetime_functionsInput
+  user_updated: create_directus_users_input
+  date_updated: Date
+  date_updated_func: datetime_functionsInput
+  img_logo: create_directus_files_input
+
+  """
+  内容仓库用于外部展示、调用的唯一标识
+  """
+  system_name: String
+
+  """
+  通过json语言描述其他元数据，用于外部服务处理
+  """
+  metadata: JSON
+  metadata_func: count_functionsInput
+
+  """
+  展示名字
+  """
+  display_name: String
+  description: String
+  available_users: create_fake_user_input
+  repo_dependency: create_content_repos_input
+  repo_dependency_required: Boolean
+  content_entities: [create_content_entities_input]
+  content_entities_func: count_functionsInput
+}
+
+input create_directus_users_input {
+  id: ID
+  first_name: String
+  last_name: String
+  email: String
+  password: String
+  location: String
+  title: String
+  description: String
+  tags: JSON
+  tags_func: count_functionsInput
+  avatar: create_directus_files_input
+  language: String
+  theme: String
+  tfa_secret: String
+  status: String!
+  role: create_directus_roles_input
+  token: String
+  last_access: Date
+  last_access_func: datetime_functionsInput
+  last_page: String
+  provider: String!
+  external_identifier: String
+  auth_data: JSON
+  auth_data_func: count_functionsInput
+  email_notifications: Boolean
+}
+
+input create_directus_files_input {
+  id: ID
+  storage: String!
+  filename_disk: String
+  filename_download: String!
+  title: String
+  type: String
+  folder: create_directus_folders_input
+  uploaded_by: create_directus_users_input
+  uploaded_on: Date!
+  uploaded_on_func: datetime_functionsInput
+  modified_by: create_directus_users_input
+  modified_on: Date!
+  modified_on_func: datetime_functionsInput
+  charset: String
+  filesize: String
+  width: Int
+  height: Int
+  duration: Int
+  embed: String
+  description: String
+  location: String
+  tags: JSON
+  tags_func: count_functionsInput
+  metadata: JSON
+  metadata_func: count_functionsInput
+}
+
+input create_directus_folders_input {
+  id: ID
+  name: String!
+  parent: create_directus_folders_input
+}
+
+input datetime_functionsInput {
+  year: Int
+  month: Int
+  week: Int
+  day: Int
+  weekday: Int
+  hour: Int
+  minute: Int
+  second: Int
+}
+
+input create_directus_roles_input {
+  id: ID
+  name: String!
+  icon: String!
+  description: String
+  ip_access: [String]
+  enforce_tfa: Boolean!
+  admin_access: Boolean!
+  app_access: Boolean!
+  users: [create_directus_users_input]
+  users_func: count_functionsInput
+}
+
+input create_fake_user_input {
+  uuid: ID
+  name: String
+}
+
+input create_content_entities_input {
+  uuid: ID
+  status: String!
+  user_created: create_directus_users_input
+  date_created: Date
+  date_created_func: datetime_functionsInput
+  user_updated: create_directus_users_input
+  date_updated: Date
+  date_updated_func: datetime_functionsInput
+  content_repo: create_content_repos_input
+
+  """
+  内容仓库用于外部展示、调用的唯一标识
+  """
+  system_name: String
+  metadata: JSON
+  metadata_func: count_functionsInput
+  display_name: String!
+  img_logo: create_directus_files_input
+  is_featured: Boolean
+  is_official: Boolean
+  entity_dependency: create_content_entities_input
+  author: create_fake_user_input
+  logo: String
+  description: String
+  content_entity_versions: [create_content_entity_versions_input]
+  content_entity_versions_func: count_functionsInput
+}
+
+input create_content_entity_versions_input {
+  uuid: ID
+  status: String!
+  sort: Int
+  user_created: create_directus_users_input
+  date_created: Date
+  date_created_func: datetime_functionsInput
+  user_updated: create_directus_users_input
+  date_updated: Date
+  date_updated_func: datetime_functionsInput
+
+  """
+  用于标记数据的标签
+  """
+  tag: String!
+  data: create_directus_files_input
+  content_entity: create_content_entities_input
+
+  """
+  对依赖的目标实体的标签进行约束
+  """
+  tag_dependency: String
+}
+
+input update_flows_input {
+  uuid: ID
+  sort: Int
+
+  """
+  内容仓库用于外部展示、调用的唯一标识
+  """
+  system_name: String
+  display_name: String
+  is_featured: Boolean
+  is_official: Boolean
+  logo: String
+  description: String
+  spec: JSON
+  spec_func: count_functionsInput
+}
+
+input update_content_repos_input {
+  uuid: ID
+
+  """
+  用于排序的字段
+  """
+  sort: Int
+  user_created: update_directus_users_input
+
+  """
+  内容创建时间
+  """
+  date_created: Date
+  date_created_func: datetime_functionsInput
+  user_updated: update_directus_users_input
+  date_updated: Date
+  date_updated_func: datetime_functionsInput
+  img_logo: update_directus_files_input
+
+  """
+  内容仓库用于外部展示、调用的唯一标识
+  """
+  system_name: String
+
+  """
+  通过json语言描述其他元数据，用于外部服务处理
+  """
+  metadata: JSON
+  metadata_func: count_functionsInput
+
+  """
+  展示名字
+  """
+  display_name: String
+  description: String
+  available_users: update_fake_user_input
+  repo_dependency: update_content_repos_input
+  repo_dependency_required: Boolean
+  content_entities: [update_content_entities_input]
+  content_entities_func: count_functionsInput
+}
+
+input update_directus_users_input {
+  id: ID
+  first_name: String
+  last_name: String
+  email: String
+  password: String
+  location: String
+  title: String
+  description: String
+  tags: JSON
+  tags_func: count_functionsInput
+  avatar: update_directus_files_input
+  language: String
+  theme: String
+  tfa_secret: String
+  status: String
+  role: update_directus_roles_input
+  token: String
+  last_access: Date
+  last_access_func: datetime_functionsInput
+  last_page: String
+  provider: String
+  external_identifier: String
+  auth_data: JSON
+  auth_data_func: count_functionsInput
+  email_notifications: Boolean
+}
+
+input update_directus_files_input {
+  id: ID
+  storage: String
+  filename_disk: String
+  filename_download: String
+  title: String
+  type: String
+  folder: update_directus_folders_input
+  uploaded_by: update_directus_users_input
+  uploaded_on: Date
+  uploaded_on_func: datetime_functionsInput
+  modified_by: update_directus_users_input
+  modified_on: Date
+  modified_on_func: datetime_functionsInput
+  charset: String
+  filesize: String
+  width: Int
+  height: Int
+  duration: Int
+  embed: String
+  description: String
+  location: String
+  tags: JSON
+  tags_func: count_functionsInput
+  metadata: JSON
+  metadata_func: count_functionsInput
+}
+
+input update_directus_folders_input {
+  id: ID
+  name: String
+  parent: update_directus_folders_input
+}
+
+input update_directus_roles_input {
+  id: ID
+  name: String
+  icon: String
+  description: String
+  ip_access: [String]
+  enforce_tfa: Boolean
+  admin_access: Boolean
+  app_access: Boolean
+  users: [update_directus_users_input]
+  users_func: count_functionsInput
+}
+
+input update_fake_user_input {
+  uuid: ID
+  name: String
+}
+
+input update_content_entities_input {
+  uuid: ID
+  status: String
+  user_created: update_directus_users_input
+  date_created: Date
+  date_created_func: datetime_functionsInput
+  user_updated: update_directus_users_input
+  date_updated: Date
+  date_updated_func: datetime_functionsInput
+  content_repo: update_content_repos_input
+
+  """
+  内容仓库用于外部展示、调用的唯一标识
+  """
+  system_name: String
+  metadata: JSON
+  metadata_func: count_functionsInput
+  display_name: String
+  img_logo: update_directus_files_input
+  is_featured: Boolean
+  is_official: Boolean
+  entity_dependency: update_content_entities_input
+  author: update_fake_user_input
+  logo: String
+  description: String
+  content_entity_versions: [update_content_entity_versions_input]
+  content_entity_versions_func: count_functionsInput
+}
+
+input update_content_entity_versions_input {
+  uuid: ID
+  status: String
+  sort: Int
+  user_created: update_directus_users_input
+  date_created: Date
+  date_created_func: datetime_functionsInput
+  user_updated: update_directus_users_input
+  date_updated: Date
+  date_updated_func: datetime_functionsInput
+
+  """
+  用于标记数据的标签
+  """
+  tag: String
+  data: update_directus_files_input
+  content_entity: update_content_entities_input
+
+  """
+  对依赖的目标实体的标签进行约束
+  """
+  tag_dependency: String
+}
+
+type delete_many {
+  ids: [ID]!
+}
+
+type delete_one {
+  id: ID!
+}

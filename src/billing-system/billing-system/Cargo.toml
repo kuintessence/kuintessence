@@ -1,0 +1,50 @@
+[package]
+name = "billing-system"
+version = "0.1.0"
+edition = "2021"
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+[dependencies]
+alice-architecture = { workspace = true }
+alice-di = { workspace = true, features = [ "actix" ] }
+alice-web-macro = { workspace = true }
+alice-infrastructure = { workspace = true, features = [ "full" ] }
+lib-co-repo = { workspace = true }
+database-model = { workspace = true }
+billing-system-kernel = { workspace = true, features = [ "full" ] }
+num-traits = { workspace = true }
+config = { workspace = true, features = [ "yaml" ] }
+derive_builder = { workspace = true }
+colored = { workspace = true }
+# tokio
+tokio = { workspace = true, features = [ "full" ] }
+bytes = { workspace = true }
+# web
+actix-web = { workspace = true, features = [ "rustls" ] }
+tracing-actix-web = { workspace = true }
+awc = { workspace = true }
+actix-http = { workspace = true }
+actix-rt = { workspace = true }
+# date and time
+chrono = { workspace = true }
+# async
+async-trait = { workspace = true }
+# log
+log = { workspace = true }
+# Error Implement
+anyhow = { workspace = true }
+sea-orm = { workspace = true, features = [ "runtime-actix-rustls", "sqlx-postgres", "with-rust_decimal" ] }
+rust_decimal = { workspace = true }
+serde = { workspace = true, features = [ "derive" ] }
+serde_json = { workspace = true }
+uuid = { workspace = true, features = [ "v4", "serde" ] }
+redis = { workspace = true, features = [ "tokio-comp" ] }
+reqwest = { workspace = true, features = [ "json", "rustls-tls" ] }
+tracing = { workspace = true }
+rusoto_s3 = { workspace = true, features = [ "rustls" ] }
+rusoto_core = { workspace = true, features = [ "rustls" ] }
+actix-easy-multipart = { workspace = true }
+rand = { workspace = true }
+flume = { workspace = true }
+actix-cors = { workspace = true }
+futures = { workspace = true }
+blake3 = { workspace = true }

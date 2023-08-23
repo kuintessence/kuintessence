@@ -1,0 +1,4 @@
+migrate:
+  db: system
+  dbcon: postgres://postgres:postgrespassword@localhost:5431/system
+  action: up

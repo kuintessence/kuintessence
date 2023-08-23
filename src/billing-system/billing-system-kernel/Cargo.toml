@@ -1,0 +1,35 @@
+[package]
+name = "billing-system-kernel"
+version = "0.1.0"
+edition = "2021"
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+[dependencies]
+alice-architecture = { workspace = true }
+lib-co-repo = { workspace = true }
+uuid = { workspace = true, features = [ "v4", "serde" ] }
+serde = { workspace = true, features = [ "derive" ] }
+async-trait = { workspace = true }
+anyhow = { workspace = true }
+derive_builder = { workspace = true }
+chrono = { workspace = true, features = [ "serde" ] }
+thiserror = { workspace = true }
+blake3 = { workspace = true }
+rand = { workspace = true }
+num-traits = { workspace = true }
+num-derive = { workspace = true }
+handlebars = { workspace = true }
+serde_json = { workspace = true }
+rust_decimal = { workspace = true }
+rust_decimal_macros = { workspace = true }
+evalexpr = { workspace = true }
+[dev-dependencies]
+tokio = { workspace = true, features = [ "full" ] }
+mockall = { workspace = true }
+[features]
+implements = [  ]
+task-distributor = [ "implements" ]
+workflow-parser = [ "implements" ]
+software-environment-builder = [ "implements" ]
+workflow-scheduler = [ "implements" ]
+workflow-status-receiver = [ "implements" ]
+full = [ "task-distributor", "task-distributor", "workflow-parser", "software-environment-builder", "workflow-scheduler", "workflow-status-receiver" ]

@@ -1,0 +1,27 @@
+common:
+  telemetry:
+    enable: true
+    console:
+      enable: true
+      max_level: "Debug"
+    file:
+      enable: true
+      enable_debug_logging: true
+      path: "/home/path/to/log"
+      max_level: "Trace"
+      rolling_time: "Hourly"
+  host:
+    bind_address: "0.0.0.0"
+    bind_port: 8001
+    upload_file_path: "."
+  db:
+    url: postgres://postgres:postgrespassword@localhost:5432/system
+  mq:
+    topics:
+      - "bill"
+    client_options:
+      group.id: "1"
+      enable.partition.eof: "false"
+      session.timeout.ms: "6000"
+      enable.auto.commit: "true"
+      bootstrap.servers: "localhost:9092"

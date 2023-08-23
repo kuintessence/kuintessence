@@ -1,0 +1,37 @@
+common:
+  mq:
+    client_options:
+      bootstrap.servers: "localhost:9092"
+  telemetry:
+    enable: true
+    console:
+      enable_debug_logging: true
+      max_level: "Debug"
+  host:
+    bind_address: "0.0.0.0"
+    bind_port: 8002
+    upload_file_path: "."
+  redis:
+    urls:
+      - redis://127.0.0.1:6379/
+  db:
+    url: postgres://postgres:postgrespassword@localhost:5432/system
+file_system:
+  cache_base: test_dir
+  realtime:
+    request_topic: realtime-request
+    ws_topic: ws-manager
+    exp_msecs: 86400000
+  snapshot:
+    request_topic: snapshot-request
+    exp_msecs: 86400000
+  file_move:
+    file_upload_topic: file-upload
+    exp_msecs: 86400000
+  multipart:
+    exp_msecs: 86400000
+default_storage_server_id: <your-default-storage-server-id-in-database>
+bill_topic: bill
+co_repo_domain: <content-repo-url>
+message_topics:
+  realtime: realtime

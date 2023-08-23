@@ -1,0 +1,17 @@
+[package]
+name = "database-model"
+version = "0.1.0"
+edition = "2021"
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+[dependencies]
+alice-architecture = { workspace = true }
+# sea orm
+uuid = { workspace = true, features = [ "v4", "serde" ] }
+sea-orm = { workspace = true, features = [ "runtime-actix-rustls", "sqlx-postgres", "macros", "debug-print", "with-chrono", "with-json", "with-uuid", "with-rust_decimal" ] }
+postgres = { workspace = true }
+kernel = { workspace = true }
+billing-system-kernel = { workspace = true }
+num-traits = { workspace = true }
+anyhow = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true, features = [ "serde" ] }

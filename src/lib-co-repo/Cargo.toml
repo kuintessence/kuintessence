@@ -1,0 +1,24 @@
+[package]
+name = "lib-co-repo"
+version = "0.1.0"
+edition = "2021"
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+[dependencies]
+alice-architecture = { workspace = true }
+schemars = { workspace = true }
+serde_json = { workspace = true }
+serde = { workspace = true, features = [ "derive" ] }
+derive_builder = { workspace = true }
+async-trait = { workspace = true }
+uuid = { workspace = true, features = [ "v4", "serde" ] }
+anyhow = { workspace = true }
+tokio = { workspace = true, features = [ "full" ] }
+thiserror = { workspace = true }
+serde_yaml = { workspace = true }
+tar = { workspace = true }
+graphql_client = { workspace = true, features = [ "reqwest-rustls" ], optional = true }
+reqwest = { workspace = true, features = [ "json", "rustls-tls" ], optional = true }
+handlebars = { workspace = true }
+[features]
+default = [ "co-repo-client" ]
+co-repo-client = [ "graphql_client", "reqwest" ]

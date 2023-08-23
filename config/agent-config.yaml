@@ -1,0 +1,33 @@
+common:
+  telemetry:
+    enable: true
+    console:
+      enable: true
+      max_level: "Debug"
+    file:
+      enable: true
+      enable_debug_logging: true
+      path: "/home/path/to/agent/log"
+  db:
+    url: "/home/path/to/agent/data"
+  mq:
+    topics:
+      - "my-topic"
+    client_options:
+      bootstrap.servers: "localhost:9092"
+      group.id: "1"
+      enable.partition.eof: "false"
+      session.timeout.ms: "6000"
+      enable.auto.commit: "true"
+agent:
+  report_url: "localhost:8002/"
+  watch_interval: 1800
+  save_path: "/home/path/to/agent/tasks"
+  upload_base_url: "localhost:8002/"
+  download_base_url: "localhost:8002/"
+  scheduler:
+    type: "pbs" # or slurm
+  login:
+    url: "<oidc-provider>/auth/realms/<your-realm>/protocol/openid-connect/auth/device"
+    client_id: "<client-name>"
+    token_url: "<oidc-provider>/auth/realms/<your-realm>/protocol/openid-connect/token"
