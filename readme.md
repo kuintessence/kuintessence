@@ -18,6 +18,7 @@
 Kuintessence is an advanced computing orchestration system aimed at transforming the landscape of HPC workload and cluster management. It empowers HPC users by enabling them to focus on their scientific concepts, instead of grappling with the intricacies of the HPC environment. It heightens research efficiency to its maximum potential.
 
 ## Features
+
 - **Automated Task Scheduling**: Intelligently arrange tasks according to resource availability and priority.
 - **User-friendly Interface**: Easily submit, monitor and manage tasks.
 - **Optimized Resource Utilization**: Ensure the maximum utilization of HPC for peak efficiency.
@@ -58,8 +59,6 @@ We welcome any contributions from the community! Kindly consult our [contributin
 please feel free to contact us directly:
 
 - esr@suan.wang
-
-
 
 ## License
 
