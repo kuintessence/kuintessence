@@ -5,7 +5,7 @@
 <h3 align="center">Open Source HPC Computing System</h3>
 
 <p align="center">
-  <a href="https://www.gnu.org/licenses/agpl-3.0.html"><img src="https://img.shields.io/badge/licenses-agpl3.0-orange" alt="License: AGPLv3"></a>
+  <a href="https://www.gnu.org/licenses/agpl-3.0.html"><img src="https://img.shields.io/badge/licenses-AGPLv3-orange" alt="License: AGPLv3"></a>
   <a href="https://img.shields.io/badge/release-v0.0.1-blue"><img src="https://img.shields.io/badge/release-v0.0.1-blue" alt=" release"></a>
 </p>
 
