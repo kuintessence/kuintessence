@@ -48,15 +48,15 @@ docker-compose up -d
 
 ## Documentation
 
-[kuintessence docs](https://docs.kuintessence.com)
+[Kuintessence Docs](https://docs.kuintessence.com)
 
 ## Contribution
 
-We welcome any contribution from the community! Kindly consult our [contributing guide](contributing.md) to initiate your journey!
+We welcome any contributions from the community! Kindly consult our [contributing guide](contributing.md) to initiate your journey!
 
 ## Get involved
 
-please feel free to contact us directly:
+Please feel free to contact us:
 
 - kuintessence@suan.wang
 
