@@ -41,6 +41,7 @@ git clone https://github.com/nsccjn/kuintessence.git
 2. 打开 docker 目录
 
 ```
+cd docker-compose
 docker-compose up -d
 ```
 
