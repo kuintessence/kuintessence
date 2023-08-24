@@ -209,7 +209,7 @@ services:
     networks:
       - demonet
     ports:
-      - 8090:8090
+      - 80:80
     volumes:
       - ./nginx:/etc/nginx
   keycloak-mariadb:
