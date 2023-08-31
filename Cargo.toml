@@ -1,0 +1,48 @@
+[workspace]
+resolver = "2"
+members = [
+  "src/app",
+  "src/infrastructure/command",
+  "src/domain/workflow",
+  "src/domain/storage",
+  "src/domain/content-repo",
+  "src/service/workflow",
+  "src/service/storage",
+  "src/service/content-repo",
+]
+
+# WARNING: Replace all git links with registry packages before opening source
+[workspace.dependencies.alice-architecture]
+git = "https://github.com/kuintessence/alice"
+
+[workspace.dependencies.database-model]
+git = "https://github.com/kuintessence/database"
+
+[workspace.dependencies]
+domain-workflow = { path = "./src/domain/workflow" }
+domain-storage = { path = "./src/domain/storage" }
+domain-content-repo = { path = "./src/domain/content-repo" }
+infrastructure-command = { path = "./src/infrastructure/command" }
+# async
+async-trait = "0.1"
+tokio = "1"
+# log
+tracing = "0.1"
+# web
+reqwest = { version = "0.11", default-features = false }
+# data
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+uuid = { version = "1.4", features = ["v4", "serde"] }
+# time
+chrono = "0.4"
+# code
+typed-builder = "0.15.2"
+# error
+anyhow = "1.0"
+thiserror = "1.0"
+# number
+num-traits = "0.2"
+# miscellaneous
+rand = "0.8"
+blake3 = "1.3"

@@ -1,0 +1,13 @@
+[package]
+name = "service-content-repo"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+domain-content-repo = { workspace = true }
+# async
+async-trait = { workspace = true }
+# data
+uuid = { workspace = true }
+# error
+anyhow = { workspace = true }

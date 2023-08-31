@@ -1,0 +1,32 @@
+[package]
+name = "domain-workflow"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+domain-storage = { workspace = true }
+domain-content-repo = { workspace = true }
+alice-architecture = { workspace = true }
+database-model = { workspace = true }
+# async
+async-trait = { workspace = true }
+tokio = { workspace = true, features = ["sync"] }
+# error
+anyhow = { workspace = true }
+thiserror = "1.0"
+# time
+chrono = { workspace = true, features = ["serde"] }
+# number
+num-traits = { workspace = true }
+num-derive = "0.3"
+# data
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+# miscellaneous
+rand = { workspace = true }
+once_cell = "1.18"
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["full"] }
+mockall = "0.11"

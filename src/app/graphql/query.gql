@@ -1,0 +1,10 @@
+query GetTarById($content_entity_version_id: ID!) {
+  content_entity_versions_by_id(id: $content_entity_version_id) {
+    data {
+      id
+      filename_download
+      filename_disk
+      type
+    }
+  }
+}

@@ -1,0 +1,25 @@
+[package]
+name = "service-storage"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+alice-architecture = { workspace = true }
+domain-storage = { workspace = true }
+domain-workflow = { workspace = true }
+# concurrency
+async-trait = { workspace = true }
+tokio = { workspace = true, features = ["full"] }
+# error
+anyhow = { workspace = true }
+# cryptographic
+blake3 = { workspace = true }
+# time
+chrono = { workspace = true }
+# code
+typed-builder = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+# string
+regex = "1.7"
+infrastructure-command = { workspace = true }
