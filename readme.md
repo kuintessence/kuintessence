@@ -5,8 +5,9 @@
 <h3 align="center">Open Source HPC Computing Orchestration System</h3>
 
 <p align="center">
-  <a href="https://www.gnu.org/licenses/agpl-3.0.html"><img src="https://img.shields.io/badge/licenses-AGPLv3-orange" alt="License: AGPLv3"></a>
-  <a href="https://img.shields.io/badge/release-v0.0.1-blue"><img src="https://img.shields.io/badge/release-v0.0.1-blue" alt=" release"></a>
+  <a href="https://www.gnu.org/licenses/agpl-3.0.html" rel="nofollow"><img src="https://img.shields.io/badge/Licenses-AGPLv3-orange" alt="License: AGPLv3"></a>
+  <a href="https://img.shields.io/badge/release-v0.0.1-blue" rel="nofollow"><img src="https://img.shields.io/badge/Release-v0.0.1-blue" alt="Release"></a>
+  <a href="https://gitpod.io/#https://github.com/nsccjn/kuintessence" rel="nofollow"><img src="https://img.shields.io/badge/Gitpod-Ready--to--Code-blue?logo=gitpod" alt="Gitpod Ready-to-code"></a>
 </p>
 
 ---
