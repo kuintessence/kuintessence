@@ -1,0 +1,68 @@
+[package]
+name = "computing-orchestration-system"
+version = "0.1.0"
+edition = "2021"
+
+# WARNING: Replace all git links with registry packages before opening source
+[dependencies.alice-di]
+git = "https://github.com/kuintessence/alice"
+features = ["actix"]
+
+[dependencies.alice-infrastructure]
+git = "https://github.com/kuintessence/alice"
+features = ["full"]
+
+[dependencies.alice-web]
+git = "https://github.com/kuintessence/alice"
+
+[dependencies]
+alice-architecture = { workspace = true }
+domain-workflow = { workspace = true }
+domain-storage = { workspace = true }
+domain-content-repo = { workspace = true }
+service-workflow = { path = "../service/workflow" }
+service-storage = { path = "../service/storage" }
+service-content-repo = { path = "../service/content-repo" }
+database-model = { workspace = true }
+infrastructure-command = { workspace = true }
+# concurrency
+async-trait = { workspace = true }
+tokio = { workspace = true, features = ["full"] }
+dashmap = { workspace = true }
+flume = { workspace = true }
+futures = { workspace = true }
+# web
+reqwest = { workspace = true, features = ["json", "rustls-tls"] }
+actix-web = { workspace = true, features = ["rustls"] }
+actix-http = { workspace = true }
+actix-easy-multipart = { workspace = true }
+actix-cors = { workspace = true }
+actix-ws = { workspace = true }
+# error
+anyhow = { workspace = true }
+# log
+tracing = { workspace = true }
+tracing-actix-web = { workspace = true }
+# time
+chrono = { workspace = true }
+# code
+typed-builder = { workspace = true }
+# data
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+config = { workspace = true, features = ["yaml"] }
+sea-orm = { workspace = true, features = [
+  "runtime-actix-rustls",
+  "sqlx-postgres",
+] }
+# repositories
+graphql_client = { workspace = true, features = ["reqwest-rustls"] }
+redis = { workspace = true, features = ["tokio-comp", "cluster"] }
+# tui
+colored = { workspace = true }
+actix-i18n = { workspace = true }
+
+[dependencies.opendal]
+workspace = true
+features = ["services-s3"]

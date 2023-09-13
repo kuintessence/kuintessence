@@ -1,0 +1,22 @@
+[package]
+name = "domain-content-repo"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+alice-architecture = { workspace = true, features = ["derive"] }
+# async
+async-trait = { workspace = true }
+# data
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml = { workspace = true }
+uuid = { workspace = true }
+schemars = { workspace = true }
+# error
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+# render
+handlebars = { workspace = true }
+# miscellaneous
+tar = { workspace = true }

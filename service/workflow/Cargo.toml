@@ -1,0 +1,32 @@
+[package]
+name = "service-workflow"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+alice-architecture = { workspace = true }
+domain-storage = { workspace = true }
+domain-workflow = { workspace = true }
+domain-content-repo = { workspace = true }
+# concurrency
+async-trait = { workspace = true }
+# web
+reqwest = { workspace = true, features = ["json", "rustls-tls"] }
+url = { workspace = true }
+# log
+tracing = { workspace = true }
+# error
+anyhow = { workspace = true }
+# cryptographic
+blake3 = { workspace = true }
+# time
+chrono = { workspace = true }
+# code
+typed-builder = { workspace = true }
+# data
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+# render
+handlebars = { workspace = true }
+rand = { workspace = true }

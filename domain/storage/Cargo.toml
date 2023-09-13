@@ -1,0 +1,24 @@
+[package]
+name = "domain-storage"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+alice-architecture = { workspace = true }
+database-model = { workspace = true }
+# error
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+# time
+chrono = { workspace = true, features = ["serde"] }
+# number
+num-traits = { workspace = true }
+num-derive = { workspace = true }
+# data
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+async-trait = { workspace = true }
+[dev-dependencies]
+tokio = { workspace = true, features = ["full"] }
+mockall = { workspace = true }
