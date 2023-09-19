@@ -1,3 +1,5 @@
+pub use alice_architecture_macro::*;
+
 /// 聚合根标记特性
 pub trait IAggregateRoot {}
 

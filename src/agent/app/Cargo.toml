@@ -2,53 +2,67 @@
 name = "agent"
 version = "0.1.0"
 edition = "2021"
-[toolchain]
-targets = [ "x86_64-unknown-linux-gnu" ]
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies.alice-infrastructure]
+workspace = true
+features = ["telemetry"]
+
+[dependencies.alice-di]
+workspace = true
+
 [dependencies]
+domain = { path = "../domain", package = "domain-agent" }
+service = { path = "../service", package = "service-agent" }
+# alice
 alice-architecture = { workspace = true }
-alice-infrastructure = { workspace = true, features = [ "telemetry" ] }
-alice-di = { workspace = true }
-agent-core = { workspace = true }
-config = { workspace = true, features = [ "yaml" ] }
-# tokio
-tokio = { workspace = true, features = [ "full" ] }
-bytes = { workspace = true }
-tracing = { workspace = true }
-reqwest = { workspace = true, features = [ "json", "multipart", "stream", "rustls-tls" ] }
-# date and time
-chrono = { workspace = true, features = [ "serde" ] }
 # async
 async-trait = { workspace = true }
-# kafka
-rdkafka = { workspace = true }
+tokio = { version = "1", features = ["full"] }
+bytes = "1.4"
+futures = "0.3"
+flume = "0.10"
 # log
-log = { workspace = true }
-# Error Implement
-anyhow = { workspace = true }
-sea-orm = { workspace = true, features = [ "runtime-actix-rustls", "sqlx-postgres" ] }
-derive_builder = { workspace = true }
-colored = { workspace = true }
-serde = { workspace = true, features = [ "derive" ] }
-serde_json = { workspace = true }
-csv = { workspace = true }
-# futures
-futures = { workspace = true }
+tracing = "0.1"
+log = "0.4"
+# data
+config = { version = "0.13", features = ["yaml"] }
 uuid = { workspace = true }
-notify = { workspace = true, features = [ "macos_fsevent" ] }
-flume = { workspace = true }
-ctrlc = { workspace = true }
-blake3 = { workspace = true }
-url = { workspace = true }
-regex = { workspace = true }
-rand = { workspace = true }
-mockall = { workspace = true }
-crossterm = "0.27"
-base64-url = "2.0"
-bytesize = { version = "1.2", features = [ "serde" ] }
-rustix = { version = "0.38", default-features = false, features = [ "fs" ] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+bytesize = { version = "1.2", features = ["serde"] }
+csv = "1.2"
+# error
+anyhow = { workspace = true }
 thiserror = "1.0"
-[dev-dependencies]
+# web
+reqwest = { version = "0.11", default-features = false, features = [
+  "json",
+  "multipart",
+  "stream",
+  "rustls-tls",
+] }
+url = "2.3"
+base64-url = "2.0"
+# middlewares
+rdkafka = "0.29"
+# system
+notify = { version = "5.1", default-features = false, features = [
+  "macos_fsevent",
+] }
+rustix = { version = "0.38", default-features = false, features = ["fs"] }
+# test
+mockall = "0.11"
+# TUI
+colored = "2.0"
+crossterm = "0.27"
+# miscellaneous
+chrono = { workspace = true }
+regex = { workspace = true }
+blake3 = "1.3"
+rand = "0.8"
+# code
+typed-builder = { workspace = true }
 indoc = "2"
+
 [build-dependencies]
-cmake = { workspace = true }
+cmake = "0.1"

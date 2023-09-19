@@ -2,44 +2,39 @@ mod agent_client;
 mod counter;
 mod grant;
 
-use anyhow::{anyhow, bail};
-use config::Config;
+use anyhow::bail;
 use reqwest::header::AUTHORIZATION;
 use reqwest::Client;
+use url::Url;
 
 use self::agent_client::AgentClient;
 use self::counter::Counter;
-use self::grant::{poll_grant, PollError, PollParams};
+use self::grant::{poll_grant, PollError};
 use crate::config::AgentConfig;
-use crate::infrastructure::token;
+use crate::infrastructure::resource::ResourceStat;
+use crate::infrastructure::service::keycloak;
+use crate::infrastructure::service::keycloak::GrantInfo;
 use crate::infrastructure::token::Bearer;
-use crate::resource;
 
 /// Login,
 /// initialize `TOKEN` in `crate::token`,
 /// print the fetched agent ID.
 ///
 /// Return error when login fails.
-pub async fn go(config: &Config) -> anyhow::Result<()> {
-    let agent_config: AgentConfig = config.get("agent")?;
+pub async fn go(
+    agent_config: &AgentConfig,
+    resource_stat: &ResourceStat,
+) -> anyhow::Result<GrantInfo> {
     let login_config = &agent_config.login;
-    let proxy_config = &agent_config.ssh_proxy;
     let client = Client::new();
 
-    let scheduler = &agent_config.scheduler.r#type;
-    resource::init_stat(scheduler, proxy_config)
-        .map_err(|t| anyhow!("Unsupported scheduler: {t}"))?;
-
-    let data: AgentClient = client
-        .post(&login_config.url)
-        .form(&[("client_id", &login_config.client_id)])
-        .send()
+    let data: AgentClient = keycloak::login(&client, &login_config.url, &login_config.client_id)
         .await?
         .json()
         .await?;
     println!("{data}");
 
-    let token = {
+    let grant_info = {
         let counter = Counter::new(data.expires_in);
         counter.render()?; // render for the first second
         tokio::select! {
@@ -47,30 +42,35 @@ pub async fn go(config: &Config) -> anyhow::Result<()> {
                 done?;
                 return Err(PollError::Timeout("verification timeout".to_owned()).into());
             }
-            token = poll_grant(
-                &login_config.token_url,
-                PollParams::new(&login_config.client_id, &data.device_code)
+            info = poll_grant(
+                keycloak::grant_request(
+                    &client,
+                    &login_config.token_url,
+                    &login_config.client_id,
+                    &data.device_code,
+                )
             ) => {
-                token?
+                info?
             }
         }
     };
 
-    let bearer = Bearer::new(&token);
+    // Register agent itself with resources in computing orchestration system
+    let bearer = Bearer::new(&grant_info.access_token);
+    let reg_url = agent_config.report_url.parse::<Url>()?.join("/agent/Register")?;
     let status = client
-        .post(format!("{}/agent/Register", agent_config.report_url))
+        .post(reg_url)
         .header(AUTHORIZATION, bearer.as_str())
-        .json(&resource::stat().total().await?)
+        .json(&resource_stat.total().await?)
         .send()
         .await?
         .status();
     if !status.is_success() {
         bail!("failed to register in computing orchestration system: response status={status}");
     }
-    token::init(bearer).expect("TOKEN was set before!");
 
-    let agent_id = token::get().payload()?.sub;
+    let agent_id = bearer.payload()?.sub;
     println!("Your agent ID: {agent_id}");
 
-    Ok(())
+    Ok(grant_info)
 }

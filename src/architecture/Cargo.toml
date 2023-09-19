@@ -11,6 +11,7 @@ async-trait = { workspace = true }
 # Serializable Trait
 serde = { workspace = true, features = [ "derive" ] }
 thiserror = { workspace = true }
+alice-architecture-macro = { path = "../architecture-macro" }
 [features]
 default = [  ]
 etcd = [  ]

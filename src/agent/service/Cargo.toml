@@ -1,0 +1,13 @@
+[package]
+name = "service-agent"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+domain = { path = "../domain", package = "domain-agent" }
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }
+regex = { workspace = true }
+typed-builder = { workspace = true }

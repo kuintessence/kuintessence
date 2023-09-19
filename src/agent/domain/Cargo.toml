@@ -1,0 +1,13 @@
+[package]
+name = "domain-agent"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+alice-architecture = { workspace = true }
+uuid = { workspace = true, features = ["v4", "serde"] }
+serde = { workspace = true }
+async-trait = { workspace = true }
+anyhow = { workspace = true }
+chrono = { workspace = true }
+regex = { workspace = true }

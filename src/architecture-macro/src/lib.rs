@@ -1,7 +1,11 @@
-use proc_macro::TokenStream;
-mod default_enum;
+mod aggregate_root;
 
-#[proc_macro_derive(EnumDefault, attributes(enum_default))]
-pub fn enum_default(input: TokenStream) -> TokenStream {
-    default_enum::enum_default(proc_macro2::TokenStream::from(input)).into()
+use proc_macro::TokenStream;
+use syn::parse_macro_input;
+use syn::DeriveInput;
+
+#[proc_macro_derive(IAggregateRoot)]
+pub fn derive_aggregate_root(input: TokenStream) -> TokenStream {
+    let ast = parse_macro_input!(input as DeriveInput);
+    aggregate_root::impl_arrgegate_root(ast).into()
 }

@@ -1,21 +1,25 @@
 use std::sync::Arc;
 
-use agent_core::{repository::ITaskRepository, services::ITaskReportService};
-use reqwest::{header::AUTHORIZATION, Url};
+use domain::{repository::ITaskRepository, service::TaskReportService};
+use reqwest::Url;
+use typed_builder::TypedBuilder;
+use uuid::Uuid;
 
 use crate::{
-    dtos::{TaskResult, TaskUsedResource},
-    infrastructure::token,
+    dto::{Reply, TaskResult, TaskUsedResource},
+    infrastructure::token::TokenManager,
 };
 
+#[derive(TypedBuilder)]
 pub struct HttpClient {
-    client: Arc<reqwest::Client>,
-    repo: Arc<dyn ITaskRepository + Send + Sync>,
+    base: reqwest::Client,
+    token_manager: Arc<TokenManager>,
     base_url: Url,
+    repo: Arc<dyn ITaskRepository + Send + Sync>,
 }
 
 #[async_trait::async_trait]
-impl ITaskReportService for HttpClient {
+impl TaskReportService for HttpClient {
     async fn report_completed_task(&self, id: &str) -> anyhow::Result<()> {
         let task = self.repo.get_by_id(id).await?;
         let used_resources = task
@@ -29,7 +33,7 @@ impl ITaskReportService for HttpClient {
             &self.base_url.join("workflow-engine/ReceiveNodeStatus").unwrap(),
             &TaskResult {
                 id: id.to_string(),
-                status: crate::dtos::TaskResultStatus::Success,
+                status: crate::dto::TaskResultStatus::Success,
                 used_resources: used_resources.map(|used_resources| TaskUsedResource {
                     cpu: used_resources.cpu,
                     avg_memory: used_resources.avg_memory,
@@ -55,7 +59,7 @@ impl ITaskReportService for HttpClient {
             &self.base_url.join("workflow-engine/ReceiveNodeStatus").unwrap(),
             &TaskResult {
                 id: id.to_string(),
-                status: crate::dtos::TaskResultStatus::Failed,
+                status: crate::dto::TaskResultStatus::Failed,
                 message: message.to_string(),
                 ..Default::default()
             },
@@ -71,7 +75,7 @@ impl ITaskReportService for HttpClient {
             &self.base_url.join("workflow-engine/ReceiveNodeStatus").unwrap(),
             &TaskResult {
                 id: id.to_string(),
-                status: crate::dtos::TaskResultStatus::Paused,
+                status: crate::dto::TaskResultStatus::Paused,
                 ..Default::default()
             },
             3,
@@ -86,7 +90,7 @@ impl ITaskReportService for HttpClient {
             &self.base_url.join("workflow-engine/ReceiveNodeStatus").unwrap(),
             &TaskResult {
                 id: id.to_string(),
-                status: crate::dtos::TaskResultStatus::Continued,
+                status: crate::dto::TaskResultStatus::Continued,
                 ..Default::default()
             },
             3,
@@ -101,7 +105,7 @@ impl ITaskReportService for HttpClient {
             &self.base_url.join("workflow-engine/ReceiveNodeStatus").unwrap(),
             &TaskResult {
                 id: id.to_string(),
-                status: crate::dtos::TaskResultStatus::Deleted,
+                status: crate::dto::TaskResultStatus::Deleted,
                 ..Default::default()
             },
             3,
@@ -116,7 +120,7 @@ impl ITaskReportService for HttpClient {
             &self.base_url.join("workflow-engine/ReceiveNodeStatus").unwrap(),
             &TaskResult {
                 id: id.to_string(),
-                status: crate::dtos::TaskResultStatus::Start,
+                status: crate::dto::TaskResultStatus::Start,
                 ..Default::default()
             },
             3,
@@ -128,39 +132,27 @@ impl ITaskReportService for HttpClient {
 }
 
 impl HttpClient {
-    pub fn new(
-        client: Arc<reqwest::Client>,
-        base_url: Url,
-        repo: Arc<dyn ITaskRepository + Send + Sync>,
-    ) -> Self {
-        Self {
-            client,
-            base_url,
-            repo,
-        }
-    }
-
     async fn http_post<'a, REQ>(
         &self,
         url: &url::Url,
         body: &REQ,
         max_times: u64,
         timeout: u64,
-    ) -> anyhow::Result<reqwest::Response>
+    ) -> anyhow::Result<Reply<Uuid>>
     where
         REQ: serde::Serialize,
     {
-        let client = self.client.clone();
+        let client = self.base.clone();
         let mut times = 1u64;
         loop {
             tokio::select! {
-                x = client.post(url.clone()).header(AUTHORIZATION, token::get().as_str()).json(&body).send() => {
+                x = self.token_manager.send(&client, client.post(url.clone()).json(body)) => {
                     match x {
                         Ok(x) => {
-                            if let Err(e) = x.error_for_status_ref() {
+                            if !x.is_ok() {
                                 times += 1;
                                 if times == max_times {
-                                    return Err(anyhow::anyhow!(e));
+                                    return Err(x.error().into());
                                 }
                                 sleep(times).await;
                                 continue;
@@ -170,7 +162,7 @@ impl HttpClient {
                         Err(e) => {
                             times += 1;
                             if times == max_times {
-                                return Err(anyhow::anyhow!(e));
+                                return Err(e.into());
                             }
                             sleep(times).await;
                             continue;

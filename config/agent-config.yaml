@@ -7,27 +7,36 @@ common:
     file:
       enable: true
       enable_debug_logging: true
+      # Log path
       path: "/home/path/to/agent/log"
   db:
+    # Local json db
     url: "/home/path/to/agent/data"
   mq:
     topics:
       - "my-topic"
     client_options:
-      bootstrap.servers: "localhost:9092"
+      bootstrap.servers: "<mq-bootstrap-server>"
       group.id: "1"
       enable.partition.eof: "false"
       session.timeout.ms: "6000"
       enable.auto.commit: "true"
 agent:
-  report_url: "localhost:8002/"
+  report_url: "<kuintessence-url>"
   watch_interval: 1800
+  # Local save path
   save_path: "/home/path/to/agent/tasks"
-  upload_base_url: "localhost:8002/"
-  download_base_url: "localhost:8002/"
+  upload_base_url: "<kuintessence-url>"
+  download_base_url: "<kuintessence-url>"
   scheduler:
     type: "pbs" # or slurm
   login:
     url: "<oidc-provider>/auth/realms/<your-realm>/protocol/openid-connect/auth/device"
     client_id: "<client-name>"
     token_url: "<oidc-provider>/auth/realms/<your-realm>/protocol/openid-connect/token"
+  # Optional, required when using ssh
+  ssh_proxy:
+    host: "<remote-ip>"
+    username: "<remote-username>"
+    port: "<remote-ssh-port>"
+    home_dir: "<remote-workdir>"

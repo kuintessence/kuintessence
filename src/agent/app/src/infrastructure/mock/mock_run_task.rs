@@ -1,6 +1,6 @@
-use agent_core::{
-    models::TaskDisplayType,
-    services::{IRunJobService, ISubTaskService},
+use domain::{
+    model::vo::TaskDisplayType,
+    service::{RunJobService, SubTaskService},
 };
 use mockall::mock;
 
@@ -8,7 +8,7 @@ mock! {
     pub RunTask {}
 
     #[async_trait::async_trait]
-    impl IRunJobService for RunTask {
+    impl RunJobService for RunTask {
 
         async fn run_job(&self, id: &str) -> anyhow::Result<()>;
         async fn complete_job(&self, id: &str) -> anyhow::Result<()>;
@@ -16,7 +16,7 @@ mock! {
     }
 
     #[async_trait::async_trait]
-    impl ISubTaskService for RunTask {
+    impl SubTaskService for RunTask {
         async fn enqueue_sub_task(&self, id: &str) -> anyhow::Result<()>;
         async fn delete_sub_task(&self, id: &str) -> anyhow::Result<()>;
         async fn pause_sub_task(&self, id: &str) -> anyhow::Result<()>;

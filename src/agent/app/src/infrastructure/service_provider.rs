@@ -1,37 +1,46 @@
+use std::collections::HashMap;
+use std::path::Path;
+use std::sync::Arc;
+
+use alice_architecture::hosting::IBackgroundService;
+use alice_di::*;
+use domain::{
+    model::{entity::task::DeployerType, vo::TaskDisplayType},
+    sender::*,
+    service::*,
+};
+use service::prelude::*;
+use url::Url;
+
 use super::{
-    extra_services::{
+    http_client::HttpClient,
+    repository::JSONRepository,
+    resource::ResourceStat,
+    service::{
+        file_load_service::FileLoadServiceImpl,
         job_schedulers::{PBSClient, SlurmClient},
         software_deployers::{apptainer::ApptainerDeployer, spack::SpackDeployer},
     },
-    file_download_runner::{DownloadSender, FileDownloadRunner},
-    file_load_service::FileLoadService,
-    file_system_watch_runner::FileSystemWatchRunner,
-    file_upload_runner::{FileUploadRunner, UploadSender},
-    http_client::HttpClient,
-    interval_runner::IntervalRunner,
-    message_queue::KafkaMessageQueue,
-    repositories::JSONRepository,
-    software_deployment_runner::{SoftwareDeploymentRunner, SoftwareDeploymentSender},
-    task_scheduler_runner::{SubTaskReportService, TaskSchedulerRunner},
-    token,
+    ssh_proxy::SshProxy,
+    token::TokenManager,
 };
-use agent_core::{
-    models::{DeployerType, TaskDisplayType},
-    services::{
-        CollectionTaskService, DeploySoftwareService, IDeploySoftwareService, IDownloadSender,
-        IFileLoadService, IJobSchedulerService, IRunJobService, ISoftwareDeployerService,
-        ISoftwareDeploymentSender, ISubTaskReportService, ISubTaskService, ITaskSchedulerService,
-        IUploadSender, RunJobService, TaskSchedulerService,
-    },
+use crate::background_service::{
+    file_download_runner::DownloadSender, file_upload_runner::UploadSender,
+    software_deployment_runner::SoftwareDeploymentSender,
+    task_scheduler_runner::SubTaskReportService,
 };
-use alice_architecture::hosting::IBackgroundService;
-use alice_di::*;
-use std::{collections::HashMap, path::Path, sync::Arc};
+use crate::background_service::{prelude::*, resource_reporter::ResourceReporter};
 
 build_container! {
     #[derive(Clone)]
     pub struct ServiceProvider;
-    params(config: config::Config)
+    params(
+        config: config::Config,
+        ssh_proxy: Arc<SshProxy>,
+        token_manager: Arc<TokenManager>,
+        topic: String,
+        resource_stat: Arc<ResourceStat>
+    )
     common_config: alice_infrastructure::config::CommonConfig {
         build {
             let common_config: alice_infrastructure::config::CommonConfig = config.get("common").unwrap_or_default();
@@ -49,7 +58,7 @@ build_container! {
             Arc::new(JSONRepository::new(common_config.db().url()).await?)
         }
     }
-    job_scheduler: Arc<dyn IJobSchedulerService + Send + Sync> {
+    job_scheduler: Arc<dyn JobSchedulerService> {
         build async {
             let path = Path::new(agent_config.include_env_script_path.as_str());
             let include_env = if path.is_file() {
@@ -57,9 +66,9 @@ build_container! {
             } else {
                 agent_config.include_env_script.clone()
             };
-            let result: Arc<dyn IJobSchedulerService + Send + Sync> = match agent_config.scheduler.r#type.to_lowercase().as_str() {
-                "pbs" => Arc::new(PBSClient::new(agent_config.save_path.clone(), include_env, agent_config.ssh_proxy.clone())),
-                "slurm" => Arc::new(SlurmClient::new(agent_config.save_path.clone(), include_env, agent_config.ssh_proxy.clone())),
+            let result: Arc<dyn JobSchedulerService> = match agent_config.scheduler.r#type.to_lowercase().as_str() {
+                "pbs" => Arc::new(PBSClient::new(agent_config.save_path.clone(), include_env, ssh_proxy.clone())),
+                "slurm" => Arc::new(SlurmClient::new(agent_config.save_path.clone(), include_env, ssh_proxy.clone())),
                 _ => {
                     anyhow::bail!("job.scheduler.type hasn't been configured.")
                 }
@@ -85,13 +94,15 @@ build_container! {
             Arc::new(SoftwareDeploymentSender::new())
         }
     }
-    http_client: Arc<reqwest::Client> {
+    http_client: reqwest::Client {
         build {
-            Arc::new(reqwest::Client::builder().connect_timeout(std::time::Duration::from_secs(2)).build()?)
+            reqwest::Client::builder()
+                .connect_timeout(std::time::Duration::from_secs(2))
+                .build()?
         }
     }
     sub_task_report_service: Arc<SubTaskReportService> {
-        provide [Arc<dyn ISubTaskReportService + Send + Sync>]
+        provide [Arc<dyn ISubTaskReportService>]
         build {
             Arc::new(SubTaskReportService::new())
         }
@@ -106,17 +117,17 @@ build_container! {
             Arc::new(ApptainerDeployer::new("apptainer".to_string(), agent_config.container_save_path.clone(), None, agent_config.ssh_proxy.clone()))
         }
     }
-    deployers: HashMap<DeployerType, Arc<dyn ISoftwareDeployerService + Send + Sync>> {
+    deployers: HashMap<DeployerType, Arc<dyn SoftwareDeployerService>> {
         build {
-            let mut deployers: HashMap<DeployerType, Arc<dyn ISoftwareDeployerService + Send + Sync>> = HashMap::new();
+            let mut deployers: HashMap<DeployerType, Arc<dyn SoftwareDeployerService>> = HashMap::new();
             deployers.insert(spack_deployer_service.get_deployer_type(), spack_deployer_service.clone());
             deployers.insert(apptainer_deployer_service.get_deployer_type(), apptainer_deployer_service.clone());
             deployers
         }
     }
-    run_task_service: Arc<dyn IRunJobService + Send + Sync> {
+    run_task_service: Arc<dyn RunJobService> {
         build {
-            Arc::new(RunJobService::new(
+            Arc::new(RunJobServiceImpl::new(
                 job_scheduler.clone(),
                 repository.clone(),
                 repository.clone(),
@@ -127,9 +138,9 @@ build_container! {
             ))
         }
     }
-    deploy_software_service: Arc<dyn IDeploySoftwareService + Send + Sync> {
+    deploy_software_service: Arc<dyn DeploySoftwareService> {
         build {
-            Arc::new(DeploySoftwareService::new(repository.clone(), sub_task_report_service.clone(), deploy_sender.clone(), deployers.clone()))
+            Arc::new(DeploySoftwareServiceImpl::new(repository.clone(), sub_task_report_service.clone(), deploy_sender.clone(), deployers.clone()))
         }
     }
     software_deployment_runner: Arc<SoftwareDeploymentRunner> {
@@ -137,32 +148,38 @@ build_container! {
             Arc::new(SoftwareDeploymentRunner::new(deploy_sender.get_receiver(), deploy_software_service.clone()))
         }
     }
-    file_load_service: Arc<dyn IFileLoadService + Send + Sync> {
+    file_load_service: Arc<dyn FileLoadService> {
         build {
-            Arc::new(FileLoadService::new(agent_config.save_path.clone(), http_client.clone(), agent_config.upload_base_url.clone(), agent_config.ssh_proxy.clone()))
+            Arc::new(
+                FileLoadServiceImpl::new(
+                    agent_config.save_path.clone(),
+                    http_client.clone(),
+                    agent_config.upload_base_url.clone(),
+                    agent_config.ssh_proxy.clone(),
+            ))
         }
     }
-    collection_task_service: Arc<CollectionTaskService> {
+    collection_task_service: Arc<CollectionTaskServiceImpl> {
         build {
-            Arc::new(CollectionTaskService::new(repository.clone(), sub_task_report_service.clone(), file_load_service.clone()))
+            Arc::new(CollectionTaskServiceImpl::new(repository.clone(), sub_task_report_service.clone(), file_load_service.clone()))
         }
     }
-    task_scheduler_service: Arc<dyn ITaskSchedulerService + Send + Sync> {
+    task_scheduler_service: Arc<dyn TaskSchedulerService> {
         build {
-            let mut sub_task_services: HashMap<TaskDisplayType, Arc<dyn ISubTaskService + Sync + Send>> = HashMap::new();
+            let mut sub_task_services: HashMap<TaskDisplayType, Arc<dyn SubTaskService + Sync + Send>> = HashMap::new();
             sub_task_services.insert(run_task_service.get_task_type(), run_task_service.clone());
             sub_task_services.insert(deploy_software_service.get_task_type(), deploy_software_service.clone());
             sub_task_services.insert(collection_task_service.get_task_type(), collection_task_service.clone());
             Arc::new(
-                TaskSchedulerService::new(
+                TaskSchedulerServiceImpl::new(
                     repository.clone(),
                     repository.clone(),
-                    Arc::new(
-                        HttpClient::new(
-                            http_client.clone(),
-                            agent_config.report_url.parse().unwrap(),
-                            repository.clone(),
-                        )
+                    Arc::new(HttpClient::builder()
+                        .base(http_client.clone())
+                        .base_url(agent_config.report_url.parse().unwrap())
+                        .token_manager(token_manager.clone())
+                        .repo(repository.clone())
+                        .build()
                     ),
                     sub_task_services,
                     0,
@@ -211,18 +228,24 @@ build_container! {
     }
     message_queue: Arc<KafkaMessageQueue> {
         build {
-            // TODO: 创建新队列
-            // bin/kafka-topics.sh --create --topic quickstart-events --bootstrap-server localhost:9092
             let client_options = common_config.mq().client_options().clone();
             let mut topics = common_config.mq().topics().clone();
-            // It is safe to parse the token into `AgentId` after login
-            topics.push(token::get().payload().unwrap().preferred_username);
-            Arc::new(
-                KafkaMessageQueue::new(
-                    task_scheduler_service.clone(),
-                    topics,
-                    client_options,
-                )
+            topics.push(topic);
+            Arc::new(KafkaMessageQueue::new(
+                task_scheduler_service.clone(),
+                topics,
+                client_options,
+            ))
+        }
+    }
+    resource_reporter: Arc<ResourceReporter> {
+        build {
+            Arc::new(ResourceReporter::builder()
+                .update_url(agent_config.report_url.parse::<Url>()?.join("/agent/UpdateUsedResource")?)
+                .http_client(http_client.clone())
+                .token_manager(token_manager.clone())
+                .stat(resource_stat.clone())
+                .build()
             )
         }
     }
@@ -237,6 +260,7 @@ build_container! {
                     message_queue.clone(),
                     task_scheduler_runner.clone(),
                     software_deployment_runner.clone(),
+                    resource_reporter.clone(),
                 ];
             result
         }

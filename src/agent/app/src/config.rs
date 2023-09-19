@@ -42,6 +42,8 @@ pub struct SshProxyConfig {
     pub port: u16,
     #[serde(default = "SshProxyConfig::default_home_dir")]
     pub home_dir: String,
+    #[serde(default = "SshProxyConfig::default_save_dir")]
+    pub save_dir: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -109,6 +111,7 @@ impl Default for SshProxyConfig {
             username: Default::default(),
             port: Self::default_port(),
             home_dir: Self::default_home_dir(),
+            save_dir: Self::default_save_dir(),
         }
     }
 }
@@ -119,5 +122,8 @@ impl SshProxyConfig {
     }
     pub fn default_home_dir() -> String {
         "~".to_string()
+    }
+    pub fn default_save_dir() -> String {
+        "agent/tasks".to_string()
     }
 }
