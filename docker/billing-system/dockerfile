@@ -1,0 +1,20 @@
+ARG RUST_IMAGE=$BA_RUST_IMAGE
+ARG DEBIAN_IMAGE=$BA_DEBIAN_IMAGE
+
+FROM ${RUST_IMAGE} as build
+WORKDIR /app
+ENV CARGO_HTTP_MULTIPLEXING=false
+COPY . /app
+RUN rustup component add rustfmt
+RUN cargo build --bin=billing-system --release
+
+FROM ${DEBIAN_IMAGE}
+
+WORKDIR /app
+# copy the build artifact from the build stage
+COPY --from=build /app/resources /app/resources
+COPY --from=build /app/target/release/billing-system /app
+COPY --from=build /app/config/bill-system-config.yaml /app
+# set the startup command to run your binary
+EXPOSE 80
+CMD ["/app/billing-system", "bill-system-config.yaml"]

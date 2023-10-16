@@ -1,0 +1,19 @@
+[source.crates-io]
+replace-with = 'ustc'
+
+[build]
+rustc-wrapper = "/app/.cargo/bin/sccache"
+
+[source.tuna]
+registry = "https://mirrors.tuna.tsinghua.edu.cn/git/crates.io-index.git"
+
+# 上海交通大学
+[source.sjtu]
+registry = "https://mirrors.sjtug.sjtu.edu.cn/git/crates.io-index"
+
+# 中国科学技术大学
+[source.ustc]
+registry = "git://mirrors.ustc.edu.cn/crates.io-index"
+
+[source.scsw]
+registry = "https://nexus-cargo.dev.supercomputing.link/repository/cargo"
