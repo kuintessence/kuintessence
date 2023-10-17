@@ -1,14 +1,14 @@
 ARG RUST_IMAGE=${{ secrets.BA_RUST_IMAGE }}
 ARG DEBIAN_IMAGE=${{ secrets.BA_DEBIAN_IMAGE }}
 
-FROM ${RUST_IMAGE} as build
+FROM ${{RUST_IMAGE}} as build
 WORKDIR /app
 ENV CARGO_HTTP_MULTIPLEXING=false
 COPY . /app
 RUN rustup component add rustfmt
 RUN cargo build --bin=co --release
 
-FROM ${DEBIAN_IMAGE}
+FROM ${{DEBIAN_IMAGE}}
 
 WORKDIR /app
 # copy the build artifact from the build stage
