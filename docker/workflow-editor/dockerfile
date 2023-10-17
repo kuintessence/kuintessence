@@ -1,15 +1,13 @@
-ARG RUST_IMAGE=${{ secrets.BA_RUST_IMAGE }}
-ARG DEBIAN_IMAGE=${{ secrets.BA_DEBIAN_IMAGE }}
-
-FROM ${{RUST_IMAGE}} as build
+FROM rust:1.71.1-slim-bullseye as build
+RUN apt update -y && apt install gcc g++ cmake apt-transport-https ca-certificates -y && apt install libssl-dev openssl pkg-config git -y
 WORKDIR /app
 ENV CARGO_HTTP_MULTIPLEXING=false
 COPY . /app
 RUN rustup component add rustfmt
 RUN cargo build --bin=co --release
 
-FROM ${{DEBIAN_IMAGE}}
-
+FROM ubuntu:23.10
+RUN apt update -y && apt install apt-transport-https ca-certificates -y && apt install libssl-dev openssl pkg-config -y
 WORKDIR /app
 # copy the build artifact from the build stage
 COPY --from=build /app/resources /app/resources
