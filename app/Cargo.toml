@@ -3,20 +3,11 @@ name = "computing-orchestration-system"
 version = "0.1.0"
 edition = "2021"
 
-# WARNING: Replace all git links with registry packages before opening source
-[dependencies.alice-di]
-git = "https://github.com/kuintessence/alice"
-features = ["actix"]
-
-[dependencies.alice-infrastructure]
-git = "https://github.com/kuintessence/alice"
-features = ["full"]
-
-[dependencies.alice-web]
-git = "https://github.com/kuintessence/alice"
-
 [dependencies]
 alice-architecture = { workspace = true }
+alice-di = { workspace = true }
+alice-infrastructure = { workspace = true }
+alice-web = { workspace = true }
 domain-workflow = { workspace = true }
 domain-storage = { workspace = true }
 domain-content-repo = { workspace = true }

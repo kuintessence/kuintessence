@@ -18,6 +18,20 @@ git = "https://github.com/kuintessence/alice"
 [workspace.dependencies.database-model]
 git = "https://github.com/kuintessence/database"
 
+[workspace.dependencies.actix-i18n]
+git = "https://github.com/kuintessence/actix-i18n.git"
+
+[workspace.dependencies.alice-di]
+git = "https://github.com/kuintessence/alice"
+features = ["actix"]
+
+[workspace.dependencies.alice-infrastructure]
+git = "https://github.com/kuintessence/alice"
+features = ["full"]
+
+[workspace.dependencies.alice-web]
+git = "https://github.com/kuintessence/alice"
+
 [workspace.dependencies]
 domain-workflow = { path = "domain/workflow" }
 domain-storage = { path = "domain/storage" }
@@ -48,7 +62,6 @@ num-derive = "0.4"
 # miscellaneous
 rand = "0.8"
 blake3 = "1.5"
-actix-i18n = { git = "https://github.com/kuintessence/actix-i18n.git" }
 schemars = "0.8"
 handlebars = "4.4"
 tar = "0.4"
