@@ -1,8 +1,10 @@
 mod manifest;
+
 pub use self::manifest::{AbilityKind, Manifest, SoftwareComputingRepo};
 
 use std::io::{Cursor, Read};
-use alice_architecture::model::derive::AggregateRoot;
+
+use alice_architecture::model::AggregateRoot;
 use anyhow::Context;
 use serde::{Deserialize, Serialize};
 use tar::Archive;

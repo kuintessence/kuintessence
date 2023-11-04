@@ -1,4 +1,4 @@
-use alice_architecture::model::derive::AggregateRoot;
+use alice_architecture::model::AggregateRoot;
 use chrono::Utc;
 use database_model::system::prelude::FileSystemModel;
 use num_derive::{FromPrimitive, ToPrimitive};

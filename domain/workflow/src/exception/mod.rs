@@ -1,10 +1,9 @@
-use alice_architecture::response::derive::I18NEnum;
-use thiserror::Error;
+use alice_architecture::response::I18NEnum;
 use uuid::Uuid;
 
 pub type WorkflowResult<T> = Result<T, WorkflowException>;
 
-#[derive(Error, Debug, I18NEnum)]
+#[derive(Debug, thiserror::Error, I18NEnum)]
 pub enum WorkflowException {
     #[error("No node drafts in workflow draft.")]
     #[status(200)]

@@ -1,5 +1,5 @@
-use alice_architecture::model::derive::AggregateRoot;
-use serde::*;
+use alice_architecture::model::AggregateRoot;
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, AggregateRoot)]
 pub struct SoftwareSource {

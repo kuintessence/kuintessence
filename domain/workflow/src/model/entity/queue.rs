@@ -1,7 +1,7 @@
 use anyhow::{anyhow, bail};
 use std::collections::HashMap;
 
-use alice_architecture::model::derive::AggregateRoot;
+use alice_architecture::model::AggregateRoot;
 use database_model::system::prelude::QueueModel;
 use once_cell::sync::Lazy;
 use tokio::sync::Mutex;

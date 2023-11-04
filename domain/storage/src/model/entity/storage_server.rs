@@ -1,4 +1,4 @@
-use alice_architecture::model::derive::AggregateRoot;
+use alice_architecture::model::AggregateRoot;
 use anyhow::bail;
 use database_model::system::prelude::StorageServerModel;
 use serde::{Deserialize, Serialize};

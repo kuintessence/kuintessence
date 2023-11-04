@@ -1,7 +1,6 @@
 use std::string::FromUtf8Error;
-use thiserror::Error;
 
-#[derive(Debug, Error)]
+#[derive(Debug, thiserror::Error)]
 pub enum Exception {
     #[error("no such path: {0}.\n{1}")]
     NoSuchPath(String, #[source] std::io::Error),

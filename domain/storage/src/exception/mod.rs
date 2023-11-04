@@ -1,10 +1,9 @@
-use alice_architecture::response::derive::I18NEnum;
-use thiserror::Error;
+use alice_architecture::response::I18NEnum;
 use uuid::Uuid;
 
 pub type FileResult<T> = Result<T, FileException>;
 
-#[derive(Error, Debug, I18NEnum)]
+#[derive(Debug, thiserror::Error, I18NEnum)]
 pub enum FileException {
     #[status(100)]
     #[error("The uploading file with id: {meta_id} has the same hash: {hash} with already uploaded file: {already_id} in {destination}, so a flash upload was implemented instead.")]

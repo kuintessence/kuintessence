@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use alice_architecture::model::derive::AggregateRoot;
+use alice_architecture::model::AggregateRoot;
 use alice_architecture::repository::ReadOnlyRepository;
 use database_model::system::prelude::FlowDraftModel;
 // WARN: 依赖了另外一个领域的实体

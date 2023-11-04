@@ -1,4 +1,4 @@
-use alice_architecture::model::derive::AggregateRoot;
+use alice_architecture::model::AggregateRoot;
 use chrono::Utc;
 use database_model::system::prelude::FileMetadataModel;
 use serde::{Deserialize, Serialize};
