@@ -49,7 +49,11 @@ sea-orm = { workspace = true, features = [
 ] }
 # repositories
 graphql_client = { workspace = true, features = ["reqwest-rustls"] }
-redis = { workspace = true, features = ["tokio-comp", "cluster"] }
+redis = { workspace = true, features = [
+  "tokio-comp",
+  "cluster-async",
+  "connection-manager",
+] }
 # tui
 colored = { workspace = true }
 actix-i18n = { workspace = true }

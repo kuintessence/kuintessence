@@ -15,13 +15,13 @@ use sea_orm::{
     Condition, DatabaseBackend, QueryTrait, Statement,
 };
 
-use crate::infrastructure::database::SeaOrmDbRepository;
+use crate::infrastructure::database::OrmRepo;
 
 #[async_trait::async_trait]
-impl ReadOnlyRepository<NetDisk> for SeaOrmDbRepository {}
+impl ReadOnlyRepository<NetDisk> for OrmRepo {}
 
 #[async_trait::async_trait]
-impl MutableRepository<NetDisk> for SeaOrmDbRepository {
+impl MutableRepository<NetDisk> for OrmRepo {
     async fn insert(&self, entity: &NetDisk) -> anyhow::Result<Uuid> {
         let mut stmts = self.statements.lock().await;
         // Use user_id and user_id + 1 as flowdraft、 flowinstance folder's root id, to avoid concurrency logic error.
@@ -74,10 +74,10 @@ impl MutableRepository<NetDisk> for SeaOrmDbRepository {
 }
 
 #[async_trait::async_trait]
-impl DBRepository<NetDisk> for SeaOrmDbRepository {}
+impl DBRepository<NetDisk> for OrmRepo {}
 
 #[async_trait]
-impl NetDiskRepo for SeaOrmDbRepository {
+impl NetDiskRepo for OrmRepo {
     async fn create_root(&self) -> anyhow::Result<Uuid> {
         let mut stmts = self.statements.lock().await;
         let user_id = self.user_id()?;

@@ -9,7 +9,7 @@ use typed_builder::TypedBuilder;
 use uuid::Uuid;
 
 #[derive(TypedBuilder)]
-pub struct SeaOrmDbRepository {
+pub struct OrmRepo {
     pub db: Arc<Database>,
     #[builder(default)]
     pub statements: Arc<Mutex<Vec<Statement>>>,
@@ -18,7 +18,7 @@ pub struct SeaOrmDbRepository {
     pub user_id: Option<Uuid>,
 }
 
-impl SeaOrmDbRepository {
+impl OrmRepo {
     pub async fn save_changed(&self) -> anyhow::Result<bool> {
         if !self.can_drop.load(Ordering::Relaxed) {
             let mut stmts = self.statements.lock().await;
@@ -45,7 +45,7 @@ impl SeaOrmDbRepository {
     }
 }
 
-impl Drop for SeaOrmDbRepository {
+impl Drop for OrmRepo {
     fn drop(&mut self) {
         if !self.can_drop.load(Ordering::Relaxed) {
             tracing::trace!("{}", self.can_drop.load(Ordering::Relaxed));

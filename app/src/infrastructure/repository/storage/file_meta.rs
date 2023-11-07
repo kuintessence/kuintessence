@@ -11,10 +11,10 @@ use sea_orm::Condition;
 use sea_orm::QueryTrait;
 use std::sync::atomic::Ordering;
 
-use crate::infrastructure::database::SeaOrmDbRepository;
+use crate::infrastructure::database::OrmRepo;
 
 #[async_trait]
-impl FileMetaRepo for SeaOrmDbRepository {
+impl FileMetaRepo for OrmRepo {
     async fn get_by_hash_and_algorithm(
         &self,
         hash: &str,
@@ -38,7 +38,7 @@ impl FileMetaRepo for SeaOrmDbRepository {
 }
 
 #[async_trait::async_trait]
-impl ReadOnlyRepository<FileMeta> for SeaOrmDbRepository {
+impl ReadOnlyRepository<FileMeta> for OrmRepo {
     async fn get_by_id(&self, uuid: Uuid) -> anyhow::Result<FileMeta> {
         let model = FileMetadataEntity::find_by_id::<Uuid>(uuid)
             .one(self.db.get_connection())
@@ -49,7 +49,7 @@ impl ReadOnlyRepository<FileMeta> for SeaOrmDbRepository {
 }
 
 #[async_trait::async_trait]
-impl MutableRepository<FileMeta> for SeaOrmDbRepository {
+impl MutableRepository<FileMeta> for OrmRepo {
     async fn insert(&self, entity: &FileMeta) -> anyhow::Result<Uuid> {
         let mut stmts = self.statements.lock().await;
         let active_model = FileMetadataModel::try_from(entity.to_owned())?.into_set();
@@ -66,4 +66,4 @@ impl MutableRepository<FileMeta> for SeaOrmDbRepository {
 }
 
 #[async_trait::async_trait]
-impl DBRepository<FileMeta> for SeaOrmDbRepository {}
+impl DBRepository<FileMeta> for OrmRepo {}

@@ -6,10 +6,10 @@ use database_model::system::prelude::{QueueActiveModel, QueueColumn, QueueEntity
 use domain_workflow::model::entity::Queue;
 use sea_orm::{prelude::*, sea_query::OnConflict, ConnectionTrait, QueryTrait, Set};
 
-use crate::infrastructure::database::SeaOrmDbRepository;
+use crate::infrastructure::database::OrmRepo;
 
 #[async_trait::async_trait]
-impl ReadOnlyRepository<Queue> for SeaOrmDbRepository {
+impl ReadOnlyRepository<Queue> for OrmRepo {
     async fn get_by_id(&self, uuid: Uuid) -> anyhow::Result<Queue> {
         let queue: Queue = QueueEntity::find_by_id(uuid)
             .one(self.db.get_connection())
@@ -30,7 +30,7 @@ impl ReadOnlyRepository<Queue> for SeaOrmDbRepository {
 }
 
 #[async_trait]
-impl MutableRepository<Queue> for SeaOrmDbRepository {
+impl MutableRepository<Queue> for OrmRepo {
     /// 插入数据
     async fn insert(&self, entity: &Queue) -> anyhow::Result<Uuid> {
         let mut stmts = self.statements.lock().await;
@@ -69,4 +69,4 @@ impl MutableRepository<Queue> for SeaOrmDbRepository {
 }
 
 #[async_trait]
-impl DBRepository<Queue> for SeaOrmDbRepository {}
+impl DBRepository<Queue> for OrmRepo {}

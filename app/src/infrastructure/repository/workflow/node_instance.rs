@@ -10,10 +10,10 @@ use domain_workflow::{
 use sea_orm::prelude::*;
 use sea_orm::QueryTrait;
 
-use crate::infrastructure::database::SeaOrmDbRepository;
+use crate::infrastructure::database::OrmRepo;
 
 #[async_trait::async_trait]
-impl ReadOnlyRepository<NodeInstance> for SeaOrmDbRepository {
+impl ReadOnlyRepository<NodeInstance> for OrmRepo {
     async fn get_by_id(&self, uuid: Uuid) -> anyhow::Result<NodeInstance> {
         NodeInstanceEntity::find_by_id(uuid)
             .one(self.db.get_connection())
@@ -30,7 +30,7 @@ impl ReadOnlyRepository<NodeInstance> for SeaOrmDbRepository {
 }
 
 #[async_trait::async_trait]
-impl MutableRepository<NodeInstance> for SeaOrmDbRepository {
+impl MutableRepository<NodeInstance> for OrmRepo {
     async fn update(&self, entity: &NodeInstance) -> anyhow::Result<()> {
         let mut stmts = self.statements.lock().await;
         let stmt =
@@ -56,10 +56,10 @@ impl MutableRepository<NodeInstance> for SeaOrmDbRepository {
     }
 }
 
-impl DBRepository<NodeInstance> for SeaOrmDbRepository {}
+impl DBRepository<NodeInstance> for OrmRepo {}
 
 #[async_trait::async_trait]
-impl NodeInstanceRepo for SeaOrmDbRepository {
+impl NodeInstanceRepo for OrmRepo {
     async fn get_node_sub_node_instances(
         &self,
         batch_parent_id: Uuid,

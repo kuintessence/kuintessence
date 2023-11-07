@@ -8,13 +8,13 @@ use domain_storage::repository::FileStorageRepo;
 use sea_orm::{ColumnTrait, Condition, ConnectionTrait, EntityTrait, QueryFilter, QueryTrait};
 use uuid::Uuid;
 
-use crate::infrastructure::database::SeaOrmDbRepository;
+use crate::infrastructure::database::OrmRepo;
 
 #[async_trait::async_trait]
-impl ReadOnlyRepository<FileStorage> for SeaOrmDbRepository {}
+impl ReadOnlyRepository<FileStorage> for OrmRepo {}
 
 #[async_trait::async_trait]
-impl MutableRepository<FileStorage> for SeaOrmDbRepository {
+impl MutableRepository<FileStorage> for OrmRepo {
     async fn insert(&self, entity: &FileStorage) -> anyhow::Result<Uuid> {
         let mut stmts = self.statements.lock().await;
         let mut model = FileStorageModel::try_from(entity.to_owned())?;
@@ -33,10 +33,10 @@ impl MutableRepository<FileStorage> for SeaOrmDbRepository {
 }
 
 #[async_trait::async_trait]
-impl DBRepository<FileStorage> for SeaOrmDbRepository {}
+impl DBRepository<FileStorage> for OrmRepo {}
 
 #[async_trait::async_trait]
-impl FileStorageRepo for SeaOrmDbRepository {
+impl FileStorageRepo for OrmRepo {
     async fn get_by_storage_server_id_and_meta_id(
         &self,
         storage_server_id: Uuid,

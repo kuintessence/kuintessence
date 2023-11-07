@@ -11,10 +11,10 @@ use sea_orm::prelude::*;
 use sea_orm::ActiveValue;
 use sea_orm::QueryTrait;
 
-use crate::infrastructure::database::SeaOrmDbRepository;
+use crate::infrastructure::database::OrmRepo;
 
 #[async_trait::async_trait]
-impl ReadOnlyRepository<WorkflowInstance> for SeaOrmDbRepository {
+impl ReadOnlyRepository<WorkflowInstance> for OrmRepo {
     async fn get_by_id(&self, uuid: Uuid) -> anyhow::Result<WorkflowInstance> {
         let entity = FlowInstanceEntity::find_by_id(uuid)
             .one(self.db.get_connection())
@@ -29,7 +29,7 @@ impl ReadOnlyRepository<WorkflowInstance> for SeaOrmDbRepository {
 }
 
 #[async_trait::async_trait]
-impl MutableRepository<WorkflowInstance> for SeaOrmDbRepository {
+impl MutableRepository<WorkflowInstance> for OrmRepo {
     async fn update(&self, entity: &WorkflowInstance) -> anyhow::Result<()> {
         let mut stmts = self.statements.lock().await;
         let model = FlowInstanceModel::try_from(entity.to_owned())?;
@@ -59,10 +59,10 @@ impl MutableRepository<WorkflowInstance> for SeaOrmDbRepository {
     }
 }
 
-impl DBRepository<WorkflowInstance> for SeaOrmDbRepository {}
+impl DBRepository<WorkflowInstance> for OrmRepo {}
 
 #[async_trait::async_trait]
-impl WorkflowInstanceRepo for SeaOrmDbRepository {
+impl WorkflowInstanceRepo for OrmRepo {
     async fn get_by_node_id(&self, node_id: Uuid) -> anyhow::Result<WorkflowInstance> {
         let workflow_instance_id = ReadOnlyRepository::<NodeInstance>::get_by_id(self, node_id)
             .await?

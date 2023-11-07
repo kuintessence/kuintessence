@@ -3,10 +3,10 @@ use domain_workflow::repository::InstalledSoftwareRepo;
 use sea_orm::prelude::*;
 use sea_orm::sea_query::Expr;
 
-use crate::infrastructure::database::SeaOrmDbRepository;
+use crate::infrastructure::database::OrmRepo;
 
 #[async_trait::async_trait]
-impl InstalledSoftwareRepo for SeaOrmDbRepository {
+impl InstalledSoftwareRepo for OrmRepo {
     async fn is_software_satisfied(
         &self,
         software_name: &str,

@@ -2,10 +2,10 @@ use database_model::agent::prelude::{SoftwareBlockListColumn, SoftwareBlockListE
 use domain_workflow::repository::SoftwareBlockListRepo;
 use sea_orm::prelude::*;
 
-use crate::infrastructure::database::SeaOrmDbRepository;
+use crate::infrastructure::database::OrmRepo;
 
 #[async_trait::async_trait]
-impl SoftwareBlockListRepo for SeaOrmDbRepository {
+impl SoftwareBlockListRepo for OrmRepo {
     async fn is_software_version_blocked(
         &self,
         software_name: &str,

@@ -6,18 +6,16 @@ use domain_storage::{model::entity::Multipart, repository::MultipartRepo};
 use redis::Cmd;
 use uuid::Uuid;
 
-use crate::infrastructure::database::RedisRepository;
+use crate::infrastructure::database::RedisRepo;
 
 #[async_trait::async_trait]
-impl MultipartRepo for RedisRepository {
+impl MultipartRepo for RedisRepo {
     async fn get_one_by_key_regex(&self, regex: &str) -> anyhow::Result<Option<Multipart>> {
-        let mut connection = self.client.get_connection()?;
-        connection.check_open()?;
-        let keys = connection.query_keys(regex)?;
+        let keys = self.query_keys(regex).await?;
         let key = keys.first();
         Ok(match key {
             Some(el) => {
-                let x = connection.query::<String>(&Cmd::get(el))?;
+                let x = self.query::<String>(&Cmd::get(el)).await?;
                 let result = serde_json::from_str::<Multipart>(&x)?;
                 Some(result)
             }
@@ -26,36 +24,33 @@ impl MultipartRepo for RedisRepository {
     }
 
     async fn delete_by_key_regex(&self, regex: &str) -> anyhow::Result<()> {
-        let mut connection = self.client.get_connection()?;
-        connection.check_open()?;
-        let keys = connection.query_keys(regex)?;
+        let keys = self.query_keys(regex).await?;
         let key = keys.first().ok_or(anyhow!("No such multipart with regex: {regex}"))?;
-        connection.query(&Cmd::del(key))?;
+        self.query(&Cmd::del(key)).await?;
         Ok(())
     }
 }
 
 #[async_trait::async_trait]
-impl LeaseDBRepository<Multipart> for RedisRepository {}
+impl LeaseDBRepository<Multipart> for RedisRepo {}
 
 #[async_trait::async_trait]
-impl DBRepository<Multipart> for RedisRepository {}
+impl DBRepository<Multipart> for RedisRepo {}
 
 #[async_trait::async_trait]
-impl LeaseRepository<Multipart> for RedisRepository {
+impl LeaseRepository<Multipart> for RedisRepo {
     async fn update_with_lease(
         &self,
         key: &str,
         entity: &Multipart,
         ttl: i64,
     ) -> anyhow::Result<()> {
-        let mut connection = self.client.get_connection()?;
-        connection.check_open()?;
-        connection.query(&Cmd::pset_ex(
+        self.query(&Cmd::pset_ex(
             key,
             serde_json::to_string_pretty(&entity)?,
             ttl as usize,
-        ))?;
+        ))
+        .await?;
         Ok(())
     }
 
@@ -65,19 +60,18 @@ impl LeaseRepository<Multipart> for RedisRepository {
         entity: &Multipart,
         ttl: i64,
     ) -> anyhow::Result<Uuid> {
-        let mut connection = self.client.get_connection()?;
-        connection.check_open()?;
-        connection.query(&Cmd::pset_ex(
+        self.query(&Cmd::pset_ex(
             key,
             serde_json::to_string_pretty(&entity)?,
             ttl as usize,
-        ))?;
+        ))
+        .await?;
         Ok(entity.meta_id)
     }
 }
 
 #[async_trait::async_trait]
-impl ReadOnlyRepository<Multipart> for RedisRepository {}
+impl ReadOnlyRepository<Multipart> for RedisRepo {}
 
 #[async_trait::async_trait]
-impl MutableRepository<Multipart> for RedisRepository {}
+impl MutableRepository<Multipart> for RedisRepo {}

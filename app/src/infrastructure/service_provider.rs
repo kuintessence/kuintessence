@@ -34,7 +34,7 @@ use service_workflow::prelude::*;
 use super::{
     config::*,
     database::{
-        graphql::content_repo::ContentRepository, RedisClient, RedisRepository, SeaOrmDbRepository,
+        graphql::content_repo::ContentRepository, RedisClient, RedisRepo, OrmRepo,
     },
     internal_message_consumer,
     service::prelude::*,
@@ -99,11 +99,11 @@ build_container! {
                 ))
         }
     }
-    scoped redis_repository: Arc<RedisRepository> {
+    scoped redis_repository: Arc<RedisRepo> {
         provide[Arc<dyn MoveRegistrationRepo>]
         build {
             Arc::new(
-                RedisRepository::builder()
+                RedisRepo::builder()
                     .client(self.redis_client.clone())
                     .user_id(user_id)
                     .build(),
@@ -115,10 +115,10 @@ build_container! {
             Arc::new(Database::new(&common_config.db.url).await)
         }
     }
-    scoped sea_orm_repository: Arc<SeaOrmDbRepository> {
+    scoped sea_orm_repository: Arc<OrmRepo> {
         build {
             Arc::new(
-                SeaOrmDbRepository::builder()
+                OrmRepo::builder()
                     .db(sp.provide())
                     .user_id(user_id)
                     .build(),

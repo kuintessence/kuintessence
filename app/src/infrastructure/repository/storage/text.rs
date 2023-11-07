@@ -6,38 +6,36 @@ use domain_storage::repository::TextStorageRepo;
 use redis::Cmd;
 use uuid::Uuid;
 
-use crate::infrastructure::database::RedisRepository;
+use crate::infrastructure::database::RedisRepo;
 
 const TEXT_KEY_PREFIX: &str = "text_";
 
 #[async_trait]
-impl TextStorageRepo for RedisRepository {
+impl TextStorageRepo for RedisRepo {
     async fn get_by_ids(&self, ids: &[Uuid]) -> anyhow::Result<Vec<(Uuid, String)>> {
-        let mut connection = self.client.get_connection()?;
-        connection.check_open()?;
         let keys = ids.iter().map(|el| format!("{TEXT_KEY_PREFIX}{el}")).collect::<Vec<_>>();
         let mut values = vec![];
         if keys.len() == 1 {
-            values =
-                vec![connection
-                    .query::<String>(&Cmd::get::<String>(keys.get(0).unwrap().to_owned()))?];
+            values = vec![
+                self.query::<String>(&Cmd::get::<String>(keys.get(0).unwrap().to_owned()))
+                    .await?,
+            ];
         } else if !keys.is_empty() {
-            values = connection.query::<Vec<String>>(&Cmd::get::<Vec<String>>(keys))?;
+            values = self.query::<Vec<String>>(&Cmd::get::<Vec<String>>(keys)).await?;
         }
         Ok(ids.iter().copied().zip(values).collect::<Vec<_>>())
     }
 
     async fn text_already_uuid(&self, text: &str) -> anyhow::Result<Option<Uuid>> {
-        let mut connection = self.client.get_connection()?;
-        connection.check_open()?;
-        let keys = connection.query_keys(&format!("{TEXT_KEY_PREFIX}*"))?;
+        let keys = self.query_keys(&format!("{TEXT_KEY_PREFIX}*")).await?;
         let mut values = vec![];
         if keys.len() == 1 {
-            values =
-                vec![connection
-                    .query::<String>(&Cmd::get::<String>(keys.get(0).unwrap().to_owned()))?];
+            values = vec![
+                self.query::<String>(&Cmd::get::<String>(keys.get(0).unwrap().to_owned()))
+                    .await?,
+            ];
         } else if !keys.is_empty() {
-            values = connection.query::<Vec<String>>(&Cmd::get::<Vec<String>>(keys.to_owned()))?;
+            values = self.query::<Vec<String>>(&Cmd::get::<Vec<String>>(keys.to_owned())).await?;
         }
         let already_kv = keys.iter().zip(values).find(|(_, value)| value.eq(&text));
         Ok(match already_kv {
@@ -48,12 +46,10 @@ impl TextStorageRepo for RedisRepository {
 }
 
 #[async_trait::async_trait]
-impl ReadOnlyRepository<TextStorage> for RedisRepository {
+impl ReadOnlyRepository<TextStorage> for RedisRepo {
     async fn get_by_id(&self, uuid: Uuid) -> anyhow::Result<TextStorage> {
-        let mut connection = self.client.get_connection()?;
-        connection.check_open()?;
         let result: Option<String> =
-            connection.query(&Cmd::get(format!("{TEXT_KEY_PREFIX}{uuid}")))?;
+            self.query(&Cmd::get(format!("{TEXT_KEY_PREFIX}{uuid}"))).await?;
         Ok(TextStorage {
             key: Some(uuid),
             value: result.context("No such text key!")?,
@@ -62,32 +58,27 @@ impl ReadOnlyRepository<TextStorage> for RedisRepository {
 }
 
 #[async_trait::async_trait]
-impl MutableRepository<TextStorage> for RedisRepository {
+impl MutableRepository<TextStorage> for RedisRepo {
     async fn update(&self, entity: &TextStorage) -> anyhow::Result<()> {
-        let mut connection = self.client.get_connection()?;
-        connection.check_open()?;
-
-        connection.query(&Cmd::getset(
+        self.query(&Cmd::getset(
             format!(
                 "{TEXT_KEY_PREFIX}{}",
                 entity.key.ok_or(anyhow::anyhow!("No such text key!"))?
             ),
             entity.value.to_owned(),
-        ))?;
+        )).await?;
         Ok(())
     }
 
     async fn insert(&self, entity: &TextStorage) -> anyhow::Result<Uuid> {
-        let mut connection = self.client.get_connection()?;
-        connection.check_open()?;
         let mut result = entity.clone();
 
         let already_key = self.text_already_uuid(&entity.value).await?;
         result.key = entity.key.or(already_key).or(Some(Uuid::new_v4()));
-        connection.query(&Cmd::set(
+        self.query(&Cmd::set(
             format!("{TEXT_KEY_PREFIX}{}", result.key.unwrap()),
             entity.value.to_owned(),
-        ))?;
+        )).await?;
         Ok(result.key.unwrap())
     }
 
@@ -99,9 +90,7 @@ impl MutableRepository<TextStorage> for RedisRepository {
     }
 
     async fn delete_by_id(&self, uuid: Uuid) -> anyhow::Result<()> {
-        let mut connection = self.client.get_connection()?;
-        connection.check_open()?;
-        connection.query(&Cmd::del(format!("{TEXT_KEY_PREFIX}{uuid}")))?;
+        self.query(&Cmd::del(format!("{TEXT_KEY_PREFIX}{uuid}"))).await?;
         Ok(())
     }
 
@@ -110,4 +99,4 @@ impl MutableRepository<TextStorage> for RedisRepository {
     }
 }
 
-impl DBRepository<TextStorage> for RedisRepository {}
+impl DBRepository<TextStorage> for RedisRepo {}
