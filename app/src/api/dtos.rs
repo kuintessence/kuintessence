@@ -2,7 +2,7 @@ use actix_easy_multipart::{tempfile::Tempfile, text::Text, MultipartForm};
 use domain_storage::model::{
     entity::{
         move_registration::{MoveDestination, RecordNetDisk},
-        net_disk::{RecordNetDiskKind, FileType},
+        net_disk::{FileType, RecordNetDiskKind},
         MoveRegistration,
     },
     vo::HashAlgorithm,
@@ -67,9 +67,9 @@ pub struct PreparePartialUpload {
     pub file_name: String,
     pub hash: String,
     pub hash_algorithm: FileHashAlgorithm,
-    pub size: usize,
-    pub count: usize,
     pub file_metadata_id: Option<Uuid>,
+    pub size: u64,
+    pub count: u64,
     #[serde(flatten)]
     pub r#type: PreparePartialUploadFrom,
 }
@@ -87,7 +87,7 @@ pub enum PreparePartialUploadFrom {
     SnapShot {
         node_id: Uuid,
         file_id: Uuid,
-        timestamp: i64,
+        timestamp: u64,
     },
 }
 

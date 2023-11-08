@@ -2,13 +2,14 @@ use alice_architecture::repository::{DBRepository, MutableRepository, ReadOnlyRe
 use anyhow::anyhow;
 
 use async_trait::async_trait;
-use database_model::system::prelude::*;
+use database_model::file_metadata;
 use domain_storage::model::entity::FileMeta;
 use domain_storage::model::vo::HashAlgorithm;
 use domain_storage::repository::FileMetaRepo;
 use sea_orm::prelude::*;
 use sea_orm::Condition;
 use sea_orm::QueryTrait;
+use sea_orm::Set;
 use std::sync::atomic::Ordering;
 
 use crate::infrastructure::database::OrmRepo;
@@ -21,11 +22,11 @@ impl FileMetaRepo for OrmRepo {
         hash_algorithm: &HashAlgorithm,
     ) -> anyhow::Result<Option<FileMeta>> {
         Ok(
-            match FileMetadataEntity::find()
+            match file_metadata::Entity::find()
                 .filter(
                     Condition::all()
-                        .add(FileMetadataColumn::Hash.eq(hash))
-                        .add(FileMetadataColumn::HashAlgorithm.eq(hash_algorithm.to_string())),
+                        .add(file_metadata::Column::Hash.eq(hash))
+                        .add(file_metadata::Column::HashAlgorithm.eq(hash_algorithm.to_string())),
                 )
                 .one(self.db.get_connection())
                 .await?
@@ -52,8 +53,15 @@ impl ReadOnlyRepository<FileMeta> for OrmRepo {
 impl MutableRepository<FileMeta> for OrmRepo {
     async fn insert(&self, entity: &FileMeta) -> anyhow::Result<Uuid> {
         let mut stmts = self.statements.lock().await;
-        let active_model = FileMetadataModel::try_from(entity.to_owned())?.into_set();
-        let stmt = FileMetadataEntity::insert(active_model)
+        let active_model = file_metadata::ActiveModel {
+            id: Set(entity.id),
+            name: Set(entity.name.to_owned()),
+            hash: Set(entity.hash.to_owned()),
+            hash_algorithm: Set(entity.hash_algorithm.to_string()),
+            size: Set(entity.size as i64),
+            ..Default::default()
+        };
+        let stmt = file_metadata::Entity::insert(active_model)
             .build(self.db.get_connection().get_database_backend());
         stmts.push(stmt);
         self.can_drop.store(false, Ordering::Relaxed);

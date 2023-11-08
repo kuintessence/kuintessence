@@ -40,18 +40,3 @@ pub enum UsecaseMaterial {
     UsecaseSpec(Box<UsecaseSpec>),
     CollectedOutList(Vec<CollectedOut>),
 }
-#[derive(JsonSchema, Serialize, Deserialize, Debug, Clone)]
-#[serde(deny_unknown_fields, rename_all = "camelCase")]
-/// 所需物理资源
-pub struct Requirements {
-    /// 核心数
-    pub cpu_cores: Option<usize>,
-    /// 节点数
-    pub node_count: Option<isize>,
-    /// 最长等待时间（s）
-    pub max_wall_time: Option<usize>,
-    /// 最大核时消耗 (s)
-    pub max_cpu_time: Option<usize>,
-    /// 定时终止 (utc 0 时区 时间戳)
-    pub stop_time: Option<usize>,
-}

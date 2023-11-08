@@ -11,6 +11,5 @@ pub async fn ws_handler(
     #[inject] ws_opener: Arc<WsSessionOpener>,
 ) -> Result<HttpResponse, actix_web::Error> {
     tracing::info!("got websocket request");
-    // let ws_manager: Arc<dyn IWsManager > = sp.provide();
     ws_opener.open_session(req, body).await
 }

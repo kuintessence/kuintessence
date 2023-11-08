@@ -2,21 +2,20 @@ use std::sync::atomic::Ordering;
 
 use alice_architecture::repository::{DBRepository, MutableRepository, ReadOnlyRepository};
 
-use database_model::system::prelude::*;
+use database_model::flow_instance;
 use domain_workflow::{
     model::entity::{NodeInstance, WorkflowInstance},
     repository::WorkflowInstanceRepo,
 };
-use sea_orm::prelude::*;
-use sea_orm::ActiveValue;
-use sea_orm::QueryTrait;
+use sea_orm::{prelude::*, Set};
+use sea_orm::{Condition, QueryTrait};
 
 use crate::infrastructure::database::OrmRepo;
 
 #[async_trait::async_trait]
 impl ReadOnlyRepository<WorkflowInstance> for OrmRepo {
     async fn get_by_id(&self, uuid: Uuid) -> anyhow::Result<WorkflowInstance> {
-        let entity = FlowInstanceEntity::find_by_id(uuid)
+        let entity = flow_instance::Entity::find_by_id(uuid)
             .one(self.db.get_connection())
             .await?
             .ok_or(anyhow::anyhow!("There is no such flow_instance id: {uuid}",))?;
@@ -32,11 +31,15 @@ impl ReadOnlyRepository<WorkflowInstance> for OrmRepo {
 impl MutableRepository<WorkflowInstance> for OrmRepo {
     async fn update(&self, entity: &WorkflowInstance) -> anyhow::Result<()> {
         let mut stmts = self.statements.lock().await;
-        let model = FlowInstanceModel::try_from(entity.to_owned())?;
-        let mut active_model: FlowInstanceActiveModel = model.into();
-        active_model.spec.reset();
-        active_model.status.reset();
-        let stmt = FlowInstanceEntity::update(active_model)
+        let active_model = flow_instance::ActiveModel {
+            status: Set(entity.status.to_owned() as i32),
+            spec: Set(serde_json::to_value(entity.spec.to_owned())?),
+            last_modified_time: Set(entity.last_modified_time),
+            ..Default::default()
+        };
+        let stmt = flow_instance::Entity::update(active_model)
+            .filter(flow_instance::Column::Id.eq(entity.id))
+            // .filter(flow_instance::Column::UserId.eq(self.user_id()?))
             .build(self.db.get_connection().get_database_backend());
         stmts.push(stmt);
         self.can_drop.store(false, Ordering::Relaxed);
@@ -44,13 +47,19 @@ impl MutableRepository<WorkflowInstance> for OrmRepo {
     }
 
     async fn insert(&self, entity: &WorkflowInstance) -> anyhow::Result<Uuid> {
-        let mut model = FlowInstanceModel::try_from(entity.to_owned())?;
-        model.user_id = self.user_id()?;
-        let active_model: FlowInstanceActiveModel = model.into();
-        let mut active_model = active_model.reset_all();
-        active_model.created_time = ActiveValue::NotSet;
-        active_model.last_modified_time = ActiveValue::NotSet;
-        FlowInstanceEntity::insert(active_model).exec(self.db.get_connection()).await?;
+        let active_model = flow_instance::ActiveModel {
+            id: Set(entity.id),
+            name: Set(entity.name.to_owned()),
+            description: Set(entity.description.to_owned()),
+            logo: Set(entity.logo.to_owned()),
+            status: Set(entity.status.to_owned() as i32),
+            spec: Set(serde_json::to_value(entity.spec.to_owned())?),
+            user_id: Set(self.user_id()?),
+            ..Default::default()
+        };
+        flow_instance::Entity::insert(active_model)
+            .exec(self.db.get_connection())
+            .await?;
         Ok(entity.id)
     }
 
@@ -75,12 +84,18 @@ impl WorkflowInstanceRepo for OrmRepo {
         &self,
         entity: WorkflowInstance,
     ) -> anyhow::Result<WorkflowInstance> {
-        let model = FlowInstanceModel::try_from(entity.to_owned())?;
-        let mut active_model: FlowInstanceActiveModel = model.into();
-        active_model.spec.reset();
-        active_model.status.reset();
-        let stmt = FlowInstanceEntity::update(active_model)
-            .filter(FlowInstanceColumn::LastModifiedTime.eq(entity.last_modified_time))
+        let active_model = flow_instance::ActiveModel {
+            status: Set(entity.status.clone() as i32),
+            spec: Set(serde_json::to_value(&entity.spec)?),
+            last_modified_time: Set(entity.last_modified_time),
+            ..Default::default()
+        };
+        let stmt = flow_instance::Entity::update(active_model)
+            .filter(
+                Condition::all()
+                    .add(flow_instance::Column::Id.eq(entity.id))
+                    .add(flow_instance::Column::LastModifiedTime.eq(entity.last_modified_time)),
+            )
             .build(self.db.get_connection().get_database_backend());
         let rows_affected = self.db.get_connection().execute(stmt).await?.rows_affected();
         if rows_affected == 0 {

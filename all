@@ -1,0 +1,22 @@
+use async_trait::async_trait;
+use domain_workflow::{
+    model::{entity::task::TaskStatus, vo::msg::ScheduleInfo},
+    service::ScheduleService,
+};
+
+pub struct TaskScheduleService {}
+
+#[async_trait]
+impl ScheduleService for TaskScheduleService {
+    type Handle = TaskStatus;
+
+    /// Schedule with changed status.
+    async fn changed_status(&self, changed: ScheduleInfo<Self::Handle>) {
+        todo!()
+    }
+
+    /// Change status.
+    async fn change_status(&self, change: ScheduleInfo<Self::Handle>) {
+        todo!()
+    }
+}

@@ -11,7 +11,7 @@ use tar::Archive;
 use uuid::Uuid;
 
 use crate::model::vo::abilities::software_computing::{
-    common::{SoftwareMaterial, UsecaseMaterial},
+    schema::{SoftwareMaterial, UsecaseMaterial},
     software::{
         materials::{
             inputs::{Argument, Environment, FilesomeInput},
@@ -291,7 +291,7 @@ impl Package {
 
 #[cfg(test)]
 mod tests {
-    use crate::model::vo::abilities::software_computing::common::SoftwareMaterial;
+    use crate::model::vo::abilities::software_computing::schema::SoftwareMaterial;
 
     // #[test]
     // fn test() {

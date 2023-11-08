@@ -108,7 +108,7 @@ pub async fn initialize_web_host(sp: Arc<ServiceProvider>) {
                     .service(api::workflow_editor::validate_workflow_draft)
                     .service(api::workflow_engine::start_workflow)
                     .service(api::workflow_engine::submit_workflow)
-                    .service(api::workflow_engine::receive_node_status)
+                    // .service(api::workflow_engine::receive_node_status)
                     .service(api::workflow_engine::pause_workflow)
                     .service(api::workflow_engine::continue_workflow)
                     .service(api::workflow_engine::terminate_workflow)

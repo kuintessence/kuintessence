@@ -7,7 +7,7 @@ pub struct RecordFileMeta {
     pub name: String,
     pub hash: String,
     pub hash_algorithm: HashAlgorithm,
-    pub size: usize,
+    pub size: u64,
 }
 
 #[derive(Serialize, Deserialize)]

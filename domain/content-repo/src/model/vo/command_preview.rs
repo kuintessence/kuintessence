@@ -150,15 +150,15 @@ pub enum FacilityKind {
 #[derive(Default, Deserialize, Serialize, Clone, Debug)]
 pub struct TaskUsedResource {
     /// 处理器使用
-    pub cpu: f64,
+    pub cpu: u64,
     /// 内存使用
-    pub memory: f64,
+    pub memory: u64,
     /// 存储使用
-    pub storage: f64,
+    pub storage: u64,
     /// 墙钟时间
-    pub wall_time: std::time::Duration,
+    pub wall_time: u64,
     /// 处理器时间
-    pub cpu_time: std::time::Duration,
+    pub cpu_time: u64,
 }
 
 use crate::model::vo::abilities::software_computing::software::SoftwareSpec;

@@ -7,10 +7,8 @@ use alice_di::IServiceProvider;
 use alice_infrastructure::error::{
     AliceCommonError, AliceError, AliceResponder, AliceResponderResult,
 };
-use domain_workflow::model::entity::task::{TaskResult, TaskResultStatus};
 use domain_workflow::service::{
     SoftwareComputingUsecaseService, WorkflowScheduleService, WorkflowService,
-    WorkflowStatusReceiverService,
 };
 use uuid::Uuid;
 
@@ -47,26 +45,26 @@ pub async fn start_workflow(
     Ok(AliceResponder(()))
 }
 
-#[actix_auto_inject(ServiceProvider, scoped)]
-#[post("workflow-engine/ReceiveNodeStatus")]
-pub async fn receive_node_status(
-    #[inject] service: std::sync::Arc<dyn WorkflowStatusReceiverService>,
-    mut task_result: web::Json<TaskResult>,
-) -> AliceResponderResult<()> {
-    let device_info =
-        scoped_config
-            .device_info
-            .ok_or(AliceError::new(AliceCommonError::InternalError {
-                source: anyhow::anyhow!("No device info in scoped config."),
-            }))?;
-    let queue_id = device_info.id;
-    if let TaskResultStatus::Start(id) = &mut task_result.0.status {
-        *id = Some(queue_id)
-    }
-    let task_result = task_result.0;
-    service.receive_node_status(task_result.to_owned()).await?;
-    Ok(AliceResponder(()))
-}
+// #[actix_auto_inject(ServiceProvider, scoped)]
+// #[post("workflow-engine/ReceiveNodeStatus")]
+// pub async fn receive_node_status(
+//     #[inject] service: std::sync::Arc<dyn WorkflowStatusReceiverService>,
+//     mut task_result: web::Json<TaskResult>,
+// ) -> AliceResponderResult<()> {
+//     let device_info =
+//         scoped_config
+//             .device_info
+//             .ok_or(AliceError::new(AliceCommonError::InternalError {
+//                 source: anyhow::anyhow!("No device info in scoped config."),
+//             }))?;
+//     let queue_id = device_info.id;
+//     if let TaskResultStatus::Start(id) = &mut task_result.0.status {
+//         *id = Some(queue_id)
+//     }
+//     let task_result = task_result.0;
+//     service.receive_node_status(task_result.to_owned()).await?;
+//     Ok(AliceResponder(()))
+// }
 
 #[actix_auto_inject(ServiceProvider, scoped)]
 #[get("workflow-engine/PauseWorkflow/{id}")]

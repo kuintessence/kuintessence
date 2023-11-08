@@ -1,6 +1,6 @@
 use alice_architecture::model::AggregateRoot;
 use anyhow::bail;
-use database_model::system::prelude::StorageServerModel;
+use database_model::storage_server;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -37,11 +37,11 @@ pub struct ObjectServerOption {
     pub region: String,
 }
 
-impl TryFrom<StorageServerModel> for StorageServer {
+impl TryFrom<storage_server::Model> for StorageServer {
     type Error = anyhow::Error;
 
-    fn try_from(model: StorageServerModel) -> Result<Self, Self::Error> {
-        let StorageServerModel {
+    fn try_from(model: storage_server::Model) -> Result<Self, Self::Error> {
+        let storage_server::Model {
             id,
             name,
             options,

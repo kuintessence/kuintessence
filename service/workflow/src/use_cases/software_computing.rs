@@ -1,5 +1,5 @@
 use alice_architecture::message_queue::producer::MessageQueueProducerTemplate;
-use anyhow::bail;
+
 use async_trait::async_trait;
 use domain_content_repo::{
     model::vo::abilities::{
@@ -23,14 +23,18 @@ use domain_content_repo::{
 use domain_storage::repository::TextStorageRepo;
 use domain_workflow::{
     model::{
-        entity::{node_instance::NodeInstanceKind, task::*, workflow_instance::NodeSpec},
-        vo::{usecase::Operation, NodeInputSlotKind, NodeKind, Requirements},
+        entity::{node_instance::NodeInstanceKind, workflow_instance::NodeSpec, task::TaskStatus},
+        vo::{
+            task_dto::{
+                result::TaskResult, CollectFrom, CollectRule, CollectTo, DownloadFile,
+                FacilityKind, FileTransmitKind, OutputCollect, StdInKind, Task, TaskBody,
+                TaskCommand, UploadFile,
+            },
+            NodeInputSlotKind, NodeKind,
+        },
     },
     repository::*,
-    service::{
-        QueueResourceService, SoftwareComputingUsecaseService, TaskDistributionService,
-        UsecaseService,
-    },
+    service::{QueueResourceService, ScheduleService, UsecaseParseService},
 };
 use handlebars::Handlebars;
 use serde::Serialize;
@@ -47,7 +51,7 @@ pub struct SoftwareComputingUsecaseServiceImpl {
     /// 文本仓储
     text_storage_repository: Arc<dyn TextStorageRepo>,
     /// 任务分发服务
-    task_distribution_service: Arc<dyn TaskDistributionService>,
+    task_distribution_service: Arc<dyn ScheduleService<Info = TaskStatus>>,
     /// 软件黑名单仓储
     software_block_list_repository: Arc<dyn SoftwareBlockListRepo>,
     /// 已安装软件仓储
@@ -63,10 +67,20 @@ pub struct SoftwareComputingUsecaseServiceImpl {
 /// 输入内容
 #[derive(Clone)]
 struct InContent {
-    /// 字符串
-    pub literal: String,
+    /// 输入作为参数时以空格分隔的字符串
+    pub args: String,
     /// 输入文件
-    pub infiles: Vec<FileInfo>,
+    pub infiles: Vec<InFileInfo>,
+}
+
+#[derive(Clone)]
+pub struct InFileInfo {
+    /// 文件路径
+    pub path: String,
+    /// 是否打包
+    pub is_packaged: bool,
+    /// 文件id
+    pub meta_id: String,
 }
 
 /// 格式填充
@@ -78,75 +92,42 @@ struct FormatFill {
     pub placeholder_fill_map: HashMap<usize, Option<String>>,
 }
 
-impl SoftwareComputingUsecaseService for SoftwareComputingUsecaseServiceImpl {}
-
 #[async_trait]
-impl UsecaseService for SoftwareComputingUsecaseServiceImpl {
+impl UsecaseParseService for SoftwareComputingUsecaseServiceImpl {
     async fn handle_usecase(&self, node_spec: NodeSpec) -> anyhow::Result<()> {
-        let id = node_spec.id;
-        let task = self.parse_task(node_spec).await?;
-        let t = serde_json::to_string(&task)?;
-        tracing::info!("Task: {t}");
-        let queue_id = self.queue_resource_service.get_queue(id).await?.id;
-        tracing::info!("Sending to queue: {queue_id}");
-        let mut node_instance = self.node_instance_repository.get_by_id(task.id).await?;
-        node_instance.queue_id = Some(queue_id.to_owned());
-        self.node_instance_repository.update(&node_instance).await?;
-        self.node_instance_repository.save_changed().await?;
-
-        let mut count = 5;
-        loop {
-            if self.task_distribution_service.send_task(&task, queue_id).await.is_ok() {
-                break;
-            }
-
-            count -= 1;
-            if count == 0 {
-                let task_result: TaskResult = TaskResult {
-                    id,
-                    status: TaskResultStatus::Failed,
-                    message: "Failed when sending message to agent.".to_string(),
-                    used_resources: None,
-                };
-                self.message_producer.send_object(&task_result, Some("node_status")).await?;
-                bail!("Failed when sending message to agent.");
-            }
-        }
-        Ok(())
-    }
-
-    async fn operate_task(&self, operate: Operation) -> anyhow::Result<()> {
-        let queue_id = self
-            .node_instance_repository
-            .get_by_id(operate.task_id)
-            .await?
-            .queue_id
-            .ok_or(anyhow::anyhow!("Node instance without cluster id!"))?;
-        let command = operate.command;
-        let task = Task {
-            id: operate.task_id,
-            body: vec![],
-            command,
-        };
-
-        let mut count = 5;
-        loop {
-            if self.task_distribution_service.send_task(&task, queue_id).await.is_ok() {
-                break;
-            }
-
-            count -= 1;
-            if count == 0 {
-                let task_result: TaskResult = TaskResult {
-                    id: operate.task_id,
-                    status: TaskResultStatus::Failed,
-                    message: "Failed when sending message to agent.".to_string(),
-                    used_resources: None,
-                };
-                self.message_producer.send_object(&task_result, Some("node_status")).await?;
-                bail!("Failed when sending message to agent.");
-            }
-        }
+        // let id = node_spec.id;
+        // let queue_id = self
+        //     .queue_resource_service
+        //     .get_queue(id, &node_spec.scheduling_strategy)
+        //     .await?
+        //     .id;
+        // let tasks = self.parse_tasks(node_spec).await?;
+        // let t = serde_json::to_string(&tasks)?;
+        // tracing::info!("Task: {t}");
+        // tracing::info!("Sending to queue: {queue_id}");
+        // let mut node_instance = self.node_instance_repository.get_by_id(task.id).await?;
+        // node_instance.queue_id = Some(queue_id.to_owned());
+        // self.node_instance_repository.update(&node_instance).await?;
+        // self.node_instance_repository.save_changed().await?;
+        //
+        // let mut count = 5;
+        // loop {
+        //     if self.task_distribution_service.send_task(&task, queue_id).await.is_ok() {
+        //         break;
+        //     }
+        //
+        //     count -= 1;
+        //     if count == 0 {
+        //         let task_result: TaskResult = TaskResult {
+        //             id,
+        //             status: TaskResultStatus::Failed,
+        //             message: "Failed when sending message to agent.".to_string(),
+        //             used_resources: None,
+        //         };
+        //         self.message_producer.send_object(&task_result, Some("node_status")).await?;
+        //         bail!("Failed when sending message to agent.");
+        //     }
+        // }
         Ok(())
     }
 
@@ -154,15 +135,15 @@ impl UsecaseService for SoftwareComputingUsecaseServiceImpl {
         NodeInstanceKind::SoftwareUsecaseComputing
     }
 
-    async fn get_cmd(&self, node_id: Uuid) -> anyhow::Result<Option<String>> {
+    async fn get_cmd(&self, node_id: String) -> anyhow::Result<Option<String>> {
         let flow_id = self.node_instance_repository.get_by_id(node_id).await?.flow_instance_id;
         let flow = self.workflow_instance_repository.get_by_id(flow_id).await?;
         let node_spec = flow.spec.node(node_id).to_owned();
-        let task = self.parse_task(node_spec).await?;
-        let name_and_arguments = task.body.iter().find_map(|el| {
+        let tasks = self.parse_tasks(node_spec).await?;
+        let name_and_arguments = tasks.iter().find_map(|task| {
             if let TaskBody::UsecaseExecution {
                 name, arguments, ..
-            } = el
+            } = &task.body
             {
                 Some((name, arguments))
             } else {
@@ -189,7 +170,7 @@ impl SoftwareComputingUsecaseServiceImpl {
     /// # 参数
     ///
     /// * `node_spec` - 节点数据
-    async fn parse_task(&self, node_spec: NodeSpec) -> anyhow::Result<Task> {
+    async fn parse_tasks(&self, node_spec: NodeSpec) -> anyhow::Result<Vec<Task<TaskBody>>> {
         let data = match &node_spec.kind {
             NodeKind::SoftwareUsecaseComputing { data } => data,
             _ => anyhow::bail!("Unreachable node kind!"),
@@ -215,21 +196,23 @@ impl SoftwareComputingUsecaseServiceImpl {
         let template_file_infos = computing_usecase.template_file_infos;
         let collected_outs = computing_usecase.collected_outs;
         let requirements = usecase_spec.requirements;
-        let override_requirements = &node_spec.requirements;
+        let override_requirements = node_spec.requirements.to_owned();
 
         let mut argument_formats_sorts = HashMap::<usize, FormatFill>::new();
         let mut environment_formats_map = HashMap::<String, FormatFill>::new();
-        let mut files = vec![];
         let mut std_in = StdInKind::default();
+        let mut tasks = vec![];
+        let mut download_files = vec![];
+        let mut upload_files = vec![];
+        let mut output_collects = vec![];
+        let out_descriptor_to_validator = usecase_spec
+            .output_slots
+            .iter()
+            .map(|o| (o.descriptor(), o.validator()))
+            .collect::<HashMap<_, _>>();
 
         // 模板描述符及其键填充值的对应关系集合
         let mut templates_kv_json = HashMap::<String, HashMap<String, Option<String>>>::new();
-
-        let mut task = Task {
-            id: node_spec.id.to_owned(),
-            command: TaskCommand::Start,
-            body: vec![],
-        };
 
         for (argument_material_descriptor, sort) in usecase_spec.flag_arguments.iter() {
             let value = Self::argument_format(&argument_materials, argument_material_descriptor);
@@ -249,7 +232,18 @@ impl SoftwareComputingUsecaseServiceImpl {
             let in_content = self.get_content(&node_spec, input_slot.descriptor()).await?;
 
             if let Some(in_content) = in_content.to_owned() {
-                files.extend(in_content.infiles.iter().map(|el| el.to_owned()));
+                let in_files = in_content
+                    .infiles
+                    .iter()
+                    .map(|f| DownloadFile {
+                        kind: FileTransmitKind::Center {
+                            file_id: f.meta_id,
+                            is_packaged: f.is_packaged,
+                        },
+                        path: f.path.to_owned(),
+                    })
+                    .collect::<Vec<_>>();
+                download_files.extend(in_files);
             }
 
             match input_slot {
@@ -273,7 +267,7 @@ impl SoftwareComputingUsecaseServiceImpl {
                                     .placeholder_fill_map
                                     .insert(
                                         *placeholder_nth,
-                                        in_content.to_owned().map(|el| el.literal),
+                                        in_content.to_owned().map(|el| el.args),
                                     );
                             }
 
@@ -290,13 +284,13 @@ impl SoftwareComputingUsecaseServiceImpl {
                                     .placeholder_fill_map
                                     .insert(
                                         *placeholder_nth,
-                                        in_content.to_owned().map(|el| el.literal),
+                                        in_content.to_owned().map(|el| el.args),
                                     );
                             }
 
                             TextRef::StdIn => {
                                 std_in = StdInKind::Text {
-                                    text: in_content.to_owned().unwrap().literal,
+                                    text: in_content.to_owned().unwrap().args,
                                 };
                             }
 
@@ -310,7 +304,7 @@ impl SoftwareComputingUsecaseServiceImpl {
                                         .or_default()
                                         .insert(
                                             ref_key.to_owned(),
-                                            in_content.to_owned().map(|el| el.literal),
+                                            in_content.to_owned().map(|el| el.args),
                                         );
                                 }
                             }
@@ -335,7 +329,7 @@ impl SoftwareComputingUsecaseServiceImpl {
                                     .placeholder_fill_map
                                     .insert(
                                         *placeholder_nth,
-                                        in_content.to_owned().map(|el| el.literal),
+                                        in_content.to_owned().map(|el| el.args),
                                     );
                             }
                             FileRef::EnvRef {
@@ -351,13 +345,13 @@ impl SoftwareComputingUsecaseServiceImpl {
                                     .placeholder_fill_map
                                     .insert(
                                         *placeholder_nth,
-                                        in_content.to_owned().map(|el| el.literal),
+                                        in_content.to_owned().map(|el| el.args),
                                     );
                             }
 
                             FileRef::StdIn => {
                                 std_in = match in_content.to_owned() {
-                                    Some(x) => StdInKind::File { path: x.literal },
+                                    Some(x) => StdInKind::File { path: x.args },
                                     None => StdInKind::None,
                                 };
                             }
@@ -376,7 +370,7 @@ impl SoftwareComputingUsecaseServiceImpl {
                                         .or_default()
                                         .insert(
                                             ref_key.to_owned(),
-                                            in_content.to_owned().map(|el| el.literal),
+                                            in_content.to_owned().map(|el| el.args),
                                         );
                                 }
                             }
@@ -453,10 +447,11 @@ impl SoftwareComputingUsecaseServiceImpl {
                         FileRef::FileInputRef(_)
                     ))
             {
-                files.push(FileInfo::Input {
+                download_files.push(DownloadFile {
+                    kind: FileTransmitKind::Text {
+                        content: filled_result.to_owned(),
+                    },
                     path: file_name.to_owned(),
-                    is_package: false,
-                    form: InFileForm::Content(filled_result.to_owned()),
                 });
             }
 
@@ -505,15 +500,17 @@ impl SoftwareComputingUsecaseServiceImpl {
                             .file_kind
                             .to_owned()
                         {
-                            FileKind::Normal(wild_card) => files.push(FileInfo::Input {
+                            FileKind::Normal(wild_card) => download_files.push(DownloadFile {
+                                kind: FileTransmitKind::Text {
+                                    content: filled_result.to_owned(),
+                                },
                                 path: wild_card,
-                                is_package: false,
-                                form: InFileForm::Content(filled_result.to_owned()),
                             }),
-                            FileKind::Batched(wild_card) => files.push(FileInfo::Input {
+                            FileKind::Batched(wild_card) => download_files.push(DownloadFile {
                                 path: wild_card,
-                                is_package: true,
-                                form: InFileForm::Content(filled_result.to_owned()),
+                                kind: FileTransmitKind::Text {
+                                    content: filled_result.to_owned(),
+                                },
                             }),
                         }
                     }
@@ -641,7 +638,7 @@ impl SoftwareComputingUsecaseServiceImpl {
                         }
                         RepoCollectRule::TopLines(line_count) => CollectRule::TopLines(line_count),
                     };
-                    task.body.push(TaskBody::CollectedOut {
+                    output_collects.push(OutputCollect {
                         from,
                         rule,
                         to,
@@ -748,7 +745,7 @@ impl SoftwareComputingUsecaseServiceImpl {
                                     CollectRule::TopLines(line_count)
                                 }
                             };
-                            task.body.push(TaskBody::CollectedOut {
+                            output_collects.push(OutputCollect {
                                 from,
                                 rule,
                                 to,
@@ -787,20 +784,30 @@ impl SoftwareComputingUsecaseServiceImpl {
                                 FileKind::Normal(file_name) => {
                                     let out_file_id =
                                         task_output_slot.all_tasks_file_outputs()?.get(0).unwrap();
-                                    files.push(FileInfo::Output {
-                                        id: out_file_id.to_owned(),
+                                    upload_files.push(UploadFile {
+                                        file_id: *out_file_id,
                                         path: out_path_alter.unwrap_or(file_name.to_owned()),
                                         is_package: false,
+                                        validator: out_descriptor_to_validator
+                                            .get(usecase_outslot_descriptor)
+                                            .unwrap()
+                                            .to_owned()
+                                            .map(|v| v.into()),
                                         optional: *optional,
                                     });
                                 }
                                 FileKind::Batched(wild_card) => {
                                     let out_file_or_zip_id =
                                         task_output_slot.all_tasks_file_outputs()?.get(0).unwrap();
-                                    files.push(FileInfo::Output {
-                                        id: out_file_or_zip_id.to_owned(),
+                                    upload_files.push(UploadFile {
+                                        file_id: out_file_or_zip_id.to_owned(),
                                         path: out_path_alter.unwrap_or(wild_card.to_owned()),
                                         is_package: true,
+                                        validator: out_descriptor_to_validator
+                                            .get(usecase_outslot_descriptor)
+                                            .unwrap()
+                                            .to_owned()
+                                            .map(|v| v.into()),
                                         optional: *optional,
                                     });
                                 }
@@ -856,23 +863,6 @@ impl SoftwareComputingUsecaseServiceImpl {
             })
             .collect();
 
-        task.body.insert(
-            0,
-            TaskBody::UsecaseExecution {
-                name: usecase_spec.command_file.to_owned(),
-                arguments,
-                environments,
-                files,
-                facility_kind: FacilityKind::from(software_spec.to_owned()),
-                std_in,
-                requirements: override_requirements.to_owned().or(serde_json::from_str::<
-                    Option<Requirements>,
-                >(
-                    &serde_json::to_string(&requirements)?,
-                )?),
-            },
-        );
-
         let (software_name, version, require_install_arguments) = match software_spec.to_owned() {
             RepoSoftwareSpec::Spack {
                 name,
@@ -896,15 +886,47 @@ impl SoftwareComputingUsecaseServiceImpl {
                 .is_software_satisfied(&software_name, &require_install_arguments)
                 .await?
         {
-            task.body.insert(
-                0,
-                TaskBody::SoftwareDeployment {
+            tasks.push(Task {
+                id: String::new_v4(),
+                body: TaskBody::SoftwareDeployment {
                     facility_kind: FacilityKind::from(software_spec.to_owned()),
                 },
-            );
+                command: TaskCommand::Start,
+            });
         }
 
-        Ok(task)
+        tasks.push(Task {
+            id: String::new_v4(),
+            body: TaskBody::FileDownload { download_files },
+            command: TaskCommand::Start,
+        });
+        tasks.push(Task {
+            id: String::new_v4(),
+            body: TaskBody::UsecaseExecution {
+                name: usecase_spec.command_file.to_owned(),
+                arguments,
+                environments,
+                facility_kind: FacilityKind::from(software_spec.to_owned()),
+                std_in,
+                requirements: override_requirements
+                    .map(|r| r.into())
+                    .or(requirements.map(|r| r.into())),
+            },
+            command: TaskCommand::Start,
+        });
+
+        tasks.push(Task {
+            id: String::new_v4(),
+            body: TaskBody::OutputCollect { output_collects },
+            command: TaskCommand::Start,
+        });
+
+        tasks.push(Task {
+            id: String::new_v4(),
+            body: TaskBody::FileUpload { upload_files },
+            command: TaskCommand::Start,
+        });
+        Ok(tasks)
     }
 
     /// 返回模板填充完毕后的内容
@@ -982,7 +1004,7 @@ impl SoftwareComputingUsecaseServiceImpl {
                     texts.push(self.text_storage_repository.get_by_id(*content).await?.value)
                 }
                 Ok(Some(InContent {
-                    literal: texts.join(" "),
+                    args: texts.join(" "),
                     infiles: vec![],
                 }))
             }
@@ -996,22 +1018,22 @@ impl SoftwareComputingUsecaseServiceImpl {
                 for content in contents.as_ref().unwrap().iter() {
                     if let Some(ref expected_file_name) = expected_file_name {
                         file_names.push(expected_file_name.to_owned());
-                        file_infos.push(FileInfo::Input {
-                            form: InFileForm::Id(content.file_metadata_id.to_owned()),
+                        file_infos.push(InFileInfo {
                             path: expected_file_name.to_owned(),
-                            is_package: is_batch,
+                            is_packaged: is_batch,
+                            meta_id: content.file_metadata_id,
                         });
                     } else {
                         file_names.push(content.file_metadata_name.to_owned());
-                        file_infos.push(FileInfo::Input {
-                            form: InFileForm::Id(content.file_metadata_id.to_owned()),
+                        file_infos.push(InFileInfo {
                             path: content.file_metadata_name.to_owned(),
-                            is_package: is_batch,
+                            is_packaged: is_batch,
+                            meta_id: content.file_metadata_id.to_owned(),
                         });
                     }
                 }
                 Ok(Some(InContent {
-                    literal: file_names.join(" "),
+                    args: file_names.join(" "),
                     infiles: file_infos,
                 }))
             }

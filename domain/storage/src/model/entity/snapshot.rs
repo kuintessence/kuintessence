@@ -18,9 +18,10 @@ pub struct Snapshot {
     pub file_id: Uuid,
     /// Snapshot timestamp
     pub timestamp: i64,
+    pub timestamp: u64,
     /// Snapshot file name
     pub file_name: String,
-    pub size: usize,
+    pub size: u64,
     pub hash: String,
     pub hash_algorithm: HashAlgorithm,
 }

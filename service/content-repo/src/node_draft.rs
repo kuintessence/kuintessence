@@ -5,8 +5,7 @@ use domain_content_repo::{
     model::vo::{
         node_ability_kind::{NodeAbilityKind, Packages},
         node_draft::{
-            NodeDraft, NodeDraftInputSlot, NodeDraftKind, NodeDraftOutputSlot, Requirements,
-            SchedulingStrategy,
+            NodeDraft, NodeDraftInputSlot, NodeDraftKind, NodeDraftOutputSlot, SchedulingStrategy,
         },
     },
     repository::PackageRepo,
@@ -54,7 +53,9 @@ impl NodeDraftServiceImpl {
                 let filesome_inputs = data.filesome_inputs;
                 let filesome_outputs = data.filesome_outputs;
                 let collected_outs = data.collected_outs;
-                let additional_data = usecase_spec.requirements.map(Requirements::from);
+                let additional_data = usecase_spec
+                    .requirements
+                    .map(domain_content_repo::model::vo::node_draft::Requirements::from);
                 let external_id = Uuid::new_v4();
                 let scheduling_strategy = SchedulingStrategy::Auto;
                 let mut input_slots = vec![];

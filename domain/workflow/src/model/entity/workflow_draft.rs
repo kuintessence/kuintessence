@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use alice_architecture::model::AggregateRoot;
 use alice_architecture::repository::ReadOnlyRepository;
-use database_model::system::prelude::FlowDraftModel;
+use database_model::flow_draft;
 // WARN: 依赖了另外一个领域的实体
 use domain_storage::model::entity::FileMeta;
 use serde::{Deserialize, Serialize};
@@ -24,6 +24,7 @@ pub struct WorkflowDraft {
     pub name: String,
     /// 描述
     pub description: String,
+    pub description: Option<String>,
     /// 图标
     pub logo: Option<String>,
     /// 工作流草稿数据
@@ -103,11 +104,11 @@ pub enum NodeDraftOutputSlotKind {
     Text,
 }
 
-impl TryFrom<FlowDraftModel> for WorkflowDraft {
+impl TryFrom<flow_draft::Model> for WorkflowDraft {
     type Error = anyhow::Error;
 
-    fn try_from(model: FlowDraftModel) -> Result<Self, Self::Error> {
-        let FlowDraftModel {
+    fn try_from(model: flow_draft::Model) -> Result<Self, Self::Error> {
+        let flow_draft::Model {
             id,
             name,
             description,
@@ -116,6 +117,8 @@ impl TryFrom<FlowDraftModel> for WorkflowDraft {
             user_id: _,
             created_time: _,
             last_modified_time: _,
+            r#type: _,
+            project_id: _,
         } = model;
 
         Ok(Self {

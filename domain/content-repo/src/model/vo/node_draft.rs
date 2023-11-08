@@ -4,7 +4,6 @@ use uuid::Uuid;
 use crate::model::vo::abilities::{
     common::FileKind,
     software_computing::{
-        common::Requirements as ModelRequirements,
         software::materials::{inputs::FilesomeInput, outputs::FilesomeOutput},
         usecase::{
             collected_out::{CollectTo, CollectedOut, OutFile},
@@ -176,18 +175,21 @@ pub struct Requirements {
     pub stop_time: Option<usize>,
 }
 
-impl From<ModelRequirements> for Requirements {
-    fn from(l: ModelRequirements) -> Self {
+impl From<crate::model::vo::abilities::software_computing::usecase::spec::Requirements>
+    for Requirements
+{
+    fn from(
+        value: crate::model::vo::abilities::software_computing::usecase::spec::Requirements,
+    ) -> Self {
         Self {
-            cpu_cores: l.cpu_cores,
-            node_count: l.node_count,
-            max_wall_time: l.max_wall_time,
-            max_cpu_time: l.max_cpu_time,
-            stop_time: l.stop_time,
+            cpu_cores: value.cpu_cores,
+            node_count: value.node_count,
+            max_wall_time: value.max_wall_time,
+            max_cpu_time: value.max_cpu_time,
+            stop_time: value.stop_time,
         }
     }
 }
-
 /// 节点批量规格
 #[derive(Clone, Serialize, Deserialize, Debug)]
 #[serde(tag = "type", deny_unknown_fields)]

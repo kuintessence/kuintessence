@@ -14,7 +14,7 @@ pub struct MoveRegistration {
     pub file_name: String,
     pub hash: String,
     pub hash_algorithm: HashAlgorithm,
-    pub size: usize,
+    pub size: u64,
     /// Destination of the file move.
     pub destination: MoveDestination,
     pub is_upload_failed: bool,
@@ -28,7 +28,7 @@ pub enum MoveDestination {
     /// Move to snapshot.
     Snapshot {
         node_id: Uuid,
-        timestamp: i64,
+        timestamp: u64,
         /// Unuploaded file meta id in agent.
         file_id: Uuid,
     },

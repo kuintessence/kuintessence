@@ -1,11 +1,13 @@
 use alice_architecture::repository::{DBRepository, MutableRepository, ReadOnlyRepository};
 use anyhow::anyhow;
+use database_model::file_storage;
 use std::sync::atomic::Ordering;
 
-use database_model::system::prelude::*;
 use domain_storage::model::entity::FileStorage;
 use domain_storage::repository::FileStorageRepo;
-use sea_orm::{ColumnTrait, Condition, ConnectionTrait, EntityTrait, QueryFilter, QueryTrait};
+use sea_orm::{
+    ActiveValue::*, ColumnTrait, Condition, ConnectionTrait, EntityTrait, QueryFilter, QueryTrait,
+};
 use uuid::Uuid;
 
 use crate::infrastructure::database::OrmRepo;
@@ -17,10 +19,14 @@ impl ReadOnlyRepository<FileStorage> for OrmRepo {}
 impl MutableRepository<FileStorage> for OrmRepo {
     async fn insert(&self, entity: &FileStorage) -> anyhow::Result<Uuid> {
         let mut stmts = self.statements.lock().await;
-        let mut model = FileStorageModel::try_from(entity.to_owned())?;
-        model.created_user_id = self.user_id()?;
-        let active_model = model.into_set();
-        let stmt = FileStorageEntity::insert(active_model)
+        let active_model = file_storage::ActiveModel {
+            storage_server_id: Set(entity.storage_server_id),
+            file_metadata_id: Set(entity.meta_id),
+            server_url: Set(entity.server_url.to_owned()),
+            created_user_id: Set(self.user_id()?),
+            ..Default::default()
+        };
+        let stmt = file_storage::Entity::insert(active_model)
             .build(self.db.get_connection().get_database_backend());
         stmts.push(stmt);
         self.can_drop.store(false, Ordering::Relaxed);
@@ -42,11 +48,11 @@ impl FileStorageRepo for OrmRepo {
         storage_server_id: Uuid,
         meta_id: Uuid,
     ) -> anyhow::Result<String> {
-        let x = FileStorageEntity::find()
+        let x = file_storage::Entity::find()
             .filter(
                 Condition::all()
-                    .add(FileStorageColumn::StorageServerId.eq(storage_server_id))
-                    .add(FileStorageColumn::FileMetadataId.eq(meta_id)), // .add(FileStorageColumn::CreatedUserId.eq(self.user_id(None)?)),
+                    .add(file_storage::Column::StorageServerId.eq(storage_server_id))
+                    .add(file_storage::Column::FileMetadataId.eq(meta_id)), // .add(FileStorageColumn::CreatedUserId.eq(self.user_id(None)?)),
             )
             .one(self.db.get_connection())
             .await?

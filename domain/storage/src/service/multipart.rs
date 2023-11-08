@@ -19,7 +19,7 @@ pub trait MultipartService: Send + Sync {
         meta_id: Uuid,
         hash: &str,
         hash_algorithm: HashAlgorithm,
-        count: usize,
+        count: u64,
     ) -> FileResult<()>;
 
     /// Complete a part.

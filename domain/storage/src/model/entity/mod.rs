@@ -6,7 +6,6 @@ pub mod net_disk;
 mod snapshot;
 pub mod storage_server;
 mod text;
-mod ws_req_info;
 
 #[rustfmt::skip]
 pub use {
@@ -18,5 +17,4 @@ pub use {
     snapshot::Snapshot,
     storage_server::StorageServer,
     text::TextStorage,
-    ws_req_info::WsReqInfo,
 };

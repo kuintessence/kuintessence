@@ -2,20 +2,20 @@ use std::sync::atomic::Ordering;
 
 use alice_architecture::repository::{DBRepository, MutableRepository, ReadOnlyRepository};
 
-use database_model::system::prelude::*;
+use database_model::node_instance;
 use domain_workflow::{
     model::entity::{node_instance::NodeInstanceStatus, NodeInstance},
     repository::NodeInstanceRepo,
 };
-use sea_orm::prelude::*;
 use sea_orm::QueryTrait;
+use sea_orm::{prelude::*, Set};
 
 use crate::infrastructure::database::OrmRepo;
 
 #[async_trait::async_trait]
 impl ReadOnlyRepository<NodeInstance> for OrmRepo {
     async fn get_by_id(&self, uuid: Uuid) -> anyhow::Result<NodeInstance> {
-        NodeInstanceEntity::find_by_id(uuid)
+        node_instance::Entity::find_by_id(uuid)
             .one(self.db.get_connection())
             .await?
             .ok_or(anyhow::anyhow!(
@@ -33,9 +33,16 @@ impl ReadOnlyRepository<NodeInstance> for OrmRepo {
 impl MutableRepository<NodeInstance> for OrmRepo {
     async fn update(&self, entity: &NodeInstance) -> anyhow::Result<()> {
         let mut stmts = self.statements.lock().await;
-        let stmt =
-            NodeInstanceEntity::update(NodeInstanceModel::try_from(entity.to_owned())?.into_set())
-                .build(self.db.get_connection().get_database_backend());
+        let active_model = node_instance::ActiveModel {
+            status: Set(entity.status.to_owned() as i32),
+            resource_meter: Set(entity.resource_meter.as_ref().map(serde_json::to_value).transpose()?),
+            log: Set(entity.log.to_owned()),
+            queue_id: Set(entity.queue_id),
+            ..Default::default()
+        };
+        let stmt = node_instance::Entity::update(active_model)
+            .filter(node_instance::Column::Id.eq(entity.id))
+            .build(self.db.get_connection().get_database_backend());
         stmts.push(stmt);
         self.can_drop.store(false, Ordering::Relaxed);
         Ok(())
@@ -43,9 +50,21 @@ impl MutableRepository<NodeInstance> for OrmRepo {
 
     async fn insert(&self, entity: &NodeInstance) -> anyhow::Result<Uuid> {
         let mut stmts = self.statements.lock().await;
-        let stmt =
-            NodeInstanceEntity::insert(NodeInstanceModel::try_from(entity.to_owned())?.into_set())
-                .build(self.db.get_connection().get_database_backend());
+        let active_model = node_instance::ActiveModel {
+            id: Set(entity.id),
+            name: Set(entity.name.to_owned()),
+            kind: Set(entity.kind.to_owned() as i32),
+            is_parent: Set(entity.is_parent),
+            batch_parent_id: Set(entity.batch_parent_id),
+            status: Set(entity.status.to_owned() as i32),
+            resource_meter: Set(entity.resource_meter.as_ref().map(serde_json::to_value).transpose()?),
+            log: Set(entity.log.to_owned()),
+            queue_id: Set(entity.queue_id),
+            flow_instance_id: Set(entity.flow_instance_id),
+            ..Default::default()
+        };
+        let stmt = node_instance::Entity::insert(active_model)
+            .build(self.db.get_connection().get_database_backend());
         stmts.push(stmt);
         self.can_drop.store(false, Ordering::Relaxed);
         Ok(entity.id)
@@ -64,9 +83,9 @@ impl NodeInstanceRepo for OrmRepo {
         &self,
         batch_parent_id: Uuid,
     ) -> anyhow::Result<Vec<NodeInstance>> {
-        let res = NodeInstanceEntity::find()
-            .filter(NodeInstanceColumn::BatchParentId.is_not_null())
-            .filter(NodeInstanceColumn::BatchParentId.eq(batch_parent_id))
+        let res = node_instance::Entity::find()
+            .filter(node_instance::Column::BatchParentId.is_not_null())
+            .filter(node_instance::Column::BatchParentId.eq(batch_parent_id))
             .all(self.db.get_connection())
             .await?;
         let mut r = vec![];
@@ -77,20 +96,20 @@ impl NodeInstanceRepo for OrmRepo {
     }
 
     async fn is_all_same_entryment_nodes_success(&self, node_id: Uuid) -> anyhow::Result<bool> {
-        let res = NodeInstanceEntity::find()
-            .filter(NodeInstanceColumn::Id.eq(node_id))
+        let res = node_instance::Entity::find()
+            .filter(node_instance::Column::Id.eq(node_id))
             .one(self.db.get_connection())
             .await?
             .ok_or(anyhow::anyhow!("No such node!"))?;
         let flow_instance_id = res.flow_instance_id;
-        let res = NodeInstanceEntity::find()
-            .filter(NodeInstanceColumn::FlowInstanceId.eq(flow_instance_id))
-            .filter(NodeInstanceColumn::BatchParentId.is_null())
+        let res = node_instance::Entity::find()
+            .filter(node_instance::Column::FlowInstanceId.eq(flow_instance_id))
+            .filter(node_instance::Column::BatchParentId.is_null())
             .all(self.db.get_connection())
             .await?;
 
         Ok(res.iter().all(|el| {
-            el.status.eq(&(NodeInstanceStatus::Finished as i32))
+            el.status.eq(&(NodeInstanceStatus::Completed as i32))
                 || el.status.eq(&(NodeInstanceStatus::Standby as i32))
         }))
     }
@@ -99,9 +118,9 @@ impl NodeInstanceRepo for OrmRepo {
         &self,
         workflow_instance_id: Uuid,
     ) -> anyhow::Result<Vec<NodeInstance>> {
-        let res = NodeInstanceEntity::find()
-            .filter(NodeInstanceColumn::FlowInstanceId.eq(workflow_instance_id))
-            .filter(NodeInstanceColumn::Status.eq(NodeInstanceStatus::Standby as i32))
+        let res = node_instance::Entity::find()
+            .filter(node_instance::Column::FlowInstanceId.eq(workflow_instance_id))
+            .filter(node_instance::Column::Status.eq(NodeInstanceStatus::Standby as i32))
             .all(self.db.get_connection())
             .await?;
         let mut r = vec![];
@@ -115,8 +134,8 @@ impl NodeInstanceRepo for OrmRepo {
         &self,
         workflow_instance_id: Uuid,
     ) -> anyhow::Result<Vec<NodeInstance>> {
-        let res = NodeInstanceEntity::find()
-            .filter(NodeInstanceColumn::FlowInstanceId.eq(workflow_instance_id))
+        let res = node_instance::Entity::find()
+            .filter(node_instance::Column::FlowInstanceId.eq(workflow_instance_id))
             .all(self.db.get_connection())
             .await?;
         let mut r = vec![];
@@ -127,14 +146,14 @@ impl NodeInstanceRepo for OrmRepo {
     }
 
     async fn get_nth_of_batch_tasks(&self, sub_node_id: Uuid) -> anyhow::Result<usize> {
-        let batch_parent_id = NodeInstanceEntity::find()
-            .filter(NodeInstanceColumn::Id.eq(sub_node_id))
+        let batch_parent_id = node_instance::Entity::find()
+            .filter(node_instance::Column::Id.eq(sub_node_id))
             .one(self.db.get_connection())
             .await?
             .ok_or(anyhow::anyhow!("No such node!"))?
             .id;
-        let sub_nodes = NodeInstanceEntity::find()
-            .filter(NodeInstanceColumn::BatchParentId.eq(batch_parent_id))
+        let sub_nodes = node_instance::Entity::find()
+            .filter(node_instance::Column::BatchParentId.eq(batch_parent_id))
             .all(self.db.get_connection())
             .await?;
         let mut nth = None;

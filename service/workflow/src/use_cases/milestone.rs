@@ -2,10 +2,10 @@ use async_trait::async_trait;
 use domain_workflow::{
     model::{
         entity::{node_instance::NodeInstanceKind, workflow_instance::NodeSpec},
-        vo::{usecase::Operation, NodeKind},
+        vo::NodeKind,
     },
     repository::NodeInstanceRepo,
-    service::UsecaseService,
+    service::UsecaseParseService,
 };
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -36,7 +36,7 @@ struct MilestoneContent {
 }
 
 #[async_trait]
-impl UsecaseService for MilestoneUsecaseServiceImpl {
+impl UsecaseParseService for MilestoneUsecaseServiceImpl {
     async fn handle_usecase(&self, node_spec: NodeSpec) -> anyhow::Result<()> {
         let data = match &node_spec.kind {
             NodeKind::Milestone { data } => data,
@@ -53,10 +53,6 @@ impl UsecaseService for MilestoneUsecaseServiceImpl {
             })
             .send()
             .await?;
-        Ok(())
-    }
-
-    async fn operate_task(&self, _operate: Operation) -> anyhow::Result<()> {
         Ok(())
     }
 

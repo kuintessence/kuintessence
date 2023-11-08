@@ -17,8 +17,6 @@ pub struct FileUploadCommand {
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ViewRealtimeCommand {
-    #[serde(skip_deserializing)]
-    pub req_id: Uuid,
     #[serde(rename = "nodeInstanceId")]
     pub node_id: Uuid,
     #[serde(rename = "fileMetadataId")]

@@ -3,7 +3,6 @@ mod meta;
 mod move_record;
 mod multipart;
 mod net_disk;
-mod realtime;
 mod snapshot;
 mod text;
 
@@ -14,7 +13,6 @@ pub use {
     move_record::MoveRegistrationRepo,
     multipart::MultipartRepo,
     net_disk::NetDiskRepo,
-    realtime::WsReqInfoRepo,
     snapshot::SnapshotRepo,
     text::TextStorageRepo,
 };

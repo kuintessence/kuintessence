@@ -1,4 +1,4 @@
-use database_model::agent::prelude::{SoftwareBlockListColumn, SoftwareBlockListEntity};
+use database_model::software_block_list;
 use domain_workflow::repository::SoftwareBlockListRepo;
 use sea_orm::prelude::*;
 
@@ -11,9 +11,9 @@ impl SoftwareBlockListRepo for OrmRepo {
         software_name: &str,
         version: &str,
     ) -> anyhow::Result<bool> {
-        Ok(SoftwareBlockListEntity::find()
-            .filter(SoftwareBlockListColumn::Name.eq(software_name))
-            .filter(SoftwareBlockListColumn::Version.eq(version))
+        Ok(software_block_list::Entity::find()
+            .filter(software_block_list::Column::Name.eq(software_name))
+            .filter(software_block_list::Column::Version.eq(version))
             .count(self.db.get_connection())
             .await?
             > 0)

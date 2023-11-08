@@ -1,8 +1,8 @@
 use anyhow::{anyhow, bail};
+use database_model::queue;
 use std::collections::HashMap;
 
 use alice_architecture::model::AggregateRoot;
-use database_model::system::prelude::QueueModel;
 use once_cell::sync::Lazy;
 use tokio::sync::Mutex;
 use uuid::Uuid;
@@ -30,9 +30,9 @@ pub struct Queue {
     pub enabled: bool,
 }
 
-impl From<QueueModel> for Queue {
-    fn from(model: QueueModel) -> Self {
-        let QueueModel {
+impl From<queue::Model> for Queue {
+    fn from(model: queue::Model) -> Self {
+        let queue::Model {
             id,
             name,
             topic_name,

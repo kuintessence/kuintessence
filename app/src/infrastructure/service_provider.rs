@@ -23,7 +23,10 @@ use domain_content_repo::service::{
 };
 use domain_storage::{command::ViewRealtimeCommand, repository::MoveRegistrationRepo, service::*};
 use domain_workflow::{
-    model::entity::{node_instance::NodeInstanceKind, Task},
+    model::{
+        entity::node_instance::NodeInstanceKind,
+        vo::task_dto::{Task, TaskBody, TaskType},
+    },
     service::*,
 };
 // domain services
@@ -33,9 +36,7 @@ use service_workflow::prelude::*;
 
 use super::{
     config::*,
-    database::{
-        graphql::content_repo::ContentRepository, RedisClient, RedisRepo, OrmRepo,
-    },
+    database::{graphql::content_repo::ContentRepository, OrmRepo, RedisClient, RedisRepo},
     internal_message_consumer,
     service::prelude::*,
     websocket_message_consumer, WsManager, WsSessionOpener,
@@ -153,7 +154,8 @@ build_container! {
     kafka_mq_producer: Arc<KafkaMessageQueueProducer> {
         provide[
             Arc<dyn MessageQueueProducerTemplate<ViewRealtimeCommand>>,
-            Arc<dyn MessageQueueProducerTemplate<Task>>,
+            Arc<dyn MessageQueueProducerTemplate<Task<TaskBody>>>,
+            Arc<dyn MessageQueueProducerTemplate<Task<TaskType>>>,
             Arc<dyn MessageQueueProducerTemplate<Uuid>>,
         ]
         build {
@@ -314,24 +316,24 @@ build_container! {
         }
     }
 
-    scoped task_distribution_service: Arc<dyn TaskDistributionService> {
+    scoped task_service: Arc<dyn TaskService> {
         build {
             Arc::new(
-                TaskDistributionServiceImpl::builder()
+                TaskServiceImpl::builder()
                     .queue_repository(sea_orm_repository.clone())
                     .mqproducer(sp.provide())
                     .build()
             )
         }
     }
-    scoped software_computing_usecase_service: Arc<dyn SoftwareComputingUsecaseService> {
+    scoped software_computing_usecase_service: Arc<dyn Computing> {
         build {
             let internal_message_queue_producer: Arc<InternalMessageQueueProducer> = sp.provide();
             Arc::new(
                 SoftwareComputingUsecaseServiceImpl::builder()
                     .computing_usecase_repo(self.co_software_computing_usecase_service.clone())
                     .text_storage_repository(redis_repository.clone())
-                    .task_distribution_service(task_distribution_service.clone())
+                    .task_distribution_service(task_service.clone())
                     .software_block_list_repository(sea_orm_repository.clone())
                     .installed_software_repository(sea_orm_repository.clone())
                     .queue_resource_service(queue_resource_service.clone())
@@ -351,7 +353,7 @@ build_container! {
     scoped script_usecase_service: Arc<ScriptUsecaseServiceImpl> {
         build {
             Arc::new(ScriptUsecaseServiceImpl::builder()
-                .task_distribution_service(task_distribution_service.clone())
+                .task_distribution_service(task_service.clone())
                 .queue_resource_service(queue_resource_service.clone())
                 .node_instance_repository(sea_orm_repository.clone())
                 .build()
@@ -370,7 +372,7 @@ build_container! {
     }
     scoped usecase_select_service: Arc<dyn UsecaseSelectService> {
         build {
-            let mut map: HashMap<NodeInstanceKind, Arc<dyn UsecaseService>> = HashMap::new();
+            let mut map: HashMap<NodeInstanceKind, Arc<dyn UsecaseParseService>> = HashMap::new();
             map.insert(self.no_action_usecase_service.get_service_type(), self.no_action_usecase_service.clone());
             map.insert(software_computing_usecase_service.get_service_type(), software_computing_usecase_service.clone());
             map.insert(script_usecase_service.get_service_type(), script_usecase_service.clone());
@@ -391,24 +393,25 @@ build_container! {
             )
         }
     }
-    scoped workflow_status_receiver_service: Arc<dyn WorkflowStatusReceiverService> {
+    scoped workflow_status_receiver_service: Arc<dyn TaskStatusReceiveService> {
         build {
             Arc::new(
-                WorkflowStatusReceiverServiceImpl::builder()
+                TaskStatusReceiveServiceImpl::builder()
                     .node_instance_repository(sea_orm_repository.clone())
                     .workflow_instance_repository(sea_orm_repository.clone())
                     .schedule_service(workflow_schedule_service.clone())
                     .mq_producer(self.kafka_mq_producer.to_owned())
                     .bill_topic(self.co_config.bill_topic.to_owned())
                     .queue_resource_service(queue_resource_service.clone())
+                    .queue_id(scoped_config.device_info.map(|i|i.id))
                     .build()
             )
         }
     }
-    scoped workflow_service: Arc<dyn WorkflowService> {
+    scoped workflow_service: Arc<dyn ControService> {
         build{
             Arc::new(
-                WorkflowServiceImpl::builder()
+                ControlServiceImpl::builder()
                     .workflow_draft_repository(sea_orm_repository.clone())
                     .workflow_instance_repository(sea_orm_repository.clone())
                     .node_instance_repository(sea_orm_repository.clone())
@@ -460,7 +463,7 @@ build_container! {
         let file_upload_topic = internal_topics.file_upload.to_owned();
         let node_status_topic = internal_topics.node_status.to_owned();
 
-        fn_mapper.insert(node_status_topic, internal_message_consumer::node_status_consumer);
+        // fn_mapper.insert(node_status_topic, internal_message_consumer::node_status_consumer);
         fn_mapper.insert(file_upload_topic, internal_message_consumer::file_upload_runner_consumer);
         fn_mapper.insert(ws_server_topic, internal_message_consumer::ws_server_operator);
 

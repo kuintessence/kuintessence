@@ -1,15 +1,25 @@
+//! Queue resource service.
+
 use async_trait::async_trait;
 use uuid::Uuid;
 
-use crate::model::entity::{
-    queue::{QueueCacheInfo, QueueResourceUsed},
-    Queue,
+use crate::model::{
+    entity::{
+        queue::{QueueCacheInfo, QueueResourceUsed},
+        Queue,
+    },
+    vo::SchedulingStrategy,
 };
 
 #[async_trait]
+/// Queue resource service.
 pub trait QueueResourceService: Send + Sync {
     /// Get an available queue.
-    async fn get_queue(&self, task_id: Uuid) -> anyhow::Result<Queue>;
+    async fn get_queue(
+        &self,
+        task_id: Uuid,
+        scheduling_strategy: &SchedulingStrategy,
+    ) -> anyhow::Result<Queue>;
 
     /// Add cached used queue resources.
     async fn add_used_queue_resources(&self, queue: &Queue) -> anyhow::Result<()>;
@@ -27,6 +37,8 @@ pub trait QueueResourceService: Send + Sync {
     async fn update_queue_resource(&self, queue_id: Uuid, queue: &QueueCacheInfo);
 
     async fn test_queue_run_out_of_resource(&self, queue_id: Uuid) -> anyhow::Result<()>;
+    /// Test if a queue is run out of resource, Err when is run out of resource.
 
     async fn get_queue_cache_info(&self, queue_id: Uuid) -> anyhow::Result<QueueCacheInfo>;
+    /// Get queue cache info.
 }

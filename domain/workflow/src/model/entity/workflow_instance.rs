@@ -3,8 +3,9 @@ use std::fmt::Debug;
 
 use alice_architecture::model::AggregateRoot;
 use anyhow::anyhow;
-use chrono::Utc;
-use database_model::system::prelude::FlowInstanceModel;
+use chrono::DateTime;
+use chrono::FixedOffset;
+use database_model::flow_instance;
 use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::FromPrimitive;
 use serde::{Deserialize, Serialize};
@@ -14,6 +15,7 @@ use uuid::Uuid;
 use super::node_instance::NodeInstanceKind;
 use super::workflow_draft::*;
 use super::NodeInstance;
+use crate::model::vo::msg::ChangeInfo;
 use crate::model::vo::*;
 
 /// 工作流实例
@@ -25,7 +27,7 @@ pub struct WorkflowInstance {
     /// 名称
     pub name: String,
     /// 描述
-    pub description: String,
+    pub description: Option<String>,
     /// 图标
     pub logo: Option<String>,
     /// 状态
@@ -33,8 +35,10 @@ pub struct WorkflowInstance {
     /// 规格
     pub spec: WorkflowInstanceSpec,
     /// 最后修改时间
-    pub last_modified_time: chrono::DateTime<Utc>,
     pub user_id: Uuid,
+    pub last_modified_time: DateTime<FixedOffset>,
+    /// Use to get user id via task id: Get node_instance_id then get workflow_instance, then get
+    /// user_id.
 }
 
 /// 工作流实例规格
@@ -118,11 +122,14 @@ pub enum NodeSpecOutputSlotKind {
     },
 }
 
+impl ChangeInfo for WorkflowInstanceStatus {}
+
 /// 工作流实例状态
-#[derive(FromPrimitive, ToPrimitive, Clone, Serialize, Deserialize, Default, Debug)]
+#[derive(FromPrimitive, ToPrimitive, Clone, Serialize, Deserialize, Debug, Default)]
 pub enum WorkflowInstanceStatus {
     /// # 已创建
     /// 工作流实例已被创建，数据库此时储存了工作流实例的各类信息
+    #[default]
     Created,
     /// # 等待中
     /// 工作流实例已经启动，此时还未进行任何作业处理（调度、分解等）
@@ -132,16 +139,16 @@ pub enum WorkflowInstanceStatus {
     Running,
     /// # 已结束
     /// 工作流实例的流程已全部完成且所有处理过的作业正常结束
-    Finished,
+    Completed,
     /// # 出错
     /// 工作流实例处理过程出现错误，已停止处理
-    Error,
+    Failed,
     /// #正在终止
     /// 工作流实例在处理过程中收到终止指令，正在终止流程
-    Stopping,
+    Terminating,
     /// # 已终止
     /// 工作流实例的处理过程已经终止
-    Stopped,
+    Terminated,
     /// # 正在暂停
     /// 工作流实例的处理过程正在暂停
     Pausing,
@@ -151,15 +158,15 @@ pub enum WorkflowInstanceStatus {
     /// # 正在恢复
     /// 工作流实例的处理过程正在恢复
     Recovering,
-    #[default]
-    Unknown,
+    /// Recovered, only use in status receiver, it eventually turns into Running.
+    Recovered,
 }
 
-impl TryFrom<FlowInstanceModel> for WorkflowInstance {
+impl TryFrom<flow_instance::Model> for WorkflowInstance {
     type Error = anyhow::Error;
 
-    fn try_from(model: FlowInstanceModel) -> Result<Self, Self::Error> {
-        let FlowInstanceModel {
+    fn try_from(model: flow_instance::Model) -> Result<Self, Self::Error> {
+        let flow_instance::Model {
             id,
             name,
             description,
@@ -169,6 +176,7 @@ impl TryFrom<FlowInstanceModel> for WorkflowInstance {
             user_id,
             created_time: _,
             last_modified_time,
+            project_id: _,
         } = model;
 
         Ok(Self {
@@ -180,35 +188,6 @@ impl TryFrom<FlowInstanceModel> for WorkflowInstance {
             spec: serde_json::from_value(spec)?,
             last_modified_time,
             user_id,
-        })
-    }
-}
-
-impl TryFrom<WorkflowInstance> for FlowInstanceModel {
-    type Error = anyhow::Error;
-
-    fn try_from(value: WorkflowInstance) -> Result<Self, Self::Error> {
-        let WorkflowInstance {
-            id,
-            name,
-            description,
-            logo,
-            status,
-            spec,
-            last_modified_time,
-            user_id,
-        } = value;
-
-        Ok(Self {
-            id,
-            name,
-            description,
-            logo,
-            status: status as i32,
-            spec: serde_json::to_value(spec)?,
-            user_id,
-            created_time: Utc::now(),
-            last_modified_time,
         })
     }
 }

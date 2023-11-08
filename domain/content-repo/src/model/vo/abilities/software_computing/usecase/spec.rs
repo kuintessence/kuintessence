@@ -1,7 +1,4 @@
-use crate::model::vo::abilities::{
-    common::{Metadata, OutValidator},
-    software_computing::common::Requirements,
-};
+use crate::model::vo::abilities::common::{Metadata, OutValidator};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -41,6 +38,22 @@ pub struct UsecaseSpec {
 
 #[derive(JsonSchema, Serialize, Deserialize, Debug, Clone)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
+/// 所需物理资源
+pub struct Requirements {
+    /// 核心数
+    pub cpu_cores: Option<usize>,
+    /// 节点数
+    pub node_count: Option<isize>,
+    /// 最长等待时间（s）
+    pub max_wall_time: Option<usize>,
+    /// 最大核时消耗 (s)
+    pub max_cpu_time: Option<usize>,
+    /// 定时终止 (utc 0 时区 时间戳)
+    pub stop_time: Option<usize>,
+}
+
+#[derive(JsonSchema, Serialize, Deserialize, Debug, Clone)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
 /// 输出插槽
 pub enum OutputSlot {
     /// 文本输出
@@ -72,6 +85,47 @@ pub enum OutputSlot {
         /// 验证使用的验证器
         validator: Option<OutValidator>,
     },
+}
+
+impl OutputSlot {
+    pub fn validator(&self) -> Option<OutValidator> {
+        match self {
+            OutputSlot::Text {
+                descriptor: _,
+                collected_out_descriptor: _,
+                metadata: _,
+                optional: _,
+                validator,
+            } => validator,
+            OutputSlot::File {
+                descriptor: _,
+                origin: _,
+                optional: _,
+                metadata: _,
+                validator,
+            } => validator,
+        }
+        .to_owned()
+    }
+    pub fn descriptor(&self) -> String {
+        match self {
+            OutputSlot::Text {
+                descriptor,
+                collected_out_descriptor: _,
+                metadata: _,
+                optional: _,
+                validator: _,
+            } => descriptor,
+            OutputSlot::File {
+                descriptor,
+                origin: _,
+                optional: _,
+                metadata: _,
+                validator: _,
+            } => descriptor,
+        }
+        .to_owned()
+    }
 }
 
 #[derive(JsonSchema, Serialize, Deserialize, Debug, Clone)]

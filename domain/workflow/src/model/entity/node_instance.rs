@@ -1,13 +1,11 @@
 use alice_architecture::model::AggregateRoot;
 use anyhow::anyhow;
-use chrono::Utc;
-use database_model::system::prelude::NodeInstanceModel;
+use database_model::node_instance;
 use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::FromPrimitive;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use super::task::TaskUsedResource;
 use crate::model::vo::NodeKind;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, AggregateRoot)]
@@ -35,6 +33,44 @@ pub struct NodeInstance {
     pub resource_meter: Option<TaskUsedResource>,
 }
 
+/// 资源使用
+#[derive(Debug, Clone, Serialize, Deserialize, Default, AggregateRoot)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskUsedResource {
+    /// 核心数
+    pub cpu: u64,
+    /// 平均内存
+    pub avg_memory: u64,
+    /// 最大内存
+    pub max_memory: u64,
+    /// 存储空间
+    pub storage: u64,
+    /// 墙钟时间
+    pub wall_time: u64,
+    /// 核心时间
+    pub cpu_time: u64,
+    /// 节点数
+    pub node: u64,
+    /// 开始时间
+    pub start_time: i64,
+    /// 结束时间
+    pub end_time: i64,
+}
+impl From<crate::model::vo::task_dto::result::TaskUsedResource> for TaskUsedResource {
+    fn from(value: crate::model::vo::task_dto::result::TaskUsedResource) -> Self {
+        Self {
+            cpu: value.cpu,
+            avg_memory: value.avg_memory,
+            max_memory: value.max_memory,
+            storage: value.storage,
+            wall_time: value.wall_time,
+            cpu_time: value.cpu_time,
+            node: value.node,
+            start_time: value.start_time,
+            end_time: value.end_time,
+        }
+    }
+}
 #[derive(
     FromPrimitive, ToPrimitive, Clone, Serialize, Deserialize, Default, Debug, Hash, PartialEq, Eq,
 )]
@@ -65,16 +101,16 @@ pub enum NodeInstanceStatus {
     Running,
     /// # 已结束
     /// 作业例的流程已全部完成且所有处理过的作业正常结束
-    Finished,
+    Completed,
     /// # 出错
     /// 作业实例处理过程出现错误，已停止
-    Error,
+    Failed,
     /// # 正在终止
     /// 作业实例在处理过程中收到终止指令，正在终止流程
-    Stopping,
+    Terminating,
     /// # 已终止
     /// 作业实例的处理过程已经终止
-    Stopped,
+    Terminated,
     /// # 待命中
     /// 等待前置作业完成，即可开始该作业的处理
     Standby,
@@ -87,13 +123,15 @@ pub enum NodeInstanceStatus {
     /// # 正在恢复
     /// 作业实例的处理过程正在恢复
     Recovering,
+    /// Recovered, only use in status receiver, it eventually turns into Running.
+    Recovered,
 }
 
-impl TryFrom<NodeInstanceModel> for NodeInstance {
+impl TryFrom<node_instance::Model> for NodeInstance {
     type Error = anyhow::Error;
 
-    fn try_from(model: NodeInstanceModel) -> Result<Self, Self::Error> {
-        let NodeInstanceModel {
+    fn try_from(model: node_instance::Model) -> Result<Self, Self::Error> {
+        let node_instance::Model {
             id,
             name,
             kind,
@@ -119,40 +157,6 @@ impl TryFrom<NodeInstanceModel> for NodeInstance {
             queue_id,
             log,
             resource_meter: resource_meter.map(serde_json::from_value).transpose()?,
-        })
-    }
-}
-
-impl TryFrom<NodeInstance> for NodeInstanceModel {
-    type Error = anyhow::Error;
-
-    fn try_from(value: NodeInstance) -> Result<Self, Self::Error> {
-        let NodeInstance {
-            kind,
-            id,
-            name,
-            is_parent,
-            batch_parent_id,
-            flow_instance_id,
-            status,
-            queue_id,
-            log,
-            resource_meter,
-        } = value;
-
-        Ok(Self {
-            id,
-            name,
-            kind: kind as i32,
-            is_parent,
-            batch_parent_id,
-            status: status as i32,
-            resource_meter: resource_meter.map(serde_json::to_value).transpose()?,
-            log,
-            queue_id,
-            flow_instance_id,
-            created_time: Utc::now().into(),
-            last_modified_time: Utc::now().into(),
         })
     }
 }

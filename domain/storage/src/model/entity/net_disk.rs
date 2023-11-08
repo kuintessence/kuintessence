@@ -1,6 +1,5 @@
 use alice_architecture::model::AggregateRoot;
-use chrono::Utc;
-use database_model::system::prelude::FileSystemModel;
+use database_model::file_system;
 use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::FromPrimitive;
 use serde::{Deserialize, Serialize};
@@ -176,11 +175,11 @@ impl NetDisk {
     }
 }
 
-impl TryFrom<FileSystemModel> for NetDisk {
+impl TryFrom<file_system::Model> for NetDisk {
     type Error = anyhow::Error;
 
-    fn try_from(model: FileSystemModel) -> Result<Self, Self::Error> {
-        let FileSystemModel {
+    fn try_from(model: file_system::Model) -> Result<Self, Self::Error> {
+        let file_system::Model {
             id,
             parent_id,
             name,
@@ -204,30 +203,3 @@ impl TryFrom<FileSystemModel> for NetDisk {
     }
 }
 
-impl TryFrom<NetDisk> for FileSystemModel {
-    type Error = anyhow::Error;
-
-    fn try_from(value: NetDisk) -> Result<Self, Self::Error> {
-        let NetDisk {
-            id,
-            parent_id,
-            name,
-            is_dict,
-            kind,
-            file_metadata_id,
-            meta,
-        } = value;
-
-        Ok(Self {
-            id,
-            parent_id,
-            name,
-            is_dict,
-            kind: kind as i32,
-            owner_id: Uuid::default(),
-            created_time: Utc::now(),
-            file_metadata_id,
-            meta: meta.map(serde_json::to_value).transpose()?,
-        })
-    }
-}

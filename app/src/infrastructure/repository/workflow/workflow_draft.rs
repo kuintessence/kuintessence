@@ -1,6 +1,6 @@
 use alice_architecture::repository::ReadOnlyRepository;
 
-use database_model::system::prelude::*;
+use database_model::flow_draft;
 use domain_workflow::model::entity::WorkflowDraft;
 use sea_orm::prelude::*;
 
@@ -9,8 +9,8 @@ use crate::infrastructure::database::OrmRepo;
 #[async_trait::async_trait]
 impl ReadOnlyRepository<WorkflowDraft> for OrmRepo {
     async fn get_by_id(&self, uuid: Uuid) -> anyhow::Result<WorkflowDraft> {
-        FlowDraftEntity::find_by_id(uuid)
-            .filter(FlowDraftColumn::UserId.eq(self.user_id()?))
+        flow_draft::Entity::find_by_id(uuid)
+            .filter(flow_draft::Column::UserId.eq(self.user_id()?))
             .one(self.db.get_connection())
             .await?
             .ok_or(anyhow::anyhow!(

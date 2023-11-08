@@ -1,6 +1,5 @@
 use alice_architecture::model::AggregateRoot;
-use chrono::Utc;
-use database_model::system::prelude::FileMetadataModel;
+use database_model::file_metadata;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -22,14 +21,14 @@ pub struct FileMeta {
     /// Hash algorithm of these files.
     pub hash_algorithm: HashAlgorithm,
     /// Size of these files.
-    pub size: usize,
+    pub size: u64,
 }
 
-impl TryFrom<FileMetadataModel> for FileMeta {
+impl TryFrom<file_metadata::Model> for FileMeta {
     type Error = anyhow::Error;
 
-    fn try_from(model: FileMetadataModel) -> Result<Self, Self::Error> {
-        let FileMetadataModel {
+    fn try_from(model: file_metadata::Model) -> Result<Self, Self::Error> {
+        let file_metadata::Model {
             id,
             name,
             hash,
@@ -43,28 +42,7 @@ impl TryFrom<FileMetadataModel> for FileMeta {
             name,
             hash,
             hash_algorithm: hash_algorithm.parse()?,
-            size: size as usize,
+            size: size as u64,
         })
-    }
-}
-
-impl From<FileMeta> for FileMetadataModel {
-    fn from(value: FileMeta) -> Self {
-        let FileMeta {
-            id,
-            name,
-            hash,
-            hash_algorithm,
-            size,
-        } = value;
-
-        Self {
-            id,
-            name,
-            hash,
-            hash_algorithm: hash_algorithm.to_string(),
-            size: size as i64,
-            created_time: Utc::now(),
-        }
     }
 }

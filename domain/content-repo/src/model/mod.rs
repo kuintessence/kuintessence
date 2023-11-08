@@ -5,7 +5,7 @@ pub mod vo;
 mod tests {
     use super::{
         entity::package::Manifest,
-        vo::abilities::software_computing::common::{SoftwareMaterial, UsecaseMaterial},
+        vo::abilities::software_computing::schema::{SoftwareMaterial, UsecaseMaterial},
     };
 
     #[test]

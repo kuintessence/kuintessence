@@ -1,6 +1,5 @@
 use alice_architecture::model::AggregateRoot;
-use chrono::Utc;
-use database_model::system::prelude::FileStorageModel;
+use database_model::file_storage;
 use uuid::Uuid;
 
 /// Record File meta and its stored server.
@@ -14,26 +13,13 @@ pub struct FileStorage {
     pub server_url: String,
 }
 
-impl From<FileStorageModel> for FileStorage {
+impl From<file_storage::Model> for FileStorage {
     #[inline]
-    fn from(model: FileStorageModel) -> Self {
+    fn from(model: file_storage::Model) -> Self {
         Self {
             storage_server_id: model.storage_server_id,
             meta_id: model.file_metadata_id,
             server_url: model.server_url,
-        }
-    }
-}
-
-impl From<FileStorage> for FileStorageModel {
-    fn from(value: FileStorage) -> Self {
-        Self {
-            id: Uuid::new_v4(),
-            storage_server_id: value.storage_server_id,
-            file_metadata_id: value.meta_id,
-            server_url: value.server_url,
-            created_time: Some(Utc::now().into()),
-            created_user_id: Uuid::default(),
         }
     }
 }

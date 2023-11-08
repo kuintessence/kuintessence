@@ -1,11 +1,10 @@
 use std::sync::Arc;
 
+use crate::infrastructure::service::file_upload_runner::FileUploadRunner;
+use alice_di::IServiceProvider;
 use alice_infrastructure::middleware::authorization::{AliceScopedConfig, UserInfo};
 use domain_storage::command::FileUploadCommand;
-use domain_workflow::{model::entity::task::TaskResult, service::WorkflowStatusReceiverService};
 use infrastructure_command::WsServerOperateCommand;
-use alice_di::IServiceProvider;
-use crate::infrastructure::service::file_upload_runner::FileUploadRunner;
 
 use super::ServiceProvider;
 
@@ -28,11 +27,11 @@ pub async fn ws_server_operator(
     Ok(())
 }
 
-#[alice_di::auto_inject(ServiceProvider, scoped)]
-#[alice_web::message_consumer]
-pub async fn node_status_consumer(
-    #[inject] service: std::sync::Arc<dyn WorkflowStatusReceiverService >,
-    #[serialize] task_result: TaskResult,
-) -> anyhow::Result<()> {
-    service.receive_node_status(task_result).await
-}
+// #[alice_di::auto_inject(ServiceProvider, scoped)]
+// #[alice_web::message_consumer]
+// pub async fn node_status_consumer(
+//     #[inject] service: std::sync::Arc<dyn WorkflowStatusReceiverService>,
+//     #[serialize] task_result: TaskResult,
+// ) -> anyhow::Result<()> {
+//     service.receive_node_status(task_result).await
+// }

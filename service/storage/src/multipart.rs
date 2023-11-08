@@ -41,7 +41,7 @@ impl MultipartService for MultipartServiceImpl {
         meta_id: Uuid,
         hash: &str,
         hash_algorithm: HashAlgorithm,
-        count: usize,
+        count: u64,
     ) -> FileResult<()> {
         let hash = hash.to_uppercase();
         // Test is hash the same.
@@ -63,7 +63,7 @@ impl MultipartService for MultipartServiceImpl {
             meta_id,
             hash: hash.to_owned(),
             hash_algorithm,
-            parts: vec![false; count],
+            parts: vec![false; count as usize],
         };
         self.multipart_repo
             .insert_with_lease(&id_hash_key(meta_id, &hash), &multipart, self.exp_msecs)
