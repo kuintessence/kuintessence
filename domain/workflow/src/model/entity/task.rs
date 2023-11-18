@@ -1,24 +1,23 @@
 use alice_architecture::model::AggregateRoot;
-use anyhow::Context;
 use num_derive::{FromPrimitive, ToPrimitive};
-use num_traits::FromPrimitive;
 use uuid::Uuid;
 
-use crate::model::vo::task_dto::result::TaskResultStatus;
+use crate::model::vo::task_dto::{self, result::TaskResultStatus};
 
 #[derive(AggregateRoot, Clone, Debug)]
 pub struct Task {
-    pub id: String,
-    pub node_instance_id: String,
+    pub id: Uuid,
+    pub node_instance_id: Uuid,
     pub r#type: TaskType,
     /// Task biz data.
     pub body: String,
     pub status: TaskStatus,
     pub message: Option<String>,
     pub used_resources: Option<String>,
+    pub queue_topic: String,
 }
 
-#[derive(ToPrimitive, FromPrimitive, Debug, Clone)]
+#[derive(ToPrimitive, FromPrimitive, Debug, Clone, PartialEq)]
 pub enum TaskType {
     SoftwareDeployment,
     FileDownload,
@@ -51,8 +50,6 @@ pub enum TaskStatus {
     Paused,
     /// Recovering.
     Recovering,
-    /// Recovered, only use in status receiver, it eventually turns into Running.
-    Recovered,
 }
 
 impl From<TaskResultStatus> for TaskStatus {
@@ -69,18 +66,15 @@ impl From<TaskResultStatus> for TaskStatus {
     }
 }
 
-impl TryFrom<database_model::task::Model> for Task {
-    type Error = anyhow::Error;
-
-    fn try_from(value: database_model::task::Model) -> Result<Self, Self::Error> {
-        Ok(Self {
-            id: value.id,
-            node_instance_id: value.node_instance_id,
-            r#type: FromPrimitive::from_i32(value.r#type).context("Wrong Task type")?,
-            body: value.body.to_string(),
-            status: FromPrimitive::from_i32(value.status).context("Wrong Task statsu")?,
-            message: value.message,
-            used_resources: value.used_resources.map(|u| u.to_string()),
-        })
+impl From<TaskType> for task_dto::TaskType {
+    fn from(value: TaskType) -> Self {
+        match value {
+            TaskType::SoftwareDeployment => Self::SoftwareDeployment,
+            TaskType::FileDownload => Self::FileDownload,
+            TaskType::UsecaseExecution => Self::UsecaseExecution,
+            TaskType::FileUpload => Self::FileUpload,
+            TaskType::OutputCollect => Self::OutputCollect,
+            TaskType::ExecuteScript => Self::ExecuteScript,
+        }
     }
 }

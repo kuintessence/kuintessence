@@ -9,8 +9,8 @@ pub trait ScheduleService: Send + Sync {
     type Info: ChangeInfo;
 
     /// Handle a changed target item.
-    async fn handle_changed(&self, id: String, info: Self::Info) -> anyhow::Result<()>;
+    async fn handle_changed(&self, id: Uuid, info: Self::Info) -> anyhow::Result<()>;
 
     /// Change an target item.
-    async fn change(&self, id: String, info: Self::Info) -> anyhow::Result<()>;
+    async fn change(&self, id: Uuid, info: Self::Info) -> anyhow::Result<()>;
 }

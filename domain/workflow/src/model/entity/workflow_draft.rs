@@ -23,7 +23,6 @@ pub struct WorkflowDraft {
     /// 名称
     pub name: String,
     /// 描述
-    pub description: String,
     pub description: Option<String>,
     /// 图标
     pub logo: Option<String>,

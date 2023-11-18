@@ -123,8 +123,6 @@ pub enum NodeInstanceStatus {
     /// # 正在恢复
     /// 作业实例的处理过程正在恢复
     Recovering,
-    /// Recovered, only use in status receiver, it eventually turns into Running.
-    Recovered,
 }
 
 impl TryFrom<node_instance::Model> for NodeInstance {

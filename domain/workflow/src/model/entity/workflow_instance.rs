@@ -15,7 +15,6 @@ use uuid::Uuid;
 use super::node_instance::NodeInstanceKind;
 use super::workflow_draft::*;
 use super::NodeInstance;
-use crate::model::vo::msg::ChangeInfo;
 use crate::model::vo::*;
 
 /// 工作流实例
@@ -35,10 +34,10 @@ pub struct WorkflowInstance {
     /// 规格
     pub spec: WorkflowInstanceSpec,
     /// 最后修改时间
-    pub user_id: Uuid,
     pub last_modified_time: DateTime<FixedOffset>,
-    /// Use to get user id via task id: Get node_instance_id then get workflow_instance, then get
     /// user_id.
+    /// Use to get user id via task id: Get node_instance_id then get workflow_instance, then get
+    pub user_id: Uuid,
 }
 
 /// 工作流实例规格
@@ -122,8 +121,6 @@ pub enum NodeSpecOutputSlotKind {
     },
 }
 
-impl ChangeInfo for WorkflowInstanceStatus {}
-
 /// 工作流实例状态
 #[derive(FromPrimitive, ToPrimitive, Clone, Serialize, Deserialize, Debug, Default)]
 pub enum WorkflowInstanceStatus {
@@ -158,8 +155,6 @@ pub enum WorkflowInstanceStatus {
     /// # 正在恢复
     /// 工作流实例的处理过程正在恢复
     Recovering,
-    /// Recovered, only use in status receiver, it eventually turns into Running.
-    Recovered,
 }
 
 impl TryFrom<flow_instance::Model> for WorkflowInstance {

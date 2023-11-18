@@ -36,9 +36,9 @@ pub trait QueueResourceService: Send + Sync {
     /// Set cached queue info to new value.
     async fn update_queue_resource(&self, queue_id: Uuid, queue: &QueueCacheInfo);
 
-    async fn test_queue_run_out_of_resource(&self, queue_id: Uuid) -> anyhow::Result<()>;
     /// Test if a queue is run out of resource, Err when is run out of resource.
+    async fn test_queue_run_out_of_resource(&self, queue_id: Uuid) -> anyhow::Result<()>;
 
-    async fn get_queue_cache_info(&self, queue_id: Uuid) -> anyhow::Result<QueueCacheInfo>;
     /// Get queue cache info.
+    async fn get_queue_cache_info(&self, queue_id: Uuid) -> anyhow::Result<QueueCacheInfo>;
 }

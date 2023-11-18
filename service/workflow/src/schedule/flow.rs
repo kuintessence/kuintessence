@@ -1,22 +1,18 @@
 use async_trait::async_trait;
-use domain_workflow::{
-    model::{entity::workflow_instance::WorkflowInstanceStatus, vo::msg::StatusChange},
-    service::ScheduleService,
-};
+use domain_workflow::{model::vo::msg::FlowStatusChange, service::ScheduleService};
+use uuid::Uuid;
 
 pub struct FlowScheduleService {}
 
 #[async_trait]
 impl ScheduleService for FlowScheduleService {
-    type Info = WorkflowInstanceStatus;
+    type Info = FlowStatusChange;
 
-    /// Schedule with changed status.
-    async fn handle_changed(&self, changed: StatusChange<Self::Info>) {
+    async fn handle_changed(&self, id: Uuid, info: Self::Info) -> anyhow::Result<()> {
         todo!()
     }
 
-    /// Change status.
-    async fn change(&self, change: StatusChange<Self::Info>) {
+    async fn change(&self, id: Uuid, info: Self::Info) -> anyhow::Result<()> {
         todo!()
     }
 }

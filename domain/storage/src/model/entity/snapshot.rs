@@ -17,7 +17,6 @@ pub struct Snapshot {
     /// Generating and unuploaded meta id in agent.
     pub file_id: Uuid,
     /// Snapshot timestamp
-    pub timestamp: i64,
     pub timestamp: u64,
     /// Snapshot file name
     pub file_name: String,
