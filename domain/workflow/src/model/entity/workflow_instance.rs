@@ -274,6 +274,31 @@ impl From<WorkflowDraftSpec> for WorkflowInstanceSpec {
 }
 
 impl WorkflowInstance {
+    /// Give a list of unschedule nodes, and return nodes to be schedule.
+    pub fn find_entry_nodes(&self, unscheduled_nodes: &[Uuid], toggled_node_id: Uuid) -> Vec<Uuid> {
+        let mut entry_nodes = vec![];
+        let mut adjacenvy_map = HashMap::new();
+        for node_id in unscheduled_nodes {
+            adjacenvy_map.insert(*node_id, 0);
+        }
+        for (_, to_id) in self
+            .spec
+            .node_relations
+            .iter()
+            .filter(|el| el.from_id.ne(&toggled_node_id) && el.to_id.ne(&toggled_node_id))
+            .map(|r| (r.from_id, r.to_id))
+            .collect::<Vec<_>>()
+        {
+            adjacenvy_map.insert(to_id, 1 + adjacenvy_map.get(&to_id).unwrap_or(&0));
+        }
+        for (node_id, adjacency) in adjacenvy_map {
+            if 0.eq(&adjacency) {
+                entry_nodes.push(node_id)
+            }
+        }
+        entry_nodes
+    }
+
     /// Update node_instance prepared upload using file meta id,
     /// because in the case when file is uploading via node instance,
     /// but a flash upload occured, will cause different meta id between prepared and recorded.

@@ -2,7 +2,7 @@ use alice_architecture::repository::DBRepository;
 use async_trait::async_trait;
 use uuid::Uuid;
 
-use crate::model::entity::NodeInstance;
+use crate::model::entity::{workflow_instance::NodeSpec, NodeInstance};
 
 #[async_trait]
 pub trait NodeInstanceRepo: DBRepository<NodeInstance> + Send + Sync {
@@ -29,4 +29,6 @@ pub trait NodeInstanceRepo: DBRepository<NodeInstance> + Send + Sync {
 
     /// 获取批量任务是第几个
     async fn get_nth_of_batch_tasks(&self, sub_node_id: Uuid) -> anyhow::Result<usize>;
+
+    async fn get_node_spec(&self, node_id: Uuid) -> anyhow::Result<NodeSpec>;
 }

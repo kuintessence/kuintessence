@@ -8,8 +8,10 @@ use domain_workflow::{
     model::{
         entity::task::{DbTask, TaskStatus},
         vo::{
-            msg::{NodeChangeInfo, NodeStatusChange, TaskChangeInfo, TaskStatusChange},
-            task_dto::{self, result::TaskUsedResource, TaskCommand, TaskType},
+            msg::{
+                ChangeMsg, Info, NodeChangeInfo, NodeStatusChange, TaskChangeInfo, TaskStatusChange,
+            },
+            task_dto::{self, result::TaskUsedResource, TaskCommand},
         },
     },
     repository::TaskRepo,
@@ -19,9 +21,9 @@ use uuid::Uuid;
 
 pub struct TaskScheduleService {
     task_repo: Arc<dyn TaskRepo>,
-    mq_producer_task_body: Arc<dyn MessageQueueProducerTemplate<task_dto::Task<String>>>,
-    mq_producer_task_command: Arc<dyn MessageQueueProducerTemplate<task_dto::Task<TaskType>>>,
-    node_schedule_service: Arc<dyn ScheduleService<Info = NodeChangeInfo>>,
+    mq_producer_task: Arc<dyn MessageQueueProducerTemplate<task_dto::Task>>,
+    status_mq_producer: Arc<dyn MessageQueueProducerTemplate<ChangeMsg>>,
+    status_mq_topic: String,
 }
 
 #[async_trait]
@@ -34,81 +36,110 @@ impl ScheduleService for TaskScheduleService {
             TaskStatusChange::Queuing => {
                 // Do nothing, because it is queuing on agent, wait agent for making another request.
             }
+
             TaskStatusChange::Running { is_recovered } => {
                 // This is toggled by Workflow Start or Task Recovered or Task start after a completed task.
                 // Firstly, judge whether this is toggled by agent recovered task or start workflow or start task
-                // If is the former, do nothing.
-                // If is the second or third, send task task command;
+                // If is the former, judge is all related tasks meet the condition to make node status to Recovered.
+                // If is the second or third, send task Start command to agent;
+
+                let task = self.task_repo.get_by_id(id).await?;
 
                 if is_recovered {
+                    let tasks = self.task_repo.get_same_node_tasks(id).await?;
+                    // All tasks meet the recovered condition to set node as recovered.
+                    if tasks.iter().all(|t| {
+                        !matches!(
+                            t.status,
+                            TaskStatus::Recovering
+                                | TaskStatus::Paused
+                                | TaskStatus::Completed
+                                | TaskStatus::Terminating
+                                | TaskStatus::Terminated
+                                | TaskStatus::Failed
+                                | TaskStatus::Pausing
+                                | TaskStatus::Queuing
+                        )
+                    }) {
+                        self.status_mq_producer
+                            .send_object(
+                                &ChangeMsg {
+                                    id: task.node_instance_id,
+                                    info: Info::Node(NodeChangeInfo {
+                                        status: NodeStatusChange::Running { is_recovered: true },
+                                        ..Default::default()
+                                    }),
+                                },
+                                Some(&self.status_mq_topic),
+                            )
+                            .await?;
+                    }
                     return Ok(());
                 }
 
-                let task = self.task_repo.get_by_id(id).await?;
                 self.mq_producer_task_body
                     .send_object(
                         &task_dto::Task {
                             id,
-                            command: TaskCommand::Start,
-                            body: task.body,
+                            command: TaskCommand::Start(task.body),
                         },
                         Some(&task.queue_topic),
                     )
                     .await?;
             }
+
             TaskStatusChange::Completed => {
                 // Firstly, get the node related tasks list.
-                // Then, judge if there are tasks in status NOT Standby and Completed.
-                // If at least one task is in the situation mentioned previously, do nothing.
+                // Then, judge if all tasks meet the condition to continue.
                 // Otherwise, get tasks in status: Standby, run runnable tasks(The same type from the first one) in the list. If the list is
                 // empty, report node as Completed.
 
                 let tasks = self.task_repo.get_same_node_tasks(id).await?;
-                let node_instance_id = self.task_repo.get_by_id(id).await?.node_instance_id;
-                let is_do_nothing = tasks.iter().any(|t| match t.status {
-                    TaskStatus::Queuing
-                    | TaskStatus::Running
-                    | TaskStatus::Failed
-                    | TaskStatus::Terminating
-                    | TaskStatus::Terminated
-                    | TaskStatus::Pausing
-                    | TaskStatus::Paused
-                    | TaskStatus::Recovering => true,
-                    _ => false,
-                });
-                if is_do_nothing {
+
+                if tasks.iter().any(|t| {
+                    matches!(
+                        t.status,
+                        TaskStatus::Recovering
+                            | TaskStatus::Paused
+                            | TaskStatus::Running
+                            | TaskStatus::Terminating
+                            | TaskStatus::Terminated
+                            | TaskStatus::Failed
+                            | TaskStatus::Pausing
+                            | TaskStatus::Queuing
+                    )
+                }) {
+                    // Do nothing, wait for the next Completed.
                     return Ok(());
                 }
 
-                let first_stand_by_task = tasks.iter().find(|t| {
-                    if let TaskStatus::Standby = t.status {
-                        true
-                    } else {
-                        false
-                    }
-                });
+                let node_instance_id = self.task_repo.get_by_id(id).await?.node_instance_id;
 
+                let first_stand_by_task =
+                    tasks.iter().find(|t| matches!(t.status, TaskStatus::Standby));
+
+                // If no stand by task, means node can be set to Completed.
                 if first_stand_by_task.is_none() {
-                    self.node_schedule_service
-                        .change(
-                            node_instance_id,
-                            NodeChangeInfo {
-                                status: NodeStatusChange::Completed,
-                                ..Default::default()
+                    self.status_mq_producer
+                        .send_object(
+                            &ChangeMsg {
+                                id: node_instance_id,
+                                info: Info::Node(NodeChangeInfo {
+                                    status: NodeStatusChange::Completed,
+                                    message: info.message,
+                                    used_resources: info.used_resources,
+                                    ..Default::default()
+                                }),
                             },
+                            Some(&self.status_mq_topic),
                         )
                         .await?;
                     return Ok(());
                 }
 
+                // iF there is stand by task, change this and all same type tasks to Running.
                 let first_stand_by_task = first_stand_by_task.unwrap();
-                for task in tasks.iter().filter(|t| {
-                    if t.r#type == first_stand_by_task.r#type {
-                        true
-                    } else {
-                        false
-                    }
-                }) {
+                for task in tasks.iter().filter(|t| t.r#type == first_stand_by_task.r#type) {
                     self.change(
                         task.id,
                         TaskChangeInfo {
@@ -120,21 +151,26 @@ impl ScheduleService for TaskScheduleService {
                     );
                 }
             }
+
             TaskStatusChange::Failed => {
                 // Report node as Failed.
 
                 let node_id = self.task_repo.get_by_id(id).await?.node_instance_id;
-                self.node_schedule_service
-                    .change(
-                        node_id,
-                        NodeChangeInfo {
-                            status: NodeStatusChange::Failed,
-                            message: info.message,
-                            used_resources: info.used_resources,
+                self.status_mq_producer
+                    .send_object(
+                        &ChangeMsg {
+                            id: node_id,
+                            info: Info::Node(NodeChangeInfo {
+                                status: NodeStatusChange::Failed,
+                                message: info.message,
+                                used_resources: info.used_resources,
+                            }),
                         },
+                        Some(&self.status_mq_topic),
                     )
                     .await?;
             }
+
             TaskStatusChange::Terminating => {
                 // This is generate from co.
                 // Use TaskDistribute Service to send task terminating command.
@@ -144,13 +180,13 @@ impl ScheduleService for TaskScheduleService {
                     .send_object(
                         &task_dto::Task {
                             id,
-                            command: TaskCommand::Delete,
-                            body: task.r#type.into(),
+                            command: TaskCommand::Delete(task.r#type.into()),
                         },
                         Some(&task.queue_topic),
                     )
                     .await?;
             }
+
             TaskStatusChange::Terminated => {
                 // This is generated from agent.
                 // Firstly, get the node related tasks list.
@@ -160,27 +196,31 @@ impl ScheduleService for TaskScheduleService {
 
                 let node_id = self.task_repo.get_by_id(id).await?.node_instance_id;
                 let tasks = self.task_repo.get_same_node_tasks(id).await?;
-                let node_terminated = tasks.iter().all(|t| match t.status {
-                    TaskStatus::Standby => true,
-                    TaskStatus::Completed => true,
-                    TaskStatus::Failed => true,
-                    TaskStatus::Terminated => true,
-                    TaskStatus::Paused => true,
-                    _ => false,
-                });
-
-                if node_terminated {
-                    self.node_schedule_service
-                        .change(
-                            node_id,
-                            NodeChangeInfo {
-                                status: NodeStatusChange::Terminated,
-                                ..Default::default()
+                if tasks.iter().all(|t| {
+                    matches!(
+                        t.status,
+                        TaskStatus::Standby
+                            | TaskStatus::Completed
+                            // | TaskStatus::Failed
+                            | TaskStatus::Terminated
+                            | TaskStatus::Paused,
+                    )
+                }) {
+                    self.status_mq_producer
+                        .send_object(
+                            &ChangeMsg {
+                                id: node_id,
+                                info: Info::Node(NodeChangeInfo {
+                                    status: NodeStatusChange::Terminated,
+                                    ..Default::default()
+                                }),
                             },
+                            Some(&self.status_mq_topic),
                         )
                         .await?;
                 }
             }
+
             TaskStatusChange::Pausing => {
                 // Use TaskDistribute Service to send task pause command.
 
@@ -189,40 +229,44 @@ impl ScheduleService for TaskScheduleService {
                     .send_object(
                         &task_dto::Task {
                             id,
-                            command: TaskCommand::Pause,
-                            body: task.r#type.into(),
+                            command: TaskCommand::Pause(task.r#type.into()),
                         },
                         Some(&task.queue_topic),
                     )
                     .await?;
             }
+
             TaskStatusChange::Paused => {
                 // Firstly, get the node related taks list.
                 // Then, judge if all tasks are: Standby or Completed
 
                 let node_id = self.task_repo.get_by_id(id).await?.node_instance_id;
                 let tasks = self.task_repo.get_same_node_tasks(id).await?;
-                let node_paused = tasks.iter().all(|t| match t.status {
-                    TaskStatus::Standby => true,
-                    TaskStatus::Completed => true,
-                    TaskStatus::Failed => true,
-                    TaskStatus::Terminated => true,
-                    TaskStatus::Paused => true,
-                    _ => false,
-                });
-
-                if node_paused {
-                    self.node_schedule_service
-                        .change(
-                            node_id,
-                            NodeChangeInfo {
-                                status: NodeStatusChange::Paused,
-                                ..Default::default()
+                if tasks.iter().all(|t| {
+                    matches!(
+                        t.status,
+                        TaskStatus::Standby
+                            | TaskStatus::Completed
+                            // | TaskStatus::Failed
+                            // | TaskStatus::Terminated
+                            | TaskStatus::Paused
+                    )
+                }) {
+                    self.status_mq_producer
+                        .send_object(
+                            &ChangeMsg {
+                                id: node_id,
+                                info: Info::Node(NodeChangeInfo {
+                                    status: NodeStatusChange::Paused,
+                                    ..Default::default()
+                                }),
                             },
+                            Some(&self.status_mq_topic),
                         )
                         .await?;
                 }
             }
+
             TaskStatusChange::Recovering => {
                 // Use TaskDistribute Service to send task recover command.
 
@@ -231,15 +275,14 @@ impl ScheduleService for TaskScheduleService {
                     .send_object(
                         &task_dto::Task {
                             id,
-                            command: TaskCommand::Continue,
-                            body: task.r#type.into(),
+                            command: TaskCommand::Continue(task.r#type.into()),
                         },
                         Some(&task.queue_topic),
                     )
                     .await?;
             }
         }
-        todo!()
+        Ok(())
     }
 
     /// Change status and call handle_changed.

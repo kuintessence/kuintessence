@@ -30,3 +30,4 @@ once_cell = { workspace = true }
 [dev-dependencies]
 tokio = { workspace = true, features = ["full"] }
 mockall = { workspace = true }
+indoc = { workspace = true }

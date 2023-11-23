@@ -25,7 +25,7 @@ use domain_storage::{command::ViewRealtimeCommand, repository::MoveRegistrationR
 use domain_workflow::{
     model::{
         entity::node_instance::NodeInstanceKind,
-        vo::task_dto::{Task, TaskBody, TaskType},
+        vo::task_dto::{Task, StartTaskBody, TaskType},
     },
     service::*,
 };
@@ -154,7 +154,7 @@ build_container! {
     kafka_mq_producer: Arc<KafkaMessageQueueProducer> {
         provide[
             Arc<dyn MessageQueueProducerTemplate<ViewRealtimeCommand>>,
-            Arc<dyn MessageQueueProducerTemplate<Task<TaskBody>>>,
+            Arc<dyn MessageQueueProducerTemplate<Task<StartTaskBody>>>,
             Arc<dyn MessageQueueProducerTemplate<Task<TaskType>>>,
             Arc<dyn MessageQueueProducerTemplate<Uuid>>,
         ]

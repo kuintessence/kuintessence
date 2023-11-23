@@ -8,6 +8,8 @@ use uuid::Uuid;
 
 use crate::model::vo::NodeKind;
 
+use super::workflow_instance::NodeSpec;
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default, AggregateRoot)]
 /// # 节点实例
 pub struct NodeInstance {

@@ -27,8 +27,8 @@ use domain_workflow::{
         vo::{
             task_dto::{
                 result::TaskResult, CollectFrom, CollectRule, CollectTo, DownloadFile,
-                FacilityKind, FileTransmitKind, OutputCollect, StdInKind, Task, TaskBody,
-                TaskCommand, UploadFile,
+                FacilityKind, FileTransmitKind, OutputCollect, StdInKind, Task, StartTaskBody,
+                TaskType, UploadFile,
             },
             NodeInputSlotKind, NodeKind,
         },
@@ -141,7 +141,7 @@ impl UsecaseParseService for SoftwareComputingUsecaseServiceImpl {
         let node_spec = flow.spec.node(node_id).to_owned();
         let tasks = self.parse_tasks(node_spec).await?;
         let name_and_arguments = tasks.iter().find_map(|task| {
-            if let TaskBody::UsecaseExecution {
+            if let StartTaskBody::ExecuteUsecase {
                 name, arguments, ..
             } = &task.body
             {
@@ -170,7 +170,7 @@ impl SoftwareComputingUsecaseServiceImpl {
     /// # 参数
     ///
     /// * `node_spec` - 节点数据
-    async fn parse_tasks(&self, node_spec: NodeSpec) -> anyhow::Result<Vec<Task<TaskBody>>> {
+    async fn parse_tasks(&self, node_spec: NodeSpec) -> anyhow::Result<Vec<Task<StartTaskBody>>> {
         let data = match &node_spec.kind {
             NodeKind::SoftwareUsecaseComputing { data } => data,
             _ => anyhow::bail!("Unreachable node kind!"),
@@ -888,21 +888,21 @@ impl SoftwareComputingUsecaseServiceImpl {
         {
             tasks.push(Task {
                 id: String::new_v4(),
-                body: TaskBody::SoftwareDeployment {
+                body: StartTaskBody::DeploySoftware {
                     facility_kind: FacilityKind::from(software_spec.to_owned()),
                 },
-                command: TaskCommand::Start,
+                command: TaskType::Start,
             });
         }
 
         tasks.push(Task {
             id: String::new_v4(),
-            body: TaskBody::FileDownload { download_files },
-            command: TaskCommand::Start,
+            body: StartTaskBody::DownloadFile { download_files },
+            command: TaskType::Start,
         });
         tasks.push(Task {
             id: String::new_v4(),
-            body: TaskBody::UsecaseExecution {
+            body: StartTaskBody::ExecuteUsecase {
                 name: usecase_spec.command_file.to_owned(),
                 arguments,
                 environments,
@@ -912,19 +912,19 @@ impl SoftwareComputingUsecaseServiceImpl {
                     .map(|r| r.into())
                     .or(requirements.map(|r| r.into())),
             },
-            command: TaskCommand::Start,
+            command: TaskType::Start,
         });
 
         tasks.push(Task {
             id: String::new_v4(),
-            body: TaskBody::OutputCollect { output_collects },
-            command: TaskCommand::Start,
+            body: StartTaskBody::CollectOutput { output_collects },
+            command: TaskType::Start,
         });
 
         tasks.push(Task {
             id: String::new_v4(),
-            body: TaskBody::FileUpload { upload_files },
-            command: TaskCommand::Start,
+            body: StartTaskBody::UploadFile { upload_files },
+            command: TaskType::Start,
         });
         Ok(tasks)
     }

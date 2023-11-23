@@ -10,7 +10,7 @@ use domain_workflow::{
             workflow_instance::NodeSpec,
         },
         vo::{
-            task_dto::{Task, TaskBody, TaskCommand},
+            task_dto::{Task, StartTaskBody, TaskType},
             NodeKind,
         },
     },
@@ -40,8 +40,8 @@ impl UsecaseParseService for ScriptUsecaseServiceImpl {
         let task = if let NodeKind::Script { script_info } = node_spec.kind {
             Task {
                 id: node_spec.id.to_owned(),
-                command: TaskCommand::Start,
-                body: TaskBody::ExecuteScript {
+                command: TaskType::Start,
+                body: StartTaskBody::ExecuteScript {
                     script_info: script_info.into(),
                 },
             }

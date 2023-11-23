@@ -6,11 +6,10 @@ use uuid::Uuid;
 #[derive(Serialize, Debug)]
 #[serde(rename_all = "camelCase")]
 /// Task to send
-pub struct Task<T> {
+pub struct Task {
     pub id: Uuid,
-    pub command: TaskCommand,
     #[serde(flatten)]
-    pub body: T,
+    pub command: TaskCommand,
 }
 
 #[derive(Serialize, Debug)]
@@ -26,32 +25,12 @@ pub enum TaskType {
 
 /// 任务目标状态
 #[derive(Serialize, Debug)]
+#[serde(tag = "command", content = "body")]
 pub enum TaskCommand {
-    Start,
-    Pause,
-    Continue,
-    Delete,
-}
-
-#[derive(Serialize, Debug)]
-#[serde(rename_all = "camelCase")]
-pub struct DownloadFile {
-    #[serde(flatten)]
-    pub kind: FileTransmitKind,
-    pub path: String,
-}
-
-#[derive(Serialize, Debug)]
-#[serde(rename_all = "camelCase")]
-pub struct UploadFile {
-    pub file_id: Uuid,
-    pub path: String,
-    /// 是否打包上传
-    pub is_package: bool,
-    /// 上传前验证文件内容
-    #[serde(flatten, skip_serializing_if = "Option::is_none")]
-    pub validator: Option<OutValidator>,
-    pub optional: bool,
+    Start(Box<StartTaskBody>),
+    Pause(TaskType),
+    Continue(TaskType),
+    Delete(TaskType),
 }
 
 #[derive(Serialize, Debug)]
@@ -89,7 +68,52 @@ pub enum ValidatedOperation {
 
 #[derive(Serialize, Debug)]
 #[serde(rename_all = "camelCase")]
-pub struct OutputCollect {
+pub struct DeploySoftware {
+    pub facility_kind: FacilityKind,
+}
+
+#[derive(Serialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct DownloadFile {
+    #[serde(flatten)]
+    pub kind: FileTransmitKind,
+    pub path: String,
+}
+
+#[derive(Serialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct ExecuteUsecase {
+    /// 执行名称
+    pub name: String,
+    /// 任务软件环境技术
+    pub facility_kind: FacilityKind,
+    /// 参数列表
+    /// 例如： ["-i a.txt","--debug"]
+    pub arguments: Vec<String>,
+    /// 环境变量列表，值为 None 时代表只设置键，值为空字符串
+    pub environments: HashMap<String, String>,
+    /// 标准输入
+    pub std_in: StdInKind,
+    /// 计算资源配置
+    pub requirements: Option<Requirements>,
+}
+
+#[derive(Serialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct UploadFile {
+    pub file_id: Uuid,
+    pub path: String,
+    ///是否打包上传
+    pub is_package: bool,
+    /// 上传前验证文件内容
+    #[serde(flatten, skip_serializing_if = "Option::is_none")]
+    pub validator: Option<OutValidator>,
+    pub optional: bool,
+}
+
+#[derive(Serialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct CollectOutput {
     /// 从哪收集
     pub from: CollectFrom,
     /// 收集规则
@@ -98,43 +122,6 @@ pub struct OutputCollect {
     pub to: CollectTo,
     /// 如果收集不到是否报错（true 时不报错）
     pub optional: bool,
-}
-
-#[derive(Serialize, Debug)]
-#[serde(tag = "type")]
-pub enum TaskBody {
-    /// 软件部署
-    #[serde(rename_all = "camelCase")]
-    SoftwareDeployment { facility_kind: FacilityKind },
-    /// 文件下载
-    #[serde(rename_all = "camelCase")]
-    FileDownload { download_files: Vec<DownloadFile> },
-    /// 用例执行
-    #[serde(rename_all = "camelCase")]
-    UsecaseExecution {
-        /// 执行名称
-        name: String,
-        /// 任务软件环境技术
-        facility_kind: FacilityKind,
-        /// 参数列表
-        /// 例如： ["-i a.txt","--debug"]
-        arguments: Vec<String>,
-        /// 环境变量列表，值为 None 时代表只设置键，值为空字符串
-        environments: HashMap<String, String>,
-        /// 标准输入
-        std_in: StdInKind,
-        /// 计算资源配置
-        requirements: Option<Requirements>,
-    },
-    /// 文件上传
-    #[serde(rename_all = "camelCase")]
-    FileUpload { upload_files: Vec<UploadFile> },
-    /// 输出收集
-    #[serde(rename_all = "camelCase")]
-    OutputCollect { output_collects: Vec<OutputCollect> },
-    /// 执行脚本
-    #[serde(rename_all = "camelCase")]
-    ExecuteScript { script_info: ScriptInfo },
 }
 
 #[derive(Serialize, Debug)]
@@ -148,6 +135,23 @@ pub struct ScriptInfo {
     output_path: HashMap<String, OutPathAndValidate>,
     /// 脚本来源
     origin: ScriptOriginKind,
+}
+
+#[derive(Serialize, Debug)]
+#[serde(tag = "type", content = "body")]
+pub enum StartTaskBody {
+    /// 软件部署
+    DeploySoftware(DeploySoftware),
+    /// 文件下载
+    DownloadFile(DownloadFile),
+    /// 用例执行
+    ExecuteUsecase(ExecuteUsecase),
+    /// 文件上传
+    UploadFile(UploadFile),
+    /// 输出收集
+    CollectOutput(CollectOutput),
+    /// 执行脚本
+    ExecuteScript(ScriptInfo),
 }
 
 /// 脚本来源
@@ -481,5 +485,56 @@ pub mod result {
                 cpu_time: value.cpu_time,
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use indoc::indoc;
+
+    use super::*;
+
+    #[test]
+    fn serialize_task() {
+        let task = Task {
+            id: Uuid::nil(),
+            command: TaskCommand::Continue(TaskType::SoftwareDeployment),
+        };
+        let task_json = serde_json::to_string(&task).unwrap();
+        println!("{task_json}");
+        assert_eq!(
+            r#"{"id":"00000000-0000-0000-0000-000000000000","command":"Continue","body":{"type":"SoftwareDeployment"}}"#,
+            task_json
+        )
+    }
+
+    #[test]
+    fn serialize_task2() {
+        let task = Task {
+            id: Uuid::nil(),
+            command: TaskCommand::Start(Box::new(StartTaskBody::UploadFile(UploadFile {
+                file_id: Uuid::nil(),
+                path: String::new(),
+                is_package: false,
+                validator: None,
+                optional: false,
+            }))),
+        };
+        let task_json1 = serde_json::to_string_pretty(&task).unwrap();
+        let task_json2 = indoc! {r#"
+            {
+              "id": "00000000-0000-0000-0000-000000000000",
+              "command": "Start",
+              "body": {
+                "type": "UploadFile",
+                "body": {
+                  "fileId": "00000000-0000-0000-0000-000000000000",
+                  "path": "",
+                  "isPackage": false,
+                  "optional": false
+                }
+              }
+            }"#};
+        assert_eq!(task_json1, task_json2)
     }
 }

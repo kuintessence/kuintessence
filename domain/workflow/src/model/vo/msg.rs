@@ -1,15 +1,31 @@
+use serde::{Deserialize, Serialize};
+use uuid::Uuid;
+
 use crate::model::entity::{
     node_instance::NodeInstanceStatus, task::TaskStatus, workflow_instance::WorkflowInstanceStatus,
 };
 
 use super::task_dto::result::TaskUsedResource;
 
+#[derive(Serialize, Deserialize)]
+pub struct ChangeMsg {
+    pub id: Uuid,
+    pub info: Info,
+}
+
+#[derive(Serialize, Deserialize)]
+pub enum Info {
+    Task(TaskChangeInfo),
+    Node(NodeChangeInfo),
+    Flow(FlowStatusChange),
+}
+
 /// Use as change info.
 pub trait ChangeInfo {}
 
 impl ChangeInfo for TaskChangeInfo {}
 
-#[derive(Default)]
+#[derive(Default, Serialize, Deserialize)]
 pub struct TaskChangeInfo {
     pub status: TaskStatusChange,
     pub message: Option<String>,
@@ -18,14 +34,14 @@ pub struct TaskChangeInfo {
 
 impl ChangeInfo for NodeChangeInfo {}
 
-#[derive(Default)]
+#[derive(Default, Serialize, Deserialize)]
 pub struct NodeChangeInfo {
     pub status: NodeStatusChange,
     pub message: Option<String>,
     pub used_resources: Option<TaskUsedResource>,
 }
 
-#[derive(Default, Clone)]
+#[derive(Default, Serialize, Deserialize, Clone)]
 pub enum TaskStatusChange {
     #[default]
     Queuing,
@@ -41,7 +57,7 @@ pub enum TaskStatusChange {
     Recovering,
 }
 
-#[derive(Default, Clone)]
+#[derive(Default, Serialize, Deserialize, Clone)]
 pub enum NodeStatusChange {
     #[default]
     Pending,
@@ -60,7 +76,7 @@ pub enum NodeStatusChange {
 
 impl ChangeInfo for FlowStatusChange {}
 
-#[derive(Default, Clone)]
+#[derive(Default, Serialize, Deserialize, Clone)]
 pub enum FlowStatusChange {
     #[default]
     Pending,
