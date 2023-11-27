@@ -1,7 +1,8 @@
 use std::sync::Arc;
 
 use alice_architecture::{
-    message_queue::producer::MessageQueueProducerTemplate, repository::DbField,
+    message_queue::producer::{MessageQueueProducer, MessageQueueProducerTemplate},
+    repository::DbField,
 };
 use async_trait::async_trait;
 use domain_workflow::{
@@ -21,7 +22,7 @@ use uuid::Uuid;
 
 pub struct TaskScheduleService {
     task_repo: Arc<dyn TaskRepo>,
-    mq_producer_task: Arc<dyn MessageQueueProducerTemplate<task_dto::Task>>,
+    mq_producer_task: Arc<dyn MessageQueueProducer>,
     status_mq_producer: Arc<dyn MessageQueueProducerTemplate<ChangeMsg>>,
     status_mq_topic: String,
 }
@@ -77,15 +78,36 @@ impl ScheduleService for TaskScheduleService {
                     return Ok(());
                 }
 
-                self.mq_producer_task_body
-                    .send_object(
-                        &task_dto::Task {
+                let mut count = 5;
+                loop {
+                    if self
+                        .mq_producer_task
+                        .send(
+                            &serde_json::to_string(&task_dto::Task {
+                                id,
+                                command: TaskCommand::Start(task.body.to_owned()),
+                            })?,
+                            Some(&task.queue_topic),
+                        )
+                        .await
+                        .is_ok()
+                    {
+                        break;
+                    }
+
+                    count -= 1;
+                    if count == 0 {
+                        self.change(
                             id,
-                            command: TaskCommand::Start(task.body),
-                        },
-                        Some(&task.queue_topic),
-                    )
-                    .await?;
+                            TaskChangeInfo {
+                                status: TaskStatusChange::Failed,
+                                message: Some("Failed to send task to agent.".to_string()),
+                                used_resources: Default::default(),
+                            },
+                        )
+                        .await?;
+                    }
+                }
             }
 
             TaskStatusChange::Completed => {
@@ -128,7 +150,6 @@ impl ScheduleService for TaskScheduleService {
                                     status: NodeStatusChange::Completed,
                                     message: info.message,
                                     used_resources: info.used_resources,
-                                    ..Default::default()
                                 }),
                             },
                             Some(&self.status_mq_topic),
@@ -148,7 +169,8 @@ impl ScheduleService for TaskScheduleService {
                             },
                             ..Default::default()
                         },
-                    );
+                    )
+                    .await?;
                 }
             }
 
@@ -176,12 +198,12 @@ impl ScheduleService for TaskScheduleService {
                 // Use TaskDistribute Service to send task terminating command.
 
                 let task = self.task_repo.get_by_id(id).await?;
-                self.mq_producer_task_command
-                    .send_object(
-                        &task_dto::Task {
+                self.mq_producer_task
+                    .send(
+                        &serde_json::to_string(&task_dto::Task {
                             id,
                             command: TaskCommand::Delete(task.r#type.into()),
-                        },
+                        })?,
                         Some(&task.queue_topic),
                     )
                     .await?;
@@ -225,12 +247,12 @@ impl ScheduleService for TaskScheduleService {
                 // Use TaskDistribute Service to send task pause command.
 
                 let task = self.task_repo.get_by_id(id).await?;
-                self.mq_producer_task_command
-                    .send_object(
-                        &task_dto::Task {
+                self.mq_producer_task
+                    .send(
+                        &serde_json::to_string(&task_dto::Task {
                             id,
                             command: TaskCommand::Pause(task.r#type.into()),
-                        },
+                        })?,
                         Some(&task.queue_topic),
                     )
                     .await?;
@@ -271,12 +293,12 @@ impl ScheduleService for TaskScheduleService {
                 // Use TaskDistribute Service to send task recover command.
 
                 let task = self.task_repo.get_by_id(id).await?;
-                self.mq_producer_task_command
-                    .send_object(
-                        &task_dto::Task {
+                self.mq_producer_task
+                    .send(
+                        &serde_json::to_string(&task_dto::Task {
                             id,
                             command: TaskCommand::Continue(task.r#type.into()),
-                        },
+                        })?,
                         Some(&task.queue_topic),
                     )
                     .await?;

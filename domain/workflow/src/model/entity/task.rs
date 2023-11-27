@@ -2,9 +2,9 @@ use alice_architecture::model::AggregateRoot;
 use num_derive::{FromPrimitive, ToPrimitive};
 use uuid::Uuid;
 
-use crate::model::vo::task_dto::{self, result::TaskResultStatus};
+use crate::model::vo::task_dto::{self, result::TaskResultStatus, StartTaskBody};
 
-#[derive(AggregateRoot, Clone, Debug)]
+#[derive(AggregateRoot, Clone, Debug, Default)]
 pub struct Task {
     pub id: Uuid,
     pub node_instance_id: Uuid,
@@ -17,13 +17,14 @@ pub struct Task {
     pub queue_topic: String,
 }
 
-#[derive(ToPrimitive, FromPrimitive, Debug, Clone, PartialEq)]
+#[derive(Default, FromPrimitive, Debug, Clone, PartialEq)]
 pub enum TaskType {
-    SoftwareDeployment,
-    FileDownload,
-    UsecaseExecution,
-    FileUpload,
-    OutputCollect,
+    #[default]
+    DeploySoftware,
+    DownloadFile,
+    ExeceteUsecase,
+    UploadFile,
+    CollectOutput,
     ExecuteScript,
 }
 
@@ -69,12 +70,25 @@ impl From<TaskResultStatus> for TaskStatus {
 impl From<TaskType> for task_dto::TaskType {
     fn from(value: TaskType) -> Self {
         match value {
-            TaskType::SoftwareDeployment => Self::SoftwareDeployment,
-            TaskType::FileDownload => Self::FileDownload,
-            TaskType::UsecaseExecution => Self::UsecaseExecution,
-            TaskType::FileUpload => Self::FileUpload,
-            TaskType::OutputCollect => Self::OutputCollect,
+            TaskType::DeploySoftware => Self::SoftwareDeployment,
+            TaskType::DownloadFile => Self::FileDownload,
+            TaskType::ExeceteUsecase => Self::UsecaseExecution,
+            TaskType::UploadFile => Self::FileUpload,
+            TaskType::CollectOutput => Self::OutputCollect,
             TaskType::ExecuteScript => Self::ExecuteScript,
+        }
+    }
+}
+
+impl TaskType {
+    pub fn from_ref(value: &StartTaskBody) -> Self {
+        match value {
+            StartTaskBody::DeploySoftware(_) => Self::DeploySoftware,
+            StartTaskBody::DownloadFile(_) => Self::DownloadFile,
+            StartTaskBody::ExecuteUsecase(_) => Self::ExeceteUsecase,
+            StartTaskBody::UploadFile(_) => Self::UploadFile,
+            StartTaskBody::CollectOutput(_) => Self::CollectOutput,
+            StartTaskBody::ExecuteScript(_) => Self::ExecuteScript,
         }
     }
 }

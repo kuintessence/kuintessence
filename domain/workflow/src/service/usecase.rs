@@ -11,7 +11,7 @@ pub trait UsecaseParseService: Send + Sync {
 
     fn get_service_type(&self) -> NodeInstanceKind;
 
-    async fn get_cmd(&self, node_id: String) -> anyhow::Result<Option<String>>;
+    async fn get_cmd(&self, node_id: Uuid) -> anyhow::Result<Option<String>>;
 }
 
 #[async_trait]

@@ -5,7 +5,7 @@ use crate::model::entity::{
     node_instance::NodeInstanceStatus, task::TaskStatus, workflow_instance::WorkflowInstanceStatus,
 };
 
-use super::task_dto::result::TaskUsedResource;
+use super::task_dto::result::{TaskResultStatus, TaskUsedResource};
 
 #[derive(Serialize, Deserialize)]
 pub struct ChangeMsg {
@@ -105,6 +105,22 @@ impl From<TaskStatusChange> for TaskStatus {
             TaskStatusChange::Paused => Self::Paused,
             TaskStatusChange::Recovering => Self::Recovering,
         }
+    }
+}
+
+impl TryFrom<TaskResultStatus> for TaskStatusChange {
+    type Error = anyhow::Error;
+
+    fn try_from(value: TaskResultStatus) -> Result<Self, Self::Error> {
+        Ok(match value {
+            TaskResultStatus::Queued => Self::Queuing,
+            TaskResultStatus::Started => anyhow::bail!("Started can't turn into TastStatusChange"),
+            TaskResultStatus::Completed => Self::Completed,
+            TaskResultStatus::Failed => Self::Failed,
+            TaskResultStatus::Paused => Self::Paused,
+            TaskResultStatus::Continued => Self::Running { is_recovered: true },
+            TaskResultStatus::Deleted => Self::Terminated,
+        })
     }
 }
 

@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 
-use crate::model::vo::msg::{ChangeMsg, TaskChangeInfo};
+use crate::model::vo::msg::ChangeMsg;
 
 #[async_trait]
 pub trait StatusService {

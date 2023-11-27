@@ -27,7 +27,8 @@ pub enum TaskType {
 #[derive(Serialize, Debug)]
 #[serde(tag = "command", content = "body")]
 pub enum TaskCommand {
-    Start(Box<StartTaskBody>),
+    // Serialized StartTaskBody
+    Start(String),
     Pause(TaskType),
     Continue(TaskType),
     Delete(TaskType),
@@ -453,7 +454,7 @@ pub mod result {
     }
 
     /// 资源使用
-    #[derive(Serialize, Deserialize)]
+    #[derive(Clone, Serialize, Deserialize)]
     #[serde(rename_all = "camelCase")]
     pub struct TaskUsedResource {
         /// 核心数
@@ -475,6 +476,7 @@ pub mod result {
         /// 结束时间
         pub end_time: i64,
     }
+
     impl From<TaskUsedResource> for domain_content_repo::model::vo::command_preview::TaskUsedResource {
         fn from(value: TaskUsedResource) -> Self {
             Self {
@@ -512,13 +514,16 @@ mod tests {
     fn serialize_task2() {
         let task = Task {
             id: Uuid::nil(),
-            command: TaskCommand::Start(Box::new(StartTaskBody::UploadFile(UploadFile {
-                file_id: Uuid::nil(),
-                path: String::new(),
-                is_package: false,
-                validator: None,
-                optional: false,
-            }))),
+            command: TaskCommand::Start(
+                serde_json::to_string(&StartTaskBody::UploadFile(UploadFile {
+                    file_id: Uuid::nil(),
+                    path: String::new(),
+                    is_package: false,
+                    validator: None,
+                    optional: false,
+                }))
+                .unwrap(),
+            ),
         };
         let task_json1 = serde_json::to_string_pretty(&task).unwrap();
         let task_json2 = indoc! {r#"

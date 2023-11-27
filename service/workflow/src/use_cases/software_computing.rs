@@ -1,4 +1,6 @@
-use alice_architecture::message_queue::producer::MessageQueueProducerTemplate;
+use alice_architecture::{
+    message_queue::producer::MessageQueueProducerTemplate, repository::DbField,
+};
 
 use async_trait::async_trait;
 use domain_content_repo::{
@@ -23,18 +25,25 @@ use domain_content_repo::{
 use domain_storage::repository::TextStorageRepo;
 use domain_workflow::{
     model::{
-        entity::{node_instance::NodeInstanceKind, workflow_instance::NodeSpec, task::TaskStatus},
+        entity::{
+            self,
+            node_instance::{DbNodeInstance, NodeInstanceKind},
+            workflow_instance::NodeSpec,
+        },
         vo::{
+            msg::{
+                ChangeMsg, Info, TaskChangeInfo, TaskStatusChange,
+            },
             task_dto::{
-                result::TaskResult, CollectFrom, CollectRule, CollectTo, DownloadFile,
-                FacilityKind, FileTransmitKind, OutputCollect, StdInKind, Task, StartTaskBody,
-                TaskType, UploadFile,
+                CollectFrom, CollectOutput, CollectRule, CollectTo, DeploySoftware, DownloadFile,
+                ExecuteUsecase, FacilityKind, FileTransmitKind, StartTaskBody, StdInKind,
+                UploadFile,
             },
             NodeInputSlotKind, NodeKind,
         },
     },
     repository::*,
-    service::{QueueResourceService, ScheduleService, UsecaseParseService},
+    service::{QueueResourceService, UsecaseParseService},
 };
 use handlebars::Handlebars;
 use serde::Serialize;
@@ -50,8 +59,6 @@ pub struct SoftwareComputingUsecaseServiceImpl {
     computing_usecase_repo: Arc<dyn CoSoftwareComputingUsecaseService>,
     /// 文本仓储
     text_storage_repository: Arc<dyn TextStorageRepo>,
-    /// 任务分发服务
-    task_distribution_service: Arc<dyn ScheduleService<Info = TaskStatus>>,
     /// 软件黑名单仓储
     software_block_list_repository: Arc<dyn SoftwareBlockListRepo>,
     /// 已安装软件仓储
@@ -59,9 +66,11 @@ pub struct SoftwareComputingUsecaseServiceImpl {
     /// 队列资源服务
     queue_resource_service: Arc<dyn QueueResourceService>,
     /// 节点实例仓储
-    node_instance_repository: Arc<dyn NodeInstanceRepo>,
-    workflow_instance_repository: Arc<dyn WorkflowInstanceRepo>,
-    message_producer: Arc<dyn MessageQueueProducerTemplate<TaskResult>>,
+    node_repo: Arc<dyn NodeInstanceRepo>,
+    flow_repo: Arc<dyn WorkflowInstanceRepo>,
+    task_repo: Arc<dyn TaskRepo>,
+    status_mq_producer: Arc<dyn MessageQueueProducerTemplate<ChangeMsg>>,
+    status_mq_topic: String,
 }
 
 /// 输入内容
@@ -80,7 +89,7 @@ pub struct InFileInfo {
     /// 是否打包
     pub is_packaged: bool,
     /// 文件id
-    pub meta_id: String,
+    pub meta_id: Uuid,
 }
 
 /// 格式填充
@@ -95,39 +104,50 @@ struct FormatFill {
 #[async_trait]
 impl UsecaseParseService for SoftwareComputingUsecaseServiceImpl {
     async fn handle_usecase(&self, node_spec: NodeSpec) -> anyhow::Result<()> {
-        // let id = node_spec.id;
-        // let queue_id = self
-        //     .queue_resource_service
-        //     .get_queue(id, &node_spec.scheduling_strategy)
-        //     .await?
-        //     .id;
-        // let tasks = self.parse_tasks(node_spec).await?;
-        // let t = serde_json::to_string(&tasks)?;
-        // tracing::info!("Task: {t}");
-        // tracing::info!("Sending to queue: {queue_id}");
-        // let mut node_instance = self.node_instance_repository.get_by_id(task.id).await?;
-        // node_instance.queue_id = Some(queue_id.to_owned());
-        // self.node_instance_repository.update(&node_instance).await?;
-        // self.node_instance_repository.save_changed().await?;
-        //
-        // let mut count = 5;
-        // loop {
-        //     if self.task_distribution_service.send_task(&task, queue_id).await.is_ok() {
-        //         break;
-        //     }
-        //
-        //     count -= 1;
-        //     if count == 0 {
-        //         let task_result: TaskResult = TaskResult {
-        //             id,
-        //             status: TaskResultStatus::Failed,
-        //             message: "Failed when sending message to agent.".to_string(),
-        //             used_resources: None,
-        //         };
-        //         self.message_producer.send_object(&task_result, Some("node_status")).await?;
-        //         bail!("Failed when sending message to agent.");
-        //     }
-        // }
+        let queue = self
+            .queue_resource_service
+            .get_queue(node_spec.id, &node_spec.scheduling_strategy)
+            .await?;
+
+        let start_bodys = self.parse_start_bodys(node_spec.to_owned()).await?;
+        let mut tasks = vec![];
+        for start_body in start_bodys {
+            tasks.push(entity::task::Task {
+                id: Uuid::new_v4(),
+                node_instance_id: node_spec.id,
+                r#type: entity::task::TaskType::from_ref(&start_body),
+                body: serde_json::to_string(&start_body)?,
+                queue_topic: queue.topic_name.to_owned(),
+                ..Default::default()
+            });
+        }
+
+        let tasks2 = tasks.iter().collect::<Vec<_>>();
+        self.task_repo.insert_list(&tasks2).await?;
+        self.task_repo.save_changed().await?;
+
+        self.node_repo
+            .update(&DbNodeInstance {
+                id: DbField::Set(node_spec.id),
+                queue_id: DbField::Set(Some(queue.id)),
+                ..Default::default()
+            })
+            .await?;
+        self.node_repo.save_changed().await?;
+        self.status_mq_producer
+            .send_object(
+                &ChangeMsg {
+                    id: node_spec.id,
+                    info: Info::Task(TaskChangeInfo {
+                        status: TaskStatusChange::Running {
+                            is_recovered: false,
+                        },
+                        ..Default::default()
+                    }),
+                },
+                Some(&self.status_mq_topic),
+            )
+            .await?;
         Ok(())
     }
 
@@ -135,15 +155,15 @@ impl UsecaseParseService for SoftwareComputingUsecaseServiceImpl {
         NodeInstanceKind::SoftwareUsecaseComputing
     }
 
-    async fn get_cmd(&self, node_id: String) -> anyhow::Result<Option<String>> {
-        let flow_id = self.node_instance_repository.get_by_id(node_id).await?.flow_instance_id;
-        let flow = self.workflow_instance_repository.get_by_id(flow_id).await?;
+    async fn get_cmd(&self, node_id: Uuid) -> anyhow::Result<Option<String>> {
+        let flow_id = self.node_repo.get_by_id(node_id).await?.flow_instance_id;
+        let flow = self.flow_repo.get_by_id(flow_id).await?;
         let node_spec = flow.spec.node(node_id).to_owned();
-        let tasks = self.parse_tasks(node_spec).await?;
+        let tasks = self.parse_start_bodys(node_spec).await?;
         let name_and_arguments = tasks.iter().find_map(|task| {
-            if let StartTaskBody::ExecuteUsecase {
+            if let StartTaskBody::ExecuteUsecase(ExecuteUsecase {
                 name, arguments, ..
-            } = &task.body
+            }) = &task
             {
                 Some((name, arguments))
             } else {
@@ -170,7 +190,7 @@ impl SoftwareComputingUsecaseServiceImpl {
     /// # 参数
     ///
     /// * `node_spec` - 节点数据
-    async fn parse_tasks(&self, node_spec: NodeSpec) -> anyhow::Result<Vec<Task<StartTaskBody>>> {
+    async fn parse_start_bodys(&self, node_spec: NodeSpec) -> anyhow::Result<Vec<StartTaskBody>> {
         let data = match &node_spec.kind {
             NodeKind::SoftwareUsecaseComputing { data } => data,
             _ => anyhow::bail!("Unreachable node kind!"),
@@ -638,7 +658,7 @@ impl SoftwareComputingUsecaseServiceImpl {
                         }
                         RepoCollectRule::TopLines(line_count) => CollectRule::TopLines(line_count),
                     };
-                    output_collects.push(OutputCollect {
+                    output_collects.push(CollectOutput {
                         from,
                         rule,
                         to,
@@ -745,7 +765,7 @@ impl SoftwareComputingUsecaseServiceImpl {
                                     CollectRule::TopLines(line_count)
                                 }
                             };
-                            output_collects.push(OutputCollect {
+                            output_collects.push(CollectOutput {
                                 from,
                                 rule,
                                 to,
@@ -886,46 +906,32 @@ impl SoftwareComputingUsecaseServiceImpl {
                 .is_software_satisfied(&software_name, &require_install_arguments)
                 .await?
         {
-            tasks.push(Task {
-                id: String::new_v4(),
-                body: StartTaskBody::DeploySoftware {
-                    facility_kind: FacilityKind::from(software_spec.to_owned()),
-                },
-                command: TaskType::Start,
-            });
+            tasks.push(StartTaskBody::DeploySoftware(DeploySoftware {
+                facility_kind: FacilityKind::from(software_spec.to_owned()),
+            }));
         }
 
-        tasks.push(Task {
-            id: String::new_v4(),
-            body: StartTaskBody::DownloadFile { download_files },
-            command: TaskType::Start,
-        });
-        tasks.push(Task {
-            id: String::new_v4(),
-            body: StartTaskBody::ExecuteUsecase {
-                name: usecase_spec.command_file.to_owned(),
-                arguments,
-                environments,
-                facility_kind: FacilityKind::from(software_spec.to_owned()),
-                std_in,
-                requirements: override_requirements
-                    .map(|r| r.into())
-                    .or(requirements.map(|r| r.into())),
-            },
-            command: TaskType::Start,
-        });
+        for download_file in download_files {
+            tasks.push(StartTaskBody::DownloadFile(download_file));
+        }
+        tasks.push(StartTaskBody::ExecuteUsecase(ExecuteUsecase {
+            name: usecase_spec.command_file.to_owned(),
+            arguments,
+            environments,
+            facility_kind: FacilityKind::from(software_spec.to_owned()),
+            std_in,
+            requirements: override_requirements
+                .map(|r| r.into())
+                .or(requirements.map(|r| r.into())),
+        }));
 
-        tasks.push(Task {
-            id: String::new_v4(),
-            body: StartTaskBody::CollectOutput { output_collects },
-            command: TaskType::Start,
-        });
+        for collect_output in output_collects {
+            tasks.push(StartTaskBody::CollectOutput(collect_output));
+        }
 
-        tasks.push(Task {
-            id: String::new_v4(),
-            body: StartTaskBody::UploadFile { upload_files },
-            command: TaskType::Start,
-        });
+        for upload_file in upload_files {
+            tasks.push(StartTaskBody::UploadFile(upload_file));
+        }
         Ok(tasks)
     }
 

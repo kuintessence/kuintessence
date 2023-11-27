@@ -1,6 +1,6 @@
 mod milestone;
 mod no_action;
-mod script;
+// mod script;
 pub mod software_computing;
 
 pub mod prelude {
@@ -8,7 +8,7 @@ pub mod prelude {
     pub use super::{
         milestone::MilestoneUsecaseServiceImpl,
         no_action::NoActionUsecaseServiceImpl,
-        script::ScriptUsecaseServiceImpl,
+        // script::ScriptUsecaseServiceImpl,
         software_computing::SoftwareComputingUsecaseServiceImpl
     };
 }

@@ -17,7 +17,7 @@ pub trait QueueResourceService: Send + Sync {
     /// Get an available queue.
     async fn get_queue(
         &self,
-        task_id: Uuid,
+        node_id: Uuid,
         scheduling_strategy: &SchedulingStrategy,
     ) -> anyhow::Result<Queue>;
 

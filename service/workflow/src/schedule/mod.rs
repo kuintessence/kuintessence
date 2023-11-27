@@ -1,6 +1,8 @@
-pub mod flow;
+mod flow;
 mod node;
 mod task;
+
+mod batch;
 
 pub use flow::FlowScheduleService;
 pub use node::NodeScheduleService;
