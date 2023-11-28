@@ -1,10 +1,10 @@
 use std::ops::Range;
 use std::sync::Arc;
 
-
 use async_trait::async_trait;
 use domain_storage::service::{
-    StorageServerResourceService, StorageServerBrokerService, StorageServerDownloadDispatcherService,
+    StorageServerBrokerService, StorageServerDownloadDispatcherService,
+    StorageServerResourceService,
 };
 use typed_builder::TypedBuilder;
 use uuid::Uuid;
@@ -32,7 +32,11 @@ impl StorageServerDownloadDispatcherService for StorageServerDownloadDispatcherS
         self.storage_server_broker_service.get_text(storage_server, meta_id).await
     }
 
-    async fn rangely_get_file(&self, meta_id: Uuid, ranges: &[Range<u64>]) -> anyhow::Result<Vec<Vec<u8>>> {
+    async fn rangely_get_file(
+        &self,
+        meta_id: Uuid,
+        ranges: &[Range<u64>],
+    ) -> anyhow::Result<Vec<Vec<u8>>> {
         let storage_server = &self.resources_service.default_file_storage_server().await?;
         self.storage_server_broker_service
             .rangely_get_file(storage_server, meta_id, ranges)

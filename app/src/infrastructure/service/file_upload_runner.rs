@@ -1,11 +1,9 @@
 use anyhow::{anyhow, bail};
-use uuid::Uuid;
 use std::sync::Arc;
+use uuid::Uuid;
 
 use domain_storage::{
-    command::{
-        CacheOperateCommand::*, CacheReadCommand::*, CreateNetDiskFileCommand,
-    },
+    command::{CacheOperateCommand::*, CacheReadCommand::*, CreateNetDiskFileCommand},
     model::{
         entity::move_registration::MoveDestination,
         vo::record::{RecordFileMeta, RecordFileStorage},

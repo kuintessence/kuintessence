@@ -1,6 +1,5 @@
 use std::sync::Arc;
 
-
 use async_trait::async_trait;
 use domain_storage::{model::vo::ServerUrl, service::*};
 use typed_builder::TypedBuilder;

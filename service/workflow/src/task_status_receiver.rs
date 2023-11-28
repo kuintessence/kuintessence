@@ -1,17 +1,22 @@
 use std::sync::Arc;
 
+use alice_architecture::message_queue::producer::MessageQueueProducerTemplate;
 use anyhow::Context;
 use async_trait::async_trait;
 use domain_workflow::{
-    model::vo::{msg::TaskChangeInfo, task_dto::result::TaskResult},
-    service::{QueueResourceService, ScheduleService, TaskStatusReceiveService},
+    model::vo::{
+        msg::{ChangeMsg, Info, TaskChangeInfo},
+        task_dto::result::TaskResult,
+    },
+    service::{QueueResourceService, TaskStatusReceiveService},
 };
 use typed_builder::TypedBuilder;
 use uuid::Uuid;
 
 #[derive(TypedBuilder)]
 pub struct TaskStatusReceiveServiceImpl {
-    task_schedule_service: Arc<dyn ScheduleService<Info = TaskChangeInfo>>,
+    status_mq_producer: Arc<dyn MessageQueueProducerTemplate<ChangeMsg>>,
+    status_mq_topic: String,
     queue_resource_service: Arc<dyn QueueResourceService>,
     queue_id: Option<Uuid>,
 }
@@ -22,15 +27,19 @@ impl TaskStatusReceiveService for TaskStatusReceiveServiceImpl {
     async fn receive_status(&self, result: TaskResult) -> anyhow::Result<()> {
         match result.status.try_into() {
             Ok(status) => {
-                self.task_schedule_service
-                    .handle_changed(
-                        result.id,
-                        TaskChangeInfo {
-                            status,
-                            ..Default::default()
+                self.status_mq_producer
+                    .send_object(
+                        &ChangeMsg {
+                            id: result.id,
+                            info: Info::Task(TaskChangeInfo {
+                                status,
+                                message: result.message,
+                                used_resources: result.used_resources,
+                            }),
                         },
+                        Some(&self.status_mq_topic),
                     )
-                    .await?
+                    .await?;
             }
             Err(_) => {
                 self.queue_resource_service

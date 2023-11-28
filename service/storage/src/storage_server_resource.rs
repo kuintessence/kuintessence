@@ -9,7 +9,7 @@ use uuid::Uuid;
 #[derive(TypedBuilder)]
 pub struct StorageServerResourceServiceImpl {
     default_storage_server_id: Uuid,
-    storage_server_repo: Arc<dyn ReadOnlyRepository<StorageServer> >,
+    storage_server_repo: Arc<dyn ReadOnlyRepository<StorageServer>>,
 }
 
 #[async_trait]

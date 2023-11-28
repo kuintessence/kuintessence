@@ -1,5 +1,5 @@
 use super::dtos::PreparePartialUpload;
-use crate::api::dtos::{PartialUploadRequest, GetPartialUploadInfoResponse, FileHashAlgorithm};
+use crate::api::dtos::{FileHashAlgorithm, GetPartialUploadInfoResponse, PartialUploadRequest};
 use crate::api::extract_uuid;
 use crate::infrastructure::ServiceProvider;
 use actix_easy_multipart::MultipartForm;
@@ -11,7 +11,9 @@ use alice_infrastructure::error::{
     AliceCommonError, AliceError, AliceResponder, AliceResponderResult,
 };
 use domain_storage::model::vo::Part;
-use domain_storage::service::{FileMoveService, MultipartService, RealtimeService, StorageServerDownloadDispatcherService};
+use domain_storage::service::{
+    FileMoveService, MultipartService, RealtimeService, StorageServerDownloadDispatcherService,
+};
 use std::io::Read;
 use std::ops::Range;
 use std::sync::Arc;

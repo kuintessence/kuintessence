@@ -46,7 +46,7 @@ impl WsManager {
         &self,
         req: HttpRequest,
         body: Payload,
-        user_id:Uuid
+        user_id: Uuid,
     ) -> Result<HttpResponse, actix_web::Error> {
         let (response, session, msg_stream) = actix_ws::handle(&req, body)?;
         let ws_session = WsSession::new(

@@ -66,7 +66,8 @@ impl MutableRepository<TextStorage> for RedisRepo {
                 entity.key.ok_or(anyhow::anyhow!("No such text key!"))?
             ),
             entity.value.to_owned(),
-        )).await?;
+        ))
+        .await?;
         Ok(())
     }
 
@@ -78,7 +79,8 @@ impl MutableRepository<TextStorage> for RedisRepo {
         self.query(&Cmd::set(
             format!("{TEXT_KEY_PREFIX}{}", result.key.unwrap()),
             entity.value.to_owned(),
-        )).await?;
+        ))
+        .await?;
         Ok(result.key.unwrap())
     }
 

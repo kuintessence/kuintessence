@@ -64,7 +64,7 @@ async fn watch_message(
     mut msg_stream: MessageStream,
     close_informer: flume::Sender<WsServerOperateCommand>,
     id: Uuid,
-    mq_producer: Arc<dyn MessageQueueProducerTemplate<(Uuid, String)> >,
+    mq_producer: Arc<dyn MessageQueueProducerTemplate<(Uuid, String)>>,
     last_modified_timestamp: Arc<AtomicI64>,
     directive_receiver: flume::Receiver<ManagerDirective>,
 ) {

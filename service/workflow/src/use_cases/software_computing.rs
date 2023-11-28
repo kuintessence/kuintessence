@@ -31,9 +31,7 @@ use domain_workflow::{
             workflow_instance::NodeSpec,
         },
         vo::{
-            msg::{
-                ChangeMsg, Info, TaskChangeInfo, TaskStatusChange,
-            },
+            msg::{ChangeMsg, Info, TaskChangeInfo, TaskStatusChange},
             task_dto::{
                 CollectFrom, CollectOutput, CollectRule, CollectTo, DeploySoftware, DownloadFile,
                 ExecuteUsecase, FacilityKind, FileTransmitKind, StartTaskBody, StdInKind,

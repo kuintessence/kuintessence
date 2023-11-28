@@ -35,7 +35,11 @@ impl MutableRepository<NodeInstance> for OrmRepo {
         let mut stmts = self.statements.lock().await;
         let active_model = node_instance::ActiveModel {
             status: Set(entity.status.to_owned() as i32),
-            resource_meter: Set(entity.resource_meter.as_ref().map(serde_json::to_value).transpose()?),
+            resource_meter: Set(entity
+                .resource_meter
+                .as_ref()
+                .map(serde_json::to_value)
+                .transpose()?),
             log: Set(entity.log.to_owned()),
             queue_id: Set(entity.queue_id),
             ..Default::default()
@@ -57,7 +61,11 @@ impl MutableRepository<NodeInstance> for OrmRepo {
             is_parent: Set(entity.is_parent),
             batch_parent_id: Set(entity.batch_parent_id),
             status: Set(entity.status.to_owned() as i32),
-            resource_meter: Set(entity.resource_meter.as_ref().map(serde_json::to_value).transpose()?),
+            resource_meter: Set(entity
+                .resource_meter
+                .as_ref()
+                .map(serde_json::to_value)
+                .transpose()?),
             log: Set(entity.log.to_owned()),
             queue_id: Set(entity.queue_id),
             flow_instance_id: Set(entity.flow_instance_id),

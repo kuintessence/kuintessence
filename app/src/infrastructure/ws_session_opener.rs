@@ -1,4 +1,3 @@
-
 use actix_web::web::Payload;
 use actix_web::{HttpRequest, HttpResponse};
 use alice_infrastructure::error::AliceError;
@@ -7,7 +6,6 @@ use std::sync::Arc;
 use uuid::Uuid;
 
 use crate::infrastructure::WsManager;
-
 
 pub struct WsSessionOpener {
     ws_manager: Arc<WsManager>,

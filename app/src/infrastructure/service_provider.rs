@@ -25,7 +25,7 @@ use domain_storage::{command::ViewRealtimeCommand, repository::MoveRegistrationR
 use domain_workflow::{
     model::{
         entity::node_instance::NodeInstanceKind,
-        vo::task_dto::{Task, StartTaskBody, TaskType},
+        vo::task_dto::{StartTaskBody, Task, TaskType},
     },
     service::*,
 };
