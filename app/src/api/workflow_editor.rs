@@ -6,7 +6,7 @@ use actix_web::{
 use alice_di::{actix_auto_inject, IServiceProvider};
 use alice_infrastructure::error::{AliceError, AliceResponder, AliceResponderResult};
 use domain_content_repo::{model::vo::NodeDraft, service::NodeDraftService};
-use domain_workflow::service::WorkflowService;
+use domain_workflow::service::ControlService;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
@@ -22,7 +22,7 @@ pub struct GetWorkflowComponentRequest {
 #[tracing::instrument(skip(sp))]
 #[get("workflow-editor/ValidateWorkflowDraft/{id}")]
 pub async fn validate_workflow_draft(
-    #[inject] service: std::sync::Arc<dyn WorkflowService>,
+    #[inject] service: std::sync::Arc<dyn ControlService>,
     id: Path<String>,
 ) -> AliceResponderResult<()> {
     let id = extract_uuid(&id)?;

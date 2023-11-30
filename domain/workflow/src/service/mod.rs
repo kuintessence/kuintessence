@@ -1,3 +1,4 @@
+mod control;
 #[allow(clippy::module_inception)]
 mod queue_resource;
 mod schedule;
@@ -11,4 +12,6 @@ pub use {
     schedule::ScheduleService,
     task_status_receiver::TaskStatusReceiveService,
     usecase::*,
+    status::StatusService,
+    control::ControlService
 };

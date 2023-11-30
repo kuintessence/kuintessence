@@ -24,8 +24,8 @@ pub struct InternalTopics {
     pub web_socket: String,
     #[serde(default = "InternalTopics::default_file_upload")]
     pub file_upload: String,
-    #[serde(default = "InternalTopics::default_node_status")]
-    pub node_status: String,
+    #[serde(default = "InternalTopics::default_status")]
+    pub status: String,
     #[serde(default)]
     pub ws_messages: WebSocketMessageTopics,
 }
@@ -37,7 +37,7 @@ impl InternalTopics {
     fn default_file_upload() -> String {
         "file-upload".to_string()
     }
-    fn default_node_status() -> String {
+    fn default_status() -> String {
         "node-status".to_string()
     }
 }
@@ -47,7 +47,7 @@ impl Default for InternalTopics {
         Self {
             web_socket: Default::default(),
             file_upload: Self::default_file_upload(),
-            node_status: Self::default_node_status(),
+            status: Self::default_status(),
             ws_messages: Default::default(),
         }
     }

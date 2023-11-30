@@ -17,7 +17,7 @@ pub struct Task {
     pub queue_topic: String,
 }
 
-#[derive(Default, FromPrimitive, Debug, Clone, PartialEq)]
+#[derive(Default, ToPrimitive, FromPrimitive, Debug, Clone, PartialEq)]
 pub enum TaskType {
     #[default]
     DeploySoftware,
@@ -50,7 +50,7 @@ pub enum TaskStatus {
     /// Pasued.
     Paused,
     /// Recovering.
-    Recovering,
+    Resuming,
 }
 
 impl From<TaskResultStatus> for TaskStatus {
@@ -80,6 +80,11 @@ impl From<TaskType> for task_dto::TaskType {
     }
 }
 
+// impl TryFrom<database_model::task::Model> for Task {
+//     type Error = anyhow::Error;
+//
+// }
+//
 impl TaskType {
     pub fn from_ref(value: &StartTaskBody) -> Self {
         match value {

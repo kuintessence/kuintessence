@@ -4,8 +4,8 @@ use alice_architecture::repository::DBRepository;
 use chrono::Utc;
 use domain_storage::{
     model::{
-        entity::{move_registration::MoveDestination, MoveRegistration, TextStorage},
-        vo::HashAlgorithm,
+        entity::{MoveRegistration, TextStorage},
+        vo::{HashAlgorithm, MoveDestination},
     },
     service::{FileMoveService, StorageServerDownloadDispatcherService},
 };
@@ -24,6 +24,7 @@ use domain_workflow::{
 };
 use uuid::Uuid;
 
+#[derive(typed_builder::TypedBuilder)]
 pub struct BatchService {
     node_instance_repository: Arc<dyn NodeInstanceRepo>,
     workflow_instance_repository: Arc<dyn WorkflowInstanceRepo>,

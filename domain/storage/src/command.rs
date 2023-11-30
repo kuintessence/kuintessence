@@ -1,8 +1,7 @@
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::model::entity::net_disk::{FileType, RecordNetDiskKind};
-use crate::model::vo::Part;
+use crate::model::{vo::Part, entity::{FileType, RecordNetDiskKind}};
 
 // use crate::model::
 

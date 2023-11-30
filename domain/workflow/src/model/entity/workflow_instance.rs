@@ -154,7 +154,7 @@ pub enum WorkflowInstanceStatus {
     Paused,
     /// # 正在恢复
     /// 工作流实例的处理过程正在恢复
-    Recovering,
+    Resuming,
 }
 
 impl TryFrom<flow_instance::Model> for WorkflowInstance {

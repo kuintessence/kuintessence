@@ -20,7 +20,8 @@ use domain_workflow::{
 };
 use uuid::Uuid;
 
-pub struct TaskScheduleService {
+#[derive(typed_builder::TypedBuilder)]
+pub struct TaskScheduleServiceImpl {
     task_repo: Arc<dyn TaskRepo>,
     mq_producer_task: Arc<dyn MessageQueueProducer>,
     status_mq_producer: Arc<dyn MessageQueueProducerTemplate<ChangeMsg>>,
@@ -28,7 +29,7 @@ pub struct TaskScheduleService {
 }
 
 #[async_trait]
-impl ScheduleService for TaskScheduleService {
+impl ScheduleService for TaskScheduleServiceImpl {
     type Info = TaskChangeInfo;
 
     /// Schedule with changed status.
@@ -38,7 +39,7 @@ impl ScheduleService for TaskScheduleService {
                 // Do nothing, because it is queuing on agent, wait agent for making another request.
             }
 
-            TaskStatusChange::Running { is_recovered } => {
+            TaskStatusChange::Running { is_resumed } => {
                 // This is toggled by Workflow Start or Task Recovered or Task start after a completed task.
                 // Firstly, judge whether this is toggled by agent recovered task or start workflow or start task
                 // If is the former, judge is all related tasks meet the condition to make node status to Recovered.
@@ -46,13 +47,13 @@ impl ScheduleService for TaskScheduleService {
 
                 let task = self.task_repo.get_by_id(id).await?;
 
-                if is_recovered {
+                if is_resumed {
                     let tasks = self.task_repo.get_same_node_tasks(id).await?;
                     // All tasks meet the recovered condition to set node as recovered.
                     if tasks.iter().all(|t| {
                         !matches!(
                             t.status,
-                            TaskStatus::Recovering
+                            TaskStatus::Resuming
                                 | TaskStatus::Paused
                                 | TaskStatus::Completed
                                 | TaskStatus::Terminating
@@ -67,7 +68,7 @@ impl ScheduleService for TaskScheduleService {
                                 &ChangeMsg {
                                     id: task.node_instance_id,
                                     info: Info::Node(NodeChangeInfo {
-                                        status: NodeStatusChange::Running { is_recovered: true },
+                                        status: NodeStatusChange::Running { is_resumed: true },
                                         ..Default::default()
                                     }),
                                 },
@@ -121,7 +122,7 @@ impl ScheduleService for TaskScheduleService {
                 if tasks.iter().any(|t| {
                     matches!(
                         t.status,
-                        TaskStatus::Recovering
+                        TaskStatus::Resuming
                             | TaskStatus::Paused
                             | TaskStatus::Running
                             | TaskStatus::Terminating
@@ -164,9 +165,7 @@ impl ScheduleService for TaskScheduleService {
                     self.change(
                         task.id,
                         TaskChangeInfo {
-                            status: TaskStatusChange::Running {
-                                is_recovered: false,
-                            },
+                            status: TaskStatusChange::Running { is_resumed: false },
                             ..Default::default()
                         },
                     )
@@ -289,7 +288,7 @@ impl ScheduleService for TaskScheduleService {
                 }
             }
 
-            TaskStatusChange::Recovering => {
+            TaskStatusChange::Resuming => {
                 // Use TaskDistribute Service to send task recover command.
 
                 let task = self.task_repo.get_by_id(id).await?;
@@ -310,7 +309,7 @@ impl ScheduleService for TaskScheduleService {
     /// Change status and call handle_changed.
     async fn change(&self, id: Uuid, info: Self::Info) -> anyhow::Result<()> {
         self.task_repo
-            .update(&DbTask {
+            .update(DbTask {
                 id: DbField::Set(id),
                 status: DbField::Set(info.status.to_owned().into()),
                 message: match &info.message {

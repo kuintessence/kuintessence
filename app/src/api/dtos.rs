@@ -1,11 +1,7 @@
 use actix_easy_multipart::{tempfile::Tempfile, text::Text, MultipartForm};
 use domain_storage::model::{
-    entity::{
-        move_registration::{MoveDestination, RecordNetDisk},
-        net_disk::{FileType, RecordNetDiskKind},
-        MoveRegistration,
-    },
-    vo::HashAlgorithm,
+    entity::{FileType, MoveRegistration, RecordNetDiskKind},
+    vo::{HashAlgorithm, MoveDestination, RecordNetDisk},
 };
 use domain_workflow::model::entity::queue::{QueueCacheInfo, QueueResourceUsed, QueueTaskCount};
 use serde::{Deserialize, Serialize};

@@ -1,7 +1,7 @@
 use alice_architecture::repository::{DBRepository, MutableRepository, ReadOnlyRepository};
 use anyhow::Context;
 use async_trait::async_trait;
-use domain_storage::model::entity::TextStorage;
+use domain_storage::model::entity::{DbTextStorage, TextStorage};
 use domain_storage::repository::TextStorageRepo;
 use redis::Cmd;
 use uuid::Uuid;
@@ -59,13 +59,13 @@ impl ReadOnlyRepository<TextStorage> for RedisRepo {
 
 #[async_trait::async_trait]
 impl MutableRepository<TextStorage> for RedisRepo {
-    async fn update(&self, entity: &TextStorage) -> anyhow::Result<()> {
+    async fn update(&self, entity: DbTextStorage) -> anyhow::Result<()> {
         self.query(&Cmd::getset(
             format!(
                 "{TEXT_KEY_PREFIX}{}",
-                entity.key.ok_or(anyhow::anyhow!("No such text key!"))?
+                entity.key.value()?.ok_or(anyhow::anyhow!("No provided key!"))?
             ),
-            entity.value.to_owned(),
+            entity.value.value()?.to_owned(),
         ))
         .await?;
         Ok(())

@@ -20,7 +20,7 @@ use domain_content_repo::{
             },
         },
     },
-    service::CoSoftwareComputingUsecaseService,
+    service::SoftwareComputingUsecaseInfoService,
 };
 use domain_storage::repository::TextStorageRepo;
 use domain_workflow::{
@@ -54,7 +54,7 @@ use uuid::Uuid;
 #[derive(TypedBuilder)]
 pub struct SoftwareComputingUsecaseServiceImpl {
     /// 软件用例获取器
-    computing_usecase_repo: Arc<dyn CoSoftwareComputingUsecaseService>,
+    computing_usecase_repo: Arc<dyn SoftwareComputingUsecaseInfoService>,
     /// 文本仓储
     text_storage_repository: Arc<dyn TextStorageRepo>,
     /// 软件黑名单仓储
@@ -120,12 +120,11 @@ impl UsecaseParseService for SoftwareComputingUsecaseServiceImpl {
             });
         }
 
-        let tasks2 = tasks.iter().collect::<Vec<_>>();
-        self.task_repo.insert_list(&tasks2).await?;
+        self.task_repo.insert_list(&tasks).await?;
         self.task_repo.save_changed().await?;
 
         self.node_repo
-            .update(&DbNodeInstance {
+            .update(DbNodeInstance {
                 id: DbField::Set(node_spec.id),
                 queue_id: DbField::Set(Some(queue.id)),
                 ..Default::default()
@@ -137,9 +136,7 @@ impl UsecaseParseService for SoftwareComputingUsecaseServiceImpl {
                 &ChangeMsg {
                     id: node_spec.id,
                     info: Info::Task(TaskChangeInfo {
-                        status: TaskStatusChange::Running {
-                            is_recovered: false,
-                        },
+                        status: TaskStatusChange::Running { is_resumed: false },
                         ..Default::default()
                     }),
                 },

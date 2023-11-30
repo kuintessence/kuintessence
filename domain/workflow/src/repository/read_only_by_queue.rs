@@ -15,6 +15,6 @@ where
 
 pub trait DBByClusterRepo<T>: ReadOnlyByQueueRepo<T> + DBRepository<T> + Send + Sync
 where
-    T: Send + AggregateRoot,
+    T: Send + AggregateRoot + 'static,
 {
 }

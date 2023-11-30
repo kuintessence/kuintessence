@@ -1,10 +1,7 @@
 use async_trait::async_trait;
 use uuid::Uuid;
 
-use crate::model::vo::{
-    record::{RecordFileMeta, RecordFileStorage},
-    HashAlgorithm,
-};
+use crate::model::vo::{HashAlgorithm, RecordFileMeta, RecordFileStorage};
 
 /// Record file_metadata and file_storage.
 #[async_trait]

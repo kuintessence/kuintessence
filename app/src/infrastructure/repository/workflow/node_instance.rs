@@ -4,7 +4,11 @@ use alice_architecture::repository::{DBRepository, MutableRepository, ReadOnlyRe
 
 use database_model::node_instance;
 use domain_workflow::{
-    model::entity::{node_instance::NodeInstanceStatus, NodeInstance},
+    model::entity::{
+        node_instance::{DbNodeInstance, NodeInstanceStatus},
+        workflow_instance::NodeSpec,
+        NodeInstance, WorkflowInstance,
+    },
     repository::NodeInstanceRepo,
 };
 use sea_orm::QueryTrait;
@@ -31,21 +35,22 @@ impl ReadOnlyRepository<NodeInstance> for OrmRepo {
 
 #[async_trait::async_trait]
 impl MutableRepository<NodeInstance> for OrmRepo {
-    async fn update(&self, entity: &NodeInstance) -> anyhow::Result<()> {
+    async fn update(&self, entity: DbNodeInstance) -> anyhow::Result<()> {
         let mut stmts = self.statements.lock().await;
         let active_model = node_instance::ActiveModel {
-            status: Set(entity.status.to_owned() as i32),
-            resource_meter: Set(entity
-                .resource_meter
-                .as_ref()
-                .map(serde_json::to_value)
-                .transpose()?),
-            log: Set(entity.log.to_owned()),
-            queue_id: Set(entity.queue_id),
+            status: entity.status.into(),
+            resource_meter: entity.resource_meter.try_into()?,
+            log: entity.log.into_active_value(),
+            queue_id: entity.queue_id.into_active_value(),
+            name: entity.name.into_active_value(),
+            kind: entity.kind.into(),
+            is_parent: entity.is_parent.into_active_value(),
+            batch_parent_id: entity.batch_parent_id.into_active_value(),
+            flow_instance_id: entity.flow_instance_id.into_active_value(),
             ..Default::default()
         };
         let stmt = node_instance::Entity::update(active_model)
-            .filter(node_instance::Column::Id.eq(entity.id))
+            .filter(node_instance::Column::Id.eq(*entity.id.value()?))
             .build(self.db.get_connection().get_database_backend());
         stmts.push(stmt);
         self.can_drop.store(false, Ordering::Relaxed);
@@ -171,5 +176,19 @@ impl NodeInstanceRepo for OrmRepo {
             }
         }
         Ok(nth.ok_or(anyhow::anyhow!("No such sub node!"))?)
+    }
+
+    async fn get_node_spec(&self, node_id: Uuid) -> anyhow::Result<NodeSpec> {
+        let node = (self as &dyn ReadOnlyRepository<NodeInstance>).get_by_id(node_id).await?;
+        let flow_id = node.flow_instance_id;
+        let flow = (self as &dyn ReadOnlyRepository<WorkflowInstance>).get_by_id(flow_id).await?;
+        let node_spec = flow
+            .spec
+            .node_specs
+            .iter()
+            .find(|n| n.id.eq(&node_id))
+            .cloned()
+            .ok_or(anyhow::anyhow!("No such node spec!"))?;
+        Ok(node_spec)
     }
 }

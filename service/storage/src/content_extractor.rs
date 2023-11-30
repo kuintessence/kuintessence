@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use async_trait::async_trait;
 use domain_storage::{
-    model::vo::content_extractor::{CapturedValue, ExtractOption, ExtractResult},
+    model::vo::{CapturedValue, ExtractOption, ExtractResult},
     service::ContentExtractorService,
 };
 

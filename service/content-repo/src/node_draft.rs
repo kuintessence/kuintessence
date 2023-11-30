@@ -13,6 +13,7 @@ use domain_content_repo::{
 };
 use uuid::Uuid;
 
+#[derive(typed_builder::TypedBuilder)]
 pub struct NodeDraftServiceImpl {
     package_repo: Arc<dyn PackageRepo>,
 }
@@ -33,11 +34,6 @@ impl NodeDraftService for NodeDraftServiceImpl {
 }
 
 impl NodeDraftServiceImpl {
-    #[inline]
-    pub fn new(package_repo: Arc<dyn PackageRepo>) -> Self {
-        Self { package_repo }
-    }
-
     /// 使用解析数据解析得出节点草稿数据并返回
     ///
     /// * ability: 节点解析数据

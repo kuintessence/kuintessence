@@ -46,7 +46,7 @@ pub enum TaskStatusChange {
     #[default]
     Queuing,
     Running {
-        is_recovered: bool,
+        is_resumed: bool,
     },
     Completed,
     Failed,
@@ -54,7 +54,7 @@ pub enum TaskStatusChange {
     Terminated,
     Pausing,
     Paused,
-    Recovering,
+    Resuming,
 }
 
 #[derive(Default, Serialize, Deserialize, Clone)]
@@ -62,7 +62,7 @@ pub enum NodeStatusChange {
     #[default]
     Pending,
     Running {
-        is_recovered: bool,
+        is_resumed: bool,
     },
     Completed,
     Failed,
@@ -71,7 +71,7 @@ pub enum NodeStatusChange {
     Standby,
     Pausing,
     Paused,
-    Recovering,
+    Resuming,
 }
 
 impl ChangeInfo for FlowStatusChange {}
@@ -81,7 +81,7 @@ pub enum FlowStatusChange {
     #[default]
     Pending,
     Running {
-        is_recovered: bool,
+        is_resumed: bool,
     },
     Completed,
     Failed,
@@ -89,7 +89,7 @@ pub enum FlowStatusChange {
     Terminated,
     Pausing,
     Paused,
-    Recovering,
+    Resuming,
 }
 
 impl From<TaskStatusChange> for TaskStatus {
@@ -103,7 +103,7 @@ impl From<TaskStatusChange> for TaskStatus {
             TaskStatusChange::Terminated => Self::Terminated,
             TaskStatusChange::Pausing => Self::Pausing,
             TaskStatusChange::Paused => Self::Paused,
-            TaskStatusChange::Recovering => Self::Recovering,
+            TaskStatusChange::Resuming => Self::Resuming,
         }
     }
 }
@@ -118,7 +118,7 @@ impl TryFrom<TaskResultStatus> for TaskStatusChange {
             TaskResultStatus::Completed => Self::Completed,
             TaskResultStatus::Failed => Self::Failed,
             TaskResultStatus::Paused => Self::Paused,
-            TaskResultStatus::Continued => Self::Running { is_recovered: true },
+            TaskResultStatus::Continued => Self::Running { is_resumed: true },
             TaskResultStatus::Deleted => Self::Terminated,
         })
     }
@@ -136,7 +136,7 @@ impl From<NodeStatusChange> for NodeInstanceStatus {
             NodeStatusChange::Standby => Self::Standby,
             NodeStatusChange::Pausing => Self::Pausing,
             NodeStatusChange::Paused => Self::Paused,
-            NodeStatusChange::Recovering => Self::Recovering,
+            NodeStatusChange::Resuming => Self::Resuming,
         }
     }
 }
@@ -152,7 +152,7 @@ impl From<FlowStatusChange> for WorkflowInstanceStatus {
             FlowStatusChange::Terminated => Self::Terminated,
             FlowStatusChange::Pausing => Self::Pausing,
             FlowStatusChange::Paused => Self::Paused,
-            FlowStatusChange::Recovering => Self::Recovering,
+            FlowStatusChange::Resuming => Self::Resuming,
         }
     }
 }

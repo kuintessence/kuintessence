@@ -1,7 +1,8 @@
-use crate::model::entity::FileStorage;
 use alice_architecture::repository::DBRepository;
 use async_trait::async_trait;
 use uuid::Uuid;
+
+use crate::model::entity::FileStorage;
 
 #[async_trait]
 pub trait FileStorageRepo: DBRepository<FileStorage> + Send + Sync {

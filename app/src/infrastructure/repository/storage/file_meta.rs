@@ -41,7 +41,7 @@ impl FileMetaRepo for OrmRepo {
 #[async_trait::async_trait]
 impl ReadOnlyRepository<FileMeta> for OrmRepo {
     async fn get_by_id(&self, uuid: Uuid) -> anyhow::Result<FileMeta> {
-        let model = FileMetadataEntity::find_by_id::<Uuid>(uuid)
+        let model = file_metadata::Entity::find_by_id::<Uuid>(uuid)
             .one(self.db.get_connection())
             .await?
             .ok_or(anyhow!("There is no such file_meta with, id: {uuid}"))?;

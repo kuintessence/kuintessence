@@ -1,7 +1,7 @@
 use alice_architecture::repository::ReadOnlyRepository;
 
 use database_model::storage_server;
-use domain_storage::model::entity::storage_server::StorageServer;
+use domain_storage::model::entity::StorageServer;
 use sea_orm::prelude::*;
 
 use crate::infrastructure::database::OrmRepo;

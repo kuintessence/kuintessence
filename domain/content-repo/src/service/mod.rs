@@ -5,6 +5,6 @@ mod validate_package;
 #[rustfmt::skip]
 pub use {
     node_draft::NodeDraftService,
-    software_computing_usecase::CoSoftwareComputingUsecaseService,
+    software_computing_usecase::SoftwareComputingUsecaseInfoService,
     validate_package::ValidatePackageService,
 };

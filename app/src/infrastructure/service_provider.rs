@@ -18,22 +18,16 @@ use infrastructure_command::WsServerOperateCommand;
 use uuid::Uuid;
 
 // domains
-use domain_content_repo::service::{
-    CoSoftwareComputingUsecaseService, NodeDraftService, ValidatePackageService,
+use domain_content_repo::{
+    repository::PackageRepo,
+    service::{NodeDraftService, SoftwareComputingUsecaseInfoService, ValidatePackageService},
 };
 use domain_storage::{command::ViewRealtimeCommand, repository::MoveRegistrationRepo, service::*};
 use domain_workflow::{
-    model::{
-        entity::node_instance::NodeInstanceKind,
-        vo::task_dto::{StartTaskBody, Task, TaskType},
-    },
+    model::{entity::node_instance::NodeInstanceKind, vo::task_dto::Task},
     service::*,
 };
 // domain services
-use service_content_repo::*;
-use service_storage::prelude::*;
-use service_workflow::prelude::*;
-
 use super::{
     config::*,
     database::{graphql::content_repo::ContentRepository, OrmRepo, RedisClient, RedisRepo},
@@ -41,17 +35,24 @@ use super::{
     service::prelude::*,
     websocket_message_consumer, WsManager, WsSessionOpener,
 };
+use service_content_repo::*;
+use service_storage::*;
+use service_workflow::*;
 
 build_container! {
     #[derive(Clone)]
     pub struct ServiceProvider;
+
     params(config: config::Config)
+
     scoped_params(scoped_config: AliceScopedConfig)
+
     scoped user_id: Option<Uuid>{
         build {
             scoped_config.user_info.map(|u|u.id)
         }
     }
+
     co_config: CoConfig {
         build {
             let co_config: CoConfig = config.clone().try_deserialize()?;
@@ -59,26 +60,31 @@ build_container! {
             co_config
         }
     }
+
     common_config: CommonConfig {
         build {
             co_config.common.clone()
         }
     }
+
     internal_topics: InternalTopics {
         build {
             co_config.internal_topics.clone()
         }
     }
+
     internal_message_queue_producer: Arc<InternalMessageQueueProducer> {
         build {
             Arc::new(InternalMessageQueueProducer::new())
         }
     }
+
     http_client: Arc<reqwest::Client> {
         build {
             alice_infrastructure::http_client::build_http_client(&common_config.http_client)?
         }
     }
+
     redis_client: Arc<RedisClient> {
         build {
             let initial_nodes = common_config.redis.urls.clone();
@@ -92,6 +98,7 @@ build_container! {
             Arc::new(redis_client)
         }
     }
+
     key_storage: Arc<dyn KeyStorage> {
         build{
             Arc::new(MemoryKeyStorage::new(
@@ -100,6 +107,7 @@ build_container! {
                 ))
         }
     }
+
     scoped redis_repository: Arc<RedisRepo> {
         provide[Arc<dyn MoveRegistrationRepo>]
         build {
@@ -111,11 +119,13 @@ build_container! {
             )
         }
     }
+
     database: Arc<Database> {
         build async {
             Arc::new(Database::new(&common_config.db.url).await)
         }
     }
+
     scoped sea_orm_repository: Arc<OrmRepo> {
         build {
             Arc::new(
@@ -126,7 +136,8 @@ build_container! {
             )
         }
     }
-    content_repository: Arc<ContentRepository> {
+
+    package_repo: Arc<dyn PackageRepo> {
         build {
             Arc::new(
                 ContentRepository::new(
@@ -136,32 +147,36 @@ build_container! {
             )
         }
     }
-    co_software_computing_usecase_service: Arc<dyn CoSoftwareComputingUsecaseService> {
+
+    co_software_computing_usecase_service: Arc<dyn SoftwareComputingUsecaseInfoService> {
         build {
-            Arc::new(CoSoftwareComputingUsecaseImpl::new(content_repository.clone()))
+            Arc::new(SoftwareComputingUsecaseInfoServiceImpl::builder().package_repo(package_repo.clone()).build())
         }
     }
+
     validate_package_service: Arc<dyn ValidatePackageService> {
         build {
             Arc::new(ValidatePackageServiceImpl)
         }
     }
+
     node_draft_service: Arc<dyn NodeDraftService> {
         build {
-            Arc::new(NodeDraftServiceImpl::new(content_repository.clone()))
+            Arc::new(NodeDraftServiceImpl::builder().package_repo(package_repo.clone()).build())
         }
     }
+
     kafka_mq_producer: Arc<KafkaMessageQueueProducer> {
         provide[
             Arc<dyn MessageQueueProducerTemplate<ViewRealtimeCommand>>,
-            Arc<dyn MessageQueueProducerTemplate<Task<StartTaskBody>>>,
-            Arc<dyn MessageQueueProducerTemplate<Task<TaskType>>>,
+            Arc<dyn MessageQueueProducerTemplate<Task>>,
             Arc<dyn MessageQueueProducerTemplate<Uuid>>,
         ]
         build {
             Arc::new(KafkaMessageQueueProducer::new(&common_config.mq.producer))
         }
     }
+
     cache_service: Arc<dyn CacheService> {
         build {
             Arc::new(
@@ -171,6 +186,7 @@ build_container! {
             )
         }
     }
+
     scoped snapshot_service: Arc<dyn SnapshotService> {
         build {
             Arc::new(
@@ -185,6 +201,7 @@ build_container! {
             )
         }
     }
+
     scoped meta_storage_service: Arc<dyn MetaStorageService> {
         build {
             Arc::new(
@@ -195,6 +212,7 @@ build_container! {
             )
         }
     }
+
     scoped storage_server_broker_service: Arc<dyn StorageServerBrokerService> {
         build {
             Arc::new(
@@ -204,6 +222,7 @@ build_container! {
             )
         }
     }
+
     scoped storage_server_resource_service: Arc<dyn StorageServerResourceService> {
         build {
             Arc::new(
@@ -214,6 +233,7 @@ build_container! {
             )
         }
     }
+
     scoped queue_resource_service: Arc<dyn QueueResourceService> {
         build {
             Arc::new(
@@ -224,6 +244,7 @@ build_container! {
             )
         }
     }
+
     scoped storage_server_upload_dispatcher_service: Arc<dyn StorageServerUploadDispatcherService> {
         build {
             Arc::new(
@@ -234,6 +255,7 @@ build_container! {
             )
         }
     }
+
     scoped storage_server_download_dispatcher_service: Arc<dyn StorageServerDownloadDispatcherService> {
         build {
             Arc::new(
@@ -244,6 +266,7 @@ build_container! {
             )
         }
     }
+
     scoped net_disk_service: Arc<dyn NetDiskService> {
         build {
             Arc::new(
@@ -267,6 +290,7 @@ build_container! {
             )
         }
     }
+
     scoped file_move_service: Arc<dyn FileMoveService> {
         build {
             Arc::new(
@@ -287,6 +311,7 @@ build_container! {
             )
         }
     }
+
     scoped file_upload_runner: Arc<FileUploadRunner> {
         build {
             Arc::new(
@@ -301,6 +326,7 @@ build_container! {
             )
         }
     }
+
     scoped realtime_service: Arc<dyn RealtimeService> {
         build {
             Arc::new(
@@ -316,50 +342,33 @@ build_container! {
         }
     }
 
-    scoped task_service: Arc<dyn TaskService> {
-        build {
-            Arc::new(
-                TaskServiceImpl::builder()
-                    .queue_repository(sea_orm_repository.clone())
-                    .mqproducer(sp.provide())
-                    .build()
-            )
-        }
-    }
-    scoped software_computing_usecase_service: Arc<dyn Computing> {
+    scoped software_computing_usecase_service: Arc<SoftwareComputingUsecaseServiceImpl> {
         build {
             let internal_message_queue_producer: Arc<InternalMessageQueueProducer> = sp.provide();
             Arc::new(
                 SoftwareComputingUsecaseServiceImpl::builder()
                     .computing_usecase_repo(self.co_software_computing_usecase_service.clone())
                     .text_storage_repository(redis_repository.clone())
-                    .task_distribution_service(task_service.clone())
                     .software_block_list_repository(sea_orm_repository.clone())
                     .installed_software_repository(sea_orm_repository.clone())
                     .queue_resource_service(queue_resource_service.clone())
-                    .node_instance_repository(sea_orm_repository.clone())
-                    .workflow_instance_repository(sea_orm_repository.clone())
-                    .message_producer(internal_message_queue_producer)
+                    .node_repo(sea_orm_repository.clone())
+                    .flow_repo(sea_orm_repository.clone())
+                    .task_repo(sea_orm_repository.clone())
+                    .status_mq_producer(internal_message_queue_producer.clone())
+                    .status_mq_topic(self.co_config.internal_topics.status.to_owned())
                     .build()
             )
         }
     }
+
     no_action_usecase_service: Arc<NoActionUsecaseServiceImpl> {
         build {
             let internal_message_queue_producer: Arc<InternalMessageQueueProducer> = internal_message_queue_producer.clone();
             Arc::new(NoActionUsecaseServiceImpl::new(internal_message_queue_producer))
         }
     }
-    scoped script_usecase_service: Arc<ScriptUsecaseServiceImpl> {
-        build {
-            Arc::new(ScriptUsecaseServiceImpl::builder()
-                .task_distribution_service(task_service.clone())
-                .queue_resource_service(queue_resource_service.clone())
-                .node_instance_repository(sea_orm_repository.clone())
-                .build()
-            )
-        }
-    }
+
     scoped milestone_usecase_service: Arc<MilestoneUsecaseServiceImpl>{
         build {
             Arc::new(
@@ -370,57 +379,46 @@ build_container! {
             )
         }
     }
+
     scoped usecase_select_service: Arc<dyn UsecaseSelectService> {
         build {
             let mut map: HashMap<NodeInstanceKind, Arc<dyn UsecaseParseService>> = HashMap::new();
             map.insert(self.no_action_usecase_service.get_service_type(), self.no_action_usecase_service.clone());
             map.insert(software_computing_usecase_service.get_service_type(), software_computing_usecase_service.clone());
-            map.insert(script_usecase_service.get_service_type(), script_usecase_service.clone());
+            // map.insert(script_usecase_service.get_service_type(), script_usecase_service.clone());
             Arc::new(InnerUsecaseSelectService::builder().usecases(map).build())
         }
     }
-    scoped workflow_schedule_service: Arc<dyn WorkflowScheduleService> {
+
+    scoped task_status_receiver_service: Arc<dyn TaskStatusReceiveService> {
         build {
-            Arc::new(
-                WorkflowScheduleServiceImpl::builder()
-                    .node_instance_repository(sea_orm_repository.clone())
-                    .workflow_instance_repository(sea_orm_repository.clone())
-                    .file_move_service(file_move_service.clone())
-                    .download_service(storage_server_download_dispatcher_service.clone())
-                    .usecase_select_service(usecase_select_service.clone())
-                    .text_storage_repository(redis_repository.clone())
-                    .build()
-            )
-        }
-    }
-    scoped workflow_status_receiver_service: Arc<dyn TaskStatusReceiveService> {
-        build {
+            let internal_message_queue_producer: Arc<InternalMessageQueueProducer> = self.internal_message_queue_producer.clone();
             Arc::new(
                 TaskStatusReceiveServiceImpl::builder()
-                    .node_instance_repository(sea_orm_repository.clone())
-                    .workflow_instance_repository(sea_orm_repository.clone())
-                    .schedule_service(workflow_schedule_service.clone())
-                    .mq_producer(self.kafka_mq_producer.to_owned())
-                    .bill_topic(self.co_config.bill_topic.to_owned())
+                    .status_mq_producer(internal_message_queue_producer)
+                    .status_mq_topic(self.co_config.internal_topics.status.to_owned())
                     .queue_resource_service(queue_resource_service.clone())
                     .queue_id(scoped_config.device_info.map(|i|i.id))
                     .build()
             )
         }
     }
-    scoped workflow_service: Arc<dyn ControService> {
+
+    scoped workflow_service: Arc<dyn ControlService> {
         build{
             Arc::new(
                 ControlServiceImpl::builder()
-                    .workflow_draft_repository(sea_orm_repository.clone())
-                    .workflow_instance_repository(sea_orm_repository.clone())
-                    .node_instance_repository(sea_orm_repository.clone())
-                    .file_metadata_repository(sea_orm_repository.clone())
-                    .workflow_schedule_service(workflow_schedule_service.clone())
+                    .draft_repo(sea_orm_repository.clone())
+                    .instance_repo(sea_orm_repository.clone())
+                    .node_repo(sea_orm_repository.clone())
+                    .file_meta_repo(sea_orm_repository.clone())
+                    .status_mq_producer(self.internal_message_queue_producer.clone())
+                    .status_mq_topic(self.co_config.internal_topics.status.to_owned())
                     .build()
             )
         }
     }
+
     scoped text_storage_service: Arc<dyn TextStorageService> {
         build{
             Arc::new(
@@ -437,7 +435,9 @@ build_container! {
             result
         }
     }
+
     outer config: config::Config {}
+
     ws_manager: Arc<WsManager> {
         build {
             Arc::new(WsManager::new(
@@ -445,13 +445,72 @@ build_container! {
                 co_config.web_socket.keep_alive))
         }
     }
+
     scoped ws_session_opener: Arc<WsSessionOpener> {
         build {
             Arc::new(WsSessionOpener::new(self.ws_manager.clone(), user_id))
         }
     }
+
     ws_sender: flume::Sender<WsServerOperateCommand> {
         build { ws_manager.command_sender.clone() }
+    }
+
+    scoped task_scheduler: Arc<TaskScheduleServiceImpl>{
+        build {
+            Arc::new(
+                TaskScheduleServiceImpl::builder()
+                    .task_repo(sea_orm_repository.clone())
+                    .mq_producer_task(self.kafka_mq_producer.clone())
+                    .status_mq_producer(self.internal_message_queue_producer.clone())
+                    .status_mq_topic(self.co_config.internal_topics.status.to_owned())
+                    .build()
+            )
+        }
+    }
+
+    scoped batch_service: Arc<BatchService>{
+        build {
+            Arc::new(
+                BatchService::builder()
+                    .node_instance_repository(sea_orm_repository.clone())
+                    .workflow_instance_repository(sea_orm_repository.clone())
+                    .file_move_service(file_move_service.clone())
+                    .download_service(storage_server_download_dispatcher_service.clone())
+                    .text_storage_repository(redis_repository.clone())
+                    .build()
+            )
+        }
+    }
+
+    scoped node_scheduler: Arc<NodeScheduleServiceImpl> {
+        build {
+            Arc::new(
+                NodeScheduleServiceImpl::builder()
+                    .node_repo(sea_orm_repository.clone())
+                    .flow_repo(sea_orm_repository.clone())
+                    .task_repo(sea_orm_repository.clone())
+                    .status_mq_producer(self.internal_message_queue_producer.clone())
+                    .status_mq_topic(self.co_config.internal_topics.status.to_owned())
+                    .usecase_select_service(usecase_select_service.clone())
+                    .batch_service(batch_service.clone())
+                    .build()
+            )
+        }
+    }
+
+    scoped flow_scheduler: Arc<FlowScheduleServiceImpl> {
+        build {
+            Arc::new(
+                FlowScheduleServiceImpl::builder()
+                    .flow_repo(sea_orm_repository.clone())
+                    .node_repo(sea_orm_repository.clone())
+                    .batch_service(batch_service.clone())
+                    .status_mq_producer(self.internal_message_queue_producer.clone())
+                    .status_mq_topic(self.co_config.internal_topics.status.to_owned())
+                    .build()
+            )
+        }
     }
 
     after_build {
@@ -461,13 +520,17 @@ build_container! {
         let internal_topics = config.internal_topics;
         let ws_server_topic = internal_topics.web_socket.to_owned();
         let file_upload_topic = internal_topics.file_upload.to_owned();
-        let node_status_topic = internal_topics.node_status.to_owned();
+        let status_topic = internal_topics.status.to_owned();
 
-        // fn_mapper.insert(node_status_topic, internal_message_consumer::node_status_consumer);
+        let realtime_ws_topic = internal_topics.ws_messages.realtime.to_owned();
+
+        // Direct internal message consumer.
         fn_mapper.insert(file_upload_topic, internal_message_consumer::file_upload_runner_consumer);
         fn_mapper.insert(ws_server_topic, internal_message_consumer::ws_server_operator);
+        fn_mapper.insert(status_topic, internal_message_consumer::status_consumer);
 
-        fn_mapper.insert(internal_topics.ws_messages.realtime.to_owned(), websocket_message_consumer::ws_realtime);
+        // Websocket message consumer.
+        fn_mapper.insert(realtime_ws_topic, websocket_message_consumer::ws_realtime);
 
         let internal_message_queue_producer: Arc<InternalMessageQueueProducer> = arc_sp.provide();
         let mq = Arc::new(InternalMessageQueueConsumer::new(internal_message_queue_producer.get_receiver(), arc_sp, fn_mapper));

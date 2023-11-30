@@ -11,3 +11,4 @@ async-trait = { workspace = true }
 uuid = { workspace = true }
 # error
 anyhow = { workspace = true }
+typed-builder = { workspace = true }

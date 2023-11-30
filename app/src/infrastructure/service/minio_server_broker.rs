@@ -3,7 +3,7 @@ use std::{ops::Range, sync::Arc};
 use async_trait::async_trait;
 use domain_storage::{
     model::{
-        entity::storage_server::{ObjectServerOption, StorageServer, StorageType},
+        entity::{ObjectServerOption, StorageServer, StorageType},
         vo::ServerUrl,
     },
     service::{MetaStorageService, StorageServerBrokerService},

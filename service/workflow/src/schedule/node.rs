@@ -22,7 +22,8 @@ use uuid::Uuid;
 
 use super::batch::BatchService;
 
-pub struct NodeScheduleService {
+#[derive(typed_builder::TypedBuilder)]
+pub struct NodeScheduleServiceImpl {
     node_repo: Arc<dyn NodeInstanceRepo>,
     flow_repo: Arc<dyn WorkflowInstanceRepo>,
     task_repo: Arc<dyn TaskRepo>,
@@ -33,7 +34,7 @@ pub struct NodeScheduleService {
 }
 
 #[async_trait]
-impl ScheduleService for NodeScheduleService {
+impl ScheduleService for NodeScheduleServiceImpl {
     type Info = NodeChangeInfo;
 
     /// Handle a changed target item.
@@ -46,7 +47,7 @@ impl ScheduleService for NodeScheduleService {
                 let node_spec = self.node_repo.get_node_spec(id).await?;
                 self.usecase_select_service.send_usecase(node_spec).await?;
             }
-            NodeStatusChange::Running { is_recovered } => {
+            NodeStatusChange::Running { is_resumed } => {
                 // Toggled by:
                 // 1. Workflow start scheduling, and the first nodes to run;
                 // 2. Recovered node that notified by TaskScheduleService;
@@ -57,22 +58,20 @@ impl ScheduleService for NodeScheduleService {
 
                 let node = self.node_repo.get_by_id(id).await?;
 
-                if is_recovered {
+                if is_resumed {
                     if let Some(parent_id) = node.batch_parent_id {
                         let same_batch_nodes =
                             self.node_repo.get_node_sub_node_instances(parent_id).await?;
                         if same_batch_nodes
                             .iter()
-                            .all(|n| !matches!(n.status, NodeInstanceStatus::Recovering))
+                            .all(|n| !matches!(n.status, NodeInstanceStatus::Resuming))
                         {
                             self.status_mq_producer
                                 .send_object(
                                     &ChangeMsg {
                                         id: parent_id,
                                         info: Info::Node(NodeChangeInfo {
-                                            status: NodeStatusChange::Running {
-                                                is_recovered: true,
-                                            },
+                                            status: NodeStatusChange::Running { is_resumed: true },
                                             ..Default::default()
                                         }),
                                     },
@@ -86,13 +85,13 @@ impl ScheduleService for NodeScheduleService {
                         .node_repo
                         .get_all_workflow_instance_nodes(node.flow_instance_id)
                         .await?;
-                    if nodes.iter().all(|n| !matches!(n.status, NodeInstanceStatus::Recovering)) {
+                    if nodes.iter().all(|n| !matches!(n.status, NodeInstanceStatus::Resuming)) {
                         self.status_mq_producer
                             .send_object(
                                 &ChangeMsg {
                                     id: node.flow_instance_id,
                                     info: Info::Flow(FlowStatusChange::Running {
-                                        is_recovered: true,
+                                        is_resumed: true,
                                     }),
                                 },
                                 Some(&self.status_mq_topic),
@@ -105,9 +104,7 @@ impl ScheduleService for NodeScheduleService {
                     .send_object(
                         &ChangeMsg {
                             id: node.flow_instance_id,
-                            info: Info::Flow(FlowStatusChange::Running {
-                                is_recovered: false,
-                            }),
+                            info: Info::Flow(FlowStatusChange::Running { is_resumed: false }),
                         },
                         Some(&self.status_mq_topic),
                     )
@@ -120,7 +117,7 @@ impl ScheduleService for NodeScheduleService {
                 let is_do_nothing = |s: &NodeInstanceStatus| {
                     matches!(
                         s,
-                        NodeInstanceStatus::Recovering
+                        NodeInstanceStatus::Resuming
                             | NodeInstanceStatus::Paused
                             | NodeInstanceStatus::Running
                             | NodeInstanceStatus::Terminating
@@ -356,7 +353,7 @@ impl ScheduleService for NodeScheduleService {
                         .await?;
                 }
             }
-            NodeStatusChange::Recovering => {
+            NodeStatusChange::Resuming => {
                 // Similar as other 'ing' command.
                 let tasks = self.task_repo.get_tasks_by_node_id(id).await?;
 
@@ -366,7 +363,7 @@ impl ScheduleService for NodeScheduleService {
                             &ChangeMsg {
                                 id: task.id,
                                 info: Info::Task(TaskChangeInfo {
-                                    status: TaskStatusChange::Recovering,
+                                    status: TaskStatusChange::Resuming,
                                     ..Default::default()
                                 }),
                             },
@@ -382,7 +379,7 @@ impl ScheduleService for NodeScheduleService {
     /// Change an target item.
     async fn change(&self, id: Uuid, info: Self::Info) -> anyhow::Result<()> {
         self.node_repo
-            .update(&DbNodeInstance {
+            .update(DbNodeInstance {
                 status: DbField::Set(info.status.clone().into()),
                 log: match &info.message {
                     m @ Some(_) => DbField::Set(m.to_owned()),

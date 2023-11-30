@@ -4,7 +4,7 @@ use alice_architecture::repository::{DBRepository, MutableRepository, ReadOnlyRe
 
 use database_model::flow_instance;
 use domain_workflow::{
-    model::entity::{NodeInstance, WorkflowInstance},
+    model::entity::{workflow_instance::DbWorkflowInstance, NodeInstance, WorkflowInstance},
     repository::WorkflowInstanceRepo,
 };
 use sea_orm::{prelude::*, Set};
@@ -29,16 +29,20 @@ impl ReadOnlyRepository<WorkflowInstance> for OrmRepo {
 
 #[async_trait::async_trait]
 impl MutableRepository<WorkflowInstance> for OrmRepo {
-    async fn update(&self, entity: &WorkflowInstance) -> anyhow::Result<()> {
+    async fn update(&self, entity: DbWorkflowInstance) -> anyhow::Result<()> {
         let mut stmts = self.statements.lock().await;
         let active_model = flow_instance::ActiveModel {
-            status: Set(entity.status.to_owned() as i32),
-            spec: Set(serde_json::to_value(entity.spec.to_owned())?),
-            last_modified_time: Set(entity.last_modified_time),
+            status: entity.status.into(),
+            spec: entity.spec.try_into()?,
+            last_modified_time: entity.last_modified_time.into_active_value(),
+            name: entity.name.into_active_value(),
+            description: entity.description.into_active_value(),
+            logo: entity.logo.into_active_value(),
+            user_id: entity.user_id.into_active_value(),
             ..Default::default()
         };
         let stmt = flow_instance::Entity::update(active_model)
-            .filter(flow_instance::Column::Id.eq(entity.id))
+            .filter(flow_instance::Column::Id.eq(*entity.id.value()?))
             // .filter(flow_instance::Column::UserId.eq(self.user_id()?))
             .build(self.db.get_connection().get_database_backend());
         stmts.push(stmt);

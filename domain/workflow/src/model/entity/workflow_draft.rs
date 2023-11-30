@@ -16,7 +16,7 @@ use crate::{
 };
 
 /// 工作流草稿
-#[derive(Debug, Clone, Serialize, Deserialize, Default, AggregateRoot)]
+#[derive(Debug, Clone, Default, AggregateRoot)]
 pub struct WorkflowDraft {
     /// id
     pub id: Uuid,
@@ -35,10 +35,12 @@ pub struct WorkflowDraft {
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct WorkflowDraftSpec {
     /// 调度策略
+    #[serde(default)]
     pub scheduling_strategy: SchedulingStrategy,
     /// 节点草稿列表
     pub node_drafts: Vec<NodeDraft>,
     /// 节点草稿关系列表
+    #[serde(default)]
     pub node_relations: Vec<NodeRelation>,
     /// 其他字段
     pub additional_data: Option<HashMap<String, Value>>,

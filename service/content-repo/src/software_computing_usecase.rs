@@ -4,16 +4,17 @@ use async_trait::async_trait;
 use domain_content_repo::{
     model::vo::{node_ability_kind::Packages, SoftwareComputingUsecase},
     repository::PackageRepo,
-    service::CoSoftwareComputingUsecaseService,
+    service::SoftwareComputingUsecaseInfoService,
 };
 use uuid::Uuid;
 
-pub struct CoSoftwareComputingUsecaseImpl {
+#[derive(typed_builder::TypedBuilder)]
+pub struct SoftwareComputingUsecaseInfoServiceImpl {
     package_repo: Arc<dyn PackageRepo>,
 }
 
 #[async_trait]
-impl CoSoftwareComputingUsecaseService for CoSoftwareComputingUsecaseImpl {
+impl SoftwareComputingUsecaseInfoService for SoftwareComputingUsecaseInfoServiceImpl {
     async fn get_computing_usecase(
         &self,
         software_ver_id: Uuid,
@@ -26,7 +27,7 @@ impl CoSoftwareComputingUsecaseService for CoSoftwareComputingUsecaseImpl {
     }
 }
 
-impl CoSoftwareComputingUsecaseImpl {
+impl SoftwareComputingUsecaseInfoServiceImpl {
     #[inline]
     pub fn new(package_repo: Arc<dyn PackageRepo>) -> Self {
         Self { package_repo }

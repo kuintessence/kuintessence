@@ -4,10 +4,7 @@ use async_trait::async_trait;
 use domain_storage::{
     model::{
         entity::{FileMeta, FileStorage},
-        vo::{
-            record::{RecordFileMeta, RecordFileStorage},
-            HashAlgorithm,
-        },
+        vo::{HashAlgorithm, RecordFileMeta, RecordFileStorage},
     },
     repository::{FileMetaRepo, FileStorageRepo},
     service::MetaStorageService,

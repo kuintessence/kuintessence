@@ -16,7 +16,8 @@ use uuid::Uuid;
 
 use crate::schedule::batch::BatchService;
 
-pub struct FlowScheduleService {
+#[derive(typed_builder::TypedBuilder)]
+pub struct FlowScheduleServiceImpl {
     flow_repo: Arc<dyn WorkflowInstanceRepo>,
     node_repo: Arc<dyn NodeInstanceRepo>,
     batch_service: Arc<BatchService>,
@@ -25,7 +26,7 @@ pub struct FlowScheduleService {
 }
 
 #[async_trait]
-impl ScheduleService for FlowScheduleService {
+impl ScheduleService for FlowScheduleServiceImpl {
     type Info = FlowStatusChange;
 
     async fn handle_changed(&self, id: Uuid, info: Self::Info) -> anyhow::Result<()> {
@@ -139,7 +140,7 @@ impl ScheduleService for FlowScheduleService {
                         .await?;
                 }
             }
-            FlowStatusChange::Recovering => {
+            FlowStatusChange::Resuming => {
                 let nodes = self.node_repo.get_all_workflow_instance_nodes(id).await?;
                 for node in nodes.iter().filter(|n| matches!(n.status, NodeInstanceStatus::Paused))
                 {
@@ -148,7 +149,7 @@ impl ScheduleService for FlowScheduleService {
                             &ChangeMsg {
                                 id: node.id,
                                 info: Info::Node(NodeChangeInfo {
-                                    status: NodeStatusChange::Recovering,
+                                    status: NodeStatusChange::Resuming,
                                     ..Default::default()
                                 }),
                             },
@@ -170,7 +171,7 @@ impl ScheduleService for FlowScheduleService {
 
     async fn change(&self, id: Uuid, info: Self::Info) -> anyhow::Result<()> {
         self.flow_repo
-            .update(&DbWorkflowInstance {
+            .update(DbWorkflowInstance {
                 id: DbField::Set(id),
                 status: DbField::Set(info.clone().into()),
                 ..Default::default()

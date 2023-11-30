@@ -4,6 +4,7 @@ mod task;
 
 mod batch;
 
-pub use flow::FlowScheduleService;
-pub use node::NodeScheduleService;
-pub use task::TaskScheduleService;
+pub use batch::BatchService;
+pub use flow::FlowScheduleServiceImpl;
+pub use node::NodeScheduleServiceImpl;
+pub use task::TaskScheduleServiceImpl;

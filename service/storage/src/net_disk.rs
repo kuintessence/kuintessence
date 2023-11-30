@@ -5,10 +5,7 @@ use async_trait::async_trait;
 use chrono::Utc;
 use domain_storage::{
     command::CreateNetDiskFileCommand,
-    model::entity::{
-        net_disk::{FileType, NetDiskMeta, RecordNetDiskKind},
-        NetDisk,
-    },
+    model::entity::{FileType, NetDisk, NetDiskMeta, RecordNetDiskKind},
     repository::NetDiskRepo,
     service::NetDiskService,
 };

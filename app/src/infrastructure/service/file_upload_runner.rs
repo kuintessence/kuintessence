@@ -4,10 +4,7 @@ use uuid::Uuid;
 
 use domain_storage::{
     command::{CacheOperateCommand::*, CacheReadCommand::*, CreateNetDiskFileCommand},
-    model::{
-        entity::move_registration::MoveDestination,
-        vo::record::{RecordFileMeta, RecordFileStorage},
-    },
+    model::vo::{MoveDestination, RecordFileMeta, RecordFileStorage},
     service::*,
 };
 use typed_builder::TypedBuilder;

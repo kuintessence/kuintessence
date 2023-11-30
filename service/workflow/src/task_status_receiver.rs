@@ -45,7 +45,7 @@ impl TaskStatusReceiveService for TaskStatusReceiveServiceImpl {
                 self.queue_resource_service
                     .task_started(
                         self.queue_id
-                            .context("No queue id when TaskStatusReceiveSerrvice use it")?,
+                            .context("No queue id when TaskStatusReceiveService use it.")?,
                     )
                     .await?
             }

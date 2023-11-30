@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 
-use crate::model::vo::content_extractor::{ExtractOption, ExtractResult};
+use crate::model::vo::{ExtractOption, ExtractResult};
 
 /// Extract file content.
 #[async_trait]

@@ -8,8 +8,9 @@ use uuid::Uuid;
 use domain_storage::{
     command::{CreateNetDiskFileCommand, FileUploadCommand},
     exception::{FileException, FileResult},
-    model::entity::{
-        move_registration::MoveDestination, net_disk::RecordNetDiskKind, MoveRegistration, Snapshot,
+    model::{
+        entity::{MoveRegistration, RecordNetDiskKind, Snapshot},
+        vo::MoveDestination,
     },
     repository::MoveRegistrationRepo,
     service::{

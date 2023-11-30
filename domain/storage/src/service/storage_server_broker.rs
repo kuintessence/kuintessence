@@ -2,8 +2,7 @@ use async_trait::async_trait;
 use std::ops::Range;
 use uuid::Uuid;
 
-use crate::model::entity::StorageServer;
-use crate::model::vo::ServerUrl;
+use crate::model::{entity::StorageServer, vo::ServerUrl};
 
 /// Transport file between local and server.
 ///

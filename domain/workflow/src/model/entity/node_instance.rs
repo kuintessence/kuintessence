@@ -122,7 +122,7 @@ pub enum NodeInstanceStatus {
     Paused,
     /// # 正在恢复
     /// 作业实例的处理过程正在恢复
-    Recovering,
+    Resuming,
 }
 
 impl TryFrom<node_instance::Model> for NodeInstance {

@@ -5,7 +5,7 @@ use std::sync::atomic::Ordering;
 use alice_architecture::repository::{DBRepository, MutableRepository, ReadOnlyRepository};
 
 use domain_storage::{
-    model::entity::net_disk::{DirKind, FileType, NetDisk},
+    model::entity::{DirKind, FileType, NetDisk},
     repository::NetDiskRepo,
 };
 use sea_orm::{
