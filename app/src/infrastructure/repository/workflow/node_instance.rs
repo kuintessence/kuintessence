@@ -38,6 +38,7 @@ impl MutableRepository<NodeInstance> for OrmRepo {
     async fn update(&self, entity: DbNodeInstance) -> anyhow::Result<()> {
         let mut stmts = self.statements.lock().await;
         let active_model = node_instance::ActiveModel {
+            id: entity.id.into_active_value(),
             status: entity.status.into(),
             resource_meter: entity.resource_meter.try_into()?,
             log: entity.log.into_active_value(),
@@ -50,7 +51,6 @@ impl MutableRepository<NodeInstance> for OrmRepo {
             ..Default::default()
         };
         let stmt = node_instance::Entity::update(active_model)
-            .filter(node_instance::Column::Id.eq(*entity.id.value()?))
             .build(self.db.get_connection().get_database_backend());
         stmts.push(stmt);
         self.can_drop.store(false, Ordering::Relaxed);
@@ -81,6 +81,35 @@ impl MutableRepository<NodeInstance> for OrmRepo {
         stmts.push(stmt);
         self.can_drop.store(false, Ordering::Relaxed);
         Ok(entity.id)
+    }
+
+    async fn insert_list(&self, entities: &[NodeInstance]) -> anyhow::Result<Vec<Uuid>> {
+        let mut stmts = self.statements.lock().await;
+        let f = |n: NodeInstance| -> anyhow::Result<node_instance::ActiveModel> {
+            Ok(node_instance::ActiveModel {
+                id: Set(n.id),
+                name: Set(n.name.to_owned()),
+                kind: Set(n.kind.to_owned() as i32),
+                is_parent: Set(n.is_parent),
+                batch_parent_id: Set(n.batch_parent_id),
+                status: Set(n.status.to_owned() as i32),
+                resource_meter: Set(n
+                    .resource_meter
+                    .as_ref()
+                    .map(serde_json::to_value)
+                    .transpose()?),
+                log: Set(n.log.to_owned()),
+                queue_id: Set(n.queue_id),
+                flow_instance_id: Set(n.flow_instance_id),
+                ..Default::default()
+            })
+        };
+        let active_models: anyhow::Result<Vec<_>> = entities.iter().cloned().map(f).collect();
+        let stmt = node_instance::Entity::insert_many(active_models?)
+            .build(self.db.get_connection().get_database_backend());
+        stmts.push(stmt);
+        self.can_drop.store(false, Ordering::Relaxed);
+        Ok(entities.iter().map(|e| e.id).collect())
     }
 
     async fn save_changed(&self) -> anyhow::Result<bool> {

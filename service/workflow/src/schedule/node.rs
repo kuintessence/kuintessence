@@ -231,7 +231,7 @@ impl ScheduleService for NodeScheduleServiceImpl {
                             &ChangeMsg {
                                 id: task.id,
                                 info: Info::Task(TaskChangeInfo {
-                                    status: TaskStatusChange::Terminating,
+                                    status: TaskStatusChange::Cancelling,
                                     ..Default::default()
                                 }),
                             },
@@ -380,6 +380,7 @@ impl ScheduleService for NodeScheduleServiceImpl {
     async fn change(&self, id: Uuid, info: Self::Info) -> anyhow::Result<()> {
         self.node_repo
             .update(DbNodeInstance {
+                id: DbField::Unchanged(id),
                 status: DbField::Set(info.status.clone().into()),
                 log: match &info.message {
                     m @ Some(_) => DbField::Set(m.to_owned()),

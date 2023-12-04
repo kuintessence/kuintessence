@@ -172,7 +172,7 @@ impl ScheduleService for FlowScheduleServiceImpl {
     async fn change(&self, id: Uuid, info: Self::Info) -> anyhow::Result<()> {
         self.flow_repo
             .update(DbWorkflowInstance {
-                id: DbField::Set(id),
+                id: DbField::Unchanged(id),
                 status: DbField::Set(info.clone().into()),
                 ..Default::default()
             })

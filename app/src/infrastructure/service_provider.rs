@@ -239,7 +239,8 @@ build_container! {
             Arc::new(
                 QueueResourceServiceImpl::builder()
                     .queue_resource_repo(sea_orm_repository.clone())
-                    .message_producer(self.internal_message_queue_producer.clone())
+                    .status_mq_producer(self.internal_message_queue_producer.clone())
+                    .status_mq_topic(self.co_config.internal_topics.status.to_owned())
                     .build()
             )
         }
@@ -365,7 +366,11 @@ build_container! {
     no_action_usecase_service: Arc<NoActionUsecaseServiceImpl> {
         build {
             let internal_message_queue_producer: Arc<InternalMessageQueueProducer> = internal_message_queue_producer.clone();
-            Arc::new(NoActionUsecaseServiceImpl::new(internal_message_queue_producer))
+            Arc::new(NoActionUsecaseServiceImpl::builder()
+                .status_mq_producer(internal_message_queue_producer)
+                .status_mq_topic(co_config.internal_topics.status.to_owned())
+                .build()
+            )
         }
     }
 

@@ -10,7 +10,7 @@ use domain_workflow::{
             workflow_instance::NodeSpec,
         },
         vo::{
-            task_dto::{Task, StartTaskBody, TaskType},
+            task_dto::{StartTaskBody, Task, TaskType},
             NodeKind,
         },
     },
@@ -58,7 +58,7 @@ impl UsecaseParseService for ScriptUsecaseServiceImpl {
         node_instance.queue_id = Some(queue_id);
         self.node_instance_repository
             .update(&DbNodeInstance {
-                id: DbField::Set(node_instance.id),
+                id: DbField::Unchanged(node_instance.id),
                 queue_id: DbField::Set(node_instance.queue_id),
                 ..Default::default()
             })

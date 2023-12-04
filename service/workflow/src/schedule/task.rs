@@ -1,8 +1,7 @@
 use std::sync::Arc;
 
 use alice_architecture::{
-    message_queue::producer::{MessageQueueProducer, MessageQueueProducerTemplate},
-    repository::DbField,
+    message_queue::producer::MessageQueueProducerTemplate, repository::DbField,
 };
 use async_trait::async_trait;
 use domain_workflow::{
@@ -23,7 +22,7 @@ use uuid::Uuid;
 #[derive(typed_builder::TypedBuilder)]
 pub struct TaskScheduleServiceImpl {
     task_repo: Arc<dyn TaskRepo>,
-    mq_producer_task: Arc<dyn MessageQueueProducer>,
+    mq_producer_task: Arc<dyn MessageQueueProducerTemplate<task_dto::Task>>,
     status_mq_producer: Arc<dyn MessageQueueProducerTemplate<ChangeMsg>>,
     status_mq_topic: String,
 }
@@ -56,8 +55,8 @@ impl ScheduleService for TaskScheduleServiceImpl {
                             TaskStatus::Resuming
                                 | TaskStatus::Paused
                                 | TaskStatus::Completed
-                                | TaskStatus::Terminating
-                                | TaskStatus::Terminated
+                                | TaskStatus::Cancelling
+                                | TaskStatus::Cancelled
                                 | TaskStatus::Failed
                                 | TaskStatus::Pausing
                                 | TaskStatus::Queuing
@@ -83,11 +82,14 @@ impl ScheduleService for TaskScheduleServiceImpl {
                 loop {
                     if self
                         .mq_producer_task
-                        .send(
-                            &serde_json::to_string(&task_dto::Task {
+                        .send_object(
+                            &task_dto::Task {
                                 id,
-                                command: TaskCommand::Start(task.body.to_owned()),
-                            })?,
+                                command: TaskCommand::Start {
+                                    node_id: task.node_instance_id,
+                                    value: task.body.to_owned(),
+                                },
+                            },
                             Some(&task.queue_topic),
                         )
                         .await
@@ -125,8 +127,8 @@ impl ScheduleService for TaskScheduleServiceImpl {
                         TaskStatus::Resuming
                             | TaskStatus::Paused
                             | TaskStatus::Running
-                            | TaskStatus::Terminating
-                            | TaskStatus::Terminated
+                            | TaskStatus::Cancelling
+                            | TaskStatus::Cancelled
                             | TaskStatus::Failed
                             | TaskStatus::Pausing
                             | TaskStatus::Queuing
@@ -192,23 +194,23 @@ impl ScheduleService for TaskScheduleServiceImpl {
                     .await?;
             }
 
-            TaskStatusChange::Terminating => {
+            TaskStatusChange::Cancelling => {
                 // This is generate from co.
                 // Use TaskDistribute Service to send task terminating command.
 
                 let task = self.task_repo.get_by_id(id).await?;
                 self.mq_producer_task
-                    .send(
-                        &serde_json::to_string(&task_dto::Task {
+                    .send_object(
+                        &task_dto::Task {
                             id,
-                            command: TaskCommand::Delete(task.r#type.into()),
-                        })?,
+                            command: TaskCommand::Cancel(task.r#type.into()),
+                        },
                         Some(&task.queue_topic),
                     )
                     .await?;
             }
 
-            TaskStatusChange::Terminated => {
+            TaskStatusChange::Cancelled => {
                 // This is generated from agent.
                 // Firstly, get the node related tasks list.
                 // Then, judge if all tasks are: Standby or Completed or Failed or Terminated or
@@ -223,7 +225,7 @@ impl ScheduleService for TaskScheduleServiceImpl {
                         TaskStatus::Standby
                             | TaskStatus::Completed
                             // | TaskStatus::Failed
-                            | TaskStatus::Terminated
+                            | TaskStatus::Cancelled
                             | TaskStatus::Paused,
                     )
                 }) {
@@ -247,11 +249,11 @@ impl ScheduleService for TaskScheduleServiceImpl {
 
                 let task = self.task_repo.get_by_id(id).await?;
                 self.mq_producer_task
-                    .send(
-                        &serde_json::to_string(&task_dto::Task {
+                    .send_object(
+                        &task_dto::Task {
                             id,
                             command: TaskCommand::Pause(task.r#type.into()),
-                        })?,
+                        },
                         Some(&task.queue_topic),
                     )
                     .await?;
@@ -293,11 +295,11 @@ impl ScheduleService for TaskScheduleServiceImpl {
 
                 let task = self.task_repo.get_by_id(id).await?;
                 self.mq_producer_task
-                    .send(
-                        &serde_json::to_string(&task_dto::Task {
+                    .send_object(
+                        &task_dto::Task {
                             id,
-                            command: TaskCommand::Continue(task.r#type.into()),
-                        })?,
+                            command: TaskCommand::Resume(task.r#type.into()),
+                        },
                         Some(&task.queue_topic),
                     )
                     .await?;
@@ -310,7 +312,7 @@ impl ScheduleService for TaskScheduleServiceImpl {
     async fn change(&self, id: Uuid, info: Self::Info) -> anyhow::Result<()> {
         self.task_repo
             .update(DbTask {
-                id: DbField::Set(id),
+                id: DbField::Unchanged(id),
                 status: DbField::Set(info.status.to_owned().into()),
                 message: match &info.message {
                     m @ Some(_) => DbField::Set(m.to_owned()),

@@ -2,6 +2,7 @@ use alice_architecture::{
     message_queue::producer::MessageQueueProducerTemplate, repository::DbField,
 };
 
+use anyhow::Context;
 use async_trait::async_trait;
 use domain_content_repo::{
     model::vo::abilities::{
@@ -114,7 +115,7 @@ impl UsecaseParseService for SoftwareComputingUsecaseServiceImpl {
                 id: Uuid::new_v4(),
                 node_instance_id: node_spec.id,
                 r#type: entity::task::TaskType::from_ref(&start_body),
-                body: serde_json::to_string(&start_body)?,
+                body: serde_json::to_value(start_body)?,
                 queue_topic: queue.topic_name.to_owned(),
                 ..Default::default()
             });
@@ -125,24 +126,28 @@ impl UsecaseParseService for SoftwareComputingUsecaseServiceImpl {
 
         self.node_repo
             .update(DbNodeInstance {
-                id: DbField::Set(node_spec.id),
+                id: DbField::Unchanged(node_spec.id),
                 queue_id: DbField::Set(Some(queue.id)),
                 ..Default::default()
             })
             .await?;
         self.node_repo.save_changed().await?;
-        self.status_mq_producer
-            .send_object(
-                &ChangeMsg {
-                    id: node_spec.id,
-                    info: Info::Task(TaskChangeInfo {
-                        status: TaskStatusChange::Running { is_resumed: false },
-                        ..Default::default()
-                    }),
-                },
-                Some(&self.status_mq_topic),
-            )
-            .await?;
+        let first_task = tasks.first().context("Tasks list is empty.")?;
+
+        for task in tasks.iter().filter(|t| t.r#type == first_task.r#type) {
+            self.status_mq_producer
+                .send_object(
+                    &ChangeMsg {
+                        id: task.id,
+                        info: Info::Task(TaskChangeInfo {
+                            status: TaskStatusChange::Running { is_resumed: false },
+                            ..Default::default()
+                        }),
+                    },
+                    Some(&self.status_mq_topic),
+                )
+                .await?;
+        }
         Ok(())
     }
 
@@ -215,7 +220,7 @@ impl SoftwareComputingUsecaseServiceImpl {
 
         let mut argument_formats_sorts = HashMap::<usize, FormatFill>::new();
         let mut environment_formats_map = HashMap::<String, FormatFill>::new();
-        let mut std_in = StdInKind::default();
+        let mut std_in = None;
         let mut tasks = vec![];
         let mut download_files = vec![];
         let mut upload_files = vec![];
@@ -304,9 +309,9 @@ impl SoftwareComputingUsecaseServiceImpl {
                             }
 
                             TextRef::StdIn => {
-                                std_in = StdInKind::Text {
+                                std_in = Some(StdInKind::Text {
                                     text: in_content.to_owned().unwrap().args,
-                                };
+                                });
                             }
 
                             TextRef::TemplateRef {
@@ -366,8 +371,8 @@ impl SoftwareComputingUsecaseServiceImpl {
 
                             FileRef::StdIn => {
                                 std_in = match in_content.to_owned() {
-                                    Some(x) => StdInKind::File { path: x.args },
-                                    None => StdInKind::None,
+                                    Some(x) => Some(StdInKind::File { path: x.args }),
+                                    None => None,
                                 };
                             }
 
@@ -443,9 +448,9 @@ impl SoftwareComputingUsecaseServiceImpl {
                     }
 
                     TextRef::StdIn => {
-                        std_in = StdInKind::Text {
+                        std_in = Some(StdInKind::Text {
                             text: filled_result.to_owned(),
-                        };
+                        });
                     }
 
                     TextRef::TemplateRef {
@@ -502,9 +507,9 @@ impl SoftwareComputingUsecaseServiceImpl {
                     }
 
                     FileRef::StdIn => {
-                        std_in = StdInKind::File {
+                        std_in = Some(StdInKind::File {
                             path: file_name.to_owned(),
-                        }
+                        })
                     }
 
                     FileRef::FileInputRef(input_material_descriptor) => {
@@ -887,16 +892,14 @@ impl SoftwareComputingUsecaseServiceImpl {
                 argument_list.get(0).cloned().unwrap_or_default().replace('@', ""),
                 argument_list,
             ),
-            RepoSoftwareSpec::Singularity { .. } => {
-                (String::default(), String::default(), Vec::default())
-            }
+            RepoSoftwareSpec::Singularity { image, tag } => (image, tag.to_owned(), vec![tag]),
         };
 
         if !self
             .software_block_list_repository
             .is_software_version_blocked(&software_name, &version)
             .await?
-            && self
+            && !self
                 .installed_software_repository
                 .is_software_satisfied(&software_name, &require_install_arguments)
                 .await?

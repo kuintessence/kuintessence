@@ -1,7 +1,9 @@
-use alice_architecture::message_queue::producer::MessageQueueProducerTemplate;
+use alice_architecture::{message_queue::producer::MessageQueueProducerTemplate, repository::DbField};
 use anyhow::anyhow;
 use async_trait::async_trait;
-use domain_workflow::repository::WorkflowInstanceRepo;
+use domain_workflow::{
+    model::entity::workflow_instance::DbWorkflowInstance, repository::WorkflowInstanceRepo,
+};
 use std::{sync::Arc, thread::sleep, time::Duration};
 use uuid::Uuid;
 
@@ -172,7 +174,11 @@ impl FileMoveService for FileMoveServiceImpl {
 
                             if self
                                 .flow_instance_repo
-                                .update_immediately_with_lock(flow_instance.clone())
+                                .update_immediately_with_lock(DbWorkflowInstance {
+                                    id: DbField::Unchanged(flow_instance.id),
+                                    spec: DbField::Set(flow_instance.spec),
+                                    ..Default::default()
+                                })
                                 .await
                                 .is_ok()
                             {

@@ -32,6 +32,7 @@ impl MutableRepository<WorkflowInstance> for OrmRepo {
     async fn update(&self, entity: DbWorkflowInstance) -> anyhow::Result<()> {
         let mut stmts = self.statements.lock().await;
         let active_model = flow_instance::ActiveModel {
+            id: entity.id.into_active_value(),
             status: entity.status.into(),
             spec: entity.spec.try_into()?,
             last_modified_time: entity.last_modified_time.into_active_value(),
@@ -42,7 +43,6 @@ impl MutableRepository<WorkflowInstance> for OrmRepo {
             ..Default::default()
         };
         let stmt = flow_instance::Entity::update(active_model)
-            .filter(flow_instance::Column::Id.eq(*entity.id.value()?))
             // .filter(flow_instance::Column::UserId.eq(self.user_id()?))
             .build(self.db.get_connection().get_database_backend());
         stmts.push(stmt);
@@ -84,27 +84,30 @@ impl WorkflowInstanceRepo for OrmRepo {
         Ok(ReadOnlyRepository::<WorkflowInstance>::get_by_id(self, workflow_instance_id).await?)
     }
 
-    async fn update_immediately_with_lock(
-        &self,
-        entity: WorkflowInstance,
-    ) -> anyhow::Result<WorkflowInstance> {
+    async fn update_immediately_with_lock(&self, entity: DbWorkflowInstance) -> anyhow::Result<()> {
+        let last_modified_time = entity.last_modified_time.value()?.to_owned();
+
         let active_model = flow_instance::ActiveModel {
-            status: Set(entity.status.clone() as i32),
-            spec: Set(serde_json::to_value(&entity.spec)?),
-            last_modified_time: Set(entity.last_modified_time),
+            id: entity.id.into_active_value(),
+            status: entity.status.into(),
+            spec: entity.spec.try_into()?,
+            last_modified_time: entity.last_modified_time.into_active_value(),
+            name: entity.name.into_active_value(),
+            description: entity.description.into_active_value(),
+            logo: entity.logo.into_active_value(),
+            user_id: entity.user_id.into_active_value(),
             ..Default::default()
         };
         let stmt = flow_instance::Entity::update(active_model)
             .filter(
                 Condition::all()
-                    .add(flow_instance::Column::Id.eq(entity.id))
-                    .add(flow_instance::Column::LastModifiedTime.eq(entity.last_modified_time)),
+                    .add(flow_instance::Column::LastModifiedTime.eq(last_modified_time)),
             )
             .build(self.db.get_connection().get_database_backend());
         let rows_affected = self.db.get_connection().execute(stmt).await?.rows_affected();
         if rows_affected == 0 {
             anyhow::bail!("No rows affected when update workflow instance.")
         }
-        Ok(entity)
+        Ok(())
     }
 }

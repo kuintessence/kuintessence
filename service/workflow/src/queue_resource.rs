@@ -11,7 +11,7 @@ use domain_workflow::{
             Queue,
         },
         vo::{
-            task_dto::result::{TaskResult, TaskResultStatus},
+            msg::{ChangeMsg, Info, TaskChangeInfo, TaskStatusChange},
             SchedulingStrategy,
         },
     },
@@ -24,7 +24,8 @@ use uuid::Uuid;
 #[derive(TypedBuilder)]
 pub struct QueueResourceServiceImpl {
     queue_resource_repo: Arc<dyn DBRepository<Queue>>,
-    message_producer: Arc<dyn MessageQueueProducerTemplate<TaskResult>>,
+    status_mq_producer: Arc<dyn MessageQueueProducerTemplate<ChangeMsg>>,
+    status_mq_topic: String,
 }
 
 impl QueueResourceServiceImpl {
@@ -70,27 +71,31 @@ impl QueueResourceService for QueueResourceServiceImpl {
             }
         }
         if not_full_queues.is_empty() {
-            let task_result: TaskResult = TaskResult {
+            let change_msg = ChangeMsg {
                 id: task_id,
-                status: TaskResultStatus::Failed,
-                message: Some("no queue available".to_string()),
-                used_resources: None,
+                info: Info::Task(TaskChangeInfo {
+                    status: TaskStatusChange::Failed,
+                    message: Some("no queue available".to_string()),
+                    used_resources: None,
+                }),
             };
-            if let SchedulingStrategy::Prefer { queues: _ } = scheduling_strategy {
-                let prefer_fallback_queues = self.get_all_quques().await?;
-                let mut not_full_queue = vec![];
-                for queue in prefer_fallback_queues {
-                    if queue.enabled && Queue::is_resource_full(&queue).await.is_ok() {
-                        not_full_queue.push(queue);
-                    }
+            let prefer_fallback_queues = self.get_all_quques().await?;
+            let mut not_full_queue = vec![];
+            for queue in prefer_fallback_queues {
+                if queue.enabled && Queue::is_resource_full(&queue).await.is_ok() {
+                    not_full_queue.push(queue);
                 }
-                if not_full_queue.is_empty() {
-                    self.message_producer.send_object(&task_result, Some("node_status")).await?;
-                    bail!("no queue available");
-                }
-            };
+            }
+            if not_full_queue.is_empty() {
+                self.status_mq_producer
+                    .send_object(&change_msg, Some(&self.status_mq_topic))
+                    .await?;
+                bail!("no queue available");
+            }
 
-            self.message_producer.send_object(&task_result, Some("node_status")).await?;
+            self.status_mq_producer
+                .send_object(&change_msg, Some(&self.status_mq_topic))
+                .await?;
             bail!("no queue available");
         }
 

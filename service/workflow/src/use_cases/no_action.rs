@@ -5,21 +5,18 @@ use async_trait::async_trait;
 use domain_workflow::{
     model::{
         entity::{node_instance::NodeInstanceKind, workflow_instance::NodeSpec},
-        vo::task_dto::result::{TaskResult, TaskResultStatus},
+        vo::msg::{ChangeMsg, Info, NodeChangeInfo, NodeStatusChange},
     },
     service::UsecaseParseService,
 };
+use typed_builder::TypedBuilder;
 use uuid::Uuid;
 
 /// 软件用例解析微服务
+#[derive(TypedBuilder)]
 pub struct NoActionUsecaseServiceImpl {
-    message_producer: Arc<dyn MessageQueueProducerTemplate<TaskResult>>,
-}
-
-impl NoActionUsecaseServiceImpl {
-    pub fn new(message_producer: Arc<dyn MessageQueueProducerTemplate<TaskResult>>) -> Self {
-        Self { message_producer }
-    }
+    status_mq_producer: Arc<dyn MessageQueueProducerTemplate<ChangeMsg>>,
+    status_mq_topic: String,
 }
 
 #[async_trait]
@@ -28,14 +25,19 @@ impl UsecaseParseService for NoActionUsecaseServiceImpl {
     /// 输入 节点信息
     /// 输出 Ok
     async fn handle_usecase(&self, node_spec: NodeSpec) -> anyhow::Result<()> {
-        let task_result: TaskResult = TaskResult {
-            id: node_spec.id,
-            status: TaskResultStatus::Completed,
-            message: None,
-            used_resources: None,
-        };
-        self.message_producer.send_object(&task_result, Some("node_status")).await?;
-
+        self.status_mq_producer
+            .send_object(
+                &ChangeMsg {
+                    id: node_spec.id,
+                    info: Info::Node(NodeChangeInfo {
+                        status: NodeStatusChange::Completed,
+                        ..Default::default()
+                    }),
+                },
+                Some(&self.status_mq_topic),
+            )
+            .await
+            .map_err(|e| anyhow::anyhow!("send message failed: {}", e))?;
         Ok(())
     }
 

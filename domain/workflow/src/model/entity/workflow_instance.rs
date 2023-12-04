@@ -51,6 +51,7 @@ pub struct WorkflowInstanceSpec {
     /// 节点实例关系列表
     pub node_relations: Vec<NodeRelation>,
     /// 其他字段
+    #[serde(default)]
     pub additional_data: Option<HashMap<String, Value>>,
 }
 
@@ -76,8 +77,10 @@ pub struct NodeSpec {
     /// 批量策略
     pub batch_strategies: Vec<BatchStrategy>,
     /// 资源需求覆盖（若没有则采取用例包规定的）
+    #[serde(default)]
     pub requirements: Option<Requirements>,
     /// 其他字段
+    #[serde(default)]
     pub additional_data: Option<HashMap<String, Value>>,
 }
 
@@ -91,6 +94,7 @@ pub struct NodeSpecOutputSlot {
     /// 描述符
     pub descriptor: String,
     /// 描述
+    #[serde(default)]
     pub description: Option<String>,
     /// 是否可选
     #[serde(default)]
@@ -433,6 +437,7 @@ impl NodeSpec {
 
     /// 根据 id 从节点中获取插槽
     pub fn input_slot(&self, descriptor: &str) -> &NodeInputSlot {
+        println!("=========={descriptor}");
         self.input_slots.iter().find(|el| el.descriptor.eq(descriptor)).unwrap()
     }
 

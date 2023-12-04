@@ -10,7 +10,7 @@ pub struct Task {
     pub node_instance_id: Uuid,
     pub r#type: TaskType,
     /// Task biz data.
-    pub body: String,
+    pub body: serde_json::Value,
     pub status: TaskStatus,
     pub message: Option<String>,
     pub used_resources: Option<String>,
@@ -42,9 +42,9 @@ pub enum TaskStatus {
     /// Failed.
     Failed,
     /// Terminating.
-    Terminating,
+    Cancelling,
     /// Terminated.
-    Terminated,
+    Cancelled,
     /// Pausing.
     Pausing,
     /// Pasued.
@@ -61,8 +61,8 @@ impl From<TaskResultStatus> for TaskStatus {
             TaskResultStatus::Completed => Self::Completed,
             TaskResultStatus::Failed => Self::Failed,
             TaskResultStatus::Paused => Self::Paused,
-            TaskResultStatus::Continued => Self::Running,
-            TaskResultStatus::Deleted => Self::Terminated,
+            TaskResultStatus::Resumed => Self::Running,
+            TaskResultStatus::Cancelled => Self::Cancelled,
         }
     }
 }
@@ -80,11 +80,6 @@ impl From<TaskType> for task_dto::TaskType {
     }
 }
 
-// impl TryFrom<database_model::task::Model> for Task {
-//     type Error = anyhow::Error;
-//
-// }
-//
 impl TaskType {
     pub fn from_ref(value: &StartTaskBody) -> Self {
         match value {

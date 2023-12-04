@@ -49,12 +49,3 @@ pub async fn status_consumer(
     }
     Ok(())
 }
-
-// #[alice_di::auto_inject(ServiceProvider, scoped)]
-// #[alice_web::message_consumer]
-// pub async fn node_status_consumer(
-//     #[inject] service: std::sync::Arc<dyn WorkflowStatusReceiverService>,
-//     #[serialize] task_result: TaskResult,
-// ) -> anyhow::Result<()> {
-//     service.receive_node_status(task_result).await
-// }

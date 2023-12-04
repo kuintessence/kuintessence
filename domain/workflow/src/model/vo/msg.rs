@@ -50,8 +50,8 @@ pub enum TaskStatusChange {
     },
     Completed,
     Failed,
-    Terminating,
-    Terminated,
+    Cancelling,
+    Cancelled,
     Pausing,
     Paused,
     Resuming,
@@ -99,8 +99,8 @@ impl From<TaskStatusChange> for TaskStatus {
             TaskStatusChange::Running { .. } => Self::Running,
             TaskStatusChange::Completed => Self::Completed,
             TaskStatusChange::Failed => Self::Failed,
-            TaskStatusChange::Terminating => Self::Terminating,
-            TaskStatusChange::Terminated => Self::Terminated,
+            TaskStatusChange::Cancelling => Self::Cancelling,
+            TaskStatusChange::Cancelled => Self::Cancelled,
             TaskStatusChange::Pausing => Self::Pausing,
             TaskStatusChange::Paused => Self::Paused,
             TaskStatusChange::Resuming => Self::Resuming,
@@ -118,8 +118,8 @@ impl TryFrom<TaskResultStatus> for TaskStatusChange {
             TaskResultStatus::Completed => Self::Completed,
             TaskResultStatus::Failed => Self::Failed,
             TaskResultStatus::Paused => Self::Paused,
-            TaskResultStatus::Continued => Self::Running { is_resumed: true },
-            TaskResultStatus::Deleted => Self::Terminated,
+            TaskResultStatus::Resumed => Self::Running { is_resumed: true },
+            TaskResultStatus::Cancelled => Self::Cancelled,
         })
     }
 }
