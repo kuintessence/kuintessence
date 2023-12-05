@@ -8,7 +8,6 @@ use domain_workflow::model::entity::task::{DbTask, Task};
 use domain_workflow::model::entity::NodeInstance;
 use domain_workflow::repository::TaskRepo;
 use num_traits::FromPrimitive;
-use sea_orm::ActiveValue::NotSet;
 use sea_orm::{
     ColumnTrait, ConnectionTrait, EntityTrait, ModelTrait, QueryFilter, QueryOrder, QueryTrait, Set,
 };
@@ -99,7 +98,7 @@ impl ReadOnlyRepository<Task> for OrmRepo {
             body: task.body,
             status: FromPrimitive::from_i32(task.status).context("Invalid task status!")?,
             message: task.message,
-            used_resources: task.used_resources.map(|u| u.to_string()),
+            used_resources: task.used_resources,
             queue_topic: queue.topic_name,
         })
     }
@@ -139,7 +138,7 @@ impl TaskRepo for OrmRepo {
                     body: m.body,
                     status: FromPrimitive::from_i32(m.status).context("Invalid task status!")?,
                     message: m.message,
-                    used_resources: m.used_resources.map(|u| u.to_string()),
+                    used_resources: m.used_resources,
                     queue_topic,
                 })
             })

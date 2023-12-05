@@ -438,7 +438,7 @@ pub mod result {
     }
 
     /// 任务执行完的状态
-    #[derive(Serialize, Deserialize, Clone)]
+    #[derive(Serialize, Deserialize, Debug, Clone)]
     pub enum TaskResultStatus {
         /// 任务暂不能执行，在agent上进入等待队列
         Queued,

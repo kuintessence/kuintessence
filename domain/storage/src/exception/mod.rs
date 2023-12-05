@@ -17,11 +17,19 @@ pub enum FileException {
 
     #[error("A not completed multipart with meta_id:{meta_id} exists.")]
     #[status(101)]
-    ConflictedId { meta_id: Uuid },
+    ConflictedId {
+        #[content]
+        meta_id: Uuid,
+    },
 
     #[error("A not completed multipart, id: {meta_id} with hash:{hash} exists.")]
     #[status(102)]
-    ConflictedHash { meta_id: Uuid, hash: String },
+    ConflictedHash {
+        #[content]
+        meta_id: Uuid,
+        #[content]
+        hash: String,
+    },
 
     #[error("The unfinished multipart with meta_id: {meta_id} can't be found.")]
     #[status(103)]

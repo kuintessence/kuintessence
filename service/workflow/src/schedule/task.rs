@@ -320,7 +320,7 @@ impl ScheduleService for TaskScheduleServiceImpl {
                 },
                 used_resources: match &info.used_resources {
                     u @ Some(_) => DbField::Set(
-                        u.as_ref().map(serde_json::to_string::<TaskUsedResource>).transpose()?,
+                        u.clone().map(serde_json::to_value::<TaskUsedResource>).transpose()?,
                     ),
                     None => DbField::NotSet,
                 },

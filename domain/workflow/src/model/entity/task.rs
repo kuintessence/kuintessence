@@ -13,7 +13,7 @@ pub struct Task {
     pub body: serde_json::Value,
     pub status: TaskStatus,
     pub message: Option<String>,
-    pub used_resources: Option<String>,
+    pub used_resources: Option<serde_json::Value>,
     pub queue_topic: String,
 }
 
