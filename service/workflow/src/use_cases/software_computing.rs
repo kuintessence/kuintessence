@@ -747,10 +747,15 @@ impl SoftwareComputingUsecaseServiceImpl {
                                         .get(0)
                                         .unwrap()
                                         .to_owned();
-
+                                    upload_files.push(UploadFile {
+                                        file_id: id,
+                                        path: out_file.get_path(),
+                                        is_package: false,
+                                        validator: None,
+                                        optional: false,
+                                    });
                                     CollectTo::File {
                                         path: out_file.get_path(),
-                                        id,
                                     }
                                 }
                                 _ => unreachable!(),

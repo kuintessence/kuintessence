@@ -314,7 +314,7 @@ pub enum CollectFrom {
 pub enum CollectTo {
     /// 输出为文件
     #[serde(rename_all = "camelCase")]
-    File { path: String, id: Uuid },
+    File { path: String },
     /// 输出为文字
     #[serde(rename_all = "camelCase")]
     Text { id: Uuid },
