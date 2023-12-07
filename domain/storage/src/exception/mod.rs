@@ -48,6 +48,9 @@ pub enum FileException {
         provided_hash: String,
         completed_hash: String,
     },
+    #[error("File is empty, no need to upload.")]
+    #[status(106)]
+    EmptyFile,
 
     #[error("File internal error: {source}")]
     #[status(500)]

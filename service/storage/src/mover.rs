@@ -1,4 +1,6 @@
-use alice_architecture::{message_queue::producer::MessageQueueProducerTemplate, repository::DbField};
+use alice_architecture::{
+    message_queue::producer::MessageQueueProducerTemplate, repository::DbField,
+};
 use anyhow::anyhow;
 use async_trait::async_trait;
 use domain_workflow::{
@@ -106,7 +108,7 @@ impl FileMoveService for FileMoveServiceImpl {
                         .0
                         .send_object(
                             &FileUploadCommand { move_id, user_id },
-                            Some(&self.upload_sender_and_topic.1),
+                            &self.upload_sender_and_topic.1,
                         )
                         .await?;
                 }
@@ -177,6 +179,9 @@ impl FileMoveService for FileMoveServiceImpl {
                                 .update_immediately_with_lock(DbWorkflowInstance {
                                     id: DbField::Unchanged(flow_instance.id),
                                     spec: DbField::Set(flow_instance.spec),
+                                    last_modified_time: DbField::Set(
+                                        flow_instance.last_modified_time,
+                                    ),
                                     ..Default::default()
                                 })
                                 .await

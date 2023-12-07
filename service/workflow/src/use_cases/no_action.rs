@@ -34,7 +34,7 @@ impl UsecaseParseService for NoActionUsecaseServiceImpl {
                         ..Default::default()
                     }),
                 },
-                Some(&self.status_mq_topic),
+                &self.status_mq_topic,
             )
             .await
             .map_err(|e| anyhow::anyhow!("send message failed: {}", e))?;

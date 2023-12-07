@@ -55,9 +55,7 @@ build_container! {
 
     co_config: CoConfig {
         build {
-            let co_config: CoConfig = config.clone().try_deserialize()?;
-            println!("{co_config:#?}");
-            co_config
+            config.clone().try_deserialize::<CoConfig>()?
         }
     }
 
@@ -287,6 +285,10 @@ build_container! {
                     .multipart_repo(redis_repository.clone())
                     .cache_service(self.cache_service.clone())
                     .exp_msecs(self.common_config.redis.exp_msecs)
+                    .move_registration_repo(redis_repository.clone())
+                    .status_mq_producer(self.internal_message_queue_producer.clone())
+                    .status_mq_topic(self.co_config.internal_topics.status.to_owned())
+                    .task_id(scoped_config.task_info.map(|t|t.id))
                     .build()
             )
         }

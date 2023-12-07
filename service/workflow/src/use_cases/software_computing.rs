@@ -144,7 +144,7 @@ impl UsecaseParseService for SoftwareComputingUsecaseServiceImpl {
                             ..Default::default()
                         }),
                     },
-                    Some(&self.status_mq_topic),
+                    &self.status_mq_topic,
                 )
                 .await?;
         }

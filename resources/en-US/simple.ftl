@@ -5,7 +5,8 @@ conflicted-id = A not completed multipart with meta-id:{ $metaId } exists.
 conflicted-hash = A not completed multipart, id: { $metaId } with hash:{ $hash } exists.
 multipart-not-found = The unfinished multipart with meta-id: { $metaId } can't be found.
 no-such-part = The unfinished multipart with meta-id: { $metaId } doesn't have part nth: { $partNth }.
-unmatched-hash = File: { $metaId }'s completed hash: { $completedHash } is unmatched with provided hash: { $originalHash }.
+unmatched-hash = File: { $metaId }'s completed hash: { $completedHash } is unmatched with provided hash: { $providedHash }.
+empty-file = File is empty, no need to upload.
 
 empty-node-drafts = No node drafts in workflow draft.
 json-schema = Json schema validate error.

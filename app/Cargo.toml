@@ -33,7 +33,6 @@ actix-ws = { workspace = true }
 anyhow = { workspace = true }
 # log
 tracing = { workspace = true }
-tracing-actix-web = { workspace = true }
 # time
 chrono = { workspace = true }
 # code

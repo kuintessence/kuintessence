@@ -19,7 +19,7 @@ impl LocalCacheServiceImpl {
         self.base.join(format!("normal/{meta_id}"))
     }
 
-    fn part_path(&self, meta_id: Uuid, nth: usize) -> PathBuf {
+    fn part_path(&self, meta_id: Uuid, nth: u64) -> PathBuf {
         self.base.join(format!("multipart/{meta_id}/{nth}"))
     }
     fn multipart_dir(&self, meta_id: Uuid) -> PathBuf {

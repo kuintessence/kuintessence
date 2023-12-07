@@ -437,7 +437,6 @@ impl NodeSpec {
 
     /// 根据 id 从节点中获取插槽
     pub fn input_slot(&self, descriptor: &str) -> &NodeInputSlot {
-        println!("=========={descriptor}");
         self.input_slots.iter().find(|el| el.descriptor.eq(descriptor)).unwrap()
     }
 

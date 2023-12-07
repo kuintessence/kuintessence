@@ -26,7 +26,7 @@ pub trait MultipartService: Send + Sync {
     ///
     /// If the multipart is completed, it will validate hash, if passed, return merged cache file,
     /// else return None.
-    async fn complete_part(&self, part: Part) -> FileResult<Vec<usize>>;
+    async fn complete_part(&self, part: Part) -> FileResult<Vec<u64>>;
 
     /// Get multipart info.
     async fn info(&self, meta_id: Uuid) -> FileResult<Multipart>;

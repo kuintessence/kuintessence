@@ -62,7 +62,7 @@ impl SnapshotService for SnapshotServiceImpl {
 
         let topic_name = self.queue_repository.get_by_id(queue_id).await?.topic_name;
 
-        self.mq_producer.send_object(&info, Some(&topic_name)).await
+        self.mq_producer.send_object(&info, &topic_name).await
     }
 
     async fn create(&self, snapshot: Snapshot) -> anyhow::Result<()> {

@@ -1,7 +1,10 @@
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::model::{vo::Part, entity::{FileType, RecordNetDiskKind}};
+use crate::model::{
+    entity::{FileType, RecordNetDiskKind},
+    vo::Part,
+};
 
 // use crate::model::
 
@@ -57,7 +60,7 @@ pub enum CacheOperateCommand {
 pub enum CacheReadCommand {
     ReadNormal { meta_id: Uuid },
     ReadSnapshot { meta_id: Uuid },
-    ReadPart { meta_id: Uuid, nth: usize },
+    ReadPart { meta_id: Uuid, nth: u64 },
 }
 
 pub struct CreateNetDiskFileCommand {

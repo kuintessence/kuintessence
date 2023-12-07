@@ -75,7 +75,7 @@ impl ScheduleService for NodeScheduleServiceImpl {
                                             ..Default::default()
                                         }),
                                     },
-                                    Some(&self.status_mq_topic),
+                                    &self.status_mq_topic,
                                 )
                                 .await?;
                         }
@@ -94,7 +94,7 @@ impl ScheduleService for NodeScheduleServiceImpl {
                                         is_resumed: true,
                                     }),
                                 },
-                                Some(&self.status_mq_topic),
+                                &self.status_mq_topic,
                             )
                             .await?;
                     }
@@ -106,7 +106,7 @@ impl ScheduleService for NodeScheduleServiceImpl {
                             id: node.flow_instance_id,
                             info: Info::Flow(FlowStatusChange::Running { is_resumed: false }),
                         },
-                        Some(&self.status_mq_topic),
+                        &self.status_mq_topic,
                     )
                     .await?;
             }
@@ -143,7 +143,7 @@ impl ScheduleService for NodeScheduleServiceImpl {
                                     ..Default::default()
                                 }),
                             },
-                            Some(&self.status_mq_topic),
+                            &self.status_mq_topic,
                         )
                         .await?;
                     return Ok(());
@@ -183,7 +183,7 @@ impl ScheduleService for NodeScheduleServiceImpl {
                                 id: node.flow_instance_id,
                                 info: Info::Flow(FlowStatusChange::Completed),
                             },
-                            Some(&self.status_mq_topic),
+                            &self.status_mq_topic,
                         )
                         .await?;
                     return Ok(());
@@ -200,7 +200,7 @@ impl ScheduleService for NodeScheduleServiceImpl {
                                     ..Default::default()
                                 }),
                             },
-                            Some(&self.status_mq_topic),
+                            &self.status_mq_topic,
                         )
                         .await?;
                 }
@@ -213,7 +213,7 @@ impl ScheduleService for NodeScheduleServiceImpl {
                             id: flow_id,
                             info: Info::Flow(FlowStatusChange::Failed),
                         },
-                        Some(&self.status_mq_topic),
+                        &self.status_mq_topic,
                     )
                     .await?;
             }
@@ -235,7 +235,7 @@ impl ScheduleService for NodeScheduleServiceImpl {
                                     ..Default::default()
                                 }),
                             },
-                            Some(&self.status_mq_topic),
+                            &self.status_mq_topic,
                         )
                         .await?;
                 }
@@ -262,7 +262,7 @@ impl ScheduleService for NodeScheduleServiceImpl {
                                         ..Default::default()
                                     }),
                                 },
-                                Some(&self.status_mq_topic),
+                                &self.status_mq_topic,
                             )
                             .await?;
                     }
@@ -277,7 +277,7 @@ impl ScheduleService for NodeScheduleServiceImpl {
                                 id: node.flow_instance_id,
                                 info: Info::Flow(FlowStatusChange::Terminated),
                             },
-                            Some(&self.status_mq_topic),
+                            &self.status_mq_topic,
                         )
                         .await?;
                 }
@@ -303,7 +303,7 @@ impl ScheduleService for NodeScheduleServiceImpl {
                                     ..Default::default()
                                 }),
                             },
-                            Some(&self.status_mq_topic),
+                            &self.status_mq_topic,
                         )
                         .await?;
                 }
@@ -333,7 +333,7 @@ impl ScheduleService for NodeScheduleServiceImpl {
                                         ..Default::default()
                                     }),
                                 },
-                                Some(&self.status_mq_topic),
+                                &self.status_mq_topic,
                             )
                             .await?;
                     }
@@ -348,7 +348,7 @@ impl ScheduleService for NodeScheduleServiceImpl {
                                 id: node.flow_instance_id,
                                 info: Info::Flow(FlowStatusChange::Paused),
                             },
-                            Some(&self.status_mq_topic),
+                            &self.status_mq_topic,
                         )
                         .await?;
                 }
@@ -367,7 +367,7 @@ impl ScheduleService for NodeScheduleServiceImpl {
                                     ..Default::default()
                                 }),
                             },
-                            Some(&self.status_mq_topic),
+                            &self.status_mq_topic,
                         )
                         .await?;
                 }

@@ -48,7 +48,7 @@ impl ControlService for ControlServiceImpl {
                     id: instance_id,
                     info: Info::Flow(FlowStatusChange::Pending),
                 },
-                Some(&self.status_mq_topic),
+                &self.status_mq_topic,
             )
             .await?;
         Ok(())
@@ -61,7 +61,7 @@ impl ControlService for ControlServiceImpl {
                     id: instance_id,
                     info: Info::Flow(FlowStatusChange::Pausing),
                 },
-                Some(&self.status_mq_topic),
+                &self.status_mq_topic,
             )
             .await?;
         Ok(())
@@ -74,7 +74,7 @@ impl ControlService for ControlServiceImpl {
                     id: instance_id,
                     info: Info::Flow(FlowStatusChange::Resuming),
                 },
-                Some(&self.status_mq_topic),
+                &self.status_mq_topic,
             )
             .await?;
         Ok(())
@@ -87,7 +87,7 @@ impl ControlService for ControlServiceImpl {
                     id: instance_id,
                     info: Info::Flow(FlowStatusChange::Terminating),
                 },
-                Some(&self.status_mq_topic),
+                &self.status_mq_topic,
             )
             .await?;
         Ok(())

@@ -67,7 +67,7 @@ pub async fn partial_upload(
     #[inject] mover_service: Arc<dyn FileMoveService>,
     #[inject] multipart_service: Arc<dyn MultipartService>,
     data: MultipartForm<PartialUploadRequest>,
-) -> AliceResponderResult<Vec<usize>> {
+) -> AliceResponderResult<Vec<u64>> {
     let data = data.0;
     let contents = &data.bin;
     if contents.len() > 1 {
@@ -113,7 +113,7 @@ pub async fn get_partial_upload_info(
         file_metadata_id: multipart.meta_id,
         hash: multipart.hash,
         hash_algorithm: FileHashAlgorithm::from(multipart.hash_algorithm),
-        shards: multipart.parts,
+        shards: multipart.shards,
         is_upload_failed,
         failed_reason,
     }))

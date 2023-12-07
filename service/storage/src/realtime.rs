@@ -37,7 +37,7 @@ impl RealtimeService for RealtimeServiceImpl {
 
         let topic_name = self.queue_repository.get_by_id(queue_id).await?.topic_name;
 
-        self.kafka_mq_producer.send_object(&cmd, Some(&topic_name)).await?;
+        self.kafka_mq_producer.send_object(&cmd, &topic_name).await?;
 
         Ok(())
     }
@@ -49,7 +49,7 @@ impl RealtimeService for RealtimeServiceImpl {
                     id: self.user_id()?,
                     content: format!("realtime {}", file_content),
                 },
-                Some(&self.ws_server_operate_topic),
+                &self.ws_server_operate_topic,
             )
             .await
     }

@@ -7,5 +7,5 @@ pub struct Part {
     /// Part content.
     pub content: Vec<u8>,
     /// Nth of the multipart.
-    pub nth: usize,
+    pub nth: u64,
 }

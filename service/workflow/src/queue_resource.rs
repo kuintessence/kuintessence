@@ -87,15 +87,11 @@ impl QueueResourceService for QueueResourceServiceImpl {
                 }
             }
             if not_full_queue.is_empty() {
-                self.status_mq_producer
-                    .send_object(&change_msg, Some(&self.status_mq_topic))
-                    .await?;
+                self.status_mq_producer.send_object(&change_msg, &self.status_mq_topic).await?;
                 bail!("no queue available");
             }
 
-            self.status_mq_producer
-                .send_object(&change_msg, Some(&self.status_mq_topic))
-                .await?;
+            self.status_mq_producer.send_object(&change_msg, &self.status_mq_topic).await?;
             bail!("no queue available");
         }
 

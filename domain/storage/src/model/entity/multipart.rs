@@ -14,5 +14,6 @@ pub struct Multipart {
     /// Multipart's original file hash algorithm.
     pub hash_algorithm: HashAlgorithm,
     /// Are parts of the multipart uploaded.
-    pub parts: Vec<bool>,
+    pub shards: Vec<u64>,
+    pub part_count: u64
 }

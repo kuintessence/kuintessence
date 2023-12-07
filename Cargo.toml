@@ -73,7 +73,6 @@ actix-http = "3.3"
 actix-easy-multipart = "3.0"
 actix-cors = "0.6"
 actix-ws = "0.2"
-tracing-actix-web = "0.7"
 config = "0.13"
 sea-orm = { version = "0.12", default-features = false }
 graphql_client = "0.13"

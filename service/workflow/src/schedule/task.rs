@@ -71,7 +71,7 @@ impl ScheduleService for TaskScheduleServiceImpl {
                                         ..Default::default()
                                     }),
                                 },
-                                Some(&self.status_mq_topic),
+                                &self.status_mq_topic,
                             )
                             .await?;
                     }
@@ -90,7 +90,7 @@ impl ScheduleService for TaskScheduleServiceImpl {
                                     value: task.body.to_owned(),
                                 },
                             },
-                            Some(&task.queue_topic),
+                            &task.queue_topic,
                         )
                         .await
                         .is_ok()
@@ -155,7 +155,7 @@ impl ScheduleService for TaskScheduleServiceImpl {
                                     used_resources: info.used_resources,
                                 }),
                             },
-                            Some(&self.status_mq_topic),
+                            &self.status_mq_topic,
                         )
                         .await?;
                     return Ok(());
@@ -189,7 +189,7 @@ impl ScheduleService for TaskScheduleServiceImpl {
                                 used_resources: info.used_resources,
                             }),
                         },
-                        Some(&self.status_mq_topic),
+                        &self.status_mq_topic,
                     )
                     .await?;
             }
@@ -205,7 +205,7 @@ impl ScheduleService for TaskScheduleServiceImpl {
                             id,
                             command: TaskCommand::Cancel(task.r#type.into()),
                         },
-                        Some(&task.queue_topic),
+                        &task.queue_topic,
                     )
                     .await?;
             }
@@ -238,7 +238,7 @@ impl ScheduleService for TaskScheduleServiceImpl {
                                     ..Default::default()
                                 }),
                             },
-                            Some(&self.status_mq_topic),
+                            &self.status_mq_topic,
                         )
                         .await?;
                 }
@@ -254,7 +254,7 @@ impl ScheduleService for TaskScheduleServiceImpl {
                             id,
                             command: TaskCommand::Pause(task.r#type.into()),
                         },
-                        Some(&task.queue_topic),
+                        &task.queue_topic,
                     )
                     .await?;
             }
@@ -284,7 +284,7 @@ impl ScheduleService for TaskScheduleServiceImpl {
                                     ..Default::default()
                                 }),
                             },
-                            Some(&self.status_mq_topic),
+                            &self.status_mq_topic,
                         )
                         .await?;
                 }
@@ -300,7 +300,7 @@ impl ScheduleService for TaskScheduleServiceImpl {
                             id,
                             command: TaskCommand::Resume(task.r#type.into()),
                         },
-                        Some(&task.queue_topic),
+                        &task.queue_topic,
                     )
                     .await?;
             }

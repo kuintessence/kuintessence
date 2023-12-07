@@ -121,7 +121,7 @@ async fn watch_message(
                                 };
 
                                 if let Err(e) =
-                                    mq_producer.send_object(&(id, cmd.to_owned()), Some(t)).await
+                                    mq_producer.send_object(&(id, cmd.to_owned()), t).await
                                 {
                                     tracing::error!("Websocket mq error: {e}");
                                 }

@@ -32,6 +32,8 @@ pub async fn async_run() {
             return eprintln!("{}: {}", "Cannot build config".red(), e);
         }
     };
+    tracing::info!("Config and env loaded");
+    tracing::debug!("{config:#?}");
 
     let service_provider = match ServiceProvider::build(config).await {
         Ok(x) => Arc::new(x),
@@ -40,7 +42,7 @@ pub async fn async_run() {
         }
     };
     let common_config: alice_infrastructure::config::CommonConfig = service_provider.provide();
-    if let Err(e) = alice_infrastructure::telemetry::initialize_telemetry(&common_config.telemetry)
+    if let Err(e) = alice_infrastructure::telemetry::init_telemetry(&common_config.telemetry)
     {
         return eprintln!("{}: {}", "Cannot build logger".red(), e);
     };
@@ -73,6 +75,7 @@ pub async fn initialize_web_host(sp: Arc<ServiceProvider>) {
     let jwt = common_config.jwt.clone();
     let rc = common_config.host.resources_config.clone();
     let database: Arc<Database> = sp.provide();
+
     match actix_web::HttpServer::new(move || {
         let resources = I18NResources::builder()
             .add_path("resources")
@@ -86,7 +89,6 @@ pub async fn initialize_web_host(sp: Arc<ServiceProvider>) {
             .max_age(86400);
 
         actix_web::App::new()
-            .wrap(tracing_actix_web::TracingLogger::default())
             .wrap(cors)
             .app_data(resources)
             .app_data(MultipartFormConfig::default().total_limit(100 * 1024 * 1024))

@@ -54,7 +54,7 @@ impl ScheduleService for FlowScheduleServiceImpl {
                                         ..Default::default()
                                     }),
                                 },
-                                Some(&self.status_mq_topic),
+                                &self.status_mq_topic,
                             )
                             .await?;
                         if !node_spec.batch_strategies.is_empty() {
@@ -70,7 +70,7 @@ impl ScheduleService for FlowScheduleServiceImpl {
                                                 ..Default::default()
                                             }),
                                         },
-                                        Some(&self.status_mq_topic),
+                                        &self.status_mq_topic,
                                     )
                                     .await?;
                             }
@@ -89,7 +89,7 @@ impl ScheduleService for FlowScheduleServiceImpl {
                                     ..Default::default()
                                 }),
                             },
-                            Some(&self.status_mq_topic),
+                            &self.status_mq_topic,
                         )
                         .await?;
                 }
@@ -113,7 +113,7 @@ impl ScheduleService for FlowScheduleServiceImpl {
                                     ..Default::default()
                                 }),
                             },
-                            Some(&self.status_mq_topic),
+                            &self.status_mq_topic,
                         )
                         .await?;
                 }
@@ -135,7 +135,7 @@ impl ScheduleService for FlowScheduleServiceImpl {
                                     ..Default::default()
                                 }),
                             },
-                            Some(&self.status_mq_topic),
+                            &self.status_mq_topic,
                         )
                         .await?;
                 }
@@ -153,7 +153,7 @@ impl ScheduleService for FlowScheduleServiceImpl {
                                     ..Default::default()
                                 }),
                             },
-                            Some(&self.status_mq_topic),
+                            &self.status_mq_topic,
                         )
                         .await?;
                 }

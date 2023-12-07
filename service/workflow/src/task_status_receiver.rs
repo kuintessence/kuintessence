@@ -25,7 +25,6 @@ pub struct TaskStatusReceiveServiceImpl {
 impl TaskStatusReceiveService for TaskStatusReceiveServiceImpl {
     /// Receive task result.
     async fn receive_status(&self, result: TaskResult) -> anyhow::Result<()> {
-        tracing::info!("\n\n\nresult: {:#?}\n\n\n", result.status);
         match result.status.try_into() {
             Ok(status) => {
                 self.status_mq_producer
@@ -38,7 +37,7 @@ impl TaskStatusReceiveService for TaskStatusReceiveServiceImpl {
                                 used_resources: result.used_resources,
                             }),
                         },
-                        Some(&self.status_mq_topic),
+                        &self.status_mq_topic,
                     )
                     .await?;
             }

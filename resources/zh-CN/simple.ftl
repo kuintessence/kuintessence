@@ -6,6 +6,7 @@ conflicted-hash = 已存在 hash为：{ $hash } 的未完成的分片上传，id
 multipart-not-found = 没有该未完成的分片上传: { $metaId }。
 no-such-part = 未完成的分片上传：{ $metaId } 没有第 { $nth } 片。
 unmatched-hash = 文件: { $metaId } 有哈希冲突, 分片注册时哈希: { $registeredHash }, 但是分片合成的哈希值为: { $providedHash }。
+empty-file = 文件为空，不需要上传
 
 empty-node-drafts = 工作流草稿中没有节点草稿。
 json-schema =  Json Schema 验证错误。

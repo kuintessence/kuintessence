@@ -163,7 +163,7 @@ impl PreparePartialUpload {
 #[derive(MultipartForm)]
 pub struct PartialUploadRequest {
     pub file_metadata_id: Text<Uuid>,
-    pub nth: Text<usize>,
+    pub nth: Text<u64>,
     pub bin: Vec<Tempfile>,
 }
 
@@ -173,7 +173,8 @@ pub struct GetPartialUploadInfoResponse {
     pub file_metadata_id: Uuid,
     pub hash: String,
     pub hash_algorithm: FileHashAlgorithm,
-    pub shards: Vec<bool>,
+    /// Unfinished parts.
+    pub shards: Vec<u64>,
     pub is_upload_failed: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub failed_reason: Option<String>,

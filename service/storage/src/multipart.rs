@@ -1,5 +1,7 @@
 use std::sync::Arc;
 
+use alice_architecture::message_queue::producer::MessageQueueProducerTemplate;
+use anyhow::Context;
 use async_trait::async_trait;
 use domain_storage::{
     command::{CacheOperateCommand, CacheReadCommand},
@@ -8,9 +10,10 @@ use domain_storage::{
         entity::Multipart,
         vo::{HashAlgorithm, Part},
     },
-    repository::MultipartRepo,
+    repository::{MoveRegistrationRepo, MultipartRepo},
     service::{CacheService, MultipartService},
 };
+use domain_workflow::model::vo::msg::{ChangeMsg, Info, TaskChangeInfo, TaskStatusChange};
 use typed_builder::TypedBuilder;
 use uuid::Uuid;
 
@@ -20,6 +23,10 @@ pub struct MultipartServiceImpl {
     cache_service: Arc<dyn CacheService>,
     #[builder(default = 24 * 60 * 60 * 1000)]
     exp_msecs: i64,
+    move_registration_repo: Arc<dyn MoveRegistrationRepo>,
+    status_mq_producer: Arc<dyn MessageQueueProducerTemplate<ChangeMsg>>,
+    status_mq_topic: String,
+    task_id: Option<Uuid>,
 }
 
 fn id_hash_key(id: Uuid, hash: &str) -> String {
@@ -32,6 +39,10 @@ fn id_key_regex(id: Uuid) -> String {
 
 fn hash_key_regex(hash: &str) -> String {
     format!("multipart_*_{hash}")
+}
+
+fn move_meta_id_key_regex(meta_id: Uuid) -> String {
+    format!("movereg_*_{meta_id}")
 }
 
 #[async_trait]
@@ -63,7 +74,8 @@ impl MultipartService for MultipartServiceImpl {
             meta_id,
             hash: hash.to_owned(),
             hash_algorithm,
-            parts: vec![false; count as usize],
+            shards: (0..count).collect(),
+            part_count: count,
         };
         self.multipart_repo
             .insert_with_lease(&id_hash_key(meta_id, &hash), &multipart, self.exp_msecs)
@@ -71,7 +83,7 @@ impl MultipartService for MultipartServiceImpl {
         Ok(())
     }
 
-    async fn complete_part(&self, part: Part) -> FileResult<Vec<usize>> {
+    async fn complete_part(&self, part: Part) -> FileResult<Vec<u64>> {
         let meta_id = part.meta_id;
         let nth = part.nth;
         let content = part.content;
@@ -91,27 +103,16 @@ impl MultipartService for MultipartServiceImpl {
             .await?
             .ok_or(FileException::MultipartNotFound { meta_id })?;
 
-        let is_nth_uploaded = multipart.parts.get_mut(nth).ok_or(FileException::NoSuchPart {
-            meta_id,
-            part_nth: nth,
-        })?;
-        *is_nth_uploaded = true;
-        let unfinished_parts = multipart
-            .parts
-            .iter()
-            .enumerate()
-            .filter(|(_, el)| !*el)
-            .map(|(n, _)| n)
-            .collect::<Vec<_>>();
-        let parts_len = multipart.parts.len();
+        multipart.shards.retain(|c| !c.eq(&nth));
+        let parts_len = multipart.part_count;
         let hash_algorithm = multipart.hash_algorithm.to_owned();
         let hash = multipart.hash.to_owned().to_uppercase();
         self.multipart_repo
             .update_with_lease(&id_hash_key(meta_id, &hash), &multipart, self.exp_msecs)
             .await?;
 
-        if !unfinished_parts.is_empty() {
-            return Ok(unfinished_parts);
+        if !multipart.shards.is_empty() {
+            return Ok(multipart.shards.to_owned());
         }
 
         // If all parts are uploaded, merge them and delete multipart dir.
@@ -127,6 +128,40 @@ impl MultipartService for MultipartServiceImpl {
             }
         };
         if completed_content_hash.ne(&hash) {
+            let mut info = self
+                .move_registration_repo
+                .get_one_by_key_regex(&move_meta_id_key_regex(multipart.meta_id))
+                .await?
+                .with_context(|| format!("no move_reg for meta_id: {}", multipart.meta_id))?;
+            info.is_upload_failed = true;
+            let failed_reason = format!(
+                "hash not match, provided: {}, completed: {}",
+                hash, completed_content_hash
+            );
+            info.failed_reason = Some(failed_reason.to_owned());
+            self.move_registration_repo
+                .update_with_lease(
+                    &move_meta_id_key_regex(multipart.meta_id),
+                    &info,
+                    self.exp_msecs,
+                )
+                .await?;
+            // If is toggled by upload file task, report task failed.
+            if let Some(task_id) = self.task_id {
+                self.status_mq_producer
+                    .send_object(
+                        &ChangeMsg {
+                            id: task_id,
+                            info: Info::Task(TaskChangeInfo {
+                                status: TaskStatusChange::Failed,
+                                message: Some(failed_reason),
+                                ..Default::default()
+                            }),
+                        },
+                        &self.status_mq_topic,
+                    )
+                    .await?;
+            }
             return Err(FileException::UnmatchedHash {
                 meta_id,
                 provided_hash: hash,
