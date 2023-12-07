@@ -35,7 +35,7 @@ impl RedisClient {
     async fn get_connection(&self) -> RedisResult<RedisConnection> {
         match self {
             RedisClient::Single(s) => Ok(RedisConnection::Single(
-                s.get_tokio_connection_manager().await?,
+                s.get_connection_manager().await?,
             )),
             RedisClient::Cluster(c) => {
                 Ok(RedisConnection::Cluster(c.get_async_connection().await?))

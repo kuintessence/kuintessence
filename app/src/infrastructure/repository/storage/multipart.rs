@@ -48,7 +48,7 @@ impl LeaseRepository<Multipart> for RedisRepo {
         self.query(&Cmd::pset_ex(
             key,
             serde_json::to_string_pretty(&entity)?,
-            ttl as usize,
+            ttl as u64,
         ))
         .await?;
         Ok(())
@@ -63,7 +63,7 @@ impl LeaseRepository<Multipart> for RedisRepo {
         self.query(&Cmd::pset_ex(
             key,
             serde_json::to_string_pretty(&entity)?,
-            ttl as usize,
+            ttl as u64,
         ))
         .await?;
         Ok(entity.meta_id)

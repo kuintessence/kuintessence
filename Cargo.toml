@@ -76,9 +76,9 @@ actix-ws = "0.2"
 config = "0.13"
 sea-orm = { version = "0.12", default-features = false }
 graphql_client = "0.13"
-redis = "0.23"
+redis = "0.24"
 colored = "2.0"
-opendal = { version = "0.41", default-features = false }
+opendal = { version = "0.42", default-features = false }
 mockall = "0.11"
 once_cell = "1.18"
 regex = "1.10"

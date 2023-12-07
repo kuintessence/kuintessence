@@ -73,7 +73,7 @@ impl LeaseRepository<Snapshot> for RedisRepo {
         self.query(&Cmd::pset_ex(
             format!("{user_id}_{key}"),
             serde_json::to_string_pretty(&entity)?,
-            ttl as usize,
+            ttl as u64,
         ))
         .await?;
         Ok(entity.id)
