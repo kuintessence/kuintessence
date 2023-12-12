@@ -2,7 +2,6 @@
 name = "domain-workflow"
 version = "0.1.0"
 edition = "2021"
-
 [dependencies]
 domain-storage = { workspace = true }
 domain-content-repo = { workspace = true }
@@ -10,12 +9,12 @@ alice-architecture = { workspace = true }
 database-model = { workspace = true }
 # async
 async-trait = { workspace = true }
-tokio = { workspace = true, features = ["sync"] }
+tokio = { workspace = true, features = [ "sync" ] }
 # error
 anyhow = { workspace = true }
 thiserror = { workspace = true }
 # time
-chrono = { workspace = true, features = ["serde"] }
+chrono = { workspace = true, features = [ "serde" ] }
 # number
 num-traits = { workspace = true }
 num-derive = { workspace = true }
@@ -26,8 +25,9 @@ uuid = { workspace = true }
 # miscellaneous
 rand = { workspace = true }
 once_cell = { workspace = true }
-
+mockall = { workspace = true, optional = true }
 [dev-dependencies]
-tokio = { workspace = true, features = ["full"] }
-mockall = { workspace = true }
+tokio = { workspace = true, default-features = false, features = [ "rt", "macros" ] }
 indoc = { workspace = true }
+[features]
+mock = [ "dep:mockall" ]

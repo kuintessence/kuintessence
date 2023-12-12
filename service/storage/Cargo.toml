@@ -2,14 +2,13 @@
 name = "service-storage"
 version = "0.1.0"
 edition = "2021"
-
 [dependencies]
 alice-architecture = { workspace = true }
-domain-storage = { workspace = true }
-domain-workflow = { workspace = true }
+domain-storage = { workspace = true, features = [ "mock" ] }
+domain-workflow = { workspace = true, features = [ "mock" ] }
 # concurrency
 async-trait = { workspace = true }
-tokio = { workspace = true, features = ["full"] }
+tokio = { workspace = true, features = [ "full" ] }
 # error
 anyhow = { workspace = true }
 # cryptographic

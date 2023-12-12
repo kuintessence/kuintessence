@@ -2,7 +2,6 @@
 name = "domain-storage"
 version = "0.1.0"
 edition = "2021"
-
 [dependencies]
 alice-architecture = { workspace = true }
 database-model = { workspace = true }
@@ -10,7 +9,7 @@ database-model = { workspace = true }
 anyhow = { workspace = true }
 thiserror = { workspace = true }
 # time
-chrono = { workspace = true, features = ["serde"] }
+chrono = { workspace = true, features = [ "serde" ] }
 # number
 num-traits = { workspace = true }
 num-derive = { workspace = true }
@@ -19,6 +18,8 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 uuid = { workspace = true }
 async-trait = { workspace = true }
+mockall = { workspace = true, optional = true }
 [dev-dependencies]
-tokio = { workspace = true, features = ["full"] }
-mockall = { workspace = true }
+tokio = { workspace = true, default-features = false, features = [ "rt", "macros" ] }
+[features]
+mock = [ "dep:mockall" ]
