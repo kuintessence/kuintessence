@@ -20,6 +20,6 @@ uuid = { workspace = true }
 async-trait = { workspace = true }
 mockall = { workspace = true, optional = true }
 [dev-dependencies]
-tokio = { workspace = true, default-features = false, features = [ "rt", "macros" ] }
+tokio = { workspace = true, features = [ "rt", "macros" ] }
 [features]
 mock = [ "dep:mockall" ]
