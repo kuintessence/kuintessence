@@ -11,7 +11,7 @@ use domain_workflow::{
     },
     repository::NodeInstanceRepo,
 };
-use sea_orm::QueryTrait;
+use sea_orm::{QueryTrait, Condition};
 use sea_orm::{prelude::*, Set};
 
 use crate::infrastructure::database::OrmRepo;
@@ -219,5 +219,35 @@ impl NodeInstanceRepo for OrmRepo {
             .cloned()
             .ok_or(anyhow::anyhow!("No such node spec!"))?;
         Ok(node_spec)
+    }
+
+    async fn update_immediately_with_lock(&self, entity: DbNodeInstance) -> anyhow::Result<()> {
+        let last_modified_time = entity.last_modified_time.value()?.to_owned();
+
+        let active_model = node_instance::ActiveModel {
+            id: entity.id.into_active_value(),
+            status: entity.status.into(),
+            resource_meter: entity.resource_meter.try_into()?,
+            log: entity.log.into_active_value(),
+            queue_id: entity.queue_id.into_active_value(),
+            name: entity.name.into_active_value(),
+            kind: entity.kind.into(),
+            is_parent: entity.is_parent.into_active_value(),
+            batch_parent_id: entity.batch_parent_id.into_active_value(),
+            flow_instance_id: entity.flow_instance_id.into_active_value(),
+            ..Default::default()
+        };
+
+        let stmt = node_instance::Entity::update(active_model)
+            .filter(
+                Condition::all()
+                    .add(node_instance::Column::LastModifiedTime.eq(last_modified_time)),
+            )
+            .build(self.db.get_connection().get_database_backend());
+        let rows_affected = self.db.get_connection().execute(stmt).await?.rows_affected();
+        if rows_affected == 0 {
+            anyhow::bail!("No rows affected when update workflow instance.")
+        }
+        Ok(())
     }
 }

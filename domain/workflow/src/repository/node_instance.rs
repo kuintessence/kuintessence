@@ -2,7 +2,9 @@ use alice_architecture::repository::DBRepository;
 use async_trait::async_trait;
 use uuid::Uuid;
 
-use crate::model::entity::{workflow_instance::NodeSpec, NodeInstance};
+use crate::model::entity::{
+    node_instance::DbNodeInstance, workflow_instance::NodeSpec, NodeInstance,
+};
 
 #[async_trait]
 pub trait NodeInstanceRepo: DBRepository<NodeInstance> + Send + Sync {
@@ -31,4 +33,7 @@ pub trait NodeInstanceRepo: DBRepository<NodeInstance> + Send + Sync {
     async fn get_nth_of_batch_tasks(&self, sub_node_id: Uuid) -> anyhow::Result<usize>;
 
     async fn get_node_spec(&self, node_id: Uuid) -> anyhow::Result<NodeSpec>;
+
+    /// For resource_meter update race.
+    async fn update_immediately_with_lock(&self, entity: DbNodeInstance) -> anyhow::Result<()>;
 }

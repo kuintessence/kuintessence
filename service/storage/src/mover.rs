@@ -6,6 +6,7 @@ use async_trait::async_trait;
 use domain_workflow::{
     model::entity::workflow_instance::DbWorkflowInstance, repository::WorkflowInstanceRepo,
 };
+use rand::Rng;
 use std::{sync::Arc, thread::sleep, time::Duration};
 use uuid::Uuid;
 
@@ -172,7 +173,6 @@ impl FileMoveService for FileMoveServiceImpl {
                 already_id = meta_id;
                 if let Some(el) = record_net_disk {
                     if let RecordNetDiskKind::NodeInstance { node_id } = el.kind {
-                        let mut remaining_retry_times = 5;
                         loop {
                             let mut flow_instance =
                                 self.flow_instance_repo.get_by_node_id(node_id).await?;
@@ -184,7 +184,7 @@ impl FileMoveService for FileMoveServiceImpl {
                                 .update_immediately_with_lock(DbWorkflowInstance {
                                     id: DbField::Unchanged(flow_instance.id),
                                     spec: DbField::Set(flow_instance.spec),
-                                    last_modified_time: DbField::Set(
+                                    last_modified_time: DbField::Unchanged(
                                         flow_instance.last_modified_time,
                                     ),
                                     ..Default::default()
@@ -195,13 +195,7 @@ impl FileMoveService for FileMoveServiceImpl {
                                 break;
                             }
 
-                            remaining_retry_times -= 1;
-                            if remaining_retry_times == 0 {
-                                return Err(
-                                    anyhow!("Update flow instance spec retry failed!").into()
-                                );
-                            }
-                            sleep(Duration::from_millis(50));
+                            sleep(Duration::from_millis(rand::thread_rng().gen_range(10..100)));
                         }
                     };
                     let file_type = el.file_type.to_owned();

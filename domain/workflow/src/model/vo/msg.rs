@@ -21,11 +21,11 @@ pub enum Info {
 }
 
 /// Use as change info.
-pub trait ChangeInfo {}
+pub trait ChangeInfo: Clone {}
 
 impl ChangeInfo for TaskChangeInfo {}
 
-#[derive(Default, Serialize, Deserialize)]
+#[derive(Default, Serialize, Deserialize, Clone)]
 pub struct TaskChangeInfo {
     pub status: TaskStatusChange,
     pub message: Option<String>,
@@ -34,11 +34,13 @@ pub struct TaskChangeInfo {
 
 impl ChangeInfo for NodeChangeInfo {}
 
-#[derive(Default, Serialize, Deserialize)]
+#[derive(Default, Serialize, Deserialize, Clone)]
 pub struct NodeChangeInfo {
     pub status: NodeStatusChange,
     pub message: Option<String>,
     pub used_resources: Option<TaskUsedResource>,
+    /// Only update message and used_resource.
+    pub do_not_update_status: bool,
 }
 
 #[derive(Default, Serialize, Deserialize, Clone)]

@@ -119,6 +119,24 @@ impl ScheduleService for TaskScheduleServiceImpl {
                 // Otherwise, get tasks in status: Standby, run runnable tasks(The same type from the first one) in the list. If the list is
                 // empty, report node as Completed.
 
+                let node_instance_id = self.task_repo.get_by_id(id).await?.node_instance_id;
+                if info.used_resources.is_some() {
+                    self.status_mq_producer
+                        .send_object(
+                            &ChangeMsg {
+                                id: node_instance_id,
+                                info: Info::Node(NodeChangeInfo {
+                                    used_resources: info.used_resources,
+                                    message: info.message.to_owned(),
+                                    do_not_update_status: true,
+                                    ..Default::default()
+                                }),
+                            },
+                            &self.status_mq_topic,
+                        )
+                        .await?;
+                }
+
                 let tasks = self.task_repo.get_same_node_tasks(id).await?;
 
                 if tasks.iter().any(|t| {
@@ -138,8 +156,6 @@ impl ScheduleService for TaskScheduleServiceImpl {
                     return Ok(());
                 }
 
-                let node_instance_id = self.task_repo.get_by_id(id).await?.node_instance_id;
-
                 let first_stand_by_task =
                     tasks.iter().find(|t| matches!(t.status, TaskStatus::Standby));
 
@@ -152,7 +168,7 @@ impl ScheduleService for TaskScheduleServiceImpl {
                                 info: Info::Node(NodeChangeInfo {
                                     status: NodeStatusChange::Completed,
                                     message: info.message,
-                                    used_resources: info.used_resources,
+                                    ..Default::default()
                                 }),
                             },
                             &self.status_mq_topic,
@@ -187,6 +203,7 @@ impl ScheduleService for TaskScheduleServiceImpl {
                                 status: NodeStatusChange::Failed,
                                 message: info.message,
                                 used_resources: info.used_resources,
+                                ..Default::default()
                             }),
                         },
                         &self.status_mq_topic,

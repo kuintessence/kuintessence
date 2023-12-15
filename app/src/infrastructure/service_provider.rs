@@ -504,6 +504,8 @@ build_container! {
                     .status_mq_topic(self.co_config.internal_topics.status.to_owned())
                     .usecase_select_service(usecase_select_service.clone())
                     .batch_service(batch_service.clone())
+                    .bill_mq_producer(self.kafka_mq_producer.clone())
+                    .bill_mq_topic(self.co_config.bill_topic.to_owned())
                     .build()
             )
         }

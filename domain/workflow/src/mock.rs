@@ -7,7 +7,7 @@ use crate::{
     model::entity::{
         task::Task,
         workflow_instance::{DbWorkflowInstance, NodeSpec},
-        NodeInstance, Queue, WorkflowDraft, WorkflowInstance,
+        NodeInstance, Queue, WorkflowDraft, WorkflowInstance, node_instance::DbNodeInstance,
     },
     repository::{NodeInstanceRepo, TaskRepo, WorkflowInstanceRepo},
 };
@@ -43,6 +43,7 @@ mock! {
         ) -> anyhow::Result<Vec<NodeInstance>>;
         async fn get_nth_of_batch_tasks(&self, sub_node_id: Uuid) -> anyhow::Result<usize>;
         async fn get_node_spec(&self, node_id: Uuid) -> anyhow::Result<NodeSpec>;
+        async fn update_immediately_with_lock(&self, entity: DbNodeInstance) -> anyhow::Result<()>;
     }
     impl DBRepository<NodeInstance> for NodeInstanceRepo {}
     impl ReadOnlyRepository<NodeInstance> for NodeInstanceRepo {}

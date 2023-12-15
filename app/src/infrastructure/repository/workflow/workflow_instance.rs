@@ -91,7 +91,6 @@ impl WorkflowInstanceRepo for OrmRepo {
             id: entity.id.into_active_value(),
             status: entity.status.into(),
             spec: entity.spec.try_into()?,
-            last_modified_time: entity.last_modified_time.into_active_value(),
             name: entity.name.into_active_value(),
             description: entity.description.into_active_value(),
             logo: entity.logo.into_active_value(),

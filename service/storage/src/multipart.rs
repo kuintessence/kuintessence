@@ -14,6 +14,7 @@ use domain_storage::{
     service::{CacheService, MultipartService},
 };
 use domain_workflow::model::vo::msg::{ChangeMsg, Info, TaskChangeInfo, TaskStatusChange};
+use rand::Rng;
 use typed_builder::TypedBuilder;
 use uuid::Uuid;
 
@@ -97,9 +98,6 @@ impl MultipartService for MultipartServiceImpl {
             .await?;
 
         // Add lock.
-        let mut remaining_retries = 5;
-        // ms
-        let mut sleep_time = 10;
         let multipart = loop {
             let mut multipart = self
                 .multipart_repo
@@ -123,46 +121,7 @@ impl MultipartService for MultipartServiceImpl {
                 }
                 break multipart;
             }
-            remaining_retries -= 1;
-            if remaining_retries == 0 {
-                let mut info = self
-                    .move_registration_repo
-                    .get_one_by_key_regex(&move_meta_id_key_regex(multipart.meta_id))
-                    .await?
-                    .with_context(|| format!("no move_reg for meta_id: {}", multipart.meta_id))?;
-                info.is_upload_failed = true;
-                let failed_reason = "Lock retry failed".to_string();
-                info.failed_reason = Some(failed_reason.to_owned());
-                self.move_registration_repo
-                    .update_with_lease(
-                        &move_meta_id_key_regex(multipart.meta_id),
-                        &info,
-                        self.exp_msecs,
-                    )
-                    .await?;
-                // If is toggled by upload file task, report task failed.
-                if let Some(task_id) = self.task_id {
-                    self.status_mq_producer
-                        .send_object(
-                            &ChangeMsg {
-                                id: task_id,
-                                info: Info::Task(TaskChangeInfo {
-                                    status: TaskStatusChange::Failed,
-                                    message: Some(failed_reason),
-                                    ..Default::default()
-                                }),
-                            },
-                            &self.status_mq_topic,
-                        )
-                        .await?;
-                }
-
-                return Err(FileException::InternalError {
-                    source: anyhow::anyhow!("Failed lock retry!"),
-                });
-            }
-            sleep_time += 10;
-            sleep(Duration::from_millis(sleep_time));
+            sleep(Duration::from_millis(rand::thread_rng().gen_range(10..100)));
         };
         // retry logic end.
 

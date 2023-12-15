@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{sync::Arc, thread::sleep, time::Duration};
 
 use alice_architecture::{
     message_queue::producer::MessageQueueProducerTemplate, repository::DbField,
@@ -18,6 +18,7 @@ use domain_workflow::{
     repository::{NodeInstanceRepo, TaskRepo, WorkflowInstanceRepo},
     service::{ScheduleService, UsecaseSelectService},
 };
+use rand::Rng;
 use uuid::Uuid;
 
 use super::batch::BatchService;
@@ -29,6 +30,8 @@ pub struct NodeScheduleServiceImpl {
     task_repo: Arc<dyn TaskRepo>,
     status_mq_producer: Arc<dyn MessageQueueProducerTemplate<ChangeMsg>>,
     status_mq_topic: String,
+    bill_mq_producer: Arc<dyn MessageQueueProducerTemplate<Uuid>>,
+    bill_mq_topic: String,
     usecase_select_service: Arc<dyn UsecaseSelectService>,
     batch_service: Arc<BatchService>,
 }
@@ -111,6 +114,9 @@ impl ScheduleService for NodeScheduleServiceImpl {
                     .await?;
             }
             NodeStatusChange::Completed => {
+                // Send bill message.
+                self.bill_mq_producer.send_object(&id, &self.bill_mq_topic).await?;
+
                 // Firstly, judge if all nodes meet the condition to continue.
 
                 let node = self.node_repo.get_by_id(id).await?;
@@ -378,6 +384,39 @@ impl ScheduleService for NodeScheduleServiceImpl {
 
     /// Change an target item.
     async fn change(&self, id: Uuid, info: Self::Info) -> anyhow::Result<()> {
+        if info.do_not_update_status {
+            loop {
+                let mut used_resources = None;
+                let node = self.node_repo.get_by_id(id).await?;
+                if let Some(ref u) = info.used_resources {
+                    used_resources = node.resource_meter.map(|r| r + u.clone().into());
+                }
+                if self
+                    .node_repo
+                    .update_immediately_with_lock(DbNodeInstance {
+                        id: DbField::Unchanged(id),
+                        status: DbField::NotSet,
+                        log: match &info.message {
+                            m @ Some(_) => DbField::Set(m.to_owned()),
+                            None => DbField::NotSet,
+                        },
+                        resource_meter: match &used_resources {
+                            u @ Some(_) => DbField::Set(u.clone()),
+                            None => DbField::NotSet,
+                        },
+                        last_modified_time: DbField::Unchanged(node.last_modified_time),
+                        ..Default::default()
+                    })
+                    .await
+                    .is_ok()
+                {
+                    break;
+                }
+                sleep(Duration::from_millis(rand::thread_rng().gen_range(10..100)));
+            }
+            return Ok(());
+        }
+
         self.node_repo
             .update(DbNodeInstance {
                 id: DbField::Unchanged(id),
@@ -386,10 +425,7 @@ impl ScheduleService for NodeScheduleServiceImpl {
                     m @ Some(_) => DbField::Set(m.to_owned()),
                     None => DbField::NotSet,
                 },
-                resource_meter: match &info.used_resources {
-                    u @ Some(_) => DbField::Set(u.as_ref().map(|u| u.to_owned().into())),
-                    None => DbField::NotSet,
-                },
+                resource_meter: DbField::NotSet,
                 ..Default::default()
             })
             .await?;

@@ -1,5 +1,6 @@
 use alice_architecture::model::AggregateRoot;
 use anyhow::anyhow;
+use chrono::{DateTime, FixedOffset};
 use database_model::node_instance;
 use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::FromPrimitive;
@@ -31,6 +32,8 @@ pub struct NodeInstance {
     pub log: Option<String>,
     /// 计量
     pub resource_meter: Option<TaskUsedResource>,
+    /// 最后修改时间
+    pub last_modified_time: DateTime<FixedOffset>,
 }
 
 /// 资源使用
@@ -56,6 +59,25 @@ pub struct TaskUsedResource {
     /// 结束时间
     pub end_time: i64,
 }
+
+impl std::ops::Add for TaskUsedResource {
+    type Output = Self;
+
+    fn add(self, rhs: Self) -> Self::Output {
+        Self {
+            cpu: self.cpu + rhs.cpu,
+            avg_memory: (self.avg_memory + rhs.avg_memory) / 2,
+            max_memory: std::cmp::max(self.max_memory, rhs.max_memory),
+            storage: self.storage + rhs.storage,
+            wall_time: self.wall_time + rhs.wall_time,
+            cpu_time: self.cpu_time + rhs.cpu_time,
+            node: self.node + rhs.node,
+            start_time: std::cmp::min(self.start_time, rhs.start_time),
+            end_time: std::cmp::max(self.end_time, rhs.end_time),
+        }
+    }
+}
+
 impl From<crate::model::vo::task_dto::result::TaskUsedResource> for TaskUsedResource {
     fn from(value: crate::model::vo::task_dto::result::TaskUsedResource) -> Self {
         Self {
@@ -141,7 +163,7 @@ impl TryFrom<node_instance::Model> for NodeInstance {
             queue_id,
             flow_instance_id,
             created_time: _,
-            last_modified_time: _,
+            last_modified_time,
         } = model;
 
         Ok(Self {
@@ -155,6 +177,7 @@ impl TryFrom<node_instance::Model> for NodeInstance {
             queue_id,
             log,
             resource_meter: resource_meter.map(serde_json::from_value).transpose()?,
+            last_modified_time,
         })
     }
 }
