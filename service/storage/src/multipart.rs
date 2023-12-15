@@ -76,7 +76,6 @@ impl MultipartService for MultipartServiceImpl {
             hash_algorithm,
             shards: (0..count).collect(),
             part_count: count,
-            last_update_timestamp: chrono::Utc::now().timestamp_micros(),
         };
         self.multipart_repo
             .insert_with_lease(&id_hash_key(meta_id, &hash), &multipart, self.exp_msecs)
@@ -99,6 +98,8 @@ impl MultipartService for MultipartServiceImpl {
 
         // Add lock.
         let mut remaining_retries = 5;
+        // ms
+        let mut sleep_time = 10;
         let multipart = loop {
             let mut multipart = self
                 .multipart_repo
@@ -107,19 +108,16 @@ impl MultipartService for MultipartServiceImpl {
                 .ok_or(FileException::MultipartNotFound { meta_id })?;
             multipart.shards.retain(|c| !c.eq(&nth));
 
-            let multipart_now = self
+            if self
                 .multipart_repo
-                .get_one_by_key_regex(&id_key_regex(meta_id))
-                .await?
-                .ok_or(FileException::MultipartNotFound { meta_id })?;
-            if multipart.last_update_timestamp == multipart_now.last_update_timestamp {
-                self.multipart_repo
-                    .update_with_lease(
-                        &id_hash_key(meta_id, &multipart.hash),
-                        &multipart,
-                        self.exp_msecs,
-                    )
-                    .await?;
+                .update_with_lease(
+                    &id_hash_key(meta_id, &multipart.hash),
+                    &multipart,
+                    self.exp_msecs,
+                )
+                .await
+                .is_ok()
+            {
                 if !multipart.shards.is_empty() {
                     return Ok(multipart.shards.to_owned());
                 }
@@ -163,7 +161,8 @@ impl MultipartService for MultipartServiceImpl {
                     source: anyhow::anyhow!("Failed lock retry!"),
                 });
             }
-            sleep(Duration::from_millis(200));
+            sleep_time += 10;
+            sleep(Duration::from_millis(sleep_time));
         };
         // retry logic end.
 

@@ -288,7 +288,7 @@ build_container! {
                     .move_registration_repo(redis_repository.clone())
                     .status_mq_producer(self.internal_message_queue_producer.clone())
                     .status_mq_topic(self.co_config.internal_topics.status.to_owned())
-                    .task_id(scoped_config.task_info.map(|t|t.id))
+                    .task_id(scoped_config.task_info.clone().map(|t|t.id))
                     .build()
             )
         }
@@ -310,6 +310,7 @@ build_container! {
                     .flow_instance_repo(sea_orm_repository.clone())
                     .exp_msecs(self.common_config.redis.exp_msecs)
                     .user_id(user_id)
+                    .task_id(scoped_config.task_info.clone().map(|t|t.id))
                     .build()
             )
         }
@@ -325,6 +326,8 @@ build_container! {
                     .net_disk_service(net_disk_service.clone())
                     .file_move_service(file_move_service.clone())
                     .multipart_service(multipart_service.clone())
+                    .status_mq_producer(self.internal_message_queue_producer.clone())
+                    .status_mq_topic(self.co_config.internal_topics.status.to_owned())
                     .build()
             )
         }

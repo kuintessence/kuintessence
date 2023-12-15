@@ -16,5 +16,4 @@ pub struct Multipart {
     /// Are parts of the multipart uploaded.
     pub shards: Vec<u64>,
     pub part_count: u64,
-    pub last_update_timestamp: i64,
 }

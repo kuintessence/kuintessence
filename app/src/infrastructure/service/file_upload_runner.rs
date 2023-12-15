@@ -1,4 +1,6 @@
+use alice_architecture::message_queue::producer::MessageQueueProducerTemplate;
 use anyhow::{anyhow, bail};
+use domain_workflow::model::vo::msg::{ChangeMsg, Info, TaskChangeInfo, TaskStatusChange};
 use std::sync::Arc;
 use uuid::Uuid;
 
@@ -17,10 +19,12 @@ pub struct FileUploadRunner {
     net_disk_service: Arc<dyn NetDiskService>,
     file_move_service: Arc<dyn FileMoveService>,
     multipart_service: Arc<dyn MultipartService>,
+    status_mq_producer: Arc<dyn MessageQueueProducerTemplate<ChangeMsg>>,
+    status_mq_topic: String,
 }
 
 impl FileUploadRunner {
-    pub async fn upload_file(&self, move_id: Uuid) -> anyhow::Result<()> {
+    pub async fn upload_file(&self, move_id: Uuid, task_id: Option<Uuid>) -> anyhow::Result<()> {
         let mut move_info = self
             .file_move_service
             .get_move_info(move_id)
@@ -86,6 +90,20 @@ impl FileUploadRunner {
         self.cache_service.operate(RemoveNormal { meta_id }).await?;
         self.multipart_service.remove(meta_id).await?;
         self.file_move_service.remove_all_with_meta_id(meta_id).await?;
+        if let Some(id) = task_id {
+            self.status_mq_producer
+                .send_object(
+                    &ChangeMsg {
+                        id,
+                        info: Info::Task(TaskChangeInfo {
+                            status: TaskStatusChange::Completed,
+                            ..Default::default()
+                        }),
+                    },
+                    &self.status_mq_topic,
+                )
+                .await?;
+        }
         Ok(())
     }
 }

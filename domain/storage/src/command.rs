@@ -13,6 +13,7 @@ use crate::model::{
 pub struct FileUploadCommand {
     pub move_id: Uuid,
     pub user_id: Uuid,
+    pub task_id: Option<Uuid>,
 }
 
 /// View realtime file message.

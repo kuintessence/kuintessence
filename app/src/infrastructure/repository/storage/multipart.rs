@@ -1,7 +1,7 @@
 use alice_architecture::repository::{
     DBRepository, LeaseDBRepository, LeaseRepository, MutableRepository, ReadOnlyRepository,
 };
-use anyhow::anyhow;
+use anyhow::{anyhow, bail};
 use domain_storage::{model::entity::Multipart, repository::MultipartRepo};
 use redis::Cmd;
 use uuid::Uuid;
@@ -45,12 +45,19 @@ impl LeaseRepository<Multipart> for RedisRepo {
         entity: &Multipart,
         ttl: i64,
     ) -> anyhow::Result<()> {
-        self.query(&Cmd::pset_ex(
-            key,
-            serde_json::to_string_pretty(&entity)?,
-            ttl as u64,
-        ))
-        .await?;
+        let lock_key = format!("m_lock_{}", entity.meta_id);
+        let get_lock: bool = self.query(&Cmd::set_nx(&lock_key, 1)).await?;
+        if get_lock {
+            self.query(&Cmd::pset_ex(
+                key,
+                serde_json::to_string_pretty(&entity)?,
+                ttl as u64,
+            ))
+            .await?;
+            self.query(&Cmd::del(lock_key)).await?;
+        } else {
+            bail!("Can not get lock.")
+        }
         Ok(())
     }
 

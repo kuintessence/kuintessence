@@ -19,7 +19,7 @@ pub async fn file_upload_runner_consumer(
     #[inject] service: Arc<FileUploadRunner>,
     #[serialize] command: FileUploadCommand,
 ) -> anyhow::Result<()> {
-    service.upload_file(command.move_id).await
+    service.upload_file(command.move_id, command.task_id).await
 }
 
 #[alice_di::auto_inject(ServiceProvider)]

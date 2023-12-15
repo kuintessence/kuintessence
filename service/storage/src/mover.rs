@@ -38,6 +38,7 @@ pub struct FileMoveServiceImpl {
     #[builder(default = 24 * 60 * 60 * 1000)]
     exp_msecs: i64,
     user_id: Option<Uuid>,
+    task_id: Option<Uuid>,
 }
 
 fn key(move_id: Uuid, meta_id: Uuid) -> String {
@@ -107,7 +108,11 @@ impl FileMoveService for FileMoveServiceImpl {
                     self.upload_sender_and_topic
                         .0
                         .send_object(
-                            &FileUploadCommand { move_id, user_id },
+                            &FileUploadCommand {
+                                move_id,
+                                user_id,
+                                task_id: self.task_id,
+                            },
                             &self.upload_sender_and_topic.1,
                         )
                         .await?;
