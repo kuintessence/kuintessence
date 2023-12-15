@@ -196,7 +196,7 @@ impl FileMoveService for FileMoveServiceImpl {
                                     anyhow!("Update flow instance spec retry failed!").into()
                                 );
                             }
-                            sleep(Duration::from_secs(1));
+                            sleep(Duration::from_millis(50));
                         }
                     };
                     let file_type = el.file_type.to_owned();

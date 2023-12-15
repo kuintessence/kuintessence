@@ -70,6 +70,7 @@ pub async fn partial_upload(
 ) -> AliceResponderResult<Vec<u64>> {
     let data = data.0;
     let contents = &data.bin;
+
     if contents.len() > 1 {
         return Err(AliceError::new(AliceCommonError::InvalidRequest {
             error_description: "Can't upload more than one file.".to_string(),

@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{sync::Arc, thread::sleep, time::Duration};
 
 use alice_architecture::message_queue::producer::MessageQueueProducerTemplate;
 use anyhow::Context;
@@ -76,6 +76,7 @@ impl MultipartService for MultipartServiceImpl {
             hash_algorithm,
             shards: (0..count).collect(),
             part_count: count,
+            last_update_timestamp: chrono::Utc::now().timestamp_micros(),
         };
         self.multipart_repo
             .insert_with_lease(&id_hash_key(meta_id, &hash), &multipart, self.exp_msecs)
@@ -96,25 +97,79 @@ impl MultipartService for MultipartServiceImpl {
             }))
             .await?;
 
-        // Get multipart and update parts' is_uploaded bool value.
-        let mut multipart = self
-            .multipart_repo
-            .get_one_by_key_regex(&id_key_regex(meta_id))
-            .await?
-            .ok_or(FileException::MultipartNotFound { meta_id })?;
+        // Add lock.
+        let mut remaining_retries = 5;
+        let multipart = loop {
+            let mut multipart = self
+                .multipart_repo
+                .get_one_by_key_regex(&id_key_regex(meta_id))
+                .await?
+                .ok_or(FileException::MultipartNotFound { meta_id })?;
+            multipart.shards.retain(|c| !c.eq(&nth));
 
-        multipart.shards.retain(|c| !c.eq(&nth));
+            let multipart_now = self
+                .multipart_repo
+                .get_one_by_key_regex(&id_key_regex(meta_id))
+                .await?
+                .ok_or(FileException::MultipartNotFound { meta_id })?;
+            if multipart.last_update_timestamp == multipart_now.last_update_timestamp {
+                self.multipart_repo
+                    .update_with_lease(
+                        &id_hash_key(meta_id, &multipart.hash),
+                        &multipart,
+                        self.exp_msecs,
+                    )
+                    .await?;
+                if !multipart.shards.is_empty() {
+                    return Ok(multipart.shards.to_owned());
+                }
+                break multipart;
+            }
+            remaining_retries -= 1;
+            if remaining_retries == 0 {
+                let mut info = self
+                    .move_registration_repo
+                    .get_one_by_key_regex(&move_meta_id_key_regex(multipart.meta_id))
+                    .await?
+                    .with_context(|| format!("no move_reg for meta_id: {}", multipart.meta_id))?;
+                info.is_upload_failed = true;
+                let failed_reason = "Lock retry failed".to_string();
+                info.failed_reason = Some(failed_reason.to_owned());
+                self.move_registration_repo
+                    .update_with_lease(
+                        &move_meta_id_key_regex(multipart.meta_id),
+                        &info,
+                        self.exp_msecs,
+                    )
+                    .await?;
+                // If is toggled by upload file task, report task failed.
+                if let Some(task_id) = self.task_id {
+                    self.status_mq_producer
+                        .send_object(
+                            &ChangeMsg {
+                                id: task_id,
+                                info: Info::Task(TaskChangeInfo {
+                                    status: TaskStatusChange::Failed,
+                                    message: Some(failed_reason),
+                                    ..Default::default()
+                                }),
+                            },
+                            &self.status_mq_topic,
+                        )
+                        .await?;
+                }
+
+                return Err(FileException::InternalError {
+                    source: anyhow::anyhow!("Failed lock retry!"),
+                });
+            }
+            sleep(Duration::from_millis(200));
+        };
+        // retry logic end.
+
         let parts_len = multipart.part_count;
         let hash_algorithm = multipart.hash_algorithm.to_owned();
         let hash = multipart.hash.to_owned().to_uppercase();
-        self.multipart_repo
-            .update_with_lease(&id_hash_key(meta_id, &hash), &multipart, self.exp_msecs)
-            .await?;
-
-        if !multipart.shards.is_empty() {
-            return Ok(multipart.shards.to_owned());
-        }
-
         // If all parts are uploaded, merge them and delete multipart dir.
         let mut completed_content = vec![];
         for nth in 0..parts_len {

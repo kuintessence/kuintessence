@@ -57,7 +57,7 @@ impl From<UpdateUsedResourceDto> for QueueCacheInfo {
     }
 }
 
-#[derive(Deserialize, Serialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct PreparePartialUpload {
     pub file_name: String,
@@ -70,7 +70,7 @@ pub struct PreparePartialUpload {
     pub r#type: PreparePartialUploadFrom,
 }
 
-#[derive(Deserialize, Serialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(untagged)]
 pub enum PreparePartialUploadFrom {
     #[serde(rename_all = "camelCase")]
@@ -87,7 +87,7 @@ pub enum PreparePartialUploadFrom {
     },
 }
 
-#[derive(Deserialize, Serialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub enum FileHashAlgorithm {
     Blake3,
