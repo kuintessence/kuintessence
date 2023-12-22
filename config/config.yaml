@@ -1,0 +1,23 @@
+mq:
+  producer:
+    bootstrap.servers: "<replace>"
+telemetry:
+  console:
+    filter: "warn,actix_server=info,alice_infrastructure=info,alice_infrastructure::message_queue=debug,computing_orchestration_system=debug,service_workflow=debug"
+host:
+  bind_address: "0.0.0.0"
+  bind_port: 80
+  upload_file_path: "uploads"
+redis:
+  urls:
+    - redis://<replace>/
+db:
+  url: <replace>
+jwt:
+  iss: [<replace>]
+  aud: [<replace>]
+default_storage_server_id: <replace>
+bill_topic: <replace>
+co_repo_domain: "<replace>"
+web_socket:
+  keep_alive: 1200
