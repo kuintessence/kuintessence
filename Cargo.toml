@@ -11,6 +11,9 @@ members = [
   "service/content-repo",
 ]
 
+[workspace.package]
+license = "AGPL-3.0"
+
 [workspace.dependencies.alice-architecture]
 git = "https://github.com/kuintessence/alice"
 

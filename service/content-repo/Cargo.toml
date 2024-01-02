@@ -2,6 +2,7 @@
 name = "service-content-repo"
 version = "0.1.0"
 edition = "2021"
+license.workspace = true
 
 [dependencies]
 domain-content-repo = { workspace = true }

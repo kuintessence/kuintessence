@@ -2,6 +2,7 @@
 name = "computing-orchestration-system"
 version = "0.1.0"
 edition = "2021"
+license.workspace = true
 
 [dependencies]
 alice-architecture = { workspace = true }

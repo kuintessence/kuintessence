@@ -2,6 +2,8 @@
 name = "domain-workflow"
 version = "0.1.0"
 edition = "2021"
+license.workspace = true
+
 [dependencies]
 domain-storage = { workspace = true }
 domain-content-repo = { workspace = true }

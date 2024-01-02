@@ -2,6 +2,8 @@
 name = "service-storage"
 version = "0.1.0"
 edition = "2021"
+license.workspace = true
+
 [dependencies]
 alice-architecture = { workspace = true }
 domain-storage = { workspace = true, features = ["mock"] }
