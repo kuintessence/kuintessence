@@ -324,7 +324,7 @@ impl ValidatePackageService for ValidatePackageServiceImpl {
             if !(using_template_file.as_file_name.is_empty()
                 || using_template_file.as_file_name.len() == 1
                     && matches!(
-                        using_template_file.as_file_name.get(0).unwrap(),
+                        using_template_file.as_file_name.first().unwrap(),
                         FileRef::FileInputRef(_)
                     ))
             {
@@ -646,7 +646,7 @@ impl ValidatePackageService for ValidatePackageServiceImpl {
             let mut argument_formats_sorts = argument_formats_sorts.into_iter().collect::<Vec<_>>();
             argument_formats_sorts.sort_by(|a, b| a.0.cmp(&b.0));
             let mut p: usize = 0;
-            if argument_formats_sorts.get(0).unwrap().0.ne(&p) {
+            if argument_formats_sorts.first().unwrap().0.ne(&p) {
                 anyhow::bail!("sort must begin with '0'");
             }
 

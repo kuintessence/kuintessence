@@ -5,9 +5,10 @@ use uuid::Uuid;
 
 use crate::{
     model::entity::{
+        node_instance::DbNodeInstance,
         task::Task,
         workflow_instance::{DbWorkflowInstance, NodeSpec},
-        NodeInstance, Queue, WorkflowDraft, WorkflowInstance, node_instance::DbNodeInstance,
+        NodeInstance, Queue, WorkflowDraft, WorkflowInstance,
     },
     repository::{NodeInstanceRepo, TaskRepo, WorkflowInstanceRepo},
 };

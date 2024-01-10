@@ -99,22 +99,8 @@ impl MultipartService for MultipartServiceImpl {
 
         // Add lock.
         let multipart = loop {
-            let mut multipart = self
-                .multipart_repo
-                .get_one_by_key_regex(&id_key_regex(meta_id))
-                .await?
-                .ok_or(FileException::MultipartNotFound { meta_id })?;
-            multipart.shards.retain(|c| !c.eq(&nth));
-
-            if self
-                .multipart_repo
-                .update_with_lease(
-                    &id_hash_key(meta_id, &multipart.hash),
-                    &multipart,
-                    self.exp_msecs,
-                )
-                .await
-                .is_ok()
+            if let Ok(multipart) =
+                self.multipart_repo.remove_nth(meta_id, nth, self.exp_msecs).await
             {
                 if !multipart.shards.is_empty() {
                     return Ok(multipart.shards.to_owned());

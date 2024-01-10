@@ -385,34 +385,36 @@ impl ScheduleService for NodeScheduleServiceImpl {
     /// Change an target item.
     async fn change(&self, id: Uuid, info: Self::Info) -> anyhow::Result<()> {
         if info.do_not_update_status {
-            loop {
-                let mut used_resources = None;
-                let node = self.node_repo.get_by_id(id).await?;
-                if let Some(ref u) = info.used_resources {
-                    used_resources = node.resource_meter.map(|r| r + u.clone().into());
+            let mut used_resources = None;
+            let node = self.node_repo.get_by_id(id).await?;
+            if let Some(ref u) = info.used_resources {
+                used_resources = node.resource_meter.map(|r| r + u.clone().into());
+            }
+            if used_resources.is_some() || info.message.is_some() {
+                loop {
+                    if self
+                        .node_repo
+                        .update_immediately_with_lock(DbNodeInstance {
+                            id: DbField::Unchanged(id),
+                            status: DbField::NotSet,
+                            log: match &info.message {
+                                m @ Some(_) => DbField::Set(m.to_owned()),
+                                None => DbField::NotSet,
+                            },
+                            resource_meter: match &used_resources {
+                                u @ Some(_) => DbField::Set(u.clone()),
+                                None => DbField::NotSet,
+                            },
+                            last_modified_time: DbField::Unchanged(node.last_modified_time),
+                            ..Default::default()
+                        })
+                        .await
+                        .is_ok()
+                    {
+                        break;
+                    }
+                    sleep(Duration::from_millis(rand::thread_rng().gen_range(10..100)));
                 }
-                if self
-                    .node_repo
-                    .update_immediately_with_lock(DbNodeInstance {
-                        id: DbField::Unchanged(id),
-                        status: DbField::NotSet,
-                        log: match &info.message {
-                            m @ Some(_) => DbField::Set(m.to_owned()),
-                            None => DbField::NotSet,
-                        },
-                        resource_meter: match &used_resources {
-                            u @ Some(_) => DbField::Set(u.clone()),
-                            None => DbField::NotSet,
-                        },
-                        last_modified_time: DbField::Unchanged(node.last_modified_time),
-                        ..Default::default()
-                    })
-                    .await
-                    .is_ok()
-                {
-                    break;
-                }
-                sleep(Duration::from_millis(rand::thread_rng().gen_range(10..100)));
             }
             return Ok(());
         }

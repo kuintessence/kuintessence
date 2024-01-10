@@ -46,10 +46,10 @@ impl ScheduleService for TaskScheduleServiceImpl {
 
                 let task = self.task_repo.get_by_id(id).await?;
 
-                if is_resumed {
-                    let tasks = self.task_repo.get_same_node_tasks(id).await?;
-                    // All tasks meet the recovered condition to set node as recovered.
-                    if tasks.iter().all(|t| {
+                let tasks = self.task_repo.get_same_node_tasks(id).await?;
+                // All tasks meet the recovered condition to set node as recovered.
+                if !is_resumed
+                    || tasks.iter().all(|t| {
                         !matches!(
                             t.status,
                             TaskStatus::Resuming
@@ -61,20 +61,23 @@ impl ScheduleService for TaskScheduleServiceImpl {
                                 | TaskStatus::Pausing
                                 | TaskStatus::Queuing
                         )
-                    }) {
-                        self.status_mq_producer
-                            .send_object(
-                                &ChangeMsg {
-                                    id: task.node_instance_id,
-                                    info: Info::Node(NodeChangeInfo {
-                                        status: NodeStatusChange::Running { is_resumed: true },
-                                        ..Default::default()
-                                    }),
-                                },
-                                &self.status_mq_topic,
-                            )
-                            .await?;
-                    }
+                    })
+                {
+                    self.status_mq_producer
+                        .send_object(
+                            &ChangeMsg {
+                                id: task.node_instance_id,
+                                info: Info::Node(NodeChangeInfo {
+                                    status: NodeStatusChange::Running { is_resumed },
+                                    ..Default::default()
+                                }),
+                            },
+                            &self.status_mq_topic,
+                        )
+                        .await?;
+                }
+
+                if is_resumed {
                     return Ok(());
                 }
 

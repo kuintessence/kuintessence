@@ -38,7 +38,7 @@ impl InternalTopics {
         "file-upload".to_string()
     }
     fn default_status() -> String {
-        "node-status".to_string()
+        "status".to_string()
     }
 }
 

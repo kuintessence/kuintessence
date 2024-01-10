@@ -17,7 +17,7 @@ impl TextStorageRepo for RedisRepo {
         let mut values = vec![];
         if keys.len() == 1 {
             values = vec![
-                self.query::<String>(&Cmd::get::<String>(keys.get(0).unwrap().to_owned()))
+                self.query::<String>(&Cmd::get::<String>(keys.first().unwrap().to_owned()))
                     .await?,
             ];
         } else if !keys.is_empty() {
@@ -31,7 +31,7 @@ impl TextStorageRepo for RedisRepo {
         let mut values = vec![];
         if keys.len() == 1 {
             values = vec![
-                self.query::<String>(&Cmd::get::<String>(keys.get(0).unwrap().to_owned()))
+                self.query::<String>(&Cmd::get::<String>(keys.first().unwrap().to_owned()))
                     .await?,
             ];
         } else if !keys.is_empty() {

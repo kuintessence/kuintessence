@@ -1,7 +1,7 @@
 mod service_provider;
 mod websocket_message_consumer;
 
-pub use service_provider::{ServiceProvider, ServiceProviderScoped};
+pub use service_provider::ServiceProvider;
 
 mod websocket;
 pub use websocket::WsManager;

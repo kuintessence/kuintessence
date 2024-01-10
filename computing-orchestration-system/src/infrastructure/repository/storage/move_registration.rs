@@ -15,7 +15,7 @@ impl MoveRegistrationRepo for RedisRepo {
         let keys = self.query_keys(&format!("*_{key_regex}")).await?;
 
         let values = if keys.len() == 1 {
-            vec![self.query::<String>(&Cmd::get(keys.get(0).unwrap())).await?]
+            vec![self.query::<String>(&Cmd::get(keys.first().unwrap())).await?]
         } else if !keys.is_empty() {
             self.query::<Vec<String>>(&Cmd::get(keys)).await?
         } else {

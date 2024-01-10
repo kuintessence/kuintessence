@@ -463,7 +463,7 @@ impl SoftwareComputingUsecaseServiceImpl {
             if !(using_template_file.as_file_name.is_empty()
                 || using_template_file.as_file_name.len() == 1
                     && matches!(
-                        using_template_file.as_file_name.get(0).unwrap(),
+                        using_template_file.as_file_name.first().unwrap(),
                         FileRef::FileInputRef(_)
                     ))
             {
@@ -598,7 +598,7 @@ impl SoftwareComputingUsecaseServiceImpl {
                                                                         .get_by_id(
                                                                             *contents
                                                                                 .unwrap()
-                                                                                .get(0)
+                                                                                .first()
                                                                                 .unwrap(),
                                                                         )
                                                                         .await?
@@ -637,7 +637,7 @@ impl SoftwareComputingUsecaseServiceImpl {
                                 .find(|el| el.descriptor.eq(descriptor))
                                 .unwrap()
                                 .all_tasks_text_outputs()?
-                                .get(0)
+                                .first()
                                 .unwrap()
                                 .to_owned();
                             // self.text_storage_repository
@@ -708,7 +708,7 @@ impl SoftwareComputingUsecaseServiceImpl {
                                                                 } => {
                                                                     match node_spec.input_slot(&text_input_descriptor).kind.to_owned(){
                                                                             NodeInputSlotKind::Text { contents, .. } => {
-                                                                                Some(self.text_storage_repository.get_by_id(*contents.unwrap().get(0).unwrap()).await?.value)
+                                                                                Some(self.text_storage_repository.get_by_id(*contents.unwrap().first().unwrap()).await?.value)
                                                                             },
                                                                             _ => unreachable!()
                                                                         }
@@ -744,7 +744,7 @@ impl SoftwareComputingUsecaseServiceImpl {
                                         .find(|el| el.descriptor.eq(usecase_outslot_descriptor))
                                         .unwrap()
                                         .all_tasks_file_outputs()?
-                                        .get(0)
+                                        .first()
                                         .unwrap()
                                         .to_owned();
                                     upload_files.push(UploadFile {
@@ -797,7 +797,7 @@ impl SoftwareComputingUsecaseServiceImpl {
                                     {
                                         NodeInputSlotKind::Text { contents, .. } => Some(
                                             self.text_storage_repository
-                                                .get_by_id(*contents.unwrap().get(0).unwrap())
+                                                .get_by_id(*contents.unwrap().first().unwrap())
                                                 .await?
                                                 .value,
                                         ),
@@ -808,7 +808,7 @@ impl SoftwareComputingUsecaseServiceImpl {
                             match &filesome_output.file_kind {
                                 FileKind::Normal(file_name) => {
                                     let out_file_id =
-                                        task_output_slot.all_tasks_file_outputs()?.get(0).unwrap();
+                                        task_output_slot.all_tasks_file_outputs()?.first().unwrap();
                                     upload_files.push(UploadFile {
                                         file_id: *out_file_id,
                                         path: out_path_alter.unwrap_or(file_name.to_owned()),
@@ -823,7 +823,7 @@ impl SoftwareComputingUsecaseServiceImpl {
                                 }
                                 FileKind::Batched(wild_card) => {
                                     let out_file_or_zip_id =
-                                        task_output_slot.all_tasks_file_outputs()?.get(0).unwrap();
+                                        task_output_slot.all_tasks_file_outputs()?.first().unwrap();
                                     upload_files.push(UploadFile {
                                         file_id: out_file_or_zip_id.to_owned(),
                                         path: out_path_alter.unwrap_or(wild_card.to_owned()),
@@ -894,7 +894,7 @@ impl SoftwareComputingUsecaseServiceImpl {
                 argument_list,
             } => (
                 name,
-                argument_list.get(0).cloned().unwrap_or_default().replace('@', ""),
+                argument_list.first().cloned().unwrap_or_default().replace('@', ""),
                 argument_list,
             ),
             RepoSoftwareSpec::Singularity { image, tag } => (image, tag.to_owned(), vec![tag]),

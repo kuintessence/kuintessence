@@ -76,7 +76,7 @@ impl BatchService {
                                     *contents = Some(vec![
                                         from_slot
                                             .all_tasks_text_outputs()?
-                                            .get(0)
+                                            .first()
                                             .unwrap()
                                             .to_owned();
                                         1
@@ -87,7 +87,7 @@ impl BatchService {
                                         FileInput {
                                             file_metadata_id: from_slot
                                                 .all_tasks_file_outputs()?
-                                                .get(0)
+                                                .first()
                                                 .unwrap()
                                                 .to_owned(),
                                             ..Default::default()
@@ -122,7 +122,7 @@ impl BatchService {
                                 all_tasks_prepared_content_ids.push(
                                     task_node_output_slot
                                         .all_tasks_file_outputs()?
-                                        .get(0)
+                                        .first()
                                         .unwrap()
                                         .to_owned(),
                                 )
@@ -137,7 +137,7 @@ impl BatchService {
                                 all_tasks_prepared_text_keys.push(
                                     task_node_output_slot
                                         .all_tasks_text_outputs()?
-                                        .get(0)
+                                        .first()
                                         .unwrap()
                                         .to_owned(),
                                 )
@@ -305,7 +305,7 @@ impl BatchService {
                 }
                 NodeInputSlotKind::File { contents, .. } => {
                     // 因为 MatchRegex 类型的批量输入只会有一个
-                    let content = contents.as_ref().unwrap().get(0).unwrap();
+                    let content = contents.as_ref().unwrap().first().unwrap();
                     // 获取文件的文本内容
                     let content = self.download_service.get_text(content.file_metadata_id).await?;
                     let contents = filler.fill_match_regex(&content, regex_to_match, *fill_count);

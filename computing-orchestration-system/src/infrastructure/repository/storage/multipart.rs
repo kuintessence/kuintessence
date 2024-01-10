@@ -1,8 +1,12 @@
 use alice_architecture::repository::{
     DBRepository, LeaseDBRepository, LeaseRepository, MutableRepository, ReadOnlyRepository,
 };
-use anyhow::{anyhow, bail};
-use domain_storage::{model::entity::Multipart, repository::MultipartRepo};
+use anyhow::anyhow;
+use domain_storage::{
+    exception::{FileException, FileResult},
+    model::entity::Multipart,
+    repository::MultipartRepo,
+};
 use redis::Cmd;
 use uuid::Uuid;
 
@@ -29,6 +33,30 @@ impl MultipartRepo for RedisRepo {
         self.query(&Cmd::del(key)).await?;
         Ok(())
     }
+
+    async fn remove_nth(&self, id: Uuid, nth: u64, ttl: i64) -> FileResult<Multipart> {
+        let lock_key = format!("m_lock_{}", id);
+        let get_lock: bool =
+            self.query(&Cmd::set_nx(&lock_key, 1)).await.map_err(|e| anyhow!(e))?;
+        if get_lock {
+            let mut multipart = self
+                .get_one_by_key_regex(&format!("multipart_{id}_*"))
+                .await?
+                .ok_or(FileException::MultipartNotFound { meta_id: id })?;
+            multipart.shards.retain(|c| !c.eq(&nth));
+            (self as &dyn LeaseRepository<Multipart>)
+                .update_with_lease(
+                    &format!("multipart_{id}_{}", multipart.hash),
+                    &multipart,
+                    ttl,
+                )
+                .await?;
+            self.query(&Cmd::del(lock_key)).await.map_err(|e| anyhow!(e))?;
+            Ok(multipart)
+        } else {
+            Err(anyhow!("Can not get lock.").into())
+        }
+    }
 }
 
 #[async_trait::async_trait]
@@ -45,19 +73,12 @@ impl LeaseRepository<Multipart> for RedisRepo {
         entity: &Multipart,
         ttl: i64,
     ) -> anyhow::Result<()> {
-        let lock_key = format!("m_lock_{}", entity.meta_id);
-        let get_lock: bool = self.query(&Cmd::set_nx(&lock_key, 1)).await?;
-        if get_lock {
-            self.query(&Cmd::pset_ex(
-                key,
-                serde_json::to_string_pretty(&entity)?,
-                ttl as u64,
-            ))
-            .await?;
-            self.query(&Cmd::del(lock_key)).await?;
-        } else {
-            bail!("Can not get lock.")
-        }
+        self.query(&Cmd::pset_ex(
+            key,
+            serde_json::to_string_pretty(&entity)?,
+            ttl as u64,
+        ))
+        .await?;
         Ok(())
     }
 

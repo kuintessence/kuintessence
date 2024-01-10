@@ -128,6 +128,7 @@ mock! {
     impl MultipartRepo for MultipartRepo {
         async fn get_one_by_key_regex(&self, regex: &str) -> anyhow::Result<Option<Multipart>>;
         async fn delete_by_key_regex(&self, regex: &str) -> anyhow::Result<()>;
+        async fn remove_nth(&self, id: Uuid, nth: u64, ttl: i64) -> crate::exception::FileResult<Multipart> ;
     }
     impl LeaseDBRepository<Multipart> for MultipartRepo {}
     impl DBRepository<Multipart> for MultipartRepo {}
