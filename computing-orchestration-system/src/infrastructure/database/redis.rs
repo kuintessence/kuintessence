@@ -1,5 +1,5 @@
 use anyhow::{anyhow, bail, Context};
-use std::sync::Arc;
+use std::{collections::HashSet, sync::Arc};
 use uuid::Uuid;
 
 use redis::{aio::ConnectionLike, from_redis_value, Cmd, FromRedisValue, RedisResult, Value};
@@ -34,9 +34,9 @@ impl RedisRepo {
 impl RedisClient {
     async fn get_connection(&self) -> RedisResult<RedisConnection> {
         match self {
-            RedisClient::Single(s) => Ok(RedisConnection::Single(
-                s.get_connection_manager().await?,
-            )),
+            RedisClient::Single(s) => {
+                Ok(RedisConnection::Single(s.get_connection_manager().await?))
+            }
             RedisClient::Cluster(c) => {
                 Ok(RedisConnection::Cluster(c.get_async_connection().await?))
             }
@@ -58,9 +58,12 @@ impl RedisConnection {
             RedisConnection::Single(..) => self.query::<Vec<String>>(cmd).await?,
             RedisConnection::Cluster(..) => {
                 let r = self.query::<Value>(cmd).await?;
-                let mut all_keys = vec![];
+                let mut all_keys = HashSet::new();
                 match r {
                     Value::Bulk(items) => {
+                        if items.is_empty() {
+                            return Ok(vec![]);
+                        }
                         for item in items {
                             match item {
                                 Value::Bulk(addr_and_value) => {
@@ -68,15 +71,19 @@ impl RedisConnection {
                                         .last()
                                         .ok_or(anyhow!("No value for addr"))?;
                                     let keys: Vec<String> = from_redis_value(value)?;
-                                    all_keys.extend_from_slice(&keys);
+                                    all_keys.extend(keys);
                                 }
-                                _ => bail!("Wrong type: not bulk"),
+                                Value::Data(key) => {
+                                    let key = String::from_utf8(key)?;
+                                    all_keys.insert(key);
+                                }
+                                _ => bail!("Item wrong type"),
                             }
                         }
                     }
-                    _ => bail!("Wrong type: not bulk"),
+                    _ => bail!("Return wrong type: not bulk"),
                 }
-                all_keys
+                all_keys.into_iter().collect::<Vec<_>>()
             }
         })
     }
