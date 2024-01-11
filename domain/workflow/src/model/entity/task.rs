@@ -70,11 +70,11 @@ impl From<TaskResultStatus> for TaskStatus {
 impl From<TaskType> for task_dto::TaskType {
     fn from(value: TaskType) -> Self {
         match value {
-            TaskType::DeploySoftware => Self::SoftwareDeployment,
-            TaskType::DownloadFile => Self::FileDownload,
-            TaskType::ExeceteUsecase => Self::UsecaseExecution,
-            TaskType::UploadFile => Self::FileUpload,
-            TaskType::CollectOutput => Self::OutputCollect,
+            TaskType::DeploySoftware => Self::DeploySoftware,
+            TaskType::DownloadFile => Self::DownloadFile,
+            TaskType::ExeceteUsecase => Self::ExecuteUsecase,
+            TaskType::UploadFile => Self::UploadFile,
+            TaskType::CollectOutput => Self::CollectOutput,
             TaskType::ExecuteScript => Self::ExecuteScript,
         }
     }

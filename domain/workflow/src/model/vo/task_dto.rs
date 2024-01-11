@@ -15,11 +15,11 @@ pub struct Task {
 #[derive(Serialize, Debug)]
 #[serde(tag = "type")]
 pub enum TaskType {
-    SoftwareDeployment,
-    FileDownload,
-    UsecaseExecution,
-    FileUpload,
-    OutputCollect,
+    DeploySoftware,
+    DownloadFile,
+    ExecuteUsecase,
+    UploadFile,
+    CollectOutput,
     ExecuteScript,
 }
 
@@ -501,7 +501,7 @@ mod tests {
     fn serialize_task() {
         let task = Task {
             id: Uuid::nil(),
-            command: TaskCommand::Resume(TaskType::SoftwareDeployment),
+            command: TaskCommand::Resume(TaskType::DeploySoftware),
         };
         let task_json = serde_json::to_string_pretty(&task).unwrap();
         println!("{task_json}");
