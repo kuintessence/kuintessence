@@ -45,7 +45,7 @@ impl ScheduleService for NodeScheduleServiceImpl {
         match info.status {
             NodeStatusChange::Pending => {
                 // Toggled by workflow start scheduling, send the node spec to usecase service and
-                // wait usecase service to send Task Running change.
+                // wait usecase service to send Task Standby change.
 
                 let node_spec = self.node_repo.get_node_spec(id).await?;
                 self.usecase_select_service.send_usecase(node_spec).await?;
@@ -74,7 +74,7 @@ impl ScheduleService for NodeScheduleServiceImpl {
                                     &ChangeMsg {
                                         id: parent_id,
                                         info: Info::Node(NodeChangeInfo {
-                                            status: NodeStatusChange::Running { is_resumed: true },
+                                            status: NodeStatusChange::Running { is_resumed },
                                             ..Default::default()
                                         }),
                                     },
@@ -107,7 +107,7 @@ impl ScheduleService for NodeScheduleServiceImpl {
                     .send_object(
                         &ChangeMsg {
                             id: node.flow_instance_id,
-                            info: Info::Flow(FlowStatusChange::Running { is_resumed: false }),
+                            info: Info::Flow(FlowStatusChange::Running { is_resumed }),
                         },
                         &self.status_mq_topic,
                     )

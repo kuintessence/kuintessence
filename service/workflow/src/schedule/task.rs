@@ -48,20 +48,32 @@ impl ScheduleService for TaskScheduleServiceImpl {
 
                 let tasks = self.task_repo.get_same_node_tasks(id).await?;
                 // All tasks meet the recovered condition to set node as recovered.
-                if !is_resumed
-                    || tasks.iter().all(|t| {
+                if (!is_resumed
+                    && tasks.iter().all(|t| {
                         !matches!(
                             t.status,
-                            TaskStatus::Resuming
-                                | TaskStatus::Paused
-                                | TaskStatus::Completed
+                            TaskStatus::Completed
+                                | TaskStatus::Failed
                                 | TaskStatus::Cancelling
                                 | TaskStatus::Cancelled
-                                | TaskStatus::Failed
                                 | TaskStatus::Pausing
-                                | TaskStatus::Queuing
+                                | TaskStatus::Paused
+                                | TaskStatus::Resuming
                         )
-                    })
+                    }))
+                    || (is_resumed
+                        && tasks.iter().all(|t| {
+                            !matches!(
+                                t.status,
+                                TaskStatus::Resuming
+                                    | TaskStatus::Paused
+                                    | TaskStatus::Cancelling
+                                    | TaskStatus::Cancelled
+                                    | TaskStatus::Failed
+                                    | TaskStatus::Pausing
+                                    | TaskStatus::Queuing
+                            )
+                        }))
                 {
                     self.status_mq_producer
                         .send_object(

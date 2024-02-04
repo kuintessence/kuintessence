@@ -131,7 +131,7 @@ impl ScheduleService for FlowScheduleServiceImpl {
                             &ChangeMsg {
                                 id: node.id,
                                 info: Info::Node(NodeChangeInfo {
-                                    status: NodeStatusChange::Terminating,
+                                    status: NodeStatusChange::Pausing,
                                     ..Default::default()
                                 }),
                             },
