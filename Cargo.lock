@@ -112,6 +112,22 @@ dependencies = [
 [[package]]
 name = "actix-i18n"
 version = "0.1.0"
+source = "git+https://git.lab.supercomputing.link/hpc-ng/computing-orchestration/team/team-be/actix-i18n.git#ae9ebaacfca02bd4b23b75ead8539b09dc57cd64"
+dependencies = [
+ "actix-web",
+ "fluent",
+ "fluent-langneg",
+ "fluent-syntax",
+ "intl-memoizer",
+ "log",
+ "smallvec",
+ "thiserror",
+ "unic-langid",
+]
+
+[[package]]
+name = "actix-i18n"
+version = "0.1.0"
 source = "git+https://github.com/kuintessence/actix-i18n.git#aa55b2821eebbd248394674e4529ef8870effedf"
 dependencies = [
  "actix-web",
@@ -356,7 +372,7 @@ checksum = "250f629c0161ad8107cf89319e990051fae62832fd343083bea452d93e2205fd"
 [[package]]
 name = "alice-architecture"
 version = "0.1.0"
-source = "git+https://github.com/kuintessence/alice#b09ea72cbe8667c545477d7295ecb5a5ed4e1b3a"
+source = "git+https://github.com/kuintessence/alice#f3293639e51c6d7d06ab7f697f8fe70584c40960"
 dependencies = [
  "alice-architecture-derive",
  "anyhow",
@@ -372,7 +388,7 @@ dependencies = [
 [[package]]
 name = "alice-architecture-derive"
 version = "0.1.0"
-source = "git+https://github.com/kuintessence/alice#b09ea72cbe8667c545477d7295ecb5a5ed4e1b3a"
+source = "git+https://github.com/kuintessence/alice#f3293639e51c6d7d06ab7f697f8fe70584c40960"
 dependencies = [
  "heck",
  "proc-macro2",
@@ -383,7 +399,7 @@ dependencies = [
 [[package]]
 name = "alice-di"
 version = "0.1.0"
-source = "git+https://github.com/kuintessence/alice#b09ea72cbe8667c545477d7295ecb5a5ed4e1b3a"
+source = "git+https://github.com/kuintessence/alice#f3293639e51c6d7d06ab7f697f8fe70584c40960"
 dependencies = [
  "alice-di-derive",
  "anyhow",
@@ -393,7 +409,7 @@ dependencies = [
 [[package]]
 name = "alice-di-derive"
 version = "0.1.0"
-source = "git+https://github.com/kuintessence/alice#b09ea72cbe8667c545477d7295ecb5a5ed4e1b3a"
+source = "git+https://github.com/kuintessence/alice#f3293639e51c6d7d06ab7f697f8fe70584c40960"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -403,10 +419,10 @@ dependencies = [
 [[package]]
 name = "alice-infrastructure"
 version = "0.1.0"
-source = "git+https://github.com/kuintessence/alice#b09ea72cbe8667c545477d7295ecb5a5ed4e1b3a"
+source = "git+https://github.com/kuintessence/alice#f3293639e51c6d7d06ab7f697f8fe70584c40960"
 dependencies = [
  "actix-http",
- "actix-i18n",
+ "actix-i18n 0.1.0 (git+https://git.lab.supercomputing.link/hpc-ng/computing-orchestration/team/team-be/actix-i18n.git)",
  "actix-web",
  "alice-architecture",
  "anyhow",
@@ -414,7 +430,7 @@ dependencies = [
  "base64 0.21.7",
  "cmake",
  "config",
- "database-model",
+ "database-model 0.1.0 (git+https://git.lab.supercomputing.link/hpc-ng/computing-orchestration/team/team-be/database)",
  "flume",
  "futures-util",
  "jsonwebtoken",
@@ -439,7 +455,7 @@ dependencies = [
 [[package]]
 name = "alice-web"
 version = "0.1.0"
-source = "git+https://github.com/kuintessence/alice#b09ea72cbe8667c545477d7295ecb5a5ed4e1b3a"
+source = "git+https://github.com/kuintessence/alice#f3293639e51c6d7d06ab7f697f8fe70584c40960"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -896,7 +912,7 @@ dependencies = [
  "actix-cors",
  "actix-easy-multipart",
  "actix-http",
- "actix-i18n",
+ "actix-i18n 0.1.0 (git+https://github.com/kuintessence/actix-i18n.git)",
  "actix-web",
  "actix-ws",
  "alice-architecture",
@@ -909,7 +925,7 @@ dependencies = [
  "colored",
  "config",
  "dashmap",
- "database-model",
+ "database-model 0.1.0 (git+https://github.com/kuintessence/database)",
  "domain-content-repo",
  "domain-storage",
  "domain-workflow",
@@ -1147,6 +1163,14 @@ dependencies = [
 [[package]]
 name = "database-model"
 version = "0.1.0"
+source = "git+https://git.lab.supercomputing.link/hpc-ng/computing-orchestration/team/team-be/database#7f6efd507ca7f4e6d101ed0d0101b6c4eaafc12d"
+dependencies = [
+ "sea-orm",
+]
+
+[[package]]
+name = "database-model"
+version = "0.1.0"
 source = "git+https://github.com/kuintessence/database#150565a23625451c4f1c9224c49574d6e07caa36"
 dependencies = [
  "sea-orm",
@@ -1266,7 +1290,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "chrono",
- "database-model",
+ "database-model 0.1.0 (git+https://github.com/kuintessence/database)",
  "mockall",
  "num-derive",
  "num-traits",
@@ -1285,7 +1309,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "chrono",
- "database-model",
+ "database-model 0.1.0 (git+https://github.com/kuintessence/database)",
  "domain-content-repo",
  "domain-storage",
  "indoc",
