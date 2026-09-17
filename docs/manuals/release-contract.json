@@ -1,0 +1,93 @@
+{
+  "schemaVersion": 1,
+  "contractId": "kuintessence-application-release-v1",
+  "decisionDate": "2026-09-03",
+  "scope": "应用组件发布；PostgreSQL、MinIO、SpiceDB、Casdoor 等基础设施升级另设维护窗口",
+  "sequence": [
+    {
+      "id": "freeze-backup",
+      "label": "冻结候选与备份",
+      "gate": "记录 source commit、镜像 digest、迁移镜像、Agent artifact、运行中 binary SHA，并完成数据库、对象和配置保护"
+    },
+    {
+      "id": "db-migration",
+      "label": "目标 DB migration",
+      "gate": "migration Job 返回 0，ledger 到达目标 tag，且 N-1 Server/Registry 已通过目标 schema 兼容测试"
+    },
+    {
+      "id": "server-compatible",
+      "label": "Server（兼容模式）",
+      "gate": "Server readiness 的 schemaMatches、授权积压和协议兼容测试通过；新 enforcement/dispatch 保持关闭"
+    },
+    {
+      "id": "agent-rollout",
+      "label": "Agent 单站点 canary 后逐站点滚动",
+      "gate": "每个站点的 binary SHA、systemd 稳定性、Server online/compute ready、原生 scheduler 和最小作业均通过"
+    },
+    {
+      "id": "registry",
+      "label": "Registry",
+      "gate": "健康检查后读取已知 catalog/template；滚动期间 ECOSYSTEM_RELEASE_AUTO_ACTIVATE 保持 false"
+    },
+    {
+      "id": "gateway-compatible-route",
+      "label": "gateway 兼容路由",
+      "gate": "仅增加兼容路由；本窗口不删除或改名旧路由"
+    },
+    {
+      "id": "web-cli",
+      "label": "Web/CLI 客户端",
+      "gate": "匿名入口、OIDC 配置和受控会话 API 通过，锁定 CLI 原样完成最小 smoke"
+    },
+    {
+      "id": "activate",
+      "label": "激活新能力或生态版本",
+      "gate": "登录、权限、最小作业/工作流和文件传输检查通过后激活"
+    },
+    {
+      "id": "observe",
+      "label": "观察",
+      "gate": "激活后至少观察 30 分钟，每 10 分钟记录健康、Agent 重连、作业、传输和授权积压"
+    }
+  ],
+  "invariants": [
+    "未变化的组件标记 N/A，其余组件按序发布",
+    "基础设施在独立的前置窗口升级，恢复健康后开始应用发布",
+    "migration 是 expand-only、forward-only；应用回滚不自动回退 schema",
+    "Registry 的生态 release 在所有 Agent 通过前不得自动激活"
+  ],
+  "rollbackBoundaries": [
+    {
+      "id": "before-migration",
+      "label": "migration 前",
+      "boundary": "任一预检、备份或恢复演练失败即停止，运行态不变"
+    },
+    {
+      "id": "after-migration-before-new-write",
+      "label": "migration 后、产生新格式写入前",
+      "boundary": "只在 expand-only 且 N-1 Server/Registry 兼容验证通过时回滚应用制品；schema 保留，不执行未知 down migration"
+    },
+    {
+      "id": "agent-rollout",
+      "label": "Agent 滚动中",
+      "boundary": "以单站点为最小回滚单元；停止扩散并恢复该站点旧 binary，不重置其他站点或原生调度器作业"
+    },
+    {
+      "id": "software-gateway-web",
+      "label": "Registry/gateway/Web 阶段",
+      "boundary": "优先回滚对应镜像或 gateway 配置，不回滚业务数据；若 N-1 不可读，按一致性单元恢复"
+    },
+    {
+      "id": "after-activation",
+      "label": "激活后或首次不兼容写入后",
+      "boundary": "停止新提交、发布和传输，使用同一时间点 PostgreSQL 与 blob 快照恢复并核对引用、授权 outbox 和调度器事实"
+    }
+  ],
+  "evidence": [
+    "候选身份、各镜像 digest、migration ledger 和 binary SHA",
+    "备份及隔离恢复演练、migration Job 返回码、Server/Registry readiness",
+    "N/N-1 Server-Agent 注册、心跳、ACK 和每站点最小作业结果",
+    "匿名 /healthz、公开 OIDC 配置、/platform/api、/software/api 和 Web/CLI smoke",
+    "激活后 30 分钟观察记录及失败站点桌面回滚记录"
+  ]
+}

@@ -1,0 +1,134 @@
+# Production overrides for the kq-platform chart.
+#
+# Recommended profile:
+#   - 1 Server replica until distributed event/session state and leader election land
+#   - 1 Registry replica with persistent blob storage
+#   - PostgreSQL / Redis / MinIO marked external (managed services)
+#   - Ingress with TLS via cert-manager
+#   - NetworkPolicy + PodDisruptionBudget enabled
+#
+# Apply:
+#   helm upgrade --install kq deploy/helm/kq-platform \
+#     -f deploy/helm/kq-platform/values.production.yaml \
+#     -n kuintessence --create-namespace
+
+server:
+  replicas: 1
+  image:
+    repository: USE-PLACEHOLDER-REGISTRY/server
+    tag: USE-PLACEHOLDER-TAG  # pin to a specific build hash, do NOT use 'latest'
+    pullPolicy: IfNotPresent
+  resources:
+    requests:
+      cpu: "1"
+      memory: "1Gi"
+    limits:
+      cpu: "4"
+      memory: "4Gi"
+  env:
+    LOG_LEVEL: info
+    NODE_ENV: production
+    MTLS_MODE: "trusted-proxy"
+    # Required at install time. Use the narrow source CIDR of the dedicated
+    # Agent mTLS ingress/proxy, never the whole cluster or VPC range.
+    MTLS_TRUSTED_PROXY_CIDRS: ""
+    MTLS_HEADER_FINGERPRINT: x-kq-client-cert-fingerprint
+    # HTTP API/SSH client IP: only CIDRs of proxies that overwrite inbound XFF.
+    HTTP_TRUSTED_PROXY_CIDRS: ""
+  autoscaling:
+    enabled: false
+    minReplicas: 1
+    maxReplicas: 1
+    targetCPUUtilizationPercentage: 70
+  podDisruptionBudget:
+    enabled: false
+    minAvailable: 1
+  podAntiAffinity:
+    enabled: false
+
+registry:
+  enabled: true
+  replicas: 1
+  image:
+    repository: USE-PLACEHOLDER-REGISTRY/registry
+    tag: USE-PLACEHOLDER-TAG
+  resources:
+    requests:
+      cpu: "500m"
+      memory: "512Mi"
+    limits:
+      cpu: "2"
+      memory: "2Gi"
+  auth:
+    mode: jwt
+    issuer: ""
+    audience: ""
+  persistence:
+    enabled: true
+    storage: 100Gi
+    storageClass: ""
+    accessModes:
+      - ReadWriteOnce
+    mountPath: /var/lib/kuintessence/registry/blobs
+  uploadLimits:
+    maxUploadBytes: 10737418240
+    maxActiveUploads: 100
+    maxActiveUploadsPerRepository: 10
+    maxIncompleteUploadBytes: 85899345920
+  podDisruptionBudget:
+    enabled: true
+    minAvailable: 1
+migration:
+  image:
+    repository: USE-PLACEHOLDER-REGISTRY/db-migrate
+    tag: USE-PLACEHOLDER-TAG
+    pullPolicy: IfNotPresent
+
+# Production: use managed PG / Redis / MinIO. Disable in-cluster ones.
+postgres:
+  enabled: false
+redis:
+  enabled: false
+minio:
+  enabled: false
+
+external:
+  databaseUrl: ""    # populate via a Secret reference at deploy time
+  redisUrl: ""
+  s3Endpoint: ""
+  s3AccessKey: ""
+  s3SecretKey: ""
+
+# Production secrets via external-secrets or a pre-created Secret.
+secrets:
+  existingSecret: kq-platform-secrets  # MUST exist before install
+
+# Ingress with TLS.
+ingress:
+  enabled: true
+  className: nginx
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-production
+    nginx.ingress.kubernetes.io/proxy-body-size: 5g    # NetDrive uploads
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+  hosts:
+    - host: USE-PLACEHOLDER-HOST.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+          service: server
+        - path: /sw
+          pathType: Prefix
+          service: registry
+  tls:
+    - secretName: kq-platform-tls
+      hosts:
+        - USE-PLACEHOLDER-HOST.example.com
+
+networkPolicy:
+  enabled: true
+
+serviceMonitor:
+  enabled: true
+  interval: 30s
+  scrapeTimeout: 10s

@@ -1,0 +1,46 @@
+{
+  "dashboards": {
+    "title": "Platform dashboards",
+    "subtitle": "Site-wide load, queue depth, throughput, and GPU utilization.",
+    "tabs": {
+      "overview": "Overview",
+      "queue": "Queue depth",
+      "throughput": "Throughput",
+      "gpu": "GPU utilization"
+    },
+    "siteOverview": {
+      "title": "Site activity heatmap",
+      "description": "Job submissions per site by hour of day (last 24h).",
+      "empty": "No site activity in the last 24 hours.",
+      "axisHour": "Hour",
+      "axisSite": "Site",
+      "tooltipUnit": "jobs"
+    },
+    "queueDepth": {
+      "title": "Queue depth over time",
+      "description": "Pending jobs per cluster, sampled every minute.",
+      "empty": "No queue samples available.",
+      "axisTime": "Time",
+      "axisDepth": "Depth"
+    },
+    "throughput": {
+      "title": "Daily job throughput",
+      "description": "Completed / failed / cancelled jobs per day (last 14 days).",
+      "empty": "No completed jobs yet.",
+      "completed": "Completed",
+      "failed": "Failed",
+      "cancelled": "Cancelled"
+    },
+    "gpu": {
+      "title": "GPU utilization",
+      "description": "Live utilization per GPU agent.",
+      "empty": "No GPU agents reporting.",
+      "unit": "%",
+      "agentLabel": "Agent"
+    },
+    "errors": {
+      "loadFailed": "Failed to load metrics",
+      "retry": "Retry"
+    }
+  }
+}

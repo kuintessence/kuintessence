@@ -1,0 +1,11 @@
+{
+  "name": "kuintessence-gui",
+  "license": "AGPL-3.0-only",
+  "private": true,
+  "scripts": {
+    "tauri": "tauri"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2"
+  }
+}

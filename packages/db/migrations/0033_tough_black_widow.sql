@@ -1,0 +1,6 @@
+ALTER TABLE "ecosystem_release_assets" ADD COLUMN "usecase_package_id" uuid;--> statement-breakpoint
+ALTER TABLE "ecosystem_release_assets" ADD COLUMN "workflow_template_id" uuid;--> statement-breakpoint
+ALTER TABLE "ecosystem_release_assets" ADD CONSTRAINT "ecosystem_release_assets_usecase_package_id_usecase_packages_id_fk" FOREIGN KEY ("usecase_package_id") REFERENCES "public"."usecase_packages"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "ecosystem_release_assets" ADD CONSTRAINT "ecosystem_release_assets_workflow_template_id_workflow_templates_id_fk" FOREIGN KEY ("workflow_template_id") REFERENCES "public"."workflow_templates"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
+CREATE UNIQUE INDEX "ecosystem_release_assets_usecase_package_idx" ON "ecosystem_release_assets" USING btree ("release_id","usecase_package_id");--> statement-breakpoint
+CREATE UNIQUE INDEX "ecosystem_release_assets_workflow_template_idx" ON "ecosystem_release_assets" USING btree ("release_id","workflow_template_id");

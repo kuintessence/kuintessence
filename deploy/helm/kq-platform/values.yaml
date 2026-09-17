@@ -1,0 +1,201 @@
+serviceAccount:
+  create: false
+  annotations: {}
+  automountToken: false
+
+server:
+  replicas: 1
+  image:
+    repository: kuintessence/server
+    tag: latest
+    pullPolicy: IfNotPresent
+  port: 3000
+  grpcPort: 3001
+  resources:
+    requests:
+      cpu: "500m"
+      memory: "512Mi"
+    limits:
+      cpu: "2"
+      memory: "2Gi"
+  env:
+    LOG_LEVEL: info
+    MTLS_MODE: "off"
+    MTLS_TRUSTED_PROXY_CIDRS: ""
+    MTLS_HEADER_FINGERPRINT: x-kq-client-cert-fingerprint
+    HTTP_TRUSTED_PROXY_CIDRS: ""
+  autoscaling:
+    enabled: false
+    minReplicas: 1
+    maxReplicas: 4
+    targetCPUUtilizationPercentage: 70
+  podDisruptionBudget:
+    enabled: false
+    minAvailable: 1
+  podAntiAffinity:
+    enabled: false
+
+registry:
+  enabled: true
+  publisherRoles: super_admin,platform_admin,org_admin
+  replicas: 1
+  image:
+    repository: kuintessence/registry
+    tag: latest
+    pullPolicy: IfNotPresent
+  port: 3100
+  auth:
+    mode: jwt
+    issuer: ""
+    audience: ""
+  persistence:
+    enabled: true
+    storage: 50Gi
+    storageClass: ""
+    accessModes:
+      - ReadWriteOnce
+    mountPath: /var/lib/kuintessence/registry/blobs
+  uploadLimits:
+    maxUploadBytes: 10737418240
+    maxActiveUploads: 100
+    maxActiveUploadsPerRepository: 10
+    maxIncompleteUploadBytes: 42949672960
+  podDisruptionBudget:
+    enabled: false
+    minAvailable: 1
+  resources:
+    requests:
+      cpu: "200m"
+      memory: "256Mi"
+    limits:
+      cpu: "1"
+      memory: "1Gi"
+
+migration:
+  image:
+    repository: kuintessence/db-migrate
+    tag: latest
+    pullPolicy: IfNotPresent
+  waitImage: bitnami/kubectl:1.32.3
+  backoffLimit: 20
+  activeDeadlineSeconds: 900
+  resources:
+    requests:
+      cpu: "100m"
+      memory: "128Mi"
+    limits:
+      cpu: "1"
+      memory: "1Gi"
+
+# Self-hosted dependencies (set enabled: false to use external services)
+postgres:
+  enabled: true
+  image: postgres:16-alpine
+  storage: 20Gi
+  storageClass: ""
+  # MUST set when postgres.enabled=true
+  password: ""
+  database: kuintessence
+  user: kq
+
+redis:
+  enabled: true
+  image: redis:7-alpine
+  storage: 1Gi
+  storageClass: ""
+
+minio:
+  enabled: true
+  image: minio/minio:RELEASE.2025-09-07T16-13-09Z
+  mcImage: minio/mc:RELEASE.2025-08-13T08-35-41Z
+  bootstrapWaitImage: bitnami/kubectl:1.32.3
+  storage: 50Gi
+  storageClass: ""
+  rootUser: minioadmin
+  # MUST set when minio.enabled=true
+  rootPassword: ""
+
+netdrive:
+  enabled: false
+  # Empty endpoint defaults to "<release>-minio" when the chart deploys MinIO.
+  endpoint: ""
+  port: 9000
+  useSsl: false
+  bucket: kuintessence
+  dataMarketStagingBucket: kuintessence-data-market-staging
+  dataMarketImmutableBucket: kuintessence-data-market-immutable
+  dataMarketStagingExpiryDays: 1
+  dataMarketImmutableRetentionDays: 365
+  # Browser/Agent-reachable S3 URL for presigned requests. Leave empty only
+  # when every NetDrive client can resolve the internal endpoint.
+  publicUrl: ""
+  region: us-east-1
+  # Server must use an ordinary IAM user, never MinIO root or a root-derived service account.
+  accessKey: kq-data-market-committer
+  secretKey: ""
+  # Increment after rotating netdrive.secretKey so the bootstrap Job updates MinIO credentials.
+  bootstrapRevision: "1"
+
+# Required secrets — at minimum JWT_SECRET.
+# Either set values here OR provide via an existing Kubernetes Secret
+# (existingSecret must contain keys: JWT_SECRET, POSTGRES_PASSWORD, MINIO_ROOT_PASSWORD,
+# DATABASE_URL/REDIS_URL when the corresponding external URL is empty, and NETDRIVE_ACCESS_KEY/
+# NETDRIVE_SECRET_KEY when netdrive.enabled=true).
+secrets:
+  # MUST set; >= 32 chars
+  jwtSecret: ""
+  # If set, skip creating the Secret resource and use this existing Secret instead
+  existingSecret: ""
+
+# External service URLs (used when corresponding *.enabled = false)
+external:
+  databaseUrl: ""
+  databaseUrlSecretKey: DATABASE_URL
+  redisUrl: ""
+  redisUrlSecretKey: REDIS_URL
+  s3Endpoint: ""
+  s3AccessKey: ""
+  s3SecretKey: ""
+
+ingress:
+  enabled: false
+  className: nginx
+  annotations: {}
+  hosts:
+    - host: kq.local
+      paths:
+        - path: /
+          pathType: Prefix
+          service: server
+        - path: /sw
+          pathType: Prefix
+          service: registry
+  tls: []
+
+# Web SPA frontend (optional; many setups serve from CDN instead).
+web:
+  enabled: false
+  replicas: 1
+  image:
+    repository: kuintessence/web
+    tag: latest
+    pullPolicy: IfNotPresent
+  port: 80
+  resources:
+    requests:
+      cpu: "50m"
+      memory: "32Mi"
+    limits:
+      cpu: "200m"
+      memory: "128Mi"
+
+# NetworkPolicy — disabled by default for dev; enable in production.
+networkPolicy:
+  enabled: false
+
+# Prometheus operator ServiceMonitor — disabled by default; enable when
+# the prometheus-operator CRDs are installed in the cluster.
+serviceMonitor:
+  enabled: false
+  interval: 30s
+  scrapeTimeout: 10s

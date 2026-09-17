@@ -1,0 +1,1011 @@
+# 工作流控制流 DSL JSON Schema（Draft 2020-12，YAML）
+#
+# 根校验一个工作流文档，涵盖基础节点构造和控制流:
+# 条件执行(when)、多路分支(Switch)、有界循环(Loop: While/ForEach)、
+# 子工作流/递归(SubWorkflow)、scatter-gather(Generate/Reduce)、安全表达式(Expr)。
+#
+# 用法与运行限制见 README.md#dsl；提交时由 shared Zod 与 Server 预检校验。
+# id 是 CEL 安全 slug，externalId 是可选 UUID。
+# maxIterations 使用 IntOrExpr；over/until/when/select.expr 使用 Expr。
+# Loop.body / SubWorkflow.ref.body 共用 WorkflowSpec，自引用递归。
+# flatten(NodeKind/SlotKind)处放宽 additionalProperties 以容纳铺平字段。
+$schema: "https://json-schema.org/draft/2020-12/schema"
+$id: "https://platform.local/schemas/workflow.json"
+title: Workflow
+description: "工作流控制流 DSL"
+$ref: "#/$defs/Workflow"
+
+$defs:
+  # ---------------------------------------------------------------------------
+  # 根 / 骨架
+  # ---------------------------------------------------------------------------
+  Workflow:
+    type: object
+    additionalProperties: false
+    required: [name, spec]
+    properties:
+      id: { $ref: "#/$defs/Uuid" }
+      name: { type: string }
+      description: { type: [string, "null"] }
+      logo: { type: [string, "null"] }
+      parameters:
+        type: array
+        default: []
+        items: { $ref: "#/$defs/Parameter" }
+      advanced: { $ref: "#/$defs/Advanced" }
+      spec: { $ref: "#/$defs/WorkflowSpec" }
+
+  # body 与根共用；body 不声明 parameters，参数在工作流顶层定义
+  WorkflowSpec:
+    type: object
+    additionalProperties: false
+    required: [nodeDrafts]
+    properties:
+      nodeDrafts:
+        type: array
+        items: { $ref: "#/$defs/WorkflowNode" }
+      nodeRelations:
+        type: array
+        default: []
+        items: { $ref: "#/$defs/NodeRelation" }
+
+  Advanced:
+    type: object
+    additionalProperties: false
+    properties:
+      skipStaticValidation: { type: boolean, default: false }
+
+  Parameter:
+    type: object
+    additionalProperties: false
+    required: [name, type]
+    properties:
+      name: { $ref: "#/$defs/Slug" }
+      type: { $ref: "#/$defs/ValueType" }
+      default: true                       # any
+      required: { type: boolean, default: false }
+      description: { type: [string, "null"] }
+
+  # ---------------------------------------------------------------------------
+  # 表达式与类型
+  # ---------------------------------------------------------------------------
+  Expr:
+    type: object
+    additionalProperties: false
+    required: [expr]
+    properties:
+      expr: { type: string }
+      lang: { type: string, default: cel }
+
+  IntOrExpr:
+    oneOf:
+      - { type: integer, minimum: 1 }
+      - { $ref: "#/$defs/Expr" }
+
+  ValueType:
+    oneOf:
+      - { enum: [bool, int, double, string, bytes, json, timestamp, duration] }
+      - type: object
+        additionalProperties: false
+        required: [list]
+        properties: { list: { $ref: "#/$defs/ValueType" } }
+      - type: object
+        additionalProperties: false
+        required: [map]
+        properties: { map: { $ref: "#/$defs/ValueType" } }
+
+  # ---------------------------------------------------------------------------
+  # 节点:公共字段 + 9 种 variant 的判别联合
+  # NodeKind 内部标签 type + flatten;故顶层放宽 additionalProperties。
+  # ---------------------------------------------------------------------------
+  WorkflowNode:
+    type: object
+    required: [type, id, name]
+    properties:
+      id: { $ref: "#/$defs/Slug" }              # 模板内部引用键(CEL 安全 slug);nodeRelations/表达式/Switch.to/sources/carry/Reduce.from 等都引用它
+      externalId:                               # 全局业务标识(UUID),由业务系统分配,可选;不参与模板内部连线
+        oneOf:
+          - { $ref: "#/$defs/Uuid" }
+          - { type: "null" }
+      name: { type: string }
+      description: { type: [string, "null"] }
+      when: { $ref: "#/$defs/Expr" }            # 节点级条件守卫(任意 variant 可选)
+    allOf:
+      - oneOf:
+          - { $ref: "#/$defs/Node_SoftwareUsecaseComputing" }
+          - { $ref: "#/$defs/Node_NoAction" }
+          - { $ref: "#/$defs/Node_Script" }
+          - { $ref: "#/$defs/Node_Milestone" }
+          - { $ref: "#/$defs/Node_Generate" }
+          - { $ref: "#/$defs/Node_Loop" }
+          - { $ref: "#/$defs/Node_Reduce" }
+          - { $ref: "#/$defs/Node_Switch" }
+          - { $ref: "#/$defs/Node_SubWorkflow" }
+
+  Node_SoftwareUsecaseComputing:
+    type: object
+    required: [type, usecaseVersionId, softwareVersionId]
+    properties:
+      type: { const: SoftwareUsecaseComputing }
+      usecaseVersionId: { $ref: "#/$defs/Uuid" }
+      softwareVersionId: { $ref: "#/$defs/Uuid" }
+      schedulingStrategy: { $ref: "#/$defs/SchedulingStrategy" }
+      requirements:
+        oneOf: [{ $ref: "#/$defs/Requirements" }, { type: "null" }]
+      inputSlots: { type: array, items: { $ref: "#/$defs/NodeInputSlot" } }
+      outputSlots: { type: array, items: { $ref: "#/$defs/NodeOutputSlot" } }
+      valueOutputsOverride:
+        type: array
+        items: { $ref: "#/$defs/ValueOutput" }
+
+  Node_NoAction:
+    type: object
+    required: [type]
+    properties:
+      type: { const: NoAction }
+      inputSlots:
+        type: array
+        items: { $ref: "#/$defs/NodeInputSlot" }
+        not:
+          contains:
+            type: object
+            required: [type]
+            properties: { type: { const: Dataset } }
+      outputSlots: { type: array, items: { $ref: "#/$defs/NodeOutputSlot" } }
+
+  Node_Script:
+    type: object
+    additionalProperties: false
+    required: [type, id, name]
+    properties:
+      type: { const: Script }
+      id: { $ref: "#/$defs/Slug" }
+      externalId:
+        oneOf: [{ $ref: "#/$defs/Uuid" }, { type: "null" }]
+      name: { type: string }
+      description: { type: [string, "null"] }
+      when: { $ref: "#/$defs/Expr" }
+      source: { $ref: "#/$defs/ScriptSource" }
+      scriptRef: { $ref: "#/$defs/AssetSelector" }
+      runtimeProfileId: { $ref: "#/$defs/Uuid" }
+      runtimeContractRef: { $ref: "#/$defs/SandboxRuntimeContractRef" }
+      executionIdentity:
+        $ref: "#/$defs/ExecutionIdentity"
+        default: { type: Inherit }
+      schedulingStrategy:
+        $ref: "#/$defs/SchedulingStrategy"
+        default: { type: Auto }
+      requirements:
+        oneOf: [{ $ref: "#/$defs/Requirements" }, { type: "null" }]
+      placementConstraint: { $ref: "#/$defs/PlacementConstraint" }
+      inputs:
+        type: object
+        propertyNames: { type: string, minLength: 1 }
+        additionalProperties: { $ref: "#/$defs/ScriptInputSpec" }
+        default: {}
+      outputs:
+        type: object
+        propertyNames: { type: string, minLength: 1 }
+        additionalProperties: { $ref: "#/$defs/ScriptOutputSpec" }
+        default: {}
+      inputSlots:
+        type: array
+        items: { $ref: "#/$defs/NodeInputSlot" }
+        not:
+          contains:
+            type: object
+            required: [type]
+            properties: { type: { const: Dataset } }
+      outputSlots: { type: array, items: { $ref: "#/$defs/NodeOutputSlot" } }
+    allOf:
+      - oneOf:
+          - required: [source]
+          - required: [scriptRef]
+      - oneOf:
+          - required: [runtimeProfileId]
+          - required: [runtimeContractRef]
+
+  Node_Milestone:
+    type: object
+    required: [type, url, customMessage]
+    properties:
+      type: { const: Milestone }
+      url: { type: string }
+      customMessage: { type: string }
+
+  # --- Generate(scatter 源)---
+  Node_Generate:
+    type: object
+    required: [type, rule, output]
+    properties:
+      type: { const: Generate }
+      rule: { $ref: "#/$defs/GenRule" }
+      output: { $ref: "#/$defs/GenOutput" }
+
+  GenOutput:
+    type: object
+    additionalProperties: false
+    required: [descriptor, as]
+    properties:
+      descriptor: { type: string }
+      as: { enum: [List, BatchFiles] }
+
+  GenRule:
+    oneOf:
+      - type: object
+        additionalProperties: false
+        required: [kind, values]
+        properties:
+          kind: { const: Enumeration }
+          values: { type: array }
+      - type: object
+        additionalProperties: false
+        required: [kind, start, stop, step]
+        properties:
+          kind: { const: Range }
+          start: { type: number }
+          stop: { type: number }
+          step:
+            type: number
+            not: { const: 0 }
+      - type: object
+        additionalProperties: false
+        required: [kind, start, stop, num]
+        properties:
+          kind: { const: Linspace }
+          start: { type: number }
+          stop: { type: number }
+          num: { type: integer, minimum: 1 }
+      - type: object
+        additionalProperties: false
+        required: [kind, count, filler]
+        properties:
+          kind: { const: FixedCount }
+          count: { type: integer, minimum: 1 }
+          filler: { $ref: "#/$defs/Filler" }
+      - type: object
+        additionalProperties: false
+        required: [kind, axes]
+        properties:
+          kind: { const: CartesianProduct }
+          axes: { type: array, minItems: 1, items: { $ref: "#/$defs/GenAxis" } }
+      - type: object
+        additionalProperties: false
+        required: [kind, axes]
+        properties:
+          kind: { const: Zip }
+          axes: { type: array, minItems: 1, items: { $ref: "#/$defs/GenAxis" } }
+      - type: object
+        additionalProperties: false
+        required: [kind, source, format]
+        properties:
+          kind: { const: FromFile }
+          source: { $ref: "#/$defs/FromFileSource" }
+          format: { enum: [CSV, JSON, JSONL] }
+          mapping:
+            type: object
+            additionalProperties: { type: string }
+      - type: object
+        additionalProperties: false
+        required: [kind, method, count, dims]
+        properties:
+          kind: { const: Sampling }
+          method: { enum: [Random, LatinHypercube, Sobol, Grid] }
+          count: { type: integer, minimum: 1 }
+          seed: { type: [integer, "null"] }
+          dims: { type: array, minItems: 1, items: { $ref: "#/$defs/SamplingDim" } }
+
+  # 轴 = 带 name 的子生成器(Enumeration/Range/Linspace)
+  GenAxis:
+    oneOf:
+      - type: object
+        additionalProperties: false
+        required: [name, kind, values]
+        properties:
+          name: { $ref: "#/$defs/Slug" }
+          kind: { const: Enumeration }
+          values: { type: array }
+      - type: object
+        additionalProperties: false
+        required: [name, kind, start, stop, step]
+        properties:
+          name: { $ref: "#/$defs/Slug" }
+          kind: { const: Range }
+          start: { type: number }
+          stop: { type: number }
+          step:
+            type: number
+            not: { const: 0 }
+      - type: object
+        additionalProperties: false
+        required: [name, kind, start, stop, num]
+        properties:
+          name: { $ref: "#/$defs/Slug" }
+          kind: { const: Linspace }
+          start: { type: number }
+          stop: { type: number }
+          num: { type: integer, minimum: 1 }
+
+  Filler:
+    oneOf:
+      - type: object
+        additionalProperties: false
+        required: [kind, start, step]
+        properties:
+          kind: { const: AutoNumber }
+          start: { type: integer }
+          step: { type: integer }
+      - type: object
+        additionalProperties: false
+        required: [kind, items]
+        properties:
+          kind: { const: Enumeration }
+          items: { type: array, minItems: 1, items: { type: string } }
+
+  FromFileSource:
+    oneOf:
+      - type: object
+        additionalProperties: false
+        required: [node, output]
+        properties:
+          node: { $ref: "#/$defs/Slug" }
+          output: { type: string }
+      - { const: upload }
+
+  SamplingDim:
+    type: object
+    additionalProperties: false
+    required: [name, dist]
+    properties:
+      name: { $ref: "#/$defs/Slug" }
+      dist: { $ref: "#/$defs/Distribution" }
+
+  Distribution:
+    oneOf:
+      - type: object
+        additionalProperties: false
+        required: [kind, min, max]
+        properties:
+          kind: { const: Uniform }
+          min: { type: number }
+          max: { type: number }
+      - type: object
+        additionalProperties: false
+        required: [kind, mean, std]
+        properties:
+          kind: { const: Normal }
+          mean: { type: number }
+          std: { type: number, exclusiveMinimum: 0 }
+      - type: object
+        additionalProperties: false
+        required: [kind, items]
+        properties:
+          kind: { const: Choice }
+          items: { type: array, minItems: 1 }
+
+  # --- Loop(While | ForEach,嵌套 body)---
+  Node_Loop:
+    type: object
+    required: [type, mode, maxIterations, body]
+    properties:
+      type: { const: Loop }
+      mode: { enum: [While, ForEach] }
+      maxIterations: { $ref: "#/$defs/IntOrExpr" }
+      body: { $ref: "#/$defs/WorkflowSpec" }
+      outputs:
+        type: array
+        items: { $ref: "#/$defs/LoopOutput" }
+      onExhausted: { enum: [Fail, SucceedWithLast] }
+      # While 专属
+      until: { $ref: "#/$defs/Expr" }
+      carry:
+        type: array
+        items: { $ref: "#/$defs/LoopCarry" }
+      # ForEach 专属
+      over: { $ref: "#/$defs/Expr" }
+      maxParallel: { type: integer, minimum: 1 }
+    allOf:
+      - oneOf:
+          - properties: { mode: { const: While } }
+            required: [until]
+          - properties: { mode: { const: ForEach } }
+            required: [over]
+
+  LoopOutput:
+    type: object
+    additionalProperties: false
+    required: [descriptor, from]
+    properties:
+      descriptor: { type: string }
+      from: { $ref: "#/$defs/NodeOutputRef" }
+      aggregate: { enum: [Collect, Concat, Reduce] }
+
+  LoopCarry:
+    type: object
+    additionalProperties: false
+    required: [from, to]
+    properties:
+      from: { $ref: "#/$defs/NodeOutputRef" }
+      to:
+        type: object
+        additionalProperties: false
+        required: [input]
+        properties: { input: { type: string } }
+      initial:
+        oneOf:
+          - { $ref: "#/$defs/NodeOutputRef" }
+          - type: object
+            additionalProperties: false
+            required: [param]
+            properties: { param: { $ref: "#/$defs/Slug" } }
+
+  NodeOutputRef:
+    type: object
+    additionalProperties: false
+    required: [node, output]
+    properties:
+      node: { $ref: "#/$defs/Slug" }
+      output: { type: string }
+
+  # --- Reduce(scatter 汇总)---
+  Node_Reduce:
+    type: object
+    required: [type, from, reducer, output]
+    properties:
+      type: { const: Reduce }
+      from: { $ref: "#/$defs/LoopOutputRef" }
+      ordering: { enum: [ByIndex, Unordered] }
+      reducer: { $ref: "#/$defs/Reducer" }
+      output: { $ref: "#/$defs/ReduceOutput" }
+
+  LoopOutputRef:
+    type: object
+    additionalProperties: false
+    required: [loop, output]
+    properties:
+      loop: { $ref: "#/$defs/Slug" }
+      output: { type: string }
+
+  Reducer:
+    oneOf:
+      - type: object
+        additionalProperties: false
+        required: [kind, columns]
+        properties:
+          kind: { const: ExtractTable }
+          columns: { type: array, minItems: 1, items: { $ref: "#/$defs/ReduceColumn" } }
+      - type: object
+        additionalProperties: false
+        required: [kind]
+        properties:
+          kind: { const: Command }
+          usecaseRef: { $ref: "#/$defs/UsecaseRef" }
+          script: { $ref: "#/$defs/ScriptOriginKind" }
+      - type: object
+        additionalProperties: false
+        required: [kind]
+        properties: { kind: { const: Concat } }
+      - type: object
+        additionalProperties: false
+        required: [kind]
+        properties: { kind: { const: Collect } }
+      - type: object
+        additionalProperties: false
+        required: [kind, over, metrics]
+        properties:
+          kind: { const: Statistics }
+          over: { type: string }
+          metrics:
+            type: array
+            minItems: 1
+            items: { enum: [mean, std, min, max, median, p90, p95, p99] }
+
+  ReduceColumn:
+    type: object
+    additionalProperties: false
+    required: [name, type, source]
+    properties:
+      name: { $ref: "#/$defs/Slug" }
+      type: { $ref: "#/$defs/ValueType" }
+      source: { $ref: "#/$defs/ColumnSource" }
+      extract: { $ref: "#/$defs/Extract" }
+
+  ColumnSource:
+    oneOf:
+      - type: object
+        additionalProperties: false
+        required: [loopItem]
+        properties: { loopItem: { type: string } }
+      - type: object
+        additionalProperties: false
+        required: [collectedOut]
+        properties: { collectedOut: { type: string } }
+      - { $ref: "#/$defs/NodeOutputRef" }
+
+  ReduceOutput:
+    type: object
+    additionalProperties: false
+    required: [kind, descriptor]
+    properties:
+      kind: { enum: [SingleFile, OrderedFolder] }
+      descriptor: { type: string }
+      fileName: { type: [string, "null"] }
+
+  UsecaseRef:
+    type: object
+    additionalProperties: false
+    required: [usecaseVersionId, softwareVersionId]
+    properties:
+      usecaseVersionId: { $ref: "#/$defs/Uuid" }
+      softwareVersionId: { $ref: "#/$defs/Uuid" }
+
+  # --- Switch(多路分支)---
+  Node_Switch:
+    type: object
+    required: [type, cases]
+    properties:
+      type: { const: Switch }
+      cases:
+        type: array
+        minItems: 1
+        items:
+          type: object
+          additionalProperties: false
+          required: [when, to]
+          properties:
+            when: { $ref: "#/$defs/Expr" }
+            to: { $ref: "#/$defs/Slug" }
+      default: { $ref: "#/$defs/Slug" }
+
+  # --- SubWorkflow(嵌套 / 递归)---
+  Node_SubWorkflow:
+    type: object
+    required: [type, ref, maxDepth]
+    properties:
+      type: { const: SubWorkflow }
+      ref: { $ref: "#/$defs/SubWorkflowRef" }
+      maxDepth: { type: integer, minimum: 1 }
+      onDepthExceeded: { enum: [Fail, SucceedWithLast] }
+      inputs:
+        type: array
+        items: { $ref: "#/$defs/SubWorkflowInput" }
+      outputs:
+        type: array
+        items: { $ref: "#/$defs/SubWorkflowOutput" }
+
+  SubWorkflowRef:
+    oneOf:
+      - type: object
+        additionalProperties: false
+        required: [kind, workflowVersionId]
+        properties:
+          kind: { const: ByVersion }
+          workflowVersionId: { $ref: "#/$defs/Uuid" }
+      - type: object
+        additionalProperties: false
+        required: [kind, body]
+        properties:
+          kind: { const: Inline }
+          body: { $ref: "#/$defs/WorkflowSpec" }
+
+  SubWorkflowInput:
+    type: object
+    additionalProperties: false
+    required: [to, from]
+    properties:
+      to:
+        type: object
+        additionalProperties: false
+        required: [param]
+        properties: { param: { $ref: "#/$defs/Slug" } }
+      from: { $ref: "#/$defs/InputBinding" }
+
+  SubWorkflowOutput:
+    type: object
+    additionalProperties: false
+    required: [descriptor, from]
+    properties:
+      descriptor: { type: string }
+      from:
+        type: object
+        additionalProperties: false
+        required: [workflowOutput]
+        properties: { workflowOutput: { type: string } }
+
+  # ---------------------------------------------------------------------------
+  # 插槽 / 关系
+  # ---------------------------------------------------------------------------
+  # 输入绑定:body/子工作流里把 loop.item、参数、上游输出、表达式喂给输入
+  InputBinding:
+    oneOf:
+      - { $ref: "#/$defs/Expr" }
+      - { $ref: "#/$defs/NodeOutputRef" }
+      - type: object
+        additionalProperties: false
+        required: [param]
+        properties: { param: { $ref: "#/$defs/Slug" } }
+
+  NodeInputSlot:
+    type: object
+    required: [type, descriptor]
+    properties:
+      descriptor: { type: string }
+      description: { type: [string, "null"] }
+      optional: { type: boolean, default: false }
+      from: { $ref: "#/$defs/InputBinding" }        # body 内取 loop.item 等
+      sources:                                       # 消费侧多源
+        type: array
+        minItems: 1
+        items: { $ref: "#/$defs/NodeOutputRef" }
+      select: { $ref: "#/$defs/SelectStrategy" }
+    allOf:
+      - oneOf:
+          - properties:
+              type: { const: Text }
+              contents: { type: [array, "null"], items: { $ref: "#/$defs/Uuid" } }
+              rule: { $ref: "#/$defs/TextInputSlotRule" }
+            required: [type]
+          - properties:
+              type: { const: File }
+              contents: { type: [array, "null"], items: { $ref: "#/$defs/FileInput" } }
+              expectedFileName: { type: [string, "null"] }
+              isBatch: { type: boolean }
+            required: [type]
+          - properties:
+              type: { const: Dataset }
+              contents:
+                oneOf:
+                  - { $ref: "#/$defs/DataMarketDataInputRef" }
+                  - { type: "null" }
+            not:
+              anyOf:
+                - required: [from]
+                - required: [sources]
+                - required: [select]
+            required: [type]
+      - if:
+          required: [select]
+        then:
+          required: [sources]
+      - not:
+          required: [from, sources]
+      - not:
+          required: [from, contents]
+      - not:
+          required: [sources, contents]
+
+  SelectStrategy:
+    oneOf:
+      - { enum: [FirstAvailable, RequireExactlyOne] }
+      - { $ref: "#/$defs/Expr" }
+
+  NodeOutputSlot:
+    type: object
+    required: [type, descriptor]
+    properties:
+      descriptor: { type: string }
+      description: { type: [string, "null"] }
+      optional: { type: boolean, default: false }
+    allOf:
+      - oneOf:
+          - properties:
+              type: { const: File }
+              origin: { enum: [CollectedOut, UsecaseOut] }
+              isBatch: { type: boolean }
+            required: [type, origin, isBatch]
+          - properties: { type: { const: Text } }
+            required: [type]
+
+  NodeRelation:
+    type: object
+    additionalProperties: false
+    required: [fromId, toId, slotRelations]
+    properties:
+      fromId: { $ref: "#/$defs/Slug" }
+      toId: { $ref: "#/$defs/Slug" }
+      when: { $ref: "#/$defs/Expr" }                 # 边级条件(可选)
+      slotRelations:
+        type: array
+        items: { $ref: "#/$defs/SlotRelation" }
+
+  SlotRelation:
+    type: object
+    additionalProperties: false
+    required: [fromSlot, toSlot, transferStrategy]
+    properties:
+      fromSlot: { type: string }
+      toSlot: { type: string }
+      transferStrategy: { $ref: "#/$defs/TransferStrategy" }
+      when: { $ref: "#/$defs/Expr" }
+
+  # ---------------------------------------------------------------------------
+  # 能力包值提取
+  # ---------------------------------------------------------------------------
+  ValueOutput:
+    type: object
+    additionalProperties: false
+    required: [descriptor, type, from, extract]
+    properties:
+      descriptor: { $ref: "#/$defs/Slug" }
+      type: { $ref: "#/$defs/ValueType" }
+      from:
+        type: object
+        additionalProperties: false
+        required: [collectedOutDescriptor]
+        properties: { collectedOutDescriptor: { type: string } }
+      extract: { $ref: "#/$defs/Extract" }
+      onMissing: { enum: [Fail, Default] }
+      default: true                                  # any
+
+  Extract:
+    type: object
+    additionalProperties: false
+    required: [kind]
+    properties:
+      kind: { enum: [Regex, JsonPath, Whole] }
+      pattern: { type: string }
+      group: { type: integer, minimum: 0 }
+      path: { type: string }
+
+  # ---------------------------------------------------------------------------
+  # 调度、传输、资源与文件公共类型
+  # ---------------------------------------------------------------------------
+  SchedulingStrategy:
+    oneOf:
+      - type: object
+        additionalProperties: false
+        required: [type, queues]
+        properties:
+          type: { const: Manual }
+          queues: { type: array, minItems: 1, maxItems: 1, items: { $ref: "#/$defs/Uuid" } }
+      - type: object
+        additionalProperties: false
+        required: [type]
+        properties: { type: { const: Auto } }
+      - type: object
+        additionalProperties: false
+        required: [type, queues]
+        properties:
+          type: { const: Prefer }
+          queues: { type: array, minItems: 1, items: { $ref: "#/$defs/Uuid" } }
+
+  TransferStrategy:
+    type: object
+    additionalProperties: false
+    required: [type]
+    properties:
+      type: { enum: [Network, Disk] }
+
+  Requirements:
+    type: object
+    additionalProperties: false
+    properties:
+      cpuCores: { type: [integer, "null"], minimum: 0 }
+      nodeCount: { type: [integer, "null"], minimum: 0 }
+      maxWallTime: { type: [integer, "null"], minimum: 0 }
+      maxCpuTime: { type: [integer, "null"], minimum: 0 }
+      stopTime: { type: [integer, "null"], minimum: 0 }
+
+  FileInput:
+    type: object
+    additionalProperties: false
+    required: [fileMetadataId, fileMetadataName, hash, size]
+    properties:
+      fileMetadataId: { $ref: "#/$defs/Uuid" }
+      fileMetadataName: { type: string }
+      hash: { type: string }
+      size: { type: integer, minimum: 0 }
+
+  DataMarketDataInputRef:
+    type: object
+    additionalProperties: false
+    required: [source, assetId, versionId, manifestDigest]
+    properties:
+      source: { const: data-market }
+      assetId: { $ref: "#/$defs/Uuid" }
+      versionId: { $ref: "#/$defs/Uuid" }
+      manifestDigest: { type: string, minLength: 1, maxLength: 128 }
+      selectedEntries:
+        type: array
+        default: []
+        items: { $ref: "#/$defs/DataAssetEntryPath" }
+      targetPath: { $ref: "#/$defs/DataDeliveryTargetPath" }
+
+  DataAssetEntryPath:
+    type: string
+    minLength: 1
+    maxLength: 2048
+    pattern: "^(?!/)(?!.*\\\\)(?!.*(?:^|/)\\.{1,2}(?:/|$))(?!.*//).+$"
+
+  DataDeliveryTargetPath:
+    $ref: "#/$defs/DataAssetEntryPath"
+
+  TextInputSlotRule:
+    oneOf:
+      - { type: object, required: [type], properties: { type: { const: Json } } }
+      - { type: object, required: [type], properties: { type: { const: Number } } }
+      - type: object
+        required: [type, regex]
+        properties:
+          type: { const: Regex }
+          regex: { type: string }
+      - { type: object, required: [type], properties: { type: { const: AnyString } } }
+
+  # ---------------------------------------------------------------------------
+  # Script canonical source、runtime、身份与 I/O manifest
+  # ---------------------------------------------------------------------------
+  AssetSelector:
+    type: object
+    additionalProperties: false
+    required: [source, name, version]
+    properties:
+      source:
+        enum: [official-upstream, platform-fork, cp-private, cp-shared, sp-draft, sp-published]
+      name: { type: string, minLength: 1 }
+      version: { type: string, minLength: 1 }
+      providerOrgId: { $ref: "#/$defs/Uuid" }
+    allOf:
+      - if:
+          required: [source]
+          properties: { source: { const: cp-private } }
+        then:
+          required: [providerOrgId]
+
+  ScriptSource:
+    oneOf:
+      - type: object
+        additionalProperties: false
+        required: [type, assetId, revision, sha256]
+        properties:
+          type: { const: AssetRevision }
+          assetId: { $ref: "#/$defs/Uuid" }
+          assetRevisionId: { $ref: "#/$defs/Uuid" }
+          revision: { type: integer, minimum: 1 }
+          sha256: { type: string, pattern: "^[0-9a-f]{64}$" }
+      - type: object
+        additionalProperties: false
+        required: [type, language, content]
+        properties:
+          type: { const: Inline }
+          language: { enum: [python, nodejs, bash] }
+          content: { type: string }
+
+  SandboxRuntimeContractRef:
+    type: object
+    additionalProperties: false
+    required: [name, version]
+    properties:
+      name: { type: string, minLength: 1 }
+      version: { type: string, minLength: 1 }
+
+  ExecutionIdentity:
+    oneOf:
+      - type: object
+        additionalProperties: false
+        required: [type]
+        properties: { type: { const: Inherit } }
+      - type: object
+        additionalProperties: false
+        required: [type]
+        properties: { type: { const: SharedService } }
+      - type: object
+        additionalProperties: false
+        required: [type]
+        properties: { type: { const: MappedAuto } }
+      - type: object
+        additionalProperties: false
+        required: [type, mappingId]
+        properties:
+          type: { const: MappedAccount }
+          mappingId: { $ref: "#/$defs/Uuid" }
+
+  ScriptIoType:
+    enum: [Text, JSON, File, FileBatch]
+
+  ScriptInputSpec:
+    type: object
+    additionalProperties: false
+    required: [type]
+    properties:
+      type: { $ref: "#/$defs/ScriptIoType" }
+      required: { type: boolean, default: true }
+
+  ScriptOutputSpec:
+    type: object
+    additionalProperties: false
+    required: [type]
+    properties:
+      type: { $ref: "#/$defs/ScriptIoType" }
+      required: { type: boolean, default: true }
+      validator: true
+      locality:
+        $ref: "#/$defs/OutputLocality"
+        default: { type: Auto }
+      durability: { enum: [Ephemeral, Checkpoint, Persistent], default: Ephemeral }
+      sizeHint:
+        $ref: "#/$defs/OutputSizeHint"
+        default: { type: SizeClass, value: Unknown }
+
+  OutputLocality:
+    oneOf:
+      - type: object
+        additionalProperties: false
+        required: [type]
+        properties: { type: { const: Auto } }
+      - type: object
+        additionalProperties: false
+        required: [type, input]
+        properties:
+          type: { const: FollowInput }
+          input: { type: string, minLength: 1 }
+      - type: object
+        additionalProperties: false
+        required: [type]
+        properties: { type: { const: FollowConsumer } }
+      - type: object
+        additionalProperties: false
+        required: [type, siteId]
+        properties:
+          type: { const: TargetSite }
+          siteId: { type: string, minLength: 1 }
+      - type: object
+        additionalProperties: false
+        required: [type, storageId]
+        properties:
+          type: { const: TargetStorage }
+          storageId: { type: string, minLength: 1 }
+
+  OutputSizeHint:
+    oneOf:
+      - type: object
+        additionalProperties: false
+        required: [type, bytes]
+        properties:
+          type: { const: FixedBytes }
+          bytes: { type: integer, minimum: 0 }
+      - type: object
+        additionalProperties: false
+        required: [type, input, ratio]
+        properties:
+          type: { const: InputRatio }
+          input: { type: string, minLength: 1 }
+          ratio: { type: number, minimum: 0 }
+      - type: object
+        additionalProperties: false
+        required: [type, value]
+        properties:
+          type: { const: SizeClass }
+          value: { enum: [Tiny, Small, Medium, Large, Huge, Unknown] }
+
+  PlacementConstraint:
+    type: object
+    additionalProperties: false
+    properties:
+      mode: { enum: [Require, Prefer], default: Prefer }
+      siteIds: { type: array, items: { type: string, minLength: 1 }, default: [] }
+      clusterIds: { type: array, items: { type: string, minLength: 1 }, default: [] }
+      dataMovement: { enum: [Allow, Forbid], default: Allow }
+
+  # 仅供 Reduce.Command.script 使用，与当前 reduce.ts 契约一致；该 reducer 尚未接入执行。
+  ScriptOriginKind:
+    oneOf:
+      - type: object
+        additionalProperties: false
+        required: [type, url]
+        properties:
+          type: { const: Git }
+          url: { type: string }
+      - type: object
+        additionalProperties: false
+        required: [type, content]
+        properties:
+          type: { const: Edit }
+          content: { type: string }
+
+  Slug:
+    type: string
+    pattern: "^[a-zA-Z_][a-zA-Z0-9_]*$"
+
+  Uuid:
+    type: string
+    pattern: "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"

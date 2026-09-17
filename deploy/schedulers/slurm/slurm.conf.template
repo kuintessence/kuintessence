@@ -1,0 +1,25 @@
+ClusterName=kq-docker-slurm
+ControlMachine=__HOSTNAME__
+SlurmUser=slurm
+SlurmctldPort=6817
+SlurmdPort=6818
+AuthType=auth/munge
+StateSaveLocation=/var/spool/slurmctld
+SlurmdSpoolDir=/var/spool/slurmd
+SwitchType=switch/none
+MpiDefault=none
+MailProg=/bin/true
+ProctrackType=proctrack/linuxproc
+ReturnToService=2
+SlurmctldPidFile=/run/slurmctld.pid
+SlurmdPidFile=/run/slurmd.pid
+SlurmctldLogFile=/var/log/slurm/slurmctld.log
+SlurmdLogFile=/var/log/slurm/slurmd.log
+TaskPlugin=task/none
+SchedulerType=sched/backfill
+SelectType=select/cons_tres
+SelectTypeParameters=CR_Core
+AccountingStorageType=accounting_storage/none
+JobAcctGatherType=jobacct_gather/none
+NodeName=__HOSTNAME__ CPUs=__CPUS__ Sockets=1 CoresPerSocket=__CPUS__ ThreadsPerCore=1 RealMemory=__REAL_MEMORY__ State=UNKNOWN
+PartitionName=debug Nodes=__HOSTNAME__ Default=YES MaxTime=INFINITE State=UP

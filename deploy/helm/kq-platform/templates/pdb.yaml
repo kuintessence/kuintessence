@@ -1,0 +1,29 @@
+{{- if and .Values.server.podDisruptionBudget.enabled (gt (int .Values.server.replicas) 1) }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "kq-platform.fullname" . }}-server
+  labels:
+    {{- include "kq-platform.labels" . | nindent 4 }}
+spec:
+  minAvailable: {{ .Values.server.podDisruptionBudget.minAvailable }}
+  selector:
+    matchLabels:
+      {{- include "kq-platform.selectorLabels" . | nindent 6 }}
+      component: server
+{{- end }}
+{{- if and .Values.registry.enabled .Values.registry.podDisruptionBudget.enabled (gt (int .Values.registry.replicas) 1) }}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "kq-platform.fullname" . }}-registry
+  labels:
+    {{- include "kq-platform.labels" . | nindent 4 }}
+spec:
+  minAvailable: {{ .Values.registry.podDisruptionBudget.minAvailable }}
+  selector:
+    matchLabels:
+      {{- include "kq-platform.selectorLabels" . | nindent 6 }}
+      component: registry
+{{- end }}

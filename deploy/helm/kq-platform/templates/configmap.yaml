@@ -1,0 +1,46 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}-config
+  labels: {{- include "kq.labels" . | nindent 4 }}
+data:
+  SERVER_PORT: {{ .Values.server.port | quote }}
+  SERVER_GRPC_PORT: {{ .Values.server.grpcPort | quote }}
+  REGISTRY_PORT: {{ .Values.registry.port | quote }}
+  REGISTRY_PUBLISHER_ROLES: {{ .Values.registry.publisherRoles | quote }}
+  REGISTRY_AUTH_MODE: {{ .Values.registry.auth.mode | quote }}
+  REGISTRY_MAX_UPLOAD_BYTES: {{ .Values.registry.uploadLimits.maxUploadBytes | quote }}
+  REGISTRY_MAX_ACTIVE_UPLOADS: {{ .Values.registry.uploadLimits.maxActiveUploads | quote }}
+  REGISTRY_MAX_ACTIVE_UPLOADS_PER_REPOSITORY: {{ .Values.registry.uploadLimits.maxActiveUploadsPerRepository | quote }}
+  REGISTRY_MAX_INCOMPLETE_UPLOAD_BYTES: {{ .Values.registry.uploadLimits.maxIncompleteUploadBytes | quote }}
+  {{- if .Values.registry.auth.issuer }}
+  REGISTRY_JWT_ISSUER: {{ .Values.registry.auth.issuer | quote }}
+  {{- end }}
+  {{- if .Values.registry.auth.audience }}
+  REGISTRY_JWT_AUDIENCE: {{ .Values.registry.auth.audience | quote }}
+  {{- end }}
+  LOG_LEVEL: {{ .Values.server.env.LOG_LEVEL | default "info" | quote }}
+  MTLS_MODE: {{ .Values.server.env.MTLS_MODE | default "off" | quote }}
+  {{- if eq (.Values.server.env.MTLS_MODE | default "off") "trusted-proxy" }}
+  MTLS_TRUSTED_PROXY_CIDRS: {{ required "server.env.MTLS_TRUSTED_PROXY_CIDRS is required when server.env.MTLS_MODE=trusted-proxy" .Values.server.env.MTLS_TRUSTED_PROXY_CIDRS | quote }}
+  MTLS_HEADER_FINGERPRINT: {{ .Values.server.env.MTLS_HEADER_FINGERPRINT | default "x-kq-client-cert-fingerprint" | quote }}
+  {{- end }}
+  HTTP_TRUSTED_PROXY_CIDRS: {{ .Values.server.env.HTTP_TRUSTED_PROXY_CIDRS | default "" | quote }}
+  NETDRIVE_ENABLED: {{ ternary "true" "false" .Values.netdrive.enabled | quote }}
+  {{- if .Values.netdrive.enabled }}
+  {{- if .Values.minio.enabled }}
+  NETDRIVE_ENDPOINT: {{ default (printf "%s-minio" .Release.Name) .Values.netdrive.endpoint | quote }}
+  {{- else }}
+  NETDRIVE_ENDPOINT: {{ required "netdrive.endpoint is required when netdrive.enabled=true and minio.enabled=false" .Values.netdrive.endpoint | quote }}
+  {{- end }}
+  NETDRIVE_PORT: {{ .Values.netdrive.port | quote }}
+  NETDRIVE_USE_SSL: {{ ternary "true" "false" .Values.netdrive.useSsl | quote }}
+  NETDRIVE_BUCKET: {{ .Values.netdrive.bucket | quote }}
+  DATA_MARKET_STAGING_BUCKET: {{ .Values.netdrive.dataMarketStagingBucket | quote }}
+  DATA_MARKET_IMMUTABLE_BUCKET: {{ .Values.netdrive.dataMarketImmutableBucket | quote }}
+  DATA_MARKET_COMMITTER_ACCESS_KEY: {{ .Values.netdrive.accessKey | quote }}
+  DATA_MARKET_STAGING_EXPIRY_DAYS: {{ .Values.netdrive.dataMarketStagingExpiryDays | quote }}
+  DATA_MARKET_IMMUTABLE_RETENTION_DAYS: {{ .Values.netdrive.dataMarketImmutableRetentionDays | quote }}
+  NETDRIVE_PUBLIC_URL: {{ .Values.netdrive.publicUrl | quote }}
+  NETDRIVE_REGION: {{ .Values.netdrive.region | quote }}
+  {{- end }}

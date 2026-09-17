@@ -1,0 +1,51 @@
+name: Scheduler image architecture
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: scheduler-image-architecture-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  k3s-image:
+    name: K3s image (${{ matrix.platform }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            overlay: deploy/schedulers/platform-amd64.yml
+          - platform: linux/arm64
+            overlay: deploy/schedulers/platform-arm64.yml
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build scheduler K3s image
+        env:
+          # Compose parses service environments even when only building an image.
+          KQ_DATA_MARKET_COMMITTER_SECRET_KEY: architecture-build-placeholder-not-for-runtime
+        run: >-
+          docker compose --project-directory .
+          -f deploy/compose/docker-compose.schedulers.yml
+          -f ${{ matrix.overlay }}
+          build scheduler-k3s
+
+      - name: Verify image architecture contract
+        run: >-
+          docker run --rm
+          --platform ${{ matrix.platform }}
+          --entrypoint /usr/local/bin/kq-verify-architecture
+          kuintessence/scheduler-k3s-aio:local
+          /usr/local/bin/bun /usr/local/bin/k3s

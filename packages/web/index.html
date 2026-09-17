@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Kuintessence</title>
+    <script>
+      // Apply persisted theme before React mounts so reload doesn't flash the wrong palette.
+      (() => {
+        try {
+          const pref = localStorage.getItem("kq.theme") || "system";
+          const resolved =
+            pref === "system"
+              ? window.matchMedia("(prefers-color-scheme: dark)").matches
+                ? "dark"
+                : "light"
+              : pref;
+          if (resolved === "dark") document.documentElement.classList.add("dark");
+          document.documentElement.dataset.theme = resolved;
+        } catch {
+          // localStorage unavailable — fall through to default theme.
+        }
+      })();
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

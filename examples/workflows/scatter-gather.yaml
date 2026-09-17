@@ -1,0 +1,74 @@
+# Scatter-gather, the platform's headline pattern. A ForEach `Loop` scatters
+# work across a CEL list and exposes a `Collect`-aggregated loop output; a
+# `Reduce` node then gathers each iteration's results into one CSV table
+# (`ExtractTable`: one row per iteration, one column per extraction item) and
+# runs after the loop via a node relation.
+name: scatter-gather
+description: >
+  Scatter-gather. A ForEach loop scatters work across a list and collects each
+  iteration's output; a Reduce node gathers the collected outputs into one
+  table.
+parameters: []
+spec:
+  nodeDrafts:
+    - type: Loop
+      id: scatter
+      name: Scatter
+      mode: ForEach
+      over:
+        expr: "['a', 'b', 'c']"
+      maxIterations: 3
+      body:
+        nodeDrafts:
+          - type: SoftwareUsecaseComputing
+            id: shard
+            name: Shard
+            usecaseVersionId: "3f2504e0-4f89-41d3-9a0c-0305e82c3301"
+            softwareVersionId: "7c9e6679-7425-40de-944b-e07fc1f90ae7"
+            inputSlots:
+              - type: Text
+                descriptor: script
+                from:
+                  expr: "'echo done > result.txt; echo metric=1'"
+            outputSlots:
+              - type: File
+                descriptor: result
+                origin: UsecaseOut
+                isBatch: false
+        nodeRelations: []
+      outputs:
+        - descriptor: results
+          from:
+            node: shard
+            output: result
+          aggregate: Collect
+    - type: Reduce
+      id: gather
+      name: Gather
+      from:
+        loop: scatter
+        output: results
+      reducer:
+        kind: ExtractTable
+        columns:
+          - name: shard_result
+            type: double
+            source:
+              node: shard
+              output: result
+          - name: metric
+            type: double
+            source:
+              collectedOut: out
+            extract:
+              kind: Regex
+              pattern: "metric=([0-9.]+)"
+              group: 1
+      output:
+        kind: SingleFile
+        descriptor: table
+        fileName: results.csv
+  nodeRelations:
+    - fromId: scatter
+      toId: gather
+      slotRelations: []

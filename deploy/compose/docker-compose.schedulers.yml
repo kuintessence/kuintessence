@@ -1,0 +1,513 @@
+x-scheduler-dev-app: &scheduler-dev-app
+  image: kuintessence-dev-workspace:latest
+  build:
+    context: .
+    dockerfile: deploy/dev/Dockerfile
+  working_dir: /app
+  volumes:
+    - .:/app
+    - scheduler-app-node-modules:/app/node_modules
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: kq
+      POSTGRES_PASSWORD: kq
+      POSTGRES_DB: kuintessence
+    volumes:
+      - scheduler-pg-data:/var/lib/postgresql/data
+    ports:
+      - "${KQ_SCHEDULER_POSTGRES_PORT:-5432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U kq -d kuintessence"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "${KQ_SCHEDULER_REDIS_PORT:-6379}:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  minio:
+    image: minio/minio:RELEASE.2025-09-07T16-13-09Z
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    volumes:
+      - scheduler-minio-data:/data
+    ports:
+      - "${KQ_SCHEDULER_MINIO_CONSOLE_PORT:-9001}:9001"
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+
+  minio-cors:
+    image: nginx:1.27-alpine
+    volumes:
+      - ./deploy/minio/cors-proxy.conf:/etc/nginx/conf.d/default.conf:ro
+    ports:
+      - "${KQ_SCHEDULER_MINIO_API_PORT:-9000}:8080"
+    depends_on:
+      minio:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/minio/health/live"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  minio-init:
+    image: minio/mc:RELEASE.2025-08-13T08-35-41Z
+    depends_on:
+      minio:
+        condition: service_healthy
+      minio-cors:
+        condition: service_healthy
+    environment:
+      MINIO_ENDPOINT: http://minio:9000
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+      NETDRIVE_BUCKET: kq-netdrive
+      DATA_MARKET_STAGING_BUCKET: kq-data-market-staging
+      DATA_MARKET_IMMUTABLE_BUCKET: ${DATA_MARKET_IMMUTABLE_BUCKET:-kq-data-market-immutable}
+      DATA_MARKET_IMMUTABLE_RETENTION_DAYS: "365"
+      DATA_MARKET_STAGING_EXPIRY_DAYS: "1"
+      DATA_MARKET_COMMITTER_ACCESS_KEY: ${KQ_DATA_MARKET_COMMITTER_ACCESS_KEY:-kq-data-market-committer}
+      DATA_MARKET_COMMITTER_SECRET_KEY: ${KQ_DATA_MARKET_COMMITTER_SECRET_KEY:?KQ_DATA_MARKET_COMMITTER_SECRET_KEY is required}
+    volumes:
+      - ./deploy/minio/bootstrap-object-lock.sh:/bootstrap-object-lock.sh:ro
+    entrypoint: ["sh", "/bootstrap-object-lock.sh"]
+    restart: "no"
+
+  spicedb-migrate:
+    image: ${KQ_SPICEDB_IMAGE:-authzed/spicedb:v1.54.0}
+    command:
+      [
+        "migrate",
+        "head",
+        "--datastore-engine",
+        "postgres",
+        "--datastore-conn-uri",
+        "${KQ_SPICEDB_DATASTORE_CONN_URI:-postgres://kq:kq@postgres:5432/kuintessence?sslmode=disable}",
+      ]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  spicedb:
+    image: ${KQ_SPICEDB_IMAGE:-authzed/spicedb:v1.54.0}
+    command:
+      [
+        "serve",
+        "--grpc-preshared-key",
+        "${KQ_SPICEDB_PRESHARED_KEY:-local-dev-authz}",
+        "--datastore-engine",
+        "postgres",
+        "--datastore-conn-uri",
+        "${KQ_SPICEDB_DATASTORE_CONN_URI:-postgres://kq:kq@postgres:5432/kuintessence?sslmode=disable}",
+        "--datastore-conn-pool-read-max-open",
+        "4",
+        "--datastore-conn-pool-read-min-open",
+        "1",
+        "--datastore-conn-pool-read-max-idletime",
+        "30s",
+        "--datastore-conn-pool-write-max-open",
+        "2",
+        "--datastore-conn-pool-write-min-open",
+        "1",
+        "--datastore-conn-pool-write-max-idletime",
+        "30s",
+      ]
+    ports:
+      - "${KQ_SCHEDULER_SPICEDB_GRPC_PORT:-50051}:50051"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      spicedb-migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "spicedb",
+          "datastore",
+          "head",
+          "--datastore-engine",
+          "postgres",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  casdoor-postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: casdoor
+      POSTGRES_PASSWORD: casdoor_dev_password
+      POSTGRES_DB: casdoor
+    volumes:
+      - scheduler-casdoor-pg-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U casdoor -d casdoor"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  casdoor:
+    build:
+      context: deploy/casdoor
+      dockerfile: Dockerfile
+    environment:
+      RUNNING_IN_DOCKER: "true"
+      CASDOOR_ORIGIN: ${SSO_BOOTSTRAP_ISSUER_URL:-${KQ_SCHEDULER_CASDOOR_BOOTSTRAP_ISSUER_URL:-http://casdoor.localhost:${KQ_SCHEDULER_CASDOOR_HTTP_PORT:-15180}}}
+      defaultLanguage: zh
+      forceLanguage: zh
+    volumes:
+      - ./deploy/casdoor/init_data.json:/init_data.json:ro
+    depends_on:
+      casdoor-postgres:
+        condition: service_healthy
+
+  casdoor-proxy:
+    image: nginx:1.27-alpine
+    volumes:
+      - ./deploy/casdoor/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    ports:
+      - "${KQ_SCHEDULER_CASDOOR_HTTP_PORT:-15180}:8080"
+    depends_on:
+      casdoor:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  db-migrate:
+    <<: *scheduler-dev-app
+    working_dir: /app/packages/db
+    command: ["bun", "run", "src/pg/migrate.ts"]
+    environment:
+      DATABASE_URL: postgres://kq:kq@postgres:5432/kuintessence
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  server:
+    <<: *scheduler-dev-app
+    command: ["bun", "run", "--filter", "@kuintessence/server", "dev"]
+    environment:
+      DATABASE_URL: postgres://kq:kq@postgres:5432/kuintessence
+      DB_MAX_CONNECTIONS: "6"
+      DB_IDLE_TIMEOUT_SEC: "30"
+      REDIS_URL: redis://redis:6379
+      JWT_SECRET: dev-secret-change-me-at-least-32-chars-long
+      SERVER_PORT: "3000"
+      SERVER_GRPC_PORT: "3001"
+      LOG_LEVEL: info
+      NODE_ENV: development
+      CLUSTER_FILE_STATIC_ROOTS: /home,/scratch,/work,/projects
+      MTLS_REQUIRED: "false"
+      WORKFLOW_RUN_BASE: /tmp/kuintessence-workflows
+      NETDRIVE_ENABLED: "true"
+      NETDRIVE_ENDPOINT: minio
+      NETDRIVE_PORT: "9000"
+      NETDRIVE_USE_SSL: "false"
+      NETDRIVE_ACCESS_KEY: ${KQ_DATA_MARKET_COMMITTER_ACCESS_KEY:-kq-data-market-committer}
+      NETDRIVE_SECRET_KEY: ${KQ_DATA_MARKET_COMMITTER_SECRET_KEY:?KQ_DATA_MARKET_COMMITTER_SECRET_KEY is required}
+      NETDRIVE_BUCKET: kq-netdrive
+      DATA_MARKET_STAGING_BUCKET: kq-data-market-staging
+      DATA_MARKET_IMMUTABLE_BUCKET: ${DATA_MARKET_IMMUTABLE_BUCKET:-kq-data-market-immutable}
+      DATA_MARKET_STAGING_EXPIRY_DAYS: "1"
+      NETDRIVE_REGION: us-east-1
+      NETDRIVE_PUBLIC_URL: "http://localhost:${KQ_SCHEDULER_MINIO_API_PORT:-9000}"
+      AUTHZ_MODE: enforce
+      AUTHZ_SPICEDB_ENDPOINT: ${KQ_SCHEDULER_SPICEDB_ENDPOINT:-spicedb:50051}
+      AUTHZ_SPICEDB_TOKEN: ${KQ_SPICEDB_PRESHARED_KEY:-local-dev-authz}
+      AUTHZ_SCHEMA_PATH: /app/authz/schema.zed
+      WEB_BASE_URL: "http://localhost:${KQ_SCHEDULER_WEB_PORT:-5173}/"
+      SSO_BOOTSTRAP_ENABLED: "true"
+      SSO_BOOTSTRAP_ISSUER_URL: ${KQ_SCHEDULER_CASDOOR_BOOTSTRAP_ISSUER_URL:-http://casdoor.localhost:${KQ_SCHEDULER_CASDOOR_HTTP_PORT:-15180}}
+      SSO_BOOTSTRAP_CLIENT_ID: ${KQ_SCHEDULER_CASDOOR_BOOTSTRAP_CLIENT_ID:-kuintessence-server}
+      SSO_BOOTSTRAP_CLIENT_SECRET: ${KQ_SCHEDULER_CASDOOR_BOOTSTRAP_CLIENT_SECRET:-kuintessence-server-dev-client-secret-change-me}
+      SSO_BOOTSTRAP_REDIRECT_URI: ${KQ_SCHEDULER_CASDOOR_BOOTSTRAP_REDIRECT_URI:-http://localhost:${KQ_SCHEDULER_WEB_PORT:-5173}/platform/api/auth/oidc/callback}
+      SSO_BOOTSTRAP_GROUP_MAPPING: ${KQ_SCHEDULER_CASDOOR_BOOTSTRAP_GROUP_MAPPING:-{"kq-super-admins":"super_admin","kq-platform-admins":"platform_admin","kq-operators":"operator","kq-users":"user"}}
+      SSO_BOOTSTRAP_AUTO_CREATE_USERS: "true"
+    extra_hosts:
+      - "casdoor.localhost:host-gateway"
+    ports:
+      - "${KQ_SCHEDULER_SERVER_HTTP_PORT:-3000}:3000"
+      - "${KQ_SCHEDULER_SERVER_GRPC_PORT:-3001}:3001"
+    depends_on:
+      db-migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+      spicedb:
+        condition: service_healthy
+      casdoor-proxy:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "bun",
+          "-e",
+          "fetch('http://127.0.0.1:3000/api/health').then((r)=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+
+  registry:
+    <<: *scheduler-dev-app
+    command: ["bun", "run", "--filter", "@kuintessence/registry", "dev"]
+    environment:
+      DATABASE_URL: postgres://kq:kq@postgres:5432/kuintessence
+      DB_MAX_CONNECTIONS: "3"
+      DB_IDLE_TIMEOUT_SEC: "30"
+      REGISTRY_PORT: "3100"
+      LOG_LEVEL: info
+      NODE_ENV: development
+      REGISTRY_AUTH_MODE: jwt
+      REGISTRY_JWT_SECRET: dev-secret-change-me-at-least-32-chars-long
+      BLOB_STORE_DIR: /var/lib/kuintessence/registry/blobs
+      ECOSYSTEM_RELEASE_TRUSTED_KEYS: "${ECOSYSTEM_RELEASE_TRUSTED_KEYS:-{}}"
+    volumes:
+      - .:/app
+      - scheduler-app-node-modules:/app/node_modules
+      - scheduler-registry-data:/var/lib/kuintessence/registry
+    ports:
+      - "${KQ_SCHEDULER_REGISTRY_PORT:-3100}:3100"
+    depends_on:
+      db-migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "bun",
+          "-e",
+          "fetch('http://127.0.0.1:3100/api/health').then((r)=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+
+  web:
+    <<: *scheduler-dev-app
+    command:
+      ["bun", "run", "--filter", "@kuintessence/web", "dev", "--", "--host", "0.0.0.0"]
+    environment:
+      KQ_WEB_SERVER_PROXY_TARGET: http://server:3000
+      KQ_WEB_REGISTRY_PROXY_TARGET: http://registry:3100
+    ports:
+      - "${KQ_SCHEDULER_WEB_PORT:-5173}:5173"
+    depends_on:
+      server:
+        condition: service_started
+      registry:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "bun",
+          "-e",
+          "fetch('http://localhost:5173').then((r)=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+
+  scheduler-base:
+    image: kuintessence/scheduler-base:local
+    build:
+      context: deploy/schedulers
+      dockerfile: base/Dockerfile
+      args:
+        APT_MIRROR: ${KQ_SCHEDULER_APT_MIRROR:-}
+    command: ["true"]
+    restart: "no"
+
+  agent-deps:
+    image: oven/bun:1.3.13
+    working_dir: /workspace
+    command:
+      [
+        "bash",
+        "-lc",
+        "deploy/schedulers/common/install-agent-deps.sh /workspace /workspace/node_modules",
+      ]
+    volumes:
+      - .:/workspace:ro
+      - scheduler-agent-node-modules:/workspace/node_modules
+      - scheduler-bun-cache:/root/.bun/install/cache
+    restart: "no"
+
+  scheduler-slurm:
+    image: kuintessence/scheduler-slurm-aio:local
+    build:
+      context: deploy/schedulers
+      dockerfile: slurm/Dockerfile
+      additional_contexts:
+        scheduler-base: service:scheduler-base
+      args:
+        APT_MIRROR: ${KQ_SCHEDULER_APT_MIRROR:-}
+    hostname: scheduler-slurm
+    environment:
+      SERVER_GRPC_URL: http://server:3001
+      SERVER_HTTP_URL: http://server:3000
+      AGENT_ID: scheduler-slurm
+      AGENT_SITE_NAME: Docker Slurm AIO
+      AGENT_DB_PATH: /var/lib/kuintessence/agent.db
+      KQ_AGENT_REGISTRATION_SCHEDULER: slurm
+      AGENT_SPACK_ENABLED: "true"
+      AGENT_SPACK_PATH: /opt/spack/bin/spack
+      AGENT_FILE_TRANSFER_CONNECT_TO: "localhost:${KQ_SCHEDULER_MINIO_API_PORT:-9000}:host.docker.internal:${KQ_SCHEDULER_MINIO_API_PORT:-9000}"
+      LOG_LEVEL: info
+      NODE_ENV: development
+    volumes:
+      - .:/workspace:ro
+      - scheduler-agent-node-modules:/workspace/node_modules
+      - scheduler-bun-cache:/var/cache/bun
+      - scheduler-slurm-state:/var/lib/kuintessence
+      - scheduler-slurm-scratch:/scratch
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      server:
+        condition: service_healthy
+      agent-deps:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "sinfo -h -o '%T' | grep -Eq 'idle|alloc|mix'"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+
+  scheduler-pbs:
+    image: kuintessence/scheduler-pbs-aio:local
+    build:
+      context: deploy/schedulers
+      dockerfile: pbs/Dockerfile
+      additional_contexts:
+        scheduler-base: service:scheduler-base
+      args:
+        APT_MIRROR: ${KQ_SCHEDULER_APT_MIRROR:-}
+    hostname: scheduler-pbs
+    privileged: true
+    environment:
+      SERVER_GRPC_URL: http://server:3001
+      SERVER_HTTP_URL: http://server:3000
+      AGENT_ID: scheduler-pbs
+      AGENT_SITE_NAME: Docker PBS AIO
+      AGENT_DB_PATH: /var/lib/kuintessence/agent.db
+      KQ_AGENT_REGISTRATION_SCHEDULER: pbs-pro
+      AGENT_SPACK_ENABLED: "true"
+      AGENT_SPACK_PATH: /opt/spack/bin/spack
+      HOME: /home/kq
+      AGENT_FILE_TRANSFER_CONNECT_TO: "localhost:${KQ_SCHEDULER_MINIO_API_PORT:-9000}:host.docker.internal:${KQ_SCHEDULER_MINIO_API_PORT:-9000}"
+      LOG_LEVEL: info
+      NODE_ENV: development
+    volumes:
+      - .:/workspace:ro
+      - scheduler-agent-node-modules:/workspace/node_modules
+      - scheduler-bun-cache:/var/cache/bun
+      - scheduler-pbs-state:/var/lib/kuintessence
+      - scheduler-pbs-scratch:/scratch
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      server:
+        condition: service_healthy
+      agent-deps:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "qstat -B >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 5s
+      retries: 18
+      start_period: 90s
+
+  scheduler-k3s:
+    image: kuintessence/scheduler-k3s-aio:local
+    build:
+      context: deploy/schedulers
+      dockerfile: k3s/Dockerfile
+      additional_contexts:
+        scheduler-base: service:scheduler-base
+      args:
+        APT_MIRROR: ${KQ_SCHEDULER_APT_MIRROR:-}
+    hostname: scheduler-k3s
+    privileged: true
+    cgroup: host
+    environment:
+      SERVER_GRPC_URL: http://server:3001
+      SERVER_HTTP_URL: http://server:3000
+      AGENT_ID: scheduler-k3s
+      AGENT_SITE_NAME: Docker K3s AIO
+      AGENT_DB_PATH: /var/lib/kuintessence/agent.db
+      KQ_AGENT_REGISTRATION_SCHEDULER: kubernetes
+      AGENT_SPACK_ENABLED: "true"
+      AGENT_SPACK_PATH: /opt/spack/bin/spack
+      AGENT_K8S_DEFAULT_IMAGE: kq-governed-spack:zlib-1.3.1
+      KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+      AGENT_FILE_TRANSFER_CONNECT_TO: "localhost:${KQ_SCHEDULER_MINIO_API_PORT:-9000}:host.docker.internal:${KQ_SCHEDULER_MINIO_API_PORT:-9000}"
+      LOG_LEVEL: info
+      NODE_ENV: development
+    volumes:
+      - .:/workspace:ro
+      - scheduler-agent-node-modules:/workspace/node_modules
+      - scheduler-bun-cache:/var/cache/bun
+      - scheduler-k3s-state:/var/lib/kuintessence
+      - scheduler-k3s-data:/var/lib/rancher/k3s
+      - scheduler-k3s-scratch:/scratch
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      server:
+        condition: service_healthy
+      agent-deps:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "kubectl get nodes >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 5s
+      retries: 18
+      start_period: 90s
+
+volumes:
+  scheduler-pg-data:
+  scheduler-casdoor-pg-data:
+  scheduler-minio-data:
+  scheduler-agent-node-modules:
+  scheduler-bun-cache:
+  scheduler-slurm-state:
+  scheduler-slurm-scratch:
+  scheduler-pbs-state:
+  scheduler-pbs-scratch:
+  scheduler-k3s-state:
+  scheduler-k3s-data:
+  scheduler-k3s-scratch:
+  scheduler-app-node-modules:
+  scheduler-registry-data:

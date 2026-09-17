@@ -1,0 +1,1 @@
+ALTER TABLE "ssh_credentials" ADD COLUMN "host_key_sha256" varchar(255) DEFAULT '' NOT NULL;

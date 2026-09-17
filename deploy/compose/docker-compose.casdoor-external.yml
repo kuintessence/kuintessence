@@ -1,0 +1,15 @@
+services:
+  casdoor:
+    profiles: ["external-casdoor"]
+
+  casdoor-postgres:
+    profiles: ["external-casdoor"]
+
+  casdoor-proxy:
+    profiles: ["external-casdoor"]
+
+  server:
+    depends_on:
+      casdoor-proxy:
+        condition: service_started
+        required: false

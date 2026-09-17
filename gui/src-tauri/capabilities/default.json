@@ -1,0 +1,17 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Allow the shell to spawn the bundled kq sidecar.",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    {
+      "identifier": "shell:allow-spawn",
+      "allow": [{ "name": "binaries/kq", "sidecar": true, "args": true }]
+    },
+    {
+      "identifier": "shell:allow-execute",
+      "allow": [{ "name": "binaries/kq", "sidecar": true, "args": true }]
+    }
+  ]
+}

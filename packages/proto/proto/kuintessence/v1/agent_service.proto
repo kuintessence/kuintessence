@@ -1,0 +1,927 @@
+syntax = "proto3";
+
+package kuintessence.v1;
+
+// FORWARD-COMPATIBILITY POLICY:
+// 1. Never reuse a tag number after removing a field. Use `reserved` immediately.
+// 2. New oneof variants must use the next available tag in the reserved range.
+// 3. Consumers MUST treat unknown oneof cases as "unsupported" — log and ignore,
+//    do not throw. This allows adding variants without breaking older Agents/Servers.
+// 4. Wire-format compatibility is the contract; structural file changes are OK
+//    if `buf breaking --against` passes WIRE_JSON checks.
+
+// Bidirectional stream initiated by Agent and handled by Server.
+// Agent initiates the connection, registers, then streams heartbeats and
+// job status updates while receiving job dispatches and cancellations.
+service AgentService {
+  rpc Connect(stream AgentMessage) returns (stream ServerMessage);
+}
+
+enum SchedulerType {
+  SCHEDULER_TYPE_UNSPECIFIED = 0;
+  SCHEDULER_TYPE_SLURM = 1;
+  SCHEDULER_TYPE_PBS_PRO = 2;
+  SCHEDULER_TYPE_TORQUE = 3;
+  SCHEDULER_TYPE_KUBERNETES = 4;
+}
+
+enum JobStatus {
+  JOB_STATUS_UNSPECIFIED = 0;
+  JOB_STATUS_PENDING = 1;
+  JOB_STATUS_QUEUED = 2;
+  JOB_STATUS_RUNNING = 3;
+  JOB_STATUS_COMPLETED = 4;
+  JOB_STATUS_FAILED = 5;
+  JOB_STATUS_CANCELLED = 6;
+}
+
+// Health of the scheduler's compute plane, intentionally distinct from the
+// Server-Agent transport state. A connected Agent can observe an unavailable
+// compute plane while its own control stream remains healthy.
+enum ComputeHealthState {
+  COMPUTE_HEALTH_STATE_UNSPECIFIED = 0;
+  COMPUTE_HEALTH_STATE_UNKNOWN = 1;
+  COMPUTE_HEALTH_STATE_READY = 2;
+  COMPUTE_HEALTH_STATE_UNAVAILABLE = 3;
+}
+
+enum QueueInventoryStatus {
+  QUEUE_INVENTORY_STATUS_UNSPECIFIED = 0;
+  QUEUE_INVENTORY_STATUS_UNKNOWN = 1;
+  QUEUE_INVENTORY_STATUS_AVAILABLE = 2;
+  QUEUE_INVENTORY_STATUS_UNAVAILABLE = 3;
+  QUEUE_INVENTORY_STATUS_STALE = 4;
+  QUEUE_INVENTORY_STATUS_UNSUPPORTED = 5;
+}
+
+enum SchedulerQueueType {
+  SCHEDULER_QUEUE_TYPE_UNSPECIFIED = 0;
+  SCHEDULER_QUEUE_TYPE_PARTITION = 1;
+  SCHEDULER_QUEUE_TYPE_EXECUTION = 2;
+  SCHEDULER_QUEUE_TYPE_ROUTE = 3;
+  SCHEDULER_QUEUE_TYPE_NAMESPACE = 4;
+  SCHEDULER_QUEUE_TYPE_UNKNOWN = 5;
+}
+
+enum SchedulerQueueState {
+  SCHEDULER_QUEUE_STATE_UNSPECIFIED = 0;
+  SCHEDULER_QUEUE_STATE_UP = 1;
+  SCHEDULER_QUEUE_STATE_DOWN = 2;
+  SCHEDULER_QUEUE_STATE_UNKNOWN = 3;
+}
+
+enum QueueTargetMode {
+  QUEUE_TARGET_MODE_UNSPECIFIED = 0;
+  QUEUE_TARGET_MODE_DEFAULT = 1;
+  QUEUE_TARGET_MODE_NAMED = 2;
+}
+
+enum QueueValidationMode {
+  QUEUE_VALIDATION_MODE_UNSPECIFIED = 0;
+  QUEUE_VALIDATION_MODE_OFF = 1;
+  QUEUE_VALIDATION_MODE_SHADOW = 2;
+  QUEUE_VALIDATION_MODE_ENFORCE = 3;
+}
+
+// tags 4 (installed_software_report) and 5 (software_policy_ack)
+// are agent-side software-governance variants.
+// tags 6 (ssh_output) and 7 (ssh_closed) carry reverse SSH
+// session bytes / close events from the Agent's ssh2 relay back to the Server
+// gateway, which fans them out to subscribed WebSocket clients. Tag 10
+// (part_urls_request) lets the agent pull presigned multipart part URLs from
+// the Server mid-upload (credential-free); tag 12 returns a typed job-log tail.
+message AgentMessage {
+  oneof payload {
+    RegisterRequest register = 1;
+    Heartbeat heartbeat = 2;
+    JobStatusUpdate job_status = 3;
+    InstalledSoftwareReport installed_software_report = 4;
+    SoftwarePolicyAck software_policy_ack = 5;
+    SshOutput ssh_output = 6;
+    SshClosed ssh_closed = 7;
+    ShellExecResponse shell_exec_response = 8;
+    FileTransferProgress file_transfer_progress = 9;
+    PartUrlsRequest part_urls_request = 10;
+    SoftwareOperationResult software_operation_result = 11;
+    JobLogsResponse job_logs_response = 12;
+    SandboxArtifactReleaseAck sandbox_artifact_release_ack = 13;
+    DataDeliveryRevokeAck data_delivery_revoke_ack = 14;
+    DataScanResult data_scan_result = 16;
+    CancelJobAck cancel_job_ack = 17;
+    JobWorkRootReleaseAck job_work_root_release_ack = 18;
+    QueueValidationShadowRejection queue_validation_shadow_rejection = 19;
+  }
+  reserved 15;
+}
+
+// tags 4 (software_policy_update) and 5 (spec_distribute) are
+// server-side software-governance variants.
+// tags 6 (ssh_open), 7 (ssh_data), 8 (ssh_close) drive an SSH
+// session on the Agent: Server gateway receives a WebSocket upgrade from the
+// browser / kq CLI, dispatches SshOpen, then forwards stdin bytes as
+// SshData and tears down with SshClose. Tag 12 (part_urls_response) returns the
+// presigned multipart part URLs the agent requested; tag 14 cancels an in-flight
+// file transfer; tag 15 requests a typed job-log tail.
+message ServerMessage {
+  oneof payload {
+    RegisterResponse register_response = 1;
+    DispatchJob dispatch_job = 2;
+    CancelJob cancel_job = 3;
+    SoftwarePolicyUpdate software_policy_update = 4;
+    SpecDistribute spec_distribute = 5;
+    SshOpen ssh_open = 6;
+    SshData ssh_data = 7;
+    SshClose ssh_close = 8;
+    ShellExecRequest shell_exec_request = 9;
+    FileTransferRequest file_transfer_request = 10;
+    SshResize ssh_resize = 11;
+    PartUrlsResponse part_urls_response = 12;
+    SoftwareOperationRequest software_operation_request = 13;
+    FileTransferCancel file_transfer_cancel = 14;
+    JobLogsRequest job_logs_request = 15;
+    SandboxArtifactRelease sandbox_artifact_release = 16;
+    DataScanRequest data_scan_request = 17;
+    DataDeliveryRevoke data_delivery_revoke = 18;
+    JobStatusAck job_status_ack = 19;
+    HeartbeatAck heartbeat_ack = 20;
+    ReleaseJobWorkRoot release_job_work_root = 21;
+    QueueValidationShadowRejectionAck queue_validation_shadow_rejection_ack = 22;
+  }
+}
+
+// CP-local dataset scan command. The path is relative to the Agent-owned
+// dataset root; absolute paths and dataset bytes never cross this protocol.
+message DataScanRequest {
+  string request_id = 1;
+  string import_id = 2;
+  string asset_id = 3;
+  string version_id = 4;
+  string managed_root_id = 5;
+  string relative_path = 6;
+  string provider_org_id = 7;
+}
+
+message DataScanFile {
+  string relative_path = 1;
+  string sha256 = 2;
+  int64 size_bytes = 3;
+  string media_type = 4;
+}
+
+// Metadata-only result of a CP-local scan. `attestation_signature` signs the
+// request binding and manifest facts with the Agent's mTLS private key.
+message DataScanResult {
+  string request_id = 1;
+  string import_id = 2;
+  string asset_id = 3;
+  string version_id = 4;
+  string managed_root_id = 5;
+  string relative_path = 6;
+  string agent_id = 7;
+  string manifest_digest = 8;
+  string content_sha256 = 9;
+  int64 total_size_bytes = 10;
+  string format = 11;
+  repeated DataScanFile files = 12;
+  string attestation_algorithm = 13;
+  string attestation_key_id = 14;
+  string attestation_signature = 15;
+  int64 scanned_at_unix_ms = 16;
+  string error = 17;
+  string provider_org_id = 18;
+}
+
+message RegisterRequest {
+  string agent_id = 1;
+  string site_name = 2;
+  SchedulerType scheduler_type = 3;
+  string scheduler_version = 4;
+  SandboxCapability sandbox_capability = 5;
+  bool restricted_data_isolation = 6;
+  reserved 7 to 15;
+  // The Agent implements ComputeHealth heartbeats. Older Servers ignore this
+  // field; a new Agent sends health only after RegisterResponse negotiates it.
+  bool compute_health_v1 = 16;
+  bool queue_inventory_v1 = 17;
+}
+
+message RegisterResponse {
+  bool accepted = 1;
+  string message = 2;
+  // Capability negotiation for protocol-compatible rolling upgrades. Agents
+  // only enforce heartbeat ACK liveness when the connected Server advertises it.
+  bool heartbeat_ack_supported = 3;
+  // When advertised, durable job statuses remain queued until the Server commits
+  // them and returns a matching JobStatusAck.
+  bool job_status_ack_supported = 4;
+  // Capability negotiation for scheduler compute-health observations.
+  bool compute_health_v1_supported = 5;
+  bool queue_inventory_v1_supported = 6;
+  // When advertised, shadow rejection events remain durable on the Agent
+  // until the Server has persisted their idempotent counter increment.
+  bool queue_validation_shadow_rejection_ack_supported = 7;
+}
+
+// tags 7–10 carry extended monitoring + installed-software
+// telemetry. `queued_jobs` (tag 6) reports the depth of the
+// outbound spillover queue — while `scheduler_queued_jobs` (tag 10) carries
+// the real squeue/qstat count.
+message Heartbeat {
+  string agent_id = 1;
+  double cpu_usage_percent = 2;
+  int64 memory_used_mb = 3;
+  int64 memory_total_mb = 4;
+  int32 running_jobs = 5;
+  int32 queued_jobs = 6;
+  repeated InstalledSpec installed_software = 7;
+  repeated GpuMetric gpus = 8;
+  float disk_used_percent = 9;
+  int32 scheduler_queued_jobs = 10;
+  SandboxCapability sandbox_capability = 11;
+  bool restricted_data_isolation = 12;
+  // Monotonic per Agent process. The Server echoes this only after the heartbeat
+  // has been applied successfully.
+  uint64 sequence = 13;
+  reserved 14 to 15;
+  ComputeHealth compute_health = 16;
+  QueueInventory queue_inventory = 17;
+}
+
+// A point-in-time scheduler controller observation. `reason` is a canonical
+// code only: it must never contain raw CLI output or credentials.
+message ComputeHealth {
+  ComputeHealthState state = 1;
+  int64 observed_at_unix_ms = 2;
+  int32 node_count = 3;
+  int32 operational_node_count = 4;
+  string reason = 5;
+}
+
+message SchedulerQueueFact {
+  string queue_name = 1;
+  SchedulerQueueType queue_type = 2;
+  bool is_default = 3;
+  SchedulerQueueState state = 4;
+  bool accepts_submissions = 5;
+  optional bool has_compute_targets = 6;
+  int64 observed_at_unix_ms = 7;
+}
+
+message QueueInventory {
+  QueueInventoryStatus status = 1;
+  string default_queue_name = 2;
+  string reason = 3;
+  int64 observed_at_unix_ms = 4;
+  repeated SchedulerQueueFact queues = 5;
+}
+
+message DispatchJob {
+  string job_id = 1;
+  string name = 2;
+  string command = 3;
+  int32 cpus = 4;
+  int64 memory_mb = 5;
+  int32 gpus = 6;
+  int64 wall_time_sec = 7;
+  string working_dir = 8;
+  map<string, string> env_vars = 9;
+  // Usecase materialization. The agent stages each input file from
+  // MinIO into `stage_path` (relative to working_dir) before running, and
+  // collects each expected output from `path` after the command exits.
+  repeated InputStaging input_staging = 10;
+  repeated ExpectedOutput expected_outputs = 11;
+  string queue_name = 12;
+  string qos = 13;
+  string stdin_text = 14;
+  SandboxExecution sandbox_execution = 15;
+  repeated LicensedMaterialMount licensed_material_mounts = 16;
+  bool restricted_no_egress = 17;
+  repeated DataDeliveryBinding data_deliveries = 18;
+  int64 dispatch_epoch = 19;
+  reserved 20;
+  repeated string file_output_descriptors = 21;
+  QueueTargetMode queue_target_mode = 22;
+  QueueValidationMode queue_validation_mode = 23;
+}
+
+enum DataDeliveryMethod {
+  DATA_DELIVERY_METHOD_UNSPECIFIED = 0;
+  DATA_DELIVERY_METHOD_OBJECT_DOWNLOAD = 1;
+  DATA_DELIVERY_METHOD_STAGE_COPY = 2;
+  DATA_DELIVERY_METHOD_READONLY_MOUNT = 3;
+}
+
+// Immutable, resolved delivery instruction for one Data Market binding.
+// For object storage the Server passes only a short-lived presigned GET URL. For
+// CP-local storage it passes only the Agent-managed root id and logical path;
+// absolute host paths and credential material never traverse this protocol.
+message DataDeliveryBinding {
+  string binding_id = 1;
+  string location_id = 2;
+  string asset_id = 3;
+  string version_id = 4;
+  string manifest_digest = 5;
+  repeated DataDeliveryEntry selected_entries = 6;
+  string stage_path = 7;
+  DataDeliveryMethod method = 8;
+  reserved 9;
+  string managed_root_id = 10;
+  string relative_path = 11;
+  bool restricted = 12;
+  // Ephemeral capability metadata only. The URL remains an in-memory dispatch
+  // detail and is never persisted by the Agent's cleanup ledger.
+  string lease_id = 13;
+  int64 lease_expires_at_unix_ms = 14;
+}
+
+message DataDeliveryEntry {
+  string path = 1;
+  string sha256 = 2;
+  int64 size_bytes = 3;
+  string object_download_url = 4;
+}
+
+// Cancels an affected delivery immediately. The Agent must cancel the
+// scheduler job, unmount/remove staged data, and destroy the restricted work
+// root when requested, even if a previously minted object URL still works.
+message DataDeliveryRevoke {
+  string job_id = 1;
+  string reason_code = 2;
+  bool destroy_restricted_work_root = 3;
+  int64 revoked_epoch = 4;
+}
+
+// Agent→Server acknowledgement after the revoke intent is durably recorded and
+// all requested cleanup work has completed. A failed cleanup is not acked so
+// the Server retains and redelivers the durable revoke command.
+message DataDeliveryRevokeAck {
+  string job_id = 1;
+  string reason_code = 2;
+}
+
+// Selector metadata only. The Agent resolves it through its private local
+// registry; licensed bytes and local filesystem paths never cross this wire.
+message LicensedMaterialMount {
+  string selector = 1;
+  string target_path = 2;
+  string expected_fingerprint = 3;
+  repeated string required_elements = 4;
+}
+
+enum SandboxLanguage {
+  SANDBOX_LANGUAGE_UNSPECIFIED = 0;
+  SANDBOX_LANGUAGE_PYTHON = 1;
+  SANDBOX_LANGUAGE_NODEJS = 2;
+  SANDBOX_LANGUAGE_BASH = 3;
+}
+
+enum SandboxRuntimeKind {
+  SANDBOX_RUNTIME_KIND_UNSPECIFIED = 0;
+  SANDBOX_RUNTIME_KIND_OCI = 1;
+  SANDBOX_RUNTIME_KIND_SIF = 2;
+}
+
+enum SandboxIdentityMode {
+  SANDBOX_IDENTITY_MODE_UNSPECIFIED = 0;
+  SANDBOX_IDENTITY_MODE_SHARED_SERVICE = 1;
+  SANDBOX_IDENTITY_MODE_MAPPED_ACCOUNT = 2;
+}
+
+enum SandboxIoType {
+  SANDBOX_IO_TYPE_UNSPECIFIED = 0;
+  SANDBOX_IO_TYPE_TEXT = 1;
+  SANDBOX_IO_TYPE_JSON = 2;
+  SANDBOX_IO_TYPE_FILE = 3;
+  SANDBOX_IO_TYPE_FILE_BATCH = 4;
+}
+
+enum SandboxMountMode {
+  SANDBOX_MOUNT_MODE_UNSPECIFIED = 0;
+  SANDBOX_MOUNT_MODE_READ_ONLY = 1;
+  SANDBOX_MOUNT_MODE_WRITE_ONLY = 2;
+}
+
+message SandboxScriptBundle {
+  SandboxLanguage language = 1;
+  string entrypoint = 2;
+  bytes content = 3;
+  string sha256 = 4;
+  string bundle_sha256 = 5;
+}
+
+message SandboxRuntimeRef {
+  string profile_id = 1;
+  SandboxRuntimeKind kind = 2;
+  string digest = 3;
+}
+
+message SandboxUnixAccount {
+  string username = 1;
+  uint32 uid = 2;
+  uint32 gid = 3;
+  string scheduler_account = 4;
+  repeated string allowed_queues = 5;
+}
+
+// Identity of the non-root Agent process available for SelfAccount execution.
+message SandboxSelfAccount {
+  string username = 1;
+  uint32 uid = 2;
+  uint32 gid = 3;
+}
+
+message SandboxKubernetesAccount {
+  string namespace = 1;
+  string service_account = 2;
+  string quota_policy = 3;
+}
+
+message SandboxExecutionIdentity {
+  SandboxIdentityMode mode = 1;
+  string account_id = 2;
+  oneof backend {
+    SandboxUnixAccount unix = 3;
+    SandboxKubernetesAccount kubernetes = 4;
+  }
+}
+
+message SandboxArtifactMount {
+  string descriptor = 1;
+  SandboxIoType io_type = 2;
+  SandboxMountMode mode = 3;
+  string relative_path = 4;
+  string container_path = 5;
+  string expected_sha256 = 6;
+  int64 size_limit_bytes = 7;
+  bool required = 8;
+  bytes inline_content = 9;
+  repeated SandboxBatchEntry batch_entries = 10;
+}
+
+message SandboxBatchEntry {
+  string relative_path = 1;
+  string sha256 = 2;
+  int64 size_bytes = 3;
+}
+
+message SandboxResourceLimits {
+  int32 pids = 1;
+  int64 output_bytes = 2;
+  int64 log_bytes = 3;
+}
+
+message SandboxSignatureEnvelope {
+  string key_id = 1;
+  string nonce = 2;
+  int64 issued_at_unix_ms = 3;
+  int64 expires_at_unix_ms = 4;
+  string manifest_sha256 = 5;
+  bytes signature = 6;
+}
+
+// Immutable, Server-signed identity for restricted HPC execution. The Agent must
+// forward these values unchanged to the root-owned compute-node wrapper.
+message SandboxTrustedExecutionProfile {
+  string profile_id = 1;
+  string apptainer_canonical_path = 2;
+  string apptainer_sha256 = 3;
+  string sif_canonical_path = 4;
+  string sif_sha256 = 5;
+  string trusted_wrapper_canonical_path = 6;
+  string trusted_wrapper_sha256 = 7;
+}
+
+message SandboxExecution {
+  SandboxScriptBundle script = 1;
+  SandboxRuntimeRef runtime = 2;
+  SandboxExecutionIdentity execution_identity = 3;
+  repeated SandboxArtifactMount artifact_mounts = 4;
+  SandboxResourceLimits limits = 5;
+  SandboxSignatureEnvelope envelope = 6;
+  bool network_disabled = 7;
+  SandboxTrustedExecutionProfile execution_profile = 8;
+  // Exact wire value: RootImpersonation or SelfAccount.
+  string execution_mode = 9;
+  // Required for SelfAccount; this is an opaque SHA-256 evidence id.
+  string runtime_attestation_id = 10;
+}
+
+message SandboxRuntimeCacheEntry {
+  string digest = 1;
+  SandboxRuntimeKind kind = 2;
+  bool signature_verified = 3;
+  // Opaque SHA-256 id of the Agent's current runtime verification evidence.
+  string runtime_attestation_id = 4;
+  // Compute nodes on which the runtime verification succeeded.
+  repeated string attested_nodes = 5;
+  // Unix epoch milliseconds; zero means no usable attestation.
+  int64 expires_at_unix_ms = 6;
+}
+
+message SandboxCapability {
+  bool enabled = 1;
+  bool root_mode = 2;
+  bool network_isolation = 3;
+  bool cgroups = 4;
+  bool seccomp = 5;
+  bool sif_signature_verification = 6;
+  bool ecl = 7;
+  bool replay_protection = 8;
+  repeated SandboxRuntimeCacheEntry runtime_cache = 9;
+  string readiness = 10;
+  repeated string missing_requirements = 11;
+  SandboxTrustedExecutionProfile restricted_execution_profile = 13;
+  string managed_root = 12;
+  // Exact wire value: RootImpersonation or SelfAccount. Unknown values are
+  // treated as unsupported by the Server.
+  string execution_mode = 14;
+  SandboxSelfAccount self_account = 15;
+}
+
+// P4-f: one input file to stage into the run directory before execution.
+// `source_url` is a short-lived presigned MinIO GET URL the agent fetches from;
+// the Server fills it in just before dispatch.
+message InputStaging {
+  string file_metadata_id = 1;
+  string stage_path = 2;
+  string source_url = 3;
+  string delivery_lease_id = 4;
+  int64 delivery_lease_expires_at_unix_ms = 5;
+}
+
+// P4-f: one output the agent is expected to surface after the run.
+message ExpectedOutput {
+  string descriptor = 1;
+  string path = 2;
+  bool is_batch = 3;
+  bool paths_only = 4;
+}
+
+message CancelJob {
+  string job_id = 1;
+  int64 revoked_epoch = 2;
+}
+
+// Agent→Server acknowledgement after the durable cancellation fence has been
+// recorded and the scheduler job was cancelled or safely determined absent.
+message CancelJobAck {
+  string job_id = 1;
+  int64 revoked_epoch = 2;
+}
+
+message ReleaseJobWorkRoot {
+  string job_id = 1;
+}
+
+message JobWorkRootReleaseAck {
+  string job_id = 1;
+}
+
+message SandboxArtifactReleaseItem {
+  string replica_id = 1;
+  string storage_ref = 2;
+}
+
+message SandboxArtifactRelease {
+  string request_id = 1;
+  repeated SandboxArtifactReleaseItem items = 2;
+}
+
+message SandboxArtifactReleaseAck {
+  string request_id = 1;
+  repeated string released_replica_ids = 2;
+  map<string, string> failures = 3;
+}
+
+message JobStatusUpdate {
+  string job_id = 1;
+  JobStatus status = 2;
+  string scheduler_job_id = 3;
+  string message = 4;
+  optional int32 exit_code = 5;
+  // P4-f: on terminal success, the agent returns the collected outputs keyed
+  // by collector descriptor (stdout/stderr/file slices) so the Server can run
+  // valueOutputs extraction → nodes.<id>.values.* for the workflow engine.
+  map<string, string> collected = 6;
+  // Allocated node / node-list once the scheduler assigns one (Slurm `nodes`,
+  // PBS/Torque `exec_host`, K8s pod node). Empty until known.
+  string node = 7;
+  // Scheduler reason a job is pending/blocked (Slurm `state_reason`, PBS/Torque
+  // `comment`). Empty when not applicable.
+  string reason = 8;
+  // Stable across retries and reconnects. The Server echoes this value only after
+  // the status has been committed successfully.
+  string event_id = 9;
+  // The actual Agent-owned working directory used when DispatchJob left it empty.
+  string working_dir = 10;
+  reserved 11 to 15;
+  string failure_code = 16;
+}
+
+message QueueValidationShadowRejection {
+  string failure_code = 1;
+  // Stable across reconnects. Older Servers ignore this field and cannot ACK it.
+  string event_id = 2;
+}
+
+message QueueValidationShadowRejectionAck {
+  string event_id = 1;
+}
+
+message JobStatusAck {
+  string event_id = 1;
+}
+
+message HeartbeatAck {
+  uint64 sequence = 1;
+}
+
+// one Spack spec entry as observed on the agent. Mirrors the
+// `InstalledSpec` shared zod schema; the `compiler` and `arch` fields are
+// optional because Spack's JSON output may omit them on partial installs.
+message InstalledSpec {
+  string name = 1;
+  string version = 2;
+  string hash = 3;
+  string compiler = 4;
+  string arch = 5;
+  string spec = 6;
+}
+
+// snapshot of one GPU on the agent host. Populated from
+// `nvidia-smi --query-gpu=…`; missing tools yield an empty `gpus` repeated.
+message GpuMetric {
+  int32 index = 1;
+  string model = 2;
+  int64 mem_used_mb = 3;
+  int64 mem_total_mb = 4;
+  float util_percent = 5;
+}
+
+// one Spack mirror entry as the Server pushes it to the Agent.
+message MirrorSpec {
+  string name = 1;
+  string url = 2;
+  int32 priority = 3;
+}
+
+// separate report variant for scenarios where the installed list
+// is too large to ride along with every Heartbeat. Server upserts the
+// agent-installed-software ledger from this payload.
+message InstalledSoftwareReport {
+  string agent_id = 1;
+  repeated InstalledSpec installed = 2;
+  int64 reported_at = 3;
+}
+
+// software-governance policy push. Server MUST stamp `policy_version`
+// to a monotonic value the agent can compare against the last-applied
+// version to make the apply step idempotent.
+message SoftwarePolicyUpdate {
+  string policy_version = 1;
+  repeated string allow_list = 2;
+  repeated string deny_list = 3;
+  bool lock_enabled = 4;
+  repeated MirrorSpec mirrors = 5;
+  repeated string preinstall_list = 6;
+}
+
+// Agent-emitted ack confirming a SoftwarePolicyUpdate landed.
+// `applied=false` MUST come with a non-empty `error` describing the failure.
+message SoftwarePolicyAck {
+  string policy_version = 1;
+  bool applied = 2;
+  optional string error = 3;
+}
+
+// Server-driven request that the agent install one spec, optionally
+// from a buildcache URL. `sign_key_id` references the GPG key the agent
+// should verify the buildcache signature against.
+message SpecDistribute {
+  string spec = 1;
+  string buildcache_url = 2;
+  optional string sign_key_id = 3;
+}
+
+enum SoftwareOperationAction {
+  SOFTWARE_OPERATION_ACTION_UNSPECIFIED = 0;
+  SOFTWARE_OPERATION_ACTION_INSTALL = 1;
+  SOFTWARE_OPERATION_ACTION_UNINSTALL = 2;
+  SOFTWARE_OPERATION_ACTION_LOAD = 3;
+  SOFTWARE_OPERATION_ACTION_IMPORT_PREINSTALLED = 4;
+}
+
+enum SoftwareOperationStatus {
+  SOFTWARE_OPERATION_STATUS_UNSPECIFIED = 0;
+  SOFTWARE_OPERATION_STATUS_RUNNING = 1;
+  SOFTWARE_OPERATION_STATUS_SUCCEEDED = 2;
+  SOFTWARE_OPERATION_STATUS_FAILED = 3;
+  SOFTWARE_OPERATION_STATUS_REJECTED = 4;
+}
+
+message SoftwareOperationRequest {
+  string operation_id = 1;
+  SoftwareOperationAction action = 2;
+  string spec = 3;
+  string requested_by = 4;
+}
+
+message SoftwareOperationResult {
+  string operation_id = 1;
+  SoftwareOperationAction action = 2;
+  SoftwareOperationStatus status = 3;
+  string spec = 4;
+  string stdout = 5;
+  string stderr = 6;
+  int32 exit_code = 7;
+  string error = 8;
+  repeated InstalledSpec installed = 9;
+}
+
+// open an SSH session on behalf of a Server WebSocket client.
+//
+// `session_id` MUST be a UUID minted by the Server gateway and is used as the
+// joint key for every subsequent SshData / SshClose (Server→Agent) and
+// SshOutput / SshClosed (Agent→Server) message. The `auth` payload carries
+// either a passphrase or a private key blob — the Server credential vault is
+// responsible for redacting these from any audit / log surface before
+// emission. Window resize rides its own SshResize message; jumphosts and X11
+// forwarding remain out of scope.
+message SshOpen {
+  string session_id = 1;
+  string host = 2;
+  int32 port = 3;
+  string username = 4;
+  SshAuth auth = 5;
+  // Base64 SHA-256 of the expected host public key. When non-empty the Agent
+  // pins the connection to it (rejects a mismatched host key — MITM defense).
+  string host_key_sha256 = 6;
+}
+
+// SSH authentication material. Exactly one of `password` or
+// `private_key` is expected; the Agent treats an empty struct as an error
+// and emits SshClosed with reason="auth payload missing".
+message SshAuth {
+  string password = 1;
+  string private_key = 2;
+  string passphrase = 3;
+}
+
+// stdin bytes from the Server WebSocket client toward the Agent's
+// ssh2 channel. `data` is raw bytes; the gateway never interprets them.
+message SshData {
+  string session_id = 1;
+  bytes data = 2;
+}
+
+// deliberate close from the Server side (user closed the WebSocket,
+// session timeout, etc.). The Agent MUST tear down the ssh2 channel and
+// emit SshClosed with the same `session_id` so the gateway can forget the
+// per-session state.
+message SshClose {
+  string session_id = 1;
+  string reason = 2;
+}
+
+// PTY window-resize from the Server WebSocket client toward the
+// Agent's ssh2 channel. The gateway forwards xterm cols/rows so the remote
+// shell re-flows instead of staying at the default 80x24. Dimensions are
+// terminal cells; pixel width/height are sent as 0 (ssh2 treats 0 as unset).
+message SshResize {
+  string session_id = 1;
+  uint32 cols = 2;
+  uint32 rows = 3;
+}
+
+// stdout/stderr bytes from the Agent's ssh2 channel toward the
+// Server gateway, which forwards them to the subscribed WebSocket client.
+message SshOutput {
+  string session_id = 1;
+  bytes data = 2;
+}
+
+// terminal close event from the Agent. Emitted on remote-side
+// EOF, ssh2 channel error, auth failure, or in response to a Server-side
+// SshClose. The Server gateway uses `session_id` to look up the WebSocket,
+// pushes a single close frame carrying `reason` + `exit_code`, and
+// removes the session from its registry.
+message SshClosed {
+  string session_id = 1;
+  string reason = 2;
+  optional int32 exit_code = 3;
+}
+
+// One-shot non-PTY command execution routed through the Agent.
+// `request_id` correlates the eventual ShellExecResponse to the awaiting
+// Server HTTP handler. The Agent runs the command in the configured Slurm
+// container (AGENT_SLURM_CONTAINER_ID) when AGENT_SPAWNER_BACKEND=container,
+// or directly on the host otherwise. No shell state persists between
+// successive ShellExecRequests — `cd` and env vars do not carry across.
+message ShellExecRequest {
+  string request_id = 1;
+  string input = 2;
+  int32 timeout_sec = 3;
+}
+
+message ShellExecResponse {
+  string request_id = 1;
+  string stdout = 2;
+  string stderr = 3;
+  int32 exit_code = 4;
+  string error = 5;
+}
+
+// One-shot scheduler log retrieval. The scheduler id drives the live query;
+// the Server job id lets adapters resolve their deterministic retained log path.
+message JobLogsRequest {
+  string request_id = 1;
+  string scheduler_job_id = 2;
+  int32 lines = 3;
+  string job_id = 4;
+  bool restricted_no_egress = 5;
+}
+
+message JobLogsResponse {
+  string request_id = 1;
+  string text = 2;
+  string error = 3;
+  // True only when the Agent confirmed that the expected log file is absent.
+  bool unavailable = 4;
+}
+
+// Move bytes between MinIO (via short-lived presigned URL) and a path
+// inside the Agent's configured Slurm container.
+//
+// direction = "cloud_to_cluster": agent fetches `source_url`, writes to
+//   `target_path` inside the container.
+// direction = "cluster_to_cloud": agent reads `source_path` from the
+//   container, PUTs to `target_url`. Server is responsible for the NetDrive
+//   commit after it observes a `succeeded` progress.
+//
+// Multipart cluster_to_cloud: when `upload_id` is non-empty the Server has
+// pre-initiated an S3 multipart upload and the agent spools, then requests
+// presigned part URLs via PartUrlsRequest instead of using `target_url`.
+// `commit_token` is a Server-signed opaque token the Server verifies on every
+// part-URL mint and on completion; `part_size` is the byte size per part.
+message FileTransferRequest {
+  string request_id = 1;
+  string direction = 2;
+  string source_url = 3;
+  string source_path = 4;
+  string target_url = 5;
+  string target_path = 6;
+  int64 total_bytes = 7;
+  string upload_id = 8;
+  string commit_token = 9;
+  int64 part_size = 10;
+}
+
+// Server→Agent cooperative cancellation for an in-flight FileTransferRequest.
+// Unknown or already-terminal request IDs are idempotent no-ops.
+message FileTransferCancel {
+  string request_id = 1;
+}
+
+// Multi-shot progress event. Server treats `state="running"` updates as
+// in-flight byte counters, and `state in {"succeeded","failed"}` as
+// terminal events that release the registry entry.
+// `sha256` is set on cluster_to_cloud success so the Server can persist a
+// netdrive_files row without a separate hash pass.
+// `parts` is set on a multipart cluster_to_cloud success so the Server can call
+// completeMultipartUpload with the per-part ETags the agent collected.
+message FileTransferProgress {
+  string request_id = 1;
+  int64 copied_bytes = 2;
+  string state = 3;
+  string error = 4;
+  string sha256 = 5;
+  repeated UploadedPart parts = 6;
+}
+
+// One uploaded S3 multipart part: its 1-based part number and the ETag MinIO
+// returned, both required by completeMultipartUpload.
+message UploadedPart {
+  int32 part_number = 1;
+  string etag = 2;
+}
+
+// Agent→Server: request presigned URLs for the listed multipart parts. The Server
+// resolves the owner + upload by `request_id` (its own dispatch bookkeeping),
+// so the agent stays credential-free and never asserts an owner.
+message PartUrlsRequest {
+  string request_id = 1;
+  repeated int32 part_numbers = 2;
+}
+
+// One presigned part-upload URL keyed by its 1-based part number.
+message PartUrl {
+  int32 part_number = 1;
+  string url = 2;
+}
+
+// Server→Agent: the presigned part URLs the agent requested, correlated back to
+// the originating PartUrlsRequest by `request_id`.
+message PartUrlsResponse {
+  string request_id = 1;
+  repeated PartUrl urls = 2;
+}

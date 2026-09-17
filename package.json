@@ -1,0 +1,52 @@
+{
+  "name": "kuintessence",
+  "license": "AGPL-3.0-only",
+  "private": true,
+  "engines": {
+    "bun": ">=1.3.0"
+  },
+  "packageManager": "bun@1.3.13",
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "bun run --filter '*' dev",
+    "test": "bun test packages/{shared,proto,db,server,agent,registry,cli}",
+    "test:unit": "bun scripts/test-unit.ts",
+    "test:helm": "bun test scripts/helm-*.test.ts",
+    "test:integration": "bun test packages/agent/test",
+    "test:web": "bun run --filter @kuintessence/web test",
+    "test:e2e": "bun test test/e2e",
+    "test:all": "bun run test:helm && bun run test:unit && bun run test:integration && bun run test:web && bun run test:e2e",
+    "docs:dev": "bun run --filter @kuintessence/docs-site dev",
+    "docs:build": "bun run --filter @kuintessence/docs-site build",
+    "docs:preview": "bun run --filter @kuintessence/docs-site preview",
+    "docs:typecheck": "bun run --filter @kuintessence/docs-site typecheck",
+    "lint": "biome check .",
+    "lint:fix": "biome check --write .",
+    "check:boundary": "bun run scripts/check-embedded-boundary.ts",
+    "check:workflow-uses": "bun run scripts/check-workflow-uses.ts",
+    "gui:bundle": "bun run --filter @kuintessence/cli build && bun run scripts/gui-prepare-sidecar.ts && bun run --filter @kuintessence/web build && cd gui && bun install && bun run tauri build",
+    "gui:single-binary": "bun run scripts/gui-single-binary.ts",
+    "typecheck": "bun run --filter @kuintessence/proto generate && bun run --filter '*' typecheck",
+    "build": "bun run --filter '*' build",
+    "compose": "bun run scripts/compose.ts",
+    "dev:compose": "bun run scripts/compose.ts watch up --attach",
+    "dev:compose:build": "bun run scripts/compose.ts watch up --build --attach",
+    "dev:compose:down": "bun run scripts/compose.ts watch down",
+    "dev:scheduler:compose": "bun run scripts/compose.ts scheduler-watch up",
+    "dev:scheduler:compose:build": "bun run scripts/compose.ts scheduler-watch up --build",
+    "dev:scheduler:compose:down": "bun run scripts/compose.ts scheduler-watch down",
+    "infra:up": "docker compose --project-directory . -f deploy/compose/docker-compose.dev.yml up -d",
+    "infra:down": "docker compose --project-directory . -f deploy/compose/docker-compose.dev.yml down",
+    "infra:reset-data": "docker compose --project-directory . -f deploy/compose/docker-compose.dev.yml down -v && docker compose --project-directory . -f deploy/compose/docker-compose.dev.yml up -d",
+    "db:generate": "cd packages/db && DATABASE_URL=\"${DATABASE_URL:-postgres://kq:kq@localhost:5432/kuintessence}\" bunx drizzle-kit generate",
+    "db:migrate": "DATABASE_URL=\"${DATABASE_URL:-postgres://kq:kq@localhost:5432/kuintessence}\" bun run packages/db/src/pg/migrate.ts",
+    "db:studio": "cd packages/db && DATABASE_URL=\"${DATABASE_URL:-postgres://kq:kq@localhost:5432/kuintessence}\" bunx drizzle-kit studio"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.4.13",
+    "bun-types": "^1.3.13",
+    "typescript": "^6.0.3"
+  }
+}

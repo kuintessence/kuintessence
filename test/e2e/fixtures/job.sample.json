@@ -1,0 +1,5 @@
+{
+  "name": "e2e-echo",
+  "command": "echo kuintessence-e2e-ok",
+  "resources": { "cpus": 1, "memoryMb": 64, "wallTimeSec": 300 }
+}

@@ -1,0 +1,10 @@
+{
+  "name": "manual-cli-smoke",
+  "command": "echo kuintessence-cli-smoke",
+  "resources": {
+    "cpus": 1,
+    "memoryMb": 512,
+    "wallTimeSec": 60
+  },
+  "tags": ["manual-smoke"]
+}

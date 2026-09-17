@@ -1,0 +1,58 @@
+{
+  "$schema": "https://biomejs.dev/schemas/2.4.13/schema.json",
+  "vcs": {
+    "enabled": true,
+    "clientKind": "git",
+    "useIgnoreFile": true
+  },
+  "files": {
+    "ignoreUnknown": true,
+    "includes": [
+      "packages/**",
+      "scripts/**",
+      "test/**",
+      "*.json",
+      "*.ts",
+      "!.claude",
+      "!docs",
+      "!ref",
+      "!node_modules",
+      "!dist",
+      "!packages/registry/src/data/spack-package-metadata.json",
+      "!packages/web/src/routeTree.gen.ts",
+      "!packages/db/migrations"
+    ]
+  },
+  "formatter": {
+    "indentStyle": "space",
+    "indentWidth": 2,
+    "lineWidth": 100
+  },
+  "javascript": {
+    "formatter": {
+      "quoteStyle": "double",
+      "semicolons": "always"
+    }
+  },
+  "css": {
+    "parser": {
+      "cssModules": false,
+      "allowWrongLineComments": false,
+      "tailwindDirectives": true
+    }
+  },
+  "linter": {
+    "enabled": true,
+    "rules": {
+      "recommended": true
+    }
+  },
+  "assist": {
+    "enabled": true,
+    "actions": {
+      "source": {
+        "organizeImports": "on"
+      }
+    }
+  }
+}

@@ -1,0 +1,35 @@
+# Testing / CI overrides for the kq-platform chart.
+# Single-replica everything, ephemeral storage, in-cluster PG/Redis/MinIO.
+server:
+  replicas: 1
+  resources:
+    requests:
+      cpu: "100m"
+      memory: "128Mi"
+    limits:
+      cpu: "500m"
+      memory: "512Mi"
+
+registry:
+  enabled: true
+  replicas: 1
+
+postgres:
+  enabled: true
+  storage: 1Gi
+  password: "testing-only-do-not-use-in-prod"
+
+redis:
+  enabled: true
+  storage: 100Mi
+
+minio:
+  enabled: true
+  storage: 1Gi
+  rootPassword: "testing-only-do-not-use-in-prod"
+
+secrets:
+  jwtSecret: "testing-only-32-character-jwt-secret-string"
+
+ingress:
+  enabled: false

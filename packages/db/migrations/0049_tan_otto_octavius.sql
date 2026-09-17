@@ -1,0 +1,2 @@
+ALTER TABLE "authz_outbox" ADD COLUMN "sequence" bigserial NOT NULL;--> statement-breakpoint
+CREATE INDEX "authz_outbox_resource_sequence_idx" ON "authz_outbox" USING btree ("resource_type","resource_id","sequence");

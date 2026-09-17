@@ -1,0 +1,155 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      run_runtime_checks:
+        description: "运行完整检查：生成代码、Helm 测试、数据库和容器测试"
+        required: true
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  static-checks:
+    name: Static checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.13
+
+      - name: Install dependencies without lifecycle scripts
+        run: bun install --frozen-lockfile --ignore-scripts
+
+      - name: Lint (Biome)
+        run: bun run lint
+
+      - name: Check local documentation links
+        run: bun scripts/check-doc-links.ts
+
+      - name: Check workflow references
+        run: bun run check:workflow-uses
+
+  lint-and-typecheck:
+    name: Full typecheck + Helm validation
+    if: github.event_name == 'workflow_dispatch' && inputs.run_runtime_checks
+    needs: static-checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.13
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Generate protobuf stubs
+        run: bun run --filter @kuintessence/proto generate
+
+      - name: Setup Helm
+        uses: azure/setup-helm@v4
+
+      - name: Render Helm deployment profiles
+        run: bun run test:helm
+
+      - name: Type check (all packages)
+        run: bun run typecheck
+
+  test:
+    name: Unit + integration tests
+    if: github.event_name == 'workflow_dispatch' && inputs.run_runtime_checks
+    runs-on: ubuntu-latest
+    needs: lint-and-typecheck
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: kq
+          POSTGRES_PASSWORD: kq
+          POSTGRES_DB: kuintessence
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U kq -d kuintessence"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.13
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Generate protobuf stubs
+        run: bun run --filter @kuintessence/proto generate
+
+      - name: Run database migrations
+        run: bun run db:migrate
+        env:
+          DATABASE_URL: postgres://kq:kq@localhost:5432/kuintessence
+
+      - name: Run tests (packages only)
+        run: bun run test
+        env:
+          DATABASE_URL: postgres://kq:kq@localhost:5432/kuintessence
+          REDIS_URL: redis://localhost:6379
+          LOG_LEVEL: warn
+
+  e2e-slice:
+    name: E2E slice (CLI -> Server -> Agent -> Slurm)
+    if: github.event_name == 'workflow_dispatch' && inputs.run_runtime_checks
+    runs-on: ubuntu-latest
+    needs: lint-and-typecheck
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.13
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Generate protobuf stubs
+        run: bun run --filter @kuintessence/proto generate
+
+      - name: Run e2e slice
+        run: bun run test:e2e

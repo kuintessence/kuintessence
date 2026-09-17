@@ -1,0 +1,56 @@
+# Composition via an inline sub-workflow. A top-level `prepare` node feeds a
+# `SubWorkflow` node whose `ref.kind: Inline` body is a nested two-node workflow
+# spec, demonstrating workflow nesting without a separate registered template.
+name: subworkflow-inline
+description: >
+  Composition via an inline sub-workflow. A top-level node feeds a SubWorkflow
+  node whose inline body is a nested workflow spec.
+parameters: []
+spec:
+  nodeDrafts:
+    - type: SoftwareUsecaseComputing
+      id: prepare
+      name: Prepare
+      usecaseVersionId: "3f2504e0-4f89-41d3-9a0c-0305e82c3301"
+      softwareVersionId: "7c9e6679-7425-40de-944b-e07fc1f90ae7"
+      inputSlots:
+        - type: Text
+          descriptor: script
+          from:
+            expr: "'echo prepared > result.txt; echo sum=0'"
+    - type: SubWorkflow
+      id: nested
+      name: Nested
+      maxDepth: 2
+      ref:
+        kind: Inline
+        body:
+          nodeDrafts:
+            - type: SoftwareUsecaseComputing
+              id: inner_a
+              name: Inner A
+              usecaseVersionId: "3f2504e0-4f89-41d3-9a0c-0305e82c3301"
+              softwareVersionId: "7c9e6679-7425-40de-944b-e07fc1f90ae7"
+              inputSlots:
+                - type: Text
+                  descriptor: script
+                  from:
+                    expr: "'echo inner-a > result.txt; echo sum=1'"
+            - type: SoftwareUsecaseComputing
+              id: inner_b
+              name: Inner B
+              usecaseVersionId: "3f2504e0-4f89-41d3-9a0c-0305e82c3301"
+              softwareVersionId: "7c9e6679-7425-40de-944b-e07fc1f90ae7"
+              inputSlots:
+                - type: Text
+                  descriptor: script
+                  from:
+                    expr: "'echo inner-b > result.txt; echo sum=2'"
+          nodeRelations:
+            - fromId: inner_a
+              toId: inner_b
+              slotRelations: []
+  nodeRelations:
+    - fromId: prepare
+      toId: nested
+      slotRelations: []

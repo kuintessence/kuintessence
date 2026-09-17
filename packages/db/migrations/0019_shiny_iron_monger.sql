@@ -1,0 +1,2 @@
+DROP INDEX "agent_registration_intents_agent_idx";--> statement-breakpoint
+CREATE UNIQUE INDEX "agent_registration_intents_active_agent_idx" ON "agent_registration_intents" USING btree ("agent_id") WHERE "agent_registration_intents"."used_at" IS NULL AND "agent_registration_intents"."revoked_at" IS NULL;

@@ -1,0 +1,2 @@
+ALTER TABLE "auth_sessions" ADD COLUMN "active_org_id" uuid;--> statement-breakpoint
+ALTER TABLE "auth_sessions" ADD CONSTRAINT "auth_sessions_active_org_id_orgs_id_fk" FOREIGN KEY ("active_org_id") REFERENCES "public"."orgs"("id") ON DELETE set null ON UPDATE no action;

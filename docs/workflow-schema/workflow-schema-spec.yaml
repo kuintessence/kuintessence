@@ -1,0 +1,295 @@
+# 工作流控制流 DSL 结构示例
+#
+# 每个顶层键是一个 Workflow 文档，用于说明 workflow-schema.yaml 的结构。
+# 覆盖:Generate / ForEach / Reduce(scatter-gather)、While(收敛)、Switch + 消费侧
+# select、SubWorkflow(嵌套 body 递归路径)。
+# 提交前需将 UUID 与 Dataset 引用替换为环境中可访问的资产版本。
+# 运行时输入绑定、分支汇合与输出形态的限制见 README.md#examples。
+# 示例中的类型绑定与依赖关系也需按这些限制调整。
+
+# 示例 1:高通量 scatter-gather(Generate → ForEach → Reduce → 串行)
+example_scatter_gather:
+  name: "雷诺数×攻角 全排列扫掠"
+  parameters: []
+  spec:
+    nodeDrafts:
+      - type: Generate
+        id: genCases                                    # 模板内部引用键(slug)
+        externalId: 99999999-9999-9999-9999-999999999999  # 全局业务标识(UUID),可选
+        name: "生成算例(全排列)"
+        rule:
+          kind: CartesianProduct
+          axes:
+            - { name: reynolds, kind: Enumeration, values: [100, 200, 500, 1000] }
+            - { name: angle, kind: Range, start: 0, stop: 30, step: 10 }
+        output: { descriptor: caseList, as: List }
+
+      - type: Loop
+        id: sweep
+        name: "逐算例处理"
+        mode: ForEach
+        over: { expr: "nodes.genCases.values.caseList" }
+        maxParallel: 32
+        maxIterations: 5000
+        body:
+          nodeDrafts:
+            - type: SoftwareUsecaseComputing
+              id: render
+              name: "模板填充输入文件"
+              usecaseVersionId: aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa
+              softwareVersionId: bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb
+              inputSlots:
+                - { type: Text, descriptor: caseParams, from: { expr: "loop.item" } }
+              outputSlots:
+                - { type: File, descriptor: caseFile, origin: UsecaseOut, isBatch: false }
+            - type: SoftwareUsecaseComputing
+              id: solveOne
+              name: "求解单算例"
+              usecaseVersionId: cccccccc-cccc-cccc-cccc-cccccccccccc
+              softwareVersionId: bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb
+              inputSlots:
+                - { type: File, descriptor: input, optional: false, isBatch: false }
+                - type: Dataset
+                  descriptor: referenceData
+                  optional: false
+                  contents:
+                    source: data-market
+                    assetId: 11111111-1111-4111-8111-111111111111
+                    versionId: 22222222-2222-4222-8222-222222222222
+                    manifestDigest: sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+                    selectedEntries: [reference/coefficients.csv]
+                    targetPath: inputs/reference-data
+              outputSlots:
+                - { type: File, descriptor: result, origin: UsecaseOut, isBatch: false }
+          nodeRelations:
+            - fromId: render
+              toId: solveOne
+              slotRelations:
+                - { fromSlot: caseFile, toSlot: input, transferStrategy: { type: Disk } }
+        outputs:
+          - { descriptor: results, from: { node: solveOne, output: result }, aggregate: Collect }
+
+      - type: Reduce
+        id: gather
+        name: "归一为 CSV"
+        from: { loop: sweep, output: results }
+        ordering: ByIndex
+        reducer:
+          kind: ExtractTable
+          columns:
+            - { name: reynolds, type: double, source: { loopItem: reynolds } }
+            - { name: angle, type: double, source: { loopItem: angle } }
+            - name: cl
+              type: double
+              source: { collectedOut: solverLog }
+              extract: { kind: Regex, pattern: "Cl=([0-9.eE+-]+)", group: 1 }
+        output: { kind: SingleFile, descriptor: summary, fileName: "summary.csv" }
+
+      - type: SoftwareUsecaseComputing
+        id: report
+        name: "出报告"
+        usecaseVersionId: dddddddd-dddd-dddd-dddd-dddddddddddd
+        softwareVersionId: bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb
+        inputSlots:
+          - { type: File, descriptor: csv, optional: false, isBatch: false }
+        outputSlots: []
+    nodeRelations:
+      - { fromId: genCases, toId: sweep, slotRelations: [] }
+      - { fromId: sweep, toId: gather, slotRelations: [] }
+      - fromId: gather
+        toId: report
+        slotRelations:
+          - { fromSlot: summary, toSlot: csv, transferStrategy: { type: Disk } }
+
+# 示例 2:收敛迭代(While + carry + onExhausted)
+example_while_convergence:
+  name: "稳态求解直到收敛"
+  parameters:
+    - { name: targetResidual, type: double, default: 1.0e-5 }
+    - { name: maxIter, type: int, default: 200 }
+  spec:
+    nodeDrafts:
+      - type: SoftwareUsecaseComputing
+        id: prep
+        name: "前处理/网格"
+        usecaseVersionId: aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa
+        softwareVersionId: bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb
+        inputSlots: []
+        outputSlots:
+          - { type: File, descriptor: mesh, origin: UsecaseOut, isBatch: false }
+
+      - type: Loop
+        id: iterate
+        name: "迭代至收敛"
+        mode: While
+        maxIterations: { expr: "params.maxIter" }
+        onExhausted: SucceedWithLast
+        until: { expr: "nodes.check.values.residual <= params.targetResidual" }
+        carry:
+          - from: { node: solve, output: field }
+            to: { input: fieldIn }
+            initial: { node: prep, output: mesh }
+        body:
+          nodeDrafts:
+            - type: SoftwareUsecaseComputing
+              id: solve
+              name: "迭代一步"
+              usecaseVersionId: cccccccc-cccc-cccc-cccc-cccccccccccc
+              softwareVersionId: bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb
+              inputSlots:
+                - { type: File, descriptor: fieldIn, optional: false, isBatch: false }
+              outputSlots:
+                - { type: File, descriptor: field, origin: UsecaseOut, isBatch: false }
+            - type: SoftwareUsecaseComputing
+              id: check
+              name: "算残差"
+              usecaseVersionId: eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee
+              softwareVersionId: bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb
+              inputSlots:
+                - { type: File, descriptor: fieldToCheck, optional: false, isBatch: false }
+              outputSlots: []
+          nodeRelations:
+            - fromId: solve
+              toId: check
+              slotRelations:
+                - { fromSlot: field, toSlot: fieldToCheck, transferStrategy: { type: Disk } }
+        outputs:
+          - { descriptor: finalField, from: { node: solve, output: field } }
+    nodeRelations:
+      - { fromId: prep, toId: iterate, slotRelations: [] }
+
+# 示例 3:多路分支 Switch + 消费侧 select
+example_switch_select:
+  name: "按网格规模选求解器"
+  parameters: []
+  spec:
+    nodeDrafts:
+      - type: SoftwareUsecaseComputing
+        id: mesh
+        name: "网格"
+        usecaseVersionId: aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa
+        softwareVersionId: bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb
+        inputSlots: []
+        outputSlots:
+          - { type: File, descriptor: meshFile, origin: UsecaseOut, isBatch: false }
+
+      - type: Switch
+        id: pick
+        name: "规模分流"
+        cases:
+          - { when: { expr: "nodes.mesh.values.cellCount < 1000000" }, to: small }
+          - { when: { expr: "nodes.mesh.values.cellCount < 50000000" }, to: medium }
+        default: large
+
+      - type: SoftwareUsecaseComputing
+        id: small
+        name: "小算例求解"
+        usecaseVersionId: cccccccc-cccc-cccc-cccc-cccccccccccc
+        softwareVersionId: bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb
+        inputSlots:
+          - { type: File, descriptor: meshIn, optional: false, isBatch: false }
+        outputSlots:
+          - { type: File, descriptor: result, origin: UsecaseOut, isBatch: false }
+      - type: SoftwareUsecaseComputing
+        id: medium
+        name: "中算例求解"
+        usecaseVersionId: cccccccc-cccc-cccc-cccc-cccccccccccc
+        softwareVersionId: bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb
+        inputSlots:
+          - { type: File, descriptor: meshIn, optional: false, isBatch: false }
+        outputSlots:
+          - { type: File, descriptor: result, origin: UsecaseOut, isBatch: false }
+      - type: SoftwareUsecaseComputing
+        id: large
+        name: "大算例求解"
+        usecaseVersionId: cccccccc-cccc-cccc-cccc-cccccccccccc
+        softwareVersionId: bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb
+        inputSlots:
+          - { type: File, descriptor: meshIn, optional: false, isBatch: false }
+        outputSlots:
+          - { type: File, descriptor: result, origin: UsecaseOut, isBatch: false }
+
+      - type: SoftwareUsecaseComputing
+        id: post
+        name: "后处理"
+        usecaseVersionId: dddddddd-dddd-dddd-dddd-dddddddddddd
+        softwareVersionId: bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb
+        inputSlots:
+          - type: File
+            descriptor: solverOut
+            optional: false
+            isBatch: false
+            sources:
+              - { node: small, output: result }
+              - { node: medium, output: result }
+              - { node: large, output: result }
+            select: FirstAvailable
+        outputSlots: []
+    nodeRelations:
+      - { fromId: mesh, toId: pick, slotRelations: [] }
+      - fromId: mesh
+        toId: small
+        slotRelations:
+          - { fromSlot: meshFile, toSlot: meshIn, transferStrategy: { type: Disk } }
+      - fromId: mesh
+        toId: medium
+        slotRelations:
+          - { fromSlot: meshFile, toSlot: meshIn, transferStrategy: { type: Disk } }
+      - fromId: mesh
+        toId: large
+        slotRelations:
+          - { fromSlot: meshFile, toSlot: meshIn, transferStrategy: { type: Disk } }
+      - { fromId: small, toId: post, slotRelations: [] }
+      - { fromId: medium, toId: post, slotRelations: [] }
+      - { fromId: large, toId: post, slotRelations: [] }
+
+# 示例 4:子工作流嵌套(SubWorkflow Inline body，展示递归 $ref 路径)
+example_subworkflow:
+  name: "区域细化(嵌套子工作流)"
+  parameters:
+    - { name: region, type: json, required: true }
+  spec:
+    nodeDrafts:
+      - type: SoftwareUsecaseComputing
+        id: outer
+        name: "外层准备"
+        usecaseVersionId: aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa
+        softwareVersionId: bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb
+        inputSlots: []
+        outputSlots:
+          - { type: File, descriptor: domain, origin: UsecaseOut, isBatch: false }
+
+      - type: SubWorkflow
+        id: refine
+        name: "细化一层"
+        maxDepth: 8
+        onDepthExceeded: Fail
+        ref:
+          kind: Inline
+          body:
+            nodeDrafts:
+              - type: SoftwareUsecaseComputing
+                id: innerSolve
+                name: "子区域求解"
+                usecaseVersionId: cccccccc-cccc-cccc-cccc-cccccccccccc
+                softwareVersionId: bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb
+                inputSlots: []
+                outputSlots:
+                  - { type: File, descriptor: result, origin: UsecaseOut, isBatch: false }
+            nodeRelations: []
+        inputs:
+          - { to: { param: region }, from: { expr: "params.region" } }
+        outputs:
+          - { descriptor: refined, from: { workflowOutput: result } }
+
+      - type: SoftwareUsecaseComputing
+        id: final
+        name: "汇总"
+        usecaseVersionId: dddddddd-dddd-dddd-dddd-dddddddddddd
+        softwareVersionId: bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb
+        inputSlots:
+          - { type: File, descriptor: r, optional: false, isBatch: false }
+        outputSlots: []
+    nodeRelations:
+      - { fromId: outer, toId: refine, slotRelations: [] }
+      - { fromId: refine, toId: final, slotRelations: [] }

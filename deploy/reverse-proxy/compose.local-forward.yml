@@ -1,0 +1,14 @@
+services:
+  local-cloud-proxy:
+    image: nginx:1.27-alpine
+    environment:
+      PLATFORM_HOST: ${PLATFORM_HOST:?PLATFORM_HOST is required}
+      FORWARDED_PROXY_UPSTREAM: ${FORWARDED_PROXY_UPSTREAM:-host.docker.internal:16443}
+    extra_hosts:
+      - host.docker.internal:host-gateway
+    volumes:
+      - ./local-forward.conf.template:/etc/nginx/templates/default.conf.template:ro
+      - ${LOCAL_PROXY_TLS_DIR:?LOCAL_PROXY_TLS_DIR is required}:/etc/nginx/tls:ro
+    ports:
+      - 127.0.0.1:${LOCAL_PROXY_PORT:-15443}:15443
+    restart: unless-stopped

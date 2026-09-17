@@ -1,0 +1,20 @@
+{
+  "name": "@kuintessence/docs-site",
+  "license": "AGPL-3.0-only",
+  "version": "0.1.0-rc.1",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vitepress dev src --host 127.0.0.1 --port 5174",
+    "build": "vitepress build src",
+    "preview": "vitepress preview src --host 127.0.0.1 --port 4174 --strictPort",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "vitepress": "^1.6.4"
+  },
+  "devDependencies": {
+    "@types/node": "^25.0.1",
+    "typescript": "^6.0.3"
+  }
+}

@@ -1,0 +1,5 @@
+ALTER TABLE "agent_scheduler_queue_snapshots" ADD COLUMN "last_no_go_at" timestamp;--> statement-breakpoint
+ALTER TABLE "agent_scheduler_queue_snapshots" ADD COLUMN "no_go_reason" varchar(64);--> statement-breakpoint
+ALTER TABLE "agent_scheduler_queue_snapshots" ADD COLUMN "recovery_started_at" timestamp;--> statement-breakpoint
+ALTER TABLE "agent_scheduler_queue_snapshots" ADD COLUMN "recovered_at" timestamp;--> statement-breakpoint
+ALTER TABLE "agent_scheduler_queue_snapshots" ADD CONSTRAINT "agent_scheduler_queue_snapshots_no_go_reason_check" CHECK ("agent_scheduler_queue_snapshots"."no_go_reason" IS NULL OR "agent_scheduler_queue_snapshots"."no_go_reason" IN ('command_failed', 'invalid_output', 'multiple_default_queues', 'default_queue_missing', 'unsupported_scheduler', 'stale', 'unknown'));

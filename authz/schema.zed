@@ -1,0 +1,164 @@
+definition user {}
+
+definition platform {
+  relation super_admin: user
+  relation admin: user
+  relation operator: user
+  relation auditor: user
+  relation member: user
+
+  permission manage = super_admin + admin
+  permission operate = manage + operator
+  permission view = operate
+  permission audit_read = view + auditor
+  permission metering_read = view + auditor
+  permission recording_read = view + auditor
+  permission software_use = member
+  permission software_view = software_use
+}
+
+definition organization {
+  relation platform: platform
+  relation owner: user
+  relation admin: user
+  relation operator: user
+  relation member: user
+  relation viewer: user
+
+  permission own = owner + platform->manage
+  permission manage = own + admin
+  permission operate = manage + operator
+  permission use = operate + member
+  permission view = use + viewer
+}
+
+definition provider {
+  relation org: organization
+  relation platform: platform
+
+  permission manage = org->manage + platform->manage
+  permission operate = manage + org->operate
+  permission view = operate + org->view
+}
+
+definition agent {
+  relation provider: provider
+  relation platform: platform
+
+  permission manage = provider->manage + platform->manage
+  permission operate = manage + provider->operate
+  permission view = operate + provider->view
+}
+
+definition queue {
+  relation provider: provider
+  relation visible_org: organization
+  relation submitter: user
+  relation platform: platform
+
+  permission manage = provider->manage + platform->manage
+  permission view = manage + visible_org->view + submitter
+  permission submit = manage + visible_org->use + submitter
+}
+
+definition software_asset {
+  relation owner: user
+  relation owner_org: organization
+  relation provider: provider
+  relation viewer: user | organization#view | platform#software_view
+  relation user: user | organization#use | platform#software_use
+  relation installer: user | organization#use | provider#operate | platform#software_use
+  relation platform: platform
+
+  permission manage = owner + owner_org->manage + provider->manage + platform->manage
+  permission view = manage + viewer + user + installer
+  permission use = manage + user + installer
+  permission install = manage + installer
+}
+
+definition data_asset {
+  relation owner: user
+  relation owner_org: organization
+  relation provider: provider
+  relation viewer: user | organization#view | platform#software_view
+  relation user: user | organization#use | platform#software_use
+  relation downloader: user | organization#use | platform#software_use
+  relation deriver: user | organization#use | platform#software_use
+  relation manager: user | organization#manage | provider#manage | platform#manage
+  relation platform: platform
+
+  permission manage = owner + owner_org->manage + provider->manage + manager + platform->manage
+  permission view = manage + viewer + user + downloader + deriver
+  permission use = manage + user + downloader + deriver
+  permission download = manage + downloader
+  permission derive = manage + deriver
+}
+
+definition job {
+  relation owner: user
+  relation consumer_org: organization
+  relation queue: queue
+  relation provider: provider
+  relation platform: platform
+
+  permission view = owner + consumer_org->manage + provider->operate + platform->view
+  permission cancel = owner + consumer_org->operate + provider->operate + platform->operate
+  permission manage = provider->manage + platform->manage
+}
+
+definition workflow {
+  relation owner: user
+  relation consumer_org: organization
+  relation platform: platform
+
+  permission view = owner + consumer_org->view + platform->view
+  permission cancel = owner + consumer_org->operate + platform->operate
+  permission manage = owner + consumer_org->manage + platform->manage
+}
+
+definition netdrive_file {
+  relation owner: user
+  relation consumer_org: organization
+  relation platform: platform
+
+  permission view = owner + consumer_org->view + platform->view
+  permission use = owner + consumer_org->use + platform->operate
+  permission delete = owner + platform->manage
+}
+
+definition cluster_file_root {
+  relation provider: provider
+  relation visible_org: organization
+  relation platform: platform
+
+  permission manage = provider->manage + platform->manage
+  permission view = manage + visible_org->view
+  permission use = manage + visible_org->use
+}
+
+definition ssh_credential {
+  relation agent: agent
+  relation platform: platform
+
+  permission view = agent->manage + platform->view
+  permission manage = agent->manage + platform->manage
+}
+
+definition ssh_session {
+  relation agent: agent
+  relation opener: user
+  relation platform: platform
+
+  permission open = agent->operate + platform->operate
+  permission view = opener + agent->manage + platform->view
+  permission close = opener + agent->operate + platform->operate
+}
+
+definition ssh_recording {
+  relation agent: agent
+  relation actor: user
+  relation platform: platform
+
+  permission view = actor + agent->manage + platform->recording_read
+  permission delete = agent->manage + platform->manage
+}

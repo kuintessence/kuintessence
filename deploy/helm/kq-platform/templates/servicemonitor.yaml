@@ -1,0 +1,19 @@
+{{- if and .Values.serviceMonitor .Values.serviceMonitor.enabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "kq-platform.fullname" . }}-server
+  labels:
+    {{- include "kq-platform.labels" . | nindent 4 }}
+    component: server
+spec:
+  selector:
+    matchLabels:
+      {{- include "kq-platform.selectorLabels" . | nindent 6 }}
+      component: server
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: {{ .Values.serviceMonitor.interval }}
+      scrapeTimeout: {{ .Values.serviceMonitor.scrapeTimeout }}
+{{- end }}

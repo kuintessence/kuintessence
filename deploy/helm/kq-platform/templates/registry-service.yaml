@@ -1,0 +1,16 @@
+{{- if .Values.registry.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}-registry
+  labels: {{- include "kq.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: {{ .Chart.Name }}
+    app.kubernetes.io/component: registry
+  ports:
+    - name: http
+      port: {{ .Values.registry.port }}
+      targetPort: http
+{{- end }}

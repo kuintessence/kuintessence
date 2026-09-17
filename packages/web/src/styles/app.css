@@ -1,0 +1,299 @@
+@import "tailwindcss";
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+/*
+ * Kuintessence design tokens.
+ * Light = default. Dark = `.dark` class on <html>.
+ * Status tokens (pending/running/...) are referenced by the Badge component.
+ */
+:root {
+  --radius: 0.625rem;
+
+  --kq-motion-enter: 160ms;
+  --kq-motion-exit: 120ms;
+  --kq-motion-fast: 100ms;
+  --kq-motion-panel-enter: 200ms;
+  --kq-motion-panel-exit: 160ms;
+  --kq-motion-ease-enter: cubic-bezier(0.2, 0, 0, 1);
+  --kq-motion-ease-exit: cubic-bezier(0.4, 0, 1, 1);
+  --kq-motion-distance: 6px;
+  --kq-motion-panel-distance: 16px;
+
+  --background: oklch(0.974 0.006 248);
+  --foreground: oklch(0.18 0.02 260);
+  --muted: oklch(0.945 0.012 252);
+  --muted-foreground: oklch(0.5 0.015 260);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.18 0.02 260);
+  --border: oklch(0.895 0.01 252);
+  --input: oklch(0.92 0.005 260);
+  --ring: oklch(0.62 0.18 255);
+
+  --brand: oklch(0.55 0.19 255);
+  --brand-foreground: oklch(0.99 0 0);
+  --brand-soft: oklch(0.94 0.04 255);
+
+  --status-pending: oklch(0.62 0.02 260);
+  --status-running: oklch(0.62 0.18 255);
+  --status-succeeded: oklch(0.62 0.18 150);
+  --status-failed: oklch(0.6 0.22 25);
+  --status-cancelled: oklch(0.55 0.01 260);
+
+  --sidebar: oklch(0.992 0.002 248);
+  --sidebar-foreground: oklch(0.22 0.01 260);
+  --sidebar-border: oklch(0.92 0.005 260);
+  --sidebar-active: oklch(0.94 0.04 255);
+  --sidebar-active-foreground: oklch(0.35 0.16 255);
+}
+
+.dark {
+  --background: oklch(0.16 0.01 260);
+  --foreground: oklch(0.96 0.005 260);
+  --muted: oklch(0.22 0.015 260);
+  --muted-foreground: oklch(0.7 0.015 260);
+  --card: oklch(0.2 0.012 260);
+  --card-foreground: oklch(0.96 0.005 260);
+  --border: oklch(0.27 0.015 260);
+  --input: oklch(0.27 0.015 260);
+  --ring: oklch(0.62 0.18 255);
+
+  --brand: oklch(0.66 0.18 255);
+  --brand-foreground: oklch(0.12 0.01 260);
+  --brand-soft: oklch(0.28 0.07 255);
+
+  --status-pending: oklch(0.7 0.02 260);
+  --status-running: oklch(0.7 0.18 255);
+  --status-succeeded: oklch(0.72 0.16 150);
+  --status-failed: oklch(0.7 0.2 25);
+  --status-cancelled: oklch(0.7 0.01 260);
+
+  --sidebar: oklch(0.18 0.012 260);
+  --sidebar-foreground: oklch(0.92 0.005 260);
+  --sidebar-border: oklch(0.27 0.015 260);
+  --sidebar-active: oklch(0.28 0.07 255);
+  --sidebar-active-foreground: oklch(0.95 0.06 255);
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+
+  --color-brand: var(--brand);
+  --color-brand-foreground: var(--brand-foreground);
+  --color-brand-soft: var(--brand-soft);
+
+  --color-status-pending: var(--status-pending);
+  --color-status-running: var(--status-running);
+  --color-status-succeeded: var(--status-succeeded);
+  --color-status-failed: var(--status-failed);
+  --color-status-cancelled: var(--status-cancelled);
+
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-active: var(--sidebar-active);
+  --color-sidebar-active-foreground: var(--sidebar-active-foreground);
+
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+
+  --font-sans:
+    "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial,
+    sans-serif;
+  --font-mono:
+    "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono",
+    "Courier New", monospace;
+}
+
+html,
+body {
+  @apply bg-background text-foreground antialiased;
+  font-family: var(--font-sans);
+}
+
+code,
+pre,
+kbd,
+samp {
+  font-family: var(--font-mono);
+}
+
+*:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
+.kq-motion--dialog[data-state="open"] {
+  animation: kq-dialog-enter var(--kq-motion-enter) var(--kq-motion-ease-enter);
+}
+
+.kq-motion--dialog[data-state="closed"] {
+  animation: kq-dialog-exit var(--kq-motion-exit) var(--kq-motion-ease-exit);
+}
+
+.kq-motion--overlay[data-state="open"] {
+  animation: kq-fade-enter var(--kq-motion-enter) var(--kq-motion-ease-enter);
+}
+
+.kq-motion--overlay[data-state="closed"] {
+  animation: kq-fade-exit var(--kq-motion-exit) var(--kq-motion-ease-exit);
+}
+
+.kq-motion--sheet-overlay[data-state="open"] {
+  animation-duration: var(--kq-motion-panel-enter);
+}
+
+.kq-motion--sheet-overlay[data-state="closed"] {
+  animation-duration: var(--kq-motion-panel-exit);
+}
+
+.kq-motion--sheet[data-state="open"] {
+  animation-duration: var(--kq-motion-panel-enter);
+  animation-timing-function: var(--kq-motion-ease-enter);
+}
+
+.kq-motion--sheet[data-state="closed"] {
+  animation-duration: var(--kq-motion-panel-exit);
+  animation-timing-function: var(--kq-motion-ease-exit);
+}
+
+.kq-motion--sheet[data-side="right"][data-state="open"] {
+  animation-name: kq-sheet-right-enter;
+}
+
+.kq-motion--sheet[data-side="right"][data-state="closed"] {
+  animation-name: kq-sheet-right-exit;
+}
+
+.kq-motion--sheet[data-side="left"][data-state="open"] {
+  animation-name: kq-sheet-left-enter;
+}
+
+.kq-motion--sheet[data-side="left"][data-state="closed"] {
+  animation-name: kq-sheet-left-exit;
+}
+
+.kq-motion--menu[data-state="open"] {
+  animation: kq-fade-enter var(--kq-motion-fast) var(--kq-motion-ease-enter);
+}
+
+.kq-motion--menu[data-state="closed"] {
+  animation: kq-fade-exit var(--kq-motion-fast) var(--kq-motion-ease-exit);
+}
+
+.kq-motion--notice[data-state="open"],
+.kq-motion--item[data-state="open"] {
+  animation: kq-fade-enter var(--kq-motion-enter) var(--kq-motion-ease-enter);
+}
+
+.kq-motion[data-state] {
+  animation-fill-mode: both;
+}
+
+@keyframes kq-fade-enter {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes kq-fade-exit {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
+}
+
+@keyframes kq-dialog-enter {
+  from {
+    opacity: 0;
+    transform: translateY(var(--kq-motion-distance));
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes kq-dialog-exit {
+  from {
+    opacity: 1;
+    transform: translateY(0);
+  }
+  to {
+    opacity: 0;
+    transform: translateY(var(--kq-motion-distance));
+  }
+}
+
+@keyframes kq-sheet-right-enter {
+  from {
+    opacity: 0;
+    transform: translateX(var(--kq-motion-panel-distance));
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+@keyframes kq-sheet-right-exit {
+  from {
+    opacity: 1;
+    transform: translateX(0);
+  }
+  to {
+    opacity: 0;
+    transform: translateX(var(--kq-motion-panel-distance));
+  }
+}
+
+@keyframes kq-sheet-left-enter {
+  from {
+    opacity: 0;
+    transform: translateX(calc(var(--kq-motion-panel-distance) * -1));
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+@keyframes kq-sheet-left-exit {
+  from {
+    opacity: 1;
+    transform: translateX(0);
+  }
+  to {
+    opacity: 0;
+    transform: translateX(calc(var(--kq-motion-panel-distance) * -1));
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .kq-motion,
+  .kq-motion--dialog[data-state],
+  .kq-motion--overlay[data-state],
+  .kq-motion--overlay.kq-motion--sheet-overlay[data-state],
+  .kq-motion--sheet[data-state],
+  .kq-motion--sheet[data-side][data-state],
+  .kq-motion--menu[data-state],
+  .kq-motion--notice[data-state],
+  .kq-motion--item[data-state] {
+    animation: none;
+  }
+}

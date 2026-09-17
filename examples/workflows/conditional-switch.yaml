@@ -1,0 +1,43 @@
+# Conditional branch. A Switch node routes on a workflow parameter to one of
+# two usecase nodes: when `mode == 'fast'` it picks `fast_path`, otherwise the
+# `default` falls through to `slow_path`.
+name: conditional-switch
+description: >
+  Conditional branch. A Switch routes on the `mode` parameter to one of two
+  usecase nodes, falling through to a default branch.
+parameters:
+  - name: mode
+    type: string
+    default: fast
+    description: Selects which branch the Switch routes to.
+spec:
+  nodeDrafts:
+    - type: Switch
+      id: route
+      name: Route
+      cases:
+        - when:
+            expr: "params.mode == 'fast'"
+          to: fast_path
+      default: slow_path
+    - type: SoftwareUsecaseComputing
+      id: fast_path
+      name: Fast Path
+      usecaseVersionId: "3f2504e0-4f89-41d3-9a0c-0305e82c3301"
+      softwareVersionId: "7c9e6679-7425-40de-944b-e07fc1f90ae7"
+      inputSlots:
+        - type: Text
+          descriptor: script
+          from:
+            expr: "'echo fast > result.txt; echo sum=1'"
+    - type: SoftwareUsecaseComputing
+      id: slow_path
+      name: Slow Path
+      usecaseVersionId: "3f2504e0-4f89-41d3-9a0c-0305e82c3301"
+      softwareVersionId: "7c9e6679-7425-40de-944b-e07fc1f90ae7"
+      inputSlots:
+        - type: Text
+          descriptor: script
+          from:
+            expr: "'echo slow > result.txt; echo sum=2'"
+  nodeRelations: []

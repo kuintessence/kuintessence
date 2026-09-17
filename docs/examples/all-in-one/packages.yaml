@@ -1,0 +1,65 @@
+# All-in-one local usecase package catalog.
+#
+# Top-level map: usecaseVersionId (UUID) -> UsecasePackage (the stored ability
+# spec a SoftwareUsecaseComputing node resolves to). The local runner validates
+# entries with `usecase.UsecasePackageSchema`; Server execution also requires
+# its governed package and software revision checks.
+#
+# Copy this file to ~/.kuintessence/packages.yaml (or set KUINTESSENCE_HOME) and
+# run `kq tui --local`. The Workflows pane resolves hello's usecase node here.
+
+# usecaseVersionId referenced by workflows/hello.yaml
+"3f2504e0-4f89-41d3-9a0c-0305e82c3301":
+  usecase:
+    # `bash -c <script>` — runs anywhere, no Spack/container needed.
+    commandFile: bash
+    inputSlots:
+      - kind: Text
+        descriptor: script
+        # The Text slot's value is mounted as the `flag` argument material.
+        refMaterials:
+          - kind: ArgRef
+            descriptor: flag
+            sort: 0
+  # Bare facility: invoke a binary already present on the machine, no env
+  # activation. Portable across any login node.
+  software:
+    kind: Bare
+  arguments:
+    # `-c {}` tokenizes to ["-c", "{}"]; `{}` is replaced by the slot value as a
+    # single argv token, so the inline script stays one shell-quoted argument:
+    #   bash -c 'echo 42 > result.txt'
+    - descriptor: flag
+      valueFormat: "-c {}"
+  environments: []
+  filesomeInputs: []
+  filesomeOutputs:
+    # The script writes ./result.txt relative to the run working dir; the local
+    # launcher reads it back as the collected output `result`.
+    - descriptor: result
+      fileKind:
+        kind: Normal
+        name: result.txt
+  valueOutputs:
+    # Extract the integer in result.txt into nodes.<id>.values.answer, so value
+    # extraction is demonstrable end to end.
+    - descriptor: answer
+      type: int
+      from:
+        collectedOutDescriptor: result
+      extract:
+        kind: Regex
+        pattern: "([0-9]+)"
+        group: 1
+    # stdout-as-value: the local launcher captures the job's standard output under
+    # the reserved `stdout` collected descriptor, so a valueOutput can read it
+    # without the script having to write a file. The script also echoes
+    # `sum=99`; this pulls 99 into nodes.<id>.values.sum.
+    - descriptor: sum
+      type: int
+      from:
+        collectedOutDescriptor: stdout
+      extract:
+        kind: Regex
+        pattern: "sum=([0-9]+)"
+        group: 1

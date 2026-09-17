@@ -1,0 +1,20 @@
+{{- if and .Values.registry.enabled .Values.registry.persistence.enabled }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ .Release.Name }}-registry-blobs
+  annotations:
+    helm.sh/resource-policy: keep
+  labels:
+    {{- include "kq.labels" . | nindent 4 }}
+    app.kubernetes.io/component: registry
+spec:
+  accessModes:
+    {{- toYaml .Values.registry.persistence.accessModes | nindent 4 }}
+  {{- if .Values.registry.persistence.storageClass }}
+  storageClassName: {{ .Values.registry.persistence.storageClass | quote }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.registry.persistence.storage }}
+{{- end }}

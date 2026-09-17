@@ -1,0 +1,69 @@
+#!/bin/sh
+# Installed by the CP as root:root 0755 at /usr/libexec/kuintessence/kq-sandbox-wrapper.
+set -eu
+
+readonly PROFILE_CONFIG=/etc/kuintessence/restricted-execution-profile.conf
+
+die() {
+  printf '%s\n' "kq-sandbox-wrapper: $*" >&2
+  exit 126
+}
+
+secure_regular_file() {
+  path=$1
+  expected_hash=$2
+  [ "$(realpath "$path")" = "$path" ] || die "non-canonical path: $path"
+  [ -f "$path" ] && [ ! -L "$path" ] || die "not a regular file: $path"
+  owner=$(stat -c '%u' "$path")
+  mode=$(stat -c '%a' "$path")
+  [ "$owner" = 0 ] || die "not root-owned: $path"
+  case "$mode" in
+    *[2367][0-7]|[0-7]*[2367]) die "group/world writable: $path" ;;
+  esac
+  actual_hash=$(sha256sum "$path" | awk '{print $1}')
+  [ "$actual_hash" = "$expected_hash" ] || die "sha256 mismatch: $path"
+}
+
+[ -r "$PROFILE_CONFIG" ] || die "profile config unavailable"
+secure_regular_file "$PROFILE_CONFIG" "$(sha256sum "$PROFILE_CONFIG" | awk '{print $1}')"
+# This file is root-owned and non-writable; its values are the local
+# compute-node authority and are intentionally not inherited from the Agent.
+. "$PROFILE_CONFIG"
+
+[ "${KQ_PROFILE_ID:-}" ] || die "missing KQ_PROFILE_ID"
+[ "${KQ_APPTAINER_PATH:-}" ] || die "missing KQ_APPTAINER_PATH"
+[ "${KQ_APPTAINER_SHA256:-}" ] || die "missing KQ_APPTAINER_SHA256"
+[ "${KQ_SIF_PATH:-}" ] || die "missing KQ_SIF_PATH"
+[ "${KQ_SIF_SHA256:-}" ] || die "missing KQ_SIF_SHA256"
+[ "${KQ_WRAPPER_PATH:-}" ] || die "missing KQ_WRAPPER_PATH"
+[ "${KQ_WRAPPER_SHA256:-}" ] || die "missing KQ_WRAPPER_SHA256"
+
+[ $# -ge 15 ] || die "incomplete signed execution profile"
+[ "$1" = --profile-id ] || die "profile id flag required"; profile_id=$2; shift 2
+[ "$1" = --apptainer-path ] || die "apptainer path flag required"; apptainer_path=$2; shift 2
+[ "$1" = --apptainer-sha256 ] || die "apptainer hash flag required"; apptainer_sha256=$2; shift 2
+[ "$1" = --sif-path ] || die "SIF path flag required"; sif_path=$2; shift 2
+[ "$1" = --sif-sha256 ] || die "SIF hash flag required"; sif_sha256=$2; shift 2
+[ "$1" = --wrapper-sha256 ] || die "wrapper hash flag required"; wrapper_sha256=$2; shift 2
+[ "$1" = -- ] || die "argv delimiter required"; shift
+
+[ "$profile_id" = "$KQ_PROFILE_ID" ] || die "profile id mismatch"
+[ "$apptainer_path" = "$KQ_APPTAINER_PATH" ] || die "Apptainer path mismatch"
+[ "$apptainer_sha256" = "$KQ_APPTAINER_SHA256" ] || die "Apptainer hash mismatch"
+[ "$sif_path" = "$KQ_SIF_PATH" ] || die "SIF path mismatch"
+[ "$sif_sha256" = "$KQ_SIF_SHA256" ] || die "SIF hash mismatch"
+[ "$wrapper_sha256" = "$KQ_WRAPPER_SHA256" ] || die "wrapper hash mismatch"
+
+secure_regular_file "$KQ_WRAPPER_PATH" "$KQ_WRAPPER_SHA256"
+secure_regular_file "$KQ_APPTAINER_PATH" "$KQ_APPTAINER_SHA256"
+[ "$(realpath "$0")" = "$KQ_WRAPPER_PATH" ] || die "wrapper execution path mismatch"
+[ "$(realpath "$KQ_SIF_PATH")" = "$KQ_SIF_PATH" ] || die "non-canonical SIF path"
+[ "$(sha256sum "$KQ_SIF_PATH" | awk '{print $1}')" = "$KQ_SIF_SHA256" ] || die "SIF hash mismatch"
+[ "$1" = "$KQ_APPTAINER_PATH" ] && [ "${2:-}" = exec ] || die "unexpected execution argv"
+
+sif_count=0
+for arg in "$@"; do
+  [ "$arg" = "$KQ_SIF_PATH" ] && sif_count=$((sif_count + 1))
+done
+[ "$sif_count" -eq 1 ] || die "execution argv does not pin exactly one SIF"
+exec "$@"

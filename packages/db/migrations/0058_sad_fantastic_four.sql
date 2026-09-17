@@ -1,0 +1,2 @@
+ALTER TABLE "agent_scheduler_queue_snapshots" ADD COLUMN "last_attempt_at" timestamp;--> statement-breakpoint
+ALTER TABLE "agent_scheduler_queue_snapshots" ADD COLUMN "last_successful_observed_at" timestamp;

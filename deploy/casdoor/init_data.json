@@ -1,0 +1,211 @@
+{
+  "organizations": [
+    {
+      "owner": "admin",
+      "name": "kuintessence",
+      "displayName": "Kuintessence 本地开发 IdP",
+      "websiteUrl": "http://localhost:15173",
+      "favicon": "",
+      "passwordType": "plain",
+      "passwordSalt": "",
+      "passwordOptions": ["AtLeast6"],
+      "countryCodes": ["CN"],
+      "defaultAvatar": "",
+      "defaultApplication": "kuintessence-server",
+      "tags": ["Kuintessence", "OIDC", "SpiceDB"],
+      "languages": ["zh", "en"],
+      "masterPassword": "admin123",
+      "defaultPassword": "admin123",
+      "initScore": 2000,
+      "enableSoftDeletion": false,
+      "isProfilePublic": true,
+      "disableSignin": false,
+      "accountItems": [
+        { "name": "Organization", "visible": true, "viewRule": "Public", "modifyRule": "Admin" },
+        { "name": "ID", "visible": true, "viewRule": "Public", "modifyRule": "Immutable" },
+        { "name": "Name", "visible": true, "viewRule": "Public", "modifyRule": "Admin" },
+        { "name": "Display name", "visible": true, "viewRule": "Public", "modifyRule": "Self" },
+        { "name": "Password", "visible": true, "viewRule": "Self", "modifyRule": "Self" },
+        { "name": "Email", "visible": true, "viewRule": "Public", "modifyRule": "Self" },
+        { "name": "Avatar", "visible": true, "viewRule": "Public", "modifyRule": "Self" }
+      ]
+    }
+  ],
+  "applications": [
+    {
+      "owner": "admin",
+      "name": "kuintessence-server",
+      "displayName": "Kuintessence Server",
+      "logo": "",
+      "homepageUrl": "http://localhost:15173",
+      "organization": "kuintessence",
+      "cert": "cert-built-in",
+      "enablePassword": true,
+      "enableSignUp": true,
+      "disableSignin": false,
+      "clientId": "kuintessence-server",
+      "clientSecret": "kuintessence-server-dev-client-secret-change-me",
+      "providers": [],
+      "signinMethods": [
+        { "name": "Password", "displayName": "密码登录", "rule": "All" },
+        { "name": "Verification code", "displayName": "验证码", "rule": "None" },
+        { "name": "WebAuthn", "displayName": "WebAuthn", "rule": "None" },
+        { "name": "Face ID", "displayName": "人脸识别", "rule": "None" }
+      ],
+      "signupItems": [
+        { "name": "ID", "visible": false, "required": true, "prompted": false, "rule": "Random" },
+        { "name": "Username", "visible": true, "required": true, "prompted": false, "rule": "None" },
+        { "name": "Display name", "visible": true, "required": true, "prompted": false, "rule": "None" },
+        { "name": "Password", "visible": true, "required": true, "prompted": false, "rule": "None" },
+        { "name": "Confirm password", "visible": true, "required": true, "prompted": false, "rule": "None" },
+        { "name": "Email", "visible": true, "required": true, "prompted": false, "rule": "None" }
+      ],
+      "grantTypes": ["authorization_code", "refresh_token"],
+      "redirectUris": [
+        "http://localhost:5173/platform/api/auth/oidc/callback",
+        "http://localhost:15173/platform/api/auth/oidc/callback",
+        "http://localhost:5173/api/auth/oidc/callback",
+        "http://localhost:15173/api/auth/oidc/callback",
+        "http://localhost:13000/api/auth/oidc/callback",
+        "http://localhost:3000/api/auth/oidc/callback"
+      ],
+      "tokenFormat": "JWT",
+      "tokenFields": ["email", "name", "displayName", "owner", "groups"],
+      "expireInHours": 168,
+      "failedSigninLimit": 5,
+      "failedSigninFrozenTime": 15
+    }
+  ],
+  "users": [
+    {
+      "owner": "kuintessence",
+      "name": "admin",
+      "type": "normal-user",
+      "password": "admin123",
+      "passwordType": "plain",
+      "displayName": "Kuintessence 管理员",
+      "avatar": "",
+      "email": "kq-admin@example.com",
+      "emailVerified": true,
+      "phone": "",
+      "countryCode": "CN",
+      "address": [],
+      "addresses": [],
+      "affiliation": "Kuintessence",
+      "tag": "admin",
+      "score": 2000,
+      "ranking": 1,
+      "isAdmin": true,
+      "isForbidden": false,
+      "isDeleted": false,
+      "signupApplication": "kuintessence-server",
+      "createdIp": "",
+      "groups": ["kq-platform-admins"]
+    },
+    {
+      "owner": "kuintessence",
+      "name": "dev-admin",
+      "type": "normal-user",
+      "password": "admin123",
+      "passwordType": "plain",
+      "displayName": "Kuintessence Dev Admin",
+      "avatar": "",
+      "email": "kq-dev-admin@example.com",
+      "emailVerified": true,
+      "phone": "",
+      "countryCode": "CN",
+      "address": [],
+      "addresses": [],
+      "affiliation": "Kuintessence",
+      "tag": "admin",
+      "score": 2000,
+      "ranking": 1,
+      "isAdmin": true,
+      "isForbidden": false,
+      "isDeleted": false,
+      "signupApplication": "kuintessence-server",
+      "createdIp": "",
+      "groups": ["kq-platform-admins"]
+    },
+    {
+      "owner": "kuintessence",
+      "name": "dev-operator",
+      "type": "normal-user",
+      "password": "admin123",
+      "passwordType": "plain",
+      "displayName": "Kuintessence Dev Operator",
+      "avatar": "",
+      "email": "kq-dev-operator@example.com",
+      "emailVerified": true,
+      "phone": "",
+      "countryCode": "CN",
+      "address": [],
+      "addresses": [],
+      "affiliation": "Kuintessence",
+      "tag": "operator",
+      "score": 2000,
+      "ranking": 2,
+      "isAdmin": false,
+      "isForbidden": false,
+      "isDeleted": false,
+      "signupApplication": "kuintessence-server",
+      "createdIp": "",
+      "groups": ["kq-operators"]
+    }
+  ],
+  "groups": [
+    {
+      "owner": "kuintessence",
+      "name": "kq-super-admins",
+      "displayName": "Kuintessence Super Admins",
+      "type": "static",
+      "isTopGroup": true,
+      "isEnabled": true
+    },
+    {
+      "owner": "kuintessence",
+      "name": "kq-platform-admins",
+      "displayName": "Kuintessence Platform Admins",
+      "type": "static",
+      "isTopGroup": true,
+      "isEnabled": true
+    },
+    {
+      "owner": "kuintessence",
+      "name": "kq-operators",
+      "displayName": "Kuintessence Operators",
+      "type": "static",
+      "isTopGroup": true,
+      "isEnabled": true
+    },
+    {
+      "owner": "kuintessence",
+      "name": "kq-users",
+      "displayName": "Kuintessence Users",
+      "type": "static",
+      "isTopGroup": true,
+      "isEnabled": true
+    }
+  ],
+  "certs": [
+    {
+      "owner": "admin",
+      "name": "cert-built-in",
+      "displayName": "Kuintessence OIDC 签名证书",
+      "scope": "JWT",
+      "type": "x509",
+      "cryptoAlgorithm": "RS256",
+      "bitSize": 4096,
+      "expireInYears": 20,
+      "certificate": "",
+      "privateKey": ""
+    }
+  ],
+  "providers": [],
+  "ldaps": [],
+  "models": [],
+  "permissions": [],
+  "roles": [],
+  "resources": [],
+  "tokens": []
+}

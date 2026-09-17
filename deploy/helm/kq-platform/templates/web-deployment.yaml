@@ -1,0 +1,59 @@
+{{- if .Values.web.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "kq-platform.fullname" . }}-web
+  labels:
+    {{- include "kq-platform.labels" . | nindent 4 }}
+    component: web
+spec:
+  replicas: {{ .Values.web.replicas }}
+  selector:
+    matchLabels:
+      {{- include "kq-platform.selectorLabels" . | nindent 6 }}
+      component: web
+  template:
+    metadata:
+      labels:
+        {{- include "kq-platform.selectorLabels" . | nindent 8 }}
+        component: web
+    spec:
+      containers:
+        - name: web
+          image: "{{ .Values.web.image.repository }}:{{ .Values.web.image.tag }}"
+          imagePullPolicy: {{ .Values.web.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.web.port }}
+          resources:
+            {{- toYaml .Values.web.resources | nindent 12 }}
+          readinessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 30
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "kq-platform.fullname" . }}-web
+  labels:
+    {{- include "kq-platform.labels" . | nindent 4 }}
+    component: web
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+  selector:
+    {{- include "kq-platform.selectorLabels" . | nindent 4 }}
+    component: web
+{{- end }}

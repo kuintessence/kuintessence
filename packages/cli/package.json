@@ -1,0 +1,41 @@
+{
+  "name": "@kuintessence/cli",
+  "license": "AGPL-3.0-only",
+  "version": "0.1.0-rc.1",
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": {
+      "bun": "./src/index.ts",
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    }
+  },
+  "bin": {
+    "kq": "src/index.ts"
+  },
+  "scripts": {
+    "dev": "bun src/index.ts",
+    "build": "bun build --compile src/index.ts --outfile=dist/kq",
+    "build:linux": "bun build --compile --target=bun-linux-x64 src/index.ts --outfile=dist/kq-linux-x64",
+    "typecheck": "tsc --noEmit",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@opentui/core": "^0.5.1",
+    "@opentui/react": "^0.5.1",
+    "@kuintessence/agent": "workspace:*",
+    "@kuintessence/db": "workspace:*",
+    "@kuintessence/shared": "workspace:*",
+    "commander": "^14.0.3",
+    "react": "^19.2.5",
+    "yaml": "^2.8.3",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@types/react": "^19.2.14",
+    "patchright": "^1.60.2",
+    "react-devtools-core": "^7.0.1"
+  }
+}

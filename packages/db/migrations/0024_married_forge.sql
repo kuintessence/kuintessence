@@ -1,0 +1,1 @@
+ALTER TABLE "software_asset_revisions" ADD COLUMN "content_sha256" varchar(64);

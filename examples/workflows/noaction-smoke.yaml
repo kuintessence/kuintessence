@@ -1,0 +1,17 @@
+# Minimal workflow for UI and Server smoke checks. It uses only NoAction nodes,
+# so it validates, submits, and completes without scheduler or software fixtures.
+name: noaction-smoke
+description: Minimal no-action graph for end-to-end workflow smoke checks.
+parameters: []
+spec:
+  nodeDrafts:
+    - type: NoAction
+      id: start
+      name: Start
+    - type: NoAction
+      id: done
+      name: Done
+  nodeRelations:
+    - fromId: start
+      toId: done
+      slotRelations: []

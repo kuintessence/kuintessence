@@ -1,0 +1,37 @@
+services:
+  postgres:
+    platform: linux/arm64
+  redis:
+    platform: linux/arm64
+  minio:
+    platform: linux/arm64
+  minio-init:
+    platform: linux/arm64
+  spicedb-migrate:
+    platform: linux/arm64
+  spicedb:
+    platform: linux/arm64
+  casdoor-postgres:
+    platform: linux/arm64
+  casdoor:
+    platform: linux/arm64
+  casdoor-proxy:
+    platform: linux/arm64
+  db-migrate:
+    platform: linux/arm64
+  server:
+    platform: linux/arm64
+  registry:
+    platform: linux/arm64
+  web:
+    platform: linux/arm64
+  scheduler-base:
+    platform: linux/arm64
+  agent-deps:
+    platform: linux/arm64
+  scheduler-slurm:
+    platform: linux/arm64
+  scheduler-pbs:
+    platform: linux/arm64
+  scheduler-k3s:
+    platform: linux/arm64

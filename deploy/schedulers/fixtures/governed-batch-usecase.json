@@ -1,0 +1,129 @@
+{
+  "usecase": {
+    "commandFile": "bash",
+    "inputSlots": [
+      {
+        "kind": "File",
+        "descriptor": "inputs",
+        "refMaterials": [
+          {
+            "kind": "FileInputRef",
+            "descriptor": "inputFiles"
+          }
+        ]
+      },
+      {
+        "kind": "Text",
+        "descriptor": "script",
+        "refMaterials": [
+          {
+            "kind": "ArgRef",
+            "descriptor": "script",
+            "sort": 0
+          }
+        ]
+      }
+    ]
+  },
+  "software": {
+    "kind": "Spack",
+    "name": "zlib@1.3.1",
+    "argumentList": []
+  },
+  "arguments": [
+    {
+      "descriptor": "script",
+      "valueFormat": "-lc {}"
+    }
+  ],
+  "environments": [],
+  "filesomeInputs": [
+    {
+      "descriptor": "inputFiles",
+      "fileKind": {
+        "kind": "Batched",
+        "pattern": "inputs/*.txt"
+      }
+    }
+  ],
+  "filesomeOutputs": [
+    {
+      "descriptor": "chunks",
+      "fileKind": {
+        "kind": "Batched",
+        "pattern": "chunks/*.txt"
+      }
+    }
+  ],
+  "valueOutputs": [
+    {
+      "descriptor": "chunkTexts",
+      "type": {
+        "list": "string"
+      },
+      "from": {
+        "collectedOutDescriptor": "chunks"
+      },
+      "extract": {
+        "kind": "Whole"
+      }
+    }
+  ],
+  "description": "受控多调度器 governed workflow batch file fixture。",
+  "domain": "HPC scheduler validation",
+  "tags": [
+    "smoke",
+    "governed-workflow",
+    "batch"
+  ],
+  "citations": [],
+  "softwareRef": {
+    "source": "official-upstream",
+    "name": "zlib",
+    "version": "1.3.1"
+  },
+  "inputs": [
+    {
+      "descriptor": "inputs",
+      "type": "FileBatch",
+      "required": true
+    },
+    {
+      "descriptor": "script",
+      "type": "String",
+      "required": true
+    }
+  ],
+  "outputs": [
+    {
+      "descriptor": "chunks",
+      "type": "FileBatch",
+      "validators": []
+    }
+  ],
+  "resources": {
+    "cpu": 1,
+    "memoryMiB": 64,
+    "walltimeSeconds": 60
+  },
+  "materialMappings": [
+    {
+      "kind": "file",
+      "descriptor": "inputs",
+      "path": "inputs/*.txt",
+      "direction": "input"
+    },
+    {
+      "kind": "argv",
+      "descriptor": "script",
+      "template": "-lc {}"
+    },
+    {
+      "kind": "file",
+      "descriptor": "chunks",
+      "path": "chunks/*.txt",
+      "direction": "output"
+    }
+  ],
+  "licenseRequirements": []
+}

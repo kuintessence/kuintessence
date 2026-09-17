@@ -1,0 +1,10 @@
+services:
+  spicedb:
+    profiles: ["external-spicedb"]
+  spicedb-migrate:
+    profiles: ["external-spicedb"]
+  server:
+    depends_on:
+      spicedb:
+        condition: service_started
+        required: false

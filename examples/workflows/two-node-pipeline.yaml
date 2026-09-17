@@ -1,0 +1,33 @@
+# Two-node control-flow DAG. `respond` depends on `greet` via an explicit
+# node relation, illustrating Kuintessence's directed node graph.
+name: two-node-pipeline
+description: >
+  Two-node DAG demo. "respond" runs after "greet" via a node relation,
+  showing the explicit relation graph (fromId -> toId).
+parameters: []
+spec:
+  nodeDrafts:
+    - type: SoftwareUsecaseComputing
+      id: greet
+      name: Greet
+      usecaseVersionId: "3f2504e0-4f89-41d3-9a0c-0305e82c3301"
+      softwareVersionId: "7c9e6679-7425-40de-944b-e07fc1f90ae7"
+      inputSlots:
+        - type: Text
+          descriptor: script
+          from:
+            expr: "'echo greeting > result.txt; echo sum=1'"
+    - type: SoftwareUsecaseComputing
+      id: respond
+      name: Respond
+      usecaseVersionId: "3f2504e0-4f89-41d3-9a0c-0305e82c3301"
+      softwareVersionId: "7c9e6679-7425-40de-944b-e07fc1f90ae7"
+      inputSlots:
+        - type: Text
+          descriptor: script
+          from:
+            expr: "'echo responding > result.txt; echo sum=2'"
+  nodeRelations:
+    - fromId: greet
+      toId: respond
+      slotRelations: []

@@ -1,0 +1,47 @@
+{{- if and .Values.networkPolicy .Values.networkPolicy.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "kq-platform.fullname" . }}-allow-server
+  labels:
+    {{- include "kq-platform.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "kq-platform.selectorLabels" . | nindent 6 }}
+      component: server
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # Allow traffic from ingress controller and other components.
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ingress-nginx
+        - podSelector:
+            matchLabels:
+              {{- include "kq-platform.selectorLabels" . | nindent 14 }}
+      ports:
+        - port: {{ .Values.server.port }}
+        - port: {{ .Values.server.grpcPort }}
+  egress:
+    # Allow egress to PG, Redis, MinIO, and DNS / external HTTPS.
+    - to:
+        - podSelector: {}
+    - to:
+        - namespaceSelector: {}
+      ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 169.254.169.254/32
+      ports:
+        - port: 443
+        - port: 80
+{{- end }}

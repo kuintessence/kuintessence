@@ -1,0 +1,31 @@
+# Per-item loop. A ForEach `Loop` iterates a small CEL list and runs one
+# usecase node per item. `over` supplies the list, `maxIterations` bounds the
+# fan-out, and the loop body is a nested workflow spec with a single node.
+name: loop-foreach
+description: >
+  Per-item loop. A ForEach loop iterates a CEL list and runs one usecase node
+  per item; the body is a nested workflow spec.
+parameters: []
+spec:
+  nodeDrafts:
+    - type: Loop
+      id: per_item
+      name: Per Item
+      mode: ForEach
+      over:
+        expr: "['a', 'b', 'c']"
+      maxIterations: 3
+      body:
+        nodeDrafts:
+          - type: SoftwareUsecaseComputing
+            id: process
+            name: Process Item
+            usecaseVersionId: "3f2504e0-4f89-41d3-9a0c-0305e82c3301"
+            softwareVersionId: "7c9e6679-7425-40de-944b-e07fc1f90ae7"
+            inputSlots:
+              - type: Text
+                descriptor: script
+                from:
+                  expr: "'echo processed > result.txt; echo sum=1'"
+        nodeRelations: []
+  nodeRelations: []

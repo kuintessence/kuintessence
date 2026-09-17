@@ -1,0 +1,29 @@
+# Control-flow workflow (WorkflowSchema). One SoftwareUsecaseComputing node
+# resolves its usecase package from packages.yaml by `usecaseVersionId`.
+#
+# Run with `kq tui --local` (packages.yaml must be present): the Workflows pane
+# lists `hello`; running it materializes the node into
+# `bash -c 'echo 42 > result.txt; echo sum=99'`, executes it locally, collects
+# result.txt, and extracts two values via the package's valueOutputs: `answer`
+# (42, from the file) and `sum` (99, from the captured stdout).
+name: hello
+description: Single-node usecase compute that writes and extracts a value, locally.
+parameters: []
+spec:
+  nodeDrafts:
+    - type: SoftwareUsecaseComputing
+      id: hello
+      name: hello
+      # Must match a key in packages.yaml.
+      usecaseVersionId: "3f2504e0-4f89-41d3-9a0c-0305e82c3301"
+      # Bare package: softwareVersionId is recorded for provenance but the local
+      # runner does not resolve a separate software artifact.
+      softwareVersionId: "7c9e6679-7425-40de-944b-e07fc1f90ae7"
+      inputSlots:
+        # Bind the usecase's `script` Text slot to a constant CEL string literal,
+        # so the node needs no external input and runs out of the box.
+        - type: Text
+          descriptor: script
+          from:
+            expr: "'echo 42 > result.txt; echo sum=99'"
+  nodeRelations: []

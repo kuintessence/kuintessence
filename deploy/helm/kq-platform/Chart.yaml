@@ -1,0 +1,14 @@
+apiVersion: v2
+name: kq-platform
+description: Kuintessence — Server + Registry computing network platform
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+keywords:
+  - hpc
+  - computing
+  - workflow
+  - kubernetes
+home: https://github.com/kuintessence/kuintessence
+maintainers:
+  - name: Kuintessence Team

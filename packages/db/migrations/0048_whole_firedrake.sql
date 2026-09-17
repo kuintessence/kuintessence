@@ -1,0 +1,1 @@
+ALTER TABLE "data_delivery_revocations" ALTER COLUMN "revoked_epoch" SET DEFAULT 0;

@@ -1,0 +1,147 @@
+map $http_upgrade $connection_upgrade {
+  default upgrade;
+  "" close;
+}
+
+map $http_authorization $registry_authorization {
+  default $http_authorization;
+  "" "Bearer $cookie_kq_access_token";
+}
+
+server {
+  listen 443 ssl;
+  http2 on;
+  server_name ${PLATFORM_HOST};
+  client_max_body_size 0;
+
+  ssl_certificate /etc/nginx/tls/server.crt;
+  ssl_certificate_key /etc/nginx/tls/server.key;
+
+  location = /healthz {
+    access_log off;
+    return 200 "ok\n";
+  }
+
+  location /platform/api/ {
+    rewrite ^/platform(/.*)$ $1 break;
+    proxy_pass http://${SERVER_UPSTREAM};
+    proxy_cookie_path /api/auth/oidc /platform/api/auth/oidc;
+    proxy_cookie_path /api/auth /platform/api/auth;
+    proxy_http_version 1.1;
+    proxy_set_header Host $http_host;
+    proxy_set_header X-Forwarded-Host $http_host;
+    proxy_set_header X-Forwarded-Proto https;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection $connection_upgrade;
+  }
+
+  location /platform/ws/ {
+    rewrite ^/platform(/.*)$ $1 break;
+    proxy_pass http://${SERVER_UPSTREAM};
+    proxy_http_version 1.1;
+    proxy_set_header Host $http_host;
+    proxy_set_header X-Forwarded-Host $http_host;
+    proxy_set_header X-Forwarded-Proto https;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection $connection_upgrade;
+  }
+
+  location /software/api/ {
+    rewrite ^/software(/.*)$ $1 break;
+    proxy_pass http://${REGISTRY_UPSTREAM};
+    proxy_http_version 1.1;
+    proxy_set_header Host $http_host;
+    proxy_set_header Authorization $registry_authorization;
+    proxy_set_header X-Forwarded-Proto https;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+  }
+
+  location /v2/ {
+    proxy_pass http://${REGISTRY_UPSTREAM};
+    proxy_http_version 1.1;
+    proxy_set_header Host $http_host;
+    proxy_set_header Authorization $registry_authorization;
+    proxy_set_header X-Forwarded-Proto https;
+  }
+
+  location /buildcache/ {
+    proxy_pass http://${REGISTRY_UPSTREAM};
+    proxy_http_version 1.1;
+    proxy_set_header Host $http_host;
+    proxy_set_header Authorization $registry_authorization;
+    proxy_set_header X-Forwarded-Proto https;
+  }
+
+  location ^~ /.well-known/ {
+    proxy_pass http://${CASDOOR_UPSTREAM};
+    proxy_set_header Host $http_host;
+    proxy_set_header X-Forwarded-Host $http_host;
+    proxy_set_header X-Forwarded-Proto https;
+  }
+
+  location ^~ /login/oauth/ {
+    proxy_pass http://${CASDOOR_UPSTREAM};
+    proxy_set_header Host $http_host;
+    proxy_set_header X-Forwarded-Host $http_host;
+    proxy_set_header X-Forwarded-Proto https;
+  }
+
+  location ^~ /static/ {
+    proxy_pass http://${CASDOOR_UPSTREAM};
+    proxy_set_header Host $http_host;
+    proxy_set_header X-Forwarded-Host $http_host;
+    proxy_set_header X-Forwarded-Proto https;
+  }
+
+  location ~ ^/api/(get-account|get-app-login|login|userinfo|logout|device-auth|oauth/register)$ {
+    proxy_pass http://${CASDOOR_UPSTREAM};
+    proxy_set_header Host $http_host;
+    proxy_set_header X-Forwarded-Host $http_host;
+    proxy_set_header X-Forwarded-Proto https;
+  }
+
+  location ^~ /api/login/oauth/ {
+    proxy_pass http://${CASDOOR_UPSTREAM};
+    proxy_set_header Host $http_host;
+    proxy_set_header X-Forwarded-Host $http_host;
+    proxy_set_header X-Forwarded-Proto https;
+  }
+
+  location ^~ /${NETDRIVE_BUCKET}/ {
+    proxy_pass http://${OBJECT_STORAGE_UPSTREAM};
+    proxy_http_version 1.1;
+    proxy_request_buffering off;
+    proxy_set_header Host $http_host;
+    proxy_set_header X-Forwarded-Proto https;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+  }
+
+  location ^~ /${DATA_MARKET_STAGING_BUCKET}/ {
+    proxy_pass http://${OBJECT_STORAGE_UPSTREAM};
+    proxy_http_version 1.1;
+    proxy_request_buffering off;
+    proxy_set_header Host $http_host;
+    proxy_set_header X-Forwarded-Proto https;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+  }
+
+  location ^~ /${DATA_MARKET_IMMUTABLE_BUCKET}/ {
+    proxy_pass http://${OBJECT_STORAGE_UPSTREAM};
+    proxy_http_version 1.1;
+    proxy_request_buffering off;
+    proxy_set_header Host $http_host;
+    proxy_set_header X-Forwarded-Proto https;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+  }
+
+  location / {
+    proxy_pass http://${WEB_UPSTREAM};
+    proxy_http_version 1.1;
+    proxy_set_header Host $http_host;
+    proxy_set_header X-Forwarded-Host $http_host;
+    proxy_set_header X-Forwarded-Proto https;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+  }
+}

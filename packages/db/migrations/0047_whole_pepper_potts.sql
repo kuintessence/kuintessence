@@ -1,0 +1,1 @@
+ALTER TABLE "job_data_bindings" ADD COLUMN "authorization_subject_ids" jsonb DEFAULT '[]'::jsonb NOT NULL;

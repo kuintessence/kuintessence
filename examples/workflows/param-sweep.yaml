@@ -1,0 +1,25 @@
+# Parameterized workflow. A workflow-level `threshold` parameter feeds the
+# usecase command via a CEL expression (`params.threshold`), so the same
+# template runs at different thresholds without editing the node.
+name: param-sweep
+description: >
+  Parameterized run. A workflow `threshold` parameter is interpolated into the
+  usecase command via CEL (params.threshold), keeping the node reusable.
+parameters:
+  - name: threshold
+    type: double
+    default: 0.5
+    description: Cutoff passed through to the run command.
+spec:
+  nodeDrafts:
+    - type: SoftwareUsecaseComputing
+      id: sweep
+      name: Sweep
+      usecaseVersionId: "3f2504e0-4f89-41d3-9a0c-0305e82c3301"
+      softwareVersionId: "7c9e6679-7425-40de-944b-e07fc1f90ae7"
+      inputSlots:
+        - type: Text
+          descriptor: script
+          from:
+            expr: "'run --threshold=' + string(params.threshold)"
+  nodeRelations: []

@@ -1,0 +1,3 @@
+spack-public        [s ] https://mirror.spack.io
+internal            [sb] https://mirrors.example.com/spack
+buildcache-shared   s3://kq-buildcache/shared

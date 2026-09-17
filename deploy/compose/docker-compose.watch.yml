@@ -1,0 +1,76 @@
+# Development override: run app services as in-container watch/dev servers.
+#
+# Usage:
+#   docker compose --project-directory . -f deploy/compose/docker-compose.yml -f deploy/compose/docker-compose.watch.yml up
+#
+# Rebuild only when package metadata or Dockerfiles change:
+#   docker compose --project-directory . -f deploy/compose/docker-compose.yml -f deploy/compose/docker-compose.watch.yml up --build
+
+x-dev-app: &dev-app
+  image: kuintessence-dev-workspace:latest
+  build:
+    context: .
+    dockerfile: deploy/dev/Dockerfile
+  working_dir: /app
+  volumes:
+    - .:/app
+    - bun-node-modules:/app/node_modules
+
+services:
+  server:
+    <<: *dev-app
+    command: ["bun", "run", "--filter", "@kuintessence/server", "dev"]
+    environment:
+      DATABASE_URL: postgres://kq:kq@postgres:5432/kuintessence
+      REDIS_URL: redis://redis:6379
+      JWT_SECRET: dev-secret-change-me-at-least-32-chars-long
+      SERVER_PORT: "3000"
+      SERVER_GRPC_PORT: "3001"
+      LOG_LEVEL: info
+      NODE_ENV: development
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "bun",
+          "-e",
+          "fetch('http://127.0.0.1:3000/api/health').then((r)=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+
+  registry:
+    <<: *dev-app
+    command: ["bun", "run", "--filter", "@kuintessence/registry", "dev"]
+    environment:
+      DATABASE_URL: postgres://kq:kq@postgres:5432/kuintessence
+      REGISTRY_PORT: "3100"
+      LOG_LEVEL: info
+      NODE_ENV: development
+
+  web:
+    <<: *dev-app
+    command:
+      ["bun", "run", "--filter", "@kuintessence/web", "dev", "--", "--host", "0.0.0.0"]
+    environment:
+      KQ_WEB_SERVER_PROXY_TARGET: http://server:3000
+      KQ_WEB_REGISTRY_PROXY_TARGET: http://registry:3100
+    ports: !override
+      - "5173:5173"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "bun",
+          "-e",
+          "fetch('http://localhost:5173').then((r)=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+
+volumes:
+  bun-node-modules:

@@ -1,0 +1,47 @@
+# Fan-out DAG. `prepare` runs first, then two independent analyses
+# (`analyze_a`, `analyze_b`) both depend on it via separate node relations,
+# so the engine can schedule them in parallel.
+name: fanout-dag
+description: >
+  Parallel fan-out DAG. Two analyses both depend on a single prepare step via
+  separate node relations, so they run in parallel after prepare.
+parameters: []
+spec:
+  nodeDrafts:
+    - type: SoftwareUsecaseComputing
+      id: prepare
+      name: Prepare
+      usecaseVersionId: "3f2504e0-4f89-41d3-9a0c-0305e82c3301"
+      softwareVersionId: "7c9e6679-7425-40de-944b-e07fc1f90ae7"
+      inputSlots:
+        - type: Text
+          descriptor: script
+          from:
+            expr: "'echo prepared > result.txt; echo sum=0'"
+    - type: SoftwareUsecaseComputing
+      id: analyze_a
+      name: Analyze A
+      usecaseVersionId: "3f2504e0-4f89-41d3-9a0c-0305e82c3301"
+      softwareVersionId: "7c9e6679-7425-40de-944b-e07fc1f90ae7"
+      inputSlots:
+        - type: Text
+          descriptor: script
+          from:
+            expr: "'echo analyzed-a > result.txt; echo sum=1'"
+    - type: SoftwareUsecaseComputing
+      id: analyze_b
+      name: Analyze B
+      usecaseVersionId: "3f2504e0-4f89-41d3-9a0c-0305e82c3301"
+      softwareVersionId: "7c9e6679-7425-40de-944b-e07fc1f90ae7"
+      inputSlots:
+        - type: Text
+          descriptor: script
+          from:
+            expr: "'echo analyzed-b > result.txt; echo sum=2'"
+  nodeRelations:
+    - fromId: prepare
+      toId: analyze_a
+      slotRelations: []
+    - fromId: prepare
+      toId: analyze_b
+      slotRelations: []

@@ -1,0 +1,63 @@
+[
+  {
+    "name": "gromacs",
+    "version": "2024.1",
+    "arch": {
+      "platform": "linux",
+      "platform_os": "rocky9",
+      "target": "x86_64"
+    },
+    "compiler": {
+      "name": "gcc",
+      "version": "13.2.0"
+    },
+    "namespace": "builtin",
+    "parameters": {
+      "cflags": [],
+      "cppflags": [],
+      "cxxflags": [],
+      "fflags": [],
+      "ldflags": [],
+      "ldlibs": [],
+      "build_system": "cmake",
+      "mpi": true,
+      "openmp": true
+    },
+    "package_hash": "ph_gromacs_2024_1",
+    "hash": "abc123def456gromacs2024"
+  },
+  {
+    "name": "openmpi",
+    "version": "4.1.5",
+    "arch": {
+      "platform": "linux",
+      "platform_os": "rocky9",
+      "target": "x86_64"
+    },
+    "compiler": {
+      "name": "gcc",
+      "version": "13.2.0"
+    },
+    "namespace": "builtin",
+    "parameters": {},
+    "package_hash": "ph_openmpi_4_1_5",
+    "hash": "def456ghi789openmpi415"
+  },
+  {
+    "name": "lammps",
+    "version": "20240829",
+    "arch": {
+      "platform": "linux",
+      "platform_os": "rocky9",
+      "target": "x86_64"
+    },
+    "compiler": {
+      "name": "gcc",
+      "version": "13.2.0"
+    },
+    "namespace": "builtin",
+    "parameters": {},
+    "package_hash": "ph_lammps_20240829",
+    "hash": "ghi789jkl012lammps2024"
+  }
+]

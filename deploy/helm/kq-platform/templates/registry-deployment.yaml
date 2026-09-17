@@ -1,0 +1,84 @@
+{{- if .Values.registry.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-registry
+  labels: {{- include "kq.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.registry.replicas }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ .Chart.Name }}
+      app.kubernetes.io/component: registry
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ .Chart.Name }}
+        app.kubernetes.io/component: registry
+    spec:
+      serviceAccountName: {{ include "kq.workloadWaitServiceAccountName" . }}
+      initContainers:
+        - name: wait-db-migration
+          image: {{ .Values.migration.waitImage | quote }}
+          command:
+            - /bin/sh
+            - -ec
+            - |
+              attempts=0
+              until kubectl get job/{{ include "kq.migrationName" . }} >/dev/null; do
+                if [ "${attempts}" -ge 60 ]; then
+                  echo "Database migration Job was not created within 120 seconds" >&2
+                  exit 1
+                fi
+                sleep 2
+                attempts=$((attempts + 1))
+              done
+              kubectl wait --for=condition=complete --timeout={{ .Values.migration.activeDeadlineSeconds }}s job/{{ include "kq.migrationName" . }}
+      containers:
+        - name: registry
+          image: "{{ .Values.registry.image.repository }}:{{ .Values.registry.image.tag }}"
+          imagePullPolicy: {{ .Values.registry.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.registry.port }}
+          env:
+            {{- include "kq.databaseEnv" . | nindent 12 }}
+            - name: REGISTRY_JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "kq.secretName" . }}
+                  key: JWT_SECRET
+            {{- if .Values.registry.persistence.enabled }}
+            - name: BLOB_STORE_DIR
+              value: {{ .Values.registry.persistence.mountPath | quote }}
+            {{- end }}
+          envFrom:
+            - configMapRef:
+                name: {{ .Release.Name }}-config
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: {{ .Values.registry.port }}
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            failureThreshold: 6
+          livenessProbe:
+            httpGet:
+              path: /api/health
+              port: {{ .Values.registry.port }}
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            failureThreshold: 3
+          resources: {{- toYaml .Values.registry.resources | nindent 12 }}
+          {{- if .Values.registry.persistence.enabled }}
+          volumeMounts:
+            - name: blob-storage
+              mountPath: {{ .Values.registry.persistence.mountPath | quote }}
+          {{- end }}
+      {{- if .Values.registry.persistence.enabled }}
+      volumes:
+        - name: blob-storage
+          persistentVolumeClaim:
+            claimName: {{ .Release.Name }}-registry-blobs
+      {{- end }}
+{{- end }}

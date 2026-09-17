@@ -1,0 +1,15 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "allowJs": false,
+    "composite": false,
+    "jsx": "preserve",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "noEmit": true,
+    "rootDir": ".",
+    "skipLibCheck": true,
+    "types": ["node"]
+  },
+  "include": ["src/.vitepress/**/*.ts"]
+}

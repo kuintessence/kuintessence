@@ -1,0 +1,51 @@
+# Kuintessence Agent for HPC login-node deployment.
+# Install via: sudo bash deploy/systemd/install-agent.sh
+
+[Unit]
+Description=Kuintessence Site Agent
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=300s
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=kq-agent
+Group=kq-agent
+WorkingDirectory=/var/lib/kq-agent
+EnvironmentFile=/etc/kq-agent/kq-agent.env
+ExecStart=/usr/local/bin/kq-agent
+UMask=0077
+
+# Restart policy: backoff to avoid log floods.
+Restart=on-failure
+RestartSec=5s
+
+# Resource limits.
+LimitNOFILE=65536
+TasksMax=4096
+MemoryHigh=1G
+MemoryMax=2G
+
+# Hardening.
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+ReadWritePaths=/var/lib/kq-agent
+
+# Logging.
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=kq-agent
+
+[Install]
+WantedBy=multi-user.target

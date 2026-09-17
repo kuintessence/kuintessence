@@ -1,0 +1,266 @@
+# One-key full-stack bring-up. Builds Server, Registry, and Web SPA from local sources.
+#
+# Usage:
+#   bun run compose -- full up --build --attach
+#   bun run compose -- full down        # stop, keep volumes
+#   bun run compose -- full down -v     # stop + drop volumes (full reset)
+# Run from the repository root; direct Docker commands require --project-directory .
+#
+# After startup:
+#   Web SPA       http://localhost:5173
+#   Server HTTP      http://localhost:3000
+#   Server gRPC      http://localhost:3001
+#   Registry  http://localhost:3100
+#   MinIO API     http://localhost:9000  (minioadmin / minioadmin)
+#   MinIO console http://localhost:9001
+#
+# The Agent is intentionally NOT included: it requires a real scheduler
+# (Slurm/PBS/Torque/kubectl) on the host. Run it on a login node — see README.md.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: kq
+      POSTGRES_PASSWORD: kq
+      POSTGRES_DB: kuintessence
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U kq -d kuintessence"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  minio:
+    image: minio/minio:RELEASE.2025-09-07T16-13-09Z
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    volumes:
+      - minio-data:/data
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+
+  spicedb-migrate:
+    image: ${KQ_SPICEDB_IMAGE:-authzed/spicedb:v1.54.0}
+    command:
+      [
+        "migrate",
+        "head",
+        "--datastore-engine",
+        "postgres",
+        "--datastore-conn-uri",
+        "${KQ_SPICEDB_DATASTORE_CONN_URI:-postgres://kq:kq@postgres:5432/kuintessence?sslmode=disable}",
+      ]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  spicedb:
+    image: ${KQ_SPICEDB_IMAGE:-authzed/spicedb:v1.54.0}
+    command:
+      [
+        "serve",
+        "--grpc-preshared-key",
+        "${KQ_SPICEDB_PRESHARED_KEY:-local-dev-authz}",
+        "--datastore-engine",
+        "postgres",
+        "--datastore-conn-uri",
+        "${KQ_SPICEDB_DATASTORE_CONN_URI:-postgres://kq:kq@postgres:5432/kuintessence?sslmode=disable}",
+      ]
+    ports:
+      - "${KQ_SPICEDB_GRPC_PORT:-50051}:50051"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      spicedb-migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "spicedb",
+          "datastore",
+          "head",
+          "--datastore-engine",
+          "postgres",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  casdoor-postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: casdoor
+      POSTGRES_PASSWORD: casdoor_dev_password
+      POSTGRES_DB: casdoor
+    volumes:
+      - casdoor-pg-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U casdoor -d casdoor"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  casdoor:
+    build:
+      context: deploy/casdoor
+      dockerfile: Dockerfile
+    environment:
+      RUNNING_IN_DOCKER: "true"
+      CASDOOR_ORIGIN: ${SSO_BOOTSTRAP_ISSUER_URL:-${KQ_CASDOOR_BOOTSTRAP_ISSUER_URL:-http://casdoor.localhost:${KQ_CASDOOR_HTTP_PORT:-15180}}}
+      defaultLanguage: zh
+      forceLanguage: zh
+    volumes:
+      - ./deploy/casdoor/init_data.json:/init_data.json:ro
+    depends_on:
+      casdoor-postgres:
+        condition: service_healthy
+
+  casdoor-proxy:
+    image: nginx:1.27-alpine
+    volumes:
+      - ./deploy/casdoor/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    ports:
+      - "${KQ_CASDOOR_HTTP_PORT:-15180}:8080"
+    depends_on:
+      casdoor:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # Runs Drizzle migrations once and exits. Server/Registry wait on it via
+  # service_completed_successfully so they never see an unmigrated DB.
+  db-migrate:
+    build:
+      context: .
+      dockerfile: packages/db/Dockerfile
+    environment:
+      DATABASE_URL: postgres://kq:kq@postgres:5432/kuintessence
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  server:
+    build:
+      context: .
+      dockerfile: packages/server/Dockerfile
+    environment:
+      DATABASE_URL: postgres://kq:kq@postgres:5432/kuintessence
+      REDIS_URL: redis://redis:6379
+      JWT_SECRET: dev-secret-change-me-at-least-32-chars-long
+      SERVER_PORT: "3000"
+      SERVER_GRPC_PORT: "3001"
+      LOG_LEVEL: info
+      NODE_ENV: development
+      CLUSTER_FILE_STATIC_ROOTS: /home,/scratch,/work,/projects
+      AUTHZ_MODE: enforce
+      AUTHZ_SPICEDB_ENDPOINT: ${KQ_SPICEDB_ENDPOINT:-spicedb:50051}
+      AUTHZ_SPICEDB_TOKEN: ${KQ_SPICEDB_PRESHARED_KEY:-local-dev-authz}
+      AUTHZ_SCHEMA_PATH: /app/authz/schema.zed
+      WEB_BASE_URL: "http://localhost:5173/"
+      SSO_BOOTSTRAP_ENABLED: "true"
+      SSO_BOOTSTRAP_ISSUER_URL: ${KQ_CASDOOR_BOOTSTRAP_ISSUER_URL:-http://casdoor.localhost:${KQ_CASDOOR_HTTP_PORT:-15180}}
+      SSO_BOOTSTRAP_CLIENT_ID: ${KQ_CASDOOR_BOOTSTRAP_CLIENT_ID:-kuintessence-server}
+      SSO_BOOTSTRAP_CLIENT_SECRET: ${KQ_CASDOOR_BOOTSTRAP_CLIENT_SECRET:-kuintessence-server-dev-client-secret-change-me}
+      SSO_BOOTSTRAP_REDIRECT_URI: ${KQ_CASDOOR_BOOTSTRAP_REDIRECT_URI:-http://localhost:5173/platform/api/auth/oidc/callback}
+      SSO_BOOTSTRAP_GROUP_MAPPING: ${KQ_CASDOOR_BOOTSTRAP_GROUP_MAPPING:-{"kq-super-admins":"super_admin","kq-platform-admins":"platform_admin","kq-operators":"operator","kq-users":"user"}}
+      SSO_BOOTSTRAP_AUTO_CREATE_USERS: "true"
+    extra_hosts:
+      - "casdoor.localhost:host-gateway"
+    ports:
+      - "3000:3000"
+      - "3001:3001"
+    depends_on:
+      db-migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+      spicedb:
+        condition: service_healthy
+      casdoor-proxy:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3000/api/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+
+  registry:
+    build:
+      context: .
+      dockerfile: packages/registry/Dockerfile
+    environment:
+      DATABASE_URL: postgres://kq:kq@postgres:5432/kuintessence
+      REGISTRY_PORT: "3100"
+      LOG_LEVEL: info
+      NODE_ENV: development
+      REGISTRY_AUTH_MODE: jwt
+      REGISTRY_JWT_SECRET: dev-secret-change-me-at-least-32-chars-long
+      BLOB_STORE_DIR: /var/lib/kuintessence/registry/blobs
+      ECOSYSTEM_RELEASE_TRUSTED_KEYS: "${ECOSYSTEM_RELEASE_TRUSTED_KEYS:-{}}"
+    volumes:
+      - registry-data:/var/lib/kuintessence/registry
+    ports:
+      - "3100:3100"
+    depends_on:
+      db-migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "bun",
+          "-e",
+          "fetch('http://127.0.0.1:3100/api/health').then((r)=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+
+  web:
+    build:
+      context: .
+      dockerfile: packages/web/Dockerfile
+    ports:
+      - "5173:80"
+    depends_on:
+      server:
+        condition: service_started
+      registry:
+        condition: service_healthy
+
+volumes:
+  pg-data:
+  casdoor-pg-data:
+  minio-data:
+  registry-data:

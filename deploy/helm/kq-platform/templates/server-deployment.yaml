@@ -1,0 +1,104 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-server
+  labels: {{- include "kq.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.server.replicas }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ .Chart.Name }}
+      app.kubernetes.io/component: server
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ .Chart.Name }}
+        app.kubernetes.io/component: server
+      {{- if .Values.netdrive.enabled }}
+      annotations:
+        kq.io/netdrive-bootstrap-revision: {{ printf "%s|%s" .Values.netdrive.accessKey .Values.netdrive.bootstrapRevision | sha256sum | quote }}
+      {{- end }}
+    spec:
+      serviceAccountName: {{ include "kq.workloadWaitServiceAccountName" . }}
+      initContainers:
+        - name: wait-db-migration
+          image: {{ .Values.migration.waitImage | quote }}
+          command:
+            - /bin/sh
+            - -ec
+            - |
+              attempts=0
+              until kubectl get job/{{ include "kq.migrationName" . }} >/dev/null; do
+                if [ "${attempts}" -ge 60 ]; then
+                  echo "Database migration Job was not created within 120 seconds" >&2
+                  exit 1
+                fi
+                sleep 2
+                attempts=$((attempts + 1))
+              done
+              kubectl wait --for=condition=complete --timeout={{ .Values.migration.activeDeadlineSeconds }}s job/{{ include "kq.migrationName" . }}
+      {{- if and .Values.minio.enabled .Values.netdrive.enabled }}
+        - name: wait-minio-bootstrap
+          image: {{ .Values.minio.bootstrapWaitImage | quote }}
+          command:
+            - /bin/sh
+            - -ec
+            - |
+              attempts=0
+              until kubectl get job/{{ include "kq.minioBootstrapName" . }} >/dev/null; do
+                if [ "${attempts}" -ge 60 ]; then
+                  echo "MinIO bootstrap Job was not created within 120 seconds" >&2
+                  exit 1
+                fi
+                sleep 2
+                attempts=$((attempts + 1))
+              done
+              kubectl wait --for=condition=complete --timeout=15m job/{{ include "kq.minioBootstrapName" . }}
+      {{- end }}
+      containers:
+        - name: server
+          image: "{{ .Values.server.image.repository }}:{{ .Values.server.image.tag }}"
+          imagePullPolicy: {{ .Values.server.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.server.port }}
+            - name: grpc
+              containerPort: {{ .Values.server.grpcPort }}
+          env:
+            {{- include "kq.databaseEnv" . | nindent 12 }}
+            {{- include "kq.redisEnv" . | nindent 12 }}
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "kq.secretName" . }}
+                  key: JWT_SECRET
+            {{- if .Values.netdrive.enabled }}
+            - name: NETDRIVE_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "kq.secretName" . }}
+                  key: NETDRIVE_ACCESS_KEY
+            - name: NETDRIVE_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "kq.secretName" . }}
+                  key: NETDRIVE_SECRET_KEY
+            {{- end }}
+          envFrom:
+            - configMapRef:
+                name: {{ .Release.Name }}-config
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: {{ .Values.server.port }}
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            failureThreshold: 6
+          livenessProbe:
+            httpGet:
+              path: /api/health
+              port: {{ .Values.server.port }}
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            failureThreshold: 3
+          resources: {{- toYaml .Values.server.resources | nindent 12 }}

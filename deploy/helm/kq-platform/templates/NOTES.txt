@@ -1,0 +1,46 @@
+================================================================================
+{{ .Chart.Name }} {{ .Chart.AppVersion }} 已安装到 namespace {{ .Release.Namespace }}。
+================================================================================
+
+Server:    kq-platform-server.{{ .Release.Namespace }}.svc:{{ .Values.server.port }}
+Registry:  kq-platform-registry.{{ .Release.Namespace }}.svc:{{ .Values.registry.port }}
+
+{{- if .Values.ingress.enabled }}
+
+Ingress 访问地址：
+{{- range .Values.ingress.hosts }}
+  - https://{{ .host }}
+{{- end }}
+
+使用 cert-manager 时，查看证书签发状态：
+  kubectl get certificate -n {{ .Release.Namespace }} -w
+
+{{- else }}
+
+通过端口转发在本地访问：
+  kubectl port-forward -n {{ .Release.Namespace }} svc/kq-platform-server {{ .Values.server.port }}:{{ .Values.server.port }}
+  open http://localhost:{{ .Values.server.port }}
+
+{{- end }}
+
+{{- if .Values.server.autoscaling.enabled }}
+
+已启用自动扩缩容（Server：{{ .Values.server.autoscaling.minReplicas }}-{{ .Values.server.autoscaling.maxReplicas }} 个副本，目标 CPU 使用率 {{ .Values.server.autoscaling.targetCPUUtilizationPercentage }}%）。
+查看 HPA：
+  kubectl get hpa -n {{ .Release.Namespace }}
+{{- end }}
+
+{{- if .Values.postgres.enabled }}
+
+已启用集群内 PostgreSQL。生产配置使用 postgres.enabled=false，
+并通过 external.databaseUrl 连接外部数据库，参见 values.production.yaml。
+{{- end }}
+
+初始化：
+  1. 通过 SSO_BOOTSTRAP_* 接入 IdP，配置 OIDC 回调地址及管理员组映射，参见 docs/security.md#authentication。
+  2. 在 HPC 登录节点安装 kq-agent，参见 deploy/systemd/README.md。
+  3. 签发 Agent 注册凭证并完成注册，参见 docs/security.md#agent。
+
+部署后的检查步骤见 docs/manuals/system-operations-manual.md。
+
+================================================================================

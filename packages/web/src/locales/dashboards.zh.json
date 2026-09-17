@@ -1,0 +1,46 @@
+{
+  "dashboards": {
+    "title": "平台运行看板",
+    "subtitle": "全站负载、队列深度、吞吐与 GPU 利用率。",
+    "tabs": {
+      "overview": "总览",
+      "queue": "队列深度",
+      "throughput": "吞吐量",
+      "gpu": "GPU 利用率"
+    },
+    "siteOverview": {
+      "title": "站点活动热力图",
+      "description": "近 24 小时各站点按小时分布的提交数。",
+      "empty": "近 24 小时无站点活动。",
+      "axisHour": "时段",
+      "axisSite": "站点",
+      "tooltipUnit": "作业"
+    },
+    "queueDepth": {
+      "title": "队列深度时间序列",
+      "description": "每分钟采样的各集群待处理任务数。",
+      "empty": "暂无队列采样。",
+      "axisTime": "时间",
+      "axisDepth": "深度"
+    },
+    "throughput": {
+      "title": "每日吞吐量",
+      "description": "近 14 天每日完成 / 失败 / 取消的作业数。",
+      "empty": "暂无完成的作业。",
+      "completed": "完成",
+      "failed": "失败",
+      "cancelled": "取消"
+    },
+    "gpu": {
+      "title": "GPU 利用率",
+      "description": "各 GPU 接入代理的实时利用率。",
+      "empty": "暂无 GPU 接入代理上报。",
+      "unit": "%",
+      "agentLabel": "节点"
+    },
+    "errors": {
+      "loadFailed": "加载指标失败",
+      "retry": "重试"
+    }
+  }
+}

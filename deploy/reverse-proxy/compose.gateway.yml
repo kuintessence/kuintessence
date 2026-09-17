@@ -1,0 +1,29 @@
+services:
+  platform-gateway:
+    image: nginx:1.27-alpine
+    environment:
+      PLATFORM_HOST: ${PLATFORM_HOST:?PLATFORM_HOST is required}
+      IDENTITY_HOST: ${IDENTITY_HOST:-identity.localhost}
+      SOFTWARE_HOST: ${SOFTWARE_HOST:-software.localhost}
+      OBJECT_STORAGE_HOST: ${OBJECT_STORAGE_HOST:-objects.localhost}
+      SERVER_UPSTREAM: ${SERVER_UPSTREAM:-server:3000}
+      WEB_UPSTREAM: ${WEB_UPSTREAM:-web:80}
+      REGISTRY_UPSTREAM: ${REGISTRY_UPSTREAM:-registry:3100}
+      CASDOOR_UPSTREAM: ${CASDOOR_UPSTREAM:-casdoor:8000}
+      OBJECT_STORAGE_UPSTREAM: ${OBJECT_STORAGE_UPSTREAM:-minio:9000}
+      NETDRIVE_BUCKET: ${NETDRIVE_BUCKET:-kq-netdrive}
+      DATA_MARKET_STAGING_BUCKET: ${DATA_MARKET_STAGING_BUCKET:-kq-data-market-staging}
+      DATA_MARKET_IMMUTABLE_BUCKET: ${DATA_MARKET_IMMUTABLE_BUCKET:-kq-data-market-immutable}
+    volumes:
+      - ${REVERSE_PROXY_TEMPLATE:-./single-domain.conf.template}:/etc/nginx/templates/default.conf.template:ro
+      - ${REVERSE_PROXY_TLS_DIR:?REVERSE_PROXY_TLS_DIR is required}:/etc/nginx/tls:ro
+    ports:
+      - ${REVERSE_PROXY_BIND:-0.0.0.0:443}:443
+    networks:
+      - platform
+    restart: unless-stopped
+
+networks:
+  platform:
+    external: true
+    name: ${PLATFORM_NETWORK:?PLATFORM_NETWORK is required}
