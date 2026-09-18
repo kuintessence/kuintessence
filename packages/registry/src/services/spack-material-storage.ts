@@ -105,7 +105,13 @@ export async function consumeMaterialStream(
       // A hostile source may never settle cancel(); it must not retain an upload slot.
       cancelMaterialInput(reader);
     }
-    reader.releaseLock();
+    try {
+      reader.releaseLock();
+    } catch {
+      // Bun native HTTP streams can throw while releasing an already-consumed reader.
+      // Cleanup must not replace a verified byte count or the original upload error.
+      logger.warn("Could not release material input reader");
+    }
   }
 }
 

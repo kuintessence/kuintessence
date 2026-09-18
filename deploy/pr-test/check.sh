@@ -8,7 +8,7 @@ test "$(bun --version)" = "1.3.13"
 bun node_modules/typescript/bin/tsc --project deploy/pr-test/tsconfig.json
 bun deploy/pr-test/runtime.ts
 
-# These are in-process regressions, not real offline Spack installation acceptance.
+# Focused regressions include loopback HTTP, not managed offline install acceptance.
 bun test \
   scripts/pr-scheduler-compose.test.ts \
   packages/shared/src/spack-lock.test.ts \
@@ -18,6 +18,7 @@ bun test \
   packages/registry/src/services/recipe-git-store.test.ts \
   packages/registry/src/services/recipe-diagnostics.test.ts \
   packages/registry/src/services/material-bootstrap.test.ts \
+  packages/registry/src/services/spack-material-stream.test.ts \
   packages/registry/src/routes/spack-materials.test.ts \
   packages/registry/src/routes/spack-material-catalog.test.ts \
   packages/agent/src/spack/material-client.test.ts \
