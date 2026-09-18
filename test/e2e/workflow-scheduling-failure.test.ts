@@ -202,8 +202,17 @@ describe("e2e: workflow scheduling failures through CLI + Server placement", () 
       job?.schedulerJobId ?? "",
       "-o",
     ]);
+    expect(schedulerRecord.exitCode).toBe(0);
     expect(schedulerRecord.stdout).toContain(`Partition=${preferredQueueName}`);
-    expect(schedulerRecord.stdout).toContain(`QOS=${MISSING_QOS}`);
+    // This fixture has no QoS accounting; inspect the script accepted by Slurm.
+    const batchScript = await stack.slurm.exec([
+      "cat",
+      `/var/tmp/kq-slurm-shared/qos-${job?.schedulerJobId}.sh`,
+    ]);
+    expect(batchScript.exitCode).toBe(0);
+    const directives = batchScript.stdout.split("\n").filter((line) => line.startsWith("#SBATCH"));
+    expect(directives).toContain(`#SBATCH --partition=${preferredQueueName}`);
+    expect(directives).toContain(`#SBATCH --qos=${MISSING_QOS}`);
 
     const status = await runCli(["workflow", "status", runId]);
     expect(status.stdout).toContain("qos_queue: Succeeded");
@@ -544,7 +553,11 @@ function missingQosWorkflow(): string {
               {
                 type: "Text",
                 descriptor: "script",
-                from: { expr: celString('printf "value=13\\n"') },
+                from: {
+                  expr: celString(
+                    'scontrol write batch_script "$SLURM_JOB_ID" "/var/tmp/kq-slurm-shared/qos-${SLURM_JOB_ID}.sh" && printf "value=13\\n"',
+                  ),
+                },
               },
             ],
           },

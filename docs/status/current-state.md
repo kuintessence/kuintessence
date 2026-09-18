@@ -18,6 +18,8 @@ Kuintessence 当前为 pre-release。以下列出组件功能、运行要求和�
 ## 工作流边界
 
 - 工作流采用控制流 DSL，编辑器与执行器使用共享 Schema 校验文档。
+- 缺失的 ByVersion 子工作流或无效的持久化模板 YAML 在提交阶段拒绝，
+  不创建 workflow run/job；此类预检失败不产生可轮询的失败 run。
 - Script 节点显式声明 source/scriptRef、runtimeProfileId/runtimeContractRef 和 inputs/outputs 契约；
   source 与 runtime 各选一种引用形式。
 - Web 根据持久化的 graph 显示节点与依赖；本地或尚未保存 graph 的运行显示节点状态列表。

@@ -5,7 +5,14 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn } from "bun";
 import { inArray } from "drizzle-orm";
-import { createPgDb, type PgDb, usecasePackages, workflowTemplates } from "../../packages/db/src";
+import {
+  createPgDb,
+  jobs,
+  type PgDb,
+  usecasePackages,
+  workflowRuns,
+  workflowTemplates,
+} from "../../packages/db/src";
 import type { usecase } from "../../packages/shared/src";
 import { governedShellPackage, seedE2eSoftwareRevision } from "./fixtures/governed-package";
 import { type Stack, startStack } from "./fixtures/stack";
@@ -257,41 +264,35 @@ describe("e2e: workflow control flow through CLI + Server + Agent + Slurm", () =
     expect(status.stdout).toContain('"refined":42');
   }, 180_000);
 
-  test("fails a ByVersion SubWorkflow when the workflow template is missing", async () => {
+  test("rejects a missing ByVersion template before creating runs or jobs", async () => {
     const yamlPath = writeWorkflowYaml(
       subWorkflowByVersionWorkflow(MISSING_CHILD_WORKFLOW_TEMPLATE_ID, "missing_child"),
     );
 
-    const submit = await runCli(["workflow", "submit", yamlPath]);
-    expect(submit.stderr).toBe("");
-    const runId = parseRunId(submit.stdout);
-    const final = await pollWorkflow(runId, "failed", 120_000);
+    const before = await executionRecords();
+    const submit = await runCli(["workflow", "submit", yamlPath], 1);
 
-    expect(final.status).toBe("failed");
-    expect(final.result?.status.missing_child).toBe("Failed");
-    expect(final.stepJobs.inner_by_version).toBeUndefined();
-
-    const status = await runCli(["workflow", "status", runId]);
-    expect(status.stdout).toContain("missing_child: Failed");
+    expect(submit.stderr).toContain("API error (400, HTTP_ERROR)");
+    expect(submit.stderr).toContain(
+      `workflow version not found: ${MISSING_CHILD_WORKFLOW_TEMPLATE_ID}`,
+    );
+    expect(submit.stdout).not.toContain("Run ID:");
+    expect(await executionRecords()).toEqual(before);
   }, 180_000);
 
-  test("fails a ByVersion SubWorkflow when the persisted template is invalid", async () => {
+  test("rejects invalid persisted ByVersion YAML before creating runs or jobs", async () => {
     await seedInvalidChildWorkflowTemplate(db);
     const yamlPath = writeWorkflowYaml(
       subWorkflowByVersionWorkflow(INVALID_CHILD_WORKFLOW_TEMPLATE_ID, "invalid_child"),
     );
 
-    const submit = await runCli(["workflow", "submit", yamlPath]);
-    expect(submit.stderr).toBe("");
-    const runId = parseRunId(submit.stdout);
-    const final = await pollWorkflow(runId, "failed", 120_000);
+    const before = await executionRecords();
+    const submit = await runCli(["workflow", "submit", yamlPath], 1);
 
-    expect(final.status).toBe("failed");
-    expect(final.result?.status.invalid_child).toBe("Failed");
-    expect(final.stepJobs.inner_by_version).toBeUndefined();
-
-    const status = await runCli(["workflow", "status", runId]);
-    expect(status.stdout).toContain("invalid_child: Failed");
+    expect(submit.stderr).toContain("API error (400, HTTP_ERROR)");
+    expect(submit.stderr).toContain("Flow sequence in block collection");
+    expect(submit.stdout).not.toContain("Run ID:");
+    expect(await executionRecords()).toEqual(before);
   }, 180_000);
 
   test("fails a ByVersion SubWorkflow cycle when maxDepth is exceeded", async () => {
@@ -1242,7 +1243,17 @@ function writeWorkflowYaml(content: string): string {
   return path;
 }
 
-async function runCli(args: string[]): Promise<{ stdout: string; stderr: string }> {
+async function executionRecords() {
+  return {
+    runs: await db.select({ id: workflowRuns.id }).from(workflowRuns).orderBy(workflowRuns.id),
+    jobs: await db.select({ id: jobs.id }).from(jobs).orderBy(jobs.id),
+  };
+}
+
+async function runCli(
+  args: string[],
+  expectedExitCode = 0,
+): Promise<{ stdout: string; stderr: string }> {
   const proc = spawn(["bun", "run", join(REPO_ROOT, "packages/cli/src/index.ts"), ...args], {
     env: { ...process.env, KQ_CONFIG_FILE: cliConfigFile },
     stdout: "pipe",
@@ -1253,7 +1264,7 @@ async function runCli(args: string[]): Promise<{ stdout: string; stderr: string 
     new Response(proc.stderr).text(),
     proc.exited,
   ]);
-  if (exitCode !== 0) {
+  if (exitCode !== expectedExitCode) {
     throw new Error(`kq ${args.join(" ")} failed with exit ${exitCode}\n${stdout}\n${stderr}`);
   }
   return { stdout, stderr };

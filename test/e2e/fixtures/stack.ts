@@ -111,7 +111,7 @@ export async function startStack(options: StartStackOptions = {}): Promise<Stack
       | undefined;
     let stopNetdrive: (() => Promise<void>) | undefined;
     if (options.netdrive) {
-      const minio = await new GenericContainer("minio/minio:RELEASE.2025-04-08T15-41-24Z")
+      const minio = await new GenericContainer("quay.io/minio/minio:RELEASE.2025-04-08T15-41-24Z")
         .withCommand(["server", "/data"])
         .withEnvironment({
           MINIO_ROOT_USER: "minioadmin",
