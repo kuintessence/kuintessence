@@ -13,9 +13,14 @@ export type InstallOutcome =
   | { outcome: "failed"; exitCode: number; stderr: string };
 
 export type SoftwareOperationOutcome =
-  | { outcome: "rejected"; reason: string }
-  | { outcome: "succeeded"; stdout: string; installed: InstalledSpec[] }
-  | { outcome: "failed"; exitCode: number; stderr: string };
+  | { outcome: "rejected"; reason: string; stdout?: string }
+  | {
+      outcome: "succeeded";
+      stdout: string;
+      installed: InstalledSpec[];
+      invalidatedHashes?: string[];
+    }
+  | { outcome: "failed"; exitCode: number; stderr: string; invalidatedHashes?: string[] };
 
 /**
  * Orchestrator that combines the policy decision engine with the Spack CLI.

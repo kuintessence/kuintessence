@@ -154,7 +154,7 @@ CPU 核·小时、GPU 小时和内存 MB·小时来自作业终态记录。这�
 
 ### 8.2 交给系统运维人员
 
-- 平台服务、Web、软件仓库、PostgreSQL、MinIO、SpiceDB、Casdoor 或网关不可用。
+- 平台服务、Web、软件仓库、PostgreSQL、RustFS、SpiceDB、Casdoor 或网关不可用。
 - 多站点控制通道同时异常。
 - 授权同步积压、数据库或对象存储异常。
 - 需要发布、回滚、备份恢复或证书更新。

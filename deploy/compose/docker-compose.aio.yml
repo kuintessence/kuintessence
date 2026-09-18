@@ -5,11 +5,11 @@
 #
 # After startup:
 #   Web SPA + Server API   http://localhost:8080
-#   MinIO API           http://localhost:9000
-#   MinIO console       http://localhost:9001  (minioadmin / minioadmin)
+#   RustFS API           http://localhost:9000
+#   RustFS console       http://localhost:9001  (rustfsadmin / rustfsadmin)
 #   App login           admin@example.com, role super_admin, no password
 #
-# Inside the container Postgres + Redis + MinIO + Server + Registry + Web/nginx
+# Inside the container Postgres + Redis + RustFS + Server + Registry + Web/nginx
 # all run together, supervised by deploy/aio/entrypoint.sh. Persistent data lives
 # in the kq-aio-data volume (drop with `docker compose --project-directory . -f deploy/compose/docker-compose.aio.yml down -v`).
 #
@@ -26,8 +26,8 @@ services:
     container_name: kq-aio
     ports:
       - "127.0.0.1:8080:80"      # Web SPA + Server API (via nginx)
-      - "127.0.0.1:9000:9000"    # MinIO API (NetDrive presigned URLs)
-      - "127.0.0.1:9001:9001"    # MinIO console
+      - "127.0.0.1:9000:9000"    # RustFS API (NetDrive presigned URLs)
+      - "127.0.0.1:9001:9001"    # RustFS console
     volumes:
       - kq-aio-data:/data
     environment:
@@ -35,6 +35,10 @@ services:
       AUTHZ_MODE: "off"
       SSO_BOOTSTRAP_ENABLED: "false"
       WEB_BASE_URL: http://localhost:8080/
+      SPACK_RECIPE_STORE_DIR: /data/registry/recipes
+      SPACK_MATERIAL_STORE_DIR: /data/registry/materials
+      SPACK_RECIPE_BOOTSTRAP_MANIFEST: ${SPACK_RECIPE_BOOTSTRAP_MANIFEST:-}
+      SPACK_MATERIAL_BOOTSTRAP_MANIFEST: ${SPACK_MATERIAL_BOOTSTRAP_MANIFEST:-}
       # Public fixture value, used only by this local demo profile.
       DATA_MARKET_COMMITTER_SECRET_KEY: ${KQ_DATA_MARKET_COMMITTER_SECRET_KEY:-aio-test-committer-secret-not-for-production}
 

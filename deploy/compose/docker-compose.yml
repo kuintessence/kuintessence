@@ -11,8 +11,8 @@
 #   Server HTTP      http://localhost:3000
 #   Server gRPC      http://localhost:3001
 #   Registry  http://localhost:3100
-#   MinIO API     http://localhost:9000  (minioadmin / minioadmin)
-#   MinIO console http://localhost:9001
+#   RustFS API     http://localhost:9000  (rustfsadmin / rustfsadmin)
+#   RustFS console http://localhost:9001
 #
 # The Agent is intentionally NOT included: it requires a real scheduler
 # (Slurm/PBS/Torque/kubectl) on the host. Run it on a login node — see README.md.
@@ -44,19 +44,20 @@ services:
       timeout: 5s
       retries: 10
 
-  minio:
-    image: minio/minio:RELEASE.2025-09-07T16-13-09Z
-    command: server /data --console-address ":9001"
+  rustfs:
+    image: rustfs/rustfs:1.0.0
+    command: ["rustfs", "/data"]
     environment:
-      MINIO_ROOT_USER: minioadmin
-      MINIO_ROOT_PASSWORD: minioadmin
+      RUSTFS_ACCESS_KEY: rustfsadmin
+      RUSTFS_SECRET_KEY: rustfsadmin
+      RUSTFS_CONSOLE_ENABLE: "true"
     volumes:
-      - minio-data:/data
+      - rustfs-data:/data
     ports:
       - "9000:9000"
       - "9001:9001"
     healthcheck:
-      test: ["CMD", "mc", "ready", "local"]
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:9000/health"]
       interval: 10s
       timeout: 5s
       retries: 10
@@ -226,6 +227,10 @@ services:
       REGISTRY_AUTH_MODE: jwt
       REGISTRY_JWT_SECRET: dev-secret-change-me-at-least-32-chars-long
       BLOB_STORE_DIR: /var/lib/kuintessence/registry/blobs
+      SPACK_RECIPE_STORE_DIR: /var/lib/kuintessence/registry/recipes
+      SPACK_MATERIAL_STORE_DIR: /var/lib/kuintessence/registry/materials
+      SPACK_RECIPE_BOOTSTRAP_MANIFEST: ${SPACK_RECIPE_BOOTSTRAP_MANIFEST:-}
+      SPACK_MATERIAL_BOOTSTRAP_MANIFEST: ${SPACK_MATERIAL_BOOTSTRAP_MANIFEST:-}
       ECOSYSTEM_RELEASE_TRUSTED_KEYS: "${ECOSYSTEM_RELEASE_TRUSTED_KEYS:-{}}"
     volumes:
       - registry-data:/var/lib/kuintessence/registry
@@ -262,5 +267,5 @@ services:
 volumes:
   pg-data:
   casdoor-pg-data:
-  minio-data:
+  rustfs-data:
   registry-data:

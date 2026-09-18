@@ -466,6 +466,13 @@ describe("loadMinioConfigFromEnv", () => {
         MINIO_ROOT_USER: "committer",
       }),
     ).toThrow(/MINIO_ROOT_USER/);
+    expect(() =>
+      loadMinioConfigFromEnv({
+        ...base,
+        DATA_MARKET_COMMITTER_ACCESS_KEY: "committer",
+        RUSTFS_ACCESS_KEY: "committer",
+      }),
+    ).toThrow(/RUSTFS_ACCESS_KEY/);
   });
 });
 

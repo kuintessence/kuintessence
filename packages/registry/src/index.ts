@@ -14,15 +14,20 @@ import { createEcosystemReleaseRoutes } from "./routes/ecosystem-releases";
 import { healthRoutes } from "./routes/health";
 import { createOciRoutes } from "./routes/oci";
 import { createSpackCatalogRoutes } from "./routes/spack-catalog";
+import { createSpackMaterialRoutes } from "./routes/spack-materials";
+import { createSpackRepositoryRoutes } from "./routes/spack-repositories";
 import { createUsecasePackageRoutes } from "./routes/usecase-packages";
 import { createWorkflowTemplateRoutes } from "./routes/workflow-templates";
 import { AppTemplateService } from "./services/app-template-service";
 import { createBlobStore } from "./services/blob-store";
 import { EcosystemOciReader } from "./services/ecosystem-oci-reader";
 import { EcosystemReleaseService } from "./services/ecosystem-release-service";
+import { RecipeGitStore } from "./services/recipe-git-store";
 import { DrizzleAuditPort, RegistryService } from "./services/registry-service";
 import { SoftwareAssetService } from "./services/software-asset-service";
+import { bootstrapConfiguredSpack } from "./services/spack-bootstrap";
 import { SpackCatalogService } from "./services/spack-catalog-service";
+import { SpackMaterialStore } from "./services/spack-material-store";
 import { UsecasePackageService } from "./services/usecase-package-service";
 import { WorkflowTemplateService } from "./services/workflow-template-service";
 
@@ -39,6 +44,21 @@ const usecasePackageService = new UsecasePackageService(db, softwareAssetService
 const workflowTemplateService = new WorkflowTemplateService(db, softwareAssetService);
 const spackCatalogService = new SpackCatalogService(db, softwareAssetService);
 const blobStore = createBlobStore(config.BLOB_STORE_DIR);
+const recipeStore = config.SPACK_RECIPE_STORE_DIR
+  ? new RecipeGitStore(config.SPACK_RECIPE_STORE_DIR, {
+      maxBundleBytes: config.SPACK_RECIPE_MAX_BUNDLE_BYTES,
+      maxExpandedBytes: config.SPACK_RECIPE_MAX_EXPANDED_BYTES,
+      maxFiles: config.SPACK_RECIPE_MAX_FILES,
+    })
+  : undefined;
+const materialStore =
+  config.SPACK_MATERIAL_STORE_DIR && recipeStore
+    ? new SpackMaterialStore(config.SPACK_MATERIAL_STORE_DIR, recipeStore, {
+        maxBlobBytes: config.SPACK_MATERIAL_MAX_BLOB_BYTES,
+        totalTimeoutMs: config.SPACK_MATERIAL_UPLOAD_TOTAL_TIMEOUT_MS,
+        idleTimeoutMs: config.SPACK_MATERIAL_UPLOAD_IDLE_TIMEOUT_MS,
+      })
+    : undefined;
 const registryService = new RegistryService(db, blobStore, new DrizzleAuditPort(db), {
   maxUploadBytes: config.REGISTRY_MAX_UPLOAD_BYTES,
   uploadIdleMs: config.REGISTRY_UPLOAD_IDLE_SEC * 1000,
@@ -97,6 +117,23 @@ const uploadSweep = setInterval(
 );
 uploadSweep.unref();
 
+if (config.SPACK_RECIPE_BOOTSTRAP_MANIFEST || config.SPACK_MATERIAL_BOOTSTRAP_MANIFEST) {
+  bootstrapConfiguredSpack({
+    recipeStore,
+    recipeManifest: config.SPACK_RECIPE_BOOTSTRAP_MANIFEST,
+    materialStore,
+    materialManifest: config.SPACK_MATERIAL_BOOTSTRAP_MANIFEST,
+  })
+    .then((report) => {
+      if (report.status === "completed") {
+        logger.info({ report }, "Completed configured Spack bootstrap");
+      } else {
+        logger.error({ report }, "Configured Spack bootstrap has failures");
+      }
+    })
+    .catch(() => logger.error("Failed to bootstrap configured Spack content"));
+}
+
 spackCatalogService
   .syncUpstreamAssets()
   .then((result) => logger.info(result, "Synced upstream Spack package assets"))
@@ -140,6 +177,8 @@ app.route("/api", createAppTemplateRoutes(appTemplateService, principalOptions))
 app.route("/api", createUsecasePackageRoutes(usecasePackageService, principalOptions));
 app.route("/api", createWorkflowTemplateRoutes(workflowTemplateService, principalOptions));
 app.route("/api", createSpackCatalogRoutes(spackCatalogService, principalOptions));
+app.route("/api", createSpackRepositoryRoutes(recipeStore, principalOptions));
+app.route("/api", createSpackMaterialRoutes(materialStore, principalOptions));
 app.route("/api", createEcosystemReleaseRoutes(ecosystemReleaseService, principalOptions));
 
 // OCI v2 + Spack buildcache. Both routers mount the principal

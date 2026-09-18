@@ -28,6 +28,11 @@ export * from "./schemas/template";
 export * from "./schemas/terminal";
 export * from "./software-governance";
 export * from "./spack";
+export * from "./spack-lock";
+export * from "./spack-material-catalog";
+export * from "./spack-material-import";
+export * from "./spack-materials";
+export * from "./spack-repositories";
 export * from "./storage-quota";
 // P4 usecase→command materialization (namespaced).
 export * as usecase from "./usecase";

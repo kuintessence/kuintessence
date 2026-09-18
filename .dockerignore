@@ -18,9 +18,9 @@ examples/docker-compose.demo.yml
 deploy
 !deploy/aio
 !deploy/dev
-!deploy/minio
-deploy/minio/*
-!deploy/minio/bootstrap-object-lock.sh
+!deploy/rustfs
+deploy/rustfs/*
+!deploy/rustfs/bootstrap-object-lock.sh
 *.md
 !packages/*/README.md
 ignored

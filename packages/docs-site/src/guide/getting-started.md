@@ -38,7 +38,7 @@ bun run dev:scheduler:compose
 | Web SPA | `http://localhost:5173` 或 scheduler watch 栈的 `http://localhost:15173` |
 | Server HTTP | `http://localhost:3000` 或 scheduler watch 栈的 `http://localhost:13000` |
 | Registry | `http://localhost:3100` 或 scheduler watch 栈的 `http://localhost:13100` |
-| MinIO console | `http://localhost:9001` 或 scheduler watch 栈的 `http://localhost:19001` |
+| RustFS console | `http://localhost:9001` 或 scheduler watch 栈的 `http://localhost:19001` |
 
 开发模式登录页允许输入任意邮箱，并选择调试角色。生产环境应配置 SSO/OIDC。
 

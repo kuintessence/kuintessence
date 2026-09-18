@@ -498,6 +498,9 @@ export function loadMinioConfigFromEnv(env: NodeJS.ProcessEnv = process.env): Mi
   if (env.MINIO_ROOT_USER && accessKey === env.MINIO_ROOT_USER) {
     throw new Error("NETDRIVE_ACCESS_KEY must not use MINIO_ROOT_USER");
   }
+  if (env.RUSTFS_ACCESS_KEY && accessKey === env.RUSTFS_ACCESS_KEY) {
+    throw new Error("NETDRIVE_ACCESS_KEY must not use RUSTFS_ACCESS_KEY");
+  }
   const immutableRetentionRaw = env.DATA_MARKET_IMMUTABLE_RETENTION_DAYS ?? "365";
   const immutableRetentionDays = Number(immutableRetentionRaw);
   if (!/^[1-9]\d*$/.test(immutableRetentionRaw) || !Number.isSafeInteger(immutableRetentionDays)) {

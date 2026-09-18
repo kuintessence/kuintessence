@@ -203,6 +203,8 @@ message RegisterRequest {
   // field; a new Agent sends health only after RegisterResponse negotiates it.
   bool compute_health_v1 = 16;
   bool queue_inventory_v1 = 17;
+  // The Agent refuses legacy installs and only stages Server-authorized materials.
+  bool spack_material_delivery_v1 = 18;
 }
 
 message RegisterResponse {
@@ -724,6 +726,9 @@ message SoftwareOperationRequest {
   SoftwareOperationAction action = 2;
   string spec = 3;
   string requested_by = 4;
+  // Short-lived, operation-scoped download credential, never a Registry credential.
+  string spack_material_ticket = 5;
+  string spack_manifest_digest = 6;
 }
 
 message SoftwareOperationResult {

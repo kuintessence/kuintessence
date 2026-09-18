@@ -53,13 +53,13 @@ const PROFILES: Record<ProfileKey, Profile> = {
   infra: {
     key: "infra",
     label: "Infra only",
-    description: "Postgres + Redis + MinIO only; use when app services run on host.",
+    description: "Postgres + Redis + RustFS only; use when app services run on host.",
     files: ["deploy/compose/docker-compose.dev.yml"],
     urls: [
       "Postgres: localhost:5432",
       "Redis: localhost:6379",
-      "MinIO API: http://localhost:9000",
-      "MinIO console: http://localhost:9001",
+      "RustFS API: http://localhost:9000",
+      "RustFS console: http://localhost:9001",
     ],
   },
   full: {
@@ -72,7 +72,7 @@ const PROFILES: Record<ProfileKey, Profile> = {
       "Server HTTP: http://localhost:3000",
       "Server gRPC: localhost:3001",
       "Registry: http://localhost:3100",
-      "MinIO console: http://localhost:9001",
+      "RustFS console: http://localhost:9001",
     ],
   },
   watch: {
@@ -85,7 +85,7 @@ const PROFILES: Record<ProfileKey, Profile> = {
       "Server HTTP: http://localhost:3000",
       "Server gRPC: localhost:3001",
       "Registry: http://localhost:3100",
-      "MinIO console: http://localhost:9001",
+      "RustFS console: http://localhost:9001",
     ],
   },
   netdrive: {
@@ -98,7 +98,7 @@ const PROFILES: Record<ProfileKey, Profile> = {
       "Server HTTP: http://localhost:3010",
       "Server gRPC: localhost:3011",
       "Registry: http://localhost:3100",
-      "MinIO console: http://localhost:9001",
+      "RustFS console: http://localhost:9001",
     ],
   },
   "watch-netdrive": {
@@ -115,7 +115,7 @@ const PROFILES: Record<ProfileKey, Profile> = {
       "Server HTTP: http://localhost:3010",
       "Server gRPC: localhost:3011",
       "Registry: http://localhost:3100",
-      "MinIO console: http://localhost:9001",
+      "RustFS console: http://localhost:9001",
     ],
   },
   scheduler: {
@@ -130,7 +130,7 @@ const PROFILES: Record<ProfileKey, Profile> = {
       "Server HTTP: http://localhost:13000",
       "Server gRPC: localhost:13001",
       "Registry: http://localhost:13100",
-      "MinIO console: http://localhost:19001",
+      "RustFS console: http://localhost:19001",
     ],
     heavy: true,
     schedulerSmoke: true,
@@ -148,7 +148,7 @@ const PROFILES: Record<ProfileKey, Profile> = {
       "Server HTTP: http://localhost:13000",
       "Server gRPC: localhost:13001",
       "Registry: http://localhost:13100",
-      "MinIO console: http://localhost:19001",
+      "RustFS console: http://localhost:19001",
     ],
     heavy: true,
     schedulerSmoke: true,
@@ -158,7 +158,7 @@ const PROFILES: Record<ProfileKey, Profile> = {
     label: "All-in-one demo",
     description: "Single all-in-one demo container with bundled services.",
     files: ["deploy/compose/docker-compose.aio.yml"],
-    urls: ["Web + Server API: http://localhost:8080", "MinIO console: http://localhost:9001"],
+    urls: ["Web + Server API: http://localhost:8080", "RustFS console: http://localhost:9001"],
     heavy: true,
   },
   demo: {
@@ -171,7 +171,7 @@ const PROFILES: Record<ProfileKey, Profile> = {
       "Server HTTP: http://localhost:3000",
       "Server gRPC: localhost:3001",
       "Registry: http://localhost:3100",
-      "MinIO console: http://localhost:9001",
+      "RustFS console: http://localhost:9001",
     ],
   },
 };
@@ -704,6 +704,33 @@ async function runCommand(cmd: string[], dryRun: boolean): Promise<number> {
   return await proc.exited;
 }
 
+async function checkStorageMigration(profile: Profile, options: Options): Promise<void> {
+  if (options.dryRun || (options.action !== "up" && options.action !== "restart")) return;
+  const proc = Bun.spawn(
+    withEnvPrefix(profile, options, [
+      ...composeBase(profile, options),
+      "config",
+      "--format",
+      "json",
+    ]),
+    { stdout: "pipe", stderr: "inherit", env: Bun.env },
+  );
+  const [output, code] = await Promise.all([new Response(proc.stdout).text(), proc.exited]);
+  if (code !== 0) throw new Error("Cannot resolve Compose project for storage migration checks");
+  const config: unknown = JSON.parse(output);
+  if (
+    typeof config !== "object" ||
+    config === null ||
+    !("name" in config) ||
+    typeof config.name !== "string" ||
+    !config.name
+  ) {
+    throw new Error("Compose configuration has no project name; refusing unchecked startup");
+  }
+  const result = await runCommand(["bash", "deploy/rustfs/check-migration.sh", config.name], false);
+  if (result !== 0) throw new Error("RustFS storage migration preflight failed");
+}
+
 function printProfileSummary(profile: Profile, options: Options): void {
   console.log(`\nProfile: ${profile.key} - ${profile.label}`);
   console.log(profile.description);
@@ -732,6 +759,7 @@ async function main(): Promise<void> {
   const profile = PROFILES[opts.profile ?? "watch"];
   validateProfileOptions(profile, opts);
   printProfileSummary(profile, opts);
+  await checkStorageMigration(profile, opts);
   const commands = commandFor(profile, {
     ...opts,
     profile: profile.key,

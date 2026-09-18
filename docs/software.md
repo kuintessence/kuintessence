@@ -138,9 +138,9 @@ Server 与 Web 的 availability、preview、operation precheck，以及 Agent �
 
 | Action | 语义 |
 |---|---|
-| `install` | `spack install --yes <spec>`，受 allow/deny/lock 约束 |
-| `uninstall` | 策略通过并确认后删除 |
-| `load` | 返回一次性 `spack load --sh` fragment，不改变未来作业环境 |
+| `install` | 默认材料准备/预检及可选 source audit 后仍 `rejected`；实验性 `AGENT_SPACK_INSTALL_ENABLED` opt-in 才进入持久化安装编排，未完成真实验收 |
+| `uninstall` | 策略通过并确认后删除；受管安装以 DAG root 为单位清理独占 store 及其私有依赖 |
+| `load` | 返回一次性 shell fragment，不改变未来作业环境；受管 root 须为当前 site profile 的 `ready` 记录，并经 readonly runtime 复验 |
 | `import_preinstalled` | 验证现存 spec 并刷新 ledger，不安装 |
 
 批量请求最多 2000 条原始行，trim/去空/去重后最多 200 个唯一 spec。
@@ -150,15 +150,46 @@ Web 保留失败输入，重试只回填待确认表单，不自动重放非幂�
 
 operation 使用 `queued → running → succeeded/failed/rejected` 单调状态机。
 result 必须匹配 operation、Agent 与 action；已终态不被乱序消息覆盖。
-安装/删除/导入成功后刷新 `spack find --json`。
-即使 CLI 成功，ledger 刷新失败也会将 operation 记录为 failed。
+安装/删除/导入成功后刷新 inventory：保留宿主 `spack find --json`，
+并合并当前 site profile 下的 managed `ready` roots。
+即使执行成功，ledger 刷新失败也会将 operation 记录为 failed。
+已发布的受管安装复验失败会撤下 `ready` 状态及 Agent 后续心跳中的对应条目，
+保留文件供诊断；显式复验通过后才能恢复，不把失败软件继续上报为可用。
 
 Agent 断线期间的结果写 SQLite outbound queue，重连回放；Server 已 push 却未收到 running
 时保持 queued，不自动判为失败或重发。离线时新操作直接 failed。
 CP 页面应同时观察 DB 心跳与 live stream；“投递状态不确定”时先恢复连接、核对历史。
 操作详情保留 error/stderr/stdout 和退出码。
 
-镜像源同步、buildcache 后台 worker、signed air-gap bundle 导入导出及完整在线
+Recipe 仓库支持本地 Git 持久化、初始化与 Web 导入 Git bundle、静态诊断、快照激活/回滚
+和鉴权导出，见 [Spack Recipe 仓库](spack-recipe-repositories.md)。
+源码/lock 支持本地材料 manifest 初始化及批量导入，先完成 recipe bootstrap，再复用
+上传/发布校验。平台与 CP 门户可使用同一材料包 Web 上传，支持未完成项重试、
+取消及按 binding 查阅；发布响应丢失显示结果待确认，不当作回滚。
+材料目录支持按当前权限发现已有发布、精确仓库筛选、刷新和分页查阅；
+单次最多返回 200 项，超限明确失败并提示缩小查询，不静默截断。
+成功 binding 需显式配置到 Server，不自动激活 recipe、启用安装或执行内容。
+Agent 已接入经 Server 下载固定 recipe archive 和源码、SHA-256 校验及持久缓存，
+并提供默认关闭、固定 digest SIF 内的 source audit。默认仅审计路径通过后保留报告，
+安装仍为 `rejected`；审计报告不代表 recipe 可信、完整依赖已正确求解或目标集群已就绪。
+
+默认关闭的实验性 `AGENT_SPACK_INSTALL_ENABLED` 要求同时开启 source audit，
+使用 host backend、非 Kubernetes adapter 和固定 site profile digest。
+TypeScript 已接入 **隔离 build → 独立 readonly verify → ready**；
+每次新安装事务独占共享持久化 `storeRoot/releases/<installation-id>/`，不共用可写依赖树。
+managed inventory/load/uninstall 为 root-only，这里的 root 是 DAG root，不是系统 root 用户；
+依赖不独立列出或管理，卸载清理该 root 的整个事务 store。
+site profile 固定 target、runtime、宿主文件和 external 绑定；
+shared storage、compute ABI、quota、recipe trust 的人工声明不等于自动验证。
+Python install worker 已实现并通过模拟 native API 的 fixture 测试；
+真实 Linux/Spack/Apptainer/SIF 与集群验收未执行，
+`ready` 不等于生产就绪。配置与限制详见 [材料发布与 Agent 下载](spack-material-delivery.md)。
+
+升级后平台的未受管 install/buildcache 导入被阻断；不能将这一阶段视为部署故障已修复。
+Recipe 激活尚不自动应用到 Agent；静态诊断不等于实际 concretize 或安装成功。
+受限厂商安装包/许可证授权、HTTP/SOCKS 上游代理、大规模材料索引/删除/可见范围变更及 15 个工作流的
+目标 Linux 材料、lock 和端到端安装/运行验收仍未完成。
+源码镜像同步、buildcache 后台 worker、signed air-gap bundle 导入导出及完整在线
 `package.py` 编辑/构建执行器尚未全部具备，使用前需确认所需执行器已部署。
 
 <a id="ecosystem"></a>

@@ -1,0 +1,73 @@
+{{- if and .Values.rustfs.enabled .Values.netdrive.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "kq.rustfsBootstrapConfigMapName" . }}
+  labels: {{- include "kq.labels" . | nindent 4 }}
+data:
+  bootstrap-object-lock.sh: |-
+{{ .Files.Get "files/bootstrap-object-lock.sh" | indent 4 }}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "kq.rustfsBootstrapName" . }}
+  labels:
+    {{- include "kq.labels" . | nindent 4 }}
+    app.kubernetes.io/component: rustfs-bootstrap
+spec:
+  backoffLimit: 3
+  activeDeadlineSeconds: 900
+  ttlSecondsAfterFinished: 86400
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ .Chart.Name }}
+        app.kubernetes.io/component: rustfs-bootstrap
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: bootstrap
+          image: {{ .Values.rustfs.rcImage | quote }}
+          command: ["/bin/sh", "/bootstrap/bootstrap-object-lock.sh"]
+          env:
+            - name: HOME
+              value: /tmp
+            - name: RUSTFS_ENDPOINT
+              value: {{ printf "http://%s-rustfs:9000" .Release.Name | quote }}
+            - name: RUSTFS_ACCESS_KEY
+              value: {{ .Values.rustfs.rootUser | quote }}
+            - name: RUSTFS_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "kq.secretName" . }}
+                  key: RUSTFS_SECRET_KEY
+            - name: NETDRIVE_BUCKET
+              value: {{ .Values.netdrive.bucket | quote }}
+            - name: DATA_MARKET_STAGING_BUCKET
+              value: {{ .Values.netdrive.dataMarketStagingBucket | quote }}
+            - name: DATA_MARKET_IMMUTABLE_BUCKET
+              value: {{ .Values.netdrive.dataMarketImmutableBucket | quote }}
+            - name: DATA_MARKET_STAGING_EXPIRY_DAYS
+              value: {{ .Values.netdrive.dataMarketStagingExpiryDays | quote }}
+            - name: DATA_MARKET_IMMUTABLE_RETENTION_DAYS
+              value: {{ .Values.netdrive.dataMarketImmutableRetentionDays | quote }}
+            - name: DATA_MARKET_COMMITTER_ACCESS_KEY
+              value: {{ .Values.netdrive.accessKey | quote }}
+            - name: DATA_MARKET_COMMITTER_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "kq.secretName" . }}
+                  key: NETDRIVE_SECRET_KEY
+            - name: RUSTFS_READY_TIMEOUT_SECONDS
+              value: "600"
+          volumeMounts:
+            - name: bootstrap-script
+              mountPath: /bootstrap
+              readOnly: true
+      volumes:
+        - name: bootstrap-script
+          configMap:
+            name: {{ include "kq.rustfsBootstrapConfigMapName" . }}
+            defaultMode: 0555
+{{- end }}

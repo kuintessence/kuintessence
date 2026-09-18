@@ -116,6 +116,7 @@ describe("agent-handler under mTLS context", () => {
         case: "register",
         value: create(RegisterRequestSchema, {
           agentId: "agent-good",
+          spackMaterialDeliveryV1: true,
           siteName: "site-x",
           schedulerType: SchedulerType.SLURM,
           schedulerVersion: "20.11",
@@ -130,6 +131,9 @@ describe("agent-handler under mTLS context", () => {
         if (!handlers.connect) throw new Error("connect handler not registered");
         for await (const m of handlers.connect(iter(reg)) as AsyncIterable<ServerMessage>) {
           out.push(m);
+          const channel = dispatcher.getChannel("agent-good");
+          expect(channel?.spackMaterialDeliveryV1).toBe(true);
+          expect(channel?.verifiedCertFingerprint).toBe("0".repeat(64));
           if (out.length >= 1) break;
         }
         return out;
@@ -199,6 +203,7 @@ describe("agent-handler under mTLS context", () => {
         case: "register",
         value: create(RegisterRequestSchema, {
           agentId: "agent-anything",
+          spackMaterialDeliveryV1: true,
           siteName: "site-x",
           schedulerType: SchedulerType.SLURM,
           schedulerVersion: "20.11",
@@ -210,6 +215,7 @@ describe("agent-handler under mTLS context", () => {
     const out: ServerMessage[] = [];
     for await (const m of handlers.connect(iter(reg)) as AsyncIterable<ServerMessage>) {
       out.push(m);
+      expect(dispatcher.getChannel("agent-anything")?.verifiedCertFingerprint).toBeUndefined();
       if (out.length >= 1) break;
     }
     const first = out[0];

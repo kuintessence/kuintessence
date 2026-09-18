@@ -114,8 +114,10 @@ import {
   clickableCardClass,
 } from "./card-navigation";
 import { LicenseEntitlementPanel } from "./EcosystemGovernancePanels";
+import { RecipeRepositoriesPanel } from "./RecipeRepositoriesPanel";
 import { SandboxScriptCatalog } from "./SandboxScriptCatalog";
 import { SoftwareCard } from "./SoftwareCard";
+import { SpackMaterialsPanel } from "./SpackMaterialsPanel";
 
 export interface TemplateView {
   template: WorkflowTemplate;
@@ -822,6 +824,8 @@ export function SoftwarePage() {
             />
           </TabsContent>
           <TabsContent value="spack">
+            <RecipeRepositoriesPanel canManage={canManageOrganization} />
+            <SpackMaterialsPanel canManage={canManageOrganization} />
             <SpackSoftwarePanel
               canManage={canManageOrganization}
               canManagePlatform={canManagePlatform}

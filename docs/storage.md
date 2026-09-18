@@ -1,7 +1,7 @@
 # 存储、传输与计量
 
 本文介绍 NetDrive、集群文件根、Data Market 对象上传、配额和传输审计。
-MinIO/S3 存储对象内容，PostgreSQL 保存文件 metadata、授权、传输记录与配额。
+RustFS/S3 存储对象内容，PostgreSQL 保存文件 metadata、授权、传输记录与配额。
 部署身份与代理要求见[安全指南](security.md)，数据资产与受限材料见[软件生态](software.md)。
 
 - [对象存储配置](#configuration)
@@ -43,7 +43,7 @@ Server 配置与部署模板中 `DATA_MARKET_IMMUTABLE_BUCKET` 的默认名称�
 
 `NETDRIVE_ENDPOINT`、access key、secret key、bucket 缺失时启动失败。
 Server 的 `NETDRIVE_ACCESS_KEY` 必须等于 `DATA_MARKET_COMMITTER_ACCESS_KEY`，
-不能使用 `MINIO_ROOT_USER`。三类 bucket 的职责不同：
+不能使用 `RUSTFS_ACCESS_KEY`。三类 bucket 的职责不同：
 
 | Bucket | 用途 | 必要控制 |
 |---|---|---|
@@ -58,16 +58,16 @@ immutable bucket 使用，应新建并切换配置，不删除旧 bucket 或 vol
 
 Compose/AIO 的 bootstrap 使用 root 初始化 bucket 与普通 IAM user，Server 随后只使用普通
 user。AIO 必须提供 `KQ_DATA_MARKET_COMMITTER_SECRET_KEY`。
-Helm 自托管 MinIO 在 `minio.enabled=true` 且 `netdrive.enabled=true` 时执行同一
+Helm 自托管 RustFS 在 `rustfs.enabled=true` 且 `netdrive.enabled=true` 时执行同一
 bootstrap；轮换 `netdrive.secretKey` 后递增非敏感的 `netdrive.bootstrapRevision`。
-外部 S3/MinIO 必须在部署前完成[Helm 控制清单](../deploy/helm/kq-platform/README.md)。
+外部 S3/RustFS 必须在部署前完成[Helm 控制清单](../deploy/helm/kq-platform/README.md)。
 
 `NETDRIVE_PUBLIC_URL` 必须同时满足实际下载方的可达性和 SigV4 签名要求。
 反向代理保留原始 Host、bucket path 和 query，不插入额外路径前缀。
 浏览器 PUT/GET/HEAD/OPTIONS 需要对象存储或代理提供 CORS。
 bootstrap 出现 CORS warning 时，需核对对象存储或代理的 CORS 配置，并验证浏览器上传。
 
-Agent 不接收 MinIO 凭据。`AGENT_FILE_TRANSFER_CONNECT_TO` 用于 Agent 进程网络，
+Agent 不接收 RustFS 凭据。`AGENT_FILE_TRANSFER_CONNECT_TO` 用于 Agent 进程网络，
 `AGENT_CONTAINER_FILE_TRANSFER_CONNECT_TO` 用于 scheduler container 网络，后者
 未设置时回退前者。连接重写保留签名 Host。
 `AGENT_FILE_TRANSFER_MAX_RETRIES` 与 `AGENT_FILE_TRANSFER_RETRY_BACKOFF_SEC`
@@ -152,7 +152,7 @@ Data Market 使用独立于 NetDrive promote 的上传流程：
 Server 从 staging 向 immutable bucket 执行带源 ETag 和 `COMPLIANCE` retention 的
 CopyObject。每次 copy 必须取得 `VersionId`，按该 version 回读并校验 SHA-256/size，
 再固定到 location、session 和 delivery binding。下载 URL 必须携带该 version ID。
-在 MinIO Community 中，`If-None-Match: *` 无法保证同 key 不被再次写入。
+平台不把 `If-None-Match: *` 作为跨 S3 后端的不可变性保证。
 对象引用固定到 version ID，同 key 后续版本不改变已绑定的旧版本。
 
 Server 启动时核验 versioning、Object Lock、bucket 分离和 immutable delete 拒绝策略。
@@ -274,7 +274,7 @@ WORM、备份到期与恢复后清理由基础设施执行，页面不能关闭�
 | `CLUSTER_TRANSFER_PREFLIGHT_UNAVAILABLE` | 指定 Agent 在线、shell channel、root check |
 | `PATH_OUTSIDE_ALLOWED_ROOT` | root 被撤销或无授权，重新发现可用 root |
 | 上传成功但无 `netdriveFileIds` | transfer commit 与持久化 metadata 是否一致 |
-| cancel 后短暂 running | terminal commit 是否已开始；查回调和 MinIO 完成状态 |
+| cancel 后短暂 running | terminal commit 是否已开始；查回调和 RustFS 完成状态 |
 | Job 完成但无 artifact | descriptor/glob、`WORKFLOW_RUN_BASE`、Agent workingDir、collection error |
 | attribution 为空 | tenant scope 与 transfer 上下文 |
 

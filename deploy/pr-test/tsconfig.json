@@ -1,0 +1,10 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "rootDir": "../..",
+    "types": ["bun-types"],
+    "lib": ["ESNext"]
+  },
+  "include": ["runtime.ts", "spack-case/*.ts", "../../scripts/pr-scheduler-compose.test.ts"]
+}

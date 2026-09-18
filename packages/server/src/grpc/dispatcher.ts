@@ -172,6 +172,8 @@ function sandboxExecutionToProto(manifest: SandboxSignedManifest) {
 export interface AgentChannel {
   push(msg: ServerMessage): void;
   close(): void;
+  spackMaterialDeliveryV1?: boolean;
+  verifiedCertFingerprint?: string;
 }
 
 /**
@@ -551,8 +553,14 @@ export class AgentDispatcher {
       action: SoftwareOperationAction;
       spec: string;
       requestedBy: string;
+      spackMaterialTicket?: string;
+      spackManifestDigest?: string;
     },
   ): boolean {
+    if (payload.spackMaterialTicket) {
+      const channel = this.channels.get(agentId);
+      if (!channel?.spackMaterialDeliveryV1 || !channel.verifiedCertFingerprint) return false;
+    }
     const msg = create(ServerMessageSchema, {
       payload: {
         case: "softwareOperationRequest",

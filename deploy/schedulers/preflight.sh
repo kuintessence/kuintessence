@@ -39,6 +39,7 @@ fi
 
 docker compose version >/dev/null
 "${compose_cmd[@]}" config >/dev/null
+bash deploy/rustfs/check-migration.sh "${project_name}"
 
 if [[ "${KQ_SCHEDULER_PREFLIGHT_SKIP_PORTS:-false}" == "true" ]]; then
   echo "preflight passed: docker is reachable, compose project ${project_name} config is valid, port check skipped"
@@ -52,8 +53,8 @@ ports=(
   "${KQ_SCHEDULER_WEB_PORT:-5173}"
   "${KQ_SCHEDULER_POSTGRES_PORT:-5432}"
   "${KQ_SCHEDULER_REDIS_PORT:-6379}"
-  "${KQ_SCHEDULER_MINIO_API_PORT:-9000}"
-  "${KQ_SCHEDULER_MINIO_CONSOLE_PORT:-9001}"
+  "${KQ_SCHEDULER_RUSTFS_API_PORT:-9000}"
+  "${KQ_SCHEDULER_RUSTFS_CONSOLE_PORT:-9001}"
 )
 busy=()
 for port in "${ports[@]}"; do

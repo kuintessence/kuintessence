@@ -2,6 +2,7 @@ import { resolve } from "node:path";
 import tailwind from "@tailwindcss/vite";
 import { TanStackRouterVite } from "@tanstack/router-plugin/vite";
 import react from "@vitejs/plugin-react";
+import type { ProxyOptions } from "vite";
 import { defineConfig } from "vitest/config";
 
 const repoRoot = resolve(__dirname, "../..");
@@ -9,6 +10,47 @@ const serverProxyTarget = process.env.KQ_WEB_SERVER_PROXY_TARGET ?? "http://loca
 const localRegistryPort = new URL(serverProxyTarget).port === "13000" ? "13100" : "3100";
 const registryProxyTarget =
   process.env.KQ_WEB_REGISTRY_PROXY_TARGET ?? `http://localhost:${localRegistryPort}`;
+const registryApiProxy: ProxyOptions = {
+  target: registryProxyTarget,
+  followRedirects: false,
+  rewrite: (path) => path.replace(/^\/software/, ""),
+  configure(proxy) {
+    proxy.on("proxyReq", (upstream, request) => {
+      if (
+        upstream.getHeader("Authorization") ||
+        request.headers.authorization ||
+        !/^\/api(?:\/|\?|$)/.test(request.url ?? "") ||
+        request.headers["sec-fetch-site"] === "cross-site"
+      ) {
+        return;
+      }
+      const origin = request.headers.origin;
+      if (origin) {
+        try {
+          const url = new URL(origin);
+          if (
+            !["http:", "https:"].includes(url.protocol) ||
+            url.host !== request.headers.host?.toLowerCase()
+          ) {
+            return;
+          }
+        } catch {
+          return;
+        }
+      }
+      const cookies = (request.headers.cookie ?? "")
+        .split(";")
+        .map((part) => part.trim())
+        .filter((part) => part.startsWith("kq_access_token="));
+      if (cookies.length !== 1) return;
+      const token = cookies[0]?.slice("kq_access_token=".length);
+      // Only bridge the raw session JWT to this fixed upstream, never to response headers.
+      if (token && /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(token)) {
+        upstream.setHeader("Authorization", `Bearer ${token}`);
+      }
+    });
+  },
+};
 const reactRefreshPreambleCompat = {
   name: "react-refresh-preamble-compat",
   apply: "serve" as const,
@@ -66,10 +108,18 @@ export default defineConfig({
         rewrite: (path) => path.replace(/^\/platform/, ""),
         ws: true,
       },
-      "/software/api": {
-        target: registryProxyTarget,
-        rewrite: (path) => path.replace(/^\/software/, ""),
+      "^/software/api/spack/recipe-repositories/import(?:\\?|$)": {
+        ...registryApiProxy,
+        // Match the nginx upload locations without extending unrelated API timeouts.
+        timeout: 900_000,
+        proxyTimeout: 900_000,
       },
+      "^/software/api/spack/material-repositories/": {
+        ...registryApiProxy,
+        timeout: 1_800_000,
+        proxyTimeout: 1_800_000,
+      },
+      "/software/api": registryApiProxy,
       "/software/v2": {
         target: registryProxyTarget,
         rewrite: (path) => path.replace(/^\/software/, ""),

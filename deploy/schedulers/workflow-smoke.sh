@@ -21,7 +21,7 @@ if [[ -n "${env_file}" ]]; then
     env_key="${BASH_REMATCH[1]}"
     env_value="${BASH_REMATCH[2]}"
     case "${env_key}" in
-      KQ_SCHEDULER_COMPOSE_PROJECT | KQ_SCHEDULER_SERVER_HTTP_PORT | KQ_SCHEDULER_SERVER_GRPC_PORT | KQ_SCHEDULER_REGISTRY_PORT | KQ_SCHEDULER_WEB_PORT | KQ_SCHEDULER_POSTGRES_PORT | KQ_SCHEDULER_REDIS_PORT | KQ_SCHEDULER_MINIO_API_PORT | KQ_SCHEDULER_MINIO_CONSOLE_PORT | KQ_SCHEDULER_CASDOOR_HTTP_PORT | KQ_SCHEDULER_APT_MIRROR)
+      KQ_SCHEDULER_COMPOSE_PROJECT | KQ_SCHEDULER_SERVER_HTTP_PORT | KQ_SCHEDULER_SERVER_GRPC_PORT | KQ_SCHEDULER_REGISTRY_PORT | KQ_SCHEDULER_WEB_PORT | KQ_SCHEDULER_POSTGRES_PORT | KQ_SCHEDULER_REDIS_PORT | KQ_SCHEDULER_RUSTFS_API_PORT | KQ_SCHEDULER_RUSTFS_CONSOLE_PORT | KQ_SCHEDULER_CASDOOR_HTTP_PORT | KQ_SCHEDULER_APT_MIRROR)
         export "${env_key}=${env_value}"
         ;;
       *)
@@ -647,7 +647,7 @@ run_optional_netdrive_smoke() {
     return
   fi
   local netdrive_api_base="${KQ_WORKFLOW_SMOKE_NETDRIVE_API_BASE:-${server_url}}"
-  echo "running optional NetDrive/MinIO smoke against ${netdrive_api_base}"
+  echo "running optional NetDrive/RustFS smoke against ${netdrive_api_base}"
   KQ_NETDRIVE_SMOKE_API_BASE="${netdrive_api_base}" bash "${repo_root}/deploy/netdrive-smoke.sh"
 }
 

@@ -87,7 +87,13 @@ async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
     );
   }
 
-  const body = (await res.json()) as T & {
+  const body = (await res.json().catch(() => {
+    throw new SoftwareError(
+      res.ok ? 502 : res.status,
+      "REGISTRY_INVALID_RESPONSE",
+      "Registry returned invalid JSON",
+    );
+  })) as T & {
     error?: string | { code?: string; message?: string; details?: unknown; detail?: unknown };
     errors?: Array<{
       code?: string;
@@ -110,6 +116,8 @@ async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
   }
   return body;
 }
+
+export { requestJson as requestSoftwareJson, writeHeaders as softwareWriteHeaders };
 
 export interface WorkflowTemplate {
   id: string;

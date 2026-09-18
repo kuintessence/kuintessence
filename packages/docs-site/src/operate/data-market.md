@@ -89,7 +89,7 @@ POST /api/admin/data-market/owner-entitlements/:grantId/revoke
 - `DATA_IMPORT_UNAVAILABLE`：NetDrive promote 或 platform-object import worker 未部署，导入未完成。
 - `Authorization denied`：CP scope、manage 或审批权限不足。
 - `Data asset version not found`：asset/version 归属不匹配，或版本尚未由 commit/scan 产生。
-- 上传 commit 的 blob missing、size/hash mismatch：检查浏览器 PUT、MinIO CORS、presigned URL 与 SHA-256。
+- 上传 commit 的 blob missing、size/hash mismatch：检查浏览器 PUT、RustFS CORS、presigned URL 与 SHA-256。
 
 生产升级使用 migration `0036`–`0043`。先完成数据库迁移和 Server/Agent 兼容部署，再配置 `AGENT_DATASET_ROOTS_JSON`，启用 CP-local scan。迁移不包含科学数据、POTCAR 或 OCI bundle。
 

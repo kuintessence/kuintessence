@@ -232,6 +232,91 @@ describe("loadAgentConfig", () => {
     expect(cfg.AGENT_SPACK_PATH).toBe("/opt/spack/bin/spack");
   });
 
+  test("requires a dedicated canonical Spack cache directory and defaults safely while disabled", () => {
+    expect(loadAgentConfig(baseEnv).AGENT_SPACK_CACHE_DIR).toBe(
+      "/var/lib/kuintessence/spack-materials",
+    );
+    expect(
+      loadAgentConfig({ ...baseEnv, AGENT_SPACK_CACHE_DIR: "/srv/kq/spack-cache" })
+        .AGENT_SPACK_CACHE_DIR,
+    ).toBe("/srv/kq/spack-cache");
+    for (const cacheDir of ["/", "relative", "/tmp/../cache", "/tmp/./cache", "/tmp/cache/"]) {
+      expect(() => loadAgentConfig({ ...baseEnv, AGENT_SPACK_CACHE_DIR: cacheDir })).toThrow(
+        "dedicated absolute canonical path",
+      );
+    }
+  });
+
+  test("source auditing is disabled by default and requires a complete pinned profile", () => {
+    expect(loadAgentConfig(baseEnv).AGENT_SPACK_AUDIT_ENABLED).toBe(false);
+    const enabled = {
+      ...baseEnv,
+      AGENT_SPACK_ENABLED: "true",
+      AGENT_SPACK_AUDIT_ENABLED: "true",
+      AGENT_SPACK_AUDIT_APPTAINER_SHA256: "a".repeat(64),
+      AGENT_SPACK_AUDIT_SIF_PATH: "/opt/kq/audit.sif",
+      AGENT_SPACK_AUDIT_SIF_SHA256: "b".repeat(64),
+    };
+    expect(loadAgentConfig(enabled).AGENT_SPACK_AUDIT_ENABLED).toBe(true);
+    for (const field of [
+      "AGENT_SPACK_AUDIT_APPTAINER_SHA256",
+      "AGENT_SPACK_AUDIT_SIF_PATH",
+      "AGENT_SPACK_AUDIT_SIF_SHA256",
+    ]) {
+      expect(() => loadAgentConfig({ ...enabled, [field]: undefined })).toThrow();
+    }
+    expect(() => loadAgentConfig({ ...enabled, AGENT_SPACK_ENABLED: "false" })).toThrow();
+    for (const path of ["relative", "/", "/opt/../audit.sif", "/opt/audit.sif:rw"]) {
+      expect(() => loadAgentConfig({ ...enabled, AGENT_SPACK_AUDIT_SIF_PATH: path })).toThrow();
+      expect(() =>
+        loadAgentConfig({ ...enabled, AGENT_SPACK_AUDIT_APPTAINER_PATH: path }),
+      ).toThrow();
+    }
+    expect(() =>
+      loadAgentConfig({ ...enabled, AGENT_SPACK_AUDIT_SIF_SHA256: "invalid" }),
+    ).toThrow();
+  });
+
+  test("persistent Spack installation requires source auditing, host execution and a pinned site profile", () => {
+    expect(loadAgentConfig(baseEnv).AGENT_SPACK_INSTALL_ENABLED).toBe(false);
+    const enabled = {
+      ...baseEnv,
+      AGENT_SPACK_ENABLED: "true",
+      AGENT_SPACK_AUDIT_ENABLED: "true",
+      AGENT_SPACK_AUDIT_APPTAINER_SHA256: "a".repeat(64),
+      AGENT_SPACK_AUDIT_SIF_PATH: "/opt/kq/audit.sif",
+      AGENT_SPACK_AUDIT_SIF_SHA256: "b".repeat(64),
+      AGENT_SPACK_INSTALL_ENABLED: "true",
+      AGENT_SPACK_INSTALL_SITE_PROFILE_PATH: "/etc/kq/spack-site.json",
+      AGENT_SPACK_INSTALL_SITE_PROFILE_SHA256: "c".repeat(64),
+    };
+    expect(loadAgentConfig(enabled).AGENT_SPACK_INSTALL_ENABLED).toBe(true);
+    for (const field of [
+      "AGENT_SPACK_INSTALL_SITE_PROFILE_PATH",
+      "AGENT_SPACK_INSTALL_SITE_PROFILE_SHA256",
+    ]) {
+      expect(() => loadAgentConfig({ ...enabled, [field]: undefined })).toThrow();
+    }
+    for (const field of ["AGENT_SPACK_ENABLED", "AGENT_SPACK_AUDIT_ENABLED"]) {
+      expect(() => loadAgentConfig({ ...enabled, [field]: "false" })).toThrow();
+    }
+    expect(() =>
+      loadAgentConfig({
+        ...enabled,
+        AGENT_SPAWNER_BACKEND: "container",
+        AGENT_SLURM_CONTAINER_ID: "fixture",
+      }),
+    ).toThrow();
+    for (const path of ["relative", "/etc/../site.json", "/etc/site.json:rw"]) {
+      expect(() =>
+        loadAgentConfig({ ...enabled, AGENT_SPACK_INSTALL_SITE_PROFILE_PATH: path }),
+      ).toThrow();
+    }
+    expect(() =>
+      loadAgentConfig({ ...enabled, AGENT_SPACK_INSTALL_SITE_PROFILE_SHA256: "invalid" }),
+    ).toThrow();
+  });
+
   // SSH relay master switch
   test("AGENT_SSH_ENABLED defaults to true (relay needs no agent-side setup; Server RBAC-gates)", () => {
     const cfg = loadAgentConfig(baseEnv);

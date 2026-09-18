@@ -3,7 +3,7 @@
 # Recommended profile:
 #   - 1 Server replica until distributed event/session state and leader election land
 #   - 1 Registry replica with persistent blob storage
-#   - PostgreSQL / Redis / MinIO marked external (managed services)
+#   - PostgreSQL / Redis / RustFS marked external (managed services)
 #   - Ingress with TLS via cert-manager
 #   - NetworkPolicy + PodDisruptionBudget enabled
 #
@@ -84,12 +84,12 @@ migration:
     tag: USE-PLACEHOLDER-TAG
     pullPolicy: IfNotPresent
 
-# Production: use managed PG / Redis / MinIO. Disable in-cluster ones.
+# Production: use managed PG / Redis / RustFS. Disable in-cluster ones.
 postgres:
   enabled: false
 redis:
   enabled: false
-minio:
+rustfs:
   enabled: false
 
 external:
