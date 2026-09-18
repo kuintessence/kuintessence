@@ -193,7 +193,7 @@ rc admin policy create local kq-data-market-committer-policy "${work_dir}/policy
 rc admin policy attach local kq-data-market-committer-policy --user "${committer_access_key}" >/dev/null
 rc --json admin user info local "${committer_access_key}" >"${work_dir}/user.json"
 if ! jq -e --arg key "${committer_access_key}" '
-  .access_key == $key and .status == "enabled" and
+  .accessKey == $key and .status == "enabled" and
   (.policies | index("kq-data-market-committer-policy")) != null
 ' "${work_dir}/user.json" >/dev/null; then
   echo "Data Market committer IAM policy was not attached" >&2

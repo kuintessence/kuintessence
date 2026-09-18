@@ -6,7 +6,12 @@ import { join } from "node:path";
 const read = (path: string): Promise<string> => Bun.file(path).text();
 
 async function runBootstrapMock(
-  options: { failCommand?: string; failCors?: boolean; invalidRetention?: boolean } = {},
+  options: {
+    failCommand?: string;
+    failCors?: boolean;
+    invalidRetention?: boolean;
+    invalidUser?: boolean;
+  } = {},
 ) {
   const dir = await mkdtemp(join(tmpdir(), "kq-rustfs-bootstrap-"));
   const rc = join(dir, "rc");
@@ -24,7 +29,7 @@ if [ "$command" = "retention info" ]; then
   echo '{"type":"locks","status":"success","data":{"items":[{"bucket":"immutable","object_lock_enabled":true,"default_retention":{"mode":"${options.invalidRetention ? "governance" : "compliance"}","duration":{"unit":"days","value":365}}}]}}'
 fi
 if [ "$command" = "admin user" ]; then
-  echo '{"access_key":"kq-data-market-committer","status":"enabled","policies":["kq-data-market-committer-policy"]}'
+  echo '{"accessKey":"kq-data-market-committer","status":"enabled","policies":${options.invalidUser ? "[]" : '["kq-data-market-committer-policy"]'}}'
 fi
 `,
     { mode: 0o755 },
@@ -128,7 +133,9 @@ describe("RustFS Object Lock bootstrap wiring", () => {
     expect(dockerfile).toContain("NETDRIVE_ENABLED=true");
     expect(dockerfile).toContain("DATA_MARKET_IMMUTABLE_RETENTION_DAYS=365");
     expect(compose).toContain("DATA_MARKET_COMMITTER_SECRET_KEY");
-    expect(compose).toContain("KQ_DATA_MARKET_COMMITTER_SECRET_KEY is required");
+    expect(entrypoint).toContain("DATA_MARKET_COMMITTER_SECRET_KEY is required");
+    expect(compose).toContain("aio-test-committer-secret-not-for-production");
+    expect(compose).toContain('"127.0.0.1:9000:9000"');
   });
 
   test("Helm carries the ordinary IAM identity and an explicit credential rotation revision", async () => {
@@ -161,6 +168,13 @@ describe("RustFS Object Lock bootstrap wiring", () => {
     expect(result.exitCode).not.toBe(0);
     expect(result.stderr).toContain("must support COMPLIANCE Object Lock");
     expect(result.log).not.toContain("admin user");
+  });
+
+  test("fails closed when the ordinary user has no committer policy", async () => {
+    const result = await runBootstrapMock({ invalidUser: true });
+
+    expect(result.exitCode).not.toBe(0);
+    expect(result.stderr).toContain("Data Market committer IAM policy was not attached");
   });
 
   test.each([
