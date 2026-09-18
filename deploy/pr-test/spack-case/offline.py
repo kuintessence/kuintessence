@@ -65,6 +65,7 @@ def native_configuration(audit: object, work: Path, output: Path) -> dict:
         "flags": {"keep_werror": "none"}, "url_fetch_method": "urllib",
     })
     data["modules"] = {"default": {"enable": []}}
+    data["packages"] = {"all": {"permissions": {"read": "world", "write": "user"}}}
     return data
 
 
@@ -110,7 +111,14 @@ def run(input_dir: Path, digest: str, output: Path) -> dict:
     # audit() calls production prepare_input(), then native lock loading,
     # DAG/package hashing and mirror-only checksum checks. It does NOT call
     # verify_runtime_boundary(); the PR orchestrator owns container isolation.
-    report = audit.audit(input_dir, audit_work, digest)
+    # Spack caches its stage root globally; audit in another process so install
+    # cannot reuse previously fetched stages despite switching configuration.
+    subprocess.run(
+        ["/opt/spack/bin/spack", "python", str(Path(__file__).resolve()),
+         "--audit", str(input_dir), digest, str(audit_work)],
+        check=True, timeout=180,
+    )
+    report = json.loads((audit_work / "report.json").read_text())
     require(report.get("passed") is True, "Native source audit failed: " + json.dumps(report["issues"]))
 
     # A separate, freshly verified input tree avoids reusing audit-stage bytes
@@ -217,6 +225,12 @@ def run(input_dir: Path, digest: str, output: Path) -> dict:
 
 
 def main() -> None:
+    if len(sys.argv) == 5 and sys.argv[1] == "--audit":
+        sys.dont_write_bytecode = True
+        work = Path(sys.argv[4])
+        report = source_audit().audit(Path(sys.argv[2]), work, sys.argv[3])
+        (work / "report.json").write_text(json.dumps(report) + "\n")
+        return
     require(len(sys.argv) == 4, "Usage: spack python offline.py INPUT_DIR DIGEST OUTPUT_DIR")
     require(sys.platform == "linux", "Only the disposable Linux PR container is supported")
     os.umask(0o022)
