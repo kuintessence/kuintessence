@@ -704,6 +704,28 @@ async function runCommand(cmd: string[], dryRun: boolean): Promise<number> {
   return await proc.exited;
 }
 
+async function checkStorageMigration(profile: Profile, options: Options): Promise<void> {
+  if (options.dryRun || (options.action !== "up" && options.action !== "restart")) return;
+  const proc = Bun.spawn(
+    withEnvPrefix(profile, options, [...composeBase(profile, options), "config", "--format", "json"]),
+    { stdout: "pipe", stderr: "inherit", env: Bun.env },
+  );
+  const [output, code] = await Promise.all([new Response(proc.stdout).text(), proc.exited]);
+  if (code !== 0) throw new Error("Cannot resolve Compose project for storage migration checks");
+  const config: unknown = JSON.parse(output);
+  if (
+    typeof config !== "object" ||
+    config === null ||
+    !("name" in config) ||
+    typeof config.name !== "string" ||
+    !config.name
+  ) {
+    throw new Error("Compose configuration has no project name; refusing unchecked startup");
+  }
+  const result = await runCommand(["bash", "deploy/rustfs/check-migration.sh", config.name], false);
+  if (result !== 0) throw new Error("RustFS storage migration preflight failed");
+}
+
 function printProfileSummary(profile: Profile, options: Options): void {
   console.log(`\nProfile: ${profile.key} - ${profile.label}`);
   console.log(profile.description);
@@ -732,6 +754,7 @@ async function main(): Promise<void> {
   const profile = PROFILES[opts.profile ?? "watch"];
   validateProfileOptions(profile, opts);
   printProfileSummary(profile, opts);
+  await checkStorageMigration(profile, opts);
   const commands = commandFor(profile, {
     ...opts,
     profile: profile.key,

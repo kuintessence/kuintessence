@@ -2,6 +2,11 @@
 {{- fail "minio values are no longer supported; migrate data separately and use rustfs values" }}
 {{- end }}
 {{- if .Values.rustfs.enabled }}
+{{- $legacyName := printf "%s-minio" .Release.Name }}
+{{- $legacyPVC := printf "data-%s-minio-0" .Release.Name }}
+{{- if and (not .Values.rustfs.migrationVerified) (or (lookup "apps/v1" "StatefulSet" .Release.Namespace $legacyName) (lookup "v1" "PersistentVolumeClaim" .Release.Namespace $legacyPVC)) }}
+{{- fail "legacy MinIO storage detected; migrate and verify objects, version references, and retention before setting rustfs.migrationVerified=true" }}
+{{- end }}
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:

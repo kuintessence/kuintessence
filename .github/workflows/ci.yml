@@ -72,7 +72,7 @@ jobs:
         run: bun run test:helm
 
       - name: Check RustFS bootstrap and deployment wiring
-        run: bun test scripts/rustfs-object-lock-bootstrap.test.ts scripts/compose.test.ts
+        run: bun test scripts/rustfs-*.test.ts scripts/compose.test.ts
 
       - name: Type check (all packages)
         run: bun run typecheck

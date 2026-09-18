@@ -39,6 +39,7 @@ fi
 
 docker compose version >/dev/null
 "${compose_cmd[@]}" config >/dev/null
+bash deploy/rustfs/check-migration.sh "${project_name}"
 
 if [[ "${KQ_SCHEDULER_PREFLIGHT_SKIP_PORTS:-false}" == "true" ]]; then
   echo "preflight passed: docker is reachable, compose project ${project_name} config is valid, port check skipped"

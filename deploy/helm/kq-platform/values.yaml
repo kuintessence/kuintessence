@@ -113,6 +113,8 @@ redis:
 
 rustfs:
   enabled: true
+  # Set only after independently verifying a legacy MinIO migration.
+  migrationVerified: false
   image: rustfs/rustfs:1.0.0
   rcImage: rustfs/rc:v0.1.36
   bootstrapWaitImage: bitnami/kubectl:1.32.3

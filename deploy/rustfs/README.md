@@ -24,12 +24,19 @@ staging lifecycle 使用固定 ID 覆盖导入，重复执行不累积规则。
   `rustfs`/`rustfs-init`/`rustfs-cors`。端口变量前缀改为 `KQ_SCHEDULER_RUSTFS_`。
 - Compose 使用新的 `rustfs-data`、`rustfs_data` 或 `scheduler-rustfs-data` 命名卷。
   旧 MinIO 卷不挂载、不转换、不删除。新后端不会自动包含旧对象。
+  PostgreSQL 卷保持原名，因此不能在旧项目中直接执行 `up` 切换后端；
+  先在独立 Compose 项目中准备目标存储，完成下述数据和版本引用核对，再切换旧项目。
+  配置解析和 bucket 初始化不检测数据库内的遗留对象引用，也不证明迁移已完成。
 - AIO 使用 `/data/rustfs`，检测到 `/data/minio` 时拒绝启动。
   不要删除旧目录来绕过检查；先备份并迁移到独立的新卷，确认数据库对象引用一致。
 - Helm 从 `minio.*` 改为 `rustfs.*`，`mcImage` 改为 `rcImage`；
   已有 Secret 的 root key 改为 `RUSTFS_SECRET_KEY`。
+  使用 `existingSecret` 时先新增此键，回退窗口内保留 `MINIO_ROOT_PASSWORD` 供旧 chart 使用。
   旧 `minio` values 会明确报错。新的 StatefulSet/PVC 使用 `rustfs` 名称，
   不把旧 PVC 交给 RustFS 打开。
+  在线安装/升级还检查同 release 的旧 StatefulSet/PVC，发现后默认拒绝；
+  完成迁移核对后才设置 `rustfs.migrationVerified=true`。
+  离线 `helm template` 无法查询集群，不能替代迁移检查。
 - 外部对象存储继续使用 `NETDRIVE_*` 配置；不迁移的站点设置 `rustfs.enabled=false`，
   显式指向已验证的外部 S3 endpoint，不自动切换既有数据。
 
@@ -39,6 +46,12 @@ staging lifecycle 使用固定 ID 覆盖导入，重复执行不累积规则。
 切换前必须验证或显式重建受影响的数据库、manifest 和 delivery binding 引用，
 并验证保留期不被削弱；平台目前不提供自动迁移工具。验证完成前保留旧服务与回退路径。
 不要直接执行 `down -v`、删除 PVC、挂载旧数据目录或盲目 `helm upgrade --reuse-values`。
+
+`bun run compose` 的 `up`/`restart` 及 scheduler preflight 会检查同项目的旧 MinIO
+容器和标记卷，存在时拒绝启动；核对完成后设置 `KQ_RUSTFS_MIGRATION_VERIFIED=true`。
+直接使用 `docker compose` 前，先运行 `bash deploy/rustfs/check-migration.sh <project-name>`。
+检查不覆盖无 Compose 标签的外部卷、自定义旧服务名或数据库中的对象引用；
+人工确认标志不等于自动迁移，也不允许删除旧卷绕过保护。
 
 ## 验证
 
