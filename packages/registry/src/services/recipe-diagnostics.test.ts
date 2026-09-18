@@ -55,6 +55,47 @@ class UnrelatedClassName(Package):
   });
 
   test.each([
+    "global",
+    "pass",
+    "async",
+    "await",
+    "class",
+    "yield",
+  ])("decodes the native v2 Python keyword escape for %s", async (name) => {
+    const result = await inspect({
+      "repo.yaml": repoYaml(),
+      [`packages/_${name}/package.py`]: "class Escaped(Package): pass",
+      "packages/consumer/package.py": `depends_on("${name}")\ndepends_on("builtin.${name}")`,
+    });
+    expect(result.roots[0]?.packageCount).toBe(2);
+    expect(result.diagnostics.filter((item) => item.severity === "error")).toEqual([]);
+    expect(result.diagnostics.filter((item) => item.code === "dependency-not-in-bundle")).toEqual(
+      [],
+    );
+  });
+
+  test.each([
+    "global",
+    "pass",
+    "_unknown",
+    "__pass",
+    "foo__bar",
+    "Uppercase",
+    "_pass_more",
+    "_",
+    "3foo",
+  ])("rejects noncanonical native v2 package directory %s", async (directory) => {
+    const path = `packages/${directory}/package.py`;
+    const result = await inspect({
+      "repo.yaml": repoYaml(),
+      [path]: "class Invalid(Package): pass",
+    });
+    expect(result.diagnostics).toContainEqual(
+      expect.objectContaining({ severity: "error", code: "invalid-package-directory", path }),
+    );
+  });
+
+  test.each([
     "v2.0",
     "v2.1",
     "v2.2",

@@ -16,6 +16,7 @@ bun test \
   packages/shared/src/spack-material-import.test.ts \
   packages/shared/src/spack-material-catalog.test.ts \
   packages/registry/src/services/recipe-git-store.test.ts \
+  packages/registry/src/services/recipe-diagnostics.test.ts \
   packages/registry/src/services/material-bootstrap.test.ts \
   packages/registry/src/routes/spack-materials.test.ts \
   packages/registry/src/routes/spack-material-catalog.test.ts \

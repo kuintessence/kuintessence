@@ -15,6 +15,41 @@ const MAX_PATH_LENGTH = 4096;
 const STATIC_REPO_APIS = new Set(["v2.0", "v2.1", "v2.2"]);
 // Bound path indexing, metadata and derived names independently of Git's limits.
 const MAX_INSPECTION_BYTES = 128 * 1024 * 1024;
+// Spack 1.0.0 util.naming: v2 directories escape lowercase Python keywords.
+const RESERVED_PACKAGE_NAMES = new Set([
+  "and",
+  "as",
+  "assert",
+  "async",
+  "await",
+  "break",
+  "class",
+  "continue",
+  "def",
+  "del",
+  "elif",
+  "else",
+  "except",
+  "finally",
+  "for",
+  "from",
+  "global",
+  "if",
+  "import",
+  "in",
+  "is",
+  "lambda",
+  "nonlocal",
+  "not",
+  "or",
+  "pass",
+  "raise",
+  "return",
+  "try",
+  "while",
+  "with",
+  "yield",
+]);
 type AddDiagnostic = (diagnostic: RecipeDiagnostic) => void;
 
 interface IndexedPackage {
@@ -353,8 +388,14 @@ function indexPackages(
       });
       continue;
     }
-    const name = directory.replace(/^_(?=\d)/, "").replaceAll("_", "-");
-    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(directory) || !/^[A-Za-z0-9][A-Za-z0-9-]*$/.test(name)) {
+    const escaped = directory.startsWith("_");
+    const validEscape = /^_\d/.test(directory) || RESERVED_PACKAGE_NAMES.has(directory.slice(1));
+    const name = directory.replace(/^_/, "").replaceAll("_", "-");
+    if (
+      !/^[a-z_][a-z0-9_]*$/.test(directory) ||
+      directory.includes("__") ||
+      (escaped ? !validEscape : RESERVED_PACKAGE_NAMES.has(directory))
+    ) {
       add({
         severity: "error",
         code: "invalid-package-directory",

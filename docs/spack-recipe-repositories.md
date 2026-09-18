@@ -195,6 +195,11 @@ Agent 下载使用独立的 Server operation ticket 入口，不能用 Agent 直
 缺少 `package.py` 和超出静态文本大小限制。
 导入成功但有这些诊断的快照可查看，不可激活。
 
+v2 package 目录沿用 Spack 的小写 Python module 命名规则：`py_numpy` 对应
+`py-numpy`，`_7zip` 对应 `7zip`，Python 关键字转义 `_global`、`_pass`
+分别对应 `global`、`pass`，依赖匹配使用还原后的包名。未转义的关键字、
+任意前导下划线、双下划线和大写 package 目录不符合该规则。
+
 `dependency-not-in-bundle` 仅代表 literal 依赖线索在本包中未找到。
 它可能来自其他仓库、条件分支或 virtual provider，不能直接认定软件包有 bug。
 报告始终标为 `static-only`，不证明 Python 语法、所有 variants、MPI/compiler 组合或安装可行。
