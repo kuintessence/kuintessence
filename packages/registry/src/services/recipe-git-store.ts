@@ -121,10 +121,10 @@ export class RecipeGitStore {
         if (!/^[a-f0-9]{40} HEAD\n$/.test(heads.stdout.toString())) {
           throw new RecipeStoreError(422, "Bundle must contain a SHA-1 HEAD reference");
         }
+        // Use explicit refs below; FETCH_HEAD is never read (Git 2.25 compatibility).
         await this.git(source, [
           "fetch",
           "--no-tags",
-          "--no-write-fetch-head",
           "--no-recurse-submodules",
           bundlePath,
           "HEAD:refs/heads/import",
@@ -164,7 +164,6 @@ export class RecipeGitStore {
           await this.git(destination, [
             "fetch",
             "--no-tags",
-            "--no-write-fetch-head",
             "--no-recurse-submodules",
             source,
             `${commit}:${snapshotRef}`,

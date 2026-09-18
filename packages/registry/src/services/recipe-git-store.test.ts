@@ -90,6 +90,24 @@ describe("RecipeGitStore", () => {
     expect(repeated.snapshots).toEqual(first.snapshots);
   });
 
+  test("resolves snapshots from explicit refs, never a preexisting FETCH_HEAD", async () => {
+    const f = await fixture();
+    const first = await f.bundle();
+    const repository = await f.store.importBundle("public/science", first.bytes, "admin");
+    await f.store.activate(repository.id, first.commit, null, "admin");
+    const directory = join(f.root, "store/repositories", `${repository.id}.git`);
+    await writeFile(join(directory, "FETCH_HEAD"), "invalid prior fetch metadata\n");
+    await writeFile(join(f.source, "README.md"), "second snapshot");
+    const second = await f.bundle();
+    const updated = await f.store.importBundle("public/science", second.bytes, "admin");
+    expect(updated.activeCommit).toBe(first.commit);
+    expect(updated.snapshots.map((snapshot) => snapshot.commit)).toContain(second.commit);
+    const archive = await f.store.archive(repository.id, first.commit);
+    const text = new TextDecoder().decode(await new Response(archive.stream).arrayBuffer());
+    expect(text).toContain("spack_repo/science/repo.yaml");
+    expect(text).not.toContain("second snapshot");
+  });
+
   test("activation uses compare-and-swap and preserves history on rollback or deactivation", async () => {
     const f = await fixture();
     const first = await f.bundle();

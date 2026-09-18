@@ -70,6 +70,9 @@ bash deploy/pr-test/run.sh pbs
 5. 未配置材料分发时，Spack 安装请求必须被 Server 拒绝，不能落入直连上游安装。
 6. 进程内 Spack lock、Git recipe、材料导入/目录/下载、Agent 缓存/预检及运行脚本回归。
 
+Recipe bundle 导入和快照导出使用 base 镜像自带的 Git 验证，覆盖实际运行环境的
+命令兼容性；快照按明确的 commit/ref 读取，不依赖 `FETCH_HEAD`。
+
 第 6 项使用 fixture/替身；不是真实 Registry → Server → Agent 的网络材料交付验收。
 这套测试未配置 mTLS 材料票据、Apptainer/SIF/site profile 或真实材料包，
 `SPACK_MATERIAL_DELIVERY_ENABLED` 和 `AGENT_SPACK_INSTALL_ENABLED` 保持关闭。

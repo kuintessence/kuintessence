@@ -50,7 +50,14 @@ describe("Helm MinIO bootstrap render", () => {
 
   test("renders bootstrap resources only for self-hosted MinIO NetDrive", () => {
     const disabled = render([]);
-    const selfHosted = render(["--set", "netdrive.enabled=true"]);
+    const selfHosted = render([
+      "--set",
+      "netdrive.enabled=true",
+      "--set",
+      "netdrive.accessKey=test-access-key",
+      "--set",
+      "netdrive.secretKey=test-secret-key",
+    ]);
     const external = render([
       "--set",
       "minio.enabled=false",
