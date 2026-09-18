@@ -1,0 +1,82 @@
+# Test-only overlay, selected solely by deploy/pr-test/run.sh --spack-case.
+services:
+  case-operator:
+    image: ${COMPOSE_PROJECT_NAME:?required}-case-operator
+    build:
+      context: .
+      dockerfile: deploy/pr-test/spack-case/materials.Dockerfile
+      additional_contexts:
+        scheduler-base: service:scheduler-base
+        test-workspace: service:test-workspace
+    profiles: [images]
+    environment:
+      KQ_PR_TEST: "1"
+    volumes:
+      - case-server:/case-server
+      - case-ca:/case-ca
+      - case-control:/case-control
+    networks: [backend]
+
+  case-native:
+    image: ${COMPOSE_PROJECT_NAME:?required}-case-native
+    build:
+      context: .
+      dockerfile: deploy/pr-test/spack-case/native.Dockerfile
+      additional_contexts:
+        scheduler-base: service:scheduler-base
+        test-workspace: service:test-workspace
+    profiles: [images]
+    environment:
+      KQ_PR_TEST: "1"
+    network_mode: none
+    read_only: true
+    init: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: 2g
+    memswap_limit: 2g
+    pids_limit: 128
+    cpus: 2
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,size=2147483648,mode=1777
+    volumes:
+      - scratch:/scratch
+      - case-input:/case-input:ro
+
+  server:
+    command: ["bun", "deploy/pr-test/spack-case/server.ts"]
+    environment:
+      KQ_PR_TEST: "1"
+      MTLS_MODE: direct
+      SERVER_CA_DIR: /case-server/ca
+      SERVER_GRPC_TLS_CERT_FILE: /case-server/server.crt
+      SERVER_GRPC_TLS_KEY_FILE: /case-server/server.key
+      SPACK_MATERIAL_DELIVERY_ENABLED: "true"
+      SPACK_REGISTRY_URL: http://registry:3100
+      SPACK_REGISTRY_ALLOW_INSECURE_HTTP: "true"
+      SPACK_REGISTRY_JWT_SECRET: ${KQ_PR_JWT_SECRET:?required}
+      SPACK_MATERIAL_TICKET_SECRET: ${KQ_PR_TICKET_SECRET:?required}
+    volumes:
+      - case-server:/case-server:ro
+      - case-control:/case-control:ro
+
+  scheduler:
+    build:
+      context: .
+      dockerfile: deploy/pr-test/spack-case/scheduler.Dockerfile
+    environment:
+      SERVER_GRPC_URL: https://server:3001
+      SERVER_HTTP_URL: https://server:3443
+      AGENT_MTLS_REQUIRED: "true"
+      NODE_EXTRA_CA_CERTS: /case-ca/ca.crt
+      CURL_CA_BUNDLE: /case-ca/ca.crt
+    volumes:
+      - case-ca:/case-ca:ro
+      - case-control:/case-control:ro
+      - case-input:/case-input
+
+volumes:
+  case-server:
+  case-ca:
+  case-control:
+  case-input:

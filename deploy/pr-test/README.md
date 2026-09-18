@@ -89,3 +89,41 @@ Recipe bundle 导入和快照导出使用 base 镜像自带的 Git 验证，覆�
 现有 `Preview` 工作流保持独立；`preview-paused` 只暂停公网预览，不暂停本测试工作流。
 实际构建与运行结果以对应提交的 GitHub Actions 或上述命令结果为准。
 配置解析或 fixture 检查通过不代表 PR runtime 已通过。
+
+## GNU Hello 单步案例
+
+独立的 [Spack case overlay](../compose/docker-compose.pr-spack-case.yml) 扩展上述基础环境，
+由同一 Actions 工作流中的 `Spack GNU Hello single-step case` job 执行：
+
+```bash
+bash deploy/pr-test/run.sh slurm --spack-case
+```
+
+该模式只支持 Slurm，不替代默认 Slurm/PBS 回归。它使用 Spack 1.0.0、
+固定 builtin recipe commit 和 GNU Hello 2.12.1 源码；材料准备在镜像构建阶段联网，
+生成真实 Linux lock、源码 mirror 和自包含 Git bundle，不使用手写 DAG/hash。
+材料不提交 Git，不进入 scheduler 镜像；只保留可复现准备脚本及自有 recipe。
+编译器和基础工具使用镜像中的 external，不代表完全从源码自举工具链。
+
+检查步骤：
+
+1. 每次生成独立 CA 和 Server TLS 证书，真实注册 Agent；control stream 使用 direct mTLS。
+2. 运维容器通过 Registry HTTP API 导入 recipe bundle、lock 和源码，发布固定 release；
+   Server 重启加载本次 binding。Agent 无 Registry 网络、URL、管理凭据或 CA 私钥。
+3. 通过 Server 的软件操作 API 下发安装请求；空缓存 Agent 只从 Server HTTPS 下载，
+   逐个校验 manifest/blob。预检完成后操作必须停在关闭的 managed-install gate，返回 `rejected`。
+4. 测试工具只将已校验的材料复制给非 root `kq` 用户。独立 native 容器使用
+   `network_mode: none`、只读 rootfs、禁止提权和资源限制，只挂载只读材料卷及输出
+   scratch 卷，不挂载 Agent 状态或证书。确认仅有 loopback、无默认路由、
+   不能访问上游或 Registry，再运行 native Spack 的源码校验与离线编译。
+5. 通过 Server 提交一个执行编译产物 `hello` 的 Slurm 作业，要求真实作业完成，
+   并从 Server 日志接口读到 `Hello, world!`。
+6. 重启 Registry 和 scheduler，重新导出 Git recipe snapshot、下载全部材料 blob 并逐一
+   校验 size/SHA-256，再提交同一单步作业验证持久化安装产物。
+
+**这是材料交付 + 手动 native 离线编译 + 单步作业验收，不是自动受管安装验收。**
+Agent 的 audit/install 开关仍关闭，不跳过或放松产品安装器的任何安全门槛。
+native 测试使用 Docker 隔离网络及已审核 recipe，不调用 Apptainer/SIF 安装 worker，
+不写 managed installation 账本，不把返回的 `rejected` 改成 `succeeded`。
+通过此案例不能宣称 Apptainer/cgroup/site profile、计算节点共享存储/ABI、15 个工作流
+或生产安装功能已经验收。测试输出只报告实际完成的阶段；缺件或构建失败即非零退出。

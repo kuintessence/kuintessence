@@ -1,0 +1,9 @@
+**
+!deploy
+!deploy/pr-test
+!deploy/pr-test/spack-case
+!deploy/pr-test/spack-case/**
+**/*.key
+**/*.pem
+**/.env*
+**/*.log

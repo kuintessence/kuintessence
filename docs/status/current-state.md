@@ -83,6 +83,9 @@ Kuintessence 当前为 pre-release。以下列出组件功能、运行要求和�
   覆盖目标为真实作业完成/日志/取消、拒绝未配置材料的安装及进程内材料回归；
   无公网端口，Agent 与 Registry 分网。实际构建与调度器结果以对应提交的
   GitHub Actions 为准；本套测试不代表离线安装验收。
+- PR 测试另有 GNU Hello 单步案例：固定 recipe/source 的真实材料发布与 mTLS Agent 下载、
+  手动 native 离线编译、Slurm 单步运行及重启后的持久化检查；结果以对应 Actions 为准。
+  此案例不启用或替代 Apptainer/SIF managed installation，不等于自动安装或 15 个工作流验收。
 
 ## 文档与验证
 

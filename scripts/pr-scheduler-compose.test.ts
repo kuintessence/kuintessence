@@ -21,6 +21,10 @@ const compose = parse(
       volumes?: string[];
       privileged?: string;
       container_name?: string;
+      network_mode?: string;
+      read_only?: boolean;
+      cap_drop?: string[];
+      security_opt?: string[];
     }
   >;
   networks: Record<string, { internal: boolean }>;
@@ -184,6 +188,58 @@ describe("PR runner lifecycle (fake Docker, no containers)", () => {
     const projects = [...result.commands.matchAll(/-p (kq-pr-test-pbs-[a-f0-9]{16})/g)];
     expect(projects.length).toBeGreaterThan(3);
     expect(new Set(projects.map((match) => match[1])).size).toBe(1);
+  });
+
+  test("Spack case provisions TLS and publishes before Agent startup, then checks persistence", async () => {
+    const result = await runWithFakeDocker(["slurm", "--spack-case"]);
+    expect(result.code).toBe(0);
+    expect(result.commands).toContain("docker-compose.pr-spack-case.yml");
+    expect(result.commands).toContain("build case-operator");
+    expect(result.commands).toContain("run --rm --no-deps case-operator bun");
+    expect(result.commands.indexOf("spack-case/setup.ts")).toBeLessThan(
+      result.commands.indexOf("spack-case/publish.ts"),
+    );
+    expect(result.commands.indexOf("spack-case/publish.ts")).toBeLessThan(
+      result.commands.indexOf("up -d --no-build --wait --wait-timeout 300 scheduler registry"),
+    );
+    expect(result.commands).toContain("spack-case/consume.ts");
+    expect(result.commands).toContain("exec -T --user kq scheduler timeout");
+    expect(result.commands).toContain("restart registry scheduler");
+    expect(result.commands).toContain("spack-case/publish.ts --verify");
+    expect(result.commands).toContain("spack-case/job.ts");
+    expect(result.commands).not.toMatch(/\b(prune|logs)\b/);
+    expect(result.commands).toContain("down --volumes --remove-orphans --rmi local");
+  });
+
+  test("does not silently claim PBS Spack case coverage", async () => {
+    const result = await runWithFakeDocker(["pbs", "--spack-case"]);
+    expect(result.code).toBe(2);
+    expect(result.commands).toBe("");
+  });
+
+  test("Spack overlay isolates private CA and inputs from Agent and keeps managed install off", async () => {
+    const overlay = parse(
+      await readFile(join(root, "deploy/compose/docker-compose.pr-spack-case.yml"), "utf8"),
+    ) as typeof compose;
+    expect(overlay.services.server?.environment?.MTLS_MODE).toBe("direct");
+    expect(overlay.services.server?.environment?.SPACK_MATERIAL_DELIVERY_ENABLED).toBe("true");
+    expect(overlay.services.scheduler?.environment?.AGENT_MTLS_REQUIRED).toBe("true");
+    expect(overlay.services.scheduler?.environment?.SERVER_HTTP_URL).toBe("https://server:3443");
+    expect(overlay.services.scheduler?.environment?.AGENT_SPACK_INSTALL_ENABLED).toBeUndefined();
+    expect(overlay.services.scheduler?.environment?.SPACK_REGISTRY_JWT_SECRET).toBeUndefined();
+    expect(overlay.services.scheduler?.volumes).not.toContain("case-server:/case-server:ro");
+    expect(overlay.services["case-operator"]?.networks).toEqual(["backend"]);
+    expect(overlay.services["case-native"]?.network_mode).toBe("none");
+    expect(overlay.services["case-native"]?.read_only).toBe(true);
+    expect(overlay.services["case-native"]?.cap_drop).toEqual(["ALL"]);
+    expect(overlay.services["case-native"]?.security_opt).toEqual(["no-new-privileges:true"]);
+    expect(overlay.services["case-native"]?.volumes).toEqual([
+      "scratch:/scratch",
+      "case-input:/case-input:ro",
+    ]);
+    for (const service of Object.values(overlay.services)) {
+      expect(service.ports).toBeUndefined();
+    }
   });
 
   for (const [failure, code] of [

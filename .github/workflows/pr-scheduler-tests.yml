@@ -14,6 +14,23 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  spack-case:
+    name: Spack GNU Hello single-step case
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.pull_request.head.repo.full_name == github.repository &&
+       !github.event.pull_request.draft)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      - name: Deliver materials, compile offline and run one Slurm step
+        run: timeout --signal=TERM --kill-after=60s 55m bash deploy/pr-test/run.sh slurm --spack-case
+
   scheduler:
     if: >-
       github.event_name == 'workflow_dispatch' ||
