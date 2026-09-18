@@ -23,9 +23,10 @@ if [[ "${GITHUB_ACTIONS:-}" == "true" ]]; then
   printf '::add-mask::%s\n' "$KQ_PR_DB_PASSWORD" "$KQ_PR_JWT_SECRET"
 fi
 compose=(docker compose --project-directory "$repo_root" --env-file /dev/null
-  -p "$COMPOSE_PROJECT_NAME" -f "$repo_root/deploy/compose/docker-compose.pr-test.yml")
+  -p "$COMPOSE_PROJECT_NAME" -f "$repo_root/deploy/compose/docker-compose.pr-test.yml"
+  --profile images)
 
-"${compose[@]}" --profile images config --quiet
+"${compose[@]}" config --quiet
 if [[ "${2:-}" == "--config" ]]; then
   printf 'PR Compose valid: %s (no containers started)\n' "$KQ_PR_SCHEDULER"
   exit 0
@@ -37,7 +38,7 @@ cleanup() {
   trap - EXIT INT TERM
   # Do not print container logs: Agent registration can include ephemeral credentials.
   "${compose[@]}" ps --all || true
-  if ! "${compose[@]}" --profile images down --volumes --remove-orphans --rmi local --timeout 15; then
+  if ! "${compose[@]}" down --volumes --remove-orphans --rmi local --timeout 15; then
     printf 'PR test cleanup failed: %s\n' "$COMPOSE_PROJECT_NAME" >&2
     result=1
   fi
@@ -52,7 +53,7 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 
 printf 'Building isolated PR test project: %s\n' "$COMPOSE_PROJECT_NAME"
-"${compose[@]}" --profile images build scheduler
-"${compose[@]}" up -d --wait --wait-timeout 300 scheduler registry
+"${compose[@]}" build scheduler
+"${compose[@]}" up -d --no-build --wait --wait-timeout 300 scheduler registry
 "${compose[@]}" exec -T --user kq scheduler timeout --signal=TERM --kill-after=10s 600s bash /workspace/deploy/pr-test/check.sh
 printf 'PR scheduler and material regression passed: %s\n' "$KQ_PR_SCHEDULER"

@@ -172,11 +172,15 @@ describe("PR runner lifecycle (fake Docker, no containers)", () => {
     const result = await runWithFakeDocker(["pbs"]);
     expect(result.code).toBe(0);
     expect(result.commands).toContain("--profile images build scheduler");
-    expect(result.commands).toContain("up -d --wait --wait-timeout 300 scheduler registry");
+    expect(result.commands).toContain(
+      "up -d --no-build --wait --wait-timeout 300 scheduler registry",
+    );
     expect(result.commands).toContain("exec -T --user kq scheduler timeout");
     expect(result.commands).toContain("down --volumes --remove-orphans --rmi local");
     expect(result.commands).not.toContain("production-must-not-touch");
     expect(result.commands).not.toMatch(/\b(prune|logs)\b/);
+    const projectCommands = result.commands.split("\n").filter((line) => line.includes(" -p "));
+    expect(projectCommands.every((line) => line.includes(" --profile images "))).toBe(true);
     const projects = [...result.commands.matchAll(/-p (kq-pr-test-pbs-[a-f0-9]{16})/g)];
     expect(projects.length).toBeGreaterThan(3);
     expect(new Set(projects.map((match) => match[1])).size).toBe(1);

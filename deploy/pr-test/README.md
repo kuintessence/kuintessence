@@ -53,6 +53,8 @@ bash deploy/pr-test/run.sh pbs
 应确认残留的 `kq-pr-test-*` project；不要清理其他项目。
 
 不直接调用 `docker compose up`，也不要在现有部署上叠加此配置。
+入口在所有 Compose 调用中保留 `images` profile，确保构建上下文引用可解析；
+启动时使用 `--no-build` 并显式选择 `scheduler registry`，不启动构建辅助服务。
 入口不会将包含临时注册凭据的容器日志输出或上传为 artifact。
 构建/启动/测试失败保留非零退出码；清理失败同样报错。
 
