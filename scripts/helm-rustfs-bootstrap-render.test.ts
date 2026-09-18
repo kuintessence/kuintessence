@@ -53,15 +53,16 @@ describe("Helm RustFS bootstrap render", () => {
   });
 
   test("uses one ConfigMap script for the Job and its upgrade-safe wait dependency", async () => {
-    const [chartScript, sharedScript, bootstrap, server, config, helpers, values] = await Promise.all([
-      read(`${chartDir}/files/bootstrap-object-lock.sh`),
-      read("deploy/rustfs/bootstrap-object-lock.sh"),
-      read(`${chartDir}/templates/rustfs-bootstrap.yaml`),
-      read(`${chartDir}/templates/server-deployment.yaml`),
-      read(`${chartDir}/templates/configmap.yaml`),
-      read(`${chartDir}/templates/_helpers.tpl`),
-      read(`${chartDir}/values.yaml`),
-    ]);
+    const [chartScript, sharedScript, bootstrap, server, config, helpers, values] =
+      await Promise.all([
+        read(`${chartDir}/files/bootstrap-object-lock.sh`),
+        read("deploy/rustfs/bootstrap-object-lock.sh"),
+        read(`${chartDir}/templates/rustfs-bootstrap.yaml`),
+        read(`${chartDir}/templates/server-deployment.yaml`),
+        read(`${chartDir}/templates/configmap.yaml`),
+        read(`${chartDir}/templates/_helpers.tpl`),
+        read(`${chartDir}/values.yaml`),
+      ]);
 
     expect(chartScript).toBe(sharedScript);
     expect(bootstrap).toContain("kind: Job");

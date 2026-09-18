@@ -163,12 +163,15 @@ describe("RustFS Object Lock bootstrap wiring", () => {
     expect(result.log).not.toContain("admin user");
   });
 
-  test.each(["version enable", "retention set", "ilm rule", "admin policy", "admin user"])(
-    "fails when %s cannot enforce its control",
-    async (failCommand) => {
-      const result = await runBootstrapMock({ failCommand });
+  test.each([
+    "version enable",
+    "retention set",
+    "ilm rule",
+    "admin policy",
+    "admin user",
+  ])("fails when %s cannot enforce its control", async (failCommand) => {
+    const result = await runBootstrapMock({ failCommand });
 
-      expect(result.exitCode).not.toBe(0);
-    },
-  );
+    expect(result.exitCode).not.toBe(0);
+  });
 });
