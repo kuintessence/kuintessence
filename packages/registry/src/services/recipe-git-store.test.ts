@@ -167,9 +167,9 @@ describe("RecipeGitStore", () => {
     await f.store.activate(repository.id, bundle.commit, null, "admin");
     const auditBefore = await readFile(join(auditDirectory, "head"), "utf8");
     await writeFile(lock, "");
-    await expect(
-      f.store.deactivate(repository.id, bundle.commit, "admin"),
-    ).rejects.toMatchObject({ status: 409 });
+    await expect(f.store.deactivate(repository.id, bundle.commit, "admin")).rejects.toMatchObject({
+      status: 409,
+    });
     expect((await f.store.get(repository.id)).activeCommit).toBe(bundle.commit);
     expect(await readFile(join(auditDirectory, "head"), "utf8")).toBe(auditBefore);
     await rm(lock);
