@@ -52,6 +52,26 @@ describe("Helm RustFS bootstrap render", () => {
     expect(decoder.decode(result.stderr)).toContain("migrate data separately");
   });
 
+  test.each(["false", "true"])("rejects string migration confirmation %s", (value) => {
+    if (!helmPath) return;
+    const result = Bun.spawnSync({
+      cmd: [
+        helmPath,
+        "template",
+        "kq",
+        chartDir,
+        "-f",
+        `${chartDir}/values.testing.yaml`,
+        "--set-string",
+        `rustfs.migrationVerified=${value}`,
+      ],
+      stderr: "pipe",
+      stdout: "pipe",
+    });
+    expect(result.exitCode).not.toBe(0);
+    expect(decoder.decode(result.stderr)).toContain("migrationVerified must be a boolean");
+  });
+
   test("uses one ConfigMap script for the Job and its upgrade-safe wait dependency", async () => {
     const [chartScript, sharedScript, bootstrap, server, config, helpers, values] =
       await Promise.all([
