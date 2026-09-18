@@ -55,6 +55,13 @@ registry:
     accessModes:
       - ReadWriteOnce
     mountPath: /var/lib/kuintessence/registry/blobs
+  recipes:
+    # Local Git storage requires persistence and a single Registry writer.
+    enabled: true
+    # Absolute path inside the container; administrators mount inputs read-only.
+    bootstrapManifest: ""
+    # Absolute path to the material manifest; administrators mount its file pack read-only.
+    materialBootstrapManifest: ""
   uploadLimits:
     maxUploadBytes: 10737418240
     maxActiveUploads: 100

@@ -15,6 +15,7 @@ import { and, desc, eq, inArray, isNull, or } from "drizzle-orm";
 import type { AgentDispatcher } from "../grpc/dispatcher";
 import type { CpScope } from "../middleware/cp-rbac";
 import type { InstalledRegistry } from "./installed-registry";
+import type { SpackInstallPreparation, SpackInstallTicket } from "./spack-material-delivery";
 
 export type SoftwareOperationAction = "install" | "uninstall" | "load" | "import_preinstalled";
 export type SoftwareOperationStatusValue =
@@ -46,6 +47,9 @@ export class SoftwareOperationService {
     private readonly db: PgDb,
     private readonly dispatcher: AgentDispatcher,
     private readonly installedRegistry: InstalledRegistry,
+    private readonly prepareSpackInstall?: (
+      input: SpackInstallPreparation,
+    ) => Promise<SpackInstallTicket>,
   ) {}
 
   async requestOperation(input: {
@@ -146,11 +150,38 @@ export class SoftwareOperationService {
         .returning();
       return rowToView(updated ?? created);
     }
+    let materialTicket: SpackInstallTicket | undefined;
+    if (action === "install" && this.prepareSpackInstall) {
+      try {
+        materialTicket = await this.prepareSpackInstall({
+          operationId: created.id,
+          agentId: input.agentId,
+          requestedBy: input.requestedBy,
+          spec,
+        });
+      } catch (error) {
+        const [updated] = await this.db
+          .update(softwareOperations)
+          .set({
+            status: "rejected",
+            error:
+              error instanceof AppError
+                ? error.message
+                : "Spack material preparation failed; no install was dispatched",
+            finishedAt: new Date(),
+            updatedAt: new Date(),
+          })
+          .where(eq(softwareOperations.id, created.id))
+          .returning();
+        return rowToView(updated ?? created);
+      }
+    }
     const dispatch = pushSoftwareOperationSafely(this.dispatcher, input.agentId, {
       operationId: created.id,
       action: actionToProto(action),
       spec,
       requestedBy: input.requestedBy,
+      ...materialTicket,
     });
     if (dispatch.pushed) {
       return rowToView(created);
@@ -415,6 +446,8 @@ export function pushSoftwareOperationSafely(
     action: ProtoSoftwareOperationAction;
     spec: string;
     requestedBy: string;
+    spackMaterialTicket?: string;
+    spackManifestDigest?: string;
   },
 ): { pushed: boolean; error?: string } {
   try {

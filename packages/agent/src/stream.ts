@@ -113,6 +113,7 @@ import type { ServerClient, ServerReachabilityProbe } from "./server-client";
 import type {
   SoftwareOperationAction as AgentSoftwareOperationAction,
   SpackManager,
+  SpackMaterialContext,
 } from "./spack";
 import type { SshHandler, SshOutgoingMessage } from "./ssh";
 import { multipartUploadFromFile } from "./staging/multipart-upload-from-file";
@@ -674,6 +675,7 @@ export class AgentStream {
   private revocationTombstones: JobRevocationTombstones | undefined;
   private spackManager: SpackManager | undefined;
   private installedSoftware: InstalledSpec[];
+  private softwareOperationQueue: Promise<void> = Promise.resolve();
   private readGpuMetricsFn: () => Promise<GpuMetric[]>;
   private readDiskUsedPercentFn: () => Promise<number | null>;
   private readSchedulerQueueDepthFn: () => Promise<number>;
@@ -1495,6 +1497,7 @@ export class AgentStream {
           restrictedDataIsolation: this.hasTrustedRestrictedExecutionProfile(),
           computeHealthV1: this.computeHealthV1Capable,
           queueInventoryV1: this.queueInventoryV1Capable,
+          spackMaterialDeliveryV1: this.spackManager?.requireServerMaterials === true,
         }),
       },
     });
@@ -2866,8 +2869,26 @@ export class AgentStream {
         { operationId: request.operationId, action: request.action, spec: request.spec },
         "Software operation received",
       );
-      this.handleSoftwareOperation(request.operationId, request.action, request.spec).catch(
-        (err) => {
+      // Include inventory updates in the queue so an older success cannot undo a later withdrawal.
+      this.softwareOperationQueue = this.softwareOperationQueue
+        .then(async () => {
+          if (this.lifecycleController.signal.aborted) {
+            this.enqueueSoftwareOperationResult({
+              operationId: request.operationId,
+              action: request.action,
+              status: SoftwareOperationStatus.FAILED,
+              spec: request.spec,
+              error: "Agent stopped before queued software operation could begin",
+            });
+            return;
+          }
+          await this.handleSoftwareOperation(request.operationId, request.action, request.spec, {
+            operationId: request.operationId,
+            ticket: request.spackMaterialTicket,
+            manifestDigest: request.spackManifestDigest,
+          });
+        })
+        .catch((err) => {
           this.logger.error(
             { err, operationId: request.operationId, spec: request.spec },
             "Failed to run software operation",
@@ -2879,8 +2900,7 @@ export class AgentStream {
             spec: request.spec,
             error: err instanceof Error ? err.message : String(err),
           });
-        },
-      );
+        });
       return;
     }
 
@@ -4088,6 +4108,7 @@ export class AgentStream {
     operationId: string,
     protoAction: SoftwareOperationAction,
     spec: string,
+    materials?: SpackMaterialContext,
   ): Promise<void> {
     const normalizedSpec = spec.trim();
     const action = softwareOperationActionToAgent(protoAction);
@@ -4140,7 +4161,11 @@ export class AgentStream {
     });
     let outcome: Awaited<ReturnType<SpackManager["runSoftwareOperation"]>>;
     try {
-      outcome = await this.spackManager.runSoftwareOperation(action, normalizedSpec);
+      outcome = await this.spackManager.runSoftwareOperation(
+        action,
+        normalizedSpec,
+        action === "install" ? materials : undefined,
+      );
     } catch (err) {
       this.enqueueSoftwareOperationResult({
         operationId,
@@ -4158,10 +4183,17 @@ export class AgentStream {
         status: SoftwareOperationStatus.REJECTED,
         spec: normalizedSpec,
         error: outcome.reason,
+        stdout: outcome.stdout,
       });
       return;
     }
     if (outcome.outcome === "failed") {
+      if (outcome.invalidatedHashes?.length) {
+        const invalidated = new Set(outcome.invalidatedHashes);
+        this.setInstalledSoftware(
+          this.installedSoftware.filter((spec) => !invalidated.has(spec.hash)),
+        );
+      }
       this.enqueueSoftwareOperationResult({
         operationId,
         action: protoAction,

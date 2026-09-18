@@ -288,6 +288,10 @@ services:
       REGISTRY_AUTH_MODE: jwt
       REGISTRY_JWT_SECRET: dev-secret-change-me-at-least-32-chars-long
       BLOB_STORE_DIR: /var/lib/kuintessence/registry/blobs
+      SPACK_RECIPE_STORE_DIR: /var/lib/kuintessence/registry/recipes
+      SPACK_MATERIAL_STORE_DIR: /var/lib/kuintessence/registry/materials
+      SPACK_RECIPE_BOOTSTRAP_MANIFEST: ${SPACK_RECIPE_BOOTSTRAP_MANIFEST:-}
+      SPACK_MATERIAL_BOOTSTRAP_MANIFEST: ${SPACK_MATERIAL_BOOTSTRAP_MANIFEST:-}
       ECOSYSTEM_RELEASE_TRUSTED_KEYS: "${ECOSYSTEM_RELEASE_TRUSTED_KEYS:-{}}"
     volumes:
       - .:/app
@@ -382,6 +386,7 @@ services:
       KQ_AGENT_REGISTRATION_SCHEDULER: slurm
       AGENT_SPACK_ENABLED: "true"
       AGENT_SPACK_PATH: /opt/spack/bin/spack
+      AGENT_SPACK_CACHE_DIR: /var/lib/kuintessence/spack-materials
       AGENT_FILE_TRANSFER_CONNECT_TO: "localhost:${KQ_SCHEDULER_MINIO_API_PORT:-9000}:host.docker.internal:${KQ_SCHEDULER_MINIO_API_PORT:-9000}"
       LOG_LEVEL: info
       NODE_ENV: development
@@ -425,6 +430,7 @@ services:
       KQ_AGENT_REGISTRATION_SCHEDULER: pbs-pro
       AGENT_SPACK_ENABLED: "true"
       AGENT_SPACK_PATH: /opt/spack/bin/spack
+      AGENT_SPACK_CACHE_DIR: /var/lib/kuintessence/spack-materials
       HOME: /home/kq
       AGENT_FILE_TRANSFER_CONNECT_TO: "localhost:${KQ_SCHEDULER_MINIO_API_PORT:-9000}:host.docker.internal:${KQ_SCHEDULER_MINIO_API_PORT:-9000}"
       LOG_LEVEL: info
@@ -470,6 +476,7 @@ services:
       KQ_AGENT_REGISTRATION_SCHEDULER: kubernetes
       AGENT_SPACK_ENABLED: "true"
       AGENT_SPACK_PATH: /opt/spack/bin/spack
+      AGENT_SPACK_CACHE_DIR: /var/lib/kuintessence/spack-materials
       AGENT_K8S_DEFAULT_IMAGE: kq-governed-spack:zlib-1.3.1
       KUBECONFIG: /etc/rancher/k3s/k3s.yaml
       AGENT_FILE_TRANSFER_CONNECT_TO: "localhost:${KQ_SCHEDULER_MINIO_API_PORT:-9000}:host.docker.internal:${KQ_SCHEDULER_MINIO_API_PORT:-9000}"

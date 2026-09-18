@@ -9,7 +9,7 @@ Kuintessence 当前为 pre-release。以下列出组件功能、运行要求和�
 | 平台服务（Server） | API、作业管理、放置流水线、偏好、审计、计量 | PostgreSQL、身份与权限配置 |
 | 接入代理（Agent） | Slurm、PBS Pro、Torque、Kubernetes；监控与离线队列 | 调度器命令及站点运行权限 |
 | Workflow | YAML 控制流 DSL、CEL、条件、循环、子工作流与 scatter-gather | 软件、数据及目标集群满足约束 |
-| 软件仓库（Registry） | 软件/用例/工作流目录、OCI、Spack buildcache | 发布者权限及 artifact 存储 |
+| 软件仓库（Registry） | 软件/用例/工作流目录、OCI、Spack buildcache、Git recipe 导入与版本管理 | 发布者权限、artifact 存储及 recipe 持久卷 |
 | Web | 用户工作区、React Flow 编辑器、CP Console、平台管理 | Server/Registry API |
 | CLI | 远程命令、TUI、无 Server 本地调度器 GUI | 对应远程身份或本地调度器 |
 | NetDrive | S3/MinIO、multipart upload、Range resume、集群传输 | 显式启用与完整存储配置 |
@@ -33,6 +33,30 @@ Kuintessence 当前为 pre-release。以下列出组件功能、运行要求和�
   安装后完成注册、配置证书与调度器权限，再手动启用服务；升级保留站点配置。
 - 通用 HTTP terminal 使用服务账号执行短命令；用户交互终端使用 SSH PTY。
 - 运行软件前需在目标站点安装，并取得软件及数据的使用许可。
+- [Recipe 仓库](../spack-recipe-repositories.md) 支持初始化/Web 导入自包含 Git bundle、
+  静态诊断、激活/回滚/停用和固定快照导出。启用本地 Git 存储时 Registry 只允许单写者；
+  Registry 不执行 Python 或真实 concretize；[材料下载](../spack-material-delivery.md) 已接入 Registry
+  发布、Server 授权转发、Agent 校验缓存，并在发布与安装入口检查 Spack 1.0.0 lock
+  的绑定及依赖图。此预检仅为 `static-only`，不证明源码齐全或宿主兼容；
+  Agent 的固定 SIF source audit 默认关闭，只用已下载材料检查 native staging。
+  默认仅审计路径即使通过仍返回 `rejected`，不登记为已安装。
+- Persistent installation 为默认关闭的实验性 `AGENT_SPACK_INSTALL_ENABLED` opt-in，
+  要求 source audit、host backend、非 Kubernetes adapter 与固定 site profile digest。
+  TypeScript 已接入隔离 build → 独立 readonly verify → `ready` 的持久化编排；
+  每次新安装事务独占共享持久化 prefix，managed inventory/load/uninstall 仅面向 DAG root，
+  依赖不独立管理，卸载清理整个事务 store；root-only 不指系统 root 身份。
+  shared storage、compute ABI、quota、recipe trust 均需运维人工声明，不等于自动验证。
+  Python install worker 已实现并通过模拟 native API 的 fixture 测试，
+  真实 Linux/Spack/Apptainer/SIF 与集群验收未执行；
+  `ready` 不等于生产就绪，不能宣称平台安装功能已恢复。
+  源码已有上传/发布 API 与本地材料 manifest 初始化/批量导入；recipe bootstrap
+  完成后才导入材料，成功 binding 仍须运维显式配置到 Server，不自动启用安装。
+  平台与 CP 门户支持材料包 Web 上传、重试、取消和按 binding 查阅，切换身份/组织/
+  发布能力时清空临时结果并中止请求；发布响应丢失保留“结果待确认”，不宣称回滚。
+  已增加权限过滤的材料目录、精确仓库筛选和分页查阅；直接发现持久化 release，
+  单次响应最多 200 项，扫描/字节/时间超限明确失败，不返回伪完整的截断列表。
+  受限厂商安装包/许可证授权、HTTP/SOCKS 上游代理、
+  大规模材料目录索引/删除/可见范围变更及 15 个工作流的目标 Linux 材料、lock 和端到端安装/运行验收仍未完成。
 - CP 的 suspend/quota 写入口已停用，暂不支持通过这些接口暂停组织或设置并发硬限。
 - 平台记录用量，外部计费系统生成账单。
 - 本地 Compose 的初始化账号与固定样例口令只用于开发，不得用于公网环境。
@@ -49,6 +73,11 @@ Kuintessence 当前为 pre-release。以下列出组件功能、运行要求和�
 - [GitHub 预览配置](../deployment.md#preview) 支持可信同仓库 PR 自动部署与 main 手动启停，
   使用带认证的限时 Quick Tunnel 和独立临时数据库；不包含真实调度器、SSO 或对象存储。
   预览配置尚待 GitHub Actions 运行验证。
+- [PR 调度器测试](../../deploy/pr-test/README.md) 已提供独立 Compose 与 Slurm/PBS
+  Actions matrix，基于现有 scheduler base 构建，测试环境固定 Spack 1.0.0。
+  覆盖目标为真实作业完成/日志/取消、拒绝未配置材料的安装及进程内材料回归；
+  无公网端口，Agent 与 Registry 分网。实际构建与调度器结果以对应提交的
+  GitHub Actions 为准；本套测试不代表离线安装验收。
 
 ## 文档与验证
 
@@ -59,7 +88,7 @@ Kuintessence 当前为 pre-release。以下列出组件功能、运行要求和�
 - [系统运维](../manuals/system-operations-manual.md)
 - [开发与检查命令](../../README.md#开发)
 
-推送 `main` 和 PR 的 CI 默认只运行 Biome、文档链接及 workflow 引用静态检查，
-安装时禁用生命周期脚本。完整类型检查、测试、binary 构建与 smoke、调度器镜像验证、
-文档站发布均由维护者手动触发；可信同仓库 PR 限时预览保持独立自动运行，
-main 预览仍手动启停。具体入口见 [GitHub Actions](../deployment.md#actions)。
+`CI` 工作流在推送 `main` 和 PR 时默认只运行 Biome、文档链接及 workflow 引用静态检查，
+安装时禁用生命周期脚本。完整类型检查/全套测试、binary 构建与 smoke、跨架构镜像验证、
+文档站发布仍由维护者手动触发；可信同仓库非草稿 PR 的 Slurm/PBS 测试和限时预览
+分别自动运行，main 预览仍手动启停。具体入口见 [GitHub Actions](../deployment.md#actions)。

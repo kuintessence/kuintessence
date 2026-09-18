@@ -5,6 +5,7 @@ import {
   nonNegativeInt,
   positiveInt,
   registryPublisherRolesConfigSchema,
+  SpackMaterialBindingSchema,
 } from "@kuintessence/shared";
 import { z } from "zod";
 
@@ -39,6 +40,44 @@ const ServerConfigSchema = z.object({
   REDIS_URL: z.string(),
   JWT_SECRET: z.string().min(32),
   REGISTRY_PUBLISHER_ROLES: registryPublisherRolesConfigSchema,
+  SPACK_MATERIAL_DELIVERY_ENABLED: envBool(false),
+  SPACK_REGISTRY_ALLOW_INSECURE_HTTP: envBool(false),
+  SPACK_REGISTRY_URL: z
+    .string()
+    .url()
+    .refine((value) => {
+      const url = new URL(value);
+      return (
+        ["https:", "http:"].includes(url.protocol) &&
+        !url.username &&
+        !url.password &&
+        !url.search &&
+        !url.hash &&
+        url.pathname === "/"
+      );
+    }, "must be an HTTP(S) origin")
+    .optional(),
+  SPACK_REGISTRY_JWT_SECRET: z.string().min(32).optional(),
+  SPACK_REGISTRY_JWT_ISSUER: z.string().min(1).optional(),
+  SPACK_REGISTRY_JWT_AUDIENCE: z.string().min(1).optional(),
+  SPACK_MATERIAL_TICKET_SECRET: z.string().min(32).optional(),
+  SPACK_MATERIAL_RELEASES: z
+    .string()
+    .max(1024 * 1024)
+    .default("{}")
+    .transform((raw, ctx) => {
+      try {
+        return z
+          .record(z.string().min(1).max(4096), SpackMaterialBindingSchema)
+          .parse(JSON.parse(raw));
+      } catch {
+        ctx.addIssue({
+          code: "custom",
+          message: "must map exact Spack specs to immutable release bindings",
+        });
+        return z.NEVER;
+      }
+    }),
   /** JSON map of key id to base64 DER/SPKI Ed25519 public key. */
   ECOSYSTEM_RELEASE_TRUSTED_KEYS: ecosystemTrustedKeysSchema,
   /** Short-lived access session. The browser renews it with the HttpOnly refresh cookie. */
@@ -278,8 +317,53 @@ const ServerConfigSchema = z.object({
   AUTHZ_OUTBOX_INTERVAL_SEC: nonNegativeInt(5),
 });
 
+const ValidatedServerConfigSchema = ServerConfigSchema.superRefine((cfg, ctx) => {
+  if (!cfg.SPACK_MATERIAL_DELIVERY_ENABLED) return;
+  for (const key of [
+    "SPACK_REGISTRY_URL",
+    "SPACK_REGISTRY_JWT_SECRET",
+    "SPACK_MATERIAL_TICKET_SECRET",
+  ] as const) {
+    if (!cfg[key])
+      ctx.addIssue({
+        code: "custom",
+        path: [key],
+        message: "required for Spack material delivery",
+      });
+  }
+  const mode = cfg.MTLS_MODE ?? (cfg.MTLS_REQUIRED ? "direct" : "off");
+  if (mode === "off") {
+    ctx.addIssue({
+      code: "custom",
+      path: ["MTLS_MODE"],
+      message: "Spack material delivery requires mTLS",
+    });
+  }
+  if (cfg.SPACK_REGISTRY_URL && !cfg.SPACK_REGISTRY_ALLOW_INSECURE_HTTP) {
+    const url = new URL(cfg.SPACK_REGISTRY_URL);
+    if (url.protocol === "http:" && !["localhost", "127.0.0.1", "[::1]"].includes(url.hostname)) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["SPACK_REGISTRY_URL"],
+        message:
+          "HTTPS is required; private HTTP needs explicit SPACK_REGISTRY_ALLOW_INSECURE_HTTP",
+      });
+    }
+  }
+  if (
+    cfg.SPACK_MATERIAL_TICKET_SECRET === cfg.JWT_SECRET ||
+    cfg.SPACK_MATERIAL_TICKET_SECRET === cfg.SPACK_REGISTRY_JWT_SECRET
+  ) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["SPACK_MATERIAL_TICKET_SECRET"],
+      message: "use a dedicated ticket signing key",
+    });
+  }
+});
+
 export type ServerConfig = z.infer<typeof ServerConfigSchema>;
 
 export function loadServerConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
-  return loadConfig(ServerConfigSchema, env, "Server");
+  return loadConfig(ValidatedServerConfigSchema, env, "Server");
 }

@@ -155,7 +155,7 @@ bun run compose -- aio down
 <a id="actions"></a>
 ## GitHub Actions
 
-推送 `main` 和目标为 `main` 的 PR 默认只触发 CI 静态检查：
+`CI` 工作流在推送 `main` 和目标为 `main` 的 PR 时默认只执行静态检查：
 Biome、本地文档链接与 workflow 引用检查。依赖安装使用
 `bun install --frozen-lockfile --ignore-scripts`，不运行安装生命周期脚本、
 protobuf 生成、测试、构建或容器。
@@ -168,6 +168,7 @@ protobuf 生成、测试、构建或容器。
 | `CI` | 自动静态检查；手动勾选 `run_runtime_checks` 才执行 protobuf 生成、完整类型检查、Helm 测试、数据库与全栈容器测试 |
 | `Build Agent binary` / `Build CLI binary` | 仅手动构建并运行 binary smoke，默认只保存 Actions artifact；在 `v*` tag 上手动触发且勾选 `publish_release` 才上传 Release |
 | `Scheduler image architecture` | 仅手动构建并运行调度器镜像架构验证 |
+| `PR scheduler tests` | 可信同仓库非草稿 PR 自动构建隔离 Slurm/PBS 测试环境，执行真实作业与材料 fixture 回归；也可手动触发 |
 | `Docs Site` | 仅从 `main` 手动构建并发布到 `gh-pages`；GitHub Pages 须单独配置发布源 |
 | `Preview` / `Preview Cleanup` | 可信同仓库 PR 自动预览与关闭清理，main 手动启停，见下节 |
 
@@ -175,8 +176,10 @@ protobuf 生成、测试、构建或容器。
 该值不作为 build arg 传入镜像，工作流不启动对象存储或完整 scheduler 栈。
 
 首次推送 `main` 不自动运行测试、binary smoke、调度器容器验证或发布文档站；
-推送 tag 也不自动发布 Release。PR 预览是唯一保留的自动构建与临时部署入口，
-不执行测试套件；`preview-paused` 标签可持续暂停该 PR 的预览。
+推送 tag 也不自动发布 Release。PR 预览不执行测试套件；
+`preview-paused` 标签可持续暂停该 PR 的预览，但不暂停独立的
+[PR 调度器测试](../deploy/pr-test/README.md)。后者不提供公网入口、不使用预览口令，
+使用 `docker-compose.pr-test.yml` 和独立的临时卷，结果以对应提交的 Actions 为准。
 在仅允许静态检查时，不应手动触发完整检查、构建、发布或预览。
 
 <a id="preview"></a>

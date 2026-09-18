@@ -35,6 +35,10 @@ services:
       AUTHZ_MODE: "off"
       SSO_BOOTSTRAP_ENABLED: "false"
       WEB_BASE_URL: http://localhost:8080/
+      SPACK_RECIPE_STORE_DIR: /data/registry/recipes
+      SPACK_MATERIAL_STORE_DIR: /data/registry/materials
+      SPACK_RECIPE_BOOTSTRAP_MANIFEST: ${SPACK_RECIPE_BOOTSTRAP_MANIFEST:-}
+      SPACK_MATERIAL_BOOTSTRAP_MANIFEST: ${SPACK_MATERIAL_BOOTSTRAP_MANIFEST:-}
       # Public fixture value, used only by this local demo profile.
       DATA_MARKET_COMMITTER_SECRET_KEY: ${KQ_DATA_MARKET_COMMITTER_SECRET_KEY:-aio-test-committer-secret-not-for-production}
 

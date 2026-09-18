@@ -8,6 +8,7 @@ import { create } from "@bufbuild/protobuf";
 import * as schema from "@kuintessence/db";
 import { createSqliteDb, runSqliteMigrations } from "@kuintessence/db";
 import {
+  type AgentMessage,
   CancelJobSchema,
   ComputeHealthState,
   DataDeliveryBindingSchema,
@@ -58,7 +59,7 @@ import { InboundAcks, type PersistInboundInput } from "./queue/inbound-acks";
 import { JobCleanupIntents, JobRevocationTombstones } from "./queue/job-cleanup-intents";
 import { type OutboundItem, OutboundQueue } from "./queue/outbound-queue";
 import type { AgentSandboxCapability } from "./sandbox/capability";
-import { SpackManager } from "./spack";
+import { type PreparedSpackMaterials, SpackManager, type SpackMaterialPrepareInput } from "./spack";
 import type { Ssh2ClientLike, Ssh2Factory } from "./ssh";
 import { SshHandler } from "./ssh";
 import { AgentStream, jobStatusReportToProto } from "./stream";
@@ -5225,6 +5226,166 @@ describe("AgentStream", () => {
     expect(spackManager.currentPolicyVersion()).toBe("v42");
   });
 
+  test.each([
+    "absent",
+    "standalone",
+    "managed",
+    "managed-disabled",
+  ] as const)("advertises Spack material delivery only for a managed manager: %s", async (mode) => {
+    const { client, sent } = makeMockClient([
+      create(ServerMessageSchema, {
+        payload: {
+          case: "registerResponse",
+          value: create(RegisterResponseSchema, { accepted: true }),
+        },
+      }),
+    ]);
+    const spackManager =
+      mode === "absent"
+        ? undefined
+        : await SpackManager.bootstrap({
+            enabled: mode !== "managed-disabled",
+            requireServerMaterials: mode.startsWith("managed"),
+            spawner: {
+              async run() {
+                return { exitCode: 0, stdout: "0.22.1", stderr: "" };
+              },
+            },
+          });
+    const stream = new AgentStream({
+      client,
+      adapter: makeAdapter(),
+      agentId: "agent-001",
+      siteName: "test-site",
+      heartbeatIntervalMs: 60_000,
+      logger: silent,
+      reconnectBackoffMs: 1,
+      sleep: async () => {},
+      spackManager,
+    });
+    activeStreams.push(stream);
+    const running = stream.start();
+    await settle(30);
+    stream.stop();
+    await running;
+    const register = (sent as AgentMessage[]).find((m) => m.payload.case === "register");
+    expect(register?.payload.case).toBe("register");
+    if (register?.payload.case === "register") {
+      expect(register.payload.value.spackMaterialDeliveryV1).toBe(mode.startsWith("managed"));
+    }
+  });
+
+  test.each([
+    "missing",
+    "expired",
+    "prepared",
+  ] as const)("managed SoftwareOperationRequest never spawns install when materials are %s", async (mode) => {
+    const operationId = "00000000-0000-4000-8000-000000000001";
+    const manifestDigest = `sha256:${"a".repeat(64)}`;
+    const ticket = mode === "missing" ? "" : "test-ticket";
+    const { client, sent } = makeMockClient(
+      [
+        create(ServerMessageSchema, {
+          payload: {
+            case: "registerResponse",
+            value: create(RegisterResponseSchema, { accepted: true }),
+          },
+        }),
+        create(ServerMessageSchema, {
+          payload: {
+            case: "softwareOperationRequest",
+            value: create(SoftwareOperationRequestSchema, {
+              operationId,
+              action: SoftwareOperationAction.INSTALL,
+              spec: "zlib@1.3.1",
+              spackMaterialTicket: ticket,
+              spackManifestDigest: manifestDigest,
+            }),
+          },
+        }),
+      ],
+      100,
+    );
+    const requests: SpackMaterialPrepareInput[] = [];
+    const calls: string[][] = [];
+    const prepared: PreparedSpackMaterials = {
+      manifestDigest,
+      manifestPath: "/cache/manifest",
+      manifestSize: 1,
+      blobs: [],
+      manifest: {
+        version: 1,
+        repository: "public/test",
+        spec: "zlib@1.3.1",
+        spackVersion: "0.22.1",
+        target: "linux-x86_64",
+        redistribution: "unrestricted",
+        recipes: [],
+        sources: [],
+        lockfile: { digest: manifestDigest, size: 1 },
+      },
+    };
+    const spackManager = await SpackManager.bootstrap({
+      requireServerMaterials: true,
+      spawner: {
+        async run(command) {
+          calls.push(command);
+          if (command[1] !== "--version") throw new Error("Unexpected Spack execution");
+          return { exitCode: 0, stdout: "0.22.1", stderr: "" };
+        },
+      },
+      materialClient: {
+        async prepare(input) {
+          requests.push(input);
+          if (mode === "expired") throw new Error("Spack material HTTP 401");
+          return prepared;
+        },
+      },
+    });
+    const stream = new AgentStream({
+      client,
+      adapter: makeAdapter(),
+      agentId: "agent-001",
+      siteName: "test-site",
+      heartbeatIntervalMs: 60_000,
+      logger: silent,
+      reconnectBackoffMs: 1,
+      sleep: async () => {},
+      spackManager,
+    });
+    activeStreams.push(stream);
+    const running = stream.start();
+    await settle(30);
+    stream.stop();
+    await running;
+    const results = (sent as AgentMessage[]).flatMap((message) =>
+      message.payload.case === "softwareOperationResult" ? [message.payload.value] : [],
+    );
+    expect(results.some((result) => result.status === SoftwareOperationStatus.SUCCEEDED)).toBe(
+      false,
+    );
+    const final = results.find((result) =>
+      [SoftwareOperationStatus.REJECTED, SoftwareOperationStatus.FAILED].includes(result.status),
+    );
+    expect(final).toBeDefined();
+    if (mode === "expired") {
+      expect(final?.status).toBe(SoftwareOperationStatus.FAILED);
+      expect(final?.stderr).toContain("401");
+    } else if (mode === "prepared") {
+      expect(final?.status).toBe(SoftwareOperationStatus.FAILED);
+      expect(final?.stderr).toContain("Spack material preflight failed");
+    } else {
+      expect(final?.status).toBe(SoftwareOperationStatus.REJECTED);
+      expect(final?.error).toContain("ticket");
+    }
+    expect(requests).toEqual(
+      mode === "missing"
+        ? []
+        : [{ operationId, ticket, manifestDigest, spec: "zlib@1.3.1", spackVersion: "0.22.1" }],
+    );
+    expect(calls).toEqual([["spack", "--version"]]);
+  });
+
   test("inbound SoftwareOperationRequest runs Spack operation and emits result", async () => {
     const serverMsgs = [
       create(ServerMessageSchema, {
@@ -5293,6 +5454,234 @@ describe("AgentStream", () => {
     expect(final?.payload.value.spec).toBe("gromacs@2024.1");
     expect(final?.payload.value.exitCode).toBe(0);
     expect(final?.payload.value.installed[0]?.name).toBe("gromacs");
+  });
+
+  test("source audit stdout is retained on rejected installation without success or inventory", async () => {
+    const report = JSON.stringify({ validation: "isolated-source-audit", passed: true });
+    const { client, sent } = makeMockClient([
+      create(ServerMessageSchema, {
+        payload: {
+          case: "registerResponse",
+          value: create(RegisterResponseSchema, { accepted: true, message: "ok" }),
+        },
+      }),
+      create(ServerMessageSchema, {
+        payload: {
+          case: "softwareOperationRequest",
+          value: create(SoftwareOperationRequestSchema, {
+            operationId: "00000000-0000-0000-0000-000000000019",
+            action: SoftwareOperationAction.INSTALL,
+            spec: "zlib@1.3.1",
+          }),
+        },
+      }),
+    ]);
+    const spackManager = await SpackManager.bootstrap({
+      requireServerMaterials: true,
+      spawner: {
+        async run() {
+          return { exitCode: 0, stdout: "1.0.0", stderr: "" };
+        },
+      },
+    });
+    spackManager.runSoftwareOperation = async () => ({
+      outcome: "rejected",
+      reason: "managed offline Spack execution is not enabled yet",
+      stdout: report,
+    });
+    const stream = new AgentStream({
+      fileTransferMaxRetries: 3,
+      fileTransferRetryBackoffSec: 0,
+      client,
+      adapter: makeAdapter(),
+      agentId: "agent-001",
+      siteName: "test-site",
+      heartbeatIntervalMs: 60_000,
+      logger: silent,
+      reconnectBackoffMs: 1,
+      sleep: async () => {},
+      spackManager,
+    });
+    activeStreams.push(stream);
+    const running = stream.start();
+    await settle(30);
+    stream.stop();
+    await running;
+    const results = (sent as AgentMessage[]).flatMap((message) =>
+      message.payload.case === "softwareOperationResult" ? [message.payload.value] : [],
+    );
+    expect(results.map((value) => value.status)).toEqual([
+      SoftwareOperationStatus.RUNNING,
+      SoftwareOperationStatus.REJECTED,
+    ]);
+    expect(results[1]?.stdout).toBe(report);
+    expect(results[1]?.installed).toEqual([]);
+  });
+
+  test("failed managed verification withdraws only invalidated software from later heartbeats", async () => {
+    const { client, sent } = makeMockClient(
+      [
+        create(ServerMessageSchema, {
+          payload: {
+            case: "registerResponse",
+            value: create(RegisterResponseSchema, { accepted: true }),
+          },
+        }),
+        create(ServerMessageSchema, {
+          payload: {
+            case: "softwareOperationRequest",
+            value: create(SoftwareOperationRequestSchema, {
+              operationId: "00000000-0000-0000-0000-000000000020",
+              action: SoftwareOperationAction.LOAD,
+              spec: "hello@1.0",
+            }),
+          },
+        }),
+      ],
+      100,
+    );
+    const spackManager = await SpackManager.bootstrap({
+      requireServerMaterials: true,
+      spawner: {
+        async run() {
+          return { exitCode: 0, stdout: "1.0.0", stderr: "" };
+        },
+      },
+    });
+    spackManager.runSoftwareOperation = async () => ({
+      outcome: "failed",
+      exitCode: 1,
+      stderr: "verification failed",
+      invalidatedHashes: ["invalid"],
+    });
+    const keep = { name: "existing", version: "1.0", hash: "keep", spec: "existing@1.0" };
+    const stream = new AgentStream({
+      fileTransferMaxRetries: 3,
+      fileTransferRetryBackoffSec: 0,
+      client,
+      adapter: makeAdapter(),
+      agentId: "agent-001",
+      siteName: "test-site",
+      heartbeatIntervalMs: 60_000,
+      logger: silent,
+      reconnectBackoffMs: 1,
+      sleep: async () => {},
+      spackManager,
+      installedSoftware: [
+        keep,
+        { name: "hello", version: "1.0", hash: "invalid", spec: "hello@1.0" },
+      ],
+    });
+    const snapshots: Array<Parameters<AgentStream["setInstalledSoftware"]>[0]> = [];
+    const update = stream.setInstalledSoftware.bind(stream);
+    stream.setInstalledSoftware = (specs) => {
+      snapshots.push(specs);
+      update(specs);
+    };
+    activeStreams.push(stream);
+    const running = stream.start();
+    await settle(30);
+    stream.stop();
+    await running;
+    expect(snapshots).toEqual([[keep]]);
+    const results = (sent as AgentMessage[]).flatMap((message) =>
+      message.payload.case === "softwareOperationResult" ? [message.payload.value] : [],
+    );
+    expect(results.map((value) => value.status)).toEqual([
+      SoftwareOperationStatus.RUNNING,
+      SoftwareOperationStatus.FAILED,
+    ]);
+  });
+
+  test("serializes software execution through inventory publication before later invalidation", async () => {
+    const { client } = makeMockClient(
+      [
+        create(ServerMessageSchema, {
+          payload: {
+            case: "registerResponse",
+            value: create(RegisterResponseSchema, { accepted: true }),
+          },
+        }),
+        ...[SoftwareOperationAction.IMPORT_PREINSTALLED, SoftwareOperationAction.LOAD].map(
+          (action, index) =>
+            create(ServerMessageSchema, {
+              payload: {
+                case: "softwareOperationRequest",
+                value: create(SoftwareOperationRequestSchema, {
+                  operationId: `00000000-0000-0000-0000-00000000003${index}`,
+                  action,
+                  spec: "hello@1.0",
+                }),
+              },
+            }),
+        ),
+      ],
+      100,
+    );
+    const spackManager = await SpackManager.bootstrap({
+      requireServerMaterials: true,
+      spawner: {
+        async run() {
+          return { exitCode: 0, stdout: "1.0.0", stderr: "" };
+        },
+      },
+    });
+    const entered = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const finished = Promise.withResolvers<void>();
+    const calls: string[] = [];
+    const keep = { name: "existing", version: "1.0", hash: "keep", spec: "existing@1.0" };
+    const installed = [keep, { name: "hello", version: "1.0", hash: "invalid", spec: "hello@1.0" }];
+    spackManager.runSoftwareOperation = async (action) => {
+      calls.push(action);
+      if (action === "import_preinstalled") {
+        entered.resolve();
+        await release.promise;
+        return { outcome: "succeeded", stdout: "", installed };
+      }
+      return {
+        outcome: "failed",
+        exitCode: 1,
+        stderr: "verification failed",
+        invalidatedHashes: ["invalid"],
+      };
+    };
+    const stream = new AgentStream({
+      fileTransferMaxRetries: 3,
+      fileTransferRetryBackoffSec: 0,
+      client,
+      adapter: makeAdapter(),
+      agentId: "agent-001",
+      siteName: "test-site",
+      heartbeatIntervalMs: 60_000,
+      logger: silent,
+      reconnectBackoffMs: 1,
+      sleep: async () => {},
+      spackManager,
+      installedSoftware: installed,
+    });
+    const snapshots: Array<Parameters<AgentStream["setInstalledSoftware"]>[0]> = [];
+    const update = stream.setInstalledSoftware.bind(stream);
+    stream.setInstalledSoftware = (specs) => {
+      snapshots.push(specs);
+      update(specs);
+      if (specs.length === 1) finished.resolve();
+    };
+    activeStreams.push(stream);
+    const running = stream.start();
+    try {
+      await entered.promise;
+      await settle(20);
+      expect(calls).toEqual(["import_preinstalled"]);
+      release.resolve();
+      await finished.promise;
+      expect(calls).toEqual(["import_preinstalled", "load"]);
+      expect(snapshots).toEqual([installed, [keep]]);
+    } finally {
+      release.resolve();
+      stream.stop();
+      await running;
+    }
   });
 
   test("inbound SoftwareOperationRequest emits failed result when execution throws", async () => {

@@ -226,6 +226,10 @@ services:
       REGISTRY_AUTH_MODE: jwt
       REGISTRY_JWT_SECRET: dev-secret-change-me-at-least-32-chars-long
       BLOB_STORE_DIR: /var/lib/kuintessence/registry/blobs
+      SPACK_RECIPE_STORE_DIR: /var/lib/kuintessence/registry/recipes
+      SPACK_MATERIAL_STORE_DIR: /var/lib/kuintessence/registry/materials
+      SPACK_RECIPE_BOOTSTRAP_MANIFEST: ${SPACK_RECIPE_BOOTSTRAP_MANIFEST:-}
+      SPACK_MATERIAL_BOOTSTRAP_MANIFEST: ${SPACK_MATERIAL_BOOTSTRAP_MANIFEST:-}
       ECOSYSTEM_RELEASE_TRUSTED_KEYS: "${ECOSYSTEM_RELEASE_TRUSTED_KEYS:-{}}"
     volumes:
       - registry-data:/var/lib/kuintessence/registry

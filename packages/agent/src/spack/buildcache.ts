@@ -37,6 +37,7 @@ export class Buildcache {
   constructor(private readonly cli: SpackCli) {}
 
   async importBuildcache(specs: string[]): Promise<ImportResult> {
+    this.cli.assertNetworkExecutionAllowed();
     const result: ImportResult = { installed: [], failed: [] };
     for (const spec of specs) {
       const r = await this.cli.buildcacheInstall(spec);
@@ -50,6 +51,7 @@ export class Buildcache {
   }
 
   async exportBuildcache(spec: string, mirror: string): Promise<ExportOutcome> {
+    this.cli.assertNetworkExecutionAllowed();
     const r = await this.cli.buildcachePush(mirror, spec);
     if (r.exitCode === 0) return { outcome: "pushed" };
     return { outcome: "failed", exitCode: r.exitCode, stderr: r.stderr };

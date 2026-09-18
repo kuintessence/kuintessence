@@ -1,4 +1,21 @@
 {{- if .Values.registry.enabled }}
+{{- if .Values.registry.recipes.enabled }}
+{{- if not .Values.registry.persistence.enabled }}
+{{- fail "registry.recipes.enabled requires registry.persistence.enabled" }}
+{{- end }}
+{{- if ne (toString .Values.registry.replicas) "1" }}
+{{- fail "registry.recipes.enabled requires registry.replicas=1" }}
+{{- end }}
+{{- if not (hasPrefix "/" .Values.registry.persistence.mountPath) }}
+{{- fail "registry recipe storage requires an absolute mountPath" }}
+{{- end }}
+{{- if and .Values.registry.recipes.bootstrapManifest (not (hasPrefix "/" .Values.registry.recipes.bootstrapManifest)) }}
+{{- fail "registry.recipes.bootstrapManifest must be an absolute local path" }}
+{{- end }}
+{{- if and .Values.registry.recipes.materialBootstrapManifest (not (hasPrefix "/" .Values.registry.recipes.materialBootstrapManifest)) }}
+{{- fail "registry.recipes.materialBootstrapManifest must be an absolute local path" }}
+{{- end }}
+{{- end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -6,6 +23,11 @@ metadata:
   labels: {{- include "kq.labels" . | nindent 4 }}
 spec:
   replicas: {{ .Values.registry.replicas }}
+  {{- if .Values.registry.recipes.enabled }}
+  strategy:
+    type: Recreate
+    rollingUpdate: null
+  {{- end }}
   selector:
     matchLabels:
       app.kubernetes.io/name: {{ .Chart.Name }}
@@ -51,6 +73,20 @@ spec:
             {{- if .Values.registry.persistence.enabled }}
             - name: BLOB_STORE_DIR
               value: {{ .Values.registry.persistence.mountPath | quote }}
+            {{- end }}
+            {{- if .Values.registry.recipes.enabled }}
+            - name: SPACK_RECIPE_STORE_DIR
+              value: {{ printf "%s/recipes" (trimSuffix "/" .Values.registry.persistence.mountPath) | quote }}
+            - name: SPACK_MATERIAL_STORE_DIR
+              value: {{ printf "%s/materials" (trimSuffix "/" .Values.registry.persistence.mountPath) | quote }}
+            {{- if .Values.registry.recipes.bootstrapManifest }}
+            - name: SPACK_RECIPE_BOOTSTRAP_MANIFEST
+              value: {{ .Values.registry.recipes.bootstrapManifest | quote }}
+            {{- end }}
+            {{- if .Values.registry.recipes.materialBootstrapManifest }}
+            - name: SPACK_MATERIAL_BOOTSTRAP_MANIFEST
+              value: {{ .Values.registry.recipes.materialBootstrapManifest | quote }}
+            {{- end }}
             {{- end }}
           envFrom:
             - configMapRef:

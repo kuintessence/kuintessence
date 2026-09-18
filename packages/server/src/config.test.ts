@@ -7,6 +7,77 @@ const VALID_BASE = {
   JWT_SECRET: "x".repeat(32),
 };
 
+describe("Spack material delivery configuration", () => {
+  const enabled = {
+    ...VALID_BASE,
+    SPACK_MATERIAL_DELIVERY_ENABLED: "true",
+    SPACK_REGISTRY_URL: "http://registry:3100",
+    SPACK_REGISTRY_ALLOW_INSECURE_HTTP: "true",
+    SPACK_REGISTRY_JWT_SECRET: "registry".repeat(5),
+    SPACK_MATERIAL_TICKET_SECRET: "ticket".repeat(6),
+    MTLS_MODE: "direct",
+  };
+  test("is disabled by default and requires dedicated keys and mTLS when enabled", () => {
+    expect(loadServerConfig(VALID_BASE).SPACK_MATERIAL_DELIVERY_ENABLED).toBe(false);
+    expect(loadServerConfig(enabled).SPACK_MATERIAL_DELIVERY_ENABLED).toBe(true);
+    for (const patch of [
+      { MTLS_MODE: "off" },
+      { SPACK_REGISTRY_URL: undefined },
+      { SPACK_REGISTRY_JWT_SECRET: undefined },
+      { SPACK_MATERIAL_TICKET_SECRET: undefined },
+      { SPACK_MATERIAL_TICKET_SECRET: VALID_BASE.JWT_SECRET },
+      { SPACK_MATERIAL_TICKET_SECRET: enabled.SPACK_REGISTRY_JWT_SECRET },
+    ]) {
+      expect(() => loadServerConfig({ ...enabled, ...patch })).toThrow();
+    }
+  });
+  test("rejects Registry URLs carrying credentials, paths, or query arguments", () => {
+    for (const url of [
+      "https://user:secret@registry",
+      "file:///tmp",
+      "https://registry/prefix",
+      "https://registry?token=secret",
+    ]) {
+      expect(() => loadServerConfig({ ...enabled, SPACK_REGISTRY_URL: url })).toThrow();
+    }
+  });
+  test("requires explicit private-network opt-in for non-loopback plaintext Registry traffic", () => {
+    expect(() =>
+      loadServerConfig({ ...enabled, SPACK_REGISTRY_ALLOW_INSECURE_HTTP: "false" }),
+    ).toThrow();
+    expect(
+      loadServerConfig({
+        ...enabled,
+        SPACK_REGISTRY_ALLOW_INSECURE_HTTP: "false",
+        SPACK_REGISTRY_URL: "https://registry",
+      }).SPACK_REGISTRY_URL,
+    ).toBe("https://registry");
+    expect(
+      loadServerConfig({
+        ...enabled,
+        SPACK_REGISTRY_ALLOW_INSECURE_HTTP: "false",
+        SPACK_REGISTRY_URL: "http://127.0.0.1:3100",
+      }).SPACK_REGISTRY_URL,
+    ).toBe("http://127.0.0.1:3100");
+  });
+  test("accepts exact spec mappings only with immutable repository and manifest digests", () => {
+    const binding = { repositoryId: "a".repeat(64), manifestDigest: `sha256:${"b".repeat(64)}` };
+    expect(
+      loadServerConfig({
+        ...enabled,
+        SPACK_MATERIAL_RELEASES: JSON.stringify({ "zlib@1.3.1": binding }),
+      }).SPACK_MATERIAL_RELEASES,
+    ).toEqual({ "zlib@1.3.1": binding });
+    expect(() => loadServerConfig({ ...enabled, SPACK_MATERIAL_RELEASES: "not json" })).toThrow();
+    expect(() =>
+      loadServerConfig({
+        ...enabled,
+        SPACK_MATERIAL_RELEASES: JSON.stringify({ zlib: { ...binding, manifestDigest: "latest" } }),
+      }),
+    ).toThrow();
+  });
+});
+
 describe("loadServerConfig (mTLS additions)", () => {
   test("DB pool config defaults to postgres-js compatible values", () => {
     const cfg = loadServerConfig({ ...VALID_BASE } as NodeJS.ProcessEnv);

@@ -78,6 +78,10 @@ const softwareClient = vi.hoisted(() => ({
 
 vi.mock("../../lib/software-client", () => softwareClient);
 
+vi.mock("../../lib/recipe-repositories-client", () => ({
+  listRecipeRepositories: vi.fn(async () => []),
+}));
+
 const apiClient = vi.hoisted(() => ({
   completeDownstreamSoftwareGrants: vi.fn(),
   createSoftwareAccessRequest: vi.fn(),
@@ -377,6 +381,16 @@ function wrapper() {
     <QueryClientProvider client={qc}>{children}</QueryClientProvider>
   );
 }
+
+test("mounts the shared recipe panel only in the Spack view", async () => {
+  render(<SoftwarePage />, { wrapper: wrapper() });
+  await screen.findByTestId("software-tab-spack");
+  expect(screen.queryByTestId("recipe-repositories-panel")).toBeNull();
+  expect(screen.queryByTestId("spack-materials-panel")).toBeNull();
+  await activateTab("software-tab-spack", "recipe-repositories-panel");
+  expect(screen.getByRole("heading", { name: "recipes.title" })).toBeTruthy();
+  expect(screen.getByRole("heading", { name: "materials.title" })).toBeTruthy();
+});
 
 const yamlOneNode = [
   "name: hello",

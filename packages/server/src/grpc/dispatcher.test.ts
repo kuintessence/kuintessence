@@ -23,6 +23,31 @@ function mockChannel() {
 }
 
 describe("AgentDispatcher", () => {
+  test("does not send material credentials to a replaced legacy or unverified channel", () => {
+    const dispatcher = new AgentDispatcher();
+    const payload = {
+      operationId: "material-operation",
+      action: SoftwareOperationAction.INSTALL,
+      spec: "zlib@1.3.1",
+      requestedBy: "operator",
+      spackMaterialTicket: "operation-scoped-ticket",
+      spackManifestDigest: `sha256:${"d".repeat(64)}`,
+    };
+    const secure = {
+      ...mockChannel(),
+      spackMaterialDeliveryV1: true,
+      verifiedCertFingerprint: "a".repeat(64),
+    };
+    dispatcher.register("a", secure);
+    expect(dispatcher.pushSoftwareOperation("a", payload)).toBe(true);
+    expect(secure.messages[0]?.payload.case).toBe("softwareOperationRequest");
+    const legacy = mockChannel();
+    dispatcher.register("a", legacy);
+    expect(dispatcher.pushSoftwareOperation("a", payload)).toBe(false);
+    expect(legacy.messages).toHaveLength(0);
+    dispatcher.register("a", { ...legacy, spackMaterialDeliveryV1: true });
+    expect(dispatcher.pushSoftwareOperation("a", payload)).toBe(false);
+  });
   const sandboxExecution: SandboxSignedManifest = {
     jobId: "00000000-0000-0000-0000-000000000111",
     script: {
