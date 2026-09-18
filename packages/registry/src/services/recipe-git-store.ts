@@ -226,16 +226,14 @@ export class RecipeGitStore {
         commit,
         actor,
       );
+      // EOF commits the whole batch after all old-value checks, including on Git 2.25.
       const result = await this.git(
         this.repositoryPath(id),
         ["update-ref", "--stdin", "--create-reflog", "-m", this.auditMessage("activate", actor)],
         true,
         [
-          "start",
           `update ${ACTIVE_REF} ${commit} ${expectedActiveCommit ?? ZERO_COMMIT}`,
           `update ${AUDIT_REF} ${audit.commit} ${audit.previous ?? ZERO_COMMIT}`,
-          "prepare",
-          "commit",
           "",
         ].join("\n"),
       );
@@ -268,11 +266,8 @@ export class RecipeGitStore {
         ["update-ref", "--stdin", "--create-reflog", "-m", this.auditMessage("deactivate", actor)],
         true,
         [
-          "start",
           `delete ${ACTIVE_REF} ${expectedActiveCommit}`,
           `update ${AUDIT_REF} ${audit.commit} ${audit.previous ?? ZERO_COMMIT}`,
-          "prepare",
-          "commit",
           "",
         ].join("\n"),
       );

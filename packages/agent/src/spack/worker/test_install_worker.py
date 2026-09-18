@@ -262,9 +262,10 @@ class InstallTests(unittest.TestCase):
     @contextlib.contextmanager
     def runtime(self):
         original = audit.read_regular
+        os_release_paths = {Path("/etc/os-release"), Path("/etc/os-release").resolve()}
 
         def read(path, maximum, expected=None):
-            if str(path) == "/etc/os-release":
+            if path in os_release_paths:
                 return b"fixture os"
             return original(path, maximum, expected)
 

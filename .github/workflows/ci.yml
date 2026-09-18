@@ -124,8 +124,15 @@ jobs:
         env:
           DATABASE_URL: postgres://kq:kq@localhost:5432/kuintessence
 
-      - name: Run tests (packages only)
-        run: bun run test
+      - name: Run isolated unit tests
+        run: bun run test:unit
+        env:
+          DATABASE_URL: postgres://kq:kq@localhost:5432/kuintessence
+          REDIS_URL: redis://localhost:6379
+          LOG_LEVEL: warn
+
+      - name: Run Agent integration tests
+        run: bun run test:integration
         env:
           DATABASE_URL: postgres://kq:kq@localhost:5432/kuintessence
           REDIS_URL: redis://localhost:6379

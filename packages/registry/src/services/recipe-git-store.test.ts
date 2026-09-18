@@ -150,6 +150,33 @@ describe("RecipeGitStore", () => {
     });
   });
 
+  test("audit ref lock failure prevents partial activation and deactivation", async () => {
+    const f = await fixture();
+    const bundle = await f.bundle();
+    const repository = await f.store.importBundle("public/science", bundle.bytes, "admin");
+    const auditDirectory = join(f.root, "store/repositories", `${repository.id}.git/refs/kq/audit`);
+    await mkdir(auditDirectory, { recursive: true });
+    const lock = join(auditDirectory, "head.lock");
+    await writeFile(lock, "");
+    await expect(
+      f.store.activate(repository.id, bundle.commit, null, "admin"),
+    ).rejects.toMatchObject({ status: 409 });
+    expect((await f.store.get(repository.id)).activeCommit).toBeNull();
+    expect(await readdir(auditDirectory)).toEqual(["head.lock"]);
+    await rm(lock);
+    await f.store.activate(repository.id, bundle.commit, null, "admin");
+    const auditBefore = await readFile(join(auditDirectory, "head"), "utf8");
+    await writeFile(lock, "");
+    await expect(
+      f.store.deactivate(repository.id, bundle.commit, "admin"),
+    ).rejects.toMatchObject({ status: 409 });
+    expect((await f.store.get(repository.id)).activeCommit).toBe(bundle.commit);
+    expect(await readFile(join(auditDirectory, "head"), "utf8")).toBe(auditBefore);
+    await rm(lock);
+    const deactivated = await f.store.deactivate(repository.id, bundle.commit, "admin");
+    expect(deactivated.activeCommit).toBeNull();
+  });
+
   test("rejects invalid bundles, paths, symlinks and resource overruns without publication", async () => {
     const f = await fixture();
     await expect(

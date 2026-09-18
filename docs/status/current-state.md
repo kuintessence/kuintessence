@@ -92,3 +92,5 @@ Kuintessence 当前为 pre-release。以下列出组件功能、运行要求和�
 安装时禁用生命周期脚本。完整类型检查/全套测试、binary 构建与 smoke、跨架构镜像验证、
 文档站发布仍由维护者手动触发；可信同仓库非草稿 PR 的 Slurm/PBS 测试和限时预览
 分别自动运行，main 预览仍手动启停。具体入口见 [GitHub Actions](../deployment.md#actions)。
+手动完整 CI 使用 `test:unit` 的临时数据库和逐文件进程隔离，再单独执行
+`test:integration`，避免跨测试文件累积数据库连接；不复用业务数据库。
