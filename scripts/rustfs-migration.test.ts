@@ -64,7 +64,9 @@ describe("RustFS migration preflight", () => {
   });
 
   test("Helm checks live legacy resources in addition to legacy values", async () => {
-    const template = await Bun.file("deploy/helm/kq-platform/templates/rustfs-statefulset.yaml").text();
+    const template = await Bun.file(
+      "deploy/helm/kq-platform/templates/rustfs-statefulset.yaml",
+    ).text();
     expect(template).toContain('lookup "apps/v1" "StatefulSet"');
     expect(template).toContain('lookup "v1" "PersistentVolumeClaim"');
     expect(template).toContain("not .Values.rustfs.migrationVerified");

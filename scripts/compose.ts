@@ -707,7 +707,12 @@ async function runCommand(cmd: string[], dryRun: boolean): Promise<number> {
 async function checkStorageMigration(profile: Profile, options: Options): Promise<void> {
   if (options.dryRun || (options.action !== "up" && options.action !== "restart")) return;
   const proc = Bun.spawn(
-    withEnvPrefix(profile, options, [...composeBase(profile, options), "config", "--format", "json"]),
+    withEnvPrefix(profile, options, [
+      ...composeBase(profile, options),
+      "config",
+      "--format",
+      "json",
+    ]),
     { stdout: "pipe", stderr: "inherit", env: Bun.env },
   );
   const [output, code] = await Promise.all([new Response(proc.stdout).text(), proc.exited]);
