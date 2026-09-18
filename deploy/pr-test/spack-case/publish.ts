@@ -117,7 +117,7 @@ if (process.argv.includes("--verify")) {
         signal: AbortSignal.timeout(120_000),
       },
     );
-    assert.equal(response.status, 201, "Material blob HTTP upload failed");
+    assert.equal(response.status, 201, `Material blob HTTP upload failed: ${path} (${blob.size} bytes)`);
     await response.body?.cancel();
     return blob;
   }

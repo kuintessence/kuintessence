@@ -45,6 +45,10 @@ docker info >/dev/null 2>&1 || fail "Docker daemon is unavailable; no build or t
 cleanup() {
   local result=$?
   trap - EXIT INT TERM
+  if "$spack_case" && [[ "$result" -ne 0 ]]; then
+    "${compose[@]}" logs --no-color --no-log-prefix registry 2>/dev/null |
+      "${compose[@]}" exec -T registry bun deploy/pr-test/spack-case/diagnostics.ts || true
+  fi
   # Do not print container logs: Agent registration can include ephemeral credentials.
   "${compose[@]}" ps --all || true
   if ! "${compose[@]}" down --volumes --remove-orphans --rmi local --timeout 15; then

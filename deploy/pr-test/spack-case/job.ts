@@ -16,6 +16,13 @@ const result = z.object({
 }).parse(JSON.parse(await readFile(`${caseDirectory}/native/result.json`, "utf8")));
 assert(!result.prefix.split("/").includes(".."));
 await waitFor(
+  "Agent control channel before submitting GNU Hello",
+  async () => z.object({
+    agents: z.array(z.object({ agentId: z.string(), controlChannelOnline: z.boolean() })),
+  }).parse(await jsonRequest(origin, token, "/cp/software/overview")),
+  (view) => view.agents.some((agent) => agent.agentId === "pr-scheduler" && agent.controlChannelOnline),
+);
+await waitFor(
   "Slurm queue after Agent startup",
   () => jsonRequest(origin, token, "/admin/agents/pr-scheduler/queue-inventory"),
   (value) => queueInventoryReady(value, "debug"),
