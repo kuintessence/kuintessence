@@ -10,6 +10,13 @@ import {
 } from "../../../packages/agent/test/fixtures/slurm-cluster";
 import { E2E_SPACK_PACKAGE } from "./governed-package";
 import {
+  COMMITTER_ACCESS_KEY,
+  COMMITTER_SECRET_KEY,
+  DATA_MARKET_IMMUTABLE_BUCKET,
+  DATA_MARKET_STAGING_BUCKET,
+  startObjectStorage,
+} from "./object-storage";
+import {
   freePort,
   waitForAgentOnline,
   waitForAgentSoftware,
@@ -36,11 +43,6 @@ export interface Stack {
 
 // fileURLToPath correctly decodes percent-encoded characters (e.g. Chinese chars in path).
 const REPO_ROOT = fileURLToPath(new URL("../../../", import.meta.url)).replace(/\/$/, "");
-const NETDRIVE_BUCKET = "kq-netdrive";
-const DATA_MARKET_STAGING_BUCKET = "kq-data-market-staging";
-const DATA_MARKET_IMMUTABLE_BUCKET = "kq-data-market-immutable";
-const MINIO_COMMITTER_ACCESS_KEY = "kq-e2e-committer";
-const MINIO_COMMITTER_SECRET_KEY = "kq-e2e-committer-secret";
 
 export interface StartStackOptions {
   netdrive?: boolean;
@@ -100,7 +102,7 @@ export async function startStack(options: StartStackOptions = {}): Promise<Stack
     }
 
     // -----------------------------------------------------------------------
-    // 4. Optional MinIO / NetDrive backend
+    // 4. Optional RustFS / NetDrive backend
     // -----------------------------------------------------------------------
     let netdrive:
       | {
@@ -111,24 +113,10 @@ export async function startStack(options: StartStackOptions = {}): Promise<Stack
       | undefined;
     let stopNetdrive: (() => Promise<void>) | undefined;
     if (options.netdrive) {
-      const minio = await new GenericContainer("quay.io/minio/minio:RELEASE.2025-04-08T15-41-24Z")
-        .withCommand(["server", "/data"])
-        .withEnvironment({
-          MINIO_ROOT_USER: "minioadmin",
-          MINIO_ROOT_PASSWORD: "minioadmin",
-        })
-        .withExposedPorts(9000)
-        .withWaitStrategy(Wait.forLogMessage("API:"))
-        .withStartupTimeout(60_000)
-        .start();
-      cleanup.push(() => minio.stop());
-      stopNetdrive = () => minio.stop();
-      await ensureMinioStorage(minio.getId());
-      netdrive = {
-        endpoint: "127.0.0.1",
-        port: minio.getMappedPort(9000),
-        bucket: NETDRIVE_BUCKET,
-      };
+      const storage = await startObjectStorage();
+      cleanup.push(() => storage.stop());
+      stopNetdrive = () => storage.stop();
+      netdrive = storage;
     }
 
     // -----------------------------------------------------------------------
@@ -152,15 +140,15 @@ export async function startStack(options: StartStackOptions = {}): Promise<Stack
         NETDRIVE_ENDPOINT: netdrive.endpoint,
         NETDRIVE_PORT: String(netdrive.port),
         NETDRIVE_USE_SSL: "false",
-        NETDRIVE_ACCESS_KEY: MINIO_COMMITTER_ACCESS_KEY,
-        NETDRIVE_SECRET_KEY: MINIO_COMMITTER_SECRET_KEY,
+        NETDRIVE_ACCESS_KEY: COMMITTER_ACCESS_KEY,
+        NETDRIVE_SECRET_KEY: COMMITTER_SECRET_KEY,
         NETDRIVE_BUCKET: netdrive.bucket,
         NETDRIVE_PUBLIC_URL: `http://localhost:${netdrive.port}`,
-        DATA_MARKET_COMMITTER_ACCESS_KEY: MINIO_COMMITTER_ACCESS_KEY,
-        DATA_MARKET_COMMITTER_SECRET_KEY: MINIO_COMMITTER_SECRET_KEY,
+        DATA_MARKET_COMMITTER_ACCESS_KEY: COMMITTER_ACCESS_KEY,
+        DATA_MARKET_COMMITTER_SECRET_KEY: COMMITTER_SECRET_KEY,
         DATA_MARKET_STAGING_BUCKET,
         DATA_MARKET_IMMUTABLE_BUCKET,
-        MINIO_ROOT_USER: "minioadmin",
+        RUSTFS_ACCESS_KEY: "rustfsadmin",
       });
     }
     Object.assign(serverEnv, options.serverEnv);
@@ -307,33 +295,6 @@ async function terminateProcess(proc: Subprocess, graceMs = 5_000): Promise<void
     proc.kill("SIGKILL");
   } catch {}
   await proc.exited;
-}
-
-async function ensureMinioStorage(containerId: string): Promise<void> {
-  const deadline = Date.now() + 30_000;
-  let last = "";
-  while (Date.now() < deadline) {
-    const result = await dockerExec(containerId, [
-      "sh",
-      "-c",
-      [
-        "mc alias set local http://127.0.0.1:9000 minioadmin minioadmin >/dev/null",
-        `mc mb --ignore-existing local/${NETDRIVE_BUCKET} >/dev/null`,
-        `mc mb --ignore-existing local/${DATA_MARKET_STAGING_BUCKET} >/dev/null`,
-        `mc mb --ignore-existing --with-lock local/${DATA_MARKET_IMMUTABLE_BUCKET} >/dev/null`,
-        `mc version enable local/${DATA_MARKET_IMMUTABLE_BUCKET} >/dev/null`,
-        `mc retention set --default COMPLIANCE 365d local/${DATA_MARKET_IMMUTABLE_BUCKET} >/dev/null`,
-        `mc admin user add local ${MINIO_COMMITTER_ACCESS_KEY} ${MINIO_COMMITTER_SECRET_KEY} >/dev/null 2>&1 || mc admin user info local ${MINIO_COMMITTER_ACCESS_KEY} >/dev/null`,
-        `mc admin policy attach local readwrite --user ${MINIO_COMMITTER_ACCESS_KEY} >/dev/null`,
-      ].join(" && "),
-    ]);
-    last = result.stderr || result.stdout;
-    if (result.exitCode === 0) {
-      return;
-    }
-    await Bun.sleep(500);
-  }
-  throw new Error(`MinIO storage was not ready: ${last.trim()}`);
 }
 
 async function installE2eSpackShim(containerId: string): Promise<void> {

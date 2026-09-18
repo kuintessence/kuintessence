@@ -1,8 +1,8 @@
-{{- if and .Values.minio.enabled .Values.netdrive.enabled }}
+{{- if and .Values.rustfs.enabled .Values.netdrive.enabled }}
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: {{ include "kq.minioBootstrapConfigMapName" . }}
+  name: {{ include "kq.rustfsBootstrapConfigMapName" . }}
   labels: {{- include "kq.labels" . | nindent 4 }}
 data:
   bootstrap-object-lock.sh: |-
@@ -11,10 +11,10 @@ data:
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: {{ include "kq.minioBootstrapName" . }}
+  name: {{ include "kq.rustfsBootstrapName" . }}
   labels:
     {{- include "kq.labels" . | nindent 4 }}
-    app.kubernetes.io/component: minio-bootstrap
+    app.kubernetes.io/component: rustfs-bootstrap
 spec:
   backoffLimit: 3
   activeDeadlineSeconds: 900
@@ -23,25 +23,25 @@ spec:
     metadata:
       labels:
         app.kubernetes.io/name: {{ .Chart.Name }}
-        app.kubernetes.io/component: minio-bootstrap
+        app.kubernetes.io/component: rustfs-bootstrap
     spec:
       restartPolicy: OnFailure
       containers:
         - name: bootstrap
-          image: {{ .Values.minio.mcImage | quote }}
+          image: {{ .Values.rustfs.rcImage | quote }}
           command: ["/bin/sh", "/bootstrap/bootstrap-object-lock.sh"]
           env:
             - name: HOME
               value: /tmp
-            - name: MINIO_ENDPOINT
-              value: {{ printf "http://%s-minio:9000" .Release.Name | quote }}
-            - name: MINIO_ROOT_USER
-              value: {{ .Values.minio.rootUser | quote }}
-            - name: MINIO_ROOT_PASSWORD
+            - name: RUSTFS_ENDPOINT
+              value: {{ printf "http://%s-rustfs:9000" .Release.Name | quote }}
+            - name: RUSTFS_ACCESS_KEY
+              value: {{ .Values.rustfs.rootUser | quote }}
+            - name: RUSTFS_SECRET_KEY
               valueFrom:
                 secretKeyRef:
                   name: {{ include "kq.secretName" . }}
-                  key: MINIO_ROOT_PASSWORD
+                  key: RUSTFS_SECRET_KEY
             - name: NETDRIVE_BUCKET
               value: {{ .Values.netdrive.bucket | quote }}
             - name: DATA_MARKET_STAGING_BUCKET
@@ -59,7 +59,7 @@ spec:
                 secretKeyRef:
                   name: {{ include "kq.secretName" . }}
                   key: NETDRIVE_SECRET_KEY
-            - name: MINIO_READY_TIMEOUT_SECONDS
+            - name: RUSTFS_READY_TIMEOUT_SECONDS
               value: "600"
           volumeMounts:
             - name: bootstrap-script
@@ -68,6 +68,6 @@ spec:
       volumes:
         - name: bootstrap-script
           configMap:
-            name: {{ include "kq.minioBootstrapConfigMapName" . }}
+            name: {{ include "kq.rustfsBootstrapConfigMapName" . }}
             defaultMode: 0555
 {{- end }}

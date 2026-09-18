@@ -9,7 +9,7 @@
 | 范围 | 主要职责 |
 |---|---|
 | 平台入口 | DNS、TLS、反向代理、单域名/多域名路由和 WebSocket |
-| 平台组件 | Server、Web、Registry、Casdoor、PostgreSQL、MinIO、SpiceDB |
+| 平台组件 | Server、Web、Registry、Casdoor、PostgreSQL、RustFS、SpiceDB |
 | 站点接入 | 接入代理进程、控制通道、证书、调度系统连通性 |
 | 数据保护 | 数据库备份、对象存储保护、配置备份和恢复演练 |
 | 发布维护 | 镜像或二进制发布、数据库迁移、滚动更新、回滚和观察 |
@@ -29,7 +29,7 @@
 | 服务 | 用途 | 关键依赖 |
 |---|---|---|
 | PostgreSQL | Server、Casdoor 等持久化数据 | 磁盘、备份和连接容量 |
-| MinIO/S3 | 平台文件空间、数据市场和可选 SSH 录制 | 对象存储容量和公共访问地址 |
+| RustFS/S3 | 平台文件空间、数据市场和可选 SSH 录制 | 对象存储容量和公共访问地址 |
 | SpiceDB | 关系授权 | PostgreSQL、Server 授权同步 |
 | Casdoor | OIDC 身份提供方 | PostgreSQL、反向代理和回调地址 |
 | Nginx gateway | 统一 TLS 入口和路径路由 | 上游服务、证书和 DNS |
@@ -51,7 +51,7 @@
 | `/v2/` | OCI Distribution API |
 | `/buildcache/` | Spack 构建缓存 |
 | OIDC 必要根路径 | Casdoor |
-| 对象存储 bucket 路径 | MinIO/S3 |
+| 对象存储 bucket 路径 | RustFS/S3 |
 
 单域名模式减少 CORS 和 Cookie 配置，适合当前云环境和多数单位部署。
 
@@ -128,7 +128,7 @@ journalctl -u kuintessence-agent --since "30 minutes ago"
 
 ### 5.1 启动顺序
 
-1. PostgreSQL 和 MinIO/S3。
+1. PostgreSQL 和 RustFS/S3。
 2. SpiceDB 和 Casdoor。
 3. Server 和 Registry。
 4. Web 和反向代理。
@@ -161,7 +161,7 @@ journalctl -u kuintessence-agent --since "30 minutes ago"
 - 发布主机、命名空间、仓库/部署目录、Compose 或 Helm 入口及正式 HTTPS 检查地址。
 - 发布人、独立观察人、系统运维负责人、权限复核的平台管理员，以及负责验证基本业务流程的业务负责人。
 
-检查运行中作业、调度队列、待取消任务和授权积压，确认可在维护窗口内处理。发布人执行并记录，观察人独立复核，系统运维负责人决定暂停后续发布或回滚。PostgreSQL、MinIO、SpiceDB、Casdoor 等基础设施升级需安排在应用发布前的独立维护窗口，恢复健康后再发布应用。
+检查运行中作业、调度队列、待取消任务和授权积压，确认可在维护窗口内处理。发布人执行并记录，观察人独立复核，系统运维负责人决定暂停后续发布或回滚。PostgreSQL、RustFS、SpiceDB、Casdoor 等基础设施升级需安排在应用发布前的独立维护窗口，恢复健康后再发布应用。
 
 执行与变更范围匹配的 focused test、lint、typecheck 和部署配置检查。以下为发布主机上的检查示例，从仓库根目录执行；实际配置、project 和地址必须来自部署记录：
 
@@ -261,7 +261,7 @@ SpiceDB 承载关系授权，Server 通过授权同步队列写入关系。
 
 恢复前停止 Server 写入，明确目标时间点和数据影响。恢复后依次检查 migration ledger、Server readiness、授权同步、登录和代表性业务资源。
 
-## 10. MinIO 与平台文件空间
+## 10. RustFS 与平台文件空间
 
 对象存储承载平台文件空间、数据市场暂存/不可变对象以及可选 SSH 录制。
 
@@ -326,7 +326,7 @@ SSH 子系统包括凭据保管库、活跃会话、会话限制和可选会话�
 
 - Server、Registry 和 gateway 可用性与延迟。
 - PostgreSQL 连接、锁等待、容量和备份结果。
-- MinIO 容量、请求失败和对象增长。
+- RustFS 容量、请求失败和对象增长。
 - 授权同步 pending、processing 和 dead letter。
 - 接入代理在线率、重连和计算健康。
 - 作业失败率、待取消任务和队列深度。
@@ -378,7 +378,7 @@ SSH 子系统包括凭据保管库、活跃会话、会话限制和可选会话�
 1. 正式 HTTPS 单域名或多域名入口可用。
 2. OIDC 登录、刷新和退出验证通过。
 3. development login 已关闭，临时网络访问限制已按登录验证结果调整。
-4. Server、Web、Registry、PostgreSQL、MinIO、SpiceDB 和 Casdoor 健康。
+4. Server、Web、Registry、PostgreSQL、RustFS、SpiceDB 和 Casdoor 健康。
 5. 目标接入代理在线且计算健康状态符合实际。
 6. 代表性调度系统完成最小作业与状态回传。
 7. 平台文件空间上传、下载和双向传输通过。

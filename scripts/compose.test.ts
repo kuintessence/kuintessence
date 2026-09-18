@@ -129,7 +129,7 @@ describe("composeEnvForSpiceDB", () => {
     const infraProfile: ComposeProfile = {
       key: "infra",
       label: "Infra only",
-      description: "Postgres + Redis + MinIO only; use when app services run on host.",
+      description: "Postgres + Redis + RustFS only; use when app services run on host.",
       files: ["deploy/compose/docker-compose.dev.yml"],
       urls: [],
     };

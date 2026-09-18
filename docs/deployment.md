@@ -4,6 +4,9 @@
 启动、重建、迁移和运行态验收会改变环境，执行前应确认目标与维护窗口。
 Server 当前只支持单实例部署，尚未通过 Redis 实现多实例协调。
 
+自托管对象存储使用 RustFS，旧 MinIO 数据不自动迁移；升级前先阅读
+[RustFS 迁移边界](../deploy/rustfs/README.md)，不要复用旧对象存储目录。
+
 - [Compose 与本地调度器](#compose)
 - [单容器演示](#aio)
 - [GitHub Actions](#actions)
@@ -46,7 +49,7 @@ bun run compose -- scheduler-watch down
 ```
 
 `scheduler` 和 `scheduler-watch` 必须设置 `KQ_DATA_MARKET_COMMITTER_SECRET_KEY`，
-用于 MinIO 初始化和 Server 文件服务。上面的固定值仅供开发测试。
+用于 RustFS 初始化和 Server 文件服务。上面的固定值仅供开发测试。
 后续启停、重建和配置解析也需要该变量；新终端中重新 export，或写入本地忽略的 `.env`。
 使用下面的 `--env-file deploy/schedulers/ports-alt.env` 命令时，仍需先 export 该变量。
 
@@ -96,7 +99,7 @@ Server `13000`、Registry `13100`。Casdoor issuer 默认
 - `db-migrate` 使用当前挂载仓库的 migrations；代码已引用但表不存在时先查 migration
   服务和 `__drizzle_migrations`，不要删除数据库绕过。
 
-`down` 保留卷；`down -v` 会删除 PostgreSQL、MinIO、Casdoor、Agent 和 scheduler
+`down` 保留卷；`down -v` 会删除 PostgreSQL、RustFS、Casdoor、Agent 和 scheduler
 状态，只能用于明确批准的开发数据销毁。仅删除 scheduler state 而保留 Server DB 会导致
 同名 Agent 的 enrollment intent 冲突。恢复时应核对原证书、执行正式轮换或采用新 Agent ID，
 禁止未经数据销毁批准清空全栈。
@@ -119,7 +122,7 @@ enforce readiness、outbox 与生产鉴权要求见[安全指南](security.md#au
 <a id="aio"></a>
 ## 单容器演示
 
-`aio` 将 Web、Server、Registry、PostgreSQL、Redis 和 MinIO 放在同一个容器中，
+`aio` 将 Web、Server、Registry、PostgreSQL、Redis 和 RustFS 放在同一个容器中，
 用于本机测试，不包含站点 Agent 或真实调度器。
 
 ```bash
@@ -132,19 +135,19 @@ bun run compose -- aio up --build --attach
 |---|---|---|
 | 平台管理员 | `admin@example.com` | 选择 `super_admin` |
 | 普通用户 | `user@example.com` | 选择 `user` |
-| MinIO console，`http://localhost:9001` | `minioadmin` | `minioadmin` |
+| RustFS console，`http://localhost:9001` | `rustfsadmin` | `rustfsadmin` |
 | PostgreSQL 应用账号，仅容器内部 | `kq` | `kq` |
-| MinIO 应用访问密钥 | `kq-data-market-committer` | `aio-test-committer-secret-not-for-production` |
+| RustFS 应用访问密钥 | `kq-data-market-committer` | `aio-test-committer-secret-not-for-production` |
 
 这些都是公开的测试值。Compose 仅发布本机回环地址上的 `8080`、`9000`、`9001`，
 不通过公网代理或 Tunnel 暴露。存储密钥可用 `KQ_DATA_MARKET_COMMITTER_SECRET_KEY` 覆盖。
-用户、数据库、MinIO 数据和 Registry 文件保存在 `kq-aio-data` 卷中。
+用户、数据库、RustFS 数据和 Registry 文件保存在 `kq-aio-data` 卷中。
 Registry 的 `BLOB_STORE_DIR=/data/registry/blobs` 保存 OCI blob 和 Spack buildcache，
 重启或重建容器时保留。启动脚本完成数据库迁移、存储桶和存储账号初始化。
 
 AIO 构建启用 `VITE_PREVIEW_LOGIN=true`，Server 使用 `NODE_ENV=development`、
 `AUTHZ_MODE=off`，不接入 SSO 或 SpiceDB。其他镜像的默认登录配置不变。
-容器健康检查覆盖 Server、Registry、MinIO 和 Web。
+容器健康检查覆盖 Server、Registry、RustFS 和 Web。
 
 ```bash
 bun run compose -- aio down
@@ -233,7 +236,7 @@ GitHub 预览入口认证换取本次环境的 HttpOnly/Secure cookie，
 ### 范围与安全边界
 
 - 包含 Web、Server、Registry、PostgreSQL 和数据库迁移；数据只来自空库及本次人工操作。
-  不含 Agent、Slurm/PBS/Kubernetes、Casdoor、SpiceDB 或 MinIO；SSO、细粒度授权、
+  不含 Agent、Slurm/PBS/Kubernetes、Casdoor、SpiceDB 或 RustFS；SSO、细粒度授权、
   NetDrive、真实作业与集群 SSH 的运行验证需另备环境。当前 Server 不连接 Redis，
   这里只保留配置占位；引入 Redis 运行依赖时，须同步补齐预览配置。
 - 数据库与业务服务不映射宿主端口，只有认证 gateway 绑定 runner loopback。
@@ -270,7 +273,7 @@ GitHub 预览入口认证换取本次环境的 HttpOnly/Secure cookie，
 | `/v2/` | OCI Distribution |
 | `/buildcache/` | Spack buildcache |
 | `/.well-known/`、`/login/oauth/`、`/static/` 与必要 `/api/*` | Casdoor |
-| 原始 bucket path | MinIO/S3 presigned transfer |
+| 原始 bucket path | RustFS/S3 presigned transfer |
 
 Web 通过 `packages/web/src/lib/platform-paths.ts` 生成 Server 路径。
 Casdoor 使用根路径，不把整个 IdP 挂到 `/identity/`；对象存储不能插入额外 path prefix。

@@ -5,30 +5,33 @@ import { join } from "node:path";
 
 const read = (path: string): Promise<string> => Bun.file(path).text();
 
-async function runBootstrapMock(options: { failCommand?: string; failCors?: boolean } = {}) {
-  const dir = await mkdtemp(join(tmpdir(), "kq-minio-bootstrap-"));
-  const mc = join(dir, "mc");
-  const log = join(dir, "mc.log");
+async function runBootstrapMock(
+  options: { failCommand?: string; failCors?: boolean; invalidRetention?: boolean } = {},
+) {
+  const dir = await mkdtemp(join(tmpdir(), "kq-rustfs-bootstrap-"));
+  const rc = join(dir, "rc");
+  const log = join(dir, "rc.log");
   await writeFile(
-    mc,
+    rc,
     `#!/usr/bin/env sh
 set -eu
+if [ "$1" = "--json" ]; then shift; fi
 command="$1 \${2:-}"
-printf '%s\\n' "$command" >> "$MC_LOG"
+printf '%s\\n' "$command" >> "$RC_LOG"
 if [ "${options.failCommand ?? ""}" = "$command" ]; then exit 1; fi
 if [ "${options.failCors ? "1" : "0"}" = "1" ] && [ "$command" = "cors set" ]; then exit 1; fi
 if [ "$command" = "retention info" ]; then
-  echo "Object locking 'COMPLIANCE' is configured for 365DAYS."
+  echo '{"type":"locks","status":"success","data":{"items":[{"bucket":"immutable","object_lock_enabled":true,"default_retention":{"mode":"${options.invalidRetention ? "governance" : "compliance"}","duration":{"unit":"days","value":365}}}]}}'
 fi
 if [ "$command" = "admin user" ]; then
-  echo "policy: kq-data-market-committer-policy"
+  echo '{"access_key":"kq-data-market-committer","status":"enabled","policies":["kq-data-market-committer-policy"]}'
 fi
 `,
     { mode: 0o755 },
   );
   try {
     const result = Bun.spawnSync({
-      cmd: ["sh", "deploy/minio/bootstrap-object-lock.sh"],
+      cmd: ["sh", "deploy/rustfs/bootstrap-object-lock.sh"],
       cwd: ".",
       env: {
         ...process.env,
@@ -37,10 +40,10 @@ fi
         DATA_MARKET_COMMITTER_SECRET_KEY: "committer-secret",
         DATA_MARKET_STAGING_BUCKET: "staging",
         DATA_MARKET_STAGING_EXPIRY_DAYS: "1",
-        MC_LOG: log,
-        MINIO_ENDPOINT: "http://minio:9000",
-        MINIO_ROOT_PASSWORD: "password",
-        MINIO_ROOT_USER: "user",
+        RC_LOG: log,
+        RUSTFS_ENDPOINT: "http://rustfs:9000",
+        RUSTFS_SECRET_KEY: "password",
+        RUSTFS_ACCESS_KEY: "user",
         NETDRIVE_BUCKET: "netdrive",
         PATH: `${dir}:${process.env.PATH ?? ""}`,
       },
@@ -57,28 +60,28 @@ fi
   }
 }
 
-describe("MinIO Object Lock bootstrap wiring", () => {
+describe("RustFS Object Lock bootstrap wiring", () => {
   test("initialization script separates deleteable staging from immutable content", async () => {
-    const script = await read("deploy/minio/bootstrap-object-lock.sh");
+    const script = await read("deploy/rustfs/bootstrap-object-lock.sh");
 
-    expect(script).toContain("mc mb --ignore-existing --with-lock");
-    expect(script).toContain("mc version enable");
+    expect(script).toContain("rc mb --ignore-existing --with-lock");
+    expect(script).toContain("rc version enable");
     expect(script).toContain("DATA_MARKET_STAGING_BUCKET must differ");
     expect(script).toContain("NETDRIVE_BUCKET must differ from Data Market buckets");
-    expect(script).toContain("mc ilm rule add --expire-days");
+    expect(script).toContain("rc ilm rule import");
     expect(script).toContain(`"local/\${staging_bucket}"`);
     expect(script).toContain(`"local/\${immutable_bucket}"`);
     expect(script).toContain('"s3:x-amz-copy-source"');
     expect(script).toContain('"s3:object-lock-mode": "COMPLIANCE"');
     expect(script).toContain('"s3:GetObjectVersion"');
     expect(script).toContain('"s3:DeleteObject", "s3:DeleteObjectVersion"');
-    expect(script).toContain("mc admin user add");
-    expect(script).toContain("mc admin policy create");
-    expect(script).toContain("mc admin policy attach");
-    expect(script).toContain("mc retention set --default COMPLIANCE");
+    expect(script).toContain("rc admin user add");
+    expect(script).toContain("rc admin policy create");
+    expect(script).toContain("rc admin policy attach");
+    expect(script).toContain("rc retention set --default compliance");
     expect(script).toContain("DATA_MARKET_IMMUTABLE_BUCKET must support COMPLIANCE Object Lock");
     expect(script).toContain("configure_cors() {");
-    expect(script).toContain(`if ! mc cors set "local/\${bucket}"`);
+    expect(script).toContain(`if ! rc cors set "local/\${bucket}"`);
     expect(script).toContain("configure and verify equivalent browser CORS separately");
     expect(script).not.toContain("|| true");
     expect(await read("deploy/helm/kq-platform/files/bootstrap-object-lock.sh")).toBe(script);
@@ -88,20 +91,20 @@ describe("MinIO Object Lock bootstrap wiring", () => {
     const compose = await read("deploy/compose/docker-compose.schedulers.yml");
     const server = compose.slice(compose.indexOf("  server:"), compose.indexOf("\n  registry:"));
 
-    expect(compose).toContain("minio-init:");
+    expect(compose).toContain("rustfs-init:");
     expect(compose).toContain("condition: service_healthy");
     expect(compose).toContain("bootstrap-object-lock.sh:/bootstrap-object-lock.sh:ro");
-    expect(server).toContain("minio-init:");
+    expect(server).toContain("rustfs-init:");
     expect(server).toContain("condition: service_completed_successfully");
   });
 
   test("scheduler CORS proxy preserves the host signed into browser upload URLs", async () => {
     const compose = await read("deploy/compose/docker-compose.schedulers.yml");
-    const proxy = await read("deploy/minio/cors-proxy.conf");
+    const proxy = await read("deploy/rustfs/cors-proxy.conf");
 
-    expect(compose).toContain("minio-cors:");
-    expect(compose).toContain(`"\${KQ_SCHEDULER_MINIO_API_PORT:-9000}:8080"`);
-    expect(compose).toContain("minio-cors:\n        condition: service_healthy");
+    expect(compose).toContain("rustfs-cors:");
+    expect(compose).toContain(`"\${KQ_SCHEDULER_RUSTFS_API_PORT:-9000}:8080"`);
+    expect(compose).toContain("rustfs-cors:\n        condition: service_healthy");
     expect(proxy).toContain("if ($request_method = OPTIONS)");
     expect(proxy).toContain('Access-Control-Allow-Methods "GET, PUT, HEAD"');
     expect(proxy).toContain("proxy_set_header Host $http_host");
@@ -115,12 +118,13 @@ describe("MinIO Object Lock bootstrap wiring", () => {
     const compose = await read("deploy/compose/docker-compose.aio.yml");
 
     expect(entrypoint.indexOf("bootstrap-object-lock")).toBeGreaterThan(
-      entrypoint.indexOf('log "starting minio"'),
+      entrypoint.indexOf('log "starting rustfs"'),
     );
     expect(entrypoint.indexOf("bootstrap-object-lock")).toBeLessThan(
       entrypoint.indexOf('log "starting server"'),
     );
-    expect(dockerfile).toContain("COPY --from=minio-mc /usr/bin/mc /usr/local/bin/mc");
+    expect(dockerfile).toContain("COPY --from=rustfs-rc /usr/bin/rc /usr/local/bin/rc");
+    expect(entrypoint).toContain("legacy MinIO data detected");
     expect(dockerfile).toContain("NETDRIVE_ENABLED=true");
     expect(dockerfile).toContain("DATA_MARKET_IMMUTABLE_RETENTION_DAYS=365");
     expect(compose).toContain("DATA_MARKET_COMMITTER_SECRET_KEY");
@@ -151,15 +155,20 @@ describe("MinIO Object Lock bootstrap wiring", () => {
     expect(result.log).toContain("admin policy");
   });
 
-  test.each([
-    "version enable",
-    "retention set",
-    "ilm rule",
-    "admin policy",
-    "admin user",
-  ])("fails when %s cannot enforce its control", async (failCommand) => {
-    const result = await runBootstrapMock({ failCommand });
+  test("fails closed when retention readback is not COMPLIANCE", async () => {
+    const result = await runBootstrapMock({ invalidRetention: true });
 
     expect(result.exitCode).not.toBe(0);
+    expect(result.stderr).toContain("must support COMPLIANCE Object Lock");
+    expect(result.log).not.toContain("admin user");
   });
+
+  test.each(["version enable", "retention set", "ilm rule", "admin policy", "admin user"])(
+    "fails when %s cannot enforce its control",
+    async (failCommand) => {
+      const result = await runBootstrapMock({ failCommand });
+
+      expect(result.exitCode).not.toBe(0);
+    },
+  );
 });

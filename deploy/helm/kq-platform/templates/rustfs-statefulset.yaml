@@ -1,49 +1,61 @@
-{{- if .Values.minio.enabled }}
+{{- if hasKey .Values "minio" }}
+{{- fail "minio values are no longer supported; migrate data separately and use rustfs values" }}
+{{- end }}
+{{- if .Values.rustfs.enabled }}
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
-  name: {{ .Release.Name }}-minio
+  name: {{ .Release.Name }}-rustfs
   labels: {{- include "kq.labels" . | nindent 4 }}
 spec:
-  serviceName: {{ .Release.Name }}-minio
+  serviceName: {{ .Release.Name }}-rustfs
   replicas: 1
   selector:
     matchLabels:
       app.kubernetes.io/name: {{ .Chart.Name }}
-      app.kubernetes.io/component: minio
+      app.kubernetes.io/component: rustfs
   template:
     metadata:
       labels:
         app.kubernetes.io/name: {{ .Chart.Name }}
-        app.kubernetes.io/component: minio
+        app.kubernetes.io/component: rustfs
     spec:
+      securityContext:
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        fsGroupChangePolicy: OnRootMismatch
       containers:
-        - name: minio
-          image: {{ .Values.minio.image }}
-          args: ["server", "/data", "--console-address", ":9001"]
+        - name: rustfs
+          image: {{ .Values.rustfs.image }}
+          args: ["rustfs", "/data"]
           ports:
             - name: api
               containerPort: 9000
             - name: console
               containerPort: 9001
           env:
-            - name: MINIO_ROOT_USER
-              value: {{ .Values.minio.rootUser }}
-            - name: MINIO_ROOT_PASSWORD
+            - name: RUSTFS_CONSOLE_ENABLE
+              value: "true"
+            - name: RUSTFS_OBS_LOG_DIRECTORY
+              value: /tmp/logs
+            - name: RUSTFS_ACCESS_KEY
+              value: {{ .Values.rustfs.rootUser }}
+            - name: RUSTFS_SECRET_KEY
               valueFrom:
                 secretKeyRef:
                   name: {{ include "kq.secretName" . }}
-                  key: MINIO_ROOT_PASSWORD
+                  key: RUSTFS_SECRET_KEY
           readinessProbe:
             httpGet:
-              path: /minio/health/ready
+              path: /health
               port: 9000
             initialDelaySeconds: 10
             periodSeconds: 10
             failureThreshold: 6
           livenessProbe:
             httpGet:
-              path: /minio/health/live
+              path: /health
               port: 9000
             initialDelaySeconds: 30
             periodSeconds: 30
@@ -56,23 +68,23 @@ spec:
         name: data
       spec:
         accessModes: ["ReadWriteOnce"]
-        {{- if .Values.minio.storageClass }}
-        storageClassName: {{ .Values.minio.storageClass }}
+        {{- if .Values.rustfs.storageClass }}
+        storageClassName: {{ .Values.rustfs.storageClass }}
         {{- end }}
         resources:
           requests:
-            storage: {{ .Values.minio.storage }}
+            storage: {{ .Values.rustfs.storage }}
 ---
 apiVersion: v1
 kind: Service
 metadata:
-  name: {{ .Release.Name }}-minio
+  name: {{ .Release.Name }}-rustfs
   labels: {{- include "kq.labels" . | nindent 4 }}
 spec:
   clusterIP: None
   selector:
     app.kubernetes.io/name: {{ .Chart.Name }}
-    app.kubernetes.io/component: minio
+    app.kubernetes.io/component: rustfs
   ports:
     - name: api
       port: 9000

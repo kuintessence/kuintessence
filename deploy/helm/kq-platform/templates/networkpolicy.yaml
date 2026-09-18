@@ -26,7 +26,7 @@ spec:
         - port: {{ .Values.server.port }}
         - port: {{ .Values.server.grpcPort }}
   egress:
-    # Allow egress to PG, Redis, MinIO, and DNS / external HTTPS.
+    # Allow egress to PG, Redis, RustFS, and DNS / external HTTPS.
     - to:
         - podSelector: {}
     - to:

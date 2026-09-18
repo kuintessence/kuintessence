@@ -19,7 +19,7 @@ scheduler-base (现有 base/Dockerfile, Spack 1.0.0, Bun 1.3.13)
 镜像构建需要访问 Ubuntu apt、GitHub、Bun/npm registry 和 Docker registry；
 不是离线构建。可用 `KQ_PR_APT_MIRROR` 配置现有 base 的 apt mirror 参数，
 不等同于 Spack 专用 HTTP/SOCKS 代理。依赖在 build 时安装，运行时不安装依赖、
-不挂载宿主源码或 Docker socket、不提供 Web、SSO、SpiceDB、MinIO 或 tunnel。
+不挂载宿主源码或 Docker socket、不提供 Web、SSO、SpiceDB、RustFS 或 tunnel。
 
 Server 和 Registry 共用本次测试数据库；scheduler 与 Server 位于独立 control 网络，
 Registry/数据库在 backend 网络，两个网络均为 `internal`。

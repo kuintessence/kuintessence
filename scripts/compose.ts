@@ -53,13 +53,13 @@ const PROFILES: Record<ProfileKey, Profile> = {
   infra: {
     key: "infra",
     label: "Infra only",
-    description: "Postgres + Redis + MinIO only; use when app services run on host.",
+    description: "Postgres + Redis + RustFS only; use when app services run on host.",
     files: ["deploy/compose/docker-compose.dev.yml"],
     urls: [
       "Postgres: localhost:5432",
       "Redis: localhost:6379",
-      "MinIO API: http://localhost:9000",
-      "MinIO console: http://localhost:9001",
+      "RustFS API: http://localhost:9000",
+      "RustFS console: http://localhost:9001",
     ],
   },
   full: {
@@ -72,7 +72,7 @@ const PROFILES: Record<ProfileKey, Profile> = {
       "Server HTTP: http://localhost:3000",
       "Server gRPC: localhost:3001",
       "Registry: http://localhost:3100",
-      "MinIO console: http://localhost:9001",
+      "RustFS console: http://localhost:9001",
     ],
   },
   watch: {
@@ -85,7 +85,7 @@ const PROFILES: Record<ProfileKey, Profile> = {
       "Server HTTP: http://localhost:3000",
       "Server gRPC: localhost:3001",
       "Registry: http://localhost:3100",
-      "MinIO console: http://localhost:9001",
+      "RustFS console: http://localhost:9001",
     ],
   },
   netdrive: {
@@ -98,7 +98,7 @@ const PROFILES: Record<ProfileKey, Profile> = {
       "Server HTTP: http://localhost:3010",
       "Server gRPC: localhost:3011",
       "Registry: http://localhost:3100",
-      "MinIO console: http://localhost:9001",
+      "RustFS console: http://localhost:9001",
     ],
   },
   "watch-netdrive": {
@@ -115,7 +115,7 @@ const PROFILES: Record<ProfileKey, Profile> = {
       "Server HTTP: http://localhost:3010",
       "Server gRPC: localhost:3011",
       "Registry: http://localhost:3100",
-      "MinIO console: http://localhost:9001",
+      "RustFS console: http://localhost:9001",
     ],
   },
   scheduler: {
@@ -130,7 +130,7 @@ const PROFILES: Record<ProfileKey, Profile> = {
       "Server HTTP: http://localhost:13000",
       "Server gRPC: localhost:13001",
       "Registry: http://localhost:13100",
-      "MinIO console: http://localhost:19001",
+      "RustFS console: http://localhost:19001",
     ],
     heavy: true,
     schedulerSmoke: true,
@@ -148,7 +148,7 @@ const PROFILES: Record<ProfileKey, Profile> = {
       "Server HTTP: http://localhost:13000",
       "Server gRPC: localhost:13001",
       "Registry: http://localhost:13100",
-      "MinIO console: http://localhost:19001",
+      "RustFS console: http://localhost:19001",
     ],
     heavy: true,
     schedulerSmoke: true,
@@ -158,7 +158,7 @@ const PROFILES: Record<ProfileKey, Profile> = {
     label: "All-in-one demo",
     description: "Single all-in-one demo container with bundled services.",
     files: ["deploy/compose/docker-compose.aio.yml"],
-    urls: ["Web + Server API: http://localhost:8080", "MinIO console: http://localhost:9001"],
+    urls: ["Web + Server API: http://localhost:8080", "RustFS console: http://localhost:9001"],
     heavy: true,
   },
   demo: {
@@ -171,7 +171,7 @@ const PROFILES: Record<ProfileKey, Profile> = {
       "Server HTTP: http://localhost:3000",
       "Server gRPC: localhost:3001",
       "Registry: http://localhost:3100",
-      "MinIO console: http://localhost:9001",
+      "RustFS console: http://localhost:9001",
     ],
   },
 };

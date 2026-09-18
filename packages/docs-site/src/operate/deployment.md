@@ -113,7 +113,7 @@ DOCS_BASE="/kuintessence/" bun run docs:build
 生产部署前检查：
 
 - Server、Web、Registry 的外部 URL 和反向代理路径。
-- Postgres、MinIO、Redis 的持久化卷和备份。
+- Postgres、RustFS、Redis 的持久化卷和备份。
 - Helm 每个 revision 的数据库 migration Job 成功，Server/Registry initContainer 未绕过该门禁；升级前已完成数据库快照，且理解 schema 为 forward-only。
 - `REGISTRY_AUTH_MODE=jwt` 及 issuer/audience；OCI blob 使用持久卷，禁止生产回退到 `InMemoryBlobStore`。
 - Server 与 Registry 保持单副本；共享 event bus、Agent session ownership、cron leader election 和共享 upload session 尚未实现，不得启用 HPA。

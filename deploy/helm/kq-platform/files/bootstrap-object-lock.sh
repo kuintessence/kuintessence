@@ -1,5 +1,12 @@
 #!/usr/bin/env sh
 set -eu
+umask 077
+work_dir="$(mktemp -d)"
+trap 'rm -rf "$work_dir"' EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
+export RC_CONFIG_DIR="${work_dir}/config"
 
 netdrive_bucket="${NETDRIVE_BUCKET:-kq-netdrive}"
 staging_bucket="${DATA_MARKET_STAGING_BUCKET:-kq-data-market-staging}"
@@ -28,49 +35,54 @@ if [ "${netdrive_bucket}" = "${staging_bucket}" ] || [ "${netdrive_bucket}" = "$
   exit 1
 fi
 
-: "${MINIO_ENDPOINT:?MINIO_ENDPOINT is required}"
-: "${MINIO_ROOT_USER:?MINIO_ROOT_USER is required}"
-: "${MINIO_ROOT_PASSWORD:?MINIO_ROOT_PASSWORD is required}"
+: "${RUSTFS_ENDPOINT:?RUSTFS_ENDPOINT is required}"
+: "${RUSTFS_ACCESS_KEY:?RUSTFS_ACCESS_KEY is required}"
+: "${RUSTFS_SECRET_KEY:?RUSTFS_SECRET_KEY is required}"
 committer_access_key="${DATA_MARKET_COMMITTER_ACCESS_KEY:-kq-data-market-committer}"
 : "${DATA_MARKET_COMMITTER_SECRET_KEY:?DATA_MARKET_COMMITTER_SECRET_KEY is required}"
-if [ "${committer_access_key}" = "${MINIO_ROOT_USER}" ]; then
-  echo "DATA_MARKET_COMMITTER_ACCESS_KEY must not be MINIO_ROOT_USER" >&2
+if [ "${committer_access_key}" = "${RUSTFS_ACCESS_KEY}" ]; then
+  echo "DATA_MARKET_COMMITTER_ACCESS_KEY must not be RUSTFS_ACCESS_KEY" >&2
   exit 1
 fi
-ready_timeout_seconds="${MINIO_READY_TIMEOUT_SECONDS:-300}"
+ready_timeout_seconds="${RUSTFS_READY_TIMEOUT_SECONDS:-300}"
 
 case "${ready_timeout_seconds}" in
   "" | *[!0-9]* | 0)
-    echo "MINIO_READY_TIMEOUT_SECONDS must be a positive integer" >&2
+    echo "RUSTFS_READY_TIMEOUT_SECONDS must be a positive integer" >&2
     exit 1
     ;;
 esac
 
-mc alias set local "${MINIO_ENDPOINT}" "${MINIO_ROOT_USER}" "${MINIO_ROOT_PASSWORD}" >/dev/null
+rc alias set local "${RUSTFS_ENDPOINT}" "${RUSTFS_ACCESS_KEY}" "${RUSTFS_SECRET_KEY}" >/dev/null
 elapsed_seconds=0
-until mc ready local >/dev/null 2>&1; do
+until rc ready local >/dev/null 2>&1; do
   if [ "${elapsed_seconds}" -ge "${ready_timeout_seconds}" ]; then
-    echo "MinIO did not become ready within ${ready_timeout_seconds} seconds" >&2
+    echo "RustFS did not become ready within ${ready_timeout_seconds} seconds" >&2
     exit 1
   fi
   sleep 2
   elapsed_seconds=$((elapsed_seconds + 2))
 done
 
-mc mb --ignore-existing "local/${netdrive_bucket}" >/dev/null
-mc mb --ignore-existing "local/${staging_bucket}" >/dev/null
-mc mb --ignore-existing --with-lock "local/${immutable_bucket}" >/dev/null
-mc version enable "local/${immutable_bucket}" >/dev/null
-mc retention set --default COMPLIANCE "${retention_days}d" "local/${immutable_bucket}" >/dev/null
-case "$(mc retention info "local/${immutable_bucket}")" in
-  *"Object locking 'COMPLIANCE' is configured"*) ;;
-  *)
-    echo "DATA_MARKET_IMMUTABLE_BUCKET must support COMPLIANCE Object Lock" >&2
-    exit 1
-    ;;
-esac
+rc mb --ignore-existing "local/${netdrive_bucket}" >/dev/null
+rc mb --ignore-existing "local/${staging_bucket}" >/dev/null
+rc mb --ignore-existing --with-lock "local/${immutable_bucket}" >/dev/null
+rc version enable "local/${immutable_bucket}" >/dev/null
+rc retention set --default compliance "${retention_days}d" "local/${immutable_bucket}" >/dev/null
+rc --json retention info --default "local/${immutable_bucket}" >"${work_dir}/retention.json"
+if ! jq -e --arg bucket "${immutable_bucket}" --argjson days "${retention_days}" '
+  .status == "success" and .type == "locks" and
+  (.data.items | length) == 1 and
+  .data.items[0].bucket == $bucket and
+  .data.items[0].object_lock_enabled == true and
+  .data.items[0].default_retention.mode == "compliance" and
+  .data.items[0].default_retention.duration == {"unit": "days", "value": $days}
+' "${work_dir}/retention.json" >/dev/null; then
+  echo "DATA_MARKET_IMMUTABLE_BUCKET must support COMPLIANCE Object Lock" >&2
+  exit 1
+fi
 
-cat >/tmp/kq-netdrive-cors.xml <<'EOF'
+cat >"${work_dir}/cors.xml" <<'EOF'
 <CORSConfiguration>
   <CORSRule>
     <AllowedOrigin>*</AllowedOrigin>
@@ -85,7 +97,7 @@ cat >/tmp/kq-netdrive-cors.xml <<'EOF'
 EOF
 configure_cors() {
   bucket="$1"
-  if ! mc cors set "local/${bucket}" /tmp/kq-netdrive-cors.xml >/dev/null; then
+  if ! rc cors set "local/${bucket}" "${work_dir}/cors.xml" >/dev/null; then
     echo "Warning: unable to configure bucket CORS for ${bucket}; configure and verify equivalent browser CORS separately" >&2
   fi
 }
@@ -93,8 +105,7 @@ configure_cors() {
 configure_cors "${netdrive_bucket}"
 configure_cors "${staging_bucket}"
 configure_cors "${immutable_bucket}"
-mc ilm rule add --expire-days "${staging_expiry_days}" --prefix "data-market/staging/" "local/${staging_bucket}" >/dev/null
-cat >/tmp/kq-data-market-staging-lifecycle.json <<EOF
+cat >"${work_dir}/lifecycle.json" <<EOF
 {
   "Rules": [
     {
@@ -106,9 +117,9 @@ cat >/tmp/kq-data-market-staging-lifecycle.json <<EOF
   ]
 }
 EOF
-mc ilm rule import "local/${staging_bucket}" </tmp/kq-data-market-staging-lifecycle.json >/dev/null
+rc ilm rule import "local/${staging_bucket}" "${work_dir}/lifecycle.json" >/dev/null
 
-cat >/tmp/kq-data-market-committer-policy.json <<EOF
+cat >"${work_dir}/policy.json" <<EOF
 {
   "Version": "2012-10-17",
   "Statement": [
@@ -177,13 +188,14 @@ cat >/tmp/kq-data-market-committer-policy.json <<EOF
   ]
 }
 EOF
-mc admin user add local "${committer_access_key}" "${DATA_MARKET_COMMITTER_SECRET_KEY}" >/dev/null
-mc admin policy create local kq-data-market-committer-policy /tmp/kq-data-market-committer-policy.json >/dev/null
-mc admin policy attach local kq-data-market-committer-policy --user "${committer_access_key}" >/dev/null
-case "$(mc admin user info local "${committer_access_key}")" in
-  *"kq-data-market-committer-policy"*) ;;
-  *)
-    echo "Data Market committer IAM policy was not attached" >&2
-    exit 1
-    ;;
-esac
+rc admin user add local "${committer_access_key}" "${DATA_MARKET_COMMITTER_SECRET_KEY}" >/dev/null
+rc admin policy create local kq-data-market-committer-policy "${work_dir}/policy.json" >/dev/null
+rc admin policy attach local kq-data-market-committer-policy --user "${committer_access_key}" >/dev/null
+rc --json admin user info local "${committer_access_key}" >"${work_dir}/user.json"
+if ! jq -e --arg key "${committer_access_key}" '
+  .access_key == $key and .status == "enabled" and
+  (.policies | index("kq-data-market-committer-policy")) != null
+' "${work_dir}/user.json" >/dev/null; then
+  echo "Data Market committer IAM policy was not attached" >&2
+  exit 1
+fi

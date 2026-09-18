@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "contractId": "kuintessence-application-release-v1",
   "decisionDate": "2026-09-03",
-  "scope": "应用组件发布；PostgreSQL、MinIO、SpiceDB、Casdoor 等基础设施升级另设维护窗口",
+  "scope": "应用组件发布；PostgreSQL、RustFS、SpiceDB、Casdoor 等基础设施升级另设维护窗口",
   "sequence": [
     {
       "id": "freeze-backup",

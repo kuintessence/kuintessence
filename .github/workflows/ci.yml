@@ -71,6 +71,9 @@ jobs:
       - name: Render Helm deployment profiles
         run: bun run test:helm
 
+      - name: Check RustFS bootstrap and deployment wiring
+        run: bun test scripts/rustfs-object-lock-bootstrap.test.ts scripts/compose.test.ts
+
       - name: Type check (all packages)
         run: bun run typecheck
 
@@ -160,3 +163,16 @@ jobs:
 
       - name: Run e2e slice
         run: bun run test:e2e
+
+  rustfs-deployments:
+    name: RustFS Compose + AIO
+    if: github.event_name == 'workflow_dispatch' && inputs.run_runtime_checks
+    runs-on: ubuntu-latest
+    needs: static-checks
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Validate Compose and run disposable RustFS AIO
+        run: bash deploy/rustfs/ci.sh

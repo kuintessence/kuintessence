@@ -59,6 +59,7 @@ export async function startSlurmCluster(): Promise<SlurmCluster> {
     // The image's default CMD is `bash -l`, which exits immediately under `docker run -d`.
     // Override with startup.sh + tail so the container stays alive while tests run.
     .withHostname("ernie")
+    .withExtraHosts([{ host: "host.docker.internal", ipAddress: "host-gateway" }])
     .withCommand(["/bin/sh", "-c", "sudo /etc/startup.sh ; tail -f /dev/null"])
     .withStartupTimeout(60_000)
     .start();

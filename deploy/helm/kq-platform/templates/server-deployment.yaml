@@ -37,23 +37,23 @@ spec:
                 attempts=$((attempts + 1))
               done
               kubectl wait --for=condition=complete --timeout={{ .Values.migration.activeDeadlineSeconds }}s job/{{ include "kq.migrationName" . }}
-      {{- if and .Values.minio.enabled .Values.netdrive.enabled }}
-        - name: wait-minio-bootstrap
-          image: {{ .Values.minio.bootstrapWaitImage | quote }}
+      {{- if and .Values.rustfs.enabled .Values.netdrive.enabled }}
+        - name: wait-rustfs-bootstrap
+          image: {{ .Values.rustfs.bootstrapWaitImage | quote }}
           command:
             - /bin/sh
             - -ec
             - |
               attempts=0
-              until kubectl get job/{{ include "kq.minioBootstrapName" . }} >/dev/null; do
+              until kubectl get job/{{ include "kq.rustfsBootstrapName" . }} >/dev/null; do
                 if [ "${attempts}" -ge 60 ]; then
-                  echo "MinIO bootstrap Job was not created within 120 seconds" >&2
+                  echo "RustFS bootstrap Job was not created within 120 seconds" >&2
                   exit 1
                 fi
                 sleep 2
                 attempts=$((attempts + 1))
               done
-              kubectl wait --for=condition=complete --timeout=15m job/{{ include "kq.minioBootstrapName" . }}
+              kubectl wait --for=condition=complete --timeout=15m job/{{ include "kq.rustfsBootstrapName" . }}
       {{- end }}
       containers:
         - name: server

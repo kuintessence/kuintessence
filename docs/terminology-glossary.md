@@ -122,7 +122,7 @@
 
 以下名称在中文界面和文档中保留原文，必要时补充中文说明：
 
-- 产品与项目：Kuintessence、Casdoor、SpiceDB、MinIO、OpenTUI。
+- 产品与项目：Kuintessence、Casdoor、SpiceDB、RustFS、OpenTUI。
 - 调度与编排系统：Slurm、OpenPBS、Torque、Kubernetes、K3s。
 - 软件与协议：Spack、Apptainer、OCI、OIDC、SSH、mTLS、WebSocket、REST、gRPC。
 - 客户端形态：Web、CLI、TUI、GUI。

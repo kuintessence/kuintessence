@@ -12,7 +12,7 @@ Kuintessence 当前为 pre-release。以下列出组件功能、运行要求和�
 | 软件仓库（Registry） | 软件/用例/工作流目录、OCI、Spack buildcache、Git recipe 导入与版本管理 | 发布者权限、artifact 存储及 recipe 持久卷 |
 | Web | 用户工作区、React Flow 编辑器、CP Console、平台管理 | Server/Registry API |
 | CLI | 远程命令、TUI、无 Server 本地调度器 GUI | 对应远程身份或本地调度器 |
-| NetDrive | S3/MinIO、multipart upload、Range resume、集群传输 | 显式启用与完整存储配置 |
+| NetDrive | S3/RustFS、multipart upload、Range resume、集群传输 | 显式启用与完整存储配置 |
 | SSH | PTY、窗口调整、凭据 vault、可选录屏 | 目标集群凭据、权限及网络可达 |
 
 ## 工作流边界
@@ -29,6 +29,9 @@ Kuintessence 当前为 pre-release。以下列出组件功能、运行要求和�
 
 ## 运行限制
 
+- 自托管对象存储已统一配置为 RustFS，初始化使用 `rc` 而非 MinIO `mc` 镜像；
+  使用新卷/PVC，不自动迁移旧对象。升级前先阅读
+  [RustFS 迁移边界](../../deploy/rustfs/README.md)，特别是固定 version ID 引用。
 - Server 的事件与会话状态保存在进程内，生产部署使用单实例；Redis 尚未用于多实例协调。
 - Agent 生产连接需配置 mTLS 或受信任代理，证书注册和账本管理见[身份与安全](../security.md#agent)。
 - Linux 登录节点使用 [`kq-agent` systemd 部署](../../deploy/systemd/README.md)：
@@ -68,7 +71,7 @@ Kuintessence 当前为 pre-release。以下列出组件功能、运行要求和�
   手动镜像架构工作流仅在构建步骤使用配置解析占位值，不启动完整栈。
 - [AIO 演示](../deployment.md#aio) 提供本机开发登录与公开测试凭据，
   自动初始化数据库和对象存储，仅绑定本机端口；不含 SSO、SpiceDB 或站点 Agent。
-  Registry 的 OCI blob 和 Spack buildcache 与数据库、MinIO 数据共用持久化卷。
+  Registry 的 OCI blob 和 Spack buildcache 与数据库、RustFS 数据共用持久化卷。
 - 平台 Compose 入口集中在 [`deploy/compose/`](../../deploy/compose/README.md)；
   从仓库根目录使用 `bun run compose`。直接调用时指定 `--project-directory .`，
   以保留构建、挂载、根目录 `.env` 和默认项目名的路径基准。
