@@ -3,7 +3,7 @@ import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { parse } from "yaml";
-import { schedulerCancelled, waitFor } from "../deploy/pr-test/runtime";
+import { queueInventoryReady, schedulerCancelled, waitFor } from "../deploy/pr-test/runtime";
 import { loadServerConfig } from "../packages/server/src/config";
 
 const root = resolve(import.meta.dir, "..");
@@ -201,6 +201,45 @@ describe("PR runner lifecycle (fake Docker, no containers)", () => {
 });
 
 describe("runtime assertions", () => {
+  test("waits for reported, available inventory and an accepting target queue", () => {
+    const snapshot = {
+      agentId: "pr-scheduler",
+      providerOrgId: null,
+      schedulerType: "slurm",
+      queueInventoryV1: true,
+      status: "available",
+      defaultQueueName: "debug",
+      reason: null,
+      observedAt: "2026-01-01T00:00:00.000Z",
+      queues: [
+        {
+          queueName: "debug",
+          queueType: "partition",
+          isDefault: true,
+          state: "up",
+          acceptsSubmissions: true,
+          observedAt: "2026-01-01T00:00:00.000Z",
+          managed: false,
+          managedQueueIds: [],
+        },
+      ],
+    };
+    expect(queueInventoryReady(snapshot, "debug")).toBe(true);
+    const pending = { ...snapshot, status: "unknown", queues: [] };
+    expect(queueInventoryReady(pending, "debug")).toBe(false);
+    expect(queueInventoryReady({ ...snapshot, queueInventoryV1: false }, "debug")).toBe(false);
+    expect(queueInventoryReady({ ...snapshot, status: "stale" }, "debug")).toBe(false);
+    expect(queueInventoryReady(snapshot, "missing")).toBe(false);
+    for (const change of [{ state: "down" }, { acceptsSubmissions: false }]) {
+      expect(
+        queueInventoryReady(
+          { ...snapshot, queues: [{ ...snapshot.queues[0], ...change }] },
+          "debug",
+        ),
+      ).toBe(false);
+    }
+  });
+
   test("requires native cancellation, not just an absent or failed qstat response", () => {
     expect(schedulerCancelled("slurm", "JobState=RUNNING")).toBe(false);
     expect(schedulerCancelled("slurm", "JobState=CANCELLED Reason=None")).toBe(true);

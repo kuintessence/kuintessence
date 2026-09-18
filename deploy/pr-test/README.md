@@ -63,7 +63,8 @@ bash deploy/pr-test/run.sh pbs
 容器内以 `kq` 身份检查：
 
 1. 实际 `spack --version` 和 `bun --version`、测试代码 TypeScript 检查。
-2. Server 登录、Agent 自动注册及在线 control channel、创建本次测试 queue。
+2. Server 登录、Agent 自动注册及在线 control channel，等待心跳上报可用的 queue
+   inventory 和接受提交的目标队列后，创建本次测试 queue；超时或请求失败均报错。
 3. 通过 Server/Agent 提交真实 echo 作业，检查终态和 Server 返回的 stdout。
 4. 提交 sleep 作业，等待运行后取消，同时检查 Server 和原生调度器终态。
 5. 未配置材料分发时，Spack 安装请求必须被 Server 拒绝，不能落入直连上游安装。

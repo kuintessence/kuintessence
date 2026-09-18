@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { promisify } from "node:util";
+import { QueueInventoryAdminViewSchema } from "@kuintessence/shared";
 import { z } from "zod";
 
 const execute = promisify(execFile);
@@ -46,6 +47,18 @@ export function schedulerCancelled(scheduler: "slurm" | "pbs", stdout: string): 
     jobs[0]?.job_state === "F" &&
     jobs[0].Exit_status !== undefined &&
     jobs[0].Exit_status !== 0
+  );
+}
+
+export function queueInventoryReady(input: unknown, queueName: string): boolean {
+  const inventory = QueueInventoryAdminViewSchema.parse(input);
+  return (
+    inventory.queueInventoryV1 &&
+    inventory.status === "available" &&
+    inventory.queues.some(
+      (queue) =>
+        queue.queueName === queueName && queue.state === "up" && queue.acceptsSubmissions,
+    )
   );
 }
 
@@ -97,6 +110,23 @@ async function main() {
     .parse(await request("/cp/agent-registration-context"));
   const provider = context.providerOrgs.find((org) => org.name === "Development Compute Provider");
   assert(provider, "Development provider was not initialized");
+  const queueName = scheduler === "pbs" ? "workq" : "debug";
+  let inventoryState = "";
+  await waitFor(
+    "Agent queue inventory",
+    async () => {
+      const inventory = QueueInventoryAdminViewSchema.parse(
+        await request("/admin/agents/pr-scheduler/queue-inventory"),
+      );
+      const state = `${inventory.status}/${inventory.reason ?? "none"}`;
+      if (state !== inventoryState) {
+        console.log(`Queue inventory: ${state}`);
+        inventoryState = state;
+      }
+      return inventory;
+    },
+    (value) => queueInventoryReady(value, queueName),
+  );
   const queueId = randomUUID();
   await request("/admin/queues", {
     queueId,
@@ -105,7 +135,7 @@ async function main() {
     visibleOrgIds: [provider.id],
     agentId: "pr-scheduler",
     schedulerType: scheduler === "pbs" ? "pbs-pro" : "slurm",
-    queueName: scheduler === "pbs" ? "workq" : "debug",
+    queueName,
     enabled: true,
     qos: null,
     policyTags: [],
