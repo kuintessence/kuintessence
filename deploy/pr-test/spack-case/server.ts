@@ -12,9 +12,14 @@ process.env.SPACK_MATERIAL_RELEASES = JSON.stringify(bindings);
 // Keep production routes and direct-mTLS stream unchanged. Only the disposable
 // HTTP listener gets a second TLS endpoint for the Agent's real material client.
 const { default: application } = await import("../../../packages/server/src/index");
-Bun.serve(application);
+const http = {
+  hostname: application.hostname,
+  fetch: application.fetch,
+};
+// The case uses REST only; the production gRPC listener is created by index.ts.
+Bun.serve({ ...http, port: application.port });
 Bun.serve({
-  ...application,
+  ...http,
   port: 3443,
   tls: {
     cert: Bun.file("/case-server/server.crt"),

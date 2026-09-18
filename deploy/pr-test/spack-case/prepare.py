@@ -25,6 +25,7 @@ import urllib.request
 
 SPEC = "hello@2.12.1"
 UPSTREAM_COMMIT = "32c54f0906004d7fd1f72fd1b5970bf2bf094e26"
+UPSTREAM_TREE = "f117b6bf72ee6d9c2951922f4afd31f461b02b0d"
 UPSTREAM = Path("/opt/kq-case/upstream")
 ROOTS = ["repos/spack_repo/kq_case", "repos/spack_repo/builtin"]
 LICENSES = ("COPYRIGHT", "LICENSE-APACHE", "LICENSE-MIT")
@@ -66,13 +67,13 @@ def files(root: Path) -> list:
 
 def official_tree() -> dict:
     url = ("https://api.github.com/repos/spack/spack-packages/git/trees/"
-           + UPSTREAM_COMMIT + "?recursive=1")
+           + UPSTREAM_TREE + "?recursive=1")
     request = urllib.request.Request(url, headers={"User-Agent": "kuintessence-pr-spack-case"})
     with urllib.request.urlopen(request, timeout=60) as response:
         data = response.read(16 * MIB + 1)
     require(len(data) <= 16 * MIB, "Upstream metadata budget exceeded")
     tree = json.loads(data)
-    require(tree["sha"] == UPSTREAM_COMMIT and tree["truncated"] is False,
+    require(tree["sha"] == UPSTREAM_TREE and tree["truncated"] is False,
             "Incomplete or incorrectly pinned upstream tree")
     selected = {}
     for entry in tree["tree"]:

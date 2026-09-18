@@ -94,7 +94,13 @@ if (process.argv.includes("--verify")) {
   const recipe = RecipeRepositorySchema.parse(await imported.json());
   const selected = recipe.snapshots.find((item) => item.commit === metadata.commit);
   assert(selected, "Imported recipe commit differs from concretized recipe");
-  assert.equal(selected.diagnostics.filter((item) => item.severity === "error").length, 0);
+  assert.deepEqual(
+    selected.diagnostics
+      .filter((item) => item.severity === "error")
+      .map(({ code, path }) => ({ code, path })),
+    [],
+    "Pinned recipe snapshot has blocking diagnostics",
+  );
 
   async function upload(path: string) {
     const file = Bun.file(join(pack, path));
