@@ -510,7 +510,10 @@ async function main() {
       installedSoftware = await spackManager.installedList();
       logger.info({ count: installedSoftware.length }, "Initial Spack installed-list cached");
     } catch (err) {
-      logger.warn({ err }, "Failed to read initial Spack installed-list; inventory remains unknown");
+      logger.warn(
+        { err },
+        "Failed to read initial Spack installed-list; inventory remains unknown",
+      );
     }
   }
 

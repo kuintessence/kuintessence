@@ -71,9 +71,7 @@ describe("parseSpackFindJson", () => {
     '[{"name":42,"version":"1.0","hash":"h1"}]',
     '[{"name":"hello","version":1,"hash":"h1"}]',
   ])("rejects malformed entries instead of fabricating empty inventory: %s", (stdout) => {
-    expect(() => parseSpackFindJson(stdout)).toThrow(
-      "parseSpackFindJson: invalid installed entry",
-    );
+    expect(() => parseSpackFindJson(stdout)).toThrow("parseSpackFindJson: invalid installed entry");
   });
 
   test("synthesizes spec without compiler when compiler is missing", () => {

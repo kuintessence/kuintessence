@@ -914,7 +914,9 @@ describe("agent-handler", () => {
       expect(await installedRegistry.listForAgent("grpc-test-agent-1")).toEqual([]);
       expect(await installedRegistry.listForAgent(otherAgentId)).toEqual(otherBefore);
     } finally {
-      await db.delete(agentInstalledSoftware).where(eq(agentInstalledSoftware.agentId, otherAgentId));
+      await db
+        .delete(agentInstalledSoftware)
+        .where(eq(agentInstalledSoftware.agentId, otherAgentId));
       await db.delete(agents).where(eq(agents.agentId, otherAgentId));
     }
   });
