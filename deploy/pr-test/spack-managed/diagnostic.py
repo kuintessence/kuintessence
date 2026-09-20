@@ -42,8 +42,28 @@ def locations(error):
         allowed = {
             "AuditError", "KeyError", "ValueError", "TypeError", "AttributeError",
             "OSError", "PermissionError", "FileNotFoundError", "InstallError", "SystemExit",
+            "RuntimeError", "AssertionError", "UnsatisfiableSpecError", "SolverError",
+            "InternalConcretizerError", "OutputDoesNotSatisfyInputError", "NoCompilerFoundError",
+            "InvalidExternalError", "ConfigError", "ConfigFormatError", "SpackError",
+            "UnknownPackageError",
         }
         print("ci-worker-error:" + (kind if kind in allowed else "Exception"), file=sys.stderr)
+        if kind in allowed:
+            message = str(error)
+            for category, fragment in {
+                "compiler-target": "incompatible with 'target=",
+                "compiler-external": "Only external, or concrete, compilers are allowed",
+                "host-target": "not compatible with this machine",
+                "attribute-selection": "Cannot select a single",
+                "version-constraint": "Cannot satisfy",
+                "not-buildable": "is not buildable",
+                "no-compiler": "No compilers",
+                "solver-timeout": "stopping concretization",
+                "solver-memory": "bad_alloc",
+                "namespace-conflict": "namespaces",
+            }.items():
+                if fragment in message:
+                    print("ci-solver-category:" + category, file=sys.stderr)
         trace = error.__traceback__
         while trace is not None:
             filename = trace.tb_frame.f_code.co_filename
@@ -52,6 +72,13 @@ def locations(error):
                       file=sys.stderr)
                 if trace.tb_frame.f_code.co_name == "verify_scratch":
                     writable_mounts(trace.tb_frame)
+            for module in (
+                "concretize.py", "solver/asp.py", "solver/core.py", "solver/counter.py",
+                "compilers/config.py", "spec.py", "config.py", "store.py", "database.py",
+            ):
+                if filename == "/opt/spack/lib/spack/spack/" + module:
+                    print("ci-native-location:" + module + ":" + str(trace.tb_lineno),
+                          file=sys.stderr)
             trace = trace.tb_next
         error = error.__cause__
 

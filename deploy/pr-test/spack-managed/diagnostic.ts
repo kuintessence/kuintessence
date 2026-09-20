@@ -26,7 +26,9 @@ const diagnosticProcess: SpackAuditProcess = {
     );
     for (const line of result.stderr.split("\n")) {
       if (
-        /^ci-worker-error:(AuditError|KeyError|ValueError|TypeError|AttributeError|OSError|PermissionError|FileNotFoundError|InstallError|SystemExit|Exception)$/.test(line) ||
+        /^ci-worker-error:(AuditError|KeyError|ValueError|TypeError|AttributeError|OSError|PermissionError|FileNotFoundError|InstallError|SystemExit|RuntimeError|AssertionError|UnsatisfiableSpecError|SolverError|InternalConcretizerError|OutputDoesNotSatisfyInputError|NoCompilerFoundError|InvalidExternalError|ConfigError|ConfigFormatError|SpackError|UnknownPackageError|Exception)$/.test(line) ||
+        /^ci-solver-category:(compiler-target|compiler-external|host-target|attribute-selection|version-constraint|not-buildable|no-compiler|solver-timeout|solver-memory|namespace-conflict)$/.test(line) ||
+        /^ci-native-location:(concretize|solver\/asp|solver\/core|solver\/counter|compilers\/config|spec|config|store|database)\.py:\d{1,5}$/.test(line) ||
         /^ci-worker-location:(install_worker|source_audit)\.py:\d{1,5}$/.test(line) ||
         /^ci-writable-mount:location=(root|devices|null-device|zero-device|random-device|urandom-device|tty-device|passwd|group|resolver|hosts|localtime|cgroups|tmp|var-tmp|work|other) filesystem=(overlay|ext4|xfs|fuse\.squashfuse|fuse\.squashfuse_ll|fuse-overlayfs|fuse\.fuse-overlayfs|cgroup2|devtmpfs|ramfs|other)$/.test(line)
       ) console.error(line);
