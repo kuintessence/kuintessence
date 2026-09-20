@@ -1,5 +1,6 @@
 """CI-only tracing contract tests; never invoke main or a Spack worker."""
 
+from collections.abc import Sequence
 import contextlib
 import io
 import resource
@@ -24,10 +25,12 @@ SOLVER_MARKER = (
     r"\A(?:ci-compiler-candidates:accepted=[0-9]{1,5} rejected=[0-9]{1,5} "
     r"gcc=(?:accepted|rejected|absent)|"
     r"ci-compiler-probe:(?:verbose|libc) result=(?:present|missing)|"
-    r"ci-solver-error:kind=(?:external-condition|os-not-buildable|compiler-external|other) "
+    r"ci-solver-error:kind=(?:external-condition|external-selection|os-not-buildable|compiler-external|other) "
     r"package=(?:gcc|gmake|glibc|hello|other) "
     r"attribute=(?:namespace|version|platform|os|target|variant|flags|other) "
     r"variant=(?:languages|build_system|other)|"
+    r"ci-target-check:stage=(?:candidates|model) present=(?:true|false|unavailable) "
+    r"matches=(?:true|false|unavailable)|"
     r"ci-compiler-execution:(?:missing-file|permission|readonly|missing-library|linker|"
     r"no-space|unsupported-option|other))\Z"
 )
@@ -49,6 +52,67 @@ class UnprintableError(RuntimeError):
 
     def __repr__(self):
         raise AssertionError("Worker exceptions must not be represented")
+
+
+SYMBOL_TYPE = SimpleNamespace(Function=object(), String=object(), Number=object())
+
+
+class FakeSymbol:
+    """Reject property access that would be invalid for a clingo Symbol type."""
+
+    def __init__(self, kind, value, arguments=()):
+        self.type = kind
+        self.value = value
+        self._arguments = arguments
+
+    @property
+    def name(self):
+        if self.type != SYMBOL_TYPE.Function:
+            raise RuntimeError("Not a function")
+        return self.value
+
+    @property
+    def arguments(self):
+        if self.type != SYMBOL_TYPE.Function:
+            raise RuntimeError("Not a function")
+        return self._arguments
+
+    @property
+    def string(self):
+        if self.type != SYMBOL_TYPE.String:
+            raise RuntimeError("Not a string")
+        return self.value
+
+    def __str__(self):
+        raise AssertionError("Symbols must not be formatted")
+
+    def __repr__(self):
+        raise AssertionError("Symbols must not be represented")
+
+
+def target_symbol(package, target, index=0):
+    return FakeSymbol(SYMBOL_TYPE.Function, "attr", (
+        FakeSymbol(SYMBOL_TYPE.String, "node_target"),
+        FakeSymbol(SYMBOL_TYPE.Function, "node", (
+            FakeSymbol(SYMBOL_TYPE.Number, index),
+            FakeSymbol(SYMBOL_TYPE.String, package),
+        )),
+        FakeSymbol(SYMBOL_TYPE.String, target),
+    ))
+
+
+class SymbolSequence(Sequence):
+    """Non-list sequence with observable length and indexed reads."""
+
+    def __init__(self, values):
+        self.length = Mock(side_effect=lambda: len(values))
+        self.read = Mock(side_effect=values.__getitem__)
+
+    def __len__(self):
+        return self.length()
+
+    def __getitem__(self, index):
+        return self.read(index)
 
 
 class DiagnosticTestCase(unittest.TestCase):
@@ -335,6 +399,280 @@ class SolverDiagnosticTests(DiagnosticTestCase):
         self.assertEqual(self.stderr.getvalue(), "")
         self.rss.assert_not_called()
 
+    def test_profile_target_uses_only_solve_profile_without_mutating_inputs(self):
+        profile = {"target": "linux-privateos-privatecpu", "private": object()}
+        snapshot = dict(profile)
+        self.assertEqual(diagnostic.solve_target((object(), object(), profile), {}), "privatecpu")
+        self.assertEqual(diagnostic.solve_target((), {"profile": profile}), "privatecpu")
+        self.assertEqual(profile, snapshot)
+        for value in (None, {}, {"target": None}, {"target": object()},
+                      {"target": "privatecpu"}, {"target": "linux--privatecpu"},
+                      {"target": "linux-os-cpu-extra"}):
+            self.assertIsNone(diagnostic.solve_target((), {"profile": value}))
+        self.assertIsNone(diagnostic.solve_target((), {}))
+        self.assertIsNone(diagnostic.solve_target((None, None, profile), {"profile": None}))
+        self.assert_diagnostics([])
+
+    def test_target_defaults_observed_only_after_original_return(self):
+        for values, expected, present, matches in (
+            ([(0, "privatecpu"), (100, "othercpu")], "privatecpu", "true", "true"),
+            ([(0, "othercpu")], "privatecpu", "true", "false"),
+            ([], "privatecpu", "false", "unavailable"),
+            ([(0, "privatecpu")], None, "true", "unavailable"),
+            (None, "privatecpu", "unavailable", "unavailable"),
+            ([(0, object())], "privatecpu", "unavailable", "unavailable"),
+            ([(0, "privatecpu"), ("bad", "othercpu")],
+             "privatecpu", "unavailable", "unavailable"),
+        ):
+            self.reset_observations()
+            owner, result, specs = SimpleNamespace(), object(), object()
+
+            def original(actual_owner, *args, **kwargs):
+                self.assertIs(actual_owner, owner)
+                self.write.assert_not_called()
+                actual_owner.default_targets = values
+                return result
+
+            function = Mock(side_effect=original)
+            wrapper = diagnostic.diagnosed_target_defaults(function, expected, self.fd)
+            self.assertIs(wrapper(owner, specs, option=specs), result)
+            function.assert_called_once_with(owner, specs, option=specs)
+            self.assertIs(owner.default_targets, values)
+            self.assert_diagnostics([
+                f"ci-target-check:stage=candidates present={present} matches={matches}",
+            ])
+        self.reset_observations()
+        for error in (UnprintableError("private"), SystemExit("private"), KeyboardInterrupt()):
+            function = Mock(side_effect=error)
+            with self.assertRaises(type(error)) as caught:
+                diagnostic.diagnosed_target_defaults(function, "privatecpu", self.fd)(owner)
+            self.assertIs(caught.exception, error)
+            function.assert_called_once_with(owner)
+        self.assert_diagnostics([])
+
+    def test_model_observation_handles_symbol_types_and_all_gmake_nodes(self):
+        match = target_symbol("gmake", "privatecpu")
+        mismatch = target_symbol("gmake", "othercpu", index=1)
+        ignored = [
+            FakeSymbol(SYMBOL_TYPE.Number, 42),
+            FakeSymbol(SYMBOL_TYPE.String, "private\n/path"),
+            FakeSymbol(SYMBOL_TYPE.Function, "private"),
+            target_symbol("gcc", "othercpu"),
+        ]
+        for model, expected, present, matches in (
+            ([*ignored, match], "privatecpu", "true", "true"),
+            ([match, target_symbol("gmake", "privatecpu", index=1)],
+             "privatecpu", "true", "true"),
+            ([mismatch], "privatecpu", "true", "false"),
+            ([match, mismatch], "privatecpu", "true", "false"),
+            (ignored, "privatecpu", "false", "unavailable"),
+            ([], "privatecpu", "false", "unavailable"),
+            ([match], None, "true", "unavailable"),
+            (None, "privatecpu", "unavailable", "unavailable"),
+            ([match, object()], "privatecpu", "unavailable", "unavailable"),
+            ([FakeSymbol(SYMBOL_TYPE.Function, "attr", (
+                FakeSymbol(SYMBOL_TYPE.String, "node_target"),
+                FakeSymbol(SYMBOL_TYPE.String, "gmake"),
+                FakeSymbol(SYMBOL_TYPE.String, "privatecpu"),
+            ))], "privatecpu", "unavailable", "unavailable"),
+            ([FakeSymbol(SYMBOL_TYPE.Function, "attr", (
+                FakeSymbol(SYMBOL_TYPE.String, "node_target"),
+                match.arguments[1], FakeSymbol(SYMBOL_TYPE.Number, 1),
+            ))], "privatecpu", "unavailable", "unavailable"),
+        ):
+            self.reset_observations()
+            owner, errors, result = SimpleNamespace(model=model), [], object()
+            snapshot = tuple(model) if type(model) is list else None
+            function = Mock(return_value=result)
+            wrapper = diagnostic.diagnosed_message(
+                function, self.fd,
+                lambda handler: diagnostic.emit_target_check(
+                    "model", lambda: diagnostic.model_target_names(handler, SYMBOL_TYPE),
+                    expected, self.fd,
+                ),
+            )
+            self.assertIs(wrapper(owner, errors), result)
+            function.assert_called_once_with(owner, errors)
+            self.assertIs(owner.model, model)
+            if snapshot is not None:
+                self.assertEqual(tuple(model), snapshot)
+            self.assert_diagnostics([
+                f"ci-target-check:stage=model present={present} matches={matches}",
+            ])
+
+    def test_unreadable_targets_are_unavailable_without_consuming_iterators(self):
+        symbol = target_symbol("gmake", "privatecpu")
+        model = iter([symbol])
+        candidates = iter([(0, "privatecpu")])
+        for stage, reader in (
+            ("candidates", lambda: diagnostic.default_target_names(
+                SimpleNamespace(default_targets=candidates))),
+            ("model", lambda: diagnostic.model_target_names(
+                SimpleNamespace(model=model), SYMBOL_TYPE)),
+            ("candidates", lambda: diagnostic.default_target_names(object())),
+            ("model", lambda: diagnostic.model_target_names(object(), SYMBOL_TYPE)),
+        ):
+            self.reset_observations()
+            diagnostic.emit_target_check(stage, reader, "privatecpu", self.fd)
+            self.assert_diagnostics([
+                f"ci-target-check:stage={stage} present=unavailable matches=unavailable",
+            ])
+        self.assertIs(next(model), symbol)
+        self.assertEqual(next(candidates), (0, "privatecpu"))
+
+    def test_model_limit_accepts_boundary_and_rejects_oversize_before_traversal(self):
+        self.assertEqual(diagnostic.TARGET_MODEL_LIMIT, 65536)
+        ignored = FakeSymbol(SYMBOL_TYPE.String, "private")
+        match = target_symbol("gmake", "privatecpu")
+        model = [ignored] * (diagnostic.TARGET_MODEL_LIMIT - 1) + [match]
+        diagnostic.emit_target_check(
+            "model", lambda: diagnostic.model_target_names(
+                SimpleNamespace(model=model), SYMBOL_TYPE),
+            "privatecpu", self.fd,
+        )
+        self.assert_diagnostics([
+            "ci-target-check:stage=model present=true matches=true",
+        ])
+        self.reset_observations()
+        access = Mock(side_effect=AssertionError("Oversize models must not be traversed"))
+
+        class UnreadableSymbol:
+            @property
+            def type(self):
+                return access()
+
+        model = [UnreadableSymbol()] * (diagnostic.TARGET_MODEL_LIMIT + 1)
+        diagnostic.emit_target_check(
+            "model", lambda: diagnostic.model_target_names(
+                SimpleNamespace(model=model), SYMBOL_TYPE),
+            "privatecpu", self.fd,
+        )
+        access.assert_not_called()
+        self.assert_diagnostics([
+            "ci-target-check:stage=model present=unavailable matches=unavailable",
+        ])
+
+    def test_non_list_symbol_sequence_normal_empty_and_limit(self):
+        match = target_symbol("gmake", "privatecpu")
+        mismatch = target_symbol("gmake", "othercpu")
+        for values, present, matches in (
+            ((match,), "true", "true"),
+            ((match, mismatch), "true", "false"),
+            ((), "false", "unavailable"),
+            ((match,) * diagnostic.TARGET_MODEL_LIMIT, "true", "true"),
+            ((match,) * (diagnostic.TARGET_MODEL_LIMIT + 1), "unavailable", "unavailable"),
+        ):
+            self.reset_observations()
+            model = SymbolSequence(values)
+            owner, errors, result = SimpleNamespace(model=model), [], object()
+            function = Mock(return_value=result)
+            wrapper = diagnostic.diagnosed_message(
+                function, self.fd,
+                lambda handler: diagnostic.emit_target_check(
+                    "model", lambda: diagnostic.model_target_names(handler, SYMBOL_TYPE),
+                    "privatecpu", self.fd,
+                ),
+            )
+            self.assertIs(wrapper(owner, errors), result)
+            function.assert_called_once_with(owner, errors)
+            self.assertIs(owner.model, model)
+            model.length.assert_called_once_with()
+            if len(values) > diagnostic.TARGET_MODEL_LIMIT:
+                model.read.assert_not_called()
+            else:
+                self.assertEqual(model.read.call_count, len(values))
+                if values:
+                    self.assertEqual(model.read.call_args_list[0], call(0))
+                    self.assertEqual(model.read.call_args_list[-1], call(len(values) - 1))
+            self.assert_diagnostics([
+                f"ci-target-check:stage=model present={present} matches={matches}",
+            ])
+
+    def test_symbol_sequence_read_errors_are_unavailable_and_preserve_formatter(self):
+        match = target_symbol("gmake", "privatecpu")
+        for location in ("length", "item"):
+            for failure in (None, UnprintableError("private formatter")):
+                self.reset_observations()
+                model = SymbolSequence((match, match))
+                if location == "length":
+                    model.length.side_effect = UnprintableError("private length")
+                else:
+                    model.read.side_effect = [match, UnprintableError("private read")]
+                owner, errors, result = SimpleNamespace(model=model), [], object()
+                function = Mock(return_value=result, side_effect=failure)
+                wrapper = diagnostic.diagnosed_message(
+                    function, self.fd,
+                    lambda handler: diagnostic.emit_target_check(
+                        "model", lambda: diagnostic.model_target_names(handler, SYMBOL_TYPE),
+                        "privatecpu", self.fd,
+                    ),
+                )
+                if failure is None:
+                    self.assertIs(wrapper(owner, errors), result)
+                else:
+                    with self.assertRaises(UnprintableError) as caught:
+                        wrapper(owner, errors)
+                    self.assertIs(caught.exception, failure)
+                function.assert_called_once_with(owner, errors)
+                model.length.assert_called_once_with()
+                if location == "length":
+                    model.read.assert_not_called()
+                else:
+                    self.assertEqual(model.read.call_args_list, [call(0), call(1)])
+                self.assert_diagnostics([
+                    "ci-target-check:stage=model present=unavailable matches=unavailable",
+                ])
+
+    def test_model_rejects_text_bytes_and_sequence_iterators_before_reading(self):
+        class IteratorSequence(SymbolSequence):
+            def __iter__(self):
+                return self
+
+            def __next__(self):
+                raise AssertionError("Diagnostic must not consume an iterator")
+
+        sequence_iterator = IteratorSequence((target_symbol("gmake", "privatecpu"),))
+        for model in ("", "private", b"", b"private", bytearray(), sequence_iterator):
+            self.reset_observations()
+            diagnostic.emit_target_check(
+                "model", lambda: diagnostic.model_target_names(
+                    SimpleNamespace(model=model), SYMBOL_TYPE),
+                "privatecpu", self.fd,
+            )
+            self.assert_diagnostics([
+                "ci-target-check:stage=model present=unavailable matches=unavailable",
+            ])
+        sequence_iterator.length.assert_not_called()
+        sequence_iterator.read.assert_not_called()
+
+    def test_target_closed_pipe_preserves_results_and_original_formatter_error(self):
+        self.write.side_effect = BrokenPipeError("private pipe")
+        owner = SimpleNamespace(default_targets=[(0, "privatecpu")], model=[])
+        result, errors = object(), []
+        function = Mock(return_value=result)
+        self.assertIs(diagnostic.diagnosed_target_defaults(
+            function, "privatecpu", self.fd,
+        )(owner), result)
+        function.assert_called_once_with(owner)
+        for failure in (None, UnprintableError("private formatter")):
+            function = Mock(return_value=result, side_effect=failure)
+            wrapper = diagnostic.diagnosed_message(
+                function, self.fd,
+                lambda handler: diagnostic.emit_target_check(
+                    "model", lambda: diagnostic.model_target_names(handler, SYMBOL_TYPE),
+                    "privatecpu", self.fd,
+                ),
+            )
+            if failure is None:
+                self.assertIs(wrapper(owner, errors), result)
+            else:
+                with self.assertRaises(UnprintableError) as caught:
+                    wrapper(owner, errors)
+                self.assertIs(caught.exception, failure)
+            function.assert_called_once_with(owner, errors)
+        self.assertEqual(self.write.call_count, 3)
+        self.assert_diagnostics([])
+
     def test_return_observer_forwards_identity_once_and_preserves_exceptions(self):
         argument, keyword, result = object(), object(), object()
         function, observer = Mock(return_value=result), Mock()
@@ -494,6 +832,33 @@ class SolverDiagnosticTests(DiagnosticTestCase):
             "ci-solver-error:kind=external-condition package=other attribute=other variant=other",
             other, other,
         ])
+
+    def test_external_selection_requires_exact_official_template_and_one_argument(self):
+        for suffix, attribute in (
+            ("any configured external spec version", "version"),
+            ("a unique configured external spec version", "version"),
+            ("any configured external spec", "other"),
+        ):
+            template = "Attempted to use external for '{0}' which does not satisfy " + suffix
+            for args, package in ((["gmake"], "gmake"), (["private\n/path"], "other")):
+                self.reset_observations()
+                errors = [(100, template, args)]
+                result, owner = object(), object()
+                function = Mock(return_value=result)
+                self.assertIs(diagnostic.diagnosed_message(function, self.fd)(owner, errors), result)
+                function.assert_called_once_with(owner, errors)
+                self.assert_diagnostics([
+                    f"ci-solver-error:kind=external-selection package={package}"
+                    f" attribute={attribute} variant=other",
+                ])
+            for message, args in (
+                (template + " private", ["gmake"]), (template, []),
+                (template, ["gmake", "private"]), (template.format("gmake"), ["gmake"]),
+            ):
+                self.assertEqual(
+                    diagnostic.solver_error_fields((100, message, args)),
+                    ("other", "other", "other", "other"),
+                )
 
     def test_error_limit_preserves_full_input_and_does_not_consume_iterators(self):
         errors = [(0, "private", [])] * 65
@@ -687,8 +1052,13 @@ class SolverDiagnosticTests(DiagnosticTestCase):
                     return None
 
         libraries.CompilerPropertyDetector = Detector
-        asp.SpackSolverSetup = type("Setup", (), {"setup": lambda self: None})
+        target_defaults = Mock(return_value=object())
+        asp.SpackSolverSetup = type("Setup", (), {
+            "setup": lambda self: None,
+            "target_defaults": lambda self, specs: target_defaults(self, specs),
+        })
         modules["clingo"].Control = type("Control", (), {"ground": lambda self: None})
+        modules["clingo"].SymbolType = SYMBOL_TYPE
         asp.SpecBuilder = type("Builder", (), {"build_specs": lambda self: None})
         candidates = (set(), set())
         asp.possible_compilers = Mock(return_value=candidates)
@@ -705,10 +1075,12 @@ class SolverDiagnosticTests(DiagnosticTestCase):
             (asp.SpecBuilder, "build_specs"), (asp, "possible_compilers"),
             (Detector, "compiler_verbose_output"), (Detector, "default_libc"),
             (Detector, "_compile_dummy_c_source"), (ErrorHandler, "message"),
+            (asp.SpackSolverSetup, "target_defaults"),
         )
         originals = [(owner, name, getattr(owner, name)) for owner, name in owners]
         original_execute = Executable.__call__
         argument, result = object(), object()
+        profile = {"target": "linux-privateos-privatecpu"}
         errors = [(10, "Only external, or concrete, compilers are allowed for the {0} language", ["c"])]
         for failure in (None, UnprintableError("private solve failure")):
             with self.subTest(fails=failure is not None):
@@ -716,21 +1088,34 @@ class SolverDiagnosticTests(DiagnosticTestCase):
                 probe_calls.clear()
                 executable_call.reset_mock()
                 formatter.reset_mock()
+                target_defaults.reset_mock()
                 originals[3][2].reset_mock()
 
-                def solve(value, *, option):
+                def solve(value, *positional, option, **keywords):
                     self.assertIs(value, argument)
                     self.assertIs(option, argument)
+                    if positional:
+                        self.assertEqual(len(positional), 2)
+                        self.assertIs(positional[0], argument)
+                        self.assertIs(positional[1], profile)
+                    else:
+                        self.assertIs(keywords["profile"], profile)
                     for owner, name, original in originals:
                         self.assertIsNot(getattr(owner, name), original)
                     self.assertIs(Executable.__call__, original_execute)
+                    setup = asp.SpackSolverSetup()
+                    setup.default_targets = [(0, "privatecpu")]
+                    self.assertIs(setup.target_defaults(argument), target_defaults.return_value)
+                    target_defaults.assert_called_once_with(setup, argument)
                     self.assertIs(asp.possible_compilers(configuration=argument), candidates)
                     detector = Detector()
                     self.assertIs(detector.compiler_verbose_output(), verbose)
                     self.assertIs(detector.default_libc(), libc)
                     self.assertIsNone(detector._compile_dummy_c_source())
                     self.assertIs(Executable.__call__, original_execute)
-                    self.assertIs(ErrorHandler().message(errors), formatted)
+                    handler = ErrorHandler()
+                    handler.model = SymbolSequence((target_symbol("gmake", "privatecpu"),))
+                    self.assertIs(handler.message(errors), formatted)
                     if failure is not None:
                         raise failure
                     return result
@@ -743,12 +1128,15 @@ class SolverDiagnosticTests(DiagnosticTestCase):
                 function.assert_not_called()
                 with patch.dict(sys.modules, modules):
                     if failure is None:
-                        self.assertIs(wrapper(argument, option=argument), result)
+                        self.assertIs(wrapper(argument, argument, profile, option=argument), result)
                     else:
                         with self.assertRaises(UnprintableError) as caught:
-                            wrapper(argument, option=argument)
+                            wrapper(argument, profile=profile, option=argument)
                         self.assertIs(caught.exception, failure)
-                function.assert_called_once_with(argument, option=argument)
+                if failure is None:
+                    function.assert_called_once_with(argument, argument, profile, option=argument)
+                else:
+                    function.assert_called_once_with(argument, profile=profile, option=argument)
                 originals[3][2].assert_called_once_with(configuration=argument)
                 self.assertEqual(probe_calls, ["verbose", "libc", "compile"])
                 executable_call.assert_called_once()
@@ -758,10 +1146,12 @@ class SolverDiagnosticTests(DiagnosticTestCase):
                     self.assertIs(getattr(owner, name), original)
                 self.assertIs(Executable.__call__, original_execute)
                 self.assert_diagnostics([
+                    "ci-target-check:stage=candidates present=true matches=true",
                     "ci-compiler-candidates:accepted=0 rejected=0 gcc=absent",
                     "ci-compiler-probe:verbose result=present",
                     "ci-compiler-probe:libc result=present",
                     "ci-compiler-execution:missing-file",
+                    "ci-target-check:stage=model present=true matches=true",
                     "ci-solver-error:kind=compiler-external package=other attribute=other variant=other",
                 ])
 

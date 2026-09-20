@@ -1,4 +1,5 @@
 """CI failure diagnosis only; executes unchanged worker checks, never publishes."""
+from collections.abc import Iterator, Sequence
 import contextlib
 import json
 import os
@@ -76,6 +77,89 @@ def emit_compiler_probe(kind, result, fd):
     emit_diagnostic(fd, f"ci-compiler-probe:{kind} result={state}")
 
 
+def solve_target(args, kwargs):
+    profile = kwargs.get("profile") if "profile" in kwargs else (
+        args[2] if len(args) > 2 else None
+    )
+    if type(profile) is not dict or type(profile.get("target")) is not str:
+        return None
+    parts = profile["target"].split("-")
+    return parts[2] if len(parts) == 3 and all(parts) else None
+
+
+def default_target_names(setup):
+    values = setup.default_targets
+    if type(values) not in (list, tuple):
+        raise ValueError("Unavailable target candidates")
+    names = []
+    for entry in values:
+        if (type(entry) not in (list, tuple) or len(entry) != 2
+                or type(entry[0]) is not int or type(entry[1]) is not str):
+            raise ValueError("Unavailable target candidates")
+        names.append(entry[1])
+    return names
+
+
+TARGET_MODEL_LIMIT = 65536
+
+
+def model_target_names(handler, symbol_type):
+    model = handler.model
+    if not isinstance(model, Sequence) or isinstance(model, (str, bytes, bytearray, Iterator)):
+        raise ValueError("Unavailable target model")
+    size = len(model)
+    if size > TARGET_MODEL_LIMIT:
+        raise ValueError("Unavailable target model")
+    names = []
+    for index in range(size):
+        symbol = model[index]
+        if symbol.type != symbol_type.Function or symbol.name != "attr":
+            continue
+        args = symbol.arguments
+        if not args or args[0].type != symbol_type.String or args[0].string != "node_target":
+            continue
+        if len(args) != 3:
+            raise ValueError("Unavailable target attribute")
+        node, target = args[1:]
+        if (node.type != symbol_type.Function or node.name != "node"
+                or len(node.arguments) != 2
+                or node.arguments[0].type != symbol_type.Number
+                or node.arguments[1].type != symbol_type.String):
+            raise ValueError("Unavailable target node")
+        if node.arguments[1].string != "gmake":
+            continue
+        if target.type != symbol_type.String:
+            raise ValueError("Unavailable target value")
+        names.append(target.string)
+    return names
+
+
+def emit_target_check(stage, read_names, expected, fd):
+    if stage not in ("candidates", "model"):
+        return
+    present = matches = "unavailable"
+    try:
+        names = read_names()
+        present = "true" if names else "false"
+        if names and type(expected) is str:
+            matched = expected in names if stage == "candidates" else all(
+                name == expected for name in names
+            )
+            matches = "true" if matched else "false"
+    except Exception:
+        pass
+    emit_diagnostic(fd, f"ci-target-check:stage={stage} present={present} matches={matches}")
+
+
+def diagnosed_target_defaults(function, expected, fd):
+    def target_defaults(self, *args, **kwargs):
+        result = function(self, *args, **kwargs)
+        emit_target_check("candidates", lambda: default_target_names(self), expected, fd)
+        return result
+
+    return target_defaults
+
+
 # Exact Spack 1.0.0 error_messages.lp templates and positional argument counts.
 EXTERNAL_ERROR_PREFIX = (
     "Attempted to build package {0} which is not buildable and does not have a satisfying external\n"
@@ -100,6 +184,15 @@ OS_NOT_BUILDABLE_ERROR = (
     "Cannot select '{0} os={1}' (operating system '{1}' is not buildable)"
 )
 COMPILER_EXTERNAL_ERROR = "Only external, or concrete, compilers are allowed for the {0} language"
+# Exact concretize.lp external-selection templates; each has one package argument.
+EXTERNAL_SELECTION_ERRORS = {
+    "Attempted to use external for '{0}' which does not satisfy any configured external spec version":
+        "version",
+    "Attempted to use external for '{0}' which does not satisfy a unique configured external spec version":
+        "version",
+    "Attempted to use external for '{0}' which does not satisfy any configured external spec":
+        "other",
+}
 
 
 def solver_error_fields(error):
@@ -133,7 +226,9 @@ def solver_error_fields(error):
     elif message == COMPILER_EXTERNAL_ERROR and len(args) == 1:
         # This template has a language argument, not a package argument.
         kind = "compiler-external"
-    if kind in ("external-condition", "os-not-buildable"):
+    elif message in EXTERNAL_SELECTION_ERRORS and len(args) == 1:
+        kind, attribute = "external-selection", EXTERNAL_SELECTION_ERRORS[message]
+    if kind in ("external-condition", "external-selection", "os-not-buildable"):
         if type(args[0]) is str and args[0] in ("gcc", "gmake", "glibc", "hello"):
             package = args[0]
     if type(variant) is not str or variant not in ("languages", "build_system"):
@@ -141,8 +236,13 @@ def solver_error_fields(error):
     return kind, package, attribute, variant
 
 
-def diagnosed_message(function, fd):
+def diagnosed_message(function, fd, target_observer=None):
     def message(self, errors):
+        if target_observer is not None:
+            try:
+                target_observer(self)
+            except Exception:
+                pass
         try:
             # Do not consume iterators that the original formatter still needs.
             if type(errors) in (tuple, list):
@@ -209,7 +309,14 @@ def diagnosed_solver(worker, fd):
         import spack.solver.asp
         import spack.util.executable
 
+        expected = solve_target(args, kwargs)
         with contextlib.ExitStack() as instrumentation:
+            instrumentation.enter_context(worker.replace_attribute(
+                spack.solver.asp.SpackSolverSetup, "target_defaults",
+                diagnosed_target_defaults(
+                    spack.solver.asp.SpackSolverSetup.target_defaults, expected, fd,
+                ),
+            ))
             for owner, name, phase in (
                 (spack.solver.asp.SpackSolverSetup, "setup", "native-setup"),
                 (clingo.Control, "ground", "native-ground"),
@@ -231,7 +338,13 @@ def diagnosed_solver(worker, fd):
                 ))
             instrumentation.enter_context(worker.replace_attribute(
                 spack.solver.asp.ErrorHandler, "message",
-                diagnosed_message(spack.solver.asp.ErrorHandler.message, fd),
+                diagnosed_message(
+                    spack.solver.asp.ErrorHandler.message, fd,
+                    lambda handler: emit_target_check(
+                        "model", lambda: model_target_names(handler, clingo.SymbolType),
+                        expected, fd,
+                    ),
+                ),
             ))
             detector = spack.compilers.libraries.CompilerPropertyDetector
             instrumentation.enter_context(worker.replace_attribute(

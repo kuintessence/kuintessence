@@ -161,6 +161,8 @@ API 安装失败时，测试可在相同隔离条件下调用未修改的 worker
 不可读时明确标记 unavailable；不输出异常消息、原始路径或 native 日志。
 Compiler 诊断只观察原有探测调用的结果、候选计数和固定求解错误类别，不额外运行探测，
 也不输出原始 external spec、compiler flags 或错误参数。
+Target 诊断只比较已生成的候选与错误模型，报告是否包含 profile target、
+gmake 是否具有 target 及是否匹配；无法读取时报告 unavailable，不输出 target 原值。
 诊断使用独立临时 store，不写安装账本，清理异常也只输出固定代码；
 即使诊断成功也保持原 API 案例失败，不作为安装成功的替代路径。
 实际通过范围必须以当前提交的 Actions 结果为准；新增测试定义本身不构成验收通过，
