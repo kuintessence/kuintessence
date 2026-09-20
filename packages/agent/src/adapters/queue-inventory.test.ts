@@ -190,7 +190,7 @@ describe("SchedulerQueueInventoryCache", () => {
     for (let heartbeat = 0; heartbeat < 9; heartbeat += 1) {
       setSystemTime(epoch + heartbeat * 30_000);
       const inventory = await cache.inspect(load);
-      expect(inventory).toBe(observations.at(-1));
+      expect(observations.at(-1)).toBe(inventory);
       setSystemTime(Date.now() + 2_000);
 
       // The Server retains its previous observation until the next delivery.
