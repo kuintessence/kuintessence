@@ -44,15 +44,15 @@ try {
   );
   // This pre-material probe has no recipe, certificate or ticket. Still whitelist
   // runtime diagnostics instead of publishing arbitrary native error strings.
-  for (const [name, expression] of [
-    ["user-namespace", /user namespace|userns|uid_map/i],
-    ["cgroup", /cgroup|systemd|dbus/i],
-    ["mount", /mount|squashfuse|overlay/i],
-    ["permission", /permission|not permitted/i],
-  ] as const) {
-    if (expression.test(result.stderr)) console.log(`Managed probe diagnostic: ${name}`);
-  }
   if (result.exitCode !== 0) {
+    for (const [name, expression] of [
+      ["user-namespace", /user namespace|userns|uid_map/i],
+      ["cgroup", /cgroup|systemd|dbus/i],
+      ["mount", /mount|squashfuse|overlay/i],
+      ["permission", /permission|not permitted/i],
+    ] as const) {
+      if (expression.test(result.stderr)) console.log(`Managed probe diagnostic: ${name}`);
+    }
     // Only this pre-material probe can expose native diagnostics: its environment
     // is explicitly constructed and its sole input is the boundary verifier.
     // Never reuse this for an Agent operation or a recipe/build process.

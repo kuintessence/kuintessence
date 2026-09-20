@@ -149,6 +149,10 @@ scheduler 工具链构建，不携带 recipe、源码或 Agent 凭据。实际�
 named volume 持久化；Agent 和 Slurm 在同一节点以相同路径访问，不代表跨节点 ABI 验收。
 
 目标检查链为：Server API 安装、隔离 source audit、build、独立 readonly verify、
-`ready`、load、真实 Slurm Hello、重启后复验/运行、卸载及库存撤回。
+`ready`、load、真实 Slurm Hello、源码缓存缺失/篡改后的撤回与显式恢复、
+重启后复验/运行、卸载及库存撤回。
+API 安装失败时，测试可在相同隔离条件下调用未修改的 worker 检查来定位错误，
+只报告固定错误类型和 worker 行号；诊断使用独立临时 store，不写安装账本，
+即使诊断成功也保持原 API 案例失败，不作为安装成功的替代路径。
 实际通过范围必须以当前提交的 Actions 结果为准；新增测试定义本身不构成验收通过，
 也不覆盖生产环境、PBS 受管安装或 15 个科学工作流。

@@ -279,10 +279,7 @@ describe("PR runner lifecycle (fake Docker, no containers)", () => {
     expect(profile).toContain("/usr/libexec/apptainer/bin/starter flags=(unconfined)");
     expect(profile).toContain("userns,");
     expect(profile).not.toContain("starter-suid");
-    const acceptance = await readFile(
-      join(root, "deploy/pr-test/spack-managed/case.ts"),
-      "utf8",
-    );
+    const acceptance = await readFile(join(root, "deploy/pr-test/spack-managed/case.ts"), "utf8");
     expect(acceptance).toContain("process.getuid?.() === 1000");
     expect(acceptance).toContain("process.geteuid?.() === 1000");
     expect(acceptance).not.toContain('from "node:os"');

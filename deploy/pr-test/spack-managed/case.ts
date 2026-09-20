@@ -19,6 +19,8 @@ import { SpackInstallStore } from "../../../packages/agent/src/spack/install-sto
 import { SpackMaterialCache } from "../../../packages/agent/src/spack/material-cache";
 import { caseDirectory, login, ReleaseSchema } from "../spack-case/api";
 import { managedApi } from "./api-helper";
+import { diagnoseManagedInstall } from "./diagnostic";
+import { verifyManagedCacheIntegrity } from "./integrity";
 
 const PhaseSchema = z.enum(["install", "restart", "uninstall"]);
 const statePath = `${caseDirectory}/managed-result.json`;
@@ -46,6 +48,7 @@ type Stage =
   | "import_preinstalled"
   | "load"
   | "job"
+  | "integrity"
   | "uninstall";
 let stage: Stage = "guard";
 
@@ -263,6 +266,13 @@ async function main() {
     stage = "store";
     await readyRecord(release, state.record);
     if (phase === "install") {
+      stage = "integrity";
+      state.record = await verifyManagedCacheIntegrity({
+        release,
+        record: state.record,
+        api,
+      });
+      await readyRecord(release, state.record);
       stage = "state";
       // Persist only typed public release metadata; never tokens, operation output or load shell.
       await mkdir(caseDirectory, { recursive: true, mode: 0o700 });
@@ -285,5 +295,6 @@ try {
           ? "INVALID_JSON"
           : "CASE_FAILED";
   console.error(`Spack managed case: stage=${stage} code=${code}`);
+  if (stage === "install") await diagnoseManagedInstall();
   process.exit(1);
 }

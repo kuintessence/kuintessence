@@ -9,6 +9,7 @@ const origin = "https://server:3443";
 const agentId = "pr-scheduler";
 const operationTimeoutMs = 15 * 60_000;
 const ActionSchema = z.enum(["install", "import_preinstalled", "load", "uninstall"]);
+const TerminalStatusSchema = z.enum(["succeeded", "failed", "rejected"]);
 const ManagedOperationSchema = OperationSchema.extend({
   agentId: z.string(),
   action: ActionSchema,
@@ -66,7 +67,12 @@ export function managedApi(token: string) {
     );
   }
 
-  async function operation(action: z.infer<typeof ActionSchema>, spec: string) {
+  async function operation(
+    action: z.infer<typeof ActionSchema>,
+    spec: string,
+    options: { expectedStatus?: z.infer<typeof TerminalStatusSchema> } = {},
+  ) {
+    const expectedStatus = TerminalStatusSchema.parse(options.expectedStatus ?? "succeeded");
     // Bound the whole request/poll cycle, including an in-flight helper HTTP request.
     // The entry point exits on failure so no abandoned poll survives the deadline.
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -108,7 +114,23 @@ export function managedApi(token: string) {
                 operationTimeoutMs,
               );
           console.log(`Spack managed operation: action=${action} status=${completed.status}`);
-          assert(completed.status === "succeeded", "Managed operation did not succeed");
+          if (completed.status !== expectedStatus) {
+            const detail = `${completed.error ?? ""}\n${completed.stderr ?? ""}`;
+            for (const [category, text] of [
+              ["download", "Spack material preparation failed"],
+              ["preflight", "preflight failed"],
+              ["source-audit", "Spack source audit"],
+              ["managed-worker", "Managed Spack operation failed"],
+              ["inventory-refresh", "installed inventory refresh failed"],
+              ["verification", "Managed Spack verification failed"],
+            ] as const) {
+              if (detail.includes(text)) console.error(`Managed failure category: ${category}`);
+            }
+          }
+          assert(
+            completed.status === expectedStatus,
+            "Managed operation returned an unexpected terminal status",
+          );
           return completed;
         })(),
         deadline,
