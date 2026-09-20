@@ -1,8 +1,10 @@
 """CI-only tracing contract tests; never invoke main or a Spack worker."""
 
+import contextlib
 import io
 import resource
-from types import SimpleNamespace
+import sys
+from types import ModuleType, SimpleNamespace
 import unittest
 from unittest.mock import Mock, call, patch
 
@@ -18,6 +20,27 @@ MARKER = (
     r"native-setup|native-ground|native-result) "
     r"event=(start|returned) rss-kib=([0-9]{1,12}|unavailable)\Z"
 )
+SOLVER_MARKER = (
+    r"\A(?:ci-compiler-candidates:accepted=[0-9]{1,5} rejected=[0-9]{1,5} "
+    r"gcc=(?:accepted|rejected|absent)|"
+    r"ci-compiler-probe:(?:verbose|libc) result=(?:present|missing)|"
+    r"ci-solver-error:kind=(?:external-condition|os-not-buildable|compiler-external|other) "
+    r"package=(?:gcc|gmake|glibc|hello|other) "
+    r"attribute=(?:namespace|version|platform|os|target|variant|flags|other) "
+    r"variant=(?:languages|build_system|other)|"
+    r"ci-compiler-execution:(?:missing-file|permission|readonly|missing-library|linker|"
+    r"no-space|unsupported-option|other))\Z"
+)
+
+
+@contextlib.contextmanager
+def replace_attribute(owner, name, replacement):
+    original = getattr(owner, name)
+    setattr(owner, name, replacement)
+    try:
+        yield original
+    finally:
+        setattr(owner, name, original)
 
 
 class UnprintableError(RuntimeError):
@@ -28,7 +51,7 @@ class UnprintableError(RuntimeError):
         raise AssertionError("Worker exceptions must not be represented")
 
 
-class TracedCallTests(unittest.TestCase):
+class DiagnosticTestCase(unittest.TestCase):
     def setUp(self):
         self.fd = 987
         self.writes = []
@@ -82,6 +105,8 @@ class TracedCallTests(unittest.TestCase):
         self.assertEqual(self.stdout.getvalue(), "")
         self.assertEqual(self.stderr.getvalue(), "")
 
+
+class TracedCallTests(DiagnosticTestCase):
     def test_forwards_argument_identity_and_returns_original_object(self):
         positional = (object(), ["private-argument"])
         keyword_values = {"option": object(), "settings": {"private": object()}}
@@ -295,6 +320,450 @@ class TracedCallTests(unittest.TestCase):
         self.assertEqual(self.write.call_count, 1)
         self.assertEqual(self.stdout.getvalue(), "")
         self.assertEqual(self.stderr.getvalue(), "")
+
+
+class SolverDiagnosticTests(DiagnosticTestCase):
+    def assert_diagnostics(self, expected):
+        lines = []
+        for _, data in self.writes:
+            self.assertTrue(data.endswith(b"\n"))
+            lines.append(data[:-1].decode("ascii"))
+        self.assertEqual(lines, expected)
+        for line in lines:
+            self.assertRegex(line, SOLVER_MARKER)
+        self.assertEqual(self.stdout.getvalue(), "")
+        self.assertEqual(self.stderr.getvalue(), "")
+        self.rss.assert_not_called()
+
+    def test_return_observer_forwards_identity_once_and_preserves_exceptions(self):
+        argument, keyword, result = object(), object(), object()
+        function, observer = Mock(return_value=result), Mock()
+        wrapper = diagnostic.observed_return(function, observer)
+        function.assert_not_called()
+        observer.assert_not_called()
+        self.assertIs(wrapper(argument, option=keyword), result)
+        function.assert_called_once_with(argument, option=keyword)
+        observer.assert_called_once_with(result)
+        for error in (UnprintableError("secret"), SystemExit("secret"), KeyboardInterrupt()):
+            with self.subTest(kind=type(error).__name__):
+                function, observer = Mock(side_effect=error), Mock()
+                with self.assertRaises(type(error)) as caught:
+                    diagnostic.observed_return(function, observer)(argument, option=keyword)
+                self.assertIs(caught.exception, error)
+                function.assert_called_once_with(argument, option=keyword)
+                observer.assert_not_called()
+        observer = Mock(side_effect=UnprintableError("private-observer-failure"))
+        self.assertIs(diagnostic.observed_return(Mock(return_value=result), observer)(), result)
+        self.assert_diagnostics([])
+
+    def test_candidates_have_bounded_counts_and_fixed_gcc_states(self):
+        gcc = SimpleNamespace(name="gcc")
+        private = SimpleNamespace(name="private\nci-injected:/private/path")
+        for accepted, rejected, state in (
+            ([], [], "absent"),
+            ([private], [private], "absent"),
+            ([gcc], [], "accepted"),
+            ([], [gcc], "rejected"),
+            ([gcc], [gcc], "accepted"),
+            ([gcc] * 99999, [], "accepted"),
+            ([], [gcc] * 99999, "rejected"),
+        ):
+            with self.subTest(accepted=len(accepted), rejected=len(rejected), state=state):
+                self.reset_observations()
+                result = (accepted, rejected)
+                function = Mock(return_value=result)
+                wrapper = diagnostic.observed_return(
+                    function, lambda value: diagnostic.emit_compiler_candidates(value, self.fd),
+                )
+                self.assertIs(wrapper(configuration=private), result)
+                function.assert_called_once_with(configuration=private)
+                self.assert_diagnostics([
+                    f"ci-compiler-candidates:accepted={len(accepted)}"
+                    f" rejected={len(rejected)} gcc={state}",
+                ])
+        for result in (([gcc] * 100000, []), ([], [gcc] * 100000), object()):
+            self.reset_observations()
+            wrapper = diagnostic.observed_return(
+                Mock(return_value=result),
+                lambda value: diagnostic.emit_compiler_candidates(value, self.fd),
+            )
+            self.assertIs(wrapper(), result)
+            self.assert_diagnostics([])
+
+    def test_probe_observes_optional_return_without_formatting_or_extra_calls(self):
+        for kind in ("verbose", "libc"):
+            for result, state in (
+                (None, "missing"), ("", "present"),
+                ("private compiler output\n/path", "present"),
+                (UnprintableError("private libc spec"), "present"),
+            ):
+                with self.subTest(kind=kind, state=state):
+                    self.reset_observations()
+                    function = Mock(return_value=result)
+                    wrapper = diagnostic.observed_return(
+                        function,
+                        lambda value: diagnostic.emit_compiler_probe(kind, value, self.fd),
+                    )
+                    self.assertIs(wrapper(), result)
+                    function.assert_called_once_with()
+                    self.assert_diagnostics([f"ci-compiler-probe:{kind} result={state}"])
+        self.reset_observations()
+        diagnostic.emit_compiler_probe("verbose\nprivate", object(), self.fd)
+        self.assert_diagnostics([])
+
+    @staticmethod
+    def external_error(attributes):
+        return (
+            "Attempted to build package {0} which is not buildable and does not have a satisfying external\n"
+            "        " + attributes
+            + " is an external constraint for {0} which was not satisfied"
+        )
+
+    def test_structured_errors_match_official_templates_and_argument_positions(self):
+        cases = [
+            (self.external_error("attr('{1}', '{2}')"),
+             ["gcc", "node", "gcc"], "external-condition", "gcc", "other", "other"),
+            (self.external_error("attr('{1}', '{2}', '{3}', '{4}')"),
+             ["gcc", "variant_value", "gcc", "languages", "private-value"],
+             "external-condition", "gcc", "variant", "languages"),
+            (self.external_error("attr('{1}', '{2}', '{3}', '{4}', '{5}')"),
+             ["gmake", "node_flag", "gmake", "private-flag", "private-value", "/private"],
+             "external-condition", "gmake", "flags", "other"),
+            ("Attempted to build package {0} which is not buildable and does not have a satisfying external\n"
+             "        'Spec({0} {1}={2})' is an external constraint for {0} which was not satisfied\n"
+             "        'Spec({0} {1}={3})' required",
+             ["gcc", "build_system", "private-old", "private-new", "startcauses", "/private", "1"],
+             "external-condition", "gcc", "variant", "build_system"),
+            ("Cannot select '{0} os={1}' (operating system '{1}' is not buildable)",
+             ["hello", "private-os"], "os-not-buildable", "hello", "os", "other"),
+            ("Only external, or concrete, compilers are allowed for the {0} language",
+             ["gcc"], "compiler-external", "other", "other", "other"),
+        ]
+        for name, attribute in (
+            ("namespace", "namespace"), ("version", "version"),
+            ("node_version_satisfies", "version"), ("node_platform", "platform"),
+            ("node_os", "os"), ("node_target", "target"), ("node_target_satisfies", "target"),
+        ):
+            cases.append((
+                self.external_error("attr('{1}', '{2}', '{3}')"),
+                ["glibc", name, "glibc", "private-value"],
+                "external-condition", "glibc", attribute, "other",
+            ))
+        for template, args, kind, package, attribute, variant in cases:
+            for escaped in (False, True):
+                with self.subTest(kind=kind, attribute=attribute, variant=variant, escaped=escaped):
+                    self.reset_observations()
+                    errors = [(0, template.replace("\n", "\\n") if escaped else template, args)]
+                    owner, result = object(), object()
+                    function = Mock(return_value=result)
+                    self.assertIs(
+                        diagnostic.diagnosed_message(function, self.fd)(owner, errors=errors),
+                        result,
+                    )
+                    function.assert_called_once_with(owner, errors)
+                    self.assertIs(function.call_args.args[1], errors)
+                    self.assert_diagnostics([
+                        f"ci-solver-error:kind={kind} package={package}"
+                        f" attribute={attribute} variant={variant}",
+                    ])
+
+    def test_unknown_and_malformed_errors_never_emit_raw_values(self):
+        secret = "private\nci-solver-error:kind=external-condition /secret -private-flag"
+        template = self.external_error("attr('{1}', '{2}', '{3}', '{4}')")
+        errors = [
+            (0, template, [secret, "variant_value", secret, secret, secret]),
+            (0, template, [secret, secret, secret, secret, secret]),
+            (0, template, ["gcc", "variant_value"]),
+            (0, template + secret, ["gcc", "variant_value", "gcc", "languages", secret]),
+            (0, secret, ["gcc", secret]),
+            (0, UnprintableError(secret), [secret]),
+            (0, template, {"private": secret}),
+            (0, template, [object(), object(), object(), object(), object()]),
+            (0, "x" * 4097, []),
+            object(),
+        ]
+        result, owner = object(), object()
+        function = Mock(return_value=result)
+        self.assertIs(diagnostic.diagnosed_message(function, self.fd)(owner, errors), result)
+        function.assert_called_once_with(owner, errors)
+        other = "ci-solver-error:kind=other package=other attribute=other variant=other"
+        self.assert_diagnostics([
+            "ci-solver-error:kind=external-condition package=other attribute=variant variant=other",
+            "ci-solver-error:kind=external-condition package=other attribute=other variant=other",
+            other, other, other, other, other,
+            "ci-solver-error:kind=external-condition package=other attribute=other variant=other",
+            other, other,
+        ])
+
+    def test_error_limit_preserves_full_input_and_does_not_consume_iterators(self):
+        errors = [(0, "private", [])] * 65
+        function = Mock(return_value=object())
+        wrapper = diagnostic.diagnosed_message(function, self.fd)
+        owner = object()
+        wrapper(owner, errors)
+        self.assertIs(function.call_args.args[1], errors)
+        self.assertEqual(len(errors), 65)
+        self.assert_diagnostics([
+            "ci-solver-error:kind=other package=other attribute=other variant=other",
+        ] * 64)
+        self.reset_observations()
+        iterator = iter(errors)
+        wrapper(owner, iterator)
+        self.assertIs(function.call_args.args[1], iterator)
+        self.assertIs(next(iterator), errors[0])
+        self.assert_diagnostics([])
+
+    def test_closed_pipe_preserves_helper_results_and_formatter_exception(self):
+        self.write.side_effect = BrokenPipeError("private pipe")
+        for emitter, result in (
+            (diagnostic.emit_compiler_candidates, ([], [])),
+            (lambda value, fd: diagnostic.emit_compiler_probe("verbose", value, fd), object()),
+            (lambda value, fd: diagnostic.emit_compiler_probe("libc", value, fd), None),
+        ):
+            function = Mock(return_value=result)
+            self.assertIs(diagnostic.observed_return(
+                function, lambda value: emitter(value, self.fd),
+            )(), result)
+            function.assert_called_once_with()
+        errors = [(0, "private", [])]
+        result, owner = object(), object()
+        self.assertIs(
+            diagnostic.diagnosed_message(Mock(return_value=result), self.fd)(owner, errors),
+            result,
+        )
+        error = UnprintableError("private original")
+        function = Mock(side_effect=error)
+        with self.assertRaises(UnprintableError) as caught:
+            diagnostic.diagnosed_message(function, self.fd)(owner, errors)
+        self.assertIs(caught.exception, error)
+        function.assert_called_once_with(owner, errors)
+        self.assert_diagnostics([])
+
+    def test_execution_classification_is_scoped_and_preserves_caught_process_error(self):
+        class ProcessError(UnprintableError):
+            pass
+
+        for message, category in (
+            ("No such file or directory", "missing-file"),
+            ("Permission denied", "permission"),
+            ("Read-only file system", "readonly"),
+            ("error while loading shared libraries: No such file or directory", "missing-library"),
+            ("cannot find -lprivate; ld returned 1 exit status", "missing-library"),
+            ("undefined reference to private", "linker"),
+            ("No space left on device", "no-space"),
+            ("unrecognized command-line option '-private'", "unsupported-option"),
+            ("private unknown failure", "other"),
+            (UnprintableError("private long message"), "other"),
+        ):
+            with self.subTest(category=category):
+                self.reset_observations()
+                error = ProcessError("private short message")
+                error.long_message = message
+                executable_call = Mock(side_effect=error)
+
+                class Executable:
+                    def __call__(self, *args, **kwargs):
+                        return executable_call(self, *args, **kwargs)
+
+                original = Executable.__call__
+                executable = SimpleNamespace(Executable=Executable, ProcessError=ProcessError)
+                command, argument, keyword, owner = Executable(), object(), object(), object()
+                result = object()
+
+                def compile_source(actual_owner, *, option):
+                    self.assertIs(actual_owner, owner)
+                    self.assertIs(option, keyword)
+                    try:
+                        command(argument, option=keyword)
+                    except ProcessError as caught:
+                        self.assertIs(caught, error)
+                        return result
+                    self.fail("Original ProcessError was swallowed")
+
+                function = Mock(side_effect=compile_source)
+                wrapper = diagnostic.diagnosed_compilation(
+                    function, replace_attribute, executable, self.fd,
+                )
+                self.assertIs(Executable.__call__, original)
+                self.assertIs(wrapper(owner, option=keyword), result)
+                function.assert_called_once_with(owner, option=keyword)
+                executable_call.assert_called_once_with(command, argument, option=keyword)
+                self.assertIs(Executable.__call__, original)
+                self.assert_diagnostics(["ci-compiler-execution:" + category])
+                with self.assertRaises(ProcessError) as caught:
+                    command()
+                self.assertIs(caught.exception, error)
+                self.assert_diagnostics(["ci-compiler-execution:" + category])
+
+    def test_compilation_restores_call_on_success_and_uncaught_exceptions_with_closed_pipe(self):
+        class ProcessError(UnprintableError):
+            @property
+            def long_message(self):
+                raise AssertionError("No error formatting")
+
+        executable_call = Mock()
+
+        class Executable:
+            def __call__(self, *args, **kwargs):
+                return executable_call(self, *args, **kwargs)
+
+        original = Executable.__call__
+        command = Executable()
+        executable = SimpleNamespace(Executable=Executable, ProcessError=ProcessError)
+        wrapper = diagnostic.diagnosed_compilation(
+            lambda *args, **kwargs: command(*args, **kwargs),
+            replace_attribute, executable, self.fd,
+        )
+        result, argument = object(), object()
+        executable_call.return_value = result
+        self.assertIs(wrapper(argument, option=argument), result)
+        executable_call.assert_called_once_with(command, argument, option=argument)
+        self.assertIs(Executable.__call__, original)
+        self.assert_diagnostics([])
+        self.write.side_effect = BrokenPipeError("private pipe")
+        process_error = ProcessError("private")
+        # A separate error class exercises a real write failure after classification.
+        class ReadableProcessError(ProcessError):
+            long_message = "Permission denied: /private"
+
+        readable_error = ReadableProcessError("private")
+        for error in (
+            process_error, readable_error, UnprintableError("private"),
+            SystemExit("private"), KeyboardInterrupt(),
+        ):
+            executable_call.reset_mock()
+            executable_call.side_effect = error
+            with self.assertRaises(type(error)) as caught:
+                wrapper(argument, option=argument)
+            self.assertIs(caught.exception, error)
+            executable_call.assert_called_once_with(command, argument, option=argument)
+            self.assertIs(Executable.__call__, original)
+        self.write.assert_called_once()
+        self.assert_diagnostics([])
+
+    def test_solver_installs_wrappers_only_during_solve_and_restores_on_error(self):
+        modules = {name: ModuleType(name) for name in (
+            "clingo", "spack", "spack.solver", "spack.solver.asp",
+            "spack.compilers", "spack.compilers.libraries", "spack.util", "spack.util.executable",
+        )}
+        for name, module in modules.items():
+            if "." in name:
+                parent, child = name.rsplit(".", 1)
+                setattr(modules[parent], child, module)
+        asp = modules["spack.solver.asp"]
+        libraries = modules["spack.compilers.libraries"]
+        executable = modules["spack.util.executable"]
+
+        class ProcessError(UnprintableError):
+            long_message = "No such file or directory: /private"
+
+        process_error = ProcessError("private")
+        executable_call = Mock(side_effect=process_error)
+
+        class Executable:
+            def __call__(self, *args, **kwargs):
+                return executable_call(self, *args, **kwargs)
+
+        executable.Executable, executable.ProcessError = Executable, ProcessError
+        verbose, libc = object(), object()
+        probe_calls = []
+
+        class Detector:
+            def compiler_verbose_output(self):
+                probe_calls.append("verbose")
+                return verbose
+
+            def default_libc(self):
+                probe_calls.append("libc")
+                return libc
+
+            def _compile_dummy_c_source(self):
+                probe_calls.append("compile")
+                try:
+                    Executable()()
+                except ProcessError as caught:
+                    if caught is not process_error:
+                        raise AssertionError("Changed original exception")
+                    return None
+
+        libraries.CompilerPropertyDetector = Detector
+        asp.SpackSolverSetup = type("Setup", (), {"setup": lambda self: None})
+        modules["clingo"].Control = type("Control", (), {"ground": lambda self: None})
+        asp.SpecBuilder = type("Builder", (), {"build_specs": lambda self: None})
+        candidates = (set(), set())
+        asp.possible_compilers = Mock(return_value=candidates)
+        formatted = object()
+        formatter = Mock(return_value=formatted)
+
+        class ErrorHandler:
+            def message(self, errors):
+                return formatter(self, errors)
+
+        asp.ErrorHandler = ErrorHandler
+        owners = (
+            (asp.SpackSolverSetup, "setup"), (modules["clingo"].Control, "ground"),
+            (asp.SpecBuilder, "build_specs"), (asp, "possible_compilers"),
+            (Detector, "compiler_verbose_output"), (Detector, "default_libc"),
+            (Detector, "_compile_dummy_c_source"), (ErrorHandler, "message"),
+        )
+        originals = [(owner, name, getattr(owner, name)) for owner, name in owners]
+        original_execute = Executable.__call__
+        argument, result = object(), object()
+        errors = [(10, "Only external, or concrete, compilers are allowed for the {0} language", ["c"])]
+        for failure in (None, UnprintableError("private solve failure")):
+            with self.subTest(fails=failure is not None):
+                self.reset_observations()
+                probe_calls.clear()
+                executable_call.reset_mock()
+                formatter.reset_mock()
+                originals[3][2].reset_mock()
+
+                def solve(value, *, option):
+                    self.assertIs(value, argument)
+                    self.assertIs(option, argument)
+                    for owner, name, original in originals:
+                        self.assertIsNot(getattr(owner, name), original)
+                    self.assertIs(Executable.__call__, original_execute)
+                    self.assertIs(asp.possible_compilers(configuration=argument), candidates)
+                    detector = Detector()
+                    self.assertIs(detector.compiler_verbose_output(), verbose)
+                    self.assertIs(detector.default_libc(), libc)
+                    self.assertIsNone(detector._compile_dummy_c_source())
+                    self.assertIs(Executable.__call__, original_execute)
+                    self.assertIs(ErrorHandler().message(errors), formatted)
+                    if failure is not None:
+                        raise failure
+                    return result
+
+                function = Mock(side_effect=solve)
+                worker = SimpleNamespace(solve_lock=function, replace_attribute=replace_attribute)
+                with patch("builtins.__import__", side_effect=AssertionError("Premature import")):
+                    wrapper = diagnostic.diagnosed_solver(worker, self.fd)
+                self.write.assert_not_called()
+                function.assert_not_called()
+                with patch.dict(sys.modules, modules):
+                    if failure is None:
+                        self.assertIs(wrapper(argument, option=argument), result)
+                    else:
+                        with self.assertRaises(UnprintableError) as caught:
+                            wrapper(argument, option=argument)
+                        self.assertIs(caught.exception, failure)
+                function.assert_called_once_with(argument, option=argument)
+                originals[3][2].assert_called_once_with(configuration=argument)
+                self.assertEqual(probe_calls, ["verbose", "libc", "compile"])
+                executable_call.assert_called_once()
+                formatter.assert_called_once()
+                self.assertIs(formatter.call_args.args[1], errors)
+                for owner, name, original in originals:
+                    self.assertIs(getattr(owner, name), original)
+                self.assertIs(Executable.__call__, original_execute)
+                self.assert_diagnostics([
+                    "ci-compiler-candidates:accepted=0 rejected=0 gcc=absent",
+                    "ci-compiler-probe:verbose result=present",
+                    "ci-compiler-probe:libc result=present",
+                    "ci-compiler-execution:missing-file",
+                    "ci-solver-error:kind=compiler-external package=other attribute=other variant=other",
+                ])
 
 
 if __name__ == "__main__":

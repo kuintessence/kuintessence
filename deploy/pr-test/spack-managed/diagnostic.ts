@@ -58,6 +58,10 @@ const diagnosticProcess: SpackAuditProcess = {
         /^ci-worker-error:(AuditError|KeyError|ValueError|TypeError|AttributeError|OSError|PermissionError|FileNotFoundError|InstallError|SystemExit|RuntimeError|AssertionError|UnsatisfiableSpecError|SolverError|InternalConcretizerError|OutputDoesNotSatisfyInputError|NoCompilerFoundError|InvalidExternalError|ConfigError|ConfigFormatError|SpackError|UnknownPackageError|Exception)$/.test(line) ||
         /^ci-solver-category:(compiler-target|compiler-external|host-target|attribute-selection|version-constraint|not-buildable|no-compiler|solver-timeout|solver-memory|namespace-conflict)$/.test(line) ||
         /^ci-worker-phase:(source-audit|configuration|solve|tree|installed|native-setup|native-ground|native-result) event=(start|returned) rss-kib=([0-9]{1,12}|unavailable)$/.test(line) ||
+        /^ci-compiler-candidates:accepted=[0-9]{1,5} rejected=[0-9]{1,5} gcc=(accepted|rejected|absent)$/.test(line) ||
+        /^ci-compiler-probe:(verbose|libc) result=(present|missing)$/.test(line) ||
+        /^ci-compiler-execution:(missing-file|permission|readonly|missing-library|linker|no-space|unsupported-option|other)$/.test(line) ||
+        /^ci-solver-error:kind=(external-condition|os-not-buildable|compiler-external|other) package=(gcc|gmake|glibc|hello|other) attribute=(namespace|version|platform|os|target|variant|flags|other) variant=(languages|build_system|other)$/.test(line) ||
         /^ci-native-location:(concretize|solver\/asp|solver\/core|solver\/counter|compilers\/config|spec|config|store|database)\.py:\d{1,5}$/.test(line) ||
         /^ci-worker-location:(install_worker|source_audit)\.py:\d{1,5}$/.test(line) ||
         /^ci-writable-mount:location=(root|devices|null-device|zero-device|random-device|urandom-device|tty-device|passwd|group|resolver|hosts|localtime|cgroups|tmp|var-tmp|work|other) filesystem=(overlay|ext4|xfs|fuse\.squashfuse|fuse\.squashfuse_ll|fuse-overlayfs|fuse\.fuse-overlayfs|cgroup2|devtmpfs|ramfs|other)$/.test(line)
