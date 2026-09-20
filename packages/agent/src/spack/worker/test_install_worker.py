@@ -627,6 +627,7 @@ class InstallTests(unittest.TestCase):
     def test_solver_external_namespace_mismatch_fails_before_build(self):
         self.add_external()
         impostor = Native(self.work, self.lock, self.store)
+        impostor.hash_descriptor = self.native.hash_descriptor
         impostor.nodes[fixtures.DEP_HASH].namespace = "other"
         self.native.solved_root = impostor.roots[0]
         with self.assertRaisesRegex(audit.AuditError, "native-binding"):
