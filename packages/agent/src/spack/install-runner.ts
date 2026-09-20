@@ -60,6 +60,8 @@ export function buildSpackInstallCommand(
   // Retain the audit isolation flags, replacing only its fixed Python entrypoint.
   return [
     ...command.slice(0, -5).filter((argument) => argument !== "--writable-tmpfs"),
+    // Apptainer 1.4.3 otherwise adds an implied rw overlay, even without writable-tmpfs.
+    "--underlay",
     "--scratch",
     "/kq/work",
     "--bind",

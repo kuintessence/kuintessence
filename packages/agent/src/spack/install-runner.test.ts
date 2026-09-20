@@ -72,7 +72,11 @@ describe("isolated persistent Spack worker", () => {
           `${f.path}:${f.path}:${action === "install" ? "rw" : "ro"}`,
         ]);
         expect(command).toContain("bind-paths,hostfs,cwd,home,sys");
+        expect(command.filter((argument) => argument === "--underlay")).toHaveLength(1);
+        expect(command.indexOf("--underlay")).toBeLessThan(command.indexOf(installRuntime.sifPath));
         expect(command).not.toContain("--writable-tmpfs");
+        expect(command).not.toContain("--writable");
+        expect(command).not.toContain("--overlay");
         expect(command).not.toContain("--workdir");
         expect(
           command.flatMap((value, index) => (value === "--scratch" ? [command[index + 1]] : [])),

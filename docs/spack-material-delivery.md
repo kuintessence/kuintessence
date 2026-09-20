@@ -467,8 +467,10 @@ recipe 是可执行 Python，可以影响同进程的审计逻辑和输出，因
 并继承 source audit 的固定 Apptainer/SIF、namespace、cgroup、超时与输出预算。
 SIF 必须预装 Spack 1.0.0 及可导入的 `clingo`/`clingo.ast`；
 worker 禁止 solver bootstrap，不会自动下载或安装缺失的 solver。
-安装/verify/load 命令使用只读 runtime 和 `--scratch /kq/work`，
-不使用 `--writable-tmpfs` 或宿主 `--workdir`。worker 核验 `/kq/work` 为本次独立
+安装/verify/load 命令使用只读 runtime、`--underlay` 和 `--scratch /kq/work`，
+避免 Apptainer 1.4.3 默认产生 VFS 标记为可写的隐式 overlay；
+不使用 `--writable-tmpfs` 或宿主 `--workdir`，不支持 underlay 的 runtime 会失败，
+不会退回可写 overlay。worker 核验 `/kq/work` 为本次独立
 `rw,tmpfs` mount、空目录且由 Agent UID 所有后，才将其权限收紧为 `0700`。
 站点 Apptainer 必须启用 `user bind control`，`memory fs type` 必须为 `tmpfs`，
 并按工作量配置 `sessiondir max size`，不能假设默认容量足够；
