@@ -569,6 +569,13 @@ worker 同时通过 `packages.all.require` 将完整 profile arch 施加到求�
   load shell 的临时路径检查仅豁免本次已验证、带路径边界的完整事务前缀，
   避免合法 `/srv/kq/spack/...` 被 `/kq/` 子串误拒绝；仍拒绝混入的 runtime 临时路径，
   不改写返回的 shell，也不放宽安装树和 native hash 校验。
+- Agent 只有成功读取或完整刷新后的库存才视为已知；启动读取失败或 Spack 不可用时
+  不宣称库存为空，`spack find --json` 任一条目缺少必填字段时整份快照失败，
+  不将静默丢弃条目后的部分结果上报为完整库存。最后一个条目撤回后，随 live heartbeat 使用现有
+  `InstalledSoftwareReport` 显式上报空库存，并在后续 heartbeat 与重连后重试。
+  Server 保留旧客户端空 heartbeat 的“未提供库存”语义，按同一流的接收顺序处理
+  非空 heartbeat 和显式报告，避免延迟写入恢复已撤回的条目；
+  该报告没有独立 ACK，周期重报提供最终同步，不承诺跨 Server 实例的全局顺序。
 - uninstall 按 `removing → removed` 清理该 root 所属的整个事务 store，包括私有依赖，
   不是在共享全局 Spack 树中逐个删除依赖。卸载前需由运维确认没有作业仍使用该 prefix。
 

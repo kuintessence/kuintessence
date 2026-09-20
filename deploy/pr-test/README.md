@@ -186,5 +186,7 @@ External target 错误额外报告精确值或范围模式，以及与 profile t
 即使诊断成功也保持原 API 案例失败，不作为安装成功的替代路径。
 load 失败诊断改为只读复验匹配本次 release/site profile 的原安装目录，
 不重新构建、不修改或删除该目录，不把 `unavailable` 记录恢复为 `ready`。
+完整性负例失败时仅报告固定 `substage` 与最后观测的 schema-validated 安装状态，
+区分本地不可用状态等待、门户库存撤回和恢复复验，不输出 spec 或原始响应。
 实际通过范围必须以当前提交的 Actions 结果为准；新增测试定义本身不构成验收通过，
 也不覆盖生产环境、PBS 受管安装或 15 个科学工作流。

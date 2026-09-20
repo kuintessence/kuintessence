@@ -26,6 +26,17 @@ const storeRoot = "/srv/kq/spack";
 const maximumSourceBytes = 64 * 1024 ** 2;
 const StableRecordSchema = SpackInstallRecordSchema.omit({ state: true, updatedAt: true }).strip();
 type Scenario = "missing-source" | "corrupt-source";
+type Substage =
+  | "guard"
+  | "baseline"
+  | "negative-load"
+  | "unavailable-wait"
+  | "record-check"
+  | "inventory-withdrawal"
+  | "restored-unavailable"
+  | "recovery-verify"
+  | "ready-wait"
+  | "inventory-recovery";
 
 export interface ManagedIntegrityInput {
   release: z.infer<typeof ReleaseSchema>;
@@ -226,6 +237,8 @@ export async function verifyManagedCacheIntegrity(
   input: ManagedIntegrityInput,
 ): Promise<SpackInstallRecord> {
   let scenario: Scenario | "guard" = "guard";
+  let substage: Substage = "guard";
+  let observedState: SpackInstallRecord["state"] | "unobserved" = "unobserved";
   try {
     assert(
       process.env.KQ_PR_TEST === "1" &&
@@ -290,11 +303,14 @@ export async function verifyManagedCacheIntegrity(
 
     for (const test of ["missing-source", "corrupt-source"] as const) {
       scenario = test;
+      substage = "baseline";
       const before = await readRecord(store, record);
+      observedState = before.state;
       assert(isDeepStrictEqual(before, record), "Integrity case ready baseline changed");
       assert(before.state === "ready", "Integrity case must begin with a ready record");
       await input.api.inventory(record.spec, true);
       await damagedSource(cache, source, test, async () => {
+        substage = "negative-load";
         const failed = await input.api.operation("load", `/${record.rootHash}`, {
           expectedStatus: "failed",
         });
@@ -302,17 +318,26 @@ export async function verifyManagedCacheIntegrity(
           failed.stdout === null || failed.stdout.trim() === "",
           "Integrity case failed load returned a shell",
         );
+        substage = "unavailable-wait";
         const unavailable = await waitFor(
           "integrity case unavailable record",
-          () => readRecord(store, record),
+          async () => {
+            const current = await readRecord(store, record);
+            observedState = current.state;
+            return current;
+          },
           (value) => value.state === "unavailable",
         );
+        substage = "record-check";
         unchangedRecord(unavailable, record, "unavailable");
+        substage = "inventory-withdrawal";
         await input.api.inventory(record.spec, false);
       });
 
       // Restoring cache bytes alone must not publish readiness.
+      substage = "restored-unavailable";
       unchangedRecord(await readRecord(store, record), record, "unavailable");
+      substage = "recovery-verify";
       const imported = await input.api.operation("import_preinstalled", `/${record.rootHash}`);
       assert(imported.stdout !== null, "Integrity case recovery report is missing");
       const recoveredReport = SpackInstallReportSchema.parse(JSON.parse(imported.stdout));
@@ -320,12 +345,18 @@ export async function verifyManagedCacheIntegrity(
         recoveredReport.action === "verify" && isDeepStrictEqual(recoveredReport, report),
         "Integrity case recovery verify report changed",
       );
+      substage = "ready-wait";
       const recovered = await waitFor(
         "integrity case recovered ready record",
-        () => readRecord(store, record),
+        async () => {
+          const current = await readRecord(store, record);
+          observedState = current.state;
+          return current;
+        },
         (value) => value.state === "ready",
       );
       unchangedRecord(recovered, record, "ready");
+      substage = "inventory-recovery";
       await input.api.inventory(record.spec, true);
       record = recovered;
       console.log(`Spack managed integrity: scenario=${test} status=succeeded`);
@@ -333,7 +364,9 @@ export async function verifyManagedCacheIntegrity(
     return record;
   } catch {
     // Do not propagate filesystem errors, assertion values, JSON input or operation output.
-    console.error(`Spack managed integrity: scenario=${scenario} code=INTEGRITY_FAILED`);
+    console.error(
+      `Spack managed integrity: scenario=${scenario} substage=${substage} state=${observedState} code=INTEGRITY_FAILED`,
+    );
     throw new Error("Managed cache integrity acceptance failed");
   }
 }

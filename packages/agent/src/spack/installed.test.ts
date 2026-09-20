@@ -50,15 +50,30 @@ describe("parseSpackFindJson", () => {
     expect(() => parseSpackFindJson('{"name":"x"}')).toThrow();
   });
 
-  test("skips entries missing required fields rather than crashing", () => {
+  test("rejects the whole snapshot when any entry is incomplete", () => {
     const partial = JSON.stringify([
       { name: "good", version: "1.0", hash: "h1" },
       { name: "incomplete-no-hash", version: "1.0" },
       { name: "incomplete-no-version", hash: "h3" },
     ]);
-    const list = parseSpackFindJson(partial);
-    expect(list).toHaveLength(1);
-    expect(list[0]?.name).toBe("good");
+    expect(() => parseSpackFindJson(partial)).toThrow(
+      "parseSpackFindJson: invalid installed entry",
+    );
+  });
+
+  test.each([
+    "[{}]",
+    "[null]",
+    "[[]]",
+    "[42]",
+    '["invalid"]',
+    '[{"name":"hello","version":"1.0","hash":""}]',
+    '[{"name":42,"version":"1.0","hash":"h1"}]',
+    '[{"name":"hello","version":1,"hash":"h1"}]',
+  ])("rejects malformed entries instead of fabricating empty inventory: %s", (stdout) => {
+    expect(() => parseSpackFindJson(stdout)).toThrow(
+      "parseSpackFindJson: invalid installed entry",
+    );
   });
 
   test("synthesizes spec without compiler when compiler is missing", () => {
@@ -96,5 +111,15 @@ describe("getInstalledList", () => {
       spawner: mockSpawner([{ exitCode: 1, stdout: "", stderr: "spack: not found" }]),
     });
     await expect(getInstalledList(cli)).rejects.toThrow(/spack: not found/);
+  });
+
+  test.each([
+    "[{}]",
+    '[{"name":"hello","version":"1.0","hash":"h1"},{}]',
+  ])("does not accept incomplete CLI-success output as authoritative: %s", async (stdout) => {
+    const cli = new SpackCli({ spawner: mockSpawner([{ exitCode: 0, stdout }]) });
+    await expect(getInstalledList(cli)).rejects.toThrow(
+      "parseSpackFindJson: invalid installed entry",
+    );
   });
 });

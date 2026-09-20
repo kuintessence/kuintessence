@@ -15,6 +15,7 @@ import {
   FileTransferProgressSchema,
   GpuMetricSchema,
   HeartbeatSchema,
+  InstalledSoftwareReportSchema,
   InstalledSpecSchema,
   JobLogsResponseSchema,
   JobStatusUpdateSchema,
@@ -535,7 +536,8 @@ export interface AgentStreamDeps {
    * Heartbeat. The Agent index.ts hydrates this once at boot via
    * SpackManager.installedList(). When the list refreshes after an
    * install/uninstall the agent should swap in a new list via the
-   * setInstalledSoftware() setter.
+   * setInstalledSoftware() setter. Omitted means unknown, not an empty
+   * inventory; only successfully read snapshots may clear the Server ledger.
    */
   installedSoftware?: InstalledSpec[];
 
@@ -675,6 +677,7 @@ export class AgentStream {
   private revocationTombstones: JobRevocationTombstones | undefined;
   private spackManager: SpackManager | undefined;
   private installedSoftware: InstalledSpec[];
+  private installedSoftwareKnown: boolean;
   private softwareOperationQueue: Promise<void> = Promise.resolve();
   private readGpuMetricsFn: () => Promise<GpuMetric[]>;
   private readDiskUsedPercentFn: () => Promise<number | null>;
@@ -746,6 +749,7 @@ export class AgentStream {
     this.revocationTombstones = deps.revocationTombstones;
     this.spackManager = deps.spackManager;
     this.installedSoftware = deps.installedSoftware ?? [];
+    this.installedSoftwareKnown = deps.installedSoftware !== undefined;
     this.readGpuMetricsFn = deps.readGpuMetrics ?? (() => defaultReadGpuMetrics());
     this.readDiskUsedPercentFn = deps.readDiskUsedPercent ?? (() => defaultReadDiskUsedPercent());
     this.readSchedulerQueueDepthFn =
@@ -977,6 +981,7 @@ export class AgentStream {
    */
   setInstalledSoftware(specs: InstalledSpec[]): void {
     this.installedSoftware = [...specs];
+    this.installedSoftwareKnown = true;
   }
 
   // ---------------------------------------------------------------------------
@@ -1571,6 +1576,25 @@ export class AgentStream {
 
           if (item.kind === "heartbeat") {
             yield item.message;
+            // Repeated proto fields cannot distinguish unknown from empty.
+            // Retry authoritative empty snapshots on each live heartbeat,
+            // including after reconnect; use current state, not a stale queue item.
+            if (
+              !signal.aborted &&
+              this.installedSoftwareKnown &&
+              this.installedSoftware.length === 0
+            ) {
+              yield create(AgentMessageSchema, {
+                payload: {
+                  case: "installedSoftwareReport",
+                  value: create(InstalledSoftwareReportSchema, {
+                    agentId: this.deps.agentId,
+                    installed: [],
+                    reportedAt: BigInt(Date.now()),
+                  }),
+                },
+              });
+            }
             if (!this.heartbeatAckSupported) this.flushHeartbeatFollowUp();
           } else if (item.kind === "jobStatus") {
             const message = this.reportToProto(item.report, item.eventId);
@@ -4188,7 +4212,7 @@ export class AgentStream {
       return;
     }
     if (outcome.outcome === "failed") {
-      if (outcome.invalidatedHashes?.length) {
+      if (outcome.invalidatedHashes?.length && this.installedSoftwareKnown) {
         const invalidated = new Set(outcome.invalidatedHashes);
         this.setInstalledSoftware(
           this.installedSoftware.filter((spec) => !invalidated.has(spec.hash)),

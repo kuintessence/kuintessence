@@ -418,6 +418,12 @@ function queueInventoryHeartbeats(
   });
 }
 
+function installedSoftwareReports(sent: unknown[]) {
+  return (sent as AgentMessage[]).flatMap((message) =>
+    message.payload.case === "installedSoftwareReport" ? [message.payload.value] : [],
+  );
+}
+
 async function deliverServerMessage(stream: AgentStream, message: ServerMessage): Promise<void> {
   await (
     stream as unknown as { handleServerMessage: (serverMessage: ServerMessage) => Promise<void> }
@@ -4797,6 +4803,124 @@ describe("AgentStream", () => {
     expect(hb?.payload.value.installedSoftware[0]?.name).toBe("gromacs");
   });
 
+  test.each([
+    { name: "known empty inventory emits periodic empty reports", known: true },
+    {
+      name: "unknown inventory emits no empty report until the setter publishes it",
+      known: false,
+    },
+  ])("$name", async ({ known }) => {
+    const closeFirst = Promise.withResolvers<void>();
+    const reconnect = makeReplayReconnectClient(
+      create(ServerMessageSchema, {
+        payload: {
+          case: "registerResponse",
+          value: create(RegisterResponseSchema, { accepted: true }),
+        },
+      }),
+      closeFirst.promise,
+    );
+    const { client } = makeMockClient([]);
+    const stream = new AgentStream({
+      client,
+      clientFactory: reconnect.clientFactory,
+      adapter: makeAdapter(),
+      agentId: "agent-installed-inventory",
+      siteName: "test-site",
+      heartbeatIntervalMs: 5,
+      logger: silent,
+      installedSoftware: known ? [] : undefined,
+      readGpuMetrics: async () => [],
+      readDiskUsedPercent: async () => 0,
+      readSchedulerQueueDepth: async () => 0,
+    });
+    activeStreams.push(stream);
+    const running = stream.start();
+    try {
+      const sent = reconnect.sentByConnection[0];
+      if (!sent) throw new Error("first connection messages missing");
+      await waitForCondition(() => queueInventoryHeartbeats(sent).length >= 3);
+      if (!known) {
+        expect(installedSoftwareReports(sent)).toEqual([]);
+        stream.setInstalledSoftware([]);
+      }
+      await waitForCondition(() => installedSoftwareReports(sent).length >= 2);
+      for (const report of installedSoftwareReports(sent)) {
+        expect(report.agentId).toBe("agent-installed-inventory");
+        expect(report.installed).toEqual([]);
+        expect(report.reportedAt).toBeGreaterThan(0n);
+      }
+      for (const [index, message] of (sent as AgentMessage[]).entries()) {
+        if (message.payload.case === "installedSoftwareReport") {
+          expect((sent[index - 1] as AgentMessage | undefined)?.payload.case).toBe("heartbeat");
+        }
+      }
+      expect(reconnect.connectionCount()).toBe(1);
+    } finally {
+      stream.stop();
+      closeFirst.resolve();
+      await running;
+    }
+  });
+
+  test("retries known empty inventory on successive live heartbeats after reconnect", async () => {
+    const closeFirst = Promise.withResolvers<void>();
+    const reconnect = makeReplayReconnectClient(
+      create(ServerMessageSchema, {
+        payload: {
+          case: "registerResponse",
+          value: create(RegisterResponseSchema, { accepted: true }),
+        },
+      }),
+      closeFirst.promise,
+    );
+    const { client } = makeMockClient([]);
+    const stream = new AgentStream({
+      client,
+      clientFactory: reconnect.clientFactory,
+      adapter: makeAdapter(),
+      agentId: "agent-installed-reconnect",
+      siteName: "test-site",
+      heartbeatIntervalMs: 5,
+      logger: silent,
+      reconnectBackoffMs: 1,
+      sleep: async () => {},
+      installedSoftware: [],
+      readGpuMetrics: async () => [],
+      readDiskUsedPercent: async () => 0,
+      readSchedulerQueueDepth: async () => 0,
+    });
+    activeStreams.push(stream);
+    const running = stream.start();
+    try {
+      const firstSent = reconnect.sentByConnection[0];
+      if (!firstSent) throw new Error("first connection messages missing");
+      await waitForCondition(() => installedSoftwareReports(firstSent).length >= 2);
+      closeFirst.resolve();
+      await waitForCondition(() => reconnect.connectionCount() === 2);
+      const secondSent = reconnect.sentByConnection[1];
+      if (!secondSent) throw new Error("second connection messages missing");
+      await waitForCondition(() => installedSoftwareReports(secondSent).length >= 2);
+      const reportsBeforeRetry = installedSoftwareReports(secondSent).length;
+      await waitForCondition(
+        () => installedSoftwareReports(secondSent).length > reportsBeforeRetry,
+      );
+      for (const sent of [firstSent, secondSent]) {
+        for (const [index, message] of (sent as AgentMessage[]).entries()) {
+          if (message.payload.case !== "installedSoftwareReport") continue;
+          expect(message.payload.value.agentId).toBe("agent-installed-reconnect");
+          expect(message.payload.value.installed).toEqual([]);
+          expect((sent[index - 1] as AgentMessage | undefined)?.payload.case).toBe("heartbeat");
+        }
+      }
+      expect(reconnect.connectionCount()).toBe(2);
+    } finally {
+      stream.stop();
+      closeFirst.resolve();
+      await running;
+    }
+  });
+
   test("negotiates compute health and preserves the adapter observation timestamp on live heartbeats", async () => {
     const observedAtUnixMs = 1_725_000_000_123;
     let observations = 0;
@@ -5518,28 +5642,30 @@ describe("AgentStream", () => {
     expect(results[1]?.installed).toEqual([]);
   });
 
-  test("failed managed verification withdraws only invalidated software from later heartbeats", async () => {
-    const { client, sent } = makeMockClient(
-      [
-        create(ServerMessageSchema, {
-          payload: {
-            case: "registerResponse",
-            value: create(RegisterResponseSchema, { accepted: true }),
-          },
-        }),
-        create(ServerMessageSchema, {
-          payload: {
-            case: "softwareOperationRequest",
-            value: create(SoftwareOperationRequestSchema, {
-              operationId: "00000000-0000-0000-0000-000000000020",
-              action: SoftwareOperationAction.LOAD,
-              spec: "hello@1.0",
-            }),
-          },
-        }),
-      ],
-      100,
+  test.each([
+    { name: "does not turn unknown inventory into known empty", known: false, keepOther: false },
+    {
+      name: "publishes empty inventory after invalidating the last hash",
+      known: true,
+      keepOther: false,
+    },
+    {
+      name: "preserves unrelated software without a clearing report",
+      known: true,
+      keepOther: true,
+    },
+  ])("failed managed verification $name", async ({ known, keepOther }) => {
+    const closeFirst = Promise.withResolvers<void>();
+    const reconnect = makeReplayReconnectClient(
+      create(ServerMessageSchema, {
+        payload: {
+          case: "registerResponse",
+          value: create(RegisterResponseSchema, { accepted: true }),
+        },
+      }),
+      closeFirst.promise,
     );
+    const { client } = makeMockClient([]);
     const spackManager = await SpackManager.bootstrap({
       requireServerMaterials: true,
       spawner: {
@@ -5559,18 +5685,24 @@ describe("AgentStream", () => {
       fileTransferMaxRetries: 3,
       fileTransferRetryBackoffSec: 0,
       client,
+      clientFactory: reconnect.clientFactory,
       adapter: makeAdapter(),
       agentId: "agent-001",
       siteName: "test-site",
-      heartbeatIntervalMs: 60_000,
+      heartbeatIntervalMs: 5,
       logger: silent,
       reconnectBackoffMs: 1,
       sleep: async () => {},
       spackManager,
-      installedSoftware: [
-        keep,
-        { name: "hello", version: "1.0", hash: "invalid", spec: "hello@1.0" },
-      ],
+      installedSoftware: known
+        ? [
+            ...(keepOther ? [keep] : []),
+            { name: "hello", version: "1.0", hash: "invalid", spec: "hello@1.0" },
+          ]
+        : undefined,
+      readGpuMetrics: async () => [],
+      readDiskUsedPercent: async () => 0,
+      readSchedulerQueueDepth: async () => 0,
     });
     const snapshots: Array<Parameters<AgentStream["setInstalledSoftware"]>[0]> = [];
     const update = stream.setInstalledSoftware.bind(stream);
@@ -5580,17 +5712,59 @@ describe("AgentStream", () => {
     };
     activeStreams.push(stream);
     const running = stream.start();
-    await settle(30);
-    stream.stop();
-    await running;
-    expect(snapshots).toEqual([[keep]]);
-    const results = (sent as AgentMessage[]).flatMap((message) =>
-      message.payload.case === "softwareOperationResult" ? [message.payload.value] : [],
-    );
-    expect(results.map((value) => value.status)).toEqual([
-      SoftwareOperationStatus.RUNNING,
-      SoftwareOperationStatus.FAILED,
-    ]);
+    try {
+      const sent = reconnect.sentByConnection[0];
+      if (!sent) throw new Error("first connection messages missing");
+      await waitForCondition(() => queueInventoryHeartbeats(sent).length >= 2);
+      expect(installedSoftwareReports(sent)).toEqual([]);
+      await deliverServerMessage(
+        stream,
+        create(ServerMessageSchema, {
+          payload: {
+            case: "softwareOperationRequest",
+            value: create(SoftwareOperationRequestSchema, {
+              operationId: "00000000-0000-0000-0000-000000000020",
+              action: SoftwareOperationAction.LOAD,
+              spec: "hello@1.0",
+            }),
+          },
+        }),
+      );
+      const results = () =>
+        (sent as AgentMessage[]).flatMap((message) =>
+          message.payload.case === "softwareOperationResult" ? [message.payload.value] : [],
+        );
+      await waitForCondition(() =>
+        results().some((result) => result.status === SoftwareOperationStatus.FAILED),
+      );
+      const afterFailure = sent.length;
+      await waitForCondition(() => queueInventoryHeartbeats(sent.slice(afterFailure)).length >= 3);
+      expect(snapshots).toEqual(known ? [keepOther ? [keep] : []] : []);
+      const heartbeats = (sent.slice(afterFailure) as AgentMessage[]).flatMap((message) =>
+        message.payload.case === "heartbeat" ? [message.payload.value] : [],
+      );
+      expect(heartbeats.at(-1)?.installedSoftware.map((spec) => spec.hash)).toEqual(
+        keepOther ? ["keep"] : [],
+      );
+      if (known && !keepOther) {
+        await waitForCondition(() => installedSoftwareReports(sent).length >= 2);
+        for (const report of installedSoftwareReports(sent)) {
+          expect(report.agentId).toBe("agent-001");
+          expect(report.installed).toEqual([]);
+        }
+      } else {
+        expect(installedSoftwareReports(sent)).toEqual([]);
+      }
+      expect(results().map((value) => value.status)).toEqual([
+        SoftwareOperationStatus.RUNNING,
+        SoftwareOperationStatus.FAILED,
+      ]);
+      expect(reconnect.connectionCount()).toBe(1);
+    } finally {
+      stream.stop();
+      closeFirst.resolve();
+      await running;
+    }
   });
 
   test("serializes software execution through inventory publication before later invalidation", async () => {

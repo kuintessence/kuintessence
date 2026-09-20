@@ -53,25 +53,27 @@ function flattenCompiler(raw: RawSpackFindEntry["compiler"]): string | undefined
  * Parse `spack find --json` output into a normalized `InstalledSpec[]`.
  *
  * Behaviors:
- *  - Entries missing `name`, `version`, or `hash` are silently dropped
- *    (keeps a partially-corrupt Spack output from killing the heartbeat
- *    loop; the dropped count can be observed via `length` mismatch in
- *    the caller if needed).
+ *  - Every entry must contain `name`, `version`, and `hash`. A partial
+ *    snapshot must never be published as authoritative empty inventory.
  *  - `spec` is derived as `name@version[%compiler]` when not provided.
- *  - Throws on invalid JSON or non-array top-level — those are operator-
- *    facing failures, not data-quality issues.
+ *  - Throws on invalid JSON, non-array top-level, or invalid entries.
  */
 export function parseSpackFindJson(stdout: string): InstalledSpec[] {
-  const parsed = JSON.parse(stdout);
+  const parsed: unknown = JSON.parse(stdout);
   if (!Array.isArray(parsed)) {
     throw new Error("parseSpackFindJson: expected top-level array");
   }
   const result: InstalledSpec[] = [];
   for (const raw of parsed as RawSpackFindEntry[]) {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+      throw new Error("parseSpackFindJson: invalid installed entry");
+    }
     const name = asString(raw?.name);
     const version = asString(raw?.version);
     const hash = asString(raw?.hash);
-    if (!name || !version || !hash) continue;
+    if (!name || !version || !hash) {
+      throw new Error("parseSpackFindJson: invalid installed entry");
+    }
     const compiler = flattenCompiler(raw?.compiler);
     const arch = flattenArch(raw?.arch);
     const explicitSpec = asString(raw?.spec);
@@ -93,7 +95,7 @@ export function parseSpackFindJson(stdout: string): InstalledSpec[] {
  *
  * Throws when the CLI itself fails (exit != 0) so the caller can decide
  * whether to mark Spack unavailable. CLI argument errors propagate as
- * exceptions; data parsing errors propagate as JSON SyntaxError.
+ * exceptions; incomplete or malformed inventories also fail the whole snapshot.
  */
 export async function getInstalledList(cli: SpackCli): Promise<InstalledSpec[]> {
   const r = await cli.findJson();

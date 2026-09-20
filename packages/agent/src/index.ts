@@ -503,16 +503,14 @@ async function main() {
     "Spack manager bootstrap complete",
   );
 
-  // Best-effort installed-list snapshot at boot. Failure here doesn't block
-  // the agent — the Server will see an empty list and the next post-install
-  // refresh will repopulate it.
-  let installedSoftware: Awaited<ReturnType<typeof spackManager.installedList>> = [];
+  // Unknown inventory must not be advertised as an authoritative empty snapshot.
+  let installedSoftware: Awaited<ReturnType<typeof spackManager.installedList>> | undefined;
   if (spackManager.available) {
     try {
       installedSoftware = await spackManager.installedList();
       logger.info({ count: installedSoftware.length }, "Initial Spack installed-list cached");
     } catch (err) {
-      logger.warn({ err }, "Failed to read initial Spack installed-list — continuing with empty");
+      logger.warn({ err }, "Failed to read initial Spack installed-list; inventory remains unknown");
     }
   }
 

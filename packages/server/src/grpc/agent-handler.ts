@@ -593,13 +593,11 @@ export function registerAgentHandler(router: ConnectRouter, deps: AgentHandlerDe
               );
             }
 
-            // when the heartbeat carries installed-software,
-            // mirror it into the per-agent ledger. This is fire-and-forget
-            // so the heartbeat ingest path stays fast; the registry's
-            // delete-stale + insert pass is bounded by the agent's local
-            // installed-list size.
+            // Serialize snapshots in stream order. A delayed nonempty heartbeat
+            // must not restore entries after a later explicit empty report.
+            // Empty repeated fields remain ambiguous for legacy/replayed heartbeats.
             if (installedRegistry && hb.installedSoftware.length > 0) {
-              installedRegistry
+              await installedRegistry
                 .replaceForAgent(
                   registeredAgentId,
                   hb.installedSoftware.map((s) => ({
