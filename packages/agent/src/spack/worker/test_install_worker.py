@@ -30,6 +30,8 @@ class InstallSpec(fixtures.FakeSpec):
         self.external_modules = external.get("module")
         self.extra_attributes = external.get("extra_attributes", {})
         self.abstract_hash = None
+        self.variants = {}
+        self.compiler_flags = ""
         self.package.spec = self
 
     @property
@@ -37,7 +39,15 @@ class InstallSpec(fixtures.FakeSpec):
         return self.external_path or str(self.native.store_path / self.name)
 
     def format(self, template=None):
-        return f"{self.namespace}.{self.name}@={self.version} arch={self.architecture}"
+        variants = "".join(f" {name}={value}" for name, value in self.variants.items())
+        return (f"{self.namespace}.{self.name}@={self.version}{variants}"
+                f"{self.compiler_flags} arch={self.architecture}")
+
+    def copy(self, deps=True):
+        assert deps is False
+        result = copy.copy(self)
+        result.variants = copy.deepcopy(self.variants)
+        return result
 
     def traverse(self):
         yield self
@@ -486,6 +496,26 @@ class InstallTests(unittest.TestCase):
                 if nodes:
                     self.assertIs(config["packages"]["gcc"]["buildable"], False)
                     self.assertEqual(len(config["packages"]["gcc"]["externals"]), 1)
+
+    def test_external_configuration_omits_native_patch_metadata_without_mutating_lock_spec(self):
+        self.add_external()
+        external = self.native.nodes[fixtures.DEP_HASH]
+        external.variants = {"languages": "c,c++", "patches": "a" * 64}
+        external.compiler_flags = ' cflags="-O2"'
+        original = copy.deepcopy(external.variants)
+        lock = copy.deepcopy(self.lock)
+        config = worker.configuration(self.work, self.native.nodes)
+        entry = config["packages"]["gcc"]["externals"][0]
+        self.assertEqual(entry["spec"],
+                         f"{external.namespace}.gcc@={external.version} languages=c,c++"
+                         ' cflags="-O2" arch=linux-ubuntu24.04-x86_64')
+        self.assertNotIn("patches=", entry["spec"])
+        self.assertNotIn("/" + fixtures.DEP_HASH, entry["spec"])
+        self.assertEqual(external.variants, original)
+        self.assertEqual(self.lock, lock)
+        self.assertEqual(entry["prefix"], external.external_path)
+        self.assertEqual(entry["extra_attributes"], external.extra_attributes)
+        self.assertIsNot(entry["extra_attributes"], external.extra_attributes)
 
     def test_install_uses_native_solver_installer_store_and_root_only_report(self):
         self.add_external()

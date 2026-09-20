@@ -359,10 +359,13 @@ def configuration(work: Path, nodes: dict) -> dict:
     for spec in nodes.values():
         if spec.external:
             entry = data["packages"].setdefault(spec.name, {"buildable": False, "externals": []})
+            external = spec.copy(deps=False)
+            # Native patch ordering is solver output, not a packages.yaml input variant.
+            external.variants.pop("patches", None)
             # str(concrete_spec) includes /hash and would shortcut the solver.
             entry["externals"].append({
-                "spec": spec.format("{namespace}.{name}{@version}{variants}{compiler_flags}"
-                                    " arch={architecture}"),
+                "spec": external.format("{namespace}.{name}{@version}{variants}{compiler_flags}"
+                                        " arch={architecture}"),
                 "prefix": str(spec.external_path),
                 "extra_attributes": copy.deepcopy(spec.extra_attributes),
             })

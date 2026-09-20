@@ -501,6 +501,8 @@ profile 文件及宿主文件的解析链须 root 所有，目录和常规文件
 recipe 仍是可信任前提下执行的任意 Python；分开 verify 也不构成防恶意 recipe 的信任证明。
 worker 实现固定材料复验、native solver 对照、安装树检查和 load 校验；
 这些检查不能替代真实站点验收，也不能把静态预检报告升级成完整求解证明。
+external 的求解配置从锁定 spec 的副本生成，不把 native `patches` 内部元数据当作
+用户输入 variant；原 lock、recipe 校验和重新求解后的完整 DAG/hash 对照保持不变。
 安装树使用 `read: world`、`write: user`，以便同站点计算任务读取；不开放 group/other 写入。
 原生 compiler-wrapper 可以使用解析后仍留在本次事务 store 内的绝对或相对 symlink；
 跨事务、未批准外部目标、scratch、悬空、循环链接和数据库内的链接仍被拒绝。
