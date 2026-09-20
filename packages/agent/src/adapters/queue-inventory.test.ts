@@ -138,7 +138,10 @@ describe("SchedulerQueueInventoryCache", () => {
     expect(first.observedAt.getTime()).toBe(epoch + 5_000);
   });
 
-  test.each([false, true])("retries a rejected shared load with prior snapshot=%s", async (seed) => {
+  test.each([
+    false,
+    true,
+  ])("retries a rejected shared load with prior snapshot=%s", async (seed) => {
     const cache = new SchedulerQueueInventoryCache();
     if (seed) {
       await cache.inspect(async () => observeQueue());
