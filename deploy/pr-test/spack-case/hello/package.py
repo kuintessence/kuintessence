@@ -5,7 +5,8 @@ class Hello(Package):
     """GNU Hello release tarball, built without regenerating Autotools files."""
 
     homepage = "https://www.gnu.org/software/hello/"
-    url = "https://ftp.gnu.org/gnu/hello/hello-2.12.1.tar.gz"
+    # Listed at www.gnu.org/prep/ftp.html; keep the upstream release checksum.
+    url = "https://mirrors.ocf.berkeley.edu/gnu/hello/hello-2.12.1.tar.gz"
 
     # Official NixOS metadata, not a digest learned from our own download:
     # github.com/NixOS/nixpkgs/blob/34b62f7c47d9e11cf95b01473e9a380e9d331a6d/

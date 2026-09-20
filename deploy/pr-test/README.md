@@ -102,6 +102,9 @@ bash deploy/pr-test/run.sh slurm --spack-case
 该模式只支持 Slurm，不替代默认 Slurm/PBS 回归。它使用 Spack 1.0.0、
 固定 builtin recipe commit 和 GNU Hello 2.12.1 源码；材料准备在镜像构建阶段联网，
 生成真实 Linux lock、源码 mirror 和自包含 Git bundle，不使用手写 DAG/hash。
+Hello 的 CI recipe 使用 GNU 官方列表中的 Berkeley HTTPS 镜像，避免单独依赖
+`ftp.gnu.org` 的 runner 可达性；版本和独立固定 SHA-256 不变，下载或校验失败仍退出。
+此上游地址只供联网材料准备使用，Agent 与离线 worker 仍只消费 Server 交付的材料。
 上游 recipe 使用固定 commit 的 shallow Git checkout，核对固定 tree 后从本地
 Git object 元数据逐一校验文件模式、长度和 blob hash，不依赖匿名 GitHub tree API。
 材料不提交 Git，不进入 scheduler 镜像；只保留可复现准备脚本及自有 recipe。

@@ -1,5 +1,6 @@
 """Offline metadata regressions; run in CI with Python unittest and local Git."""
 
+import ast
 import hashlib
 import importlib.util
 import os
@@ -25,6 +26,29 @@ def record(path, data=b"fixture\n", mode="100644", kind="blob", digest=None, siz
 
 
 class TreeParserTests(unittest.TestCase):
+    def test_case_mirror_preserves_release_and_independent_checksum(self):
+        tree = ast.parse(Path(__file__).with_name("hello").joinpath("package.py").read_text())
+        package = next(node for node in tree.body if isinstance(node, ast.ClassDef))
+        url = next(
+            node.value for node in package.body if isinstance(node, ast.Assign)
+            and any(isinstance(target, ast.Name) and target.id == "url" for target in node.targets)
+        )
+        self.assertEqual(
+            ast.literal_eval(url),
+            "https://mirrors.ocf.berkeley.edu/gnu/hello/hello-2.12.1.tar.gz",
+        )
+        versions = [
+            node.value for node in package.body if isinstance(node, ast.Expr)
+            and isinstance(node.value, ast.Call) and isinstance(node.value.func, ast.Name)
+            and node.value.func.id == "version"
+        ]
+        self.assertEqual(len(versions), 1)
+        self.assertEqual([ast.literal_eval(arg) for arg in versions[0].args], ["2.12.1"])
+        self.assertEqual(
+            {item.arg: ast.literal_eval(item.value) for item in versions[0].keywords},
+            {"sha256": "8d99142afd92576f30b0cd7cb42a8dc6809998bc5d607d88761f512e26c7db20"},
+        )
+
     def licenses(self):
         return b"".join(record(name) for name in prepare.LICENSES)
 
