@@ -143,6 +143,11 @@ native 测试使用 Docker 隔离网络及已审核 recipe，不调用 Apptainer
 提供用户 DBus 和 cgroup delegation。外层特权仅用于这台临时测试节点；
 容器使用 private cgroup namespace，不挂载宿主 cgroup、Docker socket 或宿主目录。
 Agent 无 sudo 权限；产品 Apptainer/SIF、只读输入、隔离网络和资源限额检查保持不变。
+仅 scheduler 镜像预建默认 legacy store 的 `.spack-db/lock`，目录 `0755`、锁文件
+`0644` 且均由 root 所有，并检查 `kq` 可读但不可写；不修改 SIF 或 managed store。
+这是空 legacy 库存读取的前提，不允许 Agent 写入全局 Spack 分发目录。
+启动前以 Agent 的身份、注册环境和工作目录执行一次限时 `find --json` 诊断，
+每流最多 64 KiB，只保留固定错误类别及 JSON 形状；诊断不能覆盖后续 API 失败。
 运行前先调用产品的 runtime boundary verifier，失败即停止，不能降级成 native 案例。
 Ubuntu 24.04 Actions 宿主为固定路径的非 setuid Apptainer starter 临时加载
 基于 Apptainer 1.4.3 官方配置的 AppArmor `userns` profile，job 结束后移除；

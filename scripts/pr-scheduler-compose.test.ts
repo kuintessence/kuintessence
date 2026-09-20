@@ -371,6 +371,18 @@ describe("PR runner lifecycle (fake Docker, no containers)", () => {
     expect(dockerfile).toContain("sha256sum --check");
     expect(dockerfile).toContain("rm /etc/sudoers.d/kq");
     expect(dockerfile).toContain("gpasswd -d kq sudo");
+    const legacyLock = "/opt/spack/opt/spack/.spack-db/lock";
+    const lockSetup = `touch ${legacyLock}`;
+    expect(dockerfile.indexOf(lockSetup)).toBeGreaterThan(
+      dockerfile.indexOf("FROM managed-base AS scheduler"),
+    );
+    expect(dockerfile).toContain(`chown root:root ${legacyLock}`);
+    expect(dockerfile).toContain(`chmod 0644 ${legacyLock}`);
+    expect(dockerfile).toContain(`runuser -u kq -- test -r ${legacyLock}`);
+    expect(dockerfile).toContain(`! runuser -u kq -- test -w ${legacyLock}`);
+    expect(dockerfile).toContain("! runuser -u kq -- test -w /opt/spack/opt/spack/.spack-db");
+    expect(dockerfile).not.toContain("chown -R kq");
+    expect(dockerfile).not.toContain("index.json");
     const probe = await readFile(join(root, "deploy/pr-test/spack-managed/probe.py"), "utf8");
     expect(probe).toContain("boundary.verify_runtime_boundary");
     const profile = await readFile(

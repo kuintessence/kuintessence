@@ -32,6 +32,15 @@ CMD ["build", "--disable-cache", "/runtime/spack.sif", "/sif-rootfs"]
 
 FROM managed-base AS scheduler
 COPY --from=test-workspace /workspace /workspace
+# Even an empty legacy inventory needs a readable DB lock; the Agent cannot
+# create it under the root-owned Spack distribution. Keep the store read-only.
+RUN install -d -o root -g root -m 0755 /opt/spack/opt/spack/.spack-db \
+  && touch /opt/spack/opt/spack/.spack-db/lock \
+  && chown root:root /opt/spack/opt/spack/.spack-db/lock \
+  && chmod 0644 /opt/spack/opt/spack/.spack-db/lock \
+  && runuser -u kq -- test -r /opt/spack/opt/spack/.spack-db/lock \
+  && ! runuser -u kq -- test -w /opt/spack/opt/spack/.spack-db/lock \
+  && ! runuser -u kq -- test -w /opt/spack/opt/spack/.spack-db
 RUN mkdir -p /etc/systemd/system/user@.service.d /srv/kq/spack /etc/kuintessence/managed \
   && cp /workspace/deploy/pr-test/spack-managed/delegate.conf /etc/systemd/system/user@.service.d/delegate.conf \
   && cp /workspace/deploy/pr-test/spack-managed/scheduler.service /etc/systemd/system/kq-pr-scheduler.service \

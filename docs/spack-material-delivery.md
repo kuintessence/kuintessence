@@ -571,6 +571,10 @@ worker 同时通过 `packages.all.require` 将完整 profile arch 施加到求�
 
 inventory 读取账本和路径状态，不会每次执行完整 runtime verify；
 load/复验仍依赖固定材料 cache 与 runtime，不能把安装目录视为可脱离它们管理的独立产物。
+宿主 legacy 库存也必须能由 Agent 身份执行 `spack find --json` 读取。即使库存为空，
+默认 store 仍需要可读取的数据库锁；root 安装的 Spack 应由运维预先初始化该锁，
+不能靠赋予 Agent 整个 Spack 分发目录的写权限解决。legacy 查询失败会使对应 API
+操作失败，不会伪造空库存或把已完成的 build 等同于整项操作成功。
 Agent 的软件请求从执行到 inventory 发布串行处理，避免较旧成功快照覆盖较新撤回；
 卸载清理、legacy 刷新或写锁收尾失败也保留已确定的撤回信息。
 `ready` 仅表示此受管事务满足当前编排的发布条件，不表示生产就绪或集群运行验收通过。
