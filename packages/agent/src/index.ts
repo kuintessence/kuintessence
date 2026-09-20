@@ -134,17 +134,17 @@ async function main() {
     slurmDeps = {
       logDir: containerLogDir,
       terminalStatusBackend: "scontrol",
-      queueInventoryRefreshMs: config.AGENT_SCHEDULER_METRICS_INTERVAL_SEC * 1000,
+      queueInventoryRefreshMs: config.AGENT_QUEUE_INVENTORY_INTERVAL_SEC * 1000,
       queueInventoryTimeoutMs: config.AGENT_SCHEDULER_CLI_TIMEOUT_SEC * 1000,
     };
     pbsProDeps = {
       logDir: containerLogDir,
-      queueInventoryRefreshMs: config.AGENT_SCHEDULER_METRICS_INTERVAL_SEC * 1000,
+      queueInventoryRefreshMs: config.AGENT_QUEUE_INVENTORY_INTERVAL_SEC * 1000,
       queueInventoryTimeoutMs: config.AGENT_SCHEDULER_CLI_TIMEOUT_SEC * 1000,
     };
     torqueDeps = {
       logDir: containerLogDir,
-      queueInventoryRefreshMs: config.AGENT_SCHEDULER_METRICS_INTERVAL_SEC * 1000,
+      queueInventoryRefreshMs: config.AGENT_QUEUE_INVENTORY_INTERVAL_SEC * 1000,
       queueInventoryTimeoutMs: config.AGENT_SCHEDULER_CLI_TIMEOUT_SEC * 1000,
     };
     outputReader = makeContainerReadOutput(containerId);
@@ -155,17 +155,17 @@ async function main() {
     const logDir = dataRoots.schedulerLogDir();
     slurmDeps = {
       logDir,
-      queueInventoryRefreshMs: config.AGENT_SCHEDULER_METRICS_INTERVAL_SEC * 1000,
+      queueInventoryRefreshMs: config.AGENT_QUEUE_INVENTORY_INTERVAL_SEC * 1000,
       queueInventoryTimeoutMs: config.AGENT_SCHEDULER_CLI_TIMEOUT_SEC * 1000,
     };
     pbsProDeps = {
       logDir,
-      queueInventoryRefreshMs: config.AGENT_SCHEDULER_METRICS_INTERVAL_SEC * 1000,
+      queueInventoryRefreshMs: config.AGENT_QUEUE_INVENTORY_INTERVAL_SEC * 1000,
       queueInventoryTimeoutMs: config.AGENT_SCHEDULER_CLI_TIMEOUT_SEC * 1000,
     };
     torqueDeps = {
       logDir,
-      queueInventoryRefreshMs: config.AGENT_SCHEDULER_METRICS_INTERVAL_SEC * 1000,
+      queueInventoryRefreshMs: config.AGENT_QUEUE_INVENTORY_INTERVAL_SEC * 1000,
       queueInventoryTimeoutMs: config.AGENT_SCHEDULER_CLI_TIMEOUT_SEC * 1000,
     };
     outputReader = hostOutputReader;

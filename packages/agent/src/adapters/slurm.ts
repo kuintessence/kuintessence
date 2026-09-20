@@ -293,9 +293,7 @@ export class SlurmAdapter implements SchedulerAdapter {
     this.logDir = deps.logDir ?? tmpdir();
     this.terminalStatusBackend = deps.terminalStatusBackend ?? "sacct";
     this.queueInventoryTimeoutMs = deps.queueInventoryTimeoutMs ?? COMPUTE_HEALTH_CLI_TIMEOUT_MS;
-    this.queueInventoryCache = new SchedulerQueueInventoryCache(
-      deps.queueInventoryRefreshMs ?? 120_000,
-    );
+    this.queueInventoryCache = new SchedulerQueueInventoryCache(deps.queueInventoryRefreshMs);
   }
 
   formatWallTime(seconds: number): string {

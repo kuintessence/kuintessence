@@ -361,13 +361,22 @@ Agent Queue Inventory 保存调度器观测结果。
 | `/api/admin/queues` | Registry 查询、创建和更新 |
 | `GET /api/queues/visible` | 当前 active organization 可见且可提交的目标 |
 | `QUEUE_VALIDATION_MODE=off|shadow|enforce` | Server 全局门禁模式 |
-| `QUEUE_INVENTORY_MAX_AGE_SEC` | fresh observation 窗口 |
-| `AGENT_SCHEDULER_METRICS_INTERVAL_SEC` | scheduler 采集缓存周期 |
+| `QUEUE_INVENTORY_MAX_AGE_SEC` | fresh observation 窗口，默认 120 秒 |
+| `AGENT_QUEUE_INVENTORY_INTERVAL_SEC` | 队列观测缓存周期，默认 30 秒 |
+| `AGENT_SCHEDULER_METRICS_INTERVAL_SEC` | scheduler 指标缓存周期，默认 120 秒，不再控制队列观测 |
 | `AGENT_SCHEDULER_CLI_TIMEOUT_SEC` | 采集命令超时 |
 
 Agent 协商 `queue_inventory_v1` 后，Slurm 用 `scontrol show partition -o`，
 OpenPBS 用 `qstat -Bf/-Qf -F json`，Torque 用 `qmgr` 上报。
 Kubernetes 不纳入 HPC queue enforce。
+
+队列刷新与普通指标采集分别配置。升级前若使用 `AGENT_SCHEDULER_METRICS_INTERVAL_SEC`
+调节队列刷新，升级后须通过 `AGENT_QUEUE_INVENTORY_INTERVAL_SEC` 显式配置。
+队列缓存周期加 heartbeat 等待、完整采集耗时及传输/时钟余量，应小于 Server 的 freshness 窗口；
+不要把缓存周期设置成与 freshness 相等。默认 30 秒队列缓存与 30 秒 heartbeat
+为 120 秒 freshness 留出余量，但自定义更长 heartbeat 或更短 freshness 时仍需联合调整。
+Agent 无法从本地配置获知 Server 的自定义 freshness，不对其硬编码跨服务约束。
+这不会跳过 stale/no-go，也不会立即清除既有 no-go；仍须满足后述连续健康恢复条件。
 
 CP `/cp/queues` 分别展示“已纳管目标”和“调度器观测”：
 
@@ -452,6 +461,7 @@ Server 的 no-go 持久化；ready 后须连续健康 `2 × QUEUE_INVENTORY_MAX_
 
 connectRPC 使用 `@connectrpc/connect-node` HTTP/2 transport；不可降级为 HTTP/1.1。
 scheduler 指标缓存默认 120 秒、采集超时默认 5 秒，不改变真实 submit/status/cancel 的语义。
+队列观测使用独立的 30 秒缓存；旧观测时间不会因缓存命中或 heartbeat 重发而更新。
 K3s graceful shutdown 后只清理无进程的特定空 cgroup；不要为释放空间删除数据卷。
 
 `deploy/schedulers/` 下保留识别、Job、workflow、file-transfer、Spack 与重启验证脚本。

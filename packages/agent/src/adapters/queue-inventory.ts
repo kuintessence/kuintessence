@@ -64,7 +64,7 @@ export class SchedulerQueueInventoryCache {
   private expiresAt = 0;
   private pending: Promise<SchedulerQueueInventory> | undefined;
 
-  constructor(private readonly refreshIntervalMs: number) {}
+  constructor(private readonly refreshIntervalMs = 30_000) {}
 
   async inspect(loader: () => Promise<SchedulerQueueInventory>): Promise<SchedulerQueueInventory> {
     if (this.snapshot && Date.now() < this.expiresAt) return this.snapshot;

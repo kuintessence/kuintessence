@@ -13,6 +13,8 @@ describe("loadAgentConfig", () => {
     expect(cfg.AGENT_ID).toBe("agent-test");
     expect(cfg.AGENT_DB_PATH).toBe("./agent.db");
     expect(cfg.HEARTBEAT_INTERVAL_SEC).toBe(30);
+    expect(cfg.AGENT_QUEUE_INVENTORY_INTERVAL_SEC).toBe(30);
+    expect(cfg.AGENT_SCHEDULER_METRICS_INTERVAL_SEC).toBe(120);
     expect(cfg.AGENT_GRPC_PING_INTERVAL_SEC).toBe(30);
     expect(cfg.AGENT_GRPC_PING_TIMEOUT_SEC).toBe(10);
     expect(cfg.AGENT_REGISTRATION_TIMEOUT_SEC).toBe(30);
@@ -27,6 +29,26 @@ describe("loadAgentConfig", () => {
   test("coerces HEARTBEAT_INTERVAL_SEC from string", () => {
     const cfg = loadAgentConfig({ ...baseEnv, HEARTBEAT_INTERVAL_SEC: "60" });
     expect(cfg.HEARTBEAT_INTERVAL_SEC).toBe(60);
+  });
+
+  test("configures queue freshness independently of scheduler metrics", () => {
+    const metricsOnly = loadAgentConfig({
+      ...baseEnv,
+      AGENT_SCHEDULER_METRICS_INTERVAL_SEC: "300",
+    });
+    expect(metricsOnly.AGENT_QUEUE_INVENTORY_INTERVAL_SEC).toBe(30);
+    const queueOnly = loadAgentConfig({
+      ...baseEnv,
+      AGENT_QUEUE_INVENTORY_INTERVAL_SEC: "15",
+    });
+    expect(queueOnly.AGENT_QUEUE_INVENTORY_INTERVAL_SEC).toBe(15);
+    expect(queueOnly.AGENT_SCHEDULER_METRICS_INTERVAL_SEC).toBe(120);
+  });
+
+  test.each(["0", "-1", "1.5", "invalid"])("rejects invalid queue interval %s", (interval) => {
+    expect(() =>
+      loadAgentConfig({ ...baseEnv, AGENT_QUEUE_INVENTORY_INTERVAL_SEC: interval }),
+    ).toThrow();
   });
 
   test("loads custom reconnect liveness settings", () => {

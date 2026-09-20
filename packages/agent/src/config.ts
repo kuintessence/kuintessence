@@ -91,6 +91,7 @@ const AgentConfigSchema = z
     AGENT_HEARTBEAT_ACK_TIMEOUT_SEC: boundedPositiveInt(30, 300),
     AGENT_REACHABILITY_PROBE_ENABLED: envBool(false),
     AGENT_SCHEDULER_METRICS_INTERVAL_SEC: positiveInt(120),
+    AGENT_QUEUE_INVENTORY_INTERVAL_SEC: positiveInt(30),
     AGENT_SCHEDULER_CLI_TIMEOUT_SEC: positiveInt(5),
     /**
      * Maximum number of heartbeat snapshots retained in the offline outbound
