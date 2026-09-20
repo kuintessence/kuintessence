@@ -51,8 +51,9 @@ Kuintessence 当前为 pre-release。以下列出组件功能、运行要求和�
   每次新安装事务独占共享持久化 prefix，managed inventory/load/uninstall 仅面向 DAG root，
   依赖不独立管理，卸载清理整个事务 store；root-only 不指系统 root 身份。
   shared storage、compute ABI、quota、recipe trust 均需运维人工声明，不等于自动验证。
-  Python install worker 已实现并通过模拟 native API 的 fixture 测试，
-  真实 Linux/Spack/Apptainer/SIF 与集群验收未执行；
+  Python install worker 已实现并通过模拟 native API 的 fixture 测试；
+  Actions 中真实 Linux/Spack/Apptainer/SIF 的 runtime 隔离与 source audit 已通过，
+  受管安装闭环尚未通过，不能用 native 离线编译案例替代受管安装验收；
   `ready` 不等于生产就绪，不能宣称平台安装功能已恢复。
   源码已有上传/发布 API 与本地材料 manifest 初始化/批量导入；recipe bootstrap
   完成后才导入材料，成功 binding 仍须运维显式配置到 Server，不自动启用安装。

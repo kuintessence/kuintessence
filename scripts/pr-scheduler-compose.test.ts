@@ -35,6 +35,39 @@ afterEach(async () => {
 });
 
 describe("PR scheduler isolation contract", () => {
+  test("keeps managed phase diagnostics bounded and preserves worker behavior", async () => {
+    const child = Bun.spawn({
+      cmd: [
+        "python3",
+        "-I",
+        "-B",
+        "-m",
+        "unittest",
+        "discover",
+        "-s",
+        ".",
+        "-p",
+        "test_diagnostic.py",
+        "-v",
+      ],
+      cwd: join(root, "deploy/pr-test/spack-managed"),
+      stdin: "ignore",
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const [exitCode, stdout, stderr] = await Promise.all([
+      child.exited,
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+    ]);
+    expect({ exitCode, stdout, stderr }).toMatchObject({
+      exitCode: 0,
+      stdout: "",
+      stderr: expect.stringContaining("OK"),
+    });
+    expect(stderr).toMatch(/Ran [1-9]\d* tests? in/);
+  }, 30_000);
+
   test("prepares pinned recipe metadata without the GitHub tree API", async () => {
     const child = Bun.spawn({
       cmd: [

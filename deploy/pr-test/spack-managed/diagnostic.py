@@ -3,9 +3,58 @@ import contextlib
 import json
 import os
 from pathlib import Path
+import resource
 import sys
 
-sys.path.insert(0, "/kq/input")
+
+def traced_call(function, phase, fd):
+    if phase not in {
+        "source-audit", "configuration", "solve", "tree", "installed",
+        "native-setup", "native-ground", "native-result",
+    }:
+        raise ValueError("Unsupported diagnostic phase")
+
+    def emit(event):
+        try:
+            peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+            rss = str(peak) if type(peak) is int and 0 <= peak < 10 ** 12 else "unavailable"
+        except OSError:
+            rss = "unavailable"
+        try:
+            os.write(fd, ("ci-worker-phase:" + phase + " event=" + event
+                          + " rss-kib=" + rss + "\n").encode("ascii"))
+        except OSError:
+            # A closed diagnostic pipe must not replace the worker's result or error.
+            return
+
+    def traced(*args, **kwargs):
+        emit("start")
+        result = function(*args, **kwargs)
+        emit("returned")
+        return result
+
+    return traced
+
+
+def diagnosed_solver(worker, fd):
+    original = worker.solve_lock
+
+    def solve(*args, **kwargs):
+        import clingo
+        import spack.solver.asp
+
+        with contextlib.ExitStack() as instrumentation:
+            for owner, name, phase in (
+                (spack.solver.asp.SpackSolverSetup, "setup", "native-setup"),
+                (clingo.Control, "ground", "native-ground"),
+                (spack.solver.asp.SpecBuilder, "build_specs", "native-result"),
+            ):
+                instrumentation.enter_context(worker.replace_attribute(
+                    owner, name, traced_call(getattr(owner, name), phase, fd),
+                ))
+            return original(*args, **kwargs)
+
+    return solve
 
 
 def writable_mounts(frame):
@@ -83,31 +132,49 @@ def locations(error):
         error = error.__cause__
 
 
-try:
-    saved_out, saved_err = os.dup(1), os.dup(2)
+def main():
+    sys.path.insert(0, "/kq/input")
     try:
-        with open(os.devnull, "w") as sink:
-            os.dup2(sink.fileno(), 1)
-            os.dup2(sink.fileno(), 2)
-            with contextlib.redirect_stdout(sink), contextlib.redirect_stderr(sink):
-                if len(sys.argv) == 2:
-                    import source_audit as worker
-                    worker.verify_runtime_boundary(Path("/kq/input"))
-                    result = worker.audit(Path("/kq/input"), Path("/kq/work"), sys.argv[1])
-                    prefix = "KQ_SPACK_AUDIT_RESULT:"
-                else:
-                    import install_worker as worker
-                    with worker.native_output():
-                        result = worker.run(Path("/kq/input"), Path("/kq/work"))
-                    prefix = "KQ_SPACK_INSTALL_RESULT:"
-    finally:
-        os.dup2(saved_out, 1)
-        os.dup2(saved_err, 2)
-        os.close(saved_out)
-        os.close(saved_err)
-    print(prefix + json.dumps(result, separators=(",", ":")))
-    if result.get("passed") is False:
-        raise SystemExit(1)
-except (Exception, SystemExit) as error:
-    locations(error)
-    raise SystemExit(1) from None
+        saved_out, saved_err = os.dup(1), os.dup(2)
+        try:
+            with open(os.devnull, "w") as sink:
+                os.dup2(sink.fileno(), 1)
+                os.dup2(sink.fileno(), 2)
+                with contextlib.redirect_stdout(sink), contextlib.redirect_stderr(sink):
+                    if len(sys.argv) == 2:
+                        import source_audit as worker
+                        worker.verify_runtime_boundary(Path("/kq/input"))
+                        result = worker.audit(Path("/kq/input"), Path("/kq/work"), sys.argv[1])
+                        prefix = "KQ_SPACK_AUDIT_RESULT:"
+                    else:
+                        import install_worker as worker
+                        with contextlib.ExitStack() as instrumentation:
+                            for owner, name, phase in (
+                                (worker.audit, "audit", "source-audit"),
+                                (worker, "configuration", "configuration"),
+                                (worker, "solve_lock", "solve"),
+                                (worker, "verify_tree", "tree"),
+                                (worker, "verify_installed", "installed"),
+                            ):
+                                function = (diagnosed_solver(worker, saved_err)
+                                            if name == "solve_lock" else getattr(owner, name))
+                                instrumentation.enter_context(worker.replace_attribute(
+                                    owner, name, traced_call(function, phase, saved_err),
+                                ))
+                            with worker.native_output():
+                                result = worker.run(Path("/kq/input"), Path("/kq/work"))
+                        prefix = "KQ_SPACK_INSTALL_RESULT:"
+        finally:
+            os.dup2(saved_out, 1)
+            os.dup2(saved_err, 2)
+            os.close(saved_out)
+            os.close(saved_err)
+        print(prefix + json.dumps(result, separators=(",", ":")))
+        return 1 if result.get("passed") is False else 0
+    except (Exception, SystemExit) as error:
+        locations(error)
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
