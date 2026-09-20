@@ -11,6 +11,19 @@ import { SpackMaterialCache, type SpackMaterialCacheRef } from "../../../package
 import { SpackSourceAuditor } from "../../../packages/agent/src/spack/source-auditor";
 import { ReleaseSchema } from "../spack-case/api";
 
+async function oomKills(): Promise<bigint | undefined> {
+  try {
+    const text = await readFile(
+      "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/memory.events",
+      "utf8",
+    );
+    const count = /^oom_kill ([0-9]{1,20})$/m.exec(text)?.[1];
+    return count === undefined ? undefined : BigInt(count);
+  } catch {
+    return undefined;
+  }
+}
+
 const diagnosticProcess: SpackAuditProcess = {
   async run(command, options) {
     const entry = command.findIndex((value) =>
@@ -20,10 +33,26 @@ const diagnosticProcess: SpackAuditProcess = {
       "deploy/pr-test/spack-managed/diagnostic.py",
       join(options.cwd, "input", "diagnostic.py"),
     );
-    const result = await realSpackAuditProcess.run(
-      command.map((value, index) => index === entry ? "/kq/input/diagnostic.py" : value),
-      options,
-    );
+    const before = await oomKills();
+    let result: Awaited<ReturnType<SpackAuditProcess["run"]>>;
+    try {
+      result = await realSpackAuditProcess.run(
+        command.map((value, index) => index === entry ? "/kq/input/diagnostic.py" : value),
+        options,
+      );
+    } finally {
+      const after = await oomKills();
+      const delta = before !== undefined && after !== undefined && after >= before
+        ? String(after - before) : "unavailable";
+      console.log(`Managed diagnostic cgroup: oom-kill-delta=${delta}`);
+    }
+    const exit = Number.isInteger(result.exitCode) && result.exitCode >= 0 && result.exitCode <= 255
+      ? String(result.exitCode) : "other";
+    const output = result.stdout.trim().startsWith("KQ_SPACK_INSTALL_RESULT:")
+      ? "install-report"
+      : result.stdout.trim().startsWith("KQ_SPACK_AUDIT_RESULT:")
+        ? "audit-report" : result.stdout.trim() ? "other" : "empty";
+    console.log(`Managed diagnostic process: exit=${exit} output=${output}`);
     for (const line of result.stderr.split("\n")) {
       if (
         /^ci-worker-error:(AuditError|KeyError|ValueError|TypeError|AttributeError|OSError|PermissionError|FileNotFoundError|InstallError|SystemExit|RuntimeError|AssertionError|UnsatisfiableSpecError|SolverError|InternalConcretizerError|OutputDoesNotSatisfyInputError|NoCompilerFoundError|InvalidExternalError|ConfigError|ConfigFormatError|SpackError|UnknownPackageError|Exception)$/.test(line) ||
@@ -120,7 +149,26 @@ export async function diagnoseManagedInstall(): Promise<void> {
     stage = "verify";
     await runner.run("verify", prepared, input, site, directory);
     console.log("Managed diagnostic worker: install-and-verify-completed (original API case still failed)");
-  } catch {
+  } catch (error) {
+    if (error instanceof Error) {
+      const failures: Record<string, string> = {
+        "Managed Spack worker did not complete successfully": "worker-result",
+        "Invalid managed Spack worker report": "report-schema",
+        "Managed Spack worker report binding mismatch": "report-binding",
+        "Spack audit process terminated": "process-terminated",
+        "Spack audit process left running descendants": "process-descendants",
+        "Spack audit process output limit exceeded": "process-output-limit",
+        "Spack audit process timed out": "process-timeout",
+        "Spack audit process aborted": "process-aborted",
+        "Spack audit process group cleanup failed": "process-cleanup",
+        "Spack audit process spawn failed": "process-spawn",
+        "Spack audit process output failed": "process-output",
+        "Spack audit process output is not valid UTF-8": "process-encoding",
+      };
+      if (Object.hasOwn(failures, error.message)) {
+        console.error(`Managed diagnostic failure category: ${failures[error.message]}`);
+      }
+    }
     console.error(`Managed diagnostic failed: stage=${stage}`);
   } finally {
     if (directory) {
