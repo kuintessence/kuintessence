@@ -749,6 +749,54 @@ class InstallTests(unittest.TestCase):
                 self.work.mkdir(mode=0o700)
                 self.native = Native(self.work, self.lock, self.store)
 
+    def test_load_shell_allows_only_the_exact_verified_transaction_prefix(self):
+        store = Path("/srv/kq/spack/releases/fixture-1")
+        for shell in (
+            f"export PATH='{store}/hello/bin:/usr/bin';\n",
+            f'export CMAKE_PREFIX_PATH="{store}/hello:{store}/gcc-runtime";\n',
+            f"export PREFIX={store};\n",
+            f"export PREFIX='{store}'",
+            f"export PREFIX={store}",
+        ):
+            with self.subTest(shell=shell):
+                self.assertEqual(worker.validate_load_shell(shell, store), shell)
+        for shell in (
+            f"export PATH='{store}/hello/bin:/kq/work/bin';\n",
+            f'export DATA="{store}/hello:/kq/input";\n',
+            f"export PATH='{store}-other/hello/bin';\n",
+            f"export PATH='/unapproved{store}/hello/bin';\n",
+            f"export PREFIX='-I{store}/hello';\n",
+            "export PATH='/tmp/../kq/work/bin';\n",
+            "export PREFIX=/kq",
+            "export PREFIX='/kq';\n",
+            'export PREFIX="/kq";\n',
+            "export PATH='/kq:/usr/bin';\n",
+            "export PREFIX='/kq/input';\n",
+            "export PREFIX='/kq/work';\n",
+            "\x00",
+            "x" * (256 * 1024 + 1),
+            None,
+        ):
+            with self.subTest(shell=repr(shell)[:80]):
+                with self.assertRaises(audit.AuditError):
+                    worker.validate_load_shell(shell, store)
+        dotted = Path("/srv/kq/spack/releases/fixture.1+")
+        shell = f"export PREFIX='{dotted}/hello';\n"
+        self.assertEqual(worker.validate_load_shell(shell, dotted), shell)
+        with self.assertRaises(audit.AuditError):
+            worker.validate_load_shell(
+                "export PREFIX='/srv/kq/spack/releases/fixtureX111/hello';\n", dotted
+            )
+
+    def test_load_validates_native_shell_against_its_real_store_without_installing(self):
+        shell = f"export PATH='{self.store}/hello/bin:/usr/bin';\n"
+        self.native.shell = shell
+        with patch.object(worker, "validate_load_shell", wraps=worker.validate_load_shell) as check:
+            result = self.run_worker("load")
+        check.assert_called_once_with(shell, self.store)
+        self.assertEqual(result["loadShell"], shell)
+        self.assertNotIn(("installer",), self.native.calls)
+
     def test_db_missing_uninstalled_upstream_or_wrong_prefix_rejected(self):
         for failure in ("missing", "uninstalled", "upstream", "prefix", "hash"):
             with self.subTest(failure=failure):

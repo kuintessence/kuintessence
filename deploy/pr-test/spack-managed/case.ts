@@ -294,6 +294,7 @@ async function fail(error: unknown) {
           : "CASE_FAILED";
   console.error(`Spack managed case: stage=${stage} code=${code}`);
   if (stage === "install") await diagnoseManagedInstall();
+  if (stage === "load") await diagnoseManagedInstall("load");
   process.exit(1);
 }
 

@@ -55,7 +55,7 @@ Kuintessence 当前为 pre-release。以下列出组件功能、运行要求和�
   Actions 中真实 Linux/Spack/Apptainer/SIF 的 runtime 隔离、source audit、
   build 与独立 readonly verify 已通过，安装账本达到 `ready`，
   预建只读 legacy 数据库锁后 API 安装操作也已返回成功；
-  当前受管用例阻断在创建测试队列前的就绪等待，load/Slurm、缓存破坏恢复、
+  最近一次受管用例已通过队列就绪检查，阻断在 load 独立复验；Slurm、缓存破坏恢复、
   重启复验与卸载尚未完成闭环，不能用 native 离线编译案例替代受管安装验收；
   `ready` 不等于生产就绪，不能宣称平台安装功能已恢复。
   源码已有上传/发布 API 与本地材料 manifest 初始化/批量导入；recipe bootstrap

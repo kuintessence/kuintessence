@@ -514,6 +514,21 @@ def verify_installed(store: object, root: object, nodes: dict, store_path: Path)
     return result
 
 
+def validate_load_shell(shell: object, store: Path) -> str:
+    require(isinstance(shell, str) and len(shell) <= 256 * 1024 and
+            "\x00" not in shell, "load-shell")
+    # A validated store may itself contain a "kq" component. Exempt only this
+    # transaction's exact path in a check copy, never rewrite the returned shell.
+    checked = re.sub(
+        r"(?<![A-Za-z0-9_+./-])" + re.escape(str(store)) + r"(?=/|[:\s'\";]|$)",
+        "__KQ_VERIFIED_STORE__", shell,
+    )
+    require("/kq/" not in checked and
+            re.search(r"(?<![A-Za-z0-9_+./-])/kq(?=$|[:\s'\";])", checked) is None,
+            "load-shell")
+    return shell
+
+
 def run(input_dir: Path, work: Path) -> dict:
     audit.verify_runtime_boundary(input_dir, memory_limit=4294967296)
     request = read_request(input_dir)
@@ -598,10 +613,9 @@ def run(input_dir: Path, work: Path) -> dict:
                             modifications = spack.user_environment.environment_modifications_for_specs(
                                 installed
                             )
-                            shell = modifications.shell_modifications("sh")
-                            require(isinstance(shell, str) and len(shell) <= 256 * 1024 and
-                                    "\x00" not in shell and "/kq/" not in shell, "load-shell")
-                            result["loadShell"] = shell
+                            result["loadShell"] = validate_load_shell(
+                                modifications.shell_modifications("sh"), store_path_value
+                            )
                         return result
     finally:
         os.umask(previous_umask)

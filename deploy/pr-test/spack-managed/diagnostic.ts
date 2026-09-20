@@ -77,7 +77,7 @@ const diagnosticProcess: SpackAuditProcess = {
 };
 
 /** Reproduce a failed operation without creating/updating any managed ledger entry. */
-export async function diagnoseManagedInstall(): Promise<void> {
+export async function diagnoseManagedInstall(action: "install" | "load" = "install"): Promise<void> {
   let stage = "input";
   let directory: string | undefined;
   try {
@@ -87,7 +87,8 @@ export async function diagnoseManagedInstall(): Promise<void> {
       JSON.parse(await readFile("/case-control/release.json", "utf8")),
     );
     const store = new SpackInstallStore("/srv/kq/spack");
-    for (const record of await store.list()) {
+    const records = await store.list();
+    for (const record of records) {
       // States are schema-validated enums; do not print report data or paths.
       console.log(`Managed diagnostic ledger: state=${record.state}`);
     }
@@ -148,13 +149,29 @@ export async function diagnoseManagedInstall(): Promise<void> {
     const root = await lstat(site.profile.storeRoot);
     assert(root.isDirectory() && !root.isSymbolicLink() && root.uid === 1000);
     assert.equal(site.profile.storeRoot, "/srv/kq/spack");
-    directory = store.path(randomUUID());
-    await mkdir(directory, { mode: 0o700 });
-    stage = "install";
     const runner = new IsolatedSpackInstallRunner({
       runtime,
       process: diagnosticProcess,
     });
+    if (action === "load") {
+      stage = "load";
+      const candidates = records.filter((record) =>
+        (record.state === "ready" || record.state === "unavailable") &&
+        record.spec === release.spec &&
+        record.manifestDigest === release.binding.manifestDigest &&
+        record.manifestSize === release.manifestSize &&
+        record.siteProfileDigest === site.digest &&
+        record.report?.storePath === store.path(record.id));
+      assert(candidates.length === 1);
+      const record = candidates[0];
+      assert(record);
+      await runner.run("load", prepared, input, site, store.path(record.id));
+      console.log("Managed diagnostic worker: load-completed (original API case still failed)");
+      return;
+    }
+    directory = store.path(randomUUID());
+    await mkdir(directory, { mode: 0o700 });
+    stage = "install";
     await runner.run("install", prepared, input, site, directory);
     stage = "verify";
     await runner.run("verify", prepared, input, site, directory);

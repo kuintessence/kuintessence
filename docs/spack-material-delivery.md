@@ -566,6 +566,9 @@ worker 同时通过 `packages.all.require` 将完整 profile arch 施加到求�
 - load 仅用于当前 profile 的 `ready` 记录，在独立 readonly runtime 内复验后返回一次性
   shell fragment，不自动注入未来作业环境。受管 `import_preinstalled` 是复验已有 root，
   不会把任意宿主 prefix 领养成受管安装。
+  load shell 的临时路径检查仅豁免本次已验证、带路径边界的完整事务前缀，
+  避免合法 `/srv/kq/spack/...` 被 `/kq/` 子串误拒绝；仍拒绝混入的 runtime 临时路径，
+  不改写返回的 shell，也不放宽安装树和 native hash 校验。
 - uninstall 按 `removing → removed` 清理该 root 所属的整个事务 store，包括私有依赖，
   不是在共享全局 Spack 树中逐个删除依赖。卸载前需由运维确认没有作业仍使用该 prefix。
 
