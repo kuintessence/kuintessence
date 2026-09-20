@@ -28,8 +28,14 @@ jobs:
           persist-credentials: false
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
+      - name: Permit the pinned Apptainer starter to create user namespaces
+        id: managed-apparmor
+        run: sudo apparmor_parser --replace deploy/pr-test/spack-managed/apparmor.profile
       - name: Verify isolated managed install, restart and uninstall
         run: timeout --signal=TERM --kill-after=60s 65m bash deploy/pr-test/run.sh slurm --spack-managed
+      - name: Remove the test-only AppArmor profile
+        if: always() && steps.managed-apparmor.outcome == 'success'
+        run: sudo apparmor_parser --remove deploy/pr-test/spack-managed/apparmor.profile
 
   spack-case:
     name: Spack GNU Hello single-step case

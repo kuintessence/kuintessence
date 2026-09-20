@@ -272,6 +272,13 @@ describe("PR runner lifecycle (fake Docker, no containers)", () => {
     expect(dockerfile).toContain("gpasswd -d kq sudo");
     const probe = await readFile(join(root, "deploy/pr-test/spack-managed/probe.py"), "utf8");
     expect(probe).toContain("boundary.verify_runtime_boundary");
+    const profile = await readFile(
+      join(root, "deploy/pr-test/spack-managed/apparmor.profile"),
+      "utf8",
+    );
+    expect(profile).toContain("/usr/libexec/apptainer/bin/starter flags=(unconfined)");
+    expect(profile).toContain("userns,");
+    expect(profile).not.toContain("starter-suid");
   });
 
   test("Spack overlay isolates private CA and inputs from Agent and keeps managed install off", async () => {

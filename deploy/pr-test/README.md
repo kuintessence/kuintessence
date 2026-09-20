@@ -139,6 +139,9 @@ native 测试使用 Docker 隔离网络及已审核 recipe，不调用 Apptainer
 容器使用 private cgroup namespace，不挂载宿主 cgroup、Docker socket 或宿主目录。
 Agent 无 sudo 权限；产品 Apptainer/SIF、只读输入、隔离网络和资源限额检查保持不变。
 运行前先调用产品的 runtime boundary verifier，失败即停止，不能降级成 native 案例。
+Ubuntu 24.04 Actions 宿主为固定路径的非 setuid Apptainer starter 临时加载
+基于 Apptainer 1.4.3 官方配置的 AppArmor `userns` profile，job 结束后移除；
+不关闭宿主全局 AppArmor/user namespace 限制。
 
 Apptainer 固定为 1.4.3，下载 deb 校验固定 SHA-256；SIF 从同一 Ubuntu 20.04
 scheduler 工具链构建，不携带 recipe、源码或 Agent 凭据。实际生成的 SIF 和 site profile
