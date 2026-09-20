@@ -86,9 +86,11 @@ def read_regular(path: Path, maximum: int, expected: dict = None) -> bytes:
         raise AuditError("invalid-input") from error
 
 
-def verify_runtime_boundary(input_dir: Path) -> None:
+def verify_runtime_boundary(input_dir: Path, *, memory_limit: int = 2147483648) -> None:
     """Fail closed on missing namespace/cgroup evidence; never probe a runtime."""
     try:
+        require(type(memory_limit) is int and memory_limit in (2147483648, 4294967296),
+                "runtime-boundary")
         require(sys.platform == "linux" and os.getuid() > 0, "runtime-boundary")
         metadata = document(read_regular(Path(input_dir) / "runtime.json", CHUNK))
         require(set(metadata) == {"hostNetworkNamespace", "hostPidNamespace"})
@@ -125,7 +127,7 @@ def verify_runtime_boundary(input_dir: Path) -> None:
         root, mount = mounts[0]
         # relative_to rejects mismatched roots; do not substitute the mount root.
         cgroup = Path(mount) / PurePosixPath(group).relative_to(root)
-        for name, limit in (("memory.max", 2147483648), ("pids.max", 128)):
+        for name, limit in (("memory.max", memory_limit), ("pids.max", 128)):
             text = (cgroup / name).read_text().strip()
             require(matches(r"[0-9]+", text) and 0 < int(text) <= limit)
         require((cgroup / "memory.swap.max").read_text().strip() == "0")

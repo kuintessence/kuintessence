@@ -507,6 +507,22 @@ class AuditTests(unittest.TestCase):
         self.assertEqual(output.getvalue(), "")
         self.assertNotIn("invalid-secret", errors.getvalue())
 
+    def test_runtime_boundary_rejects_invalid_memory_budgets_before_runtime_reads(self):
+        class IntSubclass(int):
+            pass
+
+        for memory_limit in (
+            None, True, False, 0, -1, 2147483647, 2147483649, 3221225472, 4294967297,
+            "2147483648", "4294967296", "max", 2147483648.0, 4294967296.0,
+            IntSubclass(2147483648), IntSubclass(4294967296), [], {},
+        ):
+            with self.subTest(memory_limit=memory_limit, kind=type(memory_limit).__name__):
+                with patch.object(sys, "platform", "linux"), patch.object(os, "getuid", return_value=1000):
+                    with patch.object(audit, "read_regular", side_effect=AssertionError("Unexpected runtime read")) as read:
+                        with self.assertRaisesRegex(audit.AuditError, "^runtime-boundary$"):
+                            audit.verify_runtime_boundary(self.input, memory_limit=memory_limit)
+                        read.assert_not_called()
+
     def test_runtime_boundary_mock_files_only(self):
         (self.input / "runtime.json").write_text(json.dumps({
             "hostNetworkNamespace": "net:[1]", "hostPidNamespace": "pid:[2]",
@@ -535,6 +551,19 @@ class AuditTests(unittest.TestCase):
             with patch.object(Path, "read_text", read_text), patch.object(Path, "iterdir", return_value=iter([Path("lo")])), patch.object(socket, "if_nameindex", return_value=[(1, "lo")]):
                 with patch.object(os, "readlink", side_effect=lambda p: "net:[3]" if str(p).endswith("/net") else "pid:[4]"):
                     audit.verify_runtime_boundary(self.input)
+                    for options, limit in (
+                        ({}, 2147483648),
+                        ({"memory_limit": 2147483648}, 2147483648),
+                        ({"memory_limit": 4294967296}, 4294967296),
+                    ):
+                        for value in (1, 2147483648, 2147483649, 4294967296, 4294967297):
+                            with self.subTest(options=options, memory_max=value):
+                                with patch.dict(files, {"/sys/fs/cgroup/worker/memory.max": f"{value}\n"}):
+                                    if value <= limit:
+                                        audit.verify_runtime_boundary(self.input, **options)
+                                    else:
+                                        with self.assertRaisesRegex(audit.AuditError, "^runtime-boundary$"):
+                                            audit.verify_runtime_boundary(self.input, **options)
 
         for key, value in (
             ("/proc/self/status", "NoNewPrivs:\t0\n"),
@@ -562,7 +591,12 @@ class AuditTests(unittest.TestCase):
                 )
             ),
             ("/sys/fs/cgroup/worker/memory.max", "max\n"),
-            ("/sys/fs/cgroup/worker/memory.max", "2147483649\n"),
+            ("/sys/fs/cgroup/worker/memory.max", "4294967297\n"),
+            ("/sys/fs/cgroup/worker/memory.max", "0\n"),
+            ("/sys/fs/cgroup/worker/memory.max", "-1\n"),
+            ("/sys/fs/cgroup/worker/memory.max", "1.5\n"),
+            ("/sys/fs/cgroup/worker/memory.max", ""),
+            ("/sys/fs/cgroup/worker/memory.max", None),
             ("/sys/fs/cgroup/worker/memory.swap.max", "1\n"),
             ("/sys/fs/cgroup/worker/memory.swap.max", "2147483648\n"),
             ("/sys/fs/cgroup/worker/memory.swap.max", "max\n"),
@@ -574,15 +608,17 @@ class AuditTests(unittest.TestCase):
             ("/sys/fs/cgroup/worker/cpu.max", "max 100000\n"),
             ("/sys/fs/cgroup/worker/cpu.max", "1 0\n"),
         ):
-            with self.subTest(key=key, value=value):
-                original = files[key]
-                files[key] = value
-                with patch.object(sys, "platform", "linux"), patch.object(os, "getuid", return_value=1000):
-                    with patch.object(Path, "read_text", read_text), patch.object(Path, "iterdir", return_value=iter([Path("lo")])), patch.object(socket, "if_nameindex", return_value=[(1, "lo")]):
-                        with patch.object(os, "readlink", side_effect=lambda p: "net:[3]" if str(p).endswith("/net") else "pid:[4]"):
-                            with self.assertRaises(audit.AuditError):
-                                audit.verify_runtime_boundary(self.input)
-                files[key] = original
+            for memory_limit in (2147483648, 4294967296):
+                with self.subTest(key=key, value=value, memory_limit=memory_limit):
+                    with patch.dict(files, {
+                        "/sys/fs/cgroup/worker/memory.max": f"{memory_limit}\n",
+                        key: value,
+                    }):
+                        with patch.object(sys, "platform", "linux"), patch.object(os, "getuid", return_value=1000):
+                            with patch.object(Path, "read_text", read_text), patch.object(Path, "iterdir", return_value=iter([Path("lo")])), patch.object(socket, "if_nameindex", return_value=[(1, "lo")]):
+                                with patch.object(os, "readlink", side_effect=lambda p: "net:[3]" if str(p).endswith("/net") else "pid:[4]"):
+                                    with self.assertRaisesRegex(audit.AuditError, "^runtime-boundary$"):
+                                        audit.verify_runtime_boundary(self.input, memory_limit=memory_limit)
         for platform, uid, net, pid, interfaces in (
             ("darwin", 1000, "net:[3]", "pid:[4]", ["lo"]),
             ("linux", 0, "net:[3]", "pid:[4]", ["lo"]),
@@ -592,21 +628,29 @@ class AuditTests(unittest.TestCase):
             ("linux", 1000, "net:[3]", "pid:[4]", []),
             ("linux", 1000, "invalid", "pid:[4]", ["lo"]),
         ):
-            with self.subTest(platform=platform, uid=uid, net=net, pid=pid, interfaces=interfaces):
-                with patch.object(sys, "platform", platform), patch.object(os, "getuid", return_value=uid):
-                    with patch.object(Path, "read_text", read_text), patch.object(Path, "iterdir", return_value=iter([Path("lo")])), patch.object(socket, "if_nameindex", return_value=list(enumerate(interfaces, 1))):
-                        with patch.object(os, "readlink", side_effect=lambda p: net if str(p).endswith("/net") else pid):
-                            with self.assertRaises(audit.AuditError):
-                                audit.verify_runtime_boundary(self.input)
+            for memory_limit in (2147483648, 4294967296):
+                with self.subTest(platform=platform, uid=uid, net=net, pid=pid, interfaces=interfaces,
+                                  memory_limit=memory_limit):
+                    with patch.dict(files, {"/sys/fs/cgroup/worker/memory.max": f"{memory_limit}\n"}):
+                        with patch.object(sys, "platform", platform), patch.object(os, "getuid", return_value=uid):
+                            with patch.object(Path, "read_text", read_text), patch.object(Path, "iterdir", return_value=iter([Path("lo")])), patch.object(socket, "if_nameindex", return_value=list(enumerate(interfaces, 1))):
+                                with patch.object(os, "readlink", side_effect=lambda p: net if str(p).endswith("/net") else pid):
+                                    with self.assertRaisesRegex(audit.AuditError, "^runtime-boundary$"):
+                                        audit.verify_runtime_boundary(self.input, memory_limit=memory_limit)
         with patch.object(sys, "platform", "linux"), patch.object(os, "getuid", return_value=1000):
             with patch.object(Path, "read_text", read_text), patch.object(Path, "iterdir", side_effect=AssertionError("Host sysfs network view must not be read")):
                 with patch.object(os, "readlink", side_effect=lambda p: "net:[3]" if str(p).endswith("/net") else "pid:[4]"):
                     with patch.object(socket, "if_nameindex", return_value=[(1, "lo")]) as interfaces:
-                        audit.verify_runtime_boundary(self.input)
-                        interfaces.assert_called_once_with()
-                        interfaces.side_effect = OSError("fixture interface lookup failed")
-                        with self.assertRaisesRegex(audit.AuditError, "^runtime-boundary$"):
-                            audit.verify_runtime_boundary(self.input)
+                        for memory_limit in (2147483648, 4294967296):
+                            with self.subTest(memory_limit=memory_limit):
+                                with patch.dict(files, {"/sys/fs/cgroup/worker/memory.max": f"{memory_limit}\n"}):
+                                    interfaces.reset_mock()
+                                    interfaces.side_effect = None
+                                    audit.verify_runtime_boundary(self.input, memory_limit=memory_limit)
+                                    interfaces.assert_called_once_with()
+                                    interfaces.side_effect = OSError("fixture interface lookup failed")
+                                    with self.assertRaisesRegex(audit.AuditError, "^runtime-boundary$"):
+                                        audit.verify_runtime_boundary(self.input, memory_limit=memory_limit)
 
     def test_archive_budgets_and_pax_overrides(self):
         for limit, value in (("TAR_BYTES", 100), ("TAR_ENTRIES", 1), ("TAR_EXPANDED", 10), ("RECIPE_TOTAL", 10)):

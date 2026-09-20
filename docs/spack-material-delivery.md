@@ -465,6 +465,11 @@ recipe 是可执行 Python，可以影响同进程的审计逻辑和输出，因
 当前入口要求 `AGENT_SPAWNER_BACKEND=host`，拒绝 Kubernetes adapter；
 不因此允许 recipe 在宿主直接执行。仍要求 Linux 非 root 专用 Agent UID，
 并继承 source audit 的固定 Apptainer/SIF、namespace、cgroup、超时与输出预算。
+独立 source audit 保持内存 2 GiB；managed install/verify/load 因需加载完整 recipe
+索引并运行 solver，使用固定内存 4 GiB、memory+swap 4 GiB，即不允许 swap。
+两种入口均由 worker 核验实际 cgroup 上限，材料或安装请求不能提高预算；
+CPU 2、PID 128 及其他隔离条件不变。4 GiB 是有界执行预算，不保证所有材料均能安装；
+仍然超限时失败，不自动重试更高限额或转为宿主执行。
 SIF 必须预装 Spack 1.0.0 及可导入的 `clingo`/`clingo.ast`；
 worker 禁止 solver bootstrap，不会自动下载或安装缺失的 solver。
 安装/verify/load 命令使用只读 runtime、`--underlay` 和 `--scratch /kq/work`，

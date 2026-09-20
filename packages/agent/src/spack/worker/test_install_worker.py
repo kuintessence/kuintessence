@@ -309,8 +309,10 @@ class InstallTests(unittest.TestCase):
         self.request["action"] = action
         self.request["manifestDigest"] = self.save()
         self.save_request()
-        with self.runtime():
-            return worker.run(self.input, self.work)
+        with self.runtime() as boundary:
+            result = worker.run(self.input, self.work)
+            boundary.assert_called_once_with(self.input, memory_limit=4294967296)
+            return result
 
     def assert_no_recipes(self):
         self.assertFalse(any(c[0] in ("repositories", "solve", "installer")
@@ -361,6 +363,7 @@ class InstallTests(unittest.TestCase):
                 with patch.object(worker, "read_request") as read:
                     with self.assertRaises(audit.AuditError):
                         worker.run(self.input, self.work)
+                    boundary.assert_called_once_with(self.input, memory_limit=4294967296)
                     read.assert_not_called()
 
     def test_spack_runpy_entry_loads_sibling_without_script_directory_on_sys_path(self):

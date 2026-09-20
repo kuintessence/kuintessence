@@ -3,6 +3,9 @@ import { constants } from "node:fs";
 import { lstat, open, realpath } from "node:fs/promises";
 import { dirname, isAbsolute, normalize, parse } from "node:path";
 
+const SPACK_AUDIT_MEMORY_BYTES = 2_147_483_648;
+export const SPACK_MANAGED_MEMORY_BYTES = 4_294_967_296;
+
 export interface SpackAuditRuntimeProfile {
   apptainerPath: string;
   apptainerSha256: string;
@@ -162,8 +165,15 @@ export function buildSpackAuditCommand(
   profile: SpackAuditRuntimeProfile,
   inputDirectory: string,
   manifestDigest: string,
+  memoryLimitBytes: number = SPACK_AUDIT_MEMORY_BYTES,
 ): string[] {
   assertProfile(profile);
+  if (
+    memoryLimitBytes !== SPACK_AUDIT_MEMORY_BYTES &&
+    memoryLimitBytes !== SPACK_MANAGED_MEMORY_BYTES
+  ) {
+    throw new Error("Invalid Spack isolation memory budget");
+  }
   if (!isSpackAuditPath(inputDirectory) || !/^sha256:[a-f0-9]{64}$/.test(manifestDigest)) {
     throw new Error("Invalid Spack audit input binding");
   }
@@ -189,9 +199,9 @@ export function buildSpackAuditCommand(
     "--pids-limit",
     "128",
     "--memory",
-    "2147483648",
+    String(memoryLimitBytes),
     "--memory-swap",
-    "2147483648",
+    String(memoryLimitBytes),
     "--cpus",
     "2",
     "--pwd",

@@ -5,6 +5,7 @@ import { realSpackAuditProcess, type SpackAuditProcess } from "./audit-process";
 import {
   buildSpackAuditCommand,
   isSpackAuditPath,
+  SPACK_MANAGED_MEMORY_BYTES,
   type SpackAuditRuntimeDeps,
   type SpackAuditRuntimeProfile,
   verifySpackAuditRuntime,
@@ -56,7 +57,7 @@ export function buildSpackInstallCommand(
   ) {
     throw new Error("Invalid managed Spack store binding");
   }
-  const command = buildSpackAuditCommand(runtime, inputs, digest);
+  const command = buildSpackAuditCommand(runtime, inputs, digest, SPACK_MANAGED_MEMORY_BYTES);
   // Retain the audit isolation flags, replacing only its fixed Python entrypoint.
   return [
     ...command.slice(0, -5).filter((argument) => argument !== "--writable-tmpfs"),

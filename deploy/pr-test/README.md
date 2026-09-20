@@ -149,6 +149,8 @@ Apptainer 固定为 1.4.3，下载 deb 校验固定 SHA-256；SIF 从同一 Ubun
 scheduler 工具链构建，不携带 recipe、源码或 Agent 凭据。实际生成的 SIF 和 site profile
 按字节固定 digest。安装 store 位于独立 2 GiB ext4 文件系统，backing file 使用临时
 named volume 持久化；Agent 和 Slurm 在同一节点以相同路径访问，不代表跨节点 ABI 验收。
+独立 source audit 使用生产的 2 GiB 内存预算，managed worker 使用独立 4 GiB
+内存硬上限，均禁止 swap，不改变 CPU/PID、网络或挂载隔离。
 
 目标检查链为：Server API 安装、隔离 source audit、build、独立 readonly verify、
 `ready`、load、真实 Slurm Hello、源码缓存缺失/篡改后的撤回与显式恢复、

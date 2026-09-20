@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
   buildSpackAuditCommand,
   isSpackAuditPath,
+  SPACK_MANAGED_MEMORY_BYTES,
   type SpackAuditFileIdentity,
   type SpackAuditRuntimeProfile,
   verifySpackAuditRuntime,
@@ -129,5 +130,27 @@ describe("Spack audit runtime identity and argv", () => {
     ]);
     expect(command).not.toContain("install");
     expect(command.some((arg) => arg.includes(":rw"))).toBe(false);
+  });
+
+  test("allows only the two fixed memory budgets without changing other isolation arguments", () => {
+    const baseline = buildSpackAuditCommand(profile, "/srv/kq/input", `sha256:${"d".repeat(64)}`);
+    const managed = buildSpackAuditCommand(
+      profile,
+      "/srv/kq/input",
+      `sha256:${"d".repeat(64)}`,
+      SPACK_MANAGED_MEMORY_BYTES,
+    );
+    expect(managed).toEqual(
+      baseline.map((value, index) =>
+        ["--memory", "--memory-swap"].includes(baseline[index - 1] ?? "")
+          ? "4294967296"
+          : value,
+      ),
+    );
+    for (const memory of [0, -1, 1.5, NaN, Infinity, 2_147_483_647, 4_294_967_297]) {
+      expect(() =>
+        buildSpackAuditCommand(profile, "/srv/kq/input", `sha256:${"d".repeat(64)}`, memory),
+      ).toThrow("memory budget");
+    }
   });
 });

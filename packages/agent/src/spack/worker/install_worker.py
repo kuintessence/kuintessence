@@ -510,7 +510,7 @@ def verify_installed(store: object, root: object, nodes: dict, store_path: Path)
 
 
 def run(input_dir: Path, work: Path) -> dict:
-    audit.verify_runtime_boundary(input_dir)
+    audit.verify_runtime_boundary(input_dir, memory_limit=4294967296)
     request = read_request(input_dir)
     profile, store_path_value = request["siteProfile"], Path(request["storePath"])
     mounts = mount_table()
