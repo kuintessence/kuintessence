@@ -282,9 +282,7 @@ async function main() {
   console.log(`Spack managed case: phase=${phase} status=succeeded`);
 }
 
-try {
-  await main();
-} catch (error) {
+async function fail(error: unknown) {
   // Do not print messages, stacks, Zod issues, assertion values, stdout or stderr.
   const code =
     error instanceof z.ZodError
@@ -297,4 +295,10 @@ try {
   console.error(`Spack managed case: stage=${stage} code=${code}`);
   if (stage === "install") await diagnoseManagedInstall();
   process.exit(1);
+}
+
+try {
+  await main();
+} catch (error) {
+  await fail(error);
 }

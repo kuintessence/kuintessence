@@ -24,7 +24,7 @@ const cacheRoot = "/var/lib/kuintessence/spack-materials";
 const digestDirectory = `${cacheRoot}/sha256`;
 const storeRoot = "/srv/kq/spack";
 const maximumSourceBytes = 64 * 1024 ** 2;
-const StableRecordSchema = SpackInstallRecordSchema.omit({ state: true, updatedAt: true });
+const StableRecordSchema = SpackInstallRecordSchema.omit({ state: true, updatedAt: true }).strip();
 type Scenario = "missing-source" | "corrupt-source";
 
 export interface ManagedIntegrityInput {
