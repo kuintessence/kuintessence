@@ -39,8 +39,14 @@ class InstallSpec(fixtures.FakeSpec):
         return self.external_path or str(self.native.store_path / self.name)
 
     def format(self, template=None):
+        assert template in (
+            None,
+            "{namespace}.{name}{@version}{variants}{compiler_flags} arch={architecture}",
+            "{name}{@version}{variants}{compiler_flags} arch={architecture}",
+        )
+        namespace = f"{self.namespace}." if template is None or "{namespace}" in template else ""
         variants = "".join(f" {name}={value}" for name, value in self.variants.items())
-        return (f"{self.namespace}.{self.name}@={self.version}{variants}"
+        return (f"{namespace}{self.name}@={self.version}{variants}"
                 f"{self.compiler_flags} arch={self.architecture}")
 
     def copy(self, deps=True):
@@ -588,7 +594,7 @@ class InstallTests(unittest.TestCase):
             config = worker.configuration(self.work, self.native.nodes, self.profile["target"])
         entry = config["packages"]["gcc"]["externals"][0]
         self.assertEqual(entry["spec"],
-                         f"{external.namespace}.gcc@={external.version} languages=c,c++"
+                         f"gcc@={external.version} languages=c,c++"
                          ' cflags="-O2" arch=linux-ubuntu24.04-x86_64')
         self.assertNotIn("patches=", entry["spec"])
         self.assertNotIn("/" + fixtures.DEP_HASH, entry["spec"])
@@ -601,6 +607,32 @@ class InstallTests(unittest.TestCase):
         self.assertEqual(entry["prefix"], external.external_path)
         self.assertEqual(entry["extra_attributes"], external.extra_attributes)
         self.assertIsNot(entry["extra_attributes"], external.extra_attributes)
+
+    def test_external_configuration_avoids_self_conditioned_namespace(self):
+        self.add_external()
+        external = self.native.nodes[fixtures.DEP_HASH]
+        original_namespace = external.namespace
+        for name in ("gcc", "gmake"):
+            with self.subTest(package=name):
+                external.name = name
+                with self.runtime():
+                    config = worker.configuration(self.work, self.native.nodes, self.profile["target"])
+                entry = config["packages"][name]["externals"][0]
+                self.assertEqual(
+                    entry["spec"], f"{name}@={external.version} arch={external.architecture}",
+                )
+                self.assertFalse(config["packages"][name]["buildable"])
+                self.assertEqual(external.namespace, original_namespace)
+
+    def test_solver_external_namespace_mismatch_fails_before_build(self):
+        self.add_external()
+        impostor = Native(self.work, self.lock, self.store)
+        impostor.nodes[fixtures.DEP_HASH].namespace = "other"
+        self.native.solved_root = impostor.roots[0]
+        with self.assertRaisesRegex(audit.AuditError, "native-binding"):
+            self.run_worker()
+        self.assertTrue(any(call[0] == "solve" for call in self.native.calls))
+        self.assertFalse(any(call[0] == "installer" for call in self.native.calls))
 
     def test_profile_granularity_preserves_full_solver_architecture_and_lock(self):
         self.add_external()

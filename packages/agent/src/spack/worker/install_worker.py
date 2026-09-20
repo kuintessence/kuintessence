@@ -369,8 +369,9 @@ def configuration(work: Path, nodes: dict, target_arch: str) -> dict:
             # Native patch ordering is solver output, not a packages.yaml input variant.
             external.variants.pop("patches", None)
             # str(concrete_spec) includes /hash and would shortcut the solver.
+            # Spack 1.0 external namespace conditions can self-cycle; bind_native checks it.
             entry["externals"].append({
-                "spec": external.format("{namespace}.{name}{@version}{variants}{compiler_flags}"
+                "spec": external.format("{name}{@version}{variants}{compiler_flags}"
                                         " arch={architecture}"),
                 "prefix": str(spec.external_path),
                 "extra_attributes": copy.deepcopy(spec.extra_attributes),

@@ -103,35 +103,122 @@ def default_target_names(setup):
 TARGET_MODEL_LIMIT = 65536
 
 
-def model_target_names(handler, symbol_type):
+def model_symbol_kind(symbol, symbol_type, details, location):
+    details.update(at=location, kind="unavailable", arity="unavailable")
+    value = symbol.type
+    if value == symbol_type.Function:
+        kind = "function"
+    elif value == symbol_type.String:
+        kind = "string"
+    elif value == symbol_type.Number:
+        kind = "number"
+    else:
+        kind = "other"
+    details["kind"] = kind
+    return kind
+
+
+def model_target_names(handler, symbol_type, details=None):
+    if details is None:
+        details = {}
+    details.update(
+        reason="read", at="model", container="unavailable", size="unavailable",
+        scanned=0, attributes=0, targets=0, gmake=0, kind="unavailable", arity="unavailable",
+    )
+
+    def unavailable(location, reason="shape"):
+        details.update(reason=reason, at=location)
+        raise ValueError("Unavailable target model")
+
     model = handler.model
-    if not isinstance(model, Sequence) or isinstance(model, (str, bytes, bytearray, Iterator)):
-        raise ValueError("Unavailable target model")
+    if isinstance(model, (str, bytes, bytearray)):
+        details["container"] = "text"
+    elif isinstance(model, Iterator):
+        details["container"] = "iterator"
+    elif type(model) is list:
+        details["container"] = "list"
+    elif type(model) is tuple:
+        details["container"] = "tuple"
+    elif isinstance(model, Sequence):
+        details["container"] = "sequence"
+    else:
+        details["container"] = "other"
+    if details["container"] not in ("list", "tuple", "sequence"):
+        unavailable("model")
+    details["at"] = "length"
     size = len(model)
+    details["size"] = size if size <= TARGET_MODEL_LIMIT else "over-limit"
     if size > TARGET_MODEL_LIMIT:
-        raise ValueError("Unavailable target model")
+        unavailable("length", "limit")
     names = []
     for index in range(size):
+        details.update(at="item", kind="unavailable", arity="unavailable")
         symbol = model[index]
-        if symbol.type != symbol_type.Function or symbol.name != "attr":
+        details["scanned"] += 1
+        if model_symbol_kind(symbol, symbol_type, details, "symbol-type") != "function":
             continue
+        details["at"] = "symbol-name"
+        if symbol.name != "attr":
+            continue
+        details["attributes"] += 1
+        details["at"] = "attribute-arity"
         args = symbol.arguments
-        if not args or args[0].type != symbol_type.String or args[0].string != "node_target":
+        arity = len(args)
+        details["arity"] = arity if arity <= 9 else "many"
+        if not arity:
             continue
-        if len(args) != 3:
-            raise ValueError("Unavailable target attribute")
-        node, target = args[1:]
-        if (node.type != symbol_type.Function or node.name != "node"
-                or len(node.arguments) != 2
-                or node.arguments[0].type != symbol_type.Number
-                or node.arguments[1].type != symbol_type.String):
-            raise ValueError("Unavailable target node")
-        if node.arguments[1].string != "gmake":
+        details["at"] = "attribute-name"
+        if model_symbol_kind(args[0], symbol_type, details, "attribute-name") != "string":
             continue
-        if target.type != symbol_type.String:
-            raise ValueError("Unavailable target value")
+        if args[0].string != "node_target":
+            continue
+        details["targets"] += 1
+        if arity != 3:
+            details["arity"] = arity if arity <= 9 else "many"
+            unavailable("attribute-arity")
+        details["at"] = "node-type"
+        node = args[1]
+        if model_symbol_kind(node, symbol_type, details, "node-type") != "function":
+            unavailable("node-type")
+        details["at"] = "node-name"
+        if node.name != "node":
+            unavailable("node-name")
+        details["at"] = "node-arity"
+        node_args = node.arguments
+        node_arity = len(node_args)
+        details["arity"] = node_arity if node_arity <= 9 else "many"
+        if node_arity != 2:
+            unavailable("node-arity")
+        details["at"] = "node-id"
+        if model_symbol_kind(node_args[0], symbol_type, details, "node-id") != "number":
+            unavailable("node-id")
+        details["at"] = "node-package"
+        if model_symbol_kind(node_args[1], symbol_type, details, "node-package") != "string":
+            unavailable("node-package")
+        if node_args[1].string != "gmake":
+            continue
+        details["gmake"] += 1
+        details["at"] = "value"
+        target = args[2]
+        if model_symbol_kind(target, symbol_type, details, "value") != "string":
+            unavailable("value")
         names.append(target.string)
+    details.update(reason="ok", at="complete", kind="unavailable", arity="unavailable")
     return names
+
+
+def emit_target_model(handler, symbol_type, expected, fd):
+    details = {}
+    emit_target_check(
+        "model", lambda: model_target_names(handler, symbol_type, details), expected, fd,
+    )
+    emit_diagnostic(
+        fd, "ci-target-model:"
+        + " ".join(f"{key}={details[key]}" for key in (
+            "reason", "at", "container", "size", "scanned", "attributes",
+            "targets", "gmake", "kind", "arity",
+        )),
+    )
 
 
 def emit_target_check(stage, read_names, expected, fd):
@@ -236,7 +323,28 @@ def solver_error_fields(error):
     return kind, package, attribute, variant
 
 
-def diagnosed_message(function, fd, target_observer=None):
+def emit_target_error(error, expected, fd):
+    if type(error) not in (tuple, list) or len(error) != 3:
+        return
+    _, message, args = error
+    if (type(message) is not str or len(message) > 4096
+            or type(args) not in (tuple, list) or len(args) != 4):
+        return
+    if EXTERNAL_ATTRIBUTE_ERRORS.get(message.replace("\\n", "\n")) != 4:
+        return
+    if (any(type(value) is not str for value in args[:3])
+            or args[0] != "gmake" or args[2] != "gmake"
+            or args[1] not in ("node_target", "node_target_satisfies")):
+        return
+    mode = "exact" if args[1] == "node_target" else "range"
+    matches = "unavailable"
+    if type(args[3]) is str and type(expected) is str:
+        # Literal equality only: range containment would require new spec parsing.
+        matches = "true" if args[3] == expected else "false"
+    emit_diagnostic(fd, f"ci-target-error:mode={mode} matches={matches}")
+
+
+def diagnosed_message(function, fd, target_observer=None, expected_target=None):
     def message(self, errors):
         if target_observer is not None:
             try:
@@ -252,6 +360,7 @@ def diagnosed_message(function, fd, target_observer=None):
                         fd, f"ci-solver-error:kind={kind} package={package}"
                         f" attribute={attribute} variant={variant}",
                     )
+                    emit_target_error(error, expected_target, fd)
         except Exception:
             pass
         return function(self, errors)
@@ -340,10 +449,8 @@ def diagnosed_solver(worker, fd):
                 spack.solver.asp.ErrorHandler, "message",
                 diagnosed_message(
                     spack.solver.asp.ErrorHandler.message, fd,
-                    lambda handler: emit_target_check(
-                        "model", lambda: model_target_names(handler, clingo.SymbolType),
-                        expected, fd,
-                    ),
+                    lambda handler: emit_target_model(handler, clingo.SymbolType, expected, fd),
+                    expected_target=expected,
                 ),
             ))
             detector = spack.compilers.libraries.CompilerPropertyDetector

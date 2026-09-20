@@ -508,6 +508,9 @@ worker 实现固定材料复验、native solver 对照、安装树检查和 load
 这些检查不能替代真实站点验收，也不能把静态预检报告升级成完整求解证明。
 external 的求解配置从锁定 spec 的副本生成，不把 native `patches` 内部元数据当作
 用户输入 variant；原 lock、recipe 校验和重新求解后的完整 DAG/hash 对照保持不变。
+external 输入不带 namespace 前缀，避免 Spack 1.0.0 的 external 条件与 namespace
+赋值形成循环；求解后仍逐节点严格核对 namespace。同名 recipe 若解析到其他 namespace，
+会在 build 前拒绝，不会替换锁定依赖或放宽完整 arch、版本及 compiler flags。
 求解候选的 granularity 按已验证 site profile 的 target 选择：vendored archspec 标为
 `generic` 的 target 只使用 generic 候选，其余保留 microarchitecture 候选。
 这不会把目标降级为 family；完整 arch 约束、host compatibility 与最终 DAG 校验仍生效，

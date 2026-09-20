@@ -163,6 +163,10 @@ Compiler 诊断只观察原有探测调用的结果、候选计数和固定求�
 也不输出原始 external spec、compiler flags 或错误参数。
 Target 诊断只比较已生成的候选与错误模型，报告是否包含 profile target、
 gmake 是否具有 target 及是否匹配；无法读取时报告 unavailable，不输出 target 原值。
+错误模型最多读取 65,536 个 symbol；另以固定类别区分读取异常、格式不符和超限，
+只报告受限计数及发生位置，超限不解释为 target 不匹配。
+External target 错误额外报告精确值或范围模式，以及与 profile target 的文本相等性；
+范围模式的相等性不代表范围包含关系，不额外解析 spec 或执行求解。
 诊断使用独立临时 store，不写安装账本，清理异常也只输出固定代码；
 即使诊断成功也保持原 API 案例失败，不作为安装成功的替代路径。
 实际通过范围必须以当前提交的 Actions 结果为准；新增测试定义本身不构成验收通过，

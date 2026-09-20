@@ -63,6 +63,8 @@ const diagnosticProcess: SpackAuditProcess = {
         /^ci-compiler-execution:(missing-file|permission|readonly|missing-library|linker|no-space|unsupported-option|other)$/.test(line) ||
         /^ci-solver-error:kind=(external-condition|external-selection|os-not-buildable|compiler-external|other) package=(gcc|gmake|glibc|hello|other) attribute=(namespace|version|platform|os|target|variant|flags|other) variant=(languages|build_system|other)$/.test(line) ||
         /^ci-target-check:stage=(candidates|model) present=(true|false|unavailable) matches=(true|false|unavailable)$/.test(line) ||
+        /^ci-target-model:reason=(ok|shape|limit|read) at=(model|length|item|symbol-type|symbol-name|attribute-arity|attribute-name|node-type|node-name|node-arity|node-id|node-package|value|complete) container=(unavailable|text|iterator|list|tuple|sequence|other) size=([0-9]{1,5}|over-limit|unavailable) scanned=[0-9]{1,5} attributes=[0-9]{1,5} targets=[0-9]{1,5} gmake=[0-9]{1,5} kind=(unavailable|function|string|number|other) arity=([0-9]|many|unavailable)$/.test(line) ||
+        /^ci-target-error:mode=(exact|range) matches=(true|false|unavailable)$/.test(line) ||
         /^ci-native-location:(concretize|solver\/asp|solver\/core|solver\/counter|compilers\/config|spec|config|store|database)\.py:\d{1,5}$/.test(line) ||
         /^ci-worker-location:(install_worker|source_audit)\.py:\d{1,5}$/.test(line) ||
         /^ci-writable-mount:location=(root|devices|null-device|zero-device|random-device|urandom-device|tty-device|passwd|group|resolver|hosts|localtime|cgroups|tmp|var-tmp|work|other) filesystem=(overlay|ext4|xfs|fuse\.squashfuse|fuse\.squashfuse_ll|fuse-overlayfs|fuse\.fuse-overlayfs|cgroup2|devtmpfs|ramfs|other)$/.test(line)
