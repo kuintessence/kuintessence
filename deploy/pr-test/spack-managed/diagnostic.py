@@ -409,6 +409,184 @@ def diagnosed_compilation(function, replace_attribute, executable, fd):
     return compile_source
 
 
+SOLVED_NODE_LIMIT = 64
+SOLVED_PACKAGES = {"hello", "gcc", "gmake", "glibc", "compiler-wrapper", "gcc-runtime"}
+
+
+def comparison_value(value, budget, depth=0):
+    budget[0] -= 1
+    if budget[0] < 0 or depth > 16:
+        raise ValueError("Comparison budget exceeded")
+    if value is None or type(value) in (bool, int):
+        return (type(value).__name__, value)
+    if isinstance(value, str):
+        if len(value) > 16384:
+            raise ValueError("Comparison string budget exceeded")
+        return ("string", value)
+    if isinstance(value, (list, tuple)):
+        if len(value) > budget[0]:
+            raise ValueError("Comparison sequence budget exceeded")
+        return ("sequence", tuple(comparison_value(x, budget, depth + 1) for x in value))
+    if isinstance(value, dict):
+        if len(value) > budget[0] or any(
+            not isinstance(key, str) or len(key) > 1024 for key in value
+        ):
+            raise ValueError("Unavailable comparison mapping")
+        return ("mapping", tuple(
+            (key, comparison_value(value[key], budget, depth + 1)) for key in sorted(value)
+        ))
+    raise ValueError("Unavailable comparison value")
+
+
+def solved_equal(left, right):
+    try:
+        return "true" if comparison_value(left(), [4096]) == comparison_value(right(), [4096]) else "false"
+    except Exception:
+        return "unavailable"
+
+
+def node_architecture(data):
+    arch = data["arch"]
+    target = arch["target"]
+    if isinstance(target, dict):
+        target = target["name"]
+    result = (arch["platform"], arch["platform_os"], target)
+    if not all(type(value) is str and 0 < len(value) <= 1024 for value in result):
+        raise ValueError("Unavailable architecture")
+    return result
+
+
+def profile_architecture(profile):
+    target = profile["target"]
+    if type(target) is not str or len(target) > 1024:
+        raise ValueError("Unavailable profile architecture")
+    result = tuple(target.split("-"))
+    if len(result) != 3 or not all(result):
+        raise ValueError("Unavailable profile architecture")
+    return result
+
+
+def cached_node_hash(spec):
+    # Spack 1.0 stores the already-computed DAG hash here; never reconstruct it.
+    value = spec._hash
+    if type(value) is not str or not 0 < len(value) <= 128:
+        raise ValueError("Unavailable cached hash")
+    return value
+
+
+def emit_solved_node(spec, data, expected, expected_digest, match, profile, fd):
+    name = data.get("name")
+    package = name if type(name) is str and name in SOLVED_PACKAGES else "other"
+    fields = {key: "unavailable" for key in (
+        "hash", "version", "namespace", "arch-profile", "arch-lock",
+        "target-profile", "target-lock", "parameters", "external", "package-hash", "dependencies",
+    )}
+    fields["arch-profile"] = solved_equal(
+        lambda: node_architecture(data), lambda: profile_architecture(profile),
+    )
+    fields["target-profile"] = solved_equal(
+        lambda: node_architecture(data)[2], lambda: profile_architecture(profile)[2],
+    )
+    if expected is not None:
+        for key in ("version", "namespace"):
+            fields[key] = solved_equal(lambda: data[key], lambda: expected[key])
+        fields["arch-lock"] = solved_equal(
+            lambda: node_architecture(data), lambda: node_architecture(expected),
+        )
+        fields["target-lock"] = solved_equal(
+            lambda: node_architecture(data)[2], lambda: node_architecture(expected)[2],
+        )
+        fields["parameters"] = solved_equal(
+            lambda: data["parameters"], lambda: expected["parameters"],
+        )
+        fields["external"] = solved_equal(
+            lambda: data.get("external"), lambda: expected.get("external"),
+        )
+        fields["package-hash"] = solved_equal(
+            lambda: data.get("package_hash"), lambda: expected.get("package_hash"),
+        )
+        fields["dependencies"] = solved_equal(
+            lambda: data.get("dependencies", []), lambda: expected.get("dependencies", []),
+        )
+        fields["hash"] = solved_equal(lambda: cached_node_hash(spec), lambda: expected_digest)
+    emit_diagnostic(
+        fd, f"ci-solved-node:package={package} match={match} "
+        + " ".join(f"{key}={value}" for key, value in fields.items()),
+    )
+
+
+def emit_solved_lock(root, lock, profile, fd):
+    summary = {
+        "status": "unavailable", "solved": "unavailable", "expected": "unavailable",
+        "root-hash": "unavailable",
+    }
+    records = []
+    try:
+        expected = lock["concrete_specs"]
+        if not isinstance(expected, dict):
+            raise ValueError("Unavailable lock nodes")
+        summary["expected"] = len(expected) if len(expected) <= SOLVED_NODE_LIMIT else "over-limit"
+        if len(expected) > SOLVED_NODE_LIMIT:
+            summary["status"] = "limit"
+        else:
+            nodes = []
+            for spec in root.traverse():
+                if len(nodes) == SOLVED_NODE_LIMIT:
+                    summary.update(status="limit", solved="over-limit")
+                    break
+                nodes.append(spec)
+            if summary["status"] != "limit":
+                summary["solved"] = len(nodes)
+                for spec in nodes:
+                    data = spec.to_node_dict()
+                    if (not isinstance(data, dict) or type(data.get("name")) is not str
+                            or len(data["name"]) > 1024):
+                        raise ValueError("Unavailable native node")
+                    records.append((spec, data))
+                if any(type(key) is not str or len(key) > 128 or not isinstance(data, dict)
+                       or type(data.get("name")) is not str or len(data["name"]) > 1024
+                       for key, data in expected.items()):
+                    raise ValueError("Unavailable lock node")
+                summary["root-hash"] = solved_equal(
+                    lambda: cached_node_hash(root), lambda: lock["roots"][0]["hash"],
+                )
+                summary["status"] = "ok"
+    except Exception:
+        summary["status"] = "unavailable"
+        records.clear()
+    emit_diagnostic(fd, "ci-solved-lock:" + " ".join(
+        f"{key}={value}" for key, value in summary.items()
+    ))
+    if summary["status"] != "ok":
+        return
+    for spec, data in records:
+        candidates = [(key, node) for key, node in expected.items() if node["name"] == data["name"]]
+        same_name = sum(node["name"] == data["name"] for _, node in records)
+        expected_digest = expected_data = None
+        if len(candidates) > 1 or same_name > 1:
+            match = "ambiguous"
+        elif candidates:
+            match = "unique"
+            expected_digest, expected_data = candidates[0]
+        else:
+            match = "missing"
+        emit_solved_node(spec, data, expected_data, expected_digest, match, profile, fd)
+
+
+def diagnosed_bind_native(function, fd):
+    def bind(root, lock, profile):
+        try:
+            return function(root, lock, profile)
+        except Exception:
+            try:
+                emit_solved_lock(root, lock, profile, fd)
+            except Exception:
+                pass
+            raise
+
+    return bind
+
+
 def diagnosed_solver(worker, fd):
     original = worker.solve_lock
 
@@ -420,6 +598,9 @@ def diagnosed_solver(worker, fd):
 
         expected = solve_target(args, kwargs)
         with contextlib.ExitStack() as instrumentation:
+            instrumentation.enter_context(worker.replace_attribute(
+                worker, "bind_native", diagnosed_bind_native(worker.bind_native, fd),
+            ))
             instrumentation.enter_context(worker.replace_attribute(
                 spack.solver.asp.SpackSolverSetup, "target_defaults",
                 diagnosed_target_defaults(
