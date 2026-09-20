@@ -163,6 +163,9 @@ named volume 持久化；Agent 和 Slurm 在同一节点以相同路径访问，
 目标检查链为：Server API 安装、隔离 source audit、build、独立 readonly verify、
 `ready`、load、真实 Slurm Hello、源码缓存缺失/篡改后的撤回与显式恢复、
 重启后复验/运行、卸载及库存撤回。
+等待测试队列时最多记录八次状态变化，仅输出 schema 校验后的枚举和布尔值；
+失败后用现有 Slurm adapter 查询一次原生队列对照，不输出原始 CLI 内容或队列清单，
+不改变原等待时限和失败结果。
 API 安装失败时，测试可在相同隔离条件下调用未修改的 worker 检查来定位错误，
 只报告固定错误类型、白名单 worker/Spack 模块行号、求解错误类别和挂载类别；
 同时报告进程退出码、报告类型、固定阶段的进程 RSS 峰值以及测试 user cgroup 的 OOM kill 计数差值，

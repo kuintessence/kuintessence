@@ -4,6 +4,7 @@ import { JobStatus, JobSubmitSchema } from "@kuintessence/shared";
 import { z } from "zod";
 import { queueInventoryReady, waitFor } from "../runtime";
 import { jsonRequest, OperationSchema } from "../spack-case/api";
+import { diagnoseManagedQueue, managedQueueMarker } from "./queue-diagnostic";
 
 const origin = "https://server:3443";
 const agentId = "pr-scheduler";
@@ -140,12 +141,32 @@ export function managedApi(token: string) {
     }
   }
 
+  async function readyQueue() {
+    let previous: string | undefined;
+    let observations = 0;
+    try {
+      await waitFor(
+        "managed Slurm queue inventory",
+        async () => {
+          const value = await request("/admin/agents/pr-scheduler/queue-inventory");
+          const marker = managedQueueMarker(value);
+          if (marker !== previous && observations < 8) {
+            console.log(marker);
+            previous = marker;
+            observations++;
+          }
+          return value;
+        },
+        (value) => queueInventoryReady(value, "debug"),
+      );
+    } catch (error) {
+      await diagnoseManagedQueue();
+      throw error;
+    }
+  }
+
   async function createQueue() {
-    await waitFor(
-      "managed Slurm queue inventory",
-      () => request("/admin/agents/pr-scheduler/queue-inventory"),
-      (value) => queueInventoryReady(value, "debug"),
-    );
+    await readyQueue();
     const context = z
       .object({
         providerOrgs: z.array(z.object({ id: z.string().uuid(), name: z.string() })),
@@ -174,11 +195,7 @@ export function managedApi(token: string) {
       shell.trim().length > 0 && shell.length <= 256 * 1024 && !shell.includes("\0"),
       "Managed load did not return a usable shell",
     );
-    await waitFor(
-      "managed Slurm queue after startup",
-      () => request("/admin/agents/pr-scheduler/queue-inventory"),
-      (value) => queueInventoryReady(value, "debug"),
-    );
+    await readyQueue();
     const created = JobSchema.parse(
       await request(
         "/jobs",

@@ -4,6 +4,10 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { parse } from "yaml";
 import { queueInventoryReady, schedulerCancelled, waitFor } from "../deploy/pr-test/runtime";
+import {
+  managedQueueMarker,
+  nativeQueueMarker,
+} from "../deploy/pr-test/spack-managed/queue-diagnostic";
 import { loadServerConfig } from "../packages/server/src/config";
 
 const root = resolve(import.meta.dir, "..");
@@ -438,6 +442,77 @@ describe("PR runner lifecycle (fake Docker, no containers)", () => {
 });
 
 describe("runtime assertions", () => {
+  test("managed queue diagnostics expose only validated enums and booleans", () => {
+    const inventory = {
+      agentId: "private-agent",
+      providerOrgId: null,
+      schedulerType: "slurm",
+      queueInventoryV1: true,
+      status: "available",
+      defaultQueueName: "debug",
+      reason: null,
+      observedAt: "2026-01-01T00:00:00.000Z",
+      queues: [
+        {
+          queueName: "debug",
+          queueType: "partition",
+          isDefault: true,
+          state: "up",
+          acceptsSubmissions: true,
+          observedAt: "2026-01-01T00:00:00.000Z",
+          managed: false,
+          managedQueueIds: [],
+        },
+      ],
+    };
+    expect(managedQueueMarker(inventory)).toBe(
+      "ci-managed-queue:capable=true status=available reason=none target=up accepting=true attempt-age=missing observation-age=missing no-go=unavailable recovering=unavailable recovered=unavailable",
+    );
+    expect(
+      managedQueueMarker({
+        ...inventory,
+        status: "unavailable",
+        reason: "command_failed",
+        queues: [],
+      }),
+    ).toBe(
+      "ci-managed-queue:capable=true status=unavailable reason=command_failed target=missing accepting=false attempt-age=missing observation-age=missing no-go=unavailable recovering=unavailable recovered=unavailable",
+    );
+    const recovery = {
+      ...inventory,
+      lastAttemptAt: inventory.observedAt,
+      lastSuccessfulObservedAt: inventory.observedAt,
+      lastNoGoAt: inventory.observedAt,
+      recoveryStartedAt: inventory.observedAt,
+      recoveredAt: null,
+    };
+    const observedAt = Date.parse(inventory.observedAt);
+    for (const [elapsed, bucket] of [
+      [-1, "future"],
+      [120_000, "under-120s"],
+      [120_001, "120-240s"],
+      [240_001, "over-240s"],
+    ] as const) {
+      const marker = managedQueueMarker(recovery, observedAt + elapsed);
+      expect(marker).toContain(`attempt-age=${bucket} observation-age=${bucket}`);
+      expect(marker).toContain("no-go=present recovering=present recovered=absent");
+      expect(marker).not.toContain("private-agent");
+      expect(marker).not.toContain(inventory.observedAt);
+    }
+    expect(() => managedQueueMarker({ ...inventory, reason: "private-error" })).toThrow();
+    expect(
+      nativeQueueMarker({
+        status: "unavailable",
+        reason: "command_failed",
+        observedAt: new Date(),
+        queues: [],
+      }),
+    ).toBe(
+      "ci-managed-queue-native:status=unavailable reason=command_failed target=missing accepting=false",
+    );
+    expect(() => nativeQueueMarker({ status: "private-error" })).toThrow();
+  });
+
   test("waits for reported, available inventory and an accepting target queue", () => {
     const snapshot = {
       agentId: "pr-scheduler",
