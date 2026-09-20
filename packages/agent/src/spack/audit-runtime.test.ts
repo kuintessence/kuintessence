@@ -142,9 +142,7 @@ describe("Spack audit runtime identity and argv", () => {
     );
     expect(managed).toEqual(
       baseline.map((value, index) =>
-        ["--memory", "--memory-swap"].includes(baseline[index - 1] ?? "")
-          ? "4294967296"
-          : value,
+        ["--memory", "--memory-swap"].includes(baseline[index - 1] ?? "") ? "4294967296" : value,
       ),
     );
     for (const memory of [0, -1, 1.5, NaN, Infinity, 2_147_483_647, 4_294_967_297]) {
