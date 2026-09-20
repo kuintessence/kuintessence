@@ -102,6 +102,8 @@ bash deploy/pr-test/run.sh slurm --spack-case
 该模式只支持 Slurm，不替代默认 Slurm/PBS 回归。它使用 Spack 1.0.0、
 固定 builtin recipe commit 和 GNU Hello 2.12.1 源码；材料准备在镜像构建阶段联网，
 生成真实 Linux lock、源码 mirror 和自包含 Git bundle，不使用手写 DAG/hash。
+上游 recipe 使用固定 commit 的 shallow Git checkout，核对固定 tree 后从本地
+Git object 元数据逐一校验文件模式、长度和 blob hash，不依赖匿名 GitHub tree API。
 材料不提交 Git，不进入 scheduler 镜像；只保留可复现准备脚本及自有 recipe。
 编译器和基础工具使用镜像中的 external，不代表完全从源码自举工具链。
 
@@ -152,7 +154,8 @@ named volume 持久化；Agent 和 Slurm 在同一节点以相同路径访问，
 `ready`、load、真实 Slurm Hello、源码缓存缺失/篡改后的撤回与显式恢复、
 重启后复验/运行、卸载及库存撤回。
 API 安装失败时，测试可在相同隔离条件下调用未修改的 worker 检查来定位错误，
-只报告固定错误类型和 worker 行号；诊断使用独立临时 store，不写安装账本，
+只报告固定错误类型、worker 行号和白名单挂载类别；不输出原始路径或 native 日志。
+诊断使用独立临时 store，不写安装账本，清理异常也只输出固定代码；
 即使诊断成功也保持原 API 案例失败，不作为安装成功的替代路径。
 实际通过范围必须以当前提交的 Actions 结果为准；新增测试定义本身不构成验收通过，
 也不覆盖生产环境、PBS 受管安装或 15 个科学工作流。

@@ -4,7 +4,7 @@ Run only in the disposable Ubuntu 20.04 PR builder:
     spack python /workspace/deploy/pr-test/spack-case/prepare.py OUTPUT_DIR
 
 Requires Spack 1.0.0, pip clingo 5.7.1, GCC, GNU make, git, and the official
-spack-packages extraction at /opt/kq-case/upstream. No packages are installed.
+spack-packages checkout at /opt/kq-case/upstream. No packages are installed.
 Only metadata.json, recipes.bundle, spack.lock and sources/ are published.
 The bundle HEAD identifies a fresh commit of the exact recipes used to solve.
 """
@@ -20,7 +20,6 @@ import stat
 import subprocess
 import sys
 import tempfile
-import urllib.request
 
 
 SPEC = "hello@2.12.1"
@@ -31,6 +30,7 @@ ROOTS = ["repos/spack_repo/kq_case", "repos/spack_repo/builtin"]
 LICENSES = ("COPYRIGHT", "LICENSE-APACHE", "LICENSE-MIT")
 MIB = 1024 ** 2
 MAX_FILES, MAX_RECIPE_BYTES, MAX_SOURCE_BYTES = 40_000, 128 * MIB, 64 * MIB
+MAX_TREE_BYTES = 16 * MIB
 
 
 def require(condition: object, message: str) -> None:
@@ -65,30 +65,61 @@ def files(root: Path) -> list:
     return sorted(result)
 
 
-def official_tree() -> dict:
-    url = ("https://api.github.com/repos/spack/spack-packages/git/trees/"
-           + UPSTREAM_TREE + "?recursive=1")
-    request = urllib.request.Request(url, headers={"User-Agent": "kuintessence-pr-spack-case"})
-    with urllib.request.urlopen(request, timeout=60) as response:
-        data = response.read(16 * MIB + 1)
-    require(len(data) <= 16 * MIB, "Upstream metadata budget exceeded")
-    tree = json.loads(data)
-    require(tree["sha"] == UPSTREAM_TREE and tree["truncated"] is False,
-            "Incomplete or incorrectly pinned upstream tree")
+def upstream_git(*args: str) -> bytes:
+    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    env.update({
+        "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_NO_REPLACE_OBJECTS": "1", "GIT_TERMINAL_PROMPT": "0",
+    })
+    # Bound in-memory metadata even if git produces an unexpectedly large tree.
+    with tempfile.TemporaryFile() as output:
+        subprocess.run(
+            ["git", *args], cwd=UPSTREAM, env=env, check=True,
+            stdout=output, timeout=120,
+        )
+        output.seek(0)
+        data = output.read(MAX_TREE_BYTES + 1)
+    require(len(data) <= MAX_TREE_BYTES, "Upstream metadata budget exceeded")
+    return data
+
+
+def parse_tree(data: bytes) -> dict:
+    require(0 < len(data) <= MAX_TREE_BYTES, "Upstream metadata budget exceeded")
+    require(data.endswith(b"\0"), "Incomplete upstream tree metadata")
     selected = {}
-    for entry in tree["tree"]:
-        path = entry["path"]
+    for record in data[:-1].split(b"\0"):
+        header, separator, raw_path = record.partition(b"\t")
+        fields = header.split()
+        require(separator and len(fields) == 4, "Malformed upstream tree record")
+        mode, kind, digest, size = fields
+        path = raw_path.decode("utf-8")
         if not (path.startswith("repos/") or path in LICENSES):
             continue
         relative(path)
-        if entry["type"] == "tree":
-            continue
-        require(entry["type"] == "blob" and entry["mode"] in {"100644", "100755"},
+        require(kind == b"blob" and mode in (b"100644", b"100755"),
                 "Pinned upstream contains a symlink or unsupported entry: " + path)
-        selected[path] = entry
+        require(re.fullmatch(rb"[a-f0-9]{40}", digest)
+                and re.fullmatch(rb"[0-9]{1,20}", size), "Invalid upstream blob metadata")
+        require(path not in selected, "Duplicate upstream path: " + path)
+        selected[path] = {
+            "path": path, "type": "blob", "mode": mode.decode("ascii"),
+            "sha": digest.decode("ascii"), "size": int(size),
+        }
+        require(len(selected) <= MAX_FILES, "Upstream file budget exceeded")
     require(0 < len(selected) <= MAX_FILES, "Upstream file budget exceeded")
     require(all(name in selected for name in LICENSES), "Upstream licenses are missing")
     return selected
+
+
+def official_tree() -> dict:
+    require(UPSTREAM.is_dir() and not UPSTREAM.is_symlink()
+            and (UPSTREAM / ".git").is_dir() and not (UPSTREAM / ".git").is_symlink(),
+            "Expected the upstream Git checkout")
+    require(upstream_git("rev-parse", "--verify", "HEAD^{commit}").strip()
+            == UPSTREAM_COMMIT.encode("ascii"), "Incorrectly pinned upstream commit")
+    require(upstream_git("rev-parse", "--verify", UPSTREAM_COMMIT + "^{tree}").strip()
+            == UPSTREAM_TREE.encode("ascii"), "Incorrectly pinned upstream tree")
+    return parse_tree(upstream_git("ls-tree", "-r", "-l", "-z", UPSTREAM_TREE))
 
 
 def copy_recipes(destination: Path) -> None:
@@ -100,6 +131,8 @@ def copy_recipes(destination: Path) -> None:
     for name, source in sorted(actual.items()):
         info = source.lstat()
         require(stat.S_ISREG(info.st_mode), "Upstream license/recipe is not a regular file")
+        require(stat.S_IMODE(info.st_mode) == (int(expected[name]["mode"], 8) & 0o777),
+                "Upstream file mode mismatch: " + name)
         require(info.st_size == expected[name]["size"], "Upstream file size mismatch: " + name)
         total += info.st_size
         require(total <= MAX_RECIPE_BYTES, "Recipe byte budget exceeded")

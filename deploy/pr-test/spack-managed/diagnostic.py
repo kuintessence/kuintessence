@@ -8,6 +8,32 @@ import sys
 sys.path.insert(0, "/kq/input")
 
 
+def writable_mounts(frame):
+    paths = {
+        "/": "root", "/dev": "devices", "/dev/null": "null-device",
+        "/dev/zero": "zero-device", "/dev/random": "random-device",
+        "/dev/urandom": "urandom-device", "/dev/tty": "tty-device",
+        "/etc/passwd": "passwd", "/etc/group": "group",
+        "/etc/resolv.conf": "resolver", "/etc/hosts": "hosts",
+        "/etc/localtime": "localtime", "/sys/fs/cgroup": "cgroups",
+        "/tmp": "tmp", "/var/tmp": "var-tmp", "/kq/work": "work",
+    }
+    filesystems = {
+        "overlay", "ext4", "xfs", "fuse.squashfuse", "fuse.squashfuse_ll",
+        "fuse-overlayfs", "fuse.fuse-overlayfs", "cgroup2", "devtmpfs", "ramfs",
+    }
+    emitted = set()
+    for path, options, filesystem in frame.f_locals.get("mounts", []):
+        if ("rw" not in options or path == frame.f_locals.get("store")
+                or filesystem in {"tmpfs", "proc", "sysfs", "devpts", "mqueue"}):
+            continue
+        location = paths.get(str(path), "other")
+        kind = filesystem if filesystem in filesystems else "other"
+        emitted.add("ci-writable-mount:location=" + location + " filesystem=" + kind)
+    for line in sorted(emitted):
+        print(line, file=sys.stderr)
+
+
 def locations(error):
     seen = set()
     while error is not None and id(error) not in seen:
@@ -24,6 +50,8 @@ def locations(error):
             if filename in {"/kq/input/install_worker.py", "/kq/input/source_audit.py"}:
                 print("ci-worker-location:" + Path(filename).name + ":" + str(trace.tb_lineno),
                       file=sys.stderr)
+                if trace.tb_frame.f_code.co_name == "verify_scratch":
+                    writable_mounts(trace.tb_frame)
             trace = trace.tb_next
         error = error.__cause__
 
@@ -42,7 +70,8 @@ try:
                     prefix = "KQ_SPACK_AUDIT_RESULT:"
                 else:
                     import install_worker as worker
-                    result = worker.run(Path("/kq/input"), Path("/kq/work"))
+                    with worker.native_output():
+                        result = worker.run(Path("/kq/input"), Path("/kq/work"))
                     prefix = "KQ_SPACK_INSTALL_RESULT:"
     finally:
         os.dup2(saved_out, 1)

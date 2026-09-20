@@ -35,6 +35,38 @@ afterEach(async () => {
 });
 
 describe("PR scheduler isolation contract", () => {
+  test("prepares pinned recipe metadata without the GitHub tree API", async () => {
+    const child = Bun.spawn({
+      cmd: [
+        "python3",
+        "-I",
+        "-B",
+        "-m",
+        "unittest",
+        "discover",
+        "-s",
+        ".",
+        "-p",
+        "test_prepare.py",
+        "-v",
+      ],
+      cwd: join(root, "deploy/pr-test/spack-case"),
+      stdin: "ignore",
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const [exitCode, stdout, stderr] = await Promise.all([
+      child.exited,
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+    ]);
+    expect({ exitCode, stdout, stderr }).toMatchObject({
+      exitCode: 0,
+      stdout: "",
+      stderr: expect.stringContaining("OK"),
+    });
+  }, 30_000);
+
   test("provides all required Server configuration without optional infrastructure", () => {
     const env = {
       ...compose.services.server?.environment,

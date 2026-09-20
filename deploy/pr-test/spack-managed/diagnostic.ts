@@ -27,7 +27,8 @@ const diagnosticProcess: SpackAuditProcess = {
     for (const line of result.stderr.split("\n")) {
       if (
         /^ci-worker-error:(AuditError|KeyError|ValueError|TypeError|AttributeError|OSError|PermissionError|FileNotFoundError|InstallError|SystemExit|Exception)$/.test(line) ||
-        /^ci-worker-location:(install_worker|source_audit)\.py:\d{1,5}$/.test(line)
+        /^ci-worker-location:(install_worker|source_audit)\.py:\d{1,5}$/.test(line) ||
+        /^ci-writable-mount:location=(root|devices|null-device|zero-device|random-device|urandom-device|tty-device|passwd|group|resolver|hosts|localtime|cgroups|tmp|var-tmp|work|other) filesystem=(overlay|ext4|xfs|fuse\.squashfuse|fuse\.squashfuse_ll|fuse-overlayfs|fuse\.fuse-overlayfs|cgroup2|devtmpfs|ramfs|other)$/.test(line)
       ) console.error(line);
     }
     return result;
@@ -120,6 +121,12 @@ export async function diagnoseManagedInstall(): Promise<void> {
   } catch {
     console.error(`Managed diagnostic failed: stage=${stage}`);
   } finally {
-    if (directory) await rm(directory, { recursive: true, force: true });
+    if (directory) {
+      try {
+        await rm(directory, { recursive: true, force: true });
+      } catch {
+        console.error("Managed diagnostic failed: stage=cleanup");
+      }
+    }
   }
 }
