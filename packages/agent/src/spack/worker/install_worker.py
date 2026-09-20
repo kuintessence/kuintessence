@@ -339,7 +339,13 @@ def bind_native(root: object, lock: dict, profile: dict) -> dict:
     return nodes
 
 
-def configuration(work: Path, nodes: dict) -> dict:
+def configuration(work: Path, nodes: dict, target_arch: str) -> dict:
+    import spack.vendor.archspec.cpu as cpu
+
+    _, _, cpu_name = target_arch.split("-")
+    require(cpu_name in cpu.TARGETS, "cpu-mismatch")
+    # Spack 1.0 filters generic targets by vendor, not by architecture family.
+    granularity = "generic" if cpu.TARGETS[cpu_name].vendor == "generic" else "microarchitectures"
     data = audit.configuration(work)
     data["config"].update({
         "install_tree": {"root": str(work / "solver-store")},
@@ -352,7 +358,7 @@ def configuration(work: Path, nodes: dict) -> dict:
     })
     data["concretizer"] = {
         "reuse": False, "unify": True, "splice": {"automatic": False},
-        "targets": {"host_compatible": True, "granularity": "microarchitectures"},
+        "targets": {"host_compatible": True, "granularity": granularity},
     }
     data["modules"] = {"default": {"enable": []}}
     data["packages"]["all"] = {"permissions": {"read": "world", "write": "user"}}
@@ -540,7 +546,7 @@ def run(input_dir: Path, work: Path) -> dict:
                     roots = list(env.concrete_roots())
                     require(len(roots) == 1, "native-root")
                     nodes = bind_native(roots[0], lock, profile)
-        scope = spack.config.InternalConfigScope("kq", configuration(work, nodes))
+        scope = spack.config.InternalConfigScope("kq", configuration(work, nodes, profile["target"]))
         with spack.config.use_configuration(scope):
             with spack.repo.use_repositories(*recipes, override=True):
                 with spack.store.use_store(work / "solver-store"):

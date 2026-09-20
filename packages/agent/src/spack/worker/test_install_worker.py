@@ -71,6 +71,7 @@ class Native(fixtures.Native):
         }
         self.upstream = False
         self.install_error = self.solver_error = None
+        self.solver_constraints = None
         self.shell = "export PATH='/approved/bin';\n"
         self.install_options = None
         for name in (
@@ -93,9 +94,22 @@ class Native(fixtures.Native):
         self.modules["spack.platforms"].host = lambda: types.SimpleNamespace(
             name="linux", default_operating_system=lambda: "ubuntu24.04"
         )
-        target = types.SimpleNamespace(name="x86_64", ancestors=[])
+        target = types.SimpleNamespace(name="x86_64", vendor="generic", ancestors=[])
+        generic = types.SimpleNamespace(
+            name="x86_64_v3", vendor="generic", ancestors=[target],
+        )
         self.modules["spack.vendor.archspec.cpu"].host = lambda: target
-        self.modules["spack.vendor.archspec.cpu"].TARGETS = {"x86_64": target}
+        self.modules["spack.vendor.archspec.cpu"].TARGETS = {
+            "x86_64": target,
+            "x86_64_v3": generic,
+            "aarch64": types.SimpleNamespace(name="aarch64", vendor="generic", ancestors=[]),
+            "haswell": types.SimpleNamespace(
+                name="haswell", vendor="GenuineIntel", ancestors=[generic, target],
+            ),
+            "zen3": types.SimpleNamespace(
+                name="zen3", vendor="AuthenticAMD", ancestors=[generic, target],
+            ),
+        }
         self.modules["clingo"] = types.ModuleType("clingo")
         self.modules["clingo"].Symbol = object
         self.modules["clingo.ast"] = types.ModuleType("clingo.ast")
@@ -121,10 +135,12 @@ class Native(fixtures.Native):
                 return [self]
 
             def constrain(self, constraint):
+                self.constraints.append(constraint.text)
                 return True
 
         result = Abstract()
         result.text = text
+        result.constraints = []
         return result
 
     def from_json(self, data):
@@ -144,6 +160,7 @@ class Native(fixtures.Native):
 
     def concretize(self, spec, **kwargs):
         self.calls.append(("solve", spec.text))
+        self.solver_constraints = list(spec.constraints)
         assert not spec.concrete
         assert self.config["concretizer"]["reuse"] is False
         assert self.config["bootstrap"]["enable"] is False
@@ -416,7 +433,7 @@ class InstallTests(unittest.TestCase):
                         cpu = self.native.modules["spack.vendor.archspec.cpu"]
                         stack.enter_context(patch.object(
                             cpu, "host", return_value=types.SimpleNamespace(
-                                name="aarch64", ancestors=[]
+                                name="aarch64", vendor="generic", ancestors=[]
                             ),
                         ))
                     else:
@@ -433,14 +450,39 @@ class InstallTests(unittest.TestCase):
                 self.assert_no_recipes()
 
     def test_all_lock_targets_and_root_external_rejected_before_recipes(self):
+        self.add_external()
+        for key in (fixtures.ROOT_HASH, fixtures.DEP_HASH):
+            node = self.lock["concrete_specs"][key]
+            original = copy.deepcopy(node["arch"])
+            for field, value in (
+                ("platform", "different"),
+                ("platform_os", "different"),
+                ("target", "x86_64_v3"),
+                ("target", {"name": "x86_64_v3"}),
+            ):
+                with self.subTest(node=key, field=field, value=value):
+                    node["arch"][field] = value
+                    with self.assertRaisesRegex(audit.AuditError, "target-mismatch"):
+                        self.run_worker()
+                    self.assert_no_recipes()
+                    node["arch"] = copy.deepcopy(original)
         node = self.lock["concrete_specs"][fixtures.ROOT_HASH]
-        node["arch"]["target"] = "aarch64"
+        node["external"] = {"path": "/usr", "module": None}
         with self.assertRaises(audit.AuditError):
             self.run_worker()
         self.assert_no_recipes()
-        node["arch"]["target"] = "x86_64"
-        node["external"] = {"path": "/usr", "module": None}
-        with self.assertRaises(audit.AuditError):
+
+    def test_profile_target_mismatch_rejected_before_recipes(self):
+        self.profile["target"] = "linux-ubuntu24.04-x86_64_v3"
+        cpu = self.native.modules["spack.vendor.archspec.cpu"]
+        with patch.object(cpu, "host", return_value=cpu.TARGETS["x86_64_v3"]):
+            with self.assertRaisesRegex(audit.AuditError, "target-mismatch"):
+                self.run_worker()
+        self.assert_no_recipes()
+
+    def test_unknown_profile_target_rejected_before_recipes(self):
+        self.profile["target"] = "linux-ubuntu24.04-unknown"
+        with self.assertRaisesRegex(audit.AuditError, "cpu-mismatch"):
             self.run_worker()
         self.assert_no_recipes()
 
@@ -489,13 +531,43 @@ class InstallTests(unittest.TestCase):
         self.add_external()
         for nodes in ({}, self.native.nodes):
             with self.subTest(externals=bool(nodes)):
-                config = worker.configuration(self.work, nodes)
+                with self.runtime():
+                    config = worker.configuration(self.work, nodes, self.profile["target"])
                 self.assertEqual(config["packages"]["all"]["permissions"],
                                  {"read": "world", "write": "user"})
                 self.assertIs(config["config"]["allow_sgid"], False)
                 if nodes:
                     self.assertIs(config["packages"]["gcc"]["buildable"], False)
                     self.assertEqual(len(config["packages"]["gcc"]["externals"]), 1)
+
+    def test_configuration_granularity_uses_target_vendor(self):
+        for cpu_name, granularity in (
+            ("x86_64", "generic"),
+            ("x86_64_v3", "generic"),
+            ("aarch64", "generic"),
+            ("haswell", "microarchitectures"),
+            ("zen3", "microarchitectures"),
+        ):
+            with self.subTest(target=cpu_name), self.runtime():
+                config = worker.configuration(self.work, {}, "linux-ubuntu24.04-" + cpu_name)
+                self.assertEqual(config["concretizer"], {
+                    "reuse": False, "unify": True, "splice": {"automatic": False},
+                    "targets": {"host_compatible": True, "granularity": granularity},
+                })
+
+    def test_configuration_does_not_infer_granularity_from_host_vendor(self):
+        cpu = self.native.modules["spack.vendor.archspec.cpu"]
+        for host_name in ("haswell", "zen3"):
+            with self.subTest(host=host_name), self.runtime():
+                with patch.object(cpu, "host", return_value=cpu.TARGETS[host_name]) as host:
+                    config = worker.configuration(self.work, {}, self.profile["target"])
+                host.assert_not_called()
+                self.assertEqual(config["concretizer"]["targets"]["granularity"], "generic")
+
+    def test_configuration_unknown_target_fails_closed(self):
+        with self.runtime(), self.assertRaisesRegex(audit.AuditError, "cpu-mismatch"):
+            worker.configuration(self.work, {}, "linux-ubuntu24.04-unknown")
+        self.assert_no_recipes()
 
     def test_external_configuration_omits_native_patch_metadata_without_mutating_lock_spec(self):
         self.add_external()
@@ -504,7 +576,13 @@ class InstallTests(unittest.TestCase):
         external.compiler_flags = ' cflags="-O2"'
         original = copy.deepcopy(external.variants)
         lock = copy.deepcopy(self.lock)
-        config = worker.configuration(self.work, self.native.nodes)
+        nodes = self.native.nodes.copy()
+        node_values = {
+            key: (node.format(), copy.deepcopy(node.variants), copy.deepcopy(node.extra_attributes))
+            for key, node in nodes.items()
+        }
+        with self.runtime():
+            config = worker.configuration(self.work, self.native.nodes, self.profile["target"])
         entry = config["packages"]["gcc"]["externals"][0]
         self.assertEqual(entry["spec"],
                          f"{external.namespace}.gcc@={external.version} languages=c,c++"
@@ -513,9 +591,46 @@ class InstallTests(unittest.TestCase):
         self.assertNotIn("/" + fixtures.DEP_HASH, entry["spec"])
         self.assertEqual(external.variants, original)
         self.assertEqual(self.lock, lock)
+        self.assertEqual(self.native.nodes, nodes)
+        for key, node in self.native.nodes.items():
+            self.assertIs(node, nodes[key])
+            self.assertEqual((node.format(), node.variants, node.extra_attributes), node_values[key])
         self.assertEqual(entry["prefix"], external.external_path)
         self.assertEqual(entry["extra_attributes"], external.extra_attributes)
         self.assertIsNot(entry["extra_attributes"], external.extra_attributes)
+
+    def test_profile_granularity_preserves_full_solver_architecture_and_lock(self):
+        self.add_external()
+        for cpu_name, granularity in (
+            ("x86_64", "generic"),
+            ("x86_64_v3", "generic"),
+            ("haswell", "microarchitectures"),
+        ):
+            with self.subTest(target=cpu_name):
+                target_arch = "linux-ubuntu24.04-" + cpu_name
+                self.profile["target"] = self.manifest["target"] = target_arch
+                for node in self.lock["concrete_specs"].values():
+                    node["arch"]["target"] = cpu_name
+                self.work = self.base / ("work-" + cpu_name)
+                self.work.mkdir(mode=0o700)
+                self.native = Native(self.work, self.lock, self.store)
+                for node in self.native.nodes.values():
+                    node.architecture = target_arch
+                cpu = self.native.modules["spack.vendor.archspec.cpu"]
+                lock = copy.deepcopy(self.lock)
+                with patch.object(cpu, "host", return_value=cpu.TARGETS[cpu_name]):
+                    result = self.run_worker()
+                self.assertEqual(self.native.solver_constraints, ["arch=" + target_arch])
+                self.assertEqual(result["root"]["arch"], target_arch)
+                self.assertEqual(self.native.config["concretizer"]["targets"], {
+                    "host_compatible": True, "granularity": granularity,
+                })
+                self.assertEqual(self.lock, lock)
+                self.assertTrue(all(str(node.architecture) == target_arch
+                                    for node in self.native.nodes.values()))
+                self.assertEqual((self.work / "env/spack.lock").read_bytes(),
+                                 (self.input / "blobs" /
+                                  self.manifest["lockfile"]["digest"][7:]).read_bytes())
 
     def test_install_uses_native_solver_installer_store_and_root_only_report(self):
         self.add_external()
@@ -537,6 +652,7 @@ class InstallTests(unittest.TestCase):
         self.assertEqual(self.native.install_options["dependencies_use_cache"], False)
         self.assertEqual(self.native.install_options["explicit"], True)
         self.assertEqual(self.native.config["config"]["concretization_cache"], {"enable": False})
+        self.assertEqual(self.native.solver_constraints, ["arch=" + self.profile["target"]])
         external = self.native.config["packages"]["gcc"]["externals"][0]
         self.assertNotIn("/" + fixtures.DEP_HASH, external["spec"])
         self.assertEqual(external["extra_attributes"]["compilers"]["c"], str(self.compiler))

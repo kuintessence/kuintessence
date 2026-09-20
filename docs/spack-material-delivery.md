@@ -503,6 +503,10 @@ worker 实现固定材料复验、native solver 对照、安装树检查和 load
 这些检查不能替代真实站点验收，也不能把静态预检报告升级成完整求解证明。
 external 的求解配置从锁定 spec 的副本生成，不把 native `patches` 内部元数据当作
 用户输入 variant；原 lock、recipe 校验和重新求解后的完整 DAG/hash 对照保持不变。
+求解候选的 granularity 按已验证 site profile 的 target 选择：vendored archspec 标为
+`generic` 的 target 只使用 generic 候选，其余保留 microarchitecture 候选。
+这不会把目标降级为 family；完整 arch 约束、host compatibility 与最终 DAG 校验仍生效，
+未知 target 直接拒绝。候选域缩小不构成安装成功或内存预算足够的证明。
 安装树使用 `read: world`、`write: user`，以便同站点计算任务读取；不开放 group/other 写入。
 原生 compiler-wrapper 可以使用解析后仍留在本次事务 store 内的绝对或相对 symlink；
 跨事务、未批准外部目标、scratch、悬空、循环链接和数据库内的链接仍被拒绝。
