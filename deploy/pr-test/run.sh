@@ -50,6 +50,12 @@ if [[ "${2:-}" == "--config" ]]; then
 fi
 docker info >/dev/null 2>&1 || fail "Docker daemon is unavailable; no build or tests ran"
 
+legacy_probe_status() {
+  "${compose[@]}" exec -T --user kq scheduler \
+    head -c 512 /var/lib/kuintessence/legacy-probe-status 2>/dev/null |
+    grep -Ex 'ci-legacy-find:result=(ok|nonzero|spawn|timeout|output-limit) reason=(none|store-permission|repo-init|config-permission|cache-permission|permission-other|other) json=(empty-array|array|non-array|invalid|unavailable)' || true
+}
+
 cleanup() {
   local result=$?
   trap - EXIT INT TERM
@@ -58,6 +64,7 @@ cleanup() {
       "${compose[@]}" exec -T registry bun deploy/pr-test/spack-case/diagnostics.ts || true
   fi
   if "$spack_managed" && [[ "$result" -ne 0 ]]; then
+    legacy_probe_status
     "${compose[@]}" exec -T scheduler cat /run/kq-pr/status || true
     "${compose[@]}" exec -T scheduler systemctl show kq-pr-scheduler.service \
       --property=ActiveState --property=Result --property=ExecMainStatus || true
@@ -102,6 +109,7 @@ if "$spack_case"; then
 fi
 "${compose[@]}" up -d --no-build --wait --wait-timeout 300 scheduler registry
 if "$spack_managed"; then
+  legacy_probe_status
   "${compose[@]}" exec -T --user kq scheduler bun deploy/pr-test/spack-managed/probe.ts
   "${compose[@]}" exec -T --user kq scheduler bun node_modules/typescript/bin/tsc --project deploy/pr-test/tsconfig.json
   "${compose[@]}" exec -T --user kq scheduler timeout --signal=TERM --kill-after=10s 1500s bun deploy/pr-test/spack-managed/case.ts install

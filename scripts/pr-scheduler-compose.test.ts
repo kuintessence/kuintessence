@@ -35,6 +35,39 @@ afterEach(async () => {
 });
 
 describe("PR scheduler isolation contract", () => {
+  test("keeps legacy inventory diagnosis bounded and free of raw output", async () => {
+    const child = Bun.spawn({
+      cmd: [
+        "python3",
+        "-I",
+        "-B",
+        "-m",
+        "unittest",
+        "discover",
+        "-s",
+        ".",
+        "-p",
+        "test_legacy_probe.py",
+        "-v",
+      ],
+      cwd: join(root, "deploy/pr-test/spack-managed"),
+      stdin: "ignore",
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const [exitCode, stdout, stderr] = await Promise.all([
+      child.exited,
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+    ]);
+    expect({ exitCode, stdout, stderr }).toMatchObject({
+      exitCode: 0,
+      stdout: "",
+      stderr: expect.stringContaining("OK"),
+    });
+    expect(stderr).toMatch(/Ran [1-9]\d* tests? in/);
+  }, 30_000);
+
   test("keeps managed phase diagnostics bounded and preserves worker behavior", async () => {
     const child = Bun.spawn({
       cmd: [
@@ -295,6 +328,9 @@ describe("PR runner lifecycle (fake Docker, no containers)", () => {
     expect(result.code).toBe(0);
     expect(result.commands).toContain("docker-compose.pr-spack-managed.yml");
     expect(result.commands).toContain("build case-operator managed-builder");
+    expect(result.commands).toContain(
+      "exec -T --user kq scheduler head -c 512 /var/lib/kuintessence/legacy-probe-status",
+    );
     expect(result.commands).toContain("--entrypoint chmod managed-builder 0444 /runtime/spack.sif");
     expect(result.commands.indexOf("spack-managed/probe.ts")).toBeLessThan(
       result.commands.indexOf("spack-managed/case.ts install"),
