@@ -5,11 +5,16 @@ fail() { printf '%s\n' "$*" >&2; exit 2; }
 case "${1:-}" in
   slurm) export KQ_PR_SCHEDULER=slurm KQ_PR_REGISTRATION_SCHEDULER=slurm KQ_PR_PRIVILEGED=false ;;
   pbs) export KQ_PR_SCHEDULER=pbs KQ_PR_REGISTRATION_SCHEDULER=pbs-pro KQ_PR_PRIVILEGED=true ;;
-  *) fail "Usage: bash deploy/pr-test/run.sh slurm|pbs [--config|--spack-case]" ;;
+  *) fail "Usage: bash deploy/pr-test/run.sh slurm|pbs [--config|--spack-case|--spack-managed]" ;;
 esac
-[[ $# -le 2 && ( $# -eq 1 || "$2" == "--config" || "$2" == "--spack-case" ) ]] || fail "Unsupported flag"
+[[ $# -le 2 && ( $# -eq 1 || "$2" == "--config" || "$2" == "--spack-case" || "$2" == "--spack-managed" ) ]] || fail "Unsupported flag"
 spack_case=false
-if [[ "${2:-}" == "--spack-case" ]]; then
+spack_managed=false
+if [[ "${2:-}" == "--spack-managed" ]]; then
+  [[ "${GITHUB_ACTIONS:-}" == true ]] || fail "Managed case runs only on disposable GitHub Actions runners"
+  spack_managed=true
+fi
+if [[ "${2:-}" == "--spack-case" ]] || "$spack_managed"; then
   [[ "$KQ_PR_SCHEDULER" == slurm ]] || fail "The Spack single-step case currently requires Slurm"
   spack_case=true
 fi
@@ -33,6 +38,9 @@ compose=(docker compose --project-directory "$repo_root" --env-file /dev/null
 if "$spack_case"; then
   compose+=(-f "$repo_root/deploy/compose/docker-compose.pr-spack-case.yml")
 fi
+if "$spack_managed"; then
+  compose+=(-f "$repo_root/deploy/compose/docker-compose.pr-spack-managed.yml")
+fi
 compose+=(--profile images)
 
 "${compose[@]}" config --quiet
@@ -49,6 +57,11 @@ cleanup() {
     "${compose[@]}" logs --no-color --no-log-prefix registry 2>/dev/null |
       "${compose[@]}" exec -T registry bun deploy/pr-test/spack-case/diagnostics.ts || true
   fi
+  if "$spack_managed" && [[ "$result" -ne 0 ]]; then
+    "${compose[@]}" exec -T scheduler cat /run/kq-pr/status || true
+    "${compose[@]}" exec -T scheduler systemctl show kq-pr-scheduler.service \
+      --property=ActiveState --property=Result --property=ExecMainStatus || true
+  fi
   # Do not print container logs: Agent registration can include ephemeral credentials.
   "${compose[@]}" ps --all || true
   if ! "${compose[@]}" down --volumes --remove-orphans --rmi local --timeout 15; then
@@ -62,6 +75,9 @@ cleanup() {
   if "$spack_case"; then
     docker image rm "$COMPOSE_PROJECT_NAME-case-operator" "$COMPOSE_PROJECT_NAME-case-native" >/dev/null 2>&1 || true
   fi
+  if "$spack_managed"; then
+    docker image rm "$COMPOSE_PROJECT_NAME-managed-builder" >/dev/null 2>&1 || true
+  fi
   exit "$result"
 }
 trap cleanup EXIT
@@ -71,14 +87,30 @@ trap 'exit 143' TERM
 printf 'Building isolated PR test project: %s\n' "$COMPOSE_PROJECT_NAME"
 "${compose[@]}" build scheduler
 if "$spack_case"; then
-  "${compose[@]}" build case-operator case-native
+  if "$spack_managed"; then
+    "${compose[@]}" build case-operator managed-builder
+    "${compose[@]}" run --rm --no-deps managed-builder
+    "${compose[@]}" run --rm --no-deps --entrypoint chmod managed-builder 0444 /runtime/spack.sif
+    "${compose[@]}" run --rm --no-deps case-operator bun deploy/pr-test/spack-managed/export-lock.ts
+  else
+    "${compose[@]}" build case-operator case-native
+  fi
   "${compose[@]}" run --rm --no-deps case-operator bun deploy/pr-test/spack-case/setup.ts
   "${compose[@]}" up -d --no-build --wait --wait-timeout 300 server registry
   "${compose[@]}" run --rm --no-deps case-operator bun deploy/pr-test/spack-case/publish.ts
   "${compose[@]}" restart server
 fi
 "${compose[@]}" up -d --no-build --wait --wait-timeout 300 scheduler registry
-if "$spack_case"; then
+if "$spack_managed"; then
+  "${compose[@]}" exec -T --user kq scheduler bun deploy/pr-test/spack-managed/probe.ts
+  "${compose[@]}" exec -T --user kq scheduler bun node_modules/typescript/bin/tsc --project deploy/pr-test/tsconfig.json
+  "${compose[@]}" exec -T --user kq scheduler timeout --signal=TERM --kill-after=10s 1500s bun deploy/pr-test/spack-managed/case.ts install
+  "${compose[@]}" restart registry scheduler
+  "${compose[@]}" up -d --no-build --wait --wait-timeout 300 scheduler registry
+  "${compose[@]}" run --rm --no-deps case-operator bun deploy/pr-test/spack-case/publish.ts --verify
+  "${compose[@]}" exec -T --user kq scheduler timeout --signal=TERM --kill-after=10s 900s bun deploy/pr-test/spack-managed/case.ts restart
+  "${compose[@]}" exec -T --user kq scheduler timeout --signal=TERM --kill-after=10s 180s bun deploy/pr-test/spack-managed/case.ts uninstall
+elif "$spack_case"; then
   "${compose[@]}" exec -T scheduler timeout --signal=TERM --kill-after=10s 180s bun deploy/pr-test/spack-case/consume.ts
   "${compose[@]}" exec -T --user kq scheduler bun node_modules/typescript/bin/tsc --project deploy/pr-test/tsconfig.json
   "${compose[@]}" run --rm --no-deps case-native timeout --signal=TERM --kill-after=10s 900s bash deploy/pr-test/spack-case/check.sh

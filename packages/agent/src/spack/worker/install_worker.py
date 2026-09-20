@@ -355,6 +355,7 @@ def configuration(work: Path, nodes: dict) -> dict:
         "targets": {"host_compatible": True, "granularity": "microarchitectures"},
     }
     data["modules"] = {"default": {"enable": []}}
+    data["packages"]["all"] = {"permissions": {"read": "world", "write": "user"}}
     for spec in nodes.values():
         if spec.external:
             entry = data["packages"].setdefault(spec.name, {"buildable": False, "externals": []})
@@ -440,7 +441,7 @@ def verify_tree(store: Path, profile: dict) -> None:
                     resolved = resolved_path(path)
                     require(not within(resolved, Path("/kq")), "output-symlink")
                     require(approved_path(resolved, profile) or
-                            (not os.path.isabs(target) and within(resolved, store)), "output-symlink")
+                            within(resolved, store), "output-symlink")
                     continue
                 require(not info.st_mode & (0o022 | stat.S_ISUID | stat.S_ISGID), "output-mode")
                 if stat.S_ISDIR(info.st_mode):

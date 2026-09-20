@@ -86,6 +86,10 @@ Kuintessence 当前为 pre-release。以下列出组件功能、运行要求和�
 - PR 测试另有 GNU Hello 单步案例：固定 recipe/source 的真实材料发布与 mTLS Agent 下载、
   手动 native 离线编译、Slurm 单步运行及重启后的持久化检查；结果以对应 Actions 为准。
   此案例不启用或替代 Apptainer/SIF managed installation，不等于自动安装或 15 个工作流验收。
+- PR 测试新增独立的实验性 GNU Hello 受管安装案例，使用临时 systemd scheduler、
+  非 root Agent、固定 Apptainer 1.4.3/SIF 和有容量上限的持久化安装 store；
+  runtime 前置条件、安装/load、Slurm、重启复验和卸载结果须以当前提交 Actions 为准，
+  未通过前不提升上述安装验收状态。外层 privileged 测试容器不作为生产部署方案。
 
 ## 文档与验证
 

@@ -146,6 +146,9 @@ class Native(fixtures.Native):
         self.install_options = kwargs
         assert packages == [self.roots[0].package]
         assert self.config["modules"]["default"]["enable"] == []
+        assert self.config["packages"]["all"]["permissions"] == {
+            "read": "world", "write": "user",
+        }
 
         def install():
             self.calls.append(("install",))
@@ -472,6 +475,18 @@ class InstallTests(unittest.TestCase):
         with self.assertRaises(audit.AuditError):
             self.run_worker()
 
+    def test_configuration_sets_shared_read_permissions_without_widening_writes(self):
+        self.add_external()
+        for nodes in ({}, self.native.nodes):
+            with self.subTest(externals=bool(nodes)):
+                config = worker.configuration(self.work, nodes)
+                self.assertEqual(config["packages"]["all"]["permissions"],
+                                 {"read": "world", "write": "user"})
+                self.assertIs(config["config"]["allow_sgid"], False)
+                if nodes:
+                    self.assertIs(config["packages"]["gcc"]["buildable"], False)
+                    self.assertEqual(len(config["packages"]["gcc"]["externals"]), 1)
+
     def test_install_uses_native_solver_installer_store_and_root_only_report(self):
         self.add_external()
         result = self.run_worker()
@@ -561,7 +576,7 @@ class InstallTests(unittest.TestCase):
         worker.verify_tree(self.store, self.profile)
         target = self.store / "unsafe"
         for failure in ("write-file", "write-dir", "fifo", "hardlink", "scratch",
-                        "absolute-store", "escape", "dangling"):
+                        "escape", "dangling"):
             with self.subTest(failure=failure):
                 if failure == "write-file":
                     target.write_text("bad")
@@ -576,7 +591,6 @@ class InstallTests(unittest.TestCase):
                 else:
                     target.symlink_to({
                         "scratch": "/kq/work/source",
-                        "absolute-store": str(self.store / "hello"),
                         "escape": "../../outside", "dangling": "missing",
                     }[failure])
                 with self.assertRaises(audit.AuditError):
@@ -590,6 +604,75 @@ class InstallTests(unittest.TestCase):
         target.unlink()
         target.symlink_to(self.compiler)
         worker.verify_tree(self.store, self.profile)
+
+    def test_output_tree_accepts_same_store_absolute_and_relative_symlinks(self):
+        wrapper = self.store / "compiler-wrapper/libexec/spack"
+        (wrapper / "gcc").mkdir(parents=True)
+        script = wrapper / "cc"
+        script.write_text("fixture compiler wrapper, never executed\n")
+        script.chmod(0o755)
+        links = {
+            wrapper / "gcc/gcc": script,
+            wrapper / "ld": "cc",
+            wrapper / "c99": wrapper / "gcc/gcc",
+            self.store / "wrapper-bin": wrapper,
+        }
+        for link, target in links.items():
+            link.symlink_to(target)
+            self.assertTrue(worker.within(link.resolve(strict=True), self.store))
+        worker.verify_tree(self.store, self.profile)
+
+    def test_output_tree_rejects_resolved_symlink_escape_to_other_transaction_or_scratch(self):
+        other = self.store.with_name(self.store.name + "-other")
+        other.mkdir()
+        (other / "cc").write_text("other transaction\n")
+        scratch = self.work / "cc"
+        scratch.write_text("scratch output\n")
+        alias = self.base / "other-alias"
+        alias.symlink_to(other, target_is_directory=True)
+        link = self.store / "unsafe"
+        for target in (
+            other / "cc", "../" + other.name + "/cc",
+            self.store / ".." / other.name / "cc", alias / "cc", scratch,
+        ):
+            with self.subTest(target=str(target)):
+                link.symlink_to(target)
+                try:
+                    self.assertTrue(link.resolve(strict=True).is_file())
+                    with self.assertRaisesRegex(audit.AuditError, "^output-symlink$"):
+                        worker.verify_tree(self.store, self.profile)
+                finally:
+                    link.unlink()
+
+    def test_output_tree_rejects_absolute_dangling_and_cyclic_symlinks(self):
+        link = self.store / "unsafe"
+        cycle = self.store / "cycle"
+        for failure in ("dangling", "self-cycle", "two-link-cycle"):
+            with self.subTest(failure=failure):
+                target = self.store / "missing" if failure == "dangling" else link
+                if failure == "two-link-cycle":
+                    cycle.symlink_to(link)
+                    target = cycle
+                link.symlink_to(target)
+                try:
+                    with self.assertRaisesRegex(audit.AuditError, "^invalid-path$"):
+                        worker.verify_tree(self.store, self.profile)
+                finally:
+                    link.unlink()
+                    if cycle.is_symlink():
+                        cycle.unlink()
+
+    def test_database_symlinks_rejected_even_when_target_is_in_same_store(self):
+        link = self.store / ".spack-db/index_verifier"
+        for target in (self.store / "hello/.spack/spec.json", "../hello/.spack/spec.json"):
+            with self.subTest(target=str(target)):
+                link.symlink_to(target)
+                try:
+                    self.assertTrue(worker.within(link.resolve(strict=True), self.store))
+                    with self.assertRaisesRegex(audit.AuditError, "^database-path$"):
+                        worker.verify_tree(self.store, self.profile)
+                finally:
+                    link.unlink()
 
     def test_tree_and_native_metadata_budgets(self):
         with patch.object(worker, "MAX_ENTRIES", 2), self.assertRaises(audit.AuditError):

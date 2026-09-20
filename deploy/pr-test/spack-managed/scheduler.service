@@ -1,0 +1,18 @@
+[Unit]
+Description=Disposable PR Slurm and managed Agent
+After=dbus.service systemd-logind.service
+Wants=dbus.service systemd-logind.service
+
+[Service]
+Type=simple
+EnvironmentFile=/run/kq-pr/environment
+ExecStart=/bin/bash /workspace/deploy/pr-test/spack-managed/start.sh
+ExecStopPost=/bin/umount /srv/kq/spack
+TimeoutStartSec=300
+TimeoutStopSec=30
+KillMode=control-group
+StandardOutput=null
+StandardError=null
+
+[Install]
+WantedBy=multi-user.target

@@ -127,3 +127,25 @@ native 测试使用 Docker 隔离网络及已审核 recipe，不调用 Apptainer
 不写 managed installation 账本，不把返回的 `rejected` 改成 `succeeded`。
 通过此案例不能宣称 Apptainer/cgroup/site profile、计算节点共享存储/ABI、15 个工作流
 或生产安装功能已经验收。测试输出只报告实际完成的阶段；缺件或构建失败即非零退出。
+
+## 实验性受管安装案例
+
+`--spack-managed` 是独立的 GitHub Actions 专用案例，保留上述 native 案例。
+只有可信同仓库非草稿 PR 或维护者手动触发才运行，不用于部署或本地执行。
+对应 overlay 为 `deploy/compose/docker-compose.pr-spack-managed.yml`。
+
+测试环境使用带 systemd 的临时 privileged scheduler 容器，为非 root `kq` Agent
+提供用户 DBus 和 cgroup delegation。外层特权仅用于这台临时测试节点；
+容器使用 private cgroup namespace，不挂载宿主 cgroup、Docker socket 或宿主目录。
+Agent 无 sudo 权限；产品 Apptainer/SIF、只读输入、隔离网络和资源限额检查保持不变。
+运行前先调用产品的 runtime boundary verifier，失败即停止，不能降级成 native 案例。
+
+Apptainer 固定为 1.4.3，下载 deb 校验固定 SHA-256；SIF 从同一 Ubuntu 20.04
+scheduler 工具链构建，不携带 recipe、源码或 Agent 凭据。实际生成的 SIF 和 site profile
+按字节固定 digest。安装 store 位于独立 2 GiB ext4 文件系统，backing file 使用临时
+named volume 持久化；Agent 和 Slurm 在同一节点以相同路径访问，不代表跨节点 ABI 验收。
+
+目标检查链为：Server API 安装、隔离 source audit、build、独立 readonly verify、
+`ready`、load、真实 Slurm Hello、重启后复验/运行、卸载及库存撤回。
+实际通过范围必须以当前提交的 Actions 结果为准；新增测试定义本身不构成验收通过，
+也不覆盖生产环境、PBS 受管安装或 15 个科学工作流。

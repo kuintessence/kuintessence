@@ -100,6 +100,7 @@ describe("PR scheduler isolation contract", () => {
 async function runWithFakeDocker(
   args: string[],
   failure: "none" | "info" | "build" | "up" | "exec" | "down" = "none",
+  githubActions = false,
 ) {
   const dir = await mkdtemp(join(tmpdir(), "kq-pr-compose-test-"));
   temporary.push(dir);
@@ -130,7 +131,7 @@ esac
       COMPOSE_PROJECT_NAME: "production-must-not-touch",
       COMPOSE_FILE: "/do-not-use.yml",
       COMPOSE_PROFILES: "tunnel",
-      GITHUB_ACTIONS: "false",
+      GITHUB_ACTIONS: String(githubActions),
     },
     stdout: "pipe",
     stderr: "pipe",
@@ -215,6 +216,62 @@ describe("PR runner lifecycle (fake Docker, no containers)", () => {
     const result = await runWithFakeDocker(["pbs", "--spack-case"]);
     expect(result.code).toBe(2);
     expect(result.commands).toBe("");
+  });
+
+  test("managed case refuses local execution before invoking Docker", async () => {
+    const result = await runWithFakeDocker(["slurm", "--spack-managed"]);
+    expect(result.code).toBe(2);
+    expect(result.stderr).toContain("only on disposable GitHub Actions runners");
+    expect(result.commands).toBe("");
+  });
+
+  test("managed lifecycle verifies real runtime before API install and cleans its project", async () => {
+    const result = await runWithFakeDocker(["slurm", "--spack-managed"], "none", true);
+    expect(result.code).toBe(0);
+    expect(result.commands).toContain("docker-compose.pr-spack-managed.yml");
+    expect(result.commands).toContain("build case-operator managed-builder");
+    expect(result.commands).toContain("--entrypoint chmod managed-builder 0444 /runtime/spack.sif");
+    expect(result.commands.indexOf("spack-managed/probe.ts")).toBeLessThan(
+      result.commands.indexOf("spack-managed/case.ts install"),
+    );
+    expect(result.commands).toContain("spack-managed/case.ts restart");
+    expect(result.commands).toContain("spack-managed/case.ts uninstall");
+    expect(result.commands).toContain("spack-case/publish.ts --verify");
+    expect(result.commands).toContain("down --volumes --remove-orphans --rmi local");
+    expect(result.commands).not.toContain("spack-case/consume.ts");
+    expect(result.commands).not.toContain("spack-case/check.sh");
+    expect(result.commands).not.toMatch(/\b(prune|logs)\b/);
+    expect(result.commands).not.toContain("production-must-not-touch");
+  });
+
+  test("managed overlay is opt-in with private cgroups and no host runtime mounts", async () => {
+    const overlay = parse(
+      await readFile(join(root, "deploy/compose/docker-compose.pr-spack-managed.yml"), "utf8"),
+    ) as typeof compose & {
+      services: Record<string, { cgroup?: string }>;
+    };
+    const scheduler = overlay.services.scheduler;
+    expect(scheduler?.cgroup).toBe("private");
+    expect(scheduler?.environment?.AGENT_SPACK_INSTALL_ENABLED).toBe("true");
+    expect(scheduler?.environment?.AGENT_SPACK_AUDIT_ENABLED).toBe("true");
+    expect(scheduler?.volumes).toContain("managed-runtime:/opt/kq/runtime:ro");
+    expect(overlay.services["managed-builder"]?.network_mode).toBe("none");
+    for (const service of Object.values(overlay.services)) {
+      expect(service.ports).toBeUndefined();
+      expect(service.network_mode).not.toBe("host");
+      for (const volume of service.volumes ?? []) {
+        expect(volume.split(":")[0]).toMatch(/^[a-z-]+$/);
+      }
+    }
+    const dockerfile = await readFile(
+      join(root, "deploy/pr-test/spack-managed/runtime.Dockerfile"),
+      "utf8",
+    );
+    expect(dockerfile).toContain("sha256sum --check");
+    expect(dockerfile).toContain("rm /etc/sudoers.d/kq");
+    expect(dockerfile).toContain("gpasswd -d kq sudo");
+    const probe = await readFile(join(root, "deploy/pr-test/spack-managed/probe.py"), "utf8");
+    expect(probe).toContain("boundary.verify_runtime_boundary");
   });
 
   test("Spack overlay isolates private CA and inputs from Agent and keeps managed install off", async () => {

@@ -15,6 +15,7 @@
 !deploy/compose
 !deploy/compose/docker-compose.pr-test.yml
 !deploy/compose/docker-compose.pr-spack-case.yml
+!deploy/compose/docker-compose.pr-spack-managed.yml
 **/node_modules
 **/dist
 **/coverage
