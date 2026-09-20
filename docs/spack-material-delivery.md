@@ -515,6 +515,9 @@ external 输入不带 namespace 前缀，避免 Spack 1.0.0 的 external 条件�
 `generic` 的 target 只使用 generic 候选，其余保留 microarchitecture 候选。
 这不会把目标降级为 family；完整 arch 约束、host compatibility 与最终 DAG 校验仍生效，
 未知 target 直接拒绝。候选域缩小不构成安装成功或内存预算足够的证明。
+worker 同时通过 `packages.all.require` 将完整 profile arch 施加到求解节点，
+包括不会自动继承 root target 的纯 build 依赖；这与既有的逐节点 arch 接受条件一致。
+求解结果仍须通过完整 DAG/hash 和逐节点绑定校验，require 配置不能替代这些检查。
 安装树使用 `read: world`、`write: user`，以便同站点计算任务读取；不开放 group/other 写入。
 原生 compiler-wrapper 可以使用解析后仍留在本次事务 store 内的绝对或相对 symlink；
 跨事务、未批准外部目标、scratch、悬空、循环链接和数据库内的链接仍被拒绝。

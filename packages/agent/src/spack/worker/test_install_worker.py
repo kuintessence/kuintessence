@@ -544,6 +544,8 @@ class InstallTests(unittest.TestCase):
                     config = worker.configuration(self.work, nodes, self.profile["target"])
                 self.assertEqual(config["packages"]["all"]["permissions"],
                                  {"read": "world", "write": "user"})
+                self.assertEqual(config["packages"]["all"]["require"],
+                                 ["arch=" + self.profile["target"]])
                 self.assertIs(config["config"]["allow_sgid"], False)
                 if nodes:
                     self.assertIs(config["packages"]["gcc"]["buildable"], False)
@@ -559,6 +561,8 @@ class InstallTests(unittest.TestCase):
         ):
             with self.subTest(target=cpu_name), self.runtime():
                 config = worker.configuration(self.work, {}, "linux-ubuntu24.04-" + cpu_name)
+                self.assertEqual(config["packages"]["all"]["require"],
+                                 ["arch=linux-ubuntu24.04-" + cpu_name])
                 self.assertEqual(config["concretizer"], {
                     "reuse": False, "unify": True, "splice": {"automatic": False},
                     "targets": {"host_compatible": True, "granularity": granularity},
@@ -635,6 +639,17 @@ class InstallTests(unittest.TestCase):
         self.assertTrue(any(call[0] == "solve" for call in self.native.calls))
         self.assertFalse(any(call[0] == "installer" for call in self.native.calls))
 
+    def test_solver_dependency_architecture_mismatch_fails_before_build(self):
+        self.add_external()
+        impostor = Native(self.work, self.lock, self.store)
+        impostor.hash_descriptor = self.native.hash_descriptor
+        impostor.nodes[fixtures.DEP_HASH].architecture = "linux-ubuntu24.04-haswell"
+        self.native.solved_root = impostor.roots[0]
+        with self.assertRaisesRegex(audit.AuditError, "native-binding"):
+            self.run_worker()
+        self.assertTrue(any(call[0] == "solve" for call in self.native.calls))
+        self.assertFalse(any(call[0] == "installer" for call in self.native.calls))
+
     def test_profile_granularity_preserves_full_solver_architecture_and_lock(self):
         self.add_external()
         for cpu_name, granularity in (
@@ -661,6 +676,8 @@ class InstallTests(unittest.TestCase):
                 self.assertEqual(self.native.config["concretizer"]["targets"], {
                     "host_compatible": True, "granularity": granularity,
                 })
+                self.assertEqual(self.native.config["packages"]["all"]["require"],
+                                 ["arch=" + target_arch])
                 self.assertEqual(self.lock, lock)
                 self.assertTrue(all(str(node.architecture) == target_arch
                                     for node in self.native.nodes.values()))

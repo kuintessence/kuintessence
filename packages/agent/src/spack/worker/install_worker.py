@@ -361,7 +361,11 @@ def configuration(work: Path, nodes: dict, target_arch: str) -> dict:
         "targets": {"host_compatible": True, "granularity": granularity},
     }
     data["modules"] = {"default": {"enable": []}}
-    data["packages"]["all"] = {"permissions": {"read": "world", "write": "user"}}
+    data["packages"]["all"] = {
+        "permissions": {"read": "world", "write": "user"},
+        # Pure build dependencies do not inherit the root architecture in Spack 1.0.
+        "require": ["arch=" + target_arch],
+    }
     for spec in nodes.values():
         if spec.external:
             entry = data["packages"].setdefault(spec.name, {"buildable": False, "externals": []})
