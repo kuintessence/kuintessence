@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import { lstat, mkdir, readFile, readdir, realpath, writeFile } from "node:fs/promises";
-import { userInfo } from "node:os";
 import { isDeepStrictEqual } from "node:util";
 import {
   inspectSpackLock,
@@ -168,8 +167,10 @@ async function noReleaseDirectory(record: SpackInstallRecord) {
 
 async function main() {
   assert(process.env.KQ_PR_TEST === "1", "Managed case requires the disposable PR environment");
+  // The image pins kq to UID 1000. Bun 1.3.13's userInfo().username reads USER,
+  // which Docker exec --user does not update; it is not process identity.
   assert(
-    process.getuid?.() !== undefined && process.getuid?.() !== 0 && userInfo().username === "kq",
+    process.getuid?.() === 1000 && process.geteuid?.() === 1000,
     "Managed case must run as the nonroot Agent user",
   );
   assert(
