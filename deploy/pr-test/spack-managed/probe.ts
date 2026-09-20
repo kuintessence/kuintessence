@@ -52,6 +52,13 @@ try {
   ] as const) {
     if (expression.test(result.stderr)) console.log(`Managed probe diagnostic: ${name}`);
   }
+  if (result.exitCode !== 0) {
+    // Only this pre-material probe can expose native diagnostics: its environment
+    // is explicitly constructed and its sole input is the boundary verifier.
+    // Never reuse this for an Agent operation or a recipe/build process.
+    console.error(`Pre-material runtime stderr: ${JSON.stringify(result.stderr.slice(0, 8192))}`);
+    console.error(`Pre-material verifier stdout: ${JSON.stringify(result.stdout.slice(0, 1024))}`);
+  }
   assert.equal(result.exitCode, 0, "Production Apptainer runtime probe failed");
   assert.equal(result.stdout.trim(), "managed-runtime-boundary-ok");
   console.log("Managed case: production namespace/network/cgroup verifier passed");

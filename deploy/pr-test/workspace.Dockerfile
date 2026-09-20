@@ -19,6 +19,7 @@ COPY scripts ./scripts
 COPY deploy/pr-test ./deploy/pr-test
 COPY deploy/compose/docker-compose.pr-test.yml ./deploy/compose/docker-compose.pr-test.yml
 COPY deploy/compose/docker-compose.pr-spack-case.yml ./deploy/compose/docker-compose.pr-spack-case.yml
+COPY deploy/compose/docker-compose.pr-spack-managed.yml ./deploy/compose/docker-compose.pr-spack-managed.yml
 RUN bun --bun run --filter @kuintessence/proto generate \
   && test "$(spack --version)" = "1.0.0" \
   && test "$(bun --version)" = "1.3.13"
