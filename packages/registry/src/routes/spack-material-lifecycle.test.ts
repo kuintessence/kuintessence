@@ -3,6 +3,7 @@ import { SpackMaterialLifecycleError, type SpackMaterialLifecycleStatus } from "
 import {
   type SpackMaterialBinding,
   SpackMaterialCatalogSchema,
+  SpackMaterialLifecycleViewSchema,
   type SpackMaterialManifest,
   spackMaterialBlobs,
 } from "@kuintessence/shared";
@@ -25,16 +26,20 @@ import {
   JWT_OPTIONS,
   ORG,
   OTHER_ORG,
-  OWNER,
-  PLATFORM,
+  OWNER as RECIPE_OWNER,
+  PLATFORM as RECIPE_PLATFORM,
+  SUPER as RECIPE_SUPER,
+  USER as RECIPE_USER,
   repository,
-  SUPER,
   token,
-  USER,
 } from "./spack-repositories.test-helpers";
 
 afterEach(cleanupMaterials);
 
+const OWNER: RbacPrincipal = { ...RECIPE_OWNER, sub: "44444444-4444-4444-8444-444444444444" };
+const PLATFORM: RbacPrincipal = { ...RECIPE_PLATFORM, sub: "55555555-5555-4555-8555-555555555555" };
+const SUPER: RbacPrincipal = { ...RECIPE_SUPER, sub: "66666666-6666-4666-8666-666666666666" };
+const USER: RbacPrincipal = { ...RECIPE_USER, sub: "77777777-7777-4777-8777-777777777777" };
 const INITIAL: SpackMaterialLifecycleStatus = {
   revision: 0,
   state: "available",
@@ -142,17 +147,33 @@ async function fixture(name = `org/${ORG}/recipes`) {
       headers: headers(actor),
       ...(method === "POST" ? { body: JSON.stringify(body) } : {}),
     });
-  return { ...f, ...fake, store, app, binding, path, request };
+  const identity = { binding, repository: f.input.repository };
+  return { ...f, ...fake, store, app, binding, identity, path, request };
 }
 
-async function expectError(response: Response, status: number, code: string) {
+async function expectError(
+  response: Response,
+  status: number,
+  code: string,
+  identity?: { binding: SpackMaterialBinding; repository: string },
+) {
   expect(response.status).toBe(status);
   expect(response.headers.get("Content-Type")).toContain("application/json");
   const body = await response.json();
-  expect(body).toMatchObject({
+  expect(body).toEqual({
     error: { code, message: expect.any(String) },
   });
   expect(body).not.toHaveProperty("errors");
+  if (identity) {
+    const serialized = JSON.stringify(body);
+    for (const value of [
+      identity.repository,
+      identity.binding.repositoryId,
+      identity.binding.manifestDigest,
+    ]) {
+      expect(serialized).not.toContain(value);
+    }
+  }
 }
 
 describe("material lifecycle authentication and authorization", () => {
@@ -169,7 +190,7 @@ describe("material lifecycle authentication and authorization", () => {
       ...(method === "POST" ? { body: JSON.stringify(WITHDRAW) } : {}),
     };
     await expectError(await f.app.request(path, request), 401, "UNAUTHORIZED");
-    const unavailable = await f.app.request(path, { ...request, headers: headers() });
+    const unavailable = await f.app.request(path, { ...request, headers: headers(OWNER) });
     await expectError(unavailable, 503, "MATERIAL_LIFECYCLE_UNAVAILABLE");
     expect(unavailable.headers.get("Cache-Control")).toBe("private, no-store");
     expect((await f.app.request("/api/health")).status).toBe(200);
@@ -198,12 +219,15 @@ describe("material lifecycle authentication and authorization", () => {
       const response = await f.request(method, current);
       expect(response.headers.get("Cache-Control")).toBe("private, no-store");
       if (status === 403) {
-        await expectError(response, 403, "MATERIAL_LIFECYCLE_FORBIDDEN");
+        await expectError(response, 403, "MATERIAL_LIFECYCLE_FORBIDDEN", f.identity);
       } else {
         expect(response.status).toBe(200);
-        expect(await response.json()).toMatchObject({
+        const body = await response.json();
+        expect(body).toEqual(SpackMaterialLifecycleViewSchema.parse(body));
+        expect(body).toMatchObject({
           revision: method === "GET" ? 0 : 1,
           state: method === "GET" ? "available" : "withdrawn",
+          ...f.identity,
         });
       }
     }
@@ -288,7 +312,18 @@ describe("material lifecycle authentication and authorization", () => {
         },
         ...(method === "POST" ? { body: JSON.stringify(WITHDRAW) } : {}),
       });
-      expect(response.status).toBe(status);
+      if (status === 403) {
+        await expectError(response, 403, "MATERIAL_LIFECYCLE_FORBIDDEN", f.identity);
+      } else {
+        expect(response.status).toBe(200);
+        const body = await response.json();
+        expect(body).toEqual(SpackMaterialLifecycleViewSchema.parse(body));
+        expect(body).toMatchObject({
+          revision: method === "GET" ? 0 : 1,
+          state: method === "GET" ? "available" : "withdrawn",
+          ...f.identity,
+        });
+      }
     }
     expect(f.port.inspect).toHaveBeenCalledWith(f.binding, OWNER.sub, expect.any(Function));
     expect(f.port.transition).toHaveBeenCalledWith(
@@ -326,8 +361,13 @@ describe("material lifecycle authentication and authorization", () => {
     }
     f.port.inspect.mockClear();
     f.port.transition.mockClear();
-    await expectError(await f.request("GET"), 403, "MATERIAL_LIFECYCLE_FORBIDDEN");
-    await expectError(await f.request("POST", OWNER, RESTORE), 403, "MATERIAL_LIFECYCLE_FORBIDDEN");
+    await expectError(await f.request("GET"), 403, "MATERIAL_LIFECYCLE_FORBIDDEN", f.identity);
+    await expectError(
+      await f.request("POST", OWNER, RESTORE),
+      403,
+      "MATERIAL_LIFECYCLE_FORBIDDEN",
+      f.identity,
+    );
     if (change === "snapshot") {
       expect(f.port.inspect).not.toHaveBeenCalled();
       expect(f.port.transition).not.toHaveBeenCalled();
@@ -339,8 +379,13 @@ describe("material lifecycle authentication and authorization", () => {
     expect((await f.request("POST")).status).toBe(200);
     const withdrawn = await (await f.request("GET")).json();
     f.control.canonical = { ...OWNER, orgIds: [] };
-    await expectError(await f.request("GET"), 403, "MATERIAL_LIFECYCLE_FORBIDDEN");
-    await expectError(await f.request("POST", OWNER, RESTORE), 403, "MATERIAL_LIFECYCLE_FORBIDDEN");
+    await expectError(await f.request("GET"), 403, "MATERIAL_LIFECYCLE_FORBIDDEN", f.identity);
+    await expectError(
+      await f.request("POST", OWNER, RESTORE),
+      403,
+      "MATERIAL_LIFECYCLE_FORBIDDEN",
+      f.identity,
+    );
     f.control.canonical = OWNER;
     expect(await (await f.request("GET")).json()).toEqual(withdrawn);
   });
@@ -372,13 +417,15 @@ describe("material lifecycle metadata admission", () => {
     });
     const response = await f.app.request(`${releasePath(binding)}/lifecycle`, {
       method,
-      headers: headers(),
+      headers: headers(OWNER),
       ...(method === "POST" ? { body: JSON.stringify(WITHDRAW) } : {}),
     });
     expect(response.status).toBe(200);
     expect(await response.json()).toMatchObject({
       revision: method === "GET" ? 0 : 1,
       state: method === "GET" ? "available" : "withdrawn",
+      binding,
+      repository: f.input.repository,
     });
     expect(f.recipes.getSnapshot).toHaveBeenCalledTimes(1);
     expect(f.recipes.getSnapshot).toHaveBeenCalledWith(f.recipe.id, COMMIT, expect.any(Function));
@@ -395,7 +442,7 @@ describe("material lifecycle metadata admission", () => {
     });
     const response = await f.request(method);
     expect(await response.clone().text()).not.toContain("Private snapshot storage failure");
-    await expectError(response, 503, "MATERIAL_LIFECYCLE_UNAVAILABLE");
+    await expectError(response, 503, "MATERIAL_LIFECYCLE_UNAVAILABLE", f.identity);
     expect(response.headers.get("Cache-Control")).toBe("private, no-store");
     expect(f.recipes.getSnapshot).toHaveBeenCalledTimes(1);
     expect(f.port.inspect).not.toHaveBeenCalled();
@@ -419,11 +466,11 @@ describe("material lifecycle metadata admission", () => {
     );
     const response = await f.app.request(f.path, {
       method,
-      headers: headers(),
+      headers: headers(OWNER),
       signal: controller.signal,
       ...(method === "POST" ? { body: JSON.stringify(WITHDRAW) } : {}),
     });
-    await expectError(response, 503, "MATERIAL_LIFECYCLE_UNAVAILABLE");
+    await expectError(response, 503, "MATERIAL_LIFECYCLE_UNAVAILABLE", f.identity);
     expect(response.headers.get("Cache-Control")).toBe("private, no-store");
     expect(f.recipes.getSnapshot).toHaveBeenCalledTimes(1);
     expect(f.port.inspect).toHaveBeenCalledTimes(method === "GET" ? 1 : 0);
@@ -432,7 +479,7 @@ describe("material lifecycle metadata admission", () => {
     f.port.transition = transition;
     const journal = await f.request("GET");
     expect(journal.status).toBe(200);
-    expect(await journal.json()).toEqual(INITIAL);
+    expect(await journal.json()).toEqual({ ...INITIAL, ...f.identity });
   });
 
   test.each(METHODS)("%s never enters the backend after request cancellation", async (method) => {
@@ -448,11 +495,11 @@ describe("material lifecycle metadata admission", () => {
       if (phase === "before metadata") controller.abort();
       const response = await f.app.request(f.path, {
         method,
-        headers: headers(),
+        headers: headers(OWNER),
         signal: controller.signal,
         ...(method === "POST" ? { body: JSON.stringify(WITHDRAW) } : {}),
       });
-      await expectError(response, 503, "MATERIAL_LIFECYCLE_UNAVAILABLE");
+      await expectError(response, 503, "MATERIAL_LIFECYCLE_UNAVAILABLE", f.identity);
       expect(response.headers.get("Cache-Control")).toBe("private, no-store");
       expect(f.recipes.getSnapshot).toHaveBeenCalledTimes(phase === "before metadata" ? 0 : 1);
       expect(f.port.inspect).not.toHaveBeenCalled();
@@ -462,6 +509,29 @@ describe("material lifecycle metadata admission", () => {
 });
 
 describe("material lifecycle state and delivery", () => {
+  test.each(METHODS)("%s returns manifest identity, not recipe identity", async (method) => {
+    const f = await fixture("public/recipes");
+    const materialRepository = `org/${ORG}/materials`;
+    await f.seed(materialRepository);
+    const binding = await f.store.publish({ ...f.input, repository: materialRepository }, SUPER);
+    expect(materialRepository).not.toBe(f.recipe.repository);
+    const response = await f.app.request(`${releasePath(binding)}/lifecycle`, {
+      method,
+      headers: headers(OWNER),
+      ...(method === "POST" ? { body: JSON.stringify(WITHDRAW) } : {}),
+    });
+    expect(response.status).toBe(200);
+    expect(response.headers.get("Cache-Control")).toBe("private, no-store");
+    const body = await response.json();
+    expect(body).toEqual(SpackMaterialLifecycleViewSchema.parse(body));
+    expect(body).toMatchObject({
+      revision: method === "GET" ? 0 : 1,
+      state: method === "GET" ? "available" : "withdrawn",
+      binding,
+      repository: materialRepository,
+    });
+  });
+
   test("withdrawal hides only its release; restore preserves every delivered byte", async () => {
     const f = await fixture();
     const sibling = await f.store.publish(
@@ -484,20 +554,34 @@ describe("material lifecycle state and delivery", () => {
       expect(response.status).toBe(200);
       downloads.push({ path, bytes: new Uint8Array(await response.arrayBuffer()) });
     }
-    expect(await (await f.request("GET")).json()).toEqual(INITIAL);
+    expect(await (await f.request("GET")).json()).toEqual({ ...INITIAL, ...f.identity });
     const withdrawn = await f.request("POST");
     expect(withdrawn.status).toBe(200);
     expect(withdrawn.headers.get("Cache-Control")).toBe("private, no-store");
     const status = await withdrawn.json();
-    expect(status).toMatchObject({
+    expect(status).toEqual(SpackMaterialLifecycleViewSchema.parse(status));
+    expect(status).toEqual({
       revision: 1,
       state: "withdrawn",
-      history: [{ revision: 1, operatorId: OWNER.sub, reason: WITHDRAW.reason }],
+      history: [
+        {
+          revision: 1,
+          state: "withdrawn",
+          operatorId: OWNER.sub,
+          reason: WITHDRAW.reason,
+          epoch: "11111111-1111-4111-8111-111111111111",
+          rolloutRevision: 2,
+          createdAt: "2026-09-21T00:00:00.000Z",
+        },
+      ],
       historyTruncated: false,
+      ...f.identity,
     });
     const inspect = await f.request("GET");
     expect(inspect.status).toBe(200);
-    expect(await inspect.json()).toEqual(status);
+    const inspected = await inspect.json();
+    expect(inspected).toEqual(SpackMaterialLifecycleViewSchema.parse(inspected));
+    expect(inspected).toEqual(status);
     for (const download of downloads) {
       await expectError(
         await f.app.request(download.path, { headers: headers(USER) }),
@@ -514,10 +598,16 @@ describe("material lifecycle state and delivery", () => {
       expect(releases[0]).toMatchObject(sibling);
     }
     const siblingStatus = await f.app.request(`${releasePath(sibling)}/lifecycle`, {
-      headers: headers(),
+      headers: headers(OWNER),
     });
     expect(siblingStatus.status).toBe(200);
-    expect(await siblingStatus.json()).toEqual(INITIAL);
+    const siblingBody = await siblingStatus.json();
+    expect(siblingBody).toEqual(SpackMaterialLifecycleViewSchema.parse(siblingBody));
+    expect(siblingBody).toEqual({
+      ...INITIAL,
+      binding: sibling,
+      repository: f.input.repository,
+    });
     const siblingDownload = await f.app.request(
       `${releasePath(sibling)}/blobs/${SOURCE_BLOB.digest}`,
       { headers: headers(USER) },
@@ -528,7 +618,7 @@ describe("material lifecycle state and delivery", () => {
     );
     const republished = await f.app.request(`${BASE}/releases`, {
       method: "POST",
-      headers: headers(),
+      headers: headers(OWNER),
       body: JSON.stringify(f.input),
     });
     await expectError(republished, 404, "NOT_FOUND");
@@ -536,13 +626,16 @@ describe("material lifecycle state and delivery", () => {
     const restored = await f.request("POST", OWNER, RESTORE);
     expect(restored.status).toBe(200);
     expect(restored.headers.get("Cache-Control")).toBe("private, no-store");
-    expect(await restored.json()).toMatchObject({
+    const restoredStatus = await restored.json();
+    expect(restoredStatus).toEqual(SpackMaterialLifecycleViewSchema.parse(restoredStatus));
+    expect(restoredStatus).toMatchObject({
       revision: 2,
       state: "available",
       history: [
         { revision: 2, state: "available", reason: RESTORE.reason },
         { revision: 1, state: "withdrawn", reason: WITHDRAW.reason },
       ],
+      ...f.identity,
     });
     for (const download of downloads) {
       const response = await f.app.request(download.path, { headers: headers(USER) });
@@ -559,14 +652,15 @@ describe("material lifecycle state and delivery", () => {
     const f = await fixture();
     f.control.referenced = true;
     const referenced = await f.request("POST");
-    await expectError(referenced, 409, "MATERIAL_RELEASE_REFERENCED");
+    await expectError(referenced, 409, "MATERIAL_RELEASE_REFERENCED", f.identity);
     expect(referenced.headers.get("Cache-Control")).toBe("private, no-store");
-    expect(await (await f.request("GET")).json()).toEqual(INITIAL);
+    expect(await (await f.request("GET")).json()).toEqual({ ...INITIAL, ...f.identity });
     f.control.referenced = false;
     await expectError(
       await f.request("POST", OWNER, { ...RESTORE, expectedRevision: 0 }),
       409,
       "MATERIAL_LIFECYCLE_CONFLICT",
+      f.identity,
     );
     expect((await f.request("POST")).status).toBe(200);
     const status = await (await f.request("GET")).json();
@@ -576,7 +670,7 @@ describe("material lifecycle state and delivery", () => {
       { ...RESTORE, expectedRevision: 0 },
     ]) {
       const conflict = await f.request("POST", OWNER, change);
-      await expectError(conflict, 409, "MATERIAL_LIFECYCLE_CONFLICT");
+      await expectError(conflict, 409, "MATERIAL_LIFECYCLE_CONFLICT", f.identity);
       expect(conflict.headers.get("Cache-Control")).toBe("private, no-store");
       expect(await (await f.request("GET")).json()).toEqual(status);
     }
@@ -624,7 +718,7 @@ describe("material lifecycle request validation", () => {
     ]) {
       const response = await f.app.request(path, {
         method,
-        headers: headers(),
+        headers: headers(OWNER),
         ...(method === "POST" ? { body: JSON.stringify(WITHDRAW) } : {}),
       });
       await expectError(response, 422, "VALIDATION_ERROR");

@@ -61,6 +61,48 @@
     "path": "Mirror path",
     "bytes": "Bytes",
     "previous": "Previous sources",
-    "next": "Next sources"
+    "next": "Next sources",
+    "lifecycleTitle": "Release lifecycle",
+    "lifecycleRepositoryId": "Lifecycle repository ID",
+    "lifecycleManifestDigest": "Lifecycle manifest digest",
+    "lifecycleInspect": "Inspect material status",
+    "lifecycleStop": "Stop waiting",
+    "lifecycleRevision": "Revision",
+    "lifecycleReason": "Audit reason",
+    "lifecycleInvalidReason": "Use 1–1000 characters without surrounding whitespace, line breaks or control characters.",
+    "lifecycleOperator": "Operator",
+    "lifecycleTime": "Time (UTC)",
+    "lifecycleHistory": "Lifecycle audit history",
+    "lifecycleHistoryEmpty": "No lifecycle changes",
+    "lifecycleHistoryTruncated": "Latest 100 events; earlier events remain in the database.",
+    "lifecyclePrevious": "Previous audit events",
+    "lifecycleNext": "Next audit events",
+    "lifecycleState": {
+      "available": "Available",
+      "withdrawn": "Withdrawn"
+    },
+    "lifecycleAction": {
+      "withdraw": "Withdraw release",
+      "restore": "Restore release"
+    },
+    "lifecycleConfirm": {
+      "withdraw": "I confirm withdrawal of this release; stored content and existing installations are retained.",
+      "restore": "I confirm restoration of this release; retired bindings remain retired."
+    },
+    "lifecycleBusy": {
+      "read": "Reading lifecycle state",
+      "write": "Submitting lifecycle change"
+    },
+    "lifecycleNotice": {
+      "changed": "Lifecycle change confirmed.",
+      "rechecked": "Current state retrieved. Audit history records the committed changes.",
+      "uncertain": "Change outcome unconfirmed. Inspect current state before another change.",
+      "conflict": "Revision or state changed. Refresh the lifecycle state.",
+      "referenced": "The release has protected bindings or operation references.",
+      "forbidden": "Lifecycle access is unavailable for the current identity and organization.",
+      "unavailable": "Lifecycle state is unavailable. Check the ready epoch, storage and service connection.",
+      "invalid": "Invalid lifecycle change or audit reason.",
+      "failed": "Could not change the release lifecycle."
+    }
   }
 }

@@ -61,6 +61,48 @@
     "path": "Mirror 路径",
     "bytes": "字节数",
     "previous": "上一页源码",
-    "next": "下一页源码"
+    "next": "下一页源码",
+    "lifecycleTitle": "发布项生命周期",
+    "lifecycleRepositoryId": "生命周期仓库 ID",
+    "lifecycleManifestDigest": "生命周期清单摘要",
+    "lifecycleInspect": "查询材料状态",
+    "lifecycleStop": "停止等待",
+    "lifecycleRevision": "Revision",
+    "lifecycleReason": "审计原因",
+    "lifecycleInvalidReason": "原因须为 1–1000 个字符，不得含首尾空白、换行或控制字符。",
+    "lifecycleOperator": "操作者",
+    "lifecycleTime": "时间（UTC）",
+    "lifecycleHistory": "生命周期审计历史",
+    "lifecycleHistoryEmpty": "暂无生命周期变更",
+    "lifecycleHistoryTruncated": "仅显示最近 100 条事件，更早的事件仍保留在数据库中。",
+    "lifecyclePrevious": "上一页审计事件",
+    "lifecycleNext": "下一页审计事件",
+    "lifecycleState": {
+      "available": "可用",
+      "withdrawn": "已下架"
+    },
+    "lifecycleAction": {
+      "withdraw": "下架发布项",
+      "restore": "恢复发布项"
+    },
+    "lifecycleConfirm": {
+      "withdraw": "我确认下架此发布项；存储内容和已有安装仍保留。",
+      "restore": "我确认恢复此发布项；已退役的绑定仍保持退役。"
+    },
+    "lifecycleBusy": {
+      "read": "正在读取生命周期状态",
+      "write": "正在提交生命周期变更"
+    },
+    "lifecycleNotice": {
+      "changed": "生命周期变更已确认。",
+      "rechecked": "已获取当前状态，已提交的变更以审计历史为准。",
+      "uncertain": "变更结果待确认。再次变更前须查询当前状态。",
+      "conflict": "Revision 或状态已变化，请刷新生命周期状态。",
+      "referenced": "该发布项仍有受保护的配置绑定或任务引用。",
+      "forbidden": "当前身份与组织无权管理此发布项。",
+      "unavailable": "生命周期状态不可用，请检查 ready epoch、存储和服务连接。",
+      "invalid": "生命周期变更或审计原因无效。",
+      "failed": "未能变更发布项生命周期。"
+    }
   }
 }

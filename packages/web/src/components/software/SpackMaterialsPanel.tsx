@@ -11,6 +11,7 @@ import { isMobileHighRiskMutationBlocked } from "../../lib/mobile-management-pol
 import { useMeCapabilities } from "../../lib/platform-capabilities";
 import { canWriteRecipeRepository } from "../../lib/recipe-repository-access";
 import { MaterialCatalog } from "./MaterialCatalog";
+import { MaterialLifecycle } from "./MaterialLifecycle";
 import { MaterialPackImport } from "./MaterialPackImport";
 import { MaterialReleaseLookup } from "./MaterialReleaseLookup";
 import { SpackOnlineImport } from "./SpackOnlineImport";
@@ -34,14 +35,19 @@ export function SpackMaterialsPanel({ canManage }: { canManage: boolean }) {
     getSessionKey() === sessionKey &&
     getStoredActiveOrganizationId() === organizationId &&
     latestScope.current === scope;
-  const writable = (repository: string) =>
+  const manageable = (repository: string) =>
     isCurrent() &&
     !isLocalMode() &&
-    !isMobileHighRiskMutationBlocked("/software/spack/material-repositories") &&
     canWriteRecipeRepository(repository, { canManage, organizationId, capabilities });
+  const writable = (repository: string) =>
+    manageable(repository) &&
+    !isMobileHighRiskMutationBlocked("/software/spack/material-repositories");
   const canImport =
     writable("public/materials") ||
     (!!organizationId && writable(`org/${organizationId}/materials`));
+  const canInspectLifecycle =
+    manageable("public/materials") ||
+    (!!organizationId && manageable(`org/${organizationId}/materials`));
   return (
     <section
       className="min-w-0 space-y-3 py-4"
@@ -57,7 +63,9 @@ export function SpackMaterialsPanel({ canManage }: { canManage: boolean }) {
         <MaterialSession
           key={scope}
           canImport={canImport}
+          canInspectLifecycle={canInspectLifecycle}
           writable={writable}
+          manageable={manageable}
           isCurrent={isCurrent}
         />
       )}
@@ -67,25 +75,39 @@ export function SpackMaterialsPanel({ canManage }: { canManage: boolean }) {
 
 function MaterialSession({
   canImport,
+  canInspectLifecycle,
   writable,
+  manageable,
   isCurrent,
 }: {
   canImport: boolean;
+  canInspectLifecycle: boolean;
   writable: (repository: string) => boolean;
+  manageable: (repository: string) => boolean;
   isCurrent: () => boolean;
 }) {
   const [selection, setSelection] = useState<{
     binding: SpackMaterialBinding;
     revision: number;
   }>();
+  const [catalogRevision, setCatalogRevision] = useState(0);
+  const [detailsStale, setDetailsStale] = useState(false);
+  const [selectionLocked, setSelectionLocked] = useState(false);
+  const selectionGuard = useRef(false);
   const inspect = (binding: SpackMaterialBinding) => {
-    if (isCurrent()) {
+    if (isCurrent() && !selectionGuard.current) {
+      setDetailsStale(false);
       setSelection((current) => ({ binding, revision: (current?.revision ?? 0) + 1 }));
     }
   };
   return (
     <>
-      <MaterialCatalog isCurrent={isCurrent} onInspect={inspect} />
+      <MaterialCatalog
+        key={catalogRevision}
+        isCurrent={isCurrent}
+        onInspect={inspect}
+        inspectionDisabled={selectionLocked}
+      />
       {canImport ? (
         <MaterialPackImport
           canWriteRepository={writable}
@@ -104,10 +126,28 @@ function MaterialSession({
         />
       ) : null}
       <MaterialReleaseLookup
-        key={selection?.revision ?? "lookup"}
-        initialBinding={selection?.binding}
+        key={`${selection?.revision ?? "lookup"}:${catalogRevision}`}
+        initialBinding={detailsStale ? undefined : selection?.binding}
         isCurrent={isCurrent}
       />
+      {canInspectLifecycle ? (
+        <MaterialLifecycle
+          key={selection?.revision ?? "lifecycle"}
+          initialBinding={selection?.binding}
+          isCurrent={isCurrent}
+          canWriteRepository={writable}
+          canInspectRepository={manageable}
+          onSelectionLockChange={(locked) => {
+            selectionGuard.current = locked;
+            setSelectionLocked(locked);
+          }}
+          onInvalidate={() => {
+            if (!isCurrent()) return;
+            setDetailsStale(true);
+            setCatalogRevision((revision) => revision + 1);
+          }}
+        />
+      ) : null}
     </>
   );
 }
