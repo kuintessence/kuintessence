@@ -4,7 +4,7 @@ import { mkdirSync, readdirSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import type { SpackMaterialLifecycleView } from "@kuintessence/shared/browser";
 import { expect, type Page, test } from "patchright/test";
-import materials from "../src/locales/materials.en.json";
+import materials from "../src/locales/materials.en.json" with { type: "json" };
 
 const labels = materials.materials;
 const origin = "https://lifecycle.example.test";
