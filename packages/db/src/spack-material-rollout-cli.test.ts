@@ -2,7 +2,10 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { parseSpackMaterialRolloutCommand } from "./pg/spack-material-rollout-input";
+import {
+  parseSpackMaterialRolloutCommand,
+  type SpackMaterialRolloutCommand,
+} from "./pg/spack-material-rollout-input";
 import { readRolloutCommand } from "./spack-material-rollout-cli";
 
 describe("offline Spack rollout command", () => {
@@ -101,7 +104,7 @@ describe("offline Spack rollout command", () => {
         legacyInventoryComplete: true,
         bindingConfigurationsRemoved: true,
       },
-    } as const;
+    } satisfies SpackMaterialRolloutCommand;
     expect(parseSpackMaterialRolloutCommand(command)).toEqual(command);
     for (const reason of ["", " ", " padded", "line\nbreak", "\x7f", "x".repeat(1001), 1]) {
       expect(() => parseSpackMaterialRolloutCommand({ ...command, reason })).toThrow();

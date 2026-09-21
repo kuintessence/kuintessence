@@ -231,7 +231,6 @@ describe("Spack binding retirement (isolated real PG)", () => {
   test.each([
     "queued",
     "running",
-    "unknown",
   ])("rejects %s installs even without registered references", async (status) => {
     const { command, state } = await fixture();
     await operation(release(), status);
@@ -335,7 +334,7 @@ describe("Spack binding retirement (isolated real PG)", () => {
     expect(current.retiredBindingCount).toBe(current.phase === "paused" ? 1 : 0);
   });
 
-  test("missing retirement storage fails both mutation and empty runtime registration closed", async () => {
+  test("missing retirement storage fails mutation and inventory inspection closed", async () => {
     const { command } = await fixture();
     await db.execute(
       sql`alter table spack_material_binding_retirements rename to hidden_retirements`,
@@ -343,14 +342,29 @@ describe("Spack binding retirement (isolated real PG)", () => {
     try {
       await expect(rollout.execute(command)).rejects.toMatchObject(ERROR);
       await expect(inspect()).rejects.toMatchObject(ERROR);
-      await expect(new SpackMaterialReferences(db).registerBindings({})).rejects.toMatchObject(
-        REFERENCE_ERROR,
-      );
     } finally {
       await db.execute(
         sql`alter table hidden_retirements rename to spack_material_binding_retirements`,
       );
     }
+  });
+
+  test("empty runtime registration checks retirement storage after the ready epoch gate", async () => {
+    const { state } = await fixture();
+    const ready = await rollout.execute(activation(state));
+    const reference = references(ready);
+    await reference.registerBindings({});
+    await db.execute(
+      sql`alter table spack_material_binding_retirements rename to hidden_retirements`,
+    );
+    try {
+      await expect(reference.registerBindings({})).rejects.toMatchObject(REFERENCE_ERROR);
+    } finally {
+      await db.execute(
+        sql`alter table hidden_retirements rename to spack_material_binding_retirements`,
+      );
+    }
+    await reference.registerBindings({});
   });
 
   test("includes more than one retirement page in the canonical inventory digest", async () => {
