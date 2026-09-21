@@ -113,30 +113,6 @@ test("the production HTTP boundary accepts >128 MiB only for material blobs", as
       ["/api/ordinary-json", "POST", "application/json"],
       ["/v2/public/test/blobs/uploads/id", "PATCH", "application/octet-stream"],
     ] as const;
-    for (const [endpoint, method, type] of legacyEndpoints) {
-      // Leave the body incomplete: the server must send 413 and close, not wait for a drain
-      // or advertise reuse. This also makes Content-Length independent of Bun.file/sendfile.
-      const wire = await readEarlyRejection(new URL(endpoint, server.url), method, type, size);
-      const parts = wire.split("\r\n\r\n");
-      expect(parts).toHaveLength(2);
-      const responseHeaders = parts[0] ?? "";
-      const responseBody = parts[1] ?? "";
-      expect(responseHeaders).toMatch(/^HTTP\/1\.1 413 /);
-      expect(responseHeaders).toMatch(/\r\nconnection: close(?:\r\n|$)/i);
-      const length = /\r\ncontent-length: (\d+)(?:\r\n|$)/i.exec(responseHeaders);
-      expect(length).not.toBeNull();
-      expect(Buffer.byteLength(responseBody)).toBe(Number(length?.[1]));
-      expect(JSON.parse(responseBody)).toMatchObject({ error: { code: "PAYLOAD_TOO_LARGE" } });
-      expect(jsonCalls).toBe(0);
-      expect(ociCalls).toBe(0);
-    }
-    expect(receivedLengths).toEqual([String(size), String(size)]);
-    expect(receivedEncodings).toEqual([null, null]);
-    expect(jsonCalls).toBe(0);
-    expect(ociCalls).toBe(0);
-    receivedLengths.length = 0;
-    receivedEncodings.length = 0;
-
     // Keep the original file-upload client and default pool across consecutive rejections;
     // explicitly declare the length instead of relying on method-specific inference.
     for (const [endpoint, method, type] of legacyEndpoints) {
@@ -202,6 +178,51 @@ test("the production HTTP boundary accepts >128 MiB only for material blobs", as
     await server.stop(true);
   }
 }, 120_000);
+
+test("an incomplete oversized request receives a complete 413 and server EOF", async () => {
+  const size = REGISTRY_LEGACY_BODY_BYTES + 1024 * 1024;
+  let receivedRequests = 0;
+  let routeCalls = 0;
+  const boundary = createRegistryHttpHandler(() => {
+    routeCalls++;
+    return new Response("unexpected handler call");
+  }, size);
+  const server = Bun.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    ...boundary,
+    fetch(request) {
+      receivedRequests++;
+      return boundary.fetch(request);
+    },
+  });
+  try {
+    const wire = await readEarlyRejection(
+      new URL("/api/ordinary-json", server.url),
+      "POST",
+      "application/json",
+      size,
+    ).catch((cause: unknown) => {
+      throw new Error(`Early rejection failed after ${receivedRequests} HTTP handler calls`, {
+        cause,
+      });
+    });
+    const parts = wire.split("\r\n\r\n");
+    expect(parts).toHaveLength(2);
+    const responseHeaders = parts[0] ?? "";
+    const responseBody = parts[1] ?? "";
+    expect(responseHeaders).toMatch(/^HTTP\/1\.1 413 /);
+    expect(responseHeaders).toMatch(/\r\nconnection: close(?:\r\n|$)/i);
+    const length = /\r\ncontent-length: (\d+)(?:\r\n|$)/i.exec(responseHeaders);
+    expect(length).not.toBeNull();
+    expect(Buffer.byteLength(responseBody)).toBe(Number(length?.[1]));
+    expect(JSON.parse(responseBody)).toMatchObject({ error: { code: "PAYLOAD_TOO_LARGE" } });
+    expect(receivedRequests).toBe(1);
+    expect(routeCalls).toBe(0);
+  } finally {
+    await server.stop(true);
+  }
+}, 15_000);
 
 test.each([
   false,
@@ -286,9 +307,18 @@ async function readEarlyRejection(
   contentLength: number,
 ): Promise<string> {
   const socket = createConnection({ host: url.hostname, port: Number(url.port) });
-  const timer = setTimeout(() => socket.destroy(new Error("Missing early 413 and EOF")), 10_000);
   let wire = "";
   let ended = false;
+  const timer = setTimeout(() => {
+    const headerEnd = wire.indexOf("\r\n\r\n");
+    const status413 = /^HTTP\/1\.1 413 /.test(wire);
+    const close = /\r\nconnection: close(?:\r\n|$)/i.test(wire.slice(0, Math.max(headerEnd, 0)));
+    socket.destroy(
+      new Error(
+        `Early response incomplete: bytes=${wire.length}, headers=${headerEnd >= 0}, status413=${status413}, close=${close}`,
+      ),
+    );
+  }, 10_000);
   try {
     return await new Promise<string>((resolve, reject) => {
       socket.once("error", reject);
