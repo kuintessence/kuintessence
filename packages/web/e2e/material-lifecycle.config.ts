@@ -17,7 +17,7 @@ export default defineConfig({
     locale: "en-US",
     timezoneId: "UTC",
     serviceWorkers: "block",
-    reducedMotion: "reduce",
+    contextOptions: { reducedMotion: "reduce" },
     trace: "retain-on-failure",
     screenshot: "only-on-failure",
   },

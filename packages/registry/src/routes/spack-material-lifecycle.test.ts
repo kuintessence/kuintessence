@@ -223,7 +223,7 @@ describe("material lifecycle authentication and authorization", () => {
       } else {
         expect(response.status).toBe(200);
         const body = await response.json();
-        expect(SpackMaterialLifecycleViewSchema.parse(body)).toEqual(body);
+        expect(body).toEqual(SpackMaterialLifecycleViewSchema.parse(body));
         expect(body).toMatchObject({
           revision: method === "GET" ? 0 : 1,
           state: method === "GET" ? "available" : "withdrawn",
@@ -317,7 +317,7 @@ describe("material lifecycle authentication and authorization", () => {
       } else {
         expect(response.status).toBe(200);
         const body = await response.json();
-        expect(SpackMaterialLifecycleViewSchema.parse(body)).toEqual(body);
+        expect(body).toEqual(SpackMaterialLifecycleViewSchema.parse(body));
         expect(body).toMatchObject({
           revision: method === "GET" ? 0 : 1,
           state: method === "GET" ? "available" : "withdrawn",
@@ -523,7 +523,7 @@ describe("material lifecycle state and delivery", () => {
     expect(response.status).toBe(200);
     expect(response.headers.get("Cache-Control")).toBe("private, no-store");
     const body = await response.json();
-    expect(SpackMaterialLifecycleViewSchema.parse(body)).toEqual(body);
+    expect(body).toEqual(SpackMaterialLifecycleViewSchema.parse(body));
     expect(body).toMatchObject({
       revision: method === "GET" ? 0 : 1,
       state: method === "GET" ? "available" : "withdrawn",
@@ -559,7 +559,7 @@ describe("material lifecycle state and delivery", () => {
     expect(withdrawn.status).toBe(200);
     expect(withdrawn.headers.get("Cache-Control")).toBe("private, no-store");
     const status = await withdrawn.json();
-    expect(SpackMaterialLifecycleViewSchema.parse(status)).toEqual(status);
+    expect(status).toEqual(SpackMaterialLifecycleViewSchema.parse(status));
     expect(status).toEqual({
       revision: 1,
       state: "withdrawn",
@@ -580,7 +580,7 @@ describe("material lifecycle state and delivery", () => {
     const inspect = await f.request("GET");
     expect(inspect.status).toBe(200);
     const inspected = await inspect.json();
-    expect(SpackMaterialLifecycleViewSchema.parse(inspected)).toEqual(inspected);
+    expect(inspected).toEqual(SpackMaterialLifecycleViewSchema.parse(inspected));
     expect(inspected).toEqual(status);
     for (const download of downloads) {
       await expectError(
@@ -602,7 +602,7 @@ describe("material lifecycle state and delivery", () => {
     });
     expect(siblingStatus.status).toBe(200);
     const siblingBody = await siblingStatus.json();
-    expect(SpackMaterialLifecycleViewSchema.parse(siblingBody)).toEqual(siblingBody);
+    expect(siblingBody).toEqual(SpackMaterialLifecycleViewSchema.parse(siblingBody));
     expect(siblingBody).toEqual({
       ...INITIAL,
       binding: sibling,
@@ -627,7 +627,7 @@ describe("material lifecycle state and delivery", () => {
     expect(restored.status).toBe(200);
     expect(restored.headers.get("Cache-Control")).toBe("private, no-store");
     const restoredStatus = await restored.json();
-    expect(SpackMaterialLifecycleViewSchema.parse(restoredStatus)).toEqual(restoredStatus);
+    expect(restoredStatus).toEqual(SpackMaterialLifecycleViewSchema.parse(restoredStatus));
     expect(restoredStatus).toMatchObject({
       revision: 2,
       state: "available",
