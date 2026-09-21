@@ -315,3 +315,8 @@ bcftools、Python 分析或完整 VCF truth 校验，不代表 MPI、PBS 受管�
 导出可供 Web 上传的材料包。macOS 仅用于获取、校验和搬运，Linux lock/source
 闭包须从经授权且实际成功的目标 Linux 准备任务取得，再按既有 bootstrap/Web
 格式手工组包导入。
+
+失败诊断不输出原始 Agent 日志、注册响应或任意安装路径。基础 PR 镜像的 PBS
+入口观察器仅报告失败行号和退出码，未修改生产 scheduler 入口；受管安装的
+输出树诊断仅报告文件类型、受限 link count 和固定文件名枚举。诊断不得替代
+安装结果，依赖 hash 不一致、特殊文件或不受支持的硬链接仍按 worker 规则拒绝。

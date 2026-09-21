@@ -61,9 +61,17 @@ legacy_probe_status() {
     grep -Ex 'ci-legacy-find:result=(ok|nonzero|spawn|timeout|output-limit) reason=(none|store-permission|repo-init|config-permission|cache-permission|permission-other|other) json=(empty-array|array|non-array|invalid|unavailable)' || true
 }
 
+pbs_entrypoint_status() {
+  "${compose[@]}" logs --no-color --no-log-prefix --tail 200 scheduler 2>/dev/null |
+    grep -Ex 'ci-pbs-entrypoint:event=(ERR|EXIT) line=[0-9]{1,5} exit=([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])' || true
+}
+
 cleanup() {
   local result=$?
   trap - EXIT INT TERM
+  if [[ "$KQ_PR_SCHEDULER" == pbs && "$result" -ne 0 ]]; then
+    pbs_entrypoint_status
+  fi
   if "$spack_case" && [[ "$result" -ne 0 ]]; then
     "${compose[@]}" logs --no-color --no-log-prefix registry 2>/dev/null |
       "${compose[@]}" exec -T registry bun deploy/pr-test/spack-case/diagnostics.ts || true

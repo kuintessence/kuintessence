@@ -4,7 +4,10 @@ from collections.abc import Sequence
 import contextlib
 import copy
 import io
+import os
+from pathlib import Path
 import resource
+import stat
 import sys
 from types import ModuleType, SimpleNamespace
 import unittest
@@ -21,6 +24,11 @@ MARKER = (
     r"\Aci-worker-phase:(source-audit|configuration|solve|tree|installed|"
     r"native-setup|native-ground|native-result) "
     r"event=(start|returned) rss-kib=([0-9]{1,12}|unavailable)\Z"
+)
+TREE_MARKER = (
+    r"\Aci-tree-entry:kind=(?:regular|directory|symlink|fifo|socket|other) "
+    r"nlink=(?:[0-9]{1,5}|unavailable) "
+    r"basename=(?:tic|captoinfo|infotocap|other)\Z"
 )
 SOLVER_MARKER = (
     r"\A(?:ci-compiler-candidates:accepted=[0-9]{1,5} rejected=[0-9]{1,5} "
@@ -426,6 +434,161 @@ class TracedCallTests(DiagnosticTestCase):
         self.assertEqual(self.write.call_count, 1)
         self.assertEqual(self.stdout.getvalue(), "")
         self.assertEqual(self.stderr.getvalue(), "")
+
+
+class TreeDiagnosticTests(DiagnosticTestCase):
+    @staticmethod
+    def tree_info(mode=stat.S_IFREG | 0o644, nlink=2):
+        return os.stat_result((mode, 123456789, 987654321, nlink, 123456, 654321, 42, 0, 0, 0))
+
+    @staticmethod
+    def tree_path(basename="tic"):
+        return Path("/private/store/private-prefix/bin") / basename
+
+    def assert_tree_marker(self, kind="regular", nlink="2", basename="tic"):
+        expected = f"ci-tree-entry:kind={kind} nlink={nlink} basename={basename}"
+        self.assertEqual(self.writes, [(self.fd, (expected + "\n").encode("ascii"))])
+        self.assertRegex(expected, TREE_MARKER)
+        self.assertEqual(self.stdout.getvalue(), "")
+        self.assertEqual(self.stderr.getvalue(), "")
+        self.rss.assert_not_called()
+
+    def emit_entry(self, **changes):
+        values = {
+            "info": self.tree_info(), "path": self.tree_path(), "store": Path("/private/store"),
+        }
+        values.update(changes)
+        diagnostic.emit_tree_entry(SimpleNamespace(f_locals=values), self.fd)
+
+    def test_tree_kind_and_nlink_use_only_existing_stat_result(self):
+        with contextlib.ExitStack() as stack:
+            for owner, names in (
+                (os, ("stat", "lstat", "scandir", "readlink")),
+                (Path, ("stat", "lstat", "resolve", "iterdir", "open")),
+            ):
+                for name in names:
+                    stack.enter_context(patch.object(
+                        owner, name, side_effect=AssertionError("No filesystem observation"),
+                    ))
+            for mode, kind in (
+                (stat.S_IFREG, "regular"), (stat.S_IFDIR, "directory"),
+                (stat.S_IFLNK, "symlink"), (stat.S_IFIFO, "fifo"), (stat.S_IFSOCK, "socket"),
+                (stat.S_IFCHR, "other"), (stat.S_IFBLK, "other"), (0, "other"),
+            ):
+                with self.subTest(kind=kind, mode=mode):
+                    self.reset_observations()
+                    self.emit_entry(info=self.tree_info(mode | 0o644))
+                    self.assert_tree_marker(kind=kind)
+
+    def test_tree_nlink_is_bounded_and_not_coerced(self):
+        for value, expected in (
+            (0, "0"), (1, "1"), (99999, "99999"), (-1, "unavailable"),
+            (100000, "unavailable"), (True, "unavailable"), (2.0, "unavailable"),
+            ("2\nprivate-token", "unavailable"), (None, "unavailable"),
+        ):
+            with self.subTest(value=value):
+                self.reset_observations()
+                self.emit_entry(info=self.tree_info(nlink=value))
+                self.assert_tree_marker(nlink=expected)
+
+    def test_tree_invalid_stat_shape_and_mode_do_not_leak(self):
+        for info in (
+            None, {"st_mode": stat.S_IFREG, "st_nlink": 2},
+            UnprintableError("private-stat"), SimpleNamespace(st_mode=stat.S_IFREG, st_nlink=2),
+        ):
+            self.reset_observations()
+            self.emit_entry(info=info)
+            self.assert_tree_marker(kind="other", nlink="unavailable")
+        for mode in (-1, 65536, True, "regular\nprivate-token", None):
+            self.reset_observations()
+            self.emit_entry(info=self.tree_info(mode=mode))
+            self.assert_tree_marker(kind="other")
+
+    def test_tree_known_basenames_are_an_exact_whitelist(self):
+        self.assertEqual(diagnostic.TREE_BASENAMES, {"tic", "captoinfo", "infotocap"})
+        for basename in ("tic", "captoinfo", "infotocap"):
+            self.reset_observations()
+            self.emit_entry(path=self.tree_path(basename))
+            self.assert_tree_marker(basename=basename)
+
+    def test_tree_unknown_and_injected_names_remain_other(self):
+        for basename in (
+            "private-file", "tic.txt", "TIC", " tic", "tic ",
+            "tic\nci-tree-entry:kind=regular", "captoinfo\rprivate-token",
+            "infotocap\x00", "\x1b[31mtic", "ncurses-private-document",
+        ):
+            self.reset_observations()
+            self.emit_entry(path=self.tree_path(basename=basename))
+            self.assert_tree_marker(basename="other")
+
+    def test_tree_invalid_path_types_are_not_formatted(self):
+        for path in (
+            None, str(self.tree_path()), UnprintableError("private-path"),
+        ):
+            self.reset_observations()
+            self.emit_entry(path=path)
+            self.assert_tree_marker(basename="other")
+
+    def test_tree_wrapper_returns_without_observation_on_success(self):
+        argument, result = object(), object()
+        function = Mock(return_value=result)
+        with patch.object(diagnostic, "emit_tree_entry") as observer:
+            self.assertIs(diagnostic.diagnosed_tree(function, self.fd)(
+                argument, profile=argument), result)
+            function.assert_called_once_with(argument, profile=argument)
+            observer.assert_not_called()
+        self.assertEqual(self.writes, [])
+
+    def test_tree_wrapper_observes_only_its_frame_and_preserves_original_exception(self):
+        original = UnprintableError("private-output-file")
+        expected_store = Path("/private/store")
+        expected_path, expected_info = self.tree_path(), self.tree_info()
+        profile = {"private": object()}
+
+        def unrelated_frame():
+            info = self.tree_info(stat.S_IFSOCK, 99)
+            path = Path("/private/unrelated")
+            store = Path("/private")
+            raise original
+
+        def verify_tree(store, supplied_profile):
+            self.assertIs(store, expected_store)
+            self.assertIs(supplied_profile, profile)
+            info, path = expected_info, expected_path
+            unrelated_frame()
+
+        for failure in (None, "observer", "pipe"):
+            with self.subTest(failure=failure):
+                self.reset_observations()
+                with contextlib.ExitStack() as stack:
+                    if failure == "observer":
+                        stack.enter_context(patch.object(
+                            diagnostic, "emit_tree_entry",
+                            side_effect=UnprintableError("private-observer"),
+                        ))
+                    elif failure == "pipe":
+                        stack.enter_context(patch.object(
+                            diagnostic.os, "write", side_effect=BrokenPipeError("private-pipe"),
+                        ))
+                    with self.assertRaises(UnprintableError) as caught:
+                        diagnostic.diagnosed_tree(verify_tree, self.fd)(expected_store, profile)
+                self.assertIs(caught.exception, original)
+                if failure is None:
+                    self.assert_tree_marker()
+                else:
+                    self.assertEqual(self.writes, [])
+                    self.assertEqual(self.stdout.getvalue(), "")
+                    self.assertEqual(self.stderr.getvalue(), "")
+
+    def test_tree_marker_rejects_unbounded_and_injected_fields(self):
+        marker = "ci-tree-entry:kind=regular nlink=2 basename=tic"
+        for original, replacement in (
+            ("kind=regular", "kind=private"), ("nlink=2", "nlink=-1"),
+            ("nlink=2", "nlink=100000"), ("nlink=2", "nlink=2.0"),
+            ("basename=tic", "basename=tic-private"),
+            ("basename=tic", "basename=tic\nprivate-token"),
+        ):
+            self.assertNotRegex(marker.replace(original, replacement), TREE_MARKER)
 
 
 class SolverDiagnosticTests(DiagnosticTestCase):

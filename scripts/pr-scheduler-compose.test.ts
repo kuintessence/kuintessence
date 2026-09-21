@@ -1,3 +1,4 @@
+import "./pr-scheduler-entrypoint.test";
 import { afterEach, describe, expect, test } from "bun:test";
 import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -230,6 +231,15 @@ case " $* " in
   *" down "*) [[ "$PR_FAIL" != down ]] || exit 21 ;;
 esac
 case " $* " in
+  *" logs --no-color --no-log-prefix --tail 200 scheduler "*)
+    printf '%s\\n' \
+      'fixture-private-registration-token' \
+      'ci-pbs-entrypoint:event=ERR line=31 exit=1' \
+      'ci-pbs-entrypoint:event=EXIT line=31 exit=1' \
+      'ci-pbs-entrypoint:event=ERR line=31 exit=1 fixture-private-registration-token' \
+      'ci-pbs-entrypoint:event=ERR line=100000 exit=1' \
+      'ci-pbs-entrypoint:event=ERR line=31 exit=256'
+    printf '%s\\n' 'fixture-private-docker-error' >&2 ;;
   *" deploy/pr-test/spack-case/rollout.ts activate "*)
     [[ "$PR_FAIL" != rollout-activate ]] || exit 29
     if [[ "$PR_FAIL" == epoch ]]; then printf 'invalid-epoch\\n'
@@ -269,6 +279,21 @@ esac
 }
 
 describe("PR runner lifecycle (fake Docker, no containers)", () => {
+  test("PBS startup failure retains its exit and exposes only bounded entrypoint markers", async () => {
+    const result = await runWithFakeDocker(["pbs"], "up");
+    expect(result.code).toBe(17);
+    expect(result.commands).toContain("logs --no-color --no-log-prefix --tail 200 scheduler");
+    expect(result.commands).not.toContain("exec -T --user kq scheduler timeout");
+    expect(result.commands).toContain("down --volumes --remove-orphans --rmi local");
+    const markers = result.stdout.split("\n").filter((line) => line.startsWith("ci-pbs-entrypoint:"));
+    expect(markers).toEqual([
+      "ci-pbs-entrypoint:event=ERR line=31 exit=1",
+      "ci-pbs-entrypoint:event=EXIT line=31 exit=1",
+    ]);
+    expect(`${result.stdout}${result.stderr}`).not.toContain("fixture-private");
+    expect(result.stdout).not.toContain("PR scheduler and material regression passed");
+  });
+
   test("config only does not access daemon, build, start or delete anything", async () => {
     const result = await runWithFakeDocker(["slurm", "--config"]);
     expect(result.code).toBe(0);

@@ -3,8 +3,9 @@ from collections.abc import Iterator, Sequence
 import contextlib
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PosixPath
 import resource
+import stat
 import sys
 
 
@@ -415,6 +416,47 @@ SOLVED_PACKAGES = {
     "samtools", "htslib", "zlib", "ncurses", "bzip2", "xz", "pkgconf", "pkg-config",
     "diffutils", "libiconv", "python", "perl",
 }
+TREE_BASENAMES = {"tic", "captoinfo", "infotocap"}
+
+
+def emit_tree_entry(frame, fd):
+    values = frame.f_locals
+    info = values.get("info")
+    kind, nlink = "other", "unavailable"
+    if type(info) is os.stat_result:
+        mode = info.st_mode
+        if type(mode) is int and 0 <= mode <= 0xffff:
+            kind = {
+                stat.S_IFREG: "regular", stat.S_IFDIR: "directory",
+                stat.S_IFLNK: "symlink", stat.S_IFIFO: "fifo", stat.S_IFSOCK: "socket",
+            }.get(stat.S_IFMT(mode), "other")
+        if type(info.st_nlink) is int and 0 <= info.st_nlink <= 99999:
+            nlink = str(info.st_nlink)
+    path = values.get("path")
+    basename = path.name if type(path) is PosixPath and path.name in TREE_BASENAMES else "other"
+    emit_diagnostic(
+        fd, f"ci-tree-entry:kind={kind} nlink={nlink} basename={basename}",
+    )
+
+
+def diagnosed_tree(function, fd):
+    def verify_tree(*args, **kwargs):
+        try:
+            return function(*args, **kwargs)
+        except Exception as error:
+            try:
+                trace = error.__traceback__
+                while trace is not None:
+                    if trace.tb_frame.f_code is function.__code__:
+                        emit_tree_entry(trace.tb_frame, fd)
+                        break
+                    trace = trace.tb_next
+            except Exception:
+                # Observe existing locals only; never replace the worker's exception.
+                pass
+            raise
+
+    return verify_tree
 
 
 def comparison_value(value, budget, depth=0):
@@ -748,8 +790,11 @@ def main():
                                 (worker, "verify_tree", "tree"),
                                 (worker, "verify_installed", "installed"),
                             ):
-                                function = (diagnosed_solver(worker, saved_err)
-                                            if name == "solve_lock" else getattr(owner, name))
+                                function = getattr(owner, name)
+                                if name == "solve_lock":
+                                    function = diagnosed_solver(worker, saved_err)
+                                elif name == "verify_tree":
+                                    function = diagnosed_tree(function, saved_err)
                                 instrumentation.enter_context(worker.replace_attribute(
                                     owner, name, traced_call(function, phase, saved_err),
                                 ))
