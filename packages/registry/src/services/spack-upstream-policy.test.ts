@@ -89,9 +89,13 @@ describe("Spack upstream policy", () => {
 
   test("makes conventional proxy ports explicit instead of losing them in URL normalization", () => {
     expect(parseUpstreamProxy("http://proxy.example.org:80")).toBe("http://proxy.example.org:80");
-    expect(parseUpstreamProxy("https://proxy.example.org:443")).toBe("https://proxy.example.org:443");
+    expect(parseUpstreamProxy("https://proxy.example.org:443")).toBe(
+      "https://proxy.example.org:443",
+    );
     expect(parseUpstreamProxy("http://proxy.example.org")).toBe("http://proxy.example.org:80");
-    expect(parseUpstreamProxy("socks5h://proxy.example.org")).toBe("socks5h://proxy.example.org:1080");
+    expect(parseUpstreamProxy("socks5h://proxy.example.org")).toBe(
+      "socks5h://proxy.example.org:1080",
+    );
   });
 
   test.each([

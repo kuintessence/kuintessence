@@ -119,18 +119,19 @@ describe("Spack upstream import HTTP authorization", () => {
     expect((await root.request("/api/health")).status).toBe(200);
   });
 
-  test.each([USER, PLATFORM, { ...OWNER, orgIds: [OTHER_ORG] }])(
-    "rejects publishers without both namespace read and write access before any download",
-    async (actor) => {
-      const f = await fixture();
-      for (const input of [f.recipe, f.material]) {
-        await expectError(await f.app.request(BASE, request(input, actor)), 403);
-      }
-      expect(f.calls).toEqual([]);
-      expect(f.recipes.importBundle).not.toHaveBeenCalled();
-      expect(f.recipes.get).not.toHaveBeenCalled();
-    },
-  );
+  test.each([
+    USER,
+    PLATFORM,
+    { ...OWNER, orgIds: [OTHER_ORG] },
+  ])("rejects publishers without both namespace read and write access before any download", async (actor) => {
+    const f = await fixture();
+    for (const input of [f.recipe, f.material]) {
+      await expectError(await f.app.request(BASE, request(input, actor)), 403);
+    }
+    expect(f.calls).toEqual([]);
+    expect(f.recipes.importBundle).not.toHaveBeenCalled();
+    expect(f.recipes.get).not.toHaveBeenCalled();
+  });
 
   test("rejects noncanonical, suspended and stale privileged JWT identities", async () => {
     const f = await fixture();

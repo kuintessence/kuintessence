@@ -13,8 +13,8 @@ import {
 } from "../services/spack-material-storage";
 import { parseMaterial } from "../services/spack-material-store";
 import {
-  sanitizeSpackUpstreamError,
   type SpackUpstreamImportService,
+  sanitizeSpackUpstreamError,
   unavailableSpackUpstreamImport,
 } from "../services/spack-upstream-import";
 
@@ -74,8 +74,7 @@ export function createSpackUpstreamRoutes(
       await readMaterialJson(body),
       "import",
     );
-    const repository =
-      request.kind === "recipe" ? request.repository : request.release.repository;
+    const repository = request.kind === "recipe" ? request.repository : request.release.repository;
     const namespace = parseNamespace(repository);
     checkNamespaceAccess(actor, namespace, "read", opts.publisherRoles);
     checkNamespaceAccess(actor, namespace, "write", opts.publisherRoles);

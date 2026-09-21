@@ -162,18 +162,18 @@ describe("recipe Vite proxy authentication (in memory, no listener)", () => {
 });
 
 describe("upstream import Vite proxy (in memory, no listener)", () => {
-  test.each([UPSTREAM_IMPORT, `${UPSTREAM_IMPORT}?request=example`])(
-    "extends only the exact endpoint timeout: %s",
-    (path) => {
-      const options = proxyOptions(path);
-      expect(options.timeout).toBe(1_800_000);
-      expect(options.proxyTimeout).toBe(1_800_000);
-      expect(options.followRedirects).toBe(false);
-      expect(options.target).toBe(proxyOptions("/software/api/spack/catalog").target);
-      expect(options.configure).toBe(proxyOptions("/software/api/spack/catalog").configure);
-      expect(options.rewrite?.(path)).toBe(path.replace(/^\/software/, ""));
-    },
-  );
+  test.each([
+    UPSTREAM_IMPORT,
+    `${UPSTREAM_IMPORT}?request=example`,
+  ])("extends only the exact endpoint timeout: %s", (path) => {
+    const options = proxyOptions(path);
+    expect(options.timeout).toBe(1_800_000);
+    expect(options.proxyTimeout).toBe(1_800_000);
+    expect(options.followRedirects).toBe(false);
+    expect(options.target).toBe(proxyOptions("/software/api/spack/catalog").target);
+    expect(options.configure).toBe(proxyOptions("/software/api/spack/catalog").configure);
+    expect(options.rewrite?.(path)).toBe(path.replace(/^\/software/, ""));
+  });
 
   test.each([
     `${UPSTREAM_IMPORT}-other`,

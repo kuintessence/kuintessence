@@ -141,18 +141,11 @@ export class RecipeGitStore {
         ]);
         await git(source, ["fsck", "--full", "--strict", "--no-reflogs"]);
         const commit = RecipeCommitSchema.parse(
-          (await git(source, ["rev-parse", "refs/heads/import^{commit}"])).stdout
-            .toString()
-            .trim(),
+          (await git(source, ["rev-parse", "refs/heads/import^{commit}"])).stdout.toString().trim(),
         );
         checkRecipeObjects(
-          (
-            await git(source, [
-              "cat-file",
-              "--batch-all-objects",
-              "--batch-check=%(objectsize)",
-            ])
-          ).stdout,
+          (await git(source, ["cat-file", "--batch-all-objects", "--batch-check=%(objectsize)"]))
+            .stdout,
           this.limits,
         );
         const files = parseRecipeTree(

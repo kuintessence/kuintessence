@@ -54,12 +54,7 @@ export function isPublicIPv4(address: string): boolean {
 }
 
 function parseUrl(raw: string): URL {
-  if (
-    raw.length > 4096 ||
-    raw.trim() !== raw ||
-    raw.includes("\\") ||
-    hasControls(raw, true)
-  ) {
+  if (raw.length > 4096 || raw.trim() !== raw || raw.includes("\\") || hasControls(raw, true)) {
     throw new SpackUpstreamError("policy");
   }
   try {
@@ -78,7 +73,10 @@ function targetUrl(raw: string): URL {
     (url.port !== "" && url.port !== "443") ||
     url.username ||
     url.password ||
-    raw.slice(raw.indexOf("//") + 2).split("/")[0]?.includes("@") ||
+    raw
+      .slice(raw.indexOf("//") + 2)
+      .split("/")[0]
+      ?.includes("@") ||
     raw.includes("?") ||
     raw.includes("#") ||
     !host.includes(".") ||

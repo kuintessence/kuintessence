@@ -274,24 +274,26 @@ test("reads a single JSON manifest without fetching its URLs", async () => {
   expect(fetcher).not.toHaveBeenCalled();
 });
 
-test.each(["empty", "oversized", "malformed", "invalid-utf8"])(
-  "rejects a %s manifest without leaking its contents",
-  async (kind) => {
-    const contents =
-      kind === "empty"
-        ? ""
-        : kind === "oversized"
-          ? " ".repeat(2 * 1024 ** 2 + 1)
-          : kind === "malformed"
-            ? recipe.url
-            : new Uint8Array([0xff]);
-    const file = new File([contents], "online.json");
-    await expect(readSpackUpstreamManifest(file)).rejects.toMatchObject({
-      code: "VALIDATION_ERROR",
-      diagnosticMessage: expect.not.stringContaining(recipe.url),
-    });
-  },
-);
+test.each([
+  "empty",
+  "oversized",
+  "malformed",
+  "invalid-utf8",
+])("rejects a %s manifest without leaking its contents", async (kind) => {
+  const contents =
+    kind === "empty"
+      ? ""
+      : kind === "oversized"
+        ? " ".repeat(2 * 1024 ** 2 + 1)
+        : kind === "malformed"
+          ? recipe.url
+          : new Uint8Array([0xff]);
+  const file = new File([contents], "online.json");
+  await expect(readSpackUpstreamManifest(file)).rejects.toMatchObject({
+    code: "VALIDATION_ERROR",
+    diagnosticMessage: expect.not.stringContaining(recipe.url),
+  });
+});
 
 test("rejects a network response loss without retrying", async () => {
   const fetcher = vi.fn().mockRejectedValue(new TypeError("Network error"));

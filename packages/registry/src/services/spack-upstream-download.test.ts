@@ -652,9 +652,9 @@ describe.serial("Spack upstream real curl proxy integration", () => {
         try {
           await waitUntil(() => fixture.requests.length === 1);
           const child = await inspectCurlChild();
-          expect(child.args.join("\0") === ["/usr/bin/curl", "-q", "--config", "-"].join("\0")).toBe(
-            true,
-          );
+          expect(
+            child.args.join("\0") === ["/usr/bin/curl", "-q", "--config", "-"].join("\0"),
+          ).toBe(true);
           expect(
             child.environment.sort().join("\0") === ["LC_ALL=C", "PATH=/usr/bin:/bin"].join("\0"),
           ).toBe(true);

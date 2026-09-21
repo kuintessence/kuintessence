@@ -132,7 +132,10 @@ export async function bounded<T>(promise: Promise<T>, timeoutMs = 2_500): Promis
     return await Promise.race([
       promise,
       new Promise<never>((_resolve, reject) => {
-        timer = setTimeout(() => reject(new Error("Upstream fixture wait exceeded budget")), timeoutMs);
+        timer = setTimeout(
+          () => reject(new Error("Upstream fixture wait exceeded budget")),
+          timeoutMs,
+        );
       }),
     ]);
   } finally {
@@ -462,7 +465,9 @@ export async function inspectCurlChild(): Promise<{ args: string[]; environment:
     try {
       const args = (await readFile(`/proc/${id}/cmdline`, "utf8")).split("\0").filter(Boolean);
       if (args[0] !== "/usr/bin/curl") continue;
-      const environment = (await readFile(`/proc/${id}/environ`, "utf8")).split("\0").filter(Boolean);
+      const environment = (await readFile(`/proc/${id}/environ`, "utf8"))
+        .split("\0")
+        .filter(Boolean);
       matches.push({ args, environment });
     } catch (error) {
       if (!(error instanceof Error) || !("code" in error) || error.code !== "ENOENT") throw error;

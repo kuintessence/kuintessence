@@ -31,14 +31,14 @@ describe("Spack upstream deployment wiring (offline, no process execution)", () 
     test(`${file} exposes opt-in importer settings without committed credentials`, async () => {
       const config = parse(await read(`deploy/compose/${file}`)) as Compose;
       const env = config.services[name]?.environment;
-      expect(env?.SPACK_UPSTREAM_ENABLED).toBe("${SPACK_UPSTREAM_ENABLED:-false}");
-      expect(env?.SPACK_UPSTREAM_PROXY_URL).toBe("${SPACK_UPSTREAM_PROXY_URL:-}");
-      expect(env?.SPACK_UPSTREAM_ALLOWED_ORIGINS).toBe("${SPACK_UPSTREAM_ALLOWED_ORIGINS:-[]}");
-      expect(env?.SPACK_UPSTREAM_TIMEOUT_MS).toBe("${SPACK_UPSTREAM_TIMEOUT_MS:-300000}");
-      expect(env?.SPACK_UPSTREAM_IDLE_TIMEOUT_MS).toBe("${SPACK_UPSTREAM_IDLE_TIMEOUT_MS:-30000}");
-      expect(env?.SPACK_UPSTREAM_MAX_CONCURRENT).toBe("${SPACK_UPSTREAM_MAX_CONCURRENT:-2}");
-      expect(env?.SPACK_UPSTREAM_MAX_BYTES).toBe("${SPACK_UPSTREAM_MAX_BYTES:-1073741824}");
-      expect(env?.SPACK_UPSTREAM_CA_BUNDLE).toBe("${SPACK_UPSTREAM_CA_BUNDLE:-}");
+      expect(env?.SPACK_UPSTREAM_ENABLED).toBe(`\${SPACK_UPSTREAM_ENABLED:-false}`);
+      expect(env?.SPACK_UPSTREAM_PROXY_URL).toBe(`\${SPACK_UPSTREAM_PROXY_URL:-}`);
+      expect(env?.SPACK_UPSTREAM_ALLOWED_ORIGINS).toBe(`\${SPACK_UPSTREAM_ALLOWED_ORIGINS:-[]}`);
+      expect(env?.SPACK_UPSTREAM_TIMEOUT_MS).toBe(`\${SPACK_UPSTREAM_TIMEOUT_MS:-300000}`);
+      expect(env?.SPACK_UPSTREAM_IDLE_TIMEOUT_MS).toBe(`\${SPACK_UPSTREAM_IDLE_TIMEOUT_MS:-30000}`);
+      expect(env?.SPACK_UPSTREAM_MAX_CONCURRENT).toBe(`\${SPACK_UPSTREAM_MAX_CONCURRENT:-2}`);
+      expect(env?.SPACK_UPSTREAM_MAX_BYTES).toBe(`\${SPACK_UPSTREAM_MAX_BYTES:-1073741824}`);
+      expect(env?.SPACK_UPSTREAM_CA_BUNDLE).toBe(`\${SPACK_UPSTREAM_CA_BUNDLE:-}`);
       expect(env).not.toHaveProperty("HTTP_PROXY");
       expect(env).not.toHaveProperty("HTTPS_PROXY");
       expect(env).not.toHaveProperty("ALL_PROXY");
