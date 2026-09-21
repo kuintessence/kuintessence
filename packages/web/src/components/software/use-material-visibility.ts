@@ -1,14 +1,15 @@
 import {
   type SpackMaterialBinding,
-  SpackMaterialLifecycleChangeSchema,
-  type SpackMaterialLifecycleView,
+  SpackMaterialVisibilityChangeSchema,
+  type SpackMaterialVisibilityPolicy,
+  type SpackMaterialVisibilityView,
 } from "@kuintessence/shared/browser";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { SoftwareError } from "../../lib/software-client";
 import {
-  changeSpackMaterialLifecycle,
-  getSpackMaterialLifecycle,
-} from "../../lib/spack-material-lifecycle-client";
+  changeSpackMaterialVisibility,
+  getSpackMaterialVisibility,
+} from "../../lib/spack-material-visibility-client";
 
 type Request = {
   controller: AbortController;
@@ -20,11 +21,9 @@ type Notice =
   | "rechecked"
   | "uncertain"
   | "conflict"
-  | "referenced"
   | "forbidden"
   | "unavailable"
-  | "invalid"
-  | "failed";
+  | "invalid";
 type Options = {
   isCurrent: () => boolean;
   canWriteRepository: (repository: string) => boolean;
@@ -37,20 +36,24 @@ function rejection(error: unknown): Notice | null {
   if (!(error instanceof SoftwareError)) return null;
   if (
     (error.status === 401 || error.status === 403) &&
-    ["UNAUTHORIZED", "INVALID_TOKEN", "FORBIDDEN", "MATERIAL_LIFECYCLE_FORBIDDEN"].includes(
+    ["UNAUTHORIZED", "INVALID_TOKEN", "FORBIDDEN", "MATERIAL_VISIBILITY_FORBIDDEN"].includes(
       error.code,
     )
   ) {
     return "forbidden";
   }
-  if (error.status === 409 && error.code === "MATERIAL_RELEASE_REFERENCED") return "referenced";
-  if (error.status === 409 && error.code === "MATERIAL_LIFECYCLE_CONFLICT") return "conflict";
-  if (error.status === 422 && error.code === "VALIDATION_ERROR") return "invalid";
+  if (error.status === 409 && error.code === "MATERIAL_VISIBILITY_CONFLICT") return "conflict";
+  if (
+    error.status === 422 &&
+    ["VALIDATION_ERROR", "MATERIAL_VISIBILITY_INVALID"].includes(error.code)
+  ) {
+    return "invalid";
+  }
   return null;
 }
 
-export function useMaterialLifecycle(options: Options) {
-  const [view, setView] = useState<SpackMaterialLifecycleView | null>(null);
+export function useMaterialVisibility(options: Options) {
+  const [view, setView] = useState<SpackMaterialVisibilityView | null>(null);
   const [busy, setBusy] = useState<Request["kind"] | null>(null);
   const [notice, setNotice] = useState<Notice | null>(null);
   const active = useRef<Request | null>(null);
@@ -130,7 +133,7 @@ export function useMaterialLifecycle(options: Options) {
     if (!current() || active.current?.kind === "write") return;
     const request = begin("read");
     try {
-      const result = await getSpackMaterialLifecycle(binding, request.controller.signal);
+      const result = await getSpackMaterialVisibility(binding, request.controller.signal);
       if (!live(request)) return;
       if (!latest.current.canInspectRepository(result.repository)) {
         setNotice(uncertain.current ? "uncertain" : "forbidden");
@@ -149,15 +152,15 @@ export function useMaterialLifecycle(options: Options) {
     }
   }
 
-  async function change(reason: string) {
+  async function change(policy: SpackMaterialVisibilityPolicy, reason: string) {
     if (!current() || active.current || uncertain.current || !view) return;
     if (!latest.current.canWriteRepository(view.repository)) {
       setView(null);
       setNotice("forbidden");
       return;
     }
-    const input = SpackMaterialLifecycleChangeSchema.safeParse({
-      action: view.state === "available" ? "withdraw" : "restore",
+    const input = SpackMaterialVisibilityChangeSchema.safeParse({
+      policy,
       expectedRevision: view.revision,
       reason,
     });
@@ -167,7 +170,7 @@ export function useMaterialLifecycle(options: Options) {
     }
     const request = begin("write");
     try {
-      const result = await changeSpackMaterialLifecycle(
+      const result = await changeSpackMaterialVisibility(
         view.binding,
         input.data,
         request.controller.signal,
@@ -175,7 +178,7 @@ export function useMaterialLifecycle(options: Options) {
       if (!live(request)) return;
       latest.current.onInvalidate();
       latest.current.onSelectionLockChange?.(false);
-      if (!latest.current.canWriteRepository(result.repository)) {
+      if (!latest.current.canInspectRepository(result.repository)) {
         setNotice("forbidden");
         return;
       }
@@ -188,7 +191,6 @@ export function useMaterialLifecycle(options: Options) {
           setNotice(denied);
           latest.current.onSelectionLockChange?.(false);
         } else {
-          // A transport/response failure after POST does not prove rollback.
           uncertain.current = true;
           setNotice("uncertain");
           latest.current.onInvalidate();
@@ -206,7 +208,7 @@ export function useMaterialLifecycle(options: Options) {
     locked: busy === "write" || uncertain.current,
     inspect,
     change,
-    stop,
     reset,
+    stop,
   };
 }

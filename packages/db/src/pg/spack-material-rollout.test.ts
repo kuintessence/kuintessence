@@ -353,9 +353,7 @@ describe("SpackMaterialRollout (isolated real PG)", () => {
       rename to visibility_events_hidden
     `);
     try {
-      await expectError(
-        rollout.execute({ ...activation(reconciled), action: "activate-policy" }),
-      );
+      await expectError(rollout.execute({ ...activation(reconciled), action: "activate-policy" }));
       expect(await journal()).toHaveLength(2);
     } finally {
       await db.execute(sql`
@@ -370,27 +368,26 @@ describe("SpackMaterialRollout (isolated real PG)", () => {
     expect(enabled).toMatchObject({ revision: 3, phase: "policy-ready" });
   });
 
-  test.each(["queued", "running", "orphan"] as const)(
-    "policy activation cannot bypass the %s installation inventory guard",
-    async (kind) => {
-      const input = await operation();
-      await references.acquireOperation(input);
-      if (kind === "orphan") {
-        await db.delete(softwareOperations).where(eq(softwareOperations.id, input.operationId));
-      } else {
-        await db
-          .update(softwareOperations)
-          .set({ status: kind })
-          .where(eq(softwareOperations.id, input.operationId));
-      }
-      const reconciled = await reconcile(await pause());
-      await expectError(
-        rollout.execute({ ...activation(reconciled), action: "activate-policy" }),
-      );
-      expect((await rollout.execute({ action: "inspect" })).phase).toBe("paused");
-      expect(await journal()).toHaveLength(2);
-    },
-  );
+  test.each([
+    "queued",
+    "running",
+    "orphan",
+  ] as const)("policy activation cannot bypass the %s installation inventory guard", async (kind) => {
+    const input = await operation();
+    await references.acquireOperation(input);
+    if (kind === "orphan") {
+      await db.delete(softwareOperations).where(eq(softwareOperations.id, input.operationId));
+    } else {
+      await db
+        .update(softwareOperations)
+        .set({ status: kind })
+        .where(eq(softwareOperations.id, input.operationId));
+    }
+    const reconciled = await reconcile(await pause());
+    await expectError(rollout.execute({ ...activation(reconciled), action: "activate-policy" }));
+    expect((await rollout.execute({ action: "inspect" })).phase).toBe("paused");
+    expect(await journal()).toHaveLength(2);
+  });
 
   test("policy activation requires explicit complete legacy isolation evidence", async () => {
     const reconciled = await reconcile(await pause());

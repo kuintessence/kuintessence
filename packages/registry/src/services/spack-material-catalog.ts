@@ -4,6 +4,7 @@ import { lstat, opendir } from "node:fs/promises";
 import { join } from "node:path";
 import {
   SPACK_MATERIAL_CATALOG_MAX_RELEASES,
+  type SpackMaterialBinding,
   type SpackMaterialCatalog,
   type SpackMaterialCatalogQuery,
   SpackMaterialCatalogQuerySchema,
@@ -44,6 +45,7 @@ interface CatalogStore {
     manifest: SpackMaterialManifest,
     actor: RbacPrincipal,
     checkpoint?: () => void,
+    binding?: SpackMaterialBinding,
   ): Promise<void>;
 }
 
@@ -146,7 +148,10 @@ export class SpackMaterialCatalogReader {
           throw new SpackMaterialCatalogLimitError();
         }
         try {
-          await this.store.authorizeManifest(stored.manifest, actor, checkpoint);
+          await this.store.authorizeManifest(stored.manifest, actor, checkpoint, {
+            repositoryId: id,
+            manifestDigest,
+          });
         } catch (error) {
           // The download policy conceals inaccessible or missing recipes with 404.
           if (

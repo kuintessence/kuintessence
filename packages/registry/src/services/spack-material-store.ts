@@ -5,6 +5,7 @@ import {
   type SpackMaterialLifecycleChange,
   SpackMaterialLifecycleError,
   type SpackMaterialLifecyclePrincipal,
+  SpackMaterialVisibilityError,
 } from "@kuintessence/db";
 import {
   inspectSpackLock,
@@ -29,12 +30,7 @@ import {
   spackMaterialBlobs,
 } from "@kuintessence/shared";
 import { z } from "zod";
-import {
-  checkNamespaceAccess,
-  NamespacePermissionError,
-  parseNamespace,
-  type RbacPrincipal,
-} from "./namespace";
+import { checkNamespaceAccess, parseNamespace, type RbacPrincipal } from "./namespace";
 import { RecipeStoreError } from "./recipe-git";
 import type { RecipeGitStore } from "./recipe-git-store";
 import { SpackMaterialCatalogReader } from "./spack-material-catalog";
@@ -56,6 +52,14 @@ import {
   SpackMaterialWithdrawnError,
   writeMaterialMetadata,
 } from "./spack-material-storage";
+import {
+  assertMaterialNamespaceReadable as assertReadable,
+  authorizeMaterialRecipe as authorizeRecipe,
+  SpackMaterialVisibilityAccess,
+  type SpackMaterialVisibilityPort,
+} from "./spack-material-visibility";
+
+export type { SpackMaterialVisibilityPort } from "./spack-material-visibility";
 
 export type MaterialRecipeStore = Pick<RecipeGitStore, "get" | "archive"> &
   Partial<Pick<RecipeGitStore, "getSnapshot">>;
@@ -89,6 +93,7 @@ export class SpackMaterialStore {
   private readonly blobs: SpackMaterialBlobStore;
   private readonly catalog: SpackMaterialCatalogReader;
   private readonly managementCatalog: SpackMaterialManagementCatalogReader;
+  private readonly visibilityAccess?: SpackMaterialVisibilityAccess;
   private uploads = 0;
   private publications = 0;
   private managementReads = 0;
@@ -99,6 +104,7 @@ export class SpackMaterialStore {
     limits: Partial<SpackMaterialLimits> = {},
     private readonly runtime?: SpackMaterialRuntimePort,
     private readonly lifecycle?: SpackMaterialLifecyclePort,
+    visibility?: SpackMaterialVisibilityPort,
   ) {
     if (!isAbsolute(root)) throw new Error("SPACK_MATERIAL_STORE_DIR must be absolute");
     this.limits = {
@@ -115,6 +121,13 @@ export class SpackMaterialStore {
     this.blobs = new SpackMaterialBlobStore(root);
     this.catalog = new SpackMaterialCatalogReader(root, this);
     this.managementCatalog = new SpackMaterialManagementCatalogReader(root);
+    if (visibility) {
+      this.visibilityAccess = new SpackMaterialVisibilityAccess(
+        visibility,
+        recipes,
+        this.readManifest.bind(this),
+      );
+    }
   }
 
   async list(query: SpackMaterialCatalogQuery, actor: RbacPrincipal, signal?: AbortSignal) {
@@ -295,6 +308,7 @@ export class SpackMaterialStore {
       await writeMaterialMetadata(this.manifestPath(repositoryId, manifestDigest), bytes, signal);
       // Re-import preserves immutable bytes and must never restore withdrawn state.
       await this.assertReleaseAvailable(repositoryId, manifestDigest);
+      // Ingest returns only this content's binding; it neither grants reads nor resets policy.
       return { repositoryId, manifestDigest };
     } finally {
       this.publications -= 1;
@@ -459,20 +473,66 @@ export class SpackMaterialStore {
     manifest: SpackMaterialManifest,
     actor: RbacPrincipal,
     checkpoint?: () => void,
+    binding?: SpackMaterialBinding,
   ): Promise<void> {
     await this.assertRuntime();
     checkpoint?.();
+    if (this.visibilityAccess) {
+      if (
+        !binding ||
+        binding.repositoryId !== SpackMaterialStore.repositoryId(manifest.repository)
+      ) {
+        throw new SpackMaterialVisibilityError("MATERIAL_VISIBILITY_UNAVAILABLE");
+      }
+      const identity = {
+        repositoryId: parseMaterial(RecipeRepositoryIdSchema, binding.repositoryId, "repository id"),
+        manifestDigest: parseMaterial(
+          SpackMaterialDigestSchema,
+          binding.manifestDigest,
+          "manifest digest",
+        ),
+      };
+      return this.visibilityAccess.assertReadable(identity, manifest, actor.sub, checkpoint);
+    }
     assertReadable(actor, manifest.repository);
     for (const selection of manifest.recipes) {
       await this.checkRecipe(manifest.repository, selection, actor, checkpoint);
     }
   }
 
-  async getBlob(id: string, manifestDigest: string, digest: string, actor: RbacPrincipal) {
+  async manageVisibility(
+    id: string,
+    digest: string,
+    subject: string,
+    change?: Parameters<SpackMaterialVisibilityPort["transition"]>[2],
+    publisherRoles?: RegistryRole[],
+    signal?: AbortSignal,
+  ) {
+    if (!this.visibilityAccess) {
+      throw new SpackMaterialVisibilityError("MATERIAL_VISIBILITY_UNAVAILABLE");
+    }
+    const binding = {
+      repositoryId: parseMaterial(RecipeRepositoryIdSchema, id, "material repository id"),
+      manifestDigest: parseMaterial(SpackMaterialDigestSchema, digest, "manifest digest"),
+    };
+    return this.visibilityAccess.manage(binding, subject, change, publisherRoles, signal);
+  }
+
+  async getBlob(
+    id: string,
+    manifestDigest: string,
+    digest: string,
+    actor: RbacPrincipal,
+    signal?: AbortSignal,
+  ) {
     await this.assertRuntime();
     parseMaterial(SpackMaterialDigestSchema, digest, "material digest");
-    const { manifest } = await this.getManifest(id, manifestDigest);
-    await this.authorizeManifest(manifest, actor);
+    const checkpoint = () => signal?.throwIfAborted();
+    const { manifest } = await this.getManifest(id, manifestDigest, { checkpoint });
+    await this.authorizeManifest(manifest, actor, checkpoint, {
+      repositoryId: id,
+      manifestDigest,
+    });
     const blob = spackMaterialBlobs(manifest).find((item) => item.digest === digest);
     if (!blob) throw new SpackMaterialError(404, "Blob is not part of this release");
     return this.blobs.get(digest, blob.size);
@@ -580,39 +640,4 @@ export class SpackMaterialStore {
 
 function encode(value: unknown): Uint8Array {
   return new TextEncoder().encode(JSON.stringify(value));
-}
-
-function authorizeRecipe(
-  repository: string,
-  selection: SpackMaterialPublish["recipes"][number],
-  actor: RbacPrincipal,
-  recipe: Pick<RecipeRepository, "repository" | "snapshots">,
-) {
-  assertReadable(actor, recipe.repository);
-  const source = parseNamespace(recipe.repository);
-  const target = parseNamespace(repository);
-  if (source.kind !== "public" && (source.kind !== target.kind || source.owner !== target.owner)) {
-    throw new SpackMaterialError(403, "Material release cannot broaden recipe visibility");
-  }
-  const snapshot = recipe.snapshots.find((item) => item.commit === selection.commit);
-  if (!snapshot) throw new SpackMaterialError(404, "Recipe snapshot not found");
-  if (
-    snapshot.validation !== "static-only" ||
-    snapshot.diagnostics.some((item) => item.severity === "error") ||
-    new Set(selection.roots).size !== selection.roots.length ||
-    selection.roots.some((root) => !snapshot.roots.some((item) => item.path === root))
-  ) {
-    throw new SpackMaterialError(422, "Recipe selection contains unverified roots or diagnostics");
-  }
-}
-
-function assertReadable(actor: RbacPrincipal, repository: string): void {
-  try {
-    checkNamespaceAccess(actor, parseNamespace(repository), "read");
-  } catch (error) {
-    if (error instanceof NamespacePermissionError) {
-      throw new SpackMaterialError(404, "Material release or referenced recipe not found");
-    }
-    throw error;
-  }
 }

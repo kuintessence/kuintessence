@@ -93,17 +93,24 @@ describe("Spack material visibility input", () => {
     }
   });
 
-  test.each([0, 2_147_483_646])("accepts bounded revision %s and a 1000-character reason", (revision) => {
+  test.each([
+    0, 2_147_483_646,
+  ])("accepts bounded revision %s and a 1000-character reason", (revision) => {
     const input = { ...CHANGE, expectedRevision: revision, reason: "x".repeat(1000) };
     expect(parseSpackMaterialVisibilityChange(input)).toEqual(input);
   });
 
-  test.each([-1, 0.5, Number.NaN, Number.POSITIVE_INFINITY, 2_147_483_647, "0", null])(
-    "rejects invalid CAS revision (%j)",
-    (expectedRevision: unknown) => {
-      expect(() => parseSpackMaterialVisibilityChange({ ...CHANGE, expectedRevision })).toThrow();
-    },
-  );
+  test.each([
+    -1,
+    0.5,
+    Number.NaN,
+    Number.POSITIVE_INFINITY,
+    2_147_483_647,
+    "0",
+    null,
+  ])("rejects invalid CAS revision (%j)", (expectedRevision: unknown) => {
+    expect(() => parseSpackMaterialVisibilityChange({ ...CHANGE, expectedRevision })).toThrow();
+  });
 
   test.each([
     "",

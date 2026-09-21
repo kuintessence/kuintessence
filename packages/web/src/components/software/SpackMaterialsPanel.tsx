@@ -11,11 +11,11 @@ import { isMobileHighRiskMutationBlocked } from "../../lib/mobile-management-pol
 import { useMeCapabilities } from "../../lib/platform-capabilities";
 import { canWriteRecipeRepository } from "../../lib/recipe-repository-access";
 import { MaterialCatalog } from "./MaterialCatalog";
-import { MaterialLifecycle } from "./MaterialLifecycle";
 import {
   MaterialManagementCatalog,
   type MaterialManagementFilter,
 } from "./MaterialManagementCatalog";
+import { MaterialManagementEditors } from "./MaterialManagementEditors";
 import { MaterialPackImport } from "./MaterialPackImport";
 import { MaterialReleaseLookup } from "./MaterialReleaseLookup";
 import { SpackOnlineImport } from "./SpackOnlineImport";
@@ -168,7 +168,7 @@ function MaterialSession({
         isCurrent={isCurrent}
       />
       {canInspectLifecycle ? (
-        <MaterialLifecycle
+        <MaterialManagementEditors
           key={selection?.revision ?? "lifecycle"}
           initialBinding={selection?.binding}
           isCurrent={isCurrent}

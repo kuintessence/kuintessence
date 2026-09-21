@@ -324,12 +324,13 @@ test.each(["success", "uncertain"])("%s discards a pending ordinary lookup", asy
   expect(lifecycle.changeSpackMaterialLifecycle).toHaveBeenCalledTimes(1);
 });
 
-test.each([
+const selectionOutcomes = [
   "success",
   "conflict",
   "uncertain then GET",
-  "uncertain then edit",
-])("%s protects a pending lifecycle write from catalog and import selection attempts", async (outcome) => {
+  "uncertain edit then GET",
+];
+test.each(selectionOutcomes)("%s protects catalog and import selection", async (outcome) => {
   const f = lifecycleFixture();
   const sibling = lifecycleFixture("org/org-a/alternate");
   const pending = deferred<SpackMaterialLifecycleView>();
@@ -420,20 +421,23 @@ test.each([
     );
     expect(materials.getSpackMaterial).toHaveBeenCalledTimes(1);
     expect(lifecycle.getSpackMaterialLifecycle).toHaveBeenCalledTimes(1);
-    if (outcome === "uncertain then GET") {
-      const recheck = deferred<SpackMaterialLifecycleView>();
-      vi.mocked(lifecycle.getSpackMaterialLifecycle).mockReturnValueOnce(recheck.promise);
-      inspectLifecycle();
-      fireEvent.click(importSelection());
-      expect(catalogSelection(sibling.view.repository)).toHaveProperty("disabled", true);
-      await act(async () => recheck.resolve(f.atRevision(1, WITHDRAW_REASON)));
-      expect(lifecycleUi().getByText(labels.lifecycleNotice.rechecked)).toBeTruthy();
-    } else {
+    if (outcome === "uncertain edit then GET") {
       fireEvent.change(lifecycleUi().getByLabelText(labels.lifecycleManifestDigest), {
         target: { value: sibling.binding.manifestDigest },
       });
-      expect(lifecycleUi().queryByRole("alert")).toBeNull();
+      expect(lifecycleUi().getByLabelText(labels.lifecycleManifestDigest)).toHaveProperty(
+        "value",
+        f.binding.manifestDigest,
+      );
+      expect(lifecycleUi().getByRole("alert").textContent).toBe(labels.lifecycleNotice.uncertain);
     }
+    const recheck = deferred<SpackMaterialLifecycleView>();
+    vi.mocked(lifecycle.getSpackMaterialLifecycle).mockReturnValueOnce(recheck.promise);
+    inspectLifecycle();
+    fireEvent.click(importSelection());
+    expect(catalogSelection(sibling.view.repository)).toHaveProperty("disabled", true);
+    await act(async () => recheck.resolve(f.atRevision(1, WITHDRAW_REASON)));
+    expect(lifecycleUi().getByText(labels.lifecycleNotice.rechecked)).toBeTruthy();
   }
   expect(catalogSelection(sibling.view.repository)).toHaveProperty("disabled", false);
   fireEvent.click(importSelection());
@@ -447,9 +451,7 @@ test.each([
     sibling.binding.manifestDigest,
   );
   expect(materials.getSpackMaterial).toHaveBeenCalledTimes(2);
-  expect(lifecycle.getSpackMaterialLifecycle).toHaveBeenCalledTimes(
-    outcome === "uncertain then GET" ? 2 : 1,
-  );
+  expect(lifecycle.getSpackMaterialLifecycle).toHaveBeenCalledTimes(uncertain ? 2 : 1);
   expect(lifecycle.changeSpackMaterialLifecycle).toHaveBeenCalledTimes(1);
   expect(materials.publishSpackMaterial).toHaveBeenCalledTimes(1);
 });

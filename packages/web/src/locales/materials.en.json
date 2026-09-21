@@ -77,6 +77,45 @@
     "bytes": "Bytes",
     "previous": "Previous sources",
     "next": "Next sources",
+    "managementEditors": "Release management",
+    "lifecycleTab": "Lifecycle",
+    "visibilityTab": "Visibility",
+    "visibilityTitle": "Release visibility",
+    "visibilityRepositoryId": "Visibility repository ID",
+    "visibilityManifestDigest": "Visibility manifest digest",
+    "visibilityInspect": "Inspect visibility policy",
+    "visibilityStop": "Stop waiting for visibility",
+    "visibilityPolicy": "Visibility policy",
+    "visibilityReason": "Visibility audit reason",
+    "visibilitySave": "Save visibility policy",
+    "visibilityInvalidPolicy": "Use at most 100 unique lowercase canonical UUIDs per list, separated by whitespace.",
+    "visibilityDenyAll": "An empty allowlist denies all ordinary reads.",
+    "visibilityConfirm": "I confirm this policy only restricts existing namespace and recipe permissions. Tightening access may interrupt ongoing downloads.",
+    "visibilityHistory": "Visibility audit history",
+    "visibilityHistoryEmpty": "No visibility changes",
+    "visibilityPrevious": "Previous visibility events",
+    "visibilityNext": "Next visibility events",
+    "visibilityMode": {
+      "inherit": "Inherit existing permissions",
+      "allowlist": "Restrict to allowlist"
+    },
+    "visibilityPrincipals": {
+      "userIds": "Allowed user UUIDs",
+      "orgIds": "Allowed organization UUIDs"
+    },
+    "visibilityBusy": {
+      "read": "Reading visibility policy",
+      "write": "Submitting visibility policy"
+    },
+    "visibilityNotice": {
+      "changed": "Visibility change confirmed.",
+      "rechecked": "Current visibility policy retrieved. Audit history records committed changes.",
+      "uncertain": "Visibility outcome unconfirmed. Inspect this binding before changing selection or submitting again.",
+      "conflict": "Revision changed or policy is unchanged. Inspect the current policy.",
+      "forbidden": "Visibility management is unavailable for the current identity and organization.",
+      "unavailable": "Visibility policy is unavailable. Management requires the policy-ready rollout phase.",
+      "invalid": "Invalid visibility policy or audit reason."
+    },
     "lifecycleTitle": "Release lifecycle",
     "lifecycleRepositoryId": "Lifecycle repository ID",
     "lifecycleManifestDigest": "Lifecycle manifest digest",

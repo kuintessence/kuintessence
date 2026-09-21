@@ -2,9 +2,9 @@ import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:tes
 import { randomUUID } from "node:crypto";
 import {
   type PgDb,
+  type SpackMaterialVisibilityPolicy,
   softwareOperations,
   spackMaterialOperationReferences,
-  type SpackMaterialVisibilityPolicy,
   userOrgMemberships,
   users,
 } from "@kuintessence/db";
@@ -107,37 +107,37 @@ describe("Server material visibility (isolated real PG)", () => {
     });
   });
 
-  test.each(["queued", "running"] as const)(
-    "tightening revokes the same %s ticket for both routes, including an existing reference",
-    async (status) => {
-      const ticket = await prepare(status);
-      await expectDownloads(ticket);
-      const references = await db.select().from(spackMaterialOperationReferences);
-      await f.changePolicy({
-        policy: DENY_ALL,
-        expectedRevision: 0,
-        reason: "Restrict an active installation",
-      });
-      // Operation/CP/certificate access still permits this requester. Only visibility changed.
-      expect(await f.access.operation(ticket.operationId)).not.toBeNull();
-      await expectDenied(ticket);
-      await expectDenied(ticket);
-      expect(await db.select().from(spackMaterialOperationReferences)).toEqual(references);
-      const [operation] = await db
-        .select()
-        .from(softwareOperations)
-        .where(eq(softwareOperations.id, ticket.operationId));
-      expect(operation?.status).toBe(status);
+  test.each([
+    "queued",
+    "running",
+  ] as const)("tightening revokes the same %s ticket for both routes, including an existing reference", async (status) => {
+    const ticket = await prepare(status);
+    await expectDownloads(ticket);
+    const references = await db.select().from(spackMaterialOperationReferences);
+    await f.changePolicy({
+      policy: DENY_ALL,
+      expectedRevision: 0,
+      reason: "Restrict an active installation",
+    });
+    // Operation/CP/certificate access still permits this requester. Only visibility changed.
+    expect(await f.access.operation(ticket.operationId)).not.toBeNull();
+    await expectDenied(ticket);
+    await expectDenied(ticket);
+    expect(await db.select().from(spackMaterialOperationReferences)).toEqual(references);
+    const [operation] = await db
+      .select()
+      .from(softwareOperations)
+      .where(eq(softwareOperations.id, ticket.operationId));
+    expect(operation?.status).toBe(status);
 
-      await f.changePolicy({
-        policy: { mode: "inherit" },
-        expectedRevision: 1,
-        reason: "Restore access after review",
-      });
-      await expectDownloads(ticket);
-      expect(await db.select().from(spackMaterialOperationReferences)).toEqual(references);
-    },
-  );
+    await f.changePolicy({
+      policy: { mode: "inherit" },
+      expectedRevision: 1,
+      reason: "Restore access after review",
+    });
+    await expectDownloads(ticket);
+    expect(await db.select().from(spackMaterialOperationReferences)).toEqual(references);
+  });
 
   test("user allowlist admits preparation and is read again on old-ticket requests", async () => {
     await f.changePolicy({
@@ -230,25 +230,25 @@ describe("Server material visibility (isolated real PG)", () => {
     });
   });
 
-  test.each(["visibility", "suspension"] as const)(
-    "preparation rechecks %s after the Registry read before issuing a ticket",
-    async (change) => {
-      f.afterManifest(async () => {
-        if (change === "visibility") {
-          await f.changePolicy({
-            policy: DENY_ALL,
-            expectedRevision: 0,
-            reason: "Tighten policy while preparation is reading the manifest",
-          });
-        } else {
-          await db.update(users).set({ suspended: true }).where(eq(users.id, ACTOR));
-        }
-      });
-      await expect(prepare()).rejects.toMatchObject({ statusCode: 503 });
-      expect(f.registryCalls).toHaveLength(1);
-      expect(await db.select().from(spackMaterialOperationReferences)).toHaveLength(0);
-    },
-  );
+  test.each([
+    "visibility",
+    "suspension",
+  ] as const)("preparation rechecks %s after the Registry read before issuing a ticket", async (change) => {
+    f.afterManifest(async () => {
+      if (change === "visibility") {
+        await f.changePolicy({
+          policy: DENY_ALL,
+          expectedRevision: 0,
+          reason: "Tighten policy while preparation is reading the manifest",
+        });
+      } else {
+        await db.update(users).set({ suspended: true }).where(eq(users.id, ACTOR));
+      }
+    });
+    await expect(prepare()).rejects.toMatchObject({ statusCode: 503 });
+    expect(f.registryCalls).toHaveLength(1);
+    expect(await db.select().from(spackMaterialOperationReferences)).toHaveLength(0);
+  });
 
   test("suspending a canonical requester revokes both old-ticket routes", async () => {
     const ticket = await prepare();

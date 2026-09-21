@@ -270,35 +270,35 @@ describe("Spack material visibility (isolated real PG)", () => {
     expect(await db.select().from(spackMaterialVisibilityEvents)).toEqual([]);
   });
 
-  test.each(["user", "organization"] as const)(
-    "%s allowlisting never broadens the external callback ACL",
-    async (mode) => {
-      const binding = release();
-      const { visibility } = await ready();
-      await db.insert(userOrgMemberships).values({ userId: READER, orgId: ORG, role: "member" });
-      const policy = mode === "user" ? allowlist([READER]) : allowlist([], [ORG]);
-      await visibility.transition(binding, OPERATOR, change(policy), allow);
-      await visibility.assertReadable(binding, READER, allow);
-      await expectError(visibility.assertReadable(binding, OUTSIDER, allow), DENIED);
-      const seen: Principal[] = [];
-      await expectError(
-        visibility.assertReadable(binding, READER, async (principal) => {
-          seen.push(principal);
-          throw new Error(PRIVATE);
-        }),
-        DENIED,
-      );
-      expect(seen).toEqual([{ sub: READER, role: "user", orgIds: [ORG] }]);
-      await db.delete(userOrgMemberships).where(eq(userOrgMemberships.userId, READER));
-      if (mode === "organization") {
-        await expectError(visibility.assertReadable(binding, READER, allow), DENIED);
-      } else {
-        await visibility.assertReadable(binding, READER, allow);
-      }
-      await db.update(users).set({ suspended: true }).where(eq(users.id, READER));
+  test.each([
+    "user",
+    "organization",
+  ] as const)("%s allowlisting never broadens the external callback ACL", async (mode) => {
+    const binding = release();
+    const { visibility } = await ready();
+    await db.insert(userOrgMemberships).values({ userId: READER, orgId: ORG, role: "member" });
+    const policy = mode === "user" ? allowlist([READER]) : allowlist([], [ORG]);
+    await visibility.transition(binding, OPERATOR, change(policy), allow);
+    await visibility.assertReadable(binding, READER, allow);
+    await expectError(visibility.assertReadable(binding, OUTSIDER, allow), DENIED);
+    const seen: Principal[] = [];
+    await expectError(
+      visibility.assertReadable(binding, READER, async (principal) => {
+        seen.push(principal);
+        throw new Error(PRIVATE);
+      }),
+      DENIED,
+    );
+    expect(seen).toEqual([{ sub: READER, role: "user", orgIds: [ORG] }]);
+    await db.delete(userOrgMemberships).where(eq(userOrgMemberships.userId, READER));
+    if (mode === "organization") {
       await expectError(visibility.assertReadable(binding, READER, allow), DENIED);
-    },
-  );
+    } else {
+      await visibility.assertReadable(binding, READER, allow);
+    }
+    await db.update(users).set({ suspended: true }).where(eq(users.id, READER));
+    await expectError(visibility.assertReadable(binding, READER, allow), DENIED);
+  });
 
   test("combines users and organizations as a union inside the external ACL intersection", async () => {
     const binding = release();
@@ -323,36 +323,36 @@ describe("Spack material visibility (isolated real PG)", () => {
     await visibility.assertReadable(binding, OPERATOR, allow);
   });
 
-  test.each(["read", "write"] as const)(
-    "management requires the supplied %s permission even for allowlisted users",
-    async (missing) => {
-      const binding = release();
-      const { visibility } = await ready();
-      await visibility.transition(binding, OPERATOR, change(allowlist([READER])), allow);
-      const checked: string[] = [];
-      const seen: Principal[] = [];
-      const manage: Authorize = async (principal) => {
-        seen.push(principal);
-        for (const permission of ["read", "write"]) {
-          checked.push(permission);
-          if (permission === missing) throw new Error(PRIVATE);
-        }
-      };
-      await expectError(visibility.inspect(binding, READER, manage), FORBIDDEN);
-      await expectError(
-        visibility.transition(binding, READER, change({ mode: "inherit" }, 1), manage),
-        FORBIDDEN,
-      );
-      expect(checked).toEqual(
-        missing === "read" ? ["read", "read"] : ["read", "write", "read", "write"],
-      );
-      expect(seen).toEqual([
-        { sub: READER, role: "user", orgIds: [] },
-        { sub: READER, role: "user", orgIds: [] },
-      ]);
-      expect(await db.select().from(spackMaterialVisibilityEvents)).toHaveLength(1);
-    },
-  );
+  test.each([
+    "read",
+    "write",
+  ] as const)("management requires the supplied %s permission even for allowlisted users", async (missing) => {
+    const binding = release();
+    const { visibility } = await ready();
+    await visibility.transition(binding, OPERATOR, change(allowlist([READER])), allow);
+    const checked: string[] = [];
+    const seen: Principal[] = [];
+    const manage: Authorize = async (principal) => {
+      seen.push(principal);
+      for (const permission of ["read", "write"]) {
+        checked.push(permission);
+        if (permission === missing) throw new Error(PRIVATE);
+      }
+    };
+    await expectError(visibility.inspect(binding, READER, manage), FORBIDDEN);
+    await expectError(
+      visibility.transition(binding, READER, change({ mode: "inherit" }, 1), manage),
+      FORBIDDEN,
+    );
+    expect(checked).toEqual(
+      missing === "read" ? ["read", "read"] : ["read", "write", "read", "write"],
+    );
+    expect(seen).toEqual([
+      { sub: READER, role: "user", orgIds: [] },
+      { sub: READER, role: "user", orgIds: [] },
+    ]);
+    expect(await db.select().from(spackMaterialVisibilityEvents)).toHaveLength(1);
+  });
 
   test("ordinary users can manage when the callback grants both read and write", async () => {
     const binding = release();
@@ -399,61 +399,65 @@ describe("Spack material visibility (isolated real PG)", () => {
     expect(await db.select().from(spackMaterialVisibilityEvents)).toHaveLength(1);
   });
 
-  test.each(["missing", "suspended", "malformed"] as const)(
-    "rejects %s canonical identities before invoking callbacks",
-    async (mode) => {
-      const binding = release();
-      const { visibility } = await ready();
-      const subject = mode === "missing" ? randomUUID() : mode === "malformed" ? "fake" : READER;
-      if (mode === "suspended") {
-        await db.update(users).set({ suspended: true }).where(eq(users.id, READER));
-      }
-      let calls = 0;
-      const authorize: Authorize = async () => {
-        calls++;
-      };
-      await expectError(visibility.assertReadable(binding, subject, authorize), DENIED);
-      await expectError(visibility.inspect(binding, subject, authorize), FORBIDDEN);
-      await expectError(visibility.transition(binding, subject, change(), authorize), FORBIDDEN);
-      expect(calls).toBe(0);
-      expect(await db.select().from(spackMaterialVisibilityEvents)).toEqual([]);
-    },
-  );
+  test.each([
+    "missing",
+    "suspended",
+    "malformed",
+  ] as const)("rejects %s canonical identities before invoking callbacks", async (mode) => {
+    const binding = release();
+    const { visibility } = await ready();
+    const subject = mode === "missing" ? randomUUID() : mode === "malformed" ? "fake" : READER;
+    if (mode === "suspended") {
+      await db.update(users).set({ suspended: true }).where(eq(users.id, READER));
+    }
+    let calls = 0;
+    const authorize: Authorize = async () => {
+      calls++;
+    };
+    await expectError(visibility.assertReadable(binding, subject, authorize), DENIED);
+    await expectError(visibility.inspect(binding, subject, authorize), FORBIDDEN);
+    await expectError(visibility.transition(binding, subject, change(), authorize), FORBIDDEN);
+    expect(calls).toBe(0);
+    expect(await db.select().from(spackMaterialVisibilityEvents)).toEqual([]);
+  });
 
-  test.each(["observe", "legacy-ready", "missing epoch", "wrong epoch", "paused"] as const)(
-    "management is fenced outside matching policy-ready (%s)",
-    async (mode) => {
-      const binding = release();
-      let visibility = new SpackMaterialVisibility(db);
-      if (mode !== "observe") {
-        const fixture = await ready(0, mode !== "legacy-ready");
-        visibility = new SpackMaterialVisibility(
-          db,
-          mode === "missing epoch" ? undefined : mode === "wrong epoch" ? randomUUID() : fixture.epoch,
-        );
-        if (mode === "paused") {
-          await rollout.execute({
-            action: "pause",
-            operatorId: OPERATOR,
-            expectedRevision: fixture.state.revision,
-          });
-        }
+  test.each([
+    "observe",
+    "legacy-ready",
+    "missing epoch",
+    "wrong epoch",
+    "paused",
+  ] as const)("management is fenced outside matching policy-ready (%s)", async (mode) => {
+    const binding = release();
+    let visibility = new SpackMaterialVisibility(db);
+    if (mode !== "observe") {
+      const fixture = await ready(0, mode !== "legacy-ready");
+      visibility = new SpackMaterialVisibility(
+        db,
+        mode === "missing epoch" ? undefined : mode === "wrong epoch" ? randomUUID() : fixture.epoch,
+      );
+      if (mode === "paused") {
+        await rollout.execute({
+          action: "pause",
+          operatorId: OPERATOR,
+          expectedRevision: fixture.state.revision,
+        });
       }
-      let calls = 0;
-      const authorize: Authorize = async () => {
-        calls++;
-      };
-      await expectError(visibility.inspect(binding, OPERATOR, authorize), UNAVAILABLE);
-      await expectError(visibility.transition(binding, OPERATOR, change(), authorize), UNAVAILABLE);
-      expect(calls).toBe(0);
-      if (mode === "observe" || mode === "legacy-ready") {
-        await visibility.assertReadable(binding, READER, allow);
-      } else {
-        await expectError(visibility.assertReadable(binding, READER, allow), UNAVAILABLE);
-      }
-      expect(await db.select().from(spackMaterialVisibilityEvents)).toEqual([]);
-    },
-  );
+    }
+    let calls = 0;
+    const authorize: Authorize = async () => {
+      calls++;
+    };
+    await expectError(visibility.inspect(binding, OPERATOR, authorize), UNAVAILABLE);
+    await expectError(visibility.transition(binding, OPERATOR, change(), authorize), UNAVAILABLE);
+    expect(calls).toBe(0);
+    if (mode === "observe" || mode === "legacy-ready") {
+      await visibility.assertReadable(binding, READER, allow);
+    } else {
+      await expectError(visibility.assertReadable(binding, READER, allow), UNAVAILABLE);
+    }
+    expect(await db.select().from(spackMaterialVisibilityEvents)).toEqual([]);
+  });
 
   test("revoke and restore append durable audit with independent lifecycle and pair revisions", async () => {
     const binding = release();
@@ -575,12 +579,12 @@ describe("Spack material visibility (isolated real PG)", () => {
           throw new Error("First writer did not wait for authorization");
         }),
       ]);
-      secondResult = Promise.allSettled([
-        peer.transition(binding, OPERATOR, change(), allow),
-      ]).then((results) => {
-        completed = true;
-        return results;
-      });
+      secondResult = Promise.allSettled([peer.transition(binding, OPERATOR, change(), allow)]).then(
+        (results) => {
+          completed = true;
+          return results;
+        },
+      );
       await waitForLock(admin, waiter, holder, "advisory", () => completed);
     } finally {
       releaseAuthorization.resolve();
@@ -614,126 +618,121 @@ describe("Spack material visibility (isolated real PG)", () => {
     { mode: "membership deletion", entry: "read" },
     { mode: "suspension", entry: "transition" },
     { mode: "membership deletion", entry: "transition" },
-  ])(
-    "canonical row locks hold $entry against concurrent $mode",
-    async ({ mode, entry }) => {
-      const binding = release();
-      const { visibility } = await ready();
-      await db.insert(userOrgMemberships).values({ userId: READER, orgId: ORG, role: "member" });
-      await visibility.transition(binding, OPERATOR, change(allowlist([], [ORG])), allow);
-      const { holder, waiter } = await backendPids();
-      const entered = Promise.withResolvers<void>();
-      const releaseAuthorization = Promise.withResolvers<void>();
-      const authorize: Authorize = async (principal) => {
-        expect(principal).toEqual({ sub: READER, role: "user", orgIds: [ORG] });
-        entered.resolve();
-        await releaseAuthorization.promise;
-      };
-      const admission =
-        entry === "read"
-          ? visibility.assertReadable(binding, READER, authorize)
-          : visibility.transition(binding, READER, change(allowlist([READER]), 1), authorize);
-      const admissionResult = Promise.allSettled([admission]);
-      let completed = false;
-      let revocationResult: Promise<PromiseSettledResult<unknown>[]> | undefined;
-      try {
-        await Promise.race([
-          entered.promise,
-          admission.then(() => {
-            throw new Error("Admission completed before authorization was released");
-          }),
-        ]);
-        revocationResult = Promise.allSettled([
-          peerDb.transaction(async (tx) => {
-            if (mode === "suspension") {
-              await tx.update(users).set({ suspended: true }).where(eq(users.id, READER));
-            } else {
-              await tx.delete(userOrgMemberships).where(eq(userOrgMemberships.userId, READER));
-            }
-          }),
-        ]).then((results) => {
-          completed = true;
-          return results;
-        });
-        await waitForLock(admin, waiter, holder, "transactionid", () => completed);
-      } finally {
-        releaseAuthorization.resolve();
-        await Promise.all([admissionResult, revocationResult]);
-      }
-      expect(await admissionResult).toMatchObject([{ status: "fulfilled" }]);
-      expect(await revocationResult).toMatchObject([{ status: "fulfilled" }]);
-      const requireMembership: Authorize = async (principal) => {
-        if (!principal.orgIds.includes(ORG)) throw new Error(PRIVATE);
-      };
-      await expectError(visibility.assertReadable(binding, READER, requireMembership), DENIED);
-      await expectError(visibility.inspect(binding, READER, requireMembership), FORBIDDEN);
-      await expectError(
-        visibility.transition(
-          binding,
-          READER,
-          change({ mode: "inherit" }, entry === "read" ? 1 : 2),
-          requireMembership,
-        ),
-        FORBIDDEN,
-      );
-      expect(await db.select().from(spackMaterialVisibilityEvents)).toHaveLength(
-        entry === "read" ? 1 : 2,
-      );
-    },
-    15_000,
-  );
-
-  test.each(["queued", "running"] as const)(
-    "tightens active %s operations, blocks concurrent retries and preserves reference history",
-    async (status) => {
-      const binding = release();
-      const { visibility, peer, references, peerReferences } = await ready();
-      const input = await operation(binding);
-      await references.acquireOperation(input);
-      await db
-        .update(softwareOperations)
-        .set({ status })
-        .where(eq(softwareOperations.id, input.operationId));
-      const original = await db.select().from(spackMaterialOperationReferences);
-      const { holder, waiter } = await backendPids();
-      const entered = Promise.withResolvers<void>();
-      const releaseAuthorization = Promise.withResolvers<void>();
-      const tighten = visibility.transition(binding, OPERATOR, change(), async () => {
-        entered.resolve();
-        await releaseAuthorization.promise;
+  ])("canonical row locks hold $entry against concurrent $mode", async ({ mode, entry }) => {
+    const binding = release();
+    const { visibility } = await ready();
+    await db.insert(userOrgMemberships).values({ userId: READER, orgId: ORG, role: "member" });
+    await visibility.transition(binding, OPERATOR, change(allowlist([], [ORG])), allow);
+    const { holder, waiter } = await backendPids();
+    const entered = Promise.withResolvers<void>();
+    const releaseAuthorization = Promise.withResolvers<void>();
+    const authorize: Authorize = async (principal) => {
+      expect(principal).toEqual({ sub: READER, role: "user", orgIds: [ORG] });
+      entered.resolve();
+      await releaseAuthorization.promise;
+    };
+    const admission =
+      entry === "read"
+        ? visibility.assertReadable(binding, READER, authorize)
+        : visibility.transition(binding, READER, change(allowlist([READER]), 1), authorize);
+    const admissionResult = Promise.allSettled([admission]);
+    let completed = false;
+    let revocationResult: Promise<PromiseSettledResult<unknown>[]> | undefined;
+    try {
+      await Promise.race([
+        entered.promise,
+        admission.then(() => {
+          throw new Error("Admission completed before authorization was released");
+        }),
+      ]);
+      revocationResult = Promise.allSettled([
+        peerDb.transaction(async (tx) => {
+          if (mode === "suspension") {
+            await tx.update(users).set({ suspended: true }).where(eq(users.id, READER));
+          } else {
+            await tx.delete(userOrgMemberships).where(eq(userOrgMemberships.userId, READER));
+          }
+        }),
+      ]).then((results) => {
+        completed = true;
+        return results;
       });
-      const tightenResult = Promise.allSettled([tighten]);
-      let completed = false;
-      let retryResult: Promise<PromiseSettledResult<unknown>[]> | undefined;
-      try {
-        await Promise.race([
-          entered.promise,
-          tighten.then(() => {
-            throw new Error("Policy mutation did not wait for authorization");
-          }),
-        ]);
-        retryResult = Promise.allSettled([peerReferences.acquireOperation(input)]).then((results) => {
-          completed = true;
-          return results;
-        });
-        await waitForLock(admin, waiter, holder, "advisory", () => completed);
-      } finally {
-        releaseAuthorization.resolve();
-        await Promise.all([tightenResult, retryResult]);
-      }
-      expect(await tightenResult).toMatchObject([{ status: "fulfilled", value: { revision: 1 } }]);
-      expect(await retryResult).toMatchObject([{ status: "rejected", reason: REFERENCE_ERROR }]);
-      await expectError(peerReferences.acquireOperation(input), REFERENCE_ERROR);
-      await expectError(peer.assertReadable(binding, READER, allow), DENIED);
-      await expectError(references.acquireOperation(await operation(binding)), REFERENCE_ERROR);
-      expect(await db.select().from(spackMaterialOperationReferences)).toEqual(original);
-      await visibility.transition(binding, OPERATOR, change(allowlist([READER]), 1), allow);
-      await peerReferences.acquireOperation(input);
-      expect(await db.select().from(spackMaterialOperationReferences)).toEqual(original);
-      expect(await db.select().from(spackMaterialLifecycleEvents)).toEqual([]);
-    },
-    15_000,
-  );
+      await waitForLock(admin, waiter, holder, "transactionid", () => completed);
+    } finally {
+      releaseAuthorization.resolve();
+      await Promise.all([admissionResult, revocationResult]);
+    }
+    expect(await admissionResult).toMatchObject([{ status: "fulfilled" }]);
+    expect(await revocationResult).toMatchObject([{ status: "fulfilled" }]);
+    const requireMembership: Authorize = async (principal) => {
+      if (!principal.orgIds.includes(ORG)) throw new Error(PRIVATE);
+    };
+    await expectError(visibility.assertReadable(binding, READER, requireMembership), DENIED);
+    await expectError(visibility.inspect(binding, READER, requireMembership), FORBIDDEN);
+    await expectError(
+      visibility.transition(
+        binding,
+        READER,
+        change({ mode: "inherit" }, entry === "read" ? 1 : 2),
+        requireMembership,
+      ),
+      FORBIDDEN,
+    );
+    expect(await db.select().from(spackMaterialVisibilityEvents)).toHaveLength(
+      entry === "read" ? 1 : 2,
+    );
+  }, 15_000);
+
+  test.each([
+    "queued",
+    "running",
+  ] as const)("tightens active %s operations, blocks concurrent retries and preserves reference history", async (status) => {
+    const binding = release();
+    const { visibility, peer, references, peerReferences } = await ready();
+    const input = await operation(binding);
+    await references.acquireOperation(input);
+    await db
+      .update(softwareOperations)
+      .set({ status })
+      .where(eq(softwareOperations.id, input.operationId));
+    const original = await db.select().from(spackMaterialOperationReferences);
+    const { holder, waiter } = await backendPids();
+    const entered = Promise.withResolvers<void>();
+    const releaseAuthorization = Promise.withResolvers<void>();
+    const tighten = visibility.transition(binding, OPERATOR, change(), async () => {
+      entered.resolve();
+      await releaseAuthorization.promise;
+    });
+    const tightenResult = Promise.allSettled([tighten]);
+    let completed = false;
+    let retryResult: Promise<PromiseSettledResult<unknown>[]> | undefined;
+    try {
+      await Promise.race([
+        entered.promise,
+        tighten.then(() => {
+          throw new Error("Policy mutation did not wait for authorization");
+        }),
+      ]);
+      retryResult = Promise.allSettled([peerReferences.acquireOperation(input)]).then((results) => {
+        completed = true;
+        return results;
+      });
+      await waitForLock(admin, waiter, holder, "advisory", () => completed);
+    } finally {
+      releaseAuthorization.resolve();
+      await Promise.all([tightenResult, retryResult]);
+    }
+    expect(await tightenResult).toMatchObject([{ status: "fulfilled", value: { revision: 1 } }]);
+    expect(await retryResult).toMatchObject([{ status: "rejected", reason: REFERENCE_ERROR }]);
+    await expectError(peerReferences.acquireOperation(input), REFERENCE_ERROR);
+    await expectError(peer.assertReadable(binding, READER, allow), DENIED);
+    await expectError(references.acquireOperation(await operation(binding)), REFERENCE_ERROR);
+    expect(await db.select().from(spackMaterialOperationReferences)).toEqual(original);
+    await visibility.transition(binding, OPERATOR, change(allowlist([READER]), 1), allow);
+    await peerReferences.acquireOperation(input);
+    expect(await db.select().from(spackMaterialOperationReferences)).toEqual(original);
+    expect(await db.select().from(spackMaterialLifecycleEvents)).toEqual([]);
+  }, 15_000);
 
   test("old operation tickets recheck canonical membership and suspension even on retry", async () => {
     const binding = release();
@@ -853,21 +852,23 @@ describe("Spack material visibility (isolated real PG)", () => {
     expect(await db.select().from(spackMaterialOperationReferences)).toEqual(original);
   });
 
-  test.each([" leading", "trailing ", "embedded\nnewline", "embedded\x7fdelete"])(
-    "corrupt persisted audit reasons fail closed (%j)",
-    async (reason) => {
-      const binding = release();
-      const { visibility } = await ready();
-      await visibility.transition(binding, OPERATOR, change(allowlist([READER])), allow);
-      await db.update(spackMaterialVisibilityEvents).set({ reason });
-      await expectError(visibility.inspect(binding, OPERATOR, allow), UNAVAILABLE);
-      await expectError(visibility.assertReadable(binding, READER, allow), UNAVAILABLE);
-      await expectError(
-        visibility.transition(binding, OPERATOR, change({ mode: "inherit" }, 1), allow),
-        UNAVAILABLE,
-      );
-    },
-  );
+  test.each([
+    " leading",
+    "trailing ",
+    "embedded\nnewline",
+    "embedded\x7fdelete",
+  ])("corrupt persisted audit reasons fail closed (%j)", async (reason) => {
+    const binding = release();
+    const { visibility } = await ready();
+    await visibility.transition(binding, OPERATOR, change(allowlist([READER])), allow);
+    await db.update(spackMaterialVisibilityEvents).set({ reason });
+    await expectError(visibility.inspect(binding, OPERATOR, allow), UNAVAILABLE);
+    await expectError(visibility.assertReadable(binding, READER, allow), UNAVAILABLE);
+    await expectError(
+      visibility.transition(binding, OPERATOR, change({ mode: "inherit" }, 1), allow),
+      UNAVAILABLE,
+    );
+  });
 
   test.each([
     "spack_material_visibility_events",
@@ -904,7 +905,9 @@ describe("Spack material visibility (isolated real PG)", () => {
     }
   });
 
-  test.each([1, 2, 3])("honors caller deadline checkpoint %s and releases the transaction", async (stop) => {
+  test.each([
+    1, 2, 3,
+  ])("honors caller deadline checkpoint %s and releases the transaction", async (stop) => {
     const binding = release();
     const { visibility, peer } = await ready();
     let checkpoints = 0;
@@ -1042,45 +1045,45 @@ describe("Spack material visibility (isolated real PG)", () => {
     expect(await db.select().from(spackMaterialVisibilityEvents)).toEqual([]);
   });
 
-  test.each(["revoke", "restore"] as const)(
-    "audit insert failure sanitizes diagnostics and rolls back %s",
-    async (mode) => {
-      const binding = release();
-      const { visibility, peer } = await ready();
-      if (mode === "restore") await visibility.transition(binding, OPERATOR, change(), allow);
-      const before = await visibility.inspect(binding, OPERATOR, allow);
-      const journal = await db.select().from(spackMaterialVisibilityEvents);
-      const mutation = change(mode === "restore" ? { mode: "inherit" } : allowlist(), before.revision);
-      await db.execute(sql`
+  test.each([
+    "revoke",
+    "restore",
+  ] as const)("audit insert failure sanitizes diagnostics and rolls back %s", async (mode) => {
+    const binding = release();
+    const { visibility, peer } = await ready();
+    if (mode === "restore") await visibility.transition(binding, OPERATOR, change(), allow);
+    const before = await visibility.inspect(binding, OPERATOR, allow);
+    const journal = await db.select().from(spackMaterialVisibilityEvents);
+    const mutation = change(mode === "restore" ? { mode: "inherit" } : allowlist(), before.revision);
+    await db.execute(sql`
         create function reject_visibility_audit() returns trigger as $$
         begin
           raise exception 'private visibility fixture SQL/token diagnostic';
         end;
         $$ language plpgsql
       `);
-      try {
-        await db.execute(sql`
+    try {
+      await db.execute(sql`
           create trigger reject_visibility before insert on spack_material_visibility_events
           for each row execute function reject_visibility_audit()
         `);
-        try {
-          await expectError(visibility.transition(binding, OPERATOR, mutation, allow), UNAVAILABLE);
-          expect(await peer.inspect(binding, OPERATOR, allow)).toEqual(before);
-          expect(await db.select().from(spackMaterialVisibilityEvents)).toEqual(journal);
-          if (mode === "restore") {
-            await expectError(peer.assertReadable(binding, READER, allow), DENIED);
-          } else {
-            await peer.assertReadable(binding, READER, allow);
-          }
-        } finally {
-          await db.execute(sql`drop trigger reject_visibility on spack_material_visibility_events`);
+      try {
+        await expectError(visibility.transition(binding, OPERATOR, mutation, allow), UNAVAILABLE);
+        expect(await peer.inspect(binding, OPERATOR, allow)).toEqual(before);
+        expect(await db.select().from(spackMaterialVisibilityEvents)).toEqual(journal);
+        if (mode === "restore") {
+          await expectError(peer.assertReadable(binding, READER, allow), DENIED);
+        } else {
+          await peer.assertReadable(binding, READER, allow);
         }
       } finally {
-        await db.execute(sql`drop function reject_visibility_audit()`);
+        await db.execute(sql`drop trigger reject_visibility on spack_material_visibility_events`);
       }
-      expect(await peer.transition(binding, OPERATOR, mutation, allow)).toMatchObject({
-        revision: before.revision + 1,
-      });
-    },
-  );
+    } finally {
+      await db.execute(sql`drop function reject_visibility_audit()`);
+    }
+    expect(await peer.transition(binding, OPERATOR, mutation, allow)).toMatchObject({
+      revision: before.revision + 1,
+    });
+  });
 });

@@ -13,16 +13,19 @@ import {
 import { join } from "node:path";
 import type { SpackMaterialImport } from "@kuintessence/shared";
 import {
+  BASE,
   cleanupMaterials,
   LOCK,
   LOCK_BLOB,
+  materialApp,
   materialFixture,
   SOURCE,
   SOURCE_BLOB,
 } from "../routes/spack-materials.test-helpers";
-import { USER } from "../routes/spack-repositories.test-helpers";
+import { headers, USER } from "../routes/spack-repositories.test-helpers";
 import { bootstrapSpackMaterials } from "./material-bootstrap";
 import { SpackMaterialStore } from "./spack-material-store";
+import { HIDE, OWNER, visibilityFake } from "./spack-material-visibility.test-helpers";
 
 afterEach(cleanupMaterials);
 
@@ -70,6 +73,82 @@ describe("material bootstrap", () => {
     );
     expect(await new Response(downloaded.stream).arrayBuffer()).toEqual(SOURCE.buffer);
     expect(await readFile(f.sourcePath)).toEqual(Buffer.from(SOURCE));
+  });
+
+  test("bootstrap with visibility admission preserves restricted policy on reimport", async () => {
+    const f = await fixture();
+    const fake = visibilityFake();
+    const store = new SpackMaterialStore(
+      f.root,
+      f.recipes,
+      {},
+      undefined,
+      fake.lifecycle,
+      fake.port,
+    );
+    const first = await bootstrapSpackMaterials(store, f.manifestPath);
+    const release = first[0];
+    if (release?.status !== "published") throw new Error("Missing published release");
+    expect(fake.port.assertReadable).not.toHaveBeenCalled();
+    expect(fake.port.inspect).not.toHaveBeenCalled();
+    expect(fake.port.transition).not.toHaveBeenCalled();
+    const binding = release.binding;
+    const path = `${BASE}/${binding.repositoryId}/releases/${binding.manifestDigest}`;
+    const app = materialApp(store);
+    const synthetic = await app.request(path, {
+      headers: headers({
+        sub: "registry-material-bootstrap",
+        role: "super_admin",
+        orgIds: [],
+      }),
+    });
+    expect(synthetic.status).toBe(404);
+    expect(fake.port.assertReadable).toHaveBeenLastCalledWith(
+      binding,
+      "registry-material-bootstrap",
+      expect.any(Function),
+      expect.any(Function),
+    );
+    const status = await store.manageVisibility(
+      binding.repositoryId,
+      binding.manifestDigest,
+      OWNER.sub,
+      HIDE,
+    );
+    const before = structuredClone(status);
+    const manifestPath = join(
+      f.root,
+      "manifests",
+      binding.repositoryId,
+      `${binding.manifestDigest.slice(7)}.json`,
+    );
+    const bytes = await readFile(manifestPath);
+    fake.port.assertReadable.mockClear();
+    const restarted = new SpackMaterialStore(
+      f.root,
+      f.recipes,
+      {},
+      undefined,
+      fake.lifecycle,
+      fake.port,
+    );
+    expect(await bootstrapSpackMaterials(restarted, f.manifestPath)).toEqual(first);
+    expect(fake.port.assertReadable).not.toHaveBeenCalled();
+    expect(fake.port.transition).toHaveBeenCalledTimes(1);
+    expect(fake.port.inspect).not.toHaveBeenCalled();
+    expect(await readFile(manifestPath)).toEqual(bytes);
+    expect(
+      await restarted.manageVisibility(binding.repositoryId, binding.manifestDigest, OWNER.sub),
+    ).toEqual(before);
+    expect(await restarted.list({}, OWNER)).toEqual({ releases: [] });
+    const restartedApp = materialApp(restarted);
+    for (const target of [path, `${path}/blobs/${SOURCE_BLOB.digest}`]) {
+      const response = await restartedApp.request(target, { headers: headers(OWNER) });
+      expect(response.status).toBe(404);
+      expect(await response.json()).toEqual({
+        error: { code: "NOT_FOUND", message: "Material release not found" },
+      });
+    }
   });
 
   test("reports release failures without erasing successful releases or skipping later ones", async () => {
