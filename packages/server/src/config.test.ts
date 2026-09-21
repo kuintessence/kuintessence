@@ -8,6 +8,23 @@ const VALID_BASE = {
 };
 
 describe("Spack material delivery configuration", () => {
+  test("validates the rollout epoch independently of material delivery enablement", () => {
+    const epoch = "12345678-abcd-4123-8123-123456789abc";
+    for (const value of [undefined, ""]) {
+      expect(
+        loadServerConfig({ ...VALID_BASE, SPACK_MATERIAL_EPOCH: value }).SPACK_MATERIAL_EPOCH,
+      ).toBeUndefined();
+    }
+    expect(
+      loadServerConfig({
+        ...VALID_BASE,
+        SPACK_MATERIAL_EPOCH: epoch.toUpperCase(),
+      }).SPACK_MATERIAL_EPOCH,
+    ).toBe(epoch);
+    for (const value of ["latest", " ", `${epoch}\n`, "https://example.invalid"]) {
+      expect(() => loadServerConfig({ ...VALID_BASE, SPACK_MATERIAL_EPOCH: value })).toThrow();
+    }
+  });
   const enabled = {
     ...VALID_BASE,
     SPACK_MATERIAL_DELIVERY_ENABLED: "true",

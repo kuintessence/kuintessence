@@ -179,6 +179,7 @@ services:
       JWT_SECRET: dev-secret-change-me-at-least-32-chars-long
       SERVER_PORT: "3000"
       SERVER_GRPC_PORT: "3001"
+      SPACK_MATERIAL_EPOCH: ${SPACK_MATERIAL_EPOCH:-}
       LOG_LEVEL: info
       NODE_ENV: development
       CLUSTER_FILE_STATIC_ROOTS: /home,/scratch,/work,/projects
@@ -222,6 +223,7 @@ services:
     environment:
       DATABASE_URL: postgres://kq:kq@postgres:5432/kuintessence
       REGISTRY_PORT: "3100"
+      SPACK_MATERIAL_EPOCH: ${SPACK_MATERIAL_EPOCH:-}
       LOG_LEVEL: info
       NODE_ENV: development
       REGISTRY_AUTH_MODE: jwt

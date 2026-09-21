@@ -42,6 +42,9 @@ import {
 } from "./spack-material-storage";
 
 export type MaterialRecipeStore = Pick<RecipeGitStore, "get" | "archive">;
+export interface SpackMaterialRuntimePort {
+  assertRuntime(): Promise<void>;
+}
 export interface SpackMaterialLimits {
   maxBlobBytes: number;
   totalTimeoutMs: number;
@@ -69,6 +72,7 @@ export class SpackMaterialStore {
     readonly root: string,
     private readonly recipes: MaterialRecipeStore,
     limits: Partial<SpackMaterialLimits> = {},
+    private readonly runtime?: SpackMaterialRuntimePort,
   ) {
     if (!isAbsolute(root)) throw new Error("SPACK_MATERIAL_STORE_DIR must be absolute");
     this.limits = {
@@ -86,7 +90,8 @@ export class SpackMaterialStore {
     this.catalog = new SpackMaterialCatalogReader(root, this);
   }
 
-  list(query: SpackMaterialCatalogQuery, actor: RbacPrincipal, signal?: AbortSignal) {
+  async list(query: SpackMaterialCatalogQuery, actor: RbacPrincipal, signal?: AbortSignal) {
+    await this.assertRuntime();
     return this.catalog.list(query, actor, signal);
   }
 
@@ -101,9 +106,11 @@ export class SpackMaterialStore {
     digest: string,
     input: ReadableStream<Uint8Array>,
   ): Promise<SpackMaterialBlob> {
+    await this.assertRuntime(input);
     const id = SpackMaterialStore.repositoryId(repository);
     parseMaterial(SpackMaterialDigestSchema, digest, "material digest");
     const blob = await this.putBlob(input, digest);
+    await this.assertRuntime(input);
     await writeMaterialMetadata(this.receiptPath(id, digest), encode(blob));
     return blob;
   }
@@ -113,6 +120,7 @@ export class SpackMaterialStore {
     actor: RbacPrincipal,
     signal?: AbortSignal,
   ): Promise<SpackMaterialBinding> {
+    await this.assertRuntime();
     signal?.throwIfAborted();
     const request = this.parseRelease(input);
     const repositoryId = SpackMaterialStore.repositoryId(request.repository);
@@ -143,6 +151,7 @@ export class SpackMaterialStore {
       );
       const bytes = encode(manifest);
       const manifestDigest = materialDigest(bytes);
+      await this.assertRuntime();
       await writeMaterialMetadata(this.manifestPath(repositoryId, manifestDigest), bytes, signal);
       return { repositoryId, manifestDigest };
     } finally {
@@ -151,6 +160,7 @@ export class SpackMaterialStore {
   }
 
   async preflightLock(input: SpackMaterialPublish, actor: RbacPrincipal): Promise<SpackLockReport> {
+    await this.assertRuntime();
     const request = this.parseRelease(input);
     if (this.publications >= 4) throw new SpackMaterialError(429, "Too many material publications");
     this.publications += 1;
@@ -202,6 +212,7 @@ export class SpackMaterialStore {
     digest: string,
     options?: MaterialMetadataReadOptions,
   ): Promise<StoredSpackMaterialManifest> {
+    await this.assertRuntime();
     const path = this.manifestPath(id, digest);
     let bytes: Buffer;
     try {
@@ -225,6 +236,7 @@ export class SpackMaterialStore {
     actor: RbacPrincipal,
     checkpoint?: () => void,
   ): Promise<void> {
+    await this.assertRuntime();
     checkpoint?.();
     assertReadable(actor, manifest.repository);
     for (const selection of manifest.recipes) {
@@ -233,12 +245,23 @@ export class SpackMaterialStore {
   }
 
   async getBlob(id: string, manifestDigest: string, digest: string, actor: RbacPrincipal) {
+    await this.assertRuntime();
     parseMaterial(SpackMaterialDigestSchema, digest, "material digest");
     const { manifest } = await this.getManifest(id, manifestDigest);
     await this.authorizeManifest(manifest, actor);
     const blob = spackMaterialBlobs(manifest).find((item) => item.digest === digest);
     if (!blob) throw new SpackMaterialError(404, "Blob is not part of this release");
     return this.blobs.get(digest, blob.size);
+  }
+
+  private async assertRuntime(input?: ReadableStream<Uint8Array>): Promise<void> {
+    // Fresh admission checks, not a lease or a drain of already admitted streams.
+    try {
+      await this.runtime?.assertRuntime();
+    } catch {
+      if (input) cancelMaterialInput(input);
+      throw new SpackMaterialError(503, "Material repository storage is unavailable");
+    }
   }
 
   private async checkRecipe(

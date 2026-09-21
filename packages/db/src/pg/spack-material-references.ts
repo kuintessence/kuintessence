@@ -2,6 +2,7 @@ import { and, eq, sql } from "drizzle-orm";
 import type { PgDb } from "./index";
 import { softwareOperations } from "./schema";
 import { spackMaterialBindings, spackMaterialOperationReferences } from "./schema-spack-materials";
+import { assertSpackMaterialRuntime } from "./spack-material-runtime";
 
 export interface SpackMaterialReferenceBinding {
   repositoryId: string;
@@ -33,6 +34,7 @@ export async function withSpackMaterialLifecycleTransaction<T>(
 ): Promise<T> {
   try {
     return await db.transaction(async (tx) => {
+      await tx.execute(sql`set local lock_timeout = '5s'`);
       await tx.execute(
         sql`select pg_advisory_xact_lock(hashtext('kuintessence:spack-material-lifecycle'))`,
       );
@@ -44,16 +46,17 @@ export async function withSpackMaterialLifecycleTransaction<T>(
 }
 
 export class SpackMaterialReferences {
-  constructor(private readonly db: PgDb) {}
+  constructor(
+    private readonly db: PgDb,
+    private readonly epoch?: string,
+  ) {}
 
   async registerBindings(bindings: Record<string, SpackMaterialReferenceBinding>): Promise<void> {
     try {
       // Validate and copy the entire batch before any asynchronous work or writes.
-      const rows = Object.entries(record(bindings)).map(([spec, binding]) => ({
-        spec: boundedString(spec, 500),
-        ...parseBinding(binding),
-      }));
+      const rows = parseSpackMaterialBindings(bindings);
       await withSpackMaterialLifecycleTransaction(this.db, async (tx) => {
+        await assertSpackMaterialRuntime(tx, this.epoch);
         // Empty configurations must still fail when reference tables/columns are missing.
         await tx.select().from(spackMaterialBindings).limit(0);
         await tx.select().from(spackMaterialOperationReferences).limit(0);
@@ -78,6 +81,7 @@ export class SpackMaterialReferences {
     try {
       const value = parseOperation(input);
       await withSpackMaterialLifecycleTransaction(this.db, async (tx) => {
+        await assertSpackMaterialRuntime(tx, this.epoch);
         const [operation] = await tx
           .select({
             agentId: softwareOperations.agentId,
@@ -171,6 +175,15 @@ export class SpackMaterialReferences {
       throw referenceError();
     }
   }
+}
+
+export function parseSpackMaterialBindings(bindings: unknown) {
+  const entries = Object.entries(record(bindings));
+  if (entries.length > 10_000) throw referenceError();
+  return entries.map(([spec, binding]) => ({
+    spec: boundedString(spec, 500),
+    ...parseBinding(binding),
+  }));
 }
 
 function record(value: unknown, keys?: readonly string[]): Record<string, unknown> {

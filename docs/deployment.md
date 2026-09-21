@@ -9,6 +9,7 @@ Server 当前只支持单实例部署，尚未通过 Redis 实现多实例协调
 
 - [Compose 与本地调度器](#compose)
 - [单容器演示](#aio)
+- [Spack 材料升级屏障](#spack-material-rollout)
 - [GitHub Actions](#actions)
 - [GitHub 预览环境](#preview)
 - [反向代理](#proxy)
@@ -154,6 +155,32 @@ bun run compose -- aio down
 ```
 
 加 `-v` 会删除演示数据。生产部署使用 [Helm 配置](../deploy/helm/kq-platform/README.md)。
+
+<a id="spack-material-rollout"></a>
+## Spack 材料升级屏障
+
+材料生命周期第二批提供离线 `SpackMaterialRollout.execute` 的
+`inspect/pause/reconcile/activate`，不是下架、恢复、ACL、绑定退役或 GC。
+完整步骤与命令 JSON 见 [Spack 材料 Rollout](spack-material-rollout.md)。
+CLI 约定为 `bun packages/db/src/spack-material-rollout-cli.ts <absolute-command-json-path>`；
+`DATABASE_URL` 从受信任 shell 环境读取，不通过 CLI 参数传入。
+mutation 的管理员 UUID 只记录操作归属，不是登录证明。
+
+full、scheduler、preview Compose 同时向 Server 和 Registry 透传可选
+`SPACK_MATERIAL_EPOCH`；watch 继承 full，AIO 由共享环境传给两个子进程。
+Helm 使用共享 `spackMaterial.epoch`，默认空且不注入环境变量，没有默认 UUID。
+必须采用 `pause` 返回的新 epoch，在重启前为所有升级后的 Server/Registry 配置一致值。
+持久化仍为 PostgreSQL、recipe 本地 Git 和不可变源码文件系统，
+原有数据卷/PVC、Secret 引用与单 Registry 写者要求不变。
+
+`pause` 后须在外部停止并排空所有 Server/Registry，包括离线及回滚副本，
+撤销/轮换旧 DB、Registry、ticket 凭据并更新访问与网络策略。
+epoch 不能 fence 不检查它的旧代码；门禁只控制准入，不中断已开始的流。
+只有无 journal 且无 epoch 时保留 observe 兼容模式；paused、DB 失败或
+ready 时 epoch 缺失/不匹配均拒绝材料 runtime。新的 pause 更换 epoch，不自动回退。
+保留 append-only journal，删除历史可能不安全地重置 observe，禁止以清表解除屏障。
+部署静态测试只覆盖接线、配置和文档；测试与运行态验收仅在 GitHub Actions
+隔离环境执行，以对应提交结果为准，部署接线不代表运行态验收通过。
 
 <a id="actions"></a>
 ## GitHub Actions

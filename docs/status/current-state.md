@@ -78,6 +78,23 @@ Kuintessence 当前为 pre-release。以下列出组件功能、运行要求和�
   Server 启动登记配置绑定，签发票据和下载前固定任务 release；登记失败拒绝继续。
   旧配置绑定不自动移除，任务引用不因超时/离线删除，孤儿引用单独保留。
   此阶段尚未开放下架、恢复、可见范围变更或绑定退役；零引用计数不代表升级对账已完成。
+  第二批新增[离线 Rollout 屏障](../spack-material-rollout.md)：
+  DB API `SpackMaterialRollout.execute` 提供 `inspect/pause/reconcile/activate`，
+  配置 `SPACK_MATERIAL_EPOCH` 同时接入 Server/Registry；Compose 默认留空，
+  AIO 共享环境，Helm 使用共享 `spackMaterial.epoch`，没有默认 UUID。
+  activate 要求显式 reconcile、当前 revision/epoch 和一致的外部确认；
+  inventoryDigest 须同时匹配最近一次 reconcile journal 与当前 DB 库存快照，
+  且无非终态安装（含未登记引用者）或孤儿引用。旧绑定及 append-only journal 保留；
+  删除历史可能不安全地重置 observe，禁止以清表解除屏障。
+  运维必须在外部停止并排空全部 Server/Registry（包括离线回滚副本），
+  撤销/轮换旧 DB、Registry、ticket 凭据并更新访问和网络策略；
+  epoch 不能隔离不检查它的旧代码，门禁不取消在途流。
+  无 journal 且无 epoch 仅为 observe 兼容；paused、DB 失败或 ready 时 epoch
+  缺失/不匹配拒绝 runtime。新的 pause 改变 epoch，不自动回退；
+  重启前须为所有升级 Server/Registry 配置同一 epoch。
+  此批尚无 rollout HTTP API 或下架、恢复、ACL、退役、GC，
+  部署静态测试只覆盖配置接线与文档；测试与运行态验收仅在 GitHub Actions
+  隔离环境执行，须核对对应提交结果，不能沿用旧提交的验收结果。
   受限厂商安装包/许可证授权、
   大规模材料目录索引/删除/可见范围变更及 15 个工作流的目标 Linux 材料、lock 和端到端安装/运行验收仍未完成。
 - CP 的 suspend/quota 写入口已停用，暂不支持通过这些接口暂停组织或设置并发硬限。
@@ -114,6 +131,7 @@ Kuintessence 当前为 pre-release。以下列出组件功能、运行要求和�
 - [认证与会话](../security.md#authentication)
 - [Registry 权限](../security.md#registry)
 - [Spack 受控上游导入](../spack-upstream-import.md)
+- [Spack 材料 Rollout](../spack-material-rollout.md)
 - [Agent 注册和证书](../security.md#agent)
 - [工作流规范](../workflow-schema/README.md)
 - [系统运维](../manuals/system-operations-manual.md)

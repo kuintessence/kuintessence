@@ -26,6 +26,10 @@ TypeScript 已接入固定 site profile digest、持久化安装账本和
 新增默认关闭的 [受控上游导入](spack-upstream-import.md)，仅由 Registry 经专用代理
 和白名单下载明确声明 digest/大小的 recipe/material；接线与回归结果以对应提交 CI
 为准，不代表生产验收。Agent 仍只从 Server 获取固定材料。
+材料生命周期第二批增加[离线 Rollout 屏障](spack-material-rollout.md)，通过
+`inspect/pause/reconcile/activate` 对账历史绑定并显式启用统一 epoch；
+不是完整生命周期 API。部署静态测试只覆盖接线、配置和文档；测试与运行态验收
+仅在 GitHub Actions 隔离环境执行，须核对对应提交结果。
 受限厂商安装包、许可证授权、buildcache 发布、大规模材料目录索引、
 删除/可见范围变更、Range/恢复上传和垃圾回收尚未接入；15 个工作流的目标 Linux 材料、
 lock、安装及运行验收仍未完成。
@@ -83,8 +87,14 @@ Server 在启用材料下载时，启动阶段先将 `SPACK_MATERIAL_RELEASES` �
 **这只是引用基础设施，不是材料下架功能。** 当前未开放下架、恢复、权限变更、
 绑定退役或物理回收接口。引用计数是诊断快照，计数为零不证明所有旧 Server、
 旧配置或升级前安装任务都已登记，也不能用作先查询再下架的授权依据。
-后续开放生命周期操作前，仍须完成停机/排空、旧引用对账和启用屏障，并将
-引用检查与状态变更放在同一事务内。不要手动清表、删除绑定或直接改材料卷；
+第二批通过[离线 Rollout](spack-material-rollout.md) 提供 pause、旧配置绑定追加对账和
+activate 屏障；activate 要求所有非终态安装（包括未登记引用的任务）及孤儿引用为零。
+运维仍须在外部停止并排空所有 Server/Registry（包括离线回滚副本），撤销/轮换旧
+DB、Registry、ticket 凭据并更新访问与网络策略；epoch 无法隔离不检查它的旧代码。
+门禁只控制准入，不中断在途流；这一步不开放材料下架、恢复、ACL、绑定退役或 GC。
+后续生命周期操作仍须将引用检查与状态变更放在同一事务内。
+rollout journal 必须 append-only，删除历史可能不安全地重置 observe。
+不要手动清表、删除绑定或直接改材料卷；
 数据库与 Git/material 卷须一起备份和恢复。
 
 ## 初始化与本地批量导入
@@ -400,6 +410,12 @@ Server：
 | `SPACK_REGISTRY_JWT_ISSUER` / `SPACK_REGISTRY_JWT_AUDIENCE` | 与 Registry 配置匹配 |
 | `SPACK_MATERIAL_TICKET_SECRET` | 独立的至少 32 字符随机签名密钥，不能复用上述密钥或浏览器 JWT key |
 | `SPACK_MATERIAL_RELEASES` | JSON：精确 spec → `{repositoryId, manifestDigest}`，默认 `{}` |
+| `SPACK_MATERIAL_EPOCH` | Server 与 Registry 共用的可选 UUID，无默认 UUID；使用本次 rollout 的 epoch |
+
+所有升级后的 Server/Registry 必须在重启前配置相同 epoch。只有无 journal 且无 epoch
+时保留 observe 兼容；paused、DB 失败或 ready 时 epoch 缺失/不匹配均拒绝材料 runtime。
+每次新的 pause 都改变 epoch，无自动回退；配置和外部隔离步骤见
+[Rollout 指南](spack-material-rollout.md)。
 
 需要启用 `MTLS_MODE=direct` 或可信代理 mTLS；配置存在不替代握手验证。
 Agent stream 必须实际验证证书，并声明 `spack_material_delivery_v1`。旧 Agent 或无

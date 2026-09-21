@@ -147,6 +147,43 @@ operation 引用：
 这只覆盖持久引用账本，不启用材料下架、删除或新增 ACL，也不将 native 的 `rejected`
 解释为受管安装成功；新增断言是否通过以当前提交的 GitHub Actions 结果为准。
 
+### Runtime Rollout Fence 回归
+
+`--spack-case` 和 `--spack-managed` 均在各自原有案例及全部引用断言完成后，
+追加 `spack-case/rollout.ts` 的真实 runtime fence 回归。脚本只在 Server 的可信
+workspace 内运行，要求 `KQ_PR_TEST=1`、无 `AGENT_ID`、材料分发开启，并严格检查
+本次 GNU Hello fixture、唯一配置 binding、唯一真实安装历史引用和零 active/orphan
+计数。不向 Agent 提供 DB 或 Registry 凭据，也不引入管理 HTTP endpoint。
+
+1. `activate` 使用现有 API helper 登录仍在运行的 Server，并从 DB 获取已播种的
+   canonical admin ID。先验证 Registry manifest GET 为 200 且 size/SHA-256 精确匹配，
+   确认 journal 为初始 observe，再按 revision CAS 执行 pause。
+2. 暂停后，同一个无 epoch 的 `SpackMaterialReferences` 实例即使注册空配置也必须被拒绝，
+   真实 Registry manifest GET 必须返回 503。随后用 `/case-control/bindings.json`
+   的实际配置 reconcile，再按 revision、epoch、inventoryDigest 执行 activate。
+   journal ready 后，仍未配置 epoch 的旧 Registry 必须继续返回 503。
+3. `activate` 的 stdout 仅返回 ready UUID；固定 stage/code 进度及脱敏错误写入 stderr。
+   入口通过 command substitution 捕获 UUID，以锚定 Bash UUID regex 验证后导出
+   `KQ_PR_MATERIAL_EPOCH`。入口启动时先清除此宿主变量，禁止继承已有部署的 generation。
+4. Compose 将 epoch 同时注入 Server/Registry 的 `SPACK_MATERIAL_EPOCH`，使用
+   `up --force-recreate --no-build --wait --wait-timeout 300 server registry` 强制重建，
+   保留本次 project 的 DB、Registry 和 control 卷。不是只重启进程，也不重新发布材料。
+5. 新容器内 `verify` 检查 Server HTTP health/login 成功、环境 epoch 等于 DB ready epoch，
+   使用该 epoch 再注册实际 bindings 后仍恰有一条 binding 和一条原历史引用。
+   当前 inventoryDigest 必须等于最后一条持久 journal 的 inventoryDigest，active/orphan
+   计数保持零，Registry manifest GET 恢复 200 且 digest 精确匹配。
+
+两个脚本模式各有 50 秒总 deadline；外层 `timeout` 为 60 秒并保留强制终止后备。
+recreation 会丢弃容器 `/tmp`，本阶段不使用临时 baseline，身份与库存校验依赖实际
+operation/reference 和持久 journal。新 epoch 后的检查只读 Registry manifest；
+此前的 Agent 材料交付、真实 Hello 作业及 native/managed 断言仍是各自独立的前提。
+
+本次 evidence 的三个 `true` 仅声明 `run.sh` 创建的全新、隔离、只运行当前 checkout
+镜像且无 legacy 部署或凭据的临时拓扑；**脚本不是生产 legacy drain 或凭据撤销的
+attestation verifier**。这项回归不证明生产 legacy 凭据已撤销，不提供 drain 机制，
+也不代表 15 个科学工作流验收。通过范围只以对应当前提交的 Actions 结果为准，
+不能由旧提交的成功记录或新增脚本本身推断。
+
 **这是材料交付 + 手动 native 离线编译 + 单步作业验收，不是自动受管安装验收。**
 Agent 的 audit/install 开关仍关闭，不跳过或放松产品安装器的任何安全门槛。
 native 测试使用 Docker 隔离网络及已审核 recipe，不调用 Apptainer/SIF 安装 worker，

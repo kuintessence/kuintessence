@@ -3,6 +3,11 @@ serviceAccount:
   annotations: {}
   automountToken: false
 
+spackMaterial:
+  # Shared by every upgraded Server and Registry; use the epoch returned by pause.
+  # Empty is observe compatibility only when the rollout journal is also empty.
+  epoch: ""
+
 server:
   replicas: 1
   image:

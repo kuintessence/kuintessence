@@ -5,5 +5,6 @@ export * from "./pg/schema";
 export * from "./pg/schema-metering";
 export * from "./pg/schema-spack-materials";
 export * from "./pg/spack-material-references";
+export * from "./pg/spack-material-rollout";
 export { createSqliteDb, runSqliteMigrations, type SqliteDb } from "./sqlite/index";
 export * from "./sqlite/schema";

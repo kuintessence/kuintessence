@@ -6,6 +6,39 @@ const VALID_BASE = {
 };
 
 describe("loadRegistryConfig", () => {
+  test.each([undefined, ""])("material epoch treats %j as unset", (epoch) => {
+    expect(
+      loadRegistryConfig({ ...VALID_BASE, SPACK_MATERIAL_EPOCH: epoch }).SPACK_MATERIAL_EPOCH,
+    ).toBeUndefined();
+  });
+
+  test.each([
+    "12345678-abcd-4abc-8def-123456789abc",
+    "12345678-ABCD-4ABC-8DEF-123456789ABC",
+  ])("material epoch accepts and normalizes a strict UUID: %s", (epoch) => {
+    expect(
+      loadRegistryConfig({ ...VALID_BASE, SPACK_MATERIAL_EPOCH: epoch }).SPACK_MATERIAL_EPOCH,
+    ).toBe("12345678-abcd-4abc-8def-123456789abc");
+  });
+
+  test.each([
+    " ",
+    "not-a-uuid",
+    "12345678abcd4abc8def123456789abc",
+    "{12345678-abcd-4abc-8def-123456789abc}",
+    "12345678-abcd-4abc-8def-123456789abc ",
+    "12345678-abcd-4abc-8def-123456789abc\n",
+    " 12345678-abcd-4abc-8def-123456789abc",
+    "12345678-abcd-0abc-8def-123456789abc",
+    "12345678-abcd-9abc-8def-123456789abc",
+    "12345678-abcd-4abc-7def-123456789abc",
+    "12345678-abcd-4abc-8def-123456789abg",
+  ])("material epoch rejects noncanonical UUID input: %j", (epoch) => {
+    expect(() => loadRegistryConfig({ ...VALID_BASE, SPACK_MATERIAL_EPOCH: epoch })).toThrow(
+      "SPACK_MATERIAL_EPOCH",
+    );
+  });
+
   test.each([undefined, ""])("material bootstrap treats %j as unset", (manifest) => {
     expect(
       loadRegistryConfig({

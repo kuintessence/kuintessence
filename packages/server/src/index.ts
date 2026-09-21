@@ -366,7 +366,7 @@ const spackMaterialDelivery =
         registryJwtAudience: config.SPACK_REGISTRY_JWT_AUDIENCE,
         ticketSecret: config.SPACK_MATERIAL_TICKET_SECRET,
         bindings: config.SPACK_MATERIAL_RELEASES,
-        references: new SpackMaterialReferences(db),
+        references: new SpackMaterialReferences(db, config.SPACK_MATERIAL_EPOCH),
         access: createSpackDeliveryAccess(db, authzService),
         dispatcher,
       })

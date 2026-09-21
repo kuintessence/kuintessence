@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+unset KQ_PR_MATERIAL_EPOCH
 
 fail() { printf '%s\n' "$*" >&2; exit 2; }
 case "${1:-}" in
@@ -140,5 +141,16 @@ elif "$spack_case"; then
   "${compose[@]}" exec -T --user kq scheduler timeout --signal=TERM --kill-after=10s 180s bun deploy/pr-test/spack-case/job.ts
 else
   "${compose[@]}" exec -T --user kq scheduler timeout --signal=TERM --kill-after=10s 600s bash /workspace/deploy/pr-test/check.sh
+fi
+if "$spack_case"; then
+  # Run only after every original case/reference assertion. Capture no token or raw DB output.
+  if ! KQ_PR_MATERIAL_EPOCH="$("${compose[@]}" exec -T server timeout --signal=TERM --kill-after=5s 60s bun deploy/pr-test/spack-case/rollout.ts activate)"; then
+    fail "Spack rollout: stage=activate code=FAILED"
+  fi
+  [[ "$KQ_PR_MATERIAL_EPOCH" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$ ]] || fail "Spack rollout: stage=epoch code=INVALID"
+  export KQ_PR_MATERIAL_EPOCH
+  # A restart cannot load a new environment. Recreate only these services, retaining volumes.
+  "${compose[@]}" up -d --force-recreate --no-build --wait --wait-timeout 300 server registry
+  "${compose[@]}" exec -T server timeout --signal=TERM --kill-after=5s 60s bun deploy/pr-test/spack-case/rollout.ts verify
 fi
 printf 'PR scheduler and material regression passed: %s\n' "$KQ_PR_SCHEDULER"
