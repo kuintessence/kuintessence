@@ -313,9 +313,10 @@ export class SpackMaterialStore {
         checkpoint();
       };
       checkpoint();
-      return await (change
+      const status = await (change
         ? this.lifecycle.transition(binding, subject, change, authorize)
         : this.lifecycle.inspect(binding, subject, authorize));
+      return { ...status, binding, repository: manifest.repository };
     } catch (error) {
       if (error instanceof SpackMaterialLifecycleError) throw error;
       if (

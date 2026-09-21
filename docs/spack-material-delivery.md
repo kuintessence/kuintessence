@@ -102,6 +102,9 @@ rollout journal 必须 append-only，删除历史可能不安全地重置 observ
 第四批增加[材料下架与恢复 API](spack-material-lifecycle.md)，要求 ready epoch、
 事务内 canonical 权限与引用检查。状态单独保存在追加式 PostgreSQL journal，
 目录、直接下载及 Server 安装准入均检查；同内容重导入不会恢复已下架发布。
+平台/CP 的材料面板已接入精确 binding 生命周期查询、原因与 revision 确认、
+下架/恢复和分页审计。普通目录仍隐藏下架项，恢复通过管理查询进行；
+网络响应丢失显示结果待确认，不自动重试状态变更。
 管理 API 不提供在线绑定退役、可见范围调整、Web 状态控件或物理回收。
 
 ## 初始化与本地批量导入

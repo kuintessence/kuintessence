@@ -26,9 +26,11 @@ const PAGE_SIZE = 20;
 export function MaterialCatalog({
   isCurrent,
   onInspect,
+  inspectionDisabled = false,
 }: {
   isCurrent: () => boolean;
   onInspect: (binding: SpackMaterialBinding) => void;
+  inspectionDisabled?: boolean;
 }) {
   const { t } = useTranslation();
   const id = useId();
@@ -208,6 +210,7 @@ export function MaterialCatalog({
                         variant="ghost"
                         title={t("materials.inspect")}
                         aria-label={t("materials.inspect")}
+                        disabled={inspectionDisabled}
                         onClick={() => {
                           if (mounted.current && latestCurrent.current()) {
                             onInspect({

@@ -214,6 +214,53 @@ jobs:
       - name: Validate Compose and run disposable RustFS AIO
         run: bash deploy/rustfs/ci.sh
 
+  spack-lifecycle-portal:
+    name: Spack lifecycle portal
+    if: github.event_name == 'workflow_dispatch' && inputs.run_runtime_checks
+    needs: static-checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+      - name: Generate protobuf stubs
+        run: bun run --filter @kuintessence/proto generate
+      - name: Verify lifecycle clients and portal sessions
+        working-directory: packages/web
+        run: >-
+          bun run test
+          src/lib/spack-material-lifecycle-client.test.ts
+          src/lib/spack-materials-client.test.ts
+          src/components/software/MaterialLifecycle*.test.tsx
+          src/components/software/SpackMaterials*.test.tsx
+          src/components/software/MaterialCatalog*.test.tsx
+          src/components/software/SpackOnlineImport.test.tsx
+          src/routes/-cp-capability-errors.test.tsx
+      - name: Build web application and styles
+        working-directory: packages/web
+        run: bun run build
+      - name: Install Chromium for isolated browser tests
+        working-directory: packages/web
+        run: bunx patchright install --with-deps chromium
+      - name: Verify desktop and mobile lifecycle interactions
+        working-directory: packages/web
+        run: bun run e2e --config=e2e/material-lifecycle.config.ts
+      - name: Upload lifecycle browser screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: spack-lifecycle-portal-${{ github.sha }}
+          path: packages/web/test-results/material-lifecycle/**/*.png
+          retention-days: 7
+          if-no-files-found: warn
+
   spack-upstream:
     name: Spack HTTP and SOCKS online imports
     if: github.event_name == 'workflow_dispatch' && inputs.run_runtime_checks
