@@ -68,7 +68,11 @@ export async function managementFixture(count = 1, name: string = QUERY.reposito
           if (!allowed[index]) return [];
           const withdrawn = control.withdrawn.has(binding.manifestDigest);
           return [
-            { ...binding, revision: withdrawn ? 1 : 0, state: withdrawn ? "withdrawn" : "available" },
+            {
+              ...binding,
+              revision: withdrawn ? 1 : 0,
+              state: withdrawn ? "withdrawn" : "available",
+            },
           ];
         });
       },
