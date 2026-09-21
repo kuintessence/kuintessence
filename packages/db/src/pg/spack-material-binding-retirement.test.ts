@@ -250,9 +250,7 @@ describe("Spack binding retirement (isolated real PG)", () => {
       ...release(),
     });
     const state = await reconcile(await inspect());
-    await expect(
-      rollout.execute(retirement(state, command.bindings)),
-    ).rejects.toMatchObject(ERROR);
+    await expect(rollout.execute(retirement(state, command.bindings))).rejects.toMatchObject(ERROR);
     expect(await db.select().from(spackMaterialBindingRetirements)).toEqual([]);
   });
 
@@ -280,7 +278,9 @@ describe("Spack binding retirement (isolated real PG)", () => {
     const ready = await rollout.execute(activation(state));
     await expect(rollout.execute(retirement(ready, command.bindings))).rejects.toMatchObject(ERROR);
     const paused = await pause(ready.revision);
-    await expect(rollout.execute(retirement(paused, command.bindings))).rejects.toMatchObject(ERROR);
+    await expect(rollout.execute(retirement(paused, command.bindings))).rejects.toMatchObject(
+      ERROR,
+    );
     expect(await db.select().from(spackMaterialBindingRetirements)).toEqual([]);
   });
 
@@ -292,7 +292,9 @@ describe("Spack binding retirement (isolated real PG)", () => {
       rollout.execute({ ...command, inventoryDigest: (await inspect()).inventoryDigest }),
     ).rejects.toMatchObject(ERROR);
     const state = await reconcile(await inspect());
-    expect((await rollout.execute(retirement(state, command.bindings))).retiredBindingCount).toBe(1);
+    expect((await rollout.execute(retirement(state, command.bindings))).retiredBindingCount).toBe(
+      1,
+    );
   });
 
   test("rejects empty, unknown, duplicate and already-retired bindings atomically", async () => {
@@ -397,7 +399,9 @@ describe("Spack binding retirement (isolated real PG)", () => {
     expect(second.inventoryDigest).toBe(
       `sha256:${createHash("sha256").update(JSON.stringify(canonical)).digest("hex")}`,
     );
-    expect((await peer.execute({ action: "inspect" })).inventoryDigest).toBe(second.inventoryDigest);
+    expect((await peer.execute({ action: "inspect" })).inventoryDigest).toBe(
+      second.inventoryDigest,
+    );
     expect(await db.select().from(spackMaterialRollouts)).toHaveLength(5);
   });
 
