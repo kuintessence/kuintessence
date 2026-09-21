@@ -191,21 +191,35 @@ jobs:
         with:
           bun-version: 1.4.2
       - name: Install dependencies without lifecycle scripts
+        id: upstream-dependencies
         run: bun install --frozen-lockfile --ignore-scripts
-      - name: Verify controlled imports through real local proxies
+      - name: Verify controlled import contracts in isolated processes
+        run: |
+          status=0
+          for test_file in \
+            packages/shared/src/spack-upstream.test.ts \
+            packages/registry/src/spack-upstream-config.test.ts \
+            packages/registry/src/services/spack-upstream-policy.test.ts \
+            packages/registry/src/services/spack-upstream-import.test.ts \
+            packages/registry/src/routes/spack-upstream.test.ts \
+            packages/registry/src/services/recipe-git.test.ts \
+            packages/registry/src/services/recipe-git-store.test.ts \
+            scripts/spack-upstream-deployment.test.ts \
+            scripts/recipe-proxy-config.test.ts \
+            scripts/recipe-vite-proxy.test.ts
+          do
+            timeout --signal=TERM --kill-after=5s 90s \
+              bun test --timeout=15000 "$test_file" || status=1
+          done
+          exit "$status"
+      - name: Verify real HTTP CONNECT and SOCKS transfers
+        if: ${{ !cancelled() && steps.upstream-dependencies.outcome == 'success' }}
         run: >-
-          bun test --timeout=15000
-          packages/shared/src/spack-upstream.test.ts
-          packages/registry/src/spack-upstream-config.test.ts
-          packages/registry/src/services/spack-upstream-policy.test.ts
-          packages/registry/src/services/spack-upstream-download.test.ts
-          packages/registry/src/services/spack-upstream-import.test.ts
-          packages/registry/src/routes/spack-upstream.test.ts
-          packages/registry/src/services/recipe-git.test.ts
-          packages/registry/src/services/recipe-git-store.test.ts
-          scripts/spack-upstream-deployment.test.ts
-          scripts/recipe-proxy-config.test.ts
-          scripts/recipe-vite-proxy.test.ts
+          timeout --signal=TERM --kill-after=5s 180s
+          bun test --timeout=15000 packages/registry/src/services/spack-upstream-download.test.ts
       - name: Verify online import browser state and client contract
+        if: ${{ !cancelled() && steps.upstream-dependencies.outcome == 'success' }}
         working-directory: packages/web
-        run: bun run test src/lib/spack-upstream-client.test.ts src/components/software/SpackOnlineImport.test.tsx
+        run: >-
+          timeout --signal=TERM --kill-after=5s 180s
+          bun run test src/lib/spack-upstream-client.test.ts src/components/software/SpackOnlineImport.test.tsx

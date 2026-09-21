@@ -35,6 +35,27 @@ const BUNDLE = new TextEncoder().encode("bundle fixture");
 const BUNDLE_URL = "https://sources.example.org/recipes.bundle";
 type DownloadInput = Parameters<SpackUpstreamDownloadPort["withDownload"]>[0];
 
+function observe<T>(operation: Promise<T>) {
+  return operation.then(
+    (value) => ({ status: "fulfilled" as const, value }),
+    (reason: unknown) => ({ status: "rejected" as const, reason }),
+  );
+}
+
+async function within<T>(operation: Promise<T>): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      operation,
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => reject(new Error("Test operation did not settle")), 2000);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 function downloader(
   entries = new Map([
     [LOCK_URL, LOCK],
@@ -370,13 +391,23 @@ describe("Spack online import cancellation and admission", () => {
       },
     });
     const first = service.import(recipeInput(), OWNER, f.signal);
-    const failed = expect(first).rejects.toMatchObject({ code: "SPACK_UPSTREAM_HTTP" });
-    await entered.promise;
-    await expect(service.import(recipeInput(), OWNER, f.signal)).rejects.toMatchObject({
-      status: 429,
+    // Do not invoke a promise matcher before this test releases the operation's gate.
+    const outcome = observe(first);
+    try {
+      await within(entered.promise);
+      const second = observe(service.import(recipeInput(), OWNER, f.signal));
+      expect(await within(second)).toMatchObject({
+        status: "rejected",
+        reason: { status: 429 },
+      });
+    } finally {
+      release.resolve();
+      await within(outcome);
+    }
+    expect(await outcome).toMatchObject({
+      status: "rejected",
+      reason: { code: "SPACK_UPSTREAM_HTTP" },
     });
-    release.resolve();
-    await failed;
     await expect(service.import(recipeInput(), OWNER, f.signal)).rejects.toMatchObject({
       code: "SPACK_UPSTREAM_HTTP",
     });
@@ -412,12 +443,16 @@ describe("Spack online import cancellation and admission", () => {
       },
     });
     const pending = service.import(f.input, OWNER, f.signal);
-    const failed = expect(pending).rejects.toMatchObject({
-      status: 408,
-      code: "UPSTREAM_IMPORT_TIMEOUT",
+    const outcome = observe(pending);
+    try {
+      await within(entered.promise);
+    } finally {
+      await within(outcome);
+    }
+    expect(await outcome).toMatchObject({
+      status: "rejected",
+      reason: { status: 408, code: "UPSTREAM_IMPORT_TIMEOUT" },
     });
-    await entered.promise;
-    await failed;
     expect(observed?.aborted).toBe(true);
     expect(f.signal.aborted).toBe(false);
     expect(await readdir(f.root)).not.toContain("manifests");

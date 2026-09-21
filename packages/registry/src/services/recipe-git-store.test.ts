@@ -19,6 +19,27 @@ afterEach(async () => {
   );
 });
 
+function observe<T>(operation: Promise<T>) {
+  return operation.then(
+    (value) => ({ status: "fulfilled" as const, value }),
+    (reason: unknown) => ({ status: "rejected" as const, reason }),
+  );
+}
+
+async function within<T>(operation: Promise<T>): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      operation,
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => reject(new Error("Test operation did not settle")), 2000);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function fixture() {
   const root = await mkdtemp(join(tmpdir(), "kq-recipe-test-"));
   directories.push(root);
@@ -128,8 +149,9 @@ describe("RecipeGitStore", () => {
       return originalGet(id);
     });
     const first = f.store.importBundle("public/science", bundle.bytes, "admin");
+    const firstOutcome = observe(first);
     try {
-      await entered.promise;
+      await within(entered.promise);
       for (let index = 0; index < 3; index++) {
         const controller = new AbortController();
         const queued = Promise.withResolvers<void>();
@@ -147,31 +169,31 @@ describe("RecipeGitStore", () => {
             if (type === "abort" && !input.locked) queued.resolve();
           },
         );
-        let timer: ReturnType<typeof setTimeout> | undefined;
         const pending = f.store.importBundle("public/science", input, "admin", controller.signal);
-        const failed = expect(pending).rejects.toThrow();
+        const outcome = observe(pending);
         try {
-          await Promise.race([
-            queued.promise,
-            new Promise<never>((_resolve, reject) => {
-              timer = setTimeout(() => reject(new Error("Import did not queue")), 2000);
-            }),
-          ]);
+          await within(queued.promise);
         } finally {
-          clearTimeout(timer);
           controller.abort();
           listener.mockRestore();
-          await failed;
+          await within(outcome);
         }
+        expect(await outcome).toMatchObject({ status: "rejected", reason: expect.any(Error) });
       }
-      await expect(
-        f.store.importBundle("public/science", bundle.bytes, "admin"),
-      ).rejects.toMatchObject({ status: 429 });
+      const rejected = observe(f.store.importBundle("public/science", bundle.bytes, "admin"));
+      expect(await within(rejected)).toMatchObject({
+        status: "rejected",
+        reason: { status: 429 },
+      });
     } finally {
       release.resolve();
-      await first;
-      receiptRead.mockRestore();
+      try {
+        await within(firstOutcome);
+      } finally {
+        receiptRead.mockRestore();
+      }
     }
+    expect(await firstOutcome).toMatchObject({ status: "fulfilled" });
     await f.store.list();
     expect(
       (await f.store.importBundle("public/science", bundle.bytes, "admin")).snapshots,
@@ -203,10 +225,14 @@ describe("RecipeGitStore", () => {
       { highWaterMark: 0 },
     );
     const pending = f.store.importBundle("public/science", input, "admin", controller.signal);
-    const failed = expect(pending).rejects.toThrow();
-    await entered.promise;
-    controller.abort();
-    await failed;
+    const outcome = observe(pending);
+    try {
+      await within(entered.promise);
+    } finally {
+      controller.abort();
+      await within(outcome);
+    }
+    expect(await outcome).toMatchObject({ status: "rejected", reason: expect.any(Error) });
     expect(cancel).toHaveBeenCalledTimes(1);
     expect(await f.store.list()).toEqual([]);
     expect(await readdir(join(f.root, "store/staging"))).toEqual([]);

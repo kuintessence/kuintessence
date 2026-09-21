@@ -12,12 +12,13 @@ const enabled = {
 
 describe("Registry Spack upstream configuration", () => {
   test("defaults to disabled without inheriting ambient proxy settings", () => {
-    expect(loadRegistryConfig({ ...base, HTTPS_PROXY: "http://ambient.invalid" })).toMatchObject({
+    const config = loadRegistryConfig({ ...base, HTTPS_PROXY: "http://ambient.invalid" });
+    expect(config).toMatchObject({
       SPACK_UPSTREAM_ENABLED: false,
       SPACK_UPSTREAM_ALLOWED_ORIGINS: [],
-      SPACK_UPSTREAM_PROXY_URL: undefined,
       SPACK_UPSTREAM_MAX_CONCURRENT: 2,
     });
+    expect(config.SPACK_UPSTREAM_PROXY_URL).toBeUndefined();
     expect(loadRegistryConfig(enabled).SPACK_UPSTREAM_ENABLED).toBe(true);
   });
 
