@@ -1,5 +1,15 @@
 import { sql } from "drizzle-orm";
-import { check, index, pgTable, timestamp, uniqueIndex, uuid, varchar } from "drizzle-orm/pg-core";
+import {
+  check,
+  index,
+  integer,
+  jsonb,
+  pgTable,
+  timestamp,
+  uniqueIndex,
+  uuid,
+  varchar,
+} from "drizzle-orm/pg-core";
 
 /** Append-only union of all Server configurations, including replaced bindings. */
 export const spackMaterialBindings = pgTable(
@@ -59,6 +69,39 @@ export const spackMaterialOperationReferences = pgTable(
     digestCheck: check(
       "spack_material_operation_references_digest_check",
       sql`${t.manifestDigest} ~ '^sha256:[a-f0-9]{64}$'`,
+    ),
+  }),
+);
+
+export interface SpackMaterialRolloutEvidence {
+  legacyProcessesStoppedAndDrained: true;
+  legacyAccessRevoked: true;
+  legacyInventoryComplete: true;
+}
+
+/** Append-only operator journal. Never delete history to return to observation mode. */
+export const spackMaterialRollouts = pgTable(
+  "spack_material_rollouts",
+  {
+    revision: integer("revision").primaryKey(),
+    epoch: uuid("epoch").notNull(),
+    phase: varchar("phase", { length: 16 }).notNull(),
+    action: varchar("action", { length: 16 }).notNull(),
+    operatorId: uuid("operator_id").notNull(),
+    inventoryDigest: varchar("inventory_digest", { length: 71 }).notNull(),
+    evidence: jsonb("evidence").$type<SpackMaterialRolloutEvidence>(),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => ({
+    revisionCheck: check("spack_material_rollouts_revision_check", sql`${t.revision} > 0`),
+    transitionCheck: check(
+      "spack_material_rollouts_transition_check",
+      sql`(${t.phase} = 'paused' and ${t.action} in ('pause', 'reconcile') and ${t.evidence} is null)
+        or (${t.phase} = 'ready' and ${t.action} = 'activate' and ${t.evidence} is not null)`,
+    ),
+    digestCheck: check(
+      "spack_material_rollouts_digest_check",
+      sql`${t.inventoryDigest} ~ '^sha256:[a-f0-9]{64}$'`,
     ),
   }),
 );
