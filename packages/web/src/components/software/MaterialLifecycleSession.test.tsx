@@ -270,7 +270,7 @@ test.each([
   expect(screen.queryByRole("table", { name: labels.catalogTitle })).toBeNull();
   expect(screen.getByLabelText(labels.repositoryId)).toHaveProperty("value", "");
   expect(screen.getByLabelText(labels.manifestDigest)).toHaveProperty("value", "");
-  expect(materials.listSpackMaterials).toHaveBeenCalledTimes(2);
+  await waitFor(() => expect(materials.listSpackMaterials).toHaveBeenCalledTimes(2));
   expect(materials.listSpackMaterials).toHaveBeenLastCalledWith({}, expect.any(AbortSignal));
   expect(materials.getSpackMaterial).toHaveBeenCalledExactlyOnceWith(
     f.binding,
@@ -403,7 +403,9 @@ test.each([
       : labels.lifecycleNotice.changed;
   await screen.findByText(notice);
   expect(signal?.aborted).toBe(false);
-  expect(materials.listSpackMaterials).toHaveBeenCalledTimes(outcome === "conflict" ? 1 : 2);
+  await waitFor(() =>
+    expect(materials.listSpackMaterials).toHaveBeenCalledTimes(outcome === "conflict" ? 1 : 2),
+  );
   if (outcome !== "conflict") {
     expect(screen.queryByTestId("material-release-detail")).toBeNull();
   }
