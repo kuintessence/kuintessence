@@ -222,4 +222,10 @@ jobs:
         working-directory: packages/web
         run: >-
           timeout --signal=TERM --kill-after=5s 180s
-          bun run test src/lib/spack-upstream-client.test.ts src/components/software/SpackOnlineImport.test.tsx
+          bun run test
+          src/lib/spack-upstream-client.test.ts
+          src/components/software/SpackOnlineImport.test.tsx
+          src/components/software/RecipeRepositoriesPanel.test.tsx
+          src/components/software/RecipeRepositorySession.test.tsx
+          src/components/software/SpackMaterialsPanel.test.tsx
+          src/components/software/SpackMaterialsSession.test.tsx

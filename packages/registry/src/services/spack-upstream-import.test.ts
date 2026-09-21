@@ -162,17 +162,16 @@ describe("Spack online import orchestration", () => {
     ]);
   });
 
-  test.each(DENIED_PRINCIPALS)(
-    "denies namespace or publisher access before downloading",
-    async (actor) => {
-      const f = await fixture();
-      await expect(f.service.import(f.input, actor, f.signal)).rejects.toMatchObject({
-        status: 403,
-      });
-      expect(f.download.calls).toEqual([]);
-      expect(f.recipes.get).not.toHaveBeenCalled();
-    },
-  );
+  test.each(
+    DENIED_PRINCIPALS,
+  )("denies namespace or publisher access before downloading", async (actor) => {
+    const f = await fixture();
+    await expect(f.service.import(f.input, actor, f.signal)).rejects.toMatchObject({
+      status: 403,
+    });
+    expect(f.download.calls).toEqual([]);
+    expect(f.recipes.get).not.toHaveBeenCalled();
+  });
 
   test("configured publisher exclusions also apply to direct service calls", async () => {
     const f = await fixture();
