@@ -65,13 +65,18 @@ export async function readSpackMaterialVisibility(
   db: ReadConnection,
   binding: SpackMaterialReferenceBinding,
 ) {
-  const [row] = await db
-    .select()
-    .from(spackMaterialVisibilityEvents)
-    .where(visibilityCondition(binding))
-    .orderBy(desc(spackMaterialVisibilityEvents.revision))
-    .limit(1);
-  return row ? validateVisibilityRow(row) : undefined;
+  try {
+    const [row] = await db
+      .select()
+      .from(spackMaterialVisibilityEvents)
+      .where(visibilityCondition(binding))
+      .orderBy(desc(spackMaterialVisibilityEvents.revision))
+      .limit(1);
+    return row ? validateVisibilityRow(row) : undefined;
+  } catch {
+    // Storage failures must survive the principal callback's authorization error boundary.
+    throw new SpackMaterialVisibilityError("MATERIAL_VISIBILITY_UNAVAILABLE");
+  }
 }
 
 export async function assertVisibilityForPrincipal(

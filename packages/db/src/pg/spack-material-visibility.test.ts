@@ -907,6 +907,46 @@ describe("Spack material visibility (isolated real PG)", () => {
     expect(await db.select().from(spackMaterialOperationReferences)).toEqual([]);
   });
 
+  test("policy storage failures remain unavailable while callback rejection stays denied", async () => {
+    const binding = release();
+    const { visibility, references } = await ready();
+    await visibility.transition(binding, OPERATOR, change(allowlist([READER])), allow);
+    const input = await operation(binding);
+    await references.acquireOperation(input);
+    await visibility.assertReadable(binding, READER, allow);
+    const journal = await db.select().from(spackMaterialVisibilityEvents);
+    const original = await db.select().from(spackMaterialOperationReferences);
+    await db.execute(
+      sql`alter table spack_material_visibility_events rename to hidden_visibility_journal`,
+    );
+    try {
+      const seen: Principal[] = [];
+      await expectError(
+        visibility.assertReadable(binding, READER, async (principal) => {
+          seen.push(principal);
+        }),
+        UNAVAILABLE,
+      );
+      expect(seen).toEqual([{ sub: READER, role: "user", orgIds: [] }]);
+      await expectError(
+        visibility.assertReadable(binding, READER, async () => {
+          throw new Error(PRIVATE);
+        }),
+        DENIED,
+      );
+      await expectError(references.acquireOperation(input), REFERENCE_ERROR);
+    } finally {
+      await db.execute(
+        sql`alter table hidden_visibility_journal rename to spack_material_visibility_events`,
+      );
+    }
+    await visibility.assertReadable(binding, READER, allow);
+    await expectError(visibility.assertReadable(binding, OUTSIDER, allow), DENIED);
+    await references.acquireOperation(input);
+    expect(await db.select().from(spackMaterialVisibilityEvents)).toEqual(journal);
+    expect(await db.select().from(spackMaterialOperationReferences)).toEqual(original);
+  });
+
   test("missing availability journal cannot be bypassed by inherited visibility", async () => {
     const binding = release();
     const { visibility, references } = await ready();
