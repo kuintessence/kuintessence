@@ -69,7 +69,7 @@ export function submitVisibility() {
 }
 
 export function selectManagementTab(name: "Visibility" | "Lifecycle") {
-  const tab = screen.getByRole("tab", { name, exact: true });
+  const tab = screen.getByRole("tab", { name });
   fireEvent.mouseDown(tab, { button: 0, ctrlKey: false });
   fireEvent.click(tab);
 }

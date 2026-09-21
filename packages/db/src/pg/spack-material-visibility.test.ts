@@ -469,7 +469,8 @@ describe("Spack material visibility (isolated real PG)", () => {
     const revoked = await visibility.transition(binding, OPERATOR, change(), allow);
     const journal = await db.select().from(spackMaterialVisibilityEvents);
     const createdAt = journal[0]?.createdAt.toISOString();
-    expect(Number.isFinite(Date.parse(createdAt ?? ""))).toBe(true);
+    if (createdAt === undefined) throw new Error("Expected a persisted audit timestamp");
+    expect(Number.isFinite(Date.parse(createdAt))).toBe(true);
     expect(revoked).toEqual({
       revision: 1,
       policy: allowlist(),

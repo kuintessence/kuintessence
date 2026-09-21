@@ -231,7 +231,7 @@ test.each(["lifecycle", "visibility"])("%s locks editor and catalog selection", 
     selectManagementTab(other);
     fireEvent.click(screen.getByRole("button", { name: labels.managementManage }));
   });
-  expect(screen.getByRole("tab", { name: other, exact: true })).toHaveProperty("disabled", true);
+  expect(screen.getByRole("tab", { name: other })).toHaveProperty("disabled", true);
   expect(
     screen.queryByTestId(`material-${editor === "lifecycle" ? "visibility" : "lifecycle"}`),
   ).toBeNull();
@@ -252,7 +252,7 @@ test.each(["lifecycle", "visibility"])("%s locks editor and catalog selection", 
   await screen.findByText(
     editor === "lifecycle" ? labels.lifecycleNotice.rechecked : labels.visibilityNotice.rechecked,
   );
-  expect(screen.getByRole("tab", { name: other, exact: true })).toHaveProperty("disabled", false);
+  expect(screen.getByRole("tab", { name: other })).toHaveProperty("disabled", false);
   selectManagementTab(other);
   expect(screen.queryByTestId(`material-${editor}`)).toBeNull();
   expect(materials.getSpackMaterial).not.toHaveBeenCalled();
@@ -274,10 +274,7 @@ test("a late lifecycle read after tab switching cannot unlock a visibility write
   confirmVisibility();
   submitVisibility();
   await act(async () => old.resolve(lifecycleFixture().view));
-  expect(screen.getByRole("tab", { name: "Lifecycle", exact: true })).toHaveProperty(
-    "disabled",
-    true,
-  );
+  expect(screen.getByRole("tab", { name: "Lifecycle" })).toHaveProperty("disabled", true);
   expect(screen.getByRole("button", { name: labels.managementManage })).toHaveProperty(
     "disabled",
     true,

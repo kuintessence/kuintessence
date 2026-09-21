@@ -110,7 +110,7 @@ test("pending and unknown policy writes retain the shared lock", async () => {
   expect(onSelectionLockChange).toHaveBeenLastCalledWith(true);
   await act(async () => pending.resolve(visibilityFixture().atRevision(1)));
   await screen.findByText(labels.visibilityNotice.uncertain);
-  const lifecycleTab = screen.getByRole("tab", { name: labels.lifecycleTab, exact: true });
+  const lifecycleTab = screen.getByRole("tab", { name: labels.lifecycleTab });
   expect(lifecycleTab).toHaveProperty("disabled", true);
   fireEvent.keyDown(lifecycleTab, { key: "Enter" });
   expect(screen.queryByTestId("material-lifecycle")).toBeNull();
@@ -163,10 +163,7 @@ test.each([
   expect(repository).toHaveProperty("value", f.binding.repositoryId);
   expect(digest).toHaveProperty("value", f.binding.manifestDigest);
   selectManagementTab("Visibility");
-  expect(screen.getByRole("tab", { name: labels.visibilityTab, exact: true })).toHaveProperty(
-    "disabled",
-    true,
-  );
+  expect(screen.getByRole("tab", { name: labels.visibilityTab })).toHaveProperty("disabled", true);
   expect(screen.queryByTestId("material-visibility")).toBeNull();
   expect(onSelectionLockChange).toHaveBeenLastCalledWith(true);
   if (outcome !== "503") {

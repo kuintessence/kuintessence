@@ -5,6 +5,7 @@ import {
   SpackMaterialManagementCatalogSchema,
   SpackMaterialVisibilityViewSchema,
 } from "@kuintessence/shared";
+import type { RbacPrincipal } from "../services/namespace";
 import {
   HIDE,
   OWNER,
@@ -21,7 +22,13 @@ import {
 import { headers, ORG, OTHER_ORG } from "./spack-repositories.test-helpers";
 
 afterEach(cleanupMaterials);
-const METHODS = ["GET", "POST"] as const;
+const METHODS: ("GET" | "POST")[] = ["GET", "POST"];
+
+type NamespaceCase = {
+  actor: RbacPrincipal;
+  repository: string;
+  status: 200 | 403;
+};
 
 describe("visibility management authorization", () => {
   test.each(METHODS)("%s requires authentication and an explicit backend", async (method) => {
@@ -40,7 +47,7 @@ describe("visibility management authorization", () => {
     expect(response.headers.get("Cache-Control")).toBe("private, no-store");
   });
 
-  test.each([
+  const cases: NamespaceCase[] = [
     { actor: READER, repository: "public/materials", status: 403 },
     { actor: OWNER, repository: "public/materials", status: 200 },
     {
@@ -49,7 +56,7 @@ describe("visibility management authorization", () => {
       status: 403,
     },
     {
-      actor: { ...OWNER, role: "org_admin" as const },
+      actor: { ...OWNER, role: "org_admin" },
       repository: `org/${ORG}/materials`,
       status: 200,
     },
@@ -60,7 +67,8 @@ describe("visibility management authorization", () => {
     },
     { actor: OWNER, repository: `user/${OWNER.sub}/materials`, status: 200 },
     { actor: OWNER, repository: `user/${READER.sub}/materials`, status: 403 },
-  ])("requires canonical namespace read and write: $repository / $status", async ({
+  ];
+  test.each(cases)("requires canonical namespace read and write: $repository / $status", async ({
     actor,
     repository,
     status,

@@ -39,7 +39,7 @@ function view(revision = 0): SpackMaterialVisibilityView {
 }
 
 describe("visibility policy and command", () => {
-  test.each([
+  const policies: SpackMaterialVisibilityPolicy[] = [
     { mode: "inherit" },
     { mode: "allowlist", userIds: [], orgIds: [] },
     policy,
@@ -48,7 +48,8 @@ describe("visibility policy and command", () => {
       userIds: Array.from({ length: 100 }, (_, index) => principal(index)),
       orgIds: Array.from({ length: 100 }, (_, index) => principal(index)),
     },
-  ])("accepts bounded canonical policies, including deny-all: %j", (input) => {
+  ];
+  test.each(policies)("accepts bounded canonical policies, including deny-all: %j", (input) => {
     expect(SpackMaterialVisibilityPolicySchema.parse(input)).toEqual(input);
     expect(SpackMaterialVisibilityChangeSchema.parse({ ...change, policy: input }).policy).toEqual(
       input,
@@ -56,8 +57,16 @@ describe("visibility policy and command", () => {
   });
 
   test("normalizes only command ordering, without mutating inputs or weakening response checks", () => {
-    const input = { mode: "allowlist", userIds: [second, first], orgIds: [second, first] };
-    const expected = { mode: "allowlist", userIds: [first, second], orgIds: [first, second] };
+    const input: SpackMaterialVisibilityPolicy = {
+      mode: "allowlist",
+      userIds: [second, first],
+      orgIds: [second, first],
+    };
+    const expected: SpackMaterialVisibilityPolicy = {
+      mode: "allowlist",
+      userIds: [first, second],
+      orgIds: [first, second],
+    };
     expect(SpackMaterialVisibilityChangeSchema.parse({ ...change, policy: input }).policy).toEqual(
       expected,
     );

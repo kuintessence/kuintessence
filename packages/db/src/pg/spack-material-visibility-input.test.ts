@@ -2,13 +2,23 @@ import { describe, expect, test } from "bun:test";
 import {
   parseSpackMaterialVisibilityChange,
   parseSpackMaterialVisibilityPolicy,
+  type SpackMaterialVisibilityChange,
+  type SpackMaterialVisibilityPolicy,
 } from "./spack-material-visibility-input";
 
 const FIRST = "00000000-0000-4000-8000-000000000001";
 const SECOND = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const THIRD = "ffffffff-ffff-4fff-8fff-ffffffffffff";
-const POLICY = { mode: "allowlist", userIds: [FIRST], orgIds: [SECOND] };
-const CHANGE = { policy: POLICY, expectedRevision: 0, reason: "Update admission policy" };
+const POLICY: SpackMaterialVisibilityPolicy = {
+  mode: "allowlist",
+  userIds: [FIRST],
+  orgIds: [SECOND],
+};
+const CHANGE: SpackMaterialVisibilityChange = {
+  policy: POLICY,
+  expectedRevision: 0,
+  reason: "Update admission policy",
+};
 const ids = (count: number) =>
   Array.from(
     { length: count },
@@ -21,7 +31,11 @@ describe("Spack material visibility input", () => {
     expect(
       parseSpackMaterialVisibilityPolicy({ mode: "allowlist", userIds: [], orgIds: [] }),
     ).toEqual({ mode: "allowlist", userIds: [], orgIds: [] });
-    const policy = { mode: "allowlist", userIds: ids(100), orgIds: ids(100) };
+    const policy: SpackMaterialVisibilityPolicy = {
+      mode: "allowlist",
+      userIds: ids(100),
+      orgIds: ids(100),
+    };
     expect(parseSpackMaterialVisibilityPolicy(policy)).toEqual(policy);
   });
 
@@ -96,7 +110,11 @@ describe("Spack material visibility input", () => {
   test.each([
     0, 2_147_483_646,
   ])("accepts bounded revision %s and a 1000-character reason", (revision) => {
-    const input = { ...CHANGE, expectedRevision: revision, reason: "x".repeat(1000) };
+    const input: SpackMaterialVisibilityChange = {
+      ...CHANGE,
+      expectedRevision: revision,
+      reason: "x".repeat(1000),
+    };
     expect(parseSpackMaterialVisibilityChange(input)).toEqual(input);
   });
 

@@ -9,6 +9,7 @@ import {
   users,
 } from "@kuintessence/db";
 import { and, eq } from "drizzle-orm";
+import type { SpackInstallPreparation } from "./spack-material-delivery";
 import {
   ACTOR,
   AGENT,
@@ -47,7 +48,7 @@ describe("Server material visibility (isolated real PG)", () => {
   });
 
   async function prepare(status: "queued" | "running" = "queued") {
-    const input = {
+    const input: SpackInstallPreparation = {
       operationId: randomUUID(),
       agentId: AGENT,
       requestedBy: ACTOR,
