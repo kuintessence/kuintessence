@@ -12,12 +12,12 @@ describe("fixed PR material cases", () => {
     });
   });
 
-  test("pins samtools and separates its release namespace", () => {
+  test("pins samtools with ncurses' direct build provider and a separate release namespace", () => {
     expect(selectedCase("samtools")).toEqual({
       id: "samtools",
       name: "samtools",
       version: "1.19.2",
-      spec: "samtools@1.19.2 ^htslib@1.19.1~libcurl~libdeflate ^zlib@1.3.1 ^ncurses+symlinks ^pkgconf",
+      spec: "samtools@1.19.2 ^htslib@1.19.1~libcurl~libdeflate ^zlib@1.3.1 ^ncurses+symlinks %pkgconf",
       repository: "public/pr-samtools-sources",
       recipes: "public/pr-samtools-recipes",
       retiredSpec: "samtools@0.0.0",

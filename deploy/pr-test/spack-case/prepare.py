@@ -37,7 +37,7 @@ CASES = {
     },
     "samtools": {
         "spec": ("samtools@1.19.2 ^htslib@1.19.1~libcurl~libdeflate ^zlib@1.3.1"
-                 " ^ncurses+symlinks ^pkgconf"),
+                 " ^ncurses+symlinks %pkgconf"),
         "version": "1.19.2", "namespace": "builtin",
         "roots": (ROOTS[1],), "externals": ("gcc", "gmake", "python", "perl"),
         # None leaves supporting versions to the native solver, pinned only in the lock.
@@ -275,8 +275,9 @@ def validate_dag(root, case: str = "hello") -> list:
                     and not node.external_modules, "Runtime external must come from /usr/bin")
     if case == "samtools":
         require({"pkgconf", "ncurses"} <= names, "Required samtools dependency is missing")
-        require(all(node.satisfies("+symlinks") for node in nonexternal if node.name == "ncurses"),
-                "Unexpected ncurses features")
+        require(all(node.satisfies("+symlinks %pkgconf")
+                    for node in nonexternal if node.name == "ncurses"),
+                "Unexpected ncurses features or build provider")
         htslib = next(node for node in nonexternal if node.name == "htslib")
         require(htslib.satisfies("~libcurl~libdeflate"), "Unexpected htslib features")
     return nonexternal

@@ -57,7 +57,7 @@ artifact。已有 PR 准备器服务于固定案例，不提供任意 spec 的�
 
 | 固定项 | 要求 |
 |---|---|
-| 请求 spec | `samtools@1.19.2 ^htslib@1.19.1~libcurl~libdeflate ^zlib@1.3.1 ^ncurses+symlinks ^pkgconf` |
+| 请求 spec | `samtools@1.19.2 ^htslib@1.19.1~libcurl~libdeflate ^zlib@1.3.1 ^ncurses+symlinks %pkgconf` |
 | Spack | `1.0.0` |
 | 官方 recipe 来源 | `spack/spack-packages` |
 | 上游 commit | `32c54f0906004d7fd1f72fd1b5970bf2bf094e26` |
@@ -79,6 +79,8 @@ provider preference、external 和 target 配置也必须一致。重新求解�
 替代配置中的硬链接安装产物。这些约束属于双方共同求解的请求 spec，
 不是准备器私有配置，也没有改写上游 recipe。worker 仍拒绝安装树中的硬链接；
 任意软件的硬链接兼容性不在本案例验收范围内。
+Spack 1.0 的 `%pkgconf` 在此绑定最近的 `^ncurses` 节点，明确其直接构建依赖；
+不能替换为 root 级 `^pkgconf`，后者不匹配该间接纯构建依赖。
 
 仅在 GitHub Actions 隔离环境中使用以下入口，不在 macOS、本地 Docker 或实际集群运行：
 

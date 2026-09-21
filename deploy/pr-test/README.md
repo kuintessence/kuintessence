@@ -288,7 +288,7 @@ bash deploy/pr-test/run.sh slurm --spack-samtools
 Linux 单节点 Slurm，不是 Actions 宿主 OS 的兼容性承诺。请求 spec 为：
 
 ```text
-samtools@1.19.2 ^htslib@1.19.1~libcurl~libdeflate ^zlib@1.3.1 ^ncurses+symlinks ^pkgconf
+samtools@1.19.2 ^htslib@1.19.1~libcurl~libdeflate ^zlib@1.3.1 ^ncurses+symlinks %pkgconf
 ```
 
 上述 spec 是求解输入，不是已成功 concretize 的证明。新增 samtools 案例的
@@ -298,6 +298,7 @@ samtools@1.19.2 ^htslib@1.19.1~libcurl~libdeflate ^zlib@1.3.1 ^ncurses+symlinks 
 冒充上游 commit。Agent 仍只从 Server 下载，不获得 Registry 凭据或上游访问路径。
 ncurses 的官方 `+symlinks` 与 `pkgconf` provider 是双方共有的 spec 约束，
 用于避免硬链接产物；不通过私有 recipe patch 或放宽 worker 规则来接受它们。
+`%pkgconf` 明确 ncurses 的直接构建依赖，不是 root 级间接 `^pkgconf` 约束。
 
 目标检查链沿用受管安装的 source audit、断网 build、独立 readonly verify、
 `ready`、managed load 和真实 Slurm 作业。作业使用独立临时目录中的合成 SAM，

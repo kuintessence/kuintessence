@@ -122,7 +122,7 @@ Kuintessence 当前为 pre-release。以下列出组件功能、运行要求和�
   许可自审与 target/MPI 风险，并提供 macOS 获取、校验、搬运和 bootstrap/Web 导入步骤。
   首个实现路线限定为 samtools 单软件切片：Spack 1.0.0、固定官方 recipe、
   Ubuntu 20.04 x86_64 和可销毁单节点 Slurm；请求 spec 为
-  `samtools@1.19.2 ^htslib@1.19.1~libcurl~libdeflate ^zlib@1.3.1 ^ncurses+symlinks ^pkgconf`。
+  `samtools@1.19.2 ^htslib@1.19.1~libcurl~libdeflate ^zlib@1.3.1 ^ncurses+symlinks %pkgconf`。
   使用官方 variant/provider 避免硬链接产物，未放宽 worker 的输出树校验。
   新增案例的实际结论以对应提交 Actions 为准，不因代码存在就认定已 concretize、
   源码闭包齐全或安装/运行通过。

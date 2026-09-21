@@ -408,7 +408,7 @@ class CaseTests(unittest.TestCase):
             ("hello", "hello@2.12.1", prepare.ROOTS),
             ("samtools",
              "samtools@1.19.2 ^htslib@1.19.1~libcurl~libdeflate ^zlib@1.3.1"
-             " ^ncurses+symlinks ^pkgconf",
+             " ^ncurses+symlinks %pkgconf",
              ["repos/spack_repo/builtin"]),
         ):
             with self.subTest(case=case):
@@ -552,6 +552,11 @@ class CaseTests(unittest.TestCase):
                          [node for node in nodes if not node.external])
 
     def test_samtools_requires_pkgconf_and_ncurses_symlinks(self):
+        root, nodes = self.dag("samtools")
+        ncurses = next(node for node in nodes if node.name == "ncurses")
+        ncurses.satisfies = Mock(return_value=True)
+        prepare.validate_dag(root, "samtools")
+        ncurses.satisfies.assert_called_once_with("+symlinks %pkgconf")
         failures = {
             "missing-pkgconf": lambda nodes: nodes.remove(
                 next(node for node in nodes if node.name == "pkgconf"),
@@ -564,7 +569,11 @@ class CaseTests(unittest.TestCase):
             ),
             "ncurses-hardlinks": lambda nodes: setattr(
                 next(node for node in nodes if node.name == "ncurses"),
-                "satisfies", lambda spec: spec != "+symlinks",
+                "satisfies", lambda spec: "+symlinks" not in spec,
+            ),
+            "ncurses-missing-direct-provider": lambda nodes: setattr(
+                next(node for node in nodes if node.name == "ncurses"),
+                "satisfies", lambda spec: "%pkgconf" not in spec,
             ),
         }
         for failure, change in failures.items():
