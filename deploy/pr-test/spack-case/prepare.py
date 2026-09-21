@@ -36,8 +36,8 @@ CASES = {
         "compiled": {"hello": "2.12.1"},
     },
     "samtools": {
-        "spec": ("samtools@1.19.2 ^htslib@1.19.1~libcurl~libdeflate ^zlib@1.3.1"
-                 " ^ncurses+symlinks %pkgconf"),
+        "spec": ("samtools@1.19.2 ^htslib@1.19.1~libcurl~libdeflate"
+                 " ^ncurses+symlinks %pkgconf ^zlib@1.3.1"),
         "version": "1.19.2", "namespace": "builtin",
         "roots": (ROOTS[1],), "externals": ("gcc", "gmake", "python", "perl"),
         # None leaves supporting versions to the native solver, pinned only in the lock.
@@ -345,6 +345,7 @@ def prepare(output: Path, work: Path, case: str = "hello") -> dict:
     import spack.fetch_strategy
     import spack.mirrors.utils
     import spack.repo
+    import spack.spec
     import spack.store
 
     require(spack.__version__ == "1.0.0", "Requires exactly Spack 1.0.0")
@@ -372,9 +373,10 @@ def prepare(output: Path, work: Path, case: str = "hello") -> dict:
             for name in selected["externals"]:
                 require(spack.config.get("packages:" + name + ":externals"),
                         "Required system external was not detected: " + name)
+            spec = selected["spec"]
+            require(str(spack.spec.Spec(spec)) == spec, "Material spec is not canonical")
             env_path = work / "env"
             env_path.mkdir()
-            spec = selected["spec"]
             (env_path / "spack.yaml").write_text(json.dumps({"spack": {"specs": [spec], "view": False}}))
             with spack.store.use_store(str(work / "store")):
                 with spack.environment.Environment(str(env_path)) as environment:

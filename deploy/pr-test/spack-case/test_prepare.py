@@ -296,12 +296,14 @@ class CheckoutTests(unittest.TestCase):
 
 
 class CaseTests(unittest.TestCase):
-    def test_prepare_uses_only_internal_scope_after_external_configuration_update(self):
+    def test_prepare_checks_scope_and_canonical_spec_before_solving(self):
         class StopBeforeSolve(Exception):
             pass
 
-        for case in ("hello", "samtools"):
-            with self.subTest(case=case), tempfile.TemporaryDirectory() as directory:
+        for case, canonical in (
+            ("hello", True), ("samtools", True), ("hello", False), ("samtools", False),
+        ):
+            with self.subTest(case=case, canonical=canonical), tempfile.TemporaryDirectory() as directory:
                 work = Path(directory) / "work"
                 output = Path(directory) / "output"
                 work.mkdir()
@@ -310,7 +312,8 @@ class CaseTests(unittest.TestCase):
                     name: ModuleType(name) for name in (
                         "spack", "spack.config", "spack.detection", "spack.environment",
                         "spack.fetch_strategy", "spack.mirrors", "spack.mirrors.utils",
-                        "spack.paths", "spack.repo", "spack.store", "clingo", "clingo.ast",
+                        "spack.paths", "spack.repo", "spack.spec", "spack.store",
+                        "clingo", "clingo.ast",
                     )
                 }
                 for name, module in modules.items():
@@ -387,19 +390,34 @@ class CaseTests(unittest.TestCase):
                 )
                 modules["spack.repo"].use_repositories = Mock(return_value=nullcontext())
                 modules["spack.store"].use_store = Mock(return_value=nullcontext())
+                spec = prepare.case_definition(case)["spec"]
+                native_spec = Mock(return_value=spec if canonical else spec + " ")
+                modules["spack.spec"].Spec = native_spec
                 with ExitStack() as stack:
                     stack.enter_context(patch.dict(prepare.sys.modules, modules))
                     stack.enter_context(patch.object(prepare, "copy_recipes"))
                     stack.enter_context(patch.object(prepare, "bundle_recipes", return_value="a" * 40))
-                    with self.assertRaises(StopBeforeSolve):
-                        prepare.prepare(output, work, case)
+                    fetch = stack.enter_context(patch.object(prepare, "fetch_sources"))
+                    if canonical:
+                        with self.assertRaises(StopBeforeSolve):
+                            prepare.prepare(output, work, case)
+                    else:
+                        with self.assertRaisesRegex(RuntimeError, "Material spec is not canonical"):
+                            prepare.prepare(output, work, case)
+                    fetch.assert_not_called()
+                native_spec.assert_called_once_with(spec)
                 config.use_configuration.assert_called_once_with(scope)
                 detection.by_path.assert_called_once_with(
                     ["builtin." + name for name in detected],
                     path_hints=["/usr/bin"], max_workers=2,
                 )
                 detection.update_configuration.assert_called_once()
-                environment.concretize.assert_called_once_with(tests=False)
+                if canonical:
+                    environment.concretize.assert_called_once_with(tests=False)
+                else:
+                    environment.concretize.assert_not_called()
+                    modules["spack.environment"].Environment.assert_not_called()
+                    self.assertFalse((work / "env").exists())
                 self.assertFalse(active)
 
     def test_default_hello_and_samtools_metadata_bind_exact_specs_and_roots(self):
@@ -407,8 +425,8 @@ class CaseTests(unittest.TestCase):
         for case, spec, roots in (
             ("hello", "hello@2.12.1", prepare.ROOTS),
             ("samtools",
-             "samtools@1.19.2 ^htslib@1.19.1~libcurl~libdeflate ^zlib@1.3.1"
-             " ^ncurses+symlinks %pkgconf",
+             "samtools@1.19.2 ^htslib@1.19.1~libcurl~libdeflate"
+             " ^ncurses+symlinks %pkgconf ^zlib@1.3.1",
              ["repos/spack_repo/builtin"]),
         ):
             with self.subTest(case=case):
