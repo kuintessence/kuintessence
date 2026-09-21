@@ -13,6 +13,7 @@ export const ACTOR: RbacPrincipal = {
   sub: "55555555-5555-4555-8555-555555555555",
 };
 export const QUERY = { repository: "public/materials", state: "all", limit: 10 } as const;
+type InspectCatalog = NonNullable<SpackMaterialLifecyclePort["inspectCatalog"]>;
 
 export async function managementFixture(count = 1, name: string = QUERY.repository) {
   const f = await materialFixture({}, repository("public/recipes"));
@@ -48,26 +49,30 @@ export async function managementFixture(count = 1, name: string = QUERY.reposito
     transition: mock(async () => {
       throw new Error("Read-only catalog must not mutate lifecycle");
     }),
-    inspectCatalog: mock(async (values, subject, authorize) => {
-      if (!control.ready) throw new SpackMaterialLifecycleError("MATERIAL_LIFECYCLE_UNAVAILABLE");
-      if (subject !== control.canonical.sub) {
-        throw new SpackMaterialLifecycleError("MATERIAL_LIFECYCLE_FORBIDDEN");
-      }
-      let allowed: readonly boolean[];
-      try {
-        allowed = await authorize(control.canonical);
-      } catch (error) {
-        if (error instanceof SpackMaterialLifecycleError) throw error;
-        throw new SpackMaterialLifecycleError("MATERIAL_LIFECYCLE_FORBIDDEN");
-      }
-      return values.flatMap((binding, index): SpackMaterialCatalogState[] => {
-        if (!allowed[index]) return [];
-        const withdrawn = control.withdrawn.has(binding.manifestDigest);
-        return [
-          { ...binding, revision: withdrawn ? 1 : 0, state: withdrawn ? "withdrawn" : "available" },
-        ];
-      });
-    }),
+    inspectCatalog: mock(
+      async (...[values, subject, authorize, checkpoint]: Parameters<InspectCatalog>) => {
+        checkpoint?.();
+        if (!control.ready) throw new SpackMaterialLifecycleError("MATERIAL_LIFECYCLE_UNAVAILABLE");
+        if (subject !== control.canonical.sub) {
+          throw new SpackMaterialLifecycleError("MATERIAL_LIFECYCLE_FORBIDDEN");
+        }
+        let allowed: readonly boolean[];
+        try {
+          allowed = await authorize(control.canonical);
+        } catch (error) {
+          if (error instanceof SpackMaterialLifecycleError) throw error;
+          throw new SpackMaterialLifecycleError("MATERIAL_LIFECYCLE_FORBIDDEN");
+        }
+        checkpoint?.();
+        return values.flatMap((binding, index): SpackMaterialCatalogState[] => {
+          if (!allowed[index]) return [];
+          const withdrawn = control.withdrawn.has(binding.manifestDigest);
+          return [
+            { ...binding, revision: withdrawn ? 1 : 0, state: withdrawn ? "withdrawn" : "available" },
+          ];
+        });
+      },
+    ),
   };
   const store = new SpackMaterialStore(f.root, f.recipes, {}, undefined, port);
   const app = materialApp(store, { allowTestHeader: true, jwtSecret: CURSOR_SECRET });

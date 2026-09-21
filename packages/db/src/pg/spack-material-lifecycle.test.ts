@@ -213,15 +213,16 @@ describe("Spack material lifecycle (isolated real PG)", () => {
   test("catalog reads a bounded authorized batch without exposing audit history", async () => {
     const { lifecycle } = await ready();
     const bindings = [release(), release(), release()];
+    const available = bindings[0];
     const withdrawn = bindings[1];
-    if (!withdrawn) throw new Error("Missing fixture");
+    if (!available || !withdrawn) throw new Error("Missing fixture");
     await lifecycle.transition(withdrawn, OPERATOR, change(), allow);
     const authorize = mock(async (principal: Parameters<Authorize>[0]) => {
       expect(principal).toMatchObject({ sub: OPERATOR, role: "platform_admin", orgIds: [] });
       return [true, true, false];
     });
     expect(await lifecycle.inspectCatalog(bindings, OPERATOR, authorize)).toEqual([
-      { ...bindings[0], revision: 0, state: "available" },
+      { ...available, revision: 0, state: "available" },
       { ...withdrawn, revision: 1, state: "withdrawn" },
     ]);
     expect(authorize).toHaveBeenCalledTimes(1);
