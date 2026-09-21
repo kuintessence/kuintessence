@@ -301,7 +301,7 @@ test("language changes retain results without refetching", async () => {
   });
   rerender(<MaterialManagementCatalog {...props} />);
   const table = within(screen.getByRole("table", { name: "维护者材料目录" }));
-  expect(table.getByRole("cell", { name: "已下架", exact: true })).toBeTruthy();
+  expect(table.getByRole("cell", { name: /^已下架$/ })).toBeTruthy();
   expect(screen.getByLabelText("管理仓库")).toHaveProperty("value", repository);
   expect(client.listSpackMaterialManagement).toHaveBeenCalledTimes(1);
 });
