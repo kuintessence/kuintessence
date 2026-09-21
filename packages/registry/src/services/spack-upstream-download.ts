@@ -87,6 +87,8 @@ export class SpackUpstreamDownloader {
     const timer = setTimeout(() => deadline.abort(), this.options.timeoutMs);
     const combined = AbortSignal.any([signal, deadline.signal]);
     let directory: string | undefined;
+    let result!: T;
+    let failure: SpackUpstreamError | RecipeStoreError | SpackMaterialError | undefined;
     const check = () => {
       if (signal.aborted) throw new SpackUpstreamError("cancelled");
       if (deadline.signal.aborted) throw new SpackUpstreamError("timeout");
@@ -126,30 +128,38 @@ export class SpackUpstreamDownloader {
         },
       });
       try {
-        const result = await consume(guarded);
+        result = await consume(guarded);
         check();
-        return result;
       } finally {
         await reader.cancel();
         reader.releaseLock();
       }
     } catch (error) {
-      check();
-      if (error instanceof SpackUpstreamError) throw error;
-      if (error instanceof RecipeStoreError || error instanceof SpackMaterialError) throw error;
-      // Only typed store errors reach the importer's sanitizer; transport details never escape.
-      throw new SpackUpstreamError("io");
+      if (signal.aborted) failure = new SpackUpstreamError("cancelled");
+      else if (deadline.signal.aborted) failure = new SpackUpstreamError("timeout");
+      else if (
+        error instanceof SpackUpstreamError ||
+        error instanceof RecipeStoreError ||
+        error instanceof SpackMaterialError
+      ) {
+        failure = error;
+      } else {
+        // Only typed store errors reach the importer's sanitizer; transport details never escape.
+        failure = new SpackUpstreamError("io");
+      }
     } finally {
       clearTimeout(timer);
       try {
         if (directory) await rm(directory, { recursive: true, force: true });
       } catch {
         logger.error("Could not remove Spack upstream staging directory");
-        throw new SpackUpstreamError("io");
+        failure ??= new SpackUpstreamError("io");
       } finally {
         this.active -= 1;
       }
     }
+    if (failure) throw failure;
+    return result;
   }
 
   private async resolve(host: string, signal: AbortSignal): Promise<string[]> {

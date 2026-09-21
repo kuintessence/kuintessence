@@ -139,17 +139,18 @@ describe("Spack online import orchestration", () => {
     ]);
   });
 
-  test.each([USER, PLATFORM, { ...OWNER, orgIds: [OTHER_ORG] }])(
-    "denies namespace or publisher access before downloading",
-    async (actor) => {
-      const f = await fixture();
-      await expect(f.service.import(f.input, actor, f.signal)).rejects.toMatchObject({
-        status: 403,
-      });
-      expect(f.download.calls).toEqual([]);
-      expect(f.recipes.get).not.toHaveBeenCalled();
-    },
-  );
+  test.each([
+    USER,
+    PLATFORM,
+    { ...OWNER, orgIds: [OTHER_ORG] },
+  ])("denies namespace or publisher access before downloading", async (actor) => {
+    const f = await fixture();
+    await expect(f.service.import(f.input, actor, f.signal)).rejects.toMatchObject({
+      status: 403,
+    });
+    expect(f.download.calls).toEqual([]);
+    expect(f.recipes.get).not.toHaveBeenCalled();
+  });
 
   test("configured publisher exclusions also apply to direct service calls", async () => {
     const f = await fixture();
@@ -181,27 +182,28 @@ describe("Spack online import orchestration", () => {
     expect(f.download.calls).toEqual([]);
   });
 
-  test.each(["root", "commit", "diagnostics"])(
-    "invalid recipe %s is rejected before downloading",
-    async (kind) => {
-      const f = await fixture();
-      const selection = f.input.release.recipes[0];
-      if (!selection) throw new Error("Missing selection");
-      if (kind === "root") selection.roots = ["unverified"];
-      if (kind === "commit") selection.commit = "b".repeat(40);
-      if (kind === "diagnostics") {
-        f.recipe.snapshots[0]?.diagnostics.push({
-          severity: "error",
-          code: "INVALID_RECIPE",
-          message: "Invalid recipe",
-        });
-      }
-      await expect(f.service.import(f.input, OWNER, f.signal)).rejects.toMatchObject({
-        status: kind === "commit" ? 404 : 422,
+  test.each([
+    "root",
+    "commit",
+    "diagnostics",
+  ])("invalid recipe %s is rejected before downloading", async (kind) => {
+    const f = await fixture();
+    const selection = f.input.release.recipes[0];
+    if (!selection) throw new Error("Missing selection");
+    if (kind === "root") selection.roots = ["unverified"];
+    if (kind === "commit") selection.commit = "b".repeat(40);
+    if (kind === "diagnostics") {
+      f.recipe.snapshots[0]?.diagnostics.push({
+        severity: "error",
+        code: "INVALID_RECIPE",
+        message: "Invalid recipe",
       });
-      expect(f.download.calls).toEqual([]);
-    },
-  );
+    }
+    await expect(f.service.import(f.input, OWNER, f.signal)).rejects.toMatchObject({
+      status: kind === "commit" ? 404 : 422,
+    });
+    expect(f.download.calls).toEqual([]);
+  });
 
   test("rechecks recipe visibility at publication after downloads", async () => {
     const f = await fixture();

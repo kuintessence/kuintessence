@@ -33,7 +33,10 @@ export const SpackUpstreamUrlSchema = z
         !url.password &&
         !url.search &&
         !url.hash &&
-        !value.slice(value.indexOf("//") + 2).split("/")[0]?.includes("@")
+        !value
+          .slice(value.indexOf("//") + 2)
+          .split("/")[0]
+          ?.includes("@")
       );
     } catch {
       return false;

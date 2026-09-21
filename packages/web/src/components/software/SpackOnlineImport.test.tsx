@@ -259,45 +259,44 @@ test.each(kinds)("%s treats a 409 unknown-result receipt as unknown, not failed"
   expect(upstream.importSpackUpstream).toHaveBeenCalledTimes(1);
 });
 
-test.each(["matching", "unrelated"])(
-  "real client accepts only a matching material repository receipt: %s",
-  async (identity) => {
-    const realClient = await vi.importActual<typeof upstream>("../../lib/spack-upstream-client");
-    vi.mocked(upstream.importSpackUpstream).mockImplementationOnce(realClient.importSpackUpstream);
-    const fixture = materialFixture();
-    const repository =
-      identity === "matching" ? fixture.manifest.repository : "org/other/materials";
-    const binding = {
-      ...fixture.binding,
-      repositoryId: createHash("sha256").update(repository).digest("hex"),
-    };
-    const fetcher = vi.fn().mockResolvedValue(
-      new Response(JSON.stringify({ kind: "material", binding }), {
-        status: 201,
-        headers: { "content-type": "application/json" },
-      }),
+test.each([
+  "matching",
+  "unrelated",
+])("real client accepts only a matching material repository receipt: %s", async (identity) => {
+  const realClient = await vi.importActual<typeof upstream>("../../lib/spack-upstream-client");
+  vi.mocked(upstream.importSpackUpstream).mockImplementationOnce(realClient.importSpackUpstream);
+  const fixture = materialFixture();
+  const repository = identity === "matching" ? fixture.manifest.repository : "org/other/materials";
+  const binding = {
+    ...fixture.binding,
+    repositoryId: createHash("sha256").update(repository).digest("hex"),
+  };
+  const fetcher = vi.fn().mockResolvedValue(
+    new Response(JSON.stringify({ kind: "material", binding }), {
+      status: 201,
+      headers: { "content-type": "application/json" },
+    }),
+  );
+  vi.stubGlobal("fetch", fetcher);
+  mount("material");
+  await select("material");
+  start("material");
+  if (identity === "matching") {
+    await screen.findByText("Online import confirmed");
+    await screen.findByTestId("material-release-detail");
+    expect(materials.getSpackMaterial).toHaveBeenCalledExactlyOnceWith(
+      binding,
+      expect.any(AbortSignal),
     );
-    vi.stubGlobal("fetch", fetcher);
-    mount("material");
-    await select("material");
-    start("material");
-    if (identity === "matching") {
-      await screen.findByText("Online import confirmed");
-      await screen.findByTestId("material-release-detail");
-      expect(materials.getSpackMaterial).toHaveBeenCalledExactlyOnceWith(
-        binding,
-        expect.any(AbortSignal),
-      );
-    } else {
-      await screen.findByText(recipesEn.spackOnline.unknown);
-      expect(screen.queryByText("Online import confirmed")).toBeNull();
-      expect(screen.queryByTestId("material-release-detail")).toBeNull();
-      expect(screen.getByLabelText("Repository ID")).toHaveProperty("value", "");
-      expect(materials.getSpackMaterial).not.toHaveBeenCalled();
-    }
-    expect(fetcher).toHaveBeenCalledTimes(1);
-  },
-);
+  } else {
+    await screen.findByText(recipesEn.spackOnline.unknown);
+    expect(screen.queryByText("Online import confirmed")).toBeNull();
+    expect(screen.queryByTestId("material-release-detail")).toBeNull();
+    expect(screen.getByLabelText("Repository ID")).toHaveProperty("value", "");
+    expect(materials.getSpackMaterial).not.toHaveBeenCalled();
+  }
+  expect(fetcher).toHaveBeenCalledTimes(1);
+});
 
 const changes = [
   "logout",
