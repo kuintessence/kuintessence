@@ -76,7 +76,12 @@ describe("PR scheduler entrypoint (shell fixtures, no containers)", () => {
     ["simple failure", 'false\nprintf "%s" "$PR_PRIVATE_FIXTURE"', 1, true],
     ["pipeline failure", 'bash -c "exit 19" | cat\nprintf "%s" "$PR_PRIVATE_FIXTURE"', 19, true],
     ["explicit exit", "exit 23", 23, false],
-    ["background wait", 'bash -c "exit 29" &\nwait "$!"\nprintf "%s" "$PR_PRIVATE_FIXTURE"', 29, true],
+    [
+      "background wait",
+      'bash -c "exit 29" &\nwait "$!"\nprintf "%s" "$PR_PRIVATE_FIXTURE"',
+      29,
+      true,
+    ],
     [
       "command substitution",
       'value="$(bash -c "exit 37")"\nprintf "%s" "$PR_PRIVATE_FIXTURE"',

@@ -285,7 +285,9 @@ describe("PR runner lifecycle (fake Docker, no containers)", () => {
     expect(result.commands).toContain("logs --no-color --no-log-prefix --tail 200 scheduler");
     expect(result.commands).not.toContain("exec -T --user kq scheduler timeout");
     expect(result.commands).toContain("down --volumes --remove-orphans --rmi local");
-    const markers = result.stdout.split("\n").filter((line) => line.startsWith("ci-pbs-entrypoint:"));
+    const markers = result.stdout
+      .split("\n")
+      .filter((line) => line.startsWith("ci-pbs-entrypoint:"));
     expect(markers).toEqual([
       "ci-pbs-entrypoint:event=ERR line=31 exit=1",
       "ci-pbs-entrypoint:event=EXIT line=31 exit=1",
