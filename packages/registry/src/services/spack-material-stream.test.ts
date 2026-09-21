@@ -113,13 +113,13 @@ test("the production HTTP boundary accepts >128 MiB only for material blobs", as
       ["/api/ordinary-json", "POST", "application/json"],
       ["/v2/public/test/blobs/uploads/id", "PATCH", "application/octet-stream"],
     ] as const;
-    // Keep the original file-upload client and default pool across consecutive rejections;
-    // explicitly declare the length instead of relying on method-specific inference.
+    // Use cancellable uploads for early rejection, retaining the default connection pool.
+    // Bun.file's sendfile path can report EPIPE before consuming the server's early response.
     for (const [endpoint, method, type] of legacyEndpoints) {
       const response = await fetch(new URL(endpoint, server.url), {
         method,
         headers: { "Content-Type": type, "Content-Length": String(size) },
-        body: Bun.file(path),
+        body: Bun.file(path).stream().pipeThrough(new TransformStream<Uint8Array, Uint8Array>()),
         signal: AbortSignal.timeout(60_000),
       });
       expect(response.status).toBe(413);
@@ -167,7 +167,7 @@ test("the production HTTP boundary accepts >128 MiB only for material blobs", as
         ...headers(OWNER, "application/octet-stream"),
         "Content-Length": String(size + 1),
       },
-      body: Bun.file(path),
+      body: Bun.file(path).stream().pipeThrough(new TransformStream<Uint8Array, Uint8Array>()),
       signal: AbortSignal.timeout(60_000),
     });
     expect(oversized.status).toBe(413);
