@@ -156,6 +156,8 @@ test("preserves a small JSON request, signal, response and unrelated exceptions"
     throw failure;
   }, MATERIAL_MAX_BLOB_BYTES);
   await expect(
-    failing.fetch(new Request("http://localhost/api/ordinary-json", { method: "POST", body: "{}" })),
+    failing.fetch(
+      new Request("http://localhost/api/ordinary-json", { method: "POST", body: "{}" }),
+    ),
   ).rejects.toBe(failure);
 });

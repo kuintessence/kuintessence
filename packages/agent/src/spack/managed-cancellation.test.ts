@@ -74,53 +74,54 @@ describe("managed Spack lifecycle cancellation", () => {
     });
   });
 
-  test.each(["load", "import_preinstalled"] as const)(
-    "passes cancellation to %s and withdraws a stopped verification",
-    async (action) => {
-      const f = await fixture();
-      const controller = new AbortController();
-      let active = false;
-      const backend = new ManagedSpackInstallation({
-        cacheDir: f.cacheDir,
-        site: f.siteOptions,
-        loadSite: async () => f.site,
-        runner: {
-          async run(nativeAction, _p, input, _s, path) {
-            await mkdir(f.report(nativeAction, path).prefix, { recursive: true });
-            if (active) {
-              expect(input.signal).toBe(controller.signal);
-              controller.abort();
-            }
-            return f.report(nativeAction, path);
-          },
+  test.each([
+    "load",
+    "import_preinstalled",
+  ] as const)("passes cancellation to %s and withdraws a stopped verification", async (action) => {
+    const f = await fixture();
+    const controller = new AbortController();
+    let active = false;
+    const backend = new ManagedSpackInstallation({
+      cacheDir: f.cacheDir,
+      site: f.siteOptions,
+      loadSite: async () => f.site,
+      runner: {
+        async run(nativeAction, _p, input, _s, path) {
+          await mkdir(f.report(nativeAction, path).prefix, { recursive: true });
+          if (active) {
+            expect(input.signal).toBe(controller.signal);
+            controller.abort();
+          }
+          return f.report(nativeAction, path);
         },
-      });
-      expect((await backend.install(f.prepared, f.input)).outcome).toBe("succeeded");
-      active = true;
-      const store = new SpackInstallStore(f.site.profile.storeRoot);
-      const [record] = await store.list();
-      if (!record) throw new Error("Missing fixture record");
-      expect(
-        await backend.operation(action, f.input.spec, { lockEnabled: false }, controller.signal),
-      ).toMatchObject({ outcome: "failed", invalidatedHashes: [record.rootHash] });
-      expect((await store.list())[0]?.state).toBe("unavailable");
-      expect((await lstat(store.path(record.id))).isDirectory()).toBe(true);
-      await expect(lstat(`${f.site.profile.storeRoot}/.writer-lock`)).rejects.toMatchObject({
-        code: "ENOENT",
-      });
-    },
-  );
+      },
+    });
+    expect((await backend.install(f.prepared, f.input)).outcome).toBe("succeeded");
+    active = true;
+    const store = new SpackInstallStore(f.site.profile.storeRoot);
+    const [record] = await store.list();
+    if (!record) throw new Error("Missing fixture record");
+    expect(
+      await backend.operation(action, f.input.spec, { lockEnabled: false }, controller.signal),
+    ).toMatchObject({ outcome: "failed", invalidatedHashes: [record.rootHash] });
+    expect((await store.list())[0]?.state).toBe("unavailable");
+    expect((await lstat(store.path(record.id))).isDirectory()).toBe(true);
+    await expect(lstat(`${f.site.profile.storeRoot}/.writer-lock`)).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+  });
 
   test("cancellation during ready publication withdraws the record without deleting its files", async () => {
     const f = await fixture();
     const controller = new AbortController();
     const original = SpackInstallStore.prototype.save;
-    const save = spyOn(SpackInstallStore.prototype, "save").mockImplementation(
-      async function (this: SpackInstallStore, record) {
-        await original.call(this, record);
-        if (record.state === "ready") controller.abort();
-      },
-    );
+    const save = spyOn(SpackInstallStore.prototype, "save").mockImplementation(async function (
+      this: SpackInstallStore,
+      record,
+    ) {
+      await original.call(this, record);
+      if (record.state === "ready") controller.abort();
+    });
     try {
       const backend = new ManagedSpackInstallation({
         cacheDir: f.cacheDir,

@@ -6057,36 +6057,36 @@ describe("AgentStream", () => {
       }
     });
 
-    test.each(["disconnect", "spill"] as const)(
-      "the shared shutdown budget can expire during %s without cancelling result persistence",
-      async (phase) => {
-        const f = await pendingSpillFixture(0);
-        try {
-          await f.prepare();
-          const stopping = f.stream.stop();
-          f.closeFirst.resolve();
-          if (phase === "spill") {
-            f.probeRelease.resolve();
-            await f.persistEntered.promise;
-          }
-          await stopping;
-          expect(f.persistFinished()).toBe(false);
-          if (phase === "disconnect") {
-            expect(f.persistStarted()).toBe(false);
-            f.probeRelease.resolve();
-            await f.persistEntered.promise;
-          }
-          // start() must reuse the expired budget even when the last spill is registered later.
-          await f.running;
-          expect(f.persistFinished()).toBe(false);
-          f.persistRelease.resolve();
-          await f.persisted.promise;
-          expect(f.persistFinished()).toBe(true);
-        } finally {
-          await f.dispose();
+    test.each([
+      "disconnect",
+      "spill",
+    ] as const)("the shared shutdown budget can expire during %s without cancelling result persistence", async (phase) => {
+      const f = await pendingSpillFixture(0);
+      try {
+        await f.prepare();
+        const stopping = f.stream.stop();
+        f.closeFirst.resolve();
+        if (phase === "spill") {
+          f.probeRelease.resolve();
+          await f.persistEntered.promise;
         }
-      },
-    );
+        await stopping;
+        expect(f.persistFinished()).toBe(false);
+        if (phase === "disconnect") {
+          expect(f.persistStarted()).toBe(false);
+          f.probeRelease.resolve();
+          await f.persistEntered.promise;
+        }
+        // start() must reuse the expired budget even when the last spill is registered later.
+        await f.running;
+        expect(f.persistFinished()).toBe(false);
+        f.persistRelease.resolve();
+        await f.persisted.promise;
+        expect(f.persistFinished()).toBe(true);
+      } finally {
+        await f.dispose();
+      }
+    });
 
     test("stop and start wait for cleanup, withdrawal and persistence; queued work never starts", async () => {
       const sqlite = new Database(":memory:");
@@ -6170,9 +6170,7 @@ describe("AgentStream", () => {
           "00000000-0000-0000-0000-000000000041",
         ]);
         expect(failed[0]?.stderr).toBe("managed verification cancelled");
-        expect(failed[1]?.error).toBe(
-          "Agent stopped before queued software operation could begin",
-        );
+        expect(failed[1]?.error).toBe("Agent stopped before queued software operation could begin");
       } finally {
         aborted.resolve();
         cleanupRelease.resolve();

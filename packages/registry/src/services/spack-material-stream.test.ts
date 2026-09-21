@@ -1,6 +1,6 @@
 import { afterEach, expect, spyOn, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { appendFile, open, readFile, readdir, stat, writeFile } from "node:fs/promises";
+import { appendFile, open, readdir, readFile, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { createRegistryHttpHandler, REGISTRY_LEGACY_BODY_BYTES } from "../registry-http";
 import { BASE, cleanupMaterials, materialFixture } from "../routes/spack-materials.test-helpers";

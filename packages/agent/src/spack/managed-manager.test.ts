@@ -214,37 +214,37 @@ describe("managed Spack manager integration", () => {
     expect(f.calls).toEqual(before);
   });
 
-  test.each(["prepare", "audit"] as const)(
-    "cancellation during %s prevents the next stage even when the provider returns successfully",
-    async (stage) => {
-      const f = await fixture();
-      const controller = new AbortController();
-      if (stage === "prepare") {
-        const prepare = f.materialClient.prepare.bind(f.materialClient);
-        f.materialClient.prepare = async (input) => {
-          const result = await prepare(input);
-          controller.abort(new Error("private abort reason"));
-          return result;
-        };
-      } else {
-        const audit = f.materialAuditor.audit.bind(f.materialAuditor);
-        f.materialAuditor.audit = async (prepared, input) => {
-          const result = await audit(prepared, input);
-          controller.abort(new Error("private abort reason"));
-          return result;
-        };
-      }
-      expect(
-        await f.manager.runSoftwareOperation("install", f.input.spec, f.input, controller.signal),
-      ).toEqual({
-        outcome: "failed",
-        exitCode: 1,
-        stderr: "Spack software operation cancelled",
-      });
-      expect(f.calls.includes("install:hello@1.0")).toBe(false);
-      expect(f.calls.includes("audit")).toBe(stage === "audit");
-    },
-  );
+  test.each([
+    "prepare",
+    "audit",
+  ] as const)("cancellation during %s prevents the next stage even when the provider returns successfully", async (stage) => {
+    const f = await fixture();
+    const controller = new AbortController();
+    if (stage === "prepare") {
+      const prepare = f.materialClient.prepare.bind(f.materialClient);
+      f.materialClient.prepare = async (input) => {
+        const result = await prepare(input);
+        controller.abort(new Error("private abort reason"));
+        return result;
+      };
+    } else {
+      const audit = f.materialAuditor.audit.bind(f.materialAuditor);
+      f.materialAuditor.audit = async (prepared, input) => {
+        const result = await audit(prepared, input);
+        controller.abort(new Error("private abort reason"));
+        return result;
+      };
+    }
+    expect(
+      await f.manager.runSoftwareOperation("install", f.input.spec, f.input, controller.signal),
+    ).toEqual({
+      outcome: "failed",
+      exitCode: 1,
+      stderr: "Spack software operation cancelled",
+    });
+    expect(f.calls.includes("install:hello@1.0")).toBe(false);
+    expect(f.calls.includes("audit")).toBe(stage === "audit");
+  });
 
   test("preflight cache reads receive cancellation and never proceed to audit", async () => {
     const f = await fixture();

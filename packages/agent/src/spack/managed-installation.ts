@@ -101,7 +101,11 @@ export class ManagedSpackInstallation implements SpackManagedInstallation {
         }
         invalidatedHashes = [record.rootHash];
         if (record.state === "ready") {
-          await store.save({ ...record, state: "unavailable", updatedAt: new Date().toISOString() });
+          await store.save({
+            ...record,
+            state: "unavailable",
+            updatedAt: new Date().toISOString(),
+          });
         }
       });
     } catch {
@@ -368,9 +372,7 @@ export class ManagedSpackInstallation implements SpackManagedInstallation {
     const bytes = await cache.readMetadata(
       { digest: record.manifestDigest, size: record.manifestSize },
       2 * 1024 ** 2,
-      signal
-        ? AbortSignal.any([signal, AbortSignal.timeout(60_000)])
-        : AbortSignal.timeout(60_000),
+      signal ? AbortSignal.any([signal, AbortSignal.timeout(60_000)]) : AbortSignal.timeout(60_000),
     );
     const manifest = SpackMaterialManifestSchema.parse(JSON.parse(new TextDecoder().decode(bytes)));
     const blobs = [

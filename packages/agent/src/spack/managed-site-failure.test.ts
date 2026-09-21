@@ -29,7 +29,7 @@ async function fixture() {
                 ? "f".repeat(64)
                 : path === "/etc/os-release"
                   ? f.site.profile.osReleaseSha256
-                  : f.site.profile.hostFiles[0]?.sha256 ?? "",
+                  : (f.site.profile.hostFiles[0]?.sha256 ?? ""),
             },
     },
     runner: {
