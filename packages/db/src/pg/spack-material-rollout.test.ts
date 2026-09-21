@@ -582,10 +582,7 @@ describe("SpackMaterialRollout (isolated real PG)", () => {
   }, 180_000);
 
   test.each([
-    999,
-    1_000,
-    1_001,
-    3_001,
+    999, 1_000, 1_001, 3_001,
   ])("matches an independent canonical JSON hash with %s rows in each paged inventory", async (count) => {
     await populateInventory("binding", count);
     await populateInventory("reference", count);
@@ -709,7 +706,12 @@ describe("SpackMaterialRollout (isolated real PG)", () => {
       { action: "pause", operatorId: OPERATOR_ID },
       { ...command, extra: true },
     ];
-    for (const operatorId of ["", "not-a-uuid", ` ${OPERATOR_ID}`, OPERATOR_ID.replaceAll("-", "")]) {
+    for (const operatorId of [
+      "",
+      "not-a-uuid",
+      ` ${OPERATOR_ID}`,
+      OPERATOR_ID.replaceAll("-", ""),
+    ]) {
       invalid.push({ ...command, operatorId });
     }
     for (const expectedRevision of [-1, 0.5, "0", null, Number.NaN, Infinity, 2_147_483_647]) {
