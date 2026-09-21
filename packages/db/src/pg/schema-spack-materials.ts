@@ -138,3 +138,47 @@ export const spackMaterialBindingRetirements = pgTable(
     ),
   }),
 );
+
+/** Append-only release state and audit. No row means available at revision zero. */
+export const spackMaterialLifecycleEvents = pgTable(
+  "spack_material_lifecycle_events",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    repositoryId: varchar("repository_id", { length: 64 }).notNull(),
+    manifestDigest: varchar("manifest_digest", { length: 71 }).notNull(),
+    revision: integer("revision").notNull(),
+    state: varchar("state", { length: 16 }).notNull(),
+    operatorId: uuid("operator_id").notNull(),
+    reason: varchar("reason", { length: 1000 }).notNull(),
+    epoch: uuid("epoch").notNull(),
+    rolloutRevision: integer("rollout_revision").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => ({
+    releaseRevisionIdx: uniqueIndex("spack_material_lifecycle_events_release_revision_idx").on(
+      t.repositoryId,
+      t.manifestDigest,
+      t.revision,
+    ),
+    repositoryCheck: check(
+      "spack_material_lifecycle_events_repository_check",
+      sql`${t.repositoryId} ~ '^[a-f0-9]{64}$'`,
+    ),
+    digestCheck: check(
+      "spack_material_lifecycle_events_digest_check",
+      sql`${t.manifestDigest} ~ '^sha256:[a-f0-9]{64}$'`,
+    ),
+    revisionCheck: check(
+      "spack_material_lifecycle_events_revision_check",
+      sql`${t.revision} > 0 and ${t.rolloutRevision} > 0`,
+    ),
+    stateCheck: check(
+      "spack_material_lifecycle_events_state_check",
+      sql`${t.state} in ('available', 'withdrawn')`,
+    ),
+    reasonCheck: check(
+      "spack_material_lifecycle_events_reason_check",
+      sql`length(trim(${t.reason})) > 0`,
+    ),
+  }),
+);
