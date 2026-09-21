@@ -215,59 +215,60 @@ test.each(
   expect(management.listSpackMaterialManagement).toHaveBeenCalledTimes(1);
 });
 
-test.each(["success", "uncertain", "stop"])(
-  "%s lifecycle invalidation remounts management, preserving only filters",
-  async (outcome) => {
-    const pending = deferred<SpackMaterialLifecycleView>();
-    if (outcome === "uncertain") {
-      vi.mocked(lifecycle.changeSpackMaterialLifecycle).mockRejectedValueOnce(
-        new SoftwareError(503, "REGISTRY_UNREACHABLE", "Receipt unavailable"),
-      );
-    }
-    if (outcome === "stop") {
-      vi.mocked(lifecycle.changeSpackMaterialLifecycle).mockReturnValueOnce(pending.promise);
-    }
-    mount();
-    search();
-    await selectManaged();
-    const previousCatalog = screen.getByTestId("material-management-catalog");
-    inspectLifecycle();
-    await screen.findByTestId("material-lifecycle-detail");
-    confirmLifecycle(RESTORE_REASON);
-    submitLifecycle("restore");
-    if (outcome === "stop") {
-      fireEvent.click(lifecycleUi().getByRole("button", { name: labels.lifecycleStop }));
-    }
-    await screen.findByText(
-      outcome === "success" ? labels.lifecycleNotice.changed : labels.lifecycleNotice.uncertain,
+test.each([
+  "success",
+  "uncertain",
+  "stop",
+])("%s lifecycle invalidation remounts management, preserving only filters", async (outcome) => {
+  const pending = deferred<SpackMaterialLifecycleView>();
+  if (outcome === "uncertain") {
+    vi.mocked(lifecycle.changeSpackMaterialLifecycle).mockRejectedValueOnce(
+      new SoftwareError(503, "REGISTRY_UNREACHABLE", "Receipt unavailable"),
     );
-    expect(screen.getByTestId("material-management-catalog")).not.toBe(previousCatalog);
-    expect(screen.queryByRole("table", { name: labels.managementTitle })).toBeNull();
-    expect(screen.queryByRole("button", { name: labels.managementNext })).toBeNull();
-    expect(screen.getByLabelText(labels.managementRepository)).toHaveProperty(
-      "value",
-      f.view.repository,
+  }
+  if (outcome === "stop") {
+    vi.mocked(lifecycle.changeSpackMaterialLifecycle).mockReturnValueOnce(pending.promise);
+  }
+  mount();
+  search();
+  await selectManaged();
+  const previousCatalog = screen.getByTestId("material-management-catalog");
+  inspectLifecycle();
+  await screen.findByTestId("material-lifecycle-detail");
+  confirmLifecycle(RESTORE_REASON);
+  submitLifecycle("restore");
+  if (outcome === "stop") {
+    fireEvent.click(lifecycleUi().getByRole("button", { name: labels.lifecycleStop }));
+  }
+  await screen.findByText(
+    outcome === "success" ? labels.lifecycleNotice.changed : labels.lifecycleNotice.uncertain,
+  );
+  expect(screen.getByTestId("material-management-catalog")).not.toBe(previousCatalog);
+  expect(screen.queryByRole("table", { name: labels.managementTitle })).toBeNull();
+  expect(screen.queryByRole("button", { name: labels.managementNext })).toBeNull();
+  expect(screen.getByLabelText(labels.managementRepository)).toHaveProperty(
+    "value",
+    f.view.repository,
+  );
+  expect(screen.getByLabelText(labels.managementState)).toHaveProperty("value", "withdrawn");
+  expect(screen.getByLabelText(labels.managementPageSize)).toHaveProperty("value", "5");
+  expect(management.listSpackMaterialManagement).toHaveBeenCalledTimes(1);
+  fireEvent.click(screen.getByRole("button", { name: labels.managementRefresh }));
+  await screen.findByRole("table", { name: labels.managementTitle });
+  expect(management.listSpackMaterialManagement).toHaveBeenLastCalledWith(
+    { repository: f.view.repository, state: "withdrawn", limit: 5 },
+    expect.any(AbortSignal),
+  );
+  if (outcome !== "success") {
+    expect(screen.getByRole("button", { name: labels.managementManage })).toHaveProperty(
+      "disabled",
+      true,
     );
-    expect(screen.getByLabelText(labels.managementState)).toHaveProperty("value", "withdrawn");
-    expect(screen.getByLabelText(labels.managementPageSize)).toHaveProperty("value", "5");
-    expect(management.listSpackMaterialManagement).toHaveBeenCalledTimes(1);
-    fireEvent.click(screen.getByRole("button", { name: labels.managementRefresh }));
-    await screen.findByRole("table", { name: labels.managementTitle });
-    expect(management.listSpackMaterialManagement).toHaveBeenLastCalledWith(
-      { repository: f.view.repository, state: "withdrawn", limit: 5 },
-      expect.any(AbortSignal),
-    );
-    if (outcome !== "success") {
-      expect(screen.getByRole("button", { name: labels.managementManage })).toHaveProperty(
-        "disabled",
-        true,
-      );
-    }
-    await act(async () => pending.resolve(f.atRevision(2)));
-    expect(lifecycle.changeSpackMaterialLifecycle).toHaveBeenCalledTimes(1);
-    expect(materials.getSpackMaterial).not.toHaveBeenCalled();
-  },
-);
+  }
+  await act(async () => pending.resolve(f.atRevision(2)));
+  expect(lifecycle.changeSpackMaterialLifecycle).toHaveBeenCalledTimes(1);
+  expect(materials.getSpackMaterial).not.toHaveBeenCalled();
+});
 
 test("invalidation aborts a pending management page and ignores its late result", async () => {
   const pending = deferred<SpackMaterialManagementCatalog>();
@@ -340,18 +341,21 @@ test("organization changes before rerender block management requests and visible
   expect(materials.getSpackMaterial).not.toHaveBeenCalled();
 });
 
-test.each(["signed out", "local", "reader", "non-member", "management disabled"])(
-  "%s has no management catalog or management reads",
-  (mode) => {
-    if (mode === "signed out") clearAuth();
-    if (mode === "local") window.__KQ_LOCAL__ = { baseUrl: "http://localhost:19999" };
-    if (mode === "reader") access.data = capabilities("user");
-    if (mode === "non-member") access.data = { ...capabilities("org_admin"), contexts: [] };
-    mount(mode !== "management disabled");
-    expect(screen.queryByTestId("material-management-catalog")).toBeNull();
-    expect(management.listSpackMaterialManagement).not.toHaveBeenCalled();
-  },
-);
+test.each([
+  "signed out",
+  "local",
+  "reader",
+  "non-member",
+  "management disabled",
+])("%s has no management catalog or management reads", (mode) => {
+  if (mode === "signed out") clearAuth();
+  if (mode === "local") window.__KQ_LOCAL__ = { baseUrl: "http://localhost:19999" };
+  if (mode === "reader") access.data = capabilities("user");
+  if (mode === "non-member") access.data = { ...capabilities("org_admin"), contexts: [] };
+  mount(mode !== "management disabled");
+  expect(screen.queryByTestId("material-management-catalog")).toBeNull();
+  expect(management.listSpackMaterialManagement).not.toHaveBeenCalled();
+});
 
 test("mobile management reads remain available while lifecycle mutations stay blocked", async () => {
   vi.spyOn(window, "matchMedia").mockReturnValue({ matches: true } as MediaQueryList);

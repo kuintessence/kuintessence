@@ -251,7 +251,10 @@ describe("Spack material lifecycle (isolated real PG)", () => {
     await expectError(lifecycle.inspectCatalog([binding, binding], OPERATOR, authorize), INVALID);
     expect(authorize).not.toHaveBeenCalled();
     await expectError(lifecycle.inspectCatalog([], OPERATOR, authorize), FORBIDDEN);
-    await expectError(lifecycle.inspectCatalog([binding], OPERATOR, async () => []), FORBIDDEN);
+    await expectError(
+      lifecycle.inspectCatalog([binding], OPERATOR, async () => []),
+      FORBIDDEN,
+    );
   });
 
   test("catalog rechecks canonical membership and fences the previous epoch", async () => {
@@ -266,18 +269,35 @@ describe("Spack material lifecycle (isolated real PG)", () => {
     expect(await lifecycle.inspectCatalog([binding], OPERATOR, authorize)).toHaveLength(1);
     await db.delete(userOrgMemberships).where(eq(userOrgMemberships.userId, OPERATOR));
     await expectError(lifecycle.inspectCatalog([binding], OPERATOR, authorize), FORBIDDEN);
-    await rollout.execute({ action: "pause", operatorId: OPERATOR, expectedRevision: state.revision });
-    await expectError(lifecycle.inspectCatalog([], OPERATOR, async () => []), UNAVAILABLE);
+    await rollout.execute({
+      action: "pause",
+      operatorId: OPERATOR,
+      expectedRevision: state.revision,
+    });
+    await expectError(
+      lifecycle.inspectCatalog([], OPERATOR, async () => []),
+      UNAVAILABLE,
+    );
   });
 
   test("catalog does not mistake a missing lifecycle journal for an empty page", async () => {
     const { lifecycle } = await ready();
-    await db.execute(sql`alter table spack_material_lifecycle_events rename to hidden_catalog_events`);
+    await db.execute(
+      sql`alter table spack_material_lifecycle_events rename to hidden_catalog_events`,
+    );
     try {
-      await expectError(lifecycle.inspectCatalog([], OPERATOR, async () => []), UNAVAILABLE);
-      await expectError(lifecycle.inspectCatalog([release()], OPERATOR, async () => [false]), UNAVAILABLE);
+      await expectError(
+        lifecycle.inspectCatalog([], OPERATOR, async () => []),
+        UNAVAILABLE,
+      );
+      await expectError(
+        lifecycle.inspectCatalog([release()], OPERATOR, async () => [false]),
+        UNAVAILABLE,
+      );
     } finally {
-      await db.execute(sql`alter table hidden_catalog_events rename to spack_material_lifecycle_events`);
+      await db.execute(
+        sql`alter table hidden_catalog_events rename to spack_material_lifecycle_events`,
+      );
     }
   });
 

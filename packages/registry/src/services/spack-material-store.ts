@@ -3,8 +3,8 @@ import { isAbsolute, join } from "node:path";
 import {
   type SpackMaterialLifecycle,
   type SpackMaterialLifecycleChange,
-  type SpackMaterialLifecyclePrincipal,
   SpackMaterialLifecycleError,
+  type SpackMaterialLifecyclePrincipal,
 } from "@kuintessence/db";
 import {
   inspectSpackLock,

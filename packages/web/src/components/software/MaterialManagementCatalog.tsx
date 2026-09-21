@@ -97,9 +97,7 @@ export function MaterialManagementCatalog({
       const catalog = await listSpackMaterialManagement(input, controller.signal);
       if (
         current() &&
-        catalog.releases.every((release) =>
-          latest.current.canInspectRepository(release.repository),
-        )
+        catalog.releases.every((release) => latest.current.canInspectRepository(release.repository))
       ) {
         const result = { catalog, query: input, cursors };
         selectable.current = result;

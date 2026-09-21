@@ -164,9 +164,9 @@ test.each([
   { releases: [{ ...release(), state: "available", revision: 0 }], nextCursor: null },
 ])("accepts ascending releases and opaque cursors, including empty pages", async (catalog) => {
   stub(catalog);
-  await expect(
-    listSpackMaterialManagement({ repository, after: cursor("a") }),
-  ).resolves.toEqual(catalog);
+  await expect(listSpackMaterialManagement({ repository, after: cursor("a") })).resolves.toEqual(
+    catalog,
+  );
 });
 
 test.each([1, 5, 10, 20])("accepts page size %i", async (limit) => {
@@ -246,9 +246,7 @@ test.each([
       return response;
     }),
   );
-  await expect(listSpackMaterialManagement({ repository }, controller.signal)).rejects.toBe(
-    reason,
-  );
+  await expect(listSpackMaterialManagement({ repository }, controller.signal)).rejects.toBe(reason);
 });
 
 test.each([

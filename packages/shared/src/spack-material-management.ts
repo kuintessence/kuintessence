@@ -22,6 +22,4 @@ export const SpackMaterialManagementCatalogSchema = z.strictObject({
   releases: z.array(SpackMaterialManagementSummarySchema).max(SPACK_MATERIAL_MANAGEMENT_MAX_PAGE),
   nextCursor: SpackMaterialManagementCursorSchema.nullable(),
 });
-export type SpackMaterialManagementCatalog = z.infer<
-  typeof SpackMaterialManagementCatalogSchema
->;
+export type SpackMaterialManagementCatalog = z.infer<typeof SpackMaterialManagementCatalogSchema>;

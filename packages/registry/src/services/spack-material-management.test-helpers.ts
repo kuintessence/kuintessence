@@ -1,8 +1,5 @@
 import { mock } from "bun:test";
-import {
-  type SpackMaterialCatalogState,
-  SpackMaterialLifecycleError,
-} from "@kuintessence/db";
+import { type SpackMaterialCatalogState, SpackMaterialLifecycleError } from "@kuintessence/db";
 import type { SpackMaterialBinding } from "@kuintessence/shared";
 import { materialApp, materialFixture } from "../routes/spack-materials.test-helpers";
 import { PLATFORM, repository, SUPER } from "../routes/spack-repositories.test-helpers";
@@ -66,7 +63,9 @@ export async function managementFixture(count = 1, name: string = QUERY.reposito
       return values.flatMap((binding, index): SpackMaterialCatalogState[] => {
         if (!allowed[index]) return [];
         const withdrawn = control.withdrawn.has(binding.manifestDigest);
-        return [{ ...binding, revision: withdrawn ? 1 : 0, state: withdrawn ? "withdrawn" : "available" }];
+        return [
+          { ...binding, revision: withdrawn ? 1 : 0, state: withdrawn ? "withdrawn" : "available" },
+        ];
       });
     }),
   };
@@ -83,12 +82,14 @@ export async function managementFixture(count = 1, name: string = QUERY.reposito
     authorize: mock(async () => {}),
     read,
     inspect: mock(async (releases: Awaited<ReturnType<typeof read>>[]) =>
-      releases.map(({ manifest, bytes }): SpackMaterialCatalogState => ({
-        repositoryId: SpackMaterialStore.repositoryId(manifest.repository),
-        manifestDigest: materialDigest(bytes),
-        revision: 0,
-        state: "available",
-      })),
+      releases.map(
+        ({ manifest, bytes }): SpackMaterialCatalogState => ({
+          repositoryId: SpackMaterialStore.repositoryId(manifest.repository),
+          manifestDigest: materialDigest(bytes),
+          revision: 0,
+          state: "available",
+        }),
+      ),
     ),
   };
   return { ...f, store, app, bindings, control, port, readerPort, list };

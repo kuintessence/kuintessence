@@ -1,7 +1,11 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { SpackMaterialManagementCatalogSchema } from "@kuintessence/shared";
 import { z } from "zod";
-import { ACTOR, managementFixture, QUERY } from "../services/spack-material-management.test-helpers";
+import {
+  ACTOR,
+  managementFixture,
+  QUERY,
+} from "../services/spack-material-management.test-helpers";
 import { BASE, cleanupMaterials } from "./spack-materials.test-helpers";
 import { headers, ORG, OTHER_ORG, SUPER } from "./spack-repositories.test-helpers";
 
@@ -75,9 +79,13 @@ describe("management catalog routes", () => {
     );
     expect(response.status).toBe(403);
     f.control.canonical = { ...ACTOR, role: "org_admin", orgIds: [OTHER_ORG] };
-    expect((await f.list({ ...QUERY, repository: `org/${OTHER_ORG}/materials` })).releases).toHaveLength(1);
+    expect(
+      (await f.list({ ...QUERY, repository: `org/${OTHER_ORG}/materials` })).releases,
+    ).toHaveLength(1);
     f.control.canonical.orgIds = [ORG];
-    await expect(f.list({ ...QUERY, repository: `org/${OTHER_ORG}/materials` })).rejects.toMatchObject({ status: 403 });
+    await expect(
+      f.list({ ...QUERY, repository: `org/${OTHER_ORG}/materials` }),
+    ).rejects.toMatchObject({ status: 403 });
   });
 
   test("empty and unknown repositories still require canonical readiness", async () => {
@@ -92,7 +100,9 @@ describe("management catalog routes", () => {
     const parsed = z.string().safeParse(123);
     if (parsed.success) throw new Error("Expected invalid fixture");
     for (const error of [new SyntaxError("private disk metadata"), parsed.error]) {
-      f.recipes.getSnapshot.mockImplementationOnce(async () => { throw error; });
+      f.recipes.getSnapshot.mockImplementationOnce(async () => {
+        throw error;
+      });
       const response = await f.app.request(path, { headers: headers(ACTOR) });
       expect(response.status).toBe(500);
       expect(await response.json()).toEqual({

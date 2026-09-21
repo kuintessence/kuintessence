@@ -20,23 +20,26 @@ describe("encrypted management cursors", () => {
     expect(Buffer.from(cursor.slice(3), "base64url").toString("utf8")).not.toContain(subject);
   });
 
-  test.each(["subject", "repository", "state", "limit", "secret"])(
-    "rejects a cursor reused with another %s",
-    (field) => {
-      const cursor = managementCursor(secret, subject, query).encode(digest);
-      const codec = managementCursor(
-        field === "secret" ? `${secret}x` : secret,
-        field === "subject" ? "someone-else" : subject,
-        {
-          ...query,
-          ...(field === "repository" ? { repository: "public/other" } : {}),
-          ...(field === "state" ? { state: "withdrawn" as const } : {}),
-          ...(field === "limit" ? { limit: 5 } : {}),
-        },
-      );
-      expect(() => codec.decode(cursor)).toThrow("Invalid or expired management cursor");
-    },
-  );
+  test.each([
+    "subject",
+    "repository",
+    "state",
+    "limit",
+    "secret",
+  ])("rejects a cursor reused with another %s", (field) => {
+    const cursor = managementCursor(secret, subject, query).encode(digest);
+    const codec = managementCursor(
+      field === "secret" ? `${secret}x` : secret,
+      field === "subject" ? "someone-else" : subject,
+      {
+        ...query,
+        ...(field === "repository" ? { repository: "public/other" } : {}),
+        ...(field === "state" ? { state: "withdrawn" as const } : {}),
+        ...(field === "limit" ? { limit: 5 } : {}),
+      },
+    );
+    expect(() => codec.decode(cursor)).toThrow("Invalid or expired management cursor");
+  });
 
   test("rejects corruption, raw digests and oversized cursors", () => {
     const codec = managementCursor(secret, subject, query);

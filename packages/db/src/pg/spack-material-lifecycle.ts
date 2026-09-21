@@ -109,7 +109,10 @@ export class SpackMaterialLifecycle {
         visible = [...mask];
       });
       checkpoint();
-      await tx.select({ id: spackMaterialLifecycleEvents.id }).from(spackMaterialLifecycleEvents).limit(0);
+      await tx
+        .select({ id: spackMaterialLifecycleEvents.id })
+        .from(spackMaterialLifecycleEvents)
+        .limit(0);
       checkpoint();
       const result: SpackMaterialCatalogState[] = [];
       for (const [index, binding] of values.entries()) {

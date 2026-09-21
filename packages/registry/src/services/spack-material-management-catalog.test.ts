@@ -1,11 +1,16 @@
 import { afterEach, describe, expect, mock, test } from "bun:test";
-import { join } from "node:path";
 import { readFile, rename, rm, symlink, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import { cleanupMaterials } from "../routes/spack-materials.test-helpers";
 import { OTHER_ORG } from "../routes/spack-repositories.test-helpers";
 import { RecipeStoreError } from "./recipe-git";
+import {
+  ACTOR,
+  CURSOR_SECRET,
+  managementFixture,
+  QUERY,
+} from "./spack-material-management.test-helpers";
 import { SpackMaterialManagementCatalogReader } from "./spack-material-management-catalog";
-import { ACTOR, CURSOR_SECRET, managementFixture, QUERY } from "./spack-material-management.test-helpers";
 import { SpackMaterialStore } from "./spack-material-store";
 
 afterEach(cleanupMaterials);
@@ -27,7 +32,9 @@ describe("maintainer catalog pagination and authorization", () => {
     const third = await f.list({ ...QUERY, limit: 1, after: second.nextCursor });
     expect(third.nextCursor).toBeNull();
     expect(
-      [...first.releases, ...second.releases, ...third.releases].map((value) => value.manifestDigest),
+      [...first.releases, ...second.releases, ...third.releases].map(
+        (value) => value.manifestDigest,
+      ),
     ).toEqual(f.bindings.map((binding) => binding.manifestDigest));
     expect(f.recipes.archive).toHaveBeenCalledTimes(3);
   });
@@ -91,7 +98,9 @@ describe("maintainer catalog pagination and authorization", () => {
   test("invalid query and pre-aborted calls do not load recipes", async () => {
     const f = await managementFixture();
     f.recipes.getSnapshot.mockClear();
-    await expect(f.list({ ...QUERY, repository: "../private" })).rejects.toMatchObject({ status: 422 });
+    await expect(f.list({ ...QUERY, repository: "../private" })).rejects.toMatchObject({
+      status: 422,
+    });
     const controller = new AbortController();
     controller.abort(new Error("Request cancelled"));
     await expect(f.list(QUERY, controller.signal)).rejects.toThrow("Request cancelled");
@@ -107,8 +116,11 @@ describe("management catalog storage bounds", () => {
     const root = join(f.root, "manifests");
     const directory = join(root, binding.repositoryId);
     const path =
-      kind === "root" ? root : kind === "repository" ? directory :
-        join(directory, `${binding.manifestDigest.slice(7)}.json`);
+      kind === "root"
+        ? root
+        : kind === "repository"
+          ? directory
+          : join(directory, `${binding.manifestDigest.slice(7)}.json`);
     const moved = join(f.root, "moved");
     await rename(path, moved);
     await symlink(moved, path);
@@ -132,7 +144,12 @@ describe("management catalog storage bounds", () => {
     const f = await managementFixture(2);
     const binding = f.bindings[1];
     if (!binding) throw new Error("Missing fixture");
-    const path = join(f.root, "manifests", binding.repositoryId, `${binding.manifestDigest.slice(7)}.json`);
+    const path = join(
+      f.root,
+      "manifests",
+      binding.repositoryId,
+      `${binding.manifestDigest.slice(7)}.json`,
+    );
     const bytes = await readFile(path);
     await writeFile(path, Buffer.concat([bytes, Buffer.from(" ")]));
     await expect(f.list()).rejects.toMatchObject({ status: 500 });
@@ -159,8 +176,12 @@ describe("management catalog storage bounds", () => {
     const f = await managementFixture();
     let enter: () => void = () => {};
     let release: () => void = () => {};
-    const entered = new Promise<void>((resolve) => { enter = resolve; });
-    const blocked = new Promise<void>((resolve) => { release = resolve; });
+    const entered = new Promise<void>((resolve) => {
+      enter = resolve;
+    });
+    const blocked = new Promise<void>((resolve) => {
+      release = resolve;
+    });
     const reader = new SpackMaterialManagementCatalogReader(f.root, { maxConcurrent: 1 });
     const controller = new AbortController();
     const port = {
@@ -185,7 +206,9 @@ describe("management catalog storage bounds", () => {
     const reader = new SpackMaterialManagementCatalogReader(f.root, { timeoutMs: 20 });
     const port = {
       ...f.readerPort,
-      authorize: mock(async () => { await Bun.sleep(40); }),
+      authorize: mock(async () => {
+        await Bun.sleep(40);
+      }),
     };
     await expect(reader.list(QUERY, port)).rejects.toMatchObject({ status: 503 });
   });

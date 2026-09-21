@@ -472,9 +472,9 @@ for (const width of [1280, 320]) {
       ].map((query) => ({ query, authorization: "Bearer lifecycle-fixture-token" })),
     );
     expect(harness.calls).toHaveLength(0);
-    await page.getByLabel(labels.lifecycleManifestDigest, { exact: true }).fill(
-      `sha256:${"c".repeat(64)}`,
-    );
+    await page
+      .getByLabel(labels.lifecycleManifestDigest, { exact: true })
+      .fill(`sha256:${"c".repeat(64)}`);
     await table.getByRole("button", { name: labels.managementManage, exact: true }).click();
     await expect(page.getByLabel(labels.lifecycleManifestDigest, { exact: true })).toHaveValue(
       binding.manifestDigest,
@@ -496,11 +496,13 @@ for (const width of [1280, 320]) {
         pageWidth: Math.max(document.documentElement.scrollWidth, document.body.scrollWidth),
         controlOverflow: controls.some((rect) => rect.left < 0 || rect.right > window.innerWidth),
         overlaps: controls.some((a, index) =>
-          controls.slice(index + 1).some(
-            (b) =>
-              Math.min(a.right, b.right) - Math.max(a.left, b.left) > 1 &&
-              Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top) > 1,
-          ),
+          controls
+            .slice(index + 1)
+            .some(
+              (b) =>
+                Math.min(a.right, b.right) - Math.max(a.left, b.left) > 1 &&
+                Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top) > 1,
+            ),
         ),
         overflowingCells: Array.from(element.querySelectorAll("th, td")).filter(
           (cell) => cell.scrollWidth > cell.clientWidth + 1,
@@ -513,11 +515,13 @@ for (const width of [1280, 320]) {
     expect(geometry.overflowingCells).toBe(0);
     if (width === 320) {
       expect(
-        await table.locator("..").evaluate(
-          (element) =>
-            getComputedStyle(element).overflowX === "auto" &&
-            element.scrollWidth > element.clientWidth,
-        ),
+        await table
+          .locator("..")
+          .evaluate(
+            (element) =>
+              getComputedStyle(element).overflowX === "auto" &&
+              element.scrollWidth > element.clientWidth,
+          ),
       ).toBe(true);
     }
     await page.screenshot({ path: info.outputPath(`management-${width}.png`), fullPage: true });
@@ -527,11 +531,16 @@ for (const width of [1280, 320]) {
 test("expired management cursor clears pages and refresh retries the scoped first page", async ({
   page,
 }) => {
-  const harness = await mount(page, [], [], [
-    { status: 200, body: { releases: [], nextCursor: managementCursor } },
-    { status: 422, body: { error: { code: "VALIDATION_ERROR", message: "Cursor expired" } } },
-    { status: 200, body: managementCatalog() },
-  ]);
+  const harness = await mount(
+    page,
+    [],
+    [],
+    [
+      { status: 200, body: { releases: [], nextCursor: managementCursor } },
+      { status: 422, body: { error: { code: "VALIDATION_ERROR", message: "Cursor expired" } } },
+      { status: 200, body: managementCatalog() },
+    ],
+  );
   await searchManagement(page);
   await expect(page.getByText(labels.managementEmpty, { exact: true })).toBeVisible();
   await page.getByRole("button", { name: labels.managementNext, exact: true }).click();
