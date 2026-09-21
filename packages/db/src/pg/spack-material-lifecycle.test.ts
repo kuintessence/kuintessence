@@ -210,6 +210,117 @@ describe("Spack material lifecycle (isolated real PG)", () => {
     }
   });
 
+  test("catalog reads a bounded authorized batch without exposing audit history", async () => {
+    const { lifecycle } = await ready();
+    const bindings = [release(), release(), release()];
+    const available = bindings[0];
+    const withdrawn = bindings[1];
+    if (!available || !withdrawn) throw new Error("Missing fixture");
+    await lifecycle.transition(withdrawn, OPERATOR, change(), allow);
+    const authorize = mock(async (principal: Parameters<Authorize>[0]) => {
+      expect(principal).toMatchObject({ sub: OPERATOR, role: "platform_admin", orgIds: [] });
+      return [true, true, false];
+    });
+    expect(await lifecycle.inspectCatalog(bindings, OPERATOR, authorize)).toEqual([
+      { ...available, revision: 0, state: "available" },
+      { ...withdrawn, revision: 1, state: "withdrawn" },
+    ]);
+    expect(authorize).toHaveBeenCalledTimes(1);
+  });
+
+  test("even an empty catalog requires ready rollout and canonical authorization", async () => {
+    const authorize = mock(async () => []);
+    const observing = new SpackMaterialLifecycle(db);
+    await expectError(observing.inspectCatalog([], OPERATOR, authorize), UNAVAILABLE);
+    expect(authorize).not.toHaveBeenCalled();
+    const { lifecycle } = await ready();
+    expect(await lifecycle.inspectCatalog([], OPERATOR, authorize)).toEqual([]);
+    await db.update(users).set({ suspended: true }).where(eq(users.id, OPERATOR));
+    await expectError(lifecycle.inspectCatalog([], OPERATOR, authorize), FORBIDDEN);
+    expect(authorize).toHaveBeenCalledTimes(1);
+    await expectError(lifecycle.inspectCatalog([], randomUUID(), authorize), FORBIDDEN);
+  });
+
+  test("catalog bounds, duplicate bindings and mismatched authorization masks fail closed", async () => {
+    const { lifecycle } = await ready();
+    const binding = release();
+    const authorize = mock(async () => [true]);
+    await expectError(
+      lifecycle.inspectCatalog(Array.from({ length: 21 }, release), OPERATOR, authorize),
+      INVALID,
+    );
+    await expectError(lifecycle.inspectCatalog([binding, binding], OPERATOR, authorize), INVALID);
+    expect(authorize).not.toHaveBeenCalled();
+    await expectError(lifecycle.inspectCatalog([], OPERATOR, authorize), FORBIDDEN);
+    await expectError(
+      lifecycle.inspectCatalog([binding], OPERATOR, async () => []),
+      FORBIDDEN,
+    );
+  });
+
+  test("catalog rechecks canonical membership and fences the previous epoch", async () => {
+    const { lifecycle, state } = await ready();
+    const orgId = randomUUID();
+    await db.insert(userOrgMemberships).values({ userId: OPERATOR, orgId, role: "admin" });
+    const authorize = async (principal: Parameters<Authorize>[0]) => {
+      if (!principal.orgIds.includes(orgId)) throw new Error("Membership required");
+      return [true];
+    };
+    const binding = release();
+    expect(await lifecycle.inspectCatalog([binding], OPERATOR, authorize)).toHaveLength(1);
+    await db.delete(userOrgMemberships).where(eq(userOrgMemberships.userId, OPERATOR));
+    await expectError(lifecycle.inspectCatalog([binding], OPERATOR, authorize), FORBIDDEN);
+    await rollout.execute({
+      action: "pause",
+      operatorId: OPERATOR,
+      expectedRevision: state.revision,
+    });
+    await expectError(
+      lifecycle.inspectCatalog([], OPERATOR, async () => []),
+      UNAVAILABLE,
+    );
+  });
+
+  test("catalog does not mistake a missing lifecycle journal for an empty page", async () => {
+    const { lifecycle } = await ready();
+    await db.execute(
+      sql`alter table spack_material_lifecycle_events rename to hidden_catalog_events`,
+    );
+    try {
+      await expectError(
+        lifecycle.inspectCatalog([], OPERATOR, async () => []),
+        UNAVAILABLE,
+      );
+      await expectError(
+        lifecycle.inspectCatalog([release()], OPERATOR, async () => [false]),
+        UNAVAILABLE,
+      );
+    } finally {
+      await db.execute(
+        sql`alter table hidden_catalog_events rename to spack_material_lifecycle_events`,
+      );
+    }
+  });
+
+  test("catalog cooperatively cancels after canonical authorization", async () => {
+    const { lifecycle } = await ready();
+    let cancelled = false;
+    await expectError(
+      lifecycle.inspectCatalog(
+        [release()],
+        OPERATOR,
+        async () => {
+          cancelled = true;
+          return [true];
+        },
+        () => {
+          if (cancelled) throw new Error("Caller left");
+        },
+      ),
+      UNAVAILABLE,
+    );
+  });
+
   test("withdraws and restores with durable audit history and release-pair isolation", async () => {
     const binding = release();
     const { lifecycle, peer, state, epoch, references } = await ready();

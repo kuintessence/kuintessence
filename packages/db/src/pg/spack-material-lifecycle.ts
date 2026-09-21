@@ -45,6 +45,10 @@ export interface SpackMaterialLifecycleStatus {
   }[];
   historyTruncated: boolean;
 }
+export interface SpackMaterialCatalogState extends SpackMaterialReferenceBinding {
+  revision: number;
+  state: "available" | "withdrawn";
+}
 
 type Transaction = Parameters<Parameters<PgDb["transaction"]>[0]>[0];
 type Authorize = (principal: SpackMaterialLifecyclePrincipal) => Promise<void>;
@@ -69,6 +73,60 @@ export class SpackMaterialLifecycle {
       await this.requireReady(tx);
       await authorizeCanonical(tx, subject, authorize);
       return status(tx, value);
+    });
+  }
+
+  async inspectCatalog(
+    bindings: SpackMaterialReferenceBinding[],
+    subject: string,
+    authorize: (principal: SpackMaterialLifecyclePrincipal) => Promise<readonly boolean[]>,
+    checkpoint: () => void = () => {},
+  ): Promise<SpackMaterialCatalogState[]> {
+    if (!Array.isArray(bindings) || bindings.length > 20) {
+      throw new SpackMaterialLifecycleError("MATERIAL_LIFECYCLE_INVALID");
+    }
+    const values = Array.from(bindings, parseBinding);
+    if (
+      new Set(values.map((value) => `${value.repositoryId}/${value.manifestDigest}`)).size !==
+      values.length
+    ) {
+      throw new SpackMaterialLifecycleError("MATERIAL_LIFECYCLE_INVALID");
+    }
+    return this.transaction(async (tx) => {
+      checkpoint();
+      await this.requireReady(tx);
+      checkpoint();
+      let visible: readonly boolean[] = [];
+      await authorizeCanonical(tx, subject, async (principal) => {
+        const mask = await authorize(principal);
+        if (
+          !Array.isArray(mask) ||
+          mask.length !== values.length ||
+          Array.from(mask).some((value) => typeof value !== "boolean")
+        ) {
+          throw new SpackMaterialLifecycleError("MATERIAL_LIFECYCLE_FORBIDDEN");
+        }
+        visible = [...mask];
+      });
+      checkpoint();
+      await tx
+        .select({ id: spackMaterialLifecycleEvents.id })
+        .from(spackMaterialLifecycleEvents)
+        .limit(0);
+      checkpoint();
+      const result: SpackMaterialCatalogState[] = [];
+      for (const [index, binding] of values.entries()) {
+        checkpoint();
+        if (!visible[index]) continue;
+        const current = await readSpackMaterialLifecycle(tx, binding);
+        checkpoint();
+        result.push({
+          ...binding,
+          revision: current?.revision ?? 0,
+          state: current?.state === "withdrawn" ? "withdrawn" : "available",
+        });
+      }
+      return result;
     });
   }
 

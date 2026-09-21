@@ -38,8 +38,8 @@ GET/POST 的成功响应同时包含不可变 `repository` 仓库名称和
 `binding: {repositoryId, manifestDigest}`。这些字段只有 canonical 授权成功后才返回，
 失败响应不附带发布身份或历史；既有状态字段保持原语义。
 `historyTruncated` 表示还有更早记录。完整历史留在数据库中，不自动过期。
-普通材料目录隐藏下架项；尚无维护者专用的下架目录，
-运维应保留发布时的 binding，也可通过下述 Web 生命周期入口查询。
+普通材料目录隐藏下架项；维护者可使用下述管理目录发现下架发布项，
+也可保留发布时的 binding，通过 Web 生命周期入口精确查询。
 
 GET 和 POST 先有界读取不可变 manifest 和指定 commit 的 recipe metadata，
 不扫描 recipe 历史、不运行 Git。最多同时处理两项管理请求，每个 snapshot 最多 2 MiB、
@@ -73,6 +73,41 @@ revision 是 **release revision**，不是 rollout revision。每次成功操作
 响应均为 `Cache-Control: private, no-store`。
 
 ## 引用与并发
+
+### 维护者目录
+
+```text
+GET /api/spack/material-repositories/management?repository=public/materials&state=all&limit=10
+```
+
+`repository` 必填，且只能指定一个完整 namespace 仓库名称。
+`state` 可为 `all`（默认）、`available` 或 `withdrawn`；
+`limit` 是每页扫描候选数，默认 10，范围 1–20。响应为
+`{releases, nextCursor}`；每项在普通目录摘要上增加 `state` 和 `revision`，
+不返回审计原因、操作者、recipe 路径或下载内容。
+
+查询先检查 canonical namespace **read 和 write**，然后有界读取候选 manifest
+和精确 commit 的 recipe snapshot，最后在数据库事务内再次检查用户、组织和
+recipe 权限并读取状态。即使仓库为空，也要求 ready epoch 和当前管理权限。
+无权访问或缺失 recipe 的候选不会出现在结果中；损坏的材料不作为成功的部分目录返回。
+管理目录不调用普通 manifest 下载，也不解除下架或放宽任何 namespace/recipe 权限。
+
+存在后续候选时，将 `nextCursor` 原样作为下一请求的 `after`，同时保持其他筛选条件。
+游标经过认证加密，绑定用户、仓库、状态与页大小，15 分钟后过期；
+不能从中读取被过滤候选的 digest，也不能用它绕过重新授权。
+Registry 使用 `REGISTRY_JWT_SECRET` 派生独立用途的游标密钥，
+管理目录要求该值至少 32 字符。副本使用相同密钥即可继续翻页；
+密钥轮换或游标过期后应重新查询第一页，不更换密钥以修复某个游标。
+
+每页按 manifest digest 排序。**空结果页仍可能有下一页**，因为状态或权限过滤
+发生在候选分页之后；不返回隐藏项总数。每页重新读取状态，不保证跨页快照一致性，
+新发布和下架/恢复期间需要刷新第一页以查看完整的当前结果。
+
+每次最多枚举 10,000 个目录项（含临时文件），读取 32 MiB manifest metadata，
+保留 32 个独立 recipe snapshot（每项最多 2 MiB）；最多并发两次扫描，
+使用 10 秒协作式 deadline。扫描超限时返回 `MATERIAL_CATALOG_LIMIT`，
+可减少页大小；原始目录项超限则需拆分材料仓库，而非无限翻页规避预算。
+等待中的 I/O 未结束前不释放名额；recipe 和文件读取不占用数据库授权事务锁。
 
 下架在与 Server 安装准入相同的事务锁内执行，且锁住任务状态写入，
 以下任一条件都会拒绝下架：
@@ -118,7 +153,9 @@ Server 继续使用原有通用引用错误，对 Agent 不暴露数据库异常
 软件中心的 Spack 页和 CP 软件页共用材料面板中的 **发布项生命周期**。
 此入口查询管理 API，不依赖普通 manifest 下载，因此下架后仍可按精确 binding 恢复。
 从材料目录或导入结果查阅发布项时会预填 binding，但不会自动发起管理请求。
-已下架项不出现在普通目录中，需要使用保留的仓库 ID 和完整清单摘要。
+已下架项不出现在普通目录中。可在维护者目录输入完整仓库名称并筛选状态，
+选中发布项后进入生命周期查询；此选择不会触发普通 manifest 下载。
+也可直接填写保留的仓库 ID 和完整清单摘要。
 
 1. 填写仓库 ID 与 `sha256:...` 清单摘要，点击“查询材料状态”。
 2. 核对返回的仓库、状态、release revision 与审计历史；历史每页 10 条，
@@ -126,7 +163,7 @@ Server 继续使用原有通用引用错误，对 Agent 不暴露数据库异常
 3. 输入审计原因并确认下架或恢复。原因修改后必须重新确认，
    操作始终使用刚读取的 revision，不自动更新 revision 重试。
 4. 成功响应经身份、revision、目标状态和原因校验后才显示变更已确认，
-   同时刷新普通目录并清除旧 manifest 展示。恢复不解除绑定退役。
+   同时使普通目录、维护者目录和旧 manifest 展示失效。恢复不解除绑定退役。
 
 前端还会校验仓库名称的 SHA-256 与 repository ID 一致，以及响应 binding
 与请求一致。校验需要浏览器的安全上下文 Web Crypto；生产应通过 HTTPS 使用门户。
@@ -141,7 +178,7 @@ Server 继续使用原有通用引用错误，对 Agent 不暴露数据库异常
 显示 **变更结果待确认**，不会自动重试 POST，也不宣称回滚。
 重新查询成功只确认当前状态，操作是否提交须结合审计历史判断。
 查询失败时继续保留待确认提示，不恢复先前状态或写入按钮。
-写入及结果待确认期间，目录/导入结果不能切换正在管理的发布项；
+写入及结果待确认期间，普通目录、维护者目录和导入结果不能切换正在管理的发布项；
 重新查询确认当前状态后解除限制，也可显式编辑 binding 开始另一项查阅。
 页面关闭、身份切换或重新选择 binding 不撤销服务器上已提交的操作；
 页面不将原因、历史或待确认队列保存到本地持久存储。
