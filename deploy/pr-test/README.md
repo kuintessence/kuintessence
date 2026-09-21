@@ -8,7 +8,7 @@
 构建依赖为：
 
 ```text
-scheduler-base (现有 base/Dockerfile, Spack 1.0.0, Bun 1.3.13)
+scheduler-base (现有 base/Dockerfile, Spack 1.0.0, Bun 1.4.2)
   ├─ scheduler-runtime (现有 slurm 或 pbs Dockerfile)
   └─ test-workspace (当前代码、锁定依赖、生成的 protobuf)
        └─ scheduler (scheduler-runtime + test-workspace)

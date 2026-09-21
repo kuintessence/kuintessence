@@ -4,7 +4,7 @@ set -euo pipefail
 [[ "${KQ_PR_TEST:-}" == "1" ]] || { echo "PR test container only" >&2; exit 2; }
 cd /workspace
 test "$(spack --version)" = "1.0.0"
-test "$(bun --version)" = "1.3.13"
+test "$(bun --version)" = "1.4.2"
 bun node_modules/typescript/bin/tsc --project deploy/pr-test/tsconfig.json
 bun deploy/pr-test/runtime.ts
 

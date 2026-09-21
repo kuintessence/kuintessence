@@ -6,7 +6,7 @@ services:
       dockerfile: base/Dockerfile
       args:
         SPACK_REF: v1.0.0
-        BUN_VERSION: 1.3.13
+        BUN_VERSION: 1.4.2
         APT_MIRROR: ${KQ_PR_APT_MIRROR:-}
     profiles: [images]
 

@@ -1,6 +1,6 @@
 
 # --- Stage 1: build app (proto codegen + web SPA) -------------------------
-FROM oven/bun:1.3.13-alpine AS builder
+FROM oven/bun:1.4.2-alpine AS builder
 WORKDIR /app
 COPY package.json bun.lock biome.json tsconfig.base.json ./
 COPY packages/shared/package.json packages/shared/tsconfig.json ./packages/shared/
@@ -54,7 +54,7 @@ RUN apk add --no-cache \
     wget
 
 # Bun runtime (statically built, lift binary out of the official image)
-COPY --from=oven/bun:1.3.13-alpine /usr/local/bin/bun /usr/local/bin/bun
+COPY --from=oven/bun:1.4.2-alpine /usr/local/bin/bun /usr/local/bin/bun
 RUN ln -sf /usr/local/bin/bun /usr/local/bin/bunx
 
 # RustFS server

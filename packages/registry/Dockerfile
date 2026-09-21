@@ -1,4 +1,4 @@
-FROM oven/bun:1.3.13-alpine AS deps
+FROM oven/bun:1.4.2-alpine AS deps
 WORKDIR /app
 COPY package.json bun.lock biome.json tsconfig.base.json ./
 COPY packages/shared/package.json ./packages/shared/
@@ -20,7 +20,7 @@ COPY packages/shared ./packages/shared
 COPY packages/db ./packages/db
 COPY packages/registry ./packages/registry
 
-FROM oven/bun:1.3.13-alpine
+FROM oven/bun:1.4.2-alpine
 RUN apk add --no-cache git
 WORKDIR /app
 COPY --from=build /app /app

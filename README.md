@@ -22,7 +22,7 @@ Web 中的“软件中心”提供软件、用例和模板入口；Registry 是�
 
 ## 快速开始
 
-需要 Bun 1.3 或更高版本，以及 Docker Compose。固定的 Bun 版本见 `packageManager`。
+需要 Bun 1.4.2 或更高版本，以及 Docker Compose。固定的 Bun 版本见 `packageManager`。
 
 ```bash
 git clone https://github.com/kuintessence/kuintessence.git

@@ -29,6 +29,9 @@ Kuintessence 当前为 pre-release。以下列出组件功能、运行要求和�
 
 ## 运行限制
 
+- 源码运行、CI 与新构建镜像固定使用 Bun 1.4.2，最低要求为 1.4.2。
+  材料上传依赖其 HTTP 拒绝连接关闭修复；升级须重新构建旧镜像与编译产物，
+  不能只修改配置后继续复用旧 Bun runtime。详见[材料上传边界](../spack-material-delivery.md)。
 - 自托管对象存储已统一配置为 RustFS，初始化使用 `rc` 而非 MinIO `mc` 镜像；
   使用新卷/PVC，不自动迁移旧对象。升级前先阅读
   [RustFS 迁移边界](../../deploy/rustfs/README.md)，特别是固定 version ID 引用。

@@ -346,6 +346,12 @@ Registry：
 原始材料上传入口使用大文件预算，其余入口保留原有 128 MiB transport 上限，
 具体路由的小额 JSON/recipe 限制不变。声明长度和实际流字节均须通过各自上限，
 不能仅调整网关而保留 HTTP listener 的较小默认值。
+Registry 拒绝超限请求时返回 413，并关闭未读完请求体的连接，不进行无界 drain。
+源码运行与新构建镜像要求 Bun 1.4.2 或更高版本；旧 Bun 1.3.13 存在响应关闭头未真正
+关闭 socket、客户端复用非 2xx 已关闭连接的问题。固定 runtime 已包含上游
+[服务端关闭修复](https://github.com/oven-sh/bun/commit/2bffc927cdaf5b3a1fe38faa8e8860bdae01a62f)
+与[客户端连接池修复](https://github.com/oven-sh/bun/commit/6d3f97f9f55d85e50bbd67eeb64d6e89153b4bb9)。
+运维升级须重新构建镜像或编译产物，不应只扩大旧 runtime 的上传限额。
 lock 上限单独为 16 MiB，图限制 10,000 个节点与 100,000 条边，报告最多 100 条诊断。
 在 JSON 解析前另行限制嵌套深度 128、容器数 100,000、键数 500,000 和 token 数
 2,000,000（容器、字符串及原始值，不含标点）；这些独立预算也可能拒绝低于图限额的输入。
