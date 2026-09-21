@@ -221,7 +221,11 @@ describe("Spack material lifecycle (isolated real PG)", () => {
     });
     await lifecycle.assertAvailable(binding);
     const withdrawn = await lifecycle.transition(binding, OPERATOR, change(), allow);
-    expect(withdrawn).toMatchObject({
+    const journal = await db.select().from(spackMaterialLifecycleEvents);
+    const createdAt = journal[0]?.createdAt.toISOString();
+    expect(Number.isFinite(Date.parse(createdAt ?? ""))).toBe(true);
+    expect(withdrawn.history[0]?.createdAt).toBe(createdAt);
+    expect(withdrawn).toEqual({
       revision: 1,
       state: "withdrawn",
       historyTruncated: false,
@@ -233,17 +237,17 @@ describe("Spack material lifecycle (isolated real PG)", () => {
           reason: change().reason,
           epoch: state.epoch,
           rolloutRevision: state.revision,
-          createdAt: expect.any(String),
+          createdAt,
         },
       ],
     });
-    expect(Number.isFinite(Date.parse(withdrawn.history[0]?.createdAt ?? ""))).toBe(true);
-    const journal = await db.select().from(spackMaterialLifecycleEvents);
     await expect(peer.assertAvailable(binding)).rejects.toMatchObject(WITHDRAWN);
     await expectError(references.registerBindings({ [SPEC]: binding }), REFERENCE_ERROR);
     await peer.assertAvailable({ ...binding, manifestDigest: release().manifestDigest });
     await peer.assertAvailable({ ...release(), manifestDigest: binding.manifestDigest });
     const restored = await peer.transition(binding, OPERATOR, change("restore", 1), allow);
+    const restoredCreatedAt = restored.history[0]?.createdAt;
+    expect(Number.isFinite(Date.parse(restoredCreatedAt ?? ""))).toBe(true);
     expect(restored).toMatchObject({ revision: 2, state: "available", historyTruncated: false });
     expect(restored.history).toHaveLength(2);
     expect(restored.history).toEqual(expect.arrayContaining(withdrawn.history));
@@ -256,7 +260,7 @@ describe("Spack material lifecycle (isolated real PG)", () => {
           reason: change("restore").reason,
           epoch: state.epoch,
           rolloutRevision: state.revision,
-          createdAt: expect.any(String),
+          createdAt: restoredCreatedAt,
         }),
       ]),
     );
