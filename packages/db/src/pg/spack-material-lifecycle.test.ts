@@ -212,7 +212,7 @@ describe("Spack material lifecycle (isolated real PG)", () => {
 
   test("withdraws and restores with durable audit history and release-pair isolation", async () => {
     const binding = release();
-    const { lifecycle, peer, state, references } = await ready();
+    const { lifecycle, peer, state, epoch, references } = await ready();
     expect(await lifecycle.inspect(binding, OPERATOR, allow)).toEqual({
       revision: 0,
       state: "available",
@@ -223,7 +223,8 @@ describe("Spack material lifecycle (isolated real PG)", () => {
     const withdrawn = await lifecycle.transition(binding, OPERATOR, change(), allow);
     const journal = await db.select().from(spackMaterialLifecycleEvents);
     const createdAt = journal[0]?.createdAt.toISOString();
-    expect(Number.isFinite(Date.parse(createdAt ?? ""))).toBe(true);
+    if (!createdAt) throw new Error("Expected a persisted audit timestamp");
+    expect(Number.isFinite(Date.parse(createdAt))).toBe(true);
     expect(withdrawn.history[0]?.createdAt).toBe(createdAt);
     expect(withdrawn).toEqual({
       revision: 1,
@@ -235,7 +236,7 @@ describe("Spack material lifecycle (isolated real PG)", () => {
           state: "withdrawn",
           operatorId: OPERATOR,
           reason: change().reason,
-          epoch: state.epoch,
+          epoch,
           rolloutRevision: state.revision,
           createdAt,
         },
