@@ -8,6 +8,7 @@ import {
   SpackMaterialLifecycleError,
 } from "./spack-material-lifecycle-state";
 import { assertSpackMaterialRuntime } from "./spack-material-runtime";
+import { assertSpackMaterialOperationVisibility } from "./spack-material-visibility-state";
 
 export interface SpackMaterialReferenceBinding {
   repositoryId: string;
@@ -115,6 +116,7 @@ export class SpackMaterialReferences {
           throw referenceError();
         }
 
+        await assertSpackMaterialOperationVisibility(tx, value, value.requestedBy);
         const [existing] = await tx
           .select()
           .from(spackMaterialOperationReferences)

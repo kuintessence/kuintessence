@@ -7,6 +7,7 @@ import {
   spackMaterialBindings,
   spackMaterialOperationReferences,
   spackMaterialRollouts,
+  spackMaterialVisibilityEvents,
 } from "./schema-spack-materials";
 import { retireSpackMaterialBindings } from "./spack-material-binding-retirement";
 import {
@@ -17,7 +18,12 @@ import {
   parseSpackMaterialEpoch,
   parseSpackMaterialRolloutCommand,
 } from "./spack-material-rollout-input";
-import { assertSpackMaterialRuntime, readSpackMaterialRollout } from "./spack-material-runtime";
+import {
+  assertSpackMaterialRuntime,
+  isSpackMaterialPaused,
+  isSpackMaterialPolicyPhase,
+  readSpackMaterialRollout,
+} from "./spack-material-runtime";
 
 type Transaction = Parameters<Parameters<PgDb["transaction"]>[0]>[0];
 const INVENTORY_PAGE_SIZE = 1_000;
@@ -52,11 +58,15 @@ export class SpackMaterialRollout {
         await tx.execute(sql`set local statement_timeout = '30s'`);
         const current = await readSpackMaterialRollout(tx);
         if (command.action === "inspect") return status(tx, current);
+        const activating = command.action === "activate" || command.action === "activate-policy";
+        const policyEnabled =
+          command.action === "activate-policy" ||
+          (current !== undefined && isSpackMaterialPolicyPhase(current.phase));
         await requireOperator(tx, command.operatorId);
         if ((current?.revision ?? 0) !== command.expectedRevision) throw rolloutError();
         if (
           command.action !== "pause" &&
-          (!current || current.phase !== "paused" || current.epoch !== command.epoch)
+          (!current || !isSpackMaterialPaused(current.phase) || current.epoch !== command.epoch)
         ) {
           throw rolloutError();
         }
@@ -72,13 +82,15 @@ export class SpackMaterialRollout {
               ],
             });
         }
-        if (command.action === "activate" || command.action === "retire") {
+        if (activating || command.action === "retire") {
           // Operation creation/status writes do not take our advisory lock.
           await tx.execute(sql`lock table ${softwareOperations} in share mode`);
         }
         let inventory = await inventorySnapshot(tx);
         if (
-          (command.action === "activate" || command.action === "retire") &&
+          (command.action === "activate" ||
+            command.action === "activate-policy" ||
+            command.action === "retire") &&
           (current?.action !== "reconcile" ||
             command.inventoryDigest !== current.inventoryDigest ||
             command.inventoryDigest !== inventory.inventoryDigest ||
@@ -86,6 +98,10 @@ export class SpackMaterialRollout {
             inventory.orphanedOperationCount !== 0)
         ) {
           throw rolloutError();
+        }
+        if (policyEnabled) {
+          // Do not activate a policy-aware epoch without its migrated journal.
+          await tx.select().from(spackMaterialVisibilityEvents).limit(0);
         }
         if (command.action === "retire") {
           await retireSpackMaterialBindings(tx, reconciled, {
@@ -102,12 +118,20 @@ export class SpackMaterialRollout {
           .values({
             revision: command.expectedRevision + 1,
             epoch: command.action === "pause" ? randomUUID() : command.epoch,
-            phase: command.action === "activate" ? "ready" : "paused",
+            phase: policyEnabled
+              ? activating
+                ? "policy-ready"
+                : "policy-paused"
+              : activating
+                ? "ready"
+                : "paused",
             action: command.action,
             operatorId: command.operatorId,
             inventoryDigest: inventory.inventoryDigest,
             evidence:
-              command.action === "activate" || command.action === "retire"
+              command.action === "activate" ||
+              command.action === "activate-policy" ||
+              command.action === "retire"
                 ? command.evidence
                 : null,
           })

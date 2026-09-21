@@ -10,7 +10,12 @@ type LifecycleCode =
   | "MATERIAL_LIFECYCLE_CONFLICT"
   | "MATERIAL_LIFECYCLE_INVALID"
   | "MATERIAL_RELEASE_REFERENCED"
-  | "MATERIAL_RELEASE_WITHDRAWN";
+  | "MATERIAL_RELEASE_WITHDRAWN"
+  | "MATERIAL_VISIBILITY_UNAVAILABLE"
+  | "MATERIAL_VISIBILITY_FORBIDDEN"
+  | "MATERIAL_VISIBILITY_CONFLICT"
+  | "MATERIAL_VISIBILITY_INVALID"
+  | "MATERIAL_VISIBILITY_DENIED";
 
 const ERRORS = {
   MATERIAL_LIFECYCLE_UNAVAILABLE: [503, "Material lifecycle is unavailable"],
@@ -19,6 +24,11 @@ const ERRORS = {
   MATERIAL_LIFECYCLE_INVALID: [422, "Invalid material lifecycle request"],
   MATERIAL_RELEASE_REFERENCED: [409, "Material release still has protected references"],
   MATERIAL_RELEASE_WITHDRAWN: [404, "Material release not found"],
+  MATERIAL_VISIBILITY_UNAVAILABLE: [503, "Material visibility policy is unavailable"],
+  MATERIAL_VISIBILITY_FORBIDDEN: [403, "Material visibility management is not permitted"],
+  MATERIAL_VISIBILITY_CONFLICT: [409, "Material visibility revision or policy conflicts"],
+  MATERIAL_VISIBILITY_INVALID: [422, "Invalid material visibility request"],
+  MATERIAL_VISIBILITY_DENIED: [404, "Material release not found"],
 } as const;
 
 /** Only bounded public errors may cross the transaction boundary. Never include SQL causes. */

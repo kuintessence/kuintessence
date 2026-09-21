@@ -36,12 +36,7 @@ function identifiers(value: unknown): string[] {
 }
 
 export function parseSpackMaterialVisibilityPolicy(input: unknown): SpackMaterialVisibilityPolicy {
-  if (
-    input &&
-    typeof input === "object" &&
-    "mode" in input &&
-    input.mode === "inherit"
-  ) {
+  if (input && typeof input === "object" && "mode" in input && input.mode === "inherit") {
     object(input, ["mode"]);
     return { mode: "inherit" };
   }

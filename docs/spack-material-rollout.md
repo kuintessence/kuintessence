@@ -5,8 +5,10 @@
 这是材料生命周期的**第二批升级屏障**，承接[持久化引用账本](spack-material-delivery.md)：
 通过离线 DB API `SpackMaterialRollout.execute(command)` 执行
 `inspect`、`pause`、`reconcile`、`activate`，将历史配置对账后显式启用 runtime。
-不是完整生命周期管理：尚无 rollout HTTP API，也未开放材料下架、恢复、
-ACL/可见范围变更或 GC。第三批另提供[离线配置绑定退役](spack-binding-retirement.md)，
+不是完整生命周期管理：尚无 rollout HTTP API 或 GC。
+下架和恢复见[材料生命周期](spack-material-lifecycle.md)；
+附加可见限制需要进一步启用[材料可见策略](spack-material-visibility.md)。
+第三批另提供[离线配置绑定退役](spack-binding-retirement.md)，
 复用本入口的 `retire` 动作，不删除历史或材料。`activate` 不执行安装、不激活 recipe，
 不代表材料或安装器生产就绪。
 
@@ -56,6 +58,8 @@ bun packages/db/src/spack-material-rollout-cli.ts <absolute-command-json-path>
 | `paused` | 拒绝准入，即使配置的 epoch 匹配 |
 | `ready` 且配置 epoch 与当前 journal 完全一致 | 通过 rollout 门禁；原身份、权限及材料校验仍然有效 |
 | `ready` 但 epoch 缺失或不匹配 | 拒绝准入，不回退到 observe |
+| `policy-ready` 且 epoch 匹配 | 新版 runtime 继续检查附加可见策略；旧版不认识此阶段时拒绝准入 |
+| `policy-paused` | 拒绝准入，不允许回退为普通 ready |
 | DB 不可用、读取失败或状态无效 | 拒绝准入，不将故障视为空 journal |
 
 这些检查只控制**新请求/操作的准入**，不取消已经通过检查的在途 stream 或安装任务。
@@ -215,6 +219,11 @@ rollout journal 为 **append-only**。不要删除、truncate 或改写历史；
 mutation 超时或响应丢失时先 inspect，不假定事务已回滚，也不盲目再次 pause。
 新的 pause 会使旧 epoch 失效；需要再次完成对账、外部确认和显式 activate，
 不会自动恢复前一个 epoch 或 ready 状态。
+
+本页示例展示未启用可见策略的初始 rollout。启用 `activate-policy` 后，
+所有后续 pause/reconcile/retire 保持 `policy-paused`，activate 保持 `policy-ready`；
+不会通过普通 activate 降级或忽略已有策略。升级流程和附加证据要求见
+[材料可见策略](spack-material-visibility.md)。
 
 部署入口见[部署指南](deployment.md)，材料存储与授权见
 [材料发布与下载](spack-material-delivery.md)，能力边界见[当前状态](status/current-state.md)。
