@@ -20,7 +20,13 @@ interface Values {
 
 describe("Spack material rollout deployment (offline, no process execution)", () => {
   for (const [file, serviceName, volume, mount, postgresVolume] of [
-    ["docker-compose.yml", "registry", "registry-data", "/var/lib/kuintessence/registry", "pg-data"],
+    [
+      "docker-compose.yml",
+      "registry",
+      "registry-data",
+      "/var/lib/kuintessence/registry",
+      "pg-data",
+    ],
     [
       "docker-compose.schedulers.yml",
       "registry",
@@ -43,7 +49,7 @@ describe("Spack material rollout deployment (offline, no process execution)", ()
       const participants = serviceName === "kq" ? ["kq"] : ["server", "registry"];
       for (const name of participants) {
         expect(config.services[name]?.environment?.SPACK_MATERIAL_EPOCH).toBe(
-          "${SPACK_MATERIAL_EPOCH:-}",
+          `\${SPACK_MATERIAL_EPOCH:-}`,
         );
       }
       const recipients = Object.entries(config.services)

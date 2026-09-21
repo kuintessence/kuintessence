@@ -4,9 +4,9 @@ import { eq, sql } from "drizzle-orm";
 import { createPgDb, type PgDb } from "./index";
 import { agents, softwareOperations, users } from "./schema";
 import {
+  type SpackMaterialRolloutEvidence,
   spackMaterialBindings,
   spackMaterialOperationReferences,
-  type SpackMaterialRolloutEvidence,
   spackMaterialRollouts,
 } from "./schema-spack-materials";
 import {
@@ -119,7 +119,7 @@ describe("SpackMaterialRollout (isolated real PG)", () => {
 
   async function populateInventory(kind: "binding" | "reference", count: number): Promise<void> {
     const release = binding();
-    const specPrefix = "accumulated-\"quoted\"\\spec@";
+    const specPrefix = 'accumulated-"quoted"\\spec@';
     await db.transaction(async (tx) => {
       await tx.execute(sql`set local statement_timeout = '30s'`);
       if (kind === "binding") {
@@ -373,15 +373,15 @@ describe("SpackMaterialRollout (isolated real PG)", () => {
     expect(await peer.execute({ action: "inspect" })).toEqual(activatedAgain);
   });
 
-  test.each(["super_admin", "platform_admin"])(
-    "accepts a current %s operator and canonicalizes its UUID",
-    async (role) => {
-      await db.update(users).set({ role }).where(eq(users.id, OPERATOR_ID));
-      const paused = await pause(0, OPERATOR_ID.toUpperCase());
-      expect(paused.revision).toBe(1);
-      expect((await journal())[0]?.operatorId).toBe(OPERATOR_ID);
-    },
-  );
+  test.each([
+    "super_admin",
+    "platform_admin",
+  ])("accepts a current %s operator and canonicalizes its UUID", async (role) => {
+    await db.update(users).set({ role }).where(eq(users.id, OPERATOR_ID));
+    const paused = await pause(0, OPERATOR_ID.toUpperCase());
+    expect(paused.revision).toBe(1);
+    expect((await journal())[0]?.operatorId).toBe(OPERATOR_ID);
+  });
 
   test.each([
     ["user", false],
@@ -535,106 +535,106 @@ describe("SpackMaterialRollout (isolated real PG)", () => {
     expect(await db.select().from(spackMaterialOperationReferences)).toHaveLength(3);
   });
 
-  test.each(["binding", "reference"] as const)(
-    "can pause and reactivate after accumulating 100001 terminal-safe %s inventory rows",
-    async (kind) => {
-      const activated = await ready();
-      const previousHistory = await journal();
-      await populateInventory(kind, 100_001);
-      await rollout.assertRuntime(epoch(activated));
-      const counts = {
-        bindingCount: kind === "binding" ? 100_001 : 0,
-        operationReferenceCount: kind === "reference" ? 100_001 : 0,
-        activeInstallCount: 0,
-        orphanedOperationCount: 0,
-      };
-      const paused = await pause(activated.revision);
-      expect(paused).toMatchObject({
-        ...counts,
-        revision: activated.revision + 1,
-        phase: "paused",
-        action: "pause",
-      });
-      expect(epoch(paused)).not.toBe(epoch(activated));
-      expect(paused.inventoryDigest).not.toBe(activated.inventoryDigest);
-      await expectError(rollout.assertRuntime(epoch(activated)));
-      expect(await peer.execute({ action: "inspect" })).toEqual(paused);
+  test.each([
+    "binding",
+    "reference",
+  ] as const)("can pause and reactivate after accumulating 100001 terminal-safe %s inventory rows", async (kind) => {
+    const activated = await ready();
+    const previousHistory = await journal();
+    await populateInventory(kind, 100_001);
+    await rollout.assertRuntime(epoch(activated));
+    const counts = {
+      bindingCount: kind === "binding" ? 100_001 : 0,
+      operationReferenceCount: kind === "reference" ? 100_001 : 0,
+      activeInstallCount: 0,
+      orphanedOperationCount: 0,
+    };
+    const paused = await pause(activated.revision);
+    expect(paused).toMatchObject({
+      ...counts,
+      revision: activated.revision + 1,
+      phase: "paused",
+      action: "pause",
+    });
+    expect(epoch(paused)).not.toBe(epoch(activated));
+    expect(paused.inventoryDigest).not.toBe(activated.inventoryDigest);
+    await expectError(rollout.assertRuntime(epoch(activated)));
+    expect(await peer.execute({ action: "inspect" })).toEqual(paused);
 
-      const merged = await reconcile(paused);
-      expect(merged).toEqual({
-        ...paused,
-        revision: paused.revision + 1,
-        action: "reconcile",
-      });
-      const reactivated = await rollout.execute(activation(merged));
-      expect(reactivated).toEqual({
-        ...merged,
-        revision: merged.revision + 1,
-        phase: "ready",
-        action: "activate",
-      });
-      await rollout.assertRuntime(epoch(reactivated));
-      await expectError(rollout.assertRuntime(epoch(activated)));
-      const history = await journal();
-      expect(history).toHaveLength(6);
-      expect(history.slice(0, previousHistory.length)).toEqual(previousHistory);
-    },
-    180_000,
-  );
+    const merged = await reconcile(paused);
+    expect(merged).toEqual({
+      ...paused,
+      revision: paused.revision + 1,
+      action: "reconcile",
+    });
+    const reactivated = await rollout.execute(activation(merged));
+    expect(reactivated).toEqual({
+      ...merged,
+      revision: merged.revision + 1,
+      phase: "ready",
+      action: "activate",
+    });
+    await rollout.assertRuntime(epoch(reactivated));
+    await expectError(rollout.assertRuntime(epoch(activated)));
+    const history = await journal();
+    expect(history).toHaveLength(6);
+    expect(history.slice(0, previousHistory.length)).toEqual(previousHistory);
+  }, 180_000);
 
-  test.each([999, 1_000, 1_001, 3_001])(
-    "matches an independent canonical JSON hash with %s rows in each paged inventory",
-    async (count) => {
-      await populateInventory("binding", count);
-      await populateInventory("reference", count);
-      // The oracle loads each complete sorted inventory once, with no keyset
-      // pagination or streaming/framing logic shared with the implementation.
-      const bindings = await db
-        .select({
-          spec: spackMaterialBindings.spec,
-          repositoryId: spackMaterialBindings.repositoryId,
-          manifestDigest: spackMaterialBindings.manifestDigest,
-        })
-        .from(spackMaterialBindings)
-        .orderBy(
-          spackMaterialBindings.spec,
-          spackMaterialBindings.repositoryId,
-          spackMaterialBindings.manifestDigest,
-        );
-      const operationReferences = await db
-        .select({
-          operationId: spackMaterialOperationReferences.operationId,
-          agentId: spackMaterialOperationReferences.agentId,
-          requestedBy: spackMaterialOperationReferences.requestedBy,
-          spec: spackMaterialOperationReferences.spec,
-          repositoryId: spackMaterialOperationReferences.repositoryId,
-          manifestDigest: spackMaterialOperationReferences.manifestDigest,
-        })
-        .from(spackMaterialOperationReferences)
-        .orderBy(spackMaterialOperationReferences.operationId);
-      expect(bindings).toHaveLength(count);
-      expect(operationReferences).toHaveLength(count);
-      const canonicalDigest = `sha256:${createHash("sha256")
-        .update(JSON.stringify({ bindings, references: operationReferences }))
-        .digest("hex")}`;
-      const observed = await rollout.execute({ action: "inspect" });
-      expect(observed).toMatchObject({
-        revision: 0,
-        phase: "observe",
-        inventoryDigest: canonicalDigest,
-        bindingCount: count,
-        operationReferenceCount: count,
-        activeInstallCount: 0,
-        orphanedOperationCount: 0,
-      });
-      const paused = await pause(observed.revision);
-      expect(paused.inventoryDigest).toBe(canonicalDigest);
-      expect(paused.bindingCount).toBe(count);
-      expect(paused.operationReferenceCount).toBe(count);
-      expect(await peer.execute({ action: "inspect" })).toEqual(paused);
-    },
-    60_000,
-  );
+  test.each([
+    999,
+    1_000,
+    1_001,
+    3_001,
+  ])("matches an independent canonical JSON hash with %s rows in each paged inventory", async (count) => {
+    await populateInventory("binding", count);
+    await populateInventory("reference", count);
+    // The oracle loads each complete sorted inventory once, with no keyset
+    // pagination or streaming/framing logic shared with the implementation.
+    const bindings = await db
+      .select({
+        spec: spackMaterialBindings.spec,
+        repositoryId: spackMaterialBindings.repositoryId,
+        manifestDigest: spackMaterialBindings.manifestDigest,
+      })
+      .from(spackMaterialBindings)
+      .orderBy(
+        spackMaterialBindings.spec,
+        spackMaterialBindings.repositoryId,
+        spackMaterialBindings.manifestDigest,
+      );
+    const operationReferences = await db
+      .select({
+        operationId: spackMaterialOperationReferences.operationId,
+        agentId: spackMaterialOperationReferences.agentId,
+        requestedBy: spackMaterialOperationReferences.requestedBy,
+        spec: spackMaterialOperationReferences.spec,
+        repositoryId: spackMaterialOperationReferences.repositoryId,
+        manifestDigest: spackMaterialOperationReferences.manifestDigest,
+      })
+      .from(spackMaterialOperationReferences)
+      .orderBy(spackMaterialOperationReferences.operationId);
+    expect(bindings).toHaveLength(count);
+    expect(operationReferences).toHaveLength(count);
+    const canonicalDigest = `sha256:${createHash("sha256")
+      .update(JSON.stringify({ bindings, references: operationReferences }))
+      .digest("hex")}`;
+    const observed = await rollout.execute({ action: "inspect" });
+    expect(observed).toMatchObject({
+      revision: 0,
+      phase: "observe",
+      inventoryDigest: canonicalDigest,
+      bindingCount: count,
+      operationReferenceCount: count,
+      activeInstallCount: 0,
+      orphanedOperationCount: 0,
+    });
+    const paused = await pause(observed.revision);
+    expect(paused.inventoryDigest).toBe(canonicalDigest);
+    expect(paused.bindingCount).toBe(count);
+    expect(paused.operationReferenceCount).toBe(count);
+    expect(await peer.execute({ action: "inspect" })).toEqual(paused);
+  }, 60_000);
 
   test("orphan references block activation even when the deleted operation was terminal", async () => {
     const input = await operation();
@@ -657,29 +657,29 @@ describe("SpackMaterialRollout (isolated real PG)", () => {
     expect((await rollout.execute({ action: "inspect" })).phase).toBe("paused");
   });
 
-  test.each(["binding", "reference"] as const)(
-    "rejects activation after the %s inventory changes without changing the revision",
-    async (kind) => {
-      const input = await operation(binding(), { status: "succeeded" });
-      const merged = await reconcile(await pause());
-      // Model an out-of-band legacy writer, not an admitted fenced reference API call.
-      if (kind === "binding") {
-        await db.insert(spackMaterialBindings).values({ spec: input.spec, ...binding() });
-      } else {
-        await db.insert(spackMaterialOperationReferences).values(input);
-      }
-      const changed = await peer.execute({ action: "inspect" });
-      expect(changed.revision).toBe(merged.revision);
-      expect(changed.inventoryDigest).not.toBe(merged.inventoryDigest);
-      expect(changed.activeInstallCount).toBe(0);
-      expect(changed.orphanedOperationCount).toBe(0);
-      await expectError(rollout.execute(activation(merged)));
-      await expectError(rollout.execute(activation(changed)));
-      expect(await journal()).toHaveLength(2);
-      const refreshed = await reconcile(changed);
-      expect((await rollout.execute(activation(refreshed))).phase).toBe("ready");
-    },
-  );
+  test.each([
+    "binding",
+    "reference",
+  ] as const)("rejects activation after the %s inventory changes without changing the revision", async (kind) => {
+    const input = await operation(binding(), { status: "succeeded" });
+    const merged = await reconcile(await pause());
+    // Model an out-of-band legacy writer, not an admitted fenced reference API call.
+    if (kind === "binding") {
+      await db.insert(spackMaterialBindings).values({ spec: input.spec, ...binding() });
+    } else {
+      await db.insert(spackMaterialOperationReferences).values(input);
+    }
+    const changed = await peer.execute({ action: "inspect" });
+    expect(changed.revision).toBe(merged.revision);
+    expect(changed.inventoryDigest).not.toBe(merged.inventoryDigest);
+    expect(changed.activeInstallCount).toBe(0);
+    expect(changed.orphanedOperationCount).toBe(0);
+    await expectError(rollout.execute(activation(merged)));
+    await expectError(rollout.execute(activation(changed)));
+    expect(await journal()).toHaveLength(2);
+    const refreshed = await reconcile(changed);
+    expect((await rollout.execute(activation(refreshed))).phase).toBe("ready");
+  });
 
   test.each([
     "legacyProcessesStoppedAndDrained",
@@ -806,27 +806,27 @@ describe("SpackMaterialRollout (isolated real PG)", () => {
     await current.acquireOperation(nextInput);
   });
 
-  test.each(["registerBindings", "acquireOperation"] as const)(
-    "the same reference instance rechecks pause on %s, including an exact retry",
-    async (method) => {
-      const activated = await ready();
-      const release = binding();
-      const input = await operation(release);
-      const instance = new SpackMaterialReferences(peerDb, epoch(activated));
-      const write = () =>
-        method === "registerBindings"
-          ? instance.registerBindings({ [input.spec]: release })
-          : instance.acquireOperation(input);
-      await write();
-      const bindings = await db.select().from(spackMaterialBindings);
-      const acquired = await db.select().from(spackMaterialOperationReferences);
-      await pause(activated.revision);
-      await expectError(write(), REFERENCE_ERROR);
-      await expectError(instance.registerBindings({}), REFERENCE_ERROR);
-      expect(await db.select().from(spackMaterialBindings)).toEqual(bindings);
-      expect(await db.select().from(spackMaterialOperationReferences)).toEqual(acquired);
-    },
-  );
+  test.each([
+    "registerBindings",
+    "acquireOperation",
+  ] as const)("the same reference instance rechecks pause on %s, including an exact retry", async (method) => {
+    const activated = await ready();
+    const release = binding();
+    const input = await operation(release);
+    const instance = new SpackMaterialReferences(peerDb, epoch(activated));
+    const write = () =>
+      method === "registerBindings"
+        ? instance.registerBindings({ [input.spec]: release })
+        : instance.acquireOperation(input);
+    await write();
+    const bindings = await db.select().from(spackMaterialBindings);
+    const acquired = await db.select().from(spackMaterialOperationReferences);
+    await pause(activated.revision);
+    await expectError(write(), REFERENCE_ERROR);
+    await expectError(instance.registerBindings({}), REFERENCE_ERROR);
+    expect(await db.select().from(spackMaterialBindings)).toEqual(bindings);
+    expect(await db.select().from(spackMaterialOperationReferences)).toEqual(acquired);
+  });
 
   test.each([
     "users",
@@ -899,45 +899,44 @@ describe("SpackMaterialRollout (isolated real PG)", () => {
     expect((await rollout.execute(activation(merged))).phase).toBe("ready");
   });
 
-  test.each(["registerBindings", "acquireOperation"] as const)(
-    "%s waits for the lifecycle lock and checks the fence after a pause commits",
-    async (method) => {
-      const activated = await ready();
-      const release = binding();
-      const input = await operation(release);
-      const instance = new SpackMaterialReferences(peerDb, epoch(activated));
-      const pid = await backendPid(peerDb);
-      let pending: ReturnType<typeof settle> | undefined;
-      // Session locks are reentrant on this backend, letting the real pause API run
-      // while the peer is already waiting at the reference transaction boundary.
-      await db.execute(sql`
-        select pg_advisory_lock(hashtext('kuintessence:spack-material-lifecycle'))
-      `);
+  test.each([
+    "registerBindings",
+    "acquireOperation",
+  ] as const)("%s waits for the lifecycle lock and checks the fence after a pause commits", async (method) => {
+    const activated = await ready();
+    const release = binding();
+    const input = await operation(release);
+    const instance = new SpackMaterialReferences(peerDb, epoch(activated));
+    const pid = await backendPid(peerDb);
+    let pending: ReturnType<typeof settle> | undefined;
+    // Session locks are reentrant on this backend, letting the real pause API run
+    // while the peer is already waiting at the reference transaction boundary.
+    await db.execute(sql`
+      select pg_advisory_lock(hashtext('kuintessence:spack-material-lifecycle'))
+    `);
+    try {
+      pending = settle(
+        method === "registerBindings"
+          ? instance.registerBindings({ [input.spec]: release })
+          : instance.acquireOperation(input),
+      );
+      await waitForLock(observer, pid, "advisory");
+      await pause(activated.revision);
+    } finally {
       try {
-        pending = settle(
-          method === "registerBindings"
-            ? instance.registerBindings({ [input.spec]: release })
-            : instance.acquireOperation(input),
-        );
-        await waitForLock(observer, pid, "advisory");
-        await pause(activated.revision);
+        await db.execute(sql`
+          select pg_advisory_unlock(hashtext('kuintessence:spack-material-lifecycle'))
+        `);
       } finally {
-        try {
-          await db.execute(sql`
-            select pg_advisory_unlock(hashtext('kuintessence:spack-material-lifecycle'))
-          `);
-        } finally {
-          await pending;
-        }
+        await pending;
       }
-      const outcome = await pending;
-      expect(outcome?.ok).toBe(false);
-      if (outcome && !outcome.ok) assertError(outcome.error, REFERENCE_ERROR);
-      expect(await db.select().from(spackMaterialBindings)).toEqual([]);
-      expect(await db.select().from(spackMaterialOperationReferences)).toEqual([]);
-    },
-    20_000,
-  );
+    }
+    const outcome = await pending;
+    expect(outcome?.ok).toBe(false);
+    if (outcome && !outcome.ok) assertError(outcome.error, REFERENCE_ERROR);
+    expect(await db.select().from(spackMaterialBindings)).toEqual([]);
+    expect(await db.select().from(spackMaterialOperationReferences)).toEqual([]);
+  }, 20_000);
 
   test("activation waits for an uncommitted unregistered install and rejects after it commits", async () => {
     const merged = await reconcile(await pause());

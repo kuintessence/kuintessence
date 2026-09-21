@@ -142,11 +142,16 @@ describe("material runtime admissions", () => {
 
   test("sanitizes a synchronous fence failure and cancels its upload", async () => {
     const f = await materialFixture();
-    const store = new SpackMaterialStore(f.root, f.recipes, {}, {
-      assertRuntime() {
-        throw new Error("private synchronous fence failure");
+    const store = new SpackMaterialStore(
+      f.root,
+      f.recipes,
+      {},
+      {
+        assertRuntime() {
+          throw new Error("private synchronous fence failure");
+        },
       },
-    });
+    );
     const cancel = mock(() => {});
     await expectUnavailable(
       store.upload(
