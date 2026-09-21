@@ -8,6 +8,7 @@ import { z } from "zod";
 import { loadRegistryConfig } from "./config";
 import { createErrorHandler, createNotFoundHandler } from "./middleware/error-handler";
 import { createPrincipalMiddleware } from "./middleware/principal";
+import { createRegistryHttpHandler } from "./registry-http";
 import { createAppTemplateRoutes } from "./routes/app-templates";
 import { createBuildcacheRoutes } from "./routes/buildcache";
 import { createEcosystemReleaseRoutes } from "./routes/ecosystem-releases";
@@ -208,5 +209,5 @@ logger.info({ port: config.REGISTRY_PORT }, "Registry starting");
 export default {
   port: config.REGISTRY_PORT,
   hostname: "0.0.0.0",
-  fetch: app.fetch,
+  ...createRegistryHttpHandler(app.fetch, materialStore?.limits.maxBlobBytes),
 };

@@ -7,6 +7,7 @@ import type { SpackAuditRuntimeProfile } from "./audit-runtime";
 import type { SpackInstallSiteProfile } from "./install-contract";
 import {
   loadSpackInstallSiteProfile,
+  loadSpackInstallStoreLocator,
   type SpackInstallSiteProfileOptions,
 } from "./install-site-profile";
 
@@ -55,6 +56,41 @@ function fixture(value: unknown = profile, bytes = encode(value)) {
 }
 
 describe("trusted Spack install site profiles", () => {
+  test("a withdrawal locator omits host content verification without becoming an execution site", async () => {
+    const f = fixture();
+    const options = {
+      ...f.options,
+      inspect: async (...args: Parameters<Inspect>) => {
+        if (!args[2]) return { sha256: "f".repeat(64) };
+        return f.options.inspect(...args);
+      },
+    };
+    const signal = new AbortController().signal;
+    expect(await loadSpackInstallStoreLocator(options, signal)).toEqual({
+      storeRoot: profile.storeRoot,
+      digest: `sha256:${sha256(f.bytes)}`,
+    });
+    expect(f.calls.map((call) => call.path)).toEqual([profilePath]);
+    await expect(loadSpackInstallSiteProfile(options, signal)).rejects.toThrow(FAILURE);
+  });
+
+  test("withdrawal locators reject changed profile bytes, runtime binding and store overlap", async () => {
+    const f = fixture();
+    for (const options of [
+      { ...f.options, sha256: "f".repeat(64) },
+      { ...f.options, runtime: { ...runtime, sifSha256: "f".repeat(64) } },
+      fixture({ ...profile, storeRoot: "/etc/kuintessence/store" }).options,
+      fixture({
+        ...profile,
+        hostFiles: [{ path: `${profile.storeRoot}/records/pin`, sha256: "d".repeat(64) }],
+      }).options,
+    ]) {
+      await expect(
+        loadSpackInstallStoreLocator(options, new AbortController().signal),
+      ).rejects.toThrow(FAILURE);
+    }
+  });
+
   test("returns exact bytes and a material digest after checking every pin", async () => {
     const bytes = new TextEncoder().encode(` \n${JSON.stringify(profile, null, 2)}\n`);
     const f = fixture(profile, bytes);

@@ -14,6 +14,7 @@ import {
 import type { SpackInstallRunner, VerifiedSpackInstallSite } from "./install-runner";
 import {
   loadSpackInstallSiteProfile,
+  loadSpackInstallStoreLocator,
   type SpackInstallSiteProfileOptions,
 } from "./install-site-profile";
 import { SpackInstallStore } from "./install-store";
@@ -36,6 +37,21 @@ const failure = (): Extract<SoftwareOperationOutcome, { outcome: "failed" }> => 
   stderr: "Managed Spack operation failed; inspect the installation record before retrying",
 });
 
+function matchRecords(records: SpackInstallRecord[], spec: string): SpackInstallRecord[] {
+  const candidates = records.filter(
+    (record) =>
+      record.state !== "removed" &&
+      (`release:${record.id}` === spec ||
+        record.spec === spec ||
+        `/${record.rootHash}` === spec ||
+        record.report?.root.name === spec),
+  );
+  const published = candidates.filter(
+    (record) => record.state === "ready" || record.state === "unavailable",
+  );
+  return published.length ? published : candidates;
+}
+
 /** Coordinates durable metadata; recipe processes never receive this store's parent or records. */
 export class ManagedSpackInstallation implements SpackManagedInstallation {
   constructor(private readonly options: ManagedInstallationOptions) {}
@@ -45,12 +61,53 @@ export class ManagedSpackInstallation implements SpackManagedInstallation {
       this.options.site,
       signal,
     );
-    const a = site.profile.storeRoot;
+    signal.throwIfAborted();
+    this.assertCacheBoundary(site.profile.storeRoot);
+    return site;
+  }
+
+  private assertCacheBoundary(a: string): void {
     const b = this.options.cacheDir;
     if (a === b || a.startsWith(`${b}/`) || b.startsWith(`${a}/`)) {
       throw new Error("Spack installation and private material cache must not overlap");
     }
-    return site;
+  }
+
+  private async withdrawAfterSiteFailure(
+    spec: string,
+    action: "install" | "load" | "uninstall" | "import_preinstalled",
+    policy: SpackPolicy = { lockEnabled: false },
+  ): Promise<SoftwareOperationOutcome> {
+    let invalidatedHashes: string[] | undefined;
+    try {
+      const locator = await loadSpackInstallStoreLocator(
+        this.options.site,
+        AbortSignal.timeout(30_000),
+      );
+      this.assertCacheBoundary(locator.storeRoot);
+      const store = new SpackInstallStore(locator.storeRoot);
+      // Do not initialize or recreate a store while its execution profile is invalid.
+      await store.withLock(async () => {
+        const matches = matchRecords(await store.list(), spec);
+        const record = matches[0];
+        if (
+          matches.length !== 1 ||
+          !record ||
+          record.siteProfileDigest !== locator.digest ||
+          (record.state !== "ready" && record.state !== "unavailable") ||
+          (action !== "import_preinstalled" && decidePolicy(record.spec, policy) !== "allow")
+        ) {
+          return;
+        }
+        invalidatedHashes = [record.rootHash];
+        if (record.state === "ready") {
+          await store.save({ ...record, state: "unavailable", updatedAt: new Date().toISOString() });
+        }
+      });
+    } catch {
+      return { ...failure(), ...(invalidatedHashes ? { invalidatedHashes } : {}) };
+    }
+    return { ...failure(), ...(invalidatedHashes ? { invalidatedHashes } : {}) };
   }
 
   private async store(site: VerifiedSpackInstallSite): Promise<SpackInstallStore> {
@@ -96,13 +153,21 @@ export class ManagedSpackInstallation implements SpackManagedInstallation {
   ): Promise<SoftwareOperationOutcome> {
     let invalidatedHashes: string[] | undefined;
     try {
-      const site = await this.site(input.signal);
+      input.signal?.throwIfAborted();
+      let site: VerifiedSpackInstallSite;
+      try {
+        site = await this.site(input.signal);
+      } catch {
+        if (input.signal?.aborted) return failure();
+        return this.withdrawAfterSiteFailure(input.spec, "install");
+      }
       if (prepared.manifest.target !== site.profile.target) return failure();
       const preflight = await preflightSpackMaterials(prepared, input);
       if (!preflight.valid || !preflight.rootHash) return failure();
       const rootHash = preflight.rootHash;
       const store = await this.store(site);
       return await store.withLock(async () => {
+        input.signal?.throwIfAborted();
         const existing = (await store.list()).find(
           (record) =>
             (record.state === "ready" || record.state === "unavailable") &&
@@ -138,6 +203,7 @@ export class ManagedSpackInstallation implements SpackManagedInstallation {
           rootHash,
         });
         try {
+          input.signal?.throwIfAborted();
           const build = await this.options.runner.run(
             "install",
             prepared,
@@ -146,8 +212,10 @@ export class ManagedSpackInstallation implements SpackManagedInstallation {
             store.path(record.id),
           );
           this.assertReport(record, build, store, "install");
+          input.signal?.throwIfAborted();
           record = { ...record, state: "verifying", updatedAt: new Date().toISOString() };
           await store.save(record);
+          input.signal?.throwIfAborted();
           const report = await this.options.runner.run(
             "verify",
             prepared,
@@ -166,12 +234,16 @@ export class ManagedSpackInstallation implements SpackManagedInstallation {
           await this.site(input.signal);
           input.signal?.throwIfAborted();
           await store.publishFiles(record.id);
+          input.signal?.throwIfAborted();
           record = { ...record, state: "ready", report, updatedAt: new Date().toISOString() };
           await store.save(record);
+          input.signal?.throwIfAborted();
+          const installed = await this.inventory(store, site);
+          input.signal?.throwIfAborted();
           return {
             outcome: "succeeded",
             stdout: JSON.stringify(report),
-            installed: await this.inventory(store, site),
+            installed,
           };
         } catch {
           // Publication can have succeeded before a later inventory error. Never delete a ready store here.
@@ -179,8 +251,15 @@ export class ManagedSpackInstallation implements SpackManagedInstallation {
           if (current && (current.state === "building" || current.state === "verifying")) {
             await store.save({ ...current, state: "failed", updatedAt: new Date().toISOString() });
             await store.removeFiles(current.id);
+          } else if (current?.state === "ready" && input.signal?.aborted) {
+            invalidatedHashes = [current.rootHash];
+            await store.save({
+              ...current,
+              state: "unavailable",
+              updatedAt: new Date().toISOString(),
+            });
           }
-          return failure();
+          return { ...failure(), ...(invalidatedHashes ? { invalidatedHashes } : {}) };
         }
       });
     } catch {
@@ -217,15 +296,19 @@ export class ManagedSpackInstallation implements SpackManagedInstallation {
     action: "verify" | "load",
     input?: SpackMaterialPrepareInput,
     materials?: PreparedSpackMaterials,
+    signal?: AbortSignal,
   ): Promise<SoftwareOperationOutcome> {
     try {
-      const prepared = materials ?? (await this.materials(record));
+      const abortSignal = input?.signal ?? signal;
+      abortSignal?.throwIfAborted();
+      const prepared = materials ?? (await this.materials(record, abortSignal));
       const request = input ?? {
         operationId: record.id,
         ticket: "",
         manifestDigest: record.manifestDigest,
         spec: record.spec,
         spackVersion: prepared.manifest.spackVersion,
+        signal: abortSignal,
       };
       const report = await this.options.runner.run(
         action,
@@ -245,10 +328,13 @@ export class ManagedSpackInstallation implements SpackManagedInstallation {
           updatedAt: new Date().toISOString(),
         });
       }
+      request.signal?.throwIfAborted();
+      const installed = await this.inventory(store, site);
+      request.signal?.throwIfAborted();
       return {
         outcome: "succeeded",
         stdout: action === "load" ? (report.loadShell ?? "") : JSON.stringify(report),
-        installed: await this.inventory(store, site),
+        installed,
       };
     } catch {
       // Even transient verification errors withdraw readiness; recovery requires an explicit verify.
@@ -272,13 +358,19 @@ export class ManagedSpackInstallation implements SpackManagedInstallation {
     }
   }
 
-  private async materials(record: SpackInstallRecord): Promise<PreparedSpackMaterials> {
+  private async materials(
+    record: SpackInstallRecord,
+    signal?: AbortSignal,
+  ): Promise<PreparedSpackMaterials> {
+    signal?.throwIfAborted();
     const cache = new SpackMaterialCache(this.options.cacheDir);
     await cache.initialize();
     const bytes = await cache.readMetadata(
       { digest: record.manifestDigest, size: record.manifestSize },
       2 * 1024 ** 2,
-      AbortSignal.timeout(60_000),
+      signal
+        ? AbortSignal.any([signal, AbortSignal.timeout(60_000)])
+        : AbortSignal.timeout(60_000),
     );
     const manifest = SpackMaterialManifestSchema.parse(JSON.parse(new TextDecoder().decode(bytes)));
     const blobs = [
@@ -300,24 +392,23 @@ export class ManagedSpackInstallation implements SpackManagedInstallation {
     action: "load" | "uninstall" | "import_preinstalled",
     spec: string,
     policy: SpackPolicy = { lockEnabled: false },
+    signal?: AbortSignal,
   ): Promise<SoftwareOperationOutcome | null> {
     let invalidatedHashes: string[] | undefined;
     try {
-      const site = await this.site();
+      signal?.throwIfAborted();
+      let site: VerifiedSpackInstallSite;
+      try {
+        site = await this.site(signal);
+      } catch {
+        if (signal?.aborted) return failure();
+        return this.withdrawAfterSiteFailure(spec, action, policy);
+      }
       const store = await this.store(site);
       return await store.withLock(async () => {
+        signal?.throwIfAborted();
         const records = (await store.list()).filter((record) => record.state !== "removed");
-        const candidates = records.filter(
-          (record) =>
-            `release:${record.id}` === spec ||
-            record.spec === spec ||
-            `/${record.rootHash}` === spec ||
-            record.report?.root.name === spec,
-        );
-        const published = candidates.filter(
-          (record) => record.state === "ready" || record.state === "unavailable",
-        );
-        const matches = published.length ? published : candidates;
+        const matches = matchRecords(records, spec);
         if (matches.length === 0) {
           const name = spec
             .trim()
@@ -385,6 +476,9 @@ export class ManagedSpackInstallation implements SpackManagedInstallation {
           store,
           site,
           action === "load" ? "load" : "verify",
+          undefined,
+          undefined,
+          signal,
         );
         if ("invalidatedHashes" in result) invalidatedHashes = result.invalidatedHashes;
         return result;

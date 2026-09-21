@@ -342,6 +342,10 @@ Registry：
 | `SPACK_MATERIAL_UPLOAD_IDLE_TIMEOUT_MS` | 默认 30 秒 |
 
 上传最多 4 个并发；发布与 lock 预检共用 4 个并发槽位，JSON metadata 上限 2 MiB。
+启用材料存储时，Registry HTTP listener 同步采用有界的材料上传限额；只有精确的
+原始材料上传入口使用大文件预算，其余入口保留原有 128 MiB transport 上限，
+具体路由的小额 JSON/recipe 限制不变。声明长度和实际流字节均须通过各自上限，
+不能仅调整网关而保留 HTTP listener 的较小默认值。
 lock 上限单独为 16 MiB，图限制 10,000 个节点与 100,000 条边，报告最多 100 条诊断。
 在 JSON 解析前另行限制嵌套深度 128、容器数 100,000、键数 500,000 和 token 数
 2,000,000（容器、字符串及原始值，不含标点）；这些独立预算也可能拒绝低于图限额的输入。
@@ -545,6 +549,20 @@ worker 同时通过 `packages.all.require` 将完整 profile arch 施加到求�
    的 installed 清单撤下。当前保守处理包括临时 runtime 故障，不自动区分材料损坏；
    修复环境后须显式 `import_preinstalled` 复验，或对同一 release 发起安装以重新 verify，
    通过后才恢复 `ready`，不会重新构建或以 load 隐式恢复。
+
+初始 host 内容 pin 校验失败时，Agent 可从独立校验的固定 profile 安全定位已有账本，
+在写锁下检查 selector 唯一性、策略和 profile digest 后撤回对应记录；不会执行 worker、
+创建新 store 或删除 release。此定位仍检查 profile 权限/字节摘要、runtime 绑定和全部
+路径/别名边界，不代替执行环境的完整校验。profile 被篡改、路径失信或无法安全解析时，
+拒绝写入，不猜测安装目录。冷启动库存未知时也不把单条撤回当作完整空库存；
+运维须修复可信配置并完成显式复验和完整库存刷新。
+
+受管下载、预检、source audit、安装和复验使用 Agent 生命周期的取消信号；
+短暂控制连接重连不会取消操作。Agent 停止时拒绝后续排队操作并有界等待在途取消与清理；
+取消后不继续启动下一 worker，未完成操作不提升为成功；停止前已提交完成的操作保留真实结果。
+尚未发布的事务清理为 `failed`，
+取消恰逢 `ready` 写入时撤回为 `unavailable` 并保留已发布文件。
+强制杀进程或超过关闭等待窗口仍可能留下需人工核验的记录/写锁，不宣称自动回收完成。
 
 同一 spec/root 的既有 `ready` 记录只有 manifest 与 site profile 均一致才走重新 verify；
 不同 release/profile 返回 `rejected`，要求显式卸载后再替换，不原地覆盖。

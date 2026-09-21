@@ -143,5 +143,6 @@ export interface SpackManagedInstallation {
     action: "load" | "uninstall" | "import_preinstalled",
     spec: string,
     policy: SpackPolicy,
+    signal?: AbortSignal,
   ): Promise<SoftwareOperationOutcome | null>;
 }

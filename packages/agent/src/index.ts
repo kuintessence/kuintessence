@@ -623,16 +623,20 @@ async function main() {
   process.on("SIGINT", () => {
     logger.info("SIGINT received — shutting down");
     if (sandboxAttestationRefreshTimer) clearInterval(sandboxAttestationRefreshTimer);
-    stream.stop();
+    void stream.stop();
   });
   process.on("SIGTERM", () => {
     logger.info("SIGTERM received — shutting down");
     if (sandboxAttestationRefreshTimer) clearInterval(sandboxAttestationRefreshTimer);
-    stream.stop();
+    void stream.stop();
   });
 
-  await stream.start();
-  if (sandboxAttestationRefreshTimer) clearInterval(sandboxAttestationRefreshTimer);
+  try {
+    await stream.start();
+  } finally {
+    if (sandboxAttestationRefreshTimer) clearInterval(sandboxAttestationRefreshTimer);
+    await stream.stop();
+  }
   logger.info("Agent stopped cleanly");
 }
 

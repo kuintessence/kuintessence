@@ -231,9 +231,30 @@ async function canonicalStorePath(path: string, signal: AbortSignal): Promise<st
   }
 }
 
+export interface SpackInstallStoreLocator {
+  storeRoot: string;
+  digest: string;
+}
+
+export async function loadSpackInstallStoreLocator(
+  options: SpackInstallSiteProfileOptions,
+  signal: AbortSignal,
+): Promise<SpackInstallStoreLocator> {
+  const site = await inspectSiteProfile(options, signal, false);
+  return { storeRoot: site.profile.storeRoot, digest: site.digest };
+}
+
 export async function loadSpackInstallSiteProfile(
   options: SpackInstallSiteProfileOptions,
   signal: AbortSignal,
+): Promise<{ profile: SpackInstallSiteProfile; digest: string; bytes: Uint8Array }> {
+  return inspectSiteProfile(options, signal, true);
+}
+
+async function inspectSiteProfile(
+  options: SpackInstallSiteProfileOptions,
+  signal: AbortSignal,
+  verifyHostContents: boolean,
 ): Promise<{ profile: SpackInstallSiteProfile; digest: string; bytes: Uint8Array }> {
   try {
     signal.throwIfAborted();
@@ -291,8 +312,14 @@ export async function loadSpackInstallSiteProfile(
       { path: "/etc/os-release", sha256: profile.osReleaseSha256 },
       ...profile.hostFiles,
     ]) {
-      const result = await inspectWithAbort(inspect, pin.path, HOST_MAXIMUM, false, signal);
-      requireValid(result.sha256 === pin.sha256);
+      if (verifyHostContents) {
+        const result = await inspectWithAbort(inspect, pin.path, HOST_MAXIMUM, false, signal);
+        requireValid(result.sha256 === pin.sha256);
+      } else if (!injected) {
+        // A locator can only withdraw metadata, never authorize worker execution.
+        // Retain every path/alias check even when host content has drifted.
+        resolutions.push(await resolveProtectedFile(pin.path, signal));
+      }
     }
     if (!injected) {
       for (const resolution of resolutions) {

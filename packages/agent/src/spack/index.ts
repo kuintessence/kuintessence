@@ -7,6 +7,7 @@ import { type InstallOutcome, type SoftwareOperationOutcome, SpackInstaller } fr
 import type {
   PreparedSpackMaterials,
   SpackMaterialContext,
+  SpackMaterialPrepareInput,
   SpackMaterialProvider,
 } from "./material-client";
 import { preflightSpackMaterials } from "./material-preflight";
@@ -90,6 +91,10 @@ export interface PolicyApplyAck {
 }
 
 export type SoftwareOperationAction = "install" | "uninstall" | "load" | "import_preinstalled";
+
+function cancelledSoftwareOperation(): SoftwareOperationOutcome {
+  return { outcome: "failed", exitCode: 1, stderr: "Spack software operation cancelled" };
+}
 
 export class SpackManager {
   readonly requireServerMaterials: boolean;
@@ -197,7 +202,9 @@ export class SpackManager {
     action: SoftwareOperationAction,
     spec: string,
     materials?: SpackMaterialContext,
+    signal?: AbortSignal,
   ): Promise<SoftwareOperationOutcome> {
+    if (signal?.aborted) return cancelledSoftwareOperation();
     if (!this.installer) {
       throw new Error("SpackManager: spack is unavailable on this Agent");
     }
@@ -206,12 +213,14 @@ export class SpackManager {
         action,
         spec,
         this.cachedPolicy ?? { lockEnabled: false },
+        signal,
       );
       if (result) return this.withLegacyInventory(result);
+      if (signal?.aborted) return cancelledSoftwareOperation();
     }
     switch (action) {
       case "install":
-        if (this.requireServerMaterials) return this.prepareManagedInstall(spec, materials);
+        if (this.requireServerMaterials) return this.prepareManagedInstall(spec, materials, signal);
         return this.installer.installAndRefresh(spec, this.cachedPolicy ?? { lockEnabled: false });
       case "uninstall":
         return this.withManagedInventory(
@@ -230,6 +239,7 @@ export class SpackManager {
   private async prepareManagedInstall(
     spec: string,
     context?: SpackMaterialContext,
+    signal?: AbortSignal,
   ): Promise<SoftwareOperationOutcome> {
     const policyRejection = this.policyRejectionForOperation("install", spec);
     if (policyRejection) return { outcome: "rejected", reason: policyRejection };
@@ -242,30 +252,29 @@ export class SpackManager {
     if (!this.materialClient || !this.version) {
       return { outcome: "rejected", reason: "managed Spack material client is not configured" };
     }
+    const input: SpackMaterialPrepareInput = {
+      operationId: context.operationId,
+      ticket: context.ticket,
+      manifestDigest: context.manifestDigest,
+      spec,
+      spackVersion: this.version,
+      ...(signal ? { signal } : {}),
+    };
     let prepared: PreparedSpackMaterials;
     try {
-      prepared = await this.materialClient.prepare({
-        operationId: context.operationId,
-        ticket: context.ticket,
-        manifestDigest: context.manifestDigest,
-        spec,
-        spackVersion: this.version,
-      });
+      prepared = await this.materialClient.prepare(input);
     } catch (error) {
+      if (signal?.aborted) return cancelledSoftwareOperation();
       return {
         outcome: "failed",
         exitCode: 1,
         stderr: `Spack material preparation failed: ${error instanceof Error ? error.message : String(error)}`,
       };
     }
+    if (signal?.aborted) return cancelledSoftwareOperation();
     try {
-      const report = await preflightSpackMaterials(prepared, {
-        operationId: context.operationId,
-        ticket: context.ticket,
-        manifestDigest: context.manifestDigest,
-        spec,
-        spackVersion: this.version,
-      });
+      const report = await preflightSpackMaterials(prepared, input);
+      if (signal?.aborted) return cancelledSoftwareOperation();
       if (!report.valid) {
         return {
           outcome: "failed",
@@ -277,6 +286,7 @@ export class SpackManager {
         };
       }
     } catch (error) {
+      if (signal?.aborted) return cancelledSoftwareOperation();
       return {
         outcome: "failed",
         exitCode: 1,
@@ -285,13 +295,8 @@ export class SpackManager {
     }
     if (this.materialAuditor) {
       try {
-        const report = await this.materialAuditor.audit(prepared, {
-          operationId: context.operationId,
-          ticket: context.ticket,
-          manifestDigest: context.manifestDigest,
-          spec,
-          spackVersion: this.version,
-        });
+        const report = await this.materialAuditor.audit(prepared, input);
+        if (signal?.aborted) return cancelledSoftwareOperation();
         if (!report.passed) {
           return {
             outcome: "failed",
@@ -303,15 +308,7 @@ export class SpackManager {
           };
         }
         if (this.managedInstallation) {
-          return this.withLegacyInventory(
-            await this.managedInstallation.install(prepared, {
-              operationId: context.operationId,
-              ticket: context.ticket,
-              manifestDigest: context.manifestDigest,
-              spec,
-              spackVersion: this.version,
-            }),
-          );
+          return this.withLegacyInventory(await this.managedInstallation.install(prepared, input));
         }
         return {
           outcome: "rejected",
@@ -319,6 +316,7 @@ export class SpackManager {
           stdout: JSON.stringify(report),
         };
       } catch {
+        if (signal?.aborted) return cancelledSoftwareOperation();
         return {
           outcome: "failed",
           exitCode: 1,

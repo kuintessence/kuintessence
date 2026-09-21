@@ -287,7 +287,11 @@ function makeMockClient(serverMessages: unknown[], holdOpenMs = 0) {
   return { client: client as never, sent };
 }
 
-function makeReplayReconnectClient(accepted: ServerMessage, closeFirstWhen: Promise<void>) {
+function makeReplayReconnectClient(
+  accepted: ServerMessage,
+  closeFirstWhen: Promise<void>,
+  readRequestsAfter?: Promise<void>,
+) {
   const sentByConnection: unknown[][] = [[], []];
   const requestDoneByConnection: Array<Promise<void> | undefined> = [];
   let connectionCount = 0;
@@ -303,6 +307,7 @@ function makeReplayReconnectClient(accepted: ServerMessage, closeFirstWhen: Prom
           resolveRequestDone = resolve;
         });
         void (async () => {
+          if (readRequestsAfter) await readRequestsAfter;
           for await (const message of request) sent.push(message);
         })()
           .catch(() => {})
@@ -5858,6 +5863,422 @@ describe("AgentStream", () => {
     }
   });
 
+  describe("software operation lifecycle cancellation", () => {
+    async function lifecycleFixture(
+      options: {
+        timeoutMs?: number;
+        outboundQueue?: OutboundQueue;
+        readRequestsAfter?: Promise<void>;
+        reachabilityProbe?: (signal: AbortSignal) => Promise<void>;
+      } = {},
+    ) {
+      const closeFirst = Promise.withResolvers<void>();
+      const reconnect = makeReplayReconnectClient(
+        create(ServerMessageSchema, {
+          payload: {
+            case: "registerResponse",
+            value: create(RegisterResponseSchema, { accepted: true }),
+          },
+        }),
+        closeFirst.promise,
+        options.readRequestsAfter,
+      );
+      const spackManager = await SpackManager.bootstrap({
+        requireServerMaterials: true,
+        spawner: {
+          async run() {
+            return { exitCode: 0, stdout: "1.0.0", stderr: "" };
+          },
+        },
+      });
+      const stream = new AgentStream({
+        client: makeMockClient([]).client,
+        clientFactory: reconnect.clientFactory,
+        adapter: makeAdapter(),
+        agentId: "agent-001",
+        siteName: "test-site",
+        heartbeatIntervalMs: 60_000,
+        logger: silent,
+        reconnectBackoffMs: 1,
+        sleep: async () => {},
+        spackManager,
+        installedSoftware: [{ name: "hello", version: "1.0", hash: "invalid", spec: "hello@1.0" }],
+        outboundQueue: options.outboundQueue,
+        softwareOperationShutdownTimeoutMs: options.timeoutMs,
+        reachabilityProbe: options.reachabilityProbe,
+        reachabilityProbeIntervalMs: options.reachabilityProbe ? 1 : undefined,
+        readGpuMetrics: async () => [],
+        readDiskUsedPercent: async () => 0,
+        readSchedulerQueueDepth: async () => 0,
+      });
+      activeStreams.push(stream);
+      const running = stream.start();
+      const request = (operationId: string) =>
+        deliverServerMessage(
+          stream,
+          create(ServerMessageSchema, {
+            payload: {
+              case: "softwareOperationRequest",
+              value: create(SoftwareOperationRequestSchema, {
+                operationId,
+                action: SoftwareOperationAction.LOAD,
+                spec: "hello@1.0",
+              }),
+            },
+          }),
+        );
+      const results = (connection: number) =>
+        ((reconnect.sentByConnection[connection] ?? []) as AgentMessage[]).flatMap((message) =>
+          message.payload.case === "softwareOperationResult" ? [message.payload.value] : [],
+        );
+      return { stream, running, spackManager, closeFirst, reconnect, request, results };
+    }
+
+    async function pendingSpillFixture(timeoutMs?: number) {
+      const sqlite = new Database(":memory:");
+      runSqliteMigrations(sqlite);
+      const outboundQueue = new OutboundQueue(drizzle(sqlite, { schema }));
+      const persist = outboundQueue.enqueueSoftwareOperationResult.bind(outboundQueue);
+      const persistEntered = Promise.withResolvers<void>();
+      const persistRelease = Promise.withResolvers<void>();
+      const persisted = Promise.withResolvers<void>();
+      let persistStarted = false;
+      let persistFinished = false;
+      outboundQueue.enqueueSoftwareOperationResult = async (item) => {
+        if (item.status === SoftwareOperationStatus.SUCCEEDED) {
+          persistStarted = true;
+          persistEntered.resolve();
+          await persistRelease.promise;
+        }
+        await persist(item);
+        if (item.status === SoftwareOperationStatus.SUCCEEDED) {
+          persistFinished = true;
+          persisted.resolve();
+        }
+      };
+      const transportRelease = Promise.withResolvers<void>();
+      const probeEntered = Promise.withResolvers<void>();
+      const probeRelease = Promise.withResolvers<void>();
+      const f = await lifecycleFixture({
+        timeoutMs,
+        outboundQueue,
+        readRequestsAfter: transportRelease.promise,
+        reachabilityProbe: async () => {
+          probeEntered.resolve();
+          await probeRelease.promise;
+        },
+      });
+      f.spackManager.runSoftwareOperation = async () => ({
+        outcome: "succeeded",
+        stdout: "",
+        installed: [],
+      });
+      const state = f.stream as unknown as {
+        outboundQueue: OutboundItem[];
+        softwareOperationQueue: Promise<void>;
+        pendingSoftwareResultSpills: Set<Promise<void>>;
+      };
+      const operationId = "00000000-0000-0000-0000-000000000044";
+      return {
+        ...f,
+        outboundQueue,
+        operationId,
+        persistEntered,
+        persistRelease,
+        persisted,
+        probeRelease,
+        persistStarted: () => persistStarted,
+        persistFinished: () => persistFinished,
+        async prepare() {
+          await probeEntered.promise;
+          await f.request(operationId);
+          await state.softwareOperationQueue;
+          expect(
+            state.outboundQueue.some(
+              (item) =>
+                item.kind === "softwareOperationResult" &&
+                item.operationId === operationId &&
+                item.status === SoftwareOperationStatus.SUCCEEDED,
+            ),
+          ).toBe(true);
+          expect(persistStarted).toBe(false);
+        },
+        async dispose() {
+          probeRelease.resolve();
+          persistRelease.resolve();
+          f.closeFirst.resolve();
+          transportRelease.resolve();
+          await f.stream.stop();
+          await f.running;
+          await state.softwareOperationQueue;
+          await Promise.all(state.pendingSoftwareResultSpills);
+          await f.reconnect.requestDoneByConnection[0];
+          sqlite.close();
+        },
+      };
+    }
+
+    test("shutdown waits for the final disconnect and delayed spill of a completed software result", async () => {
+      const f = await pendingSpillFixture();
+      let startFinished = false;
+      const finished = f.running.then(() => {
+        startFinished = true;
+      });
+      let stopFinished = false;
+      try {
+        await f.prepare();
+        const stopping = f.stream.stop().then(() => {
+          stopFinished = true;
+        });
+        f.closeFirst.resolve();
+        await settle();
+        expect(f.persistStarted()).toBe(false);
+        expect(stopFinished).toBe(false);
+        expect(startFinished).toBe(false);
+        f.probeRelease.resolve();
+        await f.persistEntered.promise;
+        await settle();
+        expect(f.persistFinished()).toBe(false);
+        expect(stopFinished).toBe(false);
+        expect(startFinished).toBe(false);
+        f.persistRelease.resolve();
+        await Promise.all([stopping, finished]);
+        expect(f.persistFinished()).toBe(true);
+        const results = (await f.outboundQueue.loadForReplay()).flatMap(({ item }) =>
+          item.kind === "softwareOperationResult" &&
+          item.operationId === f.operationId &&
+          item.status === SoftwareOperationStatus.SUCCEEDED
+            ? [item]
+            : [],
+        );
+        expect(results).toHaveLength(1);
+      } finally {
+        await f.dispose();
+      }
+    });
+
+    test.each(["disconnect", "spill"] as const)(
+      "the shared shutdown budget can expire during %s without cancelling result persistence",
+      async (phase) => {
+        const f = await pendingSpillFixture(0);
+        try {
+          await f.prepare();
+          const stopping = f.stream.stop();
+          f.closeFirst.resolve();
+          if (phase === "spill") {
+            f.probeRelease.resolve();
+            await f.persistEntered.promise;
+          }
+          await stopping;
+          expect(f.persistFinished()).toBe(false);
+          if (phase === "disconnect") {
+            expect(f.persistStarted()).toBe(false);
+            f.probeRelease.resolve();
+            await f.persistEntered.promise;
+          }
+          // start() must reuse the expired budget even when the last spill is registered later.
+          await f.running;
+          expect(f.persistFinished()).toBe(false);
+          f.persistRelease.resolve();
+          await f.persisted.promise;
+          expect(f.persistFinished()).toBe(true);
+        } finally {
+          await f.dispose();
+        }
+      },
+    );
+
+    test("stop and start wait for cleanup, withdrawal and persistence; queued work never starts", async () => {
+      const sqlite = new Database(":memory:");
+      runSqliteMigrations(sqlite);
+      const outboundQueue = new OutboundQueue(drizzle(sqlite, { schema }));
+      const persist = outboundQueue.enqueueSoftwareOperationResult.bind(outboundQueue);
+      const persistEntered = Promise.withResolvers<void>();
+      const persistRelease = Promise.withResolvers<void>();
+      outboundQueue.enqueueSoftwareOperationResult = async (item) => {
+        if (item.status === SoftwareOperationStatus.FAILED) {
+          persistEntered.resolve();
+          await persistRelease.promise;
+        }
+        await persist(item);
+      };
+      const f = await lifecycleFixture({ outboundQueue });
+      const entered = Promise.withResolvers<void>();
+      const aborted = Promise.withResolvers<void>();
+      const cleanupEntered = Promise.withResolvers<void>();
+      const cleanupRelease = Promise.withResolvers<void>();
+      const signals: Array<AbortSignal | undefined> = [];
+      const snapshots: Array<Parameters<AgentStream["setInstalledSoftware"]>[0]> = [];
+      const update = f.stream.setInstalledSoftware.bind(f.stream);
+      f.stream.setInstalledSoftware = (specs) => {
+        snapshots.push(specs);
+        update(specs);
+      };
+      f.spackManager.runSoftwareOperation = async (_action, _spec, _materials, signal) => {
+        signals.push(signal);
+        signal?.addEventListener("abort", () => aborted.resolve(), { once: true });
+        entered.resolve();
+        await aborted.promise;
+        cleanupEntered.resolve();
+        await cleanupRelease.promise;
+        return {
+          outcome: "failed",
+          exitCode: 1,
+          stderr: "managed verification cancelled",
+          invalidatedHashes: ["invalid"],
+        };
+      };
+      let startFinished = false;
+      const finished = f.running.then(() => {
+        startFinished = true;
+      });
+      let stopFinished = false;
+      try {
+        await waitForCondition(
+          () => queueInventoryHeartbeats(f.reconnect.sentByConnection[0] ?? []).length > 0,
+        );
+        await f.request("00000000-0000-0000-0000-000000000040");
+        await entered.promise;
+        await f.request("00000000-0000-0000-0000-000000000041");
+        const stopping = f.stream.stop();
+        expect(f.stream.stop()).toBe(stopping);
+        const stopped = stopping.then(() => {
+          stopFinished = true;
+        });
+        f.closeFirst.resolve();
+        expect(signals[0]?.aborted).toBe(true);
+        await cleanupEntered.promise;
+        await settle();
+        expect(startFinished).toBe(false);
+        expect(stopFinished).toBe(false);
+        cleanupRelease.resolve();
+        await persistEntered.promise;
+        await settle();
+        expect(snapshots).toEqual([[]]);
+        expect(startFinished).toBe(false);
+        expect(stopFinished).toBe(false);
+        persistRelease.resolve();
+        await Promise.all([stopped, finished]);
+        expect(signals).toHaveLength(1);
+        const failed = (await outboundQueue.loadForReplay()).flatMap(({ item }) =>
+          item.kind === "softwareOperationResult" && item.status === SoftwareOperationStatus.FAILED
+            ? [item]
+            : [],
+        );
+        expect(failed.map((item) => item.operationId)).toEqual([
+          "00000000-0000-0000-0000-000000000040",
+          "00000000-0000-0000-0000-000000000041",
+        ]);
+        expect(failed[0]?.stderr).toBe("managed verification cancelled");
+        expect(failed[1]?.error).toBe(
+          "Agent stopped before queued software operation could begin",
+        );
+      } finally {
+        aborted.resolve();
+        cleanupRelease.resolve();
+        persistRelease.resolve();
+        f.closeFirst.resolve();
+        await f.stream.stop();
+        await finished;
+        sqlite.close();
+      }
+    });
+
+    test("connection loss does not abort software and the new connection reports its result", async () => {
+      const f = await lifecycleFixture();
+      const entered = Promise.withResolvers<void>();
+      const release = Promise.withResolvers<void>();
+      const signals: Array<AbortSignal | undefined> = [];
+      f.spackManager.runSoftwareOperation = async (_action, _spec, _materials, signal) => {
+        signals.push(signal);
+        entered.resolve();
+        await release.promise;
+        return { outcome: "succeeded", stdout: "export PATH=/srv/kq/bin:$PATH;", installed: [] };
+      };
+      try {
+        await waitForCondition(
+          () => queueInventoryHeartbeats(f.reconnect.sentByConnection[0] ?? []).length > 0,
+        );
+        await f.request("00000000-0000-0000-0000-000000000042");
+        await entered.promise;
+        await waitForCondition(() => f.results(0).length > 0);
+        f.closeFirst.resolve();
+        await waitForCondition(
+          () => queueInventoryHeartbeats(f.reconnect.sentByConnection[1] ?? []).length > 0,
+        );
+        expect(signals).toHaveLength(1);
+        expect(signals[0]?.aborted).toBe(false);
+        release.resolve();
+        await waitForCondition(() =>
+          f.results(1).some((item) => item.status === SoftwareOperationStatus.SUCCEEDED),
+        );
+        expect(signals[0]?.aborted).toBe(false);
+        expect(f.results(1).some((item) => item.status === SoftwareOperationStatus.FAILED)).toBe(
+          false,
+        );
+      } finally {
+        release.resolve();
+        f.closeFirst.resolve();
+        await f.stream.stop();
+        await f.running;
+      }
+      expect(signals[0]?.aborted).toBe(true);
+    });
+
+    test("shutdown wait is bounded without cancelling later cleanup or result persistence", async () => {
+      const sqlite = new Database(":memory:");
+      runSqliteMigrations(sqlite);
+      const outboundQueue = new OutboundQueue(drizzle(sqlite, { schema }));
+      const f = await lifecycleFixture({ timeoutMs: 0, outboundQueue });
+      const entered = Promise.withResolvers<void>();
+      const release = Promise.withResolvers<void>();
+      let completed = false;
+      const signals: Array<AbortSignal | undefined> = [];
+      f.spackManager.runSoftwareOperation = async (_action, _spec, _materials, signal) => {
+        signals.push(signal);
+        entered.resolve();
+        await release.promise;
+        completed = true;
+        throw new Error("private runtime cancellation detail");
+      };
+      const operationId = "00000000-0000-0000-0000-000000000043";
+      const failedResults = async () =>
+        (await outboundQueue.loadForReplay()).flatMap(({ item }) =>
+          item.kind === "softwareOperationResult" &&
+          item.operationId === operationId &&
+          item.status === SoftwareOperationStatus.FAILED
+            ? [item]
+            : [],
+        );
+      try {
+        await waitForCondition(
+          () => queueInventoryHeartbeats(f.reconnect.sentByConnection[0] ?? []).length > 0,
+        );
+        await f.request(operationId);
+        await entered.promise;
+        const stopping = f.stream.stop();
+        f.closeFirst.resolve();
+        await Promise.all([stopping, f.running]);
+        expect(signals[0]?.aborted).toBe(true);
+        expect(completed).toBe(false);
+        release.resolve();
+        await waitForCondition(async () => (await failedResults()).length === 1);
+        expect(completed).toBe(true);
+        expect((await failedResults())[0]?.error).toBe(
+          "Software operation cancelled during Agent shutdown",
+        );
+      } finally {
+        release.resolve();
+        f.closeFirst.resolve();
+        await f.stream.stop();
+        await f.running;
+        await (f.stream as unknown as { softwareOperationQueue: Promise<void> })
+          .softwareOperationQueue;
+        sqlite.close();
+      }
+    });
+  });
+
   test("inbound SoftwareOperationRequest emits failed result when execution throws", async () => {
     const serverMsgs = [
       create(ServerMessageSchema, {
@@ -6250,10 +6671,10 @@ describe("AgentStream", () => {
     const offlineStream = stream as unknown as {
       enqueueSoftwareOperationResult(
         item: Omit<Extract<OutboundItem, { kind: "softwareOperationResult" }>, "kind">,
-      ): void;
+      ): Promise<void>;
     };
 
-    offlineStream.enqueueSoftwareOperationResult({
+    await offlineStream.enqueueSoftwareOperationResult({
       operationId: "00000000-0000-0000-0000-000000000099",
       action: SoftwareOperationAction.INSTALL,
       status: SoftwareOperationStatus.SUCCEEDED,
@@ -6261,8 +6682,6 @@ describe("AgentStream", () => {
       exitCode: 0,
       installed: [{ name: "zlib", version: "1.3", hash: "abc", spec: "zlib@1.3" }],
     });
-    await settle(5);
-
     const replayed = (await outboundQueue.loadForReplay())[0]?.item;
     if (!replayed || replayed.kind !== "softwareOperationResult") {
       throw new Error("expected softwareOperationResult item");

@@ -499,6 +499,8 @@ export interface AgentStreamDeps {
   registrationTimeoutMs?: number;
   /** Maximum wait for a negotiated primary-stream HeartbeatAck. */
   heartbeatAckTimeoutMs?: number;
+  /** Maximum shutdown wait for software cancellation, cleanup and result persistence. */
+  softwareOperationShutdownTimeoutMs?: number;
   /** Independent mTLS reachability check for detecting a half-open bidi stream. */
   reachabilityProbe?: ServerReachabilityProbe;
   /** Delay between reachability probes after registration is accepted. */
@@ -669,6 +671,7 @@ export class AgentStream {
   private heartbeatAckTimeoutMs: number;
   private reachabilityProbeIntervalMs: number;
   private currentStreamController: AbortController | undefined;
+  private streamAttemptCompletion: Promise<void> = Promise.resolve();
   private readonly lifecycleController = new AbortController();
   private persistentQueue: OutboundQueue | undefined;
   private inboundAcks: InboundAcks | undefined;
@@ -679,6 +682,8 @@ export class AgentStream {
   private installedSoftware: InstalledSpec[];
   private installedSoftwareKnown: boolean;
   private softwareOperationQueue: Promise<void> = Promise.resolve();
+  private readonly pendingSoftwareResultSpills = new Set<Promise<void>>();
+  private softwareOperationShutdown: Promise<void> | undefined;
   private readGpuMetricsFn: () => Promise<GpuMetric[]>;
   private readDiskUsedPercentFn: () => Promise<number | null>;
   private readSchedulerQueueDepthFn: () => Promise<number>;
@@ -992,12 +997,16 @@ export class AgentStream {
     await this.recoverOrphanedCleanupIntents();
     await this.recoverActiveRemoteJobs();
     while (this.running) {
+      const attempt = Promise.withResolvers<void>();
+      this.streamAttemptCompletion = attempt.promise;
       try {
         await this.runOnce();
       } catch (err) {
         if (this.running) {
           this.logger.error({ err }, "Stream error — will reconnect");
         }
+      } finally {
+        attempt.resolve();
       }
       if (this.running) {
         // The Server stream just dropped; the Server has freed its side of any SSH
@@ -1009,9 +1018,11 @@ export class AgentStream {
         await this.waitForReconnectBackoff();
       }
     }
+    await this.softwareOperationShutdown;
   }
 
-  stop(): void {
+  stop(): Promise<void> {
+    if (this.softwareOperationShutdown) return this.softwareOperationShutdown;
     this.running = false;
     this.lifecycleController.abort(new Error("agent shutdown"));
     this.currentStreamController?.abort(new Error("agent shutdown"));
@@ -1027,6 +1038,39 @@ export class AgentStream {
     }
     this.activeFileTransfers.clear();
     this.signalOutbound(); // wake the generator so it can exit
+    this.softwareOperationShutdown = this.drainSoftwareOperations();
+    return this.softwareOperationShutdown;
+  }
+
+  private async drainSoftwareOperations(): Promise<void> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const drained = async () => {
+      // The final disconnect must register its spills before an empty queue is considered drained.
+      await this.streamAttemptCompletion;
+      let pending: Promise<void>;
+      do {
+        pending = this.softwareOperationQueue;
+        await Promise.all([pending, ...this.pendingSoftwareResultSpills]);
+      } while (
+        pending !== this.softwareOperationQueue ||
+        this.pendingSoftwareResultSpills.size > 0
+      );
+    };
+    try {
+      await Promise.race([
+        drained(),
+        new Promise<void>((resolve) => {
+          timer = setTimeout(() => {
+            this.logger.warn(
+              "Software operation shutdown wait expired; cleanup may still be pending",
+            );
+            resolve();
+          }, this.deps.softwareOperationShutdownTimeoutMs ?? 5_000);
+        }),
+      ]);
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+    }
   }
 
   private waitForReconnectBackoff(): Promise<void> {
@@ -2191,8 +2235,9 @@ export class AgentStream {
 
   /**
    * Move any items still buffered in the in-memory queue into the persistent
-   * SQLite queue (best-effort, fire-and-forget). Heartbeats are dropped —
-   * a stale CPU sample is not worth replaying. Status updates are persisted.
+   * SQLite queue (best-effort). Software result writes are tracked by shutdown;
+   * other writes are fire-and-forget. Heartbeats are dropped because a stale
+   * CPU sample is not worth replaying. Status updates are persisted.
    */
   private spillInMemoryToPersistent(): void {
     if (!this.persistentQueue) {
@@ -2223,12 +2268,18 @@ export class AgentStream {
           );
         });
       } else if (item.kind === "softwareOperationResult") {
-        this.persistentQueue.enqueueSoftwareOperationResult(item).catch((err) => {
-          this.logger.error(
-            { err, operationId: item.operationId },
-            "Failed to spill software operation result to persistent queue",
-          );
-        });
+        const spill = this.persistentQueue
+          .enqueueSoftwareOperationResult(item)
+          .catch((err) => {
+            this.logger.error(
+              { err, operationId: item.operationId },
+              "Failed to spill software operation result to persistent queue",
+            );
+          })
+          .finally(() => {
+            this.pendingSoftwareResultSpills.delete(spill);
+          });
+        this.pendingSoftwareResultSpills.add(spill);
       }
     }
   }
@@ -2897,7 +2948,7 @@ export class AgentStream {
       this.softwareOperationQueue = this.softwareOperationQueue
         .then(async () => {
           if (this.lifecycleController.signal.aborted) {
-            this.enqueueSoftwareOperationResult({
+            await this.enqueueSoftwareOperationResult({
               operationId: request.operationId,
               action: request.action,
               status: SoftwareOperationStatus.FAILED,
@@ -2917,7 +2968,7 @@ export class AgentStream {
             { err, operationId: request.operationId, spec: request.spec },
             "Failed to run software operation",
           );
-          this.enqueueSoftwareOperationResult({
+          return this.enqueueSoftwareOperationResult({
             operationId: request.operationId,
             action: request.action,
             status: SoftwareOperationStatus.FAILED,
@@ -4137,7 +4188,7 @@ export class AgentStream {
     const normalizedSpec = spec.trim();
     const action = softwareOperationActionToAgent(protoAction);
     if (!action) {
-      this.enqueueSoftwareOperationResult({
+      await this.enqueueSoftwareOperationResult({
         operationId,
         action: protoAction,
         status: SoftwareOperationStatus.REJECTED,
@@ -4147,7 +4198,7 @@ export class AgentStream {
       return;
     }
     if (normalizedSpec.length === 0) {
-      this.enqueueSoftwareOperationResult({
+      await this.enqueueSoftwareOperationResult({
         operationId,
         action: protoAction,
         status: SoftwareOperationStatus.REJECTED,
@@ -4157,7 +4208,7 @@ export class AgentStream {
       return;
     }
     if (!this.spackManager?.available) {
-      this.enqueueSoftwareOperationResult({
+      await this.enqueueSoftwareOperationResult({
         operationId,
         action: protoAction,
         status: SoftwareOperationStatus.FAILED,
@@ -4168,7 +4219,7 @@ export class AgentStream {
     }
     const policyRejection = this.spackManager.policyRejectionForOperation(action, normalizedSpec);
     if (policyRejection) {
-      this.enqueueSoftwareOperationResult({
+      await this.enqueueSoftwareOperationResult({
         operationId,
         action: protoAction,
         status: SoftwareOperationStatus.REJECTED,
@@ -4177,7 +4228,7 @@ export class AgentStream {
       });
       return;
     }
-    this.enqueueSoftwareOperationResult({
+    await this.enqueueSoftwareOperationResult({
       operationId,
       action: protoAction,
       status: SoftwareOperationStatus.RUNNING,
@@ -4189,19 +4240,22 @@ export class AgentStream {
         action,
         normalizedSpec,
         action === "install" ? materials : undefined,
+        this.lifecycleController.signal,
       );
     } catch (err) {
-      this.enqueueSoftwareOperationResult({
+      await this.enqueueSoftwareOperationResult({
         operationId,
         action: protoAction,
         status: SoftwareOperationStatus.FAILED,
         spec: normalizedSpec,
-        error: `software operation failed: ${streamErrorMessage(err)}`,
+        error: this.lifecycleController.signal.aborted
+          ? "Software operation cancelled during Agent shutdown"
+          : `software operation failed: ${streamErrorMessage(err)}`,
       });
       return;
     }
     if (outcome.outcome === "rejected") {
-      this.enqueueSoftwareOperationResult({
+      await this.enqueueSoftwareOperationResult({
         operationId,
         action: protoAction,
         status: SoftwareOperationStatus.REJECTED,
@@ -4218,7 +4272,7 @@ export class AgentStream {
           this.installedSoftware.filter((spec) => !invalidated.has(spec.hash)),
         );
       }
-      this.enqueueSoftwareOperationResult({
+      await this.enqueueSoftwareOperationResult({
         operationId,
         action: protoAction,
         status: SoftwareOperationStatus.FAILED,
@@ -4231,7 +4285,7 @@ export class AgentStream {
     if (action !== "load") {
       this.setInstalledSoftware(outcome.installed);
     }
-    this.enqueueSoftwareOperationResult({
+    await this.enqueueSoftwareOperationResult({
       operationId,
       action: protoAction,
       status: SoftwareOperationStatus.SUCCEEDED,
@@ -4263,14 +4317,14 @@ export class AgentStream {
     }
   }
 
-  private enqueueSoftwareOperationResult(
+  private async enqueueSoftwareOperationResult(
     item: Omit<Extract<OutboundItem, { kind: "softwareOperationResult" }>, "kind">,
-  ): void {
-    if (this.connected) {
+  ): Promise<void> {
+    if (this.running && this.connected) {
       this.outboundQueue.push({ kind: "softwareOperationResult", ...item });
       this.signalOutbound();
     } else if (this.persistentQueue) {
-      this.persistentQueue.enqueueSoftwareOperationResult(item).catch((err) => {
+      await this.persistentQueue.enqueueSoftwareOperationResult(item).catch((err) => {
         this.logger.error(
           { err, operationId: item.operationId },
           "Failed to persist software operation result while stream offline",
