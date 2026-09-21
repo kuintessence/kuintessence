@@ -1,19 +1,23 @@
 #!/usr/bin/env bash
 set -euo pipefail
-unset KQ_PR_MATERIAL_EPOCH
+unset KQ_PR_MATERIAL_EPOCH KQ_PR_SPACK_CASE
+export KQ_PR_SPACK_CASE=hello
 
 fail() { printf '%s\n' "$*" >&2; exit 2; }
 case "${1:-}" in
   slurm) export KQ_PR_SCHEDULER=slurm KQ_PR_REGISTRATION_SCHEDULER=slurm KQ_PR_PRIVILEGED=false ;;
   pbs) export KQ_PR_SCHEDULER=pbs KQ_PR_REGISTRATION_SCHEDULER=pbs-pro KQ_PR_PRIVILEGED=true ;;
-  *) fail "Usage: bash deploy/pr-test/run.sh slurm|pbs [--config|--spack-case|--spack-managed]" ;;
+  *) fail "Usage: bash deploy/pr-test/run.sh slurm|pbs [--config|--spack-case|--spack-managed|--spack-samtools]" ;;
 esac
-[[ $# -le 2 && ( $# -eq 1 || "$2" == "--config" || "$2" == "--spack-case" || "$2" == "--spack-managed" ) ]] || fail "Unsupported flag"
+[[ $# -le 2 && ( $# -eq 1 || "$2" == "--config" || "$2" == "--spack-case" || "$2" == "--spack-managed" || "$2" == "--spack-samtools" ) ]] || fail "Unsupported flag"
 spack_case=false
 spack_managed=false
-if [[ "${2:-}" == "--spack-managed" ]]; then
+if [[ "${2:-}" == "--spack-managed" || "${2:-}" == "--spack-samtools" ]]; then
   [[ "${GITHUB_ACTIONS:-}" == true ]] || fail "Managed case runs only on disposable GitHub Actions runners"
   spack_managed=true
+fi
+if [[ "${2:-}" == "--spack-samtools" ]]; then
+  export KQ_PR_SPACK_CASE=samtools
 fi
 if [[ "${2:-}" == "--spack-case" ]] || "$spack_managed"; then
   [[ "$KQ_PR_SCHEDULER" == slurm ]] || fail "The Spack single-step case currently requires Slurm"

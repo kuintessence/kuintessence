@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { JobStatus, JobSubmitSchema } from "@kuintessence/shared";
+import { JobStatus } from "@kuintessence/shared";
 import { z } from "zod";
 import { queueInventoryReady, waitFor } from "../runtime";
 import { jsonRequest, OperationSchema } from "../spack-case/api";
+import { selectedCase } from "../spack-case/fixture";
+import { buildManagedJob, managedJobOutputAccepted } from "./jobs";
 import { diagnoseManagedQueue, managedQueueMarker } from "./queue-diagnostic";
 
 const origin = "https://server:3443";
@@ -177,7 +179,7 @@ export function managedApi(token: string) {
     const queueId = randomUUID();
     await request("/admin/queues", {
       queueId,
-      name: `PR managed GNU Hello ${queueId}`,
+      name: `PR managed ${selectedCase().name} ${queueId}`,
       providerOrgId: provider.id,
       visibleOrgIds: [provider.id],
       agentId,
@@ -190,50 +192,30 @@ export function managedApi(token: string) {
     return queueId;
   }
 
-  async function hello(queueId: string, prefix: string, shell: string) {
-    assert(
-      shell.trim().length > 0 && shell.length <= 256 * 1024 && !shell.includes("\0"),
-      "Managed load did not return a usable shell",
-    );
+  async function runCase(queueId: string, prefix: string, shell: string) {
+    const acceptance = buildManagedJob(queueId, prefix, shell);
     await readyQueue();
-    const created = JobSchema.parse(
-      await request(
-        "/jobs",
-        JobSubmitSchema.parse({
-          name: "pr_spack_managed_hello",
-          // Reset PATH so neither a distro Hello nor a previous load can satisfy this job.
-          command: [
-            "set -eu",
-            "export PATH=/usr/bin:/bin",
-            "unset SPACK_LOADED_HASHES",
-            shell,
-            `test "$(command -v hello)" = '${prefix}/bin/hello'`,
-            "LC_ALL=C hello",
-          ].join("\n"),
-          resources: { cpus: 1, memoryMb: 128, wallTimeSec: 60 },
-          schedulingStrategy: { queueId },
-        }),
-      ),
-    );
+    const created = JobSchema.parse(await request("/jobs", acceptance.submission));
     let terminal = terminalJob(created.status);
     try {
       const completed = await waitFor(
-        "managed GNU Hello Slurm job",
+        "managed acceptance Slurm job",
         () => job(created.id),
         (value) => terminalJob(value.status),
+        acceptance.timeoutMs,
       );
       terminal = true;
       console.log(`Spack managed job: status=${completed.status}`);
-      assert(completed.status === JobStatus.COMPLETED, "Managed GNU Hello job did not complete");
+      assert(completed.status === JobStatus.COMPLETED, "Managed acceptance job did not complete");
       assert(
         completed.schedulerJobId !== null && /^[1-9][0-9]*$/.test(completed.schedulerJobId),
-        "Managed GNU Hello job did not receive a Slurm job ID",
+        "Managed acceptance job did not receive a Slurm job ID",
       );
       await waitFor(
-        "managed GNU Hello stdout through Server",
+        "managed acceptance stdout through Server",
         async () =>
           z.object({ text: z.string() }).parse(await request(`/jobs/${created.id}/logs?lines=50`)),
-        (value) => /(?:^|\n)Hello, world!\r?(?:\n|$)/.test(value.text),
+        (value) => managedJobOutputAccepted(value.text, acceptance.successMarker),
       );
     } finally {
       if (!terminal) {
@@ -243,5 +225,10 @@ export function managedApi(token: string) {
     }
   }
 
-  return { online, inventory, operation, createQueue, hello };
+  async function hello(queueId: string, prefix: string, shell: string) {
+    assert(selectedCase().id === "hello", "Hello API requires the Hello fixture");
+    return runCase(queueId, prefix, shell);
+  }
+
+  return { online, inventory, operation, createQueue, runCase, hello };
 }

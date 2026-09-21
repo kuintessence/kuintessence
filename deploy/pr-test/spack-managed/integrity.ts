@@ -18,6 +18,7 @@ import { SpackInstallStore } from "../../../packages/agent/src/spack/install-sto
 import { SpackMaterialCache } from "../../../packages/agent/src/spack/material-cache";
 import { waitFor } from "../runtime";
 import { ReleaseSchema } from "../spack-case/api";
+import { selectedCase } from "../spack-case/fixture";
 import type { managedApi } from "./api-helper";
 
 const cacheRoot = "/var/lib/kuintessence/spack-materials";
@@ -247,14 +248,16 @@ export async function verifyManagedCacheIntegrity(
       "Integrity case requires the disposable nonroot Agent identity",
     );
     const release = ReleaseSchema.parse(input.release);
+    const fixture = selectedCase();
     let record = SpackInstallRecordSchema.parse(input.record);
     const report = SpackInstallReportSchema.parse(record.report);
     const store = new SpackInstallStore(storeRoot);
     assert(
       record.state === "ready" &&
         report.action === "verify" &&
-        report.root.name === "hello" &&
-        report.root.version === "2.12.1" &&
+        report.root.name === fixture.name &&
+        report.root.version === fixture.version &&
+        release.spec === fixture.spec &&
         record.spec === release.spec &&
         record.manifestDigest === release.binding.manifestDigest &&
         record.manifestSize === release.manifestSize &&
@@ -264,7 +267,7 @@ export async function verifyManagedCacheIntegrity(
         report.root.spec === record.spec &&
         report.root.arch === release.target &&
         report.storePath === store.path(record.id),
-      "Integrity case requires the published ready GNU Hello release",
+      "Integrity case requires the published ready acceptance release",
     );
     assert(
       isDeepStrictEqual(await readRecord(store, record), record),
@@ -281,7 +284,7 @@ export async function verifyManagedCacheIntegrity(
       JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(manifestBytes)),
     );
     assert(
-      manifest.repository.startsWith("public/") &&
+      manifest.repository === fixture.repository &&
         manifest.redistribution === "unrestricted" &&
         manifest.spec === release.spec &&
         manifest.target === release.target &&

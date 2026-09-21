@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { lstat, mkdir, readFile, readdir, realpath, writeFile } from "node:fs/promises";
 import { isDeepStrictEqual } from "node:util";
 import {
@@ -18,6 +19,7 @@ import {
 import { SpackInstallStore } from "../../../packages/agent/src/spack/install-store";
 import { SpackMaterialCache } from "../../../packages/agent/src/spack/material-cache";
 import { caseDirectory, login, ReleaseSchema } from "../spack-case/api";
+import { selectedCase } from "../spack-case/fixture";
 import { managedApi } from "./api-helper";
 import { diagnoseManagedInstall } from "./diagnostic";
 import { verifyManagedCacheIntegrity } from "./integrity";
@@ -67,6 +69,7 @@ async function emptyCache() {
 }
 
 function verifyReport(report: SpackInstallReport, release: Release) {
+  const fixture = selectedCase();
   assert(report.action === "verify", "Managed installation did not return a verify report");
   assert(
     report.manifestDigest === release.binding.manifestDigest &&
@@ -75,12 +78,15 @@ function verifyReport(report: SpackInstallReport, release: Release) {
     "Managed report does not match the published release",
   );
   assert(
-    report.root.name === "hello" && report.root.version === "2.12.1",
-    "Managed report is not the GNU Hello acceptance release",
+    report.root.name === fixture.name &&
+      report.root.version === fixture.version &&
+      report.root.spec === fixture.spec,
+    "Managed report is not the selected acceptance release",
   );
 }
 
 async function verifyCachedMaterials(release: Release, report: SpackInstallReport) {
+  const fixture = selectedCase();
   const cache = new SpackMaterialCache(cacheDirectory);
   const signal = AbortSignal.timeout(120_000);
   const bytes = await cache.readMetadata(
@@ -92,7 +98,9 @@ async function verifyCachedMaterials(release: Release, report: SpackInstallRepor
     JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)),
   );
   assert(
-    manifest.spec === release.spec &&
+    manifest.repository === fixture.repository &&
+      manifest.spec === fixture.spec &&
+      manifest.spec === release.spec &&
       manifest.target === release.target &&
       manifest.spackVersion === "1.0.0" &&
       manifest.recipes.some(
@@ -182,9 +190,16 @@ async function main() {
   );
   assert(process.argv.length === 3, "Expected exactly one managed case phase");
   const phase = PhaseSchema.parse(process.argv[2]);
+  const fixture = selectedCase();
   stage = "release";
   const release = ReleaseSchema.parse(
     JSON.parse(await readFile("/case-control/release.json", "utf8")),
+  );
+  assert(
+    release.spec === fixture.spec &&
+      release.binding.repositoryId === createHash("sha256").update(fixture.repository).digest("hex") &&
+      release.recipeId === createHash("sha256").update(fixture.recipes).digest("hex"),
+    "Published release is not the selected acceptance fixture",
   );
   if (phase === "install") {
     stage = "cache";
@@ -262,7 +277,7 @@ async function main() {
     stage = "store";
     const ready = await readyRecord(release, state.record);
     stage = "job";
-    await api.hello(state.queueId, ready.report.prefix, loaded.stdout);
+    await api.runCase(state.queueId, ready.report.prefix, loaded.stdout);
     stage = "store";
     await readyRecord(release, state.record);
     if (phase === "install") {

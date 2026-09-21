@@ -15,13 +15,21 @@ concurrency:
 
 jobs:
   spack-managed:
-    name: Spack GNU Hello managed installation
+    name: Spack ${{ matrix.label }} managed installation
     if: >-
       github.event_name == 'workflow_dispatch' ||
       (github.event.pull_request.head.repo.full_name == github.repository &&
        !github.event.pull_request.draft)
     runs-on: ubuntu-24.04
     timeout-minutes: 70
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: GNU Hello
+            flag: --spack-managed
+          - label: samtools
+            flag: --spack-samtools
     steps:
       - uses: actions/checkout@v4
         with:
@@ -32,7 +40,9 @@ jobs:
         id: managed-apparmor
         run: sudo apparmor_parser --replace deploy/pr-test/spack-managed/apparmor.profile
       - name: Verify isolated managed install, restart and uninstall
-        run: timeout --signal=TERM --kill-after=60s 65m bash deploy/pr-test/run.sh slurm --spack-managed
+        env:
+          CASE_FLAG: ${{ matrix.flag }}
+        run: timeout --signal=TERM --kill-after=60s 65m bash deploy/pr-test/run.sh slurm "$CASE_FLAG"
       - name: Remove the test-only AppArmor profile
         if: always() && steps.managed-apparmor.outcome == 'success'
         run: sudo apparmor_parser --remove deploy/pr-test/spack-managed/apparmor.profile

@@ -109,10 +109,16 @@ jobs:
         run: bun test scripts/rustfs-*.test.ts scripts/compose.test.ts
 
       - name: Check Spack material delivery and deployment contracts
-        run: bun test scripts/spack-material-delivery.test.ts scripts/spack-material-rollout-deployment.test.ts scripts/pr-scheduler-compose.test.ts
+        run: >-
+          bun test scripts/spack-material-delivery.test.ts
+          scripts/spack-material-rollout-deployment.test.ts scripts/pr-scheduler-compose.test.ts
+          deploy/pr-test/spack-case/fixture.test.ts deploy/pr-test/spack-managed/jobs.test.ts
 
       - name: Type check (all packages)
         run: bun run typecheck
+
+      - name: Type check PR acceptance harness
+        run: bun node_modules/typescript/bin/tsc --project deploy/pr-test/tsconfig.json
 
   test:
     name: Unit + integration tests

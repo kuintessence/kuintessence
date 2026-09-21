@@ -221,7 +221,7 @@ async function runWithFakeDocker(
     docker,
     `#!/usr/bin/env bash
 set -eu
-printf '%s | epoch=%s\\n' "$*" "\${KQ_PR_MATERIAL_EPOCH-unset}" >> "$PR_COMMAND_LOG"
+printf '%s | epoch=%s case=%s\\n' "$*" "\${KQ_PR_MATERIAL_EPOCH-unset}" "\${KQ_PR_SPACK_CASE-unset}" >> "$PR_COMMAND_LOG"
 case " $* " in
   *" info "*) [[ "$PR_FAIL" != info ]] || exit 9 ;;
   *" build scheduler "*) [[ "$PR_FAIL" != build ]] || exit 19 ;;
@@ -250,6 +250,7 @@ esac
       COMPOSE_FILE: "/do-not-use.yml",
       COMPOSE_PROFILES: "tunnel",
       KQ_PR_MATERIAL_EPOCH: "inherited-must-not-use",
+      KQ_PR_SPACK_CASE: "inherited-must-not-use",
       GITHUB_ACTIONS: String(githubActions),
     },
     stdout: "pipe",
@@ -370,10 +371,35 @@ describe("PR runner lifecycle (fake Docker, no containers)", () => {
   });
 
   test("managed case refuses local execution before invoking Docker", async () => {
-    const result = await runWithFakeDocker(["slurm", "--spack-managed"]);
+    for (const flag of ["--spack-managed", "--spack-samtools"]) {
+      const result = await runWithFakeDocker(["slurm", flag]);
+      expect(result.code).toBe(2);
+      expect(result.stderr).toContain("only on disposable GitHub Actions runners");
+      expect(result.commands).toBe("");
+    }
+  });
+
+  test("samtools requires Slurm and cannot claim PBS coverage", async () => {
+    const result = await runWithFakeDocker(["pbs", "--spack-samtools"], "none", true);
     expect(result.code).toBe(2);
-    expect(result.stderr).toContain("only on disposable GitHub Actions runners");
     expect(result.commands).toBe("");
+  });
+
+  test("samtools uses the managed lifecycle with an explicit case and rollout", async () => {
+    const result = await runWithFakeDocker(["slurm", "--spack-samtools"], "none", true);
+    expect(result.code).toBe(0);
+    expect(result.commands).toContain("case=samtools");
+    expect(result.commands).not.toContain("case=hello");
+    expect(result.commands).not.toContain("inherited-must-not-use");
+    expect(result.commands).toContain("docker-compose.pr-spack-managed.yml");
+    expect(result.commands).toContain("spack-managed/case.ts install");
+    expect(result.commands).toContain("spack-managed/case.ts restart");
+    expect(result.commands).toContain("spack-managed/case.ts uninstall");
+    expect(result.commands).toContain("spack-case/publish.ts --verify");
+    expect(result.commands).toContain("rollout.ts verify");
+    expect(result.commands).toContain("down --volumes --remove-orphans --rmi local");
+    expect(result.commands).not.toContain("spack-case/consume.ts");
+    expect(result.commands).not.toContain("spack-case/check.sh");
   });
 
   test("managed lifecycle verifies real runtime before API install and cleans its project", async () => {
@@ -396,6 +422,8 @@ describe("PR runner lifecycle (fake Docker, no containers)", () => {
     expect(result.commands).not.toContain("spack-case/check.sh");
     expect(result.commands).not.toMatch(/\b(prune|logs)\b/);
     expect(result.commands).not.toContain("production-must-not-touch");
+    expect(result.commands).toContain("case=hello");
+    expect(result.commands).not.toContain("inherited-must-not-use");
   });
 
   test("managed overlay is opt-in with private cgroups and no host runtime mounts", async () => {
@@ -463,6 +491,14 @@ describe("PR runner lifecycle (fake Docker, no containers)", () => {
     expect(overlay.services.scheduler?.environment?.SPACK_REGISTRY_JWT_SECRET).toBeUndefined();
     expect(overlay.services.scheduler?.volumes).not.toContain("case-server:/case-server:ro");
     expect(overlay.services["case-operator"]?.networks).toEqual(["backend"]);
+    expect(overlay.services["case-operator"]?.build?.args?.KQ_PR_SPACK_CASE).toBe(
+      "${KQ_PR_SPACK_CASE:-hello}",
+    );
+    for (const service of ["case-operator", "server", "scheduler"]) {
+      expect(overlay.services[service]?.environment?.KQ_PR_SPACK_CASE).toBe(
+        "${KQ_PR_SPACK_CASE:-hello}",
+      );
+    }
     expect(overlay.services["case-native"]?.network_mode).toBe("none");
     expect(overlay.services["case-native"]?.read_only).toBe(true);
     expect(overlay.services["case-native"]?.cap_drop).toEqual(["ALL"]);
