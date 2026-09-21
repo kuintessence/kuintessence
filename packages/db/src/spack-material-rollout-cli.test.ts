@@ -56,7 +56,7 @@ describe("offline Spack rollout command", () => {
         legacyAccessRevoked: true,
         legacyInventoryComplete: true,
       },
-    };
+    } as const;
     expect(parseSpackMaterialRolloutCommand(command)).toEqual(command);
     for (const evidence of [
       undefined,

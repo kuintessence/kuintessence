@@ -432,7 +432,7 @@ describe("SpackMaterialRollout (isolated real PG)", () => {
     const merged = await reconcile(await pause());
     const winner = await oneWinner([pause(merged.revision), peer.execute(activation(merged))]);
     expect(winner.revision).toBe(3);
-    expect(["pause", "activate"]).toContain(winner.action);
+    expect(winner.action === "pause" || winner.action === "activate").toBe(true);
     expect(await journal()).toHaveLength(3);
     expect(await rollout.execute({ action: "inspect" })).toEqual(winner);
     if (winner.action === "pause") {
