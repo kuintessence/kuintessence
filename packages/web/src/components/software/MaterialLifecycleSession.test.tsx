@@ -324,12 +324,7 @@ test.each(["success", "uncertain"])("%s discards a pending ordinary lookup", asy
   expect(lifecycle.changeSpackMaterialLifecycle).toHaveBeenCalledTimes(1);
 });
 
-const selectionOutcomes = [
-  "success",
-  "conflict",
-  "uncertain then GET",
-  "uncertain edit then GET",
-];
+const selectionOutcomes = ["success", "conflict", "uncertain then GET", "uncertain edit then GET"];
 test.each(selectionOutcomes)("%s protects catalog and import selection", async (outcome) => {
   const f = lifecycleFixture();
   const sibling = lifecycleFixture("org/org-a/alternate");

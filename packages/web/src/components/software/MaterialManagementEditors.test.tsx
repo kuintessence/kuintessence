@@ -118,83 +118,84 @@ test("pending and unknown policy writes retain the shared lock", async () => {
   expect(visibility.changeSpackMaterialVisibility).toHaveBeenCalledOnce();
 });
 
-test.each(["503", "stop", "timeout"])(
-  "%s lifecycle outcome keeps binding and mode locked until same-binding GET",
-  async (outcome) => {
-    const f = lifecycleFixture();
-    const pending = deferred<SpackMaterialLifecycleView>();
-    vi.mocked(lifecycle.changeSpackMaterialLifecycle).mockImplementationOnce(async () => {
-      const receipt = await pending.promise;
-      if (outcome === "503") {
-        throw new SoftwareError(503, "MATERIAL_LIFECYCLE_UNAVAILABLE", "Receipt lost");
-      }
-      return receipt;
-    });
-    const { onSelectionLockChange } = mount();
-    inspectLifecycle();
-    await screen.findByTestId("material-lifecycle-detail");
-    confirmLifecycle();
-    if (outcome === "timeout") vi.useFakeTimers();
-    act(() => {
-      submitLifecycle();
-      selectManagementTab("Visibility");
-    });
-    const signal = vi.mocked(lifecycle.changeSpackMaterialLifecycle).mock.calls[0]?.[2];
-    const repository = lifecycleUi().getByLabelText(labels.lifecycleRepositoryId);
-    const digest = lifecycleUi().getByLabelText(labels.lifecycleManifestDigest);
-    expect(repository).toHaveProperty("disabled", true);
-    expect(digest).toHaveProperty("disabled", true);
-    expect(screen.queryByTestId("material-visibility")).toBeNull();
+test.each([
+  "503",
+  "stop",
+  "timeout",
+])("%s lifecycle outcome keeps binding and mode locked until same-binding GET", async (outcome) => {
+  const f = lifecycleFixture();
+  const pending = deferred<SpackMaterialLifecycleView>();
+  vi.mocked(lifecycle.changeSpackMaterialLifecycle).mockImplementationOnce(async () => {
+    const receipt = await pending.promise;
     if (outcome === "503") {
-      await act(async () => pending.resolve(f.atRevision(1)));
-    } else if (outcome === "stop") {
-      fireEvent.click(lifecycleUi().getByRole("button", { name: labels.lifecycleStop }));
-    } else {
-      act(() => vi.advanceTimersByTime(30_000));
-      vi.useRealTimers();
+      throw new SoftwareError(503, "MATERIAL_LIFECYCLE_UNAVAILABLE", "Receipt lost");
     }
-    expect(lifecycleUi().getByRole("alert").textContent).toBe(labels.lifecycleNotice.uncertain);
-    expect(repository).toHaveProperty("disabled", true);
-    expect(digest).toHaveProperty("disabled", true);
-    fireEvent.change(repository, { target: { value: "a".repeat(64) } });
-    fireEvent.change(digest, { target: { value: `sha256:${"b".repeat(64)}` } });
-    expect(repository).toHaveProperty("value", f.binding.repositoryId);
-    expect(digest).toHaveProperty("value", f.binding.manifestDigest);
+    return receipt;
+  });
+  const { onSelectionLockChange } = mount();
+  inspectLifecycle();
+  await screen.findByTestId("material-lifecycle-detail");
+  confirmLifecycle();
+  if (outcome === "timeout") vi.useFakeTimers();
+  act(() => {
+    submitLifecycle();
     selectManagementTab("Visibility");
-    expect(screen.getByRole("tab", { name: labels.visibilityTab, exact: true })).toHaveProperty(
-      "disabled",
-      true,
-    );
-    expect(screen.queryByTestId("material-visibility")).toBeNull();
+  });
+  const signal = vi.mocked(lifecycle.changeSpackMaterialLifecycle).mock.calls[0]?.[2];
+  const repository = lifecycleUi().getByLabelText(labels.lifecycleRepositoryId);
+  const digest = lifecycleUi().getByLabelText(labels.lifecycleManifestDigest);
+  expect(repository).toHaveProperty("disabled", true);
+  expect(digest).toHaveProperty("disabled", true);
+  expect(screen.queryByTestId("material-visibility")).toBeNull();
+  if (outcome === "503") {
+    await act(async () => pending.resolve(f.atRevision(1)));
+  } else if (outcome === "stop") {
+    fireEvent.click(lifecycleUi().getByRole("button", { name: labels.lifecycleStop }));
+  } else {
+    act(() => vi.advanceTimersByTime(30_000));
+    vi.useRealTimers();
+  }
+  expect(lifecycleUi().getByRole("alert").textContent).toBe(labels.lifecycleNotice.uncertain);
+  expect(repository).toHaveProperty("disabled", true);
+  expect(digest).toHaveProperty("disabled", true);
+  fireEvent.change(repository, { target: { value: "a".repeat(64) } });
+  fireEvent.change(digest, { target: { value: `sha256:${"b".repeat(64)}` } });
+  expect(repository).toHaveProperty("value", f.binding.repositoryId);
+  expect(digest).toHaveProperty("value", f.binding.manifestDigest);
+  selectManagementTab("Visibility");
+  expect(screen.getByRole("tab", { name: labels.visibilityTab, exact: true })).toHaveProperty(
+    "disabled",
+    true,
+  );
+  expect(screen.queryByTestId("material-visibility")).toBeNull();
+  expect(onSelectionLockChange).toHaveBeenLastCalledWith(true);
+  if (outcome !== "503") {
+    expect(signal?.aborted).toBe(true);
+    await act(async () => pending.resolve(f.atRevision(1)));
     expect(onSelectionLockChange).toHaveBeenLastCalledWith(true);
-    if (outcome !== "503") {
-      expect(signal?.aborted).toBe(true);
-      await act(async () => pending.resolve(f.atRevision(1)));
-      expect(onSelectionLockChange).toHaveBeenLastCalledWith(true);
-      expect(screen.queryByTestId("material-lifecycle-detail")).toBeNull();
-    }
-    vi.mocked(lifecycle.getSpackMaterialLifecycle).mockRejectedValueOnce(
-      new SoftwareError(503, "MATERIAL_LIFECYCLE_UNAVAILABLE", "Still unavailable"),
-    );
-    await act(async () => inspectLifecycle());
-    expect(lifecycleUi().getByRole("alert").textContent).toBe(labels.lifecycleNotice.uncertain);
-    expect(onSelectionLockChange).toHaveBeenLastCalledWith(true);
-    vi.mocked(lifecycle.getSpackMaterialLifecycle).mockResolvedValueOnce(f.atRevision(1));
-    inspectLifecycle();
-    await screen.findByText(labels.lifecycleNotice.rechecked);
-    expect(lifecycle.getSpackMaterialLifecycle).toHaveBeenLastCalledWith(
-      f.binding,
-      expect.any(AbortSignal),
-    );
-    expect(onSelectionLockChange).toHaveBeenLastCalledWith(false);
-    expect(repository).toHaveProperty("disabled", false);
-    expect(digest).toHaveProperty("disabled", false);
-    selectManagementTab("Visibility");
-    expect(screen.getByTestId("material-visibility")).toBeTruthy();
-    expect(visibility.getSpackMaterialVisibility).not.toHaveBeenCalled();
-    expect(lifecycle.changeSpackMaterialLifecycle).toHaveBeenCalledOnce();
-  },
-);
+    expect(screen.queryByTestId("material-lifecycle-detail")).toBeNull();
+  }
+  vi.mocked(lifecycle.getSpackMaterialLifecycle).mockRejectedValueOnce(
+    new SoftwareError(503, "MATERIAL_LIFECYCLE_UNAVAILABLE", "Still unavailable"),
+  );
+  await act(async () => inspectLifecycle());
+  expect(lifecycleUi().getByRole("alert").textContent).toBe(labels.lifecycleNotice.uncertain);
+  expect(onSelectionLockChange).toHaveBeenLastCalledWith(true);
+  vi.mocked(lifecycle.getSpackMaterialLifecycle).mockResolvedValueOnce(f.atRevision(1));
+  inspectLifecycle();
+  await screen.findByText(labels.lifecycleNotice.rechecked);
+  expect(lifecycle.getSpackMaterialLifecycle).toHaveBeenLastCalledWith(
+    f.binding,
+    expect.any(AbortSignal),
+  );
+  expect(onSelectionLockChange).toHaveBeenLastCalledWith(false);
+  expect(repository).toHaveProperty("disabled", false);
+  expect(digest).toHaveProperty("disabled", false);
+  selectManagementTab("Visibility");
+  expect(screen.getByTestId("material-visibility")).toBeTruthy();
+  expect(visibility.getSpackMaterialVisibility).not.toHaveBeenCalled();
+  expect(lifecycle.changeSpackMaterialLifecycle).toHaveBeenCalledOnce();
+});
 
 test("leaving a read aborts it; its late rejection cannot alter the replacement editor", async () => {
   const old = deferred<void>();

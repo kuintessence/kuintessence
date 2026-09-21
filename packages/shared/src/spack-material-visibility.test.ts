@@ -138,9 +138,7 @@ describe("visibility view", () => {
   test("requires all view and audit fields", () => {
     const snapshot = view(1);
     for (const key of Object.keys(snapshot)) {
-      const input = Object.fromEntries(
-        Object.entries(snapshot).filter(([field]) => field !== key),
-      );
+      const input = Object.fromEntries(Object.entries(snapshot).filter(([field]) => field !== key));
       expect(SpackMaterialVisibilityViewSchema.safeParse(input).success).toBe(false);
     }
     const event = snapshot.history[0];

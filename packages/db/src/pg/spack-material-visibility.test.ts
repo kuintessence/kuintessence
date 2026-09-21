@@ -434,7 +434,11 @@ describe("Spack material visibility (isolated real PG)", () => {
       const fixture = await ready(0, mode !== "legacy-ready");
       visibility = new SpackMaterialVisibility(
         db,
-        mode === "missing epoch" ? undefined : mode === "wrong epoch" ? randomUUID() : fixture.epoch,
+        mode === "missing epoch"
+          ? undefined
+          : mode === "wrong epoch"
+            ? randomUUID()
+            : fixture.epoch,
       );
       if (mode === "paused") {
         await rollout.execute({
@@ -498,7 +502,12 @@ describe("Spack material visibility (isolated real PG)", () => {
     );
     expect(withdrawn.revision).toBe(1);
     const lifecycleJournal = await db.select().from(spackMaterialLifecycleEvents);
-    const restored = await peer.transition(binding, OPERATOR, change({ mode: "inherit" }, 1), allow);
+    const restored = await peer.transition(
+      binding,
+      OPERATOR,
+      change({ mode: "inherit" }, 1),
+      allow,
+    );
     expect(restored).toMatchObject({ revision: 2, policy: { mode: "inherit" } });
     expect(restored.history).toHaveLength(2);
     expect(restored.history[1]).toEqual(revoked.history[0]);
@@ -597,7 +606,10 @@ describe("Spack material visibility (isolated real PG)", () => {
     expect(journal[0]?.policy).toEqual(
       allowlist([READER, OUTSIDER].sort(), [ORG, OTHER_ORG].sort()),
     );
-    await expectError(peer.transition(binding, OPERATOR, change({ mode: "inherit" }), allow), CONFLICT);
+    await expectError(
+      peer.transition(binding, OPERATOR, change({ mode: "inherit" }), allow),
+      CONFLICT,
+    );
     await expectError(
       peer.transition(
         binding,
@@ -751,7 +763,9 @@ describe("Spack material visibility (isolated real PG)", () => {
     expect(await db.select().from(spackMaterialOperationReferences)).toEqual(original);
   });
 
-  test.each([100, 101])("bounds %s cross-epoch events without deleting older audit", async (count) => {
+  test.each([
+    100, 101,
+  ])("bounds %s cross-epoch events without deleting older audit", async (count) => {
     const binding = release();
     const previous = await ready();
     const current = await ready(previous.state.revision);
@@ -896,12 +910,16 @@ describe("Spack material visibility (isolated real PG)", () => {
     const binding = release();
     const { visibility, references } = await ready();
     const input = await operation(binding);
-    await db.execute(sql`alter table spack_material_lifecycle_events rename to hidden_availability`);
+    await db.execute(
+      sql`alter table spack_material_lifecycle_events rename to hidden_availability`,
+    );
     try {
       await expectError(visibility.assertReadable(binding, READER, allow), UNAVAILABLE);
       await expectError(references.acquireOperation(input), REFERENCE_ERROR);
     } finally {
-      await db.execute(sql`alter table hidden_availability rename to spack_material_lifecycle_events`);
+      await db.execute(
+        sql`alter table hidden_availability rename to spack_material_lifecycle_events`,
+      );
     }
   });
 
@@ -972,7 +990,9 @@ describe("Spack material visibility (isolated real PG)", () => {
     }
     expect(await holdingResult).toMatchObject([{ status: "fulfilled" }]);
     expect(await db.select().from(spackMaterialVisibilityEvents)).toEqual([]);
-    expect(await peer.transition(binding, OPERATOR, change(), allow)).toMatchObject({ revision: 1 });
+    expect(await peer.transition(binding, OPERATOR, change(), allow)).toMatchObject({
+      revision: 1,
+    });
   }, 20_000);
 
   test("statement deadline aborts a slow audit insert and rolls back the journal", async () => {
@@ -1011,7 +1031,9 @@ describe("Spack material visibility (isolated real PG)", () => {
     } finally {
       await db.execute(sql`set statement_timeout = '10s'`);
     }
-    expect(await peer.transition(binding, OPERATOR, change(), allow)).toMatchObject({ revision: 1 });
+    expect(await peer.transition(binding, OPERATOR, change(), allow)).toMatchObject({
+      revision: 1,
+    });
   }, 25_000);
 
   test("invalid binding, revision and reason inputs never authorize or write", async () => {
@@ -1054,7 +1076,10 @@ describe("Spack material visibility (isolated real PG)", () => {
     if (mode === "restore") await visibility.transition(binding, OPERATOR, change(), allow);
     const before = await visibility.inspect(binding, OPERATOR, allow);
     const journal = await db.select().from(spackMaterialVisibilityEvents);
-    const mutation = change(mode === "restore" ? { mode: "inherit" } : allowlist(), before.revision);
+    const mutation = change(
+      mode === "restore" ? { mode: "inherit" } : allowlist(),
+      before.revision,
+    );
     await db.execute(sql`
         create function reject_visibility_audit() returns trigger as $$
         begin

@@ -165,7 +165,9 @@ export function visibilityFake() {
               {
                 ...binding,
                 revision: withdrawn.has(key(binding)) ? 1 : 0,
-                state: withdrawn.has(key(binding)) ? ("withdrawn" as const) : ("available" as const),
+                state: withdrawn.has(key(binding))
+                  ? ("withdrawn" as const)
+                  : ("available" as const),
               },
             ]
           : [],

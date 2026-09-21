@@ -742,7 +742,9 @@ test("visibility pre-activation 503 exposes no editable snapshot", async ({ page
   await page.getByRole("button", { name: labels.visibilityInspect, exact: true }).click();
   await expect(page.getByRole("alert")).toHaveText(labels.visibilityNotice.unavailable);
   await expect(page.getByTestId("material-visibility-detail")).toHaveCount(0);
-  await expect(page.getByRole("button", { name: labels.visibilitySave, exact: true })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: labels.visibilitySave, exact: true })).toHaveCount(
+    0,
+  );
   expect(harness.visibilityCalls.map((call) => call.method)).toEqual(["GET"]);
   checkRequests(harness, []);
 });
@@ -753,7 +755,9 @@ test("mobile visibility audit fits the viewport and cannot submit", async ({ pag
   await page.getByRole("tab", { name: labels.visibilityTab, exact: true }).click();
   await inspectVisibilityPolicy(page);
   await expect(page.getByLabel(labels.visibilityPolicy, { exact: true })).toBeDisabled();
-  await expect(page.getByRole("button", { name: labels.visibilitySave, exact: true })).toBeDisabled();
+  await expect(
+    page.getByRole("button", { name: labels.visibilitySave, exact: true }),
+  ).toBeDisabled();
   const geometry = await page.getByTestId("material-visibility").evaluate((element) => {
     const controls = Array.from(element.querySelectorAll("input, select, textarea, button")).map(
       (control) => control.getBoundingClientRect(),

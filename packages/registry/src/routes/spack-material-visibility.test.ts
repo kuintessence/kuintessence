@@ -60,30 +60,31 @@ describe("visibility management authorization", () => {
     },
     { actor: OWNER, repository: `user/${OWNER.sub}/materials`, status: 200 },
     { actor: OWNER, repository: `user/${READER.sub}/materials`, status: 403 },
-  ])(
-    "requires canonical namespace read and write: $repository / $status",
-    async ({ actor, repository, status }) => {
-      const f = await visibilityFixture(repository);
-      f.control.canonical = actor;
-      for (const method of METHODS) {
-        const response = await f.app.request(`${f.path}/visibility`, {
-          method,
-          headers: headers({ ...actor, role: "super_admin", orgIds: [ORG, OTHER_ORG] }),
-          ...(method === "POST" ? { body: JSON.stringify(HIDE) } : {}),
-        });
-        expect(response.status).toBe(status);
-        expect(response.headers.get("Cache-Control")).toBe("private, no-store");
-        const body = await response.json();
-        if (status === 200) {
-          expect(body).toEqual(SpackMaterialVisibilityViewSchema.parse(body));
-          expect(body).toMatchObject({ binding: f.binding, repository });
-        } else {
-          expect(body).toMatchObject({ error: { code: "MATERIAL_VISIBILITY_FORBIDDEN" } });
-          expect(JSON.stringify(body)).not.toContain(repository);
-        }
+  ])("requires canonical namespace read and write: $repository / $status", async ({
+    actor,
+    repository,
+    status,
+  }) => {
+    const f = await visibilityFixture(repository);
+    f.control.canonical = actor;
+    for (const method of METHODS) {
+      const response = await f.app.request(`${f.path}/visibility`, {
+        method,
+        headers: headers({ ...actor, role: "super_admin", orgIds: [ORG, OTHER_ORG] }),
+        ...(method === "POST" ? { body: JSON.stringify(HIDE) } : {}),
+      });
+      expect(response.status).toBe(status);
+      expect(response.headers.get("Cache-Control")).toBe("private, no-store");
+      const body = await response.json();
+      if (status === 200) {
+        expect(body).toEqual(SpackMaterialVisibilityViewSchema.parse(body));
+        expect(body).toMatchObject({ binding: f.binding, repository });
+      } else {
+        expect(body).toMatchObject({ error: { code: "MATERIAL_VISIBILITY_FORBIDDEN" } });
+        expect(JSON.stringify(body)).not.toContain(repository);
       }
-    },
-  );
+    }
+  });
 
   test("publisher configuration still restricts management", async () => {
     const f = await visibilityFixture();
@@ -109,9 +110,9 @@ describe("visibility management authorization", () => {
       headers: headers(OWNER),
     });
     expect(catalog.status).toBe(200);
-    expect(
-      SpackMaterialManagementCatalogSchema.parse(await catalog.json()).releases,
-    ).toHaveLength(1);
+    expect(SpackMaterialManagementCatalogSchema.parse(await catalog.json()).releases).toHaveLength(
+      1,
+    );
     expect(f.port.assertReadable).not.toHaveBeenCalled();
     f.recipe.repository = `org/${OTHER_ORG}/recipes`;
     const forbidden = await f.app.request(`${f.path}/visibility`, { headers: headers(OWNER) });
@@ -162,35 +163,35 @@ describe("ordinary visibility admission", () => {
     const managed = await f.app.request(`${BASE}/management?repository=public/materials`, {
       headers: headers(OWNER),
     });
-    expect(
-      SpackMaterialManagementCatalogSchema.parse(await managed.json()).releases,
-    ).toHaveLength(1);
+    expect(SpackMaterialManagementCatalogSchema.parse(await managed.json()).releases).toHaveLength(
+      1,
+    );
   });
 
-  test.each(["user", "org"] as const)(
-    "allowlist %s admission intersects canonical namespace rights",
-    async (mode) => {
-      const f = await visibilityFixture(`org/${ORG}/materials`);
-      const policy = {
-        mode: "allowlist" as const,
-        userIds: mode === "user" ? [READER.sub] : [],
-        orgIds: mode === "org" ? [ORG] : [],
-      };
-      const update = await f.app.request(`${f.path}/visibility`, {
-        method: "POST",
-        headers: headers(OWNER),
-        body: JSON.stringify({ ...HIDE, policy }),
-      });
-      expect(update.status).toBe(200);
-      f.control.canonical = READER;
-      expect((await f.app.request(f.path, { headers: headers(READER) })).status).toBe(200);
-      f.control.canonical = { ...READER, orgIds: [] };
-      const denied = await f.app.request(f.path, {
-        headers: headers({ ...READER, role: "super_admin", orgIds: [ORG] }),
-      });
-      expect(denied.status).toBe(404);
-    },
-  );
+  test.each([
+    "user",
+    "org",
+  ] as const)("allowlist %s admission intersects canonical namespace rights", async (mode) => {
+    const f = await visibilityFixture(`org/${ORG}/materials`);
+    const policy = {
+      mode: "allowlist" as const,
+      userIds: mode === "user" ? [READER.sub] : [],
+      orgIds: mode === "org" ? [ORG] : [],
+    };
+    const update = await f.app.request(`${f.path}/visibility`, {
+      method: "POST",
+      headers: headers(OWNER),
+      body: JSON.stringify({ ...HIDE, policy }),
+    });
+    expect(update.status).toBe(200);
+    f.control.canonical = READER;
+    expect((await f.app.request(f.path, { headers: headers(READER) })).status).toBe(200);
+    f.control.canonical = { ...READER, orgIds: [] };
+    const denied = await f.app.request(f.path, {
+      headers: headers({ ...READER, role: "super_admin", orgIds: [ORG] }),
+    });
+    expect(denied.status).toBe(404);
+  });
 
   test("inherit rechecks suspension and membership after middleware admission", async () => {
     const f = await visibilityFixture(`org/${ORG}/materials`);

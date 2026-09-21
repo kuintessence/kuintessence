@@ -80,7 +80,11 @@ beforeEach(async () => {
     lifecycleFixture().atRevision(1),
   );
   vi.mocked(management.listSpackMaterialManagement).mockResolvedValue({
-    releases: f.catalog.releases.map((release) => ({ ...release, state: "available", revision: 0 })),
+    releases: f.catalog.releases.map((release) => ({
+      ...release,
+      state: "available",
+      revision: 0,
+    })),
     nextCursor: null,
   });
 });
@@ -233,9 +237,7 @@ test.each(["lifecycle", "visibility"])("%s locks editor and catalog selection", 
   ).toBeNull();
   await act(async () => pending.resolve());
   const notice =
-    editor === "lifecycle"
-      ? labels.lifecycleNotice.uncertain
-      : labels.visibilityNotice.uncertain;
+    editor === "lifecycle" ? labels.lifecycleNotice.uncertain : labels.visibilityNotice.uncertain;
   await screen.findByText(notice);
   selectManagementTab(other);
   fireEvent.click(screen.getByRole("button", { name: labels.managementRefresh }));

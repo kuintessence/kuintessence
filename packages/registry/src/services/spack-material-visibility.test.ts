@@ -67,112 +67,124 @@ describe("visibility immutable identity and recipe snapshots", () => {
     expect(f.port.assertReadable).not.toHaveBeenCalled();
   });
 
-  test.each(["manifest", "blob", "inspect", "transition"] as const)(
-    "%s loads exact deduplicated snapshots before the DB callback",
-    async (operation) => {
-      const f = await visibilityFixture();
-      const bytes = await readFile(
-        join(f.root, "manifests", f.binding.repositoryId, `${f.binding.manifestDigest.slice(7)}.json`),
-      );
-      const manifest = SpackMaterialManifestSchema.parse(JSON.parse(bytes.toString("utf8")));
-      const repeated = Buffer.from(
-        JSON.stringify({ ...manifest, recipes: [...manifest.recipes, ...manifest.recipes] }),
-      );
-      const binding = { ...f.binding, manifestDigest: materialDigest(repeated) };
-      await writeFile(
-        join(f.root, "manifests", binding.repositoryId, `${binding.manifestDigest.slice(7)}.json`),
-        repeated,
-      );
-      const path = `${BASE}/${binding.repositoryId}/releases/${binding.manifestDigest}`;
-      f.recipes.get.mockClear();
-      f.recipes.getSnapshot.mockClear();
+  test.each([
+    "manifest",
+    "blob",
+    "inspect",
+    "transition",
+  ] as const)("%s loads exact deduplicated snapshots before the DB callback", async (operation) => {
+    const f = await visibilityFixture();
+    const bytes = await readFile(
+      join(
+        f.root,
+        "manifests",
+        f.binding.repositoryId,
+        `${f.binding.manifestDigest.slice(7)}.json`,
+      ),
+    );
+    const manifest = SpackMaterialManifestSchema.parse(JSON.parse(bytes.toString("utf8")));
+    const repeated = Buffer.from(
+      JSON.stringify({ ...manifest, recipes: [...manifest.recipes, ...manifest.recipes] }),
+    );
+    const binding = { ...f.binding, manifestDigest: materialDigest(repeated) };
+    await writeFile(
+      join(f.root, "manifests", binding.repositoryId, `${binding.manifestDigest.slice(7)}.json`),
+      repeated,
+    );
+    const path = `${BASE}/${binding.repositoryId}/releases/${binding.manifestDigest}`;
+    f.recipes.get.mockClear();
+    f.recipes.getSnapshot.mockClear();
+    const snapshot = f.recipe.snapshots[0];
+    if (!snapshot) throw new Error("Missing snapshot");
+    f.recipes.get.mockImplementation(async () => {
+      throw new Error("Full history is forbidden");
+    });
+    f.recipes.getSnapshot.mockImplementation(async (id, commit, checkpoint) => {
+      expect(f.control.inTransaction).toBe(false);
+      expect(f.port.assertReadable).not.toHaveBeenCalled();
+      expect(f.port.inspect).not.toHaveBeenCalled();
+      expect(f.port.transition).not.toHaveBeenCalled();
+      expect(commit).toBe(COMMIT);
+      checkpoint?.();
+      return { id, repository: f.recipe.repository, snapshot };
+    });
+    const suffix =
+      operation === "blob"
+        ? `/blobs/${SOURCE_BLOB.digest}`
+        : operation === "manifest"
+          ? ""
+          : "/visibility";
+    const response = await f.app.request(`${path}${suffix}`, {
+      headers: headers(OWNER),
+      ...(operation === "transition" ? { method: "POST", body: JSON.stringify(HIDE) } : {}),
+    });
+    expect(response.status).toBe(200);
+    await response.arrayBuffer();
+    expect(f.recipes.getSnapshot).toHaveBeenCalledTimes(1);
+    expect(f.recipes.get).not.toHaveBeenCalled();
+  });
+
+  test.each([
+    "manifest",
+    "blob",
+    "catalog",
+    "inspect",
+    "transition",
+  ] as const)("%s rejects canonical membership revoked while snapshots are loading", async (operation) => {
+    const f = await visibilityFixture(`org/${ORG}/materials`);
+    const getSnapshot = f.recipes.getSnapshot.getMockImplementation();
+    if (!getSnapshot) throw new Error("Missing snapshot fixture");
+    f.recipes.getSnapshot.mockImplementation(async (...args) => {
+      const snapshot = await getSnapshot(...args);
+      f.control.canonical = { ...OWNER, orgIds: [] };
+      return snapshot;
+    });
+    const management = operation === "inspect" || operation === "transition";
+    const path =
+      operation === "catalog"
+        ? BASE
+        : operation === "blob"
+          ? `${f.path}/blobs/${SOURCE_BLOB.digest}`
+          : management
+            ? `${f.path}/visibility`
+            : f.path;
+    const response = await f.app.request(path, {
+      headers: headers(OWNER),
+      ...(operation === "transition" ? { method: "POST", body: JSON.stringify(HIDE) } : {}),
+    });
+    expect(response.status).toBe(operation === "catalog" ? 200 : management ? 403 : 404);
+    if (operation === "catalog") {
+      expect(SpackMaterialCatalogSchema.parse(await response.json()).releases).toEqual([]);
+    }
+    expect(f.current(f.binding).revision).toBe(0);
+  });
+
+  test.each([
+    "namespace",
+    "roots",
+    "diagnostics",
+    "missing",
+  ] as const)("referenced recipe %s cannot be bypassed by allowlist or management", async (mode) => {
+    const f = await visibilityFixture();
+    f.control.canonical = { ...OWNER, role: "super_admin", orgIds: [ORG, OTHER_ORG] };
+    if (mode === "namespace") f.recipe.repository = `org/${OTHER_ORG}/recipes`;
+    else if (mode === "missing") f.recipe.snapshots = [];
+    else {
       const snapshot = f.recipe.snapshots[0];
       if (!snapshot) throw new Error("Missing snapshot");
-      f.recipes.get.mockImplementation(async () => {
-        throw new Error("Full history is forbidden");
-      });
-      f.recipes.getSnapshot.mockImplementation(async (id, commit, checkpoint) => {
-        expect(f.control.inTransaction).toBe(false);
-        expect(f.port.assertReadable).not.toHaveBeenCalled();
-        expect(f.port.inspect).not.toHaveBeenCalled();
-        expect(f.port.transition).not.toHaveBeenCalled();
-        expect(commit).toBe(COMMIT);
-        checkpoint?.();
-        return { id, repository: f.recipe.repository, snapshot };
-      });
-      const suffix =
-        operation === "blob"
-          ? `/blobs/${SOURCE_BLOB.digest}`
-          : operation === "manifest"
-            ? ""
-            : "/visibility";
-      const response = await f.app.request(`${path}${suffix}`, {
-        headers: headers(OWNER),
-        ...(operation === "transition" ? { method: "POST", body: JSON.stringify(HIDE) } : {}),
-      });
-      expect(response.status).toBe(200);
-      await response.arrayBuffer();
-      expect(f.recipes.getSnapshot).toHaveBeenCalledTimes(1);
-      expect(f.recipes.get).not.toHaveBeenCalled();
-    },
-  );
-
-  test.each(["manifest", "blob", "catalog", "inspect", "transition"] as const)(
-    "%s rejects canonical membership revoked while snapshots are loading",
-    async (operation) => {
-      const f = await visibilityFixture(`org/${ORG}/materials`);
-      const getSnapshot = f.recipes.getSnapshot.getMockImplementation();
-      if (!getSnapshot) throw new Error("Missing snapshot fixture");
-      f.recipes.getSnapshot.mockImplementation(async (...args) => {
-        const snapshot = await getSnapshot(...args);
-        f.control.canonical = { ...OWNER, orgIds: [] };
-        return snapshot;
-      });
-      const management = operation === "inspect" || operation === "transition";
-      const path =
-        operation === "catalog"
-          ? BASE
-          : operation === "blob"
-            ? `${f.path}/blobs/${SOURCE_BLOB.digest}`
-            : management
-              ? `${f.path}/visibility`
-              : f.path;
-      const response = await f.app.request(path, {
-        headers: headers(OWNER),
-        ...(operation === "transition" ? { method: "POST", body: JSON.stringify(HIDE) } : {}),
-      });
-      expect(response.status).toBe(operation === "catalog" ? 200 : management ? 403 : 404);
-      if (operation === "catalog") {
-        expect(SpackMaterialCatalogSchema.parse(await response.json()).releases).toEqual([]);
-      }
-      expect(f.current(f.binding).revision).toBe(0);
-    },
-  );
-
-  test.each(["namespace", "roots", "diagnostics", "missing"] as const)(
-    "referenced recipe %s cannot be bypassed by allowlist or management",
-    async (mode) => {
-      const f = await visibilityFixture();
-      f.control.canonical = { ...OWNER, role: "super_admin", orgIds: [ORG, OTHER_ORG] };
-      if (mode === "namespace") f.recipe.repository = `org/${OTHER_ORG}/recipes`;
-      else if (mode === "missing") f.recipe.snapshots = [];
+      if (mode === "roots") snapshot.roots = [];
       else {
-        const snapshot = f.recipe.snapshots[0];
-        if (!snapshot) throw new Error("Missing snapshot");
-        if (mode === "roots") snapshot.roots = [];
-        else {
-          snapshot.diagnostics = [
-            { severity: "error", code: "broken", message: "Private recipe detail" },
-          ];
-        }
+        snapshot.diagnostics = [
+          { severity: "error", code: "broken", message: "Private recipe detail" },
+        ];
       }
-      const download = await f.app.request(f.path, { headers: headers(OWNER) });
-      expect(download.status).toBe(404);
-      const management = await f.app.request(`${f.path}/visibility`, { headers: headers(OWNER) });
-      expect(management.status).toBe(403);
-      expect(await management.text()).not.toContain("Private recipe detail");
-    },
-  );
+    }
+    const download = await f.app.request(f.path, { headers: headers(OWNER) });
+    expect(download.status).toBe(404);
+    const management = await f.app.request(`${f.path}/visibility`, { headers: headers(OWNER) });
+    expect(management.status).toBe(403);
+    expect(await management.text()).not.toContain("Private recipe detail");
+  });
 
   test("snapshot corruption is unavailable, not a filtered catalog entry", async () => {
     const f = await visibilityFixture();
@@ -253,42 +265,43 @@ describe("visibility bounded metadata admission", () => {
     expect(restored.revision).toBe(0);
   });
 
-  test.each(["before", "snapshot", "canonical"] as const)(
-    "cancellation at %s cannot commit a policy",
-    async (phase) => {
-      const f = await visibilityFixture();
-      const controller = new AbortController();
-      const getSnapshot = f.recipes.getSnapshot.getMockImplementation();
-      const transition = f.port.transition.getMockImplementation();
-      if (!getSnapshot || !transition) throw new Error("Missing fixture");
-      if (phase === "before") controller.abort();
-      if (phase === "snapshot") {
-        f.recipes.getSnapshot.mockImplementation(async (...args) => {
-          const result = await getSnapshot(...args);
-          controller.abort();
-          return result;
-        });
-      }
-      if (phase === "canonical") {
-        f.port.transition.mockImplementation(async (...args) => {
-          controller.abort();
-          return transition(...args);
-        });
-      }
-      await expect(
-        f.store.manageVisibility(
-          f.binding.repositoryId,
-          f.binding.manifestDigest,
-          OWNER.sub,
-          HIDE,
-          undefined,
-          controller.signal,
-        ),
-      ).rejects.toMatchObject({ status: 503 });
-      expect(f.current(f.binding).revision).toBe(0);
-      expect(f.recipes.getSnapshot).toHaveBeenCalledTimes(phase === "before" ? 0 : 1);
-    },
-  );
+  test.each([
+    "before",
+    "snapshot",
+    "canonical",
+  ] as const)("cancellation at %s cannot commit a policy", async (phase) => {
+    const f = await visibilityFixture();
+    const controller = new AbortController();
+    const getSnapshot = f.recipes.getSnapshot.getMockImplementation();
+    const transition = f.port.transition.getMockImplementation();
+    if (!getSnapshot || !transition) throw new Error("Missing fixture");
+    if (phase === "before") controller.abort();
+    if (phase === "snapshot") {
+      f.recipes.getSnapshot.mockImplementation(async (...args) => {
+        const result = await getSnapshot(...args);
+        controller.abort();
+        return result;
+      });
+    }
+    if (phase === "canonical") {
+      f.port.transition.mockImplementation(async (...args) => {
+        controller.abort();
+        return transition(...args);
+      });
+    }
+    await expect(
+      f.store.manageVisibility(
+        f.binding.repositoryId,
+        f.binding.manifestDigest,
+        OWNER.sub,
+        HIDE,
+        undefined,
+        controller.signal,
+      ),
+    ).rejects.toMatchObject({ status: 503 });
+    expect(f.current(f.binding).revision).toBe(0);
+    expect(f.recipes.getSnapshot).toHaveBeenCalledTimes(phase === "before" ? 0 : 1);
+  });
 
   test("a missing snapshot is hidden but an unavailable snapshot is never hidden", async () => {
     const f = await visibilityFixture();

@@ -93,20 +93,23 @@ export class SpackMaterialVisibilityAccess {
     const input = parsed?.data;
     const roles = publisherRoles === undefined ? undefined : [...publisherRoles];
     try {
-      return await this.bounded(() => signal?.throwIfAborted(), async (check) => {
-        const { manifest } = await this.read(binding.repositoryId, binding.manifestDigest, {
-          checkpoint: check,
-        });
-        const snapshots = await this.loadSnapshots(manifest, check);
-        const authorize = async (principal: SpackMaterialLifecyclePrincipal) =>
-          this.authorize(manifest, snapshots, principal, check, { publisherRoles: roles });
-        check();
-        const status = await (input
-          ? this.port.transition(binding, subject, input, authorize)
-          : this.port.inspect(binding, subject, authorize));
-        check();
-        return { ...status, binding, repository: manifest.repository };
-      });
+      return await this.bounded(
+        () => signal?.throwIfAborted(),
+        async (check) => {
+          const { manifest } = await this.read(binding.repositoryId, binding.manifestDigest, {
+            checkpoint: check,
+          });
+          const snapshots = await this.loadSnapshots(manifest, check);
+          const authorize = async (principal: SpackMaterialLifecyclePrincipal) =>
+            this.authorize(manifest, snapshots, principal, check, { publisherRoles: roles });
+          check();
+          const status = await (input
+            ? this.port.transition(binding, subject, input, authorize)
+            : this.port.inspect(binding, subject, authorize));
+          check();
+          return { ...status, binding, repository: manifest.repository };
+        },
+      );
     } catch (error) {
       if (error instanceof SpackMaterialVisibilityError) throw error;
       if (

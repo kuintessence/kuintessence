@@ -113,7 +113,10 @@ describe.each(operations)("$method visibility client", ({ method, run, runBindin
   ])("rejects invalid binding before fetch: %j", async (input) => {
     const fetcher = vi.fn();
     vi.stubGlobal("fetch", fetcher);
-    await expect(runBinding(input)).rejects.toMatchObject({ status: 422, code: "VALIDATION_ERROR" });
+    await expect(runBinding(input)).rejects.toMatchObject({
+      status: 422,
+      code: "VALIDATION_ERROR",
+    });
     expect(fetcher).not.toHaveBeenCalled();
   });
 
@@ -259,7 +262,10 @@ test.each([
   const fetcher = vi.fn();
   vi.stubGlobal("fetch", fetcher);
   await expect(
-    changeSpackMaterialVisibility(binding, { ...change, ...patch } as SpackMaterialVisibilityChange),
+    changeSpackMaterialVisibility(binding, {
+      ...change,
+      ...patch,
+    } as SpackMaterialVisibilityChange),
   ).rejects.toMatchObject({ status: 422, code: "VALIDATION_ERROR" });
   expect(fetcher).not.toHaveBeenCalled();
 });

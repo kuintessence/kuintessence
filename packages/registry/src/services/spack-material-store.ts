@@ -485,7 +485,11 @@ export class SpackMaterialStore {
         throw new SpackMaterialVisibilityError("MATERIAL_VISIBILITY_UNAVAILABLE");
       }
       const identity = {
-        repositoryId: parseMaterial(RecipeRepositoryIdSchema, binding.repositoryId, "repository id"),
+        repositoryId: parseMaterial(
+          RecipeRepositoryIdSchema,
+          binding.repositoryId,
+          "repository id",
+        ),
         manifestDigest: parseMaterial(
           SpackMaterialDigestSchema,
           binding.manifestDigest,

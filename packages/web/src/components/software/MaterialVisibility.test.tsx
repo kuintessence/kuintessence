@@ -239,7 +239,12 @@ test.each(["stop", "timeout"])("%s aborts writes and discards late receipts", as
   expect(client.changeSpackMaterialVisibility).toHaveBeenCalledOnce();
 });
 
-test.each(["edit", "unmount", "session", "permission"])("%s discards a late read", async (change) => {
+test.each([
+  "edit",
+  "unmount",
+  "session",
+  "permission",
+])("%s discards a late read", async (change) => {
   const pending = deferred<SpackMaterialVisibilityView>();
   vi.mocked(client.getSpackMaterialVisibility).mockReturnValueOnce(pending.promise);
   let current = true;
