@@ -28,10 +28,10 @@ import {
   OTHER_ORG,
   OWNER as RECIPE_OWNER,
   PLATFORM as RECIPE_PLATFORM,
-  repository,
   SUPER as RECIPE_SUPER,
-  token,
   USER as RECIPE_USER,
+  repository,
+  token,
 } from "./spack-repositories.test-helpers";
 
 afterEach(cleanupMaterials);

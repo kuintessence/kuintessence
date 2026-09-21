@@ -37,7 +37,9 @@ function rejection(error: unknown): Notice | null {
   if (!(error instanceof SoftwareError)) return null;
   if (
     (error.status === 401 || error.status === 403) &&
-    ["UNAUTHORIZED", "INVALID_TOKEN", "FORBIDDEN", "MATERIAL_LIFECYCLE_FORBIDDEN"].includes(error.code)
+    ["UNAUTHORIZED", "INVALID_TOKEN", "FORBIDDEN", "MATERIAL_LIFECYCLE_FORBIDDEN"].includes(
+      error.code,
+    )
   ) {
     return "forbidden";
   }

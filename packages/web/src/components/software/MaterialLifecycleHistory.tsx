@@ -35,7 +35,9 @@ export function MaterialLifecycleHistory({ view }: { view: SpackMaterialLifecycl
                 {view.history.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE).map((event) => (
                   <tr key={event.revision} className="border-b border-border">
                     <td className="p-2 align-top tabular-nums">{event.revision}</td>
-                    <td className="p-2 align-top">{t(`materials.lifecycleState.${event.state}`)}</td>
+                    <td className="p-2 align-top">
+                      {t(`materials.lifecycleState.${event.state}`)}
+                    </td>
                     <td className="break-all p-2 align-top font-mono">{event.operatorId}</td>
                     <td className="break-all p-2 align-top font-mono">
                       <time dateTime={event.createdAt}>{event.createdAt}</time>

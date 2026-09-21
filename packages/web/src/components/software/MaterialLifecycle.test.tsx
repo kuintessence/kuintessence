@@ -32,7 +32,9 @@ beforeEach(async () => {
   await i18n.changeLanguage("en");
   const f = lifecycleFixture();
   vi.mocked(client.getSpackMaterialLifecycle).mockResolvedValue(f.view);
-  vi.mocked(client.changeSpackMaterialLifecycle).mockResolvedValue(f.atRevision(1, WITHDRAW_REASON));
+  vi.mocked(client.changeSpackMaterialLifecycle).mockResolvedValue(
+    f.atRevision(1, WITHDRAW_REASON),
+  );
 });
 afterEach(() => {
   cleanup();
@@ -97,20 +99,25 @@ test.each([
   expect(client.changeSpackMaterialLifecycle).not.toHaveBeenCalled();
 });
 
-test.each(["", " ", " leading", "trailing ", "line\nbreak", "tab\tbreak", "x".repeat(1001)])(
-  "requires a valid audit reason even with confirmation: %j",
-  async (reason) => {
-    mount();
-    inspectLifecycle();
-    await screen.findByTestId("material-lifecycle-detail");
-    confirmLifecycle(reason);
-    expect(
-      lifecycleUi().getByRole("button", { name: labels.lifecycleAction.withdraw }),
-    ).toHaveProperty("disabled", true);
-    submitLifecycle();
-    expect(client.changeSpackMaterialLifecycle).not.toHaveBeenCalled();
-  },
-);
+test.each([
+  "",
+  " ",
+  " leading",
+  "trailing ",
+  "line\nbreak",
+  "tab\tbreak",
+  "x".repeat(1001),
+])("requires a valid audit reason even with confirmation: %j", async (reason) => {
+  mount();
+  inspectLifecycle();
+  await screen.findByTestId("material-lifecycle-detail");
+  confirmLifecycle(reason);
+  expect(
+    lifecycleUi().getByRole("button", { name: labels.lifecycleAction.withdraw }),
+  ).toHaveProperty("disabled", true);
+  submitLifecycle();
+  expect(client.changeSpackMaterialLifecycle).not.toHaveBeenCalled();
+});
 
 test("withdraws and restores with exact revisions and fresh confirmation", async () => {
   const f = lifecycleFixture();

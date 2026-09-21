@@ -49,7 +49,7 @@ export const SpackMaterialLifecycleViewSchema = z
         message: "History must contain the latest revisions, up to 100 entries",
       });
     }
-    if (value.historyTruncated !== (value.revision > 100)) {
+    if (value.historyTruncated !== value.revision > 100) {
       ctx.addIssue({
         code: "custom",
         path: ["historyTruncated"],

@@ -444,16 +444,24 @@ test("the mobile management policy hides uploads while retaining authorized look
 });
 
 test("Chinese and English material messages have matching keys and interpolation fields", async () => {
-  expect(Object.keys(materialsEn.materials).sort()).toEqual(
-    Object.keys(materialsZh.materials).sort(),
-  );
-  for (const key of Object.keys(materialsEn.materials) as Array<
-    keyof typeof materialsEn.materials
-  >) {
-    expect(materialsEn.materials[key].match(/\{\{\w+\}\}/g) ?? []).toEqual(
-      materialsZh.materials[key].match(/\{\{\w+\}\}/g) ?? [],
-    );
+  type Messages = { [key: string]: string | Messages };
+  function compareMessages(en: Messages, zh: Messages) {
+    expect(Object.keys(en).sort()).toEqual(Object.keys(zh).sort());
+    for (const [key, value] of Object.entries(en)) {
+      const translated = zh[key];
+      expect(typeof translated).toBe(typeof value);
+      if (typeof value === "string") {
+        if (typeof translated !== "string") throw new Error(`Expected translated text: ${key}`);
+        expect(value.match(/\{\{\w+\}\}/g) ?? []).toEqual(translated.match(/\{\{\w+\}\}/g) ?? []);
+      } else {
+        if (!translated || typeof translated === "string") {
+          throw new Error(`Expected translated message group: ${key}`);
+        }
+        compareMessages(value, translated);
+      }
+    }
   }
+  compareMessages(materialsEn.materials, materialsZh.materials);
   await i18n.changeLanguage("zh");
   mount();
   await screen.findByText("未找到材料");

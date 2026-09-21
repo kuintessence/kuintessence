@@ -210,10 +210,14 @@ function checkRequests(
 test("desktop withdraws and restores with explicit reasons, confirmation, and audit", async ({
   page,
 }, info) => {
-  const harness = await mount(page, [view(0)], [
-    { status: 200, body: view(1) },
-    { status: 200, body: view(2, restoreReason) },
-  ]);
+  const harness = await mount(
+    page,
+    [view(0)],
+    [
+      { status: 200, body: view(1) },
+      { status: 200, body: view(2, restoreReason) },
+    ],
+  );
   await expect(page.getByTestId("lifecycle-fixture")).toHaveAttribute(
     "data-mobile-writes-blocked",
     "false",
@@ -331,9 +335,11 @@ for (const width of [390, 320]) {
 test("uncertain POST 503 requires explicit GET reconciliation without repeating POST", async ({
   page,
 }, info) => {
-  const harness = await mount(page, [view(0), view(1)], [
-    { status: 503, body: { error: { code: "REGISTRY_UNREACHABLE", message: "Unavailable" } } },
-  ]);
+  const harness = await mount(
+    page,
+    [view(0), view(1)],
+    [{ status: 503, body: { error: { code: "REGISTRY_UNREACHABLE", message: "Unavailable" } } }],
+  );
   await inspect(page);
   await page.getByLabel(labels.lifecycleReason, { exact: true }).fill(withdrawReason);
   await page.getByRole("checkbox", { name: labels.lifecycleConfirm.withdraw }).check();

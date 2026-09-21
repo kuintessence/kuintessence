@@ -115,21 +115,21 @@ describe("material lifecycle view contract", () => {
     }
   });
 
-  test.each([0, 1, 2, 99, 100, 101, 2_147_483_647])(
-    "accepts the complete bounded view at revision %i without rewriting it",
-    (revision) => {
-      const view = lifecycleView(revision);
-      expect(SpackMaterialLifecycleViewSchema.parse(view)).toEqual(view);
-    },
-  );
+  test.each([
+    0, 1, 2, 99, 100, 101, 2_147_483_647,
+  ])("accepts the complete bounded view at revision %i without rewriting it", (revision) => {
+    const view = lifecycleView(revision);
+    expect(SpackMaterialLifecycleViewSchema.parse(view)).toEqual(view);
+  });
 
-  test.each(["public/sources", "org/research/sources", "user/alice/sources"])(
-    "accepts the immutable manifest namespace %s",
-    (repository) => {
-      const view = { ...lifecycleView(), repository };
-      expect(SpackMaterialLifecycleViewSchema.parse(view)).toEqual(view);
-    },
-  );
+  test.each([
+    "public/sources",
+    "org/research/sources",
+    "user/alice/sources",
+  ])("accepts the immutable manifest namespace %s", (repository) => {
+    const view = { ...lifecycleView(), repository };
+    expect(SpackMaterialLifecycleViewSchema.parse(view)).toEqual(view);
+  });
 
   test("requires every view and audit field", () => {
     const view = lifecycleView(1);
@@ -224,9 +224,7 @@ describe("material lifecycle view contract", () => {
   test("requires the newest history entry to match the current revision and state", () => {
     const view = lifecycleView(2);
     for (const patch of [{ revision: 1 }, { state: "withdrawn" }]) {
-      expect(
-        SpackMaterialLifecycleViewSchema.safeParse({ ...view, ...patch }).success,
-      ).toBe(false);
+      expect(SpackMaterialLifecycleViewSchema.safeParse({ ...view, ...patch }).success).toBe(false);
     }
   });
 
@@ -241,9 +239,7 @@ describe("material lifecycle view contract", () => {
       [view.history[0], { ...view.history[1], revision: 0 }, view.history[2]],
       Array.from({ length: 101 }, () => view.history[0]),
     ]) {
-      expect(
-        SpackMaterialLifecycleViewSchema.safeParse({ ...view, history }).success,
-      ).toBe(false);
+      expect(SpackMaterialLifecycleViewSchema.safeParse({ ...view, history }).success).toBe(false);
     }
     expect(
       SpackMaterialLifecycleViewSchema.safeParse({

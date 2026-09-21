@@ -228,22 +228,22 @@ describe.each(operations)("$method material lifecycle client", ({ method, run, r
     expect(fetcher).toHaveBeenCalledOnce();
   });
 
-  test.each(["resolution", "rejection"])(
-    "preserves custom cancellation during browser digest %s",
-    async (stage) => {
-      const controller = new AbortController();
-      const reason = new Error("Stopped during namespace verification");
-      vi.spyOn(crypto.subtle, "digest").mockImplementation(async () => {
-        controller.abort(reason);
-        if (stage === "rejection") throw reason;
-        return new ArrayBuffer(32);
-      });
-      const fetcher = vi.fn().mockResolvedValue(respond(view()));
-      vi.stubGlobal("fetch", fetcher);
-      await expect(run(controller.signal)).rejects.toBe(reason);
-      expect(fetcher).toHaveBeenCalledOnce();
-    },
-  );
+  test.each([
+    "resolution",
+    "rejection",
+  ])("preserves custom cancellation during browser digest %s", async (stage) => {
+    const controller = new AbortController();
+    const reason = new Error("Stopped during namespace verification");
+    vi.spyOn(crypto.subtle, "digest").mockImplementation(async () => {
+      controller.abort(reason);
+      if (stage === "rejection") throw reason;
+      return new ArrayBuffer(32);
+    });
+    const fetcher = vi.fn().mockResolvedValue(respond(view()));
+    vi.stubGlobal("fetch", fetcher);
+    await expect(run(controller.signal)).rejects.toBe(reason);
+    expect(fetcher).toHaveBeenCalledOnce();
+  });
 
   test.each(["missing", "failure"])("fails safely on %s browser crypto", async (stage) => {
     if (stage === "missing") vi.stubGlobal("crypto", undefined);
@@ -261,39 +261,36 @@ describe.each(operations)("$method material lifecycle client", ({ method, run, r
 });
 
 describe("material lifecycle reads and changes", () => {
-  test.each(["public/sources", "org/research/sources", "user/alice/sources"])(
-    "verifies the exact %s namespace using browser SHA-256",
-    async (namespace) => {
-      const expected = {
-        ...binding,
-        repositoryId: createHash("sha256").update(namespace).digest("hex"),
-      };
-      const result = { ...view(), binding: expected, repository: namespace };
-      const digest = vi.spyOn(crypto.subtle, "digest");
-      const fetcher = vi.fn().mockResolvedValue(respond(result));
-      vi.stubGlobal("fetch", fetcher);
-      await expect(getSpackMaterialLifecycle(expected)).resolves.toEqual(result);
-      expect(digest).toHaveBeenCalledExactlyOnceWith(
-        "SHA-256",
-        new TextEncoder().encode(namespace),
-      );
-      expect(fetcher).toHaveBeenCalledOnce();
-    },
-  );
+  test.each([
+    "public/sources",
+    "org/research/sources",
+    "user/alice/sources",
+  ])("verifies the exact %s namespace using browser SHA-256", async (namespace) => {
+    const expected = {
+      ...binding,
+      repositoryId: createHash("sha256").update(namespace).digest("hex"),
+    };
+    const result = { ...view(), binding: expected, repository: namespace };
+    const digest = vi.spyOn(crypto.subtle, "digest");
+    const fetcher = vi.fn().mockResolvedValue(respond(result));
+    vi.stubGlobal("fetch", fetcher);
+    await expect(getSpackMaterialLifecycle(expected)).resolves.toEqual(result);
+    expect(digest).toHaveBeenCalledExactlyOnceWith("SHA-256", new TextEncoder().encode(namespace));
+    expect(fetcher).toHaveBeenCalledOnce();
+  });
 
-  test.each([0, 1, 2, 100, 101, 2_147_483_647])(
-    "reads revision %i independently of immutable manifest availability",
-    async (revision) => {
-      const result = view(revision);
-      const fetcher = vi.fn(async (path: string) => {
-        if (path === PATH) return respond(result);
-        return respond({ error: { code: "MATERIAL_RELEASE_WITHDRAWN" } }, 409);
-      });
-      vi.stubGlobal("fetch", fetcher);
-      await expect(getSpackMaterialLifecycle(binding)).resolves.toEqual(result);
-      expect(fetcher).toHaveBeenCalledExactlyOnceWith(PATH, expect.any(Object));
-    },
-  );
+  test.each([
+    0, 1, 2, 100, 101, 2_147_483_647,
+  ])("reads revision %i independently of immutable manifest availability", async (revision) => {
+    const result = view(revision);
+    const fetcher = vi.fn(async (path: string) => {
+      if (path === PATH) return respond(result);
+      return respond({ error: { code: "MATERIAL_RELEASE_WITHDRAWN" } }, 409);
+    });
+    vi.stubGlobal("fetch", fetcher);
+    await expect(getSpackMaterialLifecycle(binding)).resolves.toEqual(result);
+    expect(fetcher).toHaveBeenCalledExactlyOnceWith(PATH, expect.any(Object));
+  });
 
   test.each([
     { action: "withdraw" as const, expectedRevision: 0 },
