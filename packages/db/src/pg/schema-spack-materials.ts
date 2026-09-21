@@ -10,6 +10,7 @@ import {
   uuid,
   varchar,
 } from "drizzle-orm/pg-core";
+import type { SpackMaterialVisibilityPolicy } from "./spack-material-visibility-input";
 
 /** Append-only union of all Server configurations, including replaced bindings. */
 export const spackMaterialBindings = pgTable(
@@ -102,9 +103,10 @@ export const spackMaterialRollouts = pgTable(
     revisionCheck: check("spack_material_rollouts_revision_check", sql`${t.revision} > 0`),
     transitionCheck: check(
       "spack_material_rollouts_transition_check",
-      sql`(${t.phase} = 'paused' and ${t.action} in ('pause', 'reconcile') and ${t.evidence} is null)
-        or (${t.phase} = 'paused' and ${t.action} = 'retire' and ${t.evidence} is not null)
-        or (${t.phase} = 'ready' and ${t.action} = 'activate' and ${t.evidence} is not null)`,
+      sql`(${t.phase} in ('paused', 'policy-paused') and ${t.action} in ('pause', 'reconcile') and ${t.evidence} is null)
+        or (${t.phase} in ('paused', 'policy-paused') and ${t.action} = 'retire' and ${t.evidence} is not null)
+        or (${t.phase} = 'ready' and ${t.action} = 'activate' and ${t.evidence} is not null)
+        or (${t.phase} = 'policy-ready' and ${t.action} in ('activate', 'activate-policy') and ${t.evidence} is not null)`,
     ),
     digestCheck: check(
       "spack_material_rollouts_digest_check",
@@ -178,6 +180,51 @@ export const spackMaterialLifecycleEvents = pgTable(
     ),
     reasonCheck: check(
       "spack_material_lifecycle_events_reason_check",
+      sql`length(trim(${t.reason})) > 0`,
+    ),
+  }),
+);
+
+/** Mutable admission policy is audited independently of immutable release content. */
+export const spackMaterialVisibilityEvents = pgTable(
+  "spack_material_visibility_events",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    repositoryId: varchar("repository_id", { length: 64 }).notNull(),
+    manifestDigest: varchar("manifest_digest", { length: 71 }).notNull(),
+    revision: integer("revision").notNull(),
+    policy: jsonb("policy").$type<SpackMaterialVisibilityPolicy>().notNull(),
+    operatorId: uuid("operator_id").notNull(),
+    reason: varchar("reason", { length: 1000 }).notNull(),
+    epoch: uuid("epoch").notNull(),
+    rolloutRevision: integer("rollout_revision").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => ({
+    releaseRevisionIdx: uniqueIndex("spack_material_visibility_events_release_revision_idx").on(
+      t.repositoryId,
+      t.manifestDigest,
+      t.revision,
+    ),
+    repositoryCheck: check(
+      "spack_material_visibility_events_repository_check",
+      sql`${t.repositoryId} ~ '^[a-f0-9]{64}$'`,
+    ),
+    digestCheck: check(
+      "spack_material_visibility_events_digest_check",
+      sql`${t.manifestDigest} ~ '^sha256:[a-f0-9]{64}$'`,
+    ),
+    revisionCheck: check(
+      "spack_material_visibility_events_revision_check",
+      sql`${t.revision} > 0 and ${t.rolloutRevision} > 0`,
+    ),
+    policyCheck: check(
+      "spack_material_visibility_events_policy_check",
+      sql`jsonb_typeof(${t.policy}) = 'object'
+        and ${t.policy}->>'mode' in ('inherit', 'allowlist')`,
+    ),
+    reasonCheck: check(
+      "spack_material_visibility_events_reason_check",
       sql`length(trim(${t.reason})) > 0`,
     ),
   }),

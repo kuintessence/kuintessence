@@ -1,11 +1,11 @@
 import type { SpackMaterialBinding } from "@kuintessence/shared/browser";
 import { useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { MaterialLifecycle } from "../../src/components/software/MaterialLifecycle";
 import {
   MaterialManagementCatalog,
   type MaterialManagementFilter,
 } from "../../src/components/software/MaterialManagementCatalog";
+import { MaterialManagementEditors } from "../../src/components/software/MaterialManagementEditors";
 import { setLang } from "../../src/lib/i18n";
 import {
   isMobileHighRiskMutationBlocked,
@@ -47,7 +47,7 @@ function LifecycleFixture({ binding }: { binding: SpackMaterialBinding }) {
           setSelection((current) => ({ binding: selected, revision: current.revision + 1 }));
         }}
       />
-      <MaterialLifecycle
+      <MaterialManagementEditors
         key={selection.revision}
         initialBinding={selection.binding}
         isCurrent={isCurrent}

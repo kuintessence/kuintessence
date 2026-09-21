@@ -7,6 +7,7 @@ import {
   SpackMaterialLifecycleChangeSchema,
   SpackMaterialManagementQuerySchema,
   SpackMaterialPublishSchema,
+  SpackMaterialVisibilityChangeSchema,
 } from "@kuintessence/shared";
 import { type Context, Hono, type MiddlewareHandler } from "hono";
 import {
@@ -221,9 +222,17 @@ export function createSpackMaterialRoutes(
   });
 
   r.get(`${BASE}/:id/releases/:digest`, authenticate, async (c) => {
+    c.header("Cache-Control", "private, no-store");
     rejectQueries(c);
-    const stored = await getStore().getManifest(c.req.param("id"), c.req.param("digest"));
-    await getStore().authorizeManifest(stored.manifest, c.get("principal"));
+    const checkpoint = () => c.req.raw.signal.throwIfAborted();
+    const binding = {
+      repositoryId: c.req.param("id"),
+      manifestDigest: c.req.param("digest"),
+    };
+    const stored = await getStore().getManifest(binding.repositoryId, binding.manifestDigest, {
+      checkpoint,
+    });
+    await getStore().authorizeManifest(stored.manifest, c.get("principal"), checkpoint, binding);
     return new Response(stored.bytes, {
       headers: {
         ...downloadHeaders(stored.bytes.byteLength),
@@ -273,18 +282,59 @@ export function createSpackMaterialRoutes(
   });
 
   r.get(`${BASE}/:id/releases/:manifestDigest/blobs/:digest`, authenticate, async (c) => {
+    c.header("Cache-Control", "private, no-store");
     rejectQueries(c);
     const blob = await getStore().getBlob(
       c.req.param("id"),
       c.req.param("manifestDigest"),
       c.req.param("digest"),
       c.get("principal"),
+      c.req.raw.signal,
     );
     return c.body(blob.stream, 200, {
       ...downloadHeaders(blob.size),
       "Content-Type": "application/octet-stream",
       ETag: `"${c.req.param("digest")}"`,
     });
+  });
+
+  r.get(`${BASE}/:id/releases/:digest/visibility`, authenticate, async (c) => {
+    c.header("Cache-Control", "private, no-store");
+    rejectQueries(c);
+    return c.json(
+      await getStore().manageVisibility(
+        c.req.param("id"),
+        c.req.param("digest"),
+        c.get("principal").sub,
+        undefined,
+        opts.publisherRoles,
+        c.req.raw.signal,
+      ),
+    );
+  });
+
+  r.post(`${BASE}/:id/releases/:digest/visibility`, authenticate, async (c) => {
+    c.header("Cache-Control", "private, no-store");
+    rejectQueries(c);
+    requireContentType(c, "application/json");
+    checkLength(c, MATERIAL_METADATA_BYTES);
+    const body = c.req.raw.body;
+    if (!body) throw new SpackMaterialError(400, "Material visibility body is empty");
+    const change = parseMaterial(
+      SpackMaterialVisibilityChangeSchema,
+      await readMaterialJson(body),
+      "material visibility change",
+    );
+    return c.json(
+      await getStore().manageVisibility(
+        c.req.param("id"),
+        c.req.param("digest"),
+        c.get("principal").sub,
+        change,
+        opts.publisherRoles,
+        c.req.raw.signal,
+      ),
+    );
   });
   return r;
 }

@@ -39,7 +39,7 @@ export function MaterialLifecycle({
     onInvalidate,
     onSelectionLockChange,
   });
-  const { view, busy, notice } = lifecycle;
+  const { view, busy, notice, locked } = lifecycle;
   const binding = SpackMaterialBindingSchema.safeParse({ repositoryId, manifestDigest });
   const action = view?.state === "withdrawn" ? "restore" : "withdraw";
   const validReason = SpackMaterialLifecycleChangeSchema.shape.reason.safeParse(reason).success;
@@ -57,8 +57,9 @@ export function MaterialLifecycle({
   }
 
   function edit() {
-    lifecycle.reset();
+    if (!lifecycle.reset()) return false;
     clearConfirmation();
+    return true;
   }
 
   return (
@@ -83,10 +84,9 @@ export function MaterialLifecycle({
             id={`${id}-repository`}
             className="font-mono"
             value={repositoryId}
-            disabled={busy === "write"}
+            disabled={locked}
             onChange={(event) => {
-              edit();
-              setRepositoryId(event.target.value);
+              if (edit()) setRepositoryId(event.target.value);
             }}
           />
         </label>
@@ -96,10 +96,9 @@ export function MaterialLifecycle({
             id={`${id}-digest`}
             className="font-mono"
             value={manifestDigest}
-            disabled={busy === "write"}
+            disabled={locked}
             onChange={(event) => {
-              edit();
-              setManifestDigest(event.target.value);
+              if (edit()) setManifestDigest(event.target.value);
             }}
           />
         </label>

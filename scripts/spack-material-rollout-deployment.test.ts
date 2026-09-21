@@ -123,6 +123,43 @@ describe("Spack material rollout deployment (offline, no process execution)", ()
 });
 
 describe("Spack material rollout documentation (offline reads only)", () => {
+  test("visibility activation documents one-way fencing and old-ticket revocation", async () => {
+    const guide = await read("docs/spack-material-visibility.md");
+    const commands = [...guide.matchAll(/```json\n([\s\S]*?)\n```/g)].map(
+      (match) => JSON.parse(match[1] ?? "") as Record<string, unknown>,
+    );
+    expect(commands).toHaveLength(2);
+    expect(commands[0]).toMatchObject({
+      action: "activate-policy",
+      operatorId: "<current operator UUID>",
+      epoch: "<epoch returned by pause>",
+      evidence: {
+        legacyProcessesStoppedAndDrained: true,
+        legacyAccessRevoked: true,
+        legacyInventoryComplete: true,
+      },
+    });
+    expect(commands[1]).toMatchObject({
+      policy: { mode: "allowlist", orgIds: [] },
+      expectedRevision: 0,
+    });
+    expect(JSON.stringify(commands)).not.toMatch(/DATABASE_URL|SECRET|PASSWORD|TOKEN/);
+    for (const text of [
+      "policy-ready",
+      "policy-paused",
+      "不可退回",
+      "旧 ticket",
+      "不是跨组织分享",
+      "100",
+    ]) {
+      expect(guide).toContain(text);
+    }
+    expect(guide).toContain("](spack-material-rollout.md)");
+    expect(await read("docs/spack-material-rollout.md")).toContain(
+      "](spack-material-visibility.md)",
+    );
+  });
+
   test("retirement documentation requires explicit configuration removal and preserves history", async () => {
     const guide = await read("docs/spack-binding-retirement.md");
     const commands = [...guide.matchAll(/```json\n([\s\S]*?)\n```/g)].map(

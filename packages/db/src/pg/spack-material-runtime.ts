@@ -5,6 +5,18 @@ import { parseSpackMaterialEpoch } from "./spack-material-rollout-input";
 
 type ReadConnection = Pick<PgDb, "select">;
 
+export function isSpackMaterialReady(phase: string): boolean {
+  return phase === "ready" || phase === "policy-ready";
+}
+
+export function isSpackMaterialPaused(phase: string): boolean {
+  return phase === "paused" || phase === "policy-paused";
+}
+
+export function isSpackMaterialPolicyPhase(phase: string): boolean {
+  return phase === "policy-ready" || phase === "policy-paused";
+}
+
 export async function readSpackMaterialRollout(db: ReadConnection) {
   const [row] = await db
     .select()
@@ -15,8 +27,14 @@ export async function readSpackMaterialRollout(db: ReadConnection) {
     row &&
     (!Number.isSafeInteger(row.revision) ||
       row.revision < 1 ||
-      (row.phase !== "paused" && row.phase !== "ready") ||
-      (row.phase === "ready" && (row.action !== "activate" || !row.evidence)))
+      (!isSpackMaterialPaused(row.phase) && !isSpackMaterialReady(row.phase)) ||
+      (row.phase === "ready" && (row.action !== "activate" || !row.evidence)) ||
+      (row.phase === "policy-ready" &&
+        ((row.action !== "activate" && row.action !== "activate-policy") ||
+          !row.evidence ||
+          row.evidence.legacyProcessesStoppedAndDrained !== true ||
+          row.evidence.legacyAccessRevoked !== true ||
+          row.evidence.legacyInventoryComplete !== true)))
   ) {
     throw new Error("Invalid Spack material rollout state");
   }
@@ -28,7 +46,7 @@ export async function assertSpackMaterialRuntime(db: ReadConnection, epoch?: str
   const expectedEpoch = epoch === undefined ? undefined : parseSpackMaterialEpoch(epoch);
   const row = await readSpackMaterialRollout(db);
   if (!row && expectedEpoch === undefined) return;
-  if (!row || row.phase !== "ready" || row.epoch !== expectedEpoch) {
+  if (!row || !isSpackMaterialReady(row.phase) || row.epoch !== expectedEpoch) {
     throw new Error("Spack material runtime is fenced");
   }
 }

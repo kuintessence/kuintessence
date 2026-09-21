@@ -22,7 +22,7 @@ export type SpackMaterialRolloutCommand =
       evidence: SpackMaterialRetirementEvidence;
     } & PausedMutation)
   | ({
-      action: "activate";
+      action: "activate" | "activate-policy";
       inventoryDigest: string;
       evidence: SpackMaterialRolloutEvidence;
     } & PausedMutation);
@@ -69,7 +69,11 @@ export function parseSpackMaterialRolloutCommand(input: unknown): SpackMaterialR
     }
     return { action: "reconcile", ...mutation, epoch, bindings: [...value.bindings] };
   }
-  if (value.action === "activate" || value.action === "retire") {
+  if (
+    value.action === "activate" ||
+    value.action === "activate-policy" ||
+    value.action === "retire"
+  ) {
     exactKeys(value, [
       "action",
       "operatorId",
@@ -128,7 +132,7 @@ export function parseSpackMaterialRolloutCommand(input: unknown): SpackMaterialR
         evidence: { ...confirmed.evidence, bindingConfigurationsRemoved: true },
       };
     }
-    return { action: "activate", ...confirmed };
+    return { action: value.action, ...confirmed };
   }
   throw new Error("Invalid rollout action");
 }

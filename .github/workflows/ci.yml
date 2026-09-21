@@ -238,12 +238,15 @@ jobs:
           bun run test
           src/lib/spack-material-lifecycle-client.test.ts
           src/lib/spack-material-management-client.test.ts
+          src/lib/spack-material-visibility-client.test.ts
           src/lib/spack-materials-client.test.ts
           src/components/software/MaterialLifecycle*.test.tsx
           src/components/software/SpackMaterials*.test.tsx
           src/components/software/MaterialCatalog*.test.tsx
           src/components/software/MaterialManagementCatalog*.test.tsx
           src/components/software/MaterialManagementSession.test.tsx
+          src/components/software/MaterialManagementEditors.test.tsx
+          src/components/software/MaterialVisibility*.test.tsx
           src/components/software/SpackOnlineImport.test.tsx
           src/routes/-cp-capability-errors.test.tsx
       - name: Build web application and styles

@@ -5,6 +5,8 @@ import { resolve } from "node:path";
 import type {
   SpackMaterialLifecycleView,
   SpackMaterialManagementCatalog,
+  SpackMaterialVisibilityPolicy,
+  SpackMaterialVisibilityView,
 } from "@kuintessence/shared/browser";
 import { expect, type Page, test } from "patchright/test";
 import materials from "../src/locales/materials.en.json" with { type: "json" };
@@ -17,6 +19,7 @@ const binding = {
   manifestDigest: `sha256:${"b".repeat(64)}`,
 };
 const apiPath = `/software/api/spack/material-repositories/${binding.repositoryId}/releases/${encodeURIComponent(binding.manifestDigest)}/lifecycle`;
+const visibilityPath = `/software/api/spack/material-repositories/${binding.repositoryId}/releases/${encodeURIComponent(binding.manifestDigest)}/visibility`;
 const operatorId = "11111111-1111-4111-8111-111111111111";
 const createdAt = "2026-09-21T00:00:00.000Z";
 const withdrawReason = "Source archive checksum requires review before further installations.";
@@ -79,8 +82,11 @@ async function mount(
   reads: SpackMaterialLifecycleView[],
   writes: Receipt[] = [],
   managementReads: Receipt[] = [],
+  visibilityReads: Receipt[] = [],
+  visibilityWrites: Receipt[] = [],
 ) {
   const calls: Call[] = [];
+  const visibilityCalls: Call[] = [];
   const managementCalls: Array<{
     query: Record<string, string>;
     authorization: string | undefined;
@@ -90,6 +96,8 @@ async function mount(
   let readIndex = 0;
   let writeIndex = 0;
   let managementIndex = 0;
+  let visibilityReadIndex = 0;
+  let visibilityWriteIndex = 0;
   page.on("pageerror", (error) => errors.push(error.message));
   await page.addInitScript(() => {
     localStorage.setItem("kq.lang", "en");
@@ -98,6 +106,30 @@ async function mount(
   await page.route("**/*", async (route) => {
     const request = route.request();
     const url = new URL(request.url());
+    if (url.href === `${origin}${visibilityPath}`) {
+      visibilityCalls.push({
+        method: request.method(),
+        body: request.postData(),
+        authorization: request.headers().authorization,
+      });
+      const receipt =
+        request.method() === "GET"
+          ? visibilityReads[visibilityReadIndex++]
+          : request.method() === "POST"
+            ? visibilityWrites[visibilityWriteIndex++]
+            : undefined;
+      if (!receipt) {
+        unexpected.push(`${request.method()} ${url.href}`);
+        await route.abort("blockedbyclient");
+        return;
+      }
+      await route.fulfill({
+        status: receipt.status,
+        contentType: "application/json; charset=utf-8",
+        body: JSON.stringify(receipt.body),
+      });
+      return;
+    }
     if (
       url.origin === origin &&
       url.pathname === "/software/api/spack/material-repositories/management" &&
@@ -181,7 +213,8 @@ async function mount(
   await expect(page.getByLabel(labels.lifecycleManifestDigest)).toHaveValue(binding.manifestDigest);
   expect(calls).toHaveLength(0);
   expect(managementCalls).toHaveLength(0);
-  return { calls, managementCalls, unexpected, errors };
+  expect(visibilityCalls).toHaveLength(0);
+  return { calls, managementCalls, visibilityCalls, unexpected, errors };
 }
 
 async function inspect(page: Page) {
@@ -385,6 +418,10 @@ test("uncertain POST 503 requires explicit GET reconciliation without repeating 
   await page.getByRole("checkbox", { name: labels.lifecycleConfirm.withdraw }).check();
   await page.getByRole("button", { name: labels.lifecycleAction.withdraw, exact: true }).click();
   await expect(page.getByRole("alert")).toHaveText(labels.lifecycleNotice.uncertain);
+  await expect(page.getByLabel(labels.lifecycleRepositoryId, { exact: true })).toBeDisabled();
+  await expect(page.getByLabel(labels.lifecycleManifestDigest, { exact: true })).toBeDisabled();
+  await expect(page.getByRole("tab", { name: labels.visibilityTab, exact: true })).toBeDisabled();
+  await expect(page.getByTestId("material-visibility")).toHaveCount(0);
   await expect(page.getByTestId("material-lifecycle-detail")).toHaveCount(0);
   await expect(page.getByTestId("invalidation-count")).toHaveText("1");
   const posted = {
@@ -395,6 +432,8 @@ test("uncertain POST 503 requires explicit GET reconciliation without repeating 
   await page.screenshot({ path: info.outputPath("desktop-uncertain.png"), fullPage: true });
   await inspect(page);
   await expect(page.getByText(labels.lifecycleNotice.rechecked, { exact: true })).toBeVisible();
+  await expect(page.getByLabel(labels.lifecycleManifestDigest, { exact: true })).toBeEnabled();
+  await expect(page.getByRole("tab", { name: labels.visibilityTab, exact: true })).toBeEnabled();
   await expect(
     page.getByRole("table", { name: labels.lifecycleHistory }).locator("tbody tr").first(),
   ).toContainText(withdrawReason);
@@ -558,4 +597,187 @@ test("expired management cursor clears pages and refresh retries the scoped firs
     { repository, state: "withdrawn", limit: "1" },
   ]);
   checkRequests(harness, []);
+});
+
+const visibilityReason = "Restrict source access to approved principals.";
+const allowedUser = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
+const allowedOrg = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb";
+const visibilityPolicy: SpackMaterialVisibilityPolicy = {
+  mode: "allowlist",
+  userIds: [operatorId, allowedUser],
+  orgIds: [allowedOrg],
+};
+
+function visibilityView(
+  revision: number,
+  policy: SpackMaterialVisibilityPolicy = revision % 2 ? visibilityPolicy : { mode: "inherit" },
+): SpackMaterialVisibilityView {
+  return {
+    binding,
+    repository,
+    revision,
+    policy,
+    history: Array.from({ length: Math.min(revision, 100) }, (_, index) => ({
+      revision: revision - index,
+      policy: index === 0 ? policy : { mode: "inherit" },
+      operatorId,
+      reason: visibilityReason,
+      epoch: "22222222-2222-4222-8222-222222222222",
+      rolloutRevision: 3,
+      createdAt,
+    })),
+    historyTruncated: revision > 100,
+  };
+}
+
+async function inspectVisibilityPolicy(page: Page) {
+  await page.getByRole("button", { name: labels.visibilityInspect, exact: true }).click();
+  await expect(page.getByTestId("material-visibility-detail")).toBeVisible();
+}
+
+async function prepareVisibilityPolicy(page: Page) {
+  await page.getByLabel(labels.visibilityPolicy, { exact: true }).selectOption("allowlist");
+  await page.getByLabel(labels.visibilityPrincipals.userIds).fill(`${allowedUser}\n${operatorId}`);
+  await page.getByLabel(labels.visibilityPrincipals.orgIds).fill(allowedOrg);
+  await page.getByLabel(labels.visibilityReason, { exact: true }).fill(visibilityReason);
+  await page.getByRole("checkbox", { name: labels.visibilityConfirm }).check();
+}
+
+test("visibility canonical allowlist and deny-all require explicit confirmation and audit", async ({
+  page,
+}, info) => {
+  const denied: SpackMaterialVisibilityPolicy = { mode: "allowlist", userIds: [], orgIds: [] };
+  const harness = await mount(
+    page,
+    [],
+    [],
+    [],
+    [{ status: 200, body: visibilityView(0) }],
+    [
+      { status: 200, body: visibilityView(1) },
+      { status: 200, body: visibilityView(2, denied) },
+    ],
+  );
+  await page.getByRole("tab", { name: labels.visibilityTab, exact: true }).click();
+  expect(harness.visibilityCalls).toHaveLength(0);
+  await inspectVisibilityPolicy(page);
+  await prepareVisibilityPolicy(page);
+  await page.getByRole("button", { name: labels.visibilitySave, exact: true }).click();
+  await expect(page.getByText(labels.visibilityNotice.changed, { exact: true })).toBeVisible();
+  const table = page.getByRole("table", { name: labels.visibilityHistory, exact: true });
+  await expect(table.locator("tbody tr").first()).toContainText(allowedOrg);
+  await expect(page.getByLabel(labels.visibilityReason, { exact: true })).toHaveValue("");
+  await expect(page.getByRole("checkbox", { name: labels.visibilityConfirm })).not.toBeChecked();
+  await page.getByLabel(labels.visibilityPrincipals.userIds).fill("");
+  await page.getByLabel(labels.visibilityPrincipals.orgIds).fill("");
+  await expect(page.getByText(labels.visibilityDenyAll, { exact: true })).toBeVisible();
+  await page.getByLabel(labels.visibilityReason, { exact: true }).fill(visibilityReason);
+  await page.getByRole("checkbox", { name: labels.visibilityConfirm }).check();
+  await page.getByRole("button", { name: labels.visibilitySave, exact: true }).click();
+  await expect(table.locator("tbody tr")).toHaveCount(2);
+  await expect(page.getByTestId("invalidation-count")).toHaveText("2");
+  expect(harness.visibilityCalls).toEqual([
+    { method: "GET", body: null, authorization: "Bearer lifecycle-fixture-token" },
+    ...[visibilityPolicy, denied].map((policy, expectedRevision) => ({
+      method: "POST",
+      body: JSON.stringify({ policy, expectedRevision, reason: visibilityReason }),
+      authorization: "Bearer lifecycle-fixture-token",
+    })),
+  ]);
+  checkRequests(harness, []);
+  await page.screenshot({ path: info.outputPath("visibility-deny-all.png"), fullPage: true });
+});
+
+test("visibility unknown receipt locks lifecycle tab and catalog until verified GET", async ({
+  page,
+}) => {
+  const harness = await mount(
+    page,
+    [],
+    [],
+    [{ status: 200, body: managementCatalog() }],
+    [
+      { status: 200, body: visibilityView(0) },
+      { status: 200, body: visibilityView(1) },
+    ],
+    [
+      {
+        status: 503,
+        body: { error: { code: "MATERIAL_VISIBILITY_UNAVAILABLE", message: "Unavailable" } },
+      },
+    ],
+  );
+  await searchManagement(page);
+  await expect(page.getByRole("table", { name: labels.managementTitle })).toBeVisible();
+  await page.getByRole("button", { name: labels.managementManage, exact: true }).click();
+  await page.getByRole("tab", { name: labels.visibilityTab, exact: true }).click();
+  await inspectVisibilityPolicy(page);
+  await prepareVisibilityPolicy(page);
+  await page.getByRole("button", { name: labels.visibilitySave, exact: true }).click();
+  await expect(page.getByRole("alert")).toHaveText(labels.visibilityNotice.uncertain);
+  await expect(page.getByRole("tab", { name: labels.lifecycleTab, exact: true })).toBeDisabled();
+  await expect(page.getByLabel(labels.visibilityManifestDigest)).toBeDisabled();
+  await expect(page.getByRole("table", { name: labels.managementTitle })).toHaveCount(0);
+  await inspectVisibilityPolicy(page);
+  await expect(page.getByText(labels.visibilityNotice.rechecked, { exact: true })).toBeVisible();
+  await expect(page.getByRole("tab", { name: labels.lifecycleTab, exact: true })).toBeEnabled();
+  expect(harness.visibilityCalls.map((call) => call.method)).toEqual(["GET", "POST", "GET"]);
+  checkRequests(harness, []);
+});
+
+test("visibility pre-activation 503 exposes no editable snapshot", async ({ page }) => {
+  const harness = await mount(
+    page,
+    [],
+    [],
+    [],
+    [
+      {
+        status: 503,
+        body: { error: { code: "MATERIAL_VISIBILITY_UNAVAILABLE", message: "Paused" } },
+      },
+    ],
+  );
+  await page.getByRole("tab", { name: labels.visibilityTab, exact: true }).click();
+  await page.getByRole("button", { name: labels.visibilityInspect, exact: true }).click();
+  await expect(page.getByRole("alert")).toHaveText(labels.visibilityNotice.unavailable);
+  await expect(page.getByTestId("material-visibility-detail")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: labels.visibilitySave, exact: true })).toHaveCount(
+    0,
+  );
+  expect(harness.visibilityCalls.map((call) => call.method)).toEqual(["GET"]);
+  checkRequests(harness, []);
+});
+
+test("mobile visibility audit fits the viewport and cannot submit", async ({ page }, info) => {
+  await page.setViewportSize({ width: 320, height: 844 });
+  const harness = await mount(page, [], [], [], [{ status: 200, body: visibilityView(1) }]);
+  await page.getByRole("tab", { name: labels.visibilityTab, exact: true }).click();
+  await inspectVisibilityPolicy(page);
+  await expect(page.getByLabel(labels.visibilityPolicy, { exact: true })).toBeDisabled();
+  await expect(
+    page.getByRole("button", { name: labels.visibilitySave, exact: true }),
+  ).toBeDisabled();
+  const geometry = await page.getByTestId("material-visibility").evaluate((element) => {
+    const controls = Array.from(element.querySelectorAll("input, select, textarea, button")).map(
+      (control) => control.getBoundingClientRect(),
+    );
+    return {
+      width: Math.max(document.documentElement.scrollWidth, document.body.scrollWidth),
+      overlaps: controls.some((a, index) =>
+        controls
+          .slice(index + 1)
+          .some(
+            (b) =>
+              Math.min(a.right, b.right) - Math.max(a.left, b.left) > 1 &&
+              Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top) > 1,
+          ),
+      ),
+    };
+  });
+  expect(geometry.width).toBeLessThanOrEqual(320);
+  expect(geometry.overlaps).toBe(false);
+  expect(harness.visibilityCalls.map((call) => call.method)).toEqual(["GET"]);
+  checkRequests(harness, []);
+  await page.screenshot({ path: info.outputPath("visibility-mobile.png"), fullPage: true });
 });

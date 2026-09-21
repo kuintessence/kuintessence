@@ -1,6 +1,6 @@
 import { and, desc, eq, isNull, sql } from "drizzle-orm";
 import type { PgDb } from "./index";
-import { softwareOperations, userOrgMemberships, users } from "./schema";
+import { softwareOperations } from "./schema";
 import {
   spackMaterialBindingRetirements,
   spackMaterialBindings,
@@ -14,18 +14,22 @@ import {
   SpackMaterialLifecycleError,
 } from "./spack-material-lifecycle-state";
 import {
+  authorizeSpackMaterialPrincipal as authorizeCanonical,
+  type SpackMaterialLifecyclePrincipal,
+} from "./spack-material-principal";
+import {
   parseSpackMaterialBindings,
   type SpackMaterialReferenceBinding,
   withSpackMaterialLifecycleTransaction,
 } from "./spack-material-references";
-import { assertSpackMaterialRuntime, readSpackMaterialRollout } from "./spack-material-runtime";
+import {
+  assertSpackMaterialRuntime,
+  isSpackMaterialReady,
+  readSpackMaterialRollout,
+} from "./spack-material-runtime";
 
 export { SpackMaterialLifecycleError } from "./spack-material-lifecycle-state";
-export interface SpackMaterialLifecyclePrincipal {
-  sub: string;
-  role: string;
-  orgIds: string[];
-}
+export type { SpackMaterialLifecyclePrincipal } from "./spack-material-principal";
 export interface SpackMaterialLifecycleChange {
   action: "withdraw" | "restore";
   expectedRevision: number;
@@ -167,7 +171,7 @@ export class SpackMaterialLifecycle {
   private async requireReady(tx: Transaction) {
     await assertSpackMaterialRuntime(tx, this.epoch);
     const rollout = await readSpackMaterialRollout(tx);
-    if (!rollout || rollout.phase !== "ready" || rollout.epoch !== this.epoch) {
+    if (!rollout || !isSpackMaterialReady(rollout.phase) || rollout.epoch !== this.epoch) {
       throw new SpackMaterialLifecycleError("MATERIAL_LIFECYCLE_UNAVAILABLE");
     }
     return rollout;
@@ -183,35 +187,6 @@ export class SpackMaterialLifecycle {
       if (error instanceof SpackMaterialLifecycleError) throw error;
       throw new SpackMaterialLifecycleError("MATERIAL_LIFECYCLE_UNAVAILABLE");
     }
-  }
-}
-
-async function authorizeCanonical(tx: Transaction, subject: string, authorize: Authorize) {
-  if (!/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(subject)) {
-    throw new SpackMaterialLifecycleError("MATERIAL_LIFECYCLE_FORBIDDEN");
-  }
-  const [actor] = await tx
-    .select({ sub: users.id, role: users.role, suspended: users.suspended })
-    .from(users)
-    .where(eq(users.id, subject))
-    .for("share");
-  if (!actor || actor.suspended) {
-    throw new SpackMaterialLifecycleError("MATERIAL_LIFECYCLE_FORBIDDEN");
-  }
-  const memberships = await tx
-    .select({ orgId: userOrgMemberships.orgId })
-    .from(userOrgMemberships)
-    .where(eq(userOrgMemberships.userId, subject))
-    .for("share");
-  try {
-    await authorize({
-      sub: actor.sub,
-      role: actor.role,
-      orgIds: memberships.map((membership) => membership.orgId),
-    });
-  } catch (error) {
-    if (error instanceof SpackMaterialLifecycleError) throw error;
-    throw new SpackMaterialLifecycleError("MATERIAL_LIFECYCLE_FORBIDDEN");
   }
 }
 

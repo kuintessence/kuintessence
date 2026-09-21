@@ -220,6 +220,7 @@ test.each([
   "uncertain",
   "stop",
 ])("%s lifecycle invalidation remounts management, preserving only filters", async (outcome) => {
+  const diagnostics = vi.spyOn(console, "error");
   const pending = deferred<SpackMaterialLifecycleView>();
   if (outcome === "uncertain") {
     vi.mocked(lifecycle.changeSpackMaterialLifecycle).mockRejectedValueOnce(
@@ -233,6 +234,8 @@ test.each([
   search();
   await selectManaged();
   const previousCatalog = screen.getByTestId("material-management-catalog");
+  const previousOrdinaryFilter = screen.getByLabelText(labels.catalogRepository);
+  const editor = screen.getByTestId("material-lifecycle");
   inspectLifecycle();
   await screen.findByTestId("material-lifecycle-detail");
   confirmLifecycle(RESTORE_REASON);
@@ -243,7 +246,11 @@ test.each([
   await screen.findByText(
     outcome === "success" ? labels.lifecycleNotice.changed : labels.lifecycleNotice.uncertain,
   );
-  expect(screen.getByTestId("material-management-catalog")).not.toBe(previousCatalog);
+  const currentCatalog = screen.getByTestId("material-management-catalog");
+  expect(currentCatalog).not.toBe(previousCatalog);
+  expect(previousCatalog.isConnected).toBe(false);
+  expect(previousOrdinaryFilter.isConnected).toBe(false);
+  expect(screen.getByTestId("material-lifecycle")).toBe(editor);
   expect(screen.queryByRole("table", { name: labels.managementTitle })).toBeNull();
   expect(screen.queryByRole("button", { name: labels.managementNext })).toBeNull();
   expect(screen.getByLabelText(labels.managementRepository)).toHaveProperty(
@@ -253,21 +260,48 @@ test.each([
   expect(screen.getByLabelText(labels.managementState)).toHaveProperty("value", "withdrawn");
   expect(screen.getByLabelText(labels.managementPageSize)).toHaveProperty("value", "5");
   expect(management.listSpackMaterialManagement).toHaveBeenCalledTimes(1);
-  fireEvent.click(screen.getByRole("button", { name: labels.managementRefresh }));
-  await screen.findByRole("table", { name: labels.managementTitle });
+  const refresh = within(currentCatalog).getByRole("button", { name: labels.managementRefresh });
+  expect(refresh).toHaveProperty("disabled", false);
+  fireEvent.click(refresh);
+  expect(management.listSpackMaterialManagement).toHaveBeenCalledTimes(2);
   expect(management.listSpackMaterialManagement).toHaveBeenLastCalledWith(
     { repository: f.view.repository, state: "withdrawn", limit: 5 },
     expect.any(AbortSignal),
   );
+  const refreshSignal = vi.mocked(management.listSpackMaterialManagement).mock.calls[1]?.[1];
+  expect(refreshSignal?.aborted).toBe(false);
+  const table = await within(currentCatalog).findByRole("table", { name: labels.managementTitle });
+  expect(screen.getByTestId("material-management-catalog")).toBe(currentCatalog);
+  expect(currentCatalog.contains(table)).toBe(true);
+  expect(within(table).getAllByRole("row")).toHaveLength(2);
+  expect(refreshSignal?.aborted).toBe(false);
+  expect(screen.getByTestId("material-lifecycle")).toBe(editor);
   if (outcome !== "success") {
     expect(screen.getByRole("button", { name: labels.managementManage })).toHaveProperty(
       "disabled",
       true,
     );
+    expect(lifecycleUi().getByRole("alert").textContent).toBe(labels.lifecycleNotice.uncertain);
+    expect(lifecycleUi().getByLabelText(labels.lifecycleManifestDigest)).toHaveProperty(
+      "disabled",
+      true,
+    );
+    expect(screen.getByRole("tab", { name: labels.visibilityTab })).toHaveProperty(
+      "disabled",
+      true,
+    );
   }
   await act(async () => pending.resolve(f.atRevision(2)));
+  expect(screen.getByRole("table", { name: labels.managementTitle })).toBe(table);
+  expect(screen.getByTestId("material-lifecycle")).toBe(editor);
+  expect(management.listSpackMaterialManagement).toHaveBeenCalledTimes(2);
   expect(lifecycle.changeSpackMaterialLifecycle).toHaveBeenCalledTimes(1);
   expect(materials.getSpackMaterial).not.toHaveBeenCalled();
+  expect(
+    diagnostics.mock.calls.filter(([message]) =>
+      String(message).includes("Encountered two children with the same key"),
+    ),
+  ).toEqual([]);
 });
 
 test("invalidation aborts a pending management page and ignores its late result", async () => {

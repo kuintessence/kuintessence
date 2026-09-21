@@ -30,6 +30,7 @@ const TABLES = [
   "spack_material_rollouts",
   "spack_material_binding_retirements",
   "spack_material_lifecycle_events",
+  "spack_material_visibility_events",
 ] as const;
 const OPERATOR_ID = randomUUID();
 const AGENT_ID = `rollout-agent-${randomUUID()}`;
@@ -307,6 +308,106 @@ describe("SpackMaterialRollout (isolated real PG)", () => {
     const unexpectedEpoch = new SpackMaterialReferences(peerDb, randomUUID());
     await expectError(unexpectedEpoch.registerBindings({}), REFERENCE_ERROR);
     await expectError(unexpectedEpoch.acquireOperation(input), REFERENCE_ERROR);
+  });
+
+  test("policy activation is one-way across pause, reconcile, retirement and ordinary activation", async () => {
+    const release = binding();
+    const merged = await reconcile(await pause(), [{ "hello@2.12.1": release }]);
+    const enabled = await rollout.execute({
+      ...activation(merged),
+      action: "activate-policy",
+    });
+    expect(enabled).toMatchObject({ phase: "policy-ready", action: "activate-policy" });
+    await rollout.assertRuntime(epoch(enabled));
+    await expectError(rollout.assertRuntime());
+    const paused = await pause(enabled.revision);
+    expect(paused.phase).toBe("policy-paused");
+    expect(paused.epoch).not.toBe(enabled.epoch);
+    await expectError(rollout.assertRuntime(epoch(enabled)));
+    await expectError(rollout.assertRuntime(epoch(paused)));
+    const reconciled = await reconcile(paused);
+    const retired = await rollout.execute({
+      action: "retire",
+      operatorId: OPERATOR_ID,
+      expectedRevision: reconciled.revision,
+      epoch: reconciled.epoch,
+      inventoryDigest: reconciled.inventoryDigest,
+      bindings: [{ "hello@2.12.1": release }],
+      reason: "Remove old test binding",
+      evidence: { ...EVIDENCE, bindingConfigurationsRemoved: true },
+    });
+    expect(retired.phase).toBe("policy-paused");
+    const next = await rollout.execute(activation(await reconcile(retired)));
+    expect(next).toMatchObject({ phase: "policy-ready", action: "activate" });
+    await rollout.assertRuntime(epoch(next));
+    const rows = await journal();
+    expect(rows.slice(2).every((row) => row.phase.startsWith("policy-"))).toBe(true);
+    // The previous runtime parser accepts exactly paused/ready, so both new phases fence it.
+    expect(rows.slice(2).every((row) => !["paused", "ready"].includes(row.phase))).toBe(true);
+  });
+
+  test("policy activation requires migrated storage and preserves CAS on missing storage", async () => {
+    const reconciled = await reconcile(await pause());
+    await db.execute(sql`
+      alter table ${sql.identifier(SCHEMA)}.spack_material_visibility_events
+      rename to visibility_events_hidden
+    `);
+    try {
+      await expectError(rollout.execute({ ...activation(reconciled), action: "activate-policy" }));
+      expect(await journal()).toHaveLength(2);
+    } finally {
+      await db.execute(sql`
+        alter table ${sql.identifier(SCHEMA)}.visibility_events_hidden
+        rename to spack_material_visibility_events
+      `);
+    }
+    const enabled = await rollout.execute({
+      ...activation(reconciled),
+      action: "activate-policy",
+    });
+    expect(enabled).toMatchObject({ revision: 3, phase: "policy-ready" });
+  });
+
+  test.each([
+    "queued",
+    "running",
+    "orphan",
+  ] as const)("policy activation cannot bypass the %s installation inventory guard", async (kind) => {
+    const input = await operation();
+    await references.acquireOperation(input);
+    if (kind === "orphan") {
+      await db.delete(softwareOperations).where(eq(softwareOperations.id, input.operationId));
+    } else {
+      await db
+        .update(softwareOperations)
+        .set({ status: kind })
+        .where(eq(softwareOperations.id, input.operationId));
+    }
+    const reconciled = await reconcile(await pause());
+    await expectError(rollout.execute({ ...activation(reconciled), action: "activate-policy" }));
+    expect((await rollout.execute({ action: "inspect" })).phase).toBe("paused");
+    expect(await journal()).toHaveLength(2);
+  });
+
+  test("policy activation requires explicit complete legacy isolation evidence", async () => {
+    const reconciled = await reconcile(await pause());
+    for (const field of Object.keys(EVIDENCE)) {
+      await expectError(
+        rollout.execute({
+          ...activation(reconciled),
+          action: "activate-policy",
+          evidence: { ...EVIDENCE, [field]: false },
+        }),
+      );
+    }
+    await expectError(
+      rollout.execute({
+        ...activation(reconciled),
+        action: "activate-policy",
+        expectedRevision: reconciled.revision - 1,
+      }),
+    );
+    expect(await journal()).toHaveLength(2);
   });
 
   test("retains immutable history, replaced bindings and terminal references across two cycles", async () => {

@@ -30,8 +30,10 @@ TypeScript 已接入固定 site profile digest、持久化安装账本和
 `inspect/pause/reconcile/activate` 对账历史绑定并显式启用统一 epoch；
 不是完整生命周期 API。部署静态测试只覆盖接线、配置和文档；测试与运行态验收
 仅在 GitHub Actions 隔离环境执行，须核对对应提交结果。
+附加[材料可见策略](spack-material-visibility.md)在 policy-ready 阶段提供用户/组织允许列表，
+只收紧 namespace/recipe 权限；安装准备与每次旧 ticket 下载重新检查，不提供跨组织授权。
 受限厂商安装包、许可证授权、buildcache 发布、大规模材料目录索引、
-删除/可见范围变更、Range/恢复上传和垃圾回收尚未接入；15 个工作流的目标 Linux 材料、
+物理删除、Range/恢复上传和垃圾回收尚未接入；15 个工作流的目标 Linux 材料、
 lock、安装及运行验收仍未完成。
 
 ## 存储与边界

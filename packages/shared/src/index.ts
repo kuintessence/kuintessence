@@ -33,6 +33,7 @@ export * from "./spack-material-catalog";
 export * from "./spack-material-import";
 export * from "./spack-material-lifecycle";
 export * from "./spack-material-management";
+export * from "./spack-material-visibility";
 export * from "./spack-materials";
 export * from "./spack-repositories";
 export * from "./spack-upstream";

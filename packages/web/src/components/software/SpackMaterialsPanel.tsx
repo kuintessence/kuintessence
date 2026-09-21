@@ -11,11 +11,11 @@ import { isMobileHighRiskMutationBlocked } from "../../lib/mobile-management-pol
 import { useMeCapabilities } from "../../lib/platform-capabilities";
 import { canWriteRecipeRepository } from "../../lib/recipe-repository-access";
 import { MaterialCatalog } from "./MaterialCatalog";
-import { MaterialLifecycle } from "./MaterialLifecycle";
 import {
   MaterialManagementCatalog,
   type MaterialManagementFilter,
 } from "./MaterialManagementCatalog";
+import { MaterialManagementEditors } from "./MaterialManagementEditors";
 import { MaterialPackImport } from "./MaterialPackImport";
 import { MaterialReleaseLookup } from "./MaterialReleaseLookup";
 import { SpackOnlineImport } from "./SpackOnlineImport";
@@ -127,7 +127,7 @@ function MaterialSession({
   return (
     <>
       <MaterialCatalog
-        key={catalogRevision}
+        key={`catalog:${catalogRevision}`}
         isCurrent={isCurrent}
         onInspect={inspect}
         inspectionDisabled={selectionLocked}
@@ -161,15 +161,15 @@ function MaterialSession({
         />
       ) : null}
       <MaterialReleaseLookup
-        key={`${selection?.revision ?? "lookup"}:${catalogRevision}`}
+        key={`lookup:${selection?.revision ?? "initial"}:${catalogRevision}`}
         initialBinding={
           detailsStale || selection?.mode === "manage" ? undefined : selection?.binding
         }
         isCurrent={isCurrent}
       />
       {canInspectLifecycle ? (
-        <MaterialLifecycle
-          key={selection?.revision ?? "lifecycle"}
+        <MaterialManagementEditors
+          key={`editors:${selection?.revision ?? "initial"}`}
           initialBinding={selection?.binding}
           isCurrent={isCurrent}
           canWriteRepository={writable}

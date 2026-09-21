@@ -2,6 +2,7 @@ import {
   createPgDb,
   SpackMaterialLifecycle,
   SpackMaterialRollout,
+  SpackMaterialVisibility,
   userOrgMemberships,
   users,
 } from "@kuintessence/db";
@@ -74,6 +75,7 @@ const materialStore =
         },
         { assertRuntime: () => rollout.assertRuntime(config.SPACK_MATERIAL_EPOCH) },
         new SpackMaterialLifecycle(db, config.SPACK_MATERIAL_EPOCH),
+        new SpackMaterialVisibility(db, config.SPACK_MATERIAL_EPOCH),
       )
     : undefined;
 const upstreamImporter =
