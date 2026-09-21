@@ -7,6 +7,11 @@ on:
     branches: [main]
   workflow_dispatch:
     inputs:
+      generate_db_migrations:
+        description: "生成数据库 migration artifact，供审阅后带回仓库"
+        required: true
+        type: boolean
+        default: false
       run_runtime_checks:
         description: "运行完整检查：生成代码、Helm 测试、数据库和容器测试"
         required: true
@@ -21,6 +26,35 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  generate-db-migrations:
+    name: Generate database migrations
+    if: github.event_name == 'workflow_dispatch' && inputs.generate_db_migrations == true
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+
+      - name: Install dependencies without lifecycle scripts
+        run: bun install --frozen-lockfile --ignore-scripts
+
+      - name: Generate database migrations
+        run: bun run db:generate
+
+      - name: Upload database migrations for review
+        uses: actions/upload-artifact@v4
+        with:
+          name: pg-migrations-${{ github.sha }}
+          path: packages/db/migrations/
+          retention-days: 7
+          if-no-files-found: error
+
   static-checks:
     name: Static checks
     runs-on: ubuntu-latest

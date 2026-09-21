@@ -4,6 +4,7 @@ import { posix as posixPath } from "node:path";
 import {
   createPgDb,
   type PgDb,
+  SpackMaterialReferences,
   userOrgMemberships,
   users,
   workflowTemplates,
@@ -365,10 +366,12 @@ const spackMaterialDelivery =
         registryJwtAudience: config.SPACK_REGISTRY_JWT_AUDIENCE,
         ticketSecret: config.SPACK_MATERIAL_TICKET_SECRET,
         bindings: config.SPACK_MATERIAL_RELEASES,
+        references: new SpackMaterialReferences(db),
         access: createSpackDeliveryAccess(db, authzService),
         dispatcher,
       })
     : undefined;
+await spackMaterialDelivery?.initialize();
 const softwareOperations = new SoftwareOperationService(
   db,
   dispatcher,

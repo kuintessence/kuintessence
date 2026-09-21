@@ -1,0 +1,64 @@
+import { sql } from "drizzle-orm";
+import { check, index, pgTable, timestamp, uniqueIndex, uuid, varchar } from "drizzle-orm/pg-core";
+
+/** Append-only union of all Server configurations, including replaced bindings. */
+export const spackMaterialBindings = pgTable(
+  "spack_material_bindings",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    spec: varchar("spec", { length: 500 }).notNull(),
+    repositoryId: varchar("repository_id", { length: 64 }).notNull(),
+    manifestDigest: varchar("manifest_digest", { length: 71 }).notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => ({
+    bindingIdx: uniqueIndex("spack_material_bindings_binding_idx").on(
+      t.spec,
+      t.repositoryId,
+      t.manifestDigest,
+    ),
+    releaseIdx: index("spack_material_bindings_release_idx").on(t.repositoryId, t.manifestDigest),
+    specCheck: check("spack_material_bindings_spec_check", sql`length(trim(${t.spec})) > 0`),
+    repositoryCheck: check(
+      "spack_material_bindings_repository_check",
+      sql`${t.repositoryId} ~ '^[a-f0-9]{64}$'`,
+    ),
+    digestCheck: check(
+      "spack_material_bindings_digest_check",
+      sql`${t.manifestDigest} ~ '^sha256:[a-f0-9]{64}$'`,
+    ),
+  }),
+);
+
+/** Immutable via the reference API; never cascade away orphan protection. */
+export const spackMaterialOperationReferences = pgTable(
+  "spack_material_operation_references",
+  {
+    // No operation, agent or requester FK: deleted parents must leave protective references.
+    operationId: uuid("operation_id").primaryKey(),
+    agentId: varchar("agent_id", { length: 255 }).notNull(),
+    requestedBy: varchar("requested_by", { length: 255 }).notNull(),
+    spec: varchar("spec", { length: 500 }).notNull(),
+    repositoryId: varchar("repository_id", { length: 64 }).notNull(),
+    manifestDigest: varchar("manifest_digest", { length: 71 }).notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => ({
+    releaseIdx: index("spack_material_operation_references_release_idx").on(
+      t.repositoryId,
+      t.manifestDigest,
+    ),
+    specCheck: check(
+      "spack_material_operation_references_spec_check",
+      sql`length(trim(${t.spec})) > 0`,
+    ),
+    repositoryCheck: check(
+      "spack_material_operation_references_repository_check",
+      sql`${t.repositoryId} ~ '^[a-f0-9]{64}$'`,
+    ),
+    digestCheck: check(
+      "spack_material_operation_references_digest_check",
+      sql`${t.manifestDigest} ~ '^sha256:[a-f0-9]{64}$'`,
+    ),
+  }),
+);

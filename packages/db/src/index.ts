@@ -3,5 +3,7 @@ export { createPgDb, type PgDb } from "./pg/index";
 export * from "./pg/migrate";
 export * from "./pg/schema";
 export * from "./pg/schema-metering";
+export * from "./pg/schema-spack-materials";
+export * from "./pg/spack-material-references";
 export { createSqliteDb, runSqliteMigrations, type SqliteDb } from "./sqlite/index";
 export * from "./sqlite/schema";

@@ -63,6 +63,30 @@ Compose、scheduler、preview 的材料目录放在原 Registry 数据卷内；A
 Registry 运行时不得外部改写、移动、替换、删除或恢复材料目录，先停止服务再做文件级维护。
 停止 Registry 后可以清理遗留 `staging/`；不要手动删除 receipt 或被 release 引用的 blob。
 
+### 持久化引用账本
+
+Server 在启用材料下载时，启动阶段先将 `SPACK_MATERIAL_RELEASES` 全量登记到
+共用 PostgreSQL 的 `spack_material_bindings`。升级前必须完成数据库迁移；
+登记失败时 Server 不继续启动，不把数据库故障当作空绑定配置。
+每次安装在验证当前用户权限、Agent 身份和 manifest 后，先将精确
+`operationId → repositoryId + manifestDigest` 写入 `spack_material_operation_references`，
+然后才签发材料票据。下载也重新核验并登记该固定引用，失败时拒绝下载，不回退上游。
+登记流程不修改 recipe Git、不可变 manifest、源码内容或 Agent 网络路径。
+
+配置绑定采用追加语义：重复启动幂等，修改或移除配置不会自动删除旧绑定，
+多个配置版本保留并集。任务引用也不因进程退出、票据过期或心跳缺失自动清理；
+同一 operation 不允许换到另一个 release。只有数据库中明确为
+`succeeded`、`failed` 或 `rejected` 的任务，才从活动任务计数中排除；
+记录仍然保留。任务记录缺失时单独计为孤儿引用，不能当作无引用。
+绑定登记与任务引用登记共用 PostgreSQL 事务锁，为后续生命周期写入提供一致的锁边界。
+
+**这只是引用基础设施，不是材料下架功能。** 当前未开放下架、恢复、权限变更、
+绑定退役或物理回收接口。引用计数是诊断快照，计数为零不证明所有旧 Server、
+旧配置或升级前安装任务都已登记，也不能用作先查询再下架的授权依据。
+后续开放生命周期操作前，仍须完成停机/排空、旧引用对账和启用屏障，并将
+引用检查与状态变更放在同一事务内。不要手动清表、删除绑定或直接改材料卷；
+数据库与 Git/material 卷须一起备份和恢复。
+
 ## 初始化与本地批量导入
 
 Registry 可通过 `SPACK_MATERIAL_BOOTSTRAP_MANIFEST` 读取管理员准备的 JSON 文件包。
@@ -624,6 +648,8 @@ Agent 的软件请求从执行到 inventory 发布串行处理，避免较旧成
 
 材料链路单元测试使用 Hono 内存请求、临时目录、模拟 Agent channel 与材料 fixture，
 不依赖容器、真实 Server listener、数据库服务、Spack 安装或集群作业。
+引用账本另有真实 PostgreSQL 集成测试，验证重启/并发登记、不可变任务绑定、
+终态计数和孤儿引用；它不属于上述纯内存材料测试。
 source audit 测试使用模拟 Spack 模块、归档 fixture、模拟 runtime metadata 和无害子进程，
 不能验证真实 Spack Python、Apptainer 或 SIF。Linux namespace/cgroup/镜像配置需站点联调；
 通过单元测试不代表 runtime 已在真实集群验收。

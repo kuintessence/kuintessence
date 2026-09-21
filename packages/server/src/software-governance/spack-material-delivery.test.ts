@@ -4,7 +4,11 @@ import { AppError, type SpackMaterialManifest } from "@kuintessence/shared";
 import { Hono } from "hono";
 import { decodeJwt, SignJWT } from "jose";
 import { createAgentSpackMaterialRoutes } from "../routes/agent-spack-materials";
-import { SpackMaterialDelivery, type SpackOperationAccess } from "./spack-material-delivery";
+import {
+  SpackMaterialDelivery,
+  type SpackMaterialReferencePort,
+  type SpackOperationAccess,
+} from "./spack-material-delivery";
 
 const operationId = "11111111-1111-4111-8111-111111111111";
 const userId = "22222222-2222-4222-8222-222222222222";
@@ -50,6 +54,23 @@ function fixture(repository = "org/provider-a/sources", downloadLifetimeMs?: num
   let blobBody: Uint8Array = blobBytes;
   let upstreamStatus = 200;
   let stallCancellation = false;
+  let referenceFailure = false;
+  let registrationFailure = false;
+  const referenceEvents: string[] = [];
+  const registeredBindings: Parameters<SpackMaterialReferencePort["registerBindings"]>[0][] = [];
+  const operationReferences: Parameters<SpackMaterialReferencePort["acquireOperation"]>[0][] = [];
+  const references: SpackMaterialReferencePort = {
+    async registerBindings(bindings) {
+      referenceEvents.push("register");
+      if (registrationFailure) throw new Error("private database connection details");
+      registeredBindings.push(structuredClone(bindings));
+    },
+    async acquireOperation(input) {
+      referenceEvents.push("acquire");
+      if (referenceFailure) throw new Error("private database connection details");
+      operationReferences.push(input);
+    },
+  };
   const calls: { url: string; init?: RequestInit }[] = [];
   const channel = {
     push() {},
@@ -64,6 +85,7 @@ function fixture(repository = "org/provider-a/sources", downloadLifetimeMs?: num
     ticketSecret: ticketKey,
     downloadLifetimeMs,
     bindings,
+    references,
     access: {
       operation: async () => access,
       certificate: async () => certificateValid,
@@ -71,6 +93,7 @@ function fixture(repository = "org/provider-a/sources", downloadLifetimeMs?: num
     dispatcher: { getChannel: () => channel },
     fetch: Object.assign(
       async (url: string | URL | Request, init?: RequestInit) => {
+        referenceEvents.push("fetch");
         calls.push({ url: String(url), init });
         return new Response(
           stallCancellation
@@ -91,7 +114,7 @@ function fixture(repository = "org/provider-a/sources", downloadLifetimeMs?: num
   const app = new Hono();
   app.onError((error, c) => {
     if (error instanceof AppError) {
-      return c.json(error.toJSON(), error.statusCode as 400 | 401 | 403 | 404 | 429 | 502);
+      return c.json(error.toJSON(), error.statusCode as 400 | 401 | 403 | 404 | 429 | 502 | 503);
     }
     return c.json({ error: "internal" }, 500);
   });
@@ -112,6 +135,15 @@ function fixture(repository = "org/provider-a/sources", downloadLifetimeMs?: num
     binding,
     channel,
     bindings,
+    referenceEvents,
+    registeredBindings,
+    operationReferences,
+    setReferenceFailure(value: boolean) {
+      referenceFailure = value;
+    },
+    setRegistrationFailure(value: boolean) {
+      registrationFailure = value;
+    },
     setAccess(value: SpackOperationAccess | null) {
       access = value;
     },
@@ -134,6 +166,70 @@ function fixture(repository = "org/provider-a/sources", downloadLifetimeMs?: num
 }
 
 describe("Server Spack material delivery", () => {
+  test("registers configuration before delivery and pins the operation before issuing a ticket", async () => {
+    const f = fixture();
+    await f.delivery.initialize();
+    expect(f.referenceEvents).toEqual(["register"]);
+    expect(f.registeredBindings).toEqual([{ "zlib@1.3.1": f.binding }]);
+    await f.prepare();
+    expect(f.referenceEvents).toEqual(["register", "fetch", "acquire"]);
+    expect(f.operationReferences).toEqual([
+      {
+        ...f.binding,
+        operationId,
+        agentId: "agent-a",
+        requestedBy: userId,
+        spec: "zlib@1.3.1",
+      },
+    ]);
+  });
+
+  test("concurrent initialization shares one configuration registration", async () => {
+    const f = fixture();
+    await Promise.all([f.delivery.initialize(), f.delivery.initialize()]);
+    expect(f.registeredBindings).toHaveLength(1);
+  });
+
+  test("failed configuration registration denies preparation without exposing database details", async () => {
+    const f = fixture();
+    f.setRegistrationFailure(true);
+    await expect(f.prepare()).rejects.toThrow("reference registry is unavailable");
+    expect(f.calls).toHaveLength(0);
+    expect(f.operationReferences).toHaveLength(0);
+    f.setRegistrationFailure(false);
+    expect((await f.prepare()).spackMaterialTicket).toBeTruthy();
+  });
+
+  test("a failed operation reference prevents ticket issue and download", async () => {
+    const f = fixture();
+    f.setReferenceFailure(true);
+    await expect(f.prepare()).rejects.toThrow("reference registry is unavailable");
+    f.setReferenceFailure(false);
+    const ticket = await f.prepare();
+    f.setReferenceFailure(true);
+    const callsBeforeDownload = f.calls.length;
+    await expect(f.delivery.download(operationId, ticket.spackMaterialTicket)).rejects.toThrow(
+      "reference registry is unavailable",
+    );
+    expect(f.calls).toHaveLength(callsBeforeDownload);
+    const response = await f.app.request(`/api/agent/spack/operations/${operationId}/manifest`, {
+      headers: { Authorization: `Bearer ${ticket.spackMaterialTicket}` },
+    });
+    expect(response.status).toBe(503);
+    const body = await response.text();
+    expect(body).toContain("reference registry is unavailable");
+    expect(body).not.toContain("private database");
+  });
+
+  test("download retains the ticket binding in its durable reference after configuration changes", async () => {
+    const f = fixture();
+    const ticket = await f.prepare();
+    f.bindings["zlib@1.3.1"] = { ...f.binding, manifestDigest: hash("replacement") };
+    await f.delivery.download(operationId, ticket.spackMaterialTicket);
+    expect(f.operationReferences.at(-1)?.manifestDigest).toBe(f.binding.manifestDigest);
+    expect(f.referenceEvents.slice(-2)).toEqual(["acquire", "fetch"]);
+  });
+
   test("pins exact manifest and keeps Registry credentials and URLs behind Server", async () => {
     const f = fixture();
     const ticket = await f.prepare();

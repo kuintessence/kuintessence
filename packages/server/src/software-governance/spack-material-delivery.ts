@@ -53,6 +53,11 @@ export interface SpackInstallTicket {
   spackManifestDigest: string;
 }
 
+export interface SpackMaterialReferencePort {
+  registerBindings(bindings: Record<string, SpackMaterialBinding>): Promise<void>;
+  acquireOperation(input: SpackInstallPreparation & SpackMaterialBinding): Promise<void>;
+}
+
 export interface SpackMaterialDeliveryOptions {
   registryUrl: string;
   allowInsecureRegistryHttp?: boolean;
@@ -61,6 +66,7 @@ export interface SpackMaterialDeliveryOptions {
   registryJwtAudience?: string;
   ticketSecret: string;
   bindings: Record<string, SpackMaterialBinding>;
+  references: SpackMaterialReferencePort;
   access: SpackDeliveryAccess;
   dispatcher: Pick<AgentDispatcher, "getChannel">;
   fetch?: typeof fetch;
@@ -73,6 +79,7 @@ export class SpackMaterialDelivery {
   private readonly registryKey: Uint8Array;
   private readonly registryUrl: string;
   private activeDownloads = 0;
+  private initialization?: Promise<void>;
 
   constructor(private readonly options: SpackMaterialDeliveryOptions) {
     const url = new URL(options.registryUrl);
@@ -97,6 +104,16 @@ export class SpackMaterialDelivery {
     this.fetcher = options.fetch ?? fetch;
     this.key = new TextEncoder().encode(options.ticketSecret);
     this.registryKey = new TextEncoder().encode(options.registryJwtSecret);
+  }
+
+  async initialize(): Promise<void> {
+    this.initialization ??= this.options.references
+      .registerBindings(this.options.bindings)
+      .catch(() => {
+        this.initialization = undefined;
+        throw referenceFailure();
+      });
+    await this.initialization;
   }
 
   async prepareOperation(input: SpackInstallPreparation): Promise<SpackInstallTicket> {
@@ -130,7 +147,9 @@ export class SpackMaterialDelivery {
       certificateFingerprint: channel.verifiedCertFingerprint,
     });
     await this.authorize(claims);
+    await this.initialize();
     await this.manifest(claims);
+    await this.acquireReference(claims);
     const ticket = await new SignJWT({ material: claims })
       .setProtectedHeader({ alg: "HS256", typ: "JWT" })
       .setIssuer(ISSUER)
@@ -162,6 +181,8 @@ export class SpackMaterialDelivery {
       throw new AppError(ErrorCode.UNAUTHORIZED, "Invalid or expired Spack material ticket", 401);
     }
     await this.authorize(claims);
+    await this.initialize();
+    await this.acquireReference(claims);
     if (this.activeDownloads >= 8) {
       throw new AppError(ErrorCode.RATE_LIMITED, "Spack delivery is busy; retry later", 429);
     }
@@ -204,6 +225,21 @@ export class SpackMaterialDelivery {
       });
     } finally {
       if (!streaming) this.activeDownloads--;
+    }
+  }
+
+  private async acquireReference(claims: MaterialClaims): Promise<void> {
+    try {
+      await this.options.references.acquireOperation({
+        operationId: claims.operationId,
+        agentId: claims.agentId,
+        requestedBy: claims.requestedBy,
+        spec: claims.spec,
+        repositoryId: claims.repositoryId,
+        manifestDigest: claims.manifestDigest,
+      });
+    } catch {
+      throw referenceFailure();
     }
   }
 
@@ -302,6 +338,14 @@ function upstreamFailure() {
     ErrorCode.INTERNAL_ERROR,
     "Spack Registry material is unavailable or invalid",
     502,
+  );
+}
+
+function referenceFailure() {
+  return new AppError(
+    ErrorCode.INTERNAL_ERROR,
+    "Spack material reference registry is unavailable or the operation reference is invalid",
+    503,
   );
 }
 

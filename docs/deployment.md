@@ -166,6 +166,14 @@ protobuf 生成、测试、构建或容器。
 完整 TypeScript 检查依赖生成的 protobuf，因此放在手动完整检查中。
 自动静态 job 的结果仅覆盖上述 Biome 和文档检查。
 
+仅允许在 Actions 执行生成器时，可手动选择目标分支并勾选
+`generate_db_migrations`（默认关闭）。独立 job 运行 `db:generate`，
+将完整 `packages/db/migrations/`（含 `meta`）作为
+`pg-migrations-<commit SHA>` artifact 保存 7 天，不连接生产数据库、不执行迁移，
+也不自动 commit 或回推。下载后先比对原有迁移，确认无非预期删除/重建，再将生成产物
+原样纳入对应分支；完整 CI 应在包含该 migration 的最终提交上另行运行。
+不要手改生成的 SQL、snapshot 或 journal，也不要把 artifact 当成迁移已应用的证明。
+
 | 工作流 | 触发与范围 |
 |---|---|
 | `CI` | 自动静态检查；手动勾选 `run_runtime_checks` 才执行 protobuf 生成、完整类型检查、Helm 测试、数据库与全栈容器测试 |

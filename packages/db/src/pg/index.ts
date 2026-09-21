@@ -2,8 +2,9 @@ import { drizzle } from "drizzle-orm/postgres-js";
 import postgres from "postgres";
 import * as schema from "./schema";
 import * as schemaMetering from "./schema-metering";
+import * as schemaSpackMaterials from "./schema-spack-materials";
 
-const fullSchema = { ...schema, ...schemaMetering };
+const fullSchema = { ...schema, ...schemaMetering, ...schemaSpackMaterials };
 
 export type PgConnectionOptions = Pick<
   postgres.Options<Record<string, postgres.PostgresType>>,
