@@ -1,7 +1,11 @@
 import type { SpackMaterialBinding } from "@kuintessence/shared/browser";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { MaterialLifecycle } from "../../src/components/software/MaterialLifecycle";
+import {
+  MaterialManagementCatalog,
+  type MaterialManagementFilter,
+} from "../../src/components/software/MaterialManagementCatalog";
 import { setLang } from "../../src/lib/i18n";
 import {
   isMobileHighRiskMutationBlocked,
@@ -17,18 +21,43 @@ const canWriteRepository = (name: string) =>
 
 function LifecycleFixture({ binding }: { binding: SpackMaterialBinding }) {
   const [invalidations, setInvalidations] = useState(0);
+  const [selection, setSelection] = useState({ binding, revision: 0 });
+  const [locked, setLocked] = useState(false);
+  const selectionGuard = useRef(false);
+  const [filter, setFilter] = useState<MaterialManagementFilter>({
+    repository: "",
+    state: "all",
+    limit: 10,
+  });
   return (
     <main
       className="mx-auto min-w-0 max-w-6xl p-4"
       data-testid="lifecycle-fixture"
       data-mobile-writes-blocked={isMobileHighRiskMutationBlocked(mutationPath)}
     >
+      <MaterialManagementCatalog
+        key={`management:${invalidations}`}
+        initialFilter={filter}
+        onFilterChange={setFilter}
+        isCurrent={isCurrent}
+        canInspectRepository={canInspectRepository}
+        inspectionDisabled={locked}
+        onManage={(selected) => {
+          if (selectionGuard.current) return;
+          setSelection((current) => ({ binding: selected, revision: current.revision + 1 }));
+        }}
+      />
       <MaterialLifecycle
-        initialBinding={binding}
+        key={selection.revision}
+        initialBinding={selection.binding}
         isCurrent={isCurrent}
         canWriteRepository={canWriteRepository}
         canInspectRepository={canInspectRepository}
         onInvalidate={() => setInvalidations((count) => count + 1)}
+        onSelectionLockChange={(value) => {
+          selectionGuard.current = value;
+          setLocked(value);
+        }}
       />
       <output data-testid="invalidation-count" aria-label="Invalidation count">
         {invalidations}

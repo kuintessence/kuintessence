@@ -2,7 +2,10 @@ import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdirSync, readdirSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import type { SpackMaterialLifecycleView } from "@kuintessence/shared/browser";
+import type {
+  SpackMaterialLifecycleView,
+  SpackMaterialManagementCatalog,
+} from "@kuintessence/shared/browser";
 import { expect, type Page, test } from "patchright/test";
 import materials from "../src/locales/materials.en.json" with { type: "json" };
 
@@ -71,12 +74,22 @@ test.beforeAll(() => {
 type Receipt = { status: number; body: unknown };
 type Call = { method: string; body: string | null; authorization: string | undefined };
 
-async function mount(page: Page, reads: SpackMaterialLifecycleView[], writes: Receipt[] = []) {
+async function mount(
+  page: Page,
+  reads: SpackMaterialLifecycleView[],
+  writes: Receipt[] = [],
+  managementReads: Receipt[] = [],
+) {
   const calls: Call[] = [];
+  const managementCalls: Array<{
+    query: Record<string, string>;
+    authorization: string | undefined;
+  }> = [];
   const unexpected: string[] = [];
   const errors: string[] = [];
   let readIndex = 0;
   let writeIndex = 0;
+  let managementIndex = 0;
   page.on("pageerror", (error) => errors.push(error.message));
   await page.addInitScript(() => {
     localStorage.setItem("kq.lang", "en");
@@ -85,6 +98,28 @@ async function mount(page: Page, reads: SpackMaterialLifecycleView[], writes: Re
   await page.route("**/*", async (route) => {
     const request = route.request();
     const url = new URL(request.url());
+    if (
+      url.origin === origin &&
+      url.pathname === "/software/api/spack/material-repositories/management" &&
+      request.method() === "GET"
+    ) {
+      managementCalls.push({
+        query: Object.fromEntries(url.searchParams),
+        authorization: request.headers().authorization,
+      });
+      const receipt = managementReads[managementIndex++];
+      if (!receipt) {
+        unexpected.push(`${request.method()} ${url.href}`);
+        await route.abort("blockedbyclient");
+        return;
+      }
+      await route.fulfill({
+        status: receipt.status,
+        contentType: "application/json; charset=utf-8",
+        body: JSON.stringify(receipt.body),
+      });
+      return;
+    }
     if (url.href === `${origin}${apiPath}`) {
       calls.push({
         method: request.method(),
@@ -145,7 +180,8 @@ async function mount(page: Page, reads: SpackMaterialLifecycleView[], writes: Re
   await expect(page.getByLabel(labels.lifecycleRepositoryId)).toHaveValue(binding.repositoryId);
   await expect(page.getByLabel(labels.lifecycleManifestDigest)).toHaveValue(binding.manifestDigest);
   expect(calls).toHaveLength(0);
-  return { calls, unexpected, errors };
+  expect(managementCalls).toHaveLength(0);
+  return { calls, managementCalls, unexpected, errors };
 }
 
 async function inspect(page: Page) {
@@ -370,4 +406,147 @@ test("uncertain POST 503 requires explicit GET reconciliation without repeating 
   checkRequests(harness, [{ method: "GET", body: null }, posted, { method: "GET", body: null }]);
   await checkGeometry(page, 1280);
   await page.screenshot({ path: info.outputPath("desktop-reconciled.png"), fullPage: true });
+});
+
+const managementCursor = `v1.${"z".repeat(64)}`;
+function managementCatalog(): SpackMaterialManagementCatalog {
+  return {
+    releases: [
+      {
+        ...binding,
+        repository,
+        spec: "source@1.0",
+        target: "linux-ubuntu24.04-x86_64",
+        spackVersion: "1.0.0",
+        redistribution: "unrestricted",
+        sourceCount: 1,
+        totalBytes: 32,
+        state: "withdrawn",
+        revision: 1,
+      },
+    ],
+    nextCursor: null,
+  };
+}
+
+async function searchManagement(page: Page) {
+  await page.getByLabel(labels.managementRepository, { exact: true }).fill(repository);
+  await page.getByLabel(labels.managementState, { exact: true }).selectOption("withdrawn");
+  await page.getByLabel(labels.managementPageSize, { exact: true }).selectOption("1");
+  await page.getByRole("button", { name: labels.managementSearch, exact: true }).click();
+}
+
+for (const width of [1280, 320]) {
+  test(`management ${width}px crosses an empty cursor page and selects withdrawn lifecycle only`, async ({
+    page,
+  }, info) => {
+    await page.setViewportSize({ width, height: 900 });
+    const empty = { status: 200, body: { releases: [], nextCursor: managementCursor } };
+    const found = { status: 200, body: managementCatalog() };
+    const harness = await mount(page, [view(1)], [], [empty, found, empty, found]);
+    await expect(
+      page.getByRole("button", { name: labels.managementSearch, exact: true }),
+    ).toBeDisabled();
+    await searchManagement(page);
+    await expect(page.getByText(labels.managementEmpty, { exact: true })).toBeVisible();
+    const next = page.getByRole("button", { name: labels.managementNext, exact: true });
+    const previous = page.getByRole("button", { name: labels.managementPrevious, exact: true });
+    await expect(previous).toBeDisabled();
+    await expect(next).toBeEnabled();
+    await next.click();
+    const table = page.getByRole("table", { name: labels.managementTitle, exact: true });
+    await expect(table.locator("tbody tr")).toHaveCount(1);
+    await expect(table).toContainText(labels.lifecycleState.withdrawn);
+    await expect(next).toBeDisabled();
+    await previous.click();
+    await expect(page.getByText(labels.managementEmpty, { exact: true })).toBeVisible();
+    await next.click();
+    await expect(table).toBeVisible();
+    const expected = { repository, state: "withdrawn", limit: "1" };
+    expect(harness.managementCalls).toEqual(
+      [
+        expected,
+        { ...expected, after: managementCursor },
+        expected,
+        { ...expected, after: managementCursor },
+      ].map((query) => ({ query, authorization: "Bearer lifecycle-fixture-token" })),
+    );
+    expect(harness.calls).toHaveLength(0);
+    await page.getByLabel(labels.lifecycleManifestDigest, { exact: true }).fill(
+      `sha256:${"c".repeat(64)}`,
+    );
+    await table.getByRole("button", { name: labels.managementManage, exact: true }).click();
+    await expect(page.getByLabel(labels.lifecycleManifestDigest, { exact: true })).toHaveValue(
+      binding.manifestDigest,
+    );
+    expect(harness.calls).toHaveLength(0);
+    await inspect(page);
+    await expect(page.getByRole("table", { name: labels.lifecycleHistory })).toBeVisible();
+    const restore = page.getByRole("button", {
+      name: labels.lifecycleAction.restore,
+      exact: true,
+    });
+    await expect(restore).toBeDisabled();
+    checkRequests(harness, [{ method: "GET", body: null }]);
+    const geometry = await page.getByTestId("material-management-catalog").evaluate((element) => {
+      const controls = Array.from(element.querySelectorAll("input, select, button"))
+        .filter((control) => !control.closest("table"))
+        .map((control) => control.getBoundingClientRect());
+      return {
+        pageWidth: Math.max(document.documentElement.scrollWidth, document.body.scrollWidth),
+        controlOverflow: controls.some((rect) => rect.left < 0 || rect.right > window.innerWidth),
+        overlaps: controls.some((a, index) =>
+          controls.slice(index + 1).some(
+            (b) =>
+              Math.min(a.right, b.right) - Math.max(a.left, b.left) > 1 &&
+              Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top) > 1,
+          ),
+        ),
+        overflowingCells: Array.from(element.querySelectorAll("th, td")).filter(
+          (cell) => cell.scrollWidth > cell.clientWidth + 1,
+        ).length,
+      };
+    });
+    expect(geometry.pageWidth).toBeLessThanOrEqual(width);
+    expect(geometry.controlOverflow).toBe(false);
+    expect(geometry.overlaps).toBe(false);
+    expect(geometry.overflowingCells).toBe(0);
+    if (width === 320) {
+      expect(
+        await table.locator("..").evaluate(
+          (element) =>
+            getComputedStyle(element).overflowX === "auto" &&
+            element.scrollWidth > element.clientWidth,
+        ),
+      ).toBe(true);
+    }
+    await page.screenshot({ path: info.outputPath(`management-${width}.png`), fullPage: true });
+  });
+}
+
+test("expired management cursor clears pages and refresh retries the scoped first page", async ({
+  page,
+}) => {
+  const harness = await mount(page, [], [], [
+    { status: 200, body: { releases: [], nextCursor: managementCursor } },
+    { status: 422, body: { error: { code: "VALIDATION_ERROR", message: "Cursor expired" } } },
+    { status: 200, body: managementCatalog() },
+  ]);
+  await searchManagement(page);
+  await expect(page.getByText(labels.managementEmpty, { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: labels.managementNext, exact: true }).click();
+  const catalog = page.getByTestId("material-management-catalog");
+  await expect(catalog.getByRole("alert")).toBeVisible();
+  await expect(catalog.getByRole("table")).toHaveCount(0);
+  await expect(catalog.getByRole("button", { name: labels.managementPrevious })).toHaveCount(0);
+  await page.getByRole("button", { name: labels.managementRefresh, exact: true }).click();
+  await expect(catalog.getByRole("table")).toBeVisible();
+  await expect(catalog.getByRole("alert")).toHaveCount(0);
+  await expect(catalog.getByRole("button", { name: labels.managementPrevious })).toBeDisabled();
+  expect(harness.managementCalls.map((call) => call.query)).toEqual([
+    { repository, state: "withdrawn", limit: "1" },
+    { repository, state: "withdrawn", limit: "1", after: managementCursor },
+    { repository, state: "withdrawn", limit: "1" },
+  ]);
+  checkRequests(harness, []);
 });

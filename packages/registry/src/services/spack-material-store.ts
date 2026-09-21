@@ -3,6 +3,7 @@ import { isAbsolute, join } from "node:path";
 import {
   type SpackMaterialLifecycle,
   type SpackMaterialLifecycleChange,
+  type SpackMaterialLifecyclePrincipal,
   SpackMaterialLifecycleError,
 } from "@kuintessence/db";
 import {
@@ -19,13 +20,15 @@ import {
   SpackMaterialBlobSchema,
   type SpackMaterialCatalogQuery,
   SpackMaterialDigestSchema,
+  type SpackMaterialManagementQuery,
+  SpackMaterialManagementQuerySchema,
   type SpackMaterialManifest,
   SpackMaterialManifestSchema,
   type SpackMaterialPublish,
   SpackMaterialPublishSchema,
   spackMaterialBlobs,
 } from "@kuintessence/shared";
-import type { z } from "zod";
+import { z } from "zod";
 import {
   checkNamespaceAccess,
   NamespacePermissionError,
@@ -35,6 +38,10 @@ import {
 import { RecipeStoreError } from "./recipe-git";
 import type { RecipeGitStore } from "./recipe-git-store";
 import { SpackMaterialCatalogReader } from "./spack-material-catalog";
+import {
+  SpackMaterialManagementCatalogReader,
+  SpackMaterialManagementLimitError,
+} from "./spack-material-management-catalog";
 import {
   cancelMaterialInput,
   DEFAULT_MATERIAL_TIMEOUTS,
@@ -58,7 +65,9 @@ export interface SpackMaterialRuntimePort {
 export type SpackMaterialLifecyclePort = Pick<
   SpackMaterialLifecycle,
   "assertAvailable" | "inspect" | "transition"
->;
+> &
+  Partial<Pick<SpackMaterialLifecycle, "inspectCatalog">>;
+type ManagementSnapshot = Awaited<ReturnType<RecipeGitStore["getSnapshot"]>>;
 export interface SpackMaterialLimits {
   maxBlobBytes: number;
   totalTimeoutMs: number;
@@ -79,6 +88,7 @@ export class SpackMaterialStore {
   readonly limits: SpackMaterialLimits;
   private readonly blobs: SpackMaterialBlobStore;
   private readonly catalog: SpackMaterialCatalogReader;
+  private readonly managementCatalog: SpackMaterialManagementCatalogReader;
   private uploads = 0;
   private publications = 0;
   private managementReads = 0;
@@ -104,11 +114,125 @@ export class SpackMaterialStore {
     }
     this.blobs = new SpackMaterialBlobStore(root);
     this.catalog = new SpackMaterialCatalogReader(root, this);
+    this.managementCatalog = new SpackMaterialManagementCatalogReader(root);
   }
 
   async list(query: SpackMaterialCatalogQuery, actor: RbacPrincipal, signal?: AbortSignal) {
     await this.assertRuntime();
     return this.catalog.list(query, actor, signal);
+  }
+
+  async listManaged(
+    query: SpackMaterialManagementQuery,
+    subject: string,
+    options: { cursorSecret?: string; publisherRoles?: RegistryRole[]; signal?: AbortSignal },
+  ) {
+    query = parseMaterial(SpackMaterialManagementQuerySchema, query, "management catalog query");
+    const lifecycle = this.lifecycle;
+    if (!lifecycle?.inspectCatalog || !this.recipes.getSnapshot) {
+      throw new SpackMaterialLifecycleError("MATERIAL_LIFECYCLE_UNAVAILABLE");
+    }
+    options.signal?.throwIfAborted();
+    const getSnapshot = this.recipes.getSnapshot.bind(this.recipes);
+    const inspectCatalog = lifecycle.inspectCatalog.bind(lifecycle);
+    const authorizeRepository = (principal: SpackMaterialLifecyclePrincipal) => {
+      const actor = { ...principal, role: RegistryRoleSchema.parse(principal.role) };
+      const namespace = parseNamespace(query.repository);
+      checkNamespaceAccess(actor, namespace, "read", options.publisherRoles);
+      checkNamespaceAccess(actor, namespace, "write", options.publisherRoles);
+      return actor;
+    };
+    await this.assertRuntime();
+    return this.managementCatalog.list(
+      query,
+      {
+        subject,
+        cursorSecret: options.cursorSecret ?? "",
+        authorize: async (checkpoint) => {
+          await inspectCatalog(
+            [],
+            subject,
+            async (principal) => {
+              authorizeRepository(principal);
+              return [];
+            },
+            checkpoint,
+          );
+        },
+        read: async (...args) => {
+          try {
+            return await this.readManifest(...args);
+          } catch (error) {
+            if (error instanceof SyntaxError) {
+              throw new SpackMaterialError(500, "Corrupt material management metadata");
+            }
+            throw error;
+          }
+        },
+        inspect: async (releases, checkpoint) => {
+          // Bound retained immutable snapshot data before acquiring canonical row locks.
+          const snapshots = new Map<string, ManagementSnapshot | null>();
+          for (const { manifest } of releases) {
+            for (const selection of manifest.recipes) {
+              checkpoint();
+              const key = `${selection.repositoryId}/${selection.commit}`;
+              if (snapshots.has(key)) continue;
+              if (snapshots.size >= 32) throw new SpackMaterialManagementLimitError();
+              try {
+                const snapshot = await getSnapshot(
+                  selection.repositoryId,
+                  selection.commit,
+                  checkpoint,
+                );
+                snapshots.set(key, snapshot);
+              } catch (error) {
+                if (error instanceof RecipeStoreError && error.status === 404) {
+                  snapshots.set(key, null);
+                } else if (error instanceof SyntaxError || error instanceof z.ZodError) {
+                  throw new SpackMaterialError(500, "Corrupt material management metadata");
+                } else {
+                  throw error;
+                }
+              }
+            }
+          }
+          checkpoint();
+          return inspectCatalog(
+            releases.map(({ manifest, bytes }) => ({
+              repositoryId: SpackMaterialStore.repositoryId(manifest.repository),
+              manifestDigest: materialDigest(bytes),
+            })),
+            subject,
+            async (principal) => {
+              const actor = authorizeRepository(principal);
+              return releases.map(({ manifest }) => {
+                try {
+                  for (const selection of manifest.recipes) {
+                    const recipe = snapshots.get(`${selection.repositoryId}/${selection.commit}`);
+                    if (!recipe) return false;
+                    authorizeRecipe(manifest.repository, selection, actor, {
+                      repository: recipe.repository,
+                      snapshots: [recipe.snapshot],
+                    });
+                  }
+                  return true;
+                } catch (error) {
+                  if (
+                    error instanceof SpackMaterialError &&
+                    (error.status === 403 || error.status === 404)
+                  ) {
+                    return false;
+                  }
+                  throw error;
+                }
+              });
+            },
+            checkpoint,
+          );
+        },
+      },
+      options.signal,
+    );
   }
 
   static repositoryId(repository: string): string {

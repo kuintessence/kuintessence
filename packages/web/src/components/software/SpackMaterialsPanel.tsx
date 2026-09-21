@@ -12,6 +12,10 @@ import { useMeCapabilities } from "../../lib/platform-capabilities";
 import { canWriteRecipeRepository } from "../../lib/recipe-repository-access";
 import { MaterialCatalog } from "./MaterialCatalog";
 import { MaterialLifecycle } from "./MaterialLifecycle";
+import {
+  MaterialManagementCatalog,
+  type MaterialManagementFilter,
+} from "./MaterialManagementCatalog";
 import { MaterialPackImport } from "./MaterialPackImport";
 import { MaterialReleaseLookup } from "./MaterialReleaseLookup";
 import { SpackOnlineImport } from "./SpackOnlineImport";
@@ -89,7 +93,13 @@ function MaterialSession({
   const [selection, setSelection] = useState<{
     binding: SpackMaterialBinding;
     revision: number;
+    mode: "inspect" | "manage";
   }>();
+  const [managementFilter, setManagementFilter] = useState<MaterialManagementFilter>({
+    repository: "",
+    state: "all",
+    limit: 10,
+  });
   const [catalogRevision, setCatalogRevision] = useState(0);
   const [detailsStale, setDetailsStale] = useState(false);
   const [selectionLocked, setSelectionLocked] = useState(false);
@@ -97,7 +107,21 @@ function MaterialSession({
   const inspect = (binding: SpackMaterialBinding) => {
     if (isCurrent() && !selectionGuard.current) {
       setDetailsStale(false);
-      setSelection((current) => ({ binding, revision: (current?.revision ?? 0) + 1 }));
+      setSelection((current) => ({
+        binding,
+        revision: (current?.revision ?? 0) + 1,
+        mode: "inspect",
+      }));
+    }
+  };
+  const manage = (binding: SpackMaterialBinding) => {
+    if (isCurrent() && canInspectLifecycle && !selectionGuard.current) {
+      setDetailsStale(true);
+      setSelection((current) => ({
+        binding,
+        revision: (current?.revision ?? 0) + 1,
+        mode: "manage",
+      }));
     }
   };
   return (
@@ -108,6 +132,17 @@ function MaterialSession({
         onInspect={inspect}
         inspectionDisabled={selectionLocked}
       />
+      {canInspectLifecycle ? (
+        <MaterialManagementCatalog
+          key={`management:${catalogRevision}`}
+          initialFilter={managementFilter}
+          onFilterChange={setManagementFilter}
+          isCurrent={isCurrent}
+          canInspectRepository={manageable}
+          onManage={manage}
+          inspectionDisabled={selectionLocked}
+        />
+      ) : null}
       {canImport ? (
         <MaterialPackImport
           canWriteRepository={writable}
@@ -127,7 +162,9 @@ function MaterialSession({
       ) : null}
       <MaterialReleaseLookup
         key={`${selection?.revision ?? "lookup"}:${catalogRevision}`}
-        initialBinding={detailsStale ? undefined : selection?.binding}
+        initialBinding={
+          detailsStale || selection?.mode === "manage" ? undefined : selection?.binding
+        }
         isCurrent={isCurrent}
       />
       {canInspectLifecycle ? (

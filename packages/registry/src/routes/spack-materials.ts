@@ -5,6 +5,7 @@ import {
   SpackMaterialCatalogQuerySchema,
   SpackMaterialDigestSchema,
   SpackMaterialLifecycleChangeSchema,
+  SpackMaterialManagementQuerySchema,
   SpackMaterialPublishSchema,
 } from "@kuintessence/shared";
 import { type Context, Hono, type MiddlewareHandler } from "hono";
@@ -21,6 +22,7 @@ import {
 } from "../services/namespace";
 import { RecipeStoreError } from "../services/recipe-git";
 import { SpackMaterialCatalogLimitError } from "../services/spack-material-catalog";
+import { SpackMaterialManagementLimitError } from "../services/spack-material-management-catalog";
 import {
   cancelMaterialInput,
   MATERIAL_METADATA_BYTES,
@@ -94,7 +96,8 @@ export function createSpackMaterialRoutes(
         {
           error: {
             code:
-              error instanceof SpackMaterialCatalogLimitError
+              error instanceof SpackMaterialCatalogLimitError ||
+              error instanceof SpackMaterialManagementLimitError
                 ? "MATERIAL_CATALOG_LIMIT"
                 : ERROR_CODES[error.status],
             message: error.message,
@@ -136,6 +139,35 @@ export function createSpackMaterialRoutes(
       "catalog query",
     );
     return c.json(await getStore().list(input, c.get("principal"), c.req.raw.signal));
+  });
+
+  r.get(`${BASE}/management`, authenticate, async (c) => {
+    c.header("Cache-Control", "private, no-store");
+    const query = c.req.queries();
+    if (
+      Object.keys(query).some((key) => !["repository", "state", "after", "limit"].includes(key)) ||
+      Object.values(query).some((values) => values.length !== 1) ||
+      (query.limit && !/^(?:[1-9]|1[0-9]|20)$/.test(query.limit[0] ?? ""))
+    ) {
+      throw new SpackMaterialError(422, "Invalid management catalog filters");
+    }
+    const input = parseMaterial(
+      SpackMaterialManagementQuerySchema,
+      {
+        repository: query.repository?.[0],
+        ...(query.state ? { state: query.state[0] } : {}),
+        ...(query.after ? { after: query.after[0] } : {}),
+        ...(query.limit ? { limit: Number(query.limit[0]) } : {}),
+      },
+      "management catalog query",
+    );
+    return c.json(
+      await getStore().listManaged(input, c.get("principal").sub, {
+        publisherRoles: opts.publisherRoles,
+        cursorSecret: opts.jwtSecret,
+        signal: c.req.raw.signal,
+      }),
+    );
   });
 
   r.post(`${BASE}/blobs`, authenticate, async (c) => {
