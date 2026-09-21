@@ -43,7 +43,7 @@ const INITIAL: SpackMaterialLifecycleStatus = {
 };
 const WITHDRAW = { action: "withdraw", expectedRevision: 0, reason: "Source needs review" };
 const RESTORE = { action: "restore", expectedRevision: 1, reason: "Source review completed" };
-const METHODS = ["GET", "POST"] as const;
+const METHODS: ("GET" | "POST")[] = ["GET", "POST"];
 
 function releasePath(binding: SpackMaterialBinding): string {
   return `${BASE}/${binding.repositoryId}/releases/${binding.manifestDigest}`;
@@ -192,9 +192,10 @@ describe("material lifecycle authentication and authorization", () => {
     { name: "super admin", actor: SUPER, status: 200 },
   ])("requires namespace read and write for $name", async ({ actor, status }) => {
     const f = await fixture();
-    f.control.canonical = actor;
+    const current = { ...actor, orgIds: [...actor.orgIds] };
+    f.control.canonical = current;
     for (const method of METHODS) {
-      const response = await f.request(method, actor);
+      const response = await f.request(method, current);
       expect(response.headers.get("Cache-Control")).toBe("private, no-store");
       if (status === 403) {
         await expectError(response, 403, "MATERIAL_LIFECYCLE_FORBIDDEN");
@@ -269,10 +270,14 @@ describe("material lifecycle authentication and authorization", () => {
     },
   ])("uses the port's current principal after $name", async ({ canonical, stale, status }) => {
     const f = await fixture();
-    f.control.canonical = canonical;
+    f.control.canonical = { ...canonical, orgIds: [...canonical.orgIds] };
     const app = materialApp(f.store, {
       ...JWT_OPTIONS,
-      resolveCanonicalPrincipal: async () => ({ ...stale, suspended: false }),
+      resolveCanonicalPrincipal: async () => ({
+        ...stale,
+        orgIds: [...stale.orgIds],
+        suspended: false,
+      }),
     });
     for (const method of METHODS) {
       const response = await app.request(f.path, {

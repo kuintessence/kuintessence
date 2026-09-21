@@ -9,7 +9,7 @@ const directories: string[] = [];
 const METADATA = [
   { name: "identity", limit: 4096 },
   { name: "snapshot", limit: 2 * 1024 ** 2 },
-] as const;
+] satisfies { name: "identity" | "snapshot"; limit: number }[];
 
 afterEach(async () => {
   await Promise.all(
