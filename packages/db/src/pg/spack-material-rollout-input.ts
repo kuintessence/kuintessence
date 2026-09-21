@@ -1,4 +1,7 @@
-import type { SpackMaterialRolloutEvidence } from "./schema-spack-materials";
+import type {
+  SpackMaterialRetirementEvidence,
+  SpackMaterialRolloutEvidence,
+} from "./schema-spack-materials";
 
 interface Mutation {
   operatorId: string;
@@ -11,6 +14,13 @@ export type SpackMaterialRolloutCommand =
   | { action: "inspect" }
   | ({ action: "pause" } & Mutation)
   | ({ action: "reconcile"; bindings: unknown[] } & PausedMutation)
+  | ({
+      action: "retire";
+      bindings: unknown[];
+      inventoryDigest: string;
+      reason: string;
+      evidence: SpackMaterialRetirementEvidence;
+    } & PausedMutation)
   | ({
       action: "activate";
       inventoryDigest: string;
@@ -59,7 +69,7 @@ export function parseSpackMaterialRolloutCommand(input: unknown): SpackMaterialR
     }
     return { action: "reconcile", ...mutation, epoch, bindings: [...value.bindings] };
   }
-  if (value.action === "activate") {
+  if (value.action === "activate" || value.action === "retire") {
     exactKeys(value, [
       "action",
       "operatorId",
@@ -67,6 +77,7 @@ export function parseSpackMaterialRolloutCommand(input: unknown): SpackMaterialR
       "epoch",
       "inventoryDigest",
       "evidence",
+      ...(value.action === "retire" ? ["bindings", "reason"] : []),
     ]);
     if (
       typeof value.inventoryDigest !== "string" ||
@@ -76,25 +87,48 @@ export function parseSpackMaterialRolloutCommand(input: unknown): SpackMaterialR
       throw new Error("Invalid rollout inventory digest");
     }
     const evidence = object(value.evidence);
-    exactKeys(evidence, [
+    const evidenceKeys = [
       "legacyProcessesStoppedAndDrained",
       "legacyAccessRevoked",
       "legacyInventoryComplete",
-    ]);
-    if (Object.values(evidence).some((acknowledged) => acknowledged !== true)) {
+      ...(value.action === "retire" ? ["bindingConfigurationsRemoved"] : []),
+    ];
+    exactKeys(evidence, evidenceKeys);
+    if (evidenceKeys.some((key) => evidence[key] !== true)) {
       throw new Error("Missing rollout evidence");
     }
-    return {
-      action: "activate",
+    const confirmed = {
       ...mutation,
       epoch,
       inventoryDigest: value.inventoryDigest,
       evidence: {
-        legacyProcessesStoppedAndDrained: true,
-        legacyAccessRevoked: true,
-        legacyInventoryComplete: true,
+        legacyProcessesStoppedAndDrained: true as const,
+        legacyAccessRevoked: true as const,
+        legacyInventoryComplete: true as const,
       },
     };
+    if (value.action === "retire") {
+      if (
+        !Array.isArray(value.bindings) ||
+        value.bindings.length === 0 ||
+        value.bindings.length > 64 ||
+        typeof value.reason !== "string" ||
+        value.reason.length === 0 ||
+        value.reason.length > 1000 ||
+        value.reason.trim() !== value.reason ||
+        [...value.reason].some((character) => character.charCodeAt(0) < 32 || character === "\x7f")
+      ) {
+        throw new Error("Invalid retirement request");
+      }
+      return {
+        action: "retire",
+        ...confirmed,
+        bindings: [...value.bindings],
+        reason: value.reason,
+        evidence: { ...confirmed.evidence, bindingConfigurationsRemoved: true },
+      };
+    }
+    return { action: "activate", ...confirmed };
   }
   throw new Error("Invalid rollout action");
 }

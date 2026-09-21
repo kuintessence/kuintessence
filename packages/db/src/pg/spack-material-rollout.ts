@@ -3,10 +3,12 @@ import { eq, sql } from "drizzle-orm";
 import type { PgDb } from "./index";
 import { softwareOperations, users } from "./schema";
 import {
+  spackMaterialBindingRetirements,
   spackMaterialBindings,
   spackMaterialOperationReferences,
   spackMaterialRollouts,
 } from "./schema-spack-materials";
+import { retireSpackMaterialBindings } from "./spack-material-binding-retirement";
 import {
   parseSpackMaterialBindings,
   withSpackMaterialLifecycleTransaction,
@@ -39,10 +41,13 @@ export class SpackMaterialRollout {
     try {
       const command = parseSpackMaterialRolloutCommand(input);
       const reconciled =
-        command.action === "reconcile"
+        command.action === "reconcile" || command.action === "retire"
           ? command.bindings.flatMap((bindings) => parseSpackMaterialBindings(bindings))
           : [];
       if (reconciled.length > 10_000) throw rolloutError();
+      if (command.action === "retire" && (reconciled.length === 0 || reconciled.length > 1000)) {
+        throw rolloutError();
+      }
       return await withSpackMaterialLifecycleTransaction(this.db, async (tx) => {
         await tx.execute(sql`set local statement_timeout = '30s'`);
         const current = await readSpackMaterialRollout(tx);
@@ -67,13 +72,13 @@ export class SpackMaterialRollout {
               ],
             });
         }
-        if (command.action === "activate") {
+        if (command.action === "activate" || command.action === "retire") {
           // Operation creation/status writes do not take our advisory lock.
           await tx.execute(sql`lock table ${softwareOperations} in share mode`);
         }
-        const inventory = await inventorySnapshot(tx);
+        let inventory = await inventorySnapshot(tx);
         if (
-          command.action === "activate" &&
+          (command.action === "activate" || command.action === "retire") &&
           (current?.action !== "reconcile" ||
             command.inventoryDigest !== current.inventoryDigest ||
             command.inventoryDigest !== inventory.inventoryDigest ||
@@ -81,6 +86,16 @@ export class SpackMaterialRollout {
             inventory.orphanedOperationCount !== 0)
         ) {
           throw rolloutError();
+        }
+        if (command.action === "retire") {
+          await retireSpackMaterialBindings(tx, reconciled, {
+            epoch: command.epoch,
+            revision: command.expectedRevision + 1,
+            operatorId: command.operatorId,
+            reason: command.reason,
+            evidence: command.evidence,
+          });
+          inventory = await inventorySnapshot(tx);
         }
         const [next] = await tx
           .insert(spackMaterialRollouts)
@@ -91,7 +106,10 @@ export class SpackMaterialRollout {
             action: command.action,
             operatorId: command.operatorId,
             inventoryDigest: inventory.inventoryDigest,
-            evidence: command.action === "activate" ? command.evidence : null,
+            evidence:
+              command.action === "activate" || command.action === "retire"
+                ? command.evidence
+                : null,
           })
           .returning();
         if (!next) throw rolloutError();
@@ -194,6 +212,34 @@ async function inventorySnapshot(tx: Transaction) {
     if (references.length < INVENTORY_PAGE_SIZE) break;
     lastOperationId = references.at(-1)?.operationId;
   }
+  hash.update('],"retirements":[');
+  let retiredBindingCount = 0;
+  let lastRetiredBindingId: string | undefined;
+  while (true) {
+    const retirements = await tx
+      .select({
+        bindingId: spackMaterialBindingRetirements.bindingId,
+        epoch: spackMaterialBindingRetirements.epoch,
+        revision: spackMaterialBindingRetirements.revision,
+        operatorId: spackMaterialBindingRetirements.operatorId,
+        reason: spackMaterialBindingRetirements.reason,
+        evidence: spackMaterialBindingRetirements.evidence,
+      })
+      .from(spackMaterialBindingRetirements)
+      .where(
+        lastRetiredBindingId
+          ? sql`${spackMaterialBindingRetirements.bindingId} > ${lastRetiredBindingId}::uuid`
+          : undefined,
+      )
+      .orderBy(spackMaterialBindingRetirements.bindingId)
+      .limit(INVENTORY_PAGE_SIZE);
+    for (const retirement of retirements) {
+      if (retiredBindingCount++ > 0) hash.update(",");
+      hash.update(JSON.stringify(retirement));
+    }
+    if (retirements.length < INVENTORY_PAGE_SIZE) break;
+    lastRetiredBindingId = retirements.at(-1)?.bindingId;
+  }
   hash.update("]}");
   const [counts] = await tx
     .select({
@@ -217,6 +263,7 @@ async function inventorySnapshot(tx: Transaction) {
   return {
     inventoryDigest: `sha256:${hash.digest("hex")}`,
     bindingCount,
+    retiredBindingCount,
     operationReferenceCount,
     ...counts,
   };

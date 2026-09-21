@@ -6,7 +6,8 @@
 通过离线 DB API `SpackMaterialRollout.execute(command)` 执行
 `inspect`、`pause`、`reconcile`、`activate`，将历史配置对账后显式启用 runtime。
 不是完整生命周期管理：尚无 rollout HTTP API，也未开放材料下架、恢复、
-ACL/可见范围变更、绑定退役或 GC。`activate` 不执行安装、不激活 recipe，
+ACL/可见范围变更或 GC。第三批另提供[离线配置绑定退役](spack-binding-retirement.md)，
+复用本入口的 `retire` 动作，不删除历史或材料。`activate` 不执行安装、不激活 recipe，
 不代表材料或安装器生产就绪。
 
 先由维护者按批准流程准备并应用对应 additive migrations，核对目标数据库与完整备份。
@@ -78,8 +79,9 @@ revision `0/1/2` 只展示首次无并发写入的顺序，实际每次使用最
 `orphanedOperationCount`，另有最后一次 journal `action`。
 无 journal 时为 `observe`、revision `0`、epoch `null`；
 `inspect` 不追加 journal，也不改变最后一次 mutation。
-digest 是当前绑定和任务引用库存的摘要，不是旧进程全部停止的证明。
-整体库存快照对 binding 和 reference 分别进行 **每页最多 1,000 行的 keyset 扫描**，
+digest 是当前绑定、任务引用和退役库存的摘要，不是旧进程全部停止的证明。
+`retiredBindingCount` 另报告已退役数量，`bindingCount` 保持历史总数语义。
+整体库存快照对 binding、reference 和 retirement 分别进行 **每页最多 1,000 行的 keyset 扫描**，
 按稳定顺序增量计算哈希，以分页限制内存占用，不把全部历史记录载入内存。
 没有 100,000 行总量上限，不会仅因历史总行数增长而拒绝 pause 或其他 rollout 命令。
 DB/query 错误仍使操作失败关闭，不返回截断快照，也不能据此激活；

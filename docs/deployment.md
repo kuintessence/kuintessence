@@ -160,7 +160,9 @@ bun run compose -- aio down
 ## Spack 材料升级屏障
 
 材料生命周期第二批提供离线 `SpackMaterialRollout.execute` 的
-`inspect/pause/reconcile/activate`，不是下架、恢复、ACL、绑定退役或 GC。
+`inspect/pause/reconcile/activate`，不是下架、恢复、ACL 或 GC。
+第三批另有[离线绑定退役](spack-binding-retirement.md) 的 `retire`：
+要求维护窗口、额外的旧配置移除确认及重新 reconcile，不提供恢复或 Web 入口。
 完整步骤与命令 JSON 见 [Spack 材料 Rollout](spack-material-rollout.md)。
 CLI 约定为 `bun packages/db/src/spack-material-rollout-cli.ts <absolute-command-json-path>`；
 `DATABASE_URL` 从受信任 shell 环境读取，不通过 CLI 参数传入。

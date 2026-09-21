@@ -123,6 +123,37 @@ describe("Spack material rollout deployment (offline, no process execution)", ()
 });
 
 describe("Spack material rollout documentation (offline reads only)", () => {
+  test("retirement documentation requires explicit configuration removal and preserves history", async () => {
+    const guide = await read("docs/spack-binding-retirement.md");
+    const commands = [...guide.matchAll(/```json\n([\s\S]*?)\n```/g)].map(
+      (match) => JSON.parse(match[1] ?? "") as Record<string, unknown>,
+    );
+    expect(commands).toHaveLength(1);
+    expect(commands[0]).toMatchObject({
+      action: "retire",
+      operatorId: "<current operator UUID>",
+      expectedRevision: 2,
+      epoch: "<epoch returned by pause>",
+      inventoryDigest: "sha256:<current reconciled inventory digest>",
+      evidence: {
+        legacyProcessesStoppedAndDrained: true,
+        legacyAccessRevoked: true,
+        legacyInventoryComplete: true,
+        bindingConfigurationsRemoved: true,
+      },
+    });
+    expect(guide).toContain("retiredBindingCount");
+    expect(guide).toContain("不会恢复");
+    expect(guide).toContain("整批回滚");
+    expect(guide).toContain("已经支持 epoch、但还没有退役检查");
+    expect(guide).toContain(
+      "bun packages/db/src/spack-material-rollout-cli.ts <absolute-command-json-path>",
+    );
+    expect(JSON.stringify(commands)).not.toMatch(/DATABASE_URL|SECRET|PASSWORD|TOKEN/);
+    const rollout = await read("docs/spack-material-rollout.md");
+    expect(rollout).toContain("](spack-binding-retirement.md)");
+  });
+
   test("command examples describe inspect, pause, reconcile and activate without credentials", async () => {
     const guide = await read("docs/spack-material-rollout.md");
     const commands = [...guide.matchAll(/```json\n([\s\S]*?)\n```/g)].map(

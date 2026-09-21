@@ -2,6 +2,7 @@ import { and, eq, sql } from "drizzle-orm";
 import type { PgDb } from "./index";
 import { softwareOperations } from "./schema";
 import { spackMaterialBindings, spackMaterialOperationReferences } from "./schema-spack-materials";
+import { assertSpackMaterialBindingsActive } from "./spack-material-binding-retirement";
 import { assertSpackMaterialRuntime } from "./spack-material-runtime";
 
 export interface SpackMaterialReferenceBinding {
@@ -57,6 +58,7 @@ export class SpackMaterialReferences {
       const rows = parseSpackMaterialBindings(bindings);
       await withSpackMaterialLifecycleTransaction(this.db, async (tx) => {
         await assertSpackMaterialRuntime(tx, this.epoch);
+        await assertSpackMaterialBindingsActive(tx, rows);
         // Empty configurations must still fail when reference tables/columns are missing.
         await tx.select().from(spackMaterialBindings).limit(0);
         await tx.select().from(spackMaterialOperationReferences).limit(0);
@@ -82,6 +84,7 @@ export class SpackMaterialReferences {
       const value = parseOperation(input);
       await withSpackMaterialLifecycleTransaction(this.db, async (tx) => {
         await assertSpackMaterialRuntime(tx, this.epoch);
+        await assertSpackMaterialBindingsActive(tx, [value]);
         const [operation] = await tx
           .select({
             agentId: softwareOperations.agentId,

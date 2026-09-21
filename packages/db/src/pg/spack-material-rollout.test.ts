@@ -28,6 +28,7 @@ const TABLES = [
   "spack_material_bindings",
   "spack_material_operation_references",
   "spack_material_rollouts",
+  "spack_material_binding_retirements",
 ] as const;
 const OPERATOR_ID = randomUUID();
 const AGENT_ID = `rollout-agent-${randomUUID()}`;
@@ -260,7 +261,7 @@ describe("SpackMaterialRollout (isolated real PG)", () => {
     }
   }, 30_000);
 
-  test("resolves all six tables only inside the dedicated schema on both connections", async () => {
+  test("resolves all tables only inside the dedicated schema on both connections", async () => {
     for (const connection of [db, peerDb]) {
       for (const table of TABLES) {
         const [row] = await connection.$client<{ schema: string }[]>`
@@ -282,6 +283,7 @@ describe("SpackMaterialRollout (isolated real PG)", () => {
       action: null,
       inventoryDigest: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
       bindingCount: 0,
+      retiredBindingCount: 0,
       operationReferenceCount: 0,
       activeInstallCount: 0,
       orphanedOperationCount: 0,
@@ -614,7 +616,7 @@ describe("SpackMaterialRollout (isolated real PG)", () => {
     expect(bindings).toHaveLength(count);
     expect(operationReferences).toHaveLength(count);
     const canonicalDigest = `sha256:${createHash("sha256")
-      .update(JSON.stringify({ bindings, references: operationReferences }))
+      .update(JSON.stringify({ bindings, references: operationReferences, retirements: [] }))
       .digest("hex")}`;
     const observed = await rollout.execute({ action: "inspect" });
     expect(observed).toMatchObject({
@@ -836,6 +838,7 @@ describe("SpackMaterialRollout (isolated real PG)", () => {
     "spack_material_bindings",
     "spack_material_operation_references",
     "spack_material_rollouts",
+    "spack_material_binding_retirements",
   ] as const)("fails closed when isolated table %s is missing", async (table) => {
     const input = await operation();
     const hidden = `${table}_hidden`;

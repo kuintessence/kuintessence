@@ -128,7 +128,10 @@ export const spackMaterialBindingRetirements = pgTable(
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   },
   (t) => ({
-    revisionCheck: check("spack_material_binding_retirements_revision_check", sql`${t.revision} > 0`),
+    revisionCheck: check(
+      "spack_material_binding_retirements_revision_check",
+      sql`${t.revision} > 0`,
+    ),
     reasonCheck: check(
       "spack_material_binding_retirements_reason_check",
       sql`length(trim(${t.reason})) > 0`,

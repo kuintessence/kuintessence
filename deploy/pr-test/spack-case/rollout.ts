@@ -5,6 +5,7 @@ import {
   createPgDb,
   type PgDb,
   softwareOperations,
+  spackMaterialBindingRetirements,
   spackMaterialBindings,
   spackMaterialOperationReferences,
   SpackMaterialReferences,
@@ -23,9 +24,10 @@ const SnapshotSchema = z.object({
   revision: z.number().int().nonnegative(),
   epoch: EpochSchema.nullable(),
   phase: z.enum(["observe", "paused", "ready"]),
-  action: z.enum(["pause", "reconcile", "activate"]).nullable(),
+  action: z.enum(["pause", "reconcile", "retire", "activate"]).nullable(),
   inventoryDigest: z.string().length(71).regex(/^sha256:[a-f0-9]{64}$/),
-  bindingCount: z.literal(1),
+  bindingCount: z.literal(2),
+  retiredBindingCount: z.number().int().min(0).max(1),
   operationReferenceCount: z.literal(1),
   activeInstallCount: z.literal(0),
   orphanedOperationCount: z.literal(0),
@@ -44,6 +46,8 @@ type Stage =
   | "paused-reference"
   | "paused-registry"
   | "reconcile"
+  | "retire"
+  | "retired-reference"
   | "activate"
   | "ready-registry"
   | "ready-journal"
@@ -57,6 +61,8 @@ const server = "http://127.0.0.1:3000";
 const registry = "http://registry:3100";
 const repository = "public/pr-hello-sources";
 const seedEmail = "scheduler-compose-seed@kuintessence.test";
+const retiredSpec = "hello@0.0.0";
+const retirementReason = "Disposable CI historical binding; never used by a deployment";
 
 function progress(next: Stage): void {
   stage = next;
@@ -67,9 +73,15 @@ function repositoryId(name: string): string {
   return createHash("sha256").update(name).digest("hex");
 }
 
-async function checkInventory(db: PgDb, release: Release, operatorId: string): Promise<void> {
+async function checkInventory(
+  db: PgDb,
+  release: Release,
+  operatorId: string,
+  retired = false,
+): Promise<void> {
   // Inspect the entire disposable material inventory, not a filtered subset.
-  const bindings = await db.select().from(spackMaterialBindings).limit(2);
+  const bindings = await db.select().from(spackMaterialBindings).limit(3);
+  const retirements = await db.select().from(spackMaterialBindingRetirements).limit(2);
   const references = await db.select().from(spackMaterialOperationReferences).limit(2);
   const operations = await db
     .select({
@@ -83,10 +95,25 @@ async function checkInventory(db: PgDb, release: Release, operatorId: string): P
     .from(softwareOperations)
     .where(eq(softwareOperations.action, "install"))
     .limit(2);
-  const binding = bindings[0];
+  const binding = bindings.find((row) => row.spec === release.spec);
   const reference = references[0];
   const operation = operations[0];
-  assert(bindings.length === 1 && binding && references.length === 1 && reference);
+  assert(bindings.length === (retired ? 2 : 1) && binding && references.length === 1 && reference);
+  assert.equal(retirements.length, retired ? 1 : 0);
+  if (retired) {
+    const oldBinding = bindings.find((row) => row.spec === retiredSpec);
+    const retirement = retirements[0];
+    assert(
+      oldBinding &&
+        oldBinding.repositoryId === binding.repositoryId &&
+        oldBinding.manifestDigest === binding.manifestDigest &&
+        retirement?.bindingId === oldBinding.id &&
+        retirement.operatorId === operatorId &&
+        retirement.revision === 3 &&
+        retirement.reason === retirementReason &&
+        retirement.evidence.bindingConfigurationsRemoved === true,
+    );
+  }
   assert(operations.length === 1 && operation);
   assert(
     binding.spec === release.spec &&
@@ -160,7 +187,8 @@ async function checkReadyJournal(db: PgDb, snapshot: Snapshot, operatorId: strin
   assert(
     snapshot.phase === "ready" &&
       snapshot.action === "activate" &&
-      snapshot.revision === 3 &&
+      snapshot.revision === 5 &&
+      snapshot.retiredBindingCount === 1 &&
       journal?.phase === "ready" &&
       journal.action === "activate" &&
       journal.revision === snapshot.revision &&
@@ -240,16 +268,18 @@ async function main(): Promise<string | undefined> {
     // Use the running Server's auth route; never synthesize or print its token.
     const token = await login(server);
     progress("inventory");
-    await checkInventory(db, release, operatorId);
+    await checkInventory(db, release, operatorId, mode === "verify");
     const rollout = new SpackMaterialRollout(db);
     const inspect = async () => SnapshotSchema.parse(await rollout.execute({ action: "inspect" }));
 
     if (mode === "activate") {
+      const references = new SpackMaterialReferences(db);
+      // Historical fixture only. The real Hello binding must remain active after retirement.
+      await references.registerBindings({ [retiredSpec]: release.binding });
       progress("observe");
       const observed = await inspect();
       assert(observed.revision === 0 && observed.phase === "observe");
       assert(observed.epoch === null && observed.action === null);
-      const references = new SpackMaterialReferences(db);
       await references.registerBindings({});
       progress("manifest-before");
       await checkManifest(token, release, 200);
@@ -288,26 +318,53 @@ async function main(): Promise<string | undefined> {
       assert(reconciled.phase === "paused" && reconciled.action === "reconcile");
       assert(reconciled.revision === 2 && reconciled.epoch === epoch);
       assert.equal(reconciled.inventoryDigest, observed.inventoryDigest);
+      const evidence = {
+        legacyProcessesStoppedAndDrained: true,
+        legacyAccessRevoked: true,
+        legacyInventoryComplete: true,
+      } as const;
+      progress("retire");
+      const retired = SnapshotSchema.parse(
+        await rollout.execute({
+          action: "retire",
+          operatorId,
+          expectedRevision: reconciled.revision,
+          epoch,
+          inventoryDigest: reconciled.inventoryDigest,
+          bindings: [{ [retiredSpec]: release.binding }],
+          reason: retirementReason,
+          // Isolated CI only: no actual legacy process or deployment ever used this binding.
+          evidence: { ...evidence, bindingConfigurationsRemoved: true },
+        }),
+      );
+      assert.equal(retired.retiredBindingCount, 1);
+      assert.notEqual(retired.inventoryDigest, observed.inventoryDigest);
+      const finalReconcile = SnapshotSchema.parse(
+        await rollout.execute({
+          action: "reconcile",
+          operatorId,
+          expectedRevision: retired.revision,
+          epoch,
+          bindings: [bindings, { [retiredSpec]: release.binding }],
+        }),
+      );
+      assert.equal(finalReconcile.inventoryDigest, retired.inventoryDigest);
       progress("activate");
       const ready = SnapshotSchema.parse(
         await rollout.execute({
           action: "activate",
           operatorId,
-          expectedRevision: reconciled.revision,
+          expectedRevision: finalReconcile.revision,
           epoch,
-          inventoryDigest: reconciled.inventoryDigest,
+          inventoryDigest: finalReconcile.inventoryDigest,
           // Test evidence only: run.sh creates fresh isolated volumes/credentials and
           // runs only this checkout's images, with no legacy deployment or credentials.
           // This is NOT a production legacy-drain or credential-revocation verifier.
-          evidence: {
-            legacyProcessesStoppedAndDrained: true,
-            legacyAccessRevoked: true,
-            legacyInventoryComplete: true,
-          },
+          evidence,
         }),
       );
       assert.equal(ready.epoch, epoch);
-      assert.equal(ready.inventoryDigest, observed.inventoryDigest);
+      assert.equal(ready.inventoryDigest, retired.inventoryDigest);
       progress("ready-registry");
       // The same still-running Registry has no epoch, even though the journal is ready.
       await checkManifest(token, release, 503);
@@ -321,7 +378,25 @@ async function main(): Promise<string | undefined> {
       await checkReadyJournal(db, ready, operatorId);
       progress("verify-reference");
       await new SpackMaterialReferences(db, configuredEpoch).registerBindings(bindings);
-      await checkInventory(db, release, operatorId);
+      await checkInventory(db, release, operatorId, true);
+      progress("retired-reference");
+      let denied = false;
+      try {
+        await new SpackMaterialReferences(db, configuredEpoch).registerBindings({
+          [retiredSpec]: release.binding,
+        });
+      } catch (error) {
+        assert(
+          error instanceof Error &&
+            "code" in error &&
+            error.code === "SPACK_MATERIAL_REFERENCE_ERROR",
+        );
+        denied = true;
+      }
+      assert(denied);
+      console.error(
+        "Spack retirement: stage=verify code=OK retainedBindingCount=2 retiredBindingCount=1",
+      );
       // Recreation discards /tmp; compare the current inventory to the persisted journal.
       const after = await inspect();
       assert.equal(after.epoch, configuredEpoch);

@@ -85,7 +85,7 @@ Server 在启用材料下载时，启动阶段先将 `SPACK_MATERIAL_RELEASES` �
 绑定登记与任务引用登记共用 PostgreSQL 事务锁，为后续生命周期写入提供一致的锁边界。
 
 **这只是引用基础设施，不是材料下架功能。** 当前未开放下架、恢复、权限变更、
-绑定退役或物理回收接口。引用计数是诊断快照，计数为零不证明所有旧 Server、
+在线绑定退役或物理回收接口。引用计数是诊断快照，计数为零不证明所有旧 Server、
 旧配置或升级前安装任务都已登记，也不能用作先查询再下架的授权依据。
 第二批通过[离线 Rollout](spack-material-rollout.md) 提供 pause、旧配置绑定追加对账和
 activate 屏障；activate 要求所有非终态安装（包括未登记引用的任务）及孤儿引用为零。
@@ -93,6 +93,10 @@ activate 屏障；activate 要求所有非终态安装（包括未登记引用�
 DB、Registry、ticket 凭据并更新访问与网络策略；epoch 无法隔离不检查它的旧代码。
 门禁只控制准入，不中断在途流；这一步不开放材料下架、恢复、ACL、绑定退役或 GC。
 后续生命周期操作仍须将引用检查与状态变更放在同一事务内。
+第三批新增[离线绑定退役](spack-binding-retirement.md)：只在暂停、对账、
+外部隔离及移除全部旧配置后追加审计 tombstone，不删除原绑定或历史引用。
+旧配置登记和安装引用获取都会拒绝已退役的精确绑定；重新导入或 reconcile 不会恢复。
+此操作没有 HTTP/CP/Web 入口，且不影响其他 spec 对同一 release 的合法使用。
 rollout journal 必须 append-only，删除历史可能不安全地重置 observe。
 不要手动清表、删除绑定或直接改材料卷；
 数据库与 Git/material 卷须一起备份和恢复。
