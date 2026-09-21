@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, mock, spyOn, test } from "bun:test";
 import { execFile } from "node:child_process";
 import { mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -7,6 +7,8 @@ import { promisify } from "node:util";
 import { Hono } from "hono";
 import { createSpackRepositoryRoutes } from "../routes/spack-repositories";
 import { RecipeGitStore } from "./recipe-git-store";
+import { materialDigest } from "./spack-material-storage";
+import { SpackUpstreamImportService } from "./spack-upstream-import";
 
 const exec = promisify(execFile);
 const directories: string[] = [];
@@ -16,6 +18,27 @@ afterEach(async () => {
     directories.splice(0).map((path) => rm(path, { recursive: true, force: true })),
   );
 });
+
+function observe<T>(operation: Promise<T>) {
+  return operation.then(
+    (value) => ({ status: "fulfilled" as const, value }),
+    (reason: unknown) => ({ status: "rejected" as const, reason }),
+  );
+}
+
+async function within<T>(operation: Promise<T>): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      operation,
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => reject(new Error("Test operation did not settle")), 2000);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 async function fixture() {
   const root = await mkdtemp(join(tmpdir(), "kq-recipe-test-"));
@@ -60,6 +83,165 @@ async function fixture() {
 }
 
 describe("RecipeGitStore", () => {
+  test("online imports persist a real Git bundle and preserve post-commit cancellation", async () => {
+    const f = await fixture();
+    const bundle = await f.bundle();
+    const controller = new AbortController();
+    const service = new SpackUpstreamImportService({
+      recipeStore: f.store,
+      downloader: {
+        async withDownload(input, signal, consume) {
+          expect(input.digest).toBe(materialDigest(bundle.bytes));
+          expect(input.size).toBe(bundle.bytes.byteLength);
+          signal.throwIfAborted();
+          return consume(
+            new ReadableStream<Uint8Array>({
+              start(stream) {
+                stream.enqueue(bundle.bytes);
+                stream.close();
+              },
+            }),
+          );
+        },
+      },
+    });
+    const input = {
+      kind: "recipe" as const,
+      repository: "public/science",
+      url: "https://sources.example.org/science.bundle",
+      digest: materialDigest(bundle.bytes),
+      size: bundle.bytes.byteLength,
+    };
+    const actor = { sub: "publisher", role: "super_admin" as const, orgIds: [] };
+    const originalGet = f.store.get.bind(f.store);
+    const receiptRead = spyOn(f.store, "get").mockImplementation(async (id) => {
+      const result = await originalGet(id);
+      controller.abort();
+      return result;
+    });
+    try {
+      await expect(service.import(input, actor, controller.signal)).rejects.toMatchObject({
+        status: 409,
+        code: "UPSTREAM_IMPORT_RESULT_UNKNOWN",
+      });
+    } finally {
+      receiptRead.mockRestore();
+    }
+    const stored = await f.store.get(RecipeGitStore.repositoryId(input.repository));
+    expect(stored.activeCommit).toBeNull();
+    expect(stored.snapshots).toHaveLength(1);
+    expect(stored.snapshots[0]?.commit).toBe(bundle.commit);
+    expect(stored.snapshots[0]?.bundleSha256).toBe(input.digest.slice(7));
+    expect(await readdir(join(f.root, "store/staging"))).toEqual([]);
+    const retry = await service.import(input, actor, new AbortController().signal);
+    expect(retry).toEqual({ kind: "recipe", repository: stored });
+  });
+
+  test("cancelled queue entries retain admission until the blocked write retires", async () => {
+    const f = await fixture();
+    const bundle = await f.bundle();
+    const entered = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const originalGet = f.store.get.bind(f.store);
+    const receiptRead = spyOn(f.store, "get").mockImplementationOnce(async (id) => {
+      entered.resolve();
+      await release.promise;
+      return originalGet(id);
+    });
+    const first = f.store.importBundle("public/science", bundle.bytes, "admin");
+    const firstOutcome = observe(first);
+    try {
+      await within(entered.promise);
+      for (let index = 0; index < 3; index++) {
+        const controller = new AbortController();
+        const queued = Promise.withResolvers<void>();
+        const input = new ReadableStream<Uint8Array>({
+          start(stream) {
+            stream.enqueue(bundle.bytes);
+            stream.close();
+          },
+        });
+        const addListener = controller.signal.addEventListener.bind(controller.signal);
+        const listener = spyOn(controller.signal, "addEventListener").mockImplementation(
+          (type, callback, options) => {
+            addListener(type, callback, options);
+            // Staging owns the reader; the queue installs its listener only after releaseLock().
+            if (type === "abort" && !input.locked) queued.resolve();
+          },
+        );
+        const pending = f.store.importBundle("public/science", input, "admin", controller.signal);
+        const outcome = observe(pending);
+        try {
+          await within(queued.promise);
+        } finally {
+          controller.abort();
+          listener.mockRestore();
+          await within(outcome);
+        }
+        expect(await outcome).toMatchObject({ status: "rejected", reason: expect.any(Error) });
+      }
+      const rejected = observe(f.store.importBundle("public/science", bundle.bytes, "admin"));
+      expect(await within(rejected)).toMatchObject({
+        status: "rejected",
+        reason: { status: 429 },
+      });
+    } finally {
+      release.resolve();
+      try {
+        await within(firstOutcome);
+      } finally {
+        receiptRead.mockRestore();
+      }
+    }
+    expect(await firstOutcome).toMatchObject({ status: "fulfilled" });
+    await f.store.list();
+    expect(
+      (await f.store.importBundle("public/science", bundle.bytes, "admin")).snapshots,
+    ).toHaveLength(1);
+  });
+
+  test("pre-cancelled imports never create a repository", async () => {
+    const f = await fixture();
+    const controller = new AbortController();
+    controller.abort();
+    await expect(
+      f.store.importBundle("public/science", new Uint8Array([1]), "admin", controller.signal),
+    ).rejects.toThrow();
+    expect(await f.store.list()).toEqual([]);
+  });
+
+  test("cancellation while staging closes the source and leaves no snapshot", async () => {
+    const f = await fixture();
+    const controller = new AbortController();
+    const entered = Promise.withResolvers<void>();
+    const cancel = mock(() => {});
+    const input = new ReadableStream<Uint8Array>(
+      {
+        pull() {
+          entered.resolve();
+        },
+        cancel,
+      },
+      { highWaterMark: 0 },
+    );
+    const pending = f.store.importBundle("public/science", input, "admin", controller.signal);
+    const outcome = observe(pending);
+    try {
+      await within(entered.promise);
+    } finally {
+      controller.abort();
+      await within(outcome);
+    }
+    expect(await outcome).toMatchObject({ status: "rejected", reason: expect.any(Error) });
+    expect(cancel).toHaveBeenCalledTimes(1);
+    expect(await f.store.list()).toEqual([]);
+    expect(await readdir(join(f.root, "store/staging"))).toEqual([]);
+    const bundle = await f.bundle();
+    expect(
+      (await f.store.importBundle("public/science", bundle.bytes, "admin")).snapshots,
+    ).toHaveLength(1);
+  });
+
   test("starts empty and persists a complete native repository without executing recipes", async () => {
     const f = await fixture();
     expect(await f.store.list()).toEqual([]);

@@ -1,4 +1,24 @@
 {
+  "spackOnline": {
+    "recipeTitle": "在线导入 recipe",
+    "materialTitle": "在线导入材料",
+    "recipeManifest": "选择 recipe 在线导入清单（JSON）",
+    "materialManifest": "选择材料在线导入清单（JSON）",
+    "chooseManifest": "选择 JSON 清单",
+    "recipeSubmit": "在线导入 recipe",
+    "materialSubmit": "在线导入材料",
+    "cancel": "取消在线导入",
+    "files": "文件数：{{count}}",
+    "reading": "正在校验在线导入清单",
+    "ready": "在线导入已就绪",
+    "importing": "Registry 正在执行在线导入",
+    "succeeded": "在线导入已确认完成",
+    "invalid": "在线导入清单无效或与当前面板类型不符。",
+    "denied": "当前会话没有目标仓库的写入权限。",
+    "failed": "在线导入未完成，可能已保存部分内容，请核查仓库后再重试。",
+    "unknown": "在线导入结果未知，Registry 可能已导入内容，请核查仓库后再重试。",
+    "refreshFailed": "已确认导入完成，但未能刷新详情。"
+  },
   "recipes": {
     "title": "Spack recipe 仓库",
     "validationMode": "检查范围：仅静态",

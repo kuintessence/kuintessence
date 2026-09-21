@@ -70,7 +70,11 @@ Kuintessence 当前为 pre-release。以下列出组件功能、运行要求和�
   发布能力时清空临时结果并中止请求；发布响应丢失保留“结果待确认”，不宣称回滚。
   已增加权限过滤的材料目录、精确仓库筛选和分页查阅；直接发现持久化 release，
   单次响应最多 200 项，扫描/字节/时间超限明确失败，不返回伪完整的截断列表。
-  受限厂商安装包/许可证授权、HTTP/SOCKS 上游代理、
+  [受控上游导入](../spack-upstream-import.md) 新增默认关闭的 Registry 专用
+  HTTP/HTTPS/SOCKS5 代理与精确 HTTPS origin 白名单，Web 提交 JSON manifest，
+  校验 digest/大小后复用 recipe/material 发布，不自动激活或修改 Server binding，
+  Agent 仍只从 Server 拉取内容。接线与代理用例的结果以对应提交的 Actions 为准，
+  不代表生产部署验收。受限厂商安装包/许可证授权、
   大规模材料目录索引/删除/可见范围变更及 15 个工作流的目标 Linux 材料、lock 和端到端安装/运行验收仍未完成。
 - CP 的 suspend/quota 写入口已停用，暂不支持通过这些接口暂停组织或设置并发硬限。
 - 平台记录用量，外部计费系统生成账单。
@@ -105,6 +109,7 @@ Kuintessence 当前为 pre-release。以下列出组件功能、运行要求和�
 
 - [认证与会话](../security.md#authentication)
 - [Registry 权限](../security.md#registry)
+- [Spack 受控上游导入](../spack-upstream-import.md)
 - [Agent 注册和证书](../security.md#agent)
 - [工作流规范](../workflow-schema/README.md)
 - [系统运维](../manuals/system-operations-manual.md)

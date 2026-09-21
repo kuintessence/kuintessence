@@ -33,6 +33,7 @@ export * from "./spack-material-catalog";
 export * from "./spack-material-import";
 export * from "./spack-materials";
 export * from "./spack-repositories";
+export * from "./spack-upstream";
 export * from "./storage-quota";
 // P4 usecase→command materialization (namespaced).
 export * as usecase from "./usecase";

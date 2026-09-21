@@ -24,6 +24,7 @@
 | [身份与安全](security.md) | 会话、OIDC、SpiceDB、mTLS、Agent 注册、SSH |
 | [存储与计量](storage.md) | NetDrive、multipart、集群传输、Data Market 对象、配额、审计 |
 | [软件与 Sandbox](software.md) | 资产发布、授权、Spack、签名生态、受限数据和隔离运行 |
+| [Spack 受控上游导入](spack-upstream-import.md) | Registry 专用代理、HTTPS 白名单、recipe/material JSON 导入及维护边界 |
 | [客户端](clients.md) | CLI/TUI、本地工作流、GUI 与 Tauri |
 | [工作流](workflow-schema/README.md) | 控制流 DSL、物化、执行、取消与恢复 |
 | [前端维护](frontend.md) | 工作区导航、权限投影和共享动效约定 |

@@ -13,6 +13,7 @@ import { canWriteRecipeRepository } from "../../lib/recipe-repository-access";
 import { MaterialCatalog } from "./MaterialCatalog";
 import { MaterialPackImport } from "./MaterialPackImport";
 import { MaterialReleaseLookup } from "./MaterialReleaseLookup";
+import { SpackOnlineImport } from "./SpackOnlineImport";
 
 function getSessionKey(): string | null {
   const auth = getAuthState();
@@ -90,6 +91,16 @@ function MaterialSession({
           canWriteRepository={writable}
           isCurrent={isCurrent}
           onInspect={inspect}
+        />
+      ) : null}
+      {canImport ? (
+        <SpackOnlineImport
+          kind="material"
+          canWriteRepository={writable}
+          isCurrent={isCurrent}
+          onImported={(result) => {
+            if (result.kind === "material") inspect(result.binding);
+          }}
         />
       ) : null}
       <MaterialReleaseLookup

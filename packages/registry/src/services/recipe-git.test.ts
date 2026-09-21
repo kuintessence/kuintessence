@@ -312,6 +312,44 @@ describe("recipe Git process deadlines", () => {
   const posixTest = process.platform === "win32" ? test.skip : test;
   const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
 
+  posixTest("caller cancellation terminates a running staging Git process", async () => {
+    const directory = await fixture();
+    const ready = join(directory, "ready");
+    const script = join(directory, "cancel.mjs");
+    await fs.writeFile(
+      script,
+      `import { writeFileSync } from "node:fs";
+writeFileSync(${JSON.stringify(ready)}, "ready");
+setInterval(() => {}, 1000);
+`,
+    );
+    const controller = new AbortController();
+    const pending = runRecipeGit(
+      directory,
+      ["-c", `alias.cancel-test=!${quote(process.execPath)} ${quote(script)}`, "cancel-test"],
+      DEFAULT_RECIPE_LIMITS,
+      true,
+      undefined,
+      controller.signal,
+    );
+    const outcome = pending.then(
+      () => new Error("Git unexpectedly succeeded"),
+      (error: unknown) => error,
+    );
+    try {
+      for (let attempt = 0; attempt < 100; attempt++) {
+        if (await Bun.file(ready).exists()) break;
+        await pause(10);
+      }
+      expect(await Bun.file(ready).exists()).toBe(true);
+      controller.abort();
+      expect(await within(outcome)).toMatchObject({ status: 422 });
+    } finally {
+      controller.abort();
+      await within(outcome);
+    }
+  });
+
   for (const output of ["stdout", "stderr"]) {
     posixTest(`caps ${output} even with allowFailure`, async () => {
       const directory = await fixture();

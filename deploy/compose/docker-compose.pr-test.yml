@@ -94,6 +94,7 @@ services:
       BLOB_STORE_DIR: /var/lib/kuintessence/registry/blobs
       SPACK_RECIPE_STORE_DIR: /var/lib/kuintessence/registry/recipes
       SPACK_MATERIAL_STORE_DIR: /var/lib/kuintessence/registry/materials
+      SPACK_UPSTREAM_ENABLED: "false"
       LOG_LEVEL: warn
     volumes:
       - registry-data:/var/lib/kuintessence/registry

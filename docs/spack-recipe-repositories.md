@@ -11,7 +11,9 @@ Registry 提供空内容 recipe 仓库，由运维导入官方或自定义 Git b
 
 本阶段支持：
 
-- 含 `HEAD`、自包含的 SHA-1 Git bundle，不支持增量 bundle、远端 URL 或 Web 指定服务端路径。
+- 含 `HEAD`、自包含的 SHA-1 Git bundle，不支持增量 bundle 或 Web 指定服务端路径。
+  原上传入口不接受 URL；可选 [受控上游导入](spack-upstream-import.md) 使用单独的 JSON
+  入口，经专用代理、origin 白名单及 digest/大小校验后复用 bundle 导入，默认关闭。
 - 原生仓库的完整文件、patch 和辅助模块，不只保存 `package.py`。
 - `repo.yaml` 显式声明 `api: v2.0`、`v2.1` 或 `v2.2`，原样保留声明；
   未知 API 或缺失 API 记录为阻断诊断。静态结构识别不代表目标 Spack 引擎已兼容。
@@ -23,7 +25,8 @@ Registry 提供空内容 recipe 仓库，由运维导入官方或自定义 Git b
 
 - 跨 recipe 仓库组合、目标环境的实际依赖 concretize，以及完整 Python 语义验证。
 - 下载和校验已接入 [材料发布与 Agent 下载](spack-material-delivery.md)，但尚不解包或执行安装。
-- 源码/厂商二进制/buildcache 的统一手动导入、恢复上传与 Spack 专用代理。
+- 源码/厂商二进制/buildcache 的统一手动导入与恢复上传。
+  新增 Spack 专用代理只用于上述受控导入，真实代理与部署验证以对应提交的 CI 为准。
 - 按具体用户授权或在 namespace 间迁移；本阶段沿用 Registry public/org/user 的权限矩阵。
 - 物理删除 Git 历史和垃圾回收。停用不删历史，不自动卸载已安装软件。
 
@@ -184,7 +187,9 @@ git -C /srv/recipe-snapshot -c pack.window=0 \
 | `DELETE /spack/recipe-repositories/:id/active` | CAS 停用 |
 | `GET /spack/recipe-repositories/:id/snapshots/:commit/archive` | 完整固定 tree 的 tar |
 
-Web 网关对应 `/software/api`。API 不提供 Git smart HTTP，也不接受任意 ref、远端 URL 或服务端目录。
+Web 网关对应 `/software/api`。上述 API 不提供 Git smart HTTP，也不接受任意 ref、远端 URL 或服务端目录。
+远端 bundle 只能通过独立的 [受控上游导入](spack-upstream-import.md) 入口提交，
+不能将 URL 直接传给原始 bundle 上传接口。
 下载 tar 是运维人工交付接口，不是 Agent 下载入口；激活不表示 Agent 已应用此仓库。
 Agent 下载使用独立的 Server operation ticket 入口，不能用 Agent 直连 Registry 代替；
 具体已实现内容和安装阻断状态见 [材料发布与 Agent 下载](spack-material-delivery.md)。

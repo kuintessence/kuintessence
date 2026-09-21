@@ -26,6 +26,7 @@ export * from "./spack-material-catalog";
 export * from "./spack-material-import";
 export * from "./spack-materials";
 export * from "./spack-repositories";
+export * from "./spack-upstream";
 export * from "./storage-quota";
 export * from "./utils/api-error";
 export * from "./utils/canonical-json";

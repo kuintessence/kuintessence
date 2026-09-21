@@ -1,4 +1,24 @@
 {
+  "spackOnline": {
+    "recipeTitle": "Online recipe import",
+    "materialTitle": "Online material import",
+    "recipeManifest": "Choose online recipe manifest (JSON)",
+    "materialManifest": "Choose online material manifest (JSON)",
+    "chooseManifest": "Choose JSON manifest",
+    "recipeSubmit": "Import recipes online",
+    "materialSubmit": "Import materials online",
+    "cancel": "Cancel online import",
+    "files": "Files: {{count}}",
+    "reading": "Validating online import manifest",
+    "ready": "Online import ready",
+    "importing": "Registry online import in progress",
+    "succeeded": "Online import confirmed",
+    "invalid": "Invalid online import manifest for this panel.",
+    "denied": "The destination is not writable in the current session.",
+    "failed": "Online import was not completed. Check the repository before retrying; partial content may remain.",
+    "unknown": "Online import result unknown. The Registry may have imported content. Check the repository before retrying.",
+    "refreshFailed": "Import confirmed, but the detail view could not be refreshed."
+  },
   "recipes": {
     "title": "Spack recipe repositories",
     "validationMode": "Validation: static only",
