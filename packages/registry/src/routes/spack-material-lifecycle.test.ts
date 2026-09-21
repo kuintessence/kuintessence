@@ -68,7 +68,8 @@ function lifecycleFake() {
     }
     try {
       await authorize({ ...control.canonical, orgIds: [...control.canonical.orgIds] });
-    } catch {
+    } catch (error) {
+      if (error instanceof SpackMaterialLifecycleError) throw error;
       throw new SpackMaterialLifecycleError("MATERIAL_LIFECYCLE_FORBIDDEN");
     }
   };
@@ -155,25 +156,24 @@ async function expectError(response: Response, status: number, code: string) {
 }
 
 describe("material lifecycle authentication and authorization", () => {
-  test.each(METHODS)(
-    "%s requires authentication and an explicit lifecycle backend",
-    async (method) => {
-      const f = await materialFixture();
-      const path = `${releasePath({
-        repositoryId: SpackMaterialStore.repositoryId(f.input.repository),
-        manifestDigest: SOURCE_BLOB.digest,
-      })}/lifecycle`;
-      const request = {
-        method,
-        ...(method === "POST" ? { body: JSON.stringify(WITHDRAW) } : {}),
-      };
-      await expectError(await f.app.request(path, request), 401, "UNAUTHORIZED");
-      const unavailable = await f.app.request(path, { ...request, headers: headers() });
-      await expectError(unavailable, 503, "MATERIAL_LIFECYCLE_UNAVAILABLE");
-      expect(unavailable.headers.get("Cache-Control")).toBe("private, no-store");
-      expect((await f.app.request("/api/health")).status).toBe(200);
-    },
-  );
+  test.each(
+    METHODS,
+  )("%s requires authentication and an explicit lifecycle backend", async (method) => {
+    const f = await materialFixture();
+    const path = `${releasePath({
+      repositoryId: SpackMaterialStore.repositoryId(f.input.repository),
+      manifestDigest: SOURCE_BLOB.digest,
+    })}/lifecycle`;
+    const request = {
+      method,
+      ...(method === "POST" ? { body: JSON.stringify(WITHDRAW) } : {}),
+    };
+    await expectError(await f.app.request(path, request), 401, "UNAUTHORIZED");
+    const unavailable = await f.app.request(path, { ...request, headers: headers() });
+    await expectError(unavailable, 503, "MATERIAL_LIFECYCLE_UNAVAILABLE");
+    expect(unavailable.headers.get("Cache-Control")).toBe("private, no-store");
+    expect((await f.app.request("/api/health")).status).toBe(200);
+  });
 
   test.each([
     { name: "org member reader", actor: USER, status: 403 },
@@ -294,43 +294,40 @@ describe("material lifecycle authentication and authorization", () => {
     );
   });
 
-  test.each(["namespace", "visibility", "snapshot", "roots", "diagnostics"])(
-    "rechecks referenced recipe %s even when inspecting a withdrawn release",
-    async (change) => {
-      const f = await fixture();
-      expect((await f.request("POST")).status).toBe(200);
-      if (change === "namespace" || change === "visibility") {
-        f.recipe.repository = `org/${OTHER_ORG}/recipes`;
-        if (change === "visibility") {
-          f.control.canonical = { ...OWNER, orgIds: [ORG, OTHER_ORG] };
-        }
-      } else if (change === "snapshot") {
-        f.recipe.snapshots = [];
+  test.each([
+    "namespace",
+    "visibility",
+    "snapshot",
+    "roots",
+    "diagnostics",
+  ])("rechecks referenced recipe %s even when inspecting a withdrawn release", async (change) => {
+    const f = await fixture();
+    expect((await f.request("POST")).status).toBe(200);
+    if (change === "namespace" || change === "visibility") {
+      f.recipe.repository = `org/${OTHER_ORG}/recipes`;
+      if (change === "visibility") {
+        f.control.canonical = { ...OWNER, orgIds: [ORG, OTHER_ORG] };
+      }
+    } else if (change === "snapshot") {
+      f.recipe.snapshots = [];
+    } else {
+      const snapshot = f.recipe.snapshots[0];
+      if (!snapshot) throw new Error("Missing fixture snapshot");
+      if (change === "roots") {
+        snapshot.roots = [];
       } else {
-        const snapshot = f.recipe.snapshots[0];
-        if (!snapshot) throw new Error("Missing fixture snapshot");
-        if (change === "roots") {
-          snapshot.roots = [];
-        } else {
-          snapshot.diagnostics = [
-            { severity: "error", code: "INVALID", message: "Invalid recipe" },
-          ];
-        }
+        snapshot.diagnostics = [{ severity: "error", code: "INVALID", message: "Invalid recipe" }];
       }
-      f.port.inspect.mockClear();
-      f.port.transition.mockClear();
-      await expectError(await f.request("GET"), 403, "MATERIAL_LIFECYCLE_FORBIDDEN");
-      await expectError(
-        await f.request("POST", OWNER, RESTORE),
-        403,
-        "MATERIAL_LIFECYCLE_FORBIDDEN",
-      );
-      if (change === "snapshot") {
-        expect(f.port.inspect).not.toHaveBeenCalled();
-        expect(f.port.transition).not.toHaveBeenCalled();
-      }
-    },
-  );
+    }
+    f.port.inspect.mockClear();
+    f.port.transition.mockClear();
+    await expectError(await f.request("GET"), 403, "MATERIAL_LIFECYCLE_FORBIDDEN");
+    await expectError(await f.request("POST", OWNER, RESTORE), 403, "MATERIAL_LIFECYCLE_FORBIDDEN");
+    if (change === "snapshot") {
+      expect(f.port.inspect).not.toHaveBeenCalled();
+      expect(f.port.transition).not.toHaveBeenCalled();
+    }
+  });
 
   test("revoked canonical membership cannot inspect withdrawn history or restore", async () => {
     const f = await fixture();
@@ -400,6 +397,39 @@ describe("material lifecycle metadata admission", () => {
     expect(f.port.transition).not.toHaveBeenCalled();
   });
 
+  test.each(METHODS)("%s cancellation before callback preserves the journal", async (method) => {
+    const f = await fixture();
+    const controller = new AbortController();
+    const inspect = f.port.inspect;
+    const transition = f.port.transition;
+    f.port.inspect = mock(async (...args: Parameters<SpackMaterialLifecyclePort["inspect"]>) => {
+      controller.abort();
+      return inspect(...args);
+    });
+    f.port.transition = mock(
+      async (...args: Parameters<SpackMaterialLifecyclePort["transition"]>) => {
+        controller.abort();
+        return transition(...args);
+      },
+    );
+    const response = await f.app.request(f.path, {
+      method,
+      headers: headers(),
+      signal: controller.signal,
+      ...(method === "POST" ? { body: JSON.stringify(WITHDRAW) } : {}),
+    });
+    await expectError(response, 503, "MATERIAL_LIFECYCLE_UNAVAILABLE");
+    expect(response.headers.get("Cache-Control")).toBe("private, no-store");
+    expect(f.recipes.getSnapshot).toHaveBeenCalledTimes(1);
+    expect(f.port.inspect).toHaveBeenCalledTimes(method === "GET" ? 1 : 0);
+    expect(f.port.transition).toHaveBeenCalledTimes(method === "POST" ? 1 : 0);
+    f.port.inspect = inspect;
+    f.port.transition = transition;
+    const journal = await f.request("GET");
+    expect(journal.status).toBe(200);
+    expect(await journal.json()).toEqual(INITIAL);
+  });
+
   test.each(METHODS)("%s never enters the backend after request cancellation", async (method) => {
     for (const phase of ["before metadata", "during snapshot"]) {
       const f = await fixture();
@@ -432,10 +462,7 @@ describe("material lifecycle state and delivery", () => {
     const sibling = await f.store.publish(
       {
         ...f.input,
-        sources: [
-          ...f.input.sources,
-          { path: "hello/alternate-1.0.tar.gz", blob: SOURCE_BLOB },
-        ],
+        sources: [...f.input.sources, { path: "hello/alternate-1.0.tar.gz", blob: SOURCE_BLOB }],
       },
       OWNER,
     );
@@ -460,9 +487,7 @@ describe("material lifecycle state and delivery", () => {
     expect(status).toMatchObject({
       revision: 1,
       state: "withdrawn",
-      history: [
-        { revision: 1, operatorId: OWNER.sub, reason: WITHDRAW.reason },
-      ],
+      history: [{ revision: 1, operatorId: OWNER.sub, reason: WITHDRAW.reason }],
       historyTruncated: false,
     });
     const inspect = await f.request("GET");

@@ -76,9 +76,7 @@ describe("RecipeGitStore bounded snapshot metadata reads", () => {
     const f = await fixture();
     const identity = {
       ...f.identity,
-      ...(field === "id"
-        ? { id: "f".repeat(64) }
-        : { repository: "public/different-repository" }),
+      ...(field === "id" ? { id: "f".repeat(64) } : { repository: "public/different-repository" }),
     };
     await writeFile(f.paths.identity, JSON.stringify(identity));
     await expect(f.store.getSnapshot(f.identity.id, COMMIT)).rejects.toMatchObject({

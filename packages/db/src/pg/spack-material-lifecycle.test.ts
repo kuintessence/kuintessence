@@ -375,39 +375,39 @@ describe("Spack material lifecycle (isolated real PG)", () => {
     ).toEqual(journal);
   });
 
-  test.each(["acquire", "register"] as const)(
-    "serializes withdrawal against concurrent %s without admitting a withdrawn release",
-    async (method) => {
-      const binding = release();
-      const { lifecycle, peerReferences } = await ready();
-      const input = await operation(binding);
-      const results = await Promise.allSettled([
-        lifecycle.transition(binding, OPERATOR, change(), allow),
-        method === "acquire"
-          ? peerReferences.acquireOperation(input)
-          : peerReferences.registerBindings({ [SPEC]: binding }),
-      ]);
-      const [withdrawal, admission] = results;
-      expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
-      expect(results.filter((result) => result.status === "rejected")).toHaveLength(1);
-      if (withdrawal.status === "fulfilled") {
-        expect(admission).toMatchObject({ status: "rejected", reason: REFERENCE_ERROR });
-        await expect(lifecycle.assertAvailable(binding)).rejects.toMatchObject(WITHDRAWN);
-      } else {
-        expect(withdrawal.reason).toMatchObject(REFERENCED);
-        expect(admission.status).toBe("fulfilled");
-        await lifecycle.assertAvailable(binding);
-      }
-      const admitted = admission.status === "fulfilled" ? 1 : 0;
-      expect(await db.select().from(spackMaterialBindings)).toHaveLength(
-        method === "register" ? admitted : 0,
-      );
-      expect(await db.select().from(spackMaterialOperationReferences)).toHaveLength(
-        method === "acquire" ? admitted : 0,
-      );
-      expect(await db.select().from(spackMaterialLifecycleEvents)).toHaveLength(1 - admitted);
-    },
-  );
+  test.each([
+    "acquire",
+    "register",
+  ] as const)("serializes withdrawal against concurrent %s without admitting a withdrawn release", async (method) => {
+    const binding = release();
+    const { lifecycle, peerReferences } = await ready();
+    const input = await operation(binding);
+    const results = await Promise.allSettled([
+      lifecycle.transition(binding, OPERATOR, change(), allow),
+      method === "acquire"
+        ? peerReferences.acquireOperation(input)
+        : peerReferences.registerBindings({ [SPEC]: binding }),
+    ]);
+    const [withdrawal, admission] = results;
+    expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+    expect(results.filter((result) => result.status === "rejected")).toHaveLength(1);
+    if (withdrawal.status === "fulfilled") {
+      expect(admission).toMatchObject({ status: "rejected", reason: REFERENCE_ERROR });
+      await expect(lifecycle.assertAvailable(binding)).rejects.toMatchObject(WITHDRAWN);
+    } else {
+      expect(withdrawal.reason).toMatchObject(REFERENCED);
+      expect(admission.status).toBe("fulfilled");
+      await lifecycle.assertAvailable(binding);
+    }
+    const admitted = admission.status === "fulfilled" ? 1 : 0;
+    expect(await db.select().from(spackMaterialBindings)).toHaveLength(
+      method === "register" ? admitted : 0,
+    );
+    expect(await db.select().from(spackMaterialOperationReferences)).toHaveLength(
+      method === "acquire" ? admitted : 0,
+    );
+    expect(await db.select().from(spackMaterialLifecycleEvents)).toHaveLength(1 - admitted);
+  });
 
   test.each([false, true])("withdrawal requires retired bindings (retired=%s)", async (retire) => {
     const binding = release();
@@ -434,33 +434,112 @@ describe("Spack material lifecycle (isolated real PG)", () => {
     expect(await db.select().from(spackMaterialBindingRetirements)).toEqual(retirements);
   });
 
-  test.each(["queued", "running", "succeeded", "failed", "rejected", "orphan"])(
-    "protects active/orphan references but retains terminal history (%s)",
-    async (status) => {
-      const binding = release();
-      const { lifecycle, references } = await ready();
-      const input = await operation(binding);
+  test.each([
+    "queued",
+    "running",
+    "succeeded",
+    "failed",
+    "rejected",
+    "orphan",
+  ])("protects active/orphan references but retains terminal history (%s)", async (status) => {
+    const binding = release();
+    const { lifecycle, references } = await ready();
+    const input = await operation(binding);
+    await references.acquireOperation(input);
+    if (status === "orphan") {
+      await db.update(softwareOperations).set({ status: "succeeded" });
+      await db.delete(softwareOperations).where(eq(softwareOperations.id, input.operationId));
+    } else {
+      await db.update(softwareOperations).set({ status });
+    }
+    const historical = await db.select().from(spackMaterialOperationReferences);
+    if (["queued", "running", "orphan"].includes(status)) {
+      await expectError(lifecycle.transition(binding, OPERATOR, change(), allow), REFERENCED);
+      expect(await db.select().from(spackMaterialLifecycleEvents)).toEqual([]);
+    } else {
+      await lifecycle.transition(binding, OPERATOR, change(), allow);
+      await db.update(softwareOperations).set({ status: "queued" });
+      await expect(references.acquireOperation(input)).rejects.toMatchObject(REFERENCE_ERROR);
+      await lifecycle.transition(binding, OPERATOR, change("restore", 1), allow);
       await references.acquireOperation(input);
-      if (status === "orphan") {
-        await db.update(softwareOperations).set({ status: "succeeded" });
-        await db.delete(softwareOperations).where(eq(softwareOperations.id, input.operationId));
-      } else {
-        await db.update(softwareOperations).set({ status });
+    }
+    expect(await db.select().from(spackMaterialOperationReferences)).toEqual(historical);
+  });
+
+  test("withdrawal waits for DELETE and rejects the orphan", async () => {
+    const binding = release();
+    const { lifecycle, references } = await ready();
+    const input = await operation(binding);
+    await references.acquireOperation(input);
+    await db
+      .update(softwareOperations)
+      .set({ status: "succeeded" })
+      .where(eq(softwareOperations.id, input.operationId));
+    const historical = await db.select().from(spackMaterialOperationReferences);
+    const [waiter] = await db.$client<{ pid: number }[]>`select pg_backend_pid() as pid`;
+    const [holder] = await peerDb.$client<{ pid: number }[]>`select pg_backend_pid() as pid`;
+    if (!waiter || !holder) throw new Error("Expected independent backend PIDs");
+    expect(waiter.pid).not.toBe(holder.pid);
+    const deleteReady = Promise.withResolvers<void>();
+    const commitDeletion = Promise.withResolvers<void>();
+    const deletion = peerDb.transaction(async (tx) => {
+      await tx.delete(softwareOperations).where(eq(softwareOperations.id, input.operationId));
+      deleteReady.resolve();
+      await commitDeletion.promise;
+    });
+    const deletionResult = Promise.allSettled([deletion]);
+    let withdrawalCompleted = false;
+    let withdrawalResult: Promise<PromiseSettledResult<unknown>[]> | undefined;
+    try {
+      await Promise.race([
+        deleteReady.promise,
+        deletion.then(() => {
+          throw new Error("DELETE committed before its release signal");
+        }),
+      ]);
+      const withdrawal = lifecycle.transition(binding, OPERATOR, change(), allow);
+      withdrawalResult = Promise.allSettled([withdrawal]).then((results) => {
+        withdrawalCompleted = true;
+        return results;
+      });
+      const deadline = Date.now() + 4_000;
+      let blocked = false;
+      while (Date.now() < deadline) {
+        if (withdrawalCompleted) throw new Error("Withdrawal did not wait for DELETE");
+        // The peer holds RowExclusiveLock; require a relation ShareLock wait, not advisory.
+        const [row] = await admin.$client<{ blocked: boolean }[]>`
+          select ${holder.pid} = any(pg_blocking_pids(${waiter.pid}))
+            and exists (
+              select 1 from pg_locks
+              where pid = ${waiter.pid} and locktype = 'relation'
+                and mode = 'ShareLock' and not granted
+                and relation = to_regclass(${`${SCHEMA}.software_operations`})
+            ) as blocked
+        `;
+        if (row?.blocked) {
+          blocked = true;
+          break;
+        }
+        await Bun.sleep(10);
       }
-      const historical = await db.select().from(spackMaterialOperationReferences);
-      if (["queued", "running", "orphan"].includes(status)) {
-        await expectError(lifecycle.transition(binding, OPERATOR, change(), allow), REFERENCED);
-        expect(await db.select().from(spackMaterialLifecycleEvents)).toEqual([]);
-      } else {
-        await lifecycle.transition(binding, OPERATOR, change(), allow);
-        await db.update(softwareOperations).set({ status: "queued" });
-        await expect(references.acquireOperation(input)).rejects.toMatchObject(REFERENCE_ERROR);
-        await lifecycle.transition(binding, OPERATOR, change("restore", 1), allow);
-        await references.acquireOperation(input);
-      }
-      expect(await db.select().from(spackMaterialOperationReferences)).toEqual(historical);
-    },
-  );
+      expect(blocked).toBe(true);
+      expect(withdrawalCompleted).toBe(false);
+    } finally {
+      deleteReady.resolve();
+      commitDeletion.resolve();
+      await Promise.all([deletionResult, withdrawalResult]);
+    }
+    expect(await deletionResult).toMatchObject([{ status: "fulfilled" }]);
+    expect(await withdrawalResult).toMatchObject([{ status: "rejected", reason: REFERENCED }]);
+    expect(await db.select().from(softwareOperations)).toEqual([]);
+    expect(await db.select().from(spackMaterialOperationReferences)).toEqual(historical);
+    expect(await db.select().from(spackMaterialLifecycleEvents)).toEqual([]);
+    expect(await lifecycle.inspect(binding, OPERATOR, allow)).toMatchObject({
+      revision: 0,
+      state: "available",
+      history: [],
+    });
+  }, 15_000);
 
   test("passes canonical users/memberships to policy and observes revocation", async () => {
     const binding = release();
@@ -486,82 +565,81 @@ describe("Spack material lifecycle (isolated real PG)", () => {
     expect(await db.select().from(spackMaterialLifecycleEvents)).toHaveLength(1);
   });
 
-  test.each(["suspension", "membership deletion"])(
-    "canonical FOR SHARE locks block concurrent %s until the mutation commits",
-    async (mode) => {
-      const binding = release();
-      const { lifecycle } = await ready();
-      const orgId = randomUUID();
-      await db.update(users).set({ role: "user" }).where(eq(users.id, OPERATOR));
-      await db.insert(userOrgMemberships).values({ userId: OPERATOR, orgId, role: "member" });
-      const [holder] = await db.$client<{ pid: number }[]>`select pg_backend_pid() as pid`;
-      const [writer] = await peerDb.$client<{ pid: number }[]>`select pg_backend_pid() as pid`;
-      if (!holder || !writer) throw new Error("Expected independent backend PIDs");
-      expect(holder.pid).not.toBe(writer.pid);
-      const entered = Promise.withResolvers<void>();
-      const releaseAuthorization = Promise.withResolvers<void>();
-      const authorize = mock<Authorize>(async (principal) => {
-        if (!principal.orgIds.includes(orgId)) throw new Error("Namespace access revoked");
-        entered.resolve();
-        await releaseAuthorization.promise;
-      });
-      const mutation = lifecycle.transition(binding, OPERATOR, change(), authorize);
-      const mutationResult = Promise.allSettled([mutation]);
-      let updateCompleted = false;
-      let updateResult: Promise<PromiseSettledResult<unknown>[]> | undefined;
-      try {
-        await Promise.race([
-          entered.promise,
-          mutation.then(() => {
-            throw new Error("Mutation completed without waiting for authorization");
-          }),
-        ]);
-        expect(authorize).toHaveBeenLastCalledWith({
-          sub: OPERATOR,
-          role: "user",
-          orgIds: [orgId],
-        });
-        updateResult = Promise.allSettled([
-          peerDb.transaction(async (tx) => {
-            if (mode === "suspension") {
-              await tx.update(users).set({ suspended: true }).where(eq(users.id, OPERATOR));
-            } else {
-              await tx.delete(userOrgMemberships).where(eq(userOrgMemberships.userId, OPERATOR));
-            }
-          }),
-        ]).then((results) => {
-          updateCompleted = true;
-          return results;
-        });
-        // Observe a real row-lock conflict, not merely an unsettled client promise.
-        await waitForRowLock(admin, writer.pid, holder.pid, () => updateCompleted);
-        expect(updateCompleted).toBe(false);
-      } finally {
-        releaseAuthorization.resolve();
-        await Promise.all([mutationResult, updateResult]);
-      }
-      expect(await mutationResult).toMatchObject([
-        { status: "fulfilled", value: { revision: 1, state: "withdrawn" } },
+  test.each([
+    "suspension",
+    "membership deletion",
+  ])("canonical FOR SHARE locks block concurrent %s until the mutation commits", async (mode) => {
+    const binding = release();
+    const { lifecycle } = await ready();
+    const orgId = randomUUID();
+    await db.update(users).set({ role: "user" }).where(eq(users.id, OPERATOR));
+    await db.insert(userOrgMemberships).values({ userId: OPERATOR, orgId, role: "member" });
+    const [holder] = await db.$client<{ pid: number }[]>`select pg_backend_pid() as pid`;
+    const [writer] = await peerDb.$client<{ pid: number }[]>`select pg_backend_pid() as pid`;
+    if (!holder || !writer) throw new Error("Expected independent backend PIDs");
+    expect(holder.pid).not.toBe(writer.pid);
+    const entered = Promise.withResolvers<void>();
+    const releaseAuthorization = Promise.withResolvers<void>();
+    const authorize = mock<Authorize>(async (principal) => {
+      if (!principal.orgIds.includes(orgId)) throw new Error("Namespace access revoked");
+      entered.resolve();
+      await releaseAuthorization.promise;
+    });
+    const mutation = lifecycle.transition(binding, OPERATOR, change(), authorize);
+    const mutationResult = Promise.allSettled([mutation]);
+    let updateCompleted = false;
+    let updateResult: Promise<PromiseSettledResult<unknown>[]> | undefined;
+    try {
+      await Promise.race([
+        entered.promise,
+        mutation.then(() => {
+          throw new Error("Mutation completed without waiting for authorization");
+        }),
       ]);
-      expect(await updateResult).toMatchObject([{ status: "fulfilled" }]);
-      expect(updateCompleted).toBe(true);
-      if (mode === "suspension") {
-        expect(await db.select().from(users).where(eq(users.id, OPERATOR))).toMatchObject([
-          { suspended: true },
-        ]);
-      } else {
-        expect(await db.select().from(userOrgMemberships)).toEqual([]);
-      }
-      await expectError(lifecycle.inspect(binding, OPERATOR, authorize), FORBIDDEN);
-      await expectError(
-        lifecycle.transition(binding, OPERATOR, change("restore", 1), authorize),
-        FORBIDDEN,
-      );
-      expect(authorize).toHaveBeenCalledTimes(mode === "suspension" ? 1 : 3);
-      expect(await db.select().from(spackMaterialLifecycleEvents)).toHaveLength(1);
-    },
-    15_000,
-  );
+      expect(authorize).toHaveBeenLastCalledWith({
+        sub: OPERATOR,
+        role: "user",
+        orgIds: [orgId],
+      });
+      updateResult = Promise.allSettled([
+        peerDb.transaction(async (tx) => {
+          if (mode === "suspension") {
+            await tx.update(users).set({ suspended: true }).where(eq(users.id, OPERATOR));
+          } else {
+            await tx.delete(userOrgMemberships).where(eq(userOrgMemberships.userId, OPERATOR));
+          }
+        }),
+      ]).then((results) => {
+        updateCompleted = true;
+        return results;
+      });
+      // Observe a real row-lock conflict, not merely an unsettled client promise.
+      await waitForRowLock(admin, writer.pid, holder.pid, () => updateCompleted);
+      expect(updateCompleted).toBe(false);
+    } finally {
+      releaseAuthorization.resolve();
+      await Promise.all([mutationResult, updateResult]);
+    }
+    expect(await mutationResult).toMatchObject([
+      { status: "fulfilled", value: { revision: 1, state: "withdrawn" } },
+    ]);
+    expect(await updateResult).toMatchObject([{ status: "fulfilled" }]);
+    expect(updateCompleted).toBe(true);
+    if (mode === "suspension") {
+      expect(await db.select().from(users).where(eq(users.id, OPERATOR))).toMatchObject([
+        { suspended: true },
+      ]);
+    } else {
+      expect(await db.select().from(userOrgMemberships)).toEqual([]);
+    }
+    await expectError(lifecycle.inspect(binding, OPERATOR, authorize), FORBIDDEN);
+    await expectError(
+      lifecycle.transition(binding, OPERATOR, change("restore", 1), authorize),
+      FORBIDDEN,
+    );
+    expect(authorize).toHaveBeenCalledTimes(mode === "suspension" ? 1 : 3);
+    expect(await db.select().from(spackMaterialLifecycleEvents)).toHaveLength(1);
+  }, 15_000);
 
   test.each(["missing", "suspended", "policy"])("fails authorization closed: %s", async (mode) => {
     const binding = release();
@@ -577,55 +655,57 @@ describe("Spack material lifecycle (isolated real PG)", () => {
     expect(await db.select().from(spackMaterialLifecycleEvents)).toEqual([]);
   });
 
-  test.each(["observe", "missing epoch", "wrong epoch", "paused"])(
-    "requires matching ready rollout for management (%s)",
-    async (mode) => {
-      const binding = release();
-      let lifecycle = new SpackMaterialLifecycle(db);
-      if (mode !== "observe") {
-        const fixture = await ready();
-        const epoch = mode === "wrong epoch" ? randomUUID() : fixture.epoch;
-        lifecycle = new SpackMaterialLifecycle(db, mode === "missing epoch" ? undefined : epoch);
-        if (mode === "paused") {
-          await rollout.execute({
-            action: "pause",
-            operatorId: OPERATOR,
-            expectedRevision: fixture.state.revision,
-          });
-        }
+  test.each([
+    "observe",
+    "missing epoch",
+    "wrong epoch",
+    "paused",
+  ])("requires matching ready rollout for management (%s)", async (mode) => {
+    const binding = release();
+    let lifecycle = new SpackMaterialLifecycle(db);
+    if (mode !== "observe") {
+      const fixture = await ready();
+      const epoch = mode === "wrong epoch" ? randomUUID() : fixture.epoch;
+      lifecycle = new SpackMaterialLifecycle(db, mode === "missing epoch" ? undefined : epoch);
+      if (mode === "paused") {
+        await rollout.execute({
+          action: "pause",
+          operatorId: OPERATOR,
+          expectedRevision: fixture.state.revision,
+        });
       }
-      await expectError(lifecycle.inspect(binding, OPERATOR, allow), UNAVAILABLE);
-      await expectError(lifecycle.transition(binding, OPERATOR, change(), allow), UNAVAILABLE);
-      expect(await db.select().from(spackMaterialLifecycleEvents)).toEqual([]);
-    },
-  );
+    }
+    await expectError(lifecycle.inspect(binding, OPERATOR, allow), UNAVAILABLE);
+    await expectError(lifecycle.transition(binding, OPERATOR, change(), allow), UNAVAILABLE);
+    expect(await db.select().from(spackMaterialLifecycleEvents)).toEqual([]);
+  });
 
-  test.each(["spack_material_lifecycle_events", "spack_material_operation_references"])(
-    "missing %s fails closed without falling back to public",
-    async (table) => {
-      const binding = release();
-      const { lifecycle, references } = await ready();
-      const input = await operation(binding);
-      await db.execute(sql`alter table ${sql.identifier(table)} rename to hidden_lifecycle_table`);
-      try {
-        await expectError(lifecycle.transition(binding, OPERATOR, change(), allow), UNAVAILABLE);
-        await expectError(references.acquireOperation(input), REFERENCE_ERROR);
-        await expectError(references.registerBindings({ [SPEC]: binding }), REFERENCE_ERROR);
-        await expectError(references.registerBindings({}), REFERENCE_ERROR);
-        if (table === "spack_material_lifecycle_events") {
-          await expectError(lifecycle.inspect(binding, OPERATOR, allow), UNAVAILABLE);
-          await expectError(lifecycle.assertAvailable(binding), UNAVAILABLE);
-        }
-      } finally {
-        await db.execute(sql`
-          alter table hidden_lifecycle_table rename to ${sql.identifier(table)}
-        `);
+  test.each([
+    "spack_material_lifecycle_events",
+    "spack_material_operation_references",
+  ])("missing %s fails closed without falling back to public", async (table) => {
+    const binding = release();
+    const { lifecycle, references } = await ready();
+    const input = await operation(binding);
+    await db.execute(sql`alter table ${sql.identifier(table)} rename to hidden_lifecycle_table`);
+    try {
+      await expectError(lifecycle.transition(binding, OPERATOR, change(), allow), UNAVAILABLE);
+      await expectError(references.acquireOperation(input), REFERENCE_ERROR);
+      await expectError(references.registerBindings({ [SPEC]: binding }), REFERENCE_ERROR);
+      await expectError(references.registerBindings({}), REFERENCE_ERROR);
+      if (table === "spack_material_lifecycle_events") {
+        await expectError(lifecycle.inspect(binding, OPERATOR, allow), UNAVAILABLE);
+        await expectError(lifecycle.assertAvailable(binding), UNAVAILABLE);
       }
-      expect(await db.select().from(spackMaterialLifecycleEvents)).toEqual([]);
-      expect(await db.select().from(spackMaterialBindings)).toEqual([]);
-      expect(await db.select().from(spackMaterialOperationReferences)).toEqual([]);
-    },
-  );
+    } finally {
+      await db.execute(sql`
+        alter table hidden_lifecycle_table rename to ${sql.identifier(table)}
+      `);
+    }
+    expect(await db.select().from(spackMaterialLifecycleEvents)).toEqual([]);
+    expect(await db.select().from(spackMaterialBindings)).toEqual([]);
+    expect(await db.select().from(spackMaterialOperationReferences)).toEqual([]);
+  });
 
   test("rejects invalid binding, CAS and reason inputs without journal writes", async () => {
     const binding = release();

@@ -7,6 +7,7 @@ import { createErrorHandler } from "../middleware/error-handler";
 import type { PrincipalMiddlewareOptions } from "../middleware/principal";
 import type { RbacPrincipal } from "../services/namespace";
 import { DEFAULT_RECIPE_LIMITS, RecipeStoreError } from "../services/recipe-git";
+import type { RecipeGitStore } from "../services/recipe-git-store";
 import { healthRoutes } from "./health";
 import { createSpackRepositoryRoutes, type RecipeRepositoryStore } from "./spack-repositories";
 
@@ -118,7 +119,7 @@ export function createStore(repositories: RecipeRepository[] = [repository()]) {
       stream: byteStream(new Uint8Array([0, 1]), new Uint8Array([254, 255])),
       size: 4,
     })),
-  } satisfies RecipeRepositoryStore;
+  } satisfies RecipeRepositoryStore & Pick<RecipeGitStore, "getSnapshot">;
   return { store, imports };
 }
 

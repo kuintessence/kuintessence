@@ -117,9 +117,9 @@ export class RecipeGitStore {
       }
       const snapshot = RecipeSnapshotSchema.parse(
         JSON.parse(
-          (
-            await read(join(this.root, "manifests", id, `${commit}.json`), 2 * 1024 ** 2)
-          ).toString("utf8"),
+          (await read(join(this.root, "manifests", id, `${commit}.json`), 2 * 1024 ** 2)).toString(
+            "utf8",
+          ),
         ),
       );
       if (snapshot.commit !== commit) {

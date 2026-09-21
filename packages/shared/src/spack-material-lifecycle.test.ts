@@ -4,17 +4,17 @@ import { SpackMaterialLifecycleChangeSchema } from "./spack-material-lifecycle";
 const change = { action: "withdraw", expectedRevision: 0, reason: "Source needs review" };
 
 describe("material lifecycle change contract", () => {
-  test.each(["withdraw", "restore"])(
-    "accepts the exact %s command without rewriting it",
-    (action) => {
-      for (const expectedRevision of [0, 2_147_483_646]) {
-        for (const reason of ["x", "Source needs review", "x".repeat(1000)]) {
-          const input = { action, expectedRevision, reason };
-          expect(SpackMaterialLifecycleChangeSchema.parse(input)).toEqual(input);
-        }
+  test.each([
+    "withdraw",
+    "restore",
+  ])("accepts the exact %s command without rewriting it", (action) => {
+    for (const expectedRevision of [0, 2_147_483_646]) {
+      for (const reason of ["x", "Source needs review", "x".repeat(1000)]) {
+        const input = { action, expectedRevision, reason };
+        expect(SpackMaterialLifecycleChangeSchema.parse(input)).toEqual(input);
       }
-    },
-  );
+    }
+  });
 
   test.each([
     null,
