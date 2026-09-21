@@ -527,7 +527,10 @@ describe("SpackMaterialReferences (real PG)", () => {
     const input = await operation(release);
     await references.registerBindings({ [input.spec]: release });
     await expect(
-      db.insert(spackMaterialBindings).values({ spec: input.spec, ...release }).execute(),
+      db
+        .insert(spackMaterialBindings)
+        .values({ spec: input.spec, ...release })
+        .execute(),
     ).rejects.toThrow();
     await references.acquireOperation(input);
     await expect(
