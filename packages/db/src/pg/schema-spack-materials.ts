@@ -79,6 +79,10 @@ export interface SpackMaterialRolloutEvidence {
   legacyInventoryComplete: true;
 }
 
+export interface SpackMaterialRetirementEvidence extends SpackMaterialRolloutEvidence {
+  bindingConfigurationsRemoved: true;
+}
+
 /** Append-only operator journal. Never delete history to return to observation mode. */
 export const spackMaterialRollouts = pgTable(
   "spack_material_rollouts",
@@ -89,7 +93,9 @@ export const spackMaterialRollouts = pgTable(
     action: varchar("action", { length: 16 }).notNull(),
     operatorId: uuid("operator_id").notNull(),
     inventoryDigest: varchar("inventory_digest", { length: 71 }).notNull(),
-    evidence: jsonb("evidence").$type<SpackMaterialRolloutEvidence>(),
+    evidence: jsonb("evidence").$type<
+      SpackMaterialRolloutEvidence | SpackMaterialRetirementEvidence
+    >(),
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   },
   (t) => ({
@@ -97,11 +103,35 @@ export const spackMaterialRollouts = pgTable(
     transitionCheck: check(
       "spack_material_rollouts_transition_check",
       sql`(${t.phase} = 'paused' and ${t.action} in ('pause', 'reconcile') and ${t.evidence} is null)
+        or (${t.phase} = 'paused' and ${t.action} = 'retire' and ${t.evidence} is not null)
         or (${t.phase} = 'ready' and ${t.action} = 'activate' and ${t.evidence} is not null)`,
     ),
     digestCheck: check(
       "spack_material_rollouts_digest_check",
       sql`${t.inventoryDigest} ~ '^sha256:[a-f0-9]{64}$'`,
+    ),
+  }),
+);
+
+/** Irreversible tombstones; preserve the binding row and its audit history. */
+export const spackMaterialBindingRetirements = pgTable(
+  "spack_material_binding_retirements",
+  {
+    bindingId: uuid("binding_id")
+      .primaryKey()
+      .references(() => spackMaterialBindings.id, { onDelete: "restrict" }),
+    epoch: uuid("epoch").notNull(),
+    revision: integer("revision").notNull(),
+    operatorId: uuid("operator_id").notNull(),
+    reason: varchar("reason", { length: 1000 }).notNull(),
+    evidence: jsonb("evidence").$type<SpackMaterialRetirementEvidence>().notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => ({
+    revisionCheck: check("spack_material_binding_retirements_revision_check", sql`${t.revision} > 0`),
+    reasonCheck: check(
+      "spack_material_binding_retirements_reason_check",
+      sql`length(trim(${t.reason})) > 0`,
     ),
   }),
 );
