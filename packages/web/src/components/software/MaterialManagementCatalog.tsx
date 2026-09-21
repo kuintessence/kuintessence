@@ -145,9 +145,10 @@ export function MaterialManagementCatalog({
           />
         </label>
         <label htmlFor={`${id}-state`} className="min-w-0 space-y-1 text-xs">
-          <span>{t("materials.managementState")}</span>
+          <span id={`${id}-state-label`}>{t("materials.managementState")}</span>
           <select
             id={`${id}-state`}
+            aria-labelledby={`${id}-state-label`}
             className="h-9 w-full rounded-md border border-input bg-background px-2 text-sm"
             value={filter.state}
             onChange={(event) => {
@@ -163,9 +164,10 @@ export function MaterialManagementCatalog({
           </select>
         </label>
         <label htmlFor={`${id}-limit`} className="min-w-0 space-y-1 text-xs">
-          <span>{t("materials.managementPageSize")}</span>
+          <span id={`${id}-limit-label`}>{t("materials.managementPageSize")}</span>
           <select
             id={`${id}-limit`}
+            aria-labelledby={`${id}-limit-label`}
             className="h-9 w-full rounded-md border border-input bg-background px-2 text-sm"
             value={filter.limit}
             onChange={(event) => edit({ ...filter, limit: Number(event.target.value) })}

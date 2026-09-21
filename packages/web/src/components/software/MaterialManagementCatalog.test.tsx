@@ -60,6 +60,18 @@ function search() {
   fireEvent.click(screen.getByRole("button", { name: labels.managementSearch }));
 }
 
+test("select accessible names stay independent of their selected options", () => {
+  mount();
+  const state = screen.getByRole("combobox", { name: labels.managementState });
+  const limit = screen.getByRole("combobox", { name: labels.managementPageSize });
+  fireEvent.change(state, { target: { value: "withdrawn" } });
+  fireEvent.change(limit, { target: { value: "1" } });
+  expect(screen.getByRole("combobox", { name: labels.managementState })).toBe(state);
+  expect(screen.getByRole("combobox", { name: labels.managementPageSize })).toBe(limit);
+  expect(state).toHaveProperty("value", "withdrawn");
+  expect(limit).toHaveProperty("value", "1");
+});
+
 test("requires an explicit manageable repository and search, with all/10 defaults", async () => {
   const { props } = mount();
   expect(client.listSpackMaterialManagement).not.toHaveBeenCalled();
