@@ -31,6 +31,7 @@ export * from "./spack";
 export * from "./spack-lock";
 export * from "./spack-material-catalog";
 export * from "./spack-material-import";
+export * from "./spack-material-lifecycle";
 export * from "./spack-materials";
 export * from "./spack-repositories";
 export * from "./spack-upstream";

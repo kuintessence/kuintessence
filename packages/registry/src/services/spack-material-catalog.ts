@@ -22,6 +22,7 @@ import {
   isMissing,
   type MaterialMetadataReadOptions,
   SpackMaterialError,
+  SpackMaterialWithdrawnError,
 } from "./spack-material-storage";
 import type { StoredSpackMaterialManifest } from "./spack-material-store";
 
@@ -125,11 +126,20 @@ export class SpackMaterialCatalogReader {
         if (!/^[a-f0-9]{64}\.json$/.test(entry.name)) continue;
         if (!entry.isFile()) throw new SpackMaterialError(500, "Invalid material catalog file");
         const manifestDigest = `sha256:${entry.name.slice(0, -5)}`;
-        const stored = await this.store.getManifest(id, manifestDigest, {
-          checkpoint,
-          checkSize,
-          validatePath,
-        });
+        let stored: StoredSpackMaterialManifest;
+        try {
+          stored = await this.store.getManifest(id, manifestDigest, {
+            checkpoint,
+            checkSize,
+            validatePath,
+          });
+        } catch (error) {
+          if (error instanceof SpackMaterialWithdrawnError) {
+            checkpoint();
+            continue;
+          }
+          throw error;
+        }
         checkpoint();
         metadataBytes += stored.bytes.byteLength;
         if (metadataBytes > this.limits.maxMetadataBytes) {

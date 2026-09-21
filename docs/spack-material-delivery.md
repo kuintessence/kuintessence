@@ -84,8 +84,7 @@ Server 在启用材料下载时，启动阶段先将 `SPACK_MATERIAL_RELEASES` �
 记录仍然保留。任务记录缺失时单独计为孤儿引用，不能当作无引用。
 绑定登记与任务引用登记共用 PostgreSQL 事务锁，为后续生命周期写入提供一致的锁边界。
 
-**这只是引用基础设施，不是材料下架功能。** 当前未开放下架、恢复、权限变更、
-在线绑定退役或物理回收接口。引用计数是诊断快照，计数为零不证明所有旧 Server、
+**引用账本本身不是材料下架授权。** 引用计数是诊断快照，计数为零不证明所有旧 Server、
 旧配置或升级前安装任务都已登记，也不能用作先查询再下架的授权依据。
 第二批通过[离线 Rollout](spack-material-rollout.md) 提供 pause、旧配置绑定追加对账和
 activate 屏障；activate 要求所有非终态安装（包括未登记引用的任务）及孤儿引用为零。
@@ -100,6 +99,10 @@ DB、Registry、ticket 凭据并更新访问与网络策略；epoch 无法隔离
 rollout journal 必须 append-only，删除历史可能不安全地重置 observe。
 不要手动清表、删除绑定或直接改材料卷；
 数据库与 Git/material 卷须一起备份和恢复。
+第四批增加[材料下架与恢复 API](spack-material-lifecycle.md)，要求 ready epoch、
+事务内 canonical 权限与引用检查。状态单独保存在追加式 PostgreSQL journal，
+目录、直接下载及 Server 安装准入均检查；同内容重导入不会恢复已下架发布。
+管理 API 不提供在线绑定退役、可见范围调整、Web 状态控件或物理回收。
 
 ## 初始化与本地批量导入
 

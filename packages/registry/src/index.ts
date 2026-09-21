@@ -1,4 +1,10 @@
-import { createPgDb, SpackMaterialRollout, userOrgMemberships, users } from "@kuintessence/db";
+import {
+  createPgDb,
+  SpackMaterialLifecycle,
+  SpackMaterialRollout,
+  userOrgMemberships,
+  users,
+} from "@kuintessence/db";
 import { createLogger, RegistryRoleSchema } from "@kuintessence/shared";
 import { eq } from "drizzle-orm";
 import { Hono } from "hono";
@@ -67,6 +73,7 @@ const materialStore =
           idleTimeoutMs: config.SPACK_MATERIAL_UPLOAD_IDLE_TIMEOUT_MS,
         },
         { assertRuntime: () => rollout.assertRuntime(config.SPACK_MATERIAL_EPOCH) },
+        new SpackMaterialLifecycle(db, config.SPACK_MATERIAL_EPOCH),
       )
     : undefined;
 const upstreamImporter =

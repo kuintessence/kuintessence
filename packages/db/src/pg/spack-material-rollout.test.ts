@@ -29,6 +29,7 @@ const TABLES = [
   "spack_material_operation_references",
   "spack_material_rollouts",
   "spack_material_binding_retirements",
+  "spack_material_lifecycle_events",
 ] as const;
 const OPERATOR_ID = randomUUID();
 const AGENT_ID = `rollout-agent-${randomUUID()}`;

@@ -153,7 +153,12 @@ operation 引用：
 追加 `spack-case/rollout.ts` 的真实 runtime fence 回归。脚本只在 Server 的可信
 workspace 内运行，要求 `KQ_PR_TEST=1`、无 `AGENT_ID`、材料分发开启，并严格检查
 本次 GNU Hello fixture、唯一配置 binding、唯一真实安装历史引用和零 active/orphan
-计数。不向 Agent 提供 DB 或 Registry 凭据，也不引入管理 HTTP endpoint。
+计数。不向 Agent 提供 DB 或 Registry 凭据；Rollout 本身仍无管理 HTTP endpoint。
+在 ready epoch 重建后的验证阶段，还会通过 Registry 的材料 lifecycle API
+检查真实 Hello release 为 available/revision 0，尝试下架必须返回
+`MATERIAL_RELEASE_REFERENCED`，随后状态与 manifest 均保持不变。
+这验证实际服务接线及有效绑定保护，不代表成功下架/恢复或生产环境验收；
+成功转换、权限和并发由独立的 PostgreSQL/HTTP 回归覆盖。
 
 1. `activate` 使用现有 API helper 登录仍在运行的 Server，并从 DB 获取已播种的
    canonical admin ID。先验证 Registry manifest GET 为 200 且 size/SHA-256 精确匹配，

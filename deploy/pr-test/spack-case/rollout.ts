@@ -53,6 +53,7 @@ type Stage =
   | "ready-journal"
   | "verify-reference"
   | "verify-manifest"
+  | "verify-lifecycle"
   | "close"
   | "complete";
 let mode: z.infer<typeof ModeSchema> | "guard" = "guard";
@@ -404,6 +405,42 @@ async function main(): Promise<string | undefined> {
       await checkReadyJournal(db, after, operatorId);
       progress("verify-manifest");
       await checkManifest(token, release, 200);
+      progress("verify-lifecycle");
+      const lifecycleUrl = `${registry}/api/spack/material-repositories/${release.binding.repositoryId}/releases/${release.binding.manifestDigest}/lifecycle`;
+      const requestLifecycle = (body?: unknown) =>
+        fetch(lifecycleUrl, {
+          method: body === undefined ? "GET" : "POST",
+          headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+          body: body === undefined ? undefined : JSON.stringify(body),
+          redirect: "error",
+          signal: AbortSignal.timeout(10_000),
+        });
+      const initial = await requestLifecycle();
+      assert.equal(initial.status, 200);
+      assert.equal(initial.headers.get("Cache-Control"), "private, no-store");
+      const status = z.object({
+        revision: z.literal(0),
+        state: z.literal("available"),
+        history: z.array(z.unknown()).length(0),
+        historyTruncated: z.literal(false),
+      });
+      status.parse(await initial.json());
+      const conflict = await requestLifecycle({
+        action: "withdraw",
+        expectedRevision: 0,
+        reason: "Disposable CI verifies that the active Hello binding remains protected",
+      });
+      assert.equal(conflict.status, 409);
+      z.object({
+        error: z.object({ code: z.literal("MATERIAL_RELEASE_REFERENCED") }),
+      }).parse(await conflict.json());
+      const unchanged = await requestLifecycle();
+      assert.equal(unchanged.status, 200);
+      status.parse(await unchanged.json());
+      await checkManifest(token, release, 200);
+      console.error(
+        "Spack lifecycle: stage=verify code=OK referencedReleaseProtected=true revision=0",
+      );
     }
     progress("close");
   } finally {

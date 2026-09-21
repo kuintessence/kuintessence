@@ -3,6 +3,10 @@ import type { PgDb } from "./index";
 import { softwareOperations } from "./schema";
 import { spackMaterialBindings, spackMaterialOperationReferences } from "./schema-spack-materials";
 import { assertSpackMaterialBindingsActive } from "./spack-material-binding-retirement";
+import {
+  assertSpackMaterialReleasesAvailable,
+  SpackMaterialLifecycleError,
+} from "./spack-material-lifecycle-state";
 import { assertSpackMaterialRuntime } from "./spack-material-runtime";
 
 export interface SpackMaterialReferenceBinding {
@@ -41,7 +45,8 @@ export async function withSpackMaterialLifecycleTransaction<T>(
       );
       return work(tx);
     });
-  } catch {
+  } catch (error) {
+    if (error instanceof SpackMaterialLifecycleError) throw error;
     throw referenceError();
   }
 }
@@ -59,6 +64,7 @@ export class SpackMaterialReferences {
       await withSpackMaterialLifecycleTransaction(this.db, async (tx) => {
         await assertSpackMaterialRuntime(tx, this.epoch);
         await assertSpackMaterialBindingsActive(tx, rows);
+        await assertSpackMaterialReleasesAvailable(tx, rows);
         // Empty configurations must still fail when reference tables/columns are missing.
         await tx.select().from(spackMaterialBindings).limit(0);
         await tx.select().from(spackMaterialOperationReferences).limit(0);
@@ -85,6 +91,7 @@ export class SpackMaterialReferences {
       await withSpackMaterialLifecycleTransaction(this.db, async (tx) => {
         await assertSpackMaterialRuntime(tx, this.epoch);
         await assertSpackMaterialBindingsActive(tx, [value]);
+        await assertSpackMaterialReleasesAvailable(tx, [value]);
         const [operation] = await tx
           .select({
             agentId: softwareOperations.agentId,

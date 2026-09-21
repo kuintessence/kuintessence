@@ -62,6 +62,14 @@ export function createStore(repositories: RecipeRepository[] = [repository()]) {
     limits,
     list: mock(async () => repositories),
     get,
+    getSnapshot: mock(async (id: string, commit: string, checkpoint?: () => void) => {
+      checkpoint?.();
+      const recipe = await get(id);
+      const snapshot = recipe.snapshots.find((item) => item.commit === commit);
+      if (!snapshot) throw new RecipeStoreError(404, "Recipe snapshot not found");
+      checkpoint?.();
+      return { id: recipe.id, repository: recipe.repository, snapshot };
+    }),
     importBundle: mock(
       async (name: string, input: Uint8Array | ReadableStream<Uint8Array>, actor: string) => {
         const chunks: Uint8Array[] = [];

@@ -1,8 +1,10 @@
+import { SpackMaterialLifecycleError } from "@kuintessence/db";
 import {
   ErrorCode,
   RecipeRepositoryNameSchema,
   SpackMaterialCatalogQuerySchema,
   SpackMaterialDigestSchema,
+  SpackMaterialLifecycleChangeSchema,
   SpackMaterialPublishSchema,
 } from "@kuintessence/shared";
 import { type Context, Hono, type MiddlewareHandler } from "hono";
@@ -84,6 +86,9 @@ export function createSpackMaterialRoutes(
   };
 
   r.onError((error, c) => {
+    if (error instanceof SpackMaterialLifecycleError) {
+      return c.json({ error: { code: error.code, message: error.message } }, error.status);
+    }
     if (error instanceof SpackMaterialError) {
       return c.json(
         {
@@ -194,6 +199,45 @@ export function createSpackMaterialRoutes(
         ETag: `"${c.req.param("digest")}"`,
       },
     });
+  });
+
+  r.get(`${BASE}/:id/releases/:digest/lifecycle`, authenticate, async (c) => {
+    c.header("Cache-Control", "private, no-store");
+    rejectQueries(c);
+    return c.json(
+      await getStore().manageLifecycle(
+        c.req.param("id"),
+        c.req.param("digest"),
+        c.get("principal").sub,
+        undefined,
+        opts.publisherRoles,
+        c.req.raw.signal,
+      ),
+    );
+  });
+
+  r.post(`${BASE}/:id/releases/:digest/lifecycle`, authenticate, async (c) => {
+    c.header("Cache-Control", "private, no-store");
+    rejectQueries(c);
+    requireContentType(c, "application/json");
+    checkLength(c, MATERIAL_METADATA_BYTES);
+    const body = c.req.raw.body;
+    if (!body) throw new SpackMaterialError(400, "Material lifecycle body is empty");
+    const change = parseMaterial(
+      SpackMaterialLifecycleChangeSchema,
+      await readMaterialJson(body),
+      "material lifecycle change",
+    );
+    return c.json(
+      await getStore().manageLifecycle(
+        c.req.param("id"),
+        c.req.param("digest"),
+        c.get("principal").sub,
+        change,
+        opts.publisherRoles,
+        c.req.raw.signal,
+      ),
+    );
   });
 
   r.get(`${BASE}/:id/releases/:manifestDigest/blobs/:digest`, authenticate, async (c) => {
