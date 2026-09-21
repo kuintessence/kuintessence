@@ -294,6 +294,7 @@ function makeReplayReconnectClient(
 ) {
   const sentByConnection: unknown[][] = [[], []];
   const requestDoneByConnection: Array<Promise<void> | undefined> = [];
+  const registrationProcessed = new Set<number>();
   let connectionCount = 0;
   const clientFactory = () => {
     const connection = connectionCount;
@@ -314,6 +315,8 @@ function makeReplayReconnectClient(
           .finally(resolveRequestDone);
         return (async function* () {
           yield accepted;
+          // The next response is requested only after AgentStream handles registration.
+          registrationProcessed.add(connection);
           if (connection === 0) {
             await closeFirstWhen;
             return;
@@ -333,6 +336,7 @@ function makeReplayReconnectClient(
     clientFactory,
     sentByConnection,
     requestDoneByConnection,
+    registrationProcessed,
     connectionCount: () => connectionCount,
   };
 }
@@ -5510,8 +5514,18 @@ describe("AgentStream", () => {
     expect(requests).toEqual(
       mode === "missing"
         ? []
-        : [{ operationId, ticket, manifestDigest, spec: "zlib@1.3.1", spackVersion: "0.22.1" }],
+        : [
+            {
+              operationId,
+              ticket,
+              manifestDigest,
+              spec: "zlib@1.3.1",
+              spackVersion: "0.22.1",
+              signal: expect.any(AbortSignal),
+            },
+          ],
     );
+    if (mode !== "missing") expect(requests[0]?.signal?.aborted).toBe(true);
     expect(calls).toEqual([["spack", "--version"]]);
   });
 
@@ -5931,7 +5945,18 @@ describe("AgentStream", () => {
         ((reconnect.sentByConnection[connection] ?? []) as AgentMessage[]).flatMap((message) =>
           message.payload.case === "softwareOperationResult" ? [message.payload.value] : [],
         );
-      return { stream, running, spackManager, closeFirst, reconnect, request, results };
+      const waitForRegistration = (connection = 0) =>
+        waitForCondition(() => reconnect.registrationProcessed.has(connection));
+      return {
+        stream,
+        running,
+        spackManager,
+        closeFirst,
+        reconnect,
+        request,
+        results,
+        waitForRegistration,
+      };
     }
 
     async function pendingSpillFixture(timeoutMs?: number) {
@@ -6134,9 +6159,7 @@ describe("AgentStream", () => {
       });
       let stopFinished = false;
       try {
-        await waitForCondition(
-          () => queueInventoryHeartbeats(f.reconnect.sentByConnection[0] ?? []).length > 0,
-        );
+        await f.waitForRegistration();
         await f.request("00000000-0000-0000-0000-000000000040");
         await entered.promise;
         await f.request("00000000-0000-0000-0000-000000000041");
@@ -6194,16 +6217,12 @@ describe("AgentStream", () => {
         return { outcome: "succeeded", stdout: "export PATH=/srv/kq/bin:$PATH;", installed: [] };
       };
       try {
-        await waitForCondition(
-          () => queueInventoryHeartbeats(f.reconnect.sentByConnection[0] ?? []).length > 0,
-        );
+        await f.waitForRegistration();
         await f.request("00000000-0000-0000-0000-000000000042");
         await entered.promise;
         await waitForCondition(() => f.results(0).length > 0);
         f.closeFirst.resolve();
-        await waitForCondition(
-          () => queueInventoryHeartbeats(f.reconnect.sentByConnection[1] ?? []).length > 0,
-        );
+        await f.waitForRegistration(1);
         expect(signals).toHaveLength(1);
         expect(signals[0]?.aborted).toBe(false);
         release.resolve();
@@ -6249,9 +6268,7 @@ describe("AgentStream", () => {
             : [],
         );
       try {
-        await waitForCondition(
-          () => queueInventoryHeartbeats(f.reconnect.sentByConnection[0] ?? []).length > 0,
-        );
+        await f.waitForRegistration();
         await f.request(operationId);
         await entered.promise;
         const stopping = f.stream.stop();
