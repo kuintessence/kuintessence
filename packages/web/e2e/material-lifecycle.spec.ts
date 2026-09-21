@@ -104,7 +104,7 @@ async function mount(page: Page, reads: SpackMaterialLifecycleView[], writes: Re
       }
       await route.fulfill({
         status: receipt.status,
-        contentType: "application/json",
+        contentType: "application/json; charset=utf-8",
         body: JSON.stringify(receipt.body),
       });
       return;
@@ -112,8 +112,9 @@ async function mount(page: Page, reads: SpackMaterialLifecycleView[], writes: Re
     if (request.method() === "GET" && url.origin === origin && !url.search) {
       if (url.pathname === "/") {
         await route.fulfill({
-          contentType: "text/html",
+          contentType: "text/html; charset=utf-8",
           body: `<!doctype html><html lang="en"><head>
+            <meta charset="utf-8">
             <meta name="viewport" content="width=device-width, initial-scale=1">
             <link rel="icon" href="data:,"><link rel="stylesheet" href="/fixture.css">
             <title>Material lifecycle acceptance fixture</title>
@@ -123,7 +124,9 @@ async function mount(page: Page, reads: SpackMaterialLifecycleView[], writes: Re
       }
       if (url.pathname === "/fixture.js" || url.pathname === "/fixture.css") {
         await route.fulfill({
-          contentType: url.pathname.endsWith(".js") ? "application/javascript" : "text/css",
+          contentType: url.pathname.endsWith(".js")
+            ? "application/javascript; charset=utf-8"
+            : "text/css; charset=utf-8",
           body: url.pathname.endsWith(".js") ? javascript : css,
         });
         return;
@@ -229,6 +232,7 @@ test("desktop withdraws and restores with explicit reasons, confirmation, and au
   await expect(withdraw).toBeDisabled();
   await reason.fill(` ${withdrawReason}`);
   await expect(reason).toHaveAttribute("aria-invalid", "true");
+  await expect(page.getByText(labels.lifecycleInvalidReason, { exact: true })).toBeVisible();
   await expect(withdraw).toBeDisabled();
   await reason.fill(withdrawReason);
   await expect(withdraw).toBeDisabled();

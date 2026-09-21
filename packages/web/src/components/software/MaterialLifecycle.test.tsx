@@ -112,6 +112,10 @@ test.each([
   inspectLifecycle();
   await screen.findByTestId("material-lifecycle-detail");
   confirmLifecycle(reason);
+  expect(lifecycleUi().getByLabelText(labels.lifecycleReason, { exact: true })).toHaveProperty(
+    "value",
+    reason,
+  );
   expect(
     lifecycleUi().getByRole("button", { name: labels.lifecycleAction.withdraw }),
   ).toHaveProperty("disabled", true);

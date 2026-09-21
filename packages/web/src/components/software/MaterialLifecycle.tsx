@@ -167,7 +167,7 @@ export function MaterialLifecycle({
             }}
           >
             <label htmlFor={`${id}-reason`} className="block space-y-1 text-xs">
-              <span>{t("materials.lifecycleReason")}</span>
+              <span id={`${id}-reason-label`}>{t("materials.lifecycleReason")}</span>
               <textarea
                 id={`${id}-reason`}
                 className="min-h-20 w-full resize-y rounded-md border border-input bg-transparent p-2 text-sm"
@@ -175,6 +175,7 @@ export function MaterialLifecycle({
                 maxLength={1000}
                 value={reason}
                 disabled={!canWriteRepository(view.repository)}
+                aria-labelledby={`${id}-reason-label`}
                 aria-invalid={reason.length > 0 && !validReason}
                 aria-describedby={reason.length > 0 && !validReason ? `${id}-invalid` : undefined}
                 onChange={(event) => {
