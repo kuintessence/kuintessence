@@ -20,6 +20,7 @@ import {
   SUPER,
   USER,
 } from "../routes/spack-repositories.test-helpers";
+import type { RbacPrincipal } from "./namespace";
 import { materialDigest } from "./spack-material-storage";
 import {
   type SpackUpstreamDownloadPort,
@@ -33,6 +34,7 @@ const LOCK_URL = "https://sources.example.org/spack.lock";
 const SOURCE_URL = "https://sources.example.org/source.tar.gz";
 const BUNDLE = new TextEncoder().encode("bundle fixture");
 const BUNDLE_URL = "https://sources.example.org/recipes.bundle";
+const DENIED_PRINCIPALS: RbacPrincipal[] = [USER, PLATFORM, { ...OWNER, orgIds: [OTHER_ORG] }];
 type DownloadInput = Parameters<SpackUpstreamDownloadPort["withDownload"]>[0];
 
 function observe<T>(operation: Promise<T>) {
@@ -160,18 +162,17 @@ describe("Spack online import orchestration", () => {
     ]);
   });
 
-  test.each([
-    USER,
-    PLATFORM,
-    { ...OWNER, orgIds: [OTHER_ORG] },
-  ])("denies namespace or publisher access before downloading", async (actor) => {
-    const f = await fixture();
-    await expect(f.service.import(f.input, actor, f.signal)).rejects.toMatchObject({
-      status: 403,
-    });
-    expect(f.download.calls).toEqual([]);
-    expect(f.recipes.get).not.toHaveBeenCalled();
-  });
+  test.each(DENIED_PRINCIPALS)(
+    "denies namespace or publisher access before downloading",
+    async (actor) => {
+      const f = await fixture();
+      await expect(f.service.import(f.input, actor, f.signal)).rejects.toMatchObject({
+        status: 403,
+      });
+      expect(f.download.calls).toEqual([]);
+      expect(f.recipes.get).not.toHaveBeenCalled();
+    },
+  );
 
   test("configured publisher exclusions also apply to direct service calls", async () => {
     const f = await fixture();

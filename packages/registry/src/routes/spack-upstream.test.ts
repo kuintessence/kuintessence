@@ -8,6 +8,7 @@ import {
 } from "@kuintessence/shared/browser";
 import { Hono } from "hono";
 import type { PrincipalMiddlewareOptions } from "../middleware/principal";
+import type { RbacPrincipal } from "../services/namespace";
 import { materialDigest, SpackMaterialError } from "../services/spack-material-storage";
 import {
   type SpackUpstreamDownloadPort,
@@ -40,6 +41,7 @@ afterEach(cleanupMaterials);
 const BASE = "/api/spack/upstream-imports";
 const BUNDLE = new TextEncoder().encode("bundle");
 const URL = "https://sources.example.org/recipes.bundle";
+const DENIED_PRINCIPALS: RbacPrincipal[] = [USER, PLATFORM, { ...OWNER, orgIds: [OTHER_ORG] }];
 
 function app(
   service?: SpackUpstreamImportService,
@@ -119,19 +121,18 @@ describe("Spack upstream import HTTP authorization", () => {
     expect((await root.request("/api/health")).status).toBe(200);
   });
 
-  test.each([
-    USER,
-    PLATFORM,
-    { ...OWNER, orgIds: [OTHER_ORG] },
-  ])("rejects publishers without both namespace read and write access before any download", async (actor) => {
-    const f = await fixture();
-    for (const input of [f.recipe, f.material]) {
-      await expectError(await f.app.request(BASE, request(input, actor)), 403);
-    }
-    expect(f.calls).toEqual([]);
-    expect(f.recipes.importBundle).not.toHaveBeenCalled();
-    expect(f.recipes.get).not.toHaveBeenCalled();
-  });
+  test.each(DENIED_PRINCIPALS)(
+    "rejects publishers without both namespace read and write access before any download",
+    async (actor) => {
+      const f = await fixture();
+      for (const input of [f.recipe, f.material]) {
+        await expectError(await f.app.request(BASE, request(input, actor)), 403);
+      }
+      expect(f.calls).toEqual([]);
+      expect(f.recipes.importBundle).not.toHaveBeenCalled();
+      expect(f.recipes.get).not.toHaveBeenCalled();
+    },
+  );
 
   test("rejects noncanonical, suspended and stale privileged JWT identities", async () => {
     const f = await fixture();

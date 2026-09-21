@@ -100,13 +100,16 @@ function mount(kind: Kind, strict = false) {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false, gcTime: Infinity } },
   });
-  const panel =
-    kind === "recipe" ? <RecipeRepositoriesPanel canManage /> : <SpackMaterialsPanel canManage />;
-  const content = () => (
-    <QueryClientProvider client={client}>
-      {strict ? <StrictMode>{panel}</StrictMode> : panel}
-    </QueryClientProvider>
-  );
+  const content = () => {
+    // Recreate the element so refresh observes changed mock capabilities.
+    const panel =
+      kind === "recipe" ? <RecipeRepositoriesPanel canManage /> : <SpackMaterialsPanel canManage />;
+    return (
+      <QueryClientProvider client={client}>
+        {strict ? <StrictMode>{panel}</StrictMode> : panel}
+      </QueryClientProvider>
+    );
+  };
   const view = render(content());
   return { ...view, refresh: () => view.rerender(content()) };
 }
