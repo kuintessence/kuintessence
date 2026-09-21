@@ -43,7 +43,8 @@ SOLVER_MARKER = (
     r"ci-solved-lock:status=(?:ok|limit|unavailable) "
     r"solved=(?:[0-9]{1,2}|over-limit|unavailable) "
     r"expected=(?:[0-9]{1,2}|over-limit|unavailable) root-hash=(?:true|false|unavailable)|"
-    r"ci-solved-node:package=(?:hello|gcc|gmake|glibc|compiler-wrapper|gcc-runtime|other) "
+    r"ci-solved-node:package=(?:hello|gcc|gmake|glibc|compiler-wrapper|gcc-runtime|"
+    r"samtools|htslib|zlib|ncurses|bzip2|xz|pkgconf|pkg-config|diffutils|libiconv|python|perl|other) "
     r"match=(?:unique|missing|ambiguous) hash=(?:true|false|unavailable) "
     r"version=(?:true|false|unavailable) namespace=(?:true|false|unavailable) "
     r"arch-profile=(?:true|false|unavailable) arch-lock=(?:true|false|unavailable) "
@@ -1566,6 +1567,37 @@ class SolverDiagnosticTests(DiagnosticTestCase):
         return f"ci-solved-node:package={package} match={match} " + " ".join(
             f"{key}={value}" for key, value in fields.items()
         )
+
+    def test_solved_known_packages_preserve_only_fixed_names(self):
+        names = (
+            "hello", "gcc", "gmake", "glibc", "compiler-wrapper", "gcc-runtime",
+            "samtools", "htslib", "zlib", "ncurses", "bzip2", "xz", "pkgconf", "pkg-config",
+            "diffutils", "libiconv", "python", "perl",
+        )
+        self.assertEqual(diagnostic.SOLVED_PACKAGES, set(names))
+        root, lock, profile = self.solved_fixture(names)
+        diagnostic.emit_solved_lock(root, lock, profile, self.fd)
+        self.assert_diagnostics([
+            f"ci-solved-lock:status=ok solved={len(names)} expected={len(names)} root-hash=true",
+            *[self.solved_node_marker(name) for name in names],
+        ])
+
+    def test_solved_unknown_and_injected_package_names_remain_other(self):
+        for name in (
+            "private-package", "samtools-extra", "SAMTOOLS", " samtools", "samtools ",
+            "samtools@1.19.2", "builtin.samtools", "/private/samtools", "pkg_config",
+            "samtools\nci-solved-node:package=perl", "htslib\rpackage=zlib",
+            "zlib\x00", "python;private-token", "\x1b[31mperl",
+        ):
+            with self.subTest(name=name):
+                self.reset_observations()
+                root, lock, profile = self.solved_fixture((name,))
+                diagnostic.emit_solved_lock(root, lock, profile, self.fd)
+                self.assert_diagnostics([
+                    "ci-solved-lock:status=ok solved=1 expected=1 root-hash=true",
+                    self.solved_node_marker("other"),
+                ])
+                self.assertNotRegex(self.solved_node_marker(name), SOLVER_MARKER)
 
     def test_bind_success_and_non_exception_failures_do_not_observe_native_inputs(self):
         argument, result = object(), object()

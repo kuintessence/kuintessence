@@ -70,6 +70,11 @@ artifact。已有 PR 准备器服务于固定案例，不提供任意 spec 的�
 上游 commit 与人工打包后的 snapshot commit 也不是同一概念，release 必须引用
 实际导入且用于 Linux 求解的快照。
 
+准备器与受管 worker 均仅加载隔离的内部配置 scope，不额外叠加 Spack 安装目录、
+用户或站点 defaults。相同 spec 和 recipe 不足以保证相同依赖 DAG；
+provider preference、external 和 target 配置也必须一致。重新求解的 root/DAG hash
+与 lock 不符时必须停止，不能手改 lock 或放宽校验来接受材料。
+
 仅在 GitHub Actions 隔离环境中使用以下入口，不在 macOS、本地 Docker 或实际集群运行：
 
 ```bash

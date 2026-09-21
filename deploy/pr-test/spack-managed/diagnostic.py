@@ -410,7 +410,11 @@ def diagnosed_compilation(function, replace_attribute, executable, fd):
 
 
 SOLVED_NODE_LIMIT = 64
-SOLVED_PACKAGES = {"hello", "gcc", "gmake", "glibc", "compiler-wrapper", "gcc-runtime"}
+SOLVED_PACKAGES = {
+    "hello", "gcc", "gmake", "glibc", "compiler-wrapper", "gcc-runtime",
+    "samtools", "htslib", "zlib", "ncurses", "bzip2", "xz", "pkgconf", "pkg-config",
+    "diffutils", "libiconv", "python", "perl",
+}
 
 
 def comparison_value(value, budget, depth=0):

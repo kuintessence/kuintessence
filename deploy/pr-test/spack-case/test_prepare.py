@@ -1,6 +1,7 @@
 """Offline metadata regressions; run in CI with Python unittest and local Git."""
 
 import ast
+from contextlib import ExitStack, contextmanager, nullcontext
 import hashlib
 import importlib.util
 import json
@@ -9,7 +10,7 @@ from pathlib import Path
 import stat
 import subprocess
 import tempfile
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
 
@@ -295,6 +296,112 @@ class CheckoutTests(unittest.TestCase):
 
 
 class CaseTests(unittest.TestCase):
+    def test_prepare_uses_only_internal_scope_after_external_configuration_update(self):
+        class StopBeforeSolve(Exception):
+            pass
+
+        for case in ("hello", "samtools"):
+            with self.subTest(case=case), tempfile.TemporaryDirectory() as directory:
+                work = Path(directory) / "work"
+                output = Path(directory) / "output"
+                work.mkdir()
+                output.mkdir()
+                modules = {
+                    name: ModuleType(name) for name in (
+                        "spack", "spack.config", "spack.detection", "spack.environment",
+                        "spack.fetch_strategy", "spack.mirrors", "spack.mirrors.utils",
+                        "spack.paths", "spack.repo", "spack.store", "clingo", "clingo.ast",
+                    )
+                }
+                for name, module in modules.items():
+                    module.__path__ = []
+                    if "." in name:
+                        parent, attribute = name.rsplit(".", 1)
+                        setattr(modules[parent], attribute, module)
+                modules["spack"].__version__ = "1.0.0"
+                modules["clingo"].__version__ = "5.7.1"
+                modules["spack.paths"].etc_path = "/unexpected-spack-defaults"
+                scope = SimpleNamespace(name="kq-case", data=None)
+                active = False
+
+                def internal_scope(name, data):
+                    self.assertEqual(name, scope.name)
+                    scope.data = data
+                    return scope
+
+                @contextmanager
+                def use_configuration(*scopes):
+                    nonlocal active
+                    self.assertEqual(scopes, (scope,))
+                    active = True
+                    try:
+                        yield
+                    finally:
+                        active = False
+
+                detected = {
+                    name: [SimpleNamespace(external_path="/usr")]
+                    for name in prepare.case_definition(case)["externals"]
+                }
+
+                def update_configuration(entries, **kwargs):
+                    self.assertTrue(active)
+                    self.assertEqual(kwargs, {"scope": scope.name, "buildable": False})
+                    self.assertEqual(entries, detected)
+                    # Spack's update_config rewrites the section without its override marker.
+                    packages = scope.data.pop("packages:")
+                    scope.data["packages"] = packages
+                    for name, externals in entries.items():
+                        packages[name]["externals"] = externals
+
+                def get_config(path):
+                    self.assertTrue(active)
+                    section, name, field = path.split(":")
+                    return scope.data[section][name][field]
+
+                def concretize(**kwargs):
+                    self.assertTrue(active)
+                    self.assertEqual(kwargs, {"tests": False})
+                    packages = scope.data["packages"]
+                    self.assertEqual(set(packages), {"all", "glibc", *detected})
+                    self.assertEqual(packages["all"], {"require": ["arch=" + prepare.TARGET]})
+                    for config in packages.values():
+                        self.assertNotIn("providers", config)
+                        self.assertNotIn("prefer", config)
+                    self.assertEqual(
+                        scope.data["concretizer"].get("duplicates", {}).get("strategy", "none"),
+                        "none",
+                    )
+                    raise StopBeforeSolve()
+
+                config = modules["spack.config"]
+                config.InternalConfigScope = Mock(side_effect=internal_scope)
+                config.use_configuration = Mock(side_effect=use_configuration)
+                config.get = Mock(side_effect=get_config)
+                detection = modules["spack.detection"]
+                detection.by_path = Mock(return_value=detected)
+                detection.update_configuration = Mock(side_effect=update_configuration)
+                environment = SimpleNamespace(concretize=Mock(side_effect=concretize))
+                modules["spack.environment"].Environment = Mock(
+                    return_value=nullcontext(environment),
+                )
+                modules["spack.repo"].use_repositories = Mock(return_value=nullcontext())
+                modules["spack.store"].use_store = Mock(return_value=nullcontext())
+                with ExitStack() as stack:
+                    stack.enter_context(patch.dict(prepare.sys.modules, modules))
+                    stack.enter_context(patch.object(prepare, "copy_recipes"))
+                    stack.enter_context(patch.object(prepare, "bundle_recipes", return_value="a" * 40))
+                    with self.assertRaises(StopBeforeSolve):
+                        prepare.prepare(output, work, case)
+                config.use_configuration.assert_called_once_with(scope)
+                detection.by_path.assert_called_once_with(
+                    ["builtin." + name for name in detected],
+                    path_hints=["/usr/bin"], max_workers=2,
+                )
+                detection.update_configuration.assert_called_once()
+                environment.concretize.assert_called_once_with(tests=False)
+                self.assertFalse(active)
+
     def test_default_hello_and_samtools_metadata_bind_exact_specs_and_roots(self):
         self.assertEqual(prepare.case_definition(), prepare.case_definition("hello"))
         for case, spec, roots in (

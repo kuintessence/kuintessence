@@ -339,7 +339,6 @@ def prepare(output: Path, work: Path, case: str = "hello") -> dict:
     import spack.environment
     import spack.fetch_strategy
     import spack.mirrors.utils
-    import spack.paths
     import spack.repo
     import spack.store
 
@@ -352,8 +351,7 @@ def prepare(output: Path, work: Path, case: str = "hello") -> dict:
     copy_recipes(tree, case)
     commit = bundle_recipes(tree, output)
     scope = spack.config.InternalConfigScope("kq-case", configuration(work, case))
-    defaults = str(Path(spack.paths.etc_path) / "defaults")
-    with spack.config.use_configuration(defaults, scope):
+    with spack.config.use_configuration(scope):
         with spack.repo.use_repositories(*(str(tree / p) for p in selected["roots"]), override=True):
             detected = spack.detection.by_path(
                 ["builtin." + name for name in selected["externals"]],
