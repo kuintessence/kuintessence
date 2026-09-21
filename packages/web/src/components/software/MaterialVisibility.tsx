@@ -127,12 +127,12 @@ export function MaterialVisibility({
             </div>
           </dl>
           <MaterialVisibilityForm
-            key={view.revision}
+            key={`form:${view.revision}`}
             view={view}
             canWrite={isCurrent() && canWriteRepository(view.repository)}
             onChange={visibility.change}
           />
-          <MaterialVisibilityHistory key={view.revision} view={view} />
+          <MaterialVisibilityHistory key={`history:${view.revision}`} view={view} />
         </div>
       ) : null}
     </section>

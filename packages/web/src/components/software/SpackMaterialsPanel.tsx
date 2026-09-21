@@ -127,7 +127,7 @@ function MaterialSession({
   return (
     <>
       <MaterialCatalog
-        key={catalogRevision}
+        key={`catalog:${catalogRevision}`}
         isCurrent={isCurrent}
         onInspect={inspect}
         inspectionDisabled={selectionLocked}
@@ -161,7 +161,7 @@ function MaterialSession({
         />
       ) : null}
       <MaterialReleaseLookup
-        key={`${selection?.revision ?? "lookup"}:${catalogRevision}`}
+        key={`lookup:${selection?.revision ?? "initial"}:${catalogRevision}`}
         initialBinding={
           detailsStale || selection?.mode === "manage" ? undefined : selection?.binding
         }
@@ -169,7 +169,7 @@ function MaterialSession({
       />
       {canInspectLifecycle ? (
         <MaterialManagementEditors
-          key={selection?.revision ?? "lifecycle"}
+          key={`editors:${selection?.revision ?? "initial"}`}
           initialBinding={selection?.binding}
           isCurrent={isCurrent}
           canWriteRepository={writable}

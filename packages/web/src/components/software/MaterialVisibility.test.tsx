@@ -88,6 +88,7 @@ test("requires explicit GET, policy change, valid reason and confirmation", asyn
 });
 
 test("saves deny-all and inherit using fresh revisions without ordinary manifest requests", async () => {
+  const diagnostics = vi.spyOn(console, "error");
   const f = visibilityFixture();
   const denied = { mode: "allowlist" as const, userIds: [], orgIds: [] };
   vi.mocked(client.changeSpackMaterialVisibility)
@@ -96,6 +97,7 @@ test("saves deny-all and inherit using fresh revisions without ordinary manifest
   const { props } = mount();
   inspectVisibility();
   await screen.findByTestId("material-visibility-detail");
+  const initialReason = visibilityUi().getByLabelText(labels.visibilityReason);
   confirmVisibility(denied);
   expect(visibilityUi().getByText(labels.visibilityDenyAll)).toBeTruthy();
   submitVisibility();
@@ -107,7 +109,10 @@ test("saves deny-all and inherit using fresh revisions without ordinary manifest
     expect.any(AbortSignal),
   );
   expect(visibilityUi().getByLabelText(labels.visibilityReason)).toHaveProperty("value", "");
+  expect(visibilityUi().getByLabelText(labels.visibilityReason)).not.toBe(initialReason);
   expect(visibilityUi().getByRole("checkbox")).toHaveProperty("checked", false);
+  const previousHistory = screen.getByRole("table", { name: labels.visibilityHistory });
+  expect(within(previousHistory).getAllByRole("row")).toHaveLength(2);
   confirmVisibility({ mode: "inherit" });
   submitVisibility();
   await waitFor(() => expect(props.onInvalidate).toHaveBeenCalledTimes(2));
@@ -117,6 +122,20 @@ test("saves deny-all and inherit using fresh revisions without ordinary manifest
     { policy: { mode: "inherit" }, expectedRevision: 1, reason: VISIBILITY_REASON },
     expect.any(AbortSignal),
   );
+  const history = screen.getByRole("table", { name: labels.visibilityHistory });
+  expect(history).not.toBe(previousHistory);
+  expect(previousHistory.isConnected).toBe(false);
+  expect(within(history).getAllByRole("row")).toHaveLength(3);
+  expect(within(history).getAllByRole("row")[1]?.textContent).toContain(
+    labels.visibilityMode.inherit,
+  );
+  expect(visibilityUi().getByLabelText(labels.visibilityReason)).toHaveProperty("value", "");
+  expect(visibilityUi().getByRole("checkbox")).toHaveProperty("checked", false);
+  expect(
+    diagnostics.mock.calls.filter(([message]) =>
+      String(message).includes("Encountered two children with the same key"),
+    ),
+  ).toEqual([]);
 });
 
 test.each([
