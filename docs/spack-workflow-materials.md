@@ -7,9 +7,9 @@ recipe 与目标 Linux 材料。候选包名不是固定 recipe 的求解结果�
 variant 或软件组合可用。**15 个工作流均未完成材料、安装及科学运行验收。**
 
 首个实现路线为工作流 10 中的 samtools 单软件垂直切片，不是完整变异检测流程。
-截至 2026-09-21，该新增案例的 GitHub Actions 验收尚未执行，没有 concretize、
-完整源码闭包、受管安装或 Slurm 运行通过结论。既有 GNU Hello 的通过记录不能
-用作 samtools 的验收证据。
+该案例提供可重复的 GitHub Actions 验收入口；concretize、完整源码闭包、受管安装
+和 Slurm 运行须分别核对对应提交的执行结果，不能将代码存在视为通过。
+既有 GNU Hello 的通过记录不能用作 samtools 的验收证据。
 
 当前没有面向这 15 个工作流的通用材料自动生成器，也没有可直接下载的完整材料
 artifact。已有 PR 准备器服务于固定案例，不提供任意 spec 的通用导出入口。
@@ -46,7 +46,7 @@ artifact。已有 PR 准备器服务于固定案例，不提供任意 spec 的�
 | 07 区域天气模拟 | `wps`、`wrf`、`cdo`、`py-xarray`、`py-netcdf4`、`python` | WPS 地理数据、NOAA GFS GRIB2 | 数据产品、时间范围、地理数据条款与再分发条件 | Linux；MPI、Fortran、HDF5/NetCDF；大文件预算与实际垂直层数；不预设 variant 可用 | 未验收 |
 | 08 全球地震波 | `specfem3d-globe`、`py-obspy`、`python` | 固定版本的官方小型 benchmark、模型、震源和台站 | 模型、算例和观测数据授权 | Linux；MPI rank 与 `NCHUNKS/NPROC_XI/NPROC_ETA` 一致；网格内存与 Python 接口 | 未验收 |
 | 09 AMR 天体物理 | `enzo`、`py-yt`、`hdf5`、`gnuplot`、`python` | 固定 release/commit 的 `ShockPool3D` 输入，不使用浮动分支 | 官方样例与软件许可 | Linux；MPI/HDF5/yt 版本兼容、层次输出和单位转换 | 未验收 |
-| 10 变异检测 | `fastp`、`bwa-mem2`、`samtools`、`bcftools`、`python` | 合成参考序列、read pairs 和 truth；首个切片仅合成 SAM | 软件及依赖许可；真实基因组数据另行治理 | Linux CPU SIMD、线程总预算、BAM/VCF/索引契约；不假定需要 MPI | 未验收；samtools 首个切片待 Actions |
+| 10 变异检测 | `fastp`、`bwa-mem2`、`samtools`、`bcftools`、`python` | 合成参考序列、read pairs 和 truth；首个切片仅合成 SAM | 软件及依赖许可；真实基因组数据另行治理 | Linux CPU SIMD、线程总预算、BAM/VCF/索引契约；不假定需要 MPI | 全链路未验收；samtools 切片见对应 Actions |
 | 11 稀疏特征值 | `petsc`、`slepc`、`py-petsc4py`、`py-slepc4py`、`py-scipy`、`python` | 合成 5×5 Matrix Market 矩阵 | 软件、示例及替换矩阵的数据许可 | Linux；同一 MPI provider/ABI、Python ABI、scalar/index 宽度和 BLAS；bindings 必须使用一致依赖 DAG | 未验收 |
 | 12 粒子输运 | `geant4`、`root`、`cmake`、`python` | 同版本官方 B4a 示例和 Geant4 物理数据集 | 示例、各物理数据集与软件条款分别核对 | Linux；C++/ROOT/PyROOT ABI、多线程预算、数据集路径；不默认采用 MPI | 未验收 |
 | 13 GIS 水文分析 | `gdal`、`grass`、`cdo`、`py-xarray`、`py-netcdf4`、`py-numpy`、`python` | 默认合成 DEM；SRTM 等真实数据另行取得 | 真实 DEM 的账号、产品和再分发条件 | Linux；GDAL Python bindings、NetCDF/HDF5；CRS、NoData、垂直基准；单节点多核不等于 MPI 验收 | 未验收 |
@@ -66,7 +66,7 @@ artifact。已有 PR 准备器服务于固定案例，不提供任意 spec 的�
 | 执行环境 | GitHub Actions 可销毁单节点 Slurm，不复用生产站点 |
 | 科学输入 | 小型合成 SAM，不包含个人基因组数据 |
 
-上述 spec 是待原生 concretize 验证的输入，不是已成功求解的 lock。
+上述 spec 是原生 concretize 的输入，不是已成功求解的 lock。
 上游 commit 与人工打包后的 snapshot commit 也不是同一概念，release 必须引用
 实际导入且用于 Linux 求解的快照。
 
@@ -288,5 +288,5 @@ visibility 与 rollout 门禁，并按[实验性受管安装要求](spack-materi
 失败应区分求解/recipe、缺件或 checksum、授权/门禁、ABI、构建、内存或磁盘预算、
 runtime 隔离、调度器和科学结果；网络问题须有脱敏后的 DNS/TLS/HTTP/超时分类证据，
 不能统一归因为网络。不得输出凭据、原始环境变量、内部路径或未经脱敏的任务日志。
-当前所有新增验收结论均待对应提交的 GitHub Actions，入口与范围见
+新增验收结论须逐项核对对应提交的 GitHub Actions，入口与范围见
 [PR 调度器测试](../deploy/pr-test/README.md)。

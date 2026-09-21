@@ -108,7 +108,9 @@ async function shellFixture(id: "hello" | "samtools", mode = "ok") {
   temporary.push(directory);
   const bin = join(directory, "bin");
   const trace = join(directory, "scratch.txt");
+  const calls = join(directory, "calls.txt");
   await mkdir(bin);
+  await writeFile(calls, "");
   const guard = [
     "#!/bin/bash",
     "set -euo pipefail",
@@ -118,6 +120,7 @@ async function shellFixture(id: "hello" | "samtools", mode = "ok") {
     'test -z "${LD_LIBRARY_PATH+x}${LD_PRELOAD+x}${PYTHONPATH+x}${PYTHONHOME+x}"',
     'test -z "${SPACK_LOADED_HASHES+x}${BASH_ENV+x}${ENV+x}"',
     'test "$LANG" = C && test "$LC_ALL" = C',
+    `printf '%s\\n' "$*" >> '${calls}'`,
   ];
   const stub =
     id === "hello"
@@ -127,6 +130,7 @@ async function shellFixture(id: "hello" | "samtools", mode = "ok") {
           "  --version)",
           '    if test "$mode" = version; then echo "samtools 0.0.0"; else echo "samtools 1.19.2"; fi ;;',
           "  view)",
+          "    shift",
           '    case "$*" in',
           '      "-b -o unsorted.bam input.sam")',
           '        test "$mode" != view; cp input.sam unsorted.bam ;;',
@@ -160,6 +164,7 @@ async function shellFixture(id: "hello" | "samtools", mode = "ok") {
   return {
     directory,
     trace,
+    calls,
     shell: `printf '%s' "$PWD" > '${trace}'\nexport PATH='${bin}':"$PATH"`,
   };
 }
@@ -196,7 +201,8 @@ async function executeJob(id: "hello" | "samtools", mode = "ok", pipelineFailure
     expect(scratch).toMatch(new RegExp(`^/tmp/kq-managed-${id}\\.[A-Za-z0-9]{10}$`));
     temporary.push(scratch);
     await expect(stat(scratch)).rejects.toMatchObject({ code: "ENOENT" });
-    return { exitCode, accepted: managedJobOutputAccepted(stdout, job.successMarker) };
+    const calls = (await readFile(fixture.calls, "utf8")).trim().split("\n");
+    return { exitCode, accepted: managedJobOutputAccepted(stdout, job.successMarker), calls };
   } finally {
     clearTimeout(timer);
   }
@@ -206,30 +212,31 @@ describe("managed job shell control flow (stub executable, Actions only)", () =>
   test.each(["hello", "samtools"] as const)(
     "%s completes from a clean environment and removes scratch",
     async (id) => {
-      expect(await executeJob(id)).toEqual({ exitCode: 0, accepted: true });
+      expect(await executeJob(id)).toMatchObject({ exitCode: 0, accepted: true });
     },
     15_000,
   );
 
   test.each([
-    "version",
-    "view",
-    "sort",
-    "index",
-    "quickcheck",
-    "count",
-    "records",
-    "accept-invalid",
-    "unavailable-negative",
-    "accept-truncated-check",
-    "accept-truncated-view",
-    "wrong-prefix",
-  ])(
+    ["version", /^--version$/],
+    ["view", /^view -b -o unsorted\.bam input\.sam$/],
+    ["sort", /^sort -@ 1 -m 64M -T /],
+    ["index", /^index -@ 1 sorted\.bam$/],
+    ["quickcheck", /^quickcheck -v sorted\.bam$/],
+    ["count", /^view -c sorted\.bam chrSynthetic:1-50$/],
+    ["records", /^view sorted\.bam chrSynthetic:1-50$/],
+    ["accept-invalid", /^view -b -o invalid\.bam invalid\.sam$/],
+    ["unavailable-negative", /^view -b -o invalid\.bam invalid\.sam$/],
+    ["accept-truncated-check", /^quickcheck -v truncated\.bam$/],
+    ["accept-truncated-view", /^view truncated\.bam$/],
+    ["wrong-prefix", /^$/],
+  ] as const)(
     "samtools rejects %s without emitting success and cleans scratch",
-    async (mode) => {
+    async (mode, expectedLastCall) => {
       const result = await executeJob("samtools", mode);
       expect(result.exitCode).not.toBe(0);
       expect(result.accepted).toBe(false);
+      expect(result.calls.at(-1)).toMatch(expectedLastCall);
     },
     15_000,
   );

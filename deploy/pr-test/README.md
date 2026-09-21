@@ -291,8 +291,8 @@ Linux 单节点 Slurm，不是 Actions 宿主 OS 的兼容性承诺。请求 spe
 samtools@1.19.2 ^htslib@1.19.1~libcurl~libdeflate ^zlib@1.3.1
 ```
 
-**截至 2026-09-21，新增 samtools 案例的 Actions 尚未执行。** 上述 spec 是求解输入，
-不是已成功 concretize 的证明；现有 Hello 通过记录不适用于该案例。
+上述 spec 是求解输入，不是已成功 concretize 的证明。新增 samtools 案例的
+通过范围须核对对应提交的 Actions；现有 Hello 通过记录不适用于该案例。
 材料准备需在隔离镜像构建阶段联网，产生真实单 root Linux lock、完整源码 mirror
 和自包含 recipe bundle；使用实际 bundle snapshot commit，不把新快照 commit
 冒充上游 commit。Agent 仍只从 Server 下载，不获得 Registry 凭据或上游访问路径。

@@ -123,7 +123,8 @@ Kuintessence 当前为 pre-release。以下列出组件功能、运行要求和�
   首个实现路线限定为 samtools 单软件切片：Spack 1.0.0、固定官方 recipe、
   Ubuntu 20.04 x86_64 和可销毁单节点 Slurm；请求 spec 为
   `samtools@1.19.2 ^htslib@1.19.1~libcurl~libdeflate ^zlib@1.3.1`。
-  新增案例的 Actions 尚未执行，不代表已 concretize、源码闭包齐全或安装/运行通过。
+  新增案例的实际结论以对应提交 Actions 为准，不因代码存在就认定已 concretize、
+  源码闭包齐全或安装/运行通过。
   当前没有通用材料生成器或可直接下载的完整材料 artifact；每软件须独立单 root
   lock/release、每步骤隔离运行环境，不能用 macOS lock 替代目标 Linux lock，
   也不能把此切片视为完整变异检测工作流验收。
