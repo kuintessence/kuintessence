@@ -63,7 +63,7 @@ export function createRegistryHttpHandler(
           },
         }),
       );
-      const init = { body, duplex: "half" };
+      const init: RequestInit = { body, duplex: "half" };
       try {
         const response = await handle(new Request(request, init));
         // A downstream parser may translate a stream error into a different HTTP status.

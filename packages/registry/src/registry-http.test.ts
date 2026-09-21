@@ -118,7 +118,7 @@ test.each([
       reader.releaseLock();
     }
   }, MATERIAL_MAX_BLOB_BYTES);
-  const init = {
+  const init: RequestInit = {
     method: "PATCH",
     body,
     duplex: "half",
