@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { chmod, readFile, stat, writeFile } from "node:fs/promises";
 import { z } from "zod";
 import { SpackInstallSiteProfileSchema } from "../../../packages/agent/src/spack/install-contract";
+import { selectedCase } from "../spack-case/fixture";
 
 assert.equal(process.env.KQ_PR_TEST, "1");
 assert.equal(process.getuid?.(), 0);
@@ -17,6 +18,10 @@ const lock = z.object({
   })),
 }).parse(JSON.parse(await readFile("/case-control/managed-lock.json", "utf8")));
 const pins = new Set(["/usr/bin/make"]);
+if (selectedCase().id === "samtools") {
+  pins.add("/usr/bin/python3");
+  pins.add("/usr/bin/perl");
+}
 function collect(value: unknown): void {
   if (typeof value === "string" && value.includes("/")) {
     assert(value.startsWith("/"), "External attribute must be a pinned absolute path");

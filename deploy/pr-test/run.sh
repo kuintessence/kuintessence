@@ -1,19 +1,23 @@
 #!/usr/bin/env bash
 set -euo pipefail
-unset KQ_PR_MATERIAL_EPOCH
+unset KQ_PR_MATERIAL_EPOCH KQ_PR_SPACK_CASE
+export KQ_PR_SPACK_CASE=hello
 
 fail() { printf '%s\n' "$*" >&2; exit 2; }
 case "${1:-}" in
   slurm) export KQ_PR_SCHEDULER=slurm KQ_PR_REGISTRATION_SCHEDULER=slurm KQ_PR_PRIVILEGED=false ;;
   pbs) export KQ_PR_SCHEDULER=pbs KQ_PR_REGISTRATION_SCHEDULER=pbs-pro KQ_PR_PRIVILEGED=true ;;
-  *) fail "Usage: bash deploy/pr-test/run.sh slurm|pbs [--config|--spack-case|--spack-managed]" ;;
+  *) fail "Usage: bash deploy/pr-test/run.sh slurm|pbs [--config|--spack-case|--spack-managed|--spack-samtools]" ;;
 esac
-[[ $# -le 2 && ( $# -eq 1 || "$2" == "--config" || "$2" == "--spack-case" || "$2" == "--spack-managed" ) ]] || fail "Unsupported flag"
+[[ $# -le 2 && ( $# -eq 1 || "$2" == "--config" || "$2" == "--spack-case" || "$2" == "--spack-managed" || "$2" == "--spack-samtools" ) ]] || fail "Unsupported flag"
 spack_case=false
 spack_managed=false
-if [[ "${2:-}" == "--spack-managed" ]]; then
+if [[ "${2:-}" == "--spack-managed" || "${2:-}" == "--spack-samtools" ]]; then
   [[ "${GITHUB_ACTIONS:-}" == true ]] || fail "Managed case runs only on disposable GitHub Actions runners"
   spack_managed=true
+fi
+if [[ "${2:-}" == "--spack-samtools" ]]; then
+  export KQ_PR_SPACK_CASE=samtools
 fi
 if [[ "${2:-}" == "--spack-case" ]] || "$spack_managed"; then
   [[ "$KQ_PR_SCHEDULER" == slurm ]] || fail "The Spack single-step case currently requires Slurm"
@@ -57,9 +61,17 @@ legacy_probe_status() {
     grep -Ex 'ci-legacy-find:result=(ok|nonzero|spawn|timeout|output-limit) reason=(none|store-permission|repo-init|config-permission|cache-permission|permission-other|other) json=(empty-array|array|non-array|invalid|unavailable)' || true
 }
 
+pbs_entrypoint_status() {
+  "${compose[@]}" logs --no-color --no-log-prefix --tail 200 scheduler 2>/dev/null |
+    grep -Ex 'ci-pbs-entrypoint:event=(ERR|EXIT) line=[0-9]{1,5} exit=([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])' || true
+}
+
 cleanup() {
   local result=$?
   trap - EXIT INT TERM
+  if [[ "$KQ_PR_SCHEDULER" == pbs && "$result" -ne 0 ]]; then
+    pbs_entrypoint_status
+  fi
   if "$spack_case" && [[ "$result" -ne 0 ]]; then
     "${compose[@]}" logs --no-color --no-log-prefix registry 2>/dev/null |
       "${compose[@]}" exec -T registry bun deploy/pr-test/spack-case/diagnostics.ts || true

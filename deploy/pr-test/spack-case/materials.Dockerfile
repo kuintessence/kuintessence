@@ -10,7 +10,8 @@ RUN python3 -m pip install --no-cache-dir clingo==5.7.1 \
     https://github.com/spack/spack-packages.git 32c54f0906004d7fd1f72fd1b5970bf2bf094e26 \
   && git -C /opt/kq-case/upstream checkout --detach 32c54f0906004d7fd1f72fd1b5970bf2bf094e26
 COPY deploy/pr-test/spack-case /workspace/deploy/pr-test/spack-case
-RUN spack python /workspace/deploy/pr-test/spack-case/prepare.py /case
+ARG KQ_PR_SPACK_CASE=hello
+RUN spack python /workspace/deploy/pr-test/spack-case/prepare.py /case "$KQ_PR_SPACK_CASE"
 
 FROM test-workspace
 COPY --from=materials /case /opt/kq-case

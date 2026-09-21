@@ -5,12 +5,15 @@ services:
     build:
       context: .
       dockerfile: deploy/pr-test/spack-case/materials.Dockerfile
+      args:
+        KQ_PR_SPACK_CASE: ${KQ_PR_SPACK_CASE:-hello}
       additional_contexts:
         scheduler-base: service:scheduler-base
         test-workspace: service:test-workspace
     profiles: [images]
     environment:
       KQ_PR_TEST: "1"
+      KQ_PR_SPACK_CASE: ${KQ_PR_SPACK_CASE:-hello}
     volumes:
       - case-server:/case-server
       - case-ca:/case-ca
@@ -47,6 +50,7 @@ services:
     command: ["bun", "deploy/pr-test/spack-case/server.ts"]
     environment:
       KQ_PR_TEST: "1"
+      KQ_PR_SPACK_CASE: ${KQ_PR_SPACK_CASE:-hello}
       MTLS_MODE: direct
       SERVER_CA_DIR: /case-server/ca
       SERVER_GRPC_TLS_CERT_FILE: /case-server/server.crt
@@ -70,6 +74,7 @@ services:
       context: .
       dockerfile: deploy/pr-test/spack-case/scheduler.Dockerfile
     environment:
+      KQ_PR_SPACK_CASE: ${KQ_PR_SPACK_CASE:-hello}
       SERVER_GRPC_URL: https://server:3001
       SERVER_HTTP_URL: https://server:3443
       AGENT_MTLS_REQUIRED: "true"

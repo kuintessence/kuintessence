@@ -272,3 +272,56 @@ load 失败诊断改为只读复验匹配本次 release/site profile 的原安�
 区分本地不可用状态等待、门户库存撤回和恢复复验，不输出 spec 或原始响应。
 实际通过范围必须以当前提交的 Actions 结果为准；新增测试定义本身不构成验收通过，
 也不覆盖生产环境、PBS 受管安装或 15 个科学工作流。
+
+## samtools 单软件垂直切片
+
+此案例是独立的 GitHub Actions 专用入口，保留 GNU Hello native/managed 案例和
+默认 Slurm/PBS 回归。仅在可信、可销毁的 Actions 环境中执行，不用于本地运行或部署：
+
+```bash
+bash deploy/pr-test/run.sh slurm --spack-samtools
+```
+
+固定 Spack 1.0.0、官方 `spack/spack-packages` commit
+`32c54f0906004d7fd1f72fd1b5970bf2bf094e26`，对应 tree
+`f117b6bf72ee6d9c2951922f4afd31f461b02b0d`。参考目标为 Ubuntu 20.04 x86_64
+Linux 单节点 Slurm，不是 Actions 宿主 OS 的兼容性承诺。请求 spec 为：
+
+```text
+samtools@1.19.2 ^htslib@1.19.1~libcurl~libdeflate ^ncurses+symlinks %pkgconf ^zlib@1.3.1
+```
+
+上述 spec 是求解输入，不是已成功 concretize 的证明。新增 samtools 案例的
+通过范围须核对对应提交的 Actions；现有 Hello 通过记录不适用于该案例。
+材料准备需在隔离镜像构建阶段联网，产生真实单 root Linux lock、完整源码 mirror
+和自包含 recipe bundle；使用实际 bundle snapshot commit，不把新快照 commit
+冒充上游 commit。Agent 仍只从 Server 下载，不获得 Registry 凭据或上游访问路径。
+ncurses 的官方 `+symlinks` 与 `pkgconf` provider 是双方共有的 spec 约束，
+用于避免硬链接产物；不通过私有 recipe patch 或放宽 worker 规则来接受它们。
+`%pkgconf` 明确 ncurses 的直接构建依赖，不是 root 级间接 `^pkgconf` 约束。
+固定字符串使用 Spack 的原生规范顺序；准备器在求解前拒绝非规范 spec，
+不修改原生 lock，也不放宽 root hash/spec 的精确比较。
+
+目标检查链沿用受管安装的 source audit、断网 build、独立 readonly verify、
+`ready`、managed load 和真实 Slurm 作业。作业使用独立临时目录中的合成 SAM，
+不含个人基因组数据，检查精确 executable 路径/版本、SAM→BAM、坐标排序、
+BAM quickcheck、BAI 索引、区域计数以及非法输入非零退出。完整性负例、重启复验、
+卸载与引用检查的实际结果也必须以对应提交 Actions 为准。
+资源与隔离约束不因增加软件而豁免；实际 DAG 超限或材料不完整均应失败。
+
+samtools 只是 15 个工作流中变异检测链路的一个软件，不包含 fastp、BWA-MEM2、
+bcftools、Python 分析或完整 VCF truth 校验，不代表 MPI、PBS 受管安装、跨节点
+共享存储或生产站点验收。后续软件各自使用独立单 root lock/release，按步骤隔离
+环境，不能把多个 load shell 堆叠为一个未经验证的运行环境。
+
+15 项候选包、外部数据、许可自审、target/MPI 风险及 macOS 文件交付步骤见
+[科学工作流材料指南](../../docs/spack-workflow-materials.md)。
+当前没有通用材料生成器，也没有可直接下载的完整材料 artifact；运行入口不承诺
+导出可供 Web 上传的材料包。macOS 仅用于获取、校验和搬运，Linux lock/source
+闭包须从经授权且实际成功的目标 Linux 准备任务取得，再按既有 bootstrap/Web
+格式手工组包导入。
+
+失败诊断不输出原始 Agent 日志、注册响应或任意安装路径。基础 PR 镜像的 PBS
+入口观察器仅报告失败行号和退出码，未修改生产 scheduler 入口；受管安装的
+输出树诊断仅报告文件类型、受限 link count 和固定文件名枚举。诊断不得替代
+安装结果，依赖 hash 不一致、特殊文件或不受支持的硬链接仍按 worker 规则拒绝。

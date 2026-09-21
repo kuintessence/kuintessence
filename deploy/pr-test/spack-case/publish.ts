@@ -12,12 +12,13 @@ import {
 } from "@kuintessence/shared";
 import { z } from "zod";
 import { jsonRequest, login, ReleaseSchema } from "./api";
+import { selectedCase } from "./fixture";
 
 assert.equal(process.env.KQ_PR_TEST, "1");
 const registry = "http://registry:3100";
 const token = await login("http://server:3000");
-const repository = "public/pr-hello-sources";
-const recipes = "public/pr-hello-recipes";
+const fixture = selectedCase();
+const { repository, recipes } = fixture;
 const pack = "/opt/kq-case";
 const metadata = z
   .object({
@@ -29,6 +30,8 @@ const metadata = z
     lockfile: SpackMaterialPathSchema,
   })
   .parse(JSON.parse(await readFile(join(pack, "metadata.json"), "utf8")));
+assert.equal(metadata.spec, fixture.spec, "Material builder and selected acceptance case differ");
+assert.equal(metadata.target, "linux-ubuntu20.04-x86_64", "Unexpected material target");
 
 if (process.argv.includes("--verify")) {
   const release = ReleaseSchema.parse(

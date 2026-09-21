@@ -1,7 +1,7 @@
 """Online image-build preparation, never an Agent or managed-store operation.
 
 Run only in the disposable Ubuntu 20.04 PR builder:
-    spack python /workspace/deploy/pr-test/spack-case/prepare.py OUTPUT_DIR
+    spack python /workspace/deploy/pr-test/spack-case/prepare.py OUTPUT_DIR [hello|samtools]
 
 Requires Spack 1.0.0, pip clingo 5.7.1, GCC, GNU make, git, and the official
 spack-packages checkout at /opt/kq-case/upstream. No packages are installed.
@@ -11,6 +11,7 @@ The bundle HEAD identifies a fresh commit of the exact recipes used to solve.
 
 import hashlib
 import importlib
+from itertools import islice
 import json
 import os
 from pathlib import Path
@@ -23,19 +24,46 @@ import tempfile
 
 
 SPEC = "hello@2.12.1"
+TARGET = "linux-ubuntu20.04-x86_64"
 UPSTREAM_COMMIT = "32c54f0906004d7fd1f72fd1b5970bf2bf094e26"
 UPSTREAM_TREE = "f117b6bf72ee6d9c2951922f4afd31f461b02b0d"
 UPSTREAM = Path("/opt/kq-case/upstream")
 ROOTS = ["repos/spack_repo/kq_case", "repos/spack_repo/builtin"]
+CASES = {
+    "hello": {
+        "spec": SPEC, "version": "2.12.1", "namespace": "kq_case",
+        "roots": tuple(ROOTS), "externals": ("gcc", "gmake"),
+        "compiled": {"hello": "2.12.1"},
+    },
+    "samtools": {
+        "spec": ("samtools@1.19.2 ^htslib@1.19.1~libcurl~libdeflate"
+                 " ^ncurses+symlinks %pkgconf ^zlib@1.3.1"),
+        "version": "1.19.2", "namespace": "builtin",
+        "roots": (ROOTS[1],), "externals": ("gcc", "gmake", "python", "perl"),
+        # None leaves supporting versions to the native solver, pinned only in the lock.
+        "compiled": {
+            "samtools": "1.19.2", "htslib": "1.19.1", "zlib": "1.3.1",
+            "ncurses": None, "bzip2": None, "xz": None,
+            "pkgconf": None, "diffutils": None, "libiconv": None,
+        },
+    },
+}
+RUNTIME_PACKAGES = {"compiler-wrapper", "gcc-runtime"}
 LICENSES = ("COPYRIGHT", "LICENSE-APACHE", "LICENSE-MIT")
 MIB = 1024 ** 2
 MAX_FILES, MAX_RECIPE_BYTES, MAX_SOURCE_BYTES = 40_000, 128 * MIB, 64 * MIB
 MAX_TREE_BYTES = 16 * MIB
+MAX_DAG_NODES, MAX_SOURCES = 16, 128
 
 
 def require(condition: object, message: str) -> None:
     if not condition:
         raise RuntimeError(message)
+
+
+def case_definition(name: str = "hello") -> dict:
+    require(name in CASES, "Unsupported material case")
+    return CASES[name]
 
 
 def relative(value: str) -> str:
@@ -122,7 +150,8 @@ def official_tree() -> dict:
     return parse_tree(upstream_git("ls-tree", "-r", "-l", "-z", UPSTREAM_TREE))
 
 
-def copy_recipes(destination: Path) -> None:
+def copy_recipes(destination: Path, case: str = "hello") -> None:
+    case_definition(case)
     expected = official_tree()
     actual = {p.relative_to(UPSTREAM).as_posix(): p for p in files(UPSTREAM / "repos")}
     actual.update({name: UPSTREAM / name for name in LICENSES})
@@ -144,16 +173,17 @@ def copy_recipes(destination: Path) -> None:
         target.write_bytes(data)
         target.chmod(int(expected[name]["mode"], 8) & 0o777)
 
-    custom = destination / ROOTS[0]
-    package = custom / "packages/hello"
-    package.mkdir(parents=True)
-    for source, target in (
-        (Path(__file__).with_name("hello") / "package.py", package / "package.py"),
-        (Path(__file__).with_name("hello") / "repo.yaml", custom / "repo.yaml"),
-    ):
-        require(stat.S_ISREG(source.lstat().st_mode), "Custom recipe must be a regular file")
-        shutil.copyfile(source, target)
-        target.chmod(0o644)
+    if case == "hello":
+        custom = destination / ROOTS[0]
+        package = custom / "packages/hello"
+        package.mkdir(parents=True)
+        for source, target in (
+            (Path(__file__).with_name("hello") / "package.py", package / "package.py"),
+            (Path(__file__).with_name("hello") / "repo.yaml", custom / "repo.yaml"),
+        ):
+            require(stat.S_ISREG(source.lstat().st_mode), "Custom recipe must be a regular file")
+            shutil.copyfile(source, target)
+            target.chmod(0o644)
     (destination / "upstream.json").write_text(
         json.dumps({"repository": "spack/spack-packages", "commit": UPSTREAM_COMMIT}) + "\n"
     )
@@ -179,7 +209,7 @@ def bundle_recipes(tree: Path, output: Path) -> str:
     git("init")
     git("symbolic-ref", "HEAD", "refs/heads/case")
     git("add", "--all")
-    git("-c", "commit.gpgsign=false", "commit", "-m", "GNU Hello PR recipe snapshot")
+    git("-c", "commit.gpgsign=false", "commit", "-m", "PR case recipe snapshot")
     commit = git("rev-parse", "HEAD")
     require(re.fullmatch(r"[a-f0-9]{40}", commit), "Expected SHA-1 bundle HEAD")
     git("bundle", "create", str(output / "recipes.bundle"), "HEAD", "refs/heads/case")
@@ -188,7 +218,12 @@ def bundle_recipes(tree: Path, output: Path) -> str:
     return commit
 
 
-def configuration(work: Path) -> dict:
+def configuration(work: Path, case: str = "hello") -> dict:
+    selected = case_definition(case)
+    packages = {
+        "all": {"require": ["arch=" + TARGET]},
+        **{name: {"buildable": False} for name in (*selected["externals"], "glibc")},
+    }
     return {
         "bootstrap:": {"enable": False, "root": str(work / "bootstrap"), "sources": []},
         "repos:": {}, "mirrors:": {}, "upstreams:": {},
@@ -205,15 +240,72 @@ def configuration(work: Path) -> dict:
             "targets": {"host_compatible": True, "granularity": "generic"},
             "splice": {"automatic": False},
         },
-        "packages:": {
-            "all": {"target": ["x86_64"], "providers": {"c": ["gcc"]}},
-            "gcc": {"buildable": False}, "gmake": {"buildable": False},
-            "glibc": {"buildable": False},
-        },
+        "packages:": packages,
     }
 
 
+def validate_dag(root, case: str = "hello") -> list:
+    selected = case_definition(case)
+    require(root.name == case and str(root.version) == selected["version"]
+            and root.namespace == selected["namespace"] and not root.external,
+            "Unexpected native root")
+    require(str(root.architecture) == TARGET,
+            "Run preparation in the Ubuntu 20.04 x86_64 scheduler builder")
+    nodes = list(islice(root.traverse(), MAX_DAG_NODES + 1))
+    require(len(nodes) <= MAX_DAG_NODES, "Unexpectedly large case DAG")
+    require(all(str(node.architecture) == str(root.architecture) for node in nodes),
+            "External/compiler architecture differs from the root target")
+    nonexternal = [node for node in nodes if not node.external]
+    expected = selected["compiled"]
+    names = {node.name for node in nonexternal}
+    pinned = {name for name, version in expected.items() if version is not None}
+    require(pinned <= names <= set(expected) | RUNTIME_PACKAGES,
+            "Unexpected compiled dependency; refuse an unbounded build")
+    for node in nonexternal:
+        require(node.namespace == (selected["namespace"] if node.name == case else "builtin"),
+                "Unexpected dependency namespace")
+        if expected.get(node.name) is not None:
+            require(str(node.version) == expected[node.name], "Unexpected dependency version")
+    external_names = {node.name for node in nodes if node.external}
+    require(set(selected["externals"]) <= external_names
+            <= set(selected["externals"]) | {"glibc"}, "Unexpected system external")
+    for node in nodes:
+        if node.external and node.name in {"python", "perl"}:
+            require(node.namespace == "builtin" and str(node.external_path) == "/usr"
+                    and not node.external_modules, "Runtime external must come from /usr/bin")
+    if case == "samtools":
+        require({"pkgconf", "ncurses"} <= names, "Required samtools dependency is missing")
+        require(all(node.satisfies("+symlinks %pkgconf")
+                    for node in nonexternal if node.name == "ncurses"),
+                "Unexpected ncurses features or build provider")
+        htslib = next(node for node in nonexternal if node.name == "htslib")
+        require(htslib.satisfies("~libcurl~libdeflate"), "Unexpected htslib features")
+    return nonexternal
+
+
+def fetch_sources(mirror: Path, nodes: list, strategies, create) -> None:
+    count = 0
+    for node in nodes:
+        stages = list(islice(node.package.stage, MAX_SOURCES + 1))
+        count += len(stages)
+        require(stages and count <= MAX_SOURCES, "Source stage budget exceeded")
+        for stage in stages:
+            fetcher = stage.default_fetcher
+            bundle = isinstance(fetcher, strategies.BundleFetchStrategy)
+            require(
+                (bundle and node.name in RUNTIME_PACKAGES)
+                or (isinstance(fetcher, strategies.URLFetchStrategy)
+                    and not isinstance(fetcher, strategies.FetchAndVerifyExpandedFile)
+                    and fetcher.digest and not stage.skip_checksum_for_mirror),
+                "Unchecksummed or unsupported source",
+            )
+    _, _, errors = create(str(mirror), nodes)
+    require(not errors, "Native mirror creation failed")
+
+
 def export_sources(mirror: Path, output: Path) -> list:
+    require(mirror.is_dir() and not mirror.is_symlink(), "Expected a real source mirror")
+    mirror = mirror.resolve(strict=True)
     sources, total = [], 0
     for directory, directories, names in os.walk(mirror, followlinks=False):
         require(not any((Path(directory) / p).is_symlink() for p in directories),
@@ -225,7 +317,8 @@ def export_sources(mirror: Path, output: Path) -> list:
             require(mirror in resolved.parents and resolved.is_file(),
                     "Mirror alias escapes the mirror or is not a file")
             total += resolved.stat().st_size
-            require(total <= MAX_SOURCE_BYTES and len(sources) < 128, "Source budget exceeded")
+            require(total <= MAX_SOURCE_BYTES and len(sources) < MAX_SOURCES,
+                    "Source budget exceeded")
             target = output / "sources" / rel
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(resolved, target)
@@ -235,15 +328,24 @@ def export_sources(mirror: Path, output: Path) -> list:
     return sorted(sources, key=lambda s: s["path"])
 
 
-def prepare(output: Path, work: Path) -> dict:
+def material_metadata(case: str, target: str, commit: str, sources: list) -> dict:
+    selected = case_definition(case)
+    return {
+        "case": case, "spec": selected["spec"], "target": target, "commit": commit,
+        "roots": list(selected["roots"]), "sources": sources, "lockfile": "spack.lock",
+    }
+
+
+def prepare(output: Path, work: Path, case: str = "hello") -> dict:
+    selected = case_definition(case)
     import spack
     import spack.config
     import spack.detection
     import spack.environment
     import spack.fetch_strategy
     import spack.mirrors.utils
-    import spack.paths
     import spack.repo
+    import spack.spec
     import spack.store
 
     require(spack.__version__ == "1.0.0", "Requires exactly Spack 1.0.0")
@@ -252,22 +354,30 @@ def prepare(output: Path, work: Path) -> dict:
     importlib.import_module("clingo.ast")
     tree = work / "recipes"
     tree.mkdir()
-    copy_recipes(tree)
+    copy_recipes(tree, case)
     commit = bundle_recipes(tree, output)
-    scope = spack.config.InternalConfigScope("kq-case", configuration(work))
-    defaults = str(Path(spack.paths.etc_path) / "defaults")
-    with spack.config.use_configuration(defaults, scope):
-        with spack.repo.use_repositories(*(str(tree / p) for p in ROOTS), override=True):
+    scope = spack.config.InternalConfigScope("kq-case", configuration(work, case))
+    with spack.config.use_configuration(scope):
+        with spack.repo.use_repositories(*(str(tree / p) for p in selected["roots"]), override=True):
             detected = spack.detection.by_path(
-                ["builtin.gcc", "builtin.gmake"], path_hints=["/usr/bin"], max_workers=2
+                ["builtin." + name for name in selected["externals"]],
+                path_hints=["/usr/bin"], max_workers=2,
             )
+            for name in ("python", "perl"):
+                if name in selected["externals"]:
+                    detected[name] = [
+                        spec for spec in detected.get(name, [])
+                        if str(spec.external_path) == "/usr"
+                    ]
             spack.detection.update_configuration(detected, scope=scope.name, buildable=False)
-            for name in ("gcc", "gmake"):
+            for name in selected["externals"]:
                 require(spack.config.get("packages:" + name + ":externals"),
                         "Required system external was not detected: " + name)
+            spec = selected["spec"]
+            require(str(spack.spec.Spec(spec)) == spec, "Material spec is not canonical")
             env_path = work / "env"
             env_path.mkdir()
-            (env_path / "spack.yaml").write_text(json.dumps({"spack": {"specs": [SPEC], "view": False}}))
+            (env_path / "spack.yaml").write_text(json.dumps({"spack": {"specs": [spec], "view": False}}))
             with spack.store.use_store(str(work / "store")):
                 with spack.environment.Environment(str(env_path)) as environment:
                     environment.concretize(tests=False)
@@ -275,49 +385,29 @@ def prepare(output: Path, work: Path) -> dict:
                     roots = list(environment.concrete_roots())
                     require(len(roots) == 1, "Expected one native root")
                     root = roots[0]
-                    require(root.name == "hello" and str(root.version) == "2.12.1"
-                            and root.namespace == "kq_case" and not root.external,
-                            "Unexpected native root")
-                    require(str(root.architecture) == "linux-ubuntu20.04-x86_64",
-                            "Run preparation in the Ubuntu 20.04 x86_64 scheduler builder")
-                    nodes = list(root.traverse())
-                    require(len(nodes) <= 16, "Unexpectedly large case DAG")
-                    require(all(str(node.architecture) == str(root.architecture) for node in nodes),
-                            "External/compiler architecture differs from the root target")
-                    nonexternal = [node for node in nodes if not node.external]
-                    require({node.name for node in nonexternal}
-                            <= {"hello", "compiler-wrapper", "gcc-runtime"},
-                            "Unexpected compiled dependency; refuse an unbounded build")
-                    for node in nonexternal:
-                        for stage in node.package.stage:
-                            fetcher = stage.default_fetcher
-                            require(isinstance(fetcher, spack.fetch_strategy.BundleFetchStrategy)
-                                    or (isinstance(fetcher, spack.fetch_strategy.URLFetchStrategy)
-                                        and fetcher.digest and not stage.skip_checksum_for_mirror),
-                                    "Unchecksummed or unsupported source")
+                    nonexternal = validate_dag(root, case)
                     mirror = work / "mirror"
-                    _, _, errors = spack.mirrors.utils.create(str(mirror), nonexternal)
-                    require(not errors, "Native mirror creation failed")
+                    fetch_sources(mirror, nonexternal, spack.fetch_strategy,
+                                  spack.mirrors.utils.create)
                     lock_path = env_path / "spack.lock"
                     lock = json.loads(lock_path.read_text())
                     require(lock["_meta"] == {
                         "file-type": "spack-lockfile", "lockfile-version": 6, "specfile-version": 5,
                     }, "Unexpected native lock format")
-                    require(lock["roots"] == [{"hash": root.dag_hash(), "spec": SPEC}],
+                    require(lock["roots"] == [{"hash": root.dag_hash(), "spec": spec}],
                             "Native lock root changed")
                     for node in nonexternal:
                         require(lock["concrete_specs"][node.dag_hash()]["package_hash"]
                                 == node.package.content_hash(), "Recipe hash changed after solving")
                     shutil.copyfile(lock_path, output / "spack.lock")
-                    return {
-                        "spec": SPEC, "target": str(root.architecture), "commit": commit,
-                        "roots": ROOTS, "sources": export_sources(mirror, output),
-                        "lockfile": "spack.lock",
-                    }
+                    return material_metadata(case, str(root.architecture), commit,
+                                             export_sources(mirror, output))
 
 
 def main() -> None:
-    require(len(sys.argv) == 2, "Usage: spack python prepare.py OUTPUT_DIR")
+    require(len(sys.argv) in (2, 3), "Usage: spack python prepare.py OUTPUT_DIR [hello|samtools]")
+    case = sys.argv[2] if len(sys.argv) == 3 else "hello"
+    case_definition(case)
     os.umask(0o022)
     sys.dont_write_bytecode = True
     output = Path(sys.argv[1]).absolute()
@@ -327,7 +417,7 @@ def main() -> None:
     output = output.resolve(strict=True)
     output.chmod(0o755)
     with tempfile.TemporaryDirectory(prefix=".prepare-", dir=output) as temporary:
-        metadata = prepare(output, Path(temporary))
+        metadata = prepare(output, Path(temporary), case)
     # Publication marker is written only after all native preparation succeeds.
     (output / "metadata.json").write_text(json.dumps(metadata, indent=2) + "\n")
     for name in ("metadata.json", "spack.lock", "recipes.bundle"):

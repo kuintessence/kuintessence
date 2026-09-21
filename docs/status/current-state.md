@@ -118,6 +118,17 @@ Kuintessence 当前为 pre-release。以下列出组件功能、运行要求和�
   当前提交的 Actions 结果才是验证依据，不将代码存在视作验收通过。
   受限厂商安装包/许可证授权、
   大规模材料目录索引/物理删除/跨组织分享及 15 个工作流的目标 Linux 材料、lock 和端到端安装/运行验收仍未完成。
+  [科学工作流材料指南](../spack-workflow-materials.md)列出 15 项候选软件、外部输入、
+  许可自审与 target/MPI 风险，并提供 macOS 获取、校验、搬运和 bootstrap/Web 导入步骤。
+  首个实现路线限定为 samtools 单软件切片：Spack 1.0.0、固定官方 recipe、
+  Ubuntu 20.04 x86_64 和可销毁单节点 Slurm；请求 spec 为
+  `samtools@1.19.2 ^htslib@1.19.1~libcurl~libdeflate ^ncurses+symlinks %pkgconf ^zlib@1.3.1`。
+  使用官方 variant/provider 避免硬链接产物，未放宽 worker 的输出树校验。
+  新增案例的实际结论以对应提交 Actions 为准，不因代码存在就认定已 concretize、
+  源码闭包齐全或安装/运行通过。
+  当前没有通用材料生成器或可直接下载的完整材料 artifact；每软件须独立单 root
+  lock/release、每步骤隔离运行环境，不能用 macOS lock 替代目标 Linux lock，
+  也不能把此切片视为完整变异检测工作流验收。
 - CP 的 suspend/quota 写入口已停用，暂不支持通过这些接口暂停组织或设置并发硬限。
 - 平台记录用量，外部计费系统生成账单。
 - 本地 Compose 的初始化账号与固定样例口令只用于开发，不得用于公网环境。
@@ -153,6 +164,7 @@ Kuintessence 当前为 pre-release。以下列出组件功能、运行要求和�
 - [Registry 权限](../security.md#registry)
 - [Spack 受控上游导入](../spack-upstream-import.md)
 - [Spack 材料 Rollout](../spack-material-rollout.md)
+- [科学工作流 Spack 材料准备](../spack-workflow-materials.md)
 - [Agent 注册和证书](../security.md#agent)
 - [工作流规范](../workflow-schema/README.md)
 - [系统运维](../manuals/system-operations-manual.md)

@@ -17,6 +17,7 @@ import { SpackMaterialBindingSchema, SpackMaterialManifestSchema } from "@kuinte
 import { desc, eq } from "drizzle-orm";
 import { z } from "zod";
 import { login, ReleaseSchema } from "./api";
+import { selectedCase } from "./fixture";
 
 const ModeSchema = z.enum(["activate", "verify"]);
 const EpochSchema = z.string().length(36).uuid();
@@ -60,9 +61,10 @@ let mode: z.infer<typeof ModeSchema> | "guard" = "guard";
 let stage: Stage = "guard";
 const server = "http://127.0.0.1:3000";
 const registry = "http://registry:3100";
-const repository = "public/pr-hello-sources";
+const fixture = selectedCase();
+const repository = fixture.repository;
 const seedEmail = "scheduler-compose-seed@kuintessence.test";
-const retiredSpec = "hello@0.0.0";
+const retiredSpec = fixture.retiredSpec;
 const retirementReason = "Disposable CI historical binding; never used by a deployment";
 
 function progress(next: Stage): void {
@@ -239,10 +241,10 @@ async function main(): Promise<string | undefined> {
     JSON.parse(await readFile("/case-control/bindings.json", "utf8")),
   );
   assert(
-    release.spec === "hello@2.12.1" &&
+    release.spec === fixture.spec &&
       release.manifestSize <= 2 * 1024 ** 2 &&
       release.binding.repositoryId === repositoryId(repository) &&
-      release.recipeId === repositoryId("public/pr-hello-recipes") &&
+      release.recipeId === repositoryId(fixture.recipes) &&
       Object.keys(bindings).length === 1 &&
       bindings[release.spec]?.repositoryId === release.binding.repositoryId &&
       bindings[release.spec]?.manifestDigest === release.binding.manifestDigest,
