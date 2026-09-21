@@ -110,34 +110,34 @@ describe("SpackMaterialReferences (real PG)", () => {
     }
   });
 
-  test.each(["bindings", "operations"] as const)(
-    "empty registration checks all columns of the %s reference table",
-    async (table) => {
-      try {
-        if (table === "bindings") {
-          await peerDb.execute(sql`
+  test.each([
+    "bindings",
+    "operations",
+  ] as const)("empty registration checks all columns of the %s reference table", async (table) => {
+    try {
+      if (table === "bindings") {
+        await peerDb.execute(sql`
             create temporary table spack_material_bindings (id uuid)
           `);
-        } else {
-          await peerDb.execute(sql`
+      } else {
+        await peerDb.execute(sql`
             create temporary table spack_material_operation_references (operation_id uuid)
           `);
-        }
-        await peerDb.execute(sql`set search_path = pg_temp, public`);
-        await expectReferenceError(peer.registerBindings({}));
-      } finally {
-        try {
-          if (table === "bindings") {
-            await peerDb.execute(sql`drop table pg_temp.spack_material_bindings`);
-          } else {
-            await peerDb.execute(sql`drop table pg_temp.spack_material_operation_references`);
-          }
-        } finally {
-          await peerDb.execute(sql`reset search_path`);
-        }
       }
-    },
-  );
+      await peerDb.execute(sql`set search_path = pg_temp, public`);
+      await expectReferenceError(peer.registerBindings({}));
+    } finally {
+      try {
+        if (table === "bindings") {
+          await peerDb.execute(sql`drop table pg_temp.spack_material_bindings`);
+        } else {
+          await peerDb.execute(sql`drop table pg_temp.spack_material_operation_references`);
+        }
+      } finally {
+        await peerDb.execute(sql`reset search_path`);
+      }
+    }
+  });
 
   test("keeps an append-only multi-Server union and isolates repository/digest pairs", async () => {
     const first = binding();
@@ -276,9 +276,7 @@ describe("SpackMaterialReferences (real PG)", () => {
       { status: "failed" },
       { status: "rejected" },
     ]) {
-      await expectReferenceError(
-        references.acquireOperation(await operation(release, overrides)),
-      );
+      await expectReferenceError(references.acquireOperation(await operation(release, overrides)));
     }
     expect(await references.listReleaseReferences(release)).toEqual({
       bindingCount: 0,
@@ -401,38 +399,37 @@ describe("SpackMaterialReferences (real PG)", () => {
     ).toMatchObject(input);
   });
 
-  test.each(["registerBindings", "acquireOperation"] as const)(
-    "%s waits on the shared lifecycle transaction lock",
-    async (method) => {
-      const release = binding();
-      const input = await operation(release);
-      const observer = createPgDb(PG_URL);
-      const [backend] = await peerDb.$client<{ pid: number }[]>`select pg_backend_pid() as pid`;
-      if (!backend) throw new Error("Expected the peer backend PID");
-      let pending: Promise<unknown> | undefined;
-      try {
-        await db.transaction(async (tx) => {
-          await tx.execute(
-            sql`select pg_advisory_xact_lock(hashtext('kuintessence:spack-material-lifecycle'))`,
-          );
-          const write =
-            method === "registerBindings"
-              ? peer.registerBindings({ [input.spec]: release })
-              : peer.acquireOperation(input);
-          pending = write.then(
-            () => ({ ok: true }),
-            (error: unknown) => ({ ok: false, error }),
-          );
-          await waitForAdvisoryWait(observer, backend.pid);
-        });
-        expect(await pending).toEqual({ ok: true });
-      } finally {
-        await pending;
-        await observer.$client.end();
-      }
-    },
-    15_000,
-  );
+  test.each([
+    "registerBindings",
+    "acquireOperation",
+  ] as const)("%s waits on the shared lifecycle transaction lock", async (method) => {
+    const release = binding();
+    const input = await operation(release);
+    const observer = createPgDb(PG_URL);
+    const [backend] = await peerDb.$client<{ pid: number }[]>`select pg_backend_pid() as pid`;
+    if (!backend) throw new Error("Expected the peer backend PID");
+    let pending: Promise<unknown> | undefined;
+    try {
+      await db.transaction(async (tx) => {
+        await tx.execute(
+          sql`select pg_advisory_xact_lock(hashtext('kuintessence:spack-material-lifecycle'))`,
+        );
+        const write =
+          method === "registerBindings"
+            ? peer.registerBindings({ [input.spec]: release })
+            : peer.acquireOperation(input);
+        pending = write.then(
+          () => ({ ok: true }),
+          (error: unknown) => ({ ok: false, error }),
+        );
+        await waitForAdvisoryWait(observer, backend.pid);
+      });
+      expect(await pending).toEqual({ ok: true });
+    } finally {
+      await pending;
+      await observer.$client.end();
+    }
+  }, 15_000);
 
   test("rolls back failed mutations and releases the transaction lock", async () => {
     const release = binding();
@@ -465,9 +462,7 @@ describe("SpackMaterialReferences (real PG)", () => {
       { manifestDigest: `sha256:${"a".repeat(65)}` },
     ]) {
       const invalid = { ...release, ...change };
-      await expectReferenceError(
-        references.registerBindings({ "valid@1": release, bad: invalid }),
-      );
+      await expectReferenceError(references.registerBindings({ "valid@1": release, bad: invalid }));
       await expectReferenceError(references.acquireOperation({ ...input, ...change }));
       await expectReferenceError(references.listReleaseReferences(invalid));
     }
