@@ -114,6 +114,12 @@ export default defineConfig({
         timeout: 900_000,
         proxyTimeout: 900_000,
       },
+      "^/software/api/spack/upstream-imports(?:\\?|$)": {
+        ...registryApiProxy,
+        // Registry enforces the 2 MiB JSON limit, including streamed request bodies.
+        timeout: 1_800_000,
+        proxyTimeout: 1_800_000,
+      },
       "^/software/api/spack/material-repositories/": {
         ...registryApiProxy,
         timeout: 1_800_000,

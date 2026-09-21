@@ -17,6 +17,7 @@ import { createOciRoutes } from "./routes/oci";
 import { createSpackCatalogRoutes } from "./routes/spack-catalog";
 import { createSpackMaterialRoutes } from "./routes/spack-materials";
 import { createSpackRepositoryRoutes } from "./routes/spack-repositories";
+import { createSpackUpstreamRoutes } from "./routes/spack-upstream";
 import { createUsecasePackageRoutes } from "./routes/usecase-packages";
 import { createWorkflowTemplateRoutes } from "./routes/workflow-templates";
 import { AppTemplateService } from "./services/app-template-service";
@@ -29,6 +30,8 @@ import { SoftwareAssetService } from "./services/software-asset-service";
 import { bootstrapConfiguredSpack } from "./services/spack-bootstrap";
 import { SpackCatalogService } from "./services/spack-catalog-service";
 import { SpackMaterialStore } from "./services/spack-material-store";
+import { SpackUpstreamDownloader } from "./services/spack-upstream-download";
+import { SpackUpstreamImportService } from "./services/spack-upstream-import";
 import { UsecasePackageService } from "./services/usecase-package-service";
 import { WorkflowTemplateService } from "./services/workflow-template-service";
 
@@ -58,6 +61,24 @@ const materialStore =
         maxBlobBytes: config.SPACK_MATERIAL_MAX_BLOB_BYTES,
         totalTimeoutMs: config.SPACK_MATERIAL_UPLOAD_TOTAL_TIMEOUT_MS,
         idleTimeoutMs: config.SPACK_MATERIAL_UPLOAD_IDLE_TIMEOUT_MS,
+      })
+    : undefined;
+const upstreamImporter =
+  config.SPACK_UPSTREAM_ENABLED && config.SPACK_UPSTREAM_PROXY_URL
+    ? new SpackUpstreamImportService({
+        downloader: new SpackUpstreamDownloader({
+          proxyUrl: config.SPACK_UPSTREAM_PROXY_URL,
+          allowedOrigins: config.SPACK_UPSTREAM_ALLOWED_ORIGINS,
+          maxBytes: config.SPACK_UPSTREAM_MAX_BYTES,
+          timeoutMs: config.SPACK_UPSTREAM_TIMEOUT_MS,
+          idleTimeoutMs: config.SPACK_UPSTREAM_IDLE_TIMEOUT_MS,
+          maxConcurrent: config.SPACK_UPSTREAM_MAX_CONCURRENT,
+          caBundle: config.SPACK_UPSTREAM_CA_BUNDLE,
+        }),
+        recipeStore,
+        materialStore,
+        publisherRoles: config.REGISTRY_PUBLISHER_ROLES,
+        maxConcurrentImports: config.SPACK_UPSTREAM_MAX_CONCURRENT,
       })
     : undefined;
 const registryService = new RegistryService(db, blobStore, new DrizzleAuditPort(db), {
@@ -180,6 +201,7 @@ app.route("/api", createWorkflowTemplateRoutes(workflowTemplateService, principa
 app.route("/api", createSpackCatalogRoutes(spackCatalogService, principalOptions));
 app.route("/api", createSpackRepositoryRoutes(recipeStore, principalOptions));
 app.route("/api", createSpackMaterialRoutes(materialStore, principalOptions));
+app.route("/api", createSpackUpstreamRoutes(upstreamImporter, principalOptions));
 app.route("/api", createEcosystemReleaseRoutes(ecosystemReleaseService, principalOptions));
 
 // OCI v2 + Spack buildcache. Both routers mount the principal

@@ -10,6 +10,7 @@ type ProxyOptions = Exclude<
 >;
 
 const IMPORT = "/software/api/spack/recipe-repositories/import";
+const UPSTREAM_IMPORT = "/software/api/spack/upstream-imports";
 const TOKEN = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJmaXh0dXJlIn0.signature";
 const HOST = "localhost:5173";
 
@@ -50,6 +51,7 @@ describe("recipe Vite proxy authentication (in memory, no listener)", () => {
     `${IMPORT}?repository=public%2Fbuiltin`,
     "/software/api/spack/recipe-repositories/id/active",
     "/software/api/spack/recipe-repositories/id/snapshots/commit/archive",
+    UPSTREAM_IMPORT,
   ])("bridges the session cookie only into the outgoing Authorization for %s", (path) => {
     const { request, upstream, response } = forward(path, {
       cookie: `other=ignored; kq_access_token=${TOKEN}; kq_refresh_token=not-an-access-token`,
@@ -156,5 +158,54 @@ describe("recipe Vite proxy authentication (in memory, no listener)", () => {
       expect(options.proxyTimeout).toBeUndefined();
       expect(options.timeout).toBeUndefined();
     }
+  });
+});
+
+describe("upstream import Vite proxy (in memory, no listener)", () => {
+  test.each([UPSTREAM_IMPORT, `${UPSTREAM_IMPORT}?request=example`])(
+    "extends only the exact endpoint timeout: %s",
+    (path) => {
+      const options = proxyOptions(path);
+      expect(options.timeout).toBe(1_800_000);
+      expect(options.proxyTimeout).toBe(1_800_000);
+      expect(options.followRedirects).toBe(false);
+      expect(options.target).toBe(proxyOptions("/software/api/spack/catalog").target);
+      expect(options.configure).toBe(proxyOptions("/software/api/spack/catalog").configure);
+      expect(options.rewrite?.(path)).toBe(path.replace(/^\/software/, ""));
+    },
+  );
+
+  test.each([
+    `${UPSTREAM_IMPORT}-other`,
+    `${UPSTREAM_IMPORT}/child`,
+    `${UPSTREAM_IMPORT}/`,
+    "/software/api/spack/catalog",
+  ])("does not extend unrelated or lookalike API timeouts: %s", (path) => {
+    const options = proxyOptions(path);
+    expect(options.timeout).toBeUndefined();
+    expect(options.proxyTimeout).toBeUndefined();
+  });
+
+  test("retains explicit credentials over the same-origin cookie", () => {
+    const { upstream } = forward(UPSTREAM_IMPORT, {
+      authorization: "Bearer explicit-token",
+      cookie: `kq_access_token=${TOKEN}`,
+      origin: `http://${HOST}`,
+    });
+    expect(upstream.getHeader("Authorization")).toBe("Bearer explicit-token");
+  });
+
+  test.each([
+    { origin: "https://attacker.invalid" },
+    { origin: "null" },
+    { origin: `http://${HOST}`, "sec-fetch-site": "cross-site" },
+    { cookie: `kq_access_token=${TOKEN}; kq_access_token=${TOKEN}` },
+    { cookie: "kq_access_token=invalid" },
+  ])("does not synthesize credentials for an unsafe import request: %j", (headers) => {
+    const { upstream } = forward(UPSTREAM_IMPORT, {
+      cookie: `kq_access_token=${TOKEN}`,
+      ...headers,
+    });
+    expect(upstream.getHeader("Authorization")).toBeUndefined();
   });
 });

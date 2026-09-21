@@ -7,6 +7,7 @@ import {
   registryPublisherRolesConfigSchema,
 } from "@kuintessence/shared";
 import { z } from "zod";
+import { spackUpstreamConfigFields } from "./spack-upstream-config";
 
 const optionalAbsolutePath = z.preprocess(
   (value) => (value === "" ? undefined : value),
@@ -39,6 +40,7 @@ const ecosystemTrustedKeysSchema = z
 
 const RegistryConfigSchema = z
   .object({
+    ...spackUpstreamConfigFields,
     DATABASE_URL: z.string().url(),
     DB_MAX_CONNECTIONS: positiveInt(10),
     DB_IDLE_TIMEOUT_SEC: nonNegativeInt(0),
@@ -84,6 +86,27 @@ const RegistryConfigSchema = z
       .transform((value) => value === "true"),
   })
   .superRefine((cfg, ctx) => {
+    if (cfg.SPACK_UPSTREAM_ENABLED) {
+      for (const key of ["SPACK_UPSTREAM_PROXY_URL", "SPACK_RECIPE_STORE_DIR"] as const) {
+        if (!cfg[key]) {
+          ctx.addIssue({ code: "custom", path: [key], message: "Required for upstream imports" });
+        }
+      }
+      if (cfg.SPACK_UPSTREAM_ALLOWED_ORIGINS.length === 0) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["SPACK_UPSTREAM_ALLOWED_ORIGINS"],
+          message: "At least one trusted upstream origin is required",
+        });
+      }
+    }
+    if (cfg.SPACK_UPSTREAM_IDLE_TIMEOUT_MS > cfg.SPACK_UPSTREAM_TIMEOUT_MS) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["SPACK_UPSTREAM_IDLE_TIMEOUT_MS"],
+        message: "Must not exceed the total transfer timeout",
+      });
+    }
     const materialDirectory = cfg.SPACK_MATERIAL_STORE_DIR;
     if (materialDirectory) {
       for (const key of ["BLOB_STORE_DIR", "SPACK_RECIPE_STORE_DIR"] as const) {

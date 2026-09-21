@@ -3,9 +3,13 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Eye, RefreshCw } from "lucide-react";
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { useTranslation } from "react-i18next";
-import { useActiveOrganizationId } from "../../lib/active-organization";
+import {
+  getStoredActiveOrganizationId,
+  useActiveOrganizationId,
+} from "../../lib/active-organization";
 import { getAuthState, subscribeAuthState } from "../../lib/auth";
 import { isLocalMode } from "../../lib/local-mode";
+import { isMobileHighRiskMutationBlocked } from "../../lib/mobile-management-policy";
 import { useMeCapabilities } from "../../lib/platform-capabilities";
 import { listRecipeRepositories } from "../../lib/recipe-repositories-client";
 import { canWriteRecipeRepository } from "../../lib/recipe-repository-access";
@@ -14,6 +18,7 @@ import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { RecipeBundleImport } from "./RecipeBundleImport";
 import { RecipeRepositoryDetail } from "./RecipeRepositoryDetail";
+import { SpackOnlineImport } from "./SpackOnlineImport";
 
 const KEY = ["spack-recipe-repositories"] as const;
 
@@ -31,6 +36,13 @@ export function RecipeRepositoriesPanel({ canManage }: { canManage: boolean }) {
   const capabilityState = useMeCapabilities(canManage && sessionKey !== null && !isLocalMode());
   const capabilities = capabilityState.status === "ready" ? capabilityState.data : null;
   const accessKey = JSON.stringify([canManage, capabilities]);
+  const scope = JSON.stringify([sessionKey, accessKey, organizationId]);
+  const latestScope = useRef(scope);
+  latestScope.current = scope;
+  const isCurrent = () =>
+    latestScope.current === scope &&
+    getRecipeSessionKey() === sessionKey &&
+    getStoredActiveOrganizationId() === organizationId;
   useEffect(() => {
     if (sessionKey === null) client.removeQueries({ queryKey: KEY });
     return () => {
@@ -49,12 +61,13 @@ export function RecipeRepositoriesPanel({ canManage }: { canManage: boolean }) {
   }
   return (
     <RepositoryPanel
-      key={JSON.stringify([sessionKey, accessKey, organizationId])}
+      key={scope}
       sessionKey={sessionKey}
       accessKey={accessKey}
       organizationId={organizationId}
       canManage={canManage}
       capabilities={capabilities}
+      isCurrent={isCurrent}
     />
   );
 }
@@ -65,12 +78,14 @@ function RepositoryPanel({
   organizationId,
   canManage,
   capabilities,
+  isCurrent,
 }: {
   sessionKey: string;
   accessKey: string;
   organizationId: string | null;
   canManage: boolean;
   capabilities: MeCapabilities | null;
+  isCurrent: () => boolean;
 }) {
   const { t } = useTranslation();
   const client = useQueryClient();
@@ -82,7 +97,7 @@ function RepositoryPanel({
       mounted.current = false;
     };
   }, []);
-  const currentSession = () => mounted.current && getRecipeSessionKey() === sessionKey;
+  const currentSession = () => mounted.current && isCurrent();
   const canWriteRepository = (repository: string) =>
     currentSession() &&
     canWriteRecipeRepository(repository, { canManage, organizationId, capabilities });
@@ -146,6 +161,20 @@ function RepositoryPanel({
           organizationId={writableOrganizationId}
           canWriteRepository={canWriteRepository}
           onImported={updateRepository}
+        />
+      ) : null}
+      {canImport &&
+      !isLocalMode() &&
+      !isMobileHighRiskMutationBlocked("/software/spack/upstream-imports") ? (
+        <SpackOnlineImport
+          kind="recipe"
+          canWriteRepository={canWriteRepository}
+          isCurrent={currentSession}
+          onImported={async (result) => {
+            if (result.kind !== "recipe" || !currentSession()) return;
+            await updateRepository(result.repository);
+            if (currentSession()) setSelectedId(result.repository.id);
+          }}
         />
       ) : null}
       {repositories.isPending ? (

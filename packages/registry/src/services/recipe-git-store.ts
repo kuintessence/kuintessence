@@ -100,44 +100,54 @@ export class RecipeGitStore {
     repository: string,
     input: Uint8Array | ReadableStream<Uint8Array>,
     actor: string,
+    signal?: AbortSignal,
   ): Promise<RecipeRepository> {
+    signal?.throwIfAborted();
     const parsed = RecipeRepositoryNameSchema.safeParse(repository);
     if (!parsed.success) throw new RecipeStoreError(400, "Invalid recipe repository namespace");
     if (this.pendingImports >= 4) throw new RecipeStoreError(429, "Too many recipe imports");
     this.pendingImports += 1;
     let staging: string | undefined;
+    let queued = false;
     try {
       await this.prepare();
+      signal?.throwIfAborted();
       staging = await mkdtemp(join(this.root, "staging", "import-"));
       const bundlePath = join(staging, "input.bundle");
-      const digest = await writeRecipeBundle(bundlePath, input, this.limits.maxBundleBytes);
+      const digest = await writeRecipeBundle(bundlePath, input, this.limits.maxBundleBytes, {
+        signal,
+      });
       const importDirectory = staging;
-      return await this.serialize(async () => {
+      const importSnapshot = async () => {
+        signal?.throwIfAborted();
         await preflightRecipeBundle(bundlePath, this.limits);
+        signal?.throwIfAborted();
+        const git = (directory: string, args: string[]) =>
+          runRecipeGit(directory, args, this.limits, false, undefined, signal);
         const source = join(importDirectory, "source.git");
-        await this.git(importDirectory, ["init", "--bare", "--template=", source]);
-        await this.git(source, ["bundle", "verify", bundlePath]);
-        const heads = await this.git(source, ["bundle", "list-heads", bundlePath, "HEAD"]);
+        await git(importDirectory, ["init", "--bare", "--template=", source]);
+        await git(source, ["bundle", "verify", bundlePath]);
+        const heads = await git(source, ["bundle", "list-heads", bundlePath, "HEAD"]);
         if (!/^[a-f0-9]{40} HEAD\n$/.test(heads.stdout.toString())) {
           throw new RecipeStoreError(422, "Bundle must contain a SHA-1 HEAD reference");
         }
         // Use explicit refs below; FETCH_HEAD is never read (Git 2.25 compatibility).
-        await this.git(source, [
+        await git(source, [
           "fetch",
           "--no-tags",
           "--no-recurse-submodules",
           bundlePath,
           "HEAD:refs/heads/import",
         ]);
-        await this.git(source, ["fsck", "--full", "--strict", "--no-reflogs"]);
+        await git(source, ["fsck", "--full", "--strict", "--no-reflogs"]);
         const commit = RecipeCommitSchema.parse(
-          (await this.git(source, ["rev-parse", "refs/heads/import^{commit}"])).stdout
+          (await git(source, ["rev-parse", "refs/heads/import^{commit}"])).stdout
             .toString()
             .trim(),
         );
         checkRecipeObjects(
           (
-            await this.git(source, [
+            await git(source, [
               "cat-file",
               "--batch-all-objects",
               "--batch-check=%(objectsize)",
@@ -146,13 +156,16 @@ export class RecipeGitStore {
           this.limits,
         );
         const files = parseRecipeTree(
-          (await this.git(source, ["ls-tree", "-r", "-z", "-l", "--full-tree", commit])).stdout,
+          (await git(source, ["ls-tree", "-r", "-z", "-l", "--full-tree", commit])).stdout,
           this.limits,
         );
         const report = await inspectRecipeTree(
           files,
-          createRecipeTextReader(source, files, this.limits),
+          createRecipeTextReader(source, files, this.limits, signal),
         );
+        signal?.throwIfAborted();
+        // From here, finish snapshot/ref publication together even if the caller cancels.
+        // Interrupting this region could strand a ref without its manifest.
         const id = RecipeGitStore.repositoryId(repository);
         const destination = this.repositoryPath(id);
         await this.ensureRepository(id, repository, importDirectory);
@@ -194,9 +207,14 @@ export class RecipeGitStore {
           throw error;
         }
         return this.get(id);
+      };
+      const imported = this.serialize(importSnapshot, signal, () => {
+        this.pendingImports -= 1;
       });
+      queued = true;
+      return await imported;
     } finally {
-      this.pendingImports -= 1;
+      if (!queued) this.pendingImports -= 1;
       if (staging) await rm(staging, { recursive: true, force: true });
     }
   }
@@ -487,14 +505,40 @@ export class RecipeGitStore {
     return runRecipeGit(directory, args, this.limits, allowFailure, input);
   }
 
-  private serialize<T>(action: () => Promise<T>): Promise<T> {
-    const result = this.writeTail.then(action);
-    // Only the queue tail consumes rejection; the caller receives the original failed promise.
+  private serialize<T>(
+    action: () => Promise<T>,
+    signal?: AbortSignal,
+    retired?: () => void,
+  ): Promise<T> {
+    let started = false;
+    const result = this.writeTail.then(() => {
+      signal?.throwIfAborted();
+      started = true;
+      return action();
+    });
+    // Canceled queued imports retain admission until their turn retires.
     this.writeTail = result.then(
-      () => undefined,
-      () => undefined,
+      () => retired?.(),
+      () => retired?.(),
     );
-    return result;
+    if (!signal) return result;
+    return new Promise<T>((resolve, reject) => {
+      const abort = () => {
+        if (!started) reject(new Error("Recipe import cancelled while queued"));
+      };
+      signal.addEventListener("abort", abort, { once: true });
+      result.then(
+        (value) => {
+          signal.removeEventListener("abort", abort);
+          resolve(value);
+        },
+        (error: unknown) => {
+          signal.removeEventListener("abort", abort);
+          reject(error);
+        },
+      );
+      if (signal.aborted) abort();
+    });
   }
 }
 

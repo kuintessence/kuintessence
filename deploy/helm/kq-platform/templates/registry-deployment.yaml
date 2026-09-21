@@ -1,4 +1,21 @@
 {{- if .Values.registry.enabled }}
+{{- if .Values.registry.upstream.enabled }}
+{{- if not .Values.registry.recipes.enabled }}
+{{- fail "registry.upstream.enabled requires registry.recipes.enabled" }}
+{{- end }}
+{{- if not .Values.registry.upstream.proxySecretRef.name }}
+{{- fail "registry.upstream.proxySecretRef.name is required when upstream imports are enabled" }}
+{{- end }}
+{{- if not .Values.registry.upstream.proxySecretRef.key }}
+{{- fail "registry.upstream.proxySecretRef.key is required when upstream imports are enabled" }}
+{{- end }}
+{{- if not .Values.registry.upstream.allowedOrigins }}
+{{- fail "registry.upstream.allowedOrigins must not be empty when upstream imports are enabled" }}
+{{- end }}
+{{- if and .Values.registry.upstream.caBundle (not (hasPrefix "/" .Values.registry.upstream.caBundle)) }}
+{{- fail "registry.upstream.caBundle must be an absolute container path" }}
+{{- end }}
+{{- end }}
 {{- if .Values.registry.recipes.enabled }}
 {{- if not .Values.registry.persistence.enabled }}
 {{- fail "registry.recipes.enabled requires registry.persistence.enabled" }}
@@ -70,6 +87,29 @@ spec:
                 secretKeyRef:
                   name: {{ include "kq.secretName" . }}
                   key: JWT_SECRET
+            - name: SPACK_UPSTREAM_ENABLED
+              value: {{ ternary "true" "false" .Values.registry.upstream.enabled | quote }}
+            {{- if .Values.registry.upstream.enabled }}
+            - name: SPACK_UPSTREAM_PROXY_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.registry.upstream.proxySecretRef.name | quote }}
+                  key: {{ .Values.registry.upstream.proxySecretRef.key | quote }}
+            - name: SPACK_UPSTREAM_ALLOWED_ORIGINS
+              value: {{ .Values.registry.upstream.allowedOrigins | toJson | quote }}
+            - name: SPACK_UPSTREAM_TIMEOUT_MS
+              value: {{ .Values.registry.upstream.timeoutMs | quote }}
+            - name: SPACK_UPSTREAM_IDLE_TIMEOUT_MS
+              value: {{ .Values.registry.upstream.idleTimeoutMs | quote }}
+            - name: SPACK_UPSTREAM_MAX_CONCURRENT
+              value: {{ .Values.registry.upstream.maxConcurrent | quote }}
+            - name: SPACK_UPSTREAM_MAX_BYTES
+              value: {{ .Values.registry.upstream.maxBytes | quote }}
+            {{- if .Values.registry.upstream.caBundle }}
+            - name: SPACK_UPSTREAM_CA_BUNDLE
+              value: {{ .Values.registry.upstream.caBundle | quote }}
+            {{- end }}
+            {{- end }}
             {{- if .Values.registry.persistence.enabled }}
             - name: BLOB_STORE_DIR
               value: {{ .Values.registry.persistence.mountPath | quote }}

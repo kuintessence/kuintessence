@@ -136,6 +136,22 @@ helm template kq deploy/helm/kq-platform -f deploy/helm/kq-platform/values.testi
 不安装依赖、启动监听服务、容器或真实 Spack，也不连接集群。
 无 Helm 时渲染用例明确跳过，静态断言仍执行。这些检查不验证镜像构建或运行时持久化。
 
+## Spack 受控上游导入
+
+默认 `registry.upstream.enabled=false`；开启时要求 recipes 持久化和单写者。
+`registry.upstream.proxySecretRef.name/key` 必须引用同 namespace 中已有 Secret，
+只向 Registry 容器注入 `SPACK_UPSTREAM_PROXY_URL`，不接受 values 中的明文代理 URL，
+不把凭据放入共享 ConfigMap 或 Server/Web/Agent 环境。
+另配置 `registry.upstream.allowedOrigins` 精确 HTTPS origin 列表和传输限额。
+代理失败不直连、不跟随重定向，目标仅为公共 IPv4 HTTPS/443。
+
+可选 `registry.upstream.caBundle` 为容器内绝对路径，管理员需另行只读挂载目标 TLS CA；
+chart 不自动创建 CA 卷。外层 Ingress 须对齐精确导入路径的 2 MiB JSON 限额与
+30 分钟超时，不能仅提高 Registry 内部超时。Secret 轮换后按部署流程重建 Registry Pod。
+完整 values 示例、权限和取消边界见
+[Spack 受控上游导入](../../../docs/spack-upstream-import.md)。
+新增接线及静态测试尚待对应提交 CI，不代表渲染、部署或真实代理已验收。
+
 ## 生产 Agent mTLS 边界
 
 `values.production.yaml` 默认使用 `MTLS_MODE=trusted-proxy`。安装时填写专用 Agent mTLS ingress/proxy 的来源 CIDR，范围只包含需要连接 Server 的代理地址：
@@ -303,6 +319,14 @@ kubectl delete pvc -l app.kubernetes.io/instance=kq
 | `registry.recipes.enabled` | `true` | 启用 recipe Git；要求持久化、单副本和 Recreate |
 | `registry.recipes.bootstrapManifest` | `""` | 可选容器内绝对本地路径；管理员自行只读挂载 manifest 与 bundle |
 | `registry.recipes.materialBootstrapManifest` | `""` | 可选材料 manifest 的容器内绝对本地路径；运维只读挂载文件包，recipe bootstrap 完成后执行 |
+| `registry.upstream.enabled` | `false` | 受控 recipe/material 上游导入；要求 recipes 开启 |
+| `registry.upstream.proxySecretRef.name/key` | `""` / `SPACK_UPSTREAM_PROXY_URL` | 已有 Secret 引用，不接受明文代理 URL |
+| `registry.upstream.allowedOrigins` | `[]` | 精确公共 HTTPS/443 origin 数组 |
+| `registry.upstream.timeoutMs` | `300000` | 单文件传输总超时，最多 1800000 毫秒 |
+| `registry.upstream.idleTimeoutMs` | `30000` | 传输空闲超时，毫秒 |
+| `registry.upstream.maxConcurrent` | `2` | 单实例并发上限，最多 4 |
+| `registry.upstream.maxBytes` | `1073741824` | 单文件下载上限，最多 16 GiB |
+| `registry.upstream.caBundle` | `""` | 可选目标 TLS CA 的绝对容器路径，运维自行只读挂载 |
 | `migration.image.repository` | `kuintessence/db-migrate` | Helm revision 的数据库迁移镜像 |
 | `postgres.enabled` | `true` | 是否部署集群内 PostgreSQL |
 | `postgres.storage` | `20Gi` | PVC 大小 |

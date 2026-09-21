@@ -295,6 +295,10 @@ namespace owner 不自动拥有发布资格；`platform_admin` 不自动跨用�
 - App template 写入要求平台管理员，读接口公开，不使用三层 namespace 规则。
 - Usecase package、workflow template 写入检查 publisher 及各自资源归属规则。
 - Spack catalog 允许受限匿名读取；显式 `source=vendor` 要求认证，并按服务规则收窄可见性。
+- Spack [受控上游导入](spack-upstream-import.md) 默认关闭，下载前检查 canonical
+  principal、publisher 及目标 namespace 读写权限；代理配置和目标 origin 白名单仅由运维配置。
+  目标 DNS 的全部 A 记录须为公网 IPv4，并固定连接地址、验证原主机名的 TLS；
+  不跟随重定向、不在代理失败后直连，也不向 Agent 下发代理凭据。
 - 受保护写路径包括 blob upload、manifest/tag mutation、artifact 删除及模板/package 修改。
 
 | 失败条件 | HTTP / 错误 |

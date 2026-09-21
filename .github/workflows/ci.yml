@@ -176,3 +176,36 @@ jobs:
           persist-credentials: false
       - name: Validate Compose and run disposable RustFS AIO
         run: bash deploy/rustfs/ci.sh
+
+  spack-upstream:
+    name: Spack HTTP and SOCKS online imports
+    if: github.event_name == 'workflow_dispatch' && inputs.run_runtime_checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - name: Install dependencies without lifecycle scripts
+        run: bun install --frozen-lockfile --ignore-scripts
+      - name: Verify controlled imports through real local proxies
+        run: >-
+          bun test --timeout=15000
+          packages/shared/src/spack-upstream.test.ts
+          packages/registry/src/spack-upstream-config.test.ts
+          packages/registry/src/services/spack-upstream-policy.test.ts
+          packages/registry/src/services/spack-upstream-download.test.ts
+          packages/registry/src/services/spack-upstream-import.test.ts
+          packages/registry/src/routes/spack-upstream.test.ts
+          packages/registry/src/services/recipe-git.test.ts
+          packages/registry/src/services/recipe-git-store.test.ts
+          scripts/spack-upstream-deployment.test.ts
+          scripts/recipe-proxy-config.test.ts
+          scripts/recipe-vite-proxy.test.ts
+      - name: Verify online import browser state and client contract
+        working-directory: packages/web
+        run: bun run test src/lib/spack-upstream-client.test.ts src/components/software/SpackOnlineImport.test.tsx

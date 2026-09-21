@@ -21,7 +21,7 @@ COPY packages/db ./packages/db
 COPY packages/registry ./packages/registry
 
 FROM oven/bun:1.4.2-alpine
-RUN apk add --no-cache git
+RUN apk add --no-cache git curl ca-certificates
 WORKDIR /app
 COPY --from=build /app /app
 ENV NODE_ENV=production \

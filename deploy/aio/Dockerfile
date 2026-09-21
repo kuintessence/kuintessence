@@ -42,6 +42,8 @@ FROM postgres:16-alpine
 
 RUN apk add --no-cache \
     bash \
+    ca-certificates \
+    curl \
     git \
     jq \
     libgcc \
@@ -82,6 +84,7 @@ ENV PATH="/usr/local/bin:${PATH}" \
     BLOB_STORE_DIR=/data/registry/blobs \
     SPACK_RECIPE_STORE_DIR=/data/registry/recipes \
     SPACK_MATERIAL_STORE_DIR=/data/registry/materials \
+    SPACK_UPSTREAM_ENABLED=false \
     GIT_CONFIG_GLOBAL=/dev/null \
     GIT_CONFIG_NOSYSTEM=1 \
     NODE_ENV=production \

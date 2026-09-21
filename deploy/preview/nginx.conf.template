@@ -54,6 +54,23 @@ server {
         proxy_hide_header Cache-Control;
     }
 
+    location = /software/api/spack/upstream-imports {
+        if ($preview_allowed = 0) {
+            return 302 /__preview/unlock;
+        }
+        client_max_body_size 2m;
+        proxy_request_buffering off;
+        proxy_buffering off;
+        proxy_read_timeout 1800s;
+        proxy_send_timeout 1800s;
+        proxy_pass http://web:80;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header Authorization $preview_authorization;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_hide_header Cache-Control;
+    }
+
     location ^~ /software/api/spack/material-repositories/ {
         if ($preview_allowed = 0) {
             return 302 /__preview/unlock;

@@ -122,6 +122,21 @@ preview 的命名卷只保证该预览实例生命周期内的容器重建持久
 `bun test packages/registry/src/config.test.ts scripts/spack-material-delivery.test.ts`。
 材料流水线用例仅使用进程内 fixture 与替身，不启动监听服务、容器或真实 Spack。
 
+## Spack 受控上游导入
+
+主配置 `registry` 和 AIO `kq` 透传 `SPACK_UPSTREAM_*`，默认关闭；watch 继承主配置。
+scheduler、PR 测试和 preview 显式关闭。Registry、dev 和 AIO runtime 提供 `curl`
+及 `ca-certificates`，PR workspace 继承 scheduler base 的相同依赖，不改变版本 pins。
+不设置全局代理，不向 Agent 注入代理 URL。
+
+开启时必须配置受信任出口代理、精确 HTTPS origin 白名单和持久化 recipe/material 目录；
+代理秘密由私有环境注入，不写入仓库或输出展开后的 Compose 配置。
+CA bundle 若配置，需运维额外只读挂载；仅设置绝对容器路径不会自动挂载文件。
+Web 请求仅上传最多 2 MiB 的 JSON manifest，Nginx 为精确路径配置 30 分钟代理超时，
+其他 API 限额不变。配置、Secret 边界、请求示例及部分失败语义见
+[Spack 受控上游导入](../../docs/spack-upstream-import.md)。
+此接线与新增回归用例尚待 GitHub Actions 验证，不能据此声称真实代理或镜像已验收。
+
 ## 直接调用
 
 构建上下文和 bind mount 均以仓库根目录为基准。直接调用时指定

@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { readFile } from "node:fs/promises";
 
 const IMPORT = "/software/api/spack/recipe-repositories/import";
+const UPSTREAM_IMPORT = "/software/api/spack/upstream-imports";
 const configurations = [
   { file: "packages/web/nginx.conf", upstream: "http://registry:3100", preview: false },
   { file: "deploy/aio/nginx.conf", upstream: "http://127.0.0.1:3100", preview: false },
@@ -28,6 +29,30 @@ function directive(source: string, name: string): string | undefined {
 
 describe("recipe upload nginx configuration (offline)", () => {
   for (const { file, upstream, preview } of configurations) {
+    test(`${file} bounds online import JSON and keeps the authenticated bridge`, async () => {
+      const source = await readFile(new URL(`../${file}`, import.meta.url), "utf8");
+      const upload = block(source, `location = ${UPSTREAM_IMPORT}`);
+      if (!upload) throw new Error("Missing exact upstream import location");
+      expect(directive(upload, "client_max_body_size")).toBe("2m");
+      expect(directive(upload, "proxy_request_buffering")).toBe("off");
+      expect(directive(upload, "proxy_buffering")).toBe("off");
+      expect(directive(upload, "proxy_read_timeout")).toBe("1800s");
+      expect(directive(upload, "proxy_send_timeout")).toBe("1800s");
+      expect(directive(upload, "proxy_http_version")).toBe("1.1");
+      expect(directive(upload, "proxy_pass")).toBe(upstream);
+      expect(directive(upload, "proxy_set_header Authorization")).toBe(
+        preview ? "$preview_authorization" : "$registry_authorization",
+      );
+      if (preview) {
+        const gate = block(upload, "if ($preview_allowed = 0)");
+        expect(directive(gate ?? "", "return")).toBe("302 /__preview/unlock");
+        expect(directive(upload, "proxy_set_header X-Forwarded-Proto")).toBe("https");
+        expect(directive(upload, "proxy_hide_header")).toBe("Cache-Control");
+      } else {
+        expect(directive(upload, "rewrite")).toBe("^/software/(.*)$ /$1 break");
+      }
+    });
+
     test(`${file} accepts a 128 MiB raw import with bounded upstream wait and streaming`, async () => {
       const source = await readFile(new URL(`../${file}`, import.meta.url), "utf8");
       const upload = block(source, `location = ${IMPORT}`);

@@ -39,7 +39,9 @@ export async function runRecipeGit(
   limits: RecipeStoreLimits,
   allowFailure = false,
   input?: string,
+  signal?: AbortSignal,
 ): Promise<{ stdout: Buffer; code: number }> {
+  signal?.throwIfAborted();
   const result = await new Promise<{ stdout: Buffer; code: number }>((resolve, reject) => {
     const grouped = process.platform !== "win32";
     const child = spawn(
@@ -115,6 +117,9 @@ export async function runRecipeGit(
         );
       }
     };
+    const abort = () => stop();
+    signal?.addEventListener("abort", abort, { once: true });
+    if (signal?.aborted) abort();
     const timer = setTimeout(stop, limits.gitTimeoutMs);
     child.stdout.on("data", (chunk: Buffer) => {
       stdoutBytes += chunk.length;
@@ -130,10 +135,11 @@ export async function runRecipeGit(
       // Git may reject input and exit before consuming the entire batch.
       if (error.code !== "EPIPE") stop(error);
     });
-    child.on("close", (code, signal) => {
+    child.on("close", (code, terminationSignal) => {
       clearTimeout(timer);
+      signal?.removeEventListener("abort", abort);
       child.stdin.destroy();
-      if (failure || signal || code === null) {
+      if (failure || terminationSignal || code === null) {
         reject(failure ?? new RecipeStoreError(422, "Git operation was terminated"));
       } else {
         resolve({ stdout: Buffer.concat(output), code });
@@ -141,6 +147,7 @@ export async function runRecipeGit(
     });
     child.stdin.end(input);
   });
+  signal?.throwIfAborted();
   if (result.code !== 0 && !allowFailure) {
     throw new RecipeStoreError(
       422,
@@ -155,6 +162,7 @@ export function createRecipeTextReader(
   directory: string,
   files: RecipeTreeFile[],
   limits: RecipeStoreLimits,
+  signal?: AbortSignal,
 ): (file: RecipeTreeFile) => Promise<string> {
   const batches: RecipeTreeFile[][] = [];
   const positions = new Map<string, number>();
@@ -175,6 +183,7 @@ export function createRecipeTextReader(
   let cachedIndex = -1;
   let cached = new Map<string, Buffer>();
   return async (file) => {
+    signal?.throwIfAborted();
     const index = positions.get(file.path);
     if (index === undefined) {
       throw new RecipeStoreError(
@@ -191,6 +200,7 @@ export function createRecipeTextReader(
         limits,
         false,
         `${selected.map((item) => item.oid).join("\n")}\n`,
+        signal,
       );
       const blobs = new Map<string, Buffer>();
       let offset = 0;
@@ -310,8 +320,10 @@ export async function writeRecipeBundle(
   path: string,
   input: Uint8Array | ReadableStream<Uint8Array>,
   limit: number,
-  timeouts: { idleTimeoutMs?: number; totalTimeoutMs?: number } = {},
+  timeouts: { idleTimeoutMs?: number; totalTimeoutMs?: number; signal?: AbortSignal } = {},
 ): Promise<string> {
+  const { signal } = timeouts;
+  signal?.throwIfAborted();
   const idleTimeoutMs = timeouts.idleTimeoutMs ?? 30_000;
   const totalTimeoutMs = timeouts.totalTimeoutMs ?? 300_000;
   if (
@@ -328,13 +340,20 @@ export async function writeRecipeBundle(
   let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
   let failure: { error: unknown } | undefined;
   const wait = async <T>(operation: () => Promise<T>, idle = false): Promise<T> => {
+    signal?.throwIfAborted();
     const remaining = deadline - performance.now();
     if (remaining <= 0) throw new RecipeStoreError(400, "Recipe upload deadline exceeded");
     const idleFirst = idle && idleTimeoutMs < remaining;
     let timer: ReturnType<typeof setTimeout> | undefined;
+    let abort: (() => void) | undefined;
     try {
       return await Promise.race([
         operation(),
+        new Promise<never>((_resolve, reject) => {
+          abort = () => reject(new Error("Recipe staging cancelled"));
+          signal?.addEventListener("abort", abort, { once: true });
+          if (signal?.aborted) abort();
+        }),
         new Promise<never>((_resolve, reject) => {
           timer = setTimeout(
             () =>
@@ -350,6 +369,7 @@ export async function writeRecipeBundle(
       ]);
     } finally {
       clearTimeout(timer);
+      if (abort) signal?.removeEventListener("abort", abort);
     }
   };
   try {
@@ -371,6 +391,7 @@ export async function writeRecipeBundle(
       }
     }
     if (size === 0) throw new RecipeStoreError(400, "Recipe bundle is empty");
+    signal?.throwIfAborted();
   } catch (error) {
     failure = { error };
     // Cancellation closes pending reads synchronously; do not await an untrusted cancel hook.

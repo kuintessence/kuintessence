@@ -67,6 +67,20 @@ registry:
     maxActiveUploads: 100
     maxActiveUploadsPerRepository: 10
     maxIncompleteUploadBytes: 42949672960
+  upstream:
+    enabled: false
+    # Existing Secret only: never put a proxy URL or its credentials in values.
+    proxySecretRef:
+      name: ""
+      key: SPACK_UPSTREAM_PROXY_URL
+    # Exact public HTTPS origins, port 443 only; no path/query/userinfo/fragment.
+    allowedOrigins: []
+    timeoutMs: 300000
+    idleTimeoutMs: 30000
+    maxConcurrent: 2
+    maxBytes: 1073741824
+    # Optional absolute target TLS CA path; mount separately and read-only.
+    caBundle: ""
   podDisruptionBudget:
     enabled: false
     minAvailable: 1
