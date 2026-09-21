@@ -598,8 +598,12 @@ source audit 测试使用模拟 Spack 模块、归档 fixture、模拟 runtime m
 通过单元测试不代表 runtime 已在真实集群验收。
 
 安装事务、策略、故障清理、mount 参数和报告绑定采用临时文件、模拟 native Spack 模块及
-TypeScript fixture 验证。真实 Linux 隔离 build、独立 readonly verify、
-共享持久化 prefix 的计算节点读取/load/uninstall、compute ABI 与站点 quota 仍须独立验收。
+TypeScript fixture 验证。提交 `c4987cf` 已在 GitHub Actions 的临时单节点 Slurm 环境
+通过 GNU Hello 的真实隔离 build、独立 readonly verify、load/作业运行、
+源码缺失与篡改后的库存撤回/显式恢复、重启复验及卸载，见
+[受管安装案例](../deploy/pr-test/README.md#实验性受管安装案例)。
+跨节点共享持久化 prefix、compute ABI、站点 quota 和生产环境仍须独立验收；
+该单包案例不替代 15 个工作流的目标 Linux 安装与运行验收。
 初始化导入测试使用临时文件与合成 lock/source fixture 验证顺序、校验、权限、
 部分失败、重试和读取期间文件变更，不替代真实部署卷及工作流材料包的导入验收。
 Web 导入采用 mock HTTP/临时 File 的组件与队列测试，不替代真实网关、大文件上传、

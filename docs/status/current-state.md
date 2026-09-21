@@ -51,16 +51,15 @@ Kuintessence 当前为 pre-release。以下列出组件功能、运行要求和�
   每次新安装事务独占共享持久化 prefix，managed inventory/load/uninstall 仅面向 DAG root，
   依赖不独立管理，卸载清理整个事务 store；root-only 不指系统 root 身份。
   shared storage、compute ABI、quota、recipe trust 均需运维人工声明，不等于自动验证。
-  Python install worker 已实现并通过模拟 native API 的 fixture 测试；
-  Actions 中真实 Linux/Spack/Apptainer/SIF 的 runtime 隔离、source audit、
-  build 与独立 readonly verify 已通过，安装账本达到 `ready`，
-  预建只读 legacy 数据库锁后 API 安装操作也已返回成功；
-  受管用例已在 Actions 中通过 load 独立复验和真实 Slurm Hello 作业，
-  源码缺失负例曾暴露空库存未同步的问题，已补充显式空报告及回归；
-  最近一轮在 load 后因队列观测过期进入 no-go，阻断真实作业提交；
-  队列刷新已与普通指标缓存拆分，运行时结果待验收。
-  缓存破坏恢复、重启复验与卸载尚未完成闭环，
-  不能用 native 离线编译案例替代受管安装验收；
+  Python install worker 已实现并通过模拟 native API 的 fixture 测试。
+  提交 `c4987cf` 的 GitHub Actions 已通过真实 Linux/Spack/Apptainer/SIF
+  GNU Hello 受管安装闭环：runtime 隔离、source audit、build、独立 readonly verify、
+  `ready`、load、Slurm 作业、源码缺失/篡改后的库存撤回与显式恢复、
+  Registry/Agent 重启后复验及再次运行、卸载和库存撤回。
+  显式空库存报告与独立队列刷新已在此案例中通过验证，详见
+  [受管安装验收范围](../../deploy/pr-test/README.md#实验性受管安装案例)。
+  此结果仅覆盖临时单节点 Slurm 环境，不代表跨节点共享存储、compute ABI、
+  生产站点或 15 个工作流验收；native 离线编译案例也不能替代受管安装验收。
   `ready` 不等于生产就绪，不能宣称平台安装功能已恢复。
   源码已有上传/发布 API 与本地材料 manifest 初始化/批量导入；recipe bootstrap
   完成后才导入材料，成功 binding 仍须运维显式配置到 Server，不自动启用安装。
@@ -96,8 +95,8 @@ Kuintessence 当前为 pre-release。以下列出组件功能、运行要求和�
   此案例不启用或替代 Apptainer/SIF managed installation，不等于自动安装或 15 个工作流验收。
 - PR 测试新增独立的实验性 GNU Hello 受管安装案例，使用临时 systemd scheduler、
   非 root Agent、固定 Apptainer 1.4.3/SIF 和有容量上限的持久化安装 store；
-  runtime 前置条件、安装/load、Slurm、重启复验和卸载结果须以当前提交 Actions 为准，
-  未通过前不提升上述安装验收状态。外层 privileged 测试容器不作为生产部署方案。
+  上述闭环已有 Actions 通过记录，后续提交仍须检查对应 Actions，不能沿用旧提交结果。
+  外层 privileged 测试容器不作为生产部署方案。
 
 ## 文档与验证
 

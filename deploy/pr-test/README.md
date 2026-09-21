@@ -163,6 +163,17 @@ named volume 持久化；Agent 和 Slurm 在同一节点以相同路径访问，
 目标检查链为：Server API 安装、隔离 source audit、build、独立 readonly verify、
 `ready`、load、真实 Slurm Hello、源码缓存缺失/篡改后的撤回与显式恢复、
 重启后复验/运行、卸载及库存撤回。
+
+2026-09-20，提交 `c4987cf` 的
+[PR scheduler tests](https://github.com/kuintessence/kuintessence/actions/runs/35514084225)
+通过 Slurm、PBS、native Hello 和此受管案例；同一提交的
+[完整 CI](https://github.com/kuintessence/kuintessence/actions/runs/35514099810)
+五项检查均通过。受管日志分别确认 `missing-source`、`corrupt-source` 负例与恢复成功，
+以及 `install`、`restart`、`uninstall` 三阶段成功。失败的 load 是完整性负例的预期结果，
+恢复材料后必须显式复验，不会仅凭恢复文件重新发布可用库存。
+该记录证明此提交在临时单节点 Slurm 环境完成上述检查链，不证明后续提交、跨节点共享
+存储、compute ABI、生产站点或 15 个工作流通过验收。
+
 等待测试队列时最多记录八次状态变化，仅输出 schema 校验后的枚举和布尔值；
 失败后用现有 Slurm adapter 查询一次原生队列对照，不输出原始 CLI 内容或队列清单，
 不改变原等待时限和失败结果。
