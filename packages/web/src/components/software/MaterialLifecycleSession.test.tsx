@@ -317,7 +317,7 @@ test.each(["success", "uncertain"])("%s discards a pending ordinary lookup", asy
   await screen.findByText(
     outcome === "success" ? labels.lifecycleNotice.changed : labels.lifecycleNotice.uncertain,
   );
-  expect(signal?.aborted).toBe(true);
+  await waitFor(() => expect(signal?.aborted).toBe(true));
   await act(async () => pending.resolve(f.manifest));
   expect(screen.queryByTestId("material-release-detail")).toBeNull();
   expect(materials.getSpackMaterial).toHaveBeenCalledTimes(1);
