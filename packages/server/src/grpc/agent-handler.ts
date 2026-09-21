@@ -383,6 +383,8 @@ export function registerAgentHandler(router: ConnectRouter, deps: AgentHandlerDe
       const requestIterator = requests[Symbol.asyncIterator]();
 
       const channel = {
+        spackMaterialDeliveryV1: false,
+        verifiedCertFingerprint: undefined as string | undefined,
         push: (m: ServerMessage) => {
           if (!active) {
             throw new Error("agent stream closed");
@@ -487,6 +489,9 @@ export function registerAgentHandler(router: ConnectRouter, deps: AgentHandlerDe
               registeredAgentId = reg.agentId;
               computeHealthV1 = reg.computeHealthV1;
               queueInventoryV1 = reg.queueInventoryV1;
+              channel.spackMaterialDeliveryV1 = reg.spackMaterialDeliveryV1;
+              channel.verifiedCertFingerprint =
+                mtlsContext.getStore()?.fingerprintSha256 ?? undefined;
               dispatcher.register(registeredAgentId, channel);
               await jobCancellations?.redeliver(registeredAgentId);
               await dataDeliveryRevocations?.redeliver(registeredAgentId);
@@ -588,13 +593,11 @@ export function registerAgentHandler(router: ConnectRouter, deps: AgentHandlerDe
               );
             }
 
-            // when the heartbeat carries installed-software,
-            // mirror it into the per-agent ledger. This is fire-and-forget
-            // so the heartbeat ingest path stays fast; the registry's
-            // delete-stale + insert pass is bounded by the agent's local
-            // installed-list size.
+            // Serialize snapshots in stream order. A delayed nonempty heartbeat
+            // must not restore entries after a later explicit empty report.
+            // Empty repeated fields remain ambiguous for legacy/replayed heartbeats.
             if (installedRegistry && hb.installedSoftware.length > 0) {
-              installedRegistry
+              await installedRegistry
                 .replaceForAgent(
                   registeredAgentId,
                   hb.installedSoftware.map((s) => ({

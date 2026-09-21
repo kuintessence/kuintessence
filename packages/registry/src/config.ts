@@ -1,3 +1,4 @@
+import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import {
   loadConfig,
   logLevelSchema,
@@ -6,6 +7,11 @@ import {
   registryPublisherRolesConfigSchema,
 } from "@kuintessence/shared";
 import { z } from "zod";
+
+const optionalAbsolutePath = z.preprocess(
+  (value) => (value === "" ? undefined : value),
+  z.string().refine(isAbsolute, "must be absolute").optional(),
+);
 
 const ecosystemTrustedKeysSchema = z
   .string()
@@ -41,6 +47,16 @@ const RegistryConfigSchema = z
     /** Filesystem directory for the artifact blob store. When unset, an
      *  in-memory store is used (dev/test). */
     BLOB_STORE_DIR: z.string().optional(),
+    SPACK_RECIPE_STORE_DIR: optionalAbsolutePath,
+    SPACK_RECIPE_BOOTSTRAP_MANIFEST: optionalAbsolutePath,
+    SPACK_RECIPE_MAX_BUNDLE_BYTES: positiveInt(128 * 1024 * 1024),
+    SPACK_RECIPE_MAX_EXPANDED_BYTES: positiveInt(512 * 1024 * 1024),
+    SPACK_RECIPE_MAX_FILES: positiveInt(100_000),
+    SPACK_MATERIAL_STORE_DIR: optionalAbsolutePath,
+    SPACK_MATERIAL_BOOTSTRAP_MANIFEST: optionalAbsolutePath,
+    SPACK_MATERIAL_MAX_BLOB_BYTES: positiveInt(16 * 1024 ** 3).pipe(z.number().max(16 * 1024 ** 3)),
+    SPACK_MATERIAL_UPLOAD_TOTAL_TIMEOUT_MS: positiveInt(30 * 60_000),
+    SPACK_MATERIAL_UPLOAD_IDLE_TIMEOUT_MS: positiveInt(30_000),
     /** Hard ceiling on one staged OCI upload (bytes). Default 10 GiB. */
     REGISTRY_MAX_UPLOAD_BYTES: positiveInt(10 * 1024 * 1024 * 1024),
     /** Idle seconds after which an unfinished OCI upload session is swept. Default 1 h. */
@@ -68,6 +84,49 @@ const RegistryConfigSchema = z
       .transform((value) => value === "true"),
   })
   .superRefine((cfg, ctx) => {
+    const materialDirectory = cfg.SPACK_MATERIAL_STORE_DIR;
+    if (materialDirectory) {
+      for (const key of ["BLOB_STORE_DIR", "SPACK_RECIPE_STORE_DIR"] as const) {
+        const directory = cfg[key];
+        if (!directory) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: [key],
+            message: `${key} is required for material storage`,
+          });
+        } else if (
+          key === "BLOB_STORE_DIR"
+            ? containsDirectory(materialDirectory, directory) ||
+              ["sha256", "_uploads"].some((name) =>
+                directoriesOverlap(materialDirectory, join(directory, name)),
+              )
+            : directoriesOverlap(materialDirectory, directory)
+        ) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ["SPACK_MATERIAL_STORE_DIR"],
+            message:
+              key === "BLOB_STORE_DIR"
+                ? "Material storage must not overlap OCI data directories or contain BLOB_STORE_DIR"
+                : `Material storage must be separate from ${key}`,
+          });
+        }
+      }
+    }
+    if (cfg.SPACK_RECIPE_BOOTSTRAP_MANIFEST && !cfg.SPACK_RECIPE_STORE_DIR) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["SPACK_RECIPE_BOOTSTRAP_MANIFEST"],
+        message: "SPACK_RECIPE_STORE_DIR is required for recipe bootstrap",
+      });
+    }
+    if (cfg.SPACK_MATERIAL_BOOTSTRAP_MANIFEST && !materialDirectory) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["SPACK_MATERIAL_BOOTSTRAP_MANIFEST"],
+        message: "SPACK_MATERIAL_STORE_DIR is required for material bootstrap",
+      });
+    }
     if (cfg.REGISTRY_AUTH_MODE === "jwt" && !cfg.REGISTRY_JWT_SECRET) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
@@ -92,4 +151,13 @@ export type RegistryConfig = z.infer<typeof RegistryConfigSchema>;
 
 export function loadRegistryConfig(env: NodeJS.ProcessEnv = process.env): RegistryConfig {
   return loadConfig(RegistryConfigSchema, env, "Registry");
+}
+
+function directoriesOverlap(left: string, right: string): boolean {
+  return containsDirectory(left, right) || containsDirectory(right, left);
+}
+
+function containsDirectory(parent: string, child: string): boolean {
+  const path = relative(resolve(parent), resolve(child));
+  return path === "" || (path !== ".." && !path.startsWith(`..${sep}`) && !isAbsolute(path));
 }

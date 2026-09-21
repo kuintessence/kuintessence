@@ -56,7 +56,10 @@ import {
   createServerClient,
   createServerReachabilityProbe,
 } from "./server-client";
-import { SpackManager } from "./spack";
+import { configureSpackMaterialClient, SpackManager } from "./spack";
+import { IsolatedSpackInstallRunner } from "./spack/install-runner";
+import { ManagedSpackInstallation } from "./spack/managed-installation";
+import { SpackSourceAuditor } from "./spack/source-auditor";
 import { SshHandler } from "./ssh";
 import { AgentStream } from "./stream";
 
@@ -131,17 +134,17 @@ async function main() {
     slurmDeps = {
       logDir: containerLogDir,
       terminalStatusBackend: "scontrol",
-      queueInventoryRefreshMs: config.AGENT_SCHEDULER_METRICS_INTERVAL_SEC * 1000,
+      queueInventoryRefreshMs: config.AGENT_QUEUE_INVENTORY_INTERVAL_SEC * 1000,
       queueInventoryTimeoutMs: config.AGENT_SCHEDULER_CLI_TIMEOUT_SEC * 1000,
     };
     pbsProDeps = {
       logDir: containerLogDir,
-      queueInventoryRefreshMs: config.AGENT_SCHEDULER_METRICS_INTERVAL_SEC * 1000,
+      queueInventoryRefreshMs: config.AGENT_QUEUE_INVENTORY_INTERVAL_SEC * 1000,
       queueInventoryTimeoutMs: config.AGENT_SCHEDULER_CLI_TIMEOUT_SEC * 1000,
     };
     torqueDeps = {
       logDir: containerLogDir,
-      queueInventoryRefreshMs: config.AGENT_SCHEDULER_METRICS_INTERVAL_SEC * 1000,
+      queueInventoryRefreshMs: config.AGENT_QUEUE_INVENTORY_INTERVAL_SEC * 1000,
       queueInventoryTimeoutMs: config.AGENT_SCHEDULER_CLI_TIMEOUT_SEC * 1000,
     };
     outputReader = makeContainerReadOutput(containerId);
@@ -152,17 +155,17 @@ async function main() {
     const logDir = dataRoots.schedulerLogDir();
     slurmDeps = {
       logDir,
-      queueInventoryRefreshMs: config.AGENT_SCHEDULER_METRICS_INTERVAL_SEC * 1000,
+      queueInventoryRefreshMs: config.AGENT_QUEUE_INVENTORY_INTERVAL_SEC * 1000,
       queueInventoryTimeoutMs: config.AGENT_SCHEDULER_CLI_TIMEOUT_SEC * 1000,
     };
     pbsProDeps = {
       logDir,
-      queueInventoryRefreshMs: config.AGENT_SCHEDULER_METRICS_INTERVAL_SEC * 1000,
+      queueInventoryRefreshMs: config.AGENT_QUEUE_INVENTORY_INTERVAL_SEC * 1000,
       queueInventoryTimeoutMs: config.AGENT_SCHEDULER_CLI_TIMEOUT_SEC * 1000,
     };
     torqueDeps = {
       logDir,
-      queueInventoryRefreshMs: config.AGENT_SCHEDULER_METRICS_INTERVAL_SEC * 1000,
+      queueInventoryRefreshMs: config.AGENT_QUEUE_INVENTORY_INTERVAL_SEC * 1000,
       queueInventoryTimeoutMs: config.AGENT_SCHEDULER_CLI_TIMEOUT_SEC * 1000,
     };
     outputReader = hostOutputReader;
@@ -440,30 +443,77 @@ async function main() {
   // bootstrap the SpackManager. Master switch + binary path
   // come from config; AGENT_SPACK_ENABLED=false (CI, k8s, edge) keeps the
   // manager `available=false` without probing a missing binary.
+  const materialDelivery = configureSpackMaterialClient({
+    enabled: config.AGENT_SPACK_ENABLED,
+    serverUrl: config.SERVER_HTTP_URL,
+    cacheDir: config.AGENT_SPACK_CACHE_DIR,
+  });
+  if (materialDelivery.unavailableReason) {
+    logger.warn(
+      { reason: materialDelivery.unavailableReason },
+      "Spack material delivery unavailable",
+    );
+  }
+  let materialAuditor: SpackSourceAuditor | undefined;
+  let managedInstallation: ManagedSpackInstallation | undefined;
+  if (config.AGENT_SPACK_AUDIT_ENABLED) {
+    const apptainerSha256 = config.AGENT_SPACK_AUDIT_APPTAINER_SHA256;
+    const sifPath = config.AGENT_SPACK_AUDIT_SIF_PATH;
+    const sifSha256 = config.AGENT_SPACK_AUDIT_SIF_SHA256;
+    if (!apptainerSha256 || !sifPath || !sifSha256) {
+      throw new Error("Spack source audit runtime profile is incomplete");
+    }
+    const runtime = {
+      apptainerPath: config.AGENT_SPACK_AUDIT_APPTAINER_PATH,
+      apptainerSha256,
+      sifPath,
+      sifSha256,
+    };
+    materialAuditor = new SpackSourceAuditor({ profile: runtime });
+    if (config.AGENT_SPACK_INSTALL_ENABLED) {
+      const path = config.AGENT_SPACK_INSTALL_SITE_PROFILE_PATH;
+      const sha256 = config.AGENT_SPACK_INSTALL_SITE_PROFILE_SHA256;
+      if (!path || !sha256 || adapter.type === "kubernetes") {
+        throw new Error("Managed Spack installation requires a pinned native HPC site profile");
+      }
+      managedInstallation = new ManagedSpackInstallation({
+        cacheDir: config.AGENT_SPACK_CACHE_DIR,
+        site: { path, sha256, runtime },
+        runner: new IsolatedSpackInstallRunner({ runtime }),
+      });
+    }
+  }
   const spackManager = await SpackManager.bootstrap({
     enabled: config.AGENT_SPACK_ENABLED,
     binary: config.AGENT_SPACK_PATH,
     spawner,
+    requireServerMaterials: true,
+    materialClient: materialDelivery.client,
+    materialAuditor,
+    managedInstallation,
   });
   logger.info(
     {
       available: spackManager.available,
       version: spackManager.version,
       enabled: config.AGENT_SPACK_ENABLED,
+      sourceAuditEnabled: config.AGENT_SPACK_AUDIT_ENABLED,
+      managedInstallEnabled: config.AGENT_SPACK_INSTALL_ENABLED,
     },
     "Spack manager bootstrap complete",
   );
 
-  // Best-effort installed-list snapshot at boot. Failure here doesn't block
-  // the agent — the Server will see an empty list and the next post-install
-  // refresh will repopulate it.
-  let installedSoftware: Awaited<ReturnType<typeof spackManager.installedList>> = [];
+  // Unknown inventory must not be advertised as an authoritative empty snapshot.
+  let installedSoftware: Awaited<ReturnType<typeof spackManager.installedList>> | undefined;
   if (spackManager.available) {
     try {
       installedSoftware = await spackManager.installedList();
       logger.info({ count: installedSoftware.length }, "Initial Spack installed-list cached");
     } catch (err) {
-      logger.warn({ err }, "Failed to read initial Spack installed-list — continuing with empty");
+      logger.warn(
+        { err },
+        "Failed to read initial Spack installed-list; inventory remains unknown",
+      );
     }
   }
 
@@ -573,16 +623,20 @@ async function main() {
   process.on("SIGINT", () => {
     logger.info("SIGINT received — shutting down");
     if (sandboxAttestationRefreshTimer) clearInterval(sandboxAttestationRefreshTimer);
-    stream.stop();
+    void stream.stop();
   });
   process.on("SIGTERM", () => {
     logger.info("SIGTERM received — shutting down");
     if (sandboxAttestationRefreshTimer) clearInterval(sandboxAttestationRefreshTimer);
-    stream.stop();
+    void stream.stop();
   });
 
-  await stream.start();
-  if (sandboxAttestationRefreshTimer) clearInterval(sandboxAttestationRefreshTimer);
+  try {
+    await stream.start();
+  } finally {
+    if (sandboxAttestationRefreshTimer) clearInterval(sandboxAttestationRefreshTimer);
+    await stream.stop();
+  }
   logger.info("Agent stopped cleanly");
 }
 

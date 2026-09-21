@@ -30,6 +30,18 @@ vi.mock("../components/cp/SoftwarePolicyTable", () => ({
   SoftwarePolicyTable: () => <div data-testid="software-policy-table" />,
 }));
 
+vi.mock("../components/software/RecipeRepositoriesPanel", () => ({
+  RecipeRepositoriesPanel: ({ canManage }: { canManage: boolean }) => (
+    <div data-testid="recipe-repositories-panel" data-can-manage={canManage} />
+  ),
+}));
+
+vi.mock("../components/software/SpackMaterialsPanel", () => ({
+  SpackMaterialsPanel: ({ canManage }: { canManage: boolean }) => (
+    <div data-testid="spack-materials-panel" data-can-manage={canManage} />
+  ),
+}));
+
 vi.mock("../components/cp/MeteringPage", () => ({
   MeteringPage: () => <div data-testid="metering-page" />,
 }));
@@ -43,6 +55,18 @@ describe("CP capability-dependent routes", () => {
     access.ready = true;
     access.error = null;
     access.retry.mockReset();
+  });
+
+  test.each([true, false])("mounts recipe management with CP capability %s", (allowed) => {
+    access.allowed = allowed;
+    render(<CpSoftwarePage />);
+    expect(screen.getByTestId("recipe-repositories-panel").getAttribute("data-can-manage")).toBe(
+      String(allowed),
+    );
+    expect(screen.getByTestId("software-policy-table")).toBeTruthy();
+    expect(screen.getByTestId("spack-materials-panel").getAttribute("data-can-manage")).toBe(
+      String(allowed),
+    );
   });
 
   test.each([

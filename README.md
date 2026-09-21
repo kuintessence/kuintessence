@@ -17,12 +17,12 @@ Kuintessence 是统一算力服务与科学计算工作流平台，将 Slurm、P
 | CLI | `kq` 远程命令、本地调度器 TUI 与 GUI |
 
 Server 使用 PostgreSQL；Agent 使用 SQLite。Server 与 Agent 通过 connectRPC 通信。
-文件服务使用 S3/MinIO。Redis 在部署配置中预留，当前 Server 事件总线仍在进程内。
+文件服务使用 S3/RustFS。Redis 在部署配置中预留，当前 Server 事件总线仍在进程内。
 Web 中的“软件中心”提供软件、用例和模板入口；Registry 是支撑这些功能的软件仓库服务。
 
 ## 快速开始
 
-需要 Bun 1.3 或更高版本，以及 Docker Compose。固定的 Bun 版本见 `packageManager`。
+需要 Bun 1.4.2 或更高版本，以及 Docker Compose。固定的 Bun 版本见 `packageManager`。
 
 ```bash
 git clone https://github.com/kuintessence/kuintessence.git
@@ -37,7 +37,7 @@ bun run compose -- full up --build --attach
 | Server HTTP | `http://localhost:3000` |
 | Server connectRPC | `localhost:3001` |
 | Registry | `http://localhost:3100` |
-| MinIO console | `http://localhost:9001` |
+| RustFS console | `http://localhost:9001` |
 
 这套配置用于本地开发和演示。生产部署需更换示例账号与口令，通过 Secret 注入凭据。
 Agent 需单独部署在能访问调度器命令的主机上。

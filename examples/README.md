@@ -13,11 +13,11 @@ docker compose -f examples/docker-compose.demo.yml up --build
 | Server HTTP | http://localhost:3000 | API + WebSocket |
 | Server gRPC | http://localhost:3001 | connectRPC（Agent protocol） |
 | Registry | http://localhost:3100 | 应用注册中心 |
-| MinIO API | http://localhost:9000 | S3-compatible object store |
-| MinIO console | http://localhost:9001 | Web UI（minioadmin / minioadmin） |
+| RustFS API | http://localhost:9000 | S3-compatible object store |
+| RustFS console | http://localhost:9001 | Web UI（rustfsadmin / rustfsadmin） |
 
 Server 与 Registry 首次运行会从源码构建，后续复用缓存镜像层。
-这套演示配置包含 Redis 与 MinIO，Server 暂不使用 Redis；配置 Server 的 `NETDRIVE_*`
+这套演示配置包含 Redis 与 RustFS，Server 暂不使用 Redis；配置 Server 的 `NETDRIVE_*`
 环境变量后可启用 S3 文件服务。
 
 ## 停止与清理
@@ -93,7 +93,7 @@ Kubernetes 使用 `deploy/helm/kq-platform/` 下的 Helm chart：
 helm install kq deploy/helm/kq-platform \
   --set secrets.jwtSecret="$(openssl rand -hex 32)" \
   --set postgres.password="$(openssl rand -hex 16)" \
-  --set minio.rootPassword="$(openssl rand -hex 16)"
+  --set rustfs.rootPassword="$(openssl rand -hex 16)"
 ```
 
 配置选项见 [Helm 部署说明](../deploy/helm/kq-platform/README.md)。

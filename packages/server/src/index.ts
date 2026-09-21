@@ -69,6 +69,7 @@ import { createAdminSshRecordingRoutes } from "./routes/admin-ssh-recordings";
 import { createAdminSshSessionRoutes } from "./routes/admin-ssh-sessions";
 import { createAdminSsoRoutes } from "./routes/admin-sso";
 import { createAgentRegistrationRoutes } from "./routes/agent-registration";
+import { createAgentSpackMaterialRoutes } from "./routes/agent-spack-materials";
 import { createAgentRoutes } from "./routes/agents";
 import { createAuditLogRoutes } from "./routes/audit-log";
 import { createAuthRoutes } from "./routes/auth";
@@ -171,6 +172,8 @@ import {
   PolicyStore,
   SoftwareOperationService,
 } from "./software-governance";
+import { createSpackDeliveryAccess } from "./software-governance/spack-delivery-access";
+import { SpackMaterialDelivery } from "./software-governance/spack-material-delivery";
 import { createRealMinioBackend, loadMinioConfigFromEnv } from "./storage/minio-client";
 import { WorkflowAsyncRunner } from "./workflow/async-runner";
 import { createDatasetPreflight } from "./workflow/dataset-preflight";
@@ -349,7 +352,38 @@ const meteringCron = new MeteringCron({
 const installedRegistry = new InstalledRegistry(db);
 const policyStore = new PolicyStore(db);
 const policyPusher = new PolicyPusher(dispatcher);
-const softwareOperations = new SoftwareOperationService(db, dispatcher, installedRegistry);
+const spackMaterialDelivery =
+  config.SPACK_MATERIAL_DELIVERY_ENABLED &&
+  config.SPACK_REGISTRY_URL &&
+  config.SPACK_REGISTRY_JWT_SECRET &&
+  config.SPACK_MATERIAL_TICKET_SECRET
+    ? new SpackMaterialDelivery({
+        registryUrl: config.SPACK_REGISTRY_URL,
+        allowInsecureRegistryHttp: config.SPACK_REGISTRY_ALLOW_INSECURE_HTTP,
+        registryJwtSecret: config.SPACK_REGISTRY_JWT_SECRET,
+        registryJwtIssuer: config.SPACK_REGISTRY_JWT_ISSUER,
+        registryJwtAudience: config.SPACK_REGISTRY_JWT_AUDIENCE,
+        ticketSecret: config.SPACK_MATERIAL_TICKET_SECRET,
+        bindings: config.SPACK_MATERIAL_RELEASES,
+        access: createSpackDeliveryAccess(db, authzService),
+        dispatcher,
+      })
+    : undefined;
+const softwareOperations = new SoftwareOperationService(
+  db,
+  dispatcher,
+  installedRegistry,
+  async (input) => {
+    if (!spackMaterialDelivery) {
+      throw new AppError(
+        ErrorCode.VALIDATION_ERROR,
+        "Server Spack material delivery is not configured; unmanaged installation is disabled",
+        422,
+      );
+    }
+    return spackMaterialDelivery.prepareOperation(input);
+  },
+);
 const metricsRecorder = new PgAgentMetricsRecorder(db);
 const queueObservability = new QueueObservabilityService(db, queueInventory);
 const licenseRuntimeGovernance = new LicenseRuntimeGovernanceService(
@@ -495,6 +529,10 @@ app.route("/", createMetricsRoutes({ queueObservability }));
 
 // Public routes
 app.route("/api", healthRoutes);
+if (spackMaterialDelivery) {
+  // Dedicated operation credentials, not browser sessions. Never proxy to an external URL.
+  app.route("/api", createAgentSpackMaterialRoutes(spackMaterialDelivery));
+}
 // Public DSL JSON Schema endpoint. Mounted on the public app
 // (NO auth) so external editors and CI lint tools can pin the schema
 // without a Server credential. Must stay BEFORE app.route("/api", protectedApi)

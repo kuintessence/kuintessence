@@ -7,6 +7,8 @@ import {
 } from "@kuintessence/shared";
 import { z } from "zod";
 import { SandboxRuntimeCacheConfigSchema } from "./sandbox/runtime-reference";
+import { isSpackAuditPath } from "./spack/audit-runtime";
+import { isSpackCacheDir } from "./spack/material-cache";
 
 const dedicatedAbsolutePath = (name: string) =>
   z
@@ -89,6 +91,7 @@ const AgentConfigSchema = z
     AGENT_HEARTBEAT_ACK_TIMEOUT_SEC: boundedPositiveInt(30, 300),
     AGENT_REACHABILITY_PROBE_ENABLED: envBool(false),
     AGENT_SCHEDULER_METRICS_INTERVAL_SEC: positiveInt(120),
+    AGENT_QUEUE_INVENTORY_INTERVAL_SEC: positiveInt(30),
     AGENT_SCHEDULER_CLI_TIMEOUT_SEC: positiveInt(5),
     /**
      * Maximum number of heartbeat snapshots retained in the offline outbound
@@ -125,6 +128,30 @@ const AgentConfigSchema = z
      * prefix (e.g. `/opt/spack/bin/spack`).
      */
     AGENT_SPACK_PATH: z.string().default("spack"),
+    AGENT_SPACK_CACHE_DIR: z
+      .string()
+      .refine(isSpackCacheDir, "AGENT_SPACK_CACHE_DIR must be a dedicated absolute canonical path")
+      .default("/var/lib/kuintessence/spack-materials"),
+    AGENT_SPACK_AUDIT_ENABLED: envBool(false),
+    AGENT_SPACK_AUDIT_APPTAINER_PATH: z
+      .string()
+      .refine(isSpackAuditPath)
+      .default("/usr/bin/apptainer"),
+    AGENT_SPACK_AUDIT_APPTAINER_SHA256: z
+      .string()
+      .regex(/^[0-9a-f]{64}$/)
+      .optional(),
+    AGENT_SPACK_AUDIT_SIF_PATH: z.string().refine(isSpackAuditPath).optional(),
+    AGENT_SPACK_AUDIT_SIF_SHA256: z
+      .string()
+      .regex(/^[0-9a-f]{64}$/)
+      .optional(),
+    AGENT_SPACK_INSTALL_ENABLED: envBool(false),
+    AGENT_SPACK_INSTALL_SITE_PROFILE_PATH: z.string().refine(isSpackAuditPath).optional(),
+    AGENT_SPACK_INSTALL_SITE_PROFILE_SHA256: z
+      .string()
+      .regex(/^[0-9a-f]{64}$/)
+      .optional(),
     /**
      * SSH relay master switch. Default true: the relay needs no
      * agent-side setup (credentials are resolved Server-side and SSH access is
@@ -281,6 +308,34 @@ const AgentConfigSchema = z
       .regex(/^[0-9a-f]{64}$/)
       .optional(),
   })
+  .refine(
+    (v) =>
+      !v.AGENT_SPACK_AUDIT_ENABLED ||
+      (v.AGENT_SPACK_ENABLED &&
+        v.AGENT_SPACK_AUDIT_APPTAINER_SHA256 &&
+        v.AGENT_SPACK_AUDIT_SIF_PATH &&
+        v.AGENT_SPACK_AUDIT_SIF_SHA256 &&
+        v.AGENT_SPACK_AUDIT_SIF_PATH !== v.AGENT_SPACK_AUDIT_APPTAINER_PATH),
+    {
+      message:
+        "Spack source auditing requires AGENT_SPACK_ENABLED and a complete pinned runtime profile",
+      path: ["AGENT_SPACK_AUDIT_ENABLED"],
+    },
+  )
+  .refine(
+    (v) =>
+      !v.AGENT_SPACK_INSTALL_ENABLED ||
+      (v.AGENT_SPACK_ENABLED &&
+        v.AGENT_SPACK_AUDIT_ENABLED &&
+        v.AGENT_SPAWNER_BACKEND === "host" &&
+        v.AGENT_SPACK_INSTALL_SITE_PROFILE_PATH &&
+        v.AGENT_SPACK_INSTALL_SITE_PROFILE_SHA256),
+    {
+      message:
+        "Managed Spack installation requires source auditing, a host backend and a pinned site profile",
+      path: ["AGENT_SPACK_INSTALL_ENABLED"],
+    },
+  )
   .refine(
     (v) =>
       v.AGENT_SPAWNER_BACKEND !== "container" ||

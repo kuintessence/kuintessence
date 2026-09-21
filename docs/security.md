@@ -527,7 +527,7 @@ Settings 的活动会话视图显示 user、Agent、来源 IP 和持续时间。
 
 ### 录屏、留存与审计
 
-`SSH_SESSION_RECORDING=true` 还需要 `NETDRIVE_ENABLED=true` 和可用 MinIO backend；
+`SSH_SESSION_RECORDING=true` 还需要 `NETDRIVE_ENABLED=true` 和可用 RustFS backend；
 缺少 NetDrive 时记录警告，录屏保持关闭。
 只录制终端输出，不直接记录输入帧，但终端回显、命令输出仍可能包含密码或其他敏感数据。
 

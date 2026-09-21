@@ -19,6 +19,7 @@ import {
   ComputeHealthState,
   GpuMetricSchema,
   HeartbeatSchema,
+  InstalledSoftwareReportSchema,
   InstalledSpecSchema,
   JobStatusUpdateSchema,
   JobStatus as ProtoJobStatus,
@@ -767,7 +768,7 @@ describe("agent-handler", () => {
     ).toBe(false);
   });
 
-  test("heartbeat with installed_software upserts the registry", async () => {
+  test("legacy nonempty heartbeat replaces the registry before the stream completes", async () => {
     // Make sure the agent exists
     await agentManager.register({
       agentId: "grpc-test-agent-1",
@@ -811,16 +812,254 @@ describe("agent-handler", () => {
     if (!handlers.connect) throw new Error("connect handler not registered");
     await collect(handlers.connect(iter(registerFrame(), hb)));
 
-    // Allow the fire-and-forget upsert to flush.
-    for (let i = 0; i < 50; i++) {
-      const out = await installedRegistry.listForAgent("grpc-test-agent-1");
-      if (out.length > 0) {
-        expect(out[0]?.name).toBe("gromacs");
-        return;
-      }
-      await new Promise((r) => setTimeout(r, 10));
+    const out = await installedRegistry.listForAgent("grpc-test-agent-1");
+    expect(out).toHaveLength(1);
+    expect(out[0]).toMatchObject({
+      name: "gromacs",
+      version: "2024.1",
+      hash: "hash-grpc-1",
+      spec: "gromacs@2024.1",
+    });
+  });
+
+  test("empty heartbeat leaves the previously known installed registry unchanged", async () => {
+    await agentManager.register({
+      agentId: "grpc-test-agent-1",
+      siteName: "grpc-test-site",
+      schedulerType: "slurm",
+      schedulerVersion: "23.02.7",
+    });
+    const installedRegistry = new InstalledRegistry(db);
+    await installedRegistry.replaceForAgent("grpc-test-agent-1", [
+      { name: "hello", version: "2.12.1", hash: "keep-on-empty-hb", spec: "hello@2.12.1" },
+    ]);
+    const before = await installedRegistry.listForAgent("grpc-test-agent-1");
+    const replacements: Array<Parameters<InstalledRegistry["replaceForAgent"]>> = [];
+    const replace = installedRegistry.replaceForAgent.bind(installedRegistry);
+    installedRegistry.replaceForAgent = async (...args) => {
+      replacements.push(args);
+      await replace(...args);
+    };
+    const { router, handlers } = createMockRouter();
+    registerAgentHandler(router, {
+      agentManager,
+      jobService,
+      logger: testLogger,
+      dispatcher: new AgentDispatcher(),
+      installedRegistry,
+    });
+    const heartbeat = create(AgentMessageSchema, {
+      payload: {
+        case: "heartbeat",
+        value: create(HeartbeatSchema, {
+          agentId: "grpc-test-agent-1",
+          installedSoftware: [],
+        }),
+      },
+    });
+
+    if (!handlers.connect) throw new Error("connect handler not registered");
+    await collect(handlers.connect(iter(registerFrame(), heartbeat)));
+
+    expect(replacements).toEqual([]);
+    expect(await installedRegistry.listForAgent("grpc-test-agent-1")).toEqual(before);
+  });
+
+  test("explicit empty installed report clears only the registered stream identity", async () => {
+    const otherAgentId = `grpc-test-agent-inventory-${crypto.randomUUID()}`;
+    const installedRegistry = new InstalledRegistry(db);
+    for (const agentId of ["grpc-test-agent-1", otherAgentId]) {
+      await agentManager.register({
+        agentId,
+        siteName: "grpc-test-site",
+        schedulerType: "slurm",
+        schedulerVersion: "23.02.7",
+      });
     }
-    throw new Error("installed-software ledger never populated");
+    try {
+      for (const agentId of ["grpc-test-agent-1", otherAgentId]) {
+        await installedRegistry.replaceForAgent(agentId, [
+          { name: "hello", version: "2.12.1", hash: "before-empty-report", spec: "hello@2.12.1" },
+        ]);
+      }
+      const otherBefore = await installedRegistry.listForAgent(otherAgentId);
+      const replacements: Array<Parameters<InstalledRegistry["replaceForAgent"]>> = [];
+      const replace = installedRegistry.replaceForAgent.bind(installedRegistry);
+      installedRegistry.replaceForAgent = async (...args) => {
+        replacements.push(args);
+        await replace(...args);
+      };
+      const { router, handlers } = createMockRouter();
+      registerAgentHandler(router, {
+        agentManager,
+        jobService,
+        logger: testLogger,
+        dispatcher: new AgentDispatcher(),
+        installedRegistry,
+      });
+      const report = create(AgentMessageSchema, {
+        payload: {
+          case: "installedSoftwareReport",
+          value: create(InstalledSoftwareReportSchema, {
+            agentId: otherAgentId,
+            installed: [],
+          }),
+        },
+      });
+
+      if (!handlers.connect) throw new Error("connect handler not registered");
+      await collect(handlers.connect(iter(registerFrame(), report)));
+
+      expect(replacements).toEqual([["grpc-test-agent-1", []]]);
+      expect(await installedRegistry.listForAgent("grpc-test-agent-1")).toEqual([]);
+      expect(await installedRegistry.listForAgent(otherAgentId)).toEqual(otherBefore);
+    } finally {
+      await db
+        .delete(agentInstalledSoftware)
+        .where(eq(agentInstalledSoftware.agentId, otherAgentId));
+      await db.delete(agents).where(eq(agents.agentId, otherAgentId));
+    }
+  });
+
+  test("installed report before stream registration cannot clear an existing agent", async () => {
+    await agentManager.register({
+      agentId: "grpc-test-agent-1",
+      siteName: "grpc-test-site",
+      schedulerType: "slurm",
+      schedulerVersion: "23.02.7",
+    });
+    const installedRegistry = new InstalledRegistry(db);
+    await installedRegistry.replaceForAgent("grpc-test-agent-1", [
+      { name: "hello", version: "2.12.1", hash: "keep-before-register", spec: "hello@2.12.1" },
+    ]);
+    const before = await installedRegistry.listForAgent("grpc-test-agent-1");
+    const replacements: Array<Parameters<InstalledRegistry["replaceForAgent"]>> = [];
+    const replace = installedRegistry.replaceForAgent.bind(installedRegistry);
+    installedRegistry.replaceForAgent = async (...args) => {
+      replacements.push(args);
+      await replace(...args);
+    };
+    const { router, handlers } = createMockRouter();
+    registerAgentHandler(router, {
+      agentManager,
+      jobService,
+      logger: testLogger,
+      dispatcher: new AgentDispatcher(),
+      installedRegistry,
+    });
+    const report = create(AgentMessageSchema, {
+      payload: {
+        case: "installedSoftwareReport",
+        value: create(InstalledSoftwareReportSchema, {
+          agentId: "grpc-test-agent-1",
+          installed: [],
+        }),
+      },
+    });
+
+    if (!handlers.connect) throw new Error("connect handler not registered");
+    await collect(handlers.connect(iter(report, registerFrame())));
+
+    expect(replacements).toEqual([]);
+    expect(await installedRegistry.listForAgent("grpc-test-agent-1")).toEqual(before);
+  });
+
+  test("delayed nonempty replacement finishes before a later empty report on the same stream", async () => {
+    const installedRegistry = new InstalledRegistry(db);
+    const replace = installedRegistry.replaceForAgent.bind(installedRegistry);
+    const barriers: { started?: () => void; release?: () => void } = {};
+    const started = new Promise<void>((resolve) => {
+      barriers.started = resolve;
+    });
+    const released = new Promise<void>((resolve) => {
+      barriers.release = resolve;
+    });
+    const events: string[] = [];
+    const writes: Promise<void>[] = [];
+    installedRegistry.replaceForAgent = (agentId, specs) => {
+      const write = (async () => {
+        const label = specs.length > 0 ? "nonempty" : "empty";
+        events.push(`${label}-started`);
+        if (specs.length > 0) {
+          barriers.started?.();
+          await released;
+        }
+        await replace(agentId, specs);
+        events.push(`${label}-finished`);
+      })();
+      writes.push(write);
+      return write;
+    };
+    const { router, handlers } = createMockRouter();
+    registerAgentHandler(router, {
+      agentManager,
+      jobService,
+      logger: testLogger,
+      dispatcher: new AgentDispatcher(),
+      installedRegistry,
+    });
+    const heartbeat = create(AgentMessageSchema, {
+      payload: {
+        case: "heartbeat",
+        value: create(HeartbeatSchema, {
+          agentId: "grpc-test-agent-1",
+          installedSoftware: [
+            create(InstalledSpecSchema, {
+              name: "hello",
+              version: "2.12.1",
+              hash: "delayed-nonempty",
+              spec: "hello@2.12.1",
+            }),
+          ],
+        }),
+      },
+    });
+    const report = create(AgentMessageSchema, {
+      payload: {
+        case: "installedSoftwareReport",
+        value: create(InstalledSoftwareReportSchema, {
+          agentId: "grpc-test-agent-1",
+          installed: [],
+        }),
+      },
+    });
+    let reportRequested = false;
+    async function* requests() {
+      yield registerFrame();
+      yield heartbeat;
+      reportRequested = true;
+      yield report;
+    }
+    if (!handlers.connect) throw new Error("connect handler not registered");
+    const running = collect(handlers.connect(requests()));
+    try {
+      await Promise.race([
+        started,
+        running.then(() => {
+          throw new Error("Stream ended before the nonempty replacement started");
+        }),
+      ]);
+      // Let an unawaited reader advance; only the explicit barrier releases the write.
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+      expect(reportRequested).toBe(false);
+      expect(events).toEqual(["nonempty-started"]);
+    } finally {
+      barriers.release?.();
+      try {
+        await running;
+      } finally {
+        await Promise.all(writes);
+      }
+    }
+
+    expect(reportRequested).toBe(true);
+    expect(events).toEqual([
+      "nonempty-started",
+      "nonempty-finished",
+      "empty-started",
+      "empty-finished",
+    ]);
+    expect(await installedRegistry.listForAgent("grpc-test-agent-1")).toEqual([]);
   });
 
   test("heartbeat with gpus + disk + queue records metrics samples", async () => {

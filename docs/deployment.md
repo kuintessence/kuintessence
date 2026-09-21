@@ -4,6 +4,9 @@
 启动、重建、迁移和运行态验收会改变环境，执行前应确认目标与维护窗口。
 Server 当前只支持单实例部署，尚未通过 Redis 实现多实例协调。
 
+自托管对象存储使用 RustFS，旧 MinIO 数据不自动迁移；升级前先阅读
+[RustFS 迁移边界](../deploy/rustfs/README.md)，不要复用旧对象存储目录。
+
 - [Compose 与本地调度器](#compose)
 - [单容器演示](#aio)
 - [GitHub Actions](#actions)
@@ -46,7 +49,7 @@ bun run compose -- scheduler-watch down
 ```
 
 `scheduler` 和 `scheduler-watch` 必须设置 `KQ_DATA_MARKET_COMMITTER_SECRET_KEY`，
-用于 MinIO 初始化和 Server 文件服务。上面的固定值仅供开发测试。
+用于 RustFS 初始化和 Server 文件服务。上面的固定值仅供开发测试。
 后续启停、重建和配置解析也需要该变量；新终端中重新 export，或写入本地忽略的 `.env`。
 使用下面的 `--env-file deploy/schedulers/ports-alt.env` 命令时，仍需先 export 该变量。
 
@@ -96,7 +99,7 @@ Server `13000`、Registry `13100`。Casdoor issuer 默认
 - `db-migrate` 使用当前挂载仓库的 migrations；代码已引用但表不存在时先查 migration
   服务和 `__drizzle_migrations`，不要删除数据库绕过。
 
-`down` 保留卷；`down -v` 会删除 PostgreSQL、MinIO、Casdoor、Agent 和 scheduler
+`down` 保留卷；`down -v` 会删除 PostgreSQL、RustFS、Casdoor、Agent 和 scheduler
 状态，只能用于明确批准的开发数据销毁。仅删除 scheduler state 而保留 Server DB 会导致
 同名 Agent 的 enrollment intent 冲突。恢复时应核对原证书、执行正式轮换或采用新 Agent ID，
 禁止未经数据销毁批准清空全栈。
@@ -119,7 +122,7 @@ enforce readiness、outbox 与生产鉴权要求见[安全指南](security.md#au
 <a id="aio"></a>
 ## 单容器演示
 
-`aio` 将 Web、Server、Registry、PostgreSQL、Redis 和 MinIO 放在同一个容器中，
+`aio` 将 Web、Server、Registry、PostgreSQL、Redis 和 RustFS 放在同一个容器中，
 用于本机测试，不包含站点 Agent 或真实调度器。
 
 ```bash
@@ -132,19 +135,19 @@ bun run compose -- aio up --build --attach
 |---|---|---|
 | 平台管理员 | `admin@example.com` | 选择 `super_admin` |
 | 普通用户 | `user@example.com` | 选择 `user` |
-| MinIO console，`http://localhost:9001` | `minioadmin` | `minioadmin` |
+| RustFS console，`http://localhost:9001` | `rustfsadmin` | `rustfsadmin` |
 | PostgreSQL 应用账号，仅容器内部 | `kq` | `kq` |
-| MinIO 应用访问密钥 | `kq-data-market-committer` | `aio-test-committer-secret-not-for-production` |
+| RustFS 应用访问密钥 | `kq-data-market-committer` | `aio-test-committer-secret-not-for-production` |
 
 这些都是公开的测试值。Compose 仅发布本机回环地址上的 `8080`、`9000`、`9001`，
 不通过公网代理或 Tunnel 暴露。存储密钥可用 `KQ_DATA_MARKET_COMMITTER_SECRET_KEY` 覆盖。
-用户、数据库、MinIO 数据和 Registry 文件保存在 `kq-aio-data` 卷中。
+用户、数据库、RustFS 数据和 Registry 文件保存在 `kq-aio-data` 卷中。
 Registry 的 `BLOB_STORE_DIR=/data/registry/blobs` 保存 OCI blob 和 Spack buildcache，
 重启或重建容器时保留。启动脚本完成数据库迁移、存储桶和存储账号初始化。
 
 AIO 构建启用 `VITE_PREVIEW_LOGIN=true`，Server 使用 `NODE_ENV=development`、
 `AUTHZ_MODE=off`，不接入 SSO 或 SpiceDB。其他镜像的默认登录配置不变。
-容器健康检查覆盖 Server、Registry、MinIO 和 Web。
+容器健康检查覆盖 Server、Registry、RustFS 和 Web。
 
 ```bash
 bun run compose -- aio down
@@ -155,7 +158,7 @@ bun run compose -- aio down
 <a id="actions"></a>
 ## GitHub Actions
 
-推送 `main` 和目标为 `main` 的 PR 默认只触发 CI 静态检查：
+`CI` 工作流在推送 `main` 和目标为 `main` 的 PR 时默认只执行静态检查：
 Biome、本地文档链接与 workflow 引用检查。依赖安装使用
 `bun install --frozen-lockfile --ignore-scripts`，不运行安装生命周期脚本、
 protobuf 生成、测试、构建或容器。
@@ -168,6 +171,7 @@ protobuf 生成、测试、构建或容器。
 | `CI` | 自动静态检查；手动勾选 `run_runtime_checks` 才执行 protobuf 生成、完整类型检查、Helm 测试、数据库与全栈容器测试 |
 | `Build Agent binary` / `Build CLI binary` | 仅手动构建并运行 binary smoke，默认只保存 Actions artifact；在 `v*` tag 上手动触发且勾选 `publish_release` 才上传 Release |
 | `Scheduler image architecture` | 仅手动构建并运行调度器镜像架构验证 |
+| `PR scheduler tests` | 可信同仓库非草稿 PR 自动构建隔离 Slurm/PBS 测试环境，执行真实作业与材料 fixture 回归；也可手动触发 |
 | `Docs Site` | 仅从 `main` 手动构建并发布到 `gh-pages`；GitHub Pages 须单独配置发布源 |
 | `Preview` / `Preview Cleanup` | 可信同仓库 PR 自动预览与关闭清理，main 手动启停，见下节 |
 
@@ -175,8 +179,10 @@ protobuf 生成、测试、构建或容器。
 该值不作为 build arg 传入镜像，工作流不启动对象存储或完整 scheduler 栈。
 
 首次推送 `main` 不自动运行测试、binary smoke、调度器容器验证或发布文档站；
-推送 tag 也不自动发布 Release。PR 预览是唯一保留的自动构建与临时部署入口，
-不执行测试套件；`preview-paused` 标签可持续暂停该 PR 的预览。
+推送 tag 也不自动发布 Release。PR 预览不执行测试套件；
+`preview-paused` 标签可持续暂停该 PR 的预览，但不暂停独立的
+[PR 调度器测试](../deploy/pr-test/README.md)。后者不提供公网入口、不使用预览口令，
+使用 `docker-compose.pr-test.yml` 和独立的临时卷，结果以对应提交的 Actions 为准。
 在仅允许静态检查时，不应手动触发完整检查、构建、发布或预览。
 
 <a id="preview"></a>
@@ -230,7 +236,7 @@ GitHub 预览入口认证换取本次环境的 HttpOnly/Secure cookie，
 ### 范围与安全边界
 
 - 包含 Web、Server、Registry、PostgreSQL 和数据库迁移；数据只来自空库及本次人工操作。
-  不含 Agent、Slurm/PBS/Kubernetes、Casdoor、SpiceDB 或 MinIO；SSO、细粒度授权、
+  不含 Agent、Slurm/PBS/Kubernetes、Casdoor、SpiceDB 或 RustFS；SSO、细粒度授权、
   NetDrive、真实作业与集群 SSH 的运行验证需另备环境。当前 Server 不连接 Redis，
   这里只保留配置占位；引入 Redis 运行依赖时，须同步补齐预览配置。
 - 数据库与业务服务不映射宿主端口，只有认证 gateway 绑定 runner loopback。
@@ -267,7 +273,7 @@ GitHub 预览入口认证换取本次环境的 HttpOnly/Secure cookie，
 | `/v2/` | OCI Distribution |
 | `/buildcache/` | Spack buildcache |
 | `/.well-known/`、`/login/oauth/`、`/static/` 与必要 `/api/*` | Casdoor |
-| 原始 bucket path | MinIO/S3 presigned transfer |
+| 原始 bucket path | RustFS/S3 presigned transfer |
 
 Web 通过 `packages/web/src/lib/platform-paths.ts` 生成 Server 路径。
 Casdoor 使用根路径，不把整个 IdP 挂到 `/identity/`；对象存储不能插入额外 path prefix。
@@ -355,13 +361,22 @@ Agent Queue Inventory 保存调度器观测结果。
 | `/api/admin/queues` | Registry 查询、创建和更新 |
 | `GET /api/queues/visible` | 当前 active organization 可见且可提交的目标 |
 | `QUEUE_VALIDATION_MODE=off|shadow|enforce` | Server 全局门禁模式 |
-| `QUEUE_INVENTORY_MAX_AGE_SEC` | fresh observation 窗口 |
-| `AGENT_SCHEDULER_METRICS_INTERVAL_SEC` | scheduler 采集缓存周期 |
+| `QUEUE_INVENTORY_MAX_AGE_SEC` | fresh observation 窗口，默认 120 秒 |
+| `AGENT_QUEUE_INVENTORY_INTERVAL_SEC` | 队列观测缓存周期，默认 30 秒 |
+| `AGENT_SCHEDULER_METRICS_INTERVAL_SEC` | scheduler 指标缓存周期，默认 120 秒，不再控制队列观测 |
 | `AGENT_SCHEDULER_CLI_TIMEOUT_SEC` | 采集命令超时 |
 
 Agent 协商 `queue_inventory_v1` 后，Slurm 用 `scontrol show partition -o`，
 OpenPBS 用 `qstat -Bf/-Qf -F json`，Torque 用 `qmgr` 上报。
 Kubernetes 不纳入 HPC queue enforce。
+
+队列刷新与普通指标采集分别配置。升级前若使用 `AGENT_SCHEDULER_METRICS_INTERVAL_SEC`
+调节队列刷新，升级后须通过 `AGENT_QUEUE_INVENTORY_INTERVAL_SEC` 显式配置。
+队列缓存周期加 heartbeat 等待、完整采集耗时及传输/时钟余量，应小于 Server 的 freshness 窗口；
+不要把缓存周期设置成与 freshness 相等。默认 30 秒队列缓存与 30 秒 heartbeat
+为 120 秒 freshness 留出余量，但自定义更长 heartbeat 或更短 freshness 时仍需联合调整。
+Agent 无法从本地配置获知 Server 的自定义 freshness，不对其硬编码跨服务约束。
+这不会跳过 stale/no-go，也不会立即清除既有 no-go；仍须满足后述连续健康恢复条件。
 
 CP `/cp/queues` 分别展示“已纳管目标”和“调度器观测”：
 
@@ -446,6 +461,7 @@ Server 的 no-go 持久化；ready 后须连续健康 `2 × QUEUE_INVENTORY_MAX_
 
 connectRPC 使用 `@connectrpc/connect-node` HTTP/2 transport；不可降级为 HTTP/1.1。
 scheduler 指标缓存默认 120 秒、采集超时默认 5 秒，不改变真实 submit/status/cancel 的语义。
+队列观测使用独立的 30 秒缓存；旧观测时间不会因缓存命中或 heartbeat 重发而更新。
 K3s graceful shutdown 后只清理无进程的特定空 cgroup；不要为释放空间删除数据卷。
 
 `deploy/schedulers/` 下保留识别、Job、workflow、file-transfer、Spack 与重启验证脚本。

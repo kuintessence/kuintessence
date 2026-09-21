@@ -1,0 +1,39 @@
+# Test-only: requires the base PR and Spack case overlays, never a deployment.
+services:
+  managed-builder:
+    image: ${COMPOSE_PROJECT_NAME:?required}-managed-builder
+    build:
+      context: .
+      dockerfile: deploy/pr-test/spack-managed/runtime.Dockerfile
+      target: sif-builder
+      additional_contexts:
+        scheduler-runtime: service:scheduler-runtime
+        test-workspace: service:test-workspace
+    profiles: [images]
+    privileged: true
+    network_mode: none
+    volumes:
+      - managed-runtime:/runtime
+
+  scheduler:
+    build:
+      dockerfile: deploy/pr-test/spack-managed/runtime.Dockerfile
+      target: scheduler
+    # systemd owns only this disposable container's private cgroup namespace.
+    # No host /sys/fs/cgroup, socket, home, credentials or store is mounted.
+    privileged: true
+    cgroup: private
+    tmpfs:
+      - /run
+      - /run/lock
+    environment:
+      AGENT_SPAWNER_BACKEND: host
+      AGENT_SPACK_AUDIT_ENABLED: "true"
+      AGENT_SPACK_INSTALL_ENABLED: "true"
+    volumes:
+      - managed-runtime:/opt/kq/runtime:ro
+      - managed-disk:/managed-disk
+
+volumes:
+  managed-runtime:
+  managed-disk:

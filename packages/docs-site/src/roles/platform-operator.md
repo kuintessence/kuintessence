@@ -119,4 +119,4 @@ GitHub workflow 会设置 `DOCS_BASE` 以适配 GitHub Pages project site。
 - signed air-gap bundle export/import。
 - Monaco + 结构化 `package.py` 编辑器。
 - 通知执行器。
-- 部署环境中的 IdP、MinIO 和集群 smoke 验证。
+- 部署环境中的 IdP、RustFS 和集群 smoke 验证。

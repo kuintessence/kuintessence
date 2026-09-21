@@ -69,7 +69,7 @@ redis://{{ .Release.Name }}-redis:6379
 {{- end }}
 
 {{/*
-Name of the Secret resource that holds JWT_SECRET and optional DB/MinIO passwords.
+Name of the Secret resource that holds JWT_SECRET and optional DB/RustFS passwords.
 If secrets.existingSecret is set, use that; otherwise use the release-scoped name.
 */}}
 {{- define "kq.secretName" -}}
@@ -81,23 +81,23 @@ If secrets.existingSecret is set, use that; otherwise use the release-scoped nam
 {{- end }}
 
 {{/*
-Stable names for the self-hosted MinIO bootstrap resources. The Job suffix changes
+Stable names for the self-hosted RustFS bootstrap resources. The Job suffix changes
 only when the bootstrap script or its storage controls change, so upgrades converge
 without attempting to mutate an immutable Job spec.
 */}}
-{{- define "kq.minioBootstrapConfigMapName" -}}
-{{ .Release.Name }}-minio-bootstrap
+{{- define "kq.rustfsBootstrapConfigMapName" -}}
+{{ .Release.Name }}-rustfs-bootstrap
 {{- end }}
 
-{{- define "kq.minioBootstrapName" -}}
+{{- define "kq.rustfsBootstrapName" -}}
 {{- $script := .Files.Get "files/bootstrap-object-lock.sh" -}}
 {{- $controls := printf "%s|%s|%s|%v|%v|%s|%s" .Values.netdrive.bucket .Values.netdrive.dataMarketStagingBucket .Values.netdrive.dataMarketImmutableBucket .Values.netdrive.dataMarketStagingExpiryDays .Values.netdrive.dataMarketImmutableRetentionDays .Values.netdrive.accessKey .Values.netdrive.bootstrapRevision -}}
-{{- $prefix := printf "%s-minio-bootstrap" .Release.Name | trunc 54 | trimSuffix "-" -}}
+{{- $prefix := printf "%s-rustfs-bootstrap" .Release.Name | trunc 54 | trimSuffix "-" -}}
 {{ printf "%s-%s" $prefix (sha256sum (printf "%s|%s" $script $controls) | trunc 8) }}
 {{- end }}
 
-{{- define "kq.minioBootstrapWaitServiceAccountName" -}}
-{{ .Release.Name }}-minio-bootstrap-wait
+{{- define "kq.rustfsBootstrapWaitServiceAccountName" -}}
+{{ .Release.Name }}-rustfs-bootstrap-wait
 {{- end }}
 
 {{/*

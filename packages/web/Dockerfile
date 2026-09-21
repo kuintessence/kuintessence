@@ -1,5 +1,5 @@
 # Built from repo root. Static build + nginx serve.
-FROM oven/bun:1.3.13-alpine AS deps
+FROM oven/bun:1.4.2-alpine AS deps
 WORKDIR /app
 
 COPY package.json bun.lock biome.json tsconfig.base.json ./

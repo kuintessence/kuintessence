@@ -1,4 +1,4 @@
-FROM oven/bun:1.3.13-alpine AS deps
+FROM oven/bun:1.4.2-alpine AS deps
 WORKDIR /app
 COPY package.json bun.lock biome.json tsconfig.base.json ./
 COPY packages/shared/package.json ./packages/shared/
@@ -24,7 +24,7 @@ COPY packages/server ./packages/server
 COPY authz ./authz
 RUN cd packages/proto && bun run generate
 
-FROM oven/bun:1.3.13-alpine
+FROM oven/bun:1.4.2-alpine
 WORKDIR /app
 COPY --from=build /app /app
 ENV NODE_ENV=production

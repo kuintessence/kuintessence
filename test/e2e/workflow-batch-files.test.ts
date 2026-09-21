@@ -198,7 +198,7 @@ async function uploadTextFile(path: string, text: string): Promise<WorkflowFileI
     headers: { "Content-Type": "text/plain" },
   });
   if (!upload.ok) {
-    throw new Error(`MinIO upload failed: ${upload.status} ${await upload.text()}`);
+    throw new Error(`S3 upload failed: ${upload.status} ${await upload.text()}`);
   }
 
   const commit = await api<{

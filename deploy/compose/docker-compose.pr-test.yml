@@ -1,0 +1,161 @@
+# Isolated, disposable PR tests. Use: bash deploy/pr-test/run.sh slurm|pbs
+services:
+  scheduler-base:
+    build:
+      context: deploy/schedulers
+      dockerfile: base/Dockerfile
+      args:
+        SPACK_REF: v1.0.0
+        BUN_VERSION: 1.4.2
+        APT_MIRROR: ${KQ_PR_APT_MIRROR:-}
+    profiles: [images]
+
+  scheduler-runtime:
+    build:
+      context: deploy/schedulers
+      dockerfile: ${KQ_PR_SCHEDULER:?Use deploy/pr-test/run.sh}/Dockerfile
+      additional_contexts:
+        scheduler-base: service:scheduler-base
+      args:
+        APT_MIRROR: ${KQ_PR_APT_MIRROR:-}
+    profiles: [images]
+
+  test-workspace:
+    image: ${COMPOSE_PROJECT_NAME:?required}-workspace
+    build:
+      context: .
+      dockerfile: deploy/pr-test/workspace.Dockerfile
+      additional_contexts:
+        scheduler-base: service:scheduler-base
+    profiles: [images]
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: kq
+      POSTGRES_PASSWORD: ${KQ_PR_DB_PASSWORD:?Use deploy/pr-test/run.sh}
+      POSTGRES_DB: kuintessence
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+    networks: [backend]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U kq -d kuintessence"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  db-migrate:
+    image: ${COMPOSE_PROJECT_NAME:?required}-workspace
+    working_dir: /workspace/packages/db
+    command: ["bun", "src/pg/migrate.ts"]
+    environment:
+      DATABASE_URL: postgres://kq:${KQ_PR_DB_PASSWORD:?required}@postgres:5432/kuintessence
+    networks: [backend]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  server:
+    image: ${COMPOSE_PROJECT_NAME:?required}-workspace
+    command: ["bun", "packages/server/src/index.ts"]
+    environment:
+      DATABASE_URL: postgres://kq:${KQ_PR_DB_PASSWORD:?required}@postgres:5432/kuintessence
+      JWT_SECRET: ${KQ_PR_JWT_SECRET:?required}
+      REDIS_URL: redis://unused:6379
+      NODE_ENV: development
+      LOG_LEVEL: warn
+      SERVER_PORT: "3000"
+      SERVER_GRPC_PORT: "3001"
+      AUTHZ_MODE: "off"
+      MTLS_MODE: "off"
+      SSO_BOOTSTRAP_ENABLED: "false"
+      NETDRIVE_ENABLED: "false"
+      SPACK_MATERIAL_DELIVERY_ENABLED: "false"
+      WORKFLOW_RUN_BASE: /scratch/kuintessence-workflows
+    networks: [backend, control]
+    depends_on:
+      db-migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "bun", "-e", "fetch('http://127.0.0.1:3000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  registry:
+    image: ${COMPOSE_PROJECT_NAME:?required}-workspace
+    command: ["bun", "packages/registry/src/index.ts"]
+    environment:
+      DATABASE_URL: postgres://kq:${KQ_PR_DB_PASSWORD:?required}@postgres:5432/kuintessence
+      REGISTRY_PORT: "3100"
+      REGISTRY_AUTH_MODE: jwt
+      REGISTRY_JWT_SECRET: ${KQ_PR_JWT_SECRET:?required}
+      BLOB_STORE_DIR: /var/lib/kuintessence/registry/blobs
+      SPACK_RECIPE_STORE_DIR: /var/lib/kuintessence/registry/recipes
+      SPACK_MATERIAL_STORE_DIR: /var/lib/kuintessence/registry/materials
+      LOG_LEVEL: warn
+    volumes:
+      - registry-data:/var/lib/kuintessence/registry
+    networks: [backend]
+    depends_on:
+      db-migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "bun", "-e", "fetch('http://127.0.0.1:3100/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  scheduler:
+    image: ${COMPOSE_PROJECT_NAME:?required}-scheduler
+    build:
+      context: deploy/pr-test
+      dockerfile: scheduler.Dockerfile
+      additional_contexts:
+        scheduler-runtime: service:scheduler-runtime
+        test-workspace: service:test-workspace
+    hostname: scheduler
+    privileged: ${KQ_PR_PRIVILEGED:-false}
+    environment:
+      SERVER_GRPC_URL: http://server:3001
+      SERVER_HTTP_URL: http://server:3000
+      AGENT_ID: pr-scheduler
+      AGENT_SITE_NAME: PR Scheduler Test
+      AGENT_DB_PATH: /var/lib/kuintessence/agent.db
+      KQ_AGENT_REGISTRATION_SCHEDULER: ${KQ_PR_REGISTRATION_SCHEDULER:?required}
+      AGENT_SPACK_ENABLED: "true"
+      AGENT_SPACK_PATH: /opt/spack/bin/spack
+      AGENT_SPACK_CACHE_DIR: /var/lib/kuintessence/spack-materials
+      AGENT_SPACK_AUDIT_ENABLED: "false"
+      AGENT_SPACK_INSTALL_ENABLED: "false"
+      KQ_PR_SCHEDULER: ${KQ_PR_SCHEDULER:?required}
+      KQ_PR_TEST: "1"
+      HOME: /home/kq
+      LOG_LEVEL: warn
+      NODE_ENV: development
+    volumes:
+      - agent-state:/var/lib/kuintessence
+      - scratch:/scratch
+    networks: [control]
+    depends_on:
+      server:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "bash", "/workspace/deploy/pr-test/health.sh"]
+      interval: 5s
+      timeout: 5s
+      retries: 36
+      start_period: 90s
+
+networks:
+  backend:
+    internal: true
+  control:
+    internal: true
+
+volumes:
+  pg-data:
+  registry-data:
+  agent-state:
+  scratch:

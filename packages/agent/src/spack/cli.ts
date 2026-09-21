@@ -19,7 +19,12 @@ export interface SpackCliOptions {
   spawner?: Spawner;
   /** Path to the spack binary. Defaults to `spack` (must be on PATH). */
   binary?: string;
+  /** Platform-managed mode never executes network-capable installation commands. */
+  requireServerMaterials?: boolean;
 }
+
+export const MANAGED_SPACK_EXECUTION_DISABLED =
+  "managed offline Spack execution is not enabled yet";
 
 /**
  * Thin typed wrapper around `Bun.spawn(['spack', ...])`.
@@ -32,12 +37,18 @@ export interface SpackCliOptions {
  * higher-level modules (`installed.ts`, `mirror-manager.ts`).
  */
 export class SpackCli {
+  readonly requireServerMaterials: boolean;
   private readonly spawner: Spawner;
   private readonly binary: string;
 
   constructor(options: SpackCliOptions = {}) {
     this.spawner = options.spawner ?? realSpawner;
     this.binary = options.binary ?? "spack";
+    this.requireServerMaterials = options.requireServerMaterials ?? false;
+  }
+
+  assertNetworkExecutionAllowed(): void {
+    if (this.requireServerMaterials) throw new Error(MANAGED_SPACK_EXECUTION_DISABLED);
   }
 
   /** `spack --version` — used as the boot-time probe. */
@@ -57,6 +68,7 @@ export class SpackCli {
 
   /** `spack install --yes <spec>` — on-demand install. */
   async install(spec: string): Promise<SpackCliResult> {
+    this.assertNetworkExecutionAllowed();
     if (!spec || spec.length === 0) {
       throw new Error("SpackCli.install: spec must be non-empty");
     }
@@ -81,6 +93,7 @@ export class SpackCli {
 
   /** `spack mirror add <name> <url>` — register a mirror. */
   async mirrorAdd(name: string, url: string): Promise<SpackCliResult> {
+    this.assertNetworkExecutionAllowed();
     if (!name || name.length === 0) {
       throw new Error("SpackCli.mirrorAdd: name must be non-empty");
     }
@@ -111,6 +124,7 @@ export class SpackCli {
    * elsewhere can find it.
    */
   async buildcachePush(mirror: string, spec: string): Promise<SpackCliResult> {
+    this.assertNetworkExecutionAllowed();
     if (!mirror || mirror.length === 0) {
       throw new Error("SpackCli.buildcachePush: mirror must be non-empty");
     }
@@ -131,6 +145,7 @@ export class SpackCli {
 
   /** `spack buildcache install <spec>` — consume a prebuilt buildcache. */
   async buildcacheInstall(spec: string): Promise<SpackCliResult> {
+    this.assertNetworkExecutionAllowed();
     if (!spec || spec.length === 0) {
       throw new Error("SpackCli.buildcacheInstall: spec must be non-empty");
     }

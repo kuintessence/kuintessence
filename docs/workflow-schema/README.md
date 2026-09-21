@@ -382,7 +382,7 @@ stdout 日志采集失败仅降级记录，但 required value extractor 缺值�
 因此，scheduler 已 completed 的 Job 仍可能对应 Failed 节点。
 终态输出收集异常会回传 failed；排障时分别检查执行、采集、发布和提取过程。
 
-文件服务配置、multipart 与排障见 [NetDrive / MinIO](../storage.md#transfers)；
+文件服务配置、multipart 与排障见 [NetDrive / RustFS](../storage.md#transfers)；
 Script 身份、runtime、安全隔离和 artifact 生命周期见 [Sandbox](../software.md#sandbox)。
 
 <a id="operations"></a>
@@ -482,7 +482,7 @@ fixture 的预期值用于检查编排和数据传递。
 
 ### 阅读索引
 
-E2E fixture 会按场景启动 PostgreSQL、MinIO、Slurm、Server、Agent 等组件，运行前准备独立测试环境。
+E2E fixture 会按场景启动 PostgreSQL、RustFS、Slurm、Server、Agent 等组件，运行前准备独立测试环境。
 
 | 主题 | 入口 |
 |---|---|

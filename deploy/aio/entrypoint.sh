@@ -1,12 +1,17 @@
 #!/usr/bin/env bash
-# AIO supervisor: starts Postgres, Redis, MinIO, Server, Registry, and nginx
+# AIO supervisor: starts Postgres, Redis, RustFS, Server, Registry, and nginx
 # inside a single container. First-run safe (initdb + create user/db + migrate).
 set -euo pipefail
 
 PGDATA=${PGDATA:-/data/postgres}
-MINIO_DATA=${MINIO_DATA:-/data/minio}
+RUSTFS_DATA=${RUSTFS_DATA:-/data/rustfs}
 
 log() { echo "[aio $(date -Iseconds)] $*"; }
+
+if [ -d /data/minio ]; then
+    log "legacy MinIO data detected; migrate objects and metadata before starting RustFS"
+    exit 1
+fi
 
 PIDS=()
 shutdown() {
@@ -21,7 +26,7 @@ shutdown() {
 trap 'shutdown' EXIT
 trap 'exit 0' SIGTERM SIGINT
 
-mkdir -p "$PGDATA" "$MINIO_DATA" /run/postgresql
+mkdir -p "$PGDATA" "$RUSTFS_DATA" /run/postgresql
 chown -R postgres:postgres "$PGDATA" /run/postgresql
 
 # 1. Initdb on first start ---------------------------------------------------
@@ -85,29 +90,29 @@ redis-server --bind 127.0.0.1 --port 6379 --daemonize no \
     >/var/log/aio/redis.log 2>&1 &
 PIDS+=("$!")
 
-# 6. Start MinIO -------------------------------------------------------------
-log "starting minio"
-minio server "$MINIO_DATA" \
-    --address ":9000" \
-    --console-address ":9001" \
-    >/var/log/aio/minio.log 2>&1 &
+# 6. Start RustFS -------------------------------------------------------------
+log "starting rustfs"
+rustfs "$RUSTFS_DATA" \
+    --address "0.0.0.0:9000" \
+    --console-address "0.0.0.0:9001" \
+    >/var/log/aio/rustfs.log 2>&1 &
 PIDS+=("$!")
 
 # 7. Initialize immutable object storage ------------------------------------
 for ((attempt = 0; attempt < 60; attempt++)); do
-    if wget -q -O- http://127.0.0.1:9000/minio/health/ready >/dev/null 2>&1; then break; fi
+    if wget -q -O- http://127.0.0.1:9000/health >/dev/null 2>&1; then break; fi
     sleep 0.5
 done
-if ! wget -q -O- http://127.0.0.1:9000/minio/health/ready >/dev/null 2>&1; then
-    log "minio failed to become ready"; tail -50 /var/log/aio/minio.log; exit 1
+if ! wget -q -O- http://127.0.0.1:9000/health >/dev/null 2>&1; then
+    log "rustfs failed to become ready"; tail -50 /var/log/aio/rustfs.log; exit 1
 fi
 log "initializing NetDrive, Data Market staging, and immutable buckets"
 : "${DATA_MARKET_COMMITTER_SECRET_KEY:?DATA_MARKET_COMMITTER_SECRET_KEY is required}"
 export NETDRIVE_ACCESS_KEY="${DATA_MARKET_COMMITTER_ACCESS_KEY}"
 export NETDRIVE_SECRET_KEY="${DATA_MARKET_COMMITTER_SECRET_KEY}"
-MINIO_ENDPOINT=http://127.0.0.1:9000 /usr/local/bin/bootstrap-object-lock
+RUSTFS_ENDPOINT=http://127.0.0.1:9000 /usr/local/bin/bootstrap-object-lock
 log "object storage buckets ready"
-unset MINIO_ROOT_USER MINIO_ROOT_PASSWORD DATA_MARKET_COMMITTER_SECRET_KEY
+unset RUSTFS_ACCESS_KEY RUSTFS_SECRET_KEY DATA_MARKET_COMMITTER_SECRET_KEY
 
 # 8. Start Server ---------------------------------------------------------------
 log "starting server"

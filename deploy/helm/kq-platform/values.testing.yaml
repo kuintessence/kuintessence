@@ -1,5 +1,5 @@
 # Testing / CI overrides for the kq-platform chart.
-# Single-replica everything, ephemeral storage, in-cluster PG/Redis/MinIO.
+# Single-replica everything, ephemeral storage, in-cluster PG/Redis/RustFS.
 server:
   replicas: 1
   resources:
@@ -23,7 +23,7 @@ redis:
   enabled: true
   storage: 100Mi
 
-minio:
+rustfs:
   enabled: true
   storage: 1Gi
   rootPassword: "testing-only-do-not-use-in-prod"

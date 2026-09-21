@@ -1,0 +1,103 @@
+{{- if hasKey .Values "minio" }}
+{{- fail "minio values are no longer supported; migrate data separately and use rustfs values" }}
+{{- end }}
+{{- if .Values.rustfs.enabled }}
+{{- if not (kindIs "bool" .Values.rustfs.migrationVerified) }}
+{{- fail "rustfs.migrationVerified must be a boolean" }}
+{{- end }}
+{{- $legacyName := printf "%s-minio" .Release.Name }}
+{{- $legacyPVC := printf "data-%s-minio-0" .Release.Name }}
+{{- if and (not .Values.rustfs.migrationVerified) (or (lookup "apps/v1" "StatefulSet" .Release.Namespace $legacyName) (lookup "v1" "PersistentVolumeClaim" .Release.Namespace $legacyPVC)) }}
+{{- fail "legacy MinIO storage detected; migrate and verify objects, version references, and retention before setting rustfs.migrationVerified=true" }}
+{{- end }}
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ .Release.Name }}-rustfs
+  labels: {{- include "kq.labels" . | nindent 4 }}
+spec:
+  serviceName: {{ .Release.Name }}-rustfs
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ .Chart.Name }}
+      app.kubernetes.io/component: rustfs
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ .Chart.Name }}
+        app.kubernetes.io/component: rustfs
+    spec:
+      securityContext:
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        fsGroupChangePolicy: OnRootMismatch
+      containers:
+        - name: rustfs
+          image: {{ .Values.rustfs.image }}
+          args: ["rustfs", "/data"]
+          ports:
+            - name: api
+              containerPort: 9000
+            - name: console
+              containerPort: 9001
+          env:
+            - name: RUSTFS_CONSOLE_ENABLE
+              value: "true"
+            - name: RUSTFS_OBS_LOG_DIRECTORY
+              value: /tmp/logs
+            - name: RUSTFS_ACCESS_KEY
+              value: {{ .Values.rustfs.rootUser }}
+            - name: RUSTFS_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "kq.secretName" . }}
+                  key: RUSTFS_SECRET_KEY
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 9000
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            failureThreshold: 6
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 9000
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            failureThreshold: 3
+          volumeMounts:
+            - name: data
+              mountPath: /data
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        {{- if .Values.rustfs.storageClass }}
+        storageClassName: {{ .Values.rustfs.storageClass }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.rustfs.storage }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}-rustfs
+  labels: {{- include "kq.labels" . | nindent 4 }}
+spec:
+  clusterIP: None
+  selector:
+    app.kubernetes.io/name: {{ .Chart.Name }}
+    app.kubernetes.io/component: rustfs
+  ports:
+    - name: api
+      port: 9000
+      targetPort: api
+    - name: console
+      port: 9001
+      targetPort: console
+{{- end }}

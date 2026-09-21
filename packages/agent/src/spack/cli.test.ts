@@ -199,3 +199,21 @@ describe("SpackCli.buildcacheInstall", () => {
     expect(calls[0]).toEqual(["spack", "buildcache", "install", "gromacs@2024.1"]);
   });
 });
+
+describe("SpackCli managed execution gate", () => {
+  test("blocks direct install/buildcache/mirror-add calls without spawning", async () => {
+    const { spawner, calls } = mockSpawner([]);
+    const cli = new SpackCli({ spawner, requireServerMaterials: true });
+    for (const operation of [
+      () => cli.install("zlib@1.3.1"),
+      () => cli.buildcacheInstall("zlib@1.3.1"),
+      () => cli.buildcachePush("mirror", "zlib@1.3.1"),
+      () => cli.mirrorAdd("mirror", "https://upstream.example"),
+    ]) {
+      await expect(operation()).rejects.toThrow(
+        "managed offline Spack execution is not enabled yet",
+      );
+    }
+    expect(calls).toEqual([]);
+  });
+});

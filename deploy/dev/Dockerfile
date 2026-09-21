@@ -1,4 +1,8 @@
-FROM oven/bun:1.3.13-alpine
+FROM oven/bun:1.4.2-alpine
+
+RUN apk add --no-cache git
+ENV GIT_CONFIG_GLOBAL=/dev/null \
+    GIT_CONFIG_NOSYSTEM=1
 
 WORKDIR /app
 

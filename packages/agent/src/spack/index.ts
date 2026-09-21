@@ -1,10 +1,19 @@
 import type { InstalledSpec, MirrorSpec, SpackPolicy } from "@kuintessence/shared";
 import type { Spawner } from "../adapters/base";
 import { Buildcache, type ExportOutcome, type ImportResult } from "./buildcache";
-import { SpackCli } from "./cli";
+import { MANAGED_SPACK_EXECUTION_DISABLED, SpackCli } from "./cli";
+import type { SpackManagedInstallation } from "./install-contract";
 import { type InstallOutcome, type SoftwareOperationOutcome, SpackInstaller } from "./installer";
+import type {
+  PreparedSpackMaterials,
+  SpackMaterialContext,
+  SpackMaterialPrepareInput,
+  SpackMaterialProvider,
+} from "./material-client";
+import { preflightSpackMaterials } from "./material-preflight";
 import { type MirrorDelta, MirrorManager } from "./mirror-manager";
 import { decidePolicy } from "./policy";
+import type { SpackMaterialAuditor } from "./source-auditor";
 
 export type { ExportOutcome, ImportResult } from "./buildcache";
 export { Buildcache } from "./buildcache";
@@ -13,6 +22,13 @@ export { SpackCli } from "./cli";
 export { getInstalledList, parseSpackFindJson } from "./installed";
 export type { InstallOutcome } from "./installer";
 export { SpackInstaller } from "./installer";
+export type {
+  PreparedSpackMaterials,
+  SpackMaterialContext,
+  SpackMaterialPrepareInput,
+  SpackMaterialProvider,
+} from "./material-client";
+export { configureSpackMaterialClient, SpackMaterialClient } from "./material-client";
 export type { MirrorDelta } from "./mirror-manager";
 export { MirrorManager, parseMirrorList } from "./mirror-manager";
 export { decidePolicy, matchesPattern } from "./policy";
@@ -29,6 +45,11 @@ export interface SpackManagerBootstrapOptions {
    * found" log spam.
    */
   enabled?: boolean;
+  /** Required on platform Agents; standalone/embedded callers retain legacy behavior. */
+  requireServerMaterials?: boolean;
+  materialClient?: SpackMaterialProvider;
+  materialAuditor?: SpackMaterialAuditor;
+  managedInstallation?: SpackManagedInstallation;
 }
 
 /**
@@ -71,7 +92,12 @@ export interface PolicyApplyAck {
 
 export type SoftwareOperationAction = "install" | "uninstall" | "load" | "import_preinstalled";
 
+function cancelledSoftwareOperation(): SoftwareOperationOutcome {
+  return { outcome: "failed", exitCode: 1, stderr: "Spack software operation cancelled" };
+}
+
 export class SpackManager {
+  readonly requireServerMaterials: boolean;
   readonly available: boolean;
   readonly version: string | undefined;
   readonly installer: SpackInstaller | undefined;
@@ -80,6 +106,9 @@ export class SpackManager {
   private readonly cli: SpackCli | undefined;
   private appliedPolicyVersion: string | undefined;
   private cachedPolicy: SpackPolicy | undefined;
+  private readonly materialClient: SpackMaterialProvider | undefined;
+  private readonly materialAuditor: SpackMaterialAuditor | undefined;
+  private readonly managedInstallation: SpackManagedInstallation | undefined;
 
   private constructor(args: {
     available: boolean;
@@ -88,6 +117,10 @@ export class SpackManager {
     installer?: SpackInstaller;
     mirrorManager?: MirrorManager;
     buildcache?: Buildcache;
+    requireServerMaterials?: boolean;
+    materialClient?: SpackMaterialProvider;
+    materialAuditor?: SpackMaterialAuditor;
+    managedInstallation?: SpackManagedInstallation;
   }) {
     this.available = args.available;
     this.version = args.version;
@@ -95,22 +128,39 @@ export class SpackManager {
     this.installer = args.installer;
     this.mirrorManager = args.mirrorManager;
     this.buildcache = args.buildcache;
+    this.requireServerMaterials = args.requireServerMaterials ?? false;
+    this.materialClient = args.materialClient;
+    this.materialAuditor = args.materialAuditor;
+    this.managedInstallation = args.managedInstallation;
   }
 
   static async bootstrap(options: SpackManagerBootstrapOptions = {}): Promise<SpackManager> {
     if (options.enabled === false) {
-      return new SpackManager({ available: false });
+      return new SpackManager({
+        available: false,
+        requireServerMaterials: options.requireServerMaterials,
+      });
     }
-    const cli = new SpackCli({ spawner: options.spawner, binary: options.binary });
+    const cli = new SpackCli({
+      spawner: options.spawner,
+      binary: options.binary,
+      requireServerMaterials: options.requireServerMaterials,
+    });
     let probe: { exitCode: number; stdout: string; stderr: string };
     try {
       probe = await cli.version();
     } catch {
       // Spawner threw (e.g. ENOENT in CI). Fail soft.
-      return new SpackManager({ available: false });
+      return new SpackManager({
+        available: false,
+        requireServerMaterials: options.requireServerMaterials,
+      });
     }
     if (probe.exitCode !== 0) {
-      return new SpackManager({ available: false });
+      return new SpackManager({
+        available: false,
+        requireServerMaterials: options.requireServerMaterials,
+      });
     }
     const version = probe.stdout.trim().split(/\s+/)[0] ?? "unknown";
     return new SpackManager({
@@ -120,6 +170,10 @@ export class SpackManager {
       installer: new SpackInstaller(cli),
       mirrorManager: new MirrorManager(cli),
       buildcache: new Buildcache(cli),
+      requireServerMaterials: options.requireServerMaterials,
+      materialClient: options.materialClient,
+      materialAuditor: options.materialAuditor,
+      managedInstallation: options.requireServerMaterials ? options.managedInstallation : undefined,
     });
   }
 
@@ -128,7 +182,9 @@ export class SpackManager {
     if (!this.installer) {
       throw new Error("SpackManager: spack is unavailable on this Agent");
     }
-    return this.installer.refreshInstalled();
+    const legacy = await this.installer.refreshInstalled();
+    const managed = (await this.managedInstallation?.installedList()) ?? [];
+    return [...new Map([...legacy, ...managed].map((entry) => [entry.hash, entry])).values()];
   }
 
   /** Convenience: try to install one spec under the given policy. */
@@ -136,39 +192,196 @@ export class SpackManager {
     if (!this.installer) {
       throw new Error("SpackManager: spack is unavailable on this Agent");
     }
+    if (this.requireServerMaterials) {
+      return { outcome: "rejected", reason: MANAGED_SPACK_EXECUTION_DISABLED };
+    }
     return this.installer.requestInstall(spec, policy);
   }
 
   async runSoftwareOperation(
     action: SoftwareOperationAction,
     spec: string,
+    materials?: SpackMaterialContext,
+    signal?: AbortSignal,
   ): Promise<SoftwareOperationOutcome> {
+    if (signal?.aborted) return cancelledSoftwareOperation();
     if (!this.installer) {
       throw new Error("SpackManager: spack is unavailable on this Agent");
     }
+    if (this.managedInstallation && action !== "install") {
+      const result = await this.managedInstallation.operation(
+        action,
+        spec,
+        this.cachedPolicy ?? { lockEnabled: false },
+        signal,
+      );
+      if (result) return this.withLegacyInventory(result);
+      if (signal?.aborted) return cancelledSoftwareOperation();
+    }
     switch (action) {
       case "install":
+        if (this.requireServerMaterials) return this.prepareManagedInstall(spec, materials, signal);
         return this.installer.installAndRefresh(spec, this.cachedPolicy ?? { lockEnabled: false });
       case "uninstall":
-        return this.installer.uninstallAndRefresh(
-          spec,
-          this.cachedPolicy ?? { lockEnabled: false },
+        return this.withManagedInventory(
+          await this.installer.uninstallAndRefresh(
+            spec,
+            this.cachedPolicy ?? { lockEnabled: false },
+          ),
         );
       case "load":
         return this.installer.loadShell(spec, this.cachedPolicy ?? { lockEnabled: false });
       case "import_preinstalled":
-        return this.installer.importPreinstalled(spec);
+        return this.withManagedInventory(await this.installer.importPreinstalled(spec));
+    }
+  }
+
+  private async prepareManagedInstall(
+    spec: string,
+    context?: SpackMaterialContext,
+    signal?: AbortSignal,
+  ): Promise<SoftwareOperationOutcome> {
+    const policyRejection = this.policyRejectionForOperation("install", spec);
+    if (policyRejection) return { outcome: "rejected", reason: policyRejection };
+    if (!context?.operationId || !context.ticket || !context.manifestDigest) {
+      return {
+        outcome: "rejected",
+        reason: "managed Spack install requires a Server material ticket and manifest digest",
+      };
+    }
+    if (!this.materialClient || !this.version) {
+      return { outcome: "rejected", reason: "managed Spack material client is not configured" };
+    }
+    const input: SpackMaterialPrepareInput = {
+      operationId: context.operationId,
+      ticket: context.ticket,
+      manifestDigest: context.manifestDigest,
+      spec,
+      spackVersion: this.version,
+      ...(signal ? { signal } : {}),
+    };
+    let prepared: PreparedSpackMaterials;
+    try {
+      prepared = await this.materialClient.prepare(input);
+    } catch (error) {
+      if (signal?.aborted) return cancelledSoftwareOperation();
+      return {
+        outcome: "failed",
+        exitCode: 1,
+        stderr: `Spack material preparation failed: ${error instanceof Error ? error.message : String(error)}`,
+      };
+    }
+    if (signal?.aborted) return cancelledSoftwareOperation();
+    try {
+      const report = await preflightSpackMaterials(prepared, input);
+      if (signal?.aborted) return cancelledSoftwareOperation();
+      if (!report.valid) {
+        return {
+          outcome: "failed",
+          exitCode: 1,
+          stderr: `Spack lock preflight failed: ${report.diagnostics
+            .filter((item) => item.severity === "error")
+            .map((item) => `${item.code}: ${item.message}`)
+            .join("; ")}`,
+        };
+      }
+    } catch (error) {
+      if (signal?.aborted) return cancelledSoftwareOperation();
+      return {
+        outcome: "failed",
+        exitCode: 1,
+        stderr: `Spack material preflight failed: ${error instanceof Error ? error.message : String(error)}`,
+      };
+    }
+    if (this.materialAuditor) {
+      try {
+        const report = await this.materialAuditor.audit(prepared, input);
+        if (signal?.aborted) return cancelledSoftwareOperation();
+        if (!report.passed) {
+          return {
+            outcome: "failed",
+            exitCode: 1,
+            stderr: `Spack source audit failed: ${report.issues
+              .filter((issue) => issue.severity === "error")
+              .map((issue) => issue.code)
+              .join("; ")}`,
+          };
+        }
+        if (this.managedInstallation) {
+          return this.withLegacyInventory(await this.managedInstallation.install(prepared, input));
+        }
+        return {
+          outcome: "rejected",
+          reason: MANAGED_SPACK_EXECUTION_DISABLED,
+          stdout: JSON.stringify(report),
+        };
+      } catch {
+        if (signal?.aborted) return cancelledSoftwareOperation();
+        return {
+          outcome: "failed",
+          exitCode: 1,
+          stderr: "Spack source audit could not complete in the configured isolated runtime",
+        };
+      }
+    }
+    return { outcome: "rejected", reason: MANAGED_SPACK_EXECUTION_DISABLED };
+  }
+
+  private async withLegacyInventory(
+    result: SoftwareOperationOutcome,
+  ): Promise<SoftwareOperationOutcome> {
+    if (result.outcome !== "succeeded" || !this.installer) return result;
+    try {
+      const legacy = await this.installer.refreshInstalled();
+      return {
+        ...result,
+        installed: [
+          ...new Map([...legacy, ...result.installed].map((entry) => [entry.hash, entry])).values(),
+        ],
+      };
+    } catch {
+      return {
+        outcome: "failed",
+        exitCode: 1,
+        stderr: "Spack operation completed but installed inventory refresh failed",
+        ...(result.invalidatedHashes ? { invalidatedHashes: result.invalidatedHashes } : {}),
+      };
+    }
+  }
+
+  private async withManagedInventory(
+    result: SoftwareOperationOutcome,
+  ): Promise<SoftwareOperationOutcome> {
+    if (result.outcome !== "succeeded" || !this.managedInstallation) return result;
+    try {
+      const managed = await this.managedInstallation.installedList();
+      return {
+        ...result,
+        installed: [
+          ...new Map(
+            [...result.installed, ...managed].map((entry) => [entry.hash, entry]),
+          ).values(),
+        ],
+      };
+    } catch {
+      return {
+        outcome: "failed",
+        exitCode: 1,
+        stderr: "Spack operation completed but managed inventory refresh failed",
+      };
     }
   }
 
   policyRejectionForOperation(action: SoftwareOperationAction, spec: string): string | null {
     if (action === "import_preinstalled") return null;
+    if (this.managedInstallation && action !== "install") return null;
     const decision = decidePolicy(spec, this.cachedPolicy ?? { lockEnabled: false });
     return decision === "allow" ? null : decision.reject;
   }
 
   /** Convenience: reconcile mirror config push from Server. */
   async applyMirrors(desired: MirrorSpec[]): Promise<MirrorDelta> {
+    if (this.requireServerMaterials) throw new Error("managed Spack upstream mirrors are disabled");
     if (!this.mirrorManager) {
       throw new Error("SpackManager: spack is unavailable on this Agent");
     }
@@ -177,6 +390,7 @@ export class SpackManager {
 
   /** Convenience: import a CP-distributed buildcache batch. */
   async importBuildcache(specs: string[]): Promise<ImportResult> {
+    if (this.requireServerMaterials) throw new Error(MANAGED_SPACK_EXECUTION_DISABLED);
     if (!this.buildcache) {
       throw new Error("SpackManager: spack is unavailable on this Agent");
     }
@@ -185,6 +399,7 @@ export class SpackManager {
 
   /** Convenience: push a locally-built spec to a mirror. */
   async exportBuildcache(spec: string, mirror: string): Promise<ExportOutcome> {
+    if (this.requireServerMaterials) throw new Error(MANAGED_SPACK_EXECUTION_DISABLED);
     if (!this.buildcache) {
       throw new Error("SpackManager: spack is unavailable on this Agent");
     }
@@ -221,7 +436,12 @@ export class SpackManager {
       return { policyVersion: input.policyVersion, applied: true };
     }
     try {
-      if (input.mirrors && input.mirrors.length > 0 && this.mirrorManager) {
+      if (
+        !this.requireServerMaterials &&
+        input.mirrors &&
+        input.mirrors.length > 0 &&
+        this.mirrorManager
+      ) {
         await this.mirrorManager.applyMirrors(input.mirrors);
       }
       this.cachedPolicy = {

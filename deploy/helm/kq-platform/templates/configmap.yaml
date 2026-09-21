@@ -28,10 +28,11 @@ data:
   HTTP_TRUSTED_PROXY_CIDRS: {{ .Values.server.env.HTTP_TRUSTED_PROXY_CIDRS | default "" | quote }}
   NETDRIVE_ENABLED: {{ ternary "true" "false" .Values.netdrive.enabled | quote }}
   {{- if .Values.netdrive.enabled }}
-  {{- if .Values.minio.enabled }}
-  NETDRIVE_ENDPOINT: {{ default (printf "%s-minio" .Release.Name) .Values.netdrive.endpoint | quote }}
+  {{- if .Values.rustfs.enabled }}
+  RUSTFS_ACCESS_KEY: {{ .Values.rustfs.rootUser | quote }}
+  NETDRIVE_ENDPOINT: {{ default (printf "%s-rustfs" .Release.Name) .Values.netdrive.endpoint | quote }}
   {{- else }}
-  NETDRIVE_ENDPOINT: {{ required "netdrive.endpoint is required when netdrive.enabled=true and minio.enabled=false" .Values.netdrive.endpoint | quote }}
+  NETDRIVE_ENDPOINT: {{ required "netdrive.endpoint is required when netdrive.enabled=true and rustfs.enabled=false" .Values.netdrive.endpoint | quote }}
   {{- end }}
   NETDRIVE_PORT: {{ .Values.netdrive.port | quote }}
   NETDRIVE_USE_SSL: {{ ternary "true" "false" .Values.netdrive.useSsl | quote }}

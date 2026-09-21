@@ -35,6 +35,42 @@ server {
         add_header Referrer-Policy "no-referrer" always;
     }
 
+    # Keep the preview gate while allowing the same raw bundle limit as Registry.
+    location = /software/api/spack/recipe-repositories/import {
+        if ($preview_allowed = 0) {
+            return 302 /__preview/unlock;
+        }
+        client_max_body_size 128m;
+        proxy_request_buffering off;
+        proxy_read_timeout 900s;
+        proxy_send_timeout 900s;
+        proxy_pass http://web:80;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header Authorization $preview_authorization;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $preview_connection;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_hide_header Cache-Control;
+    }
+
+    location ^~ /software/api/spack/material-repositories/ {
+        if ($preview_allowed = 0) {
+            return 302 /__preview/unlock;
+        }
+        client_max_body_size 16g;
+        proxy_request_buffering off;
+        proxy_buffering off;
+        proxy_read_timeout 1800s;
+        proxy_send_timeout 1800s;
+        proxy_pass http://web:80;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header Authorization $preview_authorization;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_hide_header Cache-Control;
+    }
+
     location / {
         if ($preview_allowed = 0) {
             return 302 /__preview/unlock;

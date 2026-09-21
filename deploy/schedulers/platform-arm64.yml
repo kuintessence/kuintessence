@@ -3,9 +3,9 @@ services:
     platform: linux/arm64
   redis:
     platform: linux/arm64
-  minio:
+  rustfs:
     platform: linux/arm64
-  minio-init:
+  rustfs-init:
     platform: linux/arm64
   spicedb-migrate:
     platform: linux/arm64

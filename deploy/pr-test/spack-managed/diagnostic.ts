@@ -1,0 +1,209 @@
+import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
+import { copyFile, lstat, mkdir, readFile, rm } from "node:fs/promises";
+import { join } from "node:path";
+import { SpackMaterialManifestSchema, spackMaterialBlobs } from "@kuintessence/shared";
+import { realSpackAuditProcess, type SpackAuditProcess } from "../../../packages/agent/src/spack/audit-process";
+import { IsolatedSpackInstallRunner } from "../../../packages/agent/src/spack/install-runner";
+import { loadSpackInstallSiteProfile } from "../../../packages/agent/src/spack/install-site-profile";
+import { SpackInstallStore } from "../../../packages/agent/src/spack/install-store";
+import { SpackMaterialCache, type SpackMaterialCacheRef } from "../../../packages/agent/src/spack/material-cache";
+import { SpackSourceAuditor } from "../../../packages/agent/src/spack/source-auditor";
+import { ReleaseSchema } from "../spack-case/api";
+
+async function oomKills(): Promise<bigint | undefined> {
+  try {
+    const text = await readFile(
+      "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/memory.events",
+      "utf8",
+    );
+    const count = /^oom_kill ([0-9]{1,20})$/m.exec(text)?.[1];
+    return count === undefined ? undefined : BigInt(count);
+  } catch {
+    return undefined;
+  }
+}
+
+const diagnosticProcess: SpackAuditProcess = {
+  async run(command, options) {
+    const entry = command.findIndex((value) =>
+      value === "/kq/input/install_worker.py" || value === "/kq/input/source_audit.py");
+    assert(entry >= 0);
+    await copyFile(
+      "deploy/pr-test/spack-managed/diagnostic.py",
+      join(options.cwd, "input", "diagnostic.py"),
+    );
+    const before = await oomKills();
+    let result: Awaited<ReturnType<SpackAuditProcess["run"]>>;
+    try {
+      result = await realSpackAuditProcess.run(
+        command.map((value, index) => index === entry ? "/kq/input/diagnostic.py" : value),
+        options,
+      );
+    } finally {
+      const after = await oomKills();
+      const delta = before !== undefined && after !== undefined && after >= before
+        ? String(after - before) : "unavailable";
+      console.log(`Managed diagnostic cgroup: oom-kill-delta=${delta}`);
+    }
+    const exit = Number.isInteger(result.exitCode) && result.exitCode >= 0 && result.exitCode <= 255
+      ? String(result.exitCode) : "other";
+    const output = result.stdout.trim().startsWith("KQ_SPACK_INSTALL_RESULT:")
+      ? "install-report"
+      : result.stdout.trim().startsWith("KQ_SPACK_AUDIT_RESULT:")
+        ? "audit-report" : result.stdout.trim() ? "other" : "empty";
+    console.log(`Managed diagnostic process: exit=${exit} output=${output}`);
+    for (const line of result.stderr.split("\n")) {
+      if (
+        /^ci-worker-error:(AuditError|KeyError|ValueError|TypeError|AttributeError|OSError|PermissionError|FileNotFoundError|InstallError|SystemExit|RuntimeError|AssertionError|UnsatisfiableSpecError|SolverError|InternalConcretizerError|OutputDoesNotSatisfyInputError|NoCompilerFoundError|InvalidExternalError|ConfigError|ConfigFormatError|SpackError|UnknownPackageError|Exception)$/.test(line) ||
+        /^ci-solver-category:(compiler-target|compiler-external|host-target|attribute-selection|version-constraint|not-buildable|no-compiler|solver-timeout|solver-memory|namespace-conflict)$/.test(line) ||
+        /^ci-worker-phase:(source-audit|configuration|solve|tree|installed|native-setup|native-ground|native-result) event=(start|returned) rss-kib=([0-9]{1,12}|unavailable)$/.test(line) ||
+        /^ci-compiler-candidates:accepted=[0-9]{1,5} rejected=[0-9]{1,5} gcc=(accepted|rejected|absent)$/.test(line) ||
+        /^ci-compiler-probe:(verbose|libc) result=(present|missing)$/.test(line) ||
+        /^ci-compiler-execution:(missing-file|permission|readonly|missing-library|linker|no-space|unsupported-option|other)$/.test(line) ||
+        /^ci-solver-error:kind=(external-condition|external-selection|os-not-buildable|compiler-external|other) package=(gcc|gmake|glibc|hello|other) attribute=(namespace|version|platform|os|target|variant|flags|other) variant=(languages|build_system|other)$/.test(line) ||
+        /^ci-target-check:stage=(candidates|model) present=(true|false|unavailable) matches=(true|false|unavailable)$/.test(line) ||
+        /^ci-target-model:reason=(ok|shape|limit|read) at=(model|length|item|symbol-type|symbol-name|attribute-arity|attribute-name|node-type|node-name|node-arity|node-id|node-package|value|complete) container=(unavailable|text|iterator|list|tuple|sequence|other) size=([0-9]{1,5}|over-limit|unavailable) scanned=[0-9]{1,5} attributes=[0-9]{1,5} targets=[0-9]{1,5} gmake=[0-9]{1,5} kind=(unavailable|function|string|number|other) arity=([0-9]|many|unavailable)$/.test(line) ||
+        /^ci-target-error:mode=(exact|range) matches=(true|false|unavailable)$/.test(line) ||
+        /^ci-solved-lock:status=(ok|limit|unavailable) solved=([0-9]{1,2}|over-limit|unavailable) expected=([0-9]{1,2}|over-limit|unavailable) root-hash=(true|false|unavailable)$/.test(line) ||
+        /^ci-solved-node:package=(hello|gcc|gmake|glibc|compiler-wrapper|gcc-runtime|other) match=(unique|ambiguous|missing) hash=(true|false|unavailable) version=(true|false|unavailable) namespace=(true|false|unavailable) arch-profile=(true|false|unavailable) arch-lock=(true|false|unavailable) target-profile=(true|false|unavailable) target-lock=(true|false|unavailable) parameters=(true|false|unavailable) external=(true|false|unavailable) package-hash=(true|false|unavailable) dependencies=(true|false|unavailable)$/.test(line) ||
+        /^ci-native-location:(concretize|solver\/asp|solver\/core|solver\/counter|compilers\/config|spec|config|store|database)\.py:\d{1,5}$/.test(line) ||
+        /^ci-worker-location:(install_worker|source_audit)\.py:\d{1,5}$/.test(line) ||
+        /^ci-writable-mount:location=(root|devices|null-device|zero-device|random-device|urandom-device|tty-device|passwd|group|resolver|hosts|localtime|cgroups|tmp|var-tmp|work|other) filesystem=(overlay|ext4|xfs|fuse\.squashfuse|fuse\.squashfuse_ll|fuse-overlayfs|fuse\.fuse-overlayfs|cgroup2|devtmpfs|ramfs|other)$/.test(line)
+      ) console.error(line);
+    }
+    return result;
+  },
+};
+
+/** Reproduce a failed operation without creating/updating any managed ledger entry. */
+export async function diagnoseManagedInstall(action: "install" | "load" = "install"): Promise<void> {
+  let stage = "input";
+  let directory: string | undefined;
+  try {
+    assert.equal(process.env.KQ_PR_TEST, "1");
+    assert.equal(process.getuid?.(), 1000);
+    const release = ReleaseSchema.parse(
+      JSON.parse(await readFile("/case-control/release.json", "utf8")),
+    );
+    const store = new SpackInstallStore("/srv/kq/spack");
+    const records = await store.list();
+    for (const record of records) {
+      // States are schema-validated enums; do not print report data or paths.
+      console.log(`Managed diagnostic ledger: state=${record.state}`);
+    }
+    const cacheRoot = "/var/lib/kuintessence/spack-materials";
+    const cache = new SpackMaterialCache(cacheRoot);
+    const signal = AbortSignal.timeout(10 * 60_000);
+    const manifestBytes = await cache.readMetadata(
+      { digest: release.binding.manifestDigest, size: release.manifestSize },
+      2 * 1024 ** 2, signal,
+    );
+    const manifest = SpackMaterialManifestSchema.parse(JSON.parse(new TextDecoder().decode(manifestBytes)));
+    const refs = [...new Map(spackMaterialBlobs(manifest).map((blob) => [blob.digest, blob])).values()];
+    const blobs: SpackMaterialCacheRef[] = [];
+    for (const blob of refs) {
+      const verified = await cache.reuse(blob, signal);
+      assert(verified, "Diagnostic materials are missing");
+      blobs.push(verified);
+    }
+    const prepared = {
+      manifest, manifestDigest: release.binding.manifestDigest,
+      manifestSize: release.manifestSize,
+      manifestPath: join(cacheRoot, "sha256", release.binding.manifestDigest.slice(7)),
+      blobs,
+    };
+    const values = Object.fromEntries(
+      (await readFile("/etc/kuintessence/managed/runtime.env", "utf8"))
+        .trim().split("\n").map((line) => line.split("=")),
+    );
+    const runtime = {
+      apptainerPath: values.AGENT_SPACK_AUDIT_APPTAINER_PATH ?? "",
+      apptainerSha256: values.AGENT_SPACK_AUDIT_APPTAINER_SHA256 ?? "",
+      sifPath: values.AGENT_SPACK_AUDIT_SIF_PATH ?? "",
+      sifSha256: values.AGENT_SPACK_AUDIT_SIF_SHA256 ?? "",
+    };
+    const input = {
+      operationId: randomUUID(), ticket: "", manifestDigest: release.binding.manifestDigest,
+      spec: release.spec, spackVersion: "1.0.0", signal,
+    };
+    stage = "source-audit";
+    const audit = await new SpackSourceAuditor({
+      profile: runtime, process: diagnosticProcess,
+    }).audit(prepared, input);
+    console.log(`Managed diagnostic audit: passed=${audit.passed} verified=${audit.verifiedNodeCount}`);
+    for (const issue of audit.issues) {
+      if (new Set([
+        "source-verification-failed", "package-hash-mismatch", "package-hash-unsupported",
+        "unsupported-fetcher", "native-node-mismatch", "root-spec-mismatch",
+        "root-binding-mismatch", "native-root-mismatch", "issue-limit",
+      ]).has(issue.code)) console.log(`Managed diagnostic audit issue: ${issue.code}`);
+    }
+    assert(audit.passed);
+    stage = "site";
+    const site = await loadSpackInstallSiteProfile({
+      path: values.AGENT_SPACK_INSTALL_SITE_PROFILE_PATH ?? "",
+      sha256: values.AGENT_SPACK_INSTALL_SITE_PROFILE_SHA256 ?? "",
+      runtime,
+    }, signal);
+    const root = await lstat(site.profile.storeRoot);
+    assert(root.isDirectory() && !root.isSymbolicLink() && root.uid === 1000);
+    assert.equal(site.profile.storeRoot, "/srv/kq/spack");
+    const runner = new IsolatedSpackInstallRunner({
+      runtime,
+      process: diagnosticProcess,
+    });
+    if (action === "load") {
+      stage = "load";
+      const candidates = records.filter((record) =>
+        (record.state === "ready" || record.state === "unavailable") &&
+        record.spec === release.spec &&
+        record.manifestDigest === release.binding.manifestDigest &&
+        record.manifestSize === release.manifestSize &&
+        record.siteProfileDigest === site.digest &&
+        record.report?.storePath === store.path(record.id));
+      assert(candidates.length === 1);
+      const record = candidates[0];
+      assert(record);
+      await runner.run("load", prepared, input, site, store.path(record.id));
+      console.log("Managed diagnostic worker: load-completed (original API case still failed)");
+      return;
+    }
+    directory = store.path(randomUUID());
+    await mkdir(directory, { mode: 0o700 });
+    stage = "install";
+    await runner.run("install", prepared, input, site, directory);
+    stage = "verify";
+    await runner.run("verify", prepared, input, site, directory);
+    console.log("Managed diagnostic worker: install-and-verify-completed (original API case still failed)");
+  } catch (error) {
+    if (error instanceof Error) {
+      const failures: Record<string, string> = {
+        "Managed Spack worker did not complete successfully": "worker-result",
+        "Invalid managed Spack worker report": "report-schema",
+        "Managed Spack worker report binding mismatch": "report-binding",
+        "Spack audit process terminated": "process-terminated",
+        "Spack audit process left running descendants": "process-descendants",
+        "Spack audit process output limit exceeded": "process-output-limit",
+        "Spack audit process timed out": "process-timeout",
+        "Spack audit process aborted": "process-aborted",
+        "Spack audit process group cleanup failed": "process-cleanup",
+        "Spack audit process spawn failed": "process-spawn",
+        "Spack audit process output failed": "process-output",
+        "Spack audit process output is not valid UTF-8": "process-encoding",
+      };
+      if (Object.hasOwn(failures, error.message)) {
+        console.error(`Managed diagnostic failure category: ${failures[error.message]}`);
+      }
+    }
+    console.error(`Managed diagnostic failed: stage=${stage}`);
+  } finally {
+    if (directory) {
+      try {
+        await rm(directory, { recursive: true, force: true });
+      } catch {
+        console.error("Managed diagnostic failed: stage=cleanup");
+      }
+    }
+  }
+}

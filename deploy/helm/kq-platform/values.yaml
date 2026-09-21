@@ -55,6 +55,13 @@ registry:
     accessModes:
       - ReadWriteOnce
     mountPath: /var/lib/kuintessence/registry/blobs
+  recipes:
+    # Local Git storage requires persistence and a single Registry writer.
+    enabled: true
+    # Absolute path inside the container; administrators mount inputs read-only.
+    bootstrapManifest: ""
+    # Absolute path to the material manifest; administrators mount its file pack read-only.
+    materialBootstrapManifest: ""
   uploadLimits:
     maxUploadBytes: 10737418240
     maxActiveUploads: 100
@@ -104,20 +111,22 @@ redis:
   storage: 1Gi
   storageClass: ""
 
-minio:
+rustfs:
   enabled: true
-  image: minio/minio:RELEASE.2025-09-07T16-13-09Z
-  mcImage: minio/mc:RELEASE.2025-08-13T08-35-41Z
+  # Set only after independently verifying a legacy MinIO migration.
+  migrationVerified: false
+  image: rustfs/rustfs:1.0.0
+  rcImage: rustfs/rc:v0.1.36
   bootstrapWaitImage: bitnami/kubectl:1.32.3
   storage: 50Gi
   storageClass: ""
-  rootUser: minioadmin
-  # MUST set when minio.enabled=true
+  rootUser: rustfsadmin
+  # MUST set when rustfs.enabled=true
   rootPassword: ""
 
 netdrive:
   enabled: false
-  # Empty endpoint defaults to "<release>-minio" when the chart deploys MinIO.
+  # Empty endpoint defaults to "<release>-rustfs" when the chart deploys RustFS.
   endpoint: ""
   port: 9000
   useSsl: false
@@ -130,15 +139,15 @@ netdrive:
   # when every NetDrive client can resolve the internal endpoint.
   publicUrl: ""
   region: us-east-1
-  # Server must use an ordinary IAM user, never MinIO root or a root-derived service account.
+  # Server must use an ordinary IAM user, never RustFS root or a root-derived service account.
   accessKey: kq-data-market-committer
   secretKey: ""
-  # Increment after rotating netdrive.secretKey so the bootstrap Job updates MinIO credentials.
+  # Increment after rotating netdrive.secretKey so the bootstrap Job updates RustFS credentials.
   bootstrapRevision: "1"
 
 # Required secrets — at minimum JWT_SECRET.
 # Either set values here OR provide via an existing Kubernetes Secret
-# (existingSecret must contain keys: JWT_SECRET, POSTGRES_PASSWORD, MINIO_ROOT_PASSWORD,
+# (existingSecret must contain keys: JWT_SECRET, POSTGRES_PASSWORD, RUSTFS_SECRET_KEY,
 # DATABASE_URL/REDIS_URL when the corresponding external URL is empty, and NETDRIVE_ACCESS_KEY/
 # NETDRIVE_SECRET_KEY when netdrive.enabled=true).
 secrets:
