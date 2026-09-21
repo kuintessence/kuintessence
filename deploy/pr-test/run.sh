@@ -108,25 +108,34 @@ if "$spack_case"; then
   "${compose[@]}" restart server
 fi
 "${compose[@]}" up -d --no-build --wait --wait-timeout 300 scheduler registry
+if "$spack_case"; then
+  # Query only from Server's trusted workspace; never pass database credentials to Agent.
+  "${compose[@]}" exec -T server timeout --signal=TERM --kill-after=5s 60s bun deploy/pr-test/spack-case/references.ts configured
+fi
 if "$spack_managed"; then
   legacy_probe_status
   "${compose[@]}" exec -T --user kq scheduler bun deploy/pr-test/spack-managed/probe.ts
   "${compose[@]}" exec -T --user kq scheduler bun node_modules/typescript/bin/tsc --project deploy/pr-test/tsconfig.json
   "${compose[@]}" exec -T --user kq scheduler timeout --signal=TERM --kill-after=10s 1500s bun deploy/pr-test/spack-managed/case.ts install
-  "${compose[@]}" restart registry scheduler
-  "${compose[@]}" up -d --no-build --wait --wait-timeout 300 scheduler registry
+  "${compose[@]}" exec -T server timeout --signal=TERM --kill-after=5s 60s bun deploy/pr-test/spack-case/references.ts managed-terminal
+  "${compose[@]}" restart registry scheduler server
+  "${compose[@]}" up -d --no-build --wait --wait-timeout 300 scheduler registry server
+  "${compose[@]}" exec -T server timeout --signal=TERM --kill-after=5s 60s bun deploy/pr-test/spack-case/references.ts managed-restart
   "${compose[@]}" run --rm --no-deps case-operator bun deploy/pr-test/spack-case/publish.ts --verify
   "${compose[@]}" exec -T --user kq scheduler timeout --signal=TERM --kill-after=10s 900s bun deploy/pr-test/spack-managed/case.ts restart
   "${compose[@]}" exec -T --user kq scheduler timeout --signal=TERM --kill-after=10s 180s bun deploy/pr-test/spack-managed/case.ts uninstall
+  "${compose[@]}" exec -T server timeout --signal=TERM --kill-after=5s 60s bun deploy/pr-test/spack-case/references.ts managed-uninstall
 elif "$spack_case"; then
   "${compose[@]}" exec -T scheduler timeout --signal=TERM --kill-after=10s 180s bun deploy/pr-test/spack-case/consume.ts
+  "${compose[@]}" exec -T server timeout --signal=TERM --kill-after=5s 60s bun deploy/pr-test/spack-case/references.ts native-terminal
   "${compose[@]}" exec -T --user kq scheduler bun node_modules/typescript/bin/tsc --project deploy/pr-test/tsconfig.json
   "${compose[@]}" run --rm --no-deps case-native timeout --signal=TERM --kill-after=10s 900s bash deploy/pr-test/spack-case/check.sh
   "${compose[@]}" exec -T --user kq scheduler timeout --signal=TERM --kill-after=10s 180s bun deploy/pr-test/spack-case/job.ts
   # Recreate processes while retaining this project's volumes, then verify both
   # registry releases and the compiled executable rather than trusting old logs.
-  "${compose[@]}" restart registry scheduler
-  "${compose[@]}" up -d --no-build --wait --wait-timeout 300 scheduler registry
+  "${compose[@]}" restart registry scheduler server
+  "${compose[@]}" up -d --no-build --wait --wait-timeout 300 scheduler registry server
+  "${compose[@]}" exec -T server timeout --signal=TERM --kill-after=5s 60s bun deploy/pr-test/spack-case/references.ts native-restart
   "${compose[@]}" run --rm --no-deps case-operator bun deploy/pr-test/spack-case/publish.ts --verify
   "${compose[@]}" exec -T --user kq scheduler timeout --signal=TERM --kill-after=10s 180s bun deploy/pr-test/spack-case/job.ts
 else

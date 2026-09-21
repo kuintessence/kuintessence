@@ -108,6 +108,9 @@ jobs:
       - name: Check RustFS bootstrap and deployment wiring
         run: bun test scripts/rustfs-*.test.ts scripts/compose.test.ts
 
+      - name: Check Spack material delivery and deployment contracts
+        run: bun test scripts/spack-material-delivery.test.ts
+
       - name: Type check (all packages)
         run: bun run typecheck
 

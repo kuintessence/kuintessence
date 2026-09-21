@@ -54,6 +54,9 @@ export class SpackMaterialReferences {
         ...parseBinding(binding),
       }));
       await withSpackMaterialLifecycleTransaction(this.db, async (tx) => {
+        // Empty configurations must still fail when reference tables/columns are missing.
+        await tx.select().from(spackMaterialBindings).limit(0);
+        await tx.select().from(spackMaterialOperationReferences).limit(0);
         if (rows.length === 0) return;
         await tx
           .insert(spackMaterialBindings)

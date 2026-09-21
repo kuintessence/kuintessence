@@ -112,11 +112,30 @@ describe("Spack material pipeline (in-process, no listeners)", () => {
       spec: f.input.spec,
     };
     const registryCalls: string[] = [];
+    let registered = false;
+    let acquiredReferences = 0;
     const delivery = new SpackMaterialDelivery({
       registryUrl: "https://registry.internal",
       registryJwtSecret: key,
       ticketSecret: "fixture-operation-ticket".repeat(3),
       bindings: { [f.input.spec]: binding },
+      references: {
+        async registerBindings(bindings) {
+          expect(bindings).toEqual({ [f.input.spec]: binding });
+          registered = true;
+        },
+        async acquireOperation(input) {
+          expect(registered).toBe(true);
+          expect(input).toEqual({
+            operationId,
+            agentId: access.agentId,
+            requestedBy: access.requestedBy,
+            spec: access.spec,
+            ...binding,
+          });
+          acquiredReferences++;
+        },
+      },
       access: { operation: async () => access, certificate: async () => true },
       dispatcher: {
         getChannel: () => ({
@@ -174,6 +193,7 @@ describe("Spack material pipeline (in-process, no listeners)", () => {
       agentCalls.every((url) => url.includes(`/api/agent/spack/operations/${operationId}/`)),
     ).toBe(true);
     expect(registryCalls.every((url) => url.startsWith("https://registry.internal/"))).toBe(true);
+    expect(acquiredReferences).toBeGreaterThan(1);
 
     agentCalls.length = 0;
     await new SpackMaterialClient(clientOptions).prepare(input);

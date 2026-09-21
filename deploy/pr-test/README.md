@@ -123,8 +123,29 @@ Git object 元数据逐一校验文件模式、长度和 blob hash，不依赖�
    不能访问上游或 Registry，再运行 native Spack 的源码校验与离线编译。
 5. 通过 Server 提交一个执行编译产物 `hello` 的 Slurm 作业，要求真实作业完成，
    并从 Server 日志接口读到 `Hello, world!`。
-6. 重启 Registry 和 scheduler，重新导出 Git recipe snapshot、下载全部材料 blob 并逐一
+6. 重启 Server、Registry 和 scheduler，重新导出 Git recipe snapshot、下载全部材料 blob 并逐一
    校验 size/SHA-256，再提交同一单步作业验证持久化安装产物。
+
+引用账本检查由 `spack-case/references.ts` 在 Server 的可信 workspace 容器内执行，
+仅使用 Server 已有的 `DATABASE_URL`；不向 Agent/native 容器传递 PostgreSQL 凭据，
+不改变 Compose 网络或凭据边界。脚本只读 PostgreSQL，不自行注册 binding 或构造
+operation 引用：
+
+- 启动后检查 `spack_material_bindings` 恰有一条与本次配置的 spec、repositoryId、
+  manifestDigest 精确匹配的记录，尚无 operation 引用。
+- native 的真实安装请求到达关闭的 managed-install gate 并返回 `rejected` 后，
+  检查 `spack_material_operation_references` 恰有一条记录，精确关联该 install
+  operation 的 ID、Agent、请求人、spec 与 release binding。
+- 通过 `SpackMaterialReferences.listReleaseReferences` 检查终态后的
+  `bindingCount=1`、`activeOperationCount=0`、`orphanedOperationCount=0`；
+  历史 operation 引用仍保留，不能仅凭 active count 为零判定成功。
+- Server 重启重新注册相同配置后重复检查，确认 binding 和 operation 引用均未重复，
+  且重启前的记录仍然存在。重启前后的记录指纹保存在 Server 私有临时文件中，
+  不输出记录原值，随本次容器清理。
+
+引用断言仅打印固定 stage/code 与计数，不输出 SQL、连接串、异常详情或 Agent 原始日志。
+这只覆盖持久引用账本，不启用材料下架、删除或新增 ACL，也不将 native 的 `rejected`
+解释为受管安装成功；新增断言是否通过以当前提交的 GitHub Actions 结果为准。
 
 **这是材料交付 + 手动 native 离线编译 + 单步作业验收，不是自动受管安装验收。**
 Agent 的 audit/install 开关仍关闭，不跳过或放松产品安装器的任何安全门槛。
@@ -163,6 +184,11 @@ named volume 持久化；Agent 和 Slurm 在同一节点以相同路径访问，
 目标检查链为：Server API 安装、隔离 source audit、build、独立 readonly verify、
 `ready`、load、真实 Slurm Hello、源码缓存缺失/篡改后的撤回与显式恢复、
 重启后复验/运行、卸载及库存撤回。
+
+受管案例复用上述 Server 侧引用检查：`install` 阶段完成后要求真实安装 operation
+为 `succeeded` 且存在精确材料引用；Server、Registry、scheduler 重启后以及
+`uninstall` 阶段完成后，重复检查原配置 binding 与安装历史引用仍保留且没有重复，
+active/orphaned operation count 均为零。卸载安装产物不等于下架材料 release。
 
 2026-09-20，提交 `c4987cf` 的
 [PR scheduler tests](https://github.com/kuintessence/kuintessence/actions/runs/35514084225)
