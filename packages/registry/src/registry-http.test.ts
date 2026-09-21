@@ -67,6 +67,7 @@ test.each([
     }),
   );
   expect(response.status).toBe(413);
+  expect(response.headers.get("Connection")).toBe("close");
   expect(handle).not.toHaveBeenCalled();
 });
 
@@ -83,6 +84,7 @@ test("a disabled material store cannot opt out of the original body limit", asyn
     }),
   );
   expect(response.status).toBe(413);
+  expect(response.headers.get("Connection")).toBe("close");
   expect(handle).not.toHaveBeenCalled();
 });
 
@@ -128,7 +130,39 @@ test.each([
     new Request("http://localhost/v2/public/test/blobs/uploads/id", init),
   );
   expect(response.status).toBe(413);
+  expect(response.headers.get("Connection")).toBe("close");
   expect(received).toBe(REGISTRY_LEGACY_BODY_BYTES);
+});
+
+test.each([
+  { path: UPLOAD, type: "application/octet-stream" },
+  { path: "/api/spack/material-repositories/releases", type: "application/json" },
+])("keeps delegated 413 payloads and closes the connection: $path", async ({ path, type }) => {
+  const payload = '{"error":{"code":"PAYLOAD_TOO_LARGE","message":"route byte limit"}}';
+  const http = createRegistryHttpHandler(
+    () =>
+      new Response(payload, {
+        status: 413,
+        headers: {
+          "Content-Type": "application/json",
+          Connection: "keep-alive",
+          "X-Fixture": "route",
+        },
+      }),
+    MATERIAL_MAX_BLOB_BYTES,
+  );
+  const response = await http.fetch(
+    new Request(`http://localhost${path}`, {
+      method: "POST",
+      headers: { "Content-Type": type },
+      body: new Uint8Array([1]),
+    }),
+  );
+  expect(response.status).toBe(413);
+  expect(response.headers.get("Connection")).toBe("close");
+  expect(response.headers.get("Content-Type")).toBe("application/json");
+  expect(response.headers.get("X-Fixture")).toBe("route");
+  expect(await response.text()).toBe(payload);
 });
 
 test("preserves a small JSON request, signal, response and unrelated exceptions", async () => {
