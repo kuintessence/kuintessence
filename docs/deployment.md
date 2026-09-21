@@ -9,6 +9,7 @@ Server 当前只支持单实例部署，尚未通过 Redis 实现多实例协调
 
 - [Compose 与本地调度器](#compose)
 - [单容器演示](#aio)
+- [Spack 材料升级屏障](#spack-material-rollout)
 - [GitHub Actions](#actions)
 - [GitHub 预览环境](#preview)
 - [反向代理](#proxy)
@@ -155,6 +156,34 @@ bun run compose -- aio down
 
 加 `-v` 会删除演示数据。生产部署使用 [Helm 配置](../deploy/helm/kq-platform/README.md)。
 
+<a id="spack-material-rollout"></a>
+## Spack 材料升级屏障
+
+材料生命周期第二批提供离线 `SpackMaterialRollout.execute` 的
+`inspect/pause/reconcile/activate`，不是下架、恢复、ACL 或 GC。
+第三批另有[离线绑定退役](spack-binding-retirement.md) 的 `retire`：
+要求维护窗口、额外的旧配置移除确认及重新 reconcile，不提供恢复或 Web 入口。
+完整步骤与命令 JSON 见 [Spack 材料 Rollout](spack-material-rollout.md)。
+CLI 约定为 `bun packages/db/src/spack-material-rollout-cli.ts <absolute-command-json-path>`；
+`DATABASE_URL` 从受信任 shell 环境读取，不通过 CLI 参数传入。
+mutation 的管理员 UUID 只记录操作归属，不是登录证明。
+
+full、scheduler、preview Compose 同时向 Server 和 Registry 透传可选
+`SPACK_MATERIAL_EPOCH`；watch 继承 full，AIO 由共享环境传给两个子进程。
+Helm 使用共享 `spackMaterial.epoch`，默认空且不注入环境变量，没有默认 UUID。
+必须采用 `pause` 返回的新 epoch，在重启前为所有升级后的 Server/Registry 配置一致值。
+持久化仍为 PostgreSQL、recipe 本地 Git 和不可变源码文件系统，
+原有数据卷/PVC、Secret 引用与单 Registry 写者要求不变。
+
+`pause` 后须在外部停止并排空所有 Server/Registry，包括离线及回滚副本，
+撤销/轮换旧 DB、Registry、ticket 凭据并更新访问与网络策略。
+epoch 不能 fence 不检查它的旧代码；门禁只控制准入，不中断已开始的流。
+只有无 journal 且无 epoch 时保留 observe 兼容模式；paused、DB 失败或
+ready 时 epoch 缺失/不匹配均拒绝材料 runtime。新的 pause 更换 epoch，不自动回退。
+保留 append-only journal，删除历史可能不安全地重置 observe，禁止以清表解除屏障。
+部署静态测试只覆盖接线、配置和文档；测试与运行态验收仅在 GitHub Actions
+隔离环境执行，以对应提交结果为准，部署接线不代表运行态验收通过。
+
 <a id="actions"></a>
 ## GitHub Actions
 
@@ -165,6 +194,14 @@ protobuf 生成、测试、构建或容器。
 
 完整 TypeScript 检查依赖生成的 protobuf，因此放在手动完整检查中。
 自动静态 job 的结果仅覆盖上述 Biome 和文档检查。
+
+仅允许在 Actions 执行生成器时，可手动选择目标分支并勾选
+`generate_db_migrations`（默认关闭）。独立 job 运行 `db:generate`，
+将完整 `packages/db/migrations/`（含 `meta`）作为
+`pg-migrations-<commit SHA>` artifact 保存 7 天，不连接生产数据库、不执行迁移，
+也不自动 commit 或回推。下载后先比对原有迁移，确认无非预期删除/重建，再将生成产物
+原样纳入对应分支；完整 CI 应在包含该 migration 的最终提交上另行运行。
+不要手改生成的 SQL、snapshot 或 journal，也不要把 artifact 当成迁移已应用的证明。
 
 | 工作流 | 触发与范围 |
 |---|---|

@@ -52,6 +52,7 @@ services:
       SERVER_GRPC_TLS_CERT_FILE: /case-server/server.crt
       SERVER_GRPC_TLS_KEY_FILE: /case-server/server.key
       SPACK_MATERIAL_DELIVERY_ENABLED: "true"
+      SPACK_MATERIAL_EPOCH: ${KQ_PR_MATERIAL_EPOCH:-}
       SPACK_REGISTRY_URL: http://registry:3100
       SPACK_REGISTRY_ALLOW_INSECURE_HTTP: "true"
       SPACK_REGISTRY_JWT_SECRET: ${KQ_PR_JWT_SECRET:?required}
@@ -59,6 +60,10 @@ services:
     volumes:
       - case-server:/case-server:ro
       - case-control:/case-control:ro
+
+  registry:
+    environment:
+      SPACK_MATERIAL_EPOCH: ${KQ_PR_MATERIAL_EPOCH:-}
 
   scheduler:
     build:

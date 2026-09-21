@@ -37,6 +37,7 @@ services:
       LOG_LEVEL: warn
       SERVER_PORT: "3000"
       SERVER_GRPC_PORT: "3001"
+      SPACK_MATERIAL_EPOCH: ${SPACK_MATERIAL_EPOCH:-}
       AUTHZ_MODE: "off"
       SSO_BOOTSTRAP_ENABLED: "false"
       NETDRIVE_ENABLED: "false"
@@ -61,6 +62,7 @@ services:
     environment:
       DATABASE_URL: postgres://kq:${PREVIEW_DB_PASSWORD:?required}@postgres:5432/kuintessence
       REGISTRY_PORT: "3100"
+      SPACK_MATERIAL_EPOCH: ${SPACK_MATERIAL_EPOCH:-}
       REGISTRY_AUTH_MODE: jwt
       REGISTRY_JWT_SECRET: ${PREVIEW_JWT_SECRET:?required}
       BLOB_STORE_DIR: /var/lib/kuintessence/registry

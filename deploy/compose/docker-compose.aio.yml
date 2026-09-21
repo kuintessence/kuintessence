@@ -35,6 +35,8 @@ services:
       AUTHZ_MODE: "off"
       SSO_BOOTSTRAP_ENABLED: "false"
       WEB_BASE_URL: http://localhost:8080/
+      # Shared by both Server and Registry; use the epoch returned by pause.
+      SPACK_MATERIAL_EPOCH: ${SPACK_MATERIAL_EPOCH:-}
       SPACK_RECIPE_STORE_DIR: /data/registry/recipes
       SPACK_MATERIAL_STORE_DIR: /data/registry/materials
       SPACK_RECIPE_BOOTSTRAP_MANIFEST: ${SPACK_RECIPE_BOOTSTRAP_MANIFEST:-}

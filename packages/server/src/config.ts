@@ -41,6 +41,15 @@ const ServerConfigSchema = z.object({
   JWT_SECRET: z.string().min(32),
   REGISTRY_PUBLISHER_ROLES: registryPublisherRolesConfigSchema,
   SPACK_MATERIAL_DELIVERY_ENABLED: envBool(false),
+  SPACK_MATERIAL_EPOCH: z.preprocess(
+    (value) => (value === "" ? undefined : value),
+    z
+      .string()
+      .length(36)
+      .uuid()
+      .transform((value) => value.toLowerCase())
+      .optional(),
+  ),
   SPACK_REGISTRY_ALLOW_INSECURE_HTTP: envBool(false),
   SPACK_REGISTRY_URL: z
     .string()

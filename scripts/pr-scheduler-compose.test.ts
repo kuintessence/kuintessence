@@ -201,7 +201,16 @@ describe("PR scheduler isolation contract", () => {
 
 async function runWithFakeDocker(
   args: string[],
-  failure: "none" | "info" | "build" | "up" | "exec" | "down" = "none",
+  failure:
+    | "none"
+    | "info"
+    | "build"
+    | "up"
+    | "exec"
+    | "down"
+    | "rollout-activate"
+    | "rollout-verify"
+    | "epoch" = "none",
   githubActions = false,
 ) {
   const dir = await mkdtemp(join(tmpdir(), "kq-pr-compose-test-"));
@@ -212,13 +221,20 @@ async function runWithFakeDocker(
     docker,
     `#!/usr/bin/env bash
 set -eu
-printf '%s\\n' "$*" >> "$PR_COMMAND_LOG"
+printf '%s | epoch=%s\\n' "$*" "\${KQ_PR_MATERIAL_EPOCH-unset}" >> "$PR_COMMAND_LOG"
 case " $* " in
   *" info "*) [[ "$PR_FAIL" != info ]] || exit 9 ;;
   *" build scheduler "*) [[ "$PR_FAIL" != build ]] || exit 19 ;;
   *" up "*) [[ "$PR_FAIL" != up ]] || exit 17 ;;
   *" exec "*) [[ "$PR_FAIL" != exec ]] || exit 23 ;;
   *" down "*) [[ "$PR_FAIL" != down ]] || exit 21 ;;
+esac
+case " $* " in
+  *" deploy/pr-test/spack-case/rollout.ts activate "*)
+    [[ "$PR_FAIL" != rollout-activate ]] || exit 29
+    if [[ "$PR_FAIL" == epoch ]]; then printf 'invalid-epoch\\n'
+    else printf '12345678-abcd-4123-8123-123456789abc\\n'; fi ;;
+  *" deploy/pr-test/spack-case/rollout.ts verify "*) [[ "$PR_FAIL" != rollout-verify ]] || exit 31 ;;
 esac
 `,
   );
@@ -233,6 +249,7 @@ esac
       COMPOSE_PROJECT_NAME: "production-must-not-touch",
       COMPOSE_FILE: "/do-not-use.yml",
       COMPOSE_PROFILES: "tunnel",
+      KQ_PR_MATERIAL_EPOCH: "inherited-must-not-use",
       GITHUB_ACTIONS: String(githubActions),
     },
     stdout: "pipe",
@@ -318,6 +335,38 @@ describe("PR runner lifecycle (fake Docker, no containers)", () => {
     const result = await runWithFakeDocker(["pbs", "--spack-case"]);
     expect(result.code).toBe(2);
     expect(result.commands).toBe("");
+  });
+
+  test("rollout runs after Hello and adopts only its validated epoch for recreation", async () => {
+    const result = await runWithFakeDocker(["slurm", "--spack-case"]);
+    expect(result.code).toBe(0);
+    expect(result.commands).not.toContain("inherited-must-not-use");
+    expect(result.commands.indexOf("rollout.ts activate")).toBeGreaterThan(
+      result.commands.lastIndexOf("spack-case/job.ts"),
+    );
+    const commands = result.commands.split("\n");
+    expect(commands.find((line) => line.includes("rollout.ts activate"))).toContain("epoch=unset");
+    const recreate = commands.find((line) => line.includes("up -d --force-recreate"));
+    expect(recreate).toContain("server registry");
+    expect(recreate).toContain("epoch=12345678-abcd-4123-8123-123456789abc");
+    expect(result.commands.indexOf("rollout.ts verify")).toBeGreaterThan(
+      result.commands.indexOf("up -d --force-recreate"),
+    );
+  });
+
+  test.each([
+    "rollout-activate",
+    "epoch",
+    "rollout-verify",
+  ] as const)("rollout failure %s preserves cleanup and cannot report success", async (failure) => {
+    const result = await runWithFakeDocker(["slurm", "--spack-case"], failure);
+    expect(result.code).not.toBe(0);
+    expect(result.commands).toContain("down --volumes --remove-orphans --rmi local");
+    expect(result.stdout).not.toContain("PR scheduler and material regression passed");
+    if (failure !== "rollout-verify") {
+      expect(result.commands).not.toContain("up -d --force-recreate");
+      expect(result.commands).not.toContain("rollout.ts verify");
+    }
   });
 
   test("managed case refuses local execution before invoking Docker", async () => {

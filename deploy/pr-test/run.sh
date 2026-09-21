@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+unset KQ_PR_MATERIAL_EPOCH
 
 fail() { printf '%s\n' "$*" >&2; exit 2; }
 case "${1:-}" in
@@ -108,28 +109,48 @@ if "$spack_case"; then
   "${compose[@]}" restart server
 fi
 "${compose[@]}" up -d --no-build --wait --wait-timeout 300 scheduler registry
+if "$spack_case"; then
+  # Query only from Server's trusted workspace; never pass database credentials to Agent.
+  "${compose[@]}" exec -T server timeout --signal=TERM --kill-after=5s 60s bun deploy/pr-test/spack-case/references.ts configured
+fi
 if "$spack_managed"; then
   legacy_probe_status
   "${compose[@]}" exec -T --user kq scheduler bun deploy/pr-test/spack-managed/probe.ts
   "${compose[@]}" exec -T --user kq scheduler bun node_modules/typescript/bin/tsc --project deploy/pr-test/tsconfig.json
   "${compose[@]}" exec -T --user kq scheduler timeout --signal=TERM --kill-after=10s 1500s bun deploy/pr-test/spack-managed/case.ts install
-  "${compose[@]}" restart registry scheduler
-  "${compose[@]}" up -d --no-build --wait --wait-timeout 300 scheduler registry
+  "${compose[@]}" exec -T server timeout --signal=TERM --kill-after=5s 60s bun deploy/pr-test/spack-case/references.ts managed-terminal
+  "${compose[@]}" restart registry scheduler server
+  "${compose[@]}" up -d --no-build --wait --wait-timeout 300 scheduler registry server
+  "${compose[@]}" exec -T server timeout --signal=TERM --kill-after=5s 60s bun deploy/pr-test/spack-case/references.ts managed-restart
   "${compose[@]}" run --rm --no-deps case-operator bun deploy/pr-test/spack-case/publish.ts --verify
   "${compose[@]}" exec -T --user kq scheduler timeout --signal=TERM --kill-after=10s 900s bun deploy/pr-test/spack-managed/case.ts restart
   "${compose[@]}" exec -T --user kq scheduler timeout --signal=TERM --kill-after=10s 180s bun deploy/pr-test/spack-managed/case.ts uninstall
+  "${compose[@]}" exec -T server timeout --signal=TERM --kill-after=5s 60s bun deploy/pr-test/spack-case/references.ts managed-uninstall
 elif "$spack_case"; then
   "${compose[@]}" exec -T scheduler timeout --signal=TERM --kill-after=10s 180s bun deploy/pr-test/spack-case/consume.ts
+  "${compose[@]}" exec -T server timeout --signal=TERM --kill-after=5s 60s bun deploy/pr-test/spack-case/references.ts native-terminal
   "${compose[@]}" exec -T --user kq scheduler bun node_modules/typescript/bin/tsc --project deploy/pr-test/tsconfig.json
   "${compose[@]}" run --rm --no-deps case-native timeout --signal=TERM --kill-after=10s 900s bash deploy/pr-test/spack-case/check.sh
   "${compose[@]}" exec -T --user kq scheduler timeout --signal=TERM --kill-after=10s 180s bun deploy/pr-test/spack-case/job.ts
   # Recreate processes while retaining this project's volumes, then verify both
   # registry releases and the compiled executable rather than trusting old logs.
-  "${compose[@]}" restart registry scheduler
-  "${compose[@]}" up -d --no-build --wait --wait-timeout 300 scheduler registry
+  "${compose[@]}" restart registry scheduler server
+  "${compose[@]}" up -d --no-build --wait --wait-timeout 300 scheduler registry server
+  "${compose[@]}" exec -T server timeout --signal=TERM --kill-after=5s 60s bun deploy/pr-test/spack-case/references.ts native-restart
   "${compose[@]}" run --rm --no-deps case-operator bun deploy/pr-test/spack-case/publish.ts --verify
   "${compose[@]}" exec -T --user kq scheduler timeout --signal=TERM --kill-after=10s 180s bun deploy/pr-test/spack-case/job.ts
 else
   "${compose[@]}" exec -T --user kq scheduler timeout --signal=TERM --kill-after=10s 600s bash /workspace/deploy/pr-test/check.sh
+fi
+if "$spack_case"; then
+  # Run only after every original case/reference assertion. Capture no token or raw DB output.
+  if ! KQ_PR_MATERIAL_EPOCH="$("${compose[@]}" exec -T server timeout --signal=TERM --kill-after=5s 60s bun deploy/pr-test/spack-case/rollout.ts activate)"; then
+    fail "Spack rollout: stage=activate code=FAILED"
+  fi
+  [[ "$KQ_PR_MATERIAL_EPOCH" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$ ]] || fail "Spack rollout: stage=epoch code=INVALID"
+  export KQ_PR_MATERIAL_EPOCH
+  # A restart cannot load a new environment. Recreate only these services, retaining volumes.
+  "${compose[@]}" up -d --force-recreate --no-build --wait --wait-timeout 300 server registry
+  "${compose[@]}" exec -T server timeout --signal=TERM --kill-after=5s 60s bun deploy/pr-test/spack-case/rollout.ts verify
 fi
 printf 'PR scheduler and material regression passed: %s\n' "$KQ_PR_SCHEDULER"

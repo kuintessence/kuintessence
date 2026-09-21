@@ -82,6 +82,10 @@ spec:
               containerPort: {{ .Values.registry.port }}
           env:
             {{- include "kq.databaseEnv" . | nindent 12 }}
+            {{- if .Values.spackMaterial.epoch }}
+            - name: SPACK_MATERIAL_EPOCH
+              value: {{ .Values.spackMaterial.epoch | quote }}
+            {{- end }}
             - name: REGISTRY_JWT_SECRET
               valueFrom:
                 secretKeyRef:

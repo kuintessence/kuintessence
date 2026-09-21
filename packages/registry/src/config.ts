@@ -56,6 +56,15 @@ const RegistryConfigSchema = z
     SPACK_RECIPE_MAX_FILES: positiveInt(100_000),
     SPACK_MATERIAL_STORE_DIR: optionalAbsolutePath,
     SPACK_MATERIAL_BOOTSTRAP_MANIFEST: optionalAbsolutePath,
+    SPACK_MATERIAL_EPOCH: z.preprocess(
+      (value) => (value === "" ? undefined : value),
+      z
+        .string()
+        .length(36)
+        .uuid()
+        .transform((value) => value.toLowerCase())
+        .optional(),
+    ),
     SPACK_MATERIAL_MAX_BLOB_BYTES: positiveInt(16 * 1024 ** 3).pipe(z.number().max(16 * 1024 ** 3)),
     SPACK_MATERIAL_UPLOAD_TOTAL_TIMEOUT_MS: positiveInt(30 * 60_000),
     SPACK_MATERIAL_UPLOAD_IDLE_TIMEOUT_MS: positiveInt(30_000),

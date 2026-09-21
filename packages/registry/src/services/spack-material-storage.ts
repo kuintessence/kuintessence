@@ -19,6 +19,12 @@ export class SpackMaterialError extends Error {
   }
 }
 
+export class SpackMaterialWithdrawnError extends SpackMaterialError {
+  constructor() {
+    super(404, "Material release not found");
+  }
+}
+
 export interface MaterialStreamLimits {
   maxBytes: number;
   totalTimeoutMs: number;

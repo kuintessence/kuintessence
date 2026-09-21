@@ -26,6 +26,10 @@ TypeScript 已接入固定 site profile digest、持久化安装账本和
 新增默认关闭的 [受控上游导入](spack-upstream-import.md)，仅由 Registry 经专用代理
 和白名单下载明确声明 digest/大小的 recipe/material；接线与回归结果以对应提交 CI
 为准，不代表生产验收。Agent 仍只从 Server 获取固定材料。
+材料生命周期第二批增加[离线 Rollout 屏障](spack-material-rollout.md)，通过
+`inspect/pause/reconcile/activate` 对账历史绑定并显式启用统一 epoch；
+不是完整生命周期 API。部署静态测试只覆盖接线、配置和文档；测试与运行态验收
+仅在 GitHub Actions 隔离环境执行，须核对对应提交结果。
 受限厂商安装包、许可证授权、buildcache 发布、大规模材料目录索引、
 删除/可见范围变更、Range/恢复上传和垃圾回收尚未接入；15 个工作流的目标 Linux 材料、
 lock、安装及运行验收仍未完成。
@@ -62,6 +66,43 @@ Compose、scheduler、preview 的材料目录放在原 Registry 数据卷内；A
 也不构成对抗拥有本地写权限者的文件系统沙箱。持久化目录及其父目录链须受信任控制；
 Registry 运行时不得外部改写、移动、替换、删除或恢复材料目录，先停止服务再做文件级维护。
 停止 Registry 后可以清理遗留 `staging/`；不要手动删除 receipt 或被 release 引用的 blob。
+
+### 持久化引用账本
+
+Server 在启用材料下载时，启动阶段先将 `SPACK_MATERIAL_RELEASES` 全量登记到
+共用 PostgreSQL 的 `spack_material_bindings`。升级前必须完成数据库迁移；
+登记失败时 Server 不继续启动，不把数据库故障当作空绑定配置。
+每次安装在验证当前用户权限、Agent 身份和 manifest 后，先将精确
+`operationId → repositoryId + manifestDigest` 写入 `spack_material_operation_references`，
+然后才签发材料票据。下载也重新核验并登记该固定引用，失败时拒绝下载，不回退上游。
+登记流程不修改 recipe Git、不可变 manifest、源码内容或 Agent 网络路径。
+
+配置绑定采用追加语义：重复启动幂等，修改或移除配置不会自动删除旧绑定，
+多个配置版本保留并集。任务引用也不因进程退出、票据过期或心跳缺失自动清理；
+同一 operation 不允许换到另一个 release。只有数据库中明确为
+`succeeded`、`failed` 或 `rejected` 的任务，才从活动任务计数中排除；
+记录仍然保留。任务记录缺失时单独计为孤儿引用，不能当作无引用。
+绑定登记与任务引用登记共用 PostgreSQL 事务锁，为后续生命周期写入提供一致的锁边界。
+
+**引用账本本身不是材料下架授权。** 引用计数是诊断快照，计数为零不证明所有旧 Server、
+旧配置或升级前安装任务都已登记，也不能用作先查询再下架的授权依据。
+第二批通过[离线 Rollout](spack-material-rollout.md) 提供 pause、旧配置绑定追加对账和
+activate 屏障；activate 要求所有非终态安装（包括未登记引用的任务）及孤儿引用为零。
+运维仍须在外部停止并排空所有 Server/Registry（包括离线回滚副本），撤销/轮换旧
+DB、Registry、ticket 凭据并更新访问与网络策略；epoch 无法隔离不检查它的旧代码。
+门禁只控制准入，不中断在途流；这一步不开放材料下架、恢复、ACL、绑定退役或 GC。
+后续生命周期操作仍须将引用检查与状态变更放在同一事务内。
+第三批新增[离线绑定退役](spack-binding-retirement.md)：只在暂停、对账、
+外部隔离及移除全部旧配置后追加审计 tombstone，不删除原绑定或历史引用。
+旧配置登记和安装引用获取都会拒绝已退役的精确绑定；重新导入或 reconcile 不会恢复。
+此操作没有 HTTP/CP/Web 入口，且不影响其他 spec 对同一 release 的合法使用。
+rollout journal 必须 append-only，删除历史可能不安全地重置 observe。
+不要手动清表、删除绑定或直接改材料卷；
+数据库与 Git/material 卷须一起备份和恢复。
+第四批增加[材料下架与恢复 API](spack-material-lifecycle.md)，要求 ready epoch、
+事务内 canonical 权限与引用检查。状态单独保存在追加式 PostgreSQL journal，
+目录、直接下载及 Server 安装准入均检查；同内容重导入不会恢复已下架发布。
+管理 API 不提供在线绑定退役、可见范围调整、Web 状态控件或物理回收。
 
 ## 初始化与本地批量导入
 
@@ -376,6 +417,12 @@ Server：
 | `SPACK_REGISTRY_JWT_ISSUER` / `SPACK_REGISTRY_JWT_AUDIENCE` | 与 Registry 配置匹配 |
 | `SPACK_MATERIAL_TICKET_SECRET` | 独立的至少 32 字符随机签名密钥，不能复用上述密钥或浏览器 JWT key |
 | `SPACK_MATERIAL_RELEASES` | JSON：精确 spec → `{repositoryId, manifestDigest}`，默认 `{}` |
+| `SPACK_MATERIAL_EPOCH` | Server 与 Registry 共用的可选 UUID，无默认 UUID；使用本次 rollout 的 epoch |
+
+所有升级后的 Server/Registry 必须在重启前配置相同 epoch。只有无 journal 且无 epoch
+时保留 observe 兼容；paused、DB 失败或 ready 时 epoch 缺失/不匹配均拒绝材料 runtime。
+每次新的 pause 都改变 epoch，无自动回退；配置和外部隔离步骤见
+[Rollout 指南](spack-material-rollout.md)。
 
 需要启用 `MTLS_MODE=direct` 或可信代理 mTLS；配置存在不替代握手验证。
 Agent stream 必须实际验证证书，并声明 `spack_material_delivery_v1`。旧 Agent 或无
@@ -624,6 +671,8 @@ Agent 的软件请求从执行到 inventory 发布串行处理，避免较旧成
 
 材料链路单元测试使用 Hono 内存请求、临时目录、模拟 Agent channel 与材料 fixture，
 不依赖容器、真实 Server listener、数据库服务、Spack 安装或集群作业。
+引用账本另有真实 PostgreSQL 集成测试，验证重启/并发登记、不可变任务绑定、
+终态计数和孤儿引用；它不属于上述纯内存材料测试。
 source audit 测试使用模拟 Spack 模块、归档 fixture、模拟 runtime metadata 和无害子进程，
 不能验证真实 Spack Python、Apptainer 或 SIF。Linux namespace/cgroup/镜像配置需站点联调；
 通过单元测试不代表 runtime 已在真实集群验收。

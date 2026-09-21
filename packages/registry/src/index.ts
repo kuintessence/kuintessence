@@ -1,4 +1,10 @@
-import { createPgDb, userOrgMemberships, users } from "@kuintessence/db";
+import {
+  createPgDb,
+  SpackMaterialLifecycle,
+  SpackMaterialRollout,
+  userOrgMemberships,
+  users,
+} from "@kuintessence/db";
 import { createLogger, RegistryRoleSchema } from "@kuintessence/shared";
 import { eq } from "drizzle-orm";
 import { Hono } from "hono";
@@ -41,6 +47,7 @@ const db = createPgDb(config.DATABASE_URL, {
   max: config.DB_MAX_CONNECTIONS,
   idle_timeout: config.DB_IDLE_TIMEOUT_SEC,
 });
+const rollout = new SpackMaterialRollout(db);
 
 const softwareAssetService = new SoftwareAssetService(db);
 const appTemplateService = new AppTemplateService(db);
@@ -57,11 +64,17 @@ const recipeStore = config.SPACK_RECIPE_STORE_DIR
   : undefined;
 const materialStore =
   config.SPACK_MATERIAL_STORE_DIR && recipeStore
-    ? new SpackMaterialStore(config.SPACK_MATERIAL_STORE_DIR, recipeStore, {
-        maxBlobBytes: config.SPACK_MATERIAL_MAX_BLOB_BYTES,
-        totalTimeoutMs: config.SPACK_MATERIAL_UPLOAD_TOTAL_TIMEOUT_MS,
-        idleTimeoutMs: config.SPACK_MATERIAL_UPLOAD_IDLE_TIMEOUT_MS,
-      })
+    ? new SpackMaterialStore(
+        config.SPACK_MATERIAL_STORE_DIR,
+        recipeStore,
+        {
+          maxBlobBytes: config.SPACK_MATERIAL_MAX_BLOB_BYTES,
+          totalTimeoutMs: config.SPACK_MATERIAL_UPLOAD_TOTAL_TIMEOUT_MS,
+          idleTimeoutMs: config.SPACK_MATERIAL_UPLOAD_IDLE_TIMEOUT_MS,
+        },
+        { assertRuntime: () => rollout.assertRuntime(config.SPACK_MATERIAL_EPOCH) },
+        new SpackMaterialLifecycle(db, config.SPACK_MATERIAL_EPOCH),
+      )
     : undefined;
 const upstreamImporter =
   config.SPACK_UPSTREAM_ENABLED && config.SPACK_UPSTREAM_PROXY_URL

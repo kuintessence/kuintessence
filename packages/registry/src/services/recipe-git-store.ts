@@ -32,6 +32,7 @@ import {
   writeRecipeBundle,
 } from "./recipe-git";
 import { preflightRecipeBundle } from "./recipe-pack-preflight";
+import { readMaterialMetadata } from "./spack-material-storage";
 
 const IdentitySchema = z.strictObject({
   id: RecipeRepositoryIdSchema,
@@ -94,6 +95,42 @@ export class RecipeGitStore {
       activeCommit: await this.readRef(directory, ACTIVE_REF),
       snapshots: snapshots.sort((a, b) => b.importedAt.localeCompare(a.importedAt)),
     };
+  }
+
+  /** Immutable identity and one committed snapshot only; no history scan or Git process. */
+  async getSnapshot(id: string, commit: string, checkpoint?: () => void) {
+    this.validateCommit(commit);
+    const directory = this.repositoryPath(id);
+    const read = (path: string, maxBytes: number) =>
+      readMaterialMetadata(path, {
+        checkpoint,
+        checkSize: (size) => {
+          if (size > maxBytes) throw new RecipeStoreError(503, "Recipe metadata limit exceeded");
+        },
+      });
+    try {
+      const identity = IdentitySchema.parse(
+        JSON.parse((await read(join(directory, "kq-repository.json"), 4096)).toString("utf8")),
+      );
+      if (identity.id !== id || RecipeGitStore.repositoryId(identity.repository) !== id) {
+        throw new RecipeStoreError(500, "Corrupt recipe repository identity");
+      }
+      const snapshot = RecipeSnapshotSchema.parse(
+        JSON.parse(
+          (await read(join(this.root, "manifests", id, `${commit}.json`), 2 * 1024 ** 2)).toString(
+            "utf8",
+          ),
+        ),
+      );
+      if (snapshot.commit !== commit) {
+        throw new RecipeStoreError(500, "Corrupt recipe snapshot identity");
+      }
+      checkpoint?.();
+      return { ...identity, snapshot };
+    } catch (error) {
+      if (isMissing(error)) throw new RecipeStoreError(404, "Recipe snapshot not found");
+      throw error;
+    }
   }
 
   async importBundle(
