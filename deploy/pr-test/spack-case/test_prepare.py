@@ -407,7 +407,8 @@ class CaseTests(unittest.TestCase):
         for case, spec, roots in (
             ("hello", "hello@2.12.1", prepare.ROOTS),
             ("samtools",
-             "samtools@1.19.2 ^htslib@1.19.1~libcurl~libdeflate ^zlib@1.3.1",
+             "samtools@1.19.2 ^htslib@1.19.1~libcurl~libdeflate ^zlib@1.3.1"
+             " ^ncurses+symlinks ^pkgconf",
              ["repos/spack_repo/builtin"]),
         ):
             with self.subTest(case=case):
@@ -492,7 +493,7 @@ class CaseTests(unittest.TestCase):
         self.assertEqual(prepare.case_definition("samtools")["compiled"], {
             "samtools": "1.19.2", "htslib": "1.19.1", "zlib": "1.3.1",
             "ncurses": None, "bzip2": None, "xz": None,
-            "pkgconf": None, "pkg-config": None, "diffutils": None, "libiconv": None,
+            "pkgconf": None, "diffutils": None, "libiconv": None,
         })
         for configuration in (hello, samtools):
             self.assertEqual(configuration["packages:"]["all"]["require"],
@@ -510,7 +511,6 @@ class CaseTests(unittest.TestCase):
                 architecture=prepare.TARGET, external=False, satisfies=lambda _: True,
             )
             for name, version in selected["compiled"].items()
-            if name != "pkg-config"
         ]
         nodes.extend(
             SimpleNamespace(
@@ -542,16 +542,37 @@ class CaseTests(unittest.TestCase):
                                  [node for node in nodes if not node.external])
                 self.assertLessEqual(len(nodes), prepare.MAX_DAG_NODES)
 
-    def test_unpinned_versions_and_native_provider_choices_remain_solver_output(self):
+    def test_unpinned_support_versions_remain_solver_output(self):
         root, nodes = self.dag("samtools")
         for node in nodes:
             if node.name in {"ncurses", "xz", "bzip2", "pkgconf", "diffutils", "libiconv"}:
                 node.version = "another-upstream-default"
-        pkgconf = next(node for node in nodes if node.name == "pkgconf")
-        pkgconf.name = "pkg-config"
         nodes.remove(next(node for node in nodes if node.name == "libiconv"))
         self.assertEqual(prepare.validate_dag(root, "samtools"),
                          [node for node in nodes if not node.external])
+
+    def test_samtools_requires_pkgconf_and_ncurses_symlinks(self):
+        failures = {
+            "missing-pkgconf": lambda nodes: nodes.remove(
+                next(node for node in nodes if node.name == "pkgconf"),
+            ),
+            "replacement-pkg-config": lambda nodes: setattr(
+                next(node for node in nodes if node.name == "pkgconf"), "name", "pkg-config",
+            ),
+            "missing-ncurses": lambda nodes: nodes.remove(
+                next(node for node in nodes if node.name == "ncurses"),
+            ),
+            "ncurses-hardlinks": lambda nodes: setattr(
+                next(node for node in nodes if node.name == "ncurses"),
+                "satisfies", lambda spec: spec != "+symlinks",
+            ),
+        }
+        for failure, change in failures.items():
+            with self.subTest(failure=failure):
+                root, nodes = self.dag("samtools")
+                change(nodes)
+                with self.assertRaises(RuntimeError):
+                    prepare.validate_dag(root, "samtools")
 
     def test_dag_rejects_changed_identity_architecture_dependencies_and_externals(self):
         failures = {

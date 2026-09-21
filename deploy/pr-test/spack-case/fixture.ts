@@ -12,7 +12,7 @@ const cases = {
     id: "samtools",
     name: "samtools",
     version: "1.19.2",
-    spec: "samtools@1.19.2 ^htslib@1.19.1~libcurl~libdeflate ^zlib@1.3.1",
+    spec: "samtools@1.19.2 ^htslib@1.19.1~libcurl~libdeflate ^zlib@1.3.1 ^ncurses+symlinks ^pkgconf",
     repository: "public/pr-samtools-sources",
     recipes: "public/pr-samtools-recipes",
     retiredSpec: "samtools@0.0.0",
