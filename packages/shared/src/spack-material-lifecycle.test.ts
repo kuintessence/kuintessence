@@ -18,13 +18,16 @@ describe("material lifecycle change contract", () => {
 
   test.each([
     null,
-    [],
     {},
     { expectedRevision: 0, reason: "Review" },
     { action: "withdraw", reason: "Review" },
     { action: "withdraw", expectedRevision: 0 },
   ])("requires an object with all three fields: %j", (input) => {
     expect(SpackMaterialLifecycleChangeSchema.safeParse(input).success).toBe(false);
+  });
+
+  test("rejects an empty array instead of a lifecycle change object", () => {
+    expect(SpackMaterialLifecycleChangeSchema.safeParse([]).success).toBe(false);
   });
 
   test.each([
