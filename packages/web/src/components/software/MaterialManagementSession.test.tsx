@@ -286,7 +286,10 @@ test.each([
       "disabled",
       true,
     );
-    expect(screen.getByRole("tab", { name: labels.visibilityTab })).toHaveProperty("disabled", true);
+    expect(screen.getByRole("tab", { name: labels.visibilityTab })).toHaveProperty(
+      "disabled",
+      true,
+    );
   }
   await act(async () => pending.resolve(f.atRevision(2)));
   expect(screen.getByRole("table", { name: labels.managementTitle })).toBe(table);
