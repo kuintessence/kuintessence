@@ -279,7 +279,7 @@ fi
 // These executables simulate runner control flow only; they do not build, export,
 // upload, start services, or establish real bootstrap/browser import correctness.
 async function runFixture(
-  args = ["hello", "public/fixture-recipes", "public/fixture-sources"],
+  args: readonly string[] = ["hello", "public/fixture-recipes", "public/fixture-sources"],
   failure = "none",
   env: Record<string, string> = {},
 ) {

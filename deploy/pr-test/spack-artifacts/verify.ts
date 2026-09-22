@@ -62,6 +62,7 @@ export async function verifyMaterialImport(phase: Phase) {
   const release = pack.releases[0];
   const recipeInput = recipes.repositories[0];
   assert(release && recipeInput && release.recipes.length === 1);
+  const catalogPath = `${base}?repository=${encodeURIComponent(release.repository)}`;
   const recipeId = sha256(recipeInput.repository);
   const selection = release.recipes[0];
   assert(selection && selection.repositoryId === recipeId);
@@ -91,7 +92,7 @@ export async function verifyMaterialImport(phase: Phase) {
   }
 
   async function catalog() {
-    const response = await request(`${base}?repository=${encodeURIComponent(release.repository)}`);
+    const response = await request(catalogPath);
     assert.equal(response.status, 200);
     return SpackMaterialCatalogSchema.parse(await response.json());
   }

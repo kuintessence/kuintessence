@@ -345,7 +345,7 @@ test.each(["hello", "samtools"] satisfies CaseId[])(
     const covered: string[] = [];
     for (const line of checksumLines) {
       const [expected, path] = line.split("  ");
-      if (!path) throw new Error("Missing checksum path");
+      if (!expected || !path) throw new Error("Missing checksum digest or path");
       expect(hash(await readFile(join(sample.output, path)))).toBe(expected);
       covered.push(path);
     }
