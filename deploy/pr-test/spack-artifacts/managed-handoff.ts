@@ -21,10 +21,12 @@ import {
 } from "./managed-handoff-input";
 
 const PhaseSchema = z.enum(["prepare", "verify"]);
+const ImportModeSchema = z.enum(["bootstrap", "web"]).default("bootstrap");
 type Phase = z.infer<typeof PhaseSchema>;
 type Stage =
   | "guard"
   | "input"
+  | "web-receipt"
   | "control"
   | "login"
   | "catalog"
@@ -52,6 +54,7 @@ export class ManagedHandoffError extends Error {
 export interface ManagedHandoffOptions {
   deliveryDirectory?: string;
   controlDirectory?: string;
+  webReceiptDirectory?: string;
   environment?: NodeJS.ProcessEnv;
   fetcher?: (url: string, init: RequestInit) => Promise<Response>;
   signal?: AbortSignal;
@@ -102,6 +105,27 @@ function jsonBytes(value: unknown) {
   return bytes;
 }
 
+async function readWebReceipt(directory: string, signal: AbortSignal) {
+  const root = await safeDirectory(directory);
+  const name = "web-binding.json";
+  const inventory = new Map([
+    ["", await lstat(root, { bigint: true })],
+    [name, await lstat(join(root, name), { bigint: true })],
+  ]);
+  const bytes = await readBounded(root, name, maximumControl, signal);
+  const binding = SpackMaterialBindingSchema.parse(handoffJson(bytes));
+  await verifyInventory(root, inventory);
+  return {
+    binding,
+    async verify() {
+      await safeDirectory(root);
+      await verifyInventory(root, inventory);
+      assert.deepEqual(await readBounded(root, name, maximumControl, signal), bytes);
+      await verifyInventory(root, inventory);
+    },
+  };
+}
+
 export async function runManagedHandoff(inputPhase: unknown, options: ManagedHandoffOptions = {}) {
   let stage: Stage = "guard";
   const signal = AbortSignal.any([
@@ -119,6 +143,7 @@ export async function runManagedHandoff(inputPhase: unknown, options: ManagedHan
     assert.equal(environment.GITHUB_ACTIONS, "true");
     assert.equal(environment.KQ_PR_TEST, "1");
     const caseId = CaseSchema.parse(environment.KQ_PR_SPACK_CASE);
+    const importMode = ImportModeSchema.parse(environment.KQ_ARTIFACT_IMPORT_MODE);
     const fetcher = options.fetcher ?? fetch;
     const interval = options.pollIntervalMs ?? 2000;
     assert(Number.isInteger(interval) && interval >= 0 && interval <= 10_000);
@@ -128,6 +153,14 @@ export async function runManagedHandoff(inputPhase: unknown, options: ManagedHan
       caseId,
       signal,
     );
+    let webReceipt: Awaited<ReturnType<typeof readWebReceipt>> | undefined;
+    if (importMode === "web") {
+      progress("web-receipt");
+      webReceipt = await readWebReceipt(
+        options.webReceiptDirectory ?? "/imports/web-receipt",
+        signal,
+      );
+    }
     progress("control");
     const control = await safeDirectory(options.controlDirectory ?? "/case-control");
     const bindingPath = join(control, "bindings.json");
@@ -169,7 +202,7 @@ export async function runManagedHandoff(inputPhase: unknown, options: ManagedHan
       );
     let listed = await catalog();
     const deadline = Date.now() + 300_000;
-    while (phase === "prepare" && listed.releases.length === 0) {
+    while (importMode === "bootstrap" && phase === "prepare" && listed.releases.length === 0) {
       assert(Date.now() < deadline);
       await delay(interval, undefined, { signal });
       listed = await catalog();
@@ -187,6 +220,7 @@ export async function runManagedHandoff(inputPhase: unknown, options: ManagedHan
       repositoryId: summary.repositoryId,
       manifestDigest: summary.manifestDigest,
     });
+    if (webReceipt) assert.deepEqual(webReceipt.binding, binding);
     const releasePath = `${base}/${binding.repositoryId}/releases/${binding.manifestDigest}`;
     progress("manifest");
     const rawManifest = await responseBytes(await get(releasePath), maximumJson, signal);
@@ -240,6 +274,10 @@ export async function runManagedHandoff(inputPhase: unknown, options: ManagedHan
     }
     assert.deepEqual(await catalog(), listed);
     await verifyInventory(delivery.root, delivery.inventory);
+    if (webReceipt) {
+      progress("web-receipt");
+      await webReceipt.verify();
+    }
     const receipt = ReleaseSchema.parse({
       binding,
       spec: manifest.spec,

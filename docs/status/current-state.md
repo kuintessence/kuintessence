@@ -136,11 +136,23 @@ Kuintessence 当前为 pre-release。以下列出组件功能、运行要求和�
   禁用 bootstrap 后的 handoff verify 回读成功才启动 scheduler，接入
   Server → Agent 的安装、作业、完整性检查、重启、卸载及引用/rollout 回归。
   后续 restart 也禁用 bootstrap 并回读，防止重导入修复掩盖持久化失败。
-  原有两个 managed case、Hello native 和 Slurm/PBS 回归保留，managed matrix 共四项。
-  新入口仅在 Actions 执行，不部署 preview/production，不上传材料；
-  `feat/spack-artifact-managed` 调用独立导出工作流也仅允许 `publish_artifact=false`。
-  当前新增链路尚待对应 SHA 的 Actions 验证，不能宣称已通过；
+  PR #9 的提交 `e8b50b7b6834a2937bb1a8858cf9067f232212db` 已通过完整 CI
+  `35685693358`（9 个实际 job）和 scheduler matrix `35685693281`（7 个 job），
+  包括 Hello/samtools 同一 delivery 的 bootstrap 后受管安装；此记录只适用于该 SHA。
   bootstrap 后安装不等于 Web 后安装，也不代表通用 spec 或生产目标集群验收。
+  本次新增 `--spack-web-hello`、`--spack-web-samtools`：在空 Registry 中通过真实
+  browser 上传 recipe bundle 和 material 目录，browser 返回的 binding receipt
+  必须与只读 handoff catalog 的真实 binding 精确相等。随后撤掉 host loopback
+  端口与非 internal endpoint，保留卷并重建 Server/Registry，只读 verify 成功后
+  才启动 scheduler；bootstrap 全程禁用，不调用旧 publish/export-lock 路径。
+  Agent 仍只从 Server 拉取材料，不接触 Registry backend 或挂载 delivery，
+  不修改生产协议或安装逻辑。managed matrix 共六项，旧路径和 Hello native、
+  Slurm/PBS 回归保留；仅两个 Web 条目安装 host Bun 1.4.2、frozen 依赖、
+  生成 protobuf 并安装 Patchright Chromium，沿用 AppArmor、timeout 与无上传门禁。
+  新 Web 链路尚待新 HEAD 的 Actions 验证，不沿用 PR #9 的通过结论。
+  这些入口仅在 Actions 执行，不部署 preview/production，不上传材料；
+  `feat/spack-artifact-managed` 和 `feat/spack-web-managed` 调用独立导出工作流
+  均仅允许 `publish_artifact=false`，不放宽其他分支与许可确认规则。
   当前没有通用材料生成器或全部 15 项的完整材料 artifact；每软件须独立单 root
   lock/release、每步骤隔离运行环境，不能用 macOS lock 替代目标 Linux lock，
   也不能把此切片视为完整变异检测工作流验收。

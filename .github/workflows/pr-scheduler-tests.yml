@@ -28,16 +28,41 @@ jobs:
         include:
           - label: GNU Hello
             flag: --spack-managed
+            web: false
           - label: samtools
             flag: --spack-samtools
+            web: false
           - label: GNU Hello artifact bootstrap
             flag: --spack-artifact-hello
+            web: false
           - label: samtools artifact bootstrap
             flag: --spack-artifact-samtools
+            web: false
+          - label: GNU Hello Web import
+            flag: --spack-web-hello
+            web: true
+          - label: samtools Web import
+            flag: --spack-web-samtools
+            web: true
     steps:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+      - name: Setup Bun for Web import
+        if: matrix.web == true
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - name: Install Web import dependencies
+        if: matrix.web == true
+        run: bun install --frozen-lockfile
+      - name: Generate protobuf stubs for Web import
+        if: matrix.web == true
+        run: bun run --filter @kuintessence/proto generate
+      - name: Install isolated browser for Web import
+        if: matrix.web == true
+        working-directory: packages/web
+        run: bun run e2e:install
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
       - name: Permit the pinned Apptainer starter to create user namespaces
