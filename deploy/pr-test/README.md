@@ -316,10 +316,10 @@ bcftools、Python 分析或完整 VCF truth 校验，不代表 MPI、PBS 受管�
 
 15 项候选包、外部数据、许可自审、target/MPI 风险及 macOS 文件交付步骤见
 [科学工作流材料指南](../../docs/spack-workflow-materials.md)。
-当前没有通用材料生成器，也没有可直接下载的完整材料 artifact；运行入口不承诺
-导出可供 Web 上传的材料包。macOS 仅用于获取、校验和搬运，Linux lock/source
-闭包须从经授权且实际成功的目标 Linux 准备任务取得，再按既有 bootstrap/Web
-格式手工组包导入。
+此安装验收入口不自动提供材料下载。独立的[固定案例材料导出](../../docs/spack-material-artifacts.md)
+手动工作流可生成 Hello/samtools 的 bootstrap/Web 导入目录，默认仅验证，
+经审核并明确上传后才有该 run 的 artifact；它不提供任意 spec 或 15 项通用材料生成。
+macOS 仅用于获取、校验和搬运，不能用本机 lock 替代目标 Linux lock。
 
 失败诊断不输出原始 Agent 日志、注册响应或任意安装路径。基础 PR 镜像的 PBS
 入口观察器仅报告失败行号和退出码，未修改生产 scheduler 入口；受管安装的

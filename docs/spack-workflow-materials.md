@@ -12,8 +12,9 @@ variant 或软件组合可用。**15 个工作流均未完成材料、安装及�
 既有 GNU Hello 的通过记录不能用作 samtools 的验收证据。
 
 当前没有面向这 15 个工作流的通用材料自动生成器，也没有可直接下载的完整材料
-artifact。已有 PR 准备器服务于固定案例，不提供任意 spec 的通用导出入口。
-本文的人工准备步骤不是已生成材料的下载说明。
+artifact。固定 Hello/samtools 新增[手动材料导出](spack-material-artifacts.md)入口，
+默认只验证；完成审核并明确上传后，才会产生该次 run 的可下载材料。
+不提供任意 spec 的通用导出入口，也不代表已生成 15 项材料。
 
 ## 材料分类
 
@@ -197,10 +198,10 @@ external 配置，在隔离环境中原生 concretize 每个单 root，并导出
 bundle、lock、sources 和元数据，以该 bundle 的实际 HEAD 为准，不得替换成电脑端
 另行制作的 bundle，即使二者记录了相同上游 commit。
 
-当前没有可直接下载的上述 samtools 成品。维护者须在准备任务实际成功后，另行安排
-经授权的材料导出与传输；不要假设运行 PR 入口后就会产生公开下载链接。
-已有准备器的 `metadata.json`、`recipes.bundle`、`spack.lock`、`sources/` 输出
-也不等于可直接上传 Web 的材料 `manifest.json`，仍需按发布格式组包。
+固定案例可使用[手动材料导出工作流](spack-material-artifacts.md)生成成套导入目录，
+须在实际验证成功并授权上传后取得，不预设已经存在可下载成品。
+原 PR 安装验收入口仍不自动导出材料。准备器的 `metadata.json`、`recipes.bundle`、
+`spack.lock`、`sources/` 原始输出也不等于 Web 材料 manifest，须经导出器或按下节组包。
 
 接收材料前核对：
 
