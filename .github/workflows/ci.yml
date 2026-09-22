@@ -113,12 +113,29 @@ jobs:
           bun test scripts/spack-material-delivery.test.ts
           scripts/spack-material-rollout-deployment.test.ts scripts/pr-scheduler-compose.test.ts
           deploy/pr-test/spack-case/fixture.test.ts deploy/pr-test/spack-managed/jobs.test.ts
+          scripts/spack-material-artifacts.test.ts deploy/pr-test/spack-artifacts/*.test.ts
 
       - name: Type check (all packages)
         run: bun run typecheck
 
       - name: Type check PR acceptance harness
         run: bun node_modules/typescript/bin/tsc --project deploy/pr-test/tsconfig.json
+
+  spack-artifact-imports:
+    name: Spack artifact imports (${{ matrix.case }})
+    if: github.event_name == 'workflow_dispatch' && inputs.run_runtime_checks
+    needs: lint-and-typecheck
+    strategy:
+      fail-fast: false
+      matrix:
+        case: [hello, samtools]
+    uses: ./.github/workflows/spack-material-artifacts.yml
+    with:
+      case: ${{ matrix.case }}
+      recipe_repository: public/ci-artifact-${{ matrix.case }}-recipes
+      material_repository: public/ci-artifact-${{ matrix.case }}-sources
+      publish_artifact: false
+      acknowledge_redistribution: false
 
   test:
     name: Unit + integration tests

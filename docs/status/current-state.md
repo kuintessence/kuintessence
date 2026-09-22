@@ -126,7 +126,11 @@ Kuintessence 当前为 pre-release。以下列出组件功能、运行要求和�
   使用官方 variant/provider 避免硬链接产物，未放宽 worker 的输出树校验。
   新增案例的实际结论以对应提交 Actions 为准，不因代码存在就认定已 concretize、
   源码闭包齐全或安装/运行通过。
-  当前没有通用材料生成器或可直接下载的完整材料 artifact；每软件须独立单 root
+  新增[固定案例手动材料导出](../spack-material-artifacts.md)：Hello/samtools 复用同次
+  bundle、原生 lock 和源码生成现有导入格式，Actions 验证真实 bootstrap/Web 导入、
+  逐 blob 回读及重启持久化；默认仅验证，审核确认并显式上传后才提供该 run 的 artifact。
+  不因入口存在认定已生成成品，导入通过不等于这份材料已完成受管安装验收。
+  当前没有通用材料生成器或全部 15 项的完整材料 artifact；每软件须独立单 root
   lock/release、每步骤隔离运行环境，不能用 macOS lock 替代目标 Linux lock，
   也不能把此切片视为完整变异检测工作流验收。
 - CP 的 suspend/quota 写入口已停用，暂不支持通过这些接口暂停组织或设置并发硬限。

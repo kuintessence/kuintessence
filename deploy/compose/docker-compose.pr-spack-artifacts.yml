@@ -1,0 +1,41 @@
+# Actions-only material export/import validation. No scheduler or Agent is started.
+services:
+  artifact-operator:
+    image: ${COMPOSE_PROJECT_NAME:?required}-artifact-operator
+    build:
+      context: .
+      dockerfile: deploy/pr-test/spack-case/materials.Dockerfile
+      args:
+        KQ_PR_SPACK_CASE: ${KQ_PR_SPACK_CASE:?required}
+      additional_contexts:
+        scheduler-base: service:scheduler-base
+        test-workspace: service:test-workspace
+    profiles: [images]
+    network_mode: none
+
+  server:
+    networks: [artifact-web]
+    ports:
+      - target: 3000
+        host_ip: 127.0.0.1
+
+  registry:
+    networks: [artifact-web]
+    environment:
+      SPACK_RECIPE_BOOTSTRAP_MANIFEST: ${KQ_ARTIFACT_RECIPE_BOOTSTRAP:-}
+      SPACK_MATERIAL_BOOTSTRAP_MANIFEST: ${KQ_ARTIFACT_MATERIAL_BOOTSTRAP:-}
+    ports:
+      - target: 3100
+        host_ip: 127.0.0.1
+    volumes:
+      - type: bind
+        source: ${KQ_ARTIFACT_DIRECTORY:?required}
+        target: /imports
+        read_only: true
+        bind:
+          create_host_path: false
+
+networks:
+  # Docker needs a non-internal endpoint to publish the runner's loopback ports.
+  artifact-web:
+    internal: false

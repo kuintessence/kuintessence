@@ -1,0 +1,110 @@
+name: Spack material artifacts
+
+on:
+  workflow_call:
+    inputs:
+      case:
+        required: true
+        type: string
+      recipe_repository:
+        required: true
+        type: string
+      material_repository:
+        required: true
+        type: string
+      publish_artifact:
+        type: boolean
+        default: false
+      acknowledge_redistribution:
+        type: boolean
+        default: false
+  workflow_dispatch:
+    inputs:
+      case:
+        description: "固定参考案例"
+        required: true
+        type: choice
+        options: [hello, samtools]
+        default: hello
+      recipe_repository:
+        description: "Recipe 目标 namespace（public/<name> 或 org/<owner>/<name>）"
+        required: true
+        type: string
+      material_repository:
+        description: "材料目标 namespace（须与 recipe 同 owner）"
+        required: true
+        type: string
+      publish_artifact:
+        description: "验证成功后上传下载材料；默认仅验证"
+        required: true
+        type: boolean
+        default: false
+      acknowledge_redistribution:
+        description: "已审核全部源码/依赖/recipe 的再分发要求并保留声明"
+        required: true
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: spack-material-artifacts-${{ github.ref }}-${{ inputs.case }}
+  cancel-in-progress: false
+
+jobs:
+  export-and-import:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Check trusted request
+        env:
+          REF: ${{ github.ref }}
+          PUBLISH: ${{ inputs.publish_artifact }}
+          ACKNOWLEDGED: ${{ inputs.acknowledge_redistribution }}
+        run: |
+          [[ "$REF" == refs/heads/main || "$REF" == refs/heads/feat/spack-material-artifacts ]] || {
+            echo "Only the reviewed main or material-artifacts branch is supported" >&2
+            exit 2
+          }
+          [[ "$PUBLISH" != true || "$ACKNOWLEDGED" == true ]] || {
+            echo "Artifact upload requires the publisher's redistribution review" >&2
+            exit 2
+          }
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+      - name: Generate protobuf stubs
+        run: bun run --filter @kuintessence/proto generate
+      - name: Check export contracts
+        run: bun test deploy/pr-test/spack-artifacts/*.test.ts scripts/spack-material-artifacts.test.ts
+      - name: Type check artifact harness
+        run: bun node_modules/typescript/bin/tsc --project deploy/pr-test/tsconfig.json
+      - name: Install isolated browser
+        working-directory: packages/web
+        run: bun run e2e:install
+      - uses: docker/setup-buildx-action@v3
+      - name: Export once and validate bootstrap and real Web import
+        env:
+          MATERIAL_CASE: ${{ inputs.case }}
+          RECIPE_REPOSITORY: ${{ inputs.recipe_repository }}
+          MATERIAL_REPOSITORY: ${{ inputs.material_repository }}
+        run: |
+          timeout --signal=TERM --kill-after=60s 45m \
+            bash deploy/pr-test/spack-artifacts/run.sh \
+            "$MATERIAL_CASE" "$RECIPE_REPOSITORY" "$MATERIAL_REPOSITORY"
+      - name: Upload reviewed material pack
+        if: success() && inputs.publish_artifact && inputs.acknowledge_redistribution
+        uses: actions/upload-artifact@v4
+        with:
+          name: spack-${{ inputs.case }}-${{ github.sha }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/kq-spack-material-artifact/
+          retention-days: 7
+          compression-level: 0
+          include-hidden-files: false
+          if-no-files-found: error
