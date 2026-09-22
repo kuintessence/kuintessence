@@ -179,11 +179,13 @@ describe("scientific workflow handoff templates (not runtime acceptance)", () =>
     expect(rows).toHaveLength(15);
     for (const [index, row] of rows.entries()) {
       const columns = row.split("|").map((column) => column.trim());
-      const packages = [...(columns[2] ?? "").matchAll(/`([^`]+)`/g)].map((match) => match[1]);
+      const label = columns[1];
+      const candidates = columns[2];
       const item = inventory.workflows[index];
-      expect(item).toBeDefined();
-      expect(`${item?.id} ${item?.name}`).toBe(columns[1]);
-      expect(item?.packages).toEqual(packages);
+      if (!label || !candidates || !item) throw new Error("Incomplete candidate table row");
+      const packages = names.parse([...candidates.matchAll(/`([^`]+)`/g)].map((match) => match[1]));
+      expect(`${item.id} ${item.name}`).toBe(label);
+      expect(item.packages).toEqual(packages);
     }
   });
 
