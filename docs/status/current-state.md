@@ -157,6 +157,10 @@ Kuintessence 当前为 pre-release。以下列出组件功能、运行要求和�
   lock/release、每步骤隔离运行环境，不能用 macOS lock 替代目标 Linux lock，
   也不能把此切片视为完整变异检测工作流验收。
 - CP 的 suspend/quota 写入口已停用，暂不支持通过这些接口暂停组织或设置并发硬限。
+- [三种 Linux 目标环境基线](../../deploy/pr-test/spack-targets/README.md)新增
+  CentOS 7.9.2009、Ubuntu 24.04/26.04 的 x86_64 工具链、Spack 和 Hello 原生
+  断网安装入口，结果以对应提交的 Actions 为准。它不修改既有 Ubuntu 20.04
+  managed 回归，也不证明新目标的 Server/Agent、调度器、旧内核或 15 工作流可用。
 - 平台记录用量，外部计费系统生成账单。
 - 本地 Compose 的初始化账号与固定样例口令只用于开发，不得用于公网环境。
 - `full`、`watch` 与 scheduler 开发栈的 Registry 使用 Server 登录 JWT，
