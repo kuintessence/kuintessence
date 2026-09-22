@@ -23,7 +23,7 @@ for (const caseId of cases) {
       expect(ReleaseSchema.parse(receipt)).toEqual(receipt);
       expect(receipt.binding).toEqual(expected.binding);
       expect(receipt.manifestSize).toBe(encoded(fixture.manifest).byteLength);
-      expect(await readFile(join(fixture.control, "managed-lock.json"))).toEqual(fixture.lock);
+      assert.deepEqual(await readFile(join(fixture.control, "managed-lock.json")), fixture.lock);
       expect(JSON.parse(await readFile(join(fixture.control, "bindings.json"), "utf8"))).toEqual({
         [fixture.release.spec]: expected.binding,
       });
