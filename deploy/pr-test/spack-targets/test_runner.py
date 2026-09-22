@@ -85,6 +85,7 @@ elif args[0] == "build":
     state["images"].append(option("--tag"))
     print("UNSAFE_RAW_LOG_DO_NOT_PUBLISH")
     print("#8 1.234 Target bootstrap: stage=recipes code=OK")
+    print("#8 1.233 Target checkout: component=spack error=shallow-protocol code=RETRY")
 elif command == "volume create":
     state["volumes"].append(args[-1])
 elif args[0] == "create":
@@ -253,7 +254,7 @@ class RunnerTests(unittest.TestCase):
                 r"stage=(platform|prepare|metadata|missing-source|resolve|install|execute|readback|complete) "
                 r"code=(OK|FAILED|RUNNING)"
                 r"|Target bootstrap: stage=(platform|openssl|python|solver|spack|recipes) code=(OK|FAILED)"
-                r"|Target checkout: component=spack error=missing-ref code=FAILED"
+                r"|Target checkout: component=spack (error=missing-ref code=FAILED|error=shallow-protocol code=RETRY)"
                 r"|Target diagnostic: phase=(prepare|offline) profile=(centos7|ubuntu24|ubuntu26) "
                 r"error=KeyError line=345"
                 r"|Target identity: profile=(centos7|ubuntu24|ubuntu26) "
@@ -300,6 +301,7 @@ class RunnerTests(unittest.TestCase):
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assert_safe_output(result)
                 self.assertIn("Target bootstrap: stage=recipes code=OK", result.stdout)
+                self.assertIn("Target checkout: component=spack error=shallow-protocol code=RETRY", result.stdout)
                 self.assertEqual(result.stdout.count("Target identity:"), 2)
                 self.assertIn("gcc=12.3.0 python=3.11.16 spack=1.0.0 code=OK", result.stdout)
                 self.assert_clean()

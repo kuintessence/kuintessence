@@ -56,8 +56,19 @@ checkout() {
     cd "$1"
     # Git 1.8 cannot reliably request a SHA that is not advertised as a ref.
     # The ref is only a transport locator; the pinned commit remains authoritative.
-    if ! git -c fetch.fsckObjects=true fetch --depth=1 --no-tags "$2" "$4" \
-        >"$work/git-fetch.log" 2>&1; then
+    result=0
+    git -c fetch.fsckObjects=true fetch --depth=1 --no-tags "$2" "$4" \
+      >"$work/git-fetch.log" 2>&1 || result=$?
+    # Legacy fetch-pack can reject the server's shallow negotiation before writing
+    # a shallow boundary. Only that exact failure may retry without shallow mode.
+    if [[ "$result" -ne 0 && ! -e .git/shallow ]] &&
+        grep -Fxq 'fatal: git fetch-pack: expected shallow list' "$work/git-fetch.log"; then
+      printf 'Target checkout: component=%s error=shallow-protocol code=RETRY\n' "$stage"
+      result=0
+      git -c fetch.fsckObjects=true fetch --no-tags "$2" "$4" \
+        >"$work/git-fetch.log" 2>&1 || result=$?
+    fi
+    if [[ "$result" -ne 0 ]]; then
       reason=other
       if grep -Eiq 'unadvertised object|not our ref' "$work/git-fetch.log"; then
         reason=unadvertised-object

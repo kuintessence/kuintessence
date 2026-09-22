@@ -111,7 +111,8 @@ marker = re.compile(
     r"(?:#\d+ (?:\d+\.\d+ )?)?"
     r"(Target bootstrap: stage=(?:platform|openssl|python|solver|spack|recipes) code=(?:OK|FAILED)"
     r"|Target checkout: component=(?:spack|recipes) "
-    r"error=(?:unadvertised-object|missing-ref|tls|transport|commit-mismatch|other) code=FAILED)"
+    r"(?:error=(?:unadvertised-object|missing-ref|tls|transport|commit-mismatch|other) code=FAILED"
+    r"|error=shallow-protocol code=RETRY))"
 )
 with open(sys.argv[1], encoding="utf-8", errors="replace") as stream:
     for raw in stream:
