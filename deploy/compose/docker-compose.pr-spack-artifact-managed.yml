@@ -1,0 +1,45 @@
+# Actions-only: append after the base, Spack case and managed overlays.
+services:
+  artifact-exporter:
+    image: ${COMPOSE_PROJECT_NAME:?required}-artifact-exporter
+    build:
+      context: .
+      dockerfile: deploy/pr-test/spack-case/materials.Dockerfile
+      args:
+        KQ_PR_SPACK_CASE: ${KQ_PR_SPACK_CASE:?required}
+      additional_contexts:
+        scheduler-base: service:scheduler-base
+        test-workspace: service:test-workspace
+    profiles: [images]
+    network_mode: none
+
+  artifact-control:
+    image: ${COMPOSE_PROJECT_NAME:?required}-workspace
+    profiles: [images]
+    environment:
+      GITHUB_ACTIONS: "true"
+      KQ_PR_TEST: "1"
+      KQ_PR_SPACK_CASE: ${KQ_PR_SPACK_CASE:?required}
+    volumes:
+      - case-server:/case-server
+      - case-ca:/case-ca
+      - case-control:/case-control
+      - type: bind
+        source: ${KQ_ARTIFACT_DIRECTORY:?required}
+        target: /imports/delivery
+        read_only: true
+        bind:
+          create_host_path: false
+    networks: [backend]
+
+  registry:
+    environment:
+      SPACK_RECIPE_BOOTSTRAP_MANIFEST: ${KQ_ARTIFACT_RECIPE_BOOTSTRAP:-}
+      SPACK_MATERIAL_BOOTSTRAP_MANIFEST: ${KQ_ARTIFACT_MATERIAL_BOOTSTRAP:-}
+    volumes:
+      - type: bind
+        source: ${KQ_ARTIFACT_DIRECTORY:?required}
+        target: /imports/delivery
+        read_only: true
+        bind:
+          create_host_path: false

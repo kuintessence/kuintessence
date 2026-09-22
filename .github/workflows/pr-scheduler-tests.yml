@@ -30,6 +30,10 @@ jobs:
             flag: --spack-managed
           - label: samtools
             flag: --spack-samtools
+          - label: GNU Hello artifact bootstrap
+            flag: --spack-artifact-hello
+          - label: samtools artifact bootstrap
+            flag: --spack-artifact-samtools
     steps:
       - uses: actions/checkout@v4
         with:

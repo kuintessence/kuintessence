@@ -85,6 +85,9 @@ Recipe bundle 导入和快照导出使用 base 镜像自带的 Git 验证，覆�
 不使用 `pull_request_target`、生产 environment、发布权限、仓库 secret 或持久 runner。
 每个 job 有独立 project 和总超时；失败不取消另一个调度器的诊断。
 取消时脚本尽力清理，runner 回收是强制中断的最终隔离边界。
+managed matrix 包含四项：原有 GNU Hello、samtools，以及各自标明
+`artifact bootstrap` 的两条同一 delivery 安装链路；Hello native 和默认
+Slurm/PBS matrix 保持独立。新增两项当前尚待对应 SHA 的 Actions 验证。
 
 现有 `Preview` 工作流保持独立；`preview-paused` 只暂停公网预览，不暂停本测试工作流。
 实际构建与运行结果以对应提交的 GitHub Actions 或上述命令结果为准。
@@ -320,6 +323,48 @@ bcftools、Python 分析或完整 VCF truth 校验，不代表 MPI、PBS 受管�
 手动工作流可生成 Hello/samtools 的 bootstrap/Web 导入目录，默认仅验证，
 经审核并明确上传后才有该 run 的 artifact；它不提供任意 spec 或 15 项通用材料生成。
 macOS 仅用于获取、校验和搬运，不能用本机 lock 替代目标 Linux lock。
+
+## 同一交付的 Artifact Bootstrap 受管案例
+
+以下入口仅在临时 GitHub Actions runner 内执行，不用于本地验证或部署：
+
+```bash
+bash deploy/pr-test/run.sh slurm --spack-artifact-hello
+bash deploy/pr-test/run.sh slurm --spack-artifact-samtools
+```
+
+两个新入口分别固定 Hello/samtools，复用既有 managed overlay、资源预算、
+site profile 和 Server/Agent 接口。原 `--spack-managed`、`--spack-samtools`、
+`--spack-case` 保留，不将旧案例通过记录视为新入口的通过证据。
+
+与原有直接通过 Registry API 发布材料的案例不同，新模式从同一次准备结果
+导出 delivery，通过 Registry 的 recipe/material bootstrap 导入，再以只读
+handoff 核对真实 release binding 和交付内容。handoff 不重新发布、不生成替代
+lock 或源码，不把导出时推算的值当作导入回执；校验失败即停止，不能回退旧发布路径。
+Server 使用校验后的真实 binding，Agent 保持仅从 Server 获取材料的网络与凭据边界。
+
+首次 handoff 成功后，入口清空 recipe/material bootstrap 配置，保留本次数据库和
+材料持久卷，force-recreate Registry/Server，再执行只读 handoff verify。
+只有禁用 bootstrap 后仍能回读同一 binding 和材料，才启动 scheduler 进入安装链路。
+后续 restart 同样不启用 bootstrap，并再次回读；不能靠重导入修复缺失材料，
+把持久化失败掩盖成重启成功。
+
+后续沿用真实 managed install/job/restart/uninstall 链路：source audit、
+隔离 build、独立 readonly verify、load 和相应 Hello/samtools Slurm 作业，
+并保留材料缺失/篡改后的撤回与恢复、重启复验、卸载、持久引用及 rollout 检查。
+所有阶段须针对同一份 delivery，不以另一套已通过安装的材料替代。
+合同测试 `scripts/spack-artifact-managed.test.ts` 由手动完整 CI 执行，
+handoff 测试由 `deploy/pr-test/spack-artifacts/*.test.ts` 覆盖；
+两者及 harness 类型检查都不能代替真实安装验收。
+
+该模式不运行 Web、不部署 preview/production、不上传材料、安装树或原始服务日志。
+独立[导出与 Web 导入工作流](../../docs/spack-material-artifacts.md)仍保留自己的
+许可确认和上传门禁；开发分支 `feat/spack-artifact-managed` 调用该工作流时
+只允许 `publish_artifact=false`。
+
+新增模式当前未完成 Actions 验证；实际结论须注明对应 SHA 和 job 结果。
+即使通过，也仅覆盖这份 delivery 的 bootstrap 后安装，不代表 Web 后安装、
+任意 spec、15 个工作流、PBS managed 安装或目标生产集群/共享存储/ABI 验收。
 
 失败诊断不输出原始 Agent 日志、注册响应或任意安装路径。基础 PR 镜像的 PBS
 入口观察器仅报告失败行号和退出码，未修改生产 scheduler 入口；受管安装的
