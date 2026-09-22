@@ -7,20 +7,24 @@ fail() { printf '%s\n' "$*" >&2; exit 2; }
 case "${1:-}" in
   slurm) export KQ_PR_SCHEDULER=slurm KQ_PR_REGISTRATION_SCHEDULER=slurm KQ_PR_PRIVILEGED=false ;;
   pbs) export KQ_PR_SCHEDULER=pbs KQ_PR_REGISTRATION_SCHEDULER=pbs-pro KQ_PR_PRIVILEGED=true ;;
-  *) fail "Usage: bash deploy/pr-test/run.sh slurm|pbs [--config|--spack-case|--spack-managed|--spack-samtools|--spack-artifact-hello|--spack-artifact-samtools]" ;;
+  *) fail "Usage: bash deploy/pr-test/run.sh slurm|pbs [--config|--spack-case|--spack-managed|--spack-samtools|--spack-artifact-hello|--spack-artifact-samtools|--spack-web-hello|--spack-web-samtools]" ;;
 esac
-[[ $# -le 2 && ( $# -eq 1 || "$2" == "--config" || "$2" == "--spack-case" || "$2" == "--spack-managed" || "$2" == "--spack-samtools" || "$2" == "--spack-artifact-hello" || "$2" == "--spack-artifact-samtools" ) ]] || fail "Unsupported flag"
+[[ $# -le 2 && ( $# -eq 1 || "$2" == "--config" || "$2" == "--spack-case" || "$2" == "--spack-managed" || "$2" == "--spack-samtools" || "$2" == "--spack-artifact-hello" || "$2" == "--spack-artifact-samtools" || "$2" == "--spack-web-hello" || "$2" == "--spack-web-samtools" ) ]] || fail "Unsupported flag"
 spack_case=false
 spack_managed=false
 spack_artifact=false
-if [[ "${2:-}" == "--spack-artifact-hello" || "${2:-}" == "--spack-artifact-samtools" ]]; then
+spack_web=false
+if [[ "${2:-}" == "--spack-web-hello" || "${2:-}" == "--spack-web-samtools" ]]; then
+  spack_web=true
+fi
+if [[ "${2:-}" == "--spack-artifact-hello" || "${2:-}" == "--spack-artifact-samtools" ]] || "$spack_web"; then
   spack_artifact=true
 fi
 if [[ "${2:-}" == "--spack-managed" || "${2:-}" == "--spack-samtools" ]] || "$spack_artifact"; then
   [[ "${GITHUB_ACTIONS:-}" == true ]] || fail "Managed case runs only on disposable GitHub Actions runners"
   spack_managed=true
 fi
-if [[ "${2:-}" == "--spack-samtools" || "${2:-}" == "--spack-artifact-samtools" ]]; then
+if [[ "${2:-}" == "--spack-samtools" || "${2:-}" == "--spack-artifact-samtools" || "${2:-}" == "--spack-web-samtools" ]]; then
   export KQ_PR_SPACK_CASE=samtools
 fi
 if [[ "${2:-}" == "--spack-case" ]] || "$spack_managed"; then
@@ -33,6 +37,11 @@ if "$spack_artifact"; then
   for name in ${!KQ_ARTIFACT_@}; do unset "$name"; done
   unset KQ_PR_APT_MIRROR
   command -v sha256sum >/dev/null || fail "SHA-256 checksum tool is required"
+fi
+if "$spack_web"; then
+  unset KQ_WEB_SERVER_PROXY_TARGET KQ_WEB_REGISTRY_PROXY_TARGET
+  command -v bun >/dev/null || fail "Bun is required"
+  command -v timeout >/dev/null || fail "Timeout is required"
 fi
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -60,7 +69,11 @@ fi
 if "$spack_artifact"; then
   compose+=(-f "$repo_root/deploy/compose/docker-compose.pr-spack-artifact-managed.yml")
 fi
+if "$spack_web"; then
+  compose+=(-f "$repo_root/deploy/compose/docker-compose.pr-spack-web-managed.yml")
+fi
 compose+=(--profile images)
+web_compose=("${compose[@]}" -f "$repo_root/deploy/compose/docker-compose.pr-spack-web-endpoints.yml")
 artifact_work=""
 artifact_exporter=""
 
@@ -99,7 +112,9 @@ cleanup() {
   fi
   # Do not print container logs: Agent registration can include ephemeral credentials.
   "${compose[@]}" ps --all || true
-  if ! "${compose[@]}" down --volumes --remove-orphans --rmi local --timeout 15; then
+  local teardown=("${compose[@]}")
+  if "$spack_web"; then teardown=("${web_compose[@]}"); fi
+  if ! "${teardown[@]}" down --volumes --remove-orphans --rmi local --timeout 15; then
     printf 'PR test cleanup failed: %s\n' "$COMPOSE_PROJECT_NAME" >&2
     result=1
   fi
@@ -141,11 +156,20 @@ if "$spack_artifact"; then
   artifact_exporter="$COMPOSE_PROJECT_NAME-export"
   artifact_work="$(mktemp -d "$RUNNER_TEMP/kq-spack-managed.XXXXXXXX")"
   export KQ_ARTIFACT_DIRECTORY="$artifact_work/delivery"
-  export KQ_ARTIFACT_RECIPE_BOOTSTRAP=/imports/delivery/recipe-pack/manifest.json
-  export KQ_ARTIFACT_MATERIAL_BOOTSTRAP=/imports/delivery/material-pack/manifest.json
+  if "$spack_web"; then
+    export KQ_ARTIFACT_WEB_RECEIPT_DIRECTORY="$artifact_work/web-receipt"
+    mkdir -m 0700 "$KQ_ARTIFACT_WEB_RECEIPT_DIRECTORY"
+    export KQ_ARTIFACT_RESULT_PATH="$KQ_ARTIFACT_WEB_RECEIPT_DIRECTORY/web-binding.json"
+    export KQ_ARTIFACT_REFERENCE_PATH="$artifact_work/unused-bootstrap-binding.json"
+    export KQ_ARTIFACT_WEB_URL=http://127.0.0.1:15173
+  else
+    export KQ_ARTIFACT_RECIPE_BOOTSTRAP=/imports/delivery/recipe-pack/manifest.json
+    export KQ_ARTIFACT_MATERIAL_BOOTSTRAP=/imports/delivery/material-pack/manifest.json
+  fi
 fi
 
 "${compose[@]}" config --quiet
+if "$spack_web"; then "${web_compose[@]}" config --quiet; fi
 if [[ "${2:-}" == "--config" ]]; then
   printf 'PR Compose valid: %s (no containers started)\n' "$KQ_PR_SCHEDULER"
   exit 0
@@ -160,6 +184,41 @@ artifact_checksums() {
     fail "Spack artifact managed: stage=checksum-$1 code=FAILED"
   fi
   printf 'Spack artifact managed: stage=checksum-%s code=OK\n' "$1"
+}
+
+web_import() {
+  "${web_compose[@]}" up -d --no-build --wait --wait-timeout 300 server registry
+  local server_address registry_address
+  server_address="$("${web_compose[@]}" port server 3000)"
+  registry_address="$("${web_compose[@]}" port registry 3100)"
+  [[ "$server_address" =~ ^127\.0\.0\.1:[1-9][0-9]{0,4}$ && "$registry_address" =~ ^127\.0\.0\.1:[1-9][0-9]{0,4}$ ]] || fail "Spack Web managed: stage=listeners code=INVALID"
+  export KQ_WEB_SERVER_PROXY_TARGET="http://$server_address"
+  export KQ_WEB_REGISTRY_PROXY_TARGET="http://$registry_address"
+  (
+    cd "$repo_root"
+    timeout --signal=TERM --kill-after=10s 600s bun deploy/pr-test/spack-artifacts/verify.ts empty
+    timeout --signal=TERM --kill-after=10s 900s \
+      bun run --cwd packages/web e2e --config e2e/material-artifacts.config.ts
+  )
+  unset KQ_WEB_SERVER_PROXY_TARGET KQ_WEB_REGISTRY_PROXY_TARGET
+  printf '%s\n' "Spack Web managed: stage=import code=OK"
+}
+
+web_isolated() {
+  local service container ports networks network
+  for service in server registry; do
+    container="$("${compose[@]}" ps -q "$service")"
+    [[ "$container" =~ ^[0-9a-f]{12,64}$ ]] || fail "Spack Web managed: stage=isolation code=CONTAINER"
+    ports="$(docker inspect --format '{{json .HostConfig.PortBindings}}' "$container")"
+    [[ "$ports" == '{}' || "$ports" == null ]] || fail "Spack Web managed: stage=isolation code=PORTS"
+    networks="$(docker inspect --format '{{range .NetworkSettings.Networks}}{{println .NetworkID}}{{end}}' "$container")"
+    [[ -n "$networks" ]] || fail "Spack Web managed: stage=isolation code=NETWORK"
+    while IFS= read -r network; do
+      [[ "$network" =~ ^[0-9a-f]{12,64}$ ]] || fail "Spack Web managed: stage=isolation code=NETWORK"
+      [[ "$(docker network inspect --format '{{.Internal}}' "$network")" == true ]] || fail "Spack Web managed: stage=isolation code=EGRESS"
+    done <<< "$networks"
+  done
+  printf '%s\n' "Spack Web managed: stage=isolation code=OK"
 }
 
 printf 'Building isolated PR test project: %s\n' "$COMPOSE_PROJECT_NAME"
@@ -189,12 +248,17 @@ exec bun deploy/pr-test/spack-artifacts/export.ts "$@"' \
   if ! "$spack_artifact"; then
     "${compose[@]}" run --rm --no-deps case-operator bun deploy/pr-test/spack-case/setup.ts
   fi
-  "${compose[@]}" up -d --no-build --wait --wait-timeout 300 server registry
+  if "$spack_web"; then
+    web_import
+  else
+    "${compose[@]}" up -d --no-build --wait --wait-timeout 300 server registry
+  fi
   if "$spack_artifact"; then
     "${compose[@]}" run --rm --no-deps artifact-control bun deploy/pr-test/spack-artifacts/managed-handoff.ts prepare
     # Persistence must be verified without startup re-import repairing missing content.
     unset KQ_ARTIFACT_RECIPE_BOOTSTRAP KQ_ARTIFACT_MATERIAL_BOOTSTRAP
     "${compose[@]}" up -d --force-recreate --no-build --wait --wait-timeout 300 registry server
+    if "$spack_web"; then web_isolated; fi
     "${compose[@]}" run --rm --no-deps artifact-control bun deploy/pr-test/spack-artifacts/managed-handoff.ts verify
   else
     "${compose[@]}" run --rm --no-deps case-operator bun deploy/pr-test/spack-case/publish.ts
@@ -216,6 +280,7 @@ if "$spack_managed"; then
   "${compose[@]}" up -d --no-build --wait --wait-timeout 300 scheduler registry server
   "${compose[@]}" exec -T server timeout --signal=TERM --kill-after=5s 60s bun deploy/pr-test/spack-case/references.ts managed-restart
   if "$spack_artifact"; then
+    if "$spack_web"; then web_isolated; fi
     "${compose[@]}" run --rm --no-deps artifact-control bun deploy/pr-test/spack-artifacts/managed-handoff.ts verify
   else
     "${compose[@]}" run --rm --no-deps case-operator bun deploy/pr-test/spack-case/publish.ts --verify
@@ -248,6 +313,7 @@ if "$spack_case"; then
   export KQ_PR_MATERIAL_EPOCH
   # A restart cannot load a new environment. Recreate only these services, retaining volumes.
   "${compose[@]}" up -d --force-recreate --no-build --wait --wait-timeout 300 server registry
+  if "$spack_web"; then web_isolated; fi
   "${compose[@]}" exec -T server timeout --signal=TERM --kill-after=5s 60s bun deploy/pr-test/spack-case/rollout.ts verify
 fi
 if "$spack_artifact"; then

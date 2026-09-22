@@ -1,0 +1,17 @@
+# Temporary upload-only endpoints, removed before starting the managed Agent.
+services:
+  server:
+    networks: [artifact-web]
+    ports:
+      - target: 3000
+        host_ip: 127.0.0.1
+
+  registry:
+    networks: [artifact-web]
+    ports:
+      - target: 3100
+        host_ip: 127.0.0.1
+
+networks:
+  artifact-web:
+    internal: false

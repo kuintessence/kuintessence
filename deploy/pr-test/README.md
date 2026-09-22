@@ -20,6 +20,8 @@ scheduler-base (现有 base/Dockerfile, Spack 1.0.0, Bun 1.4.2)
 不是离线构建。可用 `KQ_PR_APT_MIRROR` 配置现有 base 的 apt mirror 参数，
 不等同于 Spack 专用 HTTP/SOCKS 代理。依赖在 build 时安装，运行时不安装依赖、
 不挂载宿主源码或 Docker socket、不提供 Web、SSO、SpiceDB、RustFS 或 tunnel。
+下述 Web managed 入口仅在导入阶段额外使用 runner 上的 browser 与应用页面；
+它的 host 依赖及临时 loopback endpoint 不加入基础调度器路径。
 
 Server 和 Registry 共用本次测试数据库；scheduler 与 Server 位于独立 control 网络，
 Registry/数据库在 backend 网络，两个网络均为 `internal`。
@@ -85,9 +87,16 @@ Recipe bundle 导入和快照导出使用 base 镜像自带的 Git 验证，覆�
 不使用 `pull_request_target`、生产 environment、发布权限、仓库 secret 或持久 runner。
 每个 job 有独立 project 和总超时；失败不取消另一个调度器的诊断。
 取消时脚本尽力清理，runner 回收是强制中断的最终隔离边界。
-managed matrix 包含四项：原有 GNU Hello、samtools，以及各自标明
-`artifact bootstrap` 的两条同一 delivery 安装链路；Hello native 和默认
-Slurm/PBS matrix 保持独立。新增两项当前尚待对应 SHA 的 Actions 验证。
+managed matrix 包含六项：原有 GNU Hello、samtools，各自标明 `artifact bootstrap`
+的两条同一 delivery 安装链路，以及两条 `Web import` 链路；Hello native 和默认
+Slurm/PBS matrix 保持独立。仅 `matrix.web: true` 的两个 Web 条目安装 host
+Bun 1.4.2、frozen 依赖、生成 protobuf 并调用 `packages/web` 的 `e2e:install`
+安装 Patchright Chromium；其余条目不增加 host 依赖。
+所有 managed 条目沿用 AppArmor profile 安装/清理、70 分钟 job 总超时、
+65 分钟入口 timeout 和无 artifact 上传门禁。
+PR #9 的 `e8b50b7b6834a2937bb1a8858cf9067f232212db` 已通过完整 CI
+`35685693358` 和当时七项 scheduler matrix `35685693281`；
+新增 Web 两项不在该历史范围内，须等待新 HEAD 的 Actions 验证。
 
 现有 `Preview` 工作流保持独立；`preview-paused` 只暂停公网预览，不暂停本测试工作流。
 实际构建与运行结果以对应提交的 GitHub Actions 或上述命令结果为准。
@@ -362,11 +371,48 @@ handoff 测试由 `deploy/pr-test/spack-artifacts/*.test.ts` 覆盖；
 许可确认和上传门禁；开发分支 `feat/spack-artifact-managed` 调用该工作流时
 只允许 `publish_artifact=false`。
 
-新增模式当前未完成 Actions 验证；实际结论须注明对应 SHA 和 job 结果。
-即使通过，也仅覆盖这份 delivery 的 bootstrap 后安装，不代表 Web 后安装、
+PR #9 的提交 `e8b50b7b6834a2937bb1a8858cf9067f232212db` 已通过完整 CI
+`35685693358`（9 个实际 job）和 scheduler matrix `35685693281`（7 个 job），
+包括 Hello/samtools 的 artifact-bootstrap 受管案例。此记录只覆盖该 SHA
+及其 delivery 的 bootstrap 后安装，不代表 Web 后安装、
 任意 spec、15 个工作流、PBS managed 安装或目标生产集群/共享存储/ABI 验收。
 
 失败诊断不输出原始 Agent 日志、注册响应或任意安装路径。基础 PR 镜像的 PBS
 入口观察器仅报告失败行号和退出码，未修改生产 scheduler 入口；受管安装的
 输出树诊断仅报告文件类型、受限 link count 和固定文件名枚举。诊断不得替代
 安装结果，依赖 hash 不一致、特殊文件或不受支持的硬链接仍按 worker 规则拒绝。
+
+## 同一交付的 Web 受管案例
+
+新增两个入口仅在临时 GitHub Actions runner 执行，不用于本地验证或部署：
+
+```bash
+bash deploy/pr-test/run.sh slurm --spack-web-hello
+bash deploy/pr-test/run.sh slurm --spack-web-samtools
+```
+
+复用固定 Hello/samtools 的一次材料准备与 delivery，不另行生成 recipe、原生 lock
+或源码。导入目标为全新的空 Registry，recipe/material bootstrap 全程禁用。
+真实 browser 登录应用后上传 recipe bundle 和 material 目录，不 mock 导入 API；
+browser binding receipt 的 `repositoryId`、`manifestDigest` 必须与只读 handoff
+catalog 查得的真实 release binding 精确相等。随后完整核对 manifest、recipe
+snapshot/archive、原生 lock 和所有 blob，不能只凭 UI 成功提示或 health 判断通过。
+
+Web 导入阶段使用 runner host loopback 与临时非 internal endpoint；这阶段允许
+服务出站，不宣称断网。导入和 handoff 完成后撤掉这些 endpoint 与 host 端口，
+保留数据库和材料卷，force-recreate Server/Registry，恢复仅 internal 的服务拓扑。
+只读 handoff verify 成功后才启动 scheduler；Agent 仍仅从 Server 获取材料，
+不能访问 Registry backend 或挂载 delivery，不接收 browser/Registry 管理凭据。
+
+后续执行既有 source audit、隔离 build、独立 readonly verify、load、真实 Slurm
+作业、完整性负例及恢复、restart/uninstall、引用账本与 rollout 检查。
+重启继续禁用 bootstrap，并只读回验同一 binding 与材料，不通过重导入或修复
+掩盖持久化失败。新路径不调用旧 `publish.ts` / `export-lock.ts`，不改生产协议、
+安装 worker 或安全门槛，不部署 preview/production，不上传材料、原始日志或认证 trace。
+
+完整 CI 接入 `scripts/spack-web-managed.test.ts` 合同检查，harness 类型检查继续保留；
+它们不能代替真实 browser 与 scheduler 的运行结果。材料导出 workflow 仅新增
+`feat/spack-web-managed` 的 `publish_artifact=false` 白名单，旧分支及许可/上传门禁不放宽。
+**本新增路径仍待新 HEAD 的 Actions 验证**；PR #9 的历史通过记录不能作为 Web
+后安装证据，也不能据此宣称任意 spec、15 个工作流、PBS managed 安装、跨节点
+共享存储/ABI 或生产站点通过验收。

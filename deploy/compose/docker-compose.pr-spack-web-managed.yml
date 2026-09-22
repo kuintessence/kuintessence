@@ -1,0 +1,19 @@
+# Permanent Web-import overlay. Bootstrap and the Registry delivery mount are absent.
+services:
+  artifact-control:
+    environment:
+      KQ_ARTIFACT_IMPORT_MODE: web
+    volumes:
+      - type: bind
+        source: ${KQ_ARTIFACT_WEB_RECEIPT_DIRECTORY:?required}
+        target: /imports/web-receipt
+        read_only: true
+        bind:
+          create_host_path: false
+
+  registry:
+    environment:
+      SPACK_RECIPE_BOOTSTRAP_MANIFEST: ""
+      SPACK_MATERIAL_BOOTSTRAP_MANIFEST: ""
+    volumes: !override
+      - registry-data:/var/lib/kuintessence/registry

@@ -65,8 +65,9 @@ jobs:
         run: |
           [[ "$REF" == refs/heads/main ||
              "$REF" == refs/heads/feat/spack-material-artifacts ||
-             ( "$REF" == refs/heads/feat/spack-artifact-managed && "$PUBLISH" == false ) ]] || {
-            echo "Only reviewed branches are supported; artifact-managed requires publish_artifact=false" >&2
+             ( "$REF" == refs/heads/feat/spack-artifact-managed && "$PUBLISH" == false ) ||
+             ( "$REF" == refs/heads/feat/spack-web-managed && "$PUBLISH" == false ) ]] || {
+            echo "Only reviewed branches are supported; managed branches require publish_artifact=false" >&2
             exit 2
           }
           [[ "$PUBLISH" != true || "$ACKNOWLEDGED" == true ]] || {

@@ -13,6 +13,7 @@
     "spack-artifacts/*.ts",
     "../../scripts/pr-scheduler-compose.test.ts",
     "../../scripts/spack-material-artifacts.test.ts",
-    "../../scripts/spack-artifact-managed.test.ts"
+    "../../scripts/spack-artifact-managed.test.ts",
+    "../../scripts/spack-web-managed.test.ts"
   ]
 }
