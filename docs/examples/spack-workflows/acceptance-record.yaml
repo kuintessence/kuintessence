@@ -1,6 +1,6 @@
 version: 1
 kind: spack-workflow-acceptance-record
-# Blank private worksheet. Not consumed by Registry, Server, Agent, or CI.
+# CI checks this blank template only. Filled private copies are not runtime inputs.
 workflow_id: null
 status: pending
 target_profile:
