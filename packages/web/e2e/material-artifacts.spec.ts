@@ -26,7 +26,7 @@ import {
 import { expect, type Page, type Response, test } from "patchright/test";
 import materials from "../src/locales/materials.en.json" with { type: "json" };
 import recipes from "../src/locales/recipes.en.json" with { type: "json" };
-import type { ArtifactStage } from "./material-artifacts.reporter";
+import { type ArtifactStage, recipeHttpStages } from "./material-artifacts.reporter";
 
 const materialLabels = materials.materials;
 const recipeLabels = recipes.recipes;
@@ -198,30 +198,48 @@ test("real artifact import through the application", async ({ page }) => {
 
   await stage("recipe-import", async () => {
     const panel = page.getByTestId("recipe-repositories-panel");
-    await panel
-      .getByLabel(recipeLabels.files, { exact: true })
-      .setInputFiles(join(fixture.recipePack, fixture.recipe.bundlePath));
-    await panel
-      .getByRole("textbox", {
-        name: recipeLabels.namespace.replace("{{file}}", fixture.recipe.bundlePath),
-        exact: true,
-      })
-      .fill(fixture.recipe.repository);
-    const [response] = await Promise.all([
-      page.waitForResponse((item) => isResponse(item, recipeApi, "POST"), { timeout: 180_000 }),
-      panel.getByRole("button", { name: recipeLabels.import, exact: true }).click(),
-    ]);
-    assert.equal(response.status(), 201);
-    const imported = RecipeRepositorySchema.parse(await response.json());
-    assert.equal(imported.repository, fixture.recipe.repository);
-    assert.equal(imported.id, fixture.selection.repositoryId);
-    assert.equal(imported.activeCommit, null);
-    const snapshot = imported.snapshots.find((item) => item.commit === fixture.selection.commit);
-    assert(snapshot);
-    assert(!snapshot.diagnostics.some((item) => item.severity === "error"));
-    await expect(
-      panel.getByRole("status").filter({ hasText: "1 imported, 0 failed" }),
-    ).toBeVisible();
+    await stage("recipe-select-bundle", async () => {
+      await panel
+        .getByLabel(recipeLabels.files, { exact: true })
+        .setInputFiles(join(fixture.recipePack, fixture.recipe.bundlePath));
+    });
+    await stage("recipe-namespace", async () => {
+      await panel
+        .getByRole("textbox", {
+          name: recipeLabels.namespace.replace("{{file}}", fixture.recipe.bundlePath),
+          exact: true,
+        })
+        .fill(fixture.recipe.repository);
+    });
+    const response = await stage("recipe-submit-response", async () => {
+      const [result] = await Promise.all([
+        page.waitForResponse((item) => isResponse(item, recipeApi, "POST"), { timeout: 180_000 }),
+        panel.getByRole("button", { name: recipeLabels.import, exact: true }).click(),
+      ]);
+      const status = result.status();
+      const httpStage =
+        recipeHttpStages.find((entry) => entry.status === status)?.stage ?? "recipe-http-other";
+      await stage(httpStage, async () => {
+        assert.equal(status, 201);
+      });
+      return result;
+    });
+    const imported = await stage("recipe-response-schema", async () =>
+      RecipeRepositorySchema.parse(await response.json()),
+    );
+    await stage("recipe-identity", async () => {
+      assert.equal(imported.repository, fixture.recipe.repository);
+      assert.equal(imported.id, fixture.selection.repositoryId);
+      assert.equal(imported.activeCommit, null);
+      const snapshot = imported.snapshots.find((item) => item.commit === fixture.selection.commit);
+      assert(snapshot);
+      assert(!snapshot.diagnostics.some((item) => item.severity === "error"));
+    });
+    await stage("recipe-summary", async () => {
+      await expect(
+        panel.getByRole("status").filter({ hasText: "1 imported, 0 failed" }),
+      ).toBeVisible();
+    });
   });
 
   let scratch: string | undefined;
