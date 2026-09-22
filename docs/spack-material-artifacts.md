@@ -135,5 +135,8 @@ shasum -a 256 -c checksums.txt
 7. 再次核对待上传目录的 checksum，成功后才允许执行可选 artifact 上传。
 
 测试栈只绑定 runner 的 loopback，不启动 Agent、scheduler、公网 preview 或生产部署。
+Server/Registry 额外连接本次项目的非 internal bridge，供 Docker 发布 loopback 端口；
+数据库仍只连接 internal backend。该 bridge 允许服务出站，不是网络断网验收；
+Registry 上游导入保持关闭，导出容器使用 `network_mode: none`。
 失败只输出固定阶段标记，不上传临时认证状态。所有通过结论须核对对应提交的 Actions，
 不以配置、单元测试或文件存在代替真实导入结果。

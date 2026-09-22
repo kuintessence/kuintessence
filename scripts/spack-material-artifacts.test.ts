@@ -104,8 +104,13 @@ describe("material artifact deployment contracts", () => {
     expect(base.volumes?.["pg-data"]).toBeNull();
     expect(base.volumes?.["registry-data"]).toBeNull();
     expect(overlay.volumes).toBeUndefined();
-    expect(overlay.networks).toBeUndefined();
+    expect(overlay.networks).toEqual({ "artifact-web": { internal: false } });
+    expect(overlay.services.server?.networks).toEqual(["artifact-web"]);
+    expect(overlay.services.registry?.networks).toEqual(["artifact-web"]);
+    expect(overlay.services["artifact-operator"]?.networks).toBeUndefined();
     expect(Object.values(base.networks ?? {}).every((network) => network.internal)).toBe(true);
+    expect(base.services.postgres?.networks).toEqual(["backend"]);
+    expect(base.services["db-migrate"]?.networks).toEqual(["backend"]);
     expect(base.services.scheduler?.networks).toEqual(["control"]);
     expect(base.services.registry?.networks).toEqual(["backend"]);
     expect(base.services.server?.networks).toEqual(["backend", "control"]);
