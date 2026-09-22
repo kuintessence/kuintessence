@@ -10,8 +10,10 @@
 recipe bundle、不改写原生 lock、不重打源码归档。导出的材料仍通过既有 Registry
 和 Server 使用，Agent 不新增 Registry 或上游下载路径。
 
-此工作流验证**导出、初始化导入、真实 Web 导入和持久化回读**，不执行受管安装或
-科学作业。既有 Hello/samtools 受管安装案例的通过，不能替代另一份新生成材料的
+此导出工作流验证**导出、初始化导入、真实 Web 导入和持久化回读**，不执行受管安装或
+科学作业。独立的 PR scheduler artifact-bootstrap 模式以同一 delivery 衔接
+初始化导入与受管安装，见下文；两种工作流的验收范围不能互相替代。
+既有 Hello/samtools 受管安装案例的通过，不能替代另一份新生成材料的
 安装验收，更不能证明 15 个科学工作流或生产目标站点可用。
 
 ## 发布前提
@@ -29,6 +31,8 @@ recipe bundle、不改写原生 lock、不重打源码归档。导出的材料�
 
 在 GitHub Actions 选择 `Spack material artifacts`，使用已审阅的 `main`。
 专用开发分支 `feat/spack-material-artifacts` 仅用于本功能的隔离验收。
+`feat/spack-artifact-managed` 仅允许 `publish_artifact=false` 的隔离验证，
+即使确认再分发也不能在此分支上传；未开放其他分支或自动代替发布者确认。
 
 | 参数 | 内容 |
 |---|---|
@@ -140,3 +144,41 @@ Server/Registry 额外连接本次项目的非 internal bridge，供 Docker 发�
 Registry 上游导入保持关闭，导出容器使用 `network_mode: none`。
 失败只输出固定阶段标记，不上传临时认证状态。所有通过结论须核对对应提交的 Actions，
 不以配置、单元测试或文件存在代替真实导入结果。
+
+## 同一交付的受管安装验收
+
+独立的 `PR scheduler tests` 新增 Hello/samtools 两条 `artifact bootstrap`
+managed job，保留原有两条直接发布材料的 managed job、Hello native 和 Slurm/PBS
+回归。以下命令仅供该工作流在临时 GitHub Actions runner 内执行，不用于本地或生产：
+
+```bash
+bash deploy/pr-test/run.sh slurm --spack-artifact-hello
+bash deploy/pr-test/run.sh slurm --spack-artifact-samtools
+```
+
+新模式的目标链路是：
+
+1. 使用固定 Hello/samtools 准备器导出一份 delivery，后续阶段复用其中的
+   recipe bundle、原生单 root lock 和源码，不重新生成另一套材料。
+2. Registry 通过既有 bootstrap 导入该 delivery；handoff 只读核对真实导入结果
+   和 release binding，不另行发布、不预造 binding，也不把 health 成功视为导入完成。
+3. 首次 handoff 成功后清空 recipe/material bootstrap 配置，保留数据库和材料卷，
+   force-recreate Registry/Server，再执行只读 handoff verify，确认禁用 bootstrap
+   后仍能回读同一 binding 和材料；验证成功后才启动 scheduler。
+4. Server 使用校验后的真实 binding，Agent 仍只从 Server 获取材料，
+   不获得 Registry 网络或管理凭据。
+5. 复用既有 managed 安装、source audit、断网 build、readonly verify、load、
+   真实 Slurm 作业、完整性负例及恢复、重启、卸载、引用账本和 rollout 检查。
+   后续 restart 也保持 bootstrap 禁用并回读，不能通过启动时重导入修复材料，
+   掩盖持久化失败。
+
+此模式不启动 Web、不部署 preview/production，也不上传 delivery、安装树或原始日志。
+独立导出工作流的许可确认与可选上传规则保持不变，不因增加安装验收自动发布材料。
+完整 CI 另接入 `scripts/spack-artifact-managed.test.ts` 合同检查及 harness 类型检查；
+这些静态或 fixture 检查不能替代真实 scheduler job。
+
+当前新增链路尚待对应 SHA 的 Actions 验证，不能写作已通过。即使后续通过，
+也只证明该次 delivery 经 **Registry bootstrap 后**完成固定案例的受管安装链路，
+不证明 Web 导入后安装，不覆盖任意 spec、15 个工作流、跨节点共享存储/ABI
+或生产目标集群。固定工具链、site profile 和隔离边界见
+[PR 调度器测试](../deploy/pr-test/README.md#同一交付的-artifact-bootstrap-受管案例)。

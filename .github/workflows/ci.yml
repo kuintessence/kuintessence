@@ -113,7 +113,8 @@ jobs:
           bun test scripts/spack-material-delivery.test.ts
           scripts/spack-material-rollout-deployment.test.ts scripts/pr-scheduler-compose.test.ts
           deploy/pr-test/spack-case/fixture.test.ts deploy/pr-test/spack-managed/jobs.test.ts
-          scripts/spack-material-artifacts.test.ts deploy/pr-test/spack-artifacts/*.test.ts
+          scripts/spack-material-artifacts.test.ts scripts/spack-artifact-managed.test.ts
+          deploy/pr-test/spack-artifacts/*.test.ts
 
       - name: Type check (all packages)
         run: bun run typecheck

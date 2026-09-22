@@ -130,6 +130,17 @@ Kuintessence 当前为 pre-release。以下列出组件功能、运行要求和�
   bundle、原生 lock 和源码生成现有导入格式，Actions 验证真实 bootstrap/Web 导入、
   逐 blob 回读及重启持久化；默认仅验证，审核确认并显式上传后才提供该 run 的 artifact。
   不因入口存在认定已生成成品，导入通过不等于这份材料已完成受管安装验收。
+  PR scheduler 新增 Hello/samtools artifact-bootstrap managed 模式：
+  同一 delivery 导出后由 Registry bootstrap 导入，只读 handoff 校验真实 binding，
+  随后清空 bootstrap 配置、保留卷并 force-recreate Registry/Server；
+  禁用 bootstrap 后的 handoff verify 回读成功才启动 scheduler，接入
+  Server → Agent 的安装、作业、完整性检查、重启、卸载及引用/rollout 回归。
+  后续 restart 也禁用 bootstrap 并回读，防止重导入修复掩盖持久化失败。
+  原有两个 managed case、Hello native 和 Slurm/PBS 回归保留，managed matrix 共四项。
+  新入口仅在 Actions 执行，不部署 preview/production，不上传材料；
+  `feat/spack-artifact-managed` 调用独立导出工作流也仅允许 `publish_artifact=false`。
+  当前新增链路尚待对应 SHA 的 Actions 验证，不能宣称已通过；
+  bootstrap 后安装不等于 Web 后安装，也不代表通用 spec 或生产目标集群验收。
   当前没有通用材料生成器或全部 15 项的完整材料 artifact；每软件须独立单 root
   lock/release、每步骤隔离运行环境，不能用 macOS lock 替代目标 Linux lock，
   也不能把此切片视为完整变异检测工作流验收。

@@ -6,5 +6,13 @@
     "types": ["bun-types"],
     "lib": ["ESNext"]
   },
-  "include": ["runtime.ts", "spack-case/*.ts", "spack-managed/*.ts", "spack-artifacts/*.ts", "../../scripts/pr-scheduler-compose.test.ts", "../../scripts/spack-material-artifacts.test.ts"]
+  "include": [
+    "runtime.ts",
+    "spack-case/*.ts",
+    "spack-managed/*.ts",
+    "spack-artifacts/*.ts",
+    "../../scripts/pr-scheduler-compose.test.ts",
+    "../../scripts/spack-material-artifacts.test.ts",
+    "../../scripts/spack-artifact-managed.test.ts"
+  ]
 }
