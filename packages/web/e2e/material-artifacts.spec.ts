@@ -325,7 +325,9 @@ test("real artifact import through the application", async ({ page }) => {
         assert.equal(imported.repository, fixture.recipe.repository);
         assert.equal(imported.id, fixture.selection.repositoryId);
         assert.equal(imported.activeCommit, null);
-        const snapshot = imported.snapshots.find((item) => item.commit === fixture.selection.commit);
+        const snapshot = imported.snapshots.find(
+          (item) => item.commit === fixture.selection.commit,
+        );
         assert(snapshot);
         assert(!snapshot.diagnostics.some((item) => item.severity === "error"));
       });
