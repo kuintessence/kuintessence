@@ -16,6 +16,10 @@ artifact。固定 Hello/samtools 新增[手动材料导出](spack-material-artif
 默认只验证；完成审核并明确上传后，才会产生该次 run 的可下载材料。
 不提供任意 spec 的通用导出入口，也不代表已生成 15 项材料。
 
+运维可使用[材料交付与目标验收工作表](spack-workflow-acceptance.md)逐项记录
+target/profile、recipe、lock/source、导入 binding 和科学运行证据。其候选 YAML
+与空白记录不是平台导入 manifest，所有条目默认未验收。
+
 ## 材料分类
 
 | 类别 | 必备内容 | 边界 |
