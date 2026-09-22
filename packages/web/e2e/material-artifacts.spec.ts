@@ -61,7 +61,7 @@ async function stage<T>(name: ArtifactStage, action: () => Promise<T>): Promise<
 }
 
 async function observeRecipeReceipt(page: Page): Promise<void> {
-  await page.evaluate((path) => {
+  function install(path: string) {
     if (window.__kqArtifactRecipeReceipt) throw new Error("recipe-capture-already-installed");
     const nativeFetch = window.fetch;
     const receipt: RecipeReceiptObservation = {
@@ -115,7 +115,22 @@ async function observeRecipeReceipt(page: Page): Promise<void> {
     };
     window.__kqArtifactRecipeReceipt = receipt;
     window.fetch = observedFetch;
-  }, recipeApi);
+  }
+  await page.evaluate(install, recipeApi, false);
+}
+
+function recipeReceiptReady(): boolean {
+  const receipt = window.__kqArtifactRecipeReceipt;
+  return receipt?.state === "captured" || receipt?.state === "failed";
+}
+
+function observedRecipeReceipt() {
+  const receipt = window.__kqArtifactRecipeReceipt;
+  return { state: receipt?.state, count: receipt?.count, payload: receipt?.payload };
+}
+
+function restoreRecipeReceipt(): void {
+  window.__kqArtifactRecipeReceipt?.restore();
 }
 
 async function readManifest(path: string): Promise<unknown> {
@@ -302,18 +317,10 @@ test("real artifact import through the application", async ({ page }) => {
         ).toBeVisible();
       });
       const payload = await stage("recipe-receipt-read", async () => {
-        await page.waitForFunction(() => {
-          const receipt = window.__kqArtifactRecipeReceipt;
-          return receipt?.state === "captured" || receipt?.state === "failed";
-        });
-        const receipt = await page.evaluate(() => {
-          const captured = window.__kqArtifactRecipeReceipt;
-          return {
-            state: captured?.state,
-            count: captured?.count,
-            payload: captured?.payload,
-          };
-        });
+        await expect
+          .poll(() => page.evaluate(recipeReceiptReady, undefined, false), { timeout: 30_000 })
+          .toBe(true);
+        const receipt = await page.evaluate(observedRecipeReceipt, undefined, false);
         assert.equal(receipt.state, "captured");
         assert.equal(receipt.count, 1);
         return receipt.payload;
@@ -344,7 +351,7 @@ test("real artifact import through the application", async ({ page }) => {
       });
     } finally {
       await stage("recipe-capture-cleanup", async () => {
-        await page.evaluate(() => window.__kqArtifactRecipeReceipt?.restore());
+        await page.evaluate(restoreRecipeReceipt, undefined, false);
       });
     }
   });
