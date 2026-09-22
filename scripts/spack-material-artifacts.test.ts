@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { parse } from "yaml";
@@ -76,7 +76,11 @@ describe("material artifact deployment contracts", () => {
     const overlay = parse(
       await readFile(join(root, "deploy/compose/docker-compose.pr-spack-artifacts.yml"), "utf8"),
     ) as Compose;
-    expect(Object.keys(overlay.services).sort()).toEqual(["artifact-operator", "registry", "server"]);
+    expect(Object.keys(overlay.services).sort()).toEqual([
+      "artifact-operator",
+      "registry",
+      "server",
+    ]);
     expect(overlay.services["artifact-operator"]?.network_mode).toBe("none");
     expect(overlay.services.server?.ports).toEqual([{ target: 3000, host_ip: "127.0.0.1" }]);
     expect(overlay.services.registry?.ports).toEqual([{ target: 3100, host_ip: "127.0.0.1" }]);
@@ -94,7 +98,9 @@ describe("material artifact deployment contracts", () => {
       SPACK_MATERIAL_BOOTSTRAP_MANIFEST: `\${KQ_ARTIFACT_MATERIAL_BOOTSTRAP:-}`,
     });
     expect(base.services.postgres?.volumes).toContain("pg-data:/var/lib/postgresql/data");
-    expect(base.services.registry?.volumes).toContain("registry-data:/var/lib/kuintessence/registry");
+    expect(base.services.registry?.volumes).toContain(
+      "registry-data:/var/lib/kuintessence/registry",
+    );
     expect(base.volumes?.["pg-data"]).toBeNull();
     expect(base.volumes?.["registry-data"]).toBeNull();
     expect(overlay.volumes).toBeUndefined();
@@ -155,12 +161,16 @@ describe("material artifact deployment contracts", () => {
       RECIPE_REPOSITORY: `\${{ inputs.recipe_repository }}`,
       MATERIAL_REPOSITORY: `\${{ inputs.material_repository }}`,
     });
-    expect(invocation?.run).toContain('"$MATERIAL_CASE" "$RECIPE_REPOSITORY" "$MATERIAL_REPOSITORY"');
+    expect(invocation?.run).toContain(
+      '"$MATERIAL_CASE" "$RECIPE_REPOSITORY" "$MATERIAL_REPOSITORY"',
+    );
     expect(invocation?.run).not.toContain("${{");
   });
 
   test("full CI calls both cases without authorizing artifact publication", async () => {
-    const workflow = parse(await readFile(join(root, ".github/workflows/ci.yml"), "utf8")) as Workflow;
+    const workflow = parse(
+      await readFile(join(root, ".github/workflows/ci.yml"), "utf8"),
+    ) as Workflow;
     const job = workflow.jobs["spack-artifact-imports"];
     expect(job?.if).toBe("github.event_name == 'workflow_dispatch' && inputs.run_runtime_checks");
     expect(job?.needs).toBe("lint-and-typecheck");
@@ -362,7 +372,8 @@ describe("material artifact runner (fake tools, Actions only)", () => {
     expect(await readdir(result.runnerTemp)).toEqual([]);
   });
 
-  test.each(["", "relative", "/missing-actions-temporary-directory"])(
+  const invalidTempPaths = ["", "relative", "/missing-actions-temporary-directory"];
+  test.each(invalidTempPaths)(
     "rejects unusable Actions temporary directory %j",
     async (value) => {
       const result = await runFixture(undefined, "none", { RUNNER_TEMP: value });
@@ -371,7 +382,8 @@ describe("material artifact runner (fake tools, Actions only)", () => {
     },
   );
 
-  test.each(["hello", "samtools"])(
+  const artifactCases = ["hello", "samtools"];
+  test.each(artifactCases)(
     "%s keeps namespaces and verifies both independent stores before exposing only the pack",
     async (caseId) => {
       const recipe = "org/provider-example/fixture-recipes";
@@ -379,7 +391,9 @@ describe("material artifact runner (fake tools, Actions only)", () => {
       const result = await runFixture([caseId, recipe, material]);
       expect(result.code).toBe(0);
       expect(result.stderr).toBe("");
-      expect(result.stdout).toContain("Spack artifact export and import regression: status=succeeded");
+      expect(result.stdout).toContain(
+        "Spack artifact export and import regression: status=succeeded",
+      );
       expect(result.trace).toContain(
         `export-arguments: export /opt/kq-case /out/delivery ${caseId} ${recipe} ${material}`,
       );
@@ -441,7 +455,7 @@ describe("material artifact runner (fake tools, Actions only)", () => {
     15_000,
   );
 
-  test.each([
+  const failureStages = [
     "config",
     "build",
     "export",
@@ -456,7 +470,8 @@ describe("material artifact runner (fake tools, Actions only)", () => {
     "web-restart",
     "checksum",
     "down",
-  ])(
+  ];
+  test.each(failureStages)(
     "%s failure preserves cleanup and does not publish success",
     async (failure) => {
       const result = await runFixture(undefined, failure);
