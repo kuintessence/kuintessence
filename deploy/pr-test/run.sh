@@ -38,10 +38,10 @@ fi
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 command -v docker >/dev/null || fail "Docker is required"
 command -v openssl >/dev/null || fail "OpenSSL is required"
-docker compose version >/dev/null
 
 # Never inherit a deployment's project, env file, profiles or image tags.
-unset COMPOSE_FILE COMPOSE_PROFILES COMPOSE_ENV_FILES
+unset COMPOSE_FILE COMPOSE_PROFILES COMPOSE_ENV_FILES COMPOSE_PROJECT_NAME
+docker compose version >/dev/null
 export COMPOSE_PROJECT_NAME="kq-pr-test-${KQ_PR_SCHEDULER}-$(openssl rand -hex 8)"
 export KQ_PR_DB_PASSWORD="$(openssl rand -hex 32)"
 export KQ_PR_JWT_SECRET="$(openssl rand -hex 32)"
