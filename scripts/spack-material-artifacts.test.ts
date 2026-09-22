@@ -373,19 +373,15 @@ describe("material artifact runner (fake tools, Actions only)", () => {
   });
 
   const invalidTempPaths = ["", "relative", "/missing-actions-temporary-directory"];
-  test.each(invalidTempPaths)(
-    "rejects unusable Actions temporary directory %j",
-    async (value) => {
-      const result = await runFixture(undefined, "none", { RUNNER_TEMP: value });
-      expect(result.code).toBe(2);
-      expect(result.trace).toBe("");
-    },
-  );
+  test.each(invalidTempPaths)("rejects unusable Actions temporary directory %j", async (value) => {
+    const result = await runFixture(undefined, "none", { RUNNER_TEMP: value });
+    expect(result.code).toBe(2);
+    expect(result.trace).toBe("");
+  });
 
   const artifactCases = ["hello", "samtools"];
-  test.each(artifactCases)(
-    "%s keeps namespaces and verifies both independent stores before exposing only the pack",
-    async (caseId) => {
+  for (const caseId of artifactCases) {
+    test(`${caseId} preserves namespaces and isolates imports`, async () => {
       const recipe = "org/provider-example/fixture-recipes";
       const material = "org/provider-example/fixture-sources";
       const result = await runFixture([caseId, recipe, material]);
@@ -451,9 +447,8 @@ describe("material artifact runner (fake tools, Actions only)", () => {
         "manifest.json",
       ]);
       expect(result.trace).toContain("down --volumes --remove-orphans --rmi local --timeout 15");
-    },
-    15_000,
-  );
+    }, 15_000);
+  }
 
   const failureStages = [
     "config",
@@ -471,9 +466,8 @@ describe("material artifact runner (fake tools, Actions only)", () => {
     "checksum",
     "down",
   ];
-  test.each(failureStages)(
-    "%s failure preserves cleanup and does not publish success",
-    async (failure) => {
+  for (const failure of failureStages) {
+    test(`${failure} failure cleans up without success`, async () => {
       const result = await runFixture(undefined, failure);
       expect(result.code).not.toBe(0);
       expect(result.stdout).not.toContain(
@@ -490,9 +484,8 @@ describe("material artifact runner (fake tools, Actions only)", () => {
         }
       }
       if (failure === "browser") expect(result.trace).not.toContain("verify.ts web |");
-    },
-    15_000,
-  );
+    }, 15_000);
+  }
 
   test("final cleanup failure fails the step even after the output was prepared", async () => {
     const result = await runFixture(undefined, "cleanup");
