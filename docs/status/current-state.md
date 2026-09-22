@@ -120,6 +120,9 @@ Kuintessence 当前为 pre-release。以下列出组件功能、运行要求和�
   大规模材料目录索引/物理删除/跨组织分享及 15 个工作流的目标 Linux 材料、lock 和端到端安装/运行验收仍未完成。
   [科学工作流材料指南](../spack-workflow-materials.md)列出 15 项候选软件、外部输入、
   许可自审与 target/MPI 风险，并提供 macOS 获取、校验、搬运和 bootstrap/Web 导入步骤。
+  [交付与验收工作表](../spack-workflow-acceptance.md)提供对应机器可读候选清单、
+  target/profile 及逐软件/步骤的空白记录；不是导入或自动执行入口，默认全部未验收。
+  模板一致性检查不证明材料闭包、目标兼容或科学运行成功。
   首个实现路线限定为 samtools 单软件切片：Spack 1.0.0、固定官方 recipe、
   Ubuntu 20.04 x86_64 和可销毁单节点 Slurm；请求 spec 为
   `samtools@1.19.2 ^htslib@1.19.1~libcurl~libdeflate ^ncurses+symlinks %pkgconf ^zlib@1.3.1`。
@@ -149,7 +152,10 @@ Kuintessence 当前为 pre-release。以下列出组件功能、运行要求和�
   不修改生产协议或安装逻辑。managed matrix 共六项，旧路径和 Hello native、
   Slurm/PBS 回归保留；仅两个 Web 条目安装 host Bun 1.4.2、frozen 依赖、
   生成 protobuf 并安装 Patchright Chromium，沿用 AppArmor、timeout 与无上传门禁。
-  新 Web 链路尚待新 HEAD 的 Actions 验证，不沿用 PR #9 的通过结论。
+  PR #10 的提交 `1ffd2c4651353639b15bca012f1305bb14a8fabb` 已通过完整 CI
+  `35691359927`（9 个实际 job）和 scheduler `35691359119`（9 个 job），
+  包含 Hello/samtools 同一次 Web binding 的受管安装及三次网络隔离复核。
+  此历史证据仅适用于该 SHA，不沿用为后续提交或目标站点的通过结论。
   这些入口仅在 Actions 执行，不部署 preview/production，不上传材料；
   `feat/spack-artifact-managed` 和 `feat/spack-web-managed` 调用独立导出工作流
   均仅允许 `publish_artifact=false`，不放宽其他分支与许可确认规则。
@@ -197,8 +203,9 @@ Kuintessence 当前为 pre-release。以下列出组件功能、运行要求和�
 - [系统运维](../manuals/system-operations-manual.md)
 - [开发与检查命令](../../README.md#开发)
 
-`CI` 工作流在推送 `main` 和 PR 时默认只运行 Biome、文档链接及 workflow 引用静态检查，
-安装时禁用生命周期脚本。完整类型检查/全套测试、binary 构建与 smoke、跨架构镜像验证、
+`CI` 工作流在推送 `main` 和 PR 时默认运行 Biome、文档链接、workflow 引用及
+科学工作流交付模板的离线合同检查和该检查文件的类型检查；安装时禁用生命周期脚本，
+不生成 protobuf、不启动 Spack/服务/容器。完整类型检查/全套测试、binary 构建与 smoke、跨架构镜像验证、
 文档站发布仍由维护者手动触发；可信同仓库非草稿 PR 的 Slurm/PBS 测试和限时预览
 分别自动运行，main 预览仍手动启停。具体入口见 [GitHub Actions](../deployment.md#actions)。
 手动完整 CI 使用 `test:unit` 的临时数据库和逐文件进程隔离，再单独执行

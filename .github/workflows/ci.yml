@@ -80,6 +80,16 @@ jobs:
       - name: Check workflow references
         run: bun run check:workflow-uses
 
+      - name: Check scientific workflow handoff templates
+        run: bun test scripts/spack-workflow-handoff.test.ts
+
+      - name: Type check workflow handoff contracts
+        run: >-
+          bun node_modules/typescript/bin/tsc --noEmit --strict
+          --noUncheckedIndexedAccess --skipLibCheck --target ESNext
+          --module ESNext --moduleResolution bundler --types bun-types
+          scripts/spack-workflow-handoff.test.ts
+
   lint-and-typecheck:
     name: Full typecheck + Helm validation
     if: github.event_name == 'workflow_dispatch' && inputs.run_runtime_checks

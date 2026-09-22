@@ -1,0 +1,82 @@
+version: 1
+kind: spack-workflow-acceptance-record
+# CI checks this blank template only. Filled private copies are not runtime inputs.
+workflow_id: null
+status: pending
+target_profile:
+  id: null
+  os: null
+  architecture: null
+  spack_version: null
+  compiler: null
+  externals: []
+  mpi: null
+  scheduler: null
+  runtime_digest: null
+  site_profile_digest: null
+  storage_layout_review: null
+  resource_budget_review: null
+  network_policy_review: null
+software:
+  # Repeat per independently prepared single-root release.
+  - package: null
+    satisfies_candidates: []
+    requested_spec: null
+    root_hash: null
+    recipe:
+      repository_id: null
+      upstream_commit: null
+      snapshot_commit: null
+      roots: []
+      bundle_sha256: null
+      bundle_bytes: null
+    material:
+      repository_id: null
+      manifest_digest: null
+      lock_sha256: null
+      lock_bytes: null
+      source_inventory_digest: null
+      source_files: null
+      source_bytes: null
+    redistribution_review: null
+    preparation_evidence: null
+    import_mode: null
+    import_binding: null
+    gates:
+      recipe_review: {status: pending, evidence: []}
+      linux_lock: {status: pending, evidence: []}
+      source_closure: {status: pending, evidence: []}
+      import_readback: {status: pending, evidence: []}
+      source_audit: {status: pending, evidence: []}
+      offline_build: {status: pending, evidence: []}
+      readonly_verify: {status: pending, evidence: []}
+      managed_load: {status: pending, evidence: []}
+      restart_verify: {status: pending, evidence: []}
+      cleanup: {status: pending, evidence: []}
+inputs:
+  # Include synthetic generators and seeds as well as external files.
+  - id: null
+    origin: null
+    version: null
+    sha256: null
+    bytes: null
+    usage_review: null
+    redistribution_review: null
+steps:
+  # Each step references the exact binding, not only the package name.
+  - id: null
+    binding: null
+    input_contract: null
+    output_contract: null
+    resources: null
+    acceptance_criteria: null
+    evidence: []
+gates:
+  target_review: {status: pending, evidence: []}
+  input_review: {status: pending, evidence: []}
+  scheduler_run: {status: pending, evidence: []}
+  interface_checks: {status: pending, evidence: []}
+  scientific_checks: {status: pending, evidence: []}
+  reproducibility: {status: pending, evidence: []}
+  cleanup: {status: pending, evidence: []}
+blockers: []
