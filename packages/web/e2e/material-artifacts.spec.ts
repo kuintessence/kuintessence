@@ -37,6 +37,19 @@ const allowedSpecs = new Set([
   "samtools@1.19.2 ^htslib@1.19.1~libcurl~libdeflate ^ncurses+symlinks %pkgconf ^zlib@1.3.1",
 ]);
 
+interface RecipeReceiptObservation {
+  count: number;
+  state: "waiting" | "pending" | "captured" | "failed";
+  payload?: unknown;
+  restore: () => void;
+}
+
+declare global {
+  interface Window {
+    __kqArtifactRecipeReceipt?: RecipeReceiptObservation;
+  }
+}
+
 async function stage<T>(name: ArtifactStage, action: () => Promise<T>): Promise<T> {
   return test.step(name, async () => {
     try {
@@ -45,6 +58,64 @@ async function stage<T>(name: ArtifactStage, action: () => Promise<T>): Promise<
       throw new Error(`artifact-web stage=${name} code=failed`);
     }
   });
+}
+
+async function observeRecipeReceipt(page: Page): Promise<void> {
+  await page.evaluate((path) => {
+    if (window.__kqArtifactRecipeReceipt) throw new Error("recipe-capture-already-installed");
+    const nativeFetch = window.fetch;
+    const receipt: RecipeReceiptObservation = {
+      count: 0,
+      state: "waiting",
+      restore: () => {
+        if (window.fetch === observedFetch) window.fetch = nativeFetch;
+        delete window.__kqArtifactRecipeReceipt;
+        delete receipt.payload;
+      },
+    };
+    const observedFetch: typeof fetch = (...args) => {
+      const pending = nativeFetch.apply(window, args);
+      const [input, init] = args;
+      let matches = false;
+      try {
+        const url = new URL(input instanceof Request ? input.url : String(input), location.href);
+        const method = init?.method ?? (input instanceof Request ? input.method : "GET");
+        matches =
+          url.origin === location.origin &&
+          url.pathname === path &&
+          method.toUpperCase() === "POST";
+      } catch {
+        // Observation must not change native handling of unrelated or invalid requests.
+        return pending;
+      }
+      if (!matches) return pending;
+      receipt.count++;
+      receipt.state = receipt.count === 1 ? "pending" : "failed";
+      delete receipt.payload;
+      if (receipt.count === 1) {
+        // Clone only for observation; the application receives the untouched native response.
+        void pending.then(
+          async (response) => {
+            try {
+              const payload: unknown = await response.clone().json();
+              if (receipt.count === 1 && receipt.state === "pending") {
+                receipt.payload = payload;
+                receipt.state = "captured";
+              }
+            } catch {
+              receipt.state = "failed";
+            }
+          },
+          () => {
+            receipt.state = "failed";
+          },
+        );
+      }
+      return pending;
+    };
+    window.__kqArtifactRecipeReceipt = receipt;
+    window.fetch = observedFetch;
+  }, recipeApi);
 }
 
 async function readManifest(path: string): Promise<unknown> {
@@ -198,48 +269,82 @@ test("real artifact import through the application", async ({ page }) => {
 
   await stage("recipe-import", async () => {
     const panel = page.getByTestId("recipe-repositories-panel");
-    await stage("recipe-select-bundle", async () => {
-      await panel
-        .getByLabel(recipeLabels.files, { exact: true })
-        .setInputFiles(join(fixture.recipePack, fixture.recipe.bundlePath));
-    });
-    await stage("recipe-namespace", async () => {
-      await panel
-        .getByRole("textbox", {
-          name: recipeLabels.namespace.replace("{{file}}", fixture.recipe.bundlePath),
-          exact: true,
-        })
-        .fill(fixture.recipe.repository);
-    });
-    const response = await stage("recipe-submit-response", async () => {
-      const [result] = await Promise.all([
-        page.waitForResponse((item) => isResponse(item, recipeApi, "POST"), { timeout: 180_000 }),
-        panel.getByRole("button", { name: recipeLabels.import, exact: true }).click(),
-      ]);
-      const status = result.status();
-      const httpStage =
-        recipeHttpStages.find((entry) => entry.status === status)?.stage ?? "recipe-http-other";
-      await stage(httpStage, async () => {
-        assert.equal(status, 201);
+    await stage("recipe-capture-install", () => observeRecipeReceipt(page));
+    try {
+      await stage("recipe-select-bundle", async () => {
+        await panel
+          .getByLabel(recipeLabels.files, { exact: true })
+          .setInputFiles(join(fixture.recipePack, fixture.recipe.bundlePath));
       });
-      return result;
-    });
-    const imported = await stage("recipe-response-schema", async () =>
-      RecipeRepositorySchema.parse(await response.json()),
-    );
-    await stage("recipe-identity", async () => {
-      assert.equal(imported.repository, fixture.recipe.repository);
-      assert.equal(imported.id, fixture.selection.repositoryId);
-      assert.equal(imported.activeCommit, null);
-      const snapshot = imported.snapshots.find((item) => item.commit === fixture.selection.commit);
-      assert(snapshot);
-      assert(!snapshot.diagnostics.some((item) => item.severity === "error"));
-    });
-    await stage("recipe-summary", async () => {
-      await expect(
-        panel.getByRole("status").filter({ hasText: "1 imported, 0 failed" }),
-      ).toBeVisible();
-    });
+      await stage("recipe-namespace", async () => {
+        await panel
+          .getByRole("textbox", {
+            name: recipeLabels.namespace.replace("{{file}}", fixture.recipe.bundlePath),
+            exact: true,
+          })
+          .fill(fixture.recipe.repository);
+      });
+      await stage("recipe-submit-response", async () => {
+        const [result] = await Promise.all([
+          page.waitForResponse((item) => isResponse(item, recipeApi, "POST"), { timeout: 180_000 }),
+          panel.getByRole("button", { name: recipeLabels.import, exact: true }).click(),
+        ]);
+        const status = result.status();
+        const httpStage =
+          recipeHttpStages.find((entry) => entry.status === status)?.stage ?? "recipe-http-other";
+        await stage(httpStage, async () => {
+          assert.equal(status, 201);
+        });
+      });
+      await stage("recipe-summary", async () => {
+        await expect(
+          panel.getByRole("status").filter({ hasText: "1 imported, 0 failed" }),
+        ).toBeVisible();
+      });
+      const payload = await stage("recipe-receipt-read", async () => {
+        await page.waitForFunction(() => {
+          const receipt = window.__kqArtifactRecipeReceipt;
+          return receipt?.state === "captured" || receipt?.state === "failed";
+        });
+        const receipt = await page.evaluate(() => {
+          const captured = window.__kqArtifactRecipeReceipt;
+          return {
+            state: captured?.state,
+            count: captured?.count,
+            payload: captured?.payload,
+          };
+        });
+        assert.equal(receipt.state, "captured");
+        assert.equal(receipt.count, 1);
+        return receipt.payload;
+      });
+      const imported = await stage("recipe-response-schema", async () =>
+        RecipeRepositorySchema.parse(payload),
+      );
+      await stage("recipe-identity", async () => {
+        assert.equal(imported.repository, fixture.recipe.repository);
+        assert.equal(imported.id, fixture.selection.repositoryId);
+        assert.equal(imported.activeCommit, null);
+        const snapshot = imported.snapshots.find((item) => item.commit === fixture.selection.commit);
+        assert(snapshot);
+        assert(!snapshot.diagnostics.some((item) => item.severity === "error"));
+      });
+      const persisted = await stage("recipe-readback", async () =>
+        RecipeRepositorySchema.parse(
+          await getJson(
+            page,
+            `/software/api/spack/recipe-repositories/${fixture.selection.repositoryId}`,
+          ),
+        ),
+      );
+      await stage("recipe-receipt-match", async () => {
+        assert.deepEqual(persisted, imported);
+      });
+    } finally {
+      await stage("recipe-capture-cleanup", async () => {
+        await page.evaluate(() => window.__kqArtifactRecipeReceipt?.restore());
+      });
+    }
   });
 
   let scratch: string | undefined;
@@ -282,34 +387,59 @@ test("real artifact import through the application", async ({ page }) => {
         fixture.materialPack,
       );
       const panel = page.getByTestId("spack-materials-panel");
-      const [response] = await Promise.all([
-        page.waitForResponse((item) => isResponse(item, `${materialApi}/releases`, "POST"), {
-          timeout: 240_000,
-        }),
-        panel.getByRole("button", { name: materialLabels.import, exact: true }).click(),
-      ]);
-      assert.equal(response.status(), 201);
-      const published = SpackMaterialBindingSchema.parse(await response.json());
-      assert.equal(
-        published.repositoryId,
-        createHash("sha256").update(fixture.release.repository).digest("hex"),
-      );
-      await expect(
-        panel.getByRole("status").filter({ hasText: "1 published, 0 failed, 0 unconfirmed" }),
-      ).toBeVisible();
-      assert.equal(writes.blobs, fixture.pack.files.length);
-      assert.equal(writes.releases, 1);
-      await panel
-        .getByRole("table", { name: materialLabels.queue })
-        .getByRole("button", { name: materialLabels.inspect, exact: true })
-        .click();
-      await expect(panel.getByTestId("material-release-detail")).toBeVisible();
-      await expect(panel.getByLabel(materialLabels.repositoryId, { exact: true })).toHaveValue(
-        published.repositoryId,
-      );
-      await expect(panel.getByLabel(materialLabels.manifestDigest, { exact: true })).toHaveValue(
-        published.manifestDigest,
-      );
+      await stage("material-submit-response", async () => {
+        const [response] = await Promise.all([
+          page.waitForResponse((item) => isResponse(item, `${materialApi}/releases`, "POST"), {
+            timeout: 240_000,
+          }),
+          panel.getByRole("button", { name: materialLabels.import, exact: true }).click(),
+        ]);
+        assert.equal(response.status(), 201);
+      });
+      await stage("material-summary", async () => {
+        await expect(
+          panel.getByRole("status").filter({ hasText: "1 published, 0 failed, 0 unconfirmed" }),
+        ).toBeVisible();
+        assert.equal(writes.blobs, fixture.pack.files.length);
+        assert.equal(writes.releases, 1);
+      });
+      const published = await stage("material-catalog-binding", async () => {
+        const catalog = SpackMaterialCatalogSchema.parse(
+          await getJson(
+            page,
+            `${materialApi}?repository=${encodeURIComponent(fixture.release.repository)}`,
+          ),
+        );
+        assert.equal(catalog.releases.length, 1);
+        const release = catalog.releases[0];
+        assert(release);
+        assert.equal(release.repository, fixture.release.repository);
+        assert.equal(release.spec, fixture.release.spec);
+        assert.equal(release.target, fixture.release.target);
+        assert.equal(release.spackVersion, fixture.release.spackVersion);
+        const result = SpackMaterialBindingSchema.parse({
+          repositoryId: release.repositoryId,
+          manifestDigest: release.manifestDigest,
+        });
+        assert.equal(
+          result.repositoryId,
+          createHash("sha256").update(fixture.release.repository).digest("hex"),
+        );
+        return result;
+      });
+      await stage("material-inspect", async () => {
+        await panel
+          .getByRole("table", { name: materialLabels.queue })
+          .getByRole("button", { name: materialLabels.inspect, exact: true })
+          .click();
+        await expect(panel.getByTestId("material-release-detail")).toBeVisible();
+        await expect(panel.getByLabel(materialLabels.repositoryId, { exact: true })).toHaveValue(
+          published.repositoryId,
+        );
+        await expect(panel.getByLabel(materialLabels.manifestDigest, { exact: true })).toHaveValue(
+          published.manifestDigest,
+        );
+      });
       return published;
     });
 
