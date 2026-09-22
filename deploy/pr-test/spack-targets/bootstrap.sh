@@ -23,7 +23,7 @@ tar -xzf "$work/openssl.tar.gz" --strip-components=1 -C "$work/openssl"
   ./config --prefix=/opt/kq-openssl --libdir=lib --openssldir=/etc/ssl shared
   make -j2
   make install_sw
-)
+) >"$work/openssl-build.log" 2>&1
 printf 'Target bootstrap: stage=%s code=OK\n' "$stage"
 
 stage=python
@@ -38,7 +38,7 @@ tar -xJf "$work/python.tar.xz" --strip-components=1 -C "$work/python"
     --with-openssl-rpath=auto --with-ensurepip=install
   make -j2
   make install
-)
+) >"$work/python-build.log" 2>&1
 /opt/kq-python/bin/python3.11 -c \
   'import ssl, sys, bz2, ctypes, lzma, sqlite3, zlib; assert sys.version_info[:3] == (3, 11, 16); assert ssl.OPENSSL_VERSION.startswith("OpenSSL 3.5.8 ")'
 printf 'Target bootstrap: stage=%s code=OK\n' "$stage"
@@ -54,15 +54,36 @@ checkout() {
   git init "$1"
   (
     cd "$1"
-    git -c fetch.fsckObjects=true fetch --depth=1 --no-tags "$2" "$3"
+    # Git 1.8 cannot reliably request a SHA that is not advertised as a ref.
+    # The ref is only a transport locator; the pinned commit remains authoritative.
+    if ! git -c fetch.fsckObjects=true fetch --depth=1 --no-tags "$2" "$4" \
+        >"$work/git-fetch.log" 2>&1; then
+      reason=other
+      if grep -Eiq 'unadvertised object|not our ref' "$work/git-fetch.log"; then
+        reason=unadvertised-object
+      elif grep -Eiq 'couldn.t find remote ref|no such remote ref' "$work/git-fetch.log"; then
+        reason=missing-ref
+      elif grep -Eiq 'certificate|SSL|TLS' "$work/git-fetch.log"; then
+        reason=tls
+      elif grep -Eiq 'resolve host|timed out|connection|RPC failed|early EOF' "$work/git-fetch.log"; then
+        reason=transport
+      fi
+      printf 'Target checkout: component=%s error=%s code=FAILED\n' "$stage" "$reason" >&2
+      exit 1
+    fi
     git checkout --detach FETCH_HEAD
-    [[ "$(git rev-parse HEAD)" == "$3" ]]
+    if [[ "$(git rev-parse HEAD)" != "$3" ]]; then
+      printf 'Target checkout: component=%s error=commit-mismatch code=FAILED\n' "$stage" >&2
+      exit 1
+    fi
   )
 }
 stage=spack
-checkout /opt/spack https://github.com/spack/spack.git 73eaea13f381e3495299284856fd02a64e1d154c
+checkout /opt/spack https://github.com/spack/spack.git \
+  73eaea13f381e3495299284856fd02a64e1d154c refs/tags/v1.0.0
 printf 'Target bootstrap: stage=%s code=OK\n' "$stage"
 stage=recipes
 # Existing reviewed preparation helpers verify every selected upstream blob.
-checkout /opt/kq-case/upstream https://github.com/spack/spack-packages.git 32c54f0906004d7fd1f72fd1b5970bf2bf094e26
+checkout /opt/kq-case/upstream https://github.com/spack/spack-packages.git \
+  32c54f0906004d7fd1f72fd1b5970bf2bf094e26 refs/heads/releases/v2025.07
 printf 'Target bootstrap: stage=%s code=OK\n' "$stage"

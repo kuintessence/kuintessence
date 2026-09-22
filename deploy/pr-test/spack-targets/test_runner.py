@@ -50,6 +50,8 @@ if (
     if args[0] == "build":
         print("#8 1.234 Target bootstrap: stage=openssl code=FAILED")
         print("#8 1.235 Target bootstrap: stage=UNSAFE_RAW_LOG_DO_NOT_PUBLISH code=FAILED")
+        print("#8 1.236 Target checkout: component=spack error=missing-ref code=FAILED")
+        print("#8 1.237 Target checkout: component=spack error=UNSAFE_RAW_LOG_DO_NOT_PUBLISH code=FAILED")
     if args[0] == "start":
         created = state["containers"][args[-1]]
         print(f"Target probe: phase={created[-3]} profile={created[-2]} "
@@ -251,6 +253,7 @@ class RunnerTests(unittest.TestCase):
                 r"stage=(platform|prepare|metadata|missing-source|resolve|install|execute|readback|complete) "
                 r"code=(OK|FAILED|RUNNING)"
                 r"|Target bootstrap: stage=(platform|openssl|python|solver|spack|recipes) code=(OK|FAILED)"
+                r"|Target checkout: component=spack error=missing-ref code=FAILED"
                 r"|Target diagnostic: phase=(prepare|offline) profile=(centos7|ubuntu24|ubuntu26) "
                 r"error=KeyError line=345"
                 r"|Target identity: profile=(centos7|ubuntu24|ubuntu26) "
@@ -367,6 +370,7 @@ class RunnerTests(unittest.TestCase):
                 self.assertNotEqual(result.returncode, 0)
                 if failure == "build":
                     self.assertIn("Target bootstrap: stage=openssl code=FAILED", result.stdout)
+                    self.assertIn("Target checkout: component=spack error=missing-ref code=FAILED", result.stdout)
                 self.assert_safe_output(result)
                 self.assert_clean()
 

@@ -32,6 +32,9 @@ RPM GPG 校验，不添加 `--nogpgcheck`、不关闭 TLS、不退回 HTTP。
 - Spack 1.0.0 固定 commit `73eaea13f381e3495299284856fd02a64e1d154c`。
 - 官方 `spack-packages` 使用现有基线固定的 commit/tree，复用原 recipe
   完整性检查和 Git bundle 帮助函数，不改写既有准备器的 Ubuntu 20.04 约束。
+- 为兼容 CentOS 7 的旧版 Git，通过 Spack `v1.0.0` tag 和 packages
+  `releases/v2025.07` 分支获取对象，再核对固定 commit；ref 移动时失败，
+  不自动接受新版本或放宽完整性校验。
 - Hello 使用现有审阅过的 `kq_case` recipe 和固定发布源码 SHA-256，
   只允许 Hello、compiler-wrapper、gcc-runtime 作为非 external DAG 节点；
   GCC、GNU make 与可选 glibc 必须来自目标系统。
