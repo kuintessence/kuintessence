@@ -35,8 +35,6 @@ elif args[0] == "fetch":
     counter = root / "fetch-count"
     count = int(counter.read_text()) + 1 if counter.exists() else 1
     counter.write_text(str(count))
-    if os.environ.get("STUB_SHALLOW") == "true":
-        (Path.cwd() / ".git/shallow").write_text("a" * 40 + "\n")
     message = os.environ.get("STUB_FIRST_ERROR" if count == 1 else "STUB_SECOND_ERROR", "")
     if message:
         print(message, file=sys.stderr)
@@ -70,7 +68,7 @@ class CheckoutTests(unittest.TestCase):
                 [
                     shutil.which("bash"), "-c",
                     'source "$1"; stage=spack; checkout "$2" '
-                    '"https://example.invalid/repo.git" "$3" "refs/tags/test"',
+                    '"https://example.invalid/repo.git" "$3"',
                     "checkout-test", str(BOOTSTRAP), str(root / "checkout"), COMMIT,
                 ],
                 env={
@@ -93,29 +91,13 @@ class CheckoutTests(unittest.TestCase):
         self.assertEqual(len(fetches), 1)
         self.assertEqual(fetches[0], [
             "-c", "fetch.fsckObjects=true", "fetch", "--depth=1", "--no-tags",
-            "https://example.invalid/repo.git", "refs/tags/test",
+            "https://example.invalid/repo.git", COMMIT,
         ])
         self.assertIn(["rev-parse", "HEAD"], calls)
 
-    def test_exact_legacy_errors_retry_once_without_shallow_mode(self):
-        for error, reason in (
-            (PARENT_ERROR, "shallow-parents"), (GRAFT_ERROR, "shallow-parents"),
-            (PROTOCOL_ERROR, "shallow-protocol"),
-        ):
-            with self.subTest(reason=reason, error=error):
-                result, calls = self.invoke(STUB_FIRST_ERROR=error)
-                self.assertEqual(result.returncode, 0, result.stderr)
-                self.assertIn(f"error={reason} code=RETRY", result.stdout)
-                fetches = [call for call in calls if "fetch" in call]
-                self.assertEqual(len(fetches), 2)
-                self.assertIn("--depth=1", fetches[0])
-                self.assertNotIn("--depth=1", fetches[1])
-                self.assertEqual(fetches[1][:3], ["-c", "fetch.fsckObjects=true", "fetch"])
-                self.assertEqual(fetches[1], [arg for arg in fetches[0] if arg != "--depth=1"])
-                self.assertIn(["rev-parse", "HEAD"], calls)
-
-    def test_near_matches_and_other_failures_do_not_retry(self):
+    def test_object_and_transport_failures_do_not_retry_or_checkout(self):
         for error in (
+            PARENT_ERROR, GRAFT_ERROR, PROTOCOL_ERROR,
             PARENT_ERROR + " unexpected", "prefix " + PARENT_ERROR,
             PARENT_ERROR.replace(COMMIT, "z" * 40),
             PROTOCOL_ERROR + " unexpected", "fatal: bad object", UNSAFE,
@@ -127,23 +109,15 @@ class CheckoutTests(unittest.TestCase):
                 self.assertEqual(len([call for call in calls if "fetch" in call]), 1)
                 self.assertFalse(any(call[0] == "checkout" for call in calls))
 
-    def test_existing_shallow_boundary_prevents_retry(self):
-        result, calls = self.invoke(STUB_FIRST_ERROR=PARENT_ERROR, STUB_SHALLOW="true")
+    def test_tls_failure_is_classified_without_raw_logs(self):
+        result, calls = self.invoke(STUB_FIRST_ERROR="fatal: SSL certificate verification failed")
         self.assertNotEqual(result.returncode, 0)
+        self.assertIn("error=tls code=FAILED", result.stderr)
         self.assertEqual(len([call for call in calls if "fetch" in call]), 1)
-        self.assertNotIn("code=RETRY", result.stdout)
-
-    def test_retry_failure_is_not_hidden_or_repeated(self):
-        result, calls = self.invoke(
-            STUB_FIRST_ERROR=PARENT_ERROR, STUB_SECOND_ERROR=PARENT_ERROR,
-        )
-        self.assertNotEqual(result.returncode, 0)
-        self.assertEqual(len([call for call in calls if "fetch" in call]), 2)
         self.assertFalse(any(call[0] == "checkout" for call in calls))
-        self.assertEqual(result.stdout.count("code=RETRY"), 1)
 
-    def test_commit_mismatch_fails_after_successful_retry(self):
-        result, calls = self.invoke(STUB_FIRST_ERROR=PARENT_ERROR, STUB_HEAD="b" * 40)
+    def test_commit_mismatch_fails_after_fetch(self):
+        result, calls = self.invoke(STUB_HEAD="b" * 40)
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("error=commit-mismatch code=FAILED", result.stderr)
         self.assertIn(["rev-parse", "HEAD"], calls)

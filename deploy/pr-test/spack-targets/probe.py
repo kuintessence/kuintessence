@@ -168,6 +168,9 @@ def check_platform(profile):
     require((release["ID"], release["VERSION_ID"]) == PROFILES[profile][:2])
     if profile == "centos7":
         require("7.9.2009" in Path("/etc/centos-release").read_text())
+        require(subprocess.check_output(
+            ["git", "--version"], text=True, timeout=15,
+        ).strip() == "git version 2.43.7")
     host = spack.platforms.host()
     require(host.name == "linux" and str(host.default_operating_system()) == PROFILES[profile][2])
     require(platform.machine() == "x86_64" and cpu.host().family.name == "x86_64")

@@ -13,6 +13,22 @@ fetch() {
   printf '%s  %s\n' "$3" "$2" | sha256sum --check --status
 }
 
+bootstrap_git() {
+  stage=git
+  fetch https://www.kernel.org/pub/software/scm/git/git-2.43.7.tar.xz \
+    "$work/git.tar.xz" 657e2374455d9e62f6cdb3e7c55d867b6db5404d744e97e112cc5b0db687a19f
+  mkdir "$work/git"
+  tar -xJf "$work/git.tar.xz" --strip-components=1 -C "$work/git"
+  (
+    cd "$work/git"
+    make -j2 prefix=/opt/kq-git NO_TCLTK=YesPlease all
+    make prefix=/opt/kq-git NO_TCLTK=YesPlease install
+  ) >"$work/git-build.log" 2>&1
+  export PATH="/opt/kq-git/bin:$PATH"
+  [[ "$(git --version)" == "git version 2.43.7" ]]
+  printf 'Target bootstrap: stage=%s code=OK\n' "$stage"
+}
+
 bootstrap_tools() {
   stage=openssl
   fetch https://github.com/openssl/openssl/releases/download/openssl-3.5.8/openssl-3.5.8.tar.gz \
@@ -56,27 +72,9 @@ checkout() {
   git init "$1"
   (
     cd "$1"
-    # Git 1.8 cannot reliably request a SHA that is not advertised as a ref.
-    # The ref is only a transport locator; the pinned commit remains authoritative.
     result=0
-    git -c fetch.fsckObjects=true fetch --depth=1 --no-tags "$2" "$4" \
+    git -c fetch.fsckObjects=true fetch --depth=1 --no-tags "$2" "$3" \
       >"$work/git-fetch.log" 2>&1 || result=$?
-    # Git 1.8 may check omitted parents before recording the shallow boundary.
-    # Fetching complete history must still pass fsck; never disable object checks.
-    if [[ "$result" -ne 0 && ! -e .git/shallow ]]; then
-      retry_reason=
-      if grep -Fxq 'fatal: git fetch-pack: expected shallow list' "$work/git-fetch.log"; then
-        retry_reason=shallow-protocol
-      elif grep -Exq 'error: object [a-f0-9]{40}:(parent|graft) objects missing' "$work/git-fetch.log"; then
-        retry_reason=shallow-parents
-      fi
-      if [[ -n "$retry_reason" ]]; then
-        printf 'Target checkout: component=%s error=%s code=RETRY\n' "$stage" "$retry_reason"
-        result=0
-        git -c fetch.fsckObjects=true fetch --no-tags "$2" "$4" \
-          >"$work/git-fetch.log" 2>&1 || result=$?
-      fi
-    fi
     if [[ "$result" -ne 0 ]]; then
       reason=other
       if grep -Eiq 'unadvertised object|not our ref' "$work/git-fetch.log"; then
@@ -108,14 +106,17 @@ checkout() {
   )
 }
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  if [[ "${KQ_BOOTSTRAP_GIT:-0}" == 1 ]]; then
+    bootstrap_git
+  fi
   stage=spack
   checkout /opt/spack https://github.com/spack/spack.git \
-    73eaea13f381e3495299284856fd02a64e1d154c refs/tags/v1.0.0
+    73eaea13f381e3495299284856fd02a64e1d154c
   printf 'Target bootstrap: stage=%s code=OK\n' "$stage"
   stage=recipes
   # Existing reviewed preparation helpers verify every selected upstream blob.
   checkout /opt/kq-case/upstream https://github.com/spack/spack-packages.git \
-    32c54f0906004d7fd1f72fd1b5970bf2bf094e26 refs/heads/releases/v2025.07
+    32c54f0906004d7fd1f72fd1b5970bf2bf094e26
   printf 'Target bootstrap: stage=%s code=OK\n' "$stage"
   bootstrap_tools
 fi

@@ -32,12 +32,9 @@ RPM GPG 校验，不添加 `--nogpgcheck`、不关闭 TLS、不退回 HTTP。
 - Spack 1.0.0 固定 commit `73eaea13f381e3495299284856fd02a64e1d154c`。
 - 官方 `spack-packages` 使用现有基线固定的 commit/tree，复用原 recipe
   完整性检查和 Git bundle 帮助函数，不改写既有准备器的 Ubuntu 20.04 约束。
-- 为兼容 CentOS 7 的旧版 Git，通过 Spack `v1.0.0` tag 和 packages
-  `releases/v2025.07` 分支获取对象，再核对固定 commit；ref 移动时失败，
-  不自动接受新版本或放宽完整性校验。仅当旧 Git 明确报
-  `expected shallow list` 或明确报告 parent/graft 对象缺失，且尚未写入
-  shallow 边界时，允许一次完整 fetch；输出 `shallow-protocol/RETRY` 或
-  `shallow-parents/RETRY` 标记，仍执行对象检查及原 commit 校验。
+- CentOS 7 单独源码构建 checksum-pinned Git 2.43.7 到 `/opt/kq-git`，
+  不使用系统 Git 1.8。保留系统 GCC/GNU make 和 libcurl 的 TLS 验证；
+  runtime 校验实际 Git 版本。Git 对象错误直接失败，不改用无校验 fetch。
 - Hello 使用现有审阅过的 `kq_case` recipe 和固定发布源码 SHA-256，
   只允许 Hello、compiler-wrapper、gcc-runtime 作为非 external DAG 节点；
   GCC、GNU make 与可选 glibc 必须来自目标系统。
@@ -47,6 +44,9 @@ RPM GPG 校验，不添加 `--nogpgcheck`、不关闭 TLS、不退回 HTTP。
 - Python：[Docker 官方 Python 定义](https://github.com/docker-library/python/blob/fe89472bda6128fef7e964d1f1991534e32dcfb7/3.11/bookworm/Dockerfile)。
 - OpenSSL：[3.5.8 官方发布](https://github.com/openssl/openssl/releases/tag/openssl-3.5.8)的 `.sha256` 文件。
 - wheels：对应精确版本的 PyPI JSON 元数据中的文件摘要，写入 `requirements.txt`。
+- Git：[kernel.org 发布摘要](https://www.kernel.org/pub/software/scm/git/sha256sums.asc)
+  中的 `git-2.43.7.tar.xz`；版本选择用于兼容 CentOS 7 的系统开发库，
+  不表示它是最新 Git 或生产安全认证。
 
 这些版本仅定义本基线，不是全部科学软件推荐版本或生产安全认证。
 
