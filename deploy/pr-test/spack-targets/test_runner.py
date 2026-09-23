@@ -55,6 +55,8 @@ if (
         print("#8 1.238 Target checkout hint: component=spack hint=protocol code=FOUND")
         print("#8 1.239 Target checkout hint: component=spack hint=UNSAFE_RAW_LOG_DO_NOT_PUBLISH code=FOUND")
         print("#8 1.240 Target checkout exit: component=spack status=128 code=FAILED")
+        print("#8 1.241 Target transfer: stage=git-download error=curl status=22 http=403 code=FAILED")
+        print("#8 1.242 Target transfer: stage=git-download error=UNSAFE_RAW_LOG_DO_NOT_PUBLISH status=22 http=403 code=FAILED")
     if args[0] == "start":
         created = state["containers"][args[-1]]
         print(f"Target probe: phase={created[-3]} profile={created[-2]} "
@@ -256,7 +258,8 @@ class RunnerTests(unittest.TestCase):
                 r"|Target probe: phase=(prepare|offline) profile=(centos7|ubuntu24|ubuntu26) "
                 r"stage=(platform|prepare|metadata|missing-source|resolve|install|execute|readback|complete) "
                 r"code=(OK|FAILED|RUNNING)"
-                r"|Target bootstrap: stage=(platform|git|openssl|python|solver|spack|recipes) code=(OK|FAILED)"
+                r"|Target bootstrap: stage=(platform|git(-download|-extract|-build|-install)?|openssl|python|solver|spack|recipes) code=(OK|FAILED)"
+                r"|Target transfer: stage=git-download error=curl status=22 http=403 code=FAILED"
                 r"|Target checkout: component=spack error=missing-ref code=FAILED"
                 r"|Target checkout hint: component=spack hint=protocol code=FOUND"
                 r"|Target checkout exit: component=spack status=128 code=FAILED"
@@ -380,6 +383,7 @@ class RunnerTests(unittest.TestCase):
                     self.assertIn("Target checkout: component=spack error=missing-ref code=FAILED", result.stdout)
                     self.assertIn("Target checkout hint: component=spack hint=protocol code=FOUND", result.stdout)
                     self.assertIn("Target checkout exit: component=spack status=128 code=FAILED", result.stdout)
+                    self.assertIn("Target transfer: stage=git-download error=curl status=22 http=403 code=FAILED", result.stdout)
                 self.assert_safe_output(result)
                 self.assert_clean()
 

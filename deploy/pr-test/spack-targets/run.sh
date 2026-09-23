@@ -109,7 +109,10 @@ import sys
 
 marker = re.compile(
     r"(?:#\d+ (?:\d+\.\d+ )?)?"
-    r"(Target bootstrap: stage=(?:platform|git|openssl|python|solver|spack|recipes) code=(?:OK|FAILED)"
+    r"(Target bootstrap: stage=(?:platform|git(?:-download|-extract|-build|-install)?|"
+    r"openssl|python|solver|spack|recipes) code=(?:OK|FAILED)"
+    r"|Target transfer: stage=(?:git-download|openssl|python) "
+    r"error=(?:curl|checksum) status=[0-9]{1,3} http=[0-9]{3} code=FAILED"
     r"|Target checkout: component=(?:spack|recipes) "
     r"error=(?:unadvertised-object|missing-ref|tls|transport|commit-mismatch|other) code=FAILED"
     r"|Target checkout hint: component=(?:spack|recipes) "

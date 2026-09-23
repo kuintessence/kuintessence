@@ -8,22 +8,45 @@ work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 
 fetch() {
-  curl --fail --location --silent --show-error --retry 3 \
-    --proto '=https' --tlsv1.2 --connect-timeout 30 --max-time 300 "$1" -o "$2"
-  printf '%s  %s\n' "$3" "$2" | sha256sum --check --status
+  local result=0 http
+  http="$(curl --fail --location --silent --show-error --retry 3 \
+    --proto '=https' --tlsv1.2 --connect-timeout 30 --max-time 300 \
+    --write-out '%{http_code}' "$1" -o "$2" 2>"$work/transfer.log")" || result=$?
+  [[ "$http" =~ ^[0-9]{3}$ ]] || http=000
+  if [[ "$result" -ne 0 ]]; then
+    printf 'Target transfer: stage=%s error=curl status=%s http=%s code=FAILED\n' \
+      "$stage" "$result" "$http" >&2
+    return 1
+  fi
+  if ! printf '%s  %s\n' "$3" "$2" | sha256sum --check --status; then
+    printf 'Target transfer: stage=%s error=checksum status=0 http=%s code=FAILED\n' \
+      "$stage" "$http" >&2
+    return 1
+  fi
 }
 
 bootstrap_git() {
-  stage=git
+  stage=git-download
   fetch https://www.kernel.org/pub/software/scm/git/git-2.43.7.tar.xz \
     "$work/git.tar.xz" 657e2374455d9e62f6cdb3e7c55d867b6db5404d744e97e112cc5b0db687a19f
+  printf 'Target bootstrap: stage=%s code=OK\n' "$stage"
+  stage=git-extract
   mkdir "$work/git"
   tar -xJf "$work/git.tar.xz" --strip-components=1 -C "$work/git"
+  printf 'Target bootstrap: stage=%s code=OK\n' "$stage"
+  stage=git-build
   (
     cd "$work/git"
-    make -j2 prefix=/opt/kq-git NO_TCLTK=YesPlease all
-    make prefix=/opt/kq-git NO_TCLTK=YesPlease install
+    make -j2 prefix=/opt/kq-git CFLAGS='-g -O2 -Wall -std=gnu99' NO_TCLTK=YesPlease all
   ) >"$work/git-build.log" 2>&1
+  printf 'Target bootstrap: stage=%s code=OK\n' "$stage"
+  stage=git-install
+  (
+    cd "$work/git"
+    make prefix=/opt/kq-git CFLAGS='-g -O2 -Wall -std=gnu99' NO_TCLTK=YesPlease install
+  ) >"$work/git-install.log" 2>&1
+  printf 'Target bootstrap: stage=%s code=OK\n' "$stage"
+  stage=git
   export PATH="/opt/kq-git/bin:$PATH"
   [[ "$(git --version)" == "git version 2.43.7" ]]
   printf 'Target bootstrap: stage=%s code=OK\n' "$stage"
