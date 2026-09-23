@@ -209,6 +209,7 @@ protobuf 生成、测试、构建或容器。
 | `Build Agent binary` / `Build CLI binary` | 仅手动构建并运行 binary smoke，默认只保存 Actions artifact；在 `v*` tag 上手动触发且勾选 `publish_release` 才上传 Release |
 | `Scheduler image architecture` | 仅手动构建并运行调度器镜像架构验证 |
 | `PR scheduler tests` | 可信同仓库非草稿 PR 自动构建隔离 Slurm/PBS 测试环境，执行真实作业与材料 fixture 回归；也可手动触发 |
+| `Spack target environments` | 相关文件变更的可信同仓库 PR（含 draft）或手动触发，验证 CentOS 7、Ubuntu 24.04/26.04 x86_64 原生工具链与 Hello 离线安装；不启动服务、不上传材料 |
 | `Docs Site` | 仅从 `main` 手动构建并发布到 `gh-pages`；GitHub Pages 须单独配置发布源 |
 | `Preview` / `Preview Cleanup` | 可信同仓库 PR 自动预览与关闭清理，main 手动启停，见下节 |
 
@@ -221,6 +222,8 @@ protobuf 生成、测试、构建或容器。
 [PR 调度器测试](../deploy/pr-test/README.md)。后者不提供公网入口、不使用预览口令，
 使用 `docker-compose.pr-test.yml` 和独立的临时卷，结果以对应提交的 Actions 为准。
 在仅允许静态检查时，不应手动触发完整检查、构建、发布或预览。
+三目标环境测试独立于默认 `CI` 和 scheduler matrix，详细范围及限制见
+[Linux 目标环境基线](../deploy/pr-test/spack-targets/README.md)。
 
 <a id="preview"></a>
 ## GitHub 预览环境
