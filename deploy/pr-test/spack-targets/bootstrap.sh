@@ -13,42 +13,44 @@ fetch() {
   printf '%s  %s\n' "$3" "$2" | sha256sum --check --status
 }
 
-stage=openssl
-fetch https://github.com/openssl/openssl/releases/download/openssl-3.5.8/openssl-3.5.8.tar.gz \
-  "$work/openssl.tar.gz" a8f84a39918ec6415ce765d9b429d313ba97b8143169c172e734b9514464f5b2
-mkdir "$work/openssl"
-tar -xzf "$work/openssl.tar.gz" --strip-components=1 -C "$work/openssl"
-(
-  cd "$work/openssl"
-  ./config --prefix=/opt/kq-openssl --libdir=lib --openssldir=/etc/ssl shared
-  make -j2
-  make install_sw
-) >"$work/openssl-build.log" 2>&1
-printf 'Target bootstrap: stage=%s code=OK\n' "$stage"
+bootstrap_tools() {
+  stage=openssl
+  fetch https://github.com/openssl/openssl/releases/download/openssl-3.5.8/openssl-3.5.8.tar.gz \
+    "$work/openssl.tar.gz" a8f84a39918ec6415ce765d9b429d313ba97b8143169c172e734b9514464f5b2
+  mkdir "$work/openssl"
+  tar -xzf "$work/openssl.tar.gz" --strip-components=1 -C "$work/openssl"
+  (
+    cd "$work/openssl"
+    ./config --prefix=/opt/kq-openssl --libdir=lib --openssldir=/etc/ssl shared
+    make -j2
+    make install_sw
+  ) >"$work/openssl-build.log" 2>&1
+  printf 'Target bootstrap: stage=%s code=OK\n' "$stage"
 
-stage=python
-# Version/checksum from docker-library/python commit fe89472bda6128fef7e964d1f1991534e32dcfb7.
-fetch https://www.python.org/ftp/python/3.11.16/Python-3.11.16.tar.xz \
-  "$work/python.tar.xz" 91bcdebfdde239a003ae93738a7fce0f9230fee5c4bc2b86f6e6e8c6f98aabe8
-mkdir "$work/python"
-tar -xJf "$work/python.tar.xz" --strip-components=1 -C "$work/python"
-(
-  cd "$work/python"
-  ./configure --prefix=/opt/kq-python --with-openssl=/opt/kq-openssl \
-    --with-openssl-rpath=auto --with-ensurepip=install
-  make -j2
-  make install
-) >"$work/python-build.log" 2>&1
-/opt/kq-python/bin/python3.11 -c \
-  'import ssl, sys, bz2, ctypes, lzma, sqlite3, zlib; assert sys.version_info[:3] == (3, 11, 16); assert ssl.OPENSSL_VERSION.startswith("OpenSSL 3.5.8 ")'
-printf 'Target bootstrap: stage=%s code=OK\n' "$stage"
+  stage=python
+  # Version/checksum from docker-library/python commit fe89472bda6128fef7e964d1f1991534e32dcfb7.
+  fetch https://www.python.org/ftp/python/3.11.16/Python-3.11.16.tar.xz \
+    "$work/python.tar.xz" 91bcdebfdde239a003ae93738a7fce0f9230fee5c4bc2b86f6e6e8c6f98aabe8
+  mkdir "$work/python"
+  tar -xJf "$work/python.tar.xz" --strip-components=1 -C "$work/python"
+  (
+    cd "$work/python"
+    ./configure --prefix=/opt/kq-python --with-openssl=/opt/kq-openssl \
+      --with-openssl-rpath=auto --with-ensurepip=install
+    make -j2
+    make install
+  ) >"$work/python-build.log" 2>&1
+  /opt/kq-python/bin/python3.11 -c \
+    'import ssl, sys, bz2, ctypes, lzma, sqlite3, zlib; assert sys.version_info[:3] == (3, 11, 16); assert ssl.OPENSSL_VERSION.startswith("OpenSSL 3.5.8 ")'
+  printf 'Target bootstrap: stage=%s code=OK\n' "$stage"
 
-stage=solver
-/opt/kq-python/bin/python3.11 -m pip --isolated install \
-  --disable-pip-version-check --no-cache-dir --only-binary=:all: --require-hashes \
-  -r /opt/kq-target/requirements.txt
-/opt/kq-python/bin/python3.11 -c 'import clingo, clingo.ast; assert clingo.__version__ == "5.7.1"'
-printf 'Target bootstrap: stage=%s code=OK\n' "$stage"
+  stage=solver
+  /opt/kq-python/bin/python3.11 -m pip --isolated install \
+    --disable-pip-version-check --no-cache-dir --only-binary=:all: --require-hashes \
+    -r /opt/kq-target/requirements.txt
+  /opt/kq-python/bin/python3.11 -c 'import clingo, clingo.ast; assert clingo.__version__ == "5.7.1"'
+  printf 'Target bootstrap: stage=%s code=OK\n' "$stage"
+}
 
 checkout() {
   git init "$1"
@@ -80,6 +82,15 @@ checkout() {
         reason=transport
       fi
       printf 'Target checkout: component=%s error=%s code=FAILED\n' "$stage" "$reason" >&2
+      for hint in shallow protocol usage unknown unsupported upgrade client server \
+          fsck object index-pack fetch-pack pack corrupt signature hash sha1 \
+          permission denied fork memory file directory version command helper \
+          fatal error invalid access remote ref option; do
+        if grep -Fiq -- "$hint" "$work/git-fetch.log"; then
+          printf 'Target checkout hint: component=%s hint=%s code=FOUND\n' "$stage" "$hint" >&2
+        fi
+      done
+      printf 'Target checkout exit: component=%s status=%s code=FAILED\n' "$stage" "$result" >&2
       exit 1
     fi
     git checkout --detach FETCH_HEAD
@@ -98,3 +109,4 @@ stage=recipes
 checkout /opt/kq-case/upstream https://github.com/spack/spack-packages.git \
   32c54f0906004d7fd1f72fd1b5970bf2bf094e26 refs/heads/releases/v2025.07
 printf 'Target bootstrap: stage=%s code=OK\n' "$stage"
+bootstrap_tools
