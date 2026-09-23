@@ -112,12 +112,12 @@ marker = re.compile(
     r"(Target bootstrap: stage=(?:platform|openssl|python|solver|spack|recipes) code=(?:OK|FAILED)"
     r"|Target checkout: component=(?:spack|recipes) "
     r"(?:error=(?:unadvertised-object|missing-ref|tls|transport|commit-mismatch|other) code=FAILED"
-    r"|error=shallow-protocol code=RETRY)"
+    r"|error=(?:shallow-protocol|shallow-parents) code=RETRY)"
     r"|Target checkout hint: component=(?:spack|recipes) "
     r"hint=(?:shallow|protocol|usage|unknown|unsupported|upgrade|client|server|"
     r"fsck|object|index-pack|fetch-pack|pack|corrupt|signature|hash|sha1|"
     r"permission|denied|fork|memory|file|directory|version|command|helper|"
-    r"fatal|error|invalid|access|remote|ref|option) code=FOUND"
+    r"fatal|error|invalid|access|remote|ref|option|parent|graft|missing|sorted|tree|child) code=FOUND"
     r"|Target checkout exit: component=(?:spack|recipes) status=[1-9][0-9]{0,2} code=FAILED)"
 )
 with open(sys.argv[1], encoding="utf-8", errors="replace") as stream:

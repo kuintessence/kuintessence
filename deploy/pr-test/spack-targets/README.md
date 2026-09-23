@@ -35,8 +35,9 @@ RPM GPG 校验，不添加 `--nogpgcheck`、不关闭 TLS、不退回 HTTP。
 - 为兼容 CentOS 7 的旧版 Git，通过 Spack `v1.0.0` tag 和 packages
   `releases/v2025.07` 分支获取对象，再核对固定 commit；ref 移动时失败，
   不自动接受新版本或放宽完整性校验。仅当旧 Git 明确报
-  `expected shallow list` 且尚未写入 shallow 边界时，允许一次完整 fetch；
-  输出 `shallow-protocol/RETRY` 标记，仍校验原 commit。
+  `expected shallow list` 或明确报告 parent/graft 对象缺失，且尚未写入
+  shallow 边界时，允许一次完整 fetch；输出 `shallow-protocol/RETRY` 或
+  `shallow-parents/RETRY` 标记，仍执行对象检查及原 commit 校验。
 - Hello 使用现有审阅过的 `kq_case` recipe 和固定发布源码 SHA-256，
   只允许 Hello、compiler-wrapper、gcc-runtime 作为非 external DAG 节点；
   GCC、GNU make 与可选 glibc 必须来自目标系统。

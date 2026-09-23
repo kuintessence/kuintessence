@@ -61,14 +61,21 @@ checkout() {
     result=0
     git -c fetch.fsckObjects=true fetch --depth=1 --no-tags "$2" "$4" \
       >"$work/git-fetch.log" 2>&1 || result=$?
-    # Legacy fetch-pack can reject the server's shallow negotiation before writing
-    # a shallow boundary. Only that exact failure may retry without shallow mode.
-    if [[ "$result" -ne 0 && ! -e .git/shallow ]] &&
-        grep -Fxq 'fatal: git fetch-pack: expected shallow list' "$work/git-fetch.log"; then
-      printf 'Target checkout: component=%s error=shallow-protocol code=RETRY\n' "$stage"
-      result=0
-      git -c fetch.fsckObjects=true fetch --no-tags "$2" "$4" \
-        >"$work/git-fetch.log" 2>&1 || result=$?
+    # Git 1.8 may check omitted parents before recording the shallow boundary.
+    # Fetching complete history must still pass fsck; never disable object checks.
+    if [[ "$result" -ne 0 && ! -e .git/shallow ]]; then
+      retry_reason=
+      if grep -Fxq 'fatal: git fetch-pack: expected shallow list' "$work/git-fetch.log"; then
+        retry_reason=shallow-protocol
+      elif grep -Exq 'error: object [a-f0-9]{40}:(parent|graft) objects missing' "$work/git-fetch.log"; then
+        retry_reason=shallow-parents
+      fi
+      if [[ -n "$retry_reason" ]]; then
+        printf 'Target checkout: component=%s error=%s code=RETRY\n' "$stage" "$retry_reason"
+        result=0
+        git -c fetch.fsckObjects=true fetch --no-tags "$2" "$4" \
+          >"$work/git-fetch.log" 2>&1 || result=$?
+      fi
     fi
     if [[ "$result" -ne 0 ]]; then
       reason=other
@@ -85,7 +92,7 @@ checkout() {
       for hint in shallow protocol usage unknown unsupported upgrade client server \
           fsck object index-pack fetch-pack pack corrupt signature hash sha1 \
           permission denied fork memory file directory version command helper \
-          fatal error invalid access remote ref option; do
+          fatal error invalid access remote ref option parent graft missing sorted tree child; do
         if grep -Fiq -- "$hint" "$work/git-fetch.log"; then
           printf 'Target checkout hint: component=%s hint=%s code=FOUND\n' "$stage" "$hint" >&2
         fi
@@ -100,13 +107,15 @@ checkout() {
     fi
   )
 }
-stage=spack
-checkout /opt/spack https://github.com/spack/spack.git \
-  73eaea13f381e3495299284856fd02a64e1d154c refs/tags/v1.0.0
-printf 'Target bootstrap: stage=%s code=OK\n' "$stage"
-stage=recipes
-# Existing reviewed preparation helpers verify every selected upstream blob.
-checkout /opt/kq-case/upstream https://github.com/spack/spack-packages.git \
-  32c54f0906004d7fd1f72fd1b5970bf2bf094e26 refs/heads/releases/v2025.07
-printf 'Target bootstrap: stage=%s code=OK\n' "$stage"
-bootstrap_tools
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  stage=spack
+  checkout /opt/spack https://github.com/spack/spack.git \
+    73eaea13f381e3495299284856fd02a64e1d154c refs/tags/v1.0.0
+  printf 'Target bootstrap: stage=%s code=OK\n' "$stage"
+  stage=recipes
+  # Existing reviewed preparation helpers verify every selected upstream blob.
+  checkout /opt/kq-case/upstream https://github.com/spack/spack-packages.git \
+    32c54f0906004d7fd1f72fd1b5970bf2bf094e26 refs/heads/releases/v2025.07
+  printf 'Target bootstrap: stage=%s code=OK\n' "$stage"
+  bootstrap_tools
+fi

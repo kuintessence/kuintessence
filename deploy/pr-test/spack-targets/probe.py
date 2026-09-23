@@ -409,7 +409,8 @@ def main():
         kind = next((entry.__name__ for entry in allowed_errors if isinstance(error, entry)), "other")
         trace, line = error.__traceback__, 0
         while trace:
-            if trace.tb_frame.f_code.co_filename == __file__:
+            if (trace.tb_frame.f_code.co_filename == __file__
+                    and trace.tb_frame.f_code.co_name != "require"):
                 line = trace.tb_lineno
             trace = trace.tb_next
         print("Target diagnostic: phase={} profile={} error={} line={}"
