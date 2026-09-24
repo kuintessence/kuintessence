@@ -45,6 +45,40 @@ Ubuntu 24/26 原生 Agent 兼容性另行验证，不属于本轮通过条件。
 这是可销毁的测试环境，不是公网 preview，也不复用现有 scheduler 开发栈。
 专用配置：[docker-compose.pr-test.yml](../compose/docker-compose.pr-test.yml)。
 
+### 文件型三节点验收
+
+Actions 增加独立入口，保留上述两个标量工作流回归：
+
+```bash
+bash deploy/pr-test/run.sh slurm --spack-file-workflow-samtools
+```
+
+该入口继承 samtools 材料、安装和原两节点检查，再通过 Registry HTTP API 注册
+三个 governed usecase，复用同一 frozen software revision：
+
+1. 上传无外部数据依赖的合成 SAM，经 NetDrive `upload-url`、RustFS PUT 和
+   metadata commit 建立正式输入。
+2. `convert` 将 SAM 转为 BAM；`sort` 消费上游 File 输出，排序并生成 BAI；
+   `verify` 消费 BAM 和 BAI，检查完整性、总计数 `3` 与区间计数 `2`，发布报告。
+3. 每个输出由生产 collector 上传 RustFS 并注册文件 metadata；下游通过
+   FileSlot 引用取回，不传入生产者目录。检查三个独立 Job、Slurm ID 和 cwd，
+   再独立下载 BAM、BAI、报告，核对类型、内容、大小和 SHA-256。
+4. RustFS、Registry、Server 和 Agent 重启后回读旧 receipt、Job、日志及文件，
+   对比持久摘要，再执行新 workflow。非法 SAM 必须使真实 convert Job 失败，
+   下游取消且不产生 Job 或文件。结束时删除本次文件并确认 metadata 不再可见，
+   全部临时卷由 Compose 清理。
+
+专用 [文件工作流 overlay](../compose/docker-compose.pr-spack-file-workflow.yml)
+增加 RustFS 持久卷及完整三 bucket bootstrap，Server 仅持有非 root committer
+凭据；对象存储不暴露宿主端口，关闭 console，所有运行网络保持 internal。
+仅此入口清空 `WORKFLOW_RUN_BASE`，用生产 Agent-managed work root 和签名 URL
+stage-in 路径；原两个入口仍覆盖显式 cwd。Recipe/source 仍只从 Server 交付，
+计算输入输出访问 RustFS 不意味着允许 Agent 直连 Registry 或上游。
+
+签名 URL、认证信息、原始运行日志和材料不进入 receipt 或 Actions artifact。
+这是单 Agent 三节点文件传递验收，不代表跨集群存储、完整变异检测或 15 个科学
+workflow 已完成；运行结果须核对相应提交的 Actions，不能仅凭新增脚本认定通过。
+
 ## 镜像和网络
 
 构建依赖为：
@@ -61,7 +95,8 @@ scheduler-base (现有 base/Dockerfile, Spack 1.0.0, Bun 1.4.2)
 镜像构建需要访问 Ubuntu apt、GitHub、Bun/npm registry 和 Docker registry；
 不是离线构建。可用 `KQ_PR_APT_MIRROR` 配置现有 base 的 apt mirror 参数，
 不等同于 Spack 专用 HTTP/SOCKS 代理。依赖在 build 时安装，运行时不安装依赖、
-不挂载宿主源码或 Docker socket、不提供 Web、SSO、SpiceDB、RustFS 或 tunnel。
+基础入口不挂载宿主源码或 Docker socket、不提供 Web、SSO、SpiceDB、RustFS 或 tunnel。
+文件工作流入口额外启用 RustFS，init 仅只读挂载受版本控制的 bootstrap 脚本。
 下述 Web managed 入口仅在导入阶段额外使用 runner 上的 browser 与应用页面；
 它的 host 依赖及临时 loopback endpoint 不加入基础调度器路径。
 
