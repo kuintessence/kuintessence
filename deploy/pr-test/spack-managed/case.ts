@@ -18,7 +18,7 @@ import {
 } from "../../../packages/agent/src/spack/install-contract";
 import { SpackInstallStore } from "../../../packages/agent/src/spack/install-store";
 import { SpackMaterialCache } from "../../../packages/agent/src/spack/material-cache";
-import { caseDirectory, login, ReleaseSchema } from "../spack-case/api";
+import { caseDirectory, ReleaseSchema } from "../spack-case/api";
 import { selectedCase } from "../spack-case/fixture";
 import { managedApi } from "./api-helper";
 import { diagnoseManagedInstall } from "./diagnostic";
@@ -30,6 +30,7 @@ import {
   verifyFileWorkflow,
 } from "./file-workflow";
 import { verifyManagedCacheIntegrity } from "./integrity";
+import { managedHttpFailureCode, managedSession } from "./session";
 import { runManagedWorkflow, verifyManagedWorkflow } from "./workflow";
 import { WorkflowReceiptSchema } from "./workflow-contract";
 
@@ -219,7 +220,7 @@ async function main() {
     await emptyCache();
   }
   stage = "connect";
-  const token = await login("https://server:3443");
+  const token = managedSession();
   const api = managedApi(token);
   await api.online();
 
@@ -343,14 +344,14 @@ async function main() {
 
 async function fail(error: unknown) {
   // Do not print messages, stacks, Zod issues, assertion values, stdout or stderr.
-  const code =
+  const code = managedHttpFailureCode(error) ?? (
     error instanceof z.ZodError
       ? "SCHEMA_INVALID"
       : error instanceof assert.AssertionError
         ? "ASSERTION_FAILED"
         : error instanceof SyntaxError
           ? "INVALID_JSON"
-          : "CASE_FAILED";
+          : "CASE_FAILED");
   console.error(`Spack managed case: stage=${stage} code=${code}`);
   if (stage === "install") await diagnoseManagedInstall();
   if (stage === "load") await diagnoseManagedInstall("load");

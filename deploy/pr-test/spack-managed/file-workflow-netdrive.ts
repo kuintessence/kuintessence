@@ -7,7 +7,7 @@ import {
   NetDriveUploadUrlResponseSchema,
 } from "@kuintessence/shared";
 import { z } from "zod";
-import { jsonRequest } from "../spack-case/api";
+import { type CaseToken, jsonRequest } from "../spack-case/api";
 
 const origin = "https://server:3443";
 const maximumBytes = 1024 * 1024;
@@ -57,11 +57,14 @@ async function readBounded(response: Response): Promise<Buffer> {
 }
 
 export function fileWorkflowNetdrive(
-  token: string,
+  token: CaseToken,
   options: { request?: Request; fetch?: Fetch } = {},
 ) {
   const request = options.request ?? ((path, body) => jsonRequest(origin, token, path, body));
   const send = options.fetch ?? fetch;
+  const authorization = async () => ({
+    Authorization: `Bearer ${typeof token === "string" ? token : await token()}`,
+  });
   async function data(path: string, body?: unknown) {
     return EnvelopeSchema.parse(await request(path, body)).data;
   }
@@ -133,20 +136,20 @@ export function fileWorkflowNetdrive(
       z.string().uuid().parse(id);
       const response = await send(`${origin}/api/netdrive/files/${id}`, {
         method: "DELETE",
-        headers: { Authorization: `Bearer ${token}`, "Idempotency-Key": randomUUID() },
+        headers: { ...await authorization(), "Idempotency-Key": randomUUID() },
         redirect: "error",
         signal: AbortSignal.timeout(30_000),
       });
-      assert(response.ok, "Acceptance file deletion failed");
+      assert(response.ok, `/netdrive/files/${id}: HTTP ${response.status}`);
       const deleted = NetDriveFileSchema.parse(EnvelopeSchema.parse(await response.json()).data);
       assert.equal(deleted.id, id);
       const missing = await send(`${origin}/api/netdrive/files/${id}`, {
-        headers: { Authorization: `Bearer ${token}` },
+        headers: await authorization(),
         redirect: "error",
         signal: AbortSignal.timeout(30_000),
       });
       await missing.body?.cancel();
-      assert.equal(missing.status, 404, "Deleted acceptance file remains visible");
+      assert.equal(missing.status, 404, `/netdrive/files/${id}: HTTP ${missing.status}`);
     },
   };
 }

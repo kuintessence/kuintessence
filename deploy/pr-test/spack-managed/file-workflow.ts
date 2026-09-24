@@ -3,7 +3,7 @@ import { readFile } from "node:fs/promises";
 import { gunzipSync } from "node:zlib";
 import { z } from "zod";
 import { waitFor } from "../runtime";
-import { jsonRequest } from "../spack-case/api";
+import { type CaseToken, jsonRequest } from "../spack-case/api";
 import {
   assertFileWorkflowCompleted,
   expectedReport,
@@ -18,6 +18,7 @@ import {
   type FileSnapshot,
   fileWorkflowNetdrive,
 } from "./file-workflow-netdrive";
+import { managedHttpFailureCode } from "./session";
 import { WorkflowDetailSchema, workflowJobFailureCode } from "./workflow-contract";
 
 const origin = "https://server:3443";
@@ -70,8 +71,18 @@ function marker(stage: string) {
 
 export function assertFileWorkflowIdentity(value: unknown, runId: string) {
   const run = WorkflowDetailSchema.parse(value);
-  assert.equal(run.id, runId);
+  assert.equal(run.id, runId, "File workflow identity mismatch");
   return run;
+}
+
+export function fileWorkflowFailureCode(error: unknown): string {
+  return managedHttpFailureCode(error) ?? (
+    error instanceof assert.AssertionError
+      ? error.message === "File workflow identity mismatch"
+        ? "IDENTITY_MISMATCH"
+        : "ASSERTION_FAILED"
+      : error instanceof z.ZodError ? "SCHEMA_INVALID" : "REQUEST_FAILED"
+  );
 }
 
 export function invalidSamRejected(exitCode: number | null, text: string): boolean {
@@ -128,7 +139,7 @@ export function assertArtifactBytes(kind: typeof artifacts[number], bytes: Buffe
   }
 }
 
-async function verifyFiles(token: string, receipt: Receipt, previous?: FileWorkflowState) {
+async function verifyFiles(token: CaseToken, receipt: Receipt, previous?: FileWorkflowState) {
   const netdrive = fileWorkflowNetdrive(token);
   const input = await netdrive.download(receipt.input.fileMetadataId, previous?.snapshots.input);
   assert.equal(input.bytes.toString("utf8"), syntheticSam);
@@ -155,7 +166,7 @@ async function verifyFiles(token: string, receipt: Receipt, previous?: FileWorkf
   });
 }
 
-export async function verifyFileWorkflow(token: string, saved: FileWorkflowState) {
+export async function verifyFileWorkflow(token: CaseToken, saved: FileWorkflowState) {
   guard();
   const request: Request = (path, body) => jsonRequest(origin, token, path, body);
   assert.deepEqual(
@@ -172,11 +183,13 @@ export async function verifyFileWorkflow(token: string, saved: FileWorkflowState
   marker("readback");
 }
 
-async function executeFileWorkflow(
-  token: string, queueId: string, prefix: string, input: FileWorkflowInput,
+export async function executeFileWorkflow(
+  token: CaseToken, queueId: string, prefix: string, input: FileWorkflowInput,
+  options: { request?: Request; loadAssets?: () => Promise<Assets> } = {},
 ) {
-  const registered = await assets();
-  const request: Request = (path, body) => jsonRequest(origin, token, path, body);
+  guard();
+  const registered = await (options.loadAssets ?? assets)();
+  const request: Request = options.request ?? ((path, body) => jsonRequest(origin, token, path, body));
   const created = z.object({ runId: z.string().uuid() }).parse(
     await request("/workflows", {
       yaml: JSON.stringify(fileWorkflow(registered, queueId, prefix, input)),
@@ -184,6 +197,7 @@ async function executeFileWorkflow(
   );
   marker("submit");
   let ended = false;
+  let failed = false;
   try {
     const completed = await waitFor(
       "managed file workflow",
@@ -205,22 +219,36 @@ async function executeFileWorkflow(
       }
     }
     return { completed, registered };
+  } catch (error) {
+    failed = true;
+    console.error(`Spack file workflow: stage=poll code=${fileWorkflowFailureCode(error)}`);
+    throw error;
   } finally {
     if (!ended) {
-      const current = WorkflowDetailSchema.parse(await request(`/workflows/${created.runId}`));
-      if (!terminal(current.status)) {
-        await request(`/workflows/${created.runId}/cancel`, {});
-        await waitFor(
-          "file workflow cancellation",
-          async () => WorkflowDetailSchema.parse(await request(`/workflows/${created.runId}`)),
-          (run) => terminal(run.status),
+      try {
+        const current = assertFileWorkflowIdentity(
+          await request(`/workflows/${created.runId}`), created.runId,
         );
+        if (!terminal(current.status)) {
+          await request(`/workflows/${created.runId}/cancel`, {});
+          await waitFor(
+            "file workflow cancellation",
+            async () => assertFileWorkflowIdentity(
+              await request(`/workflows/${created.runId}`), created.runId,
+            ),
+            (run) => terminal(run.status),
+          );
+        }
+      } catch (error) {
+        console.error(`Spack file workflow: stage=cancel code=${fileWorkflowFailureCode(error)}`);
+        // Keep the first failure visible when cancellation also fails.
+        if (!failed) throw error;
       }
     }
   }
 }
 
-export async function runFileWorkflow(token: string, queueId: string, prefix: string) {
+export async function runFileWorkflow(token: CaseToken, queueId: string, prefix: string) {
   guard();
   const input = await fileWorkflowNetdrive(token).upload(syntheticSam);
   marker("upload");
@@ -232,7 +260,7 @@ export async function runFileWorkflow(token: string, queueId: string, prefix: st
   return saved;
 }
 
-export async function cleanupFileWorkflow(token: string, saved: FileWorkflowState) {
+export async function cleanupFileWorkflow(token: CaseToken, saved: FileWorkflowState) {
   guard();
   const netdrive = fileWorkflowNetdrive(token);
   for (const snapshot of Object.values(saved.snapshots)) {
@@ -242,7 +270,7 @@ export async function cleanupFileWorkflow(token: string, saved: FileWorkflowStat
   marker("cleanup");
 }
 
-export async function rejectInvalidFileWorkflow(token: string, queueId: string, prefix: string) {
+export async function rejectInvalidFileWorkflow(token: CaseToken, queueId: string, prefix: string) {
   guard();
   const netdrive = fileWorkflowNetdrive(token);
   const invalid = "not-a-SAM-record\n";

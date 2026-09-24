@@ -5,6 +5,7 @@ import {
   fileDigest,
   fileWorkflowNetdrive,
 } from "./file-workflow-netdrive";
+import { managedSession } from "./session";
 
 const signedUrl = "http://rustfs:9000/pr-files/object?X-Amz-Signature=fixture";
 const envelope = (data: unknown) => ({ success: true, data });
@@ -121,5 +122,35 @@ describe("file workflow NetDrive acceptance", () => {
     });
     await api.remove(file.id);
     expect(methods).toEqual(["DELETE", "GET"]);
+  });
+
+  test("deletion readback obtains a renewed credential when the previous one expires", async () => {
+    const mode = process.env.KQ_PR_TEST;
+    process.env.KQ_PR_TEST = "1";
+    let time = 0;
+    let logins = 0;
+    const file = metadata();
+    const token = managedSession({
+      now: () => time,
+      login: async () => ({ token: `fixture-${++logins}`, expiresIn: 900 }),
+    });
+    const api = fileWorkflowNetdrive(token, {
+      fetch: async (_url, init) => {
+        if (init?.method === "DELETE") {
+          expect(init.headers).toMatchObject({ Authorization: "Bearer fixture-1" });
+          time = 870_000;
+          return Response.json(envelope(file));
+        }
+        expect(init?.headers).toMatchObject({ Authorization: "Bearer fixture-2" });
+        return new Response(null, { status: 404 });
+      },
+    });
+    try {
+      await api.remove(file.id);
+      expect(logins).toBe(2);
+    } finally {
+      if (mode === undefined) delete process.env.KQ_PR_TEST;
+      else process.env.KQ_PR_TEST = mode;
+    }
   });
 });

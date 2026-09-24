@@ -19,7 +19,7 @@ export const OperationSchema = z.object({
   stderr: z.string().nullable(),
 });
 
-export async function login(origin: string) {
+export async function loginSession(origin: string) {
   assert.equal(process.env.KQ_PR_TEST, "1");
   const response = await fetch(`${origin}/api/auth/login`, {
     method: "POST",
@@ -31,15 +31,25 @@ export async function login(origin: string) {
     redirect: "error",
     signal: AbortSignal.timeout(10_000),
   });
-  assert(response.ok, `Case login: HTTP ${response.status}`);
-  return z.object({ token: z.string().min(1) }).parse(await response.json()).token;
+  assert(response.ok, `/auth/login: HTTP ${response.status}`);
+  return z.object({
+    token: z.string().min(1),
+    expiresIn: z.number().int().positive(),
+  }).parse(await response.json());
 }
 
-export async function jsonRequest(origin: string, token: string, path: string, body?: unknown) {
+export async function login(origin: string) {
+  return (await loginSession(origin)).token;
+}
+
+export type CaseToken = string | (() => Promise<string>);
+
+export async function jsonRequest(origin: string, token: CaseToken, path: string, body?: unknown) {
+  const bearer = typeof token === "string" ? token : await token();
   const response = await fetch(`${origin}/api${path}`, {
     method: body === undefined ? "GET" : "POST",
     headers: {
-      Authorization: `Bearer ${token}`,
+      Authorization: `Bearer ${bearer}`,
       "Content-Type": "application/json",
       ...(body === undefined ? {} : { "Idempotency-Key": randomUUID() }),
     },

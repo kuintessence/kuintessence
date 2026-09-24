@@ -87,6 +87,7 @@ jobs:
             deploy/pr-test/spack-managed/jobs.test.ts \
             deploy/pr-test/spack-managed/workflow-contract.test.ts \
             deploy/pr-test/spack-managed/workflow-assets.test.ts \
+            deploy/pr-test/spack-managed/session.test.ts \
             deploy/pr-test/spack-managed/file-workflow*.test.ts \
             scripts/spack-file-workflow.test.ts \
             scripts/spack-artifact-managed.test.ts scripts/spack-web-managed.test.ts

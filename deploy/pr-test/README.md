@@ -76,6 +76,8 @@ stage-in 路径；原两个入口仍覆盖显式 cwd。Recipe/source 仍只从 S
 计算输入输出访问 RustFS 不意味着允许 Agent 直连 Registry 或上游。
 
 签名 URL、认证信息、原始运行日志和材料不进入 receipt 或 Actions artifact。
+长时间验收按登录响应的 `expiresIn` 提前重新认证，凭据只保存在内存，
+不延长 Server 的 access token TTL，也不自动重放认证失败的写请求。
 这是单 Agent 三节点文件传递验收，不代表跨集群存储、完整变异检测或 15 个科学
 workflow 已完成；运行结果须核对相应提交的 Actions，不能仅凭新增脚本认定通过。
 
