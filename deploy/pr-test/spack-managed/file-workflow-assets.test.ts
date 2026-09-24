@@ -195,7 +195,7 @@ describe("file workflow asset registration", () => {
     expect(fixture.stages.at(-1)).toBe("material");
   });
 
-  test.each(packageFaults)("rejects base %s drift before registration", async (field) => {
+  test.each([...packageFaults])("rejects base %s drift before registration", async (field) => {
     const fixture = registrationFixture((path, response) => {
       if (path !== `/usecase-packages/${baseId}`) return;
       corruptPackage(response, field);
@@ -225,7 +225,7 @@ describe("file workflow asset registration", () => {
   });
 
   for (const nodeId of ["convert", "sort", "verify"] as const) {
-    test.each(packageFaults)(`${nodeId} rejects readback %s drift`, async (field) => {
+    test.each([...packageFaults])(`${nodeId} rejects readback %s drift`, async (field) => {
       const fixture = registrationFixture((path, response) => {
         if (path !== `/usecase-packages/${usecaseIds[nodeId]}`) return;
         corruptPackage(response, field);
@@ -254,7 +254,7 @@ describe("file workflow asset registration", () => {
     "readback",
     "usecase",
     "receipt",
-  ] as const)("stops on %s I/O failure", async (stage) => {
+  ])("stops on %s I/O failure", async (stage) => {
     const fixture = registrationFixture();
     const fail = async () => {
       throw new Error("Synthetic I/O failure");

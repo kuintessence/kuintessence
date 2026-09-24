@@ -7,7 +7,7 @@ import { assertArtifactBytes, assertFileWorkflowIdentity, invalidSamRejected } f
 describe("downloaded scientific artifact validation", () => {
   test("rejects a polled result belonging to another submitted workflow", () => {
     const runId = randomUUID();
-    const result = { id: runId, status: "completed", stepJobs: {}, result: null };
+    const result = { id: runId, status: "completed" as const, stepJobs: {}, result: null };
     expect(assertFileWorkflowIdentity(result, runId)).toEqual(result);
     expect(() => assertFileWorkflowIdentity(result, randomUUID())).toThrow();
   });

@@ -225,32 +225,34 @@ describe("file workflow runner with fake tools", () => {
     expect(result.stdout).toContain("stage=cleanup code=OK");
   });
 
-  test.each(["storage-start", "workflow-assets", "file-assets"])(
-    "%s failure blocks Agent startup and removes disposable volumes",
-    async (failure) => {
-      const result = await runRunner(["slurm", flag], failure);
-      expect(result.code).not.toBe(0);
-      expect(result.commands).not.toContain("300 scheduler registry");
-      expect(result.commands).toContain("down --volumes --remove-orphans --rmi local");
-      expect(result.commands).not.toMatch(/\blogs\b|\bprune\b/);
-      expect(`${result.stdout}${result.stderr}`).not.toContain("private-storage-error");
-      expect(result.stdout).not.toContain("PR scheduler and material regression passed");
-    },
-  );
+  test.each([
+    "storage-start",
+    "workflow-assets",
+    "file-assets",
+  ])("%s failure blocks Agent startup and removes disposable volumes", async (failure) => {
+    const result = await runRunner(["slurm", flag], failure);
+    expect(result.code).not.toBe(0);
+    expect(result.commands).not.toContain("300 scheduler registry");
+    expect(result.commands).toContain("down --volumes --remove-orphans --rmi local");
+    expect(result.commands).not.toMatch(/\blogs\b|\bprune\b/);
+    expect(`${result.stdout}${result.stderr}`).not.toContain("private-storage-error");
+    expect(result.stdout).not.toContain("PR scheduler and material regression passed");
+  });
 
-  test.each(["storage-restart", "storage-ready", "server-ready"])(
-    "%s failure blocks restart acceptance",
-    async (failure) => {
-      const result = await runRunner(["slurm", flag], failure);
-      expect(result.code).not.toBe(0);
-      expect(result.commands).toContain("spack-managed/case.ts install");
-      expect(result.commands).not.toContain("spack-managed/case.ts restart");
-      expect(result.commands).not.toContain("spack-managed/case.ts uninstall");
-      expect(result.commands).not.toContain("rollout.ts");
-      expect(result.commands).toContain("down --volumes --remove-orphans --rmi local");
-      expect(result.stdout).not.toContain("PR scheduler and material regression passed");
-    },
-  );
+  test.each([
+    "storage-restart",
+    "storage-ready",
+    "server-ready",
+  ])("%s failure blocks restart acceptance", async (failure) => {
+    const result = await runRunner(["slurm", flag], failure);
+    expect(result.code).not.toBe(0);
+    expect(result.commands).toContain("spack-managed/case.ts install");
+    expect(result.commands).not.toContain("spack-managed/case.ts restart");
+    expect(result.commands).not.toContain("spack-managed/case.ts uninstall");
+    expect(result.commands).not.toContain("rollout.ts");
+    expect(result.commands).toContain("down --volumes --remove-orphans --rmi local");
+    expect(result.stdout).not.toContain("PR scheduler and material regression passed");
+  });
 
   test("cleanup failure cannot report success", async () => {
     const result = await runRunner(["slurm", flag], "cleanup");
@@ -259,26 +261,27 @@ describe("file workflow runner with fake tools", () => {
     expect(result.stdout).not.toContain("PR scheduler and material regression passed");
   });
 
-  test.each(["--config", "--spack-workflow-hello", "--spack-workflow-samtools"])(
-    "%s ignores ambient file mode and keeps the old timeouts",
-    async (legacyFlag) => {
-      const result = await runRunner(["slurm", legacyFlag]);
-      expect(result.code).toBe(0);
-      expect(result.commands).not.toContain("file=1");
-      expect(result.commands).not.toContain("pr-spack-file-workflow.yml");
-      expect(result.commands).not.toContain("file-workflow-assets.ts");
-      expect(result.commands).not.toContain("restart rustfs");
-      expect(result.stdout.match(/^::add-mask::/gm)).toHaveLength(3);
-      if (legacyFlag === "--config") {
-        expect(result.commands).not.toMatch(/\b(info|build|up|exec|down)\b/);
-      } else {
-        expect(result.commands).toContain("1500s bun deploy/pr-test/spack-managed/case.ts install");
-        expect(result.commands).toContain("900s bun deploy/pr-test/spack-managed/case.ts restart");
-        expect(result.commands).toContain("180s bun deploy/pr-test/spack-managed/case.ts uninstall");
-        expect(result.commands).toContain("restart registry scheduler server");
-      }
-    },
-  );
+  test.each([
+    "--config",
+    "--spack-workflow-hello",
+    "--spack-workflow-samtools",
+  ])("%s ignores ambient file mode and keeps the old timeouts", async (legacyFlag) => {
+    const result = await runRunner(["slurm", legacyFlag]);
+    expect(result.code).toBe(0);
+    expect(result.commands).not.toContain("file=1");
+    expect(result.commands).not.toContain("pr-spack-file-workflow.yml");
+    expect(result.commands).not.toContain("file-workflow-assets.ts");
+    expect(result.commands).not.toContain("restart rustfs");
+    expect(result.stdout.match(/^::add-mask::/gm)).toHaveLength(3);
+    if (legacyFlag === "--config") {
+      expect(result.commands).not.toMatch(/\b(info|build|up|exec|down)\b/);
+    } else {
+      expect(result.commands).toContain("1500s bun deploy/pr-test/spack-managed/case.ts install");
+      expect(result.commands).toContain("900s bun deploy/pr-test/spack-managed/case.ts restart");
+      expect(result.commands).toContain("180s bun deploy/pr-test/spack-managed/case.ts uninstall");
+      expect(result.commands).toContain("restart registry scheduler server");
+    }
+  });
 });
 
 describe("file workflow deployment contracts", () => {
@@ -323,8 +326,8 @@ describe("file workflow deployment contracts", () => {
     expect(storage?.command).toEqual(["rustfs", "/data"]);
     expect(storage?.volumes).toEqual(["file-workflow-storage:/data"]);
     expect(storage?.environment).toEqual({
-      RUSTFS_ACCESS_KEY: "${KQ_PR_RUSTFS_ACCESS_KEY:?required}",
-      RUSTFS_SECRET_KEY: "${KQ_PR_RUSTFS_SECRET_KEY:?required}",
+      RUSTFS_ACCESS_KEY: `\${KQ_PR_RUSTFS_ACCESS_KEY:?required}`,
+      RUSTFS_SECRET_KEY: `\${KQ_PR_RUSTFS_SECRET_KEY:?required}`,
       RUSTFS_CONSOLE_ENABLE: "false",
     });
     expect(storage?.healthcheck?.test).toEqual([
@@ -359,7 +362,7 @@ describe("file workflow deployment contracts", () => {
       NETDRIVE_REGION: "us-east-1",
       NETDRIVE_PUBLIC_URL: "http://rustfs:9000",
       NETDRIVE_ACCESS_KEY: "kq-data-market-committer",
-      NETDRIVE_SECRET_KEY: "${KQ_PR_NETDRIVE_SECRET_KEY:?required}",
+      NETDRIVE_SECRET_KEY: `\${KQ_PR_NETDRIVE_SECRET_KEY:?required}`,
     });
     for (const key of [
       "NETDRIVE_BUCKET",
@@ -418,12 +421,12 @@ describe("file workflow deployment contracts", () => {
     const execution = managed?.steps.find((step) =>
       step.run?.includes("bash deploy/pr-test/run.sh"),
     );
-    expect(execution?.env).toEqual({ CASE_FLAG: "${{ matrix.flag }}" });
+    expect(execution?.env).toEqual({ CASE_FLAG: `\${{ matrix.flag }}` });
     expect(execution?.run).toContain("timeout --signal=TERM --kill-after=60s 80m");
     expect(execution?.run).toContain('bash deploy/pr-test/run.sh slurm "$CASE_FLAG"');
-    expect(
-      managed?.steps.some((step) => step.uses?.startsWith("actions/upload-artifact@")),
-    ).toBe(false);
+    expect(managed?.steps.some((step) => step.uses?.startsWith("actions/upload-artifact@"))).toBe(
+      false,
+    );
     const contracts = workflow.jobs.contracts?.steps.map((step) => step.run ?? "").join("\n");
     expect(contracts).toContain("scripts/spack-file-workflow.test.ts");
     expect(contracts).toContain("deploy/pr-test/spack-managed/file-workflow*.test.ts");

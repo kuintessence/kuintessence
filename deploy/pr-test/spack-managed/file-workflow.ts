@@ -94,7 +94,7 @@ async function verifyJobs(request: Request, receipt: Receipt, registered: Assets
     assert.equal(job.usecasePackageId, registered.usecases[node]);
     assert.equal(job.exitCode, 0);
     assert(job.schedulerJobId && /^[1-9][0-9]*$/.test(job.schedulerJobId));
-    assert(job.workingDir?.startsWith("/"));
+    assert(job.workingDir !== null && job.workingDir.startsWith("/"));
     directories.add(job.workingDir);
     schedulerIds.add(job.schedulerJobId);
     await waitFor(

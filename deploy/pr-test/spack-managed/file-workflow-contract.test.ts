@@ -31,7 +31,9 @@ const assets = {
 };
 const queueId = randomUUID();
 const prefix = "/srv/kq/spack/releases/11111111-1111-4111-8111-111111111111/root";
-const file = (fileMetadataName: string): FileRef => ({ fileMetadataId: randomUUID(), fileMetadataName });
+function file<const Name extends string>(fileMetadataName: Name) {
+  return { fileMetadataId: randomUUID(), fileMetadataName };
+}
 const input = file("synthetic.sam");
 const uploadedInput = {
   ...input,
@@ -78,7 +80,7 @@ function completed() {
         verify: { status: "Succeeded", values: { report: files.report, count: 3, region: 2 } },
       },
     },
-  };
+  } as const;
 }
 
 describe("managed samtools file workflow contract", () => {
@@ -144,7 +146,7 @@ describe("managed samtools file workflow contract", () => {
     }
   });
 
-  test.each(fileWorkflowNodes)("%s materializes governed paths without requiring a registration prefix", (nodeId) => {
+  test.each([...fileWorkflowNodes])("%s materializes governed paths without requiring a registration prefix", (nodeId) => {
     const pkg = fileWorkflowPackage(nodeId);
     expect(usecase.GovernedUsecasePackageSchema.safeParse(pkg).success).toBe(true);
     expect(pkg.software).toEqual({ kind: "Spack", name: selectedCase().spec, argumentList: [] });
