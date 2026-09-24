@@ -343,50 +343,51 @@ describe("SlurmAdapter.getJobLogs (with mock spawner)", () => {
     ]);
   });
 
-  test.each(["/scratch/kuintessence-workflows/job", ""])(
-    "reads the submitted log path after adapter restart and record purge with cwd %j",
-    async (workingDir) => {
-      const jobId = "19a20bcd-9761-4659-be4a-5ba445befc0a";
-      const logDir = "/shared/jobs/.scheduler-logs";
-      const submission = mockSpawner([{ exitCode: 0, stdout: "76\n" }]);
-      const adapter = new SlurmAdapter("23.02.7", {
-        spawner: submission.spawner,
-        logDir,
-      });
-      const { schedulerJobId } = await adapter.submit({
-        jobId,
-        name: "retained-log",
-        command: "printf 'value=43\\n'",
-        cpus: 1,
-        memoryMb: 128,
-        gpus: 0,
-        wallTimeSec: 60,
-        workingDir,
-        envVars: {},
-      });
-      const script = submission.stdin[0] ?? "";
-      const outputPath = /^#SBATCH --output=(.+)$/m.exec(script)?.[1];
-      expect(outputPath).toBe(`${logDir}/kq-${jobId}.out`);
-      expect(script).toContain(`#SBATCH --error=${outputPath}`);
-      expect(script).toContain(`#SBATCH --chdir=${workingDir || logDir}`);
+  test.each([
+    "/scratch/kuintessence-workflows/job",
+    "",
+  ])("reads the submitted log path after adapter restart and record purge with cwd %j", async (workingDir) => {
+    const jobId = "19a20bcd-9761-4659-be4a-5ba445befc0a";
+    const logDir = "/shared/jobs/.scheduler-logs";
+    const submission = mockSpawner([{ exitCode: 0, stdout: "76\n" }]);
+    const adapter = new SlurmAdapter("23.02.7", {
+      spawner: submission.spawner,
+      logDir,
+    });
+    const { schedulerJobId } = await adapter.submit({
+      jobId,
+      name: "retained-log",
+      command: "printf 'value=43\\n'",
+      cpus: 1,
+      memoryMb: 128,
+      gpus: 0,
+      wallTimeSec: 60,
+      workingDir,
+      envVars: {},
+    });
+    const script = submission.stdin[0] ?? "";
+    const outputPath = /^#SBATCH --output=(.+)$/m.exec(script)?.[1];
+    if (!outputPath) throw new Error("Submitted Slurm log path is missing");
+    expect(outputPath).toBe(`${logDir}/kq-${jobId}.out`);
+    expect(script).toContain(`#SBATCH --error=${outputPath}`);
+    expect(script).toContain(`#SBATCH --chdir=${workingDir || logDir}`);
 
-      const readback = mockSpawner([
-        { exitCode: 1, stdout: "", stderr: "Invalid job id" },
-        { exitCode: 0, stdout: "value=43\n" },
-      ]);
-      const restartedAdapter = new SlurmAdapter("23.02.7", {
-        spawner: readback.spawner,
-        logDir,
-      });
-      await expect(restartedAdapter.getJobLogs(schedulerJobId, 50, jobId)).resolves.toBe(
-        "value=43\n",
-      );
-      expect(readback.calls).toEqual([
-        ["scontrol", "show", "job", schedulerJobId, "-o"],
-        ["tail", "-n", "50", outputPath],
-      ]);
-    },
-  );
+    const readback = mockSpawner([
+      { exitCode: 1, stdout: "", stderr: "Invalid job id" },
+      { exitCode: 0, stdout: "value=43\n" },
+    ]);
+    const restartedAdapter = new SlurmAdapter("23.02.7", {
+      spawner: readback.spawner,
+      logDir,
+    });
+    await expect(restartedAdapter.getJobLogs(schedulerJobId, 50, jobId)).resolves.toBe(
+      "value=43\n",
+    );
+    expect(readback.calls).toEqual([
+      ["scontrol", "show", "job", schedulerJobId, "-o"],
+      ["tail", "-n", "50", outputPath],
+    ]);
+  });
 
   test("falls back to the retained log when completed-job StdOut has vanished", async () => {
     const jobId = "19a20bcd-9761-4659-be4a-5ba445befc0a";
