@@ -7191,6 +7191,7 @@ describe("AgentStream workflow Spack dispatch", () => {
       agentId: "spack-agent",
       siteName: "test-site",
       heartbeatIntervalMs: 60_000,
+      jobSleep: async () => {},
       logger: silent,
       inboundAcks,
       revocationTombstones: tombstones,

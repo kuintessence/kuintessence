@@ -195,9 +195,8 @@ describe("workflow Spack activation", () => {
         },
       }),
     );
-    const rejected = expect(activation).rejects.toThrow(SPACK_ACTIVATION_FAILURE);
     controller.abort(new Error("private cancellation reason"));
-    await rejected;
+    await expect(activation).rejects.toThrow(SPACK_ACTIVATION_FAILURE);
     expect(loadSignal?.aborted).toBe(true);
     expect(cleanup).toBeDefined();
     expect(cleaned).toBe(false);
