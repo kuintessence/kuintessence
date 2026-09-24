@@ -36,6 +36,7 @@ import {
   SoftwareOperationRequestSchema,
   SoftwareOperationStatus,
   SoftwarePolicyUpdateSchema,
+  SpackJobExecutionSchema,
   SshAuthSchema,
   SshCloseSchema,
   SshDataSchema,
@@ -7157,7 +7158,7 @@ describe("AgentStream workflow Spack dispatch", () => {
           cpus: 1,
           memoryMb: 64n,
           dispatchEpoch: 1n,
-          spackExecution: intent,
+          spackExecution: create(SpackJobExecutionSchema, intent),
           ...overrides,
         }),
       },
@@ -7421,7 +7422,7 @@ describe("AgentStream workflow Spack dispatch", () => {
       await waitForCondition(() => calls.length === 1);
       await deliverServerMessage(f.stream, order === "software-first" ? dispatch() : software);
       await settle();
-      expect(calls).toEqual([expected[0]]);
+      expect(calls).toEqual(expected.slice(0, 1));
       expect(maxActive).toBe(1);
       releaseFirst.resolve();
       if (order === "workflow-first") {
