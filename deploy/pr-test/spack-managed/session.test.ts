@@ -87,16 +87,16 @@ describe("long-running managed acceptance authentication", () => {
   });
 
   test("login consumes Server expiry and does not request a longer lifetime", async () => {
-    const request = spyOn(globalThis, "fetch").mockImplementation(async (_url, init) => {
-      expect(init?.body).toBe(JSON.stringify({
-        email: "scheduler-compose-seed@kuintessence.test", role: "platform_admin",
-      }));
-      return Response.json({ token: "fixture", expiresIn: 900 });
-    });
+    const request = spyOn(globalThis, "fetch").mockResolvedValue(
+      Response.json({ token: "fixture", expiresIn: 900 }),
+    );
     try {
       expect(await loginSession("https://server:3443")).toEqual({
         token: "fixture", expiresIn: 900,
       });
+      expect(request.mock.calls[0]?.[1]?.body).toBe(JSON.stringify({
+        email: "scheduler-compose-seed@kuintessence.test", role: "platform_admin",
+      }));
     } finally {
       request.mockRestore();
     }
@@ -104,18 +104,18 @@ describe("long-running managed acceptance authentication", () => {
 
   test("each JSON request resolves its credential without replaying unauthorized mutations", async () => {
     let tokens = 0;
-    let requests = 0;
     const token = async () => `fixture-${++tokens}`;
-    const request = spyOn(globalThis, "fetch").mockImplementation(async (_url, init) => {
-      requests++;
-      expect(init?.headers).toMatchObject({ Authorization: `Bearer fixture-${requests}` });
-      return requests === 1 ? Response.json({ ok: true }) : new Response(null, { status: 401 });
-    });
+    const request = spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(Response.json({ ok: true }))
+      .mockResolvedValueOnce(new Response(null, { status: 401 }));
     try {
       expect(await jsonRequest("https://server:3443", token, "/workflows")).toEqual({ ok: true });
       await expect(jsonRequest("https://server:3443", token, "/workflows", {})).rejects.toThrow();
       expect(tokens).toBe(2);
-      expect(requests).toBe(2);
+      expect(request).toHaveBeenCalledTimes(2);
+      for (const [index, call] of request.mock.calls.entries()) {
+        expect(call[1]?.headers).toMatchObject({ Authorization: `Bearer fixture-${index + 1}` });
+      }
     } finally {
       request.mockRestore();
     }
