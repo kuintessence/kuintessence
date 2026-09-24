@@ -53,7 +53,9 @@ describe("workflow Spack activation", () => {
     expect(loads).toBe(1);
     expect(checks).toBe(1);
     expect(command.startsWith("set -e\neval '")).toBe(true);
-    expect(command).toContain("'/srv/kq/store/releases/release/hello/bin'".replaceAll("'", "'\\''"));
+    expect(command).toContain(
+      "'/srv/kq/store/releases/release/hello/bin'".replaceAll("'", "'\\''"),
+    );
     expect(command.endsWith(`\n${execution.command}`)).toBe(true);
     expect(command).not.toContain("spack load");
   });

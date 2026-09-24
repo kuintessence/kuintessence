@@ -48,7 +48,12 @@ export async function activateWorkflowSpack(input: SpackActivationInput): Promis
   const manager = input.manager;
   const prepare = async () => {
     signal.throwIfAborted();
-    const outcome = await manager.runSoftwareOperation("load", execution.data.spec, undefined, signal);
+    const outcome = await manager.runSoftwareOperation(
+      "load",
+      execution.data.spec,
+      undefined,
+      signal,
+    );
     // A cancelled/expired verification can still withdraw a previously advertised install.
     if ("invalidatedHashes" in outcome && outcome.invalidatedHashes?.length) {
       input.invalidate?.(outcome.invalidatedHashes);

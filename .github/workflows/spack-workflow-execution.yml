@@ -51,6 +51,7 @@ jobs:
         with:
           bun-version: 1.4.2
       - name: Install dependencies without lifecycle scripts
+        id: dependencies
         run: bun install --frozen-lockfile --ignore-scripts
       - name: Lint and static contracts
         run: |
@@ -59,10 +60,13 @@ jobs:
           bun scripts/check-doc-links.ts
           bun run check:workflow-uses
       - name: Generate protobuf and typecheck
+        id: types
+        if: ${{ !cancelled() && steps.dependencies.outcome == 'success' }}
         run: |
           bun run typecheck
           bun node_modules/typescript/bin/tsc --project deploy/pr-test/tsconfig.json
       - name: Verify workflow activation and acceptance contracts
+        if: ${{ !cancelled() && steps.types.outcome == 'success' }}
         run: |
           bun test packages/shared/src/workflow packages/server/src/workflow/job-submitter.test.ts \
             packages/server/src/grpc/dispatcher.test.ts \
@@ -72,8 +76,10 @@ jobs:
             deploy/pr-test/spack-managed/workflow-assets.test.ts \
             scripts/spack-artifact-managed.test.ts scripts/spack-web-managed.test.ts
       - name: Verify Agent stream cancellation and dispatch regressions
+        if: ${{ !cancelled() && steps.types.outcome == 'success' }}
         run: bun test packages/agent/src/stream.test.ts
       - name: Verify database-backed workflow placement
+        if: ${{ !cancelled() && steps.types.outcome == 'success' }}
         env:
           DATABASE_URL: postgres://kq:kq@localhost:5432/kuintessence
           LOG_LEVEL: warn

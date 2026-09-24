@@ -689,7 +689,10 @@ export class AgentStream {
   private softwareOperationQueue: Promise<void> = Promise.resolve();
   private readonly pendingSoftwareResultSpills = new Set<Promise<void>>();
   private softwareOperationShutdown: Promise<void> | undefined;
-  private readonly spackActivations = new Map<string, { epoch: number; controller: AbortController }>();
+  private readonly spackActivations = new Map<
+    string,
+    { epoch: number; controller: AbortController }
+  >();
   private readonly pendingSpackPreparations = new Set<Promise<void>>();
   private readonly pendingSpackLoadCleanups = new Set<Promise<void>>();
   private readonly preparingSpackDispatches = new Set<string>();
@@ -4400,9 +4403,7 @@ export class AgentStream {
   private invalidateInstalledSoftware(hashes: string[]): void {
     if (hashes.length === 0 || !this.installedSoftwareKnown) return;
     const invalidated = new Set(hashes);
-    this.setInstalledSoftware(
-      this.installedSoftware.filter((spec) => !invalidated.has(spec.hash)),
-    );
+    this.setInstalledSoftware(this.installedSoftware.filter((spec) => !invalidated.has(spec.hash)));
   }
 
   private enqueueSoftwarePolicyAck(ack: {
