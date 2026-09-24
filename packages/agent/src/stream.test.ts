@@ -64,7 +64,7 @@ import type { AgentSandboxCapability } from "./sandbox/capability";
 import { type PreparedSpackMaterials, SpackManager, type SpackMaterialPrepareInput } from "./spack";
 import { SpackInstallStore } from "./spack/install-store";
 import type { SoftwareOperationOutcome } from "./spack/installer";
-import { SPACK_ACTIVATION_FAILURE } from "./spack/workflow-activation";
+import { SPACK_ACTIVATION_FAILURE, SPACK_ACTIVATION_TIMEOUT } from "./spack/workflow-activation";
 import type { Ssh2ClientLike, Ssh2Factory } from "./ssh";
 import { SshHandler } from "./ssh";
 import { AgentStream, type AgentStreamDeps, jobStatusReportToProto } from "./stream";
@@ -7698,6 +7698,7 @@ describe("AgentStream workflow Spack dispatch", () => {
       expect((await f.inboundAcks.pendingInbound())[0]?.payload.spackExecution).toEqual(intent);
     } else {
       expect(f.reports[0]?.status).toBe(mode === "cancel" ? "cancelled" : "failed");
+      if (mode === "timeout") expect(f.reports[0]?.message).toBe(SPACK_ACTIVATION_TIMEOUT);
     }
   });
 

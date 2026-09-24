@@ -1,5 +1,10 @@
 import assert from "node:assert/strict";
-import { usecase, workflowDsl } from "@kuintessence/shared";
+import {
+  SPACK_ACTIVATION_FAILURE,
+  SPACK_ACTIVATION_TIMEOUT,
+  usecase,
+  workflowDsl,
+} from "@kuintessence/shared";
 import { z } from "zod";
 import { selectedCase } from "../spack-case/fixture";
 import { buildManagedWorkflowScript } from "./jobs";
@@ -14,6 +19,13 @@ export const WorkflowReceiptSchema = z.strictObject({
   jobs: z.strictObject({ compute: z.string().uuid(), verify: z.string().uuid() }),
 });
 export type WorkflowReceipt = z.infer<typeof WorkflowReceiptSchema>;
+
+export function workflowJobFailureCode(message: unknown) {
+  if (message === SPACK_ACTIVATION_TIMEOUT) return "ACTIVATION_DEADLINE";
+  if (message === SPACK_ACTIVATION_FAILURE) return "ACTIVATION_FAILED";
+  return "OTHER_FAILURE";
+}
+
 export const WorkflowDetailSchema = z.object({
   id: z.string().uuid(),
   status: z.enum([

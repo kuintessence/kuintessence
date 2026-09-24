@@ -116,7 +116,11 @@ import type {
   SpackManager,
   SpackMaterialContext,
 } from "./spack";
-import { activateWorkflowSpack, SPACK_ACTIVATION_FAILURE } from "./spack/workflow-activation";
+import {
+  activateWorkflowSpack,
+  SPACK_ACTIVATION_FAILURE,
+  SPACK_ACTIVATION_TIMEOUT,
+} from "./spack/workflow-activation";
 import type { SshHandler, SshOutgoingMessage } from "./ssh";
 import { multipartUploadFromFile } from "./staging/multipart-upload-from-file";
 import { streamUploadToPresignedUrl } from "./staging/stream-upload";
@@ -502,7 +506,7 @@ export interface AgentStreamDeps {
   heartbeatAckTimeoutMs?: number;
   /** Maximum shutdown wait for software cancellation, cleanup and result persistence. */
   softwareOperationShutdownTimeoutMs?: number;
-  /** Workflow load deadline, capped at 60 seconds by the activation helper. */
+  /** Workflow load deadline, capped at the managed runtime's 30-minute ceiling. */
   spackActivationTimeoutMs?: number;
   /** Syntax-only shell validation seam; never executes the activation shell. */
   spackActivationSpawner?: Spawner;
@@ -2829,7 +2833,9 @@ export class AgentStream {
         }
         if (await this.reportCancelledDispatchIfRevoked(dj.jobId, dispatchEpoch)) return;
         const message = dj.spackExecution
-          ? SPACK_ACTIVATION_FAILURE
+          ? err instanceof Error && err.message === SPACK_ACTIVATION_TIMEOUT
+            ? SPACK_ACTIVATION_TIMEOUT
+            : SPACK_ACTIVATION_FAILURE
           : err instanceof Error
             ? err.message
             : "Licensed material preparation failed";

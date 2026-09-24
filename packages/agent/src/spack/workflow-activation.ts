@@ -1,9 +1,15 @@
-import { SPACK_EXECUTION_PLACEHOLDER, SpackExecutionSchema } from "@kuintessence/shared";
+import {
+  SPACK_ACTIVATION_FAILURE,
+  SPACK_ACTIVATION_TIMEOUT,
+  SPACK_EXECUTION_PLACEHOLDER,
+  SpackExecutionSchema,
+} from "@kuintessence/shared";
 import { realSpawner, type Spawner } from "../adapters/base";
 import type { SpackManager } from "./index";
 
-export const SPACK_ACTIVATION_FAILURE = "Workflow Spack activation failed";
-const MAX_ACTIVATION_TIMEOUT_MS = 60_000;
+export { SPACK_ACTIVATION_FAILURE, SPACK_ACTIVATION_TIMEOUT } from "@kuintessence/shared";
+// Match the existing managed readonly runner rather than truncating its verification.
+const MAX_ACTIVATION_TIMEOUT_MS = 30 * 60_000;
 const MAX_SHELL_BYTES = 256 * 1024;
 
 export interface SpackActivationInput {
@@ -35,10 +41,11 @@ export async function activateWorkflowSpack(input: SpackActivationInput): Promis
   }
   const controller = new AbortController();
   const signal = AbortSignal.any([input.signal, controller.signal]);
-  const timer = setTimeout(
-    () => controller.abort(),
-    Math.min(requestedTimeout, MAX_ACTIVATION_TIMEOUT_MS),
-  );
+  let deadlineExpired = false;
+  const timer = setTimeout(() => {
+    deadlineExpired = true;
+    controller.abort();
+  }, Math.min(requestedTimeout, MAX_ACTIVATION_TIMEOUT_MS));
   let removeAbortListener = () => {};
   const aborted = new Promise<never>((_resolve, reject) => {
     const onAbort = () => reject(new Error(SPACK_ACTIVATION_FAILURE));
@@ -90,7 +97,7 @@ export async function activateWorkflowSpack(input: SpackActivationInput): Promis
     );
     return await Promise.race([preparation, aborted]);
   } catch {
-    throw new Error(SPACK_ACTIVATION_FAILURE);
+    throw new Error(deadlineExpired ? SPACK_ACTIVATION_TIMEOUT : SPACK_ACTIVATION_FAILURE);
   } finally {
     clearTimeout(timer);
     removeAbortListener();

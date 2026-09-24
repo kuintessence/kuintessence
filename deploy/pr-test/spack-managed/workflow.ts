@@ -10,6 +10,7 @@ import {
   managedWorkflow,
   WorkflowAssetsSchema,
   WorkflowDetailSchema,
+  workflowJobFailureCode,
   type WorkflowReceipt,
 } from "./workflow-contract";
 
@@ -22,6 +23,7 @@ const JobSchema = z.object({
   agentId: z.string().nullable(),
   schedulerJobId: z.string().nullable(),
   usecasePackageId: z.string().uuid().nullable(),
+  errorMessage: z.string().nullable().optional(),
 });
 type Request = (path: string, body?: unknown) => Promise<unknown>;
 
@@ -79,6 +81,21 @@ export async function runManagedWorkflow(token: string, queueId: string, prefix:
     );
     ended = true;
     console.log(`Spack managed workflow: stage=terminal status=${completed.status}`);
+    if (completed.status !== "completed") {
+      for (const nodeId of ["compute", "verify"]) {
+        const jobId = completed.stepJobs[nodeId];
+        let code = "JOB_NOT_CREATED";
+        if (jobId) {
+          try {
+            const job = JobSchema.parse(await request(`/jobs/${jobId}`));
+            code = workflowJobFailureCode(job.errorMessage);
+          } catch {
+            code = "DIAGNOSTIC_UNAVAILABLE";
+          }
+        }
+        console.log(`Spack managed workflow: stage=diagnostic node=${nodeId} code=${code}`);
+      }
+    }
     const receipt = assertWorkflowCompleted(completed, created.runId);
     await verifyJobs(request, receipt);
     console.log("Spack managed workflow: stage=execute code=OK");

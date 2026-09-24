@@ -161,7 +161,7 @@ Kuintessence 当前为 pre-release。以下列出组件功能、运行要求和�
   [Spack 工作流闭环](../../deploy/pr-test/README.md#spack-工作流闭环)新增
   Hello/samtools 的签名目录注册、材料 bootstrap、managed 安装与正式异步
   `/workflows` 两节点执行验收，包含结果依赖及重启回读/重跑。
-  尚待该提交 Actions 验证，不沿用直接 `/jobs` 的通过记录。Agent/OS 兼容性后续
+  验收以对应提交的 Actions 结果为准，不沿用直接 `/jobs` 的通过记录。Agent/OS 兼容性后续
   独立 PR；现有隔离、OS/工具链指纹和 Server-only 材料交付约束不放宽。
 - CP 的 suspend/quota 写入口已停用，暂不支持通过这些接口暂停组织或设置并发硬限。
 - 平台记录用量，外部计费系统生成账单。

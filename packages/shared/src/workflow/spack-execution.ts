@@ -2,6 +2,8 @@ import { z } from "zod";
 
 // Older Agents must fail rather than execute a command without its managed environment.
 export const SPACK_EXECUTION_PLACEHOLDER = "exit 125";
+export const SPACK_ACTIVATION_FAILURE = "Workflow Spack activation failed";
+export const SPACK_ACTIVATION_TIMEOUT = `${SPACK_ACTIVATION_FAILURE}: deadline exceeded`;
 
 /** Internal workflow dispatch intent, never part of the public JobSubmit schema. */
 export const SpackExecutionSchema = z.strictObject({

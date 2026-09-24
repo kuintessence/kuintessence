@@ -649,7 +649,8 @@ worker 同时通过 `packages.all.require` 将完整 profile arch 施加到求�
 - load 仅用于当前 profile 的 `ready` 记录，在独立 readonly runtime 内复验后返回一次性
   shell fragment，不自动注入未来作业环境。正式 workflow 的 Spack 节点在每次 dispatch
   中单独传递结构化激活请求，Agent 重新调用 load 校验，成功后才组合命令并提交。
-  激活与运维软件操作共用串行队列；排队和校验合计最多等待 60 秒，超时或取消后
+  激活与运维软件操作共用串行队列；排队和校验合计最多等待 30 分钟，与现有
+  managed readonly runner 的上限一致。超时或取消后
   不提交作业，底层清理仍保持队列占用直至结束。短暂 control stream 重连不会把
   当前进程仍在准备的作业误报为重启失败；实际进程重启不重放未完成的激活。
   停机等待底层收尾有现有 5 秒上限，超时会记录仍可能存在待清理操作。

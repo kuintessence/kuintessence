@@ -4,6 +4,7 @@ import type { SoftwareOperationOutcome } from "./installer";
 import {
   activateWorkflowSpack,
   SPACK_ACTIVATION_FAILURE,
+  SPACK_ACTIVATION_TIMEOUT,
   type SpackActivationInput,
 } from "./workflow-activation";
 
@@ -224,7 +225,7 @@ describe("workflow Spack activation", () => {
           },
         }),
       ),
-    ).rejects.toThrow(SPACK_ACTIVATION_FAILURE);
+    ).rejects.toThrow(SPACK_ACTIVATION_TIMEOUT);
     expect(loadSignal?.aborted).toBe(true);
   });
 
@@ -252,7 +253,7 @@ describe("workflow Spack activation", () => {
           },
         }),
       ),
-    ).rejects.toThrow(SPACK_ACTIVATION_FAILURE);
+    ).rejects.toThrow(SPACK_ACTIVATION_TIMEOUT);
     expect(loads).toBe(0);
     release();
     await cleanup;

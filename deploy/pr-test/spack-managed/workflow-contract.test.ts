@@ -4,6 +4,8 @@ import { readFile } from "node:fs/promises";
 import {
   createUsecaseExecutor,
   runWorkflow,
+  SPACK_ACTIVATION_FAILURE,
+  SPACK_ACTIVATION_TIMEOUT,
   SPACK_EXECUTION_PLACEHOLDER,
   workflowDsl,
 } from "@kuintessence/shared";
@@ -12,6 +14,7 @@ import {
   assertWorkflowCompleted,
   managedWorkflow,
   managedWorkflowPackage,
+  workflowJobFailureCode,
 } from "./workflow-contract";
 
 const previous = process.env.KQ_PR_SPACK_CASE;
@@ -25,6 +28,14 @@ afterEach(() => {
 });
 
 describe("managed workflow acceptance contract", () => {
+  test("failure diagnostics expose only fixed codes", () => {
+    expect(workflowJobFailureCode(SPACK_ACTIVATION_TIMEOUT)).toBe("ACTIVATION_DEADLINE");
+    expect(workflowJobFailureCode(SPACK_ACTIVATION_FAILURE)).toBe("ACTIVATION_FAILED");
+    for (const message of [null, undefined, "private path or token", {}, ""]) {
+      expect(workflowJobFailureCode(message)).toBe("OTHER_FAILURE");
+    }
+  });
+
   test.each(["hello", "samtools"])("%s uses governed revisions and output dependencies", async (id) => {
     process.env.KQ_PR_SPACK_CASE = id;
     const fixture = selectedCase();
