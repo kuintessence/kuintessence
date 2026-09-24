@@ -263,7 +263,7 @@ type JobLogReadResult =
 
 export interface SlurmAdapterDeps {
   spawner?: Spawner;
-  /** Override for stdout/stderr when a job has no explicit working directory. */
+  /** Retained stdout/stderr directory for non-sandbox jobs; also the default cwd. */
   logDir?: string;
   /**
    * Which backend to use when a job is no longer visible in squeue.
@@ -304,7 +304,8 @@ export class SlurmAdapter implements SchedulerAdapter {
     assertSandboxSchedulerMetadata(spec);
     const lines: string[] = ["#!/bin/bash"];
     const executionRoot = spec.workingDir || this.logDir;
-    const logPath = join(executionRoot, `kq-${spec.jobId}.out`);
+    // Mapped sandbox accounts may not be able to access the Agent's private log directory.
+    const logPath = join(spec.sandbox ? executionRoot : this.logDir, `kq-${spec.jobId}.out`);
     lines.push(`#SBATCH --job-name=${spec.schedulerName ?? spec.name}`);
     lines.push(`#SBATCH --comment=KQ_JOB_ID=${spec.jobId}`);
     lines.push(`#SBATCH --cpus-per-task=${spec.cpus}`);

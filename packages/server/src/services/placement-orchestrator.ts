@@ -13,6 +13,7 @@ import type {
   RoleName,
   SandboxSignedManifest,
   SoftwareAvailabilityRequest,
+  SpackExecution,
 } from "@kuintessence/shared";
 import { createLogger } from "@kuintessence/shared";
 import { and, eq, inArray, or } from "drizzle-orm";
@@ -77,6 +78,8 @@ export interface PlaceAndDispatchInput {
   jobId: string;
   workflowRunId?: string;
   job: JobSubmit;
+  /** Transient workflow-only intent; the durable job command remains fail-closed. */
+  spackExecution?: SpackExecution;
   userId: string;
   userRole: RoleName;
   orgId: string | null;
@@ -730,6 +733,7 @@ export class PlacementOrchestrator {
       queueValidationMode: dispatchQueue?.validationMode ?? "off",
       qos: dispatchQueue?.qos,
       sandboxExecution: signedSandbox,
+      spackExecution: input.spackExecution,
       licensedMaterialMounts,
       restrictedNoEgress,
       dataDeliveries,

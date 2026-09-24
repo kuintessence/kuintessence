@@ -1,5 +1,47 @@
 # PR 调度器测试
 
+## Spack 工作流闭环
+
+新增 Actions 专用 `Spack workflow execution` 工作流及两个入口：
+
+```bash
+bash deploy/pr-test/run.sh slurm --spack-workflow-hello
+bash deploy/pr-test/run.sh slurm --spack-workflow-samtools
+```
+
+仅在授权 GitHub Actions 环境执行，不在本地或生产集群运行。沿用当前已验证的
+Ubuntu 20.04 scheduler userspace 和 Ubuntu 24.04 hosted runner；CentOS 7、
+Ubuntu 24/26 原生 Agent 兼容性另行验证，不属于本轮通过条件。
+
+这两个入口继承 artifact-bootstrap 的同一材料导出、导入、禁用 bootstrap 后
+持久化回读、Server 授权交付、Agent source audit、隔离安装、独立 readonly verify、
+直接 Slurm 作业、完整性负例及卸载回归。另外增加：
+
+1. Operator 为当前测试生成临时 Ed25519 密钥，通过真实 ecosystem import/activate
+   API 发布固定案例的软件目录 revision，再通过 usecase API 注册 governed package。
+   这是测试目录的签名，不代表上游签名或生产信任；不发布材料或镜像 artifact。
+   私钥只保存在 operator/Server 的临时卷，Registry 只读取公钥，Agent 不挂载私钥卷。
+2. 调用正式异步 `POST /api/workflows`，执行两个 `SoftwareUsecaseComputing` 节点。
+   两节点使用同一 frozen software revision、同一 managed prefix 与真实 Slurm 队列；
+   第二节点显式消费并检查第一节点的数值结果。
+3. Workflow 的 Spack 激活请求通过结构化 gRPC 字段交给 Agent；Agent 调现有
+   `SpackManager` 的 load 操作，校验成功后才提交作业。harness 不传入 load shell，
+   不设置 managed PATH，不把直接 `/jobs` 成功当作 workflow 成功。
+4. 检查 workflow 与每个节点状态、两个独立 job ID、真实 Slurm job ID、
+   精确软件路径、Hello 输出或 samtools 合成 SAM/BAM/索引/计数与非法输入检查，
+   以及通过 Server 回收的日志和类型化结果。
+5. Registry/Server/Agent 重启后读取原 workflow 结果，并创建新的 workflow 再执行。
+   最后沿用卸载、引用对账、rollout 和资源清理。
+
+验收保留显式 `WORKFLOW_RUN_BASE`，同时要求普通 Slurm 日志使用持久共享目录，
+不通过清空工作目录配置或跳过旧日志检查规避重启回读。合同测试还覆盖脚本参数中的
+`$'`、`` $` ``、`$&` 和 `$$` 原样物化，以及 Sandbox 日志路径不受影响。
+
+日志只输出固定阶段与枚举状态，不上传运行原始日志或签名材料。合同与类型检查、
+真实闭环均须核对当前提交的 Actions；**实现存在不等于验收已通过**。
+这是 Hello/samtools 的两节点编排切片，不是完整变异检测流程，也不代表全部
+15 个科学工作流、跨节点共享存储、PBS 或生产站点通过。
+
 这是可销毁的测试环境，不是公网 preview，也不复用现有 scheduler 开发栈。
 专用配置：[docker-compose.pr-test.yml](../compose/docker-compose.pr-test.yml)。
 

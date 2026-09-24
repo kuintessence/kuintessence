@@ -51,6 +51,7 @@ export * from "./utils/logger";
 export * from "./workflow/engine";
 // Storage-agnostic workflow-run persistence contract (Server PG + local SQLite).
 export * from "./workflow/run-store";
+export * from "./workflow/spack-execution";
 // Usecase node-executor — composes the materialization pieces into a NodeExecutor
 // over injected resolvePackage + submitJob; reused by Server and the local kernel.
 export * from "./workflow/usecase-executor";
