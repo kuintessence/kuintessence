@@ -23,6 +23,8 @@ import { selectedCase } from "../spack-case/fixture";
 import { managedApi } from "./api-helper";
 import { diagnoseManagedInstall } from "./diagnostic";
 import { verifyManagedCacheIntegrity } from "./integrity";
+import { runManagedWorkflow, verifyManagedWorkflow } from "./workflow";
+import { WorkflowReceiptSchema } from "./workflow-contract";
 
 const PhaseSchema = z.enum(["install", "restart", "uninstall"]);
 const statePath = `${caseDirectory}/managed-result.json`;
@@ -34,6 +36,7 @@ const StateSchema = z.strictObject({
   target: z.string().min(1),
   record: SpackInstallRecordSchema,
   queueId: z.string().uuid(),
+  workflow: WorkflowReceiptSchema.optional(),
 });
 type Release = z.infer<typeof ReleaseSchema>;
 type State = z.infer<typeof StateSchema>;
@@ -50,6 +53,7 @@ type Stage =
   | "import_preinstalled"
   | "load"
   | "job"
+  | "workflow"
   | "integrity"
   | "uninstall";
 let stage: Stage = "guard";
@@ -206,7 +210,8 @@ async function main() {
     await emptyCache();
   }
   stage = "connect";
-  const api = managedApi(await login("https://server:3443"));
+  const token = await login("https://server:3443");
+  const api = managedApi(token);
   await api.online();
 
   let state: State;
@@ -278,6 +283,16 @@ async function main() {
     const ready = await readyRecord(release, state.record);
     stage = "job";
     await api.runCase(state.queueId, ready.report.prefix, loaded.stdout);
+    if (process.env.KQ_PR_SPACK_WORKFLOW === "1") {
+      stage = "workflow";
+      if (phase === "restart") {
+        assert(state.workflow, "Workflow receipt is missing after restart");
+        await verifyManagedWorkflow(token, state.workflow);
+      }
+      const receipt = await runManagedWorkflow(token, state.queueId, ready.report.prefix);
+      if (phase === "install") state.workflow = receipt;
+      else assert.notEqual(receipt.runId, state.workflow?.runId);
+    }
     stage = "store";
     await readyRecord(release, state.record);
     if (phase === "install") {

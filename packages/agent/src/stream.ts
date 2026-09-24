@@ -116,6 +116,7 @@ import type {
   SpackManager,
   SpackMaterialContext,
 } from "./spack";
+import { activateWorkflowSpack, SPACK_ACTIVATION_FAILURE } from "./spack/workflow-activation";
 import type { SshHandler, SshOutgoingMessage } from "./ssh";
 import { multipartUploadFromFile } from "./staging/multipart-upload-from-file";
 import { streamUploadToPresignedUrl } from "./staging/stream-upload";
@@ -501,6 +502,10 @@ export interface AgentStreamDeps {
   heartbeatAckTimeoutMs?: number;
   /** Maximum shutdown wait for software cancellation, cleanup and result persistence. */
   softwareOperationShutdownTimeoutMs?: number;
+  /** Workflow load deadline, capped at 60 seconds by the activation helper. */
+  spackActivationTimeoutMs?: number;
+  /** Syntax-only shell validation seam; never executes the activation shell. */
+  spackActivationSpawner?: Spawner;
   /** Independent mTLS reachability check for detecting a half-open bidi stream. */
   reachabilityProbe?: ServerReachabilityProbe;
   /** Delay between reachability probes after registration is accepted. */
@@ -684,6 +689,11 @@ export class AgentStream {
   private softwareOperationQueue: Promise<void> = Promise.resolve();
   private readonly pendingSoftwareResultSpills = new Set<Promise<void>>();
   private softwareOperationShutdown: Promise<void> | undefined;
+  private readonly spackActivations = new Map<string, { epoch: number; controller: AbortController }>();
+  private readonly pendingSpackPreparations = new Set<Promise<void>>();
+  private readonly pendingSpackLoadCleanups = new Set<Promise<void>>();
+  private readonly preparingSpackDispatches = new Set<string>();
+  private readonly spackDispatchEpochs = new WeakMap<JobSpec, number>();
   private readGpuMetricsFn: () => Promise<GpuMetric[]>;
   private readDiskUsedPercentFn: () => Promise<number | null>;
   private readSchedulerQueueDepthFn: () => Promise<number>;
@@ -799,6 +809,11 @@ export class AgentStream {
             );
           }
           await assertRuntimeAttestation(spec.sandbox, runtimeDigest);
+        }
+        const spackEpoch = this.spackDispatchEpochs.get(spec);
+        if (spackEpoch !== undefined) {
+          await this.assertDispatchEpochAllowed(spec.jobId, spackEpoch);
+          this.lifecycleController.signal.throwIfAborted();
         }
       },
       onQueueValidationShadowRejection: (failureCode) =>
@@ -1050,10 +1065,17 @@ export class AgentStream {
       let pending: Promise<void>;
       do {
         pending = this.softwareOperationQueue;
-        await Promise.all([pending, ...this.pendingSoftwareResultSpills]);
+        await Promise.all([
+          pending,
+          ...this.pendingSoftwareResultSpills,
+          ...this.pendingSpackPreparations,
+          ...this.pendingSpackLoadCleanups,
+        ]);
       } while (
         pending !== this.softwareOperationQueue ||
-        this.pendingSoftwareResultSpills.size > 0
+        this.pendingSoftwareResultSpills.size > 0 ||
+        this.pendingSpackPreparations.size > 0 ||
+        this.pendingSpackLoadCleanups.size > 0
       );
     };
     try {
@@ -1561,6 +1583,7 @@ export class AgentStream {
     // reports land in the same connection as any other queued reports.
     // We synthesize one report per pending dispatch:
     //
+    //   - Live Spack preparations retain their pending receipt until their real first report.
     //   - If a runner is still alive locally for that jobId, replay
     //     `running` (the runner will continue emitting real updates,
     //     idempotent on the Server side).
@@ -1577,6 +1600,7 @@ export class AgentStream {
         const pending = await this.inboundAcks.pendingInbound();
         for (const row of pending) {
           if (signal.aborted) return;
+          if (this.preparingSpackDispatches.has(row.dispatchId)) continue;
           const haveLocalRunner = this.pool.get(row.jobId) !== undefined;
           const replayReport: JobStatusReport = haveLocalRunner
             ? { jobId: row.jobId, status: "running" }
@@ -2540,6 +2564,14 @@ export class AgentStream {
               name: dj.name,
               schedulerName: schedulerSubmissionTag(dj.jobId),
               command: dj.command,
+              ...(dj.spackExecution
+                ? {
+                    spackExecution: {
+                      spec: dj.spackExecution.spec,
+                      command: dj.spackExecution.command,
+                    },
+                  }
+                : {}),
               cpus: dj.cpus,
               memoryMb: Number(dj.memoryMb),
               gpus: dj.gpus,
@@ -2572,6 +2604,14 @@ export class AgentStream {
       }
       this.dispatchIdsByJob.set(dj.jobId, dispatchId);
 
+      if (dj.spackExecution && dj.sandboxExecution) {
+        await this.onJobTransition({
+          jobId: dj.jobId,
+          status: "failed",
+          message: SPACK_ACTIVATION_FAILURE,
+        });
+        return;
+      }
       const expectedOutputs: ExpectedOutput[] = dj.expectedOutputs.map((o) => ({
         descriptor: o.descriptor,
         path: o.path,
@@ -2773,19 +2813,39 @@ export class AgentStream {
         stdinText: dj.stdinText || undefined,
         restrictedNoEgress: dj.restrictedNoEgress,
       };
-      this.submitWithLicensedMaterials(dj, spec, expectedOutputs, dispatchEpoch).catch(
-        async (err) => {
-          if (!this.running) {
-            this.logger.info({ jobId: dj.jobId }, "Job preparation stopped for shutdown");
-            return;
-          }
-          if (await this.reportCancelledDispatchIfRevoked(dj.jobId, dispatchEpoch)) return;
-          const message =
-            err instanceof Error ? err.message : "Licensed material preparation failed";
-          this.logger.error({ jobId: dj.jobId, err }, "Job dispatch rejected");
-          await this.onJobTransition({ jobId: dj.jobId, status: "failed", message });
-        },
-      );
+      if (dj.spackExecution) this.preparingSpackDispatches.add(dispatchId);
+      const preparation = this.submitWithLicensedMaterials(
+        dj,
+        spec,
+        expectedOutputs,
+        dispatchEpoch,
+      ).catch(async (err) => {
+        if (!this.running) {
+          this.logger.info({ jobId: dj.jobId }, "Job preparation stopped for shutdown");
+          return;
+        }
+        if (await this.reportCancelledDispatchIfRevoked(dj.jobId, dispatchEpoch)) return;
+        const message = dj.spackExecution
+          ? SPACK_ACTIVATION_FAILURE
+          : err instanceof Error
+            ? err.message
+            : "Licensed material preparation failed";
+        this.logger.error(
+          { jobId: dj.jobId, ...(dj.spackExecution ? {} : { err }) },
+          "Job dispatch rejected",
+        );
+        await this.onJobTransition({ jobId: dj.jobId, status: "failed", message });
+      });
+      if (dj.spackExecution) {
+        const tracked = preparation.catch(() => {
+          this.logger.error({ jobId: dj.jobId }, "Failed to report Spack dispatch failure");
+        });
+        this.pendingSpackPreparations.add(tracked);
+        void tracked.then(() => {
+          this.pendingSpackPreparations.delete(tracked);
+          this.preparingSpackDispatches.delete(dispatchId);
+        });
+      }
       return;
     }
 
@@ -3167,6 +3227,44 @@ export class AgentStream {
     expectedOutputs: ExpectedOutput[],
     dispatchEpoch: number,
   ): Promise<void> {
+    if (dispatch.spackExecution) {
+      await this.assertDispatchEpochAllowed(spec.jobId, dispatchEpoch);
+      this.lifecycleController.signal.throwIfAborted();
+      const controller = new AbortController();
+      this.spackActivations.set(spec.jobId, { epoch: dispatchEpoch, controller });
+      try {
+        const command = await activateWorkflowSpack({
+          execution: {
+            spec: dispatch.spackExecution.spec,
+            command: dispatch.spackExecution.command,
+          },
+          command: dispatch.command,
+          manager: this.spackManager,
+          signal: AbortSignal.any([this.lifecycleController.signal, controller.signal]),
+          timeoutMs: this.deps.spackActivationTimeoutMs,
+          spawner: this.deps.spackActivationSpawner,
+          invalidate: (hashes) => this.invalidateInstalledSoftware(hashes),
+          schedule: (prepare) => {
+            const pending = this.softwareOperationQueue.then(prepare);
+            // Hold the shared store queue until the actual load and cleanup settle.
+            this.softwareOperationQueue = pending.then(
+              () => {},
+              () => {},
+            );
+            return pending;
+          },
+          trackCleanup: (pending) => {
+            this.pendingSpackLoadCleanups.add(pending);
+            void pending.then(() => this.pendingSpackLoadCleanups.delete(pending));
+          },
+        });
+        await this.assertDispatchEpochAllowed(spec.jobId, dispatchEpoch);
+        this.lifecycleController.signal.throwIfAborted();
+        spec = { ...spec, command };
+      } finally {
+        this.spackActivations.delete(spec.jobId);
+      }
+    }
     const hasSpecializedManagedRoot =
       dispatch.dataDeliveries.length > 0 || dispatch.licensedMaterialMounts.length > 0;
     const requiresImplicitFileWorkRoot =
@@ -3252,6 +3350,10 @@ export class AgentStream {
             }
           : deliveredSpec;
       await this.assertDispatchEpochAllowed(protectedSpec.jobId, dispatchEpoch);
+      this.lifecycleController.signal.throwIfAborted();
+      if (dispatch.spackExecution) {
+        this.spackDispatchEpochs.set(protectedSpec, dispatchEpoch);
+      }
       await this.pool.submit(protectedSpec, { expectedOutputs: protectedExpectedOutputs });
     } catch (error) {
       const cleanupErrors: unknown[] = [];
@@ -3337,6 +3439,10 @@ export class AgentStream {
     const tombstones = this.revocationTombstones;
     if (!tombstones) throw new Error("durable revocation tombstone store is not configured");
     await tombstones.record(jobId, revokedEpoch);
+    const activation = this.spackActivations.get(jobId);
+    if (activation && activation.epoch <= revokedEpoch) {
+      activation.controller.abort();
+    }
 
     const existingIntent = await this.findCleanupIntent(jobId);
     if (existingIntent) {
@@ -4266,12 +4372,7 @@ export class AgentStream {
       return;
     }
     if (outcome.outcome === "failed") {
-      if (outcome.invalidatedHashes?.length && this.installedSoftwareKnown) {
-        const invalidated = new Set(outcome.invalidatedHashes);
-        this.setInstalledSoftware(
-          this.installedSoftware.filter((spec) => !invalidated.has(spec.hash)),
-        );
-      }
+      this.invalidateInstalledSoftware(outcome.invalidatedHashes ?? []);
       await this.enqueueSoftwareOperationResult({
         operationId,
         action: protoAction,
@@ -4294,6 +4395,14 @@ export class AgentStream {
       exitCode: 0,
       installed: action === "load" ? [] : outcome.installed,
     });
+  }
+
+  private invalidateInstalledSoftware(hashes: string[]): void {
+    if (hashes.length === 0 || !this.installedSoftwareKnown) return;
+    const invalidated = new Set(hashes);
+    this.setInstalledSoftware(
+      this.installedSoftware.filter((spec) => !invalidated.has(spec.hash)),
+    );
   }
 
   private enqueueSoftwarePolicyAck(ack: {

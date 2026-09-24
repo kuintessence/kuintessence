@@ -1,30 +1,34 @@
 #!/usr/bin/env bash
 set -euo pipefail
-unset KQ_PR_MATERIAL_EPOCH KQ_PR_SPACK_CASE
+unset KQ_PR_MATERIAL_EPOCH KQ_PR_SPACK_CASE KQ_PR_SPACK_WORKFLOW
 export KQ_PR_SPACK_CASE=hello
 
 fail() { printf '%s\n' "$*" >&2; exit 2; }
 case "${1:-}" in
   slurm) export KQ_PR_SCHEDULER=slurm KQ_PR_REGISTRATION_SCHEDULER=slurm KQ_PR_PRIVILEGED=false ;;
   pbs) export KQ_PR_SCHEDULER=pbs KQ_PR_REGISTRATION_SCHEDULER=pbs-pro KQ_PR_PRIVILEGED=true ;;
-  *) fail "Usage: bash deploy/pr-test/run.sh slurm|pbs [--config|--spack-case|--spack-managed|--spack-samtools|--spack-artifact-hello|--spack-artifact-samtools|--spack-web-hello|--spack-web-samtools]" ;;
+  *) fail "Usage: bash deploy/pr-test/run.sh slurm|pbs [--config|--spack-case|--spack-managed|--spack-samtools|--spack-artifact-hello|--spack-artifact-samtools|--spack-web-hello|--spack-web-samtools|--spack-workflow-hello|--spack-workflow-samtools]" ;;
 esac
-[[ $# -le 2 && ( $# -eq 1 || "$2" == "--config" || "$2" == "--spack-case" || "$2" == "--spack-managed" || "$2" == "--spack-samtools" || "$2" == "--spack-artifact-hello" || "$2" == "--spack-artifact-samtools" || "$2" == "--spack-web-hello" || "$2" == "--spack-web-samtools" ) ]] || fail "Unsupported flag"
+[[ $# -le 2 && ( $# -eq 1 || "$2" == "--config" || "$2" == "--spack-case" || "$2" == "--spack-managed" || "$2" == "--spack-samtools" || "$2" == "--spack-artifact-hello" || "$2" == "--spack-artifact-samtools" || "$2" == "--spack-web-hello" || "$2" == "--spack-web-samtools" || "$2" == "--spack-workflow-hello" || "$2" == "--spack-workflow-samtools" ) ]] || fail "Unsupported flag"
 spack_case=false
 spack_managed=false
 spack_artifact=false
 spack_web=false
+spack_workflow=false
+if [[ "${2:-}" == "--spack-workflow-hello" || "${2:-}" == "--spack-workflow-samtools" ]]; then
+  spack_workflow=true
+fi
 if [[ "${2:-}" == "--spack-web-hello" || "${2:-}" == "--spack-web-samtools" ]]; then
   spack_web=true
 fi
-if [[ "${2:-}" == "--spack-artifact-hello" || "${2:-}" == "--spack-artifact-samtools" ]] || "$spack_web"; then
+if [[ "${2:-}" == "--spack-artifact-hello" || "${2:-}" == "--spack-artifact-samtools" ]] || "$spack_web" || "$spack_workflow"; then
   spack_artifact=true
 fi
 if [[ "${2:-}" == "--spack-managed" || "${2:-}" == "--spack-samtools" ]] || "$spack_artifact"; then
   [[ "${GITHUB_ACTIONS:-}" == true ]] || fail "Managed case runs only on disposable GitHub Actions runners"
   spack_managed=true
 fi
-if [[ "${2:-}" == "--spack-samtools" || "${2:-}" == "--spack-artifact-samtools" || "${2:-}" == "--spack-web-samtools" ]]; then
+if [[ "${2:-}" == "--spack-samtools" || "${2:-}" == "--spack-artifact-samtools" || "${2:-}" == "--spack-web-samtools" || "${2:-}" == "--spack-workflow-samtools" ]]; then
   export KQ_PR_SPACK_CASE=samtools
 fi
 if [[ "${2:-}" == "--spack-case" ]] || "$spack_managed"; then
@@ -71,6 +75,9 @@ if "$spack_artifact"; then
 fi
 if "$spack_web"; then
   compose+=(-f "$repo_root/deploy/compose/docker-compose.pr-spack-web-managed.yml")
+fi
+if "$spack_workflow"; then
+  compose+=(-f "$repo_root/deploy/compose/docker-compose.pr-spack-workflow.yml")
 fi
 compose+=(--profile images)
 web_compose=("${compose[@]}" -f "$repo_root/deploy/compose/docker-compose.pr-spack-web-endpoints.yml")
@@ -264,6 +271,9 @@ exec bun deploy/pr-test/spack-artifacts/export.ts "$@"' \
     "${compose[@]}" run --rm --no-deps case-operator bun deploy/pr-test/spack-case/publish.ts
     "${compose[@]}" restart server
   fi
+fi
+if "$spack_workflow"; then
+  "${compose[@]}" run --rm --no-deps artifact-control bun deploy/pr-test/spack-managed/workflow-assets.ts
 fi
 "${compose[@]}" up -d --no-build --wait --wait-timeout 300 scheduler registry
 if "$spack_case"; then

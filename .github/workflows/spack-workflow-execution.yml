@@ -1,0 +1,113 @@
+name: Spack workflow execution
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review]
+    paths:
+      - ".github/workflows/spack-workflow-execution.yml"
+      - "deploy/pr-test/**"
+      - "deploy/compose/docker-compose.pr-spack-workflow.yml"
+      - "packages/shared/src/workflow/**"
+      - "packages/server/src/workflow/**"
+      - "packages/server/src/index.ts"
+      - "packages/server/src/grpc/dispatcher*"
+      - "packages/server/src/services/placement-orchestrator*"
+      - "packages/agent/src/spack/**"
+      - "packages/agent/src/stream*"
+      - "packages/proto/proto/**"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: spack-workflow-execution-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  contracts:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: kq
+          POSTGRES_PASSWORD: kq
+          POSTGRES_DB: kuintessence
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U kq -d kuintessence"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - name: Install dependencies without lifecycle scripts
+        run: bun install --frozen-lockfile --ignore-scripts
+      - name: Lint and static contracts
+        run: |
+          bun run lint
+          bash -n deploy/pr-test/run.sh
+          bun scripts/check-doc-links.ts
+          bun run check:workflow-uses
+      - name: Generate protobuf and typecheck
+        run: |
+          bun run typecheck
+          bun node_modules/typescript/bin/tsc --project deploy/pr-test/tsconfig.json
+      - name: Verify workflow activation and acceptance contracts
+        run: |
+          bun test packages/shared/src/workflow packages/server/src/workflow/job-submitter.test.ts \
+            packages/server/src/grpc/dispatcher.test.ts \
+            packages/agent/src/spack \
+            deploy/pr-test/spack-managed/jobs.test.ts \
+            deploy/pr-test/spack-managed/workflow-contract.test.ts \
+            deploy/pr-test/spack-managed/workflow-assets.test.ts \
+            scripts/spack-artifact-managed.test.ts scripts/spack-web-managed.test.ts
+      - name: Verify Agent stream cancellation and dispatch regressions
+        run: bun test packages/agent/src/stream.test.ts
+      - name: Verify database-backed workflow placement
+        env:
+          DATABASE_URL: postgres://kq:kq@localhost:5432/kuintessence
+          LOG_LEVEL: warn
+        run: |
+          bun run db:migrate
+          bun test packages/server/src/services/placement-orchestrator.test.ts \
+            packages/server/src/workflow/execution.integration.test.ts
+
+  managed-workflow:
+    needs: contracts
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'pull_request' &&
+       github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 70
+    strategy:
+      fail-fast: false
+      matrix:
+        case: [hello, samtools]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@v3
+      - name: Permit the pinned Apptainer starter to create user namespaces
+        id: managed-apparmor
+        run: sudo apparmor_parser --replace deploy/pr-test/spack-managed/apparmor.profile
+      - name: Verify material import, managed installation and workflow execution
+        env:
+          CASE: ${{ matrix.case }}
+        run: >-
+          timeout --signal=TERM --kill-after=60s 65m
+          bash deploy/pr-test/run.sh slurm "--spack-workflow-$CASE"
+      - name: Remove the test-only AppArmor profile
+        if: always() && steps.managed-apparmor.outcome == 'success'
+        run: sudo apparmor_parser --remove deploy/pr-test/spack-managed/apparmor.profile

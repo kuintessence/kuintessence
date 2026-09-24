@@ -44,6 +44,7 @@ export interface JobSubmitterDeps {
     licensedMaterials: JobSubmission["licensedMaterials"],
     softwareRequirements: JobSubmission["softwareRequirements"],
     schedulingStrategy: JobSubmission["schedulingStrategy"] | undefined,
+    spackExecution?: JobSubmission["spackExecution"],
   ): Promise<void>;
   awaitCompletion(jobId: string): Promise<{
     status: JobStatusName;
@@ -102,6 +103,7 @@ export function createJobSubmitter(deps: JobSubmitterDeps): (spec: JobSubmission
       prepared.licensedMaterials,
       prepared.softwareRequirements,
       prepared.schedulingStrategy,
+      prepared.spackExecution,
     );
     const { status, collected, collectedFiles, errorMessage, reason, exitCode } =
       await deps.awaitCompletion(job.id);

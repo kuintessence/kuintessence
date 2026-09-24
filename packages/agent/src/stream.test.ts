@@ -1,7 +1,7 @@
 import { Database } from "bun:sqlite";
 import { afterEach, describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { create } from "@bufbuild/protobuf";
@@ -42,6 +42,7 @@ import {
   SshOpenSchema,
   SshResizeSchema,
 } from "@kuintessence/proto";
+import { type InstalledSpec, SPACK_EXECUTION_PLACEHOLDER } from "@kuintessence/shared";
 import { drizzle } from "drizzle-orm/bun-sqlite";
 import pino from "pino";
 import {
@@ -60,9 +61,12 @@ import { JobCleanupIntents, JobRevocationTombstones } from "./queue/job-cleanup-
 import { type OutboundItem, OutboundQueue } from "./queue/outbound-queue";
 import type { AgentSandboxCapability } from "./sandbox/capability";
 import { type PreparedSpackMaterials, SpackManager, type SpackMaterialPrepareInput } from "./spack";
+import { SpackInstallStore } from "./spack/install-store";
+import type { SoftwareOperationOutcome } from "./spack/installer";
+import { SPACK_ACTIVATION_FAILURE } from "./spack/workflow-activation";
 import type { Ssh2ClientLike, Ssh2Factory } from "./ssh";
 import { SshHandler } from "./ssh";
-import { AgentStream, jobStatusReportToProto } from "./stream";
+import { AgentStream, type AgentStreamDeps, jobStatusReportToProto } from "./stream";
 
 // Suppress log noise in tests
 const silent = pino({ level: "silent" });
@@ -7125,6 +7129,600 @@ describe("AgentStream SSH relay", () => {
       expect.objectContaining({ relativePath: "sample.txt" }),
     ]);
     expect(results[0]?.payload.value.providerOrgId).toBe("provider-org");
+  });
+});
+
+describe("AgentStream workflow Spack dispatch", () => {
+  const installed: InstalledSpec = {
+    name: "hello",
+    version: "1.0",
+    spec: "hello@1.0",
+    hash: "a".repeat(32),
+  };
+  const loadSuccess: SoftwareOperationOutcome = {
+    outcome: "succeeded",
+    stdout: "export PATH='/srv/kq/store/releases/hello/bin':\"$PATH\";\n",
+    installed: [installed],
+  };
+  const intent = { spec: "hello@1.0", command: "hello 'two words'" };
+
+  function dispatch(overrides: Parameters<typeof create<typeof DispatchJobSchema>>[1] = {}) {
+    return create(ServerMessageSchema, {
+      payload: {
+        case: "dispatchJob",
+        value: create(DispatchJobSchema, {
+          jobId: "workflow-spack",
+          name: "workflow spack",
+          command: SPACK_EXECUTION_PLACEHOLDER,
+          cpus: 1,
+          memoryMb: 64n,
+          dispatchEpoch: 1n,
+          spackExecution: intent,
+          ...overrides,
+        }),
+      },
+    });
+  }
+
+  async function fixture(
+    load: SpackManager["runSoftwareOperation"] = async () => loadSuccess,
+    overrides: Partial<AgentStreamDeps> = {},
+  ) {
+    const db = createSqliteDb(":memory:");
+    const inboundAcks = new InboundAcks(db);
+    const tombstones = new JobRevocationTombstones(db);
+    const spackManager = await SpackManager.bootstrap({
+      requireServerMaterials: true,
+      spawner: { run: async () => ({ exitCode: 0, stdout: "1.0.0", stderr: "" }) },
+    });
+    spackManager.runSoftwareOperation = load;
+    const submitted: JobSpec[] = [];
+    const reports: JobStatusReport[] = [];
+    const { client } = makeMockClient([]);
+    const stream = new AgentStream({
+      client,
+      adapter: makeAdapter({
+        submit: async (spec) => {
+          submitted.push(spec);
+          return { schedulerJobId: "scheduler-spack" };
+        },
+      }),
+      agentId: "spack-agent",
+      siteName: "test-site",
+      heartbeatIntervalMs: 60_000,
+      logger: silent,
+      inboundAcks,
+      revocationTombstones: tombstones,
+      installedSoftware: [installed],
+      spackManager,
+      spackActivationSpawner: {
+        run: async () => ({ exitCode: 0, stdout: "", stderr: "" }),
+      },
+      softwareOperationShutdownTimeoutMs: 50,
+      ...overrides,
+    });
+    stream.enqueueStatusUpdate = async (report) => {
+      reports.push(report);
+    };
+    activeStreams.push(stream);
+    const harness = stream as unknown as {
+      pendingSpackPreparations: Set<Promise<void>>;
+      pendingSpackLoadCleanups: Set<Promise<void>>;
+      softwareOperationQueue: Promise<void>;
+      installedSoftware: InstalledSpec[];
+      pool: { submit: (spec: JobSpec) => Promise<{ jobId: string }> };
+    };
+    return {
+      stream,
+      inboundAcks,
+      tombstones,
+      submitted,
+      reports,
+      harness,
+      drain: () => Promise.all([...harness.pendingSpackPreparations]),
+    };
+  }
+
+  test("pending load survives reconnect without false failure or duplicate submit", async () => {
+    const closeFirst = Promise.withResolvers<void>();
+    const finishLoad = Promise.withResolvers<SoftwareOperationOutcome>();
+    const reconnect = makeReplayReconnectClient(
+      create(ServerMessageSchema, {
+        payload: {
+          case: "registerResponse",
+          value: create(RegisterResponseSchema, { accepted: true }),
+        },
+      }),
+      closeFirst.promise,
+    );
+    let loads = 0;
+    const f = await fixture(
+      async () => {
+        loads++;
+        return finishLoad.promise;
+      },
+      {
+        clientFactory: reconnect.clientFactory,
+        heartbeatIntervalMs: 5,
+        reconnectBackoffMs: 1,
+        readGpuMetrics: async () => [],
+        readDiskUsedPercent: async () => 0,
+        readSchedulerQueueDepth: async () => 0,
+      },
+    );
+    // Preserve the real outbound path: reconnect replay does not use the fixture's report spy.
+    f.stream.enqueueStatusUpdate = AgentStream.prototype.enqueueStatusUpdate.bind(f.stream);
+    const sent = (connection: number) =>
+      (reconnect.sentByConnection[connection] ?? []) as AgentMessage[];
+    const statuses = () =>
+      reconnect.sentByConnection.flatMap((messages) =>
+        (messages as AgentMessage[]).flatMap((message) =>
+          message.payload.case === "jobStatus" &&
+          message.payload.value.jobId === "workflow-spack"
+            ? [message.payload.value.status]
+            : [],
+        ),
+      );
+    const running = f.stream.start();
+    try {
+      await waitForCondition(() => sent(0).some((m) => m.payload.case === "heartbeat"));
+      await deliverServerMessage(f.stream, dispatch());
+      await waitForCondition(() => loads === 1);
+      expect(await f.inboundAcks.pendingInbound()).toHaveLength(1);
+
+      closeFirst.resolve();
+      await waitForCondition(() => reconnect.registrationProcessed.has(1));
+      // A heartbeat is emitted only after this connection has finished inbound replay.
+      await waitForCondition(() => sent(1).some((m) => m.payload.case === "heartbeat"));
+      expect(reconnect.connectionCount()).toBe(2);
+      expect(statuses()).toEqual([]);
+      expect(await f.inboundAcks.pendingInbound()).toHaveLength(1);
+      expect(f.submitted).toEqual([]);
+
+      await deliverServerMessage(f.stream, dispatch());
+      await settle();
+      expect(loads).toBe(1);
+      finishLoad.resolve(loadSuccess);
+      await f.drain();
+      await waitForCondition(() => statuses().includes(ProtoJobStatus.COMPLETED));
+      expect(statuses()).not.toContain(ProtoJobStatus.FAILED);
+      expect(f.submitted).toHaveLength(1);
+      expect(loads).toBe(1);
+      expect(await f.inboundAcks.pendingInbound()).toEqual([]);
+    } finally {
+      closeFirst.resolve();
+      finishLoad.resolve(loadSuccess);
+      await f.stream.stop();
+      await running;
+      await Promise.all(reconnect.requestDoneByConnection);
+    }
+  });
+
+  test.each(["mock", "store"] as const)(
+    "concurrent workflow dispatches serialize load and syntax validation with a %s lock",
+    async (mode) => {
+      const releaseFirstLoad = Promise.withResolvers<void>();
+      const releaseFirstSyntax = Promise.withResolvers<void>();
+      const calls: string[] = [];
+      let active = 0;
+      let maxActive = 0;
+      let syntaxChecks = 0;
+      const root =
+        mode === "store"
+          ? await realpath(await mkdtemp(join(tmpdir(), "kq-stream-spack-")))
+          : undefined;
+      const store = root ? new SpackInstallStore(join(root, "store")) : undefined;
+      await store?.initialize();
+      const f = await fixture(
+        async (_action, spec) => {
+          calls.push(spec);
+          active++;
+          maxActive = Math.max(maxActive, active);
+          const load = async () => {
+            if (spec === "hello@1.0") await releaseFirstLoad.promise;
+            return loadSuccess;
+          };
+          try {
+            return store ? await store.withLock(load) : await load();
+          } finally {
+            active--;
+          }
+        },
+        {
+          spackActivationSpawner: {
+            run: async () => {
+              syntaxChecks++;
+              if (syntaxChecks === 1) await releaseFirstSyntax.promise;
+              return { exitCode: 0, stdout: "", stderr: "" };
+            },
+          },
+        },
+      );
+      try {
+        await deliverServerMessage(f.stream, dispatch());
+        await waitForCondition(() => calls.length === 1);
+        await deliverServerMessage(
+          f.stream,
+          dispatch({
+            jobId: "workflow-spack-second",
+            spackExecution: { spec: "hello@2.0", command: "hello second" },
+          }),
+        );
+        await settle();
+        expect(calls).toEqual(["hello@1.0"]);
+        expect(maxActive).toBe(1);
+        expect(f.submitted).toEqual([]);
+
+        releaseFirstLoad.resolve();
+        await waitForCondition(() => syntaxChecks === 1);
+        await settle();
+        // The queue owns the whole preparation, not just the manager's load promise.
+        expect(calls).toEqual(["hello@1.0"]);
+        expect(active).toBe(0);
+        releaseFirstSyntax.resolve();
+        await f.drain();
+        await waitForCondition(() => f.submitted.length === 2);
+        expect(calls).toEqual(["hello@1.0", "hello@2.0"]);
+        expect(maxActive).toBe(1);
+        expect(syntaxChecks).toBe(2);
+        expect(f.reports.some((report) => report.status === "failed")).toBe(false);
+      } finally {
+        releaseFirstLoad.resolve();
+        releaseFirstSyntax.resolve();
+        await f.drain();
+        await f.harness.softwareOperationQueue;
+        await f.stream.stop();
+        if (root) await rm(root, { recursive: true, force: true });
+      }
+    },
+  );
+
+  test.each(["software-first", "workflow-first"] as const)(
+    "%s shares the software operation queue without overlapping workflow preparation",
+    async (order) => {
+      const releaseFirst = Promise.withResolvers<void>();
+      const releaseSyntax = Promise.withResolvers<void>();
+      const calls: string[] = [];
+      let active = 0;
+      let maxActive = 0;
+      let syntaxEntered = false;
+      const f = await fixture(
+        async (_action, spec) => {
+          calls.push(spec);
+          active++;
+          maxActive = Math.max(maxActive, active);
+          try {
+            if (calls.length === 1) await releaseFirst.promise;
+            return loadSuccess;
+          } finally {
+            active--;
+          }
+        },
+        {
+          spackActivationSpawner: {
+            run: async () => {
+              syntaxEntered = true;
+              if (order === "workflow-first") await releaseSyntax.promise;
+              return { exitCode: 0, stdout: "", stderr: "" };
+            },
+          },
+        },
+      );
+      const software = create(ServerMessageSchema, {
+        payload: {
+          case: "softwareOperationRequest",
+          value: create(SoftwareOperationRequestSchema, {
+            operationId: "software-queued-with-workflow",
+            action: SoftwareOperationAction.LOAD,
+            spec: "software-only@1.0",
+          }),
+        },
+      });
+      const expected =
+        order === "software-first"
+          ? ["software-only@1.0", "hello@1.0"]
+          : ["hello@1.0", "software-only@1.0"];
+      try {
+        await deliverServerMessage(f.stream, order === "software-first" ? software : dispatch());
+        await waitForCondition(() => calls.length === 1);
+        await deliverServerMessage(f.stream, order === "software-first" ? dispatch() : software);
+        await settle();
+        expect(calls).toEqual([expected[0]]);
+        expect(maxActive).toBe(1);
+        releaseFirst.resolve();
+        if (order === "workflow-first") {
+          await waitForCondition(() => syntaxEntered);
+          await settle();
+          expect(calls).toEqual(["hello@1.0"]);
+          releaseSyntax.resolve();
+        }
+        await f.drain();
+        await f.harness.softwareOperationQueue;
+        await waitForCondition(() => f.submitted.length === 1);
+        expect(calls).toEqual(expected);
+        expect(maxActive).toBe(1);
+        expect(active).toBe(0);
+        expect(f.reports.some((report) => report.status === "failed")).toBe(false);
+      } finally {
+        releaseFirst.resolve();
+        releaseSyntax.resolve();
+        await f.drain();
+        await f.harness.softwareOperationQueue;
+        await f.stream.stop();
+      }
+    },
+  );
+
+  test("cancelled load holds the queue until cleanup finishes before the next load", async () => {
+    const releaseCleanup = Promise.withResolvers<void>();
+    const calls: string[] = [];
+    const events: string[] = [];
+    let firstSignal: AbortSignal | undefined;
+    let active = 0;
+    let maxActive = 0;
+    const f = await fixture(async (_action, spec, _materials, signal) => {
+      calls.push(spec);
+      active++;
+      maxActive = Math.max(maxActive, active);
+      try {
+        if (spec === "hello@1.0") {
+          firstSignal = signal;
+          await releaseCleanup.promise;
+          events.push("first-cleanup-finished");
+          return {
+            outcome: "failed",
+            exitCode: 1,
+            stderr: "cancelled after cleanup",
+            invalidatedHashes: [installed.hash],
+          };
+        }
+        events.push("second-load-entered");
+        expect(f.harness.installedSoftware).toEqual([]);
+        return loadSuccess;
+      } finally {
+        active--;
+      }
+    });
+    try {
+      await deliverServerMessage(f.stream, dispatch());
+      await waitForCondition(() => calls.length === 1);
+      await deliverServerMessage(
+        f.stream,
+        dispatch({
+          jobId: "workflow-spack-second",
+          spackExecution: { spec: "hello@2.0", command: "hello second" },
+        }),
+      );
+      await deliverServerMessage(f.stream, cancelJobMessage("workflow-spack", 1));
+      await waitForCondition(() =>
+        f.reports.some(
+          (report) => report.jobId === "workflow-spack" && report.status === "cancelled",
+        ),
+      );
+      await settle();
+      expect(firstSignal?.aborted).toBe(true);
+      expect(calls).toEqual(["hello@1.0"]);
+      expect(events).toEqual([]);
+      expect(active).toBe(1);
+      expect(f.submitted).toEqual([]);
+
+      releaseCleanup.resolve();
+      await f.drain();
+      await f.harness.softwareOperationQueue;
+      await waitForCondition(() => f.submitted.length === 1);
+      expect(events).toEqual(["first-cleanup-finished", "second-load-entered"]);
+      expect(calls).toEqual(["hello@1.0", "hello@2.0"]);
+      expect(maxActive).toBe(1);
+      expect(f.submitted.map((spec) => spec.jobId)).toEqual(["workflow-spack-second"]);
+      expect(f.reports.some((report) => report.status === "failed")).toBe(false);
+    } finally {
+      releaseCleanup.resolve();
+      await f.drain();
+      await f.harness.softwareOperationQueue;
+      await f.stream.stop();
+    }
+  });
+
+  test("durably records intent before loading and submits the managed environment command", async () => {
+    let sawPending = false;
+    const f = await fixture(async (action, spec, materials, signal) => {
+      expect(action).toBe("load");
+      expect(spec).toBe(intent.spec);
+      expect(materials).toBeUndefined();
+      expect(signal?.aborted).toBe(false);
+      const pending = await f.inboundAcks.pendingInbound();
+      expect(pending[0]?.payload.command).toBe("exit 125");
+      expect(pending[0]?.payload.spackExecution).toEqual(intent);
+      sawPending = true;
+      return loadSuccess;
+    });
+    await deliverServerMessage(f.stream, dispatch());
+    await f.drain();
+    await waitForCondition(() => f.submitted.length === 1);
+    expect(sawPending).toBe(true);
+    expect(f.submitted[0]?.command).toContain("/srv/kq/store/releases/hello/bin");
+    expect(f.submitted[0]?.command).toContain("set -e");
+    expect(f.submitted[0]?.command.endsWith(intent.command)).toBe(true);
+    expect(f.submitted[0]?.command).not.toContain("spack load");
+    await waitForCondition(() => f.reports.some((report) => report.status === "completed"));
+    expect(await f.inboundAcks.pendingInbound()).toEqual([]);
+  });
+
+  test.each(["failed", "rejected", "throws", "empty", "bad-shell", "unavailable"] as const)(
+    "never submits a command after %s activation and reports no raw diagnostics",
+    async (mode) => {
+      const f = await fixture(
+        async () => {
+          if (mode === "throws") throw new Error("private runtime diagnostic");
+          if (mode === "rejected") {
+            return { outcome: "rejected", reason: "private non-root or policy rejection" };
+          }
+          if (mode === "empty") return { ...loadSuccess, stdout: "" };
+          if (mode === "bad-shell") return { ...loadSuccess, stdout: "export PATH='" };
+          return { outcome: "failed", exitCode: 9, stderr: "private managed installation path" };
+        },
+        {
+          ...(mode === "unavailable" ? { spackManager: undefined } : {}),
+          spackActivationSpawner: {
+            run: async () => ({
+              exitCode: mode === "bad-shell" ? 2 : 0,
+              stdout: "",
+              stderr: "private shell diagnostic",
+            }),
+          },
+        },
+      );
+      let poolCalls = 0;
+      f.harness.pool.submit = async (spec) => {
+        poolCalls++;
+        return { jobId: spec.jobId };
+      };
+      await deliverServerMessage(f.stream, dispatch());
+      await f.drain();
+      expect(poolCalls).toBe(0);
+      expect(f.submitted).toEqual([]);
+      expect(f.reports).toEqual([
+        { jobId: "workflow-spack", status: "failed", message: SPACK_ACTIVATION_FAILURE },
+      ]);
+      expect(await f.inboundAcks.pendingInbound()).toEqual([]);
+    },
+  );
+
+  test.each(["placeholder", "shape", "sandbox"] as const)(
+    "rejects incompatible %s before calling the manager",
+    async (mode) => {
+      let loads = 0;
+      const f = await fixture(async () => {
+        loads++;
+        return loadSuccess;
+      });
+      await deliverServerMessage(
+        f.stream,
+        dispatch(
+          mode === "placeholder"
+            ? { command: "hello" }
+            : mode === "shape"
+              ? { spackExecution: { spec: "", command: "hello" } }
+              : { sandboxExecution: create(SandboxExecutionSchema, {}) },
+        ),
+      );
+      await f.drain();
+      expect(loads).toBe(0);
+      expect(f.submitted).toEqual([]);
+      expect(f.reports[0]?.message).toBe(SPACK_ACTIVATION_FAILURE);
+    },
+  );
+
+  test("withdraws invalidated managed inventory even though the job fails", async () => {
+    const f = await fixture(async () => ({
+      outcome: "failed",
+      exitCode: 1,
+      stderr: "private failed managed verification",
+      invalidatedHashes: [installed.hash],
+    }));
+    await deliverServerMessage(f.stream, dispatch());
+    await f.drain();
+    expect(f.harness.installedSoftware).toEqual([]);
+    expect(f.submitted).toEqual([]);
+    expect(f.reports[0]?.message).toBe(SPACK_ACTIVATION_FAILURE);
+  });
+
+  test("a revoked dispatch never starts loading", async () => {
+    let loads = 0;
+    const f = await fixture(async () => {
+      loads++;
+      return loadSuccess;
+    });
+    await f.tombstones.record("workflow-spack", 1);
+    await deliverServerMessage(f.stream, dispatch());
+    await f.drain();
+    expect(loads).toBe(0);
+    expect(f.submitted).toEqual([]);
+  });
+
+  test("rechecks revocation after load before submitting to the pool", async () => {
+    const f = await fixture(async () => {
+      await f.tombstones.record("workflow-spack", 1);
+      return loadSuccess;
+    });
+    await deliverServerMessage(f.stream, dispatch());
+    await f.drain();
+    expect(f.submitted).toEqual([]);
+    expect(f.reports).toEqual([{ jobId: "workflow-spack", status: "cancelled" }]);
+  });
+
+  test.each(["cancel", "shutdown", "timeout"] as const)(
+    "%s aborts a pending load and late success cannot submit",
+    async (mode) => {
+      let started: () => void = () => {};
+      const loading = new Promise<void>((resolve) => {
+        started = resolve;
+      });
+      let finish: (outcome: SoftwareOperationOutcome) => void = () => {};
+      const loaded = new Promise<SoftwareOperationOutcome>((resolve) => {
+        finish = resolve;
+      });
+      let loadSignal: AbortSignal | undefined;
+      const f = await fixture(
+        async (_action, _spec, _materials, signal) => {
+          loadSignal = signal;
+          started();
+          return loaded;
+        },
+        mode === "timeout"
+          ? { spackActivationTimeoutMs: 1 }
+          : mode === "shutdown"
+            ? { softwareOperationShutdownTimeoutMs: 2_000 }
+            : {},
+      );
+      await deliverServerMessage(f.stream, dispatch());
+      await loading;
+      let stopping: Promise<void> | undefined;
+      let stopped = false;
+      if (mode === "cancel") {
+        await deliverServerMessage(f.stream, cancelJobMessage("workflow-spack", 1));
+      } else if (mode === "shutdown") {
+        stopping = f.stream.stop().then(() => {
+          stopped = true;
+        });
+      }
+      await f.drain();
+      // Let stop() settle if it incorrectly ignores the still-pending load cleanup.
+      await settle();
+      expect(loadSignal?.aborted).toBe(true);
+      expect(f.harness.pendingSpackLoadCleanups.size).toBe(1);
+      if (mode === "shutdown") expect(stopped).toBe(false);
+      finish(loadSuccess);
+      await loaded;
+      await stopping;
+      await settle();
+      expect(f.harness.pendingSpackLoadCleanups.size).toBe(0);
+      expect(f.submitted).toEqual([]);
+      if (mode === "shutdown") {
+        expect(stopped).toBe(true);
+        expect(f.reports).toEqual([]);
+        expect((await f.inboundAcks.pendingInbound())[0]?.payload.spackExecution).toEqual(intent);
+      } else {
+        expect(f.reports[0]?.status).toBe(mode === "cancel" ? "cancelled" : "failed");
+      }
+    },
+  );
+
+  test("checks the epoch again after asynchronous work-root preparation", async () => {
+    const f = await fixture(undefined, {
+      prepareJobWorkRoot: async () => {
+        await f.tombstones.record("workflow-spack", 1);
+        return "/managed/workflow-spack";
+      },
+      removeJobWorkRoot: async () => {},
+    });
+    await deliverServerMessage(
+      f.stream,
+      dispatch({ expectedOutputs: [{ descriptor: "log", path: "log", isBatch: false }] }),
+    );
+    await f.drain();
+    expect(f.submitted).toEqual([]);
+    expect(f.reports[0]?.status).toBe("cancelled");
   });
 });
 

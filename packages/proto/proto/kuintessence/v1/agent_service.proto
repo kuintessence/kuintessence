@@ -304,6 +304,13 @@ message DispatchJob {
   repeated string file_output_descriptors = 21;
   QueueTargetMode queue_target_mode = 22;
   QueueValidationMode queue_validation_mode = 23;
+  // Workflow-only intent. command MUST remain "exit 125" for older Agents.
+  SpackJobExecution spack_execution = 24;
+}
+
+message SpackJobExecution {
+  string spec = 1;
+  string command = 2;
 }
 
 enum DataDeliveryMethod {

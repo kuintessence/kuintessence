@@ -49,43 +49,57 @@ function samtoolsCommands(version: string): string[] {
   ];
 }
 
-export function buildManagedJob(queueId: string, prefix: string, shell: string) {
+function managedScript(prefix: string, shell: string) {
   const fixture = selectedCase();
   SpackInstallPathSchema.parse(prefix);
+  const samtools = fixture.id === "samtools";
+  const successMarker: SuccessMarker = samtools ? "KQ_MANAGED_SAMTOOLS_OK" : "KQ_MANAGED_HELLO_OK";
+  return {
+    successMarker,
+    script: [
+      "set -euo pipefail",
+      "umask 077",
+      "export LANG=C LC_ALL=C",
+      `scratch="$(mktemp -d /tmp/kq-managed-${fixture.id}.XXXXXXXXXX)"`,
+      "trap '/bin/rm -rf -- \"$scratch\"' EXIT",
+      "trap 'exit 130' INT",
+      "trap 'exit 143' TERM",
+      'cd -- "$scratch"',
+      'export HOME="$scratch" TMPDIR="$scratch"',
+      shell,
+      "set -euo pipefail",
+      "hash -r",
+      `binary=${quote(`${prefix}/bin/${fixture.name}`)}`,
+      `test "$(command -v ${quote(fixture.name)})" = "$binary"`,
+      'test -x "$binary"',
+      ...(samtools
+        ? samtoolsCommands(fixture.version)
+        : [
+            '"$binary" > hello.txt',
+            'test "$(cat hello.txt)" = "Hello, world!"',
+            "printf '%s\\n' 'Hello, world!'",
+          ]),
+      `printf '%s\\n' ${quote(successMarker)}`,
+    ].join("\n"),
+  };
+}
+
+export function buildManagedWorkflowScript(prefix: string): string {
+  // Activation must come from the production Agent, never a harness-supplied load shell.
+  return `${managedScript(prefix, "").script}\nprintf '%s\\n' 'KQ_WORKFLOW_VALUE=3'`;
+}
+
+export function buildManagedJob(queueId: string, prefix: string, shell: string) {
+  const fixture = selectedCase();
   assert(
     shell.trim().length > 0 && shell.length <= 256 * 1024 && !shell.includes("\0"),
     "Managed load did not return a usable shell",
   );
   const samtools = fixture.id === "samtools";
-  const successMarker: SuccessMarker = samtools ? "KQ_MANAGED_SAMTOOLS_OK" : "KQ_MANAGED_HELLO_OK";
   const resources = samtools
     ? { cpus: 2, memoryMb: 512, wallTimeSec: 120 }
     : { cpus: 1, memoryMb: 128, wallTimeSec: 60 };
-  const script = [
-    "set -euo pipefail",
-    "umask 077",
-    `scratch="$(mktemp -d /tmp/kq-managed-${fixture.id}.XXXXXXXXXX)"`,
-    "trap '/bin/rm -rf -- \"$scratch\"' EXIT",
-    "trap 'exit 130' INT",
-    "trap 'exit 143' TERM",
-    'cd -- "$scratch"',
-    'export HOME="$scratch" TMPDIR="$scratch"',
-    // Only the already-verified managed load result may populate this clean environment.
-    shell,
-    "set -euo pipefail",
-    "hash -r",
-    `binary=${quote(`${prefix}/bin/${fixture.name}`)}`,
-    `test "$(command -v ${quote(fixture.name)})" = "$binary"`,
-    'test -x "$binary"',
-    ...(samtools
-      ? samtoolsCommands(fixture.version)
-      : [
-          '"$binary" > hello.txt',
-          'test "$(cat hello.txt)" = "Hello, world!"',
-          "printf '%s\\n' 'Hello, world!'",
-        ]),
-    `printf '%s\\n' ${quote(successMarker)}`,
-  ].join("\n");
+  const { script, successMarker } = managedScript(prefix, shell);
   return {
     successMarker,
     timeoutMs: resources.wallTimeSec * 1000 + 120_000,

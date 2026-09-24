@@ -44,4 +44,8 @@ await execute("openssl", [
   "/case-server/server.crt",
 ]);
 await writeFile("/case-control/bindings.json", "{}\n");
+if (process.env.KQ_PR_SPACK_WORKFLOW === "1") {
+  const { setupWorkflowSigning } = await import("../spack-managed/workflow-signing");
+  await setupWorkflowSigning();
+}
 console.log("Spack case: ephemeral CA and TLS server certificate prepared");

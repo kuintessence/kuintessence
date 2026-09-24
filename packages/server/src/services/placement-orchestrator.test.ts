@@ -10,7 +10,7 @@ import {
   users,
 } from "@kuintessence/db";
 import type { ServerMessage } from "@kuintessence/proto";
-import type { SandboxSignedManifest } from "@kuintessence/shared";
+import { type SandboxSignedManifest, SPACK_EXECUTION_PLACEHOLDER } from "@kuintessence/shared";
 import { eq, like, notLike } from "drizzle-orm";
 import { AgentDispatcher } from "../grpc/dispatcher";
 import { PreferenceService } from "../preferences/preference-service";
@@ -235,6 +235,46 @@ describe("PlacementOrchestrator", () => {
     expect(updated?.status).toBe("queued");
 
     dispatcher.unregister("po-agent-1");
+  });
+
+  test("forwards transient workflow Spack intent without changing the durable placeholder", async () => {
+    await agentManager.register({
+      agentId: "po-agent-1",
+      siteName: "po-site",
+      providerOrgId: orgId,
+      schedulerType: "slurm",
+      schedulerVersion: "23.02.7",
+    });
+    const channel = mockChannel();
+    dispatcher.register("po-agent-1", channel);
+    try {
+      const job = await jobService.submit(
+        {
+          name: "po-test-spack",
+          command: SPACK_EXECUTION_PLACEHOLDER,
+          resources: { cpus: 1, memoryMb: 1024 },
+        },
+        userId,
+      );
+      cleanupJobIds.push(job.id);
+      const spackExecution = { spec: "hello@1.0", command: "hello --count 2" };
+      const result = await orchestrator.placeAndDispatch({
+        jobId: job.id,
+        job: { name: job.name, command: job.command, resources: { cpus: 1, memoryMb: 1024 } },
+        spackExecution,
+        userId,
+        userRole: "user",
+        orgId,
+      });
+      expect(result.dispatched).toBe(true);
+      const message = channel.messages[0];
+      if (message?.payload.case !== "dispatchJob") throw new Error("missing dispatch");
+      expect(message.payload.value.command).toBe("exit 125");
+      expect(message.payload.value.spackExecution).toMatchObject(spackExecution);
+      expect((await jobService.getById(job.id))?.command).toBe("exit 125");
+    } finally {
+      dispatcher.unregister("po-agent-1");
+    }
   });
 
   test("compute-health gate is first in preview and prevents dispatch when enforced", async () => {

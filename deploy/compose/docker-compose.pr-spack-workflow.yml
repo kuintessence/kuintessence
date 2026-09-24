@@ -1,0 +1,18 @@
+# Test-only overlay after artifact-managed. No native Agent/OS compatibility claim.
+services:
+  case-operator:
+    environment:
+      KQ_PR_SPACK_WORKFLOW: "1"
+  artifact-control:
+    environment:
+      KQ_PR_SPACK_WORKFLOW: "1"
+  registry:
+    command: ["bun", "deploy/pr-test/spack-managed/workflow-registry.ts"]
+    environment:
+      KQ_PR_TEST: "1"
+      KQ_PR_SPACK_WORKFLOW: "1"
+    volumes:
+      - case-control:/case-control:ro
+  scheduler:
+    environment:
+      KQ_PR_SPACK_WORKFLOW: "1"
