@@ -277,6 +277,12 @@ Server 此路径缺省使用 1 CPU、1024 MiB 内存。
 | Agent `AGENT_SPAWNER_BACKEND` | `host` 或 `container`，默认 host |
 | Agent `AGENT_SLURM_CONTAINER_ID` | container backend 必填，指向已配置容器，不会替使用者创建环境 |
 
+普通 Slurm 作业的 stdout/stderr 写入 Agent 的共享 scheduler 日志目录，
+与作业 `workingDir` 分离；host backend 使用 `AGENT_JOB_WORK_ROOT/.scheduler-logs`。
+该目录必须对执行节点可见并持久保存，才能在 Slurm 作业记录清理及 Agent 重启后
+按 Job ID 回读日志。Sandbox 仍使用自身执行目录，不写入普通作业的共享日志目录。
+这不改变 stage-in、cwd 或相对输出文件的解析位置，也不提供日志自动归档或保留期限管理。
+
 QoS 拒绝规则取决于目标 Slurm accounting 配置。Web 显示预计时间和费用，实际用量由站点计量。
 
 <a id="materialization"></a>

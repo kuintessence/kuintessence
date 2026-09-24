@@ -32,7 +32,8 @@ async function verifyJobs(request: Request, receipt: WorkflowReceipt) {
     JSON.parse(await readFile("/case-control/workflow-assets.json", "utf8")),
   );
   const marker = selectedCase().id === "hello" ? "KQ_MANAGED_HELLO_OK" : "KQ_MANAGED_SAMTOOLS_OK";
-  for (const [nodeId, jobId] of Object.entries(receipt.jobs)) {
+  for (const nodeId of ["compute", "verify"] as const) {
+    const jobId = receipt.jobs[nodeId];
     const job = JobSchema.parse(await request(`/jobs/${jobId}`));
     assert.equal(job.id, jobId);
     assert.equal(job.status, "completed");
@@ -40,12 +41,14 @@ async function verifyJobs(request: Request, receipt: WorkflowReceipt) {
     assert.equal(job.name, `managed_${nodeId}`);
     assert.equal(job.usecasePackageId, assets.usecaseId);
     assert(job.schedulerJobId !== null && /^[1-9][0-9]*$/.test(job.schedulerJobId));
+    console.log(`Spack managed workflow: stage=job-record node=${nodeId} code=OK`);
     await waitFor(
       "workflow result logs through Server",
       async () => z.object({ text: z.string() }).parse(await request(`/jobs/${jobId}/logs?lines=50`)),
       ({ text }) => managedJobOutputAccepted(text, marker) &&
         text.split(/\r?\n/).includes("KQ_WORKFLOW_VALUE=3"),
     );
+    console.log(`Spack managed workflow: stage=job-logs node=${nodeId} code=OK`);
   }
 }
 
@@ -55,6 +58,7 @@ export async function verifyManagedWorkflow(token: string, receipt: WorkflowRece
     assertWorkflowCompleted(await request(`/workflows/${receipt.runId}`), receipt.runId),
     receipt,
   );
+  console.log("Spack managed workflow: stage=readback-receipt code=OK");
   await verifyJobs(request, receipt);
   console.log("Spack managed workflow: stage=readback code=OK");
 }

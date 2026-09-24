@@ -10,11 +10,13 @@ on:
       - "deploy/pr-test/**"
       - "deploy/compose/docker-compose.pr-spack-workflow.yml"
       - "packages/shared/src/workflow/**"
+      - "packages/shared/src/usecase/**"
       - "packages/server/src/workflow/**"
       - "packages/server/src/index.ts"
       - "packages/server/src/grpc/dispatcher*"
       - "packages/server/src/services/placement-orchestrator*"
       - "packages/agent/src/spack/**"
+      - "packages/agent/src/adapters/**"
       - "packages/agent/src/stream*"
       - "packages/proto/proto/**"
 
@@ -68,9 +70,12 @@ jobs:
       - name: Verify workflow activation and acceptance contracts
         if: ${{ !cancelled() && steps.types.outcome == 'success' }}
         run: |
-          bun test packages/shared/src/workflow packages/server/src/workflow/job-submitter.test.ts \
+          bun test packages/shared/src/workflow packages/shared/src/usecase \
+            packages/server/src/workflow/job-submitter.test.ts \
             packages/server/src/grpc/dispatcher.test.ts \
             packages/agent/src/spack \
+            packages/agent/src/adapters/slurm.test.ts \
+            packages/agent/src/adapters/sandbox-adapters.test.ts \
             deploy/pr-test/spack-managed/jobs.test.ts \
             deploy/pr-test/spack-managed/workflow-contract.test.ts \
             deploy/pr-test/spack-managed/workflow-assets.test.ts \

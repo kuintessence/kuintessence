@@ -93,6 +93,56 @@ describe("materialize (Spack facility, arg/env/file refs)", () => {
     expect(r.argv).toEqual(["x", "--label", "hello world"]);
   });
 
+  test.each(["$'", "$`", "$&", "$$"])("preserves literal %s in ArgRef and EnvRef", (value) => {
+    const r = materialize(
+      base({
+        usecase: {
+          commandFile: "x",
+          inputSlots: [
+            {
+              kind: "Text",
+              descriptor: "literal",
+              refMaterials: [
+                { kind: "ArgRef", descriptor: "literalArg", sort: 0 },
+                { kind: "EnvRef", descriptor: "literalEnv" },
+              ],
+            },
+          ],
+        },
+        arguments: [{ descriptor: "literalArg", valueFormat: "{} before{}after{}" }],
+        environments: [
+          { descriptor: "literalEnv", key: "LITERAL", valueFormat: "{} before{}after{}" },
+        ],
+        inputs: { literal: value },
+      }),
+    );
+    expect(r.argv).toEqual(["x", value, `before${value}after${value}`]);
+    expect(r.envVars).toEqual({ LITERAL: `${value} before${value}after${value}` });
+  });
+
+  test("preserves Bash ANSI-C quotes in a workflow script argument", () => {
+    const script =
+      "set -euo pipefail\nprintf '%s\\n' $'@HD\\tVN:1.6\\tSO:unsorted' " +
+      "$'@SQ\\tSN:chr1\\tLN:100' > input.sam\nsamtools view -b input.sam > output.bam";
+    const r = materialize(
+      base({
+        usecase: {
+          commandFile: "/bin/bash",
+          inputSlots: [
+            {
+              kind: "Text",
+              descriptor: "script",
+              refMaterials: [{ kind: "ArgRef", descriptor: "script", sort: 0 }],
+            },
+          ],
+        },
+        arguments: [{ descriptor: "script", valueFormat: "--noprofile --norc -c {} kq-workflow" }],
+        inputs: { script },
+      }),
+    );
+    expect(r.argv).toEqual(["/bin/bash", "--noprofile", "--norc", "-c", script, "kq-workflow"]);
+  });
+
   test("orders arguments by their sort", () => {
     const r = materialize(
       base({

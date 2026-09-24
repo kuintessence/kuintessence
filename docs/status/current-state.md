@@ -161,6 +161,9 @@ Kuintessence 当前为 pre-release。以下列出组件功能、运行要求和�
   [Spack 工作流闭环](../../deploy/pr-test/README.md#spack-工作流闭环)新增
   Hello/samtools 的签名目录注册、材料 bootstrap、managed 安装与正式异步
   `/workflows` 两节点执行验收，包含结果依赖及重启回读/重跑。
+  用例参数物化按字面值保留 `$` 替换序列，避免破坏 Bash ANSI-C 字符串等输入。
+  普通 Slurm 作业日志统一写入持久共享日志目录，显式 workingDir 只控制执行目录
+  与相对文件路径；Sandbox 日志路径保持独立，测试继续要求重启后日志回读成功。
   验收以对应提交的 Actions 结果为准，不沿用直接 `/jobs` 的通过记录。Agent/OS 兼容性后续
   独立 PR；现有隔离、OS/工具链指纹和 Server-only 材料交付约束不放宽。
 - CP 的 suspend/quota 写入口已停用，暂不支持通过这些接口暂停组织或设置并发硬限。
