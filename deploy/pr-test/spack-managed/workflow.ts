@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { z } from "zod";
 import { waitFor } from "../runtime";
-import { jsonRequest } from "../spack-case/api";
+import { type CaseToken, jsonRequest } from "../spack-case/api";
 import { selectedCase } from "../spack-case/fixture";
 import { managedJobOutputAccepted } from "./jobs";
 import {
@@ -52,7 +52,7 @@ async function verifyJobs(request: Request, receipt: WorkflowReceipt) {
   }
 }
 
-export async function verifyManagedWorkflow(token: string, receipt: WorkflowReceipt) {
+export async function verifyManagedWorkflow(token: CaseToken, receipt: WorkflowReceipt) {
   const request: Request = (path, body) => jsonRequest(origin, token, path, body);
   assert.deepEqual(
     assertWorkflowCompleted(await request(`/workflows/${receipt.runId}`), receipt.runId),
@@ -63,7 +63,7 @@ export async function verifyManagedWorkflow(token: string, receipt: WorkflowRece
   console.log("Spack managed workflow: stage=readback code=OK");
 }
 
-export async function runManagedWorkflow(token: string, queueId: string, prefix: string) {
+export async function runManagedWorkflow(token: CaseToken, queueId: string, prefix: string) {
   assert.equal(process.env.KQ_PR_TEST, "1");
   assert.equal(process.env.KQ_PR_SPACK_WORKFLOW, "1");
   const request: Request = (path, body) => jsonRequest(origin, token, path, body);

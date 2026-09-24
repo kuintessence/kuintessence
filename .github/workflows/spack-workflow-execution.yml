@@ -9,10 +9,18 @@ on:
       - ".github/workflows/spack-workflow-execution.yml"
       - "deploy/pr-test/**"
       - "deploy/compose/docker-compose.pr-spack-workflow.yml"
+      - "deploy/compose/docker-compose.pr-spack-file-workflow.yml"
+      - "deploy/rustfs/**"
+      - "scripts/spack-file-workflow.test.ts"
       - "packages/shared/src/workflow/**"
       - "packages/shared/src/usecase/**"
       - "packages/server/src/workflow/**"
       - "packages/server/src/index.ts"
+      - "packages/server/src/storage/**"
+      - "packages/server/src/routes/netdrive*"
+      - "packages/server/src/services/netdrive*"
+      - "packages/shared/src/netdrive-types.ts"
+      - "packages/agent/src/file-transfer*"
       - "packages/server/src/grpc/dispatcher*"
       - "packages/server/src/services/placement-orchestrator*"
       - "packages/agent/src/spack/**"
@@ -79,6 +87,9 @@ jobs:
             deploy/pr-test/spack-managed/jobs.test.ts \
             deploy/pr-test/spack-managed/workflow-contract.test.ts \
             deploy/pr-test/spack-managed/workflow-assets.test.ts \
+            deploy/pr-test/spack-managed/session.test.ts \
+            deploy/pr-test/spack-managed/file-workflow*.test.ts \
+            scripts/spack-file-workflow.test.ts \
             scripts/spack-artifact-managed.test.ts scripts/spack-web-managed.test.ts
       - name: Verify Agent stream cancellation and dispatch regressions
         if: ${{ !cancelled() && steps.types.outcome == 'success' }}
@@ -100,11 +111,17 @@ jobs:
       (github.event_name == 'pull_request' &&
        github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: ubuntu-24.04
-    timeout-minutes: 70
+    timeout-minutes: 85
     strategy:
       fail-fast: false
       matrix:
-        case: [hello, samtools]
+        include:
+          - case: hello
+            flag: --spack-workflow-hello
+          - case: samtools
+            flag: --spack-workflow-samtools
+          - case: samtools-file
+            flag: --spack-file-workflow-samtools
     steps:
       - uses: actions/checkout@v4
         with:
@@ -115,10 +132,10 @@ jobs:
         run: sudo apparmor_parser --replace deploy/pr-test/spack-managed/apparmor.profile
       - name: Verify material import, managed installation and workflow execution
         env:
-          CASE: ${{ matrix.case }}
+          CASE_FLAG: ${{ matrix.flag }}
         run: >-
-          timeout --signal=TERM --kill-after=60s 65m
-          bash deploy/pr-test/run.sh slurm "--spack-workflow-$CASE"
+          timeout --signal=TERM --kill-after=60s 80m
+          bash deploy/pr-test/run.sh slurm "$CASE_FLAG"
       - name: Remove the test-only AppArmor profile
         if: always() && steps.managed-apparmor.outcome == 'success'
         run: sudo apparmor_parser --remove deploy/pr-test/spack-managed/apparmor.profile

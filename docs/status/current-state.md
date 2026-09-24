@@ -166,6 +166,12 @@ Kuintessence 当前为 pre-release。以下列出组件功能、运行要求和�
   与相对文件路径；Sandbox 日志路径保持独立，测试继续要求重启后日志回读成功。
   验收以对应提交的 Actions 结果为准，不沿用直接 `/jobs` 的通过记录。Agent/OS 兼容性后续
   独立 PR；现有隔离、OS/工具链指纹和 Server-only 材料交付约束不放宽。
+- 新增 Actions 专用 samtools 文件工作流入口，复用既有 NetDrive/RustFS 生产传输：
+  合成 SAM 经 `convert → sort → verify` 三节点生成 BAM、BAI 和计数报告。
+  验收覆盖文件 metadata、下载摘要、独立 Job/cwd、RustFS 重启回读、再次执行、
+  非法输入阻断下游与文件清理。专用 overlay 启用内部 RustFS 和完整 bucket
+  bootstrap；原 Hello/samtools 两节点标量验收保持独立。此处描述实现范围，
+  是否通过以当前提交的 Actions 为准，不宣称跨集群或全部科学工作流完成。
 - CP 的 suspend/quota 写入口已停用，暂不支持通过这些接口暂停组织或设置并发硬限。
 - 平台记录用量，外部计费系统生成账单。
 - 本地 Compose 的初始化账号与固定样例口令只用于开发，不得用于公网环境。

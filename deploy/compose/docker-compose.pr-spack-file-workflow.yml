@@ -1,0 +1,94 @@
+# Test-only: append after pr-spack-workflow for the file-backed samtools case.
+services:
+  rustfs:
+    image: rustfs/rustfs:1.0.0
+    command: ["rustfs", "/data"]
+    environment:
+      RUSTFS_ACCESS_KEY: ${KQ_PR_RUSTFS_ACCESS_KEY:?required}
+      RUSTFS_SECRET_KEY: ${KQ_PR_RUSTFS_SECRET_KEY:?required}
+      RUSTFS_CONSOLE_ENABLE: "false"
+    volumes:
+      - file-workflow-storage:/data
+    networks: [file-workflow-storage]
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:9000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+
+  rustfs-init:
+    image: rustfs/rc:v0.1.36
+    depends_on:
+      rustfs:
+        condition: service_healthy
+    environment:
+      RUSTFS_ENDPOINT: http://rustfs:9000
+      RUSTFS_ACCESS_KEY: ${KQ_PR_RUSTFS_ACCESS_KEY:?required}
+      RUSTFS_SECRET_KEY: ${KQ_PR_RUSTFS_SECRET_KEY:?required}
+      RUSTFS_READY_TIMEOUT_SECONDS: "120"
+      NETDRIVE_BUCKET: kq-netdrive
+      DATA_MARKET_STAGING_BUCKET: kq-data-market-staging
+      DATA_MARKET_IMMUTABLE_BUCKET: kq-data-market-immutable
+      DATA_MARKET_IMMUTABLE_RETENTION_DAYS: "365"
+      DATA_MARKET_STAGING_EXPIRY_DAYS: "1"
+      DATA_MARKET_COMMITTER_ACCESS_KEY: kq-data-market-committer
+      DATA_MARKET_COMMITTER_SECRET_KEY: ${KQ_PR_NETDRIVE_SECRET_KEY:?required}
+    volumes:
+      - type: bind
+        source: ./deploy/rustfs/bootstrap-object-lock.sh
+        target: /bootstrap-object-lock.sh
+        read_only: true
+        bind:
+          create_host_path: false
+    entrypoint: ["sh", "/bootstrap-object-lock.sh"]
+    networks: [file-workflow-storage]
+    restart: "no"
+
+  server:
+    environment:
+      KQ_PR_SPACK_FILE_WORKFLOW: "1"
+      # Exercise production Agent-managed roots and signed-URL input staging.
+      # Other PR modes retain the base overlay's explicit working directory.
+      WORKFLOW_RUN_BASE: ""
+      NETDRIVE_ENABLED: "true"
+      NETDRIVE_ENDPOINT: rustfs
+      NETDRIVE_PORT: "9000"
+      NETDRIVE_USE_SSL: "false"
+      NETDRIVE_REGION: us-east-1
+      NETDRIVE_PUBLIC_URL: http://rustfs:9000
+      NETDRIVE_ACCESS_KEY: kq-data-market-committer
+      NETDRIVE_SECRET_KEY: ${KQ_PR_NETDRIVE_SECRET_KEY:?required}
+      NETDRIVE_BUCKET: kq-netdrive
+      DATA_MARKET_COMMITTER_ACCESS_KEY: kq-data-market-committer
+      DATA_MARKET_STAGING_BUCKET: kq-data-market-staging
+      DATA_MARKET_IMMUTABLE_BUCKET: kq-data-market-immutable
+      DATA_MARKET_IMMUTABLE_RETENTION_DAYS: "365"
+    networks: [file-workflow-storage]
+    depends_on:
+      rustfs-init:
+        condition: service_completed_successfully
+
+  artifact-control:
+    environment:
+      KQ_PR_SPACK_FILE_WORKFLOW: "1"
+    networks: [file-workflow-storage]
+
+  case-operator:
+    environment:
+      KQ_PR_SPACK_FILE_WORKFLOW: "1"
+    networks: [file-workflow-storage]
+
+  scheduler:
+    environment:
+      KQ_PR_SPACK_FILE_WORKFLOW: "1"
+      AGENT_FILE_TRANSFER_CONNECT_TO: ""
+      AGENT_CONTAINER_FILE_TRANSFER_CONNECT_TO: ""
+    networks: [file-workflow-storage]
+
+networks:
+  file-workflow-storage:
+    internal: true
+
+volumes:
+  file-workflow-storage:
