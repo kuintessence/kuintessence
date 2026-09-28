@@ -18,6 +18,7 @@ describe("privileged preview orchestration boundaries", () => {
     expect(workflow.jobs.gate.if).toContain("github.event.repository.default_branch");
     expect(workflow.jobs.gate.steps[0].with.ref).toBe("${{ github.workflow_sha }}");
     expect(workflow.jobs.deploy.environment).toBeUndefined();
+    expect(JSON.stringify(workflow.jobs.deploy.env)).not.toContain("runner.");
     expect(workflow.jobs.deploy.needs).toEqual(["gate", "images"]);
     expect(workflow.jobs.deploy.concurrency["cancel-in-progress"]).toBe(false);
     const build = JSON.stringify(workflow.jobs.images);

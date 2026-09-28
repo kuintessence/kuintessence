@@ -115,7 +115,6 @@ jobs:
       PREVIEW_SHA: ${{ needs.gate.outputs.sha }}
       TEST_RUN_ID: ${{ needs.gate.outputs.run }}
       IMAGE_OWNER: ${{ needs.gate.outputs.owner }}
-      IMAGE_MANIFEST: ${{ runner.temp }}/kq-preview-images/kq-images.json
     steps:
       - uses: actions/checkout@v4
         with:
@@ -160,6 +159,7 @@ jobs:
         id: helm
         if: steps.recheck.outputs.allowed == 'true'
         env:
+          IMAGE_MANIFEST: ${{ runner.temp }}/kq-preview-images/kq-images.json
           SSH_HOST: ${{ secrets.SSH_HOST }}
           SSH_PORT: ${{ secrets.SSH_PORT }}
           SSH_USER: ${{ secrets.SSH_USER }}
