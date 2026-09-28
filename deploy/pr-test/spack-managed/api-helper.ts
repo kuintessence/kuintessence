@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { JobStatus } from "@kuintessence/shared";
 import { z } from "zod";
 import { queueInventoryReady, waitFor } from "../runtime";
-import { jsonRequest, OperationSchema } from "../spack-case/api";
+import { type CaseToken, jsonRequest, OperationSchema } from "../spack-case/api";
 import { selectedCase } from "../spack-case/fixture";
 import { buildManagedJob, managedJobOutputAccepted } from "./jobs";
 import { diagnoseManagedQueue, managedQueueMarker } from "./queue-diagnostic";
@@ -40,7 +40,7 @@ const terminalOperation = (status: z.infer<typeof OperationSchema>["status"]) =>
 const terminalJob = (status: z.infer<typeof JobSchema>["status"]) =>
   status === JobStatus.COMPLETED || status === JobStatus.FAILED || status === JobStatus.CANCELLED;
 
-export function managedApi(token: string) {
+export function managedApi(token: CaseToken) {
   const request = (path: string, body?: unknown) => jsonRequest(origin, token, path, body);
   const overview = async () => OverviewSchema.parse(await request("/cp/software/overview"));
   const job = async (id: string) => JobSchema.parse(await request(`/jobs/${id}`));
