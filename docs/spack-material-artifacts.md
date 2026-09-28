@@ -31,8 +31,8 @@ delivery 分别衔接初始化/Web 导入与受管安装，见下文；各路径
 
 在 GitHub Actions 选择 `Spack material artifacts`，使用已审阅的 `main`。
 专用开发分支 `feat/spack-material-artifacts` 仅用于本功能的隔离验收。
-`feat/spack-artifact-managed` 和 `feat/spack-web-managed` 仅允许
-`publish_artifact=false` 的隔离验证，即使确认再分发也不能在这两个分支上传；
+`feat/spack-artifact-managed`、`feat/spack-web-managed` 和 `feat/spack-file-workflow`
+仅允许 `publish_artifact=false` 的隔离验证，即使确认再分发也不能在这些分支上传；
 未开放其他分支或自动代替发布者确认。
 
 | 参数 | 内容 |

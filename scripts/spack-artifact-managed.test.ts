@@ -462,7 +462,7 @@ describe("managed artifact overlay and workflow contracts", () => {
     }
   });
 
-  test("limits the managed branch to explicit validation-only requests", async () => {
+  test("limits managed and file workflow branches to validation-only requests", async () => {
     const workflow = parse(
       await readFile(join(root, ".github/workflows/spack-material-artifacts.yml"), "utf8"),
     ) as Workflow;
@@ -481,25 +481,28 @@ describe("managed artifact overlay and workflow contracts", () => {
         { ref, publish: "true", acknowledged: "false", allowed: false },
       );
     }
-    for (const publish of ["false", "true", "", "FALSE", "0"]) {
-      cases.push({
-        ref: "refs/heads/feat/spack-artifact-managed",
-        publish,
-        acknowledged: "true",
-        allowed: publish === "false",
-      });
+    for (const ref of [
+      "refs/heads/feat/spack-artifact-managed",
+      "refs/heads/feat/spack-file-workflow",
+    ]) {
+      for (const publish of ["false", "true", "", "FALSE", "0"]) {
+        cases.push({
+          ref,
+          publish,
+          acknowledged: "true",
+          allowed: publish === "false",
+        });
+      }
+      cases.push({ ref, publish: "false", acknowledged: "false", allowed: true });
     }
-    cases.push({
-      ref: "refs/heads/feat/spack-artifact-managed",
-      publish: "false",
-      acknowledged: "false",
-      allowed: true,
-    });
     for (const ref of [
       "refs/heads/other",
       "refs/pull/8/merge",
       "refs/tags/main",
       "refs/heads/feat/spack-artifact-managed-extra",
+      "refs/heads/feat/spack-file-workflow-extra",
+      "refs/tags/feat/spack-file-workflow",
+      "refs/pull/14/merge",
     ]) {
       for (const publish of ["false", "true"]) {
         cases.push({ ref, publish, acknowledged: "true", allowed: false });
