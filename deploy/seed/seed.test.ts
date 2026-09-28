@@ -30,9 +30,10 @@ describe("deployment seed", () => {
     const scheduler = store.state.users.find(
       (row) => row.email === "scheduler-compose-seed@kuintessence.test",
     );
-    expect(scheduler?.role).toBe("org_admin");
+    if (!scheduler) throw new Error("Missing seeded scheduler identity");
+    expect(scheduler.role).toBe("org_admin");
     expect(store.state.memberships).toContainEqual({
-      userId: scheduler?.id,
+      userId: scheduler.id,
       orgId: demoProvider.id,
       role: "admin",
     });
