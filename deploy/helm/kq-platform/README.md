@@ -2,6 +2,85 @@
 
 使用此 Helm chart 将 Server 与 Registry 部署到 Kubernetes。
 
+## 用户部署与 PR preview
+
+本 chart 是共用模板的唯一来源。CI 使用
+[`../kq-preview`](../kq-preview/README.md) wrapper，通过本地 dependency启用完整
+Server、Registry、Web、PostgreSQL、Redis、RustFS、NetDrive、seed和单容器
+Slurm/Agent；无需复制模板。preview的开发认证不可用于真实用户公网部署。
+
+用户默认 `server.env.NODE_ENV=production`，禁用任意邮箱/角色的开发登录。
+`seed.enabled` 默认关闭，启用后 `seed.mode` 默认 `minimal`，只执行镜像中的最小
+初始化入口；`demo` 由 preview显式启用。seed并不是认证初始化的替代品：
+生产用户仍需设置可信 OIDC/SSO并完成管理员引导。非 production Server只允许在
+启用受保护 preview时渲染，不能用 minimal seed作为开放开发登录的理由。
+
+六个自建组件的 `image` 支持 `digest`；配置时使用 `repository@digest`，
+否则使用 `repository:tag`。`global.imagePullSecrets` 与 `global.nodeSelector`
+适用于本 chart的工作负载。启用 Web会挂载 chart内 nginx副本，按 release名称
+替换 Server/Registry upstream；源码一致性由 `scripts/helm-preview*.test.ts` 检查。
+
+推荐使用 `secrets.existingSecret`，不要通过命令行或 values传递生产密码。
+使用内置 PostgreSQL时，该 Secret必须同时包含 `POSTGRES_PASSWORD` 和完整
+`DATABASE_URL`，二者密码一致；迁移、seed、Server、Registry均从 Secret引用连接串。
+其余 key包括 `JWT_SECRET`、`RUSTFS_SECRET_KEY`，启用 NetDrive还需
+`NETDRIVE_ACCESS_KEY`、`NETDRIVE_SECRET_KEY`。Server与 bootstrap从同一 Secret
+读取非 root committer凭据，不要求 values中的用户名与 Secret同步。
+
+`server.env` 提供固定的 `NODE_ENV`、`AUTHZ_MODE`、`SSO_BOOTSTRAP_ENABLED`、
+`WEB_BASE_URL`、LOG/mTLS代理设置。附加非敏感配置可用 `server.extraEnv`；
+敏感配置使用 `server.extraSecretEnv: [{name, secretName, key}]`，例如 OIDC
+client secret。受 chart管理的认证模式/数据库/NetDrive凭据不允许被这两种扩展覆盖。
+生产 mTLS仍需按下文配置受信代理或独立 TLS材料，本 chart不代替证书管理。
+
+### 用户版单容器 Slurm/Agent
+
+用户 chart可显式开启 `scheduler.enabled=true`，但不能自动调用开发登录注册。
+必须提供 `scheduler.registration.existingSecret`，其中包含已通过正常注册流程
+取得的 `client.crt`、`client.key`、`ca.crt`。证书对应的 Agent identity必须已经
+存在于此 Server的注册/证书 ledger中；单独生成自签客户端证书不能代替注册。
+`scheduler.agentId`、`scheduler.siteName` 必须与该注册一致。
+
+```yaml
+server:
+  env:
+    NODE_ENV: production
+    MTLS_MODE: direct
+  grpcTls:
+    existingSecret: kq-server-pki
+    credentialsRevision: "1"
+scheduler:
+  enabled: true
+  agentId: registered-slurm
+  siteName: Registered Slurm
+  registration:
+    existingSecret: kq-registered-agent
+    credentialsRevision: "1"
+```
+
+示例省略镜像与其他服务设置，使用者需提供完整 workspace镜像。
+`kq-server-pki` 包含 `SERVER_CA_CERT`、`SERVER_CA_KEY`、
+`SERVER_TLS_CERT`、`SERVER_TLS_KEY`；未单独指定该 Secret时回退到
+`secrets.existingSecret`。Server原生 direct mTLS挂载 CA和 server key，配置
+`SERVER_CA_DIR`、`SERVER_GRPC_TLS_CERT_FILE`、`SERVER_GRPC_TLS_KEY_FILE`。
+Server证书必须由提供的 CA签发，SAN覆盖 `<release>-server`；Agent Secret中的
+`ca.crt` 必须信任该 Server证书。gRPC固定使用内部 HTTPS Service，不关闭证书校验。
+
+注册 Secret只读挂载到 `/etc/kuintessence/agent-certs`。已有 bundle中的
+`agent.env` 不执行：chart提供仅含注释的 env文件，身份、HTTPS端点和 mTLS开关均
+由 Deployment提供，避免 PVC中旧的 HTTP端点覆盖新配置。用户模式设置
+`KQ_AGENT_REGISTRATION_ENABLED=0`；本地 Agent数据库放在 PVC
+`/var/lib/kuintessence/agent.db`。轮换客户端证书后更新
+`scheduler.registration.credentialsRevision` 触发 rollout。
+seed可独立选择是否启用；启用时 Server和 scheduler等待 seed，否则 scheduler只等待
+Server health。seed镜像必须保持 DB-only，不能请求尚在等待它的 Server API。
+
+这提供用户版单容器调度器的部署/注册接线，不等于完整生产安全认证已自动配置：
+OIDC、CA生命周期、机构与调度权限仍由用户设置。Slurm root守护进程要求 namespace
+允许非 privileged的 root容器，本模式不提供强作业沙箱或宿主机 cgroup隔离。
+**当前所有该模板部署的 scheduler均设置 `AGENT_SPACK_ENABLED=false`，不宣称支持
+远程 managed Spack安装/审计/激活或完整 Spack工作流。** 相关集群运行验收仍待 Actions。
+
 已有 MinIO 部署不能直接原地升级。先阅读 [RustFS 迁移边界](../../rustfs/README.md)，
 迁移数据与固定版本引用后使用 `rustfs.*` values；旧 `minio.*` values 会明确报错。
 
@@ -194,7 +273,7 @@ CORS 写入失败只记录 warning，其他初始化检查失败会终止 Job。
 
 平台不依赖 `s3:if-none-match` policy condition。Server 通过每次 copy 返回的 `VersionId`、逐 version digest 回读和 COMPLIANCE lock 保存不可变对象，并使用固定 `versionId` 提供下载。
 
-Server Pod 的 initContainer 等待与当前 bootstrap 配置哈希对应的 Job 成功。不要将此 Job 改为 `post-install` / `post-upgrade` hook，否则 `helm install --wait` 与 Server initContainer 会相互等待。参数或 bootstrap 脚本变更后会创建新 Job，已完成的旧 Job 在一天后由 TTL 清理。
+Server Pod 的 initContainer 等待与当前 bootstrap 配置哈希对应的 Job 成功。不要将此 Job 改为 `post-install` / `post-upgrade` hook，否则 `helm install --wait` 与 Server initContainer 会相互等待。参数或 bootstrap 脚本变更后会创建新 Job。当前版本的 migration、seed 和 bootstrap 完成 Job 不设 TTL，供 Pod 重建时继续检查；旧资源由 Helm 升级或 namespace 生命周期清理。
 
 保留期限由两个参数控制，均须为正整数：
 

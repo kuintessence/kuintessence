@@ -439,13 +439,10 @@ describe("managed artifact overlay and workflow contracts", () => {
       expect(job).toBeDefined();
       expect(job?.permissions ?? workflow.permissions).toEqual({ contents: "read" });
       expect(job?.strategy?.["fail-fast"]).toBe(false);
-      expect(job?.if).toContain("github.event_name == 'workflow_dispatch'");
-      expect(job?.if).toContain(
-        "github.event.pull_request.head.repo.full_name == github.repository",
-      );
-      expect(job?.if).toContain("!github.event.pull_request.draft");
+      expect(job?.if).toBeUndefined();
       const steps = job?.steps ?? [];
       expect(steps.find((step) => step.uses?.startsWith("actions/checkout@"))?.with).toEqual({
+        ref: "${{ inputs.source_sha || github.event.pull_request.head.sha || github.sha }}",
         "persist-credentials": false,
       });
       const invocation = steps.find((step) => step.run?.includes("bash deploy/pr-test/run.sh"));
@@ -462,7 +459,7 @@ describe("managed artifact overlay and workflow contracts", () => {
     }
   });
 
-  test("limits managed and workflow branches to validation-only requests", async () => {
+  test("allows branch and PR validation but restricts publication", async () => {
     const workflow = parse(
       await readFile(join(root, ".github/workflows/spack-material-artifacts.yml"), "utf8"),
     ) as Workflow;
@@ -485,6 +482,14 @@ describe("managed artifact overlay and workflow contracts", () => {
       "refs/heads/feat/spack-artifact-managed",
       "refs/heads/feat/spack-workflow-execution",
       "refs/heads/feat/spack-file-workflow",
+      "refs/heads/feat/k3s-pr-preview",
+      "refs/heads/other",
+      "refs/heads/feat/spack-artifact-managed-extra",
+      "refs/heads/feat/spack-workflow-execution-extra",
+      "refs/heads/feat/spack-file-workflow-extra",
+      "refs/pull/8/merge",
+      "refs/pull/13/head",
+      "refs/pull/14/merge",
     ]) {
       for (const publish of ["false", "true", "", "FALSE", "0"]) {
         cases.push({
@@ -497,16 +502,14 @@ describe("managed artifact overlay and workflow contracts", () => {
       cases.push({ ref, publish: "false", acknowledged: "false", allowed: true });
     }
     for (const ref of [
-      "refs/heads/other",
-      "refs/pull/8/merge",
       "refs/tags/main",
-      "refs/heads/feat/spack-artifact-managed-extra",
-      "refs/heads/feat/spack-workflow-execution-extra",
       "refs/tags/feat/spack-workflow-execution",
-      "refs/pull/13/merge",
-      "refs/heads/feat/spack-file-workflow-extra",
       "refs/tags/feat/spack-file-workflow",
-      "refs/pull/14/merge",
+      "refs/heads/",
+      "refs/pull/0/merge",
+      "refs/pull/14/unknown",
+      "refs/pull/14/merge/extra",
+      "",
     ]) {
       for (const publish of ["false", "true"]) {
         cases.push({ ref, publish, acknowledged: "true", allowed: false });

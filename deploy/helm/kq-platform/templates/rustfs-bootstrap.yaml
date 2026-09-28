@@ -18,13 +18,15 @@ metadata:
 spec:
   backoffLimit: 3
   activeDeadlineSeconds: 900
-  ttlSecondsAfterFinished: 86400
+  # Server restarts still wait for this bootstrap completion barrier.
   template:
     metadata:
       labels:
         app.kubernetes.io/name: {{ .Chart.Name }}
         app.kubernetes.io/component: rustfs-bootstrap
     spec:
+      {{- include "kq.podPlacement" . | nindent 6 }}
+      automountServiceAccountToken: false
       restartPolicy: OnFailure
       containers:
         - name: bootstrap
@@ -53,7 +55,10 @@ spec:
             - name: DATA_MARKET_IMMUTABLE_RETENTION_DAYS
               value: {{ .Values.netdrive.dataMarketImmutableRetentionDays | quote }}
             - name: DATA_MARKET_COMMITTER_ACCESS_KEY
-              value: {{ .Values.netdrive.accessKey | quote }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "kq.secretName" . }}
+                  key: NETDRIVE_ACCESS_KEY
             - name: DATA_MARKET_COMMITTER_SECRET_KEY
               valueFrom:
                 secretKeyRef:

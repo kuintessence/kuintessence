@@ -3,6 +3,9 @@ name: Spack material artifacts
 on:
   workflow_call:
     inputs:
+      source_sha:
+        type: string
+        default: ""
       case:
         required: true
         type: string
@@ -49,11 +52,12 @@ permissions:
   contents: read
 
 concurrency:
-  group: spack-material-artifacts-${{ github.ref }}-${{ inputs.case }}
+  group: spack-material-artifacts-${{ inputs.source_sha && github.run_id || github.ref }}-${{ inputs.case }}
   cancel-in-progress: false
 
 jobs:
   export-and-import:
+    name: export-and-import
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
@@ -63,21 +67,25 @@ jobs:
           PUBLISH: ${{ inputs.publish_artifact }}
           ACKNOWLEDGED: ${{ inputs.acknowledge_redistribution }}
         run: |
-          [[ "$REF" == refs/heads/main ||
-             "$REF" == refs/heads/feat/spack-material-artifacts ||
-             ( "$REF" == refs/heads/feat/spack-artifact-managed && "$PUBLISH" == false ) ||
-             ( "$REF" == refs/heads/feat/spack-web-managed && "$PUBLISH" == false ) ||
-             ( "$REF" == refs/heads/feat/spack-workflow-execution && "$PUBLISH" == false ) ||
-             ( "$REF" == refs/heads/feat/spack-file-workflow && "$PUBLISH" == false ) ]] || {
-            echo "Only reviewed branches are supported; managed branches require publish_artifact=false" >&2
+          if [[ "$PUBLISH" == false ]]; then
+            [[ "$REF" == refs/heads/?* || "$REF" =~ ^refs/pull/[1-9][0-9]*/(merge|head)$ ]] || {
+              echo "Validation requires a branch or pull request ref" >&2
+              exit 2
+            }
+          elif [[ "$PUBLISH" == true ]]; then
+            [[ ( "$REF" == refs/heads/main ||
+                 "$REF" == refs/heads/feat/spack-material-artifacts ) &&
+               "$ACKNOWLEDGED" == true ]] || {
+              echo "Artifact upload requires a reviewed branch and redistribution acknowledgement" >&2
+              exit 2
+            }
+          else
+            echo "Artifact publication must be an explicit boolean" >&2
             exit 2
-          }
-          [[ "$PUBLISH" != true || "$ACKNOWLEDGED" == true ]] || {
-            echo "Artifact upload requires the publisher's redistribution review" >&2
-            exit 2
-          }
+          fi
       - uses: actions/checkout@v4
         with:
+          ref: ${{ inputs.source_sha || github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
       - uses: oven-sh/setup-bun@v2
         with:

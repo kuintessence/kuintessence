@@ -1,98 +1,223 @@
 name: Preview
-run-name: >-
-  ${{ github.event_name == 'pull_request' && format('Preview PR #{0}', github.event.pull_request.number) || format('Preview main - {0}', inputs.action) }}
+run-name: Remote k3s preview
 
 on:
-  pull_request:
-    branches: [main]
-    types: [opened, synchronize, reopened, ready_for_review, unlabeled]
+  workflow_run:
+    workflows: [PR preview tests]
+    types: [completed]
   workflow_dispatch:
     inputs:
-      action:
-        description: "main 预览：start 启动 10 分钟；pause 停止并销毁"
+      pr_number:
+        description: "Trusted PR to deploy"
         required: true
-        type: choice
-        default: start
-        options: [start, pause]
+        type: string
+      test_run_id:
+        description: "Successful PR preview tests run for the current head"
+        required: true
+        type: string
 
 permissions:
   contents: read
-  pull-requests: read
 
 jobs:
-  preview:
+  gate:
     if: >-
-      (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') ||
-      (github.event_name == 'pull_request' &&
-       github.event.pull_request.head.repo.full_name == github.repository &&
-       (github.event.action != 'unlabeled' || github.event.label.name == 'preview-paused'))
+      github.event_name == 'workflow_run' ||
+      github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
     runs-on: ubuntu-24.04
-    timeout-minutes: 40
-    concurrency:
-      group: preview-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || 'main' }}
-      cancel-in-progress: true
-    env:
-      COMPOSE_PROJECT_NAME: kq-preview-${{ github.run_id }}-${{ github.run_attempt }}
-      PREVIEW_PR: ${{ github.event.pull_request.number || '' }}
-      PREVIEW_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: read
+    outputs:
+      allowed: ${{ steps.check.outputs.allowed }}
+      pr: ${{ steps.check.outputs.pr }}
+      sha: ${{ steps.check.outputs.sha }}
+      owner: ${{ steps.check.outputs.owner }}
+      run: ${{ steps.check.outputs.run }}
+      url: ${{ steps.check.outputs.url }}
     steps:
-      - name: Check current preview request
-        id: request
+      # Never use the PR checkout for privileged deployment orchestration.
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+      - name: Verify live PR trust and complete test evidence
+        id: check
         uses: actions/github-script@v7
         with:
           script: |
-            let allowed = context.eventName === "workflow_dispatch" &&
-              context.payload.inputs.action === "start";
-            if (context.eventName === "pull_request") {
-              const { data: pr } = await github.rest.pulls.get({
-                ...context.repo,
-                pull_number: context.payload.pull_request.number,
-              });
-              allowed = pr.state === "open" && !pr.draft &&
-                pr.base.ref === "main" &&
-                pr.head.repo?.full_name === `${context.repo.owner}/${context.repo.repo}` &&
-                pr.head.sha === context.payload.pull_request.head.sha &&
-                !pr.labels.some(label => label.name === "preview-paused");
-            }
-            core.setOutput("allowed", String(allowed));
-            if (!allowed) {
-              await core.summary.addRaw("预览已暂停，或该 PR 已关闭、转为草稿、被更新。没有创建环境。").write();
-            }
+            await require("./deploy/preview/gate.cjs").gate({github, context, core});
 
+  images:
+    needs: gate
+    if: needs.gate.outputs.allowed == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    permissions:
+      contents: read
+      packages: write
+    steps:
       - uses: actions/checkout@v4
-        if: steps.request.outputs.allowed == 'true'
         with:
+          ref: ${{ github.workflow_sha }}
+          path: tooling
           persist-credentials: false
-
-      - name: Prepare isolated preview credentials
-        if: steps.request.outputs.allowed == 'true'
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.gate.outputs.sha }}
+          path: source
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - name: Build and push tested amd64 images
+        working-directory: source
         env:
+          IMAGE_PREFIX: ghcr.io/${{ needs.gate.outputs.owner }}/kq-dev
+          IMAGE_SOURCE: https://github.com/${{ github.repository }}
+          REVISION: ${{ needs.gate.outputs.sha }}
+        run: >-
+          docker buildx bake --file ../tooling/deploy/preview/images.hcl
+          --push --metadata-file "$RUNNER_TEMP/kq-images-metadata.json"
+      - name: Record immutable image digests
+        env:
+          IMAGE_OWNER: ${{ needs.gate.outputs.owner }}
+          PREVIEW_SHA: ${{ needs.gate.outputs.sha }}
+        run: >-
+          node tooling/deploy/preview/images.cjs collect
+          "$RUNNER_TEMP/kq-images-metadata.json" "$RUNNER_TEMP/kq-images.json"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: kq-preview-images-${{ needs.gate.outputs.sha }}
+          path: ${{ runner.temp }}/kq-images.json
+          if-no-files-found: error
+          retention-days: 7
+
+  deploy:
+    needs: [gate, images]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    concurrency:
+      group: kq-preview-pr-${{ needs.gate.outputs.pr }}
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: write
+      deployments: write
+    env:
+      PREVIEW_PR: ${{ needs.gate.outputs.pr }}
+      PREVIEW_SHA: ${{ needs.gate.outputs.sha }}
+      TEST_RUN_ID: ${{ needs.gate.outputs.run }}
+      IMAGE_OWNER: ${{ needs.gate.outputs.owner }}
+      IMAGE_MANIFEST: ${{ runner.temp }}/kq-preview-images/kq-images.json
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: kq-preview-images-${{ needs.gate.outputs.sha }}
+          path: ${{ runner.temp }}/kq-preview-images
+      - uses: azure/setup-kubectl@v4
+        with:
+          version: v1.32.3
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.17.3
+      - name: Recheck after image builds and deployment queue
+        id: recheck
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await require("./deploy/preview/gate.cjs").gate({github, context, core}, {
+              pr: process.env.PREVIEW_PR, runId: process.env.TEST_RUN_ID,
+            });
+      - name: Record deployment start
+        if: steps.recheck.outputs.allowed == 'true'
+        id: deployment
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const {data} = await github.rest.repos.createDeployment({
+              ...context.repo, ref: process.env.PREVIEW_SHA,
+              environment: `pr-${process.env.PREVIEW_PR}`,
+              auto_merge: false, required_contexts: [],
+              transient_environment: true, production_environment: false,
+              description: "Test-gated k3s preview",
+            });
+            core.setOutput("id", data.id);
+            await github.rest.repos.createDeploymentStatus({
+              ...context.repo, deployment_id: data.id, state: "in_progress",
+            });
+      - name: Deploy through SSH and verify HTTPS
+        id: helm
+        if: steps.recheck.outputs.allowed == 'true'
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_PORT: ${{ secrets.SSH_PORT }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+          SSH_KEY: ${{ secrets.SSH_KEY }}
+          KUBE_CONFIG: ${{ secrets.KUBE_CONFIG }}
           PREVIEW_PASSWORD: ${{ secrets.PREVIEW_PASSWORD }}
-        run: bash deploy/preview/preview.sh prepare
-
-      - name: Build preview images
-        if: steps.request.outputs.allowed == 'true'
-        timeout-minutes: 20
-        run: bash deploy/preview/preview.sh build
-
-      - name: Start preview and publish URL
-        if: steps.request.outputs.allowed == 'true'
-        timeout-minutes: 5
+          GHCR_PULL_USER: ${{ secrets.GHCR_PULL_USER }}
+          GHCR_PULL_TOKEN: ${{ secrets.GHCR_PULL_TOKEN }}
+        run: bash deploy/preview/remote.sh deploy
+      - name: Recheck before publishing the URL
+        if: success() && steps.recheck.outputs.allowed == 'true'
+        id: final-check
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await require("./deploy/preview/gate.cjs").gate({github, context, core}, {
+              pr: process.env.PREVIEW_PR, runId: process.env.TEST_RUN_ID,
+            });
+      - name: Remove deployment superseded or revoked while Helm was running
+        if: always() && steps.helm.outputs.applied == 'true' && steps.final-check.outputs.allowed != 'true'
+        id: removed
         env:
-          GH_TOKEN: ${{ github.token }}
-        run: bash deploy/preview/preview.sh start
-
-      - name: Keep preview available for ten minutes
-        if: steps.request.outputs.allowed == 'true'
-        timeout-minutes: 11
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_PORT: ${{ secrets.SSH_PORT }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+          SSH_KEY: ${{ secrets.SSH_KEY }}
+          KUBE_CONFIG: ${{ secrets.KUBE_CONFIG }}
+        run: bash deploy/preview/remote.sh cleanup
+      - name: Mark the superseded preview as removed
+        if: always() && steps.removed.outcome == 'success'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await require("./deploy/preview/notice.cjs").notice(
+              {github, context, core}, "inactive", process.env.PREVIEW_PR,
+            );
+      - name: Publish the verified preview URL
+        if: success() && steps.final-check.outputs.allowed == 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await require("./deploy/preview/notice.cjs").notice(
+              {github, context, core}, "success", process.env.PREVIEW_PR, process.env.PREVIEW_SHA,
+            );
+      - name: Record deployment outcome
+        if: always() && steps.deployment.outputs.id != ''
+        uses: actions/github-script@v7
         env:
-          GH_TOKEN: ${{ github.token }}
-        run: bash deploy/preview/preview.sh hold
-
-      - name: Destroy preview
-        if: always() && steps.request.outputs.allowed == 'true'
-        timeout-minutes: 3
-        run: |
-          if [[ -f deploy/preview/preview.sh ]]; then
-            bash deploy/preview/preview.sh cleanup
-          fi
+          DEPLOYMENT_ID: ${{ steps.deployment.outputs.id }}
+          JOB_STATUS: ${{ job.status }}
+          FINAL_ALLOWED: ${{ steps.final-check.outputs.allowed }}
+        with:
+          script: |
+            const success = process.env.JOB_STATUS === "success" && process.env.FINAL_ALLOWED === "true";
+            await github.rest.repos.createDeploymentStatus({
+              ...context.repo, deployment_id: Number(process.env.DEPLOYMENT_ID),
+              state: success ? "success" : "failure",
+              environment_url: success ? `https://pr-${process.env.PREVIEW_PR}.preview.dev.kuintessence.com` : undefined,
+              description: success ? "HTTPS preview ready" : "Preview failed or was superseded; no new URL published",
+              log_url: `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+            });

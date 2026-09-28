@@ -188,9 +188,12 @@ Kuintessence 当前为 pre-release。以下列出组件功能、运行要求和�
 - 平台 Compose 入口集中在 [`deploy/compose/`](../../deploy/compose/README.md)；
   从仓库根目录使用 `bun run compose`。直接调用时指定 `--project-directory .`，
   以保留构建、挂载、根目录 `.env` 和默认项目名的路径基准。
-- [GitHub 预览配置](../deployment.md#preview) 支持可信同仓库 PR 自动部署与 main 手动启停，
-  使用带认证的限时 Quick Tunnel 和独立临时数据库；不包含真实调度器、SSO 或对象存储。
-  预览配置尚待 GitHub Actions 运行验证。
+- [GitHub 预览配置](../preview-k3s.md) 改为全部必需测试通过后构建 GHCR `kq-dev-*`
+  SHA 镜像，经 SSH 隧道部署到远程 k3s；旧 runner 限时 Quick Tunnel job 已停用。
+  门禁同时要求信任标签、作者写权限、同仓库当前 SHA 和完整测试成功。
+  提供用户 Helm Chart 与 demo CI wrapper，包含持久化 Registry、RustFS、
+  seed 和单容器 Slurm + Agent；不启用远端高权限 managed Spack runtime。
+  自动控制器须先经审核进入默认分支，运行状态以本提交 GitHub Actions 验收为准。
 - [PR 调度器测试](../../deploy/pr-test/README.md) 已提供独立 Compose 与 Slurm/PBS
   Actions matrix，基于现有 scheduler base 构建，测试环境固定 Spack 1.0.0。
   覆盖目标为真实作业完成/日志/取消、拒绝未配置材料的安装及进程内材料回归；
@@ -217,8 +220,9 @@ Kuintessence 当前为 pre-release。以下列出组件功能、运行要求和�
 - [开发与检查命令](../../README.md#开发)
 
 `CI` 工作流在推送 `main` 和 PR 时默认只运行 Biome、文档链接及 workflow 引用静态检查，
-安装时禁用生命周期脚本。完整类型检查/全套测试、binary 构建与 smoke、跨架构镜像验证、
-文档站发布仍由维护者手动触发；可信同仓库非草稿 PR 的 Slurm/PBS 测试和限时预览
-分别自动运行，main 预览仍手动启停。具体入口见 [GitHub Actions](../deployment.md#actions)。
+安装时禁用生命周期脚本。`PR preview tests` 对同仓库非草稿 PR 自动编排完整类型检查、
+测试、Slurm/PBS 与 Spack workflow，随后通过信任门禁才部署远程 k3s。
+binary 构建与 smoke、跨架构镜像验证、文档站发布仍由维护者手动触发；
+不再托管 runner 限时预览或 main 预览。具体入口见 [GitHub Actions](../deployment.md#actions)。
 手动完整 CI 使用 `test:unit` 的临时数据库和逐文件进程隔离，再单独执行
 `test:integration`，避免跨测试文件累积数据库连接；不复用业务数据库。

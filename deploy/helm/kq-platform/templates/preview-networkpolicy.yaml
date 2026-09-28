@@ -1,0 +1,37 @@
+{{- if .Values.preview.enabled }}
+# Each preview requires its own namespace. No other namespace may reach backend
+# Services directly; only Traefik can enter the authenticated gateway.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ .Release.Name }}-preview-internal
+  labels: {{- include "kq.labels" . | nindent 4 }}
+spec:
+  podSelector: {}
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - podSelector: {}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ .Release.Name }}-preview-entry
+  labels: {{- include "kq.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "kq-platform.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: gateway
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.preview.ingressNamespace | quote }}
+          podSelector:
+            matchLabels: {{- toYaml .Values.preview.ingressPodLabels | nindent 14 }}
+      ports:
+        - protocol: TCP
+          port: {{ .Values.preview.gatewayPort }}
+{{- end }}

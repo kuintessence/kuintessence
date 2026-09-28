@@ -51,10 +51,13 @@ spec:
       app.kubernetes.io/component: registry
   template:
     metadata:
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
       labels:
         app.kubernetes.io/name: {{ .Chart.Name }}
         app.kubernetes.io/component: registry
     spec:
+      {{- include "kq.podPlacement" . | nindent 6 }}
       serviceAccountName: {{ include "kq.workloadWaitServiceAccountName" . }}
       initContainers:
         - name: wait-db-migration
@@ -75,7 +78,7 @@ spec:
               kubectl wait --for=condition=complete --timeout={{ .Values.migration.activeDeadlineSeconds }}s job/{{ include "kq.migrationName" . }}
       containers:
         - name: registry
-          image: "{{ .Values.registry.image.repository }}:{{ .Values.registry.image.tag }}"
+          image: {{ include "kq.image" .Values.registry.image | quote }}
           imagePullPolicy: {{ .Values.registry.image.pullPolicy }}
           ports:
             - name: http

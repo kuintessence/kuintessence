@@ -468,9 +468,7 @@ describe("Web-to-managed overlays and workflow", () => {
       expect(jobs).toHaveLength(1);
       const job = jobs[0];
       expect(job?.strategy?.["fail-fast"]).toBe(false);
-      expect(job?.if).toContain(
-        "github.event.pull_request.head.repo.full_name == github.repository",
-      );
+      expect(job?.if).toBeUndefined();
       for (const entry of job?.strategy?.matrix.include ?? []) {
         expect(entry.web).toBe(flags.includes(entry.flag));
       }

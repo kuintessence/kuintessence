@@ -31,7 +31,7 @@ interface Compose {
 }
 
 interface Workflow {
-  on: { pull_request: { paths: string[] } };
+  on: Record<string, { inputs?: Record<string, { type: string; required?: boolean }> } | null>;
   permissions: Record<string, string>;
   jobs: Record<
     string,
@@ -404,13 +404,13 @@ describe("file workflow deployment contracts", () => {
   test("preserves old matrix entries and adds bounded file acceptance and contracts", async () => {
     const workflow = parse(await readFile(join(root, workflowPath), "utf8")) as Workflow;
     expect(workflow.permissions).toEqual({ contents: "read" });
-    expect(workflow.on.pull_request.paths).toContain(overlayPath);
-    expect(workflow.on.pull_request.paths).toContain("deploy/rustfs/**");
-    expect(workflow.on.pull_request.paths).toContain("scripts/spack-file-workflow.test.ts");
+    expect(Object.keys(workflow.on).sort()).toEqual(["workflow_call", "workflow_dispatch"]);
+    expect(workflow.on.workflow_call?.inputs?.source_sha).toEqual({
+      type: "string",
+      required: true,
+    });
     const managed = workflow.jobs["managed-workflow"];
-    expect(managed?.if).toContain(
-      "github.event.pull_request.head.repo.full_name == github.repository",
-    );
+    expect(managed?.if).toBeUndefined();
     expect(managed?.["timeout-minutes"]).toBe(85);
     expect(managed?.strategy?.["fail-fast"]).toBe(false);
     expect(managed?.strategy?.matrix.include).toEqual([

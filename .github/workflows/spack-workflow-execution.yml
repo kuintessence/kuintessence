@@ -2,41 +2,22 @@ name: Spack workflow execution
 
 on:
   workflow_dispatch:
-  pull_request:
-    branches: [main]
-    types: [opened, synchronize, reopened, ready_for_review]
-    paths:
-      - ".github/workflows/spack-workflow-execution.yml"
-      - "deploy/pr-test/**"
-      - "deploy/compose/docker-compose.pr-spack-workflow.yml"
-      - "deploy/compose/docker-compose.pr-spack-file-workflow.yml"
-      - "deploy/rustfs/**"
-      - "scripts/spack-file-workflow.test.ts"
-      - "packages/shared/src/workflow/**"
-      - "packages/shared/src/usecase/**"
-      - "packages/server/src/workflow/**"
-      - "packages/server/src/index.ts"
-      - "packages/server/src/storage/**"
-      - "packages/server/src/routes/netdrive*"
-      - "packages/server/src/services/netdrive*"
-      - "packages/shared/src/netdrive-types.ts"
-      - "packages/agent/src/file-transfer*"
-      - "packages/server/src/grpc/dispatcher*"
-      - "packages/server/src/services/placement-orchestrator*"
-      - "packages/agent/src/spack/**"
-      - "packages/agent/src/adapters/**"
-      - "packages/agent/src/stream*"
-      - "packages/proto/proto/**"
+  workflow_call:
+    inputs:
+      source_sha:
+        required: true
+        type: string
 
 permissions:
   contents: read
 
 concurrency:
-  group: spack-workflow-execution-${{ github.event.pull_request.number || github.ref }}
+  group: spack-workflow-execution-${{ inputs.source_sha && github.run_id || github.ref }}
   cancel-in-progress: false
 
 jobs:
   contracts:
+    name: contracts
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     services:
@@ -56,6 +37,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ inputs.source_sha || github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
       - uses: oven-sh/setup-bun@v2
         with:
@@ -105,11 +87,8 @@ jobs:
             packages/server/src/workflow/execution.integration.test.ts
 
   managed-workflow:
+    name: Managed workflow (${{ matrix.case }})
     needs: contracts
-    if: >-
-      github.event_name == 'workflow_dispatch' ||
-      (github.event_name == 'pull_request' &&
-       github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: ubuntu-24.04
     timeout-minutes: 85
     strategy:
@@ -125,6 +104,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ inputs.source_sha || github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
       - uses: docker/setup-buildx-action@v3
       - name: Permit the pinned Apptainer starter to create user namespaces

@@ -158,6 +158,7 @@ describe("material artifact deployment contracts", () => {
       "if-no-files-found": "error",
     });
     expect(steps.find((step) => step.uses?.startsWith("actions/checkout@"))?.with).toEqual({
+      ref: "${{ inputs.source_sha || github.event.pull_request.head.sha || github.sha }}",
       "persist-credentials": false,
     });
     const invocation = steps.find((step) => step.run?.includes("spack-artifacts/run.sh"));
@@ -177,11 +178,12 @@ describe("material artifact deployment contracts", () => {
       await readFile(join(root, ".github/workflows/ci.yml"), "utf8"),
     ) as Workflow;
     const job = workflow.jobs["spack-artifact-imports"];
-    expect(job?.if).toBe("github.event_name == 'workflow_dispatch' && inputs.run_runtime_checks");
+    expect(job?.if).toBe("inputs.run_runtime_checks || inputs.source_sha");
     expect(job?.needs).toBe("lint-and-typecheck");
     expect(job?.uses).toBe("./.github/workflows/spack-material-artifacts.yml");
     expect(job?.strategy).toEqual({ "fail-fast": false, matrix: { case: ["hello", "samtools"] } });
     expect(job?.with).toMatchObject({
+      source_sha: "${{ inputs.source_sha || github.event.pull_request.head.sha || github.sha }}",
       case: `\${{ matrix.case }}`,
       publish_artifact: false,
       acknowledge_redistribution: false,

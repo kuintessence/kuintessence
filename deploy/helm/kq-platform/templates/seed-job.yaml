@@ -1,0 +1,48 @@
+{{- if .Values.seed.enabled }}
+{{- if not (has .Values.seed.mode (list "minimal" "demo")) }}
+{{- fail "seed.mode must be minimal or demo" }}
+{{- end }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "kq.seedName" . }}
+  labels:
+    {{- include "kq.labels" . | nindent 4 }}
+    app.kubernetes.io/component: seed
+spec:
+  backoffLimit: {{ .Values.seed.backoffLimit }}
+  activeDeadlineSeconds: {{ add .Values.migration.activeDeadlineSeconds .Values.seed.activeDeadlineSeconds 120 }}
+  # New Pods still wait for this revision's completed Job after a restart.
+  template:
+    metadata:
+      labels:
+        {{- include "kq.labels" . | nindent 8 }}
+        app.kubernetes.io/component: seed
+    spec:
+      {{- include "kq.podPlacement" . | nindent 6 }}
+      serviceAccountName: {{ include "kq.workloadWaitServiceAccountName" . }}
+      restartPolicy: OnFailure
+      initContainers:
+        - name: wait-db-migration
+          image: {{ .Values.migration.waitImage | quote }}
+          command:
+            - /bin/sh
+            - -ec
+            - |
+              attempts=0
+              until kubectl get job/{{ include "kq.migrationName" . }} >/dev/null; do
+                [ "${attempts}" -lt 60 ] || exit 1
+                sleep 2
+                attempts=$((attempts + 1))
+              done
+              kubectl wait --for=condition=complete --timeout={{ .Values.migration.activeDeadlineSeconds }}s job/{{ include "kq.migrationName" . }}
+      containers:
+        - name: seed
+          image: {{ include "kq.image" .Values.seed.image | quote }}
+          imagePullPolicy: {{ .Values.seed.image.pullPolicy }}
+          env:
+            {{- include "kq.databaseEnv" . | nindent 12 }}
+            - name: SEED_MODE
+              value: {{ .Values.seed.mode | quote }}
+          resources: {{- toYaml .Values.seed.resources | nindent 12 }}
+{{- end }}
