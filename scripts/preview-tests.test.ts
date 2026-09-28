@@ -119,9 +119,13 @@ async function resolverFixture(eventName = "pull_request") {
     },
   };
   const core = { setOutput: (name: string, value: string) => outputs.set(name, value) };
-  const execute = runInNewContext(`(async ({ github, context, core }) => {\n${script}\n})`) as (
-    args: { github: typeof github; context: ResolverContext; core: typeof core },
-  ) => Promise<void>;
+  const execute = runInNewContext(
+    `(async ({ github, context, core }) => {\n${script}\n})`,
+  ) as (args: {
+    github: typeof github;
+    context: ResolverContext;
+    core: typeof core;
+  }) => Promise<void>;
   return {
     pr,
     context,
@@ -295,9 +299,7 @@ describe("preview test orchestration", () => {
               },
             },
           };
-          expect(runInNewContext(condition, { github })).toBe(
-            accepted && !draft && sameRepository,
-          );
+          expect(runInNewContext(condition, { github })).toBe(accepted && !draft && sameRepository);
           expect(runInNewContext(titleExpression, { github })).toBe(
             accepted ? "PR preview tests" : "PR preview tests (ignored label event)",
           );
@@ -432,7 +434,11 @@ describe("preview test orchestration", () => {
     expect(managedWorkflow?.needs).toBe("contracts");
     expect(managedWorkflow?.name).toBe("Managed workflow (${{ matrix.case }})");
     const workflowCases = managedWorkflow?.strategy?.matrix.include ?? [];
-    expect(workflowCases.map((entry) => entry.case)).toEqual(["hello", "samtools", "samtools-file"]);
+    expect(workflowCases.map((entry) => entry.case)).toEqual([
+      "hello",
+      "samtools",
+      "samtools-file",
+    ]);
   });
 
   test("runs real seed DB contracts between migrations and unit tests", async () => {
