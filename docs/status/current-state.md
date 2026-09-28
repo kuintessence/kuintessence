@@ -151,8 +151,8 @@ Kuintessence 当前为 pre-release。以下列出组件功能、运行要求和�
   生成 protobuf 并安装 Patchright Chromium，沿用 AppArmor、timeout 与无上传门禁。
   新 Web 链路尚待新 HEAD 的 Actions 验证，不沿用 PR #9 的通过结论。
   这些入口仅在 Actions 执行，不部署 preview/production，不上传材料；
-  `feat/spack-artifact-managed` 和 `feat/spack-web-managed` 调用独立导出工作流
-  均仅允许 `publish_artifact=false`，不放宽其他分支与许可确认规则。
+  `feat/spack-artifact-managed`、`feat/spack-web-managed` 和 `feat/spack-workflow-execution`
+  调用独立导出工作流均仅允许 `publish_artifact=false`，不放宽其他分支与许可确认规则。
   当前没有通用材料生成器或全部 15 项的完整材料 artifact；每软件须独立单 root
   lock/release、每步骤隔离运行环境，不能用 macOS lock 替代目标 Linux lock，
   也不能把此切片视为完整变异检测工作流验收。
