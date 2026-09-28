@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { z } from "zod";
 import { loginSession } from "../spack-case/api";
 
 export function managedSession(options: {
@@ -36,4 +37,22 @@ export function managedHttpFailureCode(error: unknown): string | undefined {
   if (!(error instanceof assert.AssertionError)) return undefined;
   const match = /^\/[A-Za-z0-9/_-]+: HTTP ([1-5][0-9]{2})$/.exec(error.message);
   return match ? `HTTP_${match[1]}` : undefined;
+}
+
+export function managedFailureCode(error: unknown): string {
+  const http = managedHttpFailureCode(error);
+  if (http) return http;
+  if (error instanceof z.ZodError) return "SCHEMA_INVALID";
+  if (error instanceof assert.AssertionError) return "ASSERTION_FAILED";
+  if (error instanceof SyntaxError) return "INVALID_JSON";
+  if (error instanceof DOMException) {
+    if (error.name === "TimeoutError") return "REQUEST_TIMEOUT";
+    if (error.name === "AbortError") return "REQUEST_ABORTED";
+  }
+  if (
+    error instanceof Error &&
+    (error.message === "Managed operation deadline exceeded" ||
+      error.message === "Timed out waiting for managed software operation terminal status")
+  ) return "OPERATION_TIMEOUT";
+  return "CASE_FAILED";
 }

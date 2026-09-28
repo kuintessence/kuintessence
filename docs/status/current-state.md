@@ -165,6 +165,8 @@ Kuintessence 当前为 pre-release。以下列出组件功能、运行要求和�
   用例参数物化按字面值保留 `$` 替换序列，避免破坏 Bash ANSI-C 字符串等输入。
   普通 Slurm 作业日志统一写入持久共享日志目录，显式 workingDir 只控制执行目录
   与相对文件路径；Sandbox 日志路径保持独立，测试继续要求重启后日志回读成功。
+  长时间受管验收按 Server 返回的凭据有效期提前重新认证，仅更新内存凭据；
+  不改变生产 token TTL，也不自动重放认证失败的写请求。
   验收以对应提交的 Actions 结果为准，不沿用直接 `/jobs` 的通过记录。Agent/OS 兼容性后续
   独立 PR；现有隔离、OS/工具链指纹和 Server-only 材料交付约束不放宽。
 - 新增 Actions 专用 samtools 文件工作流入口，复用既有 NetDrive/RustFS 生产传输：

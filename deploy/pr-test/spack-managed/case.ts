@@ -30,7 +30,7 @@ import {
   verifyFileWorkflow,
 } from "./file-workflow";
 import { verifyManagedCacheIntegrity } from "./integrity";
-import { managedHttpFailureCode, managedSession } from "./session";
+import { managedFailureCode, managedSession } from "./session";
 import { runManagedWorkflow, verifyManagedWorkflow } from "./workflow";
 import { WorkflowReceiptSchema } from "./workflow-contract";
 
@@ -344,14 +344,7 @@ async function main() {
 
 async function fail(error: unknown) {
   // Do not print messages, stacks, Zod issues, assertion values, stdout or stderr.
-  const code = managedHttpFailureCode(error) ?? (
-    error instanceof z.ZodError
-      ? "SCHEMA_INVALID"
-      : error instanceof assert.AssertionError
-        ? "ASSERTION_FAILED"
-        : error instanceof SyntaxError
-          ? "INVALID_JSON"
-          : "CASE_FAILED");
+  const code = managedFailureCode(error);
   console.error(`Spack managed case: stage=${stage} code=${code}`);
   if (stage === "install") await diagnoseManagedInstall();
   if (stage === "load") await diagnoseManagedInstall("load");

@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import assert from "node:assert/strict";
+import { z } from "zod";
 import { jsonRequest, loginSession } from "../spack-case/api";
-import { managedHttpFailureCode, managedSession } from "./session";
+import { managedFailureCode, managedHttpFailureCode, managedSession } from "./session";
 
 const originalMode = process.env.KQ_PR_TEST;
 beforeEach(() => {
@@ -134,6 +135,39 @@ describe("long-running managed acceptance authentication", () => {
       new Error("/workflows: HTTP 401"),
     ]) {
       expect(managedHttpFailureCode(value)).toBeUndefined();
+    }
+  });
+
+  test("failure diagnostics classify errors without exposing their content", () => {
+    const privateValue = "fixture-private-value";
+    expect(managedFailureCode(new assert.AssertionError({
+      message: "/cp/software/operations: HTTP 401",
+    }))).toBe("HTTP_401");
+    expect(managedFailureCode(new assert.AssertionError({
+      message: privateValue,
+    }))).toBe("ASSERTION_FAILED");
+    expect(managedFailureCode(new z.ZodError([{
+      code: "custom", path: [], message: privateValue,
+    }]))).toBe("SCHEMA_INVALID");
+    expect(managedFailureCode(new SyntaxError(privateValue))).toBe("INVALID_JSON");
+    expect(managedFailureCode(new DOMException(privateValue, "TimeoutError"))).toBe("REQUEST_TIMEOUT");
+    expect(managedFailureCode(new DOMException(privateValue, "AbortError"))).toBe("REQUEST_ABORTED");
+    for (const message of [
+      "Managed operation deadline exceeded",
+      "Timed out waiting for managed software operation terminal status",
+    ]) {
+      expect(managedFailureCode(new Error(message))).toBe("OPERATION_TIMEOUT");
+      expect(managedFailureCode(new Error(`${message}\n${privateValue}`))).toBe("CASE_FAILED");
+    }
+    for (const value of [
+      new Error(privateValue),
+      new Error("/cp/software/operations: HTTP 401"),
+      new DOMException(privateValue, "NetworkError"),
+      { message: privateValue, name: "TimeoutError" },
+      privateValue,
+      null,
+    ]) {
+      expect(managedFailureCode(value)).toBe("CASE_FAILED");
     }
   });
 });
