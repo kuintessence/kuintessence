@@ -462,7 +462,7 @@ describe("managed artifact overlay and workflow contracts", () => {
     }
   });
 
-  test("limits managed and file workflow branches to validation-only requests", async () => {
+  test("limits managed and workflow branches to validation-only requests", async () => {
     const workflow = parse(
       await readFile(join(root, ".github/workflows/spack-material-artifacts.yml"), "utf8"),
     ) as Workflow;
@@ -483,6 +483,7 @@ describe("managed artifact overlay and workflow contracts", () => {
     }
     for (const ref of [
       "refs/heads/feat/spack-artifact-managed",
+      "refs/heads/feat/spack-workflow-execution",
       "refs/heads/feat/spack-file-workflow",
     ]) {
       for (const publish of ["false", "true", "", "FALSE", "0"]) {
@@ -500,6 +501,9 @@ describe("managed artifact overlay and workflow contracts", () => {
       "refs/pull/8/merge",
       "refs/tags/main",
       "refs/heads/feat/spack-artifact-managed-extra",
+      "refs/heads/feat/spack-workflow-execution-extra",
+      "refs/tags/feat/spack-workflow-execution",
+      "refs/pull/13/merge",
       "refs/heads/feat/spack-file-workflow-extra",
       "refs/tags/feat/spack-file-workflow",
       "refs/pull/14/merge",
