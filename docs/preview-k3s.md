@@ -156,6 +156,13 @@ Helm 部署期间，独立只读采样器在 `preview` 内按本 PR 的 release 
 消息、日志或 Secret。采样在 `--atomic` 可能清除失败工作负载之前开始，
 不改变 Helm 的等待、回滚或成功判定；部署结束或取消时随 SSH 隧道一同停止。
 Helm 失败只输出 `KQ_PREVIEW_HELM_ERROR` 固定分类，未知错误仍保持脱敏。
+HTTPS 验收使用 `KQ_PREVIEW_HTTPS` 固定阶段与错误分类，区分匿名入口、
+认证挑战、解锁响应、cookie、Web 页面和 Server health。网络异常仅按白名单
+分类为 DNS、TLS、连接或超时等问题；HTTP 响应仅记录合法状态码，不输出
+URL、响应正文、header、证书、凭据或原始异常。未知错误不会原样透传。
+诊断不关闭 TLS 校验、不跟随重定向、不放宽认证条件，也不改变既有重试
+和失败补偿；Helm 成功不代表 HTTPS 验收成功。定位后按对应阶段修复，
+不能通过跳过验收发布地址。
 即使后续 GHCR 回收失败，评论仍如实标记站点不可用、Deployment 为 inactive；
 cleanup job 保持失败状态，修复权限等问题后可重复执行清理。
 
