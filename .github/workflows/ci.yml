@@ -121,7 +121,7 @@ jobs:
         run: bun run test:helm
 
       - name: Check RustFS bootstrap and deployment wiring
-        run: bun test scripts/rustfs-*.test.ts scripts/compose.test.ts
+        run: bun test scripts/rustfs-*.test.ts scripts/compose.test.ts deploy/rustfs/*.test.cjs
 
       - name: Check preview deployment and seed contracts
         run: bun test deploy/preview/*.test.* deploy/seed/*.test.*
