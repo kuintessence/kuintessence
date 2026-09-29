@@ -22,7 +22,16 @@ release="$PREVIEW_RELEASE"
 tooling="$(cd "$(dirname "$0")" && pwd)"
 state="$(mktemp -d "$RUNNER_TEMP/kq-preview-remote.XXXXXX")"
 ssh_pid=""
+observer_pid=""
+stop_observer() {
+  if [[ -n "$observer_pid" ]]; then
+    kill "$observer_pid" 2>/dev/null || true
+    wait "$observer_pid" 2>/dev/null || true
+    observer_pid=""
+  fi
+}
 cleanup_local() {
+  stop_observer
   if [[ -n "$ssh_pid" ]]; then
     kill "$ssh_pid" 2>/dev/null || true
     wait "$ssh_pid" 2>/dev/null || true
@@ -82,11 +91,20 @@ node "$tooling/values.cjs" values "$state/values.json"
 chart="$tooling/../helm/kq-preview"
 helm dependency build "$chart" >"$state/dependencies-log" 2>&1 ||
   fail "Unable to package the local preview chart dependency."
-helm upgrade --install "$release" "$chart" -n "$namespace" \
+# Observe before --atomic can remove failed workloads; never publish raw Kubernetes data.
+node "$tooling/workload-status.cjs" watch 2>"$state/observer-error" &
+observer_pid="$!"
+if helm upgrade --install "$release" "$chart" -n "$namespace" \
   --values "$state/values.json" --atomic --wait --wait-for-jobs --timeout 15m \
-  --history-max 3 >"$state/helm-log" 2>&1 ||
+  --history-max 3 >"$state/helm-log" 2>&1; then
+  printf 'applied=true\n' >> "${GITHUB_OUTPUT:?Actions step output is required}"
+  stop_observer
+else
+  stop_observer
+  node "$tooling/workload-status.cjs" helm-error "$state/helm-log" \
+    2>"$state/diagnostic-error" || true
   fail "Helm deployment failed or timed out; inspect the namespace privately. No raw manifests or logs were published."
-printf 'applied=true\n' >> "${GITHUB_OUTPUT:?Actions step output is required}"
+fi
 
 node "$tooling/https.cjs" "$state/secret"
 echo "Preview is ready with verified HTTPS and an authenticated gateway."

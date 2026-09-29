@@ -151,6 +151,11 @@ Helm 已应用但 HTTPS 验收或最终授权检查失败时，会补偿删除�
 归属检查或本 PR 的资源清理失败时，不进入 GHCR 镜像回收。
 资源检查失败时，Actions 仅输出 `KQ_PREVIEW_RESOURCE_ERROR` 的固定阶段与错误分类；
 RBAC 拒绝只报告白名单内的 verb、resource 和 API group，不输出身份、对象内容或原始日志。
+Helm 部署期间，独立只读采样器在 `preview` 内按本 PR 的 release label 查询工作负载状态，
+仅在状态变化时输出 `KQ_PREVIEW_WORKLOAD` 白名单类别和计数，不输出对象名、镜像地址、
+消息、日志或 Secret。采样在 `--atomic` 可能清除失败工作负载之前开始，
+不改变 Helm 的等待、回滚或成功判定；部署结束或取消时随 SSH 隧道一同停止。
+Helm 失败只输出 `KQ_PREVIEW_HELM_ERROR` 固定分类，未知错误仍保持脱敏。
 即使后续 GHCR 回收失败，评论仍如实标记站点不可用、Deployment 为 inactive；
 cleanup job 保持失败状态，修复权限等问题后可重复执行清理。
 

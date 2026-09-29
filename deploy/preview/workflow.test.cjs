@@ -550,6 +550,26 @@ describe("privileged preview orchestration boundaries", () => {
     expect(script).not.toContain("helm uninstall --all");
   });
 
+  test("observes Helm without weakening rollback or publishing raw diagnostics", () => {
+    const script = read("deploy/preview/remote.sh");
+    const observe = script.indexOf('node "$tooling/workload-status.cjs" watch');
+    const upgrade = script.indexOf('if helm upgrade --install "$release"');
+    const failure = script.indexOf('node "$tooling/workload-status.cjs" helm-error');
+    const applied = script.indexOf("printf 'applied=true");
+    expect(observe).toBeGreaterThan(0);
+    expect(upgrade).toBeGreaterThan(observe);
+    expect(failure).toBeGreaterThan(upgrade);
+    expect(applied).toBeGreaterThan(upgrade);
+    expect(applied).toBeLessThan(failure);
+    expect(script.slice(applied, failure)).toMatch(/stop_observer\nelse\n  stop_observer/);
+    expect(script).toContain("--atomic --wait --wait-for-jobs --timeout 15m");
+    expect(script).toContain("cleanup_local() {\n  stop_observer");
+    expect(script).toContain('wait "$observer_pid" 2>/dev/null || true');
+    expect(script).toContain('2>"$state/observer-error" &');
+    expect(script).toContain('2>"$state/diagnostic-error" || true');
+    expect(script).not.toMatch(/\b(cat|tail|tee)\s+["']?\$state\/(helm-log|observer-error|diagnostic-error)/);
+  });
+
   test("preview charts and secret helper agree on cookie and certificate keys", () => {
     const gateway = read("deploy/helm/kq-platform/templates/preview-gateway.yaml");
     expect(gateway).toContain('\"${#PREVIEW_COOKIE}\" -eq 64');
