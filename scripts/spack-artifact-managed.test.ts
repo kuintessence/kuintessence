@@ -484,6 +484,7 @@ describe("managed artifact overlay and workflow contracts", () => {
     for (const ref of [
       "refs/heads/feat/spack-artifact-managed",
       "refs/heads/feat/spack-workflow-execution",
+      "refs/heads/feat/spack-file-workflow",
     ]) {
       for (const publish of ["false", "true", "", "FALSE", "0"]) {
         cases.push({
@@ -503,6 +504,9 @@ describe("managed artifact overlay and workflow contracts", () => {
       "refs/heads/feat/spack-workflow-execution-extra",
       "refs/tags/feat/spack-workflow-execution",
       "refs/pull/13/merge",
+      "refs/heads/feat/spack-file-workflow-extra",
+      "refs/tags/feat/spack-file-workflow",
+      "refs/pull/14/merge",
     ]) {
       for (const publish of ["false", "true"]) {
         cases.push({ ref, publish, acknowledged: "true", allowed: false });

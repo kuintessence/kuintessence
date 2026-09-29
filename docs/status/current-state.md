@@ -151,7 +151,8 @@ Kuintessence 当前为 pre-release。以下列出组件功能、运行要求和�
   生成 protobuf 并安装 Patchright Chromium，沿用 AppArmor、timeout 与无上传门禁。
   新 Web 链路尚待新 HEAD 的 Actions 验证，不沿用 PR #9 的通过结论。
   这些入口仅在 Actions 执行，不部署 preview/production，不上传材料；
-  `feat/spack-artifact-managed`、`feat/spack-web-managed` 和 `feat/spack-workflow-execution`
+  `feat/spack-artifact-managed`、`feat/spack-web-managed`、
+  `feat/spack-workflow-execution` 和 `feat/spack-file-workflow`
   调用独立导出工作流均仅允许 `publish_artifact=false`，不放宽其他分支与许可确认规则。
   当前没有通用材料生成器或全部 15 项的完整材料 artifact；每软件须独立单 root
   lock/release、每步骤隔离运行环境，不能用 macOS lock 替代目标 Linux lock，
@@ -168,6 +169,12 @@ Kuintessence 当前为 pre-release。以下列出组件功能、运行要求和�
   不改变生产 token TTL，也不自动重放认证失败的写请求。
   验收以对应提交的 Actions 结果为准，不沿用直接 `/jobs` 的通过记录。Agent/OS 兼容性后续
   独立 PR；现有隔离、OS/工具链指纹和 Server-only 材料交付约束不放宽。
+- 新增 Actions 专用 samtools 文件工作流入口，复用既有 NetDrive/RustFS 生产传输：
+  合成 SAM 经 `convert → sort → verify` 三节点生成 BAM、BAI 和计数报告。
+  验收覆盖文件 metadata、下载摘要、独立 Job/cwd、RustFS 重启回读、再次执行、
+  非法输入阻断下游与文件清理。专用 overlay 启用内部 RustFS 和完整 bucket
+  bootstrap；原 Hello/samtools 两节点标量验收保持独立。此处描述实现范围，
+  是否通过以当前提交的 Actions 为准，不宣称跨集群或全部科学工作流完成。
 - CP 的 suspend/quota 写入口已停用，暂不支持通过这些接口暂停组织或设置并发硬限。
 - 平台记录用量，外部计费系统生成账单。
 - 本地 Compose 的初始化账号与固定样例口令只用于开发，不得用于公网环境。

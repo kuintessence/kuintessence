@@ -22,6 +22,13 @@ import { caseDirectory, ReleaseSchema } from "../spack-case/api";
 import { selectedCase } from "../spack-case/fixture";
 import { managedApi } from "./api-helper";
 import { diagnoseManagedInstall } from "./diagnostic";
+import {
+  cleanupFileWorkflow,
+  FileWorkflowStateSchema,
+  rejectInvalidFileWorkflow,
+  runFileWorkflow,
+  verifyFileWorkflow,
+} from "./file-workflow";
 import { verifyManagedCacheIntegrity } from "./integrity";
 import { managedFailureCode, managedSession } from "./session";
 import { runManagedWorkflow, verifyManagedWorkflow } from "./workflow";
@@ -38,6 +45,7 @@ const StateSchema = z.strictObject({
   record: SpackInstallRecordSchema,
   queueId: z.string().uuid(),
   workflow: WorkflowReceiptSchema.optional(),
+  fileWorkflow: FileWorkflowStateSchema.optional(),
 });
 type Release = z.infer<typeof ReleaseSchema>;
 type State = z.infer<typeof StateSchema>;
@@ -55,6 +63,7 @@ type Stage =
   | "load"
   | "job"
   | "workflow"
+  | "file-workflow"
   | "integrity"
   | "uninstall";
 let stage: Stage = "guard";
@@ -245,6 +254,11 @@ async function main() {
   }
 
   if (phase === "uninstall") {
+    if (process.env.KQ_PR_SPACK_FILE_WORKFLOW === "1") {
+      stage = "file-workflow";
+      assert(state.fileWorkflow, "File workflow receipt is missing during cleanup");
+      await cleanupFileWorkflow(token, state.fileWorkflow);
+    }
     stage = "uninstall";
     await api.operation("uninstall", `/${state.record.rootHash}`);
     stage = "inventory";
@@ -293,6 +307,21 @@ async function main() {
       const receipt = await runManagedWorkflow(token, state.queueId, ready.report.prefix);
       if (phase === "install") state.workflow = receipt;
       else assert.notEqual(receipt.runId, state.workflow?.runId);
+    }
+    if (process.env.KQ_PR_SPACK_FILE_WORKFLOW === "1") {
+      stage = "file-workflow";
+      if (phase === "restart") {
+        assert(state.fileWorkflow, "File workflow receipt is missing after restart");
+        await verifyFileWorkflow(token, state.fileWorkflow);
+      }
+      const receipt = await runFileWorkflow(token, state.queueId, ready.report.prefix);
+      if (phase === "install") {
+        state.fileWorkflow = receipt;
+      } else {
+        assert.notEqual(receipt.receipt.runId, state.fileWorkflow?.receipt.runId);
+        await cleanupFileWorkflow(token, receipt);
+        await rejectInvalidFileWorkflow(token, state.queueId, ready.report.prefix);
+      }
     }
     stage = "store";
     await readyRecord(release, state.record);
