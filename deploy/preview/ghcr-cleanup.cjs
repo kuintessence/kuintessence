@@ -151,7 +151,7 @@ async function cleanupPackage(github, scope, packageName, result, report) {
   }
 }
 
-// Requires packages:write and package admin access, after successful namespace deletion.
+// Requires packages:write and package admin access, after owned release/data cleanup.
 // The only exception is exact-tag revocation cleanup of the current publish attempt
 // that has never been handed off to k3s.
 async function cleanupImages({ github, context, core }, options) {

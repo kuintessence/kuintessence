@@ -18,6 +18,15 @@
 {{- fail "scheduler.agentId must be a safe single path component (1-63 alphanumeric, underscore or hyphen characters)" }}
 {{- end }}
 {{- if .Values.preview.enabled }}
+{{- if ne .Release.Namespace "preview" }}
+{{- fail "preview requires Release.Namespace=preview" }}
+{{- end }}
+{{- if not (regexMatch "^kq-pr-[1-9][0-9]*$" .Release.Name) }}
+{{- fail "preview requires Release.Name=kq-pr-<positive PR number>" }}
+{{- end }}
+{{- if not (regexMatch "^[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9_.-]+$" .Values.preview.repository) }}
+{{- fail "preview.repository must be an owner/repository identity" }}
+{{- end }}
 {{- if ne .Values.server.env.MTLS_MODE "direct" }}
 {{- fail "preview requires server.env.MTLS_MODE=direct" }}
 {{- end }}
@@ -29,6 +38,9 @@
 {{- end }}
 {{- if not .Values.secrets.existingSecret }}
 {{- fail "preview requires secrets.existingSecret; credentials must not be passed in values" }}
+{{- end }}
+{{- if ne .Values.secrets.existingSecret (printf "%s-secrets" .Release.Name) }}
+{{- fail "preview requires secrets.existingSecret=<release>-secrets" }}
 {{- end }}
 {{- if or .Values.secrets.jwtSecret .Values.postgres.password .Values.rustfs.rootPassword .Values.netdrive.secretKey .Values.external.databaseUrl }}
 {{- fail "preview credentials must only be supplied through the existing Secret" }}

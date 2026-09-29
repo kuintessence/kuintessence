@@ -194,9 +194,18 @@ Kuintessence 当前为 pre-release。以下列出组件功能、运行要求和�
   提供用户 Helm Chart 与 demo CI wrapper，包含持久化 Registry、RustFS、
   seed 和单容器 Slurm + Agent；不启用远端高权限 managed Spack runtime。
   预览镜像采用公开 GHCR，首次由维护者手动公开后重试失败的部署 job；
-  tag 包含 PR、完整 SHA 和发布 run/attempt。namespace 清理成功后回收对应 PR 的
-  dev 镜像版本，不删除其他用途 tag 或无法归属的 untagged 版本。
-  自动控制器须先经审核进入默认分支，运行状态以本提交 GitHub Actions 验收为准。
+  tag 包含 PR、完整 SHA 和发布 run/attempt。本轮调整为所有 PR共用预建 `preview`
+  namespace，每 PR使用 `kq-pr-<编号>` Helm release、`kq-pr-<编号>-secrets` 和
+  `kq-pr-<编号>-preview-owner`。仅需 namespace 内RBAC，不查询 nodes/namespace
+  对象、不创建或删除 namespace；基础设施由管理员预先配置。
+  资源选择和 NetworkPolicy按 release label隔离，不因同 namespace而放通其他 PR；
+  此模式不提供每 PR的 RBAC隔离或完整 egress隔离，仍只适合受信任维护者。
+  cleanup先核验归属，Helm uninstall单个 PR，再清理自有 PVC、Secret和 owner marker，
+  成功后才回收该 PR的 dev镜像版本；绝不删除共享 `preview` namespace或其他 PR资源。
+  其他用途 tag或无法归属的 untagged版本不删除。
+  旧独立 PR namespace及数据不会自动迁移或清理。共享 namespace安全实现仍待复核，
+  不宣称已上线或已通过远端验收；自动控制器须先经审核进入默认分支，
+  运行状态以对应提交的 GitHub Actions和 HTTPS验收为准。
 - [PR 调度器测试](../../deploy/pr-test/README.md) 已提供独立 Compose 与 Slurm/PBS
   Actions matrix，基于现有 scheduler base 构建，测试环境固定 Spack 1.0.0。
   覆盖目标为真实作业完成/日志/取消、拒绝未配置材料的安装及进程内材料回归；

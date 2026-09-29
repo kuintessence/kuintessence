@@ -9,8 +9,10 @@ kq-platform:
   preview:
     enabled: true
     host: ""
+    repository: ""
   secrets:
-    existingSecret: kq-preview-secrets
+    # CI must explicitly supply <release>-secrets in the preview namespace.
+    existingSecret: ""
   server:
     replicas: 1
     image:

@@ -7,12 +7,12 @@ spec:
   replicas: {{ .Values.server.replicas }}
   selector:
     matchLabels:
-      app.kubernetes.io/name: {{ .Chart.Name }}
+      {{- include "kq.workloadSelectorLabels" . | nindent 6 }}
       app.kubernetes.io/component: server
   template:
     metadata:
       labels:
-        app.kubernetes.io/name: {{ .Chart.Name }}
+        {{- include "kq.labels" . | nindent 8 }}
         app.kubernetes.io/component: server
       annotations:
         checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}

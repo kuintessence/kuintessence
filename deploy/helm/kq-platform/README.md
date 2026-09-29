@@ -9,6 +9,19 @@
 Server、Registry、Web、PostgreSQL、Redis、RustFS、NetDrive、seed和单容器
 Slurm/Agent；无需复制模板。preview的开发认证不可用于真实用户公网部署。
 
+PR preview 使用预先创建的共享 `preview` namespace，各 PR 对应独立
+`kq-pr-<编号>` Helm release、`kq-pr-<编号>-secrets` 应用 Secret 和
+`kq-pr-<编号>-preview-owner` owner marker。资源使用
+`app.kubernetes.io/instance=kq-pr-<编号>` release label，Service和 preview
+NetworkPolicy限定本 release，不放通同 namespace 的其他 PR 后端访问。
+部署身份仅需 `preview` 内的工作负载、存储声明、Secret、网络策略和 namespace 级
+RBAC权限；不需要 nodes/namespace 对象查询、namespace创建删除或 cluster-admin。
+基础设施与策略执行由管理员预先配置，namespace权限本身不是每 PR 的权限隔离。
+这些约定只适用于 preview wrapper，不改变用户版 chart的安装 namespace选择。
+共享 namespace实现仍待安全复核和对应提交的 Actions/真实集群验收，不宣称已上线；
+旧独立 PR namespace不会自动迁移或清除。完整契约见
+[k3s PR 预览](../../../docs/preview-k3s.md)。
+
 用户默认 `server.env.NODE_ENV=production`，禁用任意邮箱/角色的开发登录。
 `seed.enabled` 默认关闭，启用后 `seed.mode` 默认 `minimal`，只执行镜像中的最小
 初始化入口；`demo` 由 preview显式启用。seed并不是认证初始化的替代品：
@@ -273,7 +286,7 @@ CORS 写入失败只记录 warning，其他初始化检查失败会终止 Job。
 
 平台不依赖 `s3:if-none-match` policy condition。Server 通过每次 copy 返回的 `VersionId`、逐 version digest 回读和 COMPLIANCE lock 保存不可变对象，并使用固定 `versionId` 提供下载。
 
-Server Pod 的 initContainer 等待与当前 bootstrap 配置哈希对应的 Job 成功。不要将此 Job 改为 `post-install` / `post-upgrade` hook，否则 `helm install --wait` 与 Server initContainer 会相互等待。参数或 bootstrap 脚本变更后会创建新 Job。当前版本的 migration、seed 和 bootstrap 完成 Job 不设 TTL，供 Pod 重建时继续检查；旧资源由 Helm 升级或 namespace 生命周期清理。
+Server Pod 的 initContainer 等待与当前 bootstrap 配置哈希对应的 Job 成功。不要将此 Job 改为 `post-install` / `post-upgrade` hook，否则 `helm install --wait` 与 Server initContainer 会相互等待。参数或 bootstrap 脚本变更后会创建新 Job。当前版本的 migration、seed 和 bootstrap 完成 Job 不设 TTL，供 Pod 重建时继续检查；旧资源由对应 release 的 Helm 升级或卸载清理，PR preview 不删除共享 namespace。
 
 保留期限由两个参数控制，均须为正整数：
 
@@ -369,6 +382,15 @@ helm upgrade kq deploy/helm/kq-platform \
 外部 PostgreSQL 的连接串可放在 `secrets.existingSecret` 指定的 Secret 中，key 为 `DATABASE_URL`，无需写入 values。使用其他 key 名时，设置 `external.databaseUrlSecretKey`。
 
 ## 卸载
+
+PR preview 不采用删除 namespace 的方式清理：控制器核验 owner marker和资源归属后，
+仅在 `preview` 中 Helm uninstall本 PR的 `kq-pr-<编号>` release，再删除其自有残留
+PVC、`kq-pr-<编号>-secrets`，最后删除 `kq-pr-<编号>-preview-owner`，成功后才进入
+该 PR的 GHCR版本回收。归属不符或资源清理失败时拒绝继续，不删除其他 PR资源，
+也绝不删除共享 `preview` namespace。旧独立 namespace不在该流程的自动清理范围内。
+此过程会丢弃本 PR演示数据；底层卷遵循 StorageClass回收策略。
+
+以下为用户版 release的手动卸载示例，不能用作整个共享 preview环境的批量清理：
 
 卸载后可保留持久卷。下面的 `kubectl delete pvc` 会删除该 release 的 PVC，执行前确认数据已备份且无需保留。
 

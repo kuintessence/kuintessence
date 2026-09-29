@@ -22,7 +22,7 @@ spec:
   template:
     metadata:
       labels:
-        app.kubernetes.io/name: {{ .Chart.Name }}
+        {{- include "kq.labels" . | nindent 8 }}
         app.kubernetes.io/component: rustfs-bootstrap
     spec:
       {{- include "kq.podPlacement" . | nindent 6 }}

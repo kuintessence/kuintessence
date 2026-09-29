@@ -5,8 +5,9 @@ metadata:
   name: {{ .Release.Name }}-registry-blobs
   annotations:
     helm.sh/resource-policy: keep
+    {{- include "kq.previewStorageAnnotations" . | nindent 4 }}
   labels:
-    {{- include "kq.labels" . | nindent 4 }}
+    {{- include "kq.storageLabels" . | nindent 4 }}
     app.kubernetes.io/component: registry
 spec:
   accessModes:

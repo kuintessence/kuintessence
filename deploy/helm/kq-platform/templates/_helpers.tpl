@@ -17,6 +17,28 @@ app.kubernetes.io/name: {{ .Chart.Name }}
 app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end }}
 
+{{/* Preserve legacy user-chart immutable selectors; previews share a namespace. */}}
+{{- define "kq.workloadSelectorLabels" -}}
+app.kubernetes.io/name: {{ .Chart.Name }}
+{{- if .Values.preview.enabled }}
+app.kubernetes.io/instance: {{ .Release.Name }}
+{{- end }}
+{{- end }}
+
+{{/* PVC ownership must also survive StatefulSet deletion for precise preview cleanup. */}}
+{{- define "kq.storageLabels" -}}
+{{ include "kq.labels" . }}
+{{- if .Values.preview.enabled }}
+kuintessence.com/preview-pr: {{ trimPrefix "kq-pr-" .Release.Name | quote }}
+{{- end }}
+{{- end }}
+
+{{- define "kq.previewStorageAnnotations" -}}
+{{- if .Values.preview.enabled }}
+kuintessence.com/repository: {{ .Values.preview.repository | quote }}
+{{- end }}
+{{- end }}
+
 {{- define "kq-platform.labels" -}}
 {{- include "kq.labels" . -}}
 {{- end }}

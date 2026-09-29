@@ -17,7 +17,7 @@ spec:
       annotations:
         checksum/nginx: {{ include "kq.webConfig" . | sha256sum }}
       labels:
-        {{- include "kq-platform.selectorLabels" . | nindent 8 }}
+        {{- include "kq.labels" . | nindent 8 }}
         component: web
     spec:
       {{- include "kq.podPlacement" . | nindent 6 }}

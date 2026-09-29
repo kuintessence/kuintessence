@@ -282,7 +282,8 @@ describe("preview bake tag contract", () => {
     expect(source).not.toContain("GHCR_PULL_");
     expect(source).not.toContain("privatePull");
     expect(source).toContain("imagePullSecrets: []");
-    expect(source).toContain("process.env.PREVIEW_RUN");
-    expect(source).toContain("process.env.PREVIEW_ATTEMPT");
+    expect(source).toContain("env.PREVIEW_RUN");
+    expect(source).toContain("env.PREVIEW_ATTEMPT");
+    expect(source).toContain("env.GITHUB_REPOSITORY");
   });
 });

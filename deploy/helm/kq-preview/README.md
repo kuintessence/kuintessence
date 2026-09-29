@@ -1,8 +1,10 @@
 # kq-preview
 
 面向 CI 的短期 PR preview wrapper，通过 `file://../kq-platform` dependency
-复用用户 chart，不复制工作负载模板。每个 preview 必须使用独立 namespace。
+复用用户 chart，不复制工作负载模板。所有 PR 使用预先创建的共享 `preview`
+namespace，每个 PR 的 Helm release 为 `kq-pr-<编号>`。
 只支持本轮约定的单节点 `linux/amd64`；不部署嵌套 k3s。
+共享 namespace 安全实现仍待复核及对应提交的 Actions/真实集群验收，本文不代表已上线。
 
 ## CI 输入
 
@@ -20,7 +22,8 @@
 | `scheduler.image` | Slurm + Agent 镜像，完整内置 `/workspace` 和依赖 |
 | `seed.image` | seed 镜像，入口由镜像提供 |
 | `global.imagePullSecrets` | CI 固定 `[]`，从公开 GHCR 匿名拉取 |
-| `secrets.existingSecret` | 默认 `kq-preview-secrets` |
+| `secrets.existingSecret` | CI 指定当前 release 的 `kq-pr-<编号>-secrets`，不可跨 PR 共用 |
+| `preview.repository` | CI 从受信 `GITHUB_REPOSITORY` 传入 `owner/repo`，用于 PVC 归属核验 |
 | `scheduler.providerName` | 默认 `Development Compute Provider`，需与 seed 一致 |
 | `scheduler.registrationEmail` | 默认 `scheduler-compose-seed@kuintessence.test` |
 
@@ -41,10 +44,24 @@ wrapper 故意不提供可运行的默认镜像地址，防止漏传时启动旧
 首次发布六个 package 后，由维护者手动设为 public，再重试失败的部署 job。
 CI 在访问 k3s 前校验匿名拉取，不把 `GITHUB_TOKEN` 或其他 GHCR 凭据保存到集群。
 
+## Namespace 与资源归属
+
+管理员预建 `preview` 并配置 namespace-only RBAC。CI 只管理其中的 Chart 资源、
+Helm release Secret、自有 PVC、应用 Secret 和 owner marker；
+不要求读取 nodes/namespace 对象，不创建或删除 namespace，不需要 cluster-admin。
+节点架构、存储、Traefik/TLS 和 NetworkPolicy 执行能力由管理员预先准备。
+
+每个 release 的资源使用 `app.kubernetes.io/instance=kq-pr-<编号>` label，
+Service、PVC 归属及网络策略均需限定该 release。CI 以
+`kq-pr-<编号>-preview-owner` marker 核验仓库、PR 和 release 的归属，
+不能仅凭共享 namespace 或资源名称前缀接管、删除现有资源。
+namespace 级权限不是每 PR 的 RBAC 隔离，本模式只适合受信任维护者。
+
 ## Secret 契约
 
-CI 必须在安装前创建同 namespace 的 `kq-preview-secrets`。Chart 不创建或读取
-明文口令，不把 Secret 内容写入 ConfigMap、values 或 Helm release 参数。
+CI 必须在安装前于 `preview` 创建本 PR 的 `kq-pr-<编号>-secrets`，
+并通过 `secrets.existingSecret` 引用。不同 PR 不共享 Secret。
+Chart 不创建或读取明文口令，不把 Secret 内容写入 ConfigMap、values 或 Helm release 参数。
 
 | key | 使用者 / 约束 |
 | --- | --- |
@@ -66,6 +83,15 @@ CI 可在首次部署生成并将 `PREVIEW_PASSWORD` 额外保存在同一 Secre
 Helm upgrade自动 rollout gateway，不把 cookie本身放入 values/ConfigMap。
 轮换 NetDrive 用户/密码后递增 `netdrive.bootstrapRevision` 并重启 Server。
 
+使用受信终端私下读取示例 PR 的入口口令，不在 Actions 或公开日志中执行：
+
+```bash
+kubectl -n preview get secret kq-pr-123-secrets \
+  -o jsonpath='{.data.PREVIEW_PASSWORD}' | base64 --decode
+```
+
+将 `123` 替换为实际 PR 编号；不要将输出提交到仓库或 PR 评论。
+
 ## 启动与数据
 
 1. PostgreSQL 就绪后 migration Job 运行；Server、Registry 等待 migration 完成。
@@ -84,7 +110,8 @@ Server开启 `MTLS_MODE=direct`，从同一个只读 Secret volume读取：
 `SERVER_GRPC_TLS_CERT_FILE=/etc/kuintessence/tls/server.crt`、
 `SERVER_GRPC_TLS_KEY_FILE=/etc/kuintessence/tls/server.key`。
 内部 gRPC连接为 `https://<release>-server:3001`，证书 SAN必须包含该 Service名
-以及需要时的 namespace FQDN。CA与私钥只挂载给 Server，不挂载给 scheduler。
+以及使用的 `preview` namespace FQDN，如 `<release>-server.preview.svc` 和
+`<release>-server.preview.svc.cluster.local`。CA与私钥只挂载给 Server，不挂载给 scheduler。
 不得使用 `NODE_TLS_REJECT_UNAUTHORIZED=0`、跳过证书校验或降级为 HTTP gRPC。
 四个 PKI字段首次生成后持久保留；若更换 Server证书，更新
 `server.grpcTls.credentialsRevision` 触发 Server rollout。CA轮换还需协调重签并
@@ -138,17 +165,24 @@ preview主动使用开发登录和 `AUTHZ_MODE=off`，只适合受信任维护�
 在 gateway阻断，内部注册不经过 gateway。不要再暴露 Server/Registry/对象存储的
 NodePort、LoadBalancer或额外 Ingress。
 
-preview NetworkPolicy限制跨 namespace入口，仅允许指定 namespace与 Pod label
-匹配的 Traefik访问 gateway。同 namespace工作负载彼此信任；该策略不提供完整
-egress隔离。部署前确认 k3s启用了 NetworkPolicy执行，并确认 Traefik Pod labels。
+preview NetworkPolicy按 release label 选择受保护 Pod 和允许的同 release 来源，
+不能放通 `preview` namespace 中所有 Pod；不同 PR 不能因为共享 namespace 而
+互访受保护后端。外部入口仅允许指定 namespace 与 Pod label 匹配的 Traefik访问
+对应 gateway。该策略不提供完整 egress隔离，也不能代替应用认证或构成不可信
+多租户沙箱。部署前确认 k3s启用了 NetworkPolicy执行，并确认 Traefik Pod labels。
 
 ## 生命周期与验证
 
-普通 Helm卸载会保留 Registry PVC以及 StatefulSet PVC。CI应按已批准的 preview
-生命周期删除整个专用 namespace，并确认 PVC/PV按集群 StorageClass回收策略清理。
-不要将 preview namespace与用户数据或其他 release混用。
-namespace 清理成功后，CI 同步回收该 PR 的专用 GHCR 镜像版本；
-跨 PR 或包含其他用途 tag 的 version 不删除。权限不足时清理 job 会失败并可重试。
+普通 Helm卸载会保留 Registry PVC以及 StatefulSet PVC。CI先核验 owner marker
+和资源归属，在 `preview` 中仅卸载本 PR 的 `kq-pr-<编号>` release，再删除其自有
+残留 PVC、`kq-pr-<编号>-secrets`，最后删除 `kq-pr-<编号>-preview-owner`。
+本 PR 的集群资源清理成功后，才回收对应的专用 GHCR 镜像版本；
+跨 PR 或包含其他用途 tag 的 version 不删除。任何归属或资源清理失败均阻止 GHCR 回收。
+后续 GHCR 回收失败不改变本 PR 站点已移除的事实，但 cleanup job仍失败并可重试。
+
+**清理绝不删除共享 `preview` namespace 或其他 PR 的资源。** 本 PR 的演示数据随
+自有 PVC清理而丢失，底层卷是否回收由 StorageClass决定；控制器不直接管理集群级 PV。
+旧 `kq-pr-<编号>` 独立 namespace 不自动迁移、复制或删除，须由管理员另行审核处理。
 完整的首次公开、重试和版本回收边界见 [预览配置](../../../docs/preview-k3s.md)。
 
 Actions应执行 `scripts/helm-preview-contract.test.ts` 和

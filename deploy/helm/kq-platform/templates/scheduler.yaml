@@ -22,8 +22,11 @@ kind: PersistentVolumeClaim
 metadata:
   name: {{ .Release.Name }}-agent
   labels:
-    {{- include "kq.labels" . | nindent 4 }}
+    {{- include "kq.storageLabels" . | nindent 4 }}
     app.kubernetes.io/component: scheduler
+  {{- if .Values.preview.enabled }}
+  annotations: {{- include "kq.previewStorageAnnotations" . | nindent 4 }}
+  {{- end }}
 spec:
   accessModes: ["ReadWriteOnce"]
   {{- if .Values.scheduler.storageClass }}
@@ -49,7 +52,7 @@ spec:
   template:
     metadata:
       labels:
-        {{- include "kq-platform.selectorLabels" . | nindent 8 }}
+        {{- include "kq.labels" . | nindent 8 }}
         app.kubernetes.io/component: scheduler
       annotations:
         {{- if .Values.seed.enabled }}
