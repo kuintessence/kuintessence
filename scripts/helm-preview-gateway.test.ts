@@ -74,6 +74,7 @@ events {}
 http {
   access_log off;
   error_log /dev/null crit;
+  add_header X-Fixture-Upstream true always;
   server {
     listen 80;
     location / {
@@ -453,6 +454,7 @@ describe.skipIf(!enabled)("Helm gateway nginx container contract (Actions only)"
             const response = await request(path, { method, headers });
             // The mock rejects signatures; the gateway must not authorize them itself.
             check(response.status === 403, "STORAGE_AUTH_BYPASSED");
+            check(response.headers.get("x-fixture-upstream") === "true", "STORAGE_UPSTREAM_MISSING");
             const observed = (await response.json()) as UpstreamResponse;
             check(observed.authorization === "" && observed.cookie === "", "STORAGE_AUTH_LEAK");
             check(observed.uri === path && observed.host === `${host}:443`, "SIGNED_REWRITE");
@@ -460,8 +462,10 @@ describe.skipIf(!enabled)("Helm gateway nginx container contract (Actions only)"
           }
         }
         const denied = await request(path, { method: "POST" });
-        check(denied.status === 405, "UNSAFE_STORAGE_METHOD");
-        await denied.arrayBuffer();
+        check(denied.status === 403 || denied.status === 405, "UNSAFE_STORAGE_METHOD");
+        check(!denied.headers.has("x-fixture-upstream"), "UNSAFE_STORAGE_UPSTREAM_HEADER");
+        const deniedBody = await denied.text();
+        check(!deniedBody.includes('"authorization":'), "UNSAFE_STORAGE_UPSTREAM_BODY");
       }
       complete();
 
