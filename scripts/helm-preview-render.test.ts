@@ -213,7 +213,9 @@ describe.skipIf(!helm)("Helm preview render (Actions only)", () => {
         if (["Deployment", "StatefulSet", "Service"].includes(item.kind)) {
           const selector = selectorLabels(item);
           expect(selector[instanceLabel]).toBe(name);
-          expect(ownPods.filter((spec) => selects(selector, spec.metadata?.labels))).toHaveLength(1);
+          expect(ownPods.filter((spec) => selects(selector, spec.metadata?.labels))).toHaveLength(
+            1,
+          );
           expect(otherPods.some((spec) => selects(selector, spec.metadata?.labels))).toBe(false);
           if (item.spec?.template) {
             expect(selects(selector, item.spec.template.metadata?.labels)).toBe(true);
