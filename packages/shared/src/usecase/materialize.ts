@@ -97,7 +97,7 @@ function renderTokens(format: string, value: string | undefined): string[] {
   if (value === undefined) {
     return tokens;
   }
-  return tokens.map((tok) => tok.replaceAll("{}", value));
+  return tokens.map((tok) => tok.replaceAll("{}", () => value));
 }
 
 function asText(value: string | FileInputValue | undefined, descriptor: string): string {

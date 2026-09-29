@@ -40,12 +40,14 @@ import {
   ShellExecRequestSchema,
   type SoftwareOperationAction,
   SoftwareOperationRequestSchema,
+  SpackJobExecutionSchema,
 } from "@kuintessence/proto";
 import type {
   JobSubmit,
   QueueTargetMode,
   QueueValidationMode,
   SandboxSignedManifest,
+  SpackExecution,
 } from "@kuintessence/shared";
 import { createLogger } from "@kuintessence/shared";
 import { and, asc, eq, gte, isNotNull, isNull, lt } from "drizzle-orm";
@@ -261,6 +263,7 @@ export class AgentDispatcher {
       queueValidationMode?: QueueValidationMode;
       qos?: string | null;
       sandboxExecution?: SandboxSignedManifest;
+      spackExecution?: SpackExecution;
       licensedMaterialMounts?: Array<{
         selector: string;
         targetPath: string;
@@ -316,6 +319,9 @@ export class AgentDispatcher {
           stdinText: job.stdinText ?? "",
           sandboxExecution: job.sandboxExecution
             ? sandboxExecutionToProto(job.sandboxExecution)
+            : undefined,
+          spackExecution: job.spackExecution
+            ? create(SpackJobExecutionSchema, job.spackExecution)
             : undefined,
           licensedMaterialMounts: (job.licensedMaterialMounts ?? []).map((mount) =>
             create(LicensedMaterialMountSchema, mount),

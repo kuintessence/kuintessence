@@ -151,11 +151,23 @@ Kuintessence 当前为 pre-release。以下列出组件功能、运行要求和�
   生成 protobuf 并安装 Patchright Chromium，沿用 AppArmor、timeout 与无上传门禁。
   新 Web 链路尚待新 HEAD 的 Actions 验证，不沿用 PR #9 的通过结论。
   这些入口仅在 Actions 执行，不部署 preview/production，不上传材料；
-  `feat/spack-artifact-managed` 和 `feat/spack-web-managed` 调用独立导出工作流
-  均仅允许 `publish_artifact=false`，不放宽其他分支与许可确认规则。
+  `feat/spack-artifact-managed`、`feat/spack-web-managed` 和 `feat/spack-workflow-execution`
+  调用独立导出工作流均仅允许 `publish_artifact=false`，不放宽其他分支与许可确认规则。
   当前没有通用材料生成器或全部 15 项的完整材料 artifact；每软件须独立单 root
   lock/release、每步骤隔离运行环境，不能用 macOS lock 替代目标 Linux lock，
   也不能把此切片视为完整变异检测工作流验收。
+- Workflow 的 Spack facility 新增内部结构化激活交付，由 Agent 复用现有 load
+  校验后再提交 scheduler 作业；缺少能力或激活失败时不能执行未激活命令。
+  [Spack 工作流闭环](../../deploy/pr-test/README.md#spack-工作流闭环)新增
+  Hello/samtools 的签名目录注册、材料 bootstrap、managed 安装与正式异步
+  `/workflows` 两节点执行验收，包含结果依赖及重启回读/重跑。
+  用例参数物化按字面值保留 `$` 替换序列，避免破坏 Bash ANSI-C 字符串等输入。
+  普通 Slurm 作业日志统一写入持久共享日志目录，显式 workingDir 只控制执行目录
+  与相对文件路径；Sandbox 日志路径保持独立，测试继续要求重启后日志回读成功。
+  长时间受管验收按 Server 返回的凭据有效期提前重新认证，仅更新内存凭据；
+  不改变生产 token TTL，也不自动重放认证失败的写请求。
+  验收以对应提交的 Actions 结果为准，不沿用直接 `/jobs` 的通过记录。Agent/OS 兼容性后续
+  独立 PR；现有隔离、OS/工具链指纹和 Server-only 材料交付约束不放宽。
 - CP 的 suspend/quota 写入口已停用，暂不支持通过这些接口暂停组织或设置并发硬限。
 - 平台记录用量，外部计费系统生成账单。
 - 本地 Compose 的初始化账号与固定样例口令只用于开发，不得用于公网环境。

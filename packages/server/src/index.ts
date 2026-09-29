@@ -810,6 +810,7 @@ const makeRunner = (
         })
       : undefined;
   return createWorkflowRunner({
+    deferSpackActivation: true,
     // Persist runs for audit and visibility in `workflow list`.
     ...(persistRun
       ? {
@@ -922,6 +923,7 @@ const makeRunner = (
         licensedMaterials,
         softwareRequirements,
         schedulingStrategy,
+        spackExecution,
       ) => {
         const job = await jobService.getById(jobId);
         if (!job) {
@@ -935,6 +937,7 @@ const makeRunner = (
         try {
           const result = await orchestrator.placeAndDispatch({
             jobId,
+            spackExecution,
             restrictedNoEgress: job.restrictedNoEgress,
             ...(activeRunId ? { workflowRunId: activeRunId } : {}),
             job: {

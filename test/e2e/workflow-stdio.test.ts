@@ -172,7 +172,9 @@ function stdinStdoutWorkflow(): string {
                 type: "Text",
                 descriptor: "script",
                 from: {
-                  expr: celString('awk "{s+=\\$1} END {printf \\"sum=%d\\\\n\\", s}"'),
+                  expr: celString(
+                    'test "$KQ_E2E_SPACK_LOADED" = 1 && awk "{s+=\\$1} END {printf \\"sum=%d\\\\n\\", s}"',
+                  ),
                 },
               },
               {

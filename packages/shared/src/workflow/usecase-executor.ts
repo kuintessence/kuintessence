@@ -7,6 +7,11 @@ import {
   type NodeExecutor,
   REQUIRED_COLLECTED_OUTPUTS_KEY,
 } from "./engine";
+import {
+  SPACK_EXECUTION_PLACEHOLDER,
+  type SpackExecution,
+  SpackExecutionSchema,
+} from "./spack-execution";
 
 type CelValue = workflowDsl.CelValue;
 
@@ -35,6 +40,7 @@ export interface JobSubmission {
   /** Human-readable job name (the node's name) for the jobs list / audit. */
   name: string;
   command: string;
+  spackExecution?: SpackExecution;
   envVars: Record<string, string>;
   dataInputs?: Record<string, workflowDsl.DataInputRef>;
   inputStaging: { fileMetadataId: string; stagePath: string }[];
@@ -61,6 +67,8 @@ export interface JobSubmission {
 
 /** Package resolution, job dispatch and output collection dependencies. */
 export interface UsecaseExecutorDeps {
+  /** Production Agents activate Spack through their governed managed installation. */
+  deferSpackActivation?: boolean;
   resolvePackage(usecaseVersionId: string, softwareVersionId: string): Promise<ResolvedPackage>;
   submitJob(spec: JobSubmission): Promise<{
     jobId: string;
@@ -117,7 +125,14 @@ export function createUsecaseExecutor(deps: UsecaseExecutorDeps): NodeExecutor {
       licensedMaterials: pkg.licensedMaterials,
       inputs,
     });
-    const command = usecase.wrapCommand(task);
+    const spackExecution =
+      deps.deferSpackActivation && task.facility.kind === "Spack"
+        ? SpackExecutionSchema.parse({
+            spec: [task.facility.name, ...task.facility.argumentList].join(" "),
+            command: usecase.wrapCommand({ ...task, facility: { kind: "Bare" } }),
+          })
+        : undefined;
+    const command = spackExecution ? SPACK_EXECUTION_PLACEHOLDER : usecase.wrapCommand(task);
     const dataInputs = collectDatasetInputs(node);
     const resources = mapResources(node.requirements);
     const schedulingStrategy = mapSchedulingStrategy(node.schedulingStrategy);
@@ -137,6 +152,7 @@ export function createUsecaseExecutor(deps: UsecaseExecutorDeps): NodeExecutor {
         ...(pkg.usecasePackageId ? { usecasePackageId: pkg.usecasePackageId } : {}),
         name: node.name,
         command,
+        ...(spackExecution ? { spackExecution } : {}),
         envVars: task.envVars,
         ...(Object.keys(dataInputs).length > 0 ? { dataInputs } : {}),
         inputStaging: task.inputStaging,

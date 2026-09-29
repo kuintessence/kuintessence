@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import * as workflowDsl from "../workflow-dsl";
 import { REQUIRED_COLLECTED_OUTPUTS_KEY, runWorkflow } from "./engine";
+import { SPACK_EXECUTION_PLACEHOLDER } from "./spack-execution";
 import {
   createUsecaseExecutor,
   type JobSubmission,
@@ -104,6 +105,57 @@ describe("createUsecaseExecutor", () => {
     expect(capture.spec?.softwareRequirements).toEqual([
       { name: "vasp", version: "6.5.1", installable: false },
     ]);
+  });
+
+  test("defers production activation with the full spec and a Bare-materialized command", async () => {
+    const capture: { spec?: JobSubmission } = {};
+    const base = deps(capture);
+    const exec = createUsecaseExecutor({
+      ...base,
+      deferSpackActivation: true,
+      resolvePackage: async () => ({
+        ...(await base.resolvePackage(UUID, UUID)),
+        software: {
+          kind: "Spack",
+          name: "openfoam@2406",
+          argumentList: ["+mpi", "%gcc@13"],
+        },
+      }),
+    });
+
+    await exec(node, { params: { endTime: "500; echo unsafe" }, nodes: {} });
+
+    expect(capture.spec?.command).toBe(SPACK_EXECUTION_PLACEHOLDER);
+    expect(capture.spec?.command).not.toContain("simpleFoam");
+    expect(capture.spec?.spackExecution).toEqual({
+      spec: "openfoam@2406 +mpi %gcc@13",
+      command: "simpleFoam -endTime '500; echo unsafe'",
+    });
+  });
+
+  test("production deferral leaves other facilities unchanged", async () => {
+    for (const software of [
+      { kind: "Bare" as const },
+      { kind: "Singularity" as const, image: "solver", tag: "1" },
+    ]) {
+      const capture: { spec?: JobSubmission } = {};
+      const base = deps(capture);
+      const exec = createUsecaseExecutor({
+        ...base,
+        deferSpackActivation: true,
+        resolvePackage: async () => ({
+          ...(await base.resolvePackage(UUID, UUID)),
+          software,
+        }),
+      });
+      await exec(node, { params: { endTime: "500" }, nodes: {} });
+      expect(capture.spec?.spackExecution).toBeUndefined();
+      expect(capture.spec?.command).toBe(
+        software.kind === "Bare"
+          ? "simpleFoam -endTime 500"
+          : "apptainer exec solver:1 simpleFoam -endTime 500",
+      );
+    }
   });
 
   test("forwards node-level Dataset bindings to the submitted job without materializing them", async () => {

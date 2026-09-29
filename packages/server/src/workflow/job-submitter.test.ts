@@ -1,7 +1,46 @@
 import { describe, expect, test } from "bun:test";
+import { SPACK_EXECUTION_PLACEHOLDER } from "@kuintessence/shared";
 import { createJobSubmitter, type JobSubmitterDeps } from "./job-submitter";
 
 describe("createJobSubmitter", () => {
+  test("persists only the placeholder and forwards prepared Spack intent transiently", async () => {
+    const execution = { spec: "hello@1.0 +mpi", command: "hello --count 2" };
+    let dispatched = false;
+    const submit = createJobSubmitter({
+      prepare: async (spec) => ({ ...spec, spackExecution: execution }),
+      submit: async (spec) => {
+        expect(spec.command).toBe(SPACK_EXECUTION_PLACEHOLDER);
+        expect("spackExecution" in spec).toBe(false);
+        return { id: "job-spack" };
+      },
+      dispatch: async (
+        jobId,
+        _staging,
+        _outputs,
+        _stdin,
+        _materials,
+        _requirements,
+        _strategy,
+        spackExecution,
+      ) => {
+        expect(jobId).toBe("job-spack");
+        expect(spackExecution).toEqual(execution);
+        dispatched = true;
+      },
+      awaitCompletion: async () => ({ status: "completed", collected: {} }),
+    });
+    await submit({
+      nodeId: "spack",
+      name: "spack",
+      command: SPACK_EXECUTION_PLACEHOLDER,
+      spackExecution: { spec: "hello@1.0", command: "hello" },
+      envVars: {},
+      inputStaging: [],
+      expectedOutputs: [],
+    });
+    expect(dispatched).toBe(true);
+  });
+
   test("submits, dispatches, then awaits completion and returns status + collected outputs", async () => {
     const calls: string[] = [];
     const deps: JobSubmitterDeps = {
