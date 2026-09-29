@@ -1,4 +1,4 @@
-# CI supplies GHCR repositories and immutable sha-<fullsha> tags or digests.
+# CI supplies public GHCR digests and PR/SHA/run/attempt-scoped tags.
 # This wrapper owns no templates; all resources come from kq-platform.
 kq-platform:
   global:

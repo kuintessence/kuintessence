@@ -4,6 +4,9 @@ variable "IMAGE_PREFIX" {
 variable "REVISION" {
   default = ""
 }
+variable "IMAGE_TAG" {
+  default = ""
+}
 variable "IMAGE_SOURCE" {
   default = ""
 }
@@ -18,33 +21,34 @@ target "common" {
   labels = {
     "org.opencontainers.image.revision" = REVISION
     "org.opencontainers.image.source" = IMAGE_SOURCE
+    "kq.preview.tag" = IMAGE_TAG
   }
 }
 target "server" {
   inherits = ["common"]
   dockerfile = "packages/server/Dockerfile"
-  tags = ["${IMAGE_PREFIX}-server:sha-${REVISION}"]
+  tags = ["${IMAGE_PREFIX}-server:${IMAGE_TAG}"]
 }
 target "registry" {
   inherits = ["common"]
   dockerfile = "packages/registry/Dockerfile"
-  tags = ["${IMAGE_PREFIX}-registry:sha-${REVISION}"]
+  tags = ["${IMAGE_PREFIX}-registry:${IMAGE_TAG}"]
 }
 target "web" {
   inherits = ["common"]
   dockerfile = "packages/web/Dockerfile"
   args = { VITE_PREVIEW_LOGIN = "true" }
-  tags = ["${IMAGE_PREFIX}-web:sha-${REVISION}"]
+  tags = ["${IMAGE_PREFIX}-web:${IMAGE_TAG}"]
 }
 target "db-migrate" {
   inherits = ["common"]
   dockerfile = "packages/db/Dockerfile"
-  tags = ["${IMAGE_PREFIX}-db-migrate:sha-${REVISION}"]
+  tags = ["${IMAGE_PREFIX}-db-migrate:${IMAGE_TAG}"]
 }
 target "seed" {
   inherits = ["common"]
   dockerfile = "deploy/seed/Dockerfile"
-  tags = ["${IMAGE_PREFIX}-seed:sha-${REVISION}"]
+  tags = ["${IMAGE_PREFIX}-seed:${IMAGE_TAG}"]
 }
 target "scheduler-base" {
   context = "./deploy/schedulers"
@@ -70,5 +74,5 @@ target "scheduler" {
     scheduler-runtime = "target:scheduler-runtime"
     preview-workspace = "target:scheduler-workspace"
   }
-  tags = ["${IMAGE_PREFIX}-scheduler:sha-${REVISION}"]
+  tags = ["${IMAGE_PREFIX}-scheduler:${IMAGE_TAG}"]
 }

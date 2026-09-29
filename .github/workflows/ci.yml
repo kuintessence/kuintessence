@@ -126,6 +126,16 @@ jobs:
       - name: Check preview deployment and seed contracts
         run: bun test deploy/preview/*.test.* deploy/seed/*.test.*
 
+      - name: Validate preview image publishing configuration without building
+        env:
+          IMAGE_PREFIX: ghcr.io/example/kq-dev
+          IMAGE_SOURCE: https://github.com/example/example
+          REVISION: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+          IMAGE_TAG: pr-1-sha-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-run-1-1
+        run: >-
+          docker buildx bake --file deploy/preview/images.hcl
+          --provenance=false --sbom=false --print
+
       - name: Check preview script syntax
         run: |
           for script in deploy/preview/*.cjs; do

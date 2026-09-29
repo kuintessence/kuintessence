@@ -101,10 +101,6 @@ node "$tooling/credentials.cjs" "$state/previous-secret" "$state/secret"
 kubectl apply --server-side --field-manager=kq-preview -f "$state/secret"
 export PREVIEW_SECRET_FILE="$state/secret"
 
-if [[ -n "${GHCR_PULL_TOKEN:-}" ]]; then
-  node "$tooling/values.cjs" registry-secret "$state/pull-secret"
-  kubectl apply --server-side --field-manager=kq-preview -f "$state/pull-secret"
-fi
 node "$tooling/values.cjs" values "$state/values.json"
 chart="$tooling/../helm/kq-preview"
 helm dependency build "$chart" >"$state/dependencies-log" 2>&1 ||

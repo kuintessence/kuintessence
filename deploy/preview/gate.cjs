@@ -166,10 +166,10 @@ async function gate({ github, context, core }, options = {}) {
   core.setOutput("url", `https://pr-${prNumber}.preview.dev.kuintessence.com`);
 }
 
-async function cleanupGate({ github, context, core }) {
+async function cleanupGate({ github, context, core }, options = {}) {
   core.setOutput("allowed", "false");
   const prNumber = positiveInteger(
-    context.payload.inputs?.pr_number ?? context.payload.pull_request?.number,
+    options.pr ?? context.payload.inputs?.pr_number ?? context.payload.pull_request?.number,
     "PR number",
   );
   const { data: pr } = await github.rest.pulls.get({

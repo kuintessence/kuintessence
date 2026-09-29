@@ -193,6 +193,9 @@ Kuintessence 当前为 pre-release。以下列出组件功能、运行要求和�
   门禁同时要求信任标签、作者写权限、同仓库当前 SHA 和完整测试成功。
   提供用户 Helm Chart 与 demo CI wrapper，包含持久化 Registry、RustFS、
   seed 和单容器 Slurm + Agent；不启用远端高权限 managed Spack runtime。
+  预览镜像采用公开 GHCR，首次由维护者手动公开后重试失败的部署 job；
+  tag 包含 PR、完整 SHA 和发布 run/attempt。namespace 清理成功后回收对应 PR 的
+  dev 镜像版本，不删除其他用途 tag 或无法归属的 untagged 版本。
   自动控制器须先经审核进入默认分支，运行状态以本提交 GitHub Actions 验收为准。
 - [PR 调度器测试](../../deploy/pr-test/README.md) 已提供独立 Compose 与 Slurm/PBS
   Actions matrix，基于现有 scheduler base 构建，测试环境固定 Spack 1.0.0。

@@ -145,21 +145,29 @@ describe("SSH-tunneled Kubernetes authentication", () => {
 });
 
 describe("immutable preview images and credentials", () => {
+  const identity = { pr: 17, run: 12345, attempt: 2 };
   const metadata = Object.fromEntries(COMPONENTS.map((name) =>
     [name, { "containerimage.digest": `sha256:${"b".repeat(64)}` }]));
-  test("only consumes expected dev images with full commit tags and digests", () => {
-    const images = imagesFromMetadata(metadata, "example", sha);
+  test("only consumes public dev images bound to PR, commit, run and publish attempt", () => {
+    const images = imagesFromMetadata(metadata, "example", sha, identity);
     expect(images.server.repository).toBe("ghcr.io/example/kq-dev-server");
-    expect(images.server.tag).toBe(`sha-${sha}`);
-    expect(validateImages(images, "example", sha)).toEqual(images);
-    expect(() => validateImages(images, "example", "c".repeat(40))).toThrow();
-    expect(() => imagesFromMetadata({}, "example", sha)).toThrow();
-    expect(() => validateImages({ ...images, server: { ...images.server, repository: "untrusted/image" } }, "example", sha)).toThrow();
-    const values = previewValues(images, "17", "example", sha, true)["kq-platform"];
+    expect(images.server.tag).toBe(`pr-17-sha-${sha}-run-12345-2`);
+    expect(validateImages(images, "example", sha, identity)).toEqual(images);
+    expect(() => validateImages(images, "example", "c".repeat(40), identity)).toThrow();
+    expect(() => imagesFromMetadata({}, "example", sha, identity)).toThrow();
+    expect(() => validateImages({ ...images, server: { ...images.server, repository: "untrusted/image" } }, "example", sha, identity)).toThrow();
+    const context = { run: 12345, attempt: 2 };
+    const values = previewValues(images, "17", "example", sha, context)["kq-platform"];
     expect(values.migration.image).toEqual(images["db-migrate"]);
-    expect(values.global.imagePullSecrets).toEqual([{ name: "kq-preview-ghcr" }]);
+    expect(values.global.imagePullSecrets).toEqual([]);
     expect(values.preview.host).toBe("pr-17.preview.dev.kuintessence.com");
     expect(JSON.stringify(values)).not.toContain("PASSWORD");
+    expect(JSON.stringify(values)).not.toContain("kq-preview-ghcr");
+    expect(() => previewValues(images, "18", "example", sha, context)).toThrow();
+    expect(() => previewValues(images, "17", "example", sha, { ...context, run: 12346 })).toThrow();
+    expect(() => previewValues(images, "17", "example", sha, { ...context, attempt: 3 })).toThrow();
+    expect(() => previewValues(images, "17", "example", sha)).toThrow();
+    expect(() => previewValues(images, "17", "example", sha, true)).toThrow();
   });
   test("upgrades preserve existing database and application credentials", () => {
     const hash = () => "test-hash";

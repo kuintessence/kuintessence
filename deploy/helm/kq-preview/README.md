@@ -19,7 +19,7 @@
 | `migration.image` | db-migrate 镜像 |
 | `scheduler.image` | Slurm + Agent 镜像，完整内置 `/workspace` 和依赖 |
 | `seed.image` | seed 镜像，入口由镜像提供 |
-| `global.imagePullSecrets` | 默认 `[]`；可选 `[{name: kq-preview-ghcr}]` |
+| `global.imagePullSecrets` | CI 固定 `[]`，从公开 GHCR 匿名拉取 |
 | `secrets.existingSecret` | 默认 `kq-preview-secrets` |
 | `scheduler.providerName` | 默认 `Development Compute Provider`，需与 seed 一致 |
 | `scheduler.registrationEmail` | 默认 `scheduler-compose-seed@kuintessence.test` |
@@ -27,7 +27,8 @@
 六镜像分别使用 `ghcr.io/<owner>/kq-dev-<component>`，component 为
 `server`、`registry`、`web`、`db-migrate`、`scheduler`、`seed`。
 每个 image 支持 `repository`、`tag`、`digest`、`pullPolicy`：
-优先使用 `repository@sha256:<64hex>`，没有 digest 时使用 `tag: sha-<fullsha>`。
+CI 使用 `repository@sha256:<64hex>`，并记录
+`pr-<PR>-sha-<fullsha>-run-<run ID>-<attempt>` tag 供版本归属和清理。
 wrapper 故意不提供可运行的默认镜像地址，防止漏传时启动旧镜像。
 
 五类 PVC 的容量/StorageClass 使用：
@@ -37,8 +38,8 @@ wrapper 故意不提供可运行的默认镜像地址，防止漏传时启动旧
 
 `global.nodeSelector` 已设 `kubernetes.io/os=linux` 和
 `kubernetes.io/arch=amd64`；所有工作负载及 init Job 继承。
-如使用私有 GHCR，CI 仅在用户提供长期 `GHCR_PULL_TOKEN` 时创建 namespace 内的
-`kq-preview-ghcr`；不得将短期 `GITHUB_TOKEN` 持久保存到集群。
+首次发布六个 package 后，由维护者手动设为 public，再重试失败的部署 job。
+CI 在访问 k3s 前校验匿名拉取，不把 `GITHUB_TOKEN` 或其他 GHCR 凭据保存到集群。
 
 ## Secret 契约
 
@@ -146,6 +147,9 @@ egress隔离。部署前确认 k3s启用了 NetworkPolicy执行，并确认 Trae
 普通 Helm卸载会保留 Registry PVC以及 StatefulSet PVC。CI应按已批准的 preview
 生命周期删除整个专用 namespace，并确认 PVC/PV按集群 StorageClass回收策略清理。
 不要将 preview namespace与用户数据或其他 release混用。
+namespace 清理成功后，CI 同步回收该 PR 的专用 GHCR 镜像版本；
+跨 PR 或包含其他用途 tag 的 version 不删除。权限不足时清理 job 会失败并可重试。
+完整的首次公开、重试和版本回收边界见 [预览配置](../../../docs/preview-k3s.md)。
 
 Actions应执行 `scripts/helm-preview-contract.test.ts` 和
 `scripts/helm-preview-render.test.ts`。后者仅在 Helm可用时运行，使用临时目录构建

@@ -57,7 +57,18 @@ jobs:
     timeout-minutes: 50
     permissions:
       contents: read
+      actions: read
+      pull-requests: read
       packages: write
+    outputs:
+      attempt: ${{ steps.manifest.outputs.attempt }}
+      deployable: ${{ steps.handoff.outputs.deployable }}
+    env:
+      PREVIEW_PR: ${{ needs.gate.outputs.pr }}
+      PREVIEW_SHA: ${{ needs.gate.outputs.sha }}
+      PREVIEW_RUN: ${{ github.run_id }}
+      PREVIEW_ATTEMPT: ${{ github.run_attempt }}
+      TEST_RUN_ID: ${{ needs.gate.outputs.run }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -69,22 +80,37 @@ jobs:
           ref: ${{ needs.gate.outputs.sha }}
           path: source
           persist-credentials: false
+      - name: Recheck before publishing images
+        id: recheck
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await require("./tooling/deploy/preview/gate.cjs").gate({github, context, core}, {
+              pr: process.env.PREVIEW_PR, runId: process.env.TEST_RUN_ID,
+            });
       - uses: docker/setup-buildx-action@v3
+        if: steps.recheck.outputs.allowed == 'true'
       - uses: docker/login-action@v3
+        if: steps.recheck.outputs.allowed == 'true'
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ github.token }}
       - name: Build and push tested amd64 images
+        if: steps.recheck.outputs.allowed == 'true'
         working-directory: source
         env:
           IMAGE_PREFIX: ghcr.io/${{ needs.gate.outputs.owner }}/kq-dev
           IMAGE_SOURCE: https://github.com/${{ github.repository }}
           REVISION: ${{ needs.gate.outputs.sha }}
+          IMAGE_TAG: pr-${{ needs.gate.outputs.pr }}-sha-${{ needs.gate.outputs.sha }}-run-${{ github.run_id }}-${{ github.run_attempt }}
         run: >-
           docker buildx bake --file ../tooling/deploy/preview/images.hcl
+          --provenance=false --sbom=false
           --push --metadata-file "$RUNNER_TEMP/kq-images-metadata.json"
       - name: Record immutable image digests
+        id: manifest
+        if: steps.recheck.outputs.allowed == 'true'
         env:
           IMAGE_OWNER: ${{ needs.gate.outputs.owner }}
           PREVIEW_SHA: ${{ needs.gate.outputs.sha }}
@@ -92,14 +118,43 @@ jobs:
           node tooling/deploy/preview/images.cjs collect
           "$RUNNER_TEMP/kq-images-metadata.json" "$RUNNER_TEMP/kq-images.json"
       - uses: actions/upload-artifact@v4
+        if: steps.recheck.outputs.allowed == 'true'
         with:
-          name: kq-preview-images-${{ needs.gate.outputs.sha }}
+          name: kq-preview-images-${{ needs.gate.outputs.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/kq-images.json
           if-no-files-found: error
           retention-days: 7
+      - name: Check whether publication outlived PR eligibility
+        id: revoked
+        if: always() && steps.recheck.outputs.allowed == 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await require("./tooling/deploy/preview/gate.cjs").cleanupGate(
+              {github, context, core}, {pr: process.env.PREVIEW_PR},
+            );
+      - name: Remove this unpublished-to-k3s attempt after PR revocation
+        id: late-images
+        if: always() && steps.revoked.outputs.allowed == 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const {imageTag} = require("./tooling/deploy/preview/images.cjs");
+            await require("./tooling/deploy/preview/ghcr-cleanup.cjs").cleanupImages(
+              {github, context, core}, {
+                pr: process.env.PREVIEW_PR,
+                tag: imageTag(process.env.PREVIEW_PR, process.env.PREVIEW_SHA,
+                  process.env.PREVIEW_RUN, process.env.PREVIEW_ATTEMPT),
+              },
+            );
+      - name: Hand off only a still-eligible publication
+        id: handoff
+        if: success() && steps.revoked.outputs.allowed == 'false'
+        run: echo "deployable=true" >> "$GITHUB_OUTPUT"
 
   deploy:
     needs: [gate, images]
+    if: needs.images.outputs.attempt != '' && needs.images.outputs.deployable == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     concurrency:
@@ -110,26 +165,19 @@ jobs:
       actions: read
       pull-requests: write
       deployments: write
+      packages: write
     env:
       PREVIEW_PR: ${{ needs.gate.outputs.pr }}
       PREVIEW_SHA: ${{ needs.gate.outputs.sha }}
       TEST_RUN_ID: ${{ needs.gate.outputs.run }}
       IMAGE_OWNER: ${{ needs.gate.outputs.owner }}
+      PREVIEW_RUN: ${{ github.run_id }}
+      PREVIEW_ATTEMPT: ${{ needs.images.outputs.attempt }}
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.workflow_sha }}
           persist-credentials: false
-      - uses: actions/download-artifact@v4
-        with:
-          name: kq-preview-images-${{ needs.gate.outputs.sha }}
-          path: ${{ runner.temp }}/kq-preview-images
-      - uses: azure/setup-kubectl@v4
-        with:
-          version: v1.32.3
-      - uses: azure/setup-helm@v4
-        with:
-          version: v3.17.3
       - name: Recheck after image builds and deployment queue
         id: recheck
         uses: actions/github-script@v7
@@ -138,6 +186,56 @@ jobs:
             await require("./deploy/preview/gate.cjs").gate({github, context, core}, {
               pr: process.env.PREVIEW_PR, runId: process.env.TEST_RUN_ID,
             });
+      - name: Reconcile PR revocation after waiting for the deployment lock
+        id: retired
+        if: steps.recheck.outputs.allowed == 'false'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await require("./deploy/preview/gate.cjs").cleanupGate(
+              {github, context, core}, {pr: process.env.PREVIEW_PR},
+            );
+      - uses: azure/setup-kubectl@v4
+        if: steps.recheck.outputs.allowed == 'true' || steps.retired.outputs.allowed == 'true'
+        with:
+          version: v1.32.3
+      - name: Clean a revoked preview even if this deploy replaced its pending cleanup
+        id: retired-namespace
+        if: steps.retired.outputs.allowed == 'true'
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_PORT: ${{ secrets.SSH_PORT }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+          SSH_KEY: ${{ secrets.SSH_KEY }}
+          KUBE_CONFIG: ${{ secrets.KUBE_CONFIG }}
+        run: bash deploy/preview/remote.sh cleanup
+      - name: Reclaim dev images after revocation reconciliation
+        id: retired-images
+        if: always() && steps.retired-namespace.outcome == 'success'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await require("./deploy/preview/ghcr-cleanup.cjs").cleanupImages(
+              {github, context, core}, {pr: process.env.PREVIEW_PR},
+            );
+      - name: Mark the revoked preview as removed
+        id: retired-notice
+        if: always() && steps.retired-namespace.outcome == 'success'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await require("./deploy/preview/notice.cjs").notice(
+              {github, context, core}, "inactive", process.env.PREVIEW_PR,
+            );
+      - uses: actions/download-artifact@v4
+        if: steps.recheck.outputs.allowed == 'true'
+        with:
+          name: kq-preview-images-${{ needs.gate.outputs.sha }}-${{ github.run_id }}-${{ needs.images.outputs.attempt }}
+          path: ${{ runner.temp }}/kq-preview-images
+      - uses: azure/setup-helm@v4
+        if: steps.recheck.outputs.allowed == 'true'
+        with:
+          version: v3.17.3
       - name: Record deployment start
         if: steps.recheck.outputs.allowed == 'true'
         id: deployment
@@ -155,6 +253,11 @@ jobs:
             await github.rest.repos.createDeploymentStatus({
               ...context.repo, deployment_id: data.id, state: "in_progress",
             });
+      - name: Require anonymous GHCR pulls before accessing k3s
+        if: steps.recheck.outputs.allowed == 'true'
+        env:
+          IMAGE_MANIFEST: ${{ runner.temp }}/kq-preview-images/kq-images.json
+        run: node deploy/preview/images.cjs verify "$IMAGE_MANIFEST"
       - name: Deploy through SSH and verify HTTPS
         id: helm
         if: steps.recheck.outputs.allowed == 'true'
@@ -166,8 +269,6 @@ jobs:
           SSH_KEY: ${{ secrets.SSH_KEY }}
           KUBE_CONFIG: ${{ secrets.KUBE_CONFIG }}
           PREVIEW_PASSWORD: ${{ secrets.PREVIEW_PASSWORD }}
-          GHCR_PULL_USER: ${{ secrets.GHCR_PULL_USER }}
-          GHCR_PULL_TOKEN: ${{ secrets.GHCR_PULL_TOKEN }}
         run: bash deploy/preview/remote.sh deploy
       - name: Recheck before publishing the URL
         if: success() && steps.recheck.outputs.allowed == 'true'
@@ -188,7 +289,22 @@ jobs:
           SSH_KEY: ${{ secrets.SSH_KEY }}
           KUBE_CONFIG: ${{ secrets.KUBE_CONFIG }}
         run: bash deploy/preview/remote.sh cleanup
+      - name: Remove this attempt's images after compensating k3s cleanup
+        id: compensated-images
+        if: always() && steps.removed.outcome == 'success'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const {imageTag} = require("./deploy/preview/images.cjs");
+            await require("./deploy/preview/ghcr-cleanup.cjs").cleanupImages(
+              {github, context, core}, {
+                pr: process.env.PREVIEW_PR,
+                tag: imageTag(process.env.PREVIEW_PR, process.env.PREVIEW_SHA,
+                  process.env.PREVIEW_RUN, process.env.PREVIEW_ATTEMPT),
+              },
+            );
       - name: Mark the superseded preview as removed
+        id: compensated-notice
         if: always() && steps.removed.outcome == 'success'
         uses: actions/github-script@v7
         with:
