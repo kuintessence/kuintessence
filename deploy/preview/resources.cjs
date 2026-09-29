@@ -70,7 +70,7 @@ function diagnosticCode(error) {
   const stderr = typeof error?.stderr === "string" || Buffer.isBuffer(error?.stderr)
     ? error.stderr.toString("utf8") : "";
   if (/forbidden/i.test(stderr)) {
-    const match = stderr.match(/cannot (get|list|watch|create|update|patch|delete) resource "([a-z]+)" in API group "([a-z.]*)"/);
+    const match = stderr.match(/cannot (get|list|watch|create|update|patch|delete) resource "([a-z]+)" in API group "([a-z0-9.]*)"/);
     if (match && RESOURCE_GROUPS.has(match[2]) && RESOURCE_GROUPS.get(match[2]) === match[3]) {
       return `RBAC_DENIED verb=${match[1]} resource=${match[2]} group=${match[3] || "core"}`;
     }
