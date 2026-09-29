@@ -41,6 +41,8 @@ kq-platform:
       repository: ""
       tag: ""
   migration:
+    # Temporary compatibility source; replace with a maintained, pinned waiter.
+    waitImage: docker.io/bitnamilegacy/kubectl:1.32.3
     image:
       repository: ""
       tag: ""
@@ -63,6 +65,7 @@ kq-platform:
     storage: 1Gi
   rustfs:
     enabled: true
+    bootstrapWaitImage: docker.io/bitnamilegacy/kubectl:1.32.3
     storage: 10Gi
     consoleEnabled: false
   netdrive:

@@ -1,3 +1,6 @@
+# A 64-character cookie key plus hash overhead exceeds a 64-byte bucket.
+map_hash_bucket_size 128;
+
 map $cookie_kq_preview $preview_allowed {
     default 0;
     "${PREVIEW_COOKIE}" 1;

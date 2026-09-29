@@ -126,6 +126,11 @@ jobs:
       - name: Check preview deployment and seed contracts
         run: bun test deploy/preview/*.test.* deploy/seed/*.test.*
 
+      - name: Verify preview gateway and initialization images
+        env:
+          KQ_RUN_CONTAINER_CONTRACTS: "1"
+        run: bun test scripts/helm-preview-gateway.test.ts scripts/helm-preview-wait-image.test.ts
+
       - name: Validate preview image publishing configuration without building
         env:
           IMAGE_PREFIX: ghcr.io/example/kq-dev

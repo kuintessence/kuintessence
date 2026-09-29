@@ -44,6 +44,13 @@ wrapper 故意不提供可运行的默认镜像地址，防止漏传时启动旧
 首次发布六个 package 后，由维护者手动设为 public，再重试失败的部署 job。
 CI 在访问 k3s 前校验匿名拉取，不把 `GITHUB_TOKEN` 或其他 GHCR 凭据保存到集群。
 
+preview 的 `migration.waitImage` 与 `rustfs.bootstrapWaitImage` 暂时统一使用
+`docker.io/bitnamilegacy/kubectl:1.32.3`，保留等待脚本接口和 kubectl 版本。
+Legacy 镜像不再获得安全更新，只用于本次短期预览兼容，不推荐用于生产；
+后续应替换为持续维护、固定 digest 的等待镜像。此覆盖不改变用户版 Chart 的配置。
+Actions 显式运行容器契约测试，验证匿名拉取、amd64、`/bin/sh` 和 `kubectl wait`；
+同时验证渲染后的 gateway 配置与启动流程，不能只以 Helm 渲染成功作为运行验收。
+
 ## Namespace 与资源归属
 
 管理员预建 `preview` 并配置 namespace-only RBAC。CI 只管理其中的 Chart 资源、
