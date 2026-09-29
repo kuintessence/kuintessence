@@ -25,6 +25,10 @@ type Stage =
   | "image"
   | "legacy"
   | "syntax"
+  | "network"
+  | "mock"
+  | "gateway"
+  | "publish"
   | "entrypoint"
   | "envsubst"
   | "auth"
@@ -261,9 +265,12 @@ describe.skipIf(!enabled)("Helm gateway nginx container contract (Actions only)"
         complete();
       }
 
-      stage = "entrypoint";
+      stage = "network";
       network = `${prefix}-network`;
-      await command(["docker", "network", "create", "--internal", network]);
+      // Dedicated fixture bridge; only the gateway is published, on loopback.
+      await command(["docker", "network", "create", "--driver", "bridge", network]);
+      complete();
+      stage = "mock";
       const mockName = `${prefix}-upstream`;
       containers.push(mockName);
       await command([
@@ -282,6 +289,8 @@ describe.skipIf(!enabled)("Helm gateway nginx container contract (Actions only)"
         `${join(directory, "mock.conf")}:/etc/nginx/nginx.conf:ro`,
         gateway.image,
       ]);
+      complete();
+      stage = "gateway";
       gatewayName = `${prefix}-gateway`;
       containers.push(gatewayName);
       await command([
@@ -302,9 +311,13 @@ describe.skipIf(!enabled)("Helm gateway nginx container contract (Actions only)"
         ...gateway.command.slice(1),
         ...gateway.args,
       ]);
+      complete();
+      stage = "publish";
       const published = await command(["docker", "port", gatewayName, "8080/tcp"]);
       const address = published.stdout.trim();
       check(/^127\.0\.0\.1:[0-9]+$/.test(address), "NONLOCAL_PORT");
+      complete();
+      stage = "entrypoint";
       const request = async (path: string, options: RequestInit = {}) => {
         try {
           const headers = new Headers(options.headers);
