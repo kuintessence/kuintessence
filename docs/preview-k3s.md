@@ -104,6 +104,20 @@ gh workflow run preview.yml --ref main \
 以及第一组完整测试终态成功。手动入口不绕过任何信任或测试门禁。
 只有默认分支已经注册对应 workflow 时，GitHub 才能通过名称发现这些手动入口。
 
+### 首次部署核对
+
+控制器合入后，使用一个保持打开的受信 PR 验收；已合并 PR 不符合部署门禁。
+核对当前 head SHA 的 `PR preview tests` 全部必需 job 成功，再观察 `Preview`：
+
+1. `images` 成功后，将 `kq-dev-server`、`kq-dev-registry`、`kq-dev-web`、
+   `kq-dev-db-migrate`、`kq-dev-seed`、`kq-dev-scheduler` 六个 package 设为 public。
+2. 若 `deploy` 因匿名拉取预检失败，在原 run 选择 **Re-run failed jobs**；
+   不需要重新构建已成功推送的镜像。
+3. 以 `deploy` 成功、PR 固定评论中的 HTTPS 地址及 Deployment success 为准。
+   镜像推送成功或 Helm 资源已创建，均不等于站点验收完成。
+4. 验收期间保持 PR 打开且保留信任标签。关闭或合并该 PR 会清理站点及其 dev 镜像；
+   需要测试清理时，先确认环境中的演示数据可以丢弃。
+
 ## 升级与清理
 
 同一 PR 的部署、清理串行执行，不中途取消 Helm。构建前和部署前后均重新检查 PR 状态，
