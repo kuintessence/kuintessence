@@ -9,7 +9,7 @@ const wrapper = "deploy/helm/kq-preview";
 const read = (path: string) => Bun.file(resolve(root, path)).text();
 
 interface Values {
-  preview: { enabled: boolean; host: string; credentialsRevision: string };
+  preview: { enabled: boolean; host: string; credentialsRevision: string; repository: string };
   seed: { enabled: boolean; mode: string };
   scheduler: { enabled: boolean };
   secrets: { existingSecret: string };
@@ -48,8 +48,42 @@ describe("Helm preview source contracts", () => {
       "kubernetes.io/arch": "amd64",
     });
     expect(preview.global.imagePullSecrets).toEqual([]);
-    expect(preview.secrets.existingSecret).toBe("kq-preview-secrets");
+    expect(preview.secrets.existingSecret).toBe("");
+    expect(preview.preview.repository).toBe("");
     expect(preview.ingress).toMatchObject({ className: "traefik", tls: [] });
+  });
+
+  test("shared preview isolation is release-scoped without changing legacy selectors", async () => {
+    const helpers = await read(`${platform}/templates/_helpers.tpl`);
+    const selector = helpers.slice(
+      helpers.indexOf('{{- define "kq.workloadSelectorLabels" -}}'),
+      helpers.indexOf('{{- define "kq-platform.labels" -}}'),
+    );
+    expect(selector).toContain("{{- if .Values.preview.enabled }}");
+    expect(selector).toContain("app.kubernetes.io/instance: {{ .Release.Name }}");
+    const policy = await read(`${platform}/templates/preview-networkpolicy.yaml`);
+    expect(policy).not.toContain("podSelector: {}");
+    expect(policy).not.toContain("namespaceSelector: {}");
+    expect(policy.match(/include "kq-platform.selectorLabels"/g)).toHaveLength(3);
+    const genericPolicy = await read(`${platform}/templates/networkpolicy.yaml`);
+    expect(genericPolicy).toContain("(not .Values.preview.enabled)");
+    const validation = await read(`${platform}/templates/validate.yaml`);
+    expect(validation).toContain('ne .Release.Namespace "preview"');
+    expect(validation).toContain('printf "%s-secrets" .Release.Name');
+    expect(validation).toContain("^kq-pr-[1-9][0-9]*$");
+    expect(validation).toContain("preview.repository must be");
+    expect(helpers).toContain("kuintessence.com/preview-pr:");
+    expect(helpers).toContain("kuintessence.com/repository:");
+    for (const component of ["postgres", "redis", "rustfs"]) {
+      const stateful = await read(`${platform}/templates/${component}-statefulset.yaml`);
+      const claims = stateful.slice(
+        stateful.indexOf("  volumeClaimTemplates:"),
+        stateful.indexOf("---"),
+      );
+      expect(claims).toContain("{{- if .Values.preview.enabled }}");
+      expect(claims).toContain('include "kq.storageLabels"');
+      expect(claims).toContain('include "kq.previewStorageAnnotations"');
+    }
   });
 
   test("vendored Web nginx and unlock page stay identical to their shared sources", async () => {

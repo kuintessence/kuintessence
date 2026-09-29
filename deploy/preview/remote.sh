@@ -13,6 +13,11 @@ mode="${1:-}"
 (( 10#$SSH_PORT >= 1 && 10#$SSH_PORT <= 65535 )) || fail "Invalid SSH port."
 [[ -n "${SSH_KEY:-}" && -n "${KUBE_CONFIG:-}" ]] || fail "Missing SSH_KEY or KUBE_CONFIG."
 [[ -n "${RUNNER_TEMP:-}" ]] || fail "This command requires an Actions runner."
+export PREVIEW_NAMESPACE="preview"
+export PREVIEW_RELEASE="kq-pr-$PREVIEW_PR"
+export HELM_DRIVER="secret"
+namespace="$PREVIEW_NAMESPACE"
+release="$PREVIEW_RELEASE"
 
 tooling="$(cd "$(dirname "$0")" && pwd)"
 state="$(mktemp -d "$RUNNER_TEMP/kq-preview-remote.XXXXXX")"
@@ -50,7 +55,8 @@ ssh_pid="$!"
 ready=false
 for _ in {1..20}; do
   kill -0 "$ssh_pid" 2>/dev/null || fail "SSH tunnel could not be established."
-  if kubectl --request-timeout=5s get --raw=/readyz >"$state/api-ready" 2>/dev/null; then
+  if kubectl -n "$namespace" --request-timeout=5s get configmap "$release-preview-owner" \
+      --ignore-not-found -o name >"$state/api-ready" 2>/dev/null; then
     ready=true
     break
   fi
@@ -58,60 +64,29 @@ for _ in {1..20}; do
 done
 [[ "$ready" == true ]] || fail "The TLS-verified k3s API did not become reachable through SSH."
 
-export PREVIEW_NAMESPACE="kq-pr-$PREVIEW_PR"
-namespace="$PREVIEW_NAMESPACE"
-existing="$(kubectl get namespace "$namespace" --ignore-not-found -o json)"
-if [[ -n "$existing" ]]; then
-  jq -e --arg repo "$GITHUB_REPOSITORY" --arg pr "$PREVIEW_PR" '
-    .metadata.labels["app.kubernetes.io/managed-by"] == "kq-preview" and
-    .metadata.labels["kuintessence.com/preview-pr"] == $pr and
-    .metadata.annotations["kuintessence.com/repository"] == $repo
-  ' <<< "$existing" >/dev/null || fail "Namespace ownership mismatch; refusing to modify it."
-elif [[ "$mode" == cleanup ]]; then
-  echo "Preview namespace is already absent."
-  exit 0
-fi
-
 if [[ "$mode" == cleanup ]]; then
-  # Namespace ownership is checked above; never run a cluster-wide Helm uninstall.
-  kubectl delete namespace "$namespace" --wait=true --timeout=5m
-  echo "Managed PR namespace and its disposable data removed."
+  node "$tooling/resources.cjs" cleanup
+  echo "Owned PR release, residual claims and credentials removed from preview."
   exit 0
 fi
 
 [[ "${PREVIEW_SHA:-}" =~ ^[a-f0-9]{40}$ ]] || fail "Invalid tested revision."
 [[ "${IMAGE_OWNER:-}" =~ ^[a-z0-9][a-z0-9-]*$ ]] || fail "Invalid image owner."
 node "$tooling/images.cjs" verify "${IMAGE_MANIFEST:?Image manifest is required}"
-kubectl get nodes -o json | jq -e '
-  (.items | length) == 1 and
-  .items[0].status.nodeInfo.architecture == "amd64" and
-  .items[0].status.nodeInfo.operatingSystem == "linux" and
-  any(.items[0].status.conditions[]; .type == "Ready" and .status == "True")
-' >/dev/null || fail "Preview requires one Ready linux/amd64 node."
-if [[ -z "$existing" ]]; then
-  jq -n --arg name "$namespace" --arg repo "$GITHUB_REPOSITORY" --arg pr "$PREVIEW_PR" '{
-    apiVersion:"v1",kind:"Namespace",
-    metadata:{name:$name,labels:{"app.kubernetes.io/managed-by":"kq-preview","kuintessence.com/preview-pr":$pr},
-    annotations:{"kuintessence.com/repository":$repo}}
-  }' | kubectl create -f -
-fi
-kubectl -n "$namespace" get secret kq-preview-secrets --ignore-not-found -o json > "$state/previous-secret"
-if [[ ! -s "$state/previous-secret" ]]; then printf 'null' > "$state/previous-secret"; fi
+node "$tooling/resources.cjs" prepare "$state/previous-secret"
 node "$tooling/credentials.cjs" "$state/previous-secret" "$state/secret"
-kubectl apply --server-side --field-manager=kq-preview -f "$state/secret"
+node "$tooling/resources.cjs" credentials "$state/secret"
 export PREVIEW_SECRET_FILE="$state/secret"
 
 node "$tooling/values.cjs" values "$state/values.json"
 chart="$tooling/../helm/kq-preview"
 helm dependency build "$chart" >"$state/dependencies-log" 2>&1 ||
   fail "Unable to package the local preview chart dependency."
-helm upgrade --install "$namespace" "$chart" --namespace "$namespace" \
+helm upgrade --install "$release" "$chart" -n "$namespace" \
   --values "$state/values.json" --atomic --wait --wait-for-jobs --timeout 15m \
   --history-max 3 >"$state/helm-log" 2>&1 ||
   fail "Helm deployment failed or timed out; inspect the namespace privately. No raw manifests or logs were published."
 printf 'applied=true\n' >> "${GITHUB_OUTPUT:?Actions step output is required}"
 
-kubectl -n "$namespace" annotate namespace "$namespace" \
-  "kuintessence.com/revision=$PREVIEW_SHA" --overwrite >/dev/null
 node "$tooling/https.cjs" "$state/secret"
 echo "Preview is ready with verified HTTPS and an authenticated gateway."

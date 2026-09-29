@@ -2,8 +2,8 @@ const { describe, expect, test } = require("bun:test");
 const { eligible, positiveInteger, testsPassed, gate, REQUIRED_JOBS } = require("./gate.cjs");
 const { sanitizeConfig } = require("./kubeconfig.cjs");
 const { imagesFromMetadata, validateImages, COMPONENTS } = require("./images.cjs");
-const { credentialData } = require("./credentials.cjs");
-const { previewValues } = require("./values.cjs");
+const { credentialData, credentialSecret } = require("./credentials.cjs");
+const { previewValues, runCLI: valuesCLI } = require("./values.cjs");
 const { verifyHttps } = require("./https.cjs");
 
 const sha = "a".repeat(40);
@@ -124,6 +124,7 @@ describe("SSH-tunneled Kubernetes authentication", () => {
     expect(safe.clusters[0].cluster["tls-server-name"]).toBe("api.example.test");
     expect(safe.clusters[0].cluster["certificate-authority-data"]).toBe("Y2E=");
     expect(safe.users[0].user).toEqual(original.users[0].user);
+    expect(safe.contexts[0].context.namespace).toBe("preview");
   });
   test("refuses insecure TLS, proxies, plugins and local credential references", () => {
     for (const [key, value] of [
@@ -156,11 +157,13 @@ describe("immutable preview images and credentials", () => {
     expect(() => validateImages(images, "example", "c".repeat(40), identity)).toThrow();
     expect(() => imagesFromMetadata({}, "example", sha, identity)).toThrow();
     expect(() => validateImages({ ...images, server: { ...images.server, repository: "untrusted/image" } }, "example", sha, identity)).toThrow();
-    const context = { run: 12345, attempt: 2 };
+    const context = { run: 12345, attempt: 2, repository: "example/project" };
     const values = previewValues(images, "17", "example", sha, context)["kq-platform"];
     expect(values.migration.image).toEqual(images["db-migrate"]);
     expect(values.global.imagePullSecrets).toEqual([]);
     expect(values.preview.host).toBe("pr-17.preview.dev.kuintessence.com");
+    expect(values.preview.repository).toBe("example/project");
+    expect(values.secrets.existingSecret).toBe("kq-pr-17-secrets");
     expect(JSON.stringify(values)).not.toContain("PASSWORD");
     expect(JSON.stringify(values)).not.toContain("kq-preview-ghcr");
     expect(() => previewValues(images, "18", "example", sha, context)).toThrow();
@@ -168,10 +171,44 @@ describe("immutable preview images and credentials", () => {
     expect(() => previewValues(images, "17", "example", sha, { ...context, attempt: 3 })).toThrow();
     expect(() => previewValues(images, "17", "example", sha)).toThrow();
     expect(() => previewValues(images, "17", "example", sha, true)).toThrow();
+    for (const repository of [undefined, "", "foreign/project", "example/project/extra"]) {
+      expect(() => previewValues(images, "17", "example", sha, { ...context, repository })).toThrow();
+    }
+  });
+  test("passes the trusted repository through the values CLI without credential material", () => {
+    const images = imagesFromMetadata(metadata, "example", sha, identity);
+    const writes = [];
+    const cookie = Buffer.from("private-cookie-fixture").toString("base64");
+    const env = {
+      IMAGE_MANIFEST: "/fixture/images", PREVIEW_SECRET_FILE: "/fixture/secret",
+      PREVIEW_PR: "17", IMAGE_OWNER: "example", PREVIEW_SHA: sha,
+      PREVIEW_RUN: "12345", PREVIEW_ATTEMPT: "2", GITHUB_REPOSITORY: "example/project",
+    };
+    const files = {
+      readFileSync: (name) => {
+        if (name === env.IMAGE_MANIFEST) return JSON.stringify(images);
+        if (name === env.PREVIEW_SECRET_FILE) return JSON.stringify({ data: { PREVIEW_COOKIE: cookie } });
+        throw new Error("Unexpected fixture read");
+      },
+      writeFileSync: (...args) => writes.push(args),
+    };
+    valuesCLI(["values", "/fixture/values"], env, files);
+    expect(writes).toHaveLength(1);
+    expect(writes[0][2]).toEqual({ mode: 0o600 });
+    const values = JSON.parse(writes[0][1])["kq-platform"];
+    expect(values.preview.repository).toBe("example/project");
+    expect(values.preview.credentialsRevision).toMatch(/^[a-f0-9]{64}$/);
+    expect(values.secrets.existingSecret).toBe("kq-pr-17-secrets");
+    expect(writes[0][1]).not.toContain(cookie);
+    expect(() => valuesCLI(["values", "/fixture/values"], {
+      ...env, GITHUB_REPOSITORY: "",
+    }, files)).toThrow();
+    expect(writes).toHaveLength(1);
   });
   test("upgrades preserve existing database and application credentials", () => {
     const hash = () => "test-hash";
     const initial = credentialData({}, "kq-pr-17", undefined, hash);
+    expect(Buffer.from(initial.DATABASE_URL, "base64").toString("utf8")).toContain("@kq-pr-17-postgres:5432/");
     expect(Buffer.from(initial.PREVIEW_COOKIE, "base64").toString("utf8")).toMatch(/^[a-f0-9]{64}$/);
     expect(credentialData(initial, "kq-pr-17", undefined, hash)).toEqual(initial);
     const next = credentialData(initial, "kq-pr-17", "a-new-dedicated-preview-password", hash);
@@ -181,6 +218,31 @@ describe("immutable preview images and credentials", () => {
     expect(() => credentialData({}, "production", undefined, hash)).toThrow();
     expect(() => credentialData({}, "kq-pr-17", "short", hash)).toThrow();
   });
+  test("isolates credentials by release inside the fixed namespace", () => {
+    const initial = credentialSecret(null, "17", "example/project", undefined, () => "test-hash");
+    expect(initial.metadata.name).toBe("kq-pr-17-secrets");
+    expect(initial.metadata.namespace).toBe("preview");
+    expect(initial.metadata.labels["app.kubernetes.io/instance"]).toBe("kq-pr-17");
+    expect(credentialSecret(initial, "17", "example/project", undefined, () => "test-hash")).toEqual(initial);
+    for (const [pr, repository] of [["18", "example/project"], ["17", "another/project"]]) {
+      expect(() => credentialSecret(initial, pr, repository, undefined, () => "test-hash"))
+        .toThrow("ownership mismatch");
+    }
+    for (const mutation of [
+      { name: "kq-preview-secrets" },
+      { namespace: "kq-pr-17" },
+      { labels: {} },
+      { annotations: {} },
+    ]) {
+      expect(() => credentialSecret({
+        ...initial, metadata: { ...initial.metadata, ...mutation },
+      }, "17", "example/project", undefined, () => "test-hash")).toThrow("ownership mismatch");
+    }
+    expect(() => credentialSecret({}, "17", "example/project", undefined, () => "test-hash"))
+      .toThrow("ownership mismatch");
+    expect(() => credentialSecret(null, "../17", "example/project", undefined, () => "test-hash"))
+      .toThrow("Invalid preview credential identity");
+  }, 15000);
   test("HTTPS acceptance checks the gate, unlock, Web and Server", async () => {
     const requests = [];
     const request = async (url, options) => {

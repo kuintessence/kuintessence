@@ -44,7 +44,7 @@ function sanitizeConfig(config) {
       },
     }],
     users: [{ name: "preview", user }],
-    contexts: [{ name: "preview", context: { cluster: "preview", user: "preview" } }],
+    contexts: [{ name: "preview", context: { cluster: "preview", user: "preview", namespace: "preview" } }],
   };
 }
 

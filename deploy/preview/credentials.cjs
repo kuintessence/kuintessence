@@ -4,8 +4,8 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 
-function credentialData(previous, namespace, password, hashPassword) {
-  if (!/^kq-pr-[1-9][0-9]*$/.test(namespace)) throw new Error("Invalid preview namespace");
+function credentialData(previous, release, password, hashPassword) {
+  if (!/^kq-pr-[1-9][0-9]{0,14}$/.test(release)) throw new Error("Invalid preview release");
   if (password && (password.length < 24 || /[\r\n]/.test(password))) {
     throw new Error("PREVIEW_PASSWORD must be a single line with at least 24 characters");
   }
@@ -18,7 +18,7 @@ function credentialData(previous, namespace, password, hashPassword) {
   ensure("RUSTFS_SECRET_KEY", randomBytes(32).toString("hex"));
   ensure("NETDRIVE_ACCESS_KEY", "kq-data-market-committer");
   ensure("NETDRIVE_SECRET_KEY", randomBytes(32).toString("hex"));
-  ensure("DATABASE_URL", `postgres://kq:${encodeURIComponent(decode("POSTGRES_PASSWORD"))}@${namespace}-postgres:5432/kuintessence`);
+  ensure("DATABASE_URL", `postgres://kq:${encodeURIComponent(decode("POSTGRES_PASSWORD"))}@${release}-postgres:5432/kuintessence`);
   const nextPassword = password || decode("PREVIEW_PASSWORD") || randomBytes(32).toString("base64url");
   if (!data.PREVIEW_HTPASSWD || nextPassword !== decode("PREVIEW_PASSWORD")) {
     data.PREVIEW_PASSWORD = encode(nextPassword);
@@ -29,7 +29,8 @@ function credentialData(previous, namespace, password, hashPassword) {
   return data;
 }
 
-function addTlsData(data, namespace) {
+function addTlsData(data, release) {
+  if (!/^kq-pr-[1-9][0-9]{0,14}$/.test(release)) throw new Error("Invalid preview release");
   const keys = ["SERVER_CA_CERT", "SERVER_CA_KEY", "SERVER_TLS_CERT", "SERVER_TLS_KEY"];
   const present = keys.filter((key) => Boolean(data[key]));
   if (present.length === keys.length) return;
@@ -44,12 +45,12 @@ function addTlsData(data, namespace) {
       "-addext", "basicConstraints=critical,CA:TRUE",
       "-addext", "keyUsage=critical,keyCertSign,cRLSign");
     run("req", "-new", "-newkey", "rsa:2048", "-nodes", "-keyout", "server.key",
-      "-out", "server.csr", "-subj", `/CN=${namespace}-server`);
+      "-out", "server.csr", "-subj", `/CN=${release}-server`);
     fs.writeFileSync(path.join(directory, "server.ext"), [
       "basicConstraints=critical,CA:FALSE",
       "keyUsage=critical,digitalSignature,keyEncipherment",
       "extendedKeyUsage=serverAuth",
-      `subjectAltName=DNS:${namespace}-server,DNS:${namespace}-server.${namespace}.svc,DNS:${namespace}-server.${namespace}.svc.cluster.local`,
+      `subjectAltName=DNS:${release}-server,DNS:${release}-server.preview.svc,DNS:${release}-server.preview.svc.cluster.local`,
     ].join("\n"), { mode: 0o600 });
     run("x509", "-req", "-in", "server.csr", "-CA", "ca.crt", "-CAkey", "ca.key",
       "-CAcreateserial", "-out", "server.crt", "-days", "365", "-sha256", "-extfile", "server.ext");
@@ -61,25 +62,55 @@ function addTlsData(data, namespace) {
   }
 }
 
+function credentialSecret(previous, pr, repository, password, hashPassword) {
+  if (
+    !/^[1-9][0-9]{0,14}$/.test(String(pr)) ||
+    !/^[A-Za-z0-9][A-Za-z0-9-]*\/[A-Za-z0-9_.-]+$/.test(repository ?? "")
+  ) throw new Error("Invalid preview credential identity");
+  const release = `kq-pr-${pr}`;
+  const metadata = {
+    name: `${release}-secrets`,
+    namespace: "preview",
+    labels: {
+      "app.kubernetes.io/managed-by": "kq-preview",
+      "app.kubernetes.io/instance": release,
+      "kuintessence.com/preview-pr": String(pr),
+    },
+    annotations: { "kuintessence.com/repository": repository },
+  };
+  if (previous !== null && previous !== undefined) {
+    if (
+      previous.kind !== "Secret" || previous.type !== "Opaque" ||
+      previous.metadata?.name !== metadata.name ||
+      previous.metadata?.namespace !== metadata.namespace ||
+      !Object.entries(metadata.labels).every(([key, value]) => previous.metadata.labels?.[key] === value) ||
+      previous.metadata.annotations?.["kuintessence.com/repository"] !== repository ||
+      !previous.data || typeof previous.data !== "object" || Array.isArray(previous.data)
+    ) throw new Error("Preview credential ownership mismatch");
+  }
+  const data = credentialData(previous?.data, release, password, hashPassword);
+  addTlsData(data, release);
+  return { apiVersion: "v1", kind: "Secret", type: "Opaque", metadata, data };
+}
+
 if (require.main === module) {
   try {
     const [source, target] = process.argv.slice(2);
     const previous = JSON.parse(fs.readFileSync(source, "utf8"));
-    const namespace = process.env.PREVIEW_NAMESPACE;
-    const data = credentialData(previous?.data, namespace, process.env.PREVIEW_PASSWORD,
+    if (
+      process.env.PREVIEW_NAMESPACE !== "preview" ||
+      process.env.PREVIEW_RELEASE !== `kq-pr-${process.env.PREVIEW_PR}`
+    ) throw new Error("Invalid preview scope");
+    const secret = credentialSecret(previous, process.env.PREVIEW_PR,
+      process.env.GITHUB_REPOSITORY, process.env.PREVIEW_PASSWORD,
       (password) => execFileSync("openssl", ["passwd", "-apr1", "-stdin"], {
         input: `${password}\n`, encoding: "utf8", stdio: ["pipe", "pipe", "pipe"],
       }));
-    addTlsData(data, namespace);
-    fs.writeFileSync(target, JSON.stringify({
-      apiVersion: "v1", kind: "Secret", type: "Opaque",
-      metadata: { name: "kq-preview-secrets", namespace },
-      data,
-    }), { mode: 0o600 });
+    fs.writeFileSync(target, JSON.stringify(secret), { mode: 0o600 });
   } catch {
     console.error("Unable to prepare preview credentials; no credential values were logged.");
     process.exitCode = 1;
   }
 }
 
-module.exports = { credentialData, addTlsData };
+module.exports = { credentialData, addTlsData, credentialSecret };

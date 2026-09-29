@@ -199,6 +199,10 @@ jobs:
         if: steps.recheck.outputs.allowed == 'true' || steps.retired.outputs.allowed == 'true'
         with:
           version: v1.32.3
+      - uses: azure/setup-helm@v4
+        if: steps.recheck.outputs.allowed == 'true' || steps.retired.outputs.allowed == 'true'
+        with:
+          version: v3.17.3
       - name: Clean a revoked preview even if this deploy replaced its pending cleanup
         id: retired-namespace
         if: steps.retired.outputs.allowed == 'true'
@@ -232,10 +236,6 @@ jobs:
         with:
           name: kq-preview-images-${{ needs.gate.outputs.sha }}-${{ github.run_id }}-${{ needs.images.outputs.attempt }}
           path: ${{ runner.temp }}/kq-preview-images
-      - uses: azure/setup-helm@v4
-        if: steps.recheck.outputs.allowed == 'true'
-        with:
-          version: v3.17.3
       - name: Record deployment start
         if: steps.recheck.outputs.allowed == 'true'
         id: deployment

@@ -48,7 +48,11 @@ jobs:
         if: steps.check.outputs.allowed == 'true'
         with:
           version: v1.32.3
-      - name: Remove only the owned PR namespace
+      - uses: azure/setup-helm@v4
+        if: steps.check.outputs.allowed == 'true'
+        with:
+          version: v3.17.3
+      - name: Remove only the owned PR release and data in preview
         id: namespace
         if: steps.check.outputs.allowed == 'true'
         env:

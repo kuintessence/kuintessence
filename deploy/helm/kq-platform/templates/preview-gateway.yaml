@@ -24,7 +24,7 @@ spec:
   template:
     metadata:
       labels:
-        {{- include "kq-platform.selectorLabels" . | nindent 8 }}
+        {{- include "kq.labels" . | nindent 8 }}
         app.kubernetes.io/component: gateway
       annotations:
         checksum/nginx: {{ tpl (.Files.Get "files/preview-nginx.conf.template") . | sha256sum }}

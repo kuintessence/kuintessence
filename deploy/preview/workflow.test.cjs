@@ -352,6 +352,7 @@ describe("privileged preview orchestration boundaries", () => {
     expect(deploy.steps.indexOf(recheck)).toBeLessThan(deploy.steps.indexOf(retired));
     expect(deploy.steps.indexOf(retired)).toBeLessThan(deploy.steps.indexOf(kubectl));
     expect(deploy.steps.indexOf(kubectl)).toBeLessThan(deploy.steps.indexOf(namespace));
+    expect(deploy.steps.indexOf(setupHelm)).toBeLessThan(deploy.steps.indexOf(namespace));
     expect(deploy.steps.indexOf(namespace)).toBeLessThan(deploy.steps.indexOf(download));
     expect(namespace.run).toBe("bash deploy/preview/remote.sh cleanup");
     expect(namespace["continue-on-error"]).toBeUndefined();
@@ -386,7 +387,8 @@ describe("privileged preview orchestration boundaries", () => {
       expect(fixture.requests).toEqual([17]);
       expect(stepAllowed(namespace, steps, state !== "lookup-failed")).toBe(shouldRemove);
       expect(stepAllowed(kubectl, steps, state !== "lookup-failed")).toBe(shouldRemove);
-      for (const step of [download, publicPull, setupHelm, helm]) {
+      expect(stepAllowed(setupHelm, steps, state !== "lookup-failed")).toBe(shouldRemove);
+      for (const step of [download, publicPull, helm]) {
         expect(stepAllowed(step, steps, state !== "lookup-failed")).toBe(false);
       }
     }
@@ -396,7 +398,7 @@ describe("privileged preview orchestration boundaries", () => {
     expect(stepAllowed(retired, { recheck: { outputs: { allowed: "false" } } }, false)).toBe(false);
   });
 
-  test("retired deploys replace lost cleanup with namespace-first all-PR reclamation", async () => {
+  test("retired deploys replace lost cleanup with release-first all-PR reclamation", async () => {
     const { deploy } = preview().jobs;
     const namespace = deploy.steps.find((step) => step.id === "retired-namespace");
     const images = deploy.steps.find((step) => step.id === "retired-images");
@@ -435,11 +437,14 @@ describe("privileged preview orchestration boundaries", () => {
     }
   });
 
-  test("namespace cleanup gates image deletion and notice survives an image API failure", async () => {
+  test("release cleanup gates image deletion and notice survives an image API failure", async () => {
     const job = cleanup().jobs.cleanup;
     const namespace = job.steps.find((step) => step.id === "namespace");
     const images = job.steps.find((step) => step.with?.script?.includes("cleanupImages("));
     const notice = job.steps.find((step) => step.with?.script?.includes(".notice("));
+    const setupHelm = job.steps.find((step) => step.uses === "azure/setup-helm@v4");
+    expect(setupHelm.if).toBe("steps.check.outputs.allowed == 'true'");
+    expect(job.steps.indexOf(setupHelm)).toBeLessThan(job.steps.indexOf(namespace));
     expect(namespace.run).toBe("bash deploy/preview/remote.sh cleanup");
     expect(namespace.if).toBe("steps.check.outputs.allowed == 'true'");
     expect(namespace["continue-on-error"]).toBeUndefined();
@@ -536,8 +541,11 @@ describe("privileged preview orchestration boundaries", () => {
     expect(script).not.toContain("--insecure-skip-tls-verify");
     expect(script).not.toContain("curl -k");
     expect(script).not.toContain("NODE_TLS_REJECT_UNAUTHORIZED");
-    expect(script).toContain("Namespace ownership mismatch");
-    expect(script).toContain('kubectl delete namespace "$namespace"');
+    expect(script).toContain('PREVIEW_NAMESPACE="preview"');
+    expect(script).toContain('PREVIEW_RELEASE="kq-pr-$PREVIEW_PR"');
+    expect(script).not.toMatch(/kubectl\s+(?:get|create|delete|annotate)\s+(?:namespace|namespaces|nodes)\b/);
+    expect(script).not.toContain("--raw=/readyz");
+    expect(script).not.toContain("--create-namespace");
     expect(script).toContain("--atomic --wait --wait-for-jobs");
     expect(script).not.toContain("helm uninstall --all");
   });
@@ -567,6 +575,10 @@ describe("privileged preview orchestration boundaries", () => {
     expect(ca.ca).toBe(true);
     expect(server.verify(ca.publicKey)).toBe(true);
     expect(server.checkHost("kq-pr-17-server")).toBe("kq-pr-17-server");
+    expect(server.checkHost("kq-pr-17-server.preview.svc")).toBe("kq-pr-17-server.preview.svc");
+    expect(server.checkHost("kq-pr-17-server.preview.svc.cluster.local"))
+      .toBe("kq-pr-17-server.preview.svc.cluster.local");
+    expect(server.checkHost("kq-pr-18-server.preview.svc")).toBeUndefined();
     const privateKey = createPrivateKey(decode("SERVER_TLS_KEY"));
     expect(createPublicKey(privateKey).equals(server.publicKey)).toBe(true);
     const previous = JSON.stringify(data);

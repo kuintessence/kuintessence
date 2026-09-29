@@ -178,6 +178,8 @@ scheduler:
 preview:
   enabled: false
   host: ""
+  # CI supplies GITHUB_REPOSITORY for preview PVC cleanup ownership.
+  repository: ""
   # Non-secret sha256 of the stored PREVIEW_COOKIE data, supplied by CI.
   credentialsRevision: ""
   gatewayImage: nginx:1.27-alpine

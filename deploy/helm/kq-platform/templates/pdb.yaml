@@ -10,7 +10,7 @@ spec:
   selector:
     matchLabels:
       {{- include "kq-platform.selectorLabels" . | nindent 6 }}
-      component: server
+      app.kubernetes.io/component: server
 {{- end }}
 {{- if and .Values.registry.enabled .Values.registry.podDisruptionBudget.enabled (gt (int .Values.registry.replicas) 1) }}
 ---
@@ -25,5 +25,5 @@ spec:
   selector:
     matchLabels:
       {{- include "kq-platform.selectorLabels" . | nindent 6 }}
-      component: registry
+      app.kubernetes.io/component: registry
 {{- end }}
