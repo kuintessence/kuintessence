@@ -149,6 +149,8 @@ Helm 已应用但 HTTPS 验收或最终授权检查失败时，会补偿删除�
 
 **绝不删除 `preview` namespace，也不删除其他 PR 的 release、PVC、Secret 或 marker。**
 归属检查或本 PR 的资源清理失败时，不进入 GHCR 镜像回收。
+资源检查失败时，Actions 仅输出 `KQ_PREVIEW_RESOURCE_ERROR` 的固定阶段与错误分类；
+RBAC 拒绝只报告白名单内的 verb、resource 和 API group，不输出身份、对象内容或原始日志。
 即使后续 GHCR 回收失败，评论仍如实标记站点不可用、Deployment 为 inactive；
 cleanup job 保持失败状态，修复权限等问题后可重复执行清理。
 

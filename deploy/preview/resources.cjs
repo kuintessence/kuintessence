@@ -12,6 +12,81 @@ const INVENTORY = [
   "rolebindings", "networkpolicies", "ingresses", "poddisruptionbudgets",
   "horizontalpodautoscalers",
 ].join(",");
+const FAILURE_CODES = new Map([
+  ["Invalid preview identity", "INVALID_IDENTITY"],
+  ["Preview requires its PR release in the fixed preview namespace", "INVALID_SCOPE"],
+  ["Preview resource ownership mismatch", "RESOURCE_OWNERSHIP_MISMATCH"],
+  ["Helm resource ownership mismatch", "HELM_OWNERSHIP_MISMATCH"],
+  ["Unexpected preview claim name", "UNEXPECTED_CLAIM"],
+  ["Invalid preview inventory", "INVALID_INVENTORY"],
+  ["Existing preview resources require an owned release marker", "OWNER_MARKER_MISSING"],
+  ["Unexpected preview credential type", "UNEXPECTED_CREDENTIAL_TYPE"],
+  ["Helm release storage ownership mismatch", "HELM_STORAGE_MISMATCH"],
+  ["Preview workload ownership mismatch", "WORKLOAD_OWNERSHIP_MISMATCH"],
+  ["A foreign workload references a preview claim", "CLAIM_USED_BY_FOREIGN_WORKLOAD"],
+  ["Existing preview state requires its original credentials", "ORIGINAL_CREDENTIALS_MISSING"],
+  ["Unexpected preview credentials", "UNEXPECTED_CREDENTIALS"],
+  ["Preview credentials require an owned release marker", "CREDENTIAL_OWNER_MARKER_MISSING"],
+  ["Preview resource was replaced while waiting for deletion", "RESOURCE_REPLACED"],
+  ["Preview resource deletion did not complete", "RESOURCE_DELETE_TIMEOUT"],
+  ["Preview resource changed after ownership preflight", "RESOURCE_CHANGED"],
+  ["Unexpected preview deletion kind", "UNEXPECTED_DELETE_KIND"],
+  ["Preview release removal is incomplete", "RELEASE_REMOVAL_INCOMPLETE"],
+  ["Preview residual cleanup is incomplete", "RESIDUAL_CLEANUP_INCOMPLETE"],
+  ["Missing previous credential output", "CREDENTIAL_OUTPUT_MISSING"],
+  ["Invalid preview resource operation", "INVALID_OPERATION"],
+]);
+const STAGES = new Set([
+  "INVENTORY_READ", "INVENTORY_PARSE", "HELM_LIST", "HELM_LIST_PARSE",
+  "OWNERSHIP_CHECK", "OWNER_CREATE", "CREDENTIAL_APPLY",
+  "HELM_UNINSTALL", "RESOURCE_DELETE", "DELETE_WAIT",
+]);
+const RESOURCE_GROUPS = new Map([
+  ["", ["configmaps", "secrets", "persistentvolumeclaims", "services", "pods", "serviceaccounts", "namespaces", "nodes"]],
+  ["apps", ["statefulsets", "deployments", "replicasets", "controllerrevisions"]],
+  ["batch", ["jobs"]],
+  ["networking.k8s.io", ["networkpolicies", "ingresses"]],
+  ["rbac.authorization.k8s.io", ["roles", "rolebindings"]],
+  ["policy", ["poddisruptionbudgets"]],
+  ["autoscaling", ["horizontalpodautoscalers"]],
+].flatMap(([group, resources]) => resources.map((resource) => [resource, group])));
+
+function atStage(stage, operation) {
+  try {
+    return operation();
+  } catch (error) {
+    const failure = error instanceof Error ? error : new Error("Unknown preview failure");
+    failure.previewStage = stage;
+    throw failure;
+  }
+}
+
+function diagnosticCode(error) {
+  const known = FAILURE_CODES.get(error?.message);
+  if (known) return known;
+  if (error instanceof SyntaxError) return "INVALID_JSON_RESPONSE";
+  if (error?.code === "ENOENT") return "COMMAND_OR_FILE_MISSING";
+  if (error?.code === "ETIMEDOUT") return "COMMAND_TIMEOUT";
+  const stderr = typeof error?.stderr === "string" || Buffer.isBuffer(error?.stderr)
+    ? error.stderr.toString("utf8") : "";
+  if (/forbidden/i.test(stderr)) {
+    const match = stderr.match(/cannot (get|list|watch|create|update|patch|delete) resource "([a-z]+)" in API group "([a-z0-9.]*)"/);
+    if (match && RESOURCE_GROUPS.has(match[2]) && RESOURCE_GROUPS.get(match[2]) === match[3]) {
+      return `RBAC_DENIED verb=${match[1]} resource=${match[2]} group=${match[3] || "core"}`;
+    }
+    return "RBAC_DENIED";
+  }
+  if (/unauthorized|provide credentials/i.test(stderr)) return "API_UNAUTHORIZED";
+  if (/doesn't have a resource type|no matches for kind/i.test(stderr)) return "API_RESOURCE_UNAVAILABLE";
+  if (/x509:|certificate signed by unknown authority/i.test(stderr)) return "API_TLS_FAILURE";
+  if (/connection refused|unable to connect|cluster unreachable|i\/o timeout/i.test(stderr)) return "API_UNREACHABLE";
+  return "UNCLASSIFIED_FAILURE";
+}
+
+function diagnosticLine(error) {
+  const stage = STAGES.has(error?.previewStage) ? error.previewStage : "LIFECYCLE";
+  return `KQ_PREVIEW_RESOURCE_ERROR stage=${stage} code=${diagnosticCode(error)}`;
+}
 
 function previewScope(env) {
   const pr = env.PREVIEW_PR;
@@ -154,11 +229,14 @@ function kubectl(run, scope, args, input) {
 }
 
 function inspect(run, scope) {
-  const inventory = JSON.parse(kubectl(run, scope, ["get", INVENTORY, "-o", "json"]));
-  const releases = JSON.parse(run("helm", [
+  const inventoryText = atStage("INVENTORY_READ", () =>
+    kubectl(run, scope, ["get", INVENTORY, "-o", "json"]));
+  const inventory = atStage("INVENTORY_PARSE", () => JSON.parse(inventoryText));
+  const releaseText = atStage("HELM_LIST", () => run("helm", [
     "list", "-n", scope.namespace, "--all", "--filter", `^${scope.release}$`, "-o", "json",
   ]));
-  return validateInventory(inventory.items, releases, scope);
+  const releases = atStage("HELM_LIST_PARSE", () => JSON.parse(releaseText));
+  return atStage("OWNERSHIP_CHECK", () => validateInventory(inventory.items, releases, scope));
 }
 
 function prepare(scope, run = execute) {
@@ -167,10 +245,10 @@ function prepare(scope, run = execute) {
     throw new Error("Existing preview state requires its original credentials");
   }
   if (!current.marker) {
-    kubectl(run, scope, ["create", "-f", "-"], JSON.stringify({
+    atStage("OWNER_CREATE", () => kubectl(run, scope, ["create", "-f", "-"], JSON.stringify({
       apiVersion: "v1", kind: "ConfigMap", metadata: ownerMetadata(scope, scope.marker),
       data: { release: scope.release, repository: scope.repository },
-    }));
+    })));
   }
   return current.secret ?? null;
 }
@@ -183,8 +261,9 @@ function applyCredentials(scope, resource, run = execute) {
   assertOwned(resource, scope);
   const current = inspect(run, scope);
   if (!current.marker) throw new Error("Preview credentials require an owned release marker");
-  kubectl(run, scope, ["apply", "--server-side", "--field-manager=kq-preview", "-f", "-"],
-    JSON.stringify(resource));
+  atStage("CREDENTIAL_APPLY", () =>
+    kubectl(run, scope, ["apply", "--server-side", "--field-manager=kq-preview", "-f", "-"],
+      JSON.stringify(resource)));
 }
 
 function readResource(scope, resource, run) {
@@ -222,11 +301,11 @@ function deleteOwned(scope, resource, run, wait) {
   if (!Object.hasOwn(types, current.kind)) throw new Error("Unexpected preview deletion kind");
   const path = `/api/v1/namespaces/preview/${types[current.kind]}/${encodeURIComponent(current.metadata.name)}`;
   // kubectl v1.32 rawhttp.RawDelete passes stdin as the body, but does not wait for deletion.
-  kubectl(run, scope, ["delete", "--raw", path, "-f", "-", "--request-timeout=30s"], JSON.stringify({
+  atStage("RESOURCE_DELETE", () => kubectl(run, scope, ["delete", "--raw", path, "-f", "-", "--request-timeout=30s"], JSON.stringify({
     apiVersion: "v1", kind: "DeleteOptions", propagationPolicy: "Foreground",
     preconditions: { uid: current.metadata.uid, resourceVersion: current.metadata.resourceVersion },
-  }));
-  waitForDeletion(scope, current, run, wait);
+  })));
+  atStage("DELETE_WAIT", () => waitForDeletion(scope, current, run, wait));
 }
 
 function pause(milliseconds) {
@@ -245,10 +324,10 @@ function waitForRemoval(scope, run, wait) {
 function cleanup(scope, run = execute, wait = pause) {
   const before = inspect(run, scope);
   if (before.release) {
-    run("helm", [
+    atStage("HELM_UNINSTALL", () => run("helm", [
       "uninstall", scope.release, "-n", scope.namespace, "--wait", "--timeout", "5m",
       "--cascade", "foreground",
-    ]);
+    ]));
   }
   const after = waitForRemoval(scope, run, wait);
   for (const claim of after.claims) deleteOwned(scope, claim, run, wait);
@@ -278,10 +357,11 @@ function runCLI(args, env = process.env, run = execute, files = fs) {
 if (require.main === module) {
   try {
     runCLI(process.argv.slice(2));
-  } catch {
+  } catch (error) {
+    console.error(diagnosticLine(error));
     console.error("Preview resource lifecycle failed; ownership or removal could not be confirmed. No resource data was logged.");
     process.exitCode = 1;
   }
 }
 
-module.exports = { previewScope, ownerMetadata, prepare, applyCredentials, cleanup, runCLI };
+module.exports = { previewScope, ownerMetadata, prepare, applyCredentials, cleanup, runCLI, diagnosticCode, diagnosticLine };
