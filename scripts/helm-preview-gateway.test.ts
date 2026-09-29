@@ -90,7 +90,7 @@ http {
 
 describe.skipIf(!enabled)("Helm gateway nginx container contract (Actions only)", () => {
   test(
-    "boots rendered entrypoint and enforces cookie, Basic, Bearer and signed-object boundaries",
+    "boots the rendered gateway and enforces cookie, Basic, Bearer and signed-object boundaries without exposing credentials or signed URLs",
     async () => {
       let stage: Stage = "guard";
       let directory = "";
@@ -167,8 +167,7 @@ describe.skipIf(!enabled)("Helm gateway nginx container contract (Actions only)"
           return document.toJS() as Resource | null;
         });
         const config = resources.find(
-          (item) =>
-            item?.kind === "ConfigMap" && item.metadata.name === `${release}-preview-gateway`,
+          (item) => item?.kind === "ConfigMap" && item.metadata.name === `${release}-preview-gateway`,
         )?.data;
         const gateway = resources.find(
           (item) => item?.kind === "Deployment" && item.metadata.name === `${release}-gateway`,
@@ -470,9 +469,7 @@ describe.skipIf(!enabled)("Helm gateway nginx container contract (Actions only)"
       } catch (error) {
         const message = error instanceof Error ? error.message : "";
         const safe = /^GATEWAY_CONTRACT stage=[a-z]+ code=[A-Z_]+$/;
-        throw new Error(
-          safe.test(message) ? message : `GATEWAY_CONTRACT stage=${stage} code=FAILED`,
-        );
+        throw new Error(safe.test(message) ? message : `GATEWAY_CONTRACT stage=${stage} code=FAILED`);
       } finally {
         stage = "cleanup";
         let cleaned = true;
