@@ -14,11 +14,16 @@ spec:
       labels:
         app.kubernetes.io/name: {{ .Chart.Name }}
         app.kubernetes.io/component: server
-      {{- if .Values.netdrive.enabled }}
       annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        {{- if eq .Values.server.env.MTLS_MODE "direct" }}
+        kq.io/grpc-tls-credentials-revision: {{ .Values.server.grpcTls.credentialsRevision | quote }}
+        {{- end }}
+        {{- if .Values.netdrive.enabled }}
         kq.io/netdrive-bootstrap-revision: {{ printf "%s|%s" .Values.netdrive.accessKey .Values.netdrive.bootstrapRevision | sha256sum | quote }}
-      {{- end }}
+        {{- end }}
     spec:
+      {{- include "kq.podPlacement" . | nindent 6 }}
       serviceAccountName: {{ include "kq.workloadWaitServiceAccountName" . }}
       initContainers:
         - name: wait-db-migration
@@ -37,6 +42,21 @@ spec:
                 attempts=$((attempts + 1))
               done
               kubectl wait --for=condition=complete --timeout={{ .Values.migration.activeDeadlineSeconds }}s job/{{ include "kq.migrationName" . }}
+      {{- if .Values.seed.enabled }}
+        - name: wait-seed
+          image: {{ .Values.migration.waitImage | quote }}
+          command:
+            - /bin/sh
+            - -ec
+            - |
+              attempts=0
+              until kubectl get job/{{ include "kq.seedName" . }} >/dev/null; do
+                [ "${attempts}" -lt 60 ] || exit 1
+                sleep 2
+                attempts=$((attempts + 1))
+              done
+              kubectl wait --for=condition=complete --timeout={{ add .Values.migration.activeDeadlineSeconds .Values.seed.activeDeadlineSeconds }}s job/{{ include "kq.seedName" . }}
+      {{- end }}
       {{- if and .Values.rustfs.enabled .Values.netdrive.enabled }}
         - name: wait-rustfs-bootstrap
           image: {{ .Values.rustfs.bootstrapWaitImage | quote }}
@@ -57,7 +77,7 @@ spec:
       {{- end }}
       containers:
         - name: server
-          image: "{{ .Values.server.image.repository }}:{{ .Values.server.image.tag }}"
+          image: {{ include "kq.image" .Values.server.image | quote }}
           imagePullPolicy: {{ .Values.server.image.pullPolicy }}
           ports:
             - name: http
@@ -76,7 +96,20 @@ spec:
                 secretKeyRef:
                   name: {{ include "kq.secretName" . }}
                   key: JWT_SECRET
+            {{- if eq .Values.server.env.MTLS_MODE "direct" }}
+            - name: SERVER_CA_DIR
+              value: /etc/kuintessence/ca
+            - name: SERVER_GRPC_TLS_CERT_FILE
+              value: /etc/kuintessence/tls/server.crt
+            - name: SERVER_GRPC_TLS_KEY_FILE
+              value: /etc/kuintessence/tls/server.key
+            {{- end }}
             {{- if .Values.netdrive.enabled }}
+            - name: DATA_MARKET_COMMITTER_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "kq.secretName" . }}
+                  key: NETDRIVE_ACCESS_KEY
             - name: NETDRIVE_ACCESS_KEY
               valueFrom:
                 secretKeyRef:
@@ -87,6 +120,17 @@ spec:
                 secretKeyRef:
                   name: {{ include "kq.secretName" . }}
                   key: NETDRIVE_SECRET_KEY
+            {{- end }}
+            {{- range $name, $value := .Values.server.extraEnv }}
+            - name: {{ $name }}
+              value: {{ $value | quote }}
+            {{- end }}
+            {{- range .Values.server.extraSecretEnv }}
+            - name: {{ .name }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .secretName | quote }}
+                  key: {{ .key | quote }}
             {{- end }}
           envFrom:
             - configMapRef:
@@ -106,3 +150,25 @@ spec:
             periodSeconds: 30
             failureThreshold: 3
           resources: {{- toYaml .Values.server.resources | nindent 12 }}
+          {{- if eq .Values.server.env.MTLS_MODE "direct" }}
+          volumeMounts:
+            - name: grpc-tls
+              mountPath: /etc/kuintessence
+              readOnly: true
+          {{- end }}
+      {{- if eq .Values.server.env.MTLS_MODE "direct" }}
+      volumes:
+        - name: grpc-tls
+          secret:
+            secretName: {{ default .Values.secrets.existingSecret .Values.server.grpcTls.existingSecret | quote }}
+            defaultMode: 256 # 0400
+            items:
+              - key: SERVER_CA_CERT
+                path: ca/ca.crt
+              - key: SERVER_CA_KEY
+                path: ca/ca.key
+              - key: SERVER_TLS_CERT
+                path: tls/server.crt
+              - key: SERVER_TLS_KEY
+                path: tls/server.key
+      {{- end }}

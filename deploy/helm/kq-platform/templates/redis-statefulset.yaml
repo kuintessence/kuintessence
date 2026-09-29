@@ -17,6 +17,8 @@ spec:
         app.kubernetes.io/name: {{ .Chart.Name }}
         app.kubernetes.io/component: redis
     spec:
+      {{- include "kq.podPlacement" . | nindent 6 }}
+      automountServiceAccountToken: false
       containers:
         - name: redis
           image: {{ .Values.redis.image }}

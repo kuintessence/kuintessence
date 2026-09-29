@@ -1,0 +1,82 @@
+{{- if and (ne .Values.server.env.NODE_ENV "production") (not .Values.preview.enabled) }}
+{{- fail "non-production Server requires preview.enabled and its authenticated gateway" }}
+{{- end }}
+{{- range $name := list "NODE_ENV" "MTLS_MODE" "SERVER_CA_DIR" "SERVER_GRPC_TLS_CERT_FILE" "SERVER_GRPC_TLS_KEY_FILE" "DATABASE_URL" "JWT_SECRET" "NETDRIVE_ACCESS_KEY" "NETDRIVE_SECRET_KEY" "NETDRIVE_PUBLIC_URL" "DATA_MARKET_COMMITTER_ACCESS_KEY" }}
+{{- if hasKey $.Values.server.extraEnv $name }}
+{{- fail (printf "%s is managed by chart values or Secret references, not server.extraEnv" $name) }}
+{{- end }}
+{{- range $.Values.server.extraSecretEnv }}
+{{- if eq .name $name }}
+{{- fail (printf "%s cannot be overridden via server.extraSecretEnv" $name) }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- if and (eq .Values.server.env.MTLS_MODE "direct") (not (or .Values.server.grpcTls.existingSecret .Values.secrets.existingSecret)) }}
+{{- fail "direct mTLS requires server.grpcTls.existingSecret or secrets.existingSecret with PKI keys" }}
+{{- end }}
+{{- if and .Values.scheduler.enabled (not (regexMatch "^[A-Za-z0-9][A-Za-z0-9_-]{0,62}$" .Values.scheduler.agentId)) }}
+{{- fail "scheduler.agentId must be a safe single path component (1-63 alphanumeric, underscore or hyphen characters)" }}
+{{- end }}
+{{- if .Values.preview.enabled }}
+{{- if ne .Values.server.env.MTLS_MODE "direct" }}
+{{- fail "preview requires server.env.MTLS_MODE=direct" }}
+{{- end }}
+{{- if and .Values.preview.credentialsRevision (not (regexMatch "^[a-f0-9]{64}$" .Values.preview.credentialsRevision)) }}
+{{- fail "preview.credentialsRevision must be an empty value or a non-secret SHA-256 hex digest" }}
+{{- end }}
+{{- if not (and .Values.web.enabled .Values.registry.enabled .Values.postgres.enabled .Values.redis.enabled .Values.rustfs.enabled .Values.netdrive.enabled .Values.seed.enabled .Values.scheduler.enabled) }}
+{{- fail "preview requires Web, Registry, PostgreSQL, Redis, RustFS, NetDrive, seed and scheduler" }}
+{{- end }}
+{{- if not .Values.secrets.existingSecret }}
+{{- fail "preview requires secrets.existingSecret; credentials must not be passed in values" }}
+{{- end }}
+{{- if or .Values.secrets.jwtSecret .Values.postgres.password .Values.rustfs.rootPassword .Values.netdrive.secretKey .Values.external.databaseUrl }}
+{{- fail "preview credentials must only be supplied through the existing Secret" }}
+{{- end }}
+{{- if not (and (eq .Values.server.env.NODE_ENV "development") (eq (toString .Values.server.env.SSO_BOOTSTRAP_ENABLED) "false")) }}
+{{- fail "preview scheduler registration requires development Server with SSO bootstrap disabled" }}
+{{- end }}
+{{- if not (and .Values.ingress.enabled (eq .Values.ingress.className "traefik")) }}
+{{- fail "preview requires ingress.enabled=true and ingress.className=traefik" }}
+{{- end }}
+{{- if not (regexMatch "^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$" .Values.preview.host) }}
+{{- fail "preview.host must be a complete DNS hostname" }}
+{{- end }}
+{{- if .Values.ingress.tls }}
+{{- fail "preview TLS uses Traefik's existing default certificate; do not set ingress.tls/secretName" }}
+{{- end }}
+{{- range $annotation, $_ := .Values.ingress.annotations }}
+{{- if hasPrefix "cert-manager.io/" $annotation }}
+{{- fail "preview must not request cert-manager certificates" }}
+{{- end }}
+{{- end }}
+{{- if or (ne (toString .Values.server.replicas) "1") (ne (toString .Values.registry.replicas) "1") .Values.server.autoscaling.enabled }}
+{{- fail "preview Server and Registry require a single replica without autoscaling" }}
+{{- end }}
+{{- if not .Values.registry.persistence.enabled }}
+{{- fail "preview requires persistent Registry storage" }}
+{{- end }}
+{{- if .Values.rustfs.consoleEnabled }}
+{{- fail "preview must disable the RustFS console" }}
+{{- end }}
+{{- if and .Values.netdrive.publicUrl (ne .Values.netdrive.publicUrl (printf "https://%s" .Values.preview.host)) }}
+{{- fail "preview netdrive.publicUrl must equal the preview HTTPS origin without a path" }}
+{{- end }}
+{{- if or .Values.netdrive.endpoint .Values.netdrive.useSsl (ne (toString .Values.netdrive.port) "9000") }}
+{{- fail "preview NetDrive must use the internal RustFS endpoint on port 9000" }}
+{{- end }}
+{{- if not .Values.preview.ingressPodLabels }}
+{{- fail "preview.ingressPodLabels must restrict access to the ingress controller" }}
+{{- end }}
+{{- if not (and (eq (index .Values.global.nodeSelector "kubernetes.io/os") "linux") (eq (index .Values.global.nodeSelector "kubernetes.io/arch") "amd64")) }}
+{{- fail "preview requires the linux/amd64 node selector" }}
+{{- end }}
+{{- range $bucket := list .Values.netdrive.bucket .Values.netdrive.dataMarketStagingBucket .Values.netdrive.dataMarketImmutableBucket }}
+{{- if not (regexMatch "^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$" $bucket) }}
+{{- fail "preview bucket names must be 3-63 lowercase alphanumeric or hyphen characters" }}
+{{- end }}
+{{- end }}
+{{- if ne (len (uniq (list .Values.netdrive.bucket .Values.netdrive.dataMarketStagingBucket .Values.netdrive.dataMarketImmutableBucket))) 3 }}
+{{- fail "preview requires three distinct bucket names" }}
+{{- end }}
+{{- end }}

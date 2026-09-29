@@ -28,6 +28,8 @@ spec:
         app.kubernetes.io/name: {{ .Chart.Name }}
         app.kubernetes.io/component: rustfs
     spec:
+      {{- include "kq.podPlacement" . | nindent 6 }}
+      automountServiceAccountToken: false
       securityContext:
         runAsUser: 10001
         runAsGroup: 10001
@@ -44,7 +46,7 @@ spec:
               containerPort: 9001
           env:
             - name: RUSTFS_CONSOLE_ENABLE
-              value: "true"
+              value: {{ ternary "true" "false" .Values.rustfs.consoleEnabled | quote }}
             - name: RUSTFS_OBS_LOG_DIRECTORY
               value: /tmp/logs
             - name: RUSTFS_ACCESS_KEY
