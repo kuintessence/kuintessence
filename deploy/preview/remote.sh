@@ -5,6 +5,11 @@ umask 077
 fail() { printf '%s\n' "$1" >&2; exit 1; }
 mode="${1:-}"
 [[ "$mode" == deploy || "$mode" == cleanup ]] || fail "Expected deploy or cleanup."
+inspection="${PREVIEW_INSPECTION:-false}"
+[[ "$inspection" == true || "$inspection" == false ]] || fail "Invalid inspection mode."
+if [[ "$inspection" == true ]]; then
+  [[ "${GITHUB_EVENT_NAME:-}" == workflow_dispatch ]] || fail "Inspection requires manual dispatch."
+fi
 [[ "${PREVIEW_PR:-}" =~ ^[1-9][0-9]{0,14}$ ]] || fail "Invalid PR number."
 [[ "${GITHUB_REPOSITORY:-}" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || fail "Invalid repository."
 [[ "${SSH_HOST:-}" =~ ^[A-Za-z0-9][A-Za-z0-9.:-]*$ ]] || fail "Invalid SSH host."
@@ -91,14 +96,20 @@ node "$tooling/values.cjs" values "$state/values.json"
 chart="$tooling/../helm/kq-preview"
 helm dependency build "$chart" >"$state/dependencies-log" 2>&1 ||
   fail "Unable to package the local preview chart dependency."
-# Observe before --atomic can remove failed workloads; never publish raw Kubernetes data.
+helm_flags=(--atomic --wait --wait-for-jobs --timeout 15m)
+if [[ "$inspection" == true ]]; then
+  helm_flags=(--wait --wait-for-jobs --timeout 15m)
+fi
+printf 'inspection=%s\nattempted=true\n' "$inspection" >> "${GITHUB_OUTPUT:?Actions step output is required}"
+# Observe without publishing raw Kubernetes data; inspection retains failed workloads.
 node "$tooling/workload-status.cjs" watch 2>"$state/observer-error" &
 observer_pid="$!"
 if helm upgrade --install "$release" "$chart" -n "$namespace" \
-  --values "$state/values.json" --atomic --wait --wait-for-jobs --timeout 15m \
+  --values "$state/values.json" "${helm_flags[@]}" \
   --history-max 3 >"$state/helm-log" 2>&1; then
   printf 'applied=true\n' >> "${GITHUB_OUTPUT:?Actions step output is required}"
   stop_observer
+  echo "KQ_PREVIEW_HELM code=READY"
 else
   stop_observer
   node "$tooling/workload-status.cjs" helm-error "$state/helm-log" \
@@ -106,5 +117,10 @@ else
   fail "Helm deployment failed or timed out; inspect the namespace privately. No raw manifests or logs were published."
 fi
 
+if [[ "$inspection" == true ]]; then
+  echo "KQ_PREVIEW_HELM code=RETAINED_FOR_INSPECTION"
+  echo "Helm completed. Resources and image tags are retained; HTTPS awaits manual inspection."
+  exit 0
+fi
 node "$tooling/https.cjs" "$state/secret"
 echo "Preview is ready with verified HTTPS and an authenticated gateway."

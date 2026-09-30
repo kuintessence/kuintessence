@@ -206,6 +206,9 @@ Kuintessence 当前为 pre-release。以下列出组件功能、运行要求和�
   其他用途 tag或无法归属的 untagged版本不删除。
   HTTPS验收提供固定阶段、错误分类及合法 HTTP状态码诊断，不输出响应正文、
   header、证书、凭据或原始异常；保持 TLS校验、认证门禁、重试及失败补偿。
+  手动部署可显式设置 `inspection_mode=true`：保留 Helm 成功或失败现场及镜像，
+  禁用该次 atomic 回滚，延后自动 HTTPS 验收，评论提供待人工检查地址；
+  不标记 HTTPS 成功，PR 撤销信任或关闭等安全清理仍然有效。默认自动部署行为不变。
   旧独立 PR namespace及数据不会自动迁移或清理。共享 namespace安全实现仍待复核，
   不宣称已上线或已通过远端验收；自动控制器须先经审核进入默认分支，
   运行状态以对应提交的 GitHub Actions和 HTTPS验收为准。
