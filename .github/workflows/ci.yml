@@ -103,6 +103,16 @@ jobs:
       - name: Check workflow references
         run: bun run check:workflow-uses
 
+      - name: Check scientific workflow handoff templates
+        run: bun test scripts/spack-workflow-handoff.test.ts
+
+      - name: Type check workflow handoff contracts
+        run: >-
+          bun node_modules/typescript/bin/tsc --noEmit --strict
+          --noUncheckedIndexedAccess --skipLibCheck --target ESNext
+          --module ESNext --moduleResolution bundler --types bun-types
+          scripts/spack-workflow-handoff.test.ts
+
       - name: Check preview test orchestration contracts
         run: bun test scripts/preview-tests.test.ts
       - name: Check selective CI scope policy
