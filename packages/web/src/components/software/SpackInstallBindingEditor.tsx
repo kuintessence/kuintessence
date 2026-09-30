@@ -46,8 +46,10 @@ export function SpackInstallBindingEditor({
           if (query.success && inspectable && !busy) void editor.inspect(query.data);
         }}
       >
-        <label htmlFor={`${id}-scope`} className="min-w-0 space-y-1 text-xs">
-          <span>{t("materials.installBinding.scope")}</span>
+        <div className="min-w-0 space-y-1 text-xs">
+          <label htmlFor={`${id}-scope`} className="block">
+            {t("materials.installBinding.scope")}
+          </label>
           <select
             id={`${id}-scope`}
             className="h-9 w-full min-w-0 rounded-md border border-input bg-background px-2 text-sm"
@@ -63,7 +65,7 @@ export function SpackInstallBindingEditor({
               <option value="platform">{t("materials.installBinding.platform")}</option>
             ) : null}
           </select>
-        </label>
+        </div>
         <label htmlFor={`${id}-spec`} className="min-w-0 space-y-1 text-xs">
           <span>{t("materials.installBinding.spec")}</span>
           <Input

@@ -61,8 +61,10 @@ export function SpackInstallBindingForm({
         void onChange(command.data);
       }}
     >
-      <label htmlFor={`${id}-action`} className="block space-y-1 text-xs">
-        <span>{t("materials.installBinding.action")}</span>
+      <div className="block space-y-1 text-xs">
+        <label htmlFor={`${id}-action`} className="block">
+          {t("materials.installBinding.action")}
+        </label>
         <select
           id={`${id}-action`}
           className="h-9 w-full rounded-md border border-input bg-background px-2 text-sm"
@@ -78,7 +80,7 @@ export function SpackInstallBindingForm({
           <option value="bind">{t("materials.installBinding.bind")}</option>
           <option value="disable">{t("materials.installBinding.disable")}</option>
         </select>
-      </label>
+      </div>
       {action === "bind" ? (
         <div className="grid min-w-0 gap-2 sm:grid-cols-2">
           {[

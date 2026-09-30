@@ -4,7 +4,7 @@ import {
   SpackInstallBindingChangeSchema,
   SpackInstallBindingQuerySchema,
 } from "@kuintessence/shared";
-import { type Context, Hono } from "hono";
+import { type Context, Hono, type MiddlewareHandler } from "hono";
 import {
   createPrincipalMiddleware,
   type PrincipalMiddlewareOptions,
@@ -29,7 +29,7 @@ export function createSpackInstallBindingRoutes(
     requireCanonicalPrincipal: true,
     requirePublisher: false,
   });
-  r.use("/spack/install-bindings*", async (c, next) => {
+  const authenticate: MiddlewareHandler<RegistryEnv> = async (c, next) => {
     try {
       const response = await principal(c, async () => {});
       if (response) {
@@ -41,7 +41,7 @@ export function createSpackInstallBindingRoutes(
     } finally {
       if (c.req.raw.body && !c.req.raw.body.locked) cancelMaterialInput(c.req.raw.body);
     }
-  });
+  };
   r.onError((error, c) => {
     if (error instanceof SpackMaterialLifecycleError) {
       return c.json({ error: { code: error.code, message: error.message } }, error.status);
@@ -71,7 +71,7 @@ export function createSpackInstallBindingRoutes(
       503,
     );
   });
-  r.post("/spack/install-bindings/inspect", async (c) => {
+  r.post("/spack/install-bindings/inspect", authenticate, async (c) => {
     if (!access) throw new SpackMaterialLifecycleError("INSTALL_BINDING_UNAVAILABLE");
     const query = parseMaterial(
       SpackInstallBindingQuerySchema,
@@ -80,7 +80,7 @@ export function createSpackInstallBindingRoutes(
     );
     return c.json(await access.inspect(query, c.get("principal").sub));
   });
-  r.post("/spack/install-bindings", async (c) => {
+  r.post("/spack/install-bindings", authenticate, async (c) => {
     if (!access) throw new SpackMaterialLifecycleError("INSTALL_BINDING_UNAVAILABLE");
     const input = parseMaterial(
       SpackInstallBindingChangeSchema,
