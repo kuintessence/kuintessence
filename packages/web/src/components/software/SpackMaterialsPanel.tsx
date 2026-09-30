@@ -10,6 +10,7 @@ import { isLocalMode } from "../../lib/local-mode";
 import { isMobileHighRiskMutationBlocked } from "../../lib/mobile-management-policy";
 import { useMeCapabilities } from "../../lib/platform-capabilities";
 import { canWriteRecipeRepository } from "../../lib/recipe-repository-access";
+import { canManageSpackInstallBinding } from "../../lib/spack-install-binding-access";
 import { MaterialCatalog } from "./MaterialCatalog";
 import {
   MaterialManagementCatalog,
@@ -18,6 +19,7 @@ import {
 import { MaterialManagementEditors } from "./MaterialManagementEditors";
 import { MaterialPackImport } from "./MaterialPackImport";
 import { MaterialReleaseLookup } from "./MaterialReleaseLookup";
+import { SpackInstallBindingEditor } from "./SpackInstallBindingEditor";
 import { SpackOnlineImport } from "./SpackOnlineImport";
 
 function getSessionKey(): string | null {
@@ -52,6 +54,16 @@ export function SpackMaterialsPanel({ canManage }: { canManage: boolean }) {
   const canInspectLifecycle =
     manageable("public/materials") ||
     (!!organizationId && manageable(`org/${organizationId}/materials`));
+  const canInspectBindingScope = (bindingScope: string) =>
+    isCurrent() &&
+    !isLocalMode() &&
+    canManageSpackInstallBinding(bindingScope, { canManage, organizationId, capabilities });
+  const canInspectBindings =
+    canInspectBindingScope("platform") ||
+    (!!organizationId && canInspectBindingScope(organizationId));
+  const canWriteBindingScope = (bindingScope: string) =>
+    canInspectBindingScope(bindingScope) &&
+    !isMobileHighRiskMutationBlocked("/software/spack/install-bindings");
   return (
     <section
       className="min-w-0 space-y-3 py-4"
@@ -68,9 +80,13 @@ export function SpackMaterialsPanel({ canManage }: { canManage: boolean }) {
           key={scope}
           canImport={canImport}
           canInspectLifecycle={canInspectLifecycle}
+          canInspectBindings={canInspectBindings}
           writable={writable}
           manageable={manageable}
           isCurrent={isCurrent}
+          organizationId={organizationId}
+          canInspectBindingScope={canInspectBindingScope}
+          canWriteBindingScope={canWriteBindingScope}
         />
       )}
     </section>
@@ -80,15 +96,23 @@ export function SpackMaterialsPanel({ canManage }: { canManage: boolean }) {
 function MaterialSession({
   canImport,
   canInspectLifecycle,
+  canInspectBindings,
   writable,
   manageable,
   isCurrent,
+  organizationId,
+  canInspectBindingScope,
+  canWriteBindingScope,
 }: {
   canImport: boolean;
   canInspectLifecycle: boolean;
+  canInspectBindings: boolean;
   writable: (repository: string) => boolean;
   manageable: (repository: string) => boolean;
   isCurrent: () => boolean;
+  organizationId: string | null;
+  canInspectBindingScope: (scope: string) => boolean;
+  canWriteBindingScope: (scope: string) => boolean;
 }) {
   const [selection, setSelection] = useState<{
     binding: SpackMaterialBinding;
@@ -167,6 +191,15 @@ function MaterialSession({
         }
         isCurrent={isCurrent}
       />
+      {canInspectBindings ? (
+        <SpackInstallBindingEditor
+          organizationId={organizationId}
+          selection={selection?.binding}
+          isCurrent={isCurrent}
+          canInspectScope={canInspectBindingScope}
+          canWriteScope={canWriteBindingScope}
+        />
+      ) : null}
       {canInspectLifecycle ? (
         <MaterialManagementEditors
           key={`editors:${selection?.revision ?? "initial"}`}

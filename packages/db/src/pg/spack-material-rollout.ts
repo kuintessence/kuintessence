@@ -3,6 +3,7 @@ import { eq, sql } from "drizzle-orm";
 import type { PgDb } from "./index";
 import { softwareOperations, users } from "./schema";
 import {
+  spackInstallBindingEvents,
   spackMaterialBindingRetirements,
   spackMaterialBindings,
   spackMaterialOperationReferences,
@@ -264,7 +265,29 @@ async function inventorySnapshot(tx: Transaction) {
     if (retirements.length < INVENTORY_PAGE_SIZE) break;
     lastRetiredBindingId = retirements.at(-1)?.bindingId;
   }
-  hash.update("]}");
+  hash.update("]");
+  let lastSelectionId: string | undefined;
+  let selectionCount = 0;
+  while (true) {
+    const selections = await tx
+      .select()
+      .from(spackInstallBindingEvents)
+      .where(
+        lastSelectionId ? sql`${spackInstallBindingEvents.id} > ${lastSelectionId}::uuid` : undefined,
+      )
+      .orderBy(spackInstallBindingEvents.id)
+      .limit(INVENTORY_PAGE_SIZE);
+    for (const selection of selections) {
+      if (selectionCount++ === 0) hash.update(',"installBindings":[');
+      else hash.update(",");
+      hash.update(JSON.stringify(selection));
+    }
+    if (selections.length < INVENTORY_PAGE_SIZE) break;
+    lastSelectionId = selections.at(-1)?.id;
+  }
+  // Preserve pre-selection inventory digests, but cover every new selection/audit row.
+  if (selectionCount > 0) hash.update("]");
+  hash.update("}");
   const [counts] = await tx
     .select({
       activeInstallCount: sql`(

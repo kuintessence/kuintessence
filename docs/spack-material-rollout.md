@@ -85,7 +85,8 @@ revision `0/1/2` 只展示首次无并发写入的顺序，实际每次使用最
 `inspect` 不追加 journal，也不改变最后一次 mutation。
 digest 是当前绑定、任务引用和退役库存的摘要，不是旧进程全部停止的证明。
 `retiredBindingCount` 另报告已退役数量，`bindingCount` 保持历史总数语义。
-整体库存快照对 binding、reference 和 retirement 分别进行 **每页最多 1,000 行的 keyset 扫描**，
+整体库存快照对 binding、reference、retirement 和安装映射审计分别进行
+**每页最多 1,000 行的 keyset 扫描**，安装映射变更也会改变 inventoryDigest；
 按稳定顺序增量计算哈希，以分页限制内存占用，不把全部历史记录载入内存。
 没有 100,000 行总量上限，不会仅因历史总行数增长而拒绝 pause 或其他 rollout 命令。
 DB/query 错误仍使操作失败关闭，不返回截断快照，也不能据此激活；

@@ -1,5 +1,6 @@
 import {
   createPgDb,
+  SpackInstallBindings,
   SpackMaterialLifecycle,
   SpackMaterialRollout,
   SpackMaterialVisibility,
@@ -22,6 +23,7 @@ import { createEcosystemReleaseRoutes } from "./routes/ecosystem-releases";
 import { healthRoutes } from "./routes/health";
 import { createOciRoutes } from "./routes/oci";
 import { createSpackCatalogRoutes } from "./routes/spack-catalog";
+import { createSpackInstallBindingRoutes } from "./routes/spack-install-bindings";
 import { createSpackMaterialRoutes } from "./routes/spack-materials";
 import { createSpackRepositoryRoutes } from "./routes/spack-repositories";
 import { createSpackUpstreamRoutes } from "./routes/spack-upstream";
@@ -36,6 +38,7 @@ import { DrizzleAuditPort, RegistryService } from "./services/registry-service";
 import { SoftwareAssetService } from "./services/software-asset-service";
 import { bootstrapConfiguredSpack } from "./services/spack-bootstrap";
 import { SpackCatalogService } from "./services/spack-catalog-service";
+import { SpackInstallBindingAccess } from "./services/spack-install-bindings";
 import { SpackMaterialStore } from "./services/spack-material-store";
 import { SpackUpstreamDownloader } from "./services/spack-upstream-download";
 import { SpackUpstreamImportService } from "./services/spack-upstream-import";
@@ -216,6 +219,19 @@ app.route("/api", createWorkflowTemplateRoutes(workflowTemplateService, principa
 app.route("/api", createSpackCatalogRoutes(spackCatalogService, principalOptions));
 app.route("/api", createSpackRepositoryRoutes(recipeStore, principalOptions));
 app.route("/api", createSpackMaterialRoutes(materialStore, principalOptions));
+app.route(
+  "/api",
+  createSpackInstallBindingRoutes(
+    materialStore && recipeStore
+      ? new SpackInstallBindingAccess(
+          new SpackInstallBindings(db, config.SPACK_MATERIAL_EPOCH),
+          materialStore,
+          recipeStore,
+        )
+      : undefined,
+    principalOptions,
+  ),
+);
 app.route("/api", createSpackUpstreamRoutes(upstreamImporter, principalOptions));
 app.route("/api", createEcosystemReleaseRoutes(ecosystemReleaseService, principalOptions));
 
