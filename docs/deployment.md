@@ -213,6 +213,7 @@ protobuf 生成、业务运行时测试、构建或容器。
 | `Scheduler image architecture` | 仅手动构建并运行调度器镜像架构验证 |
 | `PR scheduler tests` | 相关源码变更时由 PR 测试编排调用，或手动触发；`run_spack`、`run_schedulers` 分别选择材料验收与 Slurm/PBS matrix |
 | `Spack workflow execution` | 自动调用默认仅 GNU Hello 工作流；手动或当前 HEAD 提交消息含 `[full-workflows]` 时运行完整三案例 |
+| `Spack target environments` | 相关文件变更的可信同仓库 PR（含 draft）或手动触发，验证 CentOS 7、Ubuntu 24.04/26.04 x86_64 原生工具链与 Hello 离线安装；不启动服务、不上传材料 |
 | `Docs Site` | 仅从 `main` 手动构建并发布到 `gh-pages`；GitHub Pages 须单独配置发布源 |
 | `Preview` / `Preview Cleanup` | 全部必需测试成功且通过信任门禁后部署远程 k3s，关闭/暂停/撤销标签后清理；无 main 常驻预览 |
 
@@ -272,6 +273,8 @@ gh workflow run ci.yml --ref feat/example -f run_runtime_checks=true \
 [PR 调度器测试](../deploy/pr-test/README.md)。后者不提供公网入口、不使用预览口令，
 使用 `docker-compose.pr-test.yml` 和独立的临时卷，结果以对应提交的 Actions 为准。
 在仅允许静态检查时，不应手动触发完整检查、构建、发布或预览。
+三目标环境测试独立于默认 `CI` 和 scheduler matrix，详细范围及限制见
+[Linux 目标环境基线](../deploy/pr-test/spack-targets/README.md)。
 
 <a id="preview"></a>
 ## GitHub 预览环境
