@@ -548,6 +548,43 @@ describe("Web-to-managed runner contract with fake tools", () => {
 });
 
 describe("Web-to-managed overlays and workflow", () => {
+  test("reference baselines survive Server recreation in a Server-only volume", async () => {
+    const overlay = parse(
+      await readFile(join(root, "deploy/compose/docker-compose.pr-spack-case.yml"), "utf8"),
+    ) as Compose & { volumes: Record<string, unknown> };
+    expect(Object.hasOwn(overlay.volumes, "case-references")).toBe(true);
+    expect(overlay.services.server?.volumes).toContain("case-references:/case-references");
+    expect(overlay.services.server?.volumes).toContain("case-server:/case-server:ro");
+    expect(overlay.services.server?.volumes).toContain("case-control:/case-control:ro");
+    for (const [name, service] of Object.entries(overlay.services)) {
+      if (name !== "server") {
+        expect(JSON.stringify(service.volumes ?? [])).not.toContain("case-references");
+      }
+    }
+    const references = await readFile(join(root, "deploy/pr-test/spack-case/references.ts"), "utf8");
+    expect(references).toContain('const baseline = "/case-references/kq-pr-spack-references"');
+    expect(references).toContain('flag: "wx"');
+    expect(references).toContain("=== bindingDigest");
+    expect(references).toContain("=== operationDigest");
+    expect(references).not.toContain("/tmp/");
+  });
+
+  test("browser installation retains the managed fixture identity for rollout checks", async () => {
+    const email = "scheduler-compose-seed@kuintessence.test";
+    const browser = await readFile(
+      join(root, "packages/web/e2e/cp-spack-install.acceptance.ts"),
+      "utf8",
+    );
+    const api = await readFile(join(root, "deploy/pr-test/spack-case/api.ts"), "utf8");
+    const rollout = await readFile(join(root, "deploy/pr-test/spack-case/rollout.ts"), "utf8");
+    expect(browser).toContain(`getByTestId("login-email").fill("${email}")`);
+    expect(browser).toContain('getByTestId("login-role").selectOption("platform_admin")');
+    expect(api).toContain(`email: "${email}"`);
+    expect(api).toContain('role: "platform_admin"');
+    expect(rollout).toContain(`const seedEmail = "${email}"`);
+    expect(rollout).toContain("operation.requestedBy === operatorId");
+  });
+
   test("Hello install exposes Server only and reuses the redacted browser runner", async () => {
     const overlay = parse(
       await readFile(join(root, "deploy/pr-test/spack-artifacts", installEndpoint), "utf8"),

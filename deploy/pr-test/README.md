@@ -103,6 +103,9 @@ load/Slurm 作业、完整性负例、重启复验和卸载。不会为了后续
 浏览器临时访问 runner loopback 上的 Server，Registry 不开放端口，Agent 仍只从
 Server 拉取材料；进入后续验收前恢复 Server 内部网络。samtools 的 Web 导入后安装
 仍由 API helper 驱动，不将 Hello 的浏览器证据扩大到其他软件或生产环境。
+页面安装使用受管案例既有的测试管理员，保持后续 rollout 的请求人核对不变。
+引用账本的原始摘要保存在仅 Server 挂载的 `case-references` 卷；
+临时端口撤回造成容器重建时仍保留基线，不重新采样或放宽持久化断言。
 
 此入口复用既有 `Spack GNU Hello Web import managed installation` job；
 是否通过以对应提交 Actions 为准。它不实现 Web 自助 binding、不更改生产安装能力，

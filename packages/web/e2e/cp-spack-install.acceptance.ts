@@ -109,8 +109,8 @@ test("Hello is installed manually through CP and appears in inventory", async ({
   await stage("install-login", async () => {
     await page.addInitScript(() => localStorage.setItem("kq.lang", "en"));
     await page.goto("/login?redirect=%2Fcp%2Fsoftware");
-    await page.getByTestId("login-email").fill("artifact-web-admin@example.test");
-    await page.getByTestId("login-role").selectOption("super_admin");
+    await page.getByTestId("login-email").fill("scheduler-compose-seed@kuintessence.test");
+    await page.getByTestId("login-role").selectOption("platform_admin");
     const [response] = await Promise.all([
       page.waitForResponse((item) => isResponse(item, "/platform/api/auth/login", "POST")),
       page.getByTestId("login-submit").click(),
