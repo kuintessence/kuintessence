@@ -1,0 +1,219 @@
+{{- if .Values.scheduler.enabled }}
+{{- $registered := not (empty .Values.scheduler.registration.existingSecret) }}
+{{- if and (not .Values.preview.enabled) (not $registered) }}
+{{- fail "user scheduler requires scheduler.registration.existingSecret; development auto-registration is preview-only" }}
+{{- end }}
+{{- if ne .Values.server.env.MTLS_MODE "direct" }}
+{{- fail "scheduler requires server.env.MTLS_MODE=direct" }}
+{{- end }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}-agent-env
+  labels: {{- include "kq.labels" . | nindent 4 }}
+data:
+  # The existing entrypoint sources this file instead of stale PVC agent.env.
+  # Identity and endpoints come from the Deployment, never from shell input.
+  agent.env: |
+    # Use the certificate bundle and Deployment environment, not stale PVC endpoints.
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ .Release.Name }}-agent
+  labels:
+    {{- include "kq.storageLabels" . | nindent 4 }}
+    app.kubernetes.io/component: scheduler
+  {{- if .Values.preview.enabled }}
+  annotations: {{- include "kq.previewStorageAnnotations" . | nindent 4 }}
+  {{- end }}
+spec:
+  accessModes: ["ReadWriteOnce"]
+  {{- if .Values.scheduler.storageClass }}
+  storageClassName: {{ .Values.scheduler.storageClass | quote }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.scheduler.storage }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-scheduler
+  labels: {{- include "kq.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "kq-platform.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: scheduler
+  template:
+    metadata:
+      labels:
+        {{- include "kq.labels" . | nindent 8 }}
+        app.kubernetes.io/component: scheduler
+      annotations:
+        {{- if .Values.seed.enabled }}
+        kq.io/seed-revision: {{ include "kq.seedName" . | quote }}
+        {{- end }}
+        kq.io/registration-secret: {{ .Values.scheduler.registration.existingSecret | quote }}
+        kq.io/registration-revision: {{ .Values.scheduler.registration.credentialsRevision | quote }}
+    spec:
+      {{- include "kq.podPlacement" . | nindent 6 }}
+      hostname: scheduler-slurm
+      {{- if .Values.seed.enabled }}
+      serviceAccountName: {{ include "kq.workloadWaitServiceAccountName" . }}
+      {{- else }}
+      automountServiceAccountToken: false
+      {{- end }}
+      terminationGracePeriodSeconds: 30
+      initContainers:
+        {{- if .Values.seed.enabled }}
+        - name: wait-seed
+          image: {{ .Values.migration.waitImage | quote }}
+          command:
+            - /bin/sh
+            - -ec
+            - |
+              attempts=0
+              until kubectl get job/{{ include "kq.seedName" . }} >/dev/null; do
+                [ "${attempts}" -lt 60 ] || exit 1
+                sleep 2
+                attempts=$((attempts + 1))
+              done
+              kubectl wait --for=condition=complete --timeout={{ add .Values.migration.activeDeadlineSeconds .Values.seed.activeDeadlineSeconds }}s job/{{ include "kq.seedName" . }}
+        {{- end }}
+        - name: prepare-agent
+          image: {{ include "kq.image" .Values.scheduler.image | quote }}
+          imagePullPolicy: {{ .Values.scheduler.image.pullPolicy }}
+          command:
+            - /bin/sh
+            - -ec
+            - |
+              test -f /workspace/package.json
+              test -d /workspace/packages/cli
+              test -d /workspace/packages/agent
+              test -d /workspace/node_modules/pino
+              test -d /workspace/node_modules/ssh2
+              test -e /workspace/node_modules/@kuintessence/db
+              mkdir -p /agent-state/state /agent-state/scratch
+              chmod 1777 /agent-state/scratch
+              attempts=0
+              until curl --fail --silent --output /dev/null --max-time 5 "${SERVER_HTTP_URL}/api/health"; do
+                [ "${attempts}" -lt 180 ] || exit 1
+                sleep 2
+                attempts=$((attempts + 1))
+              done
+          env:
+            - name: SERVER_HTTP_URL
+              value: {{ printf "http://%s-server:%v" .Release.Name .Values.server.port | quote }}
+          volumeMounts:
+            - name: agent-state
+              mountPath: /agent-state
+          securityContext:
+            runAsUser: 0
+            privileged: false
+      containers:
+        - name: scheduler
+          image: {{ include "kq.image" .Values.scheduler.image | quote }}
+          imagePullPolicy: {{ .Values.scheduler.image.pullPolicy }}
+          # Existing Slurm entrypoint starts munge, slurmctld, slurmd and Agent.
+          securityContext:
+            runAsUser: 0
+            privileged: false
+          env:
+            - name: SERVER_HTTP_URL
+              value: {{ printf "http://%s-server:%v" .Release.Name .Values.server.port | quote }}
+            - name: SERVER_GRPC_URL
+              value: {{ printf "https://%s-server:%v" .Release.Name .Values.server.grpcPort | quote }}
+            - name: AGENT_ID
+              value: {{ .Values.scheduler.agentId | quote }}
+            - name: AGENT_SITE_NAME
+              value: {{ .Values.scheduler.siteName | quote }}
+            - name: AGENT_MTLS_REQUIRED
+              value: "true"
+            - name: KQ_AGENT_ENV_FILE
+              value: /etc/kuintessence/agent-config/agent.env
+            {{- if $registered }}
+            - name: KQ_AGENT_REGISTRATION_ENABLED
+              value: "0"
+            - name: AGENT_CERT_DIR
+              value: /etc/kuintessence/agent-certs
+            - name: AGENT_DB_PATH
+              value: /var/lib/kuintessence/agent.db
+            {{- else }}
+            - name: KQ_AGENT_REGISTRATION_ENABLED
+              value: "1"
+            - name: AGENT_CERT_DIR
+              value: {{ printf "/var/lib/kuintessence/agent/%s/certs" .Values.scheduler.agentId | quote }}
+            - name: AGENT_DB_PATH
+              value: {{ printf "/var/lib/kuintessence/agent/%s/agent.db" .Values.scheduler.agentId | quote }}
+            - name: KQ_AGENT_REGISTRATION_EMAIL
+              value: {{ .Values.scheduler.registrationEmail | quote }}
+            - name: KQ_AGENT_REGISTRATION_PROVIDER_NAME
+              value: {{ .Values.scheduler.providerName | quote }}
+            - name: KQ_AGENT_REGISTRATION_SCHEDULER
+              value: slurm
+            - name: KQ_AGENT_REGISTRATION_ROLE
+              value: platform_admin
+            {{- end }}
+            - name: AGENT_SPAWNER_BACKEND
+              value: host
+            - name: AGENT_SPACK_ENABLED
+              value: "false"
+            - name: AGENT_SSH_ENABLED
+              value: "false"
+            - name: AGENT_FILE_TRANSFER_CONNECT_TO
+              value: ""
+            - name: AGENT_JOB_WORK_ROOT
+              value: /var/lib/kuintessence/jobs
+            - name: NODE_ENV
+              value: {{ .Values.server.env.NODE_ENV | quote }}
+          volumeMounts:
+            - name: agent-state
+              mountPath: /var/lib/kuintessence
+              subPath: state
+            - name: agent-state
+              mountPath: /scratch
+              subPath: scratch
+            - name: agent-env
+              mountPath: /etc/kuintessence/agent-config
+              readOnly: true
+            {{- if $registered }}
+            - name: agent-registration
+              mountPath: /etc/kuintessence/agent-certs
+              readOnly: true
+            {{- end }}
+          startupProbe:
+            exec:
+              command: ["/bin/sh", "-ec", "sinfo -h -o '%T' | grep -Eq 'idle|alloc|mix'"]
+            periodSeconds: 5
+            failureThreshold: 60
+          readinessProbe:
+            exec:
+              command: ["/bin/sh", "-ec", "sinfo -h -o '%T' | grep -Eq 'idle|alloc|mix'"]
+            periodSeconds: 10
+          resources: {{- toYaml .Values.scheduler.resources | nindent 12 }}
+      volumes:
+        - name: agent-env
+          configMap:
+            name: {{ .Release.Name }}-agent-env
+        - name: agent-state
+          persistentVolumeClaim:
+            claimName: {{ .Release.Name }}-agent
+        {{- if $registered }}
+        - name: agent-registration
+          secret:
+            secretName: {{ .Values.scheduler.registration.existingSecret | quote }}
+            defaultMode: 256 # 0400
+            items:
+              - key: client.crt
+                path: client.crt
+              - key: client.key
+                path: client.key
+              - key: ca.crt
+                path: ca.crt
+        {{- end }}
+{{- end }}

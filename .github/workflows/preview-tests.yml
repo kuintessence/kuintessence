@@ -1,0 +1,172 @@
+name: PR preview tests
+run-name: >-
+  ${{ github.event_name == 'pull_request' &&
+      ((github.event.action == 'labeled' && github.event.label.name != 'TRUST_PR_CREATOR') ||
+       (github.event.action == 'unlabeled' && github.event.label.name != 'preview-paused'))
+      && 'PR preview tests (ignored label event)' || 'PR preview tests' }}
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review, labeled, unlabeled]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: "Pull request whose current head will be tested"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: >-
+    pr-preview-tests-${{ github.event.pull_request.number || inputs.pr_number || github.ref }}-${{
+      ((github.event.action == 'labeled' && github.event.label.name != 'TRUST_PR_CREATOR') ||
+       (github.event.action == 'unlabeled' && github.event.label.name != 'preview-paused'))
+      && github.run_id || 'eligible' }}
+  cancel-in-progress: true
+
+jobs:
+  resolve:
+    name: resolve
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'pull_request' &&
+       github.event.pull_request.head.repo.full_name == github.repository &&
+       !github.event.pull_request.draft &&
+       !((github.event.action == 'labeled' && github.event.label.name != 'TRUST_PR_CREATOR') ||
+         (github.event.action == 'unlabeled' && github.event.label.name != 'preview-paused')))
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      source_sha: ${{ steps.source.outputs.source_sha }}
+      spack: ${{ steps.scope.outputs.spack }}
+      schedulers: ${{ steps.scope.outputs.schedulers }}
+      workflows: ${{ steps.scope.outputs.workflows }}
+    steps:
+      - name: Resolve the current trusted PR head
+        id: source
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const isPullRequest = context.eventName === "pull_request";
+            if (!isPullRequest && context.eventName !== "workflow_dispatch") {
+              throw new Error("Unsupported preview test event");
+            }
+            const rawNumber = isPullRequest
+              ? String(context.payload.pull_request?.number ?? "")
+              : context.payload.inputs?.pr_number;
+            if (typeof rawNumber !== "string" || !/^[1-9][0-9]*$/.test(rawNumber)) {
+              throw new Error("A positive pull request number is required");
+            }
+            const pullNumber = Number(rawNumber);
+            if (!Number.isSafeInteger(pullNumber)) {
+              throw new Error("Pull request number is out of range");
+            }
+            const { data: pr } = await github.rest.pulls.get({
+              ...context.repo,
+              pull_number: pullNumber,
+            });
+            const repository = `${context.repo.owner}/${context.repo.repo}`;
+            if (pr.state !== "open" || pr.draft ||
+                pr.head.repo?.full_name !== repository ||
+                pr.base.repo?.full_name !== repository ||
+                !/^[0-9a-f]{40}$/.test(pr.head.sha)) {
+              throw new Error("Preview tests require an open non-draft same-repository PR");
+            }
+            if (isPullRequest) {
+              if (context.payload.pull_request?.head?.sha !== pr.head.sha ||
+                  context.payload.pull_request?.head?.repo?.full_name !== repository) {
+                throw new Error("Pull request event no longer matches the current head");
+              }
+            } else if (context.ref !== `refs/heads/${pr.head.ref}` ||
+                       context.sha !== pr.head.sha) {
+              throw new Error("Dispatch must use the current pull request head branch and SHA");
+            }
+            core.setOutput("source_sha", pr.head.sha);
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.source.outputs.source_sha }}
+          persist-credentials: false
+      - name: Select expensive suites from the complete PR diff
+        id: scope
+        uses: actions/github-script@v7
+        env:
+          TEST_SHA: ${{ steps.source.outputs.source_sha }}
+        with:
+          script: |
+            const number = Number(context.payload.pull_request?.number ?? context.payload.inputs?.pr_number);
+            const {data: pr} = await github.rest.pulls.get({...context.repo, pull_number: number});
+            if (pr.head.sha !== process.env.TEST_SHA) throw new Error("PR head changed before scope resolution");
+            const scope = context.eventName === "workflow_dispatch"
+              ? {spack: true, schedulers: true}
+              : await require("./deploy/preview/test-scope.cjs").pullRequestScope(github, context.repo, pr);
+            const workflows = await require("./deploy/preview/workflow-scope.cjs").workflowScope(
+              github, context.repo, pr, { event: context.eventName, spack: scope.spack });
+            core.setOutput("spack", String(scope.spack));
+            core.setOutput("schedulers", String(scope.schedulers));
+            core.setOutput("workflows", workflows);
+            core.info(`Required suites: spack=${scope.spack}, schedulers=${scope.schedulers}, workflows=${workflows}`);
+
+  ci:
+    name: ci
+    needs: resolve
+    uses: ./.github/workflows/ci.yml
+    with:
+      source_sha: ${{ needs.resolve.outputs.source_sha }}
+      run_runtime_checks: true
+      run_spack: ${{ needs.resolve.outputs.spack == 'true' }}
+      run_schedulers: ${{ needs.resolve.outputs.schedulers == 'true' }}
+
+  schedulers:
+    name: schedulers
+    needs: resolve
+    if: needs.resolve.outputs.spack == 'true' || needs.resolve.outputs.schedulers == 'true'
+    uses: ./.github/workflows/pr-scheduler-tests.yml
+    with:
+      source_sha: ${{ needs.resolve.outputs.source_sha }}
+      run_spack: ${{ needs.resolve.outputs.spack == 'true' }}
+      run_schedulers: ${{ needs.resolve.outputs.schedulers == 'true' }}
+
+  workflows:
+    name: workflows
+    needs: resolve
+    if: needs.resolve.outputs.workflows != 'none'
+    uses: ./.github/workflows/spack-workflow-execution.yml
+    with:
+      source_sha: ${{ needs.resolve.outputs.source_sha }}
+      full_workflows: ${{ needs.resolve.outputs.workflows == 'full' }}
+
+  all-required-tests:
+    name: all-required-tests
+    needs: [resolve, ci, schedulers, workflows]
+    if: always() && needs.resolve.result != 'skipped'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require every selected test suite to succeed
+        env:
+          RESOLVE_RESULT: ${{ needs.resolve.result }}
+          CI_RESULT: ${{ needs.ci.result }}
+          SCHEDULERS_RESULT: ${{ needs.schedulers.result }}
+          WORKFLOWS_RESULT: ${{ needs.workflows.result }}
+          SPACK_REQUIRED: ${{ needs.resolve.outputs.spack }}
+          SCHEDULERS_REQUIRED: ${{ needs.resolve.outputs.schedulers }}
+          WORKFLOWS_REQUIRED: ${{ needs.resolve.outputs.workflows }}
+        run: |
+          [[ "$SPACK_REQUIRED" == true || "$SPACK_REQUIRED" == false ]]
+          [[ "$SCHEDULERS_REQUIRED" == true || "$SCHEDULERS_REQUIRED" == false ]]
+          [[ "$WORKFLOWS_REQUIRED" == none || "$WORKFLOWS_REQUIRED" == quick || "$WORKFLOWS_REQUIRED" == full ]]
+          [[ "$RESOLVE_RESULT" == success && "$CI_RESULT" == success ]]
+          if [[ "$SPACK_REQUIRED" == true || "$SCHEDULERS_REQUIRED" == true ]]; then
+            [[ "$SCHEDULERS_RESULT" == success ]]
+          else
+            [[ "$SCHEDULERS_RESULT" == skipped ]]
+          fi
+          if [[ "$WORKFLOWS_REQUIRED" == none ]]; then
+            [[ "$WORKFLOWS_RESULT" == skipped ]]
+          else
+            [[ "$WORKFLOWS_RESULT" == success ]]
+          fi
+          echo "All required preview tests passed"

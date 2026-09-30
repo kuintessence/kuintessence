@@ -18,13 +18,30 @@ import {
 } from "../../../packages/agent/src/spack/install-contract";
 import { SpackInstallStore } from "../../../packages/agent/src/spack/install-store";
 import { SpackMaterialCache } from "../../../packages/agent/src/spack/material-cache";
-import { caseDirectory, login, ReleaseSchema } from "../spack-case/api";
+import { caseDirectory, ReleaseSchema } from "../spack-case/api";
 import { selectedCase } from "../spack-case/fixture";
 import { managedApi } from "./api-helper";
 import { diagnoseManagedInstall } from "./diagnostic";
+import {
+  cleanupFileWorkflow,
+  FileWorkflowStateSchema,
+  rejectInvalidFileWorkflow,
+  runFileWorkflow,
+  verifyFileWorkflow,
+} from "./file-workflow";
 import { verifyManagedCacheIntegrity } from "./integrity";
+import { managedFailureCode, managedSession } from "./session";
+import { readWebInstallReceipt } from "./web-install-contract";
+import { runManagedWorkflow, verifyManagedWorkflow } from "./workflow";
+import { WorkflowReceiptSchema } from "./workflow-contract";
 
-const PhaseSchema = z.enum(["install", "restart", "uninstall"]);
+const PhaseSchema = z.enum([
+  "install",
+  "prepare-web-install",
+  "verify-web-install",
+  "restart",
+  "uninstall",
+]);
 const statePath = `${caseDirectory}/managed-result.json`;
 const cacheDirectory = "/var/lib/kuintessence/spack-materials";
 const store = new SpackInstallStore("/srv/kq/spack");
@@ -34,6 +51,8 @@ const StateSchema = z.strictObject({
   target: z.string().min(1),
   record: SpackInstallRecordSchema,
   queueId: z.string().uuid(),
+  workflow: WorkflowReceiptSchema.optional(),
+  fileWorkflow: FileWorkflowStateSchema.optional(),
 });
 type Release = z.infer<typeof ReleaseSchema>;
 type State = z.infer<typeof StateSchema>;
@@ -50,6 +69,8 @@ type Stage =
   | "import_preinstalled"
   | "load"
   | "job"
+  | "workflow"
+  | "file-workflow"
   | "integrity"
   | "uninstall";
 let stage: Stage = "guard";
@@ -191,6 +212,12 @@ async function main() {
   assert(process.argv.length === 3, "Expected exactly one managed case phase");
   const phase = PhaseSchema.parse(process.argv[2]);
   const fixture = selectedCase();
+  const initial = phase === "install" || phase === "verify-web-install";
+  if (phase === "prepare-web-install" || phase === "verify-web-install") {
+    assert.equal(fixture.id, "hello", "Browser installation requires the Hello fixture");
+    assert.notEqual(process.env.KQ_PR_SPACK_WORKFLOW, "1");
+    assert.notEqual(process.env.KQ_PR_SPACK_FILE_WORKFLOW, "1");
+  }
   stage = "release";
   const release = ReleaseSchema.parse(
     JSON.parse(await readFile("/case-control/release.json", "utf8")),
@@ -201,18 +228,35 @@ async function main() {
       release.recipeId === createHash("sha256").update(fixture.recipes).digest("hex"),
     "Published release is not the selected acceptance fixture",
   );
-  if (phase === "install") {
+  if (phase === "install" || phase === "prepare-web-install") {
     stage = "cache";
     await emptyCache();
   }
   stage = "connect";
-  const api = managedApi(await login("https://server:3443"));
+  const token = managedSession();
+  const api = managedApi(token);
   await api.online();
+  if (phase === "prepare-web-install") {
+    stage = "store";
+    assert.equal((await store.list()).length, 0, "Browser installation requires an empty store");
+    stage = "inventory";
+    await api.inventory(release.spec, false);
+    console.log(`Spack managed case: phase=${phase} status=succeeded`);
+    return;
+  }
 
   let state: State;
-  if (phase === "install") {
+  if (initial) {
     stage = "install";
-    const operation = await api.operation("install", release.spec);
+    const operation = await (async () => {
+      if (phase === "install") return api.operation("install", release.spec);
+      const receipt = await readWebInstallReceipt();
+      assert(
+        isDeepStrictEqual(receipt.binding, release.binding) && receipt.spec === release.spec,
+        "Browser installation binding mismatch",
+      );
+      return api.webInstall(receipt);
+    })();
     stage = "report";
     assert(operation.stdout !== null, "Managed install report is missing");
     const report = SpackInstallReportSchema.parse(JSON.parse(operation.stdout));
@@ -239,6 +283,11 @@ async function main() {
   }
 
   if (phase === "uninstall") {
+    if (process.env.KQ_PR_SPACK_FILE_WORKFLOW === "1") {
+      stage = "file-workflow";
+      assert(state.fileWorkflow, "File workflow receipt is missing during cleanup");
+      await cleanupFileWorkflow(token, state.fileWorkflow);
+    }
     stage = "uninstall";
     await api.operation("uninstall", `/${state.record.rootHash}`);
     stage = "inventory";
@@ -278,9 +327,34 @@ async function main() {
     const ready = await readyRecord(release, state.record);
     stage = "job";
     await api.runCase(state.queueId, ready.report.prefix, loaded.stdout);
+    if (process.env.KQ_PR_SPACK_WORKFLOW === "1") {
+      stage = "workflow";
+      if (phase === "restart") {
+        assert(state.workflow, "Workflow receipt is missing after restart");
+        await verifyManagedWorkflow(token, state.workflow);
+      }
+      const receipt = await runManagedWorkflow(token, state.queueId, ready.report.prefix);
+      if (phase === "install") state.workflow = receipt;
+      else assert.notEqual(receipt.runId, state.workflow?.runId);
+    }
+    if (process.env.KQ_PR_SPACK_FILE_WORKFLOW === "1") {
+      stage = "file-workflow";
+      if (phase === "restart") {
+        assert(state.fileWorkflow, "File workflow receipt is missing after restart");
+        await verifyFileWorkflow(token, state.fileWorkflow);
+      }
+      const receipt = await runFileWorkflow(token, state.queueId, ready.report.prefix);
+      if (phase === "install") {
+        state.fileWorkflow = receipt;
+      } else {
+        assert.notEqual(receipt.receipt.runId, state.fileWorkflow?.receipt.runId);
+        await cleanupFileWorkflow(token, receipt);
+        await rejectInvalidFileWorkflow(token, state.queueId, ready.report.prefix);
+      }
+    }
     stage = "store";
     await readyRecord(release, state.record);
-    if (phase === "install") {
+    if (initial) {
       stage = "integrity";
       state.record = await verifyManagedCacheIntegrity({
         release,
@@ -299,14 +373,7 @@ async function main() {
 
 async function fail(error: unknown) {
   // Do not print messages, stacks, Zod issues, assertion values, stdout or stderr.
-  const code =
-    error instanceof z.ZodError
-      ? "SCHEMA_INVALID"
-      : error instanceof assert.AssertionError
-        ? "ASSERTION_FAILED"
-        : error instanceof SyntaxError
-          ? "INVALID_JSON"
-          : "CASE_FAILED";
+  const code = managedFailureCode(error);
   console.error(`Spack managed case: stage=${stage} code=${code}`);
   if (stage === "install") await diagnoseManagedInstall();
   if (stage === "load") await diagnoseManagedInstall("load");

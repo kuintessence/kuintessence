@@ -129,7 +129,10 @@ describe("HPC Sandbox adapters", () => {
         return { exitCode: 0, stdout: "123\n", stderr: "" };
       },
     };
-    const adapter = new SlurmAdapter("23", { spawner });
+    const adapter = new SlurmAdapter("23", {
+      spawner,
+      logDir: "/private/agent/.scheduler-logs",
+    });
     await adapter.submit(job());
     expect(commands[0]?.slice(0, 5)).toEqual([
       "setpriv",
@@ -139,6 +142,14 @@ describe("HPC Sandbox adapters", () => {
       "--",
     ]);
     expect(script).toContain("#SBATCH --account=science");
+    expect(script).toContain(
+      "#SBATCH --output=/managed/job/kq-00000000-0000-0000-0000-000000000111.out",
+    );
+    expect(script).toContain(
+      "#SBATCH --error=/managed/job/kq-00000000-0000-0000-0000-000000000111.out",
+    );
+    expect(script).toContain("#SBATCH --chdir=/managed/job");
+    expect(script).not.toContain("/private/agent/.scheduler-logs");
     expect(script).not.toContain("attacker.invalid");
     expect(script).not.toContain("HOST_SECRET");
   });
@@ -164,6 +175,7 @@ describe("HPC Sandbox adapters", () => {
     sandbox.seccompProfilePath = "/etc/kuintessence/seccomp.json";
     sandbox.attestedNodes = ["slurm-2"];
     const adapter = new SlurmAdapter("23", {
+      logDir: "/private/agent/.scheduler-logs",
       spawner: {
         run: async (command, options) => {
           commands.push(command);
@@ -176,6 +188,14 @@ describe("HPC Sandbox adapters", () => {
     await adapter.submit(job(sandbox));
 
     expect(commands[0]?.slice(0, 2)).toEqual(["sbatch", "--parsable"]);
+    expect(script).toContain(
+      "#SBATCH --output=/managed/job/kq-00000000-0000-0000-0000-000000000111.out",
+    );
+    expect(script).toContain(
+      "#SBATCH --error=/managed/job/kq-00000000-0000-0000-0000-000000000111.out",
+    );
+    expect(script).toContain("#SBATCH --chdir=/managed/job");
+    expect(script).not.toContain("/private/agent/.scheduler-logs");
     expect(script).toContain("#SBATCH --nodelist=slurm-2");
     expect(script).toContain("seccomp:/etc/kuintessence/seccomp.json");
     expect(script).toContain("/usr/bin/apptainer");

@@ -40,6 +40,13 @@ export const artifactStages = [
   "readback",
   "cleanup",
   "binding-output",
+  "install-inputs",
+  "install-login",
+  "install-empty",
+  "install-submit",
+  "install-terminal",
+  "install-inventory",
+  "install-receipt",
 ] as const;
 
 export type ArtifactStage = (typeof artifactStages)[number];

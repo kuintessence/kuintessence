@@ -17,6 +17,28 @@ app.kubernetes.io/name: {{ .Chart.Name }}
 app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end }}
 
+{{/* Preserve legacy user-chart immutable selectors; previews share a namespace. */}}
+{{- define "kq.workloadSelectorLabels" -}}
+app.kubernetes.io/name: {{ .Chart.Name }}
+{{- if .Values.preview.enabled }}
+app.kubernetes.io/instance: {{ .Release.Name }}
+{{- end }}
+{{- end }}
+
+{{/* PVC ownership must also survive StatefulSet deletion for precise preview cleanup. */}}
+{{- define "kq.storageLabels" -}}
+{{ include "kq.labels" . }}
+{{- if .Values.preview.enabled }}
+kuintessence.com/preview-pr: {{ trimPrefix "kq-pr-" .Release.Name | quote }}
+{{- end }}
+{{- end }}
+
+{{- define "kq.previewStorageAnnotations" -}}
+{{- if .Values.preview.enabled }}
+kuintessence.com/repository: {{ .Values.preview.repository | quote }}
+{{- end }}
+{{- end }}
+
 {{- define "kq-platform.labels" -}}
 {{- include "kq.labels" . -}}
 {{- end }}
@@ -35,7 +57,12 @@ postgres://{{ .Values.postgres.user }}:{{ .Values.postgres.password }}@{{ .Relea
 {{/* Render DATABASE_URL from values or the operator-managed Secret. */}}
 {{- define "kq.databaseEnv" -}}
 - name: DATABASE_URL
-{{- if or .Values.postgres.enabled .Values.external.databaseUrl }}
+{{- if and .Values.postgres.enabled .Values.secrets.existingSecret }}
+  valueFrom:
+    secretKeyRef:
+      name: {{ .Values.secrets.existingSecret }}
+      key: DATABASE_URL
+{{- else if or .Values.postgres.enabled .Values.external.databaseUrl }}
   value: {{ include "kq.databaseUrl" . | quote }}
 {{- else }}
   valueFrom:
@@ -111,4 +138,42 @@ the idempotent migration runner before either application starts.
 
 {{- define "kq.workloadWaitServiceAccountName" -}}
 {{ .Release.Name }}-workload-wait
+{{- end }}
+
+{{- define "kq.seedName" -}}
+{{- $prefix := printf "%s-seed" .Release.Name | trunc 52 | trimSuffix "-" -}}
+{{ printf "%s-r%s" $prefix (toString .Release.Revision) }}
+{{- end }}
+
+{{/* Shared placement for application and infrastructure Pods. */}}
+{{- define "kq.podPlacement" -}}
+{{- with .Values.global.nodeSelector }}
+nodeSelector: {{- toYaml . | nindent 2 }}
+{{- end }}
+{{- with .Values.global.imagePullSecrets }}
+imagePullSecrets: {{- toYaml . | nindent 2 }}
+{{- end }}
+{{- end }}
+
+{{- define "kq.webConfig" -}}
+{{- $config := .Files.Get "files/web-nginx.conf" -}}
+{{- $config = replace "http://server:3000" (printf "http://%s-server:%v" .Release.Name .Values.server.port) $config -}}
+{{- $config = replace "http://registry:3100" (printf "http://%s-registry:%v" .Release.Name .Values.registry.port) $config -}}
+{{- $config = replace "listen 80;" (printf "listen %v;" .Values.web.port) $config -}}
+{{- if .Values.preview.enabled -}}
+{{- $config = replace "X-Forwarded-Proto $scheme" "X-Forwarded-Proto https" $config -}}
+{{- end -}}
+{{ $config }}
+{{- end }}
+
+{{- define "kq.image" -}}
+{{- $repository := required "image.repository is required" .repository -}}
+{{- if .digest -}}
+{{- if not (regexMatch "^sha256:[a-f0-9]{64}$" .digest) -}}
+{{- fail "image.digest must be a sha256 digest" -}}
+{{- end -}}
+{{ printf "%s@%s" $repository .digest }}
+{{- else -}}
+{{ printf "%s:%s" $repository (required "image.tag or image.digest is required" .tag) }}
+{{- end -}}
 {{- end }}

@@ -31,8 +31,8 @@ type Stage =
   | "close";
 let phase: z.infer<typeof PhaseSchema> | "guard" = "guard";
 let stage: Stage = "guard";
-// Server restart retains its private writable layer; project cleanup removes these hashes.
-const baseline = "/tmp/kq-pr-spack-references";
+// Keep the original hashes across Server recreation, without exposing them to Agent.
+const baseline = "/case-references/kq-pr-spack-references";
 const CountSchema = z.object({
   bindingCount: z.number().int().nonnegative(),
   activeOperationCount: z.number().int().nonnegative(),

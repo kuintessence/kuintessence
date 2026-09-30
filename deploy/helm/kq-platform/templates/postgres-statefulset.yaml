@@ -9,14 +9,16 @@ spec:
   replicas: 1
   selector:
     matchLabels:
-      app.kubernetes.io/name: {{ .Chart.Name }}
+      {{- include "kq.workloadSelectorLabels" . | nindent 6 }}
       app.kubernetes.io/component: postgres
   template:
     metadata:
       labels:
-        app.kubernetes.io/name: {{ .Chart.Name }}
+        {{- include "kq.labels" . | nindent 8 }}
         app.kubernetes.io/component: postgres
     spec:
+      {{- include "kq.podPlacement" . | nindent 6 }}
+      automountServiceAccountToken: false
       containers:
         - name: postgres
           image: {{ .Values.postgres.image }}
@@ -45,6 +47,11 @@ spec:
   volumeClaimTemplates:
     - metadata:
         name: data
+        {{- if .Values.preview.enabled }}
+        labels: {{- include "kq.storageLabels" . | nindent 10 }}
+          app.kubernetes.io/component: postgres
+        annotations: {{- include "kq.previewStorageAnnotations" . | nindent 10 }}
+        {{- end }}
       spec:
         accessModes: ["ReadWriteOnce"]
         {{- if .Values.postgres.storageClass }}
@@ -62,7 +69,7 @@ metadata:
 spec:
   clusterIP: None
   selector:
-    app.kubernetes.io/name: {{ .Chart.Name }}
+    {{- include "kq.workloadSelectorLabels" . | nindent 4 }}
     app.kubernetes.io/component: postgres
   ports:
     - name: postgres

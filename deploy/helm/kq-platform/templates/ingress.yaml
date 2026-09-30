@@ -9,6 +9,25 @@ metadata:
   {{- end }}
 spec:
   ingressClassName: {{ .Values.ingress.className }}
+  {{- if .Values.preview.enabled }}
+  rules:
+    - host: {{ .Values.preview.host | quote }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ .Release.Name }}-gateway
+                port:
+                  number: {{ .Values.preview.gatewayPort }}
+  # Traefik's already configured default certificate handles TLS termination.
+  # Kubernetes Secrets are namespace-scoped; never reference kube-system here.
+  tls:
+    - hosts:
+        - {{ .Values.preview.host | quote }}
+  {{- else }}
+  {{- $ports := dict "server" .Values.server.port "registry" .Values.registry.port "web" .Values.web.port "rustfs" 9000 }}
   rules:
     {{- range .Values.ingress.hosts }}
     - host: {{ .host }}
@@ -21,10 +40,11 @@ spec:
               service:
                 name: {{ $.Release.Name }}-{{ .service }}
                 port:
-                  number: {{ if eq .service "server" }}{{ $.Values.server.port }}{{ else }}{{ $.Values.registry.port }}{{ end }}
+                  number: {{ get $ports .service | required "unsupported ingress backend service" }}
           {{- end }}
     {{- end }}
   {{- with .Values.ingress.tls }}
   tls: {{- toYaml . | nindent 4 }}
+  {{- end }}
   {{- end }}
 {{- end }}

@@ -1,0 +1,894 @@
+import { describe, expect, test } from "bun:test";
+import { readFile } from "node:fs/promises";
+import { resolve } from "node:path";
+import { runInNewContext } from "node:vm";
+import { parse } from "yaml";
+
+const root = resolve(import.meta.dir, "..");
+const sourceRef = "${{ inputs.source_sha || github.event.pull_request.head.sha || github.sha }}";
+const sourceSha = "a".repeat(40);
+const repository = "example/platform";
+const sourceHead = { sha: sourceSha, ref: "feat/preview", repo: { full_name: repository } };
+const suites = {
+  ci: "ci.yml",
+  schedulers: "pr-scheduler-tests.yml",
+  workflows: "spack-workflow-execution.yml",
+};
+type WorkflowMode = "none" | "quick" | "full";
+const workflowModes: WorkflowMode[] = ["none", "quick", "full"];
+
+interface Step {
+  name?: string;
+  id?: string;
+  if?: string;
+  uses?: string;
+  run?: string;
+  "working-directory"?: string;
+  env?: Record<string, string>;
+  with?: Record<string, unknown>;
+}
+
+interface Job {
+  name?: string;
+  if?: string;
+  needs?: string | string[];
+  uses?: string;
+  secrets?: unknown;
+  with?: Record<string, unknown>;
+  outputs?: Record<string, string>;
+  steps?: Step[];
+  strategy?: {
+    "fail-fast": boolean;
+    matrix: {
+      case?: string[];
+      scheduler?: string[];
+      include?: { label?: string; case?: string; flag: string }[] | string;
+    };
+  };
+}
+
+interface Workflow {
+  name: string;
+  "run-name"?: string;
+  on: Record<
+    string,
+    {
+      branches?: string[];
+      paths?: string[];
+      types?: string[];
+      inputs?: Record<string, { type: string; required?: boolean; default?: unknown }>;
+    } | null
+  >;
+  permissions: Record<string, string>;
+  concurrency: { group: string; "cancel-in-progress": boolean };
+  jobs: Record<string, Job>;
+}
+
+async function workflow(name = "preview-tests.yml"): Promise<Workflow> {
+  return parse(await readFile(resolve(root, ".github/workflows", name), "utf8")) as Workflow;
+}
+
+interface PullRequest {
+  number: number;
+  state: string;
+  draft: boolean;
+  head: { sha: string; ref: string; repo: { full_name: string } | null };
+  base: { ref: string; repo: { full_name: string } | null };
+}
+
+interface ResolverContext {
+  eventName: string;
+  repo: { owner: string; repo: string };
+  ref: string;
+  sha: string;
+  payload: {
+    pull_request?: PullRequest;
+    inputs?: { pr_number?: unknown };
+  };
+}
+
+async function resolverFixture(eventName = "pull_request") {
+  const preview = await workflow();
+  const script = preview.jobs.resolve?.steps?.find((step) => step.id === "source")?.with?.script;
+  if (typeof script !== "string") throw new Error("Missing preview resolver");
+  const pr: PullRequest = {
+    number: 17,
+    state: "open",
+    draft: false,
+    head: structuredClone(sourceHead),
+    base: { ref: "feat/stacked-base", repo: { full_name: repository } },
+  };
+  const context: ResolverContext = {
+    eventName,
+    repo: { owner: "example", repo: "platform" },
+    ref: eventName === "pull_request" ? "refs/pull/17/merge" : "refs/heads/feat/preview",
+    sha: eventName === "pull_request" ? "b".repeat(40) : sourceSha,
+    payload:
+      eventName === "pull_request"
+        ? { pull_request: structuredClone(pr) }
+        : { inputs: { pr_number: "17" } },
+  };
+  const outputs = new Map<string, string>();
+  const requests: number[] = [];
+  const github = {
+    rest: {
+      pulls: {
+        get: async (input: { owner: string; repo: string; pull_number: number }) => {
+          expect(input.owner).toBe("example");
+          expect(input.repo).toBe("platform");
+          requests.push(input.pull_number);
+          return { data: pr };
+        },
+      },
+    },
+  };
+  const core = { setOutput: (name: string, value: string) => outputs.set(name, value) };
+  const execute = runInNewContext(
+    `(async ({ github, context, core }) => {\n${script}\n})`,
+  ) as (args: {
+    github: typeof github;
+    context: ResolverContext;
+    core: typeof core;
+  }) => Promise<void>;
+  return {
+    pr,
+    context,
+    github,
+    outputs,
+    requests,
+    execute: () => execute({ github, context, core }),
+  };
+}
+
+async function scopeFixture(eventName = "pull_request") {
+  const fixture = await resolverFixture(eventName);
+  const preview = await workflow();
+  const script = preview.jobs.resolve?.steps?.find((step) => step.id === "scope")?.with?.script;
+  if (typeof script !== "string") throw new Error("Missing preview scope resolver");
+  const selected = { spack: false, schedulers: false };
+  const selectedWorkflows: { mode: WorkflowMode } = {
+    mode: eventName === "workflow_dispatch" ? "full" : "none",
+  };
+  const modules: string[] = [];
+  const messages: string[] = [];
+  const workflowRequests: { event: string; spack: boolean }[] = [];
+  const helper = {
+    pullRequestScope: async (
+      github: typeof fixture.github,
+      repo: ResolverContext["repo"],
+      pr: PullRequest,
+    ) => {
+      expect(github).toBe(fixture.github);
+      expect(repo).toBe(fixture.context.repo);
+      expect(pr).toBe(fixture.pr);
+      return selected;
+    },
+  };
+  const workflowHelper = {
+    workflowScope: async (
+      github: typeof fixture.github,
+      repo: ResolverContext["repo"],
+      pr: PullRequest,
+      options: { event: string; spack: boolean },
+    ) => {
+      expect(github).toBe(fixture.github);
+      expect(repo).toBe(fixture.context.repo);
+      expect(pr).toBe(fixture.pr);
+      workflowRequests.push(options);
+      return selectedWorkflows.mode;
+    },
+  };
+  const execute = runInNewContext(`(async () => {\n${script}\n})`, {
+    github: fixture.github,
+    context: fixture.context,
+    process: { env: { TEST_SHA: sourceSha } },
+    require: (path: string) => {
+      modules.push(path);
+      if (path === "./deploy/preview/test-scope.cjs") return helper;
+      if (path === "./deploy/preview/workflow-scope.cjs") return workflowHelper;
+      throw new Error(`Unexpected scope helper: ${path}`);
+    },
+    core: {
+      setOutput: (name: string, value: string) => fixture.outputs.set(name, value),
+      info: (message: string) => messages.push(message),
+    },
+  }) as () => Promise<void>;
+  return {
+    ...fixture,
+    selected,
+    selectedWorkflows,
+    modules,
+    messages,
+    workflowRequests,
+    helper,
+    workflowHelper,
+    execute,
+  };
+}
+
+describe("preview source resolution", () => {
+  test("accepts a stacked PR head rather than the event merge commit", async () => {
+    const fixture = await resolverFixture();
+    await fixture.execute();
+    expect(fixture.requests).toEqual([17]);
+    expect([...fixture.outputs]).toEqual([["source_sha", sourceSha]]);
+    expect(fixture.context.sha).not.toBe(sourceSha);
+  });
+
+  test("accepts dispatch only on the current PR head branch and commit", async () => {
+    const fixture = await resolverFixture("workflow_dispatch");
+    await fixture.execute();
+    expect(fixture.requests).toEqual([17]);
+    expect([...fixture.outputs]).toEqual([["source_sha", sourceSha]]);
+  });
+
+  const invalidPullRequests: [string, Partial<PullRequest>][] = [
+    ["closed", { state: "closed" }],
+    ["draft", { draft: true }],
+    ["fork", { head: { ...sourceHead, repo: { full_name: "other/platform" } } }],
+    ["deleted head repository", { head: { ...sourceHead, repo: null } }],
+    ["other base repository", { base: { ref: "main", repo: { full_name: "other/platform" } } }],
+    ["invalid SHA", { head: { ...sourceHead, sha: "main" } }],
+    ["updated head", { head: { ...sourceHead, sha: "c".repeat(40) } }],
+  ];
+
+  test.each(invalidPullRequests)("rejects %s", async (_label, change) => {
+    for (const event of ["pull_request", "workflow_dispatch"]) {
+      const fixture = await resolverFixture(event);
+      Object.assign(fixture.pr, change);
+      await expect(fixture.execute()).rejects.toThrow();
+      expect(fixture.outputs.size).toBe(0);
+    }
+  });
+
+  const invalidDispatches: [string, Partial<ResolverContext>][] = [
+    ["another branch", { ref: "refs/heads/main" }],
+    ["tag", { ref: "refs/tags/preview" }],
+    ["stale SHA", { sha: "b".repeat(40) }],
+    ["zero PR number", { payload: { inputs: { pr_number: "0" } } }],
+    ["non-numeric PR", { payload: { inputs: { pr_number: "17;exit" } } }],
+    ["numeric input", { payload: { inputs: { pr_number: 17 } } }],
+    ["missing PR number", { payload: { inputs: {} } }],
+    ["unsafe integer", { payload: { inputs: { pr_number: "9007199254740992" } } }],
+  ];
+
+  test.each(invalidDispatches)("rejects dispatch %s", async (_label, change) => {
+    const fixture = await resolverFixture("workflow_dispatch");
+    Object.assign(fixture.context, change);
+    await expect(fixture.execute()).rejects.toThrow();
+    expect(fixture.outputs.size).toBe(0);
+  });
+
+  test("rejects an event from a different source repository", async () => {
+    const fixture = await resolverFixture();
+    if (!fixture.context.payload.pull_request) throw new Error("Missing PR fixture");
+    fixture.context.payload.pull_request.head.repo = { full_name: "other/platform" };
+    await expect(fixture.execute()).rejects.toThrow();
+    expect(fixture.outputs.size).toBe(0);
+  });
+
+  test("rejects unsupported events before looking up a PR", async () => {
+    const fixture = await resolverFixture("push");
+    await expect(fixture.execute()).rejects.toThrow();
+    expect(fixture.requests).toEqual([]);
+    expect(fixture.outputs.size).toBe(0);
+  });
+
+  test("fails closed on PR API failure", async () => {
+    const fixture = await resolverFixture();
+    fixture.github.rest.pulls.get = async () => {
+      throw new Error("Fixture lookup unavailable");
+    };
+    await expect(fixture.execute()).rejects.toThrow("Fixture lookup unavailable");
+    expect(fixture.outputs.size).toBe(0);
+  });
+});
+
+describe("preview expensive scope resolution", () => {
+  test("PR scope preserves path flags and independently awaits the workflow mode", async () => {
+    for (const spack of [false, true]) {
+      for (const schedulers of [false, true]) {
+        for (const mode of workflowModes) {
+          const fixture = await scopeFixture();
+          Object.assign(fixture.selected, { spack, schedulers });
+          fixture.selectedWorkflows.mode = mode;
+          await fixture.execute();
+          expect(fixture.requests).toEqual([17]);
+          expect(fixture.modules).toEqual([
+            "./deploy/preview/test-scope.cjs",
+            "./deploy/preview/workflow-scope.cjs",
+          ]);
+          expect(fixture.workflowRequests).toEqual([{ event: "pull_request", spack }]);
+          expect([...fixture.outputs]).toEqual([
+            ["spack", String(spack)],
+            ["schedulers", String(schedulers)],
+            ["workflows", mode],
+          ]);
+          expect(fixture.messages).toEqual([
+            `Required suites: spack=${spack}, schedulers=${schedulers}, workflows=${mode}`,
+          ]);
+        }
+      }
+    }
+  });
+
+  test("manual dispatch forces both suites without loading the PR diff helper", async () => {
+    const fixture = await scopeFixture("workflow_dispatch");
+    fixture.helper.pullRequestScope = async () => {
+      throw new Error("Dispatch must not resolve the diff");
+    };
+    await fixture.execute();
+    expect(fixture.requests).toEqual([17]);
+    expect(fixture.modules).toEqual(["./deploy/preview/workflow-scope.cjs"]);
+    expect(fixture.workflowRequests).toEqual([{ event: "workflow_dispatch", spack: true }]);
+    expect([...fixture.outputs]).toEqual([
+      ["spack", "true"],
+      ["schedulers", "true"],
+      ["workflows", "full"],
+    ]);
+    expect(fixture.messages).toEqual([
+      "Required suites: spack=true, schedulers=true, workflows=full",
+    ]);
+  });
+
+  test("scope rejects a changed PR head before loading the helper or publishing flags", async () => {
+    for (const event of ["pull_request", "workflow_dispatch"]) {
+      const fixture = await scopeFixture(event);
+      fixture.pr.head.sha = "c".repeat(40);
+      await expect(fixture.execute()).rejects.toThrow("PR head changed before scope resolution");
+      expect(fixture.modules).toEqual([]);
+      expect(fixture.outputs.size).toBe(0);
+    }
+  });
+
+  test("manual dispatch fails closed when workflow scope resolution fails", async () => {
+    const fixture = await scopeFixture("workflow_dispatch");
+    fixture.workflowHelper.workflowScope = async () => {
+      throw new Error("Fixture workflow scope unavailable");
+    };
+    await expect(fixture.execute()).rejects.toThrow("Fixture workflow scope unavailable");
+    expect(fixture.outputs.size).toBe(0);
+    expect(fixture.messages).toEqual([]);
+  });
+
+  test("scope fails closed on API or helper failure", async () => {
+    for (const failure of ["api", "helper", "workflow-helper"]) {
+      const fixture = await scopeFixture();
+      if (failure === "api") {
+        fixture.github.rest.pulls.get = async () => {
+          throw new Error("Fixture scope unavailable");
+        };
+      } else if (failure === "helper") {
+        fixture.helper.pullRequestScope = async () => {
+          throw new Error("Fixture scope unavailable");
+        };
+      } else {
+        fixture.workflowHelper.workflowScope = async () => {
+          throw new Error("Fixture scope unavailable");
+        };
+      }
+      await expect(fixture.execute()).rejects.toThrow("Fixture scope unavailable");
+      expect(fixture.outputs.size).toBe(0);
+      expect(fixture.messages).toEqual([]);
+    }
+  });
+});
+
+describe("preview test orchestration", () => {
+  test("has unrestricted PR bases and read-only permissions", async () => {
+    const preview = await workflow();
+    expect(preview.name).toBe("PR preview tests");
+    expect(Object.keys(preview.on).sort()).toEqual(["pull_request", "workflow_dispatch"]);
+    expect(preview.on.pull_request).toEqual({
+      types: ["opened", "synchronize", "reopened", "ready_for_review", "labeled", "unlabeled"],
+    });
+    expect(preview.on.workflow_dispatch?.inputs?.pr_number).toMatchObject({
+      type: "string",
+      required: true,
+    });
+    expect(preview.permissions).toEqual({ contents: "read", "pull-requests": "read" });
+    expect(preview.jobs.resolve?.outputs).toEqual({
+      source_sha: "${{ steps.source.outputs.source_sha }}",
+      spack: "${{ steps.scope.outputs.spack }}",
+      schedulers: "${{ steps.scope.outputs.schedulers }}",
+      workflows: "${{ steps.scope.outputs.workflows }}",
+    });
+    const resolveSteps = preview.jobs.resolve?.steps ?? [];
+    const source = resolveSteps.findIndex((step) => step.id === "source");
+    const checkout = resolveSteps.findIndex((step) => step.uses?.startsWith("actions/checkout@"));
+    const scope = resolveSteps.findIndex((step) => step.id === "scope");
+    expect(source).toBeGreaterThanOrEqual(0);
+    expect(checkout).toBeGreaterThan(source);
+    expect(scope).toBeGreaterThan(checkout);
+    const checkouts = resolveSteps.filter((step) => step.uses?.startsWith("actions/checkout@"));
+    expect(checkouts).toHaveLength(1);
+    expect(resolveSteps[checkout]?.with).toEqual({
+      ref: "${{ steps.source.outputs.source_sha }}",
+      "persist-credentials": false,
+    });
+    expect(resolveSteps[scope]?.uses).toBe("actions/github-script@v7");
+    expect(resolveSteps[scope]?.env).toEqual({
+      TEST_SHA: "${{ steps.source.outputs.source_sha }}",
+    });
+    for (const step of resolveSteps) expect(step.if).toBeUndefined();
+    expect(Object.keys(preview.jobs).sort()).toEqual([
+      "all-required-tests",
+      "ci",
+      "resolve",
+      "schedulers",
+      "workflows",
+    ]);
+    const conditions: Record<string, string> = {
+      schedulers:
+        "needs.resolve.outputs.spack == 'true' || needs.resolve.outputs.schedulers == 'true'",
+      workflows: "needs.resolve.outputs.workflows != 'none'",
+    };
+    for (const [id, file] of Object.entries(suites)) {
+      const job = preview.jobs[id];
+      expect(job?.name).toBe(id);
+      expect(job?.needs).toBe("resolve");
+      expect(job?.uses).toBe(`./.github/workflows/${file}`);
+      expect(job?.secrets).toBeUndefined();
+      expect(job?.if).toBe(conditions[id]);
+      expect(job?.with).toEqual({
+        source_sha: "${{ needs.resolve.outputs.source_sha }}",
+        ...(id === "ci" ? { run_runtime_checks: true } : {}),
+        ...(id !== "workflows"
+          ? {
+              run_spack: "${{ needs.resolve.outputs.spack == 'true' }}",
+              run_schedulers: "${{ needs.resolve.outputs.schedulers == 'true' }}",
+            }
+          : { full_workflows: "${{ needs.resolve.outputs.workflows == 'full' }}" }),
+      });
+    }
+  });
+
+  test("workflow selection does not change any Spack or scheduler scope combination", async () => {
+    const preview = await workflow();
+    for (const spack of [false, true]) {
+      for (const schedulers of [false, true]) {
+        for (const mode of workflowModes) {
+          const context = {
+            needs: {
+              resolve: {
+                outputs: { spack: String(spack), schedulers: String(schedulers), workflows: mode },
+              },
+            },
+          };
+          expect(runInNewContext(preview.jobs.schedulers?.if ?? "false", context)).toBe(
+            spack || schedulers,
+          );
+          expect(runInNewContext(preview.jobs.workflows?.if ?? "false", context)).toBe(
+            mode !== "none",
+          );
+          const full = preview.jobs.workflows?.with?.full_workflows;
+          if (typeof full !== "string") throw new Error("Missing full_workflows expression");
+          const expression = full.trim().match(/^\$\{\{([\s\S]*)\}\}$/)?.[1];
+          if (!expression) throw new Error("Invalid full_workflows expression");
+          expect(runInNewContext(expression, context)).toBe(mode === "full");
+        }
+      }
+    }
+  });
+
+  test("title, resolver and concurrency share the ignored-label predicate", async () => {
+    const preview = await workflow();
+    const ignoredLabelCondition =
+      "((github.event.action == 'labeled' && github.event.label.name != 'TRUST_PR_CREATOR') || " +
+      "(github.event.action == 'unlabeled' && github.event.label.name != 'preview-paused'))";
+    const normalize = (expression: string) => expression.replace(/\s+/g, " ").trim();
+    expect(normalize(preview["run-name"] ?? "")).toContain(ignoredLabelCondition);
+    expect(normalize(preview.jobs.resolve?.if ?? "")).toContain(`!${ignoredLabelCondition}`);
+    expect(normalize(preview.concurrency.group)).toContain(ignoredLabelCondition);
+  });
+
+  test("label titles match resolution while fork and draft guards remain independent", async () => {
+    const preview = await workflow();
+    const condition = preview.jobs.resolve?.if;
+    if (!condition) throw new Error("Missing preview event guard");
+    const titleExpression = preview["run-name"]?.trim().match(/^\$\{\{([\s\S]*)\}\}$/)?.[1];
+    if (!titleExpression) throw new Error("Missing preview run-name expression");
+    const events: [string, string, boolean][] = [
+      ["opened", "", true],
+      ["synchronize", "", true],
+      ["reopened", "", true],
+      ["ready_for_review", "", true],
+      ["labeled", "TRUST_PR_CREATOR", true],
+      ["unlabeled", "preview-paused", true],
+      ["labeled", "preview-paused", false],
+      ["unlabeled", "TRUST_PR_CREATOR", false],
+      ["labeled", "documentation", false],
+      ["unlabeled", "documentation", false],
+    ];
+    for (const [action, label, accepted] of events) {
+      for (const draft of [false, true]) {
+        for (const sameRepository of [false, true]) {
+          const github = {
+            event_name: "pull_request",
+            repository,
+            event: {
+              action,
+              label: { name: label },
+              pull_request: {
+                draft,
+                head: {
+                  repo: { full_name: sameRepository ? repository : "other/platform" },
+                },
+              },
+            },
+          };
+          expect(runInNewContext(condition, { github })).toBe(accepted && !draft && sameRepository);
+          expect(runInNewContext(titleExpression, { github })).toBe(
+            accepted ? "PR preview tests" : "PR preview tests (ignored label event)",
+          );
+        }
+      }
+    }
+    const dispatch = { github: { event_name: "workflow_dispatch" } };
+    expect(runInNewContext(condition, dispatch)).toBe(true);
+    expect(runInNewContext(titleExpression, dispatch)).toBe("PR preview tests");
+  });
+
+  test("ignored labels cannot cancel an eligible test run", async () => {
+    const preview = await workflow();
+    const group = preview.concurrency.group;
+    expect(preview.concurrency["cancel-in-progress"]).toBe(true);
+    const key = (action: string, label: string) =>
+      group.replace(/\$\{\{([\s\S]*?)\}\}/g, (_match, expression: string) =>
+        String(
+          runInNewContext(expression, {
+            github: {
+              event: {
+                action,
+                label: { name: label },
+                pull_request: { number: 17 },
+              },
+              run_id: 123,
+              ref: "refs/pull/17/merge",
+            },
+            inputs: {},
+          }),
+        ),
+      );
+    const eligible = key("synchronize", "");
+    expect(key("labeled", "TRUST_PR_CREATOR")).toBe(eligible);
+    expect(key("unlabeled", "preview-paused")).toBe(eligible);
+    const ignoredLabels: [string, string][] = [
+      ["labeled", "documentation"],
+      ["unlabeled", "documentation"],
+      ["labeled", "preview-paused"],
+      ["unlabeled", "TRUST_PR_CREATOR"],
+    ];
+    for (const [action, label] of ignoredLabels) {
+      expect(key(action, label)).not.toBe(eligible);
+    }
+  });
+
+  test("pins all checkouts and keeps reusable concurrency separate", async () => {
+    for (const file of [...Object.values(suites), "spack-material-artifacts.yml"]) {
+      const child = await workflow(file);
+      expect(child.on.workflow_call?.inputs?.source_sha?.type).toBe("string");
+      expect(child.concurrency.group).toContain("inputs.source_sha && github.run_id");
+      expect(child.permissions).toEqual({ contents: "read" });
+      for (const job of Object.values(child.jobs)) {
+        expect(job.secrets).toBeUndefined();
+        for (const step of job.steps ?? []) {
+          if (!step.uses?.startsWith("actions/checkout@")) continue;
+          expect(step.with).toMatchObject({ ref: sourceRef, "persist-credentials": false });
+        }
+      }
+    }
+    for (const file of Object.values(suites)) {
+      expect((await workflow(file)).on.workflow_call?.inputs?.source_sha?.required).toBe(true);
+    }
+  });
+
+  test("keeps baseline runtime checks and gates expensive jobs on reusable scope inputs", async () => {
+    const ci = await workflow("ci.yml");
+    expect(ci.on.pull_request?.branches).toBeUndefined();
+    for (const id of ["lint-and-typecheck", "test", "rustfs-deployments"]) {
+      expect(ci.jobs[id]?.if).toBe("inputs.run_runtime_checks || inputs.source_sha");
+    }
+    const scoped: Record<string, string> = {
+      "spack-artifact-imports": "run_spack",
+      "spack-lifecycle-portal": "run_spack",
+      "spack-upstream": "run_spack",
+      "e2e-slice": "run_schedulers",
+    };
+    for (const [id, flag] of Object.entries(scoped)) {
+      expect(ci.jobs[id]?.if).toBe(
+        `(inputs.run_runtime_checks || inputs.source_sha) && inputs.${flag}`,
+      );
+      for (const runtime of [false, true]) {
+        for (const sha of ["", sourceSha]) {
+          for (const spack of [false, true]) {
+            for (const schedulers of [false, true]) {
+              const inputs = {
+                run_runtime_checks: runtime,
+                source_sha: sha,
+                run_spack: spack,
+                run_schedulers: schedulers,
+              };
+              expect(Boolean(runInNewContext(ci.jobs[id]?.if ?? "false", { inputs }))).toBe(
+                (runtime || Boolean(sha)) && (flag === "run_spack" ? spack : schedulers),
+              );
+            }
+          }
+        }
+      }
+    }
+    expect(ci.jobs["spack-artifact-imports"]?.with).toMatchObject({
+      source_sha: sourceRef,
+      publish_artifact: false,
+      acknowledge_redistribution: false,
+    });
+    for (const file of [suites.ci, suites.schedulers]) {
+      const child = await workflow(file);
+      for (const event of ["workflow_call", "workflow_dispatch"]) {
+        for (const flag of ["run_spack", "run_schedulers"]) {
+          expect(child.on[event]?.inputs?.[flag]).toMatchObject({
+            type: "boolean",
+            default: true,
+          });
+        }
+      }
+    }
+    for (const file of [suites.schedulers, suites.workflows]) {
+      const child = await workflow(file);
+      expect(Object.keys(child.on).sort()).toEqual(["workflow_call", "workflow_dispatch"]);
+      if (file === suites.workflows) {
+        for (const job of Object.values(child.jobs)) expect(job.if).toBeUndefined();
+      } else {
+        expect(child.jobs["spack-managed"]?.if).toBe("inputs.run_spack");
+        expect(child.jobs["spack-case"]?.if).toBe("inputs.run_spack");
+        expect(child.jobs.scheduler?.if).toBe("inputs.run_schedulers");
+      }
+    }
+    const commands = ci.jobs["lint-and-typecheck"]?.steps?.map((step) => step.run ?? "").join("\n");
+    expect(commands).toContain("bun test deploy/preview/*.test.* deploy/seed/*.test.*");
+    expect(commands).toContain(
+      "bun node_modules/typescript/bin/tsc --project deploy/seed/tsconfig.json",
+    );
+    expect(commands).toContain("for script in deploy/preview/*.cjs; do");
+    expect(commands).toContain('node --check "$script"');
+    expect(commands).toContain("bash -n deploy/preview/remote.sh");
+    expect(commands).toContain("bun run test:helm");
+    const staticSteps = ci.jobs["static-checks"]?.steps ?? [];
+    expect(staticSteps.some((step) => step.run === "bun test scripts/preview-tests.test.ts")).toBe(
+      true,
+    );
+  });
+
+  test("keeps complete Web unit and build coverage outside the Spack gate", async () => {
+    const ci = await workflow(suites.ci);
+    const baseline = ci.jobs["lint-and-typecheck"];
+    for (const spack of [false, true]) {
+      for (const runtime of [false, true]) {
+        for (const sha of ["", sourceSha]) {
+          const inputs = {
+            run_runtime_checks: runtime,
+            source_sha: sha,
+            run_spack: spack,
+            run_schedulers: false,
+          };
+          expect(Boolean(runInNewContext(baseline?.if ?? "false", { inputs }))).toBe(
+            runtime || Boolean(sha),
+          );
+        }
+      }
+    }
+    for (const [name, command] of [
+      ["Run complete Web unit suite", "bun run test"],
+      ["Build web application and styles", "bun run build"],
+    ]) {
+      const steps = baseline?.steps?.filter((step) => step.name === name) ?? [];
+      expect(steps).toHaveLength(1);
+      expect(steps[0]).toMatchObject({ run: command, "working-directory": "packages/web" });
+      expect(steps[0]?.if).toBeUndefined();
+    }
+    const portalSteps = ci.jobs["spack-lifecycle-portal"]?.steps ?? [];
+    expect(portalSteps.some((step) => step.name === "Run complete Web unit suite")).toBe(false);
+    expect(
+      portalSteps.some(
+        (step) =>
+          step["working-directory"] === "packages/web" && step.run?.trim() === "bun run test",
+      ),
+    ).toBe(false);
+    const build = portalSteps.findIndex((step) => step.name === "Build web application and styles");
+    const browser = portalSteps.findIndex(
+      (step) =>
+        step["working-directory"] === "packages/web" && step.run?.startsWith("bun run e2e "),
+    );
+    expect(build).toBeGreaterThanOrEqual(0);
+    expect(browser).toBeGreaterThan(build);
+    expect(portalSteps[build]).toMatchObject({
+      run: "bun run build",
+      "working-directory": "packages/web",
+    });
+    expect(portalSteps[build]?.if).toBeUndefined();
+  });
+
+  test("keeps other matrices intact and defaults formal workflows to quick", async () => {
+    const ci = await workflow(suites.ci);
+    expect(ci.jobs["spack-artifact-imports"]?.strategy?.matrix.case).toEqual(["hello", "samtools"]);
+    const schedulers = await workflow(suites.schedulers);
+    const managedCases = schedulers.jobs["spack-managed"]?.strategy?.matrix.include ?? [];
+    if (!Array.isArray(managedCases)) throw new Error("Expected unchanged scheduler matrix");
+    expect(managedCases.map((entry) => entry.label)).toEqual([
+      "GNU Hello",
+      "samtools",
+      "GNU Hello artifact bootstrap",
+      "samtools artifact bootstrap",
+      "GNU Hello Web import",
+      "samtools Web import",
+    ]);
+    expect(managedCases.map((entry) => entry.flag)).toEqual([
+      "--spack-managed",
+      "--spack-samtools",
+      "--spack-artifact-hello",
+      "--spack-artifact-samtools",
+      "--spack-web-hello",
+      "--spack-web-samtools",
+    ]);
+    expect(schedulers.jobs.scheduler?.strategy?.matrix.scheduler).toEqual(["slurm", "pbs"]);
+    expect(schedulers.jobs.scheduler?.name).toBe("Scheduler (${{ matrix.scheduler }})");
+    expect(schedulers.jobs["spack-case"]).toBeDefined();
+    const workflows = await workflow(suites.workflows);
+    const managedWorkflow = workflows.jobs["managed-workflow"];
+    expect(managedWorkflow?.needs).toBe("contracts");
+    expect(managedWorkflow?.name).toBe("Managed workflow (${{ matrix.case }})");
+    expect(workflows.on.workflow_call?.inputs?.full_workflows).toEqual({
+      type: "boolean",
+      default: false,
+    });
+    const include = managedWorkflow?.strategy?.matrix.include;
+    if (typeof include !== "string") throw new Error("Missing dynamic workflow matrix");
+    const expression = include.trim().match(/^\$\{\{([\s\S]*)\}\}$/)?.[1];
+    if (!expression) throw new Error("Invalid workflow matrix expression");
+    expect(
+      runInNewContext(expression, {
+        inputs: { source_sha: sourceSha, full_workflows: false },
+        github: { event_name: "pull_request" },
+        fromJSON: JSON.parse,
+      }),
+    ).toEqual([{ case: "hello", flag: "--spack-workflow-hello" }]);
+  });
+
+  test("runs real seed DB contracts between migrations and unit tests", async () => {
+    const ci = await workflow(suites.ci);
+    const steps = ci.jobs.test?.steps ?? [];
+    const migrations = steps.findIndex((step) => step.run === "bun run db:migrate");
+    const seed = steps.findIndex((step) => step.run === "bun test deploy/seed/store.test.ts");
+    const unit = steps.findIndex((step) => step.run === "bun run test:unit");
+    expect(migrations).toBeGreaterThanOrEqual(0);
+    expect(seed).toBeGreaterThan(migrations);
+    expect(unit).toBeGreaterThan(seed);
+    expect(steps[seed]?.if).toBeUndefined();
+    expect(steps[seed]?.env).toEqual({
+      SEED_TEST_DATABASE_URL: "postgres://kq:kq@localhost:5432/kuintessence",
+      LOG_LEVEL: "warn",
+    });
+  });
+
+  test("freezes explicit child names for the deployment gate", async () => {
+    const names: Record<string, Record<string, string>> = {
+      "ci.yml": {
+        "generate-db-migrations": "Generate database migrations",
+        "static-checks": "Static checks",
+        "lint-and-typecheck": "Full typecheck + Helm validation",
+        "spack-artifact-imports": "Spack artifact imports (${{ matrix.case }})",
+        test: "Unit + integration tests",
+        "e2e-slice": "E2E slice (CLI -> Server -> Agent -> Slurm)",
+        "rustfs-deployments": "RustFS Compose + AIO",
+        "spack-lifecycle-portal": "Spack lifecycle portal",
+        "spack-upstream": "Spack HTTP and SOCKS online imports",
+      },
+      "pr-scheduler-tests.yml": {
+        "spack-managed": "Spack ${{ matrix.label }} managed installation",
+        "spack-case": "Spack GNU Hello single-step case",
+        scheduler: "Scheduler (${{ matrix.scheduler }})",
+      },
+      "spack-workflow-execution.yml": {
+        contracts: "contracts",
+        "managed-workflow": "Managed workflow (${{ matrix.case }})",
+      },
+      "spack-material-artifacts.yml": {
+        "export-and-import": "export-and-import",
+      },
+    };
+    for (const [file, expected] of Object.entries(names)) {
+      const child = await workflow(file);
+      const actual = Object.fromEntries(
+        Object.entries(child.jobs).map(([id, job]) => [id, job.name]),
+      );
+      expect(actual).toEqual(expected);
+    }
+  });
+
+  test.each(workflowModes)("final gate independently enforces workflow mode %s", async (mode) => {
+    const gate = (await workflow()).jobs["all-required-tests"];
+    expect(gate?.name).toBe("all-required-tests");
+    expect(gate?.if).toBe("always() && needs.resolve.result != 'skipped'");
+    for (const result of ["success", "failure", "cancelled", "skipped"]) {
+      expect(
+        runInNewContext(gate?.if ?? "", {
+          always: () => true,
+          needs: { resolve: { result } },
+        }),
+      ).toBe(result !== "skipped");
+    }
+    expect(gate?.needs).toEqual(["resolve", "ci", "schedulers", "workflows"]);
+    const step = gate?.steps?.[0];
+    expect(step?.env).toEqual({
+      RESOLVE_RESULT: "${{ needs.resolve.result }}",
+      CI_RESULT: "${{ needs.ci.result }}",
+      SCHEDULERS_RESULT: "${{ needs.schedulers.result }}",
+      WORKFLOWS_RESULT: "${{ needs.workflows.result }}",
+      SPACK_REQUIRED: "${{ needs.resolve.outputs.spack }}",
+      SCHEDULERS_REQUIRED: "${{ needs.resolve.outputs.schedulers }}",
+      WORKFLOWS_REQUIRED: "${{ needs.resolve.outputs.workflows }}",
+    });
+    if (!step?.run) throw new Error("Missing all-required-tests gate");
+    const cases: { results: Record<string, string>; accepted: boolean }[] = [];
+    for (const spack of [false, true]) {
+      for (const schedulers of [false, true]) {
+        const success: Record<string, string> = {
+          RESOLVE_RESULT: "success",
+          CI_RESULT: "success",
+          SCHEDULERS_RESULT: spack || schedulers ? "success" : "skipped",
+          WORKFLOWS_RESULT: mode === "none" ? "skipped" : "success",
+          SPACK_REQUIRED: String(spack),
+          SCHEDULERS_REQUIRED: String(schedulers),
+          WORKFLOWS_REQUIRED: mode,
+        };
+        cases.push({ results: success, accepted: true });
+        for (const key of [
+          "RESOLVE_RESULT",
+          "CI_RESULT",
+          "SCHEDULERS_RESULT",
+          "WORKFLOWS_RESULT",
+        ]) {
+          for (const value of [
+            "success",
+            "failure",
+            "cancelled",
+            "skipped",
+            "neutral",
+            "",
+            "SUCCESS",
+            "in_progress",
+          ]) {
+            if (value === success[key]) continue;
+            cases.push({ results: { ...success, [key]: value }, accepted: false });
+          }
+        }
+        for (const key of ["SPACK_REQUIRED", "SCHEDULERS_REQUIRED"]) {
+          for (const value of ["", "TRUE", "FALSE", "1", "0", "yes", "true ", "null"]) {
+            cases.push({ results: { ...success, [key]: value }, accepted: false });
+          }
+        }
+        for (const value of ["", "true", "false", "NONE", "QUICK", "FULL", "quick ", "unknown"]) {
+          cases.push({
+            results: { ...success, WORKFLOWS_REQUIRED: value },
+            accepted: false,
+          });
+        }
+      }
+    }
+    for (const input of cases) {
+      const child = Bun.spawn({
+        cmd: ["bash", "-euo", "pipefail", "-c", step.run],
+        env: { PATH: process.env.PATH, ...input.results },
+        stdin: "ignore",
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      const [code] = await Promise.all([
+        child.exited,
+        new Response(child.stdout).text(),
+        new Response(child.stderr).text(),
+      ]);
+      expect({ results: input.results, accepted: code === 0 }).toEqual(input);
+    }
+  }, 15000);
+});

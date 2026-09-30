@@ -188,13 +188,13 @@ ready 时 epoch 缺失/不匹配均拒绝材料 runtime。新的 pause 更换 ep
 ## GitHub Actions
 
 `CI` 工作流在推送 `main` 和目标为 `main` 的 PR 时默认只执行静态检查：
-Biome、本地文档链接、workflow 引用，以及科学工作流交付模板的离线合同检查
+Biome、本地文档链接、workflow 引用、轻量 CI 编排检查，以及科学工作流交付模板的离线合同检查
 和该检查文件的 TypeScript 类型检查。模板检查只读取仓库文件，不下载或执行 recipe。
 依赖安装使用
 `bun install --frozen-lockfile --ignore-scripts`，不运行安装生命周期脚本、
 protobuf 生成、业务运行时测试、构建或容器。
 
-完整 TypeScript 检查依赖生成的 protobuf，因此放在手动完整检查中。
+完整 TypeScript 检查依赖生成的 protobuf，由手动完整检查或 `PR preview tests` 调用。
 自动静态 job 的结果仅覆盖上述范围，不证明材料闭包、受管安装或科学工作流成功。
 
 仅允许在 Actions 执行生成器时，可手动选择目标分支并勾选
@@ -207,18 +207,67 @@ protobuf 生成、业务运行时测试、构建或容器。
 
 | 工作流 | 触发与范围 |
 |---|---|
-| `CI` | 自动静态检查；手动勾选 `run_runtime_checks` 才执行 protobuf 生成、完整类型检查、Helm 测试、数据库与全栈容器测试 |
+| `CI` | 独立入口自动静态检查；手动完整模式或由 `PR preview tests` 调用时执行 protobuf、类型、Helm、数据库及容器测试 |
+| `PR preview tests` | 同仓库非草稿 PR 固定 head SHA，按完整 PR diff 选择 Spack 和 scheduler 重型测试；手动触发强制全部组，全部必测组成功后允许进入部署门禁 |
 | `Build Agent binary` / `Build CLI binary` | 仅手动构建并运行 binary smoke，默认只保存 Actions artifact；在 `v*` tag 上手动触发且勾选 `publish_release` 才上传 Release |
 | `Scheduler image architecture` | 仅手动构建并运行调度器镜像架构验证 |
-| `PR scheduler tests` | 可信同仓库非草稿 PR 自动构建隔离 Slurm/PBS 测试环境，执行真实作业与材料 fixture 回归；也可手动触发 |
+| `PR scheduler tests` | 相关源码变更时由 PR 测试编排调用，或手动触发；`run_spack`、`run_schedulers` 分别选择材料验收与 Slurm/PBS matrix |
+| `Spack workflow execution` | 自动调用默认仅 GNU Hello 工作流；手动或当前 HEAD 提交消息含 `[full-workflows]` 时运行完整三案例 |
 | `Docs Site` | 仅从 `main` 手动构建并发布到 `gh-pages`；GitHub Pages 须单独配置发布源 |
-| `Preview` / `Preview Cleanup` | 可信同仓库 PR 自动预览与关闭清理，main 手动启停，见下节 |
+| `Preview` / `Preview Cleanup` | 全部必需测试成功且通过信任门禁后部署远程 k3s，关闭/暂停/撤销标签后清理；无 main 常驻预览 |
+
+### 重型测试范围
+
+自动 PR 测试使用 [路径策略](../deploy/preview/test-scope.cjs) 判断，按 PR 相对 base 的
+完整文件列表而非最后一次 push 判断，包含删除文件和重命名前的路径。
+
+- Spack：材料、recipe、Registry、软件治理、受管安装、工作流、相关门户及测试夹具。
+- 调度器：CLI 作业命令、Agent 适配器与执行链路、Server 调度和作业派发、
+  调度器镜像及 E2E 夹具。CLI 本地 Spack/软件命令触发 Spack 组；
+  CLI 共享 API、认证、workflow 和 Agent 入口触发两组。
+- 共享 schema、protobuf、数据库、依赖清单和共同运行基础等变更保守触发相关的两组。
+- 测试夹具及专属 workflow 的变更也触发对应组；同时定义两组的 CI 或调度器 workflow
+  变更触发两组，避免修改测试执行步骤后反而跳过验证。
+- 文档、普通 Web 展示与预览控制器变更不会仅因 PR 更新就启动这两组。
+  基础静态检查、typecheck/Helm、unit/integration、Web 单测/build 及 RustFS 检查仍执行。
+
+### 工作流测试档位
+
+正式 Spack 工作流矩阵独立于材料导入和调度器专项：
+
+- 自动快速档：相关源码变更时运行 contracts 和一个 GNU Hello managed 工作流，
+  保留真实材料导入、安装、两节点执行及重启回读；不运行 samtools 和 samtools-file。
+  它是相对完整矩阵的快速档，不是用模拟测试代替实际执行。
+- 完整档：手动运行 `Spack workflow execution`，或在当前 PR HEAD 提交消息中
+  加入精确标记 `[full-workflows]`，运行 Hello、samtools、samtools-file。
+  提交标记即使没有命中 Spack 路径也会启动完整工作流矩阵，但不会额外强制其他专项。
+- 合并前需要全部检查时，在当前 PR 分支手动运行 `PR preview tests`，
+  提供 `pr_number`，会同时强制完整工作流、材料和调度器组。
+
+标记只读取当前被测 HEAD 的提交消息，不读取 PR 标题、描述或历史提交；
+下一次无标记的提交恢复按路径选择的快速档。提交信息仅作为数据读取，不插入 shell。
+部署控制器独立复核档位，完整档少一个案例也不会放行；
+快速档失败不会自动降级或视为通过。所有执行仍在 Actions，现有 k3s 环境不受该设置改动。
+
+手动运行 `PR preview tests` 会强制全部组；也可以使用独立入口运行指定组：
+
+```bash
+gh workflow run pr-scheduler-tests.yml --ref feat/example \
+  -f run_spack=false -f run_schedulers=true
+gh workflow run spack-workflow-execution.yml --ref feat/example
+gh workflow run preview-tests.yml --ref feat/example -f pr_number=123
+gh workflow run ci.yml --ref feat/example -f run_runtime_checks=true \
+  -f run_spack=false -f run_schedulers=false
+```
+
+独立入口的部分检查不能替代预览部署所需的 PR 测试证据。最终汇总要求每个必测组成功，
+仅接受规则明确未选中的组为 `skipped`，不能将失败、取消或缺失的必测组视为成功。
 
 `Scheduler image architecture` 的构建步骤提供固定占位值，满足 Compose 的环境变量解析；
 该值不作为 build arg 传入镜像，工作流不启动对象存储或完整 scheduler 栈。
 
 首次推送 `main` 不自动运行业务运行时测试、binary smoke、调度器容器验证或发布文档站；
-推送 tag 也不自动发布 Release。PR 预览不执行测试套件；
+推送 tag 也不自动发布 Release。PR 部署必须等待所有适用的必测组成功；
 `preview-paused` 标签可持续暂停该 PR 的预览，但不暂停独立的
 [PR 调度器测试](../deploy/pr-test/README.md)。后者不提供公网入口、不使用预览口令，
 使用 `docker-compose.pr-test.yml` 和独立的临时卷，结果以对应提交的 Actions 为准。
@@ -227,76 +276,14 @@ protobuf 生成、业务运行时测试、构建或容器。
 <a id="preview"></a>
 ## GitHub 预览环境
 
-[`Preview`](../.github/workflows/preview.yml) 在 GitHub-hosted `ubuntu-24.04` runner
-内构建并运行独立的[预览 Compose](../deploy/compose/docker-compose.preview.yml)。
-Cloudflare Quick Tunnel 提供随机 HTTPS 地址；地址发布后最多保留 10 分钟，
-整个 job 上限 40 分钟，包含构建、启动与清理。没有定时续跑、常驻服务或持久数据库。
-CI 的手动完整检查与预览互相独立，预览工作流不执行测试套件。
+PR 预览改为远程单节点 amd64 k3s，runner 不再托管十分钟 Quick Tunnel 环境。
+runner 仍运行测试容器；全部必需测试通过后才构建并推送 GHCR 镜像，再通过 SSH
+隧道调用 Kubernetes API 部署。入口固定为 `https://pr-<PR编号>.preview.dev.kuintessence.com`。
 
-### 首次配置
-
-1. 将 workflow 合入 `main`，确保仓库默认分支为 `main`，并允许 GitHub Actions。
-   `workflow_dispatch` 和关闭 PR 的清理入口需要先存在于默认分支。
-2. 在 Settings → Secrets and variables → Actions 创建 repository secret
-   `PREVIEW_PASSWORD`，使用至少 24 字符的独立随机口令，不复用账号、生产或存储凭据。
-   未配置时预览失败关闭，不发布无认证入口。通过私密渠道向审阅者提供此口令。
-3. 在仓库创建 `preview-paused` 标签。不要给预览 job 配置生产 environment、
-   云凭据、集群凭据或数据库备份。
-
-### 生命周期
-
-| 操作 | 行为 |
-|---|---|
-| 同仓库、目标为 `main` 的非草稿 PR 新建/重开/更新/转为 ready | 自动构建并部署；同一 PR 只保留最新 run |
-| fork PR | 不部署，不提供预览 secret |
-| PR 加 `preview-paused` 标签 | 取消正在执行的预览；后续 push 也不重新部署 |
-| PR 移除 `preview-paused` 标签 | PR 仍打开且非草稿时重新部署 |
-| PR 转为草稿、关闭或合并 | 取消该 PR 的预览并清理 |
-| `main` 更新或 PR 合并进入 `main` | 不自动创建 main 预览 |
-| Actions → Preview → Run workflow，分支选择 `main`，`action=start` | 手动创建 main 预览；替换已有 main 预览 |
-| 同一入口选择 `action=pause` | 停止并销毁 main 预览；下次 `start` 才重新部署 |
-| 到期、部署失败、取消 run | 清理 tunnel、容器、网络、临时数据卷与凭据文件 |
-
-暂停会销毁环境，再次启动时使用新地址与空数据库。
-可以在 Actions 页面直接 Cancel workflow 停止单次运行，但 PR 后续 push 仍会部署；
-持续暂停 PR 应保留标签。
-不同 PR 与 main 相互独立，也会各自消耗 runner 并发额度。
-
-打开对应 PR 的 Preview check 或 Actions run 的 Summary 获取地址。
-浏览器首先弹出入口认证：用户名为 `preview`，口令为 `PREVIEW_PASSWORD`。
-通过后进入应用登录，使用虚构邮箱（如 `reviewer@example.com`）及所需预览角色。
-
-生产 Web 默认不提供这一入口：
-预览 Compose 和本机 AIO 演示显式设置构建参数 `VITE_PREVIEW_LOGIN=true`，
-并将各自的 Server 设为 `NODE_ENV=development`。
-GitHub 预览入口认证换取本次环境的 HttpOnly/Secure cookie，
-不占用应用自己的 Bearer Authorization。
-
-### 范围与安全边界
-
-- 包含 Web、Server、Registry、PostgreSQL 和数据库迁移；数据只来自空库及本次人工操作。
-  不含 Agent、Slurm/PBS/Kubernetes、Casdoor、SpiceDB 或 RustFS；SSO、细粒度授权、
-  NetDrive、真实作业与集群 SSH 的运行验证需另备环境。当前 Server 不连接 Redis，
-  这里只保留配置占位；引入 Redis 运行依赖时，须同步补齐预览配置。
-- 数据库与业务服务不映射宿主端口，只有认证 gateway 绑定 runner loopback。
-  Quick Tunnel 只连接该 gateway，不直接公开开发登录、Server gRPC 或数据库。
-- 能通过入口认证的审阅者可使用开发角色登录，因此仅给可信审阅者使用，不录入真实数据。
-  同仓库 PR 也必须是可信代码：提交者可修改构建与工作流，入口口令无法限制构建中的恶意代码。
-  对不可信改动先做人工代码审查，不要为了自动预览开放 fork secrets。
-- 部署 job 仅有 `contents: read`、`pull-requests: read`，checkout 不保留 Git 凭据。
-  独立 [`Preview Cleanup`](../.github/workflows/preview-cleanup.yml) 使用
-  `pull_request_target` 和 `actions: write`，只读取事件元数据并取消匹配的 Preview run，
-  不 checkout、构建、导入或执行 PR 代码。
-- 控制工作流负责取消；运行中的预览也定期确认 PR 状态，API 不可用时提前退出。
-  清理步骤为 best effort：强制取消、runner 故障或 job 超时时，最终依赖 GitHub 回收
-  临时 VM。Summary 里的历史地址不会自动消失，job 结束后即不可用。
-- 不向 PR 评论或日志公开密码，不上传数据库、运行日志或凭据 artifact。
-  Quick Tunnel 地址会出现在 Actions Summary，仅持有地址不能通过认证。
-- 预览只用于短时开发检查，不适合生产托管，也不提供高可用。
-  Quick Tunnel 不支持 SSE，依赖 SSE 的功能需通过其他入口验证。
-
-部署方须遵守 Quick Tunnel 的服务限制、GitHub Actions 使用条款和并发/额度要求。
-多人同时访问 runner 服务前，应向 GitHub 确认相应条款的适用方式。
+详见 [k3s PR 预览操作指南](preview-k3s.md)：信任门禁、SSH/KUBE_CONFIG、
+GHCR 拉取权限、首次启用、HTTPS、访问口令和清理策略。
+用户安装使用 [kq-platform](../deploy/helm/kq-platform/README.md)，CI 演示使用
+[kq-preview](../deploy/helm/kq-preview/README.md)，共用模板但采用不同 seed 配置。
 
 <a id="proxy"></a>
 ## 反向代理

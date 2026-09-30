@@ -1,0 +1,41 @@
+{{- if .Values.preview.enabled }}
+# Releases share the preview namespace; backend ingress is release-local.
+# Only the selected Traefik Pods can enter the authenticated gateway.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ .Release.Name }}-preview-internal
+  labels: {{- include "kq.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "kq-platform.selectorLabels" . | nindent 6 }}
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "kq-platform.selectorLabels" . | nindent 14 }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ .Release.Name }}-preview-entry
+  labels: {{- include "kq.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "kq-platform.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: gateway
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.preview.ingressNamespace | quote }}
+          podSelector:
+            matchLabels: {{- toYaml .Values.preview.ingressPodLabels | nindent 14 }}
+      ports:
+        - protocol: TCP
+          port: {{ .Values.preview.gatewayPort }}
+{{- end }}

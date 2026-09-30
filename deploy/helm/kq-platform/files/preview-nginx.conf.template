@@ -1,0 +1,162 @@
+# A 64-character cookie key plus hash overhead exceeds a 64-byte bucket.
+map_hash_bucket_size 128;
+
+map $cookie_kq_preview $preview_allowed {
+    default 0;
+    "${PREVIEW_COOKIE}" 1;
+}
+
+map $http_authorization $preview_authorization {
+    default $http_authorization;
+    ~*^Basic "";
+}
+
+map $http_upgrade $preview_connection {
+    default upgrade;
+    "" close;
+}
+
+# This is only a presence prefilter, never a signature verifier. RustFS performs
+# SigV4 authentication/authorization, including expiry and signed method/path.
+map $args $preview_s3_signature_present {
+    default 0;
+    "~(^|&)X-Amz-Signature=[0-9a-fA-F]+(&|$)" 1;
+}
+
+map $request_method $preview_s3_method_allowed {
+    default 0;
+    GET 1;
+    PUT 1;
+}
+
+server {
+    listen {{ .Values.preview.gatewayPort }};
+    server_name {{ .Values.preview.host }};
+    server_tokens off;
+    access_log off;
+    # Upstream errors may contain signed query strings; never log request URLs.
+    error_log /dev/null crit;
+    absolute_redirect off;
+    client_max_body_size 32m;
+    add_header Cache-Control "no-store" always;
+    add_header Referrer-Policy "no-referrer" always;
+
+    location = /__preview/unlock {
+        auth_basic "Kuintessence preview";
+        auth_basic_user_file /etc/nginx/preview/htpasswd;
+        alias /usr/share/nginx/html/unlock.html;
+        default_type text/html;
+        add_header Set-Cookie "kq_preview=${PREVIEW_COOKIE}; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age={{ .Values.preview.cookieMaxAge }}";
+        add_header Cache-Control "no-store" always;
+        add_header Referrer-Policy "no-referrer" always;
+    }
+
+    # Registration and certificate enrollment are internal-only in this mode.
+    location ~ ^/(platform/)?api/(cp/agent-registration[^/]*|agent-registration|admin/agents)(/|$) {
+        return 404;
+    }
+
+    location = /software/api/spack/recipe-repositories/import {
+        if ($preview_allowed = 0) {
+            return 302 /__preview/unlock;
+        }
+        client_max_body_size 128m;
+        proxy_request_buffering off;
+        proxy_read_timeout 900s;
+        proxy_send_timeout 900s;
+        proxy_pass http://{{ .Release.Name }}-web:{{ .Values.web.port }};
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header Authorization $preview_authorization;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $preview_connection;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_hide_header Cache-Control;
+    }
+
+    location = /software/api/spack/upstream-imports {
+        if ($preview_allowed = 0) {
+            return 302 /__preview/unlock;
+        }
+        client_max_body_size 2m;
+        proxy_request_buffering off;
+        proxy_buffering off;
+        proxy_read_timeout 1800s;
+        proxy_send_timeout 1800s;
+        proxy_pass http://{{ .Release.Name }}-web:{{ .Values.web.port }};
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header Authorization $preview_authorization;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_hide_header Cache-Control;
+    }
+
+    location ^~ /software/api/spack/material-repositories/ {
+        if ($preview_allowed = 0) {
+            return 302 /__preview/unlock;
+        }
+        client_max_body_size 16g;
+        proxy_request_buffering off;
+        proxy_buffering off;
+        proxy_read_timeout 1800s;
+        proxy_send_timeout 1800s;
+        proxy_pass http://{{ .Release.Name }}-web:{{ .Values.web.port }};
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header Authorization $preview_authorization;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_hide_header Cache-Control;
+    }
+
+    {{- range $bucket := list .Values.netdrive.bucket .Values.netdrive.dataMarketStagingBucket .Values.netdrive.dataMarketImmutableBucket }}
+    location = /{{ $bucket }} {
+        return 404;
+    }
+
+    location = /{{ $bucket }}/ {
+        return 404;
+    }
+
+    # Preserve bucket path, query and public Host for S3 SigV4 verification.
+    # Agent transfers have no browser cookie; only RustFS can authorize them.
+    location ^~ /{{ $bucket }}/ {
+        if ($preview_s3_method_allowed = 0) {
+            return 405;
+        }
+        if ($preview_s3_signature_present = 0) {
+            return 403;
+        }
+        limit_except GET PUT {
+            deny all;
+        }
+        client_max_body_size 16g;
+        proxy_request_buffering off;
+        proxy_buffering off;
+        proxy_read_timeout 1800s;
+        proxy_send_timeout 1800s;
+        proxy_pass http://{{ $.Release.Name }}-rustfs:9000;
+        proxy_http_version 1.1;
+        proxy_set_header Host $http_host;
+        proxy_set_header Authorization "";
+        proxy_set_header Cookie "";
+        proxy_set_header Connection "";
+        proxy_set_header X-Forwarded-Proto https;
+    }
+    {{- end }}
+
+    location / {
+        if ($preview_allowed = 0) {
+            return 302 /__preview/unlock;
+        }
+        proxy_pass http://{{ .Release.Name }}-web:{{ .Values.web.port }};
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header Authorization $preview_authorization;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $preview_connection;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_read_timeout 300s;
+        proxy_buffering off;
+        proxy_hide_header Cache-Control;
+    }
+}

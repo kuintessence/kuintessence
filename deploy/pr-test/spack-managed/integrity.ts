@@ -20,6 +20,7 @@ import { waitFor } from "../runtime";
 import { ReleaseSchema } from "../spack-case/api";
 import { selectedCase } from "../spack-case/fixture";
 import type { managedApi } from "./api-helper";
+import { managedFailureCode } from "./session";
 
 const cacheRoot = "/var/lib/kuintessence/spack-materials";
 const digestDirectory = `${cacheRoot}/sha256`;
@@ -365,10 +366,10 @@ export async function verifyManagedCacheIntegrity(
       console.log(`Spack managed integrity: scenario=${test} status=succeeded`);
     }
     return record;
-  } catch {
+  } catch (error) {
     // Do not propagate filesystem errors, assertion values, JSON input or operation output.
     console.error(
-      `Spack managed integrity: scenario=${scenario} substage=${substage} state=${observedState} code=INTEGRITY_FAILED`,
+      `Spack managed integrity: scenario=${scenario} substage=${substage} state=${observedState} code=INTEGRITY_FAILED reason=${managedFailureCode(error)}`,
     );
     throw new Error("Managed cache integrity acceptance failed");
   }

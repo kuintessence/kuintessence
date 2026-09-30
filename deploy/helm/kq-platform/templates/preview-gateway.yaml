@@ -1,0 +1,104 @@
+{{- if .Values.preview.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}-preview-gateway
+  labels: {{- include "kq.labels" . | nindent 4 }}
+data:
+  default.conf.template: |-
+    {{- tpl (.Files.Get "files/preview-nginx.conf.template") . | nindent 4 }}
+  unlock.html: |-
+    {{- .Files.Get "files/unlock.html" | nindent 4 }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-gateway
+  labels: {{- include "kq.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "kq-platform.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: gateway
+  template:
+    metadata:
+      labels:
+        {{- include "kq.labels" . | nindent 8 }}
+        app.kubernetes.io/component: gateway
+      annotations:
+        checksum/nginx: {{ tpl (.Files.Get "files/preview-nginx.conf.template") . | sha256sum }}
+        kq.io/preview-credentials-revision: {{ .Values.preview.credentialsRevision | quote }}
+    spec:
+      {{- include "kq.podPlacement" . | nindent 6 }}
+      automountServiceAccountToken: false
+      containers:
+        - name: gateway
+          image: {{ .Values.preview.gatewayImage | quote }}
+          command: ["/bin/sh", "-ec"]
+          args:
+            - |
+              case "${PREVIEW_COOKIE}" in
+                ""|*[!0-9a-f]*) echo "Invalid preview cookie configuration" >&2; exit 1 ;;
+              esac
+              [ "${#PREVIEW_COOKIE}" -eq 64 ] || exit 1
+              test -s /etc/nginx/preview/htpasswd
+              exec /docker-entrypoint.sh nginx -g 'daemon off;'
+          ports:
+            - name: http
+              containerPort: {{ .Values.preview.gatewayPort }}
+          env:
+            - name: NGINX_ENVSUBST_FILTER
+              value: "^PREVIEW_COOKIE$"
+            - name: PREVIEW_COOKIE
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "kq.secretName" . }}
+                  key: PREVIEW_COOKIE
+          volumeMounts:
+            - name: gateway-config
+              mountPath: /etc/nginx/templates
+              readOnly: true
+            - name: gateway-config
+              mountPath: /usr/share/nginx/html/unlock.html
+              subPath: unlock.html
+              readOnly: true
+            - name: preview-auth
+              mountPath: /etc/nginx/preview
+              readOnly: true
+          readinessProbe:
+            tcpSocket:
+              port: http
+            periodSeconds: 5
+          livenessProbe:
+            tcpSocket:
+              port: http
+            periodSeconds: 30
+          resources: {{- toYaml .Values.preview.resources | nindent 12 }}
+      volumes:
+        - name: gateway-config
+          configMap:
+            name: {{ .Release.Name }}-preview-gateway
+        - name: preview-auth
+          secret:
+            secretName: {{ include "kq.secretName" . }}
+            defaultMode: 0444
+            items:
+              - key: PREVIEW_HTPASSWD
+                path: htpasswd
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}-gateway
+  labels: {{- include "kq.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "kq-platform.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: gateway
+  ports:
+    - name: http
+      port: {{ .Values.preview.gatewayPort }}
+      targetPort: http
+{{- end }}

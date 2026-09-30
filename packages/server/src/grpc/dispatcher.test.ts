@@ -6,7 +6,7 @@ import {
   type ServerMessage,
   SoftwareOperationAction,
 } from "@kuintessence/proto";
-import type { SandboxSignedManifest } from "@kuintessence/shared";
+import { type SandboxSignedManifest, SPACK_EXECUTION_PLACEHOLDER } from "@kuintessence/shared";
 import { AgentDispatcher, JobCancellationOutbox, JobWorkRootReleaseOutbox } from "./dispatcher";
 
 function mockChannel() {
@@ -23,6 +23,27 @@ function mockChannel() {
 }
 
 describe("AgentDispatcher", () => {
+  test("forwards structured Spack intent while leaving the legacy command fail-closed", () => {
+    const dispatcher = new AgentDispatcher();
+    const channel = mockChannel();
+    dispatcher.register("spack-agent", channel);
+    const spackExecution = { spec: "hello@1.0 +mpi", command: "hello --count 2" };
+    expect(
+      dispatcher.pushDispatchJob("spack-agent", "spack-job", {
+        jobIdInternal: "spack-job",
+        name: "spack",
+        command: SPACK_EXECUTION_PLACEHOLDER,
+        resources: { cpus: 1, memoryMb: 1024 },
+        spackExecution,
+      }),
+    ).toBe(true);
+    const message = channel.messages[0];
+    expect(message?.payload.case).toBe("dispatchJob");
+    if (message?.payload.case !== "dispatchJob") throw new Error("missing dispatch");
+    expect(message.payload.value.command).toBe("exit 125");
+    expect(message.payload.value.spackExecution).toMatchObject(spackExecution);
+  });
+
   test("does not send material credentials to a replaced legacy or unverified channel", () => {
     const dispatcher = new AgentDispatcher();
     const payload = {

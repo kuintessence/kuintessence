@@ -6,7 +6,7 @@ metadata:
 spec:
   type: ClusterIP
   selector:
-    app.kubernetes.io/name: {{ .Chart.Name }}
+    {{- include "kq.workloadSelectorLabels" . | nindent 4 }}
     app.kubernetes.io/component: server
   ports:
     - name: http

@@ -1,7 +1,115 @@
 # PR 调度器测试
 
+## Spack 工作流闭环
+
+自动 PR 编排在相关源码变化时默认只运行 GNU Hello 基础工作流。
+samtools 标量和文件工作流保留为完整档：手动触发 `Spack workflow execution`，
+或当前 HEAD 提交消息包含 `[full-workflows]` 时运行全部三个案例。
+手动 `PR preview tests` 则强制全部必测组，适用于合并前验证。
+材料导入和调度器专项仍按既有源码范围选择，详见
+[工作流测试档位](../../docs/deployment.md#工作流测试档位)。
+
+新增 Actions 专用 `Spack workflow execution` 工作流及两个入口：
+
+```bash
+bash deploy/pr-test/run.sh slurm --spack-workflow-hello
+bash deploy/pr-test/run.sh slurm --spack-workflow-samtools
+```
+
+仅在授权 GitHub Actions 环境执行，不在本地或生产集群运行。沿用当前已验证的
+Ubuntu 20.04 scheduler userspace 和 Ubuntu 24.04 hosted runner；CentOS 7、
+Ubuntu 24/26 原生 Agent 兼容性另行验证，不属于本轮通过条件。
+
+这两个入口继承 artifact-bootstrap 的同一材料导出、导入、禁用 bootstrap 后
+持久化回读、Server 授权交付、Agent source audit、隔离安装、独立 readonly verify、
+直接 Slurm 作业、完整性负例及卸载回归。另外增加：
+
+1. Operator 为当前测试生成临时 Ed25519 密钥，通过真实 ecosystem import/activate
+   API 发布固定案例的软件目录 revision，再通过 usecase API 注册 governed package。
+   这是测试目录的签名，不代表上游签名或生产信任；不发布材料或镜像 artifact。
+   私钥只保存在 operator/Server 的临时卷，Registry 只读取公钥，Agent 不挂载私钥卷。
+2. 调用正式异步 `POST /api/workflows`，执行两个 `SoftwareUsecaseComputing` 节点。
+   两节点使用同一 frozen software revision、同一 managed prefix 与真实 Slurm 队列；
+   第二节点显式消费并检查第一节点的数值结果。
+3. Workflow 的 Spack 激活请求通过结构化 gRPC 字段交给 Agent；Agent 调现有
+   `SpackManager` 的 load 操作，校验成功后才提交作业。harness 不传入 load shell，
+   不设置 managed PATH，不把直接 `/jobs` 成功当作 workflow 成功。
+4. 检查 workflow 与每个节点状态、两个独立 job ID、真实 Slurm job ID、
+   精确软件路径、Hello 输出或 samtools 合成 SAM/BAM/索引/计数与非法输入检查，
+   以及通过 Server 回收的日志和类型化结果。
+5. Registry/Server/Agent 重启后读取原 workflow 结果，并创建新的 workflow 再执行。
+   最后沿用卸载、引用对账、rollout 和资源清理。
+
+验收保留显式 `WORKFLOW_RUN_BASE`，同时要求普通 Slurm 日志使用持久共享目录，
+不通过清空工作目录配置或跳过旧日志检查规避重启回读。合同测试还覆盖脚本参数中的
+`$'`、`` $` ``、`$&` 和 `$$` 原样物化，以及 Sandbox 日志路径不受影响。
+
+日志只输出固定阶段与枚举状态，不上传运行原始日志或签名材料。合同与类型检查、
+真实闭环均须核对当前提交的 Actions；**实现存在不等于验收已通过**。
+这是 Hello/samtools 的两节点编排切片，不是完整变异检测流程，也不代表全部
+15 个科学工作流、跨节点共享存储、PBS 或生产站点通过。
+
 这是可销毁的测试环境，不是公网 preview，也不复用现有 scheduler 开发栈。
 专用配置：[docker-compose.pr-test.yml](../compose/docker-compose.pr-test.yml)。
+
+### 文件型三节点验收
+
+Actions 增加独立入口，保留上述两个标量工作流回归：
+
+```bash
+bash deploy/pr-test/run.sh slurm --spack-file-workflow-samtools
+```
+
+该入口继承 samtools 材料、安装和原两节点检查，再通过 Registry HTTP API 注册
+三个 governed usecase，复用同一 frozen software revision：
+
+1. 上传无外部数据依赖的合成 SAM，经 NetDrive `upload-url`、RustFS PUT 和
+   metadata commit 建立正式输入。
+2. `convert` 将 SAM 转为 BAM；`sort` 消费上游 File 输出，排序并生成 BAI；
+   `verify` 消费 BAM 和 BAI，检查完整性、总计数 `3` 与区间计数 `2`，发布报告。
+3. 每个输出由生产 collector 上传 RustFS 并注册文件 metadata；下游通过
+   FileSlot 引用取回，不传入生产者目录。检查三个独立 Job、Slurm ID 和 cwd，
+   再独立下载 BAM、BAI、报告，核对类型、内容、大小和 SHA-256。
+4. RustFS、Registry、Server 和 Agent 重启后回读旧 receipt、Job、日志及文件，
+   对比持久摘要，再执行新 workflow。非法 SAM 必须使真实 convert Job 失败，
+   下游取消且不产生 Job 或文件。结束时删除本次文件并确认 metadata 不再可见，
+   全部临时卷由 Compose 清理。
+
+专用 [文件工作流 overlay](../compose/docker-compose.pr-spack-file-workflow.yml)
+增加 RustFS 持久卷及完整三 bucket bootstrap，Server 仅持有非 root committer
+凭据；对象存储不暴露宿主端口，关闭 console，所有运行网络保持 internal。
+仅此入口清空 `WORKFLOW_RUN_BASE`，用生产 Agent-managed work root 和签名 URL
+stage-in 路径；原两个入口仍覆盖显式 cwd。Recipe/source 仍只从 Server 交付，
+计算输入输出访问 RustFS 不意味着允许 Agent 直连 Registry 或上游。
+
+签名 URL、认证信息、原始运行日志和材料不进入 receipt 或 Actions artifact。
+长时间验收按登录响应的 `expiresIn` 提前重新认证，凭据只保存在内存，
+不延长 Server 的 access token TTL，也不自动重放认证失败的写请求。
+这是单 Agent 三节点文件传递验收，不代表跨集群存储、完整变异检测或 15 个科学
+workflow 已完成；运行结果须核对相应提交的 Actions，不能仅凭新增脚本认定通过。
+
+## CP Web 手动安装验收
+
+`--spack-web-hello` 在原有真实浏览器材料导入之后，复用同一份固定 Hello binding，
+由 CP 软件页面选择 Agent、填写 spec 并提交一次 install，等待页面操作终态和库存回显。
+开始前要求安装 store、库存和操作历史为空；测试不改策略、不创建自动安装授权，
+也不使用 API helper 代替浏览器提交。
+CP 概览在挂载且页面位于前台时每 15 秒刷新，覆盖 operation 先到终态、
+安装库存稍后写入的时序；验收不通过手动 reload 掩盖库存刷新问题。
+
+浏览器只输出不含凭据的最小 operation/binding 回执。Agent 侧通过 Server 只读查询
+核对唯一安装、operation ID、spec 和成功状态，然后继续原有 report/缓存/prefix 校验、
+load/Slurm 作业、完整性负例、重启复验和卸载。不会为了后续验证再提交一次 install。
+浏览器临时访问 runner loopback 上的 Server，Registry 不开放端口，Agent 仍只从
+Server 拉取材料；进入后续验收前恢复 Server 内部网络。samtools 的 Web 导入后安装
+仍由 API helper 驱动，不将 Hello 的浏览器证据扩大到其他软件或生产环境。
+页面安装使用受管案例既有的测试管理员，保持后续 rollout 的请求人核对不变。
+引用账本的原始摘要保存在仅 Server 挂载的 `case-references` 卷；
+临时端口撤回造成容器重建时仍保留基线，不重新采样或放宽持久化断言。
+
+此入口复用既有 `Spack GNU Hello Web import managed installation` job；
+是否通过以对应提交 Actions 为准。它不实现 Web 自助 binding、不更改生产安装能力，
+也不替代 CP 策略编辑、权限拒绝及其他角色的专项验收。
 
 ## 镜像和网络
 
@@ -19,7 +127,8 @@ scheduler-base (现有 base/Dockerfile, Spack 1.0.0, Bun 1.4.2)
 镜像构建需要访问 Ubuntu apt、GitHub、Bun/npm registry 和 Docker registry；
 不是离线构建。可用 `KQ_PR_APT_MIRROR` 配置现有 base 的 apt mirror 参数，
 不等同于 Spack 专用 HTTP/SOCKS 代理。依赖在 build 时安装，运行时不安装依赖、
-不挂载宿主源码或 Docker socket、不提供 Web、SSO、SpiceDB、RustFS 或 tunnel。
+基础入口不挂载宿主源码或 Docker socket、不提供 Web、SSO、SpiceDB、RustFS 或 tunnel。
+文件工作流入口额外启用 RustFS，init 仅只读挂载受版本控制的 bootstrap 脚本。
 下述 Web managed 入口仅在导入阶段额外使用 runner 上的 browser 与应用页面；
 它的 host 依赖及临时 loopback endpoint 不加入基础调度器路径。
 
@@ -83,7 +192,10 @@ Recipe bundle 导入和快照导出使用 base 镜像自带的 Git 验证，覆�
 ## GitHub Actions
 
 独立工作流 [PR scheduler tests](../../.github/workflows/pr-scheduler-tests.yml)
-对目标 `main` 的可信同仓库非草稿 PR 自动执行 Slurm/PBS matrix，也可手动触发。
+由 `PR preview tests` 在同仓库非草稿 PR 的相关源码变化时调用，也可手动触发。
+`run_schedulers` 控制 Slurm/PBS matrix，`run_spack` 控制受管安装与单步材料案例；
+手动默认两组均启用。仅文档或预览控制器变更不再自动启动完整调度器测试。
+具体触发范围见 [CI 重型测试策略](../../docs/deployment.md#重型测试范围)。
 不使用 `pull_request_target`、生产 environment、发布权限、仓库 secret 或持久 runner。
 每个 job 有独立 project 和总超时；失败不取消另一个调度器的诊断。
 取消时脚本尽力清理，runner 回收是强制中断的最终隔离边界。
@@ -280,8 +392,11 @@ External target 错误额外报告精确值或范围模式，以及与 profile t
 即使诊断成功也保持原 API 案例失败，不作为安装成功的替代路径。
 load 失败诊断改为只读复验匹配本次 release/site profile 的原安装目录，
 不重新构建、不修改或删除该目录，不把 `unavailable` 记录恢复为 `ready`。
-完整性负例失败时仅报告固定 `substage` 与最后观测的 schema-validated 安装状态，
-区分本地不可用状态等待、门户库存撤回和恢复复验，不输出 spec 或原始响应。
+完整性负例失败时仅报告固定 `substage`、最后观测的 schema-validated 安装状态
+以及白名单错误分类，区分 HTTP 状态、请求/操作超时、断言与结构校验失败；
+不输出 spec、异常消息或原始响应，不改变原等待时限和失败结果。
+长时间受管验收按登录响应的 `expiresIn` 提前重新认证，凭据只保存在内存，
+不延长 Server 的 access token TTL，也不自动重放认证失败的写请求。
 实际通过范围必须以当前提交的 Actions 结果为准；新增测试定义本身不构成验收通过，
 也不覆盖生产环境、PBS 受管安装或 15 个科学工作流。
 
