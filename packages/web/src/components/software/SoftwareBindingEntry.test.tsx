@@ -153,9 +153,11 @@ afterEach(() => {
 
 async function settledCapabilities() {
   await waitFor(() => {
-    expect(
-      queryClient.getQueryCache().find({ queryKey: ["me", "capabilities"] })?.state.status,
-    ).toBe("success");
+    const query = queryClient.getQueryCache().find({
+      queryKey: ["me", "capabilities"],
+      exact: false,
+    });
+    expect(query?.state.status).toBe("success");
   });
 }
 
@@ -229,9 +231,11 @@ test("SoftwarePage does not expose binding management when capabilities fail", a
   render(<SoftwarePage />, { wrapper });
   await screen.findByTestId("spack-materials-panel");
   await waitFor(() => {
-    expect(
-      queryClient.getQueryCache().find({ queryKey: ["me", "capabilities"] })?.state.status,
-    ).toBe("error");
+    const query = queryClient.getQueryCache().find({
+      queryKey: ["me", "capabilities"],
+      exact: false,
+    });
+    expect(query?.state.status).toBe("error");
   });
   expect(screen.queryByTestId("spack-install-binding-editor")).toBeNull();
   expect(screen.queryByLabelText("Material manifest (JSON)")).toBeNull();

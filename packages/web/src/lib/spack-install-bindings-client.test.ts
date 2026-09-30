@@ -32,7 +32,7 @@ function view(revision = 1): SpackInstallBindingView {
       state: "enabled",
       binding,
       source: "web",
-      operatorId: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+      operatorId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
       reason: command.reason,
       createdAt: "2026-09-30T00:00:00.000Z",
     })),
@@ -94,7 +94,7 @@ describe.each([
     null,
     { data: view() },
     { ...view(), extra: true },
-    { ...view(), scope: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa" },
+    { ...view(), scope: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" },
     { ...view(), spec: "hello" },
     { ...view(), revision: 0 },
     { ...view(), state: "absent" },
@@ -105,6 +105,10 @@ describe.each([
     { ...view(), history: [{ ...view().history[0], revision: 2 }] },
     { ...view(), history: [{ ...view().history[0], state: "disabled", binding: null }] },
     { ...view(), history: [{ ...view().history[0], operatorId: null }] },
+    {
+      ...view(),
+      history: [{ ...view().history[0], operatorId: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa" }],
+    },
     { ...view(), history: [{ ...view().history[0], createdAt: "yesterday" }] },
     {
       ...view(),

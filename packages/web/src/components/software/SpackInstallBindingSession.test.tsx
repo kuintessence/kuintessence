@@ -148,7 +148,7 @@ async function changeSession(change: (typeof changes)[number], mounted: ReturnTy
     if (change === "identity") setAuth({ email: "other@example.test", role: "platform_admin" });
     if (change === "session") setAuth({ email: "alice@example.test", role: "platform_admin" });
     if (change === "organization") {
-      localStorage.setItem(ACTIVE_ORGANIZATION_STORAGE_KEY, "cccccccc-cccc-cccc-cccc-cccccccccccc");
+      localStorage.setItem(ACTIVE_ORGANIZATION_STORAGE_KEY, "cccccccc-cccc-4ccc-8ccc-cccccccccccc");
       window.dispatchEvent(new Event("kq:active-organization-change"));
     }
     if (change === "role") access.data = verifiedCapabilities("user");

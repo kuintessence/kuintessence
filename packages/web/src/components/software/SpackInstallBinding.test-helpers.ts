@@ -1,7 +1,7 @@
 import type { SpackInstallBindingView } from "@kuintessence/shared/browser";
 import { fireEvent, screen, within } from "@testing-library/react";
 
-export const BINDING_ORG = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb";
+export const BINDING_ORG = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 export const INSTALL_SPEC = "hello@2.12.1";
 export const INSTALL_REASON = "Use reviewed release";
 export const installBinding = {
@@ -21,7 +21,7 @@ export function installBindingView(revision = 0, scope = BINDING_ORG): SpackInst
       state: "enabled",
       binding: installBinding,
       source: "web",
-      operatorId: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+      operatorId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
       reason: INSTALL_REASON,
       createdAt: "2026-09-30T00:00:00.000Z",
     })),
