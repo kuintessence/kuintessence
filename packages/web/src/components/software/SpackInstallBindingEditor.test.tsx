@@ -59,17 +59,17 @@ function mount(overrides: Partial<ComponentProps<typeof SpackInstallBindingEdito
 
 test("select labels have exact accessible names without option text", async () => {
   mount();
-  const scope = bindingUi().getByRole("combobox", { name: "Binding scope", exact: true });
+  const scope = bindingUi().getByRole("combobox", { name: /^Binding scope$/ });
   expect(bindingUi().getByLabelText("Binding scope", { exact: true })).toBe(scope);
   expect(scope).toHaveProperty("value", BINDING_ORG);
   expect(scope.closest("label")).toBeNull();
   await readyBinding();
-  const action = bindingUi().getByRole("combobox", { name: "Binding action", exact: true });
+  const action = bindingUi().getByRole("combobox", { name: /^Binding action$/ });
   expect(bindingUi().getByLabelText("Binding action", { exact: true })).toBe(action);
   expect(action).toHaveProperty("value", "bind");
   expect(action.closest("label")).toBeNull();
   fireEvent.change(action, { target: { value: "disable" } });
-  expect(bindingUi().getByRole("combobox", { name: "Binding action", exact: true })).toBe(action);
+  expect(bindingUi().getByRole("combobox", { name: /^Binding action$/ })).toBe(action);
   expect(bindingUi().getByLabelText("Binding action", { exact: true })).toHaveProperty(
     "value",
     "disable",
