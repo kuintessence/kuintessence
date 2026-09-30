@@ -12,6 +12,12 @@ on:
       run_runtime_checks:
         type: boolean
         default: true
+      run_spack:
+        type: boolean
+        default: true
+      run_schedulers:
+        type: boolean
+        default: true
   workflow_dispatch:
     inputs:
       generate_db_migrations:
@@ -24,6 +30,14 @@ on:
         required: true
         type: boolean
         default: false
+      run_spack:
+        description: "启用运行检查时，运行 Spack 材料、导入和门户测试"
+        type: boolean
+        default: true
+      run_schedulers:
+        description: "启用运行检查时，运行真实调度器 E2E"
+        type: boolean
+        default: true
 
 permissions:
   contents: read
@@ -91,6 +105,8 @@ jobs:
 
       - name: Check preview test orchestration contracts
         run: bun test scripts/preview-tests.test.ts
+      - name: Check selective CI scope policy
+        run: bun test deploy/preview/test-scope.test.cjs deploy/preview/scoped-gate.test.cjs
 
   lint-and-typecheck:
     name: Full typecheck + Helm validation
@@ -166,9 +182,17 @@ jobs:
       - name: Type check preview seed
         run: bun node_modules/typescript/bin/tsc --project deploy/seed/tsconfig.json
 
+      - name: Run complete Web unit suite
+        working-directory: packages/web
+        run: bun run test
+
+      - name: Build web application and styles
+        working-directory: packages/web
+        run: bun run build
+
   spack-artifact-imports:
     name: Spack artifact imports (${{ matrix.case }})
-    if: inputs.run_runtime_checks || inputs.source_sha
+    if: (inputs.run_runtime_checks || inputs.source_sha) && inputs.run_spack
     needs: lint-and-typecheck
     strategy:
       fail-fast: false
@@ -258,7 +282,7 @@ jobs:
 
   e2e-slice:
     name: E2E slice (CLI -> Server -> Agent -> Slurm)
-    if: inputs.run_runtime_checks || inputs.source_sha
+    if: (inputs.run_runtime_checks || inputs.source_sha) && inputs.run_schedulers
     runs-on: ubuntu-latest
     needs: lint-and-typecheck
     timeout-minutes: 20
@@ -298,7 +322,7 @@ jobs:
 
   spack-lifecycle-portal:
     name: Spack lifecycle portal
-    if: inputs.run_runtime_checks || inputs.source_sha
+    if: (inputs.run_runtime_checks || inputs.source_sha) && inputs.run_spack
     needs: static-checks
     runs-on: ubuntu-24.04
     timeout-minutes: 20
@@ -332,9 +356,6 @@ jobs:
           src/components/software/MaterialVisibility*.test.tsx
           src/components/software/SpackOnlineImport.test.tsx
           src/routes/-cp-capability-errors.test.tsx
-      - name: Run complete Web unit suite
-        working-directory: packages/web
-        run: bun run test
       - name: Build web application and styles
         working-directory: packages/web
         run: bun run build
@@ -355,7 +376,7 @@ jobs:
 
   spack-upstream:
     name: Spack HTTP and SOCKS online imports
-    if: inputs.run_runtime_checks || inputs.source_sha
+    if: (inputs.run_runtime_checks || inputs.source_sha) && inputs.run_spack
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:

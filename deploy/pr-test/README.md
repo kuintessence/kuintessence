@@ -162,7 +162,10 @@ Recipe bundle 导入和快照导出使用 base 镜像自带的 Git 验证，覆�
 ## GitHub Actions
 
 独立工作流 [PR scheduler tests](../../.github/workflows/pr-scheduler-tests.yml)
-对目标 `main` 的可信同仓库非草稿 PR 自动执行 Slurm/PBS matrix，也可手动触发。
+由 `PR preview tests` 在同仓库非草稿 PR 的相关源码变化时调用，也可手动触发。
+`run_schedulers` 控制 Slurm/PBS matrix，`run_spack` 控制受管安装与单步材料案例；
+手动默认两组均启用。仅文档或预览控制器变更不再自动启动完整调度器测试。
+具体触发范围见 [CI 重型测试策略](../../docs/deployment.md#重型测试范围)。
 不使用 `pull_request_target`、生产 environment、发布权限、仓库 secret 或持久 runner。
 每个 job 有独立 project 和总超时；失败不取消另一个调度器的诊断。
 取消时脚本尽力清理，runner 回收是强制中断的最终隔离边界。

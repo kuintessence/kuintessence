@@ -188,12 +188,12 @@ ready 时 epoch 缺失/不匹配均拒绝材料 runtime。新的 pause 更换 ep
 ## GitHub Actions
 
 `CI` 工作流在推送 `main` 和目标为 `main` 的 PR 时默认只执行静态检查：
-Biome、本地文档链接与 workflow 引用检查。依赖安装使用
+Biome、本地文档链接、workflow 引用及轻量 CI 编排合同检查。依赖安装使用
 `bun install --frozen-lockfile --ignore-scripts`，不运行安装生命周期脚本、
-protobuf 生成、测试、构建或容器。
+protobuf 生成、业务运行测试、构建或容器。
 
 完整 TypeScript 检查依赖生成的 protobuf，因此放在手动完整检查中。
-自动静态 job 的结果仅覆盖上述 Biome 和文档检查。
+自动静态 job 的结果仅覆盖上述静态与编排合同检查。
 
 仅允许在 Actions 执行生成器时，可手动选择目标分支并勾选
 `generate_db_migrations`（默认关闭）。独立 job 运行 `db:generate`，
@@ -206,18 +206,44 @@ protobuf 生成、测试、构建或容器。
 | 工作流 | 触发与范围 |
 |---|---|
 | `CI` | 独立入口自动静态检查；手动完整模式或由 `PR preview tests` 调用时执行 protobuf、类型、Helm、数据库及容器测试 |
-| `PR preview tests` | 同仓库非草稿 PR 固定 head SHA，汇总完整 CI、scheduler 与 Spack workflow；全部成功后允许进入部署门禁 |
+| `PR preview tests` | 同仓库非草稿 PR 固定 head SHA，按完整 PR diff 选择 Spack 和 scheduler 重型测试；手动触发强制全部组，全部必测组成功后允许进入部署门禁 |
 | `Build Agent binary` / `Build CLI binary` | 仅手动构建并运行 binary smoke，默认只保存 Actions artifact；在 `v*` tag 上手动触发且勾选 `publish_release` 才上传 Release |
 | `Scheduler image architecture` | 仅手动构建并运行调度器镜像架构验证 |
-| `PR scheduler tests` | 由 PR 测试编排调用，或手动触发隔离 Slurm/PBS、真实作业与 Spack 材料验收 |
+| `PR scheduler tests` | 相关源码变更时由 PR 测试编排调用，或手动触发；`run_spack`、`run_schedulers` 分别选择材料验收与 Slurm/PBS matrix |
 | `Docs Site` | 仅从 `main` 手动构建并发布到 `gh-pages`；GitHub Pages 须单独配置发布源 |
 | `Preview` / `Preview Cleanup` | 全部必需测试成功且通过信任门禁后部署远程 k3s，关闭/暂停/撤销标签后清理；无 main 常驻预览 |
+
+### 重型测试范围
+
+自动 PR 测试使用 [路径策略](../deploy/preview/test-scope.cjs) 判断，按 PR 相对 base 的
+完整文件列表而非最后一次 push 判断，包含删除文件和重命名前的路径。
+
+- Spack：材料、recipe、Registry、软件治理、受管安装、工作流、相关门户及测试夹具。
+- 调度器：Agent 适配器与执行链路、Server 调度和作业派发、调度器镜像及 E2E 夹具。
+- 共享 schema、protobuf、数据库、依赖清单和共同运行基础等变更保守触发相关的两组。
+- 测试夹具及专属 workflow 的变更也触发对应组；同时定义两组的调度器 workflow
+  变更触发两组，避免修改测试执行步骤后反而跳过验证。
+- 文档、普通 Web 展示与预览控制器变更不会仅因 PR 更新就启动这两组。
+  基础静态检查、typecheck/Helm、unit/integration、Web 单测/build 及 RustFS 检查仍执行。
+
+手动运行 `PR preview tests` 会强制全部组；也可以使用独立入口运行指定组：
+
+```bash
+gh workflow run pr-scheduler-tests.yml --ref feat/example \
+  -f run_spack=false -f run_schedulers=true
+gh workflow run spack-workflow-execution.yml --ref feat/example
+gh workflow run ci.yml --ref feat/example -f run_runtime_checks=true \
+  -f run_spack=false -f run_schedulers=false
+```
+
+独立入口的部分检查不能替代预览部署所需的 PR 测试证据。最终汇总要求每个必测组成功，
+仅接受规则明确未选中的组为 `skipped`，不能将失败、取消或缺失的必测组视为成功。
 
 `Scheduler image architecture` 的构建步骤提供固定占位值，满足 Compose 的环境变量解析；
 该值不作为 build arg 传入镜像，工作流不启动对象存储或完整 scheduler 栈。
 
 首次推送 `main` 不自动运行测试、binary smoke、调度器容器验证或发布文档站；
-推送 tag 也不自动发布 Release。PR 部署必须等待完整测试编排成功；
+推送 tag 也不自动发布 Release。PR 部署必须等待所有适用的必测组成功；
 `preview-paused` 标签可持续暂停该 PR 的预览，但不暂停独立的
 [PR 调度器测试](../deploy/pr-test/README.md)。后者不提供公网入口、不使用预览口令，
 使用 `docker-compose.pr-test.yml` 和独立的临时卷，结果以对应提交的 Actions 为准。

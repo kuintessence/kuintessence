@@ -27,6 +27,42 @@ const REQUIRED_JOBS = [
   "workflows / Managed workflow (samtools-file)",
   "all-required-tests",
 ];
+const GROUP_JOBS = {
+  spack: new Set(REQUIRED_JOBS.filter((name) =>
+    name.startsWith("ci / Spack ") ||
+    name.startsWith("schedulers / Spack ") ||
+    name.startsWith("workflows / "),
+  )),
+  schedulers: new Set([
+    "ci / E2E slice (CLI -> Server -> Agent -> Slurm)",
+    "schedulers / Scheduler (slurm)",
+    "schedulers / Scheduler (pbs)",
+  ]),
+};
+// Skipped reusable calls/matrices can appear without their expanded child jobs.
+// Keep exact names here: a group prefix must never exempt an unknown skipped job.
+const SKIPPED_PLACEHOLDERS = {
+  "ci / spack-artifact-imports": ["spack"],
+  "ci / Spack artifact imports": ["spack"],
+  "ci / Spack artifact imports ()": ["spack"],
+  "ci / Spack artifact imports (${{ matrix.case }})": ["spack"],
+  "ci / Spack artifact imports (hello)": ["spack"],
+  "ci / Spack artifact imports (samtools)": ["spack"],
+  "schedulers / spack-managed": ["spack"],
+  "schedulers / Spack managed installation": ["spack"],
+  "schedulers / Spack  managed installation": ["spack"],
+  "schedulers / Spack ${{ matrix.label }} managed installation": ["spack"],
+  "schedulers / scheduler": ["schedulers"],
+  "schedulers / Scheduler": ["schedulers"],
+  "schedulers / Scheduler ()": ["schedulers"],
+  "schedulers / Scheduler (${{ matrix.scheduler }})": ["schedulers"],
+  "workflows / managed-workflow": ["spack"],
+  "workflows / Managed workflow": ["spack"],
+  "workflows / Managed workflow ()": ["spack"],
+  "workflows / Managed workflow (${{ matrix.case }})": ["spack"],
+  workflows: ["spack"],
+  schedulers: ["spack", "schedulers"],
+};
 
 function positiveInteger(value, field) {
   const text = String(value ?? "");
@@ -47,15 +83,25 @@ function eligible(pr, repository, permission, defaultBranch = "main") {
   );
 }
 
-function testsPassed(jobs) {
-  return (
-    REQUIRED_JOBS.every((name) => jobs.filter((job) => job.name === name).length === 1) &&
-    jobs.every((job) =>
-      job.status === "completed" &&
-      (job.conclusion === "success" ||
-        (job.name === "ci / Generate database migrations" && job.conclusion === "skipped")),
-    )
-  );
+function testsPassed(jobs, scope = { spack: true, schedulers: true }) {
+  if (!Array.isArray(jobs) || !scope ||
+      typeof scope.spack !== "boolean" || typeof scope.schedulers !== "boolean") return false;
+  const skipped = new Set(["ci / Generate database migrations"]);
+  for (const [group, names] of Object.entries(GROUP_JOBS)) {
+    if (!scope[group]) for (const name of names) skipped.add(name);
+  }
+  const required = REQUIRED_JOBS.filter((name) => !skipped.has(name));
+  for (const [name, groups] of Object.entries(SKIPPED_PLACEHOLDERS)) {
+    if (groups.every((group) => !scope[group])) skipped.add(name);
+  }
+  const seen = new Set();
+  return jobs.every((job) => {
+    if (!job || typeof job.name !== "string" || seen.has(job.name) ||
+        job.status !== "completed") return false;
+    seen.add(job.name);
+    return job.conclusion === "success" ||
+      (job.conclusion === "skipped" && skipped.has(job.name));
+  }) && required.every((name) => seen.has(name));
 }
 
 async function getPermission(github, repo, username) {
@@ -128,8 +174,18 @@ async function gate({ github, context, core }, options = {}) {
     per_page: 100,
   });
   if (!testsPassed(jobs)) {
-    core.info("Preview refused: a required test suite is missing, skipped or unsuccessful.");
-    return;
+    // Only the trusted controller may derive exemptions from the live PR files.
+    // Manual runs always require the full suite; old full runs need no scope API.
+    if (run.event !== "pull_request") {
+      core.info("Preview refused: a required test suite is missing, skipped or unsuccessful.");
+      return;
+    }
+    const { pullRequestScope } = require("./test-scope.cjs");
+    const scope = await pullRequestScope(github, repo, pr);
+    if (!testsPassed(jobs, scope)) {
+      core.info("Preview refused: a required test suite is missing, skipped or unsuccessful.");
+      return;
+    }
   }
   // An earlier green run cannot supersede a newer failed or unfinished attempt.
   const runs = await github.paginate(github.rest.actions.listWorkflowRuns, {

@@ -173,12 +173,12 @@ describe("material artifact deployment contracts", () => {
     expect(invocation?.run).not.toContain("${{");
   });
 
-  test("full CI calls both cases without authorizing artifact publication", async () => {
+  test("selected Spack CI calls both cases without authorizing artifact publication", async () => {
     const workflow = parse(
       await readFile(join(root, ".github/workflows/ci.yml"), "utf8"),
     ) as Workflow;
     const job = workflow.jobs["spack-artifact-imports"];
-    expect(job?.if).toBe("inputs.run_runtime_checks || inputs.source_sha");
+    expect(job?.if).toBe("(inputs.run_runtime_checks || inputs.source_sha) && inputs.run_spack");
     expect(job?.needs).toBe("lint-and-typecheck");
     expect(job?.uses).toBe("./.github/workflows/spack-material-artifacts.yml");
     expect(job?.strategy).toEqual({ "fail-fast": false, matrix: { case: ["hello", "samtools"] } });

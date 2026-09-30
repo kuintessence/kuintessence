@@ -7,7 +7,8 @@
 ## 流程
 
 1. [`PR preview tests`](../.github/workflows/preview-tests.yml) 固定当前 PR head SHA，
-   运行完整 CI、调度器矩阵和 Spack workflow 矩阵。测试容器只存在于 runner。
+   运行基础 CI，并按完整 PR diff 选择 Spack 和调度器重型测试；手动触发该工作流
+   则运行全部组。测试容器只存在于 runner。
 2. [`Preview`](../.github/workflows/preview.yml) 从可信 workflow 版本加载部署逻辑，
    校验当前 PR、作者权限、标签、受测 SHA、必需 job 以及后续重跑状态。
 3. 独立镜像 job 构建 `linux/amd64` 的 Server、Registry、Web、db-migrate、seed、
@@ -23,7 +24,10 @@
 PR 必须同时满足：同仓库、目标为默认分支、打开、非草稿、精确标签 `TRUST_PR_CREATOR`、
 没有 `preview-paused`、作者**当前**拥有 write/maintain/admin 权限。
 标签与成员资格是 AND，不接受“只满足其中一个”。不使用过期 SHA 的历史成功结果，
-也不把 skipped、缺失或只运行静态检查的 job 算作完整成功。
+也不把必测组的 skipped、缺失或只运行静态检查的结果算作成功。
+可信部署控制器会独立读取完整 PR 文件列表、检查当前 head/base 并计算必测组，
+不信任 PR 上报的范围或 artifact；只有按路径规则未选中的组允许跳过。
+文件列表不完整、超过可完整查询的范围或查询期间版本变化时拒绝继续。
 堆叠 PR 可先运行全部测试；应先完成依赖合并并将 base 调整为默认分支，再进入部署。
 部署和自动清理采用相同的 base 限制，避免从非默认 base 执行带集群凭据的控制器。
 
@@ -111,7 +115,7 @@ demo seed 的内容和幂等策略见 [seed 指南](../deploy/seed/README.md)。
 自动 `workflow_run` 部署和 `pull_request_target` 清理须先存在于受信默认分支。
 共享 namespace 控制器修改也必须先经审核合入，不能由目标 PR 替换带凭据的部署逻辑。
 维护者准备好 `preview` namespace、namespace-only RBAC、公开镜像与集群基础设施后，
-给目标 PR 添加 `TRUST_PR_CREATOR`，完整测试通过后才进入自动部署。
+给目标 PR 添加 `TRUST_PR_CREATOR`，全部必测组通过后才进入自动部署。
 信任标签应由维护者在审阅代码后添加，不由构建脚本自动补齐。
 
 测试可在 PR 分支触发；有集群凭据的手动部署入口**仅接受默认分支**：
@@ -123,14 +127,37 @@ gh workflow run preview.yml --ref main \
 ```
 
 第一次命令的 ref 必须对应 PR 当前 head；第二次必须等待受审部署控制器进入默认分支，
-以及第一组完整测试终态成功。手动入口不绕过任何信任或测试门禁。
+以及第一组测试终态成功。手动触发 `PR preview tests` 强制运行所有组；
+手动部署入口不绕过任何信任或测试门禁。
 只有默认分支已经注册对应 workflow 时，GitHub 才能通过名称发现这些手动入口。
+
+### 保留环境供人工检查
+
+需要在 Helm 后由维护者检查网络或工作负载时，可显式启用手动检查模式：
+
+```bash
+gh workflow run preview.yml --ref main \
+  -f pr_number=123 -f test_run_id=123456789 -f inspection_mode=true
+```
+
+该选项仅对默认分支的 `workflow_dispatch` 生效，默认关闭，不绕过信任或完整测试门禁。
+Helm 仍等待工作负载与初始化 Job，超时仍为 15 分钟，但不使用 `--atomic`；
+失败不会自动回滚，资源、PVC、凭据和本次镜像 tag 保留供检查。成功后输出
+`KQ_PREVIEW_HELM code=READY` 和 `code=RETAINED_FOR_INSPECTION`，不执行自动 HTTPS 验收。
+PR 评论提供待检查地址，明确区分 Helm 成功与失败现场，不宣称 HTTPS 已通过；
+Helm 成功时 GitHub Deployment 保持 `in_progress`，失败时仍标记 `failure`。
+runner 的临时凭据文件和 SSH 隧道仍正常销毁，这不删除 k3s 环境。
+
+检查期间不要关闭 PR、转为草稿、撤销信任标签或添加 `preview-paused`，
+也不要触发新的正常部署覆盖现场。上述安全撤销清理仍然有效，模式不提供永久保留锁。
+最终资格查询异常时保留现场并使 Actions 失败；明确失去资格时仍清理自有资源。
+人工检查完成后可重新按默认模式部署并运行完整 HTTPS 验收，或显式撤销预览资格后清理。
 
 ## 升级与清理
 
 同一 PR 的部署、清理串行执行，不中途取消 Helm。构建前和部署前后均重新检查 PR 状态，
 旧 run 不得覆盖新 SHA 的环境或发布错误地址。失败时不发布新的成功链接；
-Helm 使用 atomic/wait/wait-for-jobs，原始日志和 Secret 文件不会上传。
+默认模式的 Helm 使用 atomic/wait/wait-for-jobs，原始日志和 Secret 文件不会上传。
 Helm 已应用但 HTTPS 验收或最终授权检查失败时，会补偿删除本 PR 的专用环境；
 这同样会删除该环境的演示数据，不保留一个未经验收的新版本对外提供服务。
 当前版本的 migration、seed 和 RustFS bootstrap 完成 Job 不设置 TTL，
@@ -162,7 +189,7 @@ HTTPS 验收使用 `KQ_PREVIEW_HTTPS` 固定阶段与错误分类，区分匿名
 URL、响应正文、header、证书、凭据或原始异常。未知错误不会原样透传。
 诊断不关闭 TLS 校验、不跟随重定向、不放宽认证条件，也不改变既有重试
 和失败补偿；Helm 成功不代表 HTTPS 验收成功。定位后按对应阶段修复，
-不能通过跳过验收发布地址。
+不能通过跳过验收宣称地址已验收可用。显式手动检查模式只发布待检查地址。
 即使后续 GHCR 回收失败，评论仍如实标记站点不可用、Deployment 为 inactive；
 cleanup job 保持失败状态，修复权限等问题后可重复执行清理。
 

@@ -41,6 +41,8 @@ jobs:
     timeout-minutes: 5
     outputs:
       source_sha: ${{ steps.source.outputs.source_sha }}
+      spack: ${{ steps.scope.outputs.spack }}
+      schedulers: ${{ steps.scope.outputs.schedulers }}
     steps:
       - name: Resolve the current trusted PR head
         id: source
@@ -82,6 +84,26 @@ jobs:
               throw new Error("Dispatch must use the current pull request head branch and SHA");
             }
             core.setOutput("source_sha", pr.head.sha);
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.source.outputs.source_sha }}
+          persist-credentials: false
+      - name: Select expensive suites from the complete PR diff
+        id: scope
+        uses: actions/github-script@v7
+        env:
+          TEST_SHA: ${{ steps.source.outputs.source_sha }}
+        with:
+          script: |
+            const number = Number(context.payload.pull_request?.number ?? context.payload.inputs?.pr_number);
+            const {data: pr} = await github.rest.pulls.get({...context.repo, pull_number: number});
+            if (pr.head.sha !== process.env.TEST_SHA) throw new Error("PR head changed before scope resolution");
+            const scope = context.eventName === "workflow_dispatch"
+              ? {spack: true, schedulers: true}
+              : await require("./deploy/preview/test-scope.cjs").pullRequestScope(github, context.repo, pr);
+            core.setOutput("spack", String(scope.spack));
+            core.setOutput("schedulers", String(scope.schedulers));
+            core.info(`Required suites: spack=${scope.spack}, schedulers=${scope.schedulers}`);
 
   ci:
     name: ci
@@ -90,17 +112,23 @@ jobs:
     with:
       source_sha: ${{ needs.resolve.outputs.source_sha }}
       run_runtime_checks: true
+      run_spack: ${{ needs.resolve.outputs.spack == 'true' }}
+      run_schedulers: ${{ needs.resolve.outputs.schedulers == 'true' }}
 
   schedulers:
     name: schedulers
     needs: resolve
+    if: needs.resolve.outputs.spack == 'true' || needs.resolve.outputs.schedulers == 'true'
     uses: ./.github/workflows/pr-scheduler-tests.yml
     with:
       source_sha: ${{ needs.resolve.outputs.source_sha }}
+      run_spack: ${{ needs.resolve.outputs.spack == 'true' }}
+      run_schedulers: ${{ needs.resolve.outputs.schedulers == 'true' }}
 
   workflows:
     name: workflows
     needs: resolve
+    if: needs.resolve.outputs.spack == 'true'
     uses: ./.github/workflows/spack-workflow-execution.yml
     with:
       source_sha: ${{ needs.resolve.outputs.source_sha }}
@@ -112,19 +140,26 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Require every test suite to succeed
+      - name: Require every selected test suite to succeed
         env:
           RESOLVE_RESULT: ${{ needs.resolve.result }}
           CI_RESULT: ${{ needs.ci.result }}
           SCHEDULERS_RESULT: ${{ needs.schedulers.result }}
           WORKFLOWS_RESULT: ${{ needs.workflows.result }}
+          SPACK_REQUIRED: ${{ needs.resolve.outputs.spack }}
+          SCHEDULERS_REQUIRED: ${{ needs.resolve.outputs.schedulers }}
         run: |
-          if [[ "$RESOLVE_RESULT" == success &&
-                "$CI_RESULT" == success &&
-                "$SCHEDULERS_RESULT" == success &&
-                "$WORKFLOWS_RESULT" == success ]]; then
-            echo "All required preview tests passed"
+          [[ "$SPACK_REQUIRED" == true || "$SPACK_REQUIRED" == false ]]
+          [[ "$SCHEDULERS_REQUIRED" == true || "$SCHEDULERS_REQUIRED" == false ]]
+          [[ "$RESOLVE_RESULT" == success && "$CI_RESULT" == success ]]
+          if [[ "$SPACK_REQUIRED" == true || "$SCHEDULERS_REQUIRED" == true ]]; then
+            [[ "$SCHEDULERS_RESULT" == success ]]
           else
-            echo "Required preview tests did not all succeed" >&2
-            exit 1
+            [[ "$SCHEDULERS_RESULT" == skipped ]]
           fi
+          if [[ "$SPACK_REQUIRED" == true ]]; then
+            [[ "$WORKFLOWS_RESULT" == success ]]
+          else
+            [[ "$WORKFLOWS_RESULT" == skipped ]]
+          fi
+          echo "All required preview tests passed"

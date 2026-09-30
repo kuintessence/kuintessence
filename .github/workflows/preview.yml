@@ -15,6 +15,10 @@ on:
         description: "Successful PR preview tests run for the current head"
         required: true
         type: string
+      inspection_mode:
+        description: "Retain Helm resources and images for manual inspection; defer HTTPS checks"
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -258,7 +262,7 @@ jobs:
         env:
           IMAGE_MANIFEST: ${{ runner.temp }}/kq-preview-images/kq-images.json
         run: node deploy/preview/images.cjs verify "$IMAGE_MANIFEST"
-      - name: Deploy through SSH and verify HTTPS
+      - name: Deploy through SSH and optionally verify HTTPS
         id: helm
         if: steps.recheck.outputs.allowed == 'true'
         env:
@@ -269,9 +273,12 @@ jobs:
           SSH_KEY: ${{ secrets.SSH_KEY }}
           KUBE_CONFIG: ${{ secrets.KUBE_CONFIG }}
           PREVIEW_PASSWORD: ${{ secrets.PREVIEW_PASSWORD }}
+          PREVIEW_INSPECTION: ${{ github.event_name == 'workflow_dispatch' && inputs.inspection_mode == true }}
         run: bash deploy/preview/remote.sh deploy
       - name: Recheck before publishing the URL
-        if: success() && steps.recheck.outputs.allowed == 'true'
+        if: >-
+          always() && (success() || steps.helm.outputs.inspection == 'true') &&
+          steps.helm.outputs.attempted == 'true'
         id: final-check
         uses: actions/github-script@v7
         with:
@@ -280,7 +287,13 @@ jobs:
               pr: process.env.PREVIEW_PR, runId: process.env.TEST_RUN_ID,
             });
       - name: Remove deployment superseded or revoked while Helm was running
-        if: always() && steps.helm.outputs.applied == 'true' && steps.final-check.outputs.allowed != 'true'
+        if: >-
+          always() &&
+          (steps.helm.outputs.applied == 'true' ||
+           (steps.helm.outputs.inspection == 'true' && steps.helm.outputs.attempted == 'true')) &&
+          steps.final-check.outputs.allowed != 'true' &&
+          (steps.helm.outputs.inspection != 'true' ||
+           (steps.final-check.outcome == 'success' && steps.final-check.outputs.allowed == 'false'))
         id: removed
         env:
           SSH_HOST: ${{ secrets.SSH_HOST }}
@@ -313,12 +326,27 @@ jobs:
               {github, context, core}, "inactive", process.env.PREVIEW_PR,
             );
       - name: Publish the verified preview URL
-        if: success() && steps.final-check.outputs.allowed == 'true'
+        if: success() && steps.final-check.outputs.allowed == 'true' && steps.helm.outputs.inspection != 'true'
         uses: actions/github-script@v7
         with:
           script: |
             await require("./deploy/preview/notice.cjs").notice(
               {github, context, core}, "success", process.env.PREVIEW_PR, process.env.PREVIEW_SHA,
+            );
+      - name: Publish retained environment for manual inspection
+        if: >-
+          always() && steps.helm.outputs.inspection == 'true' &&
+          steps.helm.outputs.attempted == 'true' &&
+          steps.final-check.outputs.allowed == 'true'
+        uses: actions/github-script@v7
+        env:
+          HELM_APPLIED: ${{ steps.helm.outputs.applied }}
+        with:
+          script: |
+            await require("./deploy/preview/notice.cjs").notice(
+              {github, context, core},
+              process.env.HELM_APPLIED === "true" ? "inspection" : "inspection-failed",
+              process.env.PREVIEW_PR, process.env.PREVIEW_SHA,
             );
       - name: Record deployment outcome
         if: always() && steps.deployment.outputs.id != ''
@@ -327,13 +355,19 @@ jobs:
           DEPLOYMENT_ID: ${{ steps.deployment.outputs.id }}
           JOB_STATUS: ${{ job.status }}
           FINAL_ALLOWED: ${{ steps.final-check.outputs.allowed }}
+          INSPECTION: ${{ steps.helm.outputs.inspection }}
+          HELM_APPLIED: ${{ steps.helm.outputs.applied }}
         with:
           script: |
-            const success = process.env.JOB_STATUS === "success" && process.env.FINAL_ALLOWED === "true";
+            const retained = process.env.INSPECTION === "true" && process.env.FINAL_ALLOWED === "true";
+            const inspection = retained && process.env.HELM_APPLIED === "true" && process.env.JOB_STATUS === "success";
+            const success = !retained && process.env.JOB_STATUS === "success" && process.env.FINAL_ALLOWED === "true";
             await github.rest.repos.createDeploymentStatus({
               ...context.repo, deployment_id: Number(process.env.DEPLOYMENT_ID),
-              state: success ? "success" : "failure",
-              environment_url: success ? `https://pr-${process.env.PREVIEW_PR}.preview.dev.kuintessence.com` : undefined,
-              description: success ? "HTTPS preview ready" : "Preview failed or was superseded; no new URL published",
+              state: inspection ? "in_progress" : success ? "success" : "failure",
+              environment_url: success || retained ? `https://pr-${process.env.PREVIEW_PR}.preview.dev.kuintessence.com` : undefined,
+              description: inspection ? "Helm ready; retained for manual HTTPS inspection" :
+                retained ? "Deployment failed; resources retained for inspection" :
+                success ? "HTTPS preview ready" : "Preview failed or was superseded; no new URL published",
               log_url: `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
             });

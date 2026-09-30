@@ -191,7 +191,7 @@ Kuintessence 当前为 pre-release。以下列出组件功能、运行要求和�
   以保留构建、挂载、根目录 `.env` 和默认项目名的路径基准。
 - [GitHub 预览配置](../preview-k3s.md) 改为全部必需测试通过后构建 GHCR `kq-dev-*`
   SHA 镜像，经 SSH 隧道部署到远程 k3s；旧 runner 限时 Quick Tunnel job 已停用。
-  门禁同时要求信任标签、作者写权限、同仓库当前 SHA 和完整测试成功。
+  门禁同时要求信任标签、作者写权限、同仓库当前 SHA 和全部必测组成功。
   提供用户 Helm Chart 与 demo CI wrapper，包含持久化 Registry、RustFS、
   seed 和单容器 Slurm + Agent；不启用远端高权限 managed Spack runtime。
   预览镜像采用公开 GHCR，首次由维护者手动公开后重试失败的部署 job；
@@ -206,6 +206,9 @@ Kuintessence 当前为 pre-release。以下列出组件功能、运行要求和�
   其他用途 tag或无法归属的 untagged版本不删除。
   HTTPS验收提供固定阶段、错误分类及合法 HTTP状态码诊断，不输出响应正文、
   header、证书、凭据或原始异常；保持 TLS校验、认证门禁、重试及失败补偿。
+  手动部署可显式设置 `inspection_mode=true`：保留 Helm 成功或失败现场及镜像，
+  禁用该次 atomic 回滚，延后自动 HTTPS 验收，评论提供待人工检查地址；
+  不标记 HTTPS 成功，PR 撤销信任或关闭等安全清理仍然有效。默认自动部署行为不变。
   旧独立 PR namespace及数据不会自动迁移或清理。共享 namespace安全实现仍待复核，
   不宣称已上线或已通过远端验收；自动控制器须先经审核进入默认分支，
   运行状态以对应提交的 GitHub Actions和 HTTPS验收为准。
@@ -234,9 +237,11 @@ Kuintessence 当前为 pre-release。以下列出组件功能、运行要求和�
 - [系统运维](../manuals/system-operations-manual.md)
 - [开发与检查命令](../../README.md#开发)
 
-`CI` 工作流在推送 `main` 和 PR 时默认只运行 Biome、文档链接及 workflow 引用静态检查，
+`CI` 工作流在推送 `main` 和 PR 时默认运行 Biome、文档链接、workflow 引用及轻量编排检查，
 安装时禁用生命周期脚本。`PR preview tests` 对同仓库非草稿 PR 自动编排完整类型检查、
-测试、Slurm/PBS 与 Spack workflow，随后通过信任门禁才部署远程 k3s。
+基础测试及 Web 单测/build，按完整 PR 文件列表选择 Spack 与调度器重型组，
+手动触发则运行全部组。
+部署控制器独立核算必测范围，仅允许未选组跳过，随后通过信任门禁才部署远程 k3s。
 binary 构建与 smoke、跨架构镜像验证、文档站发布仍由维护者手动触发；
 不再托管 runner 限时预览或 main 预览。具体入口见 [GitHub Actions](../deployment.md#actions)。
 手动完整 CI 使用 `test:unit` 的临时数据库和逐文件进程隔离，再单独执行

@@ -2,11 +2,26 @@ name: PR scheduler tests
 
 on:
   workflow_dispatch:
+    inputs:
+      run_spack:
+        description: "Run Spack managed installation and single-step cases"
+        type: boolean
+        default: true
+      run_schedulers:
+        description: "Run the Slurm and PBS scheduler matrix"
+        type: boolean
+        default: true
   workflow_call:
     inputs:
       source_sha:
         required: true
         type: string
+      run_spack:
+        type: boolean
+        default: true
+      run_schedulers:
+        type: boolean
+        default: true
 
 permissions:
   contents: read
@@ -18,6 +33,7 @@ concurrency:
 jobs:
   spack-managed:
     name: Spack ${{ matrix.label }} managed installation
+    if: inputs.run_spack
     runs-on: ubuntu-24.04
     timeout-minutes: 70
     strategy:
@@ -77,6 +93,7 @@ jobs:
 
   spack-case:
     name: Spack GNU Hello single-step case
+    if: inputs.run_spack
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
@@ -91,6 +108,7 @@ jobs:
 
   scheduler:
     name: Scheduler (${{ matrix.scheduler }})
+    if: inputs.run_schedulers
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     strategy:

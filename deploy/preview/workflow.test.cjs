@@ -5,7 +5,7 @@ const { runInNewContext } = require("node:vm");
 const { X509Certificate, createPrivateKey, createPublicKey } = require("node:crypto");
 const { parse } = require("yaml");
 const { addTlsData } = require("./credentials.cjs");
-const { cleanupGate } = require("./gate.cjs");
+const { cleanupGate, gate } = require("./gate.cjs");
 const { imageTag } = require("./images.cjs");
 
 const root = resolve(__dirname, "../..");
@@ -550,7 +550,7 @@ describe("privileged preview orchestration boundaries", () => {
     expect(script).not.toContain("helm uninstall --all");
   });
 
-  test("observes Helm without weakening rollback or publishing raw diagnostics", () => {
+  test("observes Helm without weakening automatic rollback or publishing raw diagnostics", () => {
     const script = read("deploy/preview/remote.sh");
     const observe = script.indexOf('node "$tooling/workload-status.cjs" watch');
     const upgrade = script.indexOf('if helm upgrade --install "$release"');
@@ -561,7 +561,9 @@ describe("privileged preview orchestration boundaries", () => {
     expect(failure).toBeGreaterThan(upgrade);
     expect(applied).toBeGreaterThan(upgrade);
     expect(applied).toBeLessThan(failure);
-    expect(script.slice(applied, failure)).toMatch(/stop_observer\nelse\n  stop_observer/);
+    expect(script.slice(applied, failure)).toMatch(
+      /stop_observer\n  echo "KQ_PREVIEW_HELM code=READY"\nelse\n  stop_observer/,
+    );
     expect(script).toContain("--atomic --wait --wait-for-jobs --timeout 15m");
     expect(script).toContain("cleanup_local() {\n  stop_observer");
     expect(script).toContain('wait "$observer_pid" 2>/dev/null || true');
@@ -606,4 +608,260 @@ describe("privileged preview orchestration boundaries", () => {
     expect(JSON.stringify(data) === previous).toBe(true);
     expect(() => addTlsData({ SERVER_CA_CERT: data.SERVER_CA_CERT }, "kq-pr-17")).toThrow();
   }, 15000);
+});
+
+describe("manual preview inspection", () => {
+  test("requires an explicit boolean opt-in on a default-branch manual dispatch", () => {
+    const workflow = preview();
+    const inputs = workflow.on.workflow_dispatch.inputs;
+    expect(inputs.inspection_mode.type).toBe("boolean");
+    expect(inputs.inspection_mode.default).toBe(false);
+    for (const name of ["pr_number", "test_run_id"]) {
+      expect(inputs[name].required).toBe(true);
+      expect(inputs[name].type).toBe("string");
+    }
+    const helm = workflow.jobs.deploy.steps.find((step) => step.id === "helm");
+    expect(helm.env.PREVIEW_INSPECTION).toBe(
+      "${{ github.event_name == 'workflow_dispatch' && inputs.inspection_mode == true }}",
+    );
+    for (const event of ["workflow_dispatch", "workflow_run"]) {
+      for (const inspection of [true, false, undefined]) {
+        expect(interpolate(helm.env.PREVIEW_INSPECTION, {
+          github: { event_name: event },
+          inputs: inspection === undefined ? {} : { inspection_mode: inspection },
+        })).toBe(String(event === "workflow_dispatch" && inspection === true));
+      }
+    }
+    for (const ref of ["refs/heads/main", "refs/heads/feature", "refs/tags/main"]) {
+      expect(runInNewContext(workflow.jobs.gate.if, {
+        github: {
+          event_name: "workflow_dispatch", ref,
+          event: { repository: { default_branch: "main" } },
+        },
+        format: (template, value) => template.replace("{0}", value),
+      })).toBe(ref === "refs/heads/main");
+    }
+    expect(workflow.jobs.images.if).toBe("needs.gate.outputs.allowed == 'true'");
+    expect(helm.if).toBe("steps.recheck.outputs.allowed == 'true'");
+  });
+
+  test("keeps atomic HTTPS acceptance by default and only defers it for inspection", () => {
+    const script = read("deploy/preview/remote.sh");
+    expect(script).toContain('inspection="${PREVIEW_INSPECTION:-false}"');
+    expect(script).toContain(
+      '[[ "$inspection" == true || "$inspection" == false ]] || fail "Invalid inspection mode."',
+    );
+    expect(script).toContain(
+      'if [[ "$inspection" == true ]]; then\n' +
+      '  [[ "${GITHUB_EVENT_NAME:-}" == workflow_dispatch ]] || fail "Inspection requires manual dispatch."\nfi',
+    );
+    expect(script.indexOf('fail "Inspection requires manual dispatch."'))
+      .toBeLessThan(script.indexOf('state="$(mktemp'));
+    expect(script).toContain(
+      "helm_flags=(--atomic --wait --wait-for-jobs --timeout 15m)\n" +
+      'if [[ "$inspection" == true ]]; then\n' +
+      "  helm_flags=(--wait --wait-for-jobs --timeout 15m)\nfi",
+    );
+    const attempted = script.indexOf("printf 'inspection=%s\\nattempted=true\\n'");
+    const upgrade = script.indexOf('if helm upgrade --install "$release"');
+    const https = script.indexOf('node "$tooling/https.cjs" "$state/secret"');
+    expect(attempted).toBeGreaterThan(0);
+    expect(attempted).toBeLessThan(upgrade);
+    expect(script.slice(upgrade, https)).toContain('"${helm_flags[@]}"');
+    expect(script.slice(upgrade, https)).toMatch(
+      /if \[\[ "\$inspection" == true \]\]; then\n[\s\S]*?code=RETAINED_FOR_INSPECTION[\s\S]*?\n  exit 0\nfi\n$/,
+    );
+    expect(script.slice(upgrade, https)).not.toContain("resources.cjs");
+    expect(script.slice(upgrade, https)).not.toContain("helm uninstall");
+    expect(script.slice(https)).toContain("Preview is ready with verified HTTPS");
+  });
+
+  test("rechecks failed inspection attempts but never publishes an unattempted environment", () => {
+    const steps = preview().jobs.deploy.steps;
+    const finalCheck = steps.find((step) => step.id === "final-check");
+    const notice = steps.find((step) => step.env?.HELM_APPLIED && !step.env.DEPLOYMENT_ID);
+    for (const inspection of ["true", "false", ""]) {
+      for (const attempted of ["true", "false", ""]) {
+        for (const successful of [true, false]) {
+          const state = {
+            helm: { outputs: { inspection, attempted } },
+            "final-check": { outputs: { allowed: "true" } },
+          };
+          expect(stepAllowed(finalCheck, state, successful)).toBe(
+            attempted === "true" && (successful || inspection === "true"),
+          );
+          expect(stepAllowed(notice, state, successful)).toBe(
+            inspection === "true" && attempted === "true",
+          );
+        }
+      }
+    }
+  });
+
+  test("retains resources and images unless a successful final query confirms revocation", () => {
+    const deploy = preview().jobs.deploy;
+    const remove = deploy.steps.find((step) => step.id === "removed");
+    const images = deploy.steps.find((step) => step.id === "compensated-images");
+    const inactive = deploy.steps.find((step) => step.id === "compensated-notice");
+    for (const applied of ["true", ""]) {
+      for (const outcome of ["success", "failure", "cancelled", "skipped"]) {
+        for (const allowed of ["true", "false", "", undefined]) {
+          const state = {
+            helm: { outputs: { inspection: "true", attempted: "true", applied } },
+            "final-check": { outcome, outputs: { allowed } },
+          };
+          const shouldRemove = outcome === "success" && allowed === "false";
+          expect(stepAllowed(remove, state, false)).toBe(shouldRemove);
+          state.removed = { outcome: shouldRemove ? "success" : "skipped" };
+          expect(stepAllowed(images, state, false)).toBe(shouldRemove);
+          expect(stepAllowed(inactive, state, false)).toBe(shouldRemove);
+        }
+      }
+    }
+    expect(stepAllowed(remove, {
+      helm: { outputs: { inspection: "true" } },
+      "final-check": { outcome: "success", outputs: { allowed: "false" } },
+    }, false)).toBe(false);
+  });
+
+  test("a real gate query writing false before throwing retains inspection but compensates automatic deploys", async () => {
+    const deploy = preview().jobs.deploy;
+    const finalCheck = deploy.steps.find((step) => step.id === "final-check");
+    const remove = deploy.steps.find((step) => step.id === "removed");
+    const outputs = {};
+    const requests = [];
+    await expect(runScript(finalCheck, { "./deploy/preview/gate.cjs": { gate } }, {
+      PREVIEW_PR: "17", TEST_RUN_ID: "88",
+    }, {
+      context: { repo: { owner: "example", repo: "project" }, payload: {} },
+      core: { setOutput: (key, value) => { outputs[key] = value; } },
+      github: { rest: { actions: { getWorkflowRun: async (options) => {
+        expect(outputs.allowed).toBe("false");
+        requests.push(options);
+        throw new Error("Mock authorization API unavailable");
+      } } } },
+    })).rejects.toThrow("Mock authorization API unavailable");
+    expect(requests).toEqual([{ owner: "example", repo: "project", run_id: 88 }]);
+    expect(outputs).toEqual({ allowed: "false" });
+    for (const inspection of ["true", "false"]) {
+      const state = {
+        helm: { outputs: { inspection, attempted: "true", applied: "true" } },
+        "final-check": { outcome: "failure", outputs },
+        removed: { outcome: "skipped" },
+      };
+      expect(stepAllowed(remove, state, false)).toBe(inspection !== "true");
+      for (const step of deploy.steps.filter((entry) => entry.with?.script?.includes(".notice("))) {
+        state["retired-namespace"] = { outcome: "skipped" };
+        expect(stepAllowed(step, state, false)).toBe(false);
+      }
+      if (inspection === "true") {
+        expect(stepAllowed(
+          deploy.steps.find((step) => step.id === "compensated-images"), state, false,
+        )).toBe(false);
+      }
+    }
+  });
+
+  test("inspection URL notices distinguish Helm success from failure without claiming HTTPS success", async () => {
+    const deploy = preview().jobs.deploy;
+    const verified = deploy.steps.find((step) => step.name === "Publish the verified preview URL");
+    const retained = deploy.steps.find((step) => step.env?.HELM_APPLIED && !step.env.DEPLOYMENT_ID);
+    expect(deploy.steps.indexOf(retained)).toBeGreaterThan(
+      deploy.steps.findIndex((step) => step.id === "final-check"),
+    );
+    expect(retained.env.HELM_APPLIED).toBe("${{ steps.helm.outputs.applied }}");
+    for (const applied of ["true", ""]) {
+      const state = {
+        helm: { outputs: { inspection: "true", attempted: "true", applied } },
+        "final-check": { outcome: "success", outputs: { allowed: "true" } },
+      };
+      expect(stepAllowed(verified, state, applied === "true")).toBe(false);
+      expect(stepAllowed(retained, state, applied === "true")).toBe(true);
+      const calls = [];
+      await runScript(retained, {
+        "./deploy/preview/notice.cjs": { notice: async (_api, ...args) => calls.push(args) },
+      }, { PREVIEW_PR: "17", PREVIEW_SHA: revision, HELM_APPLIED: applied });
+      expect(calls).toEqual([[applied === "true" ? "inspection" : "inspection-failed", "17", revision]]);
+      for (const allowed of ["false", "", undefined]) {
+        state["final-check"].outputs.allowed = allowed;
+        expect(stepAllowed(retained, state, false)).toBe(false);
+      }
+    }
+    const automatic = {
+      helm: { outputs: { inspection: "false", attempted: "true", applied: "true" } },
+      "final-check": { outcome: "success", outputs: { allowed: "true" } },
+    };
+    expect(stepAllowed(verified, automatic)).toBe(true);
+    expect(stepAllowed(verified, automatic, false)).toBe(false);
+    expect(stepAllowed(retained, automatic)).toBe(false);
+    const calls = [];
+    await runScript(verified, {
+      "./deploy/preview/notice.cjs": { notice: async (_api, ...args) => calls.push(args) },
+    }, { PREVIEW_PR: "17", PREVIEW_SHA: revision });
+    expect(calls).toEqual([["success", "17", revision]]);
+  });
+
+  test("deployment outcomes remain in_progress for inspection and failure for unsuccessful attempts", async () => {
+    const deploy = preview().jobs.deploy;
+    const start = deploy.steps.find((step) => step.id === "deployment");
+    const outcome = deploy.steps.find((step) => step.env?.DEPLOYMENT_ID);
+    const context = {
+      repo: { owner: "example", repo: "project" },
+      serverUrl: "https://github.com", runId: 99,
+    };
+    const statuses = [];
+    const outputs = {};
+    const github = { rest: { repos: {
+      createDeployment: async (options) => {
+        expect(options.ref).toBe(revision);
+        expect(options.environment).toBe("pr-17");
+        expect(options.production_environment).toBe(false);
+        return { data: { id: 123 } };
+      },
+      createDeploymentStatus: async (options) => { statuses.push(options); },
+    } } };
+    await runScript(start, {}, { PREVIEW_PR: "17", PREVIEW_SHA: revision }, {
+      github, context, core: { setOutput: (key, value) => { outputs[key] = value; } },
+    });
+    expect(outputs.id).toBe(123);
+    expect(statuses).toEqual([{ ...context.repo, deployment_id: 123, state: "in_progress" }]);
+    expect(stepAllowed(outcome, { deployment: { outputs: { id: "" } } }, false)).toBe(false);
+    expect(stepAllowed(outcome, { deployment: { outputs: { id: "123" } } }, false)).toBe(true);
+    expect(outcome.env).toEqual({
+      DEPLOYMENT_ID: "${{ steps.deployment.outputs.id }}",
+      JOB_STATUS: "${{ job.status }}",
+      FINAL_ALLOWED: "${{ steps.final-check.outputs.allowed }}",
+      INSPECTION: "${{ steps.helm.outputs.inspection }}",
+      HELM_APPLIED: "${{ steps.helm.outputs.applied }}",
+    });
+    for (const [inspection, applied, allowed, jobStatus, expected, hasUrl] of [
+      ["true", "true", "true", "success", "in_progress", true],
+      ["true", "", "true", "failure", "failure", true],
+      ["true", "true", "true", "failure", "failure", true],
+      ["true", "true", "true", "cancelled", "failure", true],
+      ["true", "true", "false", "success", "failure", false],
+      ["true", "true", "false", "failure", "failure", false],
+      ["true", "true", "", "failure", "failure", false],
+      ["false", "true", "true", "success", "success", true],
+      ["false", "true", "true", "failure", "failure", false],
+      ["false", "true", "false", "success", "failure", false],
+      ["", "", "", "failure", "failure", false],
+    ]) {
+      statuses.length = 0;
+      await runScript(outcome, {}, {
+        DEPLOYMENT_ID: "123", PREVIEW_PR: "17", INSPECTION: inspection,
+        HELM_APPLIED: applied, FINAL_ALLOWED: allowed, JOB_STATUS: jobStatus,
+      }, { github, context });
+      expect(statuses).toHaveLength(1);
+      expect(statuses[0]).toMatchObject({
+        ...context.repo, deployment_id: 123, state: expected,
+        environment_url: hasUrl ? "https://pr-17.preview.dev.kuintessence.com" : undefined,
+        log_url: "https://github.com/example/project/actions/runs/99",
+      });
+      if (inspection === "true") {
+        expect(statuses[0].description).not.toContain("HTTPS preview ready");
+        if (allowed === "true") expect(statuses[0].description).toContain("retained");
+      }
+    }
+  });
 });

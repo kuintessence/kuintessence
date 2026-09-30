@@ -439,7 +439,7 @@ describe("managed artifact overlay and workflow contracts", () => {
       expect(job).toBeDefined();
       expect(job?.permissions ?? workflow.permissions).toEqual({ contents: "read" });
       expect(job?.strategy?.["fail-fast"]).toBe(false);
-      expect(job?.if).toBeUndefined();
+      expect(job?.if).toBe("inputs.run_spack");
       const steps = job?.steps ?? [];
       expect(steps.find((step) => step.uses?.startsWith("actions/checkout@"))?.with).toEqual({
         ref: "${{ inputs.source_sha || github.event.pull_request.head.sha || github.sha }}",
