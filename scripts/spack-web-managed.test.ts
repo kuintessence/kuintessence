@@ -390,7 +390,9 @@ describe("Web-to-managed runner contract with fake tools", () => {
     expect(result.commands).toContain("/web-receipt");
     for (const service of ["server", "registry"]) {
       const expected = browserInstall ? (service === "server" ? 4 : 5) : 3;
-      expect(result.calls.filter((line) => line.includes(`ps -q ${service}`))).toHaveLength(expected);
+      expect(result.calls.filter((line) => line.includes(`ps -q ${service}`))).toHaveLength(
+        expected,
+      );
     }
     expect(result.stdout.match(/Spack Web managed: stage=isolation code=OK/g)).toHaveLength(
       browserInstall ? 4 : 3,
@@ -535,11 +537,14 @@ describe("Web-to-managed overlays and workflow", () => {
       "utf8",
     );
     expect(browser).toContain("submit.click()");
-    expect(browser).toContain('assert.equal(response.status(), 202)');
-    expect(browser).toContain('getByTestId(`cp-software-operation-status-${operationId}`)');
-    expect(browser).toContain('getByTestId(`cp-software-installed-load-${spec}`)');
+    expect(browser).toContain("assert.equal(response.status(), 202)");
+    expect(browser).toContain("getByTestId(`cp-software-operation-status-${operationId}`)");
+    expect(browser).toContain("getByTestId(`cp-software-installed-load-${spec}`)");
     expect(browser).not.toMatch(/page\.route|route\.fulfill|\.request\.post|method:\s*["']POST/);
-    const config = await readFile(join(root, "packages/web/e2e/cp-spack-install.config.ts"), "utf8");
+    const config = await readFile(
+      join(root, "packages/web/e2e/cp-spack-install.config.ts"),
+      "utf8",
+    );
     expect(config).toContain('from "./material-artifacts.config"');
     expect(config).toContain('testMatch: "cp-spack-install.acceptance.ts"');
     const api = await readFile(join(root, "deploy/pr-test/spack-managed/api-helper.ts"), "utf8");
@@ -732,10 +737,9 @@ describe("Hello browser receipt contract", () => {
     [{ ...operation, status: "failed" }],
     [{ ...operation, status: "rejected" }],
   ].map((items) => ({ items }));
-  test.each(mismatchedHistories)(
-    "rejects mismatched, duplicate or nonterminal history %#",
-    (history) => {
-      expect(() => verifyWebInstallHistory(receipt, history)).toThrow();
-    },
-  );
+  test.each(
+    mismatchedHistories,
+  )("rejects mismatched, duplicate or nonterminal history %#", (history) => {
+    expect(() => verifyWebInstallHistory(receipt, history)).toThrow();
+  });
 });
