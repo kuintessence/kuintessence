@@ -7,6 +7,7 @@ import { type CaseToken, jsonRequest, OperationSchema } from "../spack-case/api"
 import { selectedCase } from "../spack-case/fixture";
 import { buildManagedJob, managedJobOutputAccepted } from "./jobs";
 import { diagnoseManagedQueue, managedQueueMarker } from "./queue-diagnostic";
+import { type WebInstallReceipt, verifyWebInstallHistory } from "./web-install-contract";
 
 const origin = "https://server:3443";
 const agentId = "pr-scheduler";
@@ -67,6 +68,13 @@ export function managedApi(token: CaseToken) {
           agent.installedSpecs.includes(spec) === present
         );
       },
+    );
+  }
+
+  async function webInstall(receipt: WebInstallReceipt) {
+    return verifyWebInstallHistory(
+      receipt,
+      await request("/cp/software/operations?agentId=pr-scheduler&limit=500"),
     );
   }
 
@@ -230,5 +238,5 @@ export function managedApi(token: CaseToken) {
     return runCase(queueId, prefix, shell);
   }
 
-  return { online, inventory, operation, createQueue, runCase, hello };
+  return { online, inventory, operation, webInstall, createQueue, runCase, hello };
 }

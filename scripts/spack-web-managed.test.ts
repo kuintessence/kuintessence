@@ -2,16 +2,50 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import ts from "typescript";
 import { isSeq, parse, parseDocument } from "yaml";
+import {
+  verifyWebInstallHistory,
+  WebInstallReceiptSchema,
+} from "../deploy/pr-test/spack-managed/web-install-contract";
 
 const root = resolve(import.meta.dir, "..");
 const temporary: string[] = [];
 const flags = ["--spack-web-hello", "--spack-web-samtools"];
 const endpoints = "docker-compose.pr-spack-web-endpoints.yml";
+const installEndpoint = "web-install-endpoint.yml";
 const serverId = "a".repeat(64);
 const registryId = "b".repeat(64);
 const backendId = "c".repeat(64);
 const controlId = "d".repeat(64);
+
+function onlyReadOnlyFetch(source: string): boolean {
+  const file = ts.createSourceFile("browser.ts", source, ts.ScriptTarget.Latest, true);
+  const calls: ts.CallExpression[] = [];
+  function visit(node: ts.Node) {
+    if (
+      ts.isCallExpression(node) &&
+      ts.isIdentifier(node.expression) &&
+      node.expression.text === "fetch"
+    ) {
+      calls.push(node);
+    }
+    ts.forEachChild(node, visit);
+  }
+  visit(file);
+  if (calls.length !== 1) return false;
+  const options = calls[0]?.arguments[1];
+  return (
+    options !== undefined &&
+    ts.isObjectLiteralExpression(options) &&
+    options.properties.every(
+      (property) =>
+        ts.isPropertyAssignment(property) &&
+        ts.isIdentifier(property.name) &&
+        !["method", "body"].includes(property.name.text),
+    )
+  );
+}
 
 interface Compose {
   services: Record<
@@ -73,9 +107,17 @@ case " $* " in
   *"deploy/pr-test/spack-artifacts/export.ts "*)
     touch "$WEB_STATE/$COMPOSE_PROJECT_NAME-export.container" ;;
   *" up "*)
-    if [[ "$*" == *"${endpoints}"* ]]; then touch "$WEB_STATE/endpoint-network"; fi ;;
+    if [[ "$*" == *"${endpoints}"* ]]; then touch "$WEB_STATE/endpoint-network"; fi
+    if [[ "$*" == *"${installEndpoint}"* ]]; then
+      touch "$WEB_STATE/install-listener"
+    elif [[ "$*" == *"--force-recreate"* ]]; then
+      if [[ "$WEB_FAIL" == install-restore && -f "$WEB_STATE/install-listener" ]]; then exit 29; fi
+      rm -f "$WEB_STATE/install-listener"
+    fi ;;
   *" port server 3000 "*)
-    if [[ "$WEB_FAIL" == server-port ]]; then echo 0.0.0.0:13000
+    if [[ "$WEB_FAIL" == server-port ||
+          ( "$WEB_FAIL" == install-port && -f "$WEB_STATE/install-listener" ) ]]; then
+      echo 0.0.0.0:13000
     else echo 127.0.0.1:13000; fi ;;
   *" port registry 3100 "*)
     if [[ "$WEB_FAIL" == registry-port ]]; then echo 0.0.0.0:13100
@@ -87,12 +129,19 @@ case " $* " in
     [[ "$WEB_FAIL" != prepare ]] || exit 21 ;;
   *"deploy/pr-test/spack-artifacts/managed-handoff.ts verify "*)
     [[ "$WEB_FAIL" != verify ]] || exit 22 ;;
+  *"spack-managed/case.ts prepare-web-install "*)
+    [[ "$WEB_FAIL" != install-prepare ]] || exit 26 ;;
+  *"spack-managed/case.ts verify-web-install "*)
+    [[ ! -f "$WEB_STATE/install-listener" ]]
+    IFS= read -r receipt
+    [[ "$receipt" == '{"operationId":"browser-install"}' ]]
+    [[ "$WEB_FAIL" != install-verify ]] || exit 27 ;;
   *"deploy/pr-test/spack-case/rollout.ts activate "*)
     echo 12345678-abcd-4123-8123-123456789abc ;;
   *" down "*)
     [[ "$WEB_FAIL" != cleanup ]] || exit 23
     [[ "$*" == *"${endpoints}"* ]]
-    rm -f "$WEB_STATE/endpoint-network" ;;
+    rm -f "$WEB_STATE/endpoint-network" "$WEB_STATE/install-listener" ;;
   *" logs "*) echo private-container-token ;;
 esac
 if [[ "$1" == cp ]]; then
@@ -112,7 +161,9 @@ elif [[ "$1" == inspect ]]; then
   case "$3" in
     '{{json .HostConfig.PortBindings}}')
       isolation="$(grep -c ' ps -q server ' "$WEB_TRACE")"
-      if [[ "$WEB_FAIL" == published-port ||
+      if [[ ( "$WEB_FAIL" == install-registry-port && -f "$WEB_STATE/install-listener" ) ||
+            ( "$WEB_FAIL" == install-restored-port && "$isolation" == 2 ) ||
+            "$WEB_FAIL" == published-port ||
             ( "$WEB_FAIL" == published-port-restart && "$isolation" == 2 ) ]]; then
         echo '{"3000/tcp":[{"HostPort":"13000"}]}'
       else echo '{}'; fi ;;
@@ -137,10 +188,21 @@ const fakeBun = `#!/bin/bash
 set -euo pipefail
 printf 'bun %s\\n' "$*" >> "$WEB_TRACE"
 [[ "$KQ_WEB_SERVER_PROXY_TARGET" == http://127.0.0.1:13000 ]]
-[[ "$KQ_WEB_REGISTRY_PROXY_TARGET" == http://127.0.0.1:13100 ]]
 [[ "$KQ_ARTIFACT_RESULT_PATH" == "$KQ_ARTIFACT_WEB_RECEIPT_DIRECTORY/web-binding.json" ]]
 [[ "$KQ_ARTIFACT_REFERENCE_PATH" == /* ]]
 [[ ! -e "$KQ_ARTIFACT_REFERENCE_PATH" ]]
+if [[ "$*" == 'run --cwd packages/web e2e --config e2e/cp-spack-install.config.ts' ]]; then
+  [[ "$KQ_WEB_REGISTRY_PROXY_TARGET" == http://127.0.0.1:1 ]]
+  [[ "$KQ_PR_SPACK_CASE" == hello && -f "$WEB_STATE/install-listener" ]]
+  [[ "$KQ_ARTIFACT_INSTALL_RESULT_PATH" == "$(dirname "$KQ_ARTIFACT_WEB_RECEIPT_DIRECTORY")/web-install.json" ]]
+  [[ ! -e "$KQ_ARTIFACT_INSTALL_RESULT_PATH" ]]
+  [[ "$WEB_FAIL" != install-browser ]] || exit 28
+  if [[ "$WEB_FAIL" != install-no-receipt ]]; then
+    printf '{"operationId":"browser-install"}\\n' > "$KQ_ARTIFACT_INSTALL_RESULT_PATH"
+  fi
+  exit 0
+fi
+[[ "$KQ_WEB_REGISTRY_PROXY_TARGET" == http://127.0.0.1:13100 ]]
 if [[ "$*" == 'deploy/pr-test/spack-artifacts/verify.ts empty' ]]; then
   [[ "$WEB_FAIL" != empty ]] || exit 24
 elif [[ "$*" == 'run --cwd packages/web e2e --config e2e/material-artifacts.config.ts' ]]; then
@@ -197,6 +259,7 @@ printf 'checksum %s\\n' "$PWD" >> "$WEB_TRACE"
       KQ_PR_APT_MIRROR: "inherited-must-not-use",
       KQ_ARTIFACT_DIRECTORY: "inherited-must-not-use",
       KQ_ARTIFACT_WEB_RECEIPT_DIRECTORY: "inherited-must-not-use",
+      KQ_ARTIFACT_INSTALL_RESULT_PATH: "inherited-must-not-use",
       KQ_ARTIFACT_RECIPE_BOOTSTRAP: "inherited-must-not-use",
       KQ_ARTIFACT_MATERIAL_BOOTSTRAP: "inherited-must-not-use",
     },
@@ -246,6 +309,7 @@ describe("Web-to-managed runner contract with fake tools", () => {
     expect(result.commands).not.toMatch(/inherited-must-not-use|publish\.ts|export-lock\.ts/);
     expect(result.commands).not.toMatch(/case-operator|case-native|\blogs\b|\bprune\b/);
     const selected = flag === "--spack-web-hello" ? "hello" : "samtools";
+    const browserInstall = selected === "hello";
     expect(result.commands).toContain(
       `/opt/kq-case /out/delivery ${selected} public/pr-${selected}-recipes public/pr-${selected}-sources`,
     );
@@ -256,6 +320,9 @@ describe("Web-to-managed runner contract with fake tools", () => {
     expect(result.calls.filter((line) => line.startsWith("bun "))).toEqual([
       "bun deploy/pr-test/spack-artifacts/verify.ts empty",
       "bun run --cwd packages/web e2e --config e2e/material-artifacts.config.ts",
+      ...(browserInstall
+        ? ["bun run --cwd packages/web e2e --config e2e/cp-spack-install.config.ts"]
+        : []),
     ]);
     const stages = [
       "spack-artifacts/export.ts",
@@ -277,7 +344,21 @@ describe("Web-to-managed runner contract with fake tools", () => {
       "managed-handoff.ts verify",
       "300 scheduler registry",
       "references.ts configured",
-      "spack-managed/case.ts install",
+      ...(browserInstall
+        ? [
+            "spack-managed/case.ts prepare-web-install",
+            "up -d --no-deps --no-build --wait --wait-timeout 300 server",
+            "port server 3000",
+            "ps -q registry",
+            `docker inspect --format {{json .HostConfig.PortBindings}} ${registryId}`,
+            "bun run --cwd packages/web e2e --config e2e/cp-spack-install.config.ts",
+            "up -d --force-recreate --no-deps --no-build --wait --wait-timeout 300 server",
+            "ps -q server",
+            "ps -q registry",
+            "spack-managed/case.ts verify-web-install",
+          ]
+        : ["spack-managed/case.ts install"]),
+      "references.ts managed-terminal",
       "restart registry scheduler server",
       "ps -q server",
       `docker network inspect --format {{.Internal}} ${controlId}`,
@@ -305,9 +386,7 @@ describe("Web-to-managed runner contract with fake tools", () => {
     for (const call of result.calls.filter((line) => line.startsWith("docker "))) {
       expect(call).toContain("bootstrap=unset/unset");
       if (!call.startsWith("docker compose ") || !call.includes(" -p ")) continue;
-      const actualOverlays = [...call.matchAll(/-f \S*\/(docker-compose\.[^\s]+\.yml)/g)].map(
-        (match) => match[1],
-      );
+      const actualOverlays = [...call.matchAll(/-f \S*\/([^/\s]+\.yml)/g)].map((match) => match[1]);
       expect(actualOverlays).toEqual([
         "docker-compose.pr-test.yml",
         "docker-compose.pr-spack-case.yml",
@@ -315,6 +394,7 @@ describe("Web-to-managed runner contract with fake tools", () => {
         "docker-compose.pr-spack-artifact-managed.yml",
         "docker-compose.pr-spack-web-managed.yml",
         ...(call.includes(endpoints) ? [endpoints] : []),
+        ...(call.includes(installEndpoint) ? [installEndpoint] : []),
       ]);
       for (const overlay of [
         "pr-test",
@@ -327,14 +407,43 @@ describe("Web-to-managed runner contract with fake tools", () => {
       }
       const temporaryEndpoint = /300 server registry| port (server|registry) | down /.test(call);
       if (call.includes("config --quiet") || call.includes("ps --all")) continue;
+      if (call.includes(installEndpoint)) {
+        expect(browserInstall).toBe(true);
+        expect(call).toMatch(/300 server \||port server 3000 \|/);
+        expect(call).not.toContain(endpoints);
+        continue;
+      }
       const hasEndpoints = call.includes(endpoints);
       expect(hasEndpoints).toBe(temporaryEndpoint && !call.includes("--force-recreate"));
     }
     expect(result.commands).toContain("/web-receipt");
     for (const service of ["server", "registry"]) {
-      expect(result.calls.filter((line) => line.includes(`ps -q ${service}`))).toHaveLength(3);
+      const expected = browserInstall ? (service === "server" ? 4 : 5) : 3;
+      expect(result.calls.filter((line) => line.includes(`ps -q ${service}`))).toHaveLength(
+        expected,
+      );
     }
-    expect(result.stdout.match(/Spack Web managed: stage=isolation code=OK/g)).toHaveLength(3);
+    expect(result.stdout.match(/Spack Web managed: stage=isolation code=OK/g)).toHaveLength(
+      browserInstall ? 4 : 3,
+    );
+    expect(result.stdout.match(/stage=registry-isolation code=OK/g) ?? []).toHaveLength(
+      browserInstall ? 1 : 0,
+    );
+    expect(
+      result.calls.filter((line) => /spack-managed\/case\.ts install \|/.test(line)),
+    ).toHaveLength(browserInstall ? 0 : 1);
+    expect(result.calls.filter((line) => line.includes(" port registry 3100 "))).toHaveLength(1);
+    expect(
+      result.calls.filter((line) => line.includes("spack-managed/case.ts verify-web-install ")),
+    ).toHaveLength(browserInstall ? 1 : 0);
+    expect(
+      result.calls.filter((line) => line.includes("spack-managed/case.ts prepare-web-install ")),
+    ).toHaveLength(browserInstall ? 1 : 0);
+    for (const phase of ["restart", "uninstall"]) {
+      expect(
+        result.calls.filter((line) => line.includes(`spack-managed/case.ts ${phase} `)),
+      ).toHaveLength(1);
+    }
     for (const image of ["scheduler", "workspace", "managed-builder", "artifact-exporter"]) {
       expect(result.commands).toMatch(
         new RegExp(`docker image rm kq-pr-test-slurm-[a-f0-9]{16}-${image}`),
@@ -353,6 +462,38 @@ describe("Web-to-managed runner contract with fake tools", () => {
     "external-network",
     "verify",
   ];
+
+  test.each([
+    "install-prepare",
+    "install-port",
+    "install-registry-port",
+    "install-browser",
+    "install-no-receipt",
+    "install-restore",
+    "install-restored-port",
+    "install-verify",
+  ])("%s blocks Hello continuation without API fallback", async (failure) => {
+    const result = await runRunner(["slurm", "--spack-web-hello"], failure);
+    expect(result.code).not.toBe(0);
+    expect(result.resources).toEqual([]);
+    expect(result.commands).not.toContain("spack-managed/case.ts install ");
+    expect(result.commands).not.toContain("spack-managed/case.ts restart");
+    expect(result.commands).not.toContain("spack-managed/case.ts uninstall");
+    expect(result.commands).not.toContain("references.ts managed-terminal");
+    expect(result.commands).not.toMatch(/\blogs\b|\bprune\b/);
+    expect(result.stdout).not.toContain("stage=cleanup code=OK");
+    expect(result.calls.find((line) => line.includes("down --volumes"))).toContain(endpoints);
+    if (["install-prepare", "install-port", "install-registry-port"].includes(failure)) {
+      expect(
+        result.calls.some(
+          (line) => line.startsWith("bun ") && line.includes("cp-spack-install.config.ts"),
+        ),
+      ).toBe(false);
+    }
+    if (failure !== "install-verify") {
+      expect(result.commands).not.toContain("spack-managed/case.ts verify-web-install");
+    }
+  });
   test.each(failures)("%s failure blocks scheduler and cleans the Web stack", async (failure) => {
     const result = await runRunner(["slurm", "--spack-web-samtools"], failure);
     expect(result.code).not.toBe(0);
@@ -407,6 +548,99 @@ describe("Web-to-managed runner contract with fake tools", () => {
 });
 
 describe("Web-to-managed overlays and workflow", () => {
+  test("reference baselines survive Server recreation in a Server-only volume", async () => {
+    const overlay = parse(
+      await readFile(join(root, "deploy/compose/docker-compose.pr-spack-case.yml"), "utf8"),
+    ) as Compose & { volumes: Record<string, unknown> };
+    expect(Object.hasOwn(overlay.volumes, "case-references")).toBe(true);
+    expect(overlay.services.server?.volumes).toContain("case-references:/case-references");
+    expect(overlay.services.server?.volumes).toContain("case-server:/case-server:ro");
+    expect(overlay.services.server?.volumes).toContain("case-control:/case-control:ro");
+    for (const [name, service] of Object.entries(overlay.services)) {
+      if (name !== "server") {
+        expect(JSON.stringify(service.volumes ?? [])).not.toContain("case-references");
+      }
+    }
+    const references = await readFile(
+      join(root, "deploy/pr-test/spack-case/references.ts"),
+      "utf8",
+    );
+    expect(references).toContain('const baseline = "/case-references/kq-pr-spack-references"');
+    expect(references).toContain('flag: "wx"');
+    expect(references).toContain("=== bindingDigest");
+    expect(references).toContain("=== operationDigest");
+    expect(references).not.toContain("/tmp/");
+  });
+
+  test("browser installation retains the managed fixture identity for rollout checks", async () => {
+    const email = "scheduler-compose-seed@kuintessence.test";
+    const browser = await readFile(
+      join(root, "packages/web/e2e/cp-spack-install.acceptance.ts"),
+      "utf8",
+    );
+    const api = await readFile(join(root, "deploy/pr-test/spack-case/api.ts"), "utf8");
+    const rollout = await readFile(join(root, "deploy/pr-test/spack-case/rollout.ts"), "utf8");
+    expect(browser).toContain(`getByTestId("login-email").fill("${email}")`);
+    expect(browser).toContain('getByTestId("login-role").selectOption("platform_admin")');
+    expect(api).toContain(`email: "${email}"`);
+    expect(api).toContain('role: "platform_admin"');
+    expect(rollout).toContain(`const seedEmail = "${email}"`);
+    expect(rollout).toContain("operation.requestedBy === operatorId");
+  });
+
+  test("Hello install exposes Server only and reuses the redacted browser runner", async () => {
+    const overlay = parse(
+      await readFile(join(root, "deploy/pr-test/spack-artifacts", installEndpoint), "utf8"),
+    ) as Compose;
+    expect(overlay).toEqual({
+      services: {
+        server: {
+          networks: ["artifact-web"],
+          ports: [{ target: 3000, host_ip: "127.0.0.1" }],
+        },
+      },
+      networks: { "artifact-web": { internal: false } },
+    });
+    const browser = await readFile(
+      join(root, "packages/web/e2e/cp-spack-install.acceptance.ts"),
+      "utf8",
+    );
+    expect(browser).toContain("submit.click()");
+    expect(browser).toContain("assert.equal(response.status(), 202)");
+    expect(browser).toContain("getByTestId(`cp-software-operation-status-${operationId}`)");
+    expect(browser).toContain("getByTestId(`cp-software-installed-load-${spec}`)");
+    expect(browser).not.toMatch(/page\.route|route\.fulfill|\.request\.post/);
+    expect(onlyReadOnlyFetch(browser)).toBe(true);
+    const config = await readFile(
+      join(root, "packages/web/e2e/cp-spack-install.config.ts"),
+      "utf8",
+    );
+    expect(config).toContain('from "./material-artifacts.config"');
+    expect(config).toContain('testMatch: "cp-spack-install.acceptance.ts"');
+    const api = await readFile(join(root, "deploy/pr-test/spack-managed/api-helper.ts"), "utf8");
+    const readback = api.slice(
+      api.indexOf("async function webInstall("),
+      api.indexOf("async function operation("),
+    );
+    expect(readback).toContain('request("/cp/software/operations?agentId=pr-scheduler&limit=500")');
+    expect(readback).not.toContain('operation("install"');
+    const acceptance = await readFile(join(root, "deploy/pr-test/spack-managed/case.ts"), "utf8");
+    expect(acceptance).toContain(
+      'const initial = phase === "install" || phase === "verify-web-install"',
+    );
+    expect(acceptance).toContain("isDeepStrictEqual(receipt.binding, release.binding)");
+    expect(acceptance).toContain("await verifyCachedMaterials(release, report)");
+    expect(acceptance).toContain(
+      "await api.runCase(state.queueId, ready.report.prefix, loaded.stdout)",
+    );
+    expect(acceptance).toContain("state.record = await verifyManagedCacheIntegrity(");
+    expect(acceptance).toContain(
+      'await api.operation("import_preinstalled", `/${state.record.rootHash}`)',
+    );
+    expect(acceptance).toContain('await api.operation("uninstall", `/${state.record.rootHash}`)');
+    expect(acceptance).toContain("await noReleaseDirectory(state.record)");
+  });
+
   test("removes Registry delivery and exposes only temporary loopback endpoints", async () => {
     const permanent = parseDocument(
       await readFile(join(root, "deploy/compose/docker-compose.pr-spack-web-managed.yml"), "utf8"),
@@ -517,5 +751,82 @@ describe("Web-to-managed overlays and workflow", () => {
       ]);
       expect({ publish, allowed: code === 0 }).toEqual({ publish, allowed: publish === "false" });
     }
+  });
+});
+
+describe("Hello browser receipt contract", () => {
+  test("distinguishes observed POST metadata from actual network writes", () => {
+    expect(
+      onlyReadOnlyFetch(`
+      const observed = { method: "POST" };
+      fetch(path, { headers: {}, redirect: "error" });
+    `),
+    ).toBe(true);
+    for (const request of [
+      'fetch(path, { method: "POST" });',
+      "fetch(path, { body: payload });",
+      "fetch(path, options);",
+      "fetch(path, { ...options });",
+      "fetch(path, {}); fetch(other, {});",
+    ]) {
+      expect(onlyReadOnlyFetch(request)).toBe(false);
+    }
+  });
+  const receipt = WebInstallReceiptSchema.parse({
+    version: 1,
+    agentId: "pr-scheduler",
+    action: "install",
+    spec: "hello@2.12.1",
+    status: "succeeded",
+    operationId: "12345678-abcd-4123-8123-123456789abc",
+    binding: {
+      repositoryId: "a".repeat(64),
+      manifestDigest: `sha256:${"b".repeat(64)}`,
+    },
+  });
+  const operation = {
+    id: receipt.operationId,
+    agentId: receipt.agentId,
+    action: receipt.action,
+    spec: receipt.spec,
+    status: receipt.status,
+    error: null,
+    stderr: null,
+    stdout: '{"action":"verify"}',
+  };
+
+  test("reads the existing terminal report without creating another operation", () => {
+    expect(verifyWebInstallHistory(receipt, { items: [operation] })).toEqual(operation);
+  });
+
+  test.each([
+    {},
+    { ...receipt, operationId: "invalid" },
+    { ...receipt, agentId: "other-agent" },
+    { ...receipt, action: "load" },
+    { ...receipt, spec: "samtools@1.19.2" },
+    { ...receipt, status: "queued" },
+    { ...receipt, binding: { ...receipt.binding, manifestDigest: "invalid" } },
+    { ...receipt, token: "must-not-cross-browser-boundary" },
+    { ...receipt, stdout: "must-not-cross-browser-boundary" },
+  ])("rejects invalid or non-minimal receipts %#", (value) => {
+    expect(WebInstallReceiptSchema.safeParse(value).success).toBe(false);
+  });
+
+  const mismatchedHistories = [
+    [],
+    [operation, { ...operation, id: "22345678-abcd-4123-8123-123456789abc" }],
+    [{ ...operation, id: "22345678-abcd-4123-8123-123456789abc" }],
+    [{ ...operation, agentId: "other-agent" }],
+    [{ ...operation, action: "load" }],
+    [{ ...operation, spec: "samtools@1.19.2" }],
+    [{ ...operation, status: "running" }],
+    [{ ...operation, status: "failed" }],
+    [{ ...operation, status: "rejected" }],
+  ].map((items) => ({ items }));
+  test.each(
+    mismatchedHistories,
+  )("rejects mismatched, duplicate or nonterminal history %#", (history) => {
+    expect(() => verifyWebInstallHistory(receipt, history)).toThrow();
   });
 });

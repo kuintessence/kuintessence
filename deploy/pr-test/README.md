@@ -2,6 +2,13 @@
 
 ## Spack 工作流闭环
 
+自动 PR 编排在相关源码变化时默认只运行 GNU Hello 基础工作流。
+samtools 标量和文件工作流保留为完整档：手动触发 `Spack workflow execution`，
+或当前 HEAD 提交消息包含 `[full-workflows]` 时运行全部三个案例。
+手动 `PR preview tests` 则强制全部必测组，适用于合并前验证。
+材料导入和调度器专项仍按既有源码范围选择，详见
+[工作流测试档位](../../docs/deployment.md#工作流测试档位)。
+
 新增 Actions 专用 `Spack workflow execution` 工作流及两个入口：
 
 ```bash
@@ -80,6 +87,29 @@ stage-in 路径；原两个入口仍覆盖显式 cwd。Recipe/source 仍只从 S
 不延长 Server 的 access token TTL，也不自动重放认证失败的写请求。
 这是单 Agent 三节点文件传递验收，不代表跨集群存储、完整变异检测或 15 个科学
 workflow 已完成；运行结果须核对相应提交的 Actions，不能仅凭新增脚本认定通过。
+
+## CP Web 手动安装验收
+
+`--spack-web-hello` 在原有真实浏览器材料导入之后，复用同一份固定 Hello binding，
+由 CP 软件页面选择 Agent、填写 spec 并提交一次 install，等待页面操作终态和库存回显。
+开始前要求安装 store、库存和操作历史为空；测试不改策略、不创建自动安装授权，
+也不使用 API helper 代替浏览器提交。
+CP 概览在挂载且页面位于前台时每 15 秒刷新，覆盖 operation 先到终态、
+安装库存稍后写入的时序；验收不通过手动 reload 掩盖库存刷新问题。
+
+浏览器只输出不含凭据的最小 operation/binding 回执。Agent 侧通过 Server 只读查询
+核对唯一安装、operation ID、spec 和成功状态，然后继续原有 report/缓存/prefix 校验、
+load/Slurm 作业、完整性负例、重启复验和卸载。不会为了后续验证再提交一次 install。
+浏览器临时访问 runner loopback 上的 Server，Registry 不开放端口，Agent 仍只从
+Server 拉取材料；进入后续验收前恢复 Server 内部网络。samtools 的 Web 导入后安装
+仍由 API helper 驱动，不将 Hello 的浏览器证据扩大到其他软件或生产环境。
+页面安装使用受管案例既有的测试管理员，保持后续 rollout 的请求人核对不变。
+引用账本的原始摘要保存在仅 Server 挂载的 `case-references` 卷；
+临时端口撤回造成容器重建时仍保留基线，不重新采样或放宽持久化断言。
+
+此入口复用既有 `Spack GNU Hello Web import managed installation` job；
+是否通过以对应提交 Actions 为准。它不实现 Web 自助 binding、不更改生产安装能力，
+也不替代 CP 策略编辑、权限拒绝及其他角色的专项验收。
 
 ## 镜像和网络
 

@@ -30,9 +30,9 @@ const REQUIRED_JOBS = [
 const GROUP_JOBS = {
   spack: new Set(REQUIRED_JOBS.filter((name) =>
     name.startsWith("ci / Spack ") ||
-    name.startsWith("schedulers / Spack ") ||
-    name.startsWith("workflows / "),
+    name.startsWith("schedulers / Spack "),
   )),
+  workflows: new Set(REQUIRED_JOBS.filter((name) => name.startsWith("workflows / "))),
   schedulers: new Set([
     "ci / E2E slice (CLI -> Server -> Agent -> Slurm)",
     "schedulers / Scheduler (slurm)",
@@ -56,11 +56,11 @@ const SKIPPED_PLACEHOLDERS = {
   "schedulers / Scheduler": ["schedulers"],
   "schedulers / Scheduler ()": ["schedulers"],
   "schedulers / Scheduler (${{ matrix.scheduler }})": ["schedulers"],
-  "workflows / managed-workflow": ["spack"],
-  "workflows / Managed workflow": ["spack"],
-  "workflows / Managed workflow ()": ["spack"],
-  "workflows / Managed workflow (${{ matrix.case }})": ["spack"],
-  workflows: ["spack"],
+  "workflows / managed-workflow": ["workflows"],
+  "workflows / Managed workflow": ["workflows"],
+  "workflows / Managed workflow ()": ["workflows"],
+  "workflows / Managed workflow (${{ matrix.case }})": ["workflows"],
+  workflows: ["workflows"],
   schedulers: ["spack", "schedulers"],
 };
 
@@ -86,13 +86,20 @@ function eligible(pr, repository, permission, defaultBranch = "main") {
 function testsPassed(jobs, scope = { spack: true, schedulers: true }) {
   if (!Array.isArray(jobs) || !scope ||
       typeof scope.spack !== "boolean" || typeof scope.schedulers !== "boolean") return false;
+  const workflows = scope.workflows === undefined ? (scope.spack ? "full" : "none") : scope.workflows;
+  if (!["none", "quick", "full"].includes(workflows)) return false;
+  const selected = { ...scope, workflows: workflows !== "none" };
   const skipped = new Set(["ci / Generate database migrations"]);
   for (const [group, names] of Object.entries(GROUP_JOBS)) {
-    if (!scope[group]) for (const name of names) skipped.add(name);
+    if (!selected[group]) for (const name of names) skipped.add(name);
+  }
+  if (workflows === "quick") {
+    skipped.add("workflows / Managed workflow (samtools)");
+    skipped.add("workflows / Managed workflow (samtools-file)");
   }
   const required = REQUIRED_JOBS.filter((name) => !skipped.has(name));
   for (const [name, groups] of Object.entries(SKIPPED_PLACEHOLDERS)) {
-    if (groups.every((group) => !scope[group])) skipped.add(name);
+    if (groups.every((group) => !selected[group])) skipped.add(name);
   }
   const seen = new Set();
   return jobs.every((job) => {
@@ -181,8 +188,10 @@ async function gate({ github, context, core }, options = {}) {
       return;
     }
     const { pullRequestScope } = require("./test-scope.cjs");
+    const { workflowScope } = require("./workflow-scope.cjs");
     const scope = await pullRequestScope(github, repo, pr);
-    if (!testsPassed(jobs, scope)) {
+    const workflows = await workflowScope(github, repo, pr, { event: run.event, spack: scope.spack });
+    if (!testsPassed(jobs, { ...scope, workflows })) {
       core.info("Preview refused: a required test suite is missing, skipped or unsuccessful.");
       return;
     }

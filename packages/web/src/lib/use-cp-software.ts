@@ -62,6 +62,7 @@ export function useCpSoftwareOverview() {
   return useQuery<CpSoftwareOverview>({
     queryKey: [...OVERVIEW_KEY, activeOrganizationId ?? "all"],
     queryFn: () => getSoftwareOverview(),
+    refetchInterval: 15_000,
   });
 }
 

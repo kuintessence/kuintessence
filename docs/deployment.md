@@ -210,6 +210,7 @@ protobuf 生成、业务运行测试、构建或容器。
 | `Build Agent binary` / `Build CLI binary` | 仅手动构建并运行 binary smoke，默认只保存 Actions artifact；在 `v*` tag 上手动触发且勾选 `publish_release` 才上传 Release |
 | `Scheduler image architecture` | 仅手动构建并运行调度器镜像架构验证 |
 | `PR scheduler tests` | 相关源码变更时由 PR 测试编排调用，或手动触发；`run_spack`、`run_schedulers` 分别选择材料验收与 Slurm/PBS matrix |
+| `Spack workflow execution` | 自动调用默认仅 GNU Hello 工作流；手动或当前 HEAD 提交消息含 `[full-workflows]` 时运行完整三案例 |
 | `Docs Site` | 仅从 `main` 手动构建并发布到 `gh-pages`；GitHub Pages 须单独配置发布源 |
 | `Preview` / `Preview Cleanup` | 全部必需测试成功且通过信任门禁后部署远程 k3s，关闭/暂停/撤销标签后清理；无 main 常驻预览 |
 
@@ -228,12 +229,31 @@ protobuf 生成、业务运行测试、构建或容器。
 - 文档、普通 Web 展示与预览控制器变更不会仅因 PR 更新就启动这两组。
   基础静态检查、typecheck/Helm、unit/integration、Web 单测/build 及 RustFS 检查仍执行。
 
+### 工作流测试档位
+
+正式 Spack 工作流矩阵独立于材料导入和调度器专项：
+
+- 自动快速档：相关源码变更时运行 contracts 和一个 GNU Hello managed 工作流，
+  保留真实材料导入、安装、两节点执行及重启回读；不运行 samtools 和 samtools-file。
+  它是相对完整矩阵的快速档，不是用模拟测试代替实际执行。
+- 完整档：手动运行 `Spack workflow execution`，或在当前 PR HEAD 提交消息中
+  加入精确标记 `[full-workflows]`，运行 Hello、samtools、samtools-file。
+  提交标记即使没有命中 Spack 路径也会启动完整工作流矩阵，但不会额外强制其他专项。
+- 合并前需要全部检查时，在当前 PR 分支手动运行 `PR preview tests`，
+  提供 `pr_number`，会同时强制完整工作流、材料和调度器组。
+
+标记只读取当前被测 HEAD 的提交消息，不读取 PR 标题、描述或历史提交；
+下一次无标记的提交恢复按路径选择的快速档。提交信息仅作为数据读取，不插入 shell。
+部署控制器独立复核档位，完整档少一个案例也不会放行；
+快速档失败不会自动降级或视为通过。所有执行仍在 Actions，现有 k3s 环境不受该设置改动。
+
 手动运行 `PR preview tests` 会强制全部组；也可以使用独立入口运行指定组：
 
 ```bash
 gh workflow run pr-scheduler-tests.yml --ref feat/example \
   -f run_spack=false -f run_schedulers=true
 gh workflow run spack-workflow-execution.yml --ref feat/example
+gh workflow run preview-tests.yml --ref feat/example -f pr_number=123
 gh workflow run ci.yml --ref feat/example -f run_runtime_checks=true \
   -f run_spack=false -f run_schedulers=false
 ```

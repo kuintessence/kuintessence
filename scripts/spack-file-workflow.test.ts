@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { runInNewContext } from "node:vm";
 import { parse } from "yaml";
 
 const root = resolve(import.meta.dir, "..");
@@ -31,16 +32,21 @@ interface Compose {
 }
 
 interface Workflow {
-  on: Record<string, { inputs?: Record<string, { type: string; required?: boolean }> } | null>;
+  on: Record<
+    string,
+    { inputs?: Record<string, { type: string; required?: boolean; default?: unknown }> } | null
+  >;
   permissions: Record<string, string>;
   jobs: Record<
     string,
     {
+      name?: string;
+      needs?: string;
       if?: string;
       "timeout-minutes"?: number;
       strategy?: {
         "fail-fast": boolean;
-        matrix: { include: { case: string; flag: string }[] };
+        matrix: { include: string };
       };
       steps: {
         id?: string;
@@ -401,7 +407,7 @@ describe("file workflow deployment contracts", () => {
     expect(environment).not.toMatch(/RUSTFS|NETDRIVE_SECRET_KEY/);
   });
 
-  test("preserves old matrix entries and adds bounded file acceptance and contracts", async () => {
+  test("selects quick or full matrices and keeps independent dispatch full", async () => {
     const workflow = parse(await readFile(join(root, workflowPath), "utf8")) as Workflow;
     expect(workflow.permissions).toEqual({ contents: "read" });
     expect(Object.keys(workflow.on).sort()).toEqual(["workflow_call", "workflow_dispatch"]);
@@ -409,15 +415,45 @@ describe("file workflow deployment contracts", () => {
       type: "string",
       required: true,
     });
+    expect(workflow.on.workflow_call?.inputs?.full_workflows).toEqual({
+      type: "boolean",
+      default: false,
+    });
+    expect(workflow.on.workflow_dispatch?.inputs).toBeUndefined();
+    expect(Object.keys(workflow.jobs).sort()).toEqual(["contracts", "managed-workflow"]);
     const managed = workflow.jobs["managed-workflow"];
+    expect(managed?.name).toBe("Managed workflow (${{ matrix.case }})");
+    expect(managed?.needs).toBe("contracts");
     expect(managed?.if).toBeUndefined();
     expect(managed?.["timeout-minutes"]).toBe(85);
     expect(managed?.strategy?.["fail-fast"]).toBe(false);
-    expect(managed?.strategy?.matrix.include).toEqual([
+    const fullCases = [
       { case: "hello", flag: "--spack-workflow-hello" },
       { case: "samtools", flag: "--spack-workflow-samtools" },
       { case: "samtools-file", flag },
-    ]);
+    ];
+    const include = managed?.strategy?.matrix.include;
+    if (typeof include !== "string") throw new Error("Missing dynamic workflow matrix");
+    const expression = include.trim().match(/^\$\{\{([\s\S]*)\}\}$/)?.[1];
+    if (!expression) throw new Error("Invalid workflow matrix expression");
+    expect(expression).toContain("fromJSON(");
+    for (const event of ["pull_request", "workflow_call", "workflow_dispatch"]) {
+      for (const full of [undefined, false, true]) {
+        for (const sourceSha of ["", "a".repeat(40)]) {
+          const actual = runInNewContext(expression, {
+            inputs: {
+              source_sha: sourceSha,
+              ...(full === undefined ? {} : { full_workflows: full }),
+            },
+            github: { event_name: event },
+            fromJSON: JSON.parse,
+          });
+          expect(actual).toEqual(
+            full || event === "workflow_dispatch" ? fullCases : fullCases.slice(0, 1),
+          );
+        }
+      }
+    }
     const execution = managed?.steps.find((step) =>
       step.run?.includes("bash deploy/pr-test/run.sh"),
     );

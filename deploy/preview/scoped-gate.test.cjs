@@ -141,6 +141,31 @@ describe("scoped test suite acceptance", () => {
       ...jobsFor(scopes[0]), job(SPACK[0], "skipped"), job(SPACK[0], "skipped"),
     ], scopes[0])).toBe(false);
   });
+
+  test("workflow tier is independent of material and scheduler suites", () => {
+    for (const scope of scopes) {
+      const other = jobsFor(scope).filter((entry) => !entry.name.startsWith("workflows / "));
+      const required = ["workflows / contracts", "workflows / Managed workflow (hello)"].map((name) => job(name));
+      const extra = ["workflows / Managed workflow (samtools)", "workflows / Managed workflow (samtools-file)"];
+      const quickScope = { ...scope, workflows: "quick" };
+      expect(testsPassed([...other, ...required], quickScope)).toBe(true);
+      expect(testsPassed([...other, ...required, ...extra.map((name) => job(name, "skipped"))], quickScope))
+        .toBe(true);
+      for (const conclusion of ["failure", "cancelled", "timed_out"]) {
+        expect(testsPassed([...other, ...required, job(extra[0], conclusion)], quickScope)).toBe(false);
+      }
+      expect(testsPassed([...other, ...required], { ...scope, workflows: "full" })).toBe(false);
+      expect(testsPassed([...other, ...required, ...extra.map((name) => job(name))], {
+        ...scope, workflows: "full",
+      })).toBe(true);
+      expect(testsPassed([...other, job("workflows", "skipped")], { ...scope, workflows: "none" }))
+        .toBe(true);
+      expect(testsPassed([...other, ...required, job("workflows", "skipped")], quickScope)).toBe(false);
+      for (const workflows of [null, true, "", "QUICK", "all"]) {
+        expect(testsPassed(fullJobs(), { ...scope, workflows })).toBe(false);
+      }
+    }
+  });
 });
 
 const sha = "a".repeat(40);
@@ -169,9 +194,16 @@ function fixture(options = {}) {
         get: async () => ({ data: ++pullReads > 1 ? { ...pr, ...options.reread } : pr }),
         listFiles: "files",
       },
-      repos: { getCollaboratorPermissionLevel: async () => ({
-        data: { permission: options.permission ?? "write" },
-      }) },
+      repos: {
+        getCollaboratorPermissionLevel: async () => ({
+          data: { permission: options.permission ?? "write" },
+        }),
+        getCommit: async (params) => {
+          requests.push({ method: "commit", params });
+          if (options.queryError === "commit") throw new Error("Mock commit unavailable");
+          return { data: { sha, commit: { message: options.message ?? "fix: ordinary change" } } };
+        },
+      },
       actions: {
         getWorkflowRun: async () => ({ data: run }),
         listJobsForWorkflowRun: "jobs",
@@ -206,6 +238,7 @@ function fixture(options = {}) {
   runInNewContext(readFileSync(join(__dirname, "gate.cjs"), "utf8"), {
     module,
     require: (name) => {
+      if (name === "./workflow-scope.cjs") return require(name);
       expect(name).toBe("./test-scope.cjs");
       return { pullRequestScope: async (...args) => {
         scopeCalls.push(args);
@@ -250,6 +283,52 @@ describe("trusted controller scope derivation", () => {
     await state.execute();
     expect(state.outputs.allowed).toBe("false");
     expect(state.scopeCalls).toHaveLength(0);
+  });
+
+  test("automatic Spack changes require Hello but may omit the two extended workflow cases", async () => {
+    const scope = { spack: true, schedulers: false };
+    const quick = jobsFor(scope).filter((entry) => ![
+      "workflows / Managed workflow (samtools)", "workflows / Managed workflow (samtools-file)",
+    ].includes(entry.name));
+    const state = fixture({ scope, jobs: quick });
+    await state.execute();
+    expect(state.outputs.allowed).toBe("true");
+    expect(state.requests.find(({ method }) => method === "commit").params.ref).toBe(sha);
+    for (const name of ["workflows / contracts", "workflows / Managed workflow (hello)"]) {
+      const missing = fixture({ scope, jobs: quick.filter((entry) => entry.name !== name) });
+      await missing.execute();
+      expect(missing.outputs.allowed).toBe("false");
+      const failed = fixture({
+        scope, jobs: quick.map((entry) => entry.name === name ? job(name, "failure") : entry),
+      });
+      await failed.execute();
+      expect(failed.outputs.allowed).toBe("false");
+    }
+  });
+
+  test("the trusted controller requires all workflow cases for a head commit opt-in", async () => {
+    for (const spack of [true, false]) {
+      const scope = { spack, schedulers: false };
+      const message = "test: validate before merge [full-workflows]";
+      const noWorkflows = jobsFor(scope).filter((entry) => !entry.name.startsWith("workflows / "));
+      const workflowJobs = SPACK.filter((name) => name.startsWith("workflows / ")).map((name) => job(name));
+      const complete = fixture({ scope, message, jobs: [...noWorkflows, ...workflowJobs] });
+      await complete.execute();
+      expect(complete.outputs.allowed).toBe("true");
+      for (const omitted of workflowJobs) {
+        const missing = fixture({
+          scope, message, jobs: [...noWorkflows, ...workflowJobs.filter((entry) => entry !== omitted)],
+        });
+        await missing.execute();
+        expect(missing.outputs.allowed).toBe("false");
+      }
+    }
+  });
+
+  test("failed commit resolution cannot silently accept a smaller workflow matrix", async () => {
+    const state = fixture({ queryError: "commit" });
+    await expect(state.execute()).rejects.toThrow("Mock commit unavailable");
+    expect(state.outputs.allowed).toBe("false");
   });
 
   test("PR-reported scope cannot exempt groups selected by the trusted helper", async () => {
