@@ -240,8 +240,11 @@ Kuintessence 当前为 pre-release。以下列出组件功能、运行要求和�
 `CI` 工作流在推送 `main` 和 PR 时默认运行 Biome、文档链接、workflow 引用及轻量编排检查，
 安装时禁用生命周期脚本。`PR preview tests` 对同仓库非草稿 PR 自动编排完整类型检查、
 基础测试及 Web 单测/build，按完整 PR 文件列表选择 Spack 与调度器重型组，
-手动触发则运行全部组。
-部署控制器独立核算必测范围，仅允许未选组跳过，随后通过信任门禁才部署远程 k3s。
+正式 Spack 工作流矩阵默认仅 contracts 和 GNU Hello 基础案例；
+手动专项或当前 HEAD 提交消息含 `[full-workflows]` 时扩展为
+Hello、samtools、samtools-file。手动 PR 编排仍强制全部组。
+部署控制器独立核算路径范围与工作流档位，仅允许未选组/案例跳过，
+随后通过信任门禁才部署远程 k3s；基础通过不等于完整工作流已验收。
 binary 构建与 smoke、跨架构镜像验证、文档站发布仍由维护者手动触发；
 不再托管 runner 限时预览或 main 预览。具体入口见 [GitHub Actions](../deployment.md#actions)。
 手动完整 CI 使用 `test:unit` 的临时数据库和逐文件进程隔离，再单独执行

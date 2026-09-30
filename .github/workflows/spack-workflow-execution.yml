@@ -7,6 +7,9 @@ on:
       source_sha:
         required: true
         type: string
+      full_workflows:
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -94,13 +97,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - case: hello
-            flag: --spack-workflow-hello
-          - case: samtools
-            flag: --spack-workflow-samtools
-          - case: samtools-file
-            flag: --spack-file-workflow-samtools
+        include: >-
+          ${{ fromJSON((inputs.full_workflows || github.event_name == 'workflow_dispatch')
+              && '[{"case":"hello","flag":"--spack-workflow-hello"},{"case":"samtools","flag":"--spack-workflow-samtools"},{"case":"samtools-file","flag":"--spack-file-workflow-samtools"}]'
+              || '[{"case":"hello","flag":"--spack-workflow-hello"}]') }}
     steps:
       - uses: actions/checkout@v4
         with:

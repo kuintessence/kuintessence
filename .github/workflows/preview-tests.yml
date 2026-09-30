@@ -43,6 +43,7 @@ jobs:
       source_sha: ${{ steps.source.outputs.source_sha }}
       spack: ${{ steps.scope.outputs.spack }}
       schedulers: ${{ steps.scope.outputs.schedulers }}
+      workflows: ${{ steps.scope.outputs.workflows }}
     steps:
       - name: Resolve the current trusted PR head
         id: source
@@ -101,9 +102,12 @@ jobs:
             const scope = context.eventName === "workflow_dispatch"
               ? {spack: true, schedulers: true}
               : await require("./deploy/preview/test-scope.cjs").pullRequestScope(github, context.repo, pr);
+            const workflows = await require("./deploy/preview/workflow-scope.cjs").workflowScope(
+              github, context.repo, pr, { event: context.eventName, spack: scope.spack });
             core.setOutput("spack", String(scope.spack));
             core.setOutput("schedulers", String(scope.schedulers));
-            core.info(`Required suites: spack=${scope.spack}, schedulers=${scope.schedulers}`);
+            core.setOutput("workflows", workflows);
+            core.info(`Required suites: spack=${scope.spack}, schedulers=${scope.schedulers}, workflows=${workflows}`);
 
   ci:
     name: ci
@@ -128,10 +132,11 @@ jobs:
   workflows:
     name: workflows
     needs: resolve
-    if: needs.resolve.outputs.spack == 'true'
+    if: needs.resolve.outputs.workflows != 'none'
     uses: ./.github/workflows/spack-workflow-execution.yml
     with:
       source_sha: ${{ needs.resolve.outputs.source_sha }}
+      full_workflows: ${{ needs.resolve.outputs.workflows == 'full' }}
 
   all-required-tests:
     name: all-required-tests
@@ -148,18 +153,20 @@ jobs:
           WORKFLOWS_RESULT: ${{ needs.workflows.result }}
           SPACK_REQUIRED: ${{ needs.resolve.outputs.spack }}
           SCHEDULERS_REQUIRED: ${{ needs.resolve.outputs.schedulers }}
+          WORKFLOWS_REQUIRED: ${{ needs.resolve.outputs.workflows }}
         run: |
           [[ "$SPACK_REQUIRED" == true || "$SPACK_REQUIRED" == false ]]
           [[ "$SCHEDULERS_REQUIRED" == true || "$SCHEDULERS_REQUIRED" == false ]]
+          [[ "$WORKFLOWS_REQUIRED" == none || "$WORKFLOWS_REQUIRED" == quick || "$WORKFLOWS_REQUIRED" == full ]]
           [[ "$RESOLVE_RESULT" == success && "$CI_RESULT" == success ]]
           if [[ "$SPACK_REQUIRED" == true || "$SCHEDULERS_REQUIRED" == true ]]; then
             [[ "$SCHEDULERS_RESULT" == success ]]
           else
             [[ "$SCHEDULERS_RESULT" == skipped ]]
           fi
-          if [[ "$SPACK_REQUIRED" == true ]]; then
-            [[ "$WORKFLOWS_RESULT" == success ]]
-          else
+          if [[ "$WORKFLOWS_REQUIRED" == none ]]; then
             [[ "$WORKFLOWS_RESULT" == skipped ]]
+          else
+            [[ "$WORKFLOWS_RESULT" == success ]]
           fi
           echo "All required preview tests passed"

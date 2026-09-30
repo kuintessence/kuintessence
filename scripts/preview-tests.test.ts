@@ -14,6 +14,8 @@ const suites = {
   schedulers: "pr-scheduler-tests.yml",
   workflows: "spack-workflow-execution.yml",
 };
+type WorkflowMode = "none" | "quick" | "full";
+const workflowModes: WorkflowMode[] = ["none", "quick", "full"];
 
 interface Step {
   name?: string;
@@ -40,7 +42,7 @@ interface Job {
     matrix: {
       case?: string[];
       scheduler?: string[];
-      include?: { label?: string; case?: string; flag: string }[];
+      include?: { label?: string; case?: string; flag: string }[] | string;
     };
   };
 }
@@ -144,8 +146,12 @@ async function scopeFixture(eventName = "pull_request") {
   const script = preview.jobs.resolve?.steps?.find((step) => step.id === "scope")?.with?.script;
   if (typeof script !== "string") throw new Error("Missing preview scope resolver");
   const selected = { spack: false, schedulers: false };
+  const selectedWorkflows: { mode: WorkflowMode } = {
+    mode: eventName === "workflow_dispatch" ? "full" : "none",
+  };
   const modules: string[] = [];
   const messages: string[] = [];
+  const workflowRequests: { event: string; spack: boolean }[] = [];
   const helper = {
     pullRequestScope: async (
       github: typeof fixture.github,
@@ -158,21 +164,46 @@ async function scopeFixture(eventName = "pull_request") {
       return selected;
     },
   };
+  const workflowHelper = {
+    workflowScope: async (
+      github: typeof fixture.github,
+      repo: ResolverContext["repo"],
+      pr: PullRequest,
+      options: { event: string; spack: boolean },
+    ) => {
+      expect(github).toBe(fixture.github);
+      expect(repo).toBe(fixture.context.repo);
+      expect(pr).toBe(fixture.pr);
+      workflowRequests.push(options);
+      return selectedWorkflows.mode;
+    },
+  };
   const execute = runInNewContext(`(async () => {\n${script}\n})`, {
     github: fixture.github,
     context: fixture.context,
     process: { env: { TEST_SHA: sourceSha } },
     require: (path: string) => {
-      expect(path).toBe("./deploy/preview/test-scope.cjs");
       modules.push(path);
-      return helper;
+      if (path === "./deploy/preview/test-scope.cjs") return helper;
+      if (path === "./deploy/preview/workflow-scope.cjs") return workflowHelper;
+      throw new Error(`Unexpected scope helper: ${path}`);
     },
     core: {
       setOutput: (name: string, value: string) => fixture.outputs.set(name, value),
       info: (message: string) => messages.push(message),
     },
   }) as () => Promise<void>;
-  return { ...fixture, selected, modules, helper, execute };
+  return {
+    ...fixture,
+    selected,
+    selectedWorkflows,
+    modules,
+    messages,
+    workflowRequests,
+    helper,
+    workflowHelper,
+    execute,
+  };
 }
 
 describe("preview source resolution", () => {
@@ -254,18 +285,29 @@ describe("preview source resolution", () => {
 });
 
 describe("preview expensive scope resolution", () => {
-  test("PR scope uses the checked-out helper and emits its boolean flags as strings", async () => {
+  test("PR scope preserves path flags and independently awaits the workflow mode", async () => {
     for (const spack of [false, true]) {
       for (const schedulers of [false, true]) {
-        const fixture = await scopeFixture();
-        Object.assign(fixture.selected, { spack, schedulers });
-        await fixture.execute();
-        expect(fixture.requests).toEqual([17]);
-        expect(fixture.modules).toEqual(["./deploy/preview/test-scope.cjs"]);
-        expect([...fixture.outputs]).toEqual([
-          ["spack", String(spack)],
-          ["schedulers", String(schedulers)],
-        ]);
+        for (const mode of workflowModes) {
+          const fixture = await scopeFixture();
+          Object.assign(fixture.selected, { spack, schedulers });
+          fixture.selectedWorkflows.mode = mode;
+          await fixture.execute();
+          expect(fixture.requests).toEqual([17]);
+          expect(fixture.modules).toEqual([
+            "./deploy/preview/test-scope.cjs",
+            "./deploy/preview/workflow-scope.cjs",
+          ]);
+          expect(fixture.workflowRequests).toEqual([{ event: "pull_request", spack }]);
+          expect([...fixture.outputs]).toEqual([
+            ["spack", String(spack)],
+            ["schedulers", String(schedulers)],
+            ["workflows", mode],
+          ]);
+          expect(fixture.messages).toEqual([
+            `Required suites: spack=${spack}, schedulers=${schedulers}, workflows=${mode}`,
+          ]);
+        }
       }
     }
   });
@@ -277,10 +319,15 @@ describe("preview expensive scope resolution", () => {
     };
     await fixture.execute();
     expect(fixture.requests).toEqual([17]);
-    expect(fixture.modules).toEqual([]);
+    expect(fixture.modules).toEqual(["./deploy/preview/workflow-scope.cjs"]);
+    expect(fixture.workflowRequests).toEqual([{ event: "workflow_dispatch", spack: true }]);
     expect([...fixture.outputs]).toEqual([
       ["spack", "true"],
       ["schedulers", "true"],
+      ["workflows", "full"],
+    ]);
+    expect(fixture.messages).toEqual([
+      "Required suites: spack=true, schedulers=true, workflows=full",
     ]);
   });
 
@@ -294,20 +341,35 @@ describe("preview expensive scope resolution", () => {
     }
   });
 
+  test("manual dispatch fails closed when workflow scope resolution fails", async () => {
+    const fixture = await scopeFixture("workflow_dispatch");
+    fixture.workflowHelper.workflowScope = async () => {
+      throw new Error("Fixture workflow scope unavailable");
+    };
+    await expect(fixture.execute()).rejects.toThrow("Fixture workflow scope unavailable");
+    expect(fixture.outputs.size).toBe(0);
+    expect(fixture.messages).toEqual([]);
+  });
+
   test("scope fails closed on API or helper failure", async () => {
-    for (const failure of ["api", "helper"]) {
+    for (const failure of ["api", "helper", "workflow-helper"]) {
       const fixture = await scopeFixture();
       if (failure === "api") {
         fixture.github.rest.pulls.get = async () => {
           throw new Error("Fixture scope unavailable");
         };
-      } else {
+      } else if (failure === "helper") {
         fixture.helper.pullRequestScope = async () => {
+          throw new Error("Fixture scope unavailable");
+        };
+      } else {
+        fixture.workflowHelper.workflowScope = async () => {
           throw new Error("Fixture scope unavailable");
         };
       }
       await expect(fixture.execute()).rejects.toThrow("Fixture scope unavailable");
       expect(fixture.outputs.size).toBe(0);
+      expect(fixture.messages).toEqual([]);
     }
   });
 });
@@ -329,6 +391,7 @@ describe("preview test orchestration", () => {
       source_sha: "${{ steps.source.outputs.source_sha }}",
       spack: "${{ steps.scope.outputs.spack }}",
       schedulers: "${{ steps.scope.outputs.schedulers }}",
+      workflows: "${{ steps.scope.outputs.workflows }}",
     });
     const resolveSteps = preview.jobs.resolve?.steps ?? [];
     const source = resolveSteps.findIndex((step) => step.id === "source");
@@ -358,7 +421,7 @@ describe("preview test orchestration", () => {
     const conditions: Record<string, string> = {
       schedulers:
         "needs.resolve.outputs.spack == 'true' || needs.resolve.outputs.schedulers == 'true'",
-      workflows: "needs.resolve.outputs.spack == 'true'",
+      workflows: "needs.resolve.outputs.workflows != 'none'",
     };
     for (const [id, file] of Object.entries(suites)) {
       const job = preview.jobs[id];
@@ -375,22 +438,35 @@ describe("preview test orchestration", () => {
               run_spack: "${{ needs.resolve.outputs.spack == 'true' }}",
               run_schedulers: "${{ needs.resolve.outputs.schedulers == 'true' }}",
             }
-          : {}),
+          : { full_workflows: "${{ needs.resolve.outputs.workflows == 'full' }}" }),
       });
     }
   });
 
-  test("expensive reusable jobs follow all four scope combinations", async () => {
+  test("workflow selection does not change any Spack or scheduler scope combination", async () => {
     const preview = await workflow();
     for (const spack of [false, true]) {
       for (const schedulers of [false, true]) {
-        const context = {
-          needs: { resolve: { outputs: { spack: String(spack), schedulers: String(schedulers) } } },
-        };
-        expect(runInNewContext(preview.jobs.schedulers?.if ?? "false", context)).toBe(
-          spack || schedulers,
-        );
-        expect(runInNewContext(preview.jobs.workflows?.if ?? "false", context)).toBe(spack);
+        for (const mode of workflowModes) {
+          const context = {
+            needs: {
+              resolve: {
+                outputs: { spack: String(spack), schedulers: String(schedulers), workflows: mode },
+              },
+            },
+          };
+          expect(runInNewContext(preview.jobs.schedulers?.if ?? "false", context)).toBe(
+            spack || schedulers,
+          );
+          expect(runInNewContext(preview.jobs.workflows?.if ?? "false", context)).toBe(
+            mode !== "none",
+          );
+          const full = preview.jobs.workflows?.with?.full_workflows;
+          if (typeof full !== "string") throw new Error("Missing full_workflows expression");
+          const expression = full.trim().match(/^\$\{\{([\s\S]*)\}\}$/)?.[1];
+          if (!expression) throw new Error("Invalid full_workflows expression");
+          expect(runInNewContext(expression, context)).toBe(mode === "full");
+        }
       }
     }
   });
@@ -632,11 +708,12 @@ describe("preview test orchestration", () => {
     expect(portalSteps[build]?.if).toBeUndefined();
   });
 
-  test("retains all required matrix cases", async () => {
+  test("keeps other matrices intact and defaults formal workflows to quick", async () => {
     const ci = await workflow(suites.ci);
     expect(ci.jobs["spack-artifact-imports"]?.strategy?.matrix.case).toEqual(["hello", "samtools"]);
     const schedulers = await workflow(suites.schedulers);
     const managedCases = schedulers.jobs["spack-managed"]?.strategy?.matrix.include ?? [];
+    if (!Array.isArray(managedCases)) throw new Error("Expected unchanged scheduler matrix");
     expect(managedCases.map((entry) => entry.label)).toEqual([
       "GNU Hello",
       "samtools",
@@ -660,12 +737,21 @@ describe("preview test orchestration", () => {
     const managedWorkflow = workflows.jobs["managed-workflow"];
     expect(managedWorkflow?.needs).toBe("contracts");
     expect(managedWorkflow?.name).toBe("Managed workflow (${{ matrix.case }})");
-    const workflowCases = managedWorkflow?.strategy?.matrix.include ?? [];
-    expect(workflowCases.map((entry) => entry.case)).toEqual([
-      "hello",
-      "samtools",
-      "samtools-file",
-    ]);
+    expect(workflows.on.workflow_call?.inputs?.full_workflows).toEqual({
+      type: "boolean",
+      default: false,
+    });
+    const include = managedWorkflow?.strategy?.matrix.include;
+    if (typeof include !== "string") throw new Error("Missing dynamic workflow matrix");
+    const expression = include.trim().match(/^\$\{\{([\s\S]*)\}\}$/)?.[1];
+    if (!expression) throw new Error("Invalid workflow matrix expression");
+    expect(
+      runInNewContext(expression, {
+        inputs: { source_sha: sourceSha, full_workflows: false },
+        github: { event_name: "pull_request" },
+        fromJSON: JSON.parse,
+      }),
+    ).toEqual([{ case: "hello", flag: "--spack-workflow-hello" }]);
   });
 
   test("runs real seed DB contracts between migrations and unit tests", async () => {
@@ -719,7 +805,7 @@ describe("preview test orchestration", () => {
     }
   });
 
-  test("the final gate requires success for selected suites and skipped for unselected suites", async () => {
+  test.each(workflowModes)("final gate independently enforces workflow mode %s", async (mode) => {
     const gate = (await workflow()).jobs["all-required-tests"];
     expect(gate?.name).toBe("all-required-tests");
     expect(gate?.if).toBe("always() && needs.resolve.result != 'skipped'");
@@ -740,6 +826,7 @@ describe("preview test orchestration", () => {
       WORKFLOWS_RESULT: "${{ needs.workflows.result }}",
       SPACK_REQUIRED: "${{ needs.resolve.outputs.spack }}",
       SCHEDULERS_REQUIRED: "${{ needs.resolve.outputs.schedulers }}",
+      WORKFLOWS_REQUIRED: "${{ needs.resolve.outputs.workflows }}",
     });
     if (!step?.run) throw new Error("Missing all-required-tests gate");
     const cases: { results: Record<string, string>; accepted: boolean }[] = [];
@@ -749,9 +836,10 @@ describe("preview test orchestration", () => {
           RESOLVE_RESULT: "success",
           CI_RESULT: "success",
           SCHEDULERS_RESULT: spack || schedulers ? "success" : "skipped",
-          WORKFLOWS_RESULT: spack ? "success" : "skipped",
+          WORKFLOWS_RESULT: mode === "none" ? "skipped" : "success",
           SPACK_REQUIRED: String(spack),
           SCHEDULERS_REQUIRED: String(schedulers),
+          WORKFLOWS_REQUIRED: mode,
         };
         cases.push({ results: success, accepted: true });
         for (const key of [
@@ -778,6 +866,12 @@ describe("preview test orchestration", () => {
           for (const value of ["", "TRUE", "FALSE", "1", "0", "yes", "true ", "null"]) {
             cases.push({ results: { ...success, [key]: value }, accepted: false });
           }
+        }
+        for (const value of ["", "true", "false", "NONE", "QUICK", "FULL", "quick ", "unknown"]) {
+          cases.push({
+            results: { ...success, WORKFLOWS_REQUIRED: value },
+            accepted: false,
+          });
         }
       }
     }

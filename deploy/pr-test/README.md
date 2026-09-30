@@ -2,6 +2,13 @@
 
 ## Spack 工作流闭环
 
+自动 PR 编排在相关源码变化时默认只运行 GNU Hello 基础工作流。
+samtools 标量和文件工作流保留为完整档：手动触发 `Spack workflow execution`，
+或当前 HEAD 提交消息包含 `[full-workflows]` 时运行全部三个案例。
+手动 `PR preview tests` 则强制全部必测组，适用于合并前验证。
+材料导入和调度器专项仍按既有源码范围选择，详见
+[工作流测试档位](../../docs/deployment.md#工作流测试档位)。
+
 新增 Actions 专用 `Spack workflow execution` 工作流及两个入口：
 
 ```bash

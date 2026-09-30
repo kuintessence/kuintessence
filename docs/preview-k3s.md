@@ -8,7 +8,9 @@
 
 1. [`PR preview tests`](../.github/workflows/preview-tests.yml) 固定当前 PR head SHA，
    运行基础 CI，并按完整 PR diff 选择 Spack 和调度器重型测试；手动触发该工作流
-   则运行全部组。测试容器只存在于 runner。
+   则运行全部组。相关源码自动执行的正式工作流默认只有 GNU Hello 基础案例；
+   当前 HEAD 提交消息带 `[full-workflows]` 时运行完整工作流矩阵。
+   测试容器只存在于 runner。
 2. [`Preview`](../.github/workflows/preview.yml) 从可信 workflow 版本加载部署逻辑，
    校验当前 PR、作者权限、标签、受测 SHA、必需 job 以及后续重跑状态。
 3. 独立镜像 job 构建 `linux/amd64` 的 Server、Registry、Web、db-migrate、seed、
