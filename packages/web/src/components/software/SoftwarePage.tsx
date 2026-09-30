@@ -825,7 +825,7 @@ export function SoftwarePage() {
           </TabsContent>
           <TabsContent value="spack">
             <RecipeRepositoriesPanel canManage={canManageOrganization} />
-            <SpackMaterialsPanel canManage={canManageOrganization} />
+            <SpackMaterialsPanel canManage={canManageOrganization} canManageBindings />
             <SpackSoftwarePanel
               canManage={canManageOrganization}
               canManagePlatform={canManagePlatform}

@@ -36,13 +36,13 @@ const DISABLE: SpackInstallBindingChange = {
   expectedRevision: 0,
   reason: "Pause installations",
 };
-const BIND: SpackInstallBindingChange = {
+const BIND = {
   ...QUERY,
   action: "bind",
   expectedRevision: 0,
   reason: "Reviewed release",
   binding: { repositoryId: "b".repeat(64), manifestDigest: `sha256:${"c".repeat(64)}` },
-};
+} satisfies SpackInstallBindingChange;
 const ENDPOINTS = [
   { path: `${BASE}/inspect`, input: QUERY },
   { path: BASE, input: DISABLE },
@@ -354,7 +354,11 @@ describe("install binding error receipts", () => {
       const f = fixture();
       if (error instanceof RecipeStoreError) f.recipes.getSnapshot.mockRejectedValue(error);
       else f.store.getManifest.mockRejectedValue(error);
-      await expectError(await f.request(BASE, BIND), status === 422 ? 422 : 403, "VALIDATION_ERROR");
+      await expectError(
+        await f.request(BASE, BIND),
+        status === 422 ? 422 : 403,
+        "VALIDATION_ERROR",
+      );
       expect(f.port.transition).not.toHaveBeenCalled();
     }
   });

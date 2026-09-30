@@ -7,7 +7,13 @@ import {
 describe("Spack install binding contracts", () => {
   const query = { scope: "platform", spec: "hello@2.12.1" };
   const binding = { repositoryId: "a".repeat(64), manifestDigest: `sha256:${"b".repeat(64)}` };
-  const change = { ...query, action: "bind", binding, expectedRevision: 0, reason: "Initial" };
+  const change = {
+    ...query,
+    action: "bind" as const,
+    binding,
+    expectedRevision: 0,
+    reason: "Initial",
+  };
 
   test("accepts exact specs and explicit revision-checked transitions", () => {
     expect(SpackInstallBindingChangeSchema.parse(change)).toEqual(change);

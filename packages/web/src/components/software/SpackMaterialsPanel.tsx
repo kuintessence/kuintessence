@@ -28,13 +28,27 @@ function getSessionKey(): string | null {
   return JSON.stringify([auth.email, auth.revision, auth.role, auth.expiresAt]);
 }
 
-export function SpackMaterialsPanel({ canManage }: { canManage: boolean }) {
+export function SpackMaterialsPanel({
+  canManage,
+  canManageBindings = canManage,
+}: {
+  canManage: boolean;
+  canManageBindings?: boolean;
+}) {
   const { t } = useTranslation();
   const sessionKey = useSyncExternalStore(subscribeAuthState, getSessionKey, () => null);
   const organizationId = useActiveOrganizationId();
-  const capabilityState = useMeCapabilities(canManage && sessionKey !== null && !isLocalMode());
+  const capabilityState = useMeCapabilities(
+    (canManage || canManageBindings) && sessionKey !== null && !isLocalMode(),
+  );
   const capabilities = capabilityState.status === "ready" ? capabilityState.data : null;
-  const scope = JSON.stringify([sessionKey, organizationId, canManage, capabilities]);
+  const scope = JSON.stringify([
+    sessionKey,
+    organizationId,
+    canManage,
+    canManageBindings,
+    capabilities,
+  ]);
   const latestScope = useRef(scope);
   latestScope.current = scope;
   const isCurrent = () =>
@@ -57,7 +71,11 @@ export function SpackMaterialsPanel({ canManage }: { canManage: boolean }) {
   const canInspectBindingScope = (bindingScope: string) =>
     isCurrent() &&
     !isLocalMode() &&
-    canManageSpackInstallBinding(bindingScope, { canManage, organizationId, capabilities });
+    canManageSpackInstallBinding(bindingScope, {
+      canManage: canManageBindings,
+      organizationId,
+      capabilities,
+    });
   const canInspectBindings =
     canInspectBindingScope("platform") ||
     (!!organizationId && canInspectBindingScope(organizationId));

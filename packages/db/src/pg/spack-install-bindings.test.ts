@@ -268,6 +268,7 @@ describe("Spack install bindings (isolated real PG)", () => {
     const current = await peer.inspect(PLATFORM, OPERATOR);
     expect(current).toMatchObject({ revision: 1, state: "enabled", historyTruncated: false });
     expect(current.history).toHaveLength(1);
+    if (!current.binding) throw new Error("Expected an enabled binding");
     expect([first, second]).toContainEqual(current.binding);
     const journal = await db.select().from(spackInstallBindingEvents);
     expect(journal).toHaveLength(1);
@@ -448,67 +449,67 @@ describe("Spack install bindings (isolated real PG)", () => {
     expect(await db.select().from(spackInstallBindingEvents)).toEqual([]);
   });
 
-  test.each(["suspension", "membership", "membership role"] as const)(
-    "holds canonical row locks until binding commit during concurrent %s revocation",
-    async (mode) => {
-      const { bindings } = await ready();
-      await db.update(users).set({ role: "user" }).where(eq(users.id, PROVIDER));
-      await db
-        .update(userOrgMemberships)
-        .set({ role: "admin" })
-        .where(eq(userOrgMemberships.userId, PROVIDER));
-      const [holder] = await db.$client<{ pid: number }[]>`select pg_backend_pid() as pid`;
-      const [waiter] = await peerDb.$client<{ pid: number }[]>`select pg_backend_pid() as pid`;
-      if (!holder || !waiter) throw new Error("Missing PostgreSQL backend PID");
-      expect(holder.pid).not.toBe(waiter.pid);
-      const entered = Promise.withResolvers<void>();
-      const releaseAuthorization = Promise.withResolvers<void>();
-      const mutation = bindings.transition(bind(release(), 0, ORG), PROVIDER, async (principal) => {
-        expect(principal).toEqual({
-          sub: PROVIDER,
-          role: "user",
-          orgIds: [ORG],
-        });
-        entered.resolve();
-        await releaseAuthorization.promise;
+  test.each([
+    "suspension",
+    "membership",
+    "membership role",
+  ] as const)("holds canonical row locks until binding commit during concurrent %s revocation", async (mode) => {
+    const { bindings } = await ready();
+    await db.update(users).set({ role: "user" }).where(eq(users.id, PROVIDER));
+    await db
+      .update(userOrgMemberships)
+      .set({ role: "admin" })
+      .where(eq(userOrgMemberships.userId, PROVIDER));
+    const [holder] = await db.$client<{ pid: number }[]>`select pg_backend_pid() as pid`;
+    const [waiter] = await peerDb.$client<{ pid: number }[]>`select pg_backend_pid() as pid`;
+    if (!holder || !waiter) throw new Error("Missing PostgreSQL backend PID");
+    expect(holder.pid).not.toBe(waiter.pid);
+    const entered = Promise.withResolvers<void>();
+    const releaseAuthorization = Promise.withResolvers<void>();
+    const mutation = bindings.transition(bind(release(), 0, ORG), PROVIDER, async (principal) => {
+      expect(principal).toEqual({
+        sub: PROVIDER,
+        role: "user",
+        orgIds: [ORG],
       });
-      const mutationResult = Promise.allSettled([mutation]);
-      let revocationResult: Promise<PromiseSettledResult<unknown>[]> | undefined;
-      try {
-        await Promise.race([
-          entered.promise,
-          mutation.then(() => {
-            throw new Error("Mutation finished before authorization was released");
-          }),
-        ]);
-        revocationResult = Promise.allSettled([
-          peerDb.transaction(async (tx) => {
-            if (mode === "suspension") {
-              await tx.update(users).set({ suspended: true }).where(eq(users.id, PROVIDER));
-            } else if (mode === "membership role") {
-              await tx
-                .update(userOrgMemberships)
-                .set({ role: "operator" })
-                .where(eq(userOrgMemberships.userId, PROVIDER));
-            } else {
-              await tx.delete(userOrgMemberships).where(eq(userOrgMemberships.userId, PROVIDER));
-            }
-          }),
-        ]);
-        await waitForRowLock(admin, waiter.pid, holder.pid);
-      } finally {
-        releaseAuthorization.resolve();
-        await Promise.all([mutationResult, revocationResult]);
-      }
-      expect(await mutationResult).toMatchObject([{ status: "fulfilled", value: { revision: 1 } }]);
-      expect(await revocationResult).toMatchObject([{ status: "fulfilled" }]);
-      const error = mode === "suspension" ? IDENTITY_FORBIDDEN : FORBIDDEN;
-      await expectError(bindings.inspect({ scope: ORG, spec: SPEC }, PROVIDER), error);
-      await expectError(bindings.transition(disable(1, ORG), PROVIDER, allow), error);
-      expect(await db.select().from(spackInstallBindingEvents)).toHaveLength(1);
-    },
-    15_000,
-  );
+      entered.resolve();
+      await releaseAuthorization.promise;
+    });
+    const mutationResult = Promise.allSettled([mutation]);
+    let revocationResult: Promise<PromiseSettledResult<unknown>[]> | undefined;
+    try {
+      await Promise.race([
+        entered.promise,
+        mutation.then(() => {
+          throw new Error("Mutation finished before authorization was released");
+        }),
+      ]);
+      revocationResult = Promise.allSettled([
+        peerDb.transaction(async (tx) => {
+          if (mode === "suspension") {
+            await tx.update(users).set({ suspended: true }).where(eq(users.id, PROVIDER));
+          } else if (mode === "membership role") {
+            await tx
+              .update(userOrgMemberships)
+              .set({ role: "operator" })
+              .where(eq(userOrgMemberships.userId, PROVIDER));
+          } else {
+            await tx.delete(userOrgMemberships).where(eq(userOrgMemberships.userId, PROVIDER));
+          }
+        }),
+      ]);
+      await waitForRowLock(admin, waiter.pid, holder.pid);
+    } finally {
+      releaseAuthorization.resolve();
+      await Promise.all([mutationResult, revocationResult]);
+    }
+    expect(await mutationResult).toMatchObject([{ status: "fulfilled", value: { revision: 1 } }]);
+    expect(await revocationResult).toMatchObject([{ status: "fulfilled" }]);
+    const error = mode === "suspension" ? IDENTITY_FORBIDDEN : FORBIDDEN;
+    await expectError(bindings.inspect({ scope: ORG, spec: SPEC }, PROVIDER), error);
+    await expectError(bindings.transition(disable(1, ORG), PROVIDER, allow), error);
+    expect(await db.select().from(spackInstallBindingEvents)).toHaveLength(1);
+  }, 15_000);
 
   test("configuration seeds only missing platform selections and retains the full protective ledger", async () => {
     const first = release();
@@ -557,9 +558,13 @@ describe("Spack install bindings (isolated real PG)", () => {
     const events = await db.select().from(spackInstallBindingEvents);
     expect(events).toHaveLength(1);
     expect(events[0]).toMatchObject({ ...PLATFORM, revision: 1, source: "config" });
+    const event = events[0];
+    if (!event?.repositoryId || !event.manifestDigest) {
+      throw new Error("Expected a configured binding");
+    }
     expect([first, second]).toContainEqual({
-      repositoryId: events[0]?.repositoryId,
-      manifestDigest: events[0]?.manifestDigest,
+      repositoryId: event.repositoryId,
+      manifestDigest: event.manifestDigest,
     });
     expect(await db.select().from(spackMaterialBindings)).toHaveLength(2);
   });
@@ -912,11 +917,7 @@ describe("Spack install bindings (isolated real PG)", () => {
       });
     }
     const epoch =
-      mode === "missing epoch"
-        ? undefined
-        : mode === "wrong epoch"
-          ? randomUUID()
-          : fixture.epoch;
+      mode === "missing epoch" ? undefined : mode === "wrong epoch" ? randomUUID() : fixture.epoch;
     const bindings = new SpackInstallBindings(peerDb, epoch);
     const references = new SpackMaterialReferences(peerDb, epoch);
     await expectError(bindings.inspect(PLATFORM, OPERATOR), UNAVAILABLE);
