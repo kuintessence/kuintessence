@@ -176,46 +176,48 @@ describe("install binding API contract and identity", () => {
     expect(f.recipes.getSnapshot).not.toHaveBeenCalled();
   });
 
-  test.each(ENDPOINTS)(
-    "$path requires authentication before reaching the port",
-    async ({ path, input }) => {
-      const f = fixture();
-      const response = await f.app.request(path, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(input),
-      });
-      await expectError(response, 403, "FORBIDDEN");
-      expect(f.port.inspect).not.toHaveBeenCalled();
-      expect(f.port.transition).not.toHaveBeenCalled();
-    },
-  );
+  test.each(ENDPOINTS)("$path requires authentication before reaching the port", async ({
+    path,
+    input,
+  }) => {
+    const f = fixture();
+    const response = await f.app.request(path, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(input),
+    });
+    await expectError(response, 403, "FORBIDDEN");
+    expect(f.port.inspect).not.toHaveBeenCalled();
+    expect(f.port.transition).not.toHaveBeenCalled();
+  });
 
-  test.each(["missing resolver", "missing user", "suspended", "failure"] as const)(
-    "canonical %s fails closed despite privileged JWT claims and a test header",
-    async (mode) => {
-      const f = fixture({
-        resolveCanonicalPrincipal:
-          mode === "missing resolver"
-            ? undefined
-            : async () => {
-                if (mode === "failure") throw new Error("private identity database address");
-                return mode === "missing user" ? null : { ...ACTOR, suspended: true };
-              },
-      });
-      const response = await f.app.request(BASE, {
-        method: "POST",
-        headers: {
-          ...f.headers,
-          "X-Test-Principal": JSON.stringify({ ...ACTOR, role: "super_admin" }),
-        },
-        body: JSON.stringify(DISABLE),
-      });
-      await expectError(response, 403, "FORBIDDEN");
-      expect(f.port.inspect).not.toHaveBeenCalled();
-      expect(f.port.transition).not.toHaveBeenCalled();
-    },
-  );
+  test.each([
+    "missing resolver",
+    "missing user",
+    "suspended",
+    "failure",
+  ] as const)("canonical %s fails closed despite privileged JWT claims and a test header", async (mode) => {
+    const f = fixture({
+      resolveCanonicalPrincipal:
+        mode === "missing resolver"
+          ? undefined
+          : async () => {
+              if (mode === "failure") throw new Error("private identity database address");
+              return mode === "missing user" ? null : { ...ACTOR, suspended: true };
+            },
+    });
+    const response = await f.app.request(BASE, {
+      method: "POST",
+      headers: {
+        ...f.headers,
+        "X-Test-Principal": JSON.stringify({ ...ACTOR, role: "super_admin" }),
+      },
+      body: JSON.stringify(DISABLE),
+    });
+    await expectError(response, 403, "FORBIDDEN");
+    expect(f.port.inspect).not.toHaveBeenCalled();
+    expect(f.port.transition).not.toHaveBeenCalled();
+  });
 
   test("a stale privileged token cannot override the canonical scope gate", async () => {
     const f = fixture();
@@ -275,43 +277,35 @@ describe("install binding request validation", () => {
     expect(f.store.getManifest).not.toHaveBeenCalled();
   });
 
-  test.each(ENDPOINTS)(
-    "$path rejects query overrides, non-JSON and malformed bodies",
-    async ({ path, input }) => {
-      const f = fixture();
-      const suffixes = ["?scope=platform", "?role=super_admin", "?url=https://example.invalid"];
-      for (const suffix of suffixes) {
-        await expectError(
-          await f.request(`${path}${suffix}`, input),
-          422,
-          "INSTALL_BINDING_INVALID",
-        );
-      }
-      for (const [contentType, body, code] of [
-        ["text/plain", JSON.stringify(input), "INSTALL_BINDING_INVALID"],
-        ["application/json", undefined, "INSTALL_BINDING_INVALID"],
-        ["application/json", "{", "VALIDATION_ERROR"],
-        ["application/json", "null", "VALIDATION_ERROR"],
-        [
-          "application/json",
-          JSON.stringify({ ...input, operatorId: ACTOR.sub }),
-          "VALIDATION_ERROR",
-        ],
-      ] as const) {
-        await expectError(
-          await f.app.request(path, {
-            method: "POST",
-            headers: { ...f.headers, "Content-Type": contentType },
-            body,
-          }),
-          422,
-          code,
-        );
-      }
-      expect(f.port.inspect).not.toHaveBeenCalled();
-      expect(f.port.transition).not.toHaveBeenCalled();
-    },
-  );
+  test.each(ENDPOINTS)("$path rejects query overrides, non-JSON and malformed bodies", async ({
+    path,
+    input,
+  }) => {
+    const f = fixture();
+    const suffixes = ["?scope=platform", "?role=super_admin", "?url=https://example.invalid"];
+    for (const suffix of suffixes) {
+      await expectError(await f.request(`${path}${suffix}`, input), 422, "INSTALL_BINDING_INVALID");
+    }
+    for (const [contentType, body, code] of [
+      ["text/plain", JSON.stringify(input), "INSTALL_BINDING_INVALID"],
+      ["application/json", undefined, "INSTALL_BINDING_INVALID"],
+      ["application/json", "{", "VALIDATION_ERROR"],
+      ["application/json", "null", "VALIDATION_ERROR"],
+      ["application/json", JSON.stringify({ ...input, operatorId: ACTOR.sub }), "VALIDATION_ERROR"],
+    ] as const) {
+      await expectError(
+        await f.app.request(path, {
+          method: "POST",
+          headers: { ...f.headers, "Content-Type": contentType },
+          body,
+        }),
+        422,
+        code,
+      );
+    }
+    expect(f.port.inspect).not.toHaveBeenCalled();
+    expect(f.port.transition).not.toHaveBeenCalled();
+  });
 
   test("rejects an oversized body without trusting Content-Length", async () => {
     const f = fixture();
@@ -350,39 +344,33 @@ describe("install binding error receipts", () => {
     expect(f.port.transition).toHaveBeenCalledTimes(1);
   });
 
-  test.each([403, 404, 422] as const)(
-    "hides material and recipe details for status %s",
-    async (status) => {
-      for (const error of [
-        new SpackMaterialError(status, "private manifest path"),
-        new RecipeStoreError(status, "private recipe diagnostic"),
-      ]) {
-        const f = fixture();
-        if (error instanceof RecipeStoreError) f.recipes.getSnapshot.mockRejectedValue(error);
-        else f.store.getManifest.mockRejectedValue(error);
-        await expectError(
-          await f.request(BASE, BIND),
-          status === 422 ? 422 : 403,
-          "VALIDATION_ERROR",
-        );
-        expect(f.port.transition).not.toHaveBeenCalled();
-      }
-    },
-  );
+  test.each([
+    403, 404, 422,
+  ] as const)("hides material and recipe details for status %s", async (status) => {
+    for (const error of [
+      new SpackMaterialError(status, "private manifest path"),
+      new RecipeStoreError(status, "private recipe diagnostic"),
+    ]) {
+      const f = fixture();
+      if (error instanceof RecipeStoreError) f.recipes.getSnapshot.mockRejectedValue(error);
+      else f.store.getManifest.mockRejectedValue(error);
+      await expectError(await f.request(BASE, BIND), status === 422 ? 422 : 403, "VALIDATION_ERROR");
+      expect(f.port.transition).not.toHaveBeenCalled();
+    }
+  });
 
-  test.each([500, 503] as const)(
-    "storage status %s is unavailable, not a client validation error",
-    async (status) => {
-      for (const error of [
-        new SpackMaterialError(status, "private corrupt manifest"),
-        new RecipeStoreError(status, "private snapshot storage"),
-      ]) {
-        const f = fixture();
-        if (error instanceof RecipeStoreError) f.recipes.getSnapshot.mockRejectedValue(error);
-        else f.store.getManifest.mockRejectedValue(error);
-        await expectError(await f.request(BASE, BIND), 503, "INSTALL_BINDING_UNAVAILABLE");
-        expect(f.port.transition).not.toHaveBeenCalled();
-      }
-    },
-  );
+  test.each([
+    500, 503,
+  ] as const)("storage status %s is unavailable, not a client validation error", async (status) => {
+    for (const error of [
+      new SpackMaterialError(status, "private corrupt manifest"),
+      new RecipeStoreError(status, "private snapshot storage"),
+    ]) {
+      const f = fixture();
+      if (error instanceof RecipeStoreError) f.recipes.getSnapshot.mockRejectedValue(error);
+      else f.store.getManifest.mockRejectedValue(error);
+      await expectError(await f.request(BASE, BIND), 503, "INSTALL_BINDING_UNAVAILABLE");
+      expect(f.port.transition).not.toHaveBeenCalled();
+    }
+  });
 });

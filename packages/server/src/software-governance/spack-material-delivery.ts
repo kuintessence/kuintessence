@@ -135,9 +135,7 @@ export class SpackMaterialDelivery {
     ) {
       throw denied();
     }
-    if (
-      !(await this.options.access.certificate(input.agentId, channel.verifiedCertFingerprint))
-    ) {
+    if (!(await this.options.access.certificate(input.agentId, channel.verifiedCertFingerprint))) {
       throw denied();
     }
     await this.initialize();

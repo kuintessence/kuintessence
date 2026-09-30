@@ -31,7 +31,11 @@ describe("Spack install binding contracts", () => {
       ).toBe(false);
     }
     expect(SpackInstallBindingQuerySchema.safeParse({ ...query, scope: "*" }).success).toBe(false);
-    expect(SpackInstallBindingChangeSchema.safeParse({ ...change, force: true }).success).toBe(false);
-    expect(SpackInstallBindingChangeSchema.safeParse({ ...change, reason: " " }).success).toBe(false);
+    expect(SpackInstallBindingChangeSchema.safeParse({ ...change, force: true }).success).toBe(
+      false,
+    );
+    expect(SpackInstallBindingChangeSchema.safeParse({ ...change, reason: " " }).success).toBe(
+      false,
+    );
   });
 });

@@ -17,12 +17,7 @@ import {
   readyBinding,
   submitBinding,
 } from "./SpackInstallBinding.test-helpers";
-import {
-  capabilities,
-  deferred,
-  resetMaterials,
-  translation,
-} from "./SpackMaterials.test-helpers";
+import { capabilities, deferred, resetMaterials, translation } from "./SpackMaterials.test-helpers";
 import { SpackMaterialsPanel } from "./SpackMaterialsPanel";
 
 const access = vi.hoisted(() => ({
@@ -120,18 +115,20 @@ test("without an active organization platform admin defaults to platform", () =>
   expect(client.inspectSpackInstallBinding).not.toHaveBeenCalled();
 });
 
-test.each(["missing-org", "unverified-org", "missing-capability", "local"])(
-  "%s fails closed",
-  (kind) => {
-    if (kind === "missing-org") localStorage.removeItem(ACTIVE_ORGANIZATION_STORAGE_KEY);
-    if (kind === "unverified-org" && access.data) access.data.contexts = [];
-    if (kind === "missing-capability" && access.data) access.data.capabilities = [];
-    if (kind === "local") window.__KQ_LOCAL__ = { baseUrl: "http://localhost:19999" };
-    mount();
-    expect(screen.queryByTestId("spack-install-binding-editor")).toBeNull();
-    expect(client.inspectSpackInstallBinding).not.toHaveBeenCalled();
-  },
-);
+test.each([
+  "missing-org",
+  "unverified-org",
+  "missing-capability",
+  "local",
+])("%s fails closed", (kind) => {
+  if (kind === "missing-org") localStorage.removeItem(ACTIVE_ORGANIZATION_STORAGE_KEY);
+  if (kind === "unverified-org" && access.data) access.data.contexts = [];
+  if (kind === "missing-capability" && access.data) access.data.capabilities = [];
+  if (kind === "local") window.__KQ_LOCAL__ = { baseUrl: "http://localhost:19999" };
+  mount();
+  expect(screen.queryByTestId("spack-install-binding-editor")).toBeNull();
+  expect(client.inspectSpackInstallBinding).not.toHaveBeenCalled();
+});
 
 const changes = [
   "logout",
@@ -230,56 +227,56 @@ test("mobile allows inspection but disables mutation controls", async () => {
   expect(client.changeSpackInstallBinding).not.toHaveBeenCalled();
 });
 
-test.each(["owner", "admin"] as const)(
-  "role=user CP %s manages bindings without software.publish or lifecycle access",
-  async (membershipRole) => {
-    access.data = verifiedCapabilities("user");
-    access.data.contexts = [
-      {
-        id: `organization:${BINDING_ORG}`,
-        type: "organization",
-        organizationId: BINDING_ORG,
-        membershipRole,
-      },
-    ];
-    setAuth({ email: "alice@example.test", role: "user" });
-    mount();
-    expect(screen.queryByLabelText("Material manifest (JSON)")).toBeNull();
-    expect(screen.queryByLabelText("Management repository")).toBeNull();
-    expect(screen.queryByRole("tab", { name: "Lifecycle" })).toBeNull();
-    expect(bindingUi().queryByRole("option", { name: "Platform default" })).toBeNull();
-    await readyBinding();
-    fireEvent.change(bindingUi().getByLabelText("Binding action"), {
-      target: { value: "disable" },
-    });
-    confirmBinding();
-    submitBinding();
-    await screen.findByText("Installation binding change confirmed.");
-    expect(client.changeSpackInstallBinding).toHaveBeenCalledExactlyOnceWith(
-      expect.objectContaining({ scope: BINDING_ORG, action: "disable", expectedRevision: 0 }),
-      expect.any(AbortSignal),
-    );
-  },
-);
+test.each([
+  "owner",
+  "admin",
+] as const)("role=user CP %s manages bindings without software.publish or lifecycle access", async (membershipRole) => {
+  access.data = verifiedCapabilities("user");
+  access.data.contexts = [
+    {
+      id: `organization:${BINDING_ORG}`,
+      type: "organization",
+      organizationId: BINDING_ORG,
+      membershipRole,
+    },
+  ];
+  setAuth({ email: "alice@example.test", role: "user" });
+  mount();
+  expect(screen.queryByLabelText("Material manifest (JSON)")).toBeNull();
+  expect(screen.queryByLabelText("Management repository")).toBeNull();
+  expect(screen.queryByRole("tab", { name: "Lifecycle" })).toBeNull();
+  expect(bindingUi().queryByRole("option", { name: "Platform default" })).toBeNull();
+  await readyBinding();
+  fireEvent.change(bindingUi().getByLabelText("Binding action"), {
+    target: { value: "disable" },
+  });
+  confirmBinding();
+  submitBinding();
+  await screen.findByText("Installation binding change confirmed.");
+  expect(client.changeSpackInstallBinding).toHaveBeenCalledExactlyOnceWith(
+    expect.objectContaining({ scope: BINDING_ORG, action: "disable", expectedRevision: 0 }),
+    expect.any(AbortSignal),
+  );
+});
 
-test.each(["platform_admin", "super_admin"])(
-  "%s can manage platform bindings without publishing or provider capabilities",
-  async (role) => {
-    access.data = verifiedCapabilities(role);
-    access.data.capabilities = [];
-    localStorage.removeItem(ACTIVE_ORGANIZATION_STORAGE_KEY);
-    vi.mocked(client.inspectSpackInstallBinding).mockResolvedValueOnce(
-      installBindingView(0, "platform"),
-    );
-    mount();
-    expect(screen.queryByLabelText("Material manifest (JSON)")).toBeNull();
-    await readyBinding();
-    expect(client.inspectSpackInstallBinding).toHaveBeenCalledExactlyOnceWith(
-      { scope: "platform", spec: INSTALL_SPEC },
-      expect.any(AbortSignal),
-    );
-  },
-);
+test.each([
+  "platform_admin",
+  "super_admin",
+])("%s can manage platform bindings without publishing or provider capabilities", async (role) => {
+  access.data = verifiedCapabilities(role);
+  access.data.capabilities = [];
+  localStorage.removeItem(ACTIVE_ORGANIZATION_STORAGE_KEY);
+  vi.mocked(client.inspectSpackInstallBinding).mockResolvedValueOnce(
+    installBindingView(0, "platform"),
+  );
+  mount();
+  expect(screen.queryByLabelText("Material manifest (JSON)")).toBeNull();
+  await readyBinding();
+  expect(client.inspectSpackInstallBinding).toHaveBeenCalledExactlyOnceWith(
+    { scope: "platform", spec: INSTALL_SPEC },
+    expect.any(AbortSignal),
+  );
+});
 
 test("software.publish alone does not grant binding management to a CP admin", () => {
   access.data = verifiedCapabilities("user");

@@ -290,7 +290,10 @@ test("409 removes the stale form and explicit inspection supplies the next revis
   const harness = await mount(
     page,
     scope,
-    [{ status: 200, body: view(scope) }, { status: 200, body: view(scope, 1, replacement) }],
+    [
+      { status: 200, body: view(scope) },
+      { status: 200, body: view(scope, 1, replacement) },
+    ],
     [
       { status: 409, body: { error: { code: "INSTALL_BINDING_CONFLICT", message: "Changed" } } },
       { status: 200, body: view(scope, 2) },

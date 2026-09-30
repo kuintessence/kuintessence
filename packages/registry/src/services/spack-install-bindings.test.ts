@@ -96,19 +96,20 @@ describe("install binding service admission", () => {
     expect(f.recipes.getSnapshot).not.toHaveBeenCalled();
   });
 
-  test.each([" hello@1.0", "hello@1.0\n", "x".repeat(501)])(
-    "validates direct service calls before port admission: %s",
-    async (spec) => {
-      const f = fixture();
-      expect(() => f.access.inspect({ scope: ORG, spec }, ACTOR.sub)).toThrow();
-      await expect(f.access.change({ ...BIND, spec }, ACTOR.sub)).rejects.toMatchObject({
-        status: 422,
-      });
-      expect(f.port.inspect).not.toHaveBeenCalled();
-      expect(f.port.transition).not.toHaveBeenCalled();
-      expect(f.store.getManifest).not.toHaveBeenCalled();
-    },
-  );
+  test.each([
+    " hello@1.0",
+    "hello@1.0\n",
+    "x".repeat(501),
+  ])("validates direct service calls before port admission: %s", async (spec) => {
+    const f = fixture();
+    expect(() => f.access.inspect({ scope: ORG, spec }, ACTOR.sub)).toThrow();
+    await expect(f.access.change({ ...BIND, spec }, ACTOR.sub)).rejects.toMatchObject({
+      status: 422,
+    });
+    expect(f.port.inspect).not.toHaveBeenCalled();
+    expect(f.port.transition).not.toHaveBeenCalled();
+    expect(f.store.getManifest).not.toHaveBeenCalled();
+  });
 
   test("foreign scope rejection precedes material reads and transition", async () => {
     const f = fixture();
@@ -121,18 +122,19 @@ describe("install binding service admission", () => {
     expect(f.port.transition).not.toHaveBeenCalled();
   });
 
-  test.each(["hello@1.1", "hello@1.0 +shared", "hello@1.0  %gcc"])(
-    "rejects a manifest for a different exact spec: %s",
-    async (spec) => {
-      const f = fixture();
-      f.manifest.spec = spec;
-      await expect(f.access.change(BIND, ACTOR.sub)).rejects.toMatchObject({
-        code: "INSTALL_BINDING_INVALID",
-      });
-      expect(f.recipes.getSnapshot).not.toHaveBeenCalled();
-      expect(f.port.transition).not.toHaveBeenCalled();
-    },
-  );
+  test.each([
+    "hello@1.1",
+    "hello@1.0 +shared",
+    "hello@1.0  %gcc",
+  ])("rejects a manifest for a different exact spec: %s", async (spec) => {
+    const f = fixture();
+    f.manifest.spec = spec;
+    await expect(f.access.change(BIND, ACTOR.sub)).rejects.toMatchObject({
+      code: "INSTALL_BINDING_INVALID",
+    });
+    expect(f.recipes.getSnapshot).not.toHaveBeenCalled();
+    expect(f.port.transition).not.toHaveBeenCalled();
+  });
 
   test.each([
     { scope: ORG, name: `org/${OTHER_ORG}/materials` },
@@ -189,26 +191,29 @@ describe("install binding canonical recipe authorization", () => {
     expect(f.committed).not.toHaveBeenCalled();
   });
 
-  test.each(["foreign namespace", "private into public", "commit", "root", "diagnostic"] as const)(
-    "rejects unsafe recipe selection: %s",
-    async (mode) => {
-      const f = fixture();
-      f.control.canonical = { ...ACTOR, role: "super_admin", orgIds: [ORG, OTHER_ORG] };
-      if (mode === "foreign namespace") f.recipe.repository = `org/${OTHER_ORG}/recipes`;
-      if (mode === "private into public") f.manifest.repository = "public/materials";
-      if (mode === "commit") f.snapshot.commit = "e".repeat(40);
-      if (mode === "root") f.snapshot.roots = [];
-      if (mode === "diagnostic") {
-        f.snapshot.diagnostics = [
-          { severity: "error", code: "INVALID", message: "Private recipe diagnostic" },
-        ];
-      }
-      await expect(f.access.change(BIND, ACTOR.sub)).rejects.toMatchObject({
-        status: mode === "commit" ? 404 : mode === "root" || mode === "diagnostic" ? 422 : 403,
-      });
-      expect(f.committed).not.toHaveBeenCalled();
-    },
-  );
+  test.each([
+    "foreign namespace",
+    "private into public",
+    "commit",
+    "root",
+    "diagnostic",
+  ] as const)("rejects unsafe recipe selection: %s", async (mode) => {
+    const f = fixture();
+    f.control.canonical = { ...ACTOR, role: "super_admin", orgIds: [ORG, OTHER_ORG] };
+    if (mode === "foreign namespace") f.recipe.repository = `org/${OTHER_ORG}/recipes`;
+    if (mode === "private into public") f.manifest.repository = "public/materials";
+    if (mode === "commit") f.snapshot.commit = "e".repeat(40);
+    if (mode === "root") f.snapshot.roots = [];
+    if (mode === "diagnostic") {
+      f.snapshot.diagnostics = [
+        { severity: "error", code: "INVALID", message: "Private recipe diagnostic" },
+      ];
+    }
+    await expect(f.access.change(BIND, ACTOR.sub)).rejects.toMatchObject({
+      status: mode === "commit" ? 404 : mode === "root" || mode === "diagnostic" ? 422 : 403,
+    });
+    expect(f.committed).not.toHaveBeenCalled();
+  });
 
   test("loads each immutable snapshot once and validates every selected root", async () => {
     const f = fixture();
@@ -254,33 +259,35 @@ describe("install binding canonical recipe authorization", () => {
 });
 
 describe("install binding bounded work", () => {
-  test.each(["before", "snapshot", "canonical", "disable"] as const)(
-    "cancellation at %s prevents committing",
-    async (phase) => {
-      const f = fixture();
-      const controller = new AbortController();
-      if (phase === "before") controller.abort();
-      if (phase === "snapshot") {
-        f.recipes.getSnapshot.mockImplementation(async (id) => {
-          controller.abort();
-          return { id, repository: f.recipe.repository, snapshot: f.snapshot };
-        });
-      }
-      if (phase === "canonical" || phase === "disable") {
-        const transition = f.port.transition.getMockImplementation();
-        if (!transition) throw new Error("Missing transition");
-        f.port.transition.mockImplementation(async (...args) => {
-          controller.abort();
-          return transition(...args);
-        });
-      }
-      await expect(
-        f.access.change(phase === "disable" ? DISABLE : BIND, ACTOR.sub, controller.signal),
-      ).rejects.toMatchObject({ code: "INSTALL_BINDING_UNAVAILABLE" });
-      expect(f.committed).not.toHaveBeenCalled();
-      if (phase === "before") expect(f.port.inspect).not.toHaveBeenCalled();
-    },
-  );
+  test.each([
+    "before",
+    "snapshot",
+    "canonical",
+    "disable",
+  ] as const)("cancellation at %s prevents committing", async (phase) => {
+    const f = fixture();
+    const controller = new AbortController();
+    if (phase === "before") controller.abort();
+    if (phase === "snapshot") {
+      f.recipes.getSnapshot.mockImplementation(async (id) => {
+        controller.abort();
+        return { id, repository: f.recipe.repository, snapshot: f.snapshot };
+      });
+    }
+    if (phase === "canonical" || phase === "disable") {
+      const transition = f.port.transition.getMockImplementation();
+      if (!transition) throw new Error("Missing transition");
+      f.port.transition.mockImplementation(async (...args) => {
+        controller.abort();
+        return transition(...args);
+      });
+    }
+    await expect(
+      f.access.change(phase === "disable" ? DISABLE : BIND, ACTOR.sub, controller.signal),
+    ).rejects.toMatchObject({ code: "INSTALL_BINDING_UNAVAILABLE" });
+    expect(f.committed).not.toHaveBeenCalled();
+    if (phase === "before") expect(f.port.inspect).not.toHaveBeenCalled();
+  });
 
   test("expired metadata work cannot enter the transition", async () => {
     const f = fixture();

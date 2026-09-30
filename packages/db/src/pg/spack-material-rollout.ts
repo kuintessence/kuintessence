@@ -273,7 +273,9 @@ async function inventorySnapshot(tx: Transaction) {
       .select()
       .from(spackInstallBindingEvents)
       .where(
-        lastSelectionId ? sql`${spackInstallBindingEvents.id} > ${lastSelectionId}::uuid` : undefined,
+        lastSelectionId
+          ? sql`${spackInstallBindingEvents.id} > ${lastSelectionId}::uuid`
+          : undefined,
       )
       .orderBy(spackInstallBindingEvents.id)
       .limit(INVENTORY_PAGE_SIZE);

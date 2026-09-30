@@ -30,56 +30,58 @@ function access(role = "user", membershipRole: MembershipRole = "admin") {
   return { canManage: true, organizationId, capabilities };
 }
 
-test.each(["owner", "admin"] as const)(
-  "current organization %s with global user role does not need software.publish",
-  (role) => {
-    const current = access("user", role);
-    expect(canManageSpackInstallBinding(organizationId, current)).toBe(true);
-    expect(canManageSpackInstallBinding("platform", current)).toBe(false);
-    expect(canManageSpackInstallBinding(otherOrganizationId, current)).toBe(false);
-  },
-);
+test.each([
+  "owner",
+  "admin",
+] as const)("current organization %s with global user role does not need software.publish", (role) => {
+  const current = access("user", role);
+  expect(canManageSpackInstallBinding(organizationId, current)).toBe(true);
+  expect(canManageSpackInstallBinding("platform", current)).toBe(false);
+  expect(canManageSpackInstallBinding(otherOrganizationId, current)).toBe(false);
+});
 
-test.each(["platform_admin", "super_admin"])(
-  "%s does not require publishing or provider capabilities",
-  (role) => {
-    const current = access(role, "viewer");
-    current.capabilities.capabilities = [];
-    expect(canManageSpackInstallBinding("platform", current)).toBe(true);
-    expect(canManageSpackInstallBinding(organizationId, current)).toBe(true);
-    expect(canManageSpackInstallBinding(otherOrganizationId, current)).toBe(false);
-    expect(canManageSpackInstallBinding("platform", { ...current, canManage: false })).toBe(false);
-    current.capabilities.contexts = [];
-    expect(canManageSpackInstallBinding(organizationId, current)).toBe(false);
-  },
-);
+test.each([
+  "platform_admin",
+  "super_admin",
+])("%s does not require publishing or provider capabilities", (role) => {
+  const current = access(role, "viewer");
+  current.capabilities.capabilities = [];
+  expect(canManageSpackInstallBinding("platform", current)).toBe(true);
+  expect(canManageSpackInstallBinding(organizationId, current)).toBe(true);
+  expect(canManageSpackInstallBinding(otherOrganizationId, current)).toBe(false);
+  expect(canManageSpackInstallBinding("platform", { ...current, canManage: false })).toBe(false);
+  current.capabilities.contexts = [];
+  expect(canManageSpackInstallBinding(organizationId, current)).toBe(false);
+});
 
-test.each(["operator", "member", "viewer"] as const)(
-  "provider capability alone cannot elevate a user with %s membership",
-  (role) => {
-    expect(canManageSpackInstallBinding(organizationId, access("user", role))).toBe(false);
-  },
-);
+test.each([
+  "operator",
+  "member",
+  "viewer",
+] as const)("provider capability alone cannot elevate a user with %s membership", (role) => {
+  expect(canManageSpackInstallBinding(organizationId, access("user", role))).toBe(false);
+});
 
-test.each(["member", "viewer"] as const)(
-  "legacy org_admin fallback requires a verified %s context and provider capability",
-  (role) => {
-    const current = access("org_admin", role);
-    expect(canManageSpackInstallBinding(organizationId, current)).toBe(true);
-    current.capabilities.capabilities = ["software.publish"];
-    expect(canManageSpackInstallBinding(organizationId, current)).toBe(false);
-  },
-);
+test.each([
+  "member",
+  "viewer",
+] as const)("legacy org_admin fallback requires a verified %s context and provider capability", (role) => {
+  const current = access("org_admin", role);
+  expect(canManageSpackInstallBinding(organizationId, current)).toBe(true);
+  current.capabilities.capabilities = ["software.publish"];
+  expect(canManageSpackInstallBinding(organizationId, current)).toBe(false);
+});
 
-test.each(["owner", "admin", "operator"] as const)(
-  "a concrete %s membership elsewhere prevents global org_admin fallback",
-  (role) => {
-    const current = access("org_admin", "member");
-    current.capabilities.contexts.push(context(role, otherOrganizationId));
-    expect(canManageSpackInstallBinding(organizationId, current)).toBe(false);
-    expect(canManageSpackInstallBinding(otherOrganizationId, current)).toBe(false);
-  },
-);
+test.each([
+  "owner",
+  "admin",
+  "operator",
+] as const)("a concrete %s membership elsewhere prevents global org_admin fallback", (role) => {
+  const current = access("org_admin", "member");
+  current.capabilities.contexts.push(context(role, otherOrganizationId));
+  expect(canManageSpackInstallBinding(organizationId, current)).toBe(false);
+  expect(canManageSpackInstallBinding(otherOrganizationId, current)).toBe(false);
+});
 
 test("global org_admin cannot override a concrete current operator membership", () => {
   expect(canManageSpackInstallBinding(organizationId, access("org_admin", "operator"))).toBe(false);

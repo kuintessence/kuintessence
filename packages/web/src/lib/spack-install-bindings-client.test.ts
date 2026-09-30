@@ -108,9 +108,7 @@ describe.each([
     { ...view(), history: [{ ...view().history[0], createdAt: "yesterday" }] },
     {
       ...view(),
-      history: [
-        { ...view().history[0], binding: { ...binding, repositoryId: "c".repeat(64) } },
-      ],
+      history: [{ ...view().history[0], binding: { ...binding, repositoryId: "c".repeat(64) } }],
     },
   ])("rejects malformed or inconsistent views: %j", async (body) => {
     const fetcher = vi.fn().mockResolvedValue(response(body));

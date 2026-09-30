@@ -323,131 +323,130 @@ describe("Spack install bindings (isolated real PG)", () => {
     expect(await db.select().from(spackInstallBindingEvents)).toHaveLength(1);
   });
 
-  test.each(["owner", "admin", "operator"] as const)(
-    "global org_admin with A %s and B member cannot manage B through legacy fallback",
-    async (role) => {
-      const { bindings } = await ready();
-      await db
-        .update(userOrgMemberships)
-        .set({ role })
-        .where(eq(userOrgMemberships.userId, PROVIDER));
-      await db.insert(userOrgMemberships).values({
-        userId: PROVIDER,
-        orgId: OTHER_ORG,
-        role: "member",
-      });
-      await bindings.transition(bind(release(), 0, OTHER_ORG), OPERATOR, allow);
-      const seen: Principal[] = [];
-      const authorize: Authorize = async (principal) => {
-        seen.push(principal);
-      };
-      if (role === "operator") {
-        await expectError(
-          bindings.transition(bind(release(), 0, ORG), PROVIDER, authorize),
-          FORBIDDEN,
-        );
-        expect(seen).toEqual([]);
-      } else {
-        await bindings.transition(bind(release(), 0, ORG), PROVIDER, authorize);
-        expect(await bindings.inspect({ scope: ORG, spec: SPEC }, PROVIDER)).toMatchObject({
-          revision: 1,
-          state: "enabled",
-        });
-        expect(seen).toHaveLength(1);
-        expect(seen[0]).toMatchObject({
-          sub: PROVIDER,
-          role: "org_admin",
-          orgIds: expect.arrayContaining([ORG, OTHER_ORG]),
-        });
-      }
-      const calls = seen.length;
-      const journal = await db.select().from(spackInstallBindingEvents);
-      const ledger = await db.select().from(spackMaterialBindings);
-      const before = await bindings.inspect({ scope: OTHER_ORG, spec: SPEC }, OPERATOR);
+  test.each([
+    "owner",
+    "admin",
+    "operator",
+  ] as const)("global org_admin with A %s and B member cannot manage B through legacy fallback", async (role) => {
+    const { bindings } = await ready();
+    await db
+      .update(userOrgMemberships)
+      .set({ role })
+      .where(eq(userOrgMemberships.userId, PROVIDER));
+    await db.insert(userOrgMemberships).values({
+      userId: PROVIDER,
+      orgId: OTHER_ORG,
+      role: "member",
+    });
+    await bindings.transition(bind(release(), 0, OTHER_ORG), OPERATOR, allow);
+    const seen: Principal[] = [];
+    const authorize: Authorize = async (principal) => {
+      seen.push(principal);
+    };
+    if (role === "operator") {
       await expectError(
-        bindings.inspect({ scope: OTHER_ORG, spec: SPEC }, PROVIDER),
+        bindings.transition(bind(release(), 0, ORG), PROVIDER, authorize),
         FORBIDDEN,
       );
-      for (const change of [
-        { ...bind(release(), 0, OTHER_ORG), spec: "hello@new" },
-        bind(release(), 1, OTHER_ORG),
-        disable(1, OTHER_ORG),
-      ]) {
-        await expectError(bindings.transition(change, PROVIDER, authorize), FORBIDDEN);
-      }
-      expect(seen).toHaveLength(calls);
-      expect(await bindings.inspect({ scope: OTHER_ORG, spec: SPEC }, OPERATOR)).toEqual(before);
-      expect(await db.select().from(spackInstallBindingEvents)).toEqual(journal);
-      expect(await db.select().from(spackMaterialBindings)).toEqual(ledger);
-    },
-  );
-
-  test.each(["owner", "admin"] as const)(
-    "ordinary user with current %s membership manages only that organization",
-    async (role) => {
-      const { bindings } = await ready();
-      await db.update(users).set({ role: "user" }).where(eq(users.id, PROVIDER));
-      await db
-        .update(userOrgMemberships)
-        .set({ role })
-        .where(eq(userOrgMemberships.userId, PROVIDER));
-      let calls = 0;
-      const authorize: Authorize = async (principal) => {
-        calls++;
-        expect(principal).toEqual({
-          sub: PROVIDER,
-          role: "user",
-          orgIds: [ORG],
-        });
-      };
+      expect(seen).toEqual([]);
+    } else {
       await bindings.transition(bind(release(), 0, ORG), PROVIDER, authorize);
       expect(await bindings.inspect({ scope: ORG, spec: SPEC }, PROVIDER)).toMatchObject({
         revision: 1,
+        state: "enabled",
       });
-      for (const scope of ["platform", OTHER_ORG]) {
-        await expectError(bindings.inspect({ scope, spec: SPEC }, PROVIDER), FORBIDDEN);
-        await expectError(
-          bindings.transition(bind(release(), 0, scope), PROVIDER, authorize),
-          FORBIDDEN,
-        );
-      }
-      for (const demoted of ["operator", "member"]) {
-        await db
-          .update(userOrgMemberships)
-          .set({ role: demoted })
-          .where(eq(userOrgMemberships.userId, PROVIDER));
-        await expectError(bindings.inspect({ scope: ORG, spec: SPEC }, PROVIDER), FORBIDDEN);
-        await expectError(bindings.transition(disable(1, ORG), PROVIDER, authorize), FORBIDDEN);
-      }
-      expect(calls).toBe(1);
-      expect(await db.select().from(spackInstallBindingEvents)).toHaveLength(1);
-    },
-  );
+      expect(seen).toHaveLength(1);
+      expect(seen[0]).toMatchObject({
+        sub: PROVIDER,
+        role: "org_admin",
+        orgIds: expect.arrayContaining([ORG, OTHER_ORG]),
+      });
+    }
+    const calls = seen.length;
+    const journal = await db.select().from(spackInstallBindingEvents);
+    const ledger = await db.select().from(spackMaterialBindings);
+    const before = await bindings.inspect({ scope: OTHER_ORG, spec: SPEC }, OPERATOR);
+    await expectError(bindings.inspect({ scope: OTHER_ORG, spec: SPEC }, PROVIDER), FORBIDDEN);
+    for (const change of [
+      { ...bind(release(), 0, OTHER_ORG), spec: "hello@new" },
+      bind(release(), 1, OTHER_ORG),
+      disable(1, OTHER_ORG),
+    ]) {
+      await expectError(bindings.transition(change, PROVIDER, authorize), FORBIDDEN);
+    }
+    expect(seen).toHaveLength(calls);
+    expect(await bindings.inspect({ scope: OTHER_ORG, spec: SPEC }, OPERATOR)).toEqual(before);
+    expect(await db.select().from(spackInstallBindingEvents)).toEqual(journal);
+    expect(await db.select().from(spackMaterialBindings)).toEqual(ledger);
+  });
 
-  test.each(["missing", "suspended", "policy"] as const)(
-    "rejects %s authorization without a ledger or audit write",
-    async (mode) => {
-      const { bindings } = await ready();
-      const subject = mode === "missing" ? randomUUID() : OPERATOR;
-      if (mode === "suspended") {
-        await db.update(users).set({ suspended: true }).where(eq(users.id, OPERATOR));
-      }
-      let calls = 0;
+  test.each([
+    "owner",
+    "admin",
+  ] as const)("ordinary user with current %s membership manages only that organization", async (role) => {
+    const { bindings } = await ready();
+    await db.update(users).set({ role: "user" }).where(eq(users.id, PROVIDER));
+    await db
+      .update(userOrgMemberships)
+      .set({ role })
+      .where(eq(userOrgMemberships.userId, PROVIDER));
+    let calls = 0;
+    const authorize: Authorize = async (principal) => {
+      calls++;
+      expect(principal).toEqual({
+        sub: PROVIDER,
+        role: "user",
+        orgIds: [ORG],
+      });
+    };
+    await bindings.transition(bind(release(), 0, ORG), PROVIDER, authorize);
+    expect(await bindings.inspect({ scope: ORG, spec: SPEC }, PROVIDER)).toMatchObject({
+      revision: 1,
+    });
+    for (const scope of ["platform", OTHER_ORG]) {
+      await expectError(bindings.inspect({ scope, spec: SPEC }, PROVIDER), FORBIDDEN);
       await expectError(
-        bindings.transition(bind(), subject, async () => {
-          calls++;
-          throw new Error(PRIVATE);
-        }),
-        IDENTITY_FORBIDDEN,
+        bindings.transition(bind(release(), 0, scope), PROVIDER, authorize),
+        FORBIDDEN,
       );
-      expect(calls).toBe(mode === "policy" ? 1 : 0);
-      if (mode !== "policy") {
-        await expectError(bindings.inspect(PLATFORM, subject), IDENTITY_FORBIDDEN);
-      }
-      expect(await db.select().from(spackMaterialBindings)).toEqual([]);
-      expect(await db.select().from(spackInstallBindingEvents)).toEqual([]);
-    },
-  );
+    }
+    for (const demoted of ["operator", "member"]) {
+      await db
+        .update(userOrgMemberships)
+        .set({ role: demoted })
+        .where(eq(userOrgMemberships.userId, PROVIDER));
+      await expectError(bindings.inspect({ scope: ORG, spec: SPEC }, PROVIDER), FORBIDDEN);
+      await expectError(bindings.transition(disable(1, ORG), PROVIDER, authorize), FORBIDDEN);
+    }
+    expect(calls).toBe(1);
+    expect(await db.select().from(spackInstallBindingEvents)).toHaveLength(1);
+  });
+
+  test.each([
+    "missing",
+    "suspended",
+    "policy",
+  ] as const)("rejects %s authorization without a ledger or audit write", async (mode) => {
+    const { bindings } = await ready();
+    const subject = mode === "missing" ? randomUUID() : OPERATOR;
+    if (mode === "suspended") {
+      await db.update(users).set({ suspended: true }).where(eq(users.id, OPERATOR));
+    }
+    let calls = 0;
+    await expectError(
+      bindings.transition(bind(), subject, async () => {
+        calls++;
+        throw new Error(PRIVATE);
+      }),
+      IDENTITY_FORBIDDEN,
+    );
+    expect(calls).toBe(mode === "policy" ? 1 : 0);
+    if (mode !== "policy") {
+      await expectError(bindings.inspect(PLATFORM, subject), IDENTITY_FORBIDDEN);
+    }
+    expect(await db.select().from(spackMaterialBindings)).toEqual([]);
+    expect(await db.select().from(spackInstallBindingEvents)).toEqual([]);
+  });
 
   test.each(["suspension", "membership", "membership role"] as const)(
     "holds canonical row locks until binding commit during concurrent %s revocation",
@@ -724,78 +723,75 @@ describe("Spack install bindings (isolated real PG)", () => {
     expect(await db.select().from(spackInstallBindingEvents)).toHaveLength(2);
   });
 
-  test.each(["suspension", "membership"] as const)(
-    "resolution rechecks canonical requester %s even for an existing reference",
-    async (mode) => {
-      const { bindings, references, visibility } = await ready();
-      const selected = release();
-      await bindings.transition(bind(selected), OPERATOR, allow);
-      await visibility.transition(
+  test.each([
+    "suspension",
+    "membership",
+  ] as const)("resolution rechecks canonical requester %s even for an existing reference", async (mode) => {
+    const { bindings, references, visibility } = await ready();
+    const selected = release();
+    await bindings.transition(bind(selected), OPERATOR, allow);
+    await visibility.transition(
+      selected,
+      OPERATOR,
+      {
+        expectedRevision: 0,
+        policy: { mode: "allowlist", userIds: [], orgIds: [ORG] },
+        reason: "Organization-only material",
+      },
+      allow,
+    );
+    const input = await operation();
+    await references.resolveOperation(input);
+    const historical = await db.select().from(spackMaterialOperationReferences);
+    if (mode === "suspension") {
+      await db.update(users).set({ suspended: true }).where(eq(users.id, REQUESTER));
+    } else {
+      await db.delete(userOrgMemberships).where(eq(userOrgMemberships.userId, REQUESTER));
+    }
+    await expectError(references.resolveOperation(input), REFERENCE_ERROR);
+    await expectError(references.resolveOperation(await operation()), REFERENCE_ERROR);
+    expect(await db.select().from(spackMaterialOperationReferences)).toEqual(historical);
+  });
+
+  test.each([
+    "retired",
+    "withdrawn",
+  ] as const)("%s selection fails closed without fallback or rewriting historical operations", async (mode) => {
+    const initial = await ready();
+    const selected = release();
+    await initial.bindings.transition(bind(), OPERATOR, allow);
+    await initial.bindings.transition(bind(selected, 0, ORG), PROVIDER, allow);
+    const input = await operation(ORG);
+    await initial.references.resolveOperation(input);
+    const historical = await db.select().from(spackMaterialOperationReferences);
+    const journal = await db.select().from(spackInstallBindingEvents);
+    const current = await retire(selected, initial.state.revision);
+    if (mode === "withdrawn") {
+      await current.lifecycle.transition(
         selected,
         OPERATOR,
         {
+          action: "withdraw",
           expectedRevision: 0,
-          policy: { mode: "allowlist", userIds: [], orgIds: [ORG] },
-          reason: "Organization-only material",
+          reason: "Retired release withdrawn",
         },
         allow,
       );
-      const input = await operation();
-      await references.resolveOperation(input);
-      const historical = await db.select().from(spackMaterialOperationReferences);
-      if (mode === "suspension") {
-        await db.update(users).set({ suspended: true }).where(eq(users.id, REQUESTER));
-      } else {
-        await db.delete(userOrgMemberships).where(eq(userOrgMemberships.userId, REQUESTER));
-      }
-      await expectError(references.resolveOperation(input), REFERENCE_ERROR);
-      await expectError(references.resolveOperation(await operation()), REFERENCE_ERROR);
-      expect(await db.select().from(spackMaterialOperationReferences)).toEqual(historical);
-    },
-  );
-
-  test.each(["retired", "withdrawn"] as const)(
-    "%s selection fails closed without fallback or rewriting historical operations",
-    async (mode) => {
-      const initial = await ready();
-      const selected = release();
-      await initial.bindings.transition(bind(), OPERATOR, allow);
-      await initial.bindings.transition(bind(selected, 0, ORG), PROVIDER, allow);
-      const input = await operation(ORG);
-      await initial.references.resolveOperation(input);
-      const historical = await db.select().from(spackMaterialOperationReferences);
-      const journal = await db.select().from(spackInstallBindingEvents);
-      const current = await retire(selected, initial.state.revision);
-      if (mode === "withdrawn") {
-        await current.lifecycle.transition(
-          selected,
-          OPERATOR,
-          {
-            action: "withdraw",
-            expectedRevision: 0,
-            reason: "Retired release withdrawn",
-          },
-          allow,
-        );
-      }
-      await db
-        .update(softwareOperations)
-        .set({ status: "queued" })
-        .where(eq(softwareOperations.id, input.operationId));
-      await expectError(current.references.resolveOperation(input), REFERENCE_ERROR);
-      await expectError(current.references.resolveOperation(await operation(ORG)), REFERENCE_ERROR);
-      await expectError(
-        current.bindings.transition(bind(selected, 1, ORG), PROVIDER, allow),
-        UNAVAILABLE,
-      );
-      await expectError(
-        current.references.seedConfiguration({ [SPEC]: selected }),
-        REFERENCE_ERROR,
-      );
-      expect(await db.select().from(spackMaterialOperationReferences)).toEqual(historical);
-      expect(await db.select().from(spackInstallBindingEvents)).toEqual(journal);
-    },
-  );
+    }
+    await db
+      .update(softwareOperations)
+      .set({ status: "queued" })
+      .where(eq(softwareOperations.id, input.operationId));
+    await expectError(current.references.resolveOperation(input), REFERENCE_ERROR);
+    await expectError(current.references.resolveOperation(await operation(ORG)), REFERENCE_ERROR);
+    await expectError(
+      current.bindings.transition(bind(selected, 1, ORG), PROVIDER, allow),
+      UNAVAILABLE,
+    );
+    await expectError(current.references.seedConfiguration({ [SPEC]: selected }), REFERENCE_ERROR);
+    expect(await db.select().from(spackMaterialOperationReferences)).toEqual(historical);
+    expect(await db.select().from(spackInstallBindingEvents)).toEqual(journal);
+  });
 
   test("withdrawn material cannot become a new selection or seed", async () => {
     const { bindings, references, lifecycle } = await ready();
@@ -895,41 +891,42 @@ describe("Spack install bindings (isolated real PG)", () => {
     expect(await db.select().from(spackMaterialBindings)).toHaveLength(count);
   });
 
-  test.each(["missing epoch", "wrong epoch", "paused"] as const)(
-    "%s fences management, configuration seed and both fresh and existing operation resolution",
-    async (mode) => {
-      const fixture = await ready();
-      const selected = release();
-      await fixture.bindings.transition(bind(selected), OPERATOR, allow);
-      const old = await operation();
-      await fixture.references.resolveOperation(old);
-      const fresh = await operation();
-      const historical = await db.select().from(spackMaterialOperationReferences);
-      const journal = await db.select().from(spackInstallBindingEvents);
-      if (mode === "paused") {
-        await rollout.execute({
-          action: "pause",
-          operatorId: OPERATOR,
-          expectedRevision: fixture.state.revision,
-        });
-      }
-      const epoch =
-        mode === "missing epoch"
-          ? undefined
-          : mode === "wrong epoch"
-            ? randomUUID()
-            : fixture.epoch;
-      const bindings = new SpackInstallBindings(peerDb, epoch);
-      const references = new SpackMaterialReferences(peerDb, epoch);
-      await expectError(bindings.inspect(PLATFORM, OPERATOR), UNAVAILABLE);
-      await expectError(bindings.transition(disable(1), OPERATOR, allow), UNAVAILABLE);
-      await expectError(references.seedConfiguration({ [SPEC]: selected }), REFERENCE_ERROR);
-      await expectError(references.resolveOperation(old), REFERENCE_ERROR);
-      await expectError(references.resolveOperation(fresh), REFERENCE_ERROR);
-      expect(await db.select().from(spackMaterialOperationReferences)).toEqual(historical);
-      expect(await db.select().from(spackInstallBindingEvents)).toEqual(journal);
-    },
-  );
+  test.each([
+    "missing epoch",
+    "wrong epoch",
+    "paused",
+  ] as const)("%s fences management, configuration seed and both fresh and existing operation resolution", async (mode) => {
+    const fixture = await ready();
+    const selected = release();
+    await fixture.bindings.transition(bind(selected), OPERATOR, allow);
+    const old = await operation();
+    await fixture.references.resolveOperation(old);
+    const fresh = await operation();
+    const historical = await db.select().from(spackMaterialOperationReferences);
+    const journal = await db.select().from(spackInstallBindingEvents);
+    if (mode === "paused") {
+      await rollout.execute({
+        action: "pause",
+        operatorId: OPERATOR,
+        expectedRevision: fixture.state.revision,
+      });
+    }
+    const epoch =
+      mode === "missing epoch"
+        ? undefined
+        : mode === "wrong epoch"
+          ? randomUUID()
+          : fixture.epoch;
+    const bindings = new SpackInstallBindings(peerDb, epoch);
+    const references = new SpackMaterialReferences(peerDb, epoch);
+    await expectError(bindings.inspect(PLATFORM, OPERATOR), UNAVAILABLE);
+    await expectError(bindings.transition(disable(1), OPERATOR, allow), UNAVAILABLE);
+    await expectError(references.seedConfiguration({ [SPEC]: selected }), REFERENCE_ERROR);
+    await expectError(references.resolveOperation(old), REFERENCE_ERROR);
+    await expectError(references.resolveOperation(fresh), REFERENCE_ERROR);
+    expect(await db.select().from(spackMaterialOperationReferences)).toEqual(historical);
+    expect(await db.select().from(spackInstallBindingEvents)).toEqual(journal);
+  });
 
   test("observe mode cannot manage selections and an absent exact spec cannot be resolved", async () => {
     const bindings = new SpackInstallBindings(db);
@@ -941,48 +938,48 @@ describe("Spack install bindings (isolated real PG)", () => {
     expect(await db.select().from(spackMaterialOperationReferences)).toEqual([]);
   });
 
-  test.each(["web", "configuration"] as const)(
-    "failed %s audit insertion rolls back both selection and protective ledger",
-    async (source) => {
-      const { bindings, peer, references } = await ready();
-      const selected = release();
-      await db.execute(sql`
+  test.each([
+    "web",
+    "configuration",
+  ] as const)("failed %s audit insertion rolls back both selection and protective ledger", async (source) => {
+    const { bindings, peer, references } = await ready();
+    const selected = release();
+    await db.execute(sql`
         create function reject_install_binding_audit() returns trigger as $$
         begin
           raise exception 'private install binding audit diagnostic';
         end;
         $$ language plpgsql
       `);
-      try {
-        await db.execute(sql`
+    try {
+      await db.execute(sql`
           create trigger reject_install_binding before insert on spack_install_binding_events
           for each row execute function reject_install_binding_audit()
         `);
-        try {
-          if (source === "web") {
-            await expectError(bindings.transition(bind(selected), OPERATOR, allow), UNAVAILABLE);
-          } else {
-            await expectError(references.seedConfiguration({ [SPEC]: selected }), REFERENCE_ERROR);
-          }
-          expect(await peer.inspect(PLATFORM, OPERATOR)).toMatchObject({
-            revision: 0,
-            state: "absent",
-            binding: null,
-            history: [],
-          });
-          expect(await db.select().from(spackMaterialBindings)).toEqual([]);
-          expect(await db.select().from(spackInstallBindingEvents)).toEqual([]);
-        } finally {
-          await db.execute(sql`
+      try {
+        if (source === "web") {
+          await expectError(bindings.transition(bind(selected), OPERATOR, allow), UNAVAILABLE);
+        } else {
+          await expectError(references.seedConfiguration({ [SPEC]: selected }), REFERENCE_ERROR);
+        }
+        expect(await peer.inspect(PLATFORM, OPERATOR)).toMatchObject({
+          revision: 0,
+          state: "absent",
+          binding: null,
+          history: [],
+        });
+        expect(await db.select().from(spackMaterialBindings)).toEqual([]);
+        expect(await db.select().from(spackInstallBindingEvents)).toEqual([]);
+      } finally {
+        await db.execute(sql`
             drop trigger reject_install_binding on spack_install_binding_events
           `);
-        }
-      } finally {
-        await db.execute(sql`drop function reject_install_binding_audit()`);
       }
-      expect(await peer.transition(bind(selected), OPERATOR, allow)).toMatchObject({ revision: 1 });
-    },
-  );
+    } finally {
+      await db.execute(sql`drop function reject_install_binding_audit()`);
+    }
+    expect(await peer.transition(bind(selected), OPERATOR, allow)).toMatchObject({ revision: 1 });
+  });
 
   test("missing selection storage fails closed instead of using config or public fixtures", async () => {
     const { bindings, references } = await ready();

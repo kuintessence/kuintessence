@@ -51,7 +51,7 @@ function validateView(body: unknown, query: SpackInstallBindingQuery): SpackInst
     (view.state === "enabled") !== (view.binding !== null) ||
     (view.state === "absent") !== (view.revision === 0) ||
     view.history.length !== Math.min(view.revision, 100) ||
-    view.historyTruncated !== (view.revision > 100)
+    view.historyTruncated !== view.revision > 100
   ) {
     invalidResponse();
   }

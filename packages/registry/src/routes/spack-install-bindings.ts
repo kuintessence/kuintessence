@@ -60,7 +60,9 @@ export function createSpackInstallBindingRoutes(
       }
       const status = error.status === 403 || error.status === 404 ? 403 : 422;
       return c.json(
-        { error: { code: ErrorCode.VALIDATION_ERROR, message: "Invalid or inaccessible material" } },
+        {
+          error: { code: ErrorCode.VALIDATION_ERROR, message: "Invalid or inaccessible material" },
+        },
         status,
       );
     }

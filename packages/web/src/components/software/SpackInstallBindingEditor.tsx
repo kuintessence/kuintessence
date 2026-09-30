@@ -58,9 +58,7 @@ export function SpackInstallBindingEditor({
               if (canInspectScope(next) && editor.reset()) setScope(next);
             }}
           >
-            {organizationId ? (
-              <option value={organizationId}>{organizationId}</option>
-            ) : null}
+            {organizationId ? <option value={organizationId}>{organizationId}</option> : null}
             {canInspectScope("platform") ? (
               <option value="platform">{t("materials.installBinding.platform")}</option>
             ) : null}

@@ -32,10 +32,7 @@ export type { SpackInstallBindingQuery } from "./spack-install-binding-state";
 export type SpackInstallBindingChange = SpackInstallBindingQuery & {
   expectedRevision: number;
   reason: string;
-} & (
-    | { action: "bind"; binding: SpackMaterialReferenceBinding }
-    | { action: "disable" }
-  );
+} & ({ action: "bind"; binding: SpackMaterialReferenceBinding } | { action: "disable" });
 type Transaction = Parameters<Parameters<PgDb["transaction"]>[0]>[0];
 type Authorize = (principal: SpackMaterialLifecyclePrincipal) => Promise<void>;
 
@@ -132,8 +129,7 @@ function assertScope(
     principal.orgIds.includes(scope) &&
     ((!hasScopedMembership && principal.role === "org_admin") ||
       memberships.some(
-        (membership) =>
-          membership.orgId === scope && ["owner", "admin"].includes(membership.role),
+        (membership) => membership.orgId === scope && ["owner", "admin"].includes(membership.role),
       ))
   ) {
     return;
