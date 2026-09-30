@@ -72,7 +72,7 @@ describe.each([
 ])("$name client", ({ path, input, run }) => {
   test("uses authenticated no-store POST and an unwrapped view", async () => {
     localStorage.setItem("kq_token", "binding-token");
-    const fetcher = vi.fn().mockResolvedValue(response(view()));
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(response(view()));
     vi.stubGlobal("fetch", fetcher);
     const { signal } = new AbortController();
     await expect(run(signal)).resolves.toEqual(view());
@@ -84,10 +84,11 @@ describe.each([
         redirect: "error",
         cache: "no-store",
         signal,
-        body: JSON.stringify(input),
+        body: expect.any(String),
         headers: expect.objectContaining({ Authorization: "Bearer binding-token" }),
       }),
     );
+    expect(JSON.parse(String(fetcher.mock.calls[0]?.[1]?.body))).toStrictEqual(input);
   });
 
   test.each([
@@ -220,7 +221,7 @@ test("disable omits binding and validates disabled receipt", async () => {
     binding: null,
     history: [{ ...view().history[0], state: "disabled", binding: null }],
   };
-  const fetcher = vi.fn().mockResolvedValue(response(disabled));
+  const fetcher = vi.fn<typeof fetch>().mockResolvedValue(response(disabled));
   vi.stubGlobal("fetch", fetcher);
   const change: SpackInstallBindingChange = {
     ...query,
@@ -231,8 +232,9 @@ test("disable omits binding and validates disabled receipt", async () => {
   await expect(changeSpackInstallBinding(change)).resolves.toEqual(disabled);
   expect(fetcher).toHaveBeenCalledExactlyOnceWith(
     "/software/api/spack/install-bindings",
-    expect.objectContaining({ body: JSON.stringify(change) }),
+    expect.objectContaining({ body: expect.any(String) }),
   );
+  expect(JSON.parse(String(fetcher.mock.calls[0]?.[1]?.body))).toStrictEqual(change);
 });
 
 test.each([
