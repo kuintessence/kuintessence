@@ -468,7 +468,7 @@ describe("Web-to-managed overlays and workflow", () => {
       expect(jobs).toHaveLength(1);
       const job = jobs[0];
       expect(job?.strategy?.["fail-fast"]).toBe(false);
-      expect(job?.if).toBeUndefined();
+      expect(job?.if).toBe("inputs.run_spack");
       for (const entry of job?.strategy?.matrix.include ?? []) {
         expect(entry.web).toBe(flags.includes(entry.flag));
       }

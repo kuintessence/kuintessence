@@ -93,18 +93,22 @@ describe("scoped test suite acceptance", () => {
     ["ci / spack-artifact-imports", "spack"],
     ["ci / Spack artifact imports", "spack"],
     ["ci / Spack artifact imports ()", "spack"],
+    ["ci / Spack artifact imports (${{ matrix.case }})", "spack"],
     ["ci / Spack artifact imports (hello)", "spack"],
     ["ci / Spack artifact imports (samtools)", "spack"],
     ["schedulers / spack-managed", "spack"],
     ["schedulers / Spack managed installation", "spack"],
     ["schedulers / Spack  managed installation", "spack"],
+    ["schedulers / Spack ${{ matrix.label }} managed installation", "spack"],
     ["workflows / managed-workflow", "spack"],
     ["workflows / Managed workflow", "spack"],
     ["workflows / Managed workflow ()", "spack"],
+    ["workflows / Managed workflow (${{ matrix.case }})", "spack"],
     ["workflows", "spack"],
     ["schedulers / scheduler", "schedulers"],
     ["schedulers / Scheduler", "schedulers"],
     ["schedulers / Scheduler ()", "schedulers"],
+    ["schedulers / Scheduler (${{ matrix.scheduler }})", "schedulers"],
   ])("only permits unselected completed skipped placeholder %s", (name, group) => {
     const selected = { spack: false, schedulers: false, [group]: true };
     expect(testsPassed([...jobsFor(scopes[0]), job(name, "skipped")], scopes[0])).toBe(true);
