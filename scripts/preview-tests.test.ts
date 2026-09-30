@@ -344,7 +344,9 @@ describe("preview test orchestration", () => {
       "persist-credentials": false,
     });
     expect(resolveSteps[scope]?.uses).toBe("actions/github-script@v7");
-    expect(resolveSteps[scope]?.env).toEqual({ TEST_SHA: "${{ steps.source.outputs.source_sha }}" });
+    expect(resolveSteps[scope]?.env).toEqual({
+      TEST_SHA: "${{ steps.source.outputs.source_sha }}",
+    });
     for (const step of resolveSteps) expect(step.if).toBeUndefined();
     expect(Object.keys(preview.jobs).sort()).toEqual([
       "all-required-tests",
