@@ -248,7 +248,10 @@ describe("Server material visibility (isolated real PG)", () => {
     });
     await expect(prepare()).rejects.toMatchObject({ statusCode: 503 });
     expect(f.registryCalls).toHaveLength(1);
-    expect(await db.select().from(spackMaterialOperationReferences)).toHaveLength(0);
+    // Selection is pinned before network I/O; rejection must not erase its protective history.
+    expect(await db.select().from(spackMaterialOperationReferences)).toMatchObject([
+      { ...BINDING, agentId: AGENT, requestedBy: ACTOR, spec: SPEC },
+    ]);
   });
 
   test("suspending a canonical requester revokes both old-ticket routes", async () => {
@@ -256,5 +259,36 @@ describe("Server material visibility (isolated real PG)", () => {
     await expectDownloads(ticket);
     await db.update(users).set({ suspended: true }).where(eq(users.id, ACTOR));
     await expectDenied(ticket, 403);
+  });
+
+  test.each([
+    "registry failure",
+    "visibility",
+    "suspension",
+  ] as const)("install rejection after pinning preserves history without dispatch: %s", async (change) => {
+    f.afterManifest(async () => {
+      if (change === "registry failure") throw new Error("Registry unavailable");
+      if (change === "visibility") {
+        await f.changePolicy({
+          policy: DENY_ALL,
+          expectedRevision: 0,
+          reason: "Revoke admission during material preparation",
+        });
+      } else {
+        await db.update(users).set({ suspended: true }).where(eq(users.id, ACTOR));
+      }
+    });
+    const operation = await f.requestInstall();
+    expect(operation.status).toBe("rejected");
+    expect(f.pushed).toHaveLength(0);
+    expect(f.registryCalls).toHaveLength(1);
+    expect(await db.select().from(spackMaterialOperationReferences)).toMatchObject([
+      { operationId: operation.id, ...BINDING, agentId: AGENT, requestedBy: ACTOR, spec: SPEC },
+    ]);
+    const [stored] = await db
+      .select()
+      .from(softwareOperations)
+      .where(eq(softwareOperations.id, operation.id));
+    expect(stored?.status).toBe("rejected");
   });
 });

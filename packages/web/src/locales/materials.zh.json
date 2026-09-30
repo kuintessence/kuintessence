@@ -1,5 +1,44 @@
 {
   "materials": {
+    "installBinding": {
+      "title": "Spack 安装绑定",
+      "scope": "绑定作用域",
+      "platform": "平台默认",
+      "spec": "精确安装 spec",
+      "inspect": "查询安装绑定",
+      "stop": "停止等待绑定",
+      "action": "绑定操作",
+      "bind": "绑定固定发布项",
+      "disable": "停用安装绑定",
+      "repositoryId": "安装材料仓库 ID",
+      "manifestDigest": "安装材料清单摘要",
+      "useSelection": "使用当前选中的材料绑定",
+      "current": "当前固定发布项",
+      "reason": "安装绑定审计原因",
+      "confirm": "我确认此变更只影响后续安装，已有任务和安装仍使用原先固定的发布项。停用将阻止此作用域的新安装，不回退到其他绑定。",
+      "save": "保存安装绑定",
+      "history": "安装绑定审计历史",
+      "historyEmpty": "暂无绑定变更",
+      "source": "来源",
+      "state": {
+        "absent": "未显式绑定",
+        "enabled": "已启用",
+        "disabled": "已停用"
+      },
+      "busy": {
+        "read": "正在读取安装绑定",
+        "write": "正在提交安装绑定"
+      },
+      "notice": {
+        "changed": "安装绑定变更已确认。",
+        "rechecked": "已获取当前绑定，再次提交前请核对审计历史。",
+        "uncertain": "提交结果待确认。再次提交前须查询当前作用域和精确 spec。",
+        "conflict": "绑定 revision 已变化，请重新查询后再提交。",
+        "forbidden": "当前身份与组织无权管理此安装绑定。",
+        "invalid": "绑定被拒绝。请核对精确 spec、材料发布项、作用域及审计原因，再重新查询。",
+        "unavailable": "未能查询绑定，请检查权限、rollout 状态及服务连接。"
+      }
+    },
     "title": "Spack 材料",
     "signedOut": "登录后查看材料",
     "unavailable": "本地模式下材料仓库不可用",

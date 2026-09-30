@@ -48,6 +48,7 @@ bun run --filter @kuintessence/web test
 - SSH 走 Server gateway 与 Agent relay；通用 `/terminal` shell 执行是独立的 HTTP polling 界面。
 - 登录页支持 SSO/OIDC，非生产模式另提供开发登录。平台管理员可在 Settings/Operations 的 Security 区域配置中英文品牌文案、Logo 与 favicon；空值使用内置默认，图片支持随 Web 镜像发布的 `/branding/logo.svg`、`/branding/favicon.svg` 或安全 HTTPS URL。
 - CP Console 包含 Agent registration token 签发、metering 查询、导出和 webhook 管理界面。
+- 平台与 CP 材料面板共用 [Spack 安装绑定编辑器](docs/spack-install-bindings.md)，支持精确 spec 的查询、绑定、停用与审计；不代表真实安装验收已完成。
 - 本地 GUI 模式可通过 `kq gui serve` 注入 `window.__KQ_LOCAL__` 复用同一 SPA。
 
 ## 已知缺口

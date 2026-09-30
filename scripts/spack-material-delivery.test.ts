@@ -120,6 +120,11 @@ describe("Spack material pipeline (in-process, no listeners)", () => {
       ticketSecret: "fixture-operation-ticket".repeat(3),
       bindings: { [f.input.spec]: binding },
       references: {
+        async seedConfiguration() {},
+        async resolveOperation() {
+          expect(registered).toBe(true);
+          return binding;
+        },
         async registerBindings(bindings) {
           expect(bindings).toEqual({ [f.input.spec]: binding });
           registered = true;

@@ -65,6 +65,15 @@ function fixture(repository = "org/provider-a/sources", downloadLifetimeMs?: num
       if (registrationFailure) throw new Error("private database connection details");
       registeredBindings.push(structuredClone(bindings));
     },
+    async seedConfiguration() {
+      referenceEvents.push("seed");
+    },
+    async resolveOperation(input) {
+      referenceEvents.push("resolve");
+      const selected = bindings[input.spec];
+      if (referenceFailure || !selected) throw new Error("No pinned material");
+      return selected;
+    },
     async acquireOperation(input) {
       referenceEvents.push("acquire");
       if (referenceFailure) throw new Error("private database connection details");
@@ -169,10 +178,10 @@ describe("Server Spack material delivery", () => {
   test("registers configuration before delivery and pins the operation before issuing a ticket", async () => {
     const f = fixture();
     await f.delivery.initialize();
-    expect(f.referenceEvents).toEqual(["register"]);
+    expect(f.referenceEvents).toEqual(["register", "seed"]);
     expect(f.registeredBindings).toEqual([{ "zlib@1.3.1": f.binding }]);
     await f.prepare();
-    expect(f.referenceEvents).toEqual(["register", "fetch", "acquire"]);
+    expect(f.referenceEvents).toEqual(["register", "seed", "resolve", "fetch", "acquire"]);
     expect(f.operationReferences).toEqual([
       {
         ...f.binding,
@@ -341,7 +350,7 @@ describe("Server Spack material delivery", () => {
   test("rejects unknown spec, corrupt manifests and all upstream redirect/error responses", async () => {
     const f = fixture();
     delete f.bindings["zlib@1.3.1"];
-    await expect(f.prepare()).rejects.toThrow("No pinned");
+    await expect(f.prepare()).rejects.toThrow("reference registry is unavailable");
     const bad = fixture();
     bad.setManifest(Buffer.from("{}"));
     await expect(bad.prepare()).rejects.toThrow("unavailable or invalid");

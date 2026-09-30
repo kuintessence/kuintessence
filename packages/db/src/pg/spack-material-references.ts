@@ -1,7 +1,12 @@
 import { and, eq, sql } from "drizzle-orm";
 import type { PgDb } from "./index";
-import { softwareOperations } from "./schema";
-import { spackMaterialBindings, spackMaterialOperationReferences } from "./schema-spack-materials";
+import { agents, softwareOperations } from "./schema";
+import {
+  spackInstallBindingEvents,
+  spackMaterialBindings,
+  spackMaterialOperationReferences,
+} from "./schema-spack-materials";
+import { readSpackInstallBinding } from "./spack-install-binding-state";
 import { assertSpackMaterialBindingsActive } from "./spack-material-binding-retirement";
 import {
   assertSpackMaterialReleasesAvailable,
@@ -91,50 +96,88 @@ export class SpackMaterialReferences {
       const value = parseOperation(input);
       await withSpackMaterialLifecycleTransaction(this.db, async (tx) => {
         await assertSpackMaterialRuntime(tx, this.epoch);
-        await assertSpackMaterialBindingsActive(tx, [value]);
-        await assertSpackMaterialReleasesAvailable(tx, [value]);
-        const [operation] = await tx
-          .select({
-            agentId: softwareOperations.agentId,
-            requestedBy: softwareOperations.requestedBy,
-            spec: softwareOperations.spec,
-            action: softwareOperations.action,
-            status: softwareOperations.status,
-          })
-          .from(softwareOperations)
-          .where(eq(softwareOperations.id, value.operationId))
-          // Operation updates/deletes do not take the lifecycle lock.
-          .for("share");
-        if (
-          !operation ||
-          operation.agentId !== value.agentId ||
-          operation.requestedBy !== value.requestedBy ||
-          operation.spec !== value.spec ||
-          operation.action !== "install" ||
-          (operation.status !== "queued" && operation.status !== "running")
-        ) {
-          throw referenceError();
-        }
+        await acquireOperationReference(tx, value);
+      });
+    } catch {
+      throw referenceError();
+    }
+  }
 
-        await assertSpackMaterialOperationVisibility(tx, value, value.requestedBy);
+  async seedConfiguration(bindings: Record<string, SpackMaterialReferenceBinding>): Promise<void> {
+    try {
+      const rows = parseSpackMaterialBindings(bindings);
+      await withSpackMaterialLifecycleTransaction(this.db, async (tx) => {
+        await assertSpackMaterialRuntime(tx, this.epoch);
+        await tx.select().from(spackInstallBindingEvents).limit(0);
+        await assertSpackMaterialBindingsActive(tx, rows);
+        await assertSpackMaterialReleasesAvailable(tx, rows);
+        if (rows.length > 0) {
+          await tx.insert(spackMaterialBindings).values(rows).onConflictDoNothing();
+        }
+        for (const row of rows) {
+          // A web edit or explicit disable can never be overwritten by a restarting Server.
+          if (await readSpackInstallBinding(tx, { scope: "platform", spec: row.spec })) continue;
+          await tx.insert(spackInstallBindingEvents).values({
+            ...row,
+            scope: "platform",
+            revision: 1,
+            state: "enabled",
+            source: "config",
+            reason: "Initial Server configuration",
+          });
+        }
+      });
+    } catch {
+      throw referenceError();
+    }
+  }
+
+  async resolveOperation(
+    input: Omit<SpackMaterialOperationReferenceInput, keyof SpackMaterialReferenceBinding> & {
+      providerOrgId: string | null;
+    },
+  ): Promise<SpackMaterialReferenceBinding> {
+    // Reuse identity validation without accepting a caller-supplied material selection.
+    const identity = parseOperation({
+      operationId: input.operationId,
+      agentId: input.agentId,
+      requestedBy: input.requestedBy,
+      spec: input.spec,
+      repositoryId: "0".repeat(64),
+      manifestDigest: `sha256:${"0".repeat(64)}`,
+    });
+    const providerOrgId = input.providerOrgId;
+    try {
+      return await withSpackMaterialLifecycleTransaction(this.db, async (tx) => {
+        await assertSpackMaterialRuntime(tx, this.epoch);
+        const [agent] = await tx
+          .select({ providerOrgId: agents.providerOrgId })
+          .from(agents)
+          .where(eq(agents.agentId, identity.agentId))
+          .for("share");
+        if (!agent || agent.providerOrgId !== providerOrgId) throw referenceError();
         const [existing] = await tx
           .select()
           .from(spackMaterialOperationReferences)
-          .where(eq(spackMaterialOperationReferences.operationId, value.operationId));
+          .where(eq(spackMaterialOperationReferences.operationId, identity.operationId));
+        let binding: SpackMaterialReferenceBinding;
         if (existing) {
-          if (
-            existing.agentId !== value.agentId ||
-            existing.requestedBy !== value.requestedBy ||
-            existing.spec !== value.spec ||
-            existing.repositoryId !== value.repositoryId ||
-            existing.manifestDigest !== value.manifestDigest
-          ) {
-            throw referenceError();
-          }
-          return;
+          binding = {
+            repositoryId: existing.repositoryId,
+            manifestDigest: existing.manifestDigest,
+          };
+        } else {
+          const organization = providerOrgId
+            ? await readSpackInstallBinding(tx, { scope: providerOrgId, spec: identity.spec })
+            : undefined;
+          const selected =
+            organization ??
+            (await readSpackInstallBinding(tx, { scope: "platform", spec: identity.spec }));
+          if (selected?.state !== "enabled" || !selected.binding) throw referenceError();
+          binding = selected.binding;
         }
-        // No UPDATE/upsert: retries and old tickets must retain the first binding.
-        await tx.insert(spackMaterialOperationReferences).values(value);
+        await acquireOperationReference(tx, { ...identity, ...binding });
+        return binding;
       });
     } catch {
       throw referenceError();
@@ -187,6 +230,54 @@ export class SpackMaterialReferences {
       throw referenceError();
     }
   }
+}
+
+async function acquireOperationReference(
+  tx: LifecycleTransaction,
+  value: SpackMaterialOperationReferenceInput,
+) {
+  await assertSpackMaterialBindingsActive(tx, [value]);
+  await assertSpackMaterialReleasesAvailable(tx, [value]);
+  const [operation] = await tx
+    .select({
+      agentId: softwareOperations.agentId,
+      requestedBy: softwareOperations.requestedBy,
+      spec: softwareOperations.spec,
+      action: softwareOperations.action,
+      status: softwareOperations.status,
+    })
+    .from(softwareOperations)
+    .where(eq(softwareOperations.id, value.operationId))
+    .for("share");
+  if (
+    !operation ||
+    operation.agentId !== value.agentId ||
+    operation.requestedBy !== value.requestedBy ||
+    operation.spec !== value.spec ||
+    operation.action !== "install" ||
+    (operation.status !== "queued" && operation.status !== "running")
+  ) {
+    throw referenceError();
+  }
+  await assertSpackMaterialOperationVisibility(tx, value, value.requestedBy);
+  const [existing] = await tx
+    .select()
+    .from(spackMaterialOperationReferences)
+    .where(eq(spackMaterialOperationReferences.operationId, value.operationId));
+  if (existing) {
+    if (
+      existing.agentId !== value.agentId ||
+      existing.requestedBy !== value.requestedBy ||
+      existing.spec !== value.spec ||
+      existing.repositoryId !== value.repositoryId ||
+      existing.manifestDigest !== value.manifestDigest
+    ) {
+      throw referenceError();
+    }
+    return;
+  }
+  // No UPDATE/upsert: retries and old tickets must retain the first binding.
+  await tx.insert(spackMaterialOperationReferences).values(value);
 }
 
 export function parseSpackMaterialBindings(bindings: unknown) {

@@ -64,7 +64,10 @@ export class SoftwareError extends ApiError {
 }
 
 async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
-  if (init?.method && init.method !== "GET") {
+  // This exact POST endpoint is read-only; do not exempt other Registry POSTs.
+  const installBindingInspection =
+    path === "/spack/install-bindings/inspect" && init?.method === "POST";
+  if (init?.method && init.method !== "GET" && !installBindingInspection) {
     assertMobileMutationAllowed(`/software${path}`);
   }
   let res: Response;
