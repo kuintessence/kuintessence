@@ -724,7 +724,7 @@ describe("Hello browser receipt contract", () => {
     ).toBe(true);
     for (const request of [
       'fetch(path, { method: "POST" });',
-      'fetch(path, { body: payload });',
+      "fetch(path, { body: payload });",
       "fetch(path, options);",
       "fetch(path, { ...options });",
       "fetch(path, {}); fetch(other, {});",
