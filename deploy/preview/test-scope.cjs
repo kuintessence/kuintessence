@@ -5,10 +5,12 @@ const IGNORED = [
   /^(?:docs|plan|plans)\//,
   /(?:^|\/)README(?:[.-][^/]*)?$/i,
   /^deploy\/(?:preview|helm)\//,
-  /^\.github\/workflows\/(?:ci|preview|preview-tests|preview-cleanup)\.ya?ml$/,
+  /^\.github\/workflows\/(?:preview|preview-tests|preview-cleanup)\.ya?ml$/,
 ];
 
 const SHARED = [
+  /^\.github\/workflows\/ci\.ya?ml$/,
+  /^packages\/cli\/src\/(?:index\.|agent-serve\/|commands\/(?:agent|config|login|dsl|workflow)(?:[./])|lib\/(?:api-client|config|oidc-browser-flow|sse-client|local-scheduler)(?:[./]))/,
   /(?:^|\/)(?:package\.json|bun\.lockb?|package-lock\.json|pnpm-lock\.yaml|yarn\.lock)$/,
   /^(?:tsconfig(?:\.[^/]+)?\.json|bunfig\.toml|\.npmrc|\.dockerignore)$/,
   /^packages\/(?:shared|db|proto)\//,
@@ -29,6 +31,7 @@ const SHARED = [
 ];
 
 const SPACK = [
+  /^packages\/cli\/src\/(?:commands\/software|lib\/local-spack)(?:[./])/,
   /^packages\/agent\/src\/spack\//,
   /^packages\/agent\/test\/(?:fixtures|integration)\/spack[.-]/,
   /^packages\/registry\/src\//,
@@ -51,6 +54,7 @@ const SPACK = [
 ];
 
 const SCHEDULERS = [
+  /^packages\/cli\/src\/commands\/(?:submit|cancel|list|status|logs|ssh)(?:[./])/,
   /^packages\/agent\/src\/(?:adapters|executor)\//,
   /^packages\/agent\/src\/executor(?:[-./])/,
   /^packages\/server\/src\/(?:scheduler|jobs)\//,
