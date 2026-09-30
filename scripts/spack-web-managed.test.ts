@@ -561,7 +561,10 @@ describe("Web-to-managed overlays and workflow", () => {
         expect(JSON.stringify(service.volumes ?? [])).not.toContain("case-references");
       }
     }
-    const references = await readFile(join(root, "deploy/pr-test/spack-case/references.ts"), "utf8");
+    const references = await readFile(
+      join(root, "deploy/pr-test/spack-case/references.ts"),
+      "utf8",
+    );
     expect(references).toContain('const baseline = "/case-references/kq-pr-spack-references"');
     expect(references).toContain('flag: "wx"');
     expect(references).toContain("=== bindingDigest");
