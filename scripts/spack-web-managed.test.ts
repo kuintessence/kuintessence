@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import ts from "typescript";
 import { isSeq, parse, parseDocument } from "yaml";
 import {
   verifyWebInstallHistory,
@@ -17,6 +18,34 @@ const serverId = "a".repeat(64);
 const registryId = "b".repeat(64);
 const backendId = "c".repeat(64);
 const controlId = "d".repeat(64);
+
+function onlyReadOnlyFetch(source: string): boolean {
+  const file = ts.createSourceFile("browser.ts", source, ts.ScriptTarget.Latest, true);
+  const calls: ts.CallExpression[] = [];
+  function visit(node: ts.Node) {
+    if (
+      ts.isCallExpression(node) &&
+      ts.isIdentifier(node.expression) &&
+      node.expression.text === "fetch"
+    ) {
+      calls.push(node);
+    }
+    ts.forEachChild(node, visit);
+  }
+  visit(file);
+  if (calls.length !== 1) return false;
+  const options = calls[0]?.arguments[1];
+  return (
+    options !== undefined &&
+    ts.isObjectLiteralExpression(options) &&
+    options.properties.every(
+      (property) =>
+        ts.isPropertyAssignment(property) &&
+        ts.isIdentifier(property.name) &&
+        !["method", "body"].includes(property.name.text),
+    )
+  );
+}
 
 interface Compose {
   services: Record<
@@ -540,7 +569,8 @@ describe("Web-to-managed overlays and workflow", () => {
     expect(browser).toContain("assert.equal(response.status(), 202)");
     expect(browser).toContain("getByTestId(`cp-software-operation-status-${operationId}`)");
     expect(browser).toContain("getByTestId(`cp-software-installed-load-${spec}`)");
-    expect(browser).not.toMatch(/page\.route|route\.fulfill|\.request\.post|method:\s*["']POST/);
+    expect(browser).not.toMatch(/page\.route|route\.fulfill|\.request\.post/);
+    expect(onlyReadOnlyFetch(browser)).toBe(true);
     const config = await readFile(
       join(root, "packages/web/e2e/cp-spack-install.config.ts"),
       "utf8",
@@ -685,6 +715,23 @@ describe("Web-to-managed overlays and workflow", () => {
 });
 
 describe("Hello browser receipt contract", () => {
+  test("distinguishes observed POST metadata from actual network writes", () => {
+    expect(
+      onlyReadOnlyFetch(`
+      const observed = { method: "POST" };
+      fetch(path, { headers: {}, redirect: "error" });
+    `),
+    ).toBe(true);
+    for (const request of [
+      'fetch(path, { method: "POST" });',
+      'fetch(path, { body: payload });',
+      "fetch(path, options);",
+      "fetch(path, { ...options });",
+      "fetch(path, {}); fetch(other, {});",
+    ]) {
+      expect(onlyReadOnlyFetch(request)).toBe(false);
+    }
+  });
   const receipt = WebInstallReceiptSchema.parse({
     version: 1,
     agentId: "pr-scheduler",
