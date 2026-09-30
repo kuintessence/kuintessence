@@ -4,7 +4,20 @@ on:
   push:
     branches: [main]
   pull_request:
-    branches: [main]
+  workflow_call:
+    inputs:
+      source_sha:
+        required: true
+        type: string
+      run_runtime_checks:
+        type: boolean
+        default: true
+      run_spack:
+        type: boolean
+        default: true
+      run_schedulers:
+        type: boolean
+        default: true
   workflow_dispatch:
     inputs:
       generate_db_migrations:
@@ -17,12 +30,20 @@ on:
         required: true
         type: boolean
         default: false
+      run_spack:
+        description: "启用运行检查时，运行 Spack 材料、导入和门户测试"
+        type: boolean
+        default: true
+      run_schedulers:
+        description: "启用运行检查时，运行真实调度器 E2E"
+        type: boolean
+        default: true
 
 permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.event_name }}-${{ github.ref }}
+  group: ci-${{ inputs.source_sha && github.run_id || github.event_name }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -34,6 +55,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ inputs.source_sha || github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
 
       - name: Setup Bun
@@ -61,6 +83,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ inputs.source_sha || github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
 
       - name: Setup Bun
@@ -80,13 +103,38 @@ jobs:
       - name: Check workflow references
         run: bun run check:workflow-uses
 
+      - name: Check scientific workflow handoff templates
+        run: bun test scripts/spack-workflow-handoff.test.ts
+
+      - name: Type check workflow handoff contracts
+        run: >-
+          bun node_modules/typescript/bin/tsc --noEmit --strict
+          --noUncheckedIndexedAccess --skipLibCheck --target ESNext
+          --module ESNext --moduleResolution bundler --types bun-types
+          scripts/spack-workflow-handoff.test.ts
+
+      - name: Check preview test orchestration contracts
+        run: bun test scripts/preview-tests.test.ts
+      - name: Check selective CI scope policy
+        run: >-
+          bun test deploy/preview/test-scope.test.cjs deploy/preview/scoped-gate.test.cjs
+          deploy/preview/workflow-scope.test.cjs
+      - name: Check CP browser installation contracts
+        run: bun test scripts/spack-web-managed.test.ts
+      - name: Check CP inventory refresh regression
+        working-directory: packages/web
+        run: bun run test src/lib/use-cp-software.test.ts
+
   lint-and-typecheck:
     name: Full typecheck + Helm validation
-    if: github.event_name == 'workflow_dispatch' && inputs.run_runtime_checks
+    if: inputs.run_runtime_checks || inputs.source_sha
     needs: static-checks
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_sha || github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
@@ -106,7 +154,32 @@ jobs:
         run: bun run test:helm
 
       - name: Check RustFS bootstrap and deployment wiring
-        run: bun test scripts/rustfs-*.test.ts scripts/compose.test.ts
+        run: bun test scripts/rustfs-*.test.ts scripts/compose.test.ts deploy/rustfs/*.test.cjs
+
+      - name: Check preview deployment and seed contracts
+        run: bun test deploy/preview/*.test.* deploy/seed/*.test.*
+
+      - name: Verify preview gateway and initialization images
+        env:
+          KQ_RUN_CONTAINER_CONTRACTS: "1"
+        run: bun test scripts/helm-preview-gateway.test.ts scripts/helm-preview-wait-image.test.ts
+
+      - name: Validate preview image publishing configuration without building
+        env:
+          IMAGE_PREFIX: ghcr.io/example/kq-dev
+          IMAGE_SOURCE: https://github.com/example/example
+          REVISION: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+          IMAGE_TAG: pr-1-sha-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-run-1-1
+        run: >-
+          docker buildx bake --file deploy/preview/images.hcl
+          --provenance=false --sbom=false --print
+
+      - name: Check preview script syntax
+        run: |
+          for script in deploy/preview/*.cjs; do
+            node --check "$script"
+          done
+          bash -n deploy/preview/remote.sh
 
       - name: Check Spack material delivery and deployment contracts
         run: >-
@@ -123,9 +196,20 @@ jobs:
       - name: Type check PR acceptance harness
         run: bun node_modules/typescript/bin/tsc --project deploy/pr-test/tsconfig.json
 
+      - name: Type check preview seed
+        run: bun node_modules/typescript/bin/tsc --project deploy/seed/tsconfig.json
+
+      - name: Run complete Web unit suite
+        working-directory: packages/web
+        run: bun run test
+
+      - name: Build web application and styles
+        working-directory: packages/web
+        run: bun run build
+
   spack-artifact-imports:
     name: Spack artifact imports (${{ matrix.case }})
-    if: github.event_name == 'workflow_dispatch' && inputs.run_runtime_checks
+    if: (inputs.run_runtime_checks || inputs.source_sha) && inputs.run_spack
     needs: lint-and-typecheck
     strategy:
       fail-fast: false
@@ -133,6 +217,7 @@ jobs:
         case: [hello, samtools]
     uses: ./.github/workflows/spack-material-artifacts.yml
     with:
+      source_sha: ${{ inputs.source_sha || github.event.pull_request.head.sha || github.sha }}
       case: ${{ matrix.case }}
       recipe_repository: public/ci-artifact-${{ matrix.case }}-recipes
       material_repository: public/ci-artifact-${{ matrix.case }}-sources
@@ -141,7 +226,7 @@ jobs:
 
   test:
     name: Unit + integration tests
-    if: github.event_name == 'workflow_dispatch' && inputs.run_runtime_checks
+    if: inputs.run_runtime_checks || inputs.source_sha
     runs-on: ubuntu-latest
     needs: lint-and-typecheck
 
@@ -172,6 +257,9 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_sha || github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
@@ -189,6 +277,12 @@ jobs:
         env:
           DATABASE_URL: postgres://kq:kq@localhost:5432/kuintessence
 
+      - name: Run seed PostgreSQL contracts
+        run: bun test deploy/seed/store.test.ts
+        env:
+          SEED_TEST_DATABASE_URL: postgres://kq:kq@localhost:5432/kuintessence
+          LOG_LEVEL: warn
+
       - name: Run isolated unit tests
         run: bun run test:unit
         env:
@@ -205,12 +299,15 @@ jobs:
 
   e2e-slice:
     name: E2E slice (CLI -> Server -> Agent -> Slurm)
-    if: github.event_name == 'workflow_dispatch' && inputs.run_runtime_checks
+    if: (inputs.run_runtime_checks || inputs.source_sha) && inputs.run_schedulers
     runs-on: ubuntu-latest
     needs: lint-and-typecheck
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_sha || github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
@@ -228,26 +325,28 @@ jobs:
 
   rustfs-deployments:
     name: RustFS Compose + AIO
-    if: github.event_name == 'workflow_dispatch' && inputs.run_runtime_checks
+    if: inputs.run_runtime_checks || inputs.source_sha
     runs-on: ubuntu-latest
     needs: static-checks
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ inputs.source_sha || github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
       - name: Validate Compose and run disposable RustFS AIO
         run: bash deploy/rustfs/ci.sh
 
   spack-lifecycle-portal:
     name: Spack lifecycle portal
-    if: github.event_name == 'workflow_dispatch' && inputs.run_runtime_checks
+    if: (inputs.run_runtime_checks || inputs.source_sha) && inputs.run_spack
     needs: static-checks
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ inputs.source_sha || github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
@@ -294,12 +393,13 @@ jobs:
 
   spack-upstream:
     name: Spack HTTP and SOCKS online imports
-    if: github.event_name == 'workflow_dispatch' && inputs.run_runtime_checks
+    if: (inputs.run_runtime_checks || inputs.source_sha) && inputs.run_spack
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ inputs.source_sha || github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2

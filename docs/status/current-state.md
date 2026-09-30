@@ -15,6 +15,27 @@ Kuintessence 当前为 pre-release。以下列出组件功能、运行要求和�
 | NetDrive | S3/RustFS、multipart upload、Range resume、集群传输 | 显式启用与完整存储配置 |
 | SSH | PTY、窗口调整、凭据 vault、可选录屏 | 目标集群凭据、权限及网络可达 |
 
+## Spack 完成边界
+
+Recipe Git 存储、初始化/Web 导入、源码材料发布、生命周期与可见策略、受控上游代理、
+Server-only Agent 材料下载，以及 CP 安装/库存/策略操作已有实现；
+这不代表原始 Spack 目标全部完成，仍需区分以下缺口：
+
+- Registry 已提供 buildcache 仓储 API，但当前统一材料与 managed worker 使用源码路径，
+  尚无经 Server-only 交付的 buildcache 二进制受管安装闭环。
+- Web 导入成功不自动产生可安装配置：精确 spec 到材料 binding 仍由运维配置到 Server，
+  尚未实现完整的 Web 自助绑定流程。
+- 已有 Hello/samtools 固定材料和工作流验收入口，以及 15 项科学工作流手动材料指南；
+  尚无全部 15 项的成套目标 Linux 材料、安装和科学运行结果。
+- 浏览器材料上传与 API 驱动的后续安装是不同验收范围；CP 页面点击安装、观察终态和
+  库存的真实链路新增 Hello 专项入口，复用既有 Web 导入 job，回执核对后继续原有
+  load/job/重启/卸载验收。当前改动需以对应 Actions 结果为证，不能以“已有按钮”
+  或 mock 测试替代，也不代表完整 CP 策略编辑流程或其他软件已经验收。
+  CP 概览增加 15 秒前台轮询，避免终态刷新先于库存写入后一直显示旧数据；
+  不启用后台轮询。
+
+生产站点及 Agent OS 兼容性另行验证，不扩大现有单节点 Actions 案例的结论。
+
 ## 工作流边界
 
 - 工作流采用控制流 DSL，编辑器与执行器使用共享 Schema 校验文档。
@@ -33,6 +54,7 @@ Kuintessence 当前为 pre-release。以下列出组件功能、运行要求和�
   材料上传依赖其 HTTP 拒绝连接关闭修复；升级须重新构建旧镜像与编译产物，
   不能只修改配置后继续复用旧 Bun runtime。详见[材料上传边界](../spack-material-delivery.md)。
 - 自托管对象存储已统一配置为 RustFS，初始化使用 `rc` 而非 MinIO `mc` 镜像；
+  alias 的联网验证与 readiness 共用有界等待预算，持续失败仍阻止 bucket/IAM 初始化。
   使用新卷/PVC，不自动迁移旧对象。升级前先阅读
   [RustFS 迁移边界](../../deploy/rustfs/README.md)，特别是固定 version ID 引用。
 - Server 的事件与会话状态保存在进程内，生产部署使用单实例；Redis 尚未用于多实例协调。
@@ -120,6 +142,9 @@ Kuintessence 当前为 pre-release。以下列出组件功能、运行要求和�
   大规模材料目录索引/物理删除/跨组织分享及 15 个工作流的目标 Linux 材料、lock 和端到端安装/运行验收仍未完成。
   [科学工作流材料指南](../spack-workflow-materials.md)列出 15 项候选软件、外部输入、
   许可自审与 target/MPI 风险，并提供 macOS 获取、校验、搬运和 bootstrap/Web 导入步骤。
+  [交付与验收工作表](../spack-workflow-acceptance.md)提供对应机器可读候选清单、
+  target/profile 及逐软件/步骤的空白记录；不是导入或自动执行入口，默认全部未验收。
+  模板一致性检查不证明材料闭包、目标兼容或科学运行成功。
   首个实现路线限定为 samtools 单软件切片：Spack 1.0.0、固定官方 recipe、
   Ubuntu 20.04 x86_64 和可销毁单节点 Slurm；请求 spec 为
   `samtools@1.19.2 ^htslib@1.19.1~libcurl~libdeflate ^ncurses+symlinks %pkgconf ^zlib@1.3.1`。
@@ -149,13 +174,35 @@ Kuintessence 当前为 pre-release。以下列出组件功能、运行要求和�
   不修改生产协议或安装逻辑。managed matrix 共六项，旧路径和 Hello native、
   Slurm/PBS 回归保留；仅两个 Web 条目安装 host Bun 1.4.2、frozen 依赖、
   生成 protobuf 并安装 Patchright Chromium，沿用 AppArmor、timeout 与无上传门禁。
-  新 Web 链路尚待新 HEAD 的 Actions 验证，不沿用 PR #9 的通过结论。
+  PR #10 的提交 `1ffd2c4651353639b15bca012f1305bb14a8fabb` 已通过完整 CI
+  `35691359927`（9 个实际 job）和 scheduler `35691359119`（9 个 job），
+  包含 Hello/samtools 同一次 Web binding 的受管安装及三次网络隔离复核。
+  此历史证据仅适用于该 SHA，不沿用为后续提交或目标站点的通过结论。
   这些入口仅在 Actions 执行，不部署 preview/production，不上传材料；
-  `feat/spack-artifact-managed` 和 `feat/spack-web-managed` 调用独立导出工作流
-  均仅允许 `publish_artifact=false`，不放宽其他分支与许可确认规则。
+  `feat/spack-artifact-managed`、`feat/spack-web-managed`、
+  `feat/spack-workflow-execution` 和 `feat/spack-file-workflow`
+  调用独立导出工作流均仅允许 `publish_artifact=false`，不放宽其他分支与许可确认规则。
   当前没有通用材料生成器或全部 15 项的完整材料 artifact；每软件须独立单 root
   lock/release、每步骤隔离运行环境，不能用 macOS lock 替代目标 Linux lock，
   也不能把此切片视为完整变异检测工作流验收。
+- Workflow 的 Spack facility 新增内部结构化激活交付，由 Agent 复用现有 load
+  校验后再提交 scheduler 作业；缺少能力或激活失败时不能执行未激活命令。
+  [Spack 工作流闭环](../../deploy/pr-test/README.md#spack-工作流闭环)新增
+  Hello/samtools 的签名目录注册、材料 bootstrap、managed 安装与正式异步
+  `/workflows` 两节点执行验收，包含结果依赖及重启回读/重跑。
+  用例参数物化按字面值保留 `$` 替换序列，避免破坏 Bash ANSI-C 字符串等输入。
+  普通 Slurm 作业日志统一写入持久共享日志目录，显式 workingDir 只控制执行目录
+  与相对文件路径；Sandbox 日志路径保持独立，测试继续要求重启后日志回读成功。
+  长时间受管验收按 Server 返回的凭据有效期提前重新认证，仅更新内存凭据；
+  不改变生产 token TTL，也不自动重放认证失败的写请求。
+  验收以对应提交的 Actions 结果为准，不沿用直接 `/jobs` 的通过记录。Agent/OS 兼容性后续
+  独立 PR；现有隔离、OS/工具链指纹和 Server-only 材料交付约束不放宽。
+- 新增 Actions 专用 samtools 文件工作流入口，复用既有 NetDrive/RustFS 生产传输：
+  合成 SAM 经 `convert → sort → verify` 三节点生成 BAM、BAI 和计数报告。
+  验收覆盖文件 metadata、下载摘要、独立 Job/cwd、RustFS 重启回读、再次执行、
+  非法输入阻断下游与文件清理。专用 overlay 启用内部 RustFS 和完整 bucket
+  bootstrap；原 Hello/samtools 两节点标量验收保持独立。此处描述实现范围，
+  是否通过以当前提交的 Actions 为准，不宣称跨集群或全部科学工作流完成。
 - CP 的 suspend/quota 写入口已停用，暂不支持通过这些接口暂停组织或设置并发硬限。
 - [三种 Linux 目标环境基线](../../deploy/pr-test/spack-targets/README.md)新增
   CentOS 7.9.2009、Ubuntu 24.04/26.04 的 x86_64 工具链、Spack 和 Hello 原生
@@ -173,9 +220,29 @@ Kuintessence 当前为 pre-release。以下列出组件功能、运行要求和�
 - 平台 Compose 入口集中在 [`deploy/compose/`](../../deploy/compose/README.md)；
   从仓库根目录使用 `bun run compose`。直接调用时指定 `--project-directory .`，
   以保留构建、挂载、根目录 `.env` 和默认项目名的路径基准。
-- [GitHub 预览配置](../deployment.md#preview) 支持可信同仓库 PR 自动部署与 main 手动启停，
-  使用带认证的限时 Quick Tunnel 和独立临时数据库；不包含真实调度器、SSO 或对象存储。
-  预览配置尚待 GitHub Actions 运行验证。
+- [GitHub 预览配置](../preview-k3s.md) 改为全部必需测试通过后构建 GHCR `kq-dev-*`
+  SHA 镜像，经 SSH 隧道部署到远程 k3s；旧 runner 限时 Quick Tunnel job 已停用。
+  门禁同时要求信任标签、作者写权限、同仓库当前 SHA 和全部必测组成功。
+  提供用户 Helm Chart 与 demo CI wrapper，包含持久化 Registry、RustFS、
+  seed 和单容器 Slurm + Agent；不启用远端高权限 managed Spack runtime。
+  预览镜像采用公开 GHCR，首次由维护者手动公开后重试失败的部署 job；
+  tag 包含 PR、完整 SHA 和发布 run/attempt。本轮调整为所有 PR共用预建 `preview`
+  namespace，每 PR使用 `kq-pr-<编号>` Helm release、`kq-pr-<编号>-secrets` 和
+  `kq-pr-<编号>-preview-owner`。仅需 namespace 内RBAC，不查询 nodes/namespace
+  对象、不创建或删除 namespace；基础设施由管理员预先配置。
+  资源选择和 NetworkPolicy按 release label隔离，不因同 namespace而放通其他 PR；
+  此模式不提供每 PR的 RBAC隔离或完整 egress隔离，仍只适合受信任维护者。
+  cleanup先核验归属，Helm uninstall单个 PR，再清理自有 PVC、Secret和 owner marker，
+  成功后才回收该 PR的 dev镜像版本；绝不删除共享 `preview` namespace或其他 PR资源。
+  其他用途 tag或无法归属的 untagged版本不删除。
+  HTTPS验收提供固定阶段、错误分类及合法 HTTP状态码诊断，不输出响应正文、
+  header、证书、凭据或原始异常；保持 TLS校验、认证门禁、重试及失败补偿。
+  手动部署可显式设置 `inspection_mode=true`：保留 Helm 成功或失败现场及镜像，
+  禁用该次 atomic 回滚，延后自动 HTTPS 验收，评论提供待人工检查地址；
+  不标记 HTTPS 成功，PR 撤销信任或关闭等安全清理仍然有效。默认自动部署行为不变。
+  旧独立 PR namespace及数据不会自动迁移或清理。共享 namespace安全实现仍待复核，
+  不宣称已上线或已通过远端验收；自动控制器须先经审核进入默认分支，
+  运行状态以对应提交的 GitHub Actions和 HTTPS验收为准。
 - [PR 调度器测试](../../deploy/pr-test/README.md) 已提供独立 Compose 与 Slurm/PBS
   Actions matrix，基于现有 scheduler base 构建，测试环境固定 Spack 1.0.0。
   覆盖目标为真实作业完成/日志/取消、拒绝未配置材料的安装及进程内材料回归；
@@ -201,9 +268,17 @@ Kuintessence 当前为 pre-release。以下列出组件功能、运行要求和�
 - [系统运维](../manuals/system-operations-manual.md)
 - [开发与检查命令](../../README.md#开发)
 
-`CI` 工作流在推送 `main` 和 PR 时默认只运行 Biome、文档链接及 workflow 引用静态检查，
-安装时禁用生命周期脚本。完整类型检查/全套测试、binary 构建与 smoke、跨架构镜像验证、
-文档站发布仍由维护者手动触发；可信同仓库非草稿 PR 的 Slurm/PBS 测试和限时预览
-分别自动运行，main 预览仍手动启停。具体入口见 [GitHub Actions](../deployment.md#actions)。
+`CI` 工作流在推送 `main` 和 PR 时默认运行 Biome、文档链接、workflow 引用及轻量编排检查，
+以及科学工作流交付模板的离线合同和该检查文件的类型检查。
+模板检查不执行 recipe，不证明材料闭包或科学工作流成功；安装时禁用生命周期脚本。
+`PR preview tests` 对同仓库非草稿 PR 自动编排完整类型检查、
+基础测试及 Web 单测/build，按完整 PR 文件列表选择 Spack 与调度器重型组，
+正式 Spack 工作流矩阵默认仅 contracts 和 GNU Hello 基础案例；
+手动专项或当前 HEAD 提交消息含 `[full-workflows]` 时扩展为
+Hello、samtools、samtools-file。手动 PR 编排仍强制全部组。
+部署控制器独立核算路径范围与工作流档位，仅允许未选组/案例跳过，
+随后通过信任门禁才部署远程 k3s；基础通过不等于完整工作流已验收。
+binary 构建与 smoke、跨架构镜像验证、文档站发布仍由维护者手动触发；
+不再托管 runner 限时预览或 main 预览。具体入口见 [GitHub Actions](../deployment.md#actions)。
 手动完整 CI 使用 `test:unit` 的临时数据库和逐文件进程隔离，再单独执行
 `test:integration`，避免跨测试文件累积数据库连接；不复用业务数据库。

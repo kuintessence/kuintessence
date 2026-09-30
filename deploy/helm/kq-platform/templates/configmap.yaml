@@ -20,6 +20,10 @@ data:
   REGISTRY_JWT_AUDIENCE: {{ .Values.registry.auth.audience | quote }}
   {{- end }}
   LOG_LEVEL: {{ .Values.server.env.LOG_LEVEL | default "info" | quote }}
+  NODE_ENV: {{ .Values.server.env.NODE_ENV | quote }}
+  AUTHZ_MODE: {{ .Values.server.env.AUTHZ_MODE | quote }}
+  SSO_BOOTSTRAP_ENABLED: {{ .Values.server.env.SSO_BOOTSTRAP_ENABLED | quote }}
+  WEB_BASE_URL: {{ .Values.server.env.WEB_BASE_URL | quote }}
   MTLS_MODE: {{ .Values.server.env.MTLS_MODE | default "off" | quote }}
   {{- if eq (.Values.server.env.MTLS_MODE | default "off") "trusted-proxy" }}
   MTLS_TRUSTED_PROXY_CIDRS: {{ required "server.env.MTLS_TRUSTED_PROXY_CIDRS is required when server.env.MTLS_MODE=trusted-proxy" .Values.server.env.MTLS_TRUSTED_PROXY_CIDRS | quote }}
@@ -42,6 +46,6 @@ data:
   DATA_MARKET_COMMITTER_ACCESS_KEY: {{ .Values.netdrive.accessKey | quote }}
   DATA_MARKET_STAGING_EXPIRY_DAYS: {{ .Values.netdrive.dataMarketStagingExpiryDays | quote }}
   DATA_MARKET_IMMUTABLE_RETENTION_DAYS: {{ .Values.netdrive.dataMarketImmutableRetentionDays | quote }}
-  NETDRIVE_PUBLIC_URL: {{ .Values.netdrive.publicUrl | quote }}
+  NETDRIVE_PUBLIC_URL: {{ default (ternary (printf "https://%s" .Values.preview.host) "" .Values.preview.enabled) .Values.netdrive.publicUrl | quote }}
   NETDRIVE_REGION: {{ .Values.netdrive.region | quote }}
   {{- end }}

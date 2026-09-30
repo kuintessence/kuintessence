@@ -1,0 +1,65 @@
+version: 1
+kind: spack-workflow-candidate-inventory
+status: unvalidated
+# Candidate names only: not specs, locks, download URLs, or import manifests.
+workflows:
+  - id: "01"
+    name: 风道 CFD
+    packages: [gmsh, openfoam, paraview, python]
+    inputs: [合成风道几何, 边界条件, 网格]
+  - id: "02"
+    name: 悬臂梁结构
+    packages: [gmsh, calculix, py-meshio, paraview, python]
+    inputs: [合成悬臂梁, 载荷, 材料参数]
+  - id: "03"
+    name: 生物分子最小化
+    packages: [gromacs, gnuplot, python]
+    inputs: [RCSB 1AKI 结构, 力场, 水模型]
+  - id: "04"
+    name: 原子分子动力学
+    packages: [py-ase, lammps, paraview, python]
+    inputs: [合成氩晶体, Lennard-Jones 参数]
+  - id: "05"
+    name: 固体电子结构
+    packages: [quantum-espresso, wannier90, gnuplot, python]
+    inputs: [Si 结构, UPF 赝势]
+  - id: "06"
+    name: 分子结构优化
+    packages: [cp2k, py-ase, gnuplot, python]
+    inputs: [合成水分子, BASIS_MOLOPT, GTH_POTENTIALS]
+  - id: "07"
+    name: 区域天气模拟
+    packages: [wps, wrf, cdo, py-xarray, py-netcdf4, python]
+    inputs: [WPS 地理数据, NOAA GFS GRIB2]
+  - id: "08"
+    name: 全球地震波
+    packages: [specfem3d-globe, py-obspy, python]
+    inputs: [固定官方小型 benchmark, 模型, 震源, 台站]
+  - id: "09"
+    name: AMR 天体物理
+    packages: [enzo, py-yt, hdf5, gnuplot, python]
+    inputs: [固定版本 ShockPool3D 输入]
+  - id: "10"
+    name: 变异检测
+    packages: [fastp, bwa-mem2, samtools, bcftools, python]
+    inputs: [合成参考序列, read pairs, truth]
+  - id: "11"
+    name: 稀疏特征值
+    packages: [petsc, slepc, py-petsc4py, py-slepc4py, py-scipy, python]
+    inputs: [合成 5x5 Matrix Market 矩阵]
+  - id: "12"
+    name: 粒子输运
+    packages: [geant4, root, cmake, python]
+    inputs: [同版本 B4a 示例, Geant4 物理数据集]
+  - id: "13"
+    name: GIS 水文分析
+    packages: [gdal, grass, cdo, py-xarray, py-netcdf4, py-numpy, python]
+    inputs: [合成 DEM]
+  - id: "14"
+    name: 翼型 CFD
+    packages: [su2, gnuplot, paraview, python]
+    inputs: [同版本 NACA0012 配置, 网格]
+  - id: "15"
+    name: 量子化学
+    packages: [nwchem, py-ase, gnuplot, python]
+    inputs: [合成水分子, 匹配基组库]

@@ -53,9 +53,17 @@ case "${ready_timeout_seconds}" in
     ;;
 esac
 
-rc alias set local "${RUSTFS_ENDPOINT}" "${RUSTFS_ACCESS_KEY}" "${RUSTFS_SECRET_KEY}" >/dev/null
+alias_configured=false
 elapsed_seconds=0
-until rc ready local >/dev/null 2>&1; do
+while :; do
+  # Alias setup validates credentials over the network and shares the ready budget.
+  if [ "${alias_configured}" = false ] &&
+    rc alias set local "${RUSTFS_ENDPOINT}" "${RUSTFS_ACCESS_KEY}" "${RUSTFS_SECRET_KEY}" >/dev/null 2>&1; then
+    alias_configured=true
+  fi
+  if [ "${alias_configured}" = true ] && rc ready local >/dev/null 2>&1; then
+    break
+  fi
   if [ "${elapsed_seconds}" -ge "${ready_timeout_seconds}" ]; then
     echo "RustFS did not become ready within ${ready_timeout_seconds} seconds" >&2
     exit 1

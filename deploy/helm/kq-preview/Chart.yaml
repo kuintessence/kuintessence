@@ -1,0 +1,10 @@
+apiVersion: v2
+name: kq-preview
+description: Authenticated, disposable single-node Kuintessence PR preview
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+dependencies:
+  - name: kq-platform
+    version: 0.1.0
+    repository: file://../kq-platform

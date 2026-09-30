@@ -1,0 +1,80 @@
+# CI supplies public GHCR digests and PR/SHA/run/attempt-scoped tags.
+# This wrapper owns no templates; all resources come from kq-platform.
+kq-platform:
+  global:
+    nodeSelector:
+      kubernetes.io/os: linux
+      kubernetes.io/arch: amd64
+    imagePullSecrets: []
+  preview:
+    enabled: true
+    host: ""
+    repository: ""
+  secrets:
+    # CI must explicitly supply <release>-secrets in the preview namespace.
+    existingSecret: ""
+  server:
+    replicas: 1
+    image:
+      repository: ""
+      tag: ""
+    env:
+      NODE_ENV: development
+      AUTHZ_MODE: "off"
+      SSO_BOOTSTRAP_ENABLED: "false"
+      WEB_BASE_URL: "/"
+      MTLS_MODE: direct
+  registry:
+    enabled: true
+    replicas: 1
+    image:
+      repository: ""
+      tag: ""
+    persistence:
+      enabled: true
+      storage: 10Gi
+    recipes:
+      enabled: true
+  web:
+    enabled: true
+    image:
+      repository: ""
+      tag: ""
+  migration:
+    # Temporary compatibility source; replace with a maintained, pinned waiter.
+    waitImage: docker.io/bitnamilegacy/kubectl:1.32.3
+    image:
+      repository: ""
+      tag: ""
+  seed:
+    enabled: true
+    mode: demo
+    image:
+      repository: ""
+      tag: ""
+  scheduler:
+    enabled: true
+    image:
+      repository: ""
+      tag: ""
+  postgres:
+    enabled: true
+    storage: 5Gi
+  redis:
+    enabled: true
+    storage: 1Gi
+  rustfs:
+    enabled: true
+    bootstrapWaitImage: docker.io/bitnamilegacy/kubectl:1.32.3
+    storage: 10Gi
+    consoleEnabled: false
+  netdrive:
+    enabled: true
+  ingress:
+    enabled: true
+    className: traefik
+    annotations:
+      traefik.ingress.kubernetes.io/router.entrypoints: websecure
+      traefik.ingress.kubernetes.io/router.tls: "true"
+    hosts: []
+    tls: []

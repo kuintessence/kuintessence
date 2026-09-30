@@ -1,3 +1,7 @@
+global:
+  nodeSelector: {}
+  imagePullSecrets: []
+
 serviceAccount:
   create: false
   annotations: {}
@@ -16,6 +20,11 @@ server:
     pullPolicy: IfNotPresent
   port: 3000
   grpcPort: 3001
+  grpcTls:
+    # Direct mTLS uses these four keys from this Secret, falling back to
+    # secrets.existingSecret: SERVER_CA_CERT/KEY and SERVER_TLS_CERT/KEY.
+    existingSecret: ""
+    credentialsRevision: ""
   resources:
     requests:
       cpu: "500m"
@@ -24,11 +33,18 @@ server:
       cpu: "2"
       memory: "2Gi"
   env:
+    NODE_ENV: production
+    AUTHZ_MODE: "off"
+    SSO_BOOTSTRAP_ENABLED: "false"
+    WEB_BASE_URL: "/"
     LOG_LEVEL: info
     MTLS_MODE: "off"
     MTLS_TRUSTED_PROXY_CIDRS: ""
     MTLS_HEADER_FINGERPRINT: x-kq-client-cert-fingerprint
     HTTP_TRUSTED_PROXY_CIDRS: ""
+  # Non-secret optional settings. Keep credentials in extraSecretEnv references.
+  extraEnv: {}
+  extraSecretEnv: []
   autoscaling:
     enabled: false
     minReplicas: 1
@@ -113,6 +129,73 @@ migration:
       cpu: "1"
       memory: "1Gi"
 
+# Seed is opt-in for user installs; minimal never enables development login.
+seed:
+  enabled: false
+  mode: minimal
+  image:
+    repository: kuintessence/seed
+    tag: latest
+    pullPolicy: IfNotPresent
+  backoffLimit: 3
+  activeDeadlineSeconds: 600
+  resources:
+    requests:
+      cpu: "100m"
+      memory: "128Mi"
+    limits:
+      cpu: "1"
+      memory: "512Mi"
+
+# Single-container Slurm + Agent. The image must include /workspace
+# and installed dependencies, preserving kq-slurm-entrypoint as its ENTRYPOINT.
+scheduler:
+  enabled: false
+  image:
+    repository: kuintessence/scheduler
+    tag: latest
+    pullPolicy: IfNotPresent
+  agentId: preview-slurm
+  siteName: Preview Slurm
+  registrationEmail: scheduler-compose-seed@kuintessence.test
+  providerName: Development Compute Provider
+  registration:
+    # User deployments require an already registered client certificate bundle.
+    # Keys: client.crt, client.key, ca.crt. Preview alone may auto-register.
+    existingSecret: ""
+    credentialsRevision: ""
+  storage: 10Gi
+  storageClass: ""
+  resources:
+    requests:
+      cpu: "500m"
+      memory: "1Gi"
+    limits:
+      cpu: "2"
+      memory: "4Gi"
+
+# Only the CI wrapper enables this protected, deliberately non-production mode.
+preview:
+  enabled: false
+  host: ""
+  # CI supplies GITHUB_REPOSITORY for preview PVC cleanup ownership.
+  repository: ""
+  # Non-secret sha256 of the stored PREVIEW_COOKIE data, supplied by CI.
+  credentialsRevision: ""
+  gatewayImage: nginx:1.27-alpine
+  gatewayPort: 8080
+  cookieMaxAge: 3600
+  ingressNamespace: kube-system
+  ingressPodLabels:
+    app.kubernetes.io/name: traefik
+  resources:
+    requests:
+      cpu: "50m"
+      memory: "32Mi"
+    limits:
+      cpu: "200m"
+      memory: "128Mi"
+
 # Self-hosted dependencies (set enabled: false to use external services)
 postgres:
   enabled: true
@@ -142,6 +225,7 @@ rustfs:
   rootUser: rustfsadmin
   # MUST set when rustfs.enabled=true
   rootPassword: ""
+  consoleEnabled: true
 
 netdrive:
   enabled: false
@@ -166,9 +250,11 @@ netdrive:
 
 # Required secrets — at minimum JWT_SECRET.
 # Either set values here OR provide via an existing Kubernetes Secret
-# (existingSecret must contain keys: JWT_SECRET, POSTGRES_PASSWORD, RUSTFS_SECRET_KEY,
+# (existingSecret must contain keys: JWT_SECRET, POSTGRES_PASSWORD, DATABASE_URL,
+# RUSTFS_SECRET_KEY,
 # DATABASE_URL/REDIS_URL when the corresponding external URL is empty, and NETDRIVE_ACCESS_KEY/
-# NETDRIVE_SECRET_KEY when netdrive.enabled=true).
+# NETDRIVE_SECRET_KEY when netdrive.enabled=true; preview additionally needs
+# PREVIEW_HTPASSWD and PREVIEW_COOKIE. Never put preview secrets in values).
 secrets:
   # MUST set; >= 32 chars
   jwtSecret: ""

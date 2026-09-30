@@ -303,7 +303,11 @@ async function installE2eSpackShim(containerId: string): Promise<void> {
     'case "$1" in',
     '  --version) echo "1.0.0" ;;',
     `  find) echo '[{"name":"${E2E_SPACK_PACKAGE}","version":"1","hash":"e2e"}]' ;;`,
-    "  load) ;;",
+    "  load)",
+    '    [ "$#" -eq 3 ] && [ "$2" = "--sh" ] || exit 2',
+    `    [ "$3" = "${E2E_SPACK_PACKAGE}@1" ] || exit 2`,
+    "    echo 'export KQ_E2E_SPACK_LOADED=1' ;;",
+    "  *) exit 2 ;;",
     "esac",
   ].join("\n");
   const result = await dockerExec(

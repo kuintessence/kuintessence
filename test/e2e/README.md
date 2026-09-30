@@ -70,6 +70,11 @@ DATABASE_URL=postgres://user:pass@host:5432/dbname bun run test:e2e
 - GitHub Actions 中手动触发 `CI` 并启用 `run_runtime_checks`，会运行完整 E2E slice。
   全栈 fixture 按需启动 `rustfs/rustfs:1.0.0`，使用 `rustfs/rc:v0.1.36`
   执行与部署相同的初始化脚本，不再依赖 MinIO server/mc 镜像。
+- 通用工作流 E2E 的 `kq-e2e-shell` 是测试专用 Spack 替身，不执行真实安装。
+  仅对该包的合法 `load --sh` 返回固定激活变量，stdio 作业断言该变量已传入；
+  未知包和不支持的调用返回失败。生产 Agent 的空激活脚本拒绝规则不变。
+  真实 recipe/source 交付、受管安装和科学结果由
+  [Spack 专项验收](../../deploy/pr-test/README.md#spack-工作流闭环)独立验证。
 - Slurm 容器显式配置 `host.docker.internal:host-gateway`，让 Linux Docker Engine
   上的文件 staging 能访问宿主发布的 RustFS 端口；保留预签名 URL 的原始 Host。
 - `rustfs-storage.test.ts` 使用普通 IAM 用户验证 multipart、Range、COMPLIANCE copy、

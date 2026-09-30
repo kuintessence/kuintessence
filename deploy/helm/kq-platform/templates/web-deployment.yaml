@@ -14,19 +14,28 @@ spec:
       component: web
   template:
     metadata:
+      annotations:
+        checksum/nginx: {{ include "kq.webConfig" . | sha256sum }}
       labels:
-        {{- include "kq-platform.selectorLabels" . | nindent 8 }}
+        {{- include "kq.labels" . | nindent 8 }}
         component: web
     spec:
+      {{- include "kq.podPlacement" . | nindent 6 }}
+      automountServiceAccountToken: false
       containers:
         - name: web
-          image: "{{ .Values.web.image.repository }}:{{ .Values.web.image.tag }}"
+          image: {{ include "kq.image" .Values.web.image | quote }}
           imagePullPolicy: {{ .Values.web.image.pullPolicy }}
           ports:
             - name: http
               containerPort: {{ .Values.web.port }}
           resources:
             {{- toYaml .Values.web.resources | nindent 12 }}
+          volumeMounts:
+            - name: nginx
+              mountPath: /etc/nginx/conf.d/default.conf
+              subPath: default.conf
+              readOnly: true
           readinessProbe:
             httpGet:
               path: /
@@ -39,6 +48,10 @@ spec:
               port: http
             initialDelaySeconds: 15
             periodSeconds: 30
+      volumes:
+        - name: nginx
+          configMap:
+            name: {{ .Release.Name }}-web-nginx
 ---
 apiVersion: v1
 kind: Service
@@ -51,9 +64,18 @@ spec:
   type: ClusterIP
   ports:
     - name: http
-      port: 80
+      port: {{ .Values.web.port }}
       targetPort: http
   selector:
     {{- include "kq-platform.selectorLabels" . | nindent 4 }}
     component: web
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}-web-nginx
+  labels: {{- include "kq.labels" . | nindent 4 }}
+data:
+  default.conf: |-
+    {{- include "kq.webConfig" . | nindent 4 }}
 {{- end }}

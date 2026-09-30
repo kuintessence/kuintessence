@@ -1,30 +1,40 @@
 #!/usr/bin/env bash
 set -euo pipefail
-unset KQ_PR_MATERIAL_EPOCH KQ_PR_SPACK_CASE
+unset KQ_PR_MATERIAL_EPOCH KQ_PR_SPACK_CASE KQ_PR_SPACK_WORKFLOW KQ_PR_SPACK_FILE_WORKFLOW
+unset KQ_PR_RUSTFS_ACCESS_KEY KQ_PR_RUSTFS_SECRET_KEY KQ_PR_NETDRIVE_SECRET_KEY
 export KQ_PR_SPACK_CASE=hello
 
 fail() { printf '%s\n' "$*" >&2; exit 2; }
 case "${1:-}" in
   slurm) export KQ_PR_SCHEDULER=slurm KQ_PR_REGISTRATION_SCHEDULER=slurm KQ_PR_PRIVILEGED=false ;;
   pbs) export KQ_PR_SCHEDULER=pbs KQ_PR_REGISTRATION_SCHEDULER=pbs-pro KQ_PR_PRIVILEGED=true ;;
-  *) fail "Usage: bash deploy/pr-test/run.sh slurm|pbs [--config|--spack-case|--spack-managed|--spack-samtools|--spack-artifact-hello|--spack-artifact-samtools|--spack-web-hello|--spack-web-samtools]" ;;
+  *) fail "Usage: bash deploy/pr-test/run.sh slurm|pbs [--config|--spack-case|--spack-managed|--spack-samtools|--spack-artifact-hello|--spack-artifact-samtools|--spack-web-hello|--spack-web-samtools|--spack-workflow-hello|--spack-workflow-samtools|--spack-file-workflow-samtools]" ;;
 esac
-[[ $# -le 2 && ( $# -eq 1 || "$2" == "--config" || "$2" == "--spack-case" || "$2" == "--spack-managed" || "$2" == "--spack-samtools" || "$2" == "--spack-artifact-hello" || "$2" == "--spack-artifact-samtools" || "$2" == "--spack-web-hello" || "$2" == "--spack-web-samtools" ) ]] || fail "Unsupported flag"
+[[ $# -le 2 && ( $# -eq 1 || "$2" == "--config" || "$2" == "--spack-case" || "$2" == "--spack-managed" || "$2" == "--spack-samtools" || "$2" == "--spack-artifact-hello" || "$2" == "--spack-artifact-samtools" || "$2" == "--spack-web-hello" || "$2" == "--spack-web-samtools" || "$2" == "--spack-workflow-hello" || "$2" == "--spack-workflow-samtools" || "$2" == "--spack-file-workflow-samtools" ) ]] || fail "Unsupported flag"
 spack_case=false
 spack_managed=false
 spack_artifact=false
 spack_web=false
+spack_workflow=false
+spack_file_workflow=false
+if [[ "${2:-}" == "--spack-file-workflow-samtools" ]]; then
+  spack_file_workflow=true
+  export KQ_PR_SPACK_FILE_WORKFLOW=1
+fi
+if [[ "${2:-}" == "--spack-workflow-hello" || "${2:-}" == "--spack-workflow-samtools" ]] || "$spack_file_workflow"; then
+  spack_workflow=true
+fi
 if [[ "${2:-}" == "--spack-web-hello" || "${2:-}" == "--spack-web-samtools" ]]; then
   spack_web=true
 fi
-if [[ "${2:-}" == "--spack-artifact-hello" || "${2:-}" == "--spack-artifact-samtools" ]] || "$spack_web"; then
+if [[ "${2:-}" == "--spack-artifact-hello" || "${2:-}" == "--spack-artifact-samtools" ]] || "$spack_web" || "$spack_workflow"; then
   spack_artifact=true
 fi
 if [[ "${2:-}" == "--spack-managed" || "${2:-}" == "--spack-samtools" ]] || "$spack_artifact"; then
   [[ "${GITHUB_ACTIONS:-}" == true ]] || fail "Managed case runs only on disposable GitHub Actions runners"
   spack_managed=true
 fi
-if [[ "${2:-}" == "--spack-samtools" || "${2:-}" == "--spack-artifact-samtools" || "${2:-}" == "--spack-web-samtools" ]]; then
+if [[ "${2:-}" == "--spack-samtools" || "${2:-}" == "--spack-artifact-samtools" || "${2:-}" == "--spack-web-samtools" || "${2:-}" == "--spack-workflow-samtools" ]] || "$spack_file_workflow"; then
   export KQ_PR_SPACK_CASE=samtools
 fi
 if [[ "${2:-}" == "--spack-case" ]] || "$spack_managed"; then
@@ -58,6 +68,12 @@ export KQ_PR_TICKET_SECRET="$(openssl rand -hex 32)"
 if [[ "${GITHUB_ACTIONS:-}" == "true" ]]; then
   printf '::add-mask::%s\n' "$KQ_PR_DB_PASSWORD" "$KQ_PR_JWT_SECRET" "$KQ_PR_TICKET_SECRET"
 fi
+if "$spack_file_workflow"; then
+  export KQ_PR_RUSTFS_ACCESS_KEY="$(openssl rand -hex 16)"
+  export KQ_PR_RUSTFS_SECRET_KEY="$(openssl rand -hex 32)"
+  export KQ_PR_NETDRIVE_SECRET_KEY="$(openssl rand -hex 32)"
+  printf '::add-mask::%s\n' "$KQ_PR_RUSTFS_ACCESS_KEY" "$KQ_PR_RUSTFS_SECRET_KEY" "$KQ_PR_NETDRIVE_SECRET_KEY"
+fi
 compose=(docker compose --project-directory "$repo_root" --env-file /dev/null
   -p "$COMPOSE_PROJECT_NAME" -f "$repo_root/deploy/compose/docker-compose.pr-test.yml")
 if "$spack_case"; then
@@ -72,8 +88,15 @@ fi
 if "$spack_web"; then
   compose+=(-f "$repo_root/deploy/compose/docker-compose.pr-spack-web-managed.yml")
 fi
+if "$spack_workflow"; then
+  compose+=(-f "$repo_root/deploy/compose/docker-compose.pr-spack-workflow.yml")
+fi
+if "$spack_file_workflow"; then
+  compose+=(-f "$repo_root/deploy/compose/docker-compose.pr-spack-file-workflow.yml")
+fi
 compose+=(--profile images)
 web_compose=("${compose[@]}" -f "$repo_root/deploy/compose/docker-compose.pr-spack-web-endpoints.yml")
+web_install_compose=("${compose[@]}" -f "$repo_root/deploy/pr-test/spack-artifacts/web-install-endpoint.yml")
 artifact_work=""
 artifact_exporter=""
 
@@ -160,6 +183,7 @@ if "$spack_artifact"; then
     export KQ_ARTIFACT_WEB_RECEIPT_DIRECTORY="$artifact_work/web-receipt"
     mkdir -m 0700 "$KQ_ARTIFACT_WEB_RECEIPT_DIRECTORY"
     export KQ_ARTIFACT_RESULT_PATH="$KQ_ARTIFACT_WEB_RECEIPT_DIRECTORY/web-binding.json"
+    export KQ_ARTIFACT_INSTALL_RESULT_PATH="$artifact_work/web-install.json"
     export KQ_ARTIFACT_REFERENCE_PATH="$artifact_work/unused-bootstrap-binding.json"
     export KQ_ARTIFACT_WEB_URL=http://127.0.0.1:15173
   else
@@ -207,6 +231,7 @@ web_import() {
 web_isolated() {
   local service container ports networks network
   for service in server registry; do
+    if [[ "${1:-}" == registry-only && "$service" != registry ]]; then continue; fi
     container="$("${compose[@]}" ps -q "$service")"
     [[ "$container" =~ ^[0-9a-f]{12,64}$ ]] || fail "Spack Web managed: stage=isolation code=CONTAINER"
     ports="$(docker inspect --format '{{json .HostConfig.PortBindings}}' "$container")"
@@ -218,7 +243,32 @@ web_isolated() {
       [[ "$(docker network inspect --format '{{.Internal}}' "$network")" == true ]] || fail "Spack Web managed: stage=isolation code=EGRESS"
     done <<< "$networks"
   done
-  printf '%s\n' "Spack Web managed: stage=isolation code=OK"
+  if [[ "${1:-}" == registry-only ]]; then
+    printf '%s\n' "Spack Web managed: stage=registry-isolation code=OK"
+  else
+    printf '%s\n' "Spack Web managed: stage=isolation code=OK"
+  fi
+}
+
+web_install() {
+  "${web_install_compose[@]}" up -d --no-deps --no-build --wait --wait-timeout 300 server
+  local server_address
+  server_address="$("${web_install_compose[@]}" port server 3000)"
+  [[ "$server_address" =~ ^127\.0\.0\.1:[1-9][0-9]{0,4}$ ]] || fail "Spack Web managed: stage=install-listener code=INVALID"
+  web_isolated registry-only
+  export KQ_WEB_SERVER_PROXY_TARGET="http://$server_address"
+  # The install phase has no Registry proxy or published Registry port.
+  export KQ_WEB_REGISTRY_PROXY_TARGET=http://127.0.0.1:1
+  (
+    cd "$repo_root"
+    timeout --signal=TERM --kill-after=10s 1320s \
+      bun run --cwd packages/web e2e --config e2e/cp-spack-install.config.ts
+  )
+  unset KQ_WEB_SERVER_PROXY_TARGET KQ_WEB_REGISTRY_PROXY_TARGET
+  [[ -f "$KQ_ARTIFACT_INSTALL_RESULT_PATH" && ! -L "$KQ_ARTIFACT_INSTALL_RESULT_PATH" ]] || fail "Spack Web managed: stage=install-receipt code=MISSING"
+  "${compose[@]}" up -d --force-recreate --no-deps --no-build --wait --wait-timeout 300 server
+  web_isolated
+  printf '%s\n' "Spack Web managed: stage=install code=OK"
 }
 
 printf 'Building isolated PR test project: %s\n' "$COMPOSE_PROJECT_NAME"
@@ -265,19 +315,49 @@ exec bun deploy/pr-test/spack-artifacts/export.ts "$@"' \
     "${compose[@]}" restart server
   fi
 fi
+if "$spack_workflow"; then
+  "${compose[@]}" run --rm --no-deps artifact-control bun deploy/pr-test/spack-managed/workflow-assets.ts
+fi
+if "$spack_file_workflow"; then
+  "${compose[@]}" run --rm --no-deps artifact-control bun deploy/pr-test/spack-managed/file-workflow-assets.ts
+fi
 "${compose[@]}" up -d --no-build --wait --wait-timeout 300 scheduler registry
 if "$spack_case"; then
   # Query only from Server's trusted workspace; never pass database credentials to Agent.
   "${compose[@]}" exec -T server timeout --signal=TERM --kill-after=5s 60s bun deploy/pr-test/spack-case/references.ts configured
 fi
 if "$spack_managed"; then
+  install_timeout=1500s
+  restart_timeout=900s
+  uninstall_timeout=180s
+  if "$spack_file_workflow"; then
+    install_timeout=2400s
+    restart_timeout=2100s
+    uninstall_timeout=300s
+  fi
   legacy_probe_status
   "${compose[@]}" exec -T --user kq scheduler bun deploy/pr-test/spack-managed/probe.ts
   "${compose[@]}" exec -T --user kq scheduler bun node_modules/typescript/bin/tsc --project deploy/pr-test/tsconfig.json
-  "${compose[@]}" exec -T --user kq scheduler timeout --signal=TERM --kill-after=10s 1500s bun deploy/pr-test/spack-managed/case.ts install
+  if "$spack_web" && [[ "$KQ_PR_SPACK_CASE" == hello ]]; then
+    "${compose[@]}" exec -T --user kq scheduler timeout --signal=TERM --kill-after=10s 180s bun deploy/pr-test/spack-managed/case.ts prepare-web-install
+    web_install
+    "${compose[@]}" exec -T --user kq scheduler timeout --signal=TERM --kill-after=10s "$install_timeout" bun deploy/pr-test/spack-managed/case.ts verify-web-install < "$KQ_ARTIFACT_INSTALL_RESULT_PATH"
+  else
+    "${compose[@]}" exec -T --user kq scheduler timeout --signal=TERM --kill-after=10s "$install_timeout" bun deploy/pr-test/spack-managed/case.ts install
+  fi
   "${compose[@]}" exec -T server timeout --signal=TERM --kill-after=5s 60s bun deploy/pr-test/spack-case/references.ts managed-terminal
-  "${compose[@]}" restart registry scheduler server
-  "${compose[@]}" up -d --no-build --wait --wait-timeout 300 scheduler registry server
+  if "$spack_file_workflow"; then
+    "${compose[@]}" stop scheduler server
+    "${compose[@]}" restart rustfs
+    # No bootstrap replay: restart must prove the persisted buckets and IAM state.
+    "${compose[@]}" up -d --no-deps --no-build --wait --wait-timeout 300 rustfs
+    "${compose[@]}" restart registry server
+    "${compose[@]}" up -d --no-deps --no-build --wait --wait-timeout 300 registry server
+    "${compose[@]}" up -d --no-deps --no-build --wait --wait-timeout 300 scheduler
+  else
+    "${compose[@]}" restart registry scheduler server
+    "${compose[@]}" up -d --no-build --wait --wait-timeout 300 scheduler registry server
+  fi
   "${compose[@]}" exec -T server timeout --signal=TERM --kill-after=5s 60s bun deploy/pr-test/spack-case/references.ts managed-restart
   if "$spack_artifact"; then
     if "$spack_web"; then web_isolated; fi
@@ -285,8 +365,8 @@ if "$spack_managed"; then
   else
     "${compose[@]}" run --rm --no-deps case-operator bun deploy/pr-test/spack-case/publish.ts --verify
   fi
-  "${compose[@]}" exec -T --user kq scheduler timeout --signal=TERM --kill-after=10s 900s bun deploy/pr-test/spack-managed/case.ts restart
-  "${compose[@]}" exec -T --user kq scheduler timeout --signal=TERM --kill-after=10s 180s bun deploy/pr-test/spack-managed/case.ts uninstall
+  "${compose[@]}" exec -T --user kq scheduler timeout --signal=TERM --kill-after=10s "$restart_timeout" bun deploy/pr-test/spack-managed/case.ts restart
+  "${compose[@]}" exec -T --user kq scheduler timeout --signal=TERM --kill-after=10s "$uninstall_timeout" bun deploy/pr-test/spack-managed/case.ts uninstall
   "${compose[@]}" exec -T server timeout --signal=TERM --kill-after=5s 60s bun deploy/pr-test/spack-case/references.ts managed-uninstall
 elif "$spack_case"; then
   "${compose[@]}" exec -T scheduler timeout --signal=TERM --kill-after=10s 180s bun deploy/pr-test/spack-case/consume.ts

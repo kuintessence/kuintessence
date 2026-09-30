@@ -64,6 +64,7 @@ services:
     volumes:
       - case-server:/case-server:ro
       - case-control:/case-control:ro
+      - case-references:/case-references
 
   registry:
     environment:
@@ -90,3 +91,4 @@ volumes:
   case-ca:
   case-control:
   case-input:
+  case-references:

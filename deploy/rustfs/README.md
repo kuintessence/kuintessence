@@ -16,6 +16,13 @@ staging lifecycle 使用固定 ID 覆盖导入，重复执行不累积规则。
 脚本依赖 `rc` 和 `jq`，客户端镜像已包含二者。临时文件与客户端配置使用私有目录，
 退出时清理。Helm 内嵌同一脚本，CI 检查两份内容一致。
 
+`rc alias set` 会联网验证 S3 凭据，因此 alias 初始化与 `rc ready` 共用
+`RUSTFS_READY_TIMEOUT_SECONDS` 等待预算。首次启动时暂不可达不会在 readiness
+等待前直接退出；持续失败仍退出非零，且不会开始创建 bucket 或配置 IAM。
+重试不输出客户端原始错误、endpoint 或凭据，也不放宽后续 Object Lock 与 IAM 检查。
+预算沿用原有 sleep 计数，不包含单次 `rc` 调用耗时；Helm Job 的总截止仍由
+`activeDeadlineSeconds` 约束。
+
 ## 升级边界
 
 这是存储后端变更，不是原地替换二进制：

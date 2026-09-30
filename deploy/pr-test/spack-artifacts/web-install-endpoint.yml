@@ -1,0 +1,11 @@
+# Hello CP acceptance only. Registry and Agent retain their internal-only networks.
+services:
+  server:
+    networks: [artifact-web]
+    ports:
+      - target: 3000
+        host_ip: 127.0.0.1
+
+networks:
+  artifact-web:
+    internal: false
