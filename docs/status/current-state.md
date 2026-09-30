@@ -191,7 +191,7 @@ Kuintessence 当前为 pre-release。以下列出组件功能、运行要求和�
   以保留构建、挂载、根目录 `.env` 和默认项目名的路径基准。
 - [GitHub 预览配置](../preview-k3s.md) 改为全部必需测试通过后构建 GHCR `kq-dev-*`
   SHA 镜像，经 SSH 隧道部署到远程 k3s；旧 runner 限时 Quick Tunnel job 已停用。
-  门禁同时要求信任标签、作者写权限、同仓库当前 SHA 和完整测试成功。
+  门禁同时要求信任标签、作者写权限、同仓库当前 SHA 和全部必测组成功。
   提供用户 Helm Chart 与 demo CI wrapper，包含持久化 Registry、RustFS、
   seed 和单容器 Slurm + Agent；不启用远端高权限 managed Spack runtime。
   预览镜像采用公开 GHCR，首次由维护者手动公开后重试失败的部署 job；
@@ -237,9 +237,11 @@ Kuintessence 当前为 pre-release。以下列出组件功能、运行要求和�
 - [系统运维](../manuals/system-operations-manual.md)
 - [开发与检查命令](../../README.md#开发)
 
-`CI` 工作流在推送 `main` 和 PR 时默认只运行 Biome、文档链接及 workflow 引用静态检查，
+`CI` 工作流在推送 `main` 和 PR 时默认运行 Biome、文档链接、workflow 引用及轻量编排检查，
 安装时禁用生命周期脚本。`PR preview tests` 对同仓库非草稿 PR 自动编排完整类型检查、
-测试、Slurm/PBS 与 Spack workflow，随后通过信任门禁才部署远程 k3s。
+基础测试及 Web 单测/build，按完整 PR 文件列表选择 Spack 与调度器重型组，
+手动触发则运行全部组。
+部署控制器独立核算必测范围，仅允许未选组跳过，随后通过信任门禁才部署远程 k3s。
 binary 构建与 smoke、跨架构镜像验证、文档站发布仍由维护者手动触发；
 不再托管 runner 限时预览或 main 预览。具体入口见 [GitHub Actions](../deployment.md#actions)。
 手动完整 CI 使用 `test:unit` 的临时数据库和逐文件进程隔离，再单独执行

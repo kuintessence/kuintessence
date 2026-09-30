@@ -7,7 +7,8 @@
 ## 流程
 
 1. [`PR preview tests`](../.github/workflows/preview-tests.yml) 固定当前 PR head SHA，
-   运行完整 CI、调度器矩阵和 Spack workflow 矩阵。测试容器只存在于 runner。
+   运行基础 CI，并按完整 PR diff 选择 Spack 和调度器重型测试；手动触发该工作流
+   则运行全部组。测试容器只存在于 runner。
 2. [`Preview`](../.github/workflows/preview.yml) 从可信 workflow 版本加载部署逻辑，
    校验当前 PR、作者权限、标签、受测 SHA、必需 job 以及后续重跑状态。
 3. 独立镜像 job 构建 `linux/amd64` 的 Server、Registry、Web、db-migrate、seed、
@@ -23,7 +24,10 @@
 PR 必须同时满足：同仓库、目标为默认分支、打开、非草稿、精确标签 `TRUST_PR_CREATOR`、
 没有 `preview-paused`、作者**当前**拥有 write/maintain/admin 权限。
 标签与成员资格是 AND，不接受“只满足其中一个”。不使用过期 SHA 的历史成功结果，
-也不把 skipped、缺失或只运行静态检查的 job 算作完整成功。
+也不把必测组的 skipped、缺失或只运行静态检查的结果算作成功。
+可信部署控制器会独立读取完整 PR 文件列表、检查当前 head/base 并计算必测组，
+不信任 PR 上报的范围或 artifact；只有按路径规则未选中的组允许跳过。
+文件列表不完整、超过可完整查询的范围或查询期间版本变化时拒绝继续。
 堆叠 PR 可先运行全部测试；应先完成依赖合并并将 base 调整为默认分支，再进入部署。
 部署和自动清理采用相同的 base 限制，避免从非默认 base 执行带集群凭据的控制器。
 
@@ -111,7 +115,7 @@ demo seed 的内容和幂等策略见 [seed 指南](../deploy/seed/README.md)。
 自动 `workflow_run` 部署和 `pull_request_target` 清理须先存在于受信默认分支。
 共享 namespace 控制器修改也必须先经审核合入，不能由目标 PR 替换带凭据的部署逻辑。
 维护者准备好 `preview` namespace、namespace-only RBAC、公开镜像与集群基础设施后，
-给目标 PR 添加 `TRUST_PR_CREATOR`，完整测试通过后才进入自动部署。
+给目标 PR 添加 `TRUST_PR_CREATOR`，全部必测组通过后才进入自动部署。
 信任标签应由维护者在审阅代码后添加，不由构建脚本自动补齐。
 
 测试可在 PR 分支触发；有集群凭据的手动部署入口**仅接受默认分支**：
@@ -123,7 +127,8 @@ gh workflow run preview.yml --ref main \
 ```
 
 第一次命令的 ref 必须对应 PR 当前 head；第二次必须等待受审部署控制器进入默认分支，
-以及第一组完整测试终态成功。手动入口不绕过任何信任或测试门禁。
+以及第一组测试终态成功。手动触发 `PR preview tests` 强制运行所有组；
+手动部署入口不绕过任何信任或测试门禁。
 只有默认分支已经注册对应 workflow 时，GitHub 才能通过名称发现这些手动入口。
 
 ### 保留环境供人工检查

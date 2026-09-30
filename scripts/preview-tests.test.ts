@@ -16,10 +16,12 @@ const suites = {
 };
 
 interface Step {
+  name?: string;
   id?: string;
   if?: string;
   uses?: string;
   run?: string;
+  "working-directory"?: string;
   env?: Record<string, string>;
   with?: Record<string, unknown>;
 }
@@ -136,6 +138,43 @@ async function resolverFixture(eventName = "pull_request") {
   };
 }
 
+async function scopeFixture(eventName = "pull_request") {
+  const fixture = await resolverFixture(eventName);
+  const preview = await workflow();
+  const script = preview.jobs.resolve?.steps?.find((step) => step.id === "scope")?.with?.script;
+  if (typeof script !== "string") throw new Error("Missing preview scope resolver");
+  const selected = { spack: false, schedulers: false };
+  const modules: string[] = [];
+  const messages: string[] = [];
+  const helper = {
+    pullRequestScope: async (
+      github: typeof fixture.github,
+      repo: ResolverContext["repo"],
+      pr: PullRequest,
+    ) => {
+      expect(github).toBe(fixture.github);
+      expect(repo).toBe(fixture.context.repo);
+      expect(pr).toBe(fixture.pr);
+      return selected;
+    },
+  };
+  const execute = runInNewContext(`(async () => {\n${script}\n})`, {
+    github: fixture.github,
+    context: fixture.context,
+    process: { env: { TEST_SHA: sourceSha } },
+    require: (path: string) => {
+      expect(path).toBe("./deploy/preview/test-scope.cjs");
+      modules.push(path);
+      return helper;
+    },
+    core: {
+      setOutput: (name: string, value: string) => fixture.outputs.set(name, value),
+      info: (message: string) => messages.push(message),
+    },
+  }) as () => Promise<void>;
+  return { ...fixture, selected, modules, helper, execute };
+}
+
 describe("preview source resolution", () => {
   test("accepts a stacked PR head rather than the event merge commit", async () => {
     const fixture = await resolverFixture();
@@ -214,6 +253,65 @@ describe("preview source resolution", () => {
   });
 });
 
+describe("preview expensive scope resolution", () => {
+  test("PR scope uses the checked-out helper and emits its boolean flags as strings", async () => {
+    for (const spack of [false, true]) {
+      for (const schedulers of [false, true]) {
+        const fixture = await scopeFixture();
+        Object.assign(fixture.selected, { spack, schedulers });
+        await fixture.execute();
+        expect(fixture.requests).toEqual([17]);
+        expect(fixture.modules).toEqual(["./deploy/preview/test-scope.cjs"]);
+        expect([...fixture.outputs]).toEqual([
+          ["spack", String(spack)],
+          ["schedulers", String(schedulers)],
+        ]);
+      }
+    }
+  });
+
+  test("manual dispatch forces both suites without loading the PR diff helper", async () => {
+    const fixture = await scopeFixture("workflow_dispatch");
+    fixture.helper.pullRequestScope = async () => {
+      throw new Error("Dispatch must not resolve the diff");
+    };
+    await fixture.execute();
+    expect(fixture.requests).toEqual([17]);
+    expect(fixture.modules).toEqual([]);
+    expect([...fixture.outputs]).toEqual([
+      ["spack", "true"],
+      ["schedulers", "true"],
+    ]);
+  });
+
+  test("scope rejects a changed PR head before loading the helper or publishing flags", async () => {
+    for (const event of ["pull_request", "workflow_dispatch"]) {
+      const fixture = await scopeFixture(event);
+      fixture.pr.head.sha = "c".repeat(40);
+      await expect(fixture.execute()).rejects.toThrow("PR head changed before scope resolution");
+      expect(fixture.modules).toEqual([]);
+      expect(fixture.outputs.size).toBe(0);
+    }
+  });
+
+  test("scope fails closed on API or helper failure", async () => {
+    for (const failure of ["api", "helper"]) {
+      const fixture = await scopeFixture();
+      if (failure === "api") {
+        fixture.github.rest.pulls.get = async () => {
+          throw new Error("Fixture scope unavailable");
+        };
+      } else {
+        fixture.helper.pullRequestScope = async () => {
+          throw new Error("Fixture scope unavailable");
+        };
+      }
+      await expect(fixture.execute()).rejects.toThrow("Fixture scope unavailable");
+      expect(fixture.outputs.size).toBe(0);
+    }
+  });
+});
+
 describe("preview test orchestration", () => {
   test("has unrestricted PR bases and read-only permissions", async () => {
     const preview = await workflow();
@@ -229,9 +327,25 @@ describe("preview test orchestration", () => {
     expect(preview.permissions).toEqual({ contents: "read", "pull-requests": "read" });
     expect(preview.jobs.resolve?.outputs).toEqual({
       source_sha: "${{ steps.source.outputs.source_sha }}",
+      spack: "${{ steps.scope.outputs.spack }}",
+      schedulers: "${{ steps.scope.outputs.schedulers }}",
     });
     const resolveSteps = preview.jobs.resolve?.steps ?? [];
-    expect(resolveSteps.some((step) => step.uses?.includes("checkout"))).toBe(false);
+    const source = resolveSteps.findIndex((step) => step.id === "source");
+    const checkout = resolveSteps.findIndex((step) => step.uses?.startsWith("actions/checkout@"));
+    const scope = resolveSteps.findIndex((step) => step.id === "scope");
+    expect(source).toBeGreaterThanOrEqual(0);
+    expect(checkout).toBeGreaterThan(source);
+    expect(scope).toBeGreaterThan(checkout);
+    const checkouts = resolveSteps.filter((step) => step.uses?.startsWith("actions/checkout@"));
+    expect(checkouts).toHaveLength(1);
+    expect(resolveSteps[checkout]?.with).toEqual({
+      ref: "${{ steps.source.outputs.source_sha }}",
+      "persist-credentials": false,
+    });
+    expect(resolveSteps[scope]?.uses).toBe("actions/github-script@v7");
+    expect(resolveSteps[scope]?.env).toEqual({ TEST_SHA: "${{ steps.source.outputs.source_sha }}" });
+    for (const step of resolveSteps) expect(step.if).toBeUndefined();
     expect(Object.keys(preview.jobs).sort()).toEqual([
       "all-required-tests",
       "ci",
@@ -239,17 +353,43 @@ describe("preview test orchestration", () => {
       "schedulers",
       "workflows",
     ]);
+    const conditions: Record<string, string> = {
+      schedulers:
+        "needs.resolve.outputs.spack == 'true' || needs.resolve.outputs.schedulers == 'true'",
+      workflows: "needs.resolve.outputs.spack == 'true'",
+    };
     for (const [id, file] of Object.entries(suites)) {
       const job = preview.jobs[id];
       expect(job?.name).toBe(id);
       expect(job?.needs).toBe("resolve");
       expect(job?.uses).toBe(`./.github/workflows/${file}`);
       expect(job?.secrets).toBeUndefined();
-      expect(job?.if).toBeUndefined();
+      expect(job?.if).toBe(conditions[id]);
       expect(job?.with).toEqual({
         source_sha: "${{ needs.resolve.outputs.source_sha }}",
         ...(id === "ci" ? { run_runtime_checks: true } : {}),
+        ...(id !== "workflows"
+          ? {
+              run_spack: "${{ needs.resolve.outputs.spack == 'true' }}",
+              run_schedulers: "${{ needs.resolve.outputs.schedulers == 'true' }}",
+            }
+          : {}),
       });
+    }
+  });
+
+  test("expensive reusable jobs follow all four scope combinations", async () => {
+    const preview = await workflow();
+    for (const spack of [false, true]) {
+      for (const schedulers of [false, true]) {
+        const context = {
+          needs: { resolve: { outputs: { spack: String(spack), schedulers: String(schedulers) } } },
+        };
+        expect(runInNewContext(preview.jobs.schedulers?.if ?? "false", context)).toBe(
+          spack || schedulers,
+        );
+        expect(runInNewContext(preview.jobs.workflows?.if ?? "false", context)).toBe(spack);
+      }
     }
   });
 
@@ -365,30 +505,66 @@ describe("preview test orchestration", () => {
     }
   });
 
-  test("does not skip reusable runtime suites based on the caller event", async () => {
+  test("keeps baseline runtime checks and gates expensive jobs on reusable scope inputs", async () => {
     const ci = await workflow("ci.yml");
     expect(ci.on.pull_request?.branches).toBeUndefined();
-    const required = [
-      "lint-and-typecheck",
-      "spack-artifact-imports",
-      "test",
-      "e2e-slice",
-      "rustfs-deployments",
-      "spack-lifecycle-portal",
-      "spack-upstream",
-    ];
-    for (const id of required) {
+    for (const id of ["lint-and-typecheck", "test", "rustfs-deployments"]) {
       expect(ci.jobs[id]?.if).toBe("inputs.run_runtime_checks || inputs.source_sha");
+    }
+    const scoped: Record<string, string> = {
+      "spack-artifact-imports": "run_spack",
+      "spack-lifecycle-portal": "run_spack",
+      "spack-upstream": "run_spack",
+      "e2e-slice": "run_schedulers",
+    };
+    for (const [id, flag] of Object.entries(scoped)) {
+      expect(ci.jobs[id]?.if).toBe(
+        `(inputs.run_runtime_checks || inputs.source_sha) && inputs.${flag}`,
+      );
+      for (const runtime of [false, true]) {
+        for (const sha of ["", sourceSha]) {
+          for (const spack of [false, true]) {
+            for (const schedulers of [false, true]) {
+              const inputs = {
+                run_runtime_checks: runtime,
+                source_sha: sha,
+                run_spack: spack,
+                run_schedulers: schedulers,
+              };
+              expect(Boolean(runInNewContext(ci.jobs[id]?.if ?? "false", { inputs }))).toBe(
+                (runtime || Boolean(sha)) && (flag === "run_spack" ? spack : schedulers),
+              );
+            }
+          }
+        }
+      }
     }
     expect(ci.jobs["spack-artifact-imports"]?.with).toMatchObject({
       source_sha: sourceRef,
       publish_artifact: false,
       acknowledge_redistribution: false,
     });
+    for (const file of [suites.ci, suites.schedulers]) {
+      const child = await workflow(file);
+      for (const event of ["workflow_call", "workflow_dispatch"]) {
+        for (const flag of ["run_spack", "run_schedulers"]) {
+          expect(child.on[event]?.inputs?.[flag]).toMatchObject({
+            type: "boolean",
+            default: true,
+          });
+        }
+      }
+    }
     for (const file of [suites.schedulers, suites.workflows]) {
       const child = await workflow(file);
       expect(Object.keys(child.on).sort()).toEqual(["workflow_call", "workflow_dispatch"]);
-      for (const job of Object.values(child.jobs)) expect(job.if).toBeUndefined();
+      if (file === suites.workflows) {
+        for (const job of Object.values(child.jobs)) expect(job.if).toBeUndefined();
+      } else {
+        expect(child.jobs["spack-managed"]?.if).toBe("inputs.run_spack");
+        expect(child.jobs["spack-case"]?.if).toBe("inputs.run_spack");
+        expect(child.jobs.scheduler?.if).toBe("inputs.run_schedulers");
+      }
     }
     const commands = ci.jobs["lint-and-typecheck"]?.steps?.map((step) => step.run ?? "").join("\n");
     expect(commands).toContain("bun test deploy/preview/*.test.* deploy/seed/*.test.*");
@@ -403,6 +579,55 @@ describe("preview test orchestration", () => {
     expect(staticSteps.some((step) => step.run === "bun test scripts/preview-tests.test.ts")).toBe(
       true,
     );
+  });
+
+  test("keeps complete Web unit and build coverage outside the Spack gate", async () => {
+    const ci = await workflow(suites.ci);
+    const baseline = ci.jobs["lint-and-typecheck"];
+    for (const spack of [false, true]) {
+      for (const runtime of [false, true]) {
+        for (const sha of ["", sourceSha]) {
+          const inputs = {
+            run_runtime_checks: runtime,
+            source_sha: sha,
+            run_spack: spack,
+            run_schedulers: false,
+          };
+          expect(Boolean(runInNewContext(baseline?.if ?? "false", { inputs }))).toBe(
+            runtime || Boolean(sha),
+          );
+        }
+      }
+    }
+    for (const [name, command] of [
+      ["Run complete Web unit suite", "bun run test"],
+      ["Build web application and styles", "bun run build"],
+    ]) {
+      const steps = baseline?.steps?.filter((step) => step.name === name) ?? [];
+      expect(steps).toHaveLength(1);
+      expect(steps[0]).toMatchObject({ run: command, "working-directory": "packages/web" });
+      expect(steps[0]?.if).toBeUndefined();
+    }
+    const portalSteps = ci.jobs["spack-lifecycle-portal"]?.steps ?? [];
+    expect(portalSteps.some((step) => step.name === "Run complete Web unit suite")).toBe(false);
+    expect(
+      portalSteps.some(
+        (step) =>
+          step["working-directory"] === "packages/web" && step.run?.trim() === "bun run test",
+      ),
+    ).toBe(false);
+    const build = portalSteps.findIndex((step) => step.name === "Build web application and styles");
+    const browser = portalSteps.findIndex(
+      (step) =>
+        step["working-directory"] === "packages/web" && step.run?.startsWith("bun run e2e "),
+    );
+    expect(build).toBeGreaterThanOrEqual(0);
+    expect(browser).toBeGreaterThan(build);
+    expect(portalSteps[build]).toMatchObject({
+      run: "bun run build",
+      "working-directory": "packages/web",
+    });
+    expect(portalSteps[build]?.if).toBeUndefined();
   });
 
   test("retains all required matrix cases", async () => {
@@ -492,7 +717,7 @@ describe("preview test orchestration", () => {
     }
   });
 
-  test("the final gate rejects every non-success suite result", async () => {
+  test("the final gate requires success for selected suites and skipped for unselected suites", async () => {
     const gate = (await workflow()).jobs["all-required-tests"];
     expect(gate?.name).toBe("all-required-tests");
     expect(gate?.if).toBe("always() && needs.resolve.result != 'skipped'");
@@ -511,18 +736,47 @@ describe("preview test orchestration", () => {
       CI_RESULT: "${{ needs.ci.result }}",
       SCHEDULERS_RESULT: "${{ needs.schedulers.result }}",
       WORKFLOWS_RESULT: "${{ needs.workflows.result }}",
+      SPACK_REQUIRED: "${{ needs.resolve.outputs.spack }}",
+      SCHEDULERS_REQUIRED: "${{ needs.resolve.outputs.schedulers }}",
     });
     if (!step?.run) throw new Error("Missing all-required-tests gate");
-    const success = {
-      RESOLVE_RESULT: "success",
-      CI_RESULT: "success",
-      SCHEDULERS_RESULT: "success",
-      WORKFLOWS_RESULT: "success",
-    };
-    const cases = [{ results: success, accepted: true }];
-    for (const key of Object.keys(success)) {
-      for (const value of ["failure", "cancelled", "skipped", "neutral", "", "SUCCESS"]) {
-        cases.push({ results: { ...success, [key]: value }, accepted: false });
+    const cases: { results: Record<string, string>; accepted: boolean }[] = [];
+    for (const spack of [false, true]) {
+      for (const schedulers of [false, true]) {
+        const success: Record<string, string> = {
+          RESOLVE_RESULT: "success",
+          CI_RESULT: "success",
+          SCHEDULERS_RESULT: spack || schedulers ? "success" : "skipped",
+          WORKFLOWS_RESULT: spack ? "success" : "skipped",
+          SPACK_REQUIRED: String(spack),
+          SCHEDULERS_REQUIRED: String(schedulers),
+        };
+        cases.push({ results: success, accepted: true });
+        for (const key of [
+          "RESOLVE_RESULT",
+          "CI_RESULT",
+          "SCHEDULERS_RESULT",
+          "WORKFLOWS_RESULT",
+        ]) {
+          for (const value of [
+            "success",
+            "failure",
+            "cancelled",
+            "skipped",
+            "neutral",
+            "",
+            "SUCCESS",
+            "in_progress",
+          ]) {
+            if (value === success[key]) continue;
+            cases.push({ results: { ...success, [key]: value }, accepted: false });
+          }
+        }
+        for (const key of ["SPACK_REQUIRED", "SCHEDULERS_REQUIRED"]) {
+          for (const value of ["", "TRUE", "FALSE", "1", "0", "yes", "true ", "null"]) {
+            cases.push({ results: { ...success, [key]: value }, accepted: false });
+          }
+        }
       }
     }
     for (const input of cases) {
@@ -540,5 +794,5 @@ describe("preview test orchestration", () => {
       ]);
       expect({ results: input.results, accepted: code === 0 }).toEqual(input);
     }
-  });
+  }, 15000);
 });
