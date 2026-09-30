@@ -85,4 +85,12 @@ describe("workflow test tiers", () => {
     await expect(workflowScope(f.github, repo, f.pr, { event: "pull_request", spack: true }))
       .rejects.toThrow("Unavailable");
   });
+
+  test("rejects a SHA with a trailing newline before querying GitHub", async () => {
+    const f = fixture();
+    f.pr.head.sha += "\n";
+    await expect(workflowScope(f.github, repo, f.pr, { event: "pull_request", spack: true }))
+      .rejects.toThrow("Invalid workflow scope request.");
+    expect(f.requests).toEqual([]);
+  });
 });

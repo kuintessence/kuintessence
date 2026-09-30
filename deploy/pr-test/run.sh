@@ -96,6 +96,7 @@ if "$spack_file_workflow"; then
 fi
 compose+=(--profile images)
 web_compose=("${compose[@]}" -f "$repo_root/deploy/compose/docker-compose.pr-spack-web-endpoints.yml")
+web_install_compose=("${compose[@]}" -f "$repo_root/deploy/pr-test/spack-artifacts/web-install-endpoint.yml")
 artifact_work=""
 artifact_exporter=""
 
@@ -182,6 +183,7 @@ if "$spack_artifact"; then
     export KQ_ARTIFACT_WEB_RECEIPT_DIRECTORY="$artifact_work/web-receipt"
     mkdir -m 0700 "$KQ_ARTIFACT_WEB_RECEIPT_DIRECTORY"
     export KQ_ARTIFACT_RESULT_PATH="$KQ_ARTIFACT_WEB_RECEIPT_DIRECTORY/web-binding.json"
+    export KQ_ARTIFACT_INSTALL_RESULT_PATH="$artifact_work/web-install.json"
     export KQ_ARTIFACT_REFERENCE_PATH="$artifact_work/unused-bootstrap-binding.json"
     export KQ_ARTIFACT_WEB_URL=http://127.0.0.1:15173
   else
@@ -229,6 +231,7 @@ web_import() {
 web_isolated() {
   local service container ports networks network
   for service in server registry; do
+    if [[ "${1:-}" == registry-only && "$service" != registry ]]; then continue; fi
     container="$("${compose[@]}" ps -q "$service")"
     [[ "$container" =~ ^[0-9a-f]{12,64}$ ]] || fail "Spack Web managed: stage=isolation code=CONTAINER"
     ports="$(docker inspect --format '{{json .HostConfig.PortBindings}}' "$container")"
@@ -240,7 +243,32 @@ web_isolated() {
       [[ "$(docker network inspect --format '{{.Internal}}' "$network")" == true ]] || fail "Spack Web managed: stage=isolation code=EGRESS"
     done <<< "$networks"
   done
-  printf '%s\n' "Spack Web managed: stage=isolation code=OK"
+  if [[ "${1:-}" == registry-only ]]; then
+    printf '%s\n' "Spack Web managed: stage=registry-isolation code=OK"
+  else
+    printf '%s\n' "Spack Web managed: stage=isolation code=OK"
+  fi
+}
+
+web_install() {
+  "${web_install_compose[@]}" up -d --no-deps --no-build --wait --wait-timeout 300 server
+  local server_address
+  server_address="$("${web_install_compose[@]}" port server 3000)"
+  [[ "$server_address" =~ ^127\.0\.0\.1:[1-9][0-9]{0,4}$ ]] || fail "Spack Web managed: stage=install-listener code=INVALID"
+  web_isolated registry-only
+  export KQ_WEB_SERVER_PROXY_TARGET="http://$server_address"
+  # The install phase has no Registry proxy or published Registry port.
+  export KQ_WEB_REGISTRY_PROXY_TARGET=http://127.0.0.1:1
+  (
+    cd "$repo_root"
+    timeout --signal=TERM --kill-after=10s 1320s \
+      bun run --cwd packages/web e2e --config e2e/cp-spack-install.config.ts
+  )
+  unset KQ_WEB_SERVER_PROXY_TARGET KQ_WEB_REGISTRY_PROXY_TARGET
+  [[ -f "$KQ_ARTIFACT_INSTALL_RESULT_PATH" && ! -L "$KQ_ARTIFACT_INSTALL_RESULT_PATH" ]] || fail "Spack Web managed: stage=install-receipt code=MISSING"
+  "${compose[@]}" up -d --force-recreate --no-deps --no-build --wait --wait-timeout 300 server
+  web_isolated
+  printf '%s\n' "Spack Web managed: stage=install code=OK"
 }
 
 printf 'Building isolated PR test project: %s\n' "$COMPOSE_PROJECT_NAME"
@@ -310,7 +338,13 @@ if "$spack_managed"; then
   legacy_probe_status
   "${compose[@]}" exec -T --user kq scheduler bun deploy/pr-test/spack-managed/probe.ts
   "${compose[@]}" exec -T --user kq scheduler bun node_modules/typescript/bin/tsc --project deploy/pr-test/tsconfig.json
-  "${compose[@]}" exec -T --user kq scheduler timeout --signal=TERM --kill-after=10s "$install_timeout" bun deploy/pr-test/spack-managed/case.ts install
+  if "$spack_web" && [[ "$KQ_PR_SPACK_CASE" == hello ]]; then
+    "${compose[@]}" exec -T --user kq scheduler timeout --signal=TERM --kill-after=10s 180s bun deploy/pr-test/spack-managed/case.ts prepare-web-install
+    web_install
+    "${compose[@]}" exec -T --user kq scheduler timeout --signal=TERM --kill-after=10s "$install_timeout" bun deploy/pr-test/spack-managed/case.ts verify-web-install < "$KQ_ARTIFACT_INSTALL_RESULT_PATH"
+  else
+    "${compose[@]}" exec -T --user kq scheduler timeout --signal=TERM --kill-after=10s "$install_timeout" bun deploy/pr-test/spack-managed/case.ts install
+  fi
   "${compose[@]}" exec -T server timeout --signal=TERM --kill-after=5s 60s bun deploy/pr-test/spack-case/references.ts managed-terminal
   if "$spack_file_workflow"; then
     "${compose[@]}" stop scheduler server

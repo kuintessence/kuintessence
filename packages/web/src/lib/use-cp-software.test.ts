@@ -1,5 +1,9 @@
-import { describe, expect, test } from "vitest";
-import { CpApiError, type SoftwareOperation } from "./cp-client";
+import { focusManager, QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { act, cleanup, renderHook } from "@testing-library/react";
+import { createElement, type ReactNode } from "react";
+import { afterEach, describe, expect, test, vi } from "vitest";
+import * as cpClient from "./cp-client";
+import { CpApiError, type CpSoftwareOverview, type SoftwareOperation } from "./cp-client";
 import {
   mergeSoftwareOperationHistory,
   normalizeSoftwareOperationBatchResponse,
@@ -9,6 +13,7 @@ import {
   shouldPollSoftwareOperationsAt,
   shouldRetrySoftwareOperation,
   softwareOperationMatchesQueryKey,
+  useCpSoftwareOverview,
 } from "./use-cp-software";
 
 const baseOperation: SoftwareOperation = {
@@ -27,6 +32,126 @@ const baseOperation: SoftwareOperation = {
   finishedAt: "2026-06-22T00:00:02.000Z",
   updatedAt: "2026-06-22T00:00:02.000Z",
 };
+
+describe("useCpSoftwareOverview", () => {
+  afterEach(() => {
+    cleanup();
+    vi.restoreAllMocks();
+    vi.useRealTimers();
+    focusManager.setFocused(undefined);
+  });
+
+  test("polls delayed terminal inventory only while mounted and focused", async () => {
+    vi.useFakeTimers();
+    focusManager.setFocused(true);
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false, gcTime: Infinity } },
+    });
+    const before: CpSoftwareOverview = {
+      providerOrgIds: [],
+      providerPolicy: null,
+      clusters: [],
+      agents: [
+        {
+          agentId: "agent-a",
+          cluster: "cluster-a",
+          siteId: null,
+          providerOrgId: null,
+          status: "online",
+          runtimeStatus: "online",
+          controlChannelOnline: true,
+          lastHeartbeat: null,
+          schedulerType: "slurm",
+          schedulerVersion: "23.02",
+          providerPolicy: null,
+          clusterPolicy: null,
+          agentPolicy: null,
+          effectivePolicy: {
+            installMode: "explicit-install-grant",
+            allowList: [],
+            denyList: [],
+            lockEnabled: false,
+            trustedPublicAutoInstall: false,
+            usecaseDefaultAllow: true,
+            usecaseAllowList: [],
+            usecaseDenyList: [],
+            mirrors: [],
+            preinstallList: [],
+          },
+          installedCount: 0,
+          installedSpecs: [],
+          preinstalledMappings: [],
+        },
+      ],
+      summary: {
+        clusters: 0,
+        agents: 1,
+        lockedAgents: 0,
+        overrides: 0,
+        mirrors: 0,
+        preinstalledSpecs: 0,
+        installedSpecs: 0,
+      },
+    };
+    const after: CpSoftwareOverview = {
+      ...before,
+      agents: before.agents.map((agent) => ({
+        ...agent,
+        installedCount: 1,
+        installedSpecs: ["hello@2.12.1"],
+      })),
+      summary: { ...before.summary, installedSpecs: 1 },
+    };
+    const getOverview = vi
+      .spyOn(cpClient, "getSoftwareOverview")
+      .mockResolvedValueOnce(before)
+      .mockResolvedValueOnce(before)
+      .mockResolvedValue(after);
+    const { result, unmount } = renderHook(() => useCpSoftwareOverview(), {
+      wrapper: ({ children }: { children: ReactNode }) =>
+        createElement(QueryClientProvider, { client }, children),
+    });
+    try {
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1);
+      });
+      expect(getOverview).toHaveBeenCalledTimes(1);
+      expect(result.current.data?.agents[0]?.installedSpecs).toEqual([]);
+
+      // AgentDetailSheet invalidates once when the install reaches its terminal status.
+      await act(async () => {
+        await client.invalidateQueries({ queryKey: ["cp", "software", "overview"] });
+        await vi.advanceTimersByTimeAsync(1);
+      });
+      expect(getOverview).toHaveBeenCalledTimes(2);
+      expect(result.current.data?.agents[0]?.installedSpecs).toEqual([]);
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(15_000);
+      });
+      expect(getOverview).toHaveBeenCalledTimes(3);
+      expect(result.current.data?.agents[0]?.installedSpecs).toEqual(["hello@2.12.1"]);
+      expect(result.current.data?.agents[0]?.installedCount).toBe(1);
+      expect(result.current.data?.summary.installedSpecs).toBe(1);
+
+      act(() => focusManager.setFocused(false));
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(15_000);
+      });
+      expect(getOverview).toHaveBeenCalledTimes(3);
+
+      unmount();
+      act(() => focusManager.setFocused(true));
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(30_000);
+      });
+      expect(getOverview).toHaveBeenCalledTimes(3);
+    } finally {
+      unmount();
+      client.clear();
+    }
+  });
+});
 
 describe("software operation request retry", () => {
   test("retries one transient failure so the same mutation variables reuse the idempotency key", () => {

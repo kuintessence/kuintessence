@@ -86,7 +86,7 @@ function eligible(pr, repository, permission, defaultBranch = "main") {
 function testsPassed(jobs, scope = { spack: true, schedulers: true }) {
   if (!Array.isArray(jobs) || !scope ||
       typeof scope.spack !== "boolean" || typeof scope.schedulers !== "boolean") return false;
-  const workflows = scope.workflows ?? (scope.spack ? "full" : "none");
+  const workflows = scope.workflows === undefined ? (scope.spack ? "full" : "none") : scope.workflows;
   if (!["none", "quick", "full"].includes(workflows)) return false;
   const selected = { ...scope, workflows: workflows !== "none" };
   const skipped = new Set(["ci / Generate database migrations"]);

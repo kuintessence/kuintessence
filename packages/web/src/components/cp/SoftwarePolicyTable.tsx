@@ -1319,10 +1319,12 @@ function AgentDetailSheet({
                 <form
                   className="grid gap-2 md:grid-cols-[160px_1fr_auto_auto]"
                   onSubmit={submitOperation}
+                  data-testid="cp-software-operation-form"
                 >
                   <select
                     className="h-9 rounded-md border border-border bg-card px-3 text-sm"
                     value={operationAction}
+                    data-testid="cp-software-operation-action"
                     onChange={(event) =>
                       changeOperationAction(event.target.value as SoftwareOperationAction)
                     }
@@ -1335,6 +1337,7 @@ function AgentDetailSheet({
                   </select>
                   <Input
                     value={operationSpec}
+                    data-testid="cp-software-operation-spec"
                     onChange={(event) => changeOperationSpec(event.target.value)}
                     placeholder={t("cp.software.operations.specPlaceholder")}
                     className="font-mono text-xs"
@@ -2364,7 +2367,7 @@ function OperationHistoryRow({
   const retryable = isFailedOperation(operation);
   return (
     <>
-      <tr className="border-t border-border">
+      <tr className="border-t border-border" data-testid={`cp-software-operation-${operation.id}`}>
         <td className="px-2 py-2">
           <div className="flex flex-wrap items-center gap-1.5">
             <span>
@@ -2388,7 +2391,7 @@ function OperationHistoryRow({
           </div>
         </td>
         <td className="max-w-64 truncate px-2 py-2 font-mono">{operation.spec}</td>
-        <td className="px-2 py-2">
+        <td className="px-2 py-2" data-testid={`cp-software-operation-status-${operation.id}`}>
           <OperationStatusBadge operation={operation} />
           {failureSummary ? (
             <div

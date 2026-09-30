@@ -15,6 +15,27 @@ Kuintessence 当前为 pre-release。以下列出组件功能、运行要求和�
 | NetDrive | S3/RustFS、multipart upload、Range resume、集群传输 | 显式启用与完整存储配置 |
 | SSH | PTY、窗口调整、凭据 vault、可选录屏 | 目标集群凭据、权限及网络可达 |
 
+## Spack 完成边界
+
+Recipe Git 存储、初始化/Web 导入、源码材料发布、生命周期与可见策略、受控上游代理、
+Server-only Agent 材料下载，以及 CP 安装/库存/策略操作已有实现；
+这不代表原始 Spack 目标全部完成，仍需区分以下缺口：
+
+- Registry 已提供 buildcache 仓储 API，但当前统一材料与 managed worker 使用源码路径，
+  尚无经 Server-only 交付的 buildcache 二进制受管安装闭环。
+- Web 导入成功不自动产生可安装配置：精确 spec 到材料 binding 仍由运维配置到 Server，
+  尚未实现完整的 Web 自助绑定流程。
+- 已有 Hello/samtools 固定材料和工作流验收入口，以及 15 项科学工作流手动材料指南；
+  尚无全部 15 项的成套目标 Linux 材料、安装和科学运行结果。
+- 浏览器材料上传与 API 驱动的后续安装是不同验收范围；CP 页面点击安装、观察终态和
+  库存的真实链路新增 Hello 专项入口，复用既有 Web 导入 job，回执核对后继续原有
+  load/job/重启/卸载验收。当前改动需以对应 Actions 结果为证，不能以“已有按钮”
+  或 mock 测试替代，也不代表完整 CP 策略编辑流程或其他软件已经验收。
+  CP 概览增加 15 秒前台轮询，避免终态刷新先于库存写入后一直显示旧数据；
+  不启用后台轮询。
+
+生产站点及 Agent OS 兼容性另行验证，不扩大现有单节点 Actions 案例的结论。
+
 ## 工作流边界
 
 - 工作流采用控制流 DSL，编辑器与执行器使用共享 Schema 校验文档。

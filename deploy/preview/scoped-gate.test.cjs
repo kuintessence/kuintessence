@@ -161,7 +161,7 @@ describe("scoped test suite acceptance", () => {
       expect(testsPassed([...other, job("workflows", "skipped")], { ...scope, workflows: "none" }))
         .toBe(true);
       expect(testsPassed([...other, ...required, job("workflows", "skipped")], quickScope)).toBe(false);
-      for (const workflows of [true, "", "QUICK", "all"]) {
+      for (const workflows of [null, true, "", "QUICK", "all"]) {
         expect(testsPassed(fullJobs(), { ...scope, workflows })).toBe(false);
       }
     }
