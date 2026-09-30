@@ -276,6 +276,8 @@ describe("trusted controller scope derivation", () => {
   test.each([
     "packages/server/src/grpc/dispatcher.ts",
     ".github/workflows/pr-scheduler-tests.yml",
+    ".github/workflows/ci.yml",
+    "packages/cli/src/lib/api-client.ts",
   ])("real helper requires Spack as well as scheduler success for %s", async (filename) => {
     const files = [{ filename, status: "modified" }];
     for (const spackJobs of [[], SPACK.map((name) => job(name, "skipped"))]) {
@@ -294,6 +296,19 @@ describe("trusted controller scope derivation", () => {
     expect(complete.outputs.allowed).toBe("true");
     expect(complete.outputs.sha).toBe(sha);
     expect(complete.scopeCalls).toHaveLength(0);
+  });
+
+  test.each([
+    ["packages/cli/src/commands/submit.ts", { spack: false, schedulers: true }],
+    ["packages/cli/src/lib/local-spack.ts", { spack: true, schedulers: false }],
+  ])("CLI changes require the matching heavy group for %s", async (filename, scope) => {
+    const files = [{ filename, status: "modified" }];
+    const omitted = fixture({ files, jobs: jobsFor(scopes[0]) });
+    await omitted.execute();
+    expect(omitted.outputs.allowed).toBe("false");
+    const selected = fixture({ files, jobs: jobsFor(scope) });
+    await selected.execute();
+    expect(selected.outputs.allowed).toBe("true");
   });
 
   test("real scope lookup and PR snapshot failures cannot open the gate", async () => {

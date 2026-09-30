@@ -219,9 +219,11 @@ protobuf 生成、业务运行测试、构建或容器。
 完整文件列表而非最后一次 push 判断，包含删除文件和重命名前的路径。
 
 - Spack：材料、recipe、Registry、软件治理、受管安装、工作流、相关门户及测试夹具。
-- 调度器：Agent 适配器与执行链路、Server 调度和作业派发、调度器镜像及 E2E 夹具。
+- 调度器：CLI 作业命令、Agent 适配器与执行链路、Server 调度和作业派发、
+  调度器镜像及 E2E 夹具。CLI 本地 Spack/软件命令触发 Spack 组；
+  CLI 共享 API、认证、workflow 和 Agent 入口触发两组。
 - 共享 schema、protobuf、数据库、依赖清单和共同运行基础等变更保守触发相关的两组。
-- 测试夹具及专属 workflow 的变更也触发对应组；同时定义两组的调度器 workflow
+- 测试夹具及专属 workflow 的变更也触发对应组；同时定义两组的 CI 或调度器 workflow
   变更触发两组，避免修改测试执行步骤后反而跳过验证。
 - 文档、普通 Web 展示与预览控制器变更不会仅因 PR 更新就启动这两组。
   基础静态检查、typecheck/Helm、unit/integration、Web 单测/build 及 RustFS 检查仍执行。

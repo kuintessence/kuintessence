@@ -14,7 +14,7 @@ describe("preview heavy test path policy", () => {
     "deploy/preview/test-scope.cjs", "deploy/preview/test-scope.test.cjs",
     "deploy/preview/scheduler.Dockerfile", "deploy/preview/remote.sh",
     "deploy/helm/kq-platform/templates/scheduler.yaml",
-    ".github/workflows/ci.yml", ".github/workflows/preview.yml",
+    ".github/workflows/preview.yml",
     ".github/workflows/preview-tests.yml", ".github/workflows/preview-cleanup.yml",
     "packages/web/src/routes/dashboard.tsx", "packages/web/src/components/ui/button.tsx",
     "packages/web/src/lib/use-motion-presence.ts", "packages/web/e2e/app-shell.spec.ts",
@@ -22,11 +22,14 @@ describe("preview heavy test path policy", () => {
     "packages/web/src/components/files/FilesPage.tsx",
     "packages/web/src/lib/use-media-query.ts", "packages/web/src/lib/format.ts",
     "packages/web/src/lib/query-client-notes.ts",
+    "packages/cli/src/version.ts", "packages/cli/src/tui/viewport.ts",
   ])("does not enable heavy suites for %s", (filename) => {
     expect(classifyPaths([{ filename }])).toEqual(NONE);
   });
 
   test.each([
+    "packages/cli/src/commands/software.ts", "packages/cli/src/lib/local-spack.ts",
+    "packages/cli/src/lib/local-spack.test.ts",
     "packages/agent/src/spack/installer.ts",
     "packages/agent/src/spack/worker/install_worker.py",
     "packages/agent/test/integration/spack.real.test.ts",
@@ -96,6 +99,9 @@ describe("preview heavy test path policy", () => {
   });
 
   test.each([
+    "packages/cli/src/commands/submit.ts", "packages/cli/src/commands/cancel.ts",
+    "packages/cli/src/commands/list.ts", "packages/cli/src/commands/status.test.ts",
+    "packages/cli/src/commands/logs.ts", "packages/cli/src/commands/ssh.ts",
     "packages/agent/src/adapters/slurm.ts",
     "packages/agent/src/executor/job.ts",
     "packages/agent/src/executor.ts",
@@ -115,6 +121,13 @@ describe("preview heavy test path policy", () => {
   });
 
   test.each([
+    "packages/cli/src/index.ts", "packages/cli/src/agent-serve/server.ts",
+    "packages/cli/src/commands/workflow.ts", "packages/cli/src/commands/dsl.ts",
+    "packages/cli/src/commands/agent.ts", "packages/cli/src/commands/config.ts",
+    "packages/cli/src/commands/login.ts", "packages/cli/src/lib/api-client.ts",
+    "packages/cli/src/lib/config.test.ts", "packages/cli/src/lib/local-scheduler.ts",
+    "packages/cli/src/lib/oidc-browser-flow.ts", "packages/cli/src/lib/sse-client.ts",
+    ".github/workflows/ci.yml",
     "packages/agent/src/server-client.ts", "packages/agent/src/index.ts",
     "packages/agent/src/stream.ts", "packages/agent/src/stream.test.ts",
     "packages/agent/src/config.ts", "packages/agent/src/config.test.ts",
@@ -189,6 +202,10 @@ describe("preview heavy test path policy", () => {
       ["packages/agent/src/sandbox/runtime-reference.ts", "docs/runtime.ts", BOTH],
       ["packages/server/src/grpc/dispatcher.ts", "docs/dispatcher.ts", BOTH],
       [".github/workflows/pr-scheduler-tests.yml", "docs/pr-scheduler-tests.yml", BOTH],
+      [".github/workflows/ci.yml", "docs/ci.yml", BOTH],
+      ["packages/cli/src/commands/submit.ts", "docs/submit.ts", SCHEDULERS],
+      ["packages/cli/src/lib/local-spack.ts", "docs/local-spack.ts", SPACK],
+      ["packages/cli/src/lib/api-client.ts", "docs/api-client.ts", BOTH],
     ]) {
       for (const reverse of [false, true]) {
         expect(classifyPaths([{
