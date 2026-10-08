@@ -407,3 +407,50 @@ describe("workflow draft deletion", () => {
     expect(screen.queryByTestId("workflow-drafts")).toBeNull();
   });
 });
+
+describe("draft confirmation revalidation", () => {
+  const draft = { id: "draft-stale", name: "Original draft", updatedAt: "2026-10-08T00:00:00Z" };
+  test.each([
+    "error",
+    "removed",
+    "changed",
+  ])("blocks an open confirmation when the draft is %s", async (mode) => {
+    let changed = false;
+    vi.mocked(api.get).mockImplementation(async (path) => {
+      if (path !== "/workflows/drafts") return { runs: [] };
+      if (changed && mode === "error") throw new Error("Forbidden");
+      return {
+        drafts: changed
+          ? mode === "removed"
+            ? []
+            : [{ ...draft, updatedAt: "2026-10-08T01:00:00Z" }]
+          : [draft],
+      };
+    });
+    const { client, wrapper } = makeClientWrapper();
+    render(<WorkflowsPage />, { wrapper });
+    fireEvent.click(await screen.findByTestId("workflow-draft-delete-draft-stale"));
+    changed = true;
+    await client.invalidateQueries({ queryKey: ["workflow-drafts"] });
+    await waitFor(() =>
+      expect(screen.getByTestId("workflow-draft-delete-confirm")).toHaveProperty("disabled", true),
+    );
+    fireEvent.click(screen.getByTestId("workflow-draft-delete-confirm"));
+    expect(api.delete).not.toHaveBeenCalled();
+  });
+
+  test("refreshes drafts together with workflow runs", async () => {
+    let changed = false;
+    vi.mocked(api.get).mockImplementation(async (path) =>
+      path === "/workflows/drafts"
+        ? { drafts: [{ ...draft, name: changed ? "Updated draft" : draft.name }] }
+        : { runs: [] },
+    );
+    render(<WorkflowsPage />, { wrapper: wrapper() });
+    await screen.findByText("Original draft");
+    changed = true;
+    fireEvent.click(screen.getByTestId("workflows-refresh"));
+    expect(await screen.findByText("Updated draft")).toBeTruthy();
+    expect(screen.queryByText("Original draft")).toBeNull();
+  });
+});

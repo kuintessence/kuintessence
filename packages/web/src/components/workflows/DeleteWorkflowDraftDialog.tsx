@@ -15,6 +15,7 @@ import {
 interface DeleteWorkflowDraftDialogProps {
   draft: { id: string; name: string } | null;
   pending: boolean;
+  canConfirm: boolean;
   error: string | null;
   onCancel: () => void;
   onConfirm: () => void;
@@ -24,6 +25,7 @@ interface DeleteWorkflowDraftDialogProps {
 export function DeleteWorkflowDraftDialog({
   draft,
   pending,
+  canConfirm,
   error,
   onCancel,
   onConfirm,
@@ -62,7 +64,7 @@ export function DeleteWorkflowDraftDialog({
           </Button>
           <Button
             variant="destructive"
-            disabled={pending || draft === null}
+            disabled={pending || draft === null || !canConfirm}
             onClick={onConfirm}
             data-testid="workflow-draft-delete-confirm"
           >

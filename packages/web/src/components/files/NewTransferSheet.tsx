@@ -125,6 +125,7 @@ export interface NewTransferSheetProps {
   cloudListVerified: boolean;
   cloudSelected: string | null;
   clusterAgent: AgentRow | null;
+  clusterAgents: AgentRow[];
   clusterPath: string;
   clusterPathVerified: boolean;
   clusterSelected: string | null;
@@ -139,6 +140,7 @@ export function NewTransferSheet({
   cloudListVerified,
   cloudSelected,
   clusterAgent,
+  clusterAgents,
   clusterPath,
   clusterPathVerified,
   clusterSelected,
@@ -175,6 +177,13 @@ export function NewTransferSheet({
   const sourcePath =
     sourceSelection?.path ??
     (direction === "cloud_to_cluster" ? (cloudObj?.key ?? "") : pageClusterSource);
+  const cloudSource =
+    sourceSelection?.location === "cloud"
+      ? cloudObjects.find(
+          (object) => object.id === sourceSelection.id && object.key === sourceSelection.path,
+        )
+      : cloudObj;
+  const cloudSourceUsable = cloudSource?.canUse === true;
   const sourceLabel =
     sourcePath ||
     (direction === "cloud_to_cluster"
@@ -190,6 +199,13 @@ export function NewTransferSheet({
     direction === "cloud_to_cluster"
       ? (targetSelection?.siteId ?? clusterAgent?.siteName)
       : (sourceSelection?.siteId ?? clusterAgent?.siteName);
+  const executionAgentAvailable = clusterAgents.some(
+    (agent) =>
+      agent.agentId === executionAgentId &&
+      agent.siteName === executionSiteId &&
+      agent.status.toLowerCase() === "online",
+  );
+  const clusterContextBlocked = clusterContextInvalidated || !executionAgentAvailable;
   const executionClusterLabel =
     clusterAgent && clusterAgent.agentId === executionAgentId
       ? `${clusterAgent.siteName} · ${clusterAgent.schedulerType} ${clusterAgent.schedulerVersion}`
@@ -302,6 +318,17 @@ export function NewTransferSheet({
     }
   };
 
+  useEffect(() => {
+    if (!open || executionAgentAvailable) return;
+    setClusterContextInvalidated(true);
+    if (direction === "cloud_to_cluster") {
+      setTargetSelection(null);
+      setTarget("");
+    } else {
+      setSourceSelection(null);
+    }
+  }, [open, direction, executionAgentAvailable]);
+
   const pickTarget = (selection: PathPickerSelection) => {
     setTargetSelection(selection);
     setTarget(selection.path);
@@ -320,12 +347,7 @@ export function NewTransferSheet({
       if (hasCloudSource || hadCloudSource.current) setCloudSourceInvalidated(true);
       return;
     }
-    if (
-      pickerSource &&
-      !cloudObjects.some(
-        (object) => object.id === pickerSource.id && object.key === pickerSource.path,
-      )
-    ) {
+    if (hasCloudSource && !cloudSourceUsable) {
       setSourceSelection(null);
       setCloudSourceInvalidated(true);
       return;
@@ -333,15 +355,17 @@ export function NewTransferSheet({
     if (hadCloudSource.current && !hasCloudSource) {
       setCloudSourceInvalidated(true);
     }
-  }, [open, direction, cloudListVerified, cloudObjects, cloudObjKey, sourceSelection]);
+  }, [open, direction, cloudListVerified, cloudSourceUsable, cloudObjKey, sourceSelection]);
 
   const cloudContextBlocked =
-    !cloudListVerified || (direction === "cloud_to_cluster" && cloudSourceInvalidated);
+    !cloudListVerified ||
+    (direction === "cloud_to_cluster" &&
+      (cloudSourceInvalidated || (Boolean(sourcePath) && !cloudSourceUsable)));
 
   async function onSubmit(e: FormEvent) {
     e.preventDefault();
     if (pendingRef.current) return;
-    if (clusterContextInvalidated) {
+    if (clusterContextBlocked) {
       toast.error(t("files.transfer.clusterContextChanged"));
       return;
     }
@@ -349,7 +373,7 @@ export function NewTransferSheet({
       toast.error(t("files.transfer.cloudContextUnavailable"));
       return;
     }
-    if (direction === "cloud_to_cluster" && cloudSourceInvalidated) {
+    if (direction === "cloud_to_cluster" && cloudContextBlocked) {
       toast.error(t("files.transfer.cloudSourceChanged"));
       return;
     }
@@ -385,10 +409,8 @@ export function NewTransferSheet({
     setBusy(true);
     try {
       const source = sourcePath;
-      const totalBytes =
-        direction === "cloud_to_cluster" ? (sourceSelection?.size ?? cloudObj?.size) : undefined;
-      const sourceFileId =
-        direction === "cloud_to_cluster" ? (sourceSelection?.id ?? cloudObj?.id) : undefined;
+      const totalBytes = direction === "cloud_to_cluster" ? cloudSource?.size : undefined;
+      const sourceFileId = direction === "cloud_to_cluster" ? cloudSource?.id : undefined;
       const normalizedTarget = finalTarget;
       const t = await api.post<Transfer>("/files/transfers", {
         direction,
@@ -436,6 +458,7 @@ export function NewTransferSheet({
                       key={d.value}
                       type="button"
                       data-testid={`files-direction-${d.value}`}
+                      aria-pressed={selected}
                       onClick={() => setDirection(d.value)}
                       className={cn(
                         "flex w-full items-start gap-3 rounded-md border px-3 py-2 text-left text-sm transition-colors",
@@ -470,9 +493,15 @@ export function NewTransferSheet({
                       : ""
                   }
                   initialClusterPath={
-                    direction === "cluster_to_cloud" ? clusterPath : clusterPath.replace(/\/$/, "")
+                    sourceSelection?.location === "cluster"
+                      ? sourceSelection.path.replace(/\/[^/]*$/, "") || "/"
+                      : clusterPath
                   }
-                  initialAgentId={clusterAgent?.agentId ?? null}
+                  initialAgentId={
+                    sourceSelection?.location === "cluster"
+                      ? sourceSelection.agentId
+                      : clusterAgent?.agentId
+                  }
                   title={t("files.transfer.selectSourceTitle")}
                   description={t("files.transfer.selectSourceDescription")}
                   onSelect={pickSource}
@@ -491,7 +520,7 @@ export function NewTransferSheet({
                 </div>
               </div>
 
-              {clusterContextInvalidated ? (
+              {clusterContextBlocked ? (
                 <p
                   className="rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs text-destructive"
                   role="alert"
@@ -525,9 +554,13 @@ export function NewTransferSheet({
                   initialLocation={direction === "cloud_to_cluster" ? "cluster" : "cloud"}
                   initialCloudPrefix={direction === "cluster_to_cloud" ? target : "uploads/"}
                   initialClusterPath={
-                    direction === "cloud_to_cluster" ? target.replace(/\/$/, "") : clusterPath
+                    targetSelection?.location === "cluster" ? targetSelection.path : clusterPath
                   }
-                  initialAgentId={clusterAgent?.agentId ?? null}
+                  initialAgentId={
+                    targetSelection?.location === "cluster"
+                      ? targetSelection.agentId
+                      : clusterAgent?.agentId
+                  }
                   title={t("files.transfer.selectTargetTitle")}
                   description={t("files.transfer.selectTargetDescription")}
                   onSelect={pickTarget}
@@ -582,7 +615,7 @@ export function NewTransferSheet({
           <Button
             type="submit"
             form="files-new-transfer-form"
-            disabled={busy || clusterContextInvalidated || cloudContextBlocked}
+            disabled={busy || clusterContextBlocked || cloudContextBlocked}
             data-testid="files-new-transfer-submit"
           >
             {busy ? <Loader2 className="animate-spin" /> : null}

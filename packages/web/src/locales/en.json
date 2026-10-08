@@ -529,6 +529,7 @@
       "deleteDescription": "This action cannot be undone. Confirm the draft you want to delete.",
       "deleting": "Deleting…",
       "deleteFailed": "Could not delete the draft. Please try again.",
+      "deleteUnavailable": "The draft has changed, is unavailable, or cannot be verified. Cancel, refresh the list, and select it again.",
       "openTitle": "Open workflow draft",
       "loading": "Loading draft…",
       "backToList": "Back to workflows"

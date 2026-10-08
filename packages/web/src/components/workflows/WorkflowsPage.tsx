@@ -183,8 +183,16 @@ export function WorkflowsPage() {
     },
   ] satisfies SummaryItem[];
 
+  const deleteTargetVerified = Boolean(
+    deletingDraft &&
+      draftsQ.isSuccess &&
+      draftsQ.data.drafts.some(
+        (draft) => draft.id === deletingDraft.id && draft.updatedAt === deletingDraft.updatedAt,
+      ),
+  );
+
   async function deleteDraft() {
-    if (!deletingDraft || deleteInFlight.current) return;
+    if (!deletingDraft || !deleteTargetVerified || deleteInFlight.current) return;
     deleteInFlight.current = true;
     setDeletePending(true);
     setDeleteError(null);
@@ -205,7 +213,12 @@ export function WorkflowsPage() {
       <DeleteWorkflowDraftDialog
         draft={deletingDraft}
         pending={deletePending}
-        error={deleteError}
+        canConfirm={deleteTargetVerified}
+        error={
+          deletingDraft && !deleteTargetVerified
+            ? t("workflows.drafts.deleteUnavailable")
+            : deleteError
+        }
         onCancel={() => setDeletingDraft(null)}
         onConfirm={() => void deleteDraft()}
         onRestoreFocus={() =>
@@ -242,11 +255,13 @@ export function WorkflowsPage() {
               type="button"
               variant="outline"
               size="sm"
-              onClick={() => runsQ.refetch()}
+              onClick={() => void Promise.all([runsQ.refetch(), draftsQ.refetch()])}
               ref={refreshButton}
               data-testid="workflows-refresh"
             >
-              <RefreshCw className={cn(runsQ.isFetching && "animate-spin")} />
+              <RefreshCw
+                className={cn((runsQ.isFetching || draftsQ.isFetching) && "animate-spin")}
+              />
               {t("common.refresh", { defaultValue: "Refresh" })}
             </Button>
             {loadError ? (

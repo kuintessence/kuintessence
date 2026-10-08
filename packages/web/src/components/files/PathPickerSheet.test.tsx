@@ -523,3 +523,46 @@ test.each([
   fireEvent.click(button);
   expect(onSelect).not.toHaveBeenCalled();
 });
+
+test("preserves navigation and selection when the parent recreates the locations array", async () => {
+  vi.mocked(api.get).mockResolvedValue({
+    success: true,
+    data: {
+      files: [
+        {
+          id: "file-a",
+          path: "folder/input.txt",
+          size: 12,
+          mtime: "2026-10-08T00:00:00Z",
+          canUse: true,
+          canDelete: true,
+        },
+      ],
+      total: 1,
+    },
+  });
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+  const onSelect = vi.fn();
+  const view = () => (
+    <QueryClientProvider client={client}>
+      <PathPickerSheet
+        open
+        onOpenChange={vi.fn()}
+        mode="file"
+        locations={["cloud"]}
+        title="Pick file"
+        description="Pick file"
+        onSelect={onSelect}
+      />
+    </QueryClientProvider>
+  );
+  const { rerender } = render(view());
+  fireEvent.click(await screen.findByTestId("path-picker-cloud-dir-folder"));
+  fireEvent.click(await screen.findByTestId("path-picker-cloud-file-file-a"));
+  rerender(view());
+  expect(screen.getByTestId("path-picker-current").textContent).toBe("folder/input.txt");
+  fireEvent.click(screen.getByTestId("path-picker-confirm"));
+  expect(onSelect).toHaveBeenCalledWith(
+    expect.objectContaining({ id: "file-a", path: "folder/input.txt" }),
+  );
+});

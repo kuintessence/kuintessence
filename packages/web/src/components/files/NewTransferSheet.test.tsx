@@ -16,6 +16,8 @@ vi.mock("../../lib/api-client", () => ({
   api: { post: vi.fn() },
 }));
 
+const pickerAgent = vi.hoisted(() => ({ id: "agent-a", site: "site-a" }));
+
 vi.mock("./PathPickerSheet", () => ({
   PathPickerField: ({
     value,
@@ -23,7 +25,11 @@ vi.mock("./PathPickerSheet", () => ({
     mode,
     locations,
     onSelect,
+    initialAgentId,
+    initialClusterPath,
   }: {
+    initialAgentId?: string | null;
+    initialClusterPath?: string;
     value: string;
     testId: string;
     mode: "file" | "directory";
@@ -52,6 +58,8 @@ vi.mock("./PathPickerSheet", () => ({
       <button
         type="button"
         data-testid={testId}
+        data-initial-agent={initialAgentId}
+        data-initial-cluster-path={initialClusterPath}
         onClick={() =>
           onSelect({
             location,
@@ -59,7 +67,7 @@ vi.mock("./PathPickerSheet", () => ({
             path,
             ...(location === "cloud" ? { id: "cloud-a" } : {}),
             ...(location === "cluster"
-              ? { agentId: "agent-a", siteId: "site-a", name: "input.txt", size: 16 }
+              ? { agentId: pickerAgent.id, siteId: pickerAgent.site, name: "input.txt", size: 16 }
               : {}),
           })
         }
@@ -82,6 +90,8 @@ const agent = {
   memoryTotalMb: 2,
 };
 
+const otherAgent = { ...agent, agentId: "agent-b", siteName: "site-b" };
+
 const cloudObjects = [
   {
     id: "cloud-a",
@@ -92,6 +102,7 @@ const cloudObjects = [
     createdAt: "2026-07-13T00:00:00.000Z",
     modifiedAt: "2026-07-13T00:00:00.000Z",
     etag: "etag-a",
+    canUse: true,
   },
 ];
 
@@ -105,6 +116,8 @@ function deferred<T>() {
 
 afterEach(() => {
   vi.clearAllMocks();
+  pickerAgent.id = "agent-a";
+  pickerAgent.site = "site-a";
 });
 
 describe("NewTransferSheet cluster context changes", () => {
@@ -123,6 +136,7 @@ describe("NewTransferSheet cluster context changes", () => {
         cloudListVerified
         cloudSelected="cloud-a"
         clusterAgent={agent}
+        clusterAgents={[agent]}
         clusterPath="/scratch/old-root"
         clusterPathVerified
         clusterSelected={null}
@@ -158,6 +172,7 @@ describe("NewTransferSheet cluster context changes", () => {
       cloudListVerified: true,
       cloudSelected: "cloud-a",
       clusterAgent: agent,
+      clusterAgents: [agent, otherAgent],
       clusterPath: "/scratch/old-root",
       clusterPathVerified: true,
       clusterSelected: null,
@@ -201,6 +216,7 @@ describe("NewTransferSheet cluster context changes", () => {
       cloudListVerified: true,
       cloudSelected: "cloud-a",
       clusterAgent: agent,
+      clusterAgents: [agent, otherAgent],
       clusterPath: "/scratch/old-root",
       clusterPathVerified: true,
       clusterSelected: "README.md",
@@ -246,6 +262,7 @@ describe("NewTransferSheet cluster context changes", () => {
       cloudListVerified: true,
       cloudSelected: "cloud-a",
       clusterAgent: agent,
+      clusterAgents: [agent, otherAgent],
       clusterPath: "/scratch/target-root",
       clusterPathVerified: true,
       clusterSelected: null,
@@ -292,6 +309,7 @@ describe("NewTransferSheet cluster context changes", () => {
       cloudListVerified: true,
       cloudSelected: "cloud-a",
       clusterAgent: agent,
+      clusterAgents: [agent, otherAgent],
       clusterPath: "/scratch/source-root",
       clusterPathVerified: true,
       clusterSelected: "README.md",
@@ -316,5 +334,84 @@ describe("NewTransferSheet cluster context changes", () => {
     );
     expect(screen.getByTestId("files-new-transfer-target").textContent).toBe("users/me/");
     expect(screen.getByTestId("files-new-transfer-submit")).toHaveProperty("disabled", false);
+  });
+});
+
+describe("transfer selection revalidation", () => {
+  const baseProps = {
+    open: true,
+    onOpenChange: vi.fn(),
+    initialDirection: "cloud_to_cluster" as const,
+    cloudObjects,
+    cloudListVerified: true,
+    cloudSelected: "cloud-a",
+    clusterAgent: agent,
+    clusterAgents: [agent, otherAgent],
+    clusterPath: "/scratch/old-root",
+    clusterPathVerified: true,
+    clusterSelected: "README.md",
+    onCreated: vi.fn(),
+  };
+
+  test.each([
+    false,
+    undefined,
+  ])("blocks a picker source after canUse becomes %s", async (canUse) => {
+    const { rerender } = render(<NewTransferSheet {...baseProps} />);
+    fireEvent.click(screen.getByTestId("files-new-transfer-source"));
+    rerender(
+      <NewTransferSheet
+        {...baseProps}
+        cloudObjects={cloudObjects.map((file) => ({ ...file, canUse }))}
+      />,
+    );
+    expect(screen.getByTestId("files-new-transfer-submit")).toHaveProperty("disabled", true);
+    fireEvent.submit(screen.getByTestId("files-new-transfer-form"));
+    expect(api.post).not.toHaveBeenCalled();
+    rerender(<NewTransferSheet {...baseProps} />);
+    expect(screen.getByTestId("files-new-transfer-submit")).toHaveProperty("disabled", true);
+    fireEvent.click(screen.getByTestId("files-new-transfer-source"));
+    await waitFor(() =>
+      expect(screen.getByTestId("files-new-transfer-submit")).toHaveProperty("disabled", false),
+    );
+  });
+
+  test.each([
+    "cloud_to_cluster",
+    "cluster_to_cloud",
+  ] as const)("reopens the picked Agent and directory for %s", (direction) => {
+    pickerAgent.id = "agent-b";
+    pickerAgent.site = "site-b";
+    render(<NewTransferSheet {...baseProps} initialDirection={direction} />);
+    const field = screen.getByTestId(
+      direction === "cloud_to_cluster" ? "files-new-transfer-target" : "files-new-transfer-source",
+    );
+    fireEvent.click(field);
+    expect(field.getAttribute("data-initial-agent")).toBe("agent-b");
+    expect(field.getAttribute("data-initial-cluster-path")).toBe("/projects/new-root");
+  });
+  test.each([
+    "cloud_to_cluster",
+    "cluster_to_cloud",
+  ] as const)("blocks %s when the separately picked Agent goes offline", async (direction) => {
+    pickerAgent.id = "agent-b";
+    pickerAgent.site = "site-b";
+    const { rerender } = render(<NewTransferSheet {...baseProps} initialDirection={direction} />);
+    const fieldId =
+      direction === "cloud_to_cluster" ? "files-new-transfer-target" : "files-new-transfer-source";
+    fireEvent.click(screen.getByTestId(fieldId));
+    expect(screen.getByTestId("files-new-transfer-submit")).toHaveProperty("disabled", false);
+    rerender(
+      <NewTransferSheet {...baseProps} initialDirection={direction} clusterAgents={[agent]} />,
+    );
+    expect(screen.getByTestId("files-new-transfer-submit")).toHaveProperty("disabled", true);
+    fireEvent.submit(screen.getByTestId("files-new-transfer-form"));
+    expect(api.post).not.toHaveBeenCalled();
+    rerender(<NewTransferSheet {...baseProps} initialDirection={direction} />);
+    expect(screen.getByTestId("files-new-transfer-submit")).toHaveProperty("disabled", true);
+    fireEvent.click(screen.getByTestId(fieldId));
+    await waitFor(() =>
+      expect(screen.getByTestId("files-new-transfer-submit")).toHaveProperty("disabled", false),
+    );
   });
 });

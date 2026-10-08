@@ -650,6 +650,7 @@ export function FilesPage() {
         cloudListVerified={cloudQ.isSuccess && !cloudActionsDisabled}
         cloudSelected={cloudSelectionUsable ? cloudSelected : null}
         clusterAgent={selectedAgent}
+        clusterAgents={onlineAgents}
         clusterPath={clusterPath}
         clusterPathVerified={clusterPathVerified}
         clusterSelected={clusterSelectionVerified ? clusterSelected : null}

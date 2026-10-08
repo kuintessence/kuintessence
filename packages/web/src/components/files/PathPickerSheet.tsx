@@ -99,11 +99,13 @@ export interface PathPickerFieldProps extends Omit<PathPickerSheetProps, "open" 
 }
 
 function firstLocation(
-  locations: PathPickerLocation[],
+  allowCloud: boolean,
+  allowCluster: boolean,
   preferred?: PathPickerLocation,
 ): PathPickerLocation {
-  if (preferred && locations.includes(preferred)) return preferred;
-  return locations.includes("cloud") ? "cloud" : "cluster";
+  if (preferred === "cloud" && allowCloud) return preferred;
+  if (preferred === "cluster" && allowCluster) return preferred;
+  return allowCloud ? "cloud" : "cluster";
 }
 
 export function PathPickerField({
@@ -166,8 +168,10 @@ export function PathPickerSheet({
 }: PathPickerSheetProps) {
   const { t } = useTranslation();
   const activeOrganizationId = useActiveOrganizationId();
+  const allowCloud = locations.includes("cloud");
+  const allowCluster = locations.includes("cluster");
   const [location, setLocation] = useState<PathPickerLocation>(
-    firstLocation(locations, initialLocation),
+    firstLocation(allowCloud, allowCluster, initialLocation),
   );
   const [cloudPrefix, setCloudPrefix] = useState(initialCloudPrefix);
   const [requestedClusterPath, setRequestedClusterPath] = useState(initialClusterPath);
@@ -194,7 +198,7 @@ export function PathPickerSheet({
 
   useEffect(() => {
     if (!open) return;
-    setLocation(firstLocation(locations, initialLocation));
+    setLocation(firstLocation(allowCloud, allowCluster, initialLocation));
     setCloudPrefix(initialCloudPrefix);
     setRequestedClusterPath(initialClusterPath);
     setSelectedClusterRoot("");
@@ -203,7 +207,8 @@ export function PathPickerSheet({
     updateSelection(null);
   }, [
     open,
-    locations,
+    allowCloud,
+    allowCluster,
     initialLocation,
     initialCloudPrefix,
     initialClusterPath,

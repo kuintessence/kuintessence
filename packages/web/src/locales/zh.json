@@ -529,6 +529,7 @@
       "deleteDescription": "此操作无法撤销。请确认要删除以下草稿。",
       "deleting": "正在删除…",
       "deleteFailed": "草稿删除失败，请重试。",
+      "deleteUnavailable": "草稿已变更、不可用或无法验证，请取消后刷新列表并重新选择。",
       "openTitle": "打开工作流草稿",
       "loading": "正在加载草稿，请稍候…",
       "backToList": "返回工作流列表"
