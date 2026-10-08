@@ -17,6 +17,17 @@ export async function authorizeSpackMaterialPrincipal(
   subject: string,
   authorize: (principal: SpackMaterialLifecyclePrincipal) => Promise<void>,
 ) {
+  return authorizeSpackMaterialMemberships(tx, subject, async (principal) => authorize(principal));
+}
+
+export async function authorizeSpackMaterialMemberships(
+  tx: Transaction,
+  subject: string,
+  authorize: (
+    principal: SpackMaterialLifecyclePrincipal,
+    memberships: { orgId: string; role: string }[],
+  ) => Promise<void>,
+) {
   if (!/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(subject)) {
     throw new SpackMaterialLifecycleError("MATERIAL_LIFECYCLE_FORBIDDEN");
   }
@@ -29,16 +40,19 @@ export async function authorizeSpackMaterialPrincipal(
     throw new SpackMaterialLifecycleError("MATERIAL_LIFECYCLE_FORBIDDEN");
   }
   const memberships = await tx
-    .select({ orgId: userOrgMemberships.orgId })
+    .select({ orgId: userOrgMemberships.orgId, role: userOrgMemberships.role })
     .from(userOrgMemberships)
     .where(eq(userOrgMemberships.userId, subject))
     .for("share");
   try {
-    await authorize({
-      sub: actor.sub,
-      role: actor.role,
-      orgIds: memberships.map((membership) => membership.orgId),
-    });
+    await authorize(
+      {
+        sub: actor.sub,
+        role: actor.role,
+        orgIds: memberships.map((membership) => membership.orgId),
+      },
+      memberships,
+    );
   } catch (error) {
     if (error instanceof SpackMaterialLifecycleError) throw error;
     throw new SpackMaterialLifecycleError("MATERIAL_LIFECYCLE_FORBIDDEN");

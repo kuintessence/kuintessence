@@ -1,5 +1,44 @@
 {
   "materials": {
+    "installBinding": {
+      "title": "Spack installation bindings",
+      "scope": "Binding scope",
+      "platform": "Platform default",
+      "spec": "Exact installation spec",
+      "inspect": "Inspect installation binding",
+      "stop": "Stop waiting for binding",
+      "action": "Binding action",
+      "bind": "Bind immutable release",
+      "disable": "Disable installation binding",
+      "repositoryId": "Installation repository ID",
+      "manifestDigest": "Installation manifest digest",
+      "useSelection": "Use selected material binding",
+      "current": "Current immutable release",
+      "reason": "Installation binding audit reason",
+      "confirm": "I confirm this change affects future installations only. Existing operations and installations retain their pinned releases. Disabling blocks new installations in this scope without fallback.",
+      "save": "Save installation binding",
+      "history": "Installation binding audit history",
+      "historyEmpty": "No binding changes",
+      "source": "Source",
+      "state": {
+        "absent": "No explicit binding",
+        "enabled": "Enabled",
+        "disabled": "Disabled"
+      },
+      "busy": {
+        "read": "Reading installation binding",
+        "write": "Submitting installation binding"
+      },
+      "notice": {
+        "changed": "Installation binding change confirmed.",
+        "rechecked": "Current binding retrieved. Check the audit history before submitting another change.",
+        "uncertain": "Submission outcome unconfirmed. Inspect this exact scope and spec before submitting again.",
+        "conflict": "The binding revision changed. Inspect again before submitting.",
+        "forbidden": "Binding management is unavailable for this identity and organization.",
+        "invalid": "Binding rejected. Check the exact spec, release, scope and audit reason, then inspect again.",
+        "unavailable": "Could not inspect the binding. Check access, rollout readiness and service availability."
+      }
+    },
     "title": "Spack materials",
     "signedOut": "Sign in to view materials",
     "unavailable": "Materials unavailable in local mode",

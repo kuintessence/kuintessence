@@ -15,9 +15,17 @@ type LifecycleCode =
   | "MATERIAL_VISIBILITY_FORBIDDEN"
   | "MATERIAL_VISIBILITY_CONFLICT"
   | "MATERIAL_VISIBILITY_INVALID"
-  | "MATERIAL_VISIBILITY_DENIED";
+  | "MATERIAL_VISIBILITY_DENIED"
+  | "INSTALL_BINDING_INVALID"
+  | "INSTALL_BINDING_CONFLICT"
+  | "INSTALL_BINDING_FORBIDDEN"
+  | "INSTALL_BINDING_UNAVAILABLE";
 
 const ERRORS = {
+  INSTALL_BINDING_INVALID: [422, "Invalid install binding request"],
+  INSTALL_BINDING_CONFLICT: [409, "Install binding changed; inspect the current revision"],
+  INSTALL_BINDING_FORBIDDEN: [403, "Install binding management is not permitted"],
+  INSTALL_BINDING_UNAVAILABLE: [503, "Install binding is unavailable"],
   MATERIAL_LIFECYCLE_UNAVAILABLE: [503, "Material lifecycle is unavailable"],
   MATERIAL_LIFECYCLE_FORBIDDEN: [403, "Material lifecycle management is not permitted"],
   MATERIAL_LIFECYCLE_CONFLICT: [409, "Material lifecycle revision or transition conflicts"],

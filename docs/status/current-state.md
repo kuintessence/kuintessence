@@ -52,8 +52,10 @@ Server-only Agent 材料下载，以及 CP 安装/库存/策略操作已有实�
 
 - Registry 已提供 buildcache 仓储 API，但当前统一材料与 managed worker 使用源码路径，
   尚无经 Server-only 交付的 buildcache 二进制受管安装闭环。
-- Web 导入成功不自动产生可安装配置：精确 spec 到材料 binding 仍由运维配置到 Server，
-  尚未实现完整的 Web 自助绑定流程。
+- 新增[Web 安装绑定管理](../spack-install-bindings.md)：平台默认和提供者组织的精确
+  spec 映射持久化到 PostgreSQL，支持 revision 校验、替换、停用与审计。
+  导入不自动绑定；启动配置仅初始化缺失默认，不覆盖 Web 设置，既有 operation
+  保持固定 release。实际通过范围须核对当前提交 Actions，不代表生产站点验收。
 - 已有 Hello/samtools 固定材料和工作流验收入口，以及 15 项科学工作流手动材料指南；
   尚无全部 15 项的成套目标 Linux 材料、安装和科学运行结果。
 - 浏览器材料上传与 API 驱动的后续安装是不同验收范围；CP 页面点击安装、观察终态和
@@ -121,7 +123,8 @@ Server-only Agent 材料下载，以及 CP 安装/库存/策略操作已有实�
   生产站点或 15 个工作流验收；native 离线编译案例也不能替代受管安装验收。
   `ready` 不等于生产就绪，不能宣称平台安装功能已恢复。
   源码已有上传/发布 API 与本地材料 manifest 初始化/批量导入；recipe bootstrap
-  完成后才导入材料，成功 binding 仍须运维显式配置到 Server，不自动启用安装。
+  完成后才导入材料，成功 binding 须通过 Web/API 显式绑定，或用 Server 配置初始化
+  尚不存在的平台默认；不自动启用安装。
   平台与 CP 门户支持材料包 Web 上传、重试、取消和按 binding 查阅，切换身份/组织/
   发布能力时清空临时结果并中止请求；发布响应丢失保留“结果待确认”，不宣称回滚。
   已增加权限过滤的材料目录、精确仓库筛选和分页查阅；直接发现持久化 release，

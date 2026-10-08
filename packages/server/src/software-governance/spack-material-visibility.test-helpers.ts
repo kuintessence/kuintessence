@@ -48,6 +48,7 @@ const TABLES = [
   "spack_material_bindings",
   "spack_material_operation_references",
   "spack_material_rollouts",
+  "spack_install_binding_events",
   "spack_material_binding_retirements",
   "spack_material_lifecycle_events",
   "spack_material_visibility_events",

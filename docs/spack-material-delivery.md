@@ -74,9 +74,10 @@ Registry 运行时不得外部改写、移动、替换、删除或恢复材料�
 Server 在启用材料下载时，启动阶段先将 `SPACK_MATERIAL_RELEASES` 全量登记到
 共用 PostgreSQL 的 `spack_material_bindings`。升级前必须完成数据库迁移；
 登记失败时 Server 不继续启动，不把数据库故障当作空绑定配置。
-每次安装在验证当前用户权限、Agent 身份和 manifest 后，先将精确
-`operationId → repositoryId + manifestDigest` 写入 `spack_material_operation_references`，
-然后才签发材料票据。下载也重新核验并登记该固定引用，失败时拒绝下载，不回退上游。
+每次安装先核验当前用户权限和 Agent 身份，在数据库事务中选择材料并将精确
+`operationId → repositoryId + manifestDigest` 固定到 `spack_material_operation_references`，
+完成 manifest 校验及再次准入检查后才签发材料票据。材料校验失败会拒绝安装，
+已固定的保护引用仍保留。下载也重新核验该固定引用，失败时拒绝下载，不回退上游。
 登记流程不修改 recipe Git、不可变 manifest、源码内容或 Agent 网络路径。
 
 配置绑定采用追加语义：重复启动幂等，修改或移除配置不会自动删除旧绑定，
@@ -255,6 +256,8 @@ HTTP API 不接受服务器本地路径，此入口仅由管理员环境配置�
 重试不是断点续传；较大的文件会重新上传。重新打开页面后需重新选择完整材料包。
 
 成功导入仍不自动修改 `SPACK_MATERIAL_RELEASES`、激活 recipe、部署软件或执行 recipe。
+可随后使用[安装绑定管理](spack-install-bindings.md)设置平台默认或组织精确 spec 映射。
+启动配置只初始化尚不存在的平台默认，后续改绑以持久化的 Web/API revision 为准。
 持久化导入任务、删除、可见范围调整和引用回收尚未实现；
 不要直接删持久化卷上的 blob/receipt/manifest 来代替维护 API。
 
@@ -421,7 +424,7 @@ Server：
 | `SPACK_REGISTRY_JWT_SECRET` | 与 Registry 的 JWT 校验密钥匹配，仅服务端持有 |
 | `SPACK_REGISTRY_JWT_ISSUER` / `SPACK_REGISTRY_JWT_AUDIENCE` | 与 Registry 配置匹配 |
 | `SPACK_MATERIAL_TICKET_SECRET` | 独立的至少 32 字符随机签名密钥，不能复用上述密钥或浏览器 JWT key |
-| `SPACK_MATERIAL_RELEASES` | JSON：精确 spec → `{repositoryId, manifestDigest}`，默认 `{}` |
+| `SPACK_MATERIAL_RELEASES` | JSON：精确 spec → `{repositoryId, manifestDigest}`，默认 `{}`；登记保护账本并仅初始化缺失的平台默认，不覆盖既有 Web/API 映射 |
 | `SPACK_MATERIAL_EPOCH` | Server 与 Registry 共用的可选 UUID，无默认 UUID；使用本次 rollout 的 epoch |
 
 所有升级后的 Server/Registry 必须在重启前配置相同 epoch。只有无 journal 且无 epoch

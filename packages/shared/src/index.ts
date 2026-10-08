@@ -28,6 +28,7 @@ export * from "./schemas/template";
 export * from "./schemas/terminal";
 export * from "./software-governance";
 export * from "./spack";
+export * from "./spack-install-bindings";
 export * from "./spack-lock";
 export * from "./spack-material-catalog";
 export * from "./spack-material-import";

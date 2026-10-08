@@ -12,6 +12,56 @@ import {
 } from "drizzle-orm/pg-core";
 import type { SpackMaterialVisibilityPolicy } from "./spack-material-visibility-input";
 
+/** Versioned selections for future installs; the protective binding ledger stays append-only. */
+export const spackInstallBindingEvents = pgTable(
+  "spack_install_binding_events",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    scope: varchar("scope", { length: 36 }).notNull(),
+    spec: varchar("spec", { length: 500 }).notNull(),
+    revision: integer("revision").notNull(),
+    state: varchar("state", { length: 16 }).notNull(),
+    repositoryId: varchar("repository_id", { length: 64 }),
+    manifestDigest: varchar("manifest_digest", { length: 71 }),
+    source: varchar("source", { length: 16 }).notNull(),
+    operatorId: uuid("operator_id"),
+    reason: varchar("reason", { length: 1000 }).notNull(),
+    epoch: uuid("epoch"),
+    rolloutRevision: integer("rollout_revision"),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => ({
+    revisionIdx: uniqueIndex("spack_install_binding_events_revision_idx").on(
+      t.scope,
+      t.spec,
+      t.revision,
+    ),
+    scopeCheck: check(
+      "spack_install_binding_events_scope_check",
+      sql`${t.scope} = 'platform' or ${t.scope} ~ '^[a-f0-9]{8}(-[a-f0-9]{4}){3}-[a-f0-9]{12}$'`,
+    ),
+    revisionCheck: check("spack_install_binding_events_revision_check", sql`${t.revision} > 0`),
+    stateCheck: check(
+      "spack_install_binding_events_state_check",
+      sql`(${t.state} = 'disabled' and ${t.repositoryId} is null and ${t.manifestDigest} is null)
+        or (${t.state} = 'enabled' and ${t.repositoryId} is not null
+          and ${t.repositoryId} ~ '^[a-f0-9]{64}$' and ${t.manifestDigest} is not null
+          and ${t.manifestDigest} ~ '^sha256:[a-f0-9]{64}$')`,
+    ),
+    sourceCheck: check(
+      "spack_install_binding_events_source_check",
+      sql`(${t.source} = 'config' and ${t.scope} = 'platform' and ${t.revision} = 1
+          and ${t.state} = 'enabled' and ${t.operatorId} is null)
+        or (${t.source} = 'web' and ${t.operatorId} is not null and ${t.epoch} is not null
+          and ${t.rolloutRevision} is not null and ${t.rolloutRevision} > 0)`,
+    ),
+    textCheck: check(
+      "spack_install_binding_events_text_check",
+      sql`length(trim(${t.spec})) > 0 and length(trim(${t.reason})) > 0`,
+    ),
+  }),
+);
+
 /** Append-only union of all Server configurations, including replaced bindings. */
 export const spackMaterialBindings = pgTable(
   "spack_material_bindings",

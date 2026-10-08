@@ -2,7 +2,7 @@ import { defineConfig } from "patchright/test";
 
 export default defineConfig({
   testDir: ".",
-  testMatch: "material-lifecycle.spec.ts",
+  testMatch: ["material-lifecycle.spec.ts", "spack-install-bindings.spec.ts"],
   timeout: 60_000,
   expect: { timeout: 5_000 },
   forbidOnly: !!process.env.CI,

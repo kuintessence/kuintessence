@@ -846,7 +846,7 @@ export function SoftwarePage() {
               </summary>
               <div className="kq-motion--disclosure space-y-4 border-t border-border p-4">
                 <RecipeRepositoriesPanel canManage={canManageOrganization} />
-                <SpackMaterialsPanel canManage={canManageOrganization} />
+                <SpackMaterialsPanel canManage={canManageOrganization} canManageBindings />
               </div>
             </details>
             <SpackSoftwarePanel

@@ -55,6 +55,10 @@ export interface SpackInstallTicket {
 
 export interface SpackMaterialReferencePort {
   registerBindings(bindings: Record<string, SpackMaterialBinding>): Promise<void>;
+  seedConfiguration(bindings: Record<string, SpackMaterialBinding>): Promise<void>;
+  resolveOperation(
+    input: SpackInstallPreparation & { providerOrgId: string | null },
+  ): Promise<SpackMaterialBinding>;
   acquireOperation(input: SpackInstallPreparation & SpackMaterialBinding): Promise<void>;
 }
 
@@ -109,6 +113,7 @@ export class SpackMaterialDelivery {
   async initialize(): Promise<void> {
     this.initialization ??= this.options.references
       .registerBindings(this.options.bindings)
+      .then(() => this.options.references.seedConfiguration(this.options.bindings))
       .catch(() => {
         this.initialization = undefined;
         throw referenceFailure();
@@ -130,15 +135,18 @@ export class SpackMaterialDelivery {
     ) {
       throw denied();
     }
-    const binding = Object.hasOwn(this.options.bindings, input.spec)
-      ? this.options.bindings[input.spec]
-      : undefined;
-    if (!binding) {
-      throw new AppError(
-        ErrorCode.VALIDATION_ERROR,
-        "No pinned Spack material release for spec",
-        422,
-      );
+    if (!(await this.options.access.certificate(input.agentId, channel.verifiedCertFingerprint))) {
+      throw denied();
+    }
+    await this.initialize();
+    let binding: SpackMaterialBinding;
+    try {
+      binding = await this.options.references.resolveOperation({
+        ...input,
+        providerOrgId: access.providerOrgId,
+      });
+    } catch {
+      throw referenceFailure();
     }
     const claims = claimsSchema.parse({
       ...binding,
@@ -147,7 +155,6 @@ export class SpackMaterialDelivery {
       certificateFingerprint: channel.verifiedCertFingerprint,
     });
     await this.authorize(claims);
-    await this.initialize();
     await this.manifest(claims);
     await this.acquireReference(claims);
     const ticket = await new SignJWT({ material: claims })

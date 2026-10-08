@@ -4,6 +4,7 @@ export * from "./pg/migrate";
 export * from "./pg/schema";
 export * from "./pg/schema-metering";
 export * from "./pg/schema-spack-materials";
+export * from "./pg/spack-install-bindings";
 export * from "./pg/spack-material-lifecycle";
 export * from "./pg/spack-material-references";
 export * from "./pg/spack-material-rollout";
