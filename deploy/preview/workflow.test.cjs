@@ -100,6 +100,22 @@ describe("privileged preview orchestration boundaries", () => {
     expect(build).toContain("kq-dev");
   });
 
+  test("fixed preview credentials are restricted to deployment and validated before SSH", () => {
+    const workflow = preview();
+    const step = workflow.jobs.deploy.steps.find((entry) => entry.id === "helm");
+    expect(step.env.PREVIEW_USER).toBe("${{ secrets.PREVIEW_USER }}");
+    expect(step.env.PREVIEW_PASSWORD).toBe("${{ secrets.PREVIEW_PASSWORD }}");
+    for (const job of [workflow.jobs.gate, workflow.jobs.images]) {
+      expect(JSON.stringify(job)).not.toContain("secrets.PREVIEW_USER");
+      expect(JSON.stringify(job)).not.toContain("secrets.PREVIEW_PASSWORD");
+    }
+    const script = read("deploy/preview/remote.sh");
+    const validation = script.indexOf('node "$tooling/credentials.cjs" validate');
+    expect(validation).toBeGreaterThan(script.indexOf('if [[ "$mode" == deploy ]]; then'));
+    expect(validation).toBeLessThan(script.indexOf('state="$(mktemp'));
+    expect(validation).toBeLessThan(script.indexOf('printf \'%s\\n\' "$SSH_KEY"'));
+  });
+
   test("only checked controller code orchestrates the tested source checkout", () => {
     let sourceCheckouts = 0;
     let controllerCheckouts = 0;

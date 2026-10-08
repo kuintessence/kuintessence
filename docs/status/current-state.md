@@ -264,6 +264,10 @@ Server-only Agent 材料下载，以及 CP 安装/库存/策略操作已有实�
 - [GitHub 预览配置](../preview-k3s.md) 改为全部必需测试通过后构建 GHCR `kq-dev-*`
   SHA 镜像，经 SSH 隧道部署到远程 k3s；旧 runner 限时 Quick Tunnel job 已停用。
   门禁同时要求信任标签、作者写权限、同仓库当前 SHA 和全部必测组成功。
+  入口改为仓库 Actions Secrets `PREVIEW_USER` / `PREVIEW_PASSWORD` 必填的固定
+  Basic Auth，人工与 CI HTTPS 验收使用同一组凭据；不再为各 PR随机生成入口口令。
+  内部密钥与解锁 Cookie仍按 PR隔离；入口凭据变更后重新部署会轮换 Cookie并 rollout
+  gateway，保留已有数据库与应用密钥。缺失或非法配置在建立 SSH 隧道前拒绝部署。
   提供用户 Helm Chart 与 demo CI wrapper，包含持久化 Registry、RustFS、
   seed 和单容器 Slurm + Agent；不启用远端高权限 managed Spack runtime。
   预览镜像采用公开 GHCR，首次由维护者手动公开后重试失败的部署 job；

@@ -25,6 +25,9 @@ namespace="$PREVIEW_NAMESPACE"
 release="$PREVIEW_RELEASE"
 
 tooling="$(cd "$(dirname "$0")" && pwd)"
+if [[ "$mode" == deploy ]]; then
+  node "$tooling/credentials.cjs" validate
+fi
 state="$(mktemp -d "$RUNNER_TEMP/kq-preview-remote.XXXXXX")"
 ssh_pid=""
 observer_pid=""

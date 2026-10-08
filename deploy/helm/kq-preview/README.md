@@ -78,26 +78,24 @@ Chart 不创建或读取明文口令，不把 Secret 内容写入 ConfigMap、va
 | `RUSTFS_SECRET_KEY` | RustFS root 与 bootstrap |
 | `NETDRIVE_ACCESS_KEY` | Server 与 bootstrap 共用的普通 IAM 用户，不能等于 RustFS root |
 | `NETDRIVE_SECRET_KEY` | 该普通用户的密码 |
-| `PREVIEW_HTPASSWD` | 完整 `preview:<hash>` 一行；由 CI 从 preview 密码生成 |
+| `PREVIEW_HTPASSWD` | 完整 `<PREVIEW_USER>:<hash>` 一行；由 CI 从仓库固定入口凭据生成 |
 | `PREVIEW_COOKIE` | 32 字节随机值的小写 hex，即恰好 64 字符；不能是密码或公开固定值 |
 | `SERVER_CA_CERT` / `SERVER_CA_KEY` | 持久保留的 Agent CA证书和私钥，仅挂载到 Server |
 | `SERVER_TLS_CERT` / `SERVER_TLS_KEY` | 同一 CA签发的 Server gRPC证书和私钥，仅挂载到 Server |
 
-CI 可在首次部署生成并将 `PREVIEW_PASSWORD` 额外保存在同一 Secret，供有权限的
-操作者私下获取；chart 不挂载或输出该字段。后续升级保留密码/hash/cookie，
-不要每次重新随机生成。CI将 `sha256(data.PREVIEW_COOKIE)` 的 64位小写 hex结果写入
+CI 必须读取仓库 Actions Secrets `PREVIEW_USER` 和 `PREVIEW_PASSWORD`，所有 PR
+使用同一组固定 Basic Auth 凭据；缺失或不合法时拒绝部署，不随机生成或沿用旧入口口令。
+用户名须为 1–64 字符、以字母或数字开头，仅含字母、数字、`_`、`.`、`@`、`-`；
+口令至少 24 字符且不含控制字符。CI 将两者额外保存在同一 Secret，供 HTTPS 验收使用，
+chart 不挂载或输出这两个字段。数据库、JWT、对象存储凭据和 Cookie 仍按 PR 隔离。
+固定凭据不变时升级保留 hash/cookie；变更账号或口令、迁移旧格式 Secret 时轮换 Cookie。
+修改仓库 Secrets 后须重新部署各开放 PR，运行中环境不会自动同步新凭据。
+CI将 `sha256(data.PREVIEW_COOKIE)` 的 64位小写 hex结果写入
 `preview.credentialsRevision`；该非敏感摘要成为 Pod annotation，cookie轮换后随
 Helm upgrade自动 rollout gateway，不把 cookie本身放入 values/ConfigMap。
 轮换 NetDrive 用户/密码后递增 `netdrive.bootstrapRevision` 并重启 Server。
 
-使用受信终端私下读取示例 PR 的入口口令，不在 Actions 或公开日志中执行：
-
-```bash
-kubectl -n preview get secret kq-pr-123-secrets \
-  -o jsonpath='{.data.PREVIEW_PASSWORD}' | base64 --decode
-```
-
-将 `123` 替换为实际 PR 编号；不要将输出提交到仓库或 PR 评论。
+维护者通过私密渠道向审阅者提供固定账号与口令，不在 Actions、PR 评论或公开日志中输出。
 
 ## 启动与数据
 

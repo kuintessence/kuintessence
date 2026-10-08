@@ -4,11 +4,18 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 
-function credentialData(previous, release, password, hashPassword) {
-  if (!/^kq-pr-[1-9][0-9]{0,14}$/.test(release)) throw new Error("Invalid preview release");
-  if (password && (password.length < 24 || /[\r\n]/.test(password))) {
-    throw new Error("PREVIEW_PASSWORD must be a single line with at least 24 characters");
+function validateCredentials(user, password) {
+  if (typeof user !== "string" || user.length > 64 || !/^[A-Za-z0-9]/.test(user) || /[^A-Za-z0-9_.@-]/.test(user)) {
+    throw new Error("PREVIEW_USER must be 1-64 characters, start with a letter or digit, and contain only letters, digits, _, ., @ or -");
   }
+  if (typeof password !== "string" || password.length < 24 || /[\x00-\x1f\x7f]/.test(password)) {
+    throw new Error("PREVIEW_PASSWORD must contain at least 24 characters and no control characters");
+  }
+}
+
+function credentialData(previous, release, user, password, hashPassword) {
+  if (!/^kq-pr-[1-9][0-9]{0,14}$/.test(release)) throw new Error("Invalid preview release");
+  validateCredentials(user, password);
   const data = { ...previous };
   const encode = (value) => Buffer.from(value).toString("base64");
   const decode = (key) => data[key] ? Buffer.from(data[key], "base64").toString("utf8") : "";
@@ -19,10 +26,10 @@ function credentialData(previous, release, password, hashPassword) {
   ensure("NETDRIVE_ACCESS_KEY", "kq-data-market-committer");
   ensure("NETDRIVE_SECRET_KEY", randomBytes(32).toString("hex"));
   ensure("DATABASE_URL", `postgres://kq:${encodeURIComponent(decode("POSTGRES_PASSWORD"))}@${release}-postgres:5432/kuintessence`);
-  const nextPassword = password || decode("PREVIEW_PASSWORD") || randomBytes(32).toString("base64url");
-  if (!data.PREVIEW_HTPASSWD || nextPassword !== decode("PREVIEW_PASSWORD")) {
-    data.PREVIEW_PASSWORD = encode(nextPassword);
-    data.PREVIEW_HTPASSWD = encode(`preview:${hashPassword(nextPassword).trim()}\n`);
+  if (!data.PREVIEW_HTPASSWD || user !== decode("PREVIEW_USER") || password !== decode("PREVIEW_PASSWORD")) {
+    data.PREVIEW_USER = encode(user);
+    data.PREVIEW_PASSWORD = encode(password);
+    data.PREVIEW_HTPASSWD = encode(`${user}:${hashPassword(password).trim()}\n`);
     data.PREVIEW_COOKIE = encode(randomBytes(32).toString("hex"));
   }
   ensure("PREVIEW_COOKIE", randomBytes(32).toString("hex"));
@@ -62,7 +69,7 @@ function addTlsData(data, release) {
   }
 }
 
-function credentialSecret(previous, pr, repository, password, hashPassword) {
+function credentialSecret(previous, pr, repository, user, password, hashPassword) {
   if (
     !/^[1-9][0-9]{0,14}$/.test(String(pr)) ||
     !/^[A-Za-z0-9][A-Za-z0-9-]*\/[A-Za-z0-9_.-]+$/.test(repository ?? "")
@@ -88,29 +95,33 @@ function credentialSecret(previous, pr, repository, password, hashPassword) {
       !previous.data || typeof previous.data !== "object" || Array.isArray(previous.data)
     ) throw new Error("Preview credential ownership mismatch");
   }
-  const data = credentialData(previous?.data, release, password, hashPassword);
+  const data = credentialData(previous?.data, release, user, password, hashPassword);
   addTlsData(data, release);
   return { apiVersion: "v1", kind: "Secret", type: "Opaque", metadata, data };
 }
 
 if (require.main === module) {
   try {
-    const [source, target] = process.argv.slice(2);
-    const previous = JSON.parse(fs.readFileSync(source, "utf8"));
-    if (
-      process.env.PREVIEW_NAMESPACE !== "preview" ||
-      process.env.PREVIEW_RELEASE !== `kq-pr-${process.env.PREVIEW_PR}`
-    ) throw new Error("Invalid preview scope");
-    const secret = credentialSecret(previous, process.env.PREVIEW_PR,
-      process.env.GITHUB_REPOSITORY, process.env.PREVIEW_PASSWORD,
-      (password) => execFileSync("openssl", ["passwd", "-apr1", "-stdin"], {
-        input: `${password}\n`, encoding: "utf8", stdio: ["pipe", "pipe", "pipe"],
-      }));
-    fs.writeFileSync(target, JSON.stringify(secret), { mode: 0o600 });
+    if (process.argv[2] === "validate") {
+      validateCredentials(process.env.PREVIEW_USER, process.env.PREVIEW_PASSWORD);
+    } else {
+      const [source, target] = process.argv.slice(2);
+      const previous = JSON.parse(fs.readFileSync(source, "utf8"));
+      if (
+        process.env.PREVIEW_NAMESPACE !== "preview" ||
+        process.env.PREVIEW_RELEASE !== `kq-pr-${process.env.PREVIEW_PR}`
+      ) throw new Error("Invalid preview scope");
+      const secret = credentialSecret(previous, process.env.PREVIEW_PR,
+        process.env.GITHUB_REPOSITORY, process.env.PREVIEW_USER, process.env.PREVIEW_PASSWORD,
+        (password) => execFileSync("openssl", ["passwd", "-apr1", "-stdin"], {
+          input: `${password}\n`, encoding: "utf8", stdio: ["pipe", "pipe", "pipe"],
+        }));
+      fs.writeFileSync(target, JSON.stringify(secret), { mode: 0o600 });
+    }
   } catch {
-    console.error("Unable to prepare preview credentials; no credential values were logged.");
+    console.error("Unable to prepare preview credentials; check PREVIEW_USER and PREVIEW_PASSWORD secrets. No credential values were logged.");
     process.exitCode = 1;
   }
 }
 
-module.exports = { credentialData, addTlsData, credentialSecret };
+module.exports = { validateCredentials, credentialData, addTlsData, credentialSecret };

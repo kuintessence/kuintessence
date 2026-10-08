@@ -272,6 +272,7 @@ jobs:
           SSH_USER: ${{ secrets.SSH_USER }}
           SSH_KEY: ${{ secrets.SSH_KEY }}
           KUBE_CONFIG: ${{ secrets.KUBE_CONFIG }}
+          PREVIEW_USER: ${{ secrets.PREVIEW_USER }}
           PREVIEW_PASSWORD: ${{ secrets.PREVIEW_PASSWORD }}
           PREVIEW_INSPECTION: ${{ github.event_name == 'workflow_dispatch' && inputs.inspection_mode == true }}
         run: bash deploy/preview/remote.sh deploy
