@@ -96,6 +96,13 @@ export function FilesPage() {
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [deletingCloudId, setDeletingCloudId] = useState<string | null>(null);
   const deletePendingRef = useRef<string | null>(null);
+  const uploadPendingRef = useRef(false);
+  const [uploadProgress, setUploadProgress] = useState<{
+    current: number;
+    total: number;
+    name: string;
+    prefix: string;
+  } | null>(null);
   const seenFinishedTransfers = useRef(new Map<string, string | null>());
 
   const agentsQ = useQuery({
@@ -192,17 +199,31 @@ export function FilesPage() {
   };
 
   const handleUpload = async (files: FileList) => {
+    if (uploadPendingRef.current || cloudActionsDisabled) return;
+    const batch = Array.from(files);
+    if (batch.length === 0) return;
+    uploadPendingRef.current = true;
     const prefix = cloudPrefix.replace(/\/$/, "") || "users/me";
-    for (const file of Array.from(files)) {
-      try {
-        await uploadFileToNetDrive(file, prefix);
-        toast.success(`Uploaded ${file.name}`);
-      } catch (err) {
-        toast.error(toUserFacingError(err, `Failed to upload ${file.name}`));
+    try {
+      for (const [index, file] of batch.entries()) {
+        setUploadProgress({ current: index + 1, total: batch.length, name: file.name, prefix });
+        try {
+          await uploadFileToNetDrive(file, prefix);
+          toast.success(t("files.uploadSucceeded", { name: file.name }));
+        } catch (err) {
+          toast.error(toUserFacingError(err, t("files.uploadFailed", { name: file.name })));
+        }
       }
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["files-cloud"] }),
+        queryClient.invalidateQueries({ queryKey: ["storage-summary"] }),
+        queryClient.invalidateQueries({ queryKey: ["job-files-netdrive"] }),
+        queryClient.invalidateQueries({ queryKey: ["command-workdir-cloud-files"] }),
+      ]);
+    } finally {
+      uploadPendingRef.current = false;
+      setUploadProgress(null);
     }
-    queryClient.invalidateQueries({ queryKey: ["files-cloud"] });
-    queryClient.invalidateQueries({ queryKey: ["storage-summary"] });
   };
 
   const cloudObjects: CloudPaneEntry[] = useMemo(
@@ -227,7 +248,7 @@ export function FilesPage() {
       ? (clusterEntries.find((entry) => entry.kind === "file" && entry.name === clusterSelected) ??
         null)
       : null;
-  const transfers = transfersQ.data?.transfers ?? [];
+  const transfers = transfersQ.isSuccess ? (transfersQ.data?.transfers ?? []) : [];
   const transfersLoadError = transfersQ.error
     ? toUserFacingError(transfersQ.error, t("files.transfers.loadFailed"))
     : null;
@@ -298,6 +319,7 @@ export function FilesPage() {
   }, [clusterQ.error, requestedClusterPath]);
 
   useEffect(() => {
+    if (!transfersQ.isSuccess) return;
     let shouldRefreshFiles = false;
     const next = new Map<string, string | null>();
     for (const transfer of transfers) {
@@ -317,7 +339,7 @@ export function FilesPage() {
       queryClient.invalidateQueries({ queryKey: ["files-cluster"] });
       queryClient.invalidateQueries({ queryKey: ["storage-summary"] });
     }
-  }, [transfers, queryClient]);
+  }, [transfers, queryClient, transfersQ.isSuccess]);
 
   const openTransfer = (direction?: TransferDirection) => {
     const inferred =
@@ -547,6 +569,8 @@ export function FilesPage() {
           }}
           onRefresh={refresh}
           onUpload={cloudActionsDisabled ? undefined : handleUpload}
+          uploading={uploadProgress !== null}
+          uploadStatus={uploadProgress ? t("files.uploadProgress", uploadProgress) : undefined}
           onDownload={cloudActionsDisabled ? undefined : handleCloudDownload}
           onDelete={cloudActionsDisabled ? undefined : requestCloudDelete}
           deletingId={deletingCloudId}
@@ -614,6 +638,7 @@ export function FilesPage() {
           type="button"
           className="flex w-full items-center justify-between gap-3 border-b border-border px-3 py-2 text-left hover:bg-muted/40"
           onClick={() => setShowTransfers((value) => !value)}
+          aria-expanded={showTransfers}
           data-testid="files-transfers-toggle"
         >
           <span className="flex items-center gap-2">

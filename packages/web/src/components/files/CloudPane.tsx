@@ -32,6 +32,8 @@ export interface CloudPaneProps {
   onSelect: (id: string | null) => void;
   onRefresh: () => void;
   onUpload?: (files: FileList) => void;
+  uploading?: boolean;
+  uploadStatus?: string;
   onPrefixChange?: (next: string) => void;
   onDownload?: (obj: CloudObject) => void;
   onDelete?: (obj: CloudPaneEntry) => void;
@@ -48,6 +50,8 @@ export function CloudPane({
   onSelect,
   onRefresh,
   onUpload,
+  uploading = false,
+  uploadStatus,
   onPrefixChange,
   onDownload,
   onDelete,
@@ -138,14 +142,14 @@ export function CloudPane({
       onDragOver={(event) => {
         if (!onUpload) return;
         event.preventDefault();
-        setIsDragging(true);
+        setIsDragging(!uploading);
       }}
       onDragLeave={() => setIsDragging(false)}
       onDrop={(event) => {
         if (!onUpload) return;
         event.preventDefault();
         setIsDragging(false);
-        if (event.dataTransfer.files.length > 0) onUpload(event.dataTransfer.files);
+        if (!uploading && event.dataTransfer.files.length > 0) onUpload(event.dataTransfer.files);
       }}
     >
       <div className="flex h-10 items-center justify-between gap-2 border-b border-border bg-card/60 px-3">
@@ -177,9 +181,10 @@ export function CloudPane({
                 type="file"
                 multiple
                 hidden
+                disabled={uploading}
                 data-testid="files-cloud-upload-input"
                 onChange={(e) => {
-                  if (e.target.files && e.target.files.length > 0) {
+                  if (!uploading && e.target.files && e.target.files.length > 0) {
                     onUpload(e.target.files);
                     e.target.value = "";
                   }
@@ -192,9 +197,10 @@ export function CloudPane({
                 aria-label={t("files.uploadLocal")}
                 title={t("files.uploadLocal")}
                 data-testid="files-cloud-upload"
+                disabled={uploading}
                 onClick={() => fileInputRef.current?.click()}
               >
-                <Upload />
+                {uploading ? <Loader2 className="animate-spin" /> : <Upload />}
               </Button>
             </>
           ) : null}
@@ -242,6 +248,15 @@ export function CloudPane({
           </div>
         ) : null}
       </div>
+      {uploadStatus ? (
+        <div
+          role="status"
+          className="break-all border-b border-border px-3 py-2 text-xs text-muted-foreground"
+          data-testid="files-upload-status"
+        >
+          {uploadStatus}
+        </div>
+      ) : null}
       <div className="flex-1 overflow-auto">
         {visibleRows.length === 0 ? (
           <div className="flex h-32 items-center justify-center text-xs text-muted-foreground">

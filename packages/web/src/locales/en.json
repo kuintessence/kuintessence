@@ -1847,6 +1847,9 @@
       "historyLoading": "Loading quota request history…",
       "historyLoadFailed": "Quota request history could not be loaded.",
       "noRequests": "No storage quota requests yet.",
+      "expiryMustBeFuture": "The requested expiry must be in the future",
+      "exceedsLimit": "The requested quota exceeds the current policy limit",
+      "limit": "Current request limit: {{value}}",
       "formIncomplete": "Enter a valid quota and reason",
       "requestCreated": "Quota request submitted",
       "requestFailed": "Failed to submit quota request",
@@ -1873,6 +1876,9 @@
       "size": "Size",
       "modified": "Modified"
     },
+    "uploadProgress": "Uploading {{current}}/{{total}}: {{name}} → {{prefix}}",
+    "uploadSucceeded": "Uploaded {{name}}",
+    "uploadFailed": "Failed to upload {{name}}",
     "uploadTarget": "Upload target: {{prefix}}",
     "moreActions": "More actions for {{name}}",
     "context": {

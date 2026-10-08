@@ -239,7 +239,7 @@ test.each([
   inspectLifecycle();
   await screen.findByTestId("material-lifecycle-detail");
   confirmLifecycle(RESTORE_REASON);
-  submitLifecycle("restore");
+  await act(async () => submitLifecycle("restore"));
   if (outcome === "stop") {
     fireEvent.click(lifecycleUi().getByRole("button", { name: labels.lifecycleStop }));
   }

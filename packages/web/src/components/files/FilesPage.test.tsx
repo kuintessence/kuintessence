@@ -2,7 +2,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { afterEach, describe, expect, test, vi } from "vitest";
-import { ApiError, api, downloadAuthedFile } from "../../lib/api-client";
+import { ApiError, api, downloadAuthedFile, uploadFileToNetDrive } from "../../lib/api-client";
 import { FilesPage } from "./FilesPage";
 
 const toastError = vi.hoisted(() => vi.fn());
@@ -2073,4 +2073,51 @@ test("does not describe a temporary NetDrive 503 as a disabled deployment", asyn
     "files.netdriveDisabled",
   );
   expect(screen.getByTestId("files-cloud-pane").textContent).not.toContain("temporary failure");
+});
+
+test("locks upload batches across file selection and drop, reports failures, and recovers", async () => {
+  vi.mocked(api.get).mockImplementation(async (path) => {
+    if (path === "/agents") return { agents: [] };
+    if (path === "/netdrive/files") return { success: true, data: { files: [], total: 0 } };
+    if (path === "/files/transfers") return { transfers: [] };
+    if (path.startsWith("/storage/summary"))
+      return { usedBytes: 0, quotaBytes: 1024 ** 3, policy: { requestMode: "manual" } };
+    throw new Error(`unexpected GET ${path}`);
+  });
+  let rejectUpload: ((reason: Error) => void) | undefined;
+  vi.mocked(uploadFileToNetDrive)
+    .mockImplementationOnce(
+      () =>
+        new Promise((_, reject) => {
+          rejectUpload = reject;
+        }),
+    )
+    .mockResolvedValueOnce({
+      id: "uploaded",
+      path: "users/me/second.txt",
+      size: 1,
+      sha256: "digest",
+      contentType: "text/plain",
+      storageKey: "key",
+      mtime: "2026-10-08T00:00:00Z",
+      createdAt: "2026-10-08T00:00:00Z",
+    });
+  render(withQueryClient(<FilesPage />));
+  const input = await screen.findByTestId("files-cloud-upload-input");
+  const first = new File(["a"], "first.txt");
+  const second = new File(["b"], "second.txt");
+  fireEvent.change(input, { target: { files: [first, second] } });
+  fireEvent.drop(screen.getByTestId("files-cloud-pane"), { dataTransfer: { files: [first] } });
+  expect(uploadFileToNetDrive).toHaveBeenCalledTimes(1);
+  expect(screen.getByTestId("files-cloud-upload")).toHaveProperty("disabled", true);
+  expect(screen.getByTestId("files-upload-status").textContent).toContain("files.uploadProgress");
+  rejectUpload?.(new Error("Network unavailable"));
+  await waitFor(() => expect(uploadFileToNetDrive).toHaveBeenCalledTimes(2));
+  expect(uploadFileToNetDrive).toHaveBeenLastCalledWith(second, "users/me");
+  await waitFor(() =>
+    expect(screen.getByTestId("files-cloud-upload")).toHaveProperty("disabled", false),
+  );
+  expect(screen.queryByTestId("files-upload-status")).toBeNull();
+  expect(toastError).toHaveBeenCalledWith("files.uploadFailed");
+  expect(toastSuccess).toHaveBeenCalledWith("files.uploadSucceeded");
 });

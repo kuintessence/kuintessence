@@ -1847,6 +1847,9 @@
       "historyLoading": "正在加载配额申请记录…",
       "historyLoadFailed": "暂时无法加载配额申请记录。",
       "noRequests": "尚未提交过存储配额申请。",
+      "expiryMustBeFuture": "申请有效期必须晚于当前时间",
+      "exceedsLimit": "申请配额不能超过当前策略上限",
+      "limit": "当前申请上限：{{value}}",
       "formIncomplete": "请填写有效的配额和申请说明",
       "requestCreated": "配额申请已提交",
       "requestFailed": "提交配额申请失败",
@@ -1873,6 +1876,9 @@
       "size": "大小",
       "modified": "最近修改"
     },
+    "uploadProgress": "正在上传 {{current}}/{{total}}：{{name}} → {{prefix}}",
+    "uploadSucceeded": "已上传 {{name}}",
+    "uploadFailed": "上传 {{name}} 失败",
     "uploadTarget": "上传目标：{{prefix}}",
     "moreActions": "{{name}}的更多操作",
     "context": {

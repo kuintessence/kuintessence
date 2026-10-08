@@ -1,4 +1,8 @@
-import type { StorageQuotaSummary } from "@kuintessence/shared/browser";
+import {
+  StorageQuotaRequestCreateSchema,
+  type StorageQuotaSummary,
+  type StorageScope,
+} from "@kuintessence/shared/browser";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { AlertCircle, CalendarClock, Database, Loader2, RefreshCw, Send } from "lucide-react";
 import { type ReactNode, useRef, useState } from "react";
@@ -31,6 +35,8 @@ interface StorageQuotaRequestDialogProps {
 
 interface QuotaRequestRow {
   id: string;
+  scope: StorageScope;
+  scopeId: string;
   requestedQuotaBytes: number;
   requestedExpiresAt: string | null;
   status: string;
@@ -59,23 +65,48 @@ export function StorageQuotaRequestDialog({
     enabled: open,
   });
   const dirty = Boolean(quotaGb || expiresAt || reason);
+  const cloudRequests = (requestsQ.data?.requests ?? []).filter(
+    (request) => request.scope === "cloud" && request.scopeId === "global",
+  );
+  const summaryUnavailable =
+    summaryLoading ||
+    Boolean(summaryError) ||
+    !summary ||
+    summary.policy.requestMode === "disabled";
   const submit = async () => {
-    if (submittingRef.current || !summary || summaryError) return;
-    const requestedQuotaBytes = Math.round(Number(quotaGb) * 1024 * 1024 * 1024);
-    if (!Number.isFinite(requestedQuotaBytes) || requestedQuotaBytes <= 0 || !reason.trim()) {
+    if (submittingRef.current || summaryUnavailable || !summary) return;
+    const requestedGb = Number(quotaGb);
+    if (!Number.isInteger(requestedGb) || requestedGb < 1) {
       toast.error(t("files.quota.formIncomplete"));
+      return;
+    }
+    const expiry = expiresAt ? new Date(expiresAt) : null;
+    if (expiry && (!Number.isFinite(expiry.getTime()) || expiry.getTime() <= Date.now())) {
+      toast.error(t("files.quota.expiryMustBeFuture"));
+      return;
+    }
+    const input = StorageQuotaRequestCreateSchema.safeParse({
+      scope: "cloud",
+      scopeId: "global",
+      requestedQuotaBytes: requestedGb * 1024 ** 3,
+      requestedExpiresAt: expiry?.toISOString() ?? null,
+      reason: reason.trim(),
+    });
+    if (!input.success) {
+      toast.error(t("files.quota.formIncomplete"));
+      return;
+    }
+    if (
+      summary.policy.maxQuotaBytes != null &&
+      input.data.requestedQuotaBytes > summary.policy.maxQuotaBytes
+    ) {
+      toast.error(t("files.quota.exceedsLimit"));
       return;
     }
     submittingRef.current = true;
     setSubmitting(true);
     try {
-      await api.post("/storage/quota-requests", {
-        scope: "cloud",
-        scopeId: "global",
-        requestedQuotaBytes,
-        requestedExpiresAt: expiresAt ? new Date(expiresAt).toISOString() : null,
-        reason: reason.trim(),
-      });
+      await api.post("/storage/quota-requests", input.data);
       toast.success(t("files.quota.requestCreated"));
       setQuotaGb("");
       setExpiresAt("");
@@ -127,17 +158,34 @@ export function StorageQuotaRequestDialog({
           )}
           <fieldset disabled={submitting} className="space-y-3 disabled:opacity-70">
             <div className="grid gap-3 sm:grid-cols-2">
-              <label className="space-y-1.5 text-sm" htmlFor="storage-quota-gb">
-                <span className="font-medium">{t("files.quota.requestedGb")}</span>
+              <div className="space-y-1.5 text-sm">
+                <label className="font-medium" htmlFor="storage-quota-gb">
+                  {t("files.quota.requestedGb")}
+                </label>
                 <Input
                   id="storage-quota-gb"
+                  aria-describedby={
+                    !summaryUnavailable && summary?.policy.maxQuotaBytes != null
+                      ? "storage-quota-limit"
+                      : undefined
+                  }
                   type="number"
                   min="1"
                   step="1"
+                  max={
+                    summary?.policy.maxQuotaBytes != null
+                      ? summary.policy.maxQuotaBytes / 1024 ** 3
+                      : undefined
+                  }
                   value={quotaGb}
                   onChange={(event) => setQuotaGb(event.target.value)}
                 />
-              </label>
+                {!summaryUnavailable && summary?.policy.maxQuotaBytes != null ? (
+                  <span id="storage-quota-limit" className="block text-xs text-muted-foreground">
+                    {t("files.quota.limit", { value: formatBytes(summary.policy.maxQuotaBytes) })}
+                  </span>
+                ) : null}
+              </div>
               <label className="space-y-1.5 text-sm" htmlFor="storage-quota-expires-at">
                 <span className="flex items-center gap-1.5 font-medium">
                   <CalendarClock className="h-4 w-4" />
@@ -184,13 +232,13 @@ export function StorageQuotaRequestDialog({
                   {t("common.retry")}
                 </Button>
               </StatusMessage>
-            ) : (requestsQ.data?.requests ?? []).length === 0 ? (
+            ) : cloudRequests.length === 0 ? (
               <div className="rounded-md border border-dashed p-4 text-center text-xs text-muted-foreground">
                 {t("files.quota.noRequests")}
               </div>
             ) : (
               <div className="divide-y overflow-hidden rounded-md border">
-                {(requestsQ.data?.requests ?? []).slice(0, 5).map((request) => (
+                {cloudRequests.slice(0, 5).map((request) => (
                   <div key={request.id} className="flex items-center gap-3 px-3 py-2 text-xs">
                     <Database className="h-4 w-4 shrink-0 text-muted-foreground" />
                     <div className="min-w-0 flex-1">
@@ -208,16 +256,7 @@ export function StorageQuotaRequestDialog({
           <Button variant="outline" onClick={() => onOpenChange(false)} disabled={submitting}>
             {t("common.cancel")}
           </Button>
-          <Button
-            onClick={() => void submit()}
-            disabled={
-              submitting ||
-              summaryLoading ||
-              Boolean(summaryError) ||
-              !summary ||
-              summary.policy.requestMode === "disabled"
-            }
-          >
+          <Button onClick={() => void submit()} disabled={submitting || summaryUnavailable}>
             {submitting ? <Loader2 className="animate-spin" /> : <Send />}
             {t("files.quota.submit")}
           </Button>

@@ -67,7 +67,8 @@ export function TransfersTray({
   highlightTransferId,
   embedded = false,
 }: TransfersTrayProps) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
+  const language = i18n?.resolvedLanguage ?? i18n?.language;
   const [filter, setFilter] = useState<Filter>("ACTIVE");
   const [pendingActions, setPendingActions] = useState<ReadonlySet<string>>(new Set());
   const pendingActionsRef = useRef(new Set<string>());
@@ -77,7 +78,7 @@ export function TransfersTray({
     request: () => Promise<Transfer>,
     fallbackErrorKey: string,
   ) => {
-    if (pendingActionsRef.current.has(actionKey)) return;
+    if (loadError || isLoading || pendingActionsRef.current.has(actionKey)) return;
     pendingActionsRef.current.add(actionKey);
     setPendingActions(new Set(pendingActionsRef.current));
     try {
@@ -95,14 +96,16 @@ export function TransfersTray({
     }
   };
 
+  const verifiedTransfers = loadError || isLoading ? [] : transfers;
   const counts = {
-    ACTIVE: transfers.filter((t) => t.state === "running" || t.state === "queued").length,
-    FAILED: transfers.filter((t) => t.state === "failed").length,
-    COMPLETED: transfers.filter((t) => t.state === "succeeded" || t.state === "cancelled").length,
-    ALL: transfers.length,
+    ACTIVE: verifiedTransfers.filter((t) => t.state === "running" || t.state === "queued").length,
+    FAILED: verifiedTransfers.filter((t) => t.state === "failed").length,
+    COMPLETED: verifiedTransfers.filter((t) => t.state === "succeeded" || t.state === "cancelled")
+      .length,
+    ALL: verifiedTransfers.length,
   };
 
-  const visible = transfers.filter((t) => {
+  const visible = verifiedTransfers.filter((t) => {
     if (filter === "ALL") return true;
     if (filter === "ACTIVE") return t.state === "running" || t.state === "queued";
     if (filter === "FAILED") return t.state === "failed";
@@ -130,6 +133,7 @@ export function TransfersTray({
               key={f}
               type="button"
               data-testid={`files-transfers-filter-${f.toLowerCase()}`}
+              aria-pressed={filter === f}
               onClick={() => setFilter(f)}
               className={cn(
                 "min-h-11 rounded-full border px-2 py-1 font-mono uppercase tracking-wide sm:min-h-0 sm:py-0.5",
@@ -319,11 +323,11 @@ export function TransfersTray({
                     <span title={transfer.startedAt ?? undefined}>
                       {transfer.finishedAt
                         ? t("files.transfers.finishedAt", {
-                            time: relativeFromNow(transfer.finishedAt),
+                            time: relativeFromNow(transfer.finishedAt, undefined, language),
                           })
                         : transfer.startedAt
                           ? t("files.transfers.startedAt", {
-                              time: relativeFromNow(transfer.startedAt),
+                              time: relativeFromNow(transfer.startedAt, undefined, language),
                             })
                           : t("files.transfers.queued")}
                     </span>
@@ -351,7 +355,7 @@ export function TransfersTray({
       <div className="border-t border-border px-3 py-2 text-[11px] text-muted-foreground">
         <span className="font-mono tabular-nums">
           {t("files.transfers.totalActive", {
-            total: transfers.length,
+            total: verifiedTransfers.length,
             active: counts.ACTIVE,
           })}
         </span>
