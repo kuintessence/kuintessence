@@ -1,0 +1,3 @@
+clingo==5.7.1 --hash=sha256:fa0a2c9ab3fa4d93fae7bebcf0e1f78fa65949e1cf3e13867af76ebb9dd40796
+cffi==1.17.1 --hash=sha256:610faea79c43e44c71e1ec53a554553fa22321b65fae24889706c0a84d4ad86d
+pycparser==2.22 --hash=sha256:c3702b6d3dd8c7abc1afa565d7e63d53a1d0bd86cdc24edd75470f4de499cfcc
