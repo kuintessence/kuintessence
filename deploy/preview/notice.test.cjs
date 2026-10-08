@@ -53,6 +53,8 @@ describe("preview notices", () => {
       expect(posted.body).toContain(`部署版本：\`${sha}\``);
       expect(posted.body).toContain("HTTPS 和入口认证尚未验收，不能视为上线成功");
       expect(posted.body).not.toContain("HTTPS 和入口认证检查已通过");
+      expect(posted.body).toContain("`PREVIEW_USER` / `PREVIEW_PASSWORD`");
+      expect(posted.body).not.toContain("入口用户为 `preview`");
       expect(posted.body).not.toContain("环境已清理");
       expect(posted.body).toContain("资源及本次镜像 tag 保留");
       expect(posted.body).toContain("不因部署或 HTTPS 失败自动清理");
@@ -98,6 +100,8 @@ describe("preview notices", () => {
     expect(f.calls[1][1].body).toContain(`地址：${url}`);
     expect(f.calls[1][1].body).toContain(`部署版本：\`${sha}\``);
     expect(f.calls[1][1].body).toContain("HTTPS 和入口认证检查已通过");
+    expect(f.calls[1][1].body).toContain("`PREVIEW_USER` / `PREVIEW_PASSWORD`");
+    expect(f.calls[1][1].body).not.toContain("入口用户为 `preview`");
     expect(f.calls[1][1].body).not.toContain("待人工检查地址");
     expect(f.summary).toEqual([
       ["heading", "PR #17 preview"], ["raw", `${url}\n\nRevision: ${sha}`], ["write"],

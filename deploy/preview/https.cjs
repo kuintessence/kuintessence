@@ -65,7 +65,7 @@ function diagnosticLine(error, attempt) {
   return line(known?.stage ?? "UNKNOWN", known?.code ?? errorCode(error), attempt, known?.status);
 }
 
-async function acceptance(origin, password, cookie, request, report) {
+async function acceptance(origin, user, password, cookie, request, report) {
   const options = () => ({ redirect: "manual", signal: AbortSignal.timeout(15000) });
   let stage = "ANONYMOUS";
   let status;
@@ -90,7 +90,7 @@ async function acceptance(origin, password, cookie, request, report) {
     check(challenge.status === 401, "HTTP_STATUS", "Preview unlock must require authentication");
     stage = "UNLOCK";
     const unlock = await get(`${origin}/__preview/unlock`, {
-      ...options(), headers: { Authorization: `Basic ${Buffer.from(`preview:${password}`).toString("base64")}` },
+      ...options(), headers: { Authorization: `Basic ${Buffer.from(`${user}:${password}`).toString("base64")}` },
     });
     check(unlock.status === 200, "HTTP_STATUS", "Preview unlock did not issue its secure cookie");
     stage = "COOKIE";
@@ -112,8 +112,8 @@ async function acceptance(origin, password, cookie, request, report) {
   }
 }
 
-async function verifyHttps(origin, password, cookie, request = fetch) {
-  await acceptance(origin, password, cookie, request, () => {});
+async function verifyHttps(origin, user, password, cookie, request = fetch) {
+  await acceptance(origin, user, password, cookie, request, () => {});
 }
 
 async function runCLI(args, env = process.env, {
@@ -136,15 +136,17 @@ async function runCLI(args, env = process.env, {
     // Preserve the original per-attempt decoding and the delay after every failed attempt.
     const decode = (key) => Buffer.from(secret.data[key], "base64").toString("utf8");
     try {
+      let user;
       let password;
       let cookie;
       try {
+        user = decode("PREVIEW_USER");
         password = decode("PREVIEW_PASSWORD");
         cookie = decode("PREVIEW_COOKIE");
       } catch (error) {
         throw failure("INPUT", errorCode(error), "Unable to decode preview credentials");
       }
-      await acceptance(origin, password, cookie, request,
+      await acceptance(origin, user, password, cookie, request,
         (stage, status) => emit(line(stage, "OK", attempt, status)));
       emit(line("COMPLETE", "OK", attempt));
       return true;

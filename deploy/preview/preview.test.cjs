@@ -7,6 +7,8 @@ const { previewValues, runCLI: valuesCLI } = require("./values.cjs");
 const { verifyHttps } = require("./https.cjs");
 
 const sha = "a".repeat(40);
+const previewUser = "reviewer";
+const previewPassword = "a-dedicated-preview-password";
 function pull() {
   return {
     number: 17,
@@ -207,25 +209,25 @@ describe("immutable preview images and credentials", () => {
   });
   test("upgrades preserve existing database and application credentials", () => {
     const hash = () => "test-hash";
-    const initial = credentialData({}, "kq-pr-17", undefined, hash);
+    const initial = credentialData({}, "kq-pr-17", previewUser, previewPassword, hash);
     expect(Buffer.from(initial.DATABASE_URL, "base64").toString("utf8")).toContain("@kq-pr-17-postgres:5432/");
     expect(Buffer.from(initial.PREVIEW_COOKIE, "base64").toString("utf8")).toMatch(/^[a-f0-9]{64}$/);
-    expect(credentialData(initial, "kq-pr-17", undefined, hash)).toEqual(initial);
-    const next = credentialData(initial, "kq-pr-17", "a-new-dedicated-preview-password", hash);
+    expect(credentialData(initial, "kq-pr-17", previewUser, previewPassword, hash)).toEqual(initial);
+    const next = credentialData(initial, "kq-pr-17", previewUser, "a-new-dedicated-preview-password", hash);
     expect(next.JWT_SECRET).toBe(initial.JWT_SECRET);
     expect(next.POSTGRES_PASSWORD).toBe(initial.POSTGRES_PASSWORD);
     expect(next.PREVIEW_COOKIE).not.toBe(initial.PREVIEW_COOKIE);
-    expect(() => credentialData({}, "production", undefined, hash)).toThrow();
-    expect(() => credentialData({}, "kq-pr-17", "short", hash)).toThrow();
+    expect(() => credentialData({}, "production", previewUser, previewPassword, hash)).toThrow();
+    expect(() => credentialData({}, "kq-pr-17", previewUser, "short", hash)).toThrow();
   });
   test("isolates credentials by release inside the fixed namespace", () => {
-    const initial = credentialSecret(null, "17", "example/project", undefined, () => "test-hash");
+    const initial = credentialSecret(null, "17", "example/project", previewUser, previewPassword, () => "test-hash");
     expect(initial.metadata.name).toBe("kq-pr-17-secrets");
     expect(initial.metadata.namespace).toBe("preview");
     expect(initial.metadata.labels["app.kubernetes.io/instance"]).toBe("kq-pr-17");
-    expect(credentialSecret(initial, "17", "example/project", undefined, () => "test-hash")).toEqual(initial);
+    expect(credentialSecret(initial, "17", "example/project", previewUser, previewPassword, () => "test-hash")).toEqual(initial);
     for (const [pr, repository] of [["18", "example/project"], ["17", "another/project"]]) {
-      expect(() => credentialSecret(initial, pr, repository, undefined, () => "test-hash"))
+      expect(() => credentialSecret(initial, pr, repository, previewUser, previewPassword, () => "test-hash"))
         .toThrow("ownership mismatch");
     }
     for (const mutation of [
@@ -236,11 +238,11 @@ describe("immutable preview images and credentials", () => {
     ]) {
       expect(() => credentialSecret({
         ...initial, metadata: { ...initial.metadata, ...mutation },
-      }, "17", "example/project", undefined, () => "test-hash")).toThrow("ownership mismatch");
+      }, "17", "example/project", previewUser, previewPassword, () => "test-hash")).toThrow("ownership mismatch");
     }
-    expect(() => credentialSecret({}, "17", "example/project", undefined, () => "test-hash"))
+    expect(() => credentialSecret({}, "17", "example/project", previewUser, previewPassword, () => "test-hash"))
       .toThrow("ownership mismatch");
-    expect(() => credentialSecret(null, "../17", "example/project", undefined, () => "test-hash"))
+    expect(() => credentialSecret(null, "../17", "example/project", previewUser, previewPassword, () => "test-hash"))
       .toThrow("Invalid preview credential identity");
   }, 15000);
   test("HTTPS acceptance checks the gate, unlock, Web and Server", async () => {
@@ -257,10 +259,10 @@ describe("immutable preview images and credentials", () => {
       }
       return new Response("", { headers: { "content-type": url.endsWith("/api/health") ? "application/json" : "text/html" } });
     };
-    await verifyHttps("https://preview.example.test", "password", "opaque", request);
+    await verifyHttps("https://preview.example.test", previewUser, previewPassword, "opaque", request);
     expect(requests).toHaveLength(5);
     expect(requests.every(({ options }) => options.redirect === "manual")).toBe(true);
-    await expect(verifyHttps("https://preview.example.test", "password", "opaque",
+    await expect(verifyHttps("https://preview.example.test", previewUser, previewPassword, "opaque",
       async () => new Response("unguarded"))).rejects.toThrow();
   });
 });

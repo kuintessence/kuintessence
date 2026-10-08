@@ -44,7 +44,8 @@ PR 必须同时满足：同仓库、目标为默认分支、打开、非草稿�
 | `SSH_USER` | SSH 用户，需要允许 TCP forwarding |
 | `SSH_KEY` | 无交互解密的 SSH 私钥 |
 | `KUBE_CONFIG` | kubeconfig 文件原文，包含 CA 和内联 token 或客户端证书/私钥 |
-| `PREVIEW_PASSWORD` | 可选，至少 24 字符的独立预览入口口令 |
+| `PREVIEW_USER` | 必填，所有 PR 共用的固定入口用户名；1–64 字符，以字母或数字开头，仅含字母、数字、`_`、`.`、`@`、`-` |
+| `PREVIEW_PASSWORD` | 必填，所有 PR 共用的独立预览入口口令；至少 24 字符，不能含换行或其他控制字符 |
 
 预览采用**公开 GHCR**：构建推送使用该 job 的 `GITHUB_TOKEN` 和 `packages: write`，
 k3s 匿名拉取，不创建 GHCR 拉取 Secret，也不保存 Actions 的临时 token。
@@ -95,19 +96,20 @@ namespace，也不要求创建或修改 ClusterRole/ClusterRoleBinding，或取�
   此模式仅供受信任维护者使用，不是不可信多租户沙箱。
 - Traefik Ingress 使用完整 Host 和 `tls.hosts`，由现有默认 TLSStore 提供证书。
   不跨 namespace 引用 TLS Secret，不请求 cert-manager 签发，不修改集群 TLSStore。
-- 开发登录只允许经受保护的 gateway 访问。入口用户名 `preview`，
+- 开发登录只允许经受保护的 gateway 访问。入口使用仓库 Secrets 中的
+  `PREVIEW_USER` 和 `PREVIEW_PASSWORD`，人工访问与 CI HTTPS 验收使用同一组固定凭据；
   解锁后使用 HttpOnly/Secure cookie，不覆盖应用的 Bearer Authorization。
   不公开 Server gRPC、数据库、RustFS 控制台或 Agent 注册管理端点。
 
-未提供 `PREVIEW_PASSWORD` 时，首次部署生成随机口令，之后保留在
-该 PR 的 `kq-pr-<编号>-secrets`。管理员可通过受信终端读取，私下交给审阅者：
+部署前必须配置两个仓库 Actions Secrets；缺失或格式不合法时，在建立 SSH 隧道前
+拒绝部署，不再生成随机入口口令，也不回退到集群中保存的旧凭据。维护者通过私密渠道
+向审阅者提供账号和口令，不在 PR 评论、Actions Summary、日志或 artifact 中输出。
 
-```bash
-kubectl -n preview get secret kq-pr-123-secrets \
-  -o jsonpath='{.data.PREVIEW_PASSWORD}' | base64 --decode
-```
-
-将 `123` 替换成实际 PR 编号。**不要在 Actions 或公开终端录屏中运行这条取密命令。**
+每个 PR 的 `kq-pr-<编号>-secrets` 保存固定账号、口令及对应 htpasswd，供 CI 验收使用；
+数据库、JWT、对象存储密钥和入口 Cookie 仍按 PR 独立生成，不在 PR 之间共享。
+同一组凭据重复部署时保留 hash 和 Cookie；用户名或口令变更，以及旧格式 Secret 首次
+迁移时，重新生成 htpasswd 并轮换 Cookie，触发 gateway rollout，使旧解锁会话失效。
+修改 GitHub Secrets 不会立即更新已运行环境，须重新部署所有仍开放的 PR 才能完成轮换。
 demo seed 的内容和幂等策略见 [seed 指南](../deploy/seed/README.md)。
 该环境只用于虚构数据。单容器调度器不启用高权限 Apptainer managed Spack runtime；
 完整受管安装继续由独立 runner 验收，不代表远端预览已覆盖 15 个科学工作流。

@@ -2,11 +2,13 @@ const { describe, expect, test } = require("bun:test");
 const { verifyHttps, errorCode, diagnosticLine, runCLI } = require("./https.cjs");
 
 const origin = "https://private-preview.example.test";
+const user = "PRIVATE_USER_canary";
 const password = "PRIVATE_PASSWORD_canary";
 const cookie = "PRIVATE_COOKIE_canary";
 const privateText = "PRIVATE_message_header_url_certificate_canary";
 const env = { PREVIEW_PR: "17" };
 const secret = JSON.stringify({ data: {
+  PREVIEW_USER: Buffer.from(user).toString("base64"),
   PREVIEW_PASSWORD: Buffer.from(password).toString("base64"),
   PREVIEW_COOKIE: Buffer.from(cookie).toString("base64"),
 } });
@@ -49,8 +51,8 @@ async function rejected(operation) {
 
 function assertSafe(output) {
   const text = output.join("\n");
-  for (const value of [origin, password, cookie, privateText,
-    Buffer.from(`preview:${password}`).toString("base64")]) expect(text).not.toContain(value);
+  for (const value of [origin, user, password, cookie, privateText,
+    Buffer.from(`${user}:${password}`).toString("base64")]) expect(text).not.toContain(value);
   for (const entry of output) {
     expect(entry).toMatch(/^KQ_PREVIEW_HTTPS stage=[A-Z_]+ code=[A-Z_]+(?: status=[1-5][0-9]{2})?(?: attempt=(?:[1-9]|1[0-2]))?$/);
   }
@@ -59,7 +61,7 @@ function assertSafe(output) {
 describe("HTTPS acceptance stages", () => {
   test("retains five requests, manual redirects, bounded signals and exact credential routing", async () => {
     const server = requester();
-    expect(await verifyHttps(origin, password, cookie, server.request)).toBeUndefined();
+    expect(await verifyHttps(origin, user, password, cookie, server.request)).toBeUndefined();
     expect(server.calls.map((call) => call.url)).toEqual([
       origin, `${origin}/__preview/unlock`, `${origin}/__preview/unlock`, origin, `${origin}/api/health`,
     ]);
@@ -75,7 +77,7 @@ describe("HTTPS acceptance stages", () => {
     expect(server.calls[0].options.headers).toBeUndefined();
     expect(server.calls[1].options.headers).toBeUndefined();
     expect(server.calls[2].options.headers).toEqual({
-      Authorization: `Basic ${Buffer.from(`preview:${password}`).toString("base64")}`,
+      Authorization: `Basic ${Buffer.from(`${user}:${password}`).toString("base64")}`,
     });
     expect(server.calls[3].options.headers).toEqual({ Cookie: `kq_preview=${cookie}` });
     expect(server.calls[4].options.headers).toEqual({ Cookie: `kq_preview=${cookie}` });
@@ -94,7 +96,7 @@ describe("HTTPS acceptance stages", () => {
     const values = responses();
     values[index] = { status, headers };
     const server = requester(values);
-    const error = await rejected(() => verifyHttps(origin, password, cookie, server.request));
+    const error = await rejected(() => verifyHttps(origin, user, password, cookie, server.request));
     const output = [diagnosticLine(error, 3)];
     expect(output).toEqual([`KQ_PREVIEW_HTTPS stage=${stage} code=${code} status=${status} attempt=3`]);
     expect(server.calls).toHaveLength(index + 1);
@@ -104,7 +106,7 @@ describe("HTTPS acceptance stages", () => {
   test.each([0, 1, 2, 3, 4])("fetch cause at request %s retains its exact stage without stale HTTP status", async (index) => {
     const values = responses();
     values[index] = { error: new TypeError(privateText, { cause: { code: "ENOTFOUND", message: privateText } }) };
-    const error = await rejected(() => verifyHttps(origin, password, cookie, requester(values).request));
+    const error = await rejected(() => verifyHttps(origin, user, password, cookie, requester(values).request));
     const stage = ["ANONYMOUS", "CHALLENGE", "UNLOCK", "WEB", "HEALTH"][index];
     const output = [diagnosticLine(error, 1)];
     expect(output).toEqual([`KQ_PREVIEW_HTTPS stage=${stage} code=DNS_NOT_FOUND attempt=1`]);
@@ -116,10 +118,10 @@ describe("HTTPS acceptance stages", () => {
   test("throwing headers and malformed status cannot be interpolated into diagnostics", async () => {
     const values = responses();
     values[0].headerError = new Error(privateText);
-    const headerError = await rejected(() => verifyHttps(origin, password, cookie, requester(values).request));
+    const headerError = await rejected(() => verifyHttps(origin, user, password, cookie, requester(values).request));
     expect(diagnosticLine(headerError)).toBe("KQ_PREVIEW_HTTPS stage=ANONYMOUS_LOCATION code=UNKNOWN status=302");
     for (const status of [privateText, 0, 600, 200.5, NaN, { toString: () => privateText }]) {
-      const error = await rejected(() => verifyHttps(origin, password, cookie,
+      const error = await rejected(() => verifyHttps(origin, user, password, cookie,
         requester([{ status, headers: { location: privateText } }]).request));
       expect(diagnosticLine(error, privateText)).toBe("KQ_PREVIEW_HTTPS stage=ANONYMOUS code=HTTP_STATUS");
     }
@@ -129,7 +131,7 @@ describe("HTTPS acceptance stages", () => {
     const values = responses();
     values[2].headers["set-cookie"] = `kq_preview=${cookie};`;
     values[3].headers["content-type"] = "text/html";
-    await verifyHttps(origin, password, cookie, requester(values).request);
+    await verifyHttps(origin, user, password, cookie, requester(values).request);
   });
 });
 
@@ -151,7 +153,7 @@ describe("exception allowlist", () => {
   ])("recognizes only fixed error code %s", async (code, expected) => {
     const cause = new TypeError(privateText, { cause: { code, message: privateText } });
     expect(errorCode(cause)).toBe(expected);
-    const error = await rejected(() => verifyHttps(origin, password, cookie,
+    const error = await rejected(() => verifyHttps(origin, user, password, cookie,
       requester([{ error: cause }]).request));
     const output = [diagnosticLine(error, 1)];
     expect(output).toEqual([`KQ_PREVIEW_HTTPS stage=ANONYMOUS code=${expected} attempt=1`]);
@@ -180,6 +182,22 @@ describe("exception allowlist", () => {
 });
 
 describe("HTTPS CLI retries", () => {
+  test.each(["PREVIEW_USER", "PREVIEW_PASSWORD"])("missing %s never falls back to a default account or requests HTTPS", async (key) => {
+    const data = JSON.parse(secret).data;
+    delete data[key];
+    const output = [];
+    let calls = 0;
+    const ready = await runCLI(["/private/secret"], env, {
+      files: { readFileSync: () => JSON.stringify({ data }) },
+      request: async () => { calls++; throw new Error("must not request"); },
+      emit: (entry) => output.push(entry), sleep: async () => {},
+    });
+    expect(ready).toBe(false);
+    expect(calls).toBe(0);
+    expect(output[0]).toBe("KQ_PREVIEW_HTTPS stage=INPUT code=UNKNOWN attempt=1");
+    assertSafe(output);
+  });
+
   test("reports each successful check and a fixed completion marker without secrets", async () => {
     const output = [];
     const server = requester();
@@ -189,6 +207,9 @@ describe("HTTPS CLI retries", () => {
       sleep: async () => { throw new Error("must not sleep after success"); },
     });
     expect(ready).toBe(true);
+    expect(server.calls[2].options.headers.Authorization).toBe(
+      `Basic ${Buffer.from(`${user}:${password}`).toString("base64")}`,
+    );
     expect(output.map((entry) => entry.split(" ")[1])).toEqual([
       "stage=ANONYMOUS", "stage=ANONYMOUS_LOCATION", "stage=CHALLENGE", "stage=UNLOCK",
       "stage=COOKIE", "stage=WEB", "stage=WEB_HTML", "stage=HEALTH", "stage=COMPLETE",
