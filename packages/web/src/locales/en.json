@@ -1,5 +1,6 @@
 {
   "common": {
+    "retry": "Retry",
     "loading": "Loading…",
     "error": "Error",
     "cancel": "Cancel",
@@ -235,14 +236,14 @@
   },
   "quickStart": {
     "title": "Get started",
-    "description": "Nothing here yet. Submit a one-shot job or run the hello-world workflow to see the dashboard come alive.",
+    "description": "Try a real compute job or a two-step control-flow example with no software prerequisites. The run details open after submission.",
     "submitDemoJob": "Submit demo job",
-    "runHelloWorld": "Run hello-world workflow",
+    "runHelloWorld": "Run example workflow",
     "submittedJob": "Submitted demo job {{id}}",
     "failedJob": "Failed to submit demo job",
     "startedWorkflow_one": "Started workflow {{id}} ({{count}} step)",
     "startedWorkflow_other": "Started workflow {{id}} ({{count}} steps)",
-    "failedWorkflow": "Failed to start hello-world workflow"
+    "failedWorkflow": "Failed to start example workflow"
   },
   "jobs": {
     "title": "Jobs",
@@ -379,6 +380,16 @@
       "loadFailed": "Failed to load logs"
     },
     "files": {
+      "empty": "This job has no staged files.",
+      "inputs": "Input files",
+      "outputs": "Expected outputs",
+      "noInputs": "No input files staged.",
+      "noOutputs": "No output files declared.",
+      "source": "Source",
+      "stagePath": "Stage path",
+      "batch": "Batch",
+      "single": "Single",
+      "notPublishedUnverified": "NetDrive listing failed, so artifact publication cannot be verified. Try again.",
       "actions": "Actions",
       "actualFiles": "Actual files",
       "actualFileCount_one": "{{count}} file",
@@ -395,7 +406,7 @@
       "notPublishedPending": "Job has not reached terminal output collection yet.",
       "notPublishedCancelled": "Job was cancelled before this output was published.",
       "notPublishedFailed": "Job failed before this output was published.",
-      "notPublishedFailedReason": "Job failed before this output was published: {{reason}}",
+      "notPublishedFailedReason": "Job failed before this output was published. Check the job logs.",
       "notPublishedCompleted": "Job completed, but no matching NetDrive artifact was found under {{prefix}}. Check output collection logs or download from cluster storage."
     },
     "usecase": {
@@ -477,7 +488,9 @@
       "stagePathNoParent": "Stage path must not contain '..'.",
       "stagePathNoControl": "Stage path must not contain control characters.",
       "stagePathUnique": "Stage paths must be unique."
-    }
+    },
+    "noMatches": "No jobs match these filters.",
+    "loading": "Loading jobs…"
   },
   "workflows": {
     "title": "Workflows",
@@ -511,7 +524,14 @@
     "drafts": {
       "title": "Unfinished workflows",
       "description": "Open a saved draft to continue editing and configuration.",
-      "loadFailed": "Workflow drafts are temporarily unavailable. Refresh and try again."
+      "loadFailed": "Workflow drafts are temporarily unavailable. Refresh and try again.",
+      "deleteTitle": "Delete workflow draft",
+      "deleteDescription": "This action cannot be undone. Confirm the draft you want to delete.",
+      "deleting": "Deleting…",
+      "deleteFailed": "Could not delete the draft. Please try again.",
+      "openTitle": "Open workflow draft",
+      "loading": "Loading draft…",
+      "backToList": "Back to workflows"
     },
     "queueChecking": "Checking queues",
     "queueHidden_one": "{{count}} queue reference is disabled or not visible",
@@ -525,6 +545,7 @@
     "edgeCount_other": "{{count}} edges",
     "validationFailed": "YAML invalid",
     "run": {
+      "jobsLoadFailed": "{{count}} linked job(s) could not be loaded. Some nodes show saved status that may be out of date. Try again.",
       "unavailable": "This workflow run may not exist, have been deleted, or be unavailable to your account",
       "invalidId": "The workflow run ID is invalid",
       "loadFailed": "Unable to load the workflow run",
@@ -558,7 +579,16 @@
           "title": "Workflow execution interrupted",
           "message": "Platform recovery or cancellation interrupted this run. Confirm that related jobs have stopped, then submit again. Contact the platform administrator if it recurs."
         }
-      }
+      },
+      "title": "Workflow run",
+      "nodes": "Nodes",
+      "edges": "Edges",
+      "created": "Created",
+      "graph": "Graph",
+      "cancel": "Cancel run",
+      "cancelling": "Cancelling",
+      "cancelRequested": "Workflow cancellation requested",
+      "awaitingApproval": "This run is waiting for placement-plan budget approval. Its status will update automatically after approval. You can also cancel it, adjust the budget and submit again."
     },
     "templates": {
       "title": "Template",
@@ -748,7 +778,8 @@
         "durationHours": "About {{count}} hr",
         "durationHoursMinutes": "About {{hours}} hr {{minutes}} min",
         "costUnavailable": "No billing data",
-        "costValue": "{{value}} cost units"
+        "costValue": "{{value}} cost units",
+        "invalidBudget": "Enter a finite budget of zero or more, or leave it blank for no limit."
       },
       "review": {
         "title": "Pre-run review",
@@ -785,7 +816,8 @@
         "governanceBlocked": "License, runtime, or restricted-material prerequisites blocked the last submission",
         "submitConfirmDescription": "Submit a workflow with {{nodes}} nodes and {{edges}} dependencies.",
         "submitConfirmHint": "The platform will create a run using the current inputs, scheduling strategy, and budget constraints."
-      }
+      },
+      "nameRequired": "Enter a workflow name."
     },
     "parsedSteps": "Parsed nodes",
     "nodesCount_one": "{{count}} node parsed",
@@ -811,7 +843,10 @@
       "ready": "Ready",
       "unavailable": "Unavailable",
       "unknown": "Unknown"
-    }
+    },
+    "scheduler": "Scheduler",
+    "heartbeat": "Heartbeat",
+    "never": "Never"
   },
   "software": {
     "availabilityReason": {
@@ -1185,7 +1220,10 @@
       "fingerprint": "Local file fingerprint",
       "registerMaterial": "Register local material mapping",
       "noMaterialMappings": "No local restricted material mapping is registered."
-    }
+    },
+    "management": "Access and publishing management",
+    "managementDescription": "Requests, publishing status and license declarations",
+    "materialManagement": "Recipe and material management"
   },
   "sandbox": {
     "catalog": {
@@ -1777,6 +1815,8 @@
     "clusterTitle": "Cluster files",
     "clusterEmpty": "No entries in this authorized cluster path.",
     "clusterNoAgent": "No online cluster agent.",
+    "clusterAgent": "Cluster Agent",
+    "clusterAgentUnavailable": "Current Agent unavailable; select another",
     "clusterAgentsLoadFailed": "Agents could not be loaded. Refresh and try again.",
     "clusterNoAuthorizedRoot": "No authorized Cluster File Root is configured for this Agent.",
     "clusterRoot": "Cluster File Root",
@@ -1842,6 +1882,7 @@
       "copyPathFailed": "Failed to copy path"
     },
     "deleteDialog": {
+      "unavailable": "The file is unavailable or delete access could not be verified. Close this dialog, refresh, and try again.",
       "title": "Delete platform file?",
       "description": "After deletion, this file can no longer be downloaded or used for job input and transfers.",
       "size": "Size: {{size}}",

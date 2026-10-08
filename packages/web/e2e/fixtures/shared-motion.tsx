@@ -23,6 +23,8 @@ import {
   SheetTrigger,
 } from "../../src/components/ui/sheet";
 
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "../../src/components/ui/tabs";
+
 const longTitle =
   "Select destination folder for scientific computation results and transfer output files";
 const longDescription =
@@ -34,6 +36,18 @@ function MotionFixture() {
   const [deletions, setDeletions] = useState(0);
   return (
     <main>
+      <Tabs defaultValue="overview">
+        <TabsList>
+          <TabsTrigger value="overview">Overview</TabsTrigger>
+          <TabsTrigger value="logs">Logs</TabsTrigger>
+        </TabsList>
+        <TabsContent value="overview">Overview content</TabsContent>
+        <TabsContent value="logs">Logs content</TabsContent>
+      </Tabs>
+      <details>
+        <summary>Manage materials</summary>
+        <div className="kq-motion--disclosure">Materials content</div>
+      </details>
       <button type="button" onClick={() => setClicks(clicks + 1)}>
         Underlying {clicks}
       </button>
@@ -56,6 +70,7 @@ function MotionFixture() {
       </button>
       <output data-testid="deletions">{deletions}</output>
       <DeleteCloudFileDialog
+        canConfirm
         file={file}
         error={null}
         pending={false}

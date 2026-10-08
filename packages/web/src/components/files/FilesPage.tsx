@@ -104,10 +104,19 @@ export function FilesPage() {
     refetchInterval: 30_000,
   });
   const onlineAgents = useMemo(
-    () => (agentsQ.data?.agents ?? []).filter((a) => a.status.toLowerCase() === "online"),
-    [agentsQ.data],
+    () =>
+      (agentsQ.isSuccess ? (agentsQ.data?.agents ?? []) : []).filter(
+        (a) => a.status.toLowerCase() === "online",
+      ),
+    [agentsQ.data, agentsQ.isSuccess],
   );
-  const selectedAgent = onlineAgents.find((a) => a.agentId === agentId) ?? onlineAgents[0] ?? null;
+  const selectedAgent = agentId
+    ? (onlineAgents.find((a) => a.agentId === agentId) ?? null)
+    : (onlineAgents[0] ?? null);
+
+  useEffect(() => {
+    if (!agentId && selectedAgent) setAgentId(selectedAgent.agentId);
+  }, [agentId, selectedAgent]);
 
   const cloudQ = useQuery({
     queryKey: ["files-cloud"],
@@ -120,7 +129,12 @@ export function FilesPage() {
     refetchInterval: 30_000,
   });
   const clusterQ = useQuery({
-    queryKey: ["files-cluster", selectedAgent?.siteName, requestedClusterPath],
+    queryKey: [
+      "files-cluster",
+      selectedAgent?.agentId,
+      selectedAgent?.siteName,
+      requestedClusterPath,
+    ],
     queryFn: () => {
       const query = new URLSearchParams({
         agentId: selectedAgent?.agentId ?? "",
@@ -142,17 +156,19 @@ export function FilesPage() {
   const agentListError = agentsQ.error instanceof Error ? agentsQ.error : null;
   const clusterListError = clusterQ.error instanceof Error ? clusterQ.error : null;
   const netdriveDisabled =
-    netdriveError?.code === "NETDRIVE_DISABLED" ||
-    netdriveError?.status === 404 ||
-    netdriveError?.status === 503;
+    netdriveError?.code === "NETDRIVE_DISABLED" || netdriveError?.status === 404;
   const cloudActionsDisabled = cloudQ.isLoading || Boolean(cloudListError);
   const transferActionsDisabled = cloudActionsDisabled || netdriveDisabled;
-  const clusterPath = requestedClusterPath || clusterQ.data?.path || "";
+  const clusterPath = selectedAgent ? requestedClusterPath || clusterQ.data?.path || "" : "";
   const responseClusterRoots = useMemo(
     () => clusterQ.data?.roots ?? (clusterQ.data?.path ? [clusterQ.data.path] : []),
     [clusterQ.data],
   );
-  const clusterRoots = clusterQ.data ? responseClusterRoots : knownClusterRoots;
+  const clusterRoots = selectedAgent
+    ? clusterQ.data
+      ? responseClusterRoots
+      : knownClusterRoots
+    : [];
   const activeClusterRoot =
     selectedClusterRoot && clusterRoots.includes(selectedClusterRoot)
       ? selectedClusterRoot
@@ -222,7 +238,8 @@ export function FilesPage() {
   const cloudSelectionVerified =
     cloudQ.isSuccess && !cloudActionsDisabled && Boolean(selectedCloudObject);
   const cloudSelectionUsable = cloudSelectionVerified && selectedCloudObject?.canUse === true;
-  const clusterPathVerified = clusterQ.isSuccess && clusterQ.data.path === clusterPath;
+  const clusterPathVerified =
+    !clusterActionsDisabled && clusterQ.isSuccess && clusterQ.data.path === clusterPath;
   const clusterSelectionVerified =
     clusterPathVerified && !clusterActionsDisabled && Boolean(selectedClusterEntry);
 
@@ -334,6 +351,12 @@ export function FilesPage() {
     }
   };
 
+  const deleteTargetVerified = Boolean(
+    deleteTarget &&
+      !cloudActionsDisabled &&
+      cloudObjects.some((file) => file.id === deleteTarget.id && file.canDelete),
+  );
+
   const requestCloudDelete = (obj: CloudPaneEntry) => {
     if (!obj.canDelete || deletePendingRef.current) return;
     setDeleteError(null);
@@ -341,7 +364,7 @@ export function FilesPage() {
   };
 
   const confirmCloudDelete = async () => {
-    if (!deleteTarget || deletePendingRef.current) return;
+    if (!deleteTarget || !deleteTargetVerified || deletePendingRef.current) return;
     const target = deleteTarget;
     deletePendingRef.current = target.id;
     setDeletingCloudId(target.id);
@@ -356,6 +379,7 @@ export function FilesPage() {
         queryClient.invalidateQueries({ queryKey: ["storage-summary"] }),
         queryClient.invalidateQueries({ queryKey: ["command-workdir-cloud-files"] }),
         queryClient.invalidateQueries({ queryKey: ["data-market", "netdrive"] }),
+        queryClient.invalidateQueries({ queryKey: ["job-files-netdrive"] }),
       ]);
     } catch (err) {
       const message = toUserFacingError(err, t("files.deleteDialog.failed"));
@@ -637,7 +661,10 @@ export function FilesPage() {
       />
       <DeleteCloudFileDialog
         file={deleteTarget}
-        error={deleteError}
+        error={
+          deleteTarget && !deleteTargetVerified ? t("files.deleteDialog.unavailable") : deleteError
+        }
+        canConfirm={deleteTargetVerified}
         pending={deletingCloudId !== null}
         onCancel={() => {
           setDeleteTarget(null);

@@ -1,5 +1,6 @@
 import { Check, ChevronDown, Plus, Search, ShieldCheck, Upload } from "lucide-react";
 import { useTranslation } from "react-i18next";
+import { statusLabel } from "../../lib/format";
 import { cn } from "../../lib/utils";
 import { Button } from "../ui/button";
 import {
@@ -43,7 +44,7 @@ export function JobsToolbar({
   onCreateFromUsecase,
   actionsDisabled = false,
 }: JobsToolbarProps) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   return (
     <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
       <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
@@ -57,7 +58,11 @@ export function JobsToolbar({
             data-testid="jobs-search"
           />
         </div>
-        <div className="flex flex-wrap gap-1" data-testid="jobs-status-filter">
+        <fieldset
+          className="flex min-w-0 flex-wrap gap-1"
+          aria-label={t("dashboard.status")}
+          data-testid="jobs-status-filter"
+        >
           {STATUS_FILTERS.map((s) => {
             const active = s === status;
             return (
@@ -65,6 +70,7 @@ export function JobsToolbar({
                 key={s}
                 type="button"
                 data-testid={`status-chip-${s.toLowerCase()}`}
+                aria-pressed={active}
                 onClick={() => onStatusChange(s)}
                 className={cn(
                   "rounded-full border px-3 py-1 text-xs transition-colors",
@@ -73,11 +79,13 @@ export function JobsToolbar({
                     : "border-border text-muted-foreground hover:bg-muted/60",
                 )}
               >
-                {s === "ALL" ? t("common.all") : s.charAt(0) + s.slice(1).toLowerCase()}
+                {s === "ALL"
+                  ? t("common.all")
+                  : statusLabel(s, i18n?.resolvedLanguage ?? i18n?.language)}
               </button>
             );
           })}
-        </div>
+        </fieldset>
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <Button variant="outline" size="sm" data-testid="jobs-scope-filter">

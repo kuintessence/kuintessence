@@ -17,6 +17,8 @@ const ORGANIZATION_SENSITIVE_QUERY_ROOTS = new Set([
   "files-cluster",
   "files-transfers",
   "job-detail",
+  "job-logs",
+  "job-files-netdrive",
   "job-placement",
   "jobs-list",
   "metering",

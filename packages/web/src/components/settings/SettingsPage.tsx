@@ -173,7 +173,7 @@ function ExpiryRow({ expiresAt }: ExpiryRowProps) {
   return (
     <div
       data-testid="settings-expiry"
-      className="flex items-baseline gap-2 text-xs text-muted-foreground"
+      className="flex flex-wrap items-baseline gap-2 text-xs text-muted-foreground"
     >
       <span>{t("settings.tokenExpiresIn")}</span>
       <span className="font-mono tabular-nums" data-testid="settings-expiry-value">
@@ -412,12 +412,12 @@ export function SettingsPage() {
                     <CardTitle>{t("settings.account")}</CardTitle>
                   </CardHeader>
                   <CardContent className="space-y-3">
-                    <div className="grid grid-cols-[120px_1fr] gap-y-2 text-sm">
-                      <span className="text-muted-foreground">{t("settings.signedInAs")}</span>
-                      <span className="font-mono">{auth.email ?? "—"}</span>
-                      <span className="text-muted-foreground">{t("settings.role")}</span>
-                      <span className="font-mono">{auth.role ?? "user"}</span>
-                    </div>
+                    <dl className="grid min-w-0 grid-cols-1 gap-x-3 gap-y-2 text-sm sm:grid-cols-[120px_minmax(0,1fr)]">
+                      <dt className="text-muted-foreground">{t("settings.signedInAs")}</dt>
+                      <dd className="min-w-0 break-all font-mono">{auth.email ?? "—"}</dd>
+                      <dt className="text-muted-foreground">{t("settings.role")}</dt>
+                      <dd className="min-w-0 break-all font-mono">{auth.role ?? "user"}</dd>
+                    </dl>
                     <ExpiryRow expiresAt={auth.expiresAt} />
                     <Button
                       variant="outline"

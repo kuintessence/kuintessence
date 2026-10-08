@@ -1,7 +1,7 @@
 import type { ColumnDef } from "@tanstack/react-table";
 import { useMemo } from "react";
 import { useTranslation } from "react-i18next";
-import { relativeFromNow, statusToBadgeVariant } from "../../lib/format";
+import { relativeFromNow, statusLabel, statusToBadgeVariant } from "../../lib/format";
 import { useMediaQuery } from "../../lib/use-media-query";
 import { Badge } from "../ui/badge";
 import { DataTable } from "../ui/data-table";
@@ -13,7 +13,8 @@ export interface JobsTableProps {
 }
 
 export function JobsTable({ jobs, onRowClick }: JobsTableProps) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
+  const language = i18n?.resolvedLanguage ?? i18n?.language;
   const narrow = useMediaQuery("(max-width: 767px)");
   const columns = useMemo<ColumnDef<JobRow>[]>(
     () => [
@@ -29,12 +30,20 @@ export function JobsTable({ jobs, onRowClick }: JobsTableProps) {
       },
       {
         accessorKey: "name",
-        header: "Name",
+        header: t("jobs.overview.name"),
         cell: ({ row }) => (
           <div className="flex min-w-0 max-w-[28rem] flex-col">
-            <span className="truncate font-medium" title={row.original.name}>
+            <button
+              type="button"
+              className="max-w-[28rem] truncate rounded-sm text-left font-medium text-brand underline-offset-4 hover:underline focus-visible:outline-2 focus-visible:outline-ring"
+              title={row.original.name}
+              onClick={(event) => {
+                event.stopPropagation();
+                onRowClick(row.original);
+              }}
+            >
               {row.original.name}
-            </span>
+            </button>
             <span
               className="truncate font-mono text-[11px] text-muted-foreground"
               title={row.original.id}
@@ -46,28 +55,28 @@ export function JobsTable({ jobs, onRowClick }: JobsTableProps) {
       },
       {
         accessorKey: "status",
-        header: "Status",
+        header: t("dashboard.status"),
         cell: ({ row }) => (
           <Badge className="whitespace-nowrap" variant={statusToBadgeVariant(row.original.status)}>
-            {row.original.status}
+            {statusLabel(row.original.status, language)}
           </Badge>
         ),
         sortingFn: "alphanumeric",
       },
       {
         accessorKey: "submittedAt",
-        header: "Submitted",
+        header: t("jobs.overview.submitted"),
         cell: ({ row }) => (
           <span
             className="font-mono text-[11px] text-muted-foreground tabular-nums"
             title={row.original.submittedAt}
           >
-            {relativeFromNow(row.original.submittedAt)}
+            {relativeFromNow(row.original.submittedAt, undefined, language)}
           </span>
         ),
       },
     ],
-    [t],
+    [t, language, onRowClick],
   );
 
   if (narrow) {
@@ -75,7 +84,7 @@ export function JobsTable({ jobs, onRowClick }: JobsTableProps) {
       <div className="space-y-2">
         {jobs.length === 0 ? (
           <div className="rounded-lg border border-dashed border-border bg-card px-4 py-10 text-center text-sm text-muted-foreground">
-            No jobs match these filters.
+            {t("jobs.noMatches")}
           </div>
         ) : (
           jobs.map((job) => (
@@ -97,7 +106,7 @@ export function JobsTable({ jobs, onRowClick }: JobsTableProps) {
               <div className="flex items-center justify-between gap-3">
                 <div className="flex min-w-0 items-center gap-2">
                   <Badge className="whitespace-nowrap" variant={statusToBadgeVariant(job.status)}>
-                    {job.status}
+                    {statusLabel(job.status, language)}
                   </Badge>
                   {job.accessScope ? (
                     <Badge variant="outline" className="max-w-36 truncate">
@@ -106,7 +115,7 @@ export function JobsTable({ jobs, onRowClick }: JobsTableProps) {
                   ) : null}
                 </div>
                 <span className="font-mono text-[11px] text-muted-foreground tabular-nums">
-                  {relativeFromNow(job.submittedAt)}
+                  {relativeFromNow(job.submittedAt, undefined, language)}
                 </span>
               </div>
             </button>
@@ -123,7 +132,7 @@ export function JobsTable({ jobs, onRowClick }: JobsTableProps) {
       getRowId={(j) => j.id}
       rowDataTestId={(j) => `job-row-${j.id}`}
       onRowClick={onRowClick}
-      emptyState="No jobs match these filters."
+      emptyState={t("jobs.noMatches")}
     />
   );
 }

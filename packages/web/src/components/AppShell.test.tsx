@@ -128,6 +128,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.restoreAllMocks();
   vi.clearAllMocks();
   mockedIsLocalMode.mockReturnValue(false);
   mockedUseLocalCapabilities.mockReturnValue(null);
@@ -236,11 +237,15 @@ describe("AppShell sidebar — Server mode", () => {
     );
     render(<AppShell />);
 
+    expect(screen.queryByTestId("sidebar-backdrop")).toBeNull();
+    expect(localStorage.getItem("kq.sidebar-expanded")).toBe("true");
+    fireEvent.click(screen.getByTestId("mobile-sidebar-open"));
     expect(screen.getByTestId("sidebar-backdrop")).toBeTruthy();
     fireEvent.click(screen.getByTestId("workspace-nav-nav-jobs"));
 
     expect(screen.getByTestId("sidebar").getAttribute("data-expanded")).toBe("false");
     expect(screen.queryByTestId("sidebar-backdrop")).toBeNull();
+    expect(localStorage.getItem("kq.sidebar-expanded")).toBe("true");
   });
 
   test("keeps expanded content aligned with the actual sidebar width", () => {

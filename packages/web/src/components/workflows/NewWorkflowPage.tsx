@@ -1,5 +1,5 @@
 import type { PreferenceSpec } from "@kuintessence/shared/browser";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import {
   AlertTriangle,
@@ -50,6 +50,7 @@ import { type WorkflowCreationStep, WorkflowCreationStepper } from "./WorkflowCr
 import { WorkflowInputsStep, type WorkflowInputsStepHandle } from "./WorkflowInputsStep";
 import { WorkflowTemplatePickerDialog } from "./WorkflowPickerDialogs";
 import {
+  isWorkflowBudgetValid,
   type WorkflowPlacementDraft,
   type WorkflowQueueOption,
   WorkflowResourcesStep,
@@ -186,6 +187,7 @@ function collectQueueReferencesFromSpec(spec: WorkflowSpec): QueueReference[] {
 export function NewWorkflowPage() {
   const { t } = useTranslation();
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
   const [initialDraft] = useState(() => {
     const pending = consumePendingTemplate();
     const name = defaultWorkflowName();
@@ -214,11 +216,17 @@ export function NewWorkflowPage() {
   }, []);
   const [selectedTemplateId, setSelectedTemplateId] = useState<string | null>(null);
   const [fileDraftId] = useState(() => crypto.randomUUID());
-  const [savedDraftId, setSavedDraftId] = useState<string | null>(() => {
-    if (typeof window === "undefined") return null;
-    return new URLSearchParams(window.location.search).get("draftId");
-  });
+  const [draftRequest, setDraftRequest] = useState(() => ({
+    id:
+      typeof window === "undefined"
+        ? null
+        : new URLSearchParams(window.location.search).get("draftId"),
+  }));
+  const [savedDraftId, setSavedDraftId] = useState(draftRequest.id);
+  const [draftLoading, setDraftLoading] = useState(Boolean(draftRequest.id));
+  const [draftLoadError, setDraftLoadError] = useState<unknown>(null);
   const [savingDraft, setSavingDraft] = useState(false);
+  const saveInFlight = useRef(false);
   const [values, setValues] = useState<Record<string, string>>({});
   const [candidates, setCandidates] = useState<WorkflowFileCandidate[]>([]);
   const [bindings, setBindings] = useState<Record<string, WorkflowFileCandidate[]>>({});
@@ -299,10 +307,12 @@ export function NewWorkflowPage() {
   }, [parsed]);
 
   useEffect(() => {
-    if (!savedDraftId) return;
+    if (!draftRequest.id) return;
     let cancelled = false;
+    setDraftLoading(true);
+    setDraftLoadError(null);
     api
-      .get<WorkflowDraftResp>(`/workflows/drafts/${savedDraftId}`)
+      .get<WorkflowDraftResp>(`/workflows/drafts/${encodeURIComponent(draftRequest.id)}`)
       .then((draft) => {
         if (cancelled) return;
         setYaml(draft.yaml);
@@ -316,12 +326,15 @@ export function NewWorkflowPage() {
         setStartOverlayOpen(false);
       })
       .catch((error) => {
-        if (!cancelled) toast.error(toUserFacingError(error, t("common.error")));
+        if (!cancelled) setDraftLoadError(error);
+      })
+      .finally(() => {
+        if (!cancelled) setDraftLoading(false);
       });
     return () => {
       cancelled = true;
     };
-  }, [savedDraftId, t]);
+  }, [draftRequest]);
 
   function commitWorkflowName() {
     const name = workflowName.trim();
@@ -393,7 +406,12 @@ export function NewWorkflowPage() {
   const queueReferencesReady =
     queueReferences.length === 0 ||
     (!queuesQ.isLoading && !queuesQ.error && hiddenQueueRefs.length === 0);
+  const budgetValid = isWorkflowBudgetValid(placementDraft.budgetCap);
   const workflowReady =
+    !draftLoading &&
+    !draftLoadError &&
+    Boolean(workflowName.trim()) &&
+    budgetValid &&
     parsed.ok &&
     parsedNodeCount > 0 &&
     missingRequiredFiles.length === 0 &&
@@ -405,48 +423,59 @@ export function NewWorkflowPage() {
     (inputModel.files.length === 0 || inputsConfirmed) &&
     queueReferencesReady;
 
-  const readinessMessage = !parsed.ok
-    ? t("workflows.creation.readiness.fixYaml")
-    : parsedNodeCount === 0
-      ? t("workflows.creation.readiness.addNode")
-      : missingRequiredValues.length > 0
-        ? t("workflows.creation.readiness.fillParameters", {
-            count: missingRequiredValues.length,
-          })
-        : missingRequiredFiles.length > 0
-          ? t("workflows.creation.readiness.matchFiles", { count: missingRequiredFiles.length })
-          : inputModel.files.length > 0 && !inputsConfirmed
-            ? t("workflows.creation.readiness.confirmFiles")
-            : invalidDatasetBindings.length > 0
-              ? t("workflows.creation.readiness.chooseDatasets", {
-                  count: invalidDatasetBindings.length,
-                })
-              : unresolvedSubworkflowRefs.length > 0
-                ? t("workflows.creation.readiness.resolveSubworkflows", {
-                    count: unresolvedSubworkflowRefs.length,
-                    versions: unresolvedSubworkflowRefs
-                      .map((block) => block.workflowVersionId)
-                      .join(", "),
-                  })
-                : byVersionInputsQ.error
-                  ? toUserFacingError(
-                      byVersionInputsQ.error,
-                      t("workflows.creation.readiness.loadSubworkflowInputs"),
-                    )
-                  : byVersionInputsQ.isLoading
-                    ? t("workflows.creation.readinessChecking")
-                    : queueReferences.length > 0 && queuesQ.isLoading
-                      ? t("workflows.creation.readinessChecking")
-                      : queuesQ.error
-                        ? t("workflows.creation.readiness.loadQueues")
-                        : hiddenQueueRefs.length > 0
-                          ? t("workflows.creation.readiness.chooseQueue", {
-                              count: hiddenQueueRefs.length,
-                            })
-                          : t("workflows.creation.readyToSubmit");
+  const readinessMessage = !workflowName.trim()
+    ? t("workflows.creation.nameRequired")
+    : !budgetValid
+      ? t("workflows.creation.resources.invalidBudget")
+      : !parsed.ok
+        ? t("workflows.creation.readiness.fixYaml")
+        : parsedNodeCount === 0
+          ? t("workflows.creation.readiness.addNode")
+          : missingRequiredValues.length > 0
+            ? t("workflows.creation.readiness.fillParameters", {
+                count: missingRequiredValues.length,
+              })
+            : missingRequiredFiles.length > 0
+              ? t("workflows.creation.readiness.matchFiles", { count: missingRequiredFiles.length })
+              : inputModel.files.length > 0 && !inputsConfirmed
+                ? t("workflows.creation.readiness.confirmFiles")
+                : invalidDatasetBindings.length > 0
+                  ? t("workflows.creation.readiness.chooseDatasets", {
+                      count: invalidDatasetBindings.length,
+                    })
+                  : unresolvedSubworkflowRefs.length > 0
+                    ? t("workflows.creation.readiness.resolveSubworkflows", {
+                        count: unresolvedSubworkflowRefs.length,
+                        versions: unresolvedSubworkflowRefs
+                          .map((block) => block.workflowVersionId)
+                          .join(", "),
+                      })
+                    : byVersionInputsQ.error
+                      ? toUserFacingError(
+                          byVersionInputsQ.error,
+                          t("workflows.creation.readiness.loadSubworkflowInputs"),
+                        )
+                      : byVersionInputsQ.isLoading
+                        ? t("workflows.creation.readinessChecking")
+                        : queueReferences.length > 0 && queuesQ.isLoading
+                          ? t("workflows.creation.readinessChecking")
+                          : queuesQ.error
+                            ? t("workflows.creation.readiness.loadQueues")
+                            : hiddenQueueRefs.length > 0
+                              ? t("workflows.creation.readiness.chooseQueue", {
+                                  count: hiddenQueueRefs.length,
+                                })
+                              : t("workflows.creation.readyToSubmit");
 
   async function saveDraft() {
-    if (savingDraft || !workflowName.trim()) return;
+    if (
+      saveInFlight.current ||
+      draftLoading ||
+      draftLoadError ||
+      !workflowName.trim() ||
+      !budgetValid
+    )
+      return;
     let nextYaml: string;
     try {
       nextYaml = applyWorkflowInputConfiguration(
@@ -460,7 +489,9 @@ export function NewWorkflowPage() {
       toast.error(error instanceof Error ? error.message : t("workflows.validationFailed"));
       return;
     }
+    saveInFlight.current = true;
     setSavingDraft(true);
+    setYaml(nextYaml);
     try {
       const budgetCap = placementDraft.budgetCap.trim();
       const payload = {
@@ -475,8 +506,8 @@ export function NewWorkflowPage() {
       const saved = savedDraftId
         ? await api.put<WorkflowDraftResp>(`/workflows/drafts/${savedDraftId}`, payload)
         : await api.post<WorkflowDraftResp>("/workflows/drafts", payload);
-      setYaml(nextYaml);
       setSavedDraftId(saved.id);
+      void queryClient.invalidateQueries({ queryKey: ["workflow-drafts"] });
       const search = new URLSearchParams(window.location.search);
       search.set("draftId", saved.id);
       window.history.replaceState({}, "", `${window.location.pathname}?${search.toString()}`);
@@ -484,15 +515,16 @@ export function NewWorkflowPage() {
     } catch (error) {
       toast.error(toUserFacingError(error, t("workflows.creation.draftSaveFailed")));
     } finally {
+      saveInFlight.current = false;
       setSavingDraft(false);
     }
   }
   async function onSubmit() {
-    if (busy) return;
+    if (busy || !workflowReady) return;
     let submissionYaml: string;
     try {
       submissionYaml = applyWorkflowInputConfiguration(
-        yaml,
+        yamlWithCurrentName(),
         inputModel,
         values,
         bindings,
@@ -601,6 +633,38 @@ export function NewWorkflowPage() {
     setPendingStep(null);
   }
 
+  if (draftLoading || draftLoadError) {
+    return (
+      <div
+        className="space-y-4 rounded-xl border border-border bg-card p-5"
+        data-testid="workflow-draft-load-state"
+        aria-busy={draftLoading}
+      >
+        <h2 className="text-xl font-semibold">{t("workflows.drafts.openTitle")}</h2>
+        {draftLoading ? (
+          <p role="status" className="flex items-center gap-2 text-sm text-muted-foreground">
+            <Loader2 className="h-4 w-4 animate-spin motion-reduce:animate-none" />
+            {t("workflows.drafts.loading")}
+          </p>
+        ) : (
+          <p role="alert" className="text-sm text-status-failed">
+            {toUserFacingError(draftLoadError, t("workflows.drafts.loadFailed"))}
+          </p>
+        )}
+        <div className="flex flex-wrap gap-2">
+          {!draftLoading ? (
+            <Button type="button" onClick={() => setDraftRequest((request) => ({ ...request }))}>
+              {t("globalError.retry")}
+            </Button>
+          ) : null}
+          <Button type="button" variant="outline" onClick={() => navigate({ to: "/workflows" })}>
+            {t("workflows.drafts.backToList")}
+          </Button>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-5" data-testid="new-workflow-page">
       <div className="overflow-hidden rounded-xl border border-border bg-card shadow-sm">
@@ -609,7 +673,7 @@ export function NewWorkflowPage() {
             <div className="min-w-0">
               <input
                 aria-label={t("workflows.creation.workflowName")}
-                className="min-w-0 max-w-full border-0 bg-transparent p-0 text-2xl font-semibold tracking-tight outline-none ring-0 sm:text-3xl"
+                className="min-w-0 max-w-full border-0 bg-transparent p-0 text-2xl font-semibold tracking-tight rounded-sm outline-none ring-0 focus-visible:ring-2 focus-visible:ring-ring sm:text-3xl"
                 value={workflowName}
                 onChange={(event) => setWorkflowName(event.target.value)}
                 onBlur={commitWorkflowName}
@@ -636,7 +700,7 @@ export function NewWorkflowPage() {
                 type="button"
                 size="sm"
                 className="bg-[var(--status-succeeded)] text-white hover:bg-[color-mix(in_oklab,var(--status-succeeded)_88%,black)]"
-                disabled={savingDraft || !workflowName.trim()}
+                disabled={savingDraft || !workflowName.trim() || !budgetValid}
                 onClick={() => void saveDraft()}
                 data-testid="workflow-save-draft"
               >

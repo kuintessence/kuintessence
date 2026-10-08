@@ -18,6 +18,7 @@ interface DeleteCloudFileDialogProps {
   file: CloudPaneEntry | null;
   error: string | null;
   pending: boolean;
+  canConfirm: boolean;
   onCancel: () => void;
   onConfirm: () => void;
 }
@@ -26,6 +27,7 @@ export function DeleteCloudFileDialog({
   file,
   error,
   pending,
+  canConfirm,
   onCancel,
   onConfirm,
 }: DeleteCloudFileDialogProps) {
@@ -67,7 +69,7 @@ export function DeleteCloudFileDialog({
           </Button>
           <Button
             variant="destructive"
-            disabled={pending || file === null}
+            disabled={pending || file === null || !canConfirm}
             onClick={onConfirm}
             data-testid="files-delete-confirm"
           >

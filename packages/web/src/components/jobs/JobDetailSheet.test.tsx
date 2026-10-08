@@ -18,10 +18,11 @@ import { JobDetailSheet } from "./JobDetailSheet";
 // Failed job detail requests show a status-aware error card and hide the tabs.
 // Terminal client errors are not retried.
 
-function makeWrapper() {
-  const qc = new QueryClient({
+function makeWrapper(
+  qc = new QueryClient({
     defaultOptions: { queries: { retry: false, gcTime: 0 } },
-  });
+  }),
+) {
   return ({ children }: { children: ReactNode }) => (
     <QueryClientProvider client={qc}>{children}</QueryClientProvider>
   );
@@ -193,9 +194,86 @@ describe("JobDetailSheet error UI", () => {
     await waitFor(
       () => {
         expect(screen.queryByTestId("job-cancel-button")).toBeNull();
-        expect(screen.getByTestId("job-detail-sheet").textContent).toContain("cancelled");
+        expect(screen.getByTestId("job-detail-sheet").textContent).toContain("Cancelled");
       },
       { timeout: 5_000 },
     );
   });
+});
+
+test("keeps a delayed cancellation response in the original job cache after switching", async () => {
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const job = (id: string) => ({
+    id,
+    name: id,
+    status: "running",
+    submittedAt: "2026-10-08T00:00:00Z",
+  });
+  let finish: ((response: Response) => void) | undefined;
+  vi.stubGlobal("confirm", () => true);
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      if (init?.method === "POST")
+        return new Promise<Response>((resolve) => {
+          finish = resolve;
+        });
+      const path = String(input);
+      if (path.endsWith("/placement"))
+        return Promise.resolve(
+          Response.json({ error: { code: "NOT_FOUND", message: "absent" } }, { status: 404 }),
+        );
+      return Promise.resolve(Response.json(job(path.split("/").pop() ?? "")));
+    }),
+  );
+  const { rerender } = render(<JobDetailSheet jobId="job-a" open onOpenChange={() => {}} />, {
+    wrapper: makeWrapper(qc),
+  });
+  fireEvent.click(await screen.findByTestId("job-cancel-button"));
+  await waitFor(() => expect(finish).toBeDefined());
+  rerender(<JobDetailSheet jobId="job-b" open onOpenChange={() => {}} />);
+  await screen.findByRole("heading", { name: "job-b" });
+  finish?.(Response.json({ ...job("job-a"), status: "cancelled" }));
+  await waitFor(() =>
+    expect(qc.getQueryData<{ status: string }>(["job-detail", "job-a"])?.status).toBe("cancelled"),
+  );
+  expect(qc.getQueryData<{ id: string; status: string }>(["job-detail", "job-b"])).toMatchObject({
+    id: "job-b",
+    status: "running",
+  });
+});
+
+test("hides cached details and cancellation after access is revoked, then retries", async () => {
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  let denied = false;
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((input: RequestInfo | URL) => {
+      if (denied || String(input).endsWith("/placement"))
+        return Promise.resolve(
+          Response.json({ error: { code: "FORBIDDEN", message: "denied" } }, { status: 403 }),
+        );
+      return Promise.resolve(
+        Response.json({
+          id: "job-a",
+          name: "private-job-name",
+          status: "running",
+          submittedAt: "2026-10-08T00:00:00Z",
+        }),
+      );
+    }),
+  );
+  render(<JobDetailSheet jobId="job-a" open onOpenChange={() => {}} />, {
+    wrapper: makeWrapper(qc),
+  });
+  await screen.findByTestId("job-cancel-button");
+  denied = true;
+  await qc.invalidateQueries({ queryKey: ["job-detail", "job-a"] });
+  await screen.findByTestId("job-detail-error");
+  expect(screen.queryByTestId("job-cancel-button")).toBeNull();
+  expect(screen.queryByText("private-job-name")).toBeNull();
+  expect(screen.getByTestId("job-detail-error").textContent).toContain("jobs.error.forbidden");
+  denied = false;
+  fireEvent.click(screen.getByRole("button", { name: "common.retry" }));
+  expect(await screen.findByTestId("job-cancel-button")).toBeTruthy();
 });

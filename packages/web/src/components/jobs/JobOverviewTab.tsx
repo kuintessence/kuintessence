@@ -1,6 +1,6 @@
 import { CircleAlert } from "lucide-react";
 import { useTranslation } from "react-i18next";
-import { relativeFromNow, statusToBadgeVariant } from "../../lib/format";
+import { relativeFromNow, statusLabel, statusToBadgeVariant } from "../../lib/format";
 import { toUserFacingExecutionFailure } from "../../lib/user-facing-error";
 import { Badge } from "../ui/badge";
 import type { JobDetail } from "./types";
@@ -38,7 +38,8 @@ function CommandValue({ value }: { value: string }) {
 }
 
 export function JobOverviewTab({ job, loading }: JobOverviewTabProps) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
+  const language = i18n?.resolvedLanguage ?? i18n?.language;
   if (loading || !job) {
     return <div className="text-sm text-muted-foreground">{t("common.loading")}</div>;
   }
@@ -53,7 +54,9 @@ export function JobOverviewTab({ job, loading }: JobOverviewTabProps) {
   return (
     <div className="space-y-3" data-testid="job-overview-tab">
       <div className="flex flex-wrap items-center gap-2">
-        <Badge variant={statusToBadgeVariant(job.status)}>{job.status}</Badge>
+        <Badge variant={statusToBadgeVariant(job.status)}>
+          {statusLabel(job.status, language)}
+        </Badge>
         {job.exitCode !== null && job.exitCode !== undefined ? (
           <Badge variant="outline">exit {job.exitCode}</Badge>
         ) : null}
@@ -130,18 +133,18 @@ export function JobOverviewTab({ job, loading }: JobOverviewTabProps) {
           label={t("jobs.overview.submitted")}
           value={
             <>
-              {relativeFromNow(job.submittedAt)}{" "}
+              {relativeFromNow(job.submittedAt, undefined, language)}{" "}
               <span className="text-muted-foreground">({job.submittedAt})</span>
             </>
           }
         />
         <Field
           label={t("jobs.overview.started")}
-          value={job.startedAt ? relativeFromNow(job.startedAt) : "—"}
+          value={job.startedAt ? relativeFromNow(job.startedAt, undefined, language) : "—"}
         />
         <Field
           label={t("jobs.overview.completed")}
-          value={job.completedAt ? relativeFromNow(job.completedAt) : "—"}
+          value={job.completedAt ? relativeFromNow(job.completedAt, undefined, language) : "—"}
         />
       </div>
     </div>

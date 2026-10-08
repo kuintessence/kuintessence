@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { X } from "lucide-react";
+import { Loader2, X } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { api } from "../../lib/api-client";
@@ -103,7 +103,7 @@ export function JobsPage({ agentId, onClearAgentFilter }: JobsPageProps = {}) {
   }, [loadError]);
 
   return (
-    <PageShell data-testid="jobs-page">
+    <PageShell data-testid="jobs-page" aria-busy={jobsQ.isFetching}>
       <PageHeader
         title={t("jobs.title")}
         subtitle={t("jobs.subtitle")}
@@ -177,17 +177,36 @@ export function JobsPage({ agentId, onClearAgentFilter }: JobsPageProps = {}) {
 
       {loadError ? (
         <div
-          className="rounded-md border border-status-failed/40 bg-[color-mix(in_oklab,var(--status-failed)_10%,transparent)] p-3 text-sm"
+          role="alert"
+          data-state="open"
+          className="kq-motion kq-motion--notice flex flex-wrap items-center justify-between gap-3 rounded-md border border-status-failed/40 bg-[color-mix(in_oklab,var(--status-failed)_10%,transparent)] p-3 text-sm"
           data-testid="jobs-list-error"
         >
           {toUserFacingError(
             loadError,
             t("jobs.loadFailed", { defaultValue: "无法加载作业列表，请稍后重试。" }),
           )}
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => void jobsQ.refetch()}
+            disabled={jobsQ.isFetching}
+          >
+            {t("globalError.retry")}
+          </Button>
         </div>
       ) : null}
 
-      {loadError ? null : (
+      {jobsQ.isLoading ? (
+        <div
+          role="status"
+          data-testid="jobs-list-loading"
+          className="flex items-center justify-center gap-2 rounded-lg border border-border bg-card px-4 py-16 text-sm text-muted-foreground"
+        >
+          <Loader2 className="h-4 w-4 animate-spin motion-reduce:animate-none" aria-hidden="true" />
+          {t("jobs.loading")}
+        </div>
+      ) : loadError ? null : (
         <JobsTable
           jobs={jobs}
           onRowClick={(j) => {
@@ -197,7 +216,7 @@ export function JobsPage({ agentId, onClearAgentFilter }: JobsPageProps = {}) {
         />
       )}
 
-      {loadError ? null : (
+      {loadError || jobsQ.isLoading ? null : (
         <div
           className="flex flex-col gap-2 rounded-md border border-border bg-card px-3 py-2 text-sm text-muted-foreground sm:flex-row sm:items-center sm:justify-between"
           data-testid="jobs-pagination"

@@ -26,6 +26,12 @@ export interface WorkflowPlacementDraft {
   nodeConstraints: Record<string, workflowDsl.PlacementConstraint>;
 }
 
+export function isWorkflowBudgetValid(value: string): boolean {
+  if (!value.trim()) return true;
+  const amount = Number(value);
+  return Number.isFinite(amount) && amount >= 0;
+}
+
 const SELECT_CLASS =
   "h-9 w-full rounded-md border border-input bg-background px-3 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
 
@@ -189,12 +195,21 @@ export function WorkflowResourcesStep({
                 data-testid="workflow-resource-budget-cap"
                 id="workflow-placement-budget"
                 min="0"
-                step="0.01"
+                step="any"
                 type="number"
+                aria-invalid={!isWorkflowBudgetValid(draft.budgetCap)}
+                aria-describedby={
+                  !isWorkflowBudgetValid(draft.budgetCap) ? "workflow-budget-error" : undefined
+                }
                 value={draft.budgetCap}
                 placeholder={t("workflows.creation.resources.noBudgetCap")}
                 onChange={(event) => onDraftChange({ ...draft, budgetCap: event.target.value })}
               />
+              {!isWorkflowBudgetValid(draft.budgetCap) ? (
+                <p id="workflow-budget-error" role="alert" className="text-xs text-status-failed">
+                  {t("workflows.creation.resources.invalidBudget")}
+                </p>
+              ) : null}
             </div>
             <div className="space-y-1.5">
               <span className="flex items-center gap-2 text-sm font-medium">

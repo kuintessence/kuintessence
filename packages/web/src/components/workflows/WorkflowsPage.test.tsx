@@ -50,6 +50,7 @@ vi.mock("@tanstack/react-router", () => ({
 vi.mock("../../lib/api-client", () => ({
   api: {
     get: vi.fn(),
+    delete: vi.fn(),
   },
 }));
 
@@ -105,6 +106,17 @@ afterEach(() => {
 });
 
 describe("WorkflowsPage", () => {
+  test("exposes the selected status to assistive technology", async () => {
+    vi.mocked(api.get).mockImplementation((path) =>
+      Promise.resolve(path === "/workflows/drafts" ? { drafts: [] } : { runs: [] }),
+    );
+    render(<WorkflowsPage />, { wrapper: wrapper() });
+    expect(screen.getByTestId("workflows-chip-all").getAttribute("aria-pressed")).toBe("true");
+    fireEvent.click(screen.getByTestId("workflows-chip-failed"));
+    expect(screen.getByTestId("workflows-chip-all").getAttribute("aria-pressed")).toBe("false");
+    expect(screen.getByTestId("workflows-chip-failed").getAttribute("aria-pressed")).toBe("true");
+  });
+
   test("aligns active workflow statuses with the Server lifecycle", () => {
     expect(
       ["submitted", "queued", "pending", "awaiting_approval", "running", "cancelling"].every(
@@ -310,5 +322,88 @@ describe("WorkflowsPage", () => {
     );
     expect(await screen.findByTestId("workflow-row-run-submitted")).toBeTruthy();
     expect(screen.queryByTestId("workflows-pagination")).toBeNull();
+  });
+});
+
+describe("workflow draft deletion", () => {
+  const draft = { id: "draft-review", name: "Important draft", updatedAt: "2026-10-05T00:00:00Z" };
+
+  test("allows cancellation before deleting and protects an in-flight confirmation", async () => {
+    let exists = true;
+    let finishDelete: (() => void) | undefined;
+    vi.mocked(api.get).mockImplementation((path) =>
+      Promise.resolve(
+        path === "/workflows/drafts" ? { drafts: exists ? [draft] : [] } : { runs: [] },
+      ),
+    );
+    vi.mocked(api.delete).mockImplementation(
+      () =>
+        new Promise<void>((resolve) => {
+          finishDelete = () => {
+            exists = false;
+            resolve();
+          };
+        }),
+    );
+    render(<WorkflowsPage />, { wrapper: wrapper() });
+    const trigger = await screen.findByTestId("workflow-draft-delete-draft-review");
+    fireEvent.click(trigger);
+    expect(screen.getByRole("dialog").textContent).toContain("Important draft");
+    expect(api.delete).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "common.cancel" }));
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(api.delete).not.toHaveBeenCalled();
+    fireEvent.click(trigger);
+    fireEvent.click(screen.getByTestId("workflow-draft-delete-confirm"));
+    fireEvent.click(screen.getByTestId("workflow-draft-delete-confirm"));
+    expect(api.delete).toHaveBeenCalledTimes(1);
+    expect(api.delete).toHaveBeenCalledWith("/workflows/drafts/draft-review");
+    expect(screen.getByTestId("workflow-draft-delete-confirm")).toHaveProperty("disabled", true);
+    expect(screen.getByRole("button", { name: "common.cancel" })).toHaveProperty("disabled", true);
+    finishDelete?.();
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    await waitFor(() => expect(screen.queryByTestId("workflow-drafts")).toBeNull());
+  });
+
+  test("keeps the draft after deletion fails and permits retry", async () => {
+    let exists = true;
+    vi.mocked(api.get).mockImplementation((path) =>
+      Promise.resolve(
+        path === "/workflows/drafts" ? { drafts: exists ? [draft] : [] } : { runs: [] },
+      ),
+    );
+    vi.mocked(api.delete)
+      .mockRejectedValueOnce(new Error("Network error"))
+      .mockImplementationOnce(async () => {
+        exists = false;
+      });
+    render(<WorkflowsPage />, { wrapper: wrapper() });
+    fireEvent.click(await screen.findByTestId("workflow-draft-delete-draft-review"));
+    fireEvent.click(screen.getByTestId("workflow-draft-delete-confirm"));
+    expect((await screen.findByRole("alert")).textContent).toContain(
+      "workflows.drafts.deleteFailed",
+    );
+    expect(screen.getByTestId("workflow-drafts").textContent).toContain("Important draft");
+    fireEvent.click(screen.getByTestId("workflow-draft-delete-confirm"));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(api.delete).toHaveBeenCalledTimes(2);
+  });
+
+  test("hides stale drafts after a permission error on refresh", async () => {
+    let denied = false;
+    vi.mocked(api.get).mockImplementation((path) =>
+      path === "/workflows/drafts"
+        ? denied
+          ? Promise.reject(new Error("Forbidden"))
+          : Promise.resolve({ drafts: [draft] })
+        : Promise.resolve({ runs: [] }),
+    );
+    const { client, wrapper: clientWrapper } = makeClientWrapper();
+    render(<WorkflowsPage />, { wrapper: clientWrapper });
+    await screen.findByTestId("workflow-drafts");
+    denied = true;
+    await client.invalidateQueries({ queryKey: ["workflow-drafts"] });
+    await screen.findByTestId("workflow-drafts-error");
+    expect(screen.queryByTestId("workflow-drafts")).toBeNull();
   });
 });

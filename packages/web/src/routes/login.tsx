@@ -135,7 +135,11 @@ export function Login({
     >
       <div className="w-full max-w-sm space-y-6">
         <div className="flex flex-col items-center gap-3">
-          <img src={loginLogo} alt={localizedBranding.name} className="h-9 w-9 text-brand" />
+          <img
+            src={loginLogo}
+            alt={localizedBranding.name}
+            className={`h-9 w-9 ${loginLogo === defaultLogoUrl ? "dark:invert" : ""}`}
+          />
           <div className="text-center">
             <h1 className="text-xl font-semibold tracking-tight text-foreground">
               {localizedBranding.title}

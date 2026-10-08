@@ -1,5 +1,6 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import type { ReactNode } from "react";
 import { beforeEach, describe, expect, test, vi } from "vitest";
 import { ApiError } from "../lib/api-client";
 import { JobDetailPage } from "./jobs_.$jobId";
@@ -99,5 +100,44 @@ describe("JobDetailPage", () => {
     fireEvent.click(await screen.findByText("jobs.cancel"));
     await waitFor(() => expect(mocks.post).toHaveBeenCalledWith("/jobs/job-1/cancel", {}));
     expect(mocks.toastSuccess).toHaveBeenCalledWith("jobs.cancelled");
+  });
+});
+
+test("writes a late cancellation result to the submitted job after navigation", async () => {
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const job = (id: string) => ({
+    id,
+    name: id,
+    status: "running",
+    submittedAt: "2026-10-08T00:00:00Z",
+  });
+  mocks.get.mockImplementation((path: string) =>
+    path.endsWith("/placement")
+      ? Promise.reject(new ApiError(404, "NOT_FOUND", "absent"))
+      : Promise.resolve(job(path.split("/").pop() ?? "")),
+  );
+  let finish: ((value: ReturnType<typeof job>) => void) | undefined;
+  mocks.post.mockImplementation(
+    () =>
+      new Promise<ReturnType<typeof job>>((resolve) => {
+        finish = resolve;
+      }),
+  );
+  vi.stubGlobal("confirm", () => true);
+  const wrapper = ({ children }: { children: ReactNode }) => (
+    <QueryClientProvider client={qc}>{children}</QueryClientProvider>
+  );
+  const { rerender } = render(<JobDetailPage jobId="job-a" />, { wrapper });
+  fireEvent.click(await screen.findByText("jobs.cancel"));
+  await waitFor(() => expect(finish).toBeDefined());
+  rerender(<JobDetailPage jobId="job-b" />);
+  await screen.findByRole("heading", { name: "job-b" });
+  finish?.({ ...job("job-a"), status: "cancelled" });
+  await waitFor(() =>
+    expect(qc.getQueryData<{ status: string }>(["job-detail", "job-a"])?.status).toBe("cancelled"),
+  );
+  expect(qc.getQueryData(["job-detail", "job-b"])).toMatchObject({
+    id: "job-b",
+    status: "running",
   });
 });

@@ -368,3 +368,191 @@ describe("AgentRegistrationPage", () => {
     });
   });
 });
+
+const reviewContext = {
+  providerOrgs: [{ id: "org-review", name: "Review Provider" }],
+  isPlatformWide: false,
+  schedulers: ["slurm"],
+};
+const reviewToken = {
+  id: "review-token",
+  agentId: "review-agent",
+  siteName: "Review Site",
+  providerOrgId: "org-review",
+  token: "fictional-test-token",
+  expiresAt: "2026-10-06T00:00:00Z",
+  createdAt: "2026-10-05T00:00:00Z",
+};
+
+async function fillReviewForm() {
+  await waitFor(() =>
+    expect(screen.getByTestId("agent-registration-provider")).toHaveProperty("value", "org-review"),
+  );
+  fireEvent.change(screen.getByTestId("agent-registration-agent-id"), {
+    target: { value: "review-agent" },
+  });
+  fireEvent.change(screen.getByTestId("agent-registration-site-name"), {
+    target: { value: "Review Site" },
+  });
+}
+
+test("explains unavailable registration endpoints and retries context loading", async () => {
+  let available = false;
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((input: RequestInfo | URL) => {
+      if (String(input).endsWith("/agent-registration-context")) {
+        return Promise.resolve(
+          available
+            ? Response.json(reviewContext)
+            : Response.json({ error: { code: "NOT_FOUND", message: "missing" } }, { status: 404 }),
+        );
+      }
+      return Promise.resolve(Response.json({ items: [] }));
+    }),
+  );
+  render(<AgentRegistrationPage />, { wrapper: makeWrapper() });
+  const error = await screen.findByTestId("agent-registration-context-error");
+  expect(error.textContent).toContain("cp.agentRegistration.endpointUnavailable");
+  expect(screen.getByTestId("agent-registration-submit")).toHaveProperty("disabled", true);
+  available = true;
+  fireEvent.click(screen.getByRole("button", { name: "globalError.retry" }));
+  await fillReviewForm();
+  expect(screen.queryByTestId("agent-registration-context-error")).toBeNull();
+  expect(screen.getByTestId("agent-registration-submit")).toHaveProperty("disabled", false);
+});
+
+test("matches the server TTL range and does not truncate exponential numeric input", async () => {
+  const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) =>
+    Promise.resolve(
+      Response.json(
+        String(input).endsWith("/agent-registration-context")
+          ? reviewContext
+          : init?.method === "POST"
+            ? reviewToken
+            : { items: [] },
+      ),
+    ),
+  );
+  vi.stubGlobal("fetch", fetchMock);
+  render(<AgentRegistrationPage />, { wrapper: makeWrapper() });
+  await fillReviewForm();
+  for (const value of ["", "1", "59", "60.5", "2592001"]) {
+    fireEvent.change(screen.getByTestId("agent-registration-ttl"), { target: { value } });
+    expect(screen.getByTestId("agent-registration-submit")).toHaveProperty("disabled", true);
+  }
+  for (const value of ["60", "2592000", "1e3"]) {
+    fireEvent.change(screen.getByTestId("agent-registration-ttl"), { target: { value } });
+    expect(screen.getByTestId("agent-registration-submit")).toHaveProperty("disabled", false);
+  }
+  const form = screen.getByTestId("agent-registration-submit").closest("form");
+  if (!form) throw new Error("Expected registration form");
+  fireEvent.submit(form);
+  await screen.findByTestId("agent-registration-token-review-token");
+  const call = findCall(fetchMock, (_url, init) => init?.method === "POST");
+  expect(JSON.parse(String(call.init?.body)).expiresInSec).toBe(1000);
+});
+
+test("creation failure is handled and the same form can retry", async () => {
+  let creates = 0;
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      if (init?.method === "POST") {
+        creates += 1;
+        return Promise.resolve(
+          creates === 1
+            ? Response.json(
+                { error: { code: "INTERNAL_ERROR", message: "private failure" } },
+                { status: 500 },
+              )
+            : Response.json(reviewToken),
+        );
+      }
+      return Promise.resolve(
+        Response.json(
+          String(input).endsWith("/agent-registration-context") ? reviewContext : { items: [] },
+        ),
+      );
+    }),
+  );
+  render(<AgentRegistrationPage />, { wrapper: makeWrapper() });
+  await fillReviewForm();
+  fireEvent.click(screen.getByTestId("agent-registration-submit"));
+  expect((await screen.findByTestId("agent-registration-error")).textContent).toContain(
+    "cp.agentRegistration.form.createFailed",
+  );
+  fireEvent.click(screen.getByTestId("agent-registration-submit"));
+  await screen.findByTestId("agent-registration-token-review-token");
+  expect(screen.queryByTestId("agent-registration-error")).toBeNull();
+  expect(creates).toBe(2);
+});
+
+test("revocation failure keeps the token visible until a successful retry", async () => {
+  let revokes = 0;
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      if (init?.method === "DELETE") {
+        revokes += 1;
+        return Promise.resolve(
+          revokes === 1
+            ? Response.json(
+                { error: { code: "INTERNAL_ERROR", message: "private failure" } },
+                { status: 500 },
+              )
+            : new Response(null, { status: 204 }),
+        );
+      }
+      return Promise.resolve(
+        Response.json(
+          String(input).endsWith("/agent-registration-context")
+            ? reviewContext
+            : { items: revokes > 1 ? [] : [reviewToken] },
+        ),
+      );
+    }),
+  );
+  render(<AgentRegistrationPage />, { wrapper: makeWrapper() });
+  fireEvent.click(await screen.findByTestId("agent-registration-active-revoke-review-token"));
+  expect((await screen.findByTestId("agent-registration-revoke-error")).textContent).toContain(
+    "cp.agentRegistration.tokens.revokeFailed",
+  );
+  expect(screen.getByTestId("agent-registration-active-token-review-token")).toBeTruthy();
+  fireEvent.click(screen.getByTestId("agent-registration-active-revoke-review-token"));
+  await waitFor(() =>
+    expect(screen.queryByTestId("agent-registration-active-token-review-token")).toBeNull(),
+  );
+  expect(screen.queryByTestId("agent-registration-revoke-error")).toBeNull();
+});
+
+test("clipboard rejection gives manual-copy guidance without a false success", async () => {
+  vi.stubGlobal("navigator", {
+    clipboard: { writeText: vi.fn().mockRejectedValue(new Error("Denied")) },
+  });
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((input: RequestInfo | URL, init?: RequestInit) =>
+      Promise.resolve(
+        Response.json(
+          String(input).endsWith("/agent-registration-context")
+            ? reviewContext
+            : init?.method === "POST"
+              ? reviewToken
+              : { items: [] },
+        ),
+      ),
+    ),
+  );
+  render(<AgentRegistrationPage />, { wrapper: makeWrapper() });
+  await fillReviewForm();
+  fireEvent.click(screen.getByTestId("agent-registration-submit"));
+  await screen.findByTestId("agent-registration-token-review-token");
+  fireEvent.click(screen.getByRole("button", { name: "cp.agentRegistration.tokens.copyCommand" }));
+  expect((await screen.findByTestId("agent-registration-copy-error")).textContent).toContain(
+    "cp.agentRegistration.tokens.copyFailed",
+  );
+  expect(screen.getByTestId("agent-registration-command-review-token").textContent).toContain(
+    "kq agent register",
+  );
+});

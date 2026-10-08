@@ -708,25 +708,38 @@ export function SoftwarePage() {
         <AuxiliaryErrorBanner error={mirrorCacheLoadError} testId="software-mirror-cache-error" />
       ) : null}
 
-      <SoftwareRoleFlowPanel
-        accessRequests={accessRequests}
-        canRequestAccess={canRequestAccess}
-        mirrorCache={mirrorCache}
-        pendingAccessRequests={pendingAccessRequests}
-        publisherAssets={spackCatalogPackages.flatMap((pkg) => (pkg.asset ? [pkg.asset] : []))}
-        reviewAssets={reviewQueue}
-        showOperations={canManagePlatform}
-        requestAccess={(asset) => {
-          if (canRequestAccess) requestAccess.mutate(asset);
-        }}
-        reviewAccess={(requestId, decision) => reviewAccess.mutate({ requestId, decision })}
-      />
+      <details
+        className="rounded-lg border border-border bg-card"
+        data-testid="software-management"
+      >
+        <summary className="cursor-pointer rounded-lg px-4 py-3 text-sm font-medium focus-visible:outline-2 focus-visible:outline-ring">
+          {t("software.management")}
+          <span className="ml-3 text-xs font-normal text-muted-foreground">
+            {t("software.managementDescription")}
+          </span>
+        </summary>
+        <div className="kq-motion--disclosure space-y-4 border-t border-border p-4">
+          <SoftwareRoleFlowPanel
+            accessRequests={accessRequests}
+            canRequestAccess={canRequestAccess}
+            mirrorCache={mirrorCache}
+            pendingAccessRequests={pendingAccessRequests}
+            publisherAssets={spackCatalogPackages.flatMap((pkg) => (pkg.asset ? [pkg.asset] : []))}
+            reviewAssets={reviewQueue}
+            showOperations={canManagePlatform}
+            requestAccess={(asset) => {
+              if (canRequestAccess) requestAccess.mutate(asset);
+            }}
+            reviewAccess={(requestId, decision) => reviewAccess.mutate({ requestId, decision })}
+          />
 
-      <LicenseEntitlementPanel
-        canReview={canManagePlatform}
-        canSubmit={canManageOrganization}
-        defaultClaimantId={getAuthState().email}
-      />
+          <LicenseEntitlementPanel
+            canReview={canManagePlatform}
+            canSubmit={canManageOrganization}
+            defaultClaimantId={getAuthState().email}
+          />
+        </div>
+      </details>
 
       {isMissing || isUnreachable ? (
         <div
@@ -824,8 +837,18 @@ export function SoftwarePage() {
             />
           </TabsContent>
           <TabsContent value="spack">
-            <RecipeRepositoriesPanel canManage={canManageOrganization} />
-            <SpackMaterialsPanel canManage={canManageOrganization} />
+            <details
+              className="mb-4 rounded-lg border border-border bg-card"
+              data-testid="software-material-management"
+            >
+              <summary className="cursor-pointer rounded-lg px-4 py-3 text-sm font-medium focus-visible:outline-2 focus-visible:outline-ring">
+                {t("software.materialManagement")}
+              </summary>
+              <div className="kq-motion--disclosure space-y-4 border-t border-border p-4">
+                <RecipeRepositoriesPanel canManage={canManageOrganization} />
+                <SpackMaterialsPanel canManage={canManageOrganization} />
+              </div>
+            </details>
             <SpackSoftwarePanel
               canManage={canManageOrganization}
               canManagePlatform={canManagePlatform}
@@ -1559,7 +1582,10 @@ function ServerPagination({
       <span>{t("software.pageResultCount", { shown, total })}</span>
       <div className="flex items-center gap-2">
         <span className="font-mono text-[11px]">
-          {t("software.manage.catalogPageStatus", { page })}
+          {t("software.manage.catalogPageStatus", {
+            page,
+            total: Math.max(1, Math.ceil(total / WORKFLOW_TEMPLATE_PAGE_SIZE)),
+          })}
         </span>
         <Button
           type="button"

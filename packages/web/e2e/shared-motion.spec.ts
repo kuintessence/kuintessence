@@ -160,3 +160,41 @@ test("deletion snapshot stays readable while repeat confirmation is disabled", a
   await expect(closing).toHaveCount(0);
   await expect(page.locator(".kq-motion--overlay")).toHaveCount(0);
 });
+
+for (const reducedMotion of ["no-preference", "reduce"] as const) {
+  test(`tabs and disclosures respect ${reducedMotion} and keyboard navigation`, async ({
+    page,
+  }) => {
+    await page.emulateMedia({ reducedMotion });
+    await page.getByRole("tab", { name: "Overview", exact: true }).focus();
+    await page.keyboard.press("ArrowRight");
+    const logs = page.getByRole("tab", { name: "Logs", exact: true });
+    await expect(logs).toBeFocused();
+    await expect(logs).toHaveAttribute("aria-selected", "true");
+    const panel = page.getByRole("tabpanel");
+    await expect(panel).toHaveText("Logs content");
+    await page.locator("summary").focus();
+    await page.keyboard.press("Enter");
+    const disclosure = page.locator(".kq-motion--disclosure");
+    await expect(disclosure).toBeVisible();
+    for (const surface of [panel, disclosure]) {
+      const motion = await surface.evaluate((element) => {
+        const animation = element.getAnimations()[0];
+        if (animation) {
+          animation.pause();
+          animation.currentTime = 60;
+        }
+        return {
+          name: getComputedStyle(element).animationName,
+          opacity: Number(getComputedStyle(element).opacity),
+        };
+      });
+      expect(motion.name).toBe(reducedMotion === "reduce" ? "none" : "kq-fade-enter");
+      if (reducedMotion === "reduce") expect(motion.opacity).toBe(1);
+      else {
+        expect(motion.opacity).toBeGreaterThan(0);
+        expect(motion.opacity).toBeLessThan(1);
+      }
+    }
+  });
+}

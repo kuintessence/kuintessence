@@ -127,6 +127,8 @@ describe("ProviderOrganizationSelector", () => {
     queryClient.setQueryData(["cp", "dashboard"], { jobsCompleted: 9 });
     queryClient.setQueryData(["cp-data", "org-a", "assets"], { assets: ["a"] });
     queryClient.setQueryData(["metering", "query", { orgIds: ["org-a"] }], { rows: [] });
+    queryClient.setQueryData(["job-logs", "job-a"], { text: "organization-scoped log" });
+    queryClient.setQueryData(["job-files-netdrive", "job-a", "completed"], { files: ["artifact"] });
     queryClient.setQueryData(["unrelated", "theme"], "light");
 
     render(
@@ -145,6 +147,8 @@ describe("ProviderOrganizationSelector", () => {
     await waitFor(() => expect(queryClient.getQueryData(["cp", "dashboard"])).toBeUndefined());
     expect(queryClient.getQueryData(["cp-data", "org-a", "assets"])).toBeUndefined();
     expect(queryClient.getQueryData(["metering", "query", { orgIds: ["org-a"] }])).toBeUndefined();
+    expect(queryClient.getQueryData(["job-logs", "job-a"])).toBeUndefined();
+    expect(queryClient.getQueryData(["job-files-netdrive", "job-a", "completed"])).toBeUndefined();
     expect(queryClient.getQueryData(["unrelated", "theme"])).toBe("light");
   });
 });

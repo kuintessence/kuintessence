@@ -1,5 +1,9 @@
 # Kuintessence 演示
 
+[`workflows/quick-start.yaml`](workflows/quick-start.yaml) 是 Web 首页使用的两节点
+`NoAction` 编排示例，无需软件版本或调度器。它用于查看依赖与运行状态；真实计算
+可通过首页的示例作业体验。其他科学计算工作流仍需先准备其引用的软件与数据。
+
 ## 通过 Docker Compose 运行完整栈
 
 ```bash

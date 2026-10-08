@@ -4,6 +4,7 @@ import { AlertCircle, CircleStop } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { ApiError, api } from "../../lib/api-client";
+import { statusLabel } from "../../lib/format";
 import { useJobStatusStream } from "../../lib/use-job-status-stream";
 import { toUserFacingError } from "../../lib/user-facing-error";
 import { PlacementPipelineView } from "../scheduler";
@@ -37,7 +38,7 @@ export interface JobDetailSheetProps {
  * Open/close is controlled by the caller.
  */
 export function JobDetailSheet({ jobId, open, onOpenChange }: JobDetailSheetProps) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const queryClient = useQueryClient();
   const detailQ = useQuery({
     queryKey: ["job-detail", jobId],
@@ -51,7 +52,7 @@ export function JobDetailSheet({ jobId, open, onOpenChange }: JobDetailSheetProp
     // Real-time updates arrive via /platform/ws/jobs/:id while the sheet is
     // open. Polling is kept as a safety net for non-terminal states in case
     // the WS layer is unreachable (e.g. middleboxes blocking upgrade) — the
-    // hook also invalidates this query on non-clean WS close.
+    // hook also invalidates this query when the server closes the WebSocket.
     refetchInterval: (q) => {
       const status = q.state.data?.status?.toUpperCase();
       if (status === "PENDING" || status === "QUEUED" || status === "RUNNING") return REFRESH_MS;
@@ -60,12 +61,9 @@ export function JobDetailSheet({ jobId, open, onOpenChange }: JobDetailSheetProp
   });
 
   const cancelJob = useMutation({
-    mutationFn: async () => {
-      if (!jobId) throw new Error(t("jobs.cancelMissingId"));
-      return api.post<JobDetail>(`/jobs/${jobId}/cancel`, {});
-    },
-    onSuccess: (job) => {
-      queryClient.setQueryData(["job-detail", jobId], job);
+    mutationFn: (cancelId: string) => api.post<JobDetail>(`/jobs/${cancelId}/cancel`, {}),
+    onSuccess: (job, cancelId) => {
+      queryClient.setQueryData(["job-detail", cancelId], job);
       queryClient.invalidateQueries({ queryKey: ["jobs-list"] });
       queryClient.invalidateQueries({ queryKey: ["dashboard"] });
       toast.success(t("jobs.cancelled", { name: job.name }));
@@ -91,7 +89,8 @@ export function JobDetailSheet({ jobId, open, onOpenChange }: JobDetailSheetProp
     },
   });
   const hasTrace = !!traceQ.data;
-  const status = detailQ.data?.status.toUpperCase();
+  const visibleJob = detailQ.isSuccess ? detailQ.data : undefined;
+  const status = visibleJob?.status.toUpperCase();
   const canCancel = status === "PENDING" || status === "QUEUED" || status === "RUNNING";
 
   const errorBlock = detailQ.error
@@ -101,9 +100,11 @@ export function JobDetailSheet({ jobId, open, onOpenChange }: JobDetailSheetProp
         const headline =
           status === 404
             ? t("jobs.error.notFound", { defaultValue: "Job not found" })
-            : status === 400
-              ? t("jobs.error.badId", { defaultValue: "Invalid job id" })
-              : t("jobs.error.generic", { defaultValue: "Failed to load job" });
+            : status === 403
+              ? t("jobs.error.forbidden")
+              : status === 400
+                ? t("jobs.error.badId", { defaultValue: "Invalid job id" })
+                : t("jobs.error.generic", { defaultValue: "Failed to load job" });
         const detail = toUserFacingError(
           err,
           t("jobs.error.generic", { defaultValue: "无法加载作业详情，请稍后重试。" }),
@@ -115,12 +116,21 @@ export function JobDetailSheet({ jobId, open, onOpenChange }: JobDetailSheetProp
             role="alert"
           >
             <AlertCircle className="mt-0.5 h-5 w-5 shrink-0 text-status-failed" />
-            <div className="space-y-1">
+            <div className="min-w-0 space-y-2">
               <h3 className="text-sm font-semibold">{headline}</h3>
               <p className="text-sm text-muted-foreground">{detail}</p>
               {jobId ? (
-                <p className="font-mono text-[11px] text-muted-foreground">{jobId}</p>
+                <p className="break-all font-mono text-[11px] text-muted-foreground">{jobId}</p>
               ) : null}
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                disabled={detailQ.isFetching}
+                onClick={() => void detailQ.refetch()}
+              >
+                {detailQ.isFetching ? t("common.loading") : t("common.retry")}
+              </Button>
             </div>
           </div>
         );
@@ -132,10 +142,15 @@ export function JobDetailSheet({ jobId, open, onOpenChange }: JobDetailSheetProp
       <SheetContent data-testid="job-detail-sheet">
         <SheetHeader className="min-w-0">
           <div className="flex min-w-0 flex-wrap items-center gap-2">
-            <SheetTitle className="min-w-0 flex-1 truncate" title={detailQ.data?.name ?? "Job"}>
-              {detailQ.data?.name ?? "Job"}
+            <SheetTitle className="min-w-0 flex-1 truncate" title={visibleJob?.name}>
+              {visibleJob?.name ??
+                t(detailQ.error ? "jobs.error.generic" : "jobs.detail.loadingTitle")}
             </SheetTitle>
-            {detailQ.data?.status ? <Badge variant="outline">{detailQ.data.status}</Badge> : null}
+            {visibleJob?.status ? (
+              <Badge variant="outline">
+                {statusLabel(visibleJob.status, i18n?.resolvedLanguage ?? i18n?.language)}
+              </Badge>
+            ) : null}
             {canCancel ? (
               <Button
                 type="button"
@@ -143,8 +158,11 @@ export function JobDetailSheet({ jobId, open, onOpenChange }: JobDetailSheetProp
                 size="sm"
                 disabled={cancelJob.isPending}
                 onClick={() => {
-                  if (window.confirm(t("jobs.cancelConfirm", { name: detailQ.data?.name }))) {
-                    cancelJob.mutate();
+                  if (
+                    jobId &&
+                    window.confirm(t("jobs.cancelConfirm", { name: visibleJob?.name }))
+                  ) {
+                    cancelJob.mutate(jobId);
                   }
                 }}
                 data-testid="job-cancel-button"
@@ -153,8 +171,8 @@ export function JobDetailSheet({ jobId, open, onOpenChange }: JobDetailSheetProp
                 {cancelJob.isPending ? t("jobs.cancelling") : t("jobs.cancel")}
               </Button>
             ) : null}
-            {detailQ.data?.accessScope ? (
-              <Badge variant="outline">{t(`jobs.scope.${detailQ.data.accessScope}`)}</Badge>
+            {visibleJob?.accessScope ? (
+              <Badge variant="outline">{t(`jobs.scope.${visibleJob.accessScope}`)}</Badge>
             ) : null}
           </div>
           <SheetDescription className="truncate font-mono text-xs" title={jobId ?? undefined}>
