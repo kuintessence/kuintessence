@@ -1,5 +1,5 @@
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, renderHook } from "@testing-library/react";
+import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
+import { act, renderHook, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { useJobStatusStream, useWorkflowStatusStream } from "./use-job-status-stream";
@@ -10,10 +10,10 @@ import { useJobStatusStream, useWorkflowStatusStream } from "./use-job-status-st
  * The hook MUST:
  *   1. open a ws:// URL derived from window.location with either a legacy
  *      JWT query token or a same-origin HttpOnly cookie
- *   2. apply incoming { type: "job.status", … } payloads to the
+ *   2. refresh full details for incoming { type: "job.status", … } payloads in the
  *      ["job-detail", jobId] query cache
  *   3. fall back to polling — i.e. invalidate the query — if the socket
- *      closes without a clean code, so TanStack Query refetches via REST
+ *      closes on the server, so TanStack Query refetches via REST
  *   4. clean up on unmount (close socket, no leaked listeners)
  *
  * We mock `WebSocket` globally so we can drive open/message/close events
@@ -110,36 +110,81 @@ describe("useJobStatusStream", () => {
     expect(MockWebSocket.instances).toHaveLength(0);
   });
 
-  test("applies incoming job.status messages to the query cache", () => {
+  test("loads full terminal details before stopping polling", async () => {
     const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-    qc.setQueryData(["job-detail", "job-1"], {
-      id: "job-1",
-      name: "test",
-      status: "pending",
-    });
-
-    renderHook(() => useJobStatusStream("job-1"), { wrapper: makeWrapper(qc) });
-    const ws = MockWebSocket.instances[0];
-    if (!ws) throw new Error("expected ws");
+    const initial = { id: "job-1", status: "running", completedAt: null as string | null };
+    let finish: ((value: typeof initial) => void) | undefined;
+    const queryFn = vi.fn(
+      () =>
+        new Promise<typeof initial>((resolve) => {
+          finish = resolve;
+        }),
+    );
+    const { result } = renderHook(
+      () => {
+        const query = useQuery({
+          queryKey: ["job-detail", "job-1"],
+          queryFn,
+          initialData: initial,
+          staleTime: Infinity,
+        });
+        useJobStatusStream("job-1");
+        return query;
+      },
+      { wrapper: makeWrapper(qc) },
+    );
 
     act(() => {
-      ws.triggerOpen();
-      ws.triggerMessage({
+      MockWebSocket.instances[0]?.triggerMessage({
+        type: "job.status",
+        jobId: "job-1",
+        status: "completed",
+      });
+    });
+    expect(queryFn).toHaveBeenCalledTimes(1);
+    expect(result.current.data.status).toBe("running");
+    act(() => finish?.({ ...initial, status: "completed", completedAt: "2026-10-07T10:00:00Z" }));
+    await waitFor(() => expect(result.current.data.completedAt).toBe("2026-10-07T10:00:00Z"));
+    expect(result.current.data.status).toBe("completed");
+  });
+
+  test("keeps the non-terminal status when the full-detail refresh fails", async () => {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const { result } = renderHook(
+      () => {
+        const query = useQuery({
+          queryKey: ["job-detail", "job-1"],
+          queryFn: () => Promise.reject(new Error("offline")),
+          initialData: { id: "job-1", status: "running" },
+          staleTime: Infinity,
+        });
+        useJobStatusStream("job-1");
+        return query;
+      },
+      { wrapper: makeWrapper(qc) },
+    );
+    act(() =>
+      MockWebSocket.instances[0]?.triggerMessage({
+        type: "job.status",
+        jobId: "job-1",
+        status: "failed",
+      }),
+    );
+    await waitFor(() => expect(result.current.isError).toBe(true));
+    expect(result.current.data.status).toBe("running");
+  });
+
+  test("does not create partial detail data from a notification", () => {
+    const qc = new QueryClient();
+    renderHook(() => useJobStatusStream("job-1"), { wrapper: makeWrapper(qc) });
+    act(() =>
+      MockWebSocket.instances[0]?.triggerMessage({
         type: "job.status",
         jobId: "job-1",
         status: "running",
-        schedulerJobId: "slurm-99",
-        agentId: null,
-        ts: new Date().toISOString(),
-      });
-    });
-
-    const cached = qc.getQueryData<{ status: string; schedulerJobId: string | null }>([
-      "job-detail",
-      "job-1",
-    ]);
-    expect(cached?.status).toBe("running");
-    expect(cached?.schedulerJobId).toBe("slurm-99");
+      }),
+    );
+    expect(qc.getQueryData(["job-detail", "job-1"])).toBeUndefined();
   });
 
   test("ignores messages with mismatched type or jobId", () => {
@@ -160,7 +205,7 @@ describe("useJobStatusStream", () => {
     expect(cached?.status).toBe("pending");
   });
 
-  test("invalidates the query (REST fallback) when the socket closes uncleanly", () => {
+  test.each([1000, 1006])("refreshes detail when the server closes with code %s", (code) => {
     const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     qc.setQueryData(["job-detail", "job-1"], { id: "job-1", status: "running" });
     const invalidateSpy = vi.spyOn(qc, "invalidateQueries");
@@ -171,7 +216,7 @@ describe("useJobStatusStream", () => {
 
     act(() => {
       ws.triggerOpen();
-      ws.triggerClose(1006); // abnormal closure
+      ws.triggerClose(code);
     });
 
     expect(invalidateSpy).toHaveBeenCalledWith(
@@ -193,8 +238,11 @@ describe("useJobStatusStream", () => {
     });
     expect(ws.closed).toBe(false);
 
+    const invalidateSpy = vi.spyOn(qc, "invalidateQueries");
     unmount();
+    ws.triggerClose(1000);
     expect(ws.closed).toBe(true);
+    expect(invalidateSpy).not.toHaveBeenCalled();
   });
 
   test("changing jobId opens a new socket and closes the old one", () => {

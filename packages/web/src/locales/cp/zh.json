@@ -521,7 +521,11 @@
       "identity": "执行身份",
       "queues": "允许队列",
       "allQueues": "所有队列",
-      "summary": { "accounts": "账号总数", "shared": "公共账号", "enabled": "已启用" },
+      "summary": {
+        "accounts": "账号总数",
+        "shared": "公共账号",
+        "enabled": "已启用"
+      },
       "loadFailed": "执行账号列表暂时无法加载，请刷新后重试。"
     },
     "users": {
@@ -690,7 +694,8 @@
         "selectedProviderOrgId": "已选组织 ID",
         "submit": "签发 token",
         "creating": "签发中…",
-        "createFailed": "registration token 未签发，请检查组织权限后重试。"
+        "createFailed": "registration token 未签发，请检查组织权限后重试。",
+        "ttlHint": "允许 60–2592000 秒（最长 30 天），仅接受整数。"
       },
       "activeTokens": {
         "title": "当前有效 token",
@@ -704,9 +709,12 @@
         "empty": "创建后会在此显示明文 token 和注册命令。",
         "copyToken": "复制 token",
         "copyCommand": "复制命令",
-        "revoke": "撤销"
+        "revoke": "撤销",
+        "copyFailed": "无法写入剪贴板，请手动选择并复制 token 或命令。",
+        "revokeFailed": "撤销未成功，凭证仍保留在列表中，请重试。"
       },
-      "contextLoadFailed": "注册上下文暂时无法加载，请刷新后重试。"
+      "contextLoadFailed": "注册上下文暂时无法加载，请刷新后重试。",
+      "endpointUnavailable": "当前入口未提供节点注册接口。请联系部署管理员检查注册 API 的开放与路由配置。"
     },
     "data": {
       "title": "数据管理",

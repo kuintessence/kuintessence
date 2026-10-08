@@ -362,6 +362,9 @@ vi.mock("react-i18next", () => ({
         "software.access.status.canceled": "Canceled",
       };
       if (key === "software.templateCount") return `${opts?.count} / ${opts?.total}`;
+      if (key === "software.manage.catalogPageStatus") {
+        return `Page ${opts?.page} / ${opts?.total}`;
+      }
       if (key === "software.card.loaded") return `Loaded ${opts?.name}`;
       if (key === "software.manage.catalogStats") {
         return `${opts?.count} packages from ${opts?.repo}@${opts?.ref} on ${opts?.date}`;
@@ -835,6 +838,7 @@ describe("SoftwarePage", () => {
 
     await screen.findByTestId("software-card-hello");
     expect(screen.getByTestId("software-count").textContent).toBe("2 / 2");
+    expect(screen.getAllByText("Page 1 / 1").length).toBeGreaterThan(0);
     fireEvent.change(screen.getByTestId("software-search"), { target: { value: "pipeline" } });
     await waitFor(() => expect(screen.getByTestId("software-card-pipe")).toBeDefined());
     expect(screen.queryByTestId("software-card-hello")).toBeNull();

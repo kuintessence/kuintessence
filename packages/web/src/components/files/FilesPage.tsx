@@ -96,6 +96,13 @@ export function FilesPage() {
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [deletingCloudId, setDeletingCloudId] = useState<string | null>(null);
   const deletePendingRef = useRef<string | null>(null);
+  const uploadPendingRef = useRef(false);
+  const [uploadProgress, setUploadProgress] = useState<{
+    current: number;
+    total: number;
+    name: string;
+    prefix: string;
+  } | null>(null);
   const seenFinishedTransfers = useRef(new Map<string, string | null>());
 
   const agentsQ = useQuery({
@@ -104,10 +111,19 @@ export function FilesPage() {
     refetchInterval: 30_000,
   });
   const onlineAgents = useMemo(
-    () => (agentsQ.data?.agents ?? []).filter((a) => a.status.toLowerCase() === "online"),
-    [agentsQ.data],
+    () =>
+      (agentsQ.isSuccess ? (agentsQ.data?.agents ?? []) : []).filter(
+        (a) => a.status.toLowerCase() === "online",
+      ),
+    [agentsQ.data, agentsQ.isSuccess],
   );
-  const selectedAgent = onlineAgents.find((a) => a.agentId === agentId) ?? onlineAgents[0] ?? null;
+  const selectedAgent = agentId
+    ? (onlineAgents.find((a) => a.agentId === agentId) ?? null)
+    : (onlineAgents[0] ?? null);
+
+  useEffect(() => {
+    if (!agentId && selectedAgent) setAgentId(selectedAgent.agentId);
+  }, [agentId, selectedAgent]);
 
   const cloudQ = useQuery({
     queryKey: ["files-cloud"],
@@ -120,7 +136,12 @@ export function FilesPage() {
     refetchInterval: 30_000,
   });
   const clusterQ = useQuery({
-    queryKey: ["files-cluster", selectedAgent?.siteName, requestedClusterPath],
+    queryKey: [
+      "files-cluster",
+      selectedAgent?.agentId,
+      selectedAgent?.siteName,
+      requestedClusterPath,
+    ],
     queryFn: () => {
       const query = new URLSearchParams({
         agentId: selectedAgent?.agentId ?? "",
@@ -142,17 +163,19 @@ export function FilesPage() {
   const agentListError = agentsQ.error instanceof Error ? agentsQ.error : null;
   const clusterListError = clusterQ.error instanceof Error ? clusterQ.error : null;
   const netdriveDisabled =
-    netdriveError?.code === "NETDRIVE_DISABLED" ||
-    netdriveError?.status === 404 ||
-    netdriveError?.status === 503;
+    netdriveError?.code === "NETDRIVE_DISABLED" || netdriveError?.status === 404;
   const cloudActionsDisabled = cloudQ.isLoading || Boolean(cloudListError);
   const transferActionsDisabled = cloudActionsDisabled || netdriveDisabled;
-  const clusterPath = requestedClusterPath || clusterQ.data?.path || "";
+  const clusterPath = selectedAgent ? requestedClusterPath || clusterQ.data?.path || "" : "";
   const responseClusterRoots = useMemo(
     () => clusterQ.data?.roots ?? (clusterQ.data?.path ? [clusterQ.data.path] : []),
     [clusterQ.data],
   );
-  const clusterRoots = clusterQ.data ? responseClusterRoots : knownClusterRoots;
+  const clusterRoots = selectedAgent
+    ? clusterQ.data
+      ? responseClusterRoots
+      : knownClusterRoots
+    : [];
   const activeClusterRoot =
     selectedClusterRoot && clusterRoots.includes(selectedClusterRoot)
       ? selectedClusterRoot
@@ -176,17 +199,31 @@ export function FilesPage() {
   };
 
   const handleUpload = async (files: FileList) => {
+    if (uploadPendingRef.current || cloudActionsDisabled) return;
+    const batch = Array.from(files);
+    if (batch.length === 0) return;
+    uploadPendingRef.current = true;
     const prefix = cloudPrefix.replace(/\/$/, "") || "users/me";
-    for (const file of Array.from(files)) {
-      try {
-        await uploadFileToNetDrive(file, prefix);
-        toast.success(`Uploaded ${file.name}`);
-      } catch (err) {
-        toast.error(toUserFacingError(err, `Failed to upload ${file.name}`));
+    try {
+      for (const [index, file] of batch.entries()) {
+        setUploadProgress({ current: index + 1, total: batch.length, name: file.name, prefix });
+        try {
+          await uploadFileToNetDrive(file, prefix);
+          toast.success(t("files.uploadSucceeded", { name: file.name }));
+        } catch (err) {
+          toast.error(toUserFacingError(err, t("files.uploadFailed", { name: file.name })));
+        }
       }
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["files-cloud"] }),
+        queryClient.invalidateQueries({ queryKey: ["storage-summary"] }),
+        queryClient.invalidateQueries({ queryKey: ["job-files-netdrive"] }),
+        queryClient.invalidateQueries({ queryKey: ["command-workdir-cloud-files"] }),
+      ]);
+    } finally {
+      uploadPendingRef.current = false;
+      setUploadProgress(null);
     }
-    queryClient.invalidateQueries({ queryKey: ["files-cloud"] });
-    queryClient.invalidateQueries({ queryKey: ["storage-summary"] });
   };
 
   const cloudObjects: CloudPaneEntry[] = useMemo(
@@ -211,7 +248,7 @@ export function FilesPage() {
       ? (clusterEntries.find((entry) => entry.kind === "file" && entry.name === clusterSelected) ??
         null)
       : null;
-  const transfers = transfersQ.data?.transfers ?? [];
+  const transfers = transfersQ.isSuccess ? (transfersQ.data?.transfers ?? []) : [];
   const transfersLoadError = transfersQ.error
     ? toUserFacingError(transfersQ.error, t("files.transfers.loadFailed"))
     : null;
@@ -222,7 +259,8 @@ export function FilesPage() {
   const cloudSelectionVerified =
     cloudQ.isSuccess && !cloudActionsDisabled && Boolean(selectedCloudObject);
   const cloudSelectionUsable = cloudSelectionVerified && selectedCloudObject?.canUse === true;
-  const clusterPathVerified = clusterQ.isSuccess && clusterQ.data.path === clusterPath;
+  const clusterPathVerified =
+    !clusterActionsDisabled && clusterQ.isSuccess && clusterQ.data.path === clusterPath;
   const clusterSelectionVerified =
     clusterPathVerified && !clusterActionsDisabled && Boolean(selectedClusterEntry);
 
@@ -281,6 +319,7 @@ export function FilesPage() {
   }, [clusterQ.error, requestedClusterPath]);
 
   useEffect(() => {
+    if (!transfersQ.isSuccess) return;
     let shouldRefreshFiles = false;
     const next = new Map<string, string | null>();
     for (const transfer of transfers) {
@@ -300,7 +339,7 @@ export function FilesPage() {
       queryClient.invalidateQueries({ queryKey: ["files-cluster"] });
       queryClient.invalidateQueries({ queryKey: ["storage-summary"] });
     }
-  }, [transfers, queryClient]);
+  }, [transfers, queryClient, transfersQ.isSuccess]);
 
   const openTransfer = (direction?: TransferDirection) => {
     const inferred =
@@ -334,6 +373,12 @@ export function FilesPage() {
     }
   };
 
+  const deleteTargetVerified = Boolean(
+    deleteTarget &&
+      !cloudActionsDisabled &&
+      cloudObjects.some((file) => file.id === deleteTarget.id && file.canDelete),
+  );
+
   const requestCloudDelete = (obj: CloudPaneEntry) => {
     if (!obj.canDelete || deletePendingRef.current) return;
     setDeleteError(null);
@@ -341,7 +386,7 @@ export function FilesPage() {
   };
 
   const confirmCloudDelete = async () => {
-    if (!deleteTarget || deletePendingRef.current) return;
+    if (!deleteTarget || !deleteTargetVerified || deletePendingRef.current) return;
     const target = deleteTarget;
     deletePendingRef.current = target.id;
     setDeletingCloudId(target.id);
@@ -356,6 +401,7 @@ export function FilesPage() {
         queryClient.invalidateQueries({ queryKey: ["storage-summary"] }),
         queryClient.invalidateQueries({ queryKey: ["command-workdir-cloud-files"] }),
         queryClient.invalidateQueries({ queryKey: ["data-market", "netdrive"] }),
+        queryClient.invalidateQueries({ queryKey: ["job-files-netdrive"] }),
       ]);
     } catch (err) {
       const message = toUserFacingError(err, t("files.deleteDialog.failed"));
@@ -523,6 +569,8 @@ export function FilesPage() {
           }}
           onRefresh={refresh}
           onUpload={cloudActionsDisabled ? undefined : handleUpload}
+          uploading={uploadProgress !== null}
+          uploadStatus={uploadProgress ? t("files.uploadProgress", uploadProgress) : undefined}
           onDownload={cloudActionsDisabled ? undefined : handleCloudDownload}
           onDelete={cloudActionsDisabled ? undefined : requestCloudDelete}
           deletingId={deletingCloudId}
@@ -590,6 +638,7 @@ export function FilesPage() {
           type="button"
           className="flex w-full items-center justify-between gap-3 border-b border-border px-3 py-2 text-left hover:bg-muted/40"
           onClick={() => setShowTransfers((value) => !value)}
+          aria-expanded={showTransfers}
           data-testid="files-transfers-toggle"
         >
           <span className="flex items-center gap-2">
@@ -626,6 +675,7 @@ export function FilesPage() {
         cloudListVerified={cloudQ.isSuccess && !cloudActionsDisabled}
         cloudSelected={cloudSelectionUsable ? cloudSelected : null}
         clusterAgent={selectedAgent}
+        clusterAgents={onlineAgents}
         clusterPath={clusterPath}
         clusterPathVerified={clusterPathVerified}
         clusterSelected={clusterSelectionVerified ? clusterSelected : null}
@@ -637,7 +687,10 @@ export function FilesPage() {
       />
       <DeleteCloudFileDialog
         file={deleteTarget}
-        error={deleteError}
+        error={
+          deleteTarget && !deleteTargetVerified ? t("files.deleteDialog.unavailable") : deleteError
+        }
+        canConfirm={deleteTargetVerified}
         pending={deletingCloudId !== null}
         onCancel={() => {
           setDeleteTarget(null);

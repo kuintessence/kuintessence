@@ -521,7 +521,11 @@
       "identity": "Execution identity",
       "queues": "Allowed queues",
       "allQueues": "All queues",
-      "summary": { "accounts": "Accounts", "shared": "Shared accounts", "enabled": "Enabled" },
+      "summary": {
+        "accounts": "Accounts",
+        "shared": "Shared accounts",
+        "enabled": "Enabled"
+      },
       "loadFailed": "Execution accounts could not be loaded. Refresh and try again."
     },
     "users": {
@@ -690,7 +694,8 @@
         "selectedProviderOrgId": "Selected organization ID",
         "submit": "Issue token",
         "creating": "Issuing…",
-        "createFailed": "The registration token was not issued. Check organization permissions and try again."
+        "createFailed": "The registration token was not issued. Check organization permissions and try again.",
+        "ttlHint": "Use a whole number from 60 to 2592000 seconds (up to 30 days)."
       },
       "activeTokens": {
         "title": "Active tokens",
@@ -704,9 +709,12 @@
         "empty": "Plain token and registration command will appear here after creation.",
         "copyToken": "Copy token",
         "copyCommand": "Copy command",
-        "revoke": "Revoke"
+        "revoke": "Revoke",
+        "copyFailed": "Could not access the clipboard. Select and copy the token or command manually.",
+        "revokeFailed": "Revocation failed. The token remains in the list; please try again."
       },
-      "contextLoadFailed": "Registration context could not be loaded. Refresh and try again."
+      "contextLoadFailed": "Registration context could not be loaded. Refresh and try again.",
+      "endpointUnavailable": "Agent registration is unavailable at this entry point. Ask your deployment administrator to check registration API availability and routing."
     },
     "data": {
       "title": "Data management",

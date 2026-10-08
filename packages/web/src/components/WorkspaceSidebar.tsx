@@ -99,7 +99,11 @@ export function WorkspaceSidebar({
             expanded && "xl:w-24",
           )}
         >
-          <img src={sidebarLogo} alt={localizedBranding.name} className="h-7 w-7" />
+          <img
+            src={sidebarLogo}
+            alt={localizedBranding.name}
+            className={cn("h-7 w-7", sidebarLogo === defaultLogoUrl && "dark:invert")}
+          />
         </div>
         {expanded ? (
           <div className="flex min-w-0 flex-1 items-center px-4 text-base font-semibold tracking-tight">

@@ -15,7 +15,7 @@ import { useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { ApiError, api } from "../../lib/api-client";
-import { statusToBadgeVariant } from "../../lib/format";
+import { relativeFromNow, statusLabel, statusToBadgeVariant } from "../../lib/format";
 import { toUserFacingError, toUserFacingExecutionFailure } from "../../lib/user-facing-error";
 import { extractWorkflowInputModel } from "../../lib/workflow-input-config";
 import { JobDetailSheet } from "../jobs/JobDetailSheet";
@@ -62,8 +62,21 @@ interface WorkflowRunDetail {
   completedAt?: string | null;
 }
 
-const POLLED_RUN_STATUSES = new Set(["submitted", "queued", "pending", "running", "cancelling"]);
-const CANCELLABLE_RUN_STATUSES = new Set(["submitted", "queued", "pending", "running"]);
+const POLLED_RUN_STATUSES = new Set([
+  "submitted",
+  "queued",
+  "pending",
+  "awaiting_approval",
+  "running",
+  "cancelling",
+]);
+const CANCELLABLE_RUN_STATUSES = new Set([
+  "submitted",
+  "queued",
+  "pending",
+  "awaiting_approval",
+  "running",
+]);
 
 interface WorkflowCancelResponse {
   runId: string;
@@ -174,7 +187,8 @@ export interface WorkflowDagViewProps {
 }
 
 export function WorkflowDagView({ runId }: WorkflowDagViewProps) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
+  const language = i18n?.resolvedLanguage ?? i18n?.language;
   const queryClient = useQueryClient();
   const [activeJobId, setActiveJobId] = useState<string | null>(null);
   const [sheetOpen, setSheetOpen] = useState(false);
@@ -200,13 +214,15 @@ export function WorkflowDagView({ runId }: WorkflowDagViewProps) {
   });
 
   const cancelRun = useMutation({
-    mutationFn: () => api.post<WorkflowCancelResponse>(`/workflows/${runId}/cancel`, {}),
-    onSuccess: (res) => {
-      queryClient.setQueryData<WorkflowRunDetail>(["workflow-detail", runId], (run) =>
+    mutationFn: (cancelId: string) =>
+      api.post<WorkflowCancelResponse>(`/workflows/${cancelId}/cancel`, {}),
+    onSuccess: (res, cancelId) => {
+      queryClient.setQueryData<WorkflowRunDetail>(["workflow-detail", cancelId], (run) =>
         run ? { ...run, status: res.status } : run,
       );
-      queryClient.invalidateQueries({ queryKey: ["workflow-detail", runId] });
-      toast.success("Workflow cancellation requested");
+      queryClient.invalidateQueries({ queryKey: ["workflow-detail", cancelId] });
+      queryClient.invalidateQueries({ queryKey: ["workflows-list"] });
+      toast.success(t("workflows.run.cancelRequested"));
     },
     onError: (err) => {
       toast.error(
@@ -220,34 +236,35 @@ export function WorkflowDagView({ runId }: WorkflowDagViewProps) {
 
   const stepJobs = runQ.data?.stepJobs ?? {};
   const jobIds = useMemo(
-    () =>
-      Object.values(stepJobs)
-        .filter((jobId) => jobId.length > 0)
-        .sort(),
+    () => [...new Set(Object.values(stepJobs))].filter((jobId) => jobId.length > 0).sort(),
     [stepJobs],
   );
 
   const jobsQ = useQuery({
     queryKey: ["workflow-jobs", runId, jobIds.join(",")],
-    enabled: jobIds.length > 0,
+    enabled: runQ.isSuccess && jobIds.length > 0,
     queryFn: async () => {
-      const results = await Promise.all(
-        jobIds.map(async (id) => {
-          try {
-            return await api.get<JobDetail>(`/jobs/${id}`);
-          } catch {
-            return null;
-          }
-        }),
+      const results = await Promise.allSettled(
+        jobIds.map((id) => api.get<JobDetail>(`/jobs/${id}`)),
       );
-      return results.filter((j): j is JobDetail => j !== null);
+      return {
+        jobs: results.flatMap((result) => (result.status === "fulfilled" ? [result.value] : [])),
+        failedCount: results.filter((result) => result.status === "rejected").length,
+      };
     },
-    refetchInterval: 5_000,
+    refetchInterval: (q) => {
+      if (!runQ.isSuccess) return false;
+      const runActive = POLLED_RUN_STATUSES.has(normalizeStatus(runQ.data?.status));
+      const jobsActive = q.state.data?.jobs.some((job) =>
+        POLLED_RUN_STATUSES.has(normalizeStatus(job.status)),
+      );
+      return runActive || jobsActive ? 5_000 : false;
+    },
   });
 
   const jobsMap = useMemo(() => {
     const m = new Map<string, JobDetail>();
-    for (const j of jobsQ.data ?? []) m.set(j.id, j);
+    for (const j of jobsQ.data?.jobs ?? []) m.set(j.id, j);
     return m;
   }, [jobsQ.data]);
   const liveStatusByNode = useMemo(
@@ -331,10 +348,19 @@ export function WorkflowDagView({ runId }: WorkflowDagViewProps) {
         <Card className="rounded-xl shadow-none">
           <CardContent className="flex items-start gap-4 p-6">
             <AlertCircle className="mt-0.5 h-5 w-5 shrink-0 text-status-failed" />
-            <div className="space-y-1">
+            <div className="min-w-0 space-y-2">
               <h2 className="text-lg font-semibold">{headline}</h2>
               <p className="text-sm text-muted-foreground">{detail}</p>
-              <p className="font-mono text-[11px] text-muted-foreground">{runId}</p>
+              <p className="break-all font-mono text-[11px] text-muted-foreground">{runId}</p>
+              <Button
+                type="button"
+                variant="outline"
+                disabled={runQ.isFetching}
+                data-testid="workflow-run-retry"
+                onClick={() => void runQ.refetch()}
+              >
+                {runQ.isFetching ? t("common.loading") : t("globalError.retry")}
+              </Button>
             </div>
           </CardContent>
         </Card>
@@ -342,14 +368,52 @@ export function WorkflowDagView({ runId }: WorkflowDagViewProps) {
     );
   }
 
+  if (runQ.isPending) {
+    return (
+      <Card data-testid="workflow-run-loading" role="status" className="rounded-xl shadow-none">
+        <CardContent className="p-6 text-sm text-muted-foreground">
+          {t("common.loading")}
+        </CardContent>
+      </Card>
+    );
+  }
+
   return (
     <div className="space-y-5" data-testid="workflow-dag-view">
+      {jobsQ.data?.failedCount ? (
+        <div
+          role="alert"
+          data-testid="workflow-jobs-error"
+          className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-status-failed/40 bg-status-failed/5 p-4 text-sm"
+        >
+          <p>{t("workflows.run.jobsLoadFailed", { count: jobsQ.data.failedCount })}</p>
+          <Button
+            type="button"
+            variant="outline"
+            disabled={jobsQ.isFetching}
+            onClick={() => void jobsQ.refetch()}
+          >
+            {jobsQ.isFetching ? t("common.loading") : t("globalError.retry")}
+          </Button>
+        </div>
+      ) : null}
+      {runStatus === "awaiting_approval" ? (
+        <div
+          role="status"
+          data-testid="workflow-awaiting-approval"
+          className="rounded-lg border border-brand/30 bg-brand-soft p-4 text-sm"
+        >
+          {t("workflows.run.awaitingApproval")}
+        </div>
+      ) : null}
       <div className="rounded-xl border border-border bg-card p-4 shadow-sm sm:p-5">
         <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
           <div className="min-w-0">
             <div className="mb-2 flex flex-wrap items-center gap-2">
               {runQ.data ? (
-                <Badge variant={statusToBadgeVariant(runQ.data.status)}>{runQ.data.status}</Badge>
+                <Badge variant={statusToBadgeVariant(runQ.data.status)}>
+                  {statusLabel(runQ.data.status, language)}
+                </Badge>
               ) : null}
               <span
                 className="rounded-full border border-border bg-background px-3 py-1 font-mono text-[11px] text-muted-foreground"
@@ -357,11 +421,13 @@ export function WorkflowDagView({ runId }: WorkflowDagViewProps) {
                 data-testid="run-meta"
               >
                 {runId.slice(0, 8)}
-                {runQ.data?.createdAt ? ` created ${runQ.data.createdAt}` : null}
+                {runQ.data?.createdAt
+                  ? ` · ${relativeFromNow(runQ.data.createdAt, undefined, language)}`
+                  : null}
               </span>
             </div>
             <h2 className="text-2xl font-semibold tracking-tight sm:text-3xl">
-              {runQ.data?.name ?? "Workflow run"}
+              {runQ.data?.name ?? t("workflows.run.title")}
             </h2>
             {runQ.data?.description ? (
               <p className="mt-1 max-w-3xl text-sm leading-6 text-muted-foreground">
@@ -377,10 +443,10 @@ export function WorkflowDagView({ runId }: WorkflowDagViewProps) {
                 size="sm"
                 data-testid="workflow-cancel-run"
                 disabled={!canCancelRun || cancelRun.isPending}
-                onClick={() => cancelRun.mutate()}
+                onClick={() => cancelRun.mutate(runId)}
               >
                 <X />
-                {cancelInProgress ? "Cancelling" : "Cancel run"}
+                {cancelInProgress ? t("workflows.run.cancelling") : t("workflows.run.cancel")}
               </Button>
             ) : null}
           </div>
@@ -388,9 +454,17 @@ export function WorkflowDagView({ runId }: WorkflowDagViewProps) {
       </div>
 
       <div className="grid gap-3 sm:grid-cols-3">
-        <RunMetric label="Nodes" value={graphNodeCount} icon={Layers3} />
-        <RunMetric label="Edges" value={graphEdgeCount} icon={GitBranch} />
-        <RunMetric label="Created" value={runQ.data?.createdAt ?? "loading"} icon={CalendarClock} />
+        <RunMetric label={t("workflows.run.nodes")} value={graphNodeCount} icon={Layers3} />
+        <RunMetric label={t("workflows.run.edges")} value={graphEdgeCount} icon={GitBranch} />
+        <RunMetric
+          label={t("workflows.run.created")}
+          value={
+            runQ.data?.createdAt
+              ? new Date(runQ.data.createdAt).toLocaleString(language)
+              : t("common.loading")
+          }
+          icon={CalendarClock}
+        />
       </div>
 
       {localizedError ? (
@@ -518,7 +592,7 @@ export function WorkflowDagView({ runId }: WorkflowDagViewProps) {
       {runQ.data?.graph && runQ.data.graph.nodes.length > 0 ? (
         <Card className="rounded-xl shadow-none" data-testid="workflow-graph-card">
           <CardHeader>
-            <CardTitle className="text-foreground">Graph</CardTitle>
+            <CardTitle className="text-foreground">{t("workflows.run.graph")}</CardTitle>
           </CardHeader>
           <CardContent>
             <WorkflowRunGraph graph={runQ.data.graph} statusByNode={liveStatusByNode} />
@@ -527,7 +601,7 @@ export function WorkflowDagView({ runId }: WorkflowDagViewProps) {
       ) : nodeStatuses.length > 0 ? (
         <Card className="rounded-xl shadow-none" data-testid="workflow-nodes-card">
           <CardHeader>
-            <CardTitle className="text-foreground">Nodes</CardTitle>
+            <CardTitle className="text-foreground">{t("workflows.run.nodes")}</CardTitle>
           </CardHeader>
           <CardContent className="space-y-2">
             {nodeStatuses.map(([nodeId, status]) => {
@@ -546,7 +620,9 @@ export function WorkflowDagView({ runId }: WorkflowDagViewProps) {
                         {JSON.stringify(values)}
                       </span>
                     ) : null}
-                    <Badge variant={statusToBadgeVariant(status)}>{status}</Badge>
+                    <Badge variant={statusToBadgeVariant(status)}>
+                      {statusLabel(status, language)}
+                    </Badge>
                     {jobId ? (
                       <Button
                         type="button"
@@ -570,7 +646,7 @@ export function WorkflowDagView({ runId }: WorkflowDagViewProps) {
       ) : (
         <Card className="rounded-xl shadow-none" data-testid="workflow-graph-empty">
           <CardHeader>
-            <CardTitle className="text-foreground">Graph</CardTitle>
+            <CardTitle className="text-foreground">{t("workflows.run.graph")}</CardTitle>
           </CardHeader>
           <CardContent>
             <p className="text-sm text-muted-foreground">

@@ -19,7 +19,9 @@ vi.mock("sonner", () => ({
 
 vi.mock("react-i18next", () => ({
   useTranslation: () => ({
-    t: (key: string) => key,
+    t: (key: string, options?: Record<string, unknown>) =>
+      options?.time ? `${key}: ${options.time}` : key,
+    i18n: { resolvedLanguage: "zh", language: "zh" },
   }),
 }));
 
@@ -540,5 +542,59 @@ describe("TransfersTray", () => {
       "files-transfer-transfer-retryable",
       "files-transfer-transfer-plain",
     ]);
+  });
+});
+
+describe("transfer list freshness and accessibility", () => {
+  test.each([
+    "failed",
+    "running",
+  ] as const)("hides stale %s actions after a refresh failure", (state) => {
+    const props = {
+      transfers: [{ ...baseTransfer, direction: "cluster_to_cloud" as const, state }],
+      onChanged: vi.fn(),
+    };
+    const { rerender } = render(<TransfersTray {...props} />);
+    fireEvent.click(screen.getByTestId("files-transfers-filter-all"));
+    expect(screen.getByTestId("files-transfer-transfer-1")).toBeTruthy();
+    rerender(<TransfersTray {...props} loadError="Forbidden" />);
+    expect(screen.queryByTestId("files-transfer-transfer-1")).toBeNull();
+    expect(screen.queryByTestId("files-transfer-cancel-transfer-1")).toBeNull();
+    expect(screen.queryByTestId("files-transfer-retry-transfer-1")).toBeNull();
+    expect(screen.getByTestId("files-transfers-filter-all").textContent).toContain("(0)");
+    rerender(<TransfersTray {...props} />);
+    expect(screen.getByTestId("files-transfer-transfer-1")).toBeTruthy();
+  });
+
+  test("exposes the selected transfer filter", () => {
+    render(<TransfersTray transfers={[]} onChanged={vi.fn()} />);
+    expect(screen.getByTestId("files-transfers-filter-active").getAttribute("aria-pressed")).toBe(
+      "true",
+    );
+    fireEvent.click(screen.getByTestId("files-transfers-filter-failed"));
+    expect(screen.getByTestId("files-transfers-filter-active").getAttribute("aria-pressed")).toBe(
+      "false",
+    );
+    expect(screen.getByTestId("files-transfers-filter-failed").getAttribute("aria-pressed")).toBe(
+      "true",
+    );
+  });
+
+  test("formats transfer timestamps in the current UI language", () => {
+    render(
+      <TransfersTray
+        transfers={[
+          {
+            ...baseTransfer,
+            direction: "cluster_to_cloud",
+            state: "running",
+            startedAt: new Date(Date.now() - 120_000).toISOString(),
+            finishedAt: null,
+          },
+        ]}
+        onChanged={vi.fn()}
+      />,
+    );
+    expect(screen.getByTestId("files-transfer-transfer-1").textContent).toContain("2 分钟前");
   });
 });

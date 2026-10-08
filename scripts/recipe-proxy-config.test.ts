@@ -29,6 +29,24 @@ function directive(source: string, name: string): string | undefined {
 
 describe("recipe upload nginx configuration (offline)", () => {
   for (const { file, upstream, preview } of configurations) {
+    test(`${file} serves the material catalog without nginx's trailing-slash redirect`, async () => {
+      const source = await readFile(new URL(`../${file}`, import.meta.url), "utf8");
+      const catalog = block(source, "location = /software/api/spack/material-repositories");
+      if (!catalog) throw new Error("Missing exact material catalog location");
+      expect(directive(catalog, "proxy_pass")).toBe(upstream);
+      expect(directive(catalog, "proxy_set_header Authorization")).toBe(
+        preview ? "$preview_authorization" : "$registry_authorization",
+      );
+      if (preview) {
+        expect(directive(block(catalog, "if ($preview_allowed = 0)") ?? "", "return")).toBe(
+          "302 /__preview/unlock",
+        );
+      } else {
+        expect(directive(catalog, "rewrite")).toBe("^/software/(.*)$ /$1 break");
+        expect(directive(catalog, "return")).toBeUndefined();
+      }
+    });
+
     test(`${file} bounds online import JSON and keeps the authenticated bridge`, async () => {
       const source = await readFile(new URL(`../${file}`, import.meta.url), "utf8");
       const upload = block(source, `location = ${UPSTREAM_IMPORT}`);

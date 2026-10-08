@@ -81,30 +81,38 @@ describe("JobFilesTab actions", () => {
             files: [
               {
                 id: "file-input-a",
+                canUse: true,
+                canDelete: true,
                 path: "scheduler-smoke/slurm/batch/a.txt",
                 size: 5,
                 mtime: "2026-07-02T08:00:00.000Z",
               },
               {
                 id: "file-output-summary",
+                canUse: true,
+                canDelete: true,
                 path: "outputs/867d9e1e-c725-4a09-b258-e6073e0c75b7/summary.txt",
                 size: 7,
                 mtime: "2026-07-02T08:01:00.000Z",
               },
               {
                 id: "file-output-chunk-a",
+                canUse: true,
+                canDelete: true,
                 path: "outputs/867d9e1e-c725-4a09-b258-e6073e0c75b7/chunks/chunks_a.txt",
                 size: 9,
                 mtime: "2026-07-02T08:01:00.000Z",
               },
               {
                 id: "file-output-chunk-foreign",
+                canUse: true,
+                canDelete: true,
                 path: "workflow-runs/other-run/jobs/other-job/chunks/chunks_a.txt",
                 size: 11,
                 mtime: "2026-07-02T08:01:00.000Z",
               },
             ],
-            total: 2,
+            total: 4,
           },
         };
       }
@@ -164,6 +172,8 @@ describe("JobFilesTab actions", () => {
         files: [
           {
             id: "file-output-chunk-foreign",
+            canUse: true,
+            canDelete: true,
             path: "workflow-runs/other-run/jobs/other-job/chunks/chunks_a.txt",
             size: 11,
             mtime: "2026-07-02T08:01:00.000Z",
@@ -254,4 +264,75 @@ describe("JobFilesTab actions", () => {
       expect(summaryDiagnostic.textContent).not.toContain("FORBIDDEN");
     });
   });
+});
+
+test("finds outputs beyond the first page using the complete NetDrive listing", async () => {
+  const first = {
+    success: true,
+    data: {
+      files: [{ id: "unrelated", path: "notes.txt", canUse: true, canDelete: true }],
+      total: 2,
+    },
+  };
+  const next = {
+    success: true,
+    data: {
+      files: [
+        { id: "late-output", path: `outputs/${job.id}/summary.txt`, canUse: true, canDelete: true },
+      ],
+      total: 2,
+    },
+  };
+  vi.mocked(api.get).mockImplementation(async (path) => (path.includes("offset=1") ? next : first));
+  render(withQueryClient(<JobFilesTab job={job} loading={false} />));
+  expect(
+    await screen.findByTestId("job-file-output-download-cloud-summary-late-output"),
+  ).toBeTruthy();
+  expect(api.get).toHaveBeenCalledWith("/netdrive/files?limit=500&offset=1");
+});
+
+test("hides stale output links after a failed refresh, then retries", async () => {
+  const body = {
+    success: true,
+    data: {
+      files: [
+        { id: "output", path: `outputs/${job.id}/summary.txt`, canUse: true, canDelete: true },
+      ],
+      total: 1,
+    },
+  };
+  vi.mocked(api.get).mockResolvedValue(body);
+  render(withQueryClient(<JobFilesTab job={job} loading={false} />));
+  await screen.findByTestId("job-file-output-download-cloud-summary-output");
+  vi.mocked(api.get).mockRejectedValue(new Error("permission changed"));
+  fireEvent.click(screen.getByTestId("job-files-refresh"));
+  await screen.findByTestId("job-files-netdrive-error");
+  expect(screen.queryByTestId("job-file-output-download-cloud-summary-output")).toBeNull();
+  expect(screen.queryByText("Not published")).toBeNull();
+  vi.mocked(api.get).mockResolvedValue(body);
+  fireEvent.click(screen.getByTestId("job-files-refresh"));
+  expect(await screen.findByTestId("job-file-output-download-cloud-summary-output")).toBeTruthy();
+});
+
+test("refreshes artifact publication when job status reaches completed", async () => {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const wrapper = ({ children }: { children: ReactNode }) => (
+    <QueryClientProvider client={client}>{children}</QueryClientProvider>
+  );
+  vi.mocked(api.get).mockResolvedValue({ success: true, data: { files: [], total: 0 } });
+  const { rerender } = render(<JobFilesTab job={{ ...job, status: "running" }} loading={false} />, {
+    wrapper,
+  });
+  await screen.findAllByText("Not published");
+  vi.mocked(api.get).mockResolvedValue({
+    success: true,
+    data: {
+      files: [
+        { id: "output", path: `outputs/${job.id}/summary.txt`, canUse: true, canDelete: true },
+      ],
+      total: 1,
+    },
+  });
+  rerender(<JobFilesTab job={{ ...job, status: "completed" }} loading={false} />);
+  expect(await screen.findByTestId("job-file-output-download-cloud-summary-output")).toBeTruthy();
 });

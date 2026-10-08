@@ -32,6 +32,8 @@ export interface CloudPaneProps {
   onSelect: (id: string | null) => void;
   onRefresh: () => void;
   onUpload?: (files: FileList) => void;
+  uploading?: boolean;
+  uploadStatus?: string;
   onPrefixChange?: (next: string) => void;
   onDownload?: (obj: CloudObject) => void;
   onDelete?: (obj: CloudPaneEntry) => void;
@@ -48,12 +50,15 @@ export function CloudPane({
   onSelect,
   onRefresh,
   onUpload,
+  uploading = false,
+  uploadStatus,
   onPrefixChange,
   onDownload,
   onDelete,
   deletingId,
 }: CloudPaneProps) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
+  const language = i18n?.resolvedLanguage ?? i18n?.language;
   const [query, setQuery] = useState("");
   const [sortKey, setSortKey] = useState<SortKey>("name");
   const [isDragging, setIsDragging] = useState(false);
@@ -137,18 +142,18 @@ export function CloudPane({
       onDragOver={(event) => {
         if (!onUpload) return;
         event.preventDefault();
-        setIsDragging(true);
+        setIsDragging(!uploading);
       }}
       onDragLeave={() => setIsDragging(false)}
       onDrop={(event) => {
         if (!onUpload) return;
         event.preventDefault();
         setIsDragging(false);
-        if (event.dataTransfer.files.length > 0) onUpload(event.dataTransfer.files);
+        if (!uploading && event.dataTransfer.files.length > 0) onUpload(event.dataTransfer.files);
       }}
     >
       <div className="flex h-10 items-center justify-between gap-2 border-b border-border bg-card/60 px-3">
-        <div className="flex items-center gap-1">
+        <div className="flex min-w-0 flex-1 items-center gap-1">
           {canGoUp ? (
             <Button
               variant="ghost"
@@ -161,11 +166,14 @@ export function CloudPane({
               <ArrowUp />
             </Button>
           ) : null}
-          <span className="font-mono text-[11px] text-muted-foreground" title={prefix}>
+          <span
+            className="min-w-0 truncate font-mono text-[11px] text-muted-foreground"
+            title={prefix}
+          >
             {title} · {prefix || "/"}
           </span>
         </div>
-        <div className="flex items-center gap-1">
+        <div className="flex shrink-0 items-center gap-1">
           {onUpload ? (
             <>
               <input
@@ -173,9 +181,10 @@ export function CloudPane({
                 type="file"
                 multiple
                 hidden
+                disabled={uploading}
                 data-testid="files-cloud-upload-input"
                 onChange={(e) => {
-                  if (e.target.files && e.target.files.length > 0) {
+                  if (!uploading && e.target.files && e.target.files.length > 0) {
                     onUpload(e.target.files);
                     e.target.value = "";
                   }
@@ -188,9 +197,10 @@ export function CloudPane({
                 aria-label={t("files.uploadLocal")}
                 title={t("files.uploadLocal")}
                 data-testid="files-cloud-upload"
+                disabled={uploading}
                 onClick={() => fileInputRef.current?.click()}
               >
-                <Upload />
+                {uploading ? <Loader2 className="animate-spin" /> : <Upload />}
               </Button>
             </>
           ) : null}
@@ -231,13 +241,22 @@ export function CloudPane({
         </div>
         {onUpload ? (
           <div
-            className="font-mono text-[10px] text-muted-foreground"
+            className="break-all font-mono text-[10px] text-muted-foreground"
             data-testid="files-cloud-upload-target"
           >
             {t("files.uploadTarget", { prefix: uploadPrefix })}
           </div>
         ) : null}
       </div>
+      {uploadStatus ? (
+        <div
+          role="status"
+          className="break-all border-b border-border px-3 py-2 text-xs text-muted-foreground"
+          data-testid="files-upload-status"
+        >
+          {uploadStatus}
+        </div>
+      ) : null}
       <div className="flex-1 overflow-auto">
         {visibleRows.length === 0 ? (
           <div className="flex h-32 items-center justify-center text-xs text-muted-foreground">
@@ -284,9 +303,17 @@ export function CloudPane({
                       <td className="min-w-0 px-3 py-2 font-medium">
                         <div className="flex min-w-0 items-center gap-2">
                           <Folder className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                          <span className="min-w-0 truncate font-mono text-xs" title={`${r.name}/`}>
+                          <button
+                            type="button"
+                            className="min-w-0 truncate rounded-sm text-left font-mono text-xs focus-visible:outline-2 focus-visible:outline-brand"
+                            title={`${r.name}/`}
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              onPrefixChange?.(r.fullPath);
+                            }}
+                          >
                             {r.name}/
-                          </span>
+                          </button>
                           <span className="ml-1 shrink-0 text-[10px] text-muted-foreground">
                             {t("files.childCount", { count: r.childCount })}
                           </span>
@@ -299,7 +326,7 @@ export function CloudPane({
                         className="hidden px-3 py-2 font-mono text-[11px] text-muted-foreground tabular-nums md:table-cell"
                         title={r.latestModifiedAt}
                       >
-                        {relativeFromNow(r.latestModifiedAt)}
+                        {relativeFromNow(r.latestModifiedAt, undefined, language)}
                       </td>
                       <td className="px-1 py-0 text-right">
                         <Button
@@ -355,9 +382,18 @@ export function CloudPane({
                     <td className="min-w-0 px-3 py-2 font-medium">
                       <div className="flex min-w-0 items-center gap-2">
                         <File className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                        <span className="min-w-0 truncate font-mono text-xs" title={r.displayName}>
+                        <button
+                          type="button"
+                          className="min-w-0 truncate rounded-sm text-left font-mono text-xs focus-visible:outline-2 focus-visible:outline-brand"
+                          title={r.displayName}
+                          aria-pressed={isSelected}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            onSelect(isSelected ? null : r.obj.id);
+                          }}
+                        >
                           {r.displayName}
-                        </span>
+                        </button>
                       </div>
                     </td>
                     <td className="hidden px-3 py-2 text-right font-mono text-xs tabular-nums text-muted-foreground sm:table-cell">
@@ -367,7 +403,7 @@ export function CloudPane({
                       className="hidden px-3 py-2 font-mono text-[11px] text-muted-foreground tabular-nums md:table-cell"
                       title={r.obj.modifiedAt}
                     >
-                      {relativeFromNow(r.obj.modifiedAt)}
+                      {relativeFromNow(r.obj.modifiedAt, undefined, language)}
                     </td>
                     <td className="px-1 py-0 text-right">
                       <div className="flex items-center justify-end">

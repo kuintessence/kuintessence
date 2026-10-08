@@ -76,11 +76,11 @@ import { WorkflowDagView } from "./WorkflowDagView";
 
 // Workflow detail request failures render an error card with a status-aware headline.
 
-function makeWrapper() {
-  // Disable retries so the error surfaces on the first failed query.
-  const qc = new QueryClient({
+function makeWrapper(
+  qc = new QueryClient({
     defaultOptions: { queries: { retry: false, gcTime: 0 } },
-  });
+  }),
+) {
   return ({ children }: { children: ReactNode }) => (
     <QueryClientProvider client={qc}>{children}</QueryClientProvider>
   );
@@ -184,7 +184,7 @@ describe("WorkflowDagView error UI", () => {
       wrapper: makeWrapper(),
     });
 
-    expect(await screen.findByText("completed")).toBeTruthy();
+    expect(await screen.findByText("Completed")).toBeTruthy();
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
@@ -282,17 +282,19 @@ describe("WorkflowDagView error UI", () => {
 
     const solve = await screen.findByTestId("workflow-node-solve");
     await waitFor(() => {
-      expect(solve.textContent).toContain("running");
-      expect(screen.getByTestId("workflow-node-post").textContent).toContain("running");
+      expect(solve.textContent).toContain("Running");
+      expect(screen.getByTestId("workflow-node-post").textContent).toContain("Running");
     });
     expect(screen.queryByTestId("run-graph")).toBeNull();
     expect(screen.queryByTestId("dag-canvas")).toBeNull();
     expect(screen.queryByTestId("dag-edges")).toBeNull();
     expect(
-      screen.getByText("Nodes", { selector: "span" }).parentElement?.nextElementSibling
-        ?.textContent,
+      screen.getByText("workflows.run.nodes", { selector: "span" }).parentElement
+        ?.nextElementSibling?.textContent,
     ).toBe("-");
-    expect(screen.getByText("Edges").parentElement?.nextElementSibling?.textContent).toBe("-");
+    expect(
+      screen.getByText("workflows.run.edges").parentElement?.nextElementSibling?.textContent,
+    ).toBe("-");
 
     const jobButton = solve.querySelector("button");
     if (!jobButton) throw new Error("related job button missing");
@@ -309,7 +311,7 @@ describe("WorkflowDagView error UI", () => {
     render(<WorkflowDagView runId="local-run" />, { wrapper: makeWrapper() });
 
     const solve = await screen.findByTestId("workflow-node-solve");
-    expect(solve.textContent).toContain("unknown");
+    expect(solve.textContent).toContain("Unknown");
     expect(solve.querySelector("button")).toBeNull();
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(screen.queryByTestId("workflow-graph-empty")).toBeNull();
@@ -337,7 +339,7 @@ describe("WorkflowDagView error UI", () => {
     expect(nodes.querySelectorAll('[data-testid^="workflow-node-"]')).toHaveLength(3);
     expect(screen.getByTestId("workflow-node-control").textContent).toContain("Succeeded");
     expect(screen.getByTestId("workflow-node-solve").textContent).toContain("Running");
-    expect(screen.getByTestId("workflow-node-post").textContent).toContain("unknown");
+    expect(screen.getByTestId("workflow-node-post").textContent).toContain("Unknown");
     expect(screen.queryByTestId("workflow-node-__run__")).toBeNull();
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
@@ -374,11 +376,11 @@ describe("WorkflowDagView error UI", () => {
     render(<WorkflowDagView runId="local-run" />, { wrapper: makeWrapper() });
 
     await waitFor(() => {
-      expect(screen.getByTestId("workflow-node-post").textContent).toContain("running");
+      expect(screen.getByTestId("workflow-node-post").textContent).toContain("Running");
     });
     const solve = screen.getByTestId("workflow-node-solve");
-    expect(solve.textContent).toContain("unknown");
-    expect(screen.getByTestId("workflow-node-preview").textContent).toContain("unknown");
+    expect(solve.textContent).toContain("Unknown");
+    expect(screen.getByTestId("workflow-node-preview").textContent).toContain("Unknown");
     const requestedJobUrls = fetchMock.mock.calls
       .map(([input]) => String(input))
       .filter((url) => url.includes("/api/jobs/"));
@@ -557,9 +559,12 @@ describe("WorkflowDagView error UI", () => {
     });
   });
 
-  test("posts to the canonical cancel endpoint for a running run", async () => {
+  test.each([
+    "running",
+    "awaiting_approval",
+  ])("cancels a %s run through the canonical endpoint", async (initialStatus) => {
     const calls: Array<{ method: string; url: string }> = [];
-    let status = "running";
+    let status = initialStatus;
     vi.stubGlobal(
       "fetch",
       vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
@@ -584,10 +589,17 @@ describe("WorkflowDagView error UI", () => {
       }),
     );
 
-    render(<WorkflowDagView runId="run-cancel" />, { wrapper: makeWrapper() });
+    const qc = new QueryClient();
+    qc.setQueryData(["workflows-list"], { data: [{ id: "run-cancel", status: initialStatus }] });
+    render(<WorkflowDagView runId="run-cancel" />, { wrapper: makeWrapper(qc) });
 
     const button = await screen.findByTestId("workflow-cancel-run");
-    expect(button.textContent).toContain("Cancel run");
+    if (initialStatus === "awaiting_approval") {
+      expect(screen.getByTestId("workflow-awaiting-approval").textContent).toContain(
+        "workflows.run.awaitingApproval",
+      );
+    }
+    expect(button.textContent).toContain("workflows.run.cancel");
 
     fireEvent.click(button);
 
@@ -598,7 +610,8 @@ describe("WorkflowDagView error UI", () => {
         ),
       ).toBe(true);
     });
-    expect(await screen.findByText("cancelling")).toBeTruthy();
+    expect(await screen.findByText("Cancelling")).toBeTruthy();
+    expect(qc.getQueryState(["workflows-list"])?.isInvalidated).toBe(true);
   });
 
   test("does not show cancel action for a completed run", async () => {
@@ -611,7 +624,7 @@ describe("WorkflowDagView error UI", () => {
       wrapper: makeWrapper(),
     });
 
-    expect(await screen.findByText("completed")).toBeTruthy();
+    expect(await screen.findByText("Completed")).toBeTruthy();
     expect(screen.queryByTestId("workflow-cancel-run")).toBeNull();
   });
 
@@ -619,4 +632,136 @@ describe("WorkflowDagView error UI", () => {
   // recovery), so it doesn't surface within a normal test timeout. The 4xx
   // tests exercise the no-retry path; the 5xx behavior is the same render
   // branch (`runQ.error` truthy → error card with the generic headline).
+});
+
+describe("WorkflowDagView recovery", () => {
+  test("hides configuration until the run has loaded", async () => {
+    let finish: ((response: Response) => void) | undefined;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        () =>
+          new Promise<Response>((resolve) => {
+            finish = resolve;
+          }),
+      ),
+    );
+    render(<WorkflowDagView runId="loading-run" />, { wrapper: makeWrapper() });
+    expect(screen.getByTestId("workflow-run-loading")).toBeTruthy();
+    expect(screen.queryByTestId("workflow-run-configuration")).toBeNull();
+    finish?.(Response.json(workflowRunBody("completed")));
+    await screen.findByTestId("workflow-run-configuration");
+    expect(screen.queryByTestId("workflow-run-loading")).toBeNull();
+  });
+
+  test("retries a failed run detail request in place", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockResolvedValueOnce(
+          Response.json({ error: { code: "NOT_FOUND", message: "gone" } }, { status: 404 }),
+        )
+        .mockResolvedValueOnce(Response.json(workflowRunBody("completed"))),
+    );
+    render(<WorkflowDagView runId="retry-run" />, { wrapper: makeWrapper() });
+    fireEvent.click(await screen.findByTestId("workflow-run-retry"));
+    expect(await screen.findByText("async-run")).toBeTruthy();
+  });
+
+  test.each([
+    false,
+    true,
+  ])("reports failed linked jobs and recovers (all failed: %s)", async (allFailed) => {
+    let recovered = false;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.includes("/api/jobs/")) {
+          if (!recovered && (allFailed || url.endsWith("job-post"))) {
+            return Promise.resolve(
+              Response.json({ error: { code: "FORBIDDEN", message: "private" } }, { status: 403 }),
+            );
+          }
+          return Promise.resolve(
+            Response.json({
+              id: url.split("/").pop(),
+              name: "node",
+              status: "completed",
+              submittedAt: "t",
+            }),
+          );
+        }
+        return Promise.resolve(
+          Response.json({
+            ...localWorkflowRunBody({ solve: "job-solve", post: "job-post" }, "completed"),
+            result: { status: { solve: "Succeeded", post: "Pending" }, values: {} },
+          }),
+        );
+      }),
+    );
+    render(<WorkflowDagView runId="partial-run" />, { wrapper: makeWrapper() });
+    const warning = await screen.findByTestId("workflow-jobs-error");
+    expect(warning.textContent).not.toContain("private");
+    expect(screen.getByTestId("workflow-node-post").textContent).toContain("Pending");
+    expect(screen.getByTestId("workflow-node-solve").textContent).toContain(
+      allFailed ? "Succeeded" : "Completed",
+    );
+    recovered = true;
+    fireEvent.click(screen.getByRole("button", { name: "globalError.retry" }));
+    await waitFor(() => expect(screen.queryByTestId("workflow-jobs-error")).toBeNull());
+    expect(screen.getByTestId("workflow-node-post").textContent).toContain("Completed");
+  });
+
+  test("does not keep polling settled jobs for a finished run", async () => {
+    const fetchMock = vi.fn((input: RequestInfo | URL) =>
+      Promise.resolve(
+        Response.json(
+          String(input).includes("/api/jobs/")
+            ? { id: "job-solve", name: "solve", status: "completed", submittedAt: "t" }
+            : localWorkflowRunBody({ solve: "job-solve", duplicate: "job-solve" }, "completed"),
+        ),
+      ),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    render(<WorkflowDagView runId="finished-run" />, { wrapper: makeWrapper() });
+    await waitFor(() =>
+      expect(screen.getByTestId("workflow-node-solve").textContent).toContain("Completed"),
+    );
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    await new Promise((resolve) => setTimeout(resolve, 5200));
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  }, 10000);
+});
+
+test("keeps delayed cancellation scoped to the original workflow after navigation", async () => {
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  let finish: ((response: Response) => void) | undefined;
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      if (init?.method === "POST")
+        return new Promise<Response>((resolve) => {
+          finish = resolve;
+        });
+      const id = String(input).split("/").pop();
+      return Promise.resolve(Response.json({ ...workflowRunBody("running"), id, name: id }));
+    }),
+  );
+  const { rerender } = render(<WorkflowDagView runId="run-a" />, { wrapper: makeWrapper(qc) });
+  fireEvent.click(await screen.findByTestId("workflow-cancel-run"));
+  await waitFor(() => expect(finish).toBeDefined());
+  rerender(<WorkflowDagView runId="run-b" />);
+  await screen.findByRole("heading", { name: "run-b" });
+  finish?.(Response.json({ runId: "run-a", status: "cancelling" }));
+  await waitFor(() =>
+    expect(qc.getQueryData<{ status: string }>(["workflow-detail", "run-a"])?.status).toBe(
+      "cancelling",
+    ),
+  );
+  expect(qc.getQueryData(["workflow-detail", "run-b"])).toMatchObject({
+    id: "run-b",
+    status: "running",
+  });
 });

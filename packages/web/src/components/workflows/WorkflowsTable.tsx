@@ -1,6 +1,7 @@
 import type { ColumnDef } from "@tanstack/react-table";
 import type { ReactNode } from "react";
 import { useMemo } from "react";
+import { useTranslation } from "react-i18next";
 import { relativeFromNow, statusLabel, statusToBadgeVariant } from "../../lib/format";
 import { useMediaQuery } from "../../lib/use-media-query";
 import { Badge } from "../ui/badge";
@@ -26,17 +27,27 @@ export function WorkflowsTable({
   onRowClick,
   emptyState,
 }: WorkflowsTableProps) {
+  const { t, i18n } = useTranslation();
+  const language = i18n?.resolvedLanguage ?? i18n?.language;
   const narrow = useMediaQuery("(max-width: 767px)");
   const columns = useMemo<ColumnDef<WorkflowRunRow>[]>(
     () => [
       {
         accessorKey: "name",
-        header: "Name",
+        header: t("jobs.overview.name"),
         cell: ({ row }) => (
           <div className="flex min-w-0 flex-col">
-            <span className="max-w-[28rem] truncate font-medium" title={row.original.name}>
+            <button
+              type="button"
+              className="max-w-[28rem] truncate rounded-sm text-left font-medium text-brand underline-offset-4 hover:underline focus-visible:outline-2 focus-visible:outline-ring"
+              title={row.original.name}
+              onClick={(event) => {
+                event.stopPropagation();
+                onRowClick(row.original);
+              }}
+            >
               {row.original.name}
-            </span>
+            </button>
             <span className="font-mono text-[11px] text-muted-foreground" title={row.original.id}>
               {row.original.id.slice(0, 8)}
             </span>
@@ -45,28 +56,28 @@ export function WorkflowsTable({
       },
       {
         accessorKey: "status",
-        header: "Status",
+        header: t("dashboard.status"),
         cell: ({ row }) => (
           <Badge className="whitespace-nowrap" variant={statusToBadgeVariant(row.original.status)}>
-            {statusLabel(row.original.status)}
+            {statusLabel(row.original.status, language)}
           </Badge>
         ),
         sortingFn: "alphanumeric",
       },
       {
         accessorKey: "createdAt",
-        header: "Created",
+        header: t("workflows.run.created"),
         cell: ({ row }) => (
           <span
             className="font-mono text-[11px] text-muted-foreground tabular-nums"
             title={row.original.createdAt}
           >
-            {relativeFromNow(row.original.createdAt)}
+            {relativeFromNow(row.original.createdAt, undefined, language)}
           </span>
         ),
       },
     ],
-    [],
+    [t, language, onRowClick],
   );
 
   if (narrow) {
@@ -74,7 +85,7 @@ export function WorkflowsTable({
       <div className="space-y-2">
         {runs.length === 0 ? (
           <div className="rounded-lg border border-dashed border-border bg-card px-4 py-10 text-center text-sm text-muted-foreground">
-            {emptyState ?? "No workflow runs match these filters."}
+            {emptyState ?? t("workflows.noMatches")}
           </div>
         ) : (
           runs.map((run) => (
@@ -95,10 +106,10 @@ export function WorkflowsTable({
               </div>
               <div className="flex items-center justify-between gap-3">
                 <Badge className="whitespace-nowrap" variant={statusToBadgeVariant(run.status)}>
-                  {statusLabel(run.status)}
+                  {statusLabel(run.status, language)}
                 </Badge>
                 <span className="font-mono text-[11px] text-muted-foreground tabular-nums">
-                  {relativeFromNow(run.createdAt)}
+                  {relativeFromNow(run.createdAt, undefined, language)}
                 </span>
               </div>
             </button>
@@ -116,7 +127,7 @@ export function WorkflowsTable({
       getRowId={(r) => r.id}
       rowDataTestId={(r) => `workflow-row-${r.id}`}
       onRowClick={onRowClick}
-      emptyState={emptyState ?? "No workflow runs match these filters."}
+      emptyState={emptyState ?? t("workflows.noMatches")}
     />
   );
 }

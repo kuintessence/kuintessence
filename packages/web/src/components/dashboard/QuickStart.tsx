@@ -1,8 +1,9 @@
+import { useNavigate } from "@tanstack/react-router";
 import { GitBranch, ListTodo, Loader2 } from "lucide-react";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
-import helloYaml from "../../../../../examples/workflows/hello.yaml?raw";
+import quickStartYaml from "../../../../../examples/workflows/quick-start.yaml?raw";
 import { api } from "../../lib/api-client";
 import { toUserFacingError } from "../../lib/user-facing-error";
 import { Button } from "../ui/button";
@@ -32,6 +33,7 @@ export interface QuickStartProps {
 
 export function QuickStart({ onSubmitted }: QuickStartProps) {
   const { t } = useTranslation();
+  const navigate = useNavigate();
   const [busy, setBusy] = useState<"job" | "workflow" | null>(null);
 
   async function submitJob() {
@@ -40,6 +42,7 @@ export function QuickStart({ onSubmitted }: QuickStartProps) {
       const r = await api.post<JobResp>("/jobs", DEMO_JOB_BODY);
       toast.success(t("quickStart.submittedJob", { id: r.id.slice(0, 8) }));
       onSubmitted?.();
+      void navigate({ to: "/jobs/$jobId", params: { jobId: r.id } });
     } catch (err) {
       toast.error(toUserFacingError(err, t("quickStart.failedJob")));
     } finally {
@@ -50,9 +53,10 @@ export function QuickStart({ onSubmitted }: QuickStartProps) {
   async function submitWorkflow() {
     setBusy("workflow");
     try {
-      const r = await api.post<SubmitResp>("/workflows", { yaml: helloYaml });
-      toast.success(t("quickStart.startedWorkflow", { id: r.runId.slice(0, 8), count: 1 }));
+      const r = await api.post<SubmitResp>("/workflows", { yaml: quickStartYaml });
+      toast.success(t("quickStart.startedWorkflow", { id: r.runId.slice(0, 8), count: 2 }));
       onSubmitted?.();
+      void navigate({ to: "/workflows/$runId", params: { runId: r.runId } });
     } catch (err) {
       toast.error(toUserFacingError(err, t("quickStart.failedWorkflow")));
     } finally {

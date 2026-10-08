@@ -111,6 +111,9 @@ describe("PathPickerSheet", () => {
     );
     expect(screen.getByTestId("path-picker-cluster-up")).toHaveProperty("disabled", true);
 
+    await waitFor(() =>
+      expect(screen.getByTestId("path-picker-cluster-current")).toHaveProperty("disabled", false),
+    );
     fireEvent.click(screen.getByTestId("path-picker-cluster-current"));
     expect(onSelect).toHaveBeenCalledWith(
       expect.objectContaining({ location: "cluster", path: "/scratch/team-a" }),
@@ -186,6 +189,9 @@ describe("PathPickerSheet", () => {
       expect(screen.getByTestId("path-picker-current").textContent).toBe("/projects/team-a"),
     );
     expect(screen.queryByTestId("path-picker-cluster-root-select")).toBeNull();
+    await waitFor(() =>
+      expect(screen.getByTestId("path-picker-cluster-current")).toHaveProperty("disabled", false),
+    );
     fireEvent.click(screen.getByTestId("path-picker-cluster-current"));
     expect(onSelect).toHaveBeenCalledWith(
       expect.objectContaining({ location: "cluster", path: "/projects/team-a" }),
@@ -357,9 +363,8 @@ describe("PathPickerSheet", () => {
       />,
     );
 
-    expect(await screen.findByTestId("path-picker-cloud-current")).toHaveProperty(
-      "disabled",
-      false,
+    await waitFor(() =>
+      expect(screen.getByTestId("path-picker-cloud-current")).toHaveProperty("disabled", false),
     );
 
     includeFile = false;
@@ -425,4 +430,139 @@ describe("PathPickerSheet", () => {
     expect(screen.getByTestId("path-picker-confirm")).toHaveProperty("disabled", true);
     expect(onSelect).not.toHaveBeenCalled();
   });
+});
+
+test("loads a separate listing when two picker agents share a site name", async () => {
+  vi.mocked(api.get).mockImplementation(async (path: string) => {
+    if (path === "/agents")
+      return {
+        agents: ["agent-a", "agent-b"].map((agentId) => ({
+          agentId,
+          siteName: "shared-site",
+          status: "online",
+          schedulerType: "slurm",
+          schedulerVersion: "23",
+        })),
+      };
+    if (path.startsWith("/files/cluster?")) {
+      const id = new URL(path, "http://test").searchParams.get("agentId");
+      return {
+        siteId: "shared-site",
+        path: "/shared",
+        roots: ["/shared"],
+        entries: [{ name: `${id}.txt`, kind: "file", size: 1, modifiedAt: "2026-10-08T00:00:00Z" }],
+      };
+    }
+    throw new Error(`Unexpected GET ${path}`);
+  });
+  renderWithClient(
+    <PathPickerSheet
+      open
+      onOpenChange={() => {}}
+      mode="file"
+      locations={["cluster"]}
+      title="Picker"
+      description="Pick a file"
+      onSelect={() => {}}
+    />,
+  );
+  await screen.findByRole("button", { name: "agent-a.txt" });
+  fireEvent.change(screen.getByTestId("path-picker-agent-select"), {
+    target: { value: "agent-b" },
+  });
+  const choice = await screen.findByRole("button", { name: "agent-b.txt" });
+  fireEvent.click(choice);
+  expect(choice.getAttribute("aria-pressed")).toBe("true");
+  expect(screen.queryByText("agent-a.txt")).toBeNull();
+});
+
+test.each([
+  "cloud",
+  "cluster",
+] as const)("disables current-directory selection after a %s refresh fails", async (location) => {
+  let failed = false;
+  vi.mocked(api.get).mockImplementation(async (path: string) => {
+    if (path === "/agents")
+      return {
+        agents: [
+          {
+            agentId: "agent-a",
+            siteName: "site",
+            status: "online",
+            schedulerType: "slurm",
+            schedulerVersion: "23",
+          },
+        ],
+      };
+    if (failed) throw new Error("permission unavailable");
+    return location === "cloud"
+      ? { success: true, data: { files: [], total: 0 } }
+      : { siteId: "site", path: "/root", roots: ["/root"], entries: [] };
+  });
+  const onSelect = vi.fn();
+  const client = renderWithClient(
+    <PathPickerSheet
+      open
+      onOpenChange={() => {}}
+      mode="directory"
+      locations={[location]}
+      title="Directory"
+      description="Choose"
+      onSelect={onSelect}
+    />,
+  );
+  const button = await screen.findByTestId(`path-picker-${location}-current`);
+  await waitFor(() => expect(button).toHaveProperty("disabled", false));
+  failed = true;
+  await act(async () => {
+    await client.invalidateQueries({
+      queryKey: [location === "cloud" ? "files-cloud" : "files-cluster"],
+    });
+  });
+  await waitFor(() => expect(button).toHaveProperty("disabled", true));
+  fireEvent.click(button);
+  expect(onSelect).not.toHaveBeenCalled();
+});
+
+test("preserves navigation and selection when the parent recreates the locations array", async () => {
+  vi.mocked(api.get).mockResolvedValue({
+    success: true,
+    data: {
+      files: [
+        {
+          id: "file-a",
+          path: "folder/input.txt",
+          size: 12,
+          mtime: "2026-10-08T00:00:00Z",
+          canUse: true,
+          canDelete: true,
+        },
+      ],
+      total: 1,
+    },
+  });
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+  const onSelect = vi.fn();
+  const view = () => (
+    <QueryClientProvider client={client}>
+      <PathPickerSheet
+        open
+        onOpenChange={vi.fn()}
+        mode="file"
+        locations={["cloud"]}
+        title="Pick file"
+        description="Pick file"
+        onSelect={onSelect}
+      />
+    </QueryClientProvider>
+  );
+  const { rerender } = render(view());
+  fireEvent.click(await screen.findByTestId("path-picker-cloud-dir-folder"));
+  fireEvent.click(await screen.findByTestId("path-picker-cloud-file-file-a"));
+  rerender(view());
+  expect(screen.getByTestId("path-picker-current").textContent).toBe("folder/input.txt");
+  fireEvent.click(screen.getByTestId("path-picker-confirm"));
+  expect(onSelect).toHaveBeenCalledWith(
+    expect.objectContaining({ id: "file-a", path: "folder/input.txt" }),
+  );
 });

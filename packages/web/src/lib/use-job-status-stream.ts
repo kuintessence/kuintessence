@@ -39,9 +39,10 @@ function buildWsUrl(jobId: string, token: string | null): string {
  *
  * - Opens a WebSocket to /platform/ws/jobs/:id with either a legacy query token or the
  *   same-origin HttpOnly auth cookie
- * - On every job.status message, merges the new fields into the
- *   ["job-detail", jobId] query cache so the UI updates without a refetch
- * - On a non-clean close, invalidates the query so TanStack Query falls
+ * - On every job.status message, refetches the complete job detail. The event
+ *   omits completion times and diagnostics; caching its terminal status would
+ *   stop REST polling before those fields arrive.
+ * - On a server close, invalidates the query so TanStack Query falls
  *   back to its existing REST polling — the user always sees fresh data
  *   even if the WS layer is unreachable
  * - Cleans up on unmount or jobId change
@@ -62,38 +63,22 @@ export function useJobStatusStream(jobId: string | null): void {
 
     ws.onmessage = (evt) => {
       if (cancelled) return;
+      let data: unknown;
       try {
-        const data = JSON.parse(typeof evt.data === "string" ? evt.data : "");
-        if (!isJobStatusMessage(data)) return;
-        if (data.jobId !== jobId) return;
-        qc.setQueryData(["job-detail", jobId], (prev: unknown) => {
-          const base = (typeof prev === "object" && prev !== null ? prev : {}) as Record<
-            string,
-            unknown
-          >;
-          return {
-            ...base,
-            id: jobId,
-            status: data.status,
-            schedulerJobId: data.schedulerJobId ?? base.schedulerJobId ?? null,
-            agentId: data.agentId ?? base.agentId ?? null,
-          };
-        });
-        // Also keep the list view in sync if it's mounted.
-        qc.invalidateQueries({ queryKey: ["jobs-list"], exact: false });
+        data = JSON.parse(typeof evt.data === "string" ? evt.data : "");
       } catch {
         // Ignore non-JSON or malformed messages.
+        return;
       }
+      if (!isJobStatusMessage(data) || data.jobId !== jobId) return;
+      void qc.invalidateQueries({ queryKey: ["job-detail", jobId] });
+      void qc.invalidateQueries({ queryKey: ["jobs-list"], exact: false });
     };
 
-    ws.onclose = (evt) => {
+    ws.onclose = () => {
       if (cancelled) return;
-      // Code 1000 = clean close (we initiated it via cleanup). Anything else
-      // means the connection died — fall back to REST polling by invalidating
-      // the query so TanStack Query refetches on its next interval.
-      if (evt.code !== 1000) {
-        qc.invalidateQueries({ queryKey: ["job-detail", jobId] });
-      }
+      // A server can close with code 1000 too; cleanup is identified above.
+      void qc.invalidateQueries({ queryKey: ["job-detail", jobId] });
     };
 
     ws.onerror = () => {

@@ -2,7 +2,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { afterEach, describe, expect, test, vi } from "vitest";
-import { ApiError, api, downloadAuthedFile } from "../../lib/api-client";
+import { ApiError, api, downloadAuthedFile, uploadFileToNetDrive } from "../../lib/api-client";
 import { FilesPage } from "./FilesPage";
 
 const toastError = vi.hoisted(() => vi.fn());
@@ -62,12 +62,12 @@ function withQueryClient(children: ReactNode) {
   return <QueryClientProvider client={client}>{children}</QueryClientProvider>;
 }
 
-describe("FilesPage transfer direction", () => {
-  afterEach(() => {
-    vi.clearAllMocks();
-    vi.useRealTimers();
-  });
+afterEach(() => {
+  vi.clearAllMocks();
+  vi.useRealTimers();
+});
 
+describe("FilesPage transfer direction", () => {
   test("renders real cloud usage and the single global cloud label", async () => {
     const get = vi.mocked(api.get);
     get.mockImplementation(async (path: string) => {
@@ -1904,4 +1904,220 @@ describe("FilesPage transfer direction", () => {
       { timeout: 4_000 },
     );
   }, 6_000);
+});
+
+function sameSiteAgent(id: string) {
+  return {
+    agentId: id,
+    siteName: "shared-site",
+    status: "online",
+    schedulerType: "slurm",
+    schedulerVersion: "23",
+    lastHeartbeat: "2026-10-08T00:00:00Z",
+    cpuUsagePercent: 1,
+    memoryUsedMb: 1,
+    memoryTotalMb: 2,
+  };
+}
+
+function setupAgentIsolationFixture() {
+  let agents = [sameSiteAgent("agent-a"), sameSiteAgent("agent-b")];
+  let agentFailure = false;
+  let canDelete = true;
+  const calls: string[] = [];
+  vi.mocked(api.get).mockImplementation(async (path: string) => {
+    if (path === "/agents") {
+      if (agentFailure) throw new Error("registry unavailable");
+      return { agents };
+    }
+    if (path === "/netdrive/files")
+      return {
+        success: true,
+        data: {
+          files: [
+            {
+              id: "source",
+              path: "source.txt",
+              size: 12,
+              mtime: "2026-10-08T00:00:00Z",
+              canUse: true,
+              canDelete,
+            },
+          ],
+          total: 1,
+        },
+      };
+    if (path === "/files/transfers") return { transfers: [] };
+    if (path.startsWith("/storage/summary"))
+      return {
+        usedBytes: 0,
+        quotaBytes: 100,
+        usagePercent: 0,
+        policy: {
+          requestMode: "manual",
+          defaultQuotaBytes: 100,
+          maxQuotaBytes: null,
+          autoApproveLimitBytes: null,
+        },
+      };
+    if (path.startsWith("/files/cluster?")) {
+      calls.push(path);
+      const id = new URL(path, "http://test").searchParams.get("agentId");
+      return {
+        siteId: "shared-site",
+        path: `/root/${id}`,
+        roots: [`/root/${id}`],
+        entries: [{ name: `${id}.txt`, kind: "file", size: 1, modifiedAt: "2026-10-08T00:00:00Z" }],
+      };
+    }
+    throw new Error(`Unexpected GET ${path}`);
+  });
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false, staleTime: 60000 } },
+  });
+  render(
+    <QueryClientProvider client={client}>
+      <FilesPage />
+    </QueryClientProvider>,
+  );
+  return {
+    client,
+    calls,
+    revokeDelete: () => {
+      canDelete = false;
+    },
+    offline: () => {
+      agents = [sameSiteAgent("agent-b")];
+    },
+    fail: () => {
+      agentFailure = true;
+    },
+  };
+}
+
+test("separates cluster listings for agents sharing a site name", async () => {
+  setupAgentIsolationFixture();
+  await screen.findByText("agent-a.txt");
+  fireEvent.change(screen.getByTestId("files-cluster-agent-select"), {
+    target: { value: "agent-b" },
+  });
+  expect(await screen.findByText("agent-b.txt")).toBeTruthy();
+  expect(screen.queryByText("agent-a.txt")).toBeNull();
+  expect(screen.getByTestId("files-cluster-path").textContent).toBe("/root/agent-b");
+});
+
+test("requires explicit reselection when the current agent disappears", async () => {
+  const { client, calls, offline } = setupAgentIsolationFixture();
+  fireEvent.click(await screen.findByText("agent-a.txt"));
+  offline();
+  await client.invalidateQueries({ queryKey: ["agents-list"] });
+  await waitFor(() => expect(screen.queryByText("agent-a.txt")).toBeNull());
+  expect(screen.queryByText("agent-b.txt")).toBeNull();
+  expect(screen.getByTestId("files-cluster-agent-select")).toHaveProperty("value", "");
+  expect(screen.getByTestId("files-pull")).toHaveProperty("disabled", true);
+  expect(calls.some((path) => path.includes("agentId=agent-b"))).toBe(false);
+  fireEvent.change(screen.getByTestId("files-cluster-agent-select"), {
+    target: { value: "agent-b" },
+  });
+  expect(await screen.findByText("agent-b.txt")).toBeTruthy();
+});
+
+test("blocks pushing a selected cloud file when the agent registry refresh fails", async () => {
+  const { client, fail } = setupAgentIsolationFixture();
+  await screen.findByText("agent-a.txt");
+  fireEvent.click(await screen.findByTestId("files-cloud-row-source"));
+  expect(screen.getByTestId("files-push")).toHaveProperty("disabled", false);
+  fail();
+  await client.invalidateQueries({ queryKey: ["agents-list"] });
+  await screen.findByText("files.clusterAgentsLoadFailed");
+  expect(screen.getByTestId("files-push")).toHaveProperty("disabled", true);
+});
+
+test("revalidates an open delete confirmation after file permissions change", async () => {
+  const { client, revokeDelete } = setupAgentIsolationFixture();
+  fireEvent.click(await screen.findByTestId("files-cloud-more-source"));
+  fireEvent.click(await screen.findByTestId("files-context-delete"));
+  expect(screen.getByTestId("files-delete-confirm")).toHaveProperty("disabled", false);
+  revokeDelete();
+  await client.invalidateQueries({ queryKey: ["files-cloud"] });
+  await waitFor(() =>
+    expect(screen.getByTestId("files-delete-confirm")).toHaveProperty("disabled", true),
+  );
+  expect(screen.getByTestId("files-delete-error").textContent).toContain(
+    "files.deleteDialog.unavailable",
+  );
+  fireEvent.click(screen.getByTestId("files-delete-confirm"));
+  expect(api.delete).not.toHaveBeenCalled();
+});
+
+test("exposes file selection as named buttons with pressed state", async () => {
+  setupAgentIsolationFixture();
+  const cloudButton = await screen.findByRole("button", { name: "source.txt" });
+  expect(cloudButton.getAttribute("aria-pressed")).toBe("false");
+  fireEvent.click(cloudButton);
+  expect(cloudButton.getAttribute("aria-pressed")).toBe("true");
+  const clusterButton = await screen.findByRole("button", { name: "agent-a.txt" });
+  fireEvent.click(clusterButton);
+  expect(clusterButton.getAttribute("aria-pressed")).toBe("true");
+});
+
+test("does not describe a temporary NetDrive 503 as a disabled deployment", async () => {
+  vi.mocked(api.get).mockImplementation(async (path) => {
+    if (path === "/agents") return { agents: [] };
+    if (path === "/files/transfers") return { transfers: [] };
+    throw new ApiError(503, "SERVICE_UNAVAILABLE", "temporary failure");
+  });
+  render(withQueryClient(<FilesPage />));
+  await waitFor(() => expect(screen.queryByText("common.loading")).toBeNull());
+  expect(screen.getByTestId("files-cloud-pane").textContent).not.toContain(
+    "files.netdriveDisabled",
+  );
+  expect(screen.getByTestId("files-cloud-pane").textContent).not.toContain("temporary failure");
+});
+
+test("locks upload batches across file selection and drop, reports failures, and recovers", async () => {
+  vi.mocked(api.get).mockImplementation(async (path) => {
+    if (path === "/agents") return { agents: [] };
+    if (path === "/netdrive/files") return { success: true, data: { files: [], total: 0 } };
+    if (path === "/files/transfers") return { transfers: [] };
+    if (path.startsWith("/storage/summary"))
+      return { usedBytes: 0, quotaBytes: 1024 ** 3, policy: { requestMode: "manual" } };
+    throw new Error(`unexpected GET ${path}`);
+  });
+  let rejectUpload: ((reason: Error) => void) | undefined;
+  vi.mocked(uploadFileToNetDrive)
+    .mockImplementationOnce(
+      () =>
+        new Promise((_, reject) => {
+          rejectUpload = reject;
+        }),
+    )
+    .mockResolvedValueOnce({
+      id: "uploaded",
+      path: "users/me/second.txt",
+      size: 1,
+      sha256: "digest",
+      contentType: "text/plain",
+      storageKey: "key",
+      mtime: "2026-10-08T00:00:00Z",
+      createdAt: "2026-10-08T00:00:00Z",
+    });
+  render(withQueryClient(<FilesPage />));
+  const input = await screen.findByTestId("files-cloud-upload-input");
+  const first = new File(["a"], "first.txt");
+  const second = new File(["b"], "second.txt");
+  fireEvent.change(input, { target: { files: [first, second] } });
+  fireEvent.drop(screen.getByTestId("files-cloud-pane"), { dataTransfer: { files: [first] } });
+  expect(uploadFileToNetDrive).toHaveBeenCalledTimes(1);
+  expect(screen.getByTestId("files-cloud-upload")).toHaveProperty("disabled", true);
+  expect(screen.getByTestId("files-upload-status").textContent).toContain("files.uploadProgress");
+  rejectUpload?.(new Error("Network unavailable"));
+  await waitFor(() => expect(uploadFileToNetDrive).toHaveBeenCalledTimes(2));
+  expect(uploadFileToNetDrive).toHaveBeenLastCalledWith(second, "users/me");
+  await waitFor(() =>
+    expect(screen.getByTestId("files-cloud-upload")).toHaveProperty("disabled", false),
+  );
+  expect(screen.queryByTestId("files-upload-status")).toBeNull();
+  expect(toastError).toHaveBeenCalledWith("files.uploadFailed");
+  expect(toastSuccess).toHaveBeenCalledWith("files.uploadSucceeded");
 });

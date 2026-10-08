@@ -83,6 +83,18 @@ async function openSubmitMenu() {
 }
 
 describe("JobsPage pagination", () => {
+  test("exposes the selected status to assistive technology", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() => Promise.resolve(Response.json({ jobs: [], total: 0, limit: 25, offset: 0 }))),
+    );
+    render(<JobsPage />, { wrapper: makeWrapper() });
+    expect(screen.getByTestId("status-chip-all").getAttribute("aria-pressed")).toBe("true");
+    fireEvent.click(screen.getByTestId("status-chip-failed"));
+    expect(screen.getByTestId("status-chip-all").getAttribute("aria-pressed")).toBe("false");
+    expect(screen.getByTestId("status-chip-failed").getAttribute("aria-pressed")).toBe("true");
+  });
+
   test("builds a server-paginated access-scope query", () => {
     expect(
       jobsPath({
@@ -186,6 +198,57 @@ describe("JobsPage pagination", () => {
     expect(screen.queryByText("No jobs match these filters.")).toBeNull();
     expect(screen.queryByTestId("jobs-pagination")).toBeNull();
     expect(screen.getByTestId("jobs-submit-button")).toHaveProperty("disabled", true);
+  });
+
+  test("announces initial loading before showing the returned jobs", async () => {
+    let resolveFetch: ((response: Response) => void) | undefined;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        () =>
+          new Promise<Response>((resolve) => {
+            resolveFetch = resolve;
+          }),
+      ),
+    );
+    render(<JobsPage />, { wrapper: makeWrapper() });
+    expect(screen.getByRole("status").textContent).toContain("jobs.loading");
+    expect(screen.queryByTestId("jobs-pagination")).toBeNull();
+    expect(screen.queryByText("jobs.empty")).toBeNull();
+    resolveFetch?.(
+      new Response(JSON.stringify({ jobs: [job(1)], total: 1, limit: 25, offset: 0 }), {
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    await screen.findByTestId(`job-row-${job(1).id}`);
+    expect(screen.queryByTestId("jobs-list-loading")).toBeNull();
+  });
+
+  test("recovers a failed list with the retry action", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockResolvedValueOnce(
+          new Response(JSON.stringify({ error: { code: "FORBIDDEN", message: "denied" } }), {
+            status: 403,
+            headers: { "Content-Type": "application/json" },
+          }),
+        )
+        .mockResolvedValueOnce(
+          new Response(JSON.stringify({ jobs: [job(1)], total: 1, limit: 25, offset: 0 }), {
+            headers: { "Content-Type": "application/json" },
+          }),
+        ),
+    );
+    render(<JobsPage />, { wrapper: makeWrapper() });
+    await screen.findByRole("alert");
+    fireEvent.click(screen.getByRole("button", { name: "globalError.retry" }));
+    await screen.findByTestId(`job-row-${job(1).id}`);
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.getByTestId("jobs-submit-button")).toHaveProperty("disabled", false);
+    fireEvent.click(screen.getByRole("button", { name: "mock-job-1" }));
+    expect(screen.getByTestId("mock-job-detail-sheet").textContent).toBe(job(1).id);
   });
 
   test("clears stale job actions after a list refetch error", async () => {

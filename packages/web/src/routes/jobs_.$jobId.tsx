@@ -16,14 +16,14 @@ import { Button } from "../components/ui/button";
 import { PageHeader, PageShell } from "../components/ui/page";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../components/ui/tabs";
 import { ApiError, api } from "../lib/api-client";
-import { statusToBadgeVariant } from "../lib/format";
+import { statusLabel, statusToBadgeVariant } from "../lib/format";
 import { useJobStatusStream } from "../lib/use-job-status-stream";
 import { toUserFacingError } from "../lib/user-facing-error";
 
 const REFRESH_MS = 5_000;
 
 export function JobDetailPage({ jobId }: { jobId: string }) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const queryClient = useQueryClient();
   const detailQ = useQuery({
     queryKey: ["job-detail", jobId],
@@ -46,9 +46,9 @@ export function JobDetailPage({ jobId }: { jobId: string }) {
     },
   });
   const cancelJob = useMutation({
-    mutationFn: () => api.post<JobDetail>(`/jobs/${jobId}/cancel`, {}),
-    onSuccess: (job) => {
-      queryClient.setQueryData(["job-detail", jobId], job);
+    mutationFn: (cancelId: string) => api.post<JobDetail>(`/jobs/${cancelId}/cancel`, {}),
+    onSuccess: (job, cancelId) => {
+      queryClient.setQueryData(["job-detail", cancelId], job);
       void queryClient.invalidateQueries({ queryKey: ["jobs-list"] });
       void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
       toast.success(t("jobs.cancelled", { name: job.name }));
@@ -82,7 +82,9 @@ export function JobDetailPage({ jobId }: { jobId: string }) {
         subtitle={job.id}
         actions={
           <div className="flex flex-wrap items-center gap-2">
-            <Badge variant={statusToBadgeVariant(job.status)}>{job.status}</Badge>
+            <Badge variant={statusToBadgeVariant(job.status)}>
+              {statusLabel(job.status, i18n?.resolvedLanguage ?? i18n?.language)}
+            </Badge>
             {job.accessScope ? (
               <Badge variant="outline">{t(`jobs.scope.${job.accessScope}`)}</Badge>
             ) : null}
@@ -94,7 +96,7 @@ export function JobDetailPage({ jobId }: { jobId: string }) {
                 disabled={cancelJob.isPending}
                 onClick={() => {
                   if (window.confirm(t("jobs.cancelConfirm", { name: job.name })))
-                    cancelJob.mutate();
+                    cancelJob.mutate(jobId);
                 }}
               >
                 <CircleStop />

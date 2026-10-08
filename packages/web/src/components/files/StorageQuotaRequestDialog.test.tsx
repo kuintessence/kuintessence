@@ -136,3 +136,98 @@ describe("StorageQuotaRequestDialog", () => {
     await waitFor(() => expect(toastSuccess).toHaveBeenCalledWith("files.quota.requestCreated"));
   });
 });
+
+describe("quota request validation and history scope", () => {
+  test.each([
+    ["0.5", null, "", "files.quota.formIncomplete"],
+    ["1000000000", null, "", "files.quota.formIncomplete"],
+    ["3", 2 * 1024 ** 3, "", "files.quota.exceedsLimit"],
+    ["1", null, "2000-01-01T00:00", "files.quota.expiryMustBeFuture"],
+  ] as const)("rejects invalid quota %s with limit %s and expiry %s", async (quota, limit, expiry, message) => {
+    vi.mocked(api.get).mockResolvedValue({ requests: [] });
+    render(
+      withQueryClient(
+        <StorageQuotaRequestDialog
+          open
+          onOpenChange={vi.fn()}
+          summary={{ ...summary, policy: { ...summary.policy, maxQuotaBytes: limit } }}
+        />,
+      ),
+    );
+    fireEvent.change(screen.getByLabelText("files.quota.requestedGb"), {
+      target: { value: quota },
+    });
+    fireEvent.change(screen.getByLabelText("files.quota.reason"), {
+      target: { value: "Research outputs" },
+    });
+    if (expiry)
+      fireEvent.change(screen.getByLabelText("files.quota.expiresAt"), {
+        target: { value: expiry },
+      });
+    fireEvent.click(screen.getByText("files.quota.submit"));
+    expect(api.post).not.toHaveBeenCalled();
+    expect(toastError).toHaveBeenCalledWith(message);
+  });
+
+  test("submits a valid future expiry as UTC and allows the policy limit", async () => {
+    vi.mocked(api.get).mockResolvedValue({ requests: [] });
+    vi.mocked(api.post).mockResolvedValue({ ok: true });
+    render(
+      withQueryClient(
+        <StorageQuotaRequestDialog
+          open
+          onOpenChange={vi.fn()}
+          summary={{ ...summary, policy: { ...summary.policy, maxQuotaBytes: 2 * 1024 ** 3 } }}
+        />,
+      ),
+    );
+    fireEvent.change(screen.getByLabelText("files.quota.requestedGb"), { target: { value: "2" } });
+    fireEvent.change(screen.getByLabelText("files.quota.reason"), {
+      target: { value: " Research outputs " },
+    });
+    fireEvent.change(screen.getByLabelText("files.quota.expiresAt"), {
+      target: { value: "2099-01-01T12:00" },
+    });
+    fireEvent.click(screen.getByText("files.quota.submit"));
+    expect(api.post).toHaveBeenCalledWith("/storage/quota-requests", {
+      scope: "cloud",
+      scopeId: "global",
+      requestedQuotaBytes: 2 * 1024 ** 3,
+      requestedExpiresAt: new Date("2099-01-01T12:00").toISOString(),
+      reason: "Research outputs",
+    });
+    await waitFor(() => expect(toastSuccess).toHaveBeenCalled());
+  });
+
+  test.each([
+    true,
+    false,
+  ])("shows only global cloud history when a cloud request exists: %s", async (hasCloud) => {
+    const row = {
+      requestedQuotaBytes: 1024 ** 3,
+      requestedExpiresAt: null,
+      status: "pending",
+      createdAt: "2026-10-08T00:00:00Z",
+    };
+    vi.mocked(api.get).mockResolvedValue({
+      requests: [
+        ...Array.from({ length: 6 }, (_, index) => ({
+          ...row,
+          id: `cluster-${index}`,
+          scope: "cluster_root",
+          scopeId: "/scratch",
+          reason: `Cluster request ${index}`,
+        })),
+        ...(hasCloud
+          ? [{ ...row, id: "cloud", scope: "cloud", scopeId: "global", reason: "Cloud request" }]
+          : []),
+      ],
+    });
+    render(
+      withQueryClient(<StorageQuotaRequestDialog open onOpenChange={vi.fn()} summary={summary} />),
+    );
+    if (hasCloud) expect(await screen.findByText("Cloud request")).toBeTruthy();
+    else expect(await screen.findByText("files.quota.noRequests")).toBeTruthy();
+    expect(screen.queryByText("Cluster request 0")).toBeNull();
+  });
+});

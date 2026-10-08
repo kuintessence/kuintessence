@@ -133,8 +133,11 @@ function consumeOidcLanding(): void {
 export function AppShell() {
   consumeOidcLanding();
   const [, setAuthRevision] = useState(0);
-  const [expanded, setExpanded] = useState<boolean>(() => readStoredExpanded());
   const collapseSidebarOnNavigate = useMediaQuery("(max-width: 767px)");
+  const [desktopExpanded, setDesktopExpanded] = useState<boolean>(() => readStoredExpanded());
+  const [mobileExpanded, setMobileExpanded] = useState(false);
+  const expanded = collapseSidebarOnNavigate ? mobileExpanded : desktopExpanded;
+  const setExpanded = collapseSidebarOnNavigate ? setMobileExpanded : setDesktopExpanded;
   const auth = getAuthState();
   const navigate = useNavigate();
   const { i18n } = useTranslation();
@@ -163,8 +166,8 @@ export function AppShell() {
     getWorkspaceIdentity("consumer");
 
   useEffect(() => {
-    persistExpanded(expanded);
-  }, [expanded]);
+    persistExpanded(desktopExpanded);
+  }, [desktopExpanded]);
 
   useEffect(() => {
     applyPlatformBrandingDocument(branding, brandingLanguage, defaultLogoUrl);

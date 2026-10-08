@@ -406,6 +406,8 @@ describe.skipIf(!enabled)("Helm gateway nginx container contract (Actions only)"
         "/platform/api/health",
         "/software/api/spack/recipe-repositories/import",
         "/software/api/spack/upstream-imports",
+        "/software/api/spack/material-repositories",
+        "/software/api/spack/material-repositories?repository=public%2Fexample",
         "/software/api/spack/material-repositories/fixture",
       ]) {
         for (const authorization of [basic, bearer]) {

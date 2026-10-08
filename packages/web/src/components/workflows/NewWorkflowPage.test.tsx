@@ -75,6 +75,7 @@ vi.mock("../workflow/WorkflowEditorShell", () => ({
 
 import { fireEvent } from "@testing-library/react";
 import { NewWorkflowPage } from "./NewWorkflowPage";
+import { isWorkflowBudgetValid } from "./WorkflowResourcesStep";
 
 function wrapper() {
   const qc = new QueryClient({
@@ -913,4 +914,154 @@ describe("NewWorkflowPage", () => {
     const status = await screen.findByTestId("workflow-readiness");
     expect(status.textContent).toContain("workflows.creation.readiness.loadQueues");
   });
+});
+
+describe("draft loading and save races", () => {
+  const draftId = "77777777-7777-4777-8777-777777777777";
+  const draft = { id: draftId, name: "cf", yaml: WORKFLOW_DOC, placementConfig: {} };
+
+  test("blocks editing until the requested draft has loaded", async () => {
+    let finishLoad: ((value: typeof draft) => void) | undefined;
+    window.history.replaceState({}, "", `/workflows/new?draftId=${draftId}`);
+    get.mockImplementation((path: string) =>
+      path.startsWith("/workflows/drafts/")
+        ? new Promise((resolve) => {
+            finishLoad = resolve;
+          })
+        : Promise.resolve({ queues: [] }),
+    );
+    renderPage();
+    expect(screen.getByRole("status").textContent).toContain("workflows.drafts.loading");
+    expect(screen.queryByTestId("workflow-name-input")).toBeNull();
+    expect(screen.queryByTestId("workflow-save-draft")).toBeNull();
+    finishLoad?.(draft);
+    await screen.findByTestId("workflow-name-input");
+    expect(screen.getByTestId("workflow-name-input")).toHaveProperty("value", "cf");
+    expect(screen.queryByTestId("workflow-start-overlay")).toBeNull();
+  });
+
+  test("keeps a failed draft load out of the editor and permits retry", async () => {
+    window.history.replaceState({}, "", `/workflows/new?draftId=${draftId}`);
+    let calls = 0;
+    get.mockImplementation((path: string) => {
+      if (!path.startsWith("/workflows/drafts/")) return Promise.resolve({ queues: [] });
+      calls += 1;
+      return calls === 1 ? Promise.reject(new Error("Network error")) : Promise.resolve(draft);
+    });
+    renderPage();
+    expect((await screen.findByRole("alert")).textContent).toContain("workflows.drafts.loadFailed");
+    expect(screen.queryByTestId("workflow-save-draft")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "globalError.retry" }));
+    await screen.findByTestId("workflow-name-input");
+    fireEvent.change(screen.getByTestId("workflow-name-input"), {
+      target: { value: "unsaved edit" },
+    });
+    expect(
+      get.mock.calls.filter(([path]) => String(path).startsWith("/workflows/drafts/")),
+    ).toHaveLength(2);
+    expect(screen.getByTestId("workflow-name-input")).toHaveProperty("value", "unsaved edit");
+  });
+
+  test("does not overwrite newer edits or reload the created draft after save completes", async () => {
+    let finishSave: ((value: typeof draft) => void) | undefined;
+    post.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finishSave = resolve;
+        }),
+    );
+    put.mockResolvedValue(draft);
+    renderPage();
+    startFromScratch();
+    fireEvent.change(screen.getByTestId("yaml-input"), { target: { value: WORKFLOW_DOC } });
+    fireEvent.click(screen.getByTestId("workflow-save-draft"));
+    fireEvent.click(screen.getByTestId("workflow-save-draft"));
+    expect(post).toHaveBeenCalledTimes(1);
+    const newerYaml = WORKFLOW_DOC.replace("name: cf", "name: edits-during-save");
+    fireEvent.change(screen.getByTestId("yaml-input"), { target: { value: newerYaml } });
+    finishSave?.(draft);
+    await waitFor(() =>
+      expect(screen.getByTestId("workflow-save-draft")).toHaveProperty("disabled", false),
+    );
+    expect(screen.getByTestId("yaml-input")).toHaveProperty("value", newerYaml);
+    expect(screen.getByTestId("workflow-name-input")).toHaveProperty("value", "edits-during-save");
+    expect(get.mock.calls.some(([path]) => String(path).startsWith("/workflows/drafts/"))).toBe(
+      false,
+    );
+    fireEvent.click(screen.getByTestId("workflow-save-draft"));
+    await waitFor(() =>
+      expect(put).toHaveBeenCalledWith(
+        `/workflows/drafts/${draftId}`,
+        expect.objectContaining({ name: "edits-during-save" }),
+      ),
+    );
+    expect(post).toHaveBeenCalledTimes(1);
+  });
+
+  test("invalidates the draft list after saving so navigation shows the new draft", async () => {
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false, gcTime: Infinity } },
+    });
+    client.setQueryData(["workflow-drafts"], { drafts: [] });
+    post.mockResolvedValueOnce(draft);
+    render(
+      <QueryClientProvider client={client}>
+        <NewWorkflowPage />
+      </QueryClientProvider>,
+    );
+    fireEvent.click(screen.getByTestId("workflow-save-draft"));
+    await waitFor(() =>
+      expect(client.getQueryState(["workflow-drafts"])?.isInvalidated).toBe(true),
+    );
+    client.clear();
+  });
+});
+
+describe("workflow input validation", () => {
+  test("rejects negative budgets before saving or submitting and recovers after correction", async () => {
+    renderPage();
+    startFromScratch();
+    fireEvent.change(screen.getByTestId("yaml-input"), { target: { value: WORKFLOW_DOC } });
+    fireEvent.click(screen.getByTestId("workflow-step-resources"));
+    const budget = screen.getByTestId("workflow-resource-budget-cap");
+    fireEvent.change(budget, { target: { value: "-5" } });
+    expect(budget.getAttribute("aria-invalid")).toBe("true");
+    expect(screen.getByRole("alert").textContent).toContain(
+      "workflows.creation.resources.invalidBudget",
+    );
+    expect(screen.getByTestId("workflow-save-draft")).toHaveProperty("disabled", true);
+    openReview();
+    expect(screen.getByTestId("submit-workflow")).toHaveProperty("disabled", true);
+    expect(post).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByTestId("workflow-step-resources"));
+    fireEvent.change(screen.getByTestId("workflow-resource-budget-cap"), {
+      target: { value: "0" },
+    });
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.getByTestId("workflow-save-draft")).toHaveProperty("disabled", false);
+    openReview();
+    await waitFor(() =>
+      expect(screen.getByTestId("submit-workflow")).toHaveProperty("disabled", false),
+    );
+  });
+
+  test("requires a nonblank title even when the underlying YAML remains valid", () => {
+    renderPage();
+    startFromScratch();
+    fireEvent.change(screen.getByTestId("yaml-input"), { target: { value: WORKFLOW_DOC } });
+    fireEvent.change(screen.getByTestId("workflow-name-input"), { target: { value: "  " } });
+    openReview();
+    expect(screen.getByTestId("submit-workflow")).toHaveProperty("disabled", true);
+    expect(screen.getByTestId("workflow-save-draft")).toHaveProperty("disabled", true);
+    expect(screen.getByTestId("workflow-readiness").textContent).toContain(
+      "workflows.creation.nameRequired",
+    );
+  });
+});
+
+test("budget validation accepts finite nonnegative amounts only", () => {
+  for (const value of ["", "  ", "0", "0.001", "1e3"])
+    expect(isWorkflowBudgetValid(value)).toBe(true);
+  for (const value of ["-1", "Infinity", "1e309", "not a number"])
+    expect(isWorkflowBudgetValid(value)).toBe(false);
 });

@@ -257,7 +257,11 @@ export function PlatformBrandingForm() {
             <div className="flex flex-wrap items-center gap-4 rounded-md bg-muted/25 p-3">
               <div className="flex items-center gap-2 text-xs text-muted-foreground">
                 <span className="flex h-10 w-10 items-center justify-center rounded-md border bg-background">
-                  <img src={previewLogo} alt="" className="max-h-7 max-w-7" />
+                  <img
+                    src={previewLogo}
+                    alt=""
+                    className={`max-h-7 max-w-7 ${previewLogo === defaultLogoUrl ? "dark:invert" : ""}`}
+                  />
                 </span>
                 <span>{t("settings.branding.logoPreview")}</span>
               </div>

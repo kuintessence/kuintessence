@@ -1,0 +1,16 @@
+# 无需软件版本或计算资源的两节点编排示例。
+name: quick-start
+description: Two control-flow steps without software or scheduler prerequisites.
+parameters: []
+spec:
+  nodeDrafts:
+    - type: NoAction
+      id: start
+      name: start
+    - type: NoAction
+      id: done
+      name: done
+  nodeRelations:
+    - fromId: start
+      toId: done
+      slotRelations: []

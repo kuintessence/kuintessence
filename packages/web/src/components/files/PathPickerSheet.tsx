@@ -99,11 +99,13 @@ export interface PathPickerFieldProps extends Omit<PathPickerSheetProps, "open" 
 }
 
 function firstLocation(
-  locations: PathPickerLocation[],
+  allowCloud: boolean,
+  allowCluster: boolean,
   preferred?: PathPickerLocation,
 ): PathPickerLocation {
-  if (preferred && locations.includes(preferred)) return preferred;
-  return locations.includes("cloud") ? "cloud" : "cluster";
+  if (preferred === "cloud" && allowCloud) return preferred;
+  if (preferred === "cluster" && allowCluster) return preferred;
+  return allowCloud ? "cloud" : "cluster";
 }
 
 export function PathPickerField({
@@ -166,8 +168,10 @@ export function PathPickerSheet({
 }: PathPickerSheetProps) {
   const { t } = useTranslation();
   const activeOrganizationId = useActiveOrganizationId();
+  const allowCloud = locations.includes("cloud");
+  const allowCluster = locations.includes("cluster");
   const [location, setLocation] = useState<PathPickerLocation>(
-    firstLocation(locations, initialLocation),
+    firstLocation(allowCloud, allowCluster, initialLocation),
   );
   const [cloudPrefix, setCloudPrefix] = useState(initialCloudPrefix);
   const [requestedClusterPath, setRequestedClusterPath] = useState(initialClusterPath);
@@ -194,7 +198,7 @@ export function PathPickerSheet({
 
   useEffect(() => {
     if (!open) return;
-    setLocation(firstLocation(locations, initialLocation));
+    setLocation(firstLocation(allowCloud, allowCluster, initialLocation));
     setCloudPrefix(initialCloudPrefix);
     setRequestedClusterPath(initialClusterPath);
     setSelectedClusterRoot("");
@@ -203,7 +207,8 @@ export function PathPickerSheet({
     updateSelection(null);
   }, [
     open,
-    locations,
+    allowCloud,
+    allowCluster,
     initialLocation,
     initialCloudPrefix,
     initialClusterPath,
@@ -218,11 +223,19 @@ export function PathPickerSheet({
     refetchInterval: open ? 30_000 : false,
   });
   const onlineAgents = useMemo(
-    () => (agentsQ.data?.agents ?? []).filter((agent) => agent.status.toLowerCase() === "online"),
-    [agentsQ.data],
+    () =>
+      (agentsQ.isSuccess ? (agentsQ.data?.agents ?? []) : []).filter(
+        (agent) => agent.status.toLowerCase() === "online",
+      ),
+    [agentsQ.data, agentsQ.isSuccess],
   );
-  const selectedAgent =
-    onlineAgents.find((agent) => agent.agentId === agentId) ?? onlineAgents[0] ?? null;
+  const selectedAgent = agentId
+    ? (onlineAgents.find((agent) => agent.agentId === agentId) ?? null)
+    : (onlineAgents[0] ?? null);
+
+  useEffect(() => {
+    if (!agentId && selectedAgent) setAgentId(selectedAgent.agentId);
+  }, [agentId, selectedAgent]);
 
   const cloudQ = useQuery({
     queryKey: ["files-cloud", activeOrganizationId],
@@ -234,6 +247,7 @@ export function PathPickerSheet({
     queryKey: [
       "files-cluster",
       activeOrganizationId,
+      selectedAgent?.agentId,
       selectedAgent?.siteName,
       requestedClusterPath,
     ],
@@ -269,17 +283,21 @@ export function PathPickerSheet({
     [cloudObjects, cloudPrefix],
   );
   const clusterEntries = clusterQ.data?.entries ?? [];
-  const clusterPath = requestedClusterPath || clusterQ.data?.path || "";
+  const clusterPath = selectedAgent ? requestedClusterPath || clusterQ.data?.path || "" : "";
   const responseClusterRoots = useMemo(
     () => clusterQ.data?.roots ?? (clusterQ.data?.path ? [clusterQ.data.path] : []),
     [clusterQ.data],
   );
-  const clusterRoots = clusterQ.data ? responseClusterRoots : knownClusterRoots;
+  const clusterRoots = selectedAgent
+    ? clusterQ.data
+      ? responseClusterRoots
+      : knownClusterRoots
+    : [];
   const activeClusterRoot =
     selectedClusterRoot && clusterRoots.includes(selectedClusterRoot)
       ? selectedClusterRoot
       : findClusterRoot(clusterPath, clusterRoots);
-  const cloudReady = !cloudQ.isLoading && !cloudQ.error;
+  const cloudReady = cloudQ.isSuccess;
   const clusterReady =
     !agentsQ.isLoading &&
     !clusterQ.isLoading &&
@@ -293,6 +311,7 @@ export function PathPickerSheet({
     clusterEntries,
     clusterPath,
     clusterReady,
+    clusterAgentId: selectedAgent?.agentId,
     location,
     mode,
   });
@@ -344,6 +363,7 @@ export function PathPickerSheet({
         clusterEntries,
         clusterPath,
         clusterReady,
+        clusterAgentId: selectedAgent?.agentId,
         location,
         mode,
       })
@@ -354,7 +374,8 @@ export function PathPickerSheet({
   };
 
   const canSelectCurrentDirectory =
-    mode === "directory" && (location === "cloud" || Boolean(selectedAgent && clusterPath));
+    mode === "directory" &&
+    (location === "cloud" ? cloudReady : clusterReady && Boolean(clusterPath));
 
   function selectCurrentDirectory() {
     if (!canSelectCurrentDirectory) return;
@@ -649,12 +670,13 @@ function CloudBrowser({
                       <td className="min-w-0 px-3 py-2 font-medium">
                         <div className="flex min-w-0 items-center gap-2">
                           <Folder className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                          <span
-                            className="min-w-0 truncate font-mono text-xs"
+                          <button
+                            type="button"
+                            className="min-w-0 truncate rounded-sm text-left font-mono text-xs focus-visible:outline-2 focus-visible:outline-brand"
                             title={`${row.name}/`}
                           >
                             {row.name}/
-                          </span>
+                          </button>
                         </div>
                       </td>
                       <td className="hidden px-3 py-2 text-right font-mono text-xs text-muted-foreground sm:table-cell">
@@ -712,12 +734,15 @@ function CloudBrowser({
                     <td className="min-w-0 px-3 py-2 font-medium">
                       <div className="flex min-w-0 items-center gap-2">
                         <File className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                        <span
-                          className="min-w-0 truncate font-mono text-xs"
+                        <button
+                          type="button"
+                          disabled={mode !== "file" || !usable}
+                          aria-pressed={mode === "file" ? selected : undefined}
+                          className="min-w-0 truncate rounded-sm text-left font-mono text-xs focus-visible:outline-2 focus-visible:outline-brand"
                           title={row.displayName}
                         >
                           {row.displayName}
-                        </span>
+                        </button>
                         {!usable ? (
                           <span className="text-[10px] text-muted-foreground">
                             {t("files.viewOnly")}
@@ -805,9 +830,15 @@ function ClusterBrowser({
             <select
               data-testid="path-picker-agent-select"
               className="rounded-md border border-border bg-card px-2 py-1 font-mono text-[11px]"
+              aria-label={t("files.clusterAgent")}
               value={agent?.agentId ?? ""}
               onChange={(event) => onAgentChange(event.target.value)}
             >
+              {!agent ? (
+                <option value="" disabled>
+                  {t("files.clusterAgentUnavailable")}
+                </option>
+              ) : null}
               {agents.map((item) => (
                 <option key={item.agentId} value={item.agentId}>
                   {item.siteName} · {item.schedulerType} {item.schedulerVersion}
@@ -903,10 +934,18 @@ function ClusterBrowser({
                         ) : (
                           <File className="h-3.5 w-3.5 text-muted-foreground" />
                         )}
-                        <span className="min-w-0 truncate font-mono text-xs" title={entry.name}>
+                        <button
+                          type="button"
+                          disabled={entry.kind === "file" && (mode !== "file" || !agent)}
+                          aria-pressed={
+                            entry.kind === "file" && mode === "file" ? selected : undefined
+                          }
+                          className="min-w-0 truncate rounded-sm text-left font-mono text-xs focus-visible:outline-2 focus-visible:outline-brand"
+                          title={entry.name}
+                        >
                           {entry.name}
                           {entry.kind === "dir" ? "/" : ""}
-                        </span>
+                        </button>
                       </div>
                     </td>
                     <td className="hidden px-3 py-2 text-right font-mono text-xs text-muted-foreground sm:table-cell">
@@ -988,6 +1027,7 @@ function isSelectionConfirmable(
     clusterEntries: ClusterEntry[];
     clusterPath: string;
     clusterReady: boolean;
+    clusterAgentId: string | undefined;
     location: PathPickerLocation;
     mode: PathPickerMode;
   },
@@ -1003,7 +1043,7 @@ function isSelectionConfirmable(
         entry.id === selection.id && entry.key === selection.path && cloudObjectCanUse(entry),
     );
   }
-  if (!context.clusterReady) return false;
+  if (!context.clusterReady || selection.agentId !== context.clusterAgentId) return false;
   if (selection.mode === "directory" && selection.path === context.clusterPath) return true;
   return context.clusterEntries.some(
     (entry) =>

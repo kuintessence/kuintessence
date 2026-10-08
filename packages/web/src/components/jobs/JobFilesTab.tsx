@@ -10,6 +10,7 @@ import {
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { api, downloadAuthedFile } from "../../lib/api-client";
+import { listAllNetDriveFiles } from "../../lib/netdrive-client";
 import { toUserFacingError } from "../../lib/user-facing-error";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
@@ -18,19 +19,6 @@ import type { JobDetail } from "./types";
 interface JobFilesTabProps {
   job: JobDetail | undefined;
   loading: boolean;
-}
-
-interface NetDriveListResp {
-  success: true;
-  data: {
-    files: Array<{
-      id: string;
-      path: string;
-      size: number;
-      mtime: string;
-    }>;
-    total: number;
-  };
 }
 
 interface NetDriveDownloadUrlResp {
@@ -73,8 +61,8 @@ function fileNameFromUsecaseInputs(
 export function JobFilesTab({ job, loading }: JobFilesTabProps) {
   const { t } = useTranslation();
   const cloudQ = useQuery({
-    queryKey: ["job-files-netdrive", job?.id],
-    queryFn: () => api.get<NetDriveListResp>("/netdrive/files"),
+    queryKey: ["job-files-netdrive", job?.id, job?.status],
+    queryFn: listAllNetDriveFiles,
     enabled:
       !!job && ((job.inputStaging?.length ?? 0) > 0 || (job.expectedOutputs?.length ?? 0) > 0),
     staleTime: 30_000,
@@ -85,7 +73,7 @@ export function JobFilesTab({ job, loading }: JobFilesTabProps) {
   }
   const inputs = job.inputStaging ?? [];
   const outputs = job.expectedOutputs ?? [];
-  const cloudFiles = cloudQ.data?.data.files ?? [];
+  const cloudFiles = cloudQ.isSuccess ? (cloudQ.data?.data.files ?? []) : [];
   const cloudError = cloudQ.error
     ? toUserFacingError(
         cloudQ.error,
@@ -127,10 +115,27 @@ export function JobFilesTab({ job, loading }: JobFilesTabProps) {
   }
   return (
     <div className="grid gap-4" data-testid="job-files-tab">
+      <div className="flex justify-end">
+        <Button
+          type="button"
+          size="sm"
+          variant="outline"
+          disabled={cloudQ.isFetching}
+          onClick={() => void cloudQ.refetch()}
+          data-testid="job-files-refresh"
+        >
+          {cloudQ.isFetching
+            ? t("common.loading")
+            : cloudError
+              ? t("common.retry")
+              : t("common.refresh")}
+        </Button>
+      </div>
       {cloudError ? (
         <div
           className="flex items-start gap-2 rounded-md border border-status-failed/40 bg-[color-mix(in_oklab,var(--status-failed)_10%,transparent)] p-3 text-xs"
           data-testid="job-files-netdrive-error"
+          role="alert"
         >
           <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-status-failed" />
           <div className="min-w-0">
@@ -370,7 +375,7 @@ function OutputPublicationDiagnostic({
       defaultValue: "Checking NetDrive publication.",
     });
   } else if (netdriveError) {
-    message = t("jobs.files.notPublishedUnknown", {
+    message = t("jobs.files.notPublishedUnverified", {
       defaultValue: "NetDrive listing failed, so artifact publication cannot be verified.",
     });
   } else if (status === "failed" && job.errorMessage) {
@@ -405,9 +410,11 @@ function OutputPublicationDiagnostic({
       className="rounded-md border border-dashed border-border bg-muted/30 p-2 text-xs"
       data-testid={`job-file-output-diagnostic-${descriptor}`}
     >
-      <div className="font-medium text-muted-foreground">
-        {t("jobs.files.notPublished", { defaultValue: "Not published" })}
-      </div>
+      {!netdriveLoading && !netdriveError ? (
+        <div className="font-medium text-muted-foreground">
+          {t("jobs.files.notPublished", { defaultValue: "Not published" })}
+        </div>
+      ) : null}
       <div className="mt-1 text-muted-foreground">{message}</div>
     </div>
   );

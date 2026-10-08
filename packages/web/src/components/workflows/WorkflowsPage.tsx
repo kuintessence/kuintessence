@@ -12,15 +12,16 @@ import {
   X,
 } from "lucide-react";
 import type { ComponentType } from "react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { toast } from "sonner";
+
 import { api } from "../../lib/api-client";
 import { toUserFacingError } from "../../lib/user-facing-error";
 import { cn } from "../../lib/utils";
 import { Button } from "../ui/button";
 import { Card, CardContent } from "../ui/card";
 import { Input } from "../ui/input";
+import { DeleteWorkflowDraftDialog } from "./DeleteWorkflowDraftDialog";
 import { type WorkflowRunRow, WorkflowsTable } from "./WorkflowsTable";
 
 interface WorkflowsResp {
@@ -99,6 +100,12 @@ export function WorkflowsPage() {
   const [status, setStatus] = useState<WorkflowFilter>("ALL");
   const [offset, setOffset] = useState(0);
   const navigate = useNavigate();
+  const [deletingDraft, setDeletingDraft] = useState<WorkflowDraftRow | null>(null);
+  const [deletePending, setDeletePending] = useState(false);
+  const deleteInFlight = useRef(false);
+  const deleteTrigger = useRef<HTMLButtonElement | null>(null);
+  const refreshButton = useRef<HTMLButtonElement | null>(null);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
 
   const listPath = useMemo(() => {
     const params = new URLSearchParams({ limit: String(PAGE_SIZE), offset: String(offset) });
@@ -176,8 +183,51 @@ export function WorkflowsPage() {
     },
   ] satisfies SummaryItem[];
 
+  const deleteTargetVerified = Boolean(
+    deletingDraft &&
+      draftsQ.isSuccess &&
+      draftsQ.data.drafts.some(
+        (draft) => draft.id === deletingDraft.id && draft.updatedAt === deletingDraft.updatedAt,
+      ),
+  );
+
+  async function deleteDraft() {
+    if (!deletingDraft || !deleteTargetVerified || deleteInFlight.current) return;
+    deleteInFlight.current = true;
+    setDeletePending(true);
+    setDeleteError(null);
+    try {
+      await api.delete(`/workflows/drafts/${encodeURIComponent(deletingDraft.id)}`);
+      setDeletingDraft(null);
+      await draftsQ.refetch();
+    } catch (error) {
+      setDeleteError(toUserFacingError(error, t("workflows.drafts.deleteFailed")));
+    } finally {
+      deleteInFlight.current = false;
+      setDeletePending(false);
+    }
+  }
+
   return (
     <div className="space-y-5" data-testid="workflows-page">
+      <DeleteWorkflowDraftDialog
+        draft={deletingDraft}
+        pending={deletePending}
+        canConfirm={deleteTargetVerified}
+        error={
+          deletingDraft && !deleteTargetVerified
+            ? t("workflows.drafts.deleteUnavailable")
+            : deleteError
+        }
+        onCancel={() => setDeletingDraft(null)}
+        onConfirm={() => void deleteDraft()}
+        onRestoreFocus={() =>
+          (deleteTrigger.current?.isConnected
+            ? deleteTrigger.current
+            : refreshButton.current
+          )?.focus()
+        }
+      />
       <div className="rounded-xl border border-border bg-card p-4 shadow-sm sm:p-5">
         <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
           <div className="min-w-0 space-y-2">
@@ -205,10 +255,13 @@ export function WorkflowsPage() {
               type="button"
               variant="outline"
               size="sm"
-              onClick={() => runsQ.refetch()}
+              onClick={() => void Promise.all([runsQ.refetch(), draftsQ.refetch()])}
+              ref={refreshButton}
               data-testid="workflows-refresh"
             >
-              <RefreshCw className={cn(runsQ.isFetching && "animate-spin")} />
+              <RefreshCw
+                className={cn((runsQ.isFetching || draftsQ.isFetching) && "animate-spin")}
+              />
               {t("common.refresh", { defaultValue: "Refresh" })}
             </Button>
             {loadError ? (
@@ -257,7 +310,7 @@ export function WorkflowsPage() {
         })}
       </div>
 
-      {(draftsQ.data?.drafts.length ?? 0) > 0 ? (
+      {!draftsQ.error && (draftsQ.data?.drafts.length ?? 0) > 0 ? (
         <Card className="rounded-xl shadow-none" data-testid="workflow-drafts">
           <CardContent className="space-y-3 p-4">
             <div className="flex items-center justify-between gap-3">
@@ -290,20 +343,11 @@ export function WorkflowsPage() {
                     size="icon"
                     variant="ghost"
                     aria-label={t("common.delete")}
-                    onClick={async () => {
-                      try {
-                        await api.delete(`/workflows/drafts/${draft.id}`);
-                        await draftsQ.refetch();
-                      } catch (error) {
-                        toast.error(
-                          toUserFacingError(
-                            error,
-                            t("workflows.drafts.deleteFailed", {
-                              defaultValue: "无法删除工作流草稿，请稍后重试。",
-                            }),
-                          ),
-                        );
-                      }
+                    data-testid={`workflow-draft-delete-${draft.id}`}
+                    onClick={(event) => {
+                      deleteTrigger.current = event.currentTarget;
+                      setDeleteError(null);
+                      setDeletingDraft(draft);
                     }}
                   >
                     <Trash2 />
@@ -352,8 +396,9 @@ export function WorkflowsPage() {
                   data-testid="workflows-search"
                 />
               </div>
-              <div
-                className="flex max-w-full gap-1 overflow-x-auto rounded-lg border border-border bg-muted/30 p-1"
+              <fieldset
+                className="flex min-w-0 max-w-full gap-1 overflow-x-auto rounded-lg border border-border bg-muted/30 p-1"
+                aria-label={t("dashboard.status")}
                 data-testid="workflows-status-filter"
               >
                 {WORKFLOW_FILTERS.map((s) => {
@@ -363,6 +408,7 @@ export function WorkflowsPage() {
                       key={s}
                       type="button"
                       data-testid={`workflows-chip-${s.toLowerCase()}`}
+                      aria-pressed={selected}
                       onClick={() => {
                         setStatus(s);
                         setOffset(0);
@@ -378,7 +424,7 @@ export function WorkflowsPage() {
                     </button>
                   );
                 })}
-              </div>
+              </fieldset>
             </div>
             {hasFilters ? (
               <Button

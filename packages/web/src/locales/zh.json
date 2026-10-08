@@ -1,5 +1,6 @@
 {
   "common": {
+    "retry": "重试",
     "loading": "加载中…",
     "error": "错误",
     "cancel": "取消",
@@ -235,14 +236,14 @@
   },
   "quickStart": {
     "title": "快速开始",
-    "description": "暂无内容。提交一个示例作业或运行 hello-world 工作流，让控制台活跃起来。",
+    "description": "提交示例作业体验真实计算，或运行无需软件依赖的两步编排示例。提交成功后会打开运行详情。",
     "submitDemoJob": "提交示例作业",
-    "runHelloWorld": "运行 hello-world 工作流",
+    "runHelloWorld": "运行示例工作流",
     "submittedJob": "已提交示例作业 {{id}}",
     "failedJob": "提交示例作业失败",
     "startedWorkflow_one": "已启动工作流 {{id}}（{{count}} 步）",
     "startedWorkflow_other": "已启动工作流 {{id}}（{{count}} 步）",
-    "failedWorkflow": "启动 hello-world 工作流失败"
+    "failedWorkflow": "启动示例工作流失败"
   },
   "jobs": {
     "title": "作业",
@@ -379,6 +380,16 @@
       "loadFailed": "加载日志失败"
     },
     "files": {
+      "empty": "此作业没有暂存文件。",
+      "inputs": "输入文件",
+      "outputs": "预期输出",
+      "noInputs": "未暂存输入文件。",
+      "noOutputs": "未声明输出文件。",
+      "source": "来源",
+      "stagePath": "暂存路径",
+      "batch": "批量",
+      "single": "单文件",
+      "notPublishedUnverified": "文件列表读取失败，暂时无法确认输出是否已发布，请重试。",
       "actions": "操作",
       "actualFiles": "实际文件",
       "actualFileCount_one": "{{count}} 个文件",
@@ -395,7 +406,7 @@
       "notPublishedPending": "作业尚未进入终态输出收集阶段。",
       "notPublishedCancelled": "作业在发布该输出前已取消。",
       "notPublishedFailed": "作业在发布该输出前已失败。",
-      "notPublishedFailedReason": "作业在发布该输出前已失败：{{reason}}",
+      "notPublishedFailedReason": "作业在发布该输出前已失败，请查看作业日志。",
       "notPublishedCompleted": "作业已完成，但未在 {{prefix}} 下找到匹配的平台文件空间产物。请检查输出归集日志，或尝试从集群存储下载。"
     },
     "usecase": {
@@ -477,7 +488,9 @@
       "stagePathNoParent": "Stage path 不能包含 '..'。",
       "stagePathNoControl": "Stage path 不能包含控制字符。",
       "stagePathUnique": "Stage path 必须唯一。"
-    }
+    },
+    "noMatches": "没有符合筛选条件的作业。",
+    "loading": "正在加载作业…"
   },
   "workflows": {
     "title": "工作流",
@@ -488,7 +501,7 @@
     "notUpdated": "尚未更新",
     "loading": "正在加载工作流运行…",
     "empty": "暂无工作流运行。可以从模板或 YAML 创建一个。",
-    "noMatches": "没有匹配当前筛选条件的工作流运行。",
+    "noMatches": "没有符合筛选条件的工作流。",
     "clearFilters": "清除筛选",
     "pagination": {
       "page": "第 {{page}} / {{pages}} 页"
@@ -511,7 +524,15 @@
     "drafts": {
       "title": "未完成的工作流",
       "description": "打开已保存的草稿，继续编排和配置。",
-      "loadFailed": "工作流草稿暂时无法加载，请刷新后重试。"
+      "loadFailed": "工作流草稿暂时无法加载，请刷新后重试。",
+      "deleteTitle": "删除工作流草稿",
+      "deleteDescription": "此操作无法撤销。请确认要删除以下草稿。",
+      "deleting": "正在删除…",
+      "deleteFailed": "草稿删除失败，请重试。",
+      "deleteUnavailable": "草稿已变更、不可用或无法验证，请取消后刷新列表并重新选择。",
+      "openTitle": "打开工作流草稿",
+      "loading": "正在加载草稿，请稍候…",
+      "backToList": "返回工作流列表"
     },
     "queueChecking": "检查队列",
     "queueHidden_one": "{{count}} 个队列引用已禁用或不可见",
@@ -525,6 +546,7 @@
     "edgeCount_other": "{{count}} 条边",
     "validationFailed": "YAML 无效",
     "run": {
+      "jobsLoadFailed": "{{count}} 个关联作业暂时无法读取，部分节点仅显示已保存的状态，可能不是最新。请重试。",
       "unavailable": "工作流运行记录不存在、已被删除或当前不可见",
       "invalidId": "工作流运行编号无效",
       "loadFailed": "无法加载工作流运行记录",
@@ -558,7 +580,16 @@
           "title": "工作流执行被中断",
           "message": "平台恢复或取消流程中断了本次运行。请确认关联作业已结束后重新提交；若持续出现，请联系平台管理员。"
         }
-      }
+      },
+      "title": "工作流运行",
+      "nodes": "节点",
+      "edges": "依赖关系",
+      "created": "创建时间",
+      "graph": "运行图",
+      "cancel": "取消运行",
+      "cancelling": "取消中",
+      "cancelRequested": "已请求取消工作流",
+      "awaitingApproval": "当前运行正在等待调度方案的预算审批。审批完成后会自动更新状态；也可以取消后调整预算并重新提交。"
     },
     "templates": {
       "title": "模板",
@@ -748,7 +779,8 @@
         "durationHours": "约 {{count}} 小时",
         "durationHoursMinutes": "约 {{hours}} 小时 {{minutes}} 分钟",
         "costUnavailable": "暂无计费数据",
-        "costValue": "{{value}} 成本单位"
+        "costValue": "{{value}} 成本单位",
+        "invalidBudget": "预算上限必须是大于或等于 0 的有限数值，留空表示不限预算。"
       },
       "review": {
         "title": "运行前检查",
@@ -785,7 +817,8 @@
         "governanceBlocked": "License、Runtime 或受限材料前置条件阻断了上一次提交",
         "submitConfirmDescription": "将提交包含 {{nodes}} 个节点、{{edges}} 条依赖关系的工作流。",
         "submitConfirmHint": "提交后平台会按当前输入、调度策略和预算约束创建运行实例。"
-      }
+      },
+      "nameRequired": "请填写工作流名称。"
     },
     "parsedSteps": "已解析节点",
     "nodesCount_one": "{{count}} 个节点已解析",
@@ -811,7 +844,10 @@
       "ready": "就绪",
       "unavailable": "不可用",
       "unknown": "未知"
-    }
+    },
+    "scheduler": "调度器",
+    "heartbeat": "最近心跳",
+    "never": "尚未上报"
   },
   "software": {
     "availabilityReason": {
@@ -1185,7 +1221,10 @@
       "fingerprint": "本地文件指纹",
       "registerMaterial": "登记本地材料映射",
       "noMaterialMappings": "尚未登记本地受限材料映射。"
-    }
+    },
+    "management": "授权与发布管理",
+    "managementDescription": "查看软件申请、发布状态与授权声明",
+    "materialManagement": "Recipe 与材料管理"
   },
   "sandbox": {
     "catalog": {
@@ -1777,6 +1816,8 @@
     "clusterTitle": "集群文件",
     "clusterEmpty": "当前已授权集群路径下没有条目。",
     "clusterNoAgent": "没有在线集群接入代理。",
+    "clusterAgent": "集群 Agent",
+    "clusterAgentUnavailable": "当前 Agent 不可用，请重新选择",
     "clusterAgentsLoadFailed": "暂时无法加载接入代理，请刷新后重试。",
     "clusterNoAuthorizedRoot": "当前接入代理尚未配置可访问的集群文件根目录。",
     "clusterRoot": "集群文件根目录",
@@ -1806,6 +1847,9 @@
       "historyLoading": "正在加载配额申请记录…",
       "historyLoadFailed": "暂时无法加载配额申请记录。",
       "noRequests": "尚未提交过存储配额申请。",
+      "expiryMustBeFuture": "申请有效期必须晚于当前时间",
+      "exceedsLimit": "申请配额不能超过当前策略上限",
+      "limit": "当前申请上限：{{value}}",
       "formIncomplete": "请填写有效的配额和申请说明",
       "requestCreated": "配额申请已提交",
       "requestFailed": "提交配额申请失败",
@@ -1832,6 +1876,9 @@
       "size": "大小",
       "modified": "最近修改"
     },
+    "uploadProgress": "正在上传 {{current}}/{{total}}：{{name}} → {{prefix}}",
+    "uploadSucceeded": "已上传 {{name}}",
+    "uploadFailed": "上传 {{name}} 失败",
     "uploadTarget": "上传目标：{{prefix}}",
     "moreActions": "{{name}}的更多操作",
     "context": {
@@ -1842,6 +1889,7 @@
       "copyPathFailed": "复制路径失败"
     },
     "deleteDialog": {
+      "unavailable": "文件不存在或当前无法验证删除权限，请关闭对话框并刷新后重试。",
       "title": "删除平台文件？",
       "description": "删除后，该文件将无法继续用于下载、作业输入或后续传输。",
       "size": "大小：{{size}}",

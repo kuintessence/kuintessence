@@ -10,7 +10,7 @@ import {
   Workflow,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
-import { relativeFromNow } from "../../lib/format";
+import { relativeFromNow, statusLabel } from "../../lib/format";
 import { cn } from "../../lib/utils";
 import { Badge } from "../ui/badge";
 import { Card, CardContent, CardHeader } from "../ui/card";
@@ -58,7 +58,8 @@ function memUsed(used: number | null, total: number | null): string {
 }
 
 export function AgentCard({ agent, canOpenSsh }: { agent: AgentRow; canOpenSsh: boolean }) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
+  const language = i18n?.resolvedLanguage ?? i18n?.language;
   const Icon = SCHEDULER_ICON[agent.schedulerType.toLowerCase()] ?? SCHEDULER_ICON.default;
   const healthStatus = agent.computeHealthStatus ?? "unknown";
   const healthNodes =
@@ -78,7 +79,7 @@ export function AgentCard({ agent, canOpenSsh }: { agent: AgentRow; canOpenSsh: 
             className={cn("h-2 w-2 rounded-full", statusDot(agent.status))}
           />
           <Badge variant="outline" className="text-[10px]">
-            {agent.status}
+            {statusLabel(agent.status, language)}
           </Badge>
         </div>
       </CardHeader>
@@ -90,7 +91,7 @@ export function AgentCard({ agent, canOpenSsh }: { agent: AgentRow; canOpenSsh: 
           {agent.agentId.length > 12 ? agent.agentId.slice(0, 12) : agent.agentId}
         </div>
         <div className="flex items-center gap-1.5">
-          <span className="text-muted-foreground">Scheduler</span>
+          <span className="text-muted-foreground">{t("agents.scheduler")}</span>
           <span className="font-mono">
             {agent.schedulerType} {agent.schedulerVersion}
           </span>
@@ -129,9 +130,11 @@ export function AgentCard({ agent, canOpenSsh }: { agent: AgentRow; canOpenSsh: 
           className="flex items-center gap-1.5 text-muted-foreground"
           title={agent.lastHeartbeat ?? undefined}
         >
-          Heartbeat:{" "}
+          {t("agents.heartbeat")}:
           <span className="font-mono tabular-nums">
-            {agent.lastHeartbeat ? relativeFromNow(agent.lastHeartbeat) : "never"}
+            {agent.lastHeartbeat
+              ? relativeFromNow(agent.lastHeartbeat, undefined, language)
+              : t("agents.never")}
           </span>
         </div>
         <div className="mt-auto flex flex-wrap gap-3 pt-2">

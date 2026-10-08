@@ -3,6 +3,7 @@ import { Check, Clipboard, KeyRound, Trash2 } from "lucide-react";
 import type { FormEvent } from "react";
 import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { ApiError } from "../../lib/api-client";
 import type {
   ActiveAgentRegistrationToken,
   AgentRegistrationScheduler,
@@ -86,6 +87,7 @@ export function AgentRegistrationPage() {
   const [scheduler, setScheduler] = useState<AgentRegistrationScheduler>("slurm");
   const [issuedTokens, setIssuedTokens] = useState<IssuedToken[]>([]);
   const [copied, setCopied] = useState<string | null>(null);
+  const [copyError, setCopyError] = useState<string | null>(null);
 
   const providerOrgs = context.data?.providerOrgs ?? [];
   const schedulers = context.data?.schedulers ?? DEFAULT_REGISTRATION_SCHEDULERS;
@@ -97,15 +99,18 @@ export function AgentRegistrationPage() {
     () => (activeTokens.data ?? []).filter((token) => !issuedTokenIds.has(token.id)),
     [activeTokens.data, issuedTokenIds],
   );
-  const ttl = useMemo(() => Number.parseInt(ttlSec, 10), [ttlSec]);
+  const ttl = useMemo(() => Number(ttlSec), [ttlSec]);
   const formValid =
     providerOrgId.trim() !== "" &&
     agentId.trim() !== "" &&
     siteName.trim() !== "" &&
     serverHttpUrl.trim() !== "" &&
     serverGrpcUrl.trim() !== "" &&
-    Number.isFinite(ttl) &&
-    ttl > 0;
+    Number.isInteger(ttl) &&
+    ttl >= 60 &&
+    ttl <= 30 * 24 * 60 * 60 &&
+    agentId.trim().length <= 255 &&
+    siteName.trim().length <= 255;
 
   useEffect(() => {
     if (providerOrgs.length === 0) return;
@@ -118,42 +123,57 @@ export function AgentRegistrationPage() {
     setScheduler(schedulers[0] ?? "slurm");
   }, [scheduler, schedulers]);
 
-  const submit = async (event: FormEvent<HTMLFormElement>) => {
+  const registrationError = (error: Error, fallback: string) =>
+    error instanceof ApiError && error.status === 404
+      ? t("cp.agentRegistration.endpointUnavailable")
+      : toUserFacingError(error, fallback);
+
+  const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (context.error) return;
-    if (!formValid) return;
-    const token = await createToken.mutateAsync({
-      providerOrgId: providerOrgId.trim(),
-      agentId: agentId.trim(),
-      siteName: siteName.trim(),
-      expiresInSec: ttl,
-    });
-    const command = buildRegisterCommand({
-      serverHttpUrl,
-      serverGrpcUrl,
-      scheduler,
-      token: token.token,
-    });
-    setIssuedTokens((items) => [{ ...token, command }, ...items]);
-    await queryClient.invalidateQueries({ queryKey: ["cp", "agent-registration-tokens"] });
+    if (context.error || context.isLoading || !formValid || createToken.isPending) return;
+    createToken.mutate(
+      {
+        providerOrgId: providerOrgId.trim(),
+        agentId: agentId.trim(),
+        siteName: siteName.trim(),
+        expiresInSec: ttl,
+      },
+      {
+        onSuccess: (token) => {
+          const command = buildRegisterCommand({
+            serverHttpUrl,
+            serverGrpcUrl,
+            scheduler,
+            token: token.token,
+          });
+          setIssuedTokens((items) => [{ ...token, command }, ...items]);
+          void queryClient.invalidateQueries({ queryKey: ["cp", "agent-registration-tokens"] });
+        },
+      },
+    );
   };
 
   const copyText = async (key: string, value: string) => {
-    if (!navigator.clipboard) return;
-    await navigator.clipboard.writeText(value);
-    setCopied(key);
-    window.setTimeout(() => setCopied((current) => (current === key ? null : current)), 1600);
+    setCopied(null);
+    setCopyError(null);
+    try {
+      if (!navigator.clipboard) throw new Error("Clipboard unavailable");
+      await navigator.clipboard.writeText(value);
+      setCopied(key);
+      window.setTimeout(() => setCopied((current) => (current === key ? null : current)), 1600);
+    } catch {
+      setCopyError(t("cp.agentRegistration.tokens.copyFailed"));
+    }
   };
 
-  const revoke = async (token: IssuedToken) => {
-    await revokeToken.mutateAsync(token.id);
-    setIssuedTokens((items) => items.filter((item) => item.id !== token.id));
-    await queryClient.invalidateQueries({ queryKey: ["cp", "agent-registration-tokens"] });
-  };
-
-  const revokeActive = async (token: ActiveAgentRegistrationToken) => {
-    await revokeToken.mutateAsync(token.id);
-    await queryClient.invalidateQueries({ queryKey: ["cp", "agent-registration-tokens"] });
+  const revoke = (token: Pick<ActiveAgentRegistrationToken, "id">) => {
+    if (revokeToken.isPending) return;
+    revokeToken.mutate(token.id, {
+      onSuccess: () => {
+        setIssuedTokens((items) => items.filter((item) => item.id !== token.id));
+        void queryClient.invalidateQueries({ queryKey: ["cp", "agent-registration-tokens"] });
+      },
+    });
   };
 
   return (
@@ -167,6 +187,24 @@ export function AgentRegistrationPage() {
         </div>
       </div>
 
+      {revokeToken.error ? (
+        <div
+          role="alert"
+          data-testid="agent-registration-revoke-error"
+          className="rounded-md border border-status-failed/40 p-3 text-sm text-status-failed"
+        >
+          {toUserFacingError(revokeToken.error, t("cp.agentRegistration.tokens.revokeFailed"))}
+        </div>
+      ) : null}
+      {copyError ? (
+        <div
+          role="alert"
+          data-testid="agent-registration-copy-error"
+          className="rounded-md border border-status-failed/40 p-3 text-sm text-status-failed"
+        >
+          {copyError}
+        </div>
+      ) : null}
       <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(360px,0.9fr)]">
         <Card>
           <CardHeader>
@@ -216,12 +254,21 @@ export function AgentRegistrationPage() {
                   <Input
                     id="agent-registration-ttl"
                     type="number"
-                    min={1}
+                    min={60}
+                    max={30 * 24 * 60 * 60}
+                    step={1}
+                    aria-describedby="agent-registration-ttl-hint"
                     value={ttlSec}
                     onChange={(event) => setTtlSec(event.target.value)}
                     data-testid="agent-registration-ttl"
                     required
                   />
+                  <span
+                    id="agent-registration-ttl-hint"
+                    className="block text-xs text-muted-foreground"
+                  >
+                    {t("cp.agentRegistration.form.ttlHint")}
+                  </span>
                 </label>
                 <label
                   className="space-y-1 text-sm sm:col-span-3"
@@ -234,6 +281,7 @@ export function AgentRegistrationPage() {
                     id="agent-registration-agent-id"
                     value={agentId}
                     onChange={(event) => setAgentId(event.target.value)}
+                    maxLength={255}
                     data-testid="agent-registration-agent-id"
                     placeholder="example-slurm-a"
                     required
@@ -250,6 +298,7 @@ export function AgentRegistrationPage() {
                     id="agent-registration-site-name"
                     value={siteName}
                     onChange={(event) => setSiteName(event.target.value)}
+                    maxLength={255}
                     data-testid="agent-registration-site-name"
                     placeholder="example-site"
                     required
@@ -299,15 +348,30 @@ export function AgentRegistrationPage() {
               {context.error ? (
                 <div
                   className="rounded-md border border-status-failed/40 bg-[color-mix(in_oklab,var(--status-failed)_10%,transparent)] p-3 text-sm"
+                  role="alert"
                   data-testid="agent-registration-context-error"
                 >
-                  {toUserFacingError(context.error, t("cp.agentRegistration.contextLoadFailed"))}
+                  {registrationError(context.error, t("cp.agentRegistration.contextLoadFailed"))}
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="mt-2"
+                    disabled={context.isFetching || activeTokens.isFetching}
+                    onClick={() => {
+                      void context.refetch();
+                      void activeTokens.refetch();
+                    }}
+                  >
+                    {t("globalError.retry")}
+                  </Button>
                 </div>
               ) : null}
 
               {createToken.error ? (
                 <div
                   className="rounded-md border border-status-failed/40 bg-[color-mix(in_oklab,var(--status-failed)_10%,transparent)] p-3 text-sm"
+                  role="alert"
                   data-testid="agent-registration-error"
                 >
                   {toUserFacingError(
@@ -350,7 +414,7 @@ export function AgentRegistrationPage() {
                 className="rounded-md border border-status-failed/40 bg-[color-mix(in_oklab,var(--status-failed)_10%,transparent)] p-3 text-sm"
                 data-testid="agent-registration-active-error"
               >
-                {toUserFacingError(
+                {registrationError(
                   activeTokens.error,
                   t("cp.agentRegistration.activeTokens.loadFailed"),
                 )}
@@ -368,7 +432,7 @@ export function AgentRegistrationPage() {
                   <ActiveTokenCard
                     key={token.id}
                     token={token}
-                    onRevoke={() => revokeActive(token)}
+                    onRevoke={() => revoke(token)}
                     revokeDisabled={revokeToken.isPending}
                   />
                 ))}

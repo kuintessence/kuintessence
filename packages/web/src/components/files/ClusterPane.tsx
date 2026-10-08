@@ -53,7 +53,8 @@ export function ClusterPane({
   onDownload,
   agents,
 }: ClusterPaneProps) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
+  const language = i18n?.resolvedLanguage ?? i18n?.language;
   const [query, setQuery] = useState("");
   const [sortKey, setSortKey] = useState<SortKey>("name");
   const [contextTarget, setContextTarget] = useState<FileContextTarget | null>(null);
@@ -128,9 +129,15 @@ export function ClusterPane({
               <select
                 data-testid="files-cluster-agent-select"
                 className="min-w-0 flex-1 rounded-md border border-border bg-card px-2 py-0.5 font-mono text-[11px] sm:max-w-80"
+                aria-label={t("files.clusterAgent")}
                 value={agent?.agentId ?? ""}
                 onChange={(e) => onAgentChange(e.target.value)}
               >
+                {!agent ? (
+                  <option value="" disabled>
+                    {t("files.clusterAgentUnavailable")}
+                  </option>
+                ) : null}
                 {agents.map((a) => (
                   <option key={a.agentId} value={a.agentId}>
                     {a.siteName} · {a.schedulerType} {a.schedulerVersion}
@@ -262,9 +269,22 @@ export function ClusterPane({
                         ) : (
                           <File className="h-3.5 w-3.5 text-muted-foreground" />
                         )}
-                        <span className="min-w-0 truncate font-mono text-xs" title={e.name}>
+                        <button
+                          type="button"
+                          className="min-w-0 truncate rounded-sm text-left font-mono text-xs focus-visible:outline-2 focus-visible:outline-brand"
+                          title={e.name}
+                          aria-pressed={isFile ? isSelected : undefined}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            if (isFile) onSelect(isSelected ? null : e.name);
+                            else {
+                              onSelect(null);
+                              onPathChange(joinClusterPath(path, e.name));
+                            }
+                          }}
+                        >
                           {e.name}
-                        </span>
+                        </button>
                       </div>
                     </td>
                     <td className="hidden px-3 py-2 text-right font-mono text-xs tabular-nums text-muted-foreground sm:table-cell">
@@ -274,7 +294,7 @@ export function ClusterPane({
                       className="hidden px-3 py-2 font-mono text-[11px] text-muted-foreground tabular-nums md:table-cell"
                       title={e.modifiedAt}
                     >
-                      {relativeFromNow(e.modifiedAt)}
+                      {relativeFromNow(e.modifiedAt, undefined, language)}
                     </td>
                     <td className="px-1 py-0 text-right">
                       <div className="flex items-center justify-end">
