@@ -86,3 +86,24 @@ jobs:
             VITE_PREVIEW_LOGIN=false
           cache-from: type=gha,scope=production-${{ matrix.component }}
           cache-to: type=gha,mode=max,scope=production-${{ matrix.component }}
+
+  deploy-main:
+    name: Deploy main via SSH
+    needs: images
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Upload Compose configuration and deploy
+        env:
+          MAIN_SSH_HOST: ${{ secrets.MAIN_SSH_HOST }}
+          MAIN_SSH_PORT: ${{ secrets.MAIN_SSH_PORT }}
+          MAIN_SSH_USER: ${{ secrets.MAIN_SSH_USER }}
+          MAIN_SSH_KEY: ${{ secrets.MAIN_SSH_KEY }}
+        run: bash deploy/main/remote.sh

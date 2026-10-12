@@ -208,7 +208,7 @@ protobuf 生成、业务运行时测试、构建或容器。
 | 工作流 | 触发与范围 |
 |---|---|
 | `CI` | 独立入口自动静态检查；手动完整模式或由 `PR preview tests` 调用时执行 protobuf、类型、Helm、数据库及容器测试 |
-| `Build production images` | 推送 `main` 或发布 GitHub Release 时构建生产镜像并推送 GHCR；不自动部署 |
+| `Build production images` | 推送 `main` 或发布 GitHub Release 时构建生产镜像并推送 GHCR；仅 main 在全部镜像成功后通过 SSH 部署 |
 | `PR preview tests` | 同仓库非草稿 PR 固定 head SHA，按完整 PR diff 选择 Spack 和 scheduler 重型测试；手动触发强制全部组，全部必测组成功后允许进入部署门禁 |
 | `Build Agent binary` / `Build CLI binary` | 仅手动构建并运行 binary smoke，默认只保存 Actions artifact；在 `v*` tag 上手动触发且勾选 `publish_release` 才上传 Release |
 | `Scheduler image architecture` | 仅手动构建并运行调度器镜像架构验证 |
@@ -248,6 +248,49 @@ protobuf 生成、业务运行时测试、构建或容器。
 GHCR package 的可见性由仓库所有者配置；私有镜像需通过 Helm 的
 `global.imagePullSecrets` 提供拉取凭据，公开镜像可匿名拉取。
 构建与发布结果以对应 Actions run 为准，生产配置与站点验收仍按 Chart 指南执行。
+
+### main SSH 部署
+
+推送 `main` 时，镜像 workflow 在四个镜像全部构建和推送成功后执行 `deploy-main`。
+Release（包括正式发布与预发布）只发布镜像。部署步骤使用同一个 commit 的
+[`deploy/main/compose.yml`](../deploy/main/compose.yml) 和
+[`env.example`](../deploy/main/env.example)，避免构建期间 main 前进造成配置错配。
+工作流串行执行，后续推送不会中断正在进行的部署。
+
+在 GitHub 仓库 Actions secrets 中配置：
+
+| Secret | 含义 |
+|---|---|
+| `MAIN_SSH_HOST` | 部署服务器 IP 或主机名 |
+| `MAIN_SSH_PORT` | SSH 端口（1–65535） |
+| `MAIN_SSH_USER` | SSH 用户，须能写入 `/opt/deploy` 并执行部署脚本 |
+| `MAIN_SSH_KEY` | 该用户的 SSH 私钥完整内容，使用无需交互解密的专用部署密钥 |
+
+[`remote.sh`](../deploy/main/remote.sh) 通过 SSH 上传两个文件，完整接收后覆盖
+`/opt/deploy/compose.yml` 和 `/opt/deploy/env.example`；如果仓库没有示例环境文件，
+只更新 Compose。随后从 `/opt/deploy` 工作目录执行服务器已有的 `/opt/deploy/run.sh`，
+其退出码直接决定部署 job 成败。SSH 采用 `accept-new` 首次接受主机密钥，
+私钥和本次 known_hosts 存在 runner 临时目录，退出时清理。
+
+服务器需预先准备可执行的 `run.sh` 和实际 `.env`。CI 不创建或覆盖它们，也不会
+向服务器传输仓库源码、SSH 私钥或 GitHub token。`run.sh` 负责按站点要求登录 GHCR、
+拉取镜像、启动/更新服务和健康验证；私有 GHCR 镜像的拉取凭据由服务器自行配置。
+基础调用可使用 `docker compose -f /opt/deploy/compose.yml pull` 和
+`docker compose -f /opt/deploy/compose.yml up -d --wait`；数据库备份、升级与失败处置
+由站点脚本负责，CI 不自动回滚。重新运行失败的部署 job 会再次覆盖这两个文件并调用脚本。
+
+main 专用 Compose 直接引用四个 `kuintessence-*:main` 镜像，
+不依赖源码构建或仓库 bind mount。它内置 PostgreSQL、Redis、RustFS、SpiceDB，
+使用外部 SSO；Server/Registry 为单实例，数据库、Registry 内容和 Server CA 使用持久卷。
+应用服务等待数据库迁移完成。Web、Server 和 RustFS 的宿主端口仅绑定回环地址，
+由站点 HTTPS 入口及 Agent mTLS 代理转发；`MTLS_TRUSTED_PROXY_CIDRS` 必须填写
+实际证书验证代理的来源范围。沿用已有部署的项目名、数据卷和密钥，避免建立空的新实例。
+
+首次使用时将服务器上的 `env.example` 复制为 `.env`，填写空置密钥、数据库 URL、
+SSO 和代理配置。`JWT_SECRET` 至少 32 字符，`DATABASE_URL` 中的数据库密码必须与
+`POSTGRES_PASSWORD` 一致。示例不含可用密钥，不能直接启动。
+NetDrive 默认关闭；RustFS bucket/IAM 初始化与启用步骤见
+[对象存储指南](../deploy/rustfs/README.md)，由站点脚本和私有 Compose 覆盖文件配置。
 
 ### 重型测试范围
 

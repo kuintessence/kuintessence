@@ -3,6 +3,10 @@
 本目录包含平台开发与演示环境的 Compose 配置。以下命令均从仓库根目录执行。
 示例账号和固定口令仅用于本地开发，不得用于公网生产部署。
 
+main 的镜像部署使用独立的 [`deploy/main/compose.yml`](../main/compose.yml)，
+由 Actions 上传到 `/opt/deploy/compose.yml` 后调用站点已有的 `run.sh`。
+SSH secrets、`.env` 和依赖配置见 [main SSH 部署](../../docs/deployment.md#main-ssh-部署)。
+
 ## 入口
 
 | 文件 | 用途 | CLI profile |
