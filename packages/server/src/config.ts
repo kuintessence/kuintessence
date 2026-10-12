@@ -125,6 +125,7 @@ const ServerConfigSchema = z.object({
   SERVER_GRPC_TLS_KEY_FILE: z.string().min(1).optional(),
   /** Where the Server CA cert+key live on disk. Auto-generated on first start. */
   SERVER_CA_DIR: z.string().default("./server-ca"),
+  AGENT_BINARIES_DIR: z.string().min(1).default("/opt/kuintessence/agent"),
   /** Hint used to escalate the disabled-mTLS warning to a loud message in non-dev. */
   NODE_ENV: z.string().default("development"),
   /**

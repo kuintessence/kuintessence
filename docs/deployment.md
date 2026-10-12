@@ -209,6 +209,7 @@ protobuf 生成、业务运行时测试、构建或容器。
 |---|---|
 | `CI` | 独立入口自动静态检查；手动完整模式或由 `PR preview tests` 调用时执行 protobuf、类型、Helm、数据库及容器测试 |
 | `Build production images` | 推送 `main` 或发布 GitHub Release 时构建生产镜像并推送 GHCR；仅 main 在全部镜像成功后通过 SSH 部署 |
+| `Verify Server Agent bundle` | 相关 PR 构建 Server 镜像，提取并校验两种架构的 Agent、提交号与 SHA-256，执行 Linux x64 空配置 smoke |
 | `PR preview tests` | 同仓库非草稿 PR 固定 head SHA，按完整 PR diff 选择 Spack 和 scheduler 重型测试；手动触发强制全部组，全部必测组成功后允许进入部署门禁 |
 | `Build Agent binary` / `Build CLI binary` | 仅手动构建并运行 binary smoke，默认只保存 Actions artifact；在 `v*` tag 上手动触发且勾选 `publish_release` 才上传 Release |
 | `Scheduler image architecture` | 仅手动构建并运行调度器镜像架构验证 |
@@ -248,6 +249,24 @@ protobuf 生成、业务运行时测试、构建或容器。
 GHCR package 的可见性由仓库所有者配置；私有镜像需通过 Helm 的
 `global.imagePullSecrets` 提供拉取凭据，公开镜像可匿名拉取。
 构建与发布结果以对应 Actions run 为准，生产配置与站点验收仍按 Chart 指南执行。
+
+### Server 内置 Agent
+
+Server Dockerfile 从同一源码编译 Linux x64、ARM64（glibc）Agent，存放在
+`/opt/kuintessence/agent/`，文件名分别为 `kq-agent-bun-linux-x64`、
+`kq-agent-bun-linux-arm64`，附带 `manifest.json` 与 `SHA256SUMS`。
+CI 将精确构建提交写入 manifest；本地未传 `KQ_BUILD_REVISION` 时为 `unknown`。
+
+公开只读接口 `GET /api/agent-binaries` 返回版本、提交、文件大小和 SHA-256；
+`GET|HEAD /api/agent-binaries/:filename` 下载上述四个文件。Web 入口前缀为
+`/platform/api/agent-binaries`。下载附加 `?revision=<manifest 中的提交>` 可避免
+服务升级期间拿到不同提交的产物，版本不符返回 409。获取与安装示例见
+[Agent systemd 部署](../deploy/systemd/README.md#获取二进制)。
+
+[PR 校验工作流](../.github/workflows/server-agent-bundle.yml) 构建并提取实际镜像产物；
+生产发布后也按镜像 digest 提取并校验，失败会阻止 main SSH 部署。
+两种架构均检查 ELF、SHA-256 与提交一致性，x64 执行空配置拒绝 smoke；
+ARM64 未在此工作流中执行，目标节点的 OS、调度器及 mTLS 兼容性仍需站点验证。
 
 ### main SSH 部署
 

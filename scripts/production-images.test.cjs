@@ -99,7 +99,10 @@ describe("production image publication", () => {
     const build = job.steps.find((step) => step.uses === "docker/build-push-action@v6").with;
     expect(build.push).toBe(true);
     expect(build.tags).toBe(`\${{ steps.image.outputs.tags }}`);
-    expect(build["build-args"].trim()).toBe("VITE_PREVIEW_LOGIN=false");
+    expect(build["build-args"].trim().split("\n")).toEqual([
+      "VITE_PREVIEW_LOGIN=false",
+      `KQ_BUILD_REVISION=\${{ github.sha }}`,
+    ]);
     expect(build.platforms).toBe("linux/amd64");
   });
 });

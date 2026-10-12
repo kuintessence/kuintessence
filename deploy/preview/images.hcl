@@ -27,6 +27,7 @@ target "common" {
 target "server" {
   inherits = ["common"]
   dockerfile = "packages/server/Dockerfile"
+  args = { KQ_BUILD_REVISION = REVISION }
   tags = ["${IMAGE_PREFIX}-server:${IMAGE_TAG}"]
 }
 target "registry" {

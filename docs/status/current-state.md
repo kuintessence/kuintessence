@@ -100,6 +100,11 @@ Server-only Agent 材料下载，以及 CP 安装/库存/策略操作已有实�
   Web 关闭预览登录。main 镜像全部成功后，通过 `MAIN_SSH_*` secrets 上传专用 Compose
   和示例环境文件到 `/opt/deploy`，并执行站点已有 `run.sh`；Release 不触发部署。
   站点维护实际 `.env`、拉取凭据、代理与升级策略，部署脚本启动 Compose 时才执行数据库迁移。
+- Server 镜像从同一提交内置 Linux x64、ARM64 glibc Agent，保存于
+  `/opt/kuintessence/agent/`；公开 `/api/agent-binaries` 提供提交及 SHA-256 清单和下载。
+  下载可固定 revision，升级后不匹配返回 409；源码运行无产物时返回 404。
+  PR 构建及生产发布均提取镜像校验两种架构，x64 执行空配置 smoke；ARM64 仅做
+  ELF 和完整性验证。获取方式见 [Agent 部署](../../deploy/systemd/README.md#获取二进制)。
 - 源码运行、CI 与新构建镜像固定使用 Bun 1.4.2，最低要求为 1.4.2。
   材料上传依赖其 HTTP 拒绝连接关闭修复；升级须重新构建旧镜像与编译产物，
   不能只修改配置后继续复用旧 Bun runtime。详见[材料上传边界](../spack-material-delivery.md)。
@@ -332,7 +337,8 @@ Spack 或调度端到端 job 修改选择对应组；全局、未知结构与 jo
 Hello、samtools、samtools-file。手动 PR 编排仍强制全部组。
 部署控制器独立核算路径范围与工作流档位，仅允许未选组/案例跳过，
 随后通过信任门禁才部署远程 k3s；基础通过不等于完整工作流已验收。
-binary 构建与 smoke、跨架构镜像验证、文档站发布仍由维护者手动触发；
+独立 Agent/CLI binary 工作流、调度器跨架构镜像验证和文档站发布由维护者手动触发；
+Server 内置 Agent 的构建校验随相关 PR 和生产镜像发布自动执行；
 不再托管 runner 限时预览或 main 预览。具体入口见 [GitHub Actions](../deployment.md#actions)。
 手动完整 CI 使用 `test:unit` 的临时数据库和逐文件进程隔离，再单独执行
 `test:integration`，避免跨测试文件累积数据库连接；不复用业务数据库。

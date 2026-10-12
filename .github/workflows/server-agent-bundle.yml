@@ -1,0 +1,60 @@
+name: Verify Server Agent bundle
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/server-agent-bundle.yml
+      - .github/workflows/build-images.yml
+      - packages/server/Dockerfile
+      - packages/server/src/routes/agent-binaries*
+      - packages/agent/**
+      - packages/shared/**
+      - packages/proto/**
+      - packages/db/**
+      - scripts/build-agent-bundle.cjs
+      - scripts/verify-agent-bundle.cjs
+      - packages/*/package.json
+      - tsconfig.base.json
+      - package.json
+      - bun.lock
+      - .dockerignore
+
+permissions:
+  contents: read
+
+concurrency:
+  group: server-agent-bundle-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  bundle:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@v3
+      - name: Build Server image with matching Agent binaries
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: packages/server/Dockerfile
+          platforms: linux/amd64
+          load: true
+          push: false
+          tags: kuintessence-server:agent-ci
+          build-args: |
+            KQ_BUILD_REVISION=${{ github.event.pull_request.head.sha }}
+          cache-from: type=gha,scope=server-agent-ci
+          cache-to: type=gha,mode=max,scope=server-agent-ci
+      - name: Verify extracted binaries and smoke Linux x64
+        env:
+          REVISION: ${{ github.event.pull_request.head.sha }}
+        run: |
+          container="$(docker create kuintessence-server:agent-ci)"
+          trap 'docker rm "$container" >/dev/null' EXIT
+          mkdir -p "$RUNNER_TEMP/agent-bundle"
+          docker cp "$container:/opt/kuintessence/agent/." "$RUNNER_TEMP/agent-bundle/"
+          node scripts/verify-agent-bundle.cjs "$RUNNER_TEMP/agent-bundle" "$REVISION"
