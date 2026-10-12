@@ -208,6 +208,7 @@ protobuf 生成、业务运行时测试、构建或容器。
 | 工作流 | 触发与范围 |
 |---|---|
 | `CI` | 独立入口自动静态检查；手动完整模式或由 `PR preview tests` 调用时执行 protobuf、类型、Helm、数据库及容器测试 |
+| `Build production images` | 推送 `main` 或发布 GitHub Release 时构建生产镜像并推送 GHCR；不自动部署 |
 | `PR preview tests` | 同仓库非草稿 PR 固定 head SHA，按完整 PR diff 选择 Spack 和 scheduler 重型测试；手动触发强制全部组，全部必测组成功后允许进入部署门禁 |
 | `Build Agent binary` / `Build CLI binary` | 仅手动构建并运行 binary smoke，默认只保存 Actions artifact；在 `v*` tag 上手动触发且勾选 `publish_release` 才上传 Release |
 | `Scheduler image architecture` | 仅手动构建并运行调度器镜像架构验证 |
@@ -215,6 +216,38 @@ protobuf 生成、业务运行时测试、构建或容器。
 | `Spack workflow execution` | 自动调用默认仅 GNU Hello 工作流；手动或当前 HEAD 提交消息含 `[full-workflows]` 时运行完整三案例 |
 | `Docs Site` | 仅从 `main` 手动构建并发布到 `gh-pages`；GitHub Pages 须单独配置发布源 |
 | `Preview` / `Preview Cleanup` | 全部必需测试成功且通过信任门禁后部署远程 k3s，关闭/暂停/撤销标签后清理；无 main 常驻预览 |
+
+### 生产镜像
+
+[`Build production images`](../.github/workflows/build-images.yml) 使用现有 Dockerfile，
+构建 `linux/amd64` 镜像，发布到 `ghcr.io/<仓库所有者的小写名称>/`：
+
+| 组件 | 镜像名称 | Helm 镜像配置键 |
+|---|---|---|
+| Server | `kuintessence-server` | `server.image` |
+| Registry | `kuintessence-registry` | `registry.image` |
+| Web | `kuintessence-web` | `web.image` |
+| 数据库迁移 | `kuintessence-db-migrate` | `migration.image` |
+
+- 每次推送 `main`，从该事件的 commit 构建并更新固定 `main` tag，不更新 `latest`。
+- 发布 GitHub Release（`release.published`）时，从对应 tag 的 commit 构建，
+  镜像 tag 完整保留 Git tag，例如 `v1.2.3`。单独推送 Git tag 不触发构建。
+- 正式 Release 同时将 `latest` 指向本次构建；预发布只推送 Git tag，不更新 `latest`。
+  发布工作流串行执行；重新运行旧正式 Release 的工作流也会重新指向该版本。
+- Git tag 必须符合容器 tag 格式（最多 128 字符，仅字母、数字、`_`、`.`、`-`，
+  首字符不能是 `.` 或 `-`），且不能使用保留名称 `main`、`latest`；不兼容时直接失败。
+- Web 显式使用 `VITE_PREVIEW_LOGIN=false`。这些镜像不包含预览 seed 或调度器；
+  数据库迁移镜像发布本身不会执行生产数据库迁移。
+
+例如 Server 镜像地址为 `ghcr.io/kuintessence/kuintessence-server:main`。
+在生产 Helm 配置中，将上表各组件的 `repository` 和 `tag` 设置为对应镜像地址与版本。
+使用滚动的 `main` / `latest` 时将 `pullPolicy` 设置为 `Always`，并主动触发滚动更新；
+推送镜像不会自动重启现有 Pod。需要固定部署内容时记录构建摘要并按 digest 部署。
+
+发布使用仓库 `GITHUB_TOKEN` 的 `packages: write` 权限，无需另配推送凭据。
+GHCR package 的可见性由仓库所有者配置；私有镜像需通过 Helm 的
+`global.imagePullSecrets` 提供拉取凭据，公开镜像可匿名拉取。
+构建与发布结果以对应 Actions run 为准，生产配置与站点验收仍按 Chart 指南执行。
 
 ### 重型测试范围
 
@@ -226,8 +259,13 @@ protobuf 生成、业务运行时测试、构建或容器。
   调度器镜像及 E2E 夹具。CLI 本地 Spack/软件命令触发 Spack 组；
   CLI 共享 API、认证、workflow 和 Agent 入口触发两组。
 - 共享 schema、protobuf、数据库、依赖清单和共同运行基础等变更保守触发相关的两组。
-- 测试夹具及专属 workflow 的变更也触发对应组；同时定义两组的 CI 或调度器 workflow
-  变更触发两组，避免修改测试执行步骤后反而跳过验证。
+- 测试夹具及专属 workflow 的变更也触发对应组；调度器 workflow 变更触发两组。
+- `ci.yml` 修改按 PR merge base 与固定 head 的完整内容比较 job：静态检查、类型检查、
+  单元/集成、RustFS 和 migration artifact job 的修改不额外启用重型组；
+  Spack job 修改只启用 Spack，`e2e-slice` 修改只启用调度器，两者同时修改则启用两组。
+  全局配置、job 增删、未知 job、共享 outputs、YAML anchor/alias 或无法识别的结构
+  仍启用两组；CI 文件新增、删除或重命名也保守启用两组。API 读取失败或内容不完整
+  则阻止范围解析，不依赖可能缺失或截断的 patch 来跳过检查。
 - 文档、普通 Web 展示与预览控制器变更不会仅因 PR 更新就启动这两组。
   基础静态检查、typecheck/Helm、unit/integration、Web 单测/build 及 RustFS 检查仍执行。
 

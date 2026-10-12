@@ -1,5 +1,7 @@
 const MAX_FILES = 3000;
 const SHA = /^[a-f0-9]{40}$/;
+const CI = /^\.github\/workflows\/ci\.ya?ml$/;
+const { classifyCIChange } = require("./ci-scope.cjs");
 
 const IGNORED = [
   /^(?:docs|plan|plans)\//,
@@ -80,7 +82,7 @@ function validPath(path) {
     path.split("/").every((part) => part !== "" && part !== "." && part !== "..");
 }
 
-function classifyPaths(files) {
+function classifyPaths(files, ciScopes = new Map()) {
   if (!Array.isArray(files)) throw new Error("Invalid PR file list.");
   const scope = { spack: false, schedulers: false };
   const seen = new Set();
@@ -97,6 +99,12 @@ function classifyPaths(files) {
     if (file.previous_filename !== undefined) paths.push(file.previous_filename);
     for (const path of paths) {
       if (matches(IGNORED, path)) continue;
+      if (CI.test(path) && ciScopes.has(path)) {
+        const selected = ciScopes.get(path);
+        scope.spack ||= selected.spack;
+        scope.schedulers ||= selected.schedulers;
+        continue;
+      }
       if (matches(SHARED, path)) {
         scope.spack = true;
         scope.schedulers = true;
@@ -136,7 +144,34 @@ async function pullRequestScope(github, repo, pr) {
   if (!Array.isArray(files) || files.length > MAX_FILES || files.length !== before.count) {
     throw new Error("Incomplete PR file list.");
   }
-  const scope = classifyPaths(files);
+  // Validate the complete file list before requesting any workflow contents.
+  classifyPaths(files);
+  const ciScopes = new Map();
+  const modifiedCI = files.filter((file) => CI.test(file.filename) &&
+    file.status === "modified" && file.previous_filename === undefined);
+  if (modifiedCI.length) {
+    const { data: comparison } = await github.rest.repos.compareCommitsWithBasehead({
+      ...repo, basehead: `${before.base}...${before.head}`, per_page: 1,
+    });
+    const mergeBase = comparison?.merge_base_commit?.sha;
+    if (typeof mergeBase !== "string" || mergeBase.length !== 40 || !SHA.test(mergeBase)) {
+      throw new Error("Invalid PR merge base for CI scope.");
+    }
+    for (const file of modifiedCI) {
+      const contents = await Promise.all([mergeBase, before.head].map(async (ref) => {
+        const { data } = await github.rest.repos.getContent({ ...repo, path: file.filename, ref });
+        if (data?.type !== "file" || data.encoding !== "base64" ||
+            typeof data.content !== "string" || !Number.isSafeInteger(data.size) || data.size < 1) {
+          throw new Error("Incomplete CI workflow contents.");
+        }
+        const bytes = Buffer.from(data.content, "base64");
+        if (bytes.length !== data.size) throw new Error("Incomplete CI workflow contents.");
+        return bytes.toString("utf8");
+      }));
+      ciScopes.set(file.filename, classifyCIChange(...contents));
+    }
+  }
+  const scope = classifyPaths(files, ciScopes);
   const { data } = await github.rest.pulls.get({ ...repo, pull_number: before.number });
   const after = snapshot(data);
   if (after.number !== before.number || after.head !== before.head ||
