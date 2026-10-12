@@ -48,7 +48,7 @@ describe("bundled Agent identity", () => {
 
   test("Docker compiles the checked-out Agent and copies only its bundle to the runtime", () => {
     const dockerfile = readFileSync(join(root, "packages/server/Dockerfile"), "utf8");
-    expect(dockerfile).toContain("FROM build AS agent-binaries");
+    expect(dockerfile).toContain("FROM oven/bun:1.4.2 AS agent-binaries");
     expect(dockerfile).toContain("COPY packages/agent ./packages/agent");
     expect(dockerfile).toContain(
       "COPY --from=agent-binaries /opt/kuintessence/agent /opt/kuintessence/agent",

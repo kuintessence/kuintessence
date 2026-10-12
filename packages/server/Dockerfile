@@ -24,7 +24,9 @@ COPY packages/server ./packages/server
 COPY authz ./authz
 RUN cd packages/proto && bun run generate
 
-FROM build AS agent-binaries
+FROM oven/bun:1.4.2 AS agent-binaries
+WORKDIR /app
+COPY --from=build /app /app
 COPY packages/agent ./packages/agent
 COPY scripts/build-agent-bundle.cjs ./scripts/build-agent-bundle.cjs
 ARG KQ_BUILD_REVISION=unknown

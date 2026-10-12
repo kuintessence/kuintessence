@@ -252,7 +252,8 @@ GHCR package 的可见性由仓库所有者配置；私有镜像需通过 Helm �
 
 ### Server 内置 Agent
 
-Server Dockerfile 从同一源码编译 Linux x64、ARM64（glibc）Agent，存放在
+Server Dockerfile 使用独立的 glibc Bun 构建阶段，从同一源码编译 Linux x64、ARM64
+Agent（Server 运行镜像仍为 Alpine），存放在
 `/opt/kuintessence/agent/`，文件名分别为 `kq-agent-bun-linux-x64`、
 `kq-agent-bun-linux-arm64`，附带 `manifest.json` 与 `SHA256SUMS`。
 CI 将精确构建提交写入 manifest；本地未传 `KQ_BUILD_REVISION` 时为 `unknown`。
