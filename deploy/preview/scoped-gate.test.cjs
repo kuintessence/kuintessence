@@ -195,6 +195,15 @@ function fixture(options = {}) {
         listFiles: "files",
       },
       repos: {
+        compareCommitsWithBasehead: async () => ({ data: { merge_base_commit: { sha: "c".repeat(40) } } }),
+        getContent: async ({ ref }) => {
+          const source = options.ci?.[ref === sha ? "head" : "base"] ??
+            `name: ${ref}\njobs:\n  static-checks:\n    steps: []\n`;
+          return { data: {
+            type: "file", encoding: "base64", size: Buffer.byteLength(source),
+            content: Buffer.from(source).toString("base64"),
+          } };
+        },
         getCollaboratorPermissionLevel: async () => ({
           data: { permission: options.permission ?? "write" },
         }),
@@ -255,6 +264,17 @@ function fixture(options = {}) {
 }
 
 describe("trusted controller scope derivation", () => {
+  test("controller independently permits baseline CI edits without the heavy groups", async () => {
+    const base = "name: CI\njobs:\n  static-checks:\n    steps: []\n";
+    const state = fixture({
+      files: [{ filename: ".github/workflows/ci.yml", status: "modified" }],
+      ci: { base, head: base.replace("steps: []", "steps:\n      - run: bun run lint") },
+    });
+    await state.execute();
+    expect(state.outputs.allowed).toBe("true");
+    expect(state.scopeCalls).toHaveLength(1);
+  });
+
   test.each(["pull_request", "workflow_dispatch"])("legacy complete %s runs need no scope API", async (event) => {
     const state = fixture({ event, jobs: fullJobs(), scopeError: true });
     await state.execute();

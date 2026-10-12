@@ -259,8 +259,13 @@ GHCR package 的可见性由仓库所有者配置；私有镜像需通过 Helm �
   调度器镜像及 E2E 夹具。CLI 本地 Spack/软件命令触发 Spack 组；
   CLI 共享 API、认证、workflow 和 Agent 入口触发两组。
 - 共享 schema、protobuf、数据库、依赖清单和共同运行基础等变更保守触发相关的两组。
-- 测试夹具及专属 workflow 的变更也触发对应组；同时定义两组的 CI 或调度器 workflow
-  变更触发两组，避免修改测试执行步骤后反而跳过验证。
+- 测试夹具及专属 workflow 的变更也触发对应组；调度器 workflow 变更触发两组。
+- `ci.yml` 修改按 PR merge base 与固定 head 的完整内容比较 job：静态检查、类型检查、
+  单元/集成、RustFS 和 migration artifact job 的修改不额外启用重型组；
+  Spack job 修改只启用 Spack，`e2e-slice` 修改只启用调度器，两者同时修改则启用两组。
+  全局配置、job 增删、未知 job、共享 outputs、YAML anchor/alias 或无法识别的结构
+  仍启用两组；CI 文件新增、删除或重命名也保守启用两组。API 读取失败或内容不完整
+  则阻止范围解析，不依赖可能缺失或截断的 patch 来跳过检查。
 - 文档、普通 Web 展示与预览控制器变更不会仅因 PR 更新就启动这两组。
   基础静态检查、typecheck/Helm、unit/integration、Web 单测/build 及 RustFS 检查仍执行。
 

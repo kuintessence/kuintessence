@@ -270,9 +270,28 @@ function fixture(files = [{ filename: "docs/ci.md" }]) {
     changed_files: files.length,
   };
   const calls = [];
-  const state = { files, latest: structuredClone(pr) };
+  const state = {
+    files, latest: structuredClone(pr), mergeBase: "c".repeat(40),
+    baseWorkflow: "name: CI\njobs:\n  static-checks:\n    steps: []\n",
+    headWorkflow: "name: CI\njobs:\n  static-checks:\n    steps: []\n",
+  };
   const github = {
-    rest: { pulls: {
+    rest: { repos: {
+      compareCommitsWithBasehead: async (options) => {
+        calls.push(["compare", options]);
+        if (state.compareError) throw state.compareError;
+        return { data: { merge_base_commit: { sha: state.mergeBase } } };
+      },
+      getContent: async (options) => {
+        calls.push(["content", options]);
+        if (state.contentError) throw state.contentError;
+        const source = options.ref === pr.head.sha ? state.headWorkflow : state.baseWorkflow;
+        return { data: state.contentResponse ?? {
+          type: "file", encoding: "base64", size: Buffer.byteLength(source),
+          content: Buffer.from(source).toString("base64"),
+        } };
+      },
+    }, pulls: {
       listFiles: "list-files",
       get: async (options) => {
         calls.push(["get", options]);
@@ -290,6 +309,65 @@ function fixture(files = [{ filename: "docs/ci.md" }]) {
 }
 
 describe("PR scope snapshot validation", () => {
+  test("CI-only changes use complete merge-base/head contents, not the patch or current base", async () => {
+    const f = fixture([{ filename: ".github/workflows/ci.yml", status: "modified", patch: "truncated" }]);
+    f.state.headWorkflow = f.state.baseWorkflow.replace("steps: []", "steps:\n      - run: bun test scripts/production-images.test.cjs");
+    expect(await pullRequestScope(f.github, f.repo, f.pr)).toEqual(NONE);
+    expect(f.calls.find(([method]) => method === "compare")[1]).toEqual({
+      ...f.repo, basehead: `${f.pr.base.sha}...${f.pr.head.sha}`, per_page: 1,
+    });
+    expect(f.calls.filter(([method]) => method === "content").map(([, options]) => options.ref))
+      .toEqual([f.state.mergeBase, f.pr.head.sha]);
+    expect(f.calls.at(-1)[0]).toBe("get");
+  });
+
+  test("a lightweight CI edit cannot hide heavy source changes", async () => {
+    for (const [filename, expected] of [
+      ["packages/agent/src/spack/installer.ts", SPACK],
+      ["packages/agent/src/adapters/slurm.ts", SCHEDULERS],
+      ["package.json", BOTH],
+    ]) {
+      const f = fixture([{ filename: ".github/workflows/ci.yml", status: "modified" }, { filename }]);
+      expect(await pullRequestScope(f.github, f.repo, f.pr)).toEqual(expected);
+    }
+  });
+
+  test.each(["added", "removed", "renamed"])("CI %s is conservative without fetching contents", async (status) => {
+    const f = fixture([{
+      filename: ".github/workflows/ci.yml", status,
+      ...(status === "renamed" ? { previous_filename: "docs/ci.yml" } : {}),
+    }]);
+    expect(await pullRequestScope(f.github, f.repo, f.pr)).toEqual(BOTH);
+    expect(f.calls).toHaveLength(2);
+  });
+
+  test.each(["compareError", "contentError"])("CI %s cannot silently skip heavy checks", async (field) => {
+    const f = fixture([{ filename: ".github/workflows/ci.yml", status: "modified" }]);
+    f.state[field] = new Error("Unavailable workflow snapshot");
+    await expect(pullRequestScope(f.github, f.repo, f.pr)).rejects.toThrow("Unavailable workflow snapshot");
+  });
+
+  test("rejects incomplete workflow contents and an invalid merge-base SHA", async () => {
+    for (const contentResponse of [
+      [], { type: "file", encoding: "none", size: 2, content: "" },
+      { type: "file", encoding: "base64", size: 99, content: "YQ==" },
+      { type: "file", encoding: "base64", size: 0, content: "" },
+    ]) {
+      const f = fixture([{ filename: ".github/workflows/ci.yml", status: "modified" }]);
+      f.state.contentResponse = contentResponse;
+      await expect(pullRequestScope(f.github, f.repo, f.pr)).rejects.toThrow("Incomplete CI workflow");
+    }
+    const f = fixture([{ filename: ".github/workflows/ci.yml", status: "modified" }]);
+    f.state.mergeBase = "invalid";
+    await expect(pullRequestScope(f.github, f.repo, f.pr)).rejects.toThrow("Invalid PR merge base");
+  });
+
+  test("rechecks the PR snapshot after resolving CI contents", async () => {
+    const f = fixture([{ filename: ".github/workflows/ci.yml", status: "modified" }]);
+    f.state.latest.head.sha = "d".repeat(40);
+    await expect(pullRequestScope(f.github, f.repo, f.pr)).rejects.toThrow("PR changed");
+  });
+
   test("uses all paginated paths then rechecks the PR before returning scope", async () => {
     const files = Array.from({ length: 101 }, (_, index) => ({ filename: `docs/${index}.md` }));
     files[100] = { filename: "packages/agent/src/spack/installer.ts", status: "removed" };
