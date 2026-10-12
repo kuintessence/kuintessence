@@ -23,8 +23,7 @@ function editJob(source, name, field = "name", value = "Updated job") {
 describe("CI job change scope", () => {
   test("adding a production image contract check does not select Spack or schedulers", () => {
     const before = workflow.replace(
-      "      - name: Check production image publication contracts\n" +
-      "        run: bun test scripts/production-images.test.cjs\n\n", "",
+      /      - name: Check production image publication contracts\n        run: [^\n]+\n\n/, "",
     );
     expect(before).not.toBe(workflow);
     expect(classifyCIChange(before, workflow)).toEqual(NONE);
