@@ -103,6 +103,9 @@ jobs:
       - name: Check workflow references
         run: bun run check:workflow-uses
 
+      - name: Check production image publication contracts
+        run: bun test scripts/production-images.test.cjs
+
       - name: Check scientific workflow handoff templates
         run: bun test scripts/spack-workflow-handoff.test.ts
 

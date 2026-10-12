@@ -94,6 +94,10 @@ Server-only Agent 材料下载，以及 CP 安装/库存/策略操作已有实�
 
 ## 运行限制
 
+- [生产镜像 CI](../deployment.md#生产镜像) 在推送 `main` 时发布四个
+  `ghcr.io/<owner>/kuintessence-*` 镜像的 `main` tag；发布 GitHub Release 时保留
+  Git tag，正式 Release 同时更新 `latest`，预发布不更新。当前架构为 `linux/amd64`，
+  Web 关闭预览登录；工作流只构建和推送，不自动部署或执行生产数据库迁移。
 - 源码运行、CI 与新构建镜像固定使用 Bun 1.4.2，最低要求为 1.4.2。
   材料上传依赖其 HTTP 拒绝连接关闭修复；升级须重新构建旧镜像与编译产物，
   不能只修改配置后继续复用旧 Bun runtime。详见[材料上传边界](../spack-material-delivery.md)。
