@@ -15,18 +15,56 @@
 
 ## 获取二进制
 
-可在 GitHub Actions 中手动运行 **Build Agent binary**，下载对应 Linux 架构的产物。
+优先从已部署的 Server 获取同一源码提交编译的 Agent。Server 镜像内置 Linux x64、
+ARM64 的 glibc 可执行文件及 SHA-256 清单，产物自带 Bun 运行时。下载不需要登录，
+但安装后仍须完成节点注册、mTLS 和站点调度器配置。
+
+通过 Web 同源入口下载（需要 `curl`、`jq`、`sha256sum`）：
+
+```bash
+set -euo pipefail
+AGENT_URL="https://platform.example.com/platform/api/agent-binaries"
+AGENT_FILE="kq-agent-bun-linux-x64" # ARM64 改为 kq-agent-bun-linux-arm64
+curl -fsS "$AGENT_URL" -o agent-manifest.json
+AGENT_REVISION="$(jq -er .revision agent-manifest.json)"
+curl -fS "$AGENT_URL/$AGENT_FILE?revision=$AGENT_REVISION" -o "$AGENT_FILE"
+jq -er --arg name "$AGENT_FILE" \
+  '.files[] | select(.name == $name) | "\(.sha256)  \(.name)"' \
+  agent-manifest.json | sha256sum --check -
+install -m 0755 "$AGENT_FILE" ./kq-agent
+```
+
+直接访问 Server 时使用 `/api/agent-binaries`。下载期间 Server 若切换提交，
+带 `revision` 的下载返回 409；重新获取清单后重试。源码运行未配置产物时返回 404；
+可通过 Server 的 `AGENT_BINARIES_DIR` 指定产物目录。原始 `manifest.json` 和
+`SHA256SUMS` 也可通过同一下载路径获取。
+
+不经过 HTTP 时，从指定 Server 镜像复制产物（`docker create` 不启动容器）：
+
+```bash
+SERVER_IMAGE="ghcr.io/kuintessence/kuintessence-server:main" # 固定版本时使用部署的 digest
+docker pull "$SERVER_IMAGE"
+AGENT_CONTAINER="$(docker create "$SERVER_IMAGE")"
+mkdir -p ./agent-bundle
+docker cp "$AGENT_CONTAINER:/opt/kuintessence/agent/." ./agent-bundle/
+docker rm "$AGENT_CONTAINER"
+(cd agent-bundle && sha256sum --check SHA256SUMS)
+install -m 0755 ./agent-bundle/kq-agent-bun-linux-x64 ./kq-agent
+```
+
+也可在 GitHub Actions 中手动运行 **Build Agent binary**，选择与 Server 相同的提交，
+下载对应 Linux 架构的产物。
 本地构建时，在仓库根目录执行：
 
 ```bash
 bun install --frozen-lockfile
 bun run --filter @kuintessence/proto generate
-bun build --compile packages/agent/src/index.ts \
-  --outfile kq-agent \
-  --target=bun-linux-x64
+bun scripts/build-agent-bundle.cjs /tmp/kq-agent-bundle "$(git rev-parse HEAD)"
+install -m 0755 /tmp/kq-agent-bundle/kq-agent-bun-linux-x64 ./kq-agent
 ```
 
-ARM64 使用 `--target=bun-linux-arm64`。编译产物自带 Bun 运行时。
+脚本同时编译两种架构；ARM64 安装 `kq-agent-bun-linux-arm64`。为支持跨架构构建，
+打包时排除 ssh2 的可选本机 addon，使用其内置 `node:crypto` 回退实现。
 
 ## 安装与注册
 

@@ -72,6 +72,7 @@ jobs:
           password: ${{ github.token }}
 
       - name: Build and publish
+        id: build
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -84,8 +85,23 @@ jobs:
             org.opencontainers.image.revision=${{ github.sha }}
           build-args: |
             VITE_PREVIEW_LOGIN=false
+            KQ_BUILD_REVISION=${{ github.sha }}
           cache-from: type=gha,scope=production-${{ matrix.component }}
           cache-to: type=gha,mode=max,scope=production-${{ matrix.component }}
+
+      - name: Verify Agent artifacts in the published Server image
+        if: matrix.component == 'server'
+        env:
+          IMAGE_OWNER: ${{ github.repository_owner }}
+          IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
+          REVISION: ${{ github.sha }}
+        run: |
+          image="ghcr.io/${IMAGE_OWNER,,}/kuintessence-server@$IMAGE_DIGEST"
+          container="$(docker create "$image")"
+          trap 'docker rm "$container" >/dev/null' EXIT
+          mkdir -p "$RUNNER_TEMP/agent-bundle"
+          docker cp "$container:/opt/kuintessence/agent/." "$RUNNER_TEMP/agent-bundle/"
+          node scripts/verify-agent-bundle.cjs "$RUNNER_TEMP/agent-bundle" "$REVISION"
 
   deploy-main:
     name: Deploy main via SSH

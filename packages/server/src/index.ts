@@ -69,6 +69,7 @@ import { createAdminSshCredentialRoutes } from "./routes/admin-ssh-credentials";
 import { createAdminSshRecordingRoutes } from "./routes/admin-ssh-recordings";
 import { createAdminSshSessionRoutes } from "./routes/admin-ssh-sessions";
 import { createAdminSsoRoutes } from "./routes/admin-sso";
+import { createAgentBinaryRoutes } from "./routes/agent-binaries";
 import { createAgentRegistrationRoutes } from "./routes/agent-registration";
 import { createAgentSpackMaterialRoutes } from "./routes/agent-spack-materials";
 import { createAgentRoutes } from "./routes/agents";
@@ -532,6 +533,7 @@ app.route("/", createMetricsRoutes({ queueObservability }));
 
 // Public routes
 app.route("/api", healthRoutes);
+app.route("/api", createAgentBinaryRoutes(config.AGENT_BINARIES_DIR));
 if (spackMaterialDelivery) {
   // Dedicated operation credentials, not browser sessions. Never proxy to an external URL.
   app.route("/api", createAgentSpackMaterialRoutes(spackMaterialDelivery));

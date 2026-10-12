@@ -10,6 +10,10 @@ API 路径默认指 Server 内部路径；统一网关下 `/api/*` 通常对应 
 - [Agent 注册与证书](#agent)
 - [SSH vault、会话与录屏](#ssh)
 
+Server 的 `/api/agent-binaries` 及其文件下载接口公开提供同版本 Agent 构建产物，
+仅允许二进制、manifest 与 SHA-256 清单，不含节点配置、注册凭证或证书。
+下载不授予节点连接权限；Agent 仍须完成注册与 mTLS 配置。
+
 生产入口使用 HTTPS，密钥通过受控 Secret 管理。
 token、cookie、私钥、真实主机清单和运行证据不得写入仓库、代理日志和工单。
 

@@ -24,9 +24,18 @@ COPY packages/server ./packages/server
 COPY authz ./authz
 RUN cd packages/proto && bun run generate
 
+FROM oven/bun:1.4.2 AS agent-binaries
+WORKDIR /app
+COPY --from=build /app /app
+COPY packages/agent ./packages/agent
+COPY scripts/build-agent-bundle.cjs ./scripts/build-agent-bundle.cjs
+ARG KQ_BUILD_REVISION=unknown
+RUN bun scripts/build-agent-bundle.cjs /opt/kuintessence/agent "$KQ_BUILD_REVISION"
+
 FROM oven/bun:1.4.2-alpine
 WORKDIR /app
 COPY --from=build /app /app
+COPY --from=agent-binaries /opt/kuintessence/agent /opt/kuintessence/agent
 ENV NODE_ENV=production
 EXPOSE 3000 3001
 CMD ["bun", "packages/server/src/index.ts"]
