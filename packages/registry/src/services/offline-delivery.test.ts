@@ -321,3 +321,55 @@ test("seed and runtime retries preserve a manually changed install binding revis
     f.stage.mockRestore();
   }
 });
+
+test("binding a freshly imported material uses its real publication receipt and a strict inspect query", async () => {
+  const f = await fixture();
+  let bound: SpackMaterialBinding | null = null;
+  const view = () => ({
+    scope: "platform",
+    spec: "hello@1.0",
+    revision: 0,
+    state: "absent" as const,
+    binding: null,
+    history: [],
+    historyTruncated: false,
+  });
+  f.service.options.bindings = {
+    inspect: async (query) => {
+      expect(Object.keys(query).sort()).toEqual(["scope", "spec"]);
+      return view();
+    },
+    change: async (change) => {
+      if (change.action !== "bind") throw new Error("bind expected");
+      bound = change.binding;
+      return { ...view(), state: "enabled", revision: 1, binding: bound };
+    },
+  };
+  try {
+    await f.upload();
+    const plan = {
+      ...f.plan,
+      items: [
+        ...f.plan.items,
+        {
+          id: "bind",
+          kind: "binding",
+          dependsOn: ["material"],
+          change: {
+            action: "bind-imported",
+            materialItem: "material",
+            scope: "platform",
+            spec: "hello@1.0",
+            expectedRevision: 0,
+            reason: "Explicit fixture policy",
+          },
+        },
+      ],
+    };
+    const result = await f.service.run(plan, actor.sub);
+    expect(result.status).toBe("completed");
+    expect(bound).toEqual((result.items[1]?.receipt as { binding: SpackMaterialBinding }).binding);
+  } finally {
+    f.stage.mockRestore();
+  }
+});

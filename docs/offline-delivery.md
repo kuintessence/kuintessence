@@ -44,6 +44,8 @@ seed/
 - `items[]`：最多 200 项，唯一 `id`、显式 `dependsOn`，依赖必须在前。
   `recipe` 包含 repository、精确 commit、file；`material` 包含现有 publish 请求 release；
   `ecosystem` 包含签名 JSON 的 file；`binding` 包含现有 `SpackInstallBindingChange` 的 change；
+  新发布材料的绑定可使用 `change: {action:"bind-imported",materialItem,scope,spec,expectedRevision,reason}`，
+  并显式 dependsOn 该 material 项；执行时取真实发布收据，无需导出端伪造 binding。
   `activate` 包含 stagedItem、expectedActiveReleaseId（首次为 null），且依赖该 stage。
 - 多个 recipe/material 批次通过多项表达。材料必须显式依赖同清单中提供其 snapshot 的 recipe。
   独立生态资产不强制依赖材料；携带签名材料关联时，必须先发布对应材料。

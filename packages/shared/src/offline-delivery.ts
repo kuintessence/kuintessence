@@ -39,7 +39,13 @@ export const OfflineDeliverySchema = z
           z.strictObject({
             ...item,
             kind: z.literal("binding"),
-            change: SpackInstallBindingChangeSchema,
+            change: z.union([
+              SpackInstallBindingChangeSchema,
+              SpackInstallBindingChangeSchema.options[0].omit({ binding: true }).extend({
+                action: z.literal("bind-imported"),
+                materialItem: z.string().min(1).max(64),
+              }),
+            ]),
           }),
           z.strictObject({ ...item, kind: z.literal("ecosystem"), file: SpackMaterialPathSchema }),
           z.strictObject({
@@ -78,6 +84,22 @@ export const OfflineDeliverySchema = z
           !plan.items.some((other) => other.id === entry.stagedItem && other.kind === "ecosystem"))
       )
         ctx.addIssue({ code: "custom", message: "Activation must depend on an ecosystem stage" });
+      if (entry.kind === "binding" && entry.change.action === "bind-imported") {
+        const change = entry.change;
+        const material = plan.items.find(
+          (other) => other.id === change.materialItem && other.kind === "material",
+        );
+        if (
+          !entry.dependsOn.includes(change.materialItem) ||
+          material?.kind !== "material" ||
+          material.release.spec !== change.spec
+        ) {
+          ctx.addIssue({
+            code: "custom",
+            message: "Imported binding must depend on a material item with the exact spec",
+          });
+        }
+      }
       ids.add(entry.id);
     }
   });

@@ -14,6 +14,7 @@ import {
   OfflineDeliverySchema,
   type RecipeRepository,
   SPACK_LOCK_MAX_BYTES,
+  SpackMaterialBindingSchema,
   spackMaterialInputBlobs,
 } from "@kuintessence/shared";
 import { z } from "zod";
@@ -234,7 +235,10 @@ export class OfflineDeliveryService {
           result.code = "LOCK_PREFLIGHT_VALID_STATIC_ONLY";
         } else if (item.kind === "ecosystem") await this.bundle(plan, item.file);
         else if (item.kind === "binding") {
-          const current = await this.options.bindings.inspect(item.change, subject);
+          const current = await this.options.bindings.inspect(
+            { scope: item.change.scope, spec: item.change.spec },
+            subject,
+          );
           const receipt = savedSchema.safeParse(
             await this.options.receipts.read(this.itemKey(plan, item)),
           );
@@ -364,9 +368,22 @@ export class OfflineDeliveryService {
       return { binding, manifest };
     }
     if (item.kind === "binding") {
-      const current = await this.options.bindings.inspect(item.change, actor.sub);
+      const current = await this.options.bindings.inspect(
+        { scope: item.change.scope, spec: item.change.spec },
+        actor.sub,
+      );
       if (current.revision !== item.change.expectedRevision)
         fail("DELIVERY_BINDING_REVISION_CONFLICT", 409);
+      if (item.change.action === "bind-imported") {
+        const { materialItem, ...change } = item.change;
+        const receipt = z
+          .object({ binding: SpackMaterialBindingSchema })
+          .parse(completed.get(materialItem));
+        return this.options.bindings.change(
+          { ...change, action: "bind", binding: receipt.binding },
+          actor.sub,
+        );
+      }
       return this.options.bindings.change(item.change, actor.sub);
     }
     if (item.kind === "ecosystem")
