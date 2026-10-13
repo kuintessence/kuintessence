@@ -31,6 +31,7 @@ const TABLES = [
   "spack_install_binding_events",
   "spack_material_binding_retirements",
   "spack_material_lifecycle_events",
+  "ecosystem_releases",
   "spack_material_visibility_events",
 ] as const;
 const OPERATOR_ID = randomUUID();

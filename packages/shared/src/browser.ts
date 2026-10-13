@@ -3,7 +3,9 @@ export * from "./constants/errors";
 export * from "./constants/job-status";
 export * from "./constants/roles";
 export * from "./dsl-schema";
+export * from "./ecosystem-materials";
 export * from "./netdrive-types";
+export * from "./offline-delivery";
 export * from "./sandbox";
 export * from "./scheduler-types";
 export * from "./schemas/agent";
@@ -34,6 +36,7 @@ export * from "./spack-upstream";
 export * from "./storage-quota";
 export * from "./utils/api-error";
 export * from "./utils/canonical-json";
+export * from "./utils/ecosystem-canonical-json";
 export * as workflowDsl from "./workflow-dsl";
 export {
   extractRunGraph,

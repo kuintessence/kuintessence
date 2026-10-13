@@ -4,6 +4,7 @@ import {
   type SpackMaterialImport,
   SpackMaterialImportSchema,
   SpackMaterialPathSchema,
+  spackMaterialInputBlobs,
 } from "@kuintessence/shared/browser";
 import { publishSpackMaterial, uploadSpackMaterial } from "./spack-materials-client";
 
@@ -129,12 +130,7 @@ export async function runMaterialImport(
     if (!release) throw new MaterialPackError("invalidManifest");
     checkAccess(release.repository);
     const references = [
-      ...new Map(
-        [release.lockfile, ...release.sources.map((source) => source.blob)].map((blob) => [
-          blob.digest,
-          blob,
-        ]),
-      ).values(),
+      ...new Map(spackMaterialInputBlobs(release).map((blob) => [blob.digest, blob])).values(),
     ];
     const progress = { index, verifiedFiles: 0, totalFiles: references.length };
     let publishing = false;

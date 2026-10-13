@@ -275,3 +275,23 @@ describe("loadRegistryConfig", () => {
     ).toBe(true);
   });
 });
+
+test("offline seed is optional and cannot silently race legacy bootstrap or mint a principal", () => {
+  expect(loadRegistryConfig(VALID_BASE).OFFLINE_DELIVERY_SEED).toBeUndefined();
+  const seed = {
+    ...VALID_BASE,
+    BLOB_STORE_DIR: "/data/blobs",
+    SPACK_RECIPE_STORE_DIR: "/data/recipes",
+    SPACK_MATERIAL_STORE_DIR: "/data/materials",
+    OFFLINE_DELIVERY_SEED: "/seed/delivery.json",
+    OFFLINE_DELIVERY_SEED_SUBJECT: "11111111-1111-4111-8111-111111111111",
+  };
+  expect(loadRegistryConfig(seed).OFFLINE_DELIVERY_SEED).toBe("/seed/delivery.json");
+  expect(() => loadRegistryConfig({ ...seed, OFFLINE_DELIVERY_SEED_SUBJECT: "" })).toThrow();
+  expect(() =>
+    loadRegistryConfig({ ...seed, SPACK_RECIPE_BOOTSTRAP_MANIFEST: "/seed/legacy.json" }),
+  ).toThrow();
+  expect(() =>
+    loadRegistryConfig({ ...seed, SPACK_MATERIAL_BOOTSTRAP_MANIFEST: "/seed/legacy.json" }),
+  ).toThrow();
+});

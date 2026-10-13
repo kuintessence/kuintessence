@@ -6,8 +6,10 @@ export * from "./constants/roles";
 export * from "./data-market";
 // Control-flow DSL JSON Schema export.
 export * from "./dsl-schema";
+export * from "./ecosystem-materials";
 // NetDrive shared schemas (PRD F18).
 export * from "./netdrive-types";
+export * from "./offline-delivery";
 export * from "./sandbox";
 // placement-pipeline trace types (preview + post-decision audit).
 export * from "./scheduler-types";
@@ -45,6 +47,7 @@ export * from "./utils/api-error";
 export * from "./utils/canonical-json";
 export * from "./utils/config-schemas";
 export * from "./utils/desensitize";
+export * from "./utils/ecosystem-canonical-json";
 export * from "./utils/load-config";
 export * from "./utils/logger";
 // Control-flow engine core — a pure function over an injected NodeExecutor,

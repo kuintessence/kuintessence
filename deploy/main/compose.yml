@@ -139,19 +139,25 @@ services:
       NODE_ENV: production
       LOG_LEVEL: ${LOG_LEVEL:-info}
       REGISTRY_PORT: "3100"
+      OFFLINE_DELIVERY_SEED: ${OFFLINE_DELIVERY_SEED:-}
+      OFFLINE_DELIVERY_SEED_SUBJECT: ${OFFLINE_DELIVERY_SEED_SUBJECT:-}
       REGISTRY_AUTH_MODE: jwt
       REGISTRY_JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET}
       BLOB_STORE_DIR: /var/lib/kuintessence/registry/blobs
       SPACK_RECIPE_STORE_DIR: /var/lib/kuintessence/registry/recipes
       SPACK_MATERIAL_STORE_DIR: /var/lib/kuintessence/registry/materials
       SPACK_MATERIAL_EPOCH: ${SPACK_MATERIAL_EPOCH:-}
+      SPACK_RECIPE_BOOTSTRAP_MANIFEST: ${SPACK_RECIPE_BOOTSTRAP_MANIFEST:-}
+      SPACK_MATERIAL_BOOTSTRAP_MANIFEST: ${SPACK_MATERIAL_BOOTSTRAP_MANIFEST:-}
+      ECOSYSTEM_RELEASE_TRUSTED_KEYS: "${ECOSYSTEM_RELEASE_TRUSTED_KEYS:-{}}"
     volumes:
       - registry-data:/var/lib/kuintessence/registry
+      - ${KQ_SEED_DIRECTORY:-./seed}:/opt/kq-seed:ro
     depends_on:
       db-migrate:
         condition: service_completed_successfully
     healthcheck:
-      test: ["CMD", "bun", "-e", "fetch('http://127.0.0.1:3100/api/health').then((r)=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      test: ["CMD", "bun", "-e", "fetch('http://127.0.0.1:3100/api/ready').then((r)=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
       interval: 10s
       timeout: 3s
       retries: 10

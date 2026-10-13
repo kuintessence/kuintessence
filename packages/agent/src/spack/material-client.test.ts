@@ -440,3 +440,47 @@ describe("SpackMaterialClient", () => {
     }
   });
 });
+
+test("v2 evidence is downloaded and a corrupt notice is rejected by the Agent cache", async () => {
+  const notice = "license-notice";
+  const attachment = { digest: digest(notice), size: Buffer.byteLength(notice) };
+  const text = JSON.stringify({
+    ...manifest,
+    version: 2,
+    evidence: {
+      version: 1,
+      materials: [
+        {
+          subject: blob,
+          license: { expression: "MIT", status: "pending" },
+          provenance: [{ origin: "fixture", original: blob, evidence: attachment }],
+          attachments: [{ path: "NOTICE", kind: "notice", blob: attachment }],
+        },
+      ],
+    },
+  });
+  const f = await fixture(undefined, text);
+  let corrupt = false;
+  const client = new SpackMaterialClient({
+    serverUrl: "https://server.example",
+    cacheDir: f.cacheDir,
+    fetch: async (url) =>
+      new Response(
+        url.endsWith("/manifest")
+          ? text
+          : url.endsWith(attachment.digest)
+            ? corrupt
+              ? "bad-notice!!!"
+              : notice
+            : body,
+      ),
+  });
+  const prepared = await client.prepare({ ...input, manifestDigest: digest(text) });
+  expect(prepared.blobs).toHaveLength(2);
+  const cached = prepared.blobs.find((entry) => entry.digest === attachment.digest);
+  if (!cached) throw new Error("Notice was not cached");
+  expect(await readFile(cached.path, "utf8")).toBe(notice);
+  await rm(f.cacheDir, { recursive: true, force: true });
+  corrupt = true;
+  await expect(client.prepare({ ...input, manifestDigest: digest(text) })).rejects.toThrow();
+});

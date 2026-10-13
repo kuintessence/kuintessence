@@ -6,6 +6,7 @@ export * from "./pg/schema-metering";
 export * from "./pg/schema-spack-materials";
 export * from "./pg/spack-install-bindings";
 export * from "./pg/spack-material-lifecycle";
+export { assertSpackMaterialReleasesAvailable } from "./pg/spack-material-lifecycle-state";
 export * from "./pg/spack-material-references";
 export * from "./pg/spack-material-rollout";
 export * from "./pg/spack-material-visibility";

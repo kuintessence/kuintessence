@@ -2,7 +2,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, mock, test } from "b
 import { randomBytes, randomUUID } from "node:crypto";
 import { eq, sql } from "drizzle-orm";
 import { createPgDb, type PgDb } from "./index";
-import { agents, softwareOperations, userOrgMemberships, users } from "./schema";
+import { agents, ecosystemReleases, softwareOperations, userOrgMemberships, users } from "./schema";
 import {
   spackMaterialBindingRetirements,
   spackMaterialBindings,
@@ -25,6 +25,7 @@ const TABLES = [
   "spack_install_binding_events",
   "spack_material_binding_retirements",
   "spack_material_lifecycle_events",
+  "ecosystem_releases",
 ];
 const OPERATOR = randomUUID();
 const AGENT = `lifecycle-${randomUUID()}`;
@@ -240,6 +241,22 @@ describe("Spack material lifecycle (isolated real PG)", () => {
     await expectError(lifecycle.inspectCatalog([], OPERATOR, authorize), FORBIDDEN);
     expect(authorize).toHaveBeenCalledTimes(1);
     await expectError(lifecycle.inspectCatalog([], randomUUID(), authorize), FORBIDDEN);
+  });
+
+  test("signed ecosystem history protects referenced material and its attachments from withdrawal", async () => {
+    const { lifecycle } = await ready();
+    const binding = release();
+    await db.insert(ecosystemReleases).values({
+      releaseKey: "material-reference",
+      version: "1",
+      artifactDigest: `sha256:${"b".repeat(64)}`,
+      manifest: { materialRequirements: [{ binding }] },
+      signature: "fixture",
+      signingKeyId: "fixture",
+      importedBy: OPERATOR,
+      status: "inactive",
+    });
+    await expectError(lifecycle.transition(binding, OPERATOR, change(), allow), REFERENCED);
   });
 
   test("catalog bounds, duplicate bindings and mismatched authorization masks fail closed", async () => {

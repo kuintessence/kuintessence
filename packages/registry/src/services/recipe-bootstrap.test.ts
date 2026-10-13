@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -61,7 +62,7 @@ describe("recipe bootstrap", () => {
     expect(result[0]?.status).toBe("imported");
   });
 
-  test("never reimports or overwrites a repository already maintained by operators", async () => {
+  test("skips only an exactly matching bundle without changing active state", async () => {
     const f = await fixture();
     const existing = {
       id: RecipeGitStore.repositoryId("public/builtin"),
@@ -72,7 +73,7 @@ describe("recipe bootstrap", () => {
           commit: "a".repeat(40),
           importedAt: "2026-09-17T00:00:00.000Z",
           importedBy: "operator",
-          bundleSha256: "b".repeat(64),
+          bundleSha256: createHash("sha256").update("fixture bundle bytes").digest("hex"),
           fileCount: 1,
           totalBytes: 1,
           roots: [],

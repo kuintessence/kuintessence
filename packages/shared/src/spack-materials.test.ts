@@ -101,3 +101,35 @@ describe("Spack material release contracts", () => {
     ).toBe(false);
   });
 });
+
+test("v2 evidence preserves pending status, requires every source and retains all evidence blobs", () => {
+  const attachment = { digest: `sha256:${"f".repeat(64)}`, size: 20 };
+  const evidence = {
+    version: 1,
+    materials: [
+      {
+        subject: blob,
+        license: { expression: "LicenseRef-Upstream", status: "pending" },
+        provenance: [{ origin: "original-id", original: blob, evidence: attachment }],
+        attachments: [{ path: "NOTICE", kind: "notice", blob: attachment }],
+      },
+    ],
+  };
+  const value = { ...fixture, version: 2, evidence };
+  const parsed = SpackMaterialPublishSchema.parse(value);
+  expect(parsed.version).toBe(2);
+  expect(SpackMaterialPublishSchema.safeParse({ ...fixture, evidence }).success).toBe(false);
+  expect(
+    SpackMaterialPublishSchema.safeParse({ ...value, evidence: { ...evidence, materials: [] } })
+      .success,
+  ).toBe(false);
+  expect(
+    SpackMaterialPublishSchema.safeParse({ ...value, evidence: { ...evidence, version: 2 } })
+      .success,
+  ).toBe(false);
+  const manifest = SpackMaterialManifestSchema.parse({
+    ...value,
+    recipes: fixture.recipes.map((recipe) => ({ ...recipe, archive: blob })),
+  });
+  expect(spackMaterialBlobs(manifest)).toContainEqual(attachment);
+});

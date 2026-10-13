@@ -10,6 +10,7 @@ import { getSpackMaterial } from "../../lib/spack-materials-client";
 import { toUserFacingError } from "../../lib/user-facing-error";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
+import { MaterialEvidence } from "./MaterialEvidence";
 
 const PAGE_SIZE = 20;
 
@@ -136,6 +137,11 @@ export function MaterialReleaseLookup({
       ) : null}
       {manifest ? (
         <div className="min-w-0 space-y-3" data-testid="material-release-detail">
+          <MaterialEvidence
+            manifest={manifest}
+            binding={{ repositoryId, manifestDigest }}
+            isCurrent={isCurrent}
+          />
           <dl className="grid min-w-0 gap-2 text-xs sm:grid-cols-2">
             {[
               [t("materials.repository"), manifest.repository],

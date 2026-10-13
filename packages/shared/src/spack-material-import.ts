@@ -3,6 +3,7 @@ import {
   SpackMaterialBlobSchema,
   SpackMaterialPathSchema,
   SpackMaterialPublishSchema,
+  spackMaterialInputBlobs,
 } from "./spack-materials";
 
 export const SPACK_MATERIAL_IMPORT_MAX_BYTES = 2 * 1024 ** 2;
@@ -57,7 +58,7 @@ export const SpackMaterialImportSchema = z
         ctx.addIssue({ code: "custom", message: "Duplicate material import release" });
       }
       releases.add(identity);
-      for (const blob of [release.lockfile, ...release.sources.map((source) => source.blob)]) {
+      for (const blob of spackMaterialInputBlobs(release)) {
         if (files.get(blob.digest) !== blob.size) {
           ctx.addIssue({
             code: "custom",

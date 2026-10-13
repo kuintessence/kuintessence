@@ -22,6 +22,7 @@ import { createBuildcacheRoutes } from "./routes/buildcache";
 import { createEcosystemReleaseRoutes } from "./routes/ecosystem-releases";
 import { healthRoutes } from "./routes/health";
 import { createOciRoutes } from "./routes/oci";
+import { createOfflineDeliveryRoutes } from "./routes/offline-deliveries";
 import { createSpackCatalogRoutes } from "./routes/spack-catalog";
 import { createSpackInstallBindingRoutes } from "./routes/spack-install-bindings";
 import { createSpackMaterialRoutes } from "./routes/spack-materials";
@@ -33,6 +34,9 @@ import { AppTemplateService } from "./services/app-template-service";
 import { createBlobStore } from "./services/blob-store";
 import { EcosystemOciReader } from "./services/ecosystem-oci-reader";
 import { EcosystemReleaseService } from "./services/ecosystem-release-service";
+import { OfflineDeliveryService } from "./services/offline-delivery";
+import { PgDeliveryReceipts } from "./services/offline-delivery-receipts";
+import { seedOfflineDelivery } from "./services/offline-delivery-seed";
 import { RecipeGitStore } from "./services/recipe-git-store";
 import { DrizzleAuditPort, RegistryService } from "./services/registry-service";
 import { SoftwareAssetService } from "./services/software-asset-service";
@@ -110,6 +114,27 @@ const ecosystemReleaseService = new EcosystemReleaseService(
   db,
   config.ECOSYSTEM_RELEASE_TRUSTED_KEYS,
   new EcosystemOciReader(registryService),
+  async (requirements) => {
+    if (!materialStore) throw new Error("Material storage is unavailable");
+    for (const entry of requirements) {
+      const { manifest } = await materialStore.getManifest(
+        entry.binding.repositoryId,
+        entry.binding.manifestDigest,
+      );
+      if (
+        !manifest.repository.startsWith("public/") ||
+        manifest.spec !== entry.spec ||
+        manifest.target !== entry.target ||
+        manifest.spackVersion !== entry.spackVersion
+      )
+        throw new Error("Signed material association mismatch");
+      for (const selection of manifest.recipes) {
+        const snapshot = await recipeStore?.getSnapshot(selection.repositoryId, selection.commit);
+        if (!snapshot?.repository.startsWith("public/"))
+          throw new Error("Signed public material references a private recipe");
+      }
+    }
+  },
 );
 const principalOptions = {
   authMode: config.REGISTRY_AUTH_MODE,
@@ -141,6 +166,48 @@ const principalOptions = {
     };
   },
 } as const;
+
+const installBindings =
+  materialStore && recipeStore
+    ? new SpackInstallBindingAccess(
+        new SpackInstallBindings(db, config.SPACK_MATERIAL_EPOCH),
+        materialStore,
+        recipeStore,
+      )
+    : undefined;
+const offlineDelivery =
+  materialStore && recipeStore && installBindings
+    ? new OfflineDeliveryService({
+        recipes: recipeStore,
+        materials: materialStore,
+        bindings: installBindings,
+        ecosystem: ecosystemReleaseService,
+        receipts: new PgDeliveryReceipts(db, createPgDb(config.DATABASE_URL, { max: 1 })),
+        trustedKeys: config.ECOSYSTEM_RELEASE_TRUSTED_KEYS,
+        publisherRoles: config.REGISTRY_PUBLISHER_ROLES,
+        resolvePrincipal: principalOptions.resolveCanonicalPrincipal,
+      })
+    : undefined;
+let deliverySeedStatus: "disabled" | "running" | "completed" | "failed" =
+  config.OFFLINE_DELIVERY_SEED ? "running" : "disabled";
+if (config.OFFLINE_DELIVERY_SEED && config.OFFLINE_DELIVERY_SEED_SUBJECT && offlineDelivery) {
+  seedOfflineDelivery(
+    offlineDelivery,
+    config.OFFLINE_DELIVERY_SEED,
+    config.OFFLINE_DELIVERY_SEED_SUBJECT,
+  )
+    .then((report) => {
+      deliverySeedStatus = report.status === "completed" ? "completed" : "failed";
+      logger.info(
+        { digest: report.digest, status: deliverySeedStatus },
+        "Offline delivery seed finished",
+      );
+    })
+    .catch(() => {
+      deliverySeedStatus = "failed";
+      logger.error("Offline delivery seed failed; inspect input and delivery receipts");
+    });
+}
 
 // Reclaim abandoned upload sessions (client disconnected mid-push). `.unref()`
 // so the interval never keeps the process alive on its own.
@@ -212,6 +279,20 @@ app.onError(createErrorHandler(logger));
 app.notFound(createNotFoundHandler());
 app.use("*", cors());
 
+app.get("/api/ready", (c) =>
+  c.json(
+    { seed: deliverySeedStatus },
+    deliverySeedStatus === "failed" || deliverySeedStatus === "running" ? 503 : 200,
+  ),
+);
+app.route(
+  "/api",
+  createOfflineDeliveryRoutes(
+    offlineDelivery,
+    principalOptions,
+    config.OFFLINE_DELIVERY_SEED_SUBJECT,
+  ),
+);
 app.route("/api", healthRoutes);
 app.route("/api", createAppTemplateRoutes(appTemplateService, principalOptions));
 app.route("/api", createUsecasePackageRoutes(usecasePackageService, principalOptions));
@@ -219,19 +300,7 @@ app.route("/api", createWorkflowTemplateRoutes(workflowTemplateService, principa
 app.route("/api", createSpackCatalogRoutes(spackCatalogService, principalOptions));
 app.route("/api", createSpackRepositoryRoutes(recipeStore, principalOptions));
 app.route("/api", createSpackMaterialRoutes(materialStore, principalOptions));
-app.route(
-  "/api",
-  createSpackInstallBindingRoutes(
-    materialStore && recipeStore
-      ? new SpackInstallBindingAccess(
-          new SpackInstallBindings(db, config.SPACK_MATERIAL_EPOCH),
-          materialStore,
-          recipeStore,
-        )
-      : undefined,
-    principalOptions,
-  ),
-);
+app.route("/api", createSpackInstallBindingRoutes(installBindings, principalOptions));
 app.route("/api", createSpackUpstreamRoutes(upstreamImporter, principalOptions));
 app.route("/api", createEcosystemReleaseRoutes(ecosystemReleaseService, principalOptions));
 

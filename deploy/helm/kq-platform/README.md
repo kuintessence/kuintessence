@@ -452,3 +452,5 @@ kubectl delete pvc -l app.kubernetes.io/instance=kq
 Spack 源码 blob、namespace receipts 和固定 release manifests，不改变旧 OCI blob 路径。
 Server 材料分发需要另外配置专用密钥、固定 release 映射与 mTLS，默认不自动开启；
 配置和当前安装阻断状态见 [Spack 材料交付](../../../docs/spack-material-delivery.md)。
+
+离线交付的完整只读挂载接线目前由 Compose 提供；本 chart 的 `seed.enabled` 仍仅为 minimal/demo 数据库 seed，不启用离线材料导入。Helm 手动接入要求见 [离线交付说明](../../../docs/offline-delivery.md)。
