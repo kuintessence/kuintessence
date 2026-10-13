@@ -324,7 +324,7 @@ test("seed and runtime retries preserve a manually changed install binding revis
 
 test("binding a freshly imported material uses its real publication receipt and a strict inspect query", async () => {
   const f = await fixture();
-  let bound: SpackMaterialBinding | null = null;
+  const bound: SpackMaterialBinding[] = [];
   const view = () => ({
     scope: "platform",
     spec: "hello@1.0",
@@ -341,8 +341,8 @@ test("binding a freshly imported material uses its real publication receipt and 
     },
     change: async (change) => {
       if (change.action !== "bind") throw new Error("bind expected");
-      bound = change.binding;
-      return { ...view(), state: "enabled", revision: 1, binding: bound };
+      bound.push(change.binding);
+      return { ...view(), state: "enabled", revision: 1, binding: change.binding };
     },
   };
   try {
@@ -368,7 +368,9 @@ test("binding a freshly imported material uses its real publication receipt and 
     };
     const result = await f.service.run(plan, actor.sub);
     expect(result.status).toBe("completed");
-    expect(bound).toEqual((result.items[1]?.receipt as { binding: SpackMaterialBinding }).binding);
+    expect(bound).toEqual([
+      (result.items[1]?.receipt as { binding: SpackMaterialBinding }).binding,
+    ]);
   } finally {
     f.stage.mockRestore();
   }
