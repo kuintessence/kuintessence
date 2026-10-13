@@ -1,5 +1,6 @@
 import { createHash, createPublicKey, verify as verifySignature } from "node:crypto";
 import {
+  assertSpackMaterialReleasesAvailable,
   authzOutbox,
   dataAssets,
   dataAssetVersions,
@@ -19,12 +20,15 @@ import {
 import {
   AppError,
   type AuthzProjectionTuple,
+  ecosystemCanonicalJson as canonicalJson,
   DataAccessModeSchema,
   DataAssetKindSchema,
   DataDeliveryPolicySchema,
   DataSensitivitySchema,
   dataAssetPlatformTuple,
   dataAssetPublicAccessTuples,
+  type EcosystemMaterialRequirement,
+  EcosystemMaterialRequirementSchema,
   ErrorCode,
   type LicensePolicy,
   LicensePolicySchema,
@@ -66,6 +70,7 @@ export interface EcosystemManifest {
   profile?: "scientific-ecosystem-v1";
   assets: EcosystemBundleAsset[];
   runtimeReference?: Record<string, unknown>;
+  materialRequirements?: EcosystemMaterialRequirement[];
 }
 
 export interface SignedEcosystemBundle {
@@ -96,9 +101,10 @@ const EcosystemManifestEnvelopeSchema = z.strictObject({
   profile: z.literal("scientific-ecosystem-v1").optional(),
   assets: z.array(EcosystemBundleAssetEnvelopeSchema).min(1),
   runtimeReference: z.record(z.string(), z.unknown()).optional(),
+  materialRequirements: z.array(EcosystemMaterialRequirementSchema).max(200).optional(),
 });
 
-const SignedEcosystemBundleEnvelopeSchema = z.strictObject({
+export const SignedEcosystemBundleEnvelopeSchema = z.strictObject({
   manifest: EcosystemManifestEnvelopeSchema,
   signingKeyId: z.string().min(1).max(255),
   signature: z.string().min(1),
@@ -278,22 +284,7 @@ const OFFICIAL_RUNTIME_CONTRACT = {
   version: "1",
 } as const;
 
-/** Canonical JSON makes signatures independent of transport serialization details. */
-export function canonicalJson(value: unknown): string {
-  if (value === null || typeof value === "boolean" || typeof value === "number") {
-    return JSON.stringify(value);
-  }
-  if (typeof value === "string") return JSON.stringify(value);
-  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
-  if (typeof value === "object") {
-    const record = value as Record<string, unknown>;
-    return `{${Object.keys(record)
-      .sort()
-      .map((key) => `${JSON.stringify(key)}:${canonicalJson(record[key])}`)
-      .join(",")}}`;
-  }
-  throw new AppError(ErrorCode.VALIDATION_ERROR, "Bundle manifest contains a non-JSON value", 422);
-}
+export { ecosystemCanonicalJson as canonicalJson } from "@kuintessence/shared";
 
 export function manifestDigest(manifest: EcosystemManifest): string {
   return `sha256:${createHash("sha256").update(canonicalJson(manifest)).digest("hex")}`;
@@ -482,7 +473,35 @@ export class EcosystemReleaseService {
     private readonly db: PgDb,
     private readonly trustedPublicKeys: Readonly<Record<string, string>>,
     private readonly ociReader?: EcosystemOciReader,
+    private readonly verifyMaterials?: (
+      requirements: EcosystemMaterialRequirement[],
+      actor: string,
+    ) => Promise<void>,
   ) {}
+
+  private async checkMaterials(manifest: EcosystemManifest, actor: string) {
+    const requirements = manifest.materialRequirements;
+    if (!requirements?.length) return;
+    if (
+      !this.verifyMaterials ||
+      requirements.some(
+        (entry) =>
+          !manifest.assets.some((asset) => {
+            if (asset.ecosystemKey !== entry.ecosystemKey || asset.kind !== "spack-package")
+              return false;
+            const payload = SoftwareAssetPayloadSchema.parse(asset.payload);
+            return payload.kind === "spack-package" && payload.spack.defaultSpec === entry.spec;
+          }),
+      )
+    ) {
+      throw new AppError(
+        ErrorCode.VALIDATION_ERROR,
+        "Unsupported or invalid signed material association",
+        422,
+      );
+    }
+    await this.verifyMaterials(requirements, actor);
+  }
 
   async stageFromOci(reference: EcosystemOciReference, actor: string) {
     if (!this.ociReader) {
@@ -497,6 +516,7 @@ export class EcosystemReleaseService {
     const resolvedArtifactDigest = artifactDigest ?? manifestDigest(bundle.manifest);
     verifyEcosystemBundle(bundle, this.trustedPublicKeys);
     const validatedAssets = validateEcosystemManifest(bundle.manifest);
+    await this.checkMaterials(bundle.manifest, actor);
     const usecaseSpecDigests = new Map<string, string>();
     for (const asset of validatedAssets) {
       if (asset.payload.kind === "usecase") {
@@ -513,6 +533,15 @@ export class EcosystemReleaseService {
       await tx.execute(
         sql`SELECT pg_advisory_xact_lock(hashtextextended(${`ecosystem-release-stage:${bundle.manifest.releaseKey}`}, 0))`,
       );
+      if (bundle.manifest.materialRequirements?.length) {
+        await tx.execute(
+          sql`select pg_advisory_xact_lock(hashtext('kuintessence:spack-material-lifecycle'))`,
+        );
+        await assertSpackMaterialReleasesAvailable(
+          tx,
+          bundle.manifest.materialRequirements.map((entry) => entry.binding),
+        );
+      }
       await lockDataProductIdentities(tx, bundle.manifest.assets);
       const [existing] = await tx
         .select()
@@ -598,7 +627,7 @@ export class EcosystemReleaseService {
     });
   }
 
-  async activate(releaseId: string, actor: string) {
+  async activate(releaseId: string, actor: string, expectedActiveReleaseId?: string | null) {
     return this.db.transaction(async (tx) => {
       await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext('ecosystem-release-activation'))`);
       const [release] = await tx
@@ -607,6 +636,36 @@ export class EcosystemReleaseService {
         .where(eq(ecosystemReleases.id, releaseId))
         .limit(1);
       if (!release) throw new AppError(ErrorCode.NOT_FOUND, "Ecosystem release not found", 404);
+      if (expectedActiveReleaseId !== undefined) {
+        const [active] = await tx
+          .select({ id: ecosystemReleases.id })
+          .from(ecosystemReleases)
+          .where(
+            and(
+              eq(ecosystemReleases.releaseKey, release.releaseKey),
+              eq(ecosystemReleases.status, "active"),
+            ),
+          )
+          .limit(1);
+        if (active?.id === release.id) return release;
+        if ((active?.id ?? null) !== expectedActiveReleaseId || release.status === "inactive") {
+          throw new AppError(
+            ErrorCode.VALIDATION_ERROR,
+            "Active release changed; explicitly review activation",
+            409,
+          );
+        }
+      }
+      const requirements = (release.manifest as unknown as EcosystemManifest).materialRequirements;
+      if (requirements?.length) {
+        await tx.execute(
+          sql`select pg_advisory_xact_lock(hashtext('kuintessence:spack-material-lifecycle'))`,
+        );
+        await assertSpackMaterialReleasesAvailable(
+          tx,
+          requirements.map((entry) => entry.binding),
+        );
+      }
       if (release.status === "failed") {
         throw new AppError(ErrorCode.VALIDATION_ERROR, "Failed releases cannot be activated", 422);
       }

@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "purpose": "canonical serialization and signature only; not an importable ecosystem",
+  "value": {
+    "schemaVersion": 1,
+    "releaseKey": "signature-vector",
+    "version": "1",
+    "provenance": {
+      "": "后",
+      "𐀀": "前",
+      "text": "中文\nquote:\"",
+      "negativeZero": 0,
+      "integer": 42
+    },
+    "assets": []
+  },
+  "canonical": "{\"assets\":[],\"provenance\":{\"integer\":42,\"negativeZero\":0,\"text\":\"中文\\nquote:\\\"\",\"𐀀\":\"前\",\"\":\"后\"},\"releaseKey\":\"signature-vector\",\"schemaVersion\":1,\"version\":\"1\"}",
+  "utf8Hex": "7b22617373657473223a5b5d2c2270726f76656e616e6365223a7b22696e7465676572223a34322c226e656761746976655a65726f223a302c2274657874223a22e4b8ade696875c6e71756f74653a5c22222c22f0908080223a22e5898d222c22ee8080223a22e5908e227d2c2272656c656173654b6579223a227369676e61747572652d766563746f72222c22736368656d6156657273696f6e223a312c2276657273696f6e223a2231227d",
+  "publicKeySpki": "MCowBQYDK2VwAyEA11qYAYKxCrfVS/7TyWQHOg7hcvPapiMlrwIaaPcHURo=",
+  "signature": "aSp+9P0+63ffdd8K4wUyMS/XyAp8H/iZ+1hfQHrn/N2OycrBpc5zdDGVquZyAT+ztQxpASa3Vb+DOCQj71viAg=="
+}

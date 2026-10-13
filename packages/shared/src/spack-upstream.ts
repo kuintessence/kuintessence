@@ -4,6 +4,7 @@ import {
   SpackMaterialBlobSchema,
   SpackMaterialDigestSchema,
   SpackMaterialPublishSchema,
+  spackMaterialInputBlobs,
 } from "./spack-materials";
 import { RecipeRepositoryNameSchema, RecipeRepositorySchema } from "./spack-repositories";
 
@@ -81,7 +82,7 @@ export const SpackUpstreamImportSchema = z
       ctx.addIssue({ code: "custom", message: "Upstream import exceeds 512 GiB" });
     }
     const referenced = new Set<string>();
-    for (const blob of [value.release.lockfile, ...value.release.sources.map((s) => s.blob)]) {
+    for (const blob of spackMaterialInputBlobs(value.release)) {
       if (files.get(blob.digest) !== blob.size) {
         ctx.addIssue({ code: "custom", message: "Missing or inconsistent upstream file binding" });
       }

@@ -28,6 +28,7 @@ import {
   type SpackMaterialPublish,
   SpackMaterialPublishSchema,
   spackMaterialBlobs,
+  spackMaterialInputBlobs,
 } from "@kuintessence/shared";
 import { z } from "zod";
 import { checkNamespaceAccess, parseNamespace, type RbacPrincipal } from "./namespace";
@@ -268,6 +269,13 @@ export class SpackMaterialStore {
     return blob;
   }
 
+  async getUploadedBlob(repository: string, blob: SpackMaterialBlob) {
+    await this.assertRuntime();
+    const parsed = SpackMaterialBlobSchema.parse(blob);
+    await this.requireReceipt(SpackMaterialStore.repositoryId(repository), parsed);
+    return this.blobs.get(parsed.digest, parsed.size);
+  }
+
   async publish(
     input: SpackMaterialPublish,
     actor: RbacPrincipal,
@@ -346,7 +354,7 @@ export class SpackMaterialStore {
     assertReadable(actor, request.repository);
     const repositoryId = SpackMaterialStore.repositoryId(request.repository);
     const references = new Map<string, SpackMaterialBlob>();
-    for (const blob of [request.lockfile, ...request.sources.map((source) => source.blob)]) {
+    for (const blob of spackMaterialInputBlobs(request)) {
       references.set(blob.digest, blob);
     }
     for (const blob of references.values()) {

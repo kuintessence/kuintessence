@@ -1,10 +1,12 @@
+import { createHash } from "node:crypto";
 import { readFile, stat } from "node:fs/promises";
 import { dirname, isAbsolute, resolve } from "node:path";
 import { RecipeBootstrapManifestSchema } from "@kuintessence/shared";
 import { RecipeStoreError } from "./recipe-git";
 import { RecipeGitStore } from "./recipe-git-store";
 
-type BootstrapStore = Pick<RecipeGitStore, "get" | "importBundle">;
+type BootstrapStore = Pick<RecipeGitStore, "get" | "importBundle"> &
+  Partial<Pick<RecipeGitStore, "limits">>;
 
 export interface RecipeBootstrapResult {
   repository: string;
@@ -35,17 +37,21 @@ export async function bootstrapRecipeRepositories(
   });
   const results: RecipeBootstrapResult[] = [];
   for (const entry of entries) {
+    const bundleStat = await stat(entry.bundlePath);
+    if (!bundleStat.isFile() || bundleStat.size > (store.limits?.maxBundleBytes ?? 128 * 1024 ** 2))
+      throw new Error("Invalid recipe bootstrap bundle size");
+    const hash = createHash("sha256");
+    for await (const chunk of Bun.file(entry.bundlePath).stream()) hash.update(chunk);
+    const digest = hash.digest("hex");
     try {
       const existing = await store.get(RecipeGitStore.repositoryId(entry.repository));
-      if (existing.snapshots.length > 0) {
+      if (existing.snapshots.some((snapshot) => snapshot.bundleSha256 === digest)) {
         results.push({ repository: entry.repository, status: "skipped-existing" });
         continue;
       }
     } catch (error) {
       if (!(error instanceof RecipeStoreError) || error.status !== 404) throw error;
     }
-    const bundleStat = await stat(entry.bundlePath);
-    if (!bundleStat.isFile()) throw new Error("Recipe bootstrap bundle must be a regular file");
     await store.importBundle(
       entry.repository,
       Bun.file(entry.bundlePath).stream(),

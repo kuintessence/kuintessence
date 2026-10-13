@@ -3,6 +3,7 @@ import {
   SPACK_MATERIAL_IMPORT_MAX_BYTES,
   type SpackMaterialBinding,
   SpackMaterialImportSchema,
+  spackMaterialInputBlobs,
 } from "@kuintessence/shared";
 import {
   inspectMaterialImportFile,
@@ -56,7 +57,7 @@ export async function bootstrapSpackMaterials(
     signal.throwIfAborted();
     const identity = { repository: release.repository, spec: release.spec, target: release.target };
     try {
-      const references = [release.lockfile, ...release.sources.map((source) => source.blob)];
+      const references = spackMaterialInputBlobs(release);
       for (const blob of references) {
         signal.throwIfAborted();
         const key = `${release.repository}:${blob.digest}`;

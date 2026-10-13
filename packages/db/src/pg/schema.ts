@@ -701,6 +701,11 @@ export const auditLog = pgTable(
   },
   (t) => ({
     actorCreatedIdx: index("audit_log_actor_created_idx").on(t.actor, t.createdAt),
+    actionTargetCreatedIdx: index("audit_log_action_target_created_idx").on(
+      t.action,
+      t.target,
+      t.createdAt,
+    ),
     orgCreatedIdx: index("audit_log_org_created_idx").on(t.orgId, t.createdAt),
   }),
 );

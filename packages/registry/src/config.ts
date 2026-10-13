@@ -49,6 +49,11 @@ const RegistryConfigSchema = z
     /** Filesystem directory for the artifact blob store. When unset, an
      *  in-memory store is used (dev/test). */
     BLOB_STORE_DIR: z.string().optional(),
+    OFFLINE_DELIVERY_SEED: optionalAbsolutePath,
+    OFFLINE_DELIVERY_SEED_SUBJECT: z.preprocess(
+      (v) => (v === "" ? undefined : v),
+      z.string().uuid().optional(),
+    ),
     SPACK_RECIPE_STORE_DIR: optionalAbsolutePath,
     SPACK_RECIPE_BOOTSTRAP_MANIFEST: optionalAbsolutePath,
     SPACK_RECIPE_MAX_BUNDLE_BYTES: positiveInt(128 * 1024 * 1024),
@@ -95,6 +100,23 @@ const RegistryConfigSchema = z
       .transform((value) => value === "true"),
   })
   .superRefine((cfg, ctx) => {
+    if (cfg.OFFLINE_DELIVERY_SEED) {
+      if (!cfg.OFFLINE_DELIVERY_SEED_SUBJECT || !cfg.SPACK_MATERIAL_STORE_DIR)
+        ctx.addIssue({
+          code: "custom",
+          message: "Offline seed requires an existing canonical subject and material storage",
+        });
+      if (
+        cfg.SPACK_RECIPE_BOOTSTRAP_MANIFEST ||
+        cfg.SPACK_MATERIAL_BOOTSTRAP_MANIFEST ||
+        cfg.ECOSYSTEM_RELEASE_OCI_REPOSITORY
+      )
+        ctx.addIssue({
+          code: "custom",
+          message:
+            "Offline seed cannot run concurrently with legacy bootstrap; include all inputs in one delivery",
+        });
+    }
     if (cfg.SPACK_UPSTREAM_ENABLED) {
       for (const key of ["SPACK_UPSTREAM_PROXY_URL", "SPACK_RECIPE_STORE_DIR"] as const) {
         if (!cfg[key]) {

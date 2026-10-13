@@ -484,6 +484,13 @@
       "when": 1790751066794,
       "tag": "0068_conscious_leech",
       "breakpoints": true
+    },
+    {
+      "idx": 69,
+      "version": "7",
+      "when": 1791856980489,
+      "tag": "0069_right_mentor",
+      "breakpoints": true
     }
   ]
 }

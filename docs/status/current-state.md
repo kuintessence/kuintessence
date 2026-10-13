@@ -342,3 +342,7 @@ Server 内置 Agent 的构建校验随相关 PR 和生产镜像发布自动执�
 不再托管 runner 限时预览或 main 预览。具体入口见 [GitHub Actions](../deployment.md#actions)。
 手动完整 CI 使用 `test:unit` 的临时数据库和逐文件进程隔离，再单独执行
 `test:integration`，避免跨测试文件累积数据库连接；不复用业务数据库。
+
+## 离线交付与启动 seed
+
+已支持共享合同的运行时导入和 Compose 只读启动 seed、逐项持久化收据、material v2 许可证/来源附件与签名生态材料关联。详见 [离线交付说明](../offline-delivery.md)。真实 samtools@1.23.1 离线安装与作业验收尚未执行，需材料端及获授权隔离站点补齐。

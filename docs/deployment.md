@@ -594,3 +594,5 @@ K3s graceful shutdown 后只清理无进程的特定空 cgroup；不要为释放
 `deploy/schedulers/` 下保留识别、Job、workflow、file-transfer、Spack 与重启验证脚本。
 它们可能提交作业、安装软件、更新授权或重启服务，不属于静态检查。
 仅在明确授权后于隔离环境运行，并记录目标环境的验证结果。
+
+离线 recipe/material/生态交付与 main Compose 启动 seed：参见 [离线交付说明](offline-delivery.md)，包括 readiness 屏障、服务身份、签名、公钥及失败重试。

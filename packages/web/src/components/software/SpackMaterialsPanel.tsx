@@ -19,6 +19,7 @@ import {
 import { MaterialManagementEditors } from "./MaterialManagementEditors";
 import { MaterialPackImport } from "./MaterialPackImport";
 import { MaterialReleaseLookup } from "./MaterialReleaseLookup";
+import { OfflineDeliveryImport } from "./OfflineDeliveryImport";
 import { SpackInstallBindingEditor } from "./SpackInstallBindingEditor";
 import { SpackOnlineImport } from "./SpackOnlineImport";
 
@@ -185,6 +186,7 @@ function MaterialSession({
           inspectionDisabled={selectionLocked}
         />
       ) : null}
+      {canImport && <OfflineDeliveryImport isCurrent={isCurrent} canWriteRepository={writable} />}
       {canImport ? (
         <MaterialPackImport
           canWriteRepository={writable}

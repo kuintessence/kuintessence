@@ -1,6 +1,6 @@
 import { and, desc, eq, isNull, sql } from "drizzle-orm";
 import type { PgDb } from "./index";
-import { softwareOperations } from "./schema";
+import { ecosystemReleases, softwareOperations } from "./schema";
 import {
   spackMaterialBindingRetirements,
   spackMaterialBindings,
@@ -222,7 +222,14 @@ async function requireUnreferenced(tx: Transaction, binding: SpackMaterialRefere
       ),
     )
     .limit(1);
-  if (configured || active) {
+  const [ecosystem] = await tx
+    .select({ id: ecosystemReleases.id })
+    .from(ecosystemReleases)
+    .where(
+      sql`${ecosystemReleases.manifest}->'materialRequirements' @> ${JSON.stringify([{ binding }])}::jsonb`,
+    )
+    .limit(1);
+  if (configured || active || ecosystem) {
     throw new SpackMaterialLifecycleError("MATERIAL_RELEASE_REFERENCED");
   }
 }

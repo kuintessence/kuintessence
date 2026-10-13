@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "inputArtifactType": "application/vnd.kq.forge.bundle.v1",
+  "inputSchemaVersion": "2.0.0",
+  "status": "source-candidate",
+  "installable": false,
+  "missing": [
+    { "code": "RECIPE_SNAPSHOT_SELECTION", "required": "Choose a complete base Git snapshot and merge recipe updates with all patch/module files" },
+    { "code": "NATIVE_LOCK", "required": "Real single-root samtools@1.23.1 lock matching exact spec, target, Spack version and recipe commit/roots" },
+    { "code": "TARGET_PROFILE", "required": "Ubuntu 24.04/x86_64, verified compiler/externals, site profile, pinned Apptainer/SIF/solver digests" },
+    { "code": "SOURCE_COVERAGE", "required": "All dependency sources, patches, resources and bootstrap inputs; samtools source sha256 32266198a4bc6a6df395d8526688c9697d9c8e472f888c749fdde2e08ea88dd2" },
+    { "code": "MATERIAL_EVIDENCE", "required": "Original license expression/status, provenance and actual notification/association bytes" },
+    { "code": "SIGNED_CATALOG", "required": "Ed25519 signed ecosystem manifest; real usecase spec digests and workflow definitions when provided" },
+    { "code": "ISOLATED_ACCEPTANCE_ENVIRONMENT", "required": "Explicitly authorized isolated supported host-spawner Agent and empty installation store; no public network" }
+  ],
+  "acceptance": {
+    "nativeSolve": "not-run",
+    "offlineInstallation": "not-run",
+    "samtoolsJob": "not-run",
+    "missingSourceNegativeTest": "not-run"
+  }
+}
