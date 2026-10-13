@@ -136,7 +136,7 @@ HTTP 200 仅表示返回了报告，必须检查报告状态和逐项结果。
 生态 manifest 的可选 `materialRequirements[]`：
 `{ecosystemKey,binding:{repositoryId,manifestDigest},spec,target,spackVersion}`。
 这些字段参与 Ed25519 签名，Registry stage 时实际核验 public 材料与 public recipe、
-精确 spec/target/Spack。签名只认证声明的关联，不能认证未关联的独立源码。
+精确 spec/target/Spack，并以真实导入者身份执行材料 visibility 与 recipe 授权。签名只认证声明的关联，不能认证未关联的独立源码。
 被生态清单引用的材料受生命周期引用保护；包括 inactive 历史版本，避免破坏 rollback。
 真正的站点安装映射仍通过现有精确 spec、材料 target 与 revision 控制，不把站点 UUID 写入通用包。
 生态 active 与材料可安装、站点可运行是独立状态。

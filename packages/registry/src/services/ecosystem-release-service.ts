@@ -475,10 +475,11 @@ export class EcosystemReleaseService {
     private readonly ociReader?: EcosystemOciReader,
     private readonly verifyMaterials?: (
       requirements: EcosystemMaterialRequirement[],
+      actor: string,
     ) => Promise<void>,
   ) {}
 
-  private async checkMaterials(manifest: EcosystemManifest) {
+  private async checkMaterials(manifest: EcosystemManifest, actor: string) {
     const requirements = manifest.materialRequirements;
     if (!requirements?.length) return;
     if (
@@ -499,7 +500,7 @@ export class EcosystemReleaseService {
         422,
       );
     }
-    await this.verifyMaterials(requirements);
+    await this.verifyMaterials(requirements, actor);
   }
 
   async stageFromOci(reference: EcosystemOciReference, actor: string) {
@@ -515,7 +516,7 @@ export class EcosystemReleaseService {
     const resolvedArtifactDigest = artifactDigest ?? manifestDigest(bundle.manifest);
     verifyEcosystemBundle(bundle, this.trustedPublicKeys);
     const validatedAssets = validateEcosystemManifest(bundle.manifest);
-    await this.checkMaterials(bundle.manifest);
+    await this.checkMaterials(bundle.manifest, actor);
     const usecaseSpecDigests = new Map<string, string>();
     for (const asset of validatedAssets) {
       if (asset.payload.kind === "usecase") {

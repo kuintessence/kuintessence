@@ -7,7 +7,7 @@ import {
   userOrgMemberships,
   users,
 } from "@kuintessence/db";
-import { createLogger, RegistryRoleSchema } from "@kuintessence/shared";
+import { AppError, createLogger, ErrorCode, RegistryRoleSchema } from "@kuintessence/shared";
 import { eq } from "drizzle-orm";
 import { Hono } from "hono";
 import { cors } from "hono/cors";
@@ -114,7 +114,14 @@ const ecosystemReleaseService = new EcosystemReleaseService(
   db,
   config.ECOSYSTEM_RELEASE_TRUSTED_KEYS,
   new EcosystemOciReader(registryService),
-  async (requirements) => {
+  async (requirements, subject) => {
+    const principal = await principalOptions.resolveCanonicalPrincipal(subject);
+    if (!principal || principal.suspended)
+      throw new AppError(
+        ErrorCode.FORBIDDEN,
+        "An active canonical principal is required for material associations",
+        403,
+      );
     if (!materialStore) throw new Error("Material storage is unavailable");
     for (const entry of requirements) {
       const { manifest } = await materialStore.getManifest(
@@ -128,11 +135,7 @@ const ecosystemReleaseService = new EcosystemReleaseService(
         manifest.spackVersion !== entry.spackVersion
       )
         throw new Error("Signed material association mismatch");
-      for (const selection of manifest.recipes) {
-        const snapshot = await recipeStore?.getSnapshot(selection.repositoryId, selection.commit);
-        if (!snapshot?.repository.startsWith("public/"))
-          throw new Error("Signed public material references a private recipe");
-      }
+      await materialStore.authorizeManifest(manifest, principal, undefined, entry.binding);
     }
   },
 );
