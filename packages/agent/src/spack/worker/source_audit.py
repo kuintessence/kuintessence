@@ -140,9 +140,11 @@ def verify_runtime_boundary(input_dir: Path, *, memory_limit: int = 2147483648) 
 
 
 def validate_manifest(manifest: dict) -> dict:
-    require(set(manifest) == {"version", "repository", "spec", "spackVersion", "target",
-                              "redistribution", "recipes", "sources", "lockfile"})
-    require(type(manifest["version"]) is int and manifest["version"] == 1)
+    version = manifest.get("version")
+    require(type(version) is int and version in (1, 2))
+    fields = {"version", "repository", "spec", "spackVersion", "target",
+              "redistribution", "recipes", "sources", "lockfile"}
+    require(set(manifest) == (fields | {"evidence"} if version == 2 else fields))
     require(manifest["spackVersion"] == "1.0.0" and manifest["redistribution"] == "unrestricted")
     for field, limit in (("spec", 4096), ("target", 256), ("repository", 400)):
         require(isinstance(manifest[field], str) and 0 < len(manifest[field]) <= limit)
@@ -179,6 +181,43 @@ def validate_manifest(manifest: dict) -> dict:
             relative(root, allow_root=True)
         require(len(set(roots)) == len(roots))
         blob(recipe["archive"], TAR_BYTES)
+    if version == 2:
+        evidence = manifest["evidence"]
+        require(isinstance(evidence, dict) and set(evidence) == {"version", "materials"})
+        require(type(evidence["version"]) is int and evidence["version"] == 1)
+        materials = evidence["materials"]
+        require(isinstance(materials, list) and 1 <= len(materials) <= 10_000)
+        sources = {source["blob"]["digest"]: source["blob"] for source in manifest["sources"]}
+        seen = set()
+        for material in materials:
+            require(isinstance(material, dict) and
+                    set(material) == {"subject", "license", "provenance", "attachments"})
+            subject = material["subject"]
+            blob(subject)
+            require(sources.get(subject["digest"]) == subject and subject["digest"] not in seen)
+            seen.add(subject["digest"])
+            license = material["license"]
+            require(isinstance(license, dict) and set(license) == {"expression", "status"})
+            require(isinstance(license["expression"], str) and 0 < len(license["expression"]) <= 4096)
+            require(license["status"] in ("pending", "approved", "rejected", "unknown"))
+            provenance = material["provenance"]
+            require(isinstance(provenance, list) and 1 <= len(provenance) <= 100)
+            for entry in provenance:
+                require(isinstance(entry, dict) and set(entry) == {"origin", "original", "evidence"})
+                require(isinstance(entry["origin"], str) and 0 < len(entry["origin"]) <= 4096)
+                blob(entry["original"])
+                blob(entry["evidence"])
+            attachments = material["attachments"]
+            require(isinstance(attachments, list) and 1 <= len(attachments) <= 100)
+            attachment_paths = set()
+            for entry in attachments:
+                require(isinstance(entry, dict) and set(entry) == {"path", "kind", "blob"})
+                path = relative(entry["path"])
+                require(path not in attachment_paths)
+                attachment_paths.add(path)
+                require(entry["kind"] in ("license", "notice", "provenance", "conversion"))
+                blob(entry["blob"])
+        require(seen == set(sources))
     require(sum(ref["size"] for ref in refs.values()) <= 512 * 1024 ** 3)
     return refs
 

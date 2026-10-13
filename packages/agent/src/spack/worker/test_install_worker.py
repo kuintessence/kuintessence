@@ -237,6 +237,7 @@ class InstallTests(unittest.TestCase):
 
     blob = fixtures.AuditTests.blob
     save = fixtures.AuditTests.save
+    add_evidence = fixtures.AuditTests.add_evidence
 
     def save_request(self):
         profile_bytes = json.dumps(self.profile, indent=2).encode()
@@ -711,6 +712,43 @@ class InstallTests(unittest.TestCase):
         self.assertEqual(external["extra_attributes"]["compilers"]["c"], str(self.compiler))
         self.assertEqual((self.work / "env/spack.lock").read_bytes(),
                          (self.input / "blobs" / self.manifest["lockfile"]["digest"][7:]).read_bytes())
+
+    def test_v2_install_verify_and_load_preserve_manifest_binding(self):
+        self.add_evidence()
+        expected = self.save()
+        original = (self.input / "manifest.json").read_bytes()
+        for action in ("install", "verify", "load"):
+            with self.subTest(action=action):
+                result = self.run_worker(action)
+                self.assertEqual(result["action"], action)
+                self.assertEqual(result["manifestDigest"], expected)
+                self.assertEqual(result["prefix"], str(self.store / "hello"))
+                self.assertEqual("loadShell" in result, action == "load")
+                self.assertEqual((self.input / "manifest.json").read_bytes(), original)
+                self.assertEqual(("installer",) in self.native.calls, action == "install")
+                self.work = self.base / ("work-v2-" + action)
+                self.work.mkdir(mode=0o700)
+                self.native = Native(self.work, self.lock, self.store)
+
+    def test_v2_evidence_failure_blocks_all_actions_before_recipes(self):
+        self.add_evidence()
+        material = self.manifest["evidence"]["materials"][0]
+        for action in ("install", "verify", "load"):
+            for ref in (material["provenance"][0]["original"], material["provenance"][0]["evidence"],
+                        material["attachments"][0]["blob"]):
+                path = self.input / "blobs" / ref["digest"][7:]
+                original = path.read_bytes()
+                for failure in ("missing", "corrupt"):
+                    with self.subTest(action=action, digest=ref["digest"], failure=failure):
+                        if failure == "missing":
+                            path.unlink()
+                        else:
+                            path.write_bytes(b"x" * len(original))
+                        with self.assertRaises(audit.AuditError):
+                            self.run_worker(action)
+                        self.assert_no_recipes()
+                        self.assertEqual(self.native.calls, [])
+                        path.write_bytes(original)
 
     def test_audit_failure_prevents_solver_and_install(self):
         self.native.check_error = True

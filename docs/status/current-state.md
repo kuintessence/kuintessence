@@ -132,6 +132,9 @@ Server-only Agent 材料下载，以及 CP 安装/库存/策略操作已有实�
   依赖不独立管理，卸载清理整个事务 store；root-only 不指系统 root 身份。
   shared storage、compute ABI、quota、recipe trust 均需运维人工声明，不等于自动验证。
   Python install worker 已实现并通过模拟 native API 的 fixture 测试。
+  source audit 与 install/verify/load 的共享 Python 校验器已兼容 material v2，
+  严格校验证据关联及全部附件字节，保留 v1 与原始 manifest 摘要；
+  v2 正常路径及证据缺失/篡改拒绝已通过离线 fixture，尚待部署后的真实 v2 安装验收。
   提交 `c4987cf` 的 GitHub Actions 已通过真实 Linux/Spack/Apptainer/SIF
   GNU Hello 受管安装闭环：runtime 隔离、source audit、build、独立 readonly verify、
   `ready`、load、Slurm 作业、源码缺失/篡改后的库存撤回与显式恢复、

@@ -98,6 +98,11 @@ Registry 发布前重验全部 blob 的摘要与大小；附件进入不可变 m
 读取授权、withdraw 生命周期、Agent cache 下载/摘要校验和容量统计与核心材料共用。
 材料 blob 存储与 OCI GC 隔离，目前不提供材料物理 GC；未来清理必须使用完整引用集合
 `spackMaterialBlobs`，不得仅遍历 sources。旧读取端的 strict version/schema 会拒绝 v2。
+Agent Python source audit 与 managed install/verify/load 共用的校验器支持 v1/v2：
+v2 严格检查源码与证据的一一关联，并在加载 recipe 前校验 original/evidence/attachment
+全部引用的大小与 SHA-256；证据缺失或篡改会拒绝执行。保留原始 manifest 摘要及许可证状态，
+不会降级为 v1。此兼容性已由模拟 native API 的离线 fixture 覆盖，仍需部署修复版 Agent
+后完成真实 v2 安装及作业验收。
 Web 材料详情展示逐材料 license/provenance，可下载并校验附件（浏览器下载上限 32 MiB）；
 较大附件用带鉴权的 blob API 流式保存。
 

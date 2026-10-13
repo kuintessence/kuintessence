@@ -233,6 +233,21 @@ class AuditTests(unittest.TestCase):
         (self.input / "manifest.json").write_bytes(data)
         return digest(data)
 
+    def add_evidence(self):
+        self.manifest["version"] = 2
+        sources = {source["blob"]["digest"]: source["blob"] for source in self.manifest["sources"]}
+        self.manifest["evidence"] = {"version": 1, "materials": [
+            {
+                "subject": dict(source),
+                "license": {"expression": "MIT", "status": "pending"},
+                "provenance": [{"origin": "https://example.org/source",
+                                "original": self.blob(b"original source"),
+                                "evidence": self.blob(b"provenance evidence")}],
+                "attachments": [{"path": "LICENSE", "kind": "license",
+                                 "blob": self.blob(b"license attachment")}],
+            } for source in sources.values()
+        ]}
+
     def run_audit(self, native=None):
         expected = self.save()
         native = native or Native(self.work, self.lock)
@@ -242,6 +257,99 @@ class AuditTests(unittest.TestCase):
 
     def codes(self, report):
         return {issue["code"] for issue in report["issues"]}
+
+    def test_v2_audit_preserves_evidence_and_accepts_source_aliases(self):
+        self.manifest["sources"].append({"path": "alias.tar", "blob": self.manifest["sources"][0]["blob"]})
+        self.add_evidence()
+        materials = self.manifest["evidence"]["materials"]
+        for material, status in zip(materials, ("pending", "unknown", "rejected")):
+            material["license"]["status"] = status
+        expected = self.save()
+        original = (self.input / "manifest.json").read_bytes()
+        report, _ = self.run_audit()
+        self.assertTrue(report["passed"])
+        self.assertEqual(report["manifestDigest"], expected)
+        self.assertEqual((self.input / "manifest.json").read_bytes(), original)
+        refs = audit.validate_manifest(self.manifest)
+        self.assertEqual(len(materials), 3)
+        for material in materials:
+            for ref in (material["provenance"][0]["original"], material["provenance"][0]["evidence"],
+                        material["attachments"][0]["blob"]):
+                self.assertEqual(refs[ref["digest"]], ref)
+
+    def test_v2_rejects_invalid_evidence_contract(self):
+        self.add_evidence()
+        self.save()
+        original = copy.deepcopy(self.manifest)
+        mutations = [
+            ("unknown version", lambda m, e, s: m.update(version=3)),
+            ("boolean version", lambda m, e, s: m.update(version=True)),
+            ("v1 with evidence", lambda m, e, s: m.update(version=1)),
+            ("missing evidence", lambda m, e, s: m.pop("evidence")),
+            ("extra evidence field", lambda m, e, s: e.update(extra=True)),
+            ("boolean evidence version", lambda m, e, s: e.update(version=True)),
+            ("missing subject", lambda m, e, s: e["materials"].pop()),
+            ("duplicate subject", lambda m, e, s: e["materials"].append(s)),
+            ("extra material field", lambda m, e, s: s.update(extra=True)),
+            ("unrelated subject", lambda m, e, s: s.update(subject=m["lockfile"])),
+            ("wrong subject size", lambda m, e, s: s["subject"].update(size=1)),
+            ("empty license", lambda m, e, s: s["license"].update(expression="")),
+            ("long license", lambda m, e, s: s["license"].update(expression="x" * 4097)),
+            ("invalid status", lambda m, e, s: s["license"].update(status=[])),
+            ("extra license field", lambda m, e, s: s["license"].update(extra=True)),
+            ("empty provenance", lambda m, e, s: s.update(provenance=[])),
+            ("too much provenance", lambda m, e, s: s.update(provenance=s["provenance"] * 101)),
+            ("empty origin", lambda m, e, s: s["provenance"][0].update(origin="")),
+            ("extra provenance field", lambda m, e, s: s["provenance"][0].update(extra=True)),
+            ("invalid digest", lambda m, e, s: s["provenance"][0]["original"].update(digest="bad")),
+            ("boolean size", lambda m, e, s: s["provenance"][0]["evidence"].update(size=True)),
+            ("oversized blob", lambda m, e, s: s["provenance"][0]["evidence"].update(size=16 * 1024 ** 3 + 1)),
+            ("empty attachments", lambda m, e, s: s.update(attachments=[])),
+            ("duplicate path", lambda m, e, s: s["attachments"].append(s["attachments"][0])),
+            ("unsafe path", lambda m, e, s: s["attachments"][0].update(path="../LICENSE")),
+            ("invalid kind", lambda m, e, s: s["attachments"][0].update(kind={})),
+            ("extra attachment field", lambda m, e, s: s["attachments"][0].update(extra=True)),
+            ("conflicting size", lambda m, e, s: s["attachments"][0].update(
+                blob={**s["provenance"][0]["original"], "size": 1})),
+        ]
+        for name, mutate in mutations:
+            with self.subTest(name=name):
+                manifest = copy.deepcopy(original)
+                evidence = manifest["evidence"]
+                mutate(manifest, evidence, evidence["materials"][0])
+                with self.assertRaises(audit.AuditError):
+                    audit.validate_manifest(manifest)
+
+    def test_v2_evidence_counts_toward_total_blob_budget(self):
+        self.add_evidence()
+        self.save()
+        self.manifest["evidence"]["materials"][0]["attachments"] = [
+            {"path": str(i), "kind": "notice", "blob": {"digest": "sha256:" + format(i, "064x"),
+                                                       "size": 16 * 1024 ** 3}}
+            for i in range(33)
+        ]
+        with self.assertRaises(audit.AuditError):
+            audit.validate_manifest(self.manifest)
+
+    def test_v2_missing_or_corrupt_evidence_rejected_before_recipes(self):
+        self.add_evidence()
+        material = self.manifest["evidence"]["materials"][0]
+        for ref in (material["provenance"][0]["original"], material["provenance"][0]["evidence"],
+                    material["attachments"][0]["blob"]):
+            path = self.input / "blobs" / ref["digest"][7:]
+            original = path.read_bytes()
+            for failure in ("missing", "corrupt"):
+                with self.subTest(digest=ref["digest"], failure=failure):
+                    if failure == "missing":
+                        path.unlink()
+                    else:
+                        path.write_bytes(b"x" * len(original))
+                    native = Native(self.work, self.lock)
+                    with self.assertRaises(audit.AuditError):
+                        self.run_audit(native)
+                    self.assertEqual(native.calls, [])
+                    self.assertEqual(list(self.work.iterdir()), [])
+                    path.write_bytes(original)
 
     def test_native_sources_resources_patches_and_exact_contract(self):
         report, native = self.run_audit()
