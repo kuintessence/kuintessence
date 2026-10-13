@@ -65,7 +65,15 @@ test("first local seed and subsequent runtime import share real PostgreSQL ecosy
       ...options,
       receipts: new PgDeliveryReceipts(db, lockDb),
     });
-    const second = await restarted.run(f.plan, subject);
+    const [second, concurrentSeed] = await Promise.all([
+      restarted.run(f.plan, subject),
+      seedOfflineDelivery(
+        new OfflineDeliveryService({ ...options, receipts: new PgDeliveryReceipts(db, lockDb) }),
+        join(root, "input/delivery.json"),
+        subject,
+      ),
+    ]);
+    expect(concurrentSeed.status).toBe("completed");
     expect(second.status).toBe("completed");
     expect(second.items[1]?.receipt).toEqual(first.items[1]?.receipt);
     expect(second.items[2]?.receipt).toEqual(first.items[2]?.receipt);

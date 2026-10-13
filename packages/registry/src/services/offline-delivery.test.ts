@@ -375,3 +375,43 @@ test("binding a freshly imported material uses its real publication receipt and 
     f.stage.mockRestore();
   }
 });
+
+test("an unrelated existing recipe snapshot never skips the requested exact commit", async () => {
+  const f = await fixture();
+  try {
+    const source = join(f.root, "input/recipe-source");
+    const packagePath = join(source, "repo/packages/hello/package.py");
+    await writeFile(packagePath, `${await readFile(packagePath, "utf8")}\n# Another snapshot\n`);
+    const commit = Bun.spawnSync([
+      "git",
+      "-C",
+      source,
+      "-c",
+      "user.name=Fixture",
+      "-c",
+      "user.email=fixture@example.invalid",
+      "commit",
+      "-am",
+      "another snapshot",
+    ]);
+    expect(commit.exitCode).toBe(0);
+    const other = join(f.root, "other.bundle");
+    expect(Bun.spawnSync(["git", "-C", source, "bundle", "create", other, "HEAD"]).exitCode).toBe(
+      0,
+    );
+    await f.recipes.importBundle("public/fixture", Bun.file(other).stream(), actor.sub);
+    await f.upload();
+    expect((await f.service.run(f.plan, actor.sub)).status).toBe("completed");
+    const recipe = f.plan.items[0];
+    if (recipe?.kind !== "recipe") throw new Error("fixture");
+    expect(
+      (await f.recipes.getSnapshot(RecipeGitStore.repositoryId(recipe.repository), recipe.commit))
+        .snapshot.commit,
+    ).toBe(recipe.commit);
+    expect(
+      (await f.recipes.get(RecipeGitStore.repositoryId(recipe.repository))).snapshots,
+    ).toHaveLength(2);
+  } finally {
+    f.stage.mockRestore();
+  }
+});
