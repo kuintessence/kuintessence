@@ -4,10 +4,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn } from "bun";
-import { eq, inArray } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import { GenericContainer, Wait } from "testcontainers";
 import {
   agents,
+  authzOutbox,
   createPgDb,
   jobs,
   type PgDb,
@@ -144,7 +145,21 @@ async function resolveUserOrgId(email: string): Promise<string> {
 
 async function seedPackage(dbHandle: PgDb): Promise<void> {
   await dbHandle.delete(usecasePackages).where(inArray(usecasePackages.id, PACKAGE_IDS));
-  await seedE2eSoftwareRevision(dbHandle, SOFTWARE_ID);
+  const assetId = await seedE2eSoftwareRevision(dbHandle, SOFTWARE_ID);
+  const deadline = Date.now() + 30_000;
+  while (true) {
+    const projection = await dbHandle
+      .select({ processedAt: authzOutbox.processedAt, lastError: authzOutbox.lastError })
+      .from(authzOutbox)
+      .where(
+        and(eq(authzOutbox.resourceType, "software_asset"), eq(authzOutbox.resourceId, assetId)),
+      );
+    if (projection.length > 0 && projection.every((event) => event.processedAt)) break;
+    if (Date.now() >= deadline) {
+      throw new Error(`Software authorization projection timed out: ${JSON.stringify(projection)}`);
+    }
+    await Bun.sleep(100);
+  }
   await dbHandle.insert(usecasePackages).values([
     {
       id: AUTHZ_PKG_ID,

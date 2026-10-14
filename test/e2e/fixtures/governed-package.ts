@@ -7,6 +7,7 @@ import {
 } from "@kuintessence/db";
 import type { usecase } from "@kuintessence/shared";
 import { eq, inArray } from "drizzle-orm";
+import { SoftwareAssetService } from "../../../packages/registry/src/services/software-asset-service";
 
 export const E2E_SPACK_PACKAGE = "kq-e2e-shell";
 
@@ -35,32 +36,34 @@ export function governedShellPackage(
   };
 }
 
-export async function seedE2eSoftwareRevision(db: PgDb, revisionId: string): Promise<void> {
+export async function seedE2eSoftwareRevision(db: PgDb, revisionId: string): Promise<string> {
   await deleteE2eSoftwareRevision(db, revisionId);
-  const [asset] = await db
-    .insert(softwareAssets)
-    .values({
-      kind: "spack-package",
-      source: "official-upstream",
-      name: E2E_SPACK_PACKAGE,
-      version: "1",
-      lifecycle: "published",
-      visibility: "platform-public",
-      trustedForGlobalUse: true,
-    })
-    .returning({ id: softwareAssets.id });
-  if (!asset) {
-    throw new Error("Failed to seed the E2E software asset");
-  }
-  await db.insert(softwareAssetRevisions).values({
-    id: revisionId,
-    assetId: asset.id,
-    revision: 1,
+  const asset = await new SoftwareAssetService(db).upsertAsset({
+    kind: "spack-package",
+    source: "official-upstream",
+    name: E2E_SPACK_PACKAGE,
+    version: "1",
+    lifecycle: "published",
+    visibility: "platform-public",
+    trustedForGlobalUse: true,
     payload: {
       kind: "spack-package",
-      spack: { packageName: E2E_SPACK_PACKAGE, defaultSpec: `${E2E_SPACK_PACKAGE}@1` },
+      spack: {
+        packageName: E2E_SPACK_PACKAGE,
+        defaultSpec: `${E2E_SPACK_PACKAGE}@1`,
+        metadata: {},
+        dependencies: [],
+        providers: [],
+        variants: [],
+      },
     },
+    provenance: { source: "workflow-e2e" },
   });
+  // Keep the fixture's stable revision reference; asset writes use the Registry outbox.
+  await db
+    .update(softwareAssetRevisions)
+    .set({ id: revisionId })
+    .where(eq(softwareAssetRevisions.assetId, asset.id));
   const [release] = await db
     .insert(ecosystemReleases)
     .values({
@@ -103,6 +106,7 @@ export async function seedE2eSoftwareRevision(db: PgDb, revisionId: string): Pro
     assetRevisionId: revisionId,
     materializedAt: new Date(),
   });
+  return asset.id;
 }
 
 export async function deleteE2eSoftwareRevision(db: PgDb, revisionId: string): Promise<void> {
