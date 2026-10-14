@@ -174,7 +174,10 @@ import {
   PolicyStore,
   SoftwareOperationService,
 } from "./software-governance";
-import { createSpackDeliveryAccess } from "./software-governance/spack-delivery-access";
+import {
+  canOperateSpackAgent,
+  createSpackDeliveryAccess,
+} from "./software-governance/spack-delivery-access";
 import { SpackMaterialDelivery } from "./software-governance/spack-material-delivery";
 import { createRealMinioBackend, loadMinioConfigFromEnv } from "./storage/minio-client";
 import { WorkflowAsyncRunner } from "./workflow/async-runner";
@@ -386,6 +389,11 @@ const softwareOperations = new SoftwareOperationService(
       );
     }
     return spackMaterialDelivery.prepareOperation(input);
+  },
+  async (input) => {
+    if (!(await canOperateSpackAgent(db, authzService, input))) {
+      throw new AppError(ErrorCode.FORBIDDEN, "Agent operation permission denied", 403);
+    }
   },
 );
 const metricsRecorder = new PgAgentMetricsRecorder(db);

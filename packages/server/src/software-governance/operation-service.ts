@@ -52,6 +52,11 @@ export class SoftwareOperationService {
     private readonly prepareSpackInstall?: (
       input: SpackInstallPreparation,
     ) => Promise<SpackInstallTicket>,
+    private readonly authorizeJobInstall?: (input: {
+      agentId: string;
+      requestedBy: string;
+      providerOrgId: string | null;
+    }) => Promise<void>,
   ) {}
 
   async requestOperation(input: {
@@ -218,6 +223,13 @@ export class SoftwareOperationService {
     spec: string;
     requestedBy: string;
   }): Promise<SoftwareOperationView> {
+    if (!this.authorizeJobInstall) throw new Error("Workflow install authorization is unavailable");
+    const agent = await this.assertAgentExists(input.agentId);
+    await this.authorizeJobInstall({
+      agentId: input.agentId,
+      requestedBy: input.requestedBy,
+      providerOrgId: agent.providerOrgId,
+    });
     input = { ...input, spec: normalizeSoftwareOperationSpec(input.spec) };
     const idempotencyKey = `workflow:${input.jobId}:${createHash("sha256").update(input.spec).digest("hex")}`;
     const result = await this.db.transaction(async (tx) => {

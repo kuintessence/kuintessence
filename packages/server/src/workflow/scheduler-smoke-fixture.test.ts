@@ -65,6 +65,7 @@ describe("scheduler workflow smoke fixtures", () => {
         assetId: "77777777-7777-4777-8777-777777777777",
         name: "zlib",
         version: "1.3.1",
+        spec: "zlib@1.3.1",
         installable: false,
       },
     ]);

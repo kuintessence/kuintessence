@@ -20,10 +20,20 @@ let userId: string;
 const jobIds: string[] = [];
 const dispatcher = new AgentDispatcher();
 const installed = new InstalledRegistry(db);
-const operations = new SoftwareOperationService(db, dispatcher, installed, async () => ({
-  spackMaterialTicket: "test-ticket",
-  spackManifestDigest: `sha256:${"a".repeat(64)}`,
-}));
+let operateAllowed = true;
+const operations = new SoftwareOperationService(
+  db,
+  dispatcher,
+  installed,
+  async () => ({
+    spackMaterialTicket: "test-ticket",
+    spackManifestDigest: `sha256:${"a".repeat(64)}`,
+  }),
+  async () => {
+    if (!operateAllowed) throw new Error("Agent operation permission denied");
+  },
+);
+
 beforeAll(async () => {
   const [user] = await db
     .insert(users)
@@ -159,4 +169,27 @@ test("failed managed installation fails the waiter and a cancelled job starts no
   const count = messages.length;
   await expect(request(cancelled.id, "example@3")).rejects.toThrow("no longer waiting");
   expect(messages).toHaveLength(count);
+});
+
+test("denied Agent operate permission cannot create or reuse an installation", async () => {
+  const first = await makeJob("example@4");
+  const existing = await request(first.id, "example@4");
+  expect(existing.status).toBe("queued");
+  const second = await makeJob("example@4");
+  const missing = await makeJob("example@5");
+  const before = messages.length;
+  operateAllowed = false;
+  try {
+    await expect(request(second.id, "example@4")).rejects.toThrow(
+      "Agent operation permission denied",
+    );
+    await expect(request(missing.id, "example@5")).rejects.toThrow(
+      "Agent operation permission denied",
+    );
+    expect(messages).toHaveLength(before);
+    const [unlinked] = await db.select().from(jobs).where(eq(jobs.id, second.id));
+    expect(unlinked?.softwareRequirements?.[0]?.operationId).toBeUndefined();
+  } finally {
+    operateAllowed = true;
+  }
 });
