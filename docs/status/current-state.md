@@ -4,6 +4,10 @@ Kuintessence 当前为 pre-release。以下列出组件功能、运行要求和�
 
 ## 组件
 
+正式 named refs 工作流已接入冻结用例 revision、Registry 事务权限投影和治理后的缺包安装等待。
+安装复用 software operation，库存确认后重新调度；unknown/review-required 仅接受针对资产、
+提供方和使用主体的有效审批，默认仍拒绝。接口及取消/恢复边界见[软件管理](../software.md#工作流缺包自动安装)。
+
 Web 首页的快速开始提供真实示例作业和无需软件安装的两节点编排示例；提交成功后
 直接打开对应运行详情。编排示例使用 `NoAction`，不表示计算软件已经安装或运行。
 软件模板分页显示当前页与总页数。Web、AIO 和预览 nginx 对材料目录根路径使用

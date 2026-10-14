@@ -30,7 +30,7 @@ export class SoftwareFilter implements FilterStage {
         missing.push(`${key} (${availabilityReasons.join("; ")})`);
         continue;
       }
-      if (req.installable) continue;
+      if (this.deps.availability?.get(key)?.has(agent.agentId) || req.installable) continue;
       const hasKeyed = installed.has(key);
       // If no version pinned, accept any installed version of this software
       const hasName = req.version

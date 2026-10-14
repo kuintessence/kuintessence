@@ -14,6 +14,7 @@ export interface JobSubmitterDeps {
     nodeId: string;
     name: string;
     usecasePackageId?: string;
+    usecaseVersionId?: string;
     dataInputs?: Record<string, DataInputRef>;
     command: string;
     envVars: Record<string, string>;
@@ -81,6 +82,7 @@ export function createJobSubmitter(deps: JobSubmitterDeps): (spec: JobSubmission
     const job = await deps.submit({
       nodeId: prepared.nodeId,
       name: prepared.name,
+      ...(prepared.usecaseVersionId ? { usecaseVersionId: prepared.usecaseVersionId } : {}),
       ...(prepared.usecasePackageId ? { usecasePackageId: prepared.usecasePackageId } : {}),
       ...(prepared.dataInputs ? { dataInputs: prepared.dataInputs } : {}),
       command: prepared.command,

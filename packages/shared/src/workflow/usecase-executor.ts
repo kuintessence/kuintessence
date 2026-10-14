@@ -18,6 +18,7 @@ type CelValue = workflowDsl.CelValue;
 /** The usecase/software package data needed to materialize a node into a task. */
 export interface ResolvedPackage {
   usecasePackageId?: string;
+  usecaseVersionId?: string;
   usecase: { commandFile: string; inputSlots: usecase.UsecaseInputSlot[] };
   software: usecase.SoftwareSpec;
   arguments: usecase.ArgumentMaterial[];
@@ -28,6 +29,7 @@ export interface ResolvedPackage {
   licensedMaterials?: usecase.MaterializedTask["licensedMaterials"];
   softwareRequirements?: Array<{
     assetId?: string;
+    spec?: string;
     name: string;
     version?: string;
     installable: boolean;
@@ -37,6 +39,7 @@ export interface ResolvedPackage {
 export interface JobSubmission {
   nodeId: string;
   usecasePackageId?: string;
+  usecaseVersionId?: string;
   /** Human-readable job name (the node's name) for the jobs list / audit. */
   name: string;
   command: string;
@@ -55,6 +58,7 @@ export interface JobSubmission {
   licensedMaterials?: usecase.MaterializedTask["licensedMaterials"];
   softwareRequirements?: Array<{
     assetId?: string;
+    spec?: string;
     name: string;
     version?: string;
     installable: boolean;
@@ -149,6 +153,7 @@ export function createUsecaseExecutor(deps: UsecaseExecutorDeps): NodeExecutor {
     const { status, collected, collectedFiles, errorMessage, reason, exitCode, jobId } =
       await deps.submitJob({
         nodeId: node.id,
+        ...(pkg.usecaseVersionId ? { usecaseVersionId: pkg.usecaseVersionId } : {}),
         ...(pkg.usecasePackageId ? { usecasePackageId: pkg.usecasePackageId } : {}),
         name: node.name,
         command,

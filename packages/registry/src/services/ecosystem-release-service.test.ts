@@ -593,6 +593,16 @@ describe("Ecosystem release executable catalog materialization", () => {
       (entry) => entry.ecosystemKey === workflow.ecosystemKey,
     );
     expect(materializedUsecase?.usecasePackageId).toBe(catalogUsecase[0]?.id);
+    const [usecaseAssetRow] = await db
+      .select()
+      .from(softwareAssets)
+      .where(
+        eq(
+          softwareAssets.id,
+          materializedUsecase?.assetId ?? "00000000-0000-0000-0000-000000000000",
+        ),
+      );
+    expect(SoftwareAssetPayloadSchema.safeParse(usecaseAssetRow?.payload).success).toBe(true);
     if (!catalogUsecase[0]) throw new Error("materialized usecase package must exist");
     await expect(new UsecasePackageService(db).deleteById(catalogUsecase[0].id)).rejects.toThrow(
       "pinned by a staged or active ecosystem release",

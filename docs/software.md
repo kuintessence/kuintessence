@@ -385,3 +385,35 @@ BindReadOnlyPaths=/var/lib/kubelet/seccomp:/opt/kuintessence-agent-seccomp
 这必须是同一目录树，不能用可能漂移的副本或 symlink。
 隔离条件未满足时保持 `AGENT_SANDBOX_NETWORK_ISOLATION=false` 和 critical capability；
 不能借普通 Job、SelfAccount 或 RootImpersonation 绕过。
+
+### 工作流缺包自动安装
+
+正式 `SoftwareUsecaseComputing` 在 named refs 解析时冻结软件和用例 revision。
+签名用例的 `usecasePackageRevisionId` 指向不可变 spec；执行前数据输入校验也使用冻结引用。
+Registry 普通 API 写入资产时，在同一事务内更新权限 outbox；须由既有 outbox worker
+处理后才能在 enforce 模式使用，新建、替换与归档均不需要手工补资产关系。
+
+缺包需求经资产 use/install 权限、提供方策略和许可证判断后，调度器选择节点并复用
+现有 software operation 和精确 spec 的材料 binding。作业保持 `pending`，
+`softwareRequirements[].operationId` 关联安装；同一 Agent/spec 的并发需求复用在途操作。
+安装成功且库存确认后重新调度，Agent 按受控 `spackExecution` 激活并执行。
+安装失败、拒绝或等待超时会使节点失败；取消作业停止等待，不取消其他作业共享的安装。
+等待超时沿用 `SERVER_JOB_COMPLETION_TIMEOUT_SEC`。Server 重启后的运行恢复仍受现有
+工作流恢复机制限制；本次没有增加独立安装调度器或持久工作流恢复器。
+
+`NOASSERTION`/unknown 不默认允许自动安装。签名 LicensePolicy 的 `autoInstall` 必须是
+`review-required`，并且同一资产同时具备以下未过期、未撤销的平台审批：
+
+- 提供方组织的 `provider-source-install` claim；
+- 使用者用户或其当前组织的 `consumer-use` claim。
+
+Registry 正式入口为 `POST /api/license-entitlement-claims`（经 Server 代理时加 `/software`），
+请求包含 `assetId`、`entitlement`、`claimantKind`、`claimantId`、证据引用和说明，建议设置
+`expiresAt`。提供方 claim 还应填写 `providerOrgId`，并由对应组织管理员提交。
+平台管理员通过 `POST /api/license-entitlement-claims/<id>/approved` 审批，body 可含 `reason`；
+撤销用同一路径的 `/revoked`。审批按资产和主体匹配，不改变 signed policy；
+`autoInstall: denied` 不能通过 entitlement 绕过。
+
+审批也不替代资产安装权限、Agent operate 权限、安装策略、受信 release、精确材料 binding
+及 Agent 的安装开关/site profile 配置。用户脚本无需也不得注入可信加载 shell；
+后续 Bash Script 节点仍使用自己的签名 runtime。

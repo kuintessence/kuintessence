@@ -24,6 +24,7 @@ const slices: TestSlice[] = [
       "packages/cli",
       "packages/agent/src",
       "scripts/test-unit.test.ts",
+      "scripts/workflow-software.pg.test.ts",
     ],
   },
   { name: "server", paths: ["packages/server"] },

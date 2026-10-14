@@ -10,7 +10,11 @@ import {
   users,
 } from "@kuintessence/db";
 import type { ServerMessage } from "@kuintessence/proto";
-import { type SandboxSignedManifest, SPACK_EXECUTION_PLACEHOLDER } from "@kuintessence/shared";
+import {
+  type SandboxSignedManifest,
+  type SoftwareAvailabilityResponse,
+  SPACK_EXECUTION_PLACEHOLDER,
+} from "@kuintessence/shared";
 import { eq, like, notLike } from "drizzle-orm";
 import { AgentDispatcher } from "../grpc/dispatcher";
 import { PreferenceService } from "../preferences/preference-service";
@@ -272,6 +276,121 @@ describe("PlacementOrchestrator", () => {
       expect(message.payload.value.command).toBe("exit 125");
       expect(message.payload.value.spackExecution).toMatchObject(spackExecution);
       expect((await jobService.getById(job.id))?.command).toBe("exit 125");
+    } finally {
+      dispatcher.unregister("po-agent-1");
+    }
+  });
+
+  test("workflow waits for governed installation and inventory, replans, then dispatches controlled Spack intent", async () => {
+    await agentManager.register({
+      agentId: "po-agent-1",
+      siteName: "po-site",
+      providerOrgId: orgId,
+      schedulerType: "slurm",
+      schedulerVersion: "23",
+    });
+    const channel = mockChannel();
+    dispatcher.register("po-agent-1", channel);
+    let installed = false;
+    let installs = 0;
+    let inventoryChecks = 0;
+    const node = {
+      agentId: "po-agent-1",
+      siteName: "po-site",
+      providerOrgId: orgId,
+      status: "online",
+      installMode: "explicit-install-grant" as const,
+      reasons: [],
+    };
+    const gated = new PlacementOrchestrator({
+      agentManager,
+      jobService,
+      preferenceService,
+      dispatcher,
+      softwareAvailability: {
+        resolve: async (request): Promise<SoftwareAvailabilityResponse> => {
+          if (!request.installable) {
+            inventoryChecks++;
+            expect(channel.messages).toHaveLength(0);
+            if (inventoryChecks >= 2) installed = true;
+          }
+          return {
+            spec: "hello@1.0+mpi",
+            installedAvailable: installed ? [node] : [],
+            installableAvailable: !installed && request.installable ? [node] : [],
+            blocked: !installed && !request.installable ? [{ ...node, reasons: ["missing"] }] : [],
+            explanations: [],
+          };
+        },
+      },
+      softwareOperations: {
+        requestInstallForJob: async () => {
+          installs++;
+          expect(channel.messages).toHaveLength(0);
+          return {
+            id: "op",
+            agentId: "po-agent-1",
+            requestedBy: userId,
+            action: "install",
+            spec: "hello@1.0+mpi",
+            status: "queued",
+            stdout: null,
+            stderr: null,
+            exitCode: null,
+            error: null,
+            requestedAt: new Date().toISOString(),
+            startedAt: null,
+            finishedAt: null,
+            updatedAt: new Date().toISOString(),
+          };
+        },
+        getOperation: async () => {
+          expect(channel.messages).toHaveLength(0);
+          return {
+            id: "op",
+            agentId: "po-agent-1",
+            requestedBy: userId,
+            action: "install",
+            spec: "hello@1.0+mpi",
+            status: "succeeded",
+            stdout: null,
+            stderr: null,
+            exitCode: 0,
+            error: null,
+            requestedAt: new Date().toISOString(),
+            startedAt: null,
+            finishedAt: null,
+            updatedAt: new Date().toISOString(),
+          };
+        },
+      },
+    });
+    try {
+      const input = {
+        name: "po-test-wait-install",
+        command: SPACK_EXECUTION_PLACEHOLDER,
+        resources: { cpus: 1, memoryMb: 1024 },
+        softwareRequirements: [
+          { name: "hello", version: "1.0", spec: "hello@1.0+mpi", installable: true },
+        ],
+      };
+      const job = await jobService.submit(input, userId);
+      const result = await gated.placeAndDispatch({
+        jobId: job.id,
+        job: input,
+        spackExecution: { spec: "hello@1.0+mpi", command: "hello" },
+        userId,
+        userRole: "user",
+        orgId,
+      });
+      expect(installs).toBe(1);
+      expect(inventoryChecks).toBeGreaterThanOrEqual(2);
+      expect(result.dispatched).toBe(true);
+      expect(channel.messages).toHaveLength(1);
+      const message = channel.messages[0];
+      if (message?.payload.case !== "dispatchJob") throw new Error("missing dispatch");
+      expect(message.payload.value.command).toBe("exit 125");
+      expect(message.payload.value.spackExecution?.spec).toBe("hello@1.0+mpi");
     } finally {
       dispatcher.unregister("po-agent-1");
     }

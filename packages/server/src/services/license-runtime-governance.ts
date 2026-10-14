@@ -30,6 +30,7 @@ export interface LicensePolicySnapshot {
   consumerUseEntitlementRequired?: boolean;
   redistributionAllowed?: boolean;
   autoInstallAllowed?: boolean;
+  autoInstallReviewRequired?: boolean;
 }
 
 export type LicenseEntitlementScope = "provider-source-install" | "consumer-use";
@@ -156,8 +157,27 @@ export class LicenseRuntimeGovernanceService {
     const policy = input.policy;
     if (!isValidLicensePolicy(policy)) return [licensePolicyRequired()];
     const blocks: GovernanceBlock[] = [];
+    const reviewedInstall =
+      input.installRequested &&
+      policy.autoInstallReviewRequired === true &&
+      Boolean(input.assetId) &&
+      (await this.hasApprovedEntitlement({
+        assetKey: input.assetKey,
+        assetId: input.assetId,
+        subjectIds: input.providerEntitlementSubjectIds,
+        scope: "provider-source-install",
+        now: input.now,
+      })) &&
+      (await this.hasApprovedEntitlement({
+        assetKey: input.assetKey,
+        assetId: input.assetId,
+        subjectIds: input.consumerEntitlementSubjectIds,
+        scope: "consumer-use",
+        now: input.now,
+      }));
     if (
       input.installRequested &&
+      !reviewedInstall &&
       (policy.classification === "unknown" || policy.autoInstallAllowed === false)
     ) {
       blocks.push({
@@ -397,6 +417,7 @@ function isValidLicensePolicy(
     policy.consumerUseEntitlementRequired,
     policy.redistributionAllowed,
     policy.autoInstallAllowed,
+    policy.autoInstallReviewRequired,
   ].every((value) => value === undefined || typeof value === "boolean");
 }
 
@@ -765,6 +786,7 @@ export function toLicensePolicySnapshot(policy: LicensePolicy): LicensePolicySna
     consumerUseEntitlementRequired: policy.consumerEntitlements.includes("use"),
     redistributionAllowed: policy.redistribution === "permitted",
     autoInstallAllowed: policy.autoInstall === "allowed",
+    autoInstallReviewRequired: policy.autoInstall === "review-required",
   };
 }
 

@@ -8,9 +8,16 @@ import type { AgentRow, FilterStage, PlacementContext, StageResult } from "../ty
 export class InstallRightsFilter implements FilterStage {
   readonly name = "install-rights";
 
-  evaluate(_agent: AgentRow, ctx: PlacementContext): StageResult {
+  constructor(private readonly availability?: Map<string, Map<string, string[]>>) {}
+
+  evaluate(agent: AgentRow, ctx: PlacementContext): StageResult {
     const reqs = ctx.job.softwareRequirements ?? [];
-    const wantsInstall = reqs.some((r) => r.installable === true);
+    const wantsInstall = reqs.some((r) => {
+      const key = r.version ? `${r.name}@${r.version}` : r.name;
+      return (
+        r.installable === true && this.availability?.get(key)?.get(agent.agentId)?.length !== 0
+      );
+    });
     if (!wantsInstall) return { kind: "pass" };
 
     const userRole = ctx.userRole as RoleName;

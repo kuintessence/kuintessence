@@ -288,3 +288,47 @@ describe("LicenseRuntimeGovernanceService", () => {
     ).toBe("LICENSED_MATERIAL_ELEMENTS_MISMATCH");
   });
 });
+
+test("review-required installation needs current approval for exact asset, provider and consumer", async () => {
+  const input = {
+    assetKey: "NOASSERTION",
+    assetId: "asset-one",
+    policy: {
+      classification: "unknown" as const,
+      provenance: "https://example.test/review",
+      autoInstallAllowed: false,
+      autoInstallReviewRequired: true,
+    },
+    providerEntitlementSubjectIds: ["provider-one"],
+    consumerEntitlementSubjectIds: ["user-one"],
+    installRequested: true,
+  };
+  const service = new LicenseRuntimeGovernanceService(
+    repository({
+      listEntitlements: async ({ assetId, subjectIds, scope }) =>
+        assetId === "asset-one" &&
+        subjectIds.includes(scope === "consumer-use" ? "user-one" : "provider-one")
+          ? [
+              {
+                subjectId: subjectIds[0] ?? "",
+                scope,
+                status: "approved",
+                expiresAt: new Date("2099-01-01"),
+              },
+            ]
+          : [],
+    }),
+  );
+  expect(await service.evaluateLicense(input)).toEqual([]);
+  for (const overrides of [
+    { assetId: "asset-two" },
+    { providerEntitlementSubjectIds: ["provider-two"] },
+    { consumerEntitlementSubjectIds: ["user-two"] },
+    { now: new Date("2100-01-01") },
+    { policy: { ...input.policy, autoInstallReviewRequired: false } },
+  ]) {
+    expect(
+      (await service.evaluateLicense({ ...input, ...overrides })).map((block) => block.code),
+    ).toContain("LICENSE_UNKNOWN_AUTO_INSTALL_DENIED");
+  }
+});

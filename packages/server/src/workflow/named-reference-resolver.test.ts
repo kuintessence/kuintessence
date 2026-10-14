@@ -78,6 +78,8 @@ function repository(): WorkflowNamedReferenceRepository {
           revision: 7,
           payload: {
             kind: "usecase",
+            usecasePackageId: "44444444-4444-4444-8444-444444444444",
+            usecasePackageRevisionId: "55555555-5555-4555-8555-555555555555",
             spec: {
               usecase: { commandFile: "gmx", inputSlots: [] },
               software: { kind: "Spack", name: "gromacs", argumentList: [] },

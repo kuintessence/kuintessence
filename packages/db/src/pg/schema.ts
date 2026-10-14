@@ -549,7 +549,14 @@ export const jobs = pgTable(
     appTemplateKey: varchar("app_template_key", { length: 255 }),
     softwareRequirements:
       jsonb("software_requirements").$type<
-        Array<{ name: string; version?: string; installable?: boolean }>
+        Array<{
+          name: string;
+          version?: string;
+          installable?: boolean;
+          assetId?: string;
+          spec?: string;
+          operationId?: string;
+        }>
       >(),
     usecasePackageId: uuid("usecase_package_id").references(() => usecasePackages.id),
     usecasePackageName: varchar("usecase_package_name", { length: 255 }),
