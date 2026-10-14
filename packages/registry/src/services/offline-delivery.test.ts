@@ -154,6 +154,23 @@ test("runtime API and startup seed produce identical immutable materials and evi
   }
 });
 
+test("runtime import transfers shared evidence once per unique blob in the target repository", async () => {
+  const f = await fixture();
+  const upload = spyOn(f.materials, "upload");
+  try {
+    await f.upload();
+    upload.mockClear();
+    const report = await f.service.run(f.plan, actor.sub);
+    expect(report.status).toBe("completed");
+    const calls = upload.mock.calls;
+    expect(calls).toHaveLength(3); // lock, source and shared provenance/notice
+    expect(new Set(calls.map(([repository, digest]) => `${repository}:${digest}`)).size).toBe(3);
+  } finally {
+    upload.mockRestore();
+    f.stage.mockRestore();
+  }
+});
+
 test("preflight checks true lock validity, missing bytes, namespaces and signatures without publishing", async () => {
   const f = await fixture();
   try {

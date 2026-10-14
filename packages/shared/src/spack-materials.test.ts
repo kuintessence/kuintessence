@@ -4,6 +4,7 @@ import {
   SpackMaterialPathSchema,
   SpackMaterialPublishSchema,
   spackMaterialBlobs,
+  spackMaterialInputBlobs,
 } from "./spack-materials";
 
 const blob = { digest: `sha256:${"a".repeat(64)}`, size: 10 };
@@ -81,7 +82,7 @@ describe("Spack material release contracts", () => {
       ...fixture,
       recipes: fixture.recipes.map((recipe) => ({ ...recipe, archive: blob })),
     });
-    expect(spackMaterialBlobs(manifest)).toEqual([blob, blob, blob]);
+    expect(spackMaterialBlobs(manifest)).toEqual([blob]);
   });
   test("rejects conflicting sizes across lockfile, source and recipe references", () => {
     expect(
@@ -131,5 +132,17 @@ test("v2 evidence preserves pending status, requires every source and retains al
     ...value,
     recipes: fixture.recipes.map((recipe) => ({ ...recipe, archive: blob })),
   });
-  expect(spackMaterialBlobs(manifest)).toContainEqual(attachment);
+  expect(spackMaterialInputBlobs(parsed)).toEqual([blob, attachment]);
+  expect(spackMaterialBlobs(manifest)).toEqual([blob, attachment]);
+  if (parsed.version !== 2) throw new Error("v2 expected");
+  expect(evidence).toEqual(parsed.evidence);
+  const conflicting = structuredClone(value);
+  const material = conflicting.evidence.materials[0];
+  if (!material) throw new Error("evidence expected");
+  material.attachments[0] = {
+    path: "NOTICE",
+    kind: "notice",
+    blob: { ...attachment, size: attachment.size + 1 },
+  };
+  expect(SpackMaterialPublishSchema.safeParse(conflicting).success).toBe(false);
 });

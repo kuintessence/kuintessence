@@ -165,14 +165,19 @@ export function spackMaterialInputBlobs(value: {
   sources: { blob: SpackMaterialBlob }[];
   evidence?: z.infer<typeof SpackMaterialEvidenceSchema>;
 }): SpackMaterialBlob[] {
-  return [
+  return uniqueBlobs([
     value.lockfile,
     ...value.sources.map((source) => source.blob),
     ...(value.evidence?.materials.flatMap((material) => [
       ...material.provenance.flatMap((entry) => [entry.original, entry.evidence]),
       ...material.attachments.map((entry) => entry.blob),
     ]) ?? []),
-  ];
+  ]);
+}
+
+function uniqueBlobs(blobs: SpackMaterialBlob[]): SpackMaterialBlob[] {
+  // Keep conflicting sizes visible to schema validation while deduplicating identical references.
+  return [...new Map(blobs.map((blob) => [`${blob.digest}:${blob.size}`, blob])).values()];
 }
 
 function validateSources(
@@ -216,10 +221,10 @@ function validateBlobSet(blobs: SpackMaterialBlob[], ctx: z.RefinementCtx) {
 }
 
 export function spackMaterialBlobs(manifest: SpackMaterialManifest): SpackMaterialBlob[] {
-  return [
+  return uniqueBlobs([
     ...manifest.recipes.map((recipe) => recipe.archive),
     ...spackMaterialInputBlobs(manifest),
-  ];
+  ]);
 }
 
 export const SpackMaterialBindingSchema = z.strictObject({
