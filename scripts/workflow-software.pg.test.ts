@@ -235,7 +235,7 @@ test("signed import and activation resolve named references to immutable executa
   const policy = {
     classification: "open-source",
     identifiers: [{ kind: "spdx", value: "MIT" }],
-    provenance: { source: "test", reference: "https://example.test/license" },
+    provenance: { source: "official-upstream", reference: "https://example.test/license" },
     autoInstall: "allowed",
   };
   const manifest: EcosystemManifest = {
