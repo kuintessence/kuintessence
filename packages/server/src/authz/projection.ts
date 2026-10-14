@@ -3,7 +3,11 @@ import type { AuthzTuple } from "./service";
 export {
   dataAssetPlatformTuple,
   dataAssetPublicTuples,
+  softwareAssetGrantTuples,
+  softwareAssetOwnerOrgTuple,
+  softwareAssetOwnerTuple,
   softwareAssetPlatformTuple,
+  softwareAssetProviderTuple,
   softwareAssetPublicGrantTuples,
 } from "@kuintessence/shared";
 
@@ -426,59 +430,6 @@ export function sshRecordingPlatformTuple(sessionId: string): AuthzTuple {
   };
 }
 
-export function softwareAssetOwnerTuple(input: { assetId: string; userId: string }): AuthzTuple {
-  return {
-    operation: "create",
-    resource: { type: "software_asset", id: input.assetId },
-    relation: "owner",
-    subject: { type: "user", id: input.userId },
-  };
-}
-
-export function softwareAssetOwnerOrgTuple(input: { assetId: string; orgId: string }): AuthzTuple {
-  return {
-    operation: "create",
-    resource: { type: "software_asset", id: input.assetId },
-    relation: "owner_org",
-    subject: { type: "organization", id: input.orgId },
-  };
-}
-
-export function softwareAssetProviderTuple(input: {
-  assetId: string;
-  providerOrgId: string;
-}): AuthzTuple {
-  return {
-    operation: "create",
-    resource: { type: "software_asset", id: input.assetId },
-    relation: "provider",
-    subject: { type: "provider", id: input.providerOrgId },
-  };
-}
-
-export function softwareAssetGrantTuples(input: {
-  assetId: string;
-  subjectKind: string;
-  subjectId: string;
-  capabilities: string[];
-  operation: AuthzTuple["operation"];
-}): AuthzTuple[] {
-  const tuples: AuthzTuple[] = [];
-  for (const capability of input.capabilities) {
-    const relation = softwareCapabilityToRelation(capability);
-    if (!relation) continue;
-    const subject = softwareGrantSubject(input.subjectKind, input.subjectId, capability);
-    if (!subject) continue;
-    tuples.push({
-      operation: input.operation,
-      resource: { type: "software_asset", id: input.assetId },
-      relation,
-      subject,
-    });
-  }
-  return tuples;
-}
-
 export function dataAssetOwnerTuple(input: { assetId: string; userId: string }): AuthzTuple {
   return {
     operation: "create",
@@ -605,39 +556,6 @@ function dataGrantSubject(
             ? "manage"
             : "software_use",
     };
-  }
-  return null;
-}
-
-function softwareCapabilityToRelation(capability: string): "viewer" | "user" | "installer" | null {
-  if (capability === "view") return "viewer";
-  if (capability === "use") return "user";
-  if (capability === "install") return "installer";
-  return null;
-}
-
-function softwareGrantSubject(
-  subjectKind: string,
-  subjectId: string,
-  capability: string,
-): AuthzTuple["subject"] | null {
-  if (subjectKind === "user") return { type: "user", id: subjectId };
-  if (subjectKind === "org") {
-    return {
-      type: "organization",
-      id: subjectId,
-      relation: capability === "view" ? "view" : "use",
-    };
-  }
-  if (subjectKind === "platform") {
-    return {
-      type: "platform",
-      id: "root",
-      relation: capability === "view" ? "software_view" : "software_use",
-    };
-  }
-  if (subjectKind === "provider-org" && capability === "install") {
-    return { type: "provider", id: subjectId, relation: "operate" };
   }
   return null;
 }

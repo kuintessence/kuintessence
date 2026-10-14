@@ -730,10 +730,14 @@ function addInstalled(index: Map<string, Set<string>>, agentId: string, spec: st
   index.get(agentId)?.add(spec);
 }
 
-function findInstalledSpec(installed: Set<string> | undefined, spec: string): string | undefined {
+export function findInstalledSpec(
+  installed: Set<string> | undefined,
+  spec: string,
+): string | undefined {
   if (!installed) return undefined;
   if (installed.has(spec)) return spec;
   const name = packageNameFromSpec(spec);
+  if (spec.trim() !== name) return undefined;
   return [...installed].find((entry) => entry === name || entry.startsWith(`${name}@`));
 }
 

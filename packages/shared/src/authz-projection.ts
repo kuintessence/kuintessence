@@ -102,8 +102,105 @@ export function softwareAssetAuthzProjectionTuples(input: {
     softwareAssetPlatformTuple(input.assetId),
     ...softwareAssetPublicGrantTuples({
       assetId: input.assetId,
-      trustedForGlobalUse: input.trustedForGlobalUse,
+      trustedForGlobalUse: true,
       operation: publicOperation,
-    }),
+    }).map(
+      (tuple): AuthzProjectionTuple =>
+        tuple.relation === "installer" && !input.trustedForGlobalUse
+          ? { ...tuple, operation: "delete" }
+          : tuple,
+    ),
   ];
+}
+
+export function softwareAssetOwnerTuple(input: {
+  assetId: string;
+  userId: string;
+}): AuthzProjectionTuple {
+  return {
+    operation: "create",
+    resource: { type: "software_asset", id: input.assetId },
+    relation: "owner",
+    subject: { type: "user", id: input.userId },
+  };
+}
+
+export function softwareAssetOwnerOrgTuple(input: {
+  assetId: string;
+  orgId: string;
+}): AuthzProjectionTuple {
+  return {
+    operation: "create",
+    resource: { type: "software_asset", id: input.assetId },
+    relation: "owner_org",
+    subject: { type: "organization", id: input.orgId },
+  };
+}
+
+export function softwareAssetProviderTuple(input: {
+  assetId: string;
+  providerOrgId: string;
+}): AuthzProjectionTuple {
+  return {
+    operation: "create",
+    resource: { type: "software_asset", id: input.assetId },
+    relation: "provider",
+    subject: { type: "provider", id: input.providerOrgId },
+  };
+}
+
+export function softwareAssetGrantTuples(input: {
+  assetId: string;
+  subjectKind: string;
+  subjectId: string;
+  capabilities: string[];
+  operation: AuthzProjectionTuple["operation"];
+}): AuthzProjectionTuple[] {
+  const tuples: AuthzProjectionTuple[] = [];
+  for (const capability of input.capabilities) {
+    const relation = softwareCapabilityToRelation(capability);
+    if (!relation) continue;
+    const subject = softwareGrantSubject(input.subjectKind, input.subjectId, capability);
+    if (!subject) continue;
+    tuples.push({
+      operation: input.operation,
+      resource: { type: "software_asset", id: input.assetId },
+      relation,
+      subject,
+    });
+  }
+  return tuples;
+}
+
+function softwareCapabilityToRelation(capability: string): "viewer" | "user" | "installer" | null {
+  if (capability === "view") return "viewer";
+  if (capability === "use") return "user";
+  if (capability === "install") return "installer";
+  return null;
+}
+
+function softwareGrantSubject(
+  subjectKind: string,
+  subjectId: string,
+  capability: string,
+): AuthzProjectionTuple["subject"] | null {
+  if (subjectKind === "user") return { type: "user", id: subjectId };
+  if (subjectKind === "org") {
+    return {
+      type: "organization",
+      id: subjectId,
+      relation: capability === "view" ? "view" : "use",
+    };
+  }
+  if (subjectKind === "platform") {
+    return {
+      type: "platform",
+      id: "root",
+      relation: capability === "view" ? "software_view" : "software_use",
+    };
+  }
+  if (subjectKind === "provider-org" && capability === "install") {
+    return { type: "provider", id: subjectId, relation: "operate" };
+  }
+  return null;
 }

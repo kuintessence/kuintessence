@@ -82,7 +82,7 @@ async function loadUsecasePackageScope(
     .limit(1);
   if (revision) return revision;
   const [assetRevision] = await db
-    .select({ payload: softwareAssets.payload })
+    .select({ payload: softwareAssetRevisions.payload })
     .from(softwareAssetRevisions)
     .innerJoin(softwareAssets, eq(softwareAssetRevisions.assetId, softwareAssets.id))
     .where(

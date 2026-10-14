@@ -237,6 +237,7 @@ export const SoftwareAssetPayloadSchema = z.discriminatedUnion("kind", [
   z.strictObject({
     kind: z.literal("usecase"),
     usecasePackageId: z.string().uuid().optional(),
+    usecasePackageRevisionId: z.string().uuid().optional(),
     packageRefs: z.array(SoftwareAssetRefSchema).default([]),
     spec: z.record(z.string(), z.unknown()).default({}),
   }),

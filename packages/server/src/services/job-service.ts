@@ -122,6 +122,7 @@ export interface JobListOptions {
 export interface JobSubmitOptions {
   orgId?: string | null;
   trustedMaterialization?: boolean;
+  trustedUsecaseRevisionId?: string;
   trustedSandboxScript?: {
     revisionId: string;
     sha256: string;
@@ -368,7 +369,11 @@ export function verifiesTrustedEcosystemUsecaseBinding(
         asset.ecosystemKey === binding.manifestEntryDigestKey &&
         digestCanonicalJson(asset) === binding.manifestEntryDigest,
     );
-    if (!isRecord(entry) || entry.specDigest !== binding.usecaseSpecDigest) return false;
+    if (
+      !isRecord(entry) ||
+      (entry.specDigest !== undefined && entry.specDigest !== binding.usecaseSpecDigest)
+    )
+      return false;
     const entryPayload = entry.payload;
     if (
       !isRecord(entryPayload) ||
@@ -482,6 +487,7 @@ async function isTrustedEcosystemUsecase(
   db: PgDb,
   usecasePackageId: string | undefined,
   trustedPublicKeys: Readonly<Record<string, string>>,
+  assetRevisionId?: string,
 ) {
   if (!usecasePackageId) return false;
   const [row] = await db
@@ -490,8 +496,10 @@ async function isTrustedEcosystemUsecase(
       manifest: ecosystemReleases.manifest,
       manifestEntryDigest: ecosystemReleaseAssets.manifestEntryDigest,
       manifestEntryDigestKey: ecosystemReleaseAssets.ecosystemKey,
-      packageSpec: usecasePackages.spec,
-      packageSpecDigest: usecasePackages.specDigest,
+      packageSpec: assetRevisionId ? usecasePackageRevisions.spec : usecasePackages.spec,
+      packageSpecDigest: assetRevisionId
+        ? usecasePackageRevisions.specDigest
+        : usecasePackages.specDigest,
       provenance: usecasePackageRevisions.provenance,
       releaseKey: ecosystemReleases.releaseKey,
       revisionSpec: usecasePackageRevisions.spec,
@@ -515,7 +523,9 @@ async function isTrustedEcosystemUsecase(
         eq(ecosystemReleaseAssets.usecasePackageId, usecasePackageId),
         eq(ecosystemReleaseAssets.kind, "usecase"),
         eq(ecosystemReleaseAssets.usecaseSpecDigest, usecasePackageRevisions.specDigest),
-        eq(usecasePackages.specDigest, usecasePackageRevisions.specDigest),
+        assetRevisionId
+          ? eq(ecosystemReleaseAssets.assetRevisionId, assetRevisionId)
+          : eq(usecasePackages.specDigest, usecasePackageRevisions.specDigest),
         eq(ecosystemReleases.status, "active"),
       ),
     )
@@ -641,6 +651,7 @@ export class JobService {
         this.db,
         data.usecasePackageId,
         this.ecosystemReleaseTrustedKeys,
+        options.trustedUsecaseRevisionId,
       )) ||
       (await isTrustedEcosystemSandboxScript(
         this.db,

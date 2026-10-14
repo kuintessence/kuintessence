@@ -286,6 +286,13 @@ jobs:
           SEED_TEST_DATABASE_URL: postgres://kq:kq@localhost:5432/kuintessence
           LOG_LEVEL: warn
 
+      - name: Type check cross-package workflow contracts
+        run: >-
+          bun node_modules/typescript/bin/tsc --noEmit --strict
+          --noUncheckedIndexedAccess --skipLibCheck --target ESNext
+          --module ESNext --moduleResolution bundler --types bun-types
+          scripts/workflow-software.pg.test.ts
+
       - name: Run isolated unit tests
         run: bun run test:unit
         env:

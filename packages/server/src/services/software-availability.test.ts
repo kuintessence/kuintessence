@@ -5,6 +5,7 @@ import {
   authorizeSoftwareAssetAccessThroughSpice,
   evaluateRuntimeAvailability,
   evaluateUsecasePolicy,
+  findInstalledSpec,
   mergeEffectiveAvailabilityPolicyLayers,
   patternMatches,
   softwareAvailabilityGrantSubjectIds,
@@ -309,4 +310,12 @@ describe("software availability canonical local subjects", () => {
       false,
     );
   });
+});
+
+test("a different installed version or variant cannot satisfy an exact workflow spec", () => {
+  const installed = new Set(["example@1.0", "example@2.0+mpi"]);
+  expect(findInstalledSpec(installed, "example@3.0")).toBeUndefined();
+  expect(findInstalledSpec(installed, "example@2.0~mpi")).toBeUndefined();
+  expect(findInstalledSpec(installed, "example@2.0+mpi")).toBe("example@2.0+mpi");
+  expect(findInstalledSpec(installed, "example")).toBe("example@1.0");
 });

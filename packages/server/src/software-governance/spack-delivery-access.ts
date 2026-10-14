@@ -41,43 +41,8 @@ export function createSpackDeliveryAccess(
       ) {
         return null;
       }
-      const [user] = await db
-        .select({ role: users.role, suspended: users.suspended })
-        .from(users)
-        .where(eq(users.id, row.requestedBy))
-        .limit(1);
-      if (!user || user.suspended) return null;
-      const memberships = await db
-        .select({ orgId: userOrgMemberships.orgId, role: userOrgMemberships.role })
-        .from(userOrgMemberships)
-        .where(eq(userOrgMemberships.userId, row.requestedBy));
-      const scope = deriveCpScope(
-        {
-          sub: row.requestedBy,
-          role: user.role,
-          orgIds: memberships.map((membership) => membership.orgId),
-          memberships,
-        },
-        { allowEmptyScope: true },
-      );
-      const localAllowed =
-        scope.localAllowed !== false &&
-        (scope.isPlatformWide ||
-          (row.providerOrgId !== null && scope.orgIds.includes(row.providerOrgId)));
-      const check = {
-        actorUserId: row.requestedBy,
-        resource: { type: "agent", id: row.agentId },
-        permission: "operate",
-        subject: { type: "user", id: row.requestedBy },
-        context: { localAllowed, source: "spack-material-delivery" },
-        localAllowed,
-      };
-      if (authz.mode === "enforce") {
-        await authz.requirePermission(check, scope.isPlatformWide);
-      } else {
-        if (!localAllowed) return null;
-        if (authz.mode === "shadow") await authz.shadowCheck(check);
-      }
+      if (!(await canOperateSpackAgent(db, authz, { ...row, requestedBy: row.requestedBy })))
+        return null;
       const policy = await resolveEffectiveSpackPolicy(db, row.agentId);
       if (decideSpackPolicy(row.spec, policy) !== "allow") return null;
       return {
@@ -105,4 +70,50 @@ export function createSpackDeliveryAccess(
       return row !== undefined;
     },
   };
+}
+
+/** Shared operation permission check for material delivery and workflow install reuse. */
+export async function canOperateSpackAgent(
+  db: PgDb,
+  authz: Pick<AuthzService, "mode" | "requirePermission" | "shadowCheck">,
+  row: { agentId: string; requestedBy: string; providerOrgId: string | null },
+): Promise<boolean> {
+  const [user] = await db
+    .select({ role: users.role, suspended: users.suspended })
+    .from(users)
+    .where(eq(users.id, row.requestedBy))
+    .limit(1);
+  if (!user || user.suspended) return false;
+  const memberships = await db
+    .select({ orgId: userOrgMemberships.orgId, role: userOrgMemberships.role })
+    .from(userOrgMemberships)
+    .where(eq(userOrgMemberships.userId, row.requestedBy));
+  const scope = deriveCpScope(
+    {
+      sub: row.requestedBy,
+      role: user.role,
+      orgIds: memberships.map((membership) => membership.orgId),
+      memberships,
+    },
+    { allowEmptyScope: true },
+  );
+  const localAllowed =
+    scope.localAllowed !== false &&
+    (scope.isPlatformWide ||
+      (row.providerOrgId !== null && scope.orgIds.includes(row.providerOrgId)));
+  const check = {
+    actorUserId: row.requestedBy,
+    resource: { type: "agent", id: row.agentId },
+    permission: "operate",
+    subject: { type: "user", id: row.requestedBy },
+    context: { localAllowed, source: "spack-material-delivery" },
+    localAllowed,
+  };
+  if (authz.mode === "enforce") {
+    await authz.requirePermission(check, scope.isPlatformWide);
+  } else {
+    if (!localAllowed) return false;
+    if (authz.mode === "shadow") await authz.shadowCheck(check);
+  }
+  return true;
 }

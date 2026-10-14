@@ -1,5 +1,7 @@
+import { createHash } from "node:crypto";
 import {
   agents,
+  jobs,
   type PgDb,
   softwareOperations,
   softwarePolicies,
@@ -11,7 +13,7 @@ import {
   SoftwareOperationStatus,
 } from "@kuintessence/proto";
 import { AppError, decideSpackPolicy, ErrorCode, type SpackPolicy } from "@kuintessence/shared";
-import { and, desc, eq, inArray, isNull, or } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, or, sql } from "drizzle-orm";
 import type { AgentDispatcher } from "../grpc/dispatcher";
 import type { CpScope } from "../middleware/cp-rbac";
 import type { InstalledRegistry } from "./installed-registry";
@@ -50,6 +52,11 @@ export class SoftwareOperationService {
     private readonly prepareSpackInstall?: (
       input: SpackInstallPreparation,
     ) => Promise<SpackInstallTicket>,
+    private readonly authorizeJobInstall?: (input: {
+      agentId: string;
+      requestedBy: string;
+      providerOrgId: string | null;
+    }) => Promise<void>,
   ) {}
 
   async requestOperation(input: {
@@ -118,6 +125,16 @@ export class SoftwareOperationService {
     if (!created) {
       throw new AppError(ErrorCode.INTERNAL_ERROR, "Software operation insert failed", 500);
     }
+    return this.dispatchOperation(created);
+  }
+
+  private async dispatchOperation(
+    created: typeof softwareOperations.$inferSelect,
+  ): Promise<SoftwareOperationView> {
+    const input = created;
+    const spec = created.spec;
+    const action = normalizeSoftwareOperationAction(created.action);
+    if (!input.requestedBy) throw new Error("Software operation has no requester");
     let policyRejection: string | null;
     try {
       policyRejection = await this.policyRejection(input.agentId, action, spec);
@@ -197,6 +214,94 @@ export class SoftwareOperationService {
       .where(eq(softwareOperations.id, created.id))
       .returning();
     return rowToView(updated ?? created);
+  }
+
+  /** Caller must pass the governed availability check for this exact agent/spec first. */
+  async requestInstallForJob(input: {
+    jobId: string;
+    agentId: string;
+    spec: string;
+    requestedBy: string;
+  }): Promise<SoftwareOperationView> {
+    if (!this.authorizeJobInstall) throw new Error("Workflow install authorization is unavailable");
+    const agent = await this.assertAgentExists(input.agentId);
+    await this.authorizeJobInstall({
+      agentId: input.agentId,
+      requestedBy: input.requestedBy,
+      providerOrgId: agent.providerOrgId,
+    });
+    input = { ...input, spec: normalizeSoftwareOperationSpec(input.spec) };
+    const idempotencyKey = `workflow:${input.jobId}:${createHash("sha256").update(input.spec).digest("hex")}`;
+    const result = await this.db.transaction(async (tx) => {
+      await tx.execute(
+        sql`select pg_advisory_xact_lock(hashtextextended(${`software-install:${input.agentId}:${input.spec}`}, 0))`,
+      );
+      const [job] = await tx
+        .select()
+        .from(jobs)
+        .where(and(eq(jobs.id, input.jobId), eq(jobs.submittedBy, input.requestedBy)))
+        .limit(1);
+      if (!job || job.status !== "pending")
+        throw new Error("Job is no longer waiting for software installation");
+      const [existing] = await tx
+        .select()
+        .from(softwareOperations)
+        .where(
+          and(
+            eq(softwareOperations.agentId, input.agentId),
+            eq(softwareOperations.spec, input.spec),
+            eq(softwareOperations.action, "install"),
+            or(
+              inArray(softwareOperations.status, ["queued", "running"]),
+              and(
+                eq(softwareOperations.requestedBy, input.requestedBy),
+                eq(softwareOperations.idempotencyKey, idempotencyKey),
+              ),
+            ),
+          ),
+        )
+        .orderBy(desc(softwareOperations.requestedAt))
+        .limit(1);
+      const operation =
+        existing ??
+        (
+          await tx
+            .insert(softwareOperations)
+            .values({
+              agentId: input.agentId,
+              requestedBy: input.requestedBy,
+              action: "install",
+              spec: input.spec,
+              idempotencyKey,
+              idempotencyItemIndex: 0,
+              idempotencyItemCount: 1,
+            })
+            .returning()
+        )[0];
+      if (!operation) throw new Error("Software operation insert failed");
+      await tx
+        .update(jobs)
+        .set({
+          softwareRequirements: (job.softwareRequirements ?? []).map((req) =>
+            (req.spec ?? (req.version ? `${req.name}@${req.version}` : req.name)) === input.spec
+              ? { ...req, operationId: operation.id }
+              : req,
+          ),
+        })
+        .where(and(eq(jobs.id, input.jobId), eq(jobs.status, "pending")));
+      return { operation, created: !existing };
+    });
+    // Commit the operation and job link before material delivery reads them on another connection.
+    return result.created ? this.dispatchOperation(result.operation) : rowToView(result.operation);
+  }
+
+  async getOperation(id: string): Promise<SoftwareOperationView | null> {
+    const [row] = await this.db
+      .select()
+      .from(softwareOperations)
+      .where(eq(softwareOperations.id, id))
+      .limit(1);
+    return row ? rowToView(row) : null;
   }
 
   async listOperations(input: {

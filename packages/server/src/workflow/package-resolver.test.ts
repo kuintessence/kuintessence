@@ -81,6 +81,7 @@ describe("createPackageResolver", () => {
         assetId: softwareAssetId,
         name: "openfoam",
         version: "2312",
+        spec: "openfoam@2312+mpi",
         installable: false,
       },
     ]);
@@ -107,4 +108,32 @@ describe("createPackageResolver", () => {
       "does not match the usecase software selector",
     );
   });
+});
+
+test("only requests installation when the injected governance decision permits the frozen spec", async () => {
+  for (const allowed of [true, false]) {
+    const calls: string[] = [];
+    const resolver = createPackageResolver(
+      {
+        getById: async () => ({ spec: typedSpec }),
+        getSoftwareRevision: async () => ({
+          asset: { id: "asset", ...typedSpec.softwareRef, providerOrgId: null },
+          payload: {
+            kind: "spack-package",
+            spack: { packageName: "openfoam", defaultSpec: "openfoam@2312+mpi" },
+          },
+          recipeSha256: null,
+          contentSha256: null,
+        }),
+      },
+      async (assetId, spec) => {
+        calls.push(`${assetId}:${spec}`);
+        return allowed;
+      },
+    );
+    expect((await resolver("usecase", "revision")).softwareRequirements?.[0]?.installable).toBe(
+      allowed,
+    );
+    expect(calls).toEqual(["asset:openfoam@2312+mpi"]);
+  }
 });

@@ -2,6 +2,7 @@ import {
   type PgDb,
   softwareAssetRevisions,
   softwareAssets,
+  usecasePackageRevisions,
   usecasePackages,
 } from "@kuintessence/db";
 import { SoftwareAssetPayloadSchema } from "@kuintessence/shared";
@@ -34,6 +35,22 @@ export function createDbPackageStore(db: PgDb): PackageStore {
         .limit(1);
       const payload = SoftwareAssetPayloadSchema.safeParse(revision?.payload);
       if (!payload.success || payload.data.kind !== "usecase") return null;
+      if (payload.data.usecasePackageRevisionId) {
+        if (!payload.data.usecasePackageId)
+          throw new Error("Frozen usecase package identity is missing");
+        const [frozen] = await db
+          .select()
+          .from(usecasePackageRevisions)
+          .where(
+            and(
+              eq(usecasePackageRevisions.id, payload.data.usecasePackageRevisionId),
+              eq(usecasePackageRevisions.packageId, payload.data.usecasePackageId),
+            ),
+          )
+          .limit(1);
+        if (!frozen) throw new Error("Frozen usecase package revision binding is invalid");
+        return { spec: frozen.spec, usecasePackageId: frozen.packageId };
+      }
       return {
         spec: payload.data.spec,
         ...(payload.data.usecasePackageId

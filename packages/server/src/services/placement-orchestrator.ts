@@ -35,6 +35,8 @@ import { SoftwareFilter } from "../scheduler/filters/software";
 import { UrgencyFilter } from "../scheduler/filters/urgency";
 import { runPlacementWithTrace } from "../scheduler/placement-trace";
 import type { AgentRow, FilterStage, RejectionTrace } from "../scheduler/types";
+import type { SoftwareOperationService } from "../software-governance/operation-service";
+import { waitForSoftwareInstallation } from "../software-governance/wait-for-installation";
 import type { AgentManager } from "./agent-manager";
 import type { ResolvedDataDelivery, RestrictedSandboxDeliveryBinding } from "./data-delivery";
 import type { DataPrerequisitePlacementGate, DataRequirement } from "./data-prerequisite";
@@ -185,7 +187,9 @@ export class PlacementOrchestrator {
       queueRegistry?: QueueRegistryService;
       computeHealth?: ComputeHealthFilterOptions;
       db?: PgDb;
-      softwareAvailability?: SoftwareAvailabilityService;
+      softwareAvailability?: Pick<SoftwareAvailabilityService, "resolve">;
+      softwareOperations?: Pick<SoftwareOperationService, "requestInstallForJob" | "getOperation">;
+      softwareInstallTimeoutMs?: number;
       dataPrerequisites?: DataPrerequisitePlacementGate;
       loadPersistedDataPrerequisites?: (jobId: string) => Promise<DataRequirement[]>;
       resolveLicensedMaterials?: (input: {
@@ -512,6 +516,23 @@ export class PlacementOrchestrator {
     if (!selectedAgent) {
       throw new Error(`Placement selected unknown agent ${agentId}`);
     }
+    try {
+      await this.deps.jobService.setPlacementTrace(jobId, trace);
+    } catch (err) {
+      logger.warn({ jobId, err }, "Failed to persist placement trace");
+    }
+    if (await this.installMissingSoftware(input, agentId)) {
+      return this.placeAndDispatch({
+        ...input,
+        job: {
+          ...input.job,
+          softwareRequirements: input.job.softwareRequirements?.map((req) => ({
+            ...req,
+            installable: false,
+          })),
+        },
+      });
+    }
     const selectedQueue =
       schedulingIntent.queueSelection ??
       schedulingIntent.preferredQueueSelections.find(
@@ -540,11 +561,6 @@ export class PlacementOrchestrator {
         observedAt: dispatchQueue?.queueObservedAt ?? null,
       },
     );
-    try {
-      await this.deps.jobService.setPlacementTrace(jobId, trace);
-    } catch (err) {
-      logger.warn({ jobId, err }, "Failed to persist placement trace");
-    }
 
     let licensedMaterialMounts: LicensedMaterialDispatchMount[] = [];
     if (this.deps.dataPrerequisites && dataRequirements.length > 0) {
@@ -778,7 +794,7 @@ export class PlacementOrchestrator {
       new BillingFilter({ quotas: quotaMap }),
       new LoadFilter(),
       new UrgencyFilter((agentId) => activeJobsByAgent.get(agentId) ?? 0),
-      new InstallRightsFilter(),
+      new InstallRightsFilter(softwareAvailability),
       new ManualFilter(),
       new AutoFilter(sink),
     ];
@@ -896,6 +912,57 @@ export class PlacementOrchestrator {
     return result;
   }
 
+  private async installMissingSoftware(
+    input: PlaceAndDispatchInput,
+    agentId: string,
+  ): Promise<boolean> {
+    let installed = false;
+    for (const requirement of input.job.softwareRequirements ?? []) {
+      if (!requirement.installable) continue;
+      const availability = this.deps.softwareAvailability;
+      const operations = this.deps.softwareOperations;
+      if (!availability || !operations)
+        throw new Error("Governed software installation is unavailable");
+      const principal = {
+        sub: input.userId,
+        userId: input.userId,
+        role: input.userRole,
+        email: `${input.userId}@local`,
+        orgId: input.orgId,
+        orgIds: input.orgId ? [input.orgId] : [],
+        memberships: [],
+        capabilities: [],
+      };
+      const request = availabilityRequestForRequirement(requirement, [agentId]);
+      const resolved = await availability.resolve(request, principal);
+      if (resolved.installedAvailable.some((node) => node.agentId === agentId)) continue;
+      if (!resolved.installableAvailable.some((node) => node.agentId === agentId)) {
+        throw new Error(
+          `Software installation denied: ${resolved.blocked.flatMap((node) => node.reasons).join("; ")}`,
+        );
+      }
+      const operation = await operations.requestInstallForJob({
+        jobId: input.jobId,
+        agentId,
+        spec: resolved.spec,
+        requestedBy: input.userId,
+      });
+      await waitForSoftwareInstallation({
+        operationId: operation.id,
+        timeoutMs: this.deps.softwareInstallTimeoutMs ?? 24 * 60 * 60 * 1000,
+        readJobStatus: async () =>
+          (await this.deps.jobService.getById(input.jobId))?.status ?? "failed",
+        readOperation: () => operations.getOperation(operation.id),
+        inventoryReady: async () =>
+          (
+            await availability.resolve({ ...request, installable: false }, principal)
+          ).installedAvailable.some((node) => node.agentId === agentId),
+      });
+      installed = true;
+    }
+    return installed;
+  }
+
   private async loadSoftwareAvailability(
     job: JobSubmit,
     agentIds: string[],
@@ -920,7 +987,15 @@ export class PlacementOrchestrator {
             capabilities: [],
           },
         );
-        const reasonsByAgent = new Map<string, string[]>();
+        const reasonsByAgent = new Map(
+          agentIds.map((id) => [id, ["software availability was not confirmed"]]),
+        );
+        for (const allowed of [
+          ...(response?.installedAvailable ?? []),
+          ...(response?.installableAvailable ?? []),
+        ]) {
+          reasonsByAgent.set(allowed.agentId, []);
+        }
         for (const blocked of response?.blocked ?? []) {
           reasonsByAgent.set(blocked.agentId, blocked.reasons);
         }
@@ -1009,9 +1084,9 @@ export function availabilityRequestForRequirement(
   requirement: NonNullable<JobSubmit["softwareRequirements"]>[number],
   agentIds: string[],
 ): SoftwareAvailabilityRequest {
-  const rawSpec = requirement.version
-    ? `${requirement.name}@${requirement.version}`
-    : requirement.name;
+  const rawSpec =
+    requirement.spec ??
+    (requirement.version ? `${requirement.name}@${requirement.version}` : requirement.name);
   return {
     rawSpec,
     ...(requirement.assetId

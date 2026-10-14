@@ -1,18 +1,25 @@
 import { createHash } from "node:crypto";
 import {
+  authzOutbox,
   type PgDb,
   softwareAssetGrants,
   softwareAssetRevisions,
   softwareAssets,
 } from "@kuintessence/db";
-import type {
-  SoftwareAssetCapability,
-  SoftwareAssetKind,
-  SoftwareAssetLifecycle,
-  SoftwareAssetPayload,
-  SoftwareAssetSource,
-  SoftwareAssetSummary,
-  SoftwareAssetVisibility,
+import {
+  type AuthzProjectionTuple,
+  type SoftwareAssetCapability,
+  type SoftwareAssetKind,
+  type SoftwareAssetLifecycle,
+  type SoftwareAssetPayload,
+  type SoftwareAssetSource,
+  type SoftwareAssetSummary,
+  type SoftwareAssetVisibility,
+  softwareAssetAuthzProjectionTuples,
+  softwareAssetGrantTuples,
+  softwareAssetOwnerOrgTuple,
+  softwareAssetOwnerTuple,
+  softwareAssetProviderTuple,
 } from "@kuintessence/shared";
 import { and, desc, eq, sql } from "drizzle-orm";
 import type { SpackPackageMetadata } from "./spack-package-parser";
@@ -61,7 +68,14 @@ export class SoftwareAssetService {
   }
 
   async upsertAsset(input: UpsertSoftwareAssetInput): Promise<SoftwareAssetSummary> {
+    return this.db.transaction((tx) => this.inTransaction(tx).upsertAssetInTransaction(input));
+  }
+
+  private async upsertAssetInTransaction(
+    input: UpsertSoftwareAssetInput,
+  ): Promise<SoftwareAssetSummary> {
     const existing = await this.findExistingAsset(input);
+    const before = existing ? await this.projection(existing) : [];
     const payloadHash = hashJson(input.payload);
     const row = existing
       ? await this.updateAsset(existing.id, input)
@@ -74,6 +88,7 @@ export class SoftwareAssetService {
       input.createdBy,
     );
     await this.ensureGrants(row.id, input.grants ?? [], input.createdBy ?? null);
+    await this.enqueueProjectionDelta(before, await this.projection(row));
     return rowToSummary(row);
   }
 
@@ -83,8 +98,20 @@ export class SoftwareAssetService {
     legacyValue: string,
     actor?: string | null,
   ): Promise<void> {
+    await this.db.transaction((tx) =>
+      this.inTransaction(tx).archiveLegacyAssetInTransaction(kind, legacyField, legacyValue, actor),
+    );
+  }
+
+  private async archiveLegacyAssetInTransaction(
+    kind: SoftwareAssetKind,
+    legacyField: string,
+    legacyValue: string,
+    actor?: string | null,
+  ): Promise<void> {
     const existing = await this.findByLegacyRef(kind, legacyField, legacyValue);
     if (!existing) return;
+    const before = await this.projection(existing);
     await this.db
       .update(softwareAssets)
       .set({
@@ -98,6 +125,10 @@ export class SoftwareAssetService {
         updatedAt: sql`now()`,
       })
       .where(eq(softwareAssets.id, existing.id));
+    await this.enqueueProjectionDelta(
+      before,
+      await this.projection({ ...existing, lifecycle: "archived", visibility: "hidden" }),
+    );
   }
 
   async syncUpstreamPackages(packages: UpstreamPackageInput[], createdBy?: string | null) {
@@ -155,6 +186,55 @@ export class SoftwareAssetService {
       )
       .limit(1);
     return row ?? null;
+  }
+
+  private async projection(row: AssetRow): Promise<AuthzProjectionTuple[]> {
+    const tuples = softwareAssetAuthzProjectionTuples({ ...row, assetId: row.id });
+    if (row.ownerUserId)
+      tuples.push(softwareAssetOwnerTuple({ assetId: row.id, userId: row.ownerUserId }));
+    if (row.ownerOrgId)
+      tuples.push(softwareAssetOwnerOrgTuple({ assetId: row.id, orgId: row.ownerOrgId }));
+    if (row.providerOrgId)
+      tuples.push(
+        softwareAssetProviderTuple({ assetId: row.id, providerOrgId: row.providerOrgId }),
+      );
+    const grants = await this.db
+      .select()
+      .from(softwareAssetGrants)
+      .where(eq(softwareAssetGrants.assetId, row.id));
+    for (const grant of grants) {
+      if (grant.subjectKind === "platform") continue;
+      tuples.push(
+        ...softwareAssetGrantTuples({
+          ...grant,
+          operation: row.lifecycle === "published" ? "create" : "delete",
+        }),
+      );
+    }
+    return tuples;
+  }
+
+  private async enqueueProjectionDelta(
+    before: AuthzProjectionTuple[],
+    after: AuthzProjectionTuple[],
+  ): Promise<void> {
+    const key = (tuple: AuthzProjectionTuple) => JSON.stringify([tuple.relation, tuple.subject]);
+    const next = new Map(after.map((tuple) => [key(tuple), tuple]));
+    const removed = before
+      .filter((tuple) => tuple.operation === "create" && !next.has(key(tuple)))
+      .map((tuple): AuthzProjectionTuple => ({ ...tuple, operation: "delete" }));
+    await this.db.insert(authzOutbox).values(
+      [...removed, ...after].map((tuple) => ({
+        operation: tuple.operation,
+        resourceType: tuple.resource.type,
+        resourceId: tuple.resource.id,
+        relation: tuple.relation,
+        subjectType: tuple.subject.type,
+        subjectId: tuple.subject.id,
+        subjectRelation: tuple.subject.relation ?? null,
+        payload: tuple.payload ?? {},
+      })),
+    );
   }
 
   private async findExistingAsset(input: UpsertSoftwareAssetInput): Promise<AssetRow | null> {

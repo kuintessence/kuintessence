@@ -27,6 +27,7 @@ export interface PackageStore {
  */
 export function createPackageResolver(
   store: PackageStore,
+  canInstall?: (assetId: string, spec: string) => Promise<boolean>,
 ): (usecaseVersionId: string, softwareVersionId: string) => Promise<ResolvedPackage> {
   return async (usecaseVersionId, softwareVersionId) => {
     const row = await store.getById(usecaseVersionId);
@@ -59,19 +60,24 @@ export function createPackageResolver(
     if (pkg.software.kind !== "Spack") {
       throw new Error("a frozen Spack software revision requires a Spack usecase package");
     }
+    const spackSpec = (
+      payload.spack.defaultSpec ?? `${payload.spack.packageName}@${revision.asset.version}`
+    ).trim();
     return {
       ...pkg,
+      usecaseVersionId,
       ...(row.usecasePackageId ? { usecasePackageId: row.usecasePackageId } : {}),
       software: {
         ...pkg.software,
-        name: payload.spack.defaultSpec ?? `${payload.spack.packageName}@${revision.asset.version}`,
+        name: spackSpec,
       },
       softwareRequirements: [
         {
           assetId: revision.asset.id,
+          spec: spackSpec,
           name: payload.spack.packageName,
           version: revision.asset.version,
-          installable: false,
+          installable: (await canInstall?.(revision.asset.id, spackSpec)) ?? false,
         },
       ],
     };

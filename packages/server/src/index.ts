@@ -174,7 +174,10 @@ import {
   PolicyStore,
   SoftwareOperationService,
 } from "./software-governance";
-import { createSpackDeliveryAccess } from "./software-governance/spack-delivery-access";
+import {
+  canOperateSpackAgent,
+  createSpackDeliveryAccess,
+} from "./software-governance/spack-delivery-access";
 import { SpackMaterialDelivery } from "./software-governance/spack-material-delivery";
 import { createRealMinioBackend, loadMinioConfigFromEnv } from "./storage/minio-client";
 import { WorkflowAsyncRunner } from "./workflow/async-runner";
@@ -387,6 +390,11 @@ const softwareOperations = new SoftwareOperationService(
     }
     return spackMaterialDelivery.prepareOperation(input);
   },
+  async (input) => {
+    if (!(await canOperateSpackAgent(db, authzService, input))) {
+      throw new AppError(ErrorCode.FORBIDDEN, "Agent operation permission denied", 403);
+    }
+  },
 );
 const metricsRecorder = new PgAgentMetricsRecorder(db);
 const queueObservability = new QueueObservabilityService(db, queueInventory);
@@ -427,6 +435,8 @@ const orchestrator = new PlacementOrchestrator({
   },
   db,
   softwareAvailability,
+  softwareOperations,
+  softwareInstallTimeoutMs: config.SERVER_JOB_COMPLETION_TIMEOUT_SEC * 1000,
   dataPrerequisites,
   loadPersistedDataPrerequisites: (jobId) => jobService.listDataPrerequisites(jobId),
   resolveLicensedMaterials: (input) =>
@@ -701,7 +711,6 @@ app.route("/api", createAgentRegistrationRoutes(agentRegistrationService));
 // completion registry, which the gRPC handler feeds.
 const jobCompletionRegistry = new JobCompletionRegistry();
 const workflowPackageStore = createDbPackageStore(db);
-const workflowPackageResolver = createPackageResolver(workflowPackageStore);
 const workflowDataSelectionValidator = createPgDataSelectionValidator(db);
 const namedReferenceResolver = new WorkflowNamedReferenceResolver(
   new PgWorkflowNamedReferenceRepository(db),
@@ -820,7 +829,26 @@ const makeRunner = (
             workflowRegistry.recordRun(name, submittedBy, result, graph),
         }
       : {}),
-    resolvePackage: workflowPackageResolver,
+    resolvePackage: createPackageResolver(workflowPackageStore, async (assetId, spec) => {
+      const availability = await softwareAvailability.resolve(
+        {
+          assetRef: { id: assetId, kind: "spack-package" },
+          rawSpec: spec,
+          installable: true,
+        },
+        {
+          sub: submittedBy,
+          userId: submittedBy,
+          role: userRole,
+          email: `${submittedBy}@local`,
+          orgId: activeOrgId ?? null,
+          orgIds: activeOrgId ? [activeOrgId] : [],
+          memberships: [],
+          capabilities: [],
+        },
+      );
+      return availability.installableAvailable.length > 0;
+    }),
     resolveWorkflowVersion,
     ...(sandboxExecutor ? { executeScript: sandboxExecutor.execute.bind(sandboxExecutor) } : {}),
     submitJob: createJobSubmitter({
@@ -834,7 +862,9 @@ const makeRunner = (
           userId: submittedBy,
           orgId: activeOrgId ?? null,
         });
-        const row = await workflowPackageStore.getById(spec.usecasePackageId);
+        const row = await workflowPackageStore.getById(
+          spec.usecaseVersionId ?? spec.usecasePackageId,
+        );
         if (!row) throw new Error(`usecase package not found: ${spec.usecasePackageId}`);
         const pkg = usecase.UsecasePackageSchema.parse(row.spec);
         if (!("softwareRef" in pkg)) {
@@ -902,6 +932,8 @@ const makeRunner = (
           {
             ...(activeOrgId !== undefined ? { orgId: activeOrgId } : {}),
             trustedMaterialization: true,
+            trustedUsecaseRevisionId:
+              spec.usecaseVersionId !== spec.usecasePackageId ? spec.usecaseVersionId : undefined,
             ...(activeRunId ? { workflow: { runId: activeRunId, nodeId: spec.nodeId } } : {}),
           },
         );

@@ -10,6 +10,7 @@ export const ResourceRequestSchema = z.object({
 
 export const SoftwareReqSchema = z.object({
   assetId: z.string().uuid().optional(),
+  spec: z.string().min(1).max(500).optional(),
   name: z.string().min(1),
   version: z.string().optional(),
   /** If true, user is requesting that this software be installed on the agent. */
