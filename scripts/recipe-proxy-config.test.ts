@@ -27,6 +27,61 @@ function directive(source: string, name: string): string | undefined {
   return new RegExp(`^\\s*${name}\\s+([^;]+);`, "m").exec(source)?.[1]?.trim();
 }
 
+describe("offline delivery proxy chain", () => {
+  const routes = [
+    ...configurations,
+    {
+      file: "deploy/helm/kq-platform/files/web-nginx.conf",
+      upstream: "http://registry:3100",
+      preview: false,
+    },
+    {
+      file: "deploy/helm/kq-platform/files/preview-nginx.conf.template",
+      upstream: "http://{{ .Release.Name }}-web:{{ .Values.web.port }}",
+      preview: true,
+    },
+    ...["single-domain", "multi-domain"].map((name) => ({
+      file: `deploy/reverse-proxy/${name}.conf.template`,
+      upstream: `http://\${REGISTRY_UPSTREAM}`,
+      preview: false,
+    })),
+    {
+      file: "deploy/reverse-proxy/multi-domain.conf.template",
+      upstream: `http://\${REGISTRY_UPSTREAM}`,
+      preview: false,
+      direct: true,
+    },
+  ];
+  for (const route of routes) {
+    const path =
+      "direct" in route ? "/api/offline-deliveries/" : "/software/api/offline-deliveries/";
+    test(`${route.file} ${path} permits bounded long preflight without losing authorization`, async () => {
+      const source = await readFile(new URL(`../${route.file}`, import.meta.url), "utf8");
+      const location = block(source, `location ^~ ${path}`);
+      if (!location) throw new Error("Missing offline delivery location");
+      expect(directive(location, "client_max_body_size")).toBe("2m");
+      expect(directive(location, "proxy_read_timeout")).toBe("1800s");
+      expect(directive(location, "proxy_pass")).toBe(route.upstream);
+      expect(directive(location, "proxy_set_header Authorization")).toBe(
+        route.preview ? "$preview_authorization" : "$registry_authorization",
+      );
+      if (route.preview) {
+        expect(directive(block(location, "if ($preview_allowed = 0)") ?? "", "return")).toBe(
+          "302 /__preview/unlock",
+        );
+      } else if (!("direct" in route)) {
+        const [pattern, replacement, mode] = (directive(location, "rewrite") ?? "").split(" ");
+        expect(mode).toBe("break");
+        expect(`${path}preflight`.replace(new RegExp(pattern), replacement)).toBe(
+          "/api/offline-deliveries/preflight",
+        );
+      } else {
+        expect(directive(location, "rewrite")).toBeUndefined();
+      }
+    });
+  }
+});
+
 describe("recipe upload nginx configuration (offline)", () => {
   for (const { file, upstream, preview } of configurations) {
     test(`${file} serves the material catalog without nginx's trailing-slash redirect`, async () => {

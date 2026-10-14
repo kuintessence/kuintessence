@@ -41,6 +41,17 @@ server {
     proxy_set_header Connection $connection_upgrade;
   }
 
+  location ^~ /software/api/offline-deliveries/ {
+    client_max_body_size 2m;
+    proxy_read_timeout 1800s;
+    rewrite ^/software(/.*)$ $1 break;
+    proxy_pass http://${REGISTRY_UPSTREAM};
+    proxy_http_version 1.1;
+    proxy_set_header Host $http_host;
+    proxy_set_header Authorization $registry_authorization;
+    proxy_set_header X-Forwarded-Proto https;
+  }
+
   location /software/api/ {
     rewrite ^/software(/.*)$ $1 break;
     proxy_pass http://${REGISTRY_UPSTREAM};
@@ -83,6 +94,17 @@ server {
 
   ssl_certificate /etc/nginx/tls/server.crt;
   ssl_certificate_key /etc/nginx/tls/server.key;
+
+  location ^~ /api/offline-deliveries/ {
+    client_max_body_size 2m;
+    proxy_read_timeout 1800s;
+    proxy_pass http://${REGISTRY_UPSTREAM};
+    proxy_http_version 1.1;
+    proxy_request_buffering off;
+    proxy_set_header Host $http_host;
+    proxy_set_header Authorization $registry_authorization;
+    proxy_set_header X-Forwarded-Proto https;
+  }
 
   location / {
     proxy_pass http://${REGISTRY_UPSTREAM};

@@ -4,6 +4,12 @@
 导入 recipe/material、生态 stage、安装映射 bind、生态 activate 分项记录；
 这些结果均不代表真实软件安装或作业验收成功。
 
+运行时预检会校验完整 recipe，大型目录可能超过一分钟。Web、AIO、Preview、Helm
+及单域名/多域名反向代理为 `/software/api/offline-deliveries/` 保留 1800 秒响应等待和
+2 MiB 请求上限；独立软件域名对应 `/api/offline-deliveries/`。自定义外层代理也必须
+同步此配置，否则内层允许的长请求仍会在外层默认 60 秒时返回 504。鉴权转发及
+Preview 访问门禁保持有效；预检完成仍须检查逐项结果。
+
 ## 格式与材料端分工
 
 合同实现位于 `packages/shared/src/offline-delivery.ts`、`spack-materials.ts`、
