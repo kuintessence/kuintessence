@@ -77,7 +77,9 @@ target/profile、recipe、lock/source、导入 binding 和科学运行证据。�
 
 准备器与受管 worker 均仅加载隔离的内部配置 scope，不额外叠加 Spack 安装目录、
 用户或站点 defaults。相同 spec 和 recipe 不足以保证相同依赖 DAG；
-provider preference、external 和 target 配置也必须一致。重新求解的 root/DAG hash
+worker 从验证通过的 native lock 恢复各包精确版本、variants、compiler flags、target
+和唯一的 virtual/provider 选择，作为抽象约束重新求解；external 仍须与 site profile 绑定。
+同名多节点或冲突 provider 暂不支持并明确拒绝，不能默选一条。重新求解的 root/DAG hash
 与 lock 不符时必须停止，不能手改 lock 或放宽校验来接受材料。
 
 案例显式选择官方 ncurses 的 `+symlinks` 和 `pkgconf` provider，以避免其默认

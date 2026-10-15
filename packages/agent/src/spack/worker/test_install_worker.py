@@ -43,6 +43,7 @@ class InstallSpec(fixtures.FakeSpec):
             None,
             "{namespace}.{name}{@version}{variants}{compiler_flags} arch={architecture}",
             "{name}{@version}{variants}{compiler_flags} arch={architecture}",
+            "{name}@={version}{variants}{compiler_flags} arch={architecture}",
         )
         namespace = f"{self.namespace}." if template is None or "{namespace}" in template else ""
         variants = "".join(f" {name}={value}" for name, value in self.variants.items())
@@ -58,6 +59,12 @@ class InstallSpec(fixtures.FakeSpec):
     def traverse(self):
         yield self
         yield from self.dependencies()
+
+    def edges_to_dependencies(self):
+        return [types.SimpleNamespace(
+            spec=self.native.nodes[edge["hash"]],
+            virtuals=edge.get("parameters", {}).get("virtuals", []),
+        ) for edge in self.node.get("dependencies", [])]
 
 
 class Native(fixtures.Native):
@@ -628,6 +635,111 @@ class InstallTests(unittest.TestCase):
                 )
                 self.assertFalse(config["packages"][name]["buildable"])
                 self.assertEqual(external.namespace, original_namespace)
+
+    def test_solver_reproduces_nondefault_dependency_constraints_without_changing_lock(self):
+        dependency = self.add_external()
+        del dependency["external"]
+        dependency.update(name="mathlib", version="1.2", parameters={
+            "precision": "double", "patches": ["a" * 64], "cflags": ["-O2", "-fPIC"],
+        })
+        self.profile["externals"] = []
+        edge = self.lock["concrete_specs"][fixtures.ROOT_HASH]["dependencies"][0]
+        edge.update(name="mathlib", parameters={"deptypes": ["build"], "virtuals": ["math-api"]})
+        self.native = Native(self.work, self.lock, self.store)
+        pinned = self.native.nodes[fixtures.DEP_HASH]
+        pinned.variants = {key: copy.deepcopy(dependency["parameters"][key])
+                           for key in ("precision", "patches")}
+        pinned.compiler_flags = ' cflags="-O2 -fPIC"'
+        self.make_output()
+        lock, variants = copy.deepcopy(self.lock), copy.deepcopy(pinned.variants)
+        solver = self.native.modules["spack.concretize"]
+        original = solver.concretize_one
+
+        def solve(abstract, **kwargs):
+            # This fixture solver accepts the pinned build dependency only with its constraints.
+            self.assertEqual(self.native.config["packages"]["mathlib"]["require"], [
+                'mathlib@=1.2 precision=double cflags="-O2 -fPIC" arch=linux-ubuntu24.04-x86_64',
+            ])
+            self.assertEqual(self.native.config["packages"]["math-api"], {"require": ["mathlib"]})
+            self.assertEqual(self.native.config["packages"]["hello"]["require"], [
+                "hello@=1.0 arch=linux-ubuntu24.04-x86_64",
+            ])
+            self.assertEqual(abstract.text, self.manifest["spec"])
+            self.assertEqual(kwargs, {"tests": False})
+            return original(abstract, **kwargs)
+
+        with patch.object(solver, "concretize_one", side_effect=solve) as called:
+            result = self.run_worker()
+        called.assert_called_once()
+        self.assertEqual(result["root"]["hash"], fixtures.ROOT_HASH)
+        self.assertEqual(self.lock, lock)
+        self.assertEqual(pinned.variants, variants)
+        self.assertEqual((self.work / "env/spack.lock").read_bytes(),
+                         (self.input / "blobs" / self.manifest["lockfile"]["digest"][7:]).read_bytes())
+
+    def test_solver_rejects_illegal_or_inconsistent_nonexternal_dependency_before_build(self):
+        node = self.add_external()
+        del node["external"]
+        self.profile["externals"] = []
+        self.make_output()
+        for failure in ("recipe-conflict", "version", "hash"):
+            with self.subTest(failure=failure):
+                self.work = self.base / ("work-" + failure)
+                self.work.mkdir(mode=0o700)
+                self.native = Native(self.work, self.lock, self.store)
+                if failure == "recipe-conflict":
+                    self.native.solver_error = ValueError("unsatisfiable dependency constraint")
+                    error, message = ValueError, "unsatisfiable"
+                else:
+                    solved = Native(self.work, self.lock, self.store)
+                    solved.hash_descriptor = self.native.hash_descriptor
+                    if failure == "version":
+                        solved.nodes[fixtures.DEP_HASH].version = "9.9"
+                        message = "native-binding"
+                    else:
+                        solved.recomputed_hash = "z" * 32
+                        message = "native-hash"
+                    self.native.solved_root = solved.roots[0]
+                    error = audit.AuditError
+                with self.assertRaisesRegex(error, message):
+                    self.run_worker()
+                self.assertTrue(any(call[0] == "solve" for call in self.native.calls))
+                self.assertNotIn(("installer",), self.native.calls)
+
+    def test_configuration_rejects_duplicate_package_names_even_with_equal_constraints(self):
+        self.add_external()
+        dependency = self.native.nodes[fixtures.DEP_HASH]
+        for external, version in ((True, "1.0"), (False, "1.0"), (False, "2.0")):
+            with self.subTest(external=external, version=version), self.runtime():
+                dependency.external = external
+                dependency.version = version
+                dependency.name = self.native.roots[0].name
+                with self.assertRaisesRegex(audit.AuditError, "solver-duplicate-package"):
+                    worker.configuration(self.work, self.native.nodes, self.profile["target"])
+        self.assertNotIn(("installer",), self.native.calls)
+
+    def test_configuration_restores_providers_and_rejects_conflicting_choices(self):
+        self.add_external()
+        edge = self.lock["concrete_specs"][fixtures.ROOT_HASH]["dependencies"][0]
+        edge["parameters"] = {"virtuals": ["c", "cxx"]}
+        with self.runtime():
+            config = worker.configuration(self.work, self.native.nodes, self.profile["target"])
+            for virtual in ("c", "cxx"):
+                self.assertEqual(config["packages"][virtual], {"require": ["gcc"]})
+            conflict = types.SimpleNamespace(spec=self.native.roots[0], virtuals=["c"])
+            with patch.object(self.native.nodes[fixtures.DEP_HASH], "edges_to_dependencies",
+                              return_value=[conflict]):
+                with self.assertRaisesRegex(audit.AuditError, "solver-provider-conflict"):
+                    worker.configuration(self.work, self.native.nodes, self.profile["target"])
+
+    def test_configuration_rejects_concrete_or_hash_constraint(self):
+        for field, value in (("concrete", True), ("abstract_hash", fixtures.ROOT_HASH)):
+            with self.subTest(field=field), self.runtime():
+                abstract = self.native.spec("hello")
+                setattr(abstract, field, value)
+                with patch.object(self.native.modules["spack.spec"], "Spec", return_value=abstract):
+                    with self.assertRaisesRegex(audit.AuditError, "solver-hash-shortcut"):
+                        worker.configuration(self.work, self.native.nodes, self.profile["target"])
 
     def test_solver_external_namespace_mismatch_fails_before_build(self):
         self.add_external()

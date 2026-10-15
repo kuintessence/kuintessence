@@ -578,9 +578,18 @@ profile 文件及宿主文件的解析链须 root 所有，目录和常规文件
 recipe 仍是可信任前提下执行的任意 Python；分开 verify 也不构成防恶意 recipe 的信任证明。
 worker 实现固定材料复验、native solver 对照、安装树检查和 load 校验；
 这些检查不能替代真实站点验收，也不能把静态预检报告升级成完整求解证明。
-external 的求解配置从锁定 spec 的副本生成，不把 native `patches` 内部元数据当作
-用户输入 variant；原 lock、recipe 校验和重新求解后的完整 DAG/hash 对照保持不变。
-external 输入不带 namespace 前缀，避免 Spack 1.0.0 的 external 条件与 namespace
+求解配置从源码审计及 native 绑定通过后的 lock specs 副本生成，无需额外合同字段。
+非 external 包通过 `packages.<name>.require` 恢复精确版本（`@=`）、variants、
+compiler flags 和完整 arch，包含 root 及纯 build 依赖；external 仍使用固定前缀声明。
+native 依赖边中的 virtual/provider 选择转换为 virtual 的 `require` 硬约束，
+不再只凭 manifest root spec 和默认依赖偏好重求解。
+所有输入均为纯抽象约束，去除 native `patches` 内部元数据，由 recipe/solver 重新推导；
+禁止 `/hash`、concrete reuse、concretization cache 和 solver bootstrap/download。
+仍执行真实 solver，随后严格 `bind_native` 核对完整 DAG/hash；不能直接用 lock 充当求解结果。
+包级约束无法表达同名多节点（即使版本/variants 相同），此时以
+`solver-duplicate-package` 拒绝；同一 virtual 选择多个 provider 时以
+`solver-provider-conflict` 拒绝，不静默挑选或改写 lock。
+输入不带 namespace 前缀，避免 Spack 1.0.0 的 external 条件与 namespace
 赋值形成循环；求解后仍逐节点严格核对 namespace。同名 recipe 若解析到其他 namespace，
 会在 build 前拒绝，不会替换锁定依赖或放宽完整 arch、版本及 compiler flags。
 求解候选的 granularity 按已验证 site profile 的 target 选择：vendored archspec 标为

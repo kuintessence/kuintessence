@@ -340,6 +340,7 @@ def bind_native(root: object, lock: dict, profile: dict) -> dict:
 
 
 def configuration(work: Path, nodes: dict, target_arch: str) -> dict:
+    import spack.spec
     import spack.vendor.archspec.cpu as cpu
 
     _, _, cpu_name = target_arch.split("-")
@@ -366,20 +367,37 @@ def configuration(work: Path, nodes: dict, target_arch: str) -> dict:
         # Pure build dependencies do not inherit the root architecture in Spack 1.0.
         "require": ["arch=" + target_arch],
     }
+    names, providers = set(), {}
     for spec in nodes.values():
+        # shortcut: package-wide requirements cannot distinguish duplicate names; reject until scoped constraints exist.
+        require(spec.name not in names, "solver-duplicate-package")
+        names.add(spec.name)
+        pinned = spec.copy(deps=False)
+        # Native patch ordering is solver output, not an input variant.
+        pinned.variants.pop("patches", None)
+        # Never format concrete /hash or namespace conditions (Spack 1.0 can self-cycle).
+        constraint = pinned.format("{name}@={version}{variants}{compiler_flags}"
+                                   " arch={architecture}")
+        abstract = spack.spec.Spec(constraint)
+        require(all(not n.concrete and not n.abstract_hash for n in abstract.traverse()),
+                "solver-hash-shortcut")
         if spec.external:
-            entry = data["packages"].setdefault(spec.name, {"buildable": False, "externals": []})
-            external = spec.copy(deps=False)
-            # Native patch ordering is solver output, not a packages.yaml input variant.
-            external.variants.pop("patches", None)
-            # str(concrete_spec) includes /hash and would shortcut the solver.
-            # Spack 1.0 external namespace conditions can self-cycle; bind_native checks it.
-            entry["externals"].append({
-                "spec": external.format("{name}{@version}{variants}{compiler_flags}"
-                                        " arch={architecture}"),
+            data["packages"][spec.name] = {"buildable": False, "externals": [{
+                "spec": constraint,
                 "prefix": str(spec.external_path),
                 "extra_attributes": copy.deepcopy(spec.extra_attributes),
-            })
+            }]}
+        else:
+            data["packages"][spec.name] = {"require": [constraint]}
+        for edge in spec.edges_to_dependencies():
+            for virtual in edge.virtuals:
+                # shortcut: one global provider per virtual; reject mixed providers until scoped constraints exist.
+                require(virtual not in providers or providers[virtual] == edge.spec.name,
+                        "solver-provider-conflict")
+                providers[virtual] = edge.spec.name
+    for virtual, provider in providers.items():
+        require(virtual not in data["packages"], "solver-provider-conflict")
+        data["packages"][virtual] = {"require": [provider]}
     return data
 
 
