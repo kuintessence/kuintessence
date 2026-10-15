@@ -1,9 +1,11 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:test";
+import { create } from "@bufbuild/protobuf";
 import { agents, createPgDb, type PgDb, softwareOperations } from "@kuintessence/db";
 import {
   SoftwareOperationAction as ProtoSoftwareOperationAction,
   SoftwareOperationStatus as ProtoSoftwareOperationStatus,
   type SoftwareOperationResult,
+  SoftwareOperationResultSchema,
 } from "@kuintessence/proto";
 import { AppError } from "@kuintessence/shared";
 import { count, eq } from "drizzle-orm";
@@ -219,6 +221,12 @@ describe("software operation failure messages", () => {
 });
 
 describe("software operation installed-ledger refresh guard", () => {
+  test("historical successes never replace current inventory", () => {
+    for (const action of ["install", "uninstall", "import_preinstalled"] as const) {
+      expect(shouldRefreshInstalledLedger("succeeded", action, true, true)).toBe(false);
+    }
+  });
+
   test("refreshes installed software only after a matched successful mutating operation", () => {
     expect(shouldRefreshInstalledLedger("succeeded", "install", true)).toBe(true);
     expect(shouldRefreshInstalledLedger("succeeded", "uninstall", true)).toBe(true);
@@ -233,6 +241,56 @@ describe("software operation installed-ledger refresh guard", () => {
 });
 
 describe("software operation result application", () => {
+  test("lost install A success replayed after uninstall B succeeds cannot restore inventory", async () => {
+    const installId = "ffffffff-ffff-4fff-8fff-ffffffffffff";
+    const uninstallId = "00000000-0000-4000-8000-000000000001";
+    const updates: Array<Record<string, unknown>> = [];
+    const returningRows = [
+      [{ id: uninstallId, action: "uninstall" }],
+      [{ id: installId, action: "install" }],
+      [],
+    ];
+    const db = {
+      update: () => ({
+        set: (values: Record<string, unknown>) => {
+          updates.push(values);
+          return { where: () => ({ returning: async () => returningRows.shift() ?? [] }) };
+        },
+      }),
+    } as unknown as PgDb;
+    let inventory = ["zlib"];
+    let replacements = 0;
+    const installedRegistry = {
+      replaceForAgent: async (_agentId: string, installed: Array<{ name: string }>) => {
+        replacements++;
+        inventory = installed.map((item) => item.name);
+      },
+    } as unknown as InstalledRegistry;
+    const service = new SoftwareOperationService(db, new AgentDispatcher(), installedRegistry);
+    const lostInstall = create(SoftwareOperationResultSchema, {
+      operationId: installId,
+      action: ProtoSoftwareOperationAction.INSTALL,
+      status: ProtoSoftwareOperationStatus.SUCCEEDED,
+      spec: "zlib@1.3",
+      installed: [{ name: "zlib", version: "1.3", hash: "abc", spec: "zlib@1.3" }],
+    });
+    const uninstall = create(SoftwareOperationResultSchema, {
+      operationId: uninstallId,
+      action: ProtoSoftwareOperationAction.UNINSTALL,
+      status: ProtoSoftwareOperationStatus.SUCCEEDED,
+      spec: "zlib@1.3",
+    });
+    expect(uninstall.replayed).toBe(false);
+    await service.applyAgentResult("agent-a", uninstall);
+    expect(inventory).toEqual([]);
+    lostInstall.replayed = true;
+    await service.applyAgentResult("agent-a", lostInstall);
+    await service.applyAgentResult("agent-a", lostInstall);
+    expect(updates.map((values) => values.status)).toEqual(["succeeded", "succeeded", "succeeded"]);
+    expect(replacements).toBe(1);
+    expect(inventory).toEqual([]);
+  });
+
   test("marks the operation failed when Server installed-ledger refresh fails", async () => {
     const operationId = "00000000-0000-0000-0000-000000000001";
     const updates: Array<Record<string, unknown>> = [];

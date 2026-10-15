@@ -69,9 +69,7 @@ describe("managed Spack lifecycle cancellation", () => {
     const store = new SpackInstallStore(f.site.profile.storeRoot);
     expect((await store.list())[0]?.state).toBe("failed");
     expect(await readdir(`${f.site.profile.storeRoot}/releases`)).toEqual([]);
-    await expect(lstat(`${f.site.profile.storeRoot}/.writer-lock`)).rejects.toMatchObject({
-      code: "ENOENT",
-    });
+    expect((await lstat(`${f.site.profile.storeRoot}/.writer-lock`)).isDirectory()).toBe(true);
   });
 
   test.each([
@@ -106,9 +104,7 @@ describe("managed Spack lifecycle cancellation", () => {
     ).toMatchObject({ outcome: "failed", invalidatedHashes: [record.rootHash] });
     expect((await store.list())[0]?.state).toBe("unavailable");
     expect((await lstat(store.path(record.id))).isDirectory()).toBe(true);
-    await expect(lstat(`${f.site.profile.storeRoot}/.writer-lock`)).rejects.toMatchObject({
-      code: "ENOENT",
-    });
+    expect((await lstat(`${f.site.profile.storeRoot}/.writer-lock`)).isDirectory()).toBe(true);
   });
 
   test("cancellation during ready publication withdraws the record without deleting its files", async () => {
@@ -141,9 +137,7 @@ describe("managed Spack lifecycle cancellation", () => {
       expect(result).toMatchObject({ outcome: "failed", invalidatedHashes: [record.rootHash] });
       expect(record.state).toBe("unavailable");
       expect((await lstat(store.path(record.id))).isDirectory()).toBe(true);
-      await expect(lstat(`${f.site.profile.storeRoot}/.writer-lock`)).rejects.toMatchObject({
-        code: "ENOENT",
-      });
+      expect((await lstat(`${f.site.profile.storeRoot}/.writer-lock`)).isDirectory()).toBe(true);
     } finally {
       save.mockRestore();
     }

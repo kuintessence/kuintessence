@@ -74,7 +74,7 @@ export async function makeInstallFixture() {
   };
   const text = JSON.stringify(manifest);
   const input = {
-    operationId: "fixture-install",
+    operationId: "9ff66f65-ec50-4ca6-8a9b-1ed1c8ddfb04",
     ticket: "private-fixture-ticket",
     manifestDigest: installDigest(text),
     spec: manifest.spec,

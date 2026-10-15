@@ -20,6 +20,8 @@ export interface SpackAuditProcess {
   ): Promise<{ exitCode: number; stdout: string; stderr: string }>;
 }
 
+export class SpackProcessNotStartedError extends Error {}
+
 interface ProcessDependencies {
   spawnProcess?: (
     command: string,
@@ -91,11 +93,16 @@ export function createSpackAuditProcess({
   return {
     async run(command, options) {
       if (platform !== "linux" && platform !== "darwin") {
-        throw processError("platform not supported");
+        throw new SpackProcessNotStartedError("Spack audit process platform not supported");
       }
-      const env = validatedEnvironment(command, options);
+      let env: Record<string, string>;
+      try {
+        env = validatedEnvironment(command, options);
+      } catch {
+        throw new SpackProcessNotStartedError("Invalid Spack audit process options");
+      }
       const { cwd, signal, timeoutMs, maxOutputBytes } = options;
-      if (signal?.aborted) throw processError("aborted");
+      if (signal?.aborted) throw new SpackProcessNotStartedError("Spack audit process aborted");
       const output = Buffer.alloc(maxOutputBytes);
       const deadline = performance.now() + timeoutMs;
       let child: ChildProcessByStdio<null, Readable, Readable>;
@@ -108,7 +115,7 @@ export function createSpackAuditProcess({
           stdio: ["ignore", "pipe", "pipe"],
         });
       } catch {
-        throw processError("spawn failed");
+        throw new SpackProcessNotStartedError("Spack audit process spawn failed");
       }
 
       return new Promise((resolve, reject) => {
@@ -209,7 +216,11 @@ export function createSpackAuditProcess({
           fail(processError("aborted"));
         }
         function onError() {
-          fail(processError("spawn failed"));
+          fail(
+            child.pid === undefined
+              ? new SpackProcessNotStartedError("Spack audit process spawn failed")
+              : processError("spawn failed"),
+          );
         }
         function onOutputError() {
           fail(processError("output failed"));

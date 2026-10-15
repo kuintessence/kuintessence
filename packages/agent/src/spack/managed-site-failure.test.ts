@@ -173,9 +173,7 @@ describe("managed Spack site failure withdrawal", () => {
       save.mockRestore();
     }
     expect(await f.store.list()).toEqual([f.record]);
-    await expect(lstat(`${f.site.profile.storeRoot}/.writer-lock`)).rejects.toMatchObject({
-      code: "ENOENT",
-    });
+    expect((await lstat(`${f.site.profile.storeRoot}/.writer-lock`)).isDirectory()).toBe(true);
   });
 
   test.each([
@@ -192,6 +190,7 @@ describe("managed Spack site failure withdrawal", () => {
       await rename(root, saved);
       if (scenario === "symlink") await symlink(saved, root);
     } else if (scenario === "locked") {
+      await rename(`${root}/.writer-lock`, `${root}/saved-lock`);
       await mkdir(`${root}/.writer-lock`, { mode: 0o700 });
     } else {
       f.options.cacheDir = `${root}/cache`;

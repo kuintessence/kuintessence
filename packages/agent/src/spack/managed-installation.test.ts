@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
+import * as fs from "node:fs/promises";
 import { lstat, mkdir, readdir, rename, rm, symlink } from "node:fs/promises";
+import { installWorkerExecution, RECOVERY_REQUIRED } from "./execution-identity";
 import type { SpackInstallRunner } from "./install-runner";
 import { SpackInstallStore } from "./install-store";
 import { makeInstallFixture } from "./install-test-fixture";
@@ -39,68 +41,77 @@ describe("managed Spack installation transaction", () => {
       outcome: "failed",
       exitCode: 1,
       stderr: message.includes("private credential")
-        ? "Managed Spack operation failed; inspect the installation record before retrying"
+        ? "SPACK_OPERATION_FAILED: managed software operation failed"
         : message,
     });
     expect((await new SpackInstallStore(f.site.profile.storeRoot).list())[0]?.state).toBe("failed");
     expect(await readdir(`${f.site.profile.storeRoot}/releases`)).toEqual([]);
   });
 
-  test("builds at its final prefix, independently verifies, survives restart, loads and removes only its release", async () => {
-    const f = await fixture();
-    const calls: string[] = [];
-    const store = new SpackInstallStore(f.site.profile.storeRoot);
-    const runner: SpackInstallRunner = {
-      async run(action, _prepared, _input, _site, path) {
-        calls.push(action);
-        const records = await store.list();
-        if (action === "install") {
-          expect(records[0]?.state).toBe("building");
-          expect(await backend.installedList()).toEqual([]);
-          await mkdir(f.report(action, path).prefix);
-        } else if (action === "verify") {
-          expect(records[0]?.state).toBe("verifying");
-          expect(await backend.installedList()).toEqual([]);
-        }
-        return f.report(action, path);
-      },
-    };
-    const options = {
-      cacheDir: f.cacheDir,
-      site: f.siteOptions,
-      loadSite: async () => f.site,
-      runner,
-    };
-    const backend = new ManagedSpackInstallation(options);
-    const outcome = await backend.install(f.prepared, f.input);
-    expect(outcome.outcome).toBe("succeeded");
-    expect(calls).toEqual(["install", "verify"]);
-    const records = await store.list();
-    const record = records[0];
-    if (!record) throw new Error("Missing transaction");
-    expect(record.state).toBe("ready");
-    expect((await lstat(store.path(record.id))).mode & 0o777).toBe(0o755);
-    const restarted = new ManagedSpackInstallation(options);
-    expect(await restarted.installedList()).toEqual([
-      f.report("verify", store.path(record.id)).root,
-    ]);
-    const loaded = await restarted.operation("load", f.input.spec);
-    expect(loaded).toMatchObject({
-      outcome: "succeeded",
-      stdout: expect.stringContaining(store.path(record.id)),
-    });
-    expect(calls).toEqual(["install", "verify", "load"]);
-    expect(await restarted.operation("load", "unrelated@1.0")).toBeNull();
-    expect(await restarted.operation("load", "hello@wrong+variant")).toMatchObject({
-      outcome: "rejected",
-    });
-    expect(await restarted.operation("uninstall", f.input.spec)).toMatchObject({
-      outcome: "succeeded",
-      installed: [],
-    });
-    expect((await store.list())[0]?.state).toBe("removed");
-    expect(await readdir(`${f.site.profile.storeRoot}/releases`)).toEqual([]);
-    expect((await lstat(f.prepared.manifestPath)).isFile()).toBe(true);
+  test.each([
+    false,
+    true,
+  ])("builds at its final prefix, independently verifies, survives restart, loads and removes only its release (private namespace=%s)", async (privateNamespace) => {
+    const namespace = spyOn(fs, "readlink");
+    if (privateNamespace) namespace.mockResolvedValue("pid:[9999999999]");
+    try {
+      const f = await fixture();
+      const calls: string[] = [];
+      const store = new SpackInstallStore(f.site.profile.storeRoot);
+      const runner: SpackInstallRunner = {
+        async run(action, _prepared, _input, _site, path) {
+          calls.push(action);
+          const records = await store.list();
+          if (action === "install") {
+            expect(records[0]?.state).toBe("building");
+            expect(await backend.installedList()).toEqual([]);
+            await mkdir(f.report(action, path).prefix);
+          } else if (action === "verify") {
+            expect(records[0]?.state).toBe("verifying");
+            expect(await backend.installedList()).toEqual([]);
+          }
+          return f.report(action, path);
+        },
+      };
+      const options = {
+        cacheDir: f.cacheDir,
+        site: f.siteOptions,
+        loadSite: async () => f.site,
+        runner,
+      };
+      const backend = new ManagedSpackInstallation(options);
+      const outcome = await backend.install(f.prepared, f.input);
+      expect(outcome.outcome).toBe("succeeded");
+      expect(calls).toEqual(["install", "verify"]);
+      const records = await store.list();
+      const record = records[0];
+      if (!record) throw new Error("Missing transaction");
+      expect(record.state).toBe("ready");
+      expect((await lstat(store.path(record.id))).mode & 0o777).toBe(0o755);
+      const restarted = new ManagedSpackInstallation(options);
+      expect(await restarted.installedList()).toEqual([
+        f.report("verify", store.path(record.id)).root,
+      ]);
+      const loaded = await restarted.operation("load", f.input.spec);
+      expect(loaded).toMatchObject({
+        outcome: "succeeded",
+        stdout: expect.stringContaining(store.path(record.id)),
+      });
+      expect(calls).toEqual(["install", "verify", "load"]);
+      expect(await restarted.operation("load", "unrelated@1.0")).toBeNull();
+      expect(await restarted.operation("load", "hello@wrong+variant")).toMatchObject({
+        outcome: "rejected",
+      });
+      expect(await restarted.operation("uninstall", f.input.spec)).toMatchObject({
+        outcome: "succeeded",
+        installed: [],
+      });
+      expect((await store.list())[0]?.state).toBe("removed");
+      expect(await readdir(`${f.site.profile.storeRoot}/releases`)).toEqual([]);
+      expect((await lstat(f.prepared.manifestPath)).isFile()).toBe(true);
+    } finally {
+      namespace.mockRestore();
+    }
   });
 
   test.each([
@@ -129,7 +140,7 @@ describe("managed Spack installation transaction", () => {
     expect(await backend.install(f.prepared, f.input)).toEqual({
       outcome: "failed",
       exitCode: 1,
-      stderr: "Managed Spack operation failed; inspect the installation record before retrying",
+      stderr: "SPACK_OPERATION_FAILED: managed software operation failed",
     });
     const store = new SpackInstallStore(f.site.profile.storeRoot);
     expect((await store.list())[0]?.state).toBe("failed");
@@ -426,7 +437,7 @@ describe("managed Spack installation transaction", () => {
     });
     expect(await backend.install(f.prepared, f.input)).toMatchObject({
       outcome: "failed",
-      stderr: expect.stringContaining("inspect the installation record"),
+      stderr: "SPACK_OPERATION_FAILED: managed software operation failed",
     });
     const installed = (await store.list()).find((record) => record.spec === f.input.spec);
     expect(installed?.state).toBe("ready");
@@ -572,4 +583,37 @@ describe("managed Spack installation transaction", () => {
     expect((await store.list())[0]?.state).toBe("removed");
     await expect(lstat(store.path(record.id))).rejects.toThrow();
   });
+});
+
+test("uncertain load worker withdraws ready inventory while retaining files and lock", async () => {
+  const f = await fixture();
+  let uncertain = false;
+  const store = new SpackInstallStore(f.site.profile.storeRoot);
+  const backend = new ManagedSpackInstallation({
+    cacheDir: f.cacheDir,
+    site: f.siteOptions,
+    loadSite: async () => f.site,
+    runner: {
+      async run(action, _p, _i, _s, path) {
+        if (uncertain) {
+          const [record] = await store.list();
+          if (!record) throw new Error("missing fixture");
+          await installWorkerExecution.getStore()?.start(record.id);
+          throw new Error("fixture worker state unknown");
+        }
+        await mkdir(f.report(action, path).prefix, { recursive: true });
+        return f.report(action, path);
+      },
+    },
+  });
+  expect((await backend.install(f.prepared, f.input)).outcome).toBe("succeeded");
+  uncertain = true;
+  expect(await backend.operation("load", f.input.spec)).toMatchObject({
+    outcome: "failed",
+    stderr: RECOVERY_REQUIRED,
+    invalidatedHashes: ["a".repeat(32)],
+  });
+  expect((await store.list())[0]?.state).toBe("unavailable");
+  expect(await backend.installedList()).toEqual([]);
+  await expect(store.withLock(async () => {})).rejects.toThrow(RECOVERY_REQUIRED);
 });

@@ -57,6 +57,7 @@ import type { SoftwareOperationAction, SoftwareOperationStatus } from "@kuintess
 import type { InstalledSpec, QueueFailureCode } from "@kuintessence/shared";
 import { asc, eq, sql } from "drizzle-orm";
 import type { JobStatusReport } from "../embedded/job-executor";
+import { SoftwareOperations } from "./software-operations";
 
 /** Default cap for `outbound_heartbeat` rows kept on disk during a disconnect. */
 export const DEFAULT_MAX_QUEUED_HEARTBEATS = 50;
@@ -121,6 +122,7 @@ export interface OutboundQueueOptions {
 }
 
 export class OutboundQueue {
+  readonly softwareOperations: SoftwareOperations;
   private readonly now: () => Date;
   private readonly createEventId: () => string;
   private readonly maxQueuedHeartbeats: number;
@@ -129,6 +131,7 @@ export class OutboundQueue {
     private readonly db: SqliteDb,
     opts: OutboundQueueOptions = {},
   ) {
+    this.softwareOperations = new SoftwareOperations(db);
     this.now = opts.now ?? (() => new Date());
     this.createEventId = opts.createEventId ?? (() => crypto.randomUUID());
     this.maxQueuedHeartbeats = opts.maxQueuedHeartbeats ?? DEFAULT_MAX_QUEUED_HEARTBEATS;

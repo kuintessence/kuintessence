@@ -370,7 +370,7 @@ export class SoftwareOperationService {
         ),
       )
       .returning({ id: softwareOperations.id, action: softwareOperations.action });
-    if (shouldRefreshInstalledLedger(status, action, updated.length > 0)) {
+    if (shouldRefreshInstalledLedger(status, action, updated.length > 0, result.replayed)) {
       try {
         await this.installedRegistry.replaceForAgent(
           agentId,
@@ -525,8 +525,9 @@ export function shouldRefreshInstalledLedger(
   status: SoftwareOperationStatusValue,
   action: SoftwareOperationAction,
   operationMatched: boolean,
+  replayed = false,
 ): boolean {
-  return operationMatched && status === "succeeded" && action !== "load";
+  return !replayed && operationMatched && status === "succeeded" && action !== "load";
 }
 
 export function shouldApplyOperationResult(

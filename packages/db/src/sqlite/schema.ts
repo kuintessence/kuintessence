@@ -285,3 +285,14 @@ export const sandboxReplayNonces = sqliteTable(
     expiresAtIdx: index("sandbox_replay_nonces_expires_at_idx").on(t.expiresAt),
   }),
 );
+
+/** Durable software execution receipt and terminal replay; no tickets or credentials. */
+export const softwareExecutions = sqliteTable("software_executions", {
+  operationId: text("operation_id").primaryKey(),
+  action: integer("action").notNull(),
+  spec: text("spec").notNull(),
+  identity: text("identity", { mode: "json" }).$type<Record<string, unknown>>().notNull(),
+  storeRoot: text("store_root"),
+  started: integer("started", { mode: "boolean" }).notNull().default(false),
+  result: text("result", { mode: "json" }).$type<Record<string, unknown>>(),
+});

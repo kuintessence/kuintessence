@@ -6,6 +6,7 @@ import * as schema from "./schema";
 export function createSqliteDb(path: string) {
   const sqlite = new Database(path, { create: true });
   sqlite.exec("PRAGMA journal_mode = WAL;");
+  sqlite.exec("PRAGMA synchronous = FULL;");
   sqlite.exec("PRAGMA foreign_keys = ON;");
   runSqliteMigrations(sqlite);
   return drizzle(sqlite, { schema });
