@@ -136,6 +136,11 @@ Server-only Agent 材料下载，以及 CP 安装/库存/策略操作已有实�
   依赖不独立管理，卸载清理整个事务 store；root-only 不指系统 root 身份。
   shared storage、compute ABI、quota、recipe trust 均需运维人工声明，不等于自动验证。
   Python install worker 已实现并通过模拟 native API 的 fixture 测试。
+  worker 已从验证过的 native lock 恢复非 external 包的精确版本、variants、flags、arch
+  及 virtual/provider 抽象约束，仍执行 solver 并严格比较完整 DAG/hash；同名多节点或
+  冲突 provider 明确拒绝。新增离线 fixture 回归通过；Gmsh 4.13.1 的 48 节点 lock
+  已在隔离运行时通过真实 Spack 1.0.0 求解及完整 DAG/hash 比对，到安装入口即停止，
+  尚不代表实际编译安装或完整工作流验收通过。
   source audit 与 install/verify/load 的共享 Python 校验器已兼容 material v2，
   严格校验证据关联及全部附件字节，保留 v1 与原始 manifest 摘要；
   v2 正常路径及证据缺失/篡改拒绝已通过离线 fixture，尚待部署后的真实 v2 安装验收。
