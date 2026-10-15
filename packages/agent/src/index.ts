@@ -482,6 +482,7 @@ async function main() {
         runner: new IsolatedSpackInstallRunner({
           runtime,
           installTimeoutMs: config.AGENT_SPACK_INSTALL_TIMEOUT_MS,
+          managedMemoryMib: config.AGENT_SPACK_MANAGED_MEMORY_MIB,
         }),
       });
     }

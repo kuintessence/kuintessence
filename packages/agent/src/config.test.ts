@@ -31,6 +31,21 @@ describe("loadAgentConfig", () => {
     expect(cfg.HEARTBEAT_INTERVAL_SEC).toBe(60);
   });
 
+  test("managed memory defaults to 4096 MiB and accepts integer budgets from 1024 to 4096", () => {
+    expect(loadAgentConfig(baseEnv).AGENT_SPACK_MANAGED_MEMORY_MIB).toBe(4096);
+    for (const memory of ["1024", "1537", "4096"]) {
+      expect(
+        loadAgentConfig({ ...baseEnv, AGENT_SPACK_MANAGED_MEMORY_MIB: memory })
+          .AGENT_SPACK_MANAGED_MEMORY_MIB,
+      ).toBe(Number(memory));
+    }
+    for (const memory of ["", "bad", "0", "-1", "1023", "4097", "1024.5", "NaN", "Infinity"]) {
+      expect(() =>
+        loadAgentConfig({ ...baseEnv, AGENT_SPACK_MANAGED_MEMORY_MIB: memory }),
+      ).toThrow();
+    }
+  });
+
   test("managed install defaults to six hours and accepts at most 24 hours", () => {
     expect(loadAgentConfig(baseEnv).AGENT_SPACK_INSTALL_TIMEOUT_MS).toBe(21_600_000);
     for (const timeout of ["1", "86400000"]) {

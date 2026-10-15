@@ -17,8 +17,11 @@ async function fixture() {
 
 describe("managed Spack installation transaction", () => {
   test.each([
+    "Invalid managed Spack memory budget",
+    "Invalid managed Spack memory budget: private credential",
+    "Managed Spack memory admission requires configured budget + 512 MiB available without swap: private credential",
     "Managed Spack memory admission metadata unavailable or invalid",
-    "Managed Spack memory admission requires 4 GiB + 512 MiB available without swap",
+    "Managed Spack memory admission requires configured budget + 512 MiB available without swap",
     "Managed Spack memory admission metadata unavailable or invalid: private credential",
   ])("reports only fixed memory admission messages: %s", async (message) => {
     const f = await fixture();

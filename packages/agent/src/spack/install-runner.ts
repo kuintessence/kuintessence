@@ -46,6 +46,7 @@ export function buildSpackInstallCommand(
   site: SpackInstallSiteProfile,
   storePath: string,
   action: SpackInstallReport["action"],
+  managedMemoryMib = SPACK_MANAGED_MEMORY_BYTES / 1024 ** 2,
 ): string[] {
   const prefix = `${site.storeRoot}/releases/`;
   if (
@@ -58,7 +59,7 @@ export function buildSpackInstallCommand(
   ) {
     throw new Error("Invalid managed Spack store binding");
   }
-  const command = buildSpackAuditCommand(runtime, inputs, digest, SPACK_MANAGED_MEMORY_BYTES);
+  const command = buildSpackAuditCommand(runtime, inputs, digest, managedMemoryMib * 1024 ** 2);
   // Retain the audit isolation flags, replacing only its fixed Python entrypoint.
   return [
     ...command.slice(0, -5).filter((argument) => argument !== "--writable-tmpfs"),
@@ -98,6 +99,7 @@ export class IsolatedSpackInstallRunner implements SpackInstallRunner {
     private readonly options: {
       runtime: SpackAuditRuntimeProfile;
       installTimeoutMs?: number;
+      managedMemoryMib?: number;
       process?: SpackAuditProcess;
       runtimeDeps?: SpackAuditRuntimeDeps;
       runtimeContext?: () => Promise<{ hostNetworkNamespace: string; hostPidNamespace: string }>;
@@ -111,6 +113,10 @@ export class IsolatedSpackInstallRunner implements SpackInstallRunner {
     site: VerifiedSpackInstallSite,
     storePath: string,
   ): Promise<SpackInstallReport> {
+    const managedMemoryMib = this.options.managedMemoryMib ?? 4096;
+    if (!Number.isInteger(managedMemoryMib) || managedMemoryMib < 1024 || managedMemoryMib > 4096) {
+      throw new Error("Invalid managed Spack memory budget");
+    }
     const installTimeoutMs = this.options.installTimeoutMs ?? 6 * 60 * 60_000;
     if (
       !Number.isSafeInteger(installTimeoutMs) ||
@@ -176,6 +182,7 @@ export class IsolatedSpackInstallRunner implements SpackInstallRunner {
       const files: Record<string, string | Uint8Array> = {
         "manifest.json": manifest,
         "runtime.json": JSON.stringify(context),
+        "managed-memory.json": JSON.stringify({ memoryMib: managedMemoryMib }),
         "site-profile.json": site.bytes,
         "request.json": JSON.stringify({
           version: 1,
@@ -208,7 +215,7 @@ export class IsolatedSpackInstallRunner implements SpackInstallRunner {
         throw new Error("Unsafe managed Spack store directory");
       }
       await verifySpackAuditRuntime(this.options.runtime, signal, this.options.runtimeDeps);
-      await admitSpackManagedMemory(signal, this.options.runtimeDeps);
+      await admitSpackManagedMemory(signal, this.options.runtimeDeps, managedMemoryMib);
       signal.throwIfAborted();
       const remainingMs = Math.floor(expiresAt - performance.now());
       if (remainingMs <= 0) throw new Error("Managed Spack operation timed out");
@@ -221,6 +228,7 @@ export class IsolatedSpackInstallRunner implements SpackInstallRunner {
           site.profile,
           storePath,
           action,
+          managedMemoryMib,
         ),
         {
           cwd: directory,

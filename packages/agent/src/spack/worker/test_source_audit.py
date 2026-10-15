@@ -620,7 +620,7 @@ class AuditTests(unittest.TestCase):
             pass
 
         for memory_limit in (
-            None, True, False, 0, -1, 2147483647, 2147483649, 3221225472, 4294967297,
+            None, True, False, 0, -1, 1023 * audit.MIB, 2147483647, 2147483649, 4294967297,
             "2147483648", "4294967296", "max", 2147483648.0, 4294967296.0,
             IntSubclass(2147483648), IntSubclass(4294967296), [], {},
         ):
@@ -661,10 +661,12 @@ class AuditTests(unittest.TestCase):
                     audit.verify_runtime_boundary(self.input)
                     for options, limit in (
                         ({}, 2147483648),
+                        ({"memory_limit": 1073741824}, 1073741824),
+                        ({"memory_limit": 1537 * audit.MIB}, 1537 * audit.MIB),
                         ({"memory_limit": 2147483648}, 2147483648),
                         ({"memory_limit": 4294967296}, 4294967296),
                     ):
-                        for value in (1, 2147483648, 2147483649, 4294967296, 4294967297):
+                        for value in (1, 1073741824, 1073741825, 1537 * audit.MIB, 2147483648, 2147483649, 4294967296, 4294967297):
                             with self.subTest(options=options, memory_max=value):
                                 with patch.dict(files, {"/sys/fs/cgroup/worker/memory.max": f"{value}\n"}):
                                     if value <= limit:
@@ -716,7 +718,7 @@ class AuditTests(unittest.TestCase):
             ("/sys/fs/cgroup/worker/cpu.max", "max 100000\n"),
             ("/sys/fs/cgroup/worker/cpu.max", "1 0\n"),
         ):
-            for memory_limit in (2147483648, 4294967296):
+            for memory_limit in (1073741824, 2147483648, 4294967296):
                 with self.subTest(key=key, value=value, memory_limit=memory_limit):
                     with patch.dict(files, {
                         "/sys/fs/cgroup/worker/memory.max": f"{memory_limit}\n",
@@ -736,7 +738,7 @@ class AuditTests(unittest.TestCase):
             ("linux", 1000, "net:[3]", "pid:[4]", []),
             ("linux", 1000, "invalid", "pid:[4]", ["lo"]),
         ):
-            for memory_limit in (2147483648, 4294967296):
+            for memory_limit in (1073741824, 2147483648, 4294967296):
                 with self.subTest(platform=platform, uid=uid, net=net, pid=pid, interfaces=interfaces,
                                   memory_limit=memory_limit):
                     with patch.dict(files, {"/sys/fs/cgroup/worker/memory.max": f"{memory_limit}\n"}):
@@ -749,7 +751,7 @@ class AuditTests(unittest.TestCase):
             with patch.object(Path, "read_text", read_text), patch.object(Path, "iterdir", side_effect=AssertionError("Host sysfs network view must not be read")):
                 with patch.object(os, "readlink", side_effect=lambda p: "net:[3]" if str(p).endswith("/net") else "pid:[4]"):
                     with patch.object(socket, "if_nameindex", return_value=[(1, "lo")]) as interfaces:
-                        for memory_limit in (2147483648, 4294967296):
+                        for memory_limit in (1073741824, 2147483648, 4294967296):
                             with self.subTest(memory_limit=memory_limit):
                                 with patch.dict(files, {"/sys/fs/cgroup/worker/memory.max": f"{memory_limit}\n"}):
                                     interfaces.reset_mock()

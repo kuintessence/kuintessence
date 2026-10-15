@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
-import { chmod, mkdir, readdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, readdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { loadAgentConfig } from "../config";
 import type { SpackAuditProcess } from "./audit-process";
 import { SPACK_INSTALL_RESULT_PREFIX } from "./install-contract";
 import { buildSpackInstallCommand, IsolatedSpackInstallRunner } from "./install-runner";
@@ -86,6 +87,77 @@ describe("isolated persistent Spack worker", () => {
     );
     expect(invoked).toBe(false);
     expect(await readdir(join(f.cacheDir, "installs"))).toEqual([]);
+  });
+
+  test.each([
+    "install",
+    "verify",
+    "load",
+  ] as const)("passes configured 1024 MiB through admission, command and private worker input for %s", async (action) => {
+    const f = await fixture();
+    const config = loadAgentConfig({
+      SERVER_GRPC_URL: "http://localhost:3001",
+      AGENT_ID: "fixture",
+      AGENT_SITE_NAME: "fixture",
+      AGENT_SPACK_MANAGED_MEMORY_MIB: "1024",
+    });
+    let invoked = false;
+    const r = runner(
+      {
+        async run(command, options) {
+          invoked = true;
+          for (const flag of ["--memory", "--memory-swap"]) {
+            expect(command[command.indexOf(flag) + 1]).toBe("1073741824");
+          }
+          const path = join(options.cwd, "input", "managed-memory.json");
+          expect(JSON.parse(await readFile(path, "utf8"))).toEqual({ memoryMib: 1024 });
+          expect((await lstat(path)).mode & 0o777).toBe(0o400);
+          expect((await lstat(join(options.cwd, "input"))).mode & 0o777).toBe(0o700);
+          expect(command).toContain(`${options.cwd}/input:/kq/input:ro`);
+          return {
+            exitCode: 0,
+            stdout: SPACK_INSTALL_RESULT_PREFIX + JSON.stringify(f.report(action, f.path)),
+            stderr: "",
+          };
+        },
+      },
+      {
+        managedMemoryMib: config.AGENT_SPACK_MANAGED_MEMORY_MIB,
+        runtimeDeps: {
+          ...runtimeDeps,
+          readFile: installMemoryFixture({
+            "/proc/meminfo": "MemTotal: 3812352 kB\nMemAvailable: 1572864 kB\n",
+          }).readFile,
+        },
+      },
+    );
+    await r.run(action, f.prepared, f.input, f.site, f.path);
+    expect(invoked).toBe(true);
+  });
+
+  test.each([
+    0,
+    1023,
+    4097,
+    1024.5,
+    NaN,
+    Infinity,
+  ])("rejects invalid runner memory budget %s before spawn", async (managedMemoryMib) => {
+    const f = await fixture();
+    let invoked = false;
+    const r = runner(
+      {
+        async run() {
+          invoked = true;
+          throw new Error("unexpected spawn");
+        },
+      },
+      { managedMemoryMib },
+    );
+    await expect(r.run("install", f.prepared, f.input, f.site, f.path)).rejects.toThrow(
+      "Invalid managed Spack memory budget",
+    );
+    expect(invoked).toBe(false);
   });
 
   test.each([
@@ -306,6 +378,9 @@ describe("isolated persistent Spack worker", () => {
           "XDG_RUNTIME_DIR",
         ]);
         const inputs = join(options.cwd, "input");
+        expect(JSON.parse(await readFile(join(inputs, "managed-memory.json"), "utf8"))).toEqual({
+          memoryMib: 4096,
+        });
         expect(JSON.parse(await readFile(join(inputs, "request.json"), "utf8"))).toEqual({
           version: 1,
           action,

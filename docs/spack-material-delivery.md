@@ -531,6 +531,7 @@ recipe 是可执行 Python，可以影响同进程的审计逻辑和输出，因
 | Agent 配置 | 说明 |
 |---|---|
 | `AGENT_SPACK_INSTALL_ENABLED` | 默认 `false`；实验性 opt-in，同时要求 `AGENT_SPACK_ENABLED=true`、`AGENT_SPACK_AUDIT_ENABLED=true` 和完整固定 runtime 配置 |
+| `AGENT_SPACK_MANAGED_MEMORY_MIB` | install/verify/load 共用，默认 `4096`；仅允许 `1024..4096` 的整数 MiB，启动时校验 |
 | `AGENT_SPACK_INSTALL_TIMEOUT_MS` | 仅 install 使用，默认 `21600000`（6 小时），最大 `86400000`（24 小时），必须为正安全整数（毫秒） |
 | `AGENT_SPACK_INSTALL_SITE_PROFILE_PATH` | 启用时必填；运维预置 site profile JSON 的绝对路径 |
 | `AGENT_SPACK_INSTALL_SITE_PROFILE_SHA256` | 启用时必填；profile 原始文件字节的 SHA-256，64 位小写 hex，不含 `sha256:` |
@@ -538,17 +539,29 @@ recipe 是可执行 Python，可以影响同进程的审计逻辑和输出，因
 当前入口要求 `AGENT_SPAWNER_BACKEND=host`，拒绝 Kubernetes adapter；
 不因此允许 recipe 在宿主直接执行。仍要求 Linux 非 root 专用 Agent UID，
 并继承 source audit 的固定 Apptainer/SIF、namespace、cgroup 与输出预算。
-独立 source audit 保持内存 2 GiB；managed install/verify/load 因需加载完整 recipe
-索引并运行 solver，使用固定内存 4 GiB、memory+swap 4 GiB，即不允许 swap。
-两种入口均由 worker 核验实际 cgroup 上限，材料或安装请求不能提高预算；
-CPU 2、PID 128 及其他隔离条件不变。4 GiB 是有界执行预算，不保证所有材料均能安装；
+独立 source audit 保持内存 2 GiB/30 分钟，不受此配置影响。managed install/verify/load
+默认内存 4 GiB；`AGENT_SPACK_MANAGED_MEMORY_MIB` 可设为整数 `1024..4096`。
+Apptainer 的 memory 与 memory+swap 均等于配置预算，即不允许 swap。Agent 将同一预算
+写入私有目录中的只读 `managed-memory.json`；worker 只读取该输入，不从环境或材料取值，
+缺失、非法类型（含布尔、字符串、小数）或越界均拒绝。worker 核验实际 cgroup 的
+`memory.max` 必须为正数且不超过声明预算，`memory.swap.max` 必须为 0。
+CPU 2、PID 128 及其他隔离条件不变。预算不保证所有材料均能安装；
 仍然超限时失败，不自动重试更高限额或转为宿主执行。
 
 managed install/verify/load 在 spawn 前读取 Linux `/proc/meminfo`，要求 `MemTotal` 和
-`MemAvailable` 均至少为 4 GiB + 512 MiB（4,718,592 KiB），swap 不计入。
+`MemAvailable` 均至少为配置预算 + 512 MiB，swap 不计入。默认门槛为
+4,718,592 KiB；设 `1024` 时门槛为 1,572,864 KiB。
 缺失、重复、非法或不一致的字段、读取错误、非 Linux 或取消均拒绝启动，并清理暂存输入。
-安装操作仅返回固定的内存不足或元数据不可用提示，其他内部异常继续脱敏。
-因此总物理内存仅 4 GiB 的节点不能运行此 worker；满足总量也须有足够的即时可用内存。
+安装操作仅透传以下精确匹配的固定错误，不拼接配置值、路径或内部异常：
+
+- `Invalid managed Spack memory budget`
+- `Managed Spack memory admission metadata unavailable or invalid`
+- `Managed Spack memory admission requires configured budget + 512 MiB available without swap`
+
+其他内部异常继续脱敏。默认配置下，总物理内存仅 4 GiB 的节点不能运行此 worker；
+降低预算后仍须满足总量和即时可用内存门槛。低额度可供独立 Spack 模拟包验证链路，
+不承诺大型真实科学软件可用，也没有实测 1 GiB 安装成功。恢复默认只需移除
+`AGENT_SPACK_MANAGED_MEMORY_MIB` 或设为 `4096`，然后重启 Agent；切回真实材料仍须独立验收。
 这只是宿主瞬时准入，不是全局资源预留，不发现或检查 Agent/worker 的全部祖先 cgroup 额度；
 祖先限额更小或并发内存消耗仍可能导致受控失败。私有 cgroup namespace 不因这项宿主检查
 被拒绝，worker 仍按既有逻辑验证实际硬上限；不需要改用宿主 cgroup namespace。

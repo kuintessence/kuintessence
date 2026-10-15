@@ -2,11 +2,15 @@ import { describe, expect, test } from "bun:test";
 import { admitSpackManagedMemory } from "./install-memory";
 import { installMemoryFixture } from "./install-test-fixture";
 
-function admit(meminfo: string) {
-  return admitSpackManagedMemory(new AbortController().signal, {
-    platform: "linux",
-    readFile: installMemoryFixture({ "/proc/meminfo": meminfo }).readFile,
-  });
+function admit(meminfo: string, memoryMib?: number) {
+  return admitSpackManagedMemory(
+    new AbortController().signal,
+    {
+      platform: "linux",
+      readFile: installMemoryFixture({ "/proc/meminfo": meminfo }).readFile,
+    },
+    memoryMib,
+  );
 }
 
 describe("managed worker host memory admission", () => {
@@ -16,6 +20,21 @@ describe("managed worker host memory admission", () => {
     "SwapFree: 999999999 kB\n",
   ])("accepts the exact boundary independently of swap: %s", async (swap) => {
     await admit(`MemTotal: 4718592 kB\nMemAvailable: 4718592 kB\n${swap}`);
+  });
+
+  test("1024 MiB needs exactly 1536 MiB of both total and available host memory", async () => {
+    await admit("MemTotal: 1572864 kB\nMemAvailable: 1572864 kB\n", 1024);
+    for (const [total, available] of [
+      [1572863, 1572863],
+      [3812352, 1572863],
+    ]) {
+      await expect(
+        admit(`MemTotal: ${total} kB\nMemAvailable: ${available} kB\n`, 1024),
+      ).rejects.toThrow("configured budget + 512 MiB");
+    }
+    for (const memoryMib of [0, 1023, 4097, 1024.5, NaN, Infinity]) {
+      await expect(admit("", memoryMib)).rejects.toThrow("Invalid managed Spack memory budget");
+    }
   });
 
   test("reads only meminfo, without discovering cgroup namespaces or ancestors", async () => {
@@ -40,7 +59,7 @@ describe("managed worker host memory admission", () => {
   ])("rejects insufficient physical memory despite swap: total=%i available=%i", async (total, available) => {
     await expect(
       admit(`MemTotal: ${total} kB\nMemAvailable: ${available} kB\nSwapFree: 999999999 kB\n`),
-    ).rejects.toThrow("4 GiB + 512 MiB");
+    ).rejects.toThrow("configured budget + 512 MiB");
   });
 
   test.each([

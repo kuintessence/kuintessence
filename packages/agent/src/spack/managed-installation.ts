@@ -37,8 +37,9 @@ const failure = (error?: unknown): Extract<SoftwareOperationOutcome, { outcome: 
   stderr:
     error instanceof Error &&
     [
+      "Invalid managed Spack memory budget",
       "Managed Spack memory admission metadata unavailable or invalid",
-      "Managed Spack memory admission requires 4 GiB + 512 MiB available without swap",
+      "Managed Spack memory admission requires configured budget + 512 MiB available without swap",
     ].includes(error.message)
       ? error.message
       : "Managed Spack operation failed; inspect the installation record before retrying",

@@ -548,7 +548,10 @@ def validate_load_shell(shell: object, store: Path) -> str:
 
 
 def run(input_dir: Path, work: Path) -> dict:
-    audit.verify_runtime_boundary(input_dir, memory_limit=4294967296)
+    budget = audit.document(audit.read_regular(input_dir / "managed-memory.json", audit.CHUNK))
+    require(set(budget) == {"memoryMib"} and type(budget["memoryMib"]) is int
+            and 1024 <= budget["memoryMib"] <= 4096, "runtime-boundary")
+    audit.verify_runtime_boundary(input_dir, memory_limit=budget["memoryMib"] * audit.MIB)
     request = read_request(input_dir)
     profile, store_path_value = request["siteProfile"], Path(request["storePath"])
     mounts = mount_table()

@@ -154,6 +154,8 @@ export async function diagnoseManagedInstall(action: "install" | "load" = "insta
       runtime,
       installTimeoutMs: values.AGENT_SPACK_INSTALL_TIMEOUT_MS === undefined
         ? undefined : Number(values.AGENT_SPACK_INSTALL_TIMEOUT_MS),
+      managedMemoryMib: values.AGENT_SPACK_MANAGED_MEMORY_MIB === undefined
+        ? undefined : Number(values.AGENT_SPACK_MANAGED_MEMORY_MIB),
       process: diagnosticProcess,
     });
     if (action === "load") {
@@ -191,8 +193,9 @@ export async function diagnoseManagedInstall(action: "install" | "load" = "insta
         "Spack audit process timed out": "process-timeout",
         "Managed Spack operation timed out": "operation-timeout",
         "Invalid managed Spack install timeout": "install-timeout-config",
+        "Invalid managed Spack memory budget": "memory-budget",
         "Managed Spack memory admission metadata unavailable or invalid": "memory-metadata",
-        "Managed Spack memory admission requires 4 GiB + 512 MiB available without swap": "memory-budget",
+        "Managed Spack memory admission requires configured budget + 512 MiB available without swap": "memory-budget",
         "Spack audit process aborted": "process-aborted",
         "Spack audit process group cleanup failed": "process-cleanup",
         "Spack audit process spawn failed": "process-spawn",

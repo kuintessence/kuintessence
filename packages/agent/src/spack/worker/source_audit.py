@@ -89,7 +89,8 @@ def read_regular(path: Path, maximum: int, expected: dict = None) -> bytes:
 def verify_runtime_boundary(input_dir: Path, *, memory_limit: int = 2147483648) -> None:
     """Fail closed on missing namespace/cgroup evidence; never probe a runtime."""
     try:
-        require(type(memory_limit) is int and memory_limit in (2147483648, 4294967296),
+        require(type(memory_limit) is int and 1024 * MIB <= memory_limit <= 4096 * MIB
+                and memory_limit % MIB == 0,
                 "runtime-boundary")
         require(sys.platform == "linux" and os.getuid() > 0, "runtime-boundary")
         metadata = document(read_regular(Path(input_dir) / "runtime.json", CHUNK))
