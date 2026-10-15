@@ -152,6 +152,8 @@ export async function diagnoseManagedInstall(action: "install" | "load" = "insta
     assert.equal(site.profile.storeRoot, "/srv/kq/spack");
     const runner = new IsolatedSpackInstallRunner({
       runtime,
+      installTimeoutMs: values.AGENT_SPACK_INSTALL_TIMEOUT_MS === undefined
+        ? undefined : Number(values.AGENT_SPACK_INSTALL_TIMEOUT_MS),
       process: diagnosticProcess,
     });
     if (action === "load") {
@@ -187,6 +189,10 @@ export async function diagnoseManagedInstall(action: "install" | "load" = "insta
         "Spack audit process left running descendants": "process-descendants",
         "Spack audit process output limit exceeded": "process-output-limit",
         "Spack audit process timed out": "process-timeout",
+        "Managed Spack operation timed out": "operation-timeout",
+        "Invalid managed Spack install timeout": "install-timeout-config",
+        "Managed Spack memory admission metadata unavailable or invalid": "memory-metadata",
+        "Managed Spack memory admission requires 4 GiB + 512 MiB available without swap": "memory-budget",
         "Spack audit process aborted": "process-aborted",
         "Spack audit process group cleanup failed": "process-cleanup",
         "Spack audit process spawn failed": "process-spawn",

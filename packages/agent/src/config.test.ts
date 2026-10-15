@@ -31,6 +31,30 @@ describe("loadAgentConfig", () => {
     expect(cfg.HEARTBEAT_INTERVAL_SEC).toBe(60);
   });
 
+  test("managed install defaults to six hours and accepts at most 24 hours", () => {
+    expect(loadAgentConfig(baseEnv).AGENT_SPACK_INSTALL_TIMEOUT_MS).toBe(21_600_000);
+    for (const timeout of ["1", "86400000"]) {
+      expect(
+        loadAgentConfig({ ...baseEnv, AGENT_SPACK_INSTALL_TIMEOUT_MS: timeout })
+          .AGENT_SPACK_INSTALL_TIMEOUT_MS,
+      ).toBe(Number(timeout));
+    }
+    for (const timeout of [
+      "0",
+      "-1",
+      "86400001",
+      "1.5",
+      "NaN",
+      "Infinity",
+      "9007199254740992",
+      "",
+    ]) {
+      expect(() =>
+        loadAgentConfig({ ...baseEnv, AGENT_SPACK_INSTALL_TIMEOUT_MS: timeout }),
+      ).toThrow();
+    }
+  });
+
   test("configures queue freshness independently of scheduler metrics", () => {
     const metricsOnly = loadAgentConfig({
       ...baseEnv,

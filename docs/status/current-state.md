@@ -135,6 +135,16 @@ Server-only Agent 材料下载，以及 CP 安装/库存/策略操作已有实�
   每次新安装事务独占共享持久化 prefix，managed inventory/load/uninstall 仅面向 DAG root，
   依赖不独立管理，卸载清理整个事务 store；root-only 不指系统 root 身份。
   shared storage、compute ABI、quota、recipe trust 均需运维人工声明，不等于自动验证。
+  managed install/verify/load 在 spawn 前要求 Linux `/proc/meminfo` 的 `MemTotal`、
+  `MemAvailable` 均达到固定 worker 4 GiB + 512 MiB 宿主余量；swap 不计入，
+  元数据缺失/重复/非法、读取失败、非 Linux 或取消均拒绝启动并清理暂存输入。
+  此瞬时准入不检查全部祖先 cgroup、不预留全局资源；私有 cgroup namespace 不因此被拒绝，
+  仍复用 worker 的实际 4 GiB、swap0 硬上限验证，祖先限制更小时仍可能受控失败。
+  `AGENT_SPACK_INSTALL_TIMEOUT_MS` 仅用于 install，默认 6 小时、最大 24 小时、正安全整数；
+  runner 准备与进程共用总 deadline，verify/load 和独立 source-auditor 保持 30 分钟。
+  取消、进程组清理、namespace、禁网、镜像摘要、lock/DAG 和 mirror-only 边界保持不变。
+  安装操作仅透传两条固定的内存准入失败提示，其他异常继续脱敏。
+  更长时限不增加内存或 tmpfs 容量，不代表完整工作流验收通过。
   Python install worker 已实现并通过模拟 native API 的 fixture 测试。
   worker 已从验证过的 native lock 恢复非 external 包的精确版本、variants、flags、arch
   及 virtual/provider 抽象约束，仍执行 solver 并严格比较完整 DAG/hash；同名多节点或

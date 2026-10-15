@@ -479,7 +479,10 @@ async function main() {
       managedInstallation = new ManagedSpackInstallation({
         cacheDir: config.AGENT_SPACK_CACHE_DIR,
         site: { path, sha256, runtime },
-        runner: new IsolatedSpackInstallRunner({ runtime }),
+        runner: new IsolatedSpackInstallRunner({
+          runtime,
+          installTimeoutMs: config.AGENT_SPACK_INSTALL_TIMEOUT_MS,
+        }),
       });
     }
   }

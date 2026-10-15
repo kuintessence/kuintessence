@@ -147,6 +147,7 @@ const AgentConfigSchema = z
       .regex(/^[0-9a-f]{64}$/)
       .optional(),
     AGENT_SPACK_INSTALL_ENABLED: envBool(false),
+    AGENT_SPACK_INSTALL_TIMEOUT_MS: boundedPositiveInt(6 * 60 * 60_000, 24 * 60 * 60_000),
     AGENT_SPACK_INSTALL_SITE_PROFILE_PATH: z.string().refine(isSpackAuditPath).optional(),
     AGENT_SPACK_INSTALL_SITE_PROFILE_SHA256: z
       .string()

@@ -27,6 +27,7 @@ export interface SpackAuditRuntimeDeps {
   platform?: string;
   uid?: number;
   inspect?: (path: string, signal: AbortSignal) => Promise<SpackAuditFileIdentity>;
+  readFile?: (path: string, signal: AbortSignal) => Promise<string>;
 }
 
 export function isSpackAuditPath(path: string): boolean {
