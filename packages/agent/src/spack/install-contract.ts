@@ -4,6 +4,7 @@ import {
   type SpackPolicy,
 } from "@kuintessence/shared";
 import { z } from "zod";
+import { ExecutionIdentitySchema } from "./execution-identity";
 import type { SoftwareOperationOutcome } from "./installer";
 import type { PreparedSpackMaterials, SpackMaterialPrepareInput } from "./material-client";
 
@@ -128,6 +129,8 @@ export const SpackInstallRecordSchema = z.strictObject({
   siteProfileDigest: SpackMaterialDigestSchema,
   spec: z.string().min(1).max(4096),
   rootHash: SpackDagHashSchema,
+  operationId: z.string().uuid().optional(),
+  executionIdentity: ExecutionIdentitySchema.optional(),
   updatedAt: z.string().datetime(),
   report: SpackInstallReportSchema.optional(),
 });

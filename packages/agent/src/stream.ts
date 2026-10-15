@@ -117,6 +117,11 @@ import type {
   SpackMaterialContext,
 } from "./spack";
 import {
+  type ExecutionIdentity,
+  RECOVERY_REQUIRED,
+  softwareExecution,
+} from "./spack/execution-identity";
+import {
   activateWorkflowSpack,
   SPACK_ACTIVATION_FAILURE,
   SPACK_ACTIVATION_TIMEOUT,
@@ -166,6 +171,7 @@ type OutboundItem =
       exitCode?: number;
       error?: string;
       installed?: InstalledSpec[];
+      replayed?: boolean;
     }
   | {
       kind: "sshOutput";
@@ -1016,6 +1022,7 @@ export class AgentStream {
   // ---------------------------------------------------------------------------
 
   async start(): Promise<void> {
+    await this.recoverSoftwareOperations();
     await this.recoverOrphanedCleanupIntents();
     await this.recoverActiveRemoteJobs();
     while (this.running) {
@@ -1583,6 +1590,14 @@ export class AgentStream {
     const accepted = await registration;
     if (!accepted || signal.aborted || !this.running) return;
 
+    if (this.persistentQueue) {
+      await this.recoverSoftwareOperations();
+      for await (const result of this.persistentQueue.softwareOperations.results()) {
+        if (!this.isCurrentStreamAttempt(attempt)) return;
+        yield this.softwareOperationResultToProto(result, true);
+      }
+    }
+
     // ---------------------------------------------------------------------
     // Replay any inbound dispatches we received but never acked.
     //
@@ -1696,7 +1711,7 @@ export class AgentStream {
               },
             });
           } else if (item.kind === "softwareOperationResult") {
-            yield this.softwareOperationResultToProto(item);
+            yield this.softwareOperationResultToProto(item, item.replayed);
           } else if (item.kind === "sshOutput") {
             yield create(AgentMessageSchema, {
               payload: {
@@ -1907,7 +1922,7 @@ export class AgentStream {
       return this.queueValidationShadowRejectionToProto(item.failureCode, item.eventId);
     }
     if (item.kind === "heartbeat") return this.snapshotToProto(item.snapshot, heartbeatSequence);
-    return this.softwareOperationResultToProto(item);
+    return this.softwareOperationResultToProto(item, true);
   }
 
   private queueValidationShadowRejectionToProto(
@@ -2078,11 +2093,13 @@ export class AgentStream {
 
   private softwareOperationResultToProto(
     item: Omit<Extract<OutboundItem, { kind: "softwareOperationResult" }>, "kind">,
+    replayed = false,
   ): AgentMessage {
     return create(AgentMessageSchema, {
       payload: {
         case: "softwareOperationResult",
         value: create(SoftwareOperationResultSchema, {
+          replayed,
           operationId: item.operationId,
           action: item.action,
           status: item.status,
@@ -3013,6 +3030,51 @@ export class AgentStream {
         { operationId: request.operationId, action: request.action, spec: request.spec },
         "Software operation received",
       );
+      const managed = this.spackManager?.requireServerMaterials === true;
+      const ledger = managed ? this.persistentQueue?.softwareOperations : undefined;
+      if (managed && !ledger) {
+        await this.enqueueSoftwareOperationResult({
+          operationId: request.operationId,
+          action: request.action,
+          spec: request.spec,
+          status: SoftwareOperationStatus.FAILED,
+          error: RECOVERY_REQUIRED,
+        });
+        return;
+      }
+      let identity: ExecutionIdentity | undefined;
+      try {
+        identity = await ledger?.receive({
+          operationId: request.operationId,
+          action: request.action,
+          spec: request.spec,
+        });
+      } catch {
+        await this.enqueueSoftwareOperationResult({
+          operationId: request.operationId,
+          action: request.action,
+          spec: request.spec,
+          status: SoftwareOperationStatus.FAILED,
+          error: RECOVERY_REQUIRED,
+        });
+        return;
+      }
+      if (ledger && !identity) {
+        await ledger.recover();
+        for await (const result of ledger.results()) {
+          if (result.operationId === request.operationId)
+            await this.enqueueSoftwareOperationResult(result, true);
+        }
+        return;
+      }
+      const execution =
+        identity && ledger
+          ? {
+              identity,
+              operationId: request.operationId,
+              bindStore: (root: string) => ledger.bindStore(request.operationId, root),
+            }
+          : undefined;
       // Include inventory updates in the queue so an older success cannot undo a later withdrawal.
       this.softwareOperationQueue = this.softwareOperationQueue
         .then(async () => {
@@ -3026,11 +3088,15 @@ export class AgentStream {
             });
             return;
           }
-          await this.handleSoftwareOperation(request.operationId, request.action, request.spec, {
-            operationId: request.operationId,
-            ticket: request.spackMaterialTicket,
-            manifestDigest: request.spackManifestDigest,
-          });
+          await ledger?.start(request.operationId);
+          const run = () =>
+            this.handleSoftwareOperation(request.operationId, request.action, request.spec, {
+              operationId: request.operationId,
+              ticket: request.spackMaterialTicket,
+              manifestDigest: request.spackManifestDigest,
+            });
+          if (execution) await softwareExecution.run(execution, run);
+          else await run();
         })
         .catch((err) => {
           this.logger.error(
@@ -3042,7 +3108,7 @@ export class AgentStream {
             action: request.action,
             status: SoftwareOperationStatus.FAILED,
             spec: request.spec,
-            error: err instanceof Error ? err.message : String(err),
+            error: RECOVERY_REQUIRED,
           });
         });
       return;
@@ -4357,7 +4423,7 @@ export class AgentStream {
         action === "install" ? materials : undefined,
         this.lifecycleController.signal,
       );
-    } catch (err) {
+    } catch {
       await this.enqueueSoftwareOperationResult({
         operationId,
         action: protoAction,
@@ -4365,7 +4431,7 @@ export class AgentStream {
         spec: normalizedSpec,
         error: this.lifecycleController.signal.aborted
           ? "Software operation cancelled during Agent shutdown"
-          : `software operation failed: ${streamErrorMessage(err)}`,
+          : "SPACK_OPERATION_FAILED: managed software operation failed",
       });
       return;
     }
@@ -4433,23 +4499,30 @@ export class AgentStream {
     }
   }
 
+  private async recoverSoftwareOperations(): Promise<void> {
+    try {
+      await this.persistentQueue?.softwareOperations.recover();
+    } catch {
+      this.logger.error(RECOVERY_REQUIRED);
+    }
+  }
+
   private async enqueueSoftwareOperationResult(
     item: Omit<Extract<OutboundItem, { kind: "softwareOperationResult" }>, "kind">,
+    replayed = false,
   ): Promise<void> {
+    if (this.persistentQueue) {
+      item = await this.persistentQueue.softwareOperations.finish(item);
+    }
     if (this.running && this.connected) {
-      this.outboundQueue.push({ kind: "softwareOperationResult", ...item });
+      this.outboundQueue.push({ kind: "softwareOperationResult", ...item, replayed });
       this.signalOutbound();
     } else if (this.persistentQueue) {
-      await this.persistentQueue.enqueueSoftwareOperationResult(item).catch((err) => {
-        this.logger.error(
-          { err, operationId: item.operationId },
-          "Failed to persist software operation result while stream offline",
-        );
-      });
+      await this.persistentQueue.enqueueSoftwareOperationResult(item);
     } else {
       this.logger.warn(
-        { operationId: item.operationId, spec: item.spec },
-        "Software operation result dropped: stream offline",
+        { operationId: item.operationId },
+        "Software operation result unavailable: durable queue required",
       );
     }
   }
@@ -4465,8 +4538,4 @@ function protectedMountsFromExpectedOutputs(
     }
   }
   return [...unique.values()];
-}
-
-function streamErrorMessage(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
 }

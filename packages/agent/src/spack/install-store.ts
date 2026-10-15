@@ -1,18 +1,19 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
 import { constants, type Stats } from "node:fs";
-import {
-  type FileHandle,
-  lstat,
-  mkdir,
-  open,
-  opendir,
-  rename,
-  rm,
-  rmdir,
-  unlink,
-} from "node:fs/promises";
+import { lstat, mkdir, open, opendir, rename, rm, unlink } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import { z } from "zod";
+import {
+  type ExecutionIdentity,
+  ExecutionIdentitySchema,
+  executionIdentity,
+  executionState,
+  installWorkerExecution,
+  LOCK_HELD,
+  RECOVERY_REQUIRED,
+  softwareExecution,
+} from "./execution-identity";
 import {
   isSpackInstallRoot,
   type SpackInstallRecord,
@@ -23,6 +24,12 @@ type CreateInput = Pick<
   SpackInstallRecord,
   "manifestDigest" | "manifestSize" | "siteProfileDigest" | "spec" | "rootHash"
 >;
+const LockOwnerSchema = z.strictObject({
+  version: z.literal(1),
+  identity: ExecutionIdentitySchema,
+  operationId: z.string().uuid().optional(),
+});
+const WorkerSchema = z.strictObject({ execution: z.string().uuid(), recordId: z.string().uuid() });
 const MAX_BYTES = 2 * 1024 ** 2;
 const MAX_RECORDS = 1024;
 const DIR_FLAGS = constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW;
@@ -132,7 +139,14 @@ function assertRecordFile(stat: Stats): void {
 
 export class SpackInstallStore {
   private readonly context = new AsyncLocalStorage<symbol>();
-  private active?: { token: symbol; stat: Stats };
+  private active?: {
+    token: symbol;
+    stat: Stats;
+    path: string;
+    workerPending: boolean;
+    identity: ExecutionIdentity;
+    operationId?: string;
+  };
   private busy = false;
   private writing = false;
   private readonly records: string;
@@ -153,42 +167,199 @@ export class SpackInstallStore {
   async initialize(): Promise<void> {
     await this.layout(true);
   }
-  async withLock<T>(fn: () => Promise<T>): Promise<T> {
-    if (this.busy) throw new Error("Spack writer lock is not reentrant");
+  private async lockJson(path: string): Promise<unknown> {
+    const handle = await open(
+      path,
+      constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+    );
+    try {
+      assertRecordFile(await handle.stat());
+      return JSON.parse(await handle.readFile("utf8"));
+    } finally {
+      await handle.close();
+    }
+  }
+  private async lockWrite(path: string, value: unknown): Promise<void> {
+    const handle = await open(
+      path,
+      constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW,
+      0o600,
+    );
+    try {
+      await handle.writeFile(JSON.stringify(value));
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
+    await syncDirectory(dirname(path));
+  }
+  async withLock<T>(fn: () => Promise<T>, operationId?: string): Promise<T> {
+    if (this.busy) throw new Error(LOCK_HELD);
     this.busy = true;
-    let handle: FileHandle | undefined;
     let owned: Stats | undefined;
+    let path: string | undefined;
+    let recovering = false;
+    let reconciled = false;
     try {
       await this.layout();
-      await mkdir(this.lock, { mode: 0o700 });
-      owned = await lstat(this.lock);
+      const execution = softwareExecution.getStore();
+      const identity = execution?.identity ?? (await executionIdentity());
+      const owner = LockOwnerSchema.parse({
+        version: 1,
+        identity,
+        operationId: execution?.operationId ?? operationId,
+      });
+      await execution?.bindStore(this.root);
+      // Keep the legacy name occupied for the whole protocol lifetime, including idle time.
+      try {
+        await mkdir(this.lock, { mode: 0o700 });
+        await this.lockWrite(join(this.lock, "format.json"), { version: 2 });
+        await syncDirectory(this.root);
+      } catch (error) {
+        if (!hasCode(error, "EEXIST")) throw error;
+      }
+      try {
+        await directory(this.lock, false, 0o700);
+        z.strictObject({ version: z.literal(2) }).parse(
+          await this.lockJson(join(this.lock, "format.json")),
+        );
+      } catch {
+        throw new Error(RECOVERY_REQUIRED);
+      }
+      const history = join(this.lock, "generations");
+      await directory(history, true, 0o700);
+      let count = 0;
+      let highest = -1;
+      for await (const entry of await opendir(history)) {
+        if (!/^\d{16}$/.test(entry.name) || !Number.isSafeInteger(Number(entry.name)))
+          throw new Error(RECOVERY_REQUIRED);
+        count++;
+        highest = Math.max(highest, Number(entry.name));
+      }
+      if (highest !== count - 1 || !Number.isSafeInteger(count)) throw new Error(RECOVERY_REQUIRED);
+      const previous = count ? String(count - 1).padStart(16, "0") : undefined;
+      if (previous) {
+        const previousPath = join(history, previous);
+        try {
+          assertDirectory(await lstat(previousPath), true, true);
+          const owner = LockOwnerSchema.parse(
+            await this.lockJson(join(previousPath, "owner.json")),
+          );
+          const worker = await optionalStat(join(previousPath, "worker.json"));
+          if (worker) {
+            const binding = WorkerSchema.parse(
+              await this.lockJson(join(previousPath, "worker.json")),
+            );
+            if (binding.execution !== owner.identity.token) throw new Error(RECOVERY_REQUIRED);
+          }
+          const uncertain = await optionalStat(join(previousPath, "uncertain.json"));
+          if (
+            uncertain &&
+            (!worker ||
+              (await this.lockJson(join(previousPath, "uncertain.json"))) !== owner.identity.token)
+          )
+            throw new Error(RECOVERY_REQUIRED);
+          const released = await optionalStat(join(previousPath, "released.json"));
+          if (released && uncertain) throw new Error(RECOVERY_REQUIRED);
+          if (released) {
+            if ((await this.lockJson(join(previousPath, "released.json"))) !== owner.identity.token)
+              throw new Error(RECOVERY_REQUIRED);
+          } else {
+            recovering = true;
+            const state = await executionState(owner.identity, identity);
+            if (uncertain && state !== "rebooted") throw new Error(RECOVERY_REQUIRED);
+            if (state === "alive") throw new Error(LOCK_HELD);
+            // shortcut: same-boot workers stay fenced until a supervised cgroup can prove them stopped.
+            if (state === "unknown" || (state !== "rebooted" && worker)) {
+              throw new Error(RECOVERY_REQUIRED);
+            }
+          }
+        } catch (error) {
+          throw new Error(
+            error instanceof Error && error.message === LOCK_HELD ? LOCK_HELD : RECOVERY_REQUIRED,
+          );
+        }
+      }
+      path = join(history, String(count).padStart(16, "0"));
+      try {
+        await mkdir(path, { mode: 0o700 });
+      } catch (error) {
+        if (hasCode(error, "EEXIST")) throw new Error(LOCK_HELD);
+        throw error;
+      }
+      owned = await lstat(path);
       assertDirectory(owned, true, true);
-      handle = await open(this.lock, DIR_FLAGS);
-      if (!sameFile(owned, await handle.stat())) throw new Error("Spack writer lock changed");
-      await syncDirectory(this.root);
+      await syncDirectory(history);
+      await this.lockWrite(join(path, "owner.json"), owner);
       const token = Symbol("writer");
-      this.active = { token, stat: owned };
-      return await this.context.run(token, fn);
+      const active = {
+        token,
+        stat: owned,
+        path,
+        workerPending: false,
+        identity,
+        operationId: execution?.operationId ?? operationId,
+      };
+      this.active = active;
+      return await this.context.run(token, async () => {
+        // An exclusive successor proves all predecessors stopped; preserve partial files as evidence.
+        for (const record of recovering ? await this.list() : []) {
+          if (record.state === "building" || record.state === "verifying") {
+            await this.save({ ...record, state: "failed", updatedAt: new Date().toISOString() });
+          } else if (record.state === "removing") {
+            await this.removeFiles(record.id);
+            await this.save({ ...record, state: "removed", updatedAt: new Date().toISOString() });
+          }
+        }
+        reconciled = true;
+        return installWorkerExecution.run(
+          {
+            start: async (recordId) => {
+              await this.assertLocked();
+              // Persist before spawn; even a crash in the spawn/PID-registration gap is fenced.
+              if (!(await optionalStat(join(active.path, "worker.json")))) {
+                await this.lockWrite(join(active.path, "worker.json"), {
+                  execution: identity.token,
+                  recordId: ID.parse(recordId),
+                });
+              }
+              active.workerPending = true;
+            },
+            finish: async () => {
+              active.workerPending = false;
+            },
+          },
+          fn,
+        );
+      });
     } finally {
+      const active = this.active;
       this.active = undefined;
       try {
-        const current = owned && (await optionalStat(this.lock));
-        if (owned && current && sameFile(owned, current)) {
-          await rmdir(this.lock);
-          await syncDirectory(this.root);
+        if (active && reconciled && owned && path) {
+          const current = await optionalStat(path);
+          if (current && sameFile(owned, current)) {
+            await this.lockWrite(
+              join(path, active.workerPending ? "uncertain.json" : "released.json"),
+              active.identity.token,
+            );
+          }
         }
       } finally {
         this.busy = false;
-        await handle?.close();
       }
     }
+  }
+  workerUncertain(): boolean {
+    return this.active?.workerPending === true;
   }
   private async assertLocked(): Promise<void> {
     if (!this.active || this.context.getStore() !== this.active.token) {
       throw new Error("Spack mutation requires the owning withLock context");
     }
     await this.layout();
-    const current = await lstat(this.lock);
+    await directory(this.lock, false, 0o700);
+    const current = await lstat(this.active.path);
     assertDirectory(current, true, true);
     if (!sameFile(this.active.stat, current)) throw new Error("Spack writer lock changed");
   }
@@ -306,6 +477,8 @@ export class SpackInstallStore {
       const record = this.validate({
         ...CreateSchema.parse(input),
         version: 1,
+        operationId: this.active?.operationId,
+        executionIdentity: this.active?.identity,
         id: randomUUID(),
         state: "building",
         updatedAt: new Date().toISOString(),
@@ -321,7 +494,11 @@ export class SpackInstallStore {
     return this.mutate(async () => {
       const record = this.validate(value);
       const previous = await this.read(record.id);
-      if (IDENTITY.some((key) => previous[key] !== record[key])) {
+      if (
+        IDENTITY.some((key) => previous[key] !== record[key]) ||
+        previous.operationId !== record.operationId ||
+        JSON.stringify(previous.executionIdentity) !== JSON.stringify(record.executionIdentity)
+      ) {
         throw new Error("Spack record identity is immutable");
       }
       if (record.state !== previous.state && !NEXT[previous.state].includes(record.state)) {

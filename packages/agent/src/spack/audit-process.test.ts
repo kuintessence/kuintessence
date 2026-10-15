@@ -7,6 +7,7 @@ import {
   createSpackAuditProcess,
   realSpackAuditProcess,
   type SpackAuditProcess,
+  SpackProcessNotStartedError,
 } from "./audit-process";
 
 type Options = Parameters<SpackAuditProcess["run"]>[1];
@@ -445,4 +446,10 @@ describe("Spack audit process bounded cleanup", () => {
     child.emit("close", 0, null);
     await expect(result).rejects.toThrow("output limit");
   });
+});
+
+test("an exec failure certifies that no worker was started", async () => {
+  await expect(
+    realSpackAuditProcess.run(["/kq-missing-executable-fixture"], defaults),
+  ).rejects.toBeInstanceOf(SpackProcessNotStartedError);
 });

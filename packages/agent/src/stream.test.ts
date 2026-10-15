@@ -474,6 +474,26 @@ afterEach(() => {
   activeStreams.length = 0;
 });
 
+const softwareDatabases: Array<{ sqlite: Database; stream: AgentStream }> = [];
+function softwareStream(deps: AgentStreamDeps): AgentStream {
+  if (!deps.spackManager?.requireServerMaterials || deps.outboundQueue)
+    return new AgentStream(deps);
+  const sqlite = new Database(":memory:");
+  runSqliteMigrations(sqlite);
+  const stream = new AgentStream({
+    ...deps,
+    outboundQueue: new OutboundQueue(drizzle(sqlite, { schema })),
+  });
+  softwareDatabases.push({ sqlite, stream });
+  return stream;
+}
+afterEach(async () => {
+  for (const { sqlite, stream } of softwareDatabases.splice(0)) {
+    await stream.stop();
+    sqlite.close();
+  }
+});
+
 describe("AgentStream", () => {
   test("sends register as first outbound message", async () => {
     const serverMsgs = [
@@ -5330,7 +5350,7 @@ describe("AgentStream", () => {
     const spackManager = await SpackManager.bootstrap({ spawner: stubSpawner });
     expect(spackManager.available).toBe(true);
 
-    const stream = new AgentStream({
+    const stream = softwareStream({
       fileTransferMaxRetries: 3,
       fileTransferRetryBackoffSec: 0,
       client,
@@ -5390,7 +5410,7 @@ describe("AgentStream", () => {
               },
             },
           });
-    const stream = new AgentStream({
+    const stream = softwareStream({
       client,
       adapter: makeAdapter(),
       agentId: "agent-001",
@@ -5480,7 +5500,7 @@ describe("AgentStream", () => {
         },
       },
     });
-    const stream = new AgentStream({
+    const stream = softwareStream({
       client,
       adapter: makeAdapter(),
       agentId: "agent-001",
@@ -5493,7 +5513,15 @@ describe("AgentStream", () => {
     });
     activeStreams.push(stream);
     const running = stream.start();
-    await settle(30);
+    await waitForCondition(() =>
+      (sent as AgentMessage[]).some(
+        (message) =>
+          message.payload.case === "softwareOperationResult" &&
+          [SoftwareOperationStatus.REJECTED, SoftwareOperationStatus.FAILED].includes(
+            message.payload.value.status,
+          ),
+      ),
+    );
     stream.stop();
     await running;
     const results = (sent as AgentMessage[]).flatMap((message) =>
@@ -5564,7 +5592,7 @@ describe("AgentStream", () => {
       },
     };
     const spackManager = await SpackManager.bootstrap({ spawner: stubSpawner });
-    const stream = new AgentStream({
+    const stream = softwareStream({
       fileTransferMaxRetries: 3,
       fileTransferRetryBackoffSec: 0,
       client,
@@ -5602,6 +5630,11 @@ describe("AgentStream", () => {
     expect(final?.payload.value.spec).toBe("gromacs@2024.1");
     expect(final?.payload.value.exitCode).toBe(0);
     expect(final?.payload.value.installed[0]?.name).toBe("gromacs");
+    for (const message of sent as AgentMessage[]) {
+      if (message.payload.case === "softwareOperationResult") {
+        expect(message.payload.value.replayed).toBe(false);
+      }
+    }
   });
 
   test("source audit stdout is retained on rejected installation without success or inventory", async () => {
@@ -5637,7 +5670,7 @@ describe("AgentStream", () => {
       reason: "managed offline Spack execution is not enabled yet",
       stdout: report,
     });
-    const stream = new AgentStream({
+    const stream = softwareStream({
       fileTransferMaxRetries: 3,
       fileTransferRetryBackoffSec: 0,
       client,
@@ -5705,7 +5738,7 @@ describe("AgentStream", () => {
       invalidatedHashes: ["invalid"],
     });
     const keep = { name: "existing", version: "1.0", hash: "keep", spec: "existing@1.0" };
-    const stream = new AgentStream({
+    const stream = softwareStream({
       fileTransferMaxRetries: 3,
       fileTransferRetryBackoffSec: 0,
       client,
@@ -5844,7 +5877,7 @@ describe("AgentStream", () => {
         invalidatedHashes: ["invalid"],
       };
     };
-    const stream = new AgentStream({
+    const stream = softwareStream({
       fileTransferMaxRetries: 3,
       fileTransferRetryBackoffSec: 0,
       client,
@@ -5910,7 +5943,7 @@ describe("AgentStream", () => {
           },
         },
       });
-      const stream = new AgentStream({
+      const stream = softwareStream({
         client: makeMockClient([]).client,
         clientFactory: reconnect.clientFactory,
         adapter: makeAdapter(),
@@ -6328,7 +6361,7 @@ describe("AgentStream", () => {
       },
     };
     const spackManager = await SpackManager.bootstrap({ spawner: stubSpawner });
-    const stream = new AgentStream({
+    const stream = softwareStream({
       fileTransferMaxRetries: 3,
       fileTransferRetryBackoffSec: 0,
       client,
@@ -6364,7 +6397,7 @@ describe("AgentStream", () => {
     const failed = results.find((r) => r.payload.value.status === SoftwareOperationStatus.FAILED);
     expect(failed?.payload.value.spec).toBe("zlib@1.3");
     expect(failed?.payload.value.error).toBe(
-      "software operation failed: spack process spawn failed",
+      "SPACK_OPERATION_FAILED: managed software operation failed",
     );
     expect(failed?.payload.value.exitCode).toBe(0);
   });
@@ -6409,7 +6442,7 @@ describe("AgentStream", () => {
       },
     };
     const spackManager = await SpackManager.bootstrap({ spawner: stubSpawner });
-    const stream = new AgentStream({
+    const stream = softwareStream({
       fileTransferMaxRetries: 3,
       fileTransferRetryBackoffSec: 0,
       client,
@@ -6491,7 +6524,7 @@ describe("AgentStream", () => {
       },
     };
     const spackManager = await SpackManager.bootstrap({ spawner: stubSpawner });
-    const stream = new AgentStream({
+    const stream = softwareStream({
       fileTransferMaxRetries: 3,
       fileTransferRetryBackoffSec: 0,
       client,
@@ -6563,7 +6596,7 @@ describe("AgentStream", () => {
       },
     };
     const spackManager = await SpackManager.bootstrap({ spawner: stubSpawner });
-    const stream = new AgentStream({
+    const stream = softwareStream({
       fileTransferMaxRetries: 3,
       fileTransferRetryBackoffSec: 0,
       client,
@@ -6633,7 +6666,7 @@ describe("AgentStream", () => {
       },
     };
     const spackManager = await SpackManager.bootstrap({ spawner: stubSpawner });
-    const stream = new AgentStream({
+    const stream = softwareStream({
       fileTransferMaxRetries: 3,
       fileTransferRetryBackoffSec: 0,
       client,
@@ -6670,12 +6703,188 @@ describe("AgentStream", () => {
     expect(failed?.payload.value.error).toBe("spack is unavailable on this Agent");
   });
 
+  test("managed receipt survives online queue loss and replays without rerunning execution", async () => {
+    const sqlite = new Database(":memory:");
+    runSqliteMigrations(sqlite);
+    const db = drizzle(sqlite, { schema });
+    const outboundQueue = new OutboundQueue(db);
+    const operationId = "bbe907be-8f2d-40c6-984d-3156d83668ed";
+    const spackManager = await SpackManager.bootstrap({
+      requireServerMaterials: true,
+      spawner: { run: async () => ({ exitCode: 0, stdout: "1.0.0", stderr: "" }) },
+    });
+    let runs = 0;
+    spackManager.runSoftwareOperation = async () => {
+      const [receipt] = await db.select().from(schema.softwareExecutions);
+      expect(receipt?.operationId).toBe(operationId);
+      expect(receipt?.started).toBe(true);
+      runs++;
+      return { outcome: "succeeded", stdout: "verified", installed: [] };
+    };
+    const request = create(ServerMessageSchema, {
+      payload: {
+        case: "softwareOperationRequest",
+        value: create(SoftwareOperationRequestSchema, {
+          operationId,
+          action: SoftwareOperationAction.LOAD,
+          spec: "fixture@1",
+        }),
+      },
+    });
+    const closeConnection = Promise.withResolvers<void>();
+    const connection = makeReplayReconnectClient(
+      create(ServerMessageSchema, {
+        payload: {
+          case: "registerResponse",
+          value: create(RegisterResponseSchema, { accepted: true }),
+        },
+      }),
+      closeConnection.promise,
+    );
+    const sent = connection.sentByConnection[0] ?? [];
+    const deps = {
+      client: connection.clientFactory(),
+      adapter: makeAdapter(),
+      agentId: "fixture-agent",
+      siteName: "test-site",
+      heartbeatIntervalMs: 60000,
+      logger: silent,
+      outboundQueue,
+      spackManager,
+      reconnectBackoffMs: 1,
+      sleep: async () => {},
+    };
+    const before = new AgentStream(deps);
+    const state = before as unknown as {
+      connected: boolean;
+      softwareOperationQueue: Promise<void>;
+      outboundQueue: OutboundItem[];
+    };
+    state.connected = true;
+    await deliverServerMessage(before, request);
+    await state.softwareOperationQueue;
+    expect(
+      state.outboundQueue.some(
+        (item) =>
+          item.kind === "softwareOperationResult" &&
+          item.status === SoftwareOperationStatus.SUCCEEDED,
+      ),
+    ).toBe(true);
+    state.outboundQueue.length = 0;
+    await before.stop();
+    const restarted = new AgentStream(deps);
+    const running = restarted.start();
+    try {
+      await waitForCondition(() =>
+        (sent as AgentMessage[]).some(
+          (message) =>
+            message.payload.case === "softwareOperationResult" &&
+            message.payload.value.status === SoftwareOperationStatus.SUCCEEDED,
+        ),
+      );
+      await deliverServerMessage(restarted, request);
+      const results = () =>
+        (sent as AgentMessage[]).flatMap((message) =>
+          message.payload.case === "softwareOperationResult" ? [message.payload.value] : [],
+        );
+      await waitForCondition(() => results().length >= 2);
+      expect(results().map((result) => result.replayed)).toEqual([true, true]);
+      expect(runs).toBe(1);
+      const saved = [];
+      for await (const result of outboundQueue.softwareOperations.results()) saved.push(result);
+      expect(saved).toMatchObject([{ operationId, status: SoftwareOperationStatus.SUCCEEDED }]);
+    } finally {
+      closeConnection.resolve();
+      await restarted.stop();
+      await running;
+      sqlite.close();
+    }
+  });
+
+  for (const source of ["journal", "outbox"] as const) {
+    for (const inventory of ["unknown", "empty", "populated"] as const) {
+      test(`historical ${source} replay preserves ${inventory} current inventory`, async () => {
+        const sqlite = new Database(":memory:");
+        runSqliteMigrations(sqlite);
+        const outboundQueue = new OutboundQueue(drizzle(sqlite, { schema }));
+        const result = {
+          operationId: "00000000-0000-4000-8000-000000000099",
+          action: SoftwareOperationAction.INSTALL,
+          status: SoftwareOperationStatus.SUCCEEDED,
+          spec: "old@1",
+          installed: [{ name: "old", version: "1", hash: "old", spec: "old@1" }],
+        };
+        if (source === "journal") await outboundQueue.softwareOperations.finish(result);
+        else await outboundQueue.enqueueSoftwareOperationResult(result);
+        const current = [{ name: "current", version: "2", hash: "current", spec: "current@2" }];
+        const closeConnection = Promise.withResolvers<void>();
+        const connection = makeReplayReconnectClient(
+          create(ServerMessageSchema, {
+            payload: {
+              case: "registerResponse",
+              value: create(RegisterResponseSchema, { accepted: true }),
+            },
+          }),
+          closeConnection.promise,
+        );
+        const sent = connection.sentByConnection[0] ?? [];
+        const stream = new AgentStream({
+          client: connection.clientFactory(),
+          adapter: makeAdapter(),
+          agentId: "fixture-agent",
+          siteName: "test-site",
+          heartbeatIntervalMs: 5,
+          logger: silent,
+          outboundQueue,
+          installedSoftware:
+            inventory === "unknown" ? undefined : inventory === "empty" ? [] : current,
+          readGpuMetrics: async () => [],
+          readDiskUsedPercent: async () => 0,
+          readSchedulerQueueDepth: async () => 0,
+        });
+        const running = stream.start();
+        try {
+          await waitForCondition(() => queueInventoryHeartbeats(sent).length >= 3);
+          const results = (sent as AgentMessage[]).flatMap((message) =>
+            message.payload.case === "softwareOperationResult" ? [message.payload.value] : [],
+          );
+          expect(results).toHaveLength(1);
+          expect(results[0]).toMatchObject({
+            operationId: result.operationId,
+            status: SoftwareOperationStatus.SUCCEEDED,
+            replayed: true,
+            installed: [{ name: "old" }],
+          });
+          if (inventory === "empty") {
+            expect(installedSoftwareReports(sent).length).toBeGreaterThan(0);
+            for (const report of installedSoftwareReports(sent))
+              expect(report.installed).toEqual([]);
+          } else {
+            expect(installedSoftwareReports(sent)).toEqual([]);
+          }
+          for (const message of sent as AgentMessage[]) {
+            if (message.payload.case === "heartbeat") {
+              expect(message.payload.value.installedSoftware.map((item) => item.name)).toEqual(
+                inventory === "populated" ? ["current"] : [],
+              );
+            }
+          }
+        } finally {
+          closeConnection.resolve();
+          await stream.stop();
+          await running;
+          sqlite.close();
+        }
+      });
+    }
+  }
+
   test("persists software operation results while the stream is offline", async () => {
     const sqlite = new Database(":memory:");
     runSqliteMigrations(sqlite);
     const outboundQueue = new OutboundQueue(drizzle(sqlite, { schema }));
     const { client } = makeMockClient([]);
-    const stream = new AgentStream({
+    const stream = softwareStream({
       fileTransferMaxRetries: 3,
       fileTransferRetryBackoffSec: 0,
       client,
@@ -7180,7 +7389,7 @@ describe("AgentStream workflow Spack dispatch", () => {
     const submitted: JobSpec[] = [];
     const reports: JobStatusReport[] = [];
     const { client } = makeMockClient([]);
-    const stream = new AgentStream({
+    const stream = softwareStream({
       client,
       adapter: makeAdapter({
         submit: async (spec) => {

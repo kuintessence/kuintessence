@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { lstat, mkdir, readdir, rename, rm, symlink } from "node:fs/promises";
+import { installWorkerExecution, RECOVERY_REQUIRED } from "./execution-identity";
 import type { SpackInstallRunner } from "./install-runner";
 import { SpackInstallStore } from "./install-store";
 import { makeInstallFixture } from "./install-test-fixture";
@@ -39,7 +40,7 @@ describe("managed Spack installation transaction", () => {
       outcome: "failed",
       exitCode: 1,
       stderr: message.includes("private credential")
-        ? "Managed Spack operation failed; inspect the installation record before retrying"
+        ? "SPACK_OPERATION_FAILED: managed software operation failed"
         : message,
     });
     expect((await new SpackInstallStore(f.site.profile.storeRoot).list())[0]?.state).toBe("failed");
@@ -129,7 +130,7 @@ describe("managed Spack installation transaction", () => {
     expect(await backend.install(f.prepared, f.input)).toEqual({
       outcome: "failed",
       exitCode: 1,
-      stderr: "Managed Spack operation failed; inspect the installation record before retrying",
+      stderr: "SPACK_OPERATION_FAILED: managed software operation failed",
     });
     const store = new SpackInstallStore(f.site.profile.storeRoot);
     expect((await store.list())[0]?.state).toBe("failed");
@@ -426,7 +427,7 @@ describe("managed Spack installation transaction", () => {
     });
     expect(await backend.install(f.prepared, f.input)).toMatchObject({
       outcome: "failed",
-      stderr: expect.stringContaining("inspect the installation record"),
+      stderr: "SPACK_OPERATION_FAILED: managed software operation failed",
     });
     const installed = (await store.list()).find((record) => record.spec === f.input.spec);
     expect(installed?.state).toBe("ready");
@@ -572,4 +573,37 @@ describe("managed Spack installation transaction", () => {
     expect((await store.list())[0]?.state).toBe("removed");
     await expect(lstat(store.path(record.id))).rejects.toThrow();
   });
+});
+
+test("uncertain load worker withdraws ready inventory while retaining files and lock", async () => {
+  const f = await fixture();
+  let uncertain = false;
+  const store = new SpackInstallStore(f.site.profile.storeRoot);
+  const backend = new ManagedSpackInstallation({
+    cacheDir: f.cacheDir,
+    site: f.siteOptions,
+    loadSite: async () => f.site,
+    runner: {
+      async run(action, _p, _i, _s, path) {
+        if (uncertain) {
+          const [record] = await store.list();
+          if (!record) throw new Error("missing fixture");
+          await installWorkerExecution.getStore()?.start(record.id);
+          throw new Error("fixture worker state unknown");
+        }
+        await mkdir(f.report(action, path).prefix, { recursive: true });
+        return f.report(action, path);
+      },
+    },
+  });
+  expect((await backend.install(f.prepared, f.input)).outcome).toBe("succeeded");
+  uncertain = true;
+  expect(await backend.operation("load", f.input.spec)).toMatchObject({
+    outcome: "failed",
+    stderr: RECOVERY_REQUIRED,
+    invalidatedHashes: ["a".repeat(32)],
+  });
+  expect((await store.list())[0]?.state).toBe("unavailable");
+  expect(await backend.installedList()).toEqual([]);
+  await expect(store.withLock(async () => {})).rejects.toThrow(RECOVERY_REQUIRED);
 });

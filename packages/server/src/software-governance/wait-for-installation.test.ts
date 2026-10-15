@@ -63,3 +63,22 @@ test("never dispatches when successful install has no confirmed inventory", asyn
     }),
   ).rejects.toThrow("Timed out");
 });
+
+for (const error of [
+  "SPACK_INTERRUPTED: software operation interrupted",
+  "SPACK_RECOVERY_REQUIRED: store writer recovery required",
+]) {
+  test(`recovered operation releases its waiter: ${error}`, async () => {
+    await expect(
+      waitForSoftwareInstallation({
+        operationId: "recovered",
+        timeoutMs: 1000,
+        readJobStatus: async () => "pending",
+        readOperation: async () => ({ status: "failed", error }),
+        inventoryReady: async () => {
+          throw new Error("must not dispatch");
+        },
+      }),
+    ).rejects.toThrow(error);
+  });
+}

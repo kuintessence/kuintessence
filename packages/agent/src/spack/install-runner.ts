@@ -1,7 +1,11 @@
 /// <reference path="./python.d.ts" />
 import { link, lstat, mkdir, mkdtemp, readlink, realpath, rm, writeFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
-import { realSpackAuditProcess, type SpackAuditProcess } from "./audit-process";
+import { basename, dirname, join } from "node:path";
+import {
+  realSpackAuditProcess,
+  type SpackAuditProcess,
+  SpackProcessNotStartedError,
+} from "./audit-process";
 import {
   buildSpackAuditCommand,
   isSpackAuditPath,
@@ -10,6 +14,7 @@ import {
   type SpackAuditRuntimeProfile,
   verifySpackAuditRuntime,
 } from "./audit-runtime";
+import { installWorkerExecution } from "./execution-identity";
 import {
   SPACK_INSTALL_RESULT_PREFIX,
   type SpackInstallReport,
@@ -220,17 +225,19 @@ export class IsolatedSpackInstallRunner implements SpackInstallRunner {
       const remainingMs = Math.floor(expiresAt - performance.now());
       if (remainingMs <= 0) throw new Error("Managed Spack operation timed out");
       const uid = this.options.runtimeDeps?.uid ?? process.getuid?.();
-      const result = await (this.options.process ?? realSpackAuditProcess).run(
-        buildSpackInstallCommand(
-          this.options.runtime,
-          inputs,
-          input.manifestDigest,
-          site.profile,
-          storePath,
-          action,
-          managedMemoryMib,
-        ),
-        {
+      const command = buildSpackInstallCommand(
+        this.options.runtime,
+        inputs,
+        input.manifestDigest,
+        site.profile,
+        storePath,
+        action,
+        managedMemoryMib,
+      );
+      const execution = installWorkerExecution.getStore();
+      await execution?.start(basename(storePath));
+      const result = await (this.options.process ?? realSpackAuditProcess)
+        .run(command, {
           cwd: directory,
           env: {
             PATH: "/usr/bin:/bin",
@@ -243,8 +250,12 @@ export class IsolatedSpackInstallRunner implements SpackInstallRunner {
           timeoutMs: remainingMs,
           maxOutputBytes: 2 * 1024 ** 2,
           signal,
-        },
-      );
+        })
+        .catch(async (error: unknown) => {
+          if (error instanceof SpackProcessNotStartedError) await execution?.finish();
+          throw error;
+        });
+      await execution?.finish();
       signal.throwIfAborted();
       if (result.exitCode !== 0 || !result.stdout.trim().startsWith(SPACK_INSTALL_RESULT_PREFIX)) {
         throw new Error("Managed Spack worker did not complete successfully");

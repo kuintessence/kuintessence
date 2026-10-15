@@ -747,3 +747,10 @@ Web 导入采用 mock HTTP/临时 File 的组件与队列测试，不替代真�
 受控上游导入及代理的独立配置与验证边界见 [上游导入](spack-upstream-import.md)。
 受限包及许可证授权、材料删除/授权调整和 15 个工作流的完整材料准备及
 端到端安装/运行验收仍未完成，不能将实验性 opt-in 描述为生产可用或安装功能已恢复。
+
+
+### 安装中断与持久写锁
+
+Agent 重启、共享 store 写锁及 operation 重报的身份要求、固定错误码、保守拒绝边界和
+旧锁维护步骤见[Spack 安装中断与写锁恢复](spack-install-recovery.md)。不要按锁年龄清理
+`.writer-lock`；同一 boot 内 Agent 退出不证明全部安装 worker 已停止。

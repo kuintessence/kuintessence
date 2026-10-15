@@ -6,6 +6,7 @@ import {
   type SpackPolicy,
   spackMaterialBlobs,
 } from "@kuintessence/shared";
+import { INTERRUPTED, LOCK_HELD, RECOVERY_REQUIRED } from "./execution-identity";
 import {
   type SpackInstallRecord,
   SpackInstallReportSchema,
@@ -37,12 +38,15 @@ const failure = (error?: unknown): Extract<SoftwareOperationOutcome, { outcome: 
   stderr:
     error instanceof Error &&
     [
+      LOCK_HELD,
+      RECOVERY_REQUIRED,
+      INTERRUPTED,
       "Invalid managed Spack memory budget",
       "Managed Spack memory admission metadata unavailable or invalid",
       "Managed Spack memory admission requires configured budget + 512 MiB available without swap",
     ].includes(error.message)
       ? error.message
-      : "Managed Spack operation failed; inspect the installation record before retrying",
+      : "SPACK_OPERATION_FAILED: managed software operation failed",
 });
 
 function matchRecords(records: SpackInstallRecord[], spec: string): SpackInstallRecord[] {
@@ -116,8 +120,8 @@ export class ManagedSpackInstallation implements SpackManagedInstallation {
           });
         }
       });
-    } catch {
-      return { ...failure(), ...(invalidatedHashes ? { invalidatedHashes } : {}) };
+    } catch (error) {
+      return { ...failure(error), ...(invalidatedHashes ? { invalidatedHashes } : {}) };
     }
     return { ...failure(), ...(invalidatedHashes ? { invalidatedHashes } : {}) };
   }
@@ -258,6 +262,7 @@ export class ManagedSpackInstallation implements SpackManagedInstallation {
             installed,
           };
         } catch (error) {
+          if (store.workerUncertain()) return failure(new Error(RECOVERY_REQUIRED));
           // Publication can have succeeded before a later inventory error. Never delete a ready store here.
           const current = (await store.list()).find((entry) => entry.id === record.id);
           if (current && (current.state === "building" || current.state === "verifying")) {
@@ -273,9 +278,9 @@ export class ManagedSpackInstallation implements SpackManagedInstallation {
           }
           return { ...failure(error), ...(invalidatedHashes ? { invalidatedHashes } : {}) };
         }
-      });
-    } catch {
-      return { ...failure(), ...(invalidatedHashes ? { invalidatedHashes } : {}) };
+      }, input.operationId);
+    } catch (error) {
+      return { ...failure(error), ...(invalidatedHashes ? { invalidatedHashes } : {}) };
     }
   }
 
@@ -322,6 +327,10 @@ export class ManagedSpackInstallation implements SpackManagedInstallation {
         spackVersion: prepared.manifest.spackVersion,
         signal: abortSignal,
       };
+      // Withdraw before spawn so a crash cannot leave an unverified release advertised as ready.
+      if (record.state === "ready") {
+        await store.save({ ...record, state: "unavailable", updatedAt: new Date().toISOString() });
+      }
       const report = await this.options.runner.run(
         action,
         prepared,
@@ -332,14 +341,12 @@ export class ManagedSpackInstallation implements SpackManagedInstallation {
       this.assertReport(record, report, store, action);
       await this.site(request.signal);
       request.signal?.throwIfAborted();
-      if (record.state === "unavailable") {
-        await store.save({
-          ...record,
-          state: "ready",
-          report,
-          updatedAt: new Date().toISOString(),
-        });
-      }
+      await store.save({
+        ...record,
+        state: "ready",
+        report: action === "load" ? record.report : report,
+        updatedAt: new Date().toISOString(),
+      });
       request.signal?.throwIfAborted();
       const installed = await this.inventory(store, site);
       request.signal?.throwIfAborted();
@@ -364,8 +371,9 @@ export class ManagedSpackInstallation implements SpackManagedInstallation {
         outcome: "failed",
         exitCode: 1,
         invalidatedHashes: [record.rootHash],
-        stderr:
-          "Managed Spack verification failed; release is unavailable pending explicit verification",
+        stderr: store.workerUncertain()
+          ? RECOVERY_REQUIRED
+          : "Managed Spack verification failed; release is unavailable pending explicit verification",
       };
     }
   }
@@ -493,8 +501,8 @@ export class ManagedSpackInstallation implements SpackManagedInstallation {
         if ("invalidatedHashes" in result) invalidatedHashes = result.invalidatedHashes;
         return result;
       });
-    } catch {
-      return { ...failure(), ...(invalidatedHashes ? { invalidatedHashes } : {}) };
+    } catch (error) {
+      return { ...failure(error), ...(invalidatedHashes ? { invalidatedHashes } : {}) };
     }
   }
 }

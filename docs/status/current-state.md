@@ -146,7 +146,15 @@ Server-only Agent 材料下载，以及 CP 安装/库存/策略操作已有实�
   `AGENT_SPACK_INSTALL_TIMEOUT_MS` 仅用于 install，默认 6 小时、最大 24 小时、正安全整数；
   runner 准备与进程共用总 deadline，verify/load 和独立 source-auditor 保持 30 分钟。
   取消、进程组清理、namespace、禁网、镜像摘要、lock/DAG 和 mirror-only 边界保持不变。
-  安装操作仅透传[文档列出的三条固定内存错误](../spack-material-delivery.md)，其他异常继续脱敏。
+  安装操作透传[固定内存错误](../spack-material-delivery.md)及[固定恢复错误码](../spack-install-recovery.md)，其他异常继续脱敏。
+  已增加持久锁代次、真实 host boot/PID/starttime 身份与 SQLite 软件 operation 执行账本；
+  启动/重连/安装前可收尾可证明已停止的执行，终态先持久化再重报，不自动重启编译。
+  历史账本/outbox/重复请求终态标记 `replayed`，仅收尾 operation，不覆盖当前库存；
+  库存仍由 heartbeat/installedSoftwareReport 确认，未知不报空，等待者仍要求库存就绪。
+  必须先升级 Server 再升级 Agent；旧端不识别历史标记，混合版本不具备完整防回滚保证。
+  同 boot 的未知 worker、其他主机及旧空锁仍 fail closed；旧锁有明确停写、确认 worker、
+  留存证据后的维护步骤。锁代次和无 ACK 终态历史不在线回收，需要监控元数据容量。
+  本次为本地针对性验证，目标 NFS、远端 kqagent 和真实软件安装未验收，详见[恢复边界](../spack-install-recovery.md)。
   降低额度可用于独立模拟包，但不承诺大型真实软件可用，尚未实测 1 GiB 安装；
   移除配置或设为 4096 后重启 Agent 即恢复默认预算，真实材料仍须独立验收。
   更长时限不增加内存或 tmpfs 容量，不代表完整工作流验收通过。

@@ -2,7 +2,8 @@ import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { chmod, lstat, mkdir, readdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { loadAgentConfig } from "../config";
-import type { SpackAuditProcess } from "./audit-process";
+import { type SpackAuditProcess, SpackProcessNotStartedError } from "./audit-process";
+import { installWorkerExecution } from "./execution-identity";
 import { SPACK_INSTALL_RESULT_PREFIX } from "./install-contract";
 import { buildSpackInstallCommand, IsolatedSpackInstallRunner } from "./install-runner";
 import { SpackInstallStore } from "./install-store";
@@ -511,4 +512,34 @@ describe("isolated persistent Spack worker", () => {
       ).toThrow();
     }
   });
+});
+
+test.each([
+  true,
+  false,
+])("worker lifecycle distinguishes proven spawn failure: %s", async (neverStarted) => {
+  const f = await fixture();
+  const events: string[] = [];
+  const r = runner({
+    async run() {
+      events.push("spawn");
+      throw neverStarted
+        ? new SpackProcessNotStartedError("fixture")
+        : new Error("fixture uncertain worker");
+    },
+  });
+  await expect(
+    installWorkerExecution.run(
+      {
+        start: async () => {
+          events.push("persist");
+        },
+        finish: async () => {
+          events.push("stopped");
+        },
+      },
+      () => r.run("install", f.prepared, f.input, f.site, f.path),
+    ),
+  ).rejects.toThrow("fixture");
+  expect(events).toEqual(neverStarted ? ["persist", "spawn", "stopped"] : ["persist", "spawn"]);
 });

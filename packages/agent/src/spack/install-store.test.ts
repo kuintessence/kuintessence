@@ -239,6 +239,7 @@ describe("writer lock", () => {
       }),
     ).rejects.toThrow("fixture");
     expect(await other.withLock(async () => 42)).toBe(42);
+    await rename(join(root, ".writer-lock"), join(root, "saved-lock"));
     await mkdir(join(root, ".writer-lock"));
     await expect(store.withLock(async () => {})).rejects.toThrow();
     expect((await lstat(join(root, ".writer-lock"))).isDirectory()).toBe(true);
