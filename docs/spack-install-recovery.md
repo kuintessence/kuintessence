@@ -5,10 +5,17 @@
 
 ## 身份与互斥
 
-写入者需要 Linux 初始 PID namespace、真实 procfs 的
+正常写入不要求可信宿主机身份。每个 Agent 进程生成稳定的随机 instance UUID，每次执行
+另有独占 token；容器私有 PID/UTS namespace、无法读取身份或身份验证失败时，
+host/boot/start 明确保存为 null，PID 仅用于本 instance 内识别，不能作为宿主 PID 使用。
+这种 fallback 可以取得全新或已正常释放的锁、保持同一进程互斥并正常释放；
+已完成安装可在重启后继续读取、load 和卸载，不要求增加容器权限、hostPID 或宿主目录挂载。
+其他 instance 的未释放锁和未决账本始终视为 unknown，不因容器重启、PID 不存在或时间经过接管。
+
+跨进程自动恢复仍要求 Linux 初始 PID/UTS namespace 标识
+`pid:[4026531836]` / `uts:[4026531838]`、真实 procfs 的
 `/proc/sys/kernel/random/boot_id`、PID 和 `/proc/<pid>/stat` starttime。
-当前实现只接受 Linux 初始 PID/UTS namespace 标识 `pid:[4026531836]` / `uts:[4026531838]`；
-不支持该标识的内核、容器 PID namespace、虚拟 boot ID 或无法读取身份时拒绝执行。
+只有新旧双方都有可信 native 身份时，才允许使用原有跨 boot/PID 恢复判定。
 稳定主机身份使用 machine-id 与主机名的组合摘要：读取 root 所有、非组/其他用户可写的
 普通 `/etc/machine-id` 和 `/etc/hostname`，校验 `/etc` 的 root 权限，并要求 hostname
 文件内容与初始 UTS namespace 的内核主机名相同。不需要 root Agent 或读取 DMI。
@@ -58,6 +65,7 @@ cgroup 限额；现有进程传输仍是 detached process group，并没有启�
 - 同一主机、不同真实 boot ID：旧 Agent 及其所有本机 worker 已停止，可恢复。
 - 同一 boot、Agent PID/starttime 已失效，且从未标记 worker 启动：可恢复。
 - 同一 boot、worker 曾启动而没有正常释放标记：保持待维护，即使看不到 Agent PID。
+- fallback 的同一 instance：视为活执行；其他 instance（包括可信 native 与未知身份混用）：不自动恢复。
 - 活 Agent、其他主机、权限不足、空锁或损坏身份：不抢锁。
 
 恢复持锁后把遗留 `building`/`verifying` 记录变为 `failed`，保留部分文件作证据；
@@ -76,8 +84,10 @@ operationId、action、spec 和身份；接触 store 前保存 storeRoot，安�
 确认中断后保存 FAILED + `SPACK_INTERRUPTED`；仍需维护的执行保存
 FAILED + `SPACK_RECOVERY_REQUIRED`，表示控制操作已失败、底层 worker/锁仍待恢复，
 不表示已证明 worker 停止。已有等待者通过原 Server 状态机退出。
-其他主机身份或无法读取本机身份时保持未决，并记录固定恢复错误，不影响普通 Agent
-连接；新 managed 请求仍拒绝执行。
+其他主机或未知 instance 的未完成账本保持未决，不伪造终态；对相应未释放 store
+的新写入返回 recovery required。新 managed 请求可在全新或正常释放的 store 上执行。
+原有不含 instance 的完整 native 身份仍可读取并按原规则恢复；缺损身份不能升级成 fallback。
+旧版严格 schema 不认识带 instance/null 的新记录，写入新格式后不可直接降级旧 Agent。
 
 终态先持久化，再通过既有软件结果上报。在线发送队列丢失仍可重报，重复 operationId
 不会再次执行。Agent 与 Server 均保留第一个终态，晚到 failed 不能覆盖 succeeded。

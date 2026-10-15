@@ -5639,24 +5639,27 @@ describe("AgentStream", () => {
 
   test("source audit stdout is retained on rejected installation without success or inventory", async () => {
     const report = JSON.stringify({ validation: "isolated-source-audit", passed: true });
-    const { client, sent } = makeMockClient([
+    const closeConnection = Promise.withResolvers<void>();
+    const connection = makeReplayReconnectClient(
       create(ServerMessageSchema, {
         payload: {
           case: "registerResponse",
           value: create(RegisterResponseSchema, { accepted: true, message: "ok" }),
         },
       }),
-      create(ServerMessageSchema, {
-        payload: {
-          case: "softwareOperationRequest",
-          value: create(SoftwareOperationRequestSchema, {
-            operationId: "00000000-0000-0000-0000-000000000019",
-            action: SoftwareOperationAction.INSTALL,
-            spec: "zlib@1.3.1",
-          }),
-        },
-      }),
-    ]);
+      closeConnection.promise,
+    );
+    const sent = connection.sentByConnection[0] ?? [];
+    const request = create(ServerMessageSchema, {
+      payload: {
+        case: "softwareOperationRequest",
+        value: create(SoftwareOperationRequestSchema, {
+          operationId: "00000000-0000-0000-0000-000000000019",
+          action: SoftwareOperationAction.INSTALL,
+          spec: "zlib@1.3.1",
+        }),
+      },
+    });
     const spackManager = await SpackManager.bootstrap({
       requireServerMaterials: true,
       spawner: {
@@ -5673,7 +5676,7 @@ describe("AgentStream", () => {
     const stream = softwareStream({
       fileTransferMaxRetries: 3,
       fileTransferRetryBackoffSec: 0,
-      client,
+      client: connection.clientFactory(),
       adapter: makeAdapter(),
       agentId: "agent-001",
       siteName: "test-site",
@@ -5685,9 +5688,21 @@ describe("AgentStream", () => {
     });
     activeStreams.push(stream);
     const running = stream.start();
-    await settle(30);
-    stream.stop();
-    await running;
+    try {
+      await waitForCondition(() => connection.registrationProcessed.has(0));
+      await deliverServerMessage(stream, request);
+      await waitForCondition(() =>
+        (sent as AgentMessage[]).some(
+          (message) =>
+            message.payload.case === "softwareOperationResult" &&
+            message.payload.value.status === SoftwareOperationStatus.REJECTED,
+        ),
+      );
+    } finally {
+      closeConnection.resolve();
+      await stream.stop();
+      await running;
+    }
     const results = (sent as AgentMessage[]).flatMap((message) =>
       message.payload.case === "softwareOperationResult" ? [message.payload.value] : [],
     );

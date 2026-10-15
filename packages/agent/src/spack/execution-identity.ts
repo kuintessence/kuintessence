@@ -8,13 +8,24 @@ import { z } from "zod";
 export const RECOVERY_REQUIRED = "SPACK_RECOVERY_REQUIRED: store writer recovery required";
 export const LOCK_HELD = "SPACK_LOCK_HELD: store writer lock held";
 export const INTERRUPTED = "SPACK_INTERRUPTED: software operation interrupted";
-export const ExecutionIdentitySchema = z.strictObject({
+const instance = randomUUID();
+const NativeExecutionIdentitySchema = z.strictObject({
   host: z.string().regex(/^[a-f0-9]{64}$/),
   boot: z.string().uuid(),
   pid: z.number().int().positive(),
   start: z.string().regex(/^\d+$/),
   token: z.string().uuid(),
+  instance: z.string().uuid().optional(),
 });
+export const ExecutionIdentitySchema = z.union([
+  NativeExecutionIdentitySchema,
+  NativeExecutionIdentitySchema.extend({
+    host: z.null(),
+    boot: z.null(),
+    start: z.null(),
+    instance: z.string().uuid(),
+  }),
+]);
 export type ExecutionIdentity = z.infer<typeof ExecutionIdentitySchema>;
 
 export async function processStart(pid: number): Promise<string | undefined> {
@@ -57,7 +68,7 @@ export function hostIdentity(machine: string, host: string): string {
 
 export async function executionIdentity(): Promise<ExecutionIdentity> {
   try {
-    // Linux initial PID namespace only: a container restart is not a host reboot.
+    // Only trusted native identity can prove a host reboot or a stopped foreign instance.
     if (
       process.platform !== "linux" ||
       (await readlink("/proc/self/ns/pid")) !== "pid:[4026531836]" ||
@@ -84,9 +95,11 @@ export async function executionIdentity(): Promise<ExecutionIdentity> {
       pid: process.pid,
       start: await processStart(process.pid),
       token: randomUUID(),
+      instance,
     });
   } catch {
-    throw new Error(RECOVERY_REQUIRED);
+    // An untrusted namespace can write normally, but cannot prove an old execution stopped.
+    return { host: null, boot: null, start: null, pid: process.pid, token: randomUUID(), instance };
   }
 }
 
@@ -94,6 +107,11 @@ export async function executionState(
   owner: ExecutionIdentity,
   current: ExecutionIdentity,
 ): Promise<"alive" | "stopped" | "rebooted" | "unknown"> {
+  if (owner.host === null || current.host === null) {
+    return owner.instance && owner.instance === current.instance && owner.pid === current.pid
+      ? "alive"
+      : "unknown";
+  }
   if (owner.host !== current.host) return "unknown";
   if (owner.boot !== current.boot) return "rebooted";
   try {

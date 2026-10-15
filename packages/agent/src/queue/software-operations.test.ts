@@ -1,6 +1,7 @@
 import { Database } from "bun:sqlite";
-import { afterEach, beforeEach, expect, test } from "bun:test";
+import { afterEach, beforeEach, expect, spyOn, test } from "bun:test";
 import { randomUUID } from "node:crypto";
+import * as fs from "node:fs/promises";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { runSqliteMigrations, softwareExecutions } from "@kuintessence/db";
@@ -49,6 +50,32 @@ test("receipt is durable before execution and duplicate receipt never runs again
   expect(await ledger.receive(request)).toBeUndefined();
   await ledger.recover();
   expect(await results()).toEqual([]); // Reconnecting a live owner is not a restart.
+});
+
+test("namespace fallback receipts survive reconnect and remain pending across unknown instances", async () => {
+  const namespace = spyOn(fs, "readlink").mockResolvedValue("pid:[9999999999]");
+  try {
+    const request = input();
+    const identity = await ledger.receive(request);
+    expect(identity).toMatchObject({ host: null, boot: null, start: null });
+    await ledger.start(request.operationId);
+    await ledger.recover();
+    expect(await results()).toEqual([]);
+    expect(await ledger.receive(request)).toBeUndefined();
+    await drizzle(sqlite)
+      .update(softwareExecutions)
+      .set({ identity: { ...identity, instance: randomUUID() } })
+      .where(eq(softwareExecutions.operationId, request.operationId));
+    await ledger.recover();
+    expect(await results()).toEqual([]);
+    const fresh = input();
+    expect(await ledger.receive(fresh)).toBeDefined();
+    await ledger.finish({ ...fresh, status: Status.SUCCEEDED });
+    await ledger.recover();
+    expect(await results()).toMatchObject([{ ...fresh, status: Status.SUCCEEDED }]);
+  } finally {
+    namespace.mockRestore();
+  }
 });
 
 test("online saved success survives queue loss, reopen, replay and a late failure", async () => {

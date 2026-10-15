@@ -1,14 +1,17 @@
-import { afterEach, beforeEach, expect, test } from "bun:test";
+import { afterEach, beforeEach, expect, spyOn, test } from "bun:test";
 import { randomUUID } from "node:crypto";
+import * as fs from "node:fs/promises";
 import { mkdir, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
+  ExecutionIdentitySchema,
   executionIdentity,
   executionState,
   hostIdentity,
   installWorkerExecution,
   LOCK_HELD,
   RECOVERY_REQUIRED,
+  softwareExecution,
 } from "./execution-identity";
 import { SpackInstallStore } from "./install-store";
 
@@ -57,13 +60,84 @@ async function abandoned(
 test("production host identity is stable, process start is checked and tokens are unique", async () => {
   const a = await executionIdentity();
   const b = await executionIdentity();
+  if (a.host === null || b.host === null) throw new Error("Native identity fixture required");
   expect(a.host).toBe(b.host);
   expect(a.boot).toBe(b.boot);
   expect(a.start).toBe(b.start);
   expect(a.token).not.toBe(b.token);
+  expect(a.instance).toBe(b.instance);
   expect(await executionState(a, b)).toBe("alive");
   expect(await executionState({ ...a, start: "0" }, b)).toBe("stopped");
   expect(await executionState({ ...a, host: "0".repeat(64) }, b)).toBe("unknown");
+});
+
+test.each([
+  "pid",
+  "uts",
+  "unreadable",
+])("untrusted %s identity permits fresh writes and normal release only", async (kind) => {
+  const namespace = spyOn(fs, "readlink");
+  if (kind === "unreadable") namespace.mockRejectedValue(new Error("identity unavailable"));
+  else {
+    namespace.mockResolvedValue(`${kind}:[9999999999]`);
+    if (kind === "uts") namespace.mockResolvedValueOnce("pid:[4026531836]");
+  }
+  try {
+    const identity = await executionIdentity();
+    const next = await executionIdentity();
+    expect(identity).toMatchObject({ host: null, boot: null, start: null });
+    expect(identity.instance).toBe(next.instance);
+    expect(identity.token).not.toBe(next.token);
+    expect(await executionState(identity, next)).toBe("alive");
+    const store = new SpackInstallStore(root);
+    await store.withLock(async () => {
+      const record = await store.create(input);
+      await installWorkerExecution.getStore()?.start(record.id);
+      await expect(new SpackInstallStore(root).withLock(async () => {})).rejects.toThrow(LOCK_HELD);
+      await installWorkerExecution.getStore()?.finish();
+    });
+    const owner = JSON.parse(await readFile(join(generation(0), "owner.json"), "utf8"));
+    expect(owner.identity.instance).toBe(identity.instance);
+    expect(JSON.parse(await readFile(join(generation(0), "released.json"), "utf8"))).toBe(
+      owner.identity.token,
+    );
+    // A new instance can advance a normally released lock without claiming the old process died.
+    const restarted = { ...next, instance: randomUUID() };
+    expect(await executionState(identity, restarted)).toBe("unknown");
+    await softwareExecution.run(
+      { identity: restarted, operationId: randomUUID(), bindStore: async () => {} },
+      () => new SpackInstallStore(root).withLock(async () => {}),
+    );
+  } finally {
+    namespace.mockRestore();
+  }
+});
+
+test.each([false, true])("unknown instance is never recovered, worker=%s", async (worker) => {
+  const store = await abandoned(
+    { host: null, boot: null, start: null, instance: randomUUID() },
+    worker,
+  );
+  await expect(store.withLock(async () => {})).rejects.toThrow(RECOVERY_REQUIRED);
+  const namespace = spyOn(fs, "readlink").mockResolvedValue("pid:[9999999999]");
+  try {
+    await expect(store.withLock(async () => {})).rejects.toThrow(RECOVERY_REQUIRED);
+    expect((await store.list())[0]?.state).toBe("building");
+  } finally {
+    namespace.mockRestore();
+  }
+});
+
+test("legacy native identity remains readable; incomplete or legacy unknown identity is rejected", async () => {
+  const identity = await executionIdentity();
+  if (identity.host === null) throw new Error("Native identity fixture required");
+  const { instance: _instance, ...legacy } = identity;
+  expect(ExecutionIdentitySchema.parse(legacy)).toEqual(legacy);
+  expect(await executionState({ ...legacy, boot: randomUUID() }, legacy)).toBe("rebooted");
+  expect(ExecutionIdentitySchema.safeParse({ ...legacy, host: null }).success).toBe(false);
+  expect(
+    ExecutionIdentitySchema.safeParse({ ...legacy, host: null, boot: null, start: null }).success,
+  ).toBe(false);
 });
 
 test("reboot permits recovery including a worker marker; partial files are preserved", async () => {
@@ -251,6 +325,7 @@ test("lock history has no 10000-operation shutdown threshold", async () => {
 
 test("cloned machine-id with different trusted hostnames is foreign even when boots differ", async () => {
   const current = await executionIdentity();
+  if (current.host === null) throw new Error("Native identity fixture required");
   const machine = "a".repeat(32);
   const local = { ...current, host: hostIdentity(machine, "node-a.example") };
   const remote = { ...current, host: hostIdentity(machine, "node-b.example"), boot: randomUUID() };

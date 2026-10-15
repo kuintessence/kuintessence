@@ -149,6 +149,9 @@ Server-only Agent 材料下载，以及 CP 安装/库存/策略操作已有实�
   安装操作透传[固定内存错误](../spack-material-delivery.md)及[固定恢复错误码](../spack-install-recovery.md)，其他异常继续脱敏。
   已增加持久锁代次、真实 host boot/PID/starttime 身份与 SQLite 软件 operation 执行账本；
   启动/重连/安装前可收尾可证明已停止的执行，终态先持久化再重报，不自动重启编译。
+  私有 PID/UTS 或不可信宿主身份使用进程 instance fallback，支持正常安装、释放及重启后读取已完成安装；
+  不要求 hostPID/宿主目录挂载，其他未知 instance 的未释放锁与未决账本不自动恢复。
+  跨 boot/PID 自动恢复仍仅限可信 native 身份，旧完整身份可读，新身份记录不支持直接降级旧 Agent。
   历史账本/outbox/重复请求终态标记 `replayed`，仅收尾 operation，不覆盖当前库存；
   库存仍由 heartbeat/installedSoftwareReport 确认，未知不报空，等待者仍要求库存就绪。
   必须先升级 Server 再升级 Agent；旧端不识别历史标记，混合版本不具备完整防回滚保证。
