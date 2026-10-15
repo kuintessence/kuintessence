@@ -1,11 +1,12 @@
-import { afterEach, describe, expect, test } from "bun:test";
-import { chmod, mkdir, readdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
+import { chmod, lstat, mkdir, readdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { loadAgentConfig } from "../config";
 import type { SpackAuditProcess } from "./audit-process";
 import { SPACK_INSTALL_RESULT_PREFIX } from "./install-contract";
 import { buildSpackInstallCommand, IsolatedSpackInstallRunner } from "./install-runner";
 import { SpackInstallStore } from "./install-store";
-import { installRuntime, makeInstallFixture } from "./install-test-fixture";
+import { installMemoryFixture, installRuntime, makeInstallFixture } from "./install-test-fixture";
 
 const fixtures: Awaited<ReturnType<typeof makeInstallFixture>>[] = [];
 afterEach(async () => {
@@ -30,6 +31,7 @@ async function fixture() {
 const runtimeDeps = {
   platform: "linux",
   uid: 1000,
+  readFile: installMemoryFixture().readFile,
   inspect: async (path: string) => ({
     canonicalPath: path,
     uid: 0,
@@ -43,16 +45,283 @@ const runtimeDeps = {
         : installRuntime.sifSha256,
   }),
 };
-function runner(process: SpackAuditProcess) {
+function runner(
+  process: SpackAuditProcess,
+  options: Partial<ConstructorParameters<typeof IsolatedSpackInstallRunner>[0]> = {},
+) {
   return new IsolatedSpackInstallRunner({
     runtime: installRuntime,
     process,
     runtimeDeps,
     runtimeContext: async () => ({ hostNetworkNamespace: "net:[1]", hostPidNamespace: "pid:[2]" }),
+    ...options,
   });
 }
 
 describe("isolated persistent Spack worker", () => {
+  test.each([
+    { "/proc/meminfo": "MemTotal: 3812352 kB\nMemAvailable: 3000000 kB\nSwapFree: 9999999 kB\n" },
+    { "/proc/meminfo": "MemTotal: 8388608 kB\nMemAvailable: 4718591 kB\n" },
+    { "/proc/meminfo": "MemTotal: 8388608 kB\n" },
+    { "/proc/meminfo": "MemTotal: 8388608 kB\nMemAvailable: NaN kB\n" },
+    {
+      "/proc/meminfo": "MemTotal: 8388608 kB\nMemAvailable: 6291456 kB\nMemAvailable: 6291456 kB\n",
+    },
+    { "/proc/meminfo": undefined },
+  ])("rejects insufficient or invalid memory before spawn: %j", async (overrides) => {
+    const f = await fixture();
+    let invoked = false;
+    const r = runner(
+      {
+        async run() {
+          invoked = true;
+          throw new Error("unexpected spawn");
+        },
+      },
+      {
+        runtimeDeps: { ...runtimeDeps, readFile: installMemoryFixture(overrides).readFile },
+      },
+    );
+    await expect(r.run("install", f.prepared, f.input, f.site, f.path)).rejects.toThrow(
+      "Managed Spack memory admission",
+    );
+    expect(invoked).toBe(false);
+    expect(await readdir(join(f.cacheDir, "installs"))).toEqual([]);
+  });
+
+  test.each([
+    "install",
+    "verify",
+    "load",
+  ] as const)("passes configured 1024 MiB through admission, command and private worker input for %s", async (action) => {
+    const f = await fixture();
+    const config = loadAgentConfig({
+      SERVER_GRPC_URL: "http://localhost:3001",
+      AGENT_ID: "fixture",
+      AGENT_SITE_NAME: "fixture",
+      AGENT_SPACK_MANAGED_MEMORY_MIB: "1024",
+    });
+    let invoked = false;
+    const r = runner(
+      {
+        async run(command, options) {
+          invoked = true;
+          for (const flag of ["--memory", "--memory-swap"]) {
+            expect(command[command.indexOf(flag) + 1]).toBe("1073741824");
+          }
+          const path = join(options.cwd, "input", "managed-memory.json");
+          expect(JSON.parse(await readFile(path, "utf8"))).toEqual({ memoryMib: 1024 });
+          expect((await lstat(path)).mode & 0o777).toBe(0o400);
+          expect((await lstat(join(options.cwd, "input"))).mode & 0o777).toBe(0o700);
+          expect(command).toContain(`${options.cwd}/input:/kq/input:ro`);
+          return {
+            exitCode: 0,
+            stdout: SPACK_INSTALL_RESULT_PREFIX + JSON.stringify(f.report(action, f.path)),
+            stderr: "",
+          };
+        },
+      },
+      {
+        managedMemoryMib: config.AGENT_SPACK_MANAGED_MEMORY_MIB,
+        runtimeDeps: {
+          ...runtimeDeps,
+          readFile: installMemoryFixture({
+            "/proc/meminfo": "MemTotal: 3812352 kB\nMemAvailable: 1572864 kB\n",
+          }).readFile,
+        },
+      },
+    );
+    await r.run(action, f.prepared, f.input, f.site, f.path);
+    expect(invoked).toBe(true);
+  });
+
+  test.each([
+    0,
+    1023,
+    4097,
+    1024.5,
+    NaN,
+    Infinity,
+  ])("rejects invalid runner memory budget %s before spawn", async (managedMemoryMib) => {
+    const f = await fixture();
+    let invoked = false;
+    const r = runner(
+      {
+        async run() {
+          invoked = true;
+          throw new Error("unexpected spawn");
+        },
+      },
+      { managedMemoryMib },
+    );
+    await expect(r.run("install", f.prepared, f.input, f.site, f.path)).rejects.toThrow(
+      "Invalid managed Spack memory budget",
+    );
+    expect(invoked).toBe(false);
+  });
+
+  test.each([
+    "read-error",
+    "cancel-read",
+  ])("does not spawn and cleans staging on %s", async (kind) => {
+    const f = await fixture();
+    const controller = new AbortController();
+    let invoked = false;
+    const r = runner(
+      {
+        async run() {
+          invoked = true;
+          throw new Error("unexpected spawn");
+        },
+      },
+      {
+        runtimeDeps: {
+          ...runtimeDeps,
+          readFile: async (path) => {
+            if (kind === "read-error") throw new Error("read failure");
+            controller.abort(new Error("memory read cancelled"));
+            return installMemoryFixture().readFile(path);
+          },
+        },
+      },
+    );
+    await expect(
+      r.run("install", f.prepared, { ...f.input, signal: controller.signal }, f.site, f.path),
+    ).rejects.toThrow(kind === "read-error" ? "metadata" : "memory read cancelled");
+    expect(invoked).toBe(false);
+    expect(await readdir(join(f.cacheDir, "installs"))).toEqual([]);
+  });
+
+  test.each([
+    0,
+    -1,
+    1.5,
+    Number.NaN,
+    Number.POSITIVE_INFINITY,
+    24 * 60 * 60_000 + 1,
+  ])("rejects invalid direct runner timeout %s before spawn", async (installTimeoutMs) => {
+    const f = await fixture();
+    let invoked = false;
+    const r = runner(
+      {
+        async run() {
+          invoked = true;
+          throw new Error("unexpected spawn");
+        },
+      },
+      { installTimeoutMs },
+    );
+    await expect(r.run("install", f.prepared, f.input, f.site, f.path)).rejects.toThrow(
+      "Invalid managed Spack install timeout",
+    );
+    expect(invoked).toBe(false);
+  });
+
+  test.each([
+    ["install", undefined, 6 * 60 * 60_000],
+    ["install", 24 * 60 * 60_000, 24 * 60 * 60_000],
+    ["verify", 24 * 60 * 60_000, 30 * 60_000],
+    ["load", 24 * 60 * 60_000, 30 * 60_000],
+  ] as const)("%s uses only its remaining budget (%s)", async (action, installTimeoutMs, budget) => {
+    const f = await fixture();
+    let elapsed = 0;
+    const now = spyOn(performance, "now").mockImplementation(() => elapsed);
+    let invoked = false;
+    try {
+      const r = runner(
+        {
+          async run(_command, options) {
+            invoked = true;
+            expect(options.timeoutMs).toBe(budget - 12_345);
+            expect(options.signal?.aborted).toBe(false);
+            return {
+              exitCode: 0,
+              stdout: SPACK_INSTALL_RESULT_PREFIX + JSON.stringify(f.report(action, f.path)),
+              stderr: "",
+            };
+          },
+        },
+        {
+          installTimeoutMs,
+          runtimeContext: async () => {
+            elapsed = 12_345;
+            return { hostNetworkNamespace: "net:[1]", hostPidNamespace: "pid:[2]" };
+          },
+        },
+      );
+      await r.run(action, f.prepared, f.input, f.site, f.path);
+      expect(invoked).toBe(true);
+    } finally {
+      now.mockRestore();
+    }
+  });
+
+  test.each([
+    "expired",
+    "cancelled",
+    "already-cancelled",
+  ])("does not spawn when %s", async (kind) => {
+    const f = await fixture();
+    const controller = new AbortController();
+    if (kind === "already-cancelled") controller.abort();
+    let elapsed = 0;
+    const now = spyOn(performance, "now").mockImplementation(() => elapsed);
+    let invoked = false;
+    try {
+      const r = runner(
+        {
+          async run() {
+            invoked = true;
+            throw new Error("unexpected spawn");
+          },
+        },
+        {
+          installTimeoutMs: 60_000,
+          runtimeContext: async () => {
+            if (kind === "expired") elapsed = 60_000;
+            else controller.abort();
+            return { hostNetworkNamespace: "net:[1]", hostPidNamespace: "pid:[2]" };
+          },
+        },
+      );
+      await expect(
+        r.run("install", f.prepared, { ...f.input, signal: controller.signal }, f.site, f.path),
+      ).rejects.toThrow();
+      expect(invoked).toBe(false);
+    } finally {
+      now.mockRestore();
+    }
+  });
+
+  test.each([
+    "timeout",
+    "cancel",
+  ])("propagates %s to the running transport and cleans staging", async (kind) => {
+    const f = await fixture();
+    const controller = new AbortController();
+    let invoked = false;
+    const r = runner(
+      {
+        async run(_command, options) {
+          invoked = true;
+          const signal = options.signal;
+          if (!signal) throw new Error("Missing signal");
+          const stopped = new Promise<never>((_resolve, reject) => {
+            signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+          });
+          if (kind === "cancel") controller.abort();
+          return stopped;
+        },
+      },
+      { installTimeoutMs: kind === "timeout" ? 1_000 : undefined },
+    );
+    await expect(
+      r.run("install", f.prepared, { ...f.input, signal: controller.signal }, f.site, f.path),
+    ).rejects.toThrow();
+    expect(invoked).toBe(true);
+    expect(await readdir(join(f.cacheDir, "installs"))).toEqual([]);
+  });
+
   test.each([
     "install",
     "verify",
@@ -109,6 +378,9 @@ describe("isolated persistent Spack worker", () => {
           "XDG_RUNTIME_DIR",
         ]);
         const inputs = join(options.cwd, "input");
+        expect(JSON.parse(await readFile(join(inputs, "managed-memory.json"), "utf8"))).toEqual({
+          memoryMib: 4096,
+        });
         expect(JSON.parse(await readFile(join(inputs, "request.json"), "utf8"))).toEqual({
           version: 1,
           action,

@@ -31,10 +31,18 @@ interface ManagedInstallationOptions {
   loadSite?: typeof loadSpackInstallSiteProfile;
 }
 
-const failure = (): Extract<SoftwareOperationOutcome, { outcome: "failed" }> => ({
+const failure = (error?: unknown): Extract<SoftwareOperationOutcome, { outcome: "failed" }> => ({
   outcome: "failed",
   exitCode: 1,
-  stderr: "Managed Spack operation failed; inspect the installation record before retrying",
+  stderr:
+    error instanceof Error &&
+    [
+      "Invalid managed Spack memory budget",
+      "Managed Spack memory admission metadata unavailable or invalid",
+      "Managed Spack memory admission requires configured budget + 512 MiB available without swap",
+    ].includes(error.message)
+      ? error.message
+      : "Managed Spack operation failed; inspect the installation record before retrying",
 });
 
 function matchRecords(records: SpackInstallRecord[], spec: string): SpackInstallRecord[] {
@@ -249,7 +257,7 @@ export class ManagedSpackInstallation implements SpackManagedInstallation {
             stdout: JSON.stringify(report),
             installed,
           };
-        } catch {
+        } catch (error) {
           // Publication can have succeeded before a later inventory error. Never delete a ready store here.
           const current = (await store.list()).find((entry) => entry.id === record.id);
           if (current && (current.state === "building" || current.state === "verifying")) {
@@ -263,7 +271,7 @@ export class ManagedSpackInstallation implements SpackManagedInstallation {
               updatedAt: new Date().toISOString(),
             });
           }
-          return { ...failure(), ...(invalidatedHashes ? { invalidatedHashes } : {}) };
+          return { ...failure(error), ...(invalidatedHashes ? { invalidatedHashes } : {}) };
         }
       });
     } catch {

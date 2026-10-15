@@ -16,6 +16,7 @@ import {
   SpackInstallReportSchema,
   type SpackInstallSiteProfile,
 } from "./install-contract";
+import { admitSpackManagedMemory } from "./install-memory";
 import { SpackMaterialCache } from "./material-cache";
 import type { PreparedSpackMaterials, SpackMaterialPrepareInput } from "./material-client";
 import { preflightSpackMaterials } from "./material-preflight";
@@ -45,6 +46,7 @@ export function buildSpackInstallCommand(
   site: SpackInstallSiteProfile,
   storePath: string,
   action: SpackInstallReport["action"],
+  managedMemoryMib = SPACK_MANAGED_MEMORY_BYTES / 1024 ** 2,
 ): string[] {
   const prefix = `${site.storeRoot}/releases/`;
   if (
@@ -57,7 +59,7 @@ export function buildSpackInstallCommand(
   ) {
     throw new Error("Invalid managed Spack store binding");
   }
-  const command = buildSpackAuditCommand(runtime, inputs, digest, SPACK_MANAGED_MEMORY_BYTES);
+  const command = buildSpackAuditCommand(runtime, inputs, digest, managedMemoryMib * 1024 ** 2);
   // Retain the audit isolation flags, replacing only its fixed Python entrypoint.
   return [
     ...command.slice(0, -5).filter((argument) => argument !== "--writable-tmpfs"),
@@ -96,6 +98,8 @@ export class IsolatedSpackInstallRunner implements SpackInstallRunner {
   constructor(
     private readonly options: {
       runtime: SpackAuditRuntimeProfile;
+      installTimeoutMs?: number;
+      managedMemoryMib?: number;
       process?: SpackAuditProcess;
       runtimeDeps?: SpackAuditRuntimeDeps;
       runtimeContext?: () => Promise<{ hostNetworkNamespace: string; hostPidNamespace: string }>;
@@ -109,8 +113,23 @@ export class IsolatedSpackInstallRunner implements SpackInstallRunner {
     site: VerifiedSpackInstallSite,
     storePath: string,
   ): Promise<SpackInstallReport> {
-    const deadline = AbortSignal.timeout(30 * 60_000);
+    const managedMemoryMib = this.options.managedMemoryMib ?? 4096;
+    if (!Number.isInteger(managedMemoryMib) || managedMemoryMib < 1024 || managedMemoryMib > 4096) {
+      throw new Error("Invalid managed Spack memory budget");
+    }
+    const installTimeoutMs = this.options.installTimeoutMs ?? 6 * 60 * 60_000;
+    if (
+      !Number.isSafeInteger(installTimeoutMs) ||
+      installTimeoutMs <= 0 ||
+      installTimeoutMs > 24 * 60 * 60_000
+    ) {
+      throw new Error("Invalid managed Spack install timeout");
+    }
+    const timeoutMs = action === "install" ? installTimeoutMs : 30 * 60_000;
+    const expiresAt = performance.now() + timeoutMs;
+    const deadline = AbortSignal.timeout(timeoutMs);
     const signal = input.signal ? AbortSignal.any([input.signal, deadline]) : deadline;
+    signal.throwIfAborted();
     let directory: string | undefined;
     try {
       const preflight = await preflightSpackMaterials(prepared, { ...input, signal });
@@ -163,6 +182,7 @@ export class IsolatedSpackInstallRunner implements SpackInstallRunner {
       const files: Record<string, string | Uint8Array> = {
         "manifest.json": manifest,
         "runtime.json": JSON.stringify(context),
+        "managed-memory.json": JSON.stringify({ memoryMib: managedMemoryMib }),
         "site-profile.json": site.bytes,
         "request.json": JSON.stringify({
           version: 1,
@@ -195,7 +215,10 @@ export class IsolatedSpackInstallRunner implements SpackInstallRunner {
         throw new Error("Unsafe managed Spack store directory");
       }
       await verifySpackAuditRuntime(this.options.runtime, signal, this.options.runtimeDeps);
+      await admitSpackManagedMemory(signal, this.options.runtimeDeps, managedMemoryMib);
       signal.throwIfAborted();
+      const remainingMs = Math.floor(expiresAt - performance.now());
+      if (remainingMs <= 0) throw new Error("Managed Spack operation timed out");
       const uid = this.options.runtimeDeps?.uid ?? process.getuid?.();
       const result = await (this.options.process ?? realSpackAuditProcess).run(
         buildSpackInstallCommand(
@@ -205,6 +228,7 @@ export class IsolatedSpackInstallRunner implements SpackInstallRunner {
           site.profile,
           storePath,
           action,
+          managedMemoryMib,
         ),
         {
           cwd: directory,
@@ -216,7 +240,7 @@ export class IsolatedSpackInstallRunner implements SpackInstallRunner {
             XDG_RUNTIME_DIR: `/run/user/${uid}`,
             DBUS_SESSION_BUS_ADDRESS: `unix:path=/run/user/${uid}/bus`,
           },
-          timeoutMs: 30 * 60_000,
+          timeoutMs: remainingMs,
           maxOutputBytes: 2 * 1024 ** 2,
           signal,
         },

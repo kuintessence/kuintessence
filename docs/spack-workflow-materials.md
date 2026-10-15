@@ -105,8 +105,11 @@ BAM quickcheck、BAI 索引、区域计数及非法输入非零退出，不能�
 
 此范围不含 fastp、BWA-MEM2、bcftools、Python 分析或完整 VCF truth 校验，
 不证明工作流 10 全链路、PBS、MPI、跨节点存储或生产站点兼容。
-现有单次 worker 上限 30 分钟，source audit 内存 2 GiB、managed worker 内存
-4 GiB、CPU 2、PID 128；实际 DAG 是否适合这些预算尚须验证，失败不能靠绕过隔离通过。
+install 默认 6 小时、最多 24 小时；verify/load 和独立 source audit 保持 30 分钟。
+source audit 内存固定 2 GiB；managed worker 默认 4 GiB，可通过
+`AGENT_SPACK_MANAGED_MEMORY_MIB` 设为整数 1024..4096 MiB，禁止 swap，CPU 2、PID 128 不变。
+低额度不承诺大型真实软件可用，尚未实测 1 GiB 安装；实际 DAG 是否适合预算仍须验证，
+失败不能靠绕过隔离通过。移除该配置或设为 4096 后重启 Agent 即恢复默认预算。
 
 ## 单 Root 与步骤隔离
 

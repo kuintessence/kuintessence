@@ -290,7 +290,7 @@ describe("Spack audit process transport (caller supplies isolation)", () => {
     { timeoutMs: 1.5 },
     { timeoutMs: Number.NaN },
     { timeoutMs: Number.POSITIVE_INFINITY },
-    { timeoutMs: 30 * 60 * 1_000 + 1 },
+    { timeoutMs: 24 * 60 * 60_000 + 1 },
     { maxOutputBytes: 0 },
     { maxOutputBytes: -1 },
     { maxOutputBytes: 1.5 },
@@ -319,7 +319,7 @@ describe("Spack audit process transport (caller supplies isolation)", () => {
 
   test("accepts maximum timeout and output bounds without waiting for them", async () => {
     expect(
-      await fixture().run("", { timeoutMs: 30 * 60 * 1_000, maxOutputBytes: 4 * 1024 * 1024 }),
+      await fixture().run("", { timeoutMs: 24 * 60 * 60_000, maxOutputBytes: 4 * 1024 * 1024 }),
     ).toEqual({ exitCode: 0, stdout: "", stderr: "" });
   });
 });

@@ -16,6 +16,36 @@ async function fixture() {
 }
 
 describe("managed Spack installation transaction", () => {
+  test.each([
+    "Invalid managed Spack memory budget",
+    "Invalid managed Spack memory budget: private credential",
+    "Managed Spack memory admission requires configured budget + 512 MiB available without swap: private credential",
+    "Managed Spack memory admission metadata unavailable or invalid",
+    "Managed Spack memory admission requires configured budget + 512 MiB available without swap",
+    "Managed Spack memory admission metadata unavailable or invalid: private credential",
+  ])("reports only fixed memory admission messages: %s", async (message) => {
+    const f = await fixture();
+    const backend = new ManagedSpackInstallation({
+      cacheDir: f.cacheDir,
+      site: f.siteOptions,
+      loadSite: async () => f.site,
+      runner: {
+        async run() {
+          throw new Error(message);
+        },
+      },
+    });
+    expect(await backend.install(f.prepared, f.input)).toEqual({
+      outcome: "failed",
+      exitCode: 1,
+      stderr: message.includes("private credential")
+        ? "Managed Spack operation failed; inspect the installation record before retrying"
+        : message,
+    });
+    expect((await new SpackInstallStore(f.site.profile.storeRoot).list())[0]?.state).toBe("failed");
+    expect(await readdir(`${f.site.profile.storeRoot}/releases`)).toEqual([]);
+  });
+
   test("builds at its final prefix, independently verifies, survives restart, loads and removes only its release", async () => {
     const f = await fixture();
     const calls: string[] = [];

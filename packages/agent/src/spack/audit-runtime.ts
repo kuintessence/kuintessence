@@ -27,6 +27,7 @@ export interface SpackAuditRuntimeDeps {
   platform?: string;
   uid?: number;
   inspect?: (path: string, signal: AbortSignal) => Promise<SpackAuditFileIdentity>;
+  readFile?: (path: string, signal: AbortSignal) => Promise<string>;
 }
 
 export function isSpackAuditPath(path: string): boolean {
@@ -169,8 +170,9 @@ export function buildSpackAuditCommand(
 ): string[] {
   assertProfile(profile);
   if (
-    memoryLimitBytes !== SPACK_AUDIT_MEMORY_BYTES &&
-    memoryLimitBytes !== SPACK_MANAGED_MEMORY_BYTES
+    !Number.isInteger(memoryLimitBytes / 1024 ** 2) ||
+    memoryLimitBytes < 1024 ** 3 ||
+    memoryLimitBytes > SPACK_MANAGED_MEMORY_BYTES
   ) {
     throw new Error("Invalid Spack isolation memory budget");
   }

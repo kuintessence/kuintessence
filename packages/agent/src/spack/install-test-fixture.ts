@@ -19,6 +19,21 @@ export const installRuntime: SpackAuditRuntimeProfile = {
   sifSha256: "b".repeat(64),
 };
 
+export function installMemoryFixture(overrides: Record<string, string | undefined> = {}) {
+  const files: Record<string, string | undefined> = {
+    "/proc/meminfo": "MemTotal: 8388608 kB\nMemAvailable: 6291456 kB\nSwapFree: 8388608 kB\n",
+    ...overrides,
+  };
+  return {
+    async readFile(path: string) {
+      const value = files[path];
+      if (value === undefined)
+        throw Object.assign(new Error("Missing memory fixture"), { code: "ENOENT" });
+      return value;
+    },
+  };
+}
+
 export async function makeInstallFixture() {
   const root = await realpath(await mkdtemp(join(tmpdir(), "kq-install-")));
   const cacheDir = join(root, "cache");

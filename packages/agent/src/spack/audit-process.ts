@@ -47,7 +47,7 @@ function validatedEnvironment(command: string[], options: RunOptions): Record<st
     options.cwd.includes("\0") ||
     !Number.isSafeInteger(options.timeoutMs) ||
     options.timeoutMs <= 0 ||
-    options.timeoutMs > 30 * 60 * 1_000 ||
+    options.timeoutMs > 24 * 60 * 60_000 ||
     !Number.isSafeInteger(options.maxOutputBytes) ||
     options.maxOutputBytes <= 0 ||
     options.maxOutputBytes > 4 * 1024 * 1024 ||

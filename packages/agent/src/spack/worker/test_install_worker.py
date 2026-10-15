@@ -239,6 +239,7 @@ class InstallTests(unittest.TestCase):
             "siteProfileDigest": "", "storePath": str(self.store), "siteProfile": self.profile,
         }
         self.save_request()
+        (self.input / "managed-memory.json").write_text(json.dumps({"memoryMib": 4096}))
         self.native = Native(self.work, self.lock, self.store)
         self.make_output()
 
@@ -331,6 +332,39 @@ class InstallTests(unittest.TestCase):
     def assert_no_recipes(self):
         self.assertFalse(any(c[0] in ("repositories", "solve", "installer")
                              for c in self.native.calls))
+
+    def test_managed_memory_budget_is_private_strict_and_required(self):
+        path = self.input / "managed-memory.json"
+        for value in (None, True, False, "1024", 1024.0, 1024.5, 1023, 4097, 0, -1, [], {}):
+            with self.subTest(value=value):
+                path.write_text(json.dumps({"memoryMib": value}))
+                with self.runtime() as boundary, self.assertRaises(audit.AuditError):
+                    worker.run(self.input, self.work)
+                boundary.assert_not_called()
+        for text in ('{}', '{"memoryMib":1024,"extra":true}',
+                     '{"memoryMib":1024,"memoryMib":4096}', 'invalid'):
+            path.write_text(text)
+            with self.runtime() as boundary, self.assertRaises(audit.AuditError):
+                worker.run(self.input, self.work)
+            boundary.assert_not_called()
+        path.unlink()
+        with patch.dict(os.environ, {"AGENT_SPACK_MANAGED_MEMORY_MIB": "1024"}):
+            with self.runtime() as boundary, self.assertRaises(audit.AuditError):
+                worker.run(self.input, self.work)
+            boundary.assert_not_called()
+        self.assert_no_recipes()
+
+    def test_managed_memory_budget_reaches_boundary_for_all_actions(self):
+        for memory_mib in (1024, 1537, 4096):
+            for action in ("install", "verify", "load"):
+                with self.subTest(memory_mib=memory_mib, action=action):
+                    self.setUp()
+                    self.request["action"] = action
+                    self.save_request()
+                    (self.input / "managed-memory.json").write_text(json.dumps({"memoryMib": memory_mib}))
+                    with self.runtime() as boundary, patch.dict(os.environ, {"AGENT_SPACK_MANAGED_MEMORY_MIB": "4096"}):
+                        worker.run(self.input, self.work)
+                        boundary.assert_called_once_with(self.input, memory_limit=memory_mib * audit.MIB)
 
     def test_request_exact_bytes_and_strict_profile(self):
         self.assertEqual(worker.read_request(self.input), self.request)
