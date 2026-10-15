@@ -157,7 +157,14 @@ async function readyRecord(release: Release, expected?: SpackInstallRecord) {
     "Managed record binding mismatch",
   );
   if (expected) {
-    assert(isDeepStrictEqual(record, expected), "Persisted managed release record changed");
+    const { updatedAt, ...identityAndReport } = record;
+    const { updatedAt: previousUpdatedAt, ...previousIdentityAndReport } = expected;
+    assert(
+      isDeepStrictEqual(identityAndReport, previousIdentityAndReport),
+      "Persisted managed release identity or report changed",
+    );
+    // Verification withdraws readiness before the worker and restores it on success.
+    assert(Date.parse(updatedAt) >= Date.parse(previousUpdatedAt), "Managed record time regressed");
   }
   for (const path of [store.path(record.id), record.report.prefix]) {
     const entry = await lstat(path);
@@ -353,7 +360,7 @@ async function main() {
       }
     }
     stage = "store";
-    await readyRecord(release, state.record);
+    state.record = (await readyRecord(release, state.record)).record;
     if (initial) {
       stage = "integrity";
       state.record = await verifyManagedCacheIntegrity({
