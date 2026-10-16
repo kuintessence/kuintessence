@@ -13,6 +13,7 @@ import {
   formatWallTime as formatWallTimeShared,
   isRetainedSchedulerLogJobId,
   isSchedulerQueueName,
+  JobLogUnavailableError,
   type JobResult,
   type JobSpec,
   type JobStatusResult,
@@ -37,6 +38,8 @@ import {
   unavailableQueueInventory,
   validateQueueTarget,
 } from "./queue-inventory";
+
+import { readSchedulerLogs } from "./scheduler-logs";
 
 const logger = createLogger("torque-adapter");
 
@@ -330,7 +333,8 @@ export class TorqueAdapter implements SchedulerAdapter {
         timeoutMs: this.queueInventoryTimeoutMs,
       });
       if (server.exitCode !== 0) return unavailableQueueInventory("command_failed");
-      const queues = await this.spawner.run(["qmgr", "-c", "list queue"], {
+      // Without a server selector, qmgr can report only its empty active queue selection.
+      const queues = await this.spawner.run(["qmgr", "-c", "list queue @default"], {
         timeoutMs: this.queueInventoryTimeoutMs,
       });
       if (queues.exitCode !== 0) return unavailableQueueInventory("command_failed");
@@ -392,10 +396,29 @@ export class TorqueAdapter implements SchedulerAdapter {
     }
   }
 
-  async getJobLogs(schedulerJobId: string, lines: number, jobId?: string): Promise<string> {
+  async getJobLogs(
+    schedulerJobId: string,
+    lines: number,
+    jobId?: string,
+    includeStderr = false,
+  ): Promise<string> {
     const { exitCode, stdout, stderr } = await this.spawner.run(["qstat", "-f", schedulerJobId]);
     if (exitCode !== 0 || !stdout.trim()) {
       if (isRetainedSchedulerLogJobId(jobId)) {
+        if (includeStderr) {
+          try {
+            return await readSchedulerLogs(
+              this.spawner,
+              lines,
+              [join(this.logDir, `kq-torque-${jobId}.out`)],
+              [join(this.logDir, `kq-torque-${jobId}.err`)],
+            );
+          } catch (readError) {
+            if (readError instanceof JobLogUnavailableError)
+              throw new Error(`qstat failed (exit ${exitCode}): ${stderr.trim()}`);
+            throw readError;
+          }
+        }
         const persistedLog = await this.spawner.run([
           "tail",
           "-n",
@@ -407,6 +430,25 @@ export class TorqueAdapter implements SchedulerAdapter {
       throw new Error(`qstat failed (exit ${exitCode}): ${stderr.trim()}`);
     }
     const raw = parseQstatAttribute(stdout, "Output_Path");
+    if (includeStderr) {
+      const stripHost = (value: string | undefined) => value?.replace(/^[^/]*:/, "");
+      return readSchedulerLogs(
+        this.spawner,
+        lines,
+        [
+          stripHost(raw),
+          isRetainedSchedulerLogJobId(jobId)
+            ? join(this.logDir, `kq-torque-${jobId}.out`)
+            : undefined,
+        ],
+        [
+          stripHost(parseQstatAttribute(stdout, "Error_Path")),
+          isRetainedSchedulerLogJobId(jobId)
+            ? join(this.logDir, `kq-torque-${jobId}.err`)
+            : undefined,
+        ],
+      );
+    }
     if (!raw) return "";
     const path = raw.includes(":") ? raw.slice(raw.indexOf(":") + 1) : raw;
     const tail = await this.spawner.run(["tail", "-n", String(lines), path]);

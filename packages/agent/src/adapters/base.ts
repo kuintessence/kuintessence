@@ -564,10 +564,15 @@ export interface SchedulerAdapter {
   findByKuintessenceJobId?(lookup: KuintessenceJobLookup): Promise<KuintessenceJobLookupResult>;
 
   /**
-   * Tail a job's stdout. The optional Server job id lets an adapter recover a
+   * Tail stdout, optionally including stderr for user diagnostics. The Server job id recovers a
    * deterministic retained path after the scheduler purges its job record.
    */
-  getJobLogs?(schedulerJobId: string, lines: number, jobId?: string): Promise<string>;
+  getJobLogs?(
+    schedulerJobId: string,
+    lines: number,
+    jobId?: string,
+    includeStderr?: boolean,
+  ): Promise<string>;
   prepareResume?(spec: JobSpec, schedulerJobId: string): void | Promise<void>;
   releaseJob?(schedulerJobId: string): void | Promise<void>;
   stageSandboxInputs?(sandbox: SandboxJobSpec, jobId: string): Promise<void>;

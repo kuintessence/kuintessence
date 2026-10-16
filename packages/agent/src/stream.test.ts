@@ -4652,7 +4652,7 @@ describe("AgentStream", () => {
       calls.every(
         (call) =>
           JSON.stringify(call) ===
-          JSON.stringify(["scheduler-42", 5_000, "19a20bcd-9761-4659-be4a-5ba445befc0a"]),
+          JSON.stringify(["scheduler-42", 5_000, "19a20bcd-9761-4659-be4a-5ba445befc0a", true]),
       ),
     ).toBe(true);
     expect(response?.payload.value.requestId).toBe("logs-1");

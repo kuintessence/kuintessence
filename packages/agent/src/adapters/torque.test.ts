@@ -35,6 +35,35 @@ const baseSpec = {
 };
 
 describe("TorqueAdapter.getJobLogs", () => {
+  test("user diagnostics read stderr without changing default stdout extraction", async () => {
+    const { spawner, calls } = mockSpawner([
+      {
+        exitCode: 0,
+        stdout:
+          "Job Id: 101.srv\n    Output_Path = srv:/logs/out\n    Error_Path = srv:/logs/err\n",
+      },
+      { exitCode: 0, stdout: "value=2\n" },
+      { exitCode: 0, stdout: "specific failure\n" },
+    ]);
+    const adapter = new TorqueAdapter("23", { spawner });
+    expect(await adapter.getJobLogs("101.srv", 50, undefined, true)).toBe(
+      "value=2\n\n[stderr]\nspecific failure\n",
+    );
+    expect(calls.at(-1)).toEqual(["tail", "-n", "50", "/logs/err"]);
+  });
+
+  test("diagnostics recover both retained streams after scheduler history expires", async () => {
+    const jobId = "19a20bcd-9761-4659-be4a-5ba445befc0a";
+    const { spawner, calls } = mockSpawner([
+      { exitCode: 1, stdout: "", stderr: "Invalid job id / Unknown Job Id" },
+      { exitCode: 0, stdout: "output\n" },
+      { exitCode: 0, stdout: "failure\n" },
+    ]);
+    const adapter = new TorqueAdapter("23", { spawner, logDir: "/logs" });
+    expect(await adapter.getJobLogs("101.srv", 50, jobId, true)).toContain("[stderr]\nfailure");
+    expect(calls.at(-1)).toEqual(["tail", "-n", "50", `/logs/kq-torque-${jobId}.err`]);
+  });
+
   test("retains submitted logs outside a cleaned workdir across adapter restart", async () => {
     const jobId = "19a20bcd-9761-4659-be4a-5ba445befc0a";
     const logDir = "/shared/jobs/.scheduler-logs";
@@ -182,6 +211,30 @@ describe("TorqueAdapter.findByKuintessenceJobId", () => {
 });
 
 describe("TorqueAdapter queue inventory", () => {
+  test("enumerates queues even when qmgr has no active queue selection", async () => {
+    const spawner: Spawner = {
+      async run(command) {
+        const query = command.at(-1);
+        return {
+          exitCode: 0,
+          stdout:
+            query === "list server"
+              ? "Server scheduler\n\tdefault_queue = compute\n"
+              : query === "list queue @default"
+                ? "Queue compute\n\tqueue_type = Execution\n\tenabled = True\n\tstarted = True\n"
+                : "",
+          stderr: query === "list queue" ? "No Active Queues, nothing done.\n" : "",
+        };
+      },
+    };
+    const inventory = await new TorqueAdapter("6.1.3", { spawner }).inspectQueues();
+    expect(inventory).toMatchObject({
+      status: "available",
+      defaultQueueName: "compute",
+      queues: [{ queueName: "compute", state: "up", acceptsSubmissions: true }],
+    });
+  });
+
   const server = "set server default_queue = batch\n";
   const queues = [
     "create queue batch",
@@ -212,7 +265,7 @@ describe("TorqueAdapter queue inventory", () => {
 
     expect(calls).toEqual([
       ["qmgr", "-c", "list server"],
-      ["qmgr", "-c", "list queue"],
+      ["qmgr", "-c", "list queue @default"],
     ]);
     expect(inventory).toMatchObject({
       status: "available",
@@ -238,7 +291,7 @@ describe("TorqueAdapter queue inventory", () => {
     });
     expect(calls).toEqual([
       ["qmgr", "-c", "list server"],
-      ["qmgr", "-c", "list queue"],
+      ["qmgr", "-c", "list queue @default"],
     ]);
   });
 });
