@@ -122,6 +122,14 @@ const SoftwareOperationListQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(500).optional(),
 });
 
+const SoftwareOperationMaintenanceSchema = z
+  .object({
+    expectedUpdatedAt: z.string().datetime(),
+    workersStopped: z.literal(true),
+    reason: z.string().trim().min(1).max(500),
+  })
+  .strict();
+
 const PreinstalledMappingReviewSchema = z.object({
   agentId: z.string().min(1),
   decision: z.enum(["approve", "reject"]),
@@ -480,6 +488,24 @@ export function buildCpRouter(deps: CpRoutesDeps) {
       agentScopeVerified: true,
     });
     return c.json(item, 202);
+  });
+
+  r.post("/software/operations/:operationId/close-interrupted", async (c) => {
+    const scope = c.get("cpScope") as CpScope;
+    if (!scope.isPlatformWide) {
+      throw new AppError(ErrorCode.FORBIDDEN, "Platform administrator required", 403);
+    }
+    const service = deps.softwareOperations;
+    if (!service)
+      throw new AppError(ErrorCode.INTERNAL_ERROR, "software operation service is not wired");
+    const body = SoftwareOperationMaintenanceSchema.parse(await c.req.json());
+    const item = await service.closeInterruptedOperation({
+      scope,
+      ...body,
+      operationId: z.string().uuid().parse(c.req.param("operationId")),
+      actor: requireCanonicalCpActor(c),
+    });
+    return c.json(item);
   });
 
   r.post("/software/operations/batch", async (c) => {

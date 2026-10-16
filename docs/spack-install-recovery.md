@@ -119,6 +119,7 @@ ACK 后才能安全回收。不要直接删除账本，尤其不要将“已经�
 | `SPACK_RECOVERY_REQUIRED` | store writer recovery required |
 | `SPACK_INTERRUPTED` | software operation interrupted |
 | `SPACK_OPERATION_FAILED` | managed software operation failed |
+| `SPACK_MANUALLY_INTERRUPTED` | 管理员确认停止 worker 后收尾，安装结果未知 |
 
 ## 旧锁或未知 worker 的受控维护
 
@@ -143,3 +144,17 @@ ACK 后才能安全回收。不要直接删除账本，尤其不要将“已经�
 子进程 SIGKILL、活孤儿 worker 不可抢、模拟 boot 变化/PID 复用、克隆 machine-id 不同主机名、并发恢复、恢复中
 再次崩溃、在线结果丢失重报、等待者退出均有针对性检查；没有实际重启主机、运行
 科学软件、验证目标 NFS 或执行远端 kqagent 验收。
+
+
+## 人工收尾旧 operation
+
+平台管理员可在完成上面的停写、worker 检查及锁归档后调用：
+`POST /api/cp/software/operations/:operationId/close-interrupted`。
+请求体为 `{"expectedUpdatedAt":"从操作列表读取的 ISO 时间","workersStopped":true,"reason":"维护原因及证据位置"}`。
+
+此入口要求 Agent 在持久状态和当前连接中均离线，只接受尚未结束且更新时间一致的操作。
+它将控制操作标记为 failed，错误码 `SPACK_MANUALLY_INTERRUPTED`，安装结果仍然未知；
+不取消进程、不解除写锁、不改变库存、不清理文件，也不能把任务标为成功。
+管理员必须确保相关 Agent 与全部 worker 在维护期间保持停止；离线状态本身不是 worker 停止的证明。
+原因中不要填写凭据或敏感输出。操作变更与管理员、原状态、确认及原因在同一事务内写入审计记录。
+终态不可覆盖，重复请求或过期快照返回 409；需要复核当前状态，不能自动强制重试。

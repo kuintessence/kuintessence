@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import {
   agents,
+  auditLog,
   jobs,
   type PgDb,
   softwareOperations,
@@ -58,6 +59,88 @@ export class SoftwareOperationService {
       providerOrgId: string | null;
     }) => Promise<void>,
   ) {}
+
+  async closeInterruptedOperation(input: {
+    scope: CpScope;
+    operationId: string;
+    expectedUpdatedAt: string;
+    workersStopped: true;
+    reason: string;
+    actor: string;
+  }): Promise<SoftwareOperationView> {
+    if (!input.scope.isPlatformWide) {
+      throw new AppError(ErrorCode.FORBIDDEN, "Platform administrator required", 403);
+    }
+    if (input.workersStopped !== true || !input.reason.trim() || input.reason.length > 500) {
+      throw new AppError(
+        ErrorCode.VALIDATION_ERROR,
+        "Worker shutdown confirmation and reason required",
+        400,
+      );
+    }
+    return this.db.transaction(async (tx) => {
+      const [operation] = await tx
+        .select()
+        .from(softwareOperations)
+        .where(eq(softwareOperations.id, input.operationId))
+        .for("update")
+        .limit(1);
+      if (!operation) throw new AppError(ErrorCode.NOT_FOUND, "Software operation not found", 404);
+      if (
+        !["queued", "running"].includes(operation.status) ||
+        operation.updatedAt.getTime() !== Date.parse(input.expectedUpdatedAt)
+      ) {
+        throw new AppError(
+          ErrorCode.VALIDATION_ERROR,
+          "Operation changed or already finished",
+          409,
+        );
+      }
+      const [agent] = await tx
+        .select()
+        .from(agents)
+        .where(eq(agents.agentId, operation.agentId))
+        .limit(1);
+      if (!agent || agent.status !== "offline" || this.dispatcher.isOnline(operation.agentId)) {
+        throw new AppError(
+          ErrorCode.VALIDATION_ERROR,
+          "Stop the Agent and all workers before maintenance",
+          409,
+        );
+      }
+      const now = new Date();
+      const error =
+        "SPACK_MANUALLY_INTERRUPTED: closed after operator-confirmed worker shutdown; installation outcome unknown";
+      const [updated] = await tx
+        .update(softwareOperations)
+        .set({
+          status: "failed",
+          error,
+          exitCode: null,
+          finishedAt: now,
+          updatedAt: now,
+        })
+        .where(eq(softwareOperations.id, operation.id))
+        .returning();
+      if (!updated) throw new Error("Software operation disappeared during maintenance");
+      await tx.insert(auditLog).values({
+        actor: input.actor,
+        action: "software.operation.close-interrupted",
+        target: operation.id,
+        diff: {
+          before: { status: operation.status, updatedAt: operation.updatedAt.toISOString() },
+          after: {
+            status: "failed",
+            error,
+            agentId: operation.agentId,
+            reason: input.reason.trim(),
+            workersStopped: true,
+          },
+        },
+      });
+      return rowToView(updated);
+    });
+  }
 
   async requestOperation(input: {
     scope: CpScope;

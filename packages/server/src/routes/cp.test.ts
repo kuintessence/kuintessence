@@ -19,7 +19,12 @@ type CpAgentList = Awaited<ReturnType<CpConsoleService["listAgents"]>>;
 
 function makeApp(
   softwareOperations: Pick<SoftwareOperationService, "requestOperation"> &
-    Partial<Pick<SoftwareOperationService, "assertAgentInScope" | "listOperations">>,
+    Partial<
+      Pick<
+        SoftwareOperationService,
+        "assertAgentInScope" | "listOperations" | "closeInterruptedOperation"
+      >
+    >,
   consoleService?: Partial<CpConsoleService>,
   authz?: AuthzService,
   principal: (PrincipalLike & { email?: string; userId?: string }) | null = {
@@ -2320,5 +2325,73 @@ describe("CP software operation routes", () => {
         },
       },
     ]);
+  });
+});
+
+describe("interrupted software operation maintenance", () => {
+  const operationId = "11111111-1111-4111-8111-111111111111";
+  const body = {
+    expectedUpdatedAt: "2026-10-15T00:00:00.000Z",
+    workersStopped: true,
+    reason: "Workers stopped; evidence archived",
+  };
+  test("passes the canonical administrator and explicit shutdown evidence", async () => {
+    let received: Parameters<SoftwareOperationService["closeInterruptedOperation"]>[0] | undefined;
+    const app = makeApp({
+      requestOperation: async () => operationView("unused"),
+      closeInterruptedOperation: async (input) => {
+        received = input;
+        return operationView(operationId);
+      },
+    });
+    const response = await app.request(
+      `/api/cp/software/operations/${operationId}/close-interrupted`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      },
+    );
+    expect(response.status).toBe(200);
+    expect(received).toMatchObject({ ...body, operationId, actor: "user-cp-route" });
+  });
+  test.each([
+    { ...body, workersStopped: false },
+    { ...body, reason: " " },
+    { ...body, expectedUpdatedAt: "bad" },
+    { ...body, actor: "forged" },
+  ])("rejects invalid maintenance attestations", async (invalid) => {
+    const app = makeApp({
+      requestOperation: async () => operationView("unused"),
+      closeInterruptedOperation: async () => {
+        throw new Error("must not execute");
+      },
+    });
+    const response = await app.request(
+      `/api/cp/software/operations/${operationId}/close-interrupted`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(invalid),
+      },
+    );
+    expect(response.status).toBe(400);
+  });
+  test("provider administrators cannot close interrupted operations", async () => {
+    const app = makeApp(
+      { requestOperation: async () => operationView("unused") },
+      undefined,
+      undefined,
+      { sub: "provider", userId: "provider-user", role: "org_admin", orgIds: ["provider-org"] },
+    );
+    const response = await app.request(
+      `/api/cp/software/operations/${operationId}/close-interrupted`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      },
+    );
+    expect(response.status).toBe(403);
   });
 });

@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import { create } from "@bufbuild/protobuf";
-import { agents, createPgDb, type PgDb, softwareOperations } from "@kuintessence/db";
+import { agents, auditLog, createPgDb, type PgDb, softwareOperations } from "@kuintessence/db";
 import {
   SoftwareOperationAction as ProtoSoftwareOperationAction,
   SoftwareOperationStatus as ProtoSoftwareOperationStatus,
@@ -144,6 +144,143 @@ describe("software operation request idempotency", () => {
 
     expect(repeated.map((item) => item.id)).toEqual(first.map((item) => item.id));
     await expect(requestItem("zlib@1.3", 0, 3)).rejects.toMatchObject({ statusCode: 409 });
+  });
+});
+
+describe("interrupted operation maintenance", () => {
+  const db = createPgDb(TEST_DB_URL);
+  const dispatcher = new AgentDispatcher();
+  let inventoryWrites = 0;
+  const service = new SoftwareOperationService(db, dispatcher, {
+    replaceForAgent: async () => {
+      inventoryWrites += 1;
+    },
+  } as unknown as InstalledRegistry);
+  const scope = {
+    orgIds: [],
+    isPlatformWide: true,
+    principal: { sub: "maintenance", role: "platform_admin" },
+  };
+  const agentId = "software-maintenance-agent";
+  const actor = "software-idempotency-maintainer";
+  beforeAll(async () => {
+    await db.insert(agents).values({
+      agentId,
+      siteName: "test",
+      schedulerType: "slurm",
+      schedulerVersion: "23",
+      status: "offline",
+    });
+  });
+  afterAll(async () => {
+    dispatcher.unregister(agentId);
+    await db.delete(auditLog).where(eq(auditLog.actor, actor));
+    await db.delete(softwareOperations).where(eq(softwareOperations.agentId, agentId));
+    await db.delete(agents).where(eq(agents.agentId, agentId));
+  });
+  async function fixture(status = "running") {
+    const [row] = await db
+      .insert(softwareOperations)
+      .values({
+        agentId,
+        action: "install",
+        spec: "hello@2.12.1",
+        status,
+        updatedAt: new Date("2026-01-01T00:00:00.000Z"),
+      })
+      .returning();
+    if (!row) throw new Error("missing operation");
+    return {
+      scope,
+      operationId: row.id,
+      expectedUpdatedAt: row.updatedAt.toISOString(),
+      workersStopped: true as const,
+      reason: "All workers stopped; lock evidence archived",
+      actor,
+    };
+  }
+  test("closes once, audits the actor and evidence, and ignores late success without changing inventory", async () => {
+    const input = await fixture();
+    const results = await Promise.allSettled([
+      service.closeInterruptedOperation(input),
+      service.closeInterruptedOperation(input),
+    ]);
+    expect(results.filter((r) => r.status === "fulfilled")).toHaveLength(1);
+    const [closed] = await db
+      .select()
+      .from(softwareOperations)
+      .where(eq(softwareOperations.id, input.operationId));
+    expect(closed?.status).toBe("failed");
+    expect(closed?.error).toContain("SPACK_MANUALLY_INTERRUPTED");
+    expect(closed?.exitCode).toBeNull();
+    const audit = await db.select().from(auditLog).where(eq(auditLog.target, input.operationId));
+    expect(audit).toHaveLength(1);
+    expect(audit[0]).toMatchObject({
+      actor,
+      action: "software.operation.close-interrupted",
+      diff: {
+        before: { status: "running" },
+        after: { reason: input.reason, workersStopped: true },
+      },
+    });
+    await service.applyAgentResult(
+      agentId,
+      create(SoftwareOperationResultSchema, {
+        operationId: input.operationId,
+        status: ProtoSoftwareOperationStatus.SUCCEEDED,
+        action: ProtoSoftwareOperationAction.INSTALL,
+        installed: [],
+      }),
+    );
+    const [after] = await db
+      .select()
+      .from(softwareOperations)
+      .where(eq(softwareOperations.id, input.operationId));
+    expect(after?.error).toBe(closed?.error);
+    expect(after?.status).toBe("failed");
+    expect(inventoryWrites).toBe(0);
+  });
+  test("refuses non-admins, stale snapshots, unconfirmed shutdown, and finished operations", async () => {
+    const input = await fixture();
+    await expect(
+      service.closeInterruptedOperation({ ...input, scope: { ...scope, isPlatformWide: false } }),
+    ).rejects.toMatchObject({ statusCode: 403 });
+    await expect(
+      service.closeInterruptedOperation({
+        ...input,
+        expectedUpdatedAt: "2025-01-01T00:00:00.000Z",
+      }),
+    ).rejects.toMatchObject({ statusCode: 409 });
+    await expect(
+      service.closeInterruptedOperation({ ...input, reason: " " }),
+    ).rejects.toMatchObject({ statusCode: 400 });
+    await expect(
+      service.closeInterruptedOperation(await fixture("succeeded")),
+    ).rejects.toMatchObject({ statusCode: 409 });
+    const [unchanged] = await db
+      .select()
+      .from(softwareOperations)
+      .where(eq(softwareOperations.id, input.operationId));
+    expect(unchanged?.status).toBe("running");
+  });
+  test("refuses both persisted-online and locally connected Agents", async () => {
+    const input = await fixture();
+    await db.update(agents).set({ status: "online" }).where(eq(agents.agentId, agentId));
+    try {
+      await expect(service.closeInterruptedOperation(input)).rejects.toMatchObject({
+        statusCode: 409,
+      });
+    } finally {
+      await db.update(agents).set({ status: "offline" }).where(eq(agents.agentId, agentId));
+    }
+    dispatcher.register(agentId, { push: () => {}, close: () => {} });
+    try {
+      await expect(service.closeInterruptedOperation(input)).rejects.toMatchObject({
+        statusCode: 409,
+      });
+    } finally {
+      dispatcher.unregister(agentId);
+    }
   });
 });
 
