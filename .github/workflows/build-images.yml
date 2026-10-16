@@ -111,12 +111,18 @@ jobs:
     timeout-minutes: 30
     permissions:
       contents: read
+      packages: read
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
-      - name: Upload Compose configuration and deploy
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - name: Upload verified images and Compose configuration, then deploy
         env:
           MAIN_SSH_HOST: ${{ secrets.MAIN_SSH_HOST }}
           MAIN_SSH_PORT: ${{ secrets.MAIN_SSH_PORT }}
