@@ -283,21 +283,24 @@ Release（包括正式发布与预发布）只发布镜像。部署步骤使用�
 |---|---|
 | `MAIN_SSH_HOST` | 部署服务器 IP 或主机名 |
 | `MAIN_SSH_PORT` | SSH 端口（1–65535） |
-| `MAIN_SSH_USER` | SSH 用户，须能写入 `/opt/deploy` 并执行部署脚本 |
+| `MAIN_SSH_USER` | SSH 用户，须能写入 `/opt/deploy`、执行 Docker 命令及部署脚本 |
 | `MAIN_SSH_KEY` | 该用户的 SSH 私钥完整内容，使用无需交互解密的专用部署密钥 |
 
-[`remote.sh`](../deploy/main/remote.sh) 通过 SSH 上传两个文件，完整接收后覆盖
+[`remote.sh`](../deploy/main/remote.sh) 在 runner 登录 GHCR 并拉取四个应用镜像，核对
+`linux/amd64`、项目来源和本次 commit，再将镜像压缩归档与 Compose 配置通过 SSH
+一并上传。服务器校验归档 SHA-256、加载镜像并核对镜像 ID 后，才覆盖
 `/opt/deploy/compose.yml` 和 `/opt/deploy/env.example`；如果仓库没有示例环境文件，
-只更新 Compose。随后从 `/opt/deploy` 工作目录执行服务器已有的 `/opt/deploy/run.sh`，
-其退出码直接决定部署 job 成败。SSH 采用 `accept-new` 首次接受主机密钥，
+只更新 Compose。随后从 `/opt/deploy` 执行服务器已有的
+`/opt/deploy/run.sh deploy --expected-revision <commit>`，其退出码直接决定部署 job 成败。
+站点脚本必须支持该版本参数并拒绝镜像版本不匹配。SSH 采用 `accept-new` 首次接受主机密钥，
 私钥和本次 known_hosts 存在 runner 临时目录，退出时清理。
 
 服务器需预先准备可执行的 `run.sh` 和实际 `.env`。CI 不创建或覆盖它们，也不会
-向服务器传输仓库源码、SSH 私钥或 GitHub token。`run.sh` 负责按站点要求登录 GHCR、
-拉取镜像、启动/更新服务和健康验证；私有 GHCR 镜像的拉取凭据由服务器自行配置。
-基础调用可使用 `docker compose -f /opt/deploy/compose.yml pull` 和
-`docker compose -f /opt/deploy/compose.yml up -d --wait`；数据库备份、升级与失败处置
-由站点脚本负责，CI 不自动回滚。重新运行失败的部署 job 会再次覆盖这两个文件并调用脚本。
+向服务器传输仓库源码、SSH 私钥或 GitHub token。runner 使用本次 workflow 的只读
+package 权限下载私有镜像。`run.sh` 仍负责站点认证、版本核对、数据库备份、升级和
+健康验证，CI 不自动回滚。站点脚本如果再次拉取相同镜像，可复用加载后的本地镜像层；
+注册表元数据访问仍需要站点网络及相应凭据。此传输方式不包含 PostgreSQL 等基础服务镜像。
+重新运行失败的部署 job 会重新传输并校验镜像，然后调用脚本；未完成的迁移仍应按站点维护流程处理。
 
 main 专用 Compose 直接引用四个 `kuintessence-*:main` 镜像，
 不依赖源码构建或仓库 bind mount。它内置 PostgreSQL、Redis、RustFS、SpiceDB，
