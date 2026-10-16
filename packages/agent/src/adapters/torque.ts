@@ -263,10 +263,11 @@ export class TorqueAdapter implements SchedulerAdapter {
     assertSandboxSchedulerMetadata(spec);
     const lines: string[] = ["#!/bin/bash"];
     const executionRoot = spec.workingDir || this.logDir;
+    const logRoot = spec.sandbox ? executionRoot : this.logDir;
     lines.push(`#PBS -N ${spec.schedulerName ?? spec.name}`);
     lines.push(`#PBS -v KQ_JOB_ID=${spec.jobId}`);
-    lines.push(`#PBS -o ${join(executionRoot, `kq-torque-${spec.jobId}.out`)}`);
-    lines.push(`#PBS -e ${join(executionRoot, `kq-torque-${spec.jobId}.err`)}`);
+    lines.push(`#PBS -o ${join(logRoot, `kq-torque-${spec.jobId}.out`)}`);
+    lines.push(`#PBS -e ${join(logRoot, `kq-torque-${spec.jobId}.err`)}`);
     // Torque uses nodes=N:ppn=N rather than select=
     lines.push(`#PBS -l nodes=1:ppn=${spec.cpus}`);
     lines.push(`#PBS -l mem=${spec.memoryMb}mb`);

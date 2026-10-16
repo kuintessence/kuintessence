@@ -35,6 +35,29 @@ const baseSpec = {
 };
 
 describe("TorqueAdapter.getJobLogs", () => {
+  test("retains submitted logs outside a cleaned workdir across adapter restart", async () => {
+    const jobId = "19a20bcd-9761-4659-be4a-5ba445befc0a";
+    const logDir = "/shared/jobs/.scheduler-logs";
+    const submission = mockSpawner([{ exitCode: 0, stdout: "101.srv\n" }]);
+    const adapter = new TorqueAdapter("6", { spawner: submission.spawner, logDir });
+    const { schedulerJobId } = await adapter.submit({ ...baseSpec, jobId });
+    const script = submission.stdin[0] ?? "";
+    const outputPath = /^#PBS -o (.+)$/m.exec(script)?.[1];
+    if (!outputPath) throw new Error("Submitted PBS log path is missing");
+    expect(outputPath).toBe(`${logDir}/kq-torque-${jobId}.out`);
+    expect(script).toContain(`#PBS -e ${logDir}/kq-torque-${jobId}.err`);
+    expect(script).toContain("cd -- '/scratch/user' || exit 1");
+    const readback = mockSpawner([
+      { exitCode: 153, stdout: "", stderr: "Unknown Job Id" },
+      { exitCode: 0, stdout: "retained output\n" },
+    ]);
+    const restarted = new TorqueAdapter("6", { spawner: readback.spawner, logDir });
+    await expect(restarted.getJobLogs(schedulerJobId, 50, jobId)).resolves.toBe(
+      "retained output\n",
+    );
+    expect(readback.calls.at(-1)).toEqual(["tail", "-n", "50", outputPath]);
+  });
+
   test("resolves Output_Path from qstat -f and tails it", async () => {
     const qstatF = [
       "Job Id: 101.srv",
@@ -240,8 +263,8 @@ describe("TorqueAdapter.buildSubmitScript", () => {
     const script = adapter.buildSubmitScript(baseSpec);
     expect(script).toContain("#!/bin/bash");
     expect(script).toContain("#PBS -N test-job");
-    expect(script).toContain("#PBS -o /scratch/user/kq-torque-job-001.out");
-    expect(script).toContain("#PBS -e /scratch/user/kq-torque-job-001.err");
+    expect(script).toContain("#PBS -o /shared/jobs/.scheduler-logs/kq-torque-job-001.out");
+    expect(script).toContain("#PBS -e /shared/jobs/.scheduler-logs/kq-torque-job-001.err");
     expect(script).toContain("#PBS -l nodes=1:ppn=8");
     expect(script).toContain("#PBS -l mem=4096mb");
     expect(script).toContain("#PBS -l walltime=02:00:00");

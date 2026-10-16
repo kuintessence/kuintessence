@@ -35,6 +35,30 @@ const baseSpec = {
 };
 
 describe("PbsProAdapter.getJobLogs", () => {
+  test("retains submitted logs outside a cleaned workdir across adapter restart", async () => {
+    const jobId = "19a20bcd-9761-4659-be4a-5ba445befc0a";
+    const logDir = "/shared/jobs/.scheduler-logs";
+    const submission = mockSpawner([{ exitCode: 0, stdout: "101.srv\n" }]);
+    const adapter = new PbsProAdapter("23", { spawner: submission.spawner, logDir });
+    const { schedulerJobId } = await adapter.submit({ ...baseSpec, jobId });
+    const script = submission.stdin[0] ?? "";
+    const outputPath = /^#PBS -o (.+)$/m.exec(script)?.[1];
+    if (!outputPath) throw new Error("Submitted PBS log path is missing");
+    expect(outputPath).toBe(`${logDir}/kq-pbs-${jobId}.out`);
+    expect(script).toContain(`#PBS -e ${logDir}/kq-pbs-${jobId}.err`);
+    expect(script).toContain("cd -- '/scratch/user' || exit 1");
+    const readback = mockSpawner([
+      { exitCode: 1, stdout: "", stderr: "Unknown Job Id" },
+      { exitCode: 1, stdout: "", stderr: "Unknown Job Id" },
+      { exitCode: 0, stdout: "retained output\n" },
+    ]);
+    const restarted = new PbsProAdapter("23", { spawner: readback.spawner, logDir });
+    await expect(restarted.getJobLogs(schedulerJobId, 50, jobId)).resolves.toBe(
+      "retained output\n",
+    );
+    expect(readback.calls.at(-1)).toEqual(["tail", "-n", "50", outputPath]);
+  });
+
   test("resolves Output_Path (strips host) and tails it", async () => {
     const json = JSON.stringify({
       Jobs: { "101.srv": { Output_Path: "srv:/home/alice/job.o101" } },
@@ -257,8 +281,8 @@ describe("PbsProAdapter.buildSubmitScript", () => {
     const script = adapter.buildSubmitScript(baseSpec);
     expect(script).toContain("#!/bin/bash");
     expect(script).toContain("#PBS -N test-job");
-    expect(script).toContain("#PBS -o /scratch/user/kq-pbs-job-001.out");
-    expect(script).toContain("#PBS -e /scratch/user/kq-pbs-job-001.err");
+    expect(script).toContain("#PBS -o /shared/jobs/.scheduler-logs/kq-pbs-job-001.out");
+    expect(script).toContain("#PBS -e /shared/jobs/.scheduler-logs/kq-pbs-job-001.err");
     expect(script).toContain("#PBS -l select=1:ncpus=4:mem=8192mb");
     expect(script).toContain("#PBS -l walltime=01:00:00");
     expect(script).not.toContain("#PBS -d");

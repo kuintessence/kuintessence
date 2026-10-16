@@ -213,6 +213,28 @@ describe("createUsecaseExecutor", () => {
     expect(capture.spec?.resources).toEqual({ cpus: 8, wallTimeSec: 3600 });
   });
 
+  test.each([
+    undefined,
+    { cpuCores: 1, maxWallTime: 60 },
+  ])("preserves usecase memory with node requirements %j", async (requirements) => {
+    const capture: { spec?: JobSubmission } = {};
+    const base = deps(capture);
+    const executor = createUsecaseExecutor({
+      ...base,
+      resolvePackage: async (...args) => ({
+        ...(await base.resolvePackage(...args)),
+        resources: { memoryMiB: 128 },
+      }),
+    });
+    await executor(workflowDsl.WorkflowNodeSchema.parse({ ...node, requirements }), {
+      params: { endTime: "500" },
+    });
+    expect(capture.spec?.resources).toEqual({
+      memoryMb: 128,
+      ...(requirements ? { cpus: 1, wallTimeSec: 60 } : {}),
+    });
+  });
+
   test("maps a Manual schedulingStrategy queue into the submitted job", async () => {
     const capture: { spec?: JobSubmission } = {};
     const exec = createUsecaseExecutor(deps(capture));

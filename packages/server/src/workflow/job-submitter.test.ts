@@ -41,6 +41,26 @@ describe("createJobSubmitter", () => {
     expect(dispatched).toBe(true);
   });
 
+  test("passes declared memory to job submission", async () => {
+    const submit = createJobSubmitter({
+      submit: async (spec) => {
+        expect(spec.resources).toEqual({ cpus: 1, memoryMb: 128, wallTimeSec: 60 });
+        return { id: "job-memory" };
+      },
+      dispatch: async () => {},
+      awaitCompletion: async () => ({ status: "completed", collected: {} }),
+    });
+    await submit({
+      nodeId: "memory",
+      name: "memory",
+      command: "true",
+      envVars: {},
+      inputStaging: [],
+      expectedOutputs: [],
+      resources: { cpus: 1, memoryMb: 128, wallTimeSec: 60 },
+    });
+  });
+
   test("submits, dispatches, then awaits completion and returns status + collected outputs", async () => {
     const calls: string[] = [];
     const deps: JobSubmitterDeps = {

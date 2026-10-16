@@ -209,6 +209,20 @@ describe("HPC Sandbox adapters", () => {
     ).toThrow("does not match local execution facts");
   });
 
+  test("PBS Pro and Torque keep sandbox logs in the mapped account workdir", () => {
+    const pbs = new PbsProAdapter("23", { logDir: "/private/agent/.scheduler-logs" });
+    const torque = new TorqueAdapter("6", { logDir: "/private/agent/.scheduler-logs" });
+    for (const [adapter, prefix] of [
+      [pbs, "pbs"],
+      [torque, "torque"],
+    ] as const) {
+      const script = adapter.buildSubmitScript(job());
+      expect(script).toContain(`#PBS -o /managed/job/kq-${prefix}-${job().jobId}.out`);
+      expect(script).toContain(`#PBS -e /managed/job/kq-${prefix}-${job().jobId}.err`);
+      expect(script).not.toContain("/private/agent/.scheduler-logs");
+    }
+  });
+
   test("PBS Pro and Torque pin the scheduler account and reject an unauthorized queue", async () => {
     expect(new PbsProAdapter("23").buildSubmitScript(job())).toContain("#PBS -A science");
     expect(new TorqueAdapter("6").buildSubmitScript(job())).toContain("#PBS -A science");

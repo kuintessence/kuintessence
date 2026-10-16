@@ -909,11 +909,10 @@ const makeRunner = (
             ...(spec.usecasePackageId ? { usecasePackageId: spec.usecasePackageId } : {}),
             ...(spec.dataInputs ? { dataInputs: spec.dataInputs } : {}),
             command: spec.command,
-            // Honour the node's declared requirements (mapped from
-            // workflowDsl.Requirements); fall back to modest defaults.
+            // Preserve declared workflow resources before applying defaults.
             resources: {
               cpus: spec.resources?.cpus ?? 1,
-              memoryMb: 1024,
+              memoryMb: spec.resources?.memoryMb ?? 1024,
               ...(spec.resources?.wallTimeSec != null
                 ? { wallTimeSec: spec.resources.wallTimeSec }
                 : {}),

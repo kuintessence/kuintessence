@@ -267,7 +267,8 @@ queue registry 提供 partition/QoS，仍受可见性、启用状态、`queue#su
 
 用例节点 `requirements.cpuCores` 映射 Job cpus，`maxWallTime` 映射 wallTimeSec，单位为秒。
 `nodeCount/maxCpuTime/stopTime` 可通过 Schema 校验，但执行器尚未将其映射到 Job resources。
-Server 此路径缺省使用 1 CPU、1024 MiB 内存。
+用例声明的 `resources.memoryMiB` 透传为 Job `memoryMb`，供放置、调度与 Slurm/PBS 资源申请使用。
+未声明时保持 1024 MiB 默认值；未声明 CPU 时使用 1 CPU。
 
 | 配置 | 作用与注意事项 |
 |---|---|
