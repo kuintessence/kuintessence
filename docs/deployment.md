@@ -288,7 +288,9 @@ Release（包括正式发布与预发布）只发布镜像。部署步骤使用�
 
 [`remote.sh`](../deploy/main/remote.sh) 在 runner 登录 GHCR 并拉取四个应用镜像，核对
 `linux/amd64`、项目来源和本次 commit，再将镜像压缩归档与 Compose 配置通过 SSH
-一并上传。服务器校验归档 SHA-256、加载镜像并核对镜像 ID 后，才覆盖
+一并上传。临时部署 runner 启用 BBR 和从 1200 字节 MSS 开始的 MTU 探测，
+减少跨网链路丢包造成的传输降速；不修改部署服务器的网络参数。
+服务器校验归档 SHA-256、加载镜像并核对镜像 ID 后，才覆盖
 `/opt/deploy/compose.yml` 和 `/opt/deploy/env.example`；如果仓库没有示例环境文件，
 只更新 Compose。随后从 `/opt/deploy` 执行服务器已有的
 `/opt/deploy/run.sh deploy --expected-revision <commit>`，其退出码直接决定部署 job 成败。
