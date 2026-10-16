@@ -235,7 +235,15 @@ describe("main deployment wiring", () => {
     expect(workflow.concurrency["cancel-in-progress"]).toBe(false);
     expect(job.steps[0].with.ref).toBe(`\${{ github.sha }}`);
     expect(job.permissions.packages).toBe("read");
+    const network = job.steps.find(
+      (entry) => entry.name === "Configure TCP for the deployment link",
+    );
+    expect(network.run).toContain("sudo modprobe tcp_bbr");
+    expect(network.run).toContain("net.ipv4.tcp_congestion_control=bbr");
+    expect(network.run).toContain("net.ipv4.tcp_mtu_probing=2");
+    expect(network.run).toContain("net.ipv4.tcp_base_mss=1200");
     const login = job.steps.find((entry) => entry.uses === "docker/login-action@v3");
+    expect(job.steps.indexOf(network)).toBeLessThan(job.steps.indexOf(login));
     expect(login.with.registry).toBe("ghcr.io");
     expect(login.with.password).toBe(`\${{ github.token }}`);
     const step = job.steps.find((entry) => entry.run === "bash deploy/main/remote.sh");
