@@ -290,12 +290,13 @@ Release（包括正式发布与预发布）只发布镜像。部署步骤使用�
 `linux/amd64`、项目来源和本次 commit，再将镜像压缩归档与 Compose 配置通过 SSH
 一并上传。临时部署 runner 启用 BBR 和从 1200 字节 MSS 开始的 MTU 探测，
 减少跨网链路丢包造成的传输降速；不修改部署服务器的网络参数。
-服务器校验归档 SHA-256、加载镜像并核对镜像 ID 后，才覆盖
+服务器校验归档 SHA-256、加载镜像并核对平台、提交、来源及文件层摘要后，才覆盖
 `/opt/deploy/compose.yml` 和 `/opt/deploy/env.example`；如果仓库没有示例环境文件，
 只更新 Compose。随后从 `/opt/deploy` 执行服务器已有的
 `/opt/deploy/run.sh deploy --expected-revision <commit>`，其退出码直接决定部署 job 成败。
 站点脚本必须支持该版本参数并拒绝镜像版本不匹配。SSH 采用 `accept-new` 首次接受主机密钥，
 私钥和本次 known_hosts 存在 runner 临时目录，退出时清理。
+镜像内容核对兼容 classic 与 containerd 存储；二者的 `.Id` 可能分别表示配置或 manifest 摘要，不能直接跨存储比较。
 
 服务器需预先准备可执行的 `run.sh` 和实际 `.env`。CI 不创建或覆盖它们，也不会
 向服务器传输仓库源码、SSH 私钥或 GitHub token。runner 使用本次 workflow 的只读

@@ -103,7 +103,7 @@ Server-only Agent 材料下载，以及 CP 安装/库存/策略操作已有实�
   Git tag，正式 Release 同时更新 `latest`，预发布不更新。当前架构为 `linux/amd64`，
   Web 关闭预览登录。main 镜像全部成功后，runner 核对平台、来源与提交，将四镜像压缩归档
   （临时 runner 启用 BBR 与 MTU 探测，初始 MSS 1200，不修改服务器网络配置）
-  和专用 Compose 通过 SSH 上传；校验 SHA-256、加载并核对镜像 ID 后，调用站点已有
+  和专用 Compose 通过 SSH 上传；校验 SHA-256、加载并核对平台、提交、来源与文件层摘要后，调用站点已有
   `run.sh deploy --expected-revision <commit>`。SSH 用户须能执行 Docker；Release 不触发部署。
   站点可复用镜像层缓存，但仍需基础服务镜像及注册表元数据访问。
   站点维护实际 `.env`、拉取凭据、代理与升级策略，部署脚本启动 Compose 时才执行数据库迁移。
