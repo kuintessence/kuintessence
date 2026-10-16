@@ -288,8 +288,9 @@ Server-only Agent 材料下载，以及 CP 安装/库存/策略操作已有实�
   Hello/samtools 的签名目录注册、材料 bootstrap、managed 安装与正式异步
   `/workflows` 两节点执行验收，包含结果依赖及重启回读/重跑。
   用例参数物化按字面值保留 `$` 替换序列，避免破坏 Bash ANSI-C 字符串等输入。
-  普通 Slurm 作业日志统一写入持久共享日志目录，显式 workingDir 只控制执行目录
+  普通 Slurm/PBS Pro/Torque 作业日志统一写入持久共享日志目录，显式 workingDir 只控制执行目录
   与相对文件路径；Sandbox 日志路径保持独立，测试继续要求重启后日志回读成功。
+  工作流用例的 `resources.memoryMiB` 透传到 Job 内存申请；未声明时保留 1024 MiB 默认值。
   长时间受管验收按 Server 返回的凭据有效期提前重新认证，仅更新内存凭据；
   不改变生产 token TTL，也不自动重放认证失败的写请求。
   验收以对应提交的 Actions 结果为准，不沿用直接 `/jobs` 的通过记录。Agent/OS 兼容性后续

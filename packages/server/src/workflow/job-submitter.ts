@@ -29,7 +29,7 @@ export interface JobSubmitterDeps {
     stdinText?: string;
     licensedMaterials?: JobSubmission["licensedMaterials"];
     softwareRequirements?: JobSubmission["softwareRequirements"];
-    resources?: { cpus?: number; wallTimeSec?: number };
+    resources?: JobSubmission["resources"];
     schedulingStrategy?: { queueId: string };
   }): Promise<{ id: string }>;
   dispatch(

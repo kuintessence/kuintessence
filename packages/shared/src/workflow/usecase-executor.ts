@@ -26,6 +26,7 @@ export interface ResolvedPackage {
   filesomeInputs: usecase.FilesomeInputMaterial[];
   filesomeOutputs: usecase.FilesomeOutputMaterial[];
   valueOutputs: workflowDsl.ValueOutput[];
+  resources?: { memoryMiB?: number };
   licensedMaterials?: usecase.MaterializedTask["licensedMaterials"];
   softwareRequirements?: Array<{
     assetId?: string;
@@ -63,9 +64,8 @@ export interface JobSubmission {
     version?: string;
     installable: boolean;
   }>;
-  /** Mapped from the node's `requirements`; omitted when the node declares
-   *  none, so the submitter falls back to its defaults. */
-  resources?: { cpus?: number; wallTimeSec?: number };
+  /** Node CPU/walltime requirements and governed usecase memory, when declared. */
+  resources?: { cpus?: number; memoryMb?: number; wallTimeSec?: number };
   schedulingStrategy?: { queueId: string } | { preferredQueueIds: string[] };
 }
 
@@ -138,7 +138,7 @@ export function createUsecaseExecutor(deps: UsecaseExecutorDeps): NodeExecutor {
         : undefined;
     const command = spackExecution ? SPACK_EXECUTION_PLACEHOLDER : usecase.wrapCommand(task);
     const dataInputs = collectDatasetInputs(node);
-    const resources = mapResources(node.requirements);
+    const resources = mapResources(node.requirements, pkg.resources?.memoryMiB);
     const schedulingStrategy = mapSchedulingStrategy(node.schedulingStrategy);
     const valueOutputs = node.valueOutputsOverride ?? pkg.valueOutputs;
     const fileOutputDescriptors = declaredFileOutputDescriptors(node);
@@ -243,25 +243,22 @@ function mapSchedulingStrategy(
   return preferredQueueIds.length > 0 ? { preferredQueueIds } : undefined;
 }
 
-/** Map the workflow node `requirements` to the job-resource subset the scheduler
- *  understands (cpuCores→cpus, maxWallTime→wallTimeSec). Returns undefined when
- *  no mappable field is present so the submitter keeps its defaults. */
+/** Preserve declared resources; leave undeclared fields to the submitter defaults. */
 function mapResources(
   reqs: workflowDsl.Requirements | null | undefined,
-): { cpus?: number; wallTimeSec?: number } | undefined {
-  if (!reqs) {
-    return undefined;
-  }
-  const resources: { cpus?: number; wallTimeSec?: number } = {};
-  if (reqs.cpuCores != null) {
+  memoryMiB: number | undefined,
+): JobSubmission["resources"] {
+  const resources: NonNullable<JobSubmission["resources"]> = {};
+  if (reqs?.cpuCores != null) {
     resources.cpus = reqs.cpuCores;
   }
-  if (reqs.maxWallTime != null) {
+  if (reqs?.maxWallTime != null) {
     resources.wallTimeSec = reqs.maxWallTime;
   }
-  return resources.cpus === undefined && resources.wallTimeSec === undefined
-    ? undefined
-    : resources;
+  if (memoryMiB !== undefined) {
+    resources.memoryMb = memoryMiB;
+  }
+  return Object.keys(resources).length > 0 ? resources : undefined;
 }
 
 function resolveNodeInputs(

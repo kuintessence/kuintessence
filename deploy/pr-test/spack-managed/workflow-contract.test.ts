@@ -50,7 +50,7 @@ describe("managed workflow acceptance contract", () => {
       },
       submitJob: async (job) => {
         expect(job.schedulingStrategy).toEqual({ queueId });
-        expect(job.resources).toEqual({ cpus: 2, wallTimeSec: 120 });
+        expect(job.resources).toEqual({ cpus: 2, memoryMb: 1024, wallTimeSec: 120 });
         expect(job.command).toBe(SPACK_EXECUTION_PLACEHOLDER);
         expect(job.spackExecution?.spec).toBe(fixture.spec);
         expect(job.spackExecution?.command).toContain(`${prefix}/bin/${fixture.name}`);

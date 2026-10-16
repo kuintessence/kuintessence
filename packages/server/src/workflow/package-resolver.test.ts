@@ -19,7 +19,7 @@ const typedSpec = {
   softwareRef: { source: "official-upstream", name: "openfoam", version: "2312" },
   inputs: [],
   outputs: [],
-  resources: {},
+  resources: { memoryMiB: 128 },
   materialMappings: [],
   licenseRequirements: [],
 };
@@ -75,6 +75,7 @@ describe("createPackageResolver", () => {
 
     const pkg = await resolve("u1", "s1");
     expect(pkg.usecasePackageId).toBe(usecasePackageId);
+    expect(pkg.resources).toEqual({ memoryMiB: 128 });
     expect(pkg.software).toMatchObject({ kind: "Spack", name: "openfoam@2312+mpi" });
     expect(pkg.softwareRequirements).toEqual([
       {

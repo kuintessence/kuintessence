@@ -229,10 +229,11 @@ export class PbsProAdapter implements SchedulerAdapter {
     assertSandboxSchedulerMetadata(spec);
     const lines: string[] = ["#!/bin/bash"];
     const executionRoot = spec.workingDir || this.logDir;
+    const logRoot = spec.sandbox ? executionRoot : this.logDir;
     lines.push(`#PBS -N ${spec.schedulerName ?? spec.name}`);
     lines.push(`#PBS -v KQ_JOB_ID=${spec.jobId}`);
-    lines.push(`#PBS -o ${join(executionRoot, `kq-pbs-${spec.jobId}.out`)}`);
-    lines.push(`#PBS -e ${join(executionRoot, `kq-pbs-${spec.jobId}.err`)}`);
+    lines.push(`#PBS -o ${join(logRoot, `kq-pbs-${spec.jobId}.out`)}`);
+    lines.push(`#PBS -e ${join(logRoot, `kq-pbs-${spec.jobId}.err`)}`);
     const select = `select=1:ncpus=${spec.cpus}:mem=${spec.memoryMb}mb${
       spec.gpus > 0 ? `:ngpus=${spec.gpus}` : ""
     }`;
