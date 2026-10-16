@@ -38,8 +38,8 @@ for component in server registry web db-migrate; do
   identity="$(docker image inspect --format '{{.Os}}/{{.Architecture}} {{index .Config.Labels "org.opencontainers.image.revision"}} {{index .Config.Labels "org.opencontainers.image.source"}}' "$image")"
   [[ "$identity" == "linux/amd64 $GITHUB_SHA ${GITHUB_SERVER_URL:-https://github.com}/$GITHUB_REPOSITORY" ]] ||
     fail "Published image does not match this build: $image"
-  image_id="$(docker image inspect --format '{{.Id}}' "$image")"
-  printf '%s %s\n' "$image" "$image_id" >> "$state/images.ids"
+  layers="$(docker image inspect --format '{{json .RootFS.Layers}}' "$image")"
+  printf '%s %s %s\n' "$image" "$identity" "$layers" >> "$state/images.identities"
   images+=("$image")
 done
 docker save "${images[@]}" | gzip -1 > "$state/images.tar.gz"
@@ -47,7 +47,7 @@ docker save "${images[@]}" | gzip -1 > "$state/images.tar.gz"
 printf '%s\n' "$GITHUB_SHA" > "$state/revision"
 
 # Accept the first host key for this job; keep it in the private temporary state.
-tar -C "$source_dir" -cf - "${files[@]}" -C "$state" images.tar.gz images.sha256 images.ids revision |
+tar -C "$source_dir" -cf - "${files[@]}" -C "$state" images.tar.gz images.sha256 images.identities revision |
   ssh -T -i "$state/id" -p "$MAIN_SSH_PORT" -l "$MAIN_SSH_USER" \
     -o BatchMode=yes -o IdentitiesOnly=yes -o ConnectTimeout=15 \
     -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile="$state/known_hosts" \
@@ -64,9 +64,14 @@ tar -xf - -C "$stage"
 test -f "$stage/compose.yml"
 (cd "$stage" && sha256sum --check images.sha256)
 docker load -i "$stage/images.tar.gz"
-while read -r image expected_id; do
-  test "$(docker image inspect --format '\''{{.Id}}'\'' "$image")" = "$expected_id"
-done < "$stage/images.ids"
+# Docker stores can expose a config or manifest digest as Id; compare portable content instead.
+while read -r image expected_identity; do
+  actual_identity=$(docker image inspect --format '\''{{.Os}}/{{.Architecture}} {{index .Config.Labels "org.opencontainers.image.revision"}} {{index .Config.Labels "org.opencontainers.image.source"}} {{json .RootFS.Layers}}'\'' "$image")
+  if [ "$actual_identity" != "$expected_identity" ]; then
+    printf "Loaded image content does not match this build: %s\n" "$image" >&2
+    exit 1
+  fi
+done < "$stage/images.identities"
 revision=$(cat "$stage/revision")
 mv -f "$stage/compose.yml" /opt/deploy/compose.yml
 if [ -f "$stage/env.example" ]; then

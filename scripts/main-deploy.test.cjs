@@ -75,13 +75,18 @@ if (args[0] === "save") {
   if (JSON.stringify(images) !== JSON.stringify(expected)) process.exit(1);
   fs.writeFileSync(process.env.LOAD_FILE, "loaded");
 } else if (args[0] === "image" && args[1] === "inspect") {
+  if (!remote && process.env.FAIL_IMAGE_INSPECT === "true") process.exit(1);
+  const digest = createHash("sha256").update(args.at(-1)).digest("hex");
+  const layers = JSON.stringify(["sha256:" + (remote && process.env.WRONG_IMAGE_LAYERS === "true" ? "b".repeat(64) : digest)]);
   if (args[3] === "{{.Id}}") {
-    if (!remote && process.env.FAIL_IMAGE_INSPECT === "true") process.exit(1);
-    const identity = createHash("sha256").update(args.at(-1)).digest("hex");
-    process.stdout.write("sha256:" + (remote && process.env.WRONG_IMAGE_ID === "true" ? "b".repeat(64) : identity));
+    // Classic and containerd stores can report different IDs for identical content.
+    process.stdout.write("sha256:" + (remote ? "b".repeat(64) : digest));
+  } else if (args[3] === "{{json .RootFS.Layers}}") {
+    process.stdout.write(layers);
   } else {
-    const revision = process.env.WRONG_REVISION === "true" ? "b".repeat(40) : process.env.GITHUB_SHA;
+    const revision = process.env.WRONG_REVISION === "true" || (remote && process.env.WRONG_LOADED_REVISION === "true") ? "b".repeat(40) : process.env.GITHUB_SHA;
     process.stdout.write("linux/" + (process.env.WRONG_PLATFORM === "true" ? "arm64" : "amd64") + " " + revision + " https://github.com/example/kuintessence");
+    if (args[3].includes(".RootFS.Layers")) process.stdout.write(" " + layers);
   }
 } else { process.exit(1); }
 `,
@@ -215,7 +220,8 @@ describe("main SSH deployment", () => {
   test.each([
     "CORRUPT_IMAGE",
     "FAIL_LOAD",
-    "WRONG_IMAGE_ID",
+    "WRONG_IMAGE_LAYERS",
+    "WRONG_LOADED_REVISION",
   ])("%s prevents configuration replacement and deployment", (name) => {
     const result = deploy({ env: { [name]: "true" } });
     expect(result.status).not.toBe(0);
