@@ -4291,7 +4291,9 @@ export class AgentStream {
         throw new Error(`Job logs are not supported by ${this.deps.adapter.type}`);
       }
       const lines = Math.max(1, Math.min(MAX_JOB_LOG_LINES, requestedLines || 1_000));
-      text = limitJobLogBytes(await this.deps.adapter.getJobLogs(schedulerJobId, lines, jobId));
+      text = limitJobLogBytes(
+        await this.deps.adapter.getJobLogs(schedulerJobId, lines, jobId, true),
+      );
     } catch (err) {
       if (err instanceof JobLogUnavailableError) {
         unavailable = true;

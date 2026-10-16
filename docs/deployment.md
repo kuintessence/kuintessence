@@ -501,6 +501,8 @@ Agent Queue Inventory 保存调度器观测结果。
 
 Agent 协商 `queue_inventory_v1` 后，Slurm 用 `scontrol show partition -o`，
 OpenPBS 用 `qstat -Bf/-Qf -F json`，Torque 用 `qmgr` 上报。
+Torque 使用 `list queue @default` 明确枚举默认服务器的队列；不带 selector 的
+`list queue` 可能只查询空的 active selection，并返回成功退出码与空列表。
 Kubernetes 不纳入 HPC queue enforce。
 
 队列刷新与普通指标采集分别配置。升级前若使用 `AGENT_SCHEDULER_METRICS_INTERVAL_SEC`

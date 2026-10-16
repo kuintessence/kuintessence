@@ -301,6 +301,31 @@ describe("SlurmAdapter.findByKuintessenceJobId", () => {
 });
 
 describe("SlurmAdapter.getJobLogs (with mock spawner)", () => {
+  test("user diagnostics read stderr without changing default stdout extraction", async () => {
+    const { spawner, calls } = mockSpawner([
+      { exitCode: 0, stdout: "JobId=101.srv StdOut=/logs/out StdErr=/logs/err" },
+      { exitCode: 0, stdout: "value=2\n" },
+      { exitCode: 0, stdout: "specific failure\n" },
+    ]);
+    const adapter = new SlurmAdapter("23", { spawner });
+    expect(await adapter.getJobLogs("101.srv", 50, undefined, true)).toBe(
+      "value=2\n\n[stderr]\nspecific failure\n",
+    );
+    expect(calls.at(-1)).toEqual(["tail", "-n", "50", "/logs/err"]);
+  });
+
+  test("diagnostics recover both retained streams after scheduler history expires", async () => {
+    const jobId = "19a20bcd-9761-4659-be4a-5ba445befc0a";
+    const { spawner, calls } = mockSpawner([
+      { exitCode: 1, stdout: "", stderr: "Invalid job id / Unknown Job Id" },
+      { exitCode: 0, stdout: "output\n" },
+      { exitCode: 0, stdout: "failure\n" },
+    ]);
+    const adapter = new SlurmAdapter("23", { spawner, logDir: "/logs" });
+    expect(await adapter.getJobLogs("101.srv", 50, jobId, true)).toContain("[stderr]\nfailure");
+    expect(calls.at(-1)).toEqual(["tail", "-n", "50", `/logs/kq-${jobId}.err`]);
+  });
+
   test("resolves StdOut via scontrol then tails the file", async () => {
     const { spawner, calls } = mockSpawner([
       {

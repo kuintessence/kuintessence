@@ -36,6 +36,8 @@ import {
   validateQueueTarget,
 } from "./queue-inventory";
 
+import { readSchedulerLogs } from "./scheduler-logs";
+
 const logger = createLogger("slurm-adapter");
 
 /** Slurm job-state names that are NOT terminal — the runner must keep polling
@@ -483,13 +485,46 @@ export class SlurmAdapter implements SchedulerAdapter {
     }
   }
 
-  async getJobLogs(schedulerJobId: string, lines: number, jobId?: string): Promise<string> {
+  async getJobLogs(
+    schedulerJobId: string,
+    lines: number,
+    jobId?: string,
+    includeStderr = false,
+  ): Promise<string> {
     // `scontrol show job -o` prints one line of key=value pairs incl. StdOut.
     const scontrol = await this.spawner.run(["scontrol", "show", "job", schedulerJobId, "-o"]);
     const retainedPath = isRetainedSchedulerLogJobId(jobId)
       ? join(this.logDir, `kq-${jobId}.out`)
       : undefined;
 
+    if (includeStderr) {
+      const stdoutPath =
+        scontrol.exitCode === 0 ? /StdOut=(\S+)/.exec(scontrol.stdout)?.[1] : undefined;
+      const stderrPath =
+        scontrol.exitCode === 0 ? /StdErr=(\S+)/.exec(scontrol.stdout)?.[1] : undefined;
+      try {
+        return await readSchedulerLogs(
+          this.spawner,
+          lines,
+          [stdoutPath, retainedPath],
+          [
+            stderrPath,
+            isRetainedSchedulerLogJobId(jobId) ? join(this.logDir, `kq-${jobId}.err`) : undefined,
+          ],
+        );
+      } catch (error) {
+        if (
+          error instanceof JobLogUnavailableError &&
+          scontrol.exitCode !== 0 &&
+          !isSlurmJobRecordMissing(scontrol.stderr)
+        ) {
+          throw new Error(
+            `scontrol show job failed (exit ${scontrol.exitCode}): ${scontrol.stderr.trim()}`,
+          );
+        }
+        throw error;
+      }
+    }
     if (scontrol.exitCode !== 0) {
       const retained = retainedPath ? await this.tailLog(retainedPath, lines) : undefined;
       if (retained?.kind === "available") return retained.text;

@@ -12,6 +12,7 @@ import {
   type ComputeHealthObservation,
   formatWallTime as formatWallTimeShared,
   isRetainedSchedulerLogJobId,
+  JobLogUnavailableError,
   type JobResult,
   type JobSpec,
   type JobStatusResult,
@@ -36,6 +37,8 @@ import {
   unavailableQueueInventory,
   validateQueueTarget,
 } from "./queue-inventory";
+
+import { readSchedulerLogs } from "./scheduler-logs";
 
 const logger = createLogger("pbs-pro-adapter");
 
@@ -363,12 +366,30 @@ export class PbsProAdapter implements SchedulerAdapter {
     }
   }
 
-  async getJobLogs(schedulerJobId: string, lines: number, jobId?: string): Promise<string> {
+  async getJobLogs(
+    schedulerJobId: string,
+    lines: number,
+    jobId?: string,
+    includeStderr = false,
+  ): Promise<string> {
     let parsed: unknown;
     try {
       parsed = await this.queryJob(schedulerJobId);
     } catch (error) {
       if (isRetainedSchedulerLogJobId(jobId)) {
+        if (includeStderr) {
+          try {
+            return await readSchedulerLogs(
+              this.spawner,
+              lines,
+              [join(this.logDir, `kq-pbs-${jobId}.out`)],
+              [join(this.logDir, `kq-pbs-${jobId}.err`)],
+            );
+          } catch (readError) {
+            if (readError instanceof JobLogUnavailableError) throw error;
+            throw readError;
+          }
+        }
         const persistedLog = await this.spawner.run([
           "tail",
           "-n",
@@ -379,10 +400,25 @@ export class PbsProAdapter implements SchedulerAdapter {
       }
       throw error;
     }
-    const data = parsed as { Jobs?: Record<string, { Output_Path?: string }> };
+    const data = parsed as { Jobs?: Record<string, { Output_Path?: string; Error_Path?: string }> };
     const jobs = data.Jobs ?? {};
     const job = jobs[schedulerJobId] ?? Object.values(jobs)[0];
     const raw = job?.Output_Path;
+    if (includeStderr) {
+      const stripHost = (value: string | undefined) => value?.replace(/^[^/]*:/, "");
+      return readSchedulerLogs(
+        this.spawner,
+        lines,
+        [
+          stripHost(raw),
+          isRetainedSchedulerLogJobId(jobId) ? join(this.logDir, `kq-pbs-${jobId}.out`) : undefined,
+        ],
+        [
+          stripHost(job?.Error_Path),
+          isRetainedSchedulerLogJobId(jobId) ? join(this.logDir, `kq-pbs-${jobId}.err`) : undefined,
+        ],
+      );
+    }
     if (!raw) return "";
     // Output_Path is "host:/abs/path" — on the login node the path is local.
     const path = raw.includes(":") ? raw.slice(raw.indexOf(":") + 1) : raw;
