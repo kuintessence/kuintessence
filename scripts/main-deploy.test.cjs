@@ -152,7 +152,9 @@ describe("main SSH deployment", () => {
     });
     expect(result.imagesLoaded).toBe(true);
     expect(result.spaceCheck).toMatch(
-      new RegExp(`^prepare-space --expected-revision ${revision} --archive-bytes [1-9]\\d* --expanded-bytes [1-9]\\d*$`),
+      new RegExp(
+        `^prepare-space --expected-revision ${revision} --archive-bytes [1-9]\\d* --expanded-bytes [1-9]\\d*$`,
+      ),
     );
     expect(result.call.keyMode).toBe(0o600);
     expect(result.call.keyUnset).toBe(true);
