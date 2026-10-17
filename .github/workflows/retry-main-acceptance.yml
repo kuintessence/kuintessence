@@ -1,0 +1,35 @@
+name: Retry main acceptance
+
+on:
+  workflow_dispatch:
+    inputs:
+      revision:
+        description: Full SHA of the currently deployed, completed release
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: production-images
+  cancel-in-progress: false
+
+jobs:
+  acceptance:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Retry acceptance without building or transferring images
+        env:
+          KQ_ACCEPTANCE_REVISION: ${{ inputs.revision }}
+          MAIN_SSH_HOST: ${{ secrets.MAIN_SSH_HOST }}
+          MAIN_SSH_PORT: ${{ secrets.MAIN_SSH_PORT }}
+          MAIN_SSH_USER: ${{ secrets.MAIN_SSH_USER }}
+          MAIN_SSH_KEY: ${{ secrets.MAIN_SSH_KEY }}
+        run: bash deploy/main/remote.sh
