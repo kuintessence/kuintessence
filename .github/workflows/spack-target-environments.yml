@@ -1,0 +1,56 @@
+name: Spack target environments
+
+on:
+  workflow_dispatch:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+    paths:
+      - ".github/workflows/spack-target-environments.yml"
+      - "deploy/pr-test/spack-targets/**"
+      - "deploy/pr-test/spack-case/prepare.py"
+      - "deploy/pr-test/spack-case/hello/**"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: spack-target-environments-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  contracts:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Check shell syntax
+        run: |
+          bash -n deploy/pr-test/spack-targets/run.sh
+          bash -n deploy/pr-test/spack-targets/bootstrap.sh
+      - name: Check offline contracts
+        run: python3 -m unittest discover -s deploy/pr-test/spack-targets -p 'test_*.py'
+
+  native-target:
+    needs: contracts
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'pull_request' &&
+       github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 70
+    strategy:
+      fail-fast: false
+      matrix:
+        profile: [centos7, ubuntu24, ubuntu26]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Prepare native environment and validate Hello offline
+        env:
+          TARGET_PROFILE: ${{ matrix.profile }}
+        run: |
+          timeout --signal=TERM --kill-after=120s 65m \
+            bash deploy/pr-test/spack-targets/run.sh "$TARGET_PROFILE"

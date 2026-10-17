@@ -1,0 +1,11 @@
+**
+!deploy
+!deploy/pr-test
+!deploy/pr-test/spack-targets
+!deploy/pr-test/spack-targets/bootstrap.sh
+!deploy/pr-test/spack-targets/requirements.txt
+!deploy/pr-test/spack-targets/probe.py
+!deploy/pr-test/spack-case
+!deploy/pr-test/spack-case/prepare.py
+!deploy/pr-test/spack-case/hello
+!deploy/pr-test/spack-case/hello/**
