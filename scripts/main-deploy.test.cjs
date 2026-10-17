@@ -29,7 +29,7 @@ function deploy(options = {}) {
   writeFileSync(join(remote, "compose.yml"), "old compose");
   writeFileSync(join(remote, "env.example"), "old example");
   writeFileSync(join(remote, ".env"), "existing secrets");
-  const run = `#!/bin/sh\nprintf '%s' "$PWD" > deployed\nprintf '%s' "$*" > deployed-args\nexit ${options.runExit ?? 0}\n`;
+  const run = `#!/bin/sh\nif [ "$1" = prepare-space ]; then\n  printf '%s' "$*" > "$SPACE_FILE"\n  exit ${options.spaceExit ?? 0}\nfi\nprintf '%s' "$PWD" > deployed\nprintf '%s' "$*" > deployed-args\nexit ${options.runExit ?? 0}\n`;
   writeFileSync(join(remote, "run.sh"), run, { mode: options.missingExecutable ? 0o600 : 0o700 });
   writeFileSync(
     join(bin, "ssh"),
@@ -111,6 +111,7 @@ if (args[0] === "save") {
         FAIL_SSH: String(options.failSSH ?? false),
         CORRUPT_ARCHIVE: String(options.corruptArchive ?? false),
         LOAD_FILE: join(directory, "image-load"),
+        SPACE_FILE: join(directory, "space-check"),
         ...options.env,
       },
     });
@@ -127,6 +128,9 @@ if (args[0] === "save") {
       remote,
       run,
       imagesLoaded: readdirSync(directory).includes("image-load"),
+      spaceCheck: readdirSync(directory).includes("space-check")
+        ? readFileSync(join(directory, "space-check"), "utf8")
+        : undefined,
       temporaryFiles: readdirSync(runner),
     };
   } finally {
@@ -147,6 +151,11 @@ describe("main SSH deployment", () => {
       "deployed-args": `deploy --expected-revision ${revision}`,
     });
     expect(result.imagesLoaded).toBe(true);
+    expect(result.spaceCheck).toMatch(
+      new RegExp(
+        `^prepare-space --expected-revision ${revision} --archive-bytes [1-9]\\d* --expanded-bytes [1-9]\\d*$`,
+      ),
+    );
     expect(result.call.keyMode).toBe(0o600);
     expect(result.call.keyUnset).toBe(true);
     expect(result.call.args).toContain("2222");
@@ -166,6 +175,7 @@ describe("main SSH deployment", () => {
     });
     expect(result.status).toBe(0);
     expect(result.imagesLoaded).toBe(false);
+    expect(result.spaceCheck).toBeUndefined();
     expect(result.files["compose.yml"]).toBe("old compose");
     expect(result.files["deployed-args"]).toBe(`acceptance --expected-revision ${"b".repeat(40)}`);
     expect(result.temporaryFiles).toEqual([]);
@@ -180,6 +190,16 @@ describe("main SSH deployment", () => {
     expect(result.status).toBe(42);
     expect(result.imagesLoaded).toBe(false);
     expect(result.files["compose.yml"]).toBe("old compose");
+  });
+
+  test("insufficient remote space stops before image transfer and configuration changes", () => {
+    const result = deploy({ spaceExit: 42 });
+    expect(result.status).toBe(42);
+    expect(result.spaceCheck).toContain(`--expected-revision ${revision}`);
+    expect(result.imagesLoaded).toBe(false);
+    expect(result.files["compose.yml"]).toBe("old compose");
+    expect(result.files.deployed).toBeUndefined();
+    expect(result.temporaryFiles).toEqual([]);
   });
 
   test("an absent optional example leaves the existing example untouched", () => {

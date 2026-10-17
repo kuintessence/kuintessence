@@ -298,6 +298,15 @@ Release（包括正式发布与预发布）只发布镜像。部署步骤使用�
 私钥和本次 known_hosts 存在 runner 临时目录，退出时清理。
 镜像内容核对兼容 classic 与 containerd 存储；二者的 `.Id` 可能分别表示配置或 manifest 摘要，不能直接跨存储比较。
 
+传输前，CI 用实际压缩包与解压字节数调用站点
+`run.sh prepare-space --expected-revision <commit> --archive-bytes <bytes> --expanded-bytes <bytes>`。
+站点须先实现此子命令；不支持或容量不足时直接失败，不传镜像或改配置。
+当前站点按“压缩包 + 两倍展开大小 + 6 GiB 余量”保守估算，覆盖镜像内容存储与展开快照；
+共享层可能让实际占用更小。站点持发布锁，只在容量不足时清理来源可核实、没有容器引用的旧 KQ 回退镜像，
+保护当前版本、最近两个不同版本的成功发布和待发布版本；不删除 volumes、数据库或发布备份。
+每次预算及删除回执保存到 `.state/space-checks/`。未完成发布、记录不一致或分盘存储须人工处理，
+不使用全局 Docker prune。预算不是磁盘预留，其他进程新增占用时部署自身的空间预检仍会阻止继续。
+
 服务器需预先准备可执行的 `run.sh` 和实际 `.env`。CI 不创建或覆盖它们，也不会
 向服务器传输仓库源码、SSH 私钥或 GitHub token。runner 使用本次 workflow 的只读
 package 权限下载私有镜像。`run.sh` 仍负责站点认证、版本核对、数据库备份、升级和
