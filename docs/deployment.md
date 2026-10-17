@@ -305,6 +305,22 @@ package 权限下载私有镜像。`run.sh` 仍负责站点认证、版本核对
 注册表元数据访问仍需要站点网络及相应凭据。此传输方式不包含 PostgreSQL 等基础服务镜像。
 重新运行失败的部署 job 会重新传输并校验镜像，然后调用脚本；未完成的迁移仍应按站点维护流程处理。
 
+若版本已部署、只需要重新验收，在 Actions 选择
+[Retry main acceptance](../.github/workflows/retry-main-acceptance.yml)，分支选 main，
+填写当前已部署版本的完整 40 位 SHA。也可使用：
+
+```bash
+gh workflow run retry-main-acceptance.yml --ref main -f revision=<已部署完整SHA>
+```
+
+此入口通过 SSH 调用 `/opt/deploy/run.sh acceptance --expected-revision <SHA>`，
+不构建、拉取或传输镜像，不更新 Compose；与正常发布共用 Actions concurrency 分组。
+站点部署工具须实现 acceptance 子命令，并在发布锁内核对 current/release、完整发布状态、
+运行镜像与 Agent 制品，拒绝不匹配版本和未结束的历史验收工作流。
+每次结果写入该 release 的独立 acceptance-retries 子目录，保留原报告；
+调度器仍有活动作业时拒绝提交。站点尚不支持该命令时明确失败，不回退为重新部署。
+验收失败通过非零退出码传回 CI；重复点击不会绕过发布锁或覆盖证据。
+
 main 专用 Compose 直接引用四个 `kuintessence-*:main` 镜像，
 不依赖源码构建或仓库 bind mount。它内置 PostgreSQL、Redis、RustFS、SpiceDB，
 使用外部 SSO；Server/Registry 为单实例，数据库、Registry 内容和 Server CA 使用持久卷。

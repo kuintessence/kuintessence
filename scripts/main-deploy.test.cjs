@@ -155,6 +155,33 @@ describe("main SSH deployment", () => {
     expect(result.stdout + result.stderr).not.toContain("mock-private-key");
   });
 
+  test("manual acceptance retry skips images and leaves configuration untouched", () => {
+    const result = deploy({
+      missingCompose: true,
+      env: {
+        GITHUB_EVENT_NAME: "workflow_dispatch",
+        KQ_ACCEPTANCE_REVISION: "b".repeat(40),
+        FAIL_PULL: "true",
+      },
+    });
+    expect(result.status).toBe(0);
+    expect(result.imagesLoaded).toBe(false);
+    expect(result.files["compose.yml"]).toBe("old compose");
+    expect(result.files["deployed-args"]).toBe(`acceptance --expected-revision ${"b".repeat(40)}`);
+    expect(result.temporaryFiles).toEqual([]);
+    expect(result.stdout + result.stderr).not.toContain("mock-private-key");
+  });
+
+  test("manual acceptance failures are returned without a deployment fallback", () => {
+    const result = deploy({
+      runExit: 42,
+      env: { GITHUB_EVENT_NAME: "workflow_dispatch", KQ_ACCEPTANCE_REVISION: revision },
+    });
+    expect(result.status).toBe(42);
+    expect(result.imagesLoaded).toBe(false);
+    expect(result.files["compose.yml"]).toBe("old compose");
+  });
+
   test("an absent optional example leaves the existing example untouched", () => {
     const result = deploy({ noExample: true });
     expect(result.status).toBe(0);
@@ -183,6 +210,8 @@ describe("main SSH deployment", () => {
 
   test.each([
     { GITHUB_EVENT_NAME: "release" },
+    { GITHUB_EVENT_NAME: "workflow_dispatch" },
+    { GITHUB_EVENT_NAME: "workflow_dispatch", KQ_ACCEPTANCE_REVISION: "main;command" },
     { GITHUB_REF: "refs/heads/feature" },
     { MAIN_SSH_HOST: "host;command" },
     { MAIN_SSH_USER: "-root" },
@@ -256,6 +285,25 @@ describe("main deployment wiring", () => {
     for (const name of ["MAIN_SSH_HOST", "MAIN_SSH_PORT", "MAIN_SSH_USER", "MAIN_SSH_KEY"]) {
       expect(step.env[name]).toBe(`\${{ secrets.${name} }}`);
     }
+  });
+
+  test("manual retry shares the publication lock and does not publish images", () => {
+    const workflow = parse(
+      readFileSync(join(root, ".github/workflows/retry-main-acceptance.yml"), "utf8"),
+    );
+    expect(workflow.on.workflow_dispatch.inputs.revision.required).toBe(true);
+    expect(workflow.concurrency).toEqual({
+      group: "production-images",
+      "cancel-in-progress": false,
+    });
+    expect(Object.keys(workflow.jobs)).toEqual(["acceptance"]);
+    expect(workflow.jobs.acceptance.if).toBe("github.ref == 'refs/heads/main'");
+    expect(workflow.jobs.acceptance.steps.at(-1).env.KQ_ACCEPTANCE_REVISION).toBe(
+      `\${{ inputs.revision }}`,
+    );
+    expect(workflow.jobs.acceptance.steps.some((step) => step.uses?.startsWith("docker/"))).toBe(
+      false,
+    );
   });
 
   test("standalone Compose pulls all four main images and persists application state", () => {

@@ -74,7 +74,8 @@ export class SoftwareAssetService {
   private async upsertAssetInTransaction(
     input: UpsertSoftwareAssetInput,
   ): Promise<SoftwareAssetSummary> {
-    const existing = await this.findExistingAsset(input);
+    const candidate = await this.findExistingAsset(input);
+    const existing = candidate ? await this.lockAsset(candidate.id) : null;
     const before = existing ? await this.projection(existing) : [];
     const payloadHash = hashJson(input.payload);
     const row = existing
@@ -109,8 +110,9 @@ export class SoftwareAssetService {
     legacyValue: string,
     actor?: string | null,
   ): Promise<void> {
-    const existing = await this.findByLegacyRef(kind, legacyField, legacyValue);
-    if (!existing) return;
+    const candidate = await this.findByLegacyRef(kind, legacyField, legacyValue);
+    if (!candidate) return;
+    const existing = await this.lockAsset(candidate.id);
     const before = await this.projection(existing);
     await this.db
       .update(softwareAssets)
@@ -188,6 +190,17 @@ export class SoftwareAssetService {
     return row ?? null;
   }
 
+  private async lockAsset(id: string): Promise<AssetRow> {
+    // Diff against the latest committed grants while serializing concurrent asset changes.
+    const [row] = await this.db
+      .select()
+      .from(softwareAssets)
+      .where(eq(softwareAssets.id, id))
+      .for("update");
+    if (!row) throw new Error(`software asset ${id} disappeared during update`);
+    return row;
+  }
+
   private async projection(row: AssetRow): Promise<AuthzProjectionTuple[]> {
     const tuples = softwareAssetAuthzProjectionTuples({ ...row, assetId: row.id });
     if (row.ownerUserId)
@@ -219,12 +232,18 @@ export class SoftwareAssetService {
     after: AuthzProjectionTuple[],
   ): Promise<void> {
     const key = (tuple: AuthzProjectionTuple) => JSON.stringify([tuple.relation, tuple.subject]);
+    const previous = new Map(before.map((tuple) => [key(tuple), tuple]));
     const next = new Map(after.map((tuple) => [key(tuple), tuple]));
     const removed = before
       .filter((tuple) => tuple.operation === "create" && !next.has(key(tuple)))
       .map((tuple): AuthzProjectionTuple => ({ ...tuple, operation: "delete" }));
+    const changed = after.filter(
+      (tuple) => previous.get(key(tuple))?.operation !== tuple.operation,
+    );
+    const delta = [...removed, ...changed];
+    if (delta.length === 0) return;
     await this.db.insert(authzOutbox).values(
-      [...removed, ...after].map((tuple) => ({
+      delta.map((tuple) => ({
         operation: tuple.operation,
         resourceType: tuple.resource.type,
         resourceId: tuple.resource.id,
