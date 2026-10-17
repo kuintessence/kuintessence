@@ -54,6 +54,7 @@ import {
 import { createGrpcConnectNodeHandler } from "./grpc/server";
 import { attachGrpcTransportErrorHandlers } from "./grpc/transport-errors";
 import { authMiddleware } from "./middleware/auth";
+import { automationScopeMiddleware } from "./middleware/automation-scope";
 import { createErrorHandler, createNotFoundHandler } from "./middleware/error-handler";
 import { principalBinder } from "./middleware/principal-binder";
 import { securityHeaders } from "./middleware/security-headers";
@@ -75,6 +76,7 @@ import { createAgentSpackMaterialRoutes } from "./routes/agent-spack-materials";
 import { createAgentRoutes } from "./routes/agents";
 import { createAuditLogRoutes } from "./routes/audit-log";
 import { createAuthRoutes } from "./routes/auth";
+import { createAutomationCredentialRoutes } from "./routes/automation-credentials";
 import { buildCpRouter } from "./routes/cp";
 import { createDataMarketRoutes } from "./routes/data-market";
 import { dslRoutes } from "./routes/dsl";
@@ -697,6 +699,8 @@ protectedApi.use("*", authMiddleware(config.JWT_SECRET, db));
 // looks up the user's orgId from the DB and exposes `principal` for the
 // cp-rbac middleware and the metering routes.
 protectedApi.use("*", principalBinder(db));
+protectedApi.use("*", automationScopeMiddleware(db));
+protectedApi.route("/", createAutomationCredentialRoutes(db));
 // Server CA + cert issuance + mTLS for the Agent connectRPC stream.
 const ca = await ensureCa(config.SERVER_CA_DIR);
 const certStore = createPgCertStore(db);

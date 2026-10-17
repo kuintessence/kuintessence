@@ -4,6 +4,11 @@ Kuintessence 当前为 pre-release。以下列出组件功能、运行要求和�
 
 ## 组件
 
+Server 新增[自动化凭据](../automation-credentials.md)：平台管理员可创建限定组织和 scope、
+有期限且可撤销的机器凭据，供部署验收调用工作流、作业、日志和文件 API。
+使用独立普通用户身份，轮换保留身份及历史，不能交互登录或访问管理员接口；
+现场接入需另外配置凭据源和相应资源授权，不能以单元测试代替发布验收。
+
 正式 named refs 工作流已接入冻结用例 revision、Registry 事务权限投影和治理后的缺包安装等待。
 安装复用 software operation，库存确认后重新调度；unknown/review-required 仅接受针对资产、
 提供方和使用主体的有效审批，默认仍拒绝。接口及取消/恢复边界见[软件管理](../software.md#工作流缺包自动安装)。

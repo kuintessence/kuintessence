@@ -34,7 +34,7 @@ function fakeAuthDb(
   let inTransaction = false;
 
   const makeDb = (): Record<string, unknown> => ({
-    select: () => ({
+    select: (fields?: Record<string, unknown>) => ({
       from: (table: unknown) => ({
         where: () => ({
           orderBy: async () => {
@@ -45,6 +45,7 @@ function fakeAuthDb(
           },
           limit: async () => {
             if (table === ssoConfig) return [];
+            if (table === users && fields?.serviceAccount) return [];
             if (table === users) return options.existingUser ? [options.existingUser] : [];
             if (table === orgs) return options.existingOrg ? [options.existingOrg] : [];
             if (table === userOrgMemberships) {

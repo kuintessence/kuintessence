@@ -36,9 +36,32 @@ export const users = pgTable("users", {
   // middleware refuses new sessions and the placement orchestrator
   // refuses new jobs while preserving history.
   suspended: boolean("suspended").notNull().default(false),
+  serviceAccount: boolean("service_account").notNull().default(false),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
+
+export const automationCredentials = pgTable(
+  "automation_credentials",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    userId: uuid("user_id")
+      .references(() => users.id, { onDelete: "cascade" })
+      .notNull(),
+    orgId: uuid("org_id")
+      .references(() => orgs.id, { onDelete: "cascade" })
+      .notNull(),
+    createdBy: uuid("created_by").references(() => users.id, { onDelete: "set null" }),
+    name: varchar("name", { length: 120 }).notNull(),
+    secretHash: varchar("secret_hash", { length: 64 }).notNull(),
+    scopes: text("scopes").array().notNull(),
+    expiresAt: timestamp("expires_at").notNull(),
+    revokedAt: timestamp("revoked_at"),
+    lastUsedAt: timestamp("last_used_at"),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  (t) => ({ userIdx: index("automation_credentials_user_idx").on(t.userId) }),
+);
 
 export const authSessions = pgTable(
   "auth_sessions",
