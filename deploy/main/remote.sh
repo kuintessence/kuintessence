@@ -61,6 +61,10 @@ docker save "${images[@]}" | gzip -1 > "$state/images.tar.gz"
 (cd "$state" && sha256sum images.tar.gz > images.sha256)
 printf '%s\n' "$GITHUB_SHA" > "$state/revision"
 
+archive_bytes=$(wc -c < "$state/images.tar.gz")
+expanded_bytes=$(gzip -dc "$state/images.tar.gz" | wc -c)
+"${ssh_command[@]}" "cd /opt/deploy && /opt/deploy/run.sh prepare-space --expected-revision '$GITHUB_SHA' --archive-bytes '$archive_bytes' --expanded-bytes '$expanded_bytes'" < /dev/null
+
 # Accept the first host key for this job; keep it in the private temporary state.
 tar -C "$source_dir" -cf - "${files[@]}" -C "$state" images.tar.gz images.sha256 images.identities revision |
   "${ssh_command[@]}" '
