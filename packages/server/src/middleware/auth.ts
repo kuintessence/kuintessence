@@ -1,7 +1,9 @@
-import type { PgDb } from "@kuintessence/db";
+import { type PgDb, users } from "@kuintessence/db";
 import { AppError, ErrorCode } from "@kuintessence/shared";
+import { eq } from "drizzle-orm";
 import type { Context } from "hono";
 import { createMiddleware } from "hono/factory";
+import { authenticateAutomationToken } from "../auth/automation-credentials";
 import { readAuthSessionCookie } from "../auth/session-cookie";
 import { isBrowserSessionActive } from "../auth/session-ledger";
 import { type TokenPayload, verifyToken } from "../services/auth";
@@ -24,15 +26,40 @@ export function authMiddleware(jwtSecret: string, db?: PgDb) {
       assertCookieRequestBoundary(c);
     }
     try {
-      const user = await verifyToken(token, jwtSecret);
-      if (
-        db &&
-        user.sessionId &&
-        !(await isBrowserSessionActive(db, { sessionId: user.sessionId, userId: user.sub }))
-      ) {
-        throw new AppError(ErrorCode.UNAUTHORIZED, "Session has been revoked or expired", 401);
+      if (bearerToken?.startsWith("kqac_") && db) {
+        const automation = await authenticateAutomationToken(db, bearerToken);
+        if (!automation) throw new Error("Invalid automation credential");
+        c.set("automation", automation);
+        c.set("user", {
+          sub: automation.userId,
+          role: "user",
+          email: automation.email,
+          orgIds: [automation.orgId],
+        });
+      } else {
+        const user = await verifyToken(token, jwtSecret);
+        if (db) {
+          const [account] = await db
+            .select({ serviceAccount: users.serviceAccount })
+            .from(users)
+            .where(
+              /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(user.sub)
+                ? eq(users.id, user.sub)
+                : eq(users.email, user.email),
+            )
+            .limit(1);
+          if (account?.serviceAccount)
+            throw new Error("Service accounts require machine credentials");
+        }
+        if (
+          db &&
+          user.sessionId &&
+          !(await isBrowserSessionActive(db, { sessionId: user.sessionId, userId: user.sub }))
+        ) {
+          throw new AppError(ErrorCode.UNAUTHORIZED, "Session has been revoked or expired", 401);
+        }
+        c.set("user", user);
       }
-      c.set("user", user);
     } catch {
       throw new AppError(ErrorCode.UNAUTHORIZED, "Invalid or expired token", 401);
     }

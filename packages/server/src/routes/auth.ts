@@ -32,7 +32,7 @@ import {
   type RoleName,
   type SsoPublicConfig,
 } from "@kuintessence/shared";
-import { eq, or } from "drizzle-orm";
+import { and, eq, or } from "drizzle-orm";
 import { type Context, Hono } from "hono";
 import { deleteCookie, getCookie, setCookie } from "hono/cookie";
 import type { Logger } from "pino";
@@ -761,6 +761,22 @@ async function upsertUserAndSeedAuthz(
   authzEnabled: boolean,
 ): Promise<string> {
   return db.transaction(async (tx) => {
+    const [serviceAccount] = await tx
+      .select({ serviceAccount: users.serviceAccount })
+      .from(users)
+      .where(
+        and(
+          eq(users.serviceAccount, true),
+          or(
+            eq(users.email, input.email),
+            ...(input.externalId ? [eq(users.externalId, input.externalId)] : []),
+            ...(input.legacyExternalId ? [eq(users.externalId, input.legacyExternalId)] : []),
+          ),
+        ),
+      )
+      .limit(1);
+    if (serviceAccount)
+      throw new AppError(ErrorCode.FORBIDDEN, "Service accounts cannot sign in interactively", 403);
     const [canonicalExternal] = input.externalId
       ? await tx
           .select({ id: users.id })

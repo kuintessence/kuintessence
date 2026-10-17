@@ -67,6 +67,23 @@ export function resolveActiveOrganization(
 
 export function principalBinder(db: PgDb): MiddlewareHandler {
   return async (c, next) => {
+    const automation = c.get("automation");
+    if (automation) {
+      const principal: BoundPrincipal = {
+        sub: automation.userId,
+        userId: automation.userId,
+        role: "user",
+        email: automation.email,
+        sessionId: null,
+        orgId: automation.orgId,
+        orgIds: [automation.orgId],
+        memberships: [{ orgId: automation.orgId, role: "member" }],
+        capabilities: [],
+      };
+      c.set("principal" as never, principal);
+      await next();
+      return;
+    }
     const user = c.get("user") as TokenPayload | undefined;
     if (user) {
       let userId: string | null = null;
