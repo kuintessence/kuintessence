@@ -235,7 +235,7 @@ export function WorkflowsPage() {
               {draftsQ.data?.drafts.map((draft) => (
                 <div
                   key={draft.id}
-                  className="flex items-center gap-3 rounded-lg border border-border bg-muted/15 p-3"
+                  className="flex min-w-0 items-center gap-3 rounded-lg border border-border bg-muted/15 p-3"
                 >
                   <FilePenLine className="h-4 w-4 shrink-0 text-brand" />
                   <a
