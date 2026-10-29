@@ -29,9 +29,17 @@ export function OfflineDeliveryImport({
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const active = useRef<AbortController | null>(null);
-  useEffect(() => () => active.current?.abort(), []);
+  const selection = useRef(0);
+  useEffect(
+    () => () => {
+      selection.current++;
+      active.current?.abort();
+    },
+    [],
+  );
   const allowed = !!plan && canWriteRepository(plan.repository) && isCurrent();
   async function select(file?: File) {
+    const revision = ++selection.current;
     setPlan(null);
     setReport(null);
     setHistory(null);
@@ -41,9 +49,10 @@ export function OfflineDeliveryImport({
       if (file.size > OFFLINE_DELIVERY_MAX_BYTES)
         throw new Error(t("materials.offline.invalidPlan"));
       const parsed = OfflineDeliverySchema.parse(JSON.parse(await file.text()));
-      if (isCurrent()) setPlan(parsed);
+      if (revision === selection.current && isCurrent()) setPlan(parsed);
     } catch {
-      if (isCurrent()) setError(t("materials.offline.invalidPlan"));
+      if (revision === selection.current && isCurrent())
+        setError(t("materials.offline.invalidPlan"));
     }
   }
   async function run(action: "preflight" | "import" | "history") {
@@ -52,6 +61,7 @@ export function OfflineDeliveryImport({
     active.current = controller;
     setBusy(true);
     setError("");
+    if (action === "preflight") setReport(null);
     const check = () => {
       controller.signal.throwIfAborted();
       if (!isCurrent() || !canWriteRepository(plan.repository))
@@ -186,7 +196,9 @@ export function OfflineDeliveryImport({
           <section className="space-y-3" aria-label={t("materials.offline.result")}>
             <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border pt-4">
               <h3 className="text-sm font-semibold">
-                {t(`materials.offline.status.${report.status}`)}
+                {report.status === "planned"
+                  ? t("materials.offline.preflightResult")
+                  : t(`materials.offline.status.${report.status}`)}
               </h3>
               <details className="min-w-0 text-xs text-muted-foreground">
                 <summary className="cursor-pointer">{t("materials.offline.digest")}</summary>

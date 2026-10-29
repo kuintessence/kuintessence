@@ -206,6 +206,7 @@
       "execute": "导入",
       "history": "导入记录",
       "busy": "处理中…",
+      "preflightResult": "预检结果",
       "result": "导入结果",
       "digest": "清单摘要",
       "receipt": "收据",

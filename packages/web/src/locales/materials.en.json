@@ -206,6 +206,7 @@
       "execute": "Import",
       "history": "Import history",
       "busy": "Processing…",
+      "preflightResult": "Preflight results",
       "result": "Import results",
       "digest": "Manifest digest",
       "receipt": "Receipt",
