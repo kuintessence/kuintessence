@@ -29,6 +29,7 @@ import {
 } from "lucide-react";
 import { useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { toast } from "sonner";
 import { resolveSoftwareAvailability } from "../../lib/api-client";
 import { softwareAvailabilityReason } from "../../lib/software-availability-reason";
 import {
@@ -929,10 +930,15 @@ function CopySpecButton({ value }: { value: string }) {
       type="button"
       variant="outline"
       size="sm"
-      onClick={() => {
-        void navigator.clipboard?.writeText(value);
-        setCopied(true);
-        window.setTimeout(() => setCopied(false), 1400);
+      onClick={async () => {
+        setCopied(false);
+        try {
+          await navigator.clipboard.writeText(value);
+          setCopied(true);
+          window.setTimeout(() => setCopied(false), 1400);
+        } catch {
+          toast.error(t("software.detail.copyFailed"));
+        }
       }}
     >
       <Clipboard />

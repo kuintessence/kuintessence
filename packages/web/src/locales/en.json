@@ -1160,6 +1160,7 @@
       "openBoundPackage": "Open bound package",
       "installSpec": "Install spec",
       "copySpec": "Copy spec",
+      "copyFailed": "Copy failed. Check the browser clipboard permission.",
       "copied": "Copied",
       "homepage": "Open homepage",
       "packageIdentity": "Package identity",

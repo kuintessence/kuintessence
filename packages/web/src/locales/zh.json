@@ -1160,6 +1160,7 @@
       "openBoundPackage": "打开绑定软件",
       "installSpec": "安装 Spec",
       "copySpec": "复制 Spec",
+      "copyFailed": "复制失败，请检查浏览器剪贴板权限。",
       "copied": "已复制",
       "homepage": "打开 Homepage",
       "packageIdentity": "包身份",
