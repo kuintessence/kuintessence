@@ -1113,11 +1113,13 @@ describe("SoftwarePage", () => {
       );
     });
     expect(await screen.findByTestId("software-spack-package-metadata")).toBeDefined();
-    fireEvent.change(screen.getByPlaceholderText("Custom package"), {
+    fireEvent.change(screen.getByRole("textbox", { name: "Custom package" }), {
       target: { value: "lab-openfoam" },
     });
     fireEvent.change(screen.getByLabelText("Package source"), { target: { value: "vendor" } });
-    fireEvent.change(screen.getByPlaceholderText("Catalog tags"), { target: { value: "cfd,lab" } });
+    fireEvent.change(screen.getByRole("textbox", { name: "Catalog tags" }), {
+      target: { value: "cfd,lab" },
+    });
     fireEvent.submit(screen.getByTestId("software-spack-catalog-create-form"));
 
     await waitFor(() => {
@@ -1145,7 +1147,7 @@ describe("SoftwarePage", () => {
     const editForm = await screen.findByTestId(
       "software-spack-catalog-package-edit-form-catalog-official-cfd",
     );
-    fireEvent.change(within(editForm).getByPlaceholderText("Custom package"), {
+    fireEvent.change(within(editForm).getByRole("textbox", { name: "Custom package" }), {
       target: { value: "platform-cfd-updated" },
     });
     fireEvent.submit(editForm);
@@ -1294,8 +1296,10 @@ describe("SoftwarePage", () => {
     expect(router.navigate).not.toHaveBeenCalled();
     const form = await screen.findByTestId("software-template-edit-form-hello");
     expect(screen.getByText("Saving creates a new version")).toBeDefined();
-    expect((within(form).getByPlaceholderText("Version") as HTMLInputElement).value).toBe("0.1.1");
-    fireEvent.change(within(form).getByPlaceholderText("Template name"), {
+    expect((within(form).getByRole("textbox", { name: "Version" }) as HTMLInputElement).value).toBe(
+      "0.1.1",
+    );
+    fireEvent.change(within(form).getByRole("textbox", { name: "Template name" }), {
       target: { value: "Hello updated" },
     });
     fireEvent.submit(form);
@@ -1375,7 +1379,7 @@ advanced:
     await screen.findByTestId("software-card-hello");
     fireEvent.click(screen.getByTestId("software-edit-template-hello"));
     const form = await screen.findByTestId("software-template-edit-form-hello");
-    const nameInput = within(form).getByPlaceholderText("Template name");
+    const nameInput = within(form).getByRole("textbox", { name: "Template name" });
     fireEvent.change(nameInput, { target: { value: "Unsaved replacement" } });
     fireEvent.submit(form);
 
@@ -1409,8 +1413,10 @@ advanced:
     fireEvent.click(
       await screen.findByTestId("software-usecase-catalog-package-upstream-openfoam"),
     );
-    fireEvent.change(screen.getByPlaceholderText("Usecase name"), { target: { value: "solve" } });
-    fireEvent.change(screen.getByPlaceholderText("commandFile"), {
+    fireEvent.change(screen.getByRole("textbox", { name: "Usecase name" }), {
+      target: { value: "solve" },
+    });
+    fireEvent.change(screen.getByRole("textbox", { name: "commandFile" }), {
       target: { value: "simpleFoam" },
     });
     fireEvent.click(screen.getByTestId("software-usecase-open-spec-picker"));
@@ -1429,10 +1435,10 @@ advanced:
       target: { value: "openfoam/2312" },
     });
     fireEvent.click(screen.getByText("Apply spec"));
-    fireEvent.change(screen.getByPlaceholderText("input descriptor"), {
+    fireEvent.change(screen.getByRole("textbox", { name: "input descriptor" }), {
       target: { value: "caseDir" },
     });
-    fireEvent.change(screen.getByPlaceholderText("argument format"), {
+    fireEvent.change(screen.getByRole("textbox", { name: "argument format" }), {
       target: { value: "--case {}" },
     });
     fireEvent.submit(screen.getByTestId("software-usecase-form"));
@@ -1487,8 +1493,10 @@ advanced:
 
     fireEvent.click(pickerButton);
     expect(screen.queryByTestId("software-usecase-package-picker")).toBeNull();
-    fireEvent.change(screen.getByPlaceholderText("Usecase name"), { target: { value: "solve" } });
-    fireEvent.change(screen.getByPlaceholderText("commandFile"), {
+    fireEvent.change(screen.getByRole("textbox", { name: "Usecase name" }), {
+      target: { value: "solve" },
+    });
+    fireEvent.change(screen.getByRole("textbox", { name: "commandFile" }), {
       target: { value: "simpleFoam" },
     });
     fireEvent.submit(form);
@@ -1652,7 +1660,7 @@ advanced:
     await activateTab("software-tab-usecases", "software-usecase-list");
     fireEvent.click(screen.getByText("Edit"));
     const form = await screen.findByTestId("software-usecase-edit-form-uc-solve");
-    fireEvent.change(within(form).getByPlaceholderText("commandFile"), {
+    fireEvent.change(within(form).getByRole("textbox", { name: "commandFile" }), {
       target: { value: "blockMesh" },
     });
     fireEvent.submit(form);

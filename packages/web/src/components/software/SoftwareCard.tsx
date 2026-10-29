@@ -63,9 +63,9 @@ export function SoftwareCard({
       <CardHeader
         className={`flex flex-row items-start justify-between gap-2 space-y-0 ${cardContentLayerClass}`}
       >
-        <div className="flex min-w-0 items-center gap-2">
-          <Box className="h-4 w-4 shrink-0 text-muted-foreground" />
-          <span className="truncate text-sm font-semibold" title={template.name}>
+        <div className="flex min-w-0 items-start gap-2">
+          <Box className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
+          <span className="min-w-0 break-words text-sm font-semibold [overflow-wrap:anywhere]">
             {template.name}
           </span>
         </div>
