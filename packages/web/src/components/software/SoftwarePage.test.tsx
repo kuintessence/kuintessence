@@ -746,7 +746,7 @@ describe("SoftwarePage", () => {
 
     const empty = await screen.findByTestId("software-empty");
     expect(within(empty).getByText("No templates")).toBeDefined();
-    expect(screen.getByTestId("software-empty-placeholders").children).toHaveLength(3);
+    expect(screen.queryByTestId("software-empty-placeholders")).toBeNull();
     expect(
       within(empty).getByRole("link", { name: "New workflow template" }).getAttribute("href"),
     ).toBe("/software/workflow-templates/new");
@@ -754,15 +754,12 @@ describe("SoftwarePage", () => {
     expect(empty.textContent).not.toContain("docker-compose");
   });
 
-  test("keeps toolbar stats inline and role cards compact on medium screens", async () => {
+  test("keeps the toolbar focused on search without repeating catalog counts", async () => {
     render(<SoftwarePage />, { wrapper: wrapper() });
 
-    const stats = await screen.findByTestId("software-summary-stats");
-    expect(stats.className).toContain("inline-flex");
-    expect(stats.children).toHaveLength(3);
-    const overview = screen.getByTestId("software-overview");
-    expect(overview.className).toContain("grid-cols-2");
-    expect(overview.className).toContain("lg:grid-cols-4");
+    await screen.findByTestId("software-search");
+    expect(screen.queryByTestId("software-summary-stats")).toBeNull();
+    expect(screen.queryByTestId("software-overview")).toBeNull();
     const roleCards = screen.getByTestId("software-role-flow-panel");
     expect(roleCards.className).toContain("sm:grid-cols-2");
     expect(roleCards.className).toContain("2xl:grid-cols-4");
@@ -774,7 +771,7 @@ describe("SoftwarePage", () => {
     await activateTab("software-tab-usecases", "software-usecase-empty");
     const empty = screen.getByTestId("software-usecase-empty");
     expect(within(empty).getByText("No software usecases")).toBeDefined();
-    expect(screen.getByTestId("software-usecase-empty-placeholders").children).toHaveLength(3);
+    expect(screen.queryByTestId("software-usecase-empty-placeholders")).toBeNull();
     expect(
       within(empty).getByRole("link", { name: "New software usecase" }).getAttribute("href"),
     ).toBe("/software/usecases/new");
@@ -802,7 +799,7 @@ describe("SoftwarePage", () => {
     await activateTab("software-tab-spack", "software-spack-empty");
     const empty = screen.getByTestId("software-spack-empty");
     expect(within(empty).getByText("No Spack software")).toBeDefined();
-    expect(screen.getByTestId("software-spack-empty-placeholders").children).toHaveLength(3);
+    expect(screen.queryByTestId("software-spack-empty-placeholders")).toBeNull();
     expect(
       within(empty).getByRole("link", { name: "New Spack software" }).getAttribute("href"),
     ).toBe("/software/spack/new");
@@ -837,7 +834,7 @@ describe("SoftwarePage", () => {
     render(<SoftwarePage />, { wrapper: wrapper() });
 
     await screen.findByTestId("software-card-hello");
-    expect(screen.getByTestId("software-count").textContent).toBe("2 / 2");
+    expect(screen.queryByTestId("software-count")).toBeNull();
     expect(screen.getAllByText("Page 1 / 1").length).toBeGreaterThan(0);
     fireEvent.change(screen.getByTestId("software-search"), { target: { value: "pipeline" } });
     await waitFor(() => expect(screen.getByTestId("software-card-pipe")).toBeDefined());
@@ -898,7 +895,7 @@ describe("SoftwarePage", () => {
     expect(screen.getByTestId("software-error").textContent).not.toContain(
       "template list forbidden",
     );
-    expect(screen.getByTestId("software-count").textContent).toBe("0 / 0");
+    expect(screen.queryByTestId("software-count")).toBeNull();
     expect(
       (screen.getByTestId("software-create-template-link") as HTMLButtonElement).disabled,
     ).toBe(true);

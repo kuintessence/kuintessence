@@ -1,5 +1,5 @@
 import type { workflowDsl } from "@kuintessence/shared/browser";
-import { CircleDollarSign, Clock3, Cpu, MapPin, Route } from "lucide-react";
+import { CircleDollarSign, Clock3, Cpu, Route } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { estimateWorkflow } from "../../lib/workflow-estimate";
@@ -143,16 +143,16 @@ export function WorkflowResourcesStep({
   return (
     <div className="space-y-4" data-testid="workflow-resources-step">
       <Card className="rounded-xl shadow-none">
-        <CardHeader>
-          <div>
-            <CardTitle>{t("workflows.creation.resources.title")}</CardTitle>
-            <p className="mt-1 text-sm text-muted-foreground">
-              {t("workflows.creation.resources.description")}
-            </p>
-          </div>
+        <CardHeader className="flex flex-row flex-wrap items-center justify-between gap-2 space-y-0">
+          <CardTitle>{t("workflows.creation.resources.title")}</CardTitle>
+          <Badge variant="outline">
+            {queuesLoading
+              ? t("common.loading")
+              : t("workflows.creation.resources.queueCount", { count: queues.length })}
+          </Badge>
         </CardHeader>
         <CardContent className="space-y-4">
-          <div className="grid gap-4 md:grid-cols-3">
+          <div className="grid gap-4 md:grid-cols-2">
             <label className="space-y-1.5">
               <span className="flex items-center gap-2 text-sm font-medium">
                 <Route className="h-4 w-4 text-brand" />
@@ -211,19 +211,6 @@ export function WorkflowResourcesStep({
                 </p>
               ) : null}
             </div>
-            <div className="space-y-1.5">
-              <span className="flex items-center gap-2 text-sm font-medium">
-                <MapPin className="h-4 w-4 text-brand" />
-                {t("workflows.creation.resources.queueStatus")}
-              </span>
-              <div className="flex min-h-9 items-center rounded-md border border-border bg-muted/30 px-3">
-                <Badge variant="outline">
-                  {queuesLoading
-                    ? t("common.loading")
-                    : t("workflows.creation.resources.queueCount", { count: queues.length })}
-                </Badge>
-              </div>
-            </div>
           </div>
           <div className="grid gap-3 md:grid-cols-2" data-testid="workflow-resource-estimate">
             <EstimateCard
@@ -250,9 +237,6 @@ export function WorkflowResourcesStep({
         <CardHeader>
           <div>
             <CardTitle>{t("workflows.creation.resources.nodeTitle")}</CardTitle>
-            <p className="mt-1 text-sm text-muted-foreground">
-              {t("workflows.creation.resources.nodeDescription")}
-            </p>
           </div>
         </CardHeader>
         <CardContent

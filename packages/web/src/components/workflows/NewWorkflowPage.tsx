@@ -699,7 +699,7 @@ export function NewWorkflowPage() {
               <Button
                 type="button"
                 size="sm"
-                className="bg-[var(--status-succeeded)] text-white hover:bg-[color-mix(in_oklab,var(--status-succeeded)_88%,black)]"
+                variant="outline"
                 disabled={savingDraft || !workflowName.trim() || !budgetValid}
                 onClick={() => void saveDraft()}
                 data-testid="workflow-save-draft"
@@ -962,7 +962,6 @@ export function NewWorkflowPage() {
           estimate={workflowEstimate}
           model={inputModel}
           nodeCount={parsedNodeCount}
-          valid={parsed.ok}
           prerequisites={submissionBlocks}
           values={values}
           yaml={yaml}

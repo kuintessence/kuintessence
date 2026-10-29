@@ -17,7 +17,6 @@ import {
   Eye,
   FlaskConical,
   GitBranch,
-  Layers3,
   Loader2,
   PackagePlus,
   RefreshCw,
@@ -283,33 +282,6 @@ function getActiveCreateLink(tab: SoftwareTab): {
   };
 }
 
-function getActiveCount({
-  activeTab,
-  spackCatalog,
-  visibleSpackCount,
-  totalTemplateCount,
-  totalUsecaseCount,
-  totalScriptCount,
-  visibleTemplateCount,
-  visibleUsecaseCount,
-  visibleScriptCount,
-}: {
-  activeTab: SoftwareTab;
-  spackCatalog: SpackCatalog | null;
-  visibleSpackCount: number;
-  totalTemplateCount: number;
-  totalUsecaseCount: number;
-  totalScriptCount: number;
-  visibleTemplateCount: number;
-  visibleUsecaseCount: number;
-  visibleScriptCount: number;
-}): string {
-  if (activeTab === "scripts") return `${visibleScriptCount} / ${totalScriptCount}`;
-  if (activeTab === "usecases") return `${visibleUsecaseCount} / ${totalUsecaseCount}`;
-  if (activeTab === "spack") return `${visibleSpackCount} / ${spackCatalog?.totalCount ?? 0}`;
-  return `${visibleTemplateCount} / ${totalTemplateCount}`;
-}
-
 function isSoftwareTab(value: string): value is SoftwareTab {
   return value === "templates" || value === "usecases" || value === "spack" || value === "scripts";
 }
@@ -337,7 +309,6 @@ export function SoftwarePage() {
   const [spackCatalogSearch, setSpackCatalogSearch] = useState("");
   const [spackCatalogSource, setSpackCatalogSource] = useState<SpackCatalogSourceFilter>("all");
   const [spackCatalogPage, setSpackCatalogPage] = useState(1);
-  const [scriptCounts, setScriptCounts] = useState({ total: 0, visible: 0 });
   const { favorites, toggleFavorite } = useSoftwareFavorites();
   const activeOrganizationId = useActiveOrganizationId();
   const templatesQ = useQuery({
@@ -461,17 +432,6 @@ export function SoftwarePage() {
   const activeCreateLink = getActiveCreateLink(activeTab);
   const canCreateActiveArtifact =
     canManageOrganization && (activeTab !== "templates" || canManagePlatform);
-  const activeCount = getActiveCount({
-    activeTab,
-    spackCatalog,
-    totalTemplateCount: templatePageResult?.total ?? 0,
-    totalUsecaseCount: usecasePageResult?.total ?? 0,
-    totalScriptCount: scriptCounts.total,
-    visibleSpackCount: visibleSpackPackages.length,
-    visibleTemplateCount: visibleTemplates.length,
-    visibleUsecaseCount: visibleUsecases.length,
-    visibleScriptCount: scriptCounts.visible,
-  });
   const updateActiveTab = (tab: SoftwareTab) => {
     void navigate({ to: "/software", hash: SOFTWARE_SECTION_HASH[tab] });
   };
@@ -634,15 +594,8 @@ export function SoftwarePage() {
     <PageShell data-testid="software-page">
       <PageHeader
         title={t("software.title")}
-        subtitle={t("software.subtitle")}
         actions={
           <>
-            <span
-              className="rounded-md border border-border bg-card px-2.5 py-1.5 font-mono text-[11px] text-muted-foreground tabular-nums"
-              data-testid="software-count"
-            >
-              {activeCount}
-            </span>
             {canCreateActiveArtifact ? (
               activeDirectoryError ? (
                 <Button size="sm" disabled data-testid={activeCreateLink.testId}>
@@ -670,16 +623,6 @@ export function SoftwarePage() {
             </Button>
           </>
         }
-      />
-
-      <SoftwareOverview
-        activeTab={activeTab}
-        catalog={spackCatalog}
-        templateCount={templatePageResult?.total ?? 0}
-        usecaseCount={usecases.length}
-        visibleSpackCount={visibleSpackPackages.length}
-        visibleTemplateCount={visibleTemplates.length}
-        visibleUsecaseCount={visibleUsecases.length}
       />
 
       {canManagePlatform ? (
@@ -714,9 +657,6 @@ export function SoftwarePage() {
       >
         <summary className="cursor-pointer rounded-lg px-4 py-3 text-sm font-medium focus-visible:outline-2 focus-visible:outline-ring">
           {t("software.management")}
-          <span className="ml-3 text-xs font-normal text-muted-foreground">
-            {t("software.managementDescription")}
-          </span>
         </summary>
         <div className="kq-motion--disclosure space-y-4 border-t border-border p-4">
           <SoftwareRoleFlowPanel
@@ -782,15 +722,9 @@ export function SoftwarePage() {
             setSpackCatalogSearch={updateSpackCatalogSearch}
             setSpackCatalogSource={updateSpackCatalogSource}
             setUsecaseSearch={updateUsecaseSearch}
-            spackCatalog={spackCatalog}
             spackCatalogSearch={spackCatalogSearch}
             spackCatalogSource={spackCatalogSource}
             tags={tags}
-            totalTemplateCount={templatePageResult?.total ?? 0}
-            totalUsecaseCount={usecasePageResult?.total ?? 0}
-            totalVisibleSpackCount={visibleSpackPackages.length}
-            totalVisibleTemplateCount={visibleTemplates.length}
-            totalVisibleUsecaseCount={visibleUsecases.length}
             usecaseSearch={usecaseSearch}
           />
           <TabsContent value="templates">
@@ -877,7 +811,7 @@ export function SoftwarePage() {
             />
           </TabsContent>
           <TabsContent value="scripts">
-            <SandboxScriptCatalog embedded onCountsChange={setScriptCounts} />
+            <SandboxScriptCatalog embedded />
           </TabsContent>
         </Tabs>
       )}
@@ -894,15 +828,9 @@ function SoftwareStickyControls({
   setSpackCatalogSearch,
   setSpackCatalogSource,
   setUsecaseSearch,
-  spackCatalog,
   spackCatalogSearch,
   spackCatalogSource,
   tags,
-  totalTemplateCount,
-  totalUsecaseCount,
-  totalVisibleSpackCount,
-  totalVisibleTemplateCount,
-  totalVisibleUsecaseCount,
   usecaseSearch,
 }: {
   activeTab: SoftwareTab;
@@ -913,15 +841,9 @@ function SoftwareStickyControls({
   setSpackCatalogSearch: (value: string) => void;
   setSpackCatalogSource: (value: SpackCatalogSourceFilter) => void;
   setUsecaseSearch: (value: string) => void;
-  spackCatalog: SpackCatalog | null;
   spackCatalogSearch: string;
   spackCatalogSource: SpackCatalogSourceFilter;
   tags: string[];
-  totalTemplateCount: number;
-  totalUsecaseCount: number;
-  totalVisibleSpackCount: number;
-  totalVisibleTemplateCount: number;
-  totalVisibleUsecaseCount: number;
   usecaseSearch: string;
 }) {
   const { t } = useTranslation();
@@ -1011,60 +933,38 @@ function SoftwareStickyControls({
         {activeTab === "templates" ? (
           <ListToolbar
             activeTag={activeTag}
-            favoritesOnly={false}
             search={search}
             searchPlaceholder={t("software.searchPlaceholder")}
             searchTestId="software-search"
             setActiveTag={setActiveTag}
-            setFavoritesOnly={() => undefined}
             setSearch={setSearch}
-            stats={[
-              { label: t("software.summary.total"), value: String(totalTemplateCount) },
-              { label: t("software.summary.visible"), value: String(totalVisibleTemplateCount) },
-              { label: t("software.summary.tags"), value: String(tags.length) },
-            ]}
             tagTestId="software-tag-filters"
             tags={tags}
-            showFavorites={false}
             variant={fixedFrame.fixed ? "sticky" : "card"}
           />
         ) : null}
         {activeTab === "usecases" ? (
           <ListToolbar
             activeTag={null}
-            favoritesOnly={false}
             search={usecaseSearch}
             searchPlaceholder={t("software.usecaseSearchPlaceholder")}
             searchTestId="software-usecase-search"
             setActiveTag={() => undefined}
-            setFavoritesOnly={() => undefined}
             setSearch={setUsecaseSearch}
-            stats={[
-              { label: t("software.summary.total"), value: String(totalUsecaseCount) },
-              { label: t("software.summary.visible"), value: String(totalVisibleUsecaseCount) },
-            ]}
             tags={[]}
-            showFavorites={false}
             variant={fixedFrame.fixed ? "sticky" : "card"}
           />
         ) : null}
         {activeTab === "spack" ? (
           <ListToolbar
             activeTag={null}
-            favoritesOnly={false}
             search={spackCatalogSearch}
             searchPlaceholder={t("software.manage.catalogSearch")}
             searchTestId="software-spack-catalog-search"
             setActiveTag={() => undefined}
-            setFavoritesOnly={() => undefined}
             setSearch={setSpackCatalogSearch}
-            stats={[
-              { label: t("software.summary.total"), value: String(spackCatalog?.totalCount ?? 0) },
-              { label: t("software.summary.visible"), value: String(totalVisibleSpackCount) },
-            ]}
             tagTestId="software-spack-tag-filters"
             tags={[]}
-            showFavorites={false}
             variant={fixedFrame.fixed ? "sticky" : "card"}
           >
             {(["all", "upstream", "official", "vendor"] satisfies SpackCatalogSourceFilter[]).map(
@@ -1083,79 +983,6 @@ function SoftwareStickyControls({
           </ListToolbar>
         ) : null}
       </div>
-    </div>
-  );
-}
-
-function SummaryStat({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="inline-flex shrink-0 items-baseline gap-1 px-2.5 py-1.5">
-      <span className="font-mono text-sm font-semibold text-foreground tabular-nums">{value}</span>
-      <span>{label}</span>
-    </div>
-  );
-}
-
-function SoftwareOverview({
-  activeTab,
-  catalog,
-  templateCount,
-  usecaseCount,
-}: {
-  activeTab: SoftwareTab;
-  catalog: SpackCatalog | null;
-  templateCount: number;
-  usecaseCount: number;
-  visibleSpackCount: number;
-  visibleTemplateCount: number;
-  visibleUsecaseCount: number;
-}) {
-  const { t } = useTranslation();
-  const cards = [
-    {
-      key: "templates",
-      icon: <Workflow />,
-      label: t("software.tabs.templates"),
-      primary: String(templateCount),
-    },
-    {
-      key: "usecases",
-      icon: <FlaskConical />,
-      label: t("software.tabs.usecases"),
-      primary: String(usecaseCount),
-    },
-    {
-      key: "spack",
-      icon: <Boxes />,
-      label: t("software.tabs.spack"),
-      primary: String(catalog?.packageCount ?? 0),
-    },
-    {
-      key: "mirror",
-      icon: <Layers3 />,
-      label: t("software.overview.mirror"),
-      primary: catalog?.sourceRef ?? "—",
-    },
-  ];
-  return (
-    <div className="grid grid-cols-2 gap-2 lg:grid-cols-4" data-testid="software-overview">
-      {cards.map((card) => (
-        <div
-          key={card.key}
-          className={cn(
-            "min-w-0 rounded-md border border-border bg-card p-3",
-            activeTab === card.key && "border-brand bg-brand-soft/40",
-          )}
-        >
-          <div className="flex items-center gap-2 text-xs text-muted-foreground">
-            <span className="[&_svg]:h-3.5 [&_svg]:w-3.5">{card.icon}</span>
-            <span className="truncate">{card.label}</span>
-          </div>
-          <div className="mt-2 truncate font-mono text-xl font-semibold text-foreground">
-            {card.primary}
-          </div>
-        </div>
-      ))}
     </div>
   );
 }
@@ -1465,30 +1292,22 @@ function TagButton({
 function ListToolbar({
   activeTag,
   children,
-  favoritesOnly,
   search,
   searchPlaceholder,
   searchTestId,
   setActiveTag,
-  setFavoritesOnly,
   setSearch,
-  showFavorites = true,
-  stats,
   tagTestId,
   tags,
   variant = "card",
 }: {
   activeTag: string | null;
   children?: ReactNode;
-  favoritesOnly: boolean;
   search: string;
   searchPlaceholder: string;
   searchTestId: string;
   setActiveTag: (tag: string | null) => void;
-  setFavoritesOnly: (value: boolean) => void;
   setSearch: (value: string) => void;
-  showFavorites?: boolean;
-  stats: Array<{ label: string; value: string }>;
   tagTestId?: string;
   tags: string[];
   variant?: "card" | "sticky";
@@ -1521,29 +1340,6 @@ function ListToolbar({
               <X className="h-3.5 w-3.5" />
             </button>
           ) : null}
-        </div>
-        <div className="flex flex-wrap items-center justify-end gap-2">
-          {showFavorites ? (
-            <Button
-              type="button"
-              variant={favoritesOnly ? "default" : "outline"}
-              size="sm"
-              onClick={() => setFavoritesOnly(!favoritesOnly)}
-              aria-pressed={favoritesOnly}
-              data-testid="software-favorites-only"
-            >
-              <Star className={cn(favoritesOnly && "fill-current")} />
-              {t("software.favoritesOnly")}
-            </Button>
-          ) : null}
-          <div
-            className="inline-flex max-w-full divide-x divide-border overflow-x-auto rounded-md border border-border bg-background text-xs text-muted-foreground"
-            data-testid="software-summary-stats"
-          >
-            {stats.map((stat) => (
-              <SummaryStat key={stat.label} label={stat.label} value={stat.value} />
-            ))}
-          </div>
         </div>
       </div>
       {tags.length > 0 || children ? (

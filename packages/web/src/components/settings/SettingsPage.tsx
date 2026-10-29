@@ -1,17 +1,6 @@
 import type { PlatformCapability } from "@kuintessence/shared/browser";
 import { useNavigate, useRouterState } from "@tanstack/react-router";
-import {
-  Activity,
-  BadgeDollarSign,
-  ExternalLink,
-  Loader2,
-  LogOut,
-  Monitor,
-  Moon,
-  Network,
-  ShieldCheck,
-  Sun,
-} from "lucide-react";
+import { ExternalLink, Loader2, LogOut, Monitor, Moon, Sun } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
@@ -183,71 +172,6 @@ function ExpiryRow({ expiresAt }: ExpiryRowProps) {
   );
 }
 
-interface OperationsSummaryProps {
-  role: string | null;
-  capabilities?: ReadonlySet<PlatformCapability>;
-}
-
-export function OperationsSummary({ role, capabilities }: OperationsSummaryProps) {
-  const { t } = useTranslation();
-  const visibleCount = OPERATIONS_LINKS.filter((item) =>
-    canAccessOperationsLink(role, item, capabilities),
-  ).length;
-  const totalCount = OPERATIONS_LINKS.length;
-  const platformEnabled = canAccessOperation(role, "platform_admin");
-  const cpEnabled = canAccessOperation(role, "org_admin");
-  const superEnabled = canAccessOperation(role, "super_admin");
-  const summary = [
-    {
-      key: "coverage",
-      value: `${visibleCount}/${totalCount}`,
-      label: t("settings.operations.summary.coverage"),
-      icon: Activity,
-    },
-    {
-      key: "platform",
-      value: platformEnabled
-        ? t("settings.operations.summary.enabled")
-        : t("settings.operations.summary.locked"),
-      label: t("settings.operations.summary.platformOps"),
-      icon: ShieldCheck,
-    },
-    {
-      key: "provider",
-      value: cpEnabled
-        ? t("settings.operations.summary.enabled")
-        : t("settings.operations.summary.locked"),
-      label: t("settings.operations.summary.providerOps"),
-      icon: Network,
-    },
-    {
-      key: "cost",
-      value: superEnabled
-        ? t("settings.operations.summary.enabled")
-        : t("settings.operations.summary.locked"),
-      label: t("settings.operations.summary.costOps"),
-      icon: BadgeDollarSign,
-    },
-  ];
-  return (
-    <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4" data-testid="settings-ops-summary">
-      {summary.map(({ key, value, label, icon: Icon }) => (
-        <Card key={key}>
-          <CardContent className="flex items-center justify-between gap-3 p-4">
-            <div className="min-w-0">
-              <div className="text-xl font-semibold tabular-nums">{value}</div>
-              <div className="mt-1 text-xs text-muted-foreground">{label}</div>
-            </div>
-            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md border bg-muted/35">
-              <Icon className="h-4 w-4 text-muted-foreground" />
-            </div>
-          </CardContent>
-        </Card>
-      ))}
-    </div>
-  );
-}
-
 interface OperationsMapProps {
   role: string | null;
   areas?: ReadonlyArray<OperationsArea>;
@@ -265,7 +189,6 @@ export function OperationsMap({
     <Card data-testid="settings-operations-map">
       <CardHeader>
         <CardTitle>{t("settings.operations.title")}</CardTitle>
-        <p className="text-sm text-muted-foreground">{t("settings.operations.subtitle")}</p>
       </CardHeader>
       <CardContent className={cn("grid gap-4", !focused && "xl:grid-cols-4")}>
         {areas.map((area) => (
@@ -313,11 +236,11 @@ function OperationLink({ item, role, capabilities }: OperationLinkProps) {
           {t(`settings.operations.link.${item.key}.description`)}
         </div>
       </div>
-      <Badge variant={allowed ? "brand" : "outline"} className="shrink-0">
-        {allowed
-          ? t("settings.operations.available")
-          : t("settings.operations.requiresRole", { role: item.requiredRole })}
-      </Badge>
+      {!allowed ? (
+        <Badge variant="outline" className="shrink-0">
+          {t("settings.operations.requiresRole", { role: item.requiredRole })}
+        </Badge>
+      ) : null}
       {allowed ? <ExternalLink className="h-3.5 w-3.5 shrink-0 text-muted-foreground" /> : null}
     </>
   );
@@ -368,11 +291,6 @@ export function SettingsPage() {
     activeTab === "personal"
       ? t(`settings.personalSections.${personalSection}.title`)
       : t(`settings.tabs.${activeTab}`);
-  const pageSubtitle =
-    activeTab === "personal"
-      ? t(`settings.personalSections.${personalSection}.description`)
-      : t(`settings.sectionSubtitle.${activeTab}`);
-
   useEffect(() => subscribeAuthState(() => setAuthRevision((value) => value + 1)), []);
 
   useEffect(() => {
@@ -402,7 +320,7 @@ export function SettingsPage() {
         </div>
       ) : (
         <>
-          <PageHeader title={pageTitle} subtitle={pageSubtitle} />
+          <PageHeader title={pageTitle} />
 
           {activeTab === "personal" ? (
             <div className="space-y-4">

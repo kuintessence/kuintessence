@@ -1,7 +1,5 @@
 import {
-  AlertTriangle,
   Check,
-  CheckCircle2,
   CircleDollarSign,
   Clock3,
   Cloud,
@@ -44,7 +42,6 @@ export function WorkflowReviewStep({
   model,
   nodeCount,
   prerequisites = [],
-  valid,
   values,
   yaml,
 }: {
@@ -56,7 +53,6 @@ export function WorkflowReviewStep({
   model: WorkflowInputModel;
   nodeCount: number;
   prerequisites?: Array<{ code: string; message: string; remediation?: string }>;
-  valid: boolean;
   values: Record<string, string>;
   yaml: string;
 }) {
@@ -81,12 +77,6 @@ export function WorkflowReviewStep({
     if (selected === null) return !requirement.optional;
     return datasetValidity[requirement.key] !== true;
   });
-  const ready =
-    valid &&
-    missingFiles.length === 0 &&
-    missingValues.length === 0 &&
-    invalidDatasets.length === 0;
-
   function prerequisiteMessage(block: { code: string; message: string; remediation?: string }) {
     const fallback = t("workflows.creation.review.governanceBlockedHint", {
       defaultValue: "当前工作流依赖的资源或权限尚未满足，请按建议处理后重试。",
@@ -144,9 +134,6 @@ export function WorkflowReviewStep({
         <CardHeader className="flex flex-row items-start justify-between gap-3 space-y-0">
           <div>
             <CardTitle>{t("workflows.creation.review.title")}</CardTitle>
-            <p className="mt-1 text-sm text-muted-foreground">
-              {t("workflows.creation.review.description")}
-            </p>
           </div>
           <div className="flex flex-wrap items-center justify-end gap-2">
             <Button
@@ -161,12 +148,6 @@ export function WorkflowReviewStep({
                 ? t("workflows.creation.review.yamlCopiedShort")
                 : t("workflows.creation.review.copyYaml")}
             </Button>
-            <Badge variant={ready ? "succeeded" : "failed"}>
-              {ready ? <CheckCircle2 /> : <AlertTriangle />}
-              {ready
-                ? t("workflows.creation.review.ready")
-                : t("workflows.creation.review.needsAttention")}
-            </Badge>
           </div>
         </CardHeader>
         <CardContent className="space-y-4">
@@ -182,7 +163,7 @@ export function WorkflowReviewStep({
               value={formatCost(estimate.minCost, estimate.maxCost, t)}
             />
           </div>
-          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+          <dl className="flex flex-wrap gap-x-6 gap-y-2 border-y border-border py-3">
             <Summary label={t("workflows.creation.review.nodes")} value={nodeCount} />
             <Summary label={t("workflows.creation.review.edges")} value={edgeCount} />
             <Summary
@@ -190,7 +171,7 @@ export function WorkflowReviewStep({
               value={model.values.length}
             />
             <Summary label={t("workflows.creation.review.files")} value={model.files.length} />
-          </div>
+          </dl>
           {missingFiles.length > 0 || missingValues.length > 0 || invalidDatasets.length > 0 ? (
             <div className="rounded-lg border border-warning/40 bg-warning/10 p-3 text-sm">
               <p className="font-medium">{t("workflows.creation.review.missingTitle")}</p>
@@ -315,7 +296,7 @@ function ReviewEstimate({
   value: string;
 }) {
   return (
-    <div className="flex items-center gap-3 rounded-lg border border-border bg-muted/20 p-3">
+    <div className="flex items-center gap-3 py-2">
       <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-brand-soft text-brand">
         <Icon className="h-4 w-4" />
       </span>
@@ -522,9 +503,9 @@ function SlotSection({
 
 function Summary({ label, value }: { label: string; value: number }) {
   return (
-    <div className="rounded-lg border border-border bg-background p-3">
-      <p className="text-xs text-muted-foreground">{label}</p>
-      <p className="mt-1 font-mono text-xl font-semibold">{value}</p>
+    <div className="flex items-baseline gap-2">
+      <dt className="text-xs text-muted-foreground">{label}</dt>
+      <dd className="text-sm font-semibold tabular-nums">{value}</dd>
     </div>
   );
 }

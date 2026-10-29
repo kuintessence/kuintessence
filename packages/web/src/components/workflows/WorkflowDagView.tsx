@@ -1,21 +1,11 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import {
-  AlertCircle,
-  CalendarClock,
-  ExternalLink,
-  FileInput,
-  GitBranch,
-  Layers3,
-  Route,
-  SlidersHorizontal,
-  X,
-} from "lucide-react";
+import { AlertCircle, ExternalLink, FileInput, Route, SlidersHorizontal, X } from "lucide-react";
 import type { ComponentType } from "react";
 import { useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { ApiError, api } from "../../lib/api-client";
-import { relativeFromNow, statusLabel, statusToBadgeVariant } from "../../lib/format";
+import { statusLabel, statusToBadgeVariant } from "../../lib/format";
 import { toUserFacingError, toUserFacingExecutionFailure } from "../../lib/user-facing-error";
 import { extractWorkflowInputModel } from "../../lib/workflow-input-config";
 import { JobDetailSheet } from "../jobs/JobDetailSheet";
@@ -23,6 +13,7 @@ import type { JobDetail } from "../jobs/types";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
+import { PageHeader } from "../ui/page";
 import { WorkflowRunGraph } from "./WorkflowRunGraph";
 
 interface WorkflowRunDetail {
@@ -134,25 +125,11 @@ function normalizeStatus(status: string | null | undefined): string {
   return (status ?? "").toLowerCase();
 }
 
-interface RunMetricProps {
-  label: string;
-  value: string | number;
-  icon: ComponentType<{ className?: string }>;
-}
-
-function RunMetric({ label, value, icon: Icon }: RunMetricProps) {
+function RunMetric({ label, value }: { label: string; value: string | number }) {
   return (
-    <div className="rounded-xl border border-border bg-card p-3 shadow-none">
-      <div className="flex items-center justify-between gap-3">
-        <span className="text-xs font-medium text-muted-foreground">{label}</span>
-        <Icon className="h-4 w-4 text-brand" />
-      </div>
-      <div
-        className="mt-2 truncate font-mono text-lg font-semibold tabular-nums"
-        title={String(value)}
-      >
-        {value}
-      </div>
+    <div className="flex min-w-0 items-baseline gap-2">
+      <dt className="text-xs text-muted-foreground">{label}</dt>
+      <dd className="break-words text-sm font-medium tabular-nums">{value}</dd>
     </div>
   );
 }
@@ -406,56 +383,44 @@ export function WorkflowDagView({ runId }: WorkflowDagViewProps) {
           {t("workflows.run.awaitingApproval")}
         </div>
       ) : null}
-      <div className="rounded-xl border border-border bg-card p-4 shadow-sm sm:p-5">
-        <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
-          <div className="min-w-0">
-            <div className="mb-2 flex flex-wrap items-center gap-2">
-              {runQ.data ? (
-                <Badge variant={statusToBadgeVariant(runQ.data.status)}>
-                  {statusLabel(runQ.data.status, language)}
-                </Badge>
-              ) : null}
-              <span
-                className="rounded-full border border-border bg-background px-3 py-1 font-mono text-[11px] text-muted-foreground"
-                title={runId}
-                data-testid="run-meta"
-              >
-                {runId.slice(0, 8)}
-                {runQ.data?.createdAt
-                  ? ` · ${relativeFromNow(runQ.data.createdAt, undefined, language)}`
-                  : null}
-              </span>
-            </div>
-            <h2 className="text-2xl font-semibold tracking-tight sm:text-3xl">
-              {runQ.data?.name ?? t("workflows.run.title")}
-            </h2>
-            {runQ.data?.description ? (
-              <p className="mt-1 max-w-3xl text-sm leading-6 text-muted-foreground">
-                {runQ.data.description}
-              </p>
+      <PageHeader
+        title={runQ.data?.name ?? t("workflows.run.title")}
+        subtitle={runQ.data?.description}
+        meta={
+          <>
+            {runQ.data ? (
+              <Badge variant={statusToBadgeVariant(runQ.data.status)}>
+                {statusLabel(runQ.data.status, language)}
+              </Badge>
             ) : null}
-          </div>
-          <div className="flex shrink-0 items-center gap-2">
-            {runQ.data && (canCancelRun || cancelInProgress) ? (
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                data-testid="workflow-cancel-run"
-                disabled={!canCancelRun || cancelRun.isPending}
-                onClick={() => cancelRun.mutate(runId)}
-              >
-                <X />
-                {cancelInProgress ? t("workflows.run.cancelling") : t("workflows.run.cancel")}
-              </Button>
-            ) : null}
-          </div>
-        </div>
-      </div>
-
-      <div className="grid gap-3 sm:grid-cols-3">
-        <RunMetric label={t("workflows.run.nodes")} value={graphNodeCount} icon={Layers3} />
-        <RunMetric label={t("workflows.run.edges")} value={graphEdgeCount} icon={GitBranch} />
+            <span
+              className="font-mono text-xs text-muted-foreground"
+              title={runId}
+              data-testid="run-meta"
+            >
+              {runId.slice(0, 8)}
+            </span>
+          </>
+        }
+        actions={
+          runQ.data && (canCancelRun || cancelInProgress) ? (
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              data-testid="workflow-cancel-run"
+              disabled={!canCancelRun || cancelRun.isPending}
+              onClick={() => cancelRun.mutate(runId)}
+            >
+              <X />
+              {cancelInProgress ? t("workflows.run.cancelling") : t("workflows.run.cancel")}
+            </Button>
+          ) : null
+        }
+      />
+      <dl className="flex flex-wrap gap-x-6 gap-y-2">
+        <RunMetric label={t("workflows.run.nodes")} value={graphNodeCount} />
+        <RunMetric label={t("workflows.run.edges")} value={graphEdgeCount} />
         <RunMetric
           label={t("workflows.run.created")}
           value={
@@ -463,9 +428,8 @@ export function WorkflowDagView({ runId }: WorkflowDagViewProps) {
               ? new Date(runQ.data.createdAt).toLocaleString(language)
               : t("common.loading")
           }
-          icon={CalendarClock}
         />
-      </div>
+      </dl>
 
       {localizedError ? (
         <Card className="rounded-xl border-status-failed/40 bg-status-failed/5 shadow-none">
@@ -553,49 +517,17 @@ export function WorkflowDagView({ runId }: WorkflowDagViewProps) {
         </Card>
       ) : null}
 
-      <Card className="rounded-xl shadow-none" data-testid="workflow-run-configuration">
-        <CardHeader>
-          <CardTitle>{t("workflows.run.configuration")}</CardTitle>
-        </CardHeader>
-        <CardContent className="grid gap-3 md:grid-cols-3">
-          <RunConfiguration
-            icon={SlidersHorizontal}
-            label={t("workflows.run.parameters")}
-            value={String(runInputModel.values.length)}
-            detail={runInputModel.values.map((item) => item.label).join(" · ") || "—"}
-          />
-          <RunConfiguration
-            icon={FileInput}
-            label={t("workflows.run.inputFiles")}
-            value={String(runInputModel.files.length)}
-            detail={
-              runInputModel.files
-                .map((item) => `${item.nodeName}/${item.descriptor}`)
-                .join(" · ") || "—"
-            }
-          />
-          <RunConfiguration
-            icon={Route}
-            label={t("workflows.run.placement")}
-            value={runQ.data?.input?.placementConfig?.plannerMode ?? "Global"}
-            detail={
-              runQ.data?.input?.placementConfig?.budgetCap == null
-                ? t("workflows.run.noBudgetCap")
-                : t("workflows.run.budgetCap", {
-                    value: runQ.data.input.placementConfig.budgetCap,
-                  })
-            }
-          />
-        </CardContent>
-      </Card>
-
       {runQ.data?.graph && runQ.data.graph.nodes.length > 0 ? (
         <Card className="rounded-xl shadow-none" data-testid="workflow-graph-card">
           <CardHeader>
             <CardTitle className="text-foreground">{t("workflows.run.graph")}</CardTitle>
           </CardHeader>
           <CardContent>
-            <WorkflowRunGraph graph={runQ.data.graph} statusByNode={liveStatusByNode} />
+            <WorkflowRunGraph
+              graph={runQ.data.graph}
+              statusByNode={liveStatusByNode}
+              jobIdsByNode={stepJobs}
+            />
           </CardContent>
         </Card>
       ) : nodeStatuses.length > 0 ? (
@@ -659,6 +591,45 @@ export function WorkflowDagView({ runId }: WorkflowDagViewProps) {
           </CardContent>
         </Card>
       )}
+
+      <details
+        className="rounded-lg border border-border bg-card"
+        data-testid="workflow-run-configuration"
+      >
+        <summary className="cursor-pointer px-4 py-3 text-sm font-medium focus-visible:outline-2 focus-visible:outline-ring">
+          {t("workflows.run.configuration")}
+        </summary>
+        <div className="grid gap-3 border-t border-border p-4 md:grid-cols-3">
+          <RunConfiguration
+            icon={SlidersHorizontal}
+            label={t("workflows.run.parameters")}
+            value={String(runInputModel.values.length)}
+            detail={runInputModel.values.map((item) => item.label).join(" · ") || "—"}
+          />
+          <RunConfiguration
+            icon={FileInput}
+            label={t("workflows.run.inputFiles")}
+            value={String(runInputModel.files.length)}
+            detail={
+              runInputModel.files
+                .map((item) => `${item.nodeName}/${item.descriptor}`)
+                .join(" · ") || "—"
+            }
+          />
+          <RunConfiguration
+            icon={Route}
+            label={t("workflows.run.placement")}
+            value={runQ.data?.input?.placementConfig?.plannerMode ?? "Global"}
+            detail={
+              runQ.data?.input?.placementConfig?.budgetCap == null
+                ? t("workflows.run.noBudgetCap")
+                : t("workflows.run.budgetCap", {
+                    value: runQ.data.input.placementConfig.budgetCap,
+                  })
+            }
+          />
+        </div>
+      </details>
 
       <JobDetailSheet
         jobId={activeJobId}

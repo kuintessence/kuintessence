@@ -24,7 +24,7 @@ export function WorkflowCreationStepper({
     <nav
       aria-label={t("workflows.creation.stepsLabel")}
       className={cn(
-        "grid overflow-hidden bg-card md:grid-cols-4",
+        "grid grid-cols-2 overflow-hidden bg-card sm:grid-cols-4",
         embedded ? "border-t border-border" : "rounded-xl border border-border shadow-sm",
       )}
       data-testid="workflow-creation-steps"
@@ -40,7 +40,7 @@ export function WorkflowCreationStepper({
             disabled={blocked}
             onClick={() => onChange(step)}
             className={cn(
-              "flex min-w-0 items-center gap-3 border-border px-4 py-3 text-left transition-colors md:border-l md:first:border-l-0",
+              "flex min-w-0 items-center gap-2 border-border px-3 py-3 text-left transition-colors focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-ring sm:gap-3 sm:border-l sm:first:border-l-0",
               active ? "bg-brand-soft text-brand" : "hover:bg-muted/50",
               blocked && "cursor-not-allowed opacity-55 hover:bg-transparent",
             )}
@@ -59,9 +59,6 @@ export function WorkflowCreationStepper({
             <span className="min-w-0">
               <span className="block truncate text-sm font-medium">
                 {t(`workflows.creation.steps.${step}.title`)}
-              </span>
-              <span className="mt-0.5 hidden truncate text-xs text-muted-foreground lg:block">
-                {t(`workflows.creation.steps.${step}.description`)}
               </span>
             </span>
           </button>

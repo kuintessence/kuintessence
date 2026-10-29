@@ -148,7 +148,7 @@ describe("OperationsPage", () => {
 
     expect(canAccessOperations("operator")).toBe(true);
     expect(screen.getByTestId("operations-page")).toBeTruthy();
-    expect(screen.getByTestId("settings-ops-summary")).toBeTruthy();
+    expect(screen.queryByTestId("settings-ops-summary")).toBeNull();
     expect(screen.getByTestId("operations-attention-cards")).toBeTruthy();
   });
 

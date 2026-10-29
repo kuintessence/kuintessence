@@ -1,7 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { Braces, Code2, FileCode2, PackagePlus, Search, ShieldCheck } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { listSandboxScripts } from "../../lib/sandbox-client";
 import { useSoftwarePublishingAccess } from "../../lib/software-publishing-access";
@@ -27,13 +27,7 @@ function languageIcon(language: string) {
   return <Code2 className="h-4 w-4" />;
 }
 
-export function SandboxScriptCatalog({
-  embedded = false,
-  onCountsChange,
-}: {
-  embedded?: boolean;
-  onCountsChange?: (counts: { total: number; visible: number }) => void;
-}) {
+export function SandboxScriptCatalog({ embedded = false }: { embedded?: boolean }) {
   const { t } = useTranslation();
   const { canPublish } = useSoftwarePublishingAccess();
   const [search, setSearch] = useState("");
@@ -64,10 +58,6 @@ export function SandboxScriptCatalog({
       return matchesLanguage && (query === "" || haystack.includes(query));
     });
   }, [language, scripts, search]);
-
-  useEffect(() => {
-    onCountsChange?.({ total: scripts.length, visible: visible.length });
-  }, [onCountsChange, scripts.length, visible.length]);
 
   return (
     <PageShell data-testid="sandbox-script-catalog" data-embedded={embedded ? "true" : "false"}>

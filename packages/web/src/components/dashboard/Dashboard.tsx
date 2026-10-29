@@ -113,7 +113,6 @@ export function Dashboard() {
     <PageShell className="space-y-6" data-testid="dashboard">
       <PageHeader
         title={t("dashboard.title")}
-        subtitle={t("dashboard.subtitle")}
         actions={
           <span
             className="font-mono text-[11px] text-muted-foreground tabular-nums"

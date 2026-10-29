@@ -1,17 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { Link, useNavigate } from "@tanstack/react-router";
-import {
-  Activity,
-  CheckCircle2,
-  CircleSlash2,
-  FilePenLine,
-  Plus,
-  RefreshCw,
-  Search,
-  Trash2,
-  X,
-} from "lucide-react";
-import type { ComponentType } from "react";
+import { FilePenLine, Plus, RefreshCw, Search, Trash2, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 
@@ -21,6 +10,7 @@ import { cn } from "../../lib/utils";
 import { Button } from "../ui/button";
 import { Card, CardContent } from "../ui/card";
 import { Input } from "../ui/input";
+import { PageHeader } from "../ui/page";
 import { DeleteWorkflowDraftDialog } from "./DeleteWorkflowDraftDialog";
 import { type WorkflowRunRow, WorkflowsTable } from "./WorkflowsTable";
 
@@ -74,24 +64,6 @@ function classifyStatus(status: string): WorkflowBucket {
 
 function countByBucket(runs: WorkflowRunRow[], bucket: WorkflowBucket): number {
   return runs.filter((run) => classifyStatus(run.status) === bucket).length;
-}
-
-const SUMMARY_TONE_CLASS: Record<SummaryTone, string> = {
-  active:
-    "border-brand/30 bg-[linear-gradient(135deg,color-mix(in_oklab,var(--brand)_14%,transparent),transparent_62%)] text-brand",
-  completed:
-    "border-status-succeeded/30 bg-[linear-gradient(135deg,color-mix(in_oklab,var(--status-succeeded)_14%,transparent),transparent_62%)] text-[var(--status-succeeded)]",
-  failed:
-    "border-status-failed/30 bg-[linear-gradient(135deg,color-mix(in_oklab,var(--status-failed)_13%,transparent),transparent_62%)] text-[var(--status-failed)]",
-  cancelled:
-    "border-status-cancelled/30 bg-[linear-gradient(135deg,color-mix(in_oklab,var(--status-cancelled)_13%,transparent),transparent_62%)] text-[var(--status-cancelled)]",
-};
-
-interface SummaryItem {
-  key: SummaryTone;
-  label: string;
-  value: number | string;
-  icon: ComponentType<{ className?: string }>;
 }
 
 export function WorkflowsPage() {
@@ -156,32 +128,12 @@ export function WorkflowsPage() {
     : hasFilters
       ? t("workflows.noMatches")
       : t("workflows.empty");
-  const summary = [
-    {
-      key: "active",
-      label: t("workflows.summary.active"),
-      value: loadError ? "—" : active,
-      icon: Activity,
-    },
-    {
-      key: "completed",
-      label: t("workflows.summary.completed"),
-      value: loadError ? "—" : completed,
-      icon: CheckCircle2,
-    },
-    {
-      key: "failed",
-      label: t("workflows.summary.failed"),
-      value: loadError ? "—" : failed,
-      icon: X,
-    },
-    {
-      key: "cancelled",
-      label: t("workflows.summary.cancelled"),
-      value: loadError ? "—" : cancelled,
-      icon: CircleSlash2,
-    },
-  ] satisfies SummaryItem[];
+  const statusCounts: Record<Exclude<WorkflowFilter, "ALL">, number> = {
+    ACTIVE: active,
+    COMPLETED: completed,
+    FAILED: failed,
+    CANCELLED: cancelled,
+  };
 
   const deleteTargetVerified = Boolean(
     deletingDraft &&
@@ -228,29 +180,16 @@ export function WorkflowsPage() {
           )?.focus()
         }
       />
-      <div className="rounded-xl border border-border bg-card p-4 shadow-sm sm:p-5">
-        <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
-          <div className="min-w-0 space-y-2">
-            <div
-              className="inline-flex items-center gap-2 rounded-full border border-brand/25 bg-brand-soft px-3 py-1 text-xs font-medium text-brand"
+      <PageHeader
+        title={t("workflows.title")}
+        actions={
+          <>
+            <span
+              className="text-xs tabular-nums text-muted-foreground"
               data-testid="workflows-count"
             >
-              <Activity className="h-3.5 w-3.5" />
-              {t("workflows.countHint", {
-                visible: visibleValue,
-                total: totalValue,
-              })}
-            </div>
-            <div>
-              <h2 className="text-2xl font-semibold tracking-tight sm:text-3xl">
-                {t("workflows.title")}
-              </h2>
-              <p className="mt-1 max-w-3xl text-sm leading-6 text-muted-foreground">
-                {t("workflows.subtitle")}
-              </p>
-            </div>
-          </div>
-          <div className="flex flex-wrap items-center gap-2 xl:justify-end">
+              {t("workflows.countHint", { visible: visibleValue, total: totalValue })}
+            </span>
             <Button
               type="button"
               variant="outline"
@@ -277,38 +216,9 @@ export function WorkflowsPage() {
                 </Link>
               </Button>
             )}
-          </div>
-        </div>
-      </div>
-
-      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4" data-testid="workflows-summary">
-        {summary.map((item) => {
-          const Icon = item.icon;
-          return (
-            <Card
-              key={item.key}
-              className={cn("overflow-hidden rounded-xl shadow-none", SUMMARY_TONE_CLASS[item.key])}
-            >
-              <CardContent className="flex items-center justify-between gap-4 p-4">
-                <div className="min-w-0">
-                  <span className="block text-xs font-medium text-muted-foreground">
-                    {item.label}
-                  </span>
-                  <span
-                    className="mt-1 block font-mono text-2xl font-semibold tabular-nums text-foreground"
-                    data-testid={`workflows-summary-${item.key}`}
-                  >
-                    {item.value}
-                  </span>
-                </div>
-                <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border border-current/20 bg-card/70">
-                  <Icon className="h-4 w-4" />
-                </div>
-              </CardContent>
-            </Card>
-          );
-        })}
-      </div>
+          </>
+        }
+      />
 
       {!draftsQ.error && (draftsQ.data?.drafts.length ?? 0) > 0 ? (
         <Card className="rounded-xl shadow-none" data-testid="workflow-drafts">
@@ -316,7 +226,6 @@ export function WorkflowsPage() {
             <div className="flex items-center justify-between gap-3">
               <div>
                 <h3 className="text-sm font-semibold">{t("workflows.drafts.title")}</h3>
-                <p className="text-xs text-muted-foreground">{t("workflows.drafts.description")}</p>
               </div>
               <span className="font-mono text-xs text-muted-foreground">
                 {draftsQ.data?.drafts.length ?? 0}
@@ -382,8 +291,8 @@ export function WorkflowsPage() {
       <Card className="rounded-xl shadow-none">
         <CardContent className="space-y-4 p-4">
           <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
-            <div className="flex min-w-0 flex-1 flex-col gap-3 sm:flex-row sm:items-center">
-              <div className="relative w-full sm:w-96">
+            <div className="flex min-w-0 flex-1 flex-col gap-3 2xl:flex-row 2xl:items-center">
+              <div className="relative w-full 2xl:w-96">
                 <Search className="absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
                 <Input
                   value={search}
@@ -397,7 +306,7 @@ export function WorkflowsPage() {
                 />
               </div>
               <fieldset
-                className="flex min-w-0 max-w-full gap-1 overflow-x-auto rounded-lg border border-border bg-muted/30 p-1"
+                className="flex min-w-0 max-w-full flex-wrap gap-1"
                 aria-label={t("dashboard.status")}
                 data-testid="workflows-status-filter"
               >
@@ -414,13 +323,21 @@ export function WorkflowsPage() {
                         setOffset(0);
                       }}
                       className={cn(
-                        "h-8 whitespace-nowrap rounded-md px-3 text-xs font-medium transition-colors",
+                        "inline-flex h-9 items-center gap-2 whitespace-nowrap rounded-md px-3 text-xs font-medium transition-colors focus-visible:outline-2 focus-visible:outline-ring",
                         selected
-                          ? "bg-card text-foreground shadow-sm"
+                          ? "bg-brand-soft text-brand"
                           : "text-muted-foreground hover:bg-card/70 hover:text-foreground",
                       )}
                     >
                       {s === "ALL" ? t("common.all") : t(`workflows.filters.${s.toLowerCase()}`)}
+                      {s !== "ALL" ? (
+                        <span
+                          className="tabular-nums"
+                          data-testid={`workflows-summary-${s.toLowerCase()}`}
+                        >
+                          {loadError ? "—" : statusCounts[s]}
+                        </span>
+                      ) : null}
                     </button>
                   );
                 })}

@@ -620,19 +620,19 @@
       "stepsLabel": "工作流创建步骤",
       "steps": {
         "edit": {
-          "title": "工作流编辑",
+          "title": "编辑",
           "description": "编排节点与依赖关系"
         },
         "inputs": {
-          "title": "输入文件/参数配置",
+          "title": "输入",
           "description": "集中填写运行所需输入"
         },
         "resources": {
-          "title": "算力资源配置",
+          "title": "资源",
           "description": "设置调度与任务放置"
         },
         "review": {
-          "title": "预览并提交",
+          "title": "预览",
           "description": "检查配置并启动运行"
         }
       },
