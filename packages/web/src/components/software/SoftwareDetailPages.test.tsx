@@ -2,6 +2,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { ThemeProvider } from "../ThemeProvider";
 import {
   SoftwareSpackDetailPage,
   SoftwareUsecaseDetailPage,
@@ -53,6 +54,9 @@ vi.mock("@tanstack/react-router", () => ({
 vi.mock("@xyflow/react", () => ({
   Background: () => null,
   Controls: () => null,
+  Handle: () => null,
+  MarkerType: { ArrowClosed: "arrowclosed" },
+  Position: { Left: "left", Right: "right" },
   ReactFlow: ({
     children,
     nodes,
@@ -130,7 +134,9 @@ function wrapper() {
     defaultOptions: { queries: { retry: false, gcTime: 0 } },
   });
   return ({ children }: { children: ReactNode }) => (
-    <QueryClientProvider client={qc}>{children}</QueryClientProvider>
+    <QueryClientProvider client={qc}>
+      <ThemeProvider>{children}</ThemeProvider>
+    </QueryClientProvider>
   );
 }
 

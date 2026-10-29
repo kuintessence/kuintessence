@@ -1,7 +1,16 @@
 import dagre from "@dagrejs/dagre";
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
-import { Background, Controls, type Edge, type Node, ReactFlow } from "@xyflow/react";
+import {
+  Background,
+  Controls,
+  type Edge,
+  Handle,
+  MarkerType,
+  type Node,
+  Position,
+  ReactFlow,
+} from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import {
   Boxes,
@@ -38,6 +47,7 @@ import { type SoftwareSection, softwareCatalogDestination } from "../../lib/soft
 import { toUserFacingError } from "../../lib/user-facing-error";
 import { cn } from "../../lib/utils";
 import { parseWorkflowYaml, summarize } from "../../lib/workflow-parser";
+import { useTheme } from "../ThemeProvider";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { PageHeader, PageShell } from "../ui/page";
@@ -107,7 +117,7 @@ function DetailMetricTile({
 
 function DetailSection({ children, title }: { children: React.ReactNode; title: string }) {
   return (
-    <section className="space-y-3">
+    <section className="min-w-0 space-y-3">
       <h3 className="text-sm font-semibold text-foreground">{title}</h3>
       {children}
     </section>
@@ -225,11 +235,23 @@ const TEMPLATE_NODE_HEIGHT = 68;
 function TemplateGraphNode({ data }: { data: TemplateGraphNodeData }) {
   return (
     <div
-      className="grid gap-1 rounded-md border border-border bg-card p-2 shadow-sm"
+      className="relative grid gap-1 rounded-md border border-border bg-card p-2 shadow-sm"
       style={{ width: TEMPLATE_NODE_WIDTH, height: TEMPLATE_NODE_HEIGHT }}
     >
+      <Handle
+        type="target"
+        position={Position.Left}
+        isConnectable={false}
+        className="pointer-events-none !h-px !min-h-0 !w-px !min-w-0 !border-0 !opacity-0"
+      />
       <div className="truncate text-xs font-medium text-foreground">{data.label}</div>
       <div className="truncate font-mono text-[11px] text-muted-foreground">{data.kind}</div>
+      <Handle
+        type="source"
+        position={Position.Right}
+        isConnectable={false}
+        className="pointer-events-none !h-px !min-h-0 !w-px !min-w-0 !border-0 !opacity-0"
+      />
     </div>
   );
 }
@@ -260,6 +282,7 @@ function layoutTemplateGraph(nodes: { id: string }[], edges: { source: string; t
 
 function WorkflowTemplateFlow({ template }: { template: WorkflowTemplate }) {
   const { t } = useTranslation();
+  const { resolved } = useTheme();
   const parsed = useMemo(() => parseWorkflowYaml(template.yamlContent), [template.yamlContent]);
   const graph = useMemo(() => {
     if (!parsed.ok) return null;
@@ -272,6 +295,7 @@ function WorkflowTemplateFlow({ template }: { template: WorkflowTemplate }) {
       id: `${edge.fromId}->${edge.toId}-${index}`,
       source: edge.fromId,
       target: edge.toId,
+      markerEnd: { type: MarkerType.ArrowClosed },
     }));
     const positions = layoutTemplateGraph(nodes, edges);
     return {
@@ -295,9 +319,11 @@ function WorkflowTemplateFlow({ template }: { template: WorkflowTemplate }) {
       data-testid="software-template-flow"
     >
       <ReactFlow
+        colorMode={resolved}
         nodes={graph.nodes satisfies Node<TemplateGraphNodeData>[]}
         edges={graph.edges satisfies Edge[]}
         nodeTypes={TEMPLATE_NODE_TYPES}
+        minZoom={0.1}
         fitView
         nodesDraggable={false}
         nodesConnectable={false}
