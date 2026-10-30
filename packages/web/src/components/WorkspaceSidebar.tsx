@@ -134,8 +134,7 @@ export function WorkspaceSidebar({
                   title={label}
                   className={cn(
                     "relative flex h-10 w-10 items-center justify-center rounded-lg text-muted-foreground transition-all hover:bg-muted hover:text-foreground",
-                    expanded &&
-                      "xl:h-auto xl:min-h-16 xl:w-full xl:flex-col xl:gap-1 xl:px-2 xl:py-2",
+                    expanded && "xl:h-auto xl:min-h-16 xl:w-full xl:flex-col xl:gap-1 xl:py-2",
                     active &&
                       "bg-sidebar-active text-sidebar-active-foreground shadow-sm ring-1 ring-border",
                   )}
@@ -143,7 +142,7 @@ export function WorkspaceSidebar({
                 >
                   <Icon className={cn("h-5 w-5 shrink-0", expanded && "xl:h-6 xl:w-6")} />
                   {expanded ? (
-                    <span className="hidden min-w-0 truncate text-xs font-medium xl:block">
+                    <span className="hidden w-full min-w-0 break-words text-center text-[11px] font-medium leading-tight xl:block">
                       {label}
                     </span>
                   ) : null}
@@ -271,9 +270,6 @@ function WorkspaceContextHeader({
       </span>
       <span className="min-w-0 flex-1 text-left">
         <span className="block truncate text-sm font-semibold">{t(domain.labelKey)}</span>
-        <span className="mt-0.5 block truncate text-xs text-muted-foreground">
-          {t("workspace.unifiedNavigation")}
-        </span>
       </span>
     </>
   );
@@ -364,7 +360,7 @@ function WorkspaceContextHeader({
   return (
     <div
       data-testid="workspace-context-header"
-      className="flex w-full items-center gap-2.5 rounded-lg border bg-card px-3 py-3 shadow-sm"
+      className="flex w-full items-center gap-2.5 px-2 py-1"
     >
       {content}
     </div>

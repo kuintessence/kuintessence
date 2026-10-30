@@ -128,12 +128,12 @@ describe("SandboxScriptCatalog", () => {
     );
   });
 
-  test("shows the shared catalog placeholder when the script library is empty", async () => {
+  test("shows the empty library action without loading placeholders", async () => {
     sandboxClient.listSandboxScripts.mockResolvedValue([]);
     render(<SandboxScriptCatalog />, { wrapper });
 
     const empty = await screen.findByTestId("sandbox-script-empty");
-    expect(screen.getByTestId("sandbox-script-empty-placeholders").children).toHaveLength(3);
+    expect(screen.queryByTestId("sandbox-script-empty-placeholders")).toBeNull();
     expect(
       within(empty).getByRole("link", { name: "sandbox.catalog.create" }).getAttribute("href"),
     ).toBe("/software/scripts/new");

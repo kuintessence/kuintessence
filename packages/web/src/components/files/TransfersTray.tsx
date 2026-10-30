@@ -126,7 +126,9 @@ export function TransfersTray({
       aria-label={t("files.transfers.ariaLabel")}
     >
       <div className="flex flex-col gap-2 border-b border-border px-3 py-2 sm:flex-row sm:items-center sm:justify-between">
-        <span className="text-sm font-semibold">{t("files.transfers.title")}</span>
+        {!embedded ? (
+          <span className="text-sm font-semibold">{t("files.transfers.title")}</span>
+        ) : null}
         <div className="flex flex-wrap items-center gap-1 text-[11px]">
           {(["ACTIVE", "FAILED", "COMPLETED", "ALL"] as const).map((f) => (
             <button
@@ -352,14 +354,16 @@ export function TransfersTray({
         )}
       </div>
 
-      <div className="border-t border-border px-3 py-2 text-[11px] text-muted-foreground">
-        <span className="font-mono tabular-nums">
-          {t("files.transfers.totalActive", {
-            total: verifiedTransfers.length,
-            active: counts.ACTIVE,
-          })}
-        </span>
-      </div>
+      {!embedded ? (
+        <div className="border-t border-border px-3 py-2 text-[11px] text-muted-foreground">
+          <span className="font-mono tabular-nums">
+            {t("files.transfers.totalActive", {
+              total: verifiedTransfers.length,
+              active: counts.ACTIVE,
+            })}
+          </span>
+        </div>
+      ) : null}
     </aside>
   );
 }

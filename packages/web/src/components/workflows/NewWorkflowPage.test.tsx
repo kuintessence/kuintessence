@@ -4,8 +4,9 @@
  * to the canonical async workflow endpoint, not the editor internals.
  */
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
+import { toast } from "sonner";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
 const {
@@ -996,6 +997,43 @@ describe("draft loading and save races", () => {
       ),
     );
     expect(post).toHaveBeenCalledTimes(1);
+  });
+
+  test.each([
+    "success",
+    "failure",
+  ])("keeps navigation intact when a pending draft save settles with %s after leaving", async (outcome) => {
+    let finishSave: ((value: typeof draft) => void) | undefined;
+    let failSave: ((error: Error) => void) | undefined;
+    post.mockImplementationOnce(
+      () =>
+        new Promise((resolve, reject) => {
+          finishSave = resolve;
+          failSave = reject;
+        }),
+    );
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false, gcTime: Infinity } },
+    });
+    client.setQueryData(["workflow-drafts"], { drafts: [] });
+    const page = render(
+      <QueryClientProvider client={client}>
+        <NewWorkflowPage />
+      </QueryClientProvider>,
+    );
+    fireEvent.click(screen.getByTestId("workflow-save-draft"));
+    expect(post).toHaveBeenCalledTimes(1);
+    page.unmount();
+    window.history.replaceState({}, "", "/workflows?status=completed");
+    await act(async () => {
+      if (outcome === "success") finishSave?.(draft);
+      else failSave?.(new Error("Network error"));
+    });
+    expect(window.location.pathname + window.location.search).toBe("/workflows?status=completed");
+    expect(toast.success).not.toHaveBeenCalled();
+    expect(toast.error).not.toHaveBeenCalled();
+    expect(client.getQueryState(["workflow-drafts"])?.isInvalidated).toBe(outcome === "success");
+    client.clear();
   });
 
   test("invalidates the draft list after saving so navigation shows the new draft", async () => {

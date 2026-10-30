@@ -29,7 +29,6 @@ export function AgentsPage() {
     <PageShell data-testid="agents-page">
       <PageHeader
         title={t("agents.title")}
-        subtitle={t("agents.subtitle")}
         actions={
           <span
             className="font-mono text-[11px] text-muted-foreground tabular-nums"

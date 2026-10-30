@@ -227,6 +227,13 @@ export function NewWorkflowPage() {
   const [draftLoadError, setDraftLoadError] = useState<unknown>(null);
   const [savingDraft, setSavingDraft] = useState(false);
   const saveInFlight = useRef(false);
+  const mounted = useRef(false);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
   const [values, setValues] = useState<Record<string, string>>({});
   const [candidates, setCandidates] = useState<WorkflowFileCandidate[]>([]);
   const [bindings, setBindings] = useState<Record<string, WorkflowFileCandidate[]>>({});
@@ -506,17 +513,19 @@ export function NewWorkflowPage() {
       const saved = savedDraftId
         ? await api.put<WorkflowDraftResp>(`/workflows/drafts/${savedDraftId}`, payload)
         : await api.post<WorkflowDraftResp>("/workflows/drafts", payload);
-      setSavedDraftId(saved.id);
       void queryClient.invalidateQueries({ queryKey: ["workflow-drafts"] });
+      if (!mounted.current) return;
+      setSavedDraftId(saved.id);
       const search = new URLSearchParams(window.location.search);
       search.set("draftId", saved.id);
       window.history.replaceState({}, "", `${window.location.pathname}?${search.toString()}`);
       toast.success(t("workflows.creation.draftSaved"));
     } catch (error) {
-      toast.error(toUserFacingError(error, t("workflows.creation.draftSaveFailed")));
+      if (mounted.current)
+        toast.error(toUserFacingError(error, t("workflows.creation.draftSaveFailed")));
     } finally {
       saveInFlight.current = false;
-      setSavingDraft(false);
+      if (mounted.current) setSavingDraft(false);
     }
   }
   async function onSubmit() {
@@ -699,7 +708,7 @@ export function NewWorkflowPage() {
               <Button
                 type="button"
                 size="sm"
-                className="bg-[var(--status-succeeded)] text-white hover:bg-[color-mix(in_oklab,var(--status-succeeded)_88%,black)]"
+                variant="outline"
                 disabled={savingDraft || !workflowName.trim() || !budgetValid}
                 onClick={() => void saveDraft()}
                 data-testid="workflow-save-draft"
@@ -962,7 +971,6 @@ export function NewWorkflowPage() {
           estimate={workflowEstimate}
           model={inputModel}
           nodeCount={parsedNodeCount}
-          valid={parsed.ok}
           prerequisites={submissionBlocks}
           values={values}
           yaml={yaml}

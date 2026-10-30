@@ -1,8 +1,7 @@
 import { CircleAlert } from "lucide-react";
 import { useTranslation } from "react-i18next";
-import { relativeFromNow, statusLabel, statusToBadgeVariant } from "../../lib/format";
+import { relativeFromNow } from "../../lib/format";
 import { toUserFacingExecutionFailure } from "../../lib/user-facing-error";
-import { Badge } from "../ui/badge";
 import type { JobDetail } from "./types";
 
 interface JobOverviewTabProps {
@@ -12,18 +11,16 @@ interface JobOverviewTabProps {
 
 function Field({ label, value }: { label: string; value: React.ReactNode }) {
   return (
-    <div className="grid min-w-0 gap-1 rounded-md border border-border bg-card px-3 py-2 sm:grid-cols-[8rem_minmax(0,1fr)] sm:items-start sm:gap-3">
-      <span className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
-        {label}
-      </span>
-      <span className="min-w-0 break-words font-mono text-xs">{value ?? "—"}</span>
+    <div className="grid min-w-0 gap-1 py-3 sm:grid-cols-[8rem_minmax(0,1fr)] sm:items-start sm:gap-3">
+      <dt className="text-xs text-muted-foreground">{label}</dt>
+      <dd className="min-w-0 break-words text-sm">{value ?? "—"}</dd>
     </div>
   );
 }
 
 function MonoValue({ value }: { value: string }) {
   return (
-    <span className="block min-w-0 truncate" title={value}>
+    <span className="block min-w-0 truncate font-mono text-xs" title={value}>
       {value}
     </span>
   );
@@ -53,14 +50,6 @@ export function JobOverviewTab({ job, loading }: JobOverviewTabProps) {
     : null;
   return (
     <div className="space-y-3" data-testid="job-overview-tab">
-      <div className="flex flex-wrap items-center gap-2">
-        <Badge variant={statusToBadgeVariant(job.status)}>
-          {statusLabel(job.status, language)}
-        </Badge>
-        {job.exitCode !== null && job.exitCode !== undefined ? (
-          <Badge variant="outline">exit {job.exitCode}</Badge>
-        ) : null}
-      </div>
       {failed ? (
         <section
           className="space-y-2 rounded-md border border-status-failed/30 bg-[color-mix(in_oklab,var(--status-failed)_8%,transparent)] px-3 py-3"
@@ -82,9 +71,10 @@ export function JobOverviewTab({ job, loading }: JobOverviewTabProps) {
           <p className="text-xs text-muted-foreground">{t("jobs.overview.failureGuidance")}</p>
         </section>
       ) : null}
-      <div className="grid gap-2">
-        <Field label={t("jobs.overview.jobId")} value={<MonoValue value={job.id} />} />
-        <Field label={t("jobs.overview.name")} value={<MonoValue value={job.name} />} />
+      {!failed && job.exitCode !== null && job.exitCode !== undefined ? (
+        <p className="text-sm">{t("jobs.overview.exitCode", { value: job.exitCode })}</p>
+      ) : null}
+      <dl className="divide-y divide-border border-y border-border empty:hidden">
         {job.usecasePackageName ? (
           <Field
             label={t("jobs.overview.usecase", { defaultValue: "Usecase" })}
@@ -112,6 +102,8 @@ export function JobOverviewTab({ job, loading }: JobOverviewTabProps) {
         {job.command ? (
           <Field label={t("jobs.overview.command")} value={<CommandValue value={job.command} />} />
         ) : null}
+      </dl>
+      <dl className="divide-y divide-border border-y border-border">
         <Field
           label={t("jobs.overview.schedulerId")}
           value={job.schedulerJobId ? <MonoValue value={job.schedulerJobId} /> : "—"}
@@ -129,6 +121,8 @@ export function JobOverviewTab({ job, loading }: JobOverviewTabProps) {
             value={<MonoValue value={schedulerReason} />}
           />
         ) : null}
+      </dl>
+      <dl className="divide-y divide-border border-y border-border">
         <Field
           label={t("jobs.overview.submitted")}
           value={
@@ -146,7 +140,7 @@ export function JobOverviewTab({ job, loading }: JobOverviewTabProps) {
           label={t("jobs.overview.completed")}
           value={job.completedAt ? relativeFromNow(job.completedAt, undefined, language) : "—"}
         />
-      </div>
+      </dl>
     </div>
   );
 }

@@ -15,6 +15,10 @@ import { describe, expect, test, vi } from "vitest";
 
 const { updateNodeInternals } = vi.hoisted(() => ({ updateNodeInternals: vi.fn() }));
 
+vi.mock("../../ThemeProvider", () => ({
+  useTheme: () => ({ resolved: "light" }),
+}));
+
 vi.mock("react-i18next", () => ({
   useTranslation: () => ({
     t: (key: string, opts?: { defaultValue?: string }) => opts?.defaultValue ?? key,

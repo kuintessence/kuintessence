@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate } from "@tanstack/react-router";
-import { Boxes, ChevronLeft, FlaskConical, PackagePlus, ShieldCheck, Workflow } from "lucide-react";
+import { ChevronLeft, FlaskConical, PackagePlus, Workflow } from "lucide-react";
 import type { ReactNode } from "react";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -29,21 +29,13 @@ import {
 
 function CreatePageShell({
   children,
-  description,
   icon,
   section,
-  summary,
   title,
 }: {
   children: ReactNode;
-  description: string;
   icon: ReactNode;
   section: SoftwareSection;
-  summary: {
-    artifact: string;
-    checks: string;
-    destination: string;
-  };
   title: string;
 }) {
   const { t } = useTranslation();
@@ -56,7 +48,6 @@ function CreatePageShell({
             {title}
           </span>
         }
-        subtitle={description}
         actions={
           <Button asChild variant="outline" size="sm">
             <Link {...softwareCatalogDestination(section)}>
@@ -66,47 +57,8 @@ function CreatePageShell({
           </Button>
         }
       />
-      <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_340px]">
-        <div className="min-w-0">{children}</div>
-        <aside className="grid content-start gap-3">
-          <CreateSummaryTile
-            icon={<PackagePlus />}
-            label={t("software.create.artifact")}
-            value={summary.artifact}
-          />
-          <CreateSummaryTile
-            icon={<Boxes />}
-            label={t("software.create.destination")}
-            value={summary.destination}
-          />
-          <CreateSummaryTile
-            icon={<ShieldCheck />}
-            label={t("software.create.checks")}
-            value={summary.checks}
-          />
-        </aside>
-      </div>
+      <div className="max-w-5xl">{children}</div>
     </PageShell>
-  );
-}
-
-function CreateSummaryTile({
-  icon,
-  label,
-  value,
-}: {
-  icon: ReactNode;
-  label: string;
-  value: string;
-}) {
-  return (
-    <div className="rounded-lg border border-border bg-card p-4 shadow-sm">
-      <div className="flex items-center gap-2 text-xs text-muted-foreground">
-        <span className="[&_svg]:h-3.5 [&_svg]:w-3.5">{icon}</span>
-        {label}
-      </div>
-      <div className="mt-2 text-sm font-medium text-foreground">{value}</div>
-    </div>
   );
 }
 
@@ -125,14 +77,8 @@ export function SoftwareWorkflowTemplateCreatePage() {
   });
   return (
     <CreatePageShell
-      description={t("software.manage.createTemplatePageDescription")}
       icon={<Workflow />}
       section="templates"
-      summary={{
-        artifact: t("software.create.workflowArtifact"),
-        checks: t("software.create.workflowChecks"),
-        destination: t("software.create.registry"),
-      }}
       title={t("software.manage.createTemplatePage")}
     >
       <WorkflowTemplateForm
@@ -185,14 +131,8 @@ export function SoftwareUsecaseCreatePage() {
   });
   return (
     <CreatePageShell
-      description={t("software.manage.createUsecasePageDescription")}
       icon={<FlaskConical />}
       section="usecases"
-      summary={{
-        artifact: t("software.create.usecaseArtifact"),
-        checks: t("software.create.usecaseChecks"),
-        destination: t("software.create.registry"),
-      }}
       title={t("software.manage.createUsecasePage")}
     >
       <UsecasePackageForm
@@ -231,14 +171,8 @@ export function SoftwareSpackCatalogCreatePage() {
   });
   return (
     <CreatePageShell
-      description={t("software.manage.createCatalogPackagePageDescription")}
       icon={<PackagePlus />}
       section="spack"
-      summary={{
-        artifact: t("software.create.catalogArtifact"),
-        checks: t("software.create.catalogChecks"),
-        destination: t("software.create.localMirror"),
-      }}
       title={t("software.manage.createCatalogPackagePage")}
     >
       <SpackCatalogPackageForm

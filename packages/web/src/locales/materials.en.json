@@ -196,6 +196,42 @@
       "unavailable": "Lifecycle state is unavailable. Check the ready epoch, storage and service connection.",
       "invalid": "Invalid lifecycle change or audit reason.",
       "failed": "Could not change the release lifecycle."
+    },
+    "offline": {
+      "title": "Offline import",
+      "plan": "Delivery manifest",
+      "directory": "Delivery folder",
+      "changesNotice": "Import applies the binding and activation changes declared in the manifest.",
+      "preflight": "Upload and check",
+      "execute": "Import",
+      "history": "Import history",
+      "busy": "Processing…",
+      "preflightResult": "Preflight results",
+      "result": "Import results",
+      "digest": "Manifest digest",
+      "receipt": "Receipt",
+      "invalidPlan": "Choose an offline-delivery v1 JSON manifest up to 2 MiB. Export Forge archives with kq-bundles first.",
+      "sessionChanged": "Your management session has changed.",
+      "missingFile": "Missing file or size mismatch: {{path}}",
+      "failed": "Import failed. Check the saved receipts before retrying.",
+      "status": {
+        "planned": "Ready to import",
+        "existing": "Already imported",
+        "missing": "Missing",
+        "conflict": "Conflict",
+        "unsupported": "Unsupported",
+        "failed": "Failed",
+        "blocked": "Blocked",
+        "completed": "Imported",
+        "partial": "Partially imported"
+      },
+      "kind": {
+        "recipe": "Recipe",
+        "material": "Material",
+        "binding": "Installation binding",
+        "ecosystem": "Ecosystem release",
+        "activate": "Activation"
+      }
     }
   }
 }

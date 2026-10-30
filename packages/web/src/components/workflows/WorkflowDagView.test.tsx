@@ -289,11 +289,10 @@ describe("WorkflowDagView error UI", () => {
     expect(screen.queryByTestId("dag-canvas")).toBeNull();
     expect(screen.queryByTestId("dag-edges")).toBeNull();
     expect(
-      screen.getByText("workflows.run.nodes", { selector: "span" }).parentElement
-        ?.nextElementSibling?.textContent,
+      screen.getByText("workflows.run.nodes", { selector: "dt" }).nextElementSibling?.textContent,
     ).toBe("-");
     expect(
-      screen.getByText("workflows.run.edges").parentElement?.nextElementSibling?.textContent,
+      screen.getByText("workflows.run.edges", { selector: "dt" }).nextElementSibling?.textContent,
     ).toBe("-");
 
     const jobButton = solve.querySelector("button");

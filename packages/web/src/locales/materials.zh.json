@@ -196,6 +196,42 @@
       "unavailable": "生命周期状态不可用，请检查 ready epoch、存储和服务连接。",
       "invalid": "生命周期变更或审计原因无效。",
       "failed": "未能变更发布项生命周期。"
+    },
+    "offline": {
+      "title": "离线导入",
+      "plan": "交付清单",
+      "directory": "交付目录",
+      "changesNotice": "导入将执行清单中声明的安装绑定和生态激活变更。",
+      "preflight": "上传并预检",
+      "execute": "导入",
+      "history": "导入记录",
+      "busy": "处理中…",
+      "preflightResult": "预检结果",
+      "result": "导入结果",
+      "digest": "清单摘要",
+      "receipt": "收据",
+      "invalidPlan": "请选择不超过 2 MiB 的 offline-delivery v1 JSON 清单。Forge 原包需先由 kq-bundles 导出。",
+      "sessionChanged": "管理会话已变化。",
+      "missingFile": "缺失文件或大小不匹配：{{path}}",
+      "failed": "导入失败，请查看已保存的收据后重试。",
+      "status": {
+        "planned": "可导入",
+        "existing": "已存在",
+        "missing": "缺失",
+        "conflict": "冲突",
+        "unsupported": "不支持",
+        "failed": "失败",
+        "blocked": "受阻",
+        "completed": "已导入",
+        "partial": "部分导入"
+      },
+      "kind": {
+        "recipe": "Recipe",
+        "material": "材料",
+        "binding": "安装绑定",
+        "ecosystem": "生态发布",
+        "activate": "激活"
+      }
     }
   }
 }

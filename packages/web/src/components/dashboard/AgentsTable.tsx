@@ -56,7 +56,9 @@ export function AgentsTable({ agents }: AgentsTableProps) {
                 {a.schedulerType} {a.schedulerVersion}
               </td>
               <td className="px-3 py-2">
-                <Badge variant={statusVariant(a.status)}>{statusLabel(a.status, t)}</Badge>
+                <Badge className="whitespace-nowrap" variant={statusVariant(a.status)}>
+                  {statusLabel(a.status, t)}
+                </Badge>
               </td>
             </tr>
           ))}

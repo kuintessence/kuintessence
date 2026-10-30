@@ -4,7 +4,7 @@ import { AlertCircle, CircleStop } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { ApiError, api } from "../../lib/api-client";
-import { statusLabel } from "../../lib/format";
+import { statusLabel, statusToBadgeVariant } from "../../lib/format";
 import { useJobStatusStream } from "../../lib/use-job-status-stream";
 import { toUserFacingError } from "../../lib/user-facing-error";
 import { PlacementPipelineView } from "../scheduler";
@@ -147,7 +147,7 @@ export function JobDetailSheet({ jobId, open, onOpenChange }: JobDetailSheetProp
                 t(detailQ.error ? "jobs.error.generic" : "jobs.detail.loadingTitle")}
             </SheetTitle>
             {visibleJob?.status ? (
-              <Badge variant="outline">
+              <Badge variant={statusToBadgeVariant(visibleJob.status)}>
                 {statusLabel(visibleJob.status, i18n?.resolvedLanguage ?? i18n?.language)}
               </Badge>
             ) : null}

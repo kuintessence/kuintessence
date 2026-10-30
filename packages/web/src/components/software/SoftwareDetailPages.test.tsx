@@ -1,7 +1,9 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
+import { toast } from "sonner";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { ThemeProvider } from "../ThemeProvider";
 import {
   SoftwareSpackDetailPage,
   SoftwareUsecaseDetailPage,
@@ -17,6 +19,7 @@ const softwareClient = vi.hoisted(() => ({
 }));
 
 vi.mock("../../lib/software-client", () => softwareClient);
+vi.mock("sonner", () => ({ toast: { error: vi.fn() } }));
 
 const apiClient = vi.hoisted(() => ({
   resolveSoftwareAvailability: vi.fn(),
@@ -53,6 +56,9 @@ vi.mock("@tanstack/react-router", () => ({
 vi.mock("@xyflow/react", () => ({
   Background: () => null,
   Controls: () => null,
+  Handle: () => null,
+  MarkerType: { ArrowClosed: "arrowclosed" },
+  Position: { Left: "left", Right: "right" },
   ReactFlow: ({
     children,
     nodes,
@@ -130,7 +136,9 @@ function wrapper() {
     defaultOptions: { queries: { retry: false, gcTime: 0 } },
   });
   return ({ children }: { children: ReactNode }) => (
-    <QueryClientProvider client={qc}>{children}</QueryClientProvider>
+    <QueryClientProvider client={qc}>
+      <ThemeProvider>{children}</ThemeProvider>
+    </QueryClientProvider>
   );
 }
 
@@ -161,6 +169,7 @@ const yaml = [
 
 afterEach(() => {
   vi.resetAllMocks();
+  vi.unstubAllGlobals();
 });
 
 beforeEach(() => {
@@ -323,6 +332,47 @@ describe("Software detail pages", () => {
       "/software/spack/upstream/elpa",
     );
     expect(screen.getByRole("link", { name: "Back" }).getAttribute("href")).toBe("/software#spack");
+  });
+
+  test("shows copied only after the clipboard write completes", async () => {
+    let finishCopy: (() => void) | undefined;
+    const writeText = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          finishCopy = resolve;
+        }),
+    );
+    vi.stubGlobal("navigator", { clipboard: { writeText } });
+    render(<SoftwareSpackDetailPage name="openfoam" source="upstream" />, { wrapper: wrapper() });
+    fireEvent.click(await screen.findByRole("button", { name: "Copy spec" }));
+    expect(writeText).toHaveBeenCalledWith("openfoam@2312");
+    expect(screen.queryByRole("button", { name: "software.detail.copied" })).toBeNull();
+    await act(async () => {
+      finishCopy?.();
+    });
+    expect(screen.getByRole("button", { name: "software.detail.copied" })).toBeDefined();
+    expect(toast.error).not.toHaveBeenCalled();
+  });
+
+  test.each([
+    "denied",
+    "unavailable",
+  ])("reports %s clipboard access and permits retry", async (access) => {
+    vi.stubGlobal("navigator", {
+      clipboard:
+        access === "denied"
+          ? { writeText: vi.fn().mockRejectedValue(new Error("Denied")) }
+          : undefined,
+    });
+    render(<SoftwareSpackDetailPage name="openfoam" source="upstream" />, { wrapper: wrapper() });
+    fireEvent.click(await screen.findByRole("button", { name: "Copy spec" }));
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith("software.detail.copyFailed"));
+    expect(screen.queryByRole("button", { name: "software.detail.copied" })).toBeNull();
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    vi.stubGlobal("navigator", { clipboard: { writeText } });
+    fireEvent.click(screen.getByRole("button", { name: "Copy spec" }));
+    await screen.findByRole("button", { name: "software.detail.copied" });
+    expect(writeText).toHaveBeenCalledWith("openfoam@2312");
   });
 
   test("renders Spack catalog query errors instead of not found", async () => {

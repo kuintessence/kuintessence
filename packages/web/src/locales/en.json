@@ -620,19 +620,19 @@
       "stepsLabel": "Workflow creation steps",
       "steps": {
         "edit": {
-          "title": "Edit workflow",
+          "title": "Workflow",
           "description": "Compose nodes and dependencies"
         },
         "inputs": {
-          "title": "Configure files and parameters",
+          "title": "Inputs",
           "description": "Provide all runtime inputs"
         },
         "resources": {
-          "title": "Configure compute resources",
+          "title": "Resources",
           "description": "Set scheduling and placement"
         },
         "review": {
-          "title": "Review and submit",
+          "title": "Review",
           "description": "Validate configuration and start"
         }
       },
@@ -1160,6 +1160,7 @@
       "openBoundPackage": "Open bound package",
       "installSpec": "Install spec",
       "copySpec": "Copy spec",
+      "copyFailed": "Copy failed. Check the browser clipboard permission.",
       "copied": "Copied",
       "homepage": "Open homepage",
       "packageIdentity": "Package identity",

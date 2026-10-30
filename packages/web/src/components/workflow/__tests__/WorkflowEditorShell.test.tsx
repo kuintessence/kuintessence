@@ -14,6 +14,10 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
+vi.mock("../../ThemeProvider", () => ({
+  useTheme: () => ({ resolved: "light" }),
+}));
+
 const { getSandboxScript, listSandboxScripts, listUsecasePackages } = vi.hoisted(() => ({
   getSandboxScript: vi.fn(),
   listSandboxScripts: vi.fn(),

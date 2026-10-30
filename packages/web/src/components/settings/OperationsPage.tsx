@@ -17,7 +17,7 @@ import { OperationsAttentionCards } from "./OperationsAttentionCards";
 import type { OperationsArea } from "./operations-capabilities";
 import { PlatformBrandingForm } from "./PlatformBrandingForm";
 import { SandboxSecurityPanel } from "./SandboxSecurityPanel";
-import { OperationsMap, OperationsSummary } from "./SettingsPage";
+import { OperationsMap } from "./SettingsPage";
 import { SSOConfigForm } from "./SSOConfigForm";
 
 const OPERATIONS_AREAS = new Set<OperationsArea>([
@@ -79,14 +79,8 @@ export function OperationsPage() {
         id="overview"
         className="scroll-mt-4"
         title={t("settings.operations.pageTitle")}
-        subtitle={t("settings.operations.pageSubtitle")}
       />
-      {activeArea ? null : (
-        <>
-          <OperationsSummary role={auth.role} capabilities={capabilities} />
-          <OperationsAttentionCards />
-        </>
-      )}
+      {activeArea ? null : <OperationsAttentionCards />}
       <OperationsConfiguration area={activeArea} role={auth.role} capabilities={capabilities} />
       {activeArea ? (
         <OperationsMap role={auth.role} areas={[activeArea]} capabilities={capabilities} />

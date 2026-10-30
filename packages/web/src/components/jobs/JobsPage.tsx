@@ -106,7 +106,6 @@ export function JobsPage({ agentId, onClearAgentFilter }: JobsPageProps = {}) {
     <PageShell data-testid="jobs-page" aria-busy={jobsQ.isFetching}>
       <PageHeader
         title={t("jobs.title")}
-        subtitle={t("jobs.subtitle")}
         actions={
           <span
             className="font-mono text-[11px] text-muted-foreground tabular-nums"

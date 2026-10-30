@@ -1,5 +1,5 @@
 import { EMPTY_PLATFORM_BRANDING, type PlatformBranding } from "@kuintessence/shared/browser";
-import { LoaderCircle, RefreshCw, ShieldCheck } from "lucide-react";
+import { LoaderCircle, RefreshCw } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import defaultLogoUrl from "../assets/logo.svg";
@@ -68,22 +68,17 @@ export function CapabilityLoadingOverlay({
         <h1 className="text-lg font-semibold">
           {failed ? t("workspace.capabilitiesFailed") : t("workspace.preparingWorkspace")}
         </h1>
-        <p className="mt-2 text-sm leading-6 text-muted-foreground">
-          {failed
-            ? t("workspace.capabilitiesFailedDescription")
-            : t("workspace.preparingWorkspaceDescription")}
-        </p>
+        {failed ? (
+          <p className="mt-2 text-sm leading-6 text-muted-foreground">
+            {t("workspace.capabilitiesFailedDescription")}
+          </p>
+        ) : null}
         {failed ? (
           <Button className="mt-5" onClick={onRetry}>
             <RefreshCw />
             {t("workspace.retryCapabilities")}
           </Button>
-        ) : (
-          <div className="mt-5 flex items-center gap-2 text-xs text-muted-foreground">
-            <ShieldCheck className="h-4 w-4 text-primary" />
-            {t("workspace.verifyingAccess")}
-          </div>
-        )}
+        ) : null}
       </div>
     </div>
   );

@@ -746,7 +746,7 @@ describe("SoftwarePage", () => {
 
     const empty = await screen.findByTestId("software-empty");
     expect(within(empty).getByText("No templates")).toBeDefined();
-    expect(screen.getByTestId("software-empty-placeholders").children).toHaveLength(3);
+    expect(screen.queryByTestId("software-empty-placeholders")).toBeNull();
     expect(
       within(empty).getByRole("link", { name: "New workflow template" }).getAttribute("href"),
     ).toBe("/software/workflow-templates/new");
@@ -754,15 +754,12 @@ describe("SoftwarePage", () => {
     expect(empty.textContent).not.toContain("docker-compose");
   });
 
-  test("keeps toolbar stats inline and role cards compact on medium screens", async () => {
+  test("keeps the toolbar focused on search without repeating catalog counts", async () => {
     render(<SoftwarePage />, { wrapper: wrapper() });
 
-    const stats = await screen.findByTestId("software-summary-stats");
-    expect(stats.className).toContain("inline-flex");
-    expect(stats.children).toHaveLength(3);
-    const overview = screen.getByTestId("software-overview");
-    expect(overview.className).toContain("grid-cols-2");
-    expect(overview.className).toContain("lg:grid-cols-4");
+    await screen.findByTestId("software-search");
+    expect(screen.queryByTestId("software-summary-stats")).toBeNull();
+    expect(screen.queryByTestId("software-overview")).toBeNull();
     const roleCards = screen.getByTestId("software-role-flow-panel");
     expect(roleCards.className).toContain("sm:grid-cols-2");
     expect(roleCards.className).toContain("2xl:grid-cols-4");
@@ -774,7 +771,7 @@ describe("SoftwarePage", () => {
     await activateTab("software-tab-usecases", "software-usecase-empty");
     const empty = screen.getByTestId("software-usecase-empty");
     expect(within(empty).getByText("No software usecases")).toBeDefined();
-    expect(screen.getByTestId("software-usecase-empty-placeholders").children).toHaveLength(3);
+    expect(screen.queryByTestId("software-usecase-empty-placeholders")).toBeNull();
     expect(
       within(empty).getByRole("link", { name: "New software usecase" }).getAttribute("href"),
     ).toBe("/software/usecases/new");
@@ -802,7 +799,7 @@ describe("SoftwarePage", () => {
     await activateTab("software-tab-spack", "software-spack-empty");
     const empty = screen.getByTestId("software-spack-empty");
     expect(within(empty).getByText("No Spack software")).toBeDefined();
-    expect(screen.getByTestId("software-spack-empty-placeholders").children).toHaveLength(3);
+    expect(screen.queryByTestId("software-spack-empty-placeholders")).toBeNull();
     expect(
       within(empty).getByRole("link", { name: "New Spack software" }).getAttribute("href"),
     ).toBe("/software/spack/new");
@@ -837,7 +834,7 @@ describe("SoftwarePage", () => {
     render(<SoftwarePage />, { wrapper: wrapper() });
 
     await screen.findByTestId("software-card-hello");
-    expect(screen.getByTestId("software-count").textContent).toBe("2 / 2");
+    expect(screen.queryByTestId("software-count")).toBeNull();
     expect(screen.getAllByText("Page 1 / 1").length).toBeGreaterThan(0);
     fireEvent.change(screen.getByTestId("software-search"), { target: { value: "pipeline" } });
     await waitFor(() => expect(screen.getByTestId("software-card-pipe")).toBeDefined());
@@ -898,7 +895,7 @@ describe("SoftwarePage", () => {
     expect(screen.getByTestId("software-error").textContent).not.toContain(
       "template list forbidden",
     );
-    expect(screen.getByTestId("software-count").textContent).toBe("0 / 0");
+    expect(screen.queryByTestId("software-count")).toBeNull();
     expect(
       (screen.getByTestId("software-create-template-link") as HTMLButtonElement).disabled,
     ).toBe(true);
@@ -1116,11 +1113,13 @@ describe("SoftwarePage", () => {
       );
     });
     expect(await screen.findByTestId("software-spack-package-metadata")).toBeDefined();
-    fireEvent.change(screen.getByPlaceholderText("Custom package"), {
+    fireEvent.change(screen.getByRole("textbox", { name: "Custom package" }), {
       target: { value: "lab-openfoam" },
     });
     fireEvent.change(screen.getByLabelText("Package source"), { target: { value: "vendor" } });
-    fireEvent.change(screen.getByPlaceholderText("Catalog tags"), { target: { value: "cfd,lab" } });
+    fireEvent.change(screen.getByRole("textbox", { name: "Catalog tags" }), {
+      target: { value: "cfd,lab" },
+    });
     fireEvent.submit(screen.getByTestId("software-spack-catalog-create-form"));
 
     await waitFor(() => {
@@ -1148,7 +1147,7 @@ describe("SoftwarePage", () => {
     const editForm = await screen.findByTestId(
       "software-spack-catalog-package-edit-form-catalog-official-cfd",
     );
-    fireEvent.change(within(editForm).getByPlaceholderText("Custom package"), {
+    fireEvent.change(within(editForm).getByRole("textbox", { name: "Custom package" }), {
       target: { value: "platform-cfd-updated" },
     });
     fireEvent.submit(editForm);
@@ -1297,8 +1296,10 @@ describe("SoftwarePage", () => {
     expect(router.navigate).not.toHaveBeenCalled();
     const form = await screen.findByTestId("software-template-edit-form-hello");
     expect(screen.getByText("Saving creates a new version")).toBeDefined();
-    expect((within(form).getByPlaceholderText("Version") as HTMLInputElement).value).toBe("0.1.1");
-    fireEvent.change(within(form).getByPlaceholderText("Template name"), {
+    expect((within(form).getByRole("textbox", { name: "Version" }) as HTMLInputElement).value).toBe(
+      "0.1.1",
+    );
+    fireEvent.change(within(form).getByRole("textbox", { name: "Template name" }), {
       target: { value: "Hello updated" },
     });
     fireEvent.submit(form);
@@ -1378,7 +1379,7 @@ advanced:
     await screen.findByTestId("software-card-hello");
     fireEvent.click(screen.getByTestId("software-edit-template-hello"));
     const form = await screen.findByTestId("software-template-edit-form-hello");
-    const nameInput = within(form).getByPlaceholderText("Template name");
+    const nameInput = within(form).getByRole("textbox", { name: "Template name" });
     fireEvent.change(nameInput, { target: { value: "Unsaved replacement" } });
     fireEvent.submit(form);
 
@@ -1412,8 +1413,10 @@ advanced:
     fireEvent.click(
       await screen.findByTestId("software-usecase-catalog-package-upstream-openfoam"),
     );
-    fireEvent.change(screen.getByPlaceholderText("Usecase name"), { target: { value: "solve" } });
-    fireEvent.change(screen.getByPlaceholderText("commandFile"), {
+    fireEvent.change(screen.getByRole("textbox", { name: "Usecase name" }), {
+      target: { value: "solve" },
+    });
+    fireEvent.change(screen.getByRole("textbox", { name: "commandFile" }), {
       target: { value: "simpleFoam" },
     });
     fireEvent.click(screen.getByTestId("software-usecase-open-spec-picker"));
@@ -1432,10 +1435,10 @@ advanced:
       target: { value: "openfoam/2312" },
     });
     fireEvent.click(screen.getByText("Apply spec"));
-    fireEvent.change(screen.getByPlaceholderText("input descriptor"), {
+    fireEvent.change(screen.getByRole("textbox", { name: "input descriptor" }), {
       target: { value: "caseDir" },
     });
-    fireEvent.change(screen.getByPlaceholderText("argument format"), {
+    fireEvent.change(screen.getByRole("textbox", { name: "argument format" }), {
       target: { value: "--case {}" },
     });
     fireEvent.submit(screen.getByTestId("software-usecase-form"));
@@ -1490,8 +1493,10 @@ advanced:
 
     fireEvent.click(pickerButton);
     expect(screen.queryByTestId("software-usecase-package-picker")).toBeNull();
-    fireEvent.change(screen.getByPlaceholderText("Usecase name"), { target: { value: "solve" } });
-    fireEvent.change(screen.getByPlaceholderText("commandFile"), {
+    fireEvent.change(screen.getByRole("textbox", { name: "Usecase name" }), {
+      target: { value: "solve" },
+    });
+    fireEvent.change(screen.getByRole("textbox", { name: "commandFile" }), {
       target: { value: "simpleFoam" },
     });
     fireEvent.submit(form);
@@ -1655,7 +1660,7 @@ advanced:
     await activateTab("software-tab-usecases", "software-usecase-list");
     fireEvent.click(screen.getByText("Edit"));
     const form = await screen.findByTestId("software-usecase-edit-form-uc-solve");
-    fireEvent.change(within(form).getByPlaceholderText("commandFile"), {
+    fireEvent.change(within(form).getByRole("textbox", { name: "commandFile" }), {
       target: { value: "blockMesh" },
     });
     fireEvent.submit(form);

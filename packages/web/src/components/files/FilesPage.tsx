@@ -434,7 +434,6 @@ export function FilesPage() {
     <PageShell data-testid="files-page">
       <PageHeader
         title={t("files.title")}
-        subtitle={t("files.subtitle")}
         actions={
           <>
             <div
@@ -644,12 +643,14 @@ export function FilesPage() {
           <span className="flex items-center gap-2">
             <ListChecks className="h-4 w-4 text-muted-foreground" />
             <span className="text-sm font-semibold">{t("files.transfers.recentTitle")}</span>
-            <span className="font-mono text-[11px] text-muted-foreground">
-              {t("files.transfers.totalActive", {
-                total: transfers.length,
-                active: activeTransferCount,
-              })}
-            </span>
+            {!showTransfers ? (
+              <span className="font-mono text-[11px] text-muted-foreground">
+                {t("files.transfers.totalActive", {
+                  total: transfers.length,
+                  active: activeTransferCount,
+                })}
+              </span>
+            ) : null}
           </span>
           {showTransfers ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
         </button>

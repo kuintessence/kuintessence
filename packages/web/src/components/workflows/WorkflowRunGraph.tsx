@@ -1,3 +1,4 @@
+import { Link } from "@tanstack/react-router";
 /**
  * Read-only React Flow view of a workflow run's persisted node/edge graph,
  * colored by each node's live status. Nodes cannot be dragged or connected,
@@ -29,10 +30,12 @@ export interface WorkflowRunGraphProps {
     edges: { source: string; target: string; when?: string }[];
   };
   statusByNode: Record<string, string>;
+  jobIdsByNode?: Record<string, string>;
 }
 
 interface RunNodeData extends Record<string, unknown> {
   nodeId: string;
+  jobId?: string;
   label: string;
   kind: string;
   status: string;
@@ -102,7 +105,21 @@ function RunNode({ data }: { data: RunNodeData }) {
         className="pointer-events-none !h-px !min-h-0 !w-px !min-w-0 !border-0 !bg-transparent !opacity-0"
       />
       <div className="flex items-center justify-between gap-2 text-xs font-medium text-foreground">
-        <span className="truncate">{data.label}</span>
+        {data.jobId ? (
+          <Link
+            to="/jobs/$jobId"
+            params={{ jobId: data.jobId }}
+            className="nodrag nopan min-w-0 truncate text-brand underline decoration-brand/40 underline-offset-2 focus-visible:outline-2 focus-visible:outline-ring"
+            title={data.label}
+            data-testid={`run-node-job-${data.nodeId}`}
+          >
+            {data.label}
+          </Link>
+        ) : (
+          <span className="truncate" title={data.label}>
+            {data.label}
+          </span>
+        )}
         <Badge variant={statusToBadgeVariant(variant)} className="shrink-0 text-[10px]">
           {t(`workflows.run.status.${variant}`, { defaultValue: data.status })}
         </Badge>
@@ -147,7 +164,7 @@ function layout(graph: WorkflowRunGraphProps["graph"]): Map<string, { x: number;
   return positions;
 }
 
-export function WorkflowRunGraph({ graph, statusByNode }: WorkflowRunGraphProps) {
+export function WorkflowRunGraph({ graph, statusByNode, jobIdsByNode }: WorkflowRunGraphProps) {
   const { resolved } = useTheme();
   const isDark = resolved === "dark";
 
@@ -159,12 +176,13 @@ export function WorkflowRunGraph({ graph, statusByNode }: WorkflowRunGraphProps)
       position: positions.get(node.id) ?? { x: 0, y: 0 },
       data: {
         nodeId: node.id,
+        jobId: jobIdsByNode?.[node.id],
         label: node.name,
         kind: node.kind,
         status: statusByNode[node.id] ?? "Pending",
       },
     }));
-  }, [graph, statusByNode]);
+  }, [graph, statusByNode, jobIdsByNode]);
 
   const rfEdges = useMemo<Edge[]>(
     () =>
@@ -197,6 +215,7 @@ export function WorkflowRunGraph({ graph, statusByNode }: WorkflowRunGraphProps)
       data-testid="run-graph-wrap"
     >
       <ReactFlow
+        colorMode={resolved}
         nodes={rfNodes}
         edges={rfEdges}
         nodeTypes={NODE_TYPES}

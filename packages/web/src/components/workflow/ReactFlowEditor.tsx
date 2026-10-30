@@ -36,6 +36,7 @@ import "@xyflow/react/dist/style.css";
 import type { workflowDsl } from "@kuintessence/shared/browser";
 import { type DragEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { GraphEdge, GraphNode, GraphNodeKind } from "../../lib/yaml-graph-sync";
+import { useTheme } from "../ThemeProvider";
 import { EDGE_TYPE_MAP, type WorkflowEdgeVisualData } from "./EdgeTypes";
 import { PALETTE_DRAG_MIME } from "./NodePalette";
 import { ConnectionAssistProvider, NODE_TYPE_MAP } from "./NodeTypes";
@@ -236,6 +237,7 @@ export function ReactFlowEditor({
   onConnectionPaletteHover,
   flowAnimationMode = "hover",
 }: ReactFlowEditorProps) {
+  const { resolved } = useTheme();
   const wrapperRef = useRef<HTMLDivElement | null>(null);
   const [pendingRelation, setPendingRelation] = useState<{
     source: string;
@@ -676,6 +678,7 @@ export function ReactFlowEditor({
           }}
         >
           <ReactFlow
+            colorMode={resolved}
             nodes={rfNodes}
             edges={rfEdges}
             nodeTypes={nodeTypes}

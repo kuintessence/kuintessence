@@ -524,9 +524,6 @@ export const WorkflowInputsStep = forwardRef<WorkflowInputsStepHandle, WorkflowI
           <CardHeader>
             <div>
               <CardTitle>{t("workflows.creation.inputs.parametersTitle")}</CardTitle>
-              <p className="mt-1 text-sm text-muted-foreground">
-                {t("workflows.creation.inputs.parametersDescription")}
-              </p>
             </div>
           </CardHeader>
           <CardContent>
@@ -575,10 +572,11 @@ export const WorkflowInputsStep = forwardRef<WorkflowInputsStepHandle, WorkflowI
                         data-testid={`workflow-value-${requirement.key}`}
                       />
                     )}
-                    <span className="block text-xs leading-5 text-muted-foreground">
-                      {requirement.description ??
-                        t("workflows.creation.inputs.valueHint", { label: requirement.label })}
-                    </span>
+                    {requirement.description ? (
+                      <span className="block text-xs leading-5 text-muted-foreground">
+                        {requirement.description}
+                      </span>
+                    ) : null}
                   </label>
                 ))}
               </div>
@@ -589,9 +587,6 @@ export const WorkflowInputsStep = forwardRef<WorkflowInputsStepHandle, WorkflowI
         <Card className="rounded-md shadow-none">
           <CardHeader>
             <CardTitle>{t("workflows.creation.inputs.datasetsTitle")}</CardTitle>
-            <p className="mt-1 text-sm text-muted-foreground">
-              {t("workflows.creation.inputs.datasetsDescription")}
-            </p>
           </CardHeader>
           <CardContent className="space-y-3" data-testid="workflow-dataset-requirements">
             {model.datasets.length === 0 ? (

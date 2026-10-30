@@ -382,11 +382,6 @@ export function WorkflowEditorShell({ actions, value, onChange }: WorkflowEditor
           <h3 className="text-base font-semibold">
             {t("workflow.editor.title", { defaultValue: "Workflow editor" })}
           </h3>
-          <p className="mt-1 text-xs text-muted-foreground">
-            {t("workflow.editor.subtitle", {
-              defaultValue: "Drag-drop nodes, YAML stays in sync.",
-            })}
-          </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
           {error ? (

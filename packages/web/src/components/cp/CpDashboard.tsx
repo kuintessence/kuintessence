@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 import { useCpDashboard } from "../../lib/use-cp-dashboard";
 import { toUserFacingError } from "../../lib/user-facing-error";
 import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
+import { PageHeader } from "../ui/page";
 import { CpAttentionCards } from "./CpAttentionCards";
 import { KpiTile } from "./KpiTile";
 
@@ -46,12 +47,7 @@ export function CpDashboard() {
 
   return (
     <div className="space-y-6" data-testid="cp-dashboard">
-      <div className="flex items-baseline justify-between gap-4">
-        <div>
-          <h2 className="text-2xl font-semibold tracking-tight">{t("cp.dashboard.title")}</h2>
-          <p className="text-sm text-muted-foreground">{t("cp.dashboard.subtitle")}</p>
-        </div>
-      </div>
+      <PageHeader title={t("cp.dashboard.title")} />
 
       <div className="grid grid-cols-2 gap-2 md:grid-cols-4 xl:grid-cols-7">
         <KpiTile

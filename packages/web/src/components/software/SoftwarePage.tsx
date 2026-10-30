@@ -17,7 +17,6 @@ import {
   Eye,
   FlaskConical,
   GitBranch,
-  Layers3,
   Loader2,
   PackagePlus,
   RefreshCw,
@@ -31,7 +30,7 @@ import {
   X,
 } from "lucide-react";
 import type { ReactNode } from "react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { useActiveOrganizationId } from "../../lib/active-organization";
@@ -283,33 +282,6 @@ function getActiveCreateLink(tab: SoftwareTab): {
   };
 }
 
-function getActiveCount({
-  activeTab,
-  spackCatalog,
-  visibleSpackCount,
-  totalTemplateCount,
-  totalUsecaseCount,
-  totalScriptCount,
-  visibleTemplateCount,
-  visibleUsecaseCount,
-  visibleScriptCount,
-}: {
-  activeTab: SoftwareTab;
-  spackCatalog: SpackCatalog | null;
-  visibleSpackCount: number;
-  totalTemplateCount: number;
-  totalUsecaseCount: number;
-  totalScriptCount: number;
-  visibleTemplateCount: number;
-  visibleUsecaseCount: number;
-  visibleScriptCount: number;
-}): string {
-  if (activeTab === "scripts") return `${visibleScriptCount} / ${totalScriptCount}`;
-  if (activeTab === "usecases") return `${visibleUsecaseCount} / ${totalUsecaseCount}`;
-  if (activeTab === "spack") return `${visibleSpackCount} / ${spackCatalog?.totalCount ?? 0}`;
-  return `${visibleTemplateCount} / ${totalTemplateCount}`;
-}
-
 function isSoftwareTab(value: string): value is SoftwareTab {
   return value === "templates" || value === "usecases" || value === "spack" || value === "scripts";
 }
@@ -337,7 +309,6 @@ export function SoftwarePage() {
   const [spackCatalogSearch, setSpackCatalogSearch] = useState("");
   const [spackCatalogSource, setSpackCatalogSource] = useState<SpackCatalogSourceFilter>("all");
   const [spackCatalogPage, setSpackCatalogPage] = useState(1);
-  const [scriptCounts, setScriptCounts] = useState({ total: 0, visible: 0 });
   const { favorites, toggleFavorite } = useSoftwareFavorites();
   const activeOrganizationId = useActiveOrganizationId();
   const templatesQ = useQuery({
@@ -461,17 +432,6 @@ export function SoftwarePage() {
   const activeCreateLink = getActiveCreateLink(activeTab);
   const canCreateActiveArtifact =
     canManageOrganization && (activeTab !== "templates" || canManagePlatform);
-  const activeCount = getActiveCount({
-    activeTab,
-    spackCatalog,
-    totalTemplateCount: templatePageResult?.total ?? 0,
-    totalUsecaseCount: usecasePageResult?.total ?? 0,
-    totalScriptCount: scriptCounts.total,
-    visibleSpackCount: visibleSpackPackages.length,
-    visibleTemplateCount: visibleTemplates.length,
-    visibleUsecaseCount: visibleUsecases.length,
-    visibleScriptCount: scriptCounts.visible,
-  });
   const updateActiveTab = (tab: SoftwareTab) => {
     void navigate({ to: "/software", hash: SOFTWARE_SECTION_HASH[tab] });
   };
@@ -634,15 +594,8 @@ export function SoftwarePage() {
     <PageShell data-testid="software-page">
       <PageHeader
         title={t("software.title")}
-        subtitle={t("software.subtitle")}
         actions={
           <>
-            <span
-              className="rounded-md border border-border bg-card px-2.5 py-1.5 font-mono text-[11px] text-muted-foreground tabular-nums"
-              data-testid="software-count"
-            >
-              {activeCount}
-            </span>
             {canCreateActiveArtifact ? (
               activeDirectoryError ? (
                 <Button size="sm" disabled data-testid={activeCreateLink.testId}>
@@ -670,16 +623,6 @@ export function SoftwarePage() {
             </Button>
           </>
         }
-      />
-
-      <SoftwareOverview
-        activeTab={activeTab}
-        catalog={spackCatalog}
-        templateCount={templatePageResult?.total ?? 0}
-        usecaseCount={usecases.length}
-        visibleSpackCount={visibleSpackPackages.length}
-        visibleTemplateCount={visibleTemplates.length}
-        visibleUsecaseCount={visibleUsecases.length}
       />
 
       {canManagePlatform ? (
@@ -714,9 +657,6 @@ export function SoftwarePage() {
       >
         <summary className="cursor-pointer rounded-lg px-4 py-3 text-sm font-medium focus-visible:outline-2 focus-visible:outline-ring">
           {t("software.management")}
-          <span className="ml-3 text-xs font-normal text-muted-foreground">
-            {t("software.managementDescription")}
-          </span>
         </summary>
         <div className="kq-motion--disclosure space-y-4 border-t border-border p-4">
           <SoftwareRoleFlowPanel
@@ -782,15 +722,9 @@ export function SoftwarePage() {
             setSpackCatalogSearch={updateSpackCatalogSearch}
             setSpackCatalogSource={updateSpackCatalogSource}
             setUsecaseSearch={updateUsecaseSearch}
-            spackCatalog={spackCatalog}
             spackCatalogSearch={spackCatalogSearch}
             spackCatalogSource={spackCatalogSource}
             tags={tags}
-            totalTemplateCount={templatePageResult?.total ?? 0}
-            totalUsecaseCount={usecasePageResult?.total ?? 0}
-            totalVisibleSpackCount={visibleSpackPackages.length}
-            totalVisibleTemplateCount={visibleTemplates.length}
-            totalVisibleUsecaseCount={visibleUsecases.length}
             usecaseSearch={usecaseSearch}
           />
           <TabsContent value="templates">
@@ -877,7 +811,7 @@ export function SoftwarePage() {
             />
           </TabsContent>
           <TabsContent value="scripts">
-            <SandboxScriptCatalog embedded onCountsChange={setScriptCounts} />
+            <SandboxScriptCatalog embedded />
           </TabsContent>
         </Tabs>
       )}
@@ -894,15 +828,9 @@ function SoftwareStickyControls({
   setSpackCatalogSearch,
   setSpackCatalogSource,
   setUsecaseSearch,
-  spackCatalog,
   spackCatalogSearch,
   spackCatalogSource,
   tags,
-  totalTemplateCount,
-  totalUsecaseCount,
-  totalVisibleSpackCount,
-  totalVisibleTemplateCount,
-  totalVisibleUsecaseCount,
   usecaseSearch,
 }: {
   activeTab: SoftwareTab;
@@ -913,15 +841,9 @@ function SoftwareStickyControls({
   setSpackCatalogSearch: (value: string) => void;
   setSpackCatalogSource: (value: SpackCatalogSourceFilter) => void;
   setUsecaseSearch: (value: string) => void;
-  spackCatalog: SpackCatalog | null;
   spackCatalogSearch: string;
   spackCatalogSource: SpackCatalogSourceFilter;
   tags: string[];
-  totalTemplateCount: number;
-  totalUsecaseCount: number;
-  totalVisibleSpackCount: number;
-  totalVisibleTemplateCount: number;
-  totalVisibleUsecaseCount: number;
   usecaseSearch: string;
 }) {
   const { t } = useTranslation();
@@ -1011,60 +933,38 @@ function SoftwareStickyControls({
         {activeTab === "templates" ? (
           <ListToolbar
             activeTag={activeTag}
-            favoritesOnly={false}
             search={search}
             searchPlaceholder={t("software.searchPlaceholder")}
             searchTestId="software-search"
             setActiveTag={setActiveTag}
-            setFavoritesOnly={() => undefined}
             setSearch={setSearch}
-            stats={[
-              { label: t("software.summary.total"), value: String(totalTemplateCount) },
-              { label: t("software.summary.visible"), value: String(totalVisibleTemplateCount) },
-              { label: t("software.summary.tags"), value: String(tags.length) },
-            ]}
             tagTestId="software-tag-filters"
             tags={tags}
-            showFavorites={false}
             variant={fixedFrame.fixed ? "sticky" : "card"}
           />
         ) : null}
         {activeTab === "usecases" ? (
           <ListToolbar
             activeTag={null}
-            favoritesOnly={false}
             search={usecaseSearch}
             searchPlaceholder={t("software.usecaseSearchPlaceholder")}
             searchTestId="software-usecase-search"
             setActiveTag={() => undefined}
-            setFavoritesOnly={() => undefined}
             setSearch={setUsecaseSearch}
-            stats={[
-              { label: t("software.summary.total"), value: String(totalUsecaseCount) },
-              { label: t("software.summary.visible"), value: String(totalVisibleUsecaseCount) },
-            ]}
             tags={[]}
-            showFavorites={false}
             variant={fixedFrame.fixed ? "sticky" : "card"}
           />
         ) : null}
         {activeTab === "spack" ? (
           <ListToolbar
             activeTag={null}
-            favoritesOnly={false}
             search={spackCatalogSearch}
             searchPlaceholder={t("software.manage.catalogSearch")}
             searchTestId="software-spack-catalog-search"
             setActiveTag={() => undefined}
-            setFavoritesOnly={() => undefined}
             setSearch={setSpackCatalogSearch}
-            stats={[
-              { label: t("software.summary.total"), value: String(spackCatalog?.totalCount ?? 0) },
-              { label: t("software.summary.visible"), value: String(totalVisibleSpackCount) },
-            ]}
             tagTestId="software-spack-tag-filters"
             tags={[]}
-            showFavorites={false}
             variant={fixedFrame.fixed ? "sticky" : "card"}
           >
             {(["all", "upstream", "official", "vendor"] satisfies SpackCatalogSourceFilter[]).map(
@@ -1083,79 +983,6 @@ function SoftwareStickyControls({
           </ListToolbar>
         ) : null}
       </div>
-    </div>
-  );
-}
-
-function SummaryStat({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="inline-flex shrink-0 items-baseline gap-1 px-2.5 py-1.5">
-      <span className="font-mono text-sm font-semibold text-foreground tabular-nums">{value}</span>
-      <span>{label}</span>
-    </div>
-  );
-}
-
-function SoftwareOverview({
-  activeTab,
-  catalog,
-  templateCount,
-  usecaseCount,
-}: {
-  activeTab: SoftwareTab;
-  catalog: SpackCatalog | null;
-  templateCount: number;
-  usecaseCount: number;
-  visibleSpackCount: number;
-  visibleTemplateCount: number;
-  visibleUsecaseCount: number;
-}) {
-  const { t } = useTranslation();
-  const cards = [
-    {
-      key: "templates",
-      icon: <Workflow />,
-      label: t("software.tabs.templates"),
-      primary: String(templateCount),
-    },
-    {
-      key: "usecases",
-      icon: <FlaskConical />,
-      label: t("software.tabs.usecases"),
-      primary: String(usecaseCount),
-    },
-    {
-      key: "spack",
-      icon: <Boxes />,
-      label: t("software.tabs.spack"),
-      primary: String(catalog?.packageCount ?? 0),
-    },
-    {
-      key: "mirror",
-      icon: <Layers3 />,
-      label: t("software.overview.mirror"),
-      primary: catalog?.sourceRef ?? "—",
-    },
-  ];
-  return (
-    <div className="grid grid-cols-2 gap-2 lg:grid-cols-4" data-testid="software-overview">
-      {cards.map((card) => (
-        <div
-          key={card.key}
-          className={cn(
-            "min-w-0 rounded-md border border-border bg-card p-3",
-            activeTab === card.key && "border-brand bg-brand-soft/40",
-          )}
-        >
-          <div className="flex items-center gap-2 text-xs text-muted-foreground">
-            <span className="[&_svg]:h-3.5 [&_svg]:w-3.5">{card.icon}</span>
-            <span className="truncate">{card.label}</span>
-          </div>
-          <div className="mt-2 truncate font-mono text-xl font-semibold text-foreground">
-            {card.primary}
-          </div>
-        </div>
-      ))}
     </div>
   );
 }
@@ -1465,30 +1292,22 @@ function TagButton({
 function ListToolbar({
   activeTag,
   children,
-  favoritesOnly,
   search,
   searchPlaceholder,
   searchTestId,
   setActiveTag,
-  setFavoritesOnly,
   setSearch,
-  showFavorites = true,
-  stats,
   tagTestId,
   tags,
   variant = "card",
 }: {
   activeTag: string | null;
   children?: ReactNode;
-  favoritesOnly: boolean;
   search: string;
   searchPlaceholder: string;
   searchTestId: string;
   setActiveTag: (tag: string | null) => void;
-  setFavoritesOnly: (value: boolean) => void;
   setSearch: (value: string) => void;
-  showFavorites?: boolean;
-  stats: Array<{ label: string; value: string }>;
   tagTestId?: string;
   tags: string[];
   variant?: "card" | "sticky";
@@ -1521,29 +1340,6 @@ function ListToolbar({
               <X className="h-3.5 w-3.5" />
             </button>
           ) : null}
-        </div>
-        <div className="flex flex-wrap items-center justify-end gap-2">
-          {showFavorites ? (
-            <Button
-              type="button"
-              variant={favoritesOnly ? "default" : "outline"}
-              size="sm"
-              onClick={() => setFavoritesOnly(!favoritesOnly)}
-              aria-pressed={favoritesOnly}
-              data-testid="software-favorites-only"
-            >
-              <Star className={cn(favoritesOnly && "fill-current")} />
-              {t("software.favoritesOnly")}
-            </Button>
-          ) : null}
-          <div
-            className="inline-flex max-w-full divide-x divide-border overflow-x-auto rounded-md border border-border bg-background text-xs text-muted-foreground"
-            data-testid="software-summary-stats"
-          >
-            {stats.map((stat) => (
-              <SummaryStat key={stat.label} label={stat.label} value={stat.value} />
-            ))}
-          </div>
         </div>
       </div>
       {tags.length > 0 || children ? (
@@ -1766,6 +1562,7 @@ export function WorkflowTemplateForm({
   onSubmit: (payload: WorkflowTemplateCreate) => void;
 }) {
   const { t } = useTranslation();
+  const id = useId();
   const [name, setName] = useState("");
   const [version, setVersion] = useState("0.1.0");
   const [description, setDescription] = useState("");
@@ -1789,33 +1586,41 @@ export function WorkflowTemplateForm({
     >
       <FormHeader icon={<PackagePlus />} title={t("software.manage.publishTemplate")} />
       <div className="grid gap-2 md:grid-cols-[1fr_140px]">
-        <Input
-          value={name}
-          onChange={(e) => setName(e.target.value)}
-          placeholder={t("software.manage.templateName")}
-        />
-        <Input
-          value={version}
-          onChange={(e) => setVersion(e.target.value)}
-          placeholder={t("software.manage.version")}
-        />
+        <label htmlFor={`${id}-name`} className="grid min-w-0 gap-1.5 text-sm">
+          <span>{t("software.manage.templateName")}</span>
+          <Input id={`${id}-name`} value={name} onChange={(e) => setName(e.target.value)} />
+        </label>
+        <label htmlFor={`${id}-version`} className="grid min-w-0 gap-1.5 text-sm">
+          <span>{t("software.manage.version")}</span>
+          <Input
+            id={`${id}-version`}
+            value={version}
+            onChange={(e) => setVersion(e.target.value)}
+          />
+        </label>
       </div>
-      <Input
-        value={description}
-        onChange={(e) => setDescription(e.target.value)}
-        placeholder={t("software.manage.description")}
-      />
-      <Input
-        value={tags}
-        onChange={(e) => setTags(e.target.value)}
-        placeholder={t("software.manage.tags")}
-      />
-      <Textarea
-        value={yamlContent}
-        onChange={(e) => setYamlContent(e.target.value)}
-        placeholder={t("software.manage.yamlPlaceholder")}
-        className="min-h-28 font-mono text-xs"
-      />
+      <label htmlFor={`${id}-description`} className="grid min-w-0 gap-1.5 text-sm">
+        <span>{t("software.manage.description")}</span>
+        <Input
+          id={`${id}-description`}
+          value={description}
+          onChange={(e) => setDescription(e.target.value)}
+        />
+      </label>
+      <label htmlFor={`${id}-tags`} className="grid min-w-0 gap-1.5 text-sm">
+        <span>{t("software.manage.tags")}</span>
+        <Input id={`${id}-tags`} value={tags} onChange={(e) => setTags(e.target.value)} />
+      </label>
+      <label htmlFor={`${id}-yamlContent`} className="grid min-w-0 gap-1.5 text-sm">
+        <span>{t("software.detail.yamlSource")}</span>
+        <Textarea
+          id={`${id}-yamlContent`}
+          value={yamlContent}
+          onChange={(e) => setYamlContent(e.target.value)}
+          placeholder={t("software.manage.yamlPlaceholder")}
+          className="min-h-28 font-mono text-xs"
+        />
+      </label>
       <div className="flex justify-end">
         <Button type="submit" size="sm" disabled={isPending}>
           <GitBranch />
@@ -1838,6 +1643,7 @@ function WorkflowTemplateEditForm({
   template: WorkflowTemplate;
 }) {
   const { t } = useTranslation();
+  const id = useId();
   const [name, setName] = useState(template.name);
   const [version, setVersion] = useState(() => suggestNextTemplateVersion(template.version));
   const [description, setDescription] = useState(template.description ?? "");
@@ -1861,33 +1667,41 @@ function WorkflowTemplateEditForm({
     >
       <FormHeader icon={<Edit3 />} title={t("software.manage.publishTemplateVersion")} />
       <div className="grid gap-2 md:grid-cols-[1fr_140px]">
-        <Input
-          value={name}
-          onChange={(e) => setName(e.target.value)}
-          placeholder={t("software.manage.templateName")}
-        />
-        <Input
-          value={version}
-          onChange={(e) => setVersion(e.target.value)}
-          placeholder={t("software.manage.version")}
-        />
+        <label htmlFor={`${id}-name`} className="grid min-w-0 gap-1.5 text-sm">
+          <span>{t("software.manage.templateName")}</span>
+          <Input id={`${id}-name`} value={name} onChange={(e) => setName(e.target.value)} />
+        </label>
+        <label htmlFor={`${id}-version`} className="grid min-w-0 gap-1.5 text-sm">
+          <span>{t("software.manage.version")}</span>
+          <Input
+            id={`${id}-version`}
+            value={version}
+            onChange={(e) => setVersion(e.target.value)}
+          />
+        </label>
       </div>
-      <Input
-        value={description}
-        onChange={(e) => setDescription(e.target.value)}
-        placeholder={t("software.manage.description")}
-      />
-      <Input
-        value={tags}
-        onChange={(e) => setTags(e.target.value)}
-        placeholder={t("software.manage.tags")}
-      />
-      <Textarea
-        value={yamlContent}
-        onChange={(e) => setYamlContent(e.target.value)}
-        placeholder={t("software.manage.yamlPlaceholder")}
-        className="min-h-28 font-mono text-xs"
-      />
+      <label htmlFor={`${id}-description`} className="grid min-w-0 gap-1.5 text-sm">
+        <span>{t("software.manage.description")}</span>
+        <Input
+          id={`${id}-description`}
+          value={description}
+          onChange={(e) => setDescription(e.target.value)}
+        />
+      </label>
+      <label htmlFor={`${id}-tags`} className="grid min-w-0 gap-1.5 text-sm">
+        <span>{t("software.manage.tags")}</span>
+        <Input id={`${id}-tags`} value={tags} onChange={(e) => setTags(e.target.value)} />
+      </label>
+      <label htmlFor={`${id}-yamlContent`} className="grid min-w-0 gap-1.5 text-sm">
+        <span>{t("software.detail.yamlSource")}</span>
+        <Textarea
+          id={`${id}-yamlContent`}
+          value={yamlContent}
+          onChange={(e) => setYamlContent(e.target.value)}
+          placeholder={t("software.manage.yamlPlaceholder")}
+          className="min-h-28 font-mono text-xs"
+        />
+      </label>
       <div className="flex justify-end gap-2">
         <Button type="button" variant="outline" size="sm" onClick={onCancel} disabled={isPending}>
           <Undo2 />
@@ -2063,6 +1877,7 @@ export function UsecasePackageForm({
   setCatalogSource: (value: SpackCatalogSourceFilter) => void;
 }) {
   const { t } = useTranslation();
+  const id = useId();
   const [name, setName] = useState("");
   const [version, setVersion] = useState("0.1.0");
   const [description, setDescription] = useState("");
@@ -2138,27 +1953,35 @@ export function UsecasePackageForm({
         </div>
       ) : null}
       <div className="grid gap-2 md:grid-cols-[1fr_120px]">
-        <Input
-          value={name}
-          onChange={(e) => setName(e.target.value)}
-          placeholder={t("software.manage.usecaseName")}
-        />
-        <Input
-          value={version}
-          onChange={(e) => setVersion(e.target.value)}
-          placeholder={t("software.manage.version")}
-        />
+        <label htmlFor={`${id}-name`} className="grid min-w-0 gap-1.5 text-sm">
+          <span>{t("software.manage.usecaseName")}</span>
+          <Input id={`${id}-name`} value={name} onChange={(e) => setName(e.target.value)} />
+        </label>
+        <label htmlFor={`${id}-version`} className="grid min-w-0 gap-1.5 text-sm">
+          <span>{t("software.manage.version")}</span>
+          <Input
+            id={`${id}-version`}
+            value={version}
+            onChange={(e) => setVersion(e.target.value)}
+          />
+        </label>
       </div>
-      <Input
-        value={description}
-        onChange={(e) => setDescription(e.target.value)}
-        placeholder={t("software.manage.description")}
-      />
-      <Input
-        value={commandFile}
-        onChange={(e) => setCommandFile(e.target.value)}
-        placeholder={t("software.manage.commandFile")}
-      />
+      <label htmlFor={`${id}-description`} className="grid min-w-0 gap-1.5 text-sm">
+        <span>{t("software.manage.description")}</span>
+        <Input
+          id={`${id}-description`}
+          value={description}
+          onChange={(e) => setDescription(e.target.value)}
+        />
+      </label>
+      <label htmlFor={`${id}-commandFile`} className="grid min-w-0 gap-1.5 text-sm">
+        <span>{t("software.manage.commandFile")}</span>
+        <Input
+          id={`${id}-commandFile`}
+          value={commandFile}
+          onChange={(e) => setCommandFile(e.target.value)}
+        />
+      </label>
       <CatalogPackagePickerField
         disabled={catalogUnavailable}
         selected={selectedPackage}
@@ -2202,16 +2025,22 @@ export function UsecasePackageForm({
         variants={variants}
       />
       <div className="grid gap-2 md:grid-cols-2">
-        <Input
-          value={inputDescriptor}
-          onChange={(e) => setInputDescriptor(e.target.value)}
-          placeholder={t("software.manage.inputDescriptor")}
-        />
-        <Input
-          value={argumentFormat}
-          onChange={(e) => setArgumentFormat(e.target.value)}
-          placeholder={t("software.manage.argumentFormat")}
-        />
+        <label htmlFor={`${id}-inputDescriptor`} className="grid min-w-0 gap-1.5 text-sm">
+          <span>{t("software.manage.inputDescriptor")}</span>
+          <Input
+            id={`${id}-inputDescriptor`}
+            value={inputDescriptor}
+            onChange={(e) => setInputDescriptor(e.target.value)}
+          />
+        </label>
+        <label htmlFor={`${id}-argumentFormat`} className="grid min-w-0 gap-1.5 text-sm">
+          <span>{t("software.manage.argumentFormat")}</span>
+          <Input
+            id={`${id}-argumentFormat`}
+            value={argumentFormat}
+            onChange={(e) => setArgumentFormat(e.target.value)}
+          />
+        </label>
       </div>
       <div className="flex justify-end">
         <Button
@@ -2380,6 +2209,7 @@ function SpackSpecConfigSheet({
   variants: string;
 }) {
   const { t } = useTranslation();
+  const id = useId();
   const preview = packageName
     ? makeSpackSpecPreview(packageName, softwareVersion, compiler, variants)
     : "";
@@ -2409,30 +2239,42 @@ function SpackSpecConfigSheet({
           ) : null}
           <CompilerParseBox onCompilerChange={onCompilerChange} />
           <div className="grid gap-2 md:grid-cols-2">
-            <Input
-              value={softwareVersion}
-              onChange={(e) => onSoftwareVersionChange(e.target.value)}
-              placeholder={t("software.manage.softwareVersion")}
-              data-testid="software-usecase-spec-version"
-            />
-            <Input
-              value={compiler}
-              onChange={(e) => onCompilerChange(e.target.value)}
-              placeholder={t("software.manage.compiler")}
-              data-testid="software-usecase-spec-compiler"
-            />
-            <Input
-              value={moduleName}
-              onChange={(e) => onModuleNameChange(e.target.value)}
-              placeholder={t("software.manage.module")}
-              data-testid="software-usecase-spec-module"
-            />
-            <Input
-              value={variants}
-              onChange={(e) => onVariantsChange(e.target.value)}
-              placeholder={t("software.manage.variants")}
-              data-testid="software-usecase-spec-variants"
-            />
+            <label htmlFor={`${id}-softwareVersion`} className="grid min-w-0 gap-1.5 text-sm">
+              <span>{t("software.manage.softwareVersion")}</span>
+              <Input
+                id={`${id}-softwareVersion`}
+                value={softwareVersion}
+                onChange={(e) => onSoftwareVersionChange(e.target.value)}
+                data-testid="software-usecase-spec-version"
+              />
+            </label>
+            <label htmlFor={`${id}-compiler`} className="grid min-w-0 gap-1.5 text-sm">
+              <span>{t("software.manage.compiler")}</span>
+              <Input
+                id={`${id}-compiler`}
+                value={compiler}
+                onChange={(e) => onCompilerChange(e.target.value)}
+                data-testid="software-usecase-spec-compiler"
+              />
+            </label>
+            <label htmlFor={`${id}-moduleName`} className="grid min-w-0 gap-1.5 text-sm">
+              <span>{t("software.manage.module")}</span>
+              <Input
+                id={`${id}-moduleName`}
+                value={moduleName}
+                onChange={(e) => onModuleNameChange(e.target.value)}
+                data-testid="software-usecase-spec-module"
+              />
+            </label>
+            <label htmlFor={`${id}-variants`} className="grid min-w-0 gap-1.5 text-sm">
+              <span>{t("software.manage.variants")}</span>
+              <Input
+                id={`${id}-variants`}
+                value={variants}
+                onChange={(e) => onVariantsChange(e.target.value)}
+                data-testid="software-usecase-spec-variants"
+              />
+            </label>
           </div>
           <div className="flex justify-end">
             <Button type="button" size="sm" onClick={() => onOpenChange(false)}>
@@ -3258,6 +3100,7 @@ export function SpackCatalogPackageForm({
   onSubmit: (payload: SpackCatalogPackageCreate) => void;
 }) {
   const { t } = useTranslation();
+  const id = useId();
   const [name, setName] = useState("");
   const [source, setSource] = useState<SpackCatalogPackageCreate["source"]>("official");
   const [description, setDescription] = useState("");
@@ -3298,38 +3141,48 @@ export function SpackCatalogPackageForm({
       }}
     >
       <div className="grid gap-2 md:grid-cols-[1fr_150px]">
-        <Input
-          value={name}
-          onChange={(e) => setName(e.target.value)}
-          placeholder={t("software.manage.catalogPackageName")}
-        />
-        <select
-          className="h-9 rounded-md border border-border bg-card px-3 text-sm text-foreground"
-          value={source}
-          onChange={(e) => setSource(e.target.value as SpackCatalogPackageCreate["source"])}
-          aria-label={t("software.manage.catalogPackageSource")}
-        >
-          <option value="official">{sourceLabel(t, "official")}</option>
-          <option value="vendor">{sourceLabel(t, "vendor")}</option>
-        </select>
+        <label htmlFor={`${id}-name`} className="grid min-w-0 gap-1.5 text-sm">
+          <span>{t("software.manage.catalogPackageName")}</span>
+          <Input id={`${id}-name`} value={name} onChange={(e) => setName(e.target.value)} />
+        </label>
+        <label htmlFor={`${id}-source`} className="grid min-w-0 gap-1.5 text-sm">
+          <span>{t("software.manage.catalogPackageSource")}</span>
+          <select
+            id={`${id}-source`}
+            className="h-9 rounded-md border border-border bg-card px-3 text-sm text-foreground"
+            value={source}
+            onChange={(e) => setSource(e.target.value as SpackCatalogPackageCreate["source"])}
+            aria-label={t("software.manage.catalogPackageSource")}
+          >
+            <option value="official">{sourceLabel(t, "official")}</option>
+            <option value="vendor">{sourceLabel(t, "vendor")}</option>
+          </select>
+        </label>
       </div>
       {source === "vendor" && requiresActiveOrganizationForVendor ? (
         <div className="text-xs text-status-failed">
           {t("software.manage.activeOrganizationRequired")}
         </div>
       ) : null}
-      <Input
-        value={description}
-        onChange={(e) => setDescription(e.target.value)}
-        placeholder={t("software.manage.catalogPackageDescription")}
-      />
-      <Textarea
-        value={packageFile}
-        onChange={(e) => setPackageFile(e.target.value)}
-        placeholder={t("software.manage.packageFilePlaceholder")}
-        className="min-h-32 font-mono text-xs"
-        data-testid="software-spack-package-file"
-      />
+      <label htmlFor={`${id}-description`} className="grid min-w-0 gap-1.5 text-sm">
+        <span>{t("software.manage.catalogPackageDescription")}</span>
+        <Input
+          id={`${id}-description`}
+          value={description}
+          onChange={(e) => setDescription(e.target.value)}
+        />
+      </label>
+      <label htmlFor={`${id}-packageFile`} className="grid min-w-0 gap-1.5 text-sm">
+        <span>package.py</span>
+        <Textarea
+          id={`${id}-packageFile`}
+          value={packageFile}
+          onChange={(e) => setPackageFile(e.target.value)}
+          placeholder={t("software.manage.packageFilePlaceholder")}
+          className="min-h-32 font-mono text-xs"
+          data-testid="software-spack-package-file"
+        />
+      </label>
       <div className="flex flex-wrap items-center gap-2">
         <Button
           type="button"
@@ -3344,12 +3197,11 @@ export function SpackCatalogPackageForm({
         {parseError ? <span className="text-xs text-status-failed">{parseError}</span> : null}
       </div>
       {metadata ? <SpackPackageMetadataSummary metadata={metadata} /> : null}
-      <div className="grid gap-2 md:grid-cols-[1fr_auto]">
-        <Input
-          value={tags}
-          onChange={(e) => setTags(e.target.value)}
-          placeholder={t("software.manage.catalogPackageTags")}
-        />
+      <div className="grid items-end gap-2 md:grid-cols-[1fr_auto]">
+        <label htmlFor={`${id}-tags`} className="grid min-w-0 gap-1.5 text-sm">
+          <span>{t("software.manage.catalogPackageTags")}</span>
+          <Input id={`${id}-tags`} value={tags} onChange={(e) => setTags(e.target.value)} />
+        </label>
         <Button
           type="submit"
           size="sm"
@@ -3411,6 +3263,7 @@ function SpackCatalogPackageEditForm({
   pkg: SpackCatalogPackage;
 }) {
   const { t } = useTranslation();
+  const id = useId();
   const [name, setName] = useState(pkg.name);
   const [source, setSource] = useState<SpackCatalogPackageCreate["source"]>(
     pkg.source === "vendor" ? "vendor" : "official",
@@ -3433,31 +3286,36 @@ function SpackCatalogPackageEditForm({
       }}
     >
       <div className="grid gap-2 md:grid-cols-[1fr_150px]">
-        <Input
-          value={name}
-          onChange={(e) => setName(e.target.value)}
-          placeholder={t("software.manage.catalogPackageName")}
-        />
-        <select
-          className="h-9 rounded-md border border-border bg-card px-3 text-sm text-foreground"
-          value={source}
-          onChange={(e) => setSource(e.target.value as SpackCatalogPackageCreate["source"])}
-          aria-label={t("software.manage.catalogPackageSource")}
-        >
-          <option value="official">{sourceLabel(t, "official")}</option>
-          <option value="vendor">{sourceLabel(t, "vendor")}</option>
-        </select>
+        <label htmlFor={`${id}-name`} className="grid min-w-0 gap-1.5 text-sm">
+          <span>{t("software.manage.catalogPackageName")}</span>
+          <Input id={`${id}-name`} value={name} onChange={(e) => setName(e.target.value)} />
+        </label>
+        <label htmlFor={`${id}-source`} className="grid min-w-0 gap-1.5 text-sm">
+          <span>{t("software.manage.catalogPackageSource")}</span>
+          <select
+            id={`${id}-source`}
+            className="h-9 rounded-md border border-border bg-card px-3 text-sm text-foreground"
+            value={source}
+            onChange={(e) => setSource(e.target.value as SpackCatalogPackageCreate["source"])}
+            aria-label={t("software.manage.catalogPackageSource")}
+          >
+            <option value="official">{sourceLabel(t, "official")}</option>
+            <option value="vendor">{sourceLabel(t, "vendor")}</option>
+          </select>
+        </label>
       </div>
-      <Input
-        value={description}
-        onChange={(e) => setDescription(e.target.value)}
-        placeholder={t("software.manage.catalogPackageDescription")}
-      />
-      <Input
-        value={tags}
-        onChange={(e) => setTags(e.target.value)}
-        placeholder={t("software.manage.catalogPackageTags")}
-      />
+      <label htmlFor={`${id}-description`} className="grid min-w-0 gap-1.5 text-sm">
+        <span>{t("software.manage.catalogPackageDescription")}</span>
+        <Input
+          id={`${id}-description`}
+          value={description}
+          onChange={(e) => setDescription(e.target.value)}
+        />
+      </label>
+      <label htmlFor={`${id}-tags`} className="grid min-w-0 gap-1.5 text-sm">
+        <span>{t("software.manage.catalogPackageTags")}</span>
+        <Input id={`${id}-tags`} value={tags} onChange={(e) => setTags(e.target.value)} />
+      </label>
       <div className="flex justify-end gap-2">
         <Button type="button" variant="outline" size="sm" onClick={onCancel} disabled={isPending}>
           <Undo2 />
@@ -3569,6 +3427,7 @@ function UsecasePackageEditForm({
   setCatalogSource: (value: SpackCatalogSourceFilter) => void;
 }) {
   const { t } = useTranslation();
+  const id = useId();
   const packages = catalog?.packages ?? [];
   const currentSoftware = pkg.spec.software;
   const initialPackage =
@@ -3624,27 +3483,35 @@ function UsecasePackageEditForm({
     >
       <FormHeader icon={<Edit3 />} title={t("software.manage.publishUsecaseVersion")} />
       <div className="grid gap-2 md:grid-cols-[1fr_120px]">
-        <Input
-          value={name}
-          onChange={(e) => setName(e.target.value)}
-          placeholder={t("software.manage.usecaseName")}
-        />
-        <Input
-          value={version}
-          onChange={(e) => setVersion(e.target.value)}
-          placeholder={t("software.manage.version")}
-        />
+        <label htmlFor={`${id}-name`} className="grid min-w-0 gap-1.5 text-sm">
+          <span>{t("software.manage.usecaseName")}</span>
+          <Input id={`${id}-name`} value={name} onChange={(e) => setName(e.target.value)} />
+        </label>
+        <label htmlFor={`${id}-version`} className="grid min-w-0 gap-1.5 text-sm">
+          <span>{t("software.manage.version")}</span>
+          <Input
+            id={`${id}-version`}
+            value={version}
+            onChange={(e) => setVersion(e.target.value)}
+          />
+        </label>
       </div>
-      <Input
-        value={description}
-        onChange={(e) => setDescription(e.target.value)}
-        placeholder={t("software.manage.description")}
-      />
-      <Input
-        value={commandFile}
-        onChange={(e) => setCommandFile(e.target.value)}
-        placeholder={t("software.manage.commandFile")}
-      />
+      <label htmlFor={`${id}-description`} className="grid min-w-0 gap-1.5 text-sm">
+        <span>{t("software.manage.description")}</span>
+        <Input
+          id={`${id}-description`}
+          value={description}
+          onChange={(e) => setDescription(e.target.value)}
+        />
+      </label>
+      <label htmlFor={`${id}-commandFile`} className="grid min-w-0 gap-1.5 text-sm">
+        <span>{t("software.manage.commandFile")}</span>
+        <Input
+          id={`${id}-commandFile`}
+          value={commandFile}
+          onChange={(e) => setCommandFile(e.target.value)}
+        />
+      </label>
       <CatalogPackagePickerField selected={selectedPackage} onOpen={() => setPickerOpen(true)} />
       <SpackCatalogPickerDialog
         catalog={catalog}
@@ -3682,16 +3549,22 @@ function UsecasePackageEditForm({
         variants={variants}
       />
       <div className="grid gap-2 md:grid-cols-2">
-        <Input
-          value={inputDescriptor}
-          onChange={(e) => setInputDescriptor(e.target.value)}
-          placeholder={t("software.manage.inputDescriptor")}
-        />
-        <Input
-          value={argumentFormat}
-          onChange={(e) => setArgumentFormat(e.target.value)}
-          placeholder={t("software.manage.argumentFormat")}
-        />
+        <label htmlFor={`${id}-inputDescriptor`} className="grid min-w-0 gap-1.5 text-sm">
+          <span>{t("software.manage.inputDescriptor")}</span>
+          <Input
+            id={`${id}-inputDescriptor`}
+            value={inputDescriptor}
+            onChange={(e) => setInputDescriptor(e.target.value)}
+          />
+        </label>
+        <label htmlFor={`${id}-argumentFormat`} className="grid min-w-0 gap-1.5 text-sm">
+          <span>{t("software.manage.argumentFormat")}</span>
+          <Input
+            id={`${id}-argumentFormat`}
+            value={argumentFormat}
+            onChange={(e) => setArgumentFormat(e.target.value)}
+          />
+        </label>
       </div>
       <div className="flex justify-end gap-2">
         <Button type="button" variant="outline" size="sm" onClick={onCancel} disabled={isPending}>
