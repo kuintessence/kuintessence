@@ -658,8 +658,9 @@ class SourceTests(unittest.TestCase):
         pass
 
     class URL:
-        def __init__(self, digest="a" * 64):
+        def __init__(self, digest="a" * 64, url="https://example.test/source.tar.gz"):
             self.digest = digest
+            self.url = url
 
     class Expanded(URL):
         pass
@@ -700,6 +701,19 @@ class SourceTests(unittest.TestCase):
                 with self.assertRaises(RuntimeError):
                     self.fetch([node], create)
                 create.assert_not_called()
+
+    def test_pinned_zlib_uses_https_without_changing_its_checksum(self):
+        digest = "9a93b2b7dfdac77ceba5a558a580e74667dd6fede4585b91eefb60f03b72df23"
+        zlib = self.URL(digest, "http://zlib.net/fossils/zlib-1.3.1.tar.gz")
+        other = self.URL(url="http://example.test/source.tar.gz")
+
+        def create(_mirror, _nodes):
+            self.assertEqual(zlib.url, "https://zlib.net/fossils/zlib-1.3.1.tar.gz")
+            self.assertEqual(zlib.digest, digest)
+            self.assertEqual(other.url, "http://example.test/source.tar.gz")
+            return [], [], []
+
+        self.fetch([self.node("zlib", zlib), self.node("other", other)], create)
 
     def test_mirror_failure_never_becomes_a_successful_export(self):
         for create in (

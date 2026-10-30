@@ -299,6 +299,10 @@ def fetch_sources(mirror: Path, nodes: list, strategies, create) -> None:
                     and fetcher.digest and not stage.skip_checksum_for_mirror),
                 "Unchecksummed or unsupported source",
             )
+            # The pinned zlib recipe's HTTP endpoint serves HTML; retain its digest and recipe.
+            if (not bundle
+                    and fetcher.url == "http://zlib.net/fossils/zlib-1.3.1.tar.gz"):
+                fetcher.url = "https://zlib.net/fossils/zlib-1.3.1.tar.gz"
     _, _, errors = create(str(mirror), nodes)
     require(not errors, "Native mirror creation failed")
 

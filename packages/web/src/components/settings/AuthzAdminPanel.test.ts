@@ -129,8 +129,8 @@ describe("AuthzAdminPanel", () => {
     expect(screen.queryByText("alice@example.com")).toBeNull();
     expect(screen.queryByText("agent:agent-1")).toBeNull();
     expect(screen.queryByText("agent:agent-1#provider")).toBeNull();
-    expect(screen.getByText("暂无 membership")).toBeTruthy();
-    expect(screen.getByText("暂无 diff")).toBeTruthy();
+    expect(screen.getByText("暂无成员授权")).toBeTruthy();
+    expect(screen.getByText("暂无授权差异")).toBeTruthy();
     expect(screen.getByText("暂无 outbox")).toBeTruthy();
   });
 });
