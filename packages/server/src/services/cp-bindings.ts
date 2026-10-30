@@ -921,6 +921,7 @@ function makeUsersPort(deps: CpBindingsDeps): UsersServicePort {
       const baseSelection = {
         id: users.id,
         email: users.email,
+        displayName: users.displayName,
         role: users.role,
         suspended: users.suspended,
         quota: usageQuotas.remainingCreditUnits,
@@ -958,6 +959,7 @@ function makeUsersPort(deps: CpBindingsDeps): UsersServicePort {
         items: rows.map((r) => ({
           id: r.id,
           email: r.email,
+          displayName: r.displayName,
           role: r.role,
           suspended: r.suspended,
           quota: r.quota ?? 0,

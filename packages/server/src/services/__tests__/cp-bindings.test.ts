@@ -613,6 +613,17 @@ describeIfPg("cp-bindings (PG)", () => {
     expect(legacy?.lockEnabled).toBe(true);
   });
 
+  test("users.listInOrgs preserves the configured display name", async () => {
+    const result = await bindings.users.listInOrgs({
+      orgIds: [],
+      query: "cp-test-a1@example.test",
+      limit: 10,
+      offset: 0,
+    });
+    expect(result.items).toHaveLength(1);
+    expect(result.items[0]).toMatchObject({ id: USER_A1, displayName: "Alpha One" });
+  });
+
   test("users.setSuspended round-trips", async () => {
     await bindings.users.setSuspended(USER_A1, true, { actor: USER_A1, orgId: ORG_A });
     const [row] = await db.select().from(users).where(eq(users.id, USER_A1)).limit(1);
