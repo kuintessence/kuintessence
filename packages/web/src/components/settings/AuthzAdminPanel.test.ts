@@ -86,6 +86,7 @@ describe("AuthzAdminPanel", () => {
                 id: "membership-1",
                 userId: "user-1",
                 email: "alice@example.com",
+                displayName: "Alice",
                 orgId: "org-1",
                 role: "admin",
                 updatedAt: "2026-07-08T00:00:00Z",
@@ -111,7 +112,7 @@ describe("AuthzAdminPanel", () => {
     render(createElement(AuthzAdminPanel));
 
     await waitFor(() => {
-      expect(screen.getByText("alice@example.com")).toBeTruthy();
+      expect(screen.getByText("Alice")).toBeTruthy();
     });
     expect(screen.getByText("agent:agent-1")).toBeTruthy();
     expect(screen.getByText("agent:agent-1#provider")).toBeTruthy();
@@ -126,7 +127,7 @@ describe("AuthzAdminPanel", () => {
       "Authorization principal is not bound",
     );
     expect(screen.getByTestId("authz-refresh-error").textContent).not.toContain("FORBIDDEN");
-    expect(screen.queryByText("alice@example.com")).toBeNull();
+    expect(screen.queryByText("Alice")).toBeNull();
     expect(screen.queryByText("agent:agent-1")).toBeNull();
     expect(screen.queryByText("agent:agent-1#provider")).toBeNull();
     expect(screen.getByText("暂无成员授权")).toBeTruthy();

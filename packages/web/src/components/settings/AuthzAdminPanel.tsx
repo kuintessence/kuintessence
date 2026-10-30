@@ -46,6 +46,7 @@ interface AuthzMembership {
   id: string;
   userId: string;
   email: string | null;
+  displayName?: string | null;
   orgId: string;
   orgName?: string | null;
   role: string;
@@ -315,7 +316,11 @@ export function AuthzAdminPanel({ showBreakGlass = false }: { showBreakGlass?: b
             <SimpleTable
               rows={memberships
                 .slice(0, 8)
-                .map((row) => [row.email ?? row.userId, row.orgName ?? row.orgId, row.role])}
+                .map((row) => [
+                  row.displayName || row.email || row.userId,
+                  row.orgName ?? row.orgId,
+                  row.role,
+                ])}
               empty="暂无成员授权"
             />
           </div>

@@ -318,9 +318,8 @@ function ManagedQueueTable({
                   data-testid={`cp-queue-row-${queue.queueId}`}
                 >
                   <td className="order-1 min-w-0 sm:table-cell sm:px-3 sm:py-2">
-                    <div className="break-words font-medium">{queue.name}</div>
-                    <div className="hidden font-mono text-xs text-muted-foreground sm:block">
-                      {queue.queueId}
+                    <div className="break-words font-medium" title={queue.queueId}>
+                      {queue.name}
                     </div>
                   </td>
                   <td className="order-2 col-span-2 min-w-0 sm:table-cell sm:px-3 sm:py-2">

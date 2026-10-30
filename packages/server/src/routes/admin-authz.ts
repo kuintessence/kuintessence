@@ -222,6 +222,7 @@ export function createAdminAuthzRoutes(db: PgDb, options: AdminAuthzRouteOptions
         id: userOrgMemberships.id,
         userId: userOrgMemberships.userId,
         email: users.email,
+        displayName: users.displayName,
         orgId: userOrgMemberships.orgId,
         orgName: orgs.name,
         role: userOrgMemberships.role,
