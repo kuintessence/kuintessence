@@ -78,6 +78,44 @@ describe("QueueInventoryService", () => {
     await db.delete(orgs).where(eq(orgs.id, consumerOrgId));
   });
 
+  test("Kubernetes inventory is not applicable even with a legacy no-go snapshot", async () => {
+    await db
+      .update(agents)
+      .set({ schedulerType: "kubernetes" })
+      .where(eq(agents.agentId, AGENT_ID));
+    try {
+      await inventory.declareCapability(AGENT_ID, false);
+      await inventory.reconcile(AGENT_ID, {
+        status: "unavailable",
+        reason: "unsupported_scheduler",
+        observedAt: new Date(),
+        queues: [],
+      });
+      const view = await inventory.getForAgent(AGENT_ID);
+      expect(view.status).toBe("unsupported");
+      expect(view.reason).toBe("unsupported_scheduler");
+      expect(view.lastNoGoAt).not.toBeNull();
+      const target = await inventory.inspectTarget({
+        agentId: AGENT_ID,
+        schedulerType: "kubernetes",
+        targetMode: "named",
+        queueName: "default",
+      });
+      expect(target.state).toBe("unsupported");
+      expect(target.targetAvailable).toBe(true);
+      expect(target.reason).toBeNull();
+      const mismatched = await inventory.inspectTarget({
+        agentId: AGENT_ID,
+        schedulerType: "slurm",
+        targetMode: "default",
+      });
+      expect(mismatched.targetAvailable).toBe(false);
+      expect(mismatched.reason).toBe("scheduler_mismatch");
+    } finally {
+      await db.update(agents).set({ schedulerType: "slurm" }).where(eq(agents.agentId, AGENT_ID));
+    }
+  });
+
   test("replaces successful facts, preserves them after failed collection, and audits default drift", async () => {
     await inventory.declareCapability(AGENT_ID, true);
     const firstObservedAt = new Date();

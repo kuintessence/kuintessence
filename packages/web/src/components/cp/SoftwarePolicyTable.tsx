@@ -64,6 +64,7 @@ import {
   useCpSoftwareOperations,
   useCpSoftwareOverview,
 } from "../../lib/use-cp-software";
+import { useOrganizationName } from "../../lib/use-organization-name";
 import { toUserFacingError } from "../../lib/user-facing-error";
 import { RuntimeAndMaterialPanel } from "../software/EcosystemGovernancePanels";
 import { Badge, badgeVariants } from "../ui/badge";
@@ -392,6 +393,7 @@ function ProviderPolicyCard({
   onEdit?: () => void;
 }) {
   const { t } = useTranslation();
+  const organizationName = useOrganizationName();
   const policy = overview.providerPolicy ?? DEFAULT_POLICY;
   return (
     <Card>
@@ -400,7 +402,7 @@ function ProviderPolicyCard({
           <CardTitle>{t("cp.software.provider.title")}</CardTitle>
           <p className="mt-1 text-xs text-muted-foreground">
             {overview.providerOrgIds.length > 0
-              ? overview.providerOrgIds.join(", ")
+              ? overview.providerOrgIds.map(organizationName).join(", ")
               : t("cp.software.provider.noProvider")}
           </p>
         </div>

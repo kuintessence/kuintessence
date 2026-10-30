@@ -31,6 +31,7 @@ export interface JobDetail extends JobRow {
   inputStaging?: Array<{ fileMetadataId: string; stagePath: string; sourceUrl?: string }> | null;
   expectedOutputs?: Array<{ descriptor: string; path: string; isBatch: boolean }> | null;
   fileOutputDescriptors?: string[] | null;
+  collectedOutputs?: Record<string, string> | null;
   stdinText?: string | null;
 }
 

@@ -371,16 +371,22 @@ export class QueueInventoryService {
     const lastSuccessfulObservedAt =
       stored?.lastSuccessfulObservedAt ??
       (rawStatus === "available" ? (stored?.observedAt ?? latestObservedAt(facts)) : null);
-    const status = noGo.active
-      ? "unavailable"
-      : effectiveInventoryStatus(rawStatus, lastSuccessfulObservedAt, this.now(), this.options);
-    const reason = noGo.active
-      ? noGo.noGoReason
-      : status === "stale"
-        ? "stale"
-        : status === "unknown" && rawStatus === "available"
-          ? "unknown"
-          : queueInventoryReason(stored?.reason);
+    // HPC inventory does not apply to Kubernetes, including legacy failed snapshots.
+    const hpc = isHpcScheduler(agent.schedulerType);
+    const status = !hpc
+      ? "unsupported"
+      : noGo.active
+        ? "unavailable"
+        : effectiveInventoryStatus(rawStatus, lastSuccessfulObservedAt, this.now(), this.options);
+    const reason = !hpc
+      ? "unsupported_scheduler"
+      : noGo.active
+        ? noGo.noGoReason
+        : status === "stale"
+          ? "stale"
+          : status === "unknown" && rawStatus === "available"
+            ? "unknown"
+            : queueInventoryReason(stored?.reason);
     const freshUntil =
       status === "available" && lastSuccessfulObservedAt
         ? queueInventoryFreshUntil(lastSuccessfulObservedAt, this.options)

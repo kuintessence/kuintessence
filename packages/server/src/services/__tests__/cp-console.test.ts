@@ -70,8 +70,22 @@ function fakes(): CpConsoleDeps {
     listInOrgs: async () => ({
       total: 2,
       items: [
-        { id: "u-1", email: "a@x.test", role: "user", suspended: false, quota: 100 },
-        { id: "u-2", email: "b@x.test", role: "user", suspended: false, quota: 100 },
+        {
+          id: "u-1",
+          email: "a@x.test",
+          displayName: "",
+          role: "user",
+          suspended: false,
+          quota: 100,
+        },
+        {
+          id: "u-2",
+          email: "b@x.test",
+          displayName: "Beta",
+          role: "user",
+          suspended: false,
+          quota: 100,
+        },
       ],
     }),
     setSuspended: async () => {},
@@ -96,6 +110,28 @@ const scope: CpScope = {
 };
 
 describe("CpConsoleService.getDashboardKpis", () => {
+  it("uses the configured automation account name instead of its UUID email prefix", async () => {
+    const deps = fakes();
+    const id = "2f9179ba-0e10-42cd-ba3a-dd7bca9c1c04";
+    deps.jobs.topUsersByJobs = async () => [{ userId: id, jobs: 1 }];
+    deps.users.listInOrgs = async () => ({
+      total: 1,
+      items: [
+        {
+          id,
+          email: `${id}@automation.invalid`,
+          displayName: "Workflow runner",
+          role: "user",
+          suspended: false,
+          quota: 100,
+        },
+      ],
+    });
+    const result = await new CpConsoleService(deps).getDashboardKpis(scope);
+    expect(result.topUsers[0]?.displayName).toBe("Workflow runner");
+    expect(result.topUsers[0]?.userId).toBe(id);
+  });
+
   it("aggregates last-24h KPIs from all collaborators", async () => {
     const svc = new CpConsoleService({ ...fakes(), now: () => new Date("2026-04-30T12:00:00Z") });
     const r = await svc.getDashboardKpis(scope);

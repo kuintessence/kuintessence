@@ -299,6 +299,7 @@ export interface CpAgent {
   hostname: string;
   siteId: string;
   status: string;
+  managedDatasetRootIds?: string[];
 }
 
 export interface CpAgentCert {

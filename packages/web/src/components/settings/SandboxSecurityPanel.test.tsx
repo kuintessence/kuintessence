@@ -27,6 +27,28 @@ function wrapper({ children }: { children: ReactNode }) {
 afterEach(() => vi.clearAllMocks());
 
 describe("SandboxSecurityPanel", () => {
+  test("distinguishes disabled sandbox from enabled or unknown critical readiness", async () => {
+    sandboxClient.listSandboxPolicyOverlays.mockResolvedValue([]);
+    sandboxClient.getEffectiveSandboxPolicy.mockResolvedValue(undefined);
+    sandboxClient.listSandboxAgentSecurityViews.mockResolvedValue([
+      {
+        agentId: "disabled",
+        siteName: "Disabled",
+        sandboxReadiness: "critical",
+        sandboxCapabilities: { enabled: false },
+      },
+      {
+        agentId: "broken",
+        siteName: "Broken",
+        sandboxReadiness: "critical",
+        sandboxCapabilities: { enabled: true },
+      },
+      { agentId: "unknown", siteName: "Unknown", sandboxReadiness: "critical" },
+    ]);
+    render(<SandboxSecurityPanel />, { wrapper });
+    expect(await screen.findByText("sandbox.security.readiness.disabled")).toBeTruthy();
+    expect(screen.getAllByText("sandbox.security.readiness.critical")).toHaveLength(2);
+  });
   test("preserves limits and runtime denies when updating platform switches", async () => {
     sandboxClient.listSandboxAgentSecurityViews.mockResolvedValue([]);
     sandboxClient.listSandboxPolicyOverlays.mockResolvedValue([

@@ -19,6 +19,7 @@ import {
   ServerMessageSchema,
 } from "@kuintessence/proto";
 import {
+  ManagedDatasetRootIdsSchema,
   QueueFailureCodeSchema,
   SandboxRuntimeAttestationIdSchema,
   SandboxSelfAccountSchema,
@@ -482,6 +483,11 @@ export function registerAgentHandler(router: ConnectRouter, deps: AgentHandlerDe
                 schedulerVersion: reg.schedulerVersion,
                 restrictedDataIsolation: reg.restrictedDataIsolation,
                 computeHealthV1: reg.computeHealthV1,
+                topology: {
+                  managedDatasetRootIds: ManagedDatasetRootIdsSchema.parse(
+                    reg.managedDatasetRootIds,
+                  ),
+                },
                 ...sandboxCapabilityFacts(reg.sandboxCapability),
               });
               await queueInventory?.declareCapability(reg.agentId, reg.queueInventoryV1);

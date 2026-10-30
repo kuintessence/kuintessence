@@ -206,7 +206,16 @@ test("keeps CP user and audit reads available while legacy writes are disabled",
     {
       listUsers: async () => ({
         total: 1,
-        items: [{ id: "user-a", email: "user-a@test", role: "user", suspended: false, quota: 7 }],
+        items: [
+          {
+            id: "user-a",
+            email: "user-a@test",
+            displayName: null,
+            role: "user",
+            suspended: false,
+            quota: 7,
+          },
+        ],
       }),
       searchAudit: async () => ({ total: 1, items: [{ action: "cp.user.suspend" }] }),
     },

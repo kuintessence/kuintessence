@@ -29,6 +29,8 @@ interface PolicyResponse {
 interface QuotaRequestRow {
   id: string;
   userId: string;
+  userDisplayName?: string | null;
+  userEmail?: string | null;
   requestedQuotaBytes: number;
   requestedExpiresAt: string | null;
   reason: string;
@@ -291,7 +293,9 @@ export function CloudStorageGovernancePanel() {
                   <div key={request.id} className="rounded-md border p-3 text-xs">
                     <div className="flex items-start gap-3">
                       <div className="min-w-0 flex-1">
-                        <div className="font-mono font-medium">{request.userId}</div>
+                        <div className="break-words font-medium" title={request.userId}>
+                          {request.userDisplayName || request.userEmail || request.userId}
+                        </div>
                         <div className="mt-1 text-sm font-semibold">
                           {formatBytes(request.requestedQuotaBytes)}
                         </div>

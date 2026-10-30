@@ -740,7 +740,7 @@
       "agentEmpty": "当前组织暂无可用的接入代理。",
       "managedRoot": "托管根目录",
       "managedRootPlaceholder": "选择已启用的托管根目录",
-      "managedRootEmpty": "该接入代理暂无已启用的托管根目录。",
+      "managedRootEmpty": "该节点尚未登记可导入的数据集根目录。请配置 Agent 的 AGENT_DATASET_ROOTS_JSON 并重新连接；文件传输目录不能直接用于数据集导入。",
       "relativePath": "根目录内相对路径",
       "managedRootRequired": "CP-local 导入必须使用已登记的托管根目录和相对路径。",
       "cpLocalHint": "不要填写任意绝对路径；算力提供方本地数据的事实来源是受管根目录加相对路径。",

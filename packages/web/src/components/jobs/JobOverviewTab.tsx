@@ -74,6 +74,10 @@ export function JobOverviewTab({ job, loading }: JobOverviewTabProps) {
       {!failed && job.exitCode !== null && job.exitCode !== undefined ? (
         <p className="text-sm">{t("jobs.overview.exitCode", { value: job.exitCode })}</p>
       ) : null}
+      <details className="text-xs text-muted-foreground">
+        <summary className="cursor-pointer">{t("jobs.overview.identifier")}</summary>
+        <code className="mt-2 block select-all break-all">{job.id}</code>
+      </details>
       <dl className="divide-y divide-border border-y border-border empty:hidden">
         {job.usecasePackageName ? (
           <Field

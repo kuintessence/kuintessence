@@ -82,3 +82,11 @@ export function statusLabel(status: string, language = "en"): string {
   if (status.toLowerCase() === "awaiting_approval") return "Awaiting approval";
   return status.charAt(0).toUpperCase() + status.slice(1).toLowerCase();
 }
+
+/** Display-only abbreviation; callers retain the original ID for actions and details. */
+export function compactUuid(value: string): string {
+  return value.replace(
+    /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi,
+    (id) => `${id.slice(0, 8)}…${id.slice(-4)}`,
+  );
+}

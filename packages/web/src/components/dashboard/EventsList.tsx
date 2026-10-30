@@ -1,6 +1,7 @@
 import { Activity } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import type { AuditEntry } from "../../lib/dashboard-data";
+import { compactUuid } from "../../lib/format";
 
 export interface EventsListProps {
   entries: AuditEntry[];
@@ -145,6 +146,22 @@ function describeEvent(entry: AuditEntry): EventCopy {
         defaultCategory: "访问",
         subject,
       };
+    case "automation.credential.create":
+      return {
+        labelKey: "dashboard.events.automationCredentialCreated",
+        defaultLabel: "创建了自动化凭据",
+        categoryKey: "dashboard.events.categorySecurity",
+        defaultCategory: "安全",
+        subject,
+      };
+    case "automation.credential.revoke":
+      return {
+        labelKey: "dashboard.events.automationCredentialRevoked",
+        defaultLabel: "撤销了自动化凭据",
+        categoryKey: "dashboard.events.categorySecurity",
+        defaultCategory: "安全",
+        subject,
+      };
     case "sso.config.update":
       return {
         labelKey: "dashboard.events.ssoUpdated",
@@ -209,7 +226,9 @@ export function EventsList({ entries, forbidden }: EventsListProps) {
                   {t(copy.categoryKey, { defaultValue: copy.defaultCategory })}
                 </span>
               </span>
-              <span className="block truncate text-xs text-muted-foreground">{copy.subject}</span>
+              <span className="block truncate text-xs text-muted-foreground">
+                {compactUuid(copy.subject)}
+              </span>
             </span>
           </li>
         );

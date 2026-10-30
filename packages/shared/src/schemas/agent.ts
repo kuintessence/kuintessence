@@ -4,6 +4,8 @@ import { SchedulerTypeEnum } from "./scheduler";
 
 export { SchedulerTypeEnum } from "./scheduler";
 
+export const ManagedDatasetRootIdsSchema = z.array(z.string().uuid()).max(256).default([]);
+
 export const ComputeHealthStateSchema = z.enum(["unknown", "ready", "unavailable"]);
 
 export const ComputeHealthReasonSchema = z.enum([

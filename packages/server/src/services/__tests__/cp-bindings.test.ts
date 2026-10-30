@@ -309,7 +309,7 @@ describeIfPg("cp-bindings (PG)", () => {
     const now = new Date();
     await db.insert(auditLog).values([
       {
-        actor: "cp-test-a1@example.test",
+        actor: USER_A1,
         orgId: ORG_A,
         action: "test.action",
         target: "target-a",
@@ -335,6 +335,11 @@ describeIfPg("cp-bindings (PG)", () => {
     const to = new Date(now.getTime() + 60_000);
     const orgA = await bindings.audit.search({ orgIds: [ORG_A], from, to, limit: 50, offset: 0 });
     expect(orgA.total).toBe(1);
+    expect(orgA.items[0]).toMatchObject({
+      actor: USER_A1,
+      actorEmail: "cp-test-a1@example.test",
+      target: "target-a",
+    });
     const orgB = await bindings.audit.search({ orgIds: [ORG_B], from, to, limit: 50, offset: 0 });
     expect(orgB.total).toBe(1);
     const platform = await bindings.audit.search({ orgIds: [], from, to, limit: 100, offset: 0 });
@@ -606,6 +611,17 @@ describeIfPg("cp-bindings (PG)", () => {
     expect(legacy?.allowList).toEqual(["gromacs", "openmpi"]);
     expect(legacy?.denyList).toEqual(["blocked-cluster", "blocked-provider"]);
     expect(legacy?.lockEnabled).toBe(true);
+  });
+
+  test("users.listInOrgs preserves the configured display name", async () => {
+    const result = await bindings.users.listInOrgs({
+      orgIds: [],
+      query: "cp-test-a1@example.test",
+      limit: 10,
+      offset: 0,
+    });
+    expect(result.items).toHaveLength(1);
+    expect(result.items[0]).toMatchObject({ id: USER_A1, displayName: "Alpha One" });
   });
 
   test("users.setSuspended round-trips", async () => {

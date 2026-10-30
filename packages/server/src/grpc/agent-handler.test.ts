@@ -267,6 +267,7 @@ describe("agent-handler", () => {
           siteName: "grpc-test-site",
           schedulerType: SchedulerType.SLURM,
           schedulerVersion: "23.02.7",
+          managedDatasetRootIds: ["00000000-0000-4000-8000-000000000001"],
         }),
       },
     });
@@ -281,6 +282,9 @@ describe("agent-handler", () => {
 
     // Verify the agent was actually persisted
     const stored = await agentManager.getById("grpc-test-agent-1");
+    expect(stored?.topology.managedDatasetRootIds).toEqual([
+      "00000000-0000-4000-8000-000000000001",
+    ]);
     expect(stored?.siteName).toBe("grpc-test-site");
     expect(stored?.schedulerType).toBe("slurm");
   });

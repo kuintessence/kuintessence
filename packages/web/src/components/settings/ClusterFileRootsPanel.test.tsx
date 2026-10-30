@@ -226,3 +226,7 @@ describe("ClusterFileRootsPanel", () => {
     expect(screen.queryByTestId("cluster-file-root-create-form")).toBeNull();
   });
 });
+
+vi.mock("../../lib/use-organization-name", () => ({
+  useOrganizationName: () => (id: string) => id,
+}));

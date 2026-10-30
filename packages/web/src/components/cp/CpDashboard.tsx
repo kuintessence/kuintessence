@@ -141,10 +141,12 @@ export function CpDashboard() {
                   >
                     <span className="min-w-0">
                       <span className="block truncate text-sm font-medium text-foreground">
-                        {u.displayName ?? u.email ?? u.userId}
+                        <span title={u.userId}>{u.displayName ?? u.email ?? u.userId}</span>
                       </span>
                       <span className="block truncate text-[11px] text-muted-foreground">
-                        {[u.organizationName, u.email, u.userId].filter(Boolean).join(" · ")}
+                        {[u.organizationName, u.displayName ? u.email : null]
+                          .filter(Boolean)
+                          .join(" · ")}
                       </span>
                     </span>
                     <span className="font-mono tabular-nums text-xs text-muted-foreground">

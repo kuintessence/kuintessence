@@ -12,6 +12,16 @@ const suc = (id: string) => ({
 });
 
 describe("WorkflowSchema", () => {
+  test("accepts declared v2 exports and rejects unsupported versions", () => {
+    const workflow = { name: "exported", spec: { nodeDrafts: [suc("compute")] } };
+    expect(WorkflowSchema.parse({ ...workflow, schemaVersion: 2 }).schemaVersion).toBe(2);
+    for (const schemaVersion of [1, 3, "2", null]) {
+      expect(WorkflowSchema.safeParse({ ...workflow, schemaVersion }).success).toBe(false);
+    }
+    expect(WorkflowSchema.safeParse({ ...workflow, schemaVersion: 2, spec: {} }).success).toBe(
+      false,
+    );
+  });
   test("accepts a minimal workflow and defaults parameters to []", () => {
     const r = WorkflowSchema.parse({
       name: "w",

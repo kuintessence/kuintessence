@@ -60,11 +60,12 @@ function fileNameFromUsecaseInputs(
 
 export function JobFilesTab({ job, loading }: JobFilesTabProps) {
   const { t } = useTranslation();
+  const needsCloudFiles =
+    !!job && ((job.inputStaging?.length ?? 0) > 0 || (job.fileOutputDescriptors?.length ?? 0) > 0);
   const cloudQ = useQuery({
     queryKey: ["job-files-netdrive", job?.id, job?.status],
     queryFn: listAllNetDriveFiles,
-    enabled:
-      !!job && ((job.inputStaging?.length ?? 0) > 0 || (job.expectedOutputs?.length ?? 0) > 0),
+    enabled: needsCloudFiles,
     staleTime: 30_000,
   });
 
@@ -115,22 +116,24 @@ export function JobFilesTab({ job, loading }: JobFilesTabProps) {
   }
   return (
     <div className="grid gap-4" data-testid="job-files-tab">
-      <div className="flex justify-end">
-        <Button
-          type="button"
-          size="sm"
-          variant="outline"
-          disabled={cloudQ.isFetching}
-          onClick={() => void cloudQ.refetch()}
-          data-testid="job-files-refresh"
-        >
-          {cloudQ.isFetching
-            ? t("common.loading")
-            : cloudError
-              ? t("common.retry")
-              : t("common.refresh")}
-        </Button>
-      </div>
+      {needsCloudFiles ? (
+        <div className="flex justify-end">
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            disabled={cloudQ.isFetching}
+            onClick={() => void cloudQ.refetch()}
+            data-testid="job-files-refresh"
+          >
+            {cloudQ.isFetching
+              ? t("common.loading")
+              : cloudError
+                ? t("common.retry")
+                : t("common.refresh")}
+          </Button>
+        </div>
+      ) : null}
       {cloudError ? (
         <div
           className="flex items-start gap-2 rounded-md border border-status-failed/40 bg-[color-mix(in_oklab,var(--status-failed)_10%,transparent)] p-3 text-xs"
@@ -244,6 +247,30 @@ export function JobFilesTab({ job, loading }: JobFilesTabProps) {
         ) : (
           <div className="grid gap-2">
             {outputs.map((output) => {
+              if (!job.fileOutputDescriptors?.includes(output.descriptor)) {
+                const value = job.collectedOutputs?.[output.descriptor];
+                return (
+                  <div
+                    key={output.descriptor}
+                    className="space-y-2 rounded-md border border-border bg-card p-3"
+                    data-testid={`job-text-output-${output.descriptor}`}
+                  >
+                    <div className="flex items-center gap-2 text-sm font-medium">
+                      {output.path}
+                      <Badge variant="outline">{t("jobs.files.textResult")}</Badge>
+                    </div>
+                    {typeof value === "string" ? (
+                      <pre className="max-h-72 overflow-auto whitespace-pre-wrap break-words rounded bg-muted/40 p-3 font-mono text-xs">
+                        {value || t("jobs.files.emptyTextResult")}
+                      </pre>
+                    ) : (
+                      <p className="text-xs text-muted-foreground">
+                        {t("jobs.files.textResultUnavailable")}
+                      </p>
+                    )}
+                  </div>
+                );
+              }
               const actualFiles = uniqueFilesByPath(
                 findOutputCloudFiles(cloudFiles, job, output.path),
               );

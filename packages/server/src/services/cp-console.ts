@@ -37,12 +37,24 @@ export interface JobsServicePort {
 
 export interface AgentsServicePort {
   countByHealth(orgIds: string[]): Promise<{ healthy: number; sick: number; offline: number }>;
-  listForOrgs(
-    orgIds: string[],
-  ): Promise<Array<{ id: string; hostname: string; siteId: string; status: string }>>;
-  listByIds(
-    agentIds: string[],
-  ): Promise<Array<{ id: string; hostname: string; siteId: string; status: string }>>;
+  listForOrgs(orgIds: string[]): Promise<
+    Array<{
+      id: string;
+      hostname: string;
+      siteId: string;
+      status: string;
+      managedDatasetRootIds?: string[];
+    }>
+  >;
+  listByIds(agentIds: string[]): Promise<
+    Array<{
+      id: string;
+      hostname: string;
+      siteId: string;
+      status: string;
+      managedDatasetRootIds?: string[];
+    }>
+  >;
 }
 
 export interface AuditServicePort {
@@ -191,7 +203,14 @@ export interface CpSoftwareOverview {
 export interface UsersServicePort {
   listInOrgs(opts: { orgIds: string[]; query?: string; limit: number; offset: number }): Promise<{
     total: number;
-    items: Array<{ id: string; email: string; role: string; suspended: boolean; quota: number }>;
+    items: Array<{
+      id: string;
+      email: string;
+      displayName: string | null;
+      role: string;
+      suspended: boolean;
+      quota: number;
+    }>;
   }>;
   setSuspended(
     userId: string,
@@ -301,7 +320,7 @@ export class CpConsoleService {
         const user = usersById.get(entry.userId);
         return {
           ...entry,
-          displayName: user?.email.split("@")[0] ?? null,
+          displayName: user?.displayName || user?.email.split("@")[0] || null,
           email: user?.email ?? null,
           organizationName,
         };

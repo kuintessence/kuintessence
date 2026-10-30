@@ -2,6 +2,7 @@ import {
   auditLog,
   authzOutbox,
   authzShadowDiffs,
+  orgs,
   type PgDb,
   userCapabilities,
   userOrgMemberships,
@@ -221,12 +222,15 @@ export function createAdminAuthzRoutes(db: PgDb, options: AdminAuthzRouteOptions
         id: userOrgMemberships.id,
         userId: userOrgMemberships.userId,
         email: users.email,
+        displayName: users.displayName,
         orgId: userOrgMemberships.orgId,
+        orgName: orgs.name,
         role: userOrgMemberships.role,
         updatedAt: userOrgMemberships.updatedAt,
       })
       .from(userOrgMemberships)
       .leftJoin(users, eq(users.id, userOrgMemberships.userId))
+      .leftJoin(orgs, eq(orgs.id, userOrgMemberships.orgId))
       .orderBy(desc(userOrgMemberships.updatedAt))
       .limit(500);
     return c.json({ success: true, data: rows });

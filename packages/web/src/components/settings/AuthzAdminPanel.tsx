@@ -46,7 +46,9 @@ interface AuthzMembership {
   id: string;
   userId: string;
   email: string | null;
+  displayName?: string | null;
   orgId: string;
+  orgName?: string | null;
   role: string;
   updatedAt: string;
 }
@@ -180,8 +182,8 @@ export function AuthzAdminPanel({ showBreakGlass = false }: { showBreakGlass?: b
           </CardTitle>
           <p className="mt-1 text-sm text-muted-foreground">
             {showBreakGlass
-              ? "Shadow diff、outbox、membership 与 break-glass raw tuple 管理。"
-              : "Shadow diff、outbox 与 membership 管理。"}
+              ? "授权差异、关系同步、组织成员与紧急授权管理。"
+              : "授权差异、关系同步与组织成员管理。"}
           </p>
         </div>
         <Button variant="outline" size="sm" onClick={refresh} disabled={loading}>
@@ -191,30 +193,28 @@ export function AuthzAdminPanel({ showBreakGlass = false }: { showBreakGlass?: b
       </CardHeader>
       <CardContent className="space-y-5">
         <div className="grid gap-3 md:grid-cols-5">
-          <Metric label="Mode" value={health?.mode ?? "unknown"} badge={healthTone} />
-          <Metric label="Healthy" value={health?.healthy ? "yes" : "no"} badge={healthTone} />
+          <Metric label="运行模式" value={health?.mode ?? "unknown"} badge={healthTone} />
+          <Metric label="服务健康" value={health?.healthy ? "正常" : "异常"} badge={healthTone} />
           <Metric
-            label="Schema"
-            value={
-              health?.schemaWritten ? (health.schemaMatches ? "loaded" : "mismatch") : "pending"
-            }
+            label="授权模型"
+            value={health?.schemaWritten ? (health.schemaMatches ? "已加载" : "不匹配") : "待加载"}
             badge={health?.schemaWritten && health.schemaMatches ? "brand" : "failed"}
           />
           <Metric
-            label="Enforce ready"
-            value={readiness?.enforceReady ? "yes" : "no"}
+            label="强制授权就绪"
+            value={readiness?.enforceReady ? "已就绪" : "未就绪"}
             badge={readiness?.enforceReady ? "brand" : "failed"}
           />
-          <Metric label="Shadow diffs" value={String(readiness?.shadowDiffs ?? 0)} />
+          <Metric label="授权差异" value={String(readiness?.shadowDiffs ?? 0)} />
         </div>
         <div className="grid gap-3 md:grid-cols-3">
-          <Metric label="Outbox pending" value={String(readiness?.outbox.pending ?? 0)} />
-          <Metric label="Outbox processing" value={String(readiness?.outbox.processing ?? 0)} />
-          <Metric label="Outbox dead" value={String(readiness?.outbox.dead ?? 0)} />
+          <Metric label="待同步" value={String(readiness?.outbox.pending ?? 0)} />
+          <Metric label="同步中" value={String(readiness?.outbox.processing ?? 0)} />
+          <Metric label="同步失败" value={String(readiness?.outbox.dead ?? 0)} />
         </div>
         {readiness?.blockers.length ? (
           <div className="rounded-md border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive">
-            <div className="font-medium">Enforce blockers</div>
+            <div className="font-medium">授权启用条件未满足</div>
             <ul className="mt-2 list-disc space-y-1 pl-5">
               {readiness.blockers.map((blocker) => (
                 <li key={blocker}>{friendlyAuthzBlocker(blocker)}</li>
@@ -224,7 +224,7 @@ export function AuthzAdminPanel({ showBreakGlass = false }: { showBreakGlass?: b
         ) : null}
         {readiness?.externalSmokeRequired ? (
           <div className="rounded-md border p-3 text-sm text-muted-foreground">
-            切换 enforce 前仍需完成 Compose / scheduler Compose 的真实 SpiceDB smoke。
+            切换为强制授权前，请完成部署环境的 SpiceDB 授权验证。
           </div>
         ) : null}
         <Button
@@ -268,11 +268,11 @@ export function AuthzAdminPanel({ showBreakGlass = false }: { showBreakGlass?: b
 
         <div className="grid gap-4 xl:grid-cols-2">
           <div className="space-y-3">
-            <h3 className="text-sm font-medium">Membership upsert</h3>
+            <h3 className="text-sm font-medium">组织成员授权</h3>
             <div className="grid gap-2 md:grid-cols-[1fr_1fr_140px_auto]">
               <input
                 className="rounded-md border bg-background px-3 py-2 text-sm"
-                placeholder="user UUID"
+                placeholder="用户编号"
                 value={membership.userId}
                 onChange={(event) =>
                   setMembership((prev) => ({ ...prev, userId: event.target.value }))
@@ -280,7 +280,7 @@ export function AuthzAdminPanel({ showBreakGlass = false }: { showBreakGlass?: b
               />
               <input
                 className="rounded-md border bg-background px-3 py-2 text-sm"
-                placeholder="org UUID"
+                placeholder="组织编号"
                 value={membership.orgId}
                 onChange={(event) =>
                   setMembership((prev) => ({ ...prev, orgId: event.target.value }))
@@ -303,7 +303,7 @@ export function AuthzAdminPanel({ showBreakGlass = false }: { showBreakGlass?: b
                 onClick={async () => {
                   try {
                     await api.put<{ success: true }>("/admin/authz/memberships", membership);
-                    toast.success("Membership 已写入 outbox");
+                    toast.success("成员授权已加入同步队列");
                     await refresh();
                   } catch (err) {
                     toast.error(toUserFacingError(err, "成员授权保存失败，请稍后重试。"));
@@ -316,14 +316,18 @@ export function AuthzAdminPanel({ showBreakGlass = false }: { showBreakGlass?: b
             <SimpleTable
               rows={memberships
                 .slice(0, 8)
-                .map((row) => [row.email ?? row.userId, row.orgId, row.role])}
-              empty="暂无 membership"
+                .map((row) => [
+                  row.displayName || row.email || row.userId,
+                  row.orgName ?? row.orgId,
+                  row.role,
+                ])}
+              empty="暂无成员授权"
             />
           </div>
 
           {showBreakGlass ? (
             <div className="space-y-3" data-testid="authz-raw-tuple-break-glass">
-              <h3 className="text-sm font-medium">Raw tuple break-glass</h3>
+              <h3 className="text-sm font-medium">高级授权关系操作</h3>
               <textarea
                 className="min-h-40 w-full rounded-md border bg-background p-3 font-mono text-xs"
                 value={rawTuple}
@@ -335,7 +339,7 @@ export function AuthzAdminPanel({ showBreakGlass = false }: { showBreakGlass?: b
                 onClick={async () => {
                   try {
                     await api.post<{ success: true }>("/admin/authz/raw-tuples", rawTupleParsed);
-                    toast.success("Raw tuple 已写入 outbox");
+                    toast.success("授权关系已加入同步队列");
                     await refresh();
                   } catch (err) {
                     toast.error(toUserFacingError(err, "授权关系写入失败，请稍后重试。"));
@@ -343,7 +347,7 @@ export function AuthzAdminPanel({ showBreakGlass = false }: { showBreakGlass?: b
                 }}
               >
                 <DatabaseZap className="h-3.5 w-3.5" />
-                写入 raw tuple
+                写入授权关系
               </Button>
             </div>
           ) : null}
@@ -351,7 +355,7 @@ export function AuthzAdminPanel({ showBreakGlass = false }: { showBreakGlass?: b
 
         <div className="grid gap-4 xl:grid-cols-2">
           <SectionTable
-            title="最近 Shadow diff"
+            title="最近授权差异"
             action={
               <Button
                 variant="outline"
@@ -388,10 +392,10 @@ export function AuthzAdminPanel({ showBreakGlass = false }: { showBreakGlass?: b
               `${row.localAllowed}/${row.spiceAllowed}`,
               row.spiceError ? "授权差异检测未完成，请查看运维日志" : (row.actorEmail ?? ""),
             ])}
-            empty="暂无 diff"
+            empty="暂无授权差异"
           />
           <SectionTable
-            title="最近 Outbox"
+            title="最近授权同步"
             action={
               <Button
                 variant="outline"
@@ -433,14 +437,14 @@ export function AuthzAdminPanel({ showBreakGlass = false }: { showBreakGlass?: b
                   onClick={async () => {
                     try {
                       await api.post<{ success: true }>(`/admin/authz/outbox/${row.id}/retry`, {});
-                      toast.success("Outbox dead-letter 已重新入队");
+                      toast.success("失败的授权变更已重新入队");
                       await refresh();
                     } catch (err) {
                       toast.error(toUserFacingError(err, "授权变更重试失败，请稍后重试。"));
                     }
                   }}
                 >
-                  Retry
+                  重试
                 </Button>
               ) : (
                 <span key={row.id}>

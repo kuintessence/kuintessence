@@ -134,6 +134,14 @@ describe("StorageQuotaService", () => {
       reason: "scratch workspace",
     });
 
+    const requests = await service.listRequests("cluster_root", AUTO_SCOPE_ID);
+    expect(requests).toHaveLength(1);
+    expect(requests[0]).toMatchObject({
+      userId: USER_ID,
+      userDisplayName: "quota user",
+      userEmail: "storage-quota-user@test",
+    });
+    expect(await service.listRequests("cluster_root", LIMITED_SCOPE_ID)).toHaveLength(0);
     expect(request.status).toBe("approved");
     expect((await service.getSummary(USER_ID, "cluster_root", AUTO_SCOPE_ID)).quotaBytes).toBe(
       2048,

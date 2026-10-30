@@ -163,3 +163,7 @@ describe("UsersTable read-only governance", () => {
     expect(fetchMock.mock.calls.every(([, init]) => init?.method !== "POST")).toBe(true);
   });
 });
+
+vi.mock("../../lib/use-organization-name", () => ({
+  useOrganizationName: () => (id: string) => id,
+}));

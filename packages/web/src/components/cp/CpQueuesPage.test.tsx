@@ -948,3 +948,7 @@ describe("CpQueuesPage", () => {
     expect(JSON.parse((patch?.[1] as RequestInit).body as string)).not.toHaveProperty("queueName");
   });
 });
+
+vi.mock("../../lib/use-organization-name", () => ({
+  useOrganizationName: () => (id: string) => id,
+}));

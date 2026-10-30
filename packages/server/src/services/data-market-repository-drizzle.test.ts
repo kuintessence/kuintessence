@@ -132,6 +132,10 @@ describe("PgDataMarketRepository", () => {
       })
       .returning();
     if (!root) throw new Error("failed to create cluster file root");
+    await db
+      .update(agents)
+      .set({ topology: { managedDatasetRootIds: [root.id] } })
+      .where(eq(agents.agentId, agentId));
     const [asset] = await db
       .insert(dataAssets)
       .values({
@@ -174,6 +178,31 @@ describe("PgDataMarketRepository", () => {
       });
 
     try {
+      await db.update(agents).set({ topology: {} }).where(eq(agents.agentId, agentId));
+      await expect(
+        createService().startProviderImport(
+          actor,
+          { assetId: asset.id, source, version: "v1" },
+          "cp-import-replay-key",
+        ),
+      ).rejects.toThrow("Agent has not registered this dataset root");
+      expect(
+        await db
+          .select()
+          .from(dataAssetVersions)
+          .where(eq(dataAssetVersions.dataAssetId, asset.id)),
+      ).toHaveLength(0);
+      expect(
+        await db
+          .select()
+          .from(dataAssetImports)
+          .where(eq(dataAssetImports.requesterUserId, owner.id)),
+      ).toHaveLength(0);
+      expect(dispatchCount).toBe(0);
+      await db
+        .update(agents)
+        .set({ topology: { managedDatasetRootIds: [root.id] } })
+        .where(eq(agents.agentId, agentId));
       const first = await createService().startProviderImport(
         actor,
         { assetId: asset.id, source, version: "v1" },
@@ -276,6 +305,10 @@ describe("PgDataMarketRepository", () => {
       })
       .returning();
     if (!root) throw new Error("failed to create repair-import root");
+    await db
+      .update(agents)
+      .set({ topology: { managedDatasetRootIds: [root.id] } })
+      .where(eq(agents.agentId, agentId));
     const [asset] = await db
       .insert(dataAssets)
       .values({
@@ -389,6 +422,10 @@ describe("PgDataMarketRepository", () => {
       })
       .returning();
     if (!root) throw new Error("failed to create queued-import root");
+    await db
+      .update(agents)
+      .set({ topology: { managedDatasetRootIds: [root.id] } })
+      .where(eq(agents.agentId, agentId));
     const [asset] = await db
       .insert(dataAssets)
       .values({

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { relativeFromNow, statusLabel, statusToBadgeVariant } from "./format";
+import { compactUuid, relativeFromNow, statusLabel, statusToBadgeVariant } from "./format";
 
 const NOW = new Date("2026-04-27T12:00:00Z");
 
@@ -84,4 +84,11 @@ describe("statusLabel", () => {
   test("preserves length", () => {
     expect(statusLabel("succeeded")).toHaveLength("succeeded".length);
   });
+});
+
+test("abbreviates UUIDs without changing other identifiers", () => {
+  expect(compactUuid("automation_credential:12345678-1234-4234-8234-123456789abc")).toBe(
+    "automation_credential:12345678…9abc",
+  );
+  expect(compactUuid("training.csv")).toBe("training.csv");
 });

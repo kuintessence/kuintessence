@@ -231,7 +231,9 @@
       "platformUpdated": "Updated platform settings",
       "sshClosed": "Closed an SSH session",
       "sshOpened": "Opened an SSH session",
-      "ssoUpdated": "Updated single sign-on settings"
+      "ssoUpdated": "Updated single sign-on settings",
+      "automationCredentialCreated": "Created an automation credential",
+      "automationCredentialRevoked": "Revoked an automation credential"
     }
   },
   "quickStart": {
@@ -366,7 +368,8 @@
       "failureDetails": "Failure details",
       "failureUnavailable": "No more specific failure reason was recorded. Check the job logs or contact the compute resource administrator.",
       "exitCode": "Process exit code: {{value}}",
-      "failureGuidance": "Open Logs for the scientific program's stdout/stderr, then use the exit code to check inputs, software environment, and resource requests."
+      "failureGuidance": "Open Logs for the scientific program's stdout/stderr, then use the exit code to check inputs, software environment, and resource requests.",
+      "identifier": "Job ID"
     },
     "resources": {
       "cpu": "CPU",
@@ -407,7 +410,10 @@
       "notPublishedCancelled": "Job was cancelled before this output was published.",
       "notPublishedFailed": "Job failed before this output was published.",
       "notPublishedFailedReason": "Job failed before this output was published. Check the job logs.",
-      "notPublishedCompleted": "Job completed, but no matching NetDrive artifact was found under {{prefix}}. Check output collection logs or download from cluster storage."
+      "notPublishedCompleted": "Job completed, but no matching NetDrive artifact was found under {{prefix}}. Check output collection logs or download from cluster storage.",
+      "textResult": "Text result",
+      "emptyTextResult": "Collected an empty result.",
+      "textResultUnavailable": "This text result has not been collected."
     },
     "usecase": {
       "mode": "Usecase",
@@ -1383,7 +1389,8 @@
       "readiness": {
         "ready": "Ready",
         "degraded": "Degraded",
-        "critical": "Critical gaps"
+        "critical": "Critical gaps",
+        "disabled": "Disabled"
       }
     }
   },
@@ -1439,7 +1446,15 @@
     "themePersistedNote": "Persists per browser via localStorage[\"kq.theme\"].",
     "developer": "Developer",
     "sshRec": {
-      "disabled": "SSH session recording is not enabled. Configure object storage and SSH_SESSION_RECORDING to browse audit recordings here."
+      "disabled": "SSH session recording is not enabled on this platform.",
+      "playbackFailed": "无法播放该 SSH 录制，请稍后重试。",
+      "deleted": "Recording deleted",
+      "deleteFailed": "删除 SSH 录制失败，请稍后重试。",
+      "title": "SSH session playback",
+      "agentId": "Agent ID",
+      "sessionId": "Session ID",
+      "play": "Play",
+      "delete": "Delete recording"
     },
     "roleDev": "Role (dev only)",
     "roleNote": "Re-issues a JWT for the same email with the chosen role. Hidden in production builds.",
@@ -1607,7 +1622,27 @@
       "loginWelcomeZh": "Platform message (Chinese)",
       "loginWelcomeEn": "Platform message (English)",
       "loginWelcomeZhPlaceholder": "欢迎使用 Kuintessence 算力网络平台",
-      "loginWelcomeEnPlaceholder": "Welcome to the Kuintessence computing network platform"
+      "loginWelcomeEnPlaceholder": "Welcome to the Kuintessence computing network platform",
+      "testFailed": "连接测试失败，请检查配置后重试。",
+      "saved": "SSO configuration saved",
+      "saveFailed": "保存 SSO 配置失败，请稍后重试。",
+      "enabled": "Enable SSO for this platform",
+      "providerType": "Provider type",
+      "issuerUrl": "Issuer URL",
+      "clientId": "Client ID",
+      "clientSecret": "Client secret",
+      "secretUnchanged": "(unchanged — re-enter to rotate)",
+      "secretHelp": "Stored encrypted at rest. Leave empty to keep the existing value.",
+      "redirectUri": "Redirect URI",
+      "redirectHelp": "Add this URI to your IdP's allowed redirect list.",
+      "groupMapping": "Group → Role mapping",
+      "groupMappingEmpty": "No groups mapped — every signed-in user defaults to 'user'.",
+      "addGroup": "Add group mapping",
+      "autoCreate": "Auto-create users on first SSO login",
+      "testSuccess": "Discovery succeeded",
+      "test": "Test connection",
+      "save": "Save",
+      "secretStored": "Secret stored (encrypted)"
     },
     "branding": {
       "titleCard": "Platform branding",
@@ -1731,6 +1766,37 @@
         "expired": "Expired",
         "revoked": "Revoked"
       }
+    },
+    "sshSess": {
+      "closed": "Session force-closed",
+      "closeFailed": "断开 SSH 会话失败，请稍后重试。",
+      "title": "Active SSH sessions",
+      "empty": "No active SSH sessions.",
+      "kill": "Disconnect"
+    },
+    "ssh": {
+      "needAgent": "Agent ID is required",
+      "saved": "SSH credentials saved",
+      "saveFailed": "保存 SSH 凭据失败，请检查配置后重试。",
+      "deleted": "Credentials removed",
+      "deleteFailed": "删除 SSH 凭据失败，请稍后重试。",
+      "title": "SSH credential vault",
+      "empty": "No agents have SSH credentials yet.",
+      "secretSet": "secret set",
+      "noSecret": "no secret",
+      "pinned": "host-key pinned",
+      "rotate": "Rotate",
+      "agentId": "Agent ID",
+      "username": "Username",
+      "host": "Host",
+      "port": "Port",
+      "password": "Password (or use a key)",
+      "privateKey": "Private key (PEM)",
+      "passphrase": "Key passphrase (optional)",
+      "secretHelp": "Auth material is encrypted at rest and never read back.",
+      "hostKey": "Host-key pin (base64 SHA-256)",
+      "hostKeyHelp": "Optional. When set, the agent rejects a mismatched host key (MITM defense). Empty = unverified.",
+      "save": "Save credentials"
     }
   },
   "terminal": {

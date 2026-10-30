@@ -622,6 +622,7 @@ async function main() {
     removeJobWorkRoot: (jobId) => dataRoots.removeJobRoot(jobId),
     dataDeliveryExecutor,
     dataScanner,
+    managedDatasetRootIds: Object.keys(config.AGENT_DATASET_ROOTS_JSON),
   });
 
   process.on("SIGINT", () => {

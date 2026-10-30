@@ -44,12 +44,6 @@ export function JobsTable({ jobs, onRowClick }: JobsTableProps) {
             >
               {row.original.name}
             </button>
-            <span
-              className="truncate font-mono text-[11px] text-muted-foreground"
-              title={row.original.id}
-            >
-              {row.original.id}
-            </span>
           </div>
         ),
       },
@@ -98,9 +92,6 @@ export function JobsTable({ jobs, onRowClick }: JobsTableProps) {
               <div className="min-w-0">
                 <div className="truncate text-sm font-semibold" title={job.name}>
                   {job.name}
-                </div>
-                <div className="mt-1 truncate font-mono text-[11px] text-muted-foreground">
-                  {job.id}
                 </div>
               </div>
               <div className="flex items-center justify-between gap-3">

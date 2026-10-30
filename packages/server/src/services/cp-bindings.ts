@@ -36,6 +36,7 @@
 // rather than routing through JobService/UserService, because none of the
 // existing services expose org-scoped helpers. This keeps the adapter
 // honest and avoids growing those services for one consumer.
+
 import {
   agentInstalledSoftware,
   agents as agentsTable,
@@ -51,7 +52,22 @@ import {
   userOrgMemberships,
   users,
 } from "@kuintessence/db";
-import { and, asc, desc, eq, gte, ilike, inArray, isNull, lte, max, or, sql } from "drizzle-orm";
+import { ManagedDatasetRootIdsSchema } from "@kuintessence/shared";
+import {
+  and,
+  asc,
+  desc,
+  eq,
+  getTableColumns,
+  gte,
+  ilike,
+  inArray,
+  isNull,
+  lte,
+  max,
+  or,
+  sql,
+} from "drizzle-orm";
 import type { CpScope } from "../middleware/cp-rbac";
 import type { PolicyPusher } from "../software-governance/policy-pusher";
 import type { PolicyBundle, PolicyStore } from "../software-governance/policy-store";
@@ -237,6 +253,9 @@ function makeAgentsPort(deps: CpBindingsDeps): AgentsServicePort {
           hostname: a.siteName,
           siteId: a.siteName,
           status: a.status,
+          managedDatasetRootIds: ManagedDatasetRootIdsSchema.parse(
+            a.topology.managedDatasetRootIds,
+          ),
         }));
     },
     async listByIds(agentIds) {
@@ -247,10 +266,14 @@ function makeAgentsPort(deps: CpBindingsDeps): AgentsServicePort {
           hostname: agentsTable.siteName,
           siteId: agentsTable.siteName,
           status: agentsTable.status,
+          topology: agentsTable.topology,
         })
         .from(agentsTable)
         .where(inArray(agentsTable.agentId, agentIds));
-      return rows;
+      return rows.map(({ topology, ...agent }) => ({
+        ...agent,
+        managedDatasetRootIds: ManagedDatasetRootIdsSchema.parse(topology.managedDatasetRootIds),
+      }));
     },
   };
 }
@@ -276,8 +299,13 @@ function makeAuditPort(deps: CpBindingsDeps): AuditServicePort {
       }
       const where = and(...filters);
       const items = await db
-        .select()
+        .select({
+          ...getTableColumns(auditLog),
+          actorName: users.displayName,
+          actorEmail: users.email,
+        })
         .from(auditLog)
+        .leftJoin(users, eq(sql`${users.id}::text`, auditLog.actor))
         .where(where)
         .orderBy(desc(auditLog.createdAt))
         .limit(limit)
@@ -893,6 +921,7 @@ function makeUsersPort(deps: CpBindingsDeps): UsersServicePort {
       const baseSelection = {
         id: users.id,
         email: users.email,
+        displayName: users.displayName,
         role: users.role,
         suspended: users.suspended,
         quota: usageQuotas.remainingCreditUnits,
@@ -930,6 +959,7 @@ function makeUsersPort(deps: CpBindingsDeps): UsersServicePort {
         items: rows.map((r) => ({
           id: r.id,
           email: r.email,
+          displayName: r.displayName,
           role: r.role,
           suspended: r.suspended,
           quota: r.quota ?? 0,
