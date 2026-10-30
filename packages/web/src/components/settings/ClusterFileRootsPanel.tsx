@@ -7,6 +7,7 @@ import { type FormEvent, useCallback, useEffect, useMemo, useState } from "react
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { api } from "../../lib/api-client";
+import { useOrganizationName } from "../../lib/use-organization-name";
 import { toUserFacingError } from "../../lib/user-facing-error";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
@@ -78,6 +79,7 @@ const EMPTY_NEW_ROOT: NewRootDraft = {
 };
 
 export function ClusterFileRootsPanel() {
+  const organizationName = useOrganizationName();
   const { t } = useTranslation();
   const [roots, setRoots] = useState<ClusterFileRootView[]>([]);
   const [drafts, setDrafts] = useState<Record<string, RootDraft>>({});
@@ -318,8 +320,11 @@ export function ClusterFileRootsPanel() {
                         onChange={(event) => updateDraft(root.id, "label", event.target.value)}
                         data-testid={`cluster-file-root-label-${root.id}`}
                       />
-                      <div className="rounded-md border border-border bg-muted/30 px-3 py-2 font-mono text-xs">
-                        {root.providerOrgId}
+                      <div
+                        className="rounded-md border border-border bg-muted/30 px-3 py-2 text-xs"
+                        title={root.providerOrgId}
+                      >
+                        {organizationName(root.providerOrgId)}
                       </div>
                       <Input
                         value={draft.agentId}

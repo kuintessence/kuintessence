@@ -2813,3 +2813,7 @@ describe("SoftwarePolicyTable", () => {
     ).toBe("zlib");
   });
 });
+
+vi.mock("../../lib/use-organization-name", () => ({
+  useOrganizationName: () => (id: string) => id,
+}));

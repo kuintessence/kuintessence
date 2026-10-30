@@ -79,7 +79,6 @@ export function JobDetailPage({ jobId }: { jobId: string }) {
     <PageShell data-testid="job-detail-page">
       <PageHeader
         title={job.name}
-        subtitle={job.id}
         actions={
           <div className="flex flex-wrap items-center gap-2">
             <Badge variant={statusToBadgeVariant(job.status)}>

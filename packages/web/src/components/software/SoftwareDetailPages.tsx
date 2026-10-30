@@ -390,7 +390,10 @@ export function SoftwareWorkflowTemplateDetailPage({ templateId }: { templateId:
                 ))}
               </div>
               <div className="mt-4 grid gap-2 sm:grid-cols-2">
-                <DetailInfoTile label="ID" value={template.id} />
+                <details className="text-xs text-muted-foreground">
+                  <summary className="cursor-pointer">ID</summary>
+                  <code className="block select-all break-all">{template.id}</code>
+                </details>
                 <DetailInfoTile
                   label={t("software.detail.createdAt")}
                   value={formatCreatedAt(template.createdAt)}

@@ -5,17 +5,18 @@ import { useTheme } from "../ThemeProvider";
 
 export interface MeteringChartProps {
   rows: MeteringQueryRow[];
+  groupLabel: (id: string) => string;
 }
 
 const MAX_BARS = 20;
 
-export function MeteringChart({ rows }: MeteringChartProps) {
+export function MeteringChart({ rows, groupLabel }: MeteringChartProps) {
   const { resolved } = useTheme();
   const isDark = resolved === "dark";
 
   const option = useMemo(() => {
     const top = rows.slice(0, MAX_BARS);
-    const xLabels = top.map((r) => r.groupKey);
+    const xLabels = top.map((r) => groupLabel(r.groupKey));
     const yValues = top.map((r) => Number((r.cpuCoreSeconds / 3600).toFixed(2)));
     const accent = isDark ? "#7aa3ff" : "#3b6cf2";
     const grid = isDark ? "#2a2f3d" : "#e6e8ee";
@@ -44,7 +45,7 @@ export function MeteringChart({ rows }: MeteringChartProps) {
         },
       ],
     };
-  }, [rows, isDark]);
+  }, [rows, isDark, groupLabel]);
 
   return (
     <ReactECharts

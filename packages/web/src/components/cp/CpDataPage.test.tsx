@@ -42,7 +42,15 @@ vi.mock("../../lib/active-organization", () => ({
 
 vi.mock("../../lib/use-cp-agents", () => ({
   useCpAgents: () => ({
-    data: [{ id: "agent-a", hostname: "compute-a", siteId: "site-a", status: "online" }],
+    data: [
+      {
+        id: "agent-a",
+        hostname: "compute-a",
+        siteId: "site-a",
+        status: "online",
+        managedDatasetRootIds: ["root-a"],
+      },
+    ],
     error: null,
     isError: false,
     isLoading: false,
@@ -57,6 +65,13 @@ vi.mock("../../lib/use-cp-agents", () => ({
             enabled: true,
             label: "Research data",
             path: "/data/research",
+          },
+          {
+            id: "root-transfer-only",
+            agentId: "agent-a",
+            enabled: true,
+            label: "Transfer only",
+            path: "/jobs",
           },
           {
             id: "root-disabled",
@@ -168,6 +183,9 @@ describe("CpDataPage", () => {
     fireEvent.change(screen.getByTestId("cp-data-agent-select"), {
       target: { value: "agent-a" },
     });
+    expect(
+      screen.getByTestId("cp-data-root-select").querySelector('option[value="root-transfer-only"]'),
+    ).toBeNull();
     fireEvent.change(screen.getByTestId("cp-data-root-select"), {
       target: { value: "root-a" },
     });

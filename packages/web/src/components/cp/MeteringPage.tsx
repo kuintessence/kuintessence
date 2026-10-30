@@ -7,6 +7,7 @@ import {
   type MeteringPeriod,
   useMeteringQuery,
 } from "../../lib/use-metering-query";
+import { useOrganizationName } from "../../lib/use-organization-name";
 import { toUserFacingError } from "../../lib/user-facing-error";
 import { Button } from "../ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
@@ -79,6 +80,8 @@ export function MeteringPage({
     !rangeError,
   );
   const rows = q.data?.rows ?? [];
+  const organizationName = useOrganizationName(grouping === "org");
+  const groupLabel = (id: string) => (grouping === "org" ? organizationName(id) : id);
 
   const [exporting, setExporting] = useState(false);
   const [exportError, setExportError] = useState<string | null>(null);
@@ -257,7 +260,9 @@ export function MeteringPage({
                         data-testid={`metering-row-${i}`}
                         className="border-t border-border last:border-b-0"
                       >
-                        <td className="px-3 py-2 font-mono text-xs">{r.groupKey}</td>
+                        <td className="px-3 py-2 text-xs" title={r.groupKey}>
+                          {groupLabel(r.groupKey)}
+                        </td>
                         <td className="px-3 py-2 text-right font-mono text-xs tabular-nums">
                           {hours(r.cpuCoreSeconds)}
                         </td>
@@ -283,7 +288,7 @@ export function MeteringPage({
               <CardTitle>{t("cp.metering.col.cpuHours")}</CardTitle>
             </CardHeader>
             <CardContent>
-              <MeteringChart rows={rows} />
+              <MeteringChart rows={rows} groupLabel={groupLabel} />
             </CardContent>
           </Card>
         </>

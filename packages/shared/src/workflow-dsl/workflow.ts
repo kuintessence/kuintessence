@@ -21,6 +21,7 @@ export type Advanced = z.infer<typeof AdvancedSchema>;
 
 /** Top-level workflow document. */
 export const WorkflowSchema = z.strictObject({
+  schemaVersion: z.literal(2).optional(),
   id: UuidSchema.optional(),
   name: z.string().min(1),
   description: z.string().nullish(),

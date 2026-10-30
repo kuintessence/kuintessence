@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useActiveOrganizationId } from "../../lib/active-organization";
 import { useCpUsers } from "../../lib/use-cp-users";
+import { useOrganizationName } from "../../lib/use-organization-name";
 import { toUserFacingError } from "../../lib/user-facing-error";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
@@ -12,6 +13,7 @@ export function UsersTable() {
   const { t } = useTranslation();
   const [search, setSearch] = useState("");
   const activeOrganizationId = useActiveOrganizationId();
+  const organizationName = useOrganizationName(activeOrganizationId !== null);
   const [isOffline, setIsOffline] = useState(
     () => typeof navigator !== "undefined" && !navigator.onLine,
   );
@@ -40,11 +42,14 @@ export function UsersTable() {
           <h2 className="text-2xl font-semibold tracking-tight">{t("cp.users.title")}</h2>
           <p className="text-sm text-muted-foreground">{t("cp.users.subtitle")}</p>
           <p
-            className="mt-1 break-all font-mono text-xs text-muted-foreground"
+            className="mt-1 break-words text-xs text-muted-foreground"
+            title={activeOrganizationId ?? undefined}
             data-testid="cp-users-org"
           >
             {activeOrganizationId
-              ? t("cp.users.currentOrganization", { organizationId: activeOrganizationId })
+              ? t("cp.users.currentOrganization", {
+                  organizationId: organizationName(activeOrganizationId),
+                })
               : t("cp.users.organizationRequired")}
           </p>
         </div>
@@ -65,7 +70,7 @@ export function UsersTable() {
       </div>
 
       <div
-        className="rounded-md border border-status-failed/40 bg-[color-mix(in_oklab,var(--status-failed)_8%,transparent)] p-3 text-sm"
+        className="rounded-md border border-border bg-muted/30 p-3 text-sm"
         data-testid="cp-users-readonly-notice"
       >
         <p className="font-medium">{t("cp.users.readonly.title")}</p>

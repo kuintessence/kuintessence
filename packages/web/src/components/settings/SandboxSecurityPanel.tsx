@@ -190,14 +190,18 @@ export function SandboxSecurityPanel() {
                       <td className="px-3 py-2">
                         <Badge
                           variant={
-                            agent.sandboxReadiness === "ready"
-                              ? "succeeded"
-                              : agent.sandboxReadiness === "degraded"
-                                ? "pending"
-                                : "failed"
+                            agent.sandboxCapabilities?.enabled === false
+                              ? "outline"
+                              : agent.sandboxReadiness === "ready"
+                                ? "succeeded"
+                                : agent.sandboxReadiness === "degraded"
+                                  ? "pending"
+                                  : "failed"
                           }
                         >
-                          {t(`sandbox.security.readiness.${agent.sandboxReadiness}`)}
+                          {t(
+                            `sandbox.security.readiness.${agent.sandboxCapabilities?.enabled === false ? "disabled" : agent.sandboxReadiness}`,
+                          )}
                         </Badge>
                       </td>
                       <td className="px-3 py-2">

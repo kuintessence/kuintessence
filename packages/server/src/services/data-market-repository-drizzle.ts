@@ -13,7 +13,7 @@ import {
   dataReplicas,
   type PgDb,
 } from "@kuintessence/db";
-import { AppError, ErrorCode } from "@kuintessence/shared";
+import { AppError, ErrorCode, ManagedDatasetRootIdsSchema } from "@kuintessence/shared";
 import { and, count, desc, eq, ilike, inArray, isNull, or, sql } from "drizzle-orm";
 import {
   dataAssetGrantDeltaTuples,
@@ -728,11 +728,22 @@ export class PgDataMarketRepository implements DataMarketRepository {
         );
       }
       const [agent] = await tx
-        .select({ agentId: agents.agentId })
+        .select({ agentId: agents.agentId, topology: agents.topology })
         .from(agents)
         .where(eq(agents.agentId, input.agentId))
         .limit(1);
       if (!agent) throw new AppError(ErrorCode.VALIDATION_ERROR, "Agent is not registered", 400);
+      if (
+        !ManagedDatasetRootIdsSchema.parse(agent.topology.managedDatasetRootIds).includes(
+          input.managedRootId,
+        )
+      ) {
+        throw new AppError(
+          ErrorCode.VALIDATION_ERROR,
+          "Agent has not registered this dataset root. Configure AGENT_DATASET_ROOTS_JSON and reconnect the Agent before importing.",
+          400,
+        );
+      }
       const [version] = await tx
         .insert(dataAssetVersions)
         .values({

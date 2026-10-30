@@ -18,7 +18,7 @@ import {
   type StorageQuotaSummary,
   type StorageScope,
 } from "@kuintessence/shared";
-import { and, desc, eq, gt, isNull, lte, or, sql } from "drizzle-orm";
+import { and, desc, eq, getTableColumns, gt, isNull, lte, or, sql } from "drizzle-orm";
 
 const DEFAULT_CLOUD_QUOTA_BYTES = 50 * 1024 * 1024 * 1024;
 const METERING_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
@@ -186,8 +186,13 @@ export class StorageQuotaService {
 
   async listRequests(scope: StorageScope, scopeId: string) {
     return this.db
-      .select()
+      .select({
+        ...getTableColumns(storageQuotaRequests),
+        userDisplayName: users.displayName,
+        userEmail: users.email,
+      })
       .from(storageQuotaRequests)
+      .leftJoin(users, eq(users.id, storageQuotaRequests.userId))
       .where(and(eq(storageQuotaRequests.scope, scope), eq(storageQuotaRequests.scopeId, scopeId)))
       .orderBy(desc(storageQuotaRequests.createdAt));
   }

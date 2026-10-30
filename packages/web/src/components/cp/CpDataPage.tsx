@@ -38,8 +38,10 @@ export function CpDataPage() {
   const [reviewingRequestId, setReviewingRequestId] = useState<string | null>(null);
   const agents = useCpAgents();
   const roots = useCpAgentClusterFileRoots(agentId || null);
+  const registeredRootIds =
+    agents.data?.find((agent) => agent.id === agentId)?.managedDatasetRootIds ?? [];
   const enabledRoots = (roots.data ?? []).filter(
-    (root) => root.enabled && root.agentId === agentId,
+    (root) => root.enabled && root.agentId === agentId && registeredRootIds.includes(root.id),
   );
   const assets = useQuery({
     enabled: Boolean(activeOrganizationId),

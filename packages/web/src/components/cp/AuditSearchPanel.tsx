@@ -2,6 +2,7 @@ import { ChevronDown, ChevronRight, Filter, Search } from "lucide-react";
 import { Fragment, useState } from "react";
 import { useTranslation } from "react-i18next";
 import type { AuditEntry } from "../../lib/cp-client";
+import { compactUuid } from "../../lib/format";
 import { useCpSearchAudit } from "../../lib/use-cp-audit";
 import { toUserFacingError } from "../../lib/user-facing-error";
 import { Badge } from "../ui/badge";
@@ -283,7 +284,9 @@ export function AuditSearchPanel() {
                       <td className="px-3 py-2 font-mono text-xs tabular-nums">
                         {String(row.createdAt ?? "")}
                       </td>
-                      <td className="px-3 py-2 font-mono text-xs">{String(row.actor ?? "")}</td>
+                      <td className="px-3 py-2 text-xs" title={String(row.actor ?? "")}>
+                        {String(row.actorName || row.actorEmail || row.actor || "")}
+                      </td>
                       <td className="px-3 py-2">
                         <div className="flex flex-wrap items-center gap-1.5">
                           <Badge variant={categoryVariant(category)}>
@@ -307,7 +310,9 @@ export function AuditSearchPanel() {
                       </td>
                       <td className="px-3 py-2">
                         <div className="flex flex-wrap items-center gap-1.5">
-                          <code className="text-xs">{target}</code>
+                          <code className="text-xs" title={target}>
+                            {compactUuid(target)}
+                          </code>
                           {target ? (
                             <Button
                               type="button"

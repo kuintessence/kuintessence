@@ -22,6 +22,7 @@ import {
   useCreateCpQueue,
   useUpdateCpQueue,
 } from "../../lib/use-cp-queues";
+import { useOrganizationName } from "../../lib/use-organization-name";
 import { toUserFacingError } from "../../lib/user-facing-error";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
@@ -217,13 +218,16 @@ function ObservationBadge({ queue, t }: { queue: QueueRegistryView; t: Translate
 
 function ManagedQueueMobileDetails({ queue }: { queue: QueueRegistryView }) {
   const { t } = useTranslation();
+  const organizationName = useOrganizationName();
   const targetMode = queueTargetMode(queue);
   return (
     <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-4 gap-y-2 text-xs">
       <dt className="text-muted-foreground">{t("cp.queues.field.queueId")}</dt>
       <dd className="break-all font-mono">{queue.queueId}</dd>
       <dt className="text-muted-foreground">{t("cp.queues.field.providerOrgId")}</dt>
-      <dd className="break-all font-mono">{queue.providerOrgId}</dd>
+      <dd className="break-words" title={queue.providerOrgId}>
+        {organizationName(queue.providerOrgId)}
+      </dd>
       <dt className="text-muted-foreground">{t("cp.queues.col.target")}</dt>
       <dd className="break-words">
         {targetMode === "default"
@@ -236,7 +240,7 @@ function ManagedQueueMobileDetails({ queue }: { queue: QueueRegistryView }) {
       <dd className="break-words">
         {queue.visibleOrgIds.length === 0
           ? t("cp.queues.allProviderUsers")
-          : queue.visibleOrgIds.join(", ")}
+          : queue.visibleOrgIds.map(organizationName).join(", ")}
       </dd>
       <dt className="text-muted-foreground">{t("cp.queues.col.policy")}</dt>
       <dd>
@@ -262,6 +266,7 @@ function ManagedQueueTable({
   onExpandedChange: (queueId: string | null) => void;
 }) {
   const { t } = useTranslation();
+  const organizationName = useOrganizationName();
   return (
     <div
       className="rounded-md border border-border sm:overflow-x-auto sm:overscroll-x-contain"
@@ -359,10 +364,13 @@ function ManagedQueueTable({
                   <td className="order-4 col-span-2 sm:table-cell sm:px-3 sm:py-2">
                     <ObservationBadge queue={queue} t={t} />
                   </td>
-                  <td className="hidden px-3 py-2 text-xs sm:table-cell">
+                  <td
+                    className="hidden px-3 py-2 text-xs sm:table-cell"
+                    title={queue.visibleOrgIds.join(", ")}
+                  >
                     {queue.visibleOrgIds.length === 0
                       ? t("cp.queues.allProviderUsers")
-                      : queue.visibleOrgIds.join(", ")}
+                      : queue.visibleOrgIds.map(organizationName).join(", ")}
                   </td>
                   <td className="hidden px-3 py-2 sm:table-cell">
                     <QueuePolicyTags queue={queue} />

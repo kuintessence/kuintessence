@@ -175,9 +175,7 @@ export function JobDetailSheet({ jobId, open, onOpenChange }: JobDetailSheetProp
               <Badge variant="outline">{t(`jobs.scope.${visibleJob.accessScope}`)}</Badge>
             ) : null}
           </div>
-          <SheetDescription className="truncate font-mono text-xs" title={jobId ?? undefined}>
-            {jobId ?? ""}
-          </SheetDescription>
+          <SheetDescription className="sr-only">{jobId ?? ""}</SheetDescription>
         </SheetHeader>
         <SheetBody className="min-w-0">
           {errorBlock}

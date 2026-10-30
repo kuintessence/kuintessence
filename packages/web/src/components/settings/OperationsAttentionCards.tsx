@@ -55,9 +55,15 @@ async function getPlatformAttentionSnapshot(
       pendingStorageRequests: null,
       pendingAccountMappings: null,
       criticalSandboxAgents:
-        sandboxAgents.filter((agent) => agent.sandboxReadiness === "critical").length ?? null,
+        sandboxAgents.filter(
+          (agent) =>
+            agent.sandboxCapabilities?.enabled !== false && agent.sandboxReadiness === "critical",
+        ).length ?? null,
       degradedSandboxAgents:
-        sandboxAgents.filter((agent) => agent.sandboxReadiness === "degraded").length ?? null,
+        sandboxAgents.filter(
+          (agent) =>
+            agent.sandboxCapabilities?.enabled !== false && agent.sandboxReadiness === "degraded",
+        ).length ?? null,
       authorizationDeadLetters: null,
       authorizationDiffs: null,
       approvalsPartialFailure: false,
@@ -85,9 +91,15 @@ async function getPlatformAttentionSnapshot(
       storageRequests?.requests.filter((request) => request.status === "pending").length ?? null,
     pendingAccountMappings: accountMappings?.length ?? null,
     criticalSandboxAgents:
-      sandboxAgents?.filter((agent) => agent.sandboxReadiness === "critical").length ?? null,
+      sandboxAgents?.filter(
+        (agent) =>
+          agent.sandboxCapabilities?.enabled !== false && agent.sandboxReadiness === "critical",
+      ).length ?? null,
     degradedSandboxAgents:
-      sandboxAgents?.filter((agent) => agent.sandboxReadiness === "degraded").length ?? null,
+      sandboxAgents?.filter(
+        (agent) =>
+          agent.sandboxCapabilities?.enabled !== false && agent.sandboxReadiness === "degraded",
+      ).length ?? null,
     authorizationDeadLetters: authz?.data.outbox.dead ?? null,
     authorizationDiffs: authz?.data.shadowDiffs ?? null,
     approvalsPartialFailure: results.slice(0, 3).some((result) => result.status === "rejected"),

@@ -51,6 +51,7 @@ describe("OperationsAttentionCards", () => {
       { sandboxReadiness: "critical" },
       { sandboxReadiness: "degraded" },
       { sandboxReadiness: "ready" },
+      { sandboxReadiness: "critical", sandboxCapabilities: { enabled: false } },
     ]);
     mocks.apiGet.mockImplementation((path: string) => {
       if (path.includes("quota-requests")) {
@@ -105,6 +106,7 @@ describe("OperationsAttentionCards", () => {
     mocks.listSandboxAgentSecurityViews.mockResolvedValue([
       { sandboxReadiness: "critical" },
       { sandboxReadiness: "ready" },
+      { sandboxReadiness: "critical", sandboxCapabilities: { enabled: false } },
     ]);
 
     render(<OperationsAttentionCards />, { wrapper });

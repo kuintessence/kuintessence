@@ -512,6 +512,7 @@ describe("AgentStream", () => {
       client,
       adapter: makeAdapter(),
       agentId: "agent-001",
+      managedDatasetRootIds: ["00000000-0000-4000-8000-000000000001"],
       siteName: "test-site",
       heartbeatIntervalMs: 60_000, // effectively disable during test
       logger: silent,
@@ -530,6 +531,9 @@ describe("AgentStream", () => {
     expect(sent.length).toBeGreaterThanOrEqual(1);
     const first = sent[0] as { payload: { case: string } };
     expect(first.payload.case).toBe("register");
+    expect(sent[0]).toMatchObject({
+      payload: { value: { managedDatasetRootIds: ["00000000-0000-4000-8000-000000000001"] } },
+    });
   });
 
   test("reports only unexpired runtime attestations without rejecting a fresh replacement", async () => {

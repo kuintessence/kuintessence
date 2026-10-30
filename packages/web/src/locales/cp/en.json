@@ -740,7 +740,7 @@
       "agentEmpty": "No agents are available in the current organization.",
       "managedRoot": "Managed root",
       "managedRootPlaceholder": "Choose an enabled managed root",
-      "managedRootEmpty": "This agent has no enabled managed roots.",
+      "managedRootEmpty": "No importable dataset roots are registered for this agent. Configure AGENT_DATASET_ROOTS_JSON and reconnect it; file-transfer roots are not dataset roots.",
       "relativePath": "Path relative to root",
       "managedRootRequired": "CP-local imports require a registered managed root and relative path.",
       "cpLocalHint": "Do not provide arbitrary absolute paths. CP-local facts are a managed root plus relative path.",

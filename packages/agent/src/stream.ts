@@ -635,6 +635,7 @@ export interface AgentStreamDeps {
   removeJobWorkRoot?: (jobId: string) => Promise<void>;
   stageInputFile?: (sourceUrl: string, targetPath: string) => Promise<void>;
   dataScanner?: CpLocalDataScanner;
+  managedDatasetRootIds?: readonly string[];
   dataScanTimeoutMs?: number;
   dataDeliveryExecutor?: Pick<DataDeliveryExecutor, "prepare" | "release" | "recover">;
 }
@@ -1583,6 +1584,7 @@ export class AgentStream {
           computeHealthV1: this.computeHealthV1Capable,
           queueInventoryV1: this.queueInventoryV1Capable,
           spackMaterialDeliveryV1: this.spackManager?.requireServerMaterials === true,
+          managedDatasetRootIds: [...(this.deps.managedDatasetRootIds ?? [])],
         }),
       },
     });

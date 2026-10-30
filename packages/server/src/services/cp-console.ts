@@ -37,12 +37,24 @@ export interface JobsServicePort {
 
 export interface AgentsServicePort {
   countByHealth(orgIds: string[]): Promise<{ healthy: number; sick: number; offline: number }>;
-  listForOrgs(
-    orgIds: string[],
-  ): Promise<Array<{ id: string; hostname: string; siteId: string; status: string }>>;
-  listByIds(
-    agentIds: string[],
-  ): Promise<Array<{ id: string; hostname: string; siteId: string; status: string }>>;
+  listForOrgs(orgIds: string[]): Promise<
+    Array<{
+      id: string;
+      hostname: string;
+      siteId: string;
+      status: string;
+      managedDatasetRootIds?: string[];
+    }>
+  >;
+  listByIds(agentIds: string[]): Promise<
+    Array<{
+      id: string;
+      hostname: string;
+      siteId: string;
+      status: string;
+      managedDatasetRootIds?: string[];
+    }>
+  >;
 }
 
 export interface AuditServicePort {

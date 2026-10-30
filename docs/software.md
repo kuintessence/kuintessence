@@ -417,3 +417,25 @@ Registry 正式入口为 `POST /api/license-entitlement-claims`（经 Server 代
 审批也不替代资产安装权限、Agent operate 权限、安装策略、受信 release、精确材料 binding
 及 Agent 的安装开关/site profile 配置。用户脚本无需也不得注入可信加载 shell；
 后续 Bash Script 节点仍使用自己的签名 runtime。
+
+### 算力方本地数据导入的根目录配置
+
+平台的文件传输根目录不自动成为数据导入根目录。先登记专用数据目录，
+再把其 UUID 写入 Agent 的 `AGENT_DATASET_ROOTS_JSON`，值为相对于
+`AGENT_DATASET_ROOT` 的子目录（例如 `{"00000000-0000-4000-8000-000000000001":"public"}`）。
+平台登记的绝对路径应与该目录相同。数据目录与作业工作区、受限材料目录不得重叠。
+重启或重连 Agent 后，注册消息会上报配置的根目录 ID；导入页仅展示双方匹配的启用目录，
+服务端在创建版本和扫描请求前再次检查。旧 Agent 未上报时需升级并重新注册。
+导入的相对路径必须指向包含材料文件的目录，而非单个文件。
+
+### 工作流版本与作业输出
+
+工作流定义允许导出器携带 `schemaVersion: 2`，也兼容未声明版本的现有定义；
+其他版本及未知字段仍会被拒绝，节点和连线仍需通过静态校验。
+
+`expectedOutputs` 默认收集文本到作业的 `collectedOutputs`。
+需要发布为云盘文件的输出还须在 `fileOutputDescriptors` 中声明相同的 descriptor。
+文件页分别展示文本内容和文件下载状态；文本输出没有云盘文件不属于发布失败。
+
+隔离运行环境页面将 Agent 明确关闭 Sandbox 的状态展示为“未启用”；
+已启用但不满足安全条件的节点仍显示降级或严重异常，调度安全检查不变。

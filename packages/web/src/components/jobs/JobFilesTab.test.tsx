@@ -64,11 +64,53 @@ const job: JobDetail = {
     { descriptor: "summary", path: "summary.txt", isBatch: false },
     { descriptor: "chunks", path: "chunks/*.txt", isBatch: true },
   ],
+  fileOutputDescriptors: ["summary", "chunks"],
 };
 
 describe("JobFilesTab actions", () => {
   afterEach(() => {
     vi.clearAllMocks();
+  });
+
+  test("shows collected text without claiming cloud publication failed", () => {
+    render(
+      withQueryClient(
+        <JobFilesTab
+          job={{
+            ...job,
+            inputStaging: [],
+            fileOutputDescriptors: [],
+            expectedOutputs: [{ descriptor: "csv", path: "result.csv", isBatch: false }],
+            collectedOutputs: { csv: "sample,value\nA,12\nB,18\n" },
+          }}
+          loading={false}
+        />,
+      ),
+    );
+    expect(screen.getByTestId("job-text-output-csv").textContent).toContain("A,12");
+    expect(screen.queryByText("Not published")).toBeNull();
+    expect(api.get).not.toHaveBeenCalled();
+  });
+
+  test("keeps an empty collected text result distinct from an unavailable result", () => {
+    render(
+      withQueryClient(
+        <JobFilesTab
+          job={{
+            ...job,
+            inputStaging: [],
+            fileOutputDescriptors: [],
+            expectedOutputs: [{ descriptor: "empty", path: "empty.txt", isBatch: false }],
+            collectedOutputs: { empty: "" },
+          }}
+          loading={false}
+        />,
+      ),
+    );
+    expect(screen.getByTestId("job-text-output-empty").textContent).toContain(
+      "jobs.files.emptyTextResult",
+    );
+    expect(screen.queryByText("jobs.files.textResultUnavailable")).toBeNull();
   });
 
   test("downloads NetDrive inputs and matched output files, and supports cluster output download", async () => {

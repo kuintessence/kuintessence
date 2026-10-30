@@ -319,3 +319,7 @@ describe("MeteringPage", () => {
     );
   });
 });
+
+vi.mock("../../lib/use-organization-name", () => ({
+  useOrganizationName: () => (id: string) => id,
+}));

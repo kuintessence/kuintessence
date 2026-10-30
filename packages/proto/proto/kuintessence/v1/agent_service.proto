@@ -205,6 +205,8 @@ message RegisterRequest {
   bool queue_inventory_v1 = 17;
   // The Agent refuses legacy installs and only stages Server-authorized materials.
   bool spack_material_delivery_v1 = 18;
+  // IDs of dataset roots validated locally at startup. Paths remain on the Agent.
+  repeated string managed_dataset_root_ids = 19;
 }
 
 message RegisterResponse {

@@ -71,7 +71,7 @@ export function CpAccountsPage() {
                         className="truncate font-mono text-[11px] text-muted-foreground"
                         title={`${account.agentId} · ${account.id}`}
                       >
-                        {account.agentId} · {account.id}
+                        {account.agentId}
                       </div>
                     </div>
                     <Badge variant={account.enabled ? "running" : "cancelled"}>
