@@ -242,7 +242,7 @@ export function ClusterFileRootsPanel() {
             </div>
 
             <form
-              className="grid gap-2 rounded-md border border-border p-3 md:grid-cols-2 xl:grid-cols-[1fr_160px_160px_1fr_140px_1fr_auto]"
+              className="grid grid-cols-[repeat(auto-fit,minmax(min(100%,24rem),1fr))] gap-2 rounded-md border border-border p-3"
               onSubmit={createRoot}
               data-testid="cluster-file-root-create-form"
             >
@@ -312,7 +312,7 @@ export function ClusterFileRootsPanel() {
                 return (
                   <div key={root.id} className="space-y-2">
                     <div
-                      className="grid gap-2 rounded-md border border-border p-3 md:grid-cols-2 xl:grid-cols-[1fr_150px_150px_1fr_130px_1fr_150px_auto]"
+                      className="grid grid-cols-[repeat(auto-fit,minmax(min(100%,24rem),1fr))] gap-2 rounded-md border border-border p-3"
                       data-testid={`cluster-file-root-row-${root.id}`}
                     >
                       <Input
@@ -356,7 +356,7 @@ export function ClusterFileRootsPanel() {
                         data-testid={`cluster-file-root-visible-orgs-${root.id}`}
                       />
                       <RootCheckBadge check={checks[root.id]} />
-                      <div className="flex items-center justify-end gap-2">
+                      <div className="flex flex-wrap items-center justify-end gap-2">
                         <label className="flex items-center gap-2 text-xs text-muted-foreground">
                           <input
                             type="checkbox"
