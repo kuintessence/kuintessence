@@ -4,7 +4,7 @@ import type {
   SpackMaterialManagementCatalog,
   SpackMaterialManifest,
 } from "@kuintessence/shared/browser";
-import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { ACTIVE_ORGANIZATION_STORAGE_KEY } from "../../lib/active-organization";
 import { clearAuth, setAuth } from "../../lib/auth";
@@ -319,7 +319,7 @@ test("invalidation aborts a pending management page and ignores its late result"
   confirmLifecycle(RESTORE_REASON);
   submitLifecycle("restore");
   await screen.findByText(labels.lifecycleNotice.changed);
-  expect(signal?.aborted).toBe(true);
+  await waitFor(() => expect(signal?.aborted).toBe(true));
   await act(async () => pending.resolve(catalog));
   expect(screen.queryByRole("table", { name: labels.managementTitle })).toBeNull();
   expect(management.listSpackMaterialManagement).toHaveBeenCalledTimes(2);
