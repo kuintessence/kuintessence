@@ -286,4 +286,56 @@ describe("AuditSearchPanel", () => {
     expect(screen.queryByTestId("cp-audit-total")).toBeNull();
     expect(screen.queryByTestId("cp-audit-empty")).toBeNull();
   });
+  test("pages the submitted filters and resets pagination for a new search", async () => {
+    const fetchMock = vi.fn((_input: RequestInfo | URL, opts?: RequestInit) => {
+      const query = JSON.parse(String(opts?.body)) as { offset: number; text?: string };
+      return Promise.resolve(
+        new Response(
+          JSON.stringify({
+            total: 51,
+            items: [{ id: `page-${query.offset}`, action: "agent.updated", target: "agent:1" }],
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+      );
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<AuditSearchPanel />, { wrapper: makeWrapper() });
+    fireEvent.change(screen.getByTestId("cp-audit-text"), { target: { value: "original" } });
+    fireEvent.submit(screen.getByTestId("cp-audit-search-form"));
+    await waitFor(() => screen.getByTestId("cp-audit-row-page-0"));
+    expect((screen.getByTestId("cp-audit-previous") as HTMLButtonElement).disabled).toBe(true);
+    const original = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body));
+    fireEvent.change(screen.getByTestId("cp-audit-text"), { target: { value: "draft" } });
+    fireEvent.change(screen.getByTestId("cp-audit-from"), {
+      target: { value: "2026-01-01T00:00" },
+    });
+    fireEvent.click(screen.getByTestId("cp-audit-details-toggle-page-0"));
+    fireEvent.click(screen.getByTestId("cp-audit-next"));
+    await waitFor(() => screen.getByTestId("cp-audit-row-page-50"));
+    expect(JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body))).toEqual({
+      ...original,
+      offset: 50,
+    });
+    expect((screen.getByTestId("cp-audit-next") as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(screen.getByTestId("cp-audit-previous"));
+    await waitFor(() => screen.getByTestId("cp-audit-row-page-0"));
+    expect(screen.queryByTestId("cp-audit-details-page-0")).toBeNull();
+    fireEvent.click(screen.getByTestId("cp-audit-next"));
+    await waitFor(() => screen.getByTestId("cp-audit-row-page-50"));
+    fireEvent.submit(screen.getByTestId("cp-audit-search-form"));
+    await waitFor(() => screen.getByTestId("cp-audit-row-page-0"));
+    const submitted = JSON.parse(String(fetchMock.mock.calls[4]?.[1]?.body));
+    expect(submitted.offset).toBe(0);
+    expect(submitted.text).toBe("draft");
+    expect(submitted.from).not.toBe(original.from);
+    fireEvent.click(screen.getByTestId("cp-audit-next"));
+    await waitFor(() => screen.getByTestId("cp-audit-row-page-50"));
+    fireEvent.click(screen.getByTestId("cp-audit-filter-action-page-50"));
+    await waitFor(() => screen.getByTestId("cp-audit-row-page-0"));
+    expect(JSON.parse(String(fetchMock.mock.calls[6]?.[1]?.body))).toMatchObject({
+      offset: 0,
+      text: "agent.updated",
+    });
+  });
 });

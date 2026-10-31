@@ -143,6 +143,7 @@ export function AuditSearchPanel() {
       return;
     }
     setValidation(null);
+    setExpandedId(null);
     const searchText = textOverride ?? text;
     m.mutate({
       from: fromIso,
@@ -153,8 +154,6 @@ export function AuditSearchPanel() {
     });
   };
 
-  const handleSubmit = () => runSearch();
-
   const applyQuickFilter = (value: string) => {
     setText(value);
     runSearch(value);
@@ -163,6 +162,14 @@ export function AuditSearchPanel() {
   const hasSearchError = Boolean(m.error);
   const items: AuditEntry[] = hasSearchError ? [] : (m.data?.items ?? []);
   const total = hasSearchError ? 0 : (m.data?.total ?? 0);
+  const offset = m.variables?.offset ?? 0;
+
+  const changePage = (nextOffset: number) => {
+    if (!m.variables || m.isPending) return;
+    setValidation(null);
+    setExpandedId(null);
+    m.mutate({ ...m.variables, offset: nextOffset });
+  };
 
   return (
     <div className="space-y-4" data-testid="cp-audit-panel">
@@ -173,74 +180,83 @@ export function AuditSearchPanel() {
         </div>
       </div>
 
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-4">
-        <div className="flex flex-col gap-1">
-          <label htmlFor="cp-audit-from" className="text-xs font-medium">
-            {t("cp.audit.fromLabel")}
-          </label>
-          <Input
-            id="cp-audit-from"
-            data-testid="cp-audit-from"
-            type="datetime-local"
-            value={from}
-            onChange={(e) => setFrom(e.target.value)}
-          />
+      <form
+        onSubmit={(event) => {
+          event.preventDefault();
+          if (!m.isPending) runSearch();
+        }}
+        className="space-y-3"
+        data-testid="cp-audit-search-form"
+      >
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-4">
+          <div className="flex flex-col gap-1">
+            <label htmlFor="cp-audit-from" className="text-xs font-medium">
+              {t("cp.audit.fromLabel")}
+            </label>
+            <Input
+              id="cp-audit-from"
+              data-testid="cp-audit-from"
+              type="datetime-local"
+              value={from}
+              onChange={(e) => setFrom(e.target.value)}
+            />
+          </div>
+          <div className="flex flex-col gap-1">
+            <label htmlFor="cp-audit-to" className="text-xs font-medium">
+              {t("cp.audit.toLabel")}
+            </label>
+            <Input
+              id="cp-audit-to"
+              data-testid="cp-audit-to"
+              type="datetime-local"
+              value={to}
+              onChange={(e) => setTo(e.target.value)}
+            />
+          </div>
+          <div className="flex flex-col gap-1 sm:col-span-2">
+            <label htmlFor="cp-audit-text" className="text-xs font-medium">
+              {t("cp.audit.textLabel")}
+            </label>
+            <Input
+              id="cp-audit-text"
+              data-testid="cp-audit-text"
+              value={text}
+              onChange={(e) => setText(e.target.value)}
+            />
+          </div>
         </div>
-        <div className="flex flex-col gap-1">
-          <label htmlFor="cp-audit-to" className="text-xs font-medium">
-            {t("cp.audit.toLabel")}
-          </label>
-          <Input
-            id="cp-audit-to"
-            data-testid="cp-audit-to"
-            type="datetime-local"
-            value={to}
-            onChange={(e) => setTo(e.target.value)}
-          />
-        </div>
-        <div className="flex flex-col gap-1 sm:col-span-2">
-          <label htmlFor="cp-audit-text" className="text-xs font-medium">
-            {t("cp.audit.textLabel")}
-          </label>
-          <Input
-            id="cp-audit-text"
-            data-testid="cp-audit-text"
-            value={text}
-            onChange={(e) => setText(e.target.value)}
-          />
-        </div>
-      </div>
 
-      <div className="flex flex-wrap items-start gap-3">
-        <Button onClick={handleSubmit} data-testid="cp-audit-search-submit" disabled={m.isPending}>
-          <Search />
-          {t("cp.audit.search")}
-        </Button>
-        {validation ? (
-          <span
-            className="min-w-0 break-words text-xs text-[var(--status-failed)]"
-            data-testid="cp-audit-validation"
-          >
-            {validation}
-          </span>
-        ) : null}
-        {m.error ? (
-          <span
-            className="min-w-0 break-words text-xs text-[var(--status-failed)]"
-            data-testid="cp-audit-error"
-          >
-            {toUserFacingError(m.error, t("cp.audit.loadFailed"))}
-          </span>
-        ) : null}
-        {m.data && !hasSearchError ? (
-          <span
-            className="font-mono text-[11px] text-muted-foreground tabular-nums"
-            data-testid="cp-audit-total"
-          >
-            {t("cp.audit.totalCount", { total })}
-          </span>
-        ) : null}
-      </div>
+        <div className="flex flex-wrap items-start gap-3">
+          <Button type="submit" data-testid="cp-audit-search-submit" disabled={m.isPending}>
+            <Search />
+            {t("cp.audit.search")}
+          </Button>
+          {validation ? (
+            <span
+              className="min-w-0 break-words text-xs text-[var(--status-failed)]"
+              data-testid="cp-audit-validation"
+            >
+              {validation}
+            </span>
+          ) : null}
+          {m.error ? (
+            <span
+              className="min-w-0 break-words text-xs text-[var(--status-failed)]"
+              data-testid="cp-audit-error"
+            >
+              {toUserFacingError(m.error, t("cp.audit.loadFailed"))}
+            </span>
+          ) : null}
+          {m.data && !hasSearchError ? (
+            <span
+              className="font-mono text-[11px] text-muted-foreground tabular-nums"
+              data-testid="cp-audit-total"
+            >
+              {t("cp.audit.totalCount", { total })}
+            </span>
+          ) : null}
+        </div>
+      </form>
 
       {m.data && !hasSearchError && items.length === 0 ? (
         <div
@@ -300,6 +316,7 @@ export function AuditSearchPanel() {
                               size="icon"
                               title={t("cp.audit.quickFilterAction")}
                               aria-label={t("cp.audit.quickFilterAction")}
+                              disabled={m.isPending}
                               onClick={() => applyQuickFilter(action)}
                               data-testid={`cp-audit-filter-action-${id}`}
                             >
@@ -320,6 +337,7 @@ export function AuditSearchPanel() {
                               size="icon"
                               title={t("cp.audit.quickFilterTarget")}
                               aria-label={t("cp.audit.quickFilterTarget")}
+                              disabled={m.isPending}
                               onClick={() => applyQuickFilter(target)}
                               data-testid={`cp-audit-filter-target-${id}`}
                             >
@@ -369,6 +387,34 @@ export function AuditSearchPanel() {
             </tbody>
           </table>
         </div>
+      ) : null}
+      {m.data && !hasSearchError && total > PAGE_SIZE ? (
+        <nav
+          className="flex flex-wrap items-center justify-end gap-3"
+          data-testid="cp-audit-pagination"
+        >
+          <span className="text-xs tabular-nums text-muted-foreground">
+            {t("jobs.pagination.range", { start: offset + 1, end: offset + items.length, total })}
+          </span>
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={m.isPending || offset === 0}
+            onClick={() => changePage(Math.max(0, offset - PAGE_SIZE))}
+            data-testid="cp-audit-previous"
+          >
+            {t("jobs.pagination.previous")}
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={m.isPending || offset + PAGE_SIZE >= total}
+            onClick={() => changePage(offset + PAGE_SIZE)}
+            data-testid="cp-audit-next"
+          >
+            {t("jobs.pagination.next")}
+          </Button>
+        </nav>
       ) : null}
     </div>
   );

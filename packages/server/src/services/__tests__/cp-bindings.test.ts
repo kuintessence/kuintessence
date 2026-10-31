@@ -346,6 +346,27 @@ describeIfPg("cp-bindings (PG)", () => {
     expect(platform.total).toBeGreaterThanOrEqual(3);
   });
 
+  test("audit.search keeps tied timestamps in a stable order across pages", async () => {
+    const createdAt = new Date("2026-01-02T12:00:00Z");
+    const ids = [1, 2, 3].map((n) => `00000000-0000-0000-0000-00000000000${n}`);
+    await db.insert(auditLog).values(
+      ids.map((id) => ({
+        id,
+        actor: USER_A1,
+        orgId: ORG_A,
+        action: "test.pagination",
+        target: "target",
+        createdAt,
+      })),
+    );
+    const query = { orgIds: [ORG_A], from: createdAt, to: createdAt, limit: 2, offset: 0 };
+    const first = await bindings.audit.search(query);
+    const second = await bindings.audit.search({ ...query, offset: 2 });
+    expect(first.total).toBe(3);
+    expect(first.items).toMatchObject([{ id: ids[2] }, { id: ids[1] }]);
+    expect(second.items).toMatchObject([{ id: ids[0] }]);
+  });
+
   test("queueSampler.peakSince reads MAX(agents.queue_depth) directly (migration 0013)", async () => {
     // Bump the seeded agents to known queue_depth values; the sampler
     // returns the max.

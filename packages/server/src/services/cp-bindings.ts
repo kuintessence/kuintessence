@@ -307,7 +307,7 @@ function makeAuditPort(deps: CpBindingsDeps): AuditServicePort {
         .from(auditLog)
         .leftJoin(users, eq(sql`${users.id}::text`, auditLog.actor))
         .where(where)
-        .orderBy(desc(auditLog.createdAt))
+        .orderBy(desc(auditLog.createdAt), desc(auditLog.id))
         .limit(limit)
         .offset(offset);
       const totalRow = await db
