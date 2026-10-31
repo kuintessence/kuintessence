@@ -111,7 +111,8 @@
       "operationsSecurity": "Security and access",
       "operationsCompute": "Compute and software",
       "operationsMetering": "Metering and cost",
-      "operationsGovernance": "Governance and audit"
+      "operationsGovernance": "Governance and audit",
+      "interconnect": "Compute center interconnect"
     }
   },
   "dataMarket": {

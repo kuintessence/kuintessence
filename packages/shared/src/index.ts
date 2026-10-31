@@ -7,6 +7,7 @@ export * from "./data-market";
 // Control-flow DSL JSON Schema export.
 export * from "./dsl-schema";
 export * from "./ecosystem-materials";
+export * from "./interconnect";
 // NetDrive shared schemas (PRD F18).
 export * from "./netdrive-types";
 export * from "./offline-delivery";

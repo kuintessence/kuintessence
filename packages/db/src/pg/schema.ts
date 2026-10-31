@@ -1,3 +1,4 @@
+import type { CenterMetadata, ClusterMetadata, LinkMetadata, MapView } from "@kuintessence/shared";
 import { sql } from "drizzle-orm";
 import {
   bigint,
@@ -3220,3 +3221,72 @@ export {
   ociUploadSession,
   spackPackage,
 } from "./schema-registry";
+
+// Explicit resource inventory: an Agent is bound once, while capacity belongs to a cluster.
+export const computeCenters = pgTable(
+  "compute_centers",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    orgId: uuid("org_id")
+      .notNull()
+      .references(() => orgs.id),
+    metadata: jsonb("metadata").$type<CenterMetadata>().notNull(),
+    updatedAt: timestamp("updated_at").defaultNow().notNull(),
+  },
+  (t) => ({ orgIdx: index("compute_centers_org_idx").on(t.orgId) }),
+);
+
+export const computeClusters = pgTable(
+  "compute_clusters",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    centerId: uuid("center_id")
+      .notNull()
+      .references(() => computeCenters.id),
+    metadata: jsonb("metadata").$type<ClusterMetadata>().notNull(),
+    updatedAt: timestamp("updated_at").defaultNow().notNull(),
+  },
+  (t) => ({ centerIdx: index("compute_clusters_center_idx").on(t.centerId) }),
+);
+
+export const computeClusterAgents = pgTable("compute_cluster_agents", {
+  agentId: varchar("agent_id", { length: 255 })
+    .primaryKey()
+    .references(() => agents.agentId, { onDelete: "cascade" }),
+  clusterId: uuid("cluster_id")
+    .notNull()
+    .references(() => computeClusters.id, { onDelete: "cascade" }),
+});
+
+export const computeInterconnects = pgTable(
+  "compute_interconnects",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    fromCenterId: uuid("from_center_id")
+      .notNull()
+      .references(() => computeCenters.id),
+    toCenterId: uuid("to_center_id")
+      .notNull()
+      .references(() => computeCenters.id),
+    metadata: jsonb("metadata").$type<LinkMetadata>().notNull(),
+    updatedAt: timestamp("updated_at").defaultNow().notNull(),
+  },
+  (t) => ({
+    differentEnds: check(
+      "compute_interconnects_different_ends",
+      sql`${t.fromCenterId} <> ${t.toCenterId}`,
+    ),
+  }),
+);
+
+export const interconnectMapViews = pgTable(
+  "interconnect_map_views",
+  {
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    scope: varchar("scope", { length: 512 }).notNull(),
+    view: jsonb("view").$type<MapView>().notNull(),
+  },
+  (t) => ({ pk: primaryKey({ columns: [t.userId, t.scope] }) }),
+);

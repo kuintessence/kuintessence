@@ -82,6 +82,7 @@ import { createDataMarketRoutes } from "./routes/data-market";
 import { dslRoutes } from "./routes/dsl";
 import { createFileRoutes } from "./routes/files";
 import { healthRoutes } from "./routes/health";
+import { createInterconnectRoutes } from "./routes/interconnect";
 import { createJobRoutes } from "./routes/jobs";
 import { createMeCapabilityRoutes } from "./routes/me-capabilities";
 import { buildMeteringRouter, DrizzleWebhookRepository } from "./routes/metering";
@@ -132,6 +133,7 @@ import { PgDataPrerequisiteRepository } from "./services/data-prerequisite-repos
 import { DataScanCoordinator, PgDataScanCertificateLookup } from "./services/data-scan-coordinator";
 import { createPgDataSelectionValidator } from "./services/data-selection-validation";
 import { FileService } from "./services/file-service";
+import { InterconnectService } from "./services/interconnect";
 import { JobLogAccessAuditor } from "./services/job-log-access-auditor";
 import { JobLogsService } from "./services/job-logs-service";
 import { JobService } from "./services/job-service";
@@ -1724,6 +1726,10 @@ protectedApi.route(
     workflowAttribution: meteringWorkflowAttribution,
     authz: authzService,
   }),
+);
+protectedApi.route(
+  "/interconnect",
+  createInterconnectRoutes(new InterconnectService(db), authzService),
 );
 app.route("/api", protectedApi);
 // NOTE: any future PUBLIC routes must be registered BEFORE app.route("/api", protectedApi)

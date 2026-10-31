@@ -498,6 +498,13 @@
       "when": 1792198834203,
       "tag": "0070_spotty_hydra",
       "breakpoints": true
+    },
+    {
+      "idx": 71,
+      "version": "7",
+      "when": 1793405938848,
+      "tag": "0071_colorful_shadowcat",
+      "breakpoints": true
     }
   ]
 }

@@ -4,6 +4,7 @@ export * from "./constants/job-status";
 export * from "./constants/roles";
 export * from "./dsl-schema";
 export * from "./ecosystem-materials";
+export * from "./interconnect";
 export * from "./netdrive-types";
 export * from "./offline-delivery";
 export * from "./sandbox";
