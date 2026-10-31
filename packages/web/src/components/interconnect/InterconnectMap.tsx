@@ -8,6 +8,7 @@ import { useQuery } from "@tanstack/react-query";
 import { registerMap } from "echarts";
 import ReactECharts from "echarts-for-react";
 import { useMemo, useRef, useState } from "react";
+import { useTheme } from "../ThemeProvider";
 import { Button } from "../ui/button";
 import { clusterSymbol, groupNearbyCenters, STATUS_COLORS, STATUS_LABELS } from "./model";
 
@@ -43,6 +44,8 @@ export function InterconnectMap({
   saving: boolean;
 }) {
   const chart = useRef<ReactECharts>(null);
+  const { resolved } = useTheme();
+  const dark = resolved === "dark";
   const [projectionRevision, setProjectionRevision] = useState(0);
   const maps = useQuery({
     queryKey: ["interconnect-maps"],
@@ -93,11 +96,16 @@ export function InterconnectMap({
   const groups = useMemo(() => {
     void projectionRevision;
     const instance = chart.current?.getEchartsInstance();
+    // The chart can briefly exist without a model while its responsive canvas is initialized.
+    const geo = instance && !instance.isDisposed() ? instance.getOption()?.geo : undefined;
+    const ready = Array.isArray(geo) && geo.length > 0;
     const points = visible.map((center) => {
-      const position = instance?.convertToPixel({ geoIndex: 0 }, [
-        center.metadata.longitude,
-        center.metadata.latitude,
-      ]);
+      const position = ready
+        ? instance?.convertToPixel({ geoIndex: 0 }, [
+            center.metadata.longitude,
+            center.metadata.latitude,
+          ])
+        : undefined;
       return { center, x: position?.[0] ?? Number.NaN, y: position?.[1] ?? Number.NaN };
     });
     return groupNearbyCenters(points);
@@ -118,8 +126,14 @@ export function InterconnectMap({
       zoom: view.zoom,
       scaleLimit: { min: 0.5, max: 64 },
       label: { show: false },
-      itemStyle: { areaColor: "#e8edf4", borderColor: "#94a3b8" },
-      emphasis: { label: { show: true }, itemStyle: { areaColor: "#dbeafe" } },
+      itemStyle: {
+        areaColor: dark ? "#25344b" : "#e8edf4",
+        borderColor: dark ? "#64748b" : "#94a3b8",
+      },
+      emphasis: {
+        label: { show: true, color: dark ? "#e2e8f0" : "#0f172a" },
+        itemStyle: { areaColor: dark ? "#334d74" : "#dbeafe" },
+      },
     },
     series: [
       {
@@ -179,8 +193,8 @@ export function InterconnectMap({
               show: true,
               position: aggregate ? "inside" : "right",
               formatter: aggregate ? String(group.length) : center.metadata.name,
-              color: "#0f172a",
-              backgroundColor: aggregate ? "transparent" : "#ffffffdd",
+              color: aggregate || !dark ? "#0f172a" : "#e2e8f0",
+              backgroundColor: aggregate ? "transparent" : dark ? "#172033dd" : "#ffffffdd",
               padding: aggregate ? 0 : 3,
               fontSize: 12,
             },
@@ -267,7 +281,7 @@ export function InterconnectMap({
           onChartReady={() => setProjectionRevision((n) => n + 1)}
           onEvents={{
             georoam: () => {
-              const current = chart.current?.getEchartsInstance().getOption().geo as
+              const current = chart.current?.getEchartsInstance()?.getOption()?.geo as
                 | { center: [number, number]; zoom: number }[]
                 | undefined;
               if (current?.[0])
@@ -276,7 +290,8 @@ export function InterconnectMap({
             finished: () => {
               // Recompute grouping after the new projection has actually been painted.
               const instance = chart.current?.getEchartsInstance();
-              const size = `${instance?.getWidth()}:${instance?.getHeight()}:${mapName}:${view.center.join(",")}:${view.zoom}`;
+              if (!instance || instance.isDisposed()) return;
+              const size = `${instance.getWidth()}:${instance.getHeight()}:${mapName}:${view.center.join(",")}:${view.zoom}`;
               if (chart.current && chart.current.ele?.dataset.mapSize !== size) {
                 if (chart.current.ele) chart.current.ele.dataset.mapSize = size;
                 setProjectionRevision((n) => n + 1);

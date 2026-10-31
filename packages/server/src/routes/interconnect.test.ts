@@ -72,6 +72,16 @@ function write(r: Hono, path: string, body: unknown, method = "POST", organizati
   });
 }
 describe("interconnect access", () => {
+  test("global provider view has a distinct default from the administrator's own organization", async () => {
+    const { r, scopes } = app("platform_admin", [{ orgId, role: "admin" }]);
+    expect((await write(r, "provider/default-view", DEFAULT_MAP_VIEW, "PUT")).status).toBe(200);
+    expect((await write(r, "provider/default-view", DEFAULT_MAP_VIEW, "PUT", orgId)).status).toBe(
+      200,
+    );
+    expect(scopes[0]?.orgIds).toBeNull();
+    expect(scopes[1]?.orgIds).toEqual([orgId]);
+    expect(scopes[0]?.key).not.toBe(scopes[1]?.key);
+  });
   test("ordinary users cannot read platform or provider inventories", async () => {
     const { r, scopes } = app("user");
     expect((await r.request("/api/interconnect/operator/snapshot")).status).toBe(403);

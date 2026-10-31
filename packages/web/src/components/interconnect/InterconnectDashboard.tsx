@@ -13,6 +13,7 @@ import { useActiveOrganizationId } from "../../lib/active-organization";
 import { api } from "../../lib/api-client";
 import { getAuthState } from "../../lib/auth";
 import { usePlatformCapability } from "../../lib/platform-capabilities";
+import { useTheme } from "../ThemeProvider";
 import { Button } from "../ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "../ui/dialog";
 import { PageHeader } from "../ui/page";
@@ -75,6 +76,9 @@ function Distribution({
   unit?: string;
   format?: (n: number) => string;
 }) {
+  const { resolved } = useTheme();
+  const textColor = resolved === "dark" ? "#cbd5e1" : "#4a5060";
+  const gridColor = resolved === "dark" ? "#334155" : "#e2e8f0";
   return (
     <section className="min-w-0 rounded-xl border border-border bg-card p-4">
       <h2 className="font-semibold">{title}</h2>
@@ -99,7 +103,9 @@ function Distribution({
                 type: "value",
                 minInterval: 1,
                 splitNumber: 3,
+                splitLine: { lineStyle: { color: gridColor } },
                 axisLabel: {
+                  color: textColor,
                   hideOverlap: true,
                   formatter: (value: number) =>
                     format
@@ -111,7 +117,8 @@ function Distribution({
                 type: "category",
                 data: items.map((i) => i.name),
                 inverse: true,
-                axisLabel: { width: 90, overflow: "truncate" },
+                axisLabel: { width: 90, overflow: "truncate", color: textColor },
+                axisLine: { lineStyle: { color: gridColor } },
               },
               series: [
                 {

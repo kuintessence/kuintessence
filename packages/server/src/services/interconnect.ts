@@ -106,9 +106,11 @@ export class InterconnectService {
                 count: sql<number>`count(*)::int`,
               })
               .from(jobs)
+              .innerJoin(agents, eq(jobs.agentId, agents.agentId))
               .where(
                 and(
                   inArray(jobs.agentId, agentIds),
+                  eq(jobs.providerOrgId, agents.providerOrgId),
                   gte(jobs.completedAt, new Date(generatedAt.getTime() - 86400_000)),
                   inArray(jobs.status, ["completed", "failed"]),
                 ),
@@ -241,10 +243,23 @@ export class InterconnectService {
         )
           fail("Agent 必须属于算力中心的组织", 403);
         const existing = await tx
-          .select()
+          .select({
+            agentId: computeClusterAgents.agentId,
+            clusterId: computeClusterAgents.clusterId,
+            orgId: computeCenters.orgId,
+          })
           .from(computeClusterAgents)
+          .innerJoin(computeClusters, eq(computeClusters.id, computeClusterAgents.clusterId))
+          .innerJoin(computeCenters, eq(computeCenters.id, computeClusters.centerId))
           .where(inArray(computeClusterAgents.agentId, input.agentIds));
-        if (existing.some((b) => b.clusterId !== id)) fail("Agent 已归属其他集群", 409);
+        if (existing.some((b) => b.clusterId !== id && b.orgId === center.orgId))
+          fail("Agent 已归属其他集群", 409);
+        // Only discard stale ownership after locking and authorizing the Agent's current organization.
+        const staleIds = existing.filter((b) => b.orgId !== center.orgId).map((b) => b.agentId);
+        if (staleIds.length)
+          await tx
+            .delete(computeClusterAgents)
+            .where(inArray(computeClusterAgents.agentId, staleIds));
       }
       let clusterId = id;
       if (clusterId) {

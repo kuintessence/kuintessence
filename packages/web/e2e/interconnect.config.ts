@@ -3,7 +3,7 @@ import { defineConfig } from "patchright/test";
 export default defineConfig({
   testDir: ".",
   testMatch: "interconnect.spec.ts",
-  timeout: 30_000,
+  timeout: 60_000,
   expect: { timeout: 5_000 },
   workers: 1,
   use: {

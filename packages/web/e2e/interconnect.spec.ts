@@ -76,6 +76,9 @@ test("resource drilldown, map defaults, metadata and responsive layout", async (
   const errors: string[] = [];
   const writes: unknown[] = [];
   page.on("pageerror", (e) => errors.push(e.message));
+  page.on("console", (message) => {
+    if (message.type() === "error") errors.push(message.text());
+  });
   await page.addInitScript((organizationId) => {
     localStorage.setItem("kq_token", "fixture-token");
     localStorage.setItem("kq_email", "fixture@example.test");
@@ -288,11 +291,18 @@ test("resource drilldown, map defaults, metadata and responsive layout", async (
   await expect(page.getByRole("heading", { name: "多算力中心互联仪表盘" })).toBeVisible();
   await page.getByLabel("地图层级").selectOption("china");
   await page.screenshot({ path: testInfo.outputPath("interconnect-desktop.png"), fullPage: true });
-  for (const width of [390, 768, 1440]) {
+  for (const width of Array.from({ length: 30 }, (_, i) => [390, 768, 1440][i % 3] ?? 1440)) {
     await page.setViewportSize({ width, height: 1000 });
+    await expect(page.getByTestId("interconnect-dashboard")).toBeVisible();
     await expect
       .poll(() => page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1))
       .toBe(true);
   }
+  await page.getByTestId("theme-menu").click();
+  await page.getByTestId("theme-dark").click();
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
+  expect(errors).toEqual([]);
+  await expect(page.getByTestId("interconnect-dashboard")).toBeVisible();
+  await page.screenshot({ path: testInfo.outputPath("interconnect-dark.png"), fullPage: true });
   expect(errors).toEqual([]);
 });

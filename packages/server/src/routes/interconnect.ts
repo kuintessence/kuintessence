@@ -86,7 +86,7 @@ export function createInterconnectRoutes(service: InterconnectService, authz?: A
       scope = {
         orgIds: cp.isPlatformWide ? null : cp.orgIds,
         userId: p.userId,
-        key: `provider:${cp.orgIds.length === 1 ? cp.orgIds[0] : "all"}`,
+        key: `provider:${!cp.isPlatformWide && cp.orgIds.length === 1 ? cp.orgIds[0] : "all"}`,
         canManage,
       };
     }

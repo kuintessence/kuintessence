@@ -208,6 +208,26 @@ describe("interconnect relational inventory", () => {
       await db.update(agents).set({ providerOrgId: orgA }).where(eq(agents.agentId, agentIds[0]));
     }
   });
+  test("new provider can bind a transferred Agent without inheriting the old provider's job counts", async () => {
+    const scopeB: InterconnectScope = { ...scope, orgIds: [orgB], key: `provider:${orgB}` };
+    await db.update(agents).set({ providerOrgId: orgB }).where(eq(agents.agentId, agentIds[0]));
+    let rebound: string | null = null;
+    try {
+      const before = await service.snapshot(scopeB);
+      expect(before.agents.find((a) => a.id === agentIds[0])?.clusterId).toBeNull();
+      rebound = (await service.saveCluster(scopeB, null, clusterInput(centerB, [agentIds[0]]))).id;
+      const snapshot = await service.snapshot(scopeB);
+      expect(snapshot.clusters.find((c) => c.id === rebound)?.agentIds).toEqual([agentIds[0]]);
+      expect(snapshot.clusters.find((c) => c.id === rebound)?.jobs24h).toEqual({
+        succeeded: 0,
+        failed: 0,
+      });
+    } finally {
+      if (rebound) await service.remove(scopeB, "cluster", rebound);
+      await db.update(agents).set({ providerOrgId: orgA }).where(eq(agents.agentId, agentIds[0]));
+      await service.saveCluster(scope, clusterId, clusterInput(centerA, agentIds.slice(0, 2)));
+    }
+  });
   test("saves independent defaults per user and scope and protects dependent centers", async () => {
     await service.saveView(scope, { ...DEFAULT_MAP_VIEW, level: "world", zoom: 2 });
     expect((await service.snapshot(scope)).defaultView?.zoom).toBe(2);
