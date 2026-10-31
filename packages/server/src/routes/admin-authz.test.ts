@@ -134,7 +134,7 @@ interface DbCapture {
   inTransaction: boolean;
 }
 
-function fakeMembershipDb(captures: DbCapture[]): PgDb {
+function fakeMembershipDb(captures: DbCapture[], membershipExists = false): PgDb {
   let inTransaction = false;
   const selectRows = createMockAuthzLookupRows();
   const makeDb = (): Record<string, unknown> => ({
@@ -143,6 +143,9 @@ function fakeMembershipDb(captures: DbCapture[]): PgDb {
         captures.push({ operation: "insert", table, value, inTransaction });
         return {
           onConflictDoUpdate: async () => undefined,
+          onConflictDoNothing: () => ({
+            returning: async () => (membershipExists ? [] : [{ id: "new-membership" }]),
+          }),
         };
       },
     }),
@@ -1042,5 +1045,143 @@ describe("admin authz routes", () => {
     expect(res.status).toBe(403);
     expect(audits).toHaveLength(0);
     expect(tuples).toHaveLength(0);
+  });
+});
+
+describe("member management", () => {
+  test("returns named choices and indicates when a user search needs narrowing", async () => {
+    const db = {
+      select: () => ({
+        from: (table: unknown) =>
+          createMockAuthzLookupRows<Record<string, string>>(
+            table === users
+              ? Array.from({ length: 51 }, (_, index) => ({
+                  id: `user-${index}`,
+                  email: `user-${index}@example.test`,
+                  displayName: `User ${index}`,
+                }))
+              : [{ id: "org-1", name: "Research Center" }],
+          ).from(),
+      }),
+    } as unknown as PgDb;
+    const { authz } = fakeAuthz();
+    const response = await makeApp({ db, authz, rawTupleAdminEnabled: false }).request(
+      "/api/admin/authz/membership-options",
+    );
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as {
+      data: {
+        users: unknown[];
+        organizations: unknown[];
+        moreUsers: boolean;
+        moreOrganizations: boolean;
+      };
+    };
+    expect(body.data.users).toHaveLength(50);
+    expect(body.data.moreUsers).toBe(true);
+    expect(body.data.organizations).toEqual([{ id: "org-1", name: "Research Center" }]);
+    expect(body.data.moreOrganizations).toBe(false);
+  });
+
+  test("adding an existing member rejects the write without changing permissions or audit", async () => {
+    const captures: DbCapture[] = [];
+    const { authz } = fakeAuthz();
+    const res = await makeApp({
+      db: fakeMembershipDb(captures, true),
+      authz,
+      rawTupleAdminEnabled: false,
+    }).request("/api/admin/authz/memberships", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        userId: "00000000-0000-4000-8000-000000000101",
+        orgId: "00000000-0000-4000-8000-000000000201",
+        role: "member",
+        createOnly: true,
+      }),
+    });
+    expect(res.status).toBe(409);
+    expect(
+      captures.filter((capture) => capture.table === authzOutbox || capture.table === auditLog),
+    ).toEqual([]);
+  });
+
+  test("adding a new member writes permission projection and audit in the existing flow", async () => {
+    const captures: DbCapture[] = [];
+    const { authz } = fakeAuthz();
+    const res = await makeApp({
+      db: fakeMembershipDb(captures),
+      authz,
+      rawTupleAdminEnabled: false,
+    }).request("/api/admin/authz/memberships", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        userId: "00000000-0000-4000-8000-000000000101",
+        orgId: "00000000-0000-4000-8000-000000000201",
+        role: "viewer",
+        createOnly: true,
+      }),
+    });
+    expect(res.status).toBe(200);
+    expect(captures.some((capture) => capture.table === authzOutbox && capture.inTransaction)).toBe(
+      true,
+    );
+    expect(captures.some((capture) => capture.table === auditLog)).toBe(true);
+  });
+
+  test("member search pagination exposes another page and validates the query", async () => {
+    let requestedLimit = 0;
+    let requestedOffset = 0;
+    let filter: unknown;
+    const rows = Array.from({ length: 21 }, (_, index) => ({ id: `membership-${index}` }));
+    const chain = {
+      leftJoin: () => chain,
+      where: (value: unknown) => {
+        filter = value;
+        return chain;
+      },
+      orderBy: () => chain,
+      limit: (value: number) => {
+        requestedLimit = value;
+        return chain;
+      },
+      offset: async (value: number) => {
+        requestedOffset = value;
+        return rows;
+      },
+    };
+    const db = { select: () => ({ from: () => chain }) } as unknown as PgDb;
+    const { authz } = fakeAuthz();
+    const app = makeApp({ db, authz, rawTupleAdminEnabled: false });
+    const response = await app.request(
+      "/api/admin/authz/memberships?search=Alice&limit=20&offset=20",
+    );
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as { hasMore: boolean; data: unknown[] };
+    expect(body.hasMore).toBe(true);
+    expect(body.data).toHaveLength(20);
+    expect(filter).toBeDefined();
+    expect(requestedLimit).toBe(21);
+    expect(requestedOffset).toBe(20);
+    expect((await app.request("/api/admin/authz/memberships?limit=501")).status).toBe(400);
+    expect((await app.request("/api/admin/authz/memberships?offset=-1")).status).toBe(400);
+    expect(
+      (await app.request(`/api/admin/authz/membership-options?user=${"x".repeat(201)}`)).status,
+    ).toBe(400);
+  });
+
+  test("users and provider administrators cannot browse platform membership choices", async () => {
+    const { authz } = fakeAuthz();
+    for (const role of ["user", "org_admin", "operator"]) {
+      const app = makeApp({
+        db: fakeDb().db,
+        authz,
+        rawTupleAdminEnabled: false,
+        role,
+      });
+      expect((await app.request("/api/admin/authz/membership-options")).status).toBe(403);
+      expect((await app.request("/api/admin/authz/memberships?limit=20")).status).toBe(403);
+    }
   });
 });

@@ -183,6 +183,8 @@ test("governance read-only browser fixture keeps historical values, organization
 
   await page.goto("/cp/users");
   await expect(page.getByTestId("cp-users-row-a-marked")).toBeVisible();
+  await expect(page.getByTestId("cp-users-readonly-notice")).toHaveCount(0);
+  await page.getByLabel("Show legacy fields").check();
   await expect(page.getByTestId("cp-users-readonly-notice")).toBeVisible();
   await expect(page.getByText("0 (legacy API value)")).toBeVisible();
   await expect(

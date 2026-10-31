@@ -935,6 +935,7 @@ function makeUsersPort(deps: CpBindingsDeps): UsersServicePort {
               .innerJoin(userOrgMemberships, eq(userOrgMemberships.userId, users.id))
               .leftJoin(usageQuotas, quotaJoin)
               .where(where)
+              .orderBy(users.email, users.id)
               .limit(limit)
               .offset(offset)
           : await db
@@ -942,6 +943,7 @@ function makeUsersPort(deps: CpBindingsDeps): UsersServicePort {
               .from(users)
               .leftJoin(usageQuotas, quotaJoin)
               .where(where)
+              .orderBy(users.email, users.id)
               .limit(limit)
               .offset(offset);
 

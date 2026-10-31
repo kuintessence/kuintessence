@@ -188,6 +188,18 @@ Helm chart 未内置 SpiceDB 服务，部署方须落实外部 endpoint、Secret
 - `off/shadow` 使用当前 DB 身份的本地判定；`shadow` 仍保留本地拒绝结果。
 - `enforce` 依资源权限决定结果，不按旧 JWT role 提前放行或统一拦截。
 
+平台管理员可在安全设置的“组织成员权限”中按名称添加成员、编辑组织角色或确认移除成员。
+这不会修改平台角色，也不会删除账户或其他独立授权；手机端按现有策略仅可查看。
+高级授权诊断在“授权服务状态与高级操作”中展开查看。
+
+成员查询 `GET /api/admin/authz/memberships` 支持 `search`（姓名、邮箱、组织名称）、
+`limit`（1–500，默认 500）和 `offset`，保留 `data` 数组并返回 `hasMore`。
+`GET /api/admin/authz/membership-options` 接受 `user` 和 `organization` 搜索条件，
+各返回最多 50 个命名选项，`moreUsers/moreOrganizations` 提示缩小搜索范围。
+两者均沿用平台管理授权边界。新增成员时 `PUT /api/admin/authz/memberships` 可传
+`createOnly: true`，已有成员返回 409，避免重复添加覆盖角色；省略该字段仍保持原有 upsert 行为。
+成员变更继续写入审计和授权 outbox；已打开的 Web 页面按权限刷新机制更新。
+
 | 资源 | 权限与仍由本地约束的事项 |
 |---|---|
 | platform / organization | `view/manage`；global preference 还要求 canonical `super_admin` |

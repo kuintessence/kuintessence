@@ -13,11 +13,16 @@ export function UsersTable() {
   const { t } = useTranslation();
   const [search, setSearch] = useState("");
   const activeOrganizationId = useActiveOrganizationId();
+  const [pagination, setPagination] = useState({ organizationId: activeOrganizationId, page: 0 });
+  const page = pagination.organizationId === activeOrganizationId ? pagination.page : 0;
+  const setPage = (next: number) =>
+    setPagination({ organizationId: activeOrganizationId, page: next });
+  const [showLegacy, setShowLegacy] = useState(false);
   const organizationName = useOrganizationName(activeOrganizationId !== null);
   const [isOffline, setIsOffline] = useState(
     () => typeof navigator !== "undefined" && !navigator.onLine,
   );
-  const q = useCpUsers({ search: search || undefined, limit: 50, offset: 0 });
+  const q = useCpUsers({ search: search || undefined, limit: 50, offset: page * 50 });
 
   const loadError = q.error as Error | null;
   const canShowMembers = activeOrganizationId !== null && !isOffline && !loadError;
@@ -40,7 +45,6 @@ export function UsersTable() {
       <div className="flex flex-col gap-3 sm:flex-row sm:items-baseline sm:justify-between">
         <div className="min-w-0 flex-1">
           <h2 className="text-2xl font-semibold tracking-tight">{t("cp.users.title")}</h2>
-          <p className="text-sm text-muted-foreground">{t("cp.users.subtitle")}</p>
           <p
             className="mt-1 break-words text-xs text-muted-foreground"
             title={activeOrganizationId ?? undefined}
@@ -69,13 +73,15 @@ export function UsersTable() {
         </div>
       </div>
 
-      <div
-        className="rounded-md border border-border bg-muted/30 p-3 text-sm"
-        data-testid="cp-users-readonly-notice"
-      >
-        <p className="font-medium">{t("cp.users.readonly.title")}</p>
-        <p className="mt-1 text-muted-foreground">{t("cp.users.readonly.description")}</p>
-      </div>
+      {showLegacy ? (
+        <div
+          className="rounded-md border border-border bg-muted/30 p-3 text-sm"
+          data-testid="cp-users-readonly-notice"
+        >
+          <p className="font-medium">{t("cp.users.readonly.title")}</p>
+          <p className="mt-1 text-muted-foreground">{t("cp.users.readonly.description")}</p>
+        </div>
+      ) : null}
 
       <label className="grid max-w-sm gap-1 text-sm font-medium" htmlFor="cp-users-search">
         {t("cp.users.searchLabel")}
@@ -83,10 +89,22 @@ export function UsersTable() {
           id="cp-users-search"
           placeholder={t("cp.users.searchPlaceholder")}
           value={search}
-          onChange={(e) => setSearch(e.target.value)}
+          onChange={(e) => {
+            setSearch(e.target.value);
+            setPage(0);
+          }}
           className="min-h-11"
           data-testid="cp-users-search"
         />
+      </label>
+
+      <label className="flex items-center gap-2 text-sm text-muted-foreground">
+        <input
+          type="checkbox"
+          checked={showLegacy}
+          onChange={(event) => setShowLegacy(event.target.checked)}
+        />
+        {t("cp.users.showLegacy")}
       </label>
 
       {activeOrganizationId === null ? (
@@ -146,6 +164,7 @@ export function UsersTable() {
                 className="min-h-11"
                 onClick={() => {
                   setSearch("");
+                  setPage(0);
                   document.getElementById("cp-users-search")?.focus();
                 }}
               >
@@ -159,13 +178,17 @@ export function UsersTable() {
           className="rounded-md border border-border sm:overflow-x-auto sm:overscroll-x-contain"
           data-testid="cp-users-table-scroll"
         >
-          <table className="w-full text-sm xl:min-w-[48rem]">
+          <table className="w-full text-sm">
             <thead className="sr-only bg-muted/40 text-left text-xs uppercase tracking-wide text-muted-foreground xl:not-sr-only xl:table-header-group">
               <tr>
                 <th className="px-3 py-2 font-medium">{t("cp.users.col.email")}</th>
                 <th className="px-3 py-2 font-medium">{t("cp.users.col.role")}</th>
-                <th className="px-3 py-2 font-medium">{t("cp.users.col.suspended")}</th>
-                <th className="px-3 py-2 font-medium">{t("cp.users.col.quota")}</th>
+                {showLegacy ? (
+                  <>
+                    <th className="px-3 py-2 font-medium">{t("cp.users.col.suspended")}</th>
+                    <th className="px-3 py-2 font-medium">{t("cp.users.col.quota")}</th>
+                  </>
+                ) : null}
               </tr>
             </thead>
             <tbody className="block divide-y divide-border xl:table-row-group xl:divide-y-0">
@@ -176,68 +199,86 @@ export function UsersTable() {
                   className="grid grid-cols-2 gap-x-3 gap-y-3 p-4 xl:table-row xl:border-t xl:border-border xl:p-0"
                 >
                   <td className="col-span-2 min-w-0 break-all font-medium xl:table-cell xl:px-3 xl:py-2 xl:font-normal">
-                    {u.email}
+                    {u.displayName || u.email}
+                    {u.displayName ? (
+                      <span className="mt-1 block text-xs font-normal text-muted-foreground">
+                        {u.email}
+                      </span>
+                    ) : null}
                   </td>
                   <td className="xl:table-cell xl:px-3 xl:py-2 xl:font-mono xl:text-xs xl:text-muted-foreground">
                     <span className="mr-2 text-xs text-muted-foreground xl:hidden">
                       {t("cp.users.col.role")}
                     </span>
-                    {u.role}
+                    {t(`cp.users.roles.${u.role}`, { defaultValue: u.role })}
                   </td>
-                  <td className="xl:table-cell xl:px-3 xl:py-2">
-                    <span className="mr-2 text-xs text-muted-foreground xl:hidden">
-                      {t("cp.users.col.suspended")}
-                    </span>
-                    <Badge
-                      variant={
-                        u.suspended === true
-                          ? "failed"
-                          : u.suspended === false
-                            ? "outline"
-                            : "default"
-                      }
-                      className="whitespace-normal"
-                    >
-                      {u.suspended === true
-                        ? t("cp.users.historyMarked")
-                        : u.suspended === false
-                          ? t("cp.users.historyNotMarked")
-                          : t("cp.users.historyUnknown")}
-                    </Badge>
-                    <span className="mt-1 block text-xs text-muted-foreground">
-                      {t("cp.users.historySuspendedHint")}
-                    </span>
-                  </td>
-                  <td className="font-mono text-xs tabular-nums xl:table-cell xl:px-3 xl:py-2 xl:text-left">
-                    <span className="mr-2 font-sans text-muted-foreground xl:hidden">
-                      {t("cp.users.col.quota")}
-                    </span>
-                    {typeof u.quota === "number" ? (
-                      <>
-                        {u.quota === 0 ? (
-                          <>
-                            {t("cp.users.historyQuotaZero")}
-                            <span className="mt-1 block text-xs text-muted-foreground">
-                              {t("cp.users.historyQuotaZeroAmbiguity")}
-                            </span>
-                          </>
-                        ) : (
-                          u.quota
-                        )}
-                        <span className="mt-1 block text-xs text-muted-foreground">
-                          {t("cp.users.historyQuotaHint")}
+                  {showLegacy ? (
+                    <>
+                      <td className="xl:table-cell xl:px-3 xl:py-2">
+                        <span className="mr-2 text-xs text-muted-foreground xl:hidden">
+                          {t("cp.users.col.suspended")}
                         </span>
-                      </>
-                    ) : (
-                      t("cp.users.notProvided")
-                    )}
-                  </td>
+                        <Badge
+                          variant={
+                            u.suspended === true
+                              ? "failed"
+                              : u.suspended === false
+                                ? "outline"
+                                : "default"
+                          }
+                          className="whitespace-normal"
+                        >
+                          {u.suspended === true
+                            ? t("cp.users.historyMarked")
+                            : u.suspended === false
+                              ? t("cp.users.historyNotMarked")
+                              : t("cp.users.historyUnknown")}
+                        </Badge>
+                      </td>
+                      <td className="font-mono text-xs tabular-nums xl:table-cell xl:px-3 xl:py-2 xl:text-left">
+                        <span className="mr-2 font-sans text-muted-foreground xl:hidden">
+                          {t("cp.users.col.quota")}
+                        </span>
+                        {typeof u.quota === "number"
+                          ? u.quota === 0
+                            ? t("cp.users.historyQuotaZero")
+                            : u.quota
+                          : t("cp.users.notProvided")}
+                      </td>
+                    </>
+                  ) : null}
                 </tr>
               ))}
             </tbody>
           </table>
         </div>
       )}
+      {canShowMembers && total > 50 ? (
+        <nav
+          aria-label={t("cp.users.pagination")}
+          className="flex flex-wrap items-center justify-end gap-3"
+        >
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={page === 0 || q.isFetching}
+            onClick={() => setPage(page - 1)}
+          >
+            {t("cp.users.previousPage")}
+          </Button>
+          <span className="text-sm">
+            {t("cp.users.page", { page: page + 1, pages: Math.ceil(total / 50) })}
+          </span>
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={(page + 1) * 50 >= total || q.isFetching}
+            onClick={() => setPage(page + 1)}
+          >
+            {t("cp.users.nextPage")}
+          </Button>
+        </nav>
+      ) : null}
     </div>
   );
 }

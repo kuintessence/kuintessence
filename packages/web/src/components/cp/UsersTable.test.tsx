@@ -45,6 +45,7 @@ function installUsersFetch() {
               {
                 id: `${organization}-marked`,
                 email: "marked@example.com",
+                displayName: "Marked User",
                 role: "user",
                 suspended: true,
                 quota: 0,
@@ -82,6 +83,9 @@ describe("UsersTable read-only governance", () => {
     render(<UsersTable />, { wrapper: makeWrapper() });
 
     await waitFor(() => screen.getByTestId("cp-users-row-org-a-marked"));
+    expect(screen.getByText("Marked User")).toBeTruthy();
+    expect(screen.queryByText("cp.users.historyMarked")).toBeNull();
+    fireEvent.click(screen.getByLabelText("cp.users.showLegacy"));
     expect(screen.getByTestId("cp-users-readonly-notice")).toBeTruthy();
     expect(screen.getByText("cp.users.historyMarked")).toBeTruthy();
     expect(screen.getByText("cp.users.historyQuotaZero")).toBeTruthy();
@@ -95,6 +99,36 @@ describe("UsersTable read-only governance", () => {
         ([, init]) => init?.method !== "POST",
       ),
     ).toBe(true);
+  });
+
+  test("reads later pages and starts a new search or organization at the first page", async () => {
+    const urls: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        urls.push(url);
+        const offset = new URL(url, "https://example.test").searchParams.get("offset");
+        return new Response(
+          JSON.stringify({
+            total: 51,
+            items: [{ id: `offset-${offset}`, email: `page-${offset}@example.test`, role: "user" }],
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }),
+    );
+    render(<UsersTable />, { wrapper: makeWrapper() });
+    fireEvent.click(await screen.findByText("cp.users.nextPage"));
+    await screen.findByText("page-50@example.test");
+    fireEvent.change(screen.getByTestId("cp-users-search"), { target: { value: "Alice" } });
+    await waitFor(() => expect(urls.at(-1)).toContain("search=Alice&limit=50&offset=0"));
+    await screen.findByText("page-0@example.test");
+    fireEvent.click(screen.getByText("cp.users.nextPage"));
+    await screen.findByText("page-50@example.test");
+    setOrganization("org-b");
+    await screen.findByText("page-0@example.test");
+    expect(urls.at(-1)).toContain("offset=0");
   });
 
   test("requires an organization and does not read an aggregate member list", async () => {

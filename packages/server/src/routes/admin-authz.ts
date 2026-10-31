@@ -9,7 +9,7 @@ import {
   users,
 } from "@kuintessence/db";
 import { AppError, ErrorCode } from "@kuintessence/shared";
-import { and, desc, eq, sql } from "drizzle-orm";
+import { and, desc, eq, ilike, or, sql } from "drizzle-orm";
 import { type Context, Hono } from "hono";
 import { z } from "zod";
 import { requirePlatformPermission } from "../authz/platform-guard";
@@ -31,6 +31,17 @@ const MembershipUpsertSchema = z.object({
   userId: z.string().uuid(),
   orgId: z.string().uuid(),
   role: MembershipRoleSchema,
+  createOnly: z.boolean().optional(),
+});
+
+const MembershipListQuerySchema = z.object({
+  search: z.string().trim().max(200).default(""),
+  limit: z.coerce.number().int().min(1).max(500).default(500),
+  offset: z.coerce.number().int().min(0).default(0),
+});
+const MembershipOptionsQuerySchema = z.object({
+  user: z.string().trim().max(200).default(""),
+  organization: z.string().trim().max(200).default(""),
 });
 
 const RawTupleSchema = z.object({
@@ -216,25 +227,89 @@ export function createAdminAuthzRoutes(db: PgDb, options: AdminAuthzRouteOptions
     return c.json({ success: true, data: updated });
   });
 
-  r.get("/admin/authz/memberships", async (c) => {
-    const rows = await db
-      .select({
-        id: userOrgMemberships.id,
-        userId: userOrgMemberships.userId,
-        email: users.email,
-        displayName: users.displayName,
-        orgId: userOrgMemberships.orgId,
-        orgName: orgs.name,
-        role: userOrgMemberships.role,
-        updatedAt: userOrgMemberships.updatedAt,
-      })
-      .from(userOrgMemberships)
-      .leftJoin(users, eq(users.id, userOrgMemberships.userId))
-      .leftJoin(orgs, eq(orgs.id, userOrgMemberships.orgId))
-      .orderBy(desc(userOrgMemberships.updatedAt))
-      .limit(500);
-    return c.json({ success: true, data: rows });
-  });
+  r.get(
+    "/admin/authz/membership-options",
+    kqValidator("query", MembershipOptionsQuerySchema, "Invalid member search"),
+    async (c) => {
+      const query = c.req.valid("query");
+      const [userRows, organizations] = await Promise.all([
+        db
+          .select({
+            id: users.id,
+            email: users.email,
+            displayName: users.displayName,
+            role: users.role,
+          })
+          .from(users)
+          .where(
+            query.user
+              ? or(
+                  ilike(users.email, `%${query.user}%`),
+                  ilike(users.displayName, `%${query.user}%`),
+                )
+              : undefined,
+          )
+          .orderBy(users.email, users.id)
+          .limit(51),
+        db
+          .select({ id: orgs.id, name: orgs.name })
+          .from(orgs)
+          .where(query.organization ? ilike(orgs.name, `%${query.organization}%`) : undefined)
+          .orderBy(orgs.name, orgs.id)
+          .limit(51),
+      ]);
+      return c.json({
+        success: true,
+        data: {
+          users: userRows.slice(0, 50),
+          organizations: organizations.slice(0, 50),
+          moreUsers: userRows.length > 50,
+          moreOrganizations: organizations.length > 50,
+        },
+      });
+    },
+  );
+
+  r.get(
+    "/admin/authz/memberships",
+    kqValidator("query", MembershipListQuerySchema, "Invalid member query"),
+    async (c) => {
+      const query = c.req.valid("query");
+      const pattern = `%${query.search}%`;
+      const rows = await db
+        .select({
+          id: userOrgMemberships.id,
+          userId: userOrgMemberships.userId,
+          email: users.email,
+          displayName: users.displayName,
+          platformRole: users.role,
+          orgId: userOrgMemberships.orgId,
+          orgName: orgs.name,
+          role: userOrgMemberships.role,
+          updatedAt: userOrgMemberships.updatedAt,
+        })
+        .from(userOrgMemberships)
+        .leftJoin(users, eq(users.id, userOrgMemberships.userId))
+        .leftJoin(orgs, eq(orgs.id, userOrgMemberships.orgId))
+        .where(
+          query.search
+            ? or(
+                ilike(users.email, pattern),
+                ilike(users.displayName, pattern),
+                ilike(orgs.name, pattern),
+              )
+            : undefined,
+        )
+        .orderBy(desc(userOrgMemberships.updatedAt), userOrgMemberships.id)
+        .limit(query.limit + 1)
+        .offset(query.offset);
+      return c.json({
+        success: true,
+        data: rows.slice(0, query.limit),
+        hasMore: rows.length > query.limit,
+      });
+    },
+  );
 
   r.get("/admin/authz/audit-capabilities", async (c) => {
     requireAuditCapabilityAdmin(c);
@@ -364,13 +439,25 @@ export function createAdminAuthzRoutes(db: PgDb, options: AdminAuthzRouteOptions
       const body = c.req.valid("json");
       const actorUserId = requireCanonicalAuthzAdminActor(c);
       await db.transaction(async (tx) => {
-        await tx
+        const insertion = tx
           .insert(userOrgMemberships)
-          .values(body)
-          .onConflictDoUpdate({
+          .values({ userId: body.userId, orgId: body.orgId, role: body.role });
+        if (body.createOnly) {
+          const created = await insertion
+            .onConflictDoNothing()
+            .returning({ id: userOrgMemberships.id });
+          if (created.length === 0)
+            throw new AppError(
+              ErrorCode.VALIDATION_ERROR,
+              "Organization membership already exists",
+              409,
+            );
+        } else {
+          await insertion.onConflictDoUpdate({
             target: [userOrgMemberships.userId, userOrgMemberships.orgId],
             set: { role: body.role, updatedAt: new Date() },
           });
+        }
         await insertAuthzOutboxRows(tx, [
           ...organizationBaselineTuples(body.orgId),
           ...organizationMembershipReplacementTuples({

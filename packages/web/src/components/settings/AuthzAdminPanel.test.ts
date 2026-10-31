@@ -3,6 +3,8 @@ import { createElement } from "react";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { AuthzAdminPanel, canProcessAuthzOutbox } from "./AuthzAdminPanel";
 
+vi.mock("./OrganizationMembershipPanel", () => ({ OrganizationMembershipPanel: () => null }));
+
 vi.mock("sonner", () => ({
   toast: {
     error: vi.fn(),
@@ -79,21 +81,6 @@ describe("AuthzAdminPanel", () => {
             ],
           }),
         )
-        .mockImplementationOnce(() =>
-          ok({
-            data: [
-              {
-                id: "membership-1",
-                userId: "user-1",
-                email: "alice@example.com",
-                displayName: "Alice",
-                orgId: "org-1",
-                role: "admin",
-                updatedAt: "2026-07-08T00:00:00Z",
-              },
-            ],
-          }),
-        )
         .mockImplementation(() =>
           Promise.resolve(
             new Response(
@@ -112,7 +99,7 @@ describe("AuthzAdminPanel", () => {
     render(createElement(AuthzAdminPanel));
 
     await waitFor(() => {
-      expect(screen.getByText("Alice")).toBeTruthy();
+      expect(screen.getByText("agent:agent-1")).toBeTruthy();
     });
     expect(screen.getByText("agent:agent-1")).toBeTruthy();
     expect(screen.getByText("agent:agent-1#provider")).toBeTruthy();
@@ -127,10 +114,8 @@ describe("AuthzAdminPanel", () => {
       "Authorization principal is not bound",
     );
     expect(screen.getByTestId("authz-refresh-error").textContent).not.toContain("FORBIDDEN");
-    expect(screen.queryByText("Alice")).toBeNull();
     expect(screen.queryByText("agent:agent-1")).toBeNull();
     expect(screen.queryByText("agent:agent-1#provider")).toBeNull();
-    expect(screen.getByText("暂无成员授权")).toBeTruthy();
     expect(screen.getByText("暂无授权差异")).toBeTruthy();
     expect(screen.getByText("暂无 outbox")).toBeTruthy();
   });
