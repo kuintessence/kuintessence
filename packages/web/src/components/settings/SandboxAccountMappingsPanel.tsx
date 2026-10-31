@@ -122,7 +122,11 @@ export function SandboxAccountMappingsPanel() {
           <Button
             size="sm"
             onClick={() => requestMutation.mutate(candidateId)}
-            disabled={candidateId === "" || requestMutation.isPending}
+            disabled={
+              candidateUnavailable ||
+              !candidates.some((candidate) => candidate.id === candidateId) ||
+              requestMutation.isPending
+            }
           >
             {t("sandbox.accounts.request")}
           </Button>
