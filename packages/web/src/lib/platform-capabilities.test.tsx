@@ -95,14 +95,12 @@ describe("useMeCapabilities", () => {
     localStorage.setItem("kq_active_organization_id", "org-a");
 
     let resolveOperator: ((value: unknown) => void) | undefined;
+    const operatorResponse = new Promise((resolve) => {
+      resolveOperator = resolve;
+    });
     apiGet
       .mockResolvedValueOnce(capabilities(["workspace.provider.view", "workspace.provider.manage"]))
-      .mockImplementationOnce(
-        () =>
-          new Promise((resolve) => {
-            resolveOperator = resolve;
-          }),
-      );
+      .mockReturnValue(operatorResponse);
 
     const { result } = renderHook(() => useMeCapabilities(true), { wrapper: wrapper() });
     await waitFor(() => expect(result.current.status).toBe("ready"));

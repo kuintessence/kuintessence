@@ -7,16 +7,21 @@ const activeOrganization = vi.hoisted(() => ({
   get: vi.fn(),
   set: vi.fn(),
 }));
+const apiGet = vi.hoisted(() => vi.fn());
+vi.mock("../../lib/api-client", () => ({ api: { get: apiGet } }));
 
 vi.mock("react-i18next", () => ({
   useTranslation: () => ({ t: (key: string) => key }),
 }));
 
-vi.mock("../../lib/active-organization", () => ({
+vi.mock("../../lib/active-organization", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../lib/active-organization")>()),
   getActiveOrganizationContext: activeOrganization.get,
   setActiveOrganization: activeOrganization.set,
 }));
 
+import { getStoredActiveOrganizationId } from "../../lib/active-organization";
+import { useMeCapabilities } from "../../lib/platform-capabilities";
 import { ProviderOrganizationSelector } from "./ProviderOrganizationSelector";
 
 function wrapper({ children }: { children: ReactNode }) {
@@ -31,9 +36,76 @@ function createClient() {
 
 afterEach(() => {
   vi.clearAllMocks();
+  localStorage.clear();
 });
 
 describe("ProviderOrganizationSelector", () => {
+  test("finishes a live organization switch with mounted capability consumers", async () => {
+    localStorage.setItem("kq_active_organization_id", "org-a");
+    activeOrganization.get.mockResolvedValue({
+      activeOrganizationId: "org-a",
+      organizations: [
+        { orgId: "org-a", name: "Provider A", role: "admin" },
+        { orgId: "org-b", name: "Provider B", role: "operator" },
+      ],
+    });
+    activeOrganization.set.mockImplementation(async (id: string) => {
+      localStorage.setItem("kq_active_organization_id", id);
+      window.dispatchEvent(new Event("kq:active-organization-change"));
+    });
+    apiGet.mockImplementation(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      return {
+        principal: {
+          userId: "00000000-0000-4000-8000-000000000001",
+          email: "a@test.local",
+          role: "user",
+        },
+        capabilities:
+          getStoredActiveOrganizationId() === "org-a"
+            ? ["workspace.provider.view", "workspace.provider.manage"]
+            : ["workspace.provider.view"],
+        contexts: [{ id: "personal", type: "personal" }],
+        activeContextId: "personal",
+        devicePolicy: { highRiskMutations: "desktop-only", mobileMode: "observe-approve" },
+      };
+    });
+    function Consumer({ selector = false }: { selector?: boolean }) {
+      const state = useMeCapabilities(true);
+      return (
+        <>
+          <output data-testid="capability-consumer">
+            {state.status}:
+            {String(state.data?.capabilities.includes("workspace.provider.manage") ?? false)}
+          </output>
+          {selector && state.status === "ready" ? <ProviderOrganizationSelector /> : null}
+        </>
+      );
+    }
+    render(
+      <>
+        <Consumer />
+        <Consumer selector />
+      </>,
+      { wrapper },
+    );
+    await waitFor(() =>
+      expect(screen.getAllByTestId("capability-consumer").map((item) => item.textContent)).toEqual([
+        "ready:true",
+        "ready:true",
+      ]),
+    );
+    fireEvent.change(await screen.findByLabelText("cp.organizationSelector.ariaLabel"), {
+      target: { value: "org-b" },
+    });
+    await waitFor(() =>
+      expect(screen.getAllByTestId("capability-consumer").map((item) => item.textContent)).toEqual([
+        "ready:false",
+        "ready:false",
+      ]),
+    );
+  });
+
   test("lets a platform administrator select any returned provider organization", async () => {
     activeOrganization.get.mockResolvedValue({
       activeOrganizationId: null,

@@ -49,7 +49,7 @@ export function useMeCapabilities(enabled: boolean) {
   useEffect(() => {
     if (!enabled) return;
     const reload = () => {
-      queryClient.removeQueries({ queryKey: ["me", "capabilities"] });
+      void queryClient.resetQueries({ queryKey: ["me", "capabilities"] });
     };
     window.addEventListener("kq:active-organization-change", reload);
     return () => window.removeEventListener("kq:active-organization-change", reload);
