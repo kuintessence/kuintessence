@@ -10,6 +10,7 @@ const ORGANIZATION_SENSITIVE_QUERY_ROOTS = new Set([
   "agent-software",
   "agents-list",
   "cp",
+  "interconnect",
   "cp-data",
   "dashboard",
   "data-market",

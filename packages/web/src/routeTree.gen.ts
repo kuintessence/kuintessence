@@ -15,6 +15,7 @@ import { Route as SettingsRouteImport } from './routes/settings'
 import { Route as OperationsRouteImport } from './routes/operations'
 import { Route as LoginRouteImport } from './routes/login'
 import { Route as JobsRouteImport } from './routes/jobs'
+import { Route as InterconnectRouteImport } from './routes/interconnect'
 import { Route as FilesRouteImport } from './routes/files'
 import { Route as DataMarketRouteImport } from './routes/data-market'
 import { Route as CpRouteImport } from './routes/cp'
@@ -30,6 +31,7 @@ import { Route as CpUsersRouteImport } from './routes/cp.users'
 import { Route as CpSoftwareRouteImport } from './routes/cp.software'
 import { Route as CpQueuesRouteImport } from './routes/cp.queues'
 import { Route as CpMeteringRouteImport } from './routes/cp.metering'
+import { Route as CpInterconnectRouteImport } from './routes/cp.interconnect'
 import { Route as CpInfrastructureRouteImport } from './routes/cp.infrastructure'
 import { Route as CpDataRouteImport } from './routes/cp.data'
 import { Route as CpAuditRouteImport } from './routes/cp.audit'
@@ -75,6 +77,11 @@ const LoginRoute = LoginRouteImport.update({
 const JobsRoute = JobsRouteImport.update({
   id: '/jobs',
   path: '/jobs',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const InterconnectRoute = InterconnectRouteImport.update({
+  id: '/interconnect',
+  path: '/interconnect',
   getParentRoute: () => rootRouteImport,
 } as any)
 const FilesRoute = FilesRouteImport.update({
@@ -150,6 +157,11 @@ const CpQueuesRoute = CpQueuesRouteImport.update({
 const CpMeteringRoute = CpMeteringRouteImport.update({
   id: '/metering',
   path: '/metering',
+  getParentRoute: () => CpRoute,
+} as any)
+const CpInterconnectRoute = CpInterconnectRouteImport.update({
+  id: '/interconnect',
+  path: '/interconnect',
   getParentRoute: () => CpRoute,
 } as any)
 const CpInfrastructureRoute = CpInfrastructureRouteImport.update({
@@ -242,6 +254,7 @@ export interface FileRoutesByFullPath {
   '/cp': typeof CpRouteWithChildren
   '/data-market': typeof DataMarketRoute
   '/files': typeof FilesRoute
+  '/interconnect': typeof InterconnectRoute
   '/jobs': typeof JobsRoute
   '/login': typeof LoginRoute
   '/operations': typeof OperationsRoute
@@ -254,6 +267,7 @@ export interface FileRoutesByFullPath {
   '/cp/audit': typeof CpAuditRoute
   '/cp/data': typeof CpDataRoute
   '/cp/infrastructure': typeof CpInfrastructureRoute
+  '/cp/interconnect': typeof CpInterconnectRoute
   '/cp/metering': typeof CpMeteringRoute
   '/cp/queues': typeof CpQueuesRoute
   '/cp/software': typeof CpSoftwareRoute
@@ -280,6 +294,7 @@ export interface FileRoutesByTo {
   '/agents': typeof AgentsRouteWithChildren
   '/data-market': typeof DataMarketRoute
   '/files': typeof FilesRoute
+  '/interconnect': typeof InterconnectRoute
   '/jobs': typeof JobsRoute
   '/login': typeof LoginRoute
   '/operations': typeof OperationsRoute
@@ -292,6 +307,7 @@ export interface FileRoutesByTo {
   '/cp/audit': typeof CpAuditRoute
   '/cp/data': typeof CpDataRoute
   '/cp/infrastructure': typeof CpInfrastructureRoute
+  '/cp/interconnect': typeof CpInterconnectRoute
   '/cp/metering': typeof CpMeteringRoute
   '/cp/queues': typeof CpQueuesRoute
   '/cp/software': typeof CpSoftwareRoute
@@ -320,6 +336,7 @@ export interface FileRoutesById {
   '/cp': typeof CpRouteWithChildren
   '/data-market': typeof DataMarketRoute
   '/files': typeof FilesRoute
+  '/interconnect': typeof InterconnectRoute
   '/jobs': typeof JobsRoute
   '/login': typeof LoginRoute
   '/operations': typeof OperationsRoute
@@ -332,6 +349,7 @@ export interface FileRoutesById {
   '/cp/audit': typeof CpAuditRoute
   '/cp/data': typeof CpDataRoute
   '/cp/infrastructure': typeof CpInfrastructureRoute
+  '/cp/interconnect': typeof CpInterconnectRoute
   '/cp/metering': typeof CpMeteringRoute
   '/cp/queues': typeof CpQueuesRoute
   '/cp/software': typeof CpSoftwareRoute
@@ -361,6 +379,7 @@ export interface FileRouteTypes {
     | '/cp'
     | '/data-market'
     | '/files'
+    | '/interconnect'
     | '/jobs'
     | '/login'
     | '/operations'
@@ -373,6 +392,7 @@ export interface FileRouteTypes {
     | '/cp/audit'
     | '/cp/data'
     | '/cp/infrastructure'
+    | '/cp/interconnect'
     | '/cp/metering'
     | '/cp/queues'
     | '/cp/software'
@@ -399,6 +419,7 @@ export interface FileRouteTypes {
     | '/agents'
     | '/data-market'
     | '/files'
+    | '/interconnect'
     | '/jobs'
     | '/login'
     | '/operations'
@@ -411,6 +432,7 @@ export interface FileRouteTypes {
     | '/cp/audit'
     | '/cp/data'
     | '/cp/infrastructure'
+    | '/cp/interconnect'
     | '/cp/metering'
     | '/cp/queues'
     | '/cp/software'
@@ -438,6 +460,7 @@ export interface FileRouteTypes {
     | '/cp'
     | '/data-market'
     | '/files'
+    | '/interconnect'
     | '/jobs'
     | '/login'
     | '/operations'
@@ -450,6 +473,7 @@ export interface FileRouteTypes {
     | '/cp/audit'
     | '/cp/data'
     | '/cp/infrastructure'
+    | '/cp/interconnect'
     | '/cp/metering'
     | '/cp/queues'
     | '/cp/software'
@@ -478,6 +502,7 @@ export interface RootRouteChildren {
   CpRoute: typeof CpRouteWithChildren
   DataMarketRoute: typeof DataMarketRoute
   FilesRoute: typeof FilesRoute
+  InterconnectRoute: typeof InterconnectRoute
   JobsRoute: typeof JobsRoute
   LoginRoute: typeof LoginRoute
   OperationsRoute: typeof OperationsRoute
@@ -532,6 +557,13 @@ declare module '@tanstack/react-router' {
       path: '/jobs'
       fullPath: '/jobs'
       preLoaderRoute: typeof JobsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/interconnect': {
+      id: '/interconnect'
+      path: '/interconnect'
+      fullPath: '/interconnect'
+      preLoaderRoute: typeof InterconnectRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/files': {
@@ -637,6 +669,13 @@ declare module '@tanstack/react-router' {
       path: '/metering'
       fullPath: '/cp/metering'
       preLoaderRoute: typeof CpMeteringRouteImport
+      parentRoute: typeof CpRoute
+    }
+    '/cp/interconnect': {
+      id: '/cp/interconnect'
+      path: '/interconnect'
+      fullPath: '/cp/interconnect'
+      preLoaderRoute: typeof CpInterconnectRouteImport
       parentRoute: typeof CpRoute
     }
     '/cp/infrastructure': {
@@ -774,6 +813,7 @@ interface CpRouteChildren {
   CpAuditRoute: typeof CpAuditRoute
   CpDataRoute: typeof CpDataRoute
   CpInfrastructureRoute: typeof CpInfrastructureRoute
+  CpInterconnectRoute: typeof CpInterconnectRoute
   CpMeteringRoute: typeof CpMeteringRoute
   CpQueuesRoute: typeof CpQueuesRoute
   CpSoftwareRoute: typeof CpSoftwareRoute
@@ -788,6 +828,7 @@ const CpRouteChildren: CpRouteChildren = {
   CpAuditRoute: CpAuditRoute,
   CpDataRoute: CpDataRoute,
   CpInfrastructureRoute: CpInfrastructureRoute,
+  CpInterconnectRoute: CpInterconnectRoute,
   CpMeteringRoute: CpMeteringRoute,
   CpQueuesRoute: CpQueuesRoute,
   CpSoftwareRoute: CpSoftwareRoute,
@@ -842,6 +883,7 @@ const rootRouteChildren: RootRouteChildren = {
   CpRoute: CpRouteWithChildren,
   DataMarketRoute: DataMarketRoute,
   FilesRoute: FilesRoute,
+  InterconnectRoute: InterconnectRoute,
   JobsRoute: JobsRoute,
   LoginRoute: LoginRoute,
   OperationsRoute: OperationsRoute,

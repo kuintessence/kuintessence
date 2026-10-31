@@ -20,6 +20,7 @@
       "!dist",
       "!packages/registry/src/data/spack-package-metadata.json",
       "!packages/web/src/routeTree.gen.ts",
+      "!packages/web/public/maps",
       "!packages/db/migrations"
     ]
   },

@@ -111,7 +111,8 @@
       "operationsSecurity": "安全与访问",
       "operationsCompute": "算力与软件",
       "operationsMetering": "计量与成本",
-      "operationsGovernance": "治理与审计"
+      "operationsGovernance": "治理与审计",
+      "interconnect": "多算力中心互联"
     }
   },
   "dataMarket": {
