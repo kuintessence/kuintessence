@@ -7,7 +7,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect } from "react";
 import { useActiveOrganizationId } from "./active-organization";
 import { api } from "./api-client";
-import { getAuthState } from "./auth";
+import { getAuthState, syncAuthRole } from "./auth";
 import { isLocalMode } from "./local-mode";
 import { setMobileManagementPolicy } from "./mobile-management-policy";
 
@@ -26,7 +26,15 @@ export function useMeCapabilities(enabled: boolean) {
     queryFn: async () => MeCapabilitiesSchema.parse(await api.get<unknown>("/me/capabilities")),
     enabled,
     retry: false,
+    refetchInterval: 15_000,
+    refetchOnWindowFocus: "always",
   });
+
+  useEffect(() => {
+    if (enabled && query.data && !query.error) {
+      syncAuthRole(query.data.principal.role, auth.revision);
+    }
+  }, [enabled, query.data, query.error, auth.revision]);
 
   useEffect(() => {
     if (!enabled) {

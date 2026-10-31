@@ -85,6 +85,13 @@ export function clearAuth(): void {
   notifyAuthStateChanged();
 }
 
+export function syncAuthRole(role: string, revision: string | null): void {
+  const current = getAuthState();
+  if (!current.isAuthenticated || current.revision !== revision || current.role === role) return;
+  localStorage.setItem(ROLE_KEY, role);
+  notifyAuthStateChanged();
+}
+
 export async function clearServerAuthSession(): Promise<void> {
   if (typeof fetch === "undefined") return;
   try {

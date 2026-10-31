@@ -5,11 +5,34 @@ import {
   clearServerAuthSession,
   getAuthState,
   setAuth,
+  syncAuthRole,
 } from "./auth";
 
 afterEach(() => clearAuth());
 
 describe("auth state", () => {
+  test("updates the role without changing session expiry or cache identity", () => {
+    setAuth({ email: "user@test.com", expiresIn: 900, role: "operator" });
+    const before = getAuthState();
+    let changes = 0;
+    const listener = () => changes++;
+    window.addEventListener(AUTH_STATE_CHANGED_EVENT, listener);
+    try {
+      syncAuthRole("user", before.revision);
+      syncAuthRole("user", before.revision);
+      expect(getAuthState()).toEqual({ ...before, role: "user" });
+      expect(changes).toBe(1);
+      setAuth({ email: "other@test.com", role: "user" });
+      syncAuthRole("operator", before.revision);
+      expect(getAuthState().role).toBe("user");
+      clearAuth();
+      syncAuthRole("operator", null);
+      expect(getAuthState().role).toBeNull();
+    } finally {
+      window.removeEventListener(AUTH_STATE_CHANGED_EVENT, listener);
+    }
+  });
+
   test("returns unauthenticated when no browser session exists", () => {
     expect(getAuthState()).toEqual({
       isAuthenticated: false,
