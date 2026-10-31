@@ -1358,6 +1358,14 @@
       "empty": "No account mappings yet. Select a compute provider cluster account to request one.",
       "default": "Default",
       "setDefault": "Set as default",
+      "delegationRequired": "Account approval has not been delegated by this provider",
+      "status": {
+        "pending": "Pending",
+        "approved": "Approved",
+        "rejected": "Rejected",
+        "revoked": "Revoked",
+        "expired": "Expired"
+      },
       "reviewTitle": "Sandbox account mapping review",
       "reviewSubtitle": "Approve accounts owned by this compute provider only. Platform operators also require explicit provider delegation.",
       "reviewEmpty": "No account mappings are waiting for review.",

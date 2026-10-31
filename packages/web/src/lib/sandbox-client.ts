@@ -243,8 +243,13 @@ export async function setDefaultSandboxAccountMapping(mappingId: string): Promis
   await api.put(`/sandbox/account-mappings/${mappingId}/default`, {});
 }
 
-export async function listSandboxMappingReviewQueue(): Promise<SandboxAccountMappingView[]> {
-  const body = await api.get<{ success: true; data: SandboxAccountMappingView[] }>(
+export interface SandboxMappingReview extends SandboxAccountMappingView {
+  applicant: { id: string; displayName: string | null; email: string } | null;
+  canReview: boolean;
+}
+
+export async function listSandboxMappingReviewQueue(): Promise<SandboxMappingReview[]> {
+  const body = await api.get<{ success: true; data: SandboxMappingReview[] }>(
     "/sandbox/account-mapping-review-queue",
   );
   return body.data;
