@@ -74,7 +74,10 @@ export function CpAccountsPage() {
                         {account.agentId}
                       </div>
                     </div>
-                    <Badge variant={account.enabled ? "running" : "cancelled"}>
+                    <Badge
+                      variant={account.enabled ? "running" : "cancelled"}
+                      className="shrink-0 whitespace-nowrap"
+                    >
                       {account.enabled ? t("cp.common.enabled") : t("cp.common.disabled")}
                     </Badge>
                   </div>
