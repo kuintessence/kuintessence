@@ -59,7 +59,7 @@ export function CpAccountsPage() {
               {t("cp.accounts.empty")}
             </div>
           ) : (
-            <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-3">
+            <div className="grid grid-cols-1 gap-2 md:grid-cols-2 xl:grid-cols-3">
               {accounts.map((account) => (
                 <div key={account.id} className="rounded-md border border-border bg-background p-3">
                   <div className="flex items-start justify-between gap-3">
