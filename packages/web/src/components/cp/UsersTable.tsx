@@ -14,6 +14,9 @@ export function UsersTable() {
   const [search, setSearch] = useState("");
   const activeOrganizationId = useActiveOrganizationId();
   const [pagination, setPagination] = useState({ organizationId: activeOrganizationId, page: 0 });
+  if (pagination.organizationId !== activeOrganizationId) {
+    setPagination({ organizationId: activeOrganizationId, page: 0 });
+  }
   const page = pagination.organizationId === activeOrganizationId ? pagination.page : 0;
   const setPage = (next: number) =>
     setPagination({ organizationId: activeOrganizationId, page: next });

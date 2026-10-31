@@ -75,7 +75,7 @@ export function CpAccountsPage() {
                       </div>
                     </div>
                     <Badge variant={account.enabled ? "running" : "cancelled"}>
-                      {account.enabled ? t("cp.common.yes") : t("cp.common.no")}
+                      {account.enabled ? t("cp.common.enabled") : t("cp.common.disabled")}
                     </Badge>
                   </div>
                   <dl className="mt-3 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs">

@@ -29,6 +29,8 @@
       "retry": "Retry"
     },
     "common": {
+      "enabled": "Enabled",
+      "disabled": "Disabled",
       "agentStatus": {
         "online": "Online",
         "healthy": "Healthy",

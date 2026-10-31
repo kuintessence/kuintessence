@@ -129,6 +129,9 @@ describe("UsersTable read-only governance", () => {
     setOrganization("org-b");
     await screen.findByText("page-0@example.test");
     expect(urls.at(-1)).toContain("offset=0");
+    setOrganization("org-a");
+    await waitFor(() => expect(screen.queryByText("page-50@example.test")).toBeNull());
+    await screen.findByText("page-0@example.test");
   });
 
   test("requires an organization and does not read an aggregate member list", async () => {
