@@ -68,7 +68,7 @@ export function ProviderOrganizationSelector() {
         if (!isActiveOrganizationContext(current)) return current;
         return { ...current, activeOrganizationId: organizationId };
       });
-      queryClient.removeQueries({ queryKey: ["me", "capabilities"] });
+      await queryClient.resetQueries({ queryKey: ["me", "capabilities"] });
     },
   });
   const organizations = (context.data?.organizations ?? []).filter((item) =>
