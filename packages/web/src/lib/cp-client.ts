@@ -268,6 +268,7 @@ export interface AvailabilityPreviewRequest {
 export interface CpUser {
   id: string;
   email: string;
+  displayName?: string | null;
   role: string;
   suspended?: boolean;
   quota?: number;

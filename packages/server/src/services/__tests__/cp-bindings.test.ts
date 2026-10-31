@@ -624,6 +624,21 @@ describeIfPg("cp-bindings (PG)", () => {
     expect(result.items[0]).toMatchObject({ id: USER_A1, displayName: "Alpha One" });
   });
 
+  test("users.listInOrgs returns stable pages without repeating members", async () => {
+    const pages = await Promise.all(
+      [0, 1, 2].map((offset) =>
+        bindings.users.listInOrgs({
+          orgIds: [],
+          query: "cp-test-",
+          limit: 1,
+          offset,
+        }),
+      ),
+    );
+    expect(pages.map((page) => page.items[0]?.id)).toEqual([USER_A1, USER_A2, USER_B1]);
+    expect(pages.every((page) => page.total === 3)).toBe(true);
+  });
+
   test("users.setSuspended round-trips", async () => {
     await bindings.users.setSuspended(USER_A1, true, { actor: USER_A1, orgId: ORG_A });
     const [row] = await db.select().from(users).where(eq(users.id, USER_A1)).limit(1);

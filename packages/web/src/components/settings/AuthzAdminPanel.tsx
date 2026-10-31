@@ -6,6 +6,7 @@ import { toUserFacingError } from "../../lib/user-facing-error";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
+import { OrganizationMembershipPanel } from "./OrganizationMembershipPanel";
 
 interface AuthzHealth {
   mode: "off" | "shadow" | "enforce";
@@ -42,17 +43,6 @@ interface AuthzDiff {
   createdAt: string;
 }
 
-interface AuthzMembership {
-  id: string;
-  userId: string;
-  email: string | null;
-  displayName?: string | null;
-  orgId: string;
-  orgName?: string | null;
-  role: string;
-  updatedAt: string;
-}
-
 interface AuthzOutboxRow {
   id: string;
   operation: string;
@@ -73,7 +63,6 @@ interface AuthzRebuildResult {
   counts: Record<string, number>;
 }
 
-const MEMBERSHIP_ROLES = ["owner", "admin", "operator", "member", "viewer"] as const;
 const RAW_CONFIRM = "I understand this bypasses Server business constraints";
 const SHADOW_DIFF_CLEAR_CONFIRM = "I reviewed and accept clearing authorization shadow diffs";
 
@@ -108,13 +97,11 @@ export function AuthzAdminPanel({ showBreakGlass = false }: { showBreakGlass?: b
   const [readiness, setReadiness] = useState<AuthzReadiness | null>(null);
   const [diffs, setDiffs] = useState<AuthzDiff[]>([]);
   const [outbox, setOutbox] = useState<AuthzOutboxRow[]>([]);
-  const [memberships, setMemberships] = useState<AuthzMembership[]>([]);
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [rebuilding, setRebuilding] = useState(false);
   const [clearingDiffs, setClearingDiffs] = useState(false);
   const [processingOutbox, setProcessingOutbox] = useState(false);
-  const [membership, setMembership] = useState({ userId: "", orgId: "", role: "member" });
   const [rawTuple, setRawTuple] = useState(
     JSON.stringify(
       {
@@ -132,18 +119,16 @@ export function AuthzAdminPanel({ showBreakGlass = false }: { showBreakGlass?: b
   const refresh = useCallback(async () => {
     setLoading(true);
     try {
-      const [healthRes, readinessRes, diffRes, outboxRes, membershipRes] = await Promise.all([
+      const [healthRes, readinessRes, diffRes, outboxRes] = await Promise.all([
         api.get<{ success: true; data: AuthzHealth }>("/admin/authz/health"),
         api.get<{ success: true; data: AuthzReadiness }>("/admin/authz/readiness"),
         api.get<{ success: true; data: AuthzDiff[] }>("/admin/authz/shadow-diffs?limit=20"),
         api.get<{ success: true; data: AuthzOutboxRow[] }>("/admin/authz/outbox?limit=20"),
-        api.get<{ success: true; data: AuthzMembership[] }>("/admin/authz/memberships"),
       ]);
       setHealth(healthRes.data);
       setReadiness(readinessRes.data);
       setDiffs(diffRes.data);
       setOutbox(outboxRes.data);
-      setMemberships(membershipRes.data);
       setLoadError(null);
     } catch (err) {
       const message = toUserFacingError(err, "授权状态暂时无法刷新，请稍后重试。");
@@ -151,7 +136,6 @@ export function AuthzAdminPanel({ showBreakGlass = false }: { showBreakGlass?: b
       setReadiness(null);
       setDiffs([]);
       setOutbox([]);
-      setMemberships([]);
       setLoadError(message);
       toast.error(message);
     } finally {
@@ -173,290 +157,250 @@ export function AuthzAdminPanel({ showBreakGlass = false }: { showBreakGlass?: b
   }, [rawTuple]);
 
   return (
-    <Card data-testid="authz-admin-panel">
-      <CardHeader className="flex-row items-center justify-between space-y-0">
-        <div>
-          <CardTitle className="flex items-center gap-2">
-            <ShieldAlert className="h-4 w-4" />
-            SpiceDB 授权层
-          </CardTitle>
-          <p className="mt-1 text-sm text-muted-foreground">
-            {showBreakGlass
-              ? "授权差异、关系同步、组织成员与紧急授权管理。"
-              : "授权差异、关系同步与组织成员管理。"}
-          </p>
-        </div>
-        <Button variant="outline" size="sm" onClick={refresh} disabled={loading}>
-          {loading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
-          刷新
-        </Button>
-      </CardHeader>
-      <CardContent className="space-y-5">
-        <div className="grid gap-3 md:grid-cols-5">
-          <Metric label="运行模式" value={health?.mode ?? "unknown"} badge={healthTone} />
-          <Metric label="服务健康" value={health?.healthy ? "正常" : "异常"} badge={healthTone} />
-          <Metric
-            label="授权模型"
-            value={health?.schemaWritten ? (health.schemaMatches ? "已加载" : "不匹配") : "待加载"}
-            badge={health?.schemaWritten && health.schemaMatches ? "brand" : "failed"}
-          />
-          <Metric
-            label="强制授权就绪"
-            value={readiness?.enforceReady ? "已就绪" : "未就绪"}
-            badge={readiness?.enforceReady ? "brand" : "failed"}
-          />
-          <Metric label="授权差异" value={String(readiness?.shadowDiffs ?? 0)} />
-        </div>
-        <div className="grid gap-3 md:grid-cols-3">
-          <Metric label="待同步" value={String(readiness?.outbox.pending ?? 0)} />
-          <Metric label="同步中" value={String(readiness?.outbox.processing ?? 0)} />
-          <Metric label="同步失败" value={String(readiness?.outbox.dead ?? 0)} />
-        </div>
-        {readiness?.blockers.length ? (
-          <div className="rounded-md border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive">
-            <div className="font-medium">授权启用条件未满足</div>
-            <ul className="mt-2 list-disc space-y-1 pl-5">
-              {readiness.blockers.map((blocker) => (
-                <li key={blocker}>{friendlyAuthzBlocker(blocker)}</li>
-              ))}
-            </ul>
-          </div>
-        ) : null}
-        {readiness?.externalSmokeRequired ? (
-          <div className="rounded-md border p-3 text-sm text-muted-foreground">
-            切换为强制授权前，请完成部署环境的 SpiceDB 授权验证。
-          </div>
-        ) : null}
-        <Button
-          variant="outline"
-          size="sm"
-          disabled={rebuilding}
-          onClick={async () => {
-            setRebuilding(true);
-            try {
-              const res = await api.post<{ success: true; data: AuthzRebuildResult }>(
-                "/admin/authz/rebuild",
-                {},
-              );
-              toast.success(
-                `已替换 ${res.data.purgedResourceTypes.length} 类资源，写入 ${res.data.tupleCount} 条授权关系`,
-              );
-              await refresh();
-            } catch (err) {
-              toast.error(toUserFacingError(err, "授权状态重建失败，请稍后重试。"));
-            } finally {
-              setRebuilding(false);
-            }
-          }}
-        >
-          {rebuilding ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
-          重建 SpiceDB 关系
-        </Button>
-        {health?.error ? (
-          <div className="rounded-md border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive">
-            授权服务当前不可用，请重试；如问题持续，请查看平台服务与 SpiceDB 运维日志。
-          </div>
-        ) : null}
-        {loadError ? (
-          <div
-            className="rounded-md border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive"
-            data-testid="authz-refresh-error"
-          >
-            {loadError}
-          </div>
-        ) : null}
-
-        <div className="grid gap-4 xl:grid-cols-2">
-          <div className="space-y-3">
-            <h3 className="text-sm font-medium">组织成员授权</h3>
-            <div className="grid gap-2 md:grid-cols-[1fr_1fr_140px_auto]">
-              <input
-                className="rounded-md border bg-background px-3 py-2 text-sm"
-                placeholder="用户编号"
-                value={membership.userId}
-                onChange={(event) =>
-                  setMembership((prev) => ({ ...prev, userId: event.target.value }))
-                }
-              />
-              <input
-                className="rounded-md border bg-background px-3 py-2 text-sm"
-                placeholder="组织编号"
-                value={membership.orgId}
-                onChange={(event) =>
-                  setMembership((prev) => ({ ...prev, orgId: event.target.value }))
-                }
-              />
-              <select
-                className="rounded-md border bg-background px-3 py-2 text-sm"
-                value={membership.role}
-                onChange={(event) =>
-                  setMembership((prev) => ({ ...prev, role: event.target.value }))
-                }
-              >
-                {MEMBERSHIP_ROLES.map((role) => (
-                  <option key={role} value={role}>
-                    {role}
-                  </option>
-                ))}
-              </select>
-              <Button
-                onClick={async () => {
-                  try {
-                    await api.put<{ success: true }>("/admin/authz/memberships", membership);
-                    toast.success("成员授权已加入同步队列");
-                    await refresh();
-                  } catch (err) {
-                    toast.error(toUserFacingError(err, "成员授权保存失败，请稍后重试。"));
-                  }
-                }}
-              >
-                保存
-              </Button>
+    <div className="space-y-4">
+      <OrganizationMembershipPanel />
+      <details className="rounded-md border">
+        <summary className="cursor-pointer p-4 text-sm font-medium">授权服务状态与高级操作</summary>
+        <Card data-testid="authz-admin-panel" className="border-0">
+          <CardHeader className="flex-row items-center justify-between space-y-0">
+            <div>
+              <CardTitle className="flex items-center gap-2">
+                <ShieldAlert className="h-4 w-4" />
+                SpiceDB 授权层
+              </CardTitle>
+              <p className="mt-1 text-sm text-muted-foreground">
+                {showBreakGlass ? "授权差异、关系同步与紧急授权管理。" : "授权差异与关系同步。"}
+              </p>
             </div>
-            <SimpleTable
-              rows={memberships
-                .slice(0, 8)
-                .map((row) => [
-                  row.displayName || row.email || row.userId,
-                  row.orgName ?? row.orgId,
-                  row.role,
+            <Button variant="outline" size="sm" onClick={refresh} disabled={loading}>
+              {loading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
+              刷新
+            </Button>
+          </CardHeader>
+          <CardContent className="space-y-5">
+            <div className="grid gap-3 md:grid-cols-5">
+              <Metric label="运行模式" value={health?.mode ?? "unknown"} badge={healthTone} />
+              <Metric
+                label="服务健康"
+                value={health?.healthy ? "正常" : "异常"}
+                badge={healthTone}
+              />
+              <Metric
+                label="授权模型"
+                value={
+                  health?.schemaWritten ? (health.schemaMatches ? "已加载" : "不匹配") : "待加载"
+                }
+                badge={health?.schemaWritten && health.schemaMatches ? "brand" : "failed"}
+              />
+              <Metric
+                label="强制授权就绪"
+                value={readiness?.enforceReady ? "已就绪" : "未就绪"}
+                badge={readiness?.enforceReady ? "brand" : "failed"}
+              />
+              <Metric label="授权差异" value={String(readiness?.shadowDiffs ?? 0)} />
+            </div>
+            <div className="grid gap-3 md:grid-cols-3">
+              <Metric label="待同步" value={String(readiness?.outbox.pending ?? 0)} />
+              <Metric label="同步中" value={String(readiness?.outbox.processing ?? 0)} />
+              <Metric label="同步失败" value={String(readiness?.outbox.dead ?? 0)} />
+            </div>
+            {readiness?.blockers.length ? (
+              <div className="rounded-md border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive">
+                <div className="font-medium">授权启用条件未满足</div>
+                <ul className="mt-2 list-disc space-y-1 pl-5">
+                  {readiness.blockers.map((blocker) => (
+                    <li key={blocker}>{friendlyAuthzBlocker(blocker)}</li>
+                  ))}
+                </ul>
+              </div>
+            ) : null}
+            {readiness?.externalSmokeRequired ? (
+              <div className="rounded-md border p-3 text-sm text-muted-foreground">
+                切换为强制授权前，请完成部署环境的 SpiceDB 授权验证。
+              </div>
+            ) : null}
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={rebuilding}
+              onClick={async () => {
+                setRebuilding(true);
+                try {
+                  const res = await api.post<{ success: true; data: AuthzRebuildResult }>(
+                    "/admin/authz/rebuild",
+                    {},
+                  );
+                  toast.success(
+                    `已替换 ${res.data.purgedResourceTypes.length} 类资源，写入 ${res.data.tupleCount} 条授权关系`,
+                  );
+                  await refresh();
+                } catch (err) {
+                  toast.error(toUserFacingError(err, "授权状态重建失败，请稍后重试。"));
+                } finally {
+                  setRebuilding(false);
+                }
+              }}
+            >
+              {rebuilding ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
+              重建 SpiceDB 关系
+            </Button>
+            {health?.error ? (
+              <div className="rounded-md border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive">
+                授权服务当前不可用，请重试；如问题持续，请查看平台服务与 SpiceDB 运维日志。
+              </div>
+            ) : null}
+            {loadError ? (
+              <div
+                className="rounded-md border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive"
+                data-testid="authz-refresh-error"
+              >
+                {loadError}
+              </div>
+            ) : null}
+
+            <div>
+              {showBreakGlass ? (
+                <div className="space-y-3" data-testid="authz-raw-tuple-break-glass">
+                  <h3 className="text-sm font-medium">高级授权关系操作</h3>
+                  <textarea
+                    className="min-h-40 w-full rounded-md border bg-background p-3 font-mono text-xs"
+                    value={rawTuple}
+                    onChange={(event) => setRawTuple(event.target.value)}
+                  />
+                  <Button
+                    variant="destructive"
+                    disabled={!health?.rawTupleAdminEnabled || rawTupleParsed == null}
+                    onClick={async () => {
+                      try {
+                        await api.post<{ success: true }>(
+                          "/admin/authz/raw-tuples",
+                          rawTupleParsed,
+                        );
+                        toast.success("授权关系已加入同步队列");
+                        await refresh();
+                      } catch (err) {
+                        toast.error(toUserFacingError(err, "授权关系写入失败，请稍后重试。"));
+                      }
+                    }}
+                  >
+                    <DatabaseZap className="h-3.5 w-3.5" />
+                    写入授权关系
+                  </Button>
+                </div>
+              ) : null}
+            </div>
+
+            <div className="grid gap-4 xl:grid-cols-2">
+              <SectionTable
+                title="最近授权差异"
+                action={
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={clearingDiffs || (readiness?.shadowDiffs ?? 0) === 0}
+                    onClick={async () => {
+                      if (!window.confirm("确认已审阅 Shadow diff，并清空当前 diff 记录？")) return;
+                      setClearingDiffs(true);
+                      try {
+                        const res = await api.post<{ success: true; data: { cleared: number } }>(
+                          "/admin/authz/shadow-diffs/clear",
+                          { confirm: SHADOW_DIFF_CLEAR_CONFIRM },
+                        );
+                        toast.success(`已清理 ${res.data.cleared} 条 Shadow diff`);
+                        await refresh();
+                      } catch (err) {
+                        toast.error(toUserFacingError(err, "授权差异清理失败，请稍后重试。"));
+                      } finally {
+                        setClearingDiffs(false);
+                      }
+                    }}
+                  >
+                    {clearingDiffs ? (
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    ) : (
+                      <Trash2 className="h-3.5 w-3.5" />
+                    )}
+                    清理
+                  </Button>
+                }
+                rows={diffs.map((row) => [
+                  `${row.resourceType}:${row.resourceId}`,
+                  row.permission,
+                  `${row.localAllowed}/${row.spiceAllowed}`,
+                  row.spiceError ? "授权差异检测未完成，请查看运维日志" : (row.actorEmail ?? ""),
                 ])}
-              empty="暂无成员授权"
-            />
-          </div>
-
-          {showBreakGlass ? (
-            <div className="space-y-3" data-testid="authz-raw-tuple-break-glass">
-              <h3 className="text-sm font-medium">高级授权关系操作</h3>
-              <textarea
-                className="min-h-40 w-full rounded-md border bg-background p-3 font-mono text-xs"
-                value={rawTuple}
-                onChange={(event) => setRawTuple(event.target.value)}
+                empty="暂无授权差异"
               />
-              <Button
-                variant="destructive"
-                disabled={!health?.rawTupleAdminEnabled || rawTupleParsed == null}
-                onClick={async () => {
-                  try {
-                    await api.post<{ success: true }>("/admin/authz/raw-tuples", rawTupleParsed);
-                    toast.success("授权关系已加入同步队列");
-                    await refresh();
-                  } catch (err) {
-                    toast.error(toUserFacingError(err, "授权关系写入失败，请稍后重试。"));
-                  }
-                }}
-              >
-                <DatabaseZap className="h-3.5 w-3.5" />
-                写入授权关系
-              </Button>
+              <SectionTable
+                title="最近授权同步"
+                action={
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={processingOutbox || !canProcessAuthzOutbox(readiness)}
+                    onClick={async () => {
+                      setProcessingOutbox(true);
+                      try {
+                        const res = await api.post<{
+                          success: true;
+                          data: { processed: number; dead: number };
+                        }>("/admin/authz/outbox/process", { batchSize: 100 });
+                        toast.success(`已投递 ${res.data.processed} 条，dead ${res.data.dead} 条`);
+                        await refresh();
+                      } catch (err) {
+                        toast.error(toUserFacingError(err, "授权变更投递失败，请稍后重试。"));
+                      } finally {
+                        setProcessingOutbox(false);
+                      }
+                    }}
+                  >
+                    {processingOutbox ? (
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    ) : (
+                      <RefreshCw className="h-3.5 w-3.5" />
+                    )}
+                    立即投递
+                  </Button>
+                }
+                rows={outbox.map((row) => [
+                  row.status,
+                  `${row.resourceType}:${row.resourceId}#${row.relation}`,
+                  `${row.subjectType}:${row.subjectId}`,
+                  row.status === "dead" ? (
+                    <Button
+                      key={row.id}
+                      variant="outline"
+                      size="sm"
+                      onClick={async () => {
+                        try {
+                          await api.post<{ success: true }>(
+                            `/admin/authz/outbox/${row.id}/retry`,
+                            {},
+                          );
+                          toast.success("失败的授权变更已重新入队");
+                          await refresh();
+                        } catch (err) {
+                          toast.error(toUserFacingError(err, "授权变更重试失败，请稍后重试。"));
+                        }
+                      }}
+                    >
+                      重试
+                    </Button>
+                  ) : (
+                    <span key={row.id}>
+                      {row.lastError
+                        ? "授权变更投递未完成，请稍后重试"
+                        : `attempts=${row.attempts}`}
+                    </span>
+                  ),
+                ])}
+                empty="暂无 outbox"
+              />
             </div>
-          ) : null}
-        </div>
-
-        <div className="grid gap-4 xl:grid-cols-2">
-          <SectionTable
-            title="最近授权差异"
-            action={
-              <Button
-                variant="outline"
-                size="sm"
-                disabled={clearingDiffs || (readiness?.shadowDiffs ?? 0) === 0}
-                onClick={async () => {
-                  if (!window.confirm("确认已审阅 Shadow diff，并清空当前 diff 记录？")) return;
-                  setClearingDiffs(true);
-                  try {
-                    const res = await api.post<{ success: true; data: { cleared: number } }>(
-                      "/admin/authz/shadow-diffs/clear",
-                      { confirm: SHADOW_DIFF_CLEAR_CONFIRM },
-                    );
-                    toast.success(`已清理 ${res.data.cleared} 条 Shadow diff`);
-                    await refresh();
-                  } catch (err) {
-                    toast.error(toUserFacingError(err, "授权差异清理失败，请稍后重试。"));
-                  } finally {
-                    setClearingDiffs(false);
-                  }
-                }}
-              >
-                {clearingDiffs ? (
-                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                ) : (
-                  <Trash2 className="h-3.5 w-3.5" />
-                )}
-                清理
-              </Button>
-            }
-            rows={diffs.map((row) => [
-              `${row.resourceType}:${row.resourceId}`,
-              row.permission,
-              `${row.localAllowed}/${row.spiceAllowed}`,
-              row.spiceError ? "授权差异检测未完成，请查看运维日志" : (row.actorEmail ?? ""),
-            ])}
-            empty="暂无授权差异"
-          />
-          <SectionTable
-            title="最近授权同步"
-            action={
-              <Button
-                variant="outline"
-                size="sm"
-                disabled={processingOutbox || !canProcessAuthzOutbox(readiness)}
-                onClick={async () => {
-                  setProcessingOutbox(true);
-                  try {
-                    const res = await api.post<{
-                      success: true;
-                      data: { processed: number; dead: number };
-                    }>("/admin/authz/outbox/process", { batchSize: 100 });
-                    toast.success(`已投递 ${res.data.processed} 条，dead ${res.data.dead} 条`);
-                    await refresh();
-                  } catch (err) {
-                    toast.error(toUserFacingError(err, "授权变更投递失败，请稍后重试。"));
-                  } finally {
-                    setProcessingOutbox(false);
-                  }
-                }}
-              >
-                {processingOutbox ? (
-                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                ) : (
-                  <RefreshCw className="h-3.5 w-3.5" />
-                )}
-                立即投递
-              </Button>
-            }
-            rows={outbox.map((row) => [
-              row.status,
-              `${row.resourceType}:${row.resourceId}#${row.relation}`,
-              `${row.subjectType}:${row.subjectId}`,
-              row.status === "dead" ? (
-                <Button
-                  key={row.id}
-                  variant="outline"
-                  size="sm"
-                  onClick={async () => {
-                    try {
-                      await api.post<{ success: true }>(`/admin/authz/outbox/${row.id}/retry`, {});
-                      toast.success("失败的授权变更已重新入队");
-                      await refresh();
-                    } catch (err) {
-                      toast.error(toUserFacingError(err, "授权变更重试失败，请稍后重试。"));
-                    }
-                  }}
-                >
-                  重试
-                </Button>
-              ) : (
-                <span key={row.id}>
-                  {row.lastError ? "授权变更投递未完成，请稍后重试" : `attempts=${row.attempts}`}
-                </span>
-              ),
-            ])}
-            empty="暂无 outbox"
-          />
-        </div>
-      </CardContent>
-    </Card>
+          </CardContent>
+        </Card>
+      </details>
+    </div>
   );
 }
 

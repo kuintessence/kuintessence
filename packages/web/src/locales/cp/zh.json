@@ -29,6 +29,8 @@
       "retry": "重试"
     },
     "common": {
+      "enabled": "已启用",
+      "disabled": "已禁用",
       "agentStatus": {
         "online": "在线",
         "healthy": "健康",
@@ -550,12 +552,12 @@
       "historyQuotaHint": "非并发上限；不用于推断可运行作业数。",
       "readonly": {
         "title": "治理只读",
-        "description": "因旧控制的组织作用域与执行语义尚未厘清，当前禁止修改。历史暂停标记不证明访问已被限制；旧 quota 是 credit 相关返回值，不是并发上限，且旧值 0 也可能表示未配置，当前无法区分。"
+        "description": "历史字段仅供排查：暂停标记不代表访问限制已生效；quota 是旧的 credit 返回值，0 也可能表示未配置，不代表并发额度。"
       },
-      "searchPlaceholder": "按邮箱搜索…",
+      "searchPlaceholder": "按姓名或邮箱搜索…",
       "col": {
-        "email": "邮箱",
-        "role": "角色",
+        "email": "成员",
+        "role": "平台角色",
         "suspended": "历史暂停标记",
         "quota": "历史 quota 返回值（credit）",
         "actions": "操作"
@@ -576,7 +578,20 @@
       "resumed": "已恢复用户",
       "quotaSaved": "配额已更新",
       "empty": "范围内暂无用户。",
-      "countHint": "{{visible}} 显示 · {{total}} 共计"
+      "countHint": "{{visible}} 显示 · {{total}} 共计",
+      "showLegacy": "显示历史字段",
+      "pagination": "组织成员分页",
+      "previousPage": "上一页",
+      "nextPage": "下一页",
+      "page": "第 {{page}} / {{pages}} 页",
+      "roles": {
+        "super_admin": "超级管理员",
+        "platform_admin": "平台管理员",
+        "operator": "平台运营者",
+        "org_admin": "算力管理员",
+        "user": "用户",
+        "guest": "访客"
+      }
     },
     "audit": {
       "title": "审计日志",

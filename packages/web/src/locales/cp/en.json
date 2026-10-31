@@ -29,6 +29,8 @@
       "retry": "Retry"
     },
     "common": {
+      "enabled": "Enabled",
+      "disabled": "Disabled",
       "agentStatus": {
         "online": "Online",
         "healthy": "Healthy",
@@ -550,12 +552,12 @@
       "historyQuotaHint": "Not a concurrency limit; do not use to infer runnable jobs.",
       "readonly": {
         "title": "Governance is read-only",
-        "description": "Changes are disabled because legacy controls have unresolved organization scope and execution semantics. Historical suspension does not prove access is restricted. The legacy quota is credit-related, not concurrent jobs; a legacy 0 may also mean not configured, so they cannot be distinguished here."
+        "description": "Legacy fields are for troubleshooting only. A suspension flag does not prove access is restricted. Quota is a legacy credit value, and zero may mean unconfigured; it is not a concurrency limit."
       },
-      "searchPlaceholder": "Search by email…",
+      "searchPlaceholder": "Search by name or email…",
       "col": {
-        "email": "Email",
-        "role": "Role",
+        "email": "Member",
+        "role": "Platform role",
         "suspended": "Historical suspension marker",
         "quota": "Historical quota return (credit)",
         "actions": "Actions"
@@ -576,7 +578,20 @@
       "resumed": "User resumed",
       "quotaSaved": "Quota updated",
       "empty": "No users in scope.",
-      "countHint": "{{visible}} shown · {{total}} total"
+      "countHint": "{{visible}} shown · {{total}} total",
+      "showLegacy": "Show legacy fields",
+      "pagination": "Member pagination",
+      "previousPage": "Previous",
+      "nextPage": "Next",
+      "page": "Page {{page}} / {{pages}}",
+      "roles": {
+        "super_admin": "Super administrator",
+        "platform_admin": "Platform administrator",
+        "operator": "Platform operator",
+        "org_admin": "Compute administrator",
+        "user": "User",
+        "guest": "Guest"
+      }
     },
     "audit": {
       "title": "Audit log",
