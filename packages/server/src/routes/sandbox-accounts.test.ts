@@ -1,11 +1,13 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import {
+  accountAssignmentDelegations,
   agents,
   auditLog,
   clusterExecutionAccounts,
   createPgDb,
   orgs,
   type PgDb,
+  userClusterAccountMappings,
   users,
 } from "@kuintessence/db";
 import { and, eq } from "drizzle-orm";
@@ -21,18 +23,23 @@ const ADMIN_ID = "d402ba30-d962-4aa1-b725-39a46d9dd103";
 const ACCOUNT_ID = "d402ba30-d962-4aa1-b725-39a46d9dd104";
 const AGENT_ID = "sandbox-account-route-agent";
 
-function makeApp(db: PgDb, orgIds: string[]) {
+function makeApp(
+  db: PgDb,
+  orgIds: string[],
+  role = "org_admin",
+  memberships: Array<{ orgId: string; role: string }> = [],
+) {
   const app = new Hono();
   app.onError(createErrorHandler(pino({ level: "silent" })));
   app.use("*", async (c, next) => {
     c.set("principal" as never, {
       sub: ADMIN_ID,
-      role: "org_admin",
+      role,
       email: "sandbox-account-admin@example.test",
       userId: ADMIN_ID,
       orgId: orgIds[0] ?? null,
       orgIds,
-      memberships: [],
+      memberships,
     });
     await next();
   });
@@ -74,8 +81,12 @@ describe("sandbox execution account routes", () => {
 
   beforeEach(async () => {
     await db
-      .delete(auditLog)
-      .where(eq(auditLog.action, "sandbox.execution-account.allowed-queues.update"));
+      .delete(userClusterAccountMappings)
+      .where(eq(userClusterAccountMappings.userId, ADMIN_ID));
+    await db
+      .delete(accountAssignmentDelegations)
+      .where(eq(accountAssignmentDelegations.providerOrgId, PROVIDER_ORG_ID));
+    await db.delete(auditLog).where(eq(auditLog.actor, ADMIN_ID));
     await db
       .insert(clusterExecutionAccounts)
       .values({
@@ -98,13 +109,145 @@ describe("sandbox execution account routes", () => {
 
   afterAll(async () => {
     await db
-      .delete(auditLog)
-      .where(eq(auditLog.action, "sandbox.execution-account.allowed-queues.update"));
+      .delete(userClusterAccountMappings)
+      .where(eq(userClusterAccountMappings.userId, ADMIN_ID));
+    await db
+      .delete(accountAssignmentDelegations)
+      .where(eq(accountAssignmentDelegations.providerOrgId, PROVIDER_ORG_ID));
+    await db.delete(auditLog).where(eq(auditLog.actor, ADMIN_ID));
     await db.delete(clusterExecutionAccounts).where(eq(clusterExecutionAccounts.id, ACCOUNT_ID));
     await db.delete(agents).where(eq(agents.agentId, AGENT_ID));
     await db.delete(users).where(eq(users.id, ADMIN_ID));
     await db.delete(orgs).where(eq(orgs.id, PROVIDER_ORG_ID));
     await db.delete(orgs).where(eq(orgs.id, OTHER_ORG_ID));
+  });
+
+  test("an admin without organizations cannot read all execution accounts", async () => {
+    const app = makeApp(db, []);
+    expect((await app.request("/api/sandbox/accounts")).status).toBe(403);
+    expect((await app.request("/api/sandbox/account-mapping-review-queue")).status).toBe(403);
+  });
+
+  test("organization admins can review by membership and see applicant identity", async () => {
+    const [mapping] = await db
+      .insert(userClusterAccountMappings)
+      .values({
+        userId: ADMIN_ID,
+        accountId: ACCOUNT_ID,
+        status: "pending",
+      })
+      .returning();
+    const app = makeApp(db, [PROVIDER_ORG_ID], "user", [{ orgId: PROVIDER_ORG_ID, role: "admin" }]);
+    expect((await app.request("/api/sandbox/accounts")).status).toBe(200);
+    const response = await app.request("/api/sandbox/account-mapping-review-queue");
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      data: [
+        {
+          mapping: { id: mapping?.id },
+          applicant: { email: "sandbox-account-admin@example.test" },
+          canReview: true,
+        },
+      ],
+    });
+    const review = await app.request(`/api/sandbox/account-mappings/${mapping?.id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ status: "approved" }),
+    });
+    expect(review.status).toBe(200);
+    expect(
+      (
+        await makeApp(db, [PROVIDER_ORG_ID], "user", [
+          { orgId: PROVIDER_ORG_ID, role: "member" },
+        ]).request("/api/sandbox/accounts")
+      ).status,
+    ).toBe(403);
+  });
+
+  test("selected organizations constrain both lists and unauthorized filters are rejected", async () => {
+    await db
+      .insert(userClusterAccountMappings)
+      .values({ userId: ADMIN_ID, accountId: ACCOUNT_ID, status: "pending" });
+    const app = makeApp(db, [PROVIDER_ORG_ID, OTHER_ORG_ID]);
+    for (const path of ["/api/sandbox/accounts", "/api/sandbox/account-mapping-review-queue"]) {
+      const response = await app.request(path, {
+        headers: { "X-KQ-Active-Organization": OTHER_ORG_ID },
+      });
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual({ success: true, data: [] });
+      expect(
+        (
+          await makeApp(db, [PROVIDER_ORG_ID]).request(path, {
+            headers: { "X-KQ-Active-Organization": OTHER_ORG_ID },
+          })
+        ).status,
+      ).toBe(403);
+    }
+  });
+
+  test("platform review still requires provider delegation", async () => {
+    const [mapping] = await db
+      .insert(userClusterAccountMappings)
+      .values({
+        userId: ADMIN_ID,
+        accountId: ACCOUNT_ID,
+        status: "pending",
+      })
+      .returning();
+    const app = makeApp(db, [PROVIDER_ORG_ID], "super_admin", [
+      { orgId: PROVIDER_ORG_ID, role: "member" },
+    ]);
+    const pending = await app.request("/api/sandbox/account-mapping-review-queue");
+    expect(await pending.json()).toMatchObject({ data: [{ canReview: false }] });
+    const review = () =>
+      app.request(`/api/sandbox/account-mappings/${mapping?.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status: "approved" }),
+      });
+    expect((await review()).status).toBe(403);
+    await db
+      .insert(accountAssignmentDelegations)
+      .values({ providerOrgId: PROVIDER_ORG_ID, delegated: true, updatedBy: ADMIN_ID });
+    expect(
+      await (await app.request("/api/sandbox/account-mapping-review-queue")).json(),
+    ).toMatchObject({ data: [{ canReview: true }] });
+    expect((await review()).status).toBe(200);
+  });
+
+  test("expired approvals can be renewed without demoting a valid approval", async () => {
+    const [mapping] = await db
+      .insert(userClusterAccountMappings)
+      .values({
+        userId: ADMIN_ID,
+        accountId: ACCOUNT_ID,
+        status: "approved",
+        isDefault: true,
+        expiresAt: new Date("2020-01-01T00:00:00Z"),
+      })
+      .returning();
+    expect(mapping).toBeDefined();
+    if (!mapping) throw new Error("Missing test mapping");
+    const app = makeApp(db, [PROVIDER_ORG_ID]);
+    expect(await (await app.request("/api/sandbox/account-mappings")).json()).toMatchObject({
+      data: [{ mapping: { status: "expired" } }],
+    });
+    const request = () =>
+      app.request("/api/sandbox/account-mappings", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ accountId: ACCOUNT_ID }),
+      });
+    expect((await request()).status).toBe(201);
+    await db
+      .update(userClusterAccountMappings)
+      .set({ status: "approved", expiresAt: null, isDefault: true })
+      .where(eq(userClusterAccountMappings.id, mapping.id));
+    expect((await request()).status).toBe(409);
+    expect(await (await app.request("/api/sandbox/account-mappings")).json()).toMatchObject({
+      data: [{ mapping: { status: "approved", isDefault: true } }],
+    });
   });
 
   test("provider admin updates the queue allowlist and records before/after audit facts", async () => {

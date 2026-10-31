@@ -32,11 +32,15 @@ export function SandboxAccountMappingsPanel() {
     queryKey: ["sandbox-account-mappings"],
     queryFn: listSandboxAccountMappings,
     retry: false,
+    refetchInterval: 15_000,
+    refetchOnWindowFocus: true,
   });
   const candidatesQuery = useQuery({
     queryKey: ["sandbox-account-candidates"],
     queryFn: listSandboxAccountCandidates,
     retry: false,
+    refetchInterval: 15_000,
+    refetchOnWindowFocus: true,
   });
   const refresh = () => {
     void queryClient.invalidateQueries({ queryKey: ["sandbox-account-mappings"] });
@@ -118,7 +122,11 @@ export function SandboxAccountMappingsPanel() {
           <Button
             size="sm"
             onClick={() => requestMutation.mutate(candidateId)}
-            disabled={candidateId === "" || requestMutation.isPending}
+            disabled={
+              candidateUnavailable ||
+              !candidates.some((candidate) => candidate.id === candidateId) ||
+              requestMutation.isPending
+            }
           >
             {t("sandbox.accounts.request")}
           </Button>
@@ -176,8 +184,10 @@ export function SandboxAccountMappingsPanel() {
                   <div className="flex flex-wrap items-center gap-2 text-sm font-medium">
                     <ServerCog className="h-4 w-4 text-muted-foreground" />
                     <span>{account.displayName}</span>
-                    <Badge variant={statusVariant(mapping.status)}>{mapping.status}</Badge>
-                    {mapping.isDefault ? (
+                    <Badge variant={statusVariant(mapping.status)}>
+                      {t(`sandbox.accounts.status.${mapping.status}`)}
+                    </Badge>
+                    {mapping.isDefault && mapping.status === "approved" ? (
                       <Badge variant="brand">
                         <Star className="h-3 w-3" />
                         {t("sandbox.accounts.default")}

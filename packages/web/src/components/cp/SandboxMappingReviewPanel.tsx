@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { KeyRound } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
+import { useActiveOrganizationId } from "../../lib/active-organization";
 import {
   listSandboxMappingReviewQueue,
   reviewSandboxAccountMapping,
@@ -13,10 +14,13 @@ import { Button } from "../ui/button";
 export function SandboxMappingReviewPanel() {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
+  const organizationId = useActiveOrganizationId();
   const queueQuery = useQuery({
-    queryKey: ["sandbox-account-mapping-review-queue"],
+    queryKey: ["sandbox-account-mapping-review-queue", organizationId],
     queryFn: listSandboxMappingReviewQueue,
     retry: false,
+    refetchInterval: 15_000,
+    refetchOnWindowFocus: true,
   });
   const reviewMutation = useMutation({
     mutationFn: ({ id, status }: { id: string; status: "approved" | "rejected" }) =>
@@ -30,7 +34,10 @@ export function SandboxMappingReviewPanel() {
   const rows = queueQuery.data ?? [];
 
   return (
-    <section className="grid gap-3 rounded-lg border border-border bg-card p-4">
+    <section
+      className="grid gap-3 rounded-lg border border-border bg-card p-4"
+      data-testid="sandbox-mapping-review"
+    >
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <h3 className="flex items-center gap-2 text-sm font-semibold">
@@ -55,34 +62,47 @@ export function SandboxMappingReviewPanel() {
         </div>
       ) : (
         <div className="grid gap-2">
-          {rows.map(({ account, mapping }) => (
+          {rows.map(({ account, mapping, applicant, canReview }) => (
             <div
               key={mapping.id}
+              data-testid={`sandbox-mapping-review-${mapping.id}`}
               className="flex flex-col gap-3 rounded-md border border-border bg-background p-3 md:flex-row md:items-center md:justify-between"
             >
-              <div>
-                <div className="text-sm font-medium">{account.displayName}</div>
+              <div className="min-w-0 break-words">
+                <div className="text-sm font-medium">
+                  {applicant?.displayName || applicant?.email || mapping.userId}
+                </div>
+                {applicant?.displayName && applicant.email ? (
+                  <div className="text-xs text-muted-foreground">{applicant.email}</div>
+                ) : null}
+                <div className="mt-1 text-sm">{account.displayName}</div>
                 <div className="mt-1 font-mono text-[11px] text-muted-foreground">
-                  user {mapping.userId} · {account.agentId} · {account.backendType}
+                  {account.agentId} · {account.backendType}
                 </div>
               </div>
-              <div className="flex gap-2">
-                <Button
-                  size="sm"
-                  onClick={() => reviewMutation.mutate({ id: mapping.id, status: "approved" })}
-                  disabled={reviewMutation.isPending}
-                >
-                  {t("sandbox.accounts.approve")}
-                </Button>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => reviewMutation.mutate({ id: mapping.id, status: "rejected" })}
-                  disabled={reviewMutation.isPending}
-                >
-                  {t("sandbox.accounts.reject")}
-                </Button>
-              </div>
+              {canReview ? (
+                <div className="flex shrink-0 gap-2">
+                  <Button
+                    size="sm"
+                    onClick={() => reviewMutation.mutate({ id: mapping.id, status: "approved" })}
+                    disabled={reviewMutation.isPending}
+                  >
+                    {t("sandbox.accounts.approve")}
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => reviewMutation.mutate({ id: mapping.id, status: "rejected" })}
+                    disabled={reviewMutation.isPending}
+                  >
+                    {t("sandbox.accounts.reject")}
+                  </Button>
+                </div>
+              ) : (
+                <p className="text-xs text-muted-foreground">
+                  {t("sandbox.accounts.delegationRequired")}
+                </p>
+              )}
             </div>
           ))}
         </div>

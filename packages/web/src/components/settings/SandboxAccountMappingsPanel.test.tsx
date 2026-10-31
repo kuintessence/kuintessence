@@ -1,5 +1,5 @@
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor } from "@testing-library/react";
+import { focusManager, QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { beforeEach, describe, expect, test, vi } from "vitest";
 
@@ -79,14 +79,17 @@ describe("SandboxAccountMappingsPanel", () => {
     expect(manageLink?.getAttribute("href")).toBe("/cp/accounts");
   });
 
-  test("allows a rejected mapping to be requested again", async () => {
+  test.each([
+    "rejected",
+    "expired",
+  ])("allows a %s mapping to be requested again", async (status) => {
     sandboxClient.listMappings.mockResolvedValue([
       {
         mapping: {
           id: "mapping-1",
           userId: "user-1",
           accountId: candidate.id,
-          status: "rejected",
+          status,
           isDefault: false,
           requestedAt: "2026-07-22T00:00:00.000Z",
           expiresAt: null,
@@ -112,5 +115,66 @@ describe("SandboxAccountMappingsPanel", () => {
     expect(screen.getByLabelText("sandbox.accounts.candidate").hasAttribute("disabled")).toBe(
       false,
     );
+  });
+  test("refreshes approval status when the user returns to the window", async () => {
+    const mapping = {
+      id: "mapping-1",
+      accountId: candidate.id,
+      status: "pending",
+      isDefault: false,
+    };
+    sandboxClient.listMappings.mockResolvedValue([{ account: candidate, mapping }]);
+    sandboxClient.listCandidates.mockResolvedValue([candidate]);
+    render(<SandboxAccountMappingsPanel />, { wrapper: Wrapper });
+    expect(await screen.findByText("sandbox.accounts.status.pending")).toBeTruthy();
+    sandboxClient.listMappings.mockResolvedValue([
+      { account: candidate, mapping: { ...mapping, status: "approved" } },
+    ]);
+    try {
+      act(() => {
+        focusManager.setFocused(false);
+        focusManager.setFocused(true);
+      });
+      expect(await screen.findByText("sandbox.accounts.status.approved")).toBeTruthy();
+      expect(screen.queryByText("sandbox.accounts.status.pending")).toBeNull();
+    } finally {
+      focusManager.setFocused(undefined);
+    }
+  });
+  test("disables a selected candidate after another session gets it approved", async () => {
+    sandboxClient.listMappings.mockResolvedValue([]);
+    sandboxClient.listCandidates.mockResolvedValue([candidate]);
+    render(<SandboxAccountMappingsPanel />, { wrapper: Wrapper });
+    await screen.findByRole("option", { name: "示例站点 · 科研队列账号 · slurm" });
+    fireEvent.change(screen.getByLabelText("sandbox.accounts.candidate"), {
+      target: { value: candidate.id },
+    });
+    expect((screen.getByText("sandbox.accounts.request") as HTMLButtonElement).disabled).toBe(
+      false,
+    );
+    sandboxClient.listMappings.mockResolvedValue([
+      {
+        account: candidate,
+        mapping: {
+          id: "mapping-1",
+          accountId: candidate.id,
+          status: "approved",
+          isDefault: false,
+        },
+      },
+    ]);
+    try {
+      act(() => {
+        focusManager.setFocused(false);
+        focusManager.setFocused(true);
+      });
+      await screen.findByText("sandbox.accounts.status.approved");
+      expect((screen.getByText("sandbox.accounts.request") as HTMLButtonElement).disabled).toBe(
+        true,
+      );
+      expect(sandboxClient.requestMapping).not.toHaveBeenCalled();
+    } finally {
+      focusManager.setFocused(undefined);
+    }
   });
 });

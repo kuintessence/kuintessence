@@ -4,9 +4,10 @@ import {
   clusterExecutionAccounts,
   type PgDb,
   userClusterAccountMappings,
+  users,
 } from "@kuintessence/db";
 import { AppError, ErrorCode, hasRole, type RoleName } from "@kuintessence/shared";
-import { and, eq, inArray, sql } from "drizzle-orm";
+import { and, eq, inArray, isNotNull, lte, ne, or, sql } from "drizzle-orm";
 import { type Context, Hono } from "hono";
 import { z } from "zod";
 import type { BoundPrincipal } from "../middleware/principal-binder";
@@ -65,7 +66,25 @@ function isPlatform(value: BoundPrincipal): boolean {
 }
 
 function isProviderAdmin(value: BoundPrincipal, providerOrgId: string): boolean {
-  return value.orgIds.includes(providerOrgId) && hasRole(value.role as RoleName, "org_admin");
+  return (
+    (value.orgIds.includes(providerOrgId) && value.role === "org_admin") ||
+    value.memberships.some(
+      (membership) =>
+        membership.orgId === providerOrgId && ["owner", "admin"].includes(membership.role),
+    )
+  );
+}
+
+function providerReadScope(c: Context, value: BoundPrincipal): string[] | null {
+  const requested =
+    c.req.query("providerOrgId") || c.req.header("x-kq-active-organization") || value.orgId;
+  const selected = requested ? z.string().uuid().parse(requested) : null;
+  if (isPlatform(value)) return selected ? [selected] : null;
+  const orgIds = value.orgIds.filter((id) => isProviderAdmin(value, id));
+  if (orgIds.length === 0 || (selected && !orgIds.includes(selected))) {
+    throw new AppError(ErrorCode.FORBIDDEN, "Provider account access denied", 403);
+  }
+  return selected ? [selected] : orgIds;
 }
 
 async function platformDelegated(db: PgDb, providerOrgId: string): Promise<boolean> {
@@ -116,7 +135,22 @@ export function createSandboxAccountRoutes({ db }: SandboxAccountRoutesDeps): Ho
         eq(userClusterAccountMappings.accountId, clusterExecutionAccounts.id),
       )
       .where(eq(userClusterAccountMappings.userId, userId));
-    return c.json({ success: true, data: rows });
+    const now = new Date();
+    return c.json({
+      success: true,
+      data: rows.map((row) => ({
+        ...row,
+        mapping: {
+          ...row.mapping,
+          status:
+            row.mapping.status === "approved" &&
+            row.mapping.expiresAt &&
+            row.mapping.expiresAt <= now
+              ? "expired"
+              : row.mapping.status,
+        },
+      })),
+    });
   });
 
   r.get("/sandbox/account-candidates", async (c) => {
@@ -158,6 +192,11 @@ export function createSandboxAccountRoutes({ db }: SandboxAccountRoutesDeps): Ho
       .values({ userId: value.userId, accountId: account.id, status: "pending" })
       .onConflictDoUpdate({
         target: [userClusterAccountMappings.userId, userClusterAccountMappings.accountId],
+        setWhere: or(
+          ne(userClusterAccountMappings.status, "approved"),
+          isNotNull(userClusterAccountMappings.revokedAt),
+          lte(userClusterAccountMappings.expiresAt, sql`now()`),
+        ),
         set: {
           status: "pending",
           requestedAt: sql`now()`,
@@ -169,10 +208,12 @@ export function createSandboxAccountRoutes({ db }: SandboxAccountRoutesDeps): Ho
         },
       })
       .returning();
+    if (!mapping)
+      throw new AppError(ErrorCode.VALIDATION_ERROR, "Account mapping is already approved", 409);
     await writeAudit(db, {
       actor: value.userId,
       action: "sandbox.account-mapping.request",
-      target: mapping?.id ?? body.accountId,
+      target: mapping.id,
     });
     return c.json({ success: true, data: mapping }, 201);
   });
@@ -214,13 +255,9 @@ export function createSandboxAccountRoutes({ db }: SandboxAccountRoutesDeps): Ho
 
   r.get("/sandbox/accounts", async (c) => {
     const value = principal(c);
-    const providerOrgId = c.req.query("providerOrgId");
-    const providerIds = isPlatform(value) ? (providerOrgId ? [providerOrgId] : []) : value.orgIds;
-    if (!isPlatform(value) && !hasRole(value.role as RoleName, "org_admin")) {
-      throw new AppError(ErrorCode.FORBIDDEN, "Provider admin required", 403);
-    }
+    const providerIds = providerReadScope(c, value);
     const rows =
-      providerIds.length > 0
+      providerIds !== null
         ? await db
             .select()
             .from(clusterExecutionAccounts)
@@ -296,27 +333,39 @@ export function createSandboxAccountRoutes({ db }: SandboxAccountRoutesDeps): Ho
 
   r.get("/sandbox/account-mapping-review-queue", async (c) => {
     const value = principal(c);
-    if (!isPlatform(value) && !hasRole(value.role as RoleName, "org_admin")) {
-      throw new AppError(ErrorCode.FORBIDDEN, "Account mapping review denied", 403);
-    }
-    const base = db
-      .select({ mapping: userClusterAccountMappings, account: clusterExecutionAccounts })
+    const providerIds = providerReadScope(c, value);
+    const rows = await db
+      .select({
+        mapping: userClusterAccountMappings,
+        account: clusterExecutionAccounts,
+        applicant: { id: users.id, displayName: users.displayName, email: users.email },
+        delegated: accountAssignmentDelegations.delegated,
+      })
       .from(userClusterAccountMappings)
       .innerJoin(
         clusterExecutionAccounts,
         eq(userClusterAccountMappings.accountId, clusterExecutionAccounts.id),
+      )
+      .leftJoin(users, eq(userClusterAccountMappings.userId, users.id))
+      .leftJoin(
+        accountAssignmentDelegations,
+        eq(clusterExecutionAccounts.providerOrgId, accountAssignmentDelegations.providerOrgId),
+      )
+      .where(
+        and(
+          eq(userClusterAccountMappings.status, "pending"),
+          providerIds === null
+            ? undefined
+            : inArray(clusterExecutionAccounts.providerOrgId, providerIds),
+        ),
       );
-    const rows = isPlatform(value)
-      ? await base.where(eq(userClusterAccountMappings.status, "pending"))
-      : value.orgIds.length > 0
-        ? await base.where(
-            and(
-              eq(userClusterAccountMappings.status, "pending"),
-              inArray(clusterExecutionAccounts.providerOrgId, value.orgIds),
-            ),
-          )
-        : [];
-    return c.json({ success: true, data: rows });
+    const data = rows.map(({ delegated, ...row }) => ({
+      ...row,
+      canReview:
+        isProviderAdmin(value, row.account.providerOrgId) ||
+        (isPlatform(value) && delegated === true),
+    }));
+    return c.json({ success: true, data });
   });
 
   r.patch("/sandbox/account-mappings/:id", async (c) => {

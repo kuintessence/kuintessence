@@ -1358,6 +1358,14 @@
       "empty": "尚无账号映射，请选择一个算力提供方集群账号发起申请。",
       "default": "默认",
       "setDefault": "设为默认",
+      "delegationRequired": "尚未获得算力提供方的账号审批委托",
+      "status": {
+        "pending": "待审批",
+        "approved": "已批准",
+        "rejected": "已拒绝",
+        "revoked": "已撤销",
+        "expired": "已过期"
+      },
       "reviewTitle": "隔离运行账号映射审批",
       "reviewSubtitle": "仅审批属于本算力提供方的集群账号；平台运营代审批还需要算力提供方明确委托。",
       "reviewEmpty": "当前没有待审批的账号映射。",
