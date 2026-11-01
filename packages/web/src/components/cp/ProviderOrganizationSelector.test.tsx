@@ -20,7 +20,10 @@ vi.mock("../../lib/active-organization", async (importOriginal) => ({
   setActiveOrganization: activeOrganization.set,
 }));
 
-import { getStoredActiveOrganizationId } from "../../lib/active-organization";
+import {
+  getStoredActiveOrganizationId,
+  useActiveOrganizationId,
+} from "../../lib/active-organization";
 import { useMeCapabilities } from "../../lib/platform-capabilities";
 import { ProviderOrganizationSelector } from "./ProviderOrganizationSelector";
 
@@ -40,6 +43,55 @@ afterEach(() => {
 });
 
 describe("ProviderOrganizationSelector", () => {
+  test("synchronizes another tab's organization with its selector, consumers and cached resources", async () => {
+    localStorage.setItem("kq_active_organization_id", "org-a");
+    activeOrganization.get.mockResolvedValue({
+      activeOrganizationId: "org-a",
+      organizations: [
+        { orgId: "org-a", name: "Provider A", role: "admin" },
+        { orgId: "org-b", name: "Provider B", role: "admin" },
+      ],
+    });
+    const client = createClient();
+    client.setQueryData(["cp", "dashboard"], { scope: "org-a" });
+    client.setQueryData(["unrelated", "theme"], "dark");
+    function Consumer() {
+      return <output data-testid="scope-consumer">{useActiveOrganizationId() ?? "all"}</output>;
+    }
+    render(
+      <QueryClientProvider client={client}>
+        <ProviderOrganizationSelector />
+        <Consumer />
+      </QueryClientProvider>,
+    );
+    const selector = await screen.findByLabelText("cp.organizationSelector.ariaLabel");
+    expect(selector).toHaveProperty("value", "org-a");
+    localStorage.setItem("kq_active_organization_id", "org-b");
+    fireEvent(
+      window,
+      new StorageEvent("storage", {
+        key: "kq_active_organization_id",
+        newValue: "org-b",
+        storageArea: localStorage,
+      }),
+    );
+    await waitFor(() => expect(selector).toHaveProperty("value", "org-b"));
+    expect(screen.getByTestId("scope-consumer").textContent).toBe("org-b");
+    await waitFor(() => expect(client.getQueryData(["cp", "dashboard"])).toBeUndefined());
+    expect(client.getQueryData(["unrelated", "theme"])).toBe("dark");
+    localStorage.removeItem("kq_active_organization_id");
+    fireEvent(
+      window,
+      new StorageEvent("storage", {
+        key: "kq_active_organization_id",
+        storageArea: localStorage,
+      }),
+    );
+    await waitFor(() => expect(selector).toHaveProperty("value", ""));
+    expect(screen.getByTestId("scope-consumer").textContent).toBe("all");
+    expect(activeOrganization.set).not.toHaveBeenCalled();
+  });
+
   test("finishes a live organization switch with mounted capability consumers", async () => {
     localStorage.setItem("kq_active_organization_id", "org-a");
     activeOrganization.get.mockResolvedValue({
@@ -157,6 +209,7 @@ describe("ProviderOrganizationSelector", () => {
   });
 
   test("keeps the selector available after an organization update fails", async () => {
+    localStorage.setItem("kq_active_organization_id", "org-a");
     activeOrganization.get.mockResolvedValue({
       activeOrganizationId: "org-a",
       organizations: [
