@@ -9,6 +9,7 @@ import {
   listCpAgentCerts,
   listSoftwarePolicies,
   listUsers,
+  previewSoftwareAvailability,
   reviewPreinstalledMapping,
   revokeAgentRegistrationToken,
   revokeCpAgentCert,
@@ -16,6 +17,7 @@ import {
   setUserQuota,
   setUserSuspended,
 } from "./cp-client";
+import { setMobileManagementPolicy } from "./mobile-management-policy";
 
 type FetchSpy = ReturnType<typeof vi.fn>;
 
@@ -45,7 +47,42 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  setMobileManagementPolicy(false);
   vi.restoreAllMocks();
+});
+
+describe("mobile read-only POST requests", () => {
+  beforeEach(() => {
+    vi.spyOn(window, "matchMedia").mockReturnValue({ matches: true } as MediaQueryList);
+    setMobileManagementPolicy(true);
+  });
+
+  test("allows audit searches without treating them as changes", async () => {
+    const spy = captureFetch({ items: [], total: 0 });
+    await searchAudit({ from: "2026-01-01T00:00:00Z", to: "2026-01-02T00:00:00Z" });
+    expect(getCall(spy).url).toBe("/platform/api/cp/audit/search");
+    expect(getCall(spy).init?.method).toBe("POST");
+  });
+
+  test("allows software availability queries", async () => {
+    const spy = captureFetch({
+      spec: "hello",
+      installedAvailable: [],
+      installableAvailable: [],
+      blocked: [],
+      explanations: [],
+    });
+    await previewSoftwareAvailability({ rawSpec: "hello", installable: false });
+    expect(getCall(spy).url).toBe("/platform/api/cp/software/availability-preview");
+  });
+
+  test("still blocks actual changes before sending a request", async () => {
+    const spy = captureFetch({ ok: true });
+    await expect(
+      editSoftwarePolicy({ cluster: "c1", list: "whitelist", specs: ["hello"] }),
+    ).rejects.toMatchObject({ code: "MOBILE_HIGH_RISK_MUTATION_BLOCKED" });
+    expect(spy).not.toHaveBeenCalled();
+  });
 });
 
 describe("getDashboardKpis", () => {
