@@ -70,7 +70,7 @@ export function CpAgentsTable() {
           className="rounded-md border border-border sm:overflow-x-auto sm:overscroll-x-contain"
           data-testid="cp-agents-table-scroll"
         >
-          <table className="w-full text-sm sm:min-w-[48rem]">
+          <table className="block w-full text-sm sm:table sm:min-w-[48rem]">
             <thead className="sr-only bg-muted/40 text-left text-xs uppercase tracking-wide text-muted-foreground sm:not-sr-only sm:table-header-group">
               <tr>
                 <th className="px-3 py-2 font-medium">{t("cp.agents.col.id")}</th>
