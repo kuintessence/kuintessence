@@ -39,6 +39,9 @@ describe("operations capability role branches", () => {
     expect(canAccessOperationsLink("org_admin", metering)).toBe(true);
     expect(canAccessOperationsLink("operator", metering)).toBe(true);
     expect(canAccessOperationsLink("user", metering)).toBe(false);
+    expect(
+      canAccessOperationsLink("user", metering, new Set(["metering.report.view"] as const)),
+    ).toBe(true);
     expect(canAccessOperationsLink("org_admin", audit)).toBe(false);
     expect(canAccessOperationsLink("operator", audit)).toBe(true);
     expect(canAccessOperationsLink("org_admin", cpAudit)).toBe(true);

@@ -108,6 +108,7 @@ export const OPERATIONS_LINKS: ReadonlyArray<OperationsLink> = [
     href: "/cp/metering",
     requiredRole: "org_admin",
     alternativeRoles: ["operator"],
+    requiredCapability: "metering.report.view",
     icon: BadgeDollarSign,
   },
   {

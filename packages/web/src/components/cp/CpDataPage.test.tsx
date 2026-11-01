@@ -381,6 +381,80 @@ describe("CpDataPage", () => {
     expect(screen.getByText("cp.data.importAvailable")).toBeTruthy();
   });
 
+  test.each([
+    ["completed", "ready"],
+    ["failed", "failed"],
+    ["canceled", "draft"],
+  ] as const)("refreshes version and replica details after an import is %s", async (status, versionStatus) => {
+    vi.useFakeTimers();
+    client.cpAssets.mockResolvedValueOnce({
+      assets: [asset("asset-a", "Dataset A", "org-a")],
+      limit: 25,
+      offset: 0,
+      total: 1,
+    });
+    client.cpImports
+      .mockReset()
+      .mockResolvedValue({ imports: [], limit: 25, offset: 0, total: 0 })
+      .mockResolvedValueOnce({ imports: [importRecord("running")], limit: 25, offset: 0, total: 1 })
+      .mockResolvedValueOnce({ imports: [importRecord(status)], limit: 25, offset: 0, total: 1 });
+    client.cpVersions
+      .mockReset()
+      .mockResolvedValue({ versions: [], limit: 25, offset: 0, total: 0 })
+      .mockResolvedValueOnce({
+        versions: [{ ...versionRecord(), status: "validating" }],
+        limit: 25,
+        offset: 0,
+        total: 1,
+      })
+      .mockResolvedValueOnce({
+        versions: [{ ...versionRecord(), status: versionStatus }],
+        limit: 25,
+        offset: 0,
+        total: 1,
+      });
+
+    const cache = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const otherScope = ["cp-data", "org-b", "versions", "asset-b"];
+    cache.setQueryData(otherScope, { versions: [] });
+    render(
+      <QueryClientProvider client={cache}>
+        <CpDataPage />
+      </QueryClientProvider>,
+    );
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(100);
+    });
+    fireEvent.click(screen.getByTestId("cp-data-asset-asset-a"));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(100);
+    });
+    const item = screen.getByTestId("cp-data-version-version-a");
+    expect(item.textContent).toContain("validating");
+    fireEvent.click(item);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(100);
+    });
+    expect(client.cpReplicas).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(6_000);
+    });
+
+    expect(cache.getQueryState(otherScope)?.isInvalidated).toBe(false);
+    expect(item.textContent).toContain(versionStatus);
+    expect(client.cpReplicas).toHaveBeenCalledTimes(2);
+    expect(client.cpVersions).toHaveBeenCalledTimes(2);
+    expect(client.cpImports).toHaveBeenCalledTimes(2);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10_000);
+    });
+    expect(client.cpImports).toHaveBeenCalledTimes(2);
+    expect(client.cpVersions).toHaveBeenCalledTimes(2);
+    client.cpVersions
+      .mockReset()
+      .mockResolvedValue({ versions: [], limit: 25, offset: 0, total: 0 });
+  });
+
   test("labels failed imports without exposing scan details", async () => {
     client.cpImports.mockReset().mockResolvedValueOnce({
       imports: [importRecord("failed", "Agent could not read /data/research/inputs/a")],

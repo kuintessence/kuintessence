@@ -69,6 +69,17 @@ export function CpDataPage() {
         ? 5_000
         : false,
   });
+  useEffect(() => {
+    if (
+      !activeOrganizationId ||
+      !imports.data?.imports.some((dataImport) =>
+        ["completed", "failed", "canceled"].includes(dataImport.status),
+      )
+    )
+      return;
+    void cache.invalidateQueries({ queryKey: ["cp-data", activeOrganizationId, "versions"] });
+    void cache.invalidateQueries({ queryKey: ["cp-data", activeOrganizationId, "replicas"] });
+  }, [activeOrganizationId, cache, imports.data]);
   const accessRequests = useQuery({
     enabled: Boolean(activeOrganizationId),
     queryKey: ["cp-data", activeOrganizationId, "access-requests"],
