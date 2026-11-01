@@ -67,7 +67,10 @@ function get<T>(path: string): Promise<T> {
 }
 
 function post<T>(path: string, body: unknown, headers: Record<string, string> = {}): Promise<T> {
-  assertMobileMutationAllowed(`/cp${path}`);
+  // These read-only endpoints use POST to carry query bodies.
+  if (path !== "/audit/search" && path !== "/software/availability-preview") {
+    assertMobileMutationAllowed(`/cp${path}`);
+  }
   return fetchAuthed(`/cp${path}`, () => ({
     credentials: "same-origin",
     method: "POST",

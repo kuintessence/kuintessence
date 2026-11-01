@@ -205,14 +205,14 @@ export function AgentRegistrationPage() {
           {copyError}
         </div>
       ) : null}
-      <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(360px,0.9fr)]">
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(360px,0.9fr)]">
         <Card>
           <CardHeader>
             <CardTitle>{t("cp.agentRegistration.form.title")}</CardTitle>
           </CardHeader>
           <CardContent>
             <form className="space-y-4" onSubmit={submit}>
-              <div className="grid gap-3 sm:grid-cols-6">
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-6">
                 <label
                   className="space-y-1 text-sm sm:col-span-4"
                   htmlFor="agent-registration-provider"
@@ -306,8 +306,8 @@ export function AgentRegistrationPage() {
                 </label>
               </div>
 
-              <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_220px]">
-                <div className="grid gap-2 rounded-md border border-border bg-muted/25 p-3 sm:grid-cols-2">
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-[minmax(0,1fr)_220px]">
+                <div className="grid grid-cols-1 gap-2 rounded-md border border-border bg-muted/25 p-3 sm:grid-cols-2">
                   <div className="text-sm font-medium">
                     {t("cp.agentRegistration.form.detectedUrls")}
                   </div>
@@ -462,7 +462,7 @@ export function AgentRegistrationPage() {
                     data-testid={`agent-registration-token-${token.id}`}
                   >
                     <div className="flex flex-wrap items-center justify-between gap-2">
-                      <div>
+                      <div className="min-w-0 max-w-full break-words">
                         <div className="font-mono text-sm">{token.agentId}</div>
                         <div className="text-xs text-muted-foreground">
                           {token.siteName} · {token.providerOrgId}
@@ -475,7 +475,7 @@ export function AgentRegistrationPage() {
                       <Input
                         value={token.token}
                         readOnly
-                        className="font-mono text-xs"
+                        className="min-w-0 font-mono text-xs"
                         data-testid={`agent-registration-token-value-${token.id}`}
                       />
                       <Button
@@ -558,7 +558,7 @@ function ActiveTokenCard({
       data-testid={`agent-registration-active-token-${token.id}`}
     >
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <div>
+        <div className="min-w-0 max-w-full break-words">
           <div className="font-mono text-sm">{token.agentId}</div>
           <div className="text-xs text-muted-foreground">
             {token.siteName} · {token.providerOrgId}

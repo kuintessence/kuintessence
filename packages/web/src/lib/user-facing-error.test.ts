@@ -18,6 +18,19 @@ beforeEach(async () => {
 });
 
 describe("toUserFacingError", () => {
+  test.each([
+    ["zh", "请在电脑端执行此操作；手机端仅支持查看和审批。"],
+    ["en", "Use a desktop for this action. Mobile supports viewing and approvals only."],
+  ])("explains the mobile policy in %s without suggesting a role change", (lang, expected) => {
+    localStorage.setItem("kq.lang", lang);
+    expect(
+      toUserFacingError(
+        new ApiError(403, "MOBILE_HIGH_RISK_MUTATION_BLOCKED", "Desktop only"),
+        "Unable to create token",
+      ),
+    ).toBe(expected);
+  });
+
   test("maps permission failures without exposing API code or message", () => {
     const text = toUserFacingError(
       new ApiError(403, "FORBIDDEN", "Authorization denied", { reason: "RBAC" }),
