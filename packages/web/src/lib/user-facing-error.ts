@@ -12,6 +12,7 @@ const COPY: Record<
   {
     unauthorized: string;
     forbidden: string;
+    desktopRequired: string;
     notFound: string;
     conflict: string;
     validation: string;
@@ -23,6 +24,7 @@ const COPY: Record<
   zh: {
     unauthorized: "登录状态已失效，请重新登录。",
     forbidden: "当前账号没有执行此操作的权限，请联系组织管理员或切换组织后重试。",
+    desktopRequired: "请在电脑端执行此操作；手机端仅支持查看和审批。",
     notFound: "资源不存在、已删除或当前不可见，请刷新后重试。",
     conflict: "资源状态已发生变化，请刷新后重试。",
     validation: "提交内容无法处理，请检查输入后重试。",
@@ -34,6 +36,7 @@ const COPY: Record<
     unauthorized: "Your session has expired. Please sign in again.",
     forbidden:
       "Your account does not have permission to perform this action. Contact your organization administrator or switch organizations and try again.",
+    desktopRequired: "Use a desktop for this action. Mobile supports viewing and approvals only.",
     notFound:
       "This resource may not exist, have been deleted, or be unavailable to your account. Refresh and try again.",
     conflict: "The resource changed while you were working. Refresh and try again.",
@@ -146,6 +149,7 @@ export function toUserFacingError(error: unknown, fallback?: string): string {
   const effectiveCode = code ?? reason;
 
   if (status === 401 || effectiveCode === "UNAUTHORIZED") return copy.unauthorized;
+  if (effectiveCode === "MOBILE_HIGH_RISK_MUTATION_BLOCKED") return copy.desktopRequired;
   if (
     status === 403 ||
     effectiveCode === "FORBIDDEN" ||
