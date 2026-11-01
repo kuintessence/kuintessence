@@ -32,8 +32,19 @@ export function getStoredActiveOrganizationId(): string | null {
 
 function subscribeToActiveOrganization(onStoreChange: () => void): () => void {
   if (typeof window === "undefined") return () => undefined;
+  const onStorage = (event: StorageEvent) => {
+    if (
+      event.storageArea === localStorage &&
+      (event.key === ACTIVE_ORGANIZATION_STORAGE_KEY || event.key === null)
+    )
+      onStoreChange();
+  };
   window.addEventListener("kq:active-organization-change", onStoreChange);
-  return () => window.removeEventListener("kq:active-organization-change", onStoreChange);
+  window.addEventListener("storage", onStorage);
+  return () => {
+    window.removeEventListener("kq:active-organization-change", onStoreChange);
+    window.removeEventListener("storage", onStorage);
+  };
 }
 
 function storeActiveOrganizationId(organizationId: string | null): void {

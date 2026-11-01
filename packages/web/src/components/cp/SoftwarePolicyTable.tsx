@@ -167,6 +167,10 @@ export function SoftwarePolicyTable({ canManage = true }: { canManage?: boolean 
   );
 
   useEffect(() => {
+    if (!canManage) setEditorTarget(null);
+  }, [canManage]);
+
+  useEffect(() => {
     if (!overviewQuery.error) return;
     setSelectedAgentId(null);
     setEditorTarget(null);

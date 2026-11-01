@@ -1,7 +1,14 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { type QueryClient, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Building2 } from "lucide-react";
+import { useEffect } from "react";
 import { useTranslation } from "react-i18next";
-import { getActiveOrganizationContext, setActiveOrganization } from "../../lib/active-organization";
+import {
+  ACTIVE_ORGANIZATION_STORAGE_KEY,
+  getActiveOrganizationContext,
+  getStoredActiveOrganizationId,
+  setActiveOrganization,
+  useActiveOrganizationId,
+} from "../../lib/active-organization";
 import { toUserFacingError } from "../../lib/user-facing-error";
 import { Button } from "../ui/button";
 
@@ -47,9 +54,35 @@ function isOrganizationSensitiveQuery(queryKey: readonly unknown[]): boolean {
   return typeof root === "string" && ORGANIZATION_SENSITIVE_QUERY_ROOTS.has(root);
 }
 
+async function refreshOrganizationScope(queryClient: QueryClient, organizationId: string | null) {
+  const queryFilter = {
+    predicate: (query: { queryKey: readonly unknown[] }) =>
+      isOrganizationSensitiveQuery(query.queryKey),
+  };
+  await queryClient.cancelQueries(queryFilter);
+  queryClient.removeQueries(queryFilter);
+  queryClient.setQueryData(["me", "active-organization"], (current: unknown) => {
+    if (!isActiveOrganizationContext(current)) return current;
+    return { ...current, activeOrganizationId: organizationId };
+  });
+  await queryClient.resetQueries({ queryKey: ["me", "capabilities"] });
+}
+
 export function ProviderOrganizationSelector() {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
+  const activeOrganizationId = useActiveOrganizationId();
+  useEffect(() => {
+    const onStorage = (event: StorageEvent) => {
+      if (
+        event.storageArea === localStorage &&
+        (event.key === ACTIVE_ORGANIZATION_STORAGE_KEY || event.key === null)
+      )
+        void refreshOrganizationScope(queryClient, getStoredActiveOrganizationId());
+    };
+    window.addEventListener("storage", onStorage);
+    return () => window.removeEventListener("storage", onStorage);
+  }, [queryClient]);
   const context = useQuery({
     queryKey: ["me", "active-organization"],
     queryFn: getActiveOrganizationContext,
@@ -57,19 +90,7 @@ export function ProviderOrganizationSelector() {
   });
   const update = useMutation({
     mutationFn: setActiveOrganization,
-    onSuccess: async (_data, organizationId) => {
-      const queryFilter = {
-        predicate: (query: { queryKey: readonly unknown[] }) =>
-          isOrganizationSensitiveQuery(query.queryKey),
-      };
-      await queryClient.cancelQueries(queryFilter);
-      queryClient.removeQueries(queryFilter);
-      queryClient.setQueryData(["me", "active-organization"], (current: unknown) => {
-        if (!isActiveOrganizationContext(current)) return current;
-        return { ...current, activeOrganizationId: organizationId };
-      });
-      await queryClient.resetQueries({ queryKey: ["me", "capabilities"] });
-    },
+    onSuccess: (_data, organizationId) => refreshOrganizationScope(queryClient, organizationId),
   });
   const organizations = (context.data?.organizations ?? []).filter((item) =>
     CP_ROLES.has(item.role),
@@ -111,7 +132,7 @@ export function ProviderOrganizationSelector() {
         aria-label={t("cp.organizationSelector.ariaLabel")}
         className="h-9 min-w-48 max-w-full rounded-md border border-input bg-background px-3 text-sm"
         disabled={update.isPending}
-        value={context.data?.activeOrganizationId ?? ""}
+        value={activeOrganizationId ?? ""}
         onChange={(event) => update.mutate(event.target.value || null)}
       >
         <option value="">{t("cp.organizationSelector.allOrganizations")}</option>

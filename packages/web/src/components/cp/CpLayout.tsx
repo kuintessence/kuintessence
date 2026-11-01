@@ -1,6 +1,7 @@
 import { ShieldOff } from "lucide-react";
-import type { ReactNode } from "react";
+import { Fragment, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
+import { useActiveOrganizationId } from "../../lib/active-organization";
 import { usePlatformCapability } from "../../lib/platform-capabilities";
 import { CpCapabilityError } from "./CpCapabilityError";
 import { ProviderOrganizationSelector } from "./ProviderOrganizationSelector";
@@ -11,6 +12,7 @@ export interface CpLayoutProps {
 
 export function CpLayout({ children }: CpLayoutProps) {
   const { t } = useTranslation();
+  const organizationId = useActiveOrganizationId();
   const access = usePlatformCapability("workspace.provider.view");
 
   if (!access.ready) return null;
@@ -36,7 +38,7 @@ export function CpLayout({ children }: CpLayoutProps) {
       <div className="flex justify-start sm:justify-end">
         <ProviderOrganizationSelector />
       </div>
-      {children}
+      <Fragment key={organizationId ?? "all"}>{children}</Fragment>
     </div>
   );
 }

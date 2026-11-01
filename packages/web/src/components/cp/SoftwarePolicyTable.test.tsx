@@ -250,6 +250,25 @@ describe("SoftwarePolicyTable", () => {
     expect(screen.queryByText("cp.common.edit")).toBeNull();
   });
 
+  test("discards an open policy editor when management is revoked and does not reopen on regrant", async () => {
+    cpClient.getSoftwareOverview.mockResolvedValue(overview);
+    const { rerender } = render(<SoftwarePolicyTable canManage />, { wrapper: makeWrapper() });
+
+    fireEvent.click(await screen.findByText("cp.software.cluster.editOverride"));
+    expect(await screen.findByTestId("cp-software-policy-editor")).toBeTruthy();
+    fireEvent.change(screen.getByLabelText("cp.software.col.whitelist"), {
+      target: { value: "unsaved-spec" },
+    });
+    rerender(<SoftwarePolicyTable canManage={false} />);
+    expect(screen.queryByTestId("cp-software-policy-editor")).toBeNull();
+    rerender(<SoftwarePolicyTable canManage />);
+    expect(screen.queryByTestId("cp-software-policy-editor")).toBeNull();
+
+    fireEvent.click(screen.getByText("cp.software.cluster.editOverride"));
+    expect(screen.getByLabelText("cp.software.col.whitelist")).toHaveProperty("value", "");
+    expect(cpClient.saveClusterSoftwarePolicy).not.toHaveBeenCalled();
+  });
+
   test("shows a top-level notice when all agent control channels are offline", async () => {
     const offlineAgents = overviewAgents.map((agent) => ({
       ...agent,

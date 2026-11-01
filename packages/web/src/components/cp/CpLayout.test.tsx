@@ -1,4 +1,5 @@
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
+import { useState } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
 const capabilityAccess = vi.hoisted(() => ({
@@ -45,6 +46,44 @@ describe("CpLayout", () => {
 
   afterEach(() => {
     localStorage.clear();
+  });
+
+  test.each([
+    "same tab",
+    "another tab",
+  ])("clears provider drafts when organization changes in %s", (source) => {
+    capabilityAccess.allowed = true;
+    localStorage.setItem("kq_active_organization_id", "org-a");
+    function Draft() {
+      const [value, setValue] = useState("");
+      return (
+        <input
+          aria-label="draft"
+          value={value}
+          onChange={(event) => setValue(event.target.value)}
+        />
+      );
+    }
+    render(
+      <CpLayout>
+        <Draft />
+      </CpLayout>,
+    );
+    fireEvent.change(screen.getByLabelText("draft"), {
+      target: { value: "old organization draft" },
+    });
+    localStorage.setItem("kq_active_organization_id", "org-b");
+    fireEvent(
+      window,
+      source === "same tab"
+        ? new Event("kq:active-organization-change")
+        : new StorageEvent("storage", {
+            key: "kq_active_organization_id",
+            newValue: "org-b",
+            storageArea: localStorage,
+          }),
+    );
+    expect(screen.getByLabelText("draft")).toHaveProperty("value", "");
   });
 
   test("denies a principal without provider view capability", () => {
