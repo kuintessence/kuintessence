@@ -209,6 +209,9 @@ function DashboardContent({
   const [editor, setEditor] = useState<EditTarget | null>(null);
   const [selection, setSelection] = useState<{ kind: "cluster" | "link"; id: string } | null>(null);
   useEffect(() => {
+    if (query.error || query.data?.canManage === false) setEditor(null);
+  }, [query.error, query.data?.canManage]);
+  useEffect(() => {
     if (query.data && !viewLoaded) {
       setView(query.data.defaultView ?? DEFAULT_MAP_VIEW);
       setViewLoaded(true);
@@ -938,7 +941,7 @@ function DashboardContent({
           </DialogContent>
         </Dialog>
       )}
-      {editor && (
+      {editor && data.canManage && (
         <MetadataEditor
           target={editor}
           snapshot={data}
