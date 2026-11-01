@@ -208,10 +208,20 @@ export function MeteringPage({
 
       {q.error ? (
         <div
-          className="rounded-md border border-status-failed/40 bg-[color-mix(in_oklab,var(--status-failed)_10%,transparent)] p-3 text-sm"
+          className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-status-failed/40 bg-[color-mix(in_oklab,var(--status-failed)_10%,transparent)] p-3 text-sm"
           data-testid="metering-error"
+          role="alert"
         >
-          {toUserFacingError(q.error, t("cp.metering.loadFailed"))}
+          <span>{toUserFacingError(q.error, t("cp.metering.loadFailed"))}</span>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            disabled={q.isFetching || Boolean(rangeError)}
+            onClick={() => void q.refetch()}
+          >
+            {t("common.retry")}
+          </Button>
         </div>
       ) : q.isLoading ? (
         <div className="text-sm text-muted-foreground">{t("cp.metering.loading")}</div>

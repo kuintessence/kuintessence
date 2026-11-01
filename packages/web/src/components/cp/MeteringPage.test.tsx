@@ -210,6 +210,39 @@ describe("MeteringPage", () => {
     });
   });
 
+  test("retries a failed query with the same filters and organization without duplicate requests", async () => {
+    localStorage.setItem("kq_active_organization_id", "org-a");
+    const fetchMock = stubErrorFetch(503, "SERVICE_UNAVAILABLE", "unavailable");
+    render(<MeteringPage scopeToActiveOrganization showWebhooks={false} />, {
+      wrapper: makeWrapper(),
+    });
+    await screen.findByTestId("metering-error");
+    fireEvent.change(screen.getByTestId("metering-grouping"), {
+      target: { value: "cluster" },
+    });
+    await screen.findByTestId("metering-error");
+    const failedUrl = lastUrl(fetchMock);
+    expect(failedUrl).toContain("grouping=cluster");
+    expect(failedUrl).toContain("orgIds=org-a");
+    const pending = Promise.withResolvers<Response>();
+    fetchMock.mockImplementationOnce(() => pending.promise);
+    const retry = screen.getByRole("button", { name: "common.retry" });
+    const beforeRetry = fetchMock.mock.calls.length;
+    fireEvent.click(retry);
+    await screen.findByText("cp.metering.loading");
+    expect(screen.queryByRole("button", { name: "common.retry" })).toBeNull();
+    expect(fetchMock.mock.calls).toHaveLength(beforeRetry + 1);
+    expect(lastUrl(fetchMock)).toBe(failedUrl);
+    pending.resolve(
+      new Response(JSON.stringify({ rows: [row()], total: 1 }), {
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    await screen.findByTestId("metering-row-0");
+    expect(screen.queryByTestId("metering-error")).toBeNull();
+    expect(screen.getByTestId("metering-grouping")).toHaveProperty("value", "cluster");
+  });
+
   test("forbidden query renders only the error state, not empty results or table", async () => {
     stubErrorFetch(403, "FORBIDDEN", "Not authorized to view metering");
 
