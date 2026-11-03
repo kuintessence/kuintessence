@@ -1746,8 +1746,8 @@
       "title": "Cluster file roots",
       "description": "Restrict cluster browsing, downloads, and transfer preflight to authorized paths. Configure writable roots for real clusters so users do not hand-enter paths like `/scratch` that may not exist or be writable.",
       "label": "Label",
-      "providerOrgId": "Provider org ID",
-      "agentId": "Agent ID",
+      "providerOrgId": "Provider organization",
+      "agentId": "Agent",
       "capacityGb": "Capacity (GB)",
       "allAgents": "All Agents",
       "visibleOrgIds": "Visible org IDs, comma-separated",
@@ -1773,7 +1773,16 @@
         "not_readable": "Not readable",
         "not_writable": "Not writable",
         "unavailable": "Agent offline"
-      }
+      },
+      "selectProvider": "Select a provider organization",
+      "directoryFailed": "Could not load organizations or agents. Please retry.",
+      "sharedWith": "Shared with",
+      "noSharing": "No additional organizations",
+      "searchOrganizations": "Search sharing organizations",
+      "invalidCapacity": "Capacity must be a valid positive number. Leave blank for unknown capacity.",
+      "organizationSearchPlaceholder": "Name or known organization UUID",
+      "addOrganizationId": "Add this organization ID",
+      "path": "Root path"
     },
     "agentCerts": {
       "title": "Agent cert ledger",
@@ -1826,7 +1835,8 @@
       "hostKey": "Host-key pin (base64 SHA-256)",
       "hostKeyHelp": "Optional. When set, the agent rejects a mismatched host key (MITM defense). Empty = unverified.",
       "save": "Save credentials"
-    }
+    },
+    "desktopManage": "Use a desktop to change platform configuration."
   },
   "terminal": {
     "title": "Terminal",

@@ -14,6 +14,8 @@ describe("mobile management policy", () => {
     vi.spyOn(window, "matchMedia").mockReturnValue({ matches: true } as MediaQueryList);
     setMobileManagementPolicy(true);
     expect(isMobileHighRiskMutationBlocked("/admin/sso")).toBe(true);
+    expect(isMobileHighRiskMutationBlocked("/preferences/global")).toBe(true);
+    expect(isMobileHighRiskMutationBlocked("/preferences/user")).toBe(false);
     expect(isMobileHighRiskMutationBlocked("/interconnect/provider/centers")).toBe(true);
     expect(isMobileHighRiskMutationBlocked("/interconnect/operator/default-view")).toBe(false);
     expect(isMobileHighRiskMutationBlocked("/cp/queues/q1")).toBe(true);

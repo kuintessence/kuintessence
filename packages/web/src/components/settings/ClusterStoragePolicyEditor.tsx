@@ -3,6 +3,7 @@ import { Check, Loader2, Save, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import { api } from "../../lib/api-client";
+import { useMobileMutationBlocked } from "../../lib/use-mobile-mutation-blocked";
 import { toUserFacingError } from "../../lib/user-facing-error";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
@@ -35,6 +36,7 @@ interface RequestRow {
 
 export function ClusterStoragePolicyEditor({ rootId }: { rootId: string }) {
   const queryClient = useQueryClient();
+  const mobileReadOnly = useMobileMutationBlocked("/admin/storage/policy");
   const [defaultGb, setDefaultGb] = useState("0");
   const [maxGb, setMaxGb] = useState("");
   const [autoLimitGb, setAutoLimitGb] = useState("");
@@ -152,58 +154,65 @@ export function ClusterStoragePolicyEditor({ rootId }: { rootId: string }) {
         </div>
         <Badge variant={pending.length > 0 ? "brand" : "outline"}>待审批 {pending.length}</Badge>
       </div>
-      <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-[1fr_1fr_1fr_1fr_auto]">
-        <LabeledInput label="默认配额（GB）" value={defaultGb} onChange={setDefaultGb} />
-        <LabeledInput label="单用户上限（GB）" value={maxGb} onChange={setMaxGb} />
-        <label className="space-y-1 text-[11px]">
-          <span>审批方式</span>
-          <select
-            className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm"
-            value={requestMode}
-            onChange={(event) => setRequestMode(event.target.value as typeof requestMode)}
-          >
-            <option value="auto">自动审批</option>
-            <option value="manual">人工审批</option>
-            <option value="disabled">关闭申请</option>
-          </select>
-        </label>
-        <LabeledInput
-          label="自动审批上限（GB）"
-          value={autoLimitGb}
-          onChange={setAutoLimitGb}
-          disabled={requestMode !== "auto"}
-        />
-        <Button size="sm" className="self-end" onClick={() => void save()} disabled={saving}>
-          {saving ? <Loader2 className="animate-spin" /> : <Save />}
-          保存策略
-        </Button>
-      </div>
-      {pending.length > 0 ? (
-        <div className="grid gap-2 md:grid-cols-2">
-          {pending.map((request) => (
-            <div
-              key={request.id}
-              className="flex items-center gap-2 rounded-md border bg-background p-2 text-xs"
+      {mobileReadOnly && <p className="text-sm text-muted-foreground">请在电脑端修改平台配置。</p>}
+      <fieldset disabled={mobileReadOnly} className="space-y-3">
+        <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-[1fr_1fr_1fr_1fr_auto]">
+          <LabeledInput label="默认配额（GB）" value={defaultGb} onChange={setDefaultGb} />
+          <LabeledInput label="单用户上限（GB）" value={maxGb} onChange={setMaxGb} />
+          <label className="space-y-1 text-[11px]">
+            <span>审批方式</span>
+            <select
+              className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm"
+              value={requestMode}
+              onChange={(event) => setRequestMode(event.target.value as typeof requestMode)}
             >
-              <div className="min-w-0 flex-1">
-                <div className="truncate font-mono">{request.userId}</div>
-                <div className="font-medium">{bytesToGb(request.requestedQuotaBytes)} GB</div>
-              </div>
-              <Button
-                size="icon"
-                variant="outline"
-                onClick={() => void decide(request.id, "rejected")}
-                title="拒绝"
-              >
-                <X />
-              </Button>
-              <Button size="icon" onClick={() => void decide(request.id, "approved")} title="批准">
-                <Check />
-              </Button>
-            </div>
-          ))}
+              <option value="auto">自动审批</option>
+              <option value="manual">人工审批</option>
+              <option value="disabled">关闭申请</option>
+            </select>
+          </label>
+          <LabeledInput
+            label="自动审批上限（GB）"
+            value={autoLimitGb}
+            onChange={setAutoLimitGb}
+            disabled={requestMode !== "auto"}
+          />
+          <Button size="sm" className="self-end" onClick={() => void save()} disabled={saving}>
+            {saving ? <Loader2 className="animate-spin" /> : <Save />}
+            保存策略
+          </Button>
         </div>
-      ) : null}
+        {pending.length > 0 ? (
+          <div className="grid gap-2 md:grid-cols-2">
+            {pending.map((request) => (
+              <div
+                key={request.id}
+                className="flex items-center gap-2 rounded-md border bg-background p-2 text-xs"
+              >
+                <div className="min-w-0 flex-1">
+                  <div className="truncate font-mono">{request.userId}</div>
+                  <div className="font-medium">{bytesToGb(request.requestedQuotaBytes)} GB</div>
+                </div>
+                <Button
+                  size="icon"
+                  variant="outline"
+                  onClick={() => void decide(request.id, "rejected")}
+                  title="拒绝"
+                >
+                  <X />
+                </Button>
+                <Button
+                  size="icon"
+                  onClick={() => void decide(request.id, "approved")}
+                  title="批准"
+                >
+                  <Check />
+                </Button>
+              </div>
+            ))}
+          </div>
+        ) : null}
+      </fieldset>
     </div>
   );
 }

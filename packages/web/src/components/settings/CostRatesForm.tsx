@@ -4,6 +4,7 @@ import { type FormEvent, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { api } from "../../lib/api-client";
+import { useMobileMutationBlocked } from "../../lib/use-mobile-mutation-blocked";
 import { toUserFacingError } from "../../lib/user-facing-error";
 import { Button } from "../ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
@@ -34,13 +35,19 @@ function specToRows(spec: PreferenceSpec | null): RateRow[] {
 
 export function CostRatesForm() {
   const { t } = useTranslation();
+  const mobileReadOnly = useMobileMutationBlocked("/preferences/global");
   const [spec, setSpec] = useState<PreferenceSpec | null>(null);
   const [rows, setRows] = useState<RateRow[] | null>(null);
   const [saving, setSaving] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
 
+  const loadFailedLabel = t("settings.costRates.loadFailed", {
+    defaultValue: "暂时无法加载费率，请稍后重试。",
+  });
   useEffect(() => {
+    if (loadError) return;
     let cancelled = false;
+    setRows(null);
     api
       .get<{ spec: PreferenceSpec | null }>("/preferences/global")
       .then((res) => {
@@ -50,17 +57,12 @@ export function CostRatesForm() {
       })
       .catch((err: unknown) => {
         if (cancelled) return;
-        setLoadError(
-          toUserFacingError(
-            err,
-            t("settings.costRates.loadFailed", { defaultValue: "暂时无法加载费率，请稍后重试。" }),
-          ),
-        );
+        setLoadError(toUserFacingError(err, loadFailedLabel));
       });
     return () => {
       cancelled = true;
     };
-  }, [t]);
+  }, [loadFailedLabel, loadError]);
 
   if (loadError) {
     return (
@@ -74,6 +76,9 @@ export function CostRatesForm() {
           <div className="text-sm text-status-failed" data-testid="cost-rates-load-error">
             {loadError}
           </div>
+          <Button className="mt-3" variant="outline" onClick={() => setLoadError(null)}>
+            {t("common.retry")}
+          </Button>
         </CardContent>
       </Card>
     );
@@ -182,7 +187,10 @@ export function CostRatesForm() {
           })}
         </p>
         <form className="space-y-3" onSubmit={onSave}>
-          <fieldset disabled={saving} className="space-y-3">
+          {mobileReadOnly && (
+            <p className="text-sm text-muted-foreground">{t("settings.desktopManage")}</p>
+          )}
+          <fieldset disabled={saving || mobileReadOnly} className="space-y-3">
             {rows.length === 0 ? (
               <p className="text-[11px] text-muted-foreground" data-testid="cost-rates-empty">
                 {t("settings.costRates.empty", {

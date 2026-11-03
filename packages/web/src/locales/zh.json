@@ -1746,8 +1746,8 @@
       "title": "集群文件根目录",
       "description": "限制文件浏览、下载和传输预检查可访问的集群路径。为真实集群配置可写根目录后，用户不需要手填 `/scratch` 这类可能不存在或不可写的路径。",
       "label": "名称",
-      "providerOrgId": "算力提供方组织 ID",
-      "agentId": "Agent ID",
+      "providerOrgId": "所属算力组织",
+      "agentId": "接入代理",
       "capacityGb": "可用容量（GB）",
       "allAgents": "全部接入代理",
       "visibleOrgIds": "可见组织 ID，逗号分隔",
@@ -1773,7 +1773,16 @@
         "not_readable": "不可读取",
         "not_writable": "不可写",
         "unavailable": "接入代理不在线"
-      }
+      },
+      "selectProvider": "选择算力组织",
+      "directoryFailed": "组织或接入代理目录读取失败，请重试。",
+      "sharedWith": "共享给",
+      "noSharing": "不额外共享",
+      "searchOrganizations": "搜索共享组织",
+      "invalidCapacity": "容量必须是大于 0 的有效数值，留空表示未登记。",
+      "organizationSearchPlaceholder": "名称或已知组织 UUID",
+      "addOrganizationId": "添加该组织标识",
+      "path": "根目录路径"
     },
     "agentCerts": {
       "title": "接入代理证书台账",
@@ -1826,7 +1835,8 @@
       "hostKey": "主机密钥指纹（Base64 SHA-256）",
       "hostKeyHelp": "设置后拒绝不匹配的主机密钥；留空时不验证主机指纹。",
       "save": "保存凭据"
-    }
+    },
+    "desktopManage": "请在电脑端修改平台配置。"
   },
   "terminal": {
     "title": "终端",

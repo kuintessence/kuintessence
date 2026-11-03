@@ -5,6 +5,7 @@ import type { ReactNode } from "react";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import { api } from "../../lib/api-client";
+import { useMobileMutationBlocked } from "../../lib/use-mobile-mutation-blocked";
 import { toUserFacingError } from "../../lib/user-facing-error";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
@@ -56,6 +57,7 @@ const EMPTY_DRAFT: PolicyDraft = {
 
 export function CloudStorageGovernancePanel() {
   const queryClient = useQueryClient();
+  const mobileReadOnly = useMobileMutationBlocked("/admin/storage/policy");
   const [draft, setDraft] = useState<PolicyDraft>(EMPTY_DRAFT);
   const [saving, setSaving] = useState(false);
   const [grantUserId, setGrantUserId] = useState("");
@@ -248,215 +250,220 @@ export function CloudStorageGovernancePanel() {
           />
         </div>
 
-        <section className="space-y-3 rounded-md border p-3">
-          <div className="flex items-center justify-between gap-3">
-            <div>
-              <div className="text-sm font-semibold">全局配额策略</div>
-              <div className="text-xs text-muted-foreground">
-                用户未单独分配配额时使用默认值；自动审批只在限制范围内生效。
-              </div>
-            </div>
-            <Button
-              size="sm"
-              onClick={() => void savePolicy()}
-              disabled={saving || policyQ.isLoading}
-            >
-              {saving ? <Loader2 className="animate-spin" /> : <Save />}
-              保存策略
-            </Button>
-          </div>
-          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-            <Field label="默认配额（GB）">
-              <Input
-                aria-label="默认配额（GB）"
-                type="number"
-                min="0"
-                value={draft.defaultQuotaGb}
-                onChange={(event) =>
-                  setDraft((current) => ({ ...current, defaultQuotaGb: event.target.value }))
-                }
-              />
-            </Field>
-            <Field label="单用户上限（GB）">
-              <Input
-                aria-label="单用户上限（GB）"
-                type="number"
-                min="1"
-                placeholder="不限制"
-                value={draft.maxQuotaGb}
-                onChange={(event) =>
-                  setDraft((current) => ({ ...current, maxQuotaGb: event.target.value }))
-                }
-              />
-            </Field>
-            <Field label="申请审批方式">
-              <select
-                aria-label="申请审批方式"
-                className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm"
-                value={draft.requestMode}
-                onChange={(event) =>
-                  setDraft((current) => ({
-                    ...current,
-                    requestMode: event.target.value as PolicyDraft["requestMode"],
-                  }))
-                }
-              >
-                <option value="auto">自动审批</option>
-                <option value="manual">人工审批</option>
-                <option value="disabled">关闭申请</option>
-              </select>
-            </Field>
-            <Field label="自动审批上限（GB）">
-              <Input
-                aria-label="自动审批上限（GB）"
-                type="number"
-                min="1"
-                disabled={draft.requestMode !== "auto"}
-                value={draft.autoApproveLimitGb}
-                onChange={(event) =>
-                  setDraft((current) => ({ ...current, autoApproveLimitGb: event.target.value }))
-                }
-              />
-            </Field>
-          </div>
-        </section>
-
-        <section className="grid gap-4 xl:grid-cols-[1.1fr_1fr]">
-          <div className="space-y-3 rounded-md border p-3">
-            <div className="flex items-center justify-between gap-2">
-              <div className="text-sm font-semibold">待审批申请</div>
-              <Badge variant={pendingRequests.length > 0 ? "brand" : "outline"}>
-                {pendingRequests.length} 条
-              </Badge>
-            </div>
-            {pendingRequests.length === 0 ? (
-              <div className="rounded-md border border-dashed p-4 text-center text-xs text-muted-foreground">
-                当前没有待审批的配额申请。
-              </div>
-            ) : (
-              <div className="max-h-64 space-y-2 overflow-auto">
-                {pendingRequests.map((request) => (
-                  <div key={request.id} className="rounded-md border p-3 text-xs">
-                    <div className="flex items-start gap-3">
-                      <div className="min-w-0 flex-1">
-                        <div className="break-words font-medium" title={request.userId}>
-                          {request.userDisplayName || request.userEmail || request.userId}
-                        </div>
-                        <div className="mt-1 text-sm font-semibold">
-                          {formatBytes(request.requestedQuotaBytes)}
-                        </div>
-                        <div className="mt-1 line-clamp-2 text-muted-foreground">
-                          {request.reason}
-                        </div>
-                      </div>
-                      <div className="flex gap-1">
-                        <Button
-                          size="icon"
-                          variant="outline"
-                          title="拒绝"
-                          onClick={() => void decide(request.id, "rejected")}
-                        >
-                          <X />
-                        </Button>
-                        <Button
-                          size="icon"
-                          title="批准"
-                          onClick={() => void decide(request.id, "approved")}
-                        >
-                          <Check />
-                        </Button>
-                      </div>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-
-          <div className="space-y-3 rounded-md border p-3">
-            <div>
-              <div className="text-sm font-semibold">手动分配配额</div>
-              <div className="text-xs text-muted-foreground">
-                可分配长期配额；填写到期时间后将作为临时配额自动失效。
-              </div>
-            </div>
-            <Field label="分配给">
-              <Input
-                aria-label="搜索用户"
-                placeholder="搜索姓名或邮箱"
-                value={userSearch}
-                onChange={(event) => {
-                  setUserSearch(event.target.value);
-                  setGrantUserId("");
-                }}
-              />
-              {usersQ.error ? (
-                <div role="alert">
-                  用户列表读取失败。
-                  <Button variant="outline" size="sm" onClick={() => void usersQ.refetch()}>
-                    重试
-                  </Button>
+        {mobileReadOnly && (
+          <p className="text-sm text-muted-foreground">请在电脑端修改平台配置。</p>
+        )}
+        <fieldset disabled={mobileReadOnly} className="space-y-4">
+          <section className="space-y-3 rounded-md border p-3">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <div className="text-sm font-semibold">全局配额策略</div>
+                <div className="text-xs text-muted-foreground">
+                  用户未单独分配配额时使用默认值；自动审批只在限制范围内生效。
                 </div>
-              ) : (
-                <select
-                  aria-label="分配给"
-                  className="h-9 w-full min-w-0 rounded-md border bg-background px-3"
-                  value={grantUserId}
-                  disabled={usersQ.isPending || granting}
-                  onChange={(event) => setGrantUserId(event.target.value)}
-                >
-                  <option value="">
-                    {usersQ.isPending
-                      ? "正在加载用户…"
-                      : usersQ.data?.data.users.length
-                        ? "选择用户"
-                        : "没有匹配的用户"}
-                  </option>
-                  {usersQ.data?.data.users.map((user) => (
-                    <option key={user.id} value={user.id}>
-                      {user.displayName || user.email}
-                      {user.displayName ? ` · ${user.email}` : ""}
-                    </option>
-                  ))}
-                </select>
-              )}
-              {usersQ.data?.data.moreUsers && <p>仅显示前 50 个匹配用户，请缩小搜索范围。</p>}
-            </Field>
-            <div className="grid gap-3 sm:grid-cols-2">
-              <Field label="总配额（GB）">
+              </div>
+              <Button
+                size="sm"
+                onClick={() => void savePolicy()}
+                disabled={saving || policyQ.isLoading}
+              >
+                {saving ? <Loader2 className="animate-spin" /> : <Save />}
+                保存策略
+              </Button>
+            </div>
+            <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+              <Field label="默认配额（GB）">
                 <Input
-                  aria-label="总配额（GB）"
+                  aria-label="默认配额（GB）"
+                  type="number"
+                  min="0"
+                  value={draft.defaultQuotaGb}
+                  onChange={(event) =>
+                    setDraft((current) => ({ ...current, defaultQuotaGb: event.target.value }))
+                  }
+                />
+              </Field>
+              <Field label="单用户上限（GB）">
+                <Input
+                  aria-label="单用户上限（GB）"
                   type="number"
                   min="1"
-                  value={grantQuotaGb}
-                  onChange={(event) => setGrantQuotaGb(event.target.value)}
+                  placeholder="不限制"
+                  value={draft.maxQuotaGb}
+                  onChange={(event) =>
+                    setDraft((current) => ({ ...current, maxQuotaGb: event.target.value }))
+                  }
                 />
               </Field>
-              <Field label="到期时间（可选）">
+              <Field label="申请审批方式">
+                <select
+                  aria-label="申请审批方式"
+                  className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm"
+                  value={draft.requestMode}
+                  onChange={(event) =>
+                    setDraft((current) => ({
+                      ...current,
+                      requestMode: event.target.value as PolicyDraft["requestMode"],
+                    }))
+                  }
+                >
+                  <option value="auto">自动审批</option>
+                  <option value="manual">人工审批</option>
+                  <option value="disabled">关闭申请</option>
+                </select>
+              </Field>
+              <Field label="自动审批上限（GB）">
                 <Input
-                  aria-label="到期时间（可选）"
-                  type="datetime-local"
-                  value={grantExpiresAt}
-                  onChange={(event) => setGrantExpiresAt(event.target.value)}
+                  aria-label="自动审批上限（GB）"
+                  type="number"
+                  min="1"
+                  disabled={draft.requestMode !== "auto"}
+                  value={draft.autoApproveLimitGb}
+                  onChange={(event) =>
+                    setDraft((current) => ({ ...current, autoApproveLimitGb: event.target.value }))
+                  }
                 />
               </Field>
             </div>
-            <Button
-              className="w-full"
-              onClick={() => void createGrant()}
-              disabled={granting || !selectedUser || !(Number(grantQuotaGb) > 0)}
-            >
-              {granting ? (
-                <Loader2 className="animate-spin" />
-              ) : grantExpiresAt ? (
-                <Clock3 />
+          </section>
+
+          <section className="grid gap-4 xl:grid-cols-[1.1fr_1fr]">
+            <div className="space-y-3 rounded-md border p-3">
+              <div className="flex items-center justify-between gap-2">
+                <div className="text-sm font-semibold">待审批申请</div>
+                <Badge variant={pendingRequests.length > 0 ? "brand" : "outline"}>
+                  {pendingRequests.length} 条
+                </Badge>
+              </div>
+              {pendingRequests.length === 0 ? (
+                <div className="rounded-md border border-dashed p-4 text-center text-xs text-muted-foreground">
+                  当前没有待审批的配额申请。
+                </div>
               ) : (
-                <HardDrive />
+                <div className="max-h-64 space-y-2 overflow-auto">
+                  {pendingRequests.map((request) => (
+                    <div key={request.id} className="rounded-md border p-3 text-xs">
+                      <div className="flex items-start gap-3">
+                        <div className="min-w-0 flex-1">
+                          <div className="break-words font-medium" title={request.userId}>
+                            {request.userDisplayName || request.userEmail || request.userId}
+                          </div>
+                          <div className="mt-1 text-sm font-semibold">
+                            {formatBytes(request.requestedQuotaBytes)}
+                          </div>
+                          <div className="mt-1 line-clamp-2 text-muted-foreground">
+                            {request.reason}
+                          </div>
+                        </div>
+                        <div className="flex gap-1">
+                          <Button
+                            size="icon"
+                            variant="outline"
+                            title="拒绝"
+                            onClick={() => void decide(request.id, "rejected")}
+                          >
+                            <X />
+                          </Button>
+                          <Button
+                            size="icon"
+                            title="批准"
+                            onClick={() => void decide(request.id, "approved")}
+                          >
+                            <Check />
+                          </Button>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
               )}
-              分配配额
-            </Button>
-          </div>
-        </section>
+            </div>
+
+            <div className="space-y-3 rounded-md border p-3">
+              <div>
+                <div className="text-sm font-semibold">手动分配配额</div>
+                <div className="text-xs text-muted-foreground">
+                  可分配长期配额；填写到期时间后将作为临时配额自动失效。
+                </div>
+              </div>
+              <Field label="分配给">
+                <Input
+                  aria-label="搜索用户"
+                  placeholder="搜索姓名或邮箱"
+                  value={userSearch}
+                  onChange={(event) => {
+                    setUserSearch(event.target.value);
+                    setGrantUserId("");
+                  }}
+                />
+                {usersQ.error ? (
+                  <div role="alert">
+                    用户列表读取失败。
+                    <Button variant="outline" size="sm" onClick={() => void usersQ.refetch()}>
+                      重试
+                    </Button>
+                  </div>
+                ) : (
+                  <select
+                    aria-label="分配给"
+                    className="h-9 w-full min-w-0 rounded-md border bg-background px-3"
+                    value={grantUserId}
+                    disabled={usersQ.isPending || granting}
+                    onChange={(event) => setGrantUserId(event.target.value)}
+                  >
+                    <option value="">
+                      {usersQ.isPending
+                        ? "正在加载用户…"
+                        : usersQ.data?.data.users.length
+                          ? "选择用户"
+                          : "没有匹配的用户"}
+                    </option>
+                    {usersQ.data?.data.users.map((user) => (
+                      <option key={user.id} value={user.id}>
+                        {user.displayName || user.email}
+                        {user.displayName ? ` · ${user.email}` : ""}
+                      </option>
+                    ))}
+                  </select>
+                )}
+                {usersQ.data?.data.moreUsers && <p>仅显示前 50 个匹配用户，请缩小搜索范围。</p>}
+              </Field>
+              <div className="grid gap-3 sm:grid-cols-2">
+                <Field label="总配额（GB）">
+                  <Input
+                    aria-label="总配额（GB）"
+                    type="number"
+                    min="1"
+                    value={grantQuotaGb}
+                    onChange={(event) => setGrantQuotaGb(event.target.value)}
+                  />
+                </Field>
+                <Field label="到期时间（可选）">
+                  <Input
+                    aria-label="到期时间（可选）"
+                    type="datetime-local"
+                    value={grantExpiresAt}
+                    onChange={(event) => setGrantExpiresAt(event.target.value)}
+                  />
+                </Field>
+              </div>
+              <Button
+                className="w-full"
+                onClick={() => void createGrant()}
+                disabled={granting || !selectedUser || !(Number(grantQuotaGb) > 0)}
+              >
+                {granting ? (
+                  <Loader2 className="animate-spin" />
+                ) : grantExpiresAt ? (
+                  <Clock3 />
+                ) : (
+                  <HardDrive />
+                )}
+                分配配额
+              </Button>
+            </div>
+          </section>
+        </fieldset>
       </CardContent>
     </Card>
   );

@@ -2,12 +2,22 @@ import type {
   ClusterFileRootCheckResponse,
   ClusterFileRootView,
 } from "@kuintessence/shared/browser";
+import { useQuery } from "@tanstack/react-query";
 import { Activity, FolderTree, HardDrive, Loader2, Plus, RefreshCw, Save } from "lucide-react";
-import { type FormEvent, useCallback, useEffect, useMemo, useState } from "react";
+import { type FormEvent, type ReactNode, useCallback, useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
+import {
+  type ActiveOrganizationContext,
+  getActiveOrganizationContext,
+} from "../../lib/active-organization";
 import { api } from "../../lib/api-client";
-import { useOrganizationName } from "../../lib/use-organization-name";
+import { getAuthState } from "../../lib/auth";
+import {
+  listSandboxAgentSecurityViews,
+  type SandboxAgentSecurityView,
+} from "../../lib/sandbox-client";
+import { useMobileMutationBlocked } from "../../lib/use-mobile-mutation-blocked";
 import { toUserFacingError } from "../../lib/user-facing-error";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
@@ -79,8 +89,24 @@ const EMPTY_NEW_ROOT: NewRootDraft = {
 };
 
 export function ClusterFileRootsPanel() {
-  const organizationName = useOrganizationName();
+  const directory = useQuery({
+    queryKey: ["cluster-root-directory", getAuthState().revision],
+    queryFn: async () => {
+      const [context, agents] = await Promise.all([
+        getActiveOrganizationContext(),
+        listSandboxAgentSecurityViews(),
+      ]);
+      return { organizations: context.organizations, agents };
+    },
+    retry: false,
+  });
+  const organizations = directory.data?.organizations ?? [];
+  const agents = directory.data?.agents ?? [];
+  const directoryUnavailable = directory.isPending || !!directory.error;
+  const organizationName = (id: string) =>
+    organizations.find((org) => org.orgId === id)?.name ?? id;
   const { t } = useTranslation();
+  const mobileReadOnly = useMobileMutationBlocked("/admin/cluster-file-roots");
   const [roots, setRoots] = useState<ClusterFileRootView[]>([]);
   const [drafts, setDrafts] = useState<Record<string, RootDraft>>({});
   const [newRoot, setNewRoot] = useState<NewRootDraft>(EMPTY_NEW_ROOT);
@@ -135,7 +161,11 @@ export function ClusterFileRootsPanel() {
 
   const saveRoot = async (id: string) => {
     const draft = drafts[id];
-    if (!draft) return;
+    if (!draft || mobileReadOnly) return;
+    if (draft.capacityGb.trim() && parseCapacityBytes(draft.capacityGb) === null) {
+      toast.error(t("settings.clusterFileRoots.invalidCapacity"));
+      return;
+    }
     if (!draft.path.trim().startsWith("/")) {
       toast.error(t("settings.clusterFileRoots.pathMustBeAbsolute"));
       return;
@@ -178,6 +208,16 @@ export function ClusterFileRootsPanel() {
 
   const createRoot = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    if (
+      mobileReadOnly ||
+      directoryUnavailable ||
+      !organizations.some((org) => org.orgId === newRoot.providerOrgId)
+    )
+      return;
+    if (newRoot.capacityGb.trim() && parseCapacityBytes(newRoot.capacityGb) === null) {
+      toast.error(t("settings.clusterFileRoots.invalidCapacity"));
+      return;
+    }
     if (!newRoot.path.trim().startsWith("/")) {
       toast.error(t("settings.clusterFileRoots.pathMustBeAbsolute"));
       return;
@@ -222,6 +262,19 @@ export function ClusterFileRootsPanel() {
         </Button>
       </CardHeader>
       <CardContent className="space-y-4">
+        {mobileReadOnly && (
+          <p className="text-sm text-muted-foreground">{t("settings.desktopManage")}</p>
+        )}
+        {directory.error ? (
+          <div role="alert" className="space-y-2 text-sm">
+            <p>{t("settings.clusterFileRoots.directoryFailed")}</p>
+            <Button variant="outline" onClick={() => void directory.refetch()}>
+              {t("common.retry")}
+            </Button>
+          </div>
+        ) : directory.isPending ? (
+          <p role="status">{t("common.loading")}</p>
+        ) : null}
         {loadError ? (
           <div
             className="rounded-md border border-status-failed/40 p-3 text-sm text-status-failed"
@@ -241,65 +294,113 @@ export function ClusterFileRootsPanel() {
               </Badge>
             </div>
 
-            <form
-              className="grid grid-cols-[repeat(auto-fit,minmax(min(100%,24rem),1fr))] gap-2 rounded-md border border-border p-3"
-              onSubmit={createRoot}
-              data-testid="cluster-file-root-create-form"
-            >
-              <Input
-                value={newRoot.label}
-                placeholder={t("settings.clusterFileRoots.label")}
-                onChange={(event) => setNewRoot((prev) => ({ ...prev, label: event.target.value }))}
-                data-testid="cluster-file-root-new-label"
-                required
-              />
-              <Input
-                value={newRoot.providerOrgId}
-                placeholder={t("settings.clusterFileRoots.providerOrgId")}
-                onChange={(event) =>
-                  setNewRoot((prev) => ({ ...prev, providerOrgId: event.target.value }))
-                }
-                data-testid="cluster-file-root-new-provider"
-              />
-              <Input
-                value={newRoot.agentId}
-                placeholder={t("settings.clusterFileRoots.agentId")}
-                onChange={(event) =>
-                  setNewRoot((prev) => ({ ...prev, agentId: event.target.value }))
-                }
-                data-testid="cluster-file-root-new-agent"
-              />
-              <Input
-                value={newRoot.path}
-                placeholder="/scratch/project"
-                onChange={(event) => setNewRoot((prev) => ({ ...prev, path: event.target.value }))}
-                data-testid="cluster-file-root-new-path"
-                required
-              />
-              <Input
-                type="number"
-                min="0.01"
-                step="0.01"
-                value={newRoot.capacityGb}
-                placeholder={t("settings.clusterFileRoots.capacityGb")}
-                onChange={(event) =>
-                  setNewRoot((prev) => ({ ...prev, capacityGb: event.target.value }))
-                }
-                data-testid="cluster-file-root-new-capacity"
-              />
-              <Input
-                value={newRoot.visibleOrgIdsText}
-                placeholder={t("settings.clusterFileRoots.visibleOrgIds")}
-                onChange={(event) =>
-                  setNewRoot((prev) => ({ ...prev, visibleOrgIdsText: event.target.value }))
-                }
-                data-testid="cluster-file-root-new-visible-orgs"
-              />
-              <Button type="submit" disabled={creating}>
-                {creating ? <Loader2 className="animate-spin" /> : <Plus />}
-                {t("settings.clusterFileRoots.create")}
-              </Button>
-            </form>
+            {!mobileReadOnly && (
+              <form
+                className="grid grid-cols-[repeat(auto-fit,minmax(min(100%,24rem),1fr))] gap-2 rounded-md border border-border p-3"
+                onSubmit={createRoot}
+                data-testid="cluster-file-root-create-form"
+              >
+                <RootField
+                  id="cluster-file-root-new-label"
+                  label={t("settings.clusterFileRoots.label")}
+                >
+                  <Input
+                    value={newRoot.label}
+                    placeholder={t("settings.clusterFileRoots.label")}
+                    onChange={(event) =>
+                      setNewRoot((prev) => ({ ...prev, label: event.target.value }))
+                    }
+                    id="cluster-file-root-new-label"
+                    data-testid="cluster-file-root-new-label"
+                    required
+                  />
+                </RootField>
+                <RootField
+                  id="cluster-file-root-new-provider"
+                  label={t("settings.clusterFileRoots.providerOrgId")}
+                >
+                  <select
+                    aria-label={t("settings.clusterFileRoots.providerOrgId")}
+                    className="h-9 min-w-0 rounded-md border border-input bg-background px-3 text-sm"
+                    value={newRoot.providerOrgId}
+                    required
+                    disabled={directoryUnavailable || creating}
+                    onChange={(event) =>
+                      setNewRoot((prev) => ({
+                        ...prev,
+                        providerOrgId: event.target.value,
+                        agentId: "",
+                      }))
+                    }
+                    id="cluster-file-root-new-provider"
+                    data-testid="cluster-file-root-new-provider"
+                  >
+                    <option value="">{t("settings.clusterFileRoots.selectProvider")}</option>
+                    {organizations.map((org) => (
+                      <option key={org.orgId} value={org.orgId}>
+                        {org.name}
+                      </option>
+                    ))}
+                  </select>
+                </RootField>
+                <RootAgentSelect
+                  agents={agents}
+                  providerOrgId={newRoot.providerOrgId}
+                  value={newRoot.agentId}
+                  disabled={directoryUnavailable || creating || !newRoot.providerOrgId}
+                  onChange={(agentId) => setNewRoot((prev) => ({ ...prev, agentId }))}
+                  testId="cluster-file-root-new-agent"
+                />
+                <RootField
+                  id="cluster-file-root-new-path"
+                  label={t("settings.clusterFileRoots.path")}
+                >
+                  <Input
+                    value={newRoot.path}
+                    placeholder="/scratch/project"
+                    onChange={(event) =>
+                      setNewRoot((prev) => ({ ...prev, path: event.target.value }))
+                    }
+                    id="cluster-file-root-new-path"
+                    data-testid="cluster-file-root-new-path"
+                    required
+                  />
+                </RootField>
+                <RootField
+                  id="cluster-file-root-new-capacity"
+                  label={t("settings.clusterFileRoots.capacityGb")}
+                >
+                  <Input
+                    type="number"
+                    min="0.01"
+                    step="0.01"
+                    value={newRoot.capacityGb}
+                    placeholder={t("settings.clusterFileRoots.capacityGb")}
+                    onChange={(event) =>
+                      setNewRoot((prev) => ({ ...prev, capacityGb: event.target.value }))
+                    }
+                    id="cluster-file-root-new-capacity"
+                    data-testid="cluster-file-root-new-capacity"
+                  />
+                </RootField>
+                <RootOrganizationSelection
+                  organizations={organizations}
+                  value={newRoot.visibleOrgIdsText}
+                  disabled={directoryUnavailable || creating}
+                  onChange={(visibleOrgIdsText) =>
+                    setNewRoot((prev) => ({ ...prev, visibleOrgIdsText }))
+                  }
+                  testId="cluster-file-root-new-visible-orgs"
+                />
+                <Button
+                  type="submit"
+                  disabled={creating || directoryUnavailable || !newRoot.providerOrgId}
+                >
+                  {creating ? <Loader2 className="animate-spin" /> : <Plus />}
+                  {t("settings.clusterFileRoots.create")}
+                </Button>
+              </form>
+            )}
 
             {roots.length === 0 && !loading ? (
               <div className="rounded-md border border-dashed p-4 text-sm text-muted-foreground">
@@ -315,51 +416,76 @@ export function ClusterFileRootsPanel() {
                       className="grid grid-cols-[repeat(auto-fit,minmax(min(100%,24rem),1fr))] gap-2 rounded-md border border-border p-3"
                       data-testid={`cluster-file-root-row-${root.id}`}
                     >
-                      <Input
-                        value={draft.label}
-                        onChange={(event) => updateDraft(root.id, "label", event.target.value)}
-                        data-testid={`cluster-file-root-label-${root.id}`}
-                      />
+                      <RootField
+                        id={`cluster-file-root-label-${root.id}`}
+                        label={t("settings.clusterFileRoots.label")}
+                      >
+                        <Input
+                          disabled={mobileReadOnly}
+                          value={draft.label}
+                          onChange={(event) => updateDraft(root.id, "label", event.target.value)}
+                          id={`cluster-file-root-label-${root.id}`}
+                          data-testid={`cluster-file-root-label-${root.id}`}
+                        />
+                      </RootField>
                       <div
                         className="rounded-md border border-border bg-muted/30 px-3 py-2 text-xs"
                         title={root.providerOrgId}
                       >
                         {organizationName(root.providerOrgId)}
                       </div>
-                      <Input
+                      <RootAgentSelect
+                        agents={agents}
+                        providerOrgId={root.providerOrgId}
                         value={draft.agentId}
-                        onChange={(event) => updateDraft(root.id, "agentId", event.target.value)}
-                        placeholder={t("settings.clusterFileRoots.allAgents")}
-                        data-testid={`cluster-file-root-agent-${root.id}`}
+                        disabled={directoryUnavailable || mobileReadOnly}
+                        onChange={(agentId) => updateDraft(root.id, "agentId", agentId)}
+                        testId={`cluster-file-root-agent-${root.id}`}
                       />
-                      <Input
-                        value={draft.path}
-                        onChange={(event) => updateDraft(root.id, "path", event.target.value)}
-                        className="font-mono text-xs"
-                        data-testid={`cluster-file-root-path-${root.id}`}
-                      />
-                      <Input
-                        type="number"
-                        min="0.01"
-                        step="0.01"
-                        value={draft.capacityGb}
-                        onChange={(event) => updateDraft(root.id, "capacityGb", event.target.value)}
-                        placeholder={t("settings.clusterFileRoots.capacityGb")}
-                        data-testid={`cluster-file-root-capacity-${root.id}`}
-                      />
-                      <Input
+                      <RootField
+                        id={`cluster-file-root-path-${root.id}`}
+                        label={t("settings.clusterFileRoots.path")}
+                      >
+                        <Input
+                          disabled={mobileReadOnly}
+                          value={draft.path}
+                          onChange={(event) => updateDraft(root.id, "path", event.target.value)}
+                          className="font-mono text-xs"
+                          id={`cluster-file-root-path-${root.id}`}
+                          data-testid={`cluster-file-root-path-${root.id}`}
+                        />
+                      </RootField>
+                      <RootField
+                        id={`cluster-file-root-capacity-${root.id}`}
+                        label={t("settings.clusterFileRoots.capacityGb")}
+                      >
+                        <Input
+                          disabled={mobileReadOnly}
+                          type="number"
+                          min="0.01"
+                          step="0.01"
+                          value={draft.capacityGb}
+                          onChange={(event) =>
+                            updateDraft(root.id, "capacityGb", event.target.value)
+                          }
+                          placeholder={t("settings.clusterFileRoots.capacityGb")}
+                          id={`cluster-file-root-capacity-${root.id}`}
+                          data-testid={`cluster-file-root-capacity-${root.id}`}
+                        />
+                      </RootField>
+                      <RootOrganizationSelection
+                        organizations={organizations}
                         value={draft.visibleOrgIdsText}
-                        onChange={(event) =>
-                          updateDraft(root.id, "visibleOrgIdsText", event.target.value)
-                        }
-                        placeholder={t("settings.clusterFileRoots.visibleOrgIds")}
-                        data-testid={`cluster-file-root-visible-orgs-${root.id}`}
+                        disabled={directoryUnavailable || mobileReadOnly}
+                        onChange={(value) => updateDraft(root.id, "visibleOrgIdsText", value)}
+                        testId={`cluster-file-root-visible-orgs-${root.id}`}
                       />
                       <RootCheckBadge check={checks[root.id]} />
                       <div className="flex flex-wrap items-center justify-end gap-2">
                         <label className="flex items-center gap-2 text-xs text-muted-foreground">
                           <input
                             type="checkbox"
+                            disabled={mobileReadOnly}
                             checked={draft.enabled}
                             onChange={(event) =>
                               updateDraft(root.id, "enabled", event.target.checked)
@@ -383,7 +509,7 @@ export function ClusterFileRootsPanel() {
                           size="sm"
                           variant="outline"
                           onClick={() => checkRoot(root.id)}
-                          disabled={checkingId === root.id}
+                          disabled={mobileReadOnly || checkingId === root.id}
                           data-testid={`cluster-file-root-check-${root.id}`}
                         >
                           {checkingId === root.id ? (
@@ -397,7 +523,7 @@ export function ClusterFileRootsPanel() {
                           type="button"
                           size="sm"
                           onClick={() => saveRoot(root.id)}
-                          disabled={savingId === root.id}
+                          disabled={mobileReadOnly || savingId === root.id}
                           data-testid={`cluster-file-root-save-${root.id}`}
                         >
                           {savingId === root.id ? <Loader2 className="animate-spin" /> : <Save />}
@@ -444,5 +570,137 @@ function RootCheckBadge({ check }: { check?: ClusterFileRootCheckResponse }) {
     >
       {t(`settings.clusterFileRoots.checkStatus.${check.status}`)}
     </Badge>
+  );
+}
+
+function RootAgentSelect({
+  agents,
+  providerOrgId,
+  value,
+  disabled,
+  onChange,
+  testId,
+}: {
+  agents: SandboxAgentSecurityView[];
+  providerOrgId: string;
+  value: string;
+  disabled: boolean;
+  onChange: (value: string) => void;
+  testId: string;
+}) {
+  const { t } = useTranslation();
+  const choices = agents.filter((agent) => agent.providerOrgId === providerOrgId);
+  return (
+    <RootField id={testId} label={t("settings.clusterFileRoots.agentId")}>
+      <select
+        aria-label={t("settings.clusterFileRoots.agentId")}
+        id={testId}
+        data-testid={testId}
+        className="h-9 min-w-0 rounded-md border border-input bg-background px-3 text-sm"
+        value={value}
+        disabled={disabled}
+        onChange={(event) => onChange(event.target.value)}
+      >
+        <option value="">{t("settings.clusterFileRoots.allAgents")}</option>
+        {value && !choices.some((agent) => agent.agentId === value) && (
+          <option value={value}>{value}</option>
+        )}
+        {choices.map((agent) => (
+          <option key={agent.agentId} value={agent.agentId}>
+            {agent.siteName} · {agent.agentId}
+          </option>
+        ))}
+      </select>
+    </RootField>
+  );
+}
+
+function RootOrganizationSelection({
+  organizations,
+  value,
+  disabled,
+  onChange,
+  testId,
+}: {
+  organizations: ActiveOrganizationContext["organizations"];
+  value: string;
+  disabled: boolean;
+  onChange: (value: string) => void;
+  testId: string;
+}) {
+  const { t } = useTranslation();
+  const [search, setSearch] = useState("");
+  const selected = parseVisibleOrgIds(value);
+  const choices = [
+    ...organizations,
+    ...selected
+      .filter((id) => !organizations.some((org) => org.orgId === id))
+      .map((orgId) => ({ orgId, name: orgId, role: "unknown" })),
+  ];
+  return (
+    <details
+      className="min-w-0 rounded-md border border-input bg-background p-2 text-sm"
+      data-testid={testId}
+    >
+      <summary className="cursor-pointer break-words">
+        {t("settings.clusterFileRoots.sharedWith")}:{" "}
+        {selected.length
+          ? selected.map((id) => choices.find((org) => org.orgId === id)?.name ?? id).join(", ")
+          : t("settings.clusterFileRoots.noSharing")}
+      </summary>
+      <Input
+        className="mt-2"
+        aria-label={t("settings.clusterFileRoots.searchOrganizations")}
+        value={search}
+        placeholder={t("settings.clusterFileRoots.organizationSearchPlaceholder")}
+        onChange={(event) => setSearch(event.target.value)}
+      />
+      <fieldset disabled={disabled} className="mt-2 max-h-40 space-y-2 overflow-y-auto">
+        {/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(search.trim()) &&
+          !choices.some((org) => org.orgId.toLowerCase() === search.trim().toLowerCase()) && (
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => {
+                onChange([...selected, search.trim().toLowerCase()].join(", "));
+                setSearch("");
+              }}
+            >
+              {t("settings.clusterFileRoots.addOrganizationId")}
+            </Button>
+          )}
+        {choices
+          .filter((org) => org.name.toLocaleLowerCase().includes(search.toLocaleLowerCase()))
+          .map((org) => (
+            <label key={org.orgId} className="flex items-start gap-2 break-words">
+              <input
+                type="checkbox"
+                checked={selected.includes(org.orgId)}
+                onChange={(event) =>
+                  onChange(
+                    (event.target.checked
+                      ? [...selected, org.orgId]
+                      : selected.filter((id) => id !== org.orgId)
+                    ).join(", "),
+                  )
+                }
+              />
+              {org.name}
+            </label>
+          ))}
+      </fieldset>
+    </details>
+  );
+}
+
+function RootField({ id, label, children }: { id: string; label: string; children: ReactNode }) {
+  return (
+    <div className="grid min-w-0 content-start gap-1 text-xs">
+      <label htmlFor={id} className="text-muted-foreground">
+        {label}
+      </label>
+      {children}
+    </div>
   );
 }
