@@ -44,9 +44,10 @@ export class ComputeProviderService {
             profile: orgs.profile,
             createdAt: orgs.createdAt,
             updatedAt: orgs.updatedAt,
-            centerCount: sql<number>`(select count(*)::int from ${computeCenters} where ${computeCenters.orgId} = ${orgs.id})`,
-            agentCount: sql<number>`(select count(*)::int from ${agents} where ${agents.providerOrgId} = ${orgs.id})`,
-            memberCount: sql<number>`(select count(*)::int from ${userOrgMemberships} where ${userOrgMemberships.orgId} = ${orgs.id})`,
+            // Drizzle unqualifies interpolated columns in single-table selections; keep the outer ID explicit.
+            centerCount: sql<number>`(select count(*)::int from ${computeCenters} where ${computeCenters.orgId} = "orgs"."id")`,
+            agentCount: sql<number>`(select count(*)::int from ${agents} where ${agents.providerOrgId} = "orgs"."id")`,
+            memberCount: sql<number>`(select count(*)::int from ${userOrgMemberships} where ${userOrgMemberships.orgId} = "orgs"."id")`,
           })
           .from(orgs)
           .where(where)
