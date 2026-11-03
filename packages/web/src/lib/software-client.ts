@@ -333,6 +333,7 @@ export interface SpackCatalogPackage {
   metadata?: SpackPackageMetadata;
   asset?: SoftwareAssetSummary;
   licensePolicy?: LicensePolicy;
+  defaultSpec?: string;
   createdAt?: string;
   ownerOrgId?: string | null;
 }
