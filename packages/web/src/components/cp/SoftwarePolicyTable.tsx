@@ -2522,6 +2522,12 @@ function buildSpackCatalogSpec(
   version: string,
   variantOverrides: Record<string, string>,
 ) {
+  if (
+    pkg.defaultSpec &&
+    !version.trim() &&
+    !Object.values(variantOverrides).some((value) => value.trim())
+  )
+    return pkg.defaultSpec;
   const versionPart = version.trim().length > 0 ? `@${version.trim()}` : "";
   const variantSpecs =
     pkg.metadata?.variants
@@ -2534,7 +2540,7 @@ function buildSpackCatalogSpec(
       })
       .filter((spec): spec is string => spec !== null) ?? [];
   const variantPart = variantSpecs.length > 0 ? ` ${variantSpecs.join(" ")}` : "";
-  return `${pkg.name}${versionPart}${variantPart}`;
+  return `${pkg.metadata?.name ?? pkg.name}${versionPart}${variantPart}`;
 }
 
 function isBooleanSpackVariant(variant: SpackVariantMetadata) {

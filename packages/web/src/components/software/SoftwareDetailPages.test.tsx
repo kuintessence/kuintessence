@@ -334,6 +334,31 @@ describe("Software detail pages", () => {
     expect(screen.getByRole("link", { name: "Back" }).getAttribute("href")).toBe("/software#spack");
   });
 
+  test("uses the signed imported spec instead of deriving one from the display name", async () => {
+    const defaultSpec = "hello@2.12.1+example target=x86_64";
+    softwareClient.listSpackCatalog.mockResolvedValueOnce({
+      packages: [
+        {
+          name: "Imported Hello",
+          source: "official",
+          tags: [],
+          defaultSpec,
+        },
+      ],
+    });
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    vi.stubGlobal("navigator", { clipboard: { writeText } });
+    render(<SoftwareSpackDetailPage name="Imported Hello" source="official" />, {
+      wrapper: wrapper(),
+    });
+    fireEvent.click(await screen.findByRole("button", { name: "Copy spec" }));
+    expect(writeText).toHaveBeenCalledWith(defaultSpec);
+    expect(apiClient.resolveSoftwareAvailability).toHaveBeenCalledWith({
+      rawSpec: defaultSpec,
+      installable: true,
+    });
+  });
+
   test("shows copied only after the clipboard write completes", async () => {
     let finishCopy: (() => void) | undefined;
     const writeText = vi.fn(

@@ -2411,6 +2411,31 @@ describe("SoftwarePolicyTable", () => {
     expect(screen.getByText("cp.software.operations.queuedDeliveryUncertain")).toBeTruthy();
   });
 
+  test("selects the exact imported installation spec by default", async () => {
+    const defaultSpec = "hello@2.12.1+example target=x86_64";
+    cpClient.getSoftwareOverview.mockResolvedValue(overview);
+    cpClient.listSoftwareOperations.mockResolvedValue([]);
+    softwareClient.listSpackCatalog.mockResolvedValue({
+      packages: [
+        {
+          name: "Imported Hello",
+          source: "official",
+          tags: [],
+          defaultSpec,
+        },
+      ],
+    });
+    render(<SoftwarePolicyTable />, { wrapper: makeWrapper() });
+    fireEvent.click(await screen.findByText("cp.software.agent.inspect"));
+    fireEvent.click(screen.getByText("cp.software.operations.catalogOpen"));
+    fireEvent.click(
+      await screen.findByTestId("cp-software-catalog-package-official-Imported Hello"),
+    );
+    expect(screen.getByTestId("cp-software-catalog-spec")).toHaveProperty("value", defaultSpec);
+    fireEvent.click(screen.getByText("cp.software.operations.catalogUseSpec"));
+    expect(await screen.findByDisplayValue(defaultSpec)).toBeTruthy();
+  });
+
   test("selects an install spec from the Spack catalog picker", async () => {
     cpClient.getSoftwareOverview.mockResolvedValue(overview);
     cpClient.listSoftwareOperations.mockResolvedValue([]);

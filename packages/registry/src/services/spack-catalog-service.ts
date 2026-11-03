@@ -2,8 +2,13 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { appTemplates, type PgDb, softwareAssets } from "@kuintessence/db";
-import type { SoftwareAssetSummary } from "@kuintessence/shared";
-import { AppError, ErrorCode } from "@kuintessence/shared";
+import type { LicensePolicy, SoftwareAssetSummary } from "@kuintessence/shared";
+import {
+  AppError,
+  ErrorCode,
+  LicensePolicySchema,
+  SpackRecipePayloadSchema,
+} from "@kuintessence/shared";
 import { and, desc, eq, sql } from "drizzle-orm";
 import catalog from "../data/spack-package-catalog.json";
 import type { RbacPrincipal } from "./namespace";
@@ -36,6 +41,8 @@ export interface SpackCatalogPackage {
   tags: string[];
   metadata?: SpackPackageMetadata;
   asset?: SoftwareAssetSummary;
+  defaultSpec?: string;
+  licensePolicy?: LicensePolicy;
   createdAt?: string;
   ownerOrgId?: string | null;
 }
@@ -107,9 +114,10 @@ export class SpackCatalogService {
     const page = Math.max(1, input.page ?? 1);
     const query = input.q?.trim().toLowerCase() ?? "";
     const source = input.source ?? "all";
-    const customPackages = (await this.listCustomPackages()).filter((pkg) =>
-      isCatalogPackageVisible(pkg, input.principal ?? null),
-    );
+    const customPackages = [
+      ...(await this.listEcosystemPackages()),
+      ...(await this.listCustomPackages()),
+    ].filter((pkg) => isCatalogPackageVisible(pkg, input.principal ?? null));
     const custom = customPackages
       .filter((pkg) => source === "all" || pkg.source === source)
       .filter((pkg) => query.length === 0 || pkg.name.toLowerCase().includes(query));
@@ -254,6 +262,49 @@ export class SpackCatalogService {
     );
   }
 
+  private async listEcosystemPackages(): Promise<SpackCatalogPackage[]> {
+    const rows = await this.db
+      .select()
+      .from(softwareAssets)
+      .where(
+        and(
+          eq(softwareAssets.kind, "spack-package"),
+          eq(softwareAssets.source, "platform-fork"),
+          eq(softwareAssets.lifecycle, "published"),
+          eq(softwareAssets.visibility, "platform-public"),
+          sql`${softwareAssets.provenance}->>'ecosystemKey' IS NOT NULL`,
+        ),
+      )
+      .orderBy(desc(softwareAssets.createdAt), softwareAssets.id);
+    return rows.map((row) => {
+      const recipe = SpackRecipePayloadSchema.parse(row.payload.spack);
+      const licensePolicy = LicensePolicySchema.parse(row.provenance.licensePolicy);
+      const metadata = recipe.packageFile
+        ? parseSpackPackageFile(recipe.packageFile)
+        : {
+            name: recipe.packageName,
+            licenses: licensePolicy.identifiers.map((identifier) => identifier.value),
+            maintainers: [],
+            versions: [row.version],
+            variants: recipe.variants.map((name) => ({ name, values: [] })),
+            dependencies: recipe.dependencies,
+            provides: recipe.providers,
+            conflicts: [],
+          };
+      return {
+        // Signed assets have no mutable app-template ID; changes go through release import.
+        name: row.name,
+        source: "official",
+        tags: [],
+        metadata,
+        defaultSpec: recipe.defaultSpec ?? `${recipe.packageName}@${row.version}`,
+        asset: rowToSummary(row),
+        licensePolicy,
+        createdAt: row.createdAt.toISOString(),
+      };
+    });
+  }
+
   private async pagePackages(
     custom: SpackCatalogPackage[],
     upstreamNames: string[],
@@ -281,6 +332,10 @@ export class SpackCatalogService {
   private async enrichAssets(packages: SpackCatalogPackage[]): Promise<SpackCatalogPackage[]> {
     const enriched: SpackCatalogPackage[] = [];
     for (const pkg of packages) {
+      if (pkg.asset) {
+        enriched.push(pkg);
+        continue;
+      }
       const asset = await this.findCatalogAsset(pkg);
       enriched.push(asset ? { ...pkg, asset: rowToSummary(asset) } : pkg);
     }

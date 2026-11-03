@@ -1109,6 +1109,7 @@ function SpackTokenPanel({
 }
 
 function buildSpackInstallSpec(pkg: SpackCatalogPackage, metadata?: SpackPackageMetadata): string {
+  if (pkg.defaultSpec) return pkg.defaultSpec;
   const firstVersion = metadata?.versions.find((version) => version !== "develop");
   return firstVersion ? `${pkg.name}@${firstVersion}` : pkg.name;
 }
