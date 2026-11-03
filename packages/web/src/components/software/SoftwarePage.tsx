@@ -2006,7 +2006,8 @@ export function UsecasePackageForm({
         metadata={selectedPackage?.metadata}
         moduleName={moduleName}
         onOpen={() => setSpecOpen(true)}
-        packageName={selectedPackage?.name ?? null}
+        packageName={selectedPackage?.metadata?.name ?? selectedPackage?.name ?? null}
+        defaultSpec={selectedPackage?.defaultSpec}
         softwareVersion={softwareVersion}
         variants={variants}
       />
@@ -2020,7 +2021,8 @@ export function UsecasePackageForm({
         onSoftwareVersionChange={setSoftwareVersion}
         onVariantsChange={setVariants}
         open={specOpen}
-        packageName={selectedPackage?.name ?? null}
+        packageName={selectedPackage?.metadata?.name ?? selectedPackage?.name ?? null}
+        defaultSpec={selectedPackage?.defaultSpec}
         softwareVersion={softwareVersion}
         variants={variants}
       />
@@ -2108,6 +2110,7 @@ function CatalogPackagePickerField({
 }
 
 function SpackSpecPickerField({
+  defaultSpec,
   compiler,
   metadata,
   moduleName,
@@ -2116,6 +2119,7 @@ function SpackSpecPickerField({
   softwareVersion,
   variants,
 }: {
+  defaultSpec?: string;
   compiler: string;
   metadata?: SpackPackageMetadata;
   moduleName: string;
@@ -2126,7 +2130,7 @@ function SpackSpecPickerField({
 }) {
   const { t } = useTranslation();
   const preview = packageName
-    ? makeSpackSpecPreview(packageName, softwareVersion, compiler, variants)
+    ? makeSpackSpecPreview(packageName, softwareVersion, compiler, variants, defaultSpec)
     : "";
   return (
     <div
@@ -2182,6 +2186,7 @@ function SpackSpecPickerField({
 }
 
 function SpackSpecConfigSheet({
+  defaultSpec,
   compiler,
   metadata,
   moduleName,
@@ -2195,6 +2200,7 @@ function SpackSpecConfigSheet({
   softwareVersion,
   variants,
 }: {
+  defaultSpec?: string;
   compiler: string;
   metadata?: SpackPackageMetadata;
   moduleName: string;
@@ -2211,7 +2217,7 @@ function SpackSpecConfigSheet({
   const { t } = useTranslation();
   const id = useId();
   const preview = packageName
-    ? makeSpackSpecPreview(packageName, softwareVersion, compiler, variants)
+    ? makeSpackSpecPreview(packageName, softwareVersion, compiler, variants, defaultSpec)
     : "";
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
@@ -3530,7 +3536,8 @@ function UsecasePackageEditForm({
         metadata={selectedPackage?.metadata}
         moduleName={moduleName}
         onOpen={() => setSpecOpen(true)}
-        packageName={selectedPackage?.name ?? null}
+        packageName={selectedPackage?.metadata?.name ?? selectedPackage?.name ?? null}
+        defaultSpec={selectedPackage?.defaultSpec}
         softwareVersion={softwareVersion}
         variants={variants}
       />
@@ -3544,7 +3551,8 @@ function UsecasePackageEditForm({
         onSoftwareVersionChange={setSoftwareVersion}
         onVariantsChange={setVariants}
         open={specOpen}
-        packageName={selectedPackage?.name ?? null}
+        packageName={selectedPackage?.metadata?.name ?? selectedPackage?.name ?? null}
+        defaultSpec={selectedPackage?.defaultSpec}
         softwareVersion={softwareVersion}
         variants={variants}
       />
@@ -3682,7 +3690,9 @@ function makeSpackSpecPreview(
   version: string,
   compiler: string,
   variants: string,
+  defaultSpec?: string,
 ): string {
+  if (defaultSpec && !version.trim() && !compiler.trim() && !variants.trim()) return defaultSpec;
   const head = `${packageName}${version.trim() ? `@${version.trim()}` : ""}${
     compiler.trim() ? `%${compiler.trim()}` : ""
   }`;
@@ -3696,9 +3706,13 @@ function makeSpackSoftwareSpec(
 ): UsecasePackageSpec["software"] {
   const version = optionalText(config.version);
   const compiler = optionalText(config.compiler);
+  const useDefault = !!pkg.defaultSpec && !version && !compiler && !config.variants.trim();
   return {
     kind: "Spack",
-    name: makeSpackSpecPreview(pkg.name, version ?? "", compiler ?? "", ""),
+    name:
+      useDefault && pkg.defaultSpec
+        ? pkg.defaultSpec
+        : makeSpackSpecPreview(pkg.metadata?.name ?? pkg.name, version ?? "", compiler ?? "", ""),
     ...(version ? { version } : {}),
     ...(compiler ? { compiler } : {}),
     ...(optionalText(config.moduleName) ? { moduleName: optionalText(config.moduleName) } : {}),

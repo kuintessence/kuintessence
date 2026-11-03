@@ -1390,6 +1390,40 @@ advanced:
     expect((nameInput as HTMLInputElement).value).toBe("Unsaved replacement");
   });
 
+  test("keeps an imported software spec when creating a usecase without overrides", async () => {
+    const defaultSpec = "hello@2.12.1+example target=x86_64";
+    softwareClient.listSpackCatalog.mockResolvedValue({
+      packages: [
+        {
+          name: "Imported Hello",
+          source: "official",
+          tags: [],
+          defaultSpec,
+        },
+      ],
+    });
+    softwareClient.createUsecasePackage.mockResolvedValueOnce({});
+    render(<SoftwareUsecaseCreatePage />, { wrapper: wrapper() });
+    await screen.findByTestId("software-usecase-form");
+    fireEvent.click(screen.getByTestId("software-usecase-open-package-picker"));
+    fireEvent.click(
+      await screen.findByTestId("software-usecase-catalog-package-official-Imported Hello"),
+    );
+    expect(screen.getByTestId("software-usecase-spack-spec-preview").textContent).toBe(defaultSpec);
+    fireEvent.change(screen.getByRole("textbox", { name: "Usecase name" }), {
+      target: { value: "hello" },
+    });
+    fireEvent.change(screen.getByRole("textbox", { name: "commandFile" }), {
+      target: { value: "hello" },
+    });
+    fireEvent.submit(screen.getByTestId("software-usecase-form"));
+    await waitFor(() => expect(softwareClient.createUsecasePackage).toHaveBeenCalled());
+    expect(softwareClient.createUsecasePackage.mock.calls[0]?.[0].spec.software).toMatchObject({
+      name: defaultSpec,
+      argumentList: [],
+    });
+  });
+
   test("creates a usecase package from a selected Spack catalog package and configured spec", async () => {
     softwareClient.createUsecasePackage.mockResolvedValueOnce({});
 
