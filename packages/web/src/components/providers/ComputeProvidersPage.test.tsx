@@ -35,7 +35,11 @@ const directory: ComputeProviderDirectory = {
     },
   ],
 };
-afterEach(() => vi.clearAllMocks());
+afterEach(() => {
+  vi.clearAllMocks();
+  vi.restoreAllMocks();
+  sessionStorage.clear();
+});
 function setup(mode: "provider" | "operator") {
   setLang("zh");
   api.get.mockResolvedValue(directory);
@@ -97,6 +101,25 @@ test("online revocation and query errors discard editor drafts", async () => {
   await act(() => client.invalidateQueries({ queryKey: ["compute-providers"] }));
   await screen.findByRole("alert");
   expect(screen.queryByRole("dialog")).toBeNull();
+  unmount();
+  client.clear();
+});
+
+test("mobile policy keeps profile reads available without opening forbidden editors", async () => {
+  sessionStorage.setItem("kq.mobile-management-policy", "observe-approve");
+  vi.spyOn(window, "matchMedia").mockReturnValue({
+    matches: true,
+    addEventListener: vi.fn(),
+    removeEventListener: vi.fn(),
+  } as unknown as MediaQueryList);
+  const { client, unmount } = setup("operator");
+  await screen.findByText("研究中心");
+  expect(screen.getByText("请在电脑端编辑提供者资料。")).toBeTruthy();
+  expect(screen.queryByRole("button", { name: "新增提供者" })).toBeNull();
+  expect(screen.queryByRole("button", { name: "编辑资料" })).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "研究中心" }));
+  expect(screen.getByRole("dialog")).toBeTruthy();
+  expect(screen.queryByRole("button", { name: "编辑资料" })).toBeNull();
   unmount();
   client.clear();
 });

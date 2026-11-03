@@ -782,7 +782,9 @@
       "requestSubject": "申请主体：{{subject}}",
       "requestDecision": "审核结论：{{decision}}",
       "importUnavailable": "导入后端当前不可用；已保留可查询的持久化上传或导入状态。",
-      "failed": "数据管理操作失败"
+      "failed": "数据管理操作失败",
+      "selectAssetForVersions": "选择数据资产后查看版本和副本。",
+      "selectVersionForReplicas": "选择版本查看副本。"
     },
     "metering": {
       "title": "用量计量",

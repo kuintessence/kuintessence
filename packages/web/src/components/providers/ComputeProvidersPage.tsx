@@ -10,7 +10,9 @@ import { useTranslation } from "react-i18next";
 import { useActiveOrganizationId } from "../../lib/active-organization";
 import { api } from "../../lib/api-client";
 import { getAuthState } from "../../lib/auth";
+import { isMobileHighRiskMutationBlocked } from "../../lib/mobile-management-policy";
 import { usePlatformCapability } from "../../lib/platform-capabilities";
+import { useMediaQuery } from "../../lib/use-media-query";
 import { Button } from "../ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "../ui/dialog";
 import { Input } from "../ui/input";
@@ -45,6 +47,8 @@ function Directory({ mode, orgId }: { mode: Mode; orgId: string | null }) {
   const [selected, setSelected] = useState<string | null>(null);
   const [editing, setEditing] = useState(false);
   const endpoint = `/compute-providers/${mode}`;
+  const compact = useMediaQuery("(max-width: 767px)");
+  const mobileReadOnly = compact && isMobileHighRiskMutationBlocked(`${endpoint}/organizations`);
   const query = useQuery({
     queryKey: ["compute-providers", mode, orgId, getAuthState().revision, search, page],
     queryFn: () =>
@@ -54,11 +58,12 @@ function Directory({ mode, orgId }: { mode: Mode; orgId: string | null }) {
     refetchInterval: 15_000,
   });
   const data = query.data;
+  const canEdit = data?.canManage === true && !mobileReadOnly;
   const item = data?.items.find((p) => p.id === selected);
   useEffect(() => {
-    if (query.error || !data?.canManage) setEditing(false);
+    if (query.error || !canEdit) setEditing(false);
     if (query.error) setSelected(null);
-  }, [query.error, data?.canManage]);
+  }, [query.error, canEdit]);
   async function refresh() {
     await Promise.all([
       client.invalidateQueries({ queryKey: ["compute-providers"] }),
@@ -97,7 +102,7 @@ function Directory({ mode, orgId }: { mode: Mode; orgId: string | null }) {
         <Button variant="outline" onClick={() => query.refetch()}>
           {t("providers.refresh")}
         </Button>
-        {mode === "operator" && data?.canManage && !query.error && (
+        {mode === "operator" && canEdit && !query.error && (
           <Button
             onClick={() => {
               setSelected(null);
@@ -108,6 +113,9 @@ function Directory({ mode, orgId }: { mode: Mode; orgId: string | null }) {
           </Button>
         )}
       </div>
+      {data?.canManage && mobileReadOnly && (
+        <p className="text-sm text-muted-foreground">{t("providers.desktopEdit")}</p>
+      )}
       {query.error ? (
         <div role="alert" className="space-y-2">
           <p>{query.error.message}</p>
@@ -148,7 +156,7 @@ function Directory({ mode, orgId }: { mode: Mode; orgId: string | null }) {
                     <td className="px-4 py-3 tabular-nums">{provider.agentCount}</td>
                     <td className="px-4 py-3 tabular-nums">{provider.memberCount}</td>
                     <td className="px-4 py-3">
-                      {data.canManage && (
+                      {canEdit && (
                         <Button
                           variant="ghost"
                           size="sm"
@@ -219,14 +227,14 @@ function Directory({ mode, orgId }: { mode: Mode; orgId: string | null }) {
                     <dt className="text-muted-foreground">{t("providers.updatedAt")}</dt>
                     <dd>{new Date(item.updatedAt).toLocaleString()}</dd>
                   </dl>
-                  {data.canManage && (
+                  {canEdit && (
                     <Button onClick={() => setEditing(true)}>{t("providers.edit")}</Button>
                   )}
                 </div>
               </DialogContent>
             </Dialog>
           )}
-          {editing && data.canManage && (item || (mode === "operator" && !selected)) && (
+          {editing && canEdit && (item || (mode === "operator" && !selected)) && (
             <ProviderEditor
               key={item?.id ?? "new"}
               item={item}

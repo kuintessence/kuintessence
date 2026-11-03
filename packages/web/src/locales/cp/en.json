@@ -782,7 +782,9 @@
       "requestSubject": "Request subject: {{subject}}",
       "requestDecision": "Review decision: {{decision}}",
       "importUnavailable": "The import backend is currently unavailable; persistent upload or import status is retained for inspection.",
-      "failed": "Data management action failed"
+      "failed": "Data management action failed",
+      "selectAssetForVersions": "Select a data asset to view versions and replicas.",
+      "selectVersionForReplicas": "Select a version to view replicas."
     },
     "metering": {
       "title": "Usage metering",

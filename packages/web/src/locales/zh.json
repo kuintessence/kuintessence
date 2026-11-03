@@ -2204,6 +2204,7 @@
     "total": "共 {{count}} 个提供者",
     "previous": "上一页",
     "next": "下一页",
-    "updatedAt": "更新时间"
+    "updatedAt": "更新时间",
+    "desktopEdit": "请在电脑端编辑提供者资料。"
   }
 }

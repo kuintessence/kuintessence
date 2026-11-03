@@ -2204,6 +2204,7 @@
     "total": "{{count}} providers",
     "previous": "Previous",
     "next": "Next",
-    "updatedAt": "Updated"
+    "updatedAt": "Updated",
+    "desktopEdit": "Use a desktop to edit provider profiles."
   }
 }

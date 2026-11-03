@@ -104,6 +104,14 @@ function wrapper({ children }: { children: ReactNode }) {
 }
 
 describe("CpDataPage", () => {
+  test("unselected assets prompt a selection instead of claiming there are no versions", async () => {
+    client.cpAssets.mockResolvedValueOnce({ assets: [], limit: 25, offset: 0, total: 0 });
+    render(<CpDataPage />, { wrapper });
+    expect(screen.getByText("cp.data.selectAssetForVersions")).toBeTruthy();
+    expect(client.cpVersions).not.toHaveBeenCalled();
+    expect(client.cpReplicas).not.toHaveBeenCalled();
+  });
+
   afterEach(() => {
     activeOrganization.current = "org-a";
     vi.clearAllMocks();
