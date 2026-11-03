@@ -1633,7 +1633,8 @@
           "title": "Scheduler explanations",
           "description": "Inspect placement reasoning for permission, software, metering, load, and cost filters."
         }
-      }
+      },
+      "meteringSettings": "Storage quotas and cost settings"
     },
     "sso": {
       "title": "Single Sign-On (OIDC)",

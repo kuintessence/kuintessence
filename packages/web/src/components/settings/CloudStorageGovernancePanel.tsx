@@ -102,7 +102,11 @@ export function CloudStorageGovernancePanel() {
     const autoApproveLimitBytes = draft.autoApproveLimitGb
       ? gbInputToBytes(draft.autoApproveLimitGb)
       : null;
-    if (defaultQuotaBytes == null || (draft.maxQuotaGb && maxQuotaBytes == null)) {
+    if (
+      defaultQuotaBytes == null ||
+      (draft.maxQuotaGb && maxQuotaBytes == null) ||
+      (draft.autoApproveLimitGb && autoApproveLimitBytes == null)
+    ) {
       toast.error("请输入有效的存储配额");
       return;
     }
@@ -174,6 +178,35 @@ export function CloudStorageGovernancePanel() {
   const pendingRequests = (requestsQ.data?.requests ?? []).filter(
     (request) => request.status === "pending",
   );
+
+  const queries = [policyQ, overviewQ, requestsQ];
+  const failed = queries.filter((query) => query.error);
+  if (failed.length || queries.some((query) => query.isPending)) {
+    return (
+      <Card data-testid="cloud-storage-governance-panel">
+        <CardHeader>
+          <CardTitle>云存储与配额治理</CardTitle>
+        </CardHeader>
+        <CardContent>
+          {failed.length ? (
+            <div role="alert" className="space-y-3 text-sm">
+              <p>云存储配置或用量读取失败，请重试后再操作。</p>
+              <Button
+                variant="outline"
+                onClick={() => void Promise.all(failed.map((query) => query.refetch()))}
+              >
+                重试
+              </Button>
+            </div>
+          ) : (
+            <p role="status" className="text-sm text-muted-foreground">
+              正在加载云存储配置与用量…
+            </p>
+          )}
+        </CardContent>
+      </Card>
+    );
+  }
 
   return (
     <Card data-testid="cloud-storage-governance-panel">
@@ -396,6 +429,7 @@ function Metric({ label, value }: { label: string; value: string }) {
 }
 
 function gbInputToBytes(value: string): number | null {
+  if (!value.trim()) return null;
   const number = Number(value);
   if (!Number.isFinite(number) || number < 0) return null;
   return Math.round(number * GB);

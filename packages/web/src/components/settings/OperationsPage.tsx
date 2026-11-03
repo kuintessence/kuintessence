@@ -75,14 +75,18 @@ export function OperationsPage() {
   }
   return (
     <PageShell data-testid="operations-page">
-      <PageHeader
-        id="overview"
-        className="scroll-mt-4"
-        title={t("settings.operations.pageTitle")}
-      />
+      {activeArea !== "metering" && (
+        <PageHeader
+          id="overview"
+          className="scroll-mt-4"
+          title={t(
+            activeArea ? `settings.operations.area.${activeArea}` : "settings.operations.pageTitle",
+          )}
+        />
+      )}
       {activeArea ? null : <OperationsAttentionCards />}
       <OperationsConfiguration area={activeArea} role={auth.role} capabilities={capabilities} />
-      {activeArea ? (
+      {activeArea && activeArea !== "metering" ? (
         <OperationsMap role={auth.role} areas={[activeArea]} capabilities={capabilities} />
       ) : null}
     </PageShell>
@@ -98,6 +102,7 @@ function OperationsConfiguration({
   role: string | null;
   capabilities: ReadonlySet<string>;
 }) {
+  const { t } = useTranslation();
   const platformAdmin = role === "platform_admin" || role === "super_admin";
   const orgAdmin = platformAdmin || role === "org_admin";
   if (!area) return null;
@@ -114,19 +119,26 @@ function OperationsConfiguration({
   if (area === "compute" && orgAdmin) {
     return <ClusterFileRootsPanel />;
   }
-  if (area === "metering" && platformAdmin) {
+  if (area === "metering") {
     return (
-      <div className="space-y-4" data-testid="operations-metering-configuration">
-        <CloudStorageGovernancePanel />
-        {role === "super_admin" ? <CostRatesForm /> : null}
-      </div>
+      <>
+        {capabilities.has("metering.report.view") && <MeteringPage showWebhooks={false} />}
+        {platformAdmin && (
+          <details
+            className="rounded-xl border border-border p-4"
+            data-testid="operations-metering-configuration"
+          >
+            <summary className="cursor-pointer font-medium">
+              {t("settings.operations.meteringSettings")}
+            </summary>
+            <div className="mt-4 space-y-4">
+              <CloudStorageGovernancePanel />
+              {role === "super_admin" ? <CostRatesForm /> : null}
+            </div>
+          </details>
+        )}
+      </>
     );
-  }
-  if (area === "metering" && role === "operator") {
-    return <MeteringPage showWebhooks={false} />;
-  }
-  if (area === "metering" && capabilities.has("metering.report.view")) {
-    return <MeteringPage showWebhooks={false} />;
   }
   if (area === "audit" && capabilities.has("audit.view")) {
     return (

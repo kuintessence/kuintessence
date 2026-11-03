@@ -1,45 +1,92 @@
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { KeyRound, ServerCog, UsersRound } from "lucide-react";
+import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useActiveOrganizationId } from "../../lib/active-organization";
+import { getAuthState } from "../../lib/auth";
+import { isMobileHighRiskMutationBlocked } from "../../lib/mobile-management-policy";
 import { listSandboxExecutionAccounts } from "../../lib/sandbox-client";
+import { useMediaQuery } from "../../lib/use-media-query";
 import { toUserFacingError } from "../../lib/user-facing-error";
 import { Badge } from "../ui/badge";
+import { Button } from "../ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
+import { RegisterExecutionAccount } from "./RegisterExecutionAccount";
 import { SandboxMappingReviewPanel } from "./SandboxMappingReviewPanel";
 
 export function CpAccountsPage() {
   const { t } = useTranslation();
   const activeOrganizationId = useActiveOrganizationId();
+  const queryClient = useQueryClient();
+  const [registering, setRegistering] = useState(false);
+  const compact = useMediaQuery("(max-width: 767px)");
+  const mobileReadOnly = compact && isMobileHighRiskMutationBlocked("/sandbox/accounts");
   const accountsQuery = useQuery({
-    queryKey: ["sandbox-execution-accounts", activeOrganizationId ?? "all"],
+    queryKey: [
+      "sandbox-execution-accounts",
+      activeOrganizationId ?? "all",
+      getAuthState().revision,
+    ],
     queryFn: listSandboxExecutionAccounts,
     retry: false,
+    refetchInterval: 15_000,
   });
-  const accounts = accountsQuery.data ?? [];
+  const accounts = accountsQuery.data?.data ?? [];
+  const canRegister =
+    !!activeOrganizationId &&
+    !accountsQuery.error &&
+    accountsQuery.data?.manageableProviderOrgIds?.includes(activeOrganizationId) === true &&
+    !mobileReadOnly;
+  useEffect(() => {
+    if (!canRegister) setRegistering(false);
+  }, [canRegister]);
 
   return (
     <div className="space-y-4" data-testid="cp-accounts-page">
-      <div>
-        <h2 className="text-2xl font-semibold tracking-tight">{t("cp.accounts.title")}</h2>
-        <p className="text-sm text-muted-foreground">{t("cp.accounts.subtitle")}</p>
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h2 className="text-2xl font-semibold tracking-tight">{t("cp.accounts.title")}</h2>
+          <p className="text-sm text-muted-foreground">{t("cp.accounts.subtitle")}</p>
+        </div>
+        <div className="flex gap-2">
+          <Button variant="outline" onClick={() => void accountsQuery.refetch()}>
+            {t("cp.common.refresh")}
+          </Button>
+          {canRegister && (
+            <Button onClick={() => setRegistering(true)}>{t("cp.accounts.register")}</Button>
+          )}
+        </div>
       </div>
+      {!activeOrganizationId && (
+        <p className="text-sm text-muted-foreground">{t("cp.accounts.selectOrganization")}</p>
+      )}
+      {mobileReadOnly && (
+        <p className="text-sm text-muted-foreground">{t("cp.accounts.desktopRegister")}</p>
+      )}
 
       <div className="grid gap-2 sm:grid-cols-3">
         <Summary
           icon={ServerCog}
           label={t("cp.accounts.summary.accounts")}
-          value={accounts.length}
+          value={accountsQuery.error || !accountsQuery.data ? "—" : accounts.length}
         />
         <Summary
           icon={UsersRound}
           label={t("cp.accounts.summary.shared")}
-          value={accounts.filter((account) => account.sharedService).length}
+          value={
+            accountsQuery.error || !accountsQuery.data
+              ? "—"
+              : accounts.filter((account) => account.sharedService).length
+          }
         />
         <Summary
           icon={KeyRound}
           label={t("cp.accounts.summary.enabled")}
-          value={accounts.filter((account) => account.enabled).length}
+          value={
+            accountsQuery.error || !accountsQuery.data
+              ? "—"
+              : accounts.filter((account) => account.enabled).length
+          }
         />
       </div>
 
@@ -49,7 +96,7 @@ export function CpAccountsPage() {
         </CardHeader>
         <CardContent>
           {accountsQuery.error instanceof Error ? (
-            <div className="text-sm text-[var(--status-failed)]">
+            <div role="alert" className="text-sm text-[var(--status-failed)]">
               {toUserFacingError(accountsQuery.error, t("cp.accounts.loadFailed"))}
             </div>
           ) : accountsQuery.isLoading ? (
@@ -92,7 +139,9 @@ export function CpAccountsPage() {
                     </dd>
                     <dt className="text-muted-foreground">{t("cp.accounts.queues")}</dt>
                     <dd className="min-w-0 break-words">
-                      {account.allowedQueues.join(", ") || t("cp.accounts.allQueues")}
+                      {account.backendType === "kubernetes"
+                        ? t("cp.accounts.queuesNotApplicable")
+                        : account.allowedQueues.join(", ") || t("cp.accounts.noQueues")}
                     </dd>
                   </dl>
                 </div>
@@ -103,6 +152,17 @@ export function CpAccountsPage() {
       </Card>
 
       <SandboxMappingReviewPanel />
+      {registering && canRegister && activeOrganizationId && (
+        <RegisterExecutionAccount
+          key={`${activeOrganizationId}:${getAuthState().revision}`}
+          providerOrgId={activeOrganizationId}
+          onClose={() => setRegistering(false)}
+          onSaved={async () => {
+            await queryClient.invalidateQueries({ queryKey: ["sandbox-execution-accounts"] });
+            setRegistering(false);
+          }}
+        />
+      )}
     </div>
   );
 }
@@ -114,7 +174,7 @@ function Summary({
 }: {
   icon: typeof ServerCog;
   label: string;
-  value: number;
+  value: number | string;
 }) {
   return (
     <div className="flex items-center justify-between rounded-lg border bg-card p-3">

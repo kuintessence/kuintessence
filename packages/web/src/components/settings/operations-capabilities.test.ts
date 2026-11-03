@@ -48,6 +48,8 @@ describe("operations capability role branches", () => {
     expect(canAccessOperationsLink("user", audit, new Set(["audit.view"] as const))).toBe(true);
     expect(operationsHrefForRole("org_admin", metering)).toBe("/cp/metering");
     expect(operationsHrefForRole("operator", metering)).toBe("/operations#metering");
+    expect(operationsHrefForRole("platform_admin", metering)).toBe("/operations#metering");
+    expect(operationsHrefForRole("super_admin", metering)).toBe("/operations#metering");
     expect(
       operationsHrefForRole("user", metering, new Set(["metering.report.view"] as const)),
     ).toBe("/operations#metering");

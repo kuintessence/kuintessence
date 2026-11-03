@@ -49,7 +49,10 @@
       "no": "否",
       "actions": "操作",
       "empty": "暂无数据。",
-      "close": "关闭"
+      "close": "关闭",
+      "refresh": "刷新",
+      "retry": "重试",
+      "saving": "保存中…"
     },
     "dashboard": {
       "title": "算力运营概览",
@@ -520,17 +523,41 @@
       "title": "集群账号与映射",
       "subtitle": "维护可执行作业的集群账号池，并审批平台用户到 Unix 或 Kubernetes 身份的映射。",
       "poolTitle": "执行账号池",
-      "empty": "当前还没有登记集群执行账号。请先通过 API 或运维流程录入账号目录。",
+      "empty": "尚未登记集群执行账号。",
       "backend": "后端",
       "identity": "执行身份",
       "queues": "允许队列",
-      "allQueues": "所有队列",
       "summary": {
         "accounts": "账号总数",
         "shared": "公共账号",
         "enabled": "已启用"
       },
-      "loadFailed": "执行账号列表暂时无法加载，请刷新后重试。"
+      "loadFailed": "执行账号列表暂时无法加载，请刷新后重试。",
+      "register": "登记账号",
+      "selectOrganization": "选择一个算力组织后可登记集群账号。",
+      "desktopRegister": "请在电脑端登记集群账号。",
+      "registration": {
+        "note": "登记集群上已有的执行身份，不会创建或修改远端系统用户。",
+        "required": "请填写账号名称及执行身份。",
+        "invalidIdentity": "UID 和 GID 必须是大于 0 的有效整数。",
+        "failed": "登记账号失败，请检查输入后重试。",
+        "agentsFailed": "接入代理读取失败",
+        "noAgents": "当前组织没有可用的接入代理。",
+        "agent": "接入代理",
+        "selectAgent": "选择接入代理",
+        "displayName": "账号名称",
+        "namespace": "Namespace",
+        "serviceAccount": "Service Account",
+        "username": "Unix 用户名",
+        "uid": "UID",
+        "gid": "GID",
+        "schedulerAccount": "调度账号（可选）",
+        "allowedQueues": "允许队列（逗号分隔）",
+        "sharedService": "公共服务账号",
+        "emptyQueuesHint": "留空时不允许向具名队列提交作业。"
+      },
+      "noQueues": "未授权具名队列",
+      "queuesNotApplicable": "不适用"
     },
     "users": {
       "title": "组织成员",

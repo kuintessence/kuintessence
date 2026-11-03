@@ -49,7 +49,10 @@
       "no": "No",
       "actions": "Actions",
       "empty": "No data.",
-      "close": "Close"
+      "close": "Close",
+      "refresh": "Refresh",
+      "retry": "Retry",
+      "saving": "Saving…"
     },
     "dashboard": {
       "title": "Compute operations overview",
@@ -520,17 +523,41 @@
       "title": "Cluster accounts and mappings",
       "subtitle": "Maintain the execution account pool and approve platform-user mappings to Unix or Kubernetes identities.",
       "poolTitle": "Execution account pool",
-      "empty": "No cluster execution accounts are registered yet. Add them through the API or the operator provisioning workflow.",
+      "empty": "No execution accounts registered.",
       "backend": "Backend",
       "identity": "Execution identity",
       "queues": "Allowed queues",
-      "allQueues": "All queues",
       "summary": {
         "accounts": "Accounts",
         "shared": "Shared accounts",
         "enabled": "Enabled"
       },
-      "loadFailed": "Execution accounts could not be loaded. Refresh and try again."
+      "loadFailed": "Execution accounts could not be loaded. Refresh and try again.",
+      "register": "Register account",
+      "selectOrganization": "Select a provider organization to register an execution account.",
+      "desktopRegister": "Use a desktop to register execution accounts.",
+      "registration": {
+        "note": "Register an existing cluster identity. This does not create or modify remote system users.",
+        "required": "Enter an account name and execution identity.",
+        "invalidIdentity": "UID and GID must be valid integers greater than zero.",
+        "failed": "Could not register the account. Check the input and retry.",
+        "agentsFailed": "Could not load agents",
+        "noAgents": "This organization has no available agents.",
+        "agent": "Agent",
+        "selectAgent": "Select an agent",
+        "displayName": "Account name",
+        "namespace": "Namespace",
+        "serviceAccount": "Service Account",
+        "username": "Unix username",
+        "uid": "UID",
+        "gid": "GID",
+        "schedulerAccount": "Scheduler account (optional)",
+        "allowedQueues": "Allowed queues (comma-separated)",
+        "sharedService": "Shared service account",
+        "emptyQueuesHint": "Leaving this blank does not authorize submission to any named queue."
+      },
+      "noQueues": "No named queues authorized",
+      "queuesNotApplicable": "Not applicable"
     },
     "users": {
       "title": "Organization members",

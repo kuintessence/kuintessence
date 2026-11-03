@@ -128,6 +128,54 @@ describe("sandbox execution account routes", () => {
     expect((await app.request("/api/sandbox/account-mapping-review-queue")).status).toBe(403);
   });
 
+  test("registration persists the scoped identity and duplicate identities do not overwrite it", async () => {
+    const app = makeApp(db, [PROVIDER_ORG_ID]);
+    const body = {
+      providerOrgId: PROVIDER_ORG_ID,
+      agentId: AGENT_ID,
+      displayName: "Registered account",
+      backendType: "unix",
+      username: "registered-user",
+      uid: 2102,
+      gid: 2102,
+      allowedQueues: ["batch"],
+    };
+    const create = (input: typeof body) =>
+      app.request("/api/sandbox/accounts", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(input),
+      });
+    try {
+      expect((await create({ ...body, providerOrgId: OTHER_ORG_ID })).status).toBe(403);
+      expect((await create(body)).status).toBe(201);
+      expect((await create({ ...body, displayName: "Overwrite" })).status).toBe(409);
+      const [stored] = await db
+        .select()
+        .from(clusterExecutionAccounts)
+        .where(
+          and(
+            eq(clusterExecutionAccounts.agentId, AGENT_ID),
+            eq(clusterExecutionAccounts.uid, 2102),
+          ),
+        );
+      expect(stored).toMatchObject({
+        displayName: "Registered account",
+        providerOrgId: PROVIDER_ORG_ID,
+        allowedQueues: ["batch"],
+      });
+    } finally {
+      await db
+        .delete(clusterExecutionAccounts)
+        .where(
+          and(
+            eq(clusterExecutionAccounts.agentId, AGENT_ID),
+            eq(clusterExecutionAccounts.uid, 2102),
+          ),
+        );
+    }
+  });
+
   test("organization admins can review by membership and see applicant identity", async () => {
     const [mapping] = await db
       .insert(userClusterAccountMappings)
@@ -138,7 +186,9 @@ describe("sandbox execution account routes", () => {
       })
       .returning();
     const app = makeApp(db, [PROVIDER_ORG_ID], "user", [{ orgId: PROVIDER_ORG_ID, role: "admin" }]);
-    expect((await app.request("/api/sandbox/accounts")).status).toBe(200);
+    const directory = await app.request("/api/sandbox/accounts");
+    expect(directory.status).toBe(200);
+    expect(await directory.json()).toMatchObject({ manageableProviderOrgIds: [PROVIDER_ORG_ID] });
     const response = await app.request("/api/sandbox/account-mapping-review-queue");
     expect(response.status).toBe(200);
     expect(await response.json()).toMatchObject({
@@ -175,7 +225,11 @@ describe("sandbox execution account routes", () => {
         headers: { "X-KQ-Active-Organization": OTHER_ORG_ID },
       });
       expect(response.status).toBe(200);
-      expect(await response.json()).toEqual({ success: true, data: [] });
+      expect(await response.json()).toEqual({
+        success: true,
+        data: [],
+        ...(path === "/api/sandbox/accounts" ? { manageableProviderOrgIds: [OTHER_ORG_ID] } : {}),
+      });
       expect(
         (
           await makeApp(db, [PROVIDER_ORG_ID]).request(path, {
@@ -200,6 +254,9 @@ describe("sandbox execution account routes", () => {
     ]);
     const pending = await app.request("/api/sandbox/account-mapping-review-queue");
     expect(await pending.json()).toMatchObject({ data: [{ canReview: false }] });
+    expect(await (await app.request("/api/sandbox/accounts")).json()).toMatchObject({
+      manageableProviderOrgIds: [],
+    });
     const review = () =>
       app.request(`/api/sandbox/account-mappings/${mapping?.id}`, {
         method: "PATCH",
@@ -210,6 +267,9 @@ describe("sandbox execution account routes", () => {
     await db
       .insert(accountAssignmentDelegations)
       .values({ providerOrgId: PROVIDER_ORG_ID, delegated: true, updatedBy: ADMIN_ID });
+    expect(await (await app.request("/api/sandbox/accounts")).json()).toMatchObject({
+      manageableProviderOrgIds: [PROVIDER_ORG_ID],
+    });
     expect(
       await (await app.request("/api/sandbox/account-mapping-review-queue")).json(),
     ).toMatchObject({ data: [{ canReview: true }] });
