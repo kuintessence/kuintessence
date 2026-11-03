@@ -24,7 +24,10 @@ const config = {
   ],
 };
 
-afterEach(() => vi.restoreAllMocks());
+afterEach(() => {
+  vi.restoreAllMocks();
+  sessionStorage.clear();
+});
 
 describe("DesensitizeAdminPanel", () => {
   test("loads, updates, and exports without persisting the envelope", async () => {
@@ -154,4 +157,21 @@ describe("DesensitizeAdminPanel", () => {
       timeout: 500,
     });
   });
+});
+
+test("keeps mobile configuration readable without rule edits or exports", async () => {
+  sessionStorage.setItem("kq.mobile-management-policy", "observe-approve");
+  vi.spyOn(window, "matchMedia").mockReturnValue({
+    matches: true,
+    addEventListener: vi.fn(),
+    removeEventListener: vi.fn(),
+  } as unknown as MediaQueryList);
+  const fetchMock = vi.fn(async () => new Response(JSON.stringify(config), { status: 200 }));
+  vi.stubGlobal("fetch", fetchMock);
+  render(<DesensitizeAdminPanel />);
+  const save = await screen.findByTestId("desensitize-save");
+  expect(save.closest("fieldset")).toHaveProperty("disabled", true);
+  expect(screen.getByDisplayValue("actor")).toBeTruthy();
+  fireEvent.click(save);
+  expect(fetchMock).toHaveBeenCalledTimes(1);
 });

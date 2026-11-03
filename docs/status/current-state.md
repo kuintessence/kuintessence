@@ -488,3 +488,5 @@ Server 内置 Agent 的构建校验随相关 PR 和生产镜像发布自动执�
 平台管理员可通过 `/api/cp/software/operations/:operationId/close-interrupted` 收尾旧版遗留的
 queued/running 软件操作。入口要求 Agent 离线、显式确认 worker 已停止和匹配的操作更新时间；
 只标记控制操作失败并原子记录审计，不清锁、不改库存。详见 [安装恢复说明](../spack-install-recovery.md)。
+
+- 平台安全配置在手机只读策略下禁用授权关系重建／同步、脱敏编辑／导出和 Agent 证书撤销、SSH 凭据修改与会话断开，保留查询刷新；桌面撤销确认在缩为手机后关闭。
