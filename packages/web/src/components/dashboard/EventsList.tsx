@@ -91,6 +91,24 @@ function describeEvent(entry: AuditEntry): EventCopy {
       subject: name ?? entry.target,
     };
   }
+  if (
+    entry.action === "sandbox.execution-account.create" ||
+    entry.action === "sandbox.execution-account.allowed-queues.update"
+  ) {
+    const created = entry.action === "sandbox.execution-account.create";
+    return {
+      labelKey: created
+        ? "dashboard.events.executionAccountCreated"
+        : "dashboard.events.executionAccountQueuesUpdated",
+      defaultLabel: created ? "登记集群账号" : "修改账号队列授权",
+      categoryKey: "dashboard.events.categoryAccess",
+      defaultCategory: "访问",
+      subject:
+        stringField(entry.diff?.after, "displayName") ??
+        stringField(entry.diff?.before, "displayName") ??
+        entry.target,
+    };
+  }
   switch (entry.action) {
     case "netdrive.upload-url.mint":
       return {

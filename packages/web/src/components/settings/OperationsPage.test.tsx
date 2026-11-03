@@ -159,6 +159,8 @@ describe("OperationsPage", () => {
     render(<OperationsPage />);
 
     expect(screen.getByTestId("file-transfer-audit-config").dataset.canManage).toBe("true");
+    expect(screen.getByTestId("audit-policy-settings").hasAttribute("open")).toBe(false);
+    expect(screen.queryByTestId("settings-operations-map")).toBeNull();
     expect(screen.getByTestId("platform-audit-log")).toBeTruthy();
   });
 

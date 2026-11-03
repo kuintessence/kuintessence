@@ -49,3 +49,34 @@ test("legacy delete.update events remain recognizable without inventing object n
   expect(screen.getByText("删除算力中心")).toBeTruthy();
   expect(screen.getByText("legacy-center")).toBeTruthy();
 });
+
+test("execution account audits show translated actions and preserved names, including old records", () => {
+  setLang("zh");
+  const rows = [
+    {
+      id: "new",
+      actor: "admin",
+      action: "sandbox.execution-account.create",
+      target: "account-id",
+      diff: { after: { displayName: "Slurm user" } },
+      createdAt: "2026-11-03T00:00:00Z",
+    },
+    {
+      id: "legacy",
+      actor: "admin",
+      action: "sandbox.execution-account.allowed-queues.update",
+      target: "legacy-account",
+      diff: null,
+      createdAt: "2026-11-03T00:00:00Z",
+    },
+  ];
+  const { rerender } = render(<EventsList entries={rows} />);
+  expect(screen.getByText("登记集群账号")).toBeTruthy();
+  expect(screen.getByText("Slurm user")).toBeTruthy();
+  expect(screen.getByText("修改账号队列授权")).toBeTruthy();
+  expect(screen.getByText("legacy-account")).toBeTruthy();
+  setLang("en");
+  rerender(<EventsList entries={rows} />);
+  expect(screen.getByText("Registered execution account")).toBeTruthy();
+  expect(screen.getByText("Updated account queue access")).toBeTruthy();
+});

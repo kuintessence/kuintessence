@@ -86,7 +86,7 @@ export function OperationsPage() {
       )}
       {activeArea ? null : <OperationsAttentionCards />}
       <OperationsConfiguration area={activeArea} role={auth.role} capabilities={capabilities} />
-      {activeArea && activeArea !== "metering" ? (
+      {activeArea && activeArea !== "metering" && activeArea !== "audit" ? (
         <OperationsMap role={auth.role} areas={[activeArea]} capabilities={capabilities} />
       ) : null}
     </PageShell>
@@ -143,7 +143,17 @@ function OperationsConfiguration({
   if (area === "audit" && capabilities.has("audit.view")) {
     return (
       <div className="space-y-4" data-testid="operations-audit-configuration">
-        <FileTransferAuditConfigPanel canManage={platformAdmin} />
+        <details
+          className="rounded-xl border border-border p-4"
+          data-testid="audit-policy-settings"
+        >
+          <summary className="cursor-pointer font-medium">
+            {t("settings.operations.auditSettings")}
+          </summary>
+          <div className="mt-4">
+            <FileTransferAuditConfigPanel canManage={platformAdmin} />
+          </div>
+        </details>
         <AuditLogPanel />
       </div>
     );

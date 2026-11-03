@@ -164,6 +164,16 @@ describe("sandbox execution account routes", () => {
         providerOrgId: PROVIDER_ORG_ID,
         allowedQueues: ["batch"],
       });
+      const [audit] = await db
+        .select({ diff: auditLog.diff })
+        .from(auditLog)
+        .where(
+          and(
+            eq(auditLog.action, "sandbox.execution-account.create"),
+            eq(auditLog.actor, ADMIN_ID),
+          ),
+        );
+      expect(audit?.diff).toEqual({ after: { displayName: "Registered account" } });
     } finally {
       await db
         .delete(clusterExecutionAccounts)
@@ -341,8 +351,11 @@ describe("sandbox execution account routes", () => {
       actor: ADMIN_ID,
       target: ACCOUNT_ID,
       diff: {
-        before: { allowedQueues: [] },
-        after: { allowedQueues: ["slurm23-debug"] },
+        before: { displayName: "Sandbox account route Unix account", allowedQueues: [] },
+        after: {
+          displayName: "Sandbox account route Unix account",
+          allowedQueues: ["slurm23-debug"],
+        },
       },
     });
   });

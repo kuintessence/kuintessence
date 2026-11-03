@@ -216,6 +216,8 @@
       "draining": "Draining"
     },
     "events": {
+      "executionAccountCreated": "Registered execution account",
+      "executionAccountQueuesUpdated": "Updated account queue access",
       "categoryAccess": "Access",
       "categoryFiles": "Files",
       "categoryJobs": "Jobs",
@@ -1639,6 +1641,7 @@
           "description": "Inspect placement reasoning for permission, software, metering, load, and cost filters."
         }
       },
+      "auditSettings": "Audit settings",
       "meteringSettings": "Storage quotas and cost settings"
     },
     "sso": {

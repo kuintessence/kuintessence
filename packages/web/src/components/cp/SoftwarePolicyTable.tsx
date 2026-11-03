@@ -274,7 +274,7 @@ export function SoftwarePolicyTable({
     <div className="space-y-5" data-testid="cp-software-policy-table">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h2 className="text-2xl font-semibold tracking-tight">{t("cp.software.title")}</h2>
+          <h1 className="text-2xl font-semibold tracking-tight">{t("cp.software.title")}</h1>
           <p className="text-sm text-muted-foreground">{t("cp.software.subtitle")}</p>
         </div>
         <Button

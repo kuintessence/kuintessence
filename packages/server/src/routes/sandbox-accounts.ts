@@ -326,6 +326,7 @@ export function createSandboxAccountRoutes({ db }: SandboxAccountRoutesDeps): Ho
       actor: value.userId,
       action: "sandbox.execution-account.create",
       target: created.id,
+      diff: { after: { displayName: created.displayName } },
     });
     return c.json({ success: true, data: created }, 201);
   });
@@ -349,8 +350,8 @@ export function createSandboxAccountRoutes({ db }: SandboxAccountRoutesDeps): Ho
       action: "sandbox.execution-account.allowed-queues.update",
       target: account.id,
       diff: {
-        before: { allowedQueues: account.allowedQueues },
-        after: { allowedQueues: updated.allowedQueues },
+        before: { displayName: account.displayName, allowedQueues: account.allowedQueues },
+        after: { displayName: updated.displayName, allowedQueues: updated.allowedQueues },
       },
     });
     return c.json({ success: true, data: updated });
