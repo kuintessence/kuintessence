@@ -1241,7 +1241,12 @@
       "elements": "Elements, comma separated",
       "fingerprint": "Local file fingerprint",
       "registerMaterial": "Register local material mapping",
-      "noMaterialMappings": "No local restricted material mapping is registered."
+      "noMaterialMappings": "No local restricted material mapping is registered.",
+      "selectOrganization": "Select a compute organization first.",
+      "readOnly": "Read-only view. Changes require a desktop and software management permission.",
+      "loadFailed": "Could not load runtime or material configuration. Please retry.",
+      "selectRuntime": "Select a runtime",
+      "noCompatibleRuntime": "No active Python 3.12 runtime supports this scheduler. Ask a platform administrator to configure one."
     },
     "management": "Access and publishing management",
     "managementDescription": "Requests, publishing status and license declarations",

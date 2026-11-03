@@ -1241,7 +1241,12 @@
       "elements": "元素集合，以逗号分隔",
       "fingerprint": "本地文件指纹",
       "registerMaterial": "登记本地材料映射",
-      "noMaterialMappings": "尚未登记本地受限材料映射。"
+      "noMaterialMappings": "尚未登记本地受限材料映射。",
+      "selectOrganization": "请先选择算力组织。",
+      "readOnly": "当前为只读视图，修改需要电脑端及软件管理权限。",
+      "loadFailed": "运行环境或材料配置读取失败，请重试。",
+      "selectRuntime": "选择运行环境",
+      "noCompatibleRuntime": "没有适用于此调度器的已启用 Python 3.12 运行环境，请联系平台管理员配置。"
     },
     "management": "授权与发布管理",
     "managementDescription": "查看软件申请、发布状态与授权声明",

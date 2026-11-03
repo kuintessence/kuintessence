@@ -535,7 +535,7 @@
       "loadFailed": "执行账号列表暂时无法加载，请刷新后重试。",
       "register": "登记账号",
       "selectOrganization": "选择一个算力组织后可登记集群账号。",
-      "desktopRegister": "请在电脑端登记集群账号。",
+      "desktopRegister": "请在电脑端管理集群账号。",
       "registration": {
         "note": "登记集群上已有的执行身份，不会创建或修改远端系统用户。",
         "required": "请填写账号名称及执行身份。",
@@ -557,7 +557,9 @@
         "emptyQueuesHint": "留空时不允许向具名队列提交作业。"
       },
       "noQueues": "未授权具名队列",
-      "queuesNotApplicable": "不适用"
+      "queuesNotApplicable": "不适用",
+      "editQueues": "修改队列授权",
+      "queuesSaveFailed": "队列授权保存失败，请重试。"
     },
     "users": {
       "title": "组织成员",

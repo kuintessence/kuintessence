@@ -253,6 +253,13 @@ export async function createSandboxExecutionAccount(
   await api.post("/sandbox/accounts", input);
 }
 
+export async function updateSandboxAccountQueues(
+  id: string,
+  allowedQueues: string[],
+): Promise<void> {
+  await api.patch(`/sandbox/accounts/${encodeURIComponent(id)}/allowed-queues`, { allowedQueues });
+}
+
 export async function listSandboxAccountMappings(): Promise<SandboxAccountMappingView[]> {
   const body = await api.get<{ success: true; data: SandboxAccountMappingView[] }>(
     "/sandbox/account-mappings",

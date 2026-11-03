@@ -11,6 +11,7 @@ import { toUserFacingError } from "../../lib/user-facing-error";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
+import { EditAccountQueues } from "./EditAccountQueues";
 import { RegisterExecutionAccount } from "./RegisterExecutionAccount";
 import { SandboxMappingReviewPanel } from "./SandboxMappingReviewPanel";
 
@@ -19,6 +20,7 @@ export function CpAccountsPage() {
   const activeOrganizationId = useActiveOrganizationId();
   const queryClient = useQueryClient();
   const [registering, setRegistering] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
   const compact = useMediaQuery("(max-width: 767px)");
   const mobileReadOnly = compact && isMobileHighRiskMutationBlocked("/sandbox/accounts");
   const accountsQuery = useQuery({
@@ -37,6 +39,15 @@ export function CpAccountsPage() {
     !accountsQuery.error &&
     accountsQuery.data?.manageableProviderOrgIds?.includes(activeOrganizationId) === true &&
     !mobileReadOnly;
+  const editingAccount = accounts.find(
+    (account) =>
+      account.id === editingId &&
+      account.providerOrgId === activeOrganizationId &&
+      account.backendType === "unix",
+  );
+  useEffect(() => {
+    if (!canRegister || !editingAccount) setEditingId(null);
+  }, [canRegister, editingAccount]);
   useEffect(() => {
     if (!canRegister) setRegistering(false);
   }, [canRegister]);
@@ -144,6 +155,18 @@ export function CpAccountsPage() {
                         : account.allowedQueues.join(", ") || t("cp.accounts.noQueues")}
                     </dd>
                   </dl>
+                  {canRegister &&
+                    account.providerOrgId === activeOrganizationId &&
+                    account.backendType === "unix" && (
+                      <Button
+                        className="mt-3"
+                        variant="outline"
+                        size="sm"
+                        onClick={() => setEditingId(account.id)}
+                      >
+                        {t("cp.accounts.editQueues")}
+                      </Button>
+                    )}
                 </div>
               ))}
             </div>
@@ -152,6 +175,17 @@ export function CpAccountsPage() {
       </Card>
 
       <SandboxMappingReviewPanel />
+      {canRegister && editingAccount && (
+        <EditAccountQueues
+          key={`${editingAccount.id}:${getAuthState().revision}`}
+          account={editingAccount}
+          onClose={() => setEditingId(null)}
+          onSaved={async () => {
+            await queryClient.invalidateQueries({ queryKey: ["sandbox-execution-accounts"] });
+            setEditingId(null);
+          }}
+        />
+      )}
       {registering && canRegister && activeOrganizationId && (
         <RegisterExecutionAccount
           key={`${activeOrganizationId}:${getAuthState().revision}`}

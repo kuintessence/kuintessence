@@ -59,6 +59,19 @@ export function CloudStorageGovernancePanel() {
   const [draft, setDraft] = useState<PolicyDraft>(EMPTY_DRAFT);
   const [saving, setSaving] = useState(false);
   const [grantUserId, setGrantUserId] = useState("");
+  const [userSearch, setUserSearch] = useState("");
+  const usersQ = useQuery({
+    queryKey: ["storage-grant-users", userSearch],
+    queryFn: () =>
+      api.get<{
+        data: {
+          users: Array<{ id: string; email: string; displayName: string | null }>;
+          moreUsers: boolean;
+        };
+      }>(`/admin/authz/membership-options?${new URLSearchParams({ user: userSearch })}`),
+  });
+  const selectedUser =
+    !usersQ.error && usersQ.data?.data.users.find((user) => user.id === grantUserId);
   const [grantQuotaGb, setGrantQuotaGb] = useState("");
   const [grantExpiresAt, setGrantExpiresAt] = useState("");
   const [granting, setGranting] = useState(false);
@@ -148,14 +161,14 @@ export function CloudStorageGovernancePanel() {
 
   const createGrant = async () => {
     const quotaBytes = gbInputToBytes(grantQuotaGb);
-    if (!grantUserId.trim() || quotaBytes == null || quotaBytes <= 0) {
-      toast.error("请填写用户 ID 和有效配额");
+    if (!selectedUser || quotaBytes == null || quotaBytes <= 0) {
+      toast.error("请选择用户并填写有效配额");
       return;
     }
     setGranting(true);
     try {
       await api.post("/admin/storage/grants", {
-        userId: grantUserId.trim(),
+        userId: selectedUser.id,
         scope: "cloud",
         scopeId: "global",
         quotaBytes,
@@ -367,12 +380,47 @@ export function CloudStorageGovernancePanel() {
                 可分配长期配额；填写到期时间后将作为临时配额自动失效。
               </div>
             </div>
-            <Field label="平台用户 ID">
+            <Field label="分配给">
               <Input
-                aria-label="平台用户 ID"
-                value={grantUserId}
-                onChange={(event) => setGrantUserId(event.target.value)}
+                aria-label="搜索用户"
+                placeholder="搜索姓名或邮箱"
+                value={userSearch}
+                onChange={(event) => {
+                  setUserSearch(event.target.value);
+                  setGrantUserId("");
+                }}
               />
+              {usersQ.error ? (
+                <div role="alert">
+                  用户列表读取失败。
+                  <Button variant="outline" size="sm" onClick={() => void usersQ.refetch()}>
+                    重试
+                  </Button>
+                </div>
+              ) : (
+                <select
+                  aria-label="分配给"
+                  className="h-9 w-full min-w-0 rounded-md border bg-background px-3"
+                  value={grantUserId}
+                  disabled={usersQ.isPending || granting}
+                  onChange={(event) => setGrantUserId(event.target.value)}
+                >
+                  <option value="">
+                    {usersQ.isPending
+                      ? "正在加载用户…"
+                      : usersQ.data?.data.users.length
+                        ? "选择用户"
+                        : "没有匹配的用户"}
+                  </option>
+                  {usersQ.data?.data.users.map((user) => (
+                    <option key={user.id} value={user.id}>
+                      {user.displayName || user.email}
+                      {user.displayName ? ` · ${user.email}` : ""}
+                    </option>
+                  ))}
+                </select>
+              )}
+              {usersQ.data?.data.moreUsers && <p>仅显示前 50 个匹配用户，请缩小搜索范围。</p>}
             </Field>
             <div className="grid gap-3 sm:grid-cols-2">
               <Field label="总配额（GB）">
@@ -393,7 +441,11 @@ export function CloudStorageGovernancePanel() {
                 />
               </Field>
             </div>
-            <Button className="w-full" onClick={() => void createGrant()} disabled={granting}>
+            <Button
+              className="w-full"
+              onClick={() => void createGrant()}
+              disabled={granting || !selectedUser || !(Number(grantQuotaGb) > 0)}
+            >
               {granting ? (
                 <Loader2 className="animate-spin" />
               ) : grantExpiresAt ? (

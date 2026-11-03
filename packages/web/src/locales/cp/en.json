@@ -535,7 +535,7 @@
       "loadFailed": "Execution accounts could not be loaded. Refresh and try again.",
       "register": "Register account",
       "selectOrganization": "Select a provider organization to register an execution account.",
-      "desktopRegister": "Use a desktop to register execution accounts.",
+      "desktopRegister": "Use a desktop to manage execution accounts.",
       "registration": {
         "note": "Register an existing cluster identity. This does not create or modify remote system users.",
         "required": "Enter an account name and execution identity.",
@@ -557,7 +557,9 @@
         "emptyQueuesHint": "Leaving this blank does not authorize submission to any named queue."
       },
       "noQueues": "No named queues authorized",
-      "queuesNotApplicable": "Not applicable"
+      "queuesNotApplicable": "Not applicable",
+      "editQueues": "Edit queue access",
+      "queuesSaveFailed": "Could not save queue access. Please retry."
     },
     "users": {
       "title": "Organization members",

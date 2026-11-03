@@ -281,7 +281,7 @@ export function SoftwarePolicyTable({ canManage = true }: { canManage?: boolean 
           {t("cp.software.refresh")}
         </Button>
       </div>
-      <RuntimeAndMaterialPanel />
+      <RuntimeAndMaterialPanel canManage={canManage && !!overview} />
 
       {overviewQuery.error ? (
         <div className="rounded-md border border-status-failed/40 bg-[color-mix(in_oklab,var(--status-failed)_10%,transparent)] p-3 text-sm">

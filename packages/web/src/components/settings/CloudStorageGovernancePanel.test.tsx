@@ -18,6 +18,13 @@ function setup(failed: string | null) {
   let failure = failed;
   api.get.mockImplementation(async (path: string) => {
     if (path.includes(failure ?? "never-match")) throw new Error("unavailable");
+    if (path.includes("/membership-options"))
+      return {
+        data: {
+          users: [{ id: "user-1", email: "user@example.test", displayName: "Researcher" }],
+          moreUsers: false,
+        },
+      };
     if (path.includes("/policy")) return policy;
     if (path.includes("/overview"))
       return {
@@ -76,6 +83,32 @@ test("a cleared quota is not silently saved as zero", async () => {
       expect.objectContaining({ defaultQuotaBytes: 12 * 1024 ** 3 }),
     ),
   );
+  unmount();
+  client.clear();
+});
+
+test("quota assignment searches users and cannot submit a stale selection after searching again", async () => {
+  const { client, unmount } = setup(null);
+  await screen.findByRole("option", { name: "Researcher · user@example.test" });
+  fireEvent.change(screen.getByLabelText("分配给"), { target: { value: "user-1" } });
+  fireEvent.change(screen.getByLabelText("总配额（GB）"), { target: { value: "20" } });
+  fireEvent.click(screen.getByRole("button", { name: "分配配额" }));
+  await waitFor(() =>
+    expect(api.post).toHaveBeenCalledWith(
+      "/admin/storage/grants",
+      expect.objectContaining({ userId: "user-1", quotaBytes: 20 * 1024 ** 3 }),
+    ),
+  );
+  await waitFor(() => expect(screen.getByLabelText("分配给")).toHaveProperty("value", ""));
+  fireEvent.change(screen.getByLabelText("分配给"), { target: { value: "user-1" } });
+  fireEvent.change(screen.getByLabelText("总配额（GB）"), { target: { value: "30" } });
+  fireEvent.change(screen.getByLabelText("搜索用户"), { target: { value: "other" } });
+  await waitFor(() =>
+    expect(api.get).toHaveBeenCalledWith("/admin/authz/membership-options?user=other"),
+  );
+  expect(screen.getByLabelText("分配给")).toHaveProperty("value", "");
+  fireEvent.click(screen.getByRole("button", { name: "分配配额" }));
+  expect(api.post).toHaveBeenCalledTimes(1);
   unmount();
   client.clear();
 });
