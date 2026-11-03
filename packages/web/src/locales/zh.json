@@ -234,7 +234,20 @@
       "sshOpened": "打开了 SSH 会话",
       "ssoUpdated": "更新了单点登录配置",
       "automationCredentialCreated": "创建了自动化凭据",
-      "automationCredentialRevoked": "撤销了自动化凭据"
+      "automationCredentialRevoked": "撤销了自动化凭据",
+      "categoryCompute": "算力",
+      "provider_create": "新增算力提供者",
+      "provider_update": "修改算力提供者",
+      "provider_delete": "删除算力提供者",
+      "center_create": "新增算力中心",
+      "center_update": "修改算力中心",
+      "center_delete": "删除算力中心",
+      "cluster_create": "新增集群",
+      "cluster_update": "修改集群",
+      "cluster_delete": "删除集群",
+      "link_create": "新增互联链路",
+      "link_update": "修改互联链路",
+      "link_delete": "删除互联链路"
     }
   },
   "quickStart": {

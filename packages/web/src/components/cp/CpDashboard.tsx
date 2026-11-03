@@ -105,11 +105,23 @@ export function CpDashboard() {
       <div className="grid gap-2 rounded-lg border border-border bg-card p-3 sm:grid-cols-3">
         <OperationalSummary
           label={t("cp.dashboard.summary.successRate")}
-          value={isLoading ? "—" : `${successRate}%`}
+          value={
+            isLoading
+              ? "—"
+              : terminalJobs > 0
+                ? `${successRate}%`
+                : t("cp.dashboard.summary.noJobs")
+          }
         />
         <OperationalSummary
           label={t("cp.dashboard.summary.agentAvailability")}
-          value={isLoading ? "—" : `${availableAgentRate}%`}
+          value={
+            isLoading
+              ? "—"
+              : agentTotal > 0
+                ? `${availableAgentRate}%`
+                : t("cp.dashboard.summary.noAgents")
+          }
         />
         <OperationalSummary
           label={t("cp.dashboard.summary.window")}

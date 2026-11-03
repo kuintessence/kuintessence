@@ -234,7 +234,20 @@
       "sshOpened": "Opened an SSH session",
       "ssoUpdated": "Updated single sign-on settings",
       "automationCredentialCreated": "Created an automation credential",
-      "automationCredentialRevoked": "Revoked an automation credential"
+      "automationCredentialRevoked": "Revoked an automation credential",
+      "categoryCompute": "Compute",
+      "provider_create": "Created compute provider",
+      "provider_update": "Updated compute provider",
+      "provider_delete": "Deleted compute provider",
+      "center_create": "Created compute center",
+      "center_update": "Updated compute center",
+      "center_delete": "Deleted compute center",
+      "cluster_create": "Created cluster",
+      "cluster_update": "Updated cluster",
+      "cluster_delete": "Deleted cluster",
+      "link_create": "Created interconnect link",
+      "link_update": "Updated interconnect link",
+      "link_delete": "Deleted interconnect link"
     }
   },
   "quickStart": {

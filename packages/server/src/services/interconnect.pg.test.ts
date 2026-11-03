@@ -240,3 +240,22 @@ describe("interconnect relational inventory", () => {
     expect((await service.snapshot(globalScope)).links.some((l) => l.id === linkId)).toBe(false);
   });
 });
+
+test("audit preserves resource metadata and records deletion as deletion", async () => {
+  const center = await service.saveCenter(globalScope, null, centerInput(orgA, "Audit center"));
+  createdIds.push(center.id);
+  await service.saveCenter(globalScope, center.id, centerInput(orgA, "Renamed center"));
+  await service.remove(globalScope, "center", center.id);
+  const entries = await db.select().from(auditLog).where(eq(auditLog.target, center.id));
+  expect(entries.find((e) => e.action === "interconnect.center.create")?.diff).toMatchObject({
+    after: { metadata: { name: "Audit center" } },
+  });
+  expect(entries.find((e) => e.action === "interconnect.center.update")?.diff).toMatchObject({
+    before: { metadata: { name: "Audit center" } },
+    after: { metadata: { name: "Renamed center" } },
+  });
+  expect(entries.find((e) => e.action === "interconnect.center.delete")?.diff).toMatchObject({
+    before: { metadata: { name: "Renamed center" } },
+  });
+  expect(entries.some((e) => e.action.endsWith("delete.update"))).toBe(false);
+});

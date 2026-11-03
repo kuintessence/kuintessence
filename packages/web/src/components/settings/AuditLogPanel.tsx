@@ -50,7 +50,7 @@ export function AuditLogPanel() {
       ) : audit.isLoading ? (
         <div className="text-sm text-muted-foreground">{t("common.loading")}</div>
       ) : (
-        <EventsList entries={entries} />
+        <EventsList entries={entries} limit={100} />
       )}
     </section>
   );

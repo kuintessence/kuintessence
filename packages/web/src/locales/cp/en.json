@@ -71,7 +71,9 @@
         "successRate": "Job success rate",
         "agentAvailability": "Agent availability",
         "window": "Reporting window",
-        "last24Hours": "Last 24 hours"
+        "last24Hours": "Last 24 hours",
+        "noJobs": "No completed jobs",
+        "noAgents": "No connected agents"
       },
       "attention": {
         "label": "Compute provider approvals and alerts",

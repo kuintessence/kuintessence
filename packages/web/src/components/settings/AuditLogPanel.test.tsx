@@ -60,3 +60,18 @@ describe("AuditLogPanel", () => {
     expect(screen.queryByTestId("events-empty")).toBeNull();
   });
 });
+
+test("platform log displays more than ten records", async () => {
+  apiGet.mockResolvedValue({
+    entries: Array.from({ length: 25 }, (_, i) => ({
+      id: `audit-${i}`,
+      actor: "admin@example.test",
+      action: "job.submit",
+      target: `job-${i}`,
+      createdAt: "2026-11-03T00:00:00Z",
+    })),
+  });
+  render(<AuditLogPanel />, { wrapper });
+  await screen.findByTestId("events-list");
+  expect(screen.getAllByRole("listitem")).toHaveLength(25);
+});

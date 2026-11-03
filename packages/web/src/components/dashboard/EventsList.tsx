@@ -6,6 +6,7 @@ import { compactUuid } from "../../lib/format";
 export interface EventsListProps {
   entries: AuditEntry[];
   forbidden?: boolean;
+  limit?: number;
 }
 
 type EventCopy = {
@@ -64,6 +65,32 @@ function describeEvent(entry: AuditEntry): EventCopy {
   const path = filePath(entry);
   const actor = actorLabel(entry.actor);
   const subject = path ?? actor ?? "平台记录";
+  const resource =
+    /^(compute-provider|interconnect\.(center|cluster|link))\.(create|update|delete)$/.exec(
+      entry.action.replace(/\.delete\.update$/, ".delete"),
+    );
+  if (resource) {
+    const kind = resource[1] === "compute-provider" ? "provider" : resource[2];
+    const labels: Record<string, string> = {
+      provider: "算力提供者",
+      center: "算力中心",
+      cluster: "集群",
+      link: "互联链路",
+    };
+    const verbs: Record<string, string> = { create: "新增", update: "修改", delete: "删除" };
+    const name =
+      stringField(entry.diff?.after, "name") ??
+      stringField(entry.diff?.before, "name") ??
+      stringField(isRecord(entry.diff?.after) ? entry.diff.after.metadata : null, "name") ??
+      stringField(isRecord(entry.diff?.before) ? entry.diff.before.metadata : null, "name");
+    return {
+      labelKey: `dashboard.events.${kind}_${resource[3]}`,
+      defaultLabel: `${verbs[resource[3] ?? ""]}${labels[kind ?? ""]}`,
+      categoryKey: "dashboard.events.categoryCompute",
+      defaultCategory: "算力",
+      subject: name ?? entry.target,
+    };
+  }
   switch (entry.action) {
     case "netdrive.upload-url.mint":
       return {
@@ -172,8 +199,8 @@ function describeEvent(entry: AuditEntry): EventCopy {
       };
     default:
       return {
-        labelKey: "dashboard.events.platformUpdated",
-        defaultLabel: "更新了平台配置",
+        labelKey: `dashboard.events.action.${entry.action}`,
+        defaultLabel: entry.action,
         categoryKey: "dashboard.events.categoryPlatform",
         defaultCategory: "平台",
         subject,
@@ -181,7 +208,7 @@ function describeEvent(entry: AuditEntry): EventCopy {
   }
 }
 
-export function EventsList({ entries, forbidden }: EventsListProps) {
+export function EventsList({ entries, forbidden, limit = 10 }: EventsListProps) {
   const { t, i18n } = useTranslation();
   if (forbidden) {
     return (
@@ -206,7 +233,7 @@ export function EventsList({ entries, forbidden }: EventsListProps) {
   }
   return (
     <ul className="space-y-2" data-testid="events-list">
-      {entries.slice(0, 10).map((e) => {
+      {entries.slice(0, limit).map((e) => {
         const copy = describeEvent(e);
         return (
           <li

@@ -71,7 +71,9 @@
         "successRate": "作业成功率",
         "agentAvailability": "节点可用率",
         "window": "统计窗口",
-        "last24Hours": "最近 24 小时"
+        "last24Hours": "最近 24 小时",
+        "noJobs": "暂无完成作业",
+        "noAgents": "未接入节点"
       },
       "attention": {
         "label": "算力提供方审批与告警",

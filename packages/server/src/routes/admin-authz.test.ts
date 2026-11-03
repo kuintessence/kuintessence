@@ -172,11 +172,13 @@ function fakeAuditCapabilityDb(userId: string, captures: DbCapture[]): PgDb {
   let granted = false;
   const chainRows = <T extends object>(rows: T[]) => {
     const chain = rows as T[] & {
-      limit: () => Promise<T[]>;
+      limit: () => unknown;
+      offset: () => Promise<T[]>;
       orderBy: () => unknown;
       where: () => unknown;
     };
-    chain.limit = async () => rows;
+    chain.limit = () => chain;
+    chain.offset = async () => rows;
     chain.orderBy = () => chain;
     chain.where = () => chain;
     return chain;
