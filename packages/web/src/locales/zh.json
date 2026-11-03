@@ -1739,7 +1739,8 @@
       "loadFailed": "加载成本费率失败",
       "errorEmptyCluster": "集群名称不能为空",
       "errorDuplicateCluster": "集群名称重复：{{cluster}}",
-      "errorInvalidRate": "{{cluster}} 的费率必须为非负数"
+      "errorInvalidRate": "{{cluster}} 的费率必须为非负数",
+      "rateLabel": "每 CPU 小时费率"
     },
     "clusterFileRoots": {
       "title": "集群文件根目录",

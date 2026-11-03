@@ -485,7 +485,8 @@
         "saveFailed": "Failed to update policy"
       },
       "empty": "No registered agents in scope.",
-      "loadFailed": "Software governance data could not be loaded. Refresh and try again."
+      "loadFailed": "Software governance data could not be loaded. Refresh and try again.",
+      "desktopManage": "Use a desktop to change software policies or install software."
     },
     "infrastructure": {
       "title": "Cluster infrastructure",

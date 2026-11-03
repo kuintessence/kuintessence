@@ -64,6 +64,7 @@ import {
   useCpSoftwareOperations,
   useCpSoftwareOverview,
 } from "../../lib/use-cp-software";
+import { useMobileMutationBlocked } from "../../lib/use-mobile-mutation-blocked";
 import { useOrganizationName } from "../../lib/use-organization-name";
 import { toUserFacingError } from "../../lib/user-facing-error";
 import { RuntimeAndMaterialPanel } from "../software/EcosystemGovernancePanels";
@@ -147,7 +148,13 @@ interface PolicyDraft {
   preinstallText: string;
 }
 
-export function SoftwarePolicyTable({ canManage = true }: { canManage?: boolean }) {
+export function SoftwarePolicyTable({
+  canManage: managementAllowed = true,
+}: {
+  canManage?: boolean;
+}) {
+  const mobileReadOnly = useMobileMutationBlocked("/cp/software");
+  const canManage = managementAllowed && !mobileReadOnly;
   const { t } = useTranslation();
   const overviewQuery = useCpSoftwareOverview();
   const saveProvider = useCpSaveProviderSoftwarePolicy();
@@ -281,6 +288,9 @@ export function SoftwarePolicyTable({ canManage = true }: { canManage?: boolean 
           {t("cp.software.refresh")}
         </Button>
       </div>
+      {mobileReadOnly && (
+        <p className="text-sm text-muted-foreground">{t("cp.software.desktopManage")}</p>
+      )}
       <RuntimeAndMaterialPanel canManage={canManage && !!overview} />
 
       {overviewQuery.error ? (

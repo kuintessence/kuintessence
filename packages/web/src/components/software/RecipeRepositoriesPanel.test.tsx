@@ -565,3 +565,34 @@ test("stops unsent imports when publishing permission is revoked", async () => {
   expect(client.importRecipeRepository).toHaveBeenCalledTimes(1);
   expect(screen.queryByLabelText("Git bundles")).toBeNull();
 });
+
+test("mobile resize hides recipe writes and discards pending bundle selections", async () => {
+  sessionStorage.setItem("kq.mobile-management-policy", "observe-approve");
+  const listeners = new Set<() => void>();
+  const media = {
+    matches: false,
+    addEventListener: vi.fn((_name: string, listener: () => void) => listeners.add(listener)),
+    removeEventListener: vi.fn((_name: string, listener: () => void) => listeners.delete(listener)),
+  };
+  const spy = vi.spyOn(window, "matchMedia").mockReturnValue(media as unknown as MediaQueryList);
+  try {
+    mount();
+    selectFiles("demo.bundle");
+    expect(screen.getByLabelText("Repository for demo.bundle")).toBeTruthy();
+    act(() => {
+      media.matches = true;
+      for (const listener of listeners) listener();
+    });
+    expect(screen.queryByLabelText("Git bundles")).toBeNull();
+    expect(screen.queryByLabelText("Repository for demo.bundle")).toBeNull();
+    act(() => {
+      media.matches = false;
+      for (const listener of listeners) listener();
+    });
+    expect(screen.getByLabelText("Git bundles")).toBeTruthy();
+    expect(screen.queryByLabelText("Repository for demo.bundle")).toBeNull();
+  } finally {
+    spy.mockRestore();
+    sessionStorage.clear();
+  }
+});

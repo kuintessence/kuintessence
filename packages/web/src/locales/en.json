@@ -1739,7 +1739,8 @@
       "loadFailed": "Failed to load cost rates",
       "errorEmptyCluster": "Cluster name cannot be empty",
       "errorDuplicateCluster": "Duplicate cluster name: {{cluster}}",
-      "errorInvalidRate": "Rate for {{cluster}} must be a non-negative number"
+      "errorInvalidRate": "Rate for {{cluster}} must be a non-negative number",
+      "rateLabel": "Rate per CPU-hour"
     },
     "clusterFileRoots": {
       "title": "Cluster file roots",

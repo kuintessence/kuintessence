@@ -485,7 +485,8 @@
         "saveFailed": "策略更新失败"
       },
       "empty": "范围内暂无注册节点。",
-      "loadFailed": "软件治理数据暂时无法加载，请刷新后重试。"
+      "loadFailed": "软件治理数据暂时无法加载，请刷新后重试。",
+      "desktopManage": "请在电脑端修改软件策略或安装软件。"
     },
     "infrastructure": {
       "title": "集群基础设施",

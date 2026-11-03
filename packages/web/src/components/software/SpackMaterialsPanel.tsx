@@ -7,10 +7,10 @@ import {
 } from "../../lib/active-organization";
 import { getAuthState, subscribeAuthState } from "../../lib/auth";
 import { isLocalMode } from "../../lib/local-mode";
-import { isMobileHighRiskMutationBlocked } from "../../lib/mobile-management-policy";
 import { useMeCapabilities } from "../../lib/platform-capabilities";
 import { canWriteRecipeRepository } from "../../lib/recipe-repository-access";
 import { canManageSpackInstallBinding } from "../../lib/spack-install-binding-access";
+import { useMobileMutationBlocked } from "../../lib/use-mobile-mutation-blocked";
 import { MaterialCatalog } from "./MaterialCatalog";
 import {
   MaterialManagementCatalog,
@@ -37,6 +37,7 @@ export function SpackMaterialsPanel({
   canManageBindings?: boolean;
 }) {
   const { t } = useTranslation();
+  const mobileReadOnly = useMobileMutationBlocked("/software/spack/material-repositories");
   const sessionKey = useSyncExternalStore(subscribeAuthState, getSessionKey, () => null);
   const organizationId = useActiveOrganizationId();
   const capabilityState = useMeCapabilities(
@@ -49,6 +50,7 @@ export function SpackMaterialsPanel({
     canManage,
     canManageBindings,
     capabilities,
+    mobileReadOnly,
   ]);
   const latestScope = useRef(scope);
   latestScope.current = scope;
@@ -60,9 +62,7 @@ export function SpackMaterialsPanel({
     isCurrent() &&
     !isLocalMode() &&
     canWriteRecipeRepository(repository, { canManage, organizationId, capabilities });
-  const writable = (repository: string) =>
-    manageable(repository) &&
-    !isMobileHighRiskMutationBlocked("/software/spack/material-repositories");
+  const writable = (repository: string) => manageable(repository) && !mobileReadOnly;
   const canImport =
     writable("public/materials") ||
     (!!organizationId && writable(`org/${organizationId}/materials`));
@@ -81,8 +81,7 @@ export function SpackMaterialsPanel({
     canInspectBindingScope("platform") ||
     (!!organizationId && canInspectBindingScope(organizationId));
   const canWriteBindingScope = (bindingScope: string) =>
-    canInspectBindingScope(bindingScope) &&
-    !isMobileHighRiskMutationBlocked("/software/spack/install-bindings");
+    canInspectBindingScope(bindingScope) && !mobileReadOnly;
   return (
     <section
       className="min-w-0 space-y-3 py-4"

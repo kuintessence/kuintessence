@@ -217,7 +217,11 @@ test.each(
 });
 
 test("mobile allows inspection but disables mutation controls", async () => {
-  vi.spyOn(window, "matchMedia").mockReturnValue({ matches: true } as MediaQueryList);
+  vi.spyOn(window, "matchMedia").mockReturnValue({
+    matches: true,
+    addEventListener: vi.fn(),
+    removeEventListener: vi.fn(),
+  } as unknown as MediaQueryList);
   setMobileManagementPolicy(true);
   mount();
   await readyBinding();

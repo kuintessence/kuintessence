@@ -471,7 +471,11 @@ test.each([
   "org/org-a/materials",
   "org/org-b/materials",
 ])("mobile policy permits only manageable namespace audit reads, never writes: %s", async (repository) => {
-  vi.spyOn(window, "matchMedia").mockReturnValue({ matches: true } as MediaQueryList);
+  vi.spyOn(window, "matchMedia").mockReturnValue({
+    matches: true,
+    addEventListener: vi.fn(),
+    removeEventListener: vi.fn(),
+  } as unknown as MediaQueryList);
   setMobileManagementPolicy(true);
   const f = lifecycleFixture(repository);
   vi.mocked(lifecycle.getSpackMaterialLifecycle).mockResolvedValueOnce(f.atRevision(1));

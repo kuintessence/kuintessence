@@ -229,7 +229,11 @@ test("catalog limit errors are localized without disclosing server details or re
 });
 
 test("mobile write restrictions retain the read-only catalog and details", async () => {
-  vi.spyOn(window, "matchMedia").mockReturnValue({ matches: true } as MediaQueryList);
+  vi.spyOn(window, "matchMedia").mockReturnValue({
+    matches: true,
+    addEventListener: vi.fn(),
+    removeEventListener: vi.fn(),
+  } as unknown as MediaQueryList);
   setMobileManagementPolicy(true);
   vi.mocked(client.listSpackMaterials).mockResolvedValue(catalog());
   mount();

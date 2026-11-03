@@ -65,7 +65,13 @@ export function ClusterStoragePolicyEditor({ rootId }: { rootId: string }) {
     const defaultQuotaBytes = gbToBytes(defaultGb);
     const maxQuotaBytes = maxGb ? gbToBytes(maxGb) : null;
     const autoApproveLimitBytes = autoLimitGb ? gbToBytes(autoLimitGb) : null;
-    if (defaultQuotaBytes == null || (maxGb && maxQuotaBytes == null)) {
+    if (policyQ.isPending || requestsQ.isPending || policyQ.error || requestsQ.error || saving)
+      return;
+    if (
+      defaultQuotaBytes == null ||
+      (maxGb && maxQuotaBytes == null) ||
+      (autoLimitGb && autoApproveLimitBytes == null)
+    ) {
       toast.error("请输入有效的集群存储配额");
       return;
     }
@@ -103,9 +109,40 @@ export function ClusterStoragePolicyEditor({ rootId }: { rootId: string }) {
     }
   };
 
+  const queries = [policyQ, requestsQ];
+  const failed = queries.filter((query) => query.error);
+  if (failed.length || queries.some((query) => query.isPending)) {
+    return (
+      <div
+        className="space-y-3 rounded-md border border-dashed bg-muted/20 p-3"
+        data-testid="cluster-storage-policy"
+      >
+        <h3 className="text-xs font-semibold">用户配额申请策略</h3>
+        {failed.length ? (
+          <div role="alert" className="space-y-2 text-sm">
+            <p>集群存储策略或申请读取失败，请重试后再操作。</p>
+            <Button
+              variant="outline"
+              onClick={() => void Promise.all(failed.map((query) => query.refetch()))}
+            >
+              重试
+            </Button>
+          </div>
+        ) : (
+          <p role="status" className="text-sm text-muted-foreground">
+            正在加载集群存储策略与申请…
+          </p>
+        )}
+      </div>
+    );
+  }
+
   const pending = (requestsQ.data?.requests ?? []).filter((item) => item.status === "pending");
   return (
-    <div className="space-y-3 rounded-md border border-dashed bg-muted/20 p-3">
+    <div
+      className="space-y-3 rounded-md border border-dashed bg-muted/20 p-3"
+      data-testid="cluster-storage-policy"
+    >
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div>
           <div className="text-xs font-semibold">用户配额申请策略</div>
@@ -199,6 +236,7 @@ function LabeledInput({
 }
 
 function gbToBytes(value: string): number | null {
+  if (!value.trim()) return null;
   const number = Number(value);
   if (!Number.isFinite(number) || number < 0) return null;
   return Math.round(number * GB);
