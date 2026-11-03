@@ -7,6 +7,7 @@ import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { api } from "../../lib/api-client";
+import { useMobileMutationBlocked } from "../../lib/use-mobile-mutation-blocked";
 import { toUserFacingError } from "../../lib/user-facing-error";
 import { Button } from "../ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
@@ -33,15 +34,25 @@ function parseRetentionDays(value: string): number | null {
   return Number.isInteger(parsed) && parsed >= 1 && parsed <= 3650 ? parsed : null;
 }
 
-export function FileTransferAuditConfigPanel({ canManage }: { canManage: boolean }) {
+export function FileTransferAuditConfigPanel({
+  canManage: managementAllowed,
+}: {
+  canManage: boolean;
+}) {
   const { t } = useTranslation();
+  const mobileReadOnly = useMobileMutationBlocked("/admin/file-transfer-audit/config");
+  const canManage = managementAllowed && !mobileReadOnly;
   const [config, setConfig] = useState<FileTransferAuditConfigView | null>(null);
   const [form, setForm] = useState<FormState | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 
+  const loadFailedLabel = t("settings.operations.fileTransferAudit.loadFailed");
   useEffect(() => {
+    if (loadError) return;
     let cancelled = false;
+    setConfig(null);
+    setForm(null);
     api
       .get<FileTransferAuditConfigView>("/admin/file-transfer-audit/config")
       .then((loaded) => {
@@ -51,14 +62,12 @@ export function FileTransferAuditConfigPanel({ canManage }: { canManage: boolean
       })
       .catch((error: unknown) => {
         if (cancelled) return;
-        setLoadError(
-          toUserFacingError(error, t("settings.operations.fileTransferAudit.loadFailed")),
-        );
+        setLoadError(toUserFacingError(error, loadFailedLabel));
       });
     return () => {
       cancelled = true;
     };
-  }, [t]);
+  }, [loadFailedLabel, loadError]);
 
   if (loadError) {
     return (
@@ -70,6 +79,9 @@ export function FileTransferAuditConfigPanel({ canManage }: { canManage: boolean
           <div className="text-sm text-status-failed" data-testid="file-transfer-audit-load-error">
             {loadError}
           </div>
+          <Button className="mt-3" variant="outline" onClick={() => setLoadError(null)}>
+            {t("common.retry")}
+          </Button>
         </CardContent>
       </Card>
     );

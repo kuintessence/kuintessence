@@ -58,7 +58,10 @@ beforeEach(() => {
   toastSuccess.mockReset();
   toastError.mockReset();
 });
-afterEach(() => vi.restoreAllMocks());
+afterEach(() => {
+  vi.restoreAllMocks();
+  sessionStorage.clear();
+});
 
 describe("SshActiveSessions", () => {
   test("lists live sessions", async () => {
@@ -142,4 +145,21 @@ describe("SshActiveSessions", () => {
     expect(calls.some((c) => c.method === "DELETE" && c.url.includes("sess-12345678"))).toBe(true);
     await waitFor(() => screen.getByTestId("ssh-sess-empty"));
   });
+});
+
+test("mobile policy blocks SSH changes but keeps metadata readable", async () => {
+  sessionStorage.setItem("kq.mobile-management-policy", "observe-approve");
+  vi.spyOn(window, "matchMedia").mockReturnValue({
+    matches: true,
+    addEventListener: vi.fn(),
+    removeEventListener: vi.fn(),
+  } as unknown as MediaQueryList);
+  const calls = installFetch([() => oneSession(), () => oneSession()]);
+  render(<SshActiveSessions />);
+  const disconnect = await screen.findByTestId("ssh-sess-kill-sess-12345678");
+  expect(disconnect).toHaveProperty("disabled", true);
+  fireEvent.click(disconnect);
+  fireEvent.click(screen.getByTestId("ssh-sess-refresh"));
+  await waitFor(() => expect(calls).toHaveLength(2));
+  expect(calls.every((call) => call.method === "GET")).toBe(true);
 });

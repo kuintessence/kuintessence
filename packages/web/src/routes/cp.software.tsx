@@ -11,9 +11,9 @@ export function CpSoftwarePage() {
   if (management.error) return <CpCapabilityError retry={management.retry} />;
   return (
     <div className="space-y-4">
+      <SoftwarePolicyTable canManage={management.allowed} />
       <RecipeRepositoriesPanel canManage={management.allowed} />
       <SpackMaterialsPanel canManage={management.allowed} />
-      <SoftwarePolicyTable canManage={management.allowed} />
     </div>
   );
 }

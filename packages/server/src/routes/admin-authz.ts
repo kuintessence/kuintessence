@@ -311,38 +311,52 @@ export function createAdminAuthzRoutes(db: PgDb, options: AdminAuthzRouteOptions
     },
   );
 
-  r.get("/admin/authz/audit-capabilities", async (c) => {
-    requireAuditCapabilityAdmin(c);
-    const [userRows, capabilityRows] = await Promise.all([
-      db
-        .select({
-          id: users.id,
-          email: users.email,
-          role: users.role,
-        })
-        .from(users)
-        .orderBy(users.email)
-        .limit(500),
-      db
-        .select({
-          userId: userCapabilities.userId,
-          grantedBy: userCapabilities.grantedBy,
-          grantedAt: userCapabilities.grantedAt,
-        })
-        .from(userCapabilities)
-        .where(eq(userCapabilities.capability, "audit_readonly")),
-    ]);
-    const capabilityByUserId = new Map(capabilityRows.map((row) => [row.userId, row]));
-    return c.json({
-      success: true,
-      data: userRows.map((user) => ({
-        ...user,
-        auditReadonly: capabilityByUserId.has(user.id),
-        grantedBy: capabilityByUserId.get(user.id)?.grantedBy ?? null,
-        grantedAt: capabilityByUserId.get(user.id)?.grantedAt ?? null,
-      })),
-    });
-  });
+  r.get(
+    "/admin/authz/audit-capabilities",
+    kqValidator("query", MembershipListQuerySchema),
+    async (c) => {
+      const query = c.req.valid("query");
+      const pattern = `%${query.search.replace(/[\\%_]/g, "\\$&")}%`;
+      requireAuditCapabilityAdmin(c);
+      const [userRows, capabilityRows] = await Promise.all([
+        db
+          .select({
+            id: users.id,
+            email: users.email,
+            displayName: users.displayName,
+            role: users.role,
+          })
+          .from(users)
+          .where(
+            query.search
+              ? or(ilike(users.email, pattern), ilike(users.displayName, pattern))
+              : undefined,
+          )
+          .orderBy(users.email, users.id)
+          .limit(query.limit + 1)
+          .offset(query.offset),
+        db
+          .select({
+            userId: userCapabilities.userId,
+            grantedBy: userCapabilities.grantedBy,
+            grantedAt: userCapabilities.grantedAt,
+          })
+          .from(userCapabilities)
+          .where(eq(userCapabilities.capability, "audit_readonly")),
+      ]);
+      const capabilityByUserId = new Map(capabilityRows.map((row) => [row.userId, row]));
+      return c.json({
+        success: true,
+        hasMore: userRows.length > query.limit,
+        data: userRows.slice(0, query.limit).map((user) => ({
+          ...user,
+          auditReadonly: capabilityByUserId.has(user.id),
+          grantedBy: capabilityByUserId.get(user.id)?.grantedBy ?? null,
+          grantedAt: capabilityByUserId.get(user.id)?.grantedAt ?? null,
+        })),
+      });
+    },
+  );
 
   r.put("/admin/authz/audit-capabilities/:userId", async (c) => {
     requireAuditCapabilityAdmin(c);

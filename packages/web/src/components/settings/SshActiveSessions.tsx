@@ -3,6 +3,7 @@ import { useCallback, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { api } from "../../lib/api-client";
+import { useMobileMutationBlocked } from "../../lib/use-mobile-mutation-blocked";
 import { toUserFacingError } from "../../lib/user-facing-error";
 import { Button } from "../ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
@@ -31,6 +32,7 @@ function fmtDuration(ms: number): string {
 
 export function SshActiveSessions() {
   const { t } = useTranslation();
+  const mobileReadOnly = useMobileMutationBlocked("/admin/ssh-sessions");
   const [sessions, setSessions] = useState<SshSessionSummary[] | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [killing, setKilling] = useState<string | null>(null);
@@ -50,6 +52,7 @@ export function SshActiveSessions() {
   }, [refresh]);
 
   async function onKill(sessionId: string) {
+    if (mobileReadOnly || loadError) return;
     setKilling(sessionId);
     try {
       await api.delete(`/admin/ssh-sessions/${encodeURIComponent(sessionId)}`);
@@ -121,7 +124,7 @@ export function SshActiveSessions() {
                 variant="outline"
                 size="sm"
                 data-testid={`ssh-sess-kill-${s.sessionId}`}
-                disabled={Boolean(loadError) || killing === s.sessionId}
+                disabled={mobileReadOnly || Boolean(loadError) || killing === s.sessionId}
                 onClick={() => onKill(s.sessionId)}
               >
                 {killing === s.sessionId ? (

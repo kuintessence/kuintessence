@@ -342,7 +342,10 @@ export function CpDataPage() {
             </CardTitle>
           </CardHeader>
           <CardContent className="space-y-3">
-            {!versions.isError ? (
+            {!asset ? (
+              <p className="text-sm text-muted-foreground">{t("cp.data.selectAssetForVersions")}</p>
+            ) : null}
+            {asset && !versions.isError ? (
               <VersionList
                 versions={versions.data?.versions ?? []}
                 selected={selectedVersion?.id ?? null}
@@ -351,7 +354,14 @@ export function CpDataPage() {
             ) : null}
             <QueryFeedback query={versions} onRetry={() => void versions.refetch()} />
             <QueryFeedback query={replicas} onRetry={() => void replicas.refetch()} />
-            {!replicas.isError ? <ReplicaList replicas={replicas.data?.replicas ?? []} /> : null}
+            {asset && !selectedVersion && (versions.data?.versions.length ?? 0) > 0 ? (
+              <p className="text-sm text-muted-foreground">
+                {t("cp.data.selectVersionForReplicas")}
+              </p>
+            ) : null}
+            {selectedVersion && !replicas.isError ? (
+              <ReplicaList replicas={replicas.data?.replicas ?? []} />
+            ) : null}
           </CardContent>
         </Card>
         <Card>

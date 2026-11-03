@@ -434,7 +434,11 @@ test.each(["anonymous", "local"])("%s mode offers no material operations or requ
 });
 
 test("the mobile management policy hides uploads while retaining authorized lookup", async () => {
-  vi.spyOn(window, "matchMedia").mockReturnValue({ matches: true } as MediaQueryList);
+  vi.spyOn(window, "matchMedia").mockReturnValue({
+    matches: true,
+    addEventListener: vi.fn(),
+    removeEventListener: vi.fn(),
+  } as unknown as MediaQueryList);
   setMobileManagementPolicy(true);
   mount();
   expect(screen.queryByLabelText("Material manifest (JSON)")).toBeNull();

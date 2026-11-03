@@ -64,6 +64,7 @@ import {
   useCpSoftwareOperations,
   useCpSoftwareOverview,
 } from "../../lib/use-cp-software";
+import { useMobileMutationBlocked } from "../../lib/use-mobile-mutation-blocked";
 import { useOrganizationName } from "../../lib/use-organization-name";
 import { toUserFacingError } from "../../lib/user-facing-error";
 import { RuntimeAndMaterialPanel } from "../software/EcosystemGovernancePanels";
@@ -147,7 +148,13 @@ interface PolicyDraft {
   preinstallText: string;
 }
 
-export function SoftwarePolicyTable({ canManage = true }: { canManage?: boolean }) {
+export function SoftwarePolicyTable({
+  canManage: managementAllowed = true,
+}: {
+  canManage?: boolean;
+}) {
+  const mobileReadOnly = useMobileMutationBlocked("/cp/software");
+  const canManage = managementAllowed && !mobileReadOnly;
   const { t } = useTranslation();
   const overviewQuery = useCpSoftwareOverview();
   const saveProvider = useCpSaveProviderSoftwarePolicy();
@@ -267,7 +274,7 @@ export function SoftwarePolicyTable({ canManage = true }: { canManage?: boolean 
     <div className="space-y-5" data-testid="cp-software-policy-table">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h2 className="text-2xl font-semibold tracking-tight">{t("cp.software.title")}</h2>
+          <h1 className="text-2xl font-semibold tracking-tight">{t("cp.software.title")}</h1>
           <p className="text-sm text-muted-foreground">{t("cp.software.subtitle")}</p>
         </div>
         <Button
@@ -281,7 +288,10 @@ export function SoftwarePolicyTable({ canManage = true }: { canManage?: boolean 
           {t("cp.software.refresh")}
         </Button>
       </div>
-      <RuntimeAndMaterialPanel />
+      {mobileReadOnly && (
+        <p className="text-sm text-muted-foreground">{t("cp.software.desktopManage")}</p>
+      )}
+      <RuntimeAndMaterialPanel canManage={canManage && !!overview} />
 
       {overviewQuery.error ? (
         <div className="rounded-md border border-status-failed/40 bg-[color-mix(in_oklab,var(--status-failed)_10%,transparent)] p-3 text-sm">

@@ -14,6 +14,7 @@ vi.mock("sonner", () => ({
 
 afterEach(() => {
   vi.restoreAllMocks();
+  sessionStorage.clear();
 });
 
 describe("AuthzAdminPanel state helpers", () => {
@@ -156,3 +157,42 @@ function readiness() {
     externalSmokeRequired: false,
   };
 }
+
+test("mobile authorization keeps refresh available and blocks advanced mutations", async () => {
+  sessionStorage.setItem("kq.mobile-management-policy", "observe-approve");
+  vi.spyOn(window, "matchMedia").mockReturnValue({
+    matches: true,
+    addEventListener: vi.fn(),
+    removeEventListener: vi.fn(),
+  } as unknown as MediaQueryList);
+  const fetchMock = vi.fn(async (input: string) =>
+    ok({
+      data: input.endsWith("health")
+        ? { ...health(), rawTupleAdminEnabled: true }
+        : input.endsWith("readiness")
+          ? readiness()
+          : input.includes("outbox")
+            ? [
+                {
+                  id: "dead-1",
+                  status: "dead",
+                  resourceType: "agent",
+                  resourceId: "a",
+                  subjectType: "organization",
+                  subjectId: "o",
+                  relation: "provider",
+                },
+              ]
+            : [],
+    }),
+  );
+  vi.stubGlobal("fetch", fetchMock);
+  render(createElement(AuthzAdminPanel, { showBreakGlass: true }));
+  await screen.findByText("agent:a#provider");
+  for (const name of ["重建 SpiceDB 关系", "写入授权关系", "清理", "立即投递", "重试"]) {
+    expect(screen.getByText(name).closest("button")).toHaveProperty("disabled", true);
+  }
+  expect(screen.getByText("刷新").closest("button")).toHaveProperty("disabled", false);
+  fireEvent.click(screen.getByText("刷新"));
+  await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(8));
+});

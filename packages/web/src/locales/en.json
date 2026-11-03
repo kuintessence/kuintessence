@@ -112,7 +112,7 @@
       "operationsCompute": "Compute and software",
       "operationsMetering": "Metering and cost",
       "operationsGovernance": "Governance and audit",
-      "interconnect": "Compute center interconnect"
+      "interconnect": "Compute & Network Overview"
     }
   },
   "dataMarket": {
@@ -216,6 +216,8 @@
       "draining": "Draining"
     },
     "events": {
+      "executionAccountCreated": "Registered execution account",
+      "executionAccountQueuesUpdated": "Updated account queue access",
       "categoryAccess": "Access",
       "categoryFiles": "Files",
       "categoryJobs": "Jobs",
@@ -234,7 +236,20 @@
       "sshOpened": "Opened an SSH session",
       "ssoUpdated": "Updated single sign-on settings",
       "automationCredentialCreated": "Created an automation credential",
-      "automationCredentialRevoked": "Revoked an automation credential"
+      "automationCredentialRevoked": "Revoked an automation credential",
+      "categoryCompute": "Compute",
+      "provider_create": "Created compute provider",
+      "provider_update": "Updated compute provider",
+      "provider_delete": "Deleted compute provider",
+      "center_create": "Created compute center",
+      "center_update": "Updated compute center",
+      "center_delete": "Deleted compute center",
+      "cluster_create": "Created cluster",
+      "cluster_update": "Updated cluster",
+      "cluster_delete": "Deleted cluster",
+      "link_create": "Created interconnect link",
+      "link_update": "Updated interconnect link",
+      "link_delete": "Deleted interconnect link"
     }
   },
   "quickStart": {
@@ -1228,7 +1243,12 @@
       "elements": "Elements, comma separated",
       "fingerprint": "Local file fingerprint",
       "registerMaterial": "Register local material mapping",
-      "noMaterialMappings": "No local restricted material mapping is registered."
+      "noMaterialMappings": "No local restricted material mapping is registered.",
+      "selectOrganization": "Select a compute organization first.",
+      "readOnly": "Read-only view. Changes require a desktop and software management permission.",
+      "loadFailed": "Could not load runtime or material configuration. Please retry.",
+      "selectRuntime": "Select a runtime",
+      "noCompatibleRuntime": "No active Python 3.12 runtime supports this scheduler. Ask a platform administrator to configure one."
     },
     "management": "Access and publishing management",
     "managementDescription": "Requests, publishing status and license declarations",
@@ -1620,7 +1640,9 @@
           "title": "Scheduler explanations",
           "description": "Inspect placement reasoning for permission, software, metering, load, and cost filters."
         }
-      }
+      },
+      "auditSettings": "Audit settings",
+      "meteringSettings": "Storage quotas and cost settings"
     },
     "sso": {
       "title": "Single Sign-On (OIDC)",
@@ -1720,14 +1742,15 @@
       "loadFailed": "Failed to load cost rates",
       "errorEmptyCluster": "Cluster name cannot be empty",
       "errorDuplicateCluster": "Duplicate cluster name: {{cluster}}",
-      "errorInvalidRate": "Rate for {{cluster}} must be a non-negative number"
+      "errorInvalidRate": "Rate for {{cluster}} must be a non-negative number",
+      "rateLabel": "Rate per CPU-hour"
     },
     "clusterFileRoots": {
       "title": "Cluster file roots",
       "description": "Restrict cluster browsing, downloads, and transfer preflight to authorized paths. Configure writable roots for real clusters so users do not hand-enter paths like `/scratch` that may not exist or be writable.",
       "label": "Label",
-      "providerOrgId": "Provider org ID",
-      "agentId": "Agent ID",
+      "providerOrgId": "Provider organization",
+      "agentId": "Agent",
       "capacityGb": "Capacity (GB)",
       "allAgents": "All Agents",
       "visibleOrgIds": "Visible org IDs, comma-separated",
@@ -1753,7 +1776,16 @@
         "not_readable": "Not readable",
         "not_writable": "Not writable",
         "unavailable": "Agent offline"
-      }
+      },
+      "selectProvider": "Select a provider organization",
+      "directoryFailed": "Could not load organizations or agents. Please retry.",
+      "sharedWith": "Shared with",
+      "noSharing": "No additional organizations",
+      "searchOrganizations": "Search sharing organizations",
+      "invalidCapacity": "Capacity must be a valid positive number. Leave blank for unknown capacity.",
+      "organizationSearchPlaceholder": "Name or known organization UUID",
+      "addOrganizationId": "Add this organization ID",
+      "path": "Root path"
     },
     "agentCerts": {
       "title": "Agent cert ledger",
@@ -1806,7 +1838,8 @@
       "hostKey": "Host-key pin (base64 SHA-256)",
       "hostKeyHelp": "Optional. When set, the agent rejects a mismatched host key (MITM defense). Empty = unverified.",
       "save": "Save credentials"
-    }
+    },
+    "desktopManage": "Use a desktop to change platform configuration."
   },
   "terminal": {
     "title": "Terminal",
@@ -2157,5 +2190,41 @@
       },
       "score": "score"
     }
+  },
+  "providers": {
+    "title": "Compute Providers",
+    "selfTitle": "Provider Profile",
+    "name": "Name",
+    "description": "Description",
+    "contactName": "Contact",
+    "email": "Email",
+    "phone": "Phone",
+    "address": "Address",
+    "website": "Website",
+    "centers": "Centers",
+    "agents": "Agents",
+    "members": "Members",
+    "actions": "Actions",
+    "search": "Search providers",
+    "searchButton": "Search",
+    "refresh": "Refresh",
+    "create": "Add provider",
+    "edit": "Edit profile",
+    "delete": "Delete",
+    "confirmDelete": "Confirm deletion",
+    "deleteWarning": "Delete “{{name}}”? Providers with members, resources or business history cannot be deleted.",
+    "cancel": "Cancel",
+    "save": "Save",
+    "saving": "Saving…",
+    "saveFailed": "Save failed",
+    "retry": "Retry",
+    "loading": "Loading…",
+    "denied": "You cannot access provider profiles",
+    "empty": "No matching providers",
+    "total": "{{count}} providers",
+    "previous": "Previous",
+    "next": "Next",
+    "updatedAt": "Updated",
+    "desktopEdit": "Use a desktop to edit provider profiles."
   }
 }

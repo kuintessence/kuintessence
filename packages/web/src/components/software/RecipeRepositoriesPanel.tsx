@@ -9,10 +9,10 @@ import {
 } from "../../lib/active-organization";
 import { getAuthState, subscribeAuthState } from "../../lib/auth";
 import { isLocalMode } from "../../lib/local-mode";
-import { isMobileHighRiskMutationBlocked } from "../../lib/mobile-management-policy";
 import { useMeCapabilities } from "../../lib/platform-capabilities";
 import { listRecipeRepositories } from "../../lib/recipe-repositories-client";
 import { canWriteRecipeRepository } from "../../lib/recipe-repository-access";
+import { useMobileMutationBlocked } from "../../lib/use-mobile-mutation-blocked";
 import { toUserFacingError } from "../../lib/user-facing-error";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
@@ -31,11 +31,12 @@ function getRecipeSessionKey(): string | null {
 export function RecipeRepositoriesPanel({ canManage }: { canManage: boolean }) {
   const { t } = useTranslation();
   const client = useQueryClient();
+  const mobileReadOnly = useMobileMutationBlocked("/software/spack/recipe-repositories");
   const sessionKey = useSyncExternalStore(subscribeAuthState, getRecipeSessionKey, () => null);
   const organizationId = useActiveOrganizationId();
   const capabilityState = useMeCapabilities(canManage && sessionKey !== null && !isLocalMode());
   const capabilities = capabilityState.status === "ready" ? capabilityState.data : null;
-  const accessKey = JSON.stringify([canManage, capabilities]);
+  const accessKey = JSON.stringify([canManage, capabilities, mobileReadOnly]);
   const scope = JSON.stringify([sessionKey, accessKey, organizationId]);
   const latestScope = useRef(scope);
   latestScope.current = scope;
@@ -65,7 +66,7 @@ export function RecipeRepositoriesPanel({ canManage }: { canManage: boolean }) {
       sessionKey={sessionKey}
       accessKey={accessKey}
       organizationId={organizationId}
-      canManage={canManage}
+      canManage={canManage && !mobileReadOnly}
       capabilities={capabilities}
       isCurrent={isCurrent}
     />
@@ -163,9 +164,7 @@ function RepositoryPanel({
           onImported={updateRepository}
         />
       ) : null}
-      {canImport &&
-      !isLocalMode() &&
-      !isMobileHighRiskMutationBlocked("/software/spack/upstream-imports") ? (
+      {canImport && !isLocalMode() ? (
         <SpackOnlineImport
           kind="recipe"
           canWriteRepository={canWriteRepository}

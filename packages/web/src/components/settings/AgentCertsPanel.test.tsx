@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
 vi.mock("react-i18next", () => ({
@@ -61,7 +61,10 @@ beforeEach(() => {
   toastSuccess.mockReset();
   toastError.mockReset();
 });
-afterEach(() => vi.restoreAllMocks());
+afterEach(() => {
+  vi.restoreAllMocks();
+  sessionStorage.clear();
+});
 
 describe("AgentCertsPanel", () => {
   test("loads cert metadata for an agent", async () => {
@@ -144,4 +147,39 @@ describe("AgentCertsPanel", () => {
       ),
     ).toBe(true);
   });
+});
+
+test("mobile policy closes a pending certificate confirmation while keeping lookup available", async () => {
+  sessionStorage.setItem("kq.mobile-management-policy", "observe-approve");
+  let compact = false;
+  const listeners = new Set<() => void>();
+  vi.spyOn(window, "matchMedia").mockImplementation(
+    () =>
+      ({
+        get matches() {
+          return compact;
+        },
+        addEventListener: (_name: string, callback: () => void) => listeners.add(callback),
+        removeEventListener: (_name: string, callback: () => void) => listeners.delete(callback),
+      }) as unknown as MediaQueryList,
+  );
+  const calls = installFetch([() => certList()]);
+  render(<AgentCertsPanel />);
+  fireEvent.change(screen.getByTestId("agent-certs-agent-id"), { target: { value: "agent-1" } });
+  fireEvent.click(screen.getByTestId("agent-certs-load"));
+  fireEvent.click(await screen.findByTestId(`agent-cert-revoke-${fp}`));
+  await screen.findByTestId("agent-cert-revoke-dialog");
+  await act(async () => {
+    compact = true;
+    for (const listener of listeners) listener();
+  });
+  expect(screen.queryByTestId("agent-cert-revoke-dialog")).toBeNull();
+  expect(screen.getByTestId(`agent-cert-revoke-${fp}`)).toHaveProperty("disabled", true);
+  expect(screen.getByTestId("agent-certs-load")).toHaveProperty("disabled", false);
+  await act(async () => {
+    compact = false;
+    for (const listener of listeners) listener();
+  });
+  expect(screen.queryByTestId("agent-cert-revoke-dialog")).toBeNull();
+  expect(calls).toHaveLength(1);
 });

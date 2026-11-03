@@ -21,14 +21,12 @@ import {
   type MapView,
 } from "@kuintessence/shared";
 import { and, eq, gte, inArray, sql } from "drizzle-orm";
+import type { OrganizationResourceScope as InterconnectScope } from "../middleware/organization-resource-scope";
 
 type Db = Pick<PgDb, "select" | "insert" | "update" | "delete" | "execute">;
-export type InterconnectScope = {
-  orgIds: string[] | null;
-  userId: string;
-  key: string;
-  canManage: boolean;
-};
+
+export type { OrganizationResourceScope as InterconnectScope } from "../middleware/organization-resource-scope";
+
 function fail(message: string, status = 400): never {
   throw new AppError(
     status === 403 ? ErrorCode.FORBIDDEN : ErrorCode.VALIDATION_ERROR,
@@ -312,38 +310,44 @@ export class InterconnectService {
   }
 
   async remove(scope: InterconnectScope, kind: "center" | "cluster" | "link", id: string) {
-    return this.mutate(scope, `${kind}.delete`, id, async (tx) => {
-      if (kind === "center") {
-        await centerForScope(tx, scope, id);
-        const children = await tx
-          .select({ id: computeClusters.id })
-          .from(computeClusters)
-          .where(eq(computeClusters.centerId, id));
-        const links = await tx
-          .select({ id: computeInterconnects.id })
-          .from(computeInterconnects)
-          .where(
-            sql`${computeInterconnects.fromCenterId} = ${id} OR ${computeInterconnects.toCenterId} = ${id}`,
-          );
-        if (children.length || links.length) fail("请先移除中心下的集群和关联链路", 409);
-        await tx.delete(computeCenters).where(eq(computeCenters.id, id));
-      } else if (kind === "cluster") {
-        const [row] = await tx.select().from(computeClusters).where(eq(computeClusters.id, id));
-        if (!row) fail("集群不存在", 404);
-        await centerForScope(tx, scope, row.centerId);
-        await tx.delete(computeClusters).where(eq(computeClusters.id, id));
-      } else {
-        const [row] = await tx
-          .select()
-          .from(computeInterconnects)
-          .where(eq(computeInterconnects.id, id));
-        if (!row) fail("链路不存在", 404);
-        await centerForScope(tx, scope, row.fromCenterId);
-        await centerForScope(tx, scope, row.toCenterId);
-        await tx.delete(computeInterconnects).where(eq(computeInterconnects.id, id));
-      }
-      return id;
-    });
+    return this.mutate(
+      scope,
+      kind,
+      id,
+      async (tx) => {
+        if (kind === "center") {
+          await centerForScope(tx, scope, id);
+          const children = await tx
+            .select({ id: computeClusters.id })
+            .from(computeClusters)
+            .where(eq(computeClusters.centerId, id));
+          const links = await tx
+            .select({ id: computeInterconnects.id })
+            .from(computeInterconnects)
+            .where(
+              sql`${computeInterconnects.fromCenterId} = ${id} OR ${computeInterconnects.toCenterId} = ${id}`,
+            );
+          if (children.length || links.length) fail("请先移除中心下的集群和关联链路", 409);
+          await tx.delete(computeCenters).where(eq(computeCenters.id, id));
+        } else if (kind === "cluster") {
+          const [row] = await tx.select().from(computeClusters).where(eq(computeClusters.id, id));
+          if (!row) fail("集群不存在", 404);
+          await centerForScope(tx, scope, row.centerId);
+          await tx.delete(computeClusters).where(eq(computeClusters.id, id));
+        } else {
+          const [row] = await tx
+            .select()
+            .from(computeInterconnects)
+            .where(eq(computeInterconnects.id, id));
+          if (!row) fail("链路不存在", 404);
+          await centerForScope(tx, scope, row.fromCenterId);
+          await centerForScope(tx, scope, row.toCenterId);
+          await tx.delete(computeInterconnects).where(eq(computeInterconnects.id, id));
+        }
+        return id;
+      },
+      true,
+    );
   }
 
   async saveView(scope: InterconnectScope, view: MapView) {
@@ -358,20 +362,39 @@ export class InterconnectService {
 
   private async mutate(
     scope: InterconnectScope,
-    kind: string,
+    kind: "center" | "cluster" | "link",
     id: string | null,
     write: (tx: Db) => Promise<string>,
+    deleting = false,
   ) {
     if (!scope.canManage) fail("无权维护算力档案", 403);
     return this.db.transaction(async (tx) => {
       // Serialize inventory edits so validation and bindings remain atomic across concurrent requests.
       await tx.execute(sql`SELECT pg_advisory_xact_lock(725104202)`);
+      const table =
+        kind === "center"
+          ? computeCenters
+          : kind === "cluster"
+            ? computeClusters
+            : computeInterconnects;
+      const [before] = id
+        ? await tx
+            .select({ id: table.id, metadata: table.metadata })
+            .from(table)
+            .where(eq(table.id, id))
+        : [];
       const result = await write(tx);
+      const [after] = deleting
+        ? []
+        : await tx
+            .select({ id: table.id, metadata: table.metadata })
+            .from(table)
+            .where(eq(table.id, result));
       await tx.insert(auditLog).values({
         actor: scope.userId,
-        action: `interconnect.${kind}.${id ? "update" : "create"}`,
+        action: `interconnect.${kind}.${deleting ? "delete" : id ? "update" : "create"}`,
         target: result,
-        diff: { after: { id: result } },
+        diff: { before, after },
       });
       return { id: result };
     });

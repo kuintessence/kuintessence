@@ -63,7 +63,10 @@ beforeEach(() => {
   toastSuccess.mockReset();
   toastError.mockReset();
 });
-afterEach(() => vi.restoreAllMocks());
+afterEach(() => {
+  vi.restoreAllMocks();
+  sessionStorage.clear();
+});
 
 describe("SshCredentialsForm", () => {
   test("lists configured agents (no secrets shown)", async () => {
@@ -177,4 +180,23 @@ describe("SshCredentialsForm", () => {
     await waitFor(() => expect(toastSuccess).toHaveBeenCalled());
     expect(calls.some((c) => c.method === "DELETE" && c.url.includes("agent-1"))).toBe(true);
   });
+});
+
+test("mobile policy blocks SSH changes but keeps metadata readable", async () => {
+  sessionStorage.setItem("kq.mobile-management-policy", "observe-approve");
+  vi.spyOn(window, "matchMedia").mockReturnValue({
+    matches: true,
+    addEventListener: vi.fn(),
+    removeEventListener: vi.fn(),
+  } as unknown as MediaQueryList);
+  const calls = installFetch([() => oneAgent()]);
+  render(<SshCredentialsForm />);
+  await screen.findByTestId("ssh-cred-row-agent-1");
+  expect(screen.getByTestId("ssh-cred-save").closest("fieldset")).toHaveProperty("disabled", true);
+  expect(screen.getByTestId("ssh-cred-edit-agent-1")).toHaveProperty("disabled", true);
+  expect(screen.getByTestId("ssh-cred-delete-agent-1")).toHaveProperty("disabled", true);
+  const form = screen.getByTestId("ssh-cred-save").closest("form");
+  if (!form) throw new Error("SSH credential form missing");
+  fireEvent.submit(form);
+  expect(calls).toHaveLength(1);
 });

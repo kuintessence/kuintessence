@@ -1,8 +1,9 @@
 import { Loader2, RefreshCcw, ShieldX } from "lucide-react";
-import { type FormEvent, useCallback, useState } from "react";
+import { type FormEvent, useCallback, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { api } from "../../lib/api-client";
+import { useMobileMutationBlocked } from "../../lib/use-mobile-mutation-blocked";
 import { toUserFacingError } from "../../lib/user-facing-error";
 import { AgentCertRevokeDialog } from "../agent/AgentCertRevokeDialog";
 import { Badge } from "../ui/badge";
@@ -28,6 +29,7 @@ function certStatus(cert: AgentCertView): "revoked" | "expired" | "active" {
 
 export function AgentCertsPanel() {
   const { t } = useTranslation();
+  const mobileReadOnly = useMobileMutationBlocked("/admin/agents");
   const [agentId, setAgentId] = useState("");
   const [loadedAgentId, setLoadedAgentId] = useState("");
   const [certs, setCerts] = useState<AgentCertView[] | null>(null);
@@ -35,6 +37,10 @@ export function AgentCertsPanel() {
   const [loading, setLoading] = useState(false);
   const [revoking, setRevoking] = useState<string | null>(null);
   const [revokeTarget, setRevokeTarget] = useState<AgentCertView | null>(null);
+
+  useEffect(() => {
+    if (mobileReadOnly) setRevokeTarget(null);
+  }, [mobileReadOnly]);
 
   const refresh = useCallback(
     async (targetAgentId = loadedAgentId) => {
@@ -65,7 +71,7 @@ export function AgentCertsPanel() {
   };
 
   async function revoke(cert: AgentCertView, reason?: string) {
-    if (!loadedAgentId) return;
+    if (mobileReadOnly || !loadedAgentId) return;
     setRevoking(cert.fingerprintSha256);
     try {
       await api.post<{ success: true }>(
@@ -165,7 +171,7 @@ export function AgentCertsPanel() {
                     type="button"
                     variant="outline"
                     size="sm"
-                    disabled={!revocable || revoking === cert.fingerprintSha256}
+                    disabled={mobileReadOnly || !revocable || revoking === cert.fingerprintSha256}
                     onClick={() => setRevokeTarget(cert)}
                     data-testid={`agent-cert-revoke-${cert.fingerprintSha256}`}
                   >
@@ -183,7 +189,7 @@ export function AgentCertsPanel() {
         )}
 
         <AgentCertRevokeDialog
-          open={revokeTarget !== null}
+          open={!mobileReadOnly && revokeTarget !== null}
           fingerprintSha256={revokeTarget?.fingerprintSha256 ?? null}
           pending={revoking === revokeTarget?.fingerprintSha256}
           copy={{

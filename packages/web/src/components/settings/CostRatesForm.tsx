@@ -4,6 +4,7 @@ import { type FormEvent, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { api } from "../../lib/api-client";
+import { useMobileMutationBlocked } from "../../lib/use-mobile-mutation-blocked";
 import { toUserFacingError } from "../../lib/user-facing-error";
 import { Button } from "../ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
@@ -34,13 +35,19 @@ function specToRows(spec: PreferenceSpec | null): RateRow[] {
 
 export function CostRatesForm() {
   const { t } = useTranslation();
+  const mobileReadOnly = useMobileMutationBlocked("/preferences/global");
   const [spec, setSpec] = useState<PreferenceSpec | null>(null);
   const [rows, setRows] = useState<RateRow[] | null>(null);
   const [saving, setSaving] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
 
+  const loadFailedLabel = t("settings.costRates.loadFailed", {
+    defaultValue: "暂时无法加载费率，请稍后重试。",
+  });
   useEffect(() => {
+    if (loadError) return;
     let cancelled = false;
+    setRows(null);
     api
       .get<{ spec: PreferenceSpec | null }>("/preferences/global")
       .then((res) => {
@@ -50,17 +57,12 @@ export function CostRatesForm() {
       })
       .catch((err: unknown) => {
         if (cancelled) return;
-        setLoadError(
-          toUserFacingError(
-            err,
-            t("settings.costRates.loadFailed", { defaultValue: "暂时无法加载费率，请稍后重试。" }),
-          ),
-        );
+        setLoadError(toUserFacingError(err, loadFailedLabel));
       });
     return () => {
       cancelled = true;
     };
-  }, [t]);
+  }, [loadFailedLabel, loadError]);
 
   if (loadError) {
     return (
@@ -74,6 +76,9 @@ export function CostRatesForm() {
           <div className="text-sm text-status-failed" data-testid="cost-rates-load-error">
             {loadError}
           </div>
+          <Button className="mt-3" variant="outline" onClick={() => setLoadError(null)}>
+            {t("common.retry")}
+          </Button>
         </CardContent>
       </Card>
     );
@@ -113,7 +118,7 @@ export function CostRatesForm() {
 
   async function onSave(e: FormEvent) {
     e.preventDefault();
-    if (!rows) return;
+    if (!rows || saving) return;
 
     const costRates: Record<string, number> = {};
     for (const row of rows) {
@@ -136,7 +141,7 @@ export function CostRatesForm() {
         return;
       }
       const rate = Number(row.rate);
-      if (Number.isNaN(rate) || rate < 0) {
+      if (!row.rate.trim() || !Number.isFinite(rate) || rate < 0) {
         toast.error(
           t("settings.costRates.errorInvalidRate", {
             defaultValue: "Rate for {{cluster}} must be a non-negative number",
@@ -182,72 +187,79 @@ export function CostRatesForm() {
           })}
         </p>
         <form className="space-y-3" onSubmit={onSave}>
-          {rows.length === 0 ? (
-            <p className="text-[11px] text-muted-foreground" data-testid="cost-rates-empty">
-              {t("settings.costRates.empty", {
-                defaultValue: "No cluster rates configured yet.",
-              })}
-            </p>
-          ) : null}
-          {rows.map((row, idx) => (
-            <div
-              // biome-ignore lint/suspicious/noArrayIndexKey: rows are list-like, no animation, no stable id available
-              key={`row-${idx}`}
-              data-testid={`cost-rates-row-${idx}`}
-              className="flex items-center gap-2"
-            >
-              <Input
-                data-testid={`cost-rates-cluster-${idx}`}
-                value={row.cluster}
-                onChange={(e) => updateRow(idx, { cluster: e.target.value })}
-                placeholder={t("settings.costRates.clusterPlaceholder", {
-                  defaultValue: "cluster-name",
+          {mobileReadOnly && (
+            <p className="text-sm text-muted-foreground">{t("settings.desktopManage")}</p>
+          )}
+          <fieldset disabled={saving || mobileReadOnly} className="space-y-3">
+            {rows.length === 0 ? (
+              <p className="text-[11px] text-muted-foreground" data-testid="cost-rates-empty">
+                {t("settings.costRates.empty", {
+                  defaultValue: "No cluster rates configured yet.",
                 })}
-                className="flex-1"
-              />
-              <Input
-                data-testid={`cost-rates-rate-${idx}`}
-                type="text"
-                inputMode="decimal"
-                value={row.rate}
-                onChange={(e) => updateRow(idx, { rate: e.target.value })}
-                placeholder={t("settings.costRates.ratePlaceholder", {
-                  defaultValue: "0.00",
-                })}
-                className="w-32"
-              />
+              </p>
+            ) : null}
+            {rows.map((row, idx) => (
+              <div
+                // biome-ignore lint/suspicious/noArrayIndexKey: rows are list-like, no animation, no stable id available
+                key={`row-${idx}`}
+                data-testid={`cost-rates-row-${idx}`}
+                className="flex items-center gap-2"
+              >
+                <Input
+                  data-testid={`cost-rates-cluster-${idx}`}
+                  aria-label={t("settings.costRates.clusterPlaceholder")}
+                  value={row.cluster}
+                  onChange={(e) => updateRow(idx, { cluster: e.target.value })}
+                  placeholder={t("settings.costRates.clusterPlaceholder", {
+                    defaultValue: "cluster-name",
+                  })}
+                  className="flex-1"
+                />
+                <Input
+                  data-testid={`cost-rates-rate-${idx}`}
+                  aria-label={t("settings.costRates.rateLabel")}
+                  type="text"
+                  inputMode="decimal"
+                  value={row.rate}
+                  onChange={(e) => updateRow(idx, { rate: e.target.value })}
+                  placeholder={t("settings.costRates.ratePlaceholder", {
+                    defaultValue: "0.00",
+                  })}
+                  className="w-32"
+                />
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  data-testid={`cost-rates-remove-${idx}`}
+                  onClick={() => removeRow(idx)}
+                  aria-label={t("common.remove", { defaultValue: "Remove" })}
+                >
+                  <Trash2 className="h-4 w-4" />
+                </Button>
+              </div>
+            ))}
+            <div className="flex flex-wrap items-center gap-2 pt-1">
               <Button
                 type="button"
-                variant="ghost"
-                size="icon"
-                data-testid={`cost-rates-remove-${idx}`}
-                onClick={() => removeRow(idx)}
-                aria-label={t("common.remove", { defaultValue: "Remove" })}
+                variant="outline"
+                size="sm"
+                data-testid="cost-rates-add"
+                onClick={addRow}
               >
-                <Trash2 className="h-4 w-4" />
+                <Plus className="h-3.5 w-3.5" />
+                {t("settings.costRates.addRow", { defaultValue: "Add cluster" })}
+              </Button>
+              <Button type="submit" size="sm" data-testid="cost-rates-save" disabled={saving}>
+                {saving ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <Save className="h-3.5 w-3.5" />
+                )}
+                {t("settings.costRates.save", { defaultValue: "Save" })}
               </Button>
             </div>
-          ))}
-          <div className="flex flex-wrap items-center gap-2 pt-1">
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              data-testid="cost-rates-add"
-              onClick={addRow}
-            >
-              <Plus className="h-3.5 w-3.5" />
-              {t("settings.costRates.addRow", { defaultValue: "Add cluster" })}
-            </Button>
-            <Button type="submit" size="sm" data-testid="cost-rates-save" disabled={saving}>
-              {saving ? (
-                <Loader2 className="h-3.5 w-3.5 animate-spin" />
-              ) : (
-                <Save className="h-3.5 w-3.5" />
-              )}
-              {t("settings.costRates.save", { defaultValue: "Save" })}
-            </Button>
-          </div>
+          </fieldset>
         </form>
       </CardContent>
     </Card>

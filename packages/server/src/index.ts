@@ -77,6 +77,7 @@ import { createAgentRoutes } from "./routes/agents";
 import { createAuditLogRoutes } from "./routes/audit-log";
 import { createAuthRoutes } from "./routes/auth";
 import { createAutomationCredentialRoutes } from "./routes/automation-credentials";
+import { createComputeProviderRoutes } from "./routes/compute-providers";
 import { buildCpRouter } from "./routes/cp";
 import { createDataMarketRoutes } from "./routes/data-market";
 import { dslRoutes } from "./routes/dsl";
@@ -106,6 +107,7 @@ import { AgentManager } from "./services/agent-manager";
 import { AgentRegistrationService } from "./services/agent-registration";
 import { writeAudit } from "./services/audit-log-writer";
 import { ClusterFileRootService } from "./services/cluster-file-root";
+import { ComputeProviderService } from "./services/compute-providers";
 import { buildCpBindings } from "./services/cp-bindings";
 import { CpConsoleService } from "./services/cp-console";
 import {
@@ -1730,6 +1732,10 @@ protectedApi.route(
 protectedApi.route(
   "/interconnect",
   createInterconnectRoutes(new InterconnectService(db), authzService),
+);
+protectedApi.route(
+  "/compute-providers",
+  createComputeProviderRoutes(new ComputeProviderService(db), authzService),
 );
 app.route("/api", protectedApi);
 // NOTE: any future PUBLIC routes must be registered BEFORE app.route("/api", protectedApi)

@@ -232,7 +232,7 @@ export function operationsHrefForRole(
 ): string {
   if (
     item.key === "metering" &&
-    (role === "operator" ||
+    (canAccessOperation(role, "operator") ||
       (!canAccessOperation(role, "org_admin") &&
         (capabilities?.has("metering.report.view") ?? false)))
   ) {

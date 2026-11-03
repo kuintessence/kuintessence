@@ -299,7 +299,7 @@ describe("AppShell sidebar — Server mode", () => {
     const metering = screen.getByTestId("platform-capability-metering");
     expect(authz.getAttribute("href")).toBe("/settings#security/authz");
     expect(authz.getAttribute("target")).toBe("_blank");
-    expect(metering.getAttribute("href")).toBe("/cp/metering");
+    expect(metering.getAttribute("href")).toBe("/operations#metering");
     expect(screen.queryByTestId("workspace-nav-workspace-nav-operationsSecurity")).toBeNull();
   });
 

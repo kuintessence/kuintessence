@@ -166,3 +166,32 @@ describe("CostRatesForm", () => {
     expect(screen.queryByTestId("cost-rates-add")).toBeNull();
   });
 });
+
+test.each([
+  "",
+  " ",
+  "Infinity",
+  "1e309",
+])("invalid rate %j is not silently submitted as zero; explicit zero is valid", async (value) => {
+  const bodies: unknown[] = [];
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (_input: unknown, init?: RequestInit) => {
+      if (init?.method === "PUT") bodies.push(JSON.parse(String(init.body)));
+      return new Response(JSON.stringify({ spec: { costRates: { "cluster-a": 0.5 } } }), {
+        status: 200,
+      });
+    }),
+  );
+  render(<CostRatesForm />);
+  const input = await screen.findByTestId("cost-rates-rate-0");
+  fireEvent.change(input, { target: { value } });
+  fireEvent.click(screen.getByTestId("cost-rates-save"));
+  expect(toastError).toHaveBeenCalled();
+  expect(bodies).toHaveLength(0);
+  fireEvent.change(input, { target: { value: "0" } });
+  fireEvent.click(screen.getByTestId("cost-rates-save"));
+  await waitFor(() =>
+    expect(bodies).toEqual([expect.objectContaining({ costRates: { "cluster-a": 0 } })]),
+  );
+});

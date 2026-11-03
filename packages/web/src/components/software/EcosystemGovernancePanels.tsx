@@ -3,6 +3,12 @@ import { Check, FileKey2, ShieldAlert, Undo2 } from "lucide-react";
 import { type FormEvent, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
+import { useActiveOrganizationId } from "../../lib/active-organization";
+import { isMobileHighRiskMutationBlocked } from "../../lib/mobile-management-policy";
+import {
+  listSandboxAgentSecurityViews,
+  listSandboxRuntimeProfiles,
+} from "../../lib/sandbox-client";
 import {
   bindRuntimeContract,
   decideLicenseEntitlementClaim,
@@ -13,6 +19,7 @@ import {
   registerLicensedMaterialMapping,
   submitLicenseEntitlementClaim,
 } from "../../lib/software-client";
+import { useMediaQuery } from "../../lib/use-media-query";
 import { toUserFacingError } from "../../lib/user-facing-error";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
@@ -250,17 +257,62 @@ function ClaimReviewList({
   );
 }
 
-export function RuntimeAndMaterialPanel() {
+export function RuntimeAndMaterialPanel({ canManage = false }: { canManage?: boolean }) {
+  const { t } = useTranslation();
+  const providerOrgId = useActiveOrganizationId();
+  const compact = useMediaQuery("(max-width: 767px)");
+  const writable =
+    canManage &&
+    !(compact && isMobileHighRiskMutationBlocked("/software/runtime-contract-bindings"));
+  if (!providerOrgId)
+    return (
+      <p className="text-sm text-muted-foreground">{t("software.license.selectOrganization")}</p>
+    );
+  return (
+    <RuntimeAndMaterialEditor
+      key={`${providerOrgId}:${writable}`}
+      providerOrgId={providerOrgId}
+      canManage={writable}
+    />
+  );
+}
+
+function RuntimeAndMaterialEditor({
+  providerOrgId,
+  canManage,
+}: {
+  providerOrgId: string;
+  canManage: boolean;
+}) {
   const { t } = useTranslation();
   const client = useQueryClient();
-  const [providerOrgId, setProviderOrgId] = useState("");
   const [agentId, setAgentId] = useState("");
   const [runtimeProfileId, setRuntimeProfileId] = useState("");
-  const [runtimeDigest, setRuntimeDigest] = useState("");
   const [selector, setSelector] = useState("");
   const [materialVersion, setMaterialVersion] = useState("");
   const [elements, setElements] = useState("");
   const [fingerprint, setFingerprint] = useState("");
+  const agentsQ = useQuery({
+    queryKey: ["runtime-binding-agents", providerOrgId],
+    queryFn: listSandboxAgentSecurityViews,
+  });
+  const profilesQ = useQuery({
+    queryKey: ["runtime-binding-profiles", providerOrgId],
+    queryFn: listSandboxRuntimeProfiles,
+  });
+  const agents = (agentsQ.data ?? []).filter((agent) => agent.providerOrgId === providerOrgId);
+  const agent = agents.find((item) => item.agentId === agentId);
+  const profiles = (profilesQ.data ?? []).filter(
+    (profile) =>
+      profile.lifecycle === "active" &&
+      profile.language === "python" &&
+      /^3\.12(?:\.|$)/.test(profile.languageVersion) &&
+      profile.adapters.some((adapter) => adapter === agent?.schedulerType) &&
+      (agent?.schedulerType === "kubernetes" ? profile.ociDigest : profile.sifDigest),
+  );
+  const profile = profiles.find((item) => item.id === runtimeProfileId);
+  const runtimeDigest =
+    agent?.schedulerType === "kubernetes" ? profile?.ociDigest : profile?.sifDigest;
   const bindingsQ = useQuery({
     queryKey: ["runtime-contract-bindings", providerOrgId],
     queryFn: () => listRuntimeContractBindings(providerOrgId),
@@ -288,7 +340,17 @@ export function RuntimeAndMaterialPanel() {
       toast.error(toUserFacingError(error, t("software.governance.actionFailed"))),
   });
 
-  const baseReady = providerOrgId.trim() !== "" && agentId.trim() !== "";
+  const queries = [agentsQ, profilesQ, bindingsQ, materialsQ];
+  const failed = queries.filter((query) => query.error);
+  const baseReady =
+    canManage && !!agent && !failed.length && queries.every((query) => !query.isPending);
+  const elementSet = [...new Set(elements.split(/[,\s]+/).filter(Boolean))];
+  const materialReady =
+    baseReady &&
+    !!selector.trim() &&
+    !!materialVersion.trim() &&
+    !!fingerprint.trim() &&
+    elementSet.length > 0;
   return (
     <section
       className="space-y-4 rounded-md border border-border bg-card p-4"
@@ -300,120 +362,176 @@ export function RuntimeAndMaterialPanel() {
           {t("software.license.runtimeMaterialDescription")}
         </p>
       </div>
-      <Input
-        value={providerOrgId}
-        onChange={(event) => setProviderOrgId(event.target.value)}
-        placeholder={t("software.license.providerOrgPlaceholder")}
-        aria-label={t("software.license.providerOrg")}
-      />
-      <div className="grid gap-3 xl:grid-cols-2">
-        <form
-          className="grid gap-2 rounded-md border border-border bg-background p-3"
-          onSubmit={(event) => {
-            event.preventDefault();
-            if (baseReady && runtimeProfileId.trim() && runtimeDigest.trim())
-              bind.mutate({
-                providerOrgId: providerOrgId.trim(),
-                agentId: agentId.trim(),
-                runtimeContractRef: "python-3.12-stdlib-v1",
-                runtimeProfileId: runtimeProfileId.trim(),
-                runtimeDigest: runtimeDigest.trim(),
-              });
-          }}
-        >
-          <h3 className="text-sm font-medium">{t("software.license.runtimeBinding")}</h3>
-          <Input
-            value={agentId}
-            onChange={(event) => setAgentId(event.target.value)}
-            placeholder={t("software.license.agentPlaceholder")}
-            aria-label={t("software.license.agent")}
-          />
-          <Input
-            value={runtimeProfileId}
-            onChange={(event) => setRuntimeProfileId(event.target.value)}
-            placeholder={t("software.license.runtimeProfilePlaceholder")}
-            aria-label={t("software.license.runtimeProfile")}
-          />
-          <Input
-            value={runtimeDigest}
-            onChange={(event) => setRuntimeDigest(event.target.value)}
-            placeholder="sha256:…"
-            aria-label={t("software.license.runtimeDigest")}
-          />
-          <Button type="submit" size="sm" disabled={!baseReady || bind.isPending}>
-            {t("software.license.bindRuntime")}
+      {!canManage && (
+        <p className="text-sm text-muted-foreground">{t("software.license.readOnly")}</p>
+      )}
+      {failed.length ? (
+        <div role="alert" className="space-y-2 text-sm">
+          <p>{t("software.license.loadFailed")}</p>
+          <Button
+            variant="outline"
+            onClick={() => void Promise.all(failed.map((query) => query.refetch()))}
+          >
+            {t("cp.common.retry")}
           </Button>
-          <GovernanceRows
-            rows={(bindingsQ.data ?? []).map(
-              (binding) =>
-                `${binding.runtimeContractRef} → ${binding.runtimeProfileId} (${binding.agentId ?? binding.clusterId ?? "provider"})`,
-            )}
-            empty={t("software.license.noRuntimeBindings")}
-          />
-        </form>
-        <form
-          className="grid gap-2 rounded-md border border-border bg-background p-3"
-          onSubmit={(event) => {
-            event.preventDefault();
-            const elementSet = elements
-              .split(/[,\s]+/)
-              .map((item) => item.trim())
-              .filter(Boolean);
-            if (
-              baseReady &&
-              selector.trim() &&
-              materialVersion.trim() &&
-              fingerprint.trim() &&
-              elementSet.length
-            )
-              register.mutate({
-                providerOrgId: providerOrgId.trim(),
-                agentId: agentId.trim(),
-                selector: selector.trim(),
-                materialName: "VASP POTCAR",
-                materialVersion: materialVersion.trim(),
-                elementSet,
-                fingerprint: fingerprint.trim(),
-              });
-          }}
-        >
-          <h3 className="text-sm font-medium">{t("software.license.materialMapping")}</h3>
-          <Input
-            value={selector}
-            onChange={(event) => setSelector(event.target.value)}
-            placeholder={t("software.license.materialSelector")}
-            aria-label={t("software.license.materialSelector")}
-          />
-          <Input
-            value={materialVersion}
-            onChange={(event) => setMaterialVersion(event.target.value)}
-            placeholder={t("software.license.materialVersion")}
-            aria-label={t("software.license.materialVersion")}
-          />
-          <Input
-            value={elements}
-            onChange={(event) => setElements(event.target.value)}
-            placeholder={t("software.license.elements")}
-            aria-label={t("software.license.elements")}
-          />
-          <Input
-            value={fingerprint}
-            onChange={(event) => setFingerprint(event.target.value)}
-            placeholder={t("software.license.fingerprint")}
-            aria-label={t("software.license.fingerprint")}
-          />
-          <Button type="submit" size="sm" disabled={!baseReady || register.isPending}>
-            {t("software.license.registerMaterial")}
-          </Button>
-          <GovernanceRows
-            rows={(materialsQ.data ?? []).map(
-              (material) =>
-                `${material.selector} · ${material.materialVersion} · ${material.elementSet.join(", ")}`,
-            )}
-            empty={t("software.license.noMaterialMappings")}
-          />
-        </form>
-      </div>
+        </div>
+      ) : queries.some((query) => query.isPending) ? (
+        <p role="status">{t("cp.common.loading")}</p>
+      ) : (
+        <>
+          <label className="grid gap-1 text-sm">
+            {t("cp.accounts.registration.agent")}
+            <select
+              aria-label={t("cp.accounts.registration.agent")}
+              value={agentId}
+              onChange={(event) => {
+                setAgentId(event.target.value);
+                setRuntimeProfileId("");
+                setSelector("");
+                setMaterialVersion("");
+                setElements("");
+                setFingerprint("");
+              }}
+              className="h-9 w-full rounded-md border bg-background px-3"
+            >
+              <option value="">{t("cp.accounts.registration.selectAgent")}</option>
+              {agents.map((item) => (
+                <option key={item.agentId} value={item.agentId}>
+                  {item.siteName} · {item.agentId} ({item.schedulerType})
+                </option>
+              ))}
+            </select>
+          </label>
+          {!agents.length && (
+            <p className="text-sm text-muted-foreground">
+              {t("cp.accounts.registration.noAgents")}
+            </p>
+          )}
+          <div className="grid gap-3 xl:grid-cols-2">
+            <form
+              className="grid gap-2 rounded-md border border-border bg-background p-3"
+              onSubmit={(event) => {
+                event.preventDefault();
+                if (baseReady && profile && runtimeDigest)
+                  bind.mutate({
+                    providerOrgId: providerOrgId.trim(),
+                    agentId: agentId.trim(),
+                    runtimeContractRef: "python-3.12-stdlib-v1",
+                    runtimeProfileId: profile.id,
+                    runtimeDigest,
+                  });
+              }}
+            >
+              <h3 className="text-sm font-medium">{t("software.license.runtimeBinding")}</h3>
+              <p className="text-xs text-muted-foreground">Python 3.12 · python-3.12-stdlib-v1</p>
+              <label className="grid gap-1 text-sm">
+                {t("software.license.runtimeProfile")}
+                <select
+                  aria-label={t("software.license.runtimeProfile")}
+                  value={runtimeProfileId}
+                  disabled={!baseReady || bind.isPending}
+                  onChange={(event) => setRuntimeProfileId(event.target.value)}
+                  className="h-9 w-full min-w-0 rounded-md border bg-background px-3"
+                >
+                  <option value="">{t("software.license.selectRuntime")}</option>
+                  {profiles.map((item) => (
+                    <option key={item.id} value={item.id}>
+                      {item.name} · {item.languageVersion}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              {agent && !profiles.length && (
+                <p className="text-sm text-muted-foreground">
+                  {t("software.license.noCompatibleRuntime")}
+                </p>
+              )}
+              {runtimeDigest && (
+                <p
+                  className="break-all font-mono text-xs text-muted-foreground"
+                  title={t("software.license.runtimeDigest")}
+                >
+                  {runtimeDigest}
+                </p>
+              )}
+              <Button
+                type="submit"
+                size="sm"
+                disabled={!baseReady || !runtimeDigest || bind.isPending}
+              >
+                {t("software.license.bindRuntime")}
+              </Button>
+              <GovernanceRows
+                rows={(bindingsQ.data ?? [])
+                  .filter((binding) => !agentId || !binding.agentId || binding.agentId === agentId)
+                  .map(
+                    (binding) =>
+                      `${binding.runtimeContractRef} → ${profilesQ.data?.find((item) => item.id === binding.runtimeProfileId)?.name ?? binding.runtimeProfileId} (${agents.find((item) => item.agentId === binding.agentId)?.siteName ?? binding.agentId ?? binding.clusterId ?? "provider"})`,
+                  )}
+                empty={t("software.license.noRuntimeBindings")}
+              />
+            </form>
+            <form
+              className="grid gap-2 rounded-md border border-border bg-background p-3"
+              onSubmit={(event) => {
+                event.preventDefault();
+                if (materialReady)
+                  register.mutate({
+                    providerOrgId: providerOrgId.trim(),
+                    agentId: agentId.trim(),
+                    selector: selector.trim(),
+                    materialName: "VASP POTCAR",
+                    materialVersion: materialVersion.trim(),
+                    elementSet,
+                    fingerprint: fingerprint.trim(),
+                  });
+              }}
+            >
+              <h3 className="text-sm font-medium">{t("software.license.materialMapping")}</h3>
+              <fieldset disabled={!baseReady || register.isPending} className="grid gap-2">
+                <Input
+                  value={selector}
+                  onChange={(event) => setSelector(event.target.value)}
+                  placeholder={t("software.license.materialSelector")}
+                  aria-label={t("software.license.materialSelector")}
+                />
+                <Input
+                  value={materialVersion}
+                  onChange={(event) => setMaterialVersion(event.target.value)}
+                  placeholder={t("software.license.materialVersion")}
+                  aria-label={t("software.license.materialVersion")}
+                />
+                <Input
+                  value={elements}
+                  onChange={(event) => setElements(event.target.value)}
+                  placeholder={t("software.license.elements")}
+                  aria-label={t("software.license.elements")}
+                />
+                <Input
+                  value={fingerprint}
+                  onChange={(event) => setFingerprint(event.target.value)}
+                  placeholder={t("software.license.fingerprint")}
+                  aria-label={t("software.license.fingerprint")}
+                />
+                <Button type="submit" size="sm" disabled={!materialReady || register.isPending}>
+                  {t("software.license.registerMaterial")}
+                </Button>
+              </fieldset>
+              <GovernanceRows
+                rows={(materialsQ.data ?? [])
+                  .filter(
+                    (material) => !agentId || !material.agentId || material.agentId === agentId,
+                  )
+                  .map(
+                    (material) =>
+                      `${material.selector} · ${material.materialVersion} · ${material.elementSet.join(", ")}`,
+                  )}
+                empty={t("software.license.noMaterialMappings")}
+              />
+            </form>
+          </div>
+        </>
+      )}
     </section>
   );
 }

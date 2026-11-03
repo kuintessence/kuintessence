@@ -117,3 +117,38 @@ describe("CpDashboard", () => {
     });
   });
 });
+
+test("empty samples do not imply zero success or availability; real failures still show zero", async () => {
+  const kpis = {
+    windowFrom: "2026-11-02T00:00:00Z",
+    windowTo: "2026-11-03T00:00:00Z",
+    jobsCompleted: 0,
+    jobsFailed: 0,
+    bytesTransferred: 0,
+    queueDepthPeak: 0,
+    agentsHealthy: 0,
+    agentsSick: 0,
+    agentsOffline: 0,
+    topUsers: [],
+    topApps: [],
+  };
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(
+      async () =>
+        new Response(JSON.stringify({ kpis }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+    ),
+  );
+  const first = render(<CpDashboard />, { wrapper: makeWrapper() });
+  await screen.findByText("cp.dashboard.summary.noJobs");
+  await screen.findByText("cp.dashboard.summary.noAgents");
+  expect(screen.queryByText("0%")).toBeNull();
+  first.unmount();
+  kpis.jobsFailed = 1;
+  kpis.agentsOffline = 1;
+  render(<CpDashboard />, { wrapper: makeWrapper() });
+  await waitFor(() => expect(screen.getAllByText("0%")).toHaveLength(2));
+});

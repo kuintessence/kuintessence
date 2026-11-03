@@ -221,11 +221,43 @@ export async function listSandboxAccountCandidates(): Promise<SandboxAccountCand
   return body.data;
 }
 
-export async function listSandboxExecutionAccounts(): Promise<SandboxExecutionAccount[]> {
-  const body = await api.get<{ success: true; data: SandboxExecutionAccount[] }>(
-    "/sandbox/accounts",
-  );
-  return body.data;
+export interface SandboxExecutionAccountDirectory {
+  data: SandboxExecutionAccount[];
+  manageableProviderOrgIds: string[];
+}
+
+export function listSandboxExecutionAccounts(): Promise<SandboxExecutionAccountDirectory> {
+  return api.get<SandboxExecutionAccountDirectory>("/sandbox/accounts");
+}
+
+export type SandboxExecutionAccountInput = {
+  providerOrgId: string;
+  agentId: string;
+  displayName: string;
+  sharedService: boolean;
+} & (
+  | {
+      backendType: "unix";
+      username: string;
+      uid: number;
+      gid: number;
+      schedulerAccount?: string;
+      allowedQueues: string[];
+    }
+  | { backendType: "kubernetes"; namespace: string; serviceAccount: string }
+);
+
+export async function createSandboxExecutionAccount(
+  input: SandboxExecutionAccountInput,
+): Promise<void> {
+  await api.post("/sandbox/accounts", input);
+}
+
+export async function updateSandboxAccountQueues(
+  id: string,
+  allowedQueues: string[],
+): Promise<void> {
+  await api.patch(`/sandbox/accounts/${encodeURIComponent(id)}/allowed-queues`, { allowedQueues });
 }
 
 export async function listSandboxAccountMappings(): Promise<SandboxAccountMappingView[]> {

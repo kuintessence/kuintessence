@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import type {
@@ -176,6 +176,8 @@ const preview: SoftwareAvailabilityPreview = {
 
 afterEach(() => {
   vi.clearAllMocks();
+  vi.restoreAllMocks();
+  sessionStorage.clear();
 });
 
 describe("SoftwarePolicyTable", () => {
@@ -2836,3 +2838,33 @@ describe("SoftwarePolicyTable", () => {
 vi.mock("../../lib/use-organization-name", () => ({
   useOrganizationName: () => (id: string) => id,
 }));
+
+test("changing to mobile closes software editors and keeps read-only inspection", async () => {
+  sessionStorage.setItem("kq.mobile-management-policy", "observe-approve");
+  const listeners = new Set<() => void>();
+  const media = {
+    matches: false,
+    addEventListener: vi.fn((_name: string, listener: () => void) => listeners.add(listener)),
+    removeEventListener: vi.fn((_name: string, listener: () => void) => listeners.delete(listener)),
+  };
+  vi.spyOn(window, "matchMedia").mockReturnValue(media as unknown as MediaQueryList);
+  cpClient.getSoftwareOverview.mockResolvedValue(overview);
+  render(<SoftwarePolicyTable canManage />, { wrapper: makeWrapper() });
+  fireEvent.click(await screen.findByText("cp.software.cluster.editOverride"));
+  expect(await screen.findByTestId("cp-software-policy-editor")).toBeTruthy();
+  act(() => {
+    media.matches = true;
+    for (const listener of listeners) listener();
+  });
+  expect(screen.queryByTestId("cp-software-policy-editor")).toBeNull();
+  expect(screen.queryByText("cp.software.cluster.editOverride")).toBeNull();
+  expect(screen.getByText("cp.software.desktopManage")).toBeTruthy();
+  expect(screen.getByTestId("cp-software-agent-agent-a")).toBeTruthy();
+  act(() => {
+    media.matches = false;
+    for (const listener of listeners) listener();
+  });
+  expect(screen.queryByTestId("cp-software-policy-editor")).toBeNull();
+  expect(screen.getByText("cp.software.cluster.editOverride")).toBeTruthy();
+  expect(cpClient.saveClusterSoftwarePolicy).not.toHaveBeenCalled();
+});

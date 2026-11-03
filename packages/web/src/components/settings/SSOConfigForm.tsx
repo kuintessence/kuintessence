@@ -4,6 +4,7 @@ import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { api } from "../../lib/api-client";
 import { platformApiUrl } from "../../lib/platform-paths";
+import { useMobileMutationBlocked } from "../../lib/use-mobile-mutation-blocked";
 import { toUserFacingError } from "../../lib/user-facing-error";
 import { cn } from "../../lib/utils";
 import { Button } from "../ui/button";
@@ -149,6 +150,7 @@ function formToWire(state: FormState): {
 
 export function SSOConfigForm() {
   const { t } = useTranslation();
+  const mobileReadOnly = useMobileMutationBlocked("/admin/sso/config");
   const [state, setState] = useState<FormState | null>(null);
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
@@ -156,7 +158,9 @@ export function SSOConfigForm() {
   const [loadError, setLoadError] = useState<string | null>(null);
 
   useEffect(() => {
+    if (loadError) return;
     let cancelled = false;
+    setState(null);
     api
       .get<SsoConfigView>("/admin/sso/config")
       .then((view) => {
@@ -170,7 +174,7 @@ export function SSOConfigForm() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [loadError]);
 
   if (loadError) {
     return (
@@ -184,6 +188,9 @@ export function SSOConfigForm() {
           <div className="text-sm text-status-failed" data-testid="sso-load-error">
             {loadError}
           </div>
+          <Button className="mt-3" variant="outline" onClick={() => setLoadError(null)}>
+            {t("common.retry")}
+          </Button>
         </CardContent>
       </Card>
     );
@@ -303,302 +310,307 @@ export function SSOConfigForm() {
       </CardHeader>
       <CardContent className="space-y-4">
         <form className="space-y-4" onSubmit={onSave}>
-          {/* Enabled toggle */}
-          <label className="flex items-center gap-2 text-sm" data-testid="sso-enabled-row">
-            <input
-              type="checkbox"
-              checked={state.enabled}
-              onChange={(e) => update("enabled", e.target.checked)}
-              data-testid="sso-enabled"
-            />
-            <span>
-              {t("settings.sso.enabled", { defaultValue: "Enable SSO for this platform" })}
-            </span>
-          </label>
+          {mobileReadOnly && (
+            <p className="text-sm text-muted-foreground">{t("settings.desktopManage")}</p>
+          )}
+          <fieldset disabled={mobileReadOnly || saving} className="space-y-4">
+            {/* Enabled toggle */}
+            <label className="flex items-center gap-2 text-sm" data-testid="sso-enabled-row">
+              <input
+                type="checkbox"
+                checked={state.enabled}
+                onChange={(e) => update("enabled", e.target.checked)}
+                data-testid="sso-enabled"
+              />
+              <span>
+                {t("settings.sso.enabled", { defaultValue: "Enable SSO for this platform" })}
+              </span>
+            </label>
 
-          <div className="grid gap-4 rounded-md border border-border bg-muted/20 p-4">
-            <div>
-              <div className="text-sm font-medium">{t("settings.sso.loginDisplayTitle")}</div>
-              <p className="mt-1 text-xs text-muted-foreground">
-                {t("settings.sso.loginDisplayDescription")}
-              </p>
+            <div className="grid gap-4 rounded-md border border-border bg-muted/20 p-4">
+              <div>
+                <div className="text-sm font-medium">{t("settings.sso.loginDisplayTitle")}</div>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  {t("settings.sso.loginDisplayDescription")}
+                </p>
+              </div>
+              <Field label={t("settings.sso.providerDisplayName")} id="sso-provider-display-name">
+                <Input
+                  id="sso-provider-display-name"
+                  data-testid="sso-provider-display-name"
+                  value={state.providerDisplayName}
+                  onChange={(e) => update("providerDisplayName", e.target.value)}
+                  placeholder={t("settings.sso.providerDisplayNamePlaceholder")}
+                  maxLength={80}
+                />
+              </Field>
+              <div className="grid gap-4 md:grid-cols-2">
+                <Field label={t("settings.sso.loginWelcomeZh")} id="sso-login-welcome-zh">
+                  <Input
+                    id="sso-login-welcome-zh"
+                    data-testid="sso-login-welcome-zh"
+                    value={state.loginWelcomeZh}
+                    onChange={(e) => update("loginWelcomeZh", e.target.value)}
+                    placeholder={t("settings.sso.loginWelcomeZhPlaceholder")}
+                    maxLength={240}
+                  />
+                </Field>
+                <Field label={t("settings.sso.loginWelcomeEn")} id="sso-login-welcome-en">
+                  <Input
+                    id="sso-login-welcome-en"
+                    data-testid="sso-login-welcome-en"
+                    value={state.loginWelcomeEn}
+                    onChange={(e) => update("loginWelcomeEn", e.target.value)}
+                    placeholder={t("settings.sso.loginWelcomeEnPlaceholder")}
+                    maxLength={240}
+                  />
+                </Field>
+              </div>
             </div>
-            <Field label={t("settings.sso.providerDisplayName")} id="sso-provider-display-name">
+
+            {/* Provider type */}
+            <div className="space-y-1.5">
+              <label
+                htmlFor="sso-provider"
+                className="block text-xs uppercase tracking-wide text-muted-foreground"
+              >
+                {t("settings.sso.providerType", { defaultValue: "Provider type" })}
+              </label>
+              <select
+                id="sso-provider"
+                data-testid="sso-provider-type"
+                value={state.providerType}
+                onChange={(e) => update("providerType", e.target.value as ProviderType)}
+                className="h-9 w-full rounded-md border border-border bg-card px-2 text-sm"
+              >
+                {PROVIDER_TYPES.map((p) => (
+                  <option key={p} value={p} disabled={p !== "oidc"}>
+                    {p}
+                    {p !== "oidc" ? " (coming soon)" : ""}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            {/* Issuer URL */}
+            <Field
+              label={t("settings.sso.issuerUrl", { defaultValue: "Issuer URL" })}
+              id="sso-issuer-url"
+            >
               <Input
-                id="sso-provider-display-name"
-                data-testid="sso-provider-display-name"
-                value={state.providerDisplayName}
-                onChange={(e) => update("providerDisplayName", e.target.value)}
-                placeholder={t("settings.sso.providerDisplayNamePlaceholder")}
-                maxLength={80}
+                id="sso-issuer-url"
+                data-testid="sso-issuer-url"
+                type="url"
+                value={state.issuerUrl}
+                onChange={(e) => update("issuerUrl", e.target.value)}
+                placeholder="https://idp.example.com"
+                autoComplete="off"
               />
             </Field>
-            <div className="grid gap-4 md:grid-cols-2">
-              <Field label={t("settings.sso.loginWelcomeZh")} id="sso-login-welcome-zh">
-                <Input
-                  id="sso-login-welcome-zh"
-                  data-testid="sso-login-welcome-zh"
-                  value={state.loginWelcomeZh}
-                  onChange={(e) => update("loginWelcomeZh", e.target.value)}
-                  placeholder={t("settings.sso.loginWelcomeZhPlaceholder")}
-                  maxLength={240}
-                />
-              </Field>
-              <Field label={t("settings.sso.loginWelcomeEn")} id="sso-login-welcome-en">
-                <Input
-                  id="sso-login-welcome-en"
-                  data-testid="sso-login-welcome-en"
-                  value={state.loginWelcomeEn}
-                  onChange={(e) => update("loginWelcomeEn", e.target.value)}
-                  placeholder={t("settings.sso.loginWelcomeEnPlaceholder")}
-                  maxLength={240}
-                />
-              </Field>
-            </div>
-          </div>
 
-          {/* Provider type */}
-          <div className="space-y-1.5">
-            <label
-              htmlFor="sso-provider"
-              className="block text-xs uppercase tracking-wide text-muted-foreground"
-            >
-              {t("settings.sso.providerType", { defaultValue: "Provider type" })}
-            </label>
-            <select
-              id="sso-provider"
-              data-testid="sso-provider-type"
-              value={state.providerType}
-              onChange={(e) => update("providerType", e.target.value as ProviderType)}
-              className="h-9 w-full rounded-md border border-border bg-card px-2 text-sm"
-            >
-              {PROVIDER_TYPES.map((p) => (
-                <option key={p} value={p} disabled={p !== "oidc"}>
-                  {p}
-                  {p !== "oidc" ? " (coming soon)" : ""}
-                </option>
-              ))}
-            </select>
-          </div>
-
-          {/* Issuer URL */}
-          <Field
-            label={t("settings.sso.issuerUrl", { defaultValue: "Issuer URL" })}
-            id="sso-issuer-url"
-          >
-            <Input
-              id="sso-issuer-url"
-              data-testid="sso-issuer-url"
-              type="url"
-              value={state.issuerUrl}
-              onChange={(e) => update("issuerUrl", e.target.value)}
-              placeholder="https://idp.example.com"
-              autoComplete="off"
-            />
-          </Field>
-
-          {/* Client ID */}
-          <Field
-            label={t("settings.sso.clientId", { defaultValue: "Client ID" })}
-            id="sso-client-id"
-          >
-            <Input
+            {/* Client ID */}
+            <Field
+              label={t("settings.sso.clientId", { defaultValue: "Client ID" })}
               id="sso-client-id"
-              data-testid="sso-client-id"
-              value={state.clientId}
-              onChange={(e) => update("clientId", e.target.value)}
-              autoComplete="off"
-            />
-          </Field>
+            >
+              <Input
+                id="sso-client-id"
+                data-testid="sso-client-id"
+                value={state.clientId}
+                onChange={(e) => update("clientId", e.target.value)}
+                autoComplete="off"
+              />
+            </Field>
 
-          {/* Client secret */}
-          <Field
-            label={t("settings.sso.clientSecret", { defaultValue: "Client secret" })}
-            id="sso-client-secret"
-          >
-            <Input
+            {/* Client secret */}
+            <Field
+              label={t("settings.sso.clientSecret", { defaultValue: "Client secret" })}
               id="sso-client-secret"
-              data-testid="sso-client-secret"
-              type="password"
-              value={state.clientSecret}
-              onChange={(e) => update("clientSecret", e.target.value)}
-              placeholder={
-                state.hasStoredSecret
-                  ? t("settings.sso.secretUnchanged", {
-                      defaultValue: "(unchanged — re-enter to rotate)",
-                    })
-                  : ""
-              }
-              autoComplete="new-password"
-            />
-            <p className="mt-1 text-[11px] text-muted-foreground">
-              {t("settings.sso.secretHelp", {
-                defaultValue: "Stored encrypted at rest. Leave empty to keep the existing value.",
-              })}
-            </p>
-          </Field>
-
-          {/* Redirect URI (read-only) */}
-          <Field
-            label={t("settings.sso.redirectUri", { defaultValue: "Redirect URI" })}
-            id="sso-redirect-uri"
-          >
-            <Input
-              id="sso-redirect-uri"
-              data-testid="sso-redirect-uri"
-              value={state.redirectUri}
-              onChange={(e) => update("redirectUri", e.target.value)}
-              readOnly
-              className="font-mono"
-            />
-            <p className="mt-1 text-[11px] text-muted-foreground">
-              {t("settings.sso.redirectHelp", {
-                defaultValue: "Add this URI to your IdP's allowed redirect list.",
-              })}
-            </p>
-          </Field>
-
-          {/* Group mapping */}
-          <div className="space-y-2" data-testid="sso-group-mapping">
-            <div className="text-xs uppercase tracking-wide text-muted-foreground">
-              {t("settings.sso.groupMapping", { defaultValue: "Group → Role mapping" })}
-            </div>
-            {state.groupMappingRows.length === 0 ? (
-              <p className="text-[11px] text-muted-foreground">
-                {t("settings.sso.groupMappingEmpty", {
-                  defaultValue: "No groups mapped — every signed-in user defaults to 'user'.",
+            >
+              <Input
+                id="sso-client-secret"
+                data-testid="sso-client-secret"
+                type="password"
+                value={state.clientSecret}
+                onChange={(e) => update("clientSecret", e.target.value)}
+                placeholder={
+                  state.hasStoredSecret
+                    ? t("settings.sso.secretUnchanged", {
+                        defaultValue: "(unchanged — re-enter to rotate)",
+                      })
+                    : ""
+                }
+                autoComplete="new-password"
+              />
+              <p className="mt-1 text-[11px] text-muted-foreground">
+                {t("settings.sso.secretHelp", {
+                  defaultValue: "Stored encrypted at rest. Leave empty to keep the existing value.",
                 })}
               </p>
-            ) : null}
-            {state.groupMappingRows.map((row, idx) => (
-              <div
-                // biome-ignore lint/suspicious/noArrayIndexKey: rows are list-like, no animation, no stable id available
-                key={`row-${idx}`}
-                data-testid={`sso-group-row-${idx}`}
-                className="flex items-center gap-2"
-              >
-                <Input
-                  data-testid={`sso-group-key-${idx}`}
-                  value={row.key}
-                  onChange={(e) => updateGroupRow(idx, e.target.value, row.value)}
-                  placeholder="idp-group-name"
-                  className="flex-1"
-                />
-                <select
-                  data-testid={`sso-group-role-${idx}`}
-                  value={row.value}
-                  onChange={(e) => updateGroupRow(idx, row.key, e.target.value as Role)}
-                  className="h-9 rounded-md border border-border bg-card px-2 text-sm"
-                >
-                  {ROLES.map((r) => (
-                    <option key={r} value={r}>
-                      {r}
-                    </option>
-                  ))}
-                </select>
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="icon"
-                  data-testid={`sso-group-remove-${idx}`}
-                  onClick={() => removeGroupRow(idx)}
-                  aria-label={t("common.remove", { defaultValue: "Remove" })}
-                >
-                  <Trash2 className="h-4 w-4" />
-                </Button>
+            </Field>
+
+            {/* Redirect URI (read-only) */}
+            <Field
+              label={t("settings.sso.redirectUri", { defaultValue: "Redirect URI" })}
+              id="sso-redirect-uri"
+            >
+              <Input
+                id="sso-redirect-uri"
+                data-testid="sso-redirect-uri"
+                value={state.redirectUri}
+                onChange={(e) => update("redirectUri", e.target.value)}
+                readOnly
+                className="font-mono"
+              />
+              <p className="mt-1 text-[11px] text-muted-foreground">
+                {t("settings.sso.redirectHelp", {
+                  defaultValue: "Add this URI to your IdP's allowed redirect list.",
+                })}
+              </p>
+            </Field>
+
+            {/* Group mapping */}
+            <div className="space-y-2" data-testid="sso-group-mapping">
+              <div className="text-xs uppercase tracking-wide text-muted-foreground">
+                {t("settings.sso.groupMapping", { defaultValue: "Group → Role mapping" })}
               </div>
-            ))}
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              data-testid="sso-group-add"
-              onClick={addGroupRow}
-            >
-              <Plus className="h-3.5 w-3.5" />
-              {t("settings.sso.addGroup", { defaultValue: "Add group mapping" })}
-            </Button>
-          </div>
-
-          {/* Auto-create users toggle */}
-          <label className="flex items-center gap-2 text-sm" data-testid="sso-autocreate-row">
-            <input
-              type="checkbox"
-              checked={state.autoCreateUsers}
-              onChange={(e) => update("autoCreateUsers", e.target.checked)}
-              data-testid="sso-autocreate"
-            />
-            <span>
-              {t("settings.sso.autoCreate", {
-                defaultValue: "Auto-create users on first SSO login",
-              })}
-            </span>
-          </label>
-
-          {/* Test result banner */}
-          {testResult ? (
-            <div
-              data-testid="sso-test-result"
-              className={cn(
-                "rounded-md border px-3 py-2 text-xs",
-                testResult.success
-                  ? "border-status-running/40 bg-[color-mix(in_oklab,var(--status-running)_10%,transparent)] text-status-running"
-                  : "border-status-failed/40 bg-[color-mix(in_oklab,var(--status-failed)_10%,transparent)] text-status-failed",
-              )}
-            >
-              {testResult.success ? (
-                <div className="space-y-0.5">
-                  <div className="flex items-center gap-1.5 font-medium">
-                    <ShieldCheck className="h-3.5 w-3.5" />
-                    {t("settings.sso.testSuccess", { defaultValue: "Discovery succeeded" })}
-                  </div>
-                  <code className="block break-all text-[10.5px] text-muted-foreground">
-                    {testResult.issuer}
-                  </code>
-                  <code className="block break-all text-[10.5px] text-muted-foreground">
-                    auth: {testResult.authorizationEndpoint ?? "-"}
-                  </code>
-                  <code className="block break-all text-[10.5px] text-muted-foreground">
-                    token: {testResult.tokenEndpoint ?? "-"}
-                  </code>
-                </div>
-              ) : (
-                <div>
-                  {t("settings.sso.testFailed", {
-                    defaultValue: "连接测试失败，请检查配置后重试。",
+              {state.groupMappingRows.length === 0 ? (
+                <p className="text-[11px] text-muted-foreground">
+                  {t("settings.sso.groupMappingEmpty", {
+                    defaultValue: "No groups mapped — every signed-in user defaults to 'user'.",
                   })}
+                </p>
+              ) : null}
+              {state.groupMappingRows.map((row, idx) => (
+                <div
+                  // biome-ignore lint/suspicious/noArrayIndexKey: rows are list-like, no animation, no stable id available
+                  key={`row-${idx}`}
+                  data-testid={`sso-group-row-${idx}`}
+                  className="flex items-center gap-2"
+                >
+                  <Input
+                    data-testid={`sso-group-key-${idx}`}
+                    value={row.key}
+                    onChange={(e) => updateGroupRow(idx, e.target.value, row.value)}
+                    placeholder="idp-group-name"
+                    className="flex-1"
+                  />
+                  <select
+                    data-testid={`sso-group-role-${idx}`}
+                    value={row.value}
+                    onChange={(e) => updateGroupRow(idx, row.key, e.target.value as Role)}
+                    className="h-9 rounded-md border border-border bg-card px-2 text-sm"
+                  >
+                    {ROLES.map((r) => (
+                      <option key={r} value={r}>
+                        {r}
+                      </option>
+                    ))}
+                  </select>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    data-testid={`sso-group-remove-${idx}`}
+                    onClick={() => removeGroupRow(idx)}
+                    aria-label={t("common.remove", { defaultValue: "Remove" })}
+                  >
+                    <Trash2 className="h-4 w-4" />
+                  </Button>
                 </div>
-              )}
+              ))}
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                data-testid="sso-group-add"
+                onClick={addGroupRow}
+              >
+                <Plus className="h-3.5 w-3.5" />
+                {t("settings.sso.addGroup", { defaultValue: "Add group mapping" })}
+              </Button>
             </div>
-          ) : null}
 
-          {/* Action buttons */}
-          <div className="flex flex-wrap items-center gap-2 pt-2">
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              data-testid="sso-test"
-              disabled={testing || state.issuerUrl.length === 0 || state.clientId.length === 0}
-              onClick={onTest}
-            >
-              {testing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
-              {t("settings.sso.test", { defaultValue: "Test connection" })}
-            </Button>
-            <Button type="submit" size="sm" data-testid="sso-save" disabled={saving}>
-              {saving ? (
-                <Loader2 className="h-3.5 w-3.5 animate-spin" />
-              ) : (
-                <Save className="h-3.5 w-3.5" />
-              )}
-              {t("settings.sso.save", { defaultValue: "Save" })}
-            </Button>
-            {state.hasStoredSecret ? (
-              <span className="text-[11px] text-muted-foreground" data-testid="sso-secret-stored">
-                {t("settings.sso.secretStored", { defaultValue: "Secret stored (encrypted)" })}
+            {/* Auto-create users toggle */}
+            <label className="flex items-center gap-2 text-sm" data-testid="sso-autocreate-row">
+              <input
+                type="checkbox"
+                checked={state.autoCreateUsers}
+                onChange={(e) => update("autoCreateUsers", e.target.checked)}
+                data-testid="sso-autocreate"
+              />
+              <span>
+                {t("settings.sso.autoCreate", {
+                  defaultValue: "Auto-create users on first SSO login",
+                })}
               </span>
+            </label>
+
+            {/* Test result banner */}
+            {testResult ? (
+              <div
+                data-testid="sso-test-result"
+                className={cn(
+                  "rounded-md border px-3 py-2 text-xs",
+                  testResult.success
+                    ? "border-status-running/40 bg-[color-mix(in_oklab,var(--status-running)_10%,transparent)] text-status-running"
+                    : "border-status-failed/40 bg-[color-mix(in_oklab,var(--status-failed)_10%,transparent)] text-status-failed",
+                )}
+              >
+                {testResult.success ? (
+                  <div className="space-y-0.5">
+                    <div className="flex items-center gap-1.5 font-medium">
+                      <ShieldCheck className="h-3.5 w-3.5" />
+                      {t("settings.sso.testSuccess", { defaultValue: "Discovery succeeded" })}
+                    </div>
+                    <code className="block break-all text-[10.5px] text-muted-foreground">
+                      {testResult.issuer}
+                    </code>
+                    <code className="block break-all text-[10.5px] text-muted-foreground">
+                      auth: {testResult.authorizationEndpoint ?? "-"}
+                    </code>
+                    <code className="block break-all text-[10.5px] text-muted-foreground">
+                      token: {testResult.tokenEndpoint ?? "-"}
+                    </code>
+                  </div>
+                ) : (
+                  <div>
+                    {t("settings.sso.testFailed", {
+                      defaultValue: "连接测试失败，请检查配置后重试。",
+                    })}
+                  </div>
+                )}
+              </div>
             ) : null}
-          </div>
+
+            {/* Action buttons */}
+            <div className="flex flex-wrap items-center gap-2 pt-2">
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                data-testid="sso-test"
+                disabled={testing || state.issuerUrl.length === 0 || state.clientId.length === 0}
+                onClick={onTest}
+              >
+                {testing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
+                {t("settings.sso.test", { defaultValue: "Test connection" })}
+              </Button>
+              <Button type="submit" size="sm" data-testid="sso-save" disabled={saving}>
+                {saving ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <Save className="h-3.5 w-3.5" />
+                )}
+                {t("settings.sso.save", { defaultValue: "Save" })}
+              </Button>
+              {state.hasStoredSecret ? (
+                <span className="text-[11px] text-muted-foreground" data-testid="sso-secret-stored">
+                  {t("settings.sso.secretStored", { defaultValue: "Secret stored (encrypted)" })}
+                </span>
+              ) : null}
+            </div>
+          </fieldset>
         </form>
       </CardContent>
     </Card>

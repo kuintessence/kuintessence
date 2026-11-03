@@ -2,6 +2,7 @@ import { DatabaseZap, Loader2, RefreshCw, ShieldAlert, Trash2 } from "lucide-rea
 import { type ReactNode, useCallback, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import { api } from "../../lib/api-client";
+import { useMobileMutationBlocked } from "../../lib/use-mobile-mutation-blocked";
 import { toUserFacingError } from "../../lib/user-facing-error";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
@@ -93,6 +94,7 @@ function friendlyAuthzBlocker(blocker: string): string {
 }
 
 export function AuthzAdminPanel({ showBreakGlass = false }: { showBreakGlass?: boolean }) {
+  const mobileReadOnly = useMobileMutationBlocked("/admin/authz");
   const [health, setHealth] = useState<AuthzHealth | null>(null);
   const [readiness, setReadiness] = useState<AuthzReadiness | null>(null);
   const [diffs, setDiffs] = useState<AuthzDiff[]>([]);
@@ -222,7 +224,7 @@ export function AuthzAdminPanel({ showBreakGlass = false }: { showBreakGlass?: b
             <Button
               variant="outline"
               size="sm"
-              disabled={rebuilding}
+              disabled={mobileReadOnly || rebuilding}
               onClick={async () => {
                 setRebuilding(true);
                 try {
@@ -265,11 +267,14 @@ export function AuthzAdminPanel({ showBreakGlass = false }: { showBreakGlass?: b
                   <textarea
                     className="min-h-40 w-full rounded-md border bg-background p-3 font-mono text-xs"
                     value={rawTuple}
+                    disabled={mobileReadOnly}
                     onChange={(event) => setRawTuple(event.target.value)}
                   />
                   <Button
                     variant="destructive"
-                    disabled={!health?.rawTupleAdminEnabled || rawTupleParsed == null}
+                    disabled={
+                      mobileReadOnly || !health?.rawTupleAdminEnabled || rawTupleParsed == null
+                    }
                     onClick={async () => {
                       try {
                         await api.post<{ success: true }>(
@@ -297,7 +302,9 @@ export function AuthzAdminPanel({ showBreakGlass = false }: { showBreakGlass?: b
                   <Button
                     variant="outline"
                     size="sm"
-                    disabled={clearingDiffs || (readiness?.shadowDiffs ?? 0) === 0}
+                    disabled={
+                      mobileReadOnly || clearingDiffs || (readiness?.shadowDiffs ?? 0) === 0
+                    }
                     onClick={async () => {
                       if (!window.confirm("确认已审阅 Shadow diff，并清空当前 diff 记录？")) return;
                       setClearingDiffs(true);
@@ -337,7 +344,9 @@ export function AuthzAdminPanel({ showBreakGlass = false }: { showBreakGlass?: b
                   <Button
                     variant="outline"
                     size="sm"
-                    disabled={processingOutbox || !canProcessAuthzOutbox(readiness)}
+                    disabled={
+                      mobileReadOnly || processingOutbox || !canProcessAuthzOutbox(readiness)
+                    }
                     onClick={async () => {
                       setProcessingOutbox(true);
                       try {
@@ -369,6 +378,7 @@ export function AuthzAdminPanel({ showBreakGlass = false }: { showBreakGlass?: b
                   row.status === "dead" ? (
                     <Button
                       key={row.id}
+                      disabled={mobileReadOnly}
                       variant="outline"
                       size="sm"
                       onClick={async () => {

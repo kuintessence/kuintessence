@@ -302,7 +302,11 @@ test("visibility success invalidates normal details and management rows, retaini
 });
 
 test("mobile permits visibility inspection, not policy writes", async () => {
-  vi.spyOn(window, "matchMedia").mockReturnValue({ matches: true } as MediaQueryList);
+  vi.spyOn(window, "matchMedia").mockReturnValue({
+    matches: true,
+    addEventListener: vi.fn(),
+    removeEventListener: vi.fn(),
+  } as unknown as MediaQueryList);
   setMobileManagementPolicy(true);
   mount();
   await readyVisibility();

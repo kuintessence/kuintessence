@@ -505,6 +505,13 @@
       "when": 1793405938848,
       "tag": "0071_colorful_shadowcat",
       "breakpoints": true
+    },
+    {
+      "idx": 72,
+      "version": "7",
+      "when": 1793672151510,
+      "tag": "0072_odd_thunderbolt",
+      "breakpoints": true
     }
   ]
 }

@@ -2,6 +2,9 @@ import { ApiError } from "@kuintessence/shared/browser";
 
 const POLICY_KEY = "kq.mobile-management-policy";
 const HIGH_RISK_PATHS = [
+  /^\/preferences\/global(?:\/|$)/,
+  /^\/sandbox\/accounts(?:\/|$)/,
+  /^\/compute-providers\/(?:provider|operator)\/organizations(?:\/|$)/,
   /^\/interconnect\/(?:provider|operator)\/(?:centers|clusters|links)(?:\/|$)/,
   /^\/admin(?:\/|$)/,
   /^\/agent-registration(?:\/|$)/,

@@ -45,6 +45,8 @@ export type WorkspaceRoute =
   | "/agents"
   | "/software"
   | "/cp"
+  | "/providers"
+  | "/cp/profile"
   | "/interconnect"
   | "/cp/interconnect"
   | "/cp/infrastructure"
@@ -176,6 +178,7 @@ export const WORKSPACE_IDENTITIES: ReadonlyArray<WorkspaceIdentity> = [
         items: [
           { to: "/cp", exact: true, labelKey: "cp.nav.dashboard", icon: Gauge },
           { to: "/cp/interconnect", labelKey: "workspace.nav.interconnect", icon: Activity },
+          { to: "/cp/profile", labelKey: "providers.selfTitle", icon: Building2 },
           { to: "/cp/metering", labelKey: "cp.nav.metering", icon: ReceiptText },
           {
             to: "/cp/data",
@@ -256,6 +259,7 @@ export const WORKSPACE_IDENTITIES: ReadonlyArray<WorkspaceIdentity> = [
         labelKey: "workspace.section.platformOperations",
         items: [
           { to: "/interconnect", labelKey: "workspace.nav.interconnect", icon: Activity },
+          { to: "/providers", labelKey: "providers.title", icon: Building2 },
           {
             to: "/operations",
             hash: "overview",
@@ -441,7 +445,7 @@ export function inferWorkspaceIdentity(pathname: string, hash: string): Workspac
   if (pathname === "/cp" || pathname.startsWith("/cp/")) {
     return PROVIDER_TECHNICAL_PATHS.has(pathname) ? "provider-technical" : "provider-operations";
   }
-  if (pathname === "/interconnect") return "platform-operations";
+  if (pathname === "/interconnect" || pathname === "/providers") return "platform-operations";
   if (pathname === "/operations" || pathname.startsWith("/operations/")) {
     const area = hash.replace(/^#/, "");
     if (area === "audit" || area === "metering") return "platform-audit";

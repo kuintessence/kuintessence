@@ -376,7 +376,11 @@ test.each(kinds)("%s checks the current identity again before submitting", async
 });
 
 test.each(kinds)("%s hides online writes under the mobile management policy", async (kind) => {
-  vi.spyOn(window, "matchMedia").mockReturnValue({ matches: true } as MediaQueryList);
+  vi.spyOn(window, "matchMedia").mockReturnValue({
+    matches: true,
+    addEventListener: vi.fn(),
+    removeEventListener: vi.fn(),
+  } as unknown as MediaQueryList);
   setMobileManagementPolicy(true);
   mount(kind);
   expect(screen.queryByLabelText(`Choose online ${kind} manifest (JSON)`)).toBeNull();

@@ -41,4 +41,5 @@
 示例使用虚构账号和站点；凭据与内部部署资料保存在仓库外。
 新增内容归入对应手册或专题。运行 `bun scripts/check-doc-links.ts` 检查本地文档链接。
 
-- [多算力中心互联仪表盘](compute-interconnect.md)：资源档案、统计口径、地图与互联状态。
+- [算力提供者资料](compute-providers.md)：平台管理与提供方自助维护。
+- [算网一览](compute-interconnect.md)：资源档案、统计口径、地图与互联状态。

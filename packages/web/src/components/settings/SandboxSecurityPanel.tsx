@@ -10,6 +10,7 @@ import {
   listSandboxPolicyOverlays,
   updatePlatformSandboxPolicy,
 } from "../../lib/sandbox-client";
+import { useMobileMutationBlocked } from "../../lib/use-mobile-mutation-blocked";
 import { toUserFacingError } from "../../lib/user-facing-error";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
@@ -22,6 +23,7 @@ interface AgentEffectivePolicy {
 
 export function SandboxSecurityPanel() {
   const { t } = useTranslation();
+  const mobileReadOnly = useMobileMutationBlocked("/sandbox/policies/platform");
   const queryClient = useQueryClient();
   const [policy, setPolicy] = useState({
     sandboxEnabled: true,
@@ -95,52 +97,65 @@ export function SandboxSecurityPanel() {
       </CardHeader>
       <CardContent className="grid gap-5">
         <p className="text-xs leading-5 text-muted-foreground">{t("sandbox.security.subtitle")}</p>
-        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
-          <PolicyToggle
-            checked={policy.sandboxEnabled}
-            label={t("sandbox.security.sandboxEnabled")}
-            onChange={(checked) =>
-              setPolicy((current) => ({ ...current, sandboxEnabled: checked }))
-            }
-          />
-          <PolicyToggle
-            checked={policy.impersonationEnabled}
-            label={t("sandbox.security.impersonation")}
-            onChange={(checked) =>
-              setPolicy((current) => ({ ...current, impersonationEnabled: checked }))
-            }
-          />
-          <PolicyToggle
-            checked={policy.degradedImpersonationAllowed}
-            label={t("sandbox.security.degraded")}
-            onChange={(checked) =>
-              setPolicy((current) => ({ ...current, degradedImpersonationAllowed: checked }))
-            }
-          />
-          <PolicyToggle
-            checked={policy.sharedServiceAllowed}
-            label={t("sandbox.security.shared")}
-            onChange={(checked) =>
-              setPolicy((current) => ({ ...current, sharedServiceAllowed: checked }))
-            }
-          />
-          <PolicyToggle
-            checked={policy.runtimePrecacheRequired}
-            label={t("sandbox.security.precache")}
-            onChange={(checked) =>
-              setPolicy((current) => ({ ...current, runtimePrecacheRequired: checked }))
-            }
-          />
-        </div>
-        <div className="flex justify-end">
-          <Button
-            size="sm"
-            onClick={() => saveMutation.mutate()}
-            disabled={saveMutation.isPending || overlaysQuery.isLoading || overlaysQuery.isError}
-          >
-            {t("sandbox.security.saveUpperBound")}
-          </Button>
-        </div>
+        {mobileReadOnly && (
+          <p className="text-sm text-muted-foreground">{t("settings.desktopManage")}</p>
+        )}
+        <fieldset
+          disabled={
+            mobileReadOnly ||
+            saveMutation.isPending ||
+            overlaysQuery.isPending ||
+            overlaysQuery.isError
+          }
+          className="space-y-3"
+        >
+          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+            <PolicyToggle
+              checked={policy.sandboxEnabled}
+              label={t("sandbox.security.sandboxEnabled")}
+              onChange={(checked) =>
+                setPolicy((current) => ({ ...current, sandboxEnabled: checked }))
+              }
+            />
+            <PolicyToggle
+              checked={policy.impersonationEnabled}
+              label={t("sandbox.security.impersonation")}
+              onChange={(checked) =>
+                setPolicy((current) => ({ ...current, impersonationEnabled: checked }))
+              }
+            />
+            <PolicyToggle
+              checked={policy.degradedImpersonationAllowed}
+              label={t("sandbox.security.degraded")}
+              onChange={(checked) =>
+                setPolicy((current) => ({ ...current, degradedImpersonationAllowed: checked }))
+              }
+            />
+            <PolicyToggle
+              checked={policy.sharedServiceAllowed}
+              label={t("sandbox.security.shared")}
+              onChange={(checked) =>
+                setPolicy((current) => ({ ...current, sharedServiceAllowed: checked }))
+              }
+            />
+            <PolicyToggle
+              checked={policy.runtimePrecacheRequired}
+              label={t("sandbox.security.precache")}
+              onChange={(checked) =>
+                setPolicy((current) => ({ ...current, runtimePrecacheRequired: checked }))
+              }
+            />
+          </div>
+          <div className="flex justify-end">
+            <Button
+              size="sm"
+              onClick={() => saveMutation.mutate()}
+              disabled={saveMutation.isPending || overlaysQuery.isLoading || overlaysQuery.isError}
+            >
+              {t("sandbox.security.saveUpperBound")}
+            </Button>
+          </div>
+        </fieldset>
         {overlaysQuery.error instanceof Error ||
         agentsQuery.error instanceof Error ||
         effectiveQuery.error instanceof Error ? (

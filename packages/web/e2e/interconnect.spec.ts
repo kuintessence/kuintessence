@@ -138,7 +138,7 @@ test("resource drilldown, map defaults, metadata and responsive layout", async (
     });
   });
   await page.goto("/interconnect");
-  await expect(page.getByRole("heading", { name: "多算力中心互联仪表盘" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "算网一览" })).toBeVisible();
   await expect(page.locator("canvas").first()).toBeVisible();
   // Locate the amber portion of the aggregate ring on the real canvas, then click it.
   const mapCanvas = page.getByRole("region", { name: "算力中心地图" }).locator("canvas").first();
@@ -288,7 +288,7 @@ test("resource drilldown, map defaults, metadata and responsive layout", async (
     metadata: { name: "新建测试中心", longitude: null, latitude: null, status: "unknown" },
   });
   await page.goto("/cp/interconnect");
-  await expect(page.getByRole("heading", { name: "多算力中心互联仪表盘" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "算网一览" })).toBeVisible();
   await page.getByLabel("地图层级").selectOption("china");
   await page.screenshot({ path: testInfo.outputPath("interconnect-desktop.png"), fullPage: true });
   for (const width of Array.from({ length: 30 }, (_, i) => [390, 768, 1440][i % 3] ?? 1440)) {

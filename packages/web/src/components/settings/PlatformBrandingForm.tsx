@@ -13,6 +13,7 @@ import { toast } from "sonner";
 import defaultLogoUrl from "../../assets/logo.svg";
 import { api } from "../../lib/api-client";
 import { resolveImageSource } from "../../lib/platform-branding";
+import { useMobileMutationBlocked } from "../../lib/use-mobile-mutation-blocked";
 import { toUserFacingError } from "../../lib/user-facing-error";
 import { Button } from "../ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
@@ -56,12 +57,18 @@ function toForm(value: unknown): PlatformBranding {
 
 export function PlatformBrandingForm() {
   const { t } = useTranslation();
+  const mobileReadOnly = useMobileMutationBlocked("/admin/branding");
   const [state, setState] = useState<PlatformBranding | null>(null);
   const [saving, setSaving] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
 
+  const loadFailedLabel = t("settings.branding.loadFailed", {
+    defaultValue: "暂时无法加载平台 branding 配置，请稍后重试。",
+  });
   useEffect(() => {
+    if (loadError) return;
     let cancelled = false;
+    setState(null);
     api
       .get<PlatformBrandingView>("/admin/branding")
       .then((view) => {
@@ -69,20 +76,13 @@ export function PlatformBrandingForm() {
       })
       .catch((error: unknown) => {
         if (!cancelled) {
-          setLoadError(
-            toUserFacingError(
-              error,
-              t("settings.branding.loadFailed", {
-                defaultValue: "暂时无法加载平台 branding 配置，请稍后重试。",
-              }),
-            ),
-          );
+          setLoadError(toUserFacingError(error, loadFailedLabel));
         }
       });
     return () => {
       cancelled = true;
     };
-  }, [t]);
+  }, [loadFailedLabel, loadError]);
 
   if (loadError) {
     return (
@@ -96,6 +96,9 @@ export function PlatformBrandingForm() {
           <div className="text-sm text-status-failed" data-testid="platform-branding-load-error">
             {loadError}
           </div>
+          <Button className="mt-3" variant="outline" onClick={() => setLoadError(null)}>
+            {t("common.retry")}
+          </Button>
         </CardContent>
       </Card>
     );
@@ -189,98 +192,103 @@ export function PlatformBrandingForm() {
       </CardHeader>
       <CardContent>
         <form className="space-y-6" onSubmit={onSave}>
-          <div className="grid gap-5 lg:grid-cols-2">
-            {LANGUAGE_ROWS.map(({ code, labelKey }) => (
-              <section key={code} className="space-y-3 rounded-lg border border-border p-4">
-                <h3 className="text-sm font-semibold">{t(labelKey)}</h3>
-                {LOCALE_FIELDS.map(({ key, labelKey: fieldLabelKey, placeholderKey }) => (
-                  <div key={key} className="space-y-1.5">
-                    <label
-                      htmlFor={`platform-branding-${code}-${key}`}
-                      className="block text-xs font-medium uppercase tracking-wide text-muted-foreground"
-                    >
-                      {t(fieldLabelKey)}
-                    </label>
-                    <Input
-                      id={`platform-branding-${code}-${key}`}
-                      value={state.locales[code][key]}
-                      onChange={(event) => updateLocale(code, key, event.target.value)}
-                      placeholder={t(placeholderKey)}
-                      maxLength={key === "name" ? 80 : key === "title" ? 120 : 240}
-                      data-testid={`platform-branding-${code}-${key}`}
-                    />
-                  </div>
-                ))}
-              </section>
-            ))}
-          </div>
+          {mobileReadOnly && (
+            <p className="text-sm text-muted-foreground">{t("settings.desktopManage")}</p>
+          )}
+          <fieldset disabled={mobileReadOnly || saving} className="space-y-6">
+            <div className="grid gap-5 lg:grid-cols-2">
+              {LANGUAGE_ROWS.map(({ code, labelKey }) => (
+                <section key={code} className="space-y-3 rounded-lg border border-border p-4">
+                  <h3 className="text-sm font-semibold">{t(labelKey)}</h3>
+                  {LOCALE_FIELDS.map(({ key, labelKey: fieldLabelKey, placeholderKey }) => (
+                    <div key={key} className="space-y-1.5">
+                      <label
+                        htmlFor={`platform-branding-${code}-${key}`}
+                        className="block text-xs font-medium uppercase tracking-wide text-muted-foreground"
+                      >
+                        {t(fieldLabelKey)}
+                      </label>
+                      <Input
+                        id={`platform-branding-${code}-${key}`}
+                        value={state.locales[code][key]}
+                        onChange={(event) => updateLocale(code, key, event.target.value)}
+                        placeholder={t(placeholderKey)}
+                        maxLength={key === "name" ? 80 : key === "title" ? 120 : 240}
+                        data-testid={`platform-branding-${code}-${key}`}
+                      />
+                    </div>
+                  ))}
+                </section>
+              ))}
+            </div>
 
-          <section className="space-y-3 rounded-lg border border-border p-4">
-            <div>
-              <h3 className="text-sm font-semibold">{t("settings.branding.assetsTitle")}</h3>
-              <p className="mt-1 text-xs leading-5 text-muted-foreground">
-                {t("settings.branding.assetsDescription")}
-              </p>
-            </div>
-            <div className="grid gap-4 lg:grid-cols-2">
-              <div className="space-y-1.5">
-                <label
-                  htmlFor="platform-branding-logo-url"
-                  className="block text-xs font-medium uppercase tracking-wide text-muted-foreground"
-                >
-                  {t("settings.branding.logoUrl")}
-                </label>
-                <Input
-                  id="platform-branding-logo-url"
-                  value={state.logoUrl}
-                  onChange={(event) => setState({ ...state, logoUrl: event.target.value })}
-                  placeholder={t("settings.branding.imagePlaceholder")}
-                  data-testid="platform-branding-logo-url"
-                />
+            <section className="space-y-3 rounded-lg border border-border p-4">
+              <div>
+                <h3 className="text-sm font-semibold">{t("settings.branding.assetsTitle")}</h3>
+                <p className="mt-1 text-xs leading-5 text-muted-foreground">
+                  {t("settings.branding.assetsDescription")}
+                </p>
               </div>
-              <div className="space-y-1.5">
-                <label
-                  htmlFor="platform-branding-favicon-url"
-                  className="block text-xs font-medium uppercase tracking-wide text-muted-foreground"
-                >
-                  {t("settings.branding.faviconUrl")}
-                </label>
-                <Input
-                  id="platform-branding-favicon-url"
-                  value={state.faviconUrl}
-                  onChange={(event) => setState({ ...state, faviconUrl: event.target.value })}
-                  placeholder={t("settings.branding.imagePlaceholder")}
-                  data-testid="platform-branding-favicon-url"
-                />
-              </div>
-            </div>
-            <div className="flex flex-wrap items-center gap-4 rounded-md bg-muted/25 p-3">
-              <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                <span className="flex h-10 w-10 items-center justify-center rounded-md border bg-background">
-                  <img
-                    src={previewLogo}
-                    alt=""
-                    className={`max-h-7 max-w-7 ${previewLogo === defaultLogoUrl ? "dark:invert" : ""}`}
+              <div className="grid gap-4 lg:grid-cols-2">
+                <div className="space-y-1.5">
+                  <label
+                    htmlFor="platform-branding-logo-url"
+                    className="block text-xs font-medium uppercase tracking-wide text-muted-foreground"
+                  >
+                    {t("settings.branding.logoUrl")}
+                  </label>
+                  <Input
+                    id="platform-branding-logo-url"
+                    value={state.logoUrl}
+                    onChange={(event) => setState({ ...state, logoUrl: event.target.value })}
+                    placeholder={t("settings.branding.imagePlaceholder")}
+                    data-testid="platform-branding-logo-url"
                   />
-                </span>
-                <span>{t("settings.branding.logoPreview")}</span>
+                </div>
+                <div className="space-y-1.5">
+                  <label
+                    htmlFor="platform-branding-favicon-url"
+                    className="block text-xs font-medium uppercase tracking-wide text-muted-foreground"
+                  >
+                    {t("settings.branding.faviconUrl")}
+                  </label>
+                  <Input
+                    id="platform-branding-favicon-url"
+                    value={state.faviconUrl}
+                    onChange={(event) => setState({ ...state, faviconUrl: event.target.value })}
+                    placeholder={t("settings.branding.imagePlaceholder")}
+                    data-testid="platform-branding-favicon-url"
+                  />
+                </div>
               </div>
-              <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                <span className="flex h-10 w-10 items-center justify-center rounded-md border bg-background">
-                  <img src={previewFavicon} alt="" className="max-h-5 max-w-5" />
-                </span>
-                <span>{t("settings.branding.faviconPreview")}</span>
+              <div className="flex flex-wrap items-center gap-4 rounded-md bg-muted/25 p-3">
+                <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                  <span className="flex h-10 w-10 items-center justify-center rounded-md border bg-background">
+                    <img
+                      src={previewLogo}
+                      alt=""
+                      className={`max-h-7 max-w-7 ${previewLogo === defaultLogoUrl ? "dark:invert" : ""}`}
+                    />
+                  </span>
+                  <span>{t("settings.branding.logoPreview")}</span>
+                </div>
+                <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                  <span className="flex h-10 w-10 items-center justify-center rounded-md border bg-background">
+                    <img src={previewFavicon} alt="" className="max-h-5 max-w-5" />
+                  </span>
+                  <span>{t("settings.branding.faviconPreview")}</span>
+                </div>
+                <Image className="ml-auto h-4 w-4 text-muted-foreground" aria-hidden="true" />
               </div>
-              <Image className="ml-auto h-4 w-4 text-muted-foreground" aria-hidden="true" />
-            </div>
-          </section>
+            </section>
 
-          <div className="flex justify-end">
-            <Button type="submit" disabled={saving} data-testid="platform-branding-save">
-              {saving ? <Loader2 className="animate-spin" /> : <Save />}
-              {saving ? t("common.saving", { defaultValue: "Saving…" }) : t("common.save")}
-            </Button>
-          </div>
+            <div className="flex justify-end">
+              <Button type="submit" disabled={saving} data-testid="platform-branding-save">
+                {saving ? <Loader2 className="animate-spin" /> : <Save />}
+                {saving ? t("common.saving", { defaultValue: "Saving…" }) : t("common.save")}
+              </Button>
+            </div>
+          </fieldset>
         </form>
       </CardContent>
     </Card>

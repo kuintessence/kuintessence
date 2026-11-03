@@ -3,6 +3,7 @@ import { useCallback, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { api } from "../../lib/api-client";
+import { useMobileMutationBlocked } from "../../lib/use-mobile-mutation-blocked";
 import { toUserFacingError } from "../../lib/user-facing-error";
 import { Button } from "../ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
@@ -31,6 +32,7 @@ let draftSequence = 0;
 
 export function DesensitizeAdminPanel() {
   const { t } = useTranslation();
+  const mobileReadOnly = useMobileMutationBlocked("/admin/desensitize");
   const [globalEnabled, setGlobalEnabled] = useState(false);
   const [rules, setRules] = useState<DesensitizeRule[]>([]);
   const [exportEnabled, setExportEnabled] = useState(false);
@@ -99,6 +101,7 @@ export function DesensitizeAdminPanel() {
   }
 
   async function save() {
+    if (mobileReadOnly) return;
     setSaving(true);
     try {
       const config = await api.put<DesensitizeConfigView>("/admin/desensitize/config", {
@@ -119,6 +122,7 @@ export function DesensitizeAdminPanel() {
   }
 
   async function exportAliases() {
+    if (mobileReadOnly) return;
     setExporting(true);
     setEnvelope(null);
     try {
@@ -158,7 +162,7 @@ export function DesensitizeAdminPanel() {
             </Button>
           </div>
         ) : (
-          <>
+          <fieldset disabled={mobileReadOnly || saving} className="min-w-0 space-y-5">
             <label className="flex items-center justify-between gap-4 rounded-md border p-3 text-sm">
               <span>{t("settings.desensitize.globalEnabled")}</span>
               <input
@@ -338,7 +342,7 @@ export function DesensitizeAdminPanel() {
                 </div>
               ) : null}
             </div>
-          </>
+          </fieldset>
         )}
       </CardContent>
     </Card>

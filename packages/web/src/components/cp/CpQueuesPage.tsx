@@ -297,7 +297,10 @@ function ManagedQueueTable({
             <th className="px-3 py-2 font-medium" scope="col">
               {t("cp.queues.col.policy")}
             </th>
-            <th className="px-3 py-2 font-medium" scope="col">
+            <th
+              className="px-3 py-2 font-medium sm:sticky sm:right-0 sm:z-10 sm:min-w-48 sm:bg-muted"
+              scope="col"
+            >
               {t("cp.queues.col.actions")}
             </th>
           </tr>
@@ -374,7 +377,7 @@ function ManagedQueueTable({
                   <td className="hidden px-3 py-2 sm:table-cell">
                     <QueuePolicyTags queue={queue} />
                   </td>
-                  <td className="order-5 col-span-2 sm:table-cell sm:px-3 sm:py-2">
+                  <td className="order-5 col-span-2 sm:sticky sm:right-0 sm:z-10 sm:table-cell sm:min-w-48 sm:bg-card sm:px-3 sm:py-2 sm:shadow-sm">
                     <div className="grid grid-cols-2 gap-2 sm:flex sm:flex-wrap">
                       <Button
                         type="button"
@@ -619,7 +622,10 @@ function QueueInventoryAgentSection({
                 <th className="px-3 py-2 font-medium" scope="col">
                   {t("cp.queues.inventoryCol.observedAt")}
                 </th>
-                <th className="px-3 py-2 font-medium" scope="col">
+                <th
+                  className="sticky right-0 z-10 min-w-28 bg-muted px-3 py-2 font-medium"
+                  scope="col"
+                >
                   {t("cp.queues.col.actions")}
                 </th>
               </tr>
@@ -681,7 +687,7 @@ function QueueInventoryAgentSection({
                       }
                     />
                   </td>
-                  <td className="px-3 py-2">
+                  <td className="sticky right-0 z-10 min-w-28 bg-card px-3 py-2 shadow-sm">
                     {!fact.managed &&
                     (canManageFacts || (inventory.status === "stale" && !fact.isDefault)) ? (
                       <Button

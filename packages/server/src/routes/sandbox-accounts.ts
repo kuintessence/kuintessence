@@ -263,7 +263,28 @@ export function createSandboxAccountRoutes({ db }: SandboxAccountRoutesDeps): Ho
             .from(clusterExecutionAccounts)
             .where(inArray(clusterExecutionAccounts.providerOrgId, providerIds))
         : await db.select().from(clusterExecutionAccounts);
-    return c.json({ success: true, data: rows });
+    const manageable = new Set(value.orgIds.filter((id) => isProviderAdmin(value, id)));
+    if (isPlatform(value)) {
+      const delegated = await db
+        .select({ orgId: accountAssignmentDelegations.providerOrgId })
+        .from(accountAssignmentDelegations)
+        .where(
+          and(
+            eq(accountAssignmentDelegations.delegated, true),
+            providerIds === null
+              ? undefined
+              : inArray(accountAssignmentDelegations.providerOrgId, providerIds),
+          ),
+        );
+      for (const row of delegated) manageable.add(row.orgId);
+    }
+    return c.json({
+      success: true,
+      data: rows,
+      manageableProviderOrgIds: [...manageable].filter(
+        (id) => providerIds === null || providerIds.includes(id),
+      ),
+    });
   });
 
   r.post("/sandbox/accounts", async (c) => {
@@ -296,11 +317,16 @@ export function createSandboxAccountRoutes({ db }: SandboxAccountRoutesDeps): Ho
             }
           : { ...body, createdBy: value.userId },
       )
+      .onConflictDoNothing()
       .returning();
+    if (!created) {
+      throw new AppError(ErrorCode.VALIDATION_ERROR, "该接入代理上已登记相同执行身份", 409);
+    }
     await writeAudit(db, {
       actor: value.userId,
       action: "sandbox.execution-account.create",
-      target: created?.id ?? body.agentId,
+      target: created.id,
+      diff: { after: { displayName: created.displayName } },
     });
     return c.json({ success: true, data: created }, 201);
   });
@@ -324,8 +350,8 @@ export function createSandboxAccountRoutes({ db }: SandboxAccountRoutesDeps): Ho
       action: "sandbox.execution-account.allowed-queues.update",
       target: account.id,
       diff: {
-        before: { allowedQueues: account.allowedQueues },
-        after: { allowedQueues: updated.allowedQueues },
+        before: { displayName: account.displayName, allowedQueues: account.allowedQueues },
+        after: { displayName: updated.displayName, allowedQueues: updated.allowedQueues },
       },
     });
     return c.json({ success: true, data: updated });

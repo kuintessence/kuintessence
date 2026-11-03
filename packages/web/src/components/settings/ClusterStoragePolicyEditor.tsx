@@ -3,6 +3,7 @@ import { Check, Loader2, Save, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import { api } from "../../lib/api-client";
+import { useMobileMutationBlocked } from "../../lib/use-mobile-mutation-blocked";
 import { toUserFacingError } from "../../lib/user-facing-error";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
@@ -35,6 +36,7 @@ interface RequestRow {
 
 export function ClusterStoragePolicyEditor({ rootId }: { rootId: string }) {
   const queryClient = useQueryClient();
+  const mobileReadOnly = useMobileMutationBlocked("/admin/storage/policy");
   const [defaultGb, setDefaultGb] = useState("0");
   const [maxGb, setMaxGb] = useState("");
   const [autoLimitGb, setAutoLimitGb] = useState("");
@@ -65,7 +67,13 @@ export function ClusterStoragePolicyEditor({ rootId }: { rootId: string }) {
     const defaultQuotaBytes = gbToBytes(defaultGb);
     const maxQuotaBytes = maxGb ? gbToBytes(maxGb) : null;
     const autoApproveLimitBytes = autoLimitGb ? gbToBytes(autoLimitGb) : null;
-    if (defaultQuotaBytes == null || (maxGb && maxQuotaBytes == null)) {
+    if (policyQ.isPending || requestsQ.isPending || policyQ.error || requestsQ.error || saving)
+      return;
+    if (
+      defaultQuotaBytes == null ||
+      (maxGb && maxQuotaBytes == null) ||
+      (autoLimitGb && autoApproveLimitBytes == null)
+    ) {
       toast.error("请输入有效的集群存储配额");
       return;
     }
@@ -103,9 +111,40 @@ export function ClusterStoragePolicyEditor({ rootId }: { rootId: string }) {
     }
   };
 
+  const queries = [policyQ, requestsQ];
+  const failed = queries.filter((query) => query.error);
+  if (failed.length || queries.some((query) => query.isPending)) {
+    return (
+      <div
+        className="space-y-3 rounded-md border border-dashed bg-muted/20 p-3"
+        data-testid="cluster-storage-policy"
+      >
+        <h3 className="text-xs font-semibold">用户配额申请策略</h3>
+        {failed.length ? (
+          <div role="alert" className="space-y-2 text-sm">
+            <p>集群存储策略或申请读取失败，请重试后再操作。</p>
+            <Button
+              variant="outline"
+              onClick={() => void Promise.all(failed.map((query) => query.refetch()))}
+            >
+              重试
+            </Button>
+          </div>
+        ) : (
+          <p role="status" className="text-sm text-muted-foreground">
+            正在加载集群存储策略与申请…
+          </p>
+        )}
+      </div>
+    );
+  }
+
   const pending = (requestsQ.data?.requests ?? []).filter((item) => item.status === "pending");
   return (
-    <div className="space-y-3 rounded-md border border-dashed bg-muted/20 p-3">
+    <div
+      className="space-y-3 rounded-md border border-dashed bg-muted/20 p-3"
+      data-testid="cluster-storage-policy"
+    >
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div>
           <div className="text-xs font-semibold">用户配额申请策略</div>
@@ -115,58 +154,65 @@ export function ClusterStoragePolicyEditor({ rootId }: { rootId: string }) {
         </div>
         <Badge variant={pending.length > 0 ? "brand" : "outline"}>待审批 {pending.length}</Badge>
       </div>
-      <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-[1fr_1fr_1fr_1fr_auto]">
-        <LabeledInput label="默认配额（GB）" value={defaultGb} onChange={setDefaultGb} />
-        <LabeledInput label="单用户上限（GB）" value={maxGb} onChange={setMaxGb} />
-        <label className="space-y-1 text-[11px]">
-          <span>审批方式</span>
-          <select
-            className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm"
-            value={requestMode}
-            onChange={(event) => setRequestMode(event.target.value as typeof requestMode)}
-          >
-            <option value="auto">自动审批</option>
-            <option value="manual">人工审批</option>
-            <option value="disabled">关闭申请</option>
-          </select>
-        </label>
-        <LabeledInput
-          label="自动审批上限（GB）"
-          value={autoLimitGb}
-          onChange={setAutoLimitGb}
-          disabled={requestMode !== "auto"}
-        />
-        <Button size="sm" className="self-end" onClick={() => void save()} disabled={saving}>
-          {saving ? <Loader2 className="animate-spin" /> : <Save />}
-          保存策略
-        </Button>
-      </div>
-      {pending.length > 0 ? (
-        <div className="grid gap-2 md:grid-cols-2">
-          {pending.map((request) => (
-            <div
-              key={request.id}
-              className="flex items-center gap-2 rounded-md border bg-background p-2 text-xs"
+      {mobileReadOnly && <p className="text-sm text-muted-foreground">请在电脑端修改平台配置。</p>}
+      <fieldset disabled={mobileReadOnly} className="space-y-3">
+        <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-[1fr_1fr_1fr_1fr_auto]">
+          <LabeledInput label="默认配额（GB）" value={defaultGb} onChange={setDefaultGb} />
+          <LabeledInput label="单用户上限（GB）" value={maxGb} onChange={setMaxGb} />
+          <label className="space-y-1 text-[11px]">
+            <span>审批方式</span>
+            <select
+              className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm"
+              value={requestMode}
+              onChange={(event) => setRequestMode(event.target.value as typeof requestMode)}
             >
-              <div className="min-w-0 flex-1">
-                <div className="truncate font-mono">{request.userId}</div>
-                <div className="font-medium">{bytesToGb(request.requestedQuotaBytes)} GB</div>
-              </div>
-              <Button
-                size="icon"
-                variant="outline"
-                onClick={() => void decide(request.id, "rejected")}
-                title="拒绝"
-              >
-                <X />
-              </Button>
-              <Button size="icon" onClick={() => void decide(request.id, "approved")} title="批准">
-                <Check />
-              </Button>
-            </div>
-          ))}
+              <option value="auto">自动审批</option>
+              <option value="manual">人工审批</option>
+              <option value="disabled">关闭申请</option>
+            </select>
+          </label>
+          <LabeledInput
+            label="自动审批上限（GB）"
+            value={autoLimitGb}
+            onChange={setAutoLimitGb}
+            disabled={requestMode !== "auto"}
+          />
+          <Button size="sm" className="self-end" onClick={() => void save()} disabled={saving}>
+            {saving ? <Loader2 className="animate-spin" /> : <Save />}
+            保存策略
+          </Button>
         </div>
-      ) : null}
+        {pending.length > 0 ? (
+          <div className="grid gap-2 md:grid-cols-2">
+            {pending.map((request) => (
+              <div
+                key={request.id}
+                className="flex items-center gap-2 rounded-md border bg-background p-2 text-xs"
+              >
+                <div className="min-w-0 flex-1">
+                  <div className="truncate font-mono">{request.userId}</div>
+                  <div className="font-medium">{bytesToGb(request.requestedQuotaBytes)} GB</div>
+                </div>
+                <Button
+                  size="icon"
+                  variant="outline"
+                  onClick={() => void decide(request.id, "rejected")}
+                  title="拒绝"
+                >
+                  <X />
+                </Button>
+                <Button
+                  size="icon"
+                  onClick={() => void decide(request.id, "approved")}
+                  title="批准"
+                >
+                  <Check />
+                </Button>
+              </div>
+            ))}
+          </div>
+        ) : null}
+      </fieldset>
     </div>
   );
 }
@@ -199,6 +245,7 @@ function LabeledInput({
 }
 
 function gbToBytes(value: string): number | null {
+  if (!value.trim()) return null;
   const number = Number(value);
   if (!Number.isFinite(number) || number < 0) return null;
   return Math.round(number * GB);
