@@ -21,14 +21,12 @@ import {
   type MapView,
 } from "@kuintessence/shared";
 import { and, eq, gte, inArray, sql } from "drizzle-orm";
+import type { OrganizationResourceScope as InterconnectScope } from "../middleware/organization-resource-scope";
 
 type Db = Pick<PgDb, "select" | "insert" | "update" | "delete" | "execute">;
-export type InterconnectScope = {
-  orgIds: string[] | null;
-  userId: string;
-  key: string;
-  canManage: boolean;
-};
+
+export type { OrganizationResourceScope as InterconnectScope } from "../middleware/organization-resource-scope";
+
 function fail(message: string, status = 400): never {
   throw new AppError(
     status === 403 ? ErrorCode.FORBIDDEN : ErrorCode.VALIDATION_ERROR,

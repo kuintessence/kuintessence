@@ -1,4 +1,10 @@
-import type { CenterMetadata, ClusterMetadata, LinkMetadata, MapView } from "@kuintessence/shared";
+import type {
+  CenterMetadata,
+  ClusterMetadata,
+  LinkMetadata,
+  MapView,
+  ProviderProfile,
+} from "@kuintessence/shared";
 import { sql } from "drizzle-orm";
 import {
   bigint,
@@ -21,6 +27,8 @@ import {
 export type AuthorizationSubjectId = `user:${string}` | `organization:${string}`;
 
 export const orgs = pgTable("orgs", {
+  profile: jsonb("profile").$type<Partial<ProviderProfile>>().notNull().default({}),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
   id: uuid("id").primaryKey().defaultRandom(),
   name: varchar("name", { length: 255 }).notNull(),
   createdAt: timestamp("created_at").defaultNow().notNull(),

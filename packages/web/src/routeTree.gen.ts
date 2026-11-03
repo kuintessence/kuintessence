@@ -12,6 +12,7 @@ import { Route as rootRouteImport } from './routes/__root'
 import { Route as TerminalRouteImport } from './routes/terminal'
 import { Route as SoftwareRouteImport } from './routes/software'
 import { Route as SettingsRouteImport } from './routes/settings'
+import { Route as ProvidersRouteImport } from './routes/providers'
 import { Route as OperationsRouteImport } from './routes/operations'
 import { Route as LoginRouteImport } from './routes/login'
 import { Route as JobsRouteImport } from './routes/jobs'
@@ -30,6 +31,7 @@ import { Route as JobsJobIdRouteImport } from './routes/jobs_.$jobId'
 import { Route as CpUsersRouteImport } from './routes/cp.users'
 import { Route as CpSoftwareRouteImport } from './routes/cp.software'
 import { Route as CpQueuesRouteImport } from './routes/cp.queues'
+import { Route as CpProfileRouteImport } from './routes/cp.profile'
 import { Route as CpMeteringRouteImport } from './routes/cp.metering'
 import { Route as CpInterconnectRouteImport } from './routes/cp.interconnect'
 import { Route as CpInfrastructureRouteImport } from './routes/cp.infrastructure'
@@ -62,6 +64,11 @@ const SoftwareRoute = SoftwareRouteImport.update({
 const SettingsRoute = SettingsRouteImport.update({
   id: '/settings',
   path: '/settings',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ProvidersRoute = ProvidersRouteImport.update({
+  id: '/providers',
+  path: '/providers',
   getParentRoute: () => rootRouteImport,
 } as any)
 const OperationsRoute = OperationsRouteImport.update({
@@ -152,6 +159,11 @@ const CpSoftwareRoute = CpSoftwareRouteImport.update({
 const CpQueuesRoute = CpQueuesRouteImport.update({
   id: '/queues',
   path: '/queues',
+  getParentRoute: () => CpRoute,
+} as any)
+const CpProfileRoute = CpProfileRouteImport.update({
+  id: '/profile',
+  path: '/profile',
   getParentRoute: () => CpRoute,
 } as any)
 const CpMeteringRoute = CpMeteringRouteImport.update({
@@ -258,6 +270,7 @@ export interface FileRoutesByFullPath {
   '/jobs': typeof JobsRoute
   '/login': typeof LoginRoute
   '/operations': typeof OperationsRoute
+  '/providers': typeof ProvidersRoute
   '/settings': typeof SettingsRoute
   '/software': typeof SoftwareRouteWithChildren
   '/terminal': typeof TerminalRoute
@@ -269,6 +282,7 @@ export interface FileRoutesByFullPath {
   '/cp/infrastructure': typeof CpInfrastructureRoute
   '/cp/interconnect': typeof CpInterconnectRoute
   '/cp/metering': typeof CpMeteringRoute
+  '/cp/profile': typeof CpProfileRoute
   '/cp/queues': typeof CpQueuesRoute
   '/cp/software': typeof CpSoftwareRoute
   '/cp/users': typeof CpUsersRoute
@@ -298,6 +312,7 @@ export interface FileRoutesByTo {
   '/jobs': typeof JobsRoute
   '/login': typeof LoginRoute
   '/operations': typeof OperationsRoute
+  '/providers': typeof ProvidersRoute
   '/settings': typeof SettingsRoute
   '/software': typeof SoftwareRouteWithChildren
   '/terminal': typeof TerminalRoute
@@ -309,6 +324,7 @@ export interface FileRoutesByTo {
   '/cp/infrastructure': typeof CpInfrastructureRoute
   '/cp/interconnect': typeof CpInterconnectRoute
   '/cp/metering': typeof CpMeteringRoute
+  '/cp/profile': typeof CpProfileRoute
   '/cp/queues': typeof CpQueuesRoute
   '/cp/software': typeof CpSoftwareRoute
   '/cp/users': typeof CpUsersRoute
@@ -340,6 +356,7 @@ export interface FileRoutesById {
   '/jobs': typeof JobsRoute
   '/login': typeof LoginRoute
   '/operations': typeof OperationsRoute
+  '/providers': typeof ProvidersRoute
   '/settings': typeof SettingsRoute
   '/software': typeof SoftwareRouteWithChildren
   '/terminal': typeof TerminalRoute
@@ -351,6 +368,7 @@ export interface FileRoutesById {
   '/cp/infrastructure': typeof CpInfrastructureRoute
   '/cp/interconnect': typeof CpInterconnectRoute
   '/cp/metering': typeof CpMeteringRoute
+  '/cp/profile': typeof CpProfileRoute
   '/cp/queues': typeof CpQueuesRoute
   '/cp/software': typeof CpSoftwareRoute
   '/cp/users': typeof CpUsersRoute
@@ -383,6 +401,7 @@ export interface FileRouteTypes {
     | '/jobs'
     | '/login'
     | '/operations'
+    | '/providers'
     | '/settings'
     | '/software'
     | '/terminal'
@@ -394,6 +413,7 @@ export interface FileRouteTypes {
     | '/cp/infrastructure'
     | '/cp/interconnect'
     | '/cp/metering'
+    | '/cp/profile'
     | '/cp/queues'
     | '/cp/software'
     | '/cp/users'
@@ -423,6 +443,7 @@ export interface FileRouteTypes {
     | '/jobs'
     | '/login'
     | '/operations'
+    | '/providers'
     | '/settings'
     | '/software'
     | '/terminal'
@@ -434,6 +455,7 @@ export interface FileRouteTypes {
     | '/cp/infrastructure'
     | '/cp/interconnect'
     | '/cp/metering'
+    | '/cp/profile'
     | '/cp/queues'
     | '/cp/software'
     | '/cp/users'
@@ -464,6 +486,7 @@ export interface FileRouteTypes {
     | '/jobs'
     | '/login'
     | '/operations'
+    | '/providers'
     | '/settings'
     | '/software'
     | '/terminal'
@@ -475,6 +498,7 @@ export interface FileRouteTypes {
     | '/cp/infrastructure'
     | '/cp/interconnect'
     | '/cp/metering'
+    | '/cp/profile'
     | '/cp/queues'
     | '/cp/software'
     | '/cp/users'
@@ -506,6 +530,7 @@ export interface RootRouteChildren {
   JobsRoute: typeof JobsRoute
   LoginRoute: typeof LoginRoute
   OperationsRoute: typeof OperationsRoute
+  ProvidersRoute: typeof ProvidersRoute
   SettingsRoute: typeof SettingsRoute
   SoftwareRoute: typeof SoftwareRouteWithChildren
   TerminalRoute: typeof TerminalRoute
@@ -536,6 +561,13 @@ declare module '@tanstack/react-router' {
       path: '/settings'
       fullPath: '/settings'
       preLoaderRoute: typeof SettingsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/providers': {
+      id: '/providers'
+      path: '/providers'
+      fullPath: '/providers'
+      preLoaderRoute: typeof ProvidersRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/operations': {
@@ -662,6 +694,13 @@ declare module '@tanstack/react-router' {
       path: '/queues'
       fullPath: '/cp/queues'
       preLoaderRoute: typeof CpQueuesRouteImport
+      parentRoute: typeof CpRoute
+    }
+    '/cp/profile': {
+      id: '/cp/profile'
+      path: '/profile'
+      fullPath: '/cp/profile'
+      preLoaderRoute: typeof CpProfileRouteImport
       parentRoute: typeof CpRoute
     }
     '/cp/metering': {
@@ -815,6 +854,7 @@ interface CpRouteChildren {
   CpInfrastructureRoute: typeof CpInfrastructureRoute
   CpInterconnectRoute: typeof CpInterconnectRoute
   CpMeteringRoute: typeof CpMeteringRoute
+  CpProfileRoute: typeof CpProfileRoute
   CpQueuesRoute: typeof CpQueuesRoute
   CpSoftwareRoute: typeof CpSoftwareRoute
   CpUsersRoute: typeof CpUsersRoute
@@ -830,6 +870,7 @@ const CpRouteChildren: CpRouteChildren = {
   CpInfrastructureRoute: CpInfrastructureRoute,
   CpInterconnectRoute: CpInterconnectRoute,
   CpMeteringRoute: CpMeteringRoute,
+  CpProfileRoute: CpProfileRoute,
   CpQueuesRoute: CpQueuesRoute,
   CpSoftwareRoute: CpSoftwareRoute,
   CpUsersRoute: CpUsersRoute,
@@ -887,6 +928,7 @@ const rootRouteChildren: RootRouteChildren = {
   JobsRoute: JobsRoute,
   LoginRoute: LoginRoute,
   OperationsRoute: OperationsRoute,
+  ProvidersRoute: ProvidersRoute,
   SettingsRoute: SettingsRoute,
   SoftwareRoute: SoftwareRouteWithChildren,
   TerminalRoute: TerminalRoute,

@@ -8,6 +8,7 @@ import {
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import ReactECharts from "echarts-for-react";
 import { type ReactNode, useEffect, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { useActiveOrganizationId } from "../../lib/active-organization";
 import { api } from "../../lib/api-client";
@@ -194,6 +195,7 @@ function DashboardContent({
   mode: "provider" | "operator";
   orgId: string | null;
 }) {
+  const { t } = useTranslation();
   const queryClient = useQueryClient();
   const endpoint = `/interconnect/${mode}`;
   const queryKey = ["interconnect", mode, orgId, getAuthState().revision];
@@ -334,7 +336,7 @@ function DashboardContent({
     ];
   return (
     <div className="space-y-5" data-testid="interconnect-dashboard">
-      <PageHeader title="多算力中心互联仪表盘" />
+      <PageHeader title={t("workspace.nav.interconnect")} />
       <div className="flex flex-wrap items-center gap-2 text-sm">
         <span className="mr-auto text-muted-foreground">
           {mode === "operator" ? "平台范围" : "当前授权组织"} · 更新于 {time(data.generatedAt)}

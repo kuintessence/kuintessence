@@ -112,7 +112,7 @@
       "operationsCompute": "Compute and software",
       "operationsMetering": "Metering and cost",
       "operationsGovernance": "Governance and audit",
-      "interconnect": "Compute center interconnect"
+      "interconnect": "Compute & Network Overview"
     }
   },
   "dataMarket": {
@@ -2157,5 +2157,40 @@
       },
       "score": "score"
     }
+  },
+  "providers": {
+    "title": "Compute Providers",
+    "selfTitle": "Provider Profile",
+    "name": "Name",
+    "description": "Description",
+    "contactName": "Contact",
+    "email": "Email",
+    "phone": "Phone",
+    "address": "Address",
+    "website": "Website",
+    "centers": "Centers",
+    "agents": "Agents",
+    "members": "Members",
+    "actions": "Actions",
+    "search": "Search providers",
+    "searchButton": "Search",
+    "refresh": "Refresh",
+    "create": "Add provider",
+    "edit": "Edit profile",
+    "delete": "Delete",
+    "confirmDelete": "Confirm deletion",
+    "deleteWarning": "Delete “{{name}}”? Providers with members, resources or business history cannot be deleted.",
+    "cancel": "Cancel",
+    "save": "Save",
+    "saving": "Saving…",
+    "saveFailed": "Save failed",
+    "retry": "Retry",
+    "loading": "Loading…",
+    "denied": "You cannot access provider profiles",
+    "empty": "No matching providers",
+    "total": "{{count}} providers",
+    "previous": "Previous",
+    "next": "Next",
+    "updatedAt": "Updated"
   }
 }

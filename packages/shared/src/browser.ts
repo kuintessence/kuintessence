@@ -1,4 +1,5 @@
 export * from "./auth/ownership";
+export * from "./compute-providers";
 export * from "./constants/errors";
 export * from "./constants/job-status";
 export * from "./constants/roles";
