@@ -250,7 +250,7 @@ describe("sandbox execution account routes", () => {
     }
   });
 
-  test("platform review still requires provider delegation", async () => {
+  test("platform operators can review without provider delegation", async () => {
     const [mapping] = await db
       .insert(userClusterAccountMappings)
       .values({
@@ -259,13 +259,13 @@ describe("sandbox execution account routes", () => {
         status: "pending",
       })
       .returning();
-    const app = makeApp(db, [PROVIDER_ORG_ID], "super_admin", [
+    const app = makeApp(db, [PROVIDER_ORG_ID], "operator", [
       { orgId: PROVIDER_ORG_ID, role: "member" },
     ]);
     const pending = await app.request("/api/sandbox/account-mapping-review-queue");
-    expect(await pending.json()).toMatchObject({ data: [{ canReview: false }] });
+    expect(await pending.json()).toMatchObject({ data: [{ canReview: true }] });
     expect(await (await app.request("/api/sandbox/accounts")).json()).toMatchObject({
-      manageableProviderOrgIds: [],
+      manageableProviderOrgIds: [PROVIDER_ORG_ID],
     });
     const review = () =>
       app.request(`/api/sandbox/account-mappings/${mapping?.id}`, {
@@ -273,17 +273,10 @@ describe("sandbox execution account routes", () => {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ status: "approved" }),
       });
-    expect((await review()).status).toBe(403);
-    await db
-      .insert(accountAssignmentDelegations)
-      .values({ providerOrgId: PROVIDER_ORG_ID, delegated: true, updatedBy: ADMIN_ID });
-    expect(await (await app.request("/api/sandbox/accounts")).json()).toMatchObject({
-      manageableProviderOrgIds: [PROVIDER_ORG_ID],
-    });
+    expect((await review()).status).toBe(200);
     expect(
       await (await app.request("/api/sandbox/account-mapping-review-queue")).json(),
-    ).toMatchObject({ data: [{ canReview: true }] });
-    expect((await review()).status).toBe(200);
+    ).toMatchObject({ data: [] });
   });
 
   test("expired approvals can be renewed without demoting a valid approval", async () => {

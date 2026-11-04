@@ -9,6 +9,9 @@ const api = vi.hoisted(() => ({
   updateSandboxAccountQueues: vi.fn(),
 }));
 vi.mock("../../lib/sandbox-client", () => api);
+vi.mock("../../lib/use-organization-name", () => ({
+  useOrganizationName: () => (id: string) => id,
+}));
 vi.mock("../../lib/active-organization", () => ({ useActiveOrganizationId: () => "org-a" }));
 vi.mock("../../lib/auth", () => ({ getAuthState: () => ({ revision: "test" }) }));
 vi.mock("./SandboxMappingReviewPanel", () => ({ SandboxMappingReviewPanel: () => null }));

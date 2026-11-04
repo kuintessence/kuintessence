@@ -29,12 +29,12 @@ export function organizationResourceScope(
       await requirePlatformPermission(
         c,
         authz,
-        mutation ? "manage" : "view",
+        mutation ? "operate" : "view",
         "organization-resource",
       );
       let canManage = false;
       try {
-        await requirePlatformPermission(c, authz, "manage", "organization-resource");
+        await requirePlatformPermission(c, authz, "operate", "organization-resource");
         canManage = true;
       } catch (error) {
         if (!(error instanceof AppError && error.statusCode === 403)) throw error;
@@ -55,7 +55,14 @@ export function organizationResourceScope(
       let canManage = cp.canManage === true && cp.orgIds.length === 1 && !cp.isPlatformWide;
       if (cp.isPlatformWide)
         await requirePlatformPermission(c, authz, "view", "organization-resource-provider");
-      if (authz && authz.mode !== "off") {
+      if (hasRole(p.role as RoleName, "operator")) {
+        await requirePlatformPermission(
+          c,
+          authz,
+          mutation ? "operate" : "view",
+          "organization-resource-provider",
+        );
+      } else if (authz && authz.mode !== "off") {
         for (const orgId of cp.orgIds) {
           const check = {
             actorUserId: p.userId,

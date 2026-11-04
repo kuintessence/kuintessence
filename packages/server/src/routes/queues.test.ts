@@ -74,6 +74,14 @@ describe("Queue routes", () => {
     },
   } as unknown as QueueRegistryService;
 
+  test("platform operators can filter queues across organizations without becoming members", async () => {
+    const response = await appFor(userEmail, "operator").request("/api/admin/queues", {
+      headers: { "X-KQ-Active-Organization": alternateOrgId },
+    });
+    expect(response.status).toBe(200);
+    expect(contexts.at(-1)?.orgIds).toEqual([alternateOrgId]);
+  });
+
   function appFor(
     email: string,
     role: string,

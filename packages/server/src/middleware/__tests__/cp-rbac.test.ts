@@ -128,3 +128,17 @@ describe("deriveCpScope", () => {
     ).toThrow("selected organization is not available");
   });
 });
+
+it("platform operators can scope any provider without changing membership", () => {
+  const principal = { sub: "u-operator", role: "operator", orgIds: ["own-org"] };
+  expect(deriveCpScope(principal)).toMatchObject({
+    orgIds: [],
+    isPlatformWide: true,
+    canManage: true,
+  });
+  expect(deriveCpScope(principal, { activeOrganizationId: "another-org" })).toMatchObject({
+    orgIds: ["another-org"],
+    isPlatformWide: false,
+    canManage: true,
+  });
+});

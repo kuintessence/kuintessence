@@ -112,7 +112,8 @@
       "audit": "Audit and metering",
       "platformTechnical": "Platform technical operations",
       "softwareAssets": "Software assets",
-      "personal": "Account and preferences"
+      "personal": "Account and preferences",
+      "computeResources": "Resources"
     },
     "nav": {
       "operationsOverview": "Operations overview",
@@ -1377,7 +1378,6 @@
       },
       "revision": "Revision {{count}}"
     },
-
     "accounts": {
       "title": "Sandbox execution account mappings",
       "subtitle": "Inline scripts, drafts, and test runs require a CP-approved mapped account. Keep mappings for multiple clusters and select a default.",
@@ -1413,7 +1413,7 @@
       "empty": "No account mappings yet. Select a compute provider cluster account to request one.",
       "default": "Default",
       "setDefault": "Set as default",
-      "delegationRequired": "Account approval has not been delegated by this provider",
+      "delegationRequired": "You do not have approval access for this provider",
       "status": {
         "pending": "Pending",
         "approved": "Approved",
@@ -1422,7 +1422,7 @@
         "expired": "Expired"
       },
       "reviewTitle": "Sandbox account mapping review",
-      "reviewSubtitle": "Approve accounts owned by this compute provider only. Platform operators also require explicit provider delegation.",
+      "reviewSubtitle": "Providers review their own cluster accounts. Platform operators can review across providers.",
       "reviewEmpty": "No account mappings are waiting for review.",
       "reviewed": "Account mapping reviewed",
       "approve": "Approve",
@@ -2580,5 +2580,27 @@
     "resourceRelation": "Resource / relation",
     "subject": "Subject",
     "delivery": "Delivery"
+  },
+  "operations": {
+    "resources": {
+      "clusters": "Clusters & agents",
+      "accounts": "Execution accounts",
+      "users": "Platform users",
+      "provider": "Compute provider"
+    },
+    "users": {
+      "status": "Status",
+      "enable": "Enable account",
+      "disable": "Suspend account",
+      "reason": "Reason",
+      "revokeSessions": "End active sessions and block access immediately",
+      "updateFailed": "Could not update account status. Try again.",
+      "previous": "Previous",
+      "next": "Next",
+      "desktopManage": "Use a desktop to change account status."
+    },
+    "accounts": {
+      "disableConfirm": "Disable execution account {{name}}? New jobs will no longer be able to use this identity."
+    }
   }
 }

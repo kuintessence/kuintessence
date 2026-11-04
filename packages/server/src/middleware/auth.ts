@@ -40,7 +40,7 @@ export function authMiddleware(jwtSecret: string, db?: PgDb) {
         const user = await verifyToken(token, jwtSecret);
         if (db) {
           const [account] = await db
-            .select({ serviceAccount: users.serviceAccount })
+            .select({ serviceAccount: users.serviceAccount, suspended: users.suspended })
             .from(users)
             .where(
               /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(user.sub)
@@ -48,6 +48,7 @@ export function authMiddleware(jwtSecret: string, db?: PgDb) {
                 : eq(users.email, user.email),
             )
             .limit(1);
+          if (account?.suspended) throw new Error("Account suspended");
           if (account?.serviceAccount)
             throw new Error("Service accounts require machine credentials");
         }

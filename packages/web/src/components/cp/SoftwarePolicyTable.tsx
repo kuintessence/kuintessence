@@ -195,7 +195,9 @@ export function SoftwarePolicyTable({
     setEditorTarget({
       type: "provider",
       policy,
-      providerOrgId: overview?.providerPolicy?.providerOrgId ?? undefined,
+      providerOrgId:
+        overview?.providerPolicy?.providerOrgId ??
+        (overview?.providerOrgIds.length === 1 ? overview.providerOrgIds[0] : undefined),
     });
   };
 
@@ -275,7 +277,6 @@ export function SoftwarePolicyTable({
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">{t("cp.software.title")}</h1>
-          <p className="text-sm text-muted-foreground">{t("cp.software.subtitle")}</p>
         </div>
         <Button
           variant="outline"
@@ -305,10 +306,12 @@ export function SoftwarePolicyTable({
         <>
           <ControlChannelNotice overview={overview} />
           <SummaryCards overview={overview} />
-          <ProviderPolicyCard
-            overview={overview}
-            onEdit={canManage ? openProviderEditor : undefined}
-          />
+          {overview.providerOrgIds.length === 1 && (
+            <ProviderPolicyCard
+              overview={overview}
+              onEdit={canManage ? openProviderEditor : undefined}
+            />
+          )}
           <AvailabilityPreviewForm
             rawSpec={rawSpec}
             setRawSpec={setRawSpec}
@@ -325,7 +328,9 @@ export function SoftwarePolicyTable({
             overview={overview}
             onInspect={(agent) => setSelectedAgentId(agent.agentId)}
             onEdit={canManage ? openAgentEditor : undefined}
-            onEditCluster={canManage ? openClusterEditor : undefined}
+            onEditCluster={
+              canManage && overview.providerOrgIds.length === 1 ? openClusterEditor : undefined
+            }
           />
         </>
       ) : null}
@@ -471,6 +476,7 @@ function ClusterAgentTable({
   onEditCluster?: (cluster: CpSoftwareClusterView) => void;
 }) {
   const { t } = useTranslation();
+  const organizationName = useOrganizationName();
   if (overview.agents.length === 0) {
     return (
       <div
@@ -485,10 +491,16 @@ function ClusterAgentTable({
   return (
     <div className="space-y-4">
       {overview.clusters.map((cluster) => (
-        <div key={cluster.cluster} className="overflow-hidden rounded-md border border-border">
+        <div
+          key={`${cluster.providerOrgId}:${cluster.cluster}`}
+          className="overflow-hidden rounded-md border border-border"
+        >
           <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border bg-muted/30 px-4 py-3">
             <div>
               <div className="font-medium">{cluster.cluster}</div>
+              <div className="text-sm text-muted-foreground">
+                {cluster.providerOrgId ? organizationName(cluster.providerOrgId) : "—"}
+              </div>
               <div className="text-xs text-muted-foreground">
                 {t("cp.software.cluster.meta", {
                   agents: cluster.agents.length,

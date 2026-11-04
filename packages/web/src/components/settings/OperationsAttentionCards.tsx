@@ -2,6 +2,7 @@ import { Role } from "@kuintessence/shared/browser";
 import { useQuery } from "@tanstack/react-query";
 import { BellRing, ClipboardCheck } from "lucide-react";
 import { useTranslation } from "react-i18next";
+import { useActiveOrganizationId } from "../../lib/active-organization";
 import { api, listSoftwareAccessRequests } from "../../lib/api-client";
 import { getAuthState } from "../../lib/auth";
 import {
@@ -47,13 +48,20 @@ function canManagePlatformAttention(role: string | null): boolean {
 
 async function getPlatformAttentionSnapshot(
   canManagePlatform: boolean,
+  organizationId: string | null,
 ): Promise<PlatformAttentionSnapshot> {
   if (!canManagePlatform) {
-    const sandboxAgents = await listSandboxAgentSecurityViews();
+    const [allAgents, accountMappings] = await Promise.all([
+      listSandboxAgentSecurityViews(),
+      listSandboxMappingReviewQueue(),
+    ]);
+    const sandboxAgents = organizationId
+      ? allAgents.filter((agent) => agent.providerOrgId === organizationId)
+      : allAgents;
     return {
       pendingSoftwareRequests: null,
       pendingStorageRequests: null,
-      pendingAccountMappings: null,
+      pendingAccountMappings: accountMappings.length,
       criticalSandboxAgents:
         sandboxAgents.filter(
           (agent) =>
@@ -82,7 +90,10 @@ async function getPlatformAttentionSnapshot(
   const softwareRequests = settledValue(results[0]);
   const storageRequests = settledValue(results[1]);
   const accountMappings = settledValue(results[2]);
-  const sandboxAgents = settledValue(results[3]);
+  const allAgents = settledValue(results[3]);
+  const sandboxAgents = organizationId
+    ? allAgents?.filter((agent) => agent.providerOrgId === organizationId)
+    : allAgents;
   const authz = settledValue(results[4]);
 
   return {
@@ -109,10 +120,15 @@ async function getPlatformAttentionSnapshot(
 
 export function OperationsAttentionCards() {
   const { t } = useTranslation();
+  const organizationId = useActiveOrganizationId();
   const canManagePlatform = canManagePlatformAttention(getAuthState().role);
   const query = useQuery({
-    queryKey: ["platform-operations-attention", canManagePlatform ? "manage" : "observe"],
-    queryFn: () => getPlatformAttentionSnapshot(canManagePlatform),
+    queryKey: [
+      "platform-operations-attention",
+      canManagePlatform ? "manage" : "observe",
+      organizationId ?? "all",
+    ],
+    queryFn: () => getPlatformAttentionSnapshot(canManagePlatform, organizationId),
     refetchInterval: 30_000,
     retry: false,
   });
@@ -135,7 +151,7 @@ export function OperationsAttentionCards() {
       key: "accounts",
       label: t("settings.operations.attention.approvals.accounts"),
       count: snapshot?.pendingAccountMappings ?? null,
-      href: "/cp/accounts",
+      href: "/operations#accounts",
       external: true,
     },
   ];
@@ -144,13 +160,13 @@ export function OperationsAttentionCards() {
       key: "sandboxCritical",
       label: t("settings.operations.attention.alerts.sandboxCritical"),
       count: snapshot?.criticalSandboxAgents ?? null,
-      href: "/operations#security",
+      href: canManagePlatform ? "/operations#security" : "/operations#clusters",
     },
     {
       key: "sandboxDegraded",
       label: t("settings.operations.attention.alerts.sandboxDegraded"),
       count: snapshot?.degradedSandboxAgents ?? null,
-      href: "/operations#security",
+      href: canManagePlatform ? "/operations#security" : "/operations#clusters",
     },
     ...(canManagePlatform
       ? [
@@ -158,13 +174,13 @@ export function OperationsAttentionCards() {
             key: "authzDeadLetters",
             label: t("settings.operations.attention.alerts.authzDeadLetters"),
             count: snapshot?.authorizationDeadLetters ?? null,
-            href: "/operations#security",
+            href: canManagePlatform ? "/operations#security" : "/operations#clusters",
           },
           {
             key: "authzDiffs",
             label: t("settings.operations.attention.alerts.authzDiffs"),
             count: snapshot?.authorizationDiffs ?? null,
-            href: "/operations#security",
+            href: canManagePlatform ? "/operations#security" : "/operations#clusters",
           },
         ]
       : []),
@@ -176,12 +192,15 @@ export function OperationsAttentionCards() {
       className="grid gap-3 xl:grid-cols-2"
       aria-label={t("settings.operations.attention.label")}
     >
-      {canManagePlatform ? (
+      {canManagePlatform || getAuthState().role === "operator" ? (
         <AttentionOverviewCard
+          compact
           title={t("settings.operations.attention.approvals.title")}
           description={t("settings.operations.attention.approvals.description")}
           icon={ClipboardCheck}
-          items={approvals}
+          items={
+            canManagePlatform ? approvals : approvals.filter((item) => item.key === "accounts")
+          }
           emptyLabel={t("settings.operations.attention.approvals.empty")}
           partialFailureLabel={t("settings.operations.attention.partialFailure")}
           partialFailure={queryFailed || Boolean(snapshot?.approvalsPartialFailure)}
@@ -190,6 +209,7 @@ export function OperationsAttentionCards() {
         />
       ) : null}
       <AttentionOverviewCard
+        compact
         title={t("settings.operations.attention.alerts.title")}
         description={t("settings.operations.attention.alerts.description")}
         icon={BellRing}

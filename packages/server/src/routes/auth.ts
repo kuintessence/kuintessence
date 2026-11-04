@@ -728,10 +728,11 @@ async function resolveSessionIdentity(
     recordIdentityFallback(fallbackSurface);
   }
   const [row] = await db
-    .select({ id: users.id, role: users.role, email: users.email })
+    .select({ id: users.id, role: users.role, email: users.email, suspended: users.suspended })
     .from(users)
     .where(UUID_RE.test(user.sub) ? eq(users.id, user.sub) : eq(users.email, user.email))
     .limit(1);
+  if (row?.suspended) throw new AppError(ErrorCode.FORBIDDEN, "Account suspended", 403);
   return {
     userId: row?.id ?? null,
     role: (row?.role ?? "guest") as RoleName,

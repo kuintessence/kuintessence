@@ -57,15 +57,15 @@ function write(
   });
 }
 describe("compute provider permissions", () => {
-  test("ordinary users denied, operators read only, platform admins CRUD", async () => {
+  test("ordinary users denied, platform operators and admins manage providers", async () => {
     const user = app("user");
     expect((await user.r.request("/providers/operator/list")).status).toBe(403);
     const operator = app("operator");
     expect((await operator.r.request("/providers/operator/list")).status).toBe(200);
-    expect(operator.calls[0]?.canManage).toBe(false);
+    expect(operator.calls[0]?.canManage).toBe(true);
     for (const method of ["PUT", "DELETE"])
-      expect((await write(operator.r, `operator/organizations/${org}`, method)).status).toBe(403);
-    expect((await write(operator.r, "operator/organizations", "POST")).status).toBe(403);
+      expect((await write(operator.r, `operator/organizations/${org}`, method)).status).toBe(200);
+    expect((await write(operator.r, "operator/organizations", "POST")).status).toBe(201);
     const admin = app("platform_admin");
     expect((await write(admin.r, "operator/organizations", "POST")).status).toBe(201);
     expect((await write(admin.r, `operator/organizations/${org}`)).status).toBe(200);

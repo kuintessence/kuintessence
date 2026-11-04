@@ -88,6 +88,16 @@ vi.mock("../cp/MeteringPage", () => ({
   ),
 }));
 
+vi.mock("./OperationsResources", () => ({
+  isOperationsResourceArea: (area: string) =>
+    ["overview", "clusters", "accounts", "software", "users", "queues", "registration"].includes(
+      area,
+    ),
+  OperationsResources: ({ area }: { area: string }) => (
+    <div data-testid={`operations-resource-${area}`} />
+  ),
+}));
+
 import { canAccessOperations, OperationsPage } from "./OperationsPage";
 
 describe("OperationsPage", () => {
@@ -209,4 +219,12 @@ describe("OperationsPage", () => {
     expect(screen.getByTestId("operator-metering-report")).toBeTruthy();
     expect(screen.getByTestId("cost-rates-form")).toBeTruthy();
   });
+});
+
+test("global resource areas are exposed through the platform operations capability", () => {
+  localStorage.setItem("kq_role", "operator");
+  router.hash = "accounts";
+  capabilityOverride.values = ["workspace.platform.view", "workspace.platform.operate"];
+  render(<OperationsPage />);
+  expect(screen.getByTestId("operations-resource-accounts")).toBeTruthy();
 });

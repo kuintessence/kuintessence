@@ -136,3 +136,13 @@ describe("deriveMeCapabilities", () => {
     expect(result.capabilities).not.toContain("terminal.open");
   });
 });
+
+test("platform operations are separate from provider membership and system configuration", () => {
+  const operator = deriveMeCapabilities(principal({ role: "operator" }));
+  expect(operator.capabilities).toContain("workspace.platform.operate");
+  expect(operator.capabilities).not.toContain("workspace.platform.manage");
+  expect(operator.capabilities).not.toContain("workspace.provider.manage");
+  expect(deriveMeCapabilities(principal({ role: "org_admin" })).capabilities).not.toContain(
+    "workspace.platform.operate",
+  );
+});

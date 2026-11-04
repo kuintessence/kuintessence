@@ -20,6 +20,7 @@ interface AttentionOverviewCardProps {
   partialFailure?: boolean;
   tone: "pending" | "failed";
   testId: string;
+  compact?: boolean;
 }
 
 export function AttentionOverviewCard({
@@ -32,12 +33,25 @@ export function AttentionOverviewCard({
   partialFailure = false,
   tone,
   testId,
+  compact = false,
 }: AttentionOverviewCardProps) {
   const knownCounts = items.flatMap((item) => (item.count == null ? [] : [item.count]));
   const total = knownCounts.reduce((sum, count) => sum + count, 0);
   const hasUnknown = knownCounts.length !== items.length;
   const badgeVariant = total > 0 ? tone : "succeeded";
 
+  if (compact && total === 0 && !hasUnknown && !partialFailure) {
+    return (
+      <a
+        href={items[0]?.href}
+        data-testid={testId}
+        className="flex items-center gap-2 rounded-md py-2 text-sm text-muted-foreground hover:text-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring"
+      >
+        <CheckCircle2 className="h-4 w-4 shrink-0 text-status-succeeded" />
+        {emptyLabel}
+      </a>
+    );
+  }
   return (
     <Card data-testid={testId}>
       <CardHeader className="p-4 pb-2">
@@ -48,7 +62,7 @@ export function AttentionOverviewCard({
             </div>
             <div className="min-w-0">
               <CardTitle>{title}</CardTitle>
-              <p className="mt-1 text-xs text-muted-foreground">{description}</p>
+              {!compact && <p className="mt-1 text-xs text-muted-foreground">{description}</p>}
             </div>
           </div>
           <Badge variant={badgeVariant} className="shrink-0 tabular-nums">

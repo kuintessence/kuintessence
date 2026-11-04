@@ -14,6 +14,7 @@ import { ClusterFileRootsPanel } from "./ClusterFileRootsPanel";
 import { CostRatesForm } from "./CostRatesForm";
 import { FileTransferAuditConfigPanel } from "./FileTransferAuditConfigPanel";
 import { OperationsAttentionCards } from "./OperationsAttentionCards";
+import { isOperationsResourceArea, OperationsResources } from "./OperationsResources";
 import type { OperationsArea } from "./operations-capabilities";
 import { PlatformBrandingForm } from "./PlatformBrandingForm";
 import { SandboxSecurityPanel } from "./SandboxSecurityPanel";
@@ -70,6 +71,19 @@ export function OperationsPage() {
           <ShieldAlert className="mt-0.5 h-5 w-5 shrink-0 text-muted-foreground" />
           <p className="text-muted-foreground">{t("settings.operations.accessDenied.guidance")}</p>
         </div>
+      </PageShell>
+    );
+  }
+  const resourceArea = hash.replace(/^#/, "");
+  if (
+    capabilities.has("workspace.platform.operate") &&
+    (isOperationsResourceArea(resourceArea) || !resourceArea || resourceArea === "overview")
+  ) {
+    return (
+      <PageShell data-testid="operations-page">
+        <OperationsResources
+          area={isOperationsResourceArea(resourceArea) ? resourceArea : "overview"}
+        />
       </PageShell>
     );
   }

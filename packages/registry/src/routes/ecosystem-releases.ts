@@ -154,6 +154,7 @@ function assertOrgAdmin(role: RegistryRole): void {
 }
 
 function assertProviderScope(providerOrgId: string, orgIds: string[], role: RegistryRole): void {
+  if (role === "operator") return;
   assertOrgAdmin(role);
   if (role === "platform_admin" || role === "super_admin" || orgIds.includes(providerOrgId)) return;
   throw new AppError(ErrorCode.FORBIDDEN, "Provider organization membership required", 403);

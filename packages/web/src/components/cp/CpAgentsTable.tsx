@@ -12,6 +12,7 @@ import {
   useCpAgents,
   useRevokeCpAgentCert,
 } from "../../lib/use-cp-agents";
+import { useOrganizationName } from "../../lib/use-organization-name";
 import { toUserFacingError } from "../../lib/user-facing-error";
 import { AgentCertRevokeDialog } from "../agent/AgentCertRevokeDialog";
 import { Badge } from "../ui/badge";
@@ -28,6 +29,7 @@ function statusVariant(status: string): "running" | "cancelled" | "failed" | "de
 export function CpAgentsTable() {
   const { t } = useTranslation();
   const q = useCpAgents();
+  const organizationName = useOrganizationName();
   const items = q.data ?? [];
   const [certAgentId, setCertAgentId] = useState<string | null>(null);
   const [rootsAgentId, setRootsAgentId] = useState<string | null>(null);
@@ -43,7 +45,6 @@ export function CpAgentsTable() {
       <div className="flex items-baseline justify-between gap-4">
         <div>
           <h2 className="text-2xl font-semibold tracking-tight">{t("cp.agents.title")}</h2>
-          <p className="text-sm text-muted-foreground">{t("cp.agents.subtitle")}</p>
         </div>
       </div>
 
@@ -53,6 +54,9 @@ export function CpAgentsTable() {
           data-testid="cp-agents-error"
         >
           {toUserFacingError(q.error, t("cp.dashboard.loadFailed"))}
+          <Button variant="outline" className="ml-3" onClick={() => void q.refetch()}>
+            {t("cp.common.refresh")}
+          </Button>
         </div>
       ) : null}
 
@@ -75,7 +79,7 @@ export function CpAgentsTable() {
               <tr>
                 <th className="px-3 py-2 font-medium">{t("cp.agents.col.id")}</th>
                 <th className="px-3 py-2 font-medium">{t("cp.agents.col.hostname")}</th>
-                <th className="px-3 py-2 font-medium">{t("cp.agents.col.site")}</th>
+                <th className="px-3 py-2 font-medium">{t("operations.resources.provider")}</th>
                 <th className="px-3 py-2 font-medium">{t("cp.agents.col.status")}</th>
                 <th className="px-3 py-2 font-medium">{t("cp.agents.col.actions")}</th>
               </tr>
@@ -98,9 +102,11 @@ export function CpAgentsTable() {
                     </td>
                     <td className="order-2 col-span-2 min-w-0 font-mono text-xs text-muted-foreground sm:table-cell sm:px-3 sm:py-2 sm:text-foreground">
                       <span className="mr-2 font-sans text-muted-foreground sm:hidden">
-                        {t("cp.agents.col.site")}
+                        {t("operations.resources.provider")}
                       </span>
-                      <span className="break-all sm:break-normal">{a.siteId}</span>
+                      <span className="break-all sm:break-normal">
+                        {a.providerOrgId ? organizationName(a.providerOrgId) : "—"}
+                      </span>
                     </td>
                     <td className="order-1 sm:table-cell sm:px-3 sm:py-2">
                       <Badge variant={statusVariant(a.status)}>

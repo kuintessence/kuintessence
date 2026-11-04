@@ -395,11 +395,11 @@ describe("SoftwarePolicyTable", () => {
   });
 
   test("saves provider policy overrides for the explicitly selected provider org", async () => {
-    const providerA = "00000000-0000-0000-0000-00000000c0a1";
     const providerB = "00000000-0000-0000-0000-00000000c0b2";
     const multiProviderOverview: CpSoftwareOverview = {
       ...overview,
-      providerOrgIds: [providerA, providerB],
+      providerOrgIds: [providerB],
+      providerPolicy: null,
     };
     cpClient.getSoftwareOverview.mockResolvedValue(multiProviderOverview);
     cpClient.saveProviderSoftwarePolicy.mockResolvedValue(multiProviderOverview);
@@ -410,9 +410,6 @@ describe("SoftwarePolicyTable", () => {
     const providerEditButton = editButtons[0];
     if (!providerEditButton) throw new Error("provider edit button was not rendered");
     fireEvent.click(providerEditButton);
-    fireEvent.change(screen.getByLabelText("cp.software.edit.providerOrg"), {
-      target: { value: providerB },
-    });
     fireEvent.click(screen.getByText("cp.common.save"));
 
     await waitFor(() => {
@@ -430,6 +427,17 @@ describe("SoftwarePolicyTable", () => {
         preinstallList: [],
       });
     });
+  });
+
+  test("does not present a single provider default policy for multiple providers", async () => {
+    cpClient.getSoftwareOverview.mockResolvedValue({
+      ...overview,
+      providerOrgIds: ["provider-a", "provider-b"],
+    });
+    render(<SoftwarePolicyTable />, { wrapper: makeWrapper() });
+    await screen.findByText("cluster-a");
+    expect(screen.queryByText("cp.software.provider.title")).toBeNull();
+    expect(screen.queryByText("cp.software.cluster.edit")).toBeNull();
   });
 
   test("blocks saving policy overrides with conflicting Spack allow and deny entries", async () => {

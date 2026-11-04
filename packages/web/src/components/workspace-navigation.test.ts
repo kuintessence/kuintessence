@@ -167,3 +167,15 @@ describe("workspace navigation", () => {
     expect(visibleRoutes).not.toContain("/cp/accounts");
   });
 });
+
+test("platform operators reach resource management without entering the provider workspace", () => {
+  const items = getWorkspaceIdentity("platform-operations").sections.flatMap(
+    (section) => section.items,
+  );
+  for (const area of ["clusters", "accounts", "software", "users", "queues"]) {
+    const item = items.find((item) => item.hash === area);
+    expect(item?.to).toBe("/operations");
+    expect(item?.serverCapability).toBe("workspace.platform.operate");
+    expect(inferWorkspaceIdentity("/operations", `#${area}`)).toBe("platform-operations");
+  }
+});

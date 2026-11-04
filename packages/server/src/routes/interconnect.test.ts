@@ -88,14 +88,14 @@ describe("interconnect access", () => {
     expect((await r.request("/api/interconnect/provider/snapshot")).status).toBe(403);
     expect(scopes).toHaveLength(0);
   });
-  test("operator can read globally and save personal view but cannot change metadata", async () => {
+  test("operator can manage global metadata and save personal view", async () => {
     const { r, scopes } = app("operator");
     expect((await r.request("/api/interconnect/operator/snapshot")).status).toBe(200);
     expect(scopes[0]?.orgIds).toBeNull();
-    expect(scopes[0]?.canManage).toBe(false);
+    expect(scopes[0]?.canManage).toBe(true);
     expect((await write(r, "operator/default-view", DEFAULT_MAP_VIEW, "PUT")).status).toBe(200);
     expect(scopes[1]?.userId).toBe(userId);
-    expect((await write(r, "operator/centers", center)).status).toBe(403);
+    expect((await write(r, "operator/centers", center)).status).toBe(201);
   });
   test("provider read and mutation are restricted to the selected organization", async () => {
     const { r, scopes } = app("user", [{ orgId, role: "admin" }]);
