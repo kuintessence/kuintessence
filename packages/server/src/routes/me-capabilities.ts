@@ -69,6 +69,7 @@ export function deriveMeCapabilities(
   }
   if (PLATFORM_VIEW_ROLES.has(principal.role)) {
     capabilities.add("workspace.platform.view");
+    capabilities.add("workspace.platform.operate");
   }
   if (hasAuditRead) {
     capabilities.add("workspace.audit.view");

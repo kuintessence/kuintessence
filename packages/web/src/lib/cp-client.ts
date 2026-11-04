@@ -299,6 +299,7 @@ export interface AuditSearchPage {
 }
 
 export interface CpAgent {
+  providerOrgId?: string | null;
   id: string;
   hostname: string;
   siteId: string;

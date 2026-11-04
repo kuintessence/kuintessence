@@ -51,7 +51,8 @@ export function createAgentRoutes(agentManager: AgentManager, options: AgentRout
     for (const agent of list) {
       const resource = agentResourceFromProviderOrg(agent.agentId, "agent", agent.providerOrgId);
       const localAllowed = resource
-        ? authorizeResourceAccess(ownershipPrincipalFromContext(c), resource, "read").allowed
+        ? principal.role === "operator" ||
+          authorizeResourceAccess(ownershipPrincipalFromContext(c), resource, "read").allowed
         : false;
       if (options.authz?.mode === "shadow") {
         await options.authz.shadowCheck(agentViewCheck(c, agent, localAllowed));
@@ -62,7 +63,7 @@ export function createAgentRoutes(agentManager: AgentManager, options: AgentRout
   });
 
   routes.get("/agents/:id", async (c) => {
-    requireAgentPrincipal(c);
+    const principal = requireAgentPrincipal(c);
     const id = c.req.param("id");
     const agent = await agentManager.getById(id);
     if (!agent) {
@@ -72,12 +73,10 @@ export function createAgentRoutes(agentManager: AgentManager, options: AgentRout
     if (!resource) {
       throw new AppError(ErrorCode.NOT_FOUND, "Agent not found", 404);
     }
-    const localAllowed = authorizeResourceAccess(
-      ownershipPrincipalFromContext(c),
-      resource,
-      "read",
-    ).allowed;
-    if (options.authz?.mode !== "enforce") {
+    const localAllowed =
+      principal.role === "operator" ||
+      authorizeResourceAccess(ownershipPrincipalFromContext(c), resource, "read").allowed;
+    if (options.authz?.mode !== "enforce" && principal.role !== "operator") {
       assertOwnedResourceAccess(c, resource, "read");
     }
     if (!(await checkAgentThroughSpice(options.authz, c, agent, localAllowed))) {

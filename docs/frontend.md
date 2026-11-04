@@ -25,7 +25,7 @@ Web 导航分为业务域和域内菜单两层。
 | 我的工作台 | 算力使用者 | 作业、工作流、数据、可见资源 | 已登录用户 |
 | 算力提供方 | 业务运营 | 计量、用户、集群账号、软件服务、审计 | `org_admin` |
 | 算力提供方 | 技术运维 | 基础设施、Agent、节点注册、调度队列 | `org_admin` |
-| 平台管理 | 业务运营 | 平台服务、供给、计量、治理 | `operator`，只读 |
+| 平台管理 | 业务运营 | 平台服务、供给、计量、治理 | `workspace.platform.operate`，跨提供者资源管理 |
 | 平台管理 | 技术运维 | SSO、授权、Sandbox、SSH、平台基础设施 | `platform_admin` |
 | 软件生态 | 开发者 | 工作流模板、软件用例、Spack、数据处理脚本 | 已登录用户 |
 | 个人中心 | 账户与会话 | 身份、权限角色、会话状态 | 已登录用户 |
@@ -39,8 +39,8 @@ Web 导航分为业务域和域内菜单两层。
 ## 权限与路由状态
 
 - 前端按权限显示入口，请求由 Server RBAC/SpiceDB 校验。
-- `operator` 与 `org_admin` 是并行分支，不是等级链。`operator` 的 `workspace.platform.view` 不授予算力提供方管理；`org_admin` 不自动获得平台运营或技术管理。
-- 计量、审计等交叉只读能力通过显式多身份集合授权，不提高 role rank 间接放行；Provider 写操作属于 `org_admin` 分支，并受组织关系约束。
+- `operator` 与 `org_admin` 是并行分支，不是等级链。`operator` 通过独立的 `workspace.platform.operate` 统一管理资源，不获得提供者成员身份；`org_admin` 不自动获得平台运营或技术管理。
+- 计量、审计等交叉只读能力通过显式多身份集合授权，不提高 role rank 间接放行；提供者自身写操作受组织关系约束；平台资源运营通过独立平台能力校验。
 - 刷新页面时从 URL 恢复业务上下文；`/cp/*`、`/operations`、`/software/*` 分别对应算力提供方、平台管理和软件生态。
 - `/settings#personal/account`、`/settings#personal/execution-accounts`、`/settings#personal/appearance` 分别对应账户、执行账号和外观；`/settings#security`、`/settings#infrastructure` 属于平台技术运维。
 - 平台管理能力菜单的跨页面入口在新标签页打开；Settings 通过 `#security/<section>` 或 `#infrastructure/<section>` 定位具体配置板块。

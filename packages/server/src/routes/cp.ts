@@ -7,8 +7,9 @@
 import { AppError, ErrorCode, hasRole, type RoleName } from "@kuintessence/shared";
 import { type Context, Hono } from "hono";
 import { z } from "zod";
+import { requirePlatformPermission } from "../authz/platform-guard";
 import type { AuthzService } from "../authz/service";
-import { type CpScope, cpRbac } from "../middleware/cp-rbac";
+import { CpRbacError, type CpScope, cpRbac, deriveCpScope } from "../middleware/cp-rbac";
 import type { BoundPrincipal } from "../middleware/principal-binder";
 import type { AgentRegistrationService } from "../services/agent-registration";
 import type { CpConsoleService } from "../services/cp-console";
@@ -216,6 +217,34 @@ export function buildCpRouter(deps: CpRoutesDeps) {
     }),
   );
   r.use("*", async (c, next) => {
+    const scope = c.get("cpScope") as CpScope;
+    if (scope.principal.role === "operator") {
+      // Dataset access still requires provider membership, even for a global operator.
+      if (/\/data(?:\/|$)/.test(c.req.path)) {
+        const principal = c.get("principal") as BoundPrincipal;
+        try {
+          c.set(
+            "cpScope",
+            deriveCpScope(
+              { ...principal, role: "user" },
+              {
+                activeOrganizationId: c.req.header("x-kq-active-organization"),
+              },
+            ),
+          );
+        } catch (error) {
+          if (error instanceof CpRbacError)
+            throw new AppError(ErrorCode.FORBIDDEN, error.message, error.status);
+          throw error;
+        }
+      }
+      await requirePlatformPermission(
+        c,
+        deps.authz,
+        c.req.method === "GET" ? "view" : "operate",
+        "cp-platform-operations",
+      );
+    }
     if (isCpMutation(c.req.method, c.req.path)) {
       const scope = c.get("cpScope") as CpScope;
       const resourceAuthorization = cpResourceMutationAuthorization(c.req.method, c.req.path);

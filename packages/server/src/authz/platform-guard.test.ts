@@ -11,7 +11,7 @@ function appFor(
   principalUserId: string | null = "user-1",
   role = "platform_admin",
   principalRole = role,
-  permission: "view" | "manage" = "manage",
+  permission: "view" | "operate" | "manage" = "manage",
   emails: { tokenEmail?: string; principalEmail?: string } = {},
   options: { source?: string } = {},
 ) {
@@ -319,4 +319,26 @@ describe("requirePlatformPermission", () => {
     });
     expect(calls).toEqual([]);
   });
+});
+
+test("operator may operate but may not manage platform configuration", async () => {
+  expect(
+    (await appFor(undefined, "u", "operator", "operator", "operate").request("/check")).status,
+  ).toBe(200);
+  expect(
+    (await appFor(undefined, "u", "org_admin", "org_admin", "operate").request("/check")).status,
+  ).toBe(403);
+  const checks: AuthzCheck[] = [];
+  const authz = {
+    mode: "enforce",
+    requirePermission: async (check: AuthzCheck, fallback: boolean) => {
+      checks.push(check);
+      expect(fallback).toBe(false);
+      throw new AppError(ErrorCode.FORBIDDEN, "denied", 403);
+    },
+  } as unknown as AuthzService;
+  expect(
+    (await appFor(authz, "u", "operator", "operator", "operate").request("/check")).status,
+  ).toBe(403);
+  expect(checks[0]?.permission).toBe("operate");
 });

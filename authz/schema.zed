@@ -45,7 +45,7 @@ definition agent {
   relation provider: provider
   relation platform: platform
 
-  permission manage = provider->manage + platform->manage
+  permission manage = provider->manage + platform->operate
   permission operate = manage + provider->operate
   permission view = operate + provider->view
 }
@@ -56,7 +56,7 @@ definition queue {
   relation submitter: user
   relation platform: platform
 
-  permission manage = provider->manage + platform->manage
+  permission manage = provider->manage + platform->operate
   permission view = manage + visible_org->view + submitter
   permission submit = manage + visible_org->use + submitter
 }
@@ -70,7 +70,7 @@ definition software_asset {
   relation installer: user | organization#use | provider#operate | platform#software_use
   relation platform: platform
 
-  permission manage = owner + owner_org->manage + provider->manage + platform->manage
+  permission manage = owner + owner_org->manage + provider->manage + platform->operate
   permission view = manage + viewer + user + installer
   permission use = manage + user + installer
   permission install = manage + installer

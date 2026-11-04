@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { authSessions, type PgDb, userOrgMemberships, users } from "@kuintessence/db";
+import { AppError, ErrorCode } from "@kuintessence/shared";
 import { and, eq, gt, isNull, sql } from "drizzle-orm";
 
 export type SessionRotationResult =
@@ -62,10 +63,11 @@ export async function createBrowserSession(
   input: CreateBrowserSessionInput,
 ): Promise<void> {
   const [user] = await db
-    .select({ defaultOrgId: users.orgId })
+    .select({ defaultOrgId: users.orgId, suspended: users.suspended })
     .from(users)
     .where(eq(users.id, input.userId))
     .limit(1);
+  if (user?.suspended) throw new AppError(ErrorCode.FORBIDDEN, "Account suspended", 403);
   const [defaultMembership] = user?.defaultOrgId
     ? await db
         .select({ orgId: userOrgMemberships.orgId })

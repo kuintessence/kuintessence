@@ -101,7 +101,7 @@ export class SoftwareAvailabilityService {
       : localAccess;
     const localInstallAccess: AccessDecision = asset
       ? await this.evaluateAccess(asset, principal, "install")
-      : hasRole(principal.role as RoleName, "org_admin")
+      : hasRole(principal.role as RoleName, "org_admin") || principal.role === "operator"
         ? { allowed: true }
         : { allowed: false, reason: "principal role cannot trigger install" };
     const installAccess = asset
@@ -297,6 +297,7 @@ export class SoftwareAvailabilityService {
         reason: `asset lifecycle '${asset.lifecycle}' blocks ${capability}`,
       };
     }
+    if (principal.role === "operator") return { allowed: true };
     if (softwareAvailabilityOwnsUserAsset(asset, principal)) return { allowed: true };
     if (asset.ownerOrgId && principal.orgIds.includes(asset.ownerOrgId)) return { allowed: true };
     if (asset.providerOrgId && principal.orgIds.includes(asset.providerOrgId))

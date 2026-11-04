@@ -16,6 +16,7 @@ import {
   listLicensedMaterialMappings,
   listLicenseEntitlementClaims,
   listRuntimeContractBindings,
+  listSpackCatalog,
   registerLicensedMaterialMapping,
   submitLicenseEntitlementClaim,
 } from "../../lib/software-client";
@@ -288,6 +289,8 @@ function RuntimeAndMaterialEditor({
   const client = useQueryClient();
   const [agentId, setAgentId] = useState("");
   const [runtimeProfileId, setRuntimeProfileId] = useState("");
+  const [assetId, setAssetId] = useState("");
+  const [assetPage, setAssetPage] = useState(1);
   const [selector, setSelector] = useState("");
   const [materialVersion, setMaterialVersion] = useState("");
   const [elements, setElements] = useState("");
@@ -325,6 +328,14 @@ function RuntimeAndMaterialEditor({
     enabled: Boolean(providerOrgId),
     retry: false,
   });
+  const assetsQ = useQuery({
+    queryKey: ["licensed-material-software", providerOrgId, assetPage],
+    queryFn: () => listSpackCatalog("vasp", 100, "official", assetPage),
+    retry: false,
+  });
+  const assets = (assetsQ.data?.packages ?? []).filter(
+    (item) => item.asset && item.licensePolicy?.identifiers.length,
+  );
   const bindingsKey = ["runtime-contract-bindings", providerOrgId];
   const materialsKey = ["licensed-material-mappings", providerOrgId];
   const bind = useMutation({
@@ -347,6 +358,9 @@ function RuntimeAndMaterialEditor({
   const elementSet = [...new Set(elements.split(/[,\s]+/).filter(Boolean))];
   const materialReady =
     baseReady &&
+    !assetsQ.isPending &&
+    !assetsQ.error &&
+    assets.some((item) => item.asset?.id === assetId) &&
     !!selector.trim() &&
     !!materialVersion.trim() &&
     !!fingerprint.trim() &&
@@ -387,6 +401,7 @@ function RuntimeAndMaterialEditor({
               onChange={(event) => {
                 setAgentId(event.target.value);
                 setRuntimeProfileId("");
+                setAssetId("");
                 setSelector("");
                 setMaterialVersion("");
                 setElements("");
@@ -479,6 +494,7 @@ function RuntimeAndMaterialEditor({
                   register.mutate({
                     providerOrgId: providerOrgId.trim(),
                     agentId: agentId.trim(),
+                    assetId,
                     selector: selector.trim(),
                     materialName: "VASP POTCAR",
                     materialVersion: materialVersion.trim(),
@@ -489,6 +505,63 @@ function RuntimeAndMaterialEditor({
             >
               <h3 className="text-sm font-medium">{t("software.license.materialMapping")}</h3>
               <fieldset disabled={!baseReady || register.isPending} className="grid gap-2">
+                <label className="grid gap-1 text-sm">
+                  {t("software.license.materialSoftware")}
+                  <select
+                    aria-label={t("software.license.materialSoftware")}
+                    value={assetId}
+                    onChange={(event) => setAssetId(event.target.value)}
+                    disabled={assetsQ.isPending || !!assetsQ.error}
+                    className="h-9 w-full min-w-0 rounded-md border bg-background px-3"
+                  >
+                    <option value="">{t("software.license.selectMaterialSoftware")}</option>
+                    {assets.map((item) => (
+                      <option key={item.asset?.id} value={item.asset?.id}>
+                        {item.name} · {item.asset?.version}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                {assetsQ.error ? (
+                  <div role="alert" className="flex items-center gap-2 text-sm">
+                    <span>{t("software.license.loadFailed")}</span>
+                    <Button type="button" variant="outline" onClick={() => void assetsQ.refetch()}>
+                      {t("cp.common.retry")}
+                    </Button>
+                  </div>
+                ) : assetsQ.isPending ? (
+                  <p role="status">{t("cp.common.loading")}</p>
+                ) : !assets.length ? (
+                  <p className="text-sm text-muted-foreground">
+                    {t("software.license.noMaterialSoftware")}
+                  </p>
+                ) : null}
+                {assetPage > 1 || assetsQ.data?.hasNext ? (
+                  <div className="flex gap-2">
+                    <Button
+                      type="button"
+                      variant="outline"
+                      disabled={assetPage === 1 || assetsQ.isPending}
+                      onClick={() => {
+                        setAssetId("");
+                        setAssetPage(assetPage - 1);
+                      }}
+                    >
+                      {t("common.pagination.previous")}
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      disabled={!assetsQ.data?.hasNext || assetsQ.isPending}
+                      onClick={() => {
+                        setAssetId("");
+                        setAssetPage(assetPage + 1);
+                      }}
+                    >
+                      {t("common.pagination.next")}
+                    </Button>
+                  </div>
+                ) : null}
                 <Input
                   value={selector}
                   onChange={(event) => setSelector(event.target.value)}

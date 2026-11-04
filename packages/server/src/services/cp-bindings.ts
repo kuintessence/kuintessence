@@ -52,7 +52,7 @@ import {
   userOrgMemberships,
   users,
 } from "@kuintessence/db";
-import { ManagedDatasetRootIdsSchema } from "@kuintessence/shared";
+import { AppError, ErrorCode, ManagedDatasetRootIdsSchema } from "@kuintessence/shared";
 import {
   and,
   asc,
@@ -252,6 +252,7 @@ function makeAgentsPort(deps: CpBindingsDeps): AgentsServicePort {
           id: a.agentId,
           hostname: a.siteName,
           siteId: a.siteName,
+          providerOrgId: a.providerOrgId,
           status: a.status,
           managedDatasetRootIds: ManagedDatasetRootIdsSchema.parse(
             a.topology.managedDatasetRootIds,
@@ -265,6 +266,7 @@ function makeAgentsPort(deps: CpBindingsDeps): AgentsServicePort {
           id: agentsTable.agentId,
           hostname: agentsTable.siteName,
           siteId: agentsTable.siteName,
+          providerOrgId: agentsTable.providerOrgId,
           status: agentsTable.status,
           topology: agentsTable.topology,
         })
@@ -365,6 +367,12 @@ function makeSoftwarePort(deps: CpBindingsDeps): SoftwareGovernancePort {
       const providerOrgIds = uniqueSorted(
         targets.flatMap((agent) => (agent.providerOrgId ? [agent.providerOrgId] : [])),
       );
+      if (providerOrgIds.length > 1)
+        throw new AppError(
+          ErrorCode.VALIDATION_ERROR,
+          "Select a provider before editing a cluster shared by multiple providers",
+          409,
+        );
       for (const providerOrgId of providerOrgIds) {
         await upsertPolicyOverlay(db, {
           scope: "cluster",
@@ -553,8 +561,8 @@ async function buildSoftwareOverview(
   });
 
   const clusters = Array.from(groupByAgentCluster(agentsView).entries())
-    .map(([cluster, agents]) => ({
-      cluster,
+    .map(([, agents]) => ({
+      cluster: agents[0]?.cluster ?? "",
       providerOrgId: agents.find((agent) => agent.providerOrgId)?.providerOrgId ?? null,
       clusterPolicy: agents.find((agent) => agent.clusterPolicy)?.clusterPolicy ?? null,
       agents,
@@ -892,7 +900,8 @@ function groupPreinstalledMappingsByAgent(
 function groupByAgentCluster(agents: CpSoftwareAgentView[]): Map<string, CpSoftwareAgentView[]> {
   const grouped = new Map<string, CpSoftwareAgentView[]>();
   for (const agent of agents) {
-    grouped.set(agent.cluster, [...(grouped.get(agent.cluster) ?? []), agent]);
+    const key = `${agent.providerOrgId ?? ""}:${agent.cluster}`;
+    grouped.set(key, [...(grouped.get(key) ?? []), agent]);
   }
   return grouped;
 }

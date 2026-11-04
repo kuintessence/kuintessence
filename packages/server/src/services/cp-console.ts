@@ -42,6 +42,7 @@ export interface AgentsServicePort {
       id: string;
       hostname: string;
       siteId: string;
+      providerOrgId?: string | null;
       status: string;
       managedDatasetRootIds?: string[];
     }>
@@ -51,6 +52,7 @@ export interface AgentsServicePort {
       id: string;
       hostname: string;
       siteId: string;
+      providerOrgId?: string | null;
       status: string;
       managedDatasetRootIds?: string[];
     }>

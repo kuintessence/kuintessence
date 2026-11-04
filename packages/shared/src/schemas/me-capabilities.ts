@@ -6,6 +6,7 @@ export const PlatformCapabilitySchema = z.enum([
   "workspace.provider.manage",
   "workspace.platform.view",
   "workspace.platform.manage",
+  "workspace.platform.operate",
   "workspace.audit.view",
   "workspace.ecosystem.view",
   "workspace.ecosystem.publish",

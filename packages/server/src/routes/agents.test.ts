@@ -60,7 +60,10 @@ describe("Agent routes", () => {
       routeAgents.find((agent) => agent.agentId === agentId) ?? null,
   } as unknown as AgentManager;
 
-  function appFor(role: "platform_admin" | "org_admin" | "user", orgId: string | null = null) {
+  function appFor(
+    role: "platform_admin" | "org_admin" | "operator" | "user",
+    orgId: string | null = null,
+  ) {
     const app = new Hono();
     app.use("*", async (c, next) => {
       c.set("user", { sub: `${role}@agent.test`, email: `${role}@agent.test`, role });
@@ -78,6 +81,13 @@ describe("Agent routes", () => {
     app.route("/api", createAgentRoutes(manager));
     return app;
   }
+
+  test("operator discovers agents across providers without changing provider membership", async () => {
+    const response = await appFor("operator").request("/api/agents");
+    expect(response.status).toBe(200);
+    expect(((await response.json()) as { agents: unknown[] }).agents).toHaveLength(2);
+    expect((await appFor("operator").request("/api/agents/route-test-agent-b")).status).toBe(200);
+  });
 
   test("GET /api/agents returns all agents for platform admin", async () => {
     const res = await appFor("platform_admin").request("/api/agents");

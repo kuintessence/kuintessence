@@ -380,6 +380,7 @@ export interface RuntimeContractBinding {
 
 export interface LicensedMaterialMapping {
   id: string;
+  assetId: string;
   providerOrgId: string;
   agentId: string;
   selector: string;
@@ -566,6 +567,7 @@ export async function listLicensedMaterialMappings(
 }
 
 export async function registerLicensedMaterialMapping(payload: {
+  assetId: string;
   providerOrgId: string;
   agentId: string;
   selector: string;

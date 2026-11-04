@@ -1,16 +1,27 @@
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { KeyRound, ServerCog, UsersRound } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useActiveOrganizationId } from "../../lib/active-organization";
+import { api } from "../../lib/api-client";
 import { getAuthState } from "../../lib/auth";
 import { isMobileHighRiskMutationBlocked } from "../../lib/mobile-management-policy";
 import { listSandboxExecutionAccounts } from "../../lib/sandbox-client";
 import { useMediaQuery } from "../../lib/use-media-query";
+import { useOrganizationName } from "../../lib/use-organization-name";
 import { toUserFacingError } from "../../lib/user-facing-error";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
+import {
+  Dialog,
+  DialogBody,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "../ui/dialog";
 import { EditAccountQueues } from "./EditAccountQueues";
 import { RegisterExecutionAccount } from "./RegisterExecutionAccount";
 import { SandboxMappingReviewPanel } from "./SandboxMappingReviewPanel";
@@ -19,6 +30,8 @@ export function CpAccountsPage() {
   const { t } = useTranslation();
   const activeOrganizationId = useActiveOrganizationId();
   const queryClient = useQueryClient();
+  const organizationName = useOrganizationName();
+  const [statusTarget, setStatusTarget] = useState<(typeof accounts)[number] | null>(null);
   const [registering, setRegistering] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const compact = useMediaQuery("(max-width: 767px)");
@@ -34,6 +47,18 @@ export function CpAccountsPage() {
     refetchInterval: 15_000,
   });
   const accounts = accountsQuery.data?.data ?? [];
+  const canManageAccount = (orgId: string) =>
+    !accountsQuery.error &&
+    !mobileReadOnly &&
+    accountsQuery.data?.manageableProviderOrgIds?.includes(orgId) === true;
+  const statusMutation = useMutation({
+    mutationFn: (account: (typeof accounts)[number]) =>
+      api.patch(`/sandbox/accounts/${account.id}/status`, { enabled: !account.enabled }),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ["sandbox-execution-accounts"] });
+      setStatusTarget(null);
+    },
+  });
   const canRegister =
     !!activeOrganizationId &&
     !accountsQuery.error &&
@@ -42,12 +67,12 @@ export function CpAccountsPage() {
   const editingAccount = accounts.find(
     (account) =>
       account.id === editingId &&
-      account.providerOrgId === activeOrganizationId &&
+      canManageAccount(account.providerOrgId) &&
       account.backendType === "unix",
   );
   useEffect(() => {
-    if (!canRegister || !editingAccount) setEditingId(null);
-  }, [canRegister, editingAccount]);
+    if (!editingAccount) setEditingId(null);
+  }, [editingAccount]);
   useEffect(() => {
     if (!canRegister) setRegistering(false);
   }, [canRegister]);
@@ -57,7 +82,6 @@ export function CpAccountsPage() {
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <h2 className="text-2xl font-semibold tracking-tight">{t("cp.accounts.title")}</h2>
-          <p className="text-sm text-muted-foreground">{t("cp.accounts.subtitle")}</p>
         </div>
         <div className="flex gap-2">
           <Button variant="outline" onClick={() => void accountsQuery.refetch()}>
@@ -75,7 +99,7 @@ export function CpAccountsPage() {
         <p className="text-sm text-muted-foreground">{t("cp.accounts.desktopRegister")}</p>
       )}
 
-      <div className="grid gap-2 sm:grid-cols-3">
+      <div className="grid grid-cols-3 gap-2">
         <Summary
           icon={ServerCog}
           label={t("cp.accounts.summary.accounts")}
@@ -119,14 +143,21 @@ export function CpAccountsPage() {
           ) : (
             <div className="grid grid-cols-1 gap-2 md:grid-cols-2 xl:grid-cols-3">
               {accounts.map((account) => (
-                <div key={account.id} className="rounded-md border border-border bg-background p-3">
+                <div
+                  key={account.id}
+                  data-testid={`cp-execution-account-${account.id}`}
+                  className="rounded-md border border-border bg-background p-3"
+                >
                   <div className="flex items-start justify-between gap-3">
                     <div className="min-w-0">
-                      <div className="truncate text-sm font-semibold" title={account.displayName}>
+                      <div
+                        className="break-words text-sm font-semibold"
+                        title={account.displayName}
+                      >
                         {account.displayName}
                       </div>
                       <div
-                        className="truncate font-mono text-[11px] text-muted-foreground"
+                        className="break-all font-mono text-[11px] text-muted-foreground"
                         title={`${account.agentId} · ${account.id}`}
                       >
                         {account.agentId}
@@ -140,6 +171,10 @@ export function CpAccountsPage() {
                     </Badge>
                   </div>
                   <dl className="mt-3 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs">
+                    <dt className="text-muted-foreground">{t("operations.resources.provider")}</dt>
+                    <dd className="min-w-0 break-words">
+                      {organizationName(account.providerOrgId)}
+                    </dd>
                     <dt className="text-muted-foreground">{t("cp.accounts.backend")}</dt>
                     <dd>{account.backendType}</dd>
                     <dt className="text-muted-foreground">{t("cp.accounts.identity")}</dt>
@@ -155,18 +190,29 @@ export function CpAccountsPage() {
                         : account.allowedQueues.join(", ") || t("cp.accounts.noQueues")}
                     </dd>
                   </dl>
-                  {canRegister &&
-                    account.providerOrgId === activeOrganizationId &&
-                    account.backendType === "unix" && (
-                      <Button
-                        className="mt-3"
-                        variant="outline"
-                        size="sm"
-                        onClick={() => setEditingId(account.id)}
-                      >
-                        {t("cp.accounts.editQueues")}
-                      </Button>
-                    )}
+                  {canManageAccount(account.providerOrgId) && account.backendType === "unix" && (
+                    <Button
+                      className="mt-3"
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setEditingId(account.id)}
+                    >
+                      {t("cp.accounts.editQueues")}
+                    </Button>
+                  )}
+                  {canManageAccount(account.providerOrgId) && (
+                    <Button
+                      className="mt-3 ml-2"
+                      variant="outline"
+                      size="sm"
+                      onClick={() => {
+                        statusMutation.reset();
+                        setStatusTarget(account);
+                      }}
+                    >
+                      {t(account.enabled ? "operations.users.disable" : "operations.users.enable")}
+                    </Button>
+                  )}
                 </div>
               ))}
             </div>
@@ -175,7 +221,50 @@ export function CpAccountsPage() {
       </Card>
 
       <SandboxMappingReviewPanel />
-      {canRegister && editingAccount && (
+      <Dialog
+        open={statusTarget !== null}
+        onOpenChange={(open) => {
+          if (!open && !statusMutation.isPending) setStatusTarget(null);
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>
+              {t(statusTarget?.enabled ? "operations.users.disable" : "operations.users.enable")}
+            </DialogTitle>
+            <DialogDescription>
+              {statusTarget?.enabled
+                ? t("operations.accounts.disableConfirm", { name: statusTarget.displayName })
+                : statusTarget?.displayName}
+            </DialogDescription>
+          </DialogHeader>
+          {statusMutation.error && (
+            <DialogBody>
+              <p role="alert" className="text-sm text-status-failed">
+                {toUserFacingError(statusMutation.error, t("operations.users.updateFailed"))}
+              </p>
+            </DialogBody>
+          )}
+          <DialogFooter className="flex justify-end gap-2">
+            <Button
+              variant="outline"
+              disabled={statusMutation.isPending}
+              onClick={() => setStatusTarget(null)}
+            >
+              {t("cp.common.cancel")}
+            </Button>
+            <Button
+              disabled={statusMutation.isPending || !statusTarget}
+              onClick={() => {
+                if (statusTarget) statusMutation.mutate(statusTarget);
+              }}
+            >
+              {t("common.confirm")}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+      {editingAccount && (
         <EditAccountQueues
           key={`${editingAccount.id}:${getAuthState().revision}`}
           account={editingAccount}

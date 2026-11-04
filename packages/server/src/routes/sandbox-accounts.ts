@@ -2,6 +2,7 @@ import {
   accountAssignmentDelegations,
   agents,
   clusterExecutionAccounts,
+  orgs,
   type PgDb,
   userClusterAccountMappings,
   users,
@@ -10,6 +11,8 @@ import { AppError, ErrorCode, hasRole, type RoleName } from "@kuintessence/share
 import { and, eq, inArray, isNotNull, lte, ne, or, sql } from "drizzle-orm";
 import { type Context, Hono } from "hono";
 import { z } from "zod";
+import { requirePlatformPermission } from "../authz/platform-guard";
+import type { AuthzService } from "../authz/service";
 import type { BoundPrincipal } from "../middleware/principal-binder";
 import { writeAudit } from "../services/audit-log-writer";
 
@@ -62,7 +65,7 @@ function principal(c: Context): CanonicalPrincipal {
 }
 
 function isPlatform(value: BoundPrincipal): boolean {
-  return hasRole(value.role as RoleName, "platform_admin");
+  return hasRole(value.role as RoleName, "operator");
 }
 
 function isProviderAdmin(value: BoundPrincipal, providerOrgId: string): boolean {
@@ -87,22 +90,8 @@ function providerReadScope(c: Context, value: BoundPrincipal): string[] | null {
   return selected ? [selected] : orgIds;
 }
 
-async function platformDelegated(db: PgDb, providerOrgId: string): Promise<boolean> {
-  const [row] = await db
-    .select({ delegated: accountAssignmentDelegations.delegated })
-    .from(accountAssignmentDelegations)
-    .where(eq(accountAssignmentDelegations.providerOrgId, providerOrgId))
-    .limit(1);
-  return row?.delegated ?? false;
-}
-
-async function assertAccountManager(
-  db: PgDb,
-  value: BoundPrincipal,
-  providerOrgId: string,
-): Promise<void> {
-  if (isProviderAdmin(value, providerOrgId)) return;
-  if (isPlatform(value) && (await platformDelegated(db, providerOrgId))) return;
+function assertAccountManager(value: BoundPrincipal, providerOrgId: string): void {
+  if (isProviderAdmin(value, providerOrgId) || isPlatform(value)) return;
   throw new AppError(ErrorCode.FORBIDDEN, "Execution account management denied", 403);
 }
 
@@ -118,10 +107,22 @@ async function loadAccount(db: PgDb, accountId: string) {
 
 export interface SandboxAccountRoutesDeps {
   db: PgDb;
+  authz?: AuthzService;
 }
 
-export function createSandboxAccountRoutes({ db }: SandboxAccountRoutesDeps): Hono {
+export function createSandboxAccountRoutes({ db, authz }: SandboxAccountRoutesDeps): Hono {
   const r = new Hono();
+  r.use("*", async (c, next) => {
+    if (isPlatform(principal(c))) {
+      await requirePlatformPermission(
+        c,
+        authz,
+        c.req.method === "GET" ? "view" : "operate",
+        "execution-accounts",
+      );
+    }
+    await next();
+  });
 
   r.get("/sandbox/account-mappings", async (c) => {
     const value = principal(c);
@@ -265,18 +266,8 @@ export function createSandboxAccountRoutes({ db }: SandboxAccountRoutesDeps): Ho
         : await db.select().from(clusterExecutionAccounts);
     const manageable = new Set(value.orgIds.filter((id) => isProviderAdmin(value, id)));
     if (isPlatform(value)) {
-      const delegated = await db
-        .select({ orgId: accountAssignmentDelegations.providerOrgId })
-        .from(accountAssignmentDelegations)
-        .where(
-          and(
-            eq(accountAssignmentDelegations.delegated, true),
-            providerIds === null
-              ? undefined
-              : inArray(accountAssignmentDelegations.providerOrgId, providerIds),
-          ),
-        );
-      for (const row of delegated) manageable.add(row.orgId);
+      const organizations = await db.select({ orgId: orgs.id }).from(orgs);
+      for (const row of organizations) manageable.add(row.orgId);
     }
     return c.json({
       success: true,
@@ -290,7 +281,7 @@ export function createSandboxAccountRoutes({ db }: SandboxAccountRoutesDeps): Ho
   r.post("/sandbox/accounts", async (c) => {
     const value = principal(c);
     const body = AccountBodySchema.parse(await c.req.json());
-    await assertAccountManager(db, value, body.providerOrgId);
+    assertAccountManager(value, body.providerOrgId);
     const [agent] = await db
       .select({ providerOrgId: agents.providerOrgId, schedulerType: agents.schedulerType })
       .from(agents)
@@ -331,12 +322,32 @@ export function createSandboxAccountRoutes({ db }: SandboxAccountRoutesDeps): Ho
     return c.json({ success: true, data: created }, 201);
   });
 
+  r.patch("/sandbox/accounts/:id/status", async (c) => {
+    const value = principal(c);
+    const id = z.string().uuid().parse(c.req.param("id"));
+    const body = z.strictObject({ enabled: z.boolean() }).parse(await c.req.json());
+    const account = await loadAccount(db, id);
+    assertAccountManager(value, account.providerOrgId);
+    const [updated] = await db
+      .update(clusterExecutionAccounts)
+      .set({ enabled: body.enabled, updatedAt: sql`now()` })
+      .where(eq(clusterExecutionAccounts.id, id))
+      .returning();
+    await writeAudit(db, {
+      actor: value.userId,
+      action: "sandbox.execution-account.status",
+      target: id,
+      diff: { before: { enabled: account.enabled }, after: body },
+    });
+    return c.json({ success: true, data: updated });
+  });
+
   r.patch("/sandbox/accounts/:id/allowed-queues", async (c) => {
     const value = principal(c);
     const accountId = z.string().uuid().parse(c.req.param("id"));
     const body = AllowedQueuesBodySchema.parse(await c.req.json());
     const account = await loadAccount(db, accountId);
-    await assertAccountManager(db, value, account.providerOrgId);
+    assertAccountManager(value, account.providerOrgId);
     const [updated] = await db
       .update(clusterExecutionAccounts)
       .set({ allowedQueues: body.allowedQueues, updatedAt: sql`now()` })
@@ -385,11 +396,9 @@ export function createSandboxAccountRoutes({ db }: SandboxAccountRoutesDeps): Ho
             : inArray(clusterExecutionAccounts.providerOrgId, providerIds),
         ),
       );
-    const data = rows.map(({ delegated, ...row }) => ({
+    const data = rows.map(({ delegated: _delegated, ...row }) => ({
       ...row,
-      canReview:
-        isProviderAdmin(value, row.account.providerOrgId) ||
-        (isPlatform(value) && delegated === true),
+      canReview: isProviderAdmin(value, row.account.providerOrgId) || isPlatform(value),
     }));
     return c.json({ success: true, data });
   });
@@ -408,7 +417,7 @@ export function createSandboxAccountRoutes({ db }: SandboxAccountRoutesDeps): Ho
       .where(eq(userClusterAccountMappings.id, mappingId))
       .limit(1);
     if (!row) throw new AppError(ErrorCode.NOT_FOUND, "Account mapping not found", 404);
-    await assertAccountManager(db, value, row.account.providerOrgId);
+    assertAccountManager(value, row.account.providerOrgId);
     const revoked = body.status === "revoked";
     const [updated] = await db
       .update(userClusterAccountMappings)

@@ -1,27 +1,13 @@
-// CP-RBAC middleware — gates `/api/cp/*` routes.
-//
-// CP (Compute Provider) is a business role overlaid on the technical
-// RBAC matrix. A principal qualifies as CP if:
-//   - role >= ORG_ADMIN  AND
-//   - principal has at least one orgId
-//
-// SUPER_ADMIN can act as CP for any org (orgIds=['*'] semantics handled
-// downstream).
-//
-// The middleware:
-//   1. Reads the JWT principal from c.get('principal') (set by upstream auth)
-//   2. Verifies CP eligibility
-//   3. Attaches `cpScope = { orgIds, principal }` to the request context
-//
-// Routes downstream MUST scope every DB query by `cpScope.orgIds` to
-// preserve multi-tenant isolation.
+// Provider members stay within their organizations. Platform operations can
+// manage resources across providers; this scope does not grant membership.
+// Downstream queries must preserve orgIds and isPlatformWide.
 
 import type { MiddlewareHandler } from "hono";
 
 export interface CpScope {
-  /** Org ids the CP can operate on. SUPER_ADMIN: pass-through to global. */
+  /** Authorized provider ids; an explicit platform-wide scope uses an empty list. */
   orgIds: string[];
-  /** True if the caller has cross-org reach (super_admin / platform_admin). */
+  /** True if the caller has cross-org reach (super_admin / platform_admin / operator). */
   isPlatformWide: boolean;
   /** False when local CP eligibility is intentionally deferred to SpiceDB. */
   localAllowed?: boolean;
@@ -41,7 +27,7 @@ export interface PrincipalLike {
   memberships?: Array<{ orgId: string; role: string }>;
 }
 
-const PLATFORM_ROLES = new Set(["super_admin", "platform_admin"]);
+const PLATFORM_ROLES = new Set(["super_admin", "platform_admin", "operator"]);
 const CP_ELIGIBLE_MEMBERSHIP_ROLES = new Set(["owner", "admin", "operator"]);
 const CP_MANAGE_MEMBERSHIP_ROLES = new Set(["owner", "admin"]);
 
@@ -109,7 +95,7 @@ export function deriveCpScope(
   if (PLATFORM_ROLES.has(principal.role)) {
     // Platform-wide reach. Specific org filtering is done at query time.
     return {
-      orgIds: requestedOrganizationId ? [requestedOrganizationId] : (principal.orgIds ?? []),
+      orgIds: requestedOrganizationId ? [requestedOrganizationId] : [],
       isPlatformWide: !requestedOrganizationId,
       localAllowed: true,
       canManage: true,

@@ -8,6 +8,7 @@ import {
   type RoleName,
 } from "@kuintessence/shared";
 import { type Context, Hono } from "hono";
+import { requirePlatformPermission } from "../authz/platform-guard";
 import type { AuthzService } from "../authz/service";
 import type { BoundPrincipal } from "../middleware/principal-binder";
 import { assertRole } from "../middleware/rbac";
@@ -23,7 +24,10 @@ async function resolveQueueContext(
     throw new AppError(ErrorCode.FORBIDDEN, "Authorization principal is not bound", 403);
   }
   const requestedOrgId = requestedOrganizationId?.trim() || null;
-  const isPlatformWide = principal.role === "platform_admin" || principal.role === "super_admin";
+  const isPlatformWide =
+    principal.role === "operator" ||
+    principal.role === "platform_admin" ||
+    principal.role === "super_admin";
   if (requestedOrgId && !isUuid(requestedOrgId)) {
     throw new AppError(ErrorCode.VALIDATION_ERROR, "Active organization must be a UUID", 400);
   }
@@ -34,7 +38,7 @@ async function resolveQueueContext(
       403,
     );
   }
-  const activeOrgId = requestedOrgId ?? principal.orgId;
+  const activeOrgId = requestedOrgId ?? (isPlatformWide ? null : principal.orgId);
   if (!isPlatformWide && !activeOrgId && principal.orgIds.length > 1) {
     throw new AppError(
       ErrorCode.VALIDATION_ERROR,
@@ -42,7 +46,7 @@ async function resolveQueueContext(
       409,
     );
   }
-  const orgIds = activeOrgId ? [activeOrgId] : principal.orgIds;
+  const orgIds = activeOrgId ? [activeOrgId] : isPlatformWide ? [] : principal.orgIds;
   return {
     role: principal.role as RoleName,
     orgId: activeOrgId ?? orgIds[0] ?? null,
@@ -75,7 +79,7 @@ export function createQueueRoutes(
   });
 
   routes.get("/admin/queues", async (c) => {
-    assertQueueAdminRouteAccess(c, options);
+    await assertQueueAdminRouteAccess(c, options);
     const ctx = await resolveQueueContext(
       db,
       c.get("principal" as never) as BoundPrincipal | undefined,
@@ -86,7 +90,7 @@ export function createQueueRoutes(
   });
 
   routes.get("/admin/agents/:agentId/queue-inventory", async (c) => {
-    assertQueueAdminRouteAccess(c, options);
+    await assertQueueAdminRouteAccess(c, options);
     const agentId = QueueIdSchema.parse(c.req.param("agentId"));
     const ctx = await resolveQueueContext(
       db,
@@ -101,7 +105,7 @@ export function createQueueRoutes(
     "/admin/queues",
     kqValidator("json", QueueRegistryCreateSchema, "Invalid queue body"),
     async (c) => {
-      assertQueueAdminRouteAccess(c, options);
+      await assertQueueAdminRouteAccess(c, options);
       const ctx = await resolveQueueContext(
         db,
         c.get("principal" as never) as BoundPrincipal | undefined,
@@ -116,7 +120,7 @@ export function createQueueRoutes(
     "/admin/queues/:queueId",
     kqValidator("json", QueueRegistryUpdateSchema, "Invalid queue patch body"),
     async (c) => {
-      assertQueueAdminRouteAccess(c, options);
+      await assertQueueAdminRouteAccess(c, options);
       const queueId = QueueIdSchema.parse(c.req.param("queueId"));
       const ctx = await resolveQueueContext(
         db,
@@ -131,7 +135,12 @@ export function createQueueRoutes(
   return routes;
 }
 
-function assertQueueAdminRouteAccess(c: Context, options: QueueRouteOptions): void {
+async function assertQueueAdminRouteAccess(c: Context, options: QueueRouteOptions): Promise<void> {
+  const principal = c.get("principal" as never) as BoundPrincipal | undefined;
+  if (principal?.role === "operator") {
+    await requirePlatformPermission(c, options.authz, "operate", "queue-operations");
+    return;
+  }
   if (options.authz?.mode === "enforce") return;
   assertRole(c, "org_admin");
 }

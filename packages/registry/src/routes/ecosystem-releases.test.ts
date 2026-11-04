@@ -10,7 +10,7 @@ const RUNTIME_PROFILE_ID = "22222222-2222-4222-8222-222222222222";
 const RUNTIME_DIGEST = `sha256:${"a".repeat(64)}`;
 
 function principal(
-  role: "platform_admin" | "org_admin" | "user",
+  role: "platform_admin" | "org_admin" | "operator" | "user",
   orgIds: string[] = [],
   sub = "actor",
 ) {
@@ -108,6 +108,13 @@ describe("ecosystem release routes", () => {
     });
     expect(accepted.status).toBe(201);
     expect(calls.bind).toBe(1);
+    const operated = await app.request("/api/runtime-contract-bindings", {
+      method: "POST",
+      headers: principal("operator", []),
+      body: JSON.stringify(binding),
+    });
+    expect(operated.status).toBe(201);
+    expect(calls.bind).toBe(2);
   });
 
   test("allows a user claim only for the authenticated user", async () => {

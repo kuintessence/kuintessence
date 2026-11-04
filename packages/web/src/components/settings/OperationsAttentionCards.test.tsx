@@ -101,7 +101,7 @@ describe("OperationsAttentionCards", () => {
     expect(screen.getByTestId("operations-approval-attention-storage").textContent).toContain("0");
   });
 
-  test("limits an operator to sandbox readiness without treating unavailable admin sources as errors", async () => {
+  test("shows account approvals and readiness for operators without querying administrator configuration", async () => {
     mocks.getAuthState.mockReturnValue({ role: "operator" });
     mocks.listSandboxAgentSecurityViews.mockResolvedValue([
       { sandboxReadiness: "critical" },
@@ -118,7 +118,7 @@ describe("OperationsAttentionCards", () => {
     });
     expect(mocks.listSandboxAgentSecurityViews).toHaveBeenCalledOnce();
     expect(mocks.listSoftwareAccessRequests).not.toHaveBeenCalled();
-    expect(mocks.listSandboxMappingReviewQueue).not.toHaveBeenCalled();
+    expect(mocks.listSandboxMappingReviewQueue).toHaveBeenCalledOnce();
     expect(mocks.apiGet).not.toHaveBeenCalled();
     expect(screen.queryByText("settings.operations.attention.partialFailure")).toBeNull();
   });

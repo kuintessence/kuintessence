@@ -324,6 +324,9 @@ function ManagedQueueTable({
                     <div className="break-words font-medium" title={queue.queueId}>
                       {queue.name}
                     </div>
+                    <div className="break-words text-xs text-muted-foreground">
+                      {organizationName(queue.providerOrgId)}
+                    </div>
                   </td>
                   <td className="order-2 col-span-2 min-w-0 sm:table-cell sm:px-3 sm:py-2">
                     {targetMode === "default" ? (

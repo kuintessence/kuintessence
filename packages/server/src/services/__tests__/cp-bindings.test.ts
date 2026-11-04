@@ -401,6 +401,27 @@ describeIfPg("cp-bindings (PG)", () => {
     expect(orgB).toEqual({ healthy: 0, sick: 0, offline: 1 });
   });
 
+  test("global software groups same-named clusters by provider and refuses ambiguous writes", async () => {
+    await db.update(agents).set({ siteName: SITE_ALPHA }).where(eq(agents.agentId, AGENT_Y));
+    const scope = {
+      orgIds: [],
+      isPlatformWide: true,
+      principal: { sub: USER_A1, role: "operator", orgIds: [] },
+    };
+    const overview = await bindings.software.getOverview(scope);
+    const clusters = overview.clusters.filter((cluster) => cluster.cluster === SITE_ALPHA);
+    expect(clusters).toHaveLength(2);
+    expect(new Set(clusters.map((cluster) => cluster.providerOrgId))).toEqual(
+      new Set([ORG_A, ORG_B]),
+    );
+    const policy = clusters[0]?.agents[0]?.effectivePolicy;
+    expect(policy).toBeDefined();
+    if (!policy) throw new Error("Missing policy fixture");
+    await expect(bindings.software.saveClusterPolicy(scope, SITE_ALPHA, policy)).rejects.toThrow(
+      "Select a provider",
+    );
+  });
+
   test("software.getOverview returns scoped agents even when no legacy policies exist", async () => {
     await db.insert(agentInstalledSoftware).values({
       agentId: AGENT_X,

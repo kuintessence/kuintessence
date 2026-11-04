@@ -87,7 +87,7 @@ export interface QueueInventoryAdminView extends AgentQueueInventory {
 }
 
 function isPlatformWide(role: RoleName): boolean {
-  return hasRole(role, "platform_admin");
+  return hasRole(role, "operator");
 }
 
 function isVisible(row: QueueRow, ctx: QueueAccessContext): boolean {
@@ -175,6 +175,7 @@ export class QueueRegistryService {
     const rows = await this.db.select().from(schedulerQueues);
     const visible: QueueRow[] = [];
     for (const row of rows) {
+      if (isPlatformWide(ctx.role) && ctx.orgId && row.providerOrgId !== ctx.orgId) continue;
       const localAllowed =
         isPlatformWide(ctx.role) || contextOrgIds(ctx).includes(row.providerOrgId);
       if (await this.filterThroughSpice(row, "manage", ctx, localAllowed)) {
@@ -593,7 +594,7 @@ export class QueueRegistryService {
       return localAllowed;
     }
     try {
-      await this.authz.requirePermission(check, isPlatformWide(ctx.role));
+      await this.authz.requirePermission(check, hasRole(ctx.role, "platform_admin"));
       return true;
     } catch {
       return false;
@@ -612,7 +613,7 @@ export class QueueRegistryService {
       await this.authz.shadowCheck(check);
       return;
     }
-    await this.authz.requirePermission(check, isPlatformWide(ctx.role));
+    await this.authz.requirePermission(check, hasRole(ctx.role, "platform_admin"));
   }
 
   private async hasSubmitPermission(
@@ -627,7 +628,7 @@ export class QueueRegistryService {
       return localAllowed;
     }
     try {
-      await this.authz.requirePermission(check, isPlatformWide(ctx.role));
+      await this.authz.requirePermission(check, hasRole(ctx.role, "platform_admin"));
       return true;
     } catch {
       return false;
@@ -641,11 +642,15 @@ export class QueueRegistryService {
   ): Promise<void> {
     if (!this.authz || this.authz.mode === "off") return;
     const check = providerCheck(providerOrgId, ctx, localAllowed);
+    if (ctx.role === "operator") {
+      check.resource = { type: "platform", id: "root" };
+      check.permission = "operate";
+    }
     if (this.authz.mode === "shadow") {
       await this.authz.shadowCheck(check);
       return;
     }
-    await this.authz.requirePermission(check, isPlatformWide(ctx.role));
+    await this.authz.requirePermission(check, hasRole(ctx.role, "platform_admin"));
   }
 }
 

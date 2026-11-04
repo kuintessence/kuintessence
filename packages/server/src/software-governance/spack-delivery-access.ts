@@ -110,7 +110,10 @@ export async function canOperateSpackAgent(
     localAllowed,
   };
   if (authz.mode === "enforce") {
-    await authz.requirePermission(check, scope.isPlatformWide);
+    await authz.requirePermission(
+      check,
+      user.role === "platform_admin" || user.role === "super_admin",
+    );
   } else {
     if (!localAllowed) return false;
     if (authz.mode === "shadow") await authz.shadowCheck(check);

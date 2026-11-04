@@ -6,7 +6,7 @@ import type { AuthzService } from "./service";
 export async function requirePlatformPermission(
   c: Context,
   authz: AuthzService | undefined,
-  permission: "view" | "manage",
+  permission: "view" | "operate" | "manage",
   source: string,
 ): Promise<void> {
   const principal = c.get("principal" as never) as BoundPrincipal | undefined;
@@ -46,11 +46,14 @@ export function localPlatformRole(principal: Pick<BoundPrincipal, "role"> | unde
   return (principal?.role ?? "guest") as RoleName;
 }
 
-function localPlatformPermissionAllowed(role: RoleName, permission: "view" | "manage"): boolean {
-  if (permission === "view") return hasRole(role, "operator");
+function localPlatformPermissionAllowed(
+  role: RoleName,
+  permission: "view" | "operate" | "manage",
+): boolean {
+  if (permission !== "manage") return hasRole(role, "operator");
   return hasRole(role, "platform_admin");
 }
 
-function platformPermissionMessage(permission: "view" | "manage"): string {
-  return permission === "view" ? "Need platform view permission" : "Need platform_admin";
+function platformPermissionMessage(permission: "view" | "operate" | "manage"): string {
+  return permission === "manage" ? "Need platform_admin" : `Need platform ${permission} permission`;
 }

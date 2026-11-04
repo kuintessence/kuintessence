@@ -23,7 +23,7 @@ import { recordIdentityFallback } from "../observability/identity-fallback";
 import type { TokenPayload } from "../services/auth";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const PLATFORM_ROLES = new Set(["platform_admin", "super_admin"]);
+const PLATFORM_ROLES = new Set(["platform_admin", "super_admin", "operator"]);
 
 export type OrgMembershipRole = "owner" | "admin" | "operator" | "member" | "viewer";
 

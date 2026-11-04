@@ -89,6 +89,7 @@ import { createMeCapabilityRoutes } from "./routes/me-capabilities";
 import { buildMeteringRouter, DrizzleWebhookRepository } from "./routes/metering";
 import { createMetricsRoutes, recordRequest } from "./routes/metrics";
 import { createNetDriveRoutes } from "./routes/netdrive";
+import { createPlatformUserRoutes } from "./routes/platform-users";
 import { createPreferenceRoutes } from "./routes/preferences";
 import { createQueueRoutes } from "./routes/queues";
 import { createSandboxAccountRoutes } from "./routes/sandbox-accounts";
@@ -1367,6 +1368,7 @@ protectedApi.route(
 
 protectedApi.route("/", createAdminAgentRoutes(certService, { authz: authzService }));
 protectedApi.route("/", createActiveOrganizationRoutes(db));
+protectedApi.route("/", createPlatformUserRoutes(db, authzService));
 protectedApi.route(
   "/",
   createMeCapabilityRoutes({ softwarePublisherRoles: config.REGISTRY_PUBLISHER_ROLES }),
@@ -1702,7 +1704,7 @@ protectedApi.route(
       }),
   }),
 );
-protectedApi.route("/", createSandboxAccountRoutes({ db }));
+protectedApi.route("/", createSandboxAccountRoutes({ db, authz: authzService }));
 protectedApi.route("/", createSandboxPolicyRoutes({ db, service: sandboxPolicyService }));
 // CP Console REST surface (mounted under /api/cp). Tenant
 // scope is enforced by the `cpRbac` middleware inside the router.

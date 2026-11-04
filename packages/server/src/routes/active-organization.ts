@@ -8,7 +8,7 @@ const ActiveOrganizationSchema = z.object({
   organizationId: z.string().uuid().nullable(),
 });
 
-const PLATFORM_ROLES = new Set(["platform_admin", "super_admin"]);
+const PLATFORM_ROLES = new Set(["platform_admin", "super_admin", "operator"]);
 
 function requirePrincipal(c: {
   get: (key: never) => unknown;

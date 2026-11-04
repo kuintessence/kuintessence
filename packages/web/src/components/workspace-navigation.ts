@@ -269,6 +269,46 @@ export const WORKSPACE_IDENTITIES: ReadonlyArray<WorkspaceIdentity> = [
           },
         ],
       },
+      {
+        labelKey: "workspace.section.computeResources",
+        items: [
+          {
+            to: "/operations",
+            hash: "clusters",
+            labelKey: "operations.resources.clusters",
+            icon: Server,
+            serverCapability: "workspace.platform.operate",
+          },
+          {
+            to: "/operations",
+            hash: "queues",
+            labelKey: "cp.nav.queues",
+            icon: Library,
+            serverCapability: "workspace.platform.operate",
+          },
+          {
+            to: "/operations",
+            hash: "accounts",
+            labelKey: "operations.resources.accounts",
+            icon: KeyRound,
+            serverCapability: "workspace.platform.operate",
+          },
+          {
+            to: "/operations",
+            hash: "software",
+            labelKey: "cp.nav.software",
+            icon: Boxes,
+            serverCapability: "workspace.platform.operate",
+          },
+          {
+            to: "/operations",
+            hash: "users",
+            labelKey: "operations.resources.users",
+            icon: UserRound,
+            serverCapability: "workspace.platform.operate",
+          },
+        ],
+      },
     ],
   },
   {

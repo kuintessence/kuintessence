@@ -112,7 +112,8 @@
       "audit": "审计与计量",
       "platformTechnical": "平台运维",
       "softwareAssets": "软件资产",
-      "personal": "账号与偏好"
+      "personal": "账号与偏好",
+      "computeResources": "资源管理"
     },
     "nav": {
       "operationsOverview": "运营总览",
@@ -1271,6 +1272,9 @@
       "runtimeDigest": "Runtime digest",
       "bindRuntime": "绑定 python-3.12-stdlib-v1",
       "noRuntimeBindings": "此提供方尚未配置 runtime binding。未绑定的脚本只能浏览，不能提交。",
+      "materialSoftware": "关联软件",
+      "selectMaterialSoftware": "选择已发布的软件",
+      "noMaterialSoftware": "请先导入并激活包含 VASP 的软件发布包。",
       "materialMapping": "VASP POTCAR 本地映射",
       "materialSelector": "受限 material selector",
       "materialVersion": "POTCAR 版本",
@@ -1378,7 +1382,6 @@
       },
       "revision": "修订 {{count}}"
     },
-
     "accounts": {
       "title": "隔离运行执行账号映射",
       "subtitle": "内联、草稿和测试运行必须使用算力提供方审批的映射账号；可为不同集群保留多个映射并选择默认项。",
@@ -1414,7 +1417,7 @@
       "empty": "尚无账号映射，请选择一个算力提供方集群账号发起申请。",
       "default": "默认",
       "setDefault": "设为默认",
-      "delegationRequired": "尚未获得算力提供方的账号审批委托",
+      "delegationRequired": "当前账号没有此提供者的审批权限",
       "status": {
         "pending": "待审批",
         "approved": "已批准",
@@ -1423,7 +1426,7 @@
         "expired": "已过期"
       },
       "reviewTitle": "隔离运行账号映射审批",
-      "reviewSubtitle": "仅审批属于本算力提供方的集群账号；平台运营代审批还需要算力提供方明确委托。",
+      "reviewSubtitle": "提供者审批所属集群账号，平台运营者可跨提供者审批。",
       "reviewEmpty": "当前没有待审批的账号映射。",
       "reviewed": "账号映射已处理",
       "approve": "批准",
@@ -2581,5 +2584,27 @@
     "resourceRelation": "资源／关系",
     "subject": "授权对象",
     "delivery": "投递情况"
+  },
+  "operations": {
+    "resources": {
+      "clusters": "集群与代理",
+      "accounts": "执行账号",
+      "users": "平台用户",
+      "provider": "算力提供者"
+    },
+    "users": {
+      "status": "状态",
+      "enable": "启用账号",
+      "disable": "停用账号",
+      "reason": "操作原因",
+      "revokeSessions": "立即结束登录会话并禁止访问",
+      "updateFailed": "账号状态修改失败，请重试",
+      "previous": "上一页",
+      "next": "下一页",
+      "desktopManage": "请在电脑端修改账号状态。"
+    },
+    "accounts": {
+      "disableConfirm": "停用执行账号 {{name}}？后续作业将无法使用此身份。"
+    }
   }
 }
