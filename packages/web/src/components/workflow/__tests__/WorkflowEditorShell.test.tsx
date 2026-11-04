@@ -361,14 +361,17 @@ spec:
     expect(yaml.match(/descriptor: trajectory/g)).toHaveLength(1);
   });
 
-  test("choosing a data transformation script pins its managed revision", async () => {
+  test.each([
+    "double click",
+    "select and add",
+  ])("adds a standalone script to an empty workflow via %s", async (method) => {
     vi.useRealTimers();
     const assetId = "3f2504e0-4f89-41d3-9a0c-0305e82c3302";
-    const runtimeProfileId = "3f2504e0-4f89-41d3-9a0c-0305e82c3303";
+    const runtimeContractRef = { name: "python-3.12-stdlib-v1", version: "1" };
     const payload = {
       kind: "sandbox-script",
       language: "python",
-      runtimeProfileId,
+      runtimeContractRef,
       entrypoint: "main.py",
       content: "print('ok')",
       inputs: { source: { type: "File", required: true } },
@@ -417,11 +420,19 @@ spec:
       ],
     });
     const onChange = vi.fn();
-    renderShell(onChange);
+    listUsecasePackages.mockClear();
+    renderShell(
+      onChange,
+      "name: empty\nparameters: []\nspec:\n  nodeDrafts: []\n  nodeRelations: []\n",
+    );
 
     fireEvent.click(screen.getByTestId("rf-palette-Script"));
     const option = await screen.findByTestId(`workflow-script-option-${assetId}`);
-    fireEvent.doubleClick(option);
+    if (method === "double click") fireEvent.doubleClick(option);
+    else {
+      fireEvent.click(option);
+      fireEvent.click(screen.getByTestId("workflow-script-apply"));
+    }
 
     await waitFor(() => expect(onChange).toHaveBeenCalled());
     const yaml = String(onChange.mock.calls.at(-1)?.[0]);
@@ -429,7 +440,11 @@ spec:
     expect(yaml).toContain("type: AssetRevision");
     expect(yaml).toContain(`assetId: ${assetId}`);
     expect(yaml).toContain("revision: 3");
-    expect(yaml).toContain(`runtimeProfileId: ${runtimeProfileId}`);
+    expect(yaml).toContain("runtimeContractRef:");
+    expect(yaml).toContain("python-3.12-stdlib-v1");
+    expect(yaml).toContain(`sha256: ${"a".repeat(64)}`);
+    expect(yaml).not.toContain("SoftwareUsecaseComputing");
+    expect(listUsecasePackages).not.toHaveBeenCalled();
     expect(yaml).not.toContain("outputSlots:");
     expect(parseWorkflowYaml(yaml).ok).toBe(true);
   });
