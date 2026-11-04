@@ -7,6 +7,7 @@
  *   - imported YAML -> graph: validated before it replaces the visual graph.
  */
 
+import { SoftwareAssetPayloadSchema } from "@kuintessence/shared/browser";
 import { useQuery } from "@tanstack/react-query";
 import { ReactFlowProvider } from "@xyflow/react";
 import { Activity, Copy, FileUp, Sparkles, Waypoints } from "lucide-react";
@@ -351,7 +352,11 @@ export function WorkflowEditorShell({ actions, value, onChange }: WorkflowEditor
       const revision = detail.revisions.toSorted(
         (left, right) => right.revision - left.revision,
       )[0];
-      if (!revision?.contentSha256 || revision.payload.kind !== "sandbox-script") {
+      if (!revision?.contentSha256) {
+        throw new Error(t("workflow.editor.scriptPicker.invalidRevision"));
+      }
+      const payload = SoftwareAssetPayloadSchema.parse(revision.payload);
+      if (payload.kind !== "sandbox-script") {
         throw new Error(t("workflow.editor.scriptPicker.invalidRevision"));
       }
       addRequestedNode(pendingNode, asset.name, undefined, {
@@ -361,11 +366,11 @@ export function WorkflowEditorShell({ actions, value, onChange }: WorkflowEditor
           revision: revision.revision,
           sha256: revision.contentSha256,
         },
-        ...(revision.payload.runtimeContractRef
-          ? { runtimeContractRef: revision.payload.runtimeContractRef }
-          : { runtimeProfileId: revision.payload.runtimeProfileId }),
-        inputs: revision.payload.inputs,
-        outputs: revision.payload.outputs,
+        ...(payload.runtimeContractRef
+          ? { runtimeContractRef: payload.runtimeContractRef }
+          : { runtimeProfileId: payload.runtimeProfileId }),
+        inputs: payload.inputs,
+        outputs: payload.outputs,
       });
       setPendingNode(null);
     } catch (error) {

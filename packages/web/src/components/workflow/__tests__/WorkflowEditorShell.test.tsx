@@ -374,14 +374,12 @@ spec:
       runtimeContractRef,
       entrypoint: "main.py",
       content: "print('ok')",
-      inputs: { source: { type: "File", required: true } },
+      sha256: "a".repeat(64),
+      inputs: { source: { type: "File" } },
       outputs: {
         result: {
           type: "JSON",
           required: true,
-          locality: { type: "Auto" },
-          durability: "Ephemeral",
-          sizeHint: { type: "SizeClass", value: "Small" },
         },
       },
     };
@@ -445,6 +443,9 @@ spec:
     expect(yaml).toContain(`sha256: ${"a".repeat(64)}`);
     expect(yaml).not.toContain("SoftwareUsecaseComputing");
     expect(listUsecasePackages).not.toHaveBeenCalled();
+    expect(yaml).toContain("optional: false");
+    expect(yaml).toContain("durability: Ephemeral");
+    expect(screen.getByText(/workflow.editor.properties.locality.Auto/)).toBeDefined();
     expect(yaml).not.toContain("outputSlots:");
     expect(parseWorkflowYaml(yaml).ok).toBe(true);
   });
