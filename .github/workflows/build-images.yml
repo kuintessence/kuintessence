@@ -105,6 +105,7 @@ jobs:
 
   deploy-main:
     name: Deploy main via SSH
+    environment: production
     needs: images
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04

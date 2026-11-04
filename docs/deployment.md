@@ -272,6 +272,9 @@ ARM64 未在此工作流中执行，目标节点的 OS、调度器及 mTLS 兼�
 ### main SSH 部署
 
 推送 `main` 时，镜像 workflow 在四个镜像全部构建和推送成功后执行 `deploy-main`。
+该 job 使用唯一的 GitHub `production` environment，由 Actions 自动记录部署版本及
+成功、失败或取消状态；构建镜像和发布 Release 镜像本身不创建 Deployment。
+PR 预览继续通过各自的固定评论、链接和 Actions 检查展示，不再新增 Deployment。
 Release（包括正式发布与预发布）只发布镜像。部署步骤使用同一个 commit 的
 [`deploy/main/compose.yml`](../deploy/main/compose.yml) 和
 [`env.example`](../deploy/main/env.example)，避免构建期间 main 前进造成配置错配。

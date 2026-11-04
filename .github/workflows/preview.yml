@@ -168,7 +168,7 @@ jobs:
       contents: read
       actions: read
       pull-requests: write
-      deployments: write
+      deployments: write # Retire historical PR deployments during cleanup.
       packages: write
     env:
       PREVIEW_PR: ${{ needs.gate.outputs.pr }}
@@ -240,23 +240,6 @@ jobs:
         with:
           name: kq-preview-images-${{ needs.gate.outputs.sha }}-${{ github.run_id }}-${{ needs.images.outputs.attempt }}
           path: ${{ runner.temp }}/kq-preview-images
-      - name: Record deployment start
-        if: steps.recheck.outputs.allowed == 'true'
-        id: deployment
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const {data} = await github.rest.repos.createDeployment({
-              ...context.repo, ref: process.env.PREVIEW_SHA,
-              environment: `pr-${process.env.PREVIEW_PR}`,
-              auto_merge: false, required_contexts: [],
-              transient_environment: true, production_environment: false,
-              description: "Test-gated k3s preview",
-            });
-            core.setOutput("id", data.id);
-            await github.rest.repos.createDeploymentStatus({
-              ...context.repo, deployment_id: data.id, state: "in_progress",
-            });
       - name: Require anonymous GHCR pulls before accessing k3s
         if: steps.recheck.outputs.allowed == 'true'
         env:
@@ -349,26 +332,3 @@ jobs:
               process.env.HELM_APPLIED === "true" ? "inspection" : "inspection-failed",
               process.env.PREVIEW_PR, process.env.PREVIEW_SHA,
             );
-      - name: Record deployment outcome
-        if: always() && steps.deployment.outputs.id != ''
-        uses: actions/github-script@v7
-        env:
-          DEPLOYMENT_ID: ${{ steps.deployment.outputs.id }}
-          JOB_STATUS: ${{ job.status }}
-          FINAL_ALLOWED: ${{ steps.final-check.outputs.allowed }}
-          INSPECTION: ${{ steps.helm.outputs.inspection }}
-          HELM_APPLIED: ${{ steps.helm.outputs.applied }}
-        with:
-          script: |
-            const retained = process.env.INSPECTION === "true" && process.env.FINAL_ALLOWED === "true";
-            const inspection = retained && process.env.HELM_APPLIED === "true" && process.env.JOB_STATUS === "success";
-            const success = !retained && process.env.JOB_STATUS === "success" && process.env.FINAL_ALLOWED === "true";
-            await github.rest.repos.createDeploymentStatus({
-              ...context.repo, deployment_id: Number(process.env.DEPLOYMENT_ID),
-              state: inspection ? "in_progress" : success ? "success" : "failure",
-              environment_url: success || retained ? `https://pr-${process.env.PREVIEW_PR}.preview.dev.kuintessence.com` : undefined,
-              description: inspection ? "Helm ready; retained for manual HTTPS inspection" :
-                retained ? "Deployment failed; resources retained for inspection" :
-                success ? "HTTPS preview ready" : "Preview failed or was superseded; no new URL published",
-              log_url: `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
-            });

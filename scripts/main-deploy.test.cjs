@@ -285,6 +285,8 @@ describe("main deployment wiring", () => {
   test("deploys the built commit only after all images succeed on a main push", () => {
     const workflow = parse(readFileSync(join(root, ".github/workflows/build-images.yml"), "utf8"));
     const job = workflow.jobs["deploy-main"];
+    expect(job.environment).toBe("production");
+    expect(workflow.jobs.images.environment).toBeUndefined();
     expect(job.needs).toBe("images");
     expect(job.if).toBe("github.event_name == 'push' && github.ref == 'refs/heads/main'");
     expect(workflow.concurrency["cancel-in-progress"]).toBe(false);

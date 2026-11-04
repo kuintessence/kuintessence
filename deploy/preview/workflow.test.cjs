@@ -817,67 +817,17 @@ describe("manual preview inspection", () => {
     expect(calls).toEqual([["success", "17", revision]]);
   });
 
-  test("deployment outcomes remain in_progress for inspection and failure for unsuccessful attempts", async () => {
-    const deploy = preview().jobs.deploy;
-    const start = deploy.steps.find((step) => step.id === "deployment");
-    const outcome = deploy.steps.find((step) => step.env?.DEPLOYMENT_ID);
-    const context = {
-      repo: { owner: "example", repo: "project" },
-      serverUrl: "https://github.com", runId: 99,
-    };
-    const statuses = [];
-    const outputs = {};
-    const github = { rest: { repos: {
-      createDeployment: async (options) => {
-        expect(options.ref).toBe(revision);
-        expect(options.environment).toBe("pr-17");
-        expect(options.production_environment).toBe(false);
-        return { data: { id: 123 } };
-      },
-      createDeploymentStatus: async (options) => { statuses.push(options); },
-    } } };
-    await runScript(start, {}, { PREVIEW_PR: "17", PREVIEW_SHA: revision }, {
-      github, context, core: { setOutput: (key, value) => { outputs[key] = value; } },
-    });
-    expect(outputs.id).toBe(123);
-    expect(statuses).toEqual([{ ...context.repo, deployment_id: 123, state: "in_progress" }]);
-    expect(stepAllowed(outcome, { deployment: { outputs: { id: "" } } }, false)).toBe(false);
-    expect(stepAllowed(outcome, { deployment: { outputs: { id: "123" } } }, false)).toBe(true);
-    expect(outcome.env).toEqual({
-      DEPLOYMENT_ID: "${{ steps.deployment.outputs.id }}",
-      JOB_STATUS: "${{ job.status }}",
-      FINAL_ALLOWED: "${{ steps.final-check.outputs.allowed }}",
-      INSPECTION: "${{ steps.helm.outputs.inspection }}",
-      HELM_APPLIED: "${{ steps.helm.outputs.applied }}",
-    });
-    for (const [inspection, applied, allowed, jobStatus, expected, hasUrl] of [
-      ["true", "true", "true", "success", "in_progress", true],
-      ["true", "", "true", "failure", "failure", true],
-      ["true", "true", "true", "failure", "failure", true],
-      ["true", "true", "true", "cancelled", "failure", true],
-      ["true", "true", "false", "success", "failure", false],
-      ["true", "true", "false", "failure", "failure", false],
-      ["true", "true", "", "failure", "failure", false],
-      ["false", "true", "true", "success", "success", true],
-      ["false", "true", "true", "failure", "failure", false],
-      ["false", "true", "false", "success", "failure", false],
-      ["", "", "", "failure", "failure", false],
-    ]) {
-      statuses.length = 0;
-      await runScript(outcome, {}, {
-        DEPLOYMENT_ID: "123", PREVIEW_PR: "17", INSPECTION: inspection,
-        HELM_APPLIED: applied, FINAL_ALLOWED: allowed, JOB_STATUS: jobStatus,
-      }, { github, context });
-      expect(statuses).toHaveLength(1);
-      expect(statuses[0]).toMatchObject({
-        ...context.repo, deployment_id: 123, state: expected,
-        environment_url: hasUrl ? "https://pr-17.preview.dev.kuintessence.com" : undefined,
-        log_url: "https://github.com/example/project/actions/runs/99",
-      });
-      if (inspection === "true") {
-        expect(statuses[0].description).not.toContain("HTTPS preview ready");
-        if (allowed === "true") expect(statuses[0].description).toContain("retained");
+  test("preview jobs publish through PR notices without creating GitHub deployments", () => {
+    for (const workflow of [preview(), cleanup()]) {
+      for (const job of Object.values(workflow.jobs)) {
+        expect(job.environment).toBeUndefined();
+        for (const step of job.steps) {
+          expect(step.with?.script ?? "").not.toMatch(/\bcreateDeployment\s*\(/);
+          expect(step.env?.DEPLOYMENT_ID).toBeUndefined();
+        }
       }
     }
+    expect(preview().jobs.deploy.steps.some((step) =>
+      step.name === "Publish the verified preview URL")).toBe(true);
   });
 });

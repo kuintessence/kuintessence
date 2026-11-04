@@ -21,7 +21,9 @@
    在预建的 `preview` namespace 安装 `kq-preview` Chart，每个 PR 使用独立的
    `kq-pr-<编号>` Helm release。runner 只绑定 `127.0.0.1:16443`。
 5. 验证真实 HTTPS、未认证访问拒绝、入口解锁、Web 和 Server health 后，
-   更新 PR 的固定评论、Actions Summary 和 GitHub Deployment 状态。
+   更新 PR 的固定评论和 Actions Summary，结果由 Actions 检查展示。
+   PR 预览不再创建 GitHub Environment 或 Deployment；Deployments 仅用于 main 正式发布。
+   旧预览记录保留，清理对应环境时仍会将这些历史记录标为 inactive。
 
 PR 必须同时满足：同仓库、目标为默认分支、打开、非草稿、精确标签 `TRUST_PR_CREATOR`、
 没有 `preview-paused`、作者**当前**拥有 write/maintain/admin 权限。
@@ -149,7 +151,7 @@ Helm 仍等待工作负载与初始化 Job，超时仍为 15 分钟，但不使�
 失败不会自动回滚，资源、PVC、凭据和本次镜像 tag 保留供检查。成功后输出
 `KQ_PREVIEW_HELM code=READY` 和 `code=RETAINED_FOR_INSPECTION`，不执行自动 HTTPS 验收。
 PR 评论提供待检查地址，明确区分 Helm 成功与失败现场，不宣称 HTTPS 已通过；
-Helm 成功时 GitHub Deployment 保持 `in_progress`，失败时仍标记 `failure`。
+Helm 成功或失败由 Actions 和 PR 评论区分，检查模式不创建 GitHub Deployment。
 runner 的临时凭据文件和 SSH 隧道仍正常销毁，这不删除 k3s 环境。
 
 检查期间不要关闭 PR、转为草稿、撤销信任标签或添加 `preview-paused`，
@@ -194,7 +196,7 @@ URL、响应正文、header、证书、凭据或原始异常。未知错误不�
 诊断不关闭 TLS 校验、不跟随重定向、不放宽认证条件，也不改变既有重试
 和失败补偿；Helm 成功不代表 HTTPS 验收成功。定位后按对应阶段修复，
 不能通过跳过验收宣称地址已验收可用。显式手动检查模式只发布待检查地址。
-即使后续 GHCR 回收失败，评论仍如实标记站点不可用、Deployment 为 inactive；
+即使后续 GHCR 回收失败，评论仍如实标记站点不可用，旧预览 Deployment 标为 inactive；
 cleanup job 保持失败状态，修复权限等问题后可重复执行清理。
 
 **清理会删除本 PR 的演示数据和自有 PVC；StorageClass 的回收策略决定底层卷是否
