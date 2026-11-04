@@ -80,6 +80,7 @@ vi.mock("@xyflow/react", () => {
     Controls,
     MiniMap,
     useReactFlow,
+    useNodesInitialized: () => false,
     applyNodeChanges,
     applyEdgeChanges,
     addEdge,

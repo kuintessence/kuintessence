@@ -13,6 +13,7 @@ import { getAuthState } from "../../lib/auth";
 import { isMobileHighRiskMutationBlocked } from "../../lib/mobile-management-policy";
 import { usePlatformCapability } from "../../lib/platform-capabilities";
 import { useMediaQuery } from "../../lib/use-media-query";
+import { toUserFacingError } from "../../lib/user-facing-error";
 import { Button } from "../ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "../ui/dialog";
 import { Input } from "../ui/input";
@@ -30,7 +31,7 @@ export function ComputeProvidersPage({ mode }: { mode: Mode }) {
   if (access.error)
     return (
       <div role="alert">
-        {access.error.message}
+        {toUserFacingError(access.error, t("providers.loadFailed"))}
         <Button onClick={access.retry}>{t("providers.retry")}</Button>
       </div>
     );
@@ -118,7 +119,7 @@ function Directory({ mode, orgId }: { mode: Mode; orgId: string | null }) {
       )}
       {query.error ? (
         <div role="alert" className="space-y-2">
-          <p>{query.error.message}</p>
+          <p>{toUserFacingError(query.error, t("providers.loadFailed"))}</p>
           <Button onClick={() => query.refetch()}>{t("providers.retry")}</Button>
         </div>
       ) : !data ? (
@@ -142,7 +143,7 @@ function Directory({ mode, orgId }: { mode: Mode; orgId: string | null }) {
                     <td className="min-w-44 px-4 py-3">
                       <button
                         type="button"
-                        className="break-words text-left text-primary hover:underline"
+                        className="break-words text-left text-brand hover:underline"
                         onClick={() => {
                           setSelected(provider.id);
                           setEditing(false);
@@ -283,7 +284,11 @@ function ProviderEditor({
       await onSaved();
       onClose();
     } catch (e) {
-      setError(e instanceof Error ? e.message : t("providers.saveFailed"));
+      setError(
+        e && typeof e === "object" && "status" in e && e.status === 409
+          ? t("providers.inUse")
+          : toUserFacingError(e, t("providers.deleteFailed")),
+      );
     } finally {
       setBusy(false);
     }
@@ -295,12 +300,17 @@ function ProviderEditor({
         if (!open && !busy) onClose();
       }}
     >
-      <DialogContent aria-describedby={undefined} dirty outsideDismissPolicy="never">
+      <DialogContent
+        aria-describedby={undefined}
+        dismissible={!busy}
+        dirty
+        outsideDismissPolicy="never"
+      >
         <DialogHeader>
           <DialogTitle>{t(item ? "providers.edit" : "providers.create")}</DialogTitle>
         </DialogHeader>
         <form
-          className="space-y-4 overflow-y-auto p-5"
+          className="flex min-h-0 flex-col overflow-hidden"
           onSubmit={async (event) => {
             event.preventDefault();
             const form = new FormData(event.currentTarget);
@@ -311,7 +321,17 @@ function ProviderEditor({
               ),
             });
             if (!parsed.success) {
-              setError(parsed.error.issues.map((issue) => issue.message).join("；"));
+              setError(
+                t("providers.invalidFields", {
+                  fields: [
+                    ...new Set(
+                      parsed.error.issues.map((issue) =>
+                        t(`providers.${String(issue.path.at(-1) ?? "name")}`),
+                      ),
+                    ),
+                  ].join(", "),
+                }),
+              );
               return;
             }
             setBusy(true);
@@ -322,61 +342,63 @@ function ProviderEditor({
               await onSaved();
               onClose();
             } catch (e) {
-              setError(e instanceof Error ? e.message : t("providers.saveFailed"));
+              setError(toUserFacingError(e, t("providers.saveFailed")));
             } finally {
               setBusy(false);
             }
           }}
         >
-          <label htmlFor={`${id}-name`} className="grid gap-1.5 text-sm">
-            {t("providers.name")}
-            <Input
-              id={`${id}-name`}
-              name="name"
-              required
-              maxLength={255}
-              defaultValue={item?.name ?? ""}
-              disabled={busy}
-            />
-          </label>
-          {fields.map((key) => (
-            <label key={key} htmlFor={`${id}-${key}`} className="grid gap-1.5 text-sm">
-              {t(`providers.${key}`)}
-              {key === "description" ? (
-                <textarea
-                  id={`${id}-${key}`}
-                  name={key}
-                  rows={3}
-                  maxLength={2000}
-                  defaultValue={defaults[key]}
-                  disabled={busy}
-                  className="w-full rounded-md border border-border bg-background p-2"
-                />
-              ) : (
-                <Input
-                  id={`${id}-${key}`}
-                  name={key}
-                  type={key === "email" ? "email" : key === "website" ? "url" : "text"}
-                  maxLength={
-                    { contactName: 120, email: 254, phone: 80, address: 500, website: 2048 }[key]
-                  }
-                  defaultValue={defaults[key]}
-                  disabled={busy}
-                />
-              )}
+          <div className="min-h-0 space-y-4 overflow-y-auto p-5">
+            <label htmlFor={`${id}-name`} className="grid gap-1.5 text-sm">
+              {t("providers.name")}
+              <Input
+                id={`${id}-name`}
+                name="name"
+                required
+                maxLength={255}
+                defaultValue={item?.name ?? ""}
+                disabled={busy}
+              />
             </label>
-          ))}
-          {confirmDelete && (
-            <p role="status" className="text-sm text-destructive">
-              {t("providers.deleteWarning", { name: item?.name })}
-            </p>
-          )}
-          {error && (
-            <p role="alert" className="break-words text-sm text-destructive">
-              {error}
-            </p>
-          )}
-          <div className="flex flex-wrap gap-2 border-t border-border pt-4">
+            {fields.map((key) => (
+              <label key={key} htmlFor={`${id}-${key}`} className="grid gap-1.5 text-sm">
+                {t(`providers.${key}`)}
+                {key === "description" ? (
+                  <textarea
+                    id={`${id}-${key}`}
+                    name={key}
+                    rows={3}
+                    maxLength={2000}
+                    defaultValue={defaults[key]}
+                    disabled={busy}
+                    className="w-full rounded-md border border-border bg-background p-2"
+                  />
+                ) : (
+                  <Input
+                    id={`${id}-${key}`}
+                    name={key}
+                    type={key === "email" ? "email" : key === "website" ? "url" : "text"}
+                    maxLength={
+                      { contactName: 120, email: 254, phone: 80, address: 500, website: 2048 }[key]
+                    }
+                    defaultValue={defaults[key]}
+                    disabled={busy}
+                  />
+                )}
+              </label>
+            ))}
+            {confirmDelete && (
+              <p role="status" className="text-sm text-status-failed">
+                {t("providers.deleteWarning", { name: item?.name })}
+              </p>
+            )}
+            {error && (
+              <p role="alert" className="break-words text-sm text-status-failed">
+                {error}
+              </p>
+            )}
+          </div>
+          <div className="flex shrink-0 flex-wrap gap-2 border-t border-border px-5 py-4">
             {item && allowDelete && (
               <Button type="button" variant="destructive" disabled={busy} onClick={remove}>
                 {t(confirmDelete ? "providers.confirmDelete" : "providers.delete")}

@@ -160,7 +160,6 @@ export function Login({
                 <ShieldCheck />
                 {t("login.signInWithSso", { provider: providerName })}
               </Button>
-              <p className="text-center text-[11px] text-muted-foreground">{t("login.ssoNote")}</p>
             </CardContent>
           </Card>
         ) : null}

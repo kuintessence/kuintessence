@@ -187,7 +187,7 @@ export function OfflineDeliveryImport({
         {error && (
           <p
             role="alert"
-            className="break-words rounded-md border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive"
+            className="break-words rounded-md border border-status-failed/30 bg-status-failed/10 p-3 text-sm text-status-failed"
           >
             {error}
           </p>

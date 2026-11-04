@@ -1,7 +1,8 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { afterEach, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { ApiError, api } from "../../lib/api-client";
+import { setLang } from "../../lib/i18n";
 import { OrganizationMembershipPanel } from "./OrganizationMembershipPanel";
 
 vi.mock("sonner", () => ({ toast: { success: vi.fn() } }));
@@ -38,15 +39,28 @@ function setup() {
   );
   return { get, put, remove };
 }
+beforeEach(() => setLang("zh"));
+
 afterEach(() => vi.restoreAllMocks());
 
-test("edits the selected member by name and preserves the target identity", async () => {
+test.each([
+  "zh",
+  "en",
+] as const)("%s edits the selected member by name and preserves the target identity", async (lang) => {
+  setLang(lang);
   const { put } = setup();
-  fireEvent.click(await screen.findByRole("button", { name: "编辑 Alice 的组织权限" }));
+  fireEvent.click(
+    await screen.findByRole("button", {
+      name: lang === "zh" ? "编辑 Alice 的组织权限" : "Edit organization permissions for Alice",
+    }),
+  );
   const dialog = screen.getByRole("dialog");
   expect(within(dialog).getByText("研究中心")).toBeTruthy();
-  fireEvent.change(within(dialog).getByLabelText("组织角色"), { target: { value: "operator" } });
-  fireEvent.click(within(dialog).getByRole("button", { name: "保存" }));
+  fireEvent.change(
+    within(dialog).getByLabelText(lang === "zh" ? "组织角色" : "Organization role"),
+    { target: { value: "operator" } },
+  );
+  fireEvent.click(within(dialog).getByRole("button", { name: lang === "zh" ? "保存" : "Save" }));
   await waitFor(() =>
     expect(put).toHaveBeenCalledWith("/admin/authz/memberships", {
       userId: "user-1",

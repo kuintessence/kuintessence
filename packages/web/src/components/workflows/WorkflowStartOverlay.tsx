@@ -11,14 +11,14 @@ export function WorkflowStartOverlay({
   const { t } = useTranslation();
   return (
     <div
-      className="absolute inset-0 z-30 flex items-center justify-center rounded-xl bg-background/85 p-4 backdrop-blur-sm"
+      className="flex min-h-64 items-start justify-center rounded-xl border border-border bg-card p-4 sm:min-h-80 sm:items-center"
       data-testid="workflow-start-overlay"
     >
-      <div className="w-full max-w-lg rounded-xl border border-border bg-card p-5 shadow-xl sm:p-7">
+      <div className="w-full max-w-lg p-2 sm:p-7">
         <div className="text-center">
           <h3 className="text-xl font-semibold">{t("workflows.creation.start.title")}</h3>
         </div>
-        <div className="mt-6 grid gap-3 sm:grid-cols-2">
+        <div className="mt-5 grid gap-3 sm:grid-cols-2">
           <button
             type="button"
             onClick={onScratch}

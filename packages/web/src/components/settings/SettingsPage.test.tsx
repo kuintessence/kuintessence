@@ -77,6 +77,11 @@ describe("SettingsPage deep links", () => {
 
     const section = await screen.findByTestId(panel);
     expect(section.closest("section")?.id).toBe(sectionId);
+    expect(section.closest("section")?.hidden).toBe(false);
+    const other = document.getElementById(
+      sectionId === "sandbox-security" ? "branding" : "cost-rates",
+    );
+    expect(other?.hidden).toBe(true);
     await waitFor(() => expect(Element.prototype.scrollIntoView).toHaveBeenCalled());
   });
 

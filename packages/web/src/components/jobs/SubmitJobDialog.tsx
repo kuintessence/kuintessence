@@ -1094,7 +1094,7 @@ export function SubmitJobDialog({
       <SheetContent data-testid="submit-job-dialog" width="max-w-4xl">
         <SheetHeader>
           <SheetTitle>{t("jobs.submitJobTitle")}</SheetTitle>
-          <SheetDescription>{t("jobs.submitJobDesc")}</SheetDescription>
+          <SheetDescription className="sr-only">{t("jobs.submitJobDesc")}</SheetDescription>
         </SheetHeader>
         <SheetBody>
           <form id="submit-job-form" onSubmit={onSubmit} className="space-y-4">

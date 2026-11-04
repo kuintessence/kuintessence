@@ -7,10 +7,12 @@ import {
 import { useQuery } from "@tanstack/react-query";
 import { registerMap } from "echarts";
 import ReactECharts from "echarts-for-react";
+import { Minus, Plus } from "lucide-react";
 import { useMemo, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { useTheme } from "../ThemeProvider";
 import { Button } from "../ui/button";
-import { clusterSymbol, groupNearbyCenters, STATUS_COLORS, STATUS_LABELS } from "./model";
+import { clusterSymbol, getStatusLabels, groupNearbyCenters, STATUS_COLORS } from "./model";
 
 type LocatedCenter = InterconnectCenter & {
   metadata: InterconnectCenter["metadata"] & { longitude: number; latitude: number };
@@ -43,6 +45,8 @@ export function InterconnectMap({
   onSave: () => void;
   saving: boolean;
 }) {
+  const { t } = useTranslation();
+  const statusLabels = getStatusLabels(t);
   const chart = useRef<ReactECharts>(null);
   const { resolved } = useTheme();
   const dark = resolved === "dark";
@@ -54,14 +58,14 @@ export function InterconnectMap({
       const values = await Promise.all(
         ["china", "world"].map(async (name) => {
           const response = await fetch(`${import.meta.env.BASE_URL}maps/${name}.json`);
-          if (!response.ok) throw new Error("地图加载失败");
+          if (!response.ok) throw new Error(t("interconnect.mapLoadFailed"));
           const asset = (await response.json()) as MapAsset;
           registerMap(`kq-${name}`, JSON.stringify(asset));
           return asset;
         }),
       );
       const [china, world] = values;
-      if (!china || !world) throw new Error("地图数据不完整");
+      if (!china || !world) throw new Error(t("interconnect.mapIncomplete"));
       return { china, world };
     },
   });
@@ -149,7 +153,7 @@ export function InterconnectMap({
             const stale = isObservationStale(l.metadata.observedAt);
             return [
               {
-                name: `${l.metadata.name} · ${STATUS_LABELS[l.metadata.status]}${stale ? " · 观测已过期或缺失" : ""}`,
+                name: `${l.metadata.name} · ${statusLabels[l.metadata.status]}${stale ? ` · ${t("interconnect.stale")}` : ""}`,
                 linkId: l.id,
                 coords: [
                   [from.metadata.longitude, from.metadata.latitude],
@@ -175,8 +179,8 @@ export function InterconnectMap({
           const center = group[0];
           return {
             name: aggregate
-              ? `${group.length} 个算力中心`
-              : `${center.metadata.name} · ${STATUS_LABELS[center.metadata.status]}`,
+              ? t("interconnect.centerCount", { total: group.length })
+              : `${center.metadata.name} · ${statusLabels[center.metadata.status]}`,
             centerIds: group.map((c) => c.id),
             value: [
               group.reduce((n, c) => n + c.metadata.longitude, 0) / group.length,
@@ -220,23 +224,23 @@ export function InterconnectMap({
   return (
     <section
       className="overflow-hidden rounded-xl border border-border bg-card"
-      aria-label="算力中心地图"
+      aria-label={t("interconnect.mapLabel")}
     >
       <div className="flex flex-wrap items-center gap-2 border-b border-border p-3">
-        <h2 className="mr-auto font-semibold">算力中心互联</h2>
+        <h2 className="mr-auto font-semibold">{t("interconnect.mapTitle")}</h2>
         <select
-          aria-label="地图层级"
+          aria-label={t("interconnect.mapLevel")}
           className="rounded-md border border-border bg-background p-2 text-sm"
           value={view.level}
           onChange={(e) => changeLevel(e.target.value as MapView["level"])}
         >
-          <option value="world">世界</option>
-          <option value="china">中国</option>
-          <option value="province">省级</option>
+          <option value="world">{t("interconnect.world")}</option>
+          <option value="china">{t("interconnect.china")}</option>
+          <option value="province">{t("interconnect.provinceLevel")}</option>
         </select>
         {view.level === "province" && (
           <select
-            aria-label="省份"
+            aria-label={t("interconnect.province")}
             className="rounded-md border border-border bg-background p-2 text-sm"
             value={view.region}
             onChange={(e) => changeLevel("province", e.target.value)}
@@ -249,29 +253,32 @@ export function InterconnectMap({
         <Button
           variant="outline"
           size="sm"
-          aria-label="缩小地图"
+          aria-label={t("interconnect.zoomOut")}
           onClick={() => onView({ ...view, zoom: Math.max(0.5, view.zoom / 1.5) })}
         >
-          −
+          <Minus className="h-4 w-4" aria-hidden="true" />
         </Button>
         <Button
           variant="outline"
           size="sm"
-          aria-label="放大地图"
+          aria-label={t("interconnect.zoomIn")}
           onClick={() => onView({ ...view, zoom: Math.min(64, view.zoom * 1.5) })}
         >
-          ＋
+          <Plus className="h-4 w-4" aria-hidden="true" />
         </Button>
         <Button variant="outline" size="sm" disabled={saving} onClick={onSave}>
-          保存默认视图
+          {t("interconnect.saveView")}
         </Button>
       </div>
       {maps.error ? (
         <div role="alert" className="p-6">
-          地图加载失败 <Button onClick={() => void maps.refetch()}>重试</Button>
+          {t("interconnect.mapLoadFailed")}{" "}
+          <Button onClick={() => void maps.refetch()}>{t("interconnect.retry")}</Button>
         </div>
       ) : !mapName ? (
-        <p className="p-6">{maps.isPending ? "加载地图…" : "所保存的区域不存在，请重新选择"}</p>
+        <p className="p-6">
+          {maps.isPending ? t("interconnect.mapLoading") : t("interconnect.regionMissing")}
+        </p>
       ) : (
         <ReactECharts
           ref={chart}
@@ -335,7 +342,7 @@ export function InterconnectMap({
         />
       )}
       <div className="flex flex-wrap items-center gap-x-4 gap-y-2 border-t border-border px-4 py-3 text-xs text-muted-foreground">
-        {Object.entries(STATUS_LABELS).map(([status, label]) => (
+        {Object.entries(statusLabels).map(([status, label]) => (
           <span key={status} className="flex items-center gap-1.5">
             <span
               className="h-2.5 w-2.5 rounded-full"
@@ -344,7 +351,7 @@ export function InterconnectMap({
             {label}
           </span>
         ))}
-        <span>环图：中心状态分布 · 虚线：链路观测超过 5 分钟或缺失</span>
+        <span>{t("interconnect.mapLegend")}</span>
         <button
           type="button"
           className="ml-auto underline"
@@ -354,7 +361,7 @@ export function InterconnectMap({
             )
           }
         >
-          未定位 {snapshot.centers.length - located.length}
+          {t("interconnect.unlocated", { total: snapshot.centers.length - located.length })}
         </button>
       </div>
     </section>

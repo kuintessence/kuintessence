@@ -1,6 +1,7 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { createElement } from "react";
-import { afterEach, describe, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { setLang } from "../../lib/i18n";
 import { AuthzAdminPanel, canProcessAuthzOutbox } from "./AuthzAdminPanel";
 
 vi.mock("./OrganizationMembershipPanel", () => ({ OrganizationMembershipPanel: () => null }));
@@ -11,6 +12,8 @@ vi.mock("sonner", () => ({
     success: vi.fn(),
   },
 }));
+
+beforeEach(() => setLang("zh"));
 
 afterEach(() => {
   vi.restoreAllMocks();

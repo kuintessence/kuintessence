@@ -226,7 +226,7 @@ describe("AppShell sidebar — Server mode", () => {
     expect(screen.getByTestId("sidebar").getAttribute("data-expanded")).toBe("true");
   });
 
-  test("closes the overlay sidebar after mobile workspace navigation", () => {
+  test("closes the overlay sidebar after mobile workspace navigation", async () => {
     vi.spyOn(window, "matchMedia").mockImplementation(
       (query) =>
         ({
@@ -243,8 +243,14 @@ describe("AppShell sidebar — Server mode", () => {
     expect(screen.getByTestId("sidebar-backdrop")).toBeTruthy();
     fireEvent.click(screen.getByTestId("workspace-nav-nav-jobs"));
 
-    expect(screen.getByTestId("sidebar").getAttribute("data-expanded")).toBe("false");
+    expect(screen.queryByTestId("sidebar")).toBeNull();
     expect(screen.queryByTestId("sidebar-backdrop")).toBeNull();
+    fireEvent.click(screen.getByTestId("mobile-sidebar-open"));
+    fireEvent.keyDown(screen.getByRole("dialog"), { key: "Escape" });
+    expect(screen.queryByRole("dialog")).toBeNull();
+    await waitFor(() =>
+      expect(document.activeElement).toBe(screen.getByTestId("mobile-sidebar-open")),
+    );
     expect(localStorage.getItem("kq.sidebar-expanded")).toBe("true");
   });
 

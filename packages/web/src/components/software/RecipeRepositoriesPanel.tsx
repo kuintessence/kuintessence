@@ -187,9 +187,9 @@ function RepositoryPanel({
       ) : repositories.data?.length === 0 ? (
         <p className="text-xs text-muted-foreground">{t("recipes.empty")}</p>
       ) : (
-        <div className="overflow-x-auto">
+        <div className="max-h-[28rem] overflow-auto">
           <table className="w-full text-left text-xs" aria-label={t("recipes.title")}>
-            <thead className="border-b border-border text-muted-foreground">
+            <thead className="sticky top-0 z-10 border-b border-border bg-card text-muted-foreground">
               <tr>
                 {["repository", "activeCommit", "snapshots", "actions"].map((key) => (
                   <th key={key} className="p-2 font-medium">

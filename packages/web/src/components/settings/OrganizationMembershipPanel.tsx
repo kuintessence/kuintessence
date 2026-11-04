@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Pencil, Plus, RefreshCw, Trash2 } from "lucide-react";
 import { useState } from "react";
+import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { ApiError, api } from "../../lib/api-client";
 import { isMobileHighRiskMutationBlocked } from "../../lib/mobile-management-policy";
@@ -19,11 +20,11 @@ import {
 import { Input } from "../ui/input";
 
 const ROLES = {
-  owner: "所有者",
-  admin: "管理员",
-  operator: "运营人员",
-  member: "成员",
-  viewer: "观察者",
+  owner: "adminAccess.owner",
+  admin: "adminAccess.admin",
+  operator: "adminAccess.operator",
+  member: "adminAccess.member",
+  viewer: "adminAccess.viewer",
 } as const;
 type MemberRole = keyof typeof ROLES;
 interface Membership {
@@ -47,6 +48,7 @@ const PAGE_SIZE = 20;
 const selectClass = "min-h-11 w-full min-w-0 rounded-md border bg-background px-3 py-2 text-sm";
 
 export function OrganizationMembershipPanel() {
+  const { t } = useTranslation();
   const client = useQueryClient();
   const compact = useMediaQuery("(max-width: 767px)");
   const mobileReadOnly = compact && isMobileHighRiskMutationBlocked("/admin/authz/memberships");
@@ -93,7 +95,7 @@ export function OrganizationMembershipPanel() {
     onSuccess: async (_, change) => {
       setEditor(null);
       setRemoving(null);
-      toast.success(change.action === "save" ? "组织权限已保存" : "已移除组织成员");
+      toast.success(change.action === "save" ? t("adminAccess.saved") : t("adminAccess.removed"));
       if (change.action === "remove" && list.data?.data.length === 1 && page > 0) setPage(page - 1);
       await client.invalidateQueries({ queryKey: key });
       await client.invalidateQueries({ queryKey: ["me"] });
@@ -119,12 +121,12 @@ export function OrganizationMembershipPanel() {
   return (
     <Card data-testid="organization-membership-panel">
       <CardHeader className="flex flex-row flex-wrap items-center justify-between gap-3">
-        <CardTitle>组织成员权限</CardTitle>
+        <CardTitle>{t("adminAccess.members")}</CardTitle>
         <div className="flex gap-2">
           <Button
             variant="outline"
             size="sm"
-            aria-label="刷新组织成员"
+            aria-label={t("adminAccess.refreshMembers")}
             onClick={() => void list.refetch()}
             disabled={list.isFetching}
           >
@@ -132,17 +134,18 @@ export function OrganizationMembershipPanel() {
           </Button>
           <Button size="sm" disabled={mobileReadOnly} onClick={() => startEdit(null)}>
             <Plus />
-            添加成员
+
+            {t("adminAccess.add")}
           </Button>
         </div>
       </CardHeader>
       <CardContent className="space-y-4">
         {mobileReadOnly ? (
-          <p className="text-sm text-muted-foreground">请在电脑上修改组织成员权限。</p>
+          <p className="text-sm text-muted-foreground">{t("adminAccess.desktopEdit")}</p>
         ) : null}
         <Input
-          aria-label="搜索组织成员"
-          placeholder="姓名、邮箱或组织名称"
+          aria-label={t("adminAccess.search")}
+          placeholder={t("adminAccess.searchHint")}
           value={search}
           onChange={(event) => {
             setSearch(event.target.value);
@@ -151,19 +154,19 @@ export function OrganizationMembershipPanel() {
           className="max-w-md"
         />
         {list.isError ? (
-          <p role="alert" className="text-sm text-destructive">
-            {toUserFacingError(list.error, "无法读取组织成员，请重试。")}
+          <p role="alert" className="text-sm text-status-failed">
+            {toUserFacingError(list.error, t("adminAccess.loadFailed"))}
           </p>
         ) : list.isPending ? (
           <p role="status" className="text-sm text-muted-foreground">
-            正在读取成员…
+            {t("adminAccess.loading")}
           </p>
         ) : list.data.data.length === 0 ? (
           <p className="py-6 text-center text-sm text-muted-foreground">
-            {search ? "未找到匹配成员" : "暂无组织成员"}
+            {search ? t("adminAccess.noMatches") : t("adminAccess.noMembers")}
           </p>
         ) : (
-          <ul className="divide-y rounded-md border">
+          <ul className="max-h-[36rem] divide-y overflow-y-auto rounded-md border">
             {list.data.data.map((member) => (
               <li
                 key={member.id}
@@ -181,30 +184,36 @@ export function OrganizationMembershipPanel() {
                 <p className="min-w-0 flex-1 basis-40 break-words text-sm">
                   {member.orgName ?? member.orgId}
                 </p>
-                <span className="text-sm">{ROLES[member.role] ?? member.role}</span>
+                <span className="text-sm">
+                  {ROLES[member.role] ? t(ROLES[member.role]) : member.role}
+                </span>
                 <div className="flex gap-1">
                   <Button
                     variant="ghost"
                     size="sm"
                     disabled={mobileReadOnly}
-                    aria-label={`编辑 ${member.displayName || member.email || member.userId} 的组织权限`}
+                    aria-label={t("adminAccess.editMember", {
+                      name: member.displayName || member.email || member.userId,
+                    })}
                     onClick={() => startEdit(member)}
                   >
                     <Pencil />
-                    <span>编辑</span>
+                    <span>{t("adminAccess.edit")}</span>
                   </Button>
                   <Button
                     variant="ghost"
                     size="sm"
                     disabled={mobileReadOnly}
-                    aria-label={`移除 ${member.displayName || member.email || member.userId} 的组织成员资格`}
+                    aria-label={t("adminAccess.removeMember", {
+                      name: member.displayName || member.email || member.userId,
+                    })}
                     onClick={() => {
                       mutation.reset();
                       setRemoving(member);
                     }}
                   >
                     <Trash2 />
-                    <span>移除</span>
+                    <span>{t("adminAccess.remove")}</span>
                   </Button>
                 </div>
               </li>
@@ -212,23 +221,26 @@ export function OrganizationMembershipPanel() {
           </ul>
         )}
         {page > 0 || list.data?.hasMore ? (
-          <nav aria-label="组织成员分页" className="flex items-center justify-end gap-3">
+          <nav
+            aria-label={t("adminAccess.pagination")}
+            className="flex items-center justify-end gap-3"
+          >
             <Button
               variant="outline"
               size="sm"
               disabled={page === 0 || list.isFetching}
               onClick={() => setPage(page - 1)}
             >
-              上一页
+              {t("adminAccess.previous")}
             </Button>
-            <span className="text-sm">第 {page + 1} 页</span>
+            <span className="text-sm">{t("adminAccess.page", { page: page + 1 })}</span>
             <Button
               variant="outline"
               size="sm"
               disabled={!list.data?.hasMore || list.isFetching || list.isError}
               onClick={() => setPage(page + 1)}
             >
-              下一页
+              {t("adminAccess.next")}
             </Button>
           </nav>
         ) : null}
@@ -241,11 +253,13 @@ export function OrganizationMembershipPanel() {
       >
         <DialogContent dismissible={!mutation.isPending} aria-describedby={undefined}>
           <DialogHeader>
-            <DialogTitle>{editor?.existing ? "编辑组织权限" : "添加组织成员"}</DialogTitle>
+            <DialogTitle>
+              {editor?.existing ? t("adminAccess.editTitle") : t("adminAccess.addTitle")}
+            </DialogTitle>
           </DialogHeader>
           <DialogBody className="space-y-4">
             {mobileReadOnly ? (
-              <p className="text-sm text-muted-foreground">请在电脑上保存权限修改。</p>
+              <p className="text-sm text-muted-foreground">{t("adminAccess.desktopSave")}</p>
             ) : null}
             {editor?.existing ? (
               <div className="space-y-1 break-words">
@@ -258,12 +272,12 @@ export function OrganizationMembershipPanel() {
               <>
                 <div className="space-y-2">
                   <label htmlFor="membership-user" className="text-sm font-medium">
-                    用户
+                    {t("adminAccess.user")}
                   </label>
                   <Input
-                    aria-label="查找用户"
+                    aria-label={t("adminAccess.findUser")}
                     disabled={mutation.isPending}
-                    placeholder="姓名或邮箱"
+                    placeholder={t("adminAccess.userHint")}
                     value={userSearch}
                     onChange={(event) => {
                       setUserSearch(event.target.value);
@@ -281,10 +295,10 @@ export function OrganizationMembershipPanel() {
                   >
                     <option value="">
                       {options.isFetching
-                        ? "正在查找…"
+                        ? t("adminAccess.searching")
                         : options.data?.data.users.length === 0
-                          ? "未找到匹配用户"
-                          : "选择用户"}
+                          ? t("adminAccess.noUsers")
+                          : t("adminAccess.chooseUser")}
                     </option>
                     {!options.isError &&
                       options.data?.data.users.map((user) => (
@@ -294,19 +308,17 @@ export function OrganizationMembershipPanel() {
                       ))}
                   </select>
                   {options.data?.data.moreUsers ? (
-                    <p className="text-xs text-muted-foreground">
-                      匹配超过 50 位用户，请缩小搜索范围。
-                    </p>
+                    <p className="text-xs text-muted-foreground">{t("adminAccess.moreUsers")}</p>
                   ) : null}
                 </div>
                 <div className="space-y-2">
                   <label htmlFor="membership-org" className="text-sm font-medium">
-                    组织
+                    {t("adminAccess.organization")}
                   </label>
                   <Input
-                    aria-label="查找组织"
+                    aria-label={t("adminAccess.findOrganization")}
                     disabled={mutation.isPending}
-                    placeholder="组织名称"
+                    placeholder={t("adminAccess.orgHint")}
                     value={orgSearch}
                     onChange={(event) => {
                       setOrgSearch(event.target.value);
@@ -324,10 +336,10 @@ export function OrganizationMembershipPanel() {
                   >
                     <option value="">
                       {options.isFetching
-                        ? "正在查找…"
+                        ? t("adminAccess.searching")
                         : options.data?.data.organizations.length === 0
-                          ? "未找到匹配组织"
-                          : "选择组织"}
+                          ? t("adminAccess.noOrgs")
+                          : t("adminAccess.chooseOrg")}
                     </option>
                     {!options.isError &&
                       options.data?.data.organizations.map((org) => (
@@ -337,16 +349,14 @@ export function OrganizationMembershipPanel() {
                       ))}
                   </select>
                   {options.data?.data.moreOrganizations ? (
-                    <p className="text-xs text-muted-foreground">
-                      匹配超过 50 个组织，请缩小搜索范围。
-                    </p>
+                    <p className="text-xs text-muted-foreground">{t("adminAccess.moreOrgs")}</p>
                   ) : null}
                 </div>
                 {options.isError ? (
-                  <div role="alert" className="text-sm text-destructive">
-                    {toUserFacingError(options.error, "无法读取用户和组织。")}
+                  <div role="alert" className="text-sm text-status-failed">
+                    {toUserFacingError(options.error, t("adminAccess.optionsFailed"))}
                     <Button variant="outline" size="sm" onClick={() => void options.refetch()}>
-                      重试
+                      {t("adminAccess.retry")}
                     </Button>
                   </div>
                 ) : null}
@@ -354,7 +364,7 @@ export function OrganizationMembershipPanel() {
             )}
             <div className="space-y-2">
               <label htmlFor="membership-role" className="text-sm font-medium">
-                组织角色
+                {t("adminAccess.orgRole")}
               </label>
               <select
                 id="membership-role"
@@ -369,29 +379,29 @@ export function OrganizationMembershipPanel() {
               >
                 {Object.entries(ROLES).map(([value, label]) => (
                   <option key={value} value={value}>
-                    {label}
+                    {t(label)}
                   </option>
                 ))}
               </select>
             </div>
             {privileged ? (
               <p className="text-sm text-muted-foreground">
-                该用户还拥有平台或算力管理权限；修改组织角色不会撤销这些权限。
+                {t("adminAccess.independentPermissions")}
               </p>
             ) : null}
             {mutation.isError ? (
-              <p role="alert" className="text-sm text-destructive">
+              <p role="alert" className="text-sm text-status-failed">
                 {!editor?.existing &&
                 mutation.error instanceof ApiError &&
                 mutation.error.status === 409
-                  ? "该用户已属于此组织，请从成员列表编辑权限。"
-                  : toUserFacingError(mutation.error, "组织权限保存失败，请重试。")}
+                  ? t("adminAccess.alreadyMember")
+                  : toUserFacingError(mutation.error, t("adminAccess.saveFailed"))}
               </p>
             ) : null}
           </DialogBody>
           <DialogFooter className="flex justify-end gap-2">
             <Button variant="outline" disabled={mutation.isPending} onClick={() => setEditor(null)}>
-              取消
+              {t("adminAccess.cancel")}
             </Button>
             <Button
               disabled={
@@ -412,7 +422,7 @@ export function OrganizationMembershipPanel() {
                   });
               }}
             >
-              {mutation.isPending ? "保存中…" : "保存"}
+              {mutation.isPending ? t("adminAccess.saving") : t("adminAccess.save")}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -425,21 +435,22 @@ export function OrganizationMembershipPanel() {
       >
         <DialogContent dismissible={!mutation.isPending} aria-describedby={undefined}>
           <DialogHeader>
-            <DialogTitle>移除组织成员</DialogTitle>
+            <DialogTitle>{t("adminAccess.removeTitle")}</DialogTitle>
           </DialogHeader>
           <DialogBody className="space-y-3">
             {mobileReadOnly ? (
-              <p className="text-sm text-muted-foreground">请在电脑上移除组织成员。</p>
+              <p className="text-sm text-muted-foreground">{t("adminAccess.desktopRemove")}</p>
             ) : null}
             <p className="break-words">
-              确认将 {removing?.displayName || removing?.email} 从 {removing?.orgName} 移除？
+              {t("adminAccess.removeQuestion", {
+                name: removing?.displayName || removing?.email,
+                organization: removing?.orgName,
+              })}
             </p>
-            <p className="text-sm text-muted-foreground">
-              仅撤销该组织成员资格，不删除用户账户或其他独立授权。
-            </p>
+            <p className="text-sm text-muted-foreground">{t("adminAccess.removeEffect")}</p>
             {mutation.isError ? (
-              <p role="alert" className="text-sm text-destructive">
-                {toUserFacingError(mutation.error, "移除失败，请重试。")}
+              <p role="alert" className="text-sm text-status-failed">
+                {toUserFacingError(mutation.error, t("adminAccess.removeFailed"))}
               </p>
             ) : null}
           </DialogBody>
@@ -449,7 +460,7 @@ export function OrganizationMembershipPanel() {
               disabled={mutation.isPending}
               onClick={() => setRemoving(null)}
             >
-              取消
+              {t("adminAccess.cancel")}
             </Button>
             <Button
               variant="destructive"
@@ -463,7 +474,7 @@ export function OrganizationMembershipPanel() {
                   });
               }}
             >
-              {mutation.isPending ? "移除中…" : "确认移除"}
+              {mutation.isPending ? t("adminAccess.removing") : t("adminAccess.confirmRemove")}
             </Button>
           </DialogFooter>
         </DialogContent>

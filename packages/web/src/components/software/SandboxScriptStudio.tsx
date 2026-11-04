@@ -20,7 +20,7 @@ import {
   ShieldCheck,
   Trash2,
 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { cloneElement, type ReactElement, useEffect, useId, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { ApiError } from "../../lib/api-client";
@@ -368,13 +368,17 @@ export function SandboxScriptStudio({ scriptId }: { scriptId?: string }) {
     <PageShell data-testid="sandbox-script-studio">
       <PageHeader
         title={scriptId ? draft.name || t("sandbox.studio.title") : t("sandbox.studio.createTitle")}
-        subtitle={t("sandbox.studio.subtitle")}
         meta={
           <>
-            <Badge variant="brand">Sandbox</Badge>
-            {selectedRevision ? <Badge variant="outline">revision {selectedRevision}</Badge> : null}
+            {selectedRevision ? (
+              <Badge variant="outline">
+                {t("sandbox.studio.revision", { count: selectedRevision })}
+              </Badge>
+            ) : null}
             {detailQuery.data?.asset.lifecycle ? (
-              <Badge variant="outline">{detailQuery.data.asset.lifecycle}</Badge>
+              <Badge variant="outline">
+                {t(`software.governance.lifecycle.${detailQuery.data.asset.lifecycle}`)}
+              </Badge>
             ) : null}
           </>
         }
@@ -470,7 +474,8 @@ export function SandboxScriptStudio({ scriptId }: { scriptId?: string }) {
                 >
                   {detailQuery.data.revisions.map((revision) => (
                     <option key={revision.id} value={revision.revision}>
-                      revision {revision.revision} · {revision.contentSha256?.slice(0, 10)}
+                      {t("sandbox.studio.revision", { count: revision.revision })} ·{" "}
+                      {revision.contentSha256?.slice(0, 10)}
                     </option>
                   ))}
                 </select>
@@ -762,15 +767,17 @@ function Field({
   className,
   label,
 }: {
-  children: React.ReactNode;
+  children: ReactElement<{ id?: string }>;
   className?: string;
   label: string;
 }) {
+  const generatedId = useId();
+  const id = children.props.id ?? generatedId;
   return (
-    <fieldset className={`grid gap-1 text-xs text-muted-foreground ${className ?? ""}`}>
-      <legend>{label}</legend>
-      {children}
-    </fieldset>
+    <div className={`grid gap-1 text-xs text-muted-foreground ${className ?? ""}`}>
+      <label htmlFor={id}>{label}</label>
+      {cloneElement(children, { id })}
+    </div>
   );
 }
 

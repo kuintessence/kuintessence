@@ -1,7 +1,9 @@
 import { useQuery } from "@tanstack/react-query";
 import { Package } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import { api } from "../../lib/api-client";
 import { toUserFacingError } from "../../lib/user-facing-error";
+import { PageHeader } from "../ui/page";
 
 interface InstalledRow {
   name: string;
@@ -28,6 +30,7 @@ export interface AgentSoftwarePageProps {
  * powers this view; policy editing is not exposed on this page.
  */
 export function AgentSoftwarePage({ agentId }: AgentSoftwarePageProps) {
+  const { t } = useTranslation();
   const q = useQuery({
     queryKey: ["agent-software", agentId],
     queryFn: () => api.get<InstalledResponse>(`/software/agents/${agentId}/installed`),
@@ -35,7 +38,7 @@ export function AgentSoftwarePage({ agentId }: AgentSoftwarePageProps) {
   });
 
   if (q.isLoading) {
-    return <p className="text-sm text-muted-foreground">Loading…</p>;
+    return <p className="text-sm text-muted-foreground">{t("common.loading")}</p>;
   }
   if (q.error) {
     return (
@@ -48,18 +51,18 @@ export function AgentSoftwarePage({ agentId }: AgentSoftwarePageProps) {
 
   return (
     <div className="space-y-3" data-testid="agent-software-page">
-      <div className="flex items-baseline justify-between gap-4">
-        <div>
-          <h2 className="text-2xl font-semibold tracking-tight">Installed software</h2>
-          <p className="text-sm text-muted-foreground">Agent {agentId}</p>
-        </div>
-        <span
-          className="font-mono text-[11px] text-muted-foreground tabular-nums"
-          data-testid="agent-software-count"
-        >
-          {rows.length} specs
-        </span>
-      </div>
+      <PageHeader
+        title={t("agentSoftware.title")}
+        subtitle={agentId}
+        actions={
+          <span
+            className="text-xs text-muted-foreground tabular-nums"
+            data-testid="agent-software-count"
+          >
+            {t("agentSoftware.count", { count: rows.length })}
+          </span>
+        }
+      />
 
       {rows.length === 0 ? (
         <div
@@ -67,33 +70,38 @@ export function AgentSoftwarePage({ agentId }: AgentSoftwarePageProps) {
           data-testid="agent-software-empty"
         >
           <Package className="h-5 w-5" />
-          No installed software reported yet.
+          {t("agentSoftware.empty")}
         </div>
       ) : (
-        <table className="w-full border-collapse text-sm" data-testid="agent-software-table">
-          <thead className="border-b border-border text-left text-xs uppercase tracking-wider text-muted-foreground">
-            <tr>
-              <th className="py-2">Name</th>
-              <th className="py-2">Version</th>
-              <th className="py-2">Compiler</th>
-              <th className="py-2">Hash</th>
-              <th className="py-2">Spec</th>
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((r) => (
-              <tr key={r.hash} className="border-b border-border last:border-0">
-                <td className="py-2 font-medium">{r.name}</td>
-                <td className="py-2 font-mono text-xs">{r.version}</td>
-                <td className="py-2 font-mono text-xs">{r.compiler ?? "-"}</td>
-                <td className="py-2 font-mono text-[11px] text-muted-foreground">
-                  {r.hash.slice(0, 12)}
-                </td>
-                <td className="py-2 font-mono text-xs">{r.spec}</td>
+        <div className="overflow-x-auto rounded-xl border border-border bg-card px-4">
+          <table
+            className="w-full min-w-[40rem] border-collapse text-sm"
+            data-testid="agent-software-table"
+          >
+            <thead className="border-b border-border text-left text-xs uppercase tracking-wider text-muted-foreground">
+              <tr>
+                <th className="py-2">{t("agentSoftware.name")}</th>
+                <th className="py-2">{t("agentSoftware.version")}</th>
+                <th className="py-2">{t("agentSoftware.compiler")}</th>
+                <th className="py-2">Hash</th>
+                <th className="py-2">Spec</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {rows.map((r) => (
+                <tr key={r.hash} className="border-b border-border last:border-0">
+                  <td className="py-2 font-medium">{r.name}</td>
+                  <td className="py-2 font-mono text-xs">{r.version}</td>
+                  <td className="py-2 font-mono text-xs">{r.compiler ?? "-"}</td>
+                  <td className="py-2 font-mono text-xs text-muted-foreground">
+                    {r.hash.slice(0, 12)}
+                  </td>
+                  <td className="py-2 font-mono text-xs">{r.spec}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       )}
     </div>
   );

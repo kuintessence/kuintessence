@@ -2,7 +2,7 @@ import type { HTMLAttributes, ReactNode } from "react";
 import { cn } from "../../lib/utils";
 
 export function PageShell({ className, ...props }: HTMLAttributes<HTMLDivElement>) {
-  return <div className={cn("space-y-5", className)} {...props} />;
+  return <div className={cn("min-w-0 space-y-5", className)} {...props} />;
 }
 
 interface PageHeaderProps extends Omit<HTMLAttributes<HTMLDivElement>, "title"> {
@@ -24,10 +24,10 @@ export function PageHeader({
     <div className={cn("border-b border-border pb-5", className)} {...props}>
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div className="min-w-0">
-          {meta ? <div className="mb-2 flex flex-wrap items-center gap-2">{meta}</div> : null}
           <h1 className="break-words text-2xl font-semibold tracking-tight [overflow-wrap:anywhere]">
             {title}
           </h1>
+          {meta ? <div className="mt-2 flex flex-wrap items-center gap-2">{meta}</div> : null}
           {subtitle ? (
             <p className="mt-1 max-w-3xl text-sm leading-6 text-muted-foreground">{subtitle}</p>
           ) : null}

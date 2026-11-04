@@ -601,6 +601,12 @@ describe("WorkflowDagView error UI", () => {
     expect(button.textContent).toContain("workflows.run.cancel");
 
     fireEvent.click(button);
+    expect(calls.some((c) => c.method === "POST")).toBe(false);
+    fireEvent.click(await screen.findByText("workflows.run.keepRunning"));
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(calls.some((c) => c.method === "POST")).toBe(false);
+    fireEvent.click(button);
+    fireEvent.click(await screen.findByTestId("workflow-cancel-confirm"));
 
     await waitFor(() => {
       expect(
@@ -750,6 +756,7 @@ test("keeps delayed cancellation scoped to the original workflow after navigatio
   );
   const { rerender } = render(<WorkflowDagView runId="run-a" />, { wrapper: makeWrapper(qc) });
   fireEvent.click(await screen.findByTestId("workflow-cancel-run"));
+  fireEvent.click(await screen.findByTestId("workflow-cancel-confirm"));
   await waitFor(() => expect(finish).toBeDefined());
   rerender(<WorkflowDagView runId="run-b" />);
   await screen.findByRole("heading", { name: "run-b" });

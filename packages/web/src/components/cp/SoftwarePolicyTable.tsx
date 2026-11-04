@@ -2724,9 +2724,9 @@ function SpackCatalogPickerDialog({
                   <button
                     key={`${pkg.source}:${pkg.name}`}
                     type="button"
-                    className={`grid min-h-32 min-w-0 content-between gap-3 rounded-md border bg-card p-3 text-left transition-colors hover:border-primary/50 hover:bg-muted/30 ${
+                    className={`grid min-h-32 min-w-0 content-between gap-3 rounded-md border bg-card p-3 text-left transition-colors hover:border-brand/50 hover:bg-muted/30 ${
                       selectedPackage?.source === pkg.source && selectedPackage.name === pkg.name
-                        ? "border-primary ring-1 ring-primary/30"
+                        ? "border-brand ring-1 ring-brand/30"
                         : "border-border"
                     }`}
                     onClick={() => choosePackage(pkg)}
@@ -2754,7 +2754,7 @@ function SpackCatalogPickerDialog({
                             })
                           : t("cp.software.operations.catalogNoMetadata")}
                       </span>
-                      <span className="inline-flex items-center gap-1 font-medium text-primary">
+                      <span className="inline-flex items-center gap-1 font-medium text-brand">
                         <Check className="h-3.5 w-3.5" />
                         {t("cp.software.operations.catalogChoose")}
                       </span>

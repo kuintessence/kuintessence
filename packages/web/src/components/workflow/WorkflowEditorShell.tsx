@@ -109,6 +109,7 @@ function initialState(yaml: string): { graph: GraphState; error: ParseError | nu
 export function WorkflowEditorShell({ actions, value, onChange }: WorkflowEditorShellProps) {
   const { t } = useTranslation();
   const [{ graph, error }, setState] = useState(() => initialState(value));
+  const [loadedGraphRevision, setLoadedGraphRevision] = useState(0);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
   const [paletteCollapsed, setPaletteCollapsed] = useState(false);
@@ -161,6 +162,7 @@ export function WorkflowEditorShell({ actions, value, onChange }: WorkflowEditor
     lastEmittedRef.current = value;
     const parsed = yamlToGraph(value);
     if (parsed.ok) {
+      setLoadedGraphRevision((revision) => revision + 1);
       setState({
         graph: {
           header: parsed.graph.header,
@@ -258,6 +260,7 @@ export function WorkflowEditorShell({ actions, value, onChange }: WorkflowEditor
       toast.error(t("workflow.editor.yamlImportFailed"));
       return;
     }
+    setLoadedGraphRevision((revision) => revision + 1);
     setState({
       graph: {
         header: parsed.graph.header,
@@ -387,7 +390,7 @@ export function WorkflowEditorShell({ actions, value, onChange }: WorkflowEditor
           {error ? (
             <span
               data-testid="rf-shell-sync-error"
-              className="rounded-full border border-destructive/30 bg-destructive/10 px-3 py-1 font-mono text-[11px] text-destructive"
+              className="rounded-full border border-status-failed/30 bg-status-failed/10 px-3 py-1 font-mono text-[11px] text-status-failed"
             >
               {t("workflow.editor.canvas.syncError", {
                 defaultValue: "YAML parse error, edits paused",
@@ -503,7 +506,7 @@ export function WorkflowEditorShell({ actions, value, onChange }: WorkflowEditor
           label={t("workflow.editor.resizePalette")}
         />
         <div className="relative min-h-[420px] w-full overflow-hidden border-y border-border bg-background lg:h-full lg:min-h-0 lg:border-x lg:border-y-0">
-          <ReactFlowProvider>
+          <ReactFlowProvider key={loadedGraphRevision}>
             <ReactFlowEditor
               nodes={graph.nodes}
               edges={graph.edges}

@@ -2,6 +2,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import i18n from "../../lib/i18n";
 import { AgentSoftwarePage } from "./AgentSoftwarePage";
 
 function makeWrapper() {
@@ -13,7 +14,8 @@ function makeWrapper() {
   );
 }
 
-beforeEach(() => {
+beforeEach(async () => {
+  await i18n.changeLanguage("zh");
   localStorage.setItem("kq_token", "test-token");
   localStorage.setItem("kq.lang", "zh");
 });

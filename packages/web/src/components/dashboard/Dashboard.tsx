@@ -104,6 +104,7 @@ export function Dashboard() {
   const hourlyTotal = useMemo(() => buckets.reduce((acc, b) => acc + b.count, 0), [buckets]);
 
   const bootstrap = isPlatformBootstrap(jobs, runs);
+  const showThroughput = jobsQ.isPending || Boolean(jobsQ.error) || hourlyTotal > 0;
 
   const refresh = () => {
     queryClient.invalidateQueries({ queryKey: ["dashboard"] });
@@ -138,7 +139,7 @@ export function Dashboard() {
         <QuickStart onSubmitted={refresh} />
       ) : null}
 
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
+      <div className="grid grid-cols-2 gap-3 xl:grid-cols-4">
         <StatCard
           title={t("dashboard.activeJobs")}
           icon={ListTodo}
@@ -181,21 +182,27 @@ export function Dashboard() {
         />
       </div>
 
-      <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
-        <Card className="lg:col-span-2" data-testid="throughput-card">
-          <CardHeader>
-            <CardTitle>{t("dashboard.submissionsLast24h")}</CardTitle>
-          </CardHeader>
-          <CardContent>
-            {jobsQ.error ? (
-              <div className="flex h-32 items-center justify-center text-sm text-muted-foreground">
-                {t("dashboard.unavailable")}
-              </div>
-            ) : (
-              <ThroughputChart data={buckets} />
-            )}
-          </CardContent>
-        </Card>
+      <div
+        className={
+          showThroughput ? "grid grid-cols-1 items-start gap-4 lg:grid-cols-3" : "space-y-4"
+        }
+      >
+        {showThroughput ? (
+          <Card className="lg:col-span-2" data-testid="throughput-card">
+            <CardHeader>
+              <CardTitle>{t("dashboard.submissionsLast24h")}</CardTitle>
+            </CardHeader>
+            <CardContent>
+              {jobsQ.error ? (
+                <div className="flex h-32 items-center justify-center text-sm text-muted-foreground">
+                  {t("dashboard.unavailable")}
+                </div>
+              ) : (
+                <ThroughputChart data={buckets} />
+              )}
+            </CardContent>
+          </Card>
+        ) : null}
 
         <Card data-testid="agents-card">
           <CardHeader>
@@ -213,19 +220,21 @@ export function Dashboard() {
         </Card>
       </div>
 
-      <Card data-testid="events-card">
-        <CardHeader>
-          <CardTitle>{t("dashboard.recentActivity")}</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <EventsList
-            entries={auditQ.data?.entries ?? []}
-            forbidden={
-              !canViewAuditLog || (auditQ.data as { forbidden?: boolean } | undefined)?.forbidden
-            }
-          />
-        </CardContent>
-      </Card>
+      {canViewAuditLog ? (
+        <Card data-testid="events-card">
+          <CardHeader>
+            <CardTitle>{t("dashboard.recentActivity")}</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <EventsList
+              entries={auditQ.data?.entries ?? []}
+              forbidden={
+                !canViewAuditLog || (auditQ.data as { forbidden?: boolean } | undefined)?.forbidden
+              }
+            />
+          </CardContent>
+        </Card>
+      ) : null}
     </PageShell>
   );
 }

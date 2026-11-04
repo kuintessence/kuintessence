@@ -109,7 +109,6 @@ export function CpAgentsTable() {
                             defaultValue: a.status,
                           })}
                         </span>
-                        <code className="ml-1 text-[10px] opacity-75">{a.status}</code>
                       </Badge>
                     </td>
                     <td className="order-4 col-span-2 sm:table-cell sm:px-3 sm:py-2">

@@ -11,7 +11,9 @@ import {
 } from "@tanstack/react-table";
 import { ArrowDown, ArrowUp } from "lucide-react";
 import { type ReactNode, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { cn } from "../../lib/utils";
+import { Button } from "./button";
 
 export interface DataTableProps<TData, TValue> {
   columns: ColumnDef<TData, TValue>[];
@@ -36,6 +38,7 @@ export function DataTable<TData, TValue>({
   emptyState,
   pageSize = 25,
 }: DataTableProps<TData, TValue>) {
+  const { t } = useTranslation();
   const [sorting, setSorting] = useState<SortingState>([]);
   const table = useReactTable({
     data,
@@ -53,7 +56,7 @@ export function DataTable<TData, TValue>({
 
   return (
     <div className="space-y-3">
-      <div className="overflow-x-auto rounded-lg border border-border bg-card shadow-sm">
+      <div className="overflow-x-auto rounded-lg border border-border bg-card">
         <table className="w-full min-w-[720px] text-sm">
           <thead className="bg-muted/40 text-left text-xs text-muted-foreground">
             {table.getHeaderGroups().map((hg) => (
@@ -61,8 +64,19 @@ export function DataTable<TData, TValue>({
                 {hg.headers.map((header) => {
                   const sorted = header.column.getIsSorted();
                   return (
-                    <th key={header.id} className="px-4 py-3 font-medium">
-                      {header.isPlaceholder ? null : (
+                    <th
+                      key={header.id}
+                      className="px-4 py-3 font-medium"
+                      scope="col"
+                      aria-sort={
+                        sorted === "asc"
+                          ? "ascending"
+                          : sorted === "desc"
+                            ? "descending"
+                            : undefined
+                      }
+                    >
+                      {header.isPlaceholder ? null : header.column.getCanSort() ? (
                         <button
                           type="button"
                           className={cn(
@@ -75,6 +89,8 @@ export function DataTable<TData, TValue>({
                           {sorted === "asc" ? <ArrowUp className="h-3 w-3" /> : null}
                           {sorted === "desc" ? <ArrowDown className="h-3 w-3" /> : null}
                         </button>
+                      ) : (
+                        flexRender(header.column.columnDef.header, header.getContext())
                       )}
                     </th>
                   );
@@ -87,7 +103,7 @@ export function DataTable<TData, TValue>({
               <tr>
                 <td colSpan={columns.length} className="px-4 py-16">
                   <div className="sticky left-0 flex w-[calc(100vw-4rem)] items-center justify-center rounded-lg border border-dashed border-border bg-muted/20 px-4 py-8 text-center text-sm text-muted-foreground md:static md:w-auto">
-                    {emptyState ?? "No rows."}
+                    {emptyState ?? t("common.empty")}
                   </div>
                 </td>
               </tr>
@@ -117,24 +133,27 @@ export function DataTable<TData, TValue>({
       {table.getPageCount() > 1 ? (
         <div className="flex items-center justify-end gap-2 text-xs text-muted-foreground">
           <span>
-            Page {table.getState().pagination.pageIndex + 1} of {table.getPageCount()}
+            {t("common.pagination.page", {
+              page: table.getState().pagination.pageIndex + 1,
+              pages: table.getPageCount(),
+            })}
           </span>
-          <button
-            type="button"
+          <Button
+            variant="outline"
+            size="sm"
             onClick={() => table.previousPage()}
             disabled={!table.getCanPreviousPage()}
-            className="rounded border border-border px-2 py-1 disabled:opacity-50"
           >
-            Prev
-          </button>
-          <button
-            type="button"
+            {t("common.pagination.previous")}
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
             onClick={() => table.nextPage()}
             disabled={!table.getCanNextPage()}
-            className="rounded border border-border px-2 py-1 disabled:opacity-50"
           >
-            Next
-          </button>
+            {t("common.pagination.next")}
+          </Button>
         </div>
       ) : null}
     </div>

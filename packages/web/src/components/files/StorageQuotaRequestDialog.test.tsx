@@ -128,7 +128,7 @@ describe("StorageQuotaRequestDialog", () => {
     fireEvent.click(submit);
 
     expect(api.post).toHaveBeenCalledOnce();
-    expect(screen.getByRole("button", { name: "Close" })).toHaveProperty("disabled", true);
+    expect(screen.getByRole("button", { name: "common.close" })).toHaveProperty("disabled", true);
     fireEvent.keyDown(document, { key: "Escape" });
     expect(onOpenChange).not.toHaveBeenCalled();
 

@@ -470,7 +470,7 @@ export function FilesPage() {
         }
       />
 
-      <div className="flex flex-col gap-3 rounded-lg border border-border bg-card/90 p-3 shadow-sm lg:flex-row lg:items-center">
+      <div className="flex flex-col gap-3 rounded-lg border border-border bg-card p-3 lg:flex-row lg:items-center">
         <div className="min-w-0 flex-1">
           <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
             {t("files.selectionBar")}

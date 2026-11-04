@@ -118,14 +118,14 @@ afterEach(() => {
 });
 
 describe("Dashboard audit-log gating", () => {
-  test("role=user does not fire /audit-log and renders the forbidden fallback", async () => {
+  test("role=user does not fire /audit-log or display an inaccessible activity panel", async () => {
     setRole("user");
     const fetchMock = mockJsonRoutes();
 
     render(<Dashboard />, { wrapper: makeWrapper() });
 
     await waitFor(() => {
-      expect(screen.getByTestId("events-forbidden")).toBeTruthy();
+      expect(screen.queryByTestId("events-card")).toBeNull();
     });
 
     expect(auditCallCount(fetchMock)).toBe(0);
@@ -239,7 +239,7 @@ describe("Dashboard audit-log gating", () => {
     render(<Dashboard />, { wrapper: makeWrapper() });
 
     await waitFor(() => {
-      expect(screen.getByTestId("events-forbidden")).toBeTruthy();
+      expect(screen.queryByTestId("events-card")).toBeNull();
     });
 
     expect(auditCallCount(fetchMock)).toBe(0);

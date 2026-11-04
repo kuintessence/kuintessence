@@ -177,12 +177,12 @@ export function MaterialCatalog({
       ) : null}
       {catalog && catalog.releases.length > 0 ? (
         <>
-          <div className="overflow-x-auto">
+          <div className="max-h-[28rem] overflow-auto">
             <table
               className="w-full min-w-[40rem] table-fixed text-left text-xs"
               aria-label={t("materials.catalogTitle")}
             >
-              <thead className="border-b border-border text-muted-foreground">
+              <thead className="sticky top-0 z-10 border-b border-border bg-card text-muted-foreground">
                 <tr>
                   <th className="w-[25%] p-2 font-medium">{t("materials.repository")}</th>
                   <th className="p-2 font-medium">Spec</th>

@@ -497,7 +497,7 @@ describe("CpAgentsTable", () => {
 
     const row = await waitFor(() => screen.getByTestId("cp-agents-row-agent-1"));
     expect(screen.getByText("cp.common.agentStatus.online")).toBeTruthy();
-    expect(screen.getByText("online")).toBeTruthy();
+    expect(screen.queryByText("online")).toBeNull();
     const scroller = screen.getByTestId("cp-agents-table-scroll");
     expect(scroller.className).toContain("sm:overflow-x-auto");
     expect(scroller.querySelector("table")?.className).toContain("sm:min-w-[48rem]");

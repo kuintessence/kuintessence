@@ -1,6 +1,7 @@
 import * as DialogPrimitive from "@radix-ui/react-dialog";
 import { X } from "lucide-react";
 import * as React from "react";
+import { useTranslation } from "react-i18next";
 import { cn } from "../../lib/utils";
 import type { OverlayDismissPolicy } from "./dialog";
 
@@ -51,52 +52,55 @@ export const SheetContent = React.forwardRef<
       ...props
     },
     ref,
-  ) => (
-    <SheetPortal>
-      <SheetOverlay />
-      <DialogPrimitive.Content
-        ref={ref}
-        className={cn(
-          "fixed top-0 z-50 flex h-full w-[calc(100vw-0.75rem)] flex-col border-l border-border bg-card/98 p-0 text-card-foreground shadow-2xl shadow-black/10 outline-none transition ease-out sm:w-full",
-          "kq-motion kq-motion--sheet",
-          side === "right" ? "right-0" : "left-0 border-l-0 border-r",
-          width,
-          className,
-        )}
-        onInteractOutside={(event) => {
-          if (!dismissible) {
-            event.preventDefault();
-            return;
-          }
-          onInteractOutside?.(event);
-          if (
-            outsideDismissPolicy === "never" ||
-            (outsideDismissPolicy === "when-pristine" && dirty)
-          ) {
-            event.preventDefault();
-          }
-        }}
-        onEscapeKeyDown={(event) => {
-          if (!dismissible) {
-            event.preventDefault();
-            return;
-          }
-          onEscapeKeyDown?.(event);
-        }}
-        {...props}
-        data-side={side}
-      >
-        {children}
-        <DialogPrimitive.Close
-          aria-label="Close"
-          disabled={!dismissible}
-          className="absolute right-2 top-2 flex min-h-11 min-w-11 items-center justify-center rounded-md text-muted-foreground opacity-80 transition-colors hover:bg-muted hover:text-foreground hover:opacity-100 focus:outline-none focus:ring-2 focus:ring-[var(--ring)] sm:right-3 sm:top-3"
+  ) => {
+    const { t } = useTranslation();
+    return (
+      <SheetPortal>
+        <SheetOverlay />
+        <DialogPrimitive.Content
+          ref={ref}
+          className={cn(
+            "fixed top-0 z-50 flex h-full w-[calc(100vw-0.75rem)] flex-col border-l border-border bg-card/98 p-0 text-card-foreground shadow-2xl shadow-black/10 outline-none transition ease-out sm:w-full",
+            "kq-motion kq-motion--sheet",
+            side === "right" ? "right-0" : "left-0 border-l-0 border-r",
+            width,
+            className,
+          )}
+          onInteractOutside={(event) => {
+            if (!dismissible) {
+              event.preventDefault();
+              return;
+            }
+            onInteractOutside?.(event);
+            if (
+              outsideDismissPolicy === "never" ||
+              (outsideDismissPolicy === "when-pristine" && dirty)
+            ) {
+              event.preventDefault();
+            }
+          }}
+          onEscapeKeyDown={(event) => {
+            if (!dismissible) {
+              event.preventDefault();
+              return;
+            }
+            onEscapeKeyDown?.(event);
+          }}
+          {...props}
+          data-side={side}
         >
-          <X className="h-4 w-4" />
-        </DialogPrimitive.Close>
-      </DialogPrimitive.Content>
-    </SheetPortal>
-  ),
+          {children}
+          <DialogPrimitive.Close
+            aria-label={t("common.close")}
+            disabled={!dismissible}
+            className="absolute right-2 top-2 flex min-h-11 min-w-11 items-center justify-center rounded-md text-muted-foreground opacity-80 transition-colors hover:bg-muted hover:text-foreground hover:opacity-100 focus:outline-none focus:ring-2 focus:ring-[var(--ring)] sm:right-3 sm:top-3"
+          >
+            <X className="h-4 w-4" />
+          </DialogPrimitive.Close>
+        </DialogPrimitive.Content>
+      </SheetPortal>
+    );
+  },
 );
 SheetContent.displayName = "SheetContent";
 
@@ -118,7 +122,10 @@ export const SheetTitle = React.forwardRef<
 >(({ className, ...props }, ref) => (
   <DialogPrimitive.Title
     ref={ref}
-    className={cn("min-w-0 text-base font-semibold leading-6 tracking-tight", className)}
+    className={cn(
+      "min-w-0 break-words text-base font-semibold leading-6 [overflow-wrap:anywhere] tracking-tight",
+      className,
+    )}
     {...props}
   />
 ));
