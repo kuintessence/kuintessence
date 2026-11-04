@@ -999,6 +999,8 @@ async function materializeReleaseAsset(
       ),
     )
     .limit(1);
+  const contentSha256 =
+    entry.kind === "sandbox-script" ? scriptContentSha256(parseExecutablePayload(entry)) : null;
   const payload = attachExecutableCatalogBinding(entry.payload, executable);
   const provenance = {
     ...entry.provenance,
@@ -1021,6 +1023,19 @@ async function materializeReleaseAsset(
     .orderBy(desc(softwareAssetRevisions.revision))
     .limit(1);
   if (latest?.recipeSha256 === payloadHash) {
+    if (contentSha256 && latest.contentSha256 !== contentSha256) {
+      if (latest.contentSha256 !== null) {
+        throw new AppError(
+          ErrorCode.VALIDATION_ERROR,
+          "Script revision content SHA-256 mismatch",
+          422,
+        );
+      }
+      await db
+        .update(softwareAssetRevisions)
+        .set({ contentSha256 })
+        .where(eq(softwareAssetRevisions.id, latest.id));
+    }
     return {
       assetId: asset.id,
       assetRevisionId: latest.id,
@@ -1035,6 +1050,7 @@ async function materializeReleaseAsset(
       payload,
       provenance,
       recipeSha256: payloadHash,
+      contentSha256,
       createdBy: null,
     })
     .returning();
@@ -1429,6 +1445,15 @@ function parseExecutablePayload(
   return result.data;
 }
 
+function scriptContentSha256(payload: SoftwareAssetPayload): string | null {
+  if (payload.kind !== "sandbox-script") return null;
+  const digest = createHash("sha256").update(payload.content).digest("hex");
+  if (digest !== payload.sha256) {
+    throw new AppError(ErrorCode.VALIDATION_ERROR, "Script content SHA-256 mismatch", 422);
+  }
+  return digest;
+}
+
 function attachExecutableCatalogBinding(
   payload: Record<string, unknown>,
   executable: ExecutableCatalogBinding,
@@ -1454,6 +1479,8 @@ function usecaseDescription(spec: Record<string, unknown>): string | null {
 function workflowDescription(yamlContent: string): string | null {
   const document = parseWorkflowYaml("materialized workflow", yamlContent);
   if (!isRecord(document)) return null;
+  const description = document.description;
+  if (typeof description === "string" && description.length > 0) return description;
   const name = document.name;
   return typeof name === "string" && name.length > 0 ? name : null;
 }
@@ -1766,6 +1793,7 @@ function validateBundleAsset(asset: EcosystemBundleAsset): ValidatedBundleAsset 
       422,
     );
   }
+  scriptContentSha256(payload);
   if (payload.kind === "usecase") {
     const usecaseResult = usecase.GovernedUsecasePackageSchema.safeParse(payload.spec);
     if (!usecaseResult.success) {

@@ -12,6 +12,10 @@
 
 Usecase 的 `description` 应说明研究目的、适用任务、计算内容和结果用途。固定软件版本、runtime、参数契约、I/O 与 License policy 分别填写在结构化字段中。修改 `payload.spec.description` 后，必须按 canonical `payload.spec` 重算 `specDigest`，并发布新的 immutable release version。
 
+Sandbox script 的 `payload.sha256` 必须等于 UTF-8 `content` 的 SHA-256。激活时该摘要写入资产修订的 `contentSha256`，供编辑器选取、测试运行和运行校验使用。升级或重新激活历史 release 时，仅补齐同内容修订缺失的摘要，不新增修订；已有摘要冲突则拒绝激活。脚本是独立资产，加入工作流不要求关联 usecase；执行仍须满足 runtime、身份和输入输出契约。
+
+资产名称面向使用者表达用途，批次号及验收状态放在 provenance 和 description 中。更新名称时保持 `releaseKey` 和 `ecosystemKey`，发布新的签名版本，并同步所有名称引用；同一来源和类型下的 name/version 必须唯一，确有不同构建配置时用配置名称区分。Workflow 模板详情优先显示 DSL 的 `description`，未提供时兼容回退到 `name`。
+
 ## 导入与激活
 
 先把 config、签名 bundle layer 和 OCI manifest 推送到公共 registry repository，再使用不可变 manifest digest 导入。管理 API 不接受 tag 作为 release 来源：

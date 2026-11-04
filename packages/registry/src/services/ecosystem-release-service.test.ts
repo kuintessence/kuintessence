@@ -8,6 +8,7 @@ import {
   ecosystemReleaseAssets,
   ecosystemReleases,
   type PgDb,
+  softwareAssetRevisions,
   softwareAssets,
   usecasePackages,
   workflowTemplates,
@@ -325,6 +326,15 @@ describe("Ecosystem release signature and validation", () => {
     expect(() => validateEcosystemManifest(manifest)).toThrow("SoftwareAssetPayload");
   });
 
+  test("rejects a script whose declared digest does not match its content", () => {
+    const manifest = smallManifest();
+    const script = scriptAsset(1);
+    manifest.assets.push(script);
+    expect(() => validateEcosystemManifest(manifest)).not.toThrow();
+    script.payload.content = "print('changed')";
+    expect(() => validateEcosystemManifest(manifest)).toThrow("Script content SHA-256 mismatch");
+  });
+
   test("requires VASP to be proprietary and fail closed", () => {
     const manifest = smallManifest();
     manifest.assets[0] = {
@@ -527,6 +537,10 @@ describe("Ecosystem release executable catalog materialization", () => {
     const workflow = workflowAsset(1);
     workflow.ecosystemKey = "workflow/test-materialization";
     workflow.name = workflowName;
+    workflow.payload.yamlContent = JSON.stringify({
+      ...JSON.parse(String(workflow.payload.yamlContent)),
+      description: "Prepare inputs and compute scientific results.",
+    });
     const script = scriptAsset(1);
     script.ecosystemKey = "script/test-materialization";
     script.name = scriptName;
@@ -584,6 +598,7 @@ describe("Ecosystem release executable catalog materialization", () => {
       .where(eq(workflowTemplates.name, workflowName));
     expect(catalogUsecase).toHaveLength(1);
     expect(catalogWorkflow).toHaveLength(1);
+    expect(catalogWorkflow[0]?.description).toBe("Prepare inputs and compute scientific results.");
 
     const status = await service.status(releaseKey);
     const materializedUsecase = status?.assets.find(
@@ -618,6 +633,33 @@ describe("Ecosystem release executable catalog materialization", () => {
       .from(softwareAssets)
       .where(eq(softwareAssets.id, materializedScript.assetId));
     expect(SoftwareAssetPayloadSchema.safeParse(scriptAssetRow?.payload).success).toBe(true);
+    const scriptAssetId = materializedScript.assetId;
+    const revisions = () =>
+      db
+        .select()
+        .from(softwareAssetRevisions)
+        .where(eq(softwareAssetRevisions.assetId, scriptAssetId));
+    const [originalRevision] = await revisions();
+    if (!originalRevision) throw new Error("script revision must exist");
+    expect(originalRevision.contentSha256).toBe(String(script.payload.sha256));
+    await db
+      .update(softwareAssetRevisions)
+      .set({ contentSha256: null })
+      .where(eq(softwareAssetRevisions.id, originalRevision.id));
+    await service.activate(staged.id, "test");
+    expect(await revisions()).toEqual([originalRevision]);
+    await db
+      .update(softwareAssetRevisions)
+      .set({ contentSha256: "0".repeat(64) })
+      .where(eq(softwareAssetRevisions.id, originalRevision.id));
+    await expect(service.activate(staged.id, "test")).rejects.toThrow(
+      "Script revision content SHA-256 mismatch",
+    );
+    expect((await revisions())[0]?.contentSha256).toBe("0".repeat(64));
+    await db
+      .update(softwareAssetRevisions)
+      .set({ contentSha256: originalRevision.contentSha256 })
+      .where(eq(softwareAssetRevisions.id, originalRevision.id));
     const scriptProjectionRows = await db
       .select({
         operation: authzOutbox.operation,
