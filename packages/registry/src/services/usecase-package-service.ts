@@ -190,7 +190,9 @@ export class UsecasePackageService {
     packages: Array<typeof usecasePackages.$inferSelect>,
   ): Promise<PublishedUsecasePackage[]> {
     const selectors = packages.flatMap((pkg) => {
-      const spec = usecase.UsecasePackageSchema.parse(pkg.spec);
+      const parsed = usecase.UsecasePackageSchema.safeParse(pkg.spec);
+      if (!parsed.success) return [];
+      const spec = parsed.data;
       return "softwareRef" in spec ? [{ packageId: pkg.id, selector: spec.softwareRef }] : [];
     });
     if (selectors.length === 0) return packages;

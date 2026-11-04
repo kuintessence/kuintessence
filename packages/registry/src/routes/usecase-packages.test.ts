@@ -195,6 +195,17 @@ describe("Usecase package routes", () => {
     expect(create.status).toBe(201);
     const created = (await create.json()) as { id: string };
 
+    const legacySpec = { ...publishedSpec, schemaVersion: 1 };
+    const [legacy] = await db
+      .insert(usecasePackages)
+      .values({
+        name: "usecaseroute-test-published-revision-legacy",
+        version: "1.0.0",
+        spec: legacySpec,
+      })
+      .returning();
+    if (!legacy) throw new Error("legacy package must exist");
+
     const list = await app.request("/api/usecase-packages?q=usecaseroute-test-published-revision");
     expect(list.status).toBe(200);
     const body = (await list.json()) as {
@@ -210,6 +221,22 @@ describe("Usecase package routes", () => {
       .from(softwareAssetRevisions)
       .where(eq(softwareAssetRevisions.id, pkg?.publishedSoftwareRevisionId ?? ""));
     expect(revisions).toHaveLength(1);
+    const invalid = body.usecasePackages.find((item) => item.id === legacy.id);
+    expect(invalid).toBeDefined();
+    expect(invalid?.publishedSoftwareRevisionId).toBeUndefined();
+    const detail = await app.request(`/api/usecase-packages/${legacy.id}`);
+    expect(detail.status).toBe(200);
+    expect(await detail.json()).toMatchObject({ spec: legacySpec });
+    const rejected = await app.request("/api/usecase-packages", {
+      method: "POST",
+      headers: W,
+      body: JSON.stringify({
+        name: "usecaseroute-test-invalid-write",
+        version: "1.0.0",
+        spec: legacySpec,
+      }),
+    });
+    expect(rejected.status).toBe(400);
   });
 
   test("org_admin cannot mutate an arbitrary platform package id", async () => {
