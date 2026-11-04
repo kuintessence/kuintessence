@@ -52,9 +52,21 @@ export interface SetAuthOptions {
   email: string;
   expiresIn?: number;
   role?: string | null;
+  preserveRevision?: boolean;
 }
 
-export function setAuth({ token, email, expiresIn, role }: SetAuthOptions): void {
+export function setAuth({
+  token,
+  email,
+  expiresIn,
+  role,
+  preserveRevision = false,
+}: SetAuthOptions): void {
+  const previous = getAuthState();
+  const revision =
+    preserveRevision && previous.email === email && previous.role === (role ?? null)
+      ? previous.revision
+      : null;
   if (token) {
     localStorage.setItem(TOKEN_KEY, token);
   } else if (token === null) {
@@ -62,7 +74,7 @@ export function setAuth({ token, email, expiresIn, role }: SetAuthOptions): void
   }
   localStorage.setItem(SESSION_KEY, "cookie");
   localStorage.setItem(EMAIL_KEY, email);
-  localStorage.setItem(AUTH_REVISION_KEY, crypto.randomUUID());
+  localStorage.setItem(AUTH_REVISION_KEY, revision ?? crypto.randomUUID());
   if (typeof expiresIn === "number") {
     const expiresAt = Date.now() + expiresIn * 1000;
     localStorage.setItem(EXPIRES_AT_KEY, String(expiresAt));

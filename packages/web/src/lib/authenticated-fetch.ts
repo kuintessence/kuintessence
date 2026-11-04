@@ -38,6 +38,7 @@ function applyCookieSession(session: AuthSessionResponse): boolean {
     email: session.user.email,
     expiresIn: session.expiresIn,
     role: session.user.role,
+    preserveRevision: true,
   });
   return true;
 }

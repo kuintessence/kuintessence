@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { ApiError, api, downloadAuthedFile, uploadFileToNetDrive } from "./api-client";
+import { getAuthState, setAuth } from "./auth";
+import { refreshAuthSession } from "./authenticated-fetch";
 
 type FetchSpy = ReturnType<typeof makeFetchSpy>;
 
@@ -88,6 +90,44 @@ describe("api.get", () => {
       expect(err.code).toBe("HTTP_ERROR");
       expect(err.message).toBe("Server Error");
     }
+  });
+
+  test.each([
+    false,
+    true,
+  ])("preserves cache identity when renewing the same cookie session (rotate: %s)", async (rotate) => {
+    setAuth({ token: null, email: "user@test.com", role: "user", expiresIn: 60 });
+    const before = getAuthState();
+    const spy = vi.fn();
+    if (rotate) spy.mockResolvedValueOnce(new Response(JSON.stringify({ authenticated: false })));
+    spy.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          authenticated: true,
+          expiresIn: 900,
+          user: { email: "user@test.com", role: "user" },
+        }),
+      ),
+    );
+    vi.stubGlobal("fetch", spy);
+    await expect(refreshAuthSession()).resolves.toBe(true);
+    expect(getAuthState().revision).toBe(before.revision);
+    expect(getAuthState().expiresAt).toBeGreaterThan(before.expiresAt ?? 0);
+    expect(spy).toHaveBeenCalledTimes(rotate ? 2 : 1);
+  });
+
+  test.each([
+    { email: "other@test.com", role: "user" },
+    { email: "user@test.com", role: "operator" },
+  ])("changes cache identity when the refreshed principal changes: %j", async (user) => {
+    setAuth({ email: "user@test.com", role: "user", expiresIn: 900 });
+    const revision = getAuthState().revision;
+    vi.stubGlobal(
+      "fetch",
+      makeFetchSpy(JSON.stringify({ authenticated: true, expiresIn: 900, user }), { status: 200 }),
+    );
+    await expect(refreshAuthSession()).resolves.toBe(true);
+    expect(getAuthState().revision).not.toBe(revision);
   });
 
   test("refreshes a cookie session once and retries the request after 401", async () => {
