@@ -10,6 +10,7 @@ const softwareClient = vi.hoisted(() => ({
   listLicenseEntitlementClaims: vi.fn(),
   listLicensedMaterialMappings: vi.fn(),
   listRuntimeContractBindings: vi.fn(),
+  listSpackCatalog: vi.fn(),
   registerLicensedMaterialMapping: vi.fn(),
   submitLicenseEntitlementClaim: vi.fn(),
 }));
@@ -64,6 +65,17 @@ beforeEach(() => {
       sifDigest: "sha256:old",
     },
   ]);
+  softwareClient.listSpackCatalog.mockResolvedValue({
+    packages: [
+      {
+        name: "VASP",
+        asset: { id: "vasp-asset", version: "6.5" },
+        licensePolicy: { identifiers: [{ value: "VASP" }] },
+      },
+      { name: "Unmanaged VASP" },
+    ],
+    hasNext: false,
+  });
   softwareClient.listRuntimeContractBindings.mockResolvedValue([]);
   softwareClient.listLicensedMaterialMappings.mockResolvedValue([]);
 });
@@ -133,11 +145,18 @@ test("registers VASP metadata without accepting material bytes", async () => {
   fireEvent.change(screen.getByLabelText("software.license.fingerprint"), {
     target: { value: "sha256:local" },
   });
-  fireEvent.click(screen.getByRole("button", { name: "software.license.registerMaterial" }));
+  const submit = screen.getByRole("button", { name: "software.license.registerMaterial" });
+  expect(submit).toHaveProperty("disabled", true);
+  expect(screen.queryByRole("option", { name: "Unmanaged VASP" })).toBeNull();
+  fireEvent.change(screen.getByLabelText("software.license.materialSoftware"), {
+    target: { value: "vasp-asset" },
+  });
+  fireEvent.click(submit);
   await waitFor(() =>
     expect(softwareClient.registerLicensedMaterialMapping).toHaveBeenCalledWith(
       expect.objectContaining({
         agentId: "agent-1",
+        assetId: "vasp-asset",
         elementSet: ["Si", "O"],
         providerOrgId: "provider-1",
       }),
