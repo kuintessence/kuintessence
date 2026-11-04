@@ -60,7 +60,7 @@ export function CapabilityLoadingOverlay({
         <div className="relative mb-5 flex h-16 w-16 items-center justify-center rounded-2xl border bg-card shadow-lg">
           <img src={overlayLogo} alt="" className="h-9 w-9" />
           {!failed ? (
-            <span className="absolute -bottom-2 -right-2 flex h-7 w-7 items-center justify-center rounded-full bg-primary text-primary-foreground shadow-sm">
+            <span className="absolute -bottom-2 -right-2 flex h-7 w-7 items-center justify-center rounded-full bg-brand text-brand-foreground shadow-sm">
               <LoaderCircle className="h-4 w-4 animate-spin motion-reduce:animate-none" />
             </span>
           ) : null}

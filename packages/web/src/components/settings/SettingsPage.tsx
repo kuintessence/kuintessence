@@ -41,6 +41,19 @@ import { SshActiveSessions } from "./SshActiveSessions";
 import { SshCredentialsForm } from "./SshCredentialsForm";
 import { SshRecordingPlayer } from "./SshRecordingPlayer";
 
+const SECURITY_SECTIONS = [
+  "branding",
+  "sandbox-security",
+  "authz",
+  "sso",
+  "desensitize",
+  "ssh-vault",
+  "agent-certs",
+  "ssh-sessions",
+  "ssh-recordings",
+];
+const INFRASTRUCTURE_SECTIONS = ["cluster-file-roots", "cost-rates"];
+
 const ROLES = ["user", "org_admin", "operator", "platform_admin", "super_admin"] as const;
 
 function fmtDuration(ms: number): string {
@@ -68,6 +81,7 @@ function ThemeRow() {
           type="button"
           data-testid={`settings-theme-${value}`}
           onClick={() => setTheme(value)}
+          aria-pressed={theme === value}
           className={cn(
             "flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-xs",
             theme === value
@@ -287,6 +301,12 @@ export function SettingsPage() {
     requestedSection === "execution-accounts" || requestedSection === "appearance"
       ? requestedSection
       : "account";
+  const sections = (activeTab === "security" ? SECURITY_SECTIONS : INFRASTRUCTURE_SECTIONS).filter(
+    (section) => section !== "cost-rates" || canManageCost,
+  );
+  const selectedSection = sections.includes(requestedSection ?? "")
+    ? requestedSection
+    : sections[0];
   const pageTitle =
     activeTab === "personal"
       ? t(`settings.personalSections.${personalSection}.title`)
@@ -363,9 +383,6 @@ export function SettingsPage() {
                   </CardHeader>
                   <CardContent className="space-y-2">
                     <ThemeRow />
-                    <p className="text-[11px] text-muted-foreground">
-                      {t("settings.themePersistedNote")}
-                    </p>
                   </CardContent>
                 </Card>
               ) : null}
@@ -387,50 +404,106 @@ export function SettingsPage() {
             </div>
           ) : null}
 
+          {activeTab !== "personal" ? (
+            <nav
+              aria-label={pageTitle}
+              className="flex flex-wrap gap-1.5"
+              data-testid="settings-section-navigation"
+            >
+              {sections.map((section) => (
+                <Button
+                  key={section}
+                  variant={selectedSection === section ? "secondary" : "ghost"}
+                  size="sm"
+                  aria-current={selectedSection === section ? "page" : undefined}
+                  onClick={() => navigate({ to: "/settings", hash: `${activeTab}/${section}` })}
+                >
+                  {t(`settings.sections.${section}`)}
+                </Button>
+              ))}
+            </nav>
+          ) : null}
+
           {activeTab === "security" ? (
             <div className="space-y-4">
               {canManagePlatform ? (
-                <section id="branding" className="scroll-mt-4">
+                <section
+                  id="branding"
+                  hidden={selectedSection !== "branding"}
+                  className="min-w-0 scroll-mt-4"
+                >
                   <PlatformBrandingForm />
                 </section>
               ) : null}
               {canManagePlatform ? (
-                <section id="sandbox-security" className="scroll-mt-4">
+                <section
+                  id="sandbox-security"
+                  hidden={selectedSection !== "sandbox-security"}
+                  className="min-w-0 scroll-mt-4"
+                >
                   <SandboxSecurityPanel />
                 </section>
               ) : null}
               {canManagePlatform ? (
-                <section id="authz" className="scroll-mt-4">
+                <section
+                  id="authz"
+                  hidden={selectedSection !== "authz"}
+                  className="min-w-0 scroll-mt-4"
+                >
                   <AuthzAdminPanel showBreakGlass={auth.role === "super_admin"} />
                 </section>
               ) : null}
               {canManagePlatform ? (
-                <section id="sso" className="scroll-mt-4">
+                <section
+                  id="sso"
+                  hidden={selectedSection !== "sso"}
+                  className="min-w-0 scroll-mt-4"
+                >
                   <SSOConfigForm />
                 </section>
               ) : null}
               {canManagePlatform ? (
-                <section id="desensitize" className="scroll-mt-4">
+                <section
+                  id="desensitize"
+                  hidden={selectedSection !== "desensitize"}
+                  className="min-w-0 scroll-mt-4"
+                >
                   <DesensitizeAdminPanel />
                 </section>
               ) : null}
               {canManagePlatform ? (
-                <section id="ssh-vault" className="scroll-mt-4">
+                <section
+                  id="ssh-vault"
+                  hidden={selectedSection !== "ssh-vault"}
+                  className="min-w-0 scroll-mt-4"
+                >
                   <SshCredentialsForm />
                 </section>
               ) : null}
               {canManagePlatform ? (
-                <section id="agent-certs" className="scroll-mt-4">
+                <section
+                  id="agent-certs"
+                  hidden={selectedSection !== "agent-certs"}
+                  className="min-w-0 scroll-mt-4"
+                >
                   <AgentCertsPanel />
                 </section>
               ) : null}
               {canManagePlatform ? (
-                <section id="ssh-sessions" className="scroll-mt-4">
+                <section
+                  id="ssh-sessions"
+                  hidden={selectedSection !== "ssh-sessions"}
+                  className="min-w-0 scroll-mt-4"
+                >
                   <SshActiveSessions />
                 </section>
               ) : null}
               {canManagePlatform ? (
-                <section id="ssh-recordings" className="scroll-mt-4">
+                <section
+                  id="ssh-recordings"
+                  hidden={selectedSection !== "ssh-recordings"}
+                  className="min-w-0 scroll-mt-4"
+                >
                   <SshRecordingPlayer />
                 </section>
               ) : null}
@@ -440,12 +513,20 @@ export function SettingsPage() {
           {activeTab === "infrastructure" ? (
             <div className="space-y-4">
               {canAccessOperation(auth.role, "org_admin") ? (
-                <section id="cluster-file-roots" className="scroll-mt-4">
+                <section
+                  id="cluster-file-roots"
+                  hidden={selectedSection !== "cluster-file-roots"}
+                  className="min-w-0 scroll-mt-4"
+                >
                   <ClusterFileRootsPanel />
                 </section>
               ) : null}
               {canManageCost ? (
-                <section id="cost-rates" className="scroll-mt-4">
+                <section
+                  id="cost-rates"
+                  hidden={selectedSection !== "cost-rates"}
+                  className="min-w-0 scroll-mt-4"
+                >
                   <CostRatesForm />
                 </section>
               ) : null}

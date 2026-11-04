@@ -136,9 +136,7 @@ describe("SandboxScriptStudio", () => {
       revision,
     });
     const { client } = renderStudio(null);
-    const nameField = screen.getByText("sandbox.studio.name").closest("fieldset");
-    const nameInput = nameField?.querySelector("input");
-    if (!nameInput) throw new Error("name input not found");
+    const nameInput = screen.getByLabelText("sandbox.studio.name");
     fireEvent.change(nameInput, { target: { value: "Created script" } });
     const saveButton = screen.getByRole("button", { name: "sandbox.studio.save" });
     await waitFor(() => expect(saveButton.hasAttribute("disabled")).toBe(false));

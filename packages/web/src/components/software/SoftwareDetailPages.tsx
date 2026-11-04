@@ -147,9 +147,11 @@ function LicensePolicyPanel({ policy }: { policy?: LicensePolicy }) {
     policy.providerEntitlements?.length ? t("software.detail.providerEntitlementRequired") : null,
     policy.consumerEntitlements?.length ? t("software.detail.consumerEntitlementRequired") : null,
     policy.redistribution
-      ? `${t("software.detail.redistribution")}: ${policy.redistribution}`
+      ? `${t("software.detail.redistribution")}: ${t(`software.detail.licenseTerms.${policy.redistribution}`)}`
       : null,
-    policy.autoInstall ? `${t("software.detail.autoInstall")}: ${policy.autoInstall}` : null,
+    policy.autoInstall
+      ? `${t("software.detail.autoInstall")}: ${t(`software.detail.licenseTerms.${policy.autoInstall}`)}`
+      : null,
   ].filter((item): item is string => item !== null);
   return (
     <DetailSection title={t("software.detail.license")}>
@@ -157,7 +159,7 @@ function LicensePolicyPanel({ policy }: { policy?: LicensePolicy }) {
         <div className="space-y-2">
           <div className="flex flex-wrap items-center gap-2">
             <Badge variant={policy.classification === "proprietary" ? "failed" : "outline"}>
-              {policy.classification}
+              {t(`software.detail.licenseTerms.${policy.classification}`)}
             </Badge>
             {policy.identifiers.map((identifier) => (
               <Badge key={`${identifier.kind}:${identifier.value}`} variant="outline">
@@ -759,7 +761,7 @@ function SpackAvailabilityPanel({ installSpec }: { installSpec: string }) {
           title={t("software.detail.blockedNodes")}
         />
         {availabilityQ.isError ? (
-          <div className="lg:col-span-3 rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs text-destructive">
+          <div className="lg:col-span-3 rounded-md border border-status-failed/30 bg-status-failed/5 px-3 py-2 text-xs text-status-failed">
             {t("software.detail.availabilityFailed")}
           </div>
         ) : null}

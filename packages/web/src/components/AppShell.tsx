@@ -243,7 +243,6 @@ export function AppShell() {
         onSelectDomain={selectDomain}
         onToggle={() => setExpanded((value) => !value)}
       />
-      <MobileBackdrop expanded={expanded} onClose={() => setExpanded(false)} />
 
       <div
         className={cn(
@@ -286,20 +285,6 @@ export function AppShell() {
         />
       ) : null}
     </div>
-  );
-}
-
-function MobileBackdrop({ expanded, onClose }: { expanded: boolean; onClose: () => void }) {
-  const { t } = useTranslation();
-  if (!expanded) return null;
-  return (
-    <button
-      type="button"
-      aria-label={t("topbar.closeSidebar")}
-      data-testid="sidebar-backdrop"
-      className="fixed inset-0 z-30 bg-black/40 md:hidden"
-      onClick={onClose}
-    />
   );
 }
 
@@ -348,6 +333,8 @@ function Topbar({
         variant="ghost"
         size="icon"
         className="md:hidden"
+        id="workspace-navigation-toggle"
+        aria-controls="workspace-navigation"
         data-testid="mobile-sidebar-open"
         aria-label={t("topbar.expandSidebar")}
         aria-expanded={sidebarExpanded}

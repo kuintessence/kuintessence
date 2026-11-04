@@ -72,7 +72,7 @@
         "title": "Configure node I/O mapping",
         "description": "Map upstream outputs to downstream inputs. Double-click an existing edge to edit it.",
         "visualMode": "Visual",
-        "standardMode": "Standard",
+        "standardMode": "Form",
         "visualHint": "Drag to a compatible slot",
         "output": "Upstream output slot",
         "input": "Downstream input slot",

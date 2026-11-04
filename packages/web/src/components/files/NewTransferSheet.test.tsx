@@ -151,7 +151,7 @@ describe("NewTransferSheet cluster context changes", () => {
     fireEvent.submit(screen.getByTestId("files-new-transfer-form"));
     await waitFor(() => expect(api.post).toHaveBeenCalledOnce());
 
-    const close = screen.getByRole("button", { name: "Close" });
+    const close = screen.getByRole("button", { name: "common.close" });
     expect(close).toHaveProperty("disabled", true);
     fireEvent.keyDown(document, { key: "Escape" });
     expect(onOpenChange).not.toHaveBeenCalled();

@@ -266,7 +266,8 @@ describe("NewWorkflowPage", () => {
     expect(screen.getByTestId("workflow-start-overlay")).toBeTruthy();
     expect(screen.getByTestId("workflow-start-scratch")).toBeTruthy();
     expect(screen.getByTestId("workflow-start-template")).toBeTruthy();
-    expect(screen.getByTestId("workflow-template-picker-open")).toBeTruthy();
+    expect(screen.queryByTestId("workflow-template-picker-open")).toBeNull();
+    expect(screen.queryByTestId("yaml-input")).toBeNull();
     expect(screen.getByTestId("workflow-step-inputs").hasAttribute("disabled")).toBe(true);
     expect(screen.getByTestId("workflow-step-resources").hasAttribute("disabled")).toBe(true);
     expect(screen.getByTestId("workflow-step-review").hasAttribute("disabled")).toBe(true);
@@ -318,6 +319,9 @@ describe("NewWorkflowPage", () => {
     ).toBe(false);
     fireEvent.click(screen.getByTestId("workflow-title-next"));
     expect(screen.getByTestId("workflow-inputs-step")).toBeTruthy();
+    expect(screen.queryByTestId("workflow-confirm-file-bindings")).toBeNull();
+    expect(screen.queryByTestId("workflow-dataset-requirements")).toBeNull();
+    expect(screen.getByText("workflows.creation.inputs.noInputs")).toBeTruthy();
     expect(
       screen
         .getByTestId("workflow-title-actions")
@@ -339,6 +343,29 @@ describe("NewWorkflowPage", () => {
     ).toBe(true);
   });
 
+  test("keeps multiline script parameters intact when edited and revisited", () => {
+    renderPage();
+    startFromScratch();
+    const initial = "set -eu\necho start\necho end\n";
+    const document =
+      WORKFLOW_DOC +
+      `parameters:
+  - name: command
+    type: string
+    default: ${JSON.stringify(initial)}
+`;
+    fireEvent.change(screen.getByTestId("yaml-input"), { target: { value: document } });
+    fireEvent.click(screen.getByTestId("workflow-title-next"));
+    const field = screen.getByTestId("workflow-value-param:command");
+    expect(field.tagName).toBe("TEXTAREA");
+    expect(field).toHaveProperty("value", initial);
+    const edited = initial + "echo complete\n";
+    fireEvent.change(field, { target: { value: edited } });
+    fireEvent.click(screen.getByTestId("workflow-title-next"));
+    fireEvent.click(screen.getByTestId("workflow-title-previous"));
+    expect(screen.getByTestId("workflow-value-param:command")).toHaveProperty("value", edited);
+  });
+
   test("picking a Registry template replaces the editor YAML", async () => {
     renderPage();
     fireEvent.click(screen.getByTestId("workflow-start-template"));
@@ -353,7 +380,7 @@ describe("NewWorkflowPage", () => {
 
   test("filters Registry templates in the picker", async () => {
     renderPage();
-    fireEvent.click(screen.getByTestId("workflow-template-picker-open"));
+    fireEvent.click(screen.getByTestId("workflow-start-template"));
     await screen.findByTestId("workflow-template-option-template-two-node");
     fireEvent.change(screen.getByTestId("workflow-template-search"), {
       target: { value: "not-found" },
@@ -363,7 +390,7 @@ describe("NewWorkflowPage", () => {
 
   test("resets template filters when the picker is reopened", async () => {
     renderPage();
-    fireEvent.click(screen.getByTestId("workflow-template-picker-open"));
+    fireEvent.click(screen.getByTestId("workflow-start-template"));
     await screen.findByTestId("workflow-template-option-template-two-node");
     fireEvent.change(screen.getByTestId("workflow-template-search"), {
       target: { value: "not-found" },
@@ -372,7 +399,7 @@ describe("NewWorkflowPage", () => {
       expect(screen.queryByTestId("workflow-template-option-template-two-node")).toBeNull();
     });
     fireEvent.click(screen.getByRole("button", { name: "common.cancel" }));
-    fireEvent.click(screen.getByTestId("workflow-template-picker-open"));
+    fireEvent.click(screen.getByTestId("workflow-start-template"));
 
     expect((screen.getByTestId("workflow-template-search") as HTMLInputElement).value).toBe("");
     expect(await screen.findByTestId("workflow-template-option-template-two-node")).toBeTruthy();
@@ -383,7 +410,7 @@ describe("NewWorkflowPage", () => {
 
   test("loads templates from the next server page", async () => {
     renderPage();
-    fireEvent.click(screen.getByTestId("workflow-template-picker-open"));
+    fireEvent.click(screen.getByTestId("workflow-start-template"));
     await screen.findByTestId("workflow-template-option-template-two-node");
     fireEvent.click(screen.getByTestId("workflow-template-next-page"));
     expect(await screen.findByTestId("workflow-template-option-template-page-two")).toBeTruthy();
@@ -413,7 +440,7 @@ describe("NewWorkflowPage", () => {
       hasNext: false,
     });
     renderPage();
-    fireEvent.click(screen.getByTestId("workflow-template-picker-open"));
+    fireEvent.click(screen.getByTestId("workflow-start-template"));
 
     await waitFor(() => expect(listWorkflowTemplatePage).toHaveBeenCalled());
     const option = await screen.findByTestId("workflow-template-option-template-invalid-bypass");

@@ -431,9 +431,11 @@ function SlotColumn({
               <span className="block truncate font-mono text-xs font-medium">
                 {slot.descriptor}
               </span>
-              <span className="block truncate text-[11px] text-muted-foreground">
-                {slot.description || slot.type}
-              </span>
+              {slot.description ? (
+                <span className="block truncate text-[11px] text-muted-foreground">
+                  {slot.description}
+                </span>
+              ) : null}
             </span>
             <Badge variant="outline">{slot.type}</Badge>
           </button>

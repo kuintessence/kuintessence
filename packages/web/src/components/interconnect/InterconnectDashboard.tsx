@@ -14,6 +14,7 @@ import { useActiveOrganizationId } from "../../lib/active-organization";
 import { api } from "../../lib/api-client";
 import { getAuthState } from "../../lib/auth";
 import { usePlatformCapability } from "../../lib/platform-capabilities";
+import { toUserFacingError } from "../../lib/user-facing-error";
 import { useTheme } from "../ThemeProvider";
 import { Button } from "../ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "../ui/dialog";
@@ -21,20 +22,14 @@ import { PageHeader } from "../ui/page";
 import { InterconnectMap } from "./InterconnectMap";
 import { type EditTarget, MetadataEditor } from "./MetadataEditor";
 import {
+  computeTypeLabel,
   filterClusters,
-  formatCapacity,
+  formatCapacity as formatBytes,
+  getStatusLabels,
   type ResourceFilter,
   STATUS_COLORS,
-  STATUS_LABELS,
 } from "./model";
 
-const time = (value: string | null) => (value ? new Date(value).toLocaleString() : "未提供");
-const status = (value: keyof typeof STATUS_LABELS) => (
-  <span className="inline-flex items-center gap-1.5 whitespace-nowrap">
-    <span className="h-2 w-2 rounded-full" style={{ backgroundColor: STATUS_COLORS[value] }} />
-    {STATUS_LABELS[value]}
-  </span>
-);
 function Table({
   headers,
   children,
@@ -44,6 +39,7 @@ function Table({
   children: ReactNode;
   empty: boolean;
 }) {
+  const { t } = useTranslation();
   return (
     <div className="overflow-x-auto">
       <table className="w-full text-left text-sm">
@@ -60,7 +56,9 @@ function Table({
           {children}
         </tbody>
       </table>
-      {empty && <p className="p-8 text-center text-muted-foreground">没有符合条件的记录</p>}
+      {empty && (
+        <p className="p-8 text-center text-muted-foreground">{t("interconnect.noMatches")}</p>
+      )}
     </div>
   );
 }
@@ -77,6 +75,7 @@ function Distribution({
   unit?: string;
   format?: (n: number) => string;
 }) {
+  const { t, i18n } = useTranslation();
   const { resolved } = useTheme();
   const textColor = resolved === "dark" ? "#cbd5e1" : "#4a5060";
   const gridColor = resolved === "dark" ? "#334155" : "#e2e8f0";
@@ -96,7 +95,7 @@ function Distribution({
                 formatter: (p: { dataIndex: number }) => {
                   const row = items[p.dataIndex];
                   return row
-                    ? `${row.name}: ${row.missing ? "未提供" : format ? format(row.value) : `${row.value}${unit}`}`
+                    ? `${row.name}: ${row.missing ? t("interconnect.missing") : format ? format(row.value) : `${row.value}${unit}`}`
                     : "";
                 },
               },
@@ -111,7 +110,7 @@ function Distribution({
                   formatter: (value: number) =>
                     format
                       ? format(value)
-                      : new Intl.NumberFormat("zh", { notation: "compact" }).format(value),
+                      : new Intl.NumberFormat(i18n.language, { notation: "compact" }).format(value),
                 },
               },
               yAxis: {
@@ -142,7 +141,7 @@ function Distribution({
             }}
           />
           <details className="text-xs text-muted-foreground">
-            <summary className="cursor-pointer">查看数值</summary>
+            <summary className="cursor-pointer">{t("interconnect.showValues")}</summary>
             <div className="mt-2 max-h-48 overflow-auto">
               {items.map((i) => (
                 <button
@@ -153,7 +152,11 @@ function Distribution({
                 >
                   <span>{i.name}</span>
                   <span>
-                    {i.missing ? "未提供" : format ? format(i.value) : `${i.value}${unit}`}
+                    {i.missing
+                      ? t("interconnect.missing")
+                      : format
+                        ? format(i.value)
+                        : `${i.value}${unit}`}
                   </span>
                 </button>
               ))}
@@ -161,25 +164,27 @@ function Distribution({
           </details>
         </>
       ) : (
-        <p className="py-12 text-center text-sm text-muted-foreground">暂无数据</p>
+        <p className="py-12 text-center text-sm text-muted-foreground">{t("interconnect.empty")}</p>
       )}
     </section>
   );
 }
 
 export function InterconnectDashboard({ mode }: { mode: "provider" | "operator" }) {
+  const { t } = useTranslation();
   const orgId = useActiveOrganizationId();
   const access = usePlatformCapability(
     mode === "provider" ? "workspace.provider.view" : "workspace.platform.view",
   );
-  if (!access.ready) return <p>加载权限…</p>;
+  if (!access.ready) return <p>{t("interconnect.loadingAccess")}</p>;
   if (access.error)
     return (
       <div role="alert">
-        权限加载失败 <Button onClick={access.retry}>重试</Button>
+        {t("interconnect.accessFailed")}{" "}
+        <Button onClick={access.retry}>{t("interconnect.retry")}</Button>
       </div>
     );
-  if (!access.allowed) return <p>无权访问此仪表盘</p>;
+  if (!access.allowed) return <p>{t("interconnect.denied")}</p>;
   return (
     <DashboardContent
       key={`${mode}:${orgId}:${getAuthState().revision}`}
@@ -195,7 +200,18 @@ function DashboardContent({
   mode: "provider" | "operator";
   orgId: string | null;
 }) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
+  const statusLabels = getStatusLabels(t);
+  const formatCapacity = (bytes: number | null) =>
+    bytes === null ? t("interconnect.missing") : formatBytes(bytes);
+  const time = (value: string | null) =>
+    value ? new Date(value).toLocaleString(i18n.language) : t("interconnect.missing");
+  const status = (value: keyof typeof statusLabels) => (
+    <span className="inline-flex items-center gap-1.5 whitespace-nowrap">
+      <span className="h-2 w-2 rounded-full" style={{ backgroundColor: STATUS_COLORS[value] }} />
+      {statusLabels[value]}
+    </span>
+  );
   const queryClient = useQueryClient();
   const endpoint = `/interconnect/${mode}`;
   const queryKey = ["interconnect", mode, orgId, getAuthState().revision];
@@ -222,17 +238,17 @@ function DashboardContent({
   const saveView = useMutation({
     mutationFn: () => api.put(`${endpoint}/default-view`, view),
     onSuccess: () => {
-      toast.success("默认地图视图已保存");
+      toast.success(t("interconnect.viewSaved"));
     },
-    onError: (e) => toast.error(e.message),
+    onError: (e) => toast.error(toUserFacingError(e)),
   });
-  if (query.isPending) return <p>加载算力资源…</p>;
+  if (query.isPending) return <p>{t("interconnect.loadingResources")}</p>;
   if (query.error || !query.data)
     return (
       <div role="alert" className="rounded-md border border-border p-4">
-        {query.error?.message ?? "加载失败"}{" "}
+        {toUserFacingError(query.error, t("interconnect.loadFailed"))}{" "}
         <Button variant="outline" onClick={() => void query.refetch()}>
-          重试
+          {t("interconnect.retry")}
         </Button>
       </div>
     );
@@ -277,7 +293,7 @@ function DashboardContent({
   const typeRows = (kind: "computeTypes" | "storageTypes") =>
     [...new Set(data.clusters.flatMap((c) => c.metadata[kind]))].sort().map((name) => ({
       id: name,
-      name,
+      name: kind === "computeTypes" ? computeTypeLabel(name, t) : name,
       value: data.clusters.filter((c) => c.metadata[kind].some((t) => t === name)).length,
     }));
   const selectedCluster =
@@ -295,42 +311,58 @@ function DashboardContent({
   const metricCards: { label: string; value: ReactNode; state: string; filter: ResourceFilter }[] =
     [
       {
-        label: "算力中心",
+        label: t("interconnect.centers"),
         value: summary.centers,
-        state: `${summary.operational} 正常 · ${summary.centers - summary.operational} 其他状态`,
+        state: t("interconnect.centerStates", {
+          operational: summary.operational,
+          other: summary.centers - summary.operational,
+        }),
         filter: { kind: "centers" },
       },
       {
-        label: "CPU 核心",
+        label: t("interconnect.cpu"),
         value: data.clusters.length > summary.missingCpu ? summary.cpuCores.toLocaleString() : "—",
-        state: `${data.clusters.length - summary.missingCpu}/${data.clusters.length} 集群已登记`,
+        state: t("interconnect.registeredClusters", {
+          known: data.clusters.length - summary.missingCpu,
+          total: data.clusters.length,
+        }),
         filter: { kind: "clusters", metric: "cpu" },
       },
       {
-        label: "算力类型",
+        label: t("interconnect.computeTypes"),
         value: summary.computeTypes,
-        state: `${data.clusters.filter((c) => c.metadata.computeTypes.length === 0).length} 集群未提供`,
+        state: t("interconnect.missingClusters", {
+          total: data.clusters.filter((c) => c.metadata.computeTypes.length === 0).length,
+        }),
         filter: { kind: "clusters" },
       },
       {
-        label: "存储空间",
+        label: t("interconnect.storage"),
         value:
           data.clusters.length > summary.missingStorage
             ? formatCapacity(summary.storageBytes)
             : "—",
-        state: `${data.clusters.length - summary.missingStorage}/${data.clusters.length} 集群已登记`,
+        state: t("interconnect.registeredClusters", {
+          known: data.clusters.length - summary.missingStorage,
+          total: data.clusters.length,
+        }),
         filter: { kind: "clusters", metric: "storage" },
       },
       {
-        label: "存储类型",
+        label: t("interconnect.storageTypes"),
         value: summary.storageTypes,
-        state: `${data.clusters.filter((c) => c.metadata.storageTypes.length === 0).length} 集群未提供`,
+        state: t("interconnect.missingClusters", {
+          total: data.clusters.filter((c) => c.metadata.storageTypes.length === 0).length,
+        }),
         filter: { kind: "clusters" },
       },
       {
-        label: "应用软件",
+        label: t("interconnect.applications"),
         value: summary.applications,
-        state: `${data.clusters.filter((c) => c.software.some((s) => s.source === "inventory")).length} 集群有上报清单`,
+        state: t("interconnect.inventoryClusters", {
+          total: data.clusters.filter((c) => c.software.some((s) => s.source === "inventory"))
+            .length,
+        }),
         filter: { kind: "applications" },
       },
     ];
@@ -339,7 +371,10 @@ function DashboardContent({
       <PageHeader title={t("workspace.nav.interconnect")} />
       <div className="flex flex-wrap items-center gap-2 text-sm">
         <span className="mr-auto text-muted-foreground">
-          {mode === "operator" ? "平台范围" : "当前授权组织"} · 更新于 {time(data.generatedAt)}
+          {mode === "operator"
+            ? t("interconnect.platformScope")
+            : t("interconnect.organizationScope")}{" "}
+          · {t("interconnect.updated", { time: time(data.generatedAt) })}
         </span>
         <Button
           variant="outline"
@@ -347,14 +382,14 @@ function DashboardContent({
           disabled={query.isFetching}
           onClick={() => void query.refetch()}
         >
-          刷新
+          {t("interconnect.refresh")}
         </Button>
         {data.canManage &&
           (
             [
-              ["centers", "新增中心"],
-              ["clusters", "新增集群"],
-              ["links", "新增链路"],
+              ["centers", t("interconnect.addCenter")],
+              ["clusters", t("interconnect.addCluster")],
+              ["links", t("interconnect.addLink")],
             ] as const
           ).map(([kind, label]) => (
             <Button
@@ -374,7 +409,7 @@ function DashboardContent({
             key={card.label}
             type="button"
             onClick={() => setFilter(card.filter)}
-            className="min-w-0 rounded-xl border border-border bg-card p-4 text-left transition-colors hover:border-primary focus-visible:outline-2 focus-visible:outline-primary"
+            className="min-w-0 rounded-xl border border-border bg-card p-4 text-left transition-colors hover:border-brand focus-visible:outline-2 focus-visible:outline-brand"
           >
             <div className="text-sm text-muted-foreground">{card.label}</div>
             <div className="my-2 break-words text-2xl font-semibold tabular-nums">{card.value}</div>
@@ -386,40 +421,47 @@ function DashboardContent({
         <button
           type="button"
           onClick={() => setFilter({ kind: "clusters", metric: "jobs" })}
-          className="rounded-lg border border-border px-4 py-3 text-left text-sm hover:border-primary"
+          className="rounded-lg border border-border px-4 py-3 text-left text-sm hover:border-brand"
         >
-          24 小时作业成功率{" "}
-          <strong className="float-right">
-            {terminals ? `${((summary.succeeded / terminals) * 100).toFixed(1)}%` : "暂无完成作业"}
+          {t("interconnect.jobSuccess")}{" "}
+          <strong className="block mt-1 text-base tabular-nums">
+            {terminals
+              ? `${((summary.succeeded / terminals) * 100).toFixed(1)}%`
+              : t("interconnect.noFinishedJobs")}
           </strong>
           <p className="mt-1 text-xs text-muted-foreground">
-            {summary.succeeded} 成功 / {summary.failed} 失败；已绑定集群
+            {t("interconnect.jobCounts", { succeeded: summary.succeeded, failed: summary.failed })}
           </p>
         </button>
         <button
           type="button"
           onClick={() => setFilter({ kind: "clusters", metric: "agents" })}
-          className="rounded-lg border border-border px-4 py-3 text-left text-sm hover:border-primary"
+          className="rounded-lg border border-border px-4 py-3 text-left text-sm hover:border-brand"
         >
-          Agent 在线健康率{" "}
-          <strong className="float-right">
+          {t("interconnect.agentHealth")}{" "}
+          <strong className="block mt-1 text-base tabular-nums">
             {boundAgents.length
               ? `${((healthyAgents / boundAgents.length) * 100).toFixed(1)}%`
-              : "未绑定 Agent"}
+              : t("interconnect.noAgents")}
           </strong>
           <p className="mt-1 text-xs text-muted-foreground">
-            {healthyAgents} / {boundAgents.length}；5 分钟内心跳
+            {t("interconnect.heartbeatCounts", {
+              healthy: healthyAgents,
+              total: boundAgents.length,
+            })}
           </p>
         </button>
         <button
           type="button"
           onClick={() => setFilter({ kind: "links" })}
-          className="rounded-lg border border-border px-4 py-3 text-left text-sm hover:border-primary"
+          className="rounded-lg border border-border px-4 py-3 text-left text-sm hover:border-brand"
         >
-          互联链路 <strong className="float-right">{data.links.length}</strong>
+          {t("interconnect.links")}{" "}
+          <strong className="block mt-1 text-base tabular-nums">{data.links.length}</strong>
           <p className="mt-1 text-xs text-muted-foreground">
-            {data.links.filter((l) => isObservationStale(l.metadata.observedAt)).length}{" "}
-            条观测过期或缺失
+            {t("interconnect.staleLinks", {
+              total: data.links.filter((l) => isObservationStale(l.metadata.observedAt)).length,
+            })}
           </p>
         </button>
       </div>
@@ -441,11 +483,11 @@ function DashboardContent({
         />
       )}
       <div className="flex flex-wrap items-center gap-2">
-        <h2 className="mr-auto font-semibold">资源分布</h2>
+        <h2 className="mr-auto font-semibold">{t("interconnect.distributions")}</h2>
         {(
           [
-            ["center", "按算力中心"],
-            ["cluster", "按集群"],
+            ["center", t("interconnect.byCenter")],
+            ["cluster", t("interconnect.byCluster")],
           ] as const
         ).map(([value, label]) => (
           <Button
@@ -460,8 +502,8 @@ function DashboardContent({
       </div>
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
         <Distribution
-          title="中心状态"
-          items={Object.entries(STATUS_LABELS).map(([id, name]) => ({
+          title={t("interconnect.centerStatus")}
+          items={Object.entries(statusLabels).map(([id, name]) => ({
             id,
             name,
             value: data.centers.filter((c) => c.metadata.status === id).length,
@@ -469,7 +511,7 @@ function DashboardContent({
           onClick={(status) => setFilter({ kind: "centers", status })}
         />
         <Distribution
-          title="CPU 核心分布"
+          title={t("interconnect.cpuDistribution")}
           items={grouped.map((g) => ({
             id: g.id,
             name: g.name,
@@ -479,7 +521,7 @@ function DashboardContent({
           onClick={(id) => chooseGroup(id, { metric: "cpu" })}
         />
         <Distribution
-          title="存储容量分布"
+          title={t("interconnect.storageDistribution")}
           items={grouped.map((g) => ({
             id: g.id,
             name: g.name,
@@ -490,17 +532,17 @@ function DashboardContent({
           onClick={(id) => chooseGroup(id, { metric: "storage" })}
         />
         <Distribution
-          title="算力类型 · 集群数"
+          title={t("interconnect.computeDistribution")}
           items={typeRows("computeTypes")}
           onClick={(computeType) => setFilter({ kind: "clusters", computeType })}
         />
         <Distribution
-          title="存储类型 · 集群数"
+          title={t("interconnect.storageTypeDistribution")}
           items={typeRows("storageTypes")}
           onClick={(storageType) => setFilter({ kind: "clusters", storageType })}
         />
         <Distribution
-          title="应用软件分布"
+          title={t("interconnect.applicationDistribution")}
           items={grouped.map((g) => ({
             id: g.id,
             name: g.name,
@@ -509,15 +551,18 @@ function DashboardContent({
           onClick={(id) => chooseGroup(id, { kind: "applications" })}
         />
       </div>
-      <section className="rounded-xl border border-border bg-card" aria-label="资源明细">
+      <section
+        className="rounded-xl border border-border bg-card"
+        aria-label={t("interconnect.details")}
+      >
         <div className="flex flex-wrap items-center gap-2 border-b border-border p-4">
-          <h2 className="mr-auto font-semibold">资源明细</h2>
+          <h2 className="mr-auto font-semibold">{t("interconnect.details")}</h2>
           {(
             [
-              ["centers", "算力中心"],
-              ["clusters", "集群"],
-              ["applications", "应用软件"],
-              ["links", "链路"],
+              ["centers", t("interconnect.centers")],
+              ["clusters", t("interconnect.clusters")],
+              ["applications", t("interconnect.applications")],
+              ["links", t("interconnect.link")],
             ] as const
           ).map(([kind, label]) => (
             <Button
@@ -531,9 +576,9 @@ function DashboardContent({
           ))}
         </div>
         <div className="flex flex-wrap items-center gap-2 border-b border-border p-4 text-sm">
-          <span>筛选：</span>
+          <span>{t("interconnect.filter")}</span>
           <select
-            aria-label="筛选算力中心"
+            aria-label={t("interconnect.filterCenter")}
             className="max-w-full rounded border border-border bg-background p-1.5"
             value={filter.centerId ?? ""}
             onChange={(e) =>
@@ -545,7 +590,7 @@ function DashboardContent({
               })
             }
           >
-            <option value="">全部算力中心</option>
+            <option value="">{t("interconnect.allCenters")}</option>
             {data.centers.map((c) => (
               <option key={c.id} value={c.id}>
                 {c.metadata.name}
@@ -554,17 +599,19 @@ function DashboardContent({
           </select>
           {[
             filter.clusterId ? clusterName(filter.clusterId) : null,
-            filter.centerIds ? `${filter.centerIds.length} 个地图节点` : null,
-            filter.computeType,
+            filter.centerIds
+              ? t("interconnect.mapNodes", { total: filter.centerIds.length })
+              : null,
+            filter.computeType ? computeTypeLabel(filter.computeType, t) : null,
             filter.storageType,
             filter.application,
-            filter.status ? STATUS_LABELS[filter.status as keyof typeof STATUS_LABELS] : null,
+            filter.status ? statusLabels[filter.status as keyof typeof statusLabels] : null,
             filter.metric
               ? {
-                  cpu: "CPU 核心",
-                  storage: "存储容量",
-                  jobs: "24 小时作业成功率",
-                  agents: "Agent 在线健康率",
+                  cpu: t("interconnect.cpu"),
+                  storage: t("interconnect.storageCapacity"),
+                  jobs: t("interconnect.jobSuccess"),
+                  agents: t("interconnect.agentHealth"),
                 }[filter.metric]
               : null,
           ]
@@ -575,7 +622,7 @@ function DashboardContent({
               </span>
             ))}
           <Button size="sm" variant="ghost" onClick={() => setFilter({ kind: filter.kind })}>
-            清除筛选
+            {t("interconnect.clearFilters")}
           </Button>
         </div>
         {selectedCenter && (
@@ -593,7 +640,9 @@ function DashboardContent({
             </span>
             <span className="text-muted-foreground">{selectedCenter.id}</span>
             <span>
-              {data.clusters.filter((c) => c.centerId === selectedCenter.id).length} 个集群
+              {t("interconnect.clusterCount", {
+                total: data.clusters.filter((c) => c.centerId === selectedCenter.id).length,
+              })}
             </span>
             {data.canManage && (
               <Button
@@ -601,14 +650,22 @@ function DashboardContent({
                 variant="ghost"
                 onClick={() => setEditor({ kind: "centers", id: selectedCenter.id })}
               >
-                编辑中心
+                {t("interconnect.editCenter")}
               </Button>
             )}
           </div>
         )}
         {filter.kind === "centers" && (
           <Table
-            headers={["算力中心", "位置", "状态", "集群", "CPU 核心", "存储", "操作"]}
+            headers={[
+              t("interconnect.centers"),
+              t("interconnect.location"),
+              t("interconnect.statusLabel"),
+              t("interconnect.clusters"),
+              t("interconnect.cpu"),
+              t("interconnect.storageShort"),
+              t("interconnect.actions"),
+            ]}
             empty={!centers.length}
           >
             {centers.map((c) => {
@@ -617,7 +674,7 @@ function DashboardContent({
                 <tr key={c.id}>
                   <td>
                     <button
-                      className="text-primary underline-offset-4 hover:underline"
+                      className="text-brand underline-offset-4 hover:underline"
                       type="button"
                       onClick={() => setFilter({ kind: "clusters", centerId: c.id })}
                     >
@@ -636,7 +693,7 @@ function DashboardContent({
                       ? children
                           .reduce((n, r) => n + (r.metadata.cpuCores ?? 0), 0)
                           .toLocaleString()
-                      : "未提供"}
+                      : t("interconnect.missing")}
                   </td>
                   <td>
                     {formatCapacity(
@@ -652,7 +709,7 @@ function DashboardContent({
                         variant="ghost"
                         onClick={() => setEditor({ kind: "centers", id: c.id })}
                       >
-                        编辑
+                        {t("interconnect.edit")}
                       </Button>
                     )}
                   </td>
@@ -664,20 +721,20 @@ function DashboardContent({
         {filter.kind === "clusters" && (
           <Table
             headers={[
-              "集群",
-              "算力中心",
-              "状态",
-              "CPU 核心",
-              "算力类型",
-              "存储容量",
-              "存储类型",
-              "软件",
+              t("interconnect.clusters"),
+              t("interconnect.centers"),
+              t("interconnect.statusLabel"),
+              t("interconnect.cpu"),
+              t("interconnect.computeTypes"),
+              t("interconnect.storageCapacity"),
+              t("interconnect.storageTypes"),
+              t("interconnect.software"),
               ...(filter.metric === "jobs"
-                ? ["24h 成功 / 失败"]
+                ? [t("interconnect.jobs24h")]
                 : filter.metric === "agents"
-                  ? ["在线健康 / Agent"]
+                  ? [t("interconnect.agentsHealthy")]
                   : []),
-              "更新时间",
+              t("interconnect.updatedAt"),
             ]}
             empty={!clusters.length}
           >
@@ -686,7 +743,7 @@ function DashboardContent({
                 <td>
                   <button
                     type="button"
-                    className="text-primary hover:underline"
+                    className="text-brand hover:underline"
                     onClick={() => setSelection({ kind: "cluster", id: c.id })}
                   >
                     {c.metadata.name}
@@ -694,14 +751,17 @@ function DashboardContent({
                 </td>
                 <td>{centerName(c.centerId)}</td>
                 <td>{status(c.metadata.status)}</td>
-                <td>{c.metadata.cpuCores?.toLocaleString() ?? "未提供"}</td>
-                <td>{c.metadata.computeTypes.join("、") || "未提供"}</td>
+                <td>{c.metadata.cpuCores?.toLocaleString() ?? t("interconnect.missing")}</td>
+                <td>
+                  {c.metadata.computeTypes.map((type) => computeTypeLabel(type, t)).join(", ") ||
+                    t("interconnect.missing")}
+                </td>
                 <td>{formatCapacity(c.metadata.storageBytes)}</td>
-                <td>{c.metadata.storageTypes.join("、") || "未提供"}</td>
+                <td>{c.metadata.storageTypes.join(", ") || t("interconnect.missing")}</td>
                 <td>
                   <button
                     type="button"
-                    className="text-primary"
+                    className="text-brand"
                     onClick={() => setFilter({ ...filter, kind: "applications", clusterId: c.id })}
                   >
                     {c.software.length}
@@ -730,11 +790,19 @@ function DashboardContent({
         {filter.kind === "applications" && (
           <>
             <p className="px-4 py-2 text-xs text-muted-foreground">
-              {new Set(applications.map((r) => r.software.name)).size} 种软件 ·{" "}
-              {applications.length} 条集群关联
+              {t("interconnect.applicationCounts", {
+                software: new Set(applications.map((r) => r.software.name)).size,
+                associations: applications.length,
+              })}
             </p>
             <Table
-              headers={["应用软件", "算力中心", "集群", "来源", "状态／上报时间"]}
+              headers={[
+                t("interconnect.applications"),
+                t("interconnect.centers"),
+                t("interconnect.clusters"),
+                t("interconnect.source"),
+                t("interconnect.reportedAt"),
+              ]}
               empty={!applications.length}
             >
               {applications.map(({ cluster: c, software: s }) => (
@@ -742,7 +810,7 @@ function DashboardContent({
                   <td>
                     <button
                       type="button"
-                      className="text-primary"
+                      className="text-brand"
                       onClick={() => setFilter({ ...filter, application: s.name })}
                     >
                       {s.name}
@@ -752,17 +820,21 @@ function DashboardContent({
                   <td>
                     <button
                       type="button"
-                      className="text-primary"
+                      className="text-brand"
                       onClick={() => setSelection({ kind: "cluster", id: c.id })}
                     >
                       {c.metadata.name}
                     </button>
                   </td>
-                  <td>{s.source === "inventory" ? "Agent 上报" : "人工登记"}</td>
+                  <td>
+                    {s.source === "inventory"
+                      ? t("interconnect.inventory")
+                      : t("interconnect.declared")}
+                  </td>
                   <td>
                     {s.source === "declared"
-                      ? "安装状态未验证"
-                      : `${isObservationStale(s.observedAt) ? "上报已过期 · " : "已安装 · "}${time(s.observedAt)}`}
+                      ? t("interconnect.unverified")
+                      : `${isObservationStale(s.observedAt) ? t("interconnect.reportStalePrefix") : t("interconnect.installedPrefix")}${time(s.observedAt)}`}
                   </td>
                 </tr>
               ))}
@@ -770,13 +842,22 @@ function DashboardContent({
           </>
         )}
         {filter.kind === "links" && (
-          <Table headers={["链路", "起点", "终点", "状态", "观测时间"]} empty={!links.length}>
+          <Table
+            headers={[
+              t("interconnect.link"),
+              t("interconnect.from"),
+              t("interconnect.to"),
+              t("interconnect.statusLabel"),
+              t("interconnect.observedAt"),
+            ]}
+            empty={!links.length}
+          >
             {links.map((l) => (
               <tr key={l.id}>
                 <td>
                   <button
                     type="button"
-                    className="text-primary"
+                    className="text-brand"
                     onClick={() => setSelection({ kind: "link", id: l.id })}
                   >
                     {l.metadata.name}
@@ -789,7 +870,9 @@ function DashboardContent({
                     isObservationStale(l.metadata.observedAt) ? "unknown" : l.metadata.status,
                   )}
                   {isObservationStale(l.metadata.observedAt) && (
-                    <span className="ml-2 text-xs text-muted-foreground">观测过期或缺失</span>
+                    <span className="ml-2 text-xs text-muted-foreground">
+                      {t("interconnect.stale")}
+                    </span>
                   )}
                 </td>
                 <td>{time(l.metadata.observedAt)}</td>
@@ -799,14 +882,8 @@ function DashboardContent({
         )}
       </section>
       <details className="text-xs text-muted-foreground">
-        <summary className="cursor-pointer">统计口径</summary>
-        <p className="mt-2 leading-6">
-          仅统计当前权限内已登记的中心与集群，未绑定 Agent
-          不计入集群监控。容量按集群登记值求和，每个集群只计一次；共享存储应只登记一次，不在多个集群重复填报。空值表示未提供，部分已知的总量为已知值小计。类型分布按含该类型的集群计数，多类型分类不可相加。软件以名称区分，版本和多
-          Agent 安装去重；登记软件不代表已安装。作业成功率为绑定 Agent 最近 24 小时完成数
-          /（完成数＋失败数），取消和运行中作业不计入。中心及集群运行状态来自档案登记，Agent
-          状态来自心跳；链路状态来自注明来源的观测值，超过 5 分钟显示未知。
-        </p>
+        <summary className="cursor-pointer">{t("interconnect.counting")}</summary>
+        <p className="mt-2 leading-6">{t("interconnect.countingRules")}</p>
       </details>
       {selection && (selectedCluster || selectedLink) && (
         <Dialog
@@ -830,27 +907,37 @@ function DashboardContent({
                     {status(selectedCluster.metadata.status)}
                   </p>
                   <dl className="grid grid-cols-2 gap-3">
-                    <dt>CPU 核心</dt>
-                    <dd>{selectedCluster.metadata.cpuCores ?? "未提供"}</dd>
-                    <dt>算力类型</dt>
-                    <dd>{selectedCluster.metadata.computeTypes.join("、") || "未提供"}</dd>
-                    <dt>存储容量</dt>
+                    <dt>{t("interconnect.cpu")}</dt>
+                    <dd>{selectedCluster.metadata.cpuCores ?? t("interconnect.missing")}</dd>
+                    <dt>{t("interconnect.computeTypes")}</dt>
+                    <dd>
+                      {selectedCluster.metadata.computeTypes
+                        .map((type) => computeTypeLabel(type, t))
+                        .join(", ") || t("interconnect.missing")}
+                    </dd>
+                    <dt>{t("interconnect.storageCapacity")}</dt>
                     <dd>{formatCapacity(selectedCluster.metadata.storageBytes)}</dd>
-                    <dt>存储类型</dt>
-                    <dd>{selectedCluster.metadata.storageTypes.join("、") || "未提供"}</dd>
-                    <dt>档案更新时间</dt>
+                    <dt>{t("interconnect.storageTypes")}</dt>
+                    <dd>
+                      {selectedCluster.metadata.storageTypes.join(", ") ||
+                        t("interconnect.missing")}
+                    </dd>
+                    <dt>{t("interconnect.recordUpdatedAt")}</dt>
                     <dd>{time(selectedCluster.updatedAt)}</dd>
                   </dl>
                   <h3 className="font-semibold">Agent</h3>
                   {selectedCluster.agents.length ? (
                     selectedCluster.agents.map((a) => (
                       <div key={a.id} className="break-words rounded border border-border p-2">
-                        {a.id} · {isObservationStale(a.observedAt) ? "心跳过期或缺失" : a.status}
+                        {a.id} ·{" "}
+                        {isObservationStale(a.observedAt)
+                          ? t("interconnect.staleHeartbeat")
+                          : a.status}
                         <p className="text-xs text-muted-foreground">{time(a.observedAt)}</p>
                       </div>
                     ))
                   ) : (
-                    <p>未绑定 Agent</p>
+                    <p>{t("interconnect.noAgents")}</p>
                   )}
                   <Button
                     variant="outline"
@@ -863,7 +950,7 @@ function DashboardContent({
                       setSelection(null);
                     }}
                   >
-                    查看软件（{selectedCluster.software.length}）
+                    {t("interconnect.viewSoftware", { total: selectedCluster.software.length })}
                   </Button>
                 </>
               )}
@@ -872,7 +959,7 @@ function DashboardContent({
                   <p>
                     <button
                       type="button"
-                      className="text-primary"
+                      className="text-brand"
                       onClick={() => {
                         setFilter({ kind: "clusters", centerId: selectedLink.fromCenterId });
                         setSelection(null);
@@ -883,7 +970,7 @@ function DashboardContent({
                     ↔{" "}
                     <button
                       type="button"
-                      className="text-primary"
+                      className="text-brand"
                       onClick={() => {
                         setFilter({ kind: "clusters", centerId: selectedLink.toCenterId });
                         setSelection(null);
@@ -899,30 +986,32 @@ function DashboardContent({
                         : selectedLink.metadata.status,
                     )}
                     {isObservationStale(selectedLink.metadata.observedAt) &&
-                      ` · 观测过期或缺失，上次记录：${STATUS_LABELS[selectedLink.metadata.status]}`}
+                      t("interconnect.lastStatus", {
+                        status: statusLabels[selectedLink.metadata.status],
+                      })}
                   </p>
                   <dl className="grid grid-cols-2 gap-3">
                     {(
                       [
-                        ["bandwidthMbps", "带宽", "Mbps"],
-                        ["throughputMbps", "吞吐量", "Mbps"],
-                        ["latencyMs", "时延", "ms"],
-                        ["packetLossPercent", "丢包率", "%"],
+                        ["bandwidthMbps", t("interconnect.bandwidth"), "Mbps"],
+                        ["throughputMbps", t("interconnect.throughput"), "Mbps"],
+                        ["latencyMs", t("interconnect.latency"), "ms"],
+                        ["packetLossPercent", t("interconnect.packetLoss"), "%"],
                       ] as const
                     ).map(([key, label, unit]) => (
                       <div key={key} className="contents">
                         <dt>{label}</dt>
                         <dd>
                           {selectedLink.metadata[key] === null
-                            ? "未采集"
+                            ? t("interconnect.notMeasured")
                             : `${selectedLink.metadata[key]} ${unit}`}
                         </dd>
                       </div>
                     ))}
-                    <dt>观测时间</dt>
+                    <dt>{t("interconnect.observedAt")}</dt>
                     <dd>{time(selectedLink.metadata.observedAt)}</dd>
-                    <dt>来源</dt>
-                    <dd>{selectedLink.metadata.source || "未提供"}</dd>
+                    <dt>{t("interconnect.source")}</dt>
+                    <dd>{selectedLink.metadata.source || t("interconnect.missing")}</dd>
                   </dl>
                 </>
               )}
@@ -936,7 +1025,7 @@ function DashboardContent({
                     setSelection(null);
                   }}
                 >
-                  编辑档案
+                  {t("interconnect.editRecord")}
                 </Button>
               )}
             </div>
@@ -952,12 +1041,12 @@ function DashboardContent({
             if (editor.id) await api.put(`${endpoint}/${editor.kind}/${editor.id}`, body);
             else await api.post(`${endpoint}/${editor.kind}`, body);
             await queryClient.invalidateQueries({ queryKey: ["interconnect"] });
-            toast.success("档案已保存");
+            toast.success(t("interconnect.saved"));
           }}
           onDelete={async () => {
             await api.delete(`${endpoint}/${editor.kind}/${editor.id}`);
             await queryClient.invalidateQueries({ queryKey: ["interconnect"] });
-            toast.success("档案已删除");
+            toast.success(t("interconnect.deleted"));
           }}
         />
       )}

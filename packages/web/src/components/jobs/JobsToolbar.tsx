@@ -54,12 +54,28 @@ export function JobsToolbar({
             value={search}
             onChange={(e) => onSearchChange(e.target.value)}
             placeholder={t("jobs.searchPlaceholder")}
+            aria-label={t("jobs.searchPlaceholder")}
             className="pl-8"
             data-testid="jobs-search"
           />
         </div>
+        <select
+          className="h-9 max-w-full rounded-md border border-input bg-card px-2 text-sm sm:hidden"
+          aria-label={t("dashboard.status")}
+          value={status}
+          onChange={(event) => onStatusChange(event.target.value as StatusFilter)}
+          data-testid="jobs-status-select"
+        >
+          {STATUS_FILTERS.map((s) => (
+            <option key={s} value={s}>
+              {s === "ALL"
+                ? t("common.all")
+                : statusLabel(s, i18n?.resolvedLanguage ?? i18n?.language)}
+            </option>
+          ))}
+        </select>
         <fieldset
-          className="flex min-w-0 flex-wrap gap-1"
+          className="hidden min-w-0 flex-wrap gap-1 sm:flex"
           aria-label={t("dashboard.status")}
           data-testid="jobs-status-filter"
         >

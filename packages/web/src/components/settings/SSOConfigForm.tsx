@@ -563,13 +563,13 @@ export function SSOConfigForm() {
                       <ShieldCheck className="h-3.5 w-3.5" />
                       {t("settings.sso.testSuccess", { defaultValue: "Discovery succeeded" })}
                     </div>
-                    <code className="block break-all text-[10.5px] text-muted-foreground">
+                    <code className="block break-all text-xs text-muted-foreground">
                       {testResult.issuer}
                     </code>
-                    <code className="block break-all text-[10.5px] text-muted-foreground">
+                    <code className="block break-all text-xs text-muted-foreground">
                       auth: {testResult.authorizationEndpoint ?? "-"}
                     </code>
-                    <code className="block break-all text-[10.5px] text-muted-foreground">
+                    <code className="block break-all text-xs text-muted-foreground">
                       token: {testResult.tokenEndpoint ?? "-"}
                     </code>
                   </div>

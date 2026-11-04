@@ -139,6 +139,7 @@ export function DataMarketPage() {
               value={query}
               onChange={(event) => setQuery(event.target.value)}
               placeholder={t("dataMarket.search")}
+              aria-label={t("dataMarket.search")}
             />
           </CardHeader>
           <CardContent className="space-y-2">
@@ -152,7 +153,11 @@ export function DataMarketPage() {
               >
                 <div className="flex items-center justify-between gap-3">
                   <span className="font-medium">{asset.name}</span>
-                  <Badge variant="outline">{asset.visibility}</Badge>
+                  <Badge variant="outline">
+                    {t(`dataMarket.visibility.${asset.visibility}`, {
+                      defaultValue: asset.visibility,
+                    })}
+                  </Badge>
                 </div>
                 <p className="mt-1 line-clamp-2 text-sm text-muted-foreground">
                   {asset.description ?? t("dataMarket.noDescription")}
@@ -173,16 +178,24 @@ export function DataMarketPage() {
             </CardHeader>
             <CardContent className="space-y-3">
               <p className="text-xs text-muted-foreground">{t("dataMarket.privateRestriction")}</p>
-              <Input
-                value={privateName}
-                onChange={(event) => setPrivateName(event.target.value)}
-                placeholder={t("dataMarket.name")}
-              />
-              <Input
-                value={privateVersion}
-                onChange={(event) => setPrivateVersion(event.target.value)}
-                placeholder={t("dataMarket.version")}
-              />
+              <label htmlFor="private-data-name" className="grid gap-1 text-sm font-medium">
+                {t("dataMarket.name")}
+                <Input
+                  id="private-data-name"
+                  value={privateName}
+                  onChange={(event) => setPrivateName(event.target.value)}
+                  placeholder={t("dataMarket.name")}
+                />
+              </label>
+              <label htmlFor="private-data-version" className="grid gap-1 text-sm font-medium">
+                {t("dataMarket.version")}
+                <Input
+                  id="private-data-version"
+                  value={privateVersion}
+                  onChange={(event) => setPrivateVersion(event.target.value)}
+                  placeholder={t("dataMarket.version")}
+                />
+              </label>
               <label className="grid gap-1 text-sm font-medium">
                 {t("dataMarket.privateKind")}
                 <select
@@ -308,7 +321,7 @@ function DataAssetDetail({
           </p>
         ) : null}
         {!accessStateReady ? (
-          <p className="text-xs text-destructive" data-testid="data-access-state-unavailable">
+          <p className="text-xs text-status-failed" data-testid="data-access-state-unavailable">
             {accessStateError
               ? t("dataMarket.accessStateUnavailable")
               : t("dataMarket.accessStateLoading")}

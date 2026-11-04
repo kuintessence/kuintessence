@@ -30,6 +30,7 @@ import {
   type OnConnectEnd,
   type OnConnectStart,
   ReactFlow,
+  useNodesInitialized,
   useReactFlow,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
@@ -254,7 +255,14 @@ export function ReactFlowEditor({
   const [hoveredEdgeId, setHoveredEdgeId] = useState<string | null>(null);
   const [focusedNodeId, setFocusedNodeId] = useState<string | null>(null);
   const [focusedEdgeId, setFocusedEdgeId] = useState<string | null>(null);
-  const { screenToFlowPosition } = useReactFlow();
+  const { screenToFlowPosition, fitView } = useReactFlow();
+  const nodesInitialized = useNodesInitialized();
+  const fittedInitially = useRef(false);
+  useEffect(() => {
+    if (!nodesInitialized || fittedInitially.current) return;
+    fittedInitially.current = true;
+    void fitView({ minZoom: 0.1, maxZoom: 1 });
+  }, [nodesInitialized, fitView]);
   const handledExternalConnectionRef = useRef<number | null>(null);
 
   useEffect(() => {
@@ -701,8 +709,7 @@ export function ReactFlowEditor({
             onNodeMouseEnter={(_event, node) => setHoveredNodeId(node.id)}
             onNodeMouseLeave={() => setHoveredNodeId(null)}
             onPaneClick={handlePaneClick}
-            fitView
-            fitViewOptions={{ maxZoom: 1 }}
+            minZoom={0.1}
             proOptions={{ hideAttribution: true }}
           >
             <Background variant={BackgroundVariant.Dots} gap={16} size={1} />

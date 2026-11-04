@@ -13,6 +13,15 @@ import type { JobDetail } from "../jobs/types";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from "../ui/dialog";
 import { PageHeader } from "../ui/page";
 import { WorkflowRunGraph } from "./WorkflowRunGraph";
 
@@ -169,6 +178,7 @@ export function WorkflowDagView({ runId }: WorkflowDagViewProps) {
   const queryClient = useQueryClient();
   const [activeJobId, setActiveJobId] = useState<string | null>(null);
   const [sheetOpen, setSheetOpen] = useState(false);
+  const [cancelTarget, setCancelTarget] = useState<string | null>(null);
 
   const runQ = useQuery({
     queryKey: ["workflow-detail", runId],
@@ -404,17 +414,52 @@ export function WorkflowDagView({ runId }: WorkflowDagViewProps) {
         }
         actions={
           runQ.data && (canCancelRun || cancelInProgress) ? (
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              data-testid="workflow-cancel-run"
-              disabled={!canCancelRun || cancelRun.isPending}
-              onClick={() => cancelRun.mutate(runId)}
+            <Dialog
+              open={cancelTarget === runId}
+              onOpenChange={(open) => setCancelTarget(open ? runId : null)}
             >
-              <X />
-              {cancelInProgress ? t("workflows.run.cancelling") : t("workflows.run.cancel")}
-            </Button>
+              <DialogTrigger asChild>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  data-testid="workflow-cancel-run"
+                  disabled={!canCancelRun || cancelRun.isPending}
+                >
+                  <X />
+                  {cancelInProgress ? t("workflows.run.cancelling") : t("workflows.run.cancel")}
+                </Button>
+              </DialogTrigger>
+              <DialogContent dismissible={!cancelRun.isPending} outsideDismissPolicy="never">
+                <DialogHeader>
+                  <DialogTitle>
+                    {t("workflows.run.cancelTitle", { name: runQ.data.name })}
+                  </DialogTitle>
+                  <DialogDescription>{t("workflows.run.cancelDescription")}</DialogDescription>
+                </DialogHeader>
+                <DialogFooter className="flex flex-wrap justify-end gap-2">
+                  <Button
+                    variant="outline"
+                    disabled={cancelRun.isPending}
+                    onClick={() => setCancelTarget(null)}
+                  >
+                    {t("workflows.run.keepRunning")}
+                  </Button>
+                  <Button
+                    variant="destructive"
+                    disabled={!canCancelRun || cancelRun.isPending || cancelTarget !== runId}
+                    data-testid="workflow-cancel-confirm"
+                    onClick={() =>
+                      cancelRun.mutate(runId, { onSuccess: () => setCancelTarget(null) })
+                    }
+                  >
+                    {cancelRun.isPending
+                      ? t("workflows.run.cancelling")
+                      : t("workflows.run.cancel")}
+                  </Button>
+                </DialogFooter>
+              </DialogContent>
+            </Dialog>
           ) : null
         }
       />

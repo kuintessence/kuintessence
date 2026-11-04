@@ -99,7 +99,7 @@ describe("Login page SSO entry", () => {
     expect(screen.getByTestId("sso-login-button").textContent).toContain(
       "使用 科研统一身份认证 登录",
     );
-    expect(screen.getByText("登录后将进入平台。")).toBeTruthy();
+    expect(screen.queryByText("登录后将进入平台。")).toBeNull();
     expect(screen.getByText("显示开发者登录")).toBeTruthy();
     expect(screen.getByTestId("login-platform-message").textContent).toBe("欢迎访问科研算力平台");
     expect(screen.queryByText(/localhost|v0\.0\.1/)).toBeNull();

@@ -3,6 +3,7 @@ import {
   type PlatformBranding,
   type PlatformCapability,
 } from "@kuintessence/shared/browser";
+import * as DialogPrimitive from "@radix-ui/react-dialog";
 import { Link } from "@tanstack/react-router";
 import { ChevronDown, CircleHelp, ExternalLink, PanelLeftClose, PanelLeftOpen } from "lucide-react";
 import { useTranslation } from "react-i18next";
@@ -82,16 +83,24 @@ export function WorkspaceSidebar({
     .filter((item) => item.domain === identity.domain)
     .flatMap((item) => item.sections.map((section) => ({ identityId: item.id, section })));
 
-  return (
+  const sidebar = (
     <aside
+      id="workspace-navigation"
       data-testid="sidebar"
       data-expanded={expanded}
       className={cn(
         "fixed inset-y-0 left-0 z-40 flex flex-col border-r border-sidebar-border bg-sidebar text-sidebar-foreground transition-[width,transform] duration-200",
-        expanded ? "w-64 translate-x-0 xl:w-72" : "-translate-x-full md:w-16 md:translate-x-0",
+        expanded
+          ? "w-64 translate-x-0 xl:w-72"
+          : "invisible -translate-x-full md:visible md:w-16 md:translate-x-0",
       )}
       aria-label={t("workspace.navigation")}
     >
+      {collapseOnNavigate ? (
+        <DialogPrimitive.Title className="sr-only">
+          {t("workspace.navigation")}
+        </DialogPrimitive.Title>
+      ) : null}
       <div className="flex h-14 w-full shrink-0 border-b border-sidebar-border">
         <div
           className={cn(
@@ -147,7 +156,7 @@ export function WorkspaceSidebar({
                     </span>
                   ) : null}
                   {active ? (
-                    <span className="absolute -left-2 h-5 w-0.5 rounded-r bg-primary" aria-hidden />
+                    <span className="absolute -left-2 h-5 w-0.5 rounded-r bg-brand" aria-hidden />
                   ) : null}
                 </button>
               );
@@ -236,7 +245,9 @@ export function WorkspaceSidebar({
                             )}
                           >
                             <Icon className="h-4 w-4 shrink-0" />
-                            <span className="min-w-0 flex-1 truncate">{t(item.labelKey)}</span>
+                            <span className="min-w-0 flex-1 break-words leading-snug">
+                              {t(item.labelKey)}
+                            </span>
                           </Link>
                         );
                       })}
@@ -249,6 +260,32 @@ export function WorkspaceSidebar({
         ) : null}
       </div>
     </aside>
+  );
+  if (!collapseOnNavigate) return sidebar;
+  return (
+    <DialogPrimitive.Root
+      open={expanded}
+      onOpenChange={(open) => {
+        if (!open) onNavigate();
+      }}
+    >
+      <DialogPrimitive.Portal>
+        <DialogPrimitive.Overlay
+          className="fixed inset-0 z-30 bg-black/40"
+          data-testid="sidebar-backdrop"
+        />
+        <DialogPrimitive.Content
+          asChild
+          aria-describedby={undefined}
+          onCloseAutoFocus={(event) => {
+            event.preventDefault();
+            document.getElementById("workspace-navigation-toggle")?.focus();
+          }}
+        >
+          {sidebar}
+        </DialogPrimitive.Content>
+      </DialogPrimitive.Portal>
+    </DialogPrimitive.Root>
   );
 }
 
@@ -269,7 +306,9 @@ function WorkspaceContextHeader({
         <Icon className="h-5 w-5" />
       </span>
       <span className="min-w-0 flex-1 text-left">
-        <span className="block truncate text-sm font-semibold">{t(domain.labelKey)}</span>
+        <span className="block break-words text-sm font-semibold leading-snug">
+          {t(domain.labelKey)}
+        </span>
       </span>
     </>
   );

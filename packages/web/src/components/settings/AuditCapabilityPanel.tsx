@@ -86,7 +86,7 @@ export function AuditCapabilityPanel() {
             正在载入用户
           </div>
         ) : query.isError ? (
-          <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">
+          <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-status-failed/30 bg-status-failed/5 p-3 text-sm text-status-failed">
             <span>{toUserFacingError(query.error, "无法载入审计权限列表，请稍后重试。")}</span>
             <Button type="button" variant="outline" size="sm" onClick={() => query.refetch()}>
               <RefreshCw />

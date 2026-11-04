@@ -61,7 +61,7 @@ export function AuditDrawer({ session, open, onOpenChange }: AuditDrawerProps) {
 
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
-      <SheetContent className="w-[720px] sm:max-w-[720px]" data-testid="terminal-audit-drawer">
+      <SheetContent width="max-w-[720px]" data-testid="terminal-audit-drawer">
         <SheetHeader>
           <div className="flex items-center justify-between gap-2">
             <SheetTitle className="font-mono text-sm">
@@ -80,7 +80,7 @@ export function AuditDrawer({ session, open, onOpenChange }: AuditDrawerProps) {
               className="rounded-md border border-border p-4 text-xs"
               data-testid="terminal-audit-meta"
             >
-              <dl className="grid grid-cols-[120px_1fr] gap-y-1.5 font-mono">
+              <dl className="grid grid-cols-[minmax(0,2fr)_minmax(0,3fr)] gap-x-3 gap-y-1.5 break-words font-mono [overflow-wrap:anywhere] sm:grid-cols-[120px_minmax(0,1fr)]">
                 <dt className="text-muted-foreground">{t("terminal.auditSite")}</dt>
                 <dd>{session.siteId}</dd>
                 <dt className="text-muted-foreground">{t("terminal.auditAgent")}</dt>

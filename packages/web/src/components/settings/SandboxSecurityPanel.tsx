@@ -194,7 +194,7 @@ export function SandboxSecurityPanel() {
                     <tr key={agent.agentId} className="border-t border-border">
                       <td className="px-3 py-2">
                         <div className="font-medium">{agent.siteName}</div>
-                        <div className="font-mono text-[10px] text-muted-foreground">
+                        <div className="font-mono text-xs text-muted-foreground">
                           {agent.agentId}
                         </div>
                       </td>
@@ -225,7 +225,7 @@ export function SandboxSecurityPanel() {
                       <td className="px-3 py-2">
                         <Fact enabled={effective?.sharedServiceAllowed ?? false} />
                       </td>
-                      <td className="px-3 py-2 font-mono text-[10px] text-muted-foreground">
+                      <td className="px-3 py-2 font-mono text-xs text-muted-foreground">
                         {effective
                           ? `${effective.limits.maxCpuCores} CPU · ${effective.limits.maxMemoryMb} MiB · ${effective.limits.maxWallTimeSec}s`
                           : "—"}

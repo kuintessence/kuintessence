@@ -44,7 +44,7 @@ import { fmtBytes } from "../files/path-picker-utils";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
-import { Input } from "../ui/input";
+import { Input, Textarea } from "../ui/input";
 
 interface NetDriveListResp {
   success: true;
@@ -520,249 +520,108 @@ export const WorkflowInputsStep = forwardRef<WorkflowInputsStepHandle, WorkflowI
 
     return (
       <div className="space-y-4" data-testid="workflow-inputs-step">
-        <Card className="rounded-md shadow-none">
-          <CardHeader>
-            <div>
-              <CardTitle>{t("workflows.creation.inputs.parametersTitle")}</CardTitle>
-            </div>
-          </CardHeader>
-          <CardContent>
-            {model.values.length === 0 ? (
-              <EmptyMessage text={t("workflows.creation.inputs.noParameters")} />
-            ) : (
-              <div className="grid gap-4 md:grid-cols-2">
-                {model.values.map((requirement) => (
-                  <label
-                    key={requirement.key}
-                    htmlFor={`workflow-value-${requirement.key}`}
-                    className="space-y-1.5"
-                  >
-                    <span className="flex items-center gap-2 text-sm font-medium">
-                      {requirement.label}
-                      {requirement.required ? (
-                        <Badge variant="outline">{t("common.required")}</Badge>
-                      ) : null}
-                    </span>
-                    {requirement.type === "bool" ? (
-                      <select
-                        id={`workflow-value-${requirement.key}`}
-                        className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm"
-                        value={values[requirement.key] ?? ""}
-                        onChange={(event) =>
-                          onValuesChange({ ...values, [requirement.key]: event.target.value })
-                        }
-                      >
-                        <option value="">{t("workflows.creation.inputs.notSet")}</option>
-                        <option value="true">true</option>
-                        <option value="false">false</option>
-                      </select>
-                    ) : (
-                      <Input
-                        id={`workflow-value-${requirement.key}`}
-                        value={values[requirement.key] ?? ""}
-                        onChange={(event) =>
-                          onValuesChange({ ...values, [requirement.key]: event.target.value })
-                        }
-                        placeholder={
-                          requirement.description ??
-                          t("workflows.creation.inputs.valuePlaceholder", {
-                            label: requirement.label,
-                          })
-                        }
-                        data-testid={`workflow-value-${requirement.key}`}
-                      />
-                    )}
-                    {requirement.description ? (
-                      <span className="block text-xs leading-5 text-muted-foreground">
-                        {requirement.description}
-                      </span>
-                    ) : null}
-                  </label>
-                ))}
-              </div>
+        {model.values.length === 0 && model.datasets.length === 0 && model.files.length === 0 && (
+          <p className="rounded-xl border bg-card p-5 text-sm text-muted-foreground">
+            {t(
+              model.unresolvedSubworkflowRefs.length
+                ? "workflows.creation.inputs.unresolvedInputs"
+                : "workflows.creation.inputs.noInputs",
             )}
-          </CardContent>
-        </Card>
-
-        <Card className="rounded-md shadow-none">
-          <CardHeader>
-            <CardTitle>{t("workflows.creation.inputs.datasetsTitle")}</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-3" data-testid="workflow-dataset-requirements">
-            {model.datasets.length === 0 ? (
-              <EmptyMessage text={t("workflows.creation.inputs.noDatasets")} />
-            ) : (
-              datasetGroups.map((group) => (
-                <article
-                  key={group.nodeId}
-                  className="overflow-hidden rounded-lg border border-border bg-background"
-                  data-testid={`workflow-dataset-node-${group.nodeId}`}
-                >
-                  <header className="flex items-center justify-between gap-3 border-b border-border bg-muted/30 px-3 py-2.5">
-                    <div className="min-w-0">
-                      <p className="truncate text-sm font-semibold">{group.nodeName}</p>
-                      <p className="truncate font-mono text-[11px] text-muted-foreground">
-                        {group.nodeId}
-                      </p>
-                    </div>
-                    <Badge variant="outline">{group.datasets.length}</Badge>
-                  </header>
-                  <div className="grid gap-3 p-3 xl:grid-cols-2">
-                    {group.datasets.map((requirement) => (
-                      <DatasetInputPicker
-                        key={requirement.key}
-                        onChange={(value) => onDatasetBindingChange(requirement.key, value)}
-                        onValidityChange={(valid) =>
-                          onDatasetValidityChange(requirement.key, valid)
-                        }
-                        requirement={requirement}
-                        value={resolveWorkflowDatasetBinding(
-                          datasetBindings,
-                          requirement.key,
-                          requirement.bound,
-                        )}
-                      />
-                    ))}
-                  </div>
-                </article>
-              ))
-            )}
-          </CardContent>
-        </Card>
-
-        <Card className="rounded-md shadow-none">
-          <CardHeader className="flex flex-row items-start justify-between gap-3 space-y-0">
-            <div>
-              <CardTitle>{t("workflows.creation.inputs.filesTitle")}</CardTitle>
-              <p className="mt-1 text-sm text-muted-foreground">
-                {t("workflows.creation.inputs.filesDescription")}
-              </p>
-            </div>
-            <div className="flex flex-wrap items-center justify-end gap-2">
-              <Button
-                type="button"
-                variant="outline"
-                onClick={() => {
-                  onBindingsChange(smartMatchWorkflowFiles(model.files, candidates, bindings));
-                  onConfirmedChange(false);
-                }}
-                disabled={model.files.length === 0 || candidates.length === 0}
-              >
-                <Sparkles />
-                {t("workflows.creation.inputs.smartMatch")}
-              </Button>
-              <Button
-                type="button"
-                onClick={() => void confirmAssociations()}
-                disabled={model.files.length === 0 || uploadProgress !== null || confirmed}
-                data-testid="workflow-confirm-file-bindings"
-              >
-                {confirmed ? <CheckCircle2 /> : <UploadCloud />}
-                {confirmed
-                  ? t("workflows.creation.inputs.associationsConfirmed")
-                  : t("workflows.creation.inputs.confirmAssociations")}
-              </Button>
-            </div>
-          </CardHeader>
-          <CardContent className="grid gap-4 lg:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)]">
-            <section
-              aria-label={t("workflows.creation.inputs.candidateFiles")}
-              className="min-w-0 rounded-lg border border-border bg-muted/20 p-3 transition-colors hover:border-brand/50"
-              onDragOver={(event) => event.preventDefault()}
-              onDrop={(event) => {
-                event.preventDefault();
-                void readDroppedFiles(event).then((entries) => stageLocalEntries(entries));
-              }}
-            >
-              <div className="flex flex-wrap gap-2">
-                <Button type="button" variant="outline" onClick={() => openCloudPicker(null)}>
-                  <Cloud />
-                  {t("workflows.creation.inputs.chooseCloudDirectory")}
-                </Button>
-                <Button type="button" variant="outline" asChild>
-                  <label>
-                    <FileUp />
-                    {t("workflows.creation.inputs.chooseLocalFile")}
-                    <input
-                      data-testid="workflow-choose-local-file"
-                      type="file"
-                      className="sr-only"
-                      onChange={(event) => {
-                        stageLocalFiles(event.target.files);
-                        event.target.value = "";
-                      }}
-                    />
-                  </label>
-                </Button>
-                <Button type="button" variant="outline" asChild>
-                  <label>
-                    <FolderOpen />
-                    {t("workflows.creation.inputs.chooseLocalFolder")}
-                    <input
-                      data-testid="workflow-choose-local-folder"
-                      ref={(element) => element?.setAttribute("webkitdirectory", "")}
-                      type="file"
-                      multiple
-                      className="sr-only"
-                      onChange={(event) => {
-                        stageLocalFiles(event.target.files);
-                        event.target.value = "";
-                      }}
-                    />
-                  </label>
-                </Button>
+          </p>
+        )}
+        {model.values.length > 0 && (
+          <Card className="rounded-md shadow-none">
+            <CardHeader>
+              <div>
+                <CardTitle>{t("workflows.creation.inputs.parametersTitle")}</CardTitle>
               </div>
-              <p className="mt-3 text-xs leading-5 text-muted-foreground">
-                {t("workflows.creation.inputs.matchHint")}
-              </p>
-              <div className="mt-3 space-y-3" data-testid="workflow-file-candidates">
-                {candidateTrees.length === 0 ? (
-                  <EmptyMessage text={t("workflows.creation.inputs.noCandidates")} />
-                ) : (
-                  candidateTrees.map((tree) => (
-                    <div
-                      key={tree.key}
-                      className="overflow-hidden rounded-md border border-border bg-card"
-                    >
-                      <div className="flex items-center gap-2 border-b border-border bg-muted/30 px-2.5 py-2 text-xs font-medium">
-                        {tree.source === "local" ? (
-                          <FolderOpen
-                            className="h-3.5 w-3.5 text-brand"
-                            aria-label={t("workflows.creation.inputs.localSource")}
-                          />
-                        ) : (
-                          <Cloud
-                            className="h-3.5 w-3.5 text-brand"
-                            aria-label={t("workflows.creation.inputs.cloudSource")}
-                          />
-                        )}
-                        <span className="truncate font-mono">
-                          {tree.label || t("workflows.creation.inputs.directoryRoot")}
-                        </span>
-                      </div>
-                      <div className="py-1">
-                        <CandidateTreeBranches
-                          assignedIds={assignedIds}
-                          depth={1}
-                          nodes={tree.nodes}
-                          onRemove={removeCandidate}
-                        />
-                      </div>
-                    </div>
-                  ))
-                )}
-              </div>
-            </section>
-
-            <section className="min-w-0 space-y-3" data-testid="workflow-file-requirements">
-              {model.files.length === 0 ? (
-                <EmptyMessage text={t("workflows.creation.inputs.noFiles")} />
+            </CardHeader>
+            <CardContent>
+              {model.values.length === 0 ? (
+                <EmptyMessage text={t("workflows.creation.inputs.noParameters")} />
               ) : (
-                requirementGroups.map((group) => (
+                <div className="grid gap-4 md:grid-cols-2">
+                  {model.values.map((requirement) => (
+                    <label
+                      key={requirement.key}
+                      htmlFor={`workflow-value-${requirement.key}`}
+                      className="space-y-1.5"
+                    >
+                      <span className="flex items-center gap-2 text-sm font-medium">
+                        {requirement.label}
+                        {requirement.required ? (
+                          <Badge variant="outline">{t("common.required")}</Badge>
+                        ) : null}
+                      </span>
+                      {requirement.type === "bool" ? (
+                        <select
+                          id={`workflow-value-${requirement.key}`}
+                          className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm"
+                          value={values[requirement.key] ?? ""}
+                          onChange={(event) =>
+                            onValuesChange({ ...values, [requirement.key]: event.target.value })
+                          }
+                        >
+                          <option value="">{t("workflows.creation.inputs.notSet")}</option>
+                          <option value="true">true</option>
+                          <option value="false">false</option>
+                        </select>
+                      ) : requirement.type === "string" || requirement.type === "json" ? (
+                        <Textarea
+                          id={`workflow-value-${requirement.key}`}
+                          rows={requirement.initialValue.includes("\n") ? 6 : 2}
+                          value={values[requirement.key] ?? ""}
+                          onChange={(event) =>
+                            onValuesChange({ ...values, [requirement.key]: event.target.value })
+                          }
+                          placeholder={t("workflows.creation.inputs.valuePlaceholder", {
+                            label: requirement.label,
+                          })}
+                          data-testid={`workflow-value-${requirement.key}`}
+                        />
+                      ) : (
+                        <Input
+                          id={`workflow-value-${requirement.key}`}
+                          value={values[requirement.key] ?? ""}
+                          onChange={(event) =>
+                            onValuesChange({ ...values, [requirement.key]: event.target.value })
+                          }
+                          placeholder={
+                            requirement.description ??
+                            t("workflows.creation.inputs.valuePlaceholder", {
+                              label: requirement.label,
+                            })
+                          }
+                          data-testid={`workflow-value-${requirement.key}`}
+                        />
+                      )}
+                      {requirement.description ? (
+                        <span className="block text-xs leading-5 text-muted-foreground">
+                          {requirement.description}
+                        </span>
+                      ) : null}
+                    </label>
+                  ))}
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        )}
+
+        {model.datasets.length > 0 && (
+          <Card className="rounded-md shadow-none">
+            <CardHeader>
+              <CardTitle>{t("workflows.creation.inputs.datasetsTitle")}</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-3" data-testid="workflow-dataset-requirements">
+              {model.datasets.length === 0 ? (
+                <EmptyMessage text={t("workflows.creation.inputs.noDatasets")} />
+              ) : (
+                datasetGroups.map((group) => (
                   <article
                     key={group.nodeId}
-                    className="overflow-hidden rounded-md border border-border bg-card"
-                    data-testid={`workflow-file-node-${group.nodeId}`}
+                    className="overflow-hidden rounded-lg border border-border bg-background"
+                    data-testid={`workflow-dataset-node-${group.nodeId}`}
                   >
                     <header className="flex items-center justify-between gap-3 border-b border-border bg-muted/30 px-3 py-2.5">
                       <div className="min-w-0">
@@ -771,158 +630,327 @@ export const WorkflowInputsStep = forwardRef<WorkflowInputsStepHandle, WorkflowI
                           {group.nodeId}
                         </p>
                       </div>
-                      <Badge variant="outline">{group.files.length}</Badge>
+                      <Badge variant="outline">{group.datasets.length}</Badge>
                     </header>
                     <div className="grid gap-3 p-3 xl:grid-cols-2">
-                      {group.files.map((requirement) => {
-                        const assigned = bindings[requirement.key] ?? requirement.bound;
-                        return (
-                          <fieldset
-                            key={requirement.key}
-                            aria-label={`${requirement.nodeName} / ${requirement.descriptor}`}
-                            className="rounded-lg border border-dashed border-border bg-background p-3 transition-colors focus-within:border-brand"
-                            onDragOver={(event) => event.preventDefault()}
-                            onDrop={(event) => {
-                              event.preventDefault();
-                              if (event.dataTransfer.files.length > 0) {
-                                stageLocalFiles(event.dataTransfer.files, requirement.key);
-                                return;
-                              }
-                              assign(
-                                requirement.key,
-                                event.dataTransfer.getData("application/x-kq-workflow-file"),
-                              );
-                            }}
-                            data-testid={`workflow-file-requirement-${requirement.key}`}
-                          >
-                            <div className="flex items-start justify-between gap-3">
-                              <div className="min-w-0">
-                                <p className="truncate text-sm font-semibold">
-                                  {requirement.descriptor}
-                                </p>
-                                {requirement.expectedFileName ? (
-                                  <p className="mt-1 font-mono text-[11px] text-muted-foreground">
-                                    {t("workflows.creation.inputs.expectedFile", {
-                                      name: requirement.expectedFileName,
-                                    })}
-                                  </p>
-                                ) : null}
-                              </div>
-                              <Badge variant="outline">
-                                {requirement.batch
-                                  ? t("workflows.creation.inputs.fileBatch")
-                                  : t("workflows.creation.inputs.singleFile")}
-                              </Badge>
-                            </div>
-                            <div className="mt-3 space-y-2">
-                              <div className="flex min-h-10 min-w-0 flex-col items-stretch gap-2 rounded-md border border-dashed border-brand/35 bg-brand-soft/20 px-3 py-2">
-                                {assigned.length === 0 ? (
-                                  <span className="block min-w-0 truncate text-xs text-muted-foreground">
-                                    {t("workflows.creation.inputs.dropHere")}
-                                  </span>
-                                ) : (
-                                  assigned.map((candidate) => (
-                                    <span
-                                      key={candidate.id}
-                                      className="flex min-w-0 w-full items-center gap-1 rounded-md bg-brand-soft px-2 py-1 text-xs text-brand"
-                                    >
-                                      <span
-                                        className="min-w-0 flex-1 truncate"
-                                        data-testid={`workflow-file-binding-name-${candidate.id}`}
-                                      >
-                                        {candidate.name}
-                                      </span>
-                                      <button
-                                        type="button"
-                                        aria-label={t("common.remove")}
-                                        className="relative z-10 shrink-0"
-                                        data-testid={`workflow-file-binding-remove-${candidate.id}`}
-                                        onClick={() => {
-                                          onBindingsChange({
-                                            ...bindings,
-                                            [requirement.key]: assigned.filter(
-                                              (item) => item.id !== candidate.id,
-                                            ),
-                                          });
-                                          onConfirmedChange(false);
-                                        }}
-                                      >
-                                        <X className="h-3.5 w-3.5" />
-                                      </button>
-                                    </span>
-                                  ))
-                                )}
-                              </div>
-                              <div className="grid grid-cols-[repeat(auto-fit,minmax(min(100%,10rem),1fr))] gap-2">
-                                <Button
-                                  type="button"
-                                  variant="outline"
-                                  size="sm"
-                                  className="h-10 w-full"
-                                  asChild
-                                >
-                                  <label>
-                                    <FileUp />
-                                    {t("workflows.creation.inputs.chooseLocalFile")}
-                                    <input
-                                      data-testid={`workflow-choose-local-file-${requirement.key}`}
-                                      type="file"
-                                      multiple={requirement.batch}
-                                      className="sr-only"
-                                      onChange={(event) => {
-                                        stageLocalFiles(event.target.files, requirement.key);
-                                        event.target.value = "";
-                                      }}
-                                    />
-                                  </label>
-                                </Button>
-                                <Button
-                                  type="button"
-                                  variant="outline"
-                                  size="sm"
-                                  className="h-10 w-full"
-                                  asChild
-                                >
-                                  <label>
-                                    <FolderOpen />
-                                    {t("workflows.creation.inputs.chooseLocalFolder")}
-                                    <input
-                                      data-testid={`workflow-choose-local-folder-${requirement.key}`}
-                                      ref={(element) =>
-                                        element?.setAttribute("webkitdirectory", "")
-                                      }
-                                      type="file"
-                                      multiple
-                                      className="sr-only"
-                                      onChange={(event) => {
-                                        stageLocalFiles(event.target.files, requirement.key);
-                                        event.target.value = "";
-                                      }}
-                                    />
-                                  </label>
-                                </Button>
-                                <Button
-                                  type="button"
-                                  variant="outline"
-                                  size="sm"
-                                  className="h-10 w-full"
-                                  onClick={() => openCloudPicker(requirement.key)}
-                                >
-                                  <Cloud />
-                                  {t("workflows.creation.inputs.chooseFromCloud")}
-                                </Button>
-                              </div>
-                            </div>
-                          </fieldset>
-                        );
-                      })}
+                      {group.datasets.map((requirement) => (
+                        <DatasetInputPicker
+                          key={requirement.key}
+                          onChange={(value) => onDatasetBindingChange(requirement.key, value)}
+                          onValidityChange={(valid) =>
+                            onDatasetValidityChange(requirement.key, valid)
+                          }
+                          requirement={requirement}
+                          value={resolveWorkflowDatasetBinding(
+                            datasetBindings,
+                            requirement.key,
+                            requirement.bound,
+                          )}
+                        />
+                      ))}
                     </div>
                   </article>
                 ))
               )}
-            </section>
-          </CardContent>
-        </Card>
+            </CardContent>
+          </Card>
+        )}
+
+        {model.files.length > 0 && (
+          <Card className="rounded-md shadow-none">
+            <CardHeader className="flex flex-row items-start justify-between gap-3 space-y-0">
+              <div>
+                <CardTitle>{t("workflows.creation.inputs.filesTitle")}</CardTitle>
+                <p className="mt-1 text-sm text-muted-foreground">
+                  {t("workflows.creation.inputs.filesDescription")}
+                </p>
+              </div>
+              <div className="flex flex-wrap items-center justify-end gap-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => {
+                    onBindingsChange(smartMatchWorkflowFiles(model.files, candidates, bindings));
+                    onConfirmedChange(false);
+                  }}
+                  disabled={model.files.length === 0 || candidates.length === 0}
+                >
+                  <Sparkles />
+                  {t("workflows.creation.inputs.smartMatch")}
+                </Button>
+                <Button
+                  type="button"
+                  onClick={() => void confirmAssociations()}
+                  disabled={model.files.length === 0 || uploadProgress !== null || confirmed}
+                  data-testid="workflow-confirm-file-bindings"
+                >
+                  {confirmed ? <CheckCircle2 /> : <UploadCloud />}
+                  {confirmed
+                    ? t("workflows.creation.inputs.associationsConfirmed")
+                    : t("workflows.creation.inputs.confirmAssociations")}
+                </Button>
+              </div>
+            </CardHeader>
+            <CardContent className="grid gap-4 lg:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)]">
+              <section
+                aria-label={t("workflows.creation.inputs.candidateFiles")}
+                className="min-w-0 rounded-lg border border-border bg-muted/20 p-3 transition-colors hover:border-brand/50"
+                onDragOver={(event) => event.preventDefault()}
+                onDrop={(event) => {
+                  event.preventDefault();
+                  void readDroppedFiles(event).then((entries) => stageLocalEntries(entries));
+                }}
+              >
+                <div className="flex flex-wrap gap-2">
+                  <Button type="button" variant="outline" onClick={() => openCloudPicker(null)}>
+                    <Cloud />
+                    {t("workflows.creation.inputs.chooseCloudDirectory")}
+                  </Button>
+                  <Button type="button" variant="outline" asChild>
+                    <label>
+                      <FileUp />
+                      {t("workflows.creation.inputs.chooseLocalFile")}
+                      <input
+                        data-testid="workflow-choose-local-file"
+                        type="file"
+                        className="sr-only"
+                        onChange={(event) => {
+                          stageLocalFiles(event.target.files);
+                          event.target.value = "";
+                        }}
+                      />
+                    </label>
+                  </Button>
+                  <Button type="button" variant="outline" asChild>
+                    <label>
+                      <FolderOpen />
+                      {t("workflows.creation.inputs.chooseLocalFolder")}
+                      <input
+                        data-testid="workflow-choose-local-folder"
+                        ref={(element) => element?.setAttribute("webkitdirectory", "")}
+                        type="file"
+                        multiple
+                        className="sr-only"
+                        onChange={(event) => {
+                          stageLocalFiles(event.target.files);
+                          event.target.value = "";
+                        }}
+                      />
+                    </label>
+                  </Button>
+                </div>
+                <p className="mt-3 text-xs leading-5 text-muted-foreground">
+                  {t("workflows.creation.inputs.matchHint")}
+                </p>
+                <div className="mt-3 space-y-3" data-testid="workflow-file-candidates">
+                  {candidateTrees.length === 0 ? (
+                    <EmptyMessage text={t("workflows.creation.inputs.noCandidates")} />
+                  ) : (
+                    candidateTrees.map((tree) => (
+                      <div
+                        key={tree.key}
+                        className="overflow-hidden rounded-md border border-border bg-card"
+                      >
+                        <div className="flex items-center gap-2 border-b border-border bg-muted/30 px-2.5 py-2 text-xs font-medium">
+                          {tree.source === "local" ? (
+                            <FolderOpen
+                              className="h-3.5 w-3.5 text-brand"
+                              aria-label={t("workflows.creation.inputs.localSource")}
+                            />
+                          ) : (
+                            <Cloud
+                              className="h-3.5 w-3.5 text-brand"
+                              aria-label={t("workflows.creation.inputs.cloudSource")}
+                            />
+                          )}
+                          <span className="truncate font-mono">
+                            {tree.label || t("workflows.creation.inputs.directoryRoot")}
+                          </span>
+                        </div>
+                        <div className="py-1">
+                          <CandidateTreeBranches
+                            assignedIds={assignedIds}
+                            depth={1}
+                            nodes={tree.nodes}
+                            onRemove={removeCandidate}
+                          />
+                        </div>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </section>
+
+              <section className="min-w-0 space-y-3" data-testid="workflow-file-requirements">
+                {model.files.length === 0 ? (
+                  <EmptyMessage text={t("workflows.creation.inputs.noFiles")} />
+                ) : (
+                  requirementGroups.map((group) => (
+                    <article
+                      key={group.nodeId}
+                      className="overflow-hidden rounded-md border border-border bg-card"
+                      data-testid={`workflow-file-node-${group.nodeId}`}
+                    >
+                      <header className="flex items-center justify-between gap-3 border-b border-border bg-muted/30 px-3 py-2.5">
+                        <div className="min-w-0">
+                          <p className="truncate text-sm font-semibold">{group.nodeName}</p>
+                          <p className="truncate font-mono text-[11px] text-muted-foreground">
+                            {group.nodeId}
+                          </p>
+                        </div>
+                        <Badge variant="outline">{group.files.length}</Badge>
+                      </header>
+                      <div className="grid gap-3 p-3 xl:grid-cols-2">
+                        {group.files.map((requirement) => {
+                          const assigned = bindings[requirement.key] ?? requirement.bound;
+                          return (
+                            <fieldset
+                              key={requirement.key}
+                              aria-label={`${requirement.nodeName} / ${requirement.descriptor}`}
+                              className="rounded-lg border border-dashed border-border bg-background p-3 transition-colors focus-within:border-brand"
+                              onDragOver={(event) => event.preventDefault()}
+                              onDrop={(event) => {
+                                event.preventDefault();
+                                if (event.dataTransfer.files.length > 0) {
+                                  stageLocalFiles(event.dataTransfer.files, requirement.key);
+                                  return;
+                                }
+                                assign(
+                                  requirement.key,
+                                  event.dataTransfer.getData("application/x-kq-workflow-file"),
+                                );
+                              }}
+                              data-testid={`workflow-file-requirement-${requirement.key}`}
+                            >
+                              <div className="flex items-start justify-between gap-3">
+                                <div className="min-w-0">
+                                  <p className="truncate text-sm font-semibold">
+                                    {requirement.descriptor}
+                                  </p>
+                                  {requirement.expectedFileName ? (
+                                    <p className="mt-1 font-mono text-[11px] text-muted-foreground">
+                                      {t("workflows.creation.inputs.expectedFile", {
+                                        name: requirement.expectedFileName,
+                                      })}
+                                    </p>
+                                  ) : null}
+                                </div>
+                                <Badge variant="outline">
+                                  {requirement.batch
+                                    ? t("workflows.creation.inputs.fileBatch")
+                                    : t("workflows.creation.inputs.singleFile")}
+                                </Badge>
+                              </div>
+                              <div className="mt-3 space-y-2">
+                                <div className="flex min-h-10 min-w-0 flex-col items-stretch gap-2 rounded-md border border-dashed border-brand/35 bg-brand-soft/20 px-3 py-2">
+                                  {assigned.length === 0 ? (
+                                    <span className="block min-w-0 truncate text-xs text-muted-foreground">
+                                      {t("workflows.creation.inputs.dropHere")}
+                                    </span>
+                                  ) : (
+                                    assigned.map((candidate) => (
+                                      <span
+                                        key={candidate.id}
+                                        className="flex min-w-0 w-full items-center gap-1 rounded-md bg-brand-soft px-2 py-1 text-xs text-brand"
+                                      >
+                                        <span
+                                          className="min-w-0 flex-1 truncate"
+                                          data-testid={`workflow-file-binding-name-${candidate.id}`}
+                                        >
+                                          {candidate.name}
+                                        </span>
+                                        <button
+                                          type="button"
+                                          aria-label={t("common.remove")}
+                                          className="relative z-10 shrink-0"
+                                          data-testid={`workflow-file-binding-remove-${candidate.id}`}
+                                          onClick={() => {
+                                            onBindingsChange({
+                                              ...bindings,
+                                              [requirement.key]: assigned.filter(
+                                                (item) => item.id !== candidate.id,
+                                              ),
+                                            });
+                                            onConfirmedChange(false);
+                                          }}
+                                        >
+                                          <X className="h-3.5 w-3.5" />
+                                        </button>
+                                      </span>
+                                    ))
+                                  )}
+                                </div>
+                                <div className="grid grid-cols-[repeat(auto-fit,minmax(min(100%,10rem),1fr))] gap-2">
+                                  <Button
+                                    type="button"
+                                    variant="outline"
+                                    size="sm"
+                                    className="h-10 w-full"
+                                    asChild
+                                  >
+                                    <label>
+                                      <FileUp />
+                                      {t("workflows.creation.inputs.chooseLocalFile")}
+                                      <input
+                                        data-testid={`workflow-choose-local-file-${requirement.key}`}
+                                        type="file"
+                                        multiple={requirement.batch}
+                                        className="sr-only"
+                                        onChange={(event) => {
+                                          stageLocalFiles(event.target.files, requirement.key);
+                                          event.target.value = "";
+                                        }}
+                                      />
+                                    </label>
+                                  </Button>
+                                  <Button
+                                    type="button"
+                                    variant="outline"
+                                    size="sm"
+                                    className="h-10 w-full"
+                                    asChild
+                                  >
+                                    <label>
+                                      <FolderOpen />
+                                      {t("workflows.creation.inputs.chooseLocalFolder")}
+                                      <input
+                                        data-testid={`workflow-choose-local-folder-${requirement.key}`}
+                                        ref={(element) =>
+                                          element?.setAttribute("webkitdirectory", "")
+                                        }
+                                        type="file"
+                                        multiple
+                                        className="sr-only"
+                                        onChange={(event) => {
+                                          stageLocalFiles(event.target.files, requirement.key);
+                                          event.target.value = "";
+                                        }}
+                                      />
+                                    </label>
+                                  </Button>
+                                  <Button
+                                    type="button"
+                                    variant="outline"
+                                    size="sm"
+                                    className="h-10 w-full"
+                                    onClick={() => openCloudPicker(requirement.key)}
+                                  >
+                                    <Cloud />
+                                    {t("workflows.creation.inputs.chooseFromCloud")}
+                                  </Button>
+                                </div>
+                              </div>
+                            </fieldset>
+                          );
+                        })}
+                      </div>
+                    </article>
+                  ))
+                )}
+              </section>
+            </CardContent>
+          </Card>
+        )}
 
         <PathPickerSheet
           open={cloudPickerOpen}

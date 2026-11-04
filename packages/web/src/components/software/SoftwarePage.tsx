@@ -101,6 +101,7 @@ import {
   SheetBody,
   SheetContent,
   SheetDescription,
+  SheetFooter,
   SheetHeader,
   SheetTitle,
 } from "../ui/sheet";
@@ -1651,7 +1652,7 @@ function WorkflowTemplateEditForm({
   const [yamlContent, setYamlContent] = useState(template.yamlContent);
   return (
     <form
-      className="grid grid-cols-1 gap-3 rounded-md border border-border bg-card p-3"
+      className="grid grid-cols-1 gap-3"
       data-testid={`software-template-edit-form-${template.id}`}
       onSubmit={(e) => {
         e.preventDefault();
@@ -1665,7 +1666,6 @@ function WorkflowTemplateEditForm({
         });
       }}
     >
-      <FormHeader icon={<Edit3 />} title={t("software.manage.publishTemplateVersion")} />
       <div className="grid gap-2 md:grid-cols-[1fr_140px]">
         <label htmlFor={`${id}-name`} className="grid min-w-0 gap-1.5 text-sm">
           <span>{t("software.manage.templateName")}</span>
@@ -1699,7 +1699,7 @@ function WorkflowTemplateEditForm({
           value={yamlContent}
           onChange={(e) => setYamlContent(e.target.value)}
           placeholder={t("software.manage.yamlPlaceholder")}
-          className="min-h-28 font-mono text-xs"
+          className="min-h-64 font-mono text-xs"
         />
       </label>
       <div className="flex justify-end gap-2">
@@ -2282,13 +2282,13 @@ function SpackSpecConfigSheet({
               />
             </label>
           </div>
-          <div className="flex justify-end">
-            <Button type="button" size="sm" onClick={() => onOpenChange(false)}>
-              <Save />
-              {t("software.manage.applySpec")}
-            </Button>
-          </div>
         </SheetBody>
+        <SheetFooter className="flex justify-end">
+          <Button type="button" size="sm" onClick={() => onOpenChange(false)}>
+            <Save />
+            {t("software.manage.applySpec")}
+          </Button>
+        </SheetFooter>
       </SheetContent>
     </Sheet>
   );
@@ -2486,10 +2486,10 @@ function SpackCatalogPickerDialog({
       <DialogContent
         className="h-[min(88vh,900px)] w-[min(calc(100vw-1rem),1120px)]"
         data-testid="software-usecase-package-picker"
+        aria-describedby={undefined}
       >
         <DialogHeader>
           <DialogTitle>{t("software.manage.packagePickerTitle")}</DialogTitle>
-          <DialogDescription>{t("software.manage.packagePickerDescription")}</DialogDescription>
         </DialogHeader>
         <DialogBody className="flex flex-col gap-3">
           <div className="grid gap-2 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-center">
@@ -2535,8 +2535,8 @@ function SpackCatalogPickerDialog({
                     key={key}
                     type="button"
                     className={cn(
-                      "grid min-h-36 min-w-0 content-between gap-3 rounded-md border bg-card p-3 text-left transition-colors hover:border-primary/50 hover:bg-muted/30",
-                      active ? "border-primary ring-1 ring-primary/40" : "border-border",
+                      "grid min-h-36 min-w-0 content-between gap-3 rounded-md border bg-card p-3 text-left transition-colors hover:border-brand/50 hover:bg-muted/30",
+                      active ? "border-brand ring-1 ring-brand/40" : "border-border",
                     )}
                     onClick={() => choose(pkg)}
                     data-testid={`software-usecase-catalog-package-${pkg.source}-${pkg.name}`}
@@ -2550,9 +2550,11 @@ function SpackCatalogPickerDialog({
                           {sourceLabel(t, pkg.source)}
                         </Badge>
                       </div>
-                      <p className="mt-2 line-clamp-2 text-xs text-muted-foreground">
-                        {pkg.description ?? t("software.card.noDescription")}
-                      </p>
+                      {pkg.description ? (
+                        <p className="mt-2 line-clamp-2 text-xs text-muted-foreground">
+                          {pkg.description}
+                        </p>
+                      ) : null}
                       <div className="mt-2 flex flex-wrap gap-1">
                         {pkg.metadata ? (
                           <>
@@ -2575,19 +2577,14 @@ function SpackCatalogPickerDialog({
                         ))}
                       </div>
                     </div>
-                    <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
-                      <span className="text-muted-foreground">
-                        {pkg.tags.length > 0
-                          ? pkg.tags.join(", ")
-                          : t("software.manage.noCatalogTags")}
-                      </span>
+                    <div className="flex justify-end text-xs">
                       {active ? (
-                        <span className="inline-flex items-center gap-1 font-medium text-primary">
+                        <span className="inline-flex items-center gap-1 font-medium text-brand">
                           <Check className="h-3.5 w-3.5" />
                           {t("software.manage.selected")}
                         </span>
                       ) : (
-                        <span className="font-medium text-primary">
+                        <span className="font-medium text-brand">
                           {t("software.manage.choose")}
                         </span>
                       )}
@@ -3278,7 +3275,7 @@ function SpackCatalogPackageEditForm({
   const [tags, setTags] = useState(pkg.tags.join(","));
   return (
     <form
-      className="mt-2 grid gap-2 rounded-md border border-border bg-background p-2"
+      className="grid gap-3"
       data-testid={`software-spack-catalog-package-edit-form-${pkg.id}`}
       onSubmit={(e) => {
         e.preventDefault();
@@ -3463,7 +3460,7 @@ function UsecasePackageEditForm({
   );
   return (
     <form
-      className="mt-3 grid min-w-0 grid-cols-1 content-start gap-3 rounded-md border border-border bg-background p-3"
+      className="grid min-w-0 grid-cols-1 content-start gap-3"
       data-testid={`software-usecase-edit-form-${pkg.id}`}
       onSubmit={(e) => {
         e.preventDefault();
@@ -3487,7 +3484,6 @@ function UsecasePackageEditForm({
         });
       }}
     >
-      <FormHeader icon={<Edit3 />} title={t("software.manage.publishUsecaseVersion")} />
       <div className="grid gap-2 md:grid-cols-[1fr_120px]">
         <label htmlFor={`${id}-name`} className="grid min-w-0 gap-1.5 text-sm">
           <span>{t("software.manage.usecaseName")}</span>

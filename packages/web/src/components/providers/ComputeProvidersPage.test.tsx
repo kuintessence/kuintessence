@@ -76,7 +76,7 @@ test("platform deletion requires confirmation and shows dependency failures", as
   fireEvent.click(await screen.findByRole("button", { name: "编辑资料" }));
   fireEvent.click(screen.getByRole("button", { name: "删除" }));
   expect(api.delete).not.toHaveBeenCalled();
-  api.delete.mockRejectedValueOnce(new Error("该提供者仍有关联成员、资源或历史业务记录，不能删除"));
+  api.delete.mockRejectedValueOnce({ status: 409, message: "internal dependency constraint" });
   fireEvent.click(screen.getByRole("button", { name: "确认删除" }));
   expect(await screen.findByRole("alert")).toHaveProperty(
     "textContent",

@@ -1,5 +1,7 @@
+import type { TFunction } from "i18next";
 import { DatabaseZap, Loader2, RefreshCw, ShieldAlert, Trash2 } from "lucide-react";
 import { type ReactNode, useCallback, useEffect, useMemo, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { api } from "../../lib/api-client";
 import { useMobileMutationBlocked } from "../../lib/use-mobile-mutation-blocked";
@@ -73,27 +75,28 @@ export function canProcessAuthzOutbox(
   return (readiness?.outbox.pending ?? 0) > 0 || (readiness?.outbox.processing ?? 0) > 0;
 }
 
-function friendlyAuthzBlocker(blocker: string): string {
-  if (blocker === "AUTHZ_MODE is off") return "平台授权模式尚未启用";
-  if (blocker === "SpiceDB client is not configured") return "授权服务尚未完成配置";
+function friendlyAuthzBlocker(blocker: string, t: TFunction): string {
+  if (blocker === "AUTHZ_MODE is off") return t("adminAccess.modeOff");
+  if (blocker === "SpiceDB client is not configured") return t("adminAccess.notConfigured");
   if (blocker === "SpiceDB schema has not been written by this Server") {
-    return "授权关系模型尚未初始化";
+    return t("adminAccess.schemaMissing");
   }
   if (blocker === "SpiceDB schema differs from AUTHZ_SCHEMA_PATH") {
-    return "授权关系模型与平台配置不一致";
+    return t("adminAccess.schemaMismatch");
   }
   const pending = blocker.match(/^(\d+) authz outbox rows are pending$/);
-  if (pending?.[1]) return `仍有 ${pending[1]} 条授权变更等待投递`;
+  if (pending?.[1]) return t("adminAccess.pendingChanges", { total: pending[1] });
   const processing = blocker.match(/^(\d+) authz outbox rows are still processing$/);
-  if (processing?.[1]) return `仍有 ${processing[1]} 条授权变更正在投递`;
+  if (processing?.[1]) return t("adminAccess.processingChanges", { total: processing[1] });
   const dead = blocker.match(/^(\d+) authz outbox rows are dead-lettered$/);
-  if (dead?.[1]) return `有 ${dead[1]} 条授权变更需要人工重试`;
+  if (dead?.[1]) return t("adminAccess.deadChanges", { total: dead[1] });
   const diffs = blocker.match(/^(\d+) shadow authorization diffs remain$/);
-  if (diffs?.[1]) return `仍有 ${diffs[1]} 条授权差异需要复核`;
-  return "授权服务健康检查未通过，请查看运维日志";
+  if (diffs?.[1]) return t("adminAccess.remainingDiffs", { total: diffs[1] });
+  return t("adminAccess.healthFailed");
 }
 
 export function AuthzAdminPanel({ showBreakGlass = false }: { showBreakGlass?: boolean }) {
+  const { t } = useTranslation();
   const mobileReadOnly = useMobileMutationBlocked("/admin/authz");
   const [health, setHealth] = useState<AuthzHealth | null>(null);
   const [readiness, setReadiness] = useState<AuthzReadiness | null>(null);
@@ -133,7 +136,7 @@ export function AuthzAdminPanel({ showBreakGlass = false }: { showBreakGlass?: b
       setOutbox(outboxRes.data);
       setLoadError(null);
     } catch (err) {
-      const message = toUserFacingError(err, "授权状态暂时无法刷新，请稍后重试。");
+      const message = toUserFacingError(err, t("adminAccess.refreshFailed"));
       setHealth(null);
       setReadiness(null);
       setDiffs([]);
@@ -143,7 +146,7 @@ export function AuthzAdminPanel({ showBreakGlass = false }: { showBreakGlass?: b
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [t]);
 
   useEffect(() => {
     refresh();
@@ -162,63 +165,88 @@ export function AuthzAdminPanel({ showBreakGlass = false }: { showBreakGlass?: b
     <div className="space-y-4">
       <OrganizationMembershipPanel />
       <details className="rounded-md border">
-        <summary className="cursor-pointer p-4 text-sm font-medium">授权服务状态与高级操作</summary>
+        <summary className="cursor-pointer p-4 text-sm font-medium">
+          {t("adminAccess.advancedTitle")}
+        </summary>
         <Card data-testid="authz-admin-panel" className="border-0">
           <CardHeader className="flex-row items-center justify-between space-y-0">
             <div>
               <CardTitle className="flex items-center gap-2">
                 <ShieldAlert className="h-4 w-4" />
-                SpiceDB 授权层
+
+                {t("adminAccess.serviceTitle")}
               </CardTitle>
-              <p className="mt-1 text-sm text-muted-foreground">
-                {showBreakGlass ? "授权差异、关系同步与紧急授权管理。" : "授权差异与关系同步。"}
-              </p>
             </div>
             <Button variant="outline" size="sm" onClick={refresh} disabled={loading}>
               {loading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
-              刷新
+
+              {t("adminAccess.refresh")}
             </Button>
           </CardHeader>
           <CardContent className="space-y-5">
             <div className="grid gap-3 md:grid-cols-5">
-              <Metric label="运行模式" value={health?.mode ?? "unknown"} badge={healthTone} />
               <Metric
-                label="服务健康"
-                value={health?.healthy ? "正常" : "异常"}
+                label={t("adminAccess.mode")}
+                value={
+                  health
+                    ? t(
+                        {
+                          off: "adminAccess.off",
+                          shadow: "adminAccess.shadow",
+                          enforce: "adminAccess.enforced",
+                        }[health.mode],
+                      )
+                    : t("adminAccess.unknown")
+                }
                 badge={healthTone}
               />
               <Metric
-                label="授权模型"
+                label={t("adminAccess.health")}
+                value={health?.healthy ? t("adminAccess.healthy") : t("adminAccess.unhealthy")}
+                badge={healthTone}
+              />
+              <Metric
+                label={t("adminAccess.schema")}
                 value={
-                  health?.schemaWritten ? (health.schemaMatches ? "已加载" : "不匹配") : "待加载"
+                  health?.schemaWritten
+                    ? health.schemaMatches
+                      ? t("adminAccess.loaded")
+                      : t("adminAccess.mismatch")
+                    : t("adminAccess.notLoaded")
                 }
                 badge={health?.schemaWritten && health.schemaMatches ? "brand" : "failed"}
               />
               <Metric
-                label="强制授权就绪"
-                value={readiness?.enforceReady ? "已就绪" : "未就绪"}
+                label={t("adminAccess.enforce")}
+                value={readiness?.enforceReady ? t("adminAccess.ready") : t("adminAccess.notReady")}
                 badge={readiness?.enforceReady ? "brand" : "failed"}
               />
-              <Metric label="授权差异" value={String(readiness?.shadowDiffs ?? 0)} />
+              <Metric label={t("adminAccess.diffs")} value={String(readiness?.shadowDiffs ?? 0)} />
             </div>
             <div className="grid gap-3 md:grid-cols-3">
-              <Metric label="待同步" value={String(readiness?.outbox.pending ?? 0)} />
-              <Metric label="同步中" value={String(readiness?.outbox.processing ?? 0)} />
-              <Metric label="同步失败" value={String(readiness?.outbox.dead ?? 0)} />
+              <Metric
+                label={t("adminAccess.pending")}
+                value={String(readiness?.outbox.pending ?? 0)}
+              />
+              <Metric
+                label={t("adminAccess.processing")}
+                value={String(readiness?.outbox.processing ?? 0)}
+              />
+              <Metric label={t("adminAccess.failed")} value={String(readiness?.outbox.dead ?? 0)} />
             </div>
             {readiness?.blockers.length ? (
-              <div className="rounded-md border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive">
-                <div className="font-medium">授权启用条件未满足</div>
+              <div className="rounded-md border border-status-failed/30 bg-status-failed/10 p-3 text-sm text-status-failed">
+                <div className="font-medium">{t("adminAccess.conditions")}</div>
                 <ul className="mt-2 list-disc space-y-1 pl-5">
                   {readiness.blockers.map((blocker) => (
-                    <li key={blocker}>{friendlyAuthzBlocker(blocker)}</li>
+                    <li key={blocker}>{friendlyAuthzBlocker(blocker, t)}</li>
                   ))}
                 </ul>
               </div>
             ) : null}
             {readiness?.externalSmokeRequired ? (
               <div className="rounded-md border p-3 text-sm text-muted-foreground">
-                切换为强制授权前，请完成部署环境的 SpiceDB 授权验证。
+                {t("adminAccess.verifyEnforcement")}
               </div>
             ) : null}
             <Button
@@ -233,27 +261,31 @@ export function AuthzAdminPanel({ showBreakGlass = false }: { showBreakGlass?: b
                     {},
                   );
                   toast.success(
-                    `已替换 ${res.data.purgedResourceTypes.length} 类资源，写入 ${res.data.tupleCount} 条授权关系`,
+                    t("adminAccess.rebuilt", {
+                      types: res.data.purgedResourceTypes.length,
+                      total: res.data.tupleCount,
+                    }),
                   );
                   await refresh();
                 } catch (err) {
-                  toast.error(toUserFacingError(err, "授权状态重建失败，请稍后重试。"));
+                  toast.error(toUserFacingError(err, t("adminAccess.rebuildFailed")));
                 } finally {
                   setRebuilding(false);
                 }
               }}
             >
               {rebuilding ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
-              重建 SpiceDB 关系
+
+              {t("adminAccess.rebuild")}
             </Button>
             {health?.error ? (
-              <div className="rounded-md border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive">
-                授权服务当前不可用，请重试；如问题持续，请查看平台服务与 SpiceDB 运维日志。
+              <div className="rounded-md border border-status-failed/30 bg-status-failed/10 p-3 text-sm text-status-failed">
+                {t("adminAccess.unavailable")}
               </div>
             ) : null}
             {loadError ? (
               <div
-                className="rounded-md border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive"
+                className="rounded-md border border-status-failed/30 bg-status-failed/10 p-3 text-sm text-status-failed"
                 data-testid="authz-refresh-error"
               >
                 {loadError}
@@ -263,8 +295,9 @@ export function AuthzAdminPanel({ showBreakGlass = false }: { showBreakGlass?: b
             <div>
               {showBreakGlass ? (
                 <div className="space-y-3" data-testid="authz-raw-tuple-break-glass">
-                  <h3 className="text-sm font-medium">高级授权关系操作</h3>
+                  <h3 className="text-sm font-medium">{t("adminAccess.rawTitle")}</h3>
                   <textarea
+                    aria-label={t("adminAccess.rawLabel")}
                     className="min-h-40 w-full rounded-md border bg-background p-3 font-mono text-xs"
                     value={rawTuple}
                     disabled={mobileReadOnly}
@@ -281,15 +314,16 @@ export function AuthzAdminPanel({ showBreakGlass = false }: { showBreakGlass?: b
                           "/admin/authz/raw-tuples",
                           rawTupleParsed,
                         );
-                        toast.success("授权关系已加入同步队列");
+                        toast.success(t("adminAccess.queued"));
                         await refresh();
                       } catch (err) {
-                        toast.error(toUserFacingError(err, "授权关系写入失败，请稍后重试。"));
+                        toast.error(toUserFacingError(err, t("adminAccess.writeFailed")));
                       }
                     }}
                   >
                     <DatabaseZap className="h-3.5 w-3.5" />
-                    写入授权关系
+
+                    {t("adminAccess.write")}
                   </Button>
                 </div>
               ) : null}
@@ -297,7 +331,13 @@ export function AuthzAdminPanel({ showBreakGlass = false }: { showBreakGlass?: b
 
             <div className="grid gap-4 xl:grid-cols-2">
               <SectionTable
-                title="最近授权差异"
+                title={t("adminAccess.recentDiffs")}
+                headers={[
+                  t("adminAccess.resource"),
+                  t("adminAccess.permission"),
+                  t("adminAccess.comparison"),
+                  t("adminAccess.actor"),
+                ]}
                 action={
                   <Button
                     variant="outline"
@@ -306,17 +346,17 @@ export function AuthzAdminPanel({ showBreakGlass = false }: { showBreakGlass?: b
                       mobileReadOnly || clearingDiffs || (readiness?.shadowDiffs ?? 0) === 0
                     }
                     onClick={async () => {
-                      if (!window.confirm("确认已审阅 Shadow diff，并清空当前 diff 记录？")) return;
+                      if (!window.confirm(t("adminAccess.clearConfirm"))) return;
                       setClearingDiffs(true);
                       try {
                         const res = await api.post<{ success: true; data: { cleared: number } }>(
                           "/admin/authz/shadow-diffs/clear",
                           { confirm: SHADOW_DIFF_CLEAR_CONFIRM },
                         );
-                        toast.success(`已清理 ${res.data.cleared} 条 Shadow diff`);
+                        toast.success(t("adminAccess.cleared", { total: res.data.cleared }));
                         await refresh();
                       } catch (err) {
-                        toast.error(toUserFacingError(err, "授权差异清理失败，请稍后重试。"));
+                        toast.error(toUserFacingError(err, t("adminAccess.clearFailed")));
                       } finally {
                         setClearingDiffs(false);
                       }
@@ -327,19 +367,26 @@ export function AuthzAdminPanel({ showBreakGlass = false }: { showBreakGlass?: b
                     ) : (
                       <Trash2 className="h-3.5 w-3.5" />
                     )}
-                    清理
+
+                    {t("adminAccess.clear")}
                   </Button>
                 }
                 rows={diffs.map((row) => [
                   `${row.resourceType}:${row.resourceId}`,
                   row.permission,
-                  `${row.localAllowed}/${row.spiceAllowed}`,
-                  row.spiceError ? "授权差异检测未完成，请查看运维日志" : (row.actorEmail ?? ""),
+                  `${t(row.localAllowed ? "adminAccess.allow" : "adminAccess.deny")} / ${t(row.spiceAllowed ? "adminAccess.allow" : "adminAccess.deny")}`,
+                  row.spiceError ? t("adminAccess.diffCheckFailed") : (row.actorEmail ?? ""),
                 ])}
-                empty="暂无授权差异"
+                empty={t("adminAccess.noDiffs")}
               />
               <SectionTable
-                title="最近授权同步"
+                title={t("adminAccess.recentSync")}
+                headers={[
+                  t("adminAccess.syncStatus"),
+                  t("adminAccess.resourceRelation"),
+                  t("adminAccess.subject"),
+                  t("adminAccess.delivery"),
+                ]}
                 action={
                   <Button
                     variant="outline"
@@ -354,10 +401,15 @@ export function AuthzAdminPanel({ showBreakGlass = false }: { showBreakGlass?: b
                           success: true;
                           data: { processed: number; dead: number };
                         }>("/admin/authz/outbox/process", { batchSize: 100 });
-                        toast.success(`已投递 ${res.data.processed} 条，dead ${res.data.dead} 条`);
+                        toast.success(
+                          t("adminAccess.delivered", {
+                            total: res.data.processed,
+                            failed: res.data.dead,
+                          }),
+                        );
                         await refresh();
                       } catch (err) {
-                        toast.error(toUserFacingError(err, "授权变更投递失败，请稍后重试。"));
+                        toast.error(toUserFacingError(err, t("adminAccess.deliveryFailed")));
                       } finally {
                         setProcessingOutbox(false);
                       }
@@ -368,7 +420,8 @@ export function AuthzAdminPanel({ showBreakGlass = false }: { showBreakGlass?: b
                     ) : (
                       <RefreshCw className="h-3.5 w-3.5" />
                     )}
-                    立即投递
+
+                    {t("adminAccess.deliver")}
                   </Button>
                 }
                 rows={outbox.map((row) => [
@@ -387,24 +440,24 @@ export function AuthzAdminPanel({ showBreakGlass = false }: { showBreakGlass?: b
                             `/admin/authz/outbox/${row.id}/retry`,
                             {},
                           );
-                          toast.success("失败的授权变更已重新入队");
+                          toast.success(t("adminAccess.requeued"));
                           await refresh();
                         } catch (err) {
-                          toast.error(toUserFacingError(err, "授权变更重试失败，请稍后重试。"));
+                          toast.error(toUserFacingError(err, t("adminAccess.retryFailed")));
                         }
                       }}
                     >
-                      重试
+                      {t("adminAccess.retry")}
                     </Button>
                   ) : (
                     <span key={row.id}>
                       {row.lastError
-                        ? "授权变更投递未完成，请稍后重试"
-                        : `attempts=${row.attempts}`}
+                        ? t("adminAccess.incomplete")
+                        : t("adminAccess.attempts", { total: row.attempts })}
                     </span>
                   ),
                 ])}
-                empty="暂无 outbox"
+                empty={t("adminAccess.noOutbox")}
               />
             </div>
           </CardContent>
@@ -435,11 +488,13 @@ function Metric({
 
 function SectionTable({
   title,
+  headers,
   action,
   rows,
   empty,
 }: {
   title: string;
+  headers: string[];
   action?: ReactNode;
   rows: ReactNode[][];
   empty: string;
@@ -450,38 +505,52 @@ function SectionTable({
         <h3 className="text-sm font-medium">{title}</h3>
         {action}
       </div>
-      <SimpleTable rows={rows} empty={empty} />
+      <SimpleTable headers={headers} rows={rows} empty={empty} />
     </div>
   );
 }
 
-function SimpleTable({ rows, empty }: { rows: ReactNode[][]; empty: string }) {
-  if (rows.length === 0) {
-    return (
-      <div className="rounded-md border border-dashed p-4 text-sm text-muted-foreground">
-        {empty}
-      </div>
-    );
-  }
+function SimpleTable({
+  headers,
+  rows,
+  empty,
+}: {
+  headers: string[];
+  rows: ReactNode[][];
+  empty: string;
+}) {
+  if (rows.length === 0) return <p className="py-6 text-sm text-muted-foreground">{empty}</p>;
   const cellKeys = ["primary", "secondary", "tertiary", "quaternary"] as const;
   return (
-    <div className="overflow-hidden rounded-md border">
-      {rows.map((row) => {
-        const rowKey = row.map((cell) => (typeof cell === "string" ? cell : "node")).join("|");
-        return (
-          <div key={rowKey} className="grid grid-cols-4 gap-2 border-b p-2 text-xs last:border-b-0">
-            {row.map((cell, index) => (
-              <div
-                key={cellKeys[index] ?? index}
-                className="truncate font-mono"
-                title={typeof cell === "string" ? cell : undefined}
-              >
-                {cell || "-"}
-              </div>
+    <div className="max-h-[28rem] overflow-auto rounded-md border">
+      <table className="w-full min-w-[32rem] table-fixed text-left text-xs">
+        <thead className="sticky top-0 border-b bg-muted">
+          <tr>
+            {headers.map((label) => (
+              <th key={label} className="p-3 font-medium">
+                {label}
+              </th>
             ))}
-          </div>
-        );
-      })}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row) => {
+            const rowKey = row.map((cell) => (typeof cell === "string" ? cell : "node")).join("|");
+            return (
+              <tr key={rowKey} className="border-b last:border-b-0">
+                {row.map((cell, index) => (
+                  <td
+                    key={cellKeys[index] ?? index}
+                    className="break-words p-3 align-top [overflow-wrap:anywhere]"
+                  >
+                    {cell || "—"}
+                  </td>
+                ))}
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
     </div>
   );
 }

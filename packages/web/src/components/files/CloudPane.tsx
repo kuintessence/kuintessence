@@ -257,20 +257,20 @@ export function CloudPane({
           {uploadStatus}
         </div>
       ) : null}
-      <div className="flex-1 overflow-auto">
+      <div className="min-h-0 max-h-[28rem] flex-1 overflow-auto">
         {visibleRows.length === 0 ? (
           <div className="flex h-32 items-center justify-center text-xs text-muted-foreground">
             {disabledMessage ?? (query ? t("files.emptySearch") : emptyMessage)}
           </div>
         ) : (
           <table className="w-full table-fixed text-sm">
-            <thead className="bg-muted/40 text-left text-[11px] uppercase tracking-wide text-muted-foreground">
+            <thead className="sticky top-0 z-10 bg-muted text-left text-[11px] uppercase tracking-wide text-muted-foreground">
               <tr>
                 <th className="min-w-0 px-3 py-2 font-medium">{t("files.table.name")}</th>
-                <th className="hidden px-3 py-2 font-medium text-right sm:table-cell">
+                <th className="hidden w-20 px-2 py-2 font-medium text-right sm:table-cell">
                   {t("files.table.size")}
                 </th>
-                <th className="hidden px-3 py-2 font-medium md:table-cell">
+                <th className="hidden w-24 px-2 py-2 font-medium md:table-cell">
                   {t("files.table.modified")}
                 </th>
                 <th
@@ -305,7 +305,7 @@ export function CloudPane({
                           <Folder className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
                           <button
                             type="button"
-                            className="min-w-0 truncate rounded-sm text-left font-mono text-xs focus-visible:outline-2 focus-visible:outline-brand"
+                            className="min-w-0 break-words rounded-sm text-left text-sm [overflow-wrap:anywhere] focus-visible:outline-2 focus-visible:outline-brand"
                             title={`${r.name}/`}
                             onClick={(event) => {
                               event.stopPropagation();
@@ -384,7 +384,7 @@ export function CloudPane({
                         <File className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
                         <button
                           type="button"
-                          className="min-w-0 truncate rounded-sm text-left font-mono text-xs focus-visible:outline-2 focus-visible:outline-brand"
+                          className="min-w-0 break-words rounded-sm text-left text-sm [overflow-wrap:anywhere] focus-visible:outline-2 focus-visible:outline-brand"
                           title={r.displayName}
                           aria-pressed={isSelected}
                           onClick={(event) => {

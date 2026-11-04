@@ -205,7 +205,7 @@ describe("ImportJobJsonDialog", () => {
     fireEvent.click(screen.getByTestId("import-job-json-submit"));
     await waitFor(() => expect(apiClient.api.post).toHaveBeenCalledTimes(1));
 
-    fireEvent.click(screen.getByRole("button", { name: "Close" }));
+    fireEvent.click(screen.getByRole("button", { name: "common.close" }));
     expect(onOpenChange).not.toHaveBeenCalled();
     expect(screen.getByTestId("import-job-json-dialog")).toBeTruthy();
 

@@ -1,12 +1,14 @@
 import type { InterconnectCenter, InterconnectCluster } from "@kuintessence/shared/browser";
 
-export const STATUS_LABELS = {
-  operational: "正常",
-  degraded: "异常",
-  offline: "离线",
-  maintenance: "维护",
-  unknown: "未知",
-} as const;
+import type { TFunction } from "i18next";
+
+export const getStatusLabels = (t: TFunction) => ({
+  operational: t("interconnect.statuses.operational"),
+  degraded: t("interconnect.statuses.degraded"),
+  offline: t("interconnect.statuses.offline"),
+  maintenance: t("interconnect.statuses.maintenance"),
+  unknown: t("interconnect.statuses.unknown"),
+});
 export const STATUS_COLORS = {
   operational: "#16a34a",
   degraded: "#d97706",
@@ -40,8 +42,7 @@ export function filterClusters(clusters: InterconnectCluster[], filter: Resource
       (!filter.status || c.metadata.status === filter.status),
   );
 }
-export function formatCapacity(bytes: number | null): string {
-  if (bytes === null) return "未提供";
+export function formatCapacity(bytes: number): string {
   const units = ["B", "KiB", "MiB", "GiB", "TiB", "PiB"];
   let n = bytes;
   let i = 0;
@@ -89,4 +90,10 @@ export function clusterSymbol(centers: InterconnectCenter[]): string {
     })
     .join("");
   return `image://data:image/svg+xml;charset=UTF-8,${encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" width="56" height="56"><circle cx="28" cy="28" r="24" fill="#fff"/>${arcs}</svg>`)}`;
+}
+
+export function computeTypeLabel(value: string, t: TFunction): string {
+  if (value === "国产 CPU") return t("interconnect.computeType.domestic");
+  if (value === "其他") return t("interconnect.computeType.other");
+  return value;
 }

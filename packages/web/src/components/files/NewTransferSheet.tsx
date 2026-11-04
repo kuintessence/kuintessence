@@ -522,7 +522,7 @@ export function NewTransferSheet({
 
               {clusterContextBlocked ? (
                 <p
-                  className="rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs text-destructive"
+                  className="rounded-md border border-status-failed/30 bg-status-failed/5 px-3 py-2 text-xs text-status-failed"
                   role="alert"
                   data-testid="files-new-transfer-cluster-context-invalid"
                 >
@@ -532,7 +532,7 @@ export function NewTransferSheet({
 
               {cloudContextBlocked ? (
                 <p
-                  className="rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs text-destructive"
+                  className="rounded-md border border-status-failed/30 bg-status-failed/5 px-3 py-2 text-xs text-status-failed"
                   role="alert"
                   data-testid="files-new-transfer-cloud-context-invalid"
                 >

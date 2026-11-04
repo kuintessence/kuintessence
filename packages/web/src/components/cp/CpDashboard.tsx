@@ -252,17 +252,15 @@ function AgentsHealthBar({ healthy, sick, offline }: AgentsHealthBarProps) {
           style={{ width: pct(offline) }}
         />
       </div>
-      <div className="flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-muted-foreground tabular-nums">
+      <div className="flex flex-wrap gap-x-3 gap-y-1 text-xs text-muted-foreground tabular-nums">
         <span data-testid="cp-agents-health-label-healthy">
-          ● {t("cp.common.agentStatus.healthy")} <code className="text-[10px]">healthy</code>{" "}
-          {healthy}
+          {t("cp.common.agentStatus.healthy")} {healthy}
         </span>
         <span data-testid="cp-agents-health-label-sick">
-          ● {t("cp.common.agentStatus.sick")} <code className="text-[10px]">sick</code> {sick}
+          {t("cp.common.agentStatus.sick")} {sick}
         </span>
         <span data-testid="cp-agents-health-label-offline">
-          ● {t("cp.common.agentStatus.offline")} <code className="text-[10px]">offline</code>{" "}
-          {offline}
+          {t("cp.common.agentStatus.offline")} {offline}
         </span>
       </div>
     </div>

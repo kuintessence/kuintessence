@@ -901,26 +901,28 @@ export function NewWorkflowPage() {
       {activeStep === "edit" ? (
         <div className="space-y-4">
           <div className="relative min-h-80">
-            <WorkflowEditorShell
-              value={yaml}
-              onChange={(nextYaml) => {
-                setYaml(nextYaml);
-                setInputsConfirmed(false);
-                setSubmissionBlocks([]);
-              }}
-              actions={
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  onClick={() => setTemplatePickerOpen(true)}
-                  data-testid="workflow-template-picker-open"
-                >
-                  <LayoutTemplate />
-                  {t("workflows.templates.choose")}
-                </Button>
-              }
-            />
+            {!startOverlayOpen ? (
+              <WorkflowEditorShell
+                value={yaml}
+                onChange={(nextYaml) => {
+                  setYaml(nextYaml);
+                  setInputsConfirmed(false);
+                  setSubmissionBlocks([]);
+                }}
+                actions={
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setTemplatePickerOpen(true)}
+                    data-testid="workflow-template-picker-open"
+                  >
+                    <LayoutTemplate />
+                    {t("workflows.templates.choose")}
+                  </Button>
+                }
+              />
+            ) : null}
             {startOverlayOpen ? (
               <WorkflowStartOverlay
                 onScratch={() => {

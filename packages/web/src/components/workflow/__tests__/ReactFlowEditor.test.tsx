@@ -13,7 +13,11 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, test, vi } from "vitest";
 
-const { updateNodeInternals } = vi.hoisted(() => ({ updateNodeInternals: vi.fn() }));
+const { updateNodeInternals, fitView, viewportState } = vi.hoisted(() => ({
+  updateNodeInternals: vi.fn(),
+  fitView: vi.fn(),
+  viewportState: { initialized: true },
+}));
 
 vi.mock("../../ThemeProvider", () => ({
   useTheme: () => ({ resolved: "light" }),
@@ -239,6 +243,7 @@ vi.mock("@xyflow/react", () => {
   const Position = { Top: "top", Right: "right", Bottom: "bottom", Left: "left" };
   function useReactFlow() {
     return {
+      fitView,
       screenToFlowPosition: ({ x, y }: { x: number; y: number }) => ({ x, y }),
     };
   }
@@ -264,6 +269,7 @@ vi.mock("@xyflow/react", () => {
     Handle,
     Position,
     useReactFlow,
+    useNodesInitialized: () => viewportState.initialized,
     useUpdateNodeInternals,
     applyNodeChanges,
     applyEdgeChanges,
@@ -298,6 +304,18 @@ function harness(nodes: GraphNode[], edges: GraphEdge[] = []) {
 }
 
 describe("ReactFlowEditor", () => {
+  test("fits after every node is measured without resetting the viewport on edits", () => {
+    fitView.mockClear();
+    viewportState.initialized = false;
+    const view = render(harness([makeFlatNode("a")]));
+    expect(fitView).not.toHaveBeenCalled();
+    viewportState.initialized = true;
+    view.rerender(harness([makeFlatNode("a"), makeFlatNode("b")]));
+    expect(fitView).toHaveBeenCalledOnce();
+    view.rerender(harness([makeFlatNode("a"), makeFlatNode("b"), makeFlatNode("c")]));
+    expect(fitView).toHaveBeenCalledOnce();
+  });
+
   test("renders Background, Controls, and MiniMap chrome", () => {
     render(harness([makeFlatNode("a")]));
 
