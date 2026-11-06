@@ -148,6 +148,7 @@ beforeEach(async () => {
     verifyAccess: (input) => repository.verifyAccess(input),
   }).resolveForDispatch({ jobId, actorUserId: userId, orgId: null, agentId });
   original = new AgentDispatcher().buildDispatchJob(jobId, {
+    federationExecution: true,
     jobIdInternal: jobId,
     name: "Renew credentials",
     command: "true",
@@ -181,7 +182,12 @@ test("reconnect renews credentials while retaining the original outbox and immut
   const bytes = Buffer.from(toBinary(ServerMessageSchema, original)).toString("base64");
   const outbox = makeOutbox();
   expect(await outbox.enqueue(agentId, original, runId)).toEqual({ sent: false, pending: true });
-  dispatcher.register(agentId, { close: () => {}, push: (message) => delivered.push(message) });
+  dispatcher.register(agentId, {
+    federationExecutionV1: true,
+    verifiedCertFingerprint: "test-verified-certificate",
+    close: () => {},
+    push: (message) => delivered.push(message),
+  });
   await outbox.redeliver(agentId);
   await makeOutbox().redeliver(agentId);
   expect(delivered).toHaveLength(2);
@@ -326,6 +332,8 @@ test("data-bearing federation dispatch cannot bypass an absent renewal service",
   const dispatcher = new AgentDispatcher();
   let sent = 0;
   dispatcher.register(agentId, {
+    federationExecutionV1: true,
+    verifiedCertFingerprint: "test-verified-certificate",
     close: () => {},
     push: () => {
       sent++;

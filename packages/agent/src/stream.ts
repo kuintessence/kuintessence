@@ -12,6 +12,7 @@ import {
   DataScanFileSchema,
   DataScanResultSchema,
   type DispatchJob,
+  type FederationExecutionRequest,
   FileTransferProgressSchema,
   GpuMetricSchema,
   HeartbeatSchema,
@@ -92,6 +93,7 @@ import { readMetrics } from "./monitor/metrics";
 import { createCachedSchedulerQueueDepthReader } from "./monitor/queue-depth";
 import type { ExpectedOutput } from "./output-collector";
 import type { ActiveRemoteJobs } from "./queue/active-remote-jobs";
+import { FederationExecutionClient } from "./queue/federation-execution";
 import type { InboundAcks } from "./queue/inbound-acks";
 import type {
   JobCleanupIntent,
@@ -215,6 +217,7 @@ type OutboundItem =
       requestId: string;
       partNumbers: number[];
     }
+  | { kind: "federationExecutionRequest"; request: FederationExecutionRequest }
   | {
       kind: "sandboxArtifactReleaseAck";
       requestId: string;
@@ -671,6 +674,19 @@ function throwIfTransferAborted(signal: AbortSignal): void {
 export class AgentStream {
   private running = true;
   private connected = false;
+  private federationExecutionSupported = false;
+  // shortcut: live reconnect only; persist full dispatches before enabling process-restart replay.
+  private readonly federationDispatches = new Map<
+    string,
+    { dispatch: DispatchJob; controller: AbortController }
+  >();
+  private readonly federationSpecs = new WeakSet<JobSpec>();
+  private readonly federationExecution = new FederationExecutionClient((request) => {
+    if (!this.connected || !this.federationExecutionSupported) return false;
+    this.outboundQueue.push({ kind: "federationExecutionRequest", request });
+    this.signalOutbound();
+    return true;
+  });
   private outboundQueue: OutboundItem[] = [];
   private readonly outboundResolvers = new Set<() => void>();
   private readonly pendingPartUrlRequests = new Map<
@@ -831,6 +847,13 @@ export class AgentStream {
           await this.assertDispatchEpochAllowed(spec.jobId, spackEpoch);
           this.lifecycleController.signal.throwIfAborted();
         }
+        if (this.federationSpecs.has(spec)) {
+          const pending = this.federationDispatches.get(spec.jobId);
+          if (!pending) throw new Error("Federation dispatch authority is missing");
+          const grant = await this.renewFederationExecution(pending.dispatch);
+          if (!grant || grant.expiresAt <= Date.now())
+            throw new Error("Federation execution grant expired before submission");
+        }
       },
       onQueueValidationShadowRejection: (failureCode) =>
         this.enqueueQueueValidationShadowRejection(failureCode),
@@ -957,6 +980,10 @@ export class AgentStream {
    * routes the report onto the outbound queue / persistent spillover.
    */
   private async onJobTransition(report: JobStatusReport): Promise<void> {
+    if (["completed", "failed", "cancelled"].includes(report.status)) {
+      this.federationDispatches.get(report.jobId)?.controller.abort();
+      this.federationDispatches.delete(report.jobId);
+    }
     const dispatchId = this.dispatchIdsByJob.get(report.jobId) ?? report.jobId;
     await this.enqueueStatusUpdate(report);
     if (this.inboundAcks && !this.ackedDispatches.has(dispatchId)) {
@@ -1591,6 +1618,7 @@ export class AgentStream {
             this.spackManager?.requireServerMaterials === true &&
             !!this.persistentQueue?.softwareOperations,
           managedDatasetRootIds: [...(this.deps.managedDatasetRootIds ?? [])],
+          federationExecutionV1: this.federationExecutionCapable(),
         }),
       },
     });
@@ -1631,6 +1659,7 @@ export class AgentStream {
         for (const row of pending) {
           if (signal.aborted) return;
           if (this.preparingSpackDispatches.has(row.dispatchId)) continue;
+          if (this.federationDispatches.has(row.jobId)) continue;
           const haveLocalRunner = this.pool.get(row.jobId) !== undefined;
           const replayReport: JobStatusReport = haveLocalRunner
             ? { jobId: row.jobId, status: "running" }
@@ -1776,6 +1805,11 @@ export class AgentStream {
                 }),
               },
             });
+          } else if (item.kind === "federationExecutionRequest") {
+            if (this.federationExecution.hasPending(item.request.requestId))
+              yield create(AgentMessageSchema, {
+                payload: { case: "federationExecutionRequest", value: item.request },
+              });
           } else if (item.kind === "sandboxArtifactReleaseAck") {
             yield create(AgentMessageSchema, {
               payload: {
@@ -2210,6 +2244,8 @@ export class AgentStream {
             clearTimeout(registrationTimer);
             if (message.payload.value.accepted) {
               this.connected = true;
+              this.federationExecutionSupported =
+                message.payload.value.federationExecutionV1Supported;
               this.heartbeatAckSupported = message.payload.value.heartbeatAckSupported;
               this.jobStatusAckSupported = message.payload.value.jobStatusAckSupported;
               this.queueValidationShadowRejectionAckSupported =
@@ -2255,6 +2291,8 @@ export class AgentStream {
         this.heartbeatPreparationAttempt = undefined;
       }
       this.connected = false;
+      this.federationExecutionSupported = false;
+      this.federationExecution.disconnect();
       this.stopHeartbeatTimer(controller);
       this.heartbeatAckSupported = false;
       this.jobStatusAckSupported = false;
@@ -2556,8 +2594,24 @@ export class AgentStream {
       return;
     }
 
+    if (payload.case === "federationExecutionResponse") {
+      this.federationExecution.receive(payload.value);
+      return;
+    }
+
     if (payload.case === "dispatchJob") {
       const dj = payload.value;
+      if (
+        dj.federationExecution &&
+        (!this.federationExecutionSupported || !this.federationExecutionCapable())
+      ) {
+        await this.onJobTransition({
+          jobId: dj.jobId,
+          status: "failed",
+          message: "Federation execution renewal is unavailable",
+        });
+        return;
+      }
       const queueTargetMode = queueTargetModeFromProto(dj.queueTargetMode);
       const queueValidationMode = queueValidationModeFromProto(dj.queueValidationMode);
       const dispatchEpoch = Number(dj.dispatchEpoch);
@@ -2611,6 +2665,7 @@ export class AgentStream {
               queueValidationMode,
               qos: dj.qos,
               stdinText: dj.stdinText,
+              federationExecution: dj.federationExecution,
             },
           });
           if (!accepted) {
@@ -2632,6 +2687,11 @@ export class AgentStream {
         return;
       }
       this.dispatchIdsByJob.set(dj.jobId, dispatchId);
+      if (dj.federationExecution)
+        this.federationDispatches.set(dj.jobId, {
+          dispatch: dj,
+          controller: new AbortController(),
+        });
 
       if (dj.spackExecution && dj.sandboxExecution) {
         await this.onJobTransition({
@@ -2716,11 +2776,12 @@ export class AgentStream {
           });
           return;
         }
-        processor
-          .prepare(
+        (async () => {
+          const authorized = (await this.renewFederationExecution(dj))?.dispatch ?? dj;
+          return processor.prepare(
             dj.jobId,
             sandboxExecution,
-            dj.inputStaging.map((input) => ({
+            authorized.inputStaging.map((input) => ({
               stagePath: input.stagePath,
               sourceUrl: input.sourceUrl,
               ...(input.deliveryLeaseId
@@ -2730,7 +2791,8 @@ export class AgentStream {
                   }
                 : {}),
             })),
-          )
+          );
+        })()
           .then(async (prepared) => {
             const profile = this.deps.restrictedExecutionProfile;
             if (
@@ -2801,6 +2863,7 @@ export class AgentStream {
             }
             await this.assertDispatchEpochAllowed(dj.jobId, dispatchEpoch);
             this.sandboxRuntimeDigests.set(spec, prepared.runtimeDigest);
+            if (dj.federationExecution) this.federationSpecs.add(spec);
             return this.pool.submit(spec, { expectedOutputs: sandboxOutputs });
           })
           .catch(async (err) => {
@@ -3311,12 +3374,34 @@ export class AgentStream {
     this.signalOutbound();
   }
 
+  private federationExecutionCapable(): boolean {
+    return Boolean(this.inboundAcks && this.revocationTombstones && this.cleanupIntents);
+  }
+
+  private async renewFederationExecution(dispatch: DispatchJob) {
+    if (!dispatch.federationExecution) return undefined;
+    const pending = this.federationDispatches.get(dispatch.jobId);
+    if (!pending) throw new Error("Federation dispatch authority is missing");
+    const signal = AbortSignal.any([this.lifecycleController.signal, pending.controller.signal]);
+    signal.throwIfAborted();
+    await this.assertDispatchEpochAllowed(dispatch.jobId, Number(dispatch.dispatchEpoch));
+    for (;;) {
+      const grant = await this.federationExecution.renew(pending.dispatch, signal);
+      await this.assertDispatchEpochAllowed(dispatch.jobId, Number(dispatch.dispatchEpoch));
+      signal.throwIfAborted();
+      if (grant.expiresAt <= Date.now()) continue;
+      pending.dispatch = grant.dispatch;
+      return grant;
+    }
+  }
+
   private async submitWithLicensedMaterials(
     dispatch: DispatchJob,
     spec: JobSpec,
     expectedOutputs: ExpectedOutput[],
     dispatchEpoch: number,
   ): Promise<void> {
+    dispatch = (await this.renewFederationExecution(dispatch))?.dispatch ?? dispatch;
     if (dispatch.spackExecution) {
       await this.assertDispatchEpochAllowed(spec.jobId, dispatchEpoch);
       this.lifecycleController.signal.throwIfAborted();
@@ -3379,7 +3464,27 @@ export class AgentStream {
     try {
       const delivered = deliveryExecutor
         ? await deliveryExecutor.prepare(managedSpec.jobId, dispatch.dataDeliveries, {
+            signal: dispatch.federationExecution
+              ? AbortSignal.any([
+                  this.lifecycleController.signal,
+                  this.federationDispatches.get(dispatch.jobId)?.controller.signal ??
+                    AbortSignal.abort(),
+                ])
+              : this.lifecycleController.signal,
+            ...(dispatch.federationExecution
+              ? {
+                  renew: async (binding) => {
+                    const renewed = await this.renewFederationExecution(dispatch);
+                    const current = renewed?.dispatch.dataDeliveries.find(
+                      (item) => item.bindingId === binding.bindingId,
+                    );
+                    if (!current) throw new Error("Federation data renewal is missing its binding");
+                    return current;
+                  },
+                }
+              : {}),
             beforeSideEffect: async (delivery) => {
+              await this.assertDispatchEpochAllowed(managedSpec.jobId, dispatchEpoch);
               await this.cleanupIntents?.recordDataDelivery(managedSpec.jobId, {
                 bindingId: delivery.bindingId,
                 targetPath: delivery.targetPath,
@@ -3441,6 +3546,7 @@ export class AgentStream {
       if (dispatch.spackExecution) {
         this.spackDispatchEpochs.set(protectedSpec, dispatchEpoch);
       }
+      if (dispatch.federationExecution) this.federationSpecs.add(protectedSpec);
       await this.pool.submit(protectedSpec, { expectedOutputs: protectedExpectedOutputs });
     } catch (error) {
       const cleanupErrors: unknown[] = [];
@@ -3526,6 +3632,9 @@ export class AgentStream {
     const tombstones = this.revocationTombstones;
     if (!tombstones) throw new Error("durable revocation tombstone store is not configured");
     await tombstones.record(jobId, revokedEpoch);
+    const federation = this.federationDispatches.get(jobId);
+    if (federation && federation.dispatch.dispatchEpoch <= BigInt(revokedEpoch))
+      federation.controller.abort();
     const activation = this.spackActivations.get(jobId);
     if (activation && activation.epoch <= revokedEpoch) {
       activation.controller.abort();
@@ -3722,6 +3831,7 @@ export class AgentStream {
     destroyRestrictedWorkRoot: boolean,
     reasonCode: string,
   ): Promise<void> {
+    this.federationDispatches.get(jobId)?.controller.abort();
     const schedulerCancellation = this.pool.get(jobId)
       ? this.pool.cancel(jobId)
       : Promise.resolve();

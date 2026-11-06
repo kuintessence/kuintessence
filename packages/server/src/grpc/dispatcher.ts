@@ -177,6 +177,7 @@ export interface AgentChannel {
   spackMaterialDeliveryV1?: boolean;
   spackPinnedExecutionV1?: boolean;
   softwareOperationReplayV1?: boolean;
+  federationExecutionV1?: boolean;
   verifiedCertFingerprint?: string;
 }
 
@@ -264,6 +265,8 @@ export class AgentDispatcher {
 
   pushPreparedDispatch(agentId: string, message: ServerMessage): boolean {
     if (message.payload.case !== "dispatchJob") throw new Error("Expected a job dispatch message");
+    if (message.payload.value.federationExecution && !this.supportsFederationExecution(agentId))
+      return false;
     if (
       message.payload.value.spackExecution?.pin &&
       (message.payload.value.command !== SPACK_PINNED_EXECUTION_PLACEHOLDER ||
@@ -271,6 +274,11 @@ export class AgentDispatcher {
     )
       return false;
     return this.pushToAgent(agentId, message);
+  }
+
+  supportsFederationExecution(agentId: string): boolean {
+    const channel = this.getChannel(agentId);
+    return channel?.federationExecutionV1 === true && !!channel.verifiedCertFingerprint;
   }
 
   supportsSoftwareOperationReplay(agentId: string): boolean {
@@ -313,6 +321,7 @@ export class AgentDispatcher {
         deliveryLeaseExpiresAtUnixMs?: number;
       }>;
       dataDeliveries?: ResolvedDataDelivery[];
+      federationExecution?: boolean;
     },
   ): ServerMessage {
     if (job.spackExecution?.pin && job.command !== SPACK_PINNED_EXECUTION_PLACEHOLDER)
@@ -365,6 +374,7 @@ export class AgentDispatcher {
           restrictedNoEgress: job.restrictedNoEgress ?? false,
           dataDeliveries: (job.dataDeliveries ?? []).map(dataDeliveryToProto),
           dispatchEpoch: BigInt(job.dispatchEpoch ?? 0),
+          federationExecution: job.federationExecution ?? false,
         }),
       },
     });

@@ -851,6 +851,7 @@ export class PlacementOrchestrator {
     const message = this.deps.dispatcher.buildDispatchJob(jobId, {
       jobIdInternal: jobId,
       dispatchEpoch: assigned.dispatchEpoch,
+      federationExecution: Boolean(scoped),
       name: job.name,
       command: job.command,
       resources: job.resources,

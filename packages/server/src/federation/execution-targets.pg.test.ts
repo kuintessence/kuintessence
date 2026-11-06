@@ -84,6 +84,8 @@ beforeAll(async () => {
       qos: null,
     });
     dispatcher.register(target.agentId, {
+      federationExecutionV1: true,
+      verifiedCertFingerprint: "test-verified-certificate",
       push: (message) => {
         sent.push({ agentId: target.agentId, message });
       },

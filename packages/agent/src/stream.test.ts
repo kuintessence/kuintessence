@@ -14,6 +14,8 @@ import {
   DataDeliveryBindingSchema,
   DataScanRequestSchema,
   DispatchJobSchema,
+  FederationExecutionDecision,
+  FederationExecutionResponseSchema,
   FileTransferCancelSchema,
   HeartbeatAckSchema,
   JobLogsRequestSchema,
@@ -350,7 +352,11 @@ function makeReplayReconnectClient(
   };
 }
 
-function makePendingRegisteredClient(heartbeatAckSupported = false, jobStatusAckSupported = false) {
+function makePendingRegisteredClient(
+  heartbeatAckSupported = false,
+  jobStatusAckSupported = false,
+  federation?: { supported: boolean; onMessage: (message: AgentMessage) => Promise<void> },
+) {
   const accepted = create(ServerMessageSchema, {
     payload: {
       case: "registerResponse",
@@ -359,14 +365,15 @@ function makePendingRegisteredClient(heartbeatAckSupported = false, jobStatusAck
         message: "ok",
         heartbeatAckSupported,
         jobStatusAckSupported,
+        federationExecutionV1Supported: federation?.supported ?? false,
       }),
     },
   });
   return {
-    connect(request: AsyncIterable<unknown>, options?: { signal?: AbortSignal }) {
+    connect(request: AsyncIterable<AgentMessage>, options?: { signal?: AbortSignal }) {
       void (async () => {
-        for await (const _message of request) {
-          // Keep the request generator flowing until this attempt is aborted.
+        for await (const message of request) {
+          await federation?.onMessage(message);
         }
       })().catch(() => {});
       let first = true;
@@ -8054,5 +8061,117 @@ describe("jobStatusReportToProto", () => {
     const msg = jobStatusReportToProto({ jobId: "j-cancelled", status: "cancelled" });
     const value = (msg.payload as { value: { status: ProtoJobStatus } }).value;
     expect(value.status).toBe(ProtoJobStatus.CANCELLED);
+  });
+});
+
+describe("federation execution boundaries", () => {
+  test.each([
+    "grant",
+    "deny",
+    "cancel",
+    "unsupported",
+  ] as const)("%s at the final submission boundary", async (outcome) => {
+    const db = createSqliteDb(":memory:");
+    const validated = Promise.withResolvers<void>();
+    const releaseValidation = Promise.withResolvers<void>();
+    const grants: string[] = [];
+    const submitted: JobSpec[] = [];
+    const reports: JobStatusReport[] = [];
+    const dispatch = create(DispatchJobSchema, {
+      jobId: crypto.randomUUID(),
+      command: "echo immutable",
+      cpus: 1,
+      memoryMb: 128n,
+      dispatchEpoch: 1n,
+      federationExecution: true,
+      queueTargetMode: QueueTargetMode.NAMED,
+      queueName: "approved",
+      queueValidationMode: QueueValidationMode.ENFORCE,
+    });
+    const stream = new AgentStream({
+      client: makePendingRegisteredClient(false, false, {
+        supported: outcome !== "unsupported",
+        onMessage: async (message) => {
+          if (message.payload.case !== "federationExecutionRequest") return;
+          const request = message.payload.value;
+          grants.push(request.requestId);
+          if (grants.length === 2 && outcome === "cancel") return;
+          await deliverServerMessage(
+            stream,
+            create(ServerMessageSchema, {
+              payload: {
+                case: "federationExecutionResponse",
+                value: create(FederationExecutionResponseSchema, {
+                  requestId: request.requestId,
+                  jobId: request.jobId,
+                  dispatchEpoch: request.dispatchEpoch,
+                  decision:
+                    grants.length === 2 && outcome === "deny"
+                      ? FederationExecutionDecision.DENIED
+                      : FederationExecutionDecision.GRANTED,
+                  dispatch,
+                  expiresAtUnixMs: BigInt(Date.now() + 10_000),
+                }),
+              },
+            }),
+          );
+        },
+      }),
+      adapter: makeAdapter({
+        validateQueueTarget: async () => {
+          validated.resolve();
+          await releaseValidation.promise;
+          return { accepted: true, resolvedQueueName: "approved" };
+        },
+        submit: async (spec) => {
+          submitted.push(spec);
+          return { schedulerJobId: "federated-scheduler-job" };
+        },
+      }),
+      agentId: "federation-agent",
+      siteName: "test-site",
+      heartbeatIntervalMs: 60_000,
+      jobSleep: async () => {},
+      logger: silent,
+      inboundAcks: new InboundAcks(db),
+      revocationTombstones: new JobRevocationTombstones(db),
+      cleanupIntents: new JobCleanupIntents(db),
+    });
+    stream.enqueueStatusUpdate = async (report) => {
+      reports.push(report);
+    };
+    activeStreams.push(stream);
+    const running = stream.start();
+    try {
+      await settle(20);
+      await deliverServerMessage(
+        stream,
+        create(ServerMessageSchema, { payload: { case: "dispatchJob", value: dispatch } }),
+      );
+      if (outcome === "unsupported") {
+        await waitForCondition(() => reports.some((report) => report.status === "failed"));
+        expect(grants).toHaveLength(0);
+      } else {
+        await validated.promise;
+        expect(grants).toHaveLength(1);
+        expect(submitted).toHaveLength(0);
+        releaseValidation.resolve();
+        await waitForCondition(() => grants.length === 2);
+        if (outcome === "cancel") {
+          expect(submitted).toHaveLength(0);
+          await deliverServerMessage(stream, cancelJobMessage(dispatch.jobId, 1));
+        }
+        await waitForCondition(() =>
+          reports.some((report) => ["completed", "failed", "cancelled"].includes(report.status)),
+        );
+        expect(new Set(grants).size).toBe(2);
+      }
+      expect(submitted).toHaveLength(outcome === "grant" ? 1 : 0);
+      if (outcome === "grant") expect(submitted[0]?.command).toBe("echo immutable");
+    } finally {
+      releaseValidation.resolve();
+      stream.stop();
+      await running;
+    }
   });
 });

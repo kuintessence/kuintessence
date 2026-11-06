@@ -692,6 +692,8 @@ test("software redelivery uses the real Agent receipt once and recovers a lost t
 
 test("federation outbox requires fresh authorization on initial delivery and every restart retry", async () => {
   const { jobId, dispatcher, message, outbox } = await dispatchFixture();
+  if (message.payload.case !== "dispatchJob") throw new Error("Expected dispatch");
+  message.payload.value.federationExecution = true;
   const runId = crypto.randomUUID();
   const reservationId = crypto.randomUUID();
   await db.insert(schema.workflowRuns).values({
@@ -703,6 +705,8 @@ test("federation outbox requires fresh authorization on initial delivery and eve
   });
   const delivered: ServerMessage[] = [];
   dispatcher.register(agentId, {
+    federationExecutionV1: true,
+    verifiedCertFingerprint: "test-verified-certificate",
     push: (value) => {
       if (value.payload.case === "dispatchJob" && value.payload.value.jobId === jobId)
         delivered.push(value);

@@ -17,6 +17,9 @@ import {
   AgentMessageSchema,
   ComputeHealthSchema,
   ComputeHealthState,
+  FederationExecutionDecision,
+  FederationExecutionRequestSchema,
+  FederationExecutionResponseSchema,
   GpuMetricSchema,
   HeartbeatSchema,
   InstalledSoftwareReportSchema,
@@ -35,9 +38,11 @@ import {
   SchedulerQueueState,
   SchedulerQueueType,
   SchedulerType,
+  type ServerMessage,
 } from "@kuintessence/proto";
 import { eq } from "drizzle-orm";
 import pino from "pino";
+import { runWithMtlsContext } from "../auth/mtls-context";
 import { AgentManager } from "../services/agent-manager";
 import { JobService } from "../services/job-service";
 import type { QueueInventoryService } from "../services/queue-inventory";
@@ -248,6 +253,115 @@ describe("agent-handler", () => {
     await db.delete(agents).where(eq(agents.agentId, "grpc-test-agent-1"));
     await db.delete(users).where(eq(users.id, testUserId));
     await db.delete(orgs).where(eq(orgs.id, testOrgId));
+  });
+
+  test.each([
+    "grant",
+    "denied",
+    "retry",
+    "legacy",
+    "unverified",
+  ] as const)("federation grant RPC: %s", async (outcome) => {
+    const { router, handlers } = createMockRouter();
+    const received = Promise.withResolvers<void>();
+    const heartbeatDelivered = Promise.withResolvers<void>();
+    const calledBy: string[] = [];
+    registerAgentHandler(router, {
+      agentManager,
+      jobService,
+      logger: testLogger,
+      dispatcher: new AgentDispatcher(),
+      jobDispatches: {
+        acknowledge: async () => {},
+        redeliver: async () => {},
+        renewExecution: async (agentId, request, send) => {
+          calledBy.push(agentId);
+          if (outcome === "retry") throw new Error("private infrastructure detail");
+          if (outcome === "denied") return false;
+          await heartbeatDelivered.promise;
+          send(
+            create(FederationExecutionResponseSchema, {
+              requestId: request.requestId,
+              jobId: request.jobId,
+              dispatchEpoch: request.dispatchEpoch,
+              decision: FederationExecutionDecision.GRANTED,
+              expiresAtUnixMs: BigInt(Date.now() + 1000),
+            }),
+          );
+          return true;
+        },
+      },
+    });
+    await agentManager.register({
+      agentId: "grpc-test-agent-1",
+      siteName: "test",
+      schedulerType: "slurm",
+      schedulerVersion: "test",
+    });
+    const register = registerFrame();
+    if (register.payload.case !== "register") throw new Error("Missing register");
+    register.payload.value.federationExecutionV1 = outcome !== "legacy";
+    const request = create(FederationExecutionRequestSchema, {
+      requestId: crypto.randomUUID(),
+      jobId: testJobId,
+      dispatchEpoch: 1n,
+    });
+    async function* messages() {
+      yield register;
+      yield create(AgentMessageSchema, {
+        payload: { case: "federationExecutionRequest", value: request },
+      });
+      if (outcome === "grant")
+        yield create(AgentMessageSchema, {
+          payload: {
+            case: "heartbeat",
+            value: create(HeartbeatSchema, { agentId: "grpc-test-agent-1", sequence: 1n }),
+          },
+        });
+      await received.promise;
+    }
+    const connect = handlers.connect;
+    if (!connect) throw new Error("Missing connect");
+    const responses = await runWithMtlsContext(
+      {
+        agentId: outcome === "unverified" ? null : "grpc-test-agent-1",
+        fingerprintSha256: outcome === "unverified" ? null : "test-verified",
+      },
+      async () => {
+        const output: ServerMessage[] = [];
+        for await (const message of connect(messages())) {
+          const reply = message as ServerMessage;
+          output.push(reply);
+          if (reply.payload.case === "heartbeatAck") heartbeatDelivered.resolve();
+          if (reply.payload.case === "federationExecutionResponse") received.resolve();
+        }
+        return output;
+      },
+    );
+    const reply = responses.find(
+      (message) => message.payload.case === "federationExecutionResponse",
+    );
+    if (reply?.payload.case !== "federationExecutionResponse")
+      throw new Error("Missing grant response");
+    expect(reply.payload.value).toMatchObject({
+      requestId: request.requestId,
+      jobId: testJobId,
+      dispatchEpoch: 1n,
+      decision:
+        outcome === "grant"
+          ? FederationExecutionDecision.GRANTED
+          : outcome === "retry"
+            ? FederationExecutionDecision.RETRY
+            : FederationExecutionDecision.DENIED,
+    });
+    expect(calledBy).toEqual(
+      ["legacy", "unverified"].includes(outcome) ? [] : ["grpc-test-agent-1"],
+    );
+    expect(
+      JSON.stringify(reply, (_key, value: unknown) =>
+        typeof value === "bigint" ? value.toString() : value,
+      ),
+    ).not.toContain("private infrastructure detail");
   });
 
   test("registers an agent and yields acceptance", async () => {

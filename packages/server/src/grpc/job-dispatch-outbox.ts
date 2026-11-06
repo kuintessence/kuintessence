@@ -1,5 +1,7 @@
-import { fromBinary, toBinary } from "@bufbuild/protobuf";
+import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
 import {
+  federationAgreements,
+  federationReservations,
   federationWorkflowBindings,
   jobDispatchOutbox,
   jobs,
@@ -8,7 +10,15 @@ import {
   workflowExecutionJobs,
   workflowRuns,
 } from "@kuintessence/db";
-import { type ServerMessage, ServerMessageSchema } from "@kuintessence/proto";
+import {
+  FederationExecutionDecision,
+  type FederationExecutionRequest,
+  type FederationExecutionResponse,
+  FederationExecutionResponseSchema,
+  type ServerMessage,
+  ServerMessageSchema,
+  sameDispatchIntent,
+} from "@kuintessence/proto";
 import { createLogger, WorkflowExecutionInterrupted } from "@kuintessence/shared";
 import { and, asc, eq, isNull, lt, lte, or, sql } from "drizzle-orm";
 import type { PreparedFederationDataDispatch } from "../federation/data-dispatch";
@@ -17,6 +27,13 @@ import type { LeasedWorkflowJournal } from "../workflow/execution-journal";
 import type { AgentDispatcher } from "./dispatcher";
 
 const logger = createLogger("job-dispatch-outbox");
+const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
+
+interface ExecutionGrantDelivery {
+  agentId: string;
+  request: FederationExecutionRequest;
+  send: (response: FederationExecutionResponse) => void;
+}
 
 /** Stores the original envelope. Renewed data credentials never change its execution intent. */
 export class JobDispatchOutbox {
@@ -143,6 +160,22 @@ export class JobDispatchOutbox {
     });
   }
 
+  async renewExecution(
+    agentId: string,
+    request: FederationExecutionRequest,
+    send: ExecutionGrantDelivery["send"],
+  ): Promise<boolean> {
+    if (
+      !UUID.test(request.jobId) ||
+      !UUID.test(request.requestId) ||
+      request.dispatchEpoch < 1n ||
+      request.dispatchEpoch > BigInt(Number.MAX_SAFE_INTEGER)
+    )
+      return false;
+    if (!this.dispatcher.supportsFederationExecution(agentId)) return false;
+    return this.deliver(request.jobId, true, { agentId, request, send });
+  }
+
   async redeliver(agentId?: string): Promise<void> {
     const rows = await this.db
       .select({ jobId: jobDispatchOutbox.jobId })
@@ -186,7 +219,11 @@ export class JobDispatchOutbox {
     }
   }
 
-  private async deliver(jobId: string, force: boolean): Promise<boolean> {
+  private async deliver(
+    jobId: string,
+    force: boolean,
+    grant?: ExecutionGrantDelivery,
+  ): Promise<boolean> {
     const [identity] = await this.db
       .select({
         runId: jobDispatchOutbox.workflowRunId,
@@ -210,6 +247,19 @@ export class JobDispatchOutbox {
       Buffer.from(identity.payloadBase64, "base64"),
     );
     if (preparedMessage.payload.case !== "dispatchJob") throw new Error("Invalid dispatch payload");
+    const originalDispatch = preparedMessage.payload.value;
+    if (Boolean(reservationId) !== preparedMessage.payload.value.federationExecution)
+      throw new WorkflowExecutionInterrupted(
+        "Dispatch federation capability does not match its binding",
+        { retryable: false },
+      );
+    if (
+      grant &&
+      (!reservationId ||
+        identity.agentId !== grant.agentId ||
+        preparedMessage.payload.value.dispatchEpoch !== grant.request.dispatchEpoch)
+    )
+      return false;
     if (reservationId && (!identity.runId || !this.prepareFederationDispatch))
       throw new WorkflowExecutionInterrupted("Federation dispatch authorization is unavailable", {
         retryable: false,
@@ -256,7 +306,7 @@ export class JobDispatchOutbox {
         .where(
           and(
             eq(jobDispatchOutbox.jobId, jobId),
-            isNull(jobDispatchOutbox.acknowledgedAt),
+            grant ? undefined : isNull(jobDispatchOutbox.acknowledgedAt),
             force ? undefined : lte(jobDispatchOutbox.nextAttemptAt, sql`clock_timestamp()`),
           ),
         )
@@ -289,12 +339,59 @@ export class JobDispatchOutbox {
         message.payload.value.dispatchEpoch !== BigInt(saved.dispatchEpoch)
       )
         throw new Error("Invalid persisted dispatch envelope");
+      if (!sameDispatchIntent(originalDispatch, message.payload.value))
+        throw new WorkflowExecutionInterrupted("Credential renewal changed dispatch intent", {
+          retryable: false,
+        });
       await tx
         .update(jobDispatchOutbox)
         .set({ nextAttemptAt: sql`clock_timestamp() + interval '10 seconds'` })
         .where(eq(jobDispatchOutbox.jobId, jobId));
       await authorize?.(tx);
       await data?.authorize(tx);
+      if (grant) {
+        const [binding] = await tx
+          .select({
+            snapshot: federationWorkflowBindings.snapshot,
+            terms: federationAgreements.terms,
+          })
+          .from(federationWorkflowBindings)
+          .innerJoin(
+            federationReservations,
+            eq(federationReservations.id, federationWorkflowBindings.reservationId),
+          )
+          .innerJoin(
+            federationAgreements,
+            eq(federationAgreements.revisionId, federationReservations.agreementRevisionId),
+          )
+          .where(eq(federationWorkflowBindings.workflowRunId, saved.workflowRunId ?? ""));
+        if (!binding) return false;
+        const dispatch = message.payload.value;
+        const expiry = Math.min(
+          Date.now() + 10_000,
+          Date.parse(binding.snapshot.request.expiresAt),
+          Date.parse(binding.terms.validUntil),
+          ...dispatch.dataDeliveries.map((item) => Number(item.leaseExpiresAtUnixMs)),
+          ...dispatch.inputStaging
+            .filter((item) => item.deliveryLeaseId)
+            .map((item) => Number(item.deliveryLeaseExpiresAtUnixMs)),
+          ...(dispatch.sandboxExecution?.envelope
+            ? [Number(dispatch.sandboxExecution.envelope.expiresAtUnixMs)]
+            : []),
+        );
+        if (!Number.isSafeInteger(expiry) || expiry <= Date.now()) return false;
+        grant.send(
+          create(FederationExecutionResponseSchema, {
+            requestId: grant.request.requestId,
+            jobId,
+            dispatchEpoch: grant.request.dispatchEpoch,
+            decision: FederationExecutionDecision.GRANTED,
+            expiresAtUnixMs: BigInt(expiry),
+            dispatch,
+          }),
+        );
+        return true;
+      }
       // Synchronous channel enqueue stays inside the cancellation fence; no network await here.
       // A failed commit may replay the same epoch, which the Agent's durable inbox deduplicates.
       return this.dispatcher.pushPreparedDispatch(saved.agentId, message);

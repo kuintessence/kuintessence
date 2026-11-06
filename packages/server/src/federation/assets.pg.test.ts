@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, expect, spyOn, test } from "bun:test";
 import { createHash } from "node:crypto";
+import { create } from "@bufbuild/protobuf";
 import {
   agents,
   auditLog,
@@ -19,6 +20,7 @@ import {
   federationSigningKeys,
   federationSites,
   federationWorkflowBindings,
+  jobDispatchOutbox,
   jobs,
   orgs,
   schedulerQueues,
@@ -29,6 +31,11 @@ import {
   workflowExecutionJobs,
   workflowRuns,
 } from "@kuintessence/db";
+import {
+  FederationExecutionDecision,
+  FederationExecutionRequestSchema,
+  type FederationExecutionResponse,
+} from "@kuintessence/proto";
 import {
   FederationAcceptanceSchema,
   FederationAgreementSchema,
@@ -1068,6 +1075,7 @@ test("real federation authorization fences outbox retries and holds agreement re
   let delivered = 0;
   let probe: ReturnType<typeof Bun.spawnSync> | undefined;
   const message = dispatcher.buildDispatchJob(jobId, {
+    federationExecution: true,
     jobIdInternal: jobId,
     name: "Fence test",
     command: "true",
@@ -1082,6 +1090,8 @@ test("real federation authorization fences outbox retries and holds agreement re
       pending: true,
     });
     dispatcher.register(agentId, {
+      federationExecutionV1: true,
+      verifiedCertFingerprint: "test-verified-certificate",
       close: () => {},
       push: () => {
         probe = Bun.spawnSync(
@@ -1112,6 +1122,77 @@ test("real federation authorization fences outbox retries and holds agreement re
     expect(delivered).toBe(1);
     expect(probe?.exitCode).toBe(0);
     expect(probe?.stdout?.toString()).toBe("55P03");
+    const clock = spyOn(Date, "now").mockReturnValue(testNow.getTime());
+    const request = create(FederationExecutionRequestSchema, {
+      requestId: crypto.randomUUID(),
+      jobId,
+      dispatchEpoch: 1n,
+    });
+    const grants: FederationExecutionResponse[] = [];
+    try {
+      await outbox.acknowledge(agentId, jobId);
+      expect(await outbox.renewExecution(agentId, request, (grant) => grants.push(grant))).toBe(
+        true,
+      );
+      expect(grants).toHaveLength(1);
+      expect(grants[0]?.decision).toBe(FederationExecutionDecision.GRANTED);
+      expect(grants[0]?.dispatch?.command).toBe("true");
+      expect(grants[0]?.expiresAtUnixMs).toBe(BigInt(testNow.getTime() + 10_000));
+      dispatcher.register("different-agent", {
+        federationExecutionV1: true,
+        verifiedCertFingerprint: "other-verified",
+        close: () => {},
+        push: () => {},
+      });
+      expect(
+        await outbox.renewExecution("different-agent", request, (grant) => grants.push(grant)),
+      ).toBe(false);
+      expect(
+        await outbox.renewExecution(agentId, { ...request, dispatchEpoch: 2n }, (grant) =>
+          grants.push(grant),
+        ),
+      ).toBe(false);
+      expect(grants).toHaveLength(1);
+      await db.update(jobs).set({ revokedEpoch: 1 }).where(eq(jobs.id, jobId));
+      expect(await outbox.renewExecution(agentId, request, (grant) => grants.push(grant))).toBe(
+        false,
+      );
+      expect(grants).toHaveLength(1);
+      await db.update(jobs).set({ revokedEpoch: 0 }).where(eq(jobs.id, jobId));
+      const snapshot = await loadFederationWorkflowBinding(db, binding.workflowRunId);
+      if (!snapshot) throw new Error("Missing binding snapshot");
+      const expiresAt = Date.parse(snapshot.snapshot.request.expiresAt);
+      clock.mockReturnValue(expiresAt - 500);
+      expect(await outbox.renewExecution(agentId, request, (grant) => grants.push(grant))).toBe(
+        true,
+      );
+      expect(grants.at(-1)?.expiresAtUnixMs).toBe(BigInt(expiresAt));
+      clock.mockReturnValue(expiresAt);
+      expect(await outbox.renewExecution(agentId, request, (grant) => grants.push(grant))).toBe(
+        false,
+      );
+      expect(grants).toHaveLength(2);
+      grants.pop();
+      clock.mockReturnValue(testNow.getTime());
+      await db
+        .update(federationAgreements)
+        .set({ state: "suspended" })
+        .where(eq(federationAgreements.revisionId, agreement.agreementRevisionId));
+      await expect(
+        outbox.renewExecution(agentId, request, (grant) => grants.push(grant)),
+      ).rejects.toThrow();
+      expect(grants).toHaveLength(1);
+    } finally {
+      clock.mockRestore();
+      await db
+        .update(federationAgreements)
+        .set({ state: "active" })
+        .where(eq(federationAgreements.revisionId, agreement.agreementRevisionId));
+      await db
+        .update(jobDispatchOutbox)
+        .set({ acknowledgedAt: null })
+        .where(eq(jobDispatchOutbox.jobId, jobId));
+    }
     const fence = await authorization.prepare(binding.workflowRunId, {
       kind: "compute",
       jobId,

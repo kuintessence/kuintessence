@@ -110,6 +110,7 @@ message AgentMessage {
     CancelJobAck cancel_job_ack = 17;
     JobWorkRootReleaseAck job_work_root_release_ack = 18;
     QueueValidationShadowRejection queue_validation_shadow_rejection = 19;
+    FederationExecutionRequest federation_execution_request = 20;
   }
   reserved 15;
 }
@@ -146,6 +147,7 @@ message ServerMessage {
     HeartbeatAck heartbeat_ack = 20;
     ReleaseJobWorkRoot release_job_work_root = 21;
     QueueValidationShadowRejectionAck queue_validation_shadow_rejection_ack = 22;
+    FederationExecutionResponse federation_execution_response = 23;
   }
 }
 
@@ -211,6 +213,8 @@ message RegisterRequest {
   bool spack_pinned_execution_v1 = 20;
   // Durable installation receipts reject changed intent and replay the original operation.
   bool software_operation_replay_v1 = 21;
+  // Reauthorizes received federation work before preparation and scheduler submission.
+  bool federation_execution_v1 = 22;
 }
 
 message RegisterResponse {
@@ -228,6 +232,7 @@ message RegisterResponse {
   // When advertised, shadow rejection events remain durable on the Agent
   // until the Server has persisted their idempotent counter increment.
   bool queue_validation_shadow_rejection_ack_supported = 7;
+  bool federation_execution_v1_supported = 8;
 }
 
 // tags 7–10 carry extended monitoring + installed-software
@@ -312,6 +317,31 @@ message DispatchJob {
   QueueValidationMode queue_validation_mode = 23;
   // Workflow-only intent. command is "exit 125", or "exit 126" when pin is set.
   SpackJobExecution spack_execution = 24;
+  // Requires a fresh FederationExecutionResponse before starting scheduler submission.
+  bool federation_execution = 25;
+}
+
+message FederationExecutionRequest {
+  string request_id = 1;
+  string job_id = 2;
+  int64 dispatch_epoch = 3;
+}
+
+enum FederationExecutionDecision {
+  FEDERATION_EXECUTION_DECISION_UNSPECIFIED = 0;
+  FEDERATION_EXECUTION_DECISION_GRANTED = 1;
+  FEDERATION_EXECUTION_DECISION_RETRY = 2;
+  FEDERATION_EXECUTION_DECISION_DENIED = 3;
+}
+
+message FederationExecutionResponse {
+  string request_id = 1;
+  string job_id = 2;
+  int64 dispatch_epoch = 3;
+  FederationExecutionDecision decision = 4;
+  int64 expires_at_unix_ms = 5;
+  // Original intent with renewed transport credentials. Never a replacement Job.
+  DispatchJob dispatch = 6;
 }
 
 message SpackJobExecution {

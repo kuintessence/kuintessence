@@ -612,3 +612,32 @@ test("pinned dispatch survives encoding and refuses a legacy or unverified repla
     ),
   ).toBe(false);
 });
+
+test("federation dispatch requires both renewal capability and verified transport", () => {
+  const dispatcher = new AgentDispatcher();
+  const message = dispatcher.buildDispatchJob("federation-job", {
+    jobIdInternal: "federation-job",
+    name: "federation",
+    command: "true",
+    resources: { cpus: 1, memoryMb: 128 },
+    federationExecution: true,
+  });
+  for (const capabilities of [
+    {},
+    { federationExecutionV1: true },
+    { verifiedCertFingerprint: "verified" },
+  ]) {
+    const channel = { ...mockChannel(), ...capabilities };
+    dispatcher.register("agent", channel);
+    expect(dispatcher.pushPreparedDispatch("agent", message)).toBe(false);
+    expect(channel.messages).toHaveLength(0);
+  }
+  const channel = {
+    ...mockChannel(),
+    federationExecutionV1: true,
+    verifiedCertFingerprint: "verified",
+  };
+  dispatcher.register("agent", channel);
+  expect(dispatcher.pushPreparedDispatch("agent", message)).toBe(true);
+  expect(channel.messages).toHaveLength(1);
+});

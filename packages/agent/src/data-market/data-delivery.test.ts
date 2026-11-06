@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { create } from "@bufbuild/protobuf";
+import { clone, create } from "@bufbuild/protobuf";
 import {
   DataDeliveryBindingSchema,
   DataDeliveryEntrySchema,
@@ -214,4 +214,94 @@ describe("DataDeliveryExecutor", () => {
       ]),
     ).rejects.toThrow("must not already exist");
   });
+});
+
+test("renews expired object credentials before transfer and after a long transfer", async () => {
+  const { roots, jobRoot } = await fixture();
+  let now = 1_000;
+  let renewals = 0;
+  const executor = new DataDeliveryExecutor({
+    roots,
+    now: () => now,
+    fetchImpl: (async (url: string | URL | Request) => {
+      expect(String(url)).toBe("https://object.test/renewed-2");
+      now = 10_000;
+      return new Response("content");
+    }) as unknown as typeof fetch,
+  });
+  const expired = binding({
+    method: DataDeliveryMethod.OBJECT_DOWNLOAD,
+    entries: [{ path: "input", value: "content", url: "https://object.test/expired" }],
+  });
+  expired.leaseExpiresAtUnixMs = 999n;
+  await executor.prepare("renewed-job", [expired], {
+    renew: async (previous) => {
+      renewals++;
+      const current = clone(DataDeliveryBindingSchema, previous);
+      current.leaseExpiresAtUnixMs = BigInt(now + 1000);
+      for (const entry of current.selectedEntries)
+        entry.objectDownloadUrl = `https://object.test/renewed-${renewals}`;
+      return current;
+    },
+  });
+  expect(renewals).toBe(3);
+  expect(await readFile(join(jobRoot, "renewed-job/inputs/dataset/input"), "utf8")).toBe("content");
+});
+
+test.each([
+  "denied",
+  "expired",
+  "cancelled",
+] as const)("removes a downloaded file when post-transfer authority is %s", async (reason) => {
+  const { roots, jobRoot } = await fixture();
+  let downloaded = false;
+  const controller = new AbortController();
+  const executor = new DataDeliveryExecutor({
+    roots,
+    now: () => 1000,
+    fetchImpl: (async () => {
+      downloaded = true;
+      if (reason === "cancelled") controller.abort(new Error("cancelled"));
+      return new Response("content");
+    }) as unknown as typeof fetch,
+  });
+  const original = binding({
+    method: DataDeliveryMethod.OBJECT_DOWNLOAD,
+    entries: [{ path: "input", value: "content", url: "https://object.test/input" }],
+  });
+  await expect(
+    executor.prepare("denied-job", [original], {
+      signal: controller.signal,
+      renew: async (previous) => {
+        if (!downloaded) return previous;
+        if (reason === "denied") throw new Error("authorization denied");
+        return create(DataDeliveryBindingSchema, { ...previous, leaseExpiresAtUnixMs: 999n });
+      },
+    }),
+  ).rejects.toThrow();
+  expect(downloaded).toBe(true);
+  await expect(readFile(join(jobRoot, "denied-job/inputs/dataset/input"))).rejects.toThrow();
+});
+
+test("rejects changed data identity before any download", async () => {
+  const { roots } = await fixture();
+  let downloaded = false;
+  const executor = new DataDeliveryExecutor({
+    roots,
+    fetchImpl: (async () => {
+      downloaded = true;
+      return new Response("content");
+    }) as unknown as typeof fetch,
+  });
+  const original = binding({
+    method: DataDeliveryMethod.OBJECT_DOWNLOAD,
+    entries: [{ path: "input", value: "content", url: "https://object.test/input" }],
+  });
+  await expect(
+    executor.prepare("changed-job", [original], {
+      renew: async (previous) =>
+        create(DataDeliveryBindingSchema, { ...previous, versionId: "replacement" }),
+    }),
+  ).rejects.toThrow("immutable intent");
+  expect(downloaded).toBe(false);
 });

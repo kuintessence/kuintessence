@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { copyFile, lstat, mkdir, open, readdir, rename, rm, unlink } from "node:fs/promises";
 import { dirname, isAbsolute, resolve, sep } from "node:path";
-import type { DataDeliveryBinding } from "@kuintessence/proto";
+import { type DataDeliveryBinding, sameDataDeliveryIntent } from "@kuintessence/proto";
 import type { Spawner } from "../adapters/base";
 import type { AgentDataRoots } from "./local-data-security";
 
@@ -52,6 +52,8 @@ export interface DataDeliveryExecutorOptions {
 
 export interface DataDeliveryPrepareOptions {
   beforeSideEffect?: (delivery: PreparedDataDelivery) => Promise<void>;
+  renew?: (binding: DataDeliveryBinding) => Promise<DataDeliveryBinding>;
+  signal?: AbortSignal;
 }
 
 /**
@@ -81,8 +83,8 @@ export class DataDeliveryExecutor {
     const prepared: PreparedDataDelivery[] = [];
     try {
       for (const binding of bindings) {
-        this.assertLeaseValid(binding);
-        prepared.push(...(await this.prepareOne(jobRoot, binding, options)));
+        const current = await this.currentBinding(binding, options);
+        prepared.push(...(await this.prepareOne(jobRoot, current, options)));
       }
       const previous = this.preparedMounts.get(jobId);
       this.preparedMounts.set(jobId, {
@@ -134,7 +136,8 @@ export class DataDeliveryExecutor {
       }
       const prepared: PreparedDataDelivery[] = [];
       try {
-        for (const entry of binding.selectedEntries) {
+        for (const original of binding.selectedEntries) {
+          let entry = original;
           if (!entry.objectDownloadUrl) {
             throw new Error("Object data delivery entry is missing a presigned URL");
           }
@@ -146,16 +149,20 @@ export class DataDeliveryExecutor {
             protectedPath: binding.restricted,
           };
           await options.beforeSideEffect?.(cleanup);
-          this.assertLeaseValid(binding);
+          binding = await this.currentBinding(binding, options);
+          const renewedEntry = binding.selectedEntries.find((item) => item.path === original.path);
+          if (!renewedEntry) throw new Error("Renewed data delivery is missing its entry");
+          entry = renewedEntry;
           await downloadVerified(
             this.fetchImpl,
             entry.objectDownloadUrl,
             target,
             entry.sha256,
             entry.sizeBytes,
+            options.signal,
           );
-          this.assertLeaseValid(binding);
           prepared.push(cleanup);
+          binding = await this.currentBinding(binding, options);
         }
         return prepared;
       } catch (error) {
@@ -186,13 +193,14 @@ export class DataDeliveryExecutor {
           if (binding.restricted)
             throw new Error("Restricted CP-local data requires a readonly mount");
           await options.beforeSideEffect?.(cleanup);
-          this.assertLeaseValid(binding);
+          binding = await this.currentBinding(binding, options);
           await copyManagedData(source, target);
           await verifyLocalEntry(target, entry.sha256, entry.sizeBytes).catch(async (error) => {
             await removeDeliveryTarget(jobRoot, target);
             throw error;
           });
           prepared.push(cleanup);
+          binding = await this.currentBinding(binding, options);
           continue;
         }
         if (method !== "readonly-mount") throw new Error("Unsupported data delivery method");
@@ -200,7 +208,7 @@ export class DataDeliveryExecutor {
         if (!driver?.trusted)
           throw new Error("Readonly data delivery requires a trusted mount driver");
         await options.beforeSideEffect?.(cleanup);
-        this.assertLeaseValid(binding);
+        binding = await this.currentBinding(binding, options);
         try {
           await createMountTarget(source, target);
           await driver.mountReadonly(source, target);
@@ -211,6 +219,7 @@ export class DataDeliveryExecutor {
           throw error;
         }
         prepared.push(cleanup);
+        binding = await this.currentBinding(binding, options);
       }
       return prepared;
     } catch (error) {
@@ -226,6 +235,19 @@ export class DataDeliveryExecutor {
     if (binding.leaseExpiresAtUnixMs <= BigInt(this.now())) {
       throw new Error("Data delivery lease has expired");
     }
+  }
+
+  private async currentBinding(
+    binding: DataDeliveryBinding,
+    options: DataDeliveryPrepareOptions,
+  ): Promise<DataDeliveryBinding> {
+    options.signal?.throwIfAborted();
+    const current = options.renew ? await options.renew(binding) : binding;
+    options.signal?.throwIfAborted();
+    if (!sameDataDeliveryIntent(binding, current))
+      throw new Error("Renewed data delivery changed immutable intent");
+    this.assertLeaseValid(current);
+    return current;
   }
 
   private async releasePrepared(
@@ -291,6 +313,7 @@ async function downloadVerified(
   target: string,
   expectedSha256: string,
   expectedSize: bigint,
+  signal?: AbortSignal,
 ): Promise<void> {
   if (!/^https?:\/\//.test(url)) throw new Error("Data object URL must be HTTP(S)");
   if (!/^[a-f0-9]{64}$/i.test(expectedSha256)) throw new Error("Data delivery digest is invalid");
@@ -298,7 +321,7 @@ async function downloadVerified(
   await assertNoSymlinkAncestor(dirname(target));
   const temporary = `${target}.part-${randomUUID()}`;
   try {
-    const response = await fetchImpl(url, { redirect: "error" });
+    const response = await fetchImpl(url, { redirect: "error", signal });
     if (!response.ok || !response.body) {
       throw new Error(`Data object download failed with HTTP ${response.status}`);
     }
