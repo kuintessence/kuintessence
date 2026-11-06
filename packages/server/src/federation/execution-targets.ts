@@ -55,7 +55,8 @@ export async function resolveFederationTargets(
     if (
       row &&
       JSON.stringify(row.queue) === before.get(target.queueId) &&
-      matchesTarget(target, row.agent, row.queue) &&
+      row.agent.status === "online" &&
+      matchesFederationTarget(target, row.agent, row.queue) &&
       selection.agentId === target.agentId &&
       selection.schedulerType === row.agent.schedulerType
     )
@@ -88,7 +89,12 @@ export async function lockFederationTarget(
       .innerJoin(agents, eq(agents.agentId, schedulerQueues.agentId))
       .where(and(eq(schedulerQueues.queueId, target.queueId), eq(agents.agentId, input.agentId)))
       .for("share", { of: [agents, schedulerQueues] });
-    if (!row || !matchesTarget(target, row.agent, row.queue)) continue;
+    if (
+      !row ||
+      row.agent.status !== "online" ||
+      !matchesFederationTarget(target, row.agent, row.queue)
+    )
+      continue;
     if (input.updatedAt && row.queue.updatedAt.getTime() !== input.updatedAt.getTime()) continue;
     if (input.targetMode !== undefined && row.queue.targetMode !== input.targetMode) continue;
     if (
@@ -105,13 +111,12 @@ export async function lockFederationTarget(
   });
 }
 
-function matchesTarget(
+export function matchesFederationTarget(
   target: FederationExecutionTarget,
   agent: typeof agents.$inferSelect,
   queue: typeof schedulerQueues.$inferSelect,
 ) {
   return (
-    agent.status === "online" &&
     agent.agentId === target.agentId &&
     agent.providerOrgId === target.providerOrgId &&
     agent.clusterId === target.clusterId &&

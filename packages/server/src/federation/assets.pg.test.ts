@@ -7,7 +7,10 @@ import {
   createPgDb,
   dataAssets,
   dataAssetVersions,
+  dataGrants,
   dataLocations,
+  ecosystemReleaseAssets,
+  ecosystemReleases,
   federationAgreements,
   federationAssetMappings,
   federationAttestationOutbox,
@@ -20,13 +23,16 @@ import {
   federationSigningKeys,
   federationSites,
   federationWorkflowBindings,
+  jobDataBindings,
   jobDispatchOutbox,
   jobs,
+  licenseEntitlementClaims,
   orgs,
   schedulerQueues,
   softwareAssetRevisions,
   softwareAssets,
   softwareOperations,
+  softwarePolicies,
   userOrgMemberships,
   users,
   workflowExecutionJobs,
@@ -37,6 +43,7 @@ import {
   FederationExecutionRequestSchema,
   type FederationExecutionResponse,
 } from "@kuintessence/proto";
+import { AppError, ErrorCode } from "@kuintessence/shared";
 import {
   FederationAcceptanceSchema,
   FederationAgreementSchema,
@@ -52,6 +59,7 @@ import { and, count, eq, inArray, sql } from "drizzle-orm";
 import { Hono } from "hono";
 import { exportSPKI } from "jose";
 import pino from "pino";
+import { AuthorizationUnavailableError } from "../authz/service";
 import { AgentDispatcher } from "../grpc/dispatcher";
 import { JobDispatchOutbox } from "../grpc/job-dispatch-outbox";
 import { createErrorHandler } from "../middleware/error-handler";
@@ -1693,6 +1701,7 @@ test("monitor pagination skips ordinary and terminal runs, and failures never st
   const monitor = new FederationExecutionMonitor(
     db,
     {
+      checkActiveJobs: async () => {},
       prepare: async (id) => {
         checked.add(id);
         throw new Error("Transient authorization backend failure");
@@ -1714,4 +1723,466 @@ test("monitor pagination skips ordinary and terminal runs, and failures never st
   expect(checked.has(terminalId)).toBe(false);
   expect(cancelled).toEqual([]);
   await db.delete(workflowRuns).where(inArray(workflowRuns.id, [...runIds, terminalId, ordinary]));
+});
+
+async function monitoredJob(status: "pending" | "running" | "completed" = "running") {
+  await assets.register(actor, { reference: scriptRef, localRevisionId: revisionId });
+  const f = await monitoredExecution();
+  const jobId = crypto.randomUUID();
+  const queues = new QueueRegistryService(db);
+  const authorization = new FederationDispatchAuthorization(
+    db,
+    f.preparation,
+    queues,
+    availability,
+  );
+  const monitor = new FederationExecutionMonitor(db, authorization, f.runner);
+  await db.insert(agents).values({
+    agentId: approvedTarget.agentId,
+    providerOrgId: approvedTarget.providerOrgId,
+    clusterId: approvedTarget.clusterId,
+    siteName: "Monitored target",
+    schedulerType: "slurm",
+    schedulerVersion: "test",
+    status: "online",
+  });
+  await db.insert(schedulerQueues).values({
+    queueId: approvedTarget.queueId,
+    providerOrgId: approvedTarget.providerOrgId,
+    agentId: approvedTarget.agentId,
+    name: "Monitored queue",
+    schedulerType: "slurm",
+    queueName: "approved",
+  });
+  await db.insert(jobs).values({
+    id: jobId,
+    name: "Monitored Job",
+    command: "true",
+    cpus: 1,
+    memoryMb: 128,
+    wallTimeSec: 30,
+    submittedBy: identity.userId,
+    orgId: identity.orgId,
+    status,
+    ...(status !== "pending"
+      ? {
+          agentId: approvedTarget.agentId,
+          queueId: approvedTarget.queueId,
+          queueTargetMode: "named",
+          schedulerQueueName: "approved",
+        }
+      : {}),
+  });
+  const lease = await new WorkflowExecutionJournalStore(db).acquire(f.runId);
+  if (!lease) throw new Error("Missing monitor test lease");
+  await db.insert(workflowExecutionJobs).values({
+    runId: f.runId,
+    jobId,
+    pathHash: "a".repeat(64),
+    path: '["node","monitor"]',
+    nodeId: "monitor",
+    intent: {
+      nodeId: "monitor",
+      name: "Monitored",
+      command: "true",
+      envVars: {},
+      inputStaging: [],
+      expectedOutputs: [],
+    },
+  });
+  await lease.release();
+  return {
+    ...f,
+    jobId,
+    queues,
+    authorization,
+    monitor,
+    cleanup: async () => {
+      await monitor.stop();
+      await db.delete(softwareOperations).where(eq(softwareOperations.federationJobId, jobId));
+      await db.delete(workflowExecutionJobs).where(eq(workflowExecutionJobs.jobId, jobId));
+      await db.delete(jobs).where(eq(jobs.id, jobId));
+      await db.delete(schedulerQueues).where(eq(schedulerQueues.queueId, approvedTarget.queueId));
+      await db.delete(agents).where(eq(agents.agentId, approvedTarget.agentId));
+    },
+  };
+}
+
+test.each([
+  "offline",
+  "queue",
+  "cluster",
+  "provider",
+  "queue-name",
+] as const)("active target monitoring handles %s independently of placement readiness", async (change) => {
+  const f = await monitoredJob();
+  try {
+    await scanExecutions(f.monitor);
+    expect((await f.registry.getById(f.runId))?.status).toBe("running");
+    if (change === "offline")
+      await db
+        .update(agents)
+        .set({ status: "offline" })
+        .where(eq(agents.agentId, approvedTarget.agentId));
+    if (change === "queue")
+      await db
+        .update(schedulerQueues)
+        .set({ enabled: false })
+        .where(eq(schedulerQueues.queueId, approvedTarget.queueId));
+    if (change === "cluster")
+      await db
+        .update(agents)
+        .set({ clusterId: "unapproved" })
+        .where(eq(agents.agentId, approvedTarget.agentId));
+    if (change === "provider")
+      await db
+        .update(agents)
+        .set({ providerOrgId: outsider.orgId })
+        .where(eq(agents.agentId, approvedTarget.agentId));
+    if (change === "queue-name")
+      await db
+        .update(schedulerQueues)
+        .set({ queueName: "replacement" })
+        .where(eq(schedulerQueues.queueId, approvedTarget.queueId));
+    await scanExecutions(f.monitor);
+    expect((await f.registry.getById(f.runId))?.status).toBe(
+      change === "offline" ? "running" : "cancelling",
+    );
+    if (change !== "offline") {
+      expect((await f.registry.getById(f.runId))?.errorMessage).toBe("POLICY_DENIED");
+      await f.drain();
+      expect(f.cancellations).toContain(f.runId);
+      expect((await f.registry.getById(f.runId))?.status).toBe("cancelling");
+    }
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test("active queue authorization retries backend failures but persists explicit permission loss", async () => {
+  const f = await monitoredJob();
+  const access = spyOn(f.queues, "assertExecutionAccess").mockRejectedValue(
+    new AuthorizationUnavailableError("Authorization unavailable: authz offline"),
+  );
+  try {
+    await scanExecutions(f.monitor);
+    expect((await f.registry.getById(f.runId))?.status).toBe("running");
+    access.mockRejectedValue(new AppError(ErrorCode.FORBIDDEN, "Permission removed", 403));
+    await scanExecutions(f.monitor);
+    expect(await f.registry.getById(f.runId)).toMatchObject({
+      status: "cancelling",
+      errorMessage: "POLICY_DENIED",
+    });
+  } finally {
+    access.mockRestore();
+    await f.cleanup();
+  }
+});
+
+test("completed Jobs do not acquire new execution obligations", async () => {
+  const f = await monitoredJob("completed");
+  try {
+    await db
+      .update(schedulerQueues)
+      .set({ enabled: false })
+      .where(eq(schedulerQueues.queueId, approvedTarget.queueId));
+    await scanExecutions(f.monitor);
+    expect((await f.registry.getById(f.runId))?.status).toBe("running");
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test("installation target revocation cancels a Job that has no compute Agent yet", async () => {
+  const f = await monitoredJob("pending");
+  const operationId = crypto.randomUUID();
+  try {
+    await db.insert(softwareOperations).values({
+      id: operationId,
+      federationJobId: f.jobId,
+      requestedBy: identity.userId,
+      agentId: approvedTarget.agentId,
+      action: "install",
+      spec: "hello@1",
+      replayEnabled: true,
+      manifestDigest: `sha256:${"a".repeat(64)}`,
+      status: "running",
+    });
+    await db
+      .update(jobs)
+      .set({ softwareRequirements: [{ name: "hello", spec: "hello@1", operationId }] })
+      .where(eq(jobs.id, f.jobId));
+    await db
+      .update(schedulerQueues)
+      .set({ enabled: false })
+      .where(eq(schedulerQueues.queueId, approvedTarget.queueId));
+    await scanExecutions(f.monitor);
+    expect(await f.registry.getById(f.runId)).toMatchObject({
+      status: "cancelling",
+      errorMessage: "POLICY_DENIED",
+    });
+    await f.drain();
+    expect(f.cancellations).toContain(f.runId);
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test.each([
+  "expiry",
+  "revoke",
+  "version",
+  "digest",
+  "policy",
+] as const)("active data %s change stops computation without renewing transport credentials", async (change) => {
+  const f = await monitoredJob();
+  const dataId = crypto.randomUUID(),
+    dataVersionId = crypto.randomUUID(),
+    grantId = crypto.randomUUID();
+  try {
+    await db.insert(dataAssets).values({
+      id: dataId,
+      ownerKind: "user",
+      ownerUserId: actor.userId,
+      kind: "scientific-dataset",
+      name: "Runtime grant",
+      lifecycle: "published",
+      visibility: "public",
+      accessMode: "request",
+      sensitivity: "open",
+      createdBy: actor.userId,
+    });
+    await db.insert(dataAssetVersions).values({
+      id: dataVersionId,
+      dataAssetId: dataId,
+      version: "1",
+      status: "ready",
+      immutableAt: new Date(),
+      manifestDigest: `sha256:${"a".repeat(64)}`,
+    });
+    await db.insert(dataGrants).values({
+      id: grantId,
+      dataAssetId: dataId,
+      dataAssetVersionId: dataVersionId,
+      subjectKind: "user",
+      subjectId: identity.userId,
+      capabilities: ["use"],
+      startsAt: new Date(Date.now() - 60_000),
+      expiresAt: new Date(Date.now() + 60_000),
+      status: "active",
+    });
+    await db.insert(jobDataBindings).values({
+      jobId: f.jobId,
+      inputDescriptor: "input",
+      source: "data-market",
+      assetId: dataId,
+      versionId: dataVersionId,
+      manifestDigest: `sha256:${"a".repeat(64)}`,
+      assetKind: "scientific-dataset",
+      sensitivity: "open",
+      egressPolicy: "deny",
+      selectedEntries: ["input.txt"],
+    });
+    await scanExecutions(f.monitor);
+    expect((await f.registry.getById(f.runId))?.status).toBe("running");
+    if (change === "expiry")
+      await db
+        .update(dataGrants)
+        .set({ expiresAt: new Date(Date.now() - 1000) })
+        .where(eq(dataGrants.id, grantId));
+    if (change === "revoke")
+      await db.update(dataGrants).set({ status: "revoked" }).where(eq(dataGrants.id, grantId));
+    if (change === "version")
+      await db
+        .update(dataAssetVersions)
+        .set({ status: "revoked" })
+        .where(eq(dataAssetVersions.id, dataVersionId));
+    if (change === "digest")
+      await db
+        .update(dataAssetVersions)
+        .set({ manifestDigest: `sha256:${"b".repeat(64)}` })
+        .where(eq(dataAssetVersions.id, dataVersionId));
+    if (change === "policy")
+      await db
+        .update(dataAssetVersions)
+        .set({ manifest: { deliveryPolicy: { download: "allow" } } })
+        .where(eq(dataAssetVersions.id, dataVersionId));
+    const unavailable =
+      change === "expiry"
+        ? spyOn(f.queues, "assertExecutionAccess").mockRejectedValue(
+            new AuthorizationUnavailableError("Authorization unavailable"),
+          )
+        : undefined;
+    try {
+      await scanExecutions(f.monitor);
+    } finally {
+      unavailable?.mockRestore();
+    }
+    expect(await f.registry.getById(f.runId)).toMatchObject({
+      status: "cancelling",
+      errorMessage: change === "digest" ? "OPERATION_CONFLICT" : "POLICY_DENIED",
+      completedAt: null,
+    });
+  } finally {
+    await f.cleanup();
+    await db.delete(dataAssets).where(eq(dataAssets.id, dataId));
+  }
+});
+
+test.each([
+  "license",
+  "software-policy",
+  "software-permission",
+] as const)("active software %s revocation enters durable Workflow cancellation", async (change) => {
+  const f = await monitoredJob();
+  const softwareId = crypto.randomUUID(),
+    releaseId = crypto.randomUUID(),
+    claimId = crypto.randomUUID();
+  const name = `monitored-${crypto.randomUUID()}`,
+    spec = `${name}@1`;
+  try {
+    const softwarePayload = {
+      kind: "spack-package",
+      spack: { packageName: name, defaultSpec: spec },
+    };
+    await db.insert(softwareAssets).values({
+      id: softwareId,
+      kind: "spack-package",
+      name,
+      version: "1",
+      source: "sp-published",
+      lifecycle: "published",
+      visibility: "platform-public",
+      payload: softwarePayload,
+    });
+    const [revision] = await db
+      .insert(softwareAssetRevisions)
+      .values({ assetId: softwareId, revision: 1, payload: softwarePayload })
+      .returning();
+    if (!revision) throw new Error("Missing test software revision");
+    await db.insert(ecosystemReleases).values({
+      id: releaseId,
+      releaseKey: name,
+      version: "1",
+      artifactDigest: `sha256:${"a".repeat(64)}`,
+      manifest: {},
+      provenance: {},
+      signature: "test",
+      signingKeyId: "test",
+      status: "active",
+      importedBy: actor.userId,
+    });
+    await db.insert(ecosystemReleaseAssets).values({
+      releaseId,
+      assetId: softwareId,
+      assetRevisionId: revision.id,
+      materializedAt: new Date(),
+      ecosystemKey: `software/${name}`,
+      kind: "spack-package",
+      name,
+      version: "1",
+      payload: softwarePayload,
+      provenance: {},
+      manifestEntryDigest: `sha256:${"b".repeat(64)}`,
+      licensePolicy: {
+        classification: "proprietary",
+        identifiers: [{ kind: "custom", value: "test-license" }],
+        provenance: { source: "sp-published", reference: "test-contract" },
+        acceptanceRequired: false,
+        providerEntitlements: [],
+        consumerEntitlements: ["use"],
+        redistribution: "prohibited",
+        autoInstall: "allowed",
+      },
+    });
+    await db.insert(licenseEntitlementClaims).values({
+      id: claimId,
+      assetId: softwareId,
+      licenseSubject: "test-license",
+      entitlement: "consumer-use",
+      claimantKind: "user",
+      claimantId: identity.userId,
+      evidenceReference: "test-contract",
+      evidenceSummary: "Test authorization",
+      status: "approved",
+      submittedBy: actor.userId,
+    });
+    const [invocation] = await db
+      .select()
+      .from(workflowExecutionJobs)
+      .where(eq(workflowExecutionJobs.jobId, f.jobId));
+    if (!invocation) throw new Error("Missing test invocation");
+    const requirements = [{ name, spec, assetId: softwareId, installable: false }];
+    await db
+      .update(workflowExecutionJobs)
+      .set({ intent: { ...invocation.intent, softwareRequirements: requirements } })
+      .where(eq(workflowExecutionJobs.jobId, f.jobId));
+    await db.update(jobs).set({ softwareRequirements: requirements }).where(eq(jobs.id, f.jobId));
+    // Running software does not need a new installation inventory report to retain its permit.
+    await db
+      .update(agents)
+      .set({ status: "offline" })
+      .where(eq(agents.agentId, approvedTarget.agentId));
+    await scanExecutions(f.monitor);
+    expect((await f.registry.getById(f.runId))?.status).toBe("running");
+    if (change === "license")
+      await db
+        .update(licenseEntitlementClaims)
+        .set({ expiresAt: new Date(Date.now() - 1000) })
+        .where(eq(licenseEntitlementClaims.id, claimId));
+    if (change === "software-policy")
+      await db
+        .insert(softwarePolicies)
+        .values({ agentId: approvedTarget.agentId, denyList: [spec], version: "revoked" });
+    if (change === "software-permission")
+      await db
+        .update(softwareAssets)
+        .set({ visibility: "private" })
+        .where(eq(softwareAssets.id, softwareId));
+    const unavailable =
+      change === "license"
+        ? spyOn(f.queues, "assertExecutionAccess").mockRejectedValue(
+            new AuthorizationUnavailableError("Authorization unavailable"),
+          )
+        : undefined;
+    try {
+      await scanExecutions(f.monitor);
+    } finally {
+      unavailable?.mockRestore();
+    }
+    expect(await f.registry.getById(f.runId)).toMatchObject({
+      status: "cancelling",
+      errorCode: "FEDERATION_AUTHORIZATION_REVOKED",
+      errorMessage: "POLICY_DENIED",
+      completedAt: null,
+    });
+    await f.drain();
+    expect(f.cancellations).toContain(f.runId);
+  } finally {
+    await f.cleanup();
+    await db.delete(licenseEntitlementClaims).where(eq(licenseEntitlementClaims.id, claimId));
+    await db.delete(ecosystemReleases).where(eq(ecosystemReleases.id, releaseId));
+    await db.delete(softwareAssets).where(eq(softwareAssets.id, softwareId));
+  }
+});
+
+test("temporary material failure cannot hide active queue revocation", async () => {
+  const f = await monitoredJob();
+  const unavailable = spyOn(f.authorization, "prepare").mockRejectedValue(
+    new FederationError("DATA_WAITING"),
+  );
+  try {
+    await db
+      .update(schedulerQueues)
+      .set({ enabled: false })
+      .where(eq(schedulerQueues.queueId, approvedTarget.queueId));
+    await scanExecutions(f.monitor);
+    expect(await f.registry.getById(f.runId)).toMatchObject({
+      status: "cancelling",
+      errorMessage: "POLICY_DENIED",
+    });
+  } finally {
+    unavailable.mockRestore();
+    await f.cleanup();
+  }
 });

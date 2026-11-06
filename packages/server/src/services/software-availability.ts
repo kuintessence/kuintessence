@@ -209,6 +209,61 @@ export class SoftwareAvailabilityService {
     }
   }
 
+  /** Recheck policy for an existing execution without interpreting lost inventory as revocation. */
+  async assertExecutionAccess(
+    input: SoftwareAvailabilityRequest,
+    principal: BoundPrincipal,
+    installing: boolean,
+  ): Promise<void> {
+    const asset = await this.resolveAsset(input);
+    const spec = this.resolveSpec(input, asset);
+    const agentId = input.targetAgentIds?.[0];
+    if (
+      !asset ||
+      asset.kind !== "spack-package" ||
+      asset.id !== input.assetRef?.id ||
+      !spec ||
+      !agentId ||
+      input.targetAgentIds?.length !== 1
+    )
+      throw new AppError(ErrorCode.FORBIDDEN, "Execution software binding is unavailable", 403);
+    const [agent] = await this.db.select().from(agents).where(eq(agents.agentId, agentId));
+    if (!agent)
+      throw new AppError(ErrorCode.FORBIDDEN, "Execution Agent binding is unavailable", 403);
+    const access = await authorizeSoftwareAssetAccessThroughSpice({
+      authz: this.authz,
+      assetId: asset.id,
+      capability: "use",
+      principal,
+      local: await this.evaluateAccess(asset, principal, "use"),
+    });
+    const installAccess = installing
+      ? await authorizeSoftwareAssetAccessThroughSpice({
+          authz: this.authz,
+          assetId: asset.id,
+          capability: "install",
+          principal,
+          local: await this.evaluateAccess(asset, principal, "install"),
+        })
+      : { allowed: true };
+    const policy = (await this.loadPolicies([agent])).get(agentId) ?? defaultPolicy();
+    const reasons = this.evaluateAgent({
+      agent,
+      asset,
+      spec,
+      policy,
+      accessAllowed: access.allowed,
+      installAllowed: installAccess.allowed,
+      installRequested: installing,
+      // Compute is already using this spec; this is not an inventory or installation claim.
+      installedSpec: installing ? undefined : spec,
+      usecaseRef: input.usecaseRef,
+      controlChannelOnline: null,
+    });
+    if (reasons.length)
+      throw new AppError(ErrorCode.FORBIDDEN, "Execution software policy revoked", 403);
+  }
+
   private async evaluateLicense(
     asset: AssetRow | null,
     installRequested: boolean,

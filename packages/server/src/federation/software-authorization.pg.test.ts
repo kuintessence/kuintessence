@@ -271,3 +271,54 @@ test("missing asset, missing service, wrong target and undeclared installation f
     ),
   ).rejects.toMatchObject({ code: "OPERATION_CONFLICT" });
 });
+
+test.each([
+  false,
+  true,
+])("running software preserves authority while Agent/inventory is unavailable (installing=%s)", async (installing) => {
+  await db.update(agents).set({ status: "offline" }).where(eq(agents.agentId, agentId));
+  await db.delete(agentInstalledSoftware).where(eq(agentInstalledSoftware.agentId, agentId));
+  const target = installing ? { ...delivery, kind: "install" as const, spec } : delivery;
+  const fence = await prepareFederationSoftware(intent, identity, target, software, true);
+  await db.transaction((tx) => fence(tx, identity.orgId));
+  await db
+    .update(licenseEntitlementClaims)
+    .set({ expiresAt: new Date(Date.now() - 1000) })
+    .where(eq(licenseEntitlementClaims.id, claimId));
+  await expect(db.transaction((tx) => fence(tx, identity.orgId))).rejects.toMatchObject({
+    code: "POLICY_DENIED",
+  });
+});
+
+test.each([
+  "permission",
+  "lifecycle",
+  "policy",
+  "install-permission",
+] as const)("running software checks current %s without placement discovery", async (change) => {
+  const target =
+    change === "install-permission" ? { ...delivery, kind: "install" as const, spec } : delivery;
+  await prepareFederationSoftware(intent, identity, target, software, true);
+  if (change === "permission")
+    await db
+      .update(softwareAssets)
+      .set({ ownerUserId: null, visibility: "private" })
+      .where(eq(softwareAssets.id, assetId));
+  if (change === "lifecycle")
+    await db
+      .update(softwareAssets)
+      .set({ lifecycle: "revoked" })
+      .where(eq(softwareAssets.id, assetId));
+  if (change === "install-permission")
+    await db
+      .update(softwareAssets)
+      .set({ ownerUserId: null })
+      .where(eq(softwareAssets.id, assetId));
+  if (change === "policy")
+    await db
+      .insert(softwarePolicies)
+      .values({ agentId, denyList: [spec], version: "runtime-revoked" });
+  await expect(
+    prepareFederationSoftware(intent, identity, target, software, true),
+  ).rejects.toMatchObject({ statusCode: 403 });
+});

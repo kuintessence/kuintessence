@@ -1,9 +1,10 @@
 import { federationWorkflowBindings, type PgDb, workflowRuns } from "@kuintessence/db";
-import { AppError, createLogger } from "@kuintessence/shared";
+import { createLogger } from "@kuintessence/shared";
 import { FederationError } from "@kuintessence/shared/federation";
 import { and, asc, eq, gt, inArray, isNotNull, or, sql } from "drizzle-orm";
 import type { WorkflowAsyncRunner } from "../workflow/async-runner";
 import type { FederationDispatchAuthorization } from "./dispatch-authorization";
+import { federationExecutionDenial } from "./execution-policy";
 
 const logger = createLogger("federation-execution-monitor");
 
@@ -15,7 +16,9 @@ export class FederationExecutionMonitor {
 
   constructor(
     private readonly db: PgDb,
-    private readonly authorization: Pick<FederationDispatchAuthorization, "prepare"> | undefined,
+    private readonly authorization:
+      | Pick<FederationDispatchAuthorization, "prepare" | "checkActiveJobs">
+      | undefined,
     private readonly runner: Pick<WorkflowAsyncRunner, "cancel">,
   ) {}
 
@@ -75,29 +78,33 @@ export class FederationExecutionMonitor {
   }
 
   private async inspect(runId: string) {
-    let reason: string;
-    try {
-      if (!this.authorization) throw new FederationError("POLICY_DENIED");
-      const fence = await this.authorization.prepare(runId);
-      await this.db.transaction(fence);
-      return;
-    } catch (error) {
-      if (
-        error instanceof FederationError &&
-        error.code !== "ASSET_UNAVAILABLE" &&
-        error.code !== "DATA_WAITING"
-      ) {
-        reason = error.code;
-      } else if (error instanceof AppError && error.statusCode === 403) {
-        reason = "POLICY_DENIED";
-      } else {
-        // Missing replicas and infrastructure failures are not proof of revoked authority.
-        throw error;
+    let transient: unknown;
+    const checks = [
+      async () => {
+        if (!this.authorization) throw new FederationError("POLICY_DENIED");
+        await this.db.transaction(await this.authorization.prepare(runId));
+      },
+      async () => {
+        if (!this.authorization) throw new FederationError("POLICY_DENIED");
+        await this.authorization.checkActiveJobs(runId);
+      },
+    ];
+    for (const check of checks) {
+      try {
+        await check();
+      } catch (error) {
+        const reason = federationExecutionDenial(error);
+        if (!reason) {
+          transient ??= error;
+          continue;
+        }
+        await this.runner.cancel(runId, {
+          code: "FEDERATION_AUTHORIZATION_REVOKED",
+          message: reason,
+        });
+        return;
       }
     }
-    await this.runner.cancel(runId, {
-      code: "FEDERATION_AUTHORIZATION_REVOKED",
-      message: reason,
-    });
+    if (transient !== undefined) throw transient;
   }
 }

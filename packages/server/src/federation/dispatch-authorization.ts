@@ -13,6 +13,7 @@ import type { SoftwareAvailabilityService } from "../services/software-availabil
 import { constrainWorkflowResources } from "../workflow/resource-limits";
 import { federationMaterialDigest } from "./assets";
 import { federationExecutionSnapshot, loadFederationWorkflowBinding } from "./execution-binding";
+import { checkFederationExecutionPolicy } from "./execution-policy";
 import { lockFederationTarget, resolveFederationTargets } from "./execution-targets";
 import type { FederationPreparationService } from "./preparation";
 import { prepareFederationSoftware } from "./software-authorization";
@@ -27,9 +28,19 @@ export class FederationDispatchAuthorization {
   constructor(
     private readonly db: PgDb,
     private readonly preparation: FederationPreparationService,
-    private readonly queues?: Pick<QueueRegistryService, "inspectPreferredForSubmit">,
-    private readonly software?: Pick<SoftwareAvailabilityService, "resolve">,
+    private readonly queues?: Pick<
+      QueueRegistryService,
+      "inspectPreferredForSubmit" | "assertExecutionAccess"
+    >,
+    private readonly software?: Pick<
+      SoftwareAvailabilityService,
+      "resolve" | "assertExecutionAccess"
+    >,
   ) {}
+
+  async checkActiveJobs(runId: string): Promise<void> {
+    await checkFederationExecutionPolicy(this.db, runId, this.queues, this.software);
+  }
 
   async prepare(
     runId: string,

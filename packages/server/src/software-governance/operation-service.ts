@@ -39,6 +39,7 @@ import {
   federationExecutionDeadline,
 } from "@kuintessence/shared/federation";
 import { and, desc, eq, inArray, isNull, or, sql } from "drizzle-orm";
+import { AuthorizationUnavailableError } from "../authz/service";
 import type { FederationDeliveryTarget } from "../federation/dispatch-authorization";
 import type { AgentDispatcher } from "../grpc/dispatcher";
 import type { CpScope } from "../middleware/cp-rbac";
@@ -701,6 +702,7 @@ export class SoftwareOperationService {
         cause,
         retryable: !(
           cause instanceof AppError &&
+          !(cause instanceof AuthorizationUnavailableError) &&
           cause.statusCode >= 400 &&
           cause.statusCode < 500
         ),

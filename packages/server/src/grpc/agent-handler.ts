@@ -33,6 +33,7 @@ import {
 import { FederationError } from "@kuintessence/shared/federation";
 import type { Logger } from "pino";
 import { mtlsContext } from "../auth/mtls-context";
+import { AuthorizationUnavailableError } from "../authz/service";
 import type { AgentManager, ComputeHealthReport } from "../services/agent-manager";
 import type { DataDeliveryRevocationOutbox } from "../services/data-delivery-revocations";
 import type { DataScanCoordinator } from "../services/data-scan-coordinator";
@@ -1143,9 +1144,12 @@ export function registerAgentHandler(router: ConnectRouter, deps: AgentHandlerDe
                 if (!granted) respond(FederationExecutionDecision.DENIED);
               } catch (error) {
                 const denied =
-                  error instanceof FederationError ||
-                  (error instanceof WorkflowExecutionInterrupted && !error.retryable) ||
-                  (error instanceof AppError && error.code === ErrorCode.FORBIDDEN);
+                  !(error instanceof AuthorizationUnavailableError) &&
+                  ((error instanceof FederationError &&
+                    error.code !== "DATA_WAITING" &&
+                    error.code !== "ASSET_UNAVAILABLE") ||
+                    (error instanceof WorkflowExecutionInterrupted && !error.retryable) ||
+                    (error instanceof AppError && error.code === ErrorCode.FORBIDDEN));
                 respond(
                   denied ? FederationExecutionDecision.DENIED : FederationExecutionDecision.RETRY,
                 );

@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import { readFile } from "node:fs/promises";
 import { v1 } from "@authzed/authzed-node";
 import type { PgDb } from "@kuintessence/db";
@@ -32,7 +32,7 @@ import {
   workflowConsumerOrgTuple,
   workflowPlatformTuple,
 } from "./projection";
-import { AuthzService, coalesceAuthzTuples } from "./service";
+import { AuthorizationUnavailableError, AuthzService, coalesceAuthzTuples } from "./service";
 
 const db = {} as PgDb;
 
@@ -1155,3 +1155,34 @@ function inspectSql(value: unknown): string {
     return candidate;
   });
 }
+
+test("real permission checks preserve backend unavailability while keeping HTTP callers closed", async () => {
+  const service = new AuthzService({
+    mode: "enforce",
+    endpoint: "localhost:50051",
+    token: "test-token",
+    schemaPath: "authz/schema.zed",
+    db: fakeAuditDb().db,
+    platformAdminDegrade: false,
+  });
+  const checked = spyOn(service, "check").mockRejectedValue(new Error("backend offline"));
+  const input = {
+    resource: { type: "queue", id: "q" },
+    permission: "submit",
+    subject: { type: "user", id: "u" },
+  };
+  try {
+    await expect(service.requirePermission(input, false)).rejects.toBeInstanceOf(
+      AuthorizationUnavailableError,
+    );
+    await expect(service.requirePermission(input, false)).rejects.toMatchObject({
+      statusCode: 403,
+      code: "FORBIDDEN",
+    });
+    checked.mockResolvedValue(false);
+    await expect(service.requirePermission(input, false)).rejects.toThrow("Authorization denied");
+  } finally {
+    checked.mockRestore();
+    service.close();
+  }
+});

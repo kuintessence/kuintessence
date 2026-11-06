@@ -14,7 +14,8 @@ export async function prepareFederationSoftware(
   intent: JobSubmission,
   identity: { userId: string; orgId: string },
   delivery: FederationDeliveryTarget,
-  availability?: Pick<SoftwareAvailabilityService, "resolve">,
+  availability?: Pick<SoftwareAvailabilityService, "resolve" | "assertExecutionAccess">,
+  running = false,
 ): Promise<(tx: PgTransaction, providerOrgId: string) => Promise<void>> {
   const requirements = intent.softwareRequirements ?? [];
   const selected =
@@ -40,17 +41,22 @@ export async function prepareFederationSoftware(
     // A missing mapped asset must never fall back to raw-spec authorization.
     if (!requirement.assetId) throw new FederationError("OPERATION_CONFLICT");
     const request = availabilityRequestForRequirement(requirement, [delivery.agentId]);
+    const principal = {
+      ...identity,
+      sub: identity.userId,
+      role: "user" as const,
+      email: "",
+      orgIds: [identity.orgId],
+      memberships: [{ orgId: identity.orgId, role: "member" as const }],
+      capabilities: [],
+    };
+    if (running) {
+      await availability?.assertExecutionAccess(request, principal, delivery.kind === "install");
+      continue;
+    }
     const response = await availability?.resolve(
       { ...request, installable: delivery.kind === "install" },
-      {
-        ...identity,
-        sub: identity.userId,
-        role: "user",
-        email: "",
-        orgIds: [identity.orgId],
-        memberships: [{ orgId: identity.orgId, role: "member" }],
-        capabilities: [],
-      },
+      principal,
       { requireInstallation: delivery.kind === "install" },
     );
     if (

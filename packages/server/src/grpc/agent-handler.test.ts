@@ -42,9 +42,11 @@ import {
   SchedulerType,
   type ServerMessage,
 } from "@kuintessence/proto";
+import { FederationError } from "@kuintessence/shared/federation";
 import { eq } from "drizzle-orm";
 import pino from "pino";
 import { runWithMtlsContext } from "../auth/mtls-context";
+import { AuthorizationUnavailableError } from "../authz/service";
 import { AgentManager } from "../services/agent-manager";
 import { JobService } from "../services/job-service";
 import type { QueueInventoryService } from "../services/queue-inventory";
@@ -262,6 +264,9 @@ describe("agent-handler", () => {
       "grant",
       "denied",
       "retry",
+      "authz-unavailable",
+      "data-waiting",
+      "asset-unavailable",
       "legacy",
       "unverified",
     ] as const)(`federation ${installation ? "installation" : "execution"} grant RPC: %s`, async (outcome) => {
@@ -276,6 +281,12 @@ describe("agent-handler", () => {
       ) => {
         calledBy.push(agentId);
         if (outcome === "retry") throw new Error("private infrastructure detail");
+        if (outcome === "authz-unavailable")
+          throw new AuthorizationUnavailableError(
+            "Authorization unavailable: private infrastructure detail",
+          );
+        if (outcome === "data-waiting") throw new FederationError("DATA_WAITING");
+        if (outcome === "asset-unavailable") throw new FederationError("ASSET_UNAVAILABLE");
         if (outcome === "denied") return false;
         await heartbeatDelivered.promise;
         send(
@@ -365,7 +376,7 @@ describe("agent-handler", () => {
         decision:
           outcome === "grant"
             ? FederationExecutionDecision.GRANTED
-            : outcome === "retry"
+            : ["retry", "authz-unavailable", "data-waiting", "asset-unavailable"].includes(outcome)
               ? FederationExecutionDecision.RETRY
               : FederationExecutionDecision.DENIED,
       });

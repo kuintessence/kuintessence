@@ -97,6 +97,13 @@ export const MANAGED_AUTHZ_RESOURCE_TYPES = [
   "ssh_recording",
 ] as const;
 
+/** HTTP callers still fail closed; execution monitors must distinguish outage from revocation. */
+export class AuthorizationUnavailableError extends AppError {
+  constructor(message: string) {
+    super(ErrorCode.FORBIDDEN, message, 403);
+  }
+}
+
 export class AuthzService {
   private readonly client: SpiceClient | null;
   private schemaWritten = false;
@@ -527,11 +534,7 @@ export class AuthzService {
         return;
       }
       if (err instanceof AppError) throw err;
-      throw new AppError(
-        ErrorCode.FORBIDDEN,
-        `Authorization unavailable: ${errorMessage(err)}`,
-        403,
-      );
+      throw new AuthorizationUnavailableError(`Authorization unavailable: ${errorMessage(err)}`);
     }
   }
 

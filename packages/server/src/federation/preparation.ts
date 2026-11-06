@@ -19,6 +19,7 @@ import {
   federationCanonicalJson,
 } from "@kuintessence/shared/federation";
 import { and, eq } from "drizzle-orm";
+import { AuthorizationUnavailableError } from "../authz/service";
 import { type FederationAssetService, federationMaterialDigest } from "./assets";
 import { type ExecutionIdentity, requireExecutionIdentity } from "./execution-identity";
 import { type FederationWorkflowProjection, materializeFederationWorkflow } from "./materialize";
@@ -66,6 +67,7 @@ export class FederationPreparationService {
       }
       return this.store(reservationId, "resolved", null, mappings);
     } catch (error) {
+      if (error instanceof AuthorizationUnavailableError) throw error;
       if (error instanceof FederationError)
         return this.store(
           reservationId,
