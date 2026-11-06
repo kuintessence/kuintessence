@@ -40,6 +40,7 @@ export interface SandboxOutputFact {
   sha256: string;
   sizeBytes: number;
   storageRef: string;
+  facts?: Array<{ relativePath: string; sha256: string; sizeBytes: number }>;
 }
 
 function pathInside(root: string, candidate: string): boolean {

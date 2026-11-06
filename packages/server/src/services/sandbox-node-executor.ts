@@ -12,6 +12,7 @@ import {
   type NodeExecutionResult,
   type NodeInvocation,
   type RoleName,
+  type SandboxArtifactMember,
   type SandboxDispatchIdentity,
   type SandboxDispatchMount,
   type SandboxExecutionMode,
@@ -24,6 +25,7 @@ import {
 import { and, eq, inArray, isNull } from "drizzle-orm";
 import { bindWorkflowExecutionJob } from "../workflow/execution-jobs";
 import type { LeasedWorkflowJournal } from "../workflow/execution-journal";
+import { artifactBatchHash, validateArtifactMembers } from "./artifact-members";
 import type { JobService, JobSubmitOptions } from "./job-service";
 import {
   type LicenseRuntimeGovernanceService,
@@ -72,6 +74,7 @@ export interface SandboxNodeExecutorOptions {
   orchestrator: Pick<PlacementOrchestrator, "placeAndDispatch">;
   artifactService: WorkflowArtifactService;
   awaitCompletion(jobId: string): Promise<CompletionResult>;
+  resolveFileInput?(value: unknown): Promise<unknown>;
   submittedBy: string;
   orgId?: string | null;
   userRole: RoleName;
@@ -125,6 +128,7 @@ interface PreparedInputs {
 }
 
 interface SandboxArtifactFact {
+  facts?: SandboxArtifactMember[];
   descriptor: string;
   sha256: string;
   sizeBytes: number;
@@ -235,21 +239,12 @@ function resolveSlotValue(
 
 function fileMetadataIds(value: unknown): string[] {
   const values = Array.isArray(value) ? value : [value];
-  return values.flatMap((item) => {
-    if (!item || typeof item !== "object") return [];
+  return values.map((item) => {
+    if (!item || typeof item !== "object") throw new Error("Invalid Sandbox file reference");
     const id = (item as Record<string, unknown>).fileMetadataId;
-    return typeof id === "string" ? [id] : [];
+    if (typeof id !== "string") throw new Error("Invalid Sandbox file reference");
+    return id;
   });
-}
-
-function batchSha256(entries: Array<{ relativePath: string; sha256: string; sizeBytes: number }>) {
-  const hash = createHash("sha256");
-  for (const entry of entries.toSorted((left, right) =>
-    left.relativePath.localeCompare(right.relativePath),
-  )) {
-    hash.update(`${entry.relativePath}\0${entry.sizeBytes}\0${entry.sha256}\n`);
-  }
-  return hash.digest("hex");
 }
 
 function artifactFact(value: string | undefined, descriptor: string): SandboxArtifactFact {
@@ -656,11 +651,18 @@ export class SandboxNodeExecutor {
       const rawFact = completion.collected[`$sandbox-artifact:${descriptor}`];
       if (!rawFact && !output.required) continue;
       const fact = artifactFact(rawFact, descriptor);
+      const fileMembers = validateArtifactMembers({
+        ioType: output.type,
+        contentHash: fact.sha256,
+        sizeBytes: fact.sizeBytes,
+        fileMembers: fact.facts,
+      });
       actualOutputBytes += fact.sizeBytes;
       const artifact = await this.options.artifactService.registerLocal({
         workflowRunId: this.options.workflowRunId,
         producerNodeId: node.id,
         producerJobId: job.id,
+        fileMembers,
         descriptor,
         ioType: output.type,
         contentHash: fact.sha256,
@@ -863,13 +865,14 @@ export class SandboxNodeExecutor {
     const bytesByDescriptor: Record<string, number> = {};
     for (const [descriptor, input] of Object.entries(node.inputs)) {
       const slot = node.inputSlots?.find((candidate) => candidate.descriptor === descriptor);
-      const value = resolveSlotValue(slot, ctx);
+      let value: unknown = resolveSlotValue(slot, ctx);
       if (value === undefined) {
         if (input.required)
           throw new Error(`Required Sandbox input '${descriptor}' is unavailable`);
         continue;
       }
       if (input.type === "File" || input.type === "FileBatch") {
+        if (this.options.resolveFileInput) value = await this.options.resolveFileInput(value);
         const dataInput = DataInputRefSchema.safeParse(value);
         if (dataInput.success && dataInput.data.source === "data-market") {
           if (input.type !== "FileBatch") {
@@ -917,7 +920,10 @@ export class SandboxNodeExecutor {
                     .at(-1)
                     ?.replace(/[^A-Za-z0-9._-]/g, "_") || "file";
                 return {
-                  relativePath: `${String(index).padStart(4, "0")}-${name}`,
+                  relativePath:
+                    Array.isArray(value) && typeof value[index]?.relativePath === "string"
+                      ? (value[index].relativePath as string)
+                      : `${String(index).padStart(4, "0")}-${name}`,
                   sha256: file.sha256,
                   sizeBytes: file.size,
                 };
@@ -925,9 +931,16 @@ export class SandboxNodeExecutor {
             : [];
         const totalBytes = orderedFiles.reduce((total, file) => total + (file?.size ?? 0), 0);
         bytesByDescriptor[descriptor] = totalBytes;
+        if (input.type === "FileBatch")
+          validateArtifactMembers({
+            ioType: "FileBatch",
+            fileMembers: batchEntries,
+            sizeBytes: totalBytes,
+            contentHash: artifactBatchHash(batchEntries),
+          });
         const single = orderedFiles[0];
         const expectedSha256 =
-          input.type === "FileBatch" ? batchSha256(batchEntries) : single?.sha256;
+          input.type === "FileBatch" ? artifactBatchHash(batchEntries) : single?.sha256;
         if (!expectedSha256) throw new Error(`Sandbox File input '${descriptor}' lacks a hash`);
         mounts.push({
           descriptor,

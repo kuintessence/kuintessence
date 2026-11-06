@@ -12,18 +12,24 @@ import {
   workflowExecutionJobs,
   workflowRuns,
 } from "@kuintessence/db";
-import { WorkflowExecutionInterrupted, workflowDsl } from "@kuintessence/shared";
+import {
+  type SandboxArtifactMember,
+  WorkflowExecutionInterrupted,
+  workflowDsl,
+} from "@kuintessence/shared";
 import { eq, inArray } from "drizzle-orm";
 import {
   type LeasedWorkflowJournal,
   WorkflowExecutionJournalStore,
 } from "../workflow/execution-journal";
 import { completionFromJob } from "../workflow/job-completion-registry";
+import { artifactBatchHash } from "./artifact-members";
 import { JobService } from "./job-service";
 import { SandboxExecutionResolver } from "./sandbox-execution-resolver";
 import { SandboxManifestSigner } from "./sandbox-manifest-signer";
 import { SandboxNodeExecutor } from "./sandbox-node-executor";
 import { PgArtifactStore, WorkflowArtifactService } from "./workflow-artifact";
+import { WorkflowArtifactFiles } from "./workflow-artifact-files";
 
 const url = process.env.DATABASE_URL;
 if (!url || !/^\/kuintessence_unit_[a-z0-9_]+$/.test(new URL(url).pathname))
@@ -82,7 +88,7 @@ afterAll(async () => {
   await db.$client.end({ timeout: 5 });
 });
 
-async function fixture() {
+async function fixture(outputBatch?: SandboxArtifactMember[]) {
   const runId = randomUUID();
   runIds.push(runId);
   await db
@@ -105,7 +111,9 @@ async function fixture() {
   let refuseAuthorization = false;
   let cancelOnCompletion = false;
   async function complete(jobId: string) {
-    const digest = createHash("sha256").update(jobId).digest("hex");
+    const digest = outputBatch
+      ? artifactBatchHash(outputBatch)
+      : createHash("sha256").update(jobId).digest("hex");
     await db
       .update(jobs)
       .set({
@@ -116,7 +124,10 @@ async function fixture() {
           "$sandbox-artifact:result": JSON.stringify({
             descriptor: "result",
             sha256: digest,
-            sizeBytes: 8,
+            sizeBytes: outputBatch
+              ? outputBatch.reduce((sum, member) => sum + member.sizeBytes, 0)
+              : 8,
+            ...(outputBatch ? { facts: outputBatch } : {}),
             storageRef: `/isolated/${jobId}/result`,
           }),
         },
@@ -126,6 +137,7 @@ async function fixture() {
   const executor = (
     current: LeasedWorkflowJournal,
     scope: { orgId?: string | null } = { orgId: null },
+    resolveFileInput?: (value: unknown) => Promise<unknown>,
   ) =>
     new SandboxNodeExecutor({
       db,
@@ -133,6 +145,7 @@ async function fixture() {
       resolver,
       signer,
       artifactService,
+      resolveFileInput,
       workflowRunId: runId,
       executionLease: current,
       submittedBy: userId,
@@ -400,7 +413,7 @@ test("fresh artifact service resumes a DB checkpoint after publication fails and
     },
   });
   await expect(interrupted.awaitCheckpointPersistence(f.runId)).rejects.toThrow(
-    "interrupted transfer",
+    "Artifact publication is pending",
   );
   expect(await artifacts.pendingPersistence(f.runId)).toHaveLength(1);
   let copies = 0;
@@ -468,5 +481,111 @@ test("DB checkpoint without a verified unexpired source remains pending", async 
     "no verified local replica",
   );
   expect(await artifacts.pendingPersistence(f.runId)).toHaveLength(1);
+  await f.lease.release();
+});
+
+test("Script FileBatch output resolves to signed input members for a downstream Script", async () => {
+  const f = await fixture();
+  await f.executor(f.lease).execute(node, {}, invocation());
+  const producerJobId = f.dispatched[0];
+  if (!producerJobId) throw new Error("Missing producer");
+  const fileMembers = [
+    { relativePath: "a.txt", sha256: "a".repeat(64), sizeBytes: 2 },
+    { relativePath: "nested/b.txt", sha256: "b".repeat(64), sizeBytes: 3 },
+  ];
+  const { artifact } = await artifacts.registerLocal({
+    workflowRunId: f.runId,
+    producerNodeId: "producer",
+    producerJobId,
+    descriptor: "batch",
+    ioType: "FileBatch",
+    contentHash: artifactBatchHash(fileMembers),
+    sizeBytes: 5,
+    durability: "Ephemeral",
+    ownerId: userId,
+    agentId,
+    siteId: "test-site",
+    clusterId: "test-cluster",
+    storageRef: "/isolated/batch",
+    fileMembers,
+  });
+  const bridge = new WorkflowArtifactFiles(db, async (input) => {
+    const [file] = await db
+      .insert(netdriveFiles)
+      .values({
+        ownerId: input.ownerId,
+        path: input.target,
+        storageKey: input.target,
+        sha256: input.sha256,
+        size: input.sizeBytes,
+      })
+      .returning();
+    if (!file) throw new Error("Missing uploaded file");
+    return { netdriveFileId: file.id, storageRef: file.path };
+  });
+  const service = new WorkflowArtifactService(artifacts, bridge);
+  const consumer = workflowDsl.WorkflowNodeSchema.parse({
+    ...node,
+    id: "consumer",
+    inputs: { data: { type: "FileBatch", required: true } },
+    inputSlots: [
+      {
+        type: "File",
+        descriptor: "data",
+        isBatch: true,
+        from: { node: "producer", output: "batch" },
+      },
+    ],
+  });
+  if (consumer.type !== "Script") throw new Error("Expected Script");
+  const context = {
+    nodes: {
+      producer: {
+        status: "Succeeded",
+        values: { batch: { artifactId: artifact.id, type: "FileBatch" } },
+      },
+    },
+  };
+  const executor = f.executor(f.lease, { orgId: null }, (value) =>
+    bridge.resolve(value, { workflowRunId: f.runId, ownerId: userId }, service),
+  );
+  expect((await executor.execute(consumer, context, { path: '["node","consumer"]' })).status).toBe(
+    "Succeeded",
+  );
+  const id = f.dispatched[1];
+  if (!id) throw new Error("Missing consumer Job");
+  const job = await jobService.getById(id);
+  expect(job?.inputStaging?.map((item) => item.stagePath)).toEqual([
+    "inputs/data/a.txt",
+    "inputs/data/nested/b.txt",
+  ]);
+  const [binding] = await db
+    .select()
+    .from(workflowExecutionJobs)
+    .where(eq(workflowExecutionJobs.jobId, id));
+  expect(JSON.stringify(binding?.intent)).toContain(artifactBatchHash(fileMembers));
+  expect((await executor.execute(consumer, context, { path: '["node","consumer"]' })).status).toBe(
+    "Succeeded",
+  );
+  expect(f.dispatched).toHaveLength(2);
+  await f.lease.release();
+});
+
+test("Script producer retains the Agent's verified FileBatch manifest before returning an artifact reference", async () => {
+  const members = [{ relativePath: "nested/result.dat", sha256: "a".repeat(64), sizeBytes: 2 }];
+  const f = await fixture(members);
+  const producer = workflowDsl.WorkflowNodeSchema.parse({
+    ...node,
+    outputs: { result: { type: "FileBatch" } },
+  });
+  if (producer.type !== "Script") throw new Error("Expected Script");
+  const result = await f.executor(f.lease).execute(producer, {}, invocation());
+  expect(result.status).toBe("Succeeded");
+  const [artifact] = await db
+    .select()
+    .from(workflowArtifacts)
+    .where(eq(workflowArtifacts.workflowRunId, f.runId));
+  expect(artifact?.fileMembers).toEqual(members);
+  expect(result.values?.result).toEqual({ artifactId: artifact?.id, type: "FileBatch" });
   await f.lease.release();
 });

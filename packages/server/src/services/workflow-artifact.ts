@@ -1,6 +1,22 @@
-import { artifactReplicas, type PgDb, workflowArtifacts, workflowRuns } from "@kuintessence/db";
-import { type ArtifactDurability, createLogger, type ScriptIoType } from "@kuintessence/shared";
-import { and, eq, inArray, isNotNull, isNull, lte, or } from "drizzle-orm";
+import {
+  artifactReplicas,
+  netdriveFiles,
+  type PgDb,
+  workflowArtifactFiles,
+  workflowArtifacts,
+  workflowRuns,
+} from "@kuintessence/db";
+import {
+  type ArtifactDurability,
+  canonicalJson,
+  createLogger,
+  type SandboxArtifactMember,
+  type ScriptIoType,
+  WorkflowExecutionInterrupted,
+} from "@kuintessence/shared";
+import { and, eq, inArray, isNotNull, isNull, lte, ne, or, sql } from "drizzle-orm";
+
+import { validateArtifactMembers } from "./artifact-members";
 
 export interface ArtifactRecord {
   id: string;
@@ -13,6 +29,7 @@ export interface ArtifactRecord {
   sizeBytes: number;
   durability: ArtifactDurability;
   netdriveFileId: string | null;
+  fileMembers?: SandboxArtifactMember[] | null;
   createdAt: Date;
   persistentAt: Date | null;
 }
@@ -41,6 +58,7 @@ export interface LocalArtifactRegistration {
   sizeBytes: number;
   durability: ArtifactDurability;
   ownerId: string;
+  fileMembers?: SandboxArtifactMember[] | null;
   agentId: string;
   siteId: string;
   clusterId: string;
@@ -65,7 +83,7 @@ export interface ArtifactStore {
   completePersistence(
     artifactId: string,
     replicaId: string,
-    result: { netdriveFileId: string; storageRef: string },
+    result: { netdriveFileId: string | null; storageRef: string },
   ): Promise<void>;
   failPersistence(replicaId: string, reason: string): Promise<void>;
   expireEphemeral(workflowRunId: string, expiresAt: Date): Promise<void>;
@@ -79,7 +97,7 @@ export interface ArtifactPersister {
     artifact: ArtifactRecord;
     localReplica: ArtifactReplicaRecord;
     ownerId: string;
-  }): Promise<{ netdriveFileId: string; storageRef: string }>;
+  }): Promise<{ netdriveFileId: string | null; storageRef: string }>;
 }
 
 function artifactRecord(row: typeof workflowArtifacts.$inferSelect): ArtifactRecord {
@@ -112,8 +130,10 @@ export class PgArtifactStore implements ArtifactStore {
   async registerLocal(
     input: LocalArtifactRegistration,
   ): Promise<{ artifact: ArtifactRecord; replica: ArtifactReplicaRecord }> {
+    const fileMembers = validateArtifactMembers(input);
     return this.db.transaction(async (tx) => {
       const values = {
+        fileMembers,
         workflowRunId: input.workflowRunId,
         producerNodeId: input.producerNodeId,
         producerJobId: input.producerJobId ?? null,
@@ -144,6 +164,7 @@ export class PgArtifactStore implements ArtifactStore {
               targetWhere: isNull(workflowArtifacts.producerJobId),
               set: {
                 ioType: input.ioType,
+                fileMembers,
                 contentHash: input.contentHash,
                 sizeBytes: input.sizeBytes,
                 durability: input.durability,
@@ -176,9 +197,14 @@ export class PgArtifactStore implements ArtifactStore {
           artifact.ioType !== input.ioType ||
           artifact.contentHash !== input.contentHash ||
           artifact.sizeBytes !== input.sizeBytes ||
-          artifact.durability !== input.durability)
+          artifact.durability !== input.durability ||
+          canonicalJson(artifact.fileMembers) !== canonicalJson(fileMembers))
       )
         throw new Error("A completed job's artifact is immutable");
+      if (!input.producerJobId)
+        await tx
+          .delete(workflowArtifactFiles)
+          .where(eq(workflowArtifactFiles.artifactId, artifact.id));
       const [replica] = await tx
         .insert(artifactReplicas)
         .values({
@@ -223,7 +249,23 @@ export class PgArtifactStore implements ArtifactStore {
         and(
           eq(workflowArtifacts.workflowRunId, workflowRunId),
           inArray(workflowArtifacts.durability, ["Checkpoint", "Persistent"]),
-          or(isNull(workflowArtifacts.persistentAt), isNull(workflowArtifacts.netdriveFileId)),
+          or(
+            isNull(workflowArtifacts.persistentAt),
+            and(
+              ne(workflowArtifacts.ioType, "FileBatch"),
+              isNull(workflowArtifacts.netdriveFileId),
+            ),
+            and(
+              eq(workflowArtifacts.ioType, "FileBatch"),
+              or(
+                isNull(workflowArtifacts.fileMembers),
+                sql`(SELECT count(*) FROM ${workflowArtifactFiles}
+                JOIN ${netdriveFiles} ON ${netdriveFiles.id} = ${workflowArtifactFiles.netdriveFileId}
+                WHERE ${workflowArtifactFiles.artifactId} = ${workflowArtifacts.id}
+                  AND ${netdriveFiles.deletedAt} IS NULL) < jsonb_array_length(${workflowArtifacts.fileMembers})`,
+              ),
+            ),
+          ),
         ),
       );
     const replicas = await this.availableReplicas(rows.map(({ artifact }) => artifact.id));
@@ -273,18 +315,87 @@ export class PgArtifactStore implements ArtifactStore {
   async completePersistence(
     artifactId: string,
     replicaId: string,
-    result: { netdriveFileId: string; storageRef: string },
+    result: { netdriveFileId: string | null; storageRef: string },
   ): Promise<void> {
     await this.db.transaction(async (tx) => {
+      const [artifact] = await tx
+        .select()
+        .from(workflowArtifacts)
+        .where(eq(workflowArtifacts.id, artifactId))
+        .for("update");
+      if (!artifact) throw new Error("Artifact disappeared during publication");
+      const [run] = await tx
+        .select({ ownerId: workflowRuns.submittedBy })
+        .from(workflowRuns)
+        .where(eq(workflowRuns.id, artifact.workflowRunId));
+      if (!run?.ownerId) throw new Error("Artifact has no workflow owner");
+      if (artifact.ioType === "FileBatch") {
+        const members = validateArtifactMembers(artifact);
+        if (!members || result.netdriveFileId !== null)
+          throw new Error("Invalid batch publication");
+        const files = await tx
+          .select({ path: workflowArtifactFiles.relativePath, file: netdriveFiles })
+          .from(workflowArtifactFiles)
+          .innerJoin(netdriveFiles, eq(netdriveFiles.id, workflowArtifactFiles.netdriveFileId))
+          .where(
+            and(eq(workflowArtifactFiles.artifactId, artifactId), isNull(netdriveFiles.deletedAt)),
+          );
+        if (
+          members.some(
+            (member) =>
+              !files.some(
+                ({ path, file }) =>
+                  path === member.relativePath &&
+                  file.ownerId === run.ownerId &&
+                  file.sha256 === member.sha256 &&
+                  file.size === member.sizeBytes,
+              ),
+          )
+        )
+          throw new Error("Artifact batch publication is incomplete");
+      } else {
+        const [file] = result.netdriveFileId
+          ? await tx
+              .select()
+              .from(netdriveFiles)
+              .where(
+                and(eq(netdriveFiles.id, result.netdriveFileId), isNull(netdriveFiles.deletedAt)),
+              )
+          : [];
+        if (
+          !file ||
+          file.ownerId !== run.ownerId ||
+          file.sha256 !== artifact.contentHash ||
+          file.size !== artifact.sizeBytes
+        )
+          throw new WorkflowExecutionInterrupted(
+            "Artifact publication failed ownership/size/hash verification",
+            { retryable: false },
+          );
+      }
+      let published = result;
+      if (artifact.netdriveFileId) {
+        const [existing] = await tx
+          .select()
+          .from(netdriveFiles)
+          .where(
+            and(eq(netdriveFiles.id, artifact.netdriveFileId), isNull(netdriveFiles.deletedAt)),
+          );
+        if (existing) {
+          if (existing.sha256 !== artifact.contentHash || existing.size !== artifact.sizeBytes)
+            throw new Error("Published artifact content is inconsistent");
+          published = { netdriveFileId: existing.id, storageRef: existing.path };
+        }
+      }
       const now = new Date();
       await tx
         .update(workflowArtifacts)
-        .set({ netdriveFileId: result.netdriveFileId, persistentAt: now })
+        .set({ netdriveFileId: published.netdriveFileId, persistentAt: now })
         .where(eq(workflowArtifacts.id, artifactId));
       await tx
         .update(artifactReplicas)
         .set({
-          storageRef: result.storageRef,
+          storageRef: published.storageRef,
           status: "available",
           verifiedAt: now,
           failureReason: null,
@@ -363,6 +474,7 @@ export class WorkflowArtifactService {
   private readonly logger = createLogger("workflow-artifact");
 
   private readonly checkpointTasks = new Map<string, Set<Promise<void>>>();
+  private readonly publications = new Map<string, Promise<void>>();
 
   constructor(
     private readonly store: ArtifactStore,
@@ -380,7 +492,8 @@ export class WorkflowArtifactService {
     const registered = await this.store.registerLocal(input);
     if (
       input.durability === "Ephemeral" ||
-      (registered.artifact.netdriveFileId && registered.artifact.persistentAt)
+      ((registered.artifact.ioType === "FileBatch" || registered.artifact.netdriveFileId) &&
+        registered.artifact.persistentAt)
     )
       return registered.artifact;
     if (!this.persister) throw new Error("durable artifacts require a NetDrive persister");
@@ -433,7 +546,24 @@ export class WorkflowArtifactService {
     return removed.length;
   }
 
-  private async persist(
+  persist(
+    registered: { artifact: ArtifactRecord; replica: ArtifactReplicaRecord },
+    ownerId: string,
+  ): Promise<void> {
+    const key = `${ownerId}:${registered.artifact.id}`;
+    const pending = this.publications.get(key);
+    if (pending) return pending;
+    const task = this.publish(registered, ownerId)
+      .catch((cause) => {
+        if (cause instanceof WorkflowExecutionInterrupted) throw cause;
+        throw new WorkflowExecutionInterrupted("Artifact publication is pending", { cause });
+      })
+      .finally(() => this.publications.delete(key));
+    this.publications.set(key, task);
+    return task;
+  }
+
+  private async publish(
     registered: { artifact: ArtifactRecord; replica: ArtifactReplicaRecord },
     ownerId: string,
   ): Promise<void> {

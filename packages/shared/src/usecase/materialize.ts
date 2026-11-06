@@ -66,6 +66,7 @@ export interface FilesomeOutputMaterial {
 export interface FileValue {
   fileMetadataId: string;
   fileMetadataName: string;
+  relativePath?: string;
 }
 export type FileInputValue = FileValue | FileValue[];
 
@@ -182,6 +183,8 @@ export function materialize(input: MaterializeInput): MaterializedTask {
     }
   }
 
+  if (new Set(inputStaging.map((file) => file.stagePath)).size !== inputStaging.length)
+    throw new Error("materialize: file inputs resolve to overlapping stage paths");
   positioned.sort((a, b) => a.sort - b.sort);
   const argv = [input.usecase.commandFile, ...positioned.flatMap((p) => p.tokens)];
 
@@ -216,6 +219,10 @@ export function materialize(input: MaterializeInput): MaterializedTask {
 }
 
 function batchStagePath(pattern: string, file: FileValue, index: number): string {
+  if (file.relativePath !== undefined) {
+    const directory = pattern.includes("*") ? posixPath.dirname(pattern) : pattern;
+    return `${directory === "." ? "" : `${directory.replace(/\/$/, "")}/`}${file.relativePath}`;
+  }
   const rawName = posixPath.basename(file.fileMetadataName) || `item-${index}`;
   const safeName = rawName.replace(/[^\w.-]/g, "_");
   if (pattern.includes("*")) {

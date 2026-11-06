@@ -364,3 +364,34 @@ describe("materialize (Spack facility, arg/env/file refs)", () => {
     expect(r.argv).toEqual(["simpleFoam"]);
   });
 });
+
+test("managed batch members retain their directories and cannot escape or overwrite one another", () => {
+  const file = {
+    fileMetadataId: "file-a",
+    fileMetadataName: "nested/a.dat",
+    relativePath: "nested/a.dat",
+  };
+  const input = base({
+    usecase: {
+      commandFile: "true",
+      inputSlots: [
+        {
+          kind: "File",
+          descriptor: "data",
+          refMaterials: [{ kind: "FileInputRef", descriptor: "data" }],
+        },
+      ],
+    },
+    filesomeInputs: [{ descriptor: "data", fileKind: { kind: "Batched", pattern: "inputs/*" } }],
+    inputs: { data: [file] },
+  });
+  expect(materialize(input).inputStaging).toEqual([
+    { fileMetadataId: "file-a", stagePath: "inputs/nested/a.dat" },
+  ]);
+  expect(() =>
+    materialize({ ...input, inputs: { data: [{ ...file, relativePath: "../secret" }] } }),
+  ).toThrow("unsafe stagePath");
+  expect(() =>
+    materialize({ ...input, inputs: { data: [file, { ...file, fileMetadataId: "file-b" }] } }),
+  ).toThrow("overlapping stage paths");
+});

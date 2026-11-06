@@ -78,6 +78,7 @@ export interface JobSubmission {
 export interface UsecaseExecutorDeps {
   /** Production Agents activate Spack through their governed managed installation. */
   deferSpackActivation?: boolean;
+  resolveFileInput?(value: unknown): Promise<unknown>;
   resolvePackage(usecaseVersionId: string, softwareVersionId: string): Promise<ResolvedPackage>;
   submitJob(spec: JobSubmission): Promise<{
     jobId: string;
@@ -124,7 +125,7 @@ export function createUsecaseExecutor(deps: UsecaseExecutorDeps): NodeExecutor {
       );
     }
     const pkg = await deps.resolvePackage(node.usecaseVersionId, node.softwareVersionId);
-    const inputs = resolveNodeInputs(node, ctx);
+    const inputs = await resolveNodeInputs(node, ctx, deps.resolveFileInput);
     const task = usecase.materialize({
       usecase: pkg.usecase,
       software: pkg.software,
@@ -275,10 +276,11 @@ function mapResources(
   return Object.keys(resources).length > 0 ? resources : undefined;
 }
 
-function resolveNodeInputs(
+async function resolveNodeInputs(
   node: Extract<workflowDsl.WorkflowNode, { type: "SoftwareUsecaseComputing" }>,
   ctx: Record<string, CelValue>,
-): Record<string, string | usecase.FileInputValue> {
+  resolveFileInput?: UsecaseExecutorDeps["resolveFileInput"],
+): Promise<Record<string, string | usecase.FileInputValue>> {
   const inputs: Record<string, string | usecase.FileInputValue> = {};
   for (const slot of node.inputSlots ?? []) {
     if (slot.type === "Dataset") {
@@ -287,12 +289,20 @@ function resolveNodeInputs(
     if (slot.sources && slot.sources.length > 0) {
       const v = resolveSources(slot.sources, slot.select, ctx);
       if (v !== undefined) {
-        assignInput(inputs, slot, v);
+        assignInput(
+          inputs,
+          slot,
+          slot.type === "File" && resolveFileInput ? await resolveFileInput(v) : v,
+        );
       }
     } else if (slot.from) {
       const v = resolveBinding(slot.from, ctx);
       if (v !== undefined) {
-        assignInput(inputs, slot, v);
+        assignInput(
+          inputs,
+          slot,
+          slot.type === "File" && resolveFileInput ? await resolveFileInput(v) : v,
+        );
       }
     } else if (slot.type === "File") {
       const contents = slot.contents ?? [];
@@ -320,7 +330,7 @@ function resolveNodeInputs(
 function assignInput(
   inputs: Record<string, string | usecase.FileInputValue>,
   slot: workflowDsl.NodeInputSlot,
-  value: CelValue,
+  value: unknown,
 ): void {
   if (slot.type === "Text") {
     if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {

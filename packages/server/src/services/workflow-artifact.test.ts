@@ -72,7 +72,7 @@ class MemoryArtifactStore implements ArtifactStore {
   async completePersistence(
     _artifactId: string,
     _replicaId: string,
-    result: { netdriveFileId: string; storageRef: string },
+    result: { netdriveFileId: string | null; storageRef: string },
   ) {
     if (this.artifact) {
       this.artifact.netdriveFileId = result.netdriveFileId;
@@ -234,7 +234,9 @@ test("failed checkpoint publication remains retryable and missing source cannot 
       throw new Error("storage offline");
     },
   });
-  await expect(unavailable.awaitCheckpointPersistence("run-1")).rejects.toThrow("storage offline");
+  await expect(unavailable.awaitCheckpointPersistence("run-1")).rejects.toThrow(
+    "Artifact publication is pending",
+  );
   expect(store.persistent?.status).toBe("failed");
   expect(store.artifact?.persistentAt).toBeNull();
   store.local = undefined;

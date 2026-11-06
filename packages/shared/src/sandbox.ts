@@ -162,6 +162,23 @@ export const ArtifactReplicaStatusSchema = z.enum([
 ]);
 export type ArtifactReplicaStatus = z.infer<typeof ArtifactReplicaStatusSchema>;
 
+export const SandboxArtifactMemberSchema = z.strictObject({
+  relativePath: z
+    .string()
+    .min(1)
+    .max(255)
+    .refine(
+      (value) =>
+        !value.includes("\\") &&
+        !value.includes("\0") &&
+        value.split("/").every((part) => part !== "" && part !== "." && part !== ".."),
+      { message: "artifact member must be a normalized relative path" },
+    ),
+  sha256: z.string().regex(/^[0-9a-f]{64}$/),
+  sizeBytes: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+});
+export type SandboxArtifactMember = z.infer<typeof SandboxArtifactMemberSchema>;
+
 export const WorkflowArtifactSchema = z.strictObject({
   id: UuidSchema,
   workflowRunId: UuidSchema,
@@ -173,6 +190,7 @@ export const WorkflowArtifactSchema = z.strictObject({
   sizeBytes: z.number().int().nonnegative(),
   durability: ArtifactDurabilitySchema,
   netdriveFileId: UuidSchema.nullish(),
+  fileMembers: z.array(SandboxArtifactMemberSchema).max(256).nullish(),
   createdAt: z.coerce.date(),
   persistentAt: z.coerce.date().nullish(),
 });

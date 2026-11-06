@@ -189,6 +189,7 @@ import { TransferRegistry } from "./services/transfer-registry";
 import { TransferRunner } from "./services/transfer-runner";
 import { assertUsecasePackageExecutionAccess } from "./services/usecase-execution-authorizer";
 import { PgArtifactStore, WorkflowArtifactService } from "./services/workflow-artifact";
+import { WorkflowArtifactFiles } from "./services/workflow-artifact-files";
 import { createWorkflowPlacementBuilder } from "./services/workflow-placement-builder";
 import {
   InstalledRegistry,
@@ -486,37 +487,34 @@ let netdriveServiceForWorkflowOutputs: NetDriveService | undefined;
 let dataMarketUploadPort: DataUploadPort = new UnavailableDataMarketUploadPort();
 let transferRunner: TransferRunner | undefined;
 const sandboxArtifactReleaseService = new SandboxArtifactReleaseService(dispatcher);
+const workflowArtifactFiles = new WorkflowArtifactFiles(db, async (input) => {
+  if (!transferRunner || !netdriveServiceForWorkflowOutputs)
+    throw new Error("NetDrive is unavailable for Sandbox artifacts");
+  await waitForWorkflowOutputTransfer({
+    transferId: crypto.randomUUID(),
+    ownerId: input.ownerId,
+    source: input.source,
+    target: input.target,
+    agentId: input.agentId,
+    workflowRunId: input.artifact.workflowRunId,
+    jobId: input.artifact.producerJobId ?? undefined,
+  });
+  const listed = await netdriveServiceForWorkflowOutputs.listFiles(input.ownerId, {
+    prefix: input.target,
+    limit: 1,
+    offset: 0,
+  });
+  const file = listed.files.find((item) => item.path === input.target);
+  if (!file || file.sha256 !== input.sha256 || file.size !== input.sizeBytes)
+    throw new Error("Persisted Sandbox artifact failed size/hash verification");
+  return { netdriveFileId: file.id, storageRef: input.target };
+});
 const workflowArtifactService = new WorkflowArtifactService(
   new PgArtifactStore(db),
-  {
-    persist: async ({ artifact, localReplica, ownerId }) => {
-      if (!transferRunner || !netdriveServiceForWorkflowOutputs) {
-        throw new Error("NetDrive is unavailable for durable Sandbox artifacts");
-      }
-      const safeDescriptor = artifact.descriptor.replace(/[^a-zA-Z0-9._-]/g, "_");
-      const target = `workflow-runs/${artifact.workflowRunId}/artifacts/${artifact.id}/${safeDescriptor}`;
-      await waitForWorkflowOutputTransfer({
-        transferId: crypto.randomUUID(),
-        ownerId,
-        source: localReplica.storageRef,
-        target,
-        agentId: localReplica.agentId,
-        workflowRunId: artifact.workflowRunId,
-      });
-      const listed = await netdriveServiceForWorkflowOutputs.listFiles(ownerId, {
-        prefix: target,
-        limit: 1,
-        offset: 0,
-      });
-      const file = listed.files.find((item) => item.path === target);
-      if (!file || file.sha256 !== artifact.contentHash || file.size !== artifact.sizeBytes) {
-        throw new Error("Persisted Sandbox artifact failed size/hash verification");
-      }
-      return { netdriveFileId: file.id, storageRef: target };
-    },
-  },
+  workflowArtifactFiles,
   (replica) => sandboxArtifactReleaseService.release(replica),
 );
+
 if (config.SANDBOX_ARTIFACT_GC_INTERVAL_SEC > 0) {
   setInterval(() => {
     workflowArtifactService
@@ -857,6 +855,17 @@ const makeRunner = (
       throw cause;
     }
   };
+  const resolveFileInput = async (value: unknown) => {
+    if (!activeRunId) return value;
+    await executionLease?.renew();
+    const resolved = await workflowArtifactFiles.resolve(
+      value,
+      { workflowRunId: activeRunId, ownerId: submittedBy },
+      workflowArtifactService,
+    );
+    await executionLease?.renew();
+    return resolved;
+  };
   const sandboxExecutor =
     sandboxManifestSigner && activeRunId
       ? new SandboxNodeExecutor({
@@ -866,6 +875,7 @@ const makeRunner = (
           jobService,
           orchestrator,
           artifactService: workflowArtifactService,
+          resolveFileInput,
           awaitCompletion: awaitWorkflowJob,
           executionLease,
           submittedBy,
@@ -890,6 +900,7 @@ const makeRunner = (
         })
       : undefined;
   return createWorkflowRunner({
+    resolveFileInput,
     journal: executionLease,
     deferSpackActivation: true,
     // Persist runs for audit and visibility in `workflow list`.

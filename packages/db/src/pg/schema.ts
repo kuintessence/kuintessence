@@ -4,6 +4,7 @@ import type {
   LinkMetadata,
   MapView,
   ProviderProfile,
+  SandboxArtifactMember,
 } from "@kuintessence/shared";
 import { sql } from "drizzle-orm";
 import {
@@ -3040,6 +3041,7 @@ export const workflowArtifacts = pgTable(
       .references(() => workflowRuns.id, { onDelete: "cascade" })
       .notNull(),
     producerJobId: uuid("producer_job_id").references(() => jobs.id),
+    fileMembers: jsonb("file_members").$type<SandboxArtifactMember[]>(),
     producerNodeId: varchar("producer_node_id", { length: 255 }).notNull(),
     descriptor: varchar("descriptor", { length: 255 }).notNull(),
     ioType: varchar("io_type", { length: 20 }).notNull(),
@@ -3070,6 +3072,20 @@ export const workflowArtifacts = pgTable(
       sql`${t.durability} IN ('Ephemeral', 'Checkpoint', 'Persistent')`,
     ),
   }),
+);
+
+export const workflowArtifactFiles = pgTable(
+  "workflow_artifact_files",
+  {
+    artifactId: uuid("artifact_id")
+      .references(() => workflowArtifacts.id, { onDelete: "cascade" })
+      .notNull(),
+    relativePath: varchar("relative_path", { length: 255 }).notNull(),
+    netdriveFileId: uuid("netdrive_file_id").references(() => netdriveFiles.id, {
+      onDelete: "set null",
+    }),
+  },
+  (t) => ({ pk: primaryKey({ columns: [t.artifactId, t.relativePath] }) }),
 );
 
 export const artifactReplicas = pgTable(

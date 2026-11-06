@@ -184,7 +184,7 @@ PG 测试必须指定 `kuintessence_unit_*` 隔离数据库，拒绝默认连接
 
 全仓 lint 无错误（原有 47 warnings、1 info）；全仓 typecheck 通过，最后的执行器调整按 Server 范围复查。当时生产 `makeRunner` 尚未传入 `executionLease`；后续内部持久模式接入见下文。只有普通 Script 的按 Job 分离产物行为已接入现有调用路径。
 
-**自动恢复仍有明确依赖**：生产 lease 心跳已在下文接通，原子运行创建/联邦预留映射仍待接通；下文已补齐已分配 Job 的准备恢复与派发终点校验，分配前的软件安装等待恢复仍需衔接；执行统计已改为按 Job 幂等贡献（见下），但其他恢复依赖尚未完成。另已确认 Script 的 File 输出返回 `artifactId`，下游输入当前只接受 `fileMetadataId`，需要接通受管副本/文件解析，不能把这次绑定测试当成文件工作流端到端通过。
+**自动恢复仍有明确依赖**：生产 lease 心跳已在下文接通，原子运行创建/联邦预留映射仍待接通；下文已补齐已分配 Job 的准备恢复与派发终点校验，分配前的软件安装等待恢复仍需衔接；执行统计已改为按 Job 幂等贡献（见下），但其他恢复依赖尚未完成。当时 Script 的 File 输出返回 `artifactId`，下游只接受 `fileMetadataId`；下文已接通受管文件解析，实际文件传输端到端仍待验收。
 
 ## Script 执行统计按 Job 去重
 
@@ -198,7 +198,7 @@ PG 测试必须指定 `kuintessence_unit_*` 隔离数据库，拒绝默认连接
 - 不在数据库事务内等待网络回执。若已入通道但事务提交失败，仍按原始指令/epoch 重投，由 Agent 持久 inbox 去重；取消只能阻止尚未投递的指令，已投递任务仍须走原有取消协议。
 - [真实 PostgreSQL/Agent SQLite 测试](../../../scripts/workflow-dispatch.pg.test.ts) 13 项通过，包括原有断线重放、重复回执、并发补投、停止运行和固定 Spack 意图保护。新增三项验证：在实际入队边界用独立进程探测 Workflow 和 Job 行锁，均返回 `55P03`；取消事务先取得锁时，首次授权落库和已有 outbox 补投都实际等待该事务，取消提交后均不发出指令。检查使用数据库阻塞关系确认先后顺序，不靠固定等待时间碰运气。全仓 lint 无错误（原有 47 warnings、1 info）；全仓类型检查和新增测试脚本的独立严格类型检查通过，524 个本地文档链接通过。临时 PostgreSQL 已停止，其自建数据目录已清理。
 
-**仍待接通**：这次修复运行/Job 取消与投递的竞争；下文已补齐执行租约代次在最终授权提交处的检查，以及已分配 Job 没有完整 envelope 时的准备恢复。Script 的 File 输出转换也尚待实现；FileBatch 的 Agent 校验结果已有成员摘要，但 Server 尚未保留成员和逐文件持久映射，不能把目录当成单个云盘文件交给下游。
+**仍待接通**：这次修复运行/Job 取消与投递的竞争；下文已补齐执行租约代次在最终授权提交处的检查，以及已分配 Job 没有完整 envelope 时的准备恢复。当时尚未实现的 Script 文件转换、FileBatch 成员保留和逐文件映射已在下文接通；目录按成员传输，不作为单个云盘文件。
 
 ## 已分配 Job 的准备恢复与最终租约检查
 
@@ -210,7 +210,7 @@ PG 测试必须指定 `kuintessence_unit_*` 隔离数据库，拒绝默认连接
 
 验证：新增[准备恢复 PostgreSQL 测试](../../../packages/server/src/services/placement-recovery.pg.test.ts) 4 项通过，实际使用 JobService、placement、租约事务和 outbox；在文件准备、epoch 检查后主动释放租约模拟执行权丢失。验证原 Job/Agent/epoch、固定 Spack pin 保留、原 Agent 离线等待、已有 outbox 不重做准备、旧 token 无法再写失败或提交指令，以及不同运行/身份与缺少 outbox 的拒绝。Script 恢复 6 项、派发 13 项、原有调度 23 项、JobService 33 项均通过，共 79 项数据库相关检查；提交桥接与 Script 的 17 项单元测试通过。测试使用受控通道和下载 URL，没有运行真实调度器、安装科学软件或传输实际文件。全仓 lint 无错误（原有 47 warnings、1 info）；全仓类型检查发现测试 Spack 版本字面量需显式类型，修正后 Server 复查通过，其余包、Fabric 脚本和派发测试脚本的严格检查均通过。529 个本地文档链接通过；本轮临时 PostgreSQL 已停止并清理。
 
-**本节当时的剩余项**：下文接通 `makeRunner`/异步运行器的内部持久模式、心跳与重启扫描、用例原子绑定和动态调用取消清单；Script 文件产物转换仍未完成。此次恢复覆盖已分配 Agent 后的准备中断；分配前的软件安装等待、跨实例联邦预留到 Workflow 的原子映射仍待完成，不能据此认定联邦作业已经可用。
+**本节当时的剩余项**：下文接通 `makeRunner`/异步运行器的内部持久模式、心跳与重启扫描、用例原子绑定和动态调用取消清单；Script 文件产物转换已在后续章节接通。此次恢复覆盖已分配 Agent 后的准备中断；分配前的软件安装等待、跨实例联邦预留到 Workflow 的原子映射仍待完成，不能据此认定联邦作业已经可用。
 
 ## 内部持久执行接入生产运行器
 
@@ -221,7 +221,7 @@ PG 测试必须指定 `kuintessence_unit_*` 隔离数据库，拒绝默认连接
 
 验证：[持久运行器 PostgreSQL 测试](../../../packages/server/src/workflow/durable-runner.pg.test.ts) 7 项、journal 9 项、运行登记 6 项，共 **22 项数据库检查**，另 **38 项相关单元测试**通过。覆盖循环中断后复用原 Job、全部动态调用取消、定义漂移停止重试、真实 5 秒扫描不影响 legacy 运行、500ms 租约实际续期、文件清单跨租约恢复和旧 token 写入拒绝。使用真实 PostgreSQL 与受控 Job 完成，不等同于完整 Server 进程重启、文件传输或 Slurm/PBS 验收。全仓 lint 无错误（原有 47 warnings、1 info）；类型检查中新增导出类型的可移植性问题已修正，DB、Server、shared 和脚本复查通过，其余包此前已通过。
 
-Script 的 File/FileBatch 到下游受管文件转换、分配 Agent 前的软件安装等待、联邦预留到运行的事务映射仍待完成；Checkpoint 文件持久化的数据库恢复已在下文补齐。
+Script 的 File/FileBatch 到下游受管文件转换、Checkpoint 文件持久化恢复已在下文补齐；分配 Agent 前的软件安装等待、联邦预留到运行的事务映射仍待完成。
 
 ## Checkpoint 上传从数据库恢复
 
@@ -231,7 +231,21 @@ Script 的 File/FileBatch 到下游受管文件转换、分配 Agent 前的软�
 
 全仓类型检查（含 protobuf 生成和 Fabric 脚本检查）通过；lint 无错误，原有 47 warnings、1 info 未增加；534 个本地文档链接通过。自建 PostgreSQL 已停止、临时数据已清理。
 
-测试使用受控文件上传器，并非真实 Agent/NetDrive 传输或完整 Server 进程重启验收。Script FileBatch 成员保留与逐文件传输、File 输出到下游受管输入转换仍未完成。
+测试使用受控文件上传器，并非真实 Agent/NetDrive 传输或完整 Server 进程重启验收。Script FileBatch 成员保留、逐文件发布及 File 输出转换的后续实现见下文。
+
+## Script 受管文件桥接与批次成员恢复
+
+- [受管文件桥接](../../../packages/server/src/services/workflow-artifact-files.ts)将 Script 的 File/FileBatch 引用按当前 Workflow 和用户解析成下游输入。生产工厂同时传给软件节点和 Script；循环产生的引用数组逐项校验后解析。普通文件 ID 继续走原 Job 授权；不能用其他运行、其他用户的 artifactId 获取文件。
+- 发布前验证原 Job 已完成、归属一致且没有 `restrictedNoEgress`，生产传输携带原 Job/Workflow ID。Ephemeral 在被下游读取时才经既有 Agent → NetDrive 通道发布；Checkpoint/Persistent 仍按原持久化策略执行。暂时上传失败使持久运行等待恢复，不标成计算失败。
+- [成员校验](../../../packages/server/src/services/artifact-members.ts)保留 Agent 返回的每个相对路径、SHA-256 和大小，验证总大小/总摘要，拒绝越界、重复、文件/目录冲突；成员上限沿用 Sandbox 输入契约的 256 项。Script 与用例均保留批次目录结构，重复目标路径拒绝覆盖。
+- [0088](../../../packages/db/migrations/0088_quick_loki.sql)由 Drizzle 生成，增加批次不可变清单和逐文件发布映射，云盘文件删除会清空对应外键。完整发布前再校验归属、摘要和大小；失败后保留已发布成员，恢复只补缺失部分，空批次与缺少清单分开处理。旧批次没有清单或原 Job 归属时拒绝推断和导出。
+- 同进程并发读取共享上传任务；不同实例的上传使用独立目标，数据库保留首个有效文件映射，避免后到上传覆盖下游已引用的文件。宕机留下的未绑定云盘副本和 Ephemeral 云盘字节回收仍需连接完整清理流程；当前没有宣称上传恰好一次或自动回收这些字节。同 Agent 的本地直读优化也尚未实现，当前均复用云盘传输路径。
+
+验证：**83 项相关单元测试**通过（包含 Agent 实际临时文件校验），另 **15 项 PostgreSQL 测试**覆盖完整迁移、Script 保存 Agent 批次事实、Script → Script 输入、Script → 软件输入、部分发布后的服务替换恢复、并发引用稳定、跨用户/运行拒绝、禁止导出、文件删除后补传及旧清单拒绝。初轮发现新测试 Job 缺少 CPU/内存必填字段、UUID schema 引用错误及数组解析未接入，均已修复；没有修改生产数据来使测试通过。
+
+全仓 lint 无错误（原有 47 warnings、1 info）；全仓类型检查首轮定位到 Server 的 schema 引用与测试字段问题，修正后 Server、shared 及 Fabric 脚本复查通过，其余包此前已通过。537 个本地文档链接与差异格式检查通过，自建 PostgreSQL 已停止并清理。
+
+本轮上传器受控，没有实际连接 Slurm/PBS、NetDrive 网络后端，也未进行完整 Server 进程重启；不能据此认为跨集群工作流或 A01–A10 已通过。仍需接通安装等待恢复、联邦预留 → Workflow，并运行真实传输和调度联合验收。
 
 ## 尚未接通，不能宣称支持
 
