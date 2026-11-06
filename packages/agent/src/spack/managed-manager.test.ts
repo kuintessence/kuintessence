@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import type { InstalledSpec, SpackPolicy } from "@kuintessence/shared";
+import { SpackInstallationPending } from "./execution-identity";
 import { SpackManager } from "./index";
 import type { SpackManagedInstallation } from "./install-contract";
 import { installRootHash, makeInstallFixture } from "./install-test-fixture";
@@ -379,4 +380,18 @@ test("pinned workflow loading never falls back to the CLI and forwards current p
   expect(f.manager.pinnedExecutionAvailable).toBe(true);
   expect((await f.manager.loadPinnedWorkflow(f.input.spec, pin, signal)).outcome).toBe("succeeded");
   expect(loaded).toBe(1);
+});
+
+test("manager preserves retryable installation wait and inventory withdrawal", async () => {
+  const f = await fixture();
+  const pending = new SpackInstallationPending([managed.hash]);
+  f.backend.install = async () => {
+    throw pending;
+  };
+  await expect(
+    f.manager.runSoftwareOperation("install", f.input.spec, {
+      ...f.input,
+      authorizeInstallation: async () => Date.now() + 10_000,
+    }),
+  ).rejects.toBe(pending);
 });

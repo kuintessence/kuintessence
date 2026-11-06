@@ -16,6 +16,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { join } from "node:path";
+import { executionIdentity } from "./execution-identity";
 import { SpackInstallRecordSchema, type SpackInstallReport } from "./install-contract";
 import { SpackInstallStore } from "./install-store";
 
@@ -58,8 +59,10 @@ afterEach(async () => {
 describe("SpackInstallStore transaction lifecycle", () => {
   test("enforces the complete transition matrix, including recovery through failed", async () => {
     const allowed = {
-      building: ["building", "verifying", "failed"],
-      verifying: ["verifying", "ready", "failed"],
+      building: ["building", "waiting_install", "verifying", "failed"],
+      waiting_install: ["waiting_install", "building", "failed", "removing"],
+      verifying: ["verifying", "waiting_verify", "ready", "failed"],
+      waiting_verify: ["waiting_verify", "verifying", "failed", "removing"],
       ready: ["ready", "unavailable", "removing"],
       unavailable: ["unavailable", "ready", "removing"],
       failed: ["failed", "removing"],
@@ -67,11 +70,21 @@ describe("SpackInstallStore transaction lifecycle", () => {
       removed: ["removed"],
     };
     const record = await create();
+    const identity = await executionIdentity();
     const states = SpackInstallRecordSchema.shape.state.options;
     await store.withLock(async () => {
       for (const from of states) {
         for (const to of states) {
-          const previous = { ...record, state: from, report: report(record.id) };
+          const previous = {
+            ...record,
+            state: from,
+            report: report(record.id),
+            operationId: randomUUID(),
+            executionIdentity: identity,
+            ...(from === "waiting_verify" || (from === "verifying" && to === "waiting_verify")
+              ? { buildReport: { ...report(record.id), action: "install" as const } }
+              : {}),
+          };
           await writeFile(recordPath(record.id), JSON.stringify(previous));
           const update = store.save({ ...previous, state: to });
           if (allowed[from].includes(to)) await update;

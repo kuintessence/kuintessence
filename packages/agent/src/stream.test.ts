@@ -68,7 +68,7 @@ import { JobCleanupIntents, JobRevocationTombstones } from "./queue/job-cleanup-
 import { type OutboundItem, OutboundQueue } from "./queue/outbound-queue";
 import type { AgentSandboxCapability } from "./sandbox/capability";
 import { type PreparedSpackMaterials, SpackManager, type SpackMaterialPrepareInput } from "./spack";
-import { installWorkerExecution } from "./spack/execution-identity";
+import { installWorkerExecution, SpackInstallationPending } from "./spack/execution-identity";
 import { SpackInstallStore } from "./spack/install-store";
 import type { SoftwareOperationOutcome } from "./spack/installer";
 import { SPACK_ACTIVATION_FAILURE, SPACK_ACTIVATION_TIMEOUT } from "./spack/workflow-activation";
@@ -8975,5 +8975,150 @@ test.each([
     await stream.stop();
     await running;
     await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test.each([
+  "resume",
+  "cancel",
+  "deny",
+] as const)("federation installation authorization wait through AgentStream: %s", async (kind) => {
+  const db = createSqliteDb(":memory:");
+  const outbound = new OutboundQueue(db);
+  const spackManager = await SpackManager.bootstrap({
+    requireServerMaterials: true,
+    spawner: { run: async () => ({ exitCode: 0, stdout: "1.0.0", stderr: "" }) },
+  });
+  const request = create(SoftwareOperationRequestSchema, {
+    operationId: crypto.randomUUID(),
+    federationJobId: crypto.randomUUID(),
+    action: SoftwareOperationAction.INSTALL,
+    spec: "hello@1",
+    requestedBy: "owner",
+    spackMaterialTicket: "initial",
+    spackManifestDigest: `sha256:${"a".repeat(64)}`,
+    durableReplay: true,
+  });
+  let installs = 0;
+  let unrelated = 0;
+  let deny = false;
+  let cancelAck = false;
+  let terminalDelivered = false;
+  const release = Promise.withResolvers<void>();
+  spackManager.runSoftwareOperation = async (_action, spec) => {
+    if (spec === "unrelated") {
+      unrelated++;
+      return { outcome: "succeeded", stdout: "", installed: [] };
+    }
+    installs++;
+    if (installs === 1) throw new SpackInstallationPending();
+    await release.promise;
+    return { outcome: "succeeded", stdout: "", installed: [] };
+  };
+  const stream = new AgentStream({
+    client: makePendingRegisteredClient(false, false, {
+      supported: true,
+      installationSupported: true,
+      onMessage: async (message) => {
+        if (
+          message.payload.case === "softwareOperationResult" &&
+          message.payload.value.operationId === request.operationId &&
+          message.payload.value.status !== SoftwareOperationStatus.RUNNING
+        )
+          terminalDelivered = true;
+        if (message.payload.case === "cancelJobAck")
+          cancelAck = message.payload.value.installationsStopped;
+        if (message.payload.case !== "federationExecutionRequest") return;
+        const renewal = message.payload.value;
+        await deliverServerMessage(
+          stream,
+          create(ServerMessageSchema, {
+            payload: {
+              case: "federationExecutionResponse",
+              value: {
+                requestId: renewal.requestId,
+                jobId: renewal.jobId,
+                operationId: renewal.operationId,
+                decision: deny
+                  ? FederationExecutionDecision.DENIED
+                  : FederationExecutionDecision.GRANTED,
+                expiresAtUnixMs: BigInt(Date.now() + 10_000),
+                installation: { ...request, spackMaterialTicket: "fresh" },
+              },
+            },
+          }),
+        );
+      },
+    }),
+    adapter: makeAdapter(),
+    agentId: "install-agent",
+    siteName: "test",
+    logger: silent,
+    heartbeatIntervalMs: 20,
+    spackManager,
+    inboundAcks: new InboundAcks(db),
+    activeRemoteJobs: new ActiveRemoteJobs(db),
+    cleanupIntents: new JobCleanupIntents(db),
+    revocationTombstones: new JobRevocationTombstones(db),
+    outboundQueue: outbound,
+  });
+  activeStreams.push(stream);
+  const running = stream.start();
+  const deliver = (value = request) =>
+    deliverServerMessage(
+      stream,
+      create(ServerMessageSchema, { payload: { case: "softwareOperationRequest", value } }),
+    );
+  try {
+    await settle(20);
+    await deliver();
+    await waitForCondition(
+      async () =>
+        (await db.select().from(schema.softwareExecutions))[0]?.authorizationWaiting === true,
+    );
+    expect((await db.select().from(schema.softwareExecutions))[0]?.result).toBeNull();
+    await deliver({
+      ...request,
+      operationId: crypto.randomUUID(),
+      federationJobId: "",
+      spec: "unrelated",
+    });
+    await waitForCondition(() => unrelated === 1);
+    if (kind === "cancel") {
+      await deliverServerMessage(stream, cancelJobMessage(request.federationJobId, 1));
+      await waitForCondition(() => cancelAck);
+      await deliver();
+    } else {
+      deny = kind === "deny";
+      await deliver();
+      if (!deny) {
+        await waitForCondition(() => installs === 2);
+        await deliver(); // An active replay must not create another worker.
+        release.resolve();
+      }
+    }
+    await waitForCondition(async () =>
+      (await db.select().from(schema.softwareExecutions)).some(
+        (r) => r.operationId === request.operationId && r.result !== null,
+      ),
+    );
+    const saved = (await db.select().from(schema.softwareExecutions)).find(
+      (r) => r.operationId === request.operationId,
+    );
+    expect(saved?.result).toMatchObject({
+      status:
+        kind === "resume" ? SoftwareOperationStatus.SUCCEEDED : SoftwareOperationStatus.FAILED,
+    });
+    expect(saved?.authorizationWaiting).toBe(false);
+    expect(installs).toBe(kind === "resume" ? 2 : 1);
+    await waitForCondition(() => terminalDelivered);
+    if (kind === "deny") {
+      await deliverServerMessage(stream, cancelJobMessage(request.federationJobId, 1));
+      await waitForCondition(() => cancelAck);
+    }
+  } finally {
+    release.resolve();
+    await stream.stop();
+    await running;
   }
 });

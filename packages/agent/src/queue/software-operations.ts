@@ -114,7 +114,84 @@ export class SoftwareOperations {
             isNull(softwareExecutions.jobScope),
           ),
         );
+    if (
+      saved.authorizationWaiting &&
+      saved.requestDigest === requestDigest &&
+      input.federationJobId
+    ) {
+      const resumed = await this.db
+        .update(softwareExecutions)
+        .set({ identity, authorizationWaiting: false, started: false })
+        .where(
+          and(
+            eq(softwareExecutions.operationId, input.operationId),
+            eq(softwareExecutions.authorizationWaiting, true),
+            isNull(softwareExecutions.result),
+          ),
+        )
+        .returning({ operationId: softwareExecutions.operationId });
+      if (resumed.length) return identity;
+    }
     return undefined;
+  }
+
+  async deferAuthorization(operationId: string, identityToken: string): Promise<boolean> {
+    const rows = await this.db
+      .update(softwareExecutions)
+      .set({ authorizationWaiting: true })
+      .where(
+        and(
+          eq(softwareExecutions.operationId, operationId),
+          isNull(softwareExecutions.result),
+          sql`json_extract(${softwareExecutions.identity}, '$.token') = ${identityToken}`,
+        ),
+      )
+      .returning({ operationId: softwareExecutions.operationId });
+    return rows.length === 1;
+  }
+
+  async cancelAuthorizationWaits(jobId: string): Promise<SoftwareResult[]> {
+    const rows = await this.db
+      .select()
+      .from(softwareExecutions)
+      .where(
+        and(
+          eq(softwareExecutions.jobScope, jobId),
+          eq(softwareExecutions.authorizationWaiting, true),
+          isNull(softwareExecutions.result),
+        ),
+      );
+    const results: SoftwareResult[] = [];
+    for (const row of rows) {
+      const supervisors = z.array(SpackProcessSupervisionSchema).parse(row.supervisors ?? []);
+      for (const ref of supervisors) await removeSpackSupervisedInputs(ref);
+      if (row.storeRoot)
+        await new SpackInstallStore(row.storeRoot).cancelAuthorizationWait(row.operationId);
+      // A deferred boundary has no worker; preserve that proof with the terminal receipt.
+      const updated = await this.db
+        .update(softwareExecutions)
+        .set({
+          authorizationWaiting: false,
+          stoppedAt: new Date(),
+          result: {
+            operationId: row.operationId,
+            action: ResultSchema.shape.action.parse(row.action),
+            spec: row.spec,
+            status: SoftwareOperationStatus.FAILED,
+            error: "Federation installation cancelled while awaiting authorization",
+          },
+        })
+        .where(
+          and(
+            eq(softwareExecutions.operationId, row.operationId),
+            eq(softwareExecutions.authorizationWaiting, true),
+            isNull(softwareExecutions.result),
+          ),
+        )
+        .returning({ result: softwareExecutions.result });
+      for (const entry of updated) results.push(ResultSchema.parse(entry.result));
+    }
+    return results;
   }
 
   async revokedJobs(): Promise<{ jobId: string; revokedEpoch: number }[]> {
@@ -151,9 +228,9 @@ export class SoftwareOperations {
       if (!row.result) throw new Error(RECOVERY_REQUIRED);
       const supervisors = z.array(SpackProcessSupervisionSchema).parse(row.supervisors ?? []);
       for (const ref of supervisors) await removeSpackSupervisedInputs(ref);
-      if (row.started && row.storeRoot) {
+      if (row.storeRoot) {
         // The existing writer fence refuses active/uncertain workers, including after restart.
-        await new SpackInstallStore(row.storeRoot).withLock(async () => {});
+        await new SpackInstallStore(row.storeRoot).cancelAuthorizationWait(row.operationId);
       } else if (row.started) {
         const result = ResultSchema.parse(row.result);
         if (
@@ -212,7 +289,7 @@ export class SoftwareOperations {
     if (updated.length !== 1) throw new Error(RECOVERY_REQUIRED);
   }
 
-  async finish(result: SoftwareResult): Promise<SoftwareResult> {
+  async finish(result: SoftwareResult, identityToken?: string): Promise<SoftwareResult> {
     if (result.status === SoftwareOperationStatus.RUNNING) return result;
     // Terminal-only receipts also cover preflight refusal and legacy operations without Linux identity.
     await this.db
@@ -228,11 +305,14 @@ export class SoftwareOperations {
     // First terminal wins locally too; a late failure must not replace a saved success.
     await this.db
       .update(softwareExecutions)
-      .set({ result: { ...result } })
+      .set({ result: { ...result }, authorizationWaiting: false })
       .where(
         and(
           eq(softwareExecutions.operationId, result.operationId),
           isNull(softwareExecutions.result),
+          identityToken
+            ? sql`json_extract(${softwareExecutions.identity}, '$.token') = ${identityToken}`
+            : undefined,
         ),
       );
     const [row] = await this.db
@@ -272,26 +352,39 @@ export class SoftwareOperations {
       const state = await executionState(owner, current);
       // A reconnect does not end a live execution; remote hosts are never inferred dead.
       if (state === "alive" || state === "unknown") continue;
+      if (row.authorizationWaiting) continue;
+      if (!row.started && row.requestDigest && z.uuid().safeParse(row.jobScope).success) {
+        await this.deferAuthorization(row.operationId, owner.token);
+        continue;
+      }
       let error = INTERRUPTED;
       try {
         const supervisors = z.array(SpackProcessSupervisionSchema).parse(row.supervisors ?? []);
         for (const ref of supervisors) await removeSpackSupervisedInputs(ref);
         if (row.storeRoot) {
-          await new SpackInstallStore(row.storeRoot).withLock(async () => {});
+          const store = new SpackInstallStore(row.storeRoot);
+          await store.withLock(async () => {});
+          if (await store.awaitingAuthorization(row.operationId)) {
+            await this.deferAuthorization(row.operationId, owner.token);
+            continue;
+          }
         } else if (row.started && state !== "rebooted" && !supervisors.length) {
           error = RECOVERY_REQUIRED;
         }
       } catch {
         error = RECOVERY_REQUIRED;
       }
-      await this.finish({
-        operationId: row.operationId,
-        action: ResultSchema.shape.action.parse(row.action),
-        spec: row.spec,
-        status: SoftwareOperationStatus.FAILED,
-        exitCode: 1,
-        error,
-      });
+      await this.finish(
+        {
+          operationId: row.operationId,
+          action: ResultSchema.shape.action.parse(row.action),
+          spec: row.spec,
+          status: SoftwareOperationStatus.FAILED,
+          exitCode: 1,
+          error,
+        },
+        owner.token,
+      );
     }
   }
 }

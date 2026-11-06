@@ -1,7 +1,11 @@
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import * as fs from "node:fs/promises";
 import { lstat, mkdir, readdir, rename, rm, symlink } from "node:fs/promises";
-import { installWorkerExecution, RECOVERY_REQUIRED } from "./execution-identity";
+import {
+  installWorkerExecution,
+  RECOVERY_REQUIRED,
+  SpackInstallationPending,
+} from "./execution-identity";
 import type { SpackInstallRunner } from "./install-runner";
 import { SpackInstallStore } from "./install-store";
 import { makeInstallFixture } from "./install-test-fixture";
@@ -696,4 +700,163 @@ test("pinned workflow refuses legacy material without license/provenance evidenc
     ).outcome,
   ).toBe("rejected");
   expect(loads).toBe(0);
+});
+
+test.each([
+  "install",
+  "verify",
+] as const)("authorization wait at %s releases lock and resumes original checkpoint after restart", async (phase) => {
+  const f = await fixture();
+  const store = new SpackInstallStore(f.site.profile.storeRoot);
+  let waiting = true;
+  const compiled: string[] = [];
+  const calls: string[] = [];
+  const options = {
+    cacheDir: f.cacheDir,
+    site: f.siteOptions,
+    loadSite: async () => f.site,
+    runner: {
+      async run(action, _p, request, _s, path) {
+        calls.push(action);
+        if (action === phase && waiting) throw new SpackInstallationPending();
+        await request.authorizeInstallation?.(new AbortController().signal);
+        if (action === "install") {
+          compiled.push(path);
+          await mkdir(f.report(action, path).prefix);
+        }
+        return f.report(action, path);
+      },
+    } satisfies SpackInstallRunner,
+  };
+  const input = { ...f.input, authorizeInstallation: async () => Date.now() + 10_000 };
+  await expect(
+    new ManagedSpackInstallation(options).install(f.prepared, input),
+  ).rejects.toBeInstanceOf(SpackInstallationPending);
+  const [pending] = await store.list();
+  if (!pending) throw new Error("Missing checkpoint");
+  expect(pending.state).toBe(`waiting_${phase}`);
+  expect(pending.operationId).toBe(input.operationId);
+  expect(await new ManagedSpackInstallation(options).installedList()).toEqual([]);
+  await store.withLock(async () => {}); // Waiting must not monopolize unrelated installations.
+  expect((await new ManagedSpackInstallation(options).install(f.prepared, f.input)).outcome).toBe(
+    "rejected",
+  );
+  await expect(
+    new ManagedSpackInstallation(options).install(f.prepared, {
+      ...input,
+      operationId: crypto.randomUUID(),
+    }),
+  ).rejects.toBeInstanceOf(SpackInstallationPending);
+  expect(await store.list()).toHaveLength(1);
+  waiting = false;
+  expect((await new ManagedSpackInstallation(options).install(f.prepared, input)).outcome).toBe(
+    "succeeded",
+  );
+  expect(compiled).toEqual([store.path(pending.id)]);
+  expect(calls).toEqual(
+    phase === "install" ? ["install", "install", "verify"] : ["install", "verify", "verify"],
+  );
+  expect(await store.list()).toMatchObject([{ id: pending.id, state: "ready" }]);
+});
+
+test("compiled checkpoint cannot be rewritten and cancellation retires it", async () => {
+  const f = await fixture();
+  const backend = new ManagedSpackInstallation({
+    cacheDir: f.cacheDir,
+    site: f.siteOptions,
+    loadSite: async () => f.site,
+    runner: {
+      async run(action, _p, _i, _s, path) {
+        if (action === "verify") throw new SpackInstallationPending();
+        await mkdir(f.report(action, path).prefix);
+        return f.report(action, path);
+      },
+    },
+  });
+  await expect(
+    backend.install(f.prepared, {
+      ...f.input,
+      authorizeInstallation: async () => Date.now() + 10_000,
+    }),
+  ).rejects.toBeInstanceOf(SpackInstallationPending);
+  const store = new SpackInstallStore(f.site.profile.storeRoot);
+  const [record] = await store.list();
+  if (!record?.buildReport) throw new Error("Missing build checkpoint");
+  const buildReport = record.buildReport;
+  await store.withLock(async () => {
+    await expect(store.save({ ...record, buildReport: undefined })).rejects.toThrow();
+    await expect(
+      store.save({
+        ...record,
+        buildReport: { ...buildReport, prefix: `${store.path(record.id)}/other` },
+      }),
+    ).rejects.toThrow();
+    await expect(store.save({ ...record, operationId: crypto.randomUUID() })).rejects.toThrow();
+  });
+  await store.cancelAuthorizationWait(f.input.operationId);
+  expect(await store.awaitingAuthorization(f.input.operationId)).toBe(false);
+  expect(await store.list()).toMatchObject([{ id: record.id, state: "failed" }]);
+});
+
+test("ready release awaiting re-verification is withdrawn and invalidates inventory", async () => {
+  const f = await fixture();
+  let wait = false;
+  const backend = new ManagedSpackInstallation({
+    cacheDir: f.cacheDir,
+    site: f.siteOptions,
+    loadSite: async () => f.site,
+    runner: {
+      async run(action, _p, _i, _s, path) {
+        if (wait) throw new SpackInstallationPending();
+        await mkdir(f.report(action, path).prefix, { recursive: true });
+        return f.report(action, path);
+      },
+    },
+  });
+  expect((await backend.install(f.prepared, f.input)).outcome).toBe("succeeded");
+  wait = true;
+  const store = new SpackInstallStore(f.site.profile.storeRoot);
+  const [record] = await store.list();
+  await expect(
+    backend.install(f.prepared, {
+      ...f.input,
+      authorizeInstallation: async () => Date.now() + 10_000,
+    }),
+  ).rejects.toMatchObject({ invalidatedHashes: [record?.rootHash] });
+  expect(await backend.installedList()).toEqual([]);
+  expect(await store.list()).toMatchObject([{ state: "unavailable" }]);
+});
+
+test.each([
+  "denied",
+  "cancelled",
+] as const)("explicit %s authority never creates a retryable checkpoint", async (reason) => {
+  const f = await fixture();
+  const controller = new AbortController();
+  const backend = new ManagedSpackInstallation({
+    cacheDir: f.cacheDir,
+    site: f.siteOptions,
+    loadSite: async () => f.site,
+    runner: {
+      async run() {
+        if (reason === "cancelled") {
+          controller.abort();
+          throw new SpackInstallationPending();
+        }
+        throw new Error("authorization denied");
+      },
+    },
+  });
+  expect(
+    (
+      await backend.install(f.prepared, {
+        ...f.input,
+        signal: controller.signal,
+        authorizeInstallation: async () => Date.now() + 10_000,
+      })
+    ).outcome,
+  ).toBe("failed");
+  expect(await new SpackInstallStore(f.site.profile.storeRoot).list()).toMatchObject([
+    { state: "failed" },
+  ]);
 });

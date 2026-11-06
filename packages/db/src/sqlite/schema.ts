@@ -292,6 +292,9 @@ export const softwareExecutions = sqliteTable("software_executions", {
   jobScope: text("job_scope"),
   stoppedAt: integer("stopped_at", { mode: "timestamp_ms" }),
   supervisors: text("supervisors", { mode: "json" }).$type<{ directory: string; unit: string }[]>(),
+  authorizationWaiting: integer("authorization_waiting", { mode: "boolean" })
+    .notNull()
+    .default(false),
   requestDigest: text("request_digest"),
   operationId: text("operation_id").primaryKey(),
   action: integer("action").notNull(),

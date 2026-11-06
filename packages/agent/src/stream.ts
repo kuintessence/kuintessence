@@ -130,6 +130,7 @@ import type {
 import {
   type ExecutionIdentity,
   RECOVERY_REQUIRED,
+  SpackInstallationPending,
   softwareExecution,
 } from "./spack/execution-identity";
 import {
@@ -3477,10 +3478,9 @@ export class AgentStream {
                         // Bound online checks while the install-store lock is held.
                         const grant = await this.federationExecution.renewInstallation(
                           request,
-                          AbortSignal.any([signal, operationSignal, AbortSignal.timeout(15_000)]),
+                          AbortSignal.any([signal, operationSignal]),
                         );
-                        if (grant.expiresAt <= Date.now())
-                          throw new Error("Federation installation grant expired");
+                        if (grant.expiresAt <= Date.now()) throw new SpackInstallationPending();
                         return grant.expiresAt;
                       },
                     }
@@ -3491,7 +3491,18 @@ export class AgentStream {
           if (execution) await softwareExecution.run(execution, run);
           else await run();
         })
-        .catch((err) => {
+        .catch(async (err) => {
+          if (
+            err instanceof SpackInstallationPending &&
+            request.federationJobId &&
+            ledger &&
+            identity &&
+            !operationSignal.aborted
+          ) {
+            this.invalidateInstalledSoftware(err.invalidatedHashes);
+            await ledger.deferAuthorization(request.operationId, identity.token);
+            return;
+          }
           this.logger.error(
             { err, operationId: request.operationId, spec: request.spec },
             "Failed to run software operation",
@@ -3505,7 +3516,8 @@ export class AgentStream {
           });
         })
         .finally(() => {
-          this.federationInstallations.delete(request.operationId);
+          if (this.federationInstallations.get(request.operationId) === installation)
+            this.federationInstallations.delete(request.operationId);
         });
       if (installation) {
         installation.settled = this.softwareOperationQueue;
@@ -4139,6 +4151,10 @@ export class AgentStream {
         });
       }),
     );
+    for (const result of (await this.persistentQueue?.softwareOperations.cancelAuthorizationWaits(
+      jobId,
+    )) ?? [])
+      await this.enqueueSoftwareOperationResult(result, true);
     await this.persistentQueue?.softwareOperations.assertJobStopped(jobId);
     await this.jobPreparations.get(jobId);
     const hadActiveRunner = this.pool.get(jobId) !== undefined;
@@ -4978,7 +4994,8 @@ export class AgentStream {
         action === "install" ? materials : undefined,
         signal,
       );
-    } catch {
+    } catch (error) {
+      if (error instanceof SpackInstallationPending) throw error;
       await this.enqueueSoftwareOperationResult({
         operationId,
         action: protoAction,

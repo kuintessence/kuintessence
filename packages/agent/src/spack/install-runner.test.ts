@@ -546,6 +546,7 @@ test.each([
   "granted",
   "denied",
   "expired",
+  "invalid",
 ] as const)("installation worker obeys fresh authority after preparation: %s", async (decision) => {
   const f = await fixture();
   let authorized = false;
@@ -566,12 +567,20 @@ test.each([
     authorizeInstallation: async () => {
       authorized = true;
       if (decision === "denied") throw new Error("authorization denied");
+      if (decision === "invalid") return Number.NaN;
       return Date.now() + (decision === "expired" ? -1 : 10_000);
     },
   };
   const operation = r.run("install", f.prepared, input, f.site, f.path);
   if (decision === "granted") await operation;
-  else await expect(operation).rejects.toThrow();
+  else
+    await expect(operation).rejects.toThrow(
+      decision === "expired"
+        ? "SPACK_AUTHORIZATION_PENDING"
+        : decision === "invalid"
+          ? "Invalid federation installation grant expiry"
+          : "authorization denied",
+    );
   expect(authorized).toBe(true);
   expect(started).toBe(decision === "granted");
   expect(await readdir(join(f.cacheDir, "installs"))).toEqual([]);

@@ -9,7 +9,11 @@ import {
   type SpackAuditRuntimeProfile,
   verifySpackAuditRuntime,
 } from "./audit-runtime";
-import { installWorkerExecution, softwareExecution } from "./execution-identity";
+import {
+  installWorkerExecution,
+  SpackInstallationPending,
+  softwareExecution,
+} from "./execution-identity";
 import {
   SPACK_INSTALL_RESULT_PREFIX,
   type SpackInstallReport,
@@ -243,12 +247,13 @@ export class IsolatedSpackInstallRunner implements SpackInstallRunner {
       if (supervisor) await softwareExecution.getStore()?.bindSupervisor?.(supervisor);
       const execution = installWorkerExecution.getStore();
       await execution?.start(basename(storePath), supervisor);
-      if (
-        authorizedUntil !== undefined &&
-        (!Number.isSafeInteger(authorizedUntil) || authorizedUntil <= Date.now())
-      ) {
+      if (authorizedUntil !== undefined && !Number.isSafeInteger(authorizedUntil)) {
         await execution?.finish();
-        throw new Error("Federation installation grant expired before worker startup");
+        throw new Error("Invalid federation installation grant expiry");
+      }
+      if (authorizedUntil !== undefined && authorizedUntil <= Date.now()) {
+        await execution?.finish();
+        throw new SpackInstallationPending();
       }
       workerUncertain = true;
       const transport: SpackAuditProcess = this.options.process ?? {

@@ -43,8 +43,10 @@ const CreateSchema = SpackInstallRecordSchema.pick({
   rootHash: true,
 });
 const NEXT: Record<SpackInstallRecord["state"], SpackInstallRecord["state"][]> = {
-  building: ["verifying", "failed"],
-  verifying: ["ready", "failed"],
+  building: ["waiting_install", "verifying", "failed"],
+  waiting_install: ["building", "failed", "removing"],
+  verifying: ["waiting_verify", "ready", "failed"],
+  waiting_verify: ["verifying", "failed", "removing"],
   ready: ["unavailable", "removing"],
   unavailable: ["ready", "removing"],
   failed: ["removing"],
@@ -403,6 +405,25 @@ export class SpackInstallStore {
   }
   private validate(value: unknown): SpackInstallRecord {
     const record = SpackInstallRecordSchema.parse(value);
+    if (record.state === "waiting_install" || record.state === "waiting_verify") {
+      if (
+        !record.operationId ||
+        !record.executionIdentity ||
+        (record.state === "waiting_install" && record.buildReport) ||
+        (record.state === "waiting_verify" && !record.buildReport)
+      )
+        throw new Error("Invalid Spack authorization checkpoint");
+    }
+    if (
+      record.buildReport &&
+      (record.buildReport.action !== "install" ||
+        record.buildReport.root.hash !== record.rootHash ||
+        record.buildReport.root.spec !== record.spec ||
+        record.buildReport.manifestDigest !== record.manifestDigest ||
+        record.buildReport.siteProfileDigest !== record.siteProfileDigest ||
+        record.buildReport.storePath !== this.path(record.id))
+    )
+      throw new Error("Invalid Spack build checkpoint");
     if (record.state === "ready") {
       const report = record.report;
       if (
@@ -512,6 +533,26 @@ export class SpackInstallStore {
       return record;
     });
   }
+  async awaitingAuthorization(operationId: string): Promise<boolean> {
+    return (await this.list()).some(
+      (record) =>
+        record.operationId === operationId &&
+        (record.state === "waiting_install" || record.state === "waiting_verify"),
+    );
+  }
+
+  async cancelAuthorizationWait(operationId: string): Promise<void> {
+    await this.withLock(async () => {
+      for (const record of await this.list()) {
+        if (
+          record.operationId === operationId &&
+          (record.state === "waiting_install" || record.state === "waiting_verify")
+        ) {
+          await this.save({ ...record, state: "failed", updatedAt: new Date().toISOString() });
+        }
+      }
+    });
+  }
   async save(value: SpackInstallRecord): Promise<void> {
     return this.mutate(async () => {
       const record = this.validate(value);
@@ -523,6 +564,11 @@ export class SpackInstallStore {
       ) {
         throw new Error("Spack record identity is immutable");
       }
+      if (
+        previous.buildReport &&
+        JSON.stringify(previous.buildReport) !== JSON.stringify(record.buildReport)
+      )
+        throw new Error("Spack build checkpoint is immutable");
       if (record.state !== previous.state && !NEXT[previous.state].includes(record.state)) {
         throw new Error("Invalid Spack installation state transition");
       }

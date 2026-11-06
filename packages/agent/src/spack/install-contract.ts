@@ -120,7 +120,17 @@ export const SPACK_INSTALL_RESULT_PREFIX = "KQ_SPACK_INSTALL_RESULT:";
 export const SpackInstallRecordSchema = z.strictObject({
   version: z.literal(1),
   id: z.string().uuid(),
-  state: z.enum(["building", "verifying", "ready", "unavailable", "failed", "removing", "removed"]),
+  state: z.enum([
+    "building",
+    "waiting_install",
+    "verifying",
+    "waiting_verify",
+    "ready",
+    "unavailable",
+    "failed",
+    "removing",
+    "removed",
+  ]),
   manifestDigest: SpackMaterialDigestSchema,
   manifestSize: z
     .number()
@@ -134,6 +144,7 @@ export const SpackInstallRecordSchema = z.strictObject({
   executionIdentity: ExecutionIdentitySchema.optional(),
   updatedAt: z.string().datetime(),
   report: SpackInstallReportSchema.optional(),
+  buildReport: SpackInstallReportSchema.optional(),
 });
 export type SpackInstallRecord = z.infer<typeof SpackInstallRecordSchema>;
 

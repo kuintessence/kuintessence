@@ -8,7 +8,12 @@ import {
   type SpackPolicy,
   spackMaterialBlobs,
 } from "@kuintessence/shared";
-import { INTERRUPTED, LOCK_HELD, RECOVERY_REQUIRED } from "./execution-identity";
+import {
+  INTERRUPTED,
+  LOCK_HELD,
+  RECOVERY_REQUIRED,
+  SpackInstallationPending,
+} from "./execution-identity";
 import {
   type SpackInstallRecord,
   SpackInstallReportSchema,
@@ -186,12 +191,50 @@ export class ManagedSpackInstallation implements SpackManagedInstallation {
       const store = await this.store(site);
       return await store.withLock(async () => {
         input.signal?.throwIfAborted();
-        const existing = (await store.list()).find(
+        const records = await store.list();
+        const waiting = records.filter(
+          (record) =>
+            record.operationId === input.operationId &&
+            (record.state === "waiting_install" || record.state === "waiting_verify"),
+        );
+        if (waiting.length > 1) return failure(new Error(RECOVERY_REQUIRED));
+        const pending = waiting[0];
+        if (pending && !input.authorizeInstallation)
+          return {
+            outcome: "rejected",
+            reason: "Pending installation requires fresh authorization",
+          };
+        if (
+          pending &&
+          (pending.manifestDigest !== input.manifestDigest ||
+            pending.siteProfileDigest !== site.digest ||
+            pending.rootHash !== rootHash ||
+            pending.spec !== input.spec)
+        )
+          return {
+            outcome: "rejected",
+            reason: "Pending installation cannot change its material or target binding",
+          };
+        if (
+          !pending &&
+          records.some(
+            (record) =>
+              (record.state === "waiting_install" || record.state === "waiting_verify") &&
+              (record.spec === input.spec || record.rootHash === rootHash),
+          )
+        ) {
+          if (input.authorizeInstallation) throw new SpackInstallationPending();
+          return {
+            outcome: "rejected",
+            reason: "Managed release is awaiting authorization for another installation",
+          };
+        }
+        const existing = records.find(
           (record) =>
             (record.state === "ready" || record.state === "unavailable") &&
             (record.spec === input.spec || record.rootHash === rootHash),
         );
-        if (existing) {
+        if (existing && !pending) {
           if (
             existing.manifestDigest !== input.manifestDigest ||
             existing.siteProfileDigest !== site.digest
@@ -213,26 +256,44 @@ export class ManagedSpackInstallation implements SpackManagedInstallation {
           if ("invalidatedHashes" in result) invalidatedHashes = result.invalidatedHashes;
           return result;
         }
-        let record = await store.create({
-          manifestDigest: input.manifestDigest,
-          manifestSize: prepared.manifestSize,
-          siteProfileDigest: site.digest,
-          spec: input.spec,
-          rootHash,
-        });
+        let record =
+          pending ??
+          (await store.create({
+            manifestDigest: input.manifestDigest,
+            manifestSize: prepared.manifestSize,
+            siteProfileDigest: site.digest,
+            spec: input.spec,
+            rootHash,
+          }));
         try {
           input.signal?.throwIfAborted();
-          const build = await this.options.runner.run(
-            "install",
-            prepared,
-            input,
-            site,
-            store.path(record.id),
-          );
-          this.assertReport(record, build, store, "install");
-          input.signal?.throwIfAborted();
-          record = { ...record, state: "verifying", updatedAt: new Date().toISOString() };
-          await store.save(record);
+          if (record.state === "waiting_install" || record.state === "waiting_verify") {
+            record = {
+              ...record,
+              state: record.state === "waiting_install" ? "building" : "verifying",
+              updatedAt: new Date().toISOString(),
+            };
+            await store.save(record);
+          }
+          let build = record.buildReport;
+          if (!build) {
+            build = await this.options.runner.run(
+              "install",
+              prepared,
+              input,
+              site,
+              store.path(record.id),
+            );
+            this.assertReport(record, build, store, "install");
+            input.signal?.throwIfAborted();
+            record = {
+              ...record,
+              state: "verifying",
+              buildReport: build,
+              updatedAt: new Date().toISOString(),
+            };
+            await store.save(record);
+          }
           input.signal?.throwIfAborted();
           const report = await this.options.runner.run(
             "verify",
@@ -265,6 +326,18 @@ export class ManagedSpackInstallation implements SpackManagedInstallation {
           };
         } catch (error) {
           if (store.workerUncertain()) return failure(new Error(RECOVERY_REQUIRED));
+          if (
+            error instanceof SpackInstallationPending &&
+            input.authorizeInstallation &&
+            !input.signal?.aborted
+          ) {
+            await store.save({
+              ...record,
+              state: record.buildReport ? "waiting_verify" : "waiting_install",
+              updatedAt: new Date().toISOString(),
+            });
+            throw error;
+          }
           // Publication can have succeeded before a later inventory error. Never delete a ready store here.
           const current = (await store.list()).find((entry) => entry.id === record.id);
           if (current && (current.state === "building" || current.state === "verifying")) {
@@ -282,6 +355,7 @@ export class ManagedSpackInstallation implements SpackManagedInstallation {
         }
       }, input.operationId);
     } catch (error) {
+      if (error instanceof SpackInstallationPending) throw error;
       return { ...failure(error), ...(invalidatedHashes ? { invalidatedHashes } : {}) };
     }
   }
@@ -369,7 +443,13 @@ export class ManagedSpackInstallation implements SpackManagedInstallation {
         stdout: action === "load" ? (report.loadShell ?? "") : JSON.stringify(report),
         installed,
       };
-    } catch {
+    } catch (error) {
+      if (
+        error instanceof SpackInstallationPending &&
+        input?.authorizeInstallation &&
+        !input.signal?.aborted
+      )
+        throw new SpackInstallationPending([record.rootHash]);
       // Even transient verification errors withdraw readiness; recovery requires an explicit verify.
       try {
         await store.save({ ...record, state: "unavailable", updatedAt: new Date().toISOString() });

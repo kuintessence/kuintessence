@@ -7,6 +7,7 @@ import type {
 import type { Spawner } from "../adapters/base";
 import { Buildcache, type ExportOutcome, type ImportResult } from "./buildcache";
 import { MANAGED_SPACK_EXECUTION_DISABLED, SpackCli } from "./cli";
+import { SpackInstallationPending } from "./execution-identity";
 import type { SpackManagedInstallation } from "./install-contract";
 import { type InstallOutcome, type SoftwareOperationOutcome, SpackInstaller } from "./installer";
 import type {
@@ -343,7 +344,8 @@ export class SpackManager {
           reason: MANAGED_SPACK_EXECUTION_DISABLED,
           stdout: JSON.stringify(report),
         };
-      } catch {
+      } catch (error) {
+        if (error instanceof SpackInstallationPending) throw error;
         if (signal?.aborted) return cancelledSoftwareOperation();
         return {
           outcome: "failed",

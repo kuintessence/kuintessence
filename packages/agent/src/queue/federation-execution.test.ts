@@ -9,6 +9,7 @@ import {
   SoftwareOperationAction,
   SoftwareOperationRequestSchema,
 } from "@kuintessence/proto";
+import { SpackInstallationPending } from "../spack/execution-identity";
 import { FederationExecutionClient } from "./federation-execution";
 
 const original = create(DispatchJobSchema, {
@@ -197,4 +198,49 @@ test.each([
   const pending = client.renewInstallation(initial, new AbortController().signal);
   if (change === "ticket") expect((await pending).installation.spackMaterialTicket).toBe("new");
   else await expect(pending).rejects.toThrow("invalid");
+});
+
+test.each([
+  "offline",
+  "timeout",
+  "retry",
+  "deny",
+  "cancel",
+] as const)("bounded installation authority wait classifies %s", async (kind) => {
+  const initial = create(SoftwareOperationRequestSchema, {
+    operationId: crypto.randomUUID(),
+    federationJobId: crypto.randomUUID(),
+    action: SoftwareOperationAction.INSTALL,
+    spec: "hello@1",
+    requestedBy: "owner",
+    durableReplay: true,
+    spackManifestDigest: `sha256:${"a".repeat(64)}`,
+    spackMaterialTicket: "old",
+  });
+  const requests: string[] = [];
+  const controller = new AbortController();
+  const client: FederationExecutionClient = new FederationExecutionClient(
+    (request) => {
+      requests.push(request.requestId);
+      if (kind === "offline") return false;
+      if (kind === "cancel") controller.abort(new Error("cancelled"));
+      if (kind === "retry" || kind === "deny")
+        client.receive(
+          create(FederationExecutionResponseSchema, {
+            requestId: request.requestId,
+            jobId: request.jobId,
+            operationId: request.operationId,
+            decision: kind === "deny" ? Decision.DENIED : Decision.RETRY,
+          }),
+        );
+      return true;
+    },
+    { ...options, installationWaitMs: 15, retryMs: 30 },
+  );
+  const pending = client.renewInstallation(initial, controller.signal);
+  if (kind === "deny" || kind === "cancel")
+    await expect(pending).rejects.toThrow(kind === "deny" ? "denied" : "cancelled");
+  else await expect(pending).rejects.toBeInstanceOf(SpackInstallationPending);
+  expect(requests.length).toBeGreaterThan(0);
+  expect(requests.every((id) => !client.hasPending(id))).toBe(true);
 });

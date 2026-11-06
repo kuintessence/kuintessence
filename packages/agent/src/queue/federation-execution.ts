@@ -11,6 +11,7 @@ import {
   sameDispatchIntent,
   sameInstallationIntent,
 } from "@kuintessence/proto";
+import { SpackInstallationPending } from "../spack/execution-identity";
 
 /** Grants are memory-only. Every preparation/submission boundary asks the current Server again. */
 export class FederationExecutionClient {
@@ -18,7 +19,12 @@ export class FederationExecutionClient {
 
   constructor(
     private readonly send: (request: FederationExecutionRequest) => boolean,
-    private readonly options: { timeoutMs?: number; retryMs?: number; now?: () => number } = {},
+    private readonly options: {
+      timeoutMs?: number;
+      retryMs?: number;
+      now?: () => number;
+      installationWaitMs?: number;
+    } = {},
   ) {}
 
   hasPending(requestId: string): boolean {
@@ -85,19 +91,37 @@ export class FederationExecutionClient {
       original.action !== SoftwareOperationAction.INSTALL
     )
       throw new Error("Installation grant requires a durable federation install");
-    const grant = await this.renewGrant(
-      original.federationJobId,
-      0n,
-      original.operationId,
-      signal,
-      (response) =>
-        !response.dispatch &&
-        !!response.installation &&
-        !!response.installation.spackMaterialTicket &&
-        sameInstallationIntent(original, response.installation),
+    const deadline = new AbortController();
+    const timer = setTimeout(
+      () => deadline.abort(new SpackInstallationPending()),
+      this.options.installationWaitMs ?? 15000,
     );
-    if (!grant.response.installation) throw new Error("Missing federation installation grant");
-    return { installation: grant.response.installation, expiresAt: grant.expiresAt };
+    try {
+      const grant = await this.renewGrant(
+        original.federationJobId,
+        0n,
+        original.operationId,
+        AbortSignal.any([signal, deadline.signal]),
+        (response) =>
+          !response.dispatch &&
+          !!response.installation &&
+          !!response.installation.spackMaterialTicket &&
+          sameInstallationIntent(original, response.installation),
+      );
+      if (!grant.response.installation) throw new Error("Missing federation installation grant");
+      return { installation: grant.response.installation, expiresAt: grant.expiresAt };
+    } catch (error) {
+      if (
+        !signal.aborted &&
+        deadline.signal.aborted &&
+        (error === deadline.signal.reason ||
+          (error instanceof Error && error.cause === deadline.signal.reason))
+      )
+        throw new SpackInstallationPending();
+      throw error;
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   private async renewGrant(
