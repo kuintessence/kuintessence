@@ -17,6 +17,7 @@ import {
 } from "@kuintessence/shared";
 import { eq, like, notLike } from "drizzle-orm";
 import { AgentDispatcher } from "../grpc/dispatcher";
+import { JobDispatchOutbox } from "../grpc/job-dispatch-outbox";
 import { PreferenceService } from "../preferences/preference-service";
 import { AgentManager } from "./agent-manager";
 import { DataPrerequisitePlacementGate, DataPrerequisitePlanner } from "./data-prerequisite";
@@ -872,6 +873,52 @@ describe("PlacementOrchestrator", () => {
     expect(r.selectedAgentId).toBe("po-agent-1");
     expect(r.dispatched).toBe(true);
 
+    dispatcher.unregister("po-agent-1");
+  });
+
+  test("retains the authorized dispatch when the Agent channel drops after placement", async () => {
+    await agentManager.register({
+      agentId: "po-agent-1",
+      siteName: "po-site",
+      schedulerType: "slurm",
+      schedulerVersion: "23.02.7",
+    });
+    dispatcher.register("po-agent-1", {
+      push: () => {
+        throw new Error("connection dropped during dispatch");
+      },
+      close: () => {},
+    });
+    const durable = new PlacementOrchestrator({
+      agentManager,
+      jobService,
+      preferenceService,
+      dispatcher,
+      dispatchOutbox: new JobDispatchOutbox(db, dispatcher),
+    });
+    const job = await jobService.submit(
+      { name: "po-test-durable", command: "echo", resources: { cpus: 1, memoryMb: 16 } },
+      userId,
+    );
+    cleanupJobIds.push(job.id);
+    const result = await durable.placeAndDispatch({
+      jobId: job.id,
+      job: { name: job.name, command: job.command, resources: { cpus: 1, memoryMb: 16 } },
+      userId,
+      userRole: "user",
+      orgId,
+    });
+    expect(result.dispatched).toBe(false);
+    expect(result.pendingDelivery).toBe(true);
+    expect((await jobService.getById(job.id))?.status).toBe("queued");
+    const channel = mockChannel();
+    dispatcher.register("po-agent-1", channel);
+    await new JobDispatchOutbox(db, dispatcher).redeliver("po-agent-1");
+    expect(channel.messages).toHaveLength(1);
+    expect(channel.messages[0]?.payload).toMatchObject({
+      case: "dispatchJob",
+      value: { jobId: job.id },
+    });
     dispatcher.unregister("po-agent-1");
   });
 

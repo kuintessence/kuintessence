@@ -18,6 +18,7 @@ import type {
 import { createLogger } from "@kuintessence/shared";
 import { and, eq, inArray, or } from "drizzle-orm";
 import type { AgentDispatcher, JobCancellationOutbox } from "../grpc/dispatcher";
+import type { JobDispatchOutbox } from "../grpc/job-dispatch-outbox";
 import type { PreferenceService } from "../preferences/preference-service";
 import { deriveDataSites } from "../scheduler/data-locality";
 import { AutoFilter } from "../scheduler/filters/auto";
@@ -107,6 +108,8 @@ export interface PlaceAndDispatchResult {
    *  channel. The workflow runner uses this to fail the job's awaitCompletion rather
    *  than hang when the job will never run (no agent / closed channel). */
   dispatched: boolean;
+  /** Authorized envelope is committed and awaiting Agent delivery/receipt. */
+  pendingDelivery?: boolean;
   /** full per-stage trace persisted on the job. */
   trace?: PlacementTrace;
 }
@@ -183,6 +186,7 @@ export class PlacementOrchestrator {
       jobService: JobService;
       preferenceService: PreferenceService;
       dispatcher: AgentDispatcher;
+      dispatchOutbox?: Pick<JobDispatchOutbox, "enqueue">;
       jobCancellations?: Pick<JobCancellationOutbox, "enqueue" | "redeliver">;
       queueRegistry?: QueueRegistryService;
       computeHealth?: ComputeHealthFilterOptions;
@@ -732,7 +736,7 @@ export class PlacementOrchestrator {
     if (!dispatchClaimed) {
       return { selectedAgentId: agentId, rejections, dispatched: false, trace };
     }
-    const ok = this.deps.dispatcher.pushDispatchJob(agentId, jobId, {
+    const message = this.deps.dispatcher.buildDispatchJob(jobId, {
       jobIdInternal: jobId,
       dispatchEpoch: assigned.dispatchEpoch,
       name: job.name,
@@ -754,7 +758,11 @@ export class PlacementOrchestrator {
       restrictedNoEgress,
       dataDeliveries,
     });
-    if (!ok) {
+    const delivery = this.deps.dispatchOutbox
+      ? await this.deps.dispatchOutbox.enqueue(agentId, message, workflowRunId)
+      : { sent: this.deps.dispatcher.pushPreparedDispatch(agentId, message), pending: false };
+    const ok = delivery.sent;
+    if (!ok && !delivery.pending) {
       // Assigned but the channel was gone: don't leave a "queued" row that no
       // agent will ever run. Mark failed so it matches the workflow node outcome.
       // Dispatch fails immediately when no Agent channel is available.
@@ -769,7 +777,13 @@ export class PlacementOrchestrator {
     }
 
     logger.info({ jobId, agentId, dispatched: ok }, "Job placement complete");
-    return { selectedAgentId: agentId, rejections, dispatched: ok, trace };
+    return {
+      selectedAgentId: agentId,
+      rejections,
+      dispatched: ok,
+      ...(delivery.pending ? { pendingDelivery: true } : {}),
+      trace,
+    };
   }
 
   /**

@@ -35,7 +35,10 @@ function fakeDb(
 }
 
 describe("SandboxNodeExecutor", () => {
-  test("dispatches only a signed manifest and registers verified output facts", async () => {
+  test.each([
+    false,
+    true,
+  ])("dispatches a signed manifest and waits for its result (pending delivery: %s)", async (pendingDelivery) => {
     const node = workflowDsl.WorkflowNodeSchema.parse({
       type: "Script",
       id: "transform",
@@ -117,7 +120,12 @@ describe("SandboxNodeExecutor", () => {
         });
         signedManifest = manifest as SandboxSignedManifest;
         signedScript = Buffer.from(manifest.script.contentBase64, "base64").toString("utf8");
-        return { dispatched: true, selectedAgentId: "agent-a", rejections: [] };
+        return {
+          dispatched: !pendingDelivery,
+          pendingDelivery,
+          selectedAgentId: "agent-a",
+          rejections: [],
+        };
       },
     } as unknown as PlacementOrchestrator;
     const registered: Array<Record<string, unknown>> = [];

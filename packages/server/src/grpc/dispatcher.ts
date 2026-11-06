@@ -255,6 +255,18 @@ export class AgentDispatcher {
   pushDispatchJob(
     agentId: string,
     jobId: string,
+    job: Parameters<AgentDispatcher["buildDispatchJob"]>[1],
+  ): boolean {
+    return this.pushPreparedDispatch(agentId, this.buildDispatchJob(jobId, job));
+  }
+
+  pushPreparedDispatch(agentId: string, message: ServerMessage): boolean {
+    if (message.payload.case !== "dispatchJob") throw new Error("Expected a job dispatch message");
+    return this.pushToAgent(agentId, message);
+  }
+
+  buildDispatchJob(
+    jobId: string,
     job: JobSubmit & {
       jobIdInternal: string;
       dispatchEpoch?: number;
@@ -280,8 +292,8 @@ export class AgentDispatcher {
       }>;
       dataDeliveries?: ResolvedDataDelivery[];
     },
-  ): boolean {
-    const msg = create(ServerMessageSchema, {
+  ): ServerMessage {
+    return create(ServerMessageSchema, {
       payload: {
         case: "dispatchJob",
         value: create(DispatchJobSchema, {
@@ -355,7 +367,6 @@ export class AgentDispatcher {
         }),
       },
     });
-    return this.pushToAgent(agentId, msg);
   }
 
   /**

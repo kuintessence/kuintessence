@@ -58,6 +58,7 @@ import {
   JobCancellationOutbox,
   JobWorkRootReleaseOutbox,
 } from "./grpc/dispatcher";
+import { JobDispatchOutbox } from "./grpc/job-dispatch-outbox";
 import { createGrpcConnectNodeHandler } from "./grpc/server";
 import { attachGrpcTransportErrorHandlers } from "./grpc/transport-errors";
 import { authMiddleware } from "./middleware/auth";
@@ -203,7 +204,7 @@ import { createDatasetPreflight } from "./workflow/dataset-preflight";
 import { createDbPackageStore } from "./workflow/db-package-store";
 import { WorkflowDraftService } from "./workflow/draft-service";
 import { createFileStager } from "./workflow/file-stager";
-import { JobCompletionRegistry } from "./workflow/job-completion-registry";
+import { completionFromJob, JobCompletionRegistry } from "./workflow/job-completion-registry";
 import { createJobSubmitter } from "./workflow/job-submitter";
 import {
   PgWorkflowNamedReferenceRepository,
@@ -254,6 +255,8 @@ const eventBus = new EventBus();
 const preferenceService = new PreferenceService(db);
 const dispatcher = new AgentDispatcher();
 const jobCancellationOutbox = new JobCancellationOutbox(db, dispatcher);
+const jobDispatchOutbox = new JobDispatchOutbox(db, dispatcher);
+jobDispatchOutbox.start();
 const jobWorkRootReleaseOutbox = new JobWorkRootReleaseOutbox(db, dispatcher);
 const dataScanCoordinator = new DataScanCoordinator(
   new PgDataImportCoordinator(db),
@@ -445,6 +448,7 @@ const orchestrator = new PlacementOrchestrator({
   preferenceService,
   dispatcher,
   jobCancellations: jobCancellationOutbox,
+  dispatchOutbox: jobDispatchOutbox,
   queueRegistry,
   computeHealth: {
     enforce: config.COMPUTE_HEALTH_ENFORCE,
@@ -729,7 +733,12 @@ app.route("/api", createAgentRegistrationRoutes(agentRegistrationService));
 // dispatches it through the placement orchestrator (carrying input staging),
 // and awaits the agent's terminal status (collected outputs) via the
 // completion registry, which the gRPC handler feeds.
-const jobCompletionRegistry = new JobCompletionRegistry();
+const jobCompletionRegistry = new JobCompletionRegistry({
+  load: async (jobId) => {
+    const job = await jobService.getById(jobId);
+    return job ? completionFromJob(job) : null;
+  },
+});
 const workflowPackageStore = createDbPackageStore(db);
 const workflowDataSelectionValidator = createPgDataSelectionValidator(db);
 const namedReferenceResolver = new WorkflowNamedReferenceResolver(
@@ -1025,7 +1034,7 @@ const makeRunner = (
           // The job will never run (no eligible agent / closed channel): resolve
           // the completion as failed so awaitCompletion — and the workflow node — fails
           // fast instead of hanging until the request times out.
-          if (!result.dispatched) {
+          if (!result.dispatched && !result.pendingDelivery) {
             const failedJob = await jobService.getById(jobId);
             jobCompletionRegistry.complete(jobId, {
               status: "failed",
@@ -1793,6 +1802,7 @@ const grpcDeps = {
   dataScanCoordinator,
   dataDeliveryRevocations: dataDeliveryRevocationOutbox,
   jobCancellations: jobCancellationOutbox,
+  jobDispatches: jobDispatchOutbox,
   jobWorkRootReleases: jobWorkRootReleaseOutbox,
 };
 
@@ -1905,6 +1915,7 @@ async function shutdown(signal: string): Promise<void> {
     grpcServer.close();
     await federationIngress?.stop(true);
     await federationPreparationWorker?.stop();
+    await jobDispatchOutbox.stop();
     fileService.shutdown();
     // Stop the metering rollup cron so an in-flight tick can drain
     // before exit; the cron internally catches and logs errors so this

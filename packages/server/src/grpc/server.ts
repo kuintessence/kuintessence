@@ -26,6 +26,7 @@ import type {
   JobCancellationOutbox,
   JobWorkRootReleaseOutbox,
 } from "./dispatcher";
+import type { JobDispatchOutbox } from "./job-dispatch-outbox";
 
 export type GrpcNodeHttpHandler = ReturnType<typeof connectNodeAdapter>;
 type GrpcServerRequest = Parameters<GrpcNodeHttpHandler>[0];
@@ -57,6 +58,7 @@ export interface CreateGrpcHandlerDeps {
   sandboxArtifactRelease?: Pick<SandboxArtifactReleaseService, "resolve">;
   dataDeliveryRevocations?: Pick<DataDeliveryRevocationOutbox, "acknowledge" | "redeliver">;
   jobCancellations?: Pick<JobCancellationOutbox, "acknowledge" | "redeliver">;
+  jobDispatches?: Pick<JobDispatchOutbox, "acknowledge" | "redeliver">;
   jobWorkRootReleases?: Pick<JobWorkRootReleaseOutbox, "acknowledge" | "redeliver">;
 }
 

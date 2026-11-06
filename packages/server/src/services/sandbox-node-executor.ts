@@ -523,7 +523,7 @@ export class SandboxNodeExecutor {
         },
       },
     });
-    if (!dispatch.dispatched || !dispatch.selectedAgentId) {
+    if ((!dispatch.dispatched && !dispatch.pendingDelivery) || !dispatch.selectedAgentId) {
       return {
         status: "Failed",
         values: {},

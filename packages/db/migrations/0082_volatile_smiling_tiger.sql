@@ -1,0 +1,2 @@
+ALTER TABLE "job_dispatch_outbox" ADD COLUMN "workflow_run_id" uuid;--> statement-breakpoint
+ALTER TABLE "job_dispatch_outbox" ADD CONSTRAINT "job_dispatch_outbox_workflow_run_id_workflow_runs_id_fk" FOREIGN KEY ("workflow_run_id") REFERENCES "public"."workflow_runs"("id") ON DELETE no action ON UPDATE no action;

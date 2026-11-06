@@ -2,6 +2,8 @@ import type { JobSubmission, WorkflowJournalEntry } from "@kuintessence/shared";
 import { sql } from "drizzle-orm";
 import {
   check,
+  index,
+  integer,
   jsonb,
   pgTable,
   primaryKey,
@@ -11,7 +13,31 @@ import {
   uuid,
   varchar,
 } from "drizzle-orm/pg-core";
-import { jobs, workflowRuns } from "./schema";
+import { agents, jobs, workflowRuns } from "./schema";
+
+export const jobDispatchOutbox = pgTable(
+  "job_dispatch_outbox",
+  {
+    jobId: uuid("job_id")
+      .primaryKey()
+      .references(() => jobs.id, { onDelete: "cascade" }),
+    agentId: text("agent_id")
+      .notNull()
+      .references(() => agents.agentId),
+    dispatchEpoch: integer("dispatch_epoch").notNull(),
+    payloadBase64: text("payload_base64").notNull(),
+    workflowRunId: uuid("workflow_run_id").references(() => workflowRuns.id),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    nextAttemptAt: timestamp("next_attempt_at", { withTimezone: true }).notNull().defaultNow(),
+    acknowledgedAt: timestamp("acknowledged_at", { withTimezone: true }),
+  },
+  (t) => [
+    check("job_dispatch_outbox_epoch", sql`${t.dispatchEpoch} > 0`),
+    index("job_dispatch_outbox_pending")
+      .on(t.nextAttemptAt)
+      .where(sql`${t.acknowledgedAt} IS NULL`),
+  ],
+);
 
 export const workflowExecutionLeases = pgTable(
   "workflow_execution_leases",

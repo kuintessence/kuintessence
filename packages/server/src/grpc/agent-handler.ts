@@ -45,7 +45,11 @@ import type { InstalledRegistry } from "../software-governance/installed-registr
 import type { SoftwareOperationService } from "../software-governance/operation-service";
 import type { PolicyPusher } from "../software-governance/policy-pusher";
 import type { PolicyStore } from "../software-governance/policy-store";
-import type { JobCompletionRegistry } from "../workflow/job-completion-registry";
+import { completionFromJob, type JobCompletionRegistry } from "../workflow/job-completion-registry";
+import type { JobDispatchOutbox } from "./job-dispatch-outbox";
+
+export { collectedForJobCompletion } from "../workflow/job-completion-registry";
+
 import type {
   AgentDispatcher,
   JobCancellationOutbox,
@@ -229,13 +233,6 @@ function protoToSchedulerQueueState(state: SchedulerQueueState): "up" | "down" |
   }
 }
 
-export function collectedForJobCompletion(
-  restrictedNoEgress: boolean,
-  collected: Record<string, string>,
-): Record<string, string> {
-  return restrictedNoEgress ? {} : collected;
-}
-
 export interface AgentMetricsRecorder {
   /**
    * Persist one or more metric samples for an agent. Implementations
@@ -308,6 +305,7 @@ export interface AgentHandlerDeps {
   dataScanCoordinator?: Pick<DataScanCoordinator, "acceptAgentResult" | "onAgentConnected">;
   dataDeliveryRevocations?: Pick<DataDeliveryRevocationOutbox, "acknowledge" | "redeliver">;
   jobCancellations?: Pick<JobCancellationOutbox, "acknowledge" | "redeliver">;
+  jobDispatches?: Pick<JobDispatchOutbox, "acknowledge" | "redeliver">;
   jobWorkRootReleases?: Pick<JobWorkRootReleaseOutbox, "acknowledge" | "redeliver">;
 }
 
@@ -369,6 +367,7 @@ export function registerAgentHandler(router: ConnectRouter, deps: AgentHandlerDe
     dataScanCoordinator,
     dataDeliveryRevocations,
     jobCancellations,
+    jobDispatches,
     jobWorkRootReleases,
   } = deps;
 
@@ -528,6 +527,11 @@ export function registerAgentHandler(router: ConnectRouter, deps: AgentHandlerDe
                     "Failed to push stored software policy after agent register",
                   );
                 }
+              }
+              try {
+                await jobDispatches?.redeliver(registeredAgentId);
+              } catch (err) {
+                logger.warn({ err, agentId: registeredAgentId }, "Job dispatch replay deferred");
               }
             } catch (err) {
               logger.error({ err, agentId: reg.agentId }, "Agent registration failed");
@@ -829,6 +833,7 @@ export function registerAgentHandler(router: ConnectRouter, deps: AgentHandlerDe
                   reason: failureCode.success ? failureCode.data : update.reason || null,
                 },
               );
+              await jobDispatches?.acknowledge(registeredAgentId, update.jobId);
               if (update.workingDir && !persistedJob.workingDir) {
                 await jobService.setWorkingDir(update.jobId, update.workingDir);
               }
@@ -855,22 +860,9 @@ export function registerAgentHandler(router: ConnectRouter, deps: AgentHandlerDe
                 { jobId: update.jobId, status: internalStatus, agentId: registeredAgentId },
                 "Job status update from agent",
               );
-              if (
-                jobCompletionRegistry &&
-                (persistedJob.status === "completed" ||
-                  persistedJob.status === "failed" ||
-                  persistedJob.status === "cancelled")
-              ) {
-                jobCompletionRegistry.complete(update.jobId, {
-                  status: persistedJob.status,
-                  collected: collectedForJobCompletion(
-                    persistedJob.restrictedNoEgress,
-                    persistedJob.collectedOutputs ?? {},
-                  ),
-                  ...(persistedJob.errorMessage ? { errorMessage: persistedJob.errorMessage } : {}),
-                  ...(persistedJob.reason ? { reason: persistedJob.reason } : {}),
-                  ...(persistedJob.exitCode !== null ? { exitCode: persistedJob.exitCode } : {}),
-                });
+              if (jobCompletionRegistry) {
+                const completion = completionFromJob(persistedJob);
+                if (completion) jobCompletionRegistry.complete(update.jobId, completion);
               }
               if (update.eventId) {
                 channel.push(

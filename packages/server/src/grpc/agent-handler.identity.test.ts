@@ -260,6 +260,7 @@ describe("agent-handler identity pinning", () => {
   });
 
   test("acks a job status event only after the registered Agent update succeeds", async () => {
+    const receiptEvents: string[] = [];
     const calls: Array<
       [
         string,
@@ -285,6 +286,7 @@ describe("agent-handler identity pinning", () => {
         eventId?: string,
         schedulerDetails?: SchedulerRuntimeDetails,
       ) => {
+        receiptEvents.push("persisted");
         calls.push([
           jobId,
           status,
@@ -305,6 +307,14 @@ describe("agent-handler identity pinning", () => {
       jobService: fakeJob,
       logger: silent,
       dispatcher: new AgentDispatcher(),
+      jobDispatches: {
+        redeliver: async (id) => {
+          receiptEvents.push(`replay:${id}`);
+        },
+        acknowledge: async (id, jobId) => {
+          receiptEvents.push(`receipt:${id}:${jobId}`);
+        },
+      },
     });
 
     const status = create(AgentMessageSchema, {
@@ -327,6 +337,7 @@ describe("agent-handler identity pinning", () => {
     if (!handlers.connect) throw new Error("connect handler not registered");
     const responses = await collectServer(handlers.connect(iter(registerMsg("agent-1"), status)));
 
+    expect(receiptEvents).toEqual(["replay:agent-1", "persisted", "receipt:agent-1:job-1"]);
     expect(calls).toHaveLength(1);
     expect(calls[0]).toEqual([
       "job-1",
