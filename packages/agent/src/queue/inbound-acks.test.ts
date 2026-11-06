@@ -217,3 +217,42 @@ test("expiry at the persistence boundary rejects late grants without changing an
   expect((await acks.get("job:2"))?.payload.federationRuntime).toMatchObject({ state: "active" });
   await expect(acks.renewRuntime("job:2", "owner-2", now + 30_001)).rejects.toThrow("Invalid");
 });
+
+test("Kubernetes UID binding survives reopening, is immutable and scopes stop proof", async () => {
+  const db = freshDb();
+  const inbox = new InboundAcks(db);
+  const identity = {
+    schedulerJobId: "kq-job-5",
+    namespace: "tenant-ns",
+    schedulerUid: crypto.randomUUID(),
+  };
+  await inbox.persistInbound({
+    dispatchId: "job:5",
+    jobId: "job",
+    payload: { federationExecution: true },
+  });
+  await expect(inbox.bindRuntimeSchedulerIdentity("job:5", identity)).rejects.toThrow();
+  await inbox.markSubmissionStarted("job:5", undefined, {
+    owner: "agent",
+    expiresAt: Date.now() + 1000,
+    state: "active",
+  });
+  await inbox.bindRuntimeSchedulerIdentity("job:5", identity);
+  const reopened = new InboundAcks(db);
+  await reopened.bindRuntimeSchedulerIdentity("job:5", identity);
+  expect(await reopened.runtimeSchedulerIdentity("job:5")).toEqual(identity);
+  await expect(
+    reopened.bindRuntimeSchedulerIdentity("job:5", {
+      ...identity,
+      schedulerUid: crypto.randomUUID(),
+    }),
+  ).rejects.toThrow("replaced");
+  await inbox.setRuntimeState("job:5", "agent", "stopping");
+  await reopened.recordRuntimeStop("job:5", identity.schedulerJobId, identity.schedulerUid);
+  expect(
+    await inbox.hasConfirmedRuntimeStop("job:5", identity.schedulerJobId, identity.schedulerUid),
+  ).toBe(true);
+  expect(
+    await inbox.hasConfirmedRuntimeStop("job:5", identity.schedulerJobId, crypto.randomUUID()),
+  ).toBe(false);
+});

@@ -42,8 +42,10 @@ export async function runFederationWatchdog(): Promise<void> {
       transport.run(args, { ...options, timeoutMs: Math.min(options?.timeoutMs ?? 5000, 5000) }),
   };
   const adapter = await detectScheduler({ spawner });
-  if (!["slurm", "pbs-pro", "torque"].includes(adapter.type))
-    throw new Error("Independent federation watchdog requires Slurm, PBS Pro or Torque");
+  if (!["slurm", "pbs-pro", "torque", "kubernetes"].includes(adapter.type))
+    throw new Error(
+      "Independent federation watchdog requires Slurm, PBS Pro, Torque or Kubernetes",
+    );
   const sqlite = new Database(path, { readwrite: true });
   sqlite.exec("PRAGMA busy_timeout = 5000; PRAGMA synchronous = FULL;");
   const watchdog = new FederationRuntimeWatchdog(drizzle(sqlite, { schema }), adapter, logger);

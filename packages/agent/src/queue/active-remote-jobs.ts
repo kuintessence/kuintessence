@@ -9,6 +9,7 @@ import { SandboxJobSpecSchema } from "./sandbox-job-spec";
 export interface ActiveRemoteJobRecord {
   jobId: string;
   schedulerJobId: string;
+  schedulerUid?: string;
   dispatchId?: string;
   spec: JobSpec;
   expectedOutputs: ExpectedOutput[];
@@ -21,6 +22,7 @@ export interface PreparedRemoteJob {
 
 export interface RecordSubmittedInput extends PreparedRemoteJob {
   schedulerJobId: string;
+  schedulerUid?: string;
   dispatchId?: string;
 }
 
@@ -54,7 +56,11 @@ export class ActiveRemoteJobs {
       .values({
         jobId: input.spec.jobId,
         schedulerJobId: input.schedulerJobId,
-        spec: { ...jobSpecToJson(input.spec), dispatchId: input.dispatchId },
+        spec: {
+          ...jobSpecToJson(input.spec),
+          dispatchId: input.dispatchId,
+          schedulerUid: input.schedulerUid,
+        },
         expectedOutputs: input.expectedOutputs.map(expectedOutputToJson),
         createdAt: now,
         updatedAt: now,
@@ -63,7 +69,11 @@ export class ActiveRemoteJobs {
         target: activeRemoteJobs.jobId,
         set: {
           schedulerJobId: input.schedulerJobId,
-          spec: { ...jobSpecToJson(input.spec), dispatchId: input.dispatchId },
+          spec: {
+            ...jobSpecToJson(input.spec),
+            dispatchId: input.dispatchId,
+            schedulerUid: input.schedulerUid,
+          },
           expectedOutputs: input.expectedOutputs.map(expectedOutputToJson),
           updatedAt: now,
         },
@@ -79,6 +89,7 @@ export class ActiveRemoteJobs {
       jobId: row.jobId,
       schedulerJobId: row.schedulerJobId,
       dispatchId: optionalString(row.spec.dispatchId),
+      schedulerUid: z.string().uuid().optional().parse(row.spec.schedulerUid),
       spec: jsonToJobSpec(row.spec),
       expectedOutputs: row.expectedOutputs.map(jsonToExpectedOutput),
     }));
@@ -117,6 +128,13 @@ function jsonToJobSpec(value: Record<string, unknown>): JobSpec {
     envVars: jsonToStringMap(value.envVars),
     queueName: optionalString(value.queueName),
     schedulerName: optionalString(value.schedulerName),
+    federationDispatchEpoch: z
+      .number()
+      .int()
+      .nonnegative()
+      .max(Number.MAX_SAFE_INTEGER)
+      .optional()
+      .parse(value.federationDispatchEpoch),
     queueTargetMode: QueueTargetModeSchema.optional().parse(value.queueTargetMode),
     queueValidationMode: QueueValidationModeSchema.optional().parse(value.queueValidationMode),
     sandbox: SandboxJobSpecSchema.optional().parse(value.sandbox),

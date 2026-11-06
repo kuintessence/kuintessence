@@ -10,7 +10,7 @@ import { FederationRuntimeWatchdog } from "./federation-runtime-watchdog";
 import { InboundAcks } from "./inbound-acks";
 import { JobRevocationTombstones } from "./job-cleanup-intents";
 
-async function fixture() {
+async function fixture(kubernetes = false) {
   const db = createSqliteDb(":memory:");
   let now = Date.now();
   let monotonic = 0;
@@ -34,6 +34,7 @@ async function fixture() {
     workingDir: "/tmp",
     envVars: {},
     schedulerName: federationSchedulerName(5n),
+    ...(kubernetes ? { federationDispatchEpoch: 5, queueName: "tenant-ns" } : {}),
   };
   await inbox.persistInbound({
     dispatchId,
@@ -56,7 +57,7 @@ async function fixture() {
   let stopped = true;
   let available = true;
   const adapter: SchedulerAdapter = {
-    type: "slurm",
+    type: kubernetes ? "kubernetes" : "slurm",
     version: "test",
     submit: async () => {
       throw new Error("watchdog cannot submit");
@@ -217,4 +218,86 @@ describe("independent federation watchdog", () => {
     f.advance(2001);
     await expect(f.inbox.assertWatchdogReady("slurm")).rejects.toThrow("unavailable");
   });
+});
+
+test("Kubernetes watchdog reopens the immutable UID even after the Job disappears", async () => {
+  const f = await fixture(true);
+  const schedulerUid = crypto.randomUUID();
+  await f.inbox.bindRuntimeSchedulerIdentity(f.dispatchId, {
+    schedulerUid,
+    schedulerJobId: "scheduler-original",
+    namespace: "tenant-ns",
+  });
+  await f.active.markFinished(f.spec.jobId);
+  f.adapter.findByKuintessenceJobId = async () => {
+    throw new Error("must not rediscover a deleted Job");
+  };
+  f.adapter.cancel = async (id, lookup) => {
+    expect(id).toBe("scheduler-original");
+    expect(lookup).toMatchObject({
+      schedulerUid,
+      namespace: "tenant-ns",
+      federationDispatchEpoch: 5,
+    });
+    f.cancelled.push(id);
+  };
+  f.advance(1001);
+  f.stopped(false);
+  await f.watchdog().tick();
+  expect(
+    await f.inbox.hasConfirmedRuntimeStop(f.dispatchId, "scheduler-original", schedulerUid),
+  ).toBe(false);
+  f.stopped(true);
+  await f.watchdog().tick();
+  expect(f.cancelled).toHaveLength(2);
+  expect(
+    await f.inbox.hasConfirmedRuntimeStop(f.dispatchId, "scheduler-original", schedulerUid),
+  ).toBe(true);
+});
+
+test("Kubernetes recovery binds a lost response UID and persists it with the active record", async () => {
+  const f = await fixture(true);
+  const schedulerUid = crypto.randomUUID();
+  f.adapter.findByKuintessenceJobId = async () => ({
+    status: "found",
+    schedulerJobId: "scheduler-original",
+    schedulerUid,
+  });
+  f.advance(1001);
+  await f.watchdog().tick();
+  expect(await f.inbox.runtimeSchedulerIdentity(f.dispatchId)).toMatchObject({
+    schedulerUid,
+    namespace: "tenant-ns",
+  });
+  await f.active.recordSubmitted({
+    spec: f.spec,
+    expectedOutputs: [],
+    dispatchId: f.dispatchId,
+    schedulerJobId: "scheduler-original",
+    schedulerUid,
+  });
+  expect((await new ActiveRemoteJobs(f.db).listActive())[0]).toMatchObject({
+    schedulerUid,
+    spec: { federationDispatchEpoch: 5 },
+  });
+});
+
+test("conflicting persisted Kubernetes UIDs cannot cancel or record a stop", async () => {
+  const f = await fixture(true);
+  await f.inbox.bindRuntimeSchedulerIdentity(f.dispatchId, {
+    schedulerUid: crypto.randomUUID(),
+    schedulerJobId: "scheduler-original",
+    namespace: "tenant-ns",
+  });
+  await f.active.recordSubmitted({
+    spec: f.spec,
+    expectedOutputs: [],
+    dispatchId: f.dispatchId,
+    schedulerJobId: "scheduler-original",
+    schedulerUid: crypto.randomUUID(),
+  });
+  f.advance(1001);
+  await f.watchdog().tick();
+  expect(f.cancelled).toEqual([]);
+  expect((await f.inbox.get(f.dispatchId))?.payload.federationRuntimeStop).toBeUndefined();
 });

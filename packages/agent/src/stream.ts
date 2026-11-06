@@ -391,6 +391,7 @@ function schedulerLookupForSpec(spec: JobSpec): KuintessenceJobLookup & { schedu
   const identity = spec.sandbox?.identity;
   return {
     jobId: spec.jobId,
+    federationDispatchEpoch: spec.federationDispatchEpoch,
     schedulerName: spec.schedulerName ?? schedulerSubmissionTag(spec.jobId),
     ...(identity?.backend === "Unix" && identity.schedulerAccount
       ? { schedulerAccount: identity.schedulerAccount }
@@ -951,12 +952,26 @@ export class AgentStream {
       },
       onQueueValidationShadowRejection: (failureCode) =>
         this.enqueueQueueValidationShadowRejection(failureCode),
-      onSchedulerSubmitted: async (spec, schedulerJobId, expectedOutputs) => {
+      onSchedulerSubmitted: async (spec, schedulerJobId, expectedOutputs, schedulerUid) => {
         try {
+          if (
+            spec.federationDispatchEpoch !== undefined &&
+            this.deps.adapter.type === "kubernetes"
+          ) {
+            const dispatchId = this.dispatchIdsByJob.get(spec.jobId);
+            if (!schedulerUid || !dispatchId || !this.inboundAcks)
+              throw new Error("Federation Kubernetes submission requires a durable UID");
+            await this.inboundAcks.bindRuntimeSchedulerIdentity(dispatchId, {
+              schedulerJobId,
+              schedulerUid,
+              namespace: schedulerLookupForSpec(spec).namespace ?? "default",
+            });
+          }
           await this.cleanupIntents?.recordSchedulerSubmitted(spec.jobId, schedulerJobId);
           await this.activeRemoteJobs?.recordSubmitted({
             spec,
             schedulerJobId,
+            schedulerUid,
             expectedOutputs,
             dispatchId: this.dispatchIdsByJob.get(spec.jobId),
           });
@@ -1006,6 +1021,18 @@ export class AgentStream {
             "Retaining cleanup intent because submitted scheduler job could not be reconciled",
           );
           return;
+        }
+        const runtime = this.federationRuntimes.get(jobId);
+        if (runtime?.receipt.state === "stopping") {
+          const active = (await this.activeRemoteJobs?.listActive())?.find(
+            (job) => job.jobId === jobId,
+          );
+          if (active?.dispatchId === runtime.dispatchId)
+            await this.inboundAcks?.recordRuntimeStop(
+              runtime.dispatchId,
+              active.schedulerJobId,
+              active.schedulerUid,
+            );
         }
         const mounts = this.licensedMaterialMounts.get(jobId);
         const [dataCleanup, licensedCleanup, restrictedRootCleanup] = await Promise.allSettled([
@@ -1302,22 +1329,46 @@ export class AgentStream {
           if (!(await this.recoverFederationRuntime(row.jobId, row.dispatchId))) continue;
           const revoked = !allowed || intent?.revoked === true;
           if (active.has(row.jobId) && !revoked) continue;
+          const savedIdentity = await this.inboundAcks.runtimeSchedulerIdentity(row.dispatchId);
+          const activeJob = active.get(row.jobId);
+          if (
+            activeJob &&
+            (activeJob.dispatchId !== row.dispatchId ||
+              (savedIdentity &&
+                (savedIdentity.schedulerJobId !== activeJob.schedulerJobId ||
+                  savedIdentity.schedulerUid !== activeJob.schedulerUid)))
+          )
+            throw new Error("Federation durable scheduler identities disagree");
+          let schedulerUid = savedIdentity?.schedulerUid ?? active.get(row.jobId)?.schedulerUid;
           let schedulerJobId =
+            savedIdentity?.schedulerJobId ??
             active.get(row.jobId)?.schedulerJobId ??
             intent?.schedulerJobId ??
             this.unreconciledSubmittedJobs.get(row.jobId);
-          if (!schedulerJobId) {
+          if (!schedulerJobId || (this.deps.adapter.type === "kubernetes" && !schedulerUid)) {
             const lookup = await this.deps.adapter.findByKuintessenceJobId?.({
               ...schedulerLookupForSpec(prepared.spec),
               submittedAfterUnixMs: row.receivedAt.getTime(),
             });
             if (lookup?.status !== "found") continue;
+            if (schedulerJobId && schedulerJobId !== lookup.schedulerJobId)
+              throw new Error("Federation scheduler identity changed");
             schedulerJobId = lookup.schedulerJobId;
+            schedulerUid = lookup.schedulerUid;
+            if (schedulerUid)
+              await this.inboundAcks.bindRuntimeSchedulerIdentity(row.dispatchId, {
+                schedulerJobId,
+                schedulerUid,
+                namespace: schedulerLookupForSpec(prepared.spec).namespace ?? "default",
+              });
           }
+          if (this.deps.adapter.type === "kubernetes" && !schedulerUid)
+            throw new Error("Federation Kubernetes recovery requires a durable UID");
           if (!this.running) return;
           await this.activeRemoteJobs.recordSubmitted({
             ...prepared,
             schedulerJobId,
+            schedulerUid,
             dispatchId: row.dispatchId,
           });
           await this.cleanupIntents?.recordSchedulerSubmitted(row.jobId, schedulerJobId);
@@ -1327,12 +1378,11 @@ export class AgentStream {
               reason: "JOB_CANCELLED",
               destroyRestrictedWorkRoot: false,
             });
-            await this.deps.adapter.prepareResume?.(prepared.spec, schedulerJobId);
-            await cancelAndConfirmStopped(
-              this.deps.adapter,
-              schedulerJobId,
-              schedulerLookupForSpec(prepared.spec),
-            );
+            await this.deps.adapter.prepareResume?.(prepared.spec, schedulerJobId, schedulerUid);
+            await cancelAndConfirmStopped(this.deps.adapter, schedulerJobId, {
+              ...schedulerLookupForSpec(prepared.spec),
+              schedulerUid,
+            });
             await this.onJobTransition({
               jobId: row.jobId,
               status: "cancelled",
@@ -1438,6 +1488,20 @@ export class AgentStream {
           continue;
         }
         if (dispatchId && !(await this.recoverFederationRuntime(job.jobId, dispatchId))) continue;
+        if (
+          dispatchId &&
+          job.spec.federationDispatchEpoch !== undefined &&
+          this.deps.adapter.type === "kubernetes"
+        ) {
+          const saved = await this.inboundAcks?.runtimeSchedulerIdentity(dispatchId);
+          if (
+            !saved ||
+            saved.schedulerJobId !== job.schedulerJobId ||
+            saved.schedulerUid !== job.schedulerUid ||
+            saved.namespace !== (schedulerLookupForSpec(job.spec).namespace ?? "default")
+          )
+            throw new Error("Federation Kubernetes recovery identities disagree");
+        }
         const mounts =
           job.spec.licensedMaterialCleanup ??
           protectedMountsFromExpectedOutputs(job.expectedOutputs);
@@ -1466,6 +1530,7 @@ export class AgentStream {
           continue;
         await this.pool.resume(spec, job.schedulerJobId, {
           expectedOutputs: job.expectedOutputs,
+          schedulerUid: job.schedulerUid,
         });
         recovered++;
       }
@@ -1495,29 +1560,26 @@ export class AgentStream {
         if (uncertainJobs.has(intent.jobId)) continue;
         if (activeJobIds.has(intent.jobId) && !intent.revoked) continue;
         try {
-          const find = this.deps.adapter.findByKuintessenceJobId;
-          if (!find) {
-            throw new Error("scheduler adapter cannot reconcile Kuintessence UUID metadata");
-          }
-          const lookup = await find.call(this.deps.adapter, {
-            jobId: intent.jobId,
-            schedulerName: intent.schedulerSubmissionTag,
-            schedulerAccount: intent.schedulerAccount,
-            namespace: intent.schedulerNamespace,
-          });
-          if (lookup.status === "indeterminate") {
-            throw new Error(`scheduler UUID lookup is indeterminate: ${lookup.reason}`);
-          }
+          const lookup = await this.lookupSchedulerJob(intent.jobId, intent);
           const activeJob = active.find((job) => job.jobId === intent.jobId);
           const schedulerJobId =
             activeJob?.schedulerJobId ??
             intent.schedulerJobId ??
             (lookup.status === "found" ? lookup.schedulerJobId : undefined);
           if (schedulerJobId) {
-            if (activeJob) await this.deps.adapter.prepareResume?.(activeJob.spec, schedulerJobId);
+            if (activeJob)
+              await this.deps.adapter.prepareResume?.(
+                activeJob.spec,
+                schedulerJobId,
+                activeJob.schedulerUid,
+              );
             await cancelAndConfirmStopped(this.deps.adapter, schedulerJobId, {
               jobId: intent.jobId,
               namespace: intent.schedulerNamespace,
+              schedulerUid:
+                activeJob?.schedulerUid ??
+                (lookup.status === "found" ? lookup.schedulerUid : undefined),
+              federationDispatchEpoch: activeJob?.spec.federationDispatchEpoch,
             });
           } else if (intent.schedulerSubmissionTag) {
             throw new Error("Scheduler submission outcome is unknown; retaining cleanup intent");
@@ -2956,6 +3018,9 @@ export class AgentStream {
             jobId: dj.jobId,
             payload: {
               name: dj.name,
+              federationDispatchEpoch: dj.federationExecution
+                ? Number(dj.dispatchEpoch)
+                : undefined,
               schedulerName: dj.federationExecution
                 ? federationSchedulerName(dj.dispatchEpoch)
                 : schedulerSubmissionTag(dj.jobId),
@@ -3155,6 +3220,9 @@ export class AgentStream {
             const spec: JobSpec = {
               jobId: dj.jobId,
               name: dj.name,
+              federationDispatchEpoch: dj.federationExecution
+                ? Number(dj.dispatchEpoch)
+                : undefined,
               schedulerName: dj.federationExecution
                 ? federationSchedulerName(dj.dispatchEpoch)
                 : schedulerSubmissionTag(dj.jobId),
@@ -3206,6 +3274,7 @@ export class AgentStream {
       const spec: JobSpec = {
         jobId: dj.jobId,
         name: dj.name,
+        federationDispatchEpoch: dj.federationExecution ? Number(dj.dispatchEpoch) : undefined,
         schedulerName: dj.federationExecution
           ? federationSchedulerName(dj.dispatchEpoch)
           : schedulerSubmissionTag(dj.jobId),
@@ -4378,47 +4447,98 @@ export class AgentStream {
       this.findCleanupIntent(jobId),
     ]);
     const activeJob = active.find((job) => job.jobId === jobId);
+    const pendingReceipt = await this.inboundAcks?.latestForJob(jobId);
+    const prepared =
+      pendingReceipt?.payload.federationSubmissionStarted === true
+        ? jsonToPreparedRemoteJob(pendingReceipt.payload.federationSubmission)
+        : undefined;
+    const savedIdentity = pendingReceipt
+      ? await this.inboundAcks?.runtimeSchedulerIdentity(pendingReceipt.dispatchId)
+      : undefined;
+    if (
+      activeJob &&
+      savedIdentity &&
+      (activeJob.schedulerJobId !== savedIdentity.schedulerJobId ||
+        activeJob.schedulerUid !== savedIdentity.schedulerUid)
+    )
+      throw new Error("Federation durable scheduler identities disagree");
+    const schedulerUid = savedIdentity?.schedulerUid ?? activeJob?.schedulerUid;
+    const cancelLookup = {
+      jobId,
+      ...(prepared
+        ? schedulerLookupForSpec(prepared.spec)
+        : activeJob
+          ? schedulerLookupForSpec(activeJob.spec)
+          : {}),
+      namespace:
+        savedIdentity?.namespace ??
+        intent?.schedulerNamespace ??
+        (prepared
+          ? schedulerLookupForSpec(prepared.spec).namespace
+          : activeJob
+            ? schedulerLookupForSpec(activeJob.spec).namespace
+            : undefined),
+      schedulerUid,
+    };
+    const stopProof = pendingReceipt?.payload.federationRuntimeStop;
+    const stoppedSchedulerJobId =
+      stopProof &&
+      typeof stopProof === "object" &&
+      "schedulerJobId" in stopProof &&
+      typeof stopProof.schedulerJobId === "string"
+        ? stopProof.schedulerJobId
+        : undefined;
     const unreconciledSchedulerJobId = this.unreconciledSubmittedJobs.get(jobId);
     const schedulerJobId =
-      activeJob?.schedulerJobId ?? intent?.schedulerJobId ?? unreconciledSchedulerJobId;
+      savedIdentity?.schedulerJobId ??
+      activeJob?.schedulerJobId ??
+      intent?.schedulerJobId ??
+      unreconciledSchedulerJobId ??
+      stoppedSchedulerJobId;
 
-    if (!activeJob && !intent && !schedulerJobId && !hadActiveRunner) {
+    if (!activeJob && !intent && !schedulerJobId && !hadActiveRunner && !prepared) {
       this.logger.info({ jobId }, "Cancellation converged for unknown job");
       return;
     }
 
+    const runtimeDispatchId = activeJob?.dispatchId ?? pendingReceipt?.dispatchId;
     const watchdogStopped =
       !hadActiveRunner &&
-      activeJob?.dispatchId &&
+      runtimeDispatchId &&
       schedulerJobId &&
-      (await this.inboundAcks?.hasConfirmedRuntimeStop(activeJob.dispatchId, schedulerJobId));
+      (await this.inboundAcks?.hasConfirmedRuntimeStop(
+        runtimeDispatchId,
+        schedulerJobId,
+        schedulerUid,
+      ));
     if (
       watchdogStopped &&
-      activeJob?.dispatchId &&
+      runtimeDispatchId &&
       this.inboundAcks &&
       !this.federationRuntimes.has(jobId)
     ) {
-      const epoch = epochFromDispatchId(jobId, activeJob.dispatchId);
+      const epoch = epochFromDispatchId(jobId, runtimeDispatchId);
       if (epoch === undefined)
         throw new Error("Federation watchdog stop receipt has no dispatch epoch");
-      const receipt = await this.inboundAcks.claimRuntime(activeJob.dispatchId);
-      this.startFederationRuntime(jobId, activeJob.dispatchId, epoch, receipt);
+      const receipt = await this.inboundAcks.claimRuntime(runtimeDispatchId);
+      this.startFederationRuntime(jobId, runtimeDispatchId, epoch, receipt);
     }
     if (!runnerCancelled && !watchdogStopped) {
-      if (schedulerJobId) {
-        if (activeJob) await this.deps.adapter.prepareResume?.(activeJob.spec, schedulerJobId);
-        await cancelAndConfirmStopped(this.deps.adapter, schedulerJobId, {
-          jobId,
-          namespace: intent?.schedulerNamespace,
-        });
+      if (
+        schedulerJobId &&
+        !(this.deps.adapter.type === "kubernetes" && prepared && !schedulerUid)
+      ) {
+        if (activeJob)
+          await this.deps.adapter.prepareResume?.(activeJob.spec, schedulerJobId, schedulerUid);
+        await cancelAndConfirmStopped(this.deps.adapter, schedulerJobId, cancelLookup);
       } else {
         const lookup = await this.lookupSchedulerJob(jobId, intent);
         if (lookup.status === "found") {
           await cancelAndConfirmStopped(this.deps.adapter, lookup.schedulerJobId, {
-            jobId,
-            namespace: intent?.schedulerNamespace,
+            ...cancelLookup,
+            schedulerUid: lookup.schedulerUid,
           });
-        } else if (intent?.schedulerSubmissionTag) {
+        } else if (intent?.schedulerSubmissionTag || prepared) {
           throw new Error("Scheduler submission outcome is unknown; retaining job inputs");
         }
       }
@@ -4444,14 +4564,42 @@ export class AgentStream {
     if (!find) {
       throw new Error("scheduler adapter cannot reconcile Kuintessence UUID metadata");
     }
+    const row = await this.inboundAcks?.latestForJob(jobId);
+    const prepared =
+      row?.payload.federationSubmissionStarted === true
+        ? jsonToPreparedRemoteJob(row.payload.federationSubmission)
+        : undefined;
+    if (row && prepared) {
+      const saved = await this.inboundAcks?.runtimeSchedulerIdentity(row.dispatchId);
+      if (saved)
+        return {
+          status: "found",
+          schedulerJobId: saved.schedulerJobId,
+          schedulerUid: saved.schedulerUid,
+        };
+      if (
+        this.deps.adapter.type === "kubernetes" &&
+        prepared.spec.federationDispatchEpoch === undefined
+      )
+        throw new Error("Federation Kubernetes lookup requires a dispatch epoch");
+    }
     const lookup = await find.call(this.deps.adapter, {
       jobId,
       schedulerName: intent?.schedulerSubmissionTag ?? schedulerSubmissionTag(jobId),
       schedulerAccount: intent?.schedulerAccount,
       namespace: intent?.schedulerNamespace,
+      ...(prepared ? schedulerLookupForSpec(prepared.spec) : {}),
     });
     if (lookup.status === "indeterminate") {
       throw new Error(`scheduler UUID lookup is indeterminate: ${lookup.reason}`);
+    }
+    if (row && prepared && this.deps.adapter.type === "kubernetes" && lookup.status === "found") {
+      if (!lookup.schedulerUid) throw new Error("Federation Kubernetes lookup requires a UID");
+      await this.inboundAcks?.bindRuntimeSchedulerIdentity(row.dispatchId, {
+        schedulerJobId: lookup.schedulerJobId,
+        schedulerUid: lookup.schedulerUid,
+        namespace: schedulerLookupForSpec(prepared.spec).namespace ?? "default",
+      });
     }
     return lookup;
   }

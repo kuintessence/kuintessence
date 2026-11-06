@@ -33,7 +33,23 @@
 
 import { agentConfig, inboundDispatchPending, type SqliteDb } from "@kuintessence/db";
 import { and, asc, desc, eq, isNull, sql } from "drizzle-orm";
+import { z } from "zod";
 import { type PreparedRemoteJob, preparedRemoteJobToJson } from "./active-remote-jobs";
+
+export const RuntimeSchedulerIdentitySchema = z.strictObject({
+  schedulerJobId: z
+    .string()
+    .min(1)
+    .max(63)
+    .regex(/^[a-z0-9]([-a-z0-9]*[a-z0-9])?$/),
+  schedulerUid: z.string().uuid(),
+  namespace: z
+    .string()
+    .min(1)
+    .max(63)
+    .regex(/^[a-z0-9]([-a-z0-9]*[a-z0-9])?$/),
+});
+export type RuntimeSchedulerIdentity = z.infer<typeof RuntimeSchedulerIdentitySchema>;
 
 export interface FederationRuntimeReceipt {
   owner: string;
@@ -260,17 +276,54 @@ export class InboundAcks {
     return updated.length === 1;
   }
 
-  async recordRuntimeStop(dispatchId: string, schedulerJobId: string): Promise<void> {
+  async runtimeSchedulerIdentity(
+    dispatchId: string,
+  ): Promise<RuntimeSchedulerIdentity | undefined> {
+    const row = await this.get(dispatchId);
+    return RuntimeSchedulerIdentitySchema.optional().parse(
+      row?.payload.federationSchedulerIdentity,
+    );
+  }
+
+  async bindRuntimeSchedulerIdentity(
+    dispatchId: string,
+    identity: RuntimeSchedulerIdentity,
+  ): Promise<void> {
+    const value = JSON.stringify(RuntimeSchedulerIdentitySchema.parse(identity));
+    const updated = await this.db
+      .update(inboundDispatchPending)
+      .set({
+        payload: sql`json_set(${inboundDispatchPending.payload}, '$.federationSchedulerIdentity', json(${value}))`,
+      })
+      .where(sql`${inboundDispatchPending.dispatchId} = ${dispatchId}
+      AND json_extract(${inboundDispatchPending.payload}, '$.federationExecution') = 1
+      AND json_extract(${inboundDispatchPending.payload}, '$.federationSubmissionStarted') = 1
+      AND (json_extract(${inboundDispatchPending.payload}, '$.federationSchedulerIdentity') IS NULL
+        OR json_extract(${inboundDispatchPending.payload}, '$.federationSchedulerIdentity') = json(${value}))`)
+      .returning({ dispatchId: inboundDispatchPending.dispatchId });
+    if (updated.length !== 1)
+      throw new Error("Federation scheduler identity is missing or was replaced");
+  }
+
+  async recordRuntimeStop(
+    dispatchId: string,
+    schedulerJobId: string,
+    schedulerUid?: string,
+  ): Promise<void> {
     await this.db
       .update(inboundDispatchPending)
       .set({
-        payload: sql`json_set(${inboundDispatchPending.payload}, '$.federationRuntimeStop', json(${JSON.stringify({ schedulerJobId, confirmedAt: this.now().getTime() })}))`,
+        payload: sql`json_set(${inboundDispatchPending.payload}, '$.federationRuntimeStop', json(${JSON.stringify({ schedulerJobId, ...(schedulerUid ? { schedulerUid } : {}), confirmedAt: this.now().getTime() })}))`,
       })
       .where(sql`${inboundDispatchPending.dispatchId} = ${dispatchId}
       AND json_extract(${inboundDispatchPending.payload}, '$.federationRuntime.state') = 'stopping'`);
   }
 
-  async hasConfirmedRuntimeStop(dispatchId: string, schedulerJobId: string): Promise<boolean> {
+  async hasConfirmedRuntimeStop(
+    dispatchId: string,
+    schedulerJobId: string,
+    schedulerUid?: string,
+  ): Promise<boolean> {
     const row = await this.get(dispatchId);
     const proof = row?.payload.federationRuntimeStop;
     return (
@@ -279,6 +332,7 @@ export class InboundAcks {
       typeof proof === "object" &&
       "schedulerJobId" in proof &&
       proof.schedulerJobId === schedulerJobId &&
+      (!schedulerUid || ("schedulerUid" in proof && proof.schedulerUid === schedulerUid)) &&
       "confirmedAt" in proof &&
       typeof proof.confirmedAt === "number" &&
       Number.isSafeInteger(proof.confirmedAt) &&

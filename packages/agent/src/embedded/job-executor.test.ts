@@ -940,3 +940,40 @@ test("unconfirmed cancellation retains inputs and can be retried after the sched
   await running;
   expect(cleanups).toBe(1);
 });
+
+test("runner carries scheduler UID through submission, recovery and cancellation", async () => {
+  const schedulerUid = crypto.randomUUID();
+  let submittedUid: string | undefined;
+  let resumedUid: string | undefined;
+  const cancelled: Array<string | undefined> = [];
+  const adapter: SchedulerAdapter = {
+    type: "kubernetes",
+    version: "test",
+    submit: async () => ({ schedulerJobId: "original", schedulerUid }),
+    prepareResume: (_spec, _id, uid) => {
+      resumedUid = uid;
+    },
+    status: async () => ({ status: "running" }),
+    cancel: async (_id, lookup) => {
+      cancelled.push(lookup?.schedulerUid);
+    },
+    confirmStopped: async () => true,
+  };
+  for (const resume of [false, true]) {
+    const runner = new JobRunner({
+      adapter,
+      onStatusUpdate: async () => {},
+      onSchedulerSubmitted: async (_spec, _id, _outputs, uid) => {
+        submittedUid = uid;
+      },
+      sleep: async () => {
+        await runner.cancelAndKill();
+      },
+    });
+    if (resume) await runner.resume(baseSpec, "original", [], schedulerUid);
+    else await runner.run(baseSpec);
+  }
+  expect(submittedUid).toBe(schedulerUid);
+  expect(resumedUid).toBe(schedulerUid);
+  expect(cancelled).toEqual([schedulerUid, schedulerUid]);
+});

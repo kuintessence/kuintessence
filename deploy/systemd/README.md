@@ -144,7 +144,7 @@ sudo systemctl restart kq-agent
 
 ## 联邦计算的独立看守
 
-Slurm、PBS Pro 和 Torque 的联邦计算需要独立运行的
+Slurm、PBS Pro、Torque 和 Kubernetes 的联邦计算需要独立运行的
 [kq-federation-watchdog.service](kq-federation-watchdog.service)。安装脚本复制该 unit，
 不自动启动。Agent 首次启动并建立 SQLite 后，由站点管理员启用：
 
@@ -157,7 +157,14 @@ sudo journalctl -u kq-federation-watchdog -f
 同一个服务账号、`AGENT_DB_PATH`、调度器 CLI 环境和集群目标；容器后端还必须使用相同的
 `AGENT_SPAWNER_BACKEND` 与 `AGENT_SLURM_CONTAINER_ID`。看守不连接 Server、Fabric，
 不注册 Agent，也不创建或迁移数据库。数据库须已存在、归服务账号所有且权限为 `0600`；
-不要将控制面数据库目录挂给计算任务。Kubernetes 独立看守尚未接入，此模式会拒绝启动。
+不要将控制面数据库目录挂给计算任务。
+
+Kubernetes 看守还须安装 `kubectl`，使用与 Agent 相同的受控 `KUBECONFIG`/context，
+并能在作业目标命名空间列出 Job/Pod、读取和删除 Job。权限不需要覆盖 Secrets；
+不要将这些控制凭据挂载给任务。需要用 systemd drop-in 放行凭据所在路径。
+新联邦作业名称包含代次，API 返回的 Job UID 和命名空间先写入收件记录，再保存活动记录。
+取消通过 UID precondition 执行，随后核对原 UID 对应 Pod；同名新 Job 不会被删除，
+原 Job 消失但 Pod 仍运行时也不认定停止。缺失 UID 或记录冲突保留待核对。
 
 新 Agent 在联邦计算提交前和运行续期时检查看守最近 2 秒内完成的扫描。缺少看守、
 扫描停顿或调度器类型不匹配时，不提交新任务，也不延长运行许可；普通本地任务不受影响。

@@ -22,6 +22,7 @@ export interface JobSpec {
   queueTargetMode?: QueueTargetMode;
   queueValidationMode?: QueueValidationMode;
   schedulerName?: string;
+  federationDispatchEpoch?: number;
   qos?: string;
   stdinText?: string;
   restrictedNoEgress?: boolean;
@@ -99,6 +100,7 @@ export interface SandboxJobSpec {
 
 export interface JobResult {
   schedulerJobId: string;
+  schedulerUid?: string;
 }
 
 export interface QueueTargetValidation {
@@ -488,6 +490,8 @@ export interface ListedJob {
 /** Scheduler-specific context retained with a pre-submit cleanup intent. */
 export interface KuintessenceJobLookup {
   jobId: string;
+  schedulerUid?: string;
+  federationDispatchEpoch?: number;
   /** Include retained completed jobs during submission recovery, starting at this receipt time. */
   submittedAfterUnixMs?: number;
   schedulerName?: string;
@@ -501,7 +505,7 @@ export interface KuintessenceJobLookup {
  * `indeterminate`.
  */
 export type KuintessenceJobLookupResult =
-  | { status: "found"; schedulerJobId: string }
+  | { status: "found"; schedulerJobId: string; schedulerUid?: string }
   | { status: "not_found" }
   | { status: "indeterminate"; reason: string };
 
@@ -577,7 +581,11 @@ export interface SchedulerAdapter {
     jobId?: string,
     includeStderr?: boolean,
   ): Promise<string>;
-  prepareResume?(spec: JobSpec, schedulerJobId: string): void | Promise<void>;
+  prepareResume?(
+    spec: JobSpec,
+    schedulerJobId: string,
+    schedulerUid?: string,
+  ): void | Promise<void>;
   releaseJob?(schedulerJobId: string): void | Promise<void>;
   stageSandboxInputs?(sandbox: SandboxJobSpec, jobId: string): Promise<void>;
   stageSandboxOutputs?(sandbox: SandboxJobSpec, schedulerJobId: string): Promise<void>;

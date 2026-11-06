@@ -76,7 +76,7 @@ export class ExecutorPool {
   async resume(
     spec: JobSpec,
     schedulerJobId: string,
-    opts: { expectedOutputs?: ExpectedOutput[] } = {},
+    opts: { expectedOutputs?: ExpectedOutput[]; schedulerUid?: string } = {},
   ): Promise<{ jobId: string }> {
     if (!this.accepting) throw new ExecutorPoolStoppedError();
     if (this.active.has(spec.jobId)) {
@@ -99,7 +99,7 @@ export class ExecutorPool {
     });
     this.active.set(spec.jobId, runner);
     const p = runner
-      .resume(spec, schedulerJobId, opts.expectedOutputs ?? [])
+      .resume(spec, schedulerJobId, opts.expectedOutputs ?? [], opts.schedulerUid)
       .then(() => undefined)
       .catch(() => undefined)
       .finally(() => {

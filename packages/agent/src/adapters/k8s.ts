@@ -2,6 +2,7 @@ import { mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { createLogger } from "@kuintessence/shared";
+import { z } from "zod";
 import {
   COMPUTE_HEALTH_CLI_TIMEOUT_MS,
   type ComputeHealthObservation,
@@ -22,6 +23,17 @@ import {
 } from "./base";
 
 const logger = createLogger("k8s-adapter");
+
+function kubernetesJobName(spec: JobSpec): string {
+  const name = `kq-${spec.jobId}`.toLowerCase().replace(/[^a-z0-9-]/g, "-");
+  const epoch = spec.federationDispatchEpoch;
+  if (epoch === undefined) return name;
+  if (!Number.isSafeInteger(epoch) || epoch < 0)
+    throw new Error("Invalid federation dispatch epoch");
+  const scoped = `${name}-${epoch.toString(36)}`;
+  if (scoped.length > 63) throw new Error("Federation Kubernetes job name is too long");
+  return scoped;
+}
 
 interface K8sJobStatus {
   active?: number;
@@ -114,6 +126,7 @@ export class K8sAdapter implements SchedulerAdapter {
   private tmpDir: string;
   private sandboxSeccompProfile?: K8sAdapterDeps["sandboxSeccompProfile"];
   private jobNamespaces = new Map<string, string>();
+  private jobUids = new Map<string, string>();
 
   constructor(
     readonly version: string,
@@ -144,7 +157,7 @@ export class K8sAdapter implements SchedulerAdapter {
     }
 
     // Sanitise name: k8s labels must be DNS-safe lowercase
-    const jobName = `kq-${spec.jobId}`.toLowerCase().replace(/[^a-z0-9-]/g, "-");
+    const jobName = kubernetesJobName(spec);
 
     const manifest: Record<string, unknown> = {
       apiVersion: "batch/v1",
@@ -154,6 +167,9 @@ export class K8sAdapter implements SchedulerAdapter {
         namespace,
         labels: {
           "kuintessence.io/job-id": spec.jobId,
+          ...(spec.federationDispatchEpoch !== undefined
+            ? { "kuintessence.io/dispatch-epoch": String(spec.federationDispatchEpoch) }
+            : {}),
           "kuintessence.io/job-name": spec.schedulerName ?? spec.name,
           ...(spec.qos ? { "kuintessence.io/qos": spec.qos } : {}),
         },
@@ -201,11 +217,15 @@ export class K8sAdapter implements SchedulerAdapter {
     if (pvcMounts.length > 0 && !sandbox.kubernetesArtifactPvc) {
       throw new Error("Kubernetes Sandbox artifact mounts require a managed PVC");
     }
-    const jobName = `kq-${spec.jobId}`.toLowerCase().replace(/[^a-z0-9-]/g, "-");
+    const jobName = kubernetesJobName(spec);
     const scriptConfigName = `${jobName}-script`;
     const labels = {
       "kuintessence.io/job-id": spec.jobId,
       "kuintessence.io/sandbox": "true",
+      "kuintessence.io/job-name": spec.schedulerName ?? spec.name,
+      ...(spec.federationDispatchEpoch !== undefined
+        ? { "kuintessence.io/dispatch-epoch": String(spec.federationDispatchEpoch) }
+        : {}),
     };
     const limits: Record<string, string> = {
       cpu: String(spec.cpus),
@@ -344,18 +364,24 @@ export class K8sAdapter implements SchedulerAdapter {
     const manifestPath = join(this.tmpDir, `kq-k8s-${spec.jobId}.json`);
     await writeFile(manifestPath, manifestJson);
 
-    const { exitCode, stderr } = await this.spawner.run([
+    const { exitCode, stdout, stderr } = await this.spawner.run([
       "kubectl",
-      "apply",
+      spec.federationDispatchEpoch === undefined ? "apply" : "create",
       "-f",
       manifestPath,
+      ...(spec.federationDispatchEpoch !== undefined
+        ? [
+            "-o",
+            'jsonpath={.kind}{"\\t"}{.metadata.name}{"\\t"}{.metadata.namespace}{"\\t"}{.metadata.uid}{"\\n"}',
+          ]
+        : []),
       "-n",
       spec.sandbox?.identity.backend === "Kubernetes"
         ? spec.sandbox.identity.namespace
         : (spec.queueName ?? this.namespace),
     ]);
     if (exitCode !== 0) {
-      throw new Error(`kubectl apply failed (exit ${exitCode}): ${stderr.trim()}`);
+      throw new Error(`kubectl submission failed (exit ${exitCode}): ${stderr.trim()}`);
     }
 
     const jobResource =
@@ -368,6 +394,26 @@ export class K8sAdapter implements SchedulerAdapter {
       spec.sandbox?.identity.backend === "Kubernetes"
         ? spec.sandbox.identity.namespace
         : (spec.queueName ?? this.namespace);
+    let schedulerUid: string | undefined;
+    if (spec.federationDispatchEpoch !== undefined) {
+      // kubectl prints each List member separately; request identity fields only.
+      const jobs = stdout
+        .trim()
+        .split("\n")
+        .map((line) => line.split("\t"))
+        .filter((fields) => fields[0] === "Job");
+      const job = jobs[0];
+      if (
+        jobs.length !== 1 ||
+        !job ||
+        job.length !== 4 ||
+        job[1] !== jobName ||
+        job[2] !== namespace
+      )
+        throw new Error("Kubernetes submission returned an unexpected identity");
+      schedulerUid = z.string().uuid().parse(job[3]);
+      this.jobUids.set(jobName, schedulerUid);
+    }
     this.jobNamespaces.set(jobName, namespace);
     logger.info(
       {
@@ -377,11 +423,39 @@ export class K8sAdapter implements SchedulerAdapter {
       },
       "Job submitted to Kubernetes",
     );
-    return { schedulerJobId: jobName };
+    return { schedulerJobId: jobName, ...(schedulerUid ? { schedulerUid } : {}) };
   }
 
   async cancel(schedulerJobId: string, lookup?: KuintessenceJobLookup): Promise<void> {
     const namespace = lookup?.namespace ?? this.namespaceFor(schedulerJobId);
+    const uid = lookup?.schedulerUid ?? this.jobUids.get(schedulerJobId);
+    if (lookup?.federationDispatchEpoch !== undefined && !uid)
+      throw new Error("Federation Kubernetes cancellation requires a UID");
+    if (uid) {
+      z.string().uuid().parse(uid);
+      const result = await this.spawner.run(
+        [
+          "kubectl",
+          "delete",
+          "--raw",
+          `/apis/batch/v1/namespaces/${encodeURIComponent(namespace)}/jobs/${encodeURIComponent(schedulerJobId)}`,
+          "-f",
+          "-",
+        ],
+        {
+          timeoutMs: 5000,
+          stdin: JSON.stringify({
+            apiVersion: "v1",
+            kind: "DeleteOptions",
+            propagationPolicy: "Foreground",
+            preconditions: { uid },
+          }),
+        },
+      );
+      if (result.exitCode !== 0)
+        throw new Error("Kubernetes UID-conditional delete was not accepted");
+      return;
+    }
     const { exitCode, stderr } = await this.spawner.run(
       [
         "kubectl",
@@ -403,6 +477,10 @@ export class K8sAdapter implements SchedulerAdapter {
 
   async confirmStopped(schedulerJobId: string, lookup?: KuintessenceJobLookup): Promise<boolean> {
     const namespace = lookup?.namespace ?? this.namespaceFor(schedulerJobId);
+    const uid = lookup?.schedulerUid ?? this.jobUids.get(schedulerJobId);
+    if (lookup?.federationDispatchEpoch !== undefined && !uid)
+      throw new Error("Federation Kubernetes stop confirmation requires a UID");
+    if (uid) z.string().uuid().parse(uid);
     const job = await this.spawner.run(
       [
         "kubectl",
@@ -420,25 +498,24 @@ export class K8sAdapter implements SchedulerAdapter {
     if (job.exitCode !== 0) throw new Error("Kubernetes job stop query failed");
     if (job.stdout.trim()) {
       const value: unknown = JSON.parse(job.stdout);
-      if (
-        !isRecord(value) ||
-        !isRecord(value.metadata) ||
-        value.metadata.name !== schedulerJobId ||
-        !isRecord(value.status)
-      )
-        throw new Error("Kubernetes job stop query returned an invalid identity or status");
-      const conditions = value.status.conditions;
-      if (
-        !Array.isArray(conditions) ||
-        !conditions.some(
-          (condition: unknown) =>
-            isRecord(condition) &&
-            (condition.type === "Complete" || condition.type === "Failed") &&
-            condition.status === "True",
+      if (!isRecord(value) || !isRecord(value.metadata) || value.metadata.name !== schedulerJobId)
+        throw new Error("Kubernetes job stop query returned an invalid identity");
+      if (uid) z.string().uuid().parse(value.metadata.uid);
+      if (!uid || value.metadata.uid === uid) {
+        if (!isRecord(value.status)) throw new Error("Kubernetes job stop status is invalid");
+        const conditions = value.status.conditions;
+        if (
+          !Array.isArray(conditions) ||
+          !conditions.some(
+            (condition: unknown) =>
+              isRecord(condition) &&
+              (condition.type === "Complete" || condition.type === "Failed") &&
+              condition.status === "True",
+          )
         )
-      )
-        return false;
-      if (value.status.active !== undefined && value.status.active !== 0) return false;
+          return false;
+        if (value.status.active !== undefined && value.status.active !== 0) return false;
+      }
     }
     // Pods can outlive deletion of their Job. Owner references also cover pods whose labels changed.
     const pods = await this.spawner.run(["kubectl", "get", "pods", "-n", namespace, "-o", "json"], {
@@ -469,7 +546,23 @@ export class K8sAdapter implements SchedulerAdapter {
         (owner: unknown) =>
           isRecord(owner) && owner.kind === "Job" && owner.name === schedulerJobId,
       );
-      if (!labeled && !owned) continue;
+      if (uid) {
+        const matchingUid =
+          owners.some(
+            (owner: unknown) => isRecord(owner) && owner.kind === "Job" && owner.uid === uid,
+          ) ||
+          (isRecord(labels) &&
+            (labels["controller-uid"] === uid ||
+              labels["batch.kubernetes.io/controller-uid"] === uid));
+        const knownOtherUid = owners.some(
+          (owner: unknown) =>
+            isRecord(owner) &&
+            owner.kind === "Job" &&
+            typeof owner.uid === "string" &&
+            owner.uid !== uid,
+        );
+        if (!matchingUid && ((!labeled && !owned) || knownOtherUid)) continue;
+      } else if (!labeled && !owned) continue;
       if (!isRecord(pod.status) || !["Succeeded", "Failed"].includes(String(pod.status.phase)))
         return false;
     }
@@ -516,26 +609,53 @@ export class K8sAdapter implements SchedulerAdapter {
       } catch {
         return { status: "indeterminate", reason: "kubectl returned non-JSON output" };
       }
-      const data = parsed as { items?: Array<{ metadata?: { name?: string } }> };
-      const names = (data.items ?? [])
-        .map((item) => item.metadata?.name)
-        .filter((name): name is string => !!name);
-      if (names.length === 0) return { status: "not_found" };
-      if (names.length !== 1) {
+      if (!isRecord(parsed) || !Array.isArray(parsed.items))
+        return { status: "indeterminate", reason: "Kubernetes lookup returned an invalid list" };
+      const matches = parsed.items.filter((item: unknown) => {
+        if (!isRecord(item) || !isRecord(item.metadata)) return false;
+        const labels = item.metadata.labels;
+        if (lookup.federationDispatchEpoch !== undefined) {
+          return (
+            isRecord(labels) &&
+            labels["kuintessence.io/job-id"] === lookup.jobId &&
+            labels["kuintessence.io/dispatch-epoch"] === String(lookup.federationDispatchEpoch) &&
+            labels["kuintessence.io/job-name"] === lookup.schedulerName
+          );
+        }
+        return (
+          !lookup.schedulerName ||
+          !isRecord(labels) ||
+          labels["kuintessence.io/job-name"] === undefined ||
+          labels["kuintessence.io/job-name"] === lookup.schedulerName
+        );
+      });
+      if (matches.length === 0) return { status: "not_found" };
+      if (matches.length !== 1)
         return {
           status: "indeterminate",
           reason: "multiple Kubernetes jobs share Kuintessence UUID",
         };
-      }
-      const schedulerJobId = names[0];
-      if (!schedulerJobId) {
+      const item = matches[0];
+      if (
+        !isRecord(item) ||
+        !isRecord(item.metadata) ||
+        typeof item.metadata.name !== "string" ||
+        !item.metadata.name
+      )
         return {
           status: "indeterminate",
           reason: "Kubernetes lookup returned an invalid job name",
         };
-      }
+      const schedulerJobId = item.metadata.name;
+      const schedulerUid =
+        item.metadata.uid === undefined && lookup.federationDispatchEpoch === undefined
+          ? undefined
+          : z.string().uuid().parse(item.metadata.uid);
+      if (lookup.schedulerUid && lookup.schedulerUid !== schedulerUid)
+        return { status: "indeterminate", reason: "Kubernetes job UID was replaced" };
+      if (schedulerUid) this.jobUids.set(schedulerJobId, schedulerUid);
       this.jobNamespaces.set(schedulerJobId, namespace);
-      return { status: "found", schedulerJobId };
+      return { status: "found", schedulerJobId, ...(schedulerUid ? { schedulerUid } : {}) };
     } catch (error) {
       return {
         status: "indeterminate",
@@ -583,7 +703,9 @@ export class K8sAdapter implements SchedulerAdapter {
     const { exitCode, stdout, stderr } = await this.spawner.run([
       "kubectl",
       "logs",
-      `job/${schedulerJobId}`,
+      ...(this.jobUids.has(schedulerJobId)
+        ? ["-l", this.podSelector(schedulerJobId)]
+        : [`job/${schedulerJobId}`]),
       "-n",
       namespace,
       `--tail=${lines}`,
@@ -899,6 +1021,9 @@ export class K8sAdapter implements SchedulerAdapter {
       throw new Error("kubectl returned non-JSON");
     }
 
+    const uid = this.jobUids.get(schedulerJobId);
+    if (uid && (!isRecord(parsed) || !isRecord(parsed.metadata) || parsed.metadata.uid !== uid))
+      throw new Error("Kubernetes job UID was replaced");
     const data = parsed as {
       status?: {
         active?: number;
@@ -937,7 +1062,10 @@ export class K8sAdapter implements SchedulerAdapter {
     return { status: "queued", ...(await this.podReason(schedulerJobId, namespace)) };
   }
 
-  prepareResume(spec: JobSpec, schedulerJobId: string): void {
+  prepareResume(spec: JobSpec, schedulerJobId: string, schedulerUid?: string): void {
+    if (spec.federationDispatchEpoch !== undefined && !schedulerUid)
+      throw new Error("Federation Kubernetes recovery requires its durable UID");
+    if (schedulerUid) this.jobUids.set(schedulerJobId, z.string().uuid().parse(schedulerUid));
     const namespace =
       spec.sandbox?.identity.backend === "Kubernetes"
         ? spec.sandbox.identity.namespace
@@ -947,6 +1075,12 @@ export class K8sAdapter implements SchedulerAdapter {
 
   releaseJob(schedulerJobId: string): void {
     this.jobNamespaces.delete(schedulerJobId);
+    this.jobUids.delete(schedulerJobId);
+  }
+
+  private podSelector(schedulerJobId: string): string {
+    const uid = this.jobUids.get(schedulerJobId);
+    return uid ? `controller-uid=${uid}` : `job-name=${schedulerJobId}`;
   }
 
   private namespaceFor(schedulerJobId: string): string {
@@ -967,7 +1101,7 @@ export class K8sAdapter implements SchedulerAdapter {
         "-n",
         namespace,
         "--selector",
-        `job-name=${schedulerJobId}`,
+        this.podSelector(schedulerJobId),
         "-o",
         "json",
       ]);
@@ -1006,7 +1140,7 @@ export class K8sAdapter implements SchedulerAdapter {
         "-n",
         namespace,
         "--selector",
-        `job-name=${schedulerJobId}`,
+        this.podSelector(schedulerJobId),
         "-o",
         "json",
       ]);
@@ -1072,7 +1206,7 @@ export class K8sAdapter implements SchedulerAdapter {
         "-n",
         namespace,
         "--selector",
-        `job-name=${schedulerJobId}`,
+        this.podSelector(schedulerJobId),
         "-o",
         "json",
       ]);
@@ -1116,7 +1250,7 @@ export class K8sAdapter implements SchedulerAdapter {
         "-n",
         namespace,
         "--selector",
-        `job-name=${schedulerJobId}`,
+        this.podSelector(schedulerJobId),
         "-o",
         'jsonpath={.items[0].spec.nodeName}{"\\t"}{.items[0].status.startTime}',
       ]);

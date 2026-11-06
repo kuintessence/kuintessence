@@ -75,22 +75,63 @@ export class FederationRuntimeWatchdog {
         const active = (await this.active.listActive()).find((job) => job.jobId === row.jobId);
         if (active && active.dispatchId !== row.dispatchId)
           throw new Error("Federation watchdog found a different active dispatch");
+        if (
+          this.adapter.type === "kubernetes" &&
+          prepared.spec.federationDispatchEpoch !== receipt.epoch
+        )
+          throw new Error("Federation Kubernetes submission has no matching epoch");
+        const saved = await this.inbox.runtimeSchedulerIdentity(row.dispatchId);
+        if (
+          saved &&
+          active &&
+          (saved.schedulerJobId !== active.schedulerJobId ||
+            saved.schedulerUid !== active.schedulerUid)
+        )
+          throw new Error("Federation watchdog durable scheduler identities disagree");
         const identity = prepared.spec.sandbox?.identity;
         const lookup = {
           jobId: row.jobId,
           schedulerName: prepared.spec.schedulerName,
           schedulerAccount: identity?.backend === "Unix" ? identity.schedulerAccount : undefined,
-          namespace: identity?.backend === "Kubernetes" ? identity.namespace : undefined,
+          namespace:
+            identity?.backend === "Kubernetes" ? identity.namespace : prepared.spec.queueName,
+          federationDispatchEpoch: prepared.spec.federationDispatchEpoch,
+          schedulerUid: saved?.schedulerUid ?? active?.schedulerUid,
           submittedAfterUnixMs: row.receivedAt.getTime(),
         };
-        const found = await this.adapter.findByKuintessenceJobId?.(lookup);
+        if (saved && saved.namespace !== (lookup.namespace ?? "default"))
+          throw new Error("Federation watchdog scheduler namespace changed");
+        const known = saved ?? (active?.schedulerUid ? active : undefined);
+        const found =
+          this.adapter.type === "kubernetes" && known
+            ? {
+                status: "found" as const,
+                schedulerJobId: known.schedulerJobId,
+                schedulerUid: known.schedulerUid,
+              }
+            : await this.adapter.findByKuintessenceJobId?.(lookup);
         if (found?.status !== "found")
           throw new Error("Federation watchdog cannot establish scheduler submission identity");
         if (active && active.schedulerJobId !== found.schedulerJobId)
           throw new Error("Federation watchdog scheduler identity changed");
-        await this.adapter.prepareResume?.(prepared.spec, found.schedulerJobId);
-        await cancelAndConfirmStopped(this.adapter, found.schedulerJobId, lookup);
-        await this.inbox.recordRuntimeStop(row.dispatchId, found.schedulerJobId);
+        if (this.adapter.type === "kubernetes") {
+          if (!found.schedulerUid) throw new Error("Federation watchdog requires a Kubernetes UID");
+          await this.inbox.bindRuntimeSchedulerIdentity(row.dispatchId, {
+            schedulerJobId: found.schedulerJobId,
+            schedulerUid: found.schedulerUid,
+            namespace: lookup.namespace ?? "default",
+          });
+        }
+        await this.adapter.prepareResume?.(prepared.spec, found.schedulerJobId, found.schedulerUid);
+        await cancelAndConfirmStopped(this.adapter, found.schedulerJobId, {
+          ...lookup,
+          schedulerUid: found.schedulerUid,
+        });
+        await this.inbox.recordRuntimeStop(
+          row.dispatchId,
+          found.schedulerJobId,
+          found.schedulerUid,
+        );
         this.logger.info(
           { jobId: row.jobId, dispatchEpoch: receipt.epoch },
           "Federation watchdog confirmed scheduler stop",

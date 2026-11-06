@@ -67,6 +67,7 @@ export interface JobRunnerDeps {
     spec: JobSpec,
     schedulerJobId: string,
     expectedOutputs: ExpectedOutput[],
+    schedulerUid?: string,
   ) => void | Promise<void>;
   onSchedulerSubmitting?: (
     spec: JobSpec,
@@ -94,6 +95,7 @@ export class JobRunner {
   private killed = false;
   private pendingKill: Promise<void> | undefined;
   private schedulerJobId: string | null = null;
+  private schedulerUid: string | undefined;
   private jobId: string | null = null;
   private jobFinished = false;
   private schedulerSubmissionStarted = false;
@@ -142,9 +144,15 @@ export class JobRunner {
 
     const schedulerJobId = attempt.result.schedulerJobId;
     this.schedulerJobId = schedulerJobId;
+    this.schedulerUid = attempt.result.schedulerUid;
     this.logger.info({ jobId: spec.jobId, schedulerJobId }, "Job submitted to scheduler");
     try {
-      await this.deps.onSchedulerSubmitted?.(spec, schedulerJobId, expectedOutputs);
+      await this.deps.onSchedulerSubmitted?.(
+        spec,
+        schedulerJobId,
+        expectedOutputs,
+        this.schedulerUid,
+      );
       await this.deps.onStatusUpdate({
         jobId: spec.jobId,
         status: "queued",
@@ -277,10 +285,12 @@ export class JobRunner {
     spec: JobSpec,
     schedulerJobId: string,
     expectedOutputs: ExpectedOutput[] = [],
+    schedulerUid?: string,
   ): Promise<string> {
     this.jobId = spec.jobId;
     this.schedulerJobId = schedulerJobId;
-    await this.deps.adapter.prepareResume?.(spec, schedulerJobId);
+    this.schedulerUid = schedulerUid;
+    await this.deps.adapter.prepareResume?.(spec, schedulerJobId, schedulerUid);
     this.logger.info({ jobId: spec.jobId, schedulerJobId }, "Resuming scheduler job polling");
     await this.pollUntilTerminal(spec, schedulerJobId, expectedOutputs, true);
     return schedulerJobId;
@@ -446,7 +456,13 @@ export class JobRunner {
     if (this.pendingKill) return this.pendingKill;
     const schedulerJobId = this.schedulerJobId;
     const kill = async () => {
-      await cancelAndConfirmStopped(this.deps.adapter, schedulerJobId);
+      await cancelAndConfirmStopped(
+        this.deps.adapter,
+        schedulerJobId,
+        this.schedulerUid && this.jobId
+          ? { jobId: this.jobId, schedulerUid: this.schedulerUid }
+          : undefined,
+      );
       this.killed = true;
       this.logger.info({ jobId: this.jobId, schedulerJobId }, "Scheduler job stop confirmed");
     };

@@ -270,7 +270,7 @@ describe("K8sAdapter.submit (with mock spawner)", () => {
       { exitCode: 1, stdout: "", stderr: 'namespaces "kq-ns" not found' },
     ]);
     const adapter = new K8sAdapter("v1.28.0", { spawner, namespace: "kq-ns", tmpDir: "/tmp" });
-    await expect(adapter.submit(baseSpec)).rejects.toThrow(/kubectl apply failed/);
+    await expect(adapter.submit(baseSpec)).rejects.toThrow(/kubectl submission failed/);
   });
 });
 
@@ -723,4 +723,153 @@ test("a remaining job-labeled Pod is not ignored when its owner reference is mis
     },
   ]);
   expect(await new K8sAdapter("v1.28.0", { spawner }).confirmStopped("original")).toBe(false);
+});
+
+describe("federation Kubernetes identity", () => {
+  const uid = "00000000-0000-4000-8000-000000000001";
+  const replacementUid = "00000000-0000-4000-8000-000000000002";
+  const lookup = {
+    jobId: baseSpec.jobId,
+    namespace: "tenant-ns",
+    schedulerUid: uid,
+    federationDispatchEpoch: 5,
+  };
+
+  test("creates an epoch-scoped Job and retains the API UID", async () => {
+    const name = `kq-${baseSpec.jobId}-5`;
+    const { spawner, calls } = mockSpawner([
+      {
+        exitCode: 0,
+        stdout: `NetworkPolicy\tpolicy\ttenant-ns\t${replacementUid}\nConfigMap\tscript\ttenant-ns\t${replacementUid}\nJob\t${name}\ttenant-ns\t${uid}\n`,
+      },
+    ]);
+    const adapter = new K8sAdapter("test", { spawner });
+    const spec = { ...baseSpec, queueName: "tenant-ns", federationDispatchEpoch: 5 };
+    expect(adapter.buildJobManifest(spec)).toMatchObject({
+      metadata: {
+        name,
+        labels: { "kuintessence.io/dispatch-epoch": "5" },
+      },
+    });
+    expect(await adapter.submit(spec)).toEqual({ schedulerJobId: name, schedulerUid: uid });
+    expect(calls[0]).toContain("create");
+    expect(calls[0]?.some((arg) => arg.startsWith("jsonpath="))).toBe(true);
+  });
+
+  test("raw DELETE carries an API UID precondition and the original namespace", async () => {
+    let called = false;
+    const adapter = new K8sAdapter("test", {
+      spawner: {
+        run: async (args, options) => {
+          expect(args).toEqual([
+            "kubectl",
+            "delete",
+            "--raw",
+            "/apis/batch/v1/namespaces/tenant-ns/jobs/original",
+            "-f",
+            "-",
+          ]);
+          expect(JSON.parse(String(options?.stdin))).toEqual({
+            apiVersion: "v1",
+            kind: "DeleteOptions",
+            propagationPolicy: "Foreground",
+            preconditions: { uid },
+          });
+          called = true;
+          return { exitCode: 0, stdout: "", stderr: "" };
+        },
+      },
+    });
+    await adapter.cancel("original", lookup);
+    expect(called).toBe(true);
+    await expect(
+      adapter.cancel("unknown", { jobId: "unknown", federationDispatchEpoch: 5 }),
+    ).rejects.toThrow("requires a UID");
+    expect(() =>
+      adapter.prepareResume({ ...baseSpec, federationDispatchEpoch: 5 }, "original"),
+    ).toThrow("durable UID");
+  });
+
+  test.each([
+    true,
+    false,
+  ])("same-name replacement cannot hide an original running Pod (remaining=%s)", async (remaining) => {
+    const { spawner } = mockSpawner([
+      {
+        exitCode: 0,
+        stdout: JSON.stringify({
+          metadata: { name: "original", uid: replacementUid },
+          status: { active: 1 },
+        }),
+      },
+      {
+        exitCode: 0,
+        stdout: JSON.stringify({
+          items: [
+            {
+              metadata: {
+                ownerReferences: [{ kind: "Job", name: "original", uid: replacementUid }],
+              },
+              status: { phase: "Running" },
+            },
+            ...(remaining
+              ? [
+                  {
+                    metadata: { ownerReferences: [{ kind: "Job", name: "original", uid }] },
+                    status: { phase: "Running" },
+                  },
+                ]
+              : []),
+          ],
+        }),
+      },
+    ]);
+    expect(await new K8sAdapter("test", { spawner }).confirmStopped("original", lookup)).toBe(
+      !remaining,
+    );
+  });
+
+  test("controller UID still identifies an original Pod after its name labels and owner were removed", async () => {
+    const { spawner } = mockSpawner([
+      { exitCode: 0, stdout: "" },
+      {
+        exitCode: 0,
+        stdout: JSON.stringify({
+          items: [
+            { metadata: { labels: { "controller-uid": uid } }, status: { phase: "Running" } },
+          ],
+        }),
+      },
+    ]);
+    expect(await new K8sAdapter("test", { spawner }).confirmStopped("original", lookup)).toBe(
+      false,
+    );
+  });
+
+  test("recovery cannot select another epoch or adopt a replacement UID", async () => {
+    const item = (epoch: number, id: string) => ({
+      metadata: {
+        name: `kq-${baseSpec.jobId}-${epoch}`,
+        uid: id,
+        labels: {
+          "kuintessence.io/job-id": baseSpec.jobId,
+          "kuintessence.io/dispatch-epoch": String(epoch),
+          "kuintessence.io/job-name": "kf5",
+        },
+      },
+    });
+    const { spawner } = mockSpawner([
+      { exitCode: 0, stdout: JSON.stringify({ items: [item(4, replacementUid), item(5, uid)] }) },
+      { exitCode: 0, stdout: JSON.stringify({ items: [item(5, replacementUid)] }) },
+    ]);
+    const adapter = new K8sAdapter("test", { spawner });
+    expect(await adapter.findByKuintessenceJobId({ ...lookup, schedulerName: "kf5" })).toEqual({
+      status: "found",
+      schedulerJobId: `kq-${baseSpec.jobId}-5`,
+      schedulerUid: uid,
+    });
+    expect(
+      await adapter.findByKuintessenceJobId({ ...lookup, schedulerName: "kf5" }),
+    ).toMatchObject({ status: "indeterminate" });
+  });
 });

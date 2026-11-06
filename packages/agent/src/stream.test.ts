@@ -9423,3 +9423,82 @@ test.each([
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test.each([
+  false,
+  true,
+])("Kubernetes cancellation preserves receipt-only UID after active-row loss (conflict=%s)", async (conflict) => {
+  const db = createSqliteDb(":memory:");
+  const inbox = new InboundAcks(db);
+  const active = new ActiveRemoteJobs(db);
+  const jobId = crypto.randomUUID();
+  const dispatchId = `${jobId}:5`;
+  const schedulerUid = crypto.randomUUID();
+  const spec = {
+    jobId,
+    name: "test",
+    command: "sleep 60",
+    cpus: 1,
+    memoryMb: 32,
+    gpus: 0,
+    wallTimeSec: 60,
+    workingDir: "/tmp",
+    envVars: {},
+    queueName: "original-ns",
+    schedulerName: "kf5",
+    federationDispatchEpoch: 5,
+  };
+  await inbox.persistInbound({ dispatchId, jobId, payload: { federationExecution: true } });
+  await inbox.markSubmissionStarted(
+    dispatchId,
+    { spec, expectedOutputs: [] },
+    { owner: "old", expiresAt: Date.now() + 1000, state: "stopping" },
+  );
+  await inbox.bindRuntimeSchedulerIdentity(dispatchId, {
+    schedulerUid,
+    schedulerJobId: "original",
+    namespace: "original-ns",
+  });
+  if (conflict)
+    await active.recordSubmitted({
+      dispatchId,
+      spec,
+      schedulerJobId: "original",
+      schedulerUid: crypto.randomUUID(),
+      expectedOutputs: [],
+    });
+  let cancelled = false;
+  const stream = new AgentStream({
+    client: makeMockClient([]).client,
+    agentId: "agent",
+    siteName: "site",
+    heartbeatIntervalMs: 60000,
+    logger: silent,
+    inboundAcks: inbox,
+    activeRemoteJobs: active,
+    adapter: {
+      type: "kubernetes",
+      version: "test",
+      submit: async () => {
+        throw new Error("No resubmission");
+      },
+      status: async () => ({ status: "running" }),
+      confirmStopped: async () => true,
+      cancel: async (id, lookup) => {
+        expect(id).toBe("original");
+        expect(lookup).toMatchObject({
+          schedulerUid,
+          namespace: "original-ns",
+          federationDispatchEpoch: 5,
+        });
+        cancelled = true;
+      },
+    },
+  });
+  activeStreams.push(stream);
+  const harness = stream as unknown as { performJobCancellation: (id: string) => Promise<void> };
+  if (conflict)
+    await expect(harness.performJobCancellation(jobId)).rejects.toThrow("identities disagree");
+  else await harness.performJobCancellation(jobId);
+  expect(cancelled).toBe(!conflict);
+});
