@@ -73,7 +73,7 @@
 
 ### 接单的事务边界
 
-接收方的 `GET /api/federation/agreements/:revisionId/reservations` 分别返回接单预留、材料准备和本地 Workflow 状态。`preparation.state=resolved` 只表示引用已解析，不能据此显示“执行成功”；`workflow` 在未绑定运行时为 null，绑定后包含 `runId/status/errorCode/updatedAt`。查询沿用协议读取能力与当前组织检查，不返回脚本、输入、结果或原始错误文本；此接口是接收方本地管理查询，不是已接通的跨机构状态回传。
+接收方的 `GET /api/federation/agreements/:revisionId/reservations` 分别返回接单预留、材料准备和本地 Workflow 状态。`preparation.state=resolved` 只表示引用已解析，不能据此显示“执行成功”；`workflow` 在未绑定运行时为 null，绑定后包含 `runId/status/errorCode/updatedAt`。查询沿用协议读取能力与当前组织检查，不返回脚本、输入、结果或原始错误文本；此接口是接收方本地管理查询；源站的跨机构查询见下文“签名运行状态查询”。
 
 接收端自动入队前先复用现有 PlacementPlanService 生成持久资源计划，供 Script 按目标解析本地运行契约。联邦规划候选必须匹配双签目标中的提供方、集群与 Agent；Script 镜像类型和摘要必须匹配签署的环境锁。规划不授予派发权，最终派发及续期继续检查队列、账号、软件、数据和协议当前授权。
 
@@ -118,7 +118,19 @@ worker 用短事务领取最多 60 秒的处理租约，在网络发送前完成
 
 接单窗口过后，仅重放原 JWS 以取回接收方已保存的回执，不续签新期限，不生成新操作；没有既有预留的接收端仍按原期限拒绝首次接单。未知交付、超时、坏回执不释放额度。源站在预算域/epoch 锁内汇总原请求金额与数量，阻止并发超额及复制到其他协议；当前尚无结算释放，accepted 也继续占用原预留。新 worker 领取后，旧 worker 不能覆盖其状态。
 
-发送后的接单回执是历史事实：本地授权在网络调用期间失效，不会把已收到的可信接单回执抹掉。后续不得未经授权再发送；远端撤销/停止确认仍需要专用协议。当前出站入口是独立的委派 API，普通 Workflow 的远端节点选择、运行状态与结果回传、撤销消息、退款与结算尚待接通。原 `ledger_coordinated` 仍受链许可门槛限制。
+发送后的接单回执是历史事实：本地授权在网络调用期间失效，不会把已收到的可信接单回执抹掉。后续不得未经授权再发送；远端撤销/停止确认仍需要专用协议。当前出站入口是独立的委派 API，普通 Workflow 的远端节点选择、结果交付、撤销消息、退款与结算尚待接通；源站按需查询运行状态见下节。原 `ledger_coordinated` 仍受链许可门槛限制。
+
+### 签名运行状态查询
+
+源站 `GET /api/federation/outbound/:operationId/remote-status` 要求当前组织的 `delegation.read`（submit 包含 read），仅查询已验收接单回执的原操作。接收方独立 mTLS 网关新增 `POST /federation/v1/status`，仍只转发固定路径及由真实 TLS 证书生成的指纹；普通 Web 端口不挂载该机构入口。
+
+每次查询签署新的 `status-query`，包含随机 queryId、原委派 operation/task/attempt、协议修订、reservationId、requestDigest 和最长 60 秒的期限。响应 `status-report` 绑定完整查询摘要、queryId 和原任务身份，返回 observedAt、材料准备与 Workflow 状态及各自更新时间；未准备/未绑定为 null。`cancelling` 不等于 `cancelled`；`completed` 是接收方声明的 Workflow 终态，不证明结果已传回、科学结果正确或已经结算。响应禁止脚本、结果正文、原始错误、日志和本地用户/运行标识。
+
+两端必须在 trust registry 显式为机构签名密钥登记新用途：源端 `status-query`、接收端 `status-report`。旧记录不会自动扩权；既有密钥用途不可原地覆盖，按原轮换流程登记新 keyId、向对端提供对应公钥并更新 Server 签名配置，保留原委派/接单验签所需旧记录。mTLS 客户端配置沿用上一节。用途缺失拒绝查询，不能退回 unsigned JSON。
+
+历史状态查询不重新批准作业，所以不以原接单窗口、执行期限或协议到期为查询截止，也不复用执行身份或材料 use 权限。必须保持当前机构/证书/签名密钥可信，以及源站查询者的当前组织读取权限。接收方按原预留的 sender、接收机构和完整任务身份限制查询；签署前后复核信任。源站在网络请求后再次核对读取权限及签名信任，校验查询有效期、身份、摘要和观测时间（最多 60 秒时钟偏差）。签署及网络不占数据库事务。
+
+接口按需向原登记端点请求，不缓存/持久化为最新运行状态；无后台轮询、结果下载或自动推进源站 Workflow。网络故障返回 503，坏传输响应为 502，签名/身份冲突拒绝；均不改写 accepted、预算或任务状态。返回 report、reportJws 和 verifiedAt，HTTP 设置 no-store。端点与委派记录不符时返回冲突，目前已接单操作的端点迁移仍待专用维护流程。
 
 ### 机构协议 API
 

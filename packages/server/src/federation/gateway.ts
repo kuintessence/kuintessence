@@ -30,7 +30,10 @@ export function createFederationGateway(options: FederationGatewayOptions) {
         res.writeHead(401).end();
         return;
       }
-      if (req.method !== "POST" || req.url !== "/federation/v1/delegations") {
+      if (
+        req.method !== "POST" ||
+        (req.url !== "/federation/v1/delegations" && req.url !== "/federation/v1/status")
+      ) {
         res.writeHead(404).end();
         return;
       }
@@ -58,7 +61,7 @@ export function createFederationGateway(options: FederationGatewayOptions) {
         {
           socketPath: options.socketPath,
           method: "POST",
-          path: "/federation/v1/delegations",
+          path: req.url,
           // Deliberate allowlist: never forward client identity, cookies, authorization or proxy headers.
           headers: {
             "content-type": "application/jose",

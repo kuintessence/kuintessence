@@ -39,9 +39,18 @@ export const FederationKeyInput = z
     keyId: z.string().regex(/^[a-zA-Z0-9_.:-]{1,128}$/),
     publicKeyPem: z.string().min(1).max(16384),
     allowedKinds: z
-      .array(z.enum(["agreement", "delegation", "acceptance", "evidence-batch"]))
+      .array(
+        z.enum([
+          "agreement",
+          "delegation",
+          "acceptance",
+          "evidence-batch",
+          "status-query",
+          "status-report",
+        ]),
+      )
       .min(1)
-      .max(4),
+      .max(6),
     validFrom: z.iso.datetime(),
     validUntil: z.iso.datetime(),
   })

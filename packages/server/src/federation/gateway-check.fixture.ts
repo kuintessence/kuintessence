@@ -89,6 +89,7 @@ try {
   const socketPath = join(dir, "backend.sock");
   const backend = createServer(async (req, res) => {
     calls++;
+    assert.ok(["/federation/v1/delegations", "/federation/v1/status"].includes(req.url ?? ""));
     assert.equal(
       req.headers["x-kq-federation-cert"],
       new X509Certificate(cert).fingerprint256.replaceAll(":", "").toLowerCase(),
@@ -153,6 +154,8 @@ try {
     });
   try {
     assert.deepEqual(await call({ cert, key }), { status: 200, body: "signed.receipt.bytes" });
+    assert.equal((await call({ cert, key }, "/federation/v1/status")).status, 200);
+    assert.equal((await call({ cert, key }, "/federation/v1/status?peer=forged")).status, 404);
     await assert.rejects(call({}));
     await assert.rejects(call({ cert: await pem("rogue.pem"), key: await pem("rogue.key") }));
     assert.equal((await call({ cert, key }, "/api/admin/federation/sites")).status, 404);
@@ -161,7 +164,7 @@ try {
       (await call({ cert, key }, "/federation/v1/delegations", "x".repeat(524289))).status,
       413,
     );
-    assert.equal(calls, 1);
+    assert.equal(calls, 2);
     await new Promise<void>((resolve, reject) =>
       backend.close((error) => (error ? reject(error) : resolve())),
     );

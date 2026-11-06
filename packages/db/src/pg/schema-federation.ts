@@ -48,7 +48,16 @@ export const federationSigningKeys = pgTable(
     keyId: varchar("key_id", { length: 128 }).notNull(),
     publicKeyPem: text("public_key_pem").notNull(),
     allowedKinds: jsonb("allowed_kinds")
-      .$type<("agreement" | "delegation" | "acceptance" | "evidence-batch")[]>()
+      .$type<
+        (
+          | "agreement"
+          | "delegation"
+          | "acceptance"
+          | "evidence-batch"
+          | "status-query"
+          | "status-report"
+        )[]
+      >()
       .notNull(),
     validFrom: timestamp("valid_from", { withTimezone: true }).notNull(),
     validUntil: timestamp("valid_until", { withTimezone: true }).notNull(),

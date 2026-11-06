@@ -4,6 +4,7 @@ import { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { z } from "zod";
 import type { FederationOutboundService } from "../federation/outbound";
+import { FederationDeliveryError } from "../federation/outbound-client";
 import type { FederationActor } from "../federation/permissions";
 import type { BoundPrincipal } from "../middleware/principal-binder";
 import { kqValidator } from "../middleware/validator";
@@ -23,6 +24,11 @@ export function createFederationOutboundRoutes(service: FederationOutboundServic
   });
   r.use("/federation/outbound/*", bodyLimit({ maxSize: 524288 }));
   r.onError((error, c) => {
+    if (error instanceof FederationDeliveryError)
+      return c.json(
+        { error: { code: error.code } },
+        error.code === "DELIVERY_UNAVAILABLE" ? 503 : 502,
+      );
     if (error instanceof FederationError)
       return c.json(
         { error: { code: error.code } },
@@ -59,6 +65,20 @@ export function createFederationOutboundRoutes(service: FederationOutboundServic
     async (c) => {
       await service.retry(c.get("federationActor"), c.req.valid("param").operationId);
       return c.json({ success: true });
+    },
+  );
+  r.get(
+    "/federation/outbound/:operationId/remote-status",
+    kqValidator("param", z.object({ operationId: z.uuid() })),
+    async (c) => {
+      c.header("cache-control", "no-store");
+      return c.json({
+        success: true,
+        data: await service.remoteStatus(
+          c.get("federationActor"),
+          c.req.valid("param").operationId,
+        ),
+      });
     },
   );
   return r;

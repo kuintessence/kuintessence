@@ -1,6 +1,6 @@
 # 联邦机构认证入口
 
-当前只接通签名委派的额度预留，不创建或执行 Job。另有独立的 [Fabric 证据链码与 Adapter](fabric-evidence.md)，已接通 Server outbox 和恢复 worker，真实链验收仍未完成。完整目标与边界见[实现进展](../../docs/design/federation/progress.md)。不要将入口连通作为完整联邦验收结果。
+当前已接通源站持久发送、接收方原子接单、准备后的授权入队，以及源站签名运行状态查询；本机双平台真实 Kubernetes 文件工作流已通过。另有独立的 [Fabric 证据链码与 Adapter](fabric-evidence.md)，已接通 Server outbox 和恢复 worker，并通过真实 Fabric 隐私/背书与断链恢复验证；完整作业与链联合验收仍未完成。完整目标与边界见[实现进展](../../docs/design/federation/progress.md)。不要将入口连通作为完整联邦验收结果。
 
 ## 认证路径
 
@@ -14,7 +14,7 @@
                               PostgreSQL 原子预留
 ```
 
-Gateway 使用 Node 22，强制校验客户端证书链，按实际 TLS 证书计算 SHA-256 指纹。客户端提供的身份头、Authorization、Cookie、代理头均不转发。Bun 私有入口按指纹查本地登记，验证机构签名，并在接单事务中锁定、复查信任状态。普通 Server HTTP 端口没有 `/federation/v1/delegations` 路由。
+Gateway 使用 Node 22，强制校验客户端证书链，按实际 TLS 证书计算 SHA-256 指纹。客户端提供的身份头、Authorization、Cookie、代理头均不转发。Bun 私有入口按指纹查本地登记，验证机构签名，并在接单事务中锁定、复查信任状态。网关只允许 `/federation/v1/delegations` 和 `/federation/v1/status`；普通 Server HTTP 端口不挂载这两个机构路由。
 
 Unix socket 只允许 Server 与 Gateway 的相同系统 UID 访问。独立目录须为该 UID 所有、权限 0700；socket 为 0600。运行时拒绝公开目录和权限过宽的签名私钥。Gateway 与 Server 属于同一机构的信任边界，不能把此 socket 挂给其他机构容器。各机构使用独立目录、数据库和签名密钥。
 
@@ -49,7 +49,24 @@ docker compose --project-directory . \
 
 宿主机设置的 `FEDERATION_SIGNING_KEY_FILE` 和三个 `FEDERATION_TLS_*_FILE` 指向部署方管理的文件。缺失变量使 Compose 直接报错。示例采用当前 Server 镜像的默认 UID；变更 UID 时须同步两端及宿主机文件所有者。Gateway 默认只发布到 `127.0.0.1:3443`；跨机构部署时明确配置 `FEDERATION_TLS_BIND`、防火墙和 TLS 直通入口。不得让 HTTP 代理终止 TLS 后伪造证书头。
 
-此叠加文件无任何 Fabric 服务或依赖。Gateway 缺失或上游不可用时返回失败，客户端后续须使用同一个 operationId 核对/重试。当前尚无完整源站发送器、状态核对接口或 Helm 联邦配置。Docker/Compose 镜像运行尚待预览环境验证。
+此叠加文件无任何 Fabric 服务或依赖。Gateway 缺失或上游不可用时返回失败，客户端后续须使用同一个 operationId 核对/重试。源站发送器和按需签名状态查询已接通，启用方式见下节；完整 Helm 联邦配置、Docker/Compose 镜像运行尚待预览环境验证。
+
+## 源站发送与状态查询
+
+Server 另行配置 `FEDERATION_CLIENT_CERT_FILE`、`FEDERATION_CLIENT_KEY_FILE`、`FEDERATION_CLIENT_CA_FILE` 三个绝对路径，必须同时提供。客户端私钥由 Server UID 持有，权限 0600；客户端证书须在对端按机构登记。Compose 入口叠加文件当前仅配置接收入站，源站部署须额外将上述文件只读挂载给 Server 并设置容器内路径；不复用 Agent 凭据。
+
+平台管理员为活动组织成员显式分配 `delegation.submit` 或 `delegation.read`，前者包含读取权。两端登记原协议/模板/材料，交换同一条款的签名后，源站使用人类登录 session 调用：
+
+| 方法与完整路径 | 用途 |
+| --- | --- |
+| `POST /api/federation/outbound` | 提交签名委派原字段，202 表示已持久入队 |
+| `GET /api/federation/outbound` | 组织内出站操作分页清单，accepted 仅表示可信接单 |
+| `POST /api/federation/outbound/:operationId/retry` | 按原操作/JWS 重试，并确认采用同一对端当前登记端点 |
+| `GET /api/federation/outbound/:operationId/remote-status` | 按需取得签名准备/运行状态，响应含观测时间及验签时间 |
+
+签名状态查询须为源端密钥登记 `status-query`、接收端密钥登记 `status-report` 用途；旧记录不自动扩权，按新 keyId 轮换并保留历史验证所需密钥。每次查询使用独立 challenge 和一分钟有效期，绑定原任务/预留/摘要，不返回结果正文或内部账号。当前组织读取权和机构信任必须有效；原协议到期不阻止历史状态核对。网络不通返回明确错误，不将接单等同于完成。
+
+出站与状态接口不依赖 Fabric。额度尚未接通结算释放；源站结果交付、远端取消确认、后台状态同步、普通 Workflow 自动委派和已接单端点迁移仍待完成。详细契约见[实现说明](../../docs/design/federation/implementation.md#源站持久发送)。
 
 ## 本地信任管理 API
 
@@ -62,7 +79,7 @@ docker compose --project-directory . \
 | `GET /sites/:siteId` | 机构详情、登记公钥和证书及其有效期/撤销状态 |
 | `PUT /sites/:siteId` | `{name,endpoint}`；不能改机构 ID |
 | `POST /sites/:siteId/state` | `{state: active或suspended或revoked}`；revoked 不可恢复 |
-| `POST /sites/:siteId/keys` | `{keyId,publicKeyPem,allowedKinds,validFrom,validUntil}`；用途为 agreement/delegation/acceptance/evidence-batch |
+| `POST /sites/:siteId/keys` | `{keyId,publicKeyPem,allowedKinds,validFrom,validUntil}`；用途为 agreement/delegation/acceptance/evidence-batch/status-query/status-report |
 | `POST /sites/:siteId/certificates` | `{certificatePem}`；服务端计算指纹及有效期 |
 | `POST /sites/:siteId/revoke` | `{keyId}` 或 `{fingerprint}`；永久撤销 |
 
@@ -79,7 +96,7 @@ docker compose --project-directory . \
 
 ## 协议审批 API
 
-平台管理员通过 `GET /api/admin/federation/capabilities?orgId=...` 查询授权，或 `PUT /api/admin/federation/capabilities` 提交 `{orgId,userId,capability,enabled}`。capability 为 `agreement.read` 或 `agreement.approve`，后者包含读取权。被授权人必须是该组织的当前真人成员；自动化凭据和受限服务账号不能代表机构审批。平台管理员如需审批，也必须被显式授予该组织权限。
+平台管理员通过 `GET /api/admin/federation/capabilities?orgId=...` 查询授权，或 `PUT /api/admin/federation/capabilities` 提交 `{orgId,userId,capability,enabled}`。审批相关 capability 为 `agreement.read` 或 `agreement.approve`，后者包含读取权。被授权人必须是该组织的当前真人成员；自动化凭据和受限服务账号不能代表机构审批。平台管理员如需审批，也必须被显式授予该组织权限。
 
 审批人切换到目标本地组织后，使用现有登录 session 调用：
 
@@ -93,7 +110,7 @@ docker compose --project-directory . \
 
 `orgId`、审批人和签名私钥不能从请求正文指定；机构 ID 来自部署配置，组织及审批人来自当前会话和数据库成员/授权校验。本站用于协议签署的登记公钥还须有 `agreement` 用途。签名密钥轮换后，旧批准仍按原 keyId 验证，不静默改写旧证据。
 
-两端可交换返回的 `approvalJws`，分别导入对方签名。目前这一步是明确的 API 操作，尚无自动协议协商发送器或 UI。源方只记录双签，额度以接收方已安装协议为准。接收方本地暂停会阻止继续接单；源方本地暂停不证明远端运行任务已停止，跨站撤销确认尚待实现。链协调模式当前仍明确拒绝，不会降级为双边模式。
+两端可交换返回的 `approvalJws`，分别导入对方签名。目前这一步是明确的 API 操作，尚无自动协议协商发送器或 UI。源方记录双签，并在实际出站提交时预留本地预算；接收方仍按自己已安装的协议独立检查和预留额度。接收方本地暂停会阻止继续接单；源方本地暂停不证明远端运行任务已停止，跨站撤销确认尚待实现。链协调模式当前仍明确拒绝，不会降级为双边模式。
 
 ## 资源映射和材料准备
 

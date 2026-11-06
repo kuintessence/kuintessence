@@ -44,7 +44,14 @@ export interface FederationVerificationKey {
   validFrom: Date;
   validUntil: Date;
   revoked: boolean;
-  allowedKinds: readonly ("agreement" | "delegation" | "acceptance" | "evidence-batch")[];
+  allowedKinds: readonly (
+    | "agreement"
+    | "delegation"
+    | "acceptance"
+    | "evidence-batch"
+    | "status-query"
+    | "status-report"
+  )[];
 }
 
 // This wire format requires compact JSON, preserving property order. The equality rejects duplicate

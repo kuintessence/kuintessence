@@ -1,6 +1,6 @@
 # 当前功能与使用边界
 
-源站现已支持持久委派 API 和后台 mTLS 自动发送，固定原操作/JWS 重试、额度预留及租约恢复；accepted 仅代表可信接单，尚无结算释放。两个生产 Server 与独立数据库的本机联合验收已通过：A API 重复提交保持同一操作，B 自动运行真实 Kubernetes 双 Script 文件链，输出 `42` → `verified:42`，不依赖 Fabric。当前仍需分别登记两端材料，A 尚无远端完成/结果回传和取消确认；不等于多主机、Slurm/PBS 或完整联盟链验收。详见[源站与双平台验收](../design/federation/progress.md#源站持久发送与真实双平台验收)。
+源站现已支持持久委派 API 和后台 mTLS 自动发送，固定原操作/JWS 重试、额度预留及租约恢复；accepted 仅代表可信接单，尚无结算释放。两个生产 Server 与独立数据库的本机联合验收已通过：A API 重复提交保持同一操作，B 自动运行真实 Kubernetes 双 Script 文件链，输出 `42` → `verified:42`，不依赖 Fabric。A 已新增按需签名运行状态查询，在真实双平台运行后取得并验证 B 的 completed 状态；查询绑定随机 challenge 与原任务，防止重放/串单，读取权限在网络返回后复查。当前仍需分别登记两端材料，结果交付、远端取消确认、源站后台同步与普通 Workflow 自动委派尚未接通；不等于多主机、Slurm/PBS 或完整联盟链验收。详见[签名运行状态查询](../design/federation/progress.md#源站签名运行状态查询)。
 
 已有一个接收站点内的真实 Kubernetes 联邦文件流水线通过：两个脚本按依赖顺序执行，首个文件经 RustFS 上传、下载与摘要校验后被下游读取，结果产物发布为 Persistent；重复委派保持一个运行，无 Fabric 依赖。修复 PVC 路径共用、输出目录未准备、可选输出误报和 Agent 文本读取路径错误。该轮尚未覆盖两个平台；后续本机双平台已通过，Slurm/PBS 跨站验收仍未完成，PVC 自动回收也待补，见[文件联调记录](../design/federation/progress.md#kubernetes-联邦文件流水线)。
 

@@ -8,12 +8,15 @@ import {
 import { AppError, createLogger } from "@kuintessence/shared";
 import {
   assertDelegationPolicy,
+  assertFederationStatusReport,
   FederationAcceptanceSchema,
   FederationAgreementSchema,
   type FederationAssetRef,
   type FederationDelegation,
   FederationDelegationSchema,
   FederationError,
+  FederationStatusQuerySchema,
+  FederationStatusReportSchema,
   federationCanonicalJson,
 } from "@kuintessence/shared/federation";
 import { and, asc, desc, eq, lte, or, sql } from "drizzle-orm";
@@ -327,6 +330,74 @@ export class FederationOutboundService {
         diff: { before: { endpoint: row.endpoint }, after: { endpoint: target.endpoint } },
       });
     });
+  }
+
+  async remoteStatus(actor: FederationActor, operationId: string) {
+    const authorize = async (tx: FederationTransaction) => {
+      await requireFederationCapability(tx, actor, "delegation.read");
+      const [row] = await tx
+        .select()
+        .from(federationOutbound)
+        .where(and(this.key(operationId), eq(federationOutbound.localOrgId, actor.orgId)));
+      if (!row) throw new FederationError("POLICY_DENIED");
+      if (row.state !== "accepted" || !row.receipt) throw new FederationError("OPERATION_CONFLICT");
+      const [target] = await tx
+        .select()
+        .from(federationSites)
+        .where(eq(federationSites.id, row.request.recipientSiteId))
+        .for("share");
+      if (!target || target.state !== "active") throw new FederationError("UNTRUSTED_IDENTITY");
+      if (target.endpoint !== row.endpoint) throw new FederationError("OPERATION_CONFLICT");
+      await this.trust.assertKey(tx, this.signingKey.siteId, this.signingKey.keyId, this.clock());
+      return { row, receipt: row.receipt };
+    };
+    const { row, receipt } = await this.db.transaction(authorize);
+    const ownKey = await this.trust.resolveKey(
+      this.signingKey.siteId,
+      this.signingKey.keyId,
+      this.clock(),
+    );
+    const query = FederationStatusQuerySchema.parse({
+      protocolVersion: 1,
+      kind: "status-query",
+      queryId: crypto.randomUUID(),
+      senderSiteId: this.signingKey.siteId,
+      recipientSiteId: row.request.recipientSiteId,
+      operationId,
+      agreementRevisionId: row.agreementRevisionId,
+      taskId: row.taskId,
+      attempt: row.attempt,
+      reservationId: receipt.reservationId,
+      requestDigest: row.requestDigest,
+      issuedAt: this.clock().toISOString(),
+      expiresAt: new Date(this.clock().getTime() + 60_000).toISOString(),
+    });
+    if (!ownKey.allowedKinds.includes("status-query"))
+      throw new FederationError("UNTRUSTED_IDENTITY");
+    const jws = await signFederationMessage(FederationStatusQuerySchema, query, this.signingKey);
+    const verified = await verifyFederationMessage(
+      FederationStatusQuerySchema,
+      jws,
+      ownKey,
+      this.clock(),
+    );
+    await this.db.transaction(authorize);
+    const reportJws = await this.send(row.endpoint, jws, "/federation/v1/status");
+    const keyId = federationMessageKeyId(reportJws);
+    const peer = await this.trust.resolveKey(query.recipientSiteId, keyId, this.clock());
+    const { payload: report } = await verifyFederationMessage(
+      FederationStatusReportSchema,
+      reportJws,
+      peer,
+      this.clock(),
+    );
+    assertFederationStatusReport(query, verified.digest, report, this.clock());
+    await this.db.transaction(async (tx) => {
+      await authorize(tx);
+      await this.trust.assertKey(tx, peer.siteId, keyId, this.clock());
+      assertFederationStatusReport(query, verified.digest, report, this.clock());
+    });
+    return { report, reportJws, verifiedAt: this.clock().toISOString() };
   }
 
   async deliverNext(): Promise<boolean> {

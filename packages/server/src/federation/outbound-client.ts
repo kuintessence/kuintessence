@@ -7,7 +7,11 @@ export class FederationDeliveryError extends Error {
   }
 }
 
-export type FederationSend = (endpoint: string, jws: string) => Promise<string>;
+export type FederationSend = (
+  endpoint: string,
+  jws: string,
+  path?: "/federation/v1/delegations" | "/federation/v1/status",
+) => Promise<string>;
 
 /** Only registry-approved HTTPS origins; no redirects, proxies or peer-provided URLs. */
 export function createFederationSender(tls: {
@@ -16,13 +20,15 @@ export function createFederationSender(tls: {
   ca: string;
   timeoutMs?: number;
 }): FederationSend {
-  return (origin, jws) => {
+  return (origin, jws, path = "/federation/v1/delegations") => {
+    if (path !== "/federation/v1/delegations" && path !== "/federation/v1/status")
+      throw new FederationDeliveryError("INVALID_RECEIPT_RESPONSE");
     const endpoint = FederationSiteInput.shape.endpoint.parse(origin);
     if (Buffer.byteLength(jws) > 524288)
       throw new FederationDeliveryError("INVALID_RECEIPT_RESPONSE");
     return new Promise<string>((resolve, reject) => {
       let settled = false;
-      const req = request(new URL("/federation/v1/delegations", endpoint), {
+      const req = request(new URL(path, endpoint), {
         method: "POST",
         cert: tls.cert,
         key: tls.key,

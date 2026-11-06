@@ -8,9 +8,11 @@ import {
   federationAssetMappings,
   federationBudgets,
   federationCapabilities,
+  federationCertificates,
   federationEvidence,
   federationMaterials,
   federationOutbound,
+  federationPreparations,
   federationReservations,
   federationSigningKeys,
   federationSites,
@@ -24,6 +26,8 @@ import {
   FederationAcceptanceSchema,
   type FederationAgreement,
   FederationAgreementSchema,
+  FederationStatusQuerySchema,
+  FederationStatusReportSchema,
 } from "@kuintessence/shared/federation";
 import { and, eq, inArray } from "drizzle-orm";
 import { Hono } from "hono";
@@ -35,7 +39,8 @@ import { FederationAssetService, federationMaterialDigest } from "./assets";
 import { FederationOutboundService } from "./outbound";
 import { FederationDeliveryError, type FederationSend } from "./outbound-client";
 import { FederationPermissionService } from "./permissions";
-import { signFederationMessage } from "./signatures";
+import { signFederationMessage, verifyFederationMessage } from "./signatures";
+import { FederationStatusResponder } from "./status";
 import { testAgreement, testDelegation, testKeys, testNow } from "./test-fixtures";
 import { FederationTrustRegistry } from "./trust-registry";
 
@@ -58,6 +63,8 @@ const clock = () => time;
 const revisions: string[] = [];
 const assetIds: string[] = [];
 const agreements: FederationAgreement[] = [];
+const sourceFingerprint = "ab".repeat(32);
+const targetFingerprint = "cd".repeat(32);
 
 beforeAll(async () => {
   await db
@@ -95,13 +102,22 @@ beforeAll(async () => {
       {
         keyId: key.signing.keyId,
         publicKeyPem: await exportSPKI(key.verification.publicKey),
-        allowedKinds: ["agreement", "delegation", "acceptance"],
+        allowedKinds: ["agreement", "delegation", "acceptance", "status-query", "status-report"],
         validFrom: key.verification.validFrom.toISOString(),
         validUntil: key.verification.validUntil.toISOString(),
       },
       actor.userId,
     );
   }
+  await db.insert(federationCertificates).values(
+    [a, b].map((key, i) => ({
+      siteId: key.signing.siteId,
+      fingerprint: i === 0 ? sourceFingerprint : targetFingerprint,
+      certificatePem: "Database fixture; real mTLS is tested by gateway.test.ts",
+      validFrom: key.verification.validFrom,
+      validUntil: key.verification.validUntil,
+    })),
+  );
   for (const identity of [actor, receiver])
     for (const capability of ["agreement.approve", "delegation.submit", "asset.map"] as const)
       await permission.set({ ...identity, capability, enabled: true }, actor.userId);
@@ -124,6 +140,12 @@ afterAll(async () => {
         reservations.map((row) => row.id),
       ),
     );
+  await db.delete(federationPreparations).where(
+    inArray(
+      federationPreparations.reservationId,
+      reservations.map((v) => v.id),
+    ),
+  );
   await db
     .delete(federationReservations)
     .where(inArray(federationReservations.agreementRevisionId, termsIds));
@@ -147,6 +169,9 @@ afterAll(async () => {
   await db.delete(softwareAssetRevisions).where(inArray(softwareAssetRevisions.id, revisions));
   await db.delete(softwareAssets).where(inArray(softwareAssets.id, assetIds));
   await db.delete(federationCapabilities).where(inArray(federationCapabilities.orgId, orgIds));
+  await db
+    .delete(federationCertificates)
+    .where(inArray(federationCertificates.siteId, [a.signing.siteId, b.signing.siteId]));
   await db
     .delete(federationSigningKeys)
     .where(inArray(federationSigningKeys.siteId, [a.signing.siteId, b.signing.siteId]));
@@ -503,4 +528,160 @@ test("a stale sender cannot replace the newer worker's accepted receipt", async 
     await sending;
   }
   expect(await row(f.request.operationId)).toMatchObject({ state: "accepted", lastError: null });
+});
+
+test("remote status is scoped, signed and read-only after admission and agreement expiry", async () => {
+  const f = await fixture();
+  const responder = new FederationStatusResponder(db, b.signing, clock);
+  let queries = 0;
+  const service = f.service(async (endpoint, jws, path) => {
+    if (path !== "/federation/v1/status") return f.receive(endpoint, jws);
+    queries++;
+    return responder.receive(jws, sourceFingerprint);
+  });
+  await service.enqueue(actor, f.request);
+  await expect(service.remoteStatus(actor, f.request.operationId)).rejects.toThrow(
+    "OPERATION_CONFLICT",
+  );
+  await service.deliverNext();
+  await expect(service.remoteStatus(receiver, f.request.operationId)).rejects.toThrow(
+    "POLICY_DENIED",
+  );
+  expect(queries).toBe(0);
+  const saved = await row(f.request.operationId);
+  const first = await service.remoteStatus(actor, f.request.operationId);
+  expect(first.report).toMatchObject({
+    preparation: null,
+    workflow: null,
+    requestDigest: saved.requestDigest,
+  });
+  if (!saved.receipt) throw new Error("Expected receipt");
+  await db.insert(federationPreparations).values({
+    reservationId: saved.receipt.reservationId,
+    state: "waiting",
+    blocker: "DATA_WAITING",
+    updatedAt: clock(),
+  });
+  time = new Date("2026-01-03T00:00:00.000Z");
+  const second = await service.remoteStatus(actor, f.request.operationId);
+  expect(second.report.preparation?.state).toBe("waiting");
+  expect(second.report.queryId).not.toBe(first.report.queryId);
+  expect(JSON.stringify(second.report)).not.toContain("blocker");
+  expect(await row(f.request.operationId)).toEqual(saved);
+  const app = new Hono();
+  app.use("*", async (c, next) => {
+    c.set("principal" as never, actor as never);
+    await next();
+  });
+  app.route("/api", createFederationOutboundRoutes(service));
+  const response = await app.request(
+    `/api/federation/outbound/${f.request.operationId}/remote-status`,
+  );
+  expect(response.status).toBe(200);
+  expect(response.headers.get("cache-control")).toBe("no-store");
+});
+
+test("remote status rejects replayed, mismatched and forged reports without altering acceptance", async () => {
+  const f = await fixture();
+  const responder = new FederationStatusResponder(db, b.signing, clock);
+  await f.service().enqueue(actor, f.request);
+  await f.service().deliverNext();
+  const saved = await row(f.request.operationId);
+  let previous = "";
+  const replay = f.service(async (_endpoint, jws) => {
+    if (!previous) previous = await responder.receive(jws, sourceFingerprint);
+    return previous;
+  });
+  await replay.remoteStatus(actor, f.request.operationId);
+  await expect(replay.remoteStatus(actor, f.request.operationId)).rejects.toThrow(
+    "INVALID_MESSAGE",
+  );
+  const bad = f.service(async (_endpoint, jws) => {
+    const reportJws = await responder.receive(jws, sourceFingerprint);
+    const key = await trust.resolveKey(b.signing.siteId, b.signing.keyId, clock());
+    const { payload } = await verifyFederationMessage(
+      FederationStatusReportSchema,
+      reportJws,
+      key,
+      clock(),
+    );
+    return signFederationMessage(
+      FederationStatusReportSchema,
+      { ...payload, taskId: crypto.randomUUID() },
+      b.signing,
+    );
+  });
+  await expect(bad.remoteStatus(actor, f.request.operationId)).rejects.toThrow("INVALID_MESSAGE");
+  await expect(
+    f.service(async () => "forged").remoteStatus(actor, f.request.operationId),
+  ).rejects.toThrow("INVALID_MESSAGE");
+  expect(await row(f.request.operationId)).toEqual(saved);
+});
+
+test("remote status rejects wrong TLS peer, altered request identity and expired challenges", async () => {
+  const f = await fixture();
+  const responder = new FederationStatusResponder(db, b.signing, clock);
+  await f.service().enqueue(actor, f.request);
+  await f.service().deliverNext();
+  const service = f.service(async (_endpoint, jws) => {
+    await expect(responder.receive(jws, targetFingerprint)).rejects.toThrow("UNTRUSTED_IDENTITY");
+    const key = await trust.resolveKey(a.signing.siteId, a.signing.keyId, clock());
+    const { payload } = await verifyFederationMessage(
+      FederationStatusQuerySchema,
+      jws,
+      key,
+      clock(),
+    );
+    for (const change of [
+      { requestDigest: `sha256:${"0".repeat(64)}` },
+      { reservationId: crypto.randomUUID() },
+      { taskId: crypto.randomUUID() },
+    ]) {
+      const altered = await signFederationMessage(
+        FederationStatusQuerySchema,
+        { ...payload, ...change },
+        a.signing,
+      );
+      await expect(responder.receive(altered, sourceFingerprint)).rejects.toThrow("POLICY_DENIED");
+    }
+    time = new Date(time.getTime() + 60_000);
+    await expect(responder.receive(jws, sourceFingerprint)).rejects.toThrow(
+      "AUTHORIZATION_EXPIRED",
+    );
+    throw new FederationDeliveryError("DELIVERY_UNAVAILABLE");
+  });
+  await expect(service.remoteStatus(actor, f.request.operationId)).rejects.toThrow(
+    "DELIVERY_UNAVAILABLE",
+  );
+});
+
+test("remote status rechecks reader authorization after network I/O and preserves accepted fact", async () => {
+  const f = await fixture();
+  const responder = new FederationStatusResponder(db, b.signing, clock);
+  await f.service().enqueue(actor, f.request);
+  await f.service().deliverNext();
+  const saved = await row(f.request.operationId);
+  const service = f.service(async (_endpoint, jws) => {
+    const result = await responder.receive(jws, sourceFingerprint);
+    await permission.set(
+      { ...actor, capability: "delegation.submit", enabled: false },
+      actor.userId,
+    );
+    return result;
+  });
+  try {
+    await expect(service.remoteStatus(actor, f.request.operationId)).rejects.toThrow(
+      "POLICY_DENIED",
+    );
+    expect(await row(f.request.operationId)).toEqual(saved);
+    await permission.set({ ...actor, capability: "delegation.read", enabled: true }, actor.userId);
+    const readOnly = f.service((_endpoint, jws) => responder.receive(jws, sourceFingerprint));
+    expect((await readOnly.remoteStatus(actor, f.request.operationId)).report.workflow).toBeNull();
+  } finally {
+    await permission.set({ ...actor, capability: "delegation.read", enabled: false }, actor.userId);
+    await permission.set(
+      { ...actor, capability: "delegation.submit", enabled: true },
+      actor.userId,
+    );
+  }
 });

@@ -5,6 +5,7 @@ import { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { FederationAdmission } from "./admission";
 import { type FederationSigningKey, federationMessageKeyId } from "./signatures";
+import { FederationStatusResponder } from "./status";
 import { FederationTrustRegistry } from "./trust-registry";
 
 const logger = createLogger("federation-ingress");
@@ -13,6 +14,7 @@ const logger = createLogger("federation-ingress");
 export function createFederationIngress(db: PgDb, signingKey: FederationSigningKey) {
   const r = new Hono();
   const trust = new FederationTrustRegistry(db);
+  const status = new FederationStatusResponder(db, signingKey);
   r.use("*", bodyLimit({ maxSize: 524288 }));
   r.onError((error, c) => {
     if (error instanceof FederationError) {
@@ -58,6 +60,15 @@ export function createFederationIngress(db: PgDb, signingKey: FederationSigningK
       "content-type": "application/jose",
       "cache-control": "no-store",
     });
+  });
+  r.post("/federation/v1/status", async (c) => {
+    if (c.req.header("content-type") !== "application/jose")
+      return c.json({ error: { code: "INVALID_MESSAGE" } }, 415);
+    const report = await status.receive(
+      await c.req.text(),
+      c.req.header("x-kq-federation-cert") ?? "",
+    );
+    return c.body(report, 200, { "content-type": "application/jose", "cache-control": "no-store" });
   });
   return r;
 }
