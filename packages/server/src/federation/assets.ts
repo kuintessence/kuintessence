@@ -271,6 +271,20 @@ export class FederationAssetService {
       await this.authorization.authorizeSoftware(local.asset.id, executionPrincipal(actor), "view");
   }
 
+  async resolveForDelegation(actor: FederationActor, reference: FederationAssetRef) {
+    const snapshot = await this.db.transaction(async (tx) => {
+      await requireFederationCapability(tx, actor, "delegation.submit");
+      return this.assertResolved(tx, actor, reference);
+    });
+    if (snapshot.local.kind === "software")
+      await this.authorization.authorizeSoftware(
+        snapshot.local.asset.id,
+        executionPrincipal(actor),
+        "use",
+      );
+    return snapshot;
+  }
+
   async assertResolved(
     tx: PgTransaction,
     identity: ExecutionIdentity,

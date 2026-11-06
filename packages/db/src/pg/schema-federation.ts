@@ -99,7 +99,7 @@ export const federationCapabilities = pgTable(
     primaryKey({ columns: [t.orgId, t.userId, t.capability] }),
     check(
       "federation_capability_kind",
-      sql`${t.capability} IN ('agreement.read', 'agreement.approve', 'asset.read', 'asset.map')`,
+      sql`${t.capability} IN ('agreement.read', 'agreement.approve', 'asset.read', 'asset.map', 'delegation.read', 'delegation.submit')`,
     ),
   ],
 );
@@ -129,6 +129,70 @@ export const federationAgreementApprovals = pgTable(
     primaryKey({ columns: [t.localSiteId, t.revisionId] }),
     index("federation_approval_org").on(t.localOrgId, t.createdAt),
     check("federation_approval_state", sql`${t.state} IN ('active', 'suspended', 'revoked')`),
+  ],
+);
+
+/** Source-owned delivery intent. Unknown delivery never releases its reserved budget. */
+export const federationOutbound = pgTable(
+  "federation_outbound",
+  {
+    localSiteId: uuid("local_site_id").notNull(),
+    operationId: uuid("operation_id").notNull(),
+    agreementRevisionId: uuid("agreement_revision_id").notNull(),
+    localOrgId: uuid("local_org_id")
+      .notNull()
+      .references(() => orgs.id),
+    submittedBy: uuid("submitted_by")
+      .notNull()
+      .references(() => users.id),
+    taskId: uuid("task_id").notNull(),
+    attempt: integer("attempt").notNull(),
+    budgetDomainId: uuid("budget_domain_id").notNull(),
+    epoch: uuid("epoch").notNull(),
+    amount: numeric("amount", { precision: 38, scale: 0 }).notNull(),
+    endpoint: text("endpoint").notNull(),
+    request: jsonb("request").$type<FederationDelegation>().notNull(),
+    requestDigest: varchar("request_digest", { length: 71 }).notNull(),
+    requestJws: text("request_jws").notNull(),
+    receipt: jsonb("receipt").$type<FederationAcceptance>(),
+    receiptJws: text("receipt_jws"),
+    state: varchar("state", { length: 24 }).notNull().default("queued"),
+    lastError: varchar("last_error", { length: 64 }),
+    leaseOwner: uuid("lease_owner"),
+    leaseUntil: timestamp("lease_until", { withTimezone: true }),
+    nextAttemptAt: timestamp("next_attempt_at", { withTimezone: true }).notNull().defaultNow(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.localSiteId, t.operationId] }),
+    foreignKey({
+      columns: [t.localSiteId, t.agreementRevisionId],
+      foreignColumns: [
+        federationAgreementApprovals.localSiteId,
+        federationAgreementApprovals.revisionId,
+      ],
+    }),
+    uniqueIndex("federation_outbound_task_attempt").on(
+      t.localSiteId,
+      t.agreementRevisionId,
+      t.taskId,
+      t.attempt,
+    ),
+    index("federation_outbound_delivery").on(t.localSiteId, t.state, t.nextAttemptAt),
+    index("federation_outbound_budget").on(t.localSiteId, t.budgetDomainId, t.epoch),
+    check(
+      "federation_outbound_state",
+      sql`${t.state} IN ('queued', 'sending', 'accepted', 'needs_review')`,
+    ),
+    check(
+      "federation_outbound_amount",
+      sql`${t.amount}::text ~ '^(0|[1-9][0-9]{0,37})$' AND ${t.attempt} > 0`,
+    ),
+    check(
+      "federation_outbound_receipt",
+      sql`(${t.state} = 'accepted' AND ${t.receipt} IS NOT NULL AND ${t.receiptJws} IS NOT NULL) OR (${t.state} <> 'accepted' AND ${t.receipt} IS NULL AND ${t.receiptJws} IS NULL)`,
+    ),
   ],
 );
 

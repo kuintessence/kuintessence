@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { createPgDb } from "@kuintessence/db";
 import { exportPKCS8, generateKeyPair } from "jose";
 import { loadServerConfig } from "../config";
-import { startFederationIngress } from "./runtime";
+import { loadFederationSender, startFederationIngress } from "./runtime";
 
 const base = {
   DATABASE_URL: "postgres://unused:unused@127.0.0.1:1/kuintessence_unit_unused",
@@ -58,6 +58,37 @@ test("private ingress only binds a mode-0600 Unix socket in an owned mode-0700 d
     } finally {
       await server?.stop(true);
     }
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("outbound requires federation plus all three TLS files and a private client key", async () => {
+  expect(await loadFederationSender(loadServerConfig(base))).toBeUndefined();
+  const config = {
+    ...base,
+    FEDERATION_ENABLED: "true",
+    FEDERATION_SITE_ID: crypto.randomUUID(),
+    FEDERATION_SOCKET_PATH: "/private/ingress.sock",
+    FEDERATION_SIGNING_KEY_ID: "test",
+    FEDERATION_SIGNING_KEY_FILE: "/private/signing.key",
+  };
+  expect(() =>
+    loadServerConfig({ ...config, FEDERATION_CLIENT_KEY_FILE: "/private/client.key" }),
+  ).toThrow();
+  const dir = await mkdtemp(join(tmpdir(), "kq-federation-client-"));
+  const keyFile = join(dir, "client.key");
+  try {
+    await writeFile(keyFile, "unused", { mode: 0o644 });
+    const files = {
+      FEDERATION_CLIENT_CERT_FILE: join(dir, "client.pem"),
+      FEDERATION_CLIENT_KEY_FILE: keyFile,
+      FEDERATION_CLIENT_CA_FILE: join(dir, "ca.pem"),
+    };
+    expect(() => loadServerConfig({ ...base, ...files })).toThrow();
+    await expect(loadFederationSender(loadServerConfig({ ...config, ...files }))).rejects.toThrow(
+      "private file",
+    );
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

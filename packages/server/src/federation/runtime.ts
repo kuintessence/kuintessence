@@ -4,6 +4,7 @@ import type { PgDb } from "@kuintessence/db";
 import { importPKCS8 } from "jose";
 import type { ServerConfig } from "../config";
 import { createFederationIngress } from "./ingress";
+import { createFederationSender } from "./outbound-client";
 import type { FederationSigningKey } from "./signatures";
 
 export async function startFederationIngress(
@@ -52,4 +53,23 @@ export async function loadFederationSigningKey(
     throw new Error("Federation signing key must be a private file owned by the Server UID");
   const privateKey = await importPKCS8(await readFile(keyFile, "utf8"), "RS256");
   return { siteId, keyId, privateKey };
+}
+
+export async function loadFederationSender(config: ServerConfig) {
+  if (!config.FEDERATION_ENABLED || !config.FEDERATION_CLIENT_KEY_FILE) return undefined;
+  const {
+    FEDERATION_CLIENT_KEY_FILE: keyFile,
+    FEDERATION_CLIENT_CERT_FILE: certFile,
+    FEDERATION_CLIENT_CA_FILE: caFile,
+  } = config;
+  if (!certFile || !caFile) throw new Error("Federation client TLS configuration is incomplete");
+  const stat = await lstat(keyFile);
+  if (!stat.isFile() || (stat.mode & 0o077) !== 0 || stat.uid !== process.getuid?.())
+    throw new Error("Federation client key must be a private file owned by the Server UID");
+  const [cert, key, ca] = await Promise.all([
+    readFile(certFile, "utf8"),
+    readFile(keyFile, "utf8"),
+    readFile(caFile, "utf8"),
+  ]);
+  return createFederationSender({ cert, key, ca });
 }

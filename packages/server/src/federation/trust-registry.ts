@@ -242,8 +242,13 @@ export class FederationTrustRegistry {
     return this.resolveKey(cert.siteId, keyId, now);
   }
 
-  async resolveKey(siteId: string, keyId: string, now: Date): Promise<FederationVerificationKey> {
-    const [row] = await this.db
+  async resolveKey(
+    siteId: string,
+    keyId: string,
+    now: Date,
+    database: PgDb | FederationTransaction = this.db,
+  ): Promise<FederationVerificationKey> {
+    const [row] = await database
       .select({ key: federationSigningKeys, site: federationSites })
       .from(federationSigningKeys)
       .innerJoin(federationSites, eq(federationSites.id, federationSigningKeys.siteId))

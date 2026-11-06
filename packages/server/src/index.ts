@@ -61,11 +61,16 @@ import {
   queueFederationWorkflow,
 } from "./federation/execution-binding";
 import { FederationExecutionMonitor } from "./federation/execution-monitor";
+import { FederationOutboundService, FederationOutboundWorker } from "./federation/outbound";
 import { createFederationPackageResolver } from "./federation/package-resolver";
 import { FederationPermissionService } from "./federation/permissions";
 import { FederationPreparationService } from "./federation/preparation";
 import { FederationPreparationWorker } from "./federation/preparation-worker";
-import { loadFederationSigningKey, startFederationIngress } from "./federation/runtime";
+import {
+  loadFederationSender,
+  loadFederationSigningKey,
+  startFederationIngress,
+} from "./federation/runtime";
 import { FederationTrustRegistry } from "./federation/trust-registry";
 import {
   AgentDispatcher,
@@ -107,6 +112,7 @@ import { createDataMarketRoutes } from "./routes/data-market";
 import { dslRoutes } from "./routes/dsl";
 import { createFederationAgreementRoutes } from "./routes/federation-agreements";
 import { createFederationAssetRoutes } from "./routes/federation-assets";
+import { createFederationOutboundRoutes } from "./routes/federation-outbound";
 import { createFileRoutes } from "./routes/files";
 import { healthRoutes } from "./routes/health";
 import { createInterconnectRoutes } from "./routes/interconnect";
@@ -1582,6 +1588,12 @@ const federationAssets = new FederationAssetService(db, {
     softwareAvailability.assertAssetCapability(assetId, principal, capability),
 });
 const federationSigningKey = await loadFederationSigningKey(config);
+const federationSender = await loadFederationSender(config);
+const federationOutbound =
+  federationSigningKey && federationSender
+    ? new FederationOutboundService(db, federationSigningKey, federationSender, federationAssets)
+    : undefined;
+if (federationOutbound) protectedApi.route("/", createFederationOutboundRoutes(federationOutbound));
 const federationAttestation = federationSigningKey
   ? new FederationAttestationService(
       db,
@@ -2130,6 +2142,10 @@ const federationPreparationWorker = federationPreparation
     )
   : undefined;
 federationPreparationWorker?.start();
+const federationOutboundWorker = federationOutbound
+  ? new FederationOutboundWorker(federationOutbound)
+  : undefined;
+federationOutboundWorker?.start();
 const federationExecutionMonitor = new FederationExecutionMonitor(
   db,
   federationDispatchAuthorization,
@@ -2182,6 +2198,7 @@ async function shutdown(signal: string): Promise<void> {
     await workflowAsyncRunner.stop();
     await federationIngress?.stop(true);
     await federationPreparationWorker?.stop();
+    await federationOutboundWorker?.stop();
     await federationAttestationWorker?.stop();
     await jobDispatchOutbox.stop();
     await jobCancellationOutbox.stop();

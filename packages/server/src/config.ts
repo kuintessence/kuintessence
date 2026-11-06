@@ -43,6 +43,9 @@ const ServerConfigSchema = z.object({
     .regex(/^[a-zA-Z0-9_.:-]{1,128}$/)
     .optional(),
   FEDERATION_SIGNING_KEY_FILE: z.string().min(1).optional(),
+  FEDERATION_CLIENT_CERT_FILE: z.string().startsWith("/").optional(),
+  FEDERATION_CLIENT_KEY_FILE: z.string().startsWith("/").optional(),
+  FEDERATION_CLIENT_CA_FILE: z.string().startsWith("/").optional(),
   FEDERATION_ATTESTATION_SOCKET_PATH: z.string().startsWith("/").optional(),
   DB_MAX_CONNECTIONS: positiveInt(10),
   DB_IDLE_TIMEOUT_SEC: nonNegativeInt(0),
@@ -353,6 +356,26 @@ const ValidatedServerConfigSchema = ServerConfigSchema.superRefine((cfg, ctx) =>
         path: ["FEDERATION_SOCKET_PATH"],
         message: "must be an absolute Unix socket path",
       });
+  }
+  const clientFiles = [
+    "FEDERATION_CLIENT_CERT_FILE",
+    "FEDERATION_CLIENT_KEY_FILE",
+    "FEDERATION_CLIENT_CA_FILE",
+  ] as const;
+  if (clientFiles.some((key) => cfg[key])) {
+    if (!cfg.FEDERATION_ENABLED)
+      ctx.addIssue({
+        code: "custom",
+        path: ["FEDERATION_ENABLED"],
+        message: "required for federation outbound",
+      });
+    for (const key of clientFiles)
+      if (!cfg[key])
+        ctx.addIssue({
+          code: "custom",
+          path: [key],
+          message: "required for federation outbound mTLS",
+        });
   }
   if (!cfg.SPACK_MATERIAL_DELIVERY_ENABLED) return;
   for (const key of [

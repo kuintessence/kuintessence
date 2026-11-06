@@ -15,6 +15,8 @@ export const FederationCapabilitySchema = z.enum([
   "agreement.approve",
   "asset.read",
   "asset.map",
+  "delegation.read",
+  "delegation.submit",
 ]);
 export type FederationCapability = z.infer<typeof FederationCapabilitySchema>;
 export interface FederationActor {
@@ -46,9 +48,11 @@ export async function requireFederationCapability(
   const allowed =
     capability === "agreement.read"
       ? ["agreement.read", "agreement.approve"]
-      : capability === "asset.read"
-        ? ["asset.read", "asset.map"]
-        : [capability];
+      : capability === "delegation.read"
+        ? ["delegation.read", "delegation.submit"]
+        : capability === "asset.read"
+          ? ["asset.read", "asset.map"]
+          : [capability];
   const [grant] = await tx
     .select()
     .from(federationCapabilities)

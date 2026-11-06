@@ -91,6 +91,35 @@
 
 `/api/federation/agreements`、`members`、`tasks`、`evidence-batches`、`deliveries`、`settlements`：由本机构登录用户调用，使用对应 capability 和机构范围；不通过现有 operator 角色自动继承所有商业审批权限。
 
+### 源站持久发送
+
+源站管理入口为 `POST /api/federation/outbound`、`GET /api/federation/outbound`、`POST /api/federation/outbound/:operationId/retry`。提交使用 FederationDelegationSchema 的原委派字段；本机必须是 sender，目标必须属于该组织已双签的协议。提交者须有当前组织的 `delegation.submit`，查询须有 `delegation.read`（submit 包含 read）；平台管理员不自动获得这些业务权限。HTTP 202 只表示原请求已经持久保存。列表保留组织隔离和分页，不返回原请求 JWS、脚本或本地提交者身份。
+
+先在源站按本地审批与材料管理接口登记模板/固定修订映射、inputs 和 environment-lock。首次提交和实际发送均复查原提交者、双签协议、机构密钥、材料映射及软件 use/数据访问权限；材料准备不替代目标平台自己的执行授权。源站保留请求、原始 JWS、SHA-256、原提交者和目标端点，远端只收到协议定义的机构/任务字段。
+
+发送配置在 `FEDERATION_ENABLED=true` 基础上同时设置三个绝对文件路径：
+
+```dotenv
+FEDERATION_CLIENT_CERT_FILE=/run/secrets/federation-client.crt
+FEDERATION_CLIENT_KEY_FILE=/run/secrets/federation-client.key
+FEDERATION_CLIENT_CA_FILE=/run/secrets/federation-peer-ca.crt
+```
+
+私钥文件须由 Server UID 持有，组/其他用户无权限。接收方信任登记须包含该客户端证书及源站机构签名公钥；源站须登记接收机构的协议/回执公钥，并为 HTTPS hostname 配置匹配证书与可信 CA。启用后 Server 启动持久发送 worker；未配置时不挂载出站 API，也不隐式使用 Agent 证书。修改部署凭据后重启加载。
+
+worker 用短事务领取最多 60 秒的处理租约，在网络发送前完成当前授权检查；网络调用不占数据库事务，单次绝对超时 10 秒、响应最多 512 KiB，不跟随重定向，不读取响应提供的任意 URL。端点来自本机 trust registry，排队后端点变化先进入 needs_review；有提交权限的人员明确 retry 后可采用同一接收机构当前登记的端点，保留原请求/JWS 并审计端点变更。查询结果的状态含义：
+
+| 状态 | 含义 |
+| --- | --- |
+| queued | 等待首次发送或原请求重投，不能推断远端没有接单 |
+| sending | 某 worker 已领取发送租约，崩溃后可按原操作恢复 |
+| accepted | 已验证接收方签名回执，并逐项匹配请求摘要、协议/预算域、任务/attempt、金额及有效接单时间；不表示运行完成 |
+| needs_review | 当前授权、端点或回执不满足要求；保留原意图和额度，供核对及显式重试 |
+
+接单窗口过后，仅重放原 JWS 以取回接收方已保存的回执，不续签新期限，不生成新操作；没有既有预留的接收端仍按原期限拒绝首次接单。未知交付、超时、坏回执不释放额度。源站在预算域/epoch 锁内汇总原请求金额与数量，阻止并发超额及复制到其他协议；当前尚无结算释放，accepted 也继续占用原预留。新 worker 领取后，旧 worker 不能覆盖其状态。
+
+发送后的接单回执是历史事实：本地授权在网络调用期间失效，不会把已收到的可信接单回执抹掉。后续不得未经授权再发送；远端撤销/停止确认仍需要专用协议。当前出站入口是独立的委派 API，普通 Workflow 的远端节点选择、运行状态与结果回传、撤销消息、退款与结算尚待接通。原 `ledger_coordinated` 仍受链许可门槛限制。
+
 ### 机构协议 API
 
 `/federation/v1/delegations`、`operations/:id`、`receipts`、`revocations`、`data-authorizations`：独立 mTLS listener，验证机构签名和协议能力，不接受浏览器 session 代替机构授权。
