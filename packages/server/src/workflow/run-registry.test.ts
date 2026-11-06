@@ -150,6 +150,25 @@ describe("WorkflowRunRegistry", () => {
     expect(recoverable.some((r) => r.id === runId)).toBe(true);
   });
 
+  test("cancellation reason is atomic, survives retries and cannot rewrite a terminal run", async () => {
+    const runId = await registry.createRun("cancel reason", testUserId, { nodes: [], edges: [] });
+    recordedRunIds.push(runId);
+    const reason = { code: "FEDERATION_AUTHORIZATION_REVOKED", message: "AUTHORIZATION_EXPIRED" };
+    expect(await registry.requestCancel(runId, reason)).toBe("cancelling");
+    expect(
+      await registry.requestCancel(runId, { code: "replacement", message: "replacement" }),
+    ).toBe("cancelling");
+    expect(await registry.cancelRun(runId)).toBe(true);
+    expect(await registry.requestCancel(runId, { code: "late", message: "late" })).toBe(
+      "cancelled",
+    );
+    expect(await registry.getById(runId)).toMatchObject({
+      status: "cancelled",
+      errorCode: reason.code,
+      errorMessage: reason.message,
+    });
+  });
+
   test("recordStepJob merges node job ids without overwriting existing entries", async () => {
     const graph: WorkflowRunGraph = { nodes: [], edges: [] };
     const runId = await registry.createRun("step-jobs", testUserId, graph, {

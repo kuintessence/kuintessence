@@ -303,10 +303,18 @@ export class WorkflowRunRegistry implements WorkflowRunStore {
     return cancelled.length === 1;
   }
 
-  async requestCancel(runId: string): Promise<WorkflowRunStatus | null> {
+  async requestCancel(
+    runId: string,
+    reason?: { code: string; message: string },
+  ): Promise<WorkflowRunStatus | null> {
     const cancelling = await this.db
       .update(workflowRuns)
-      .set({ status: "cancelling", cancelRequestedAt: new Date(), updatedAt: new Date() })
+      .set({
+        status: "cancelling",
+        cancelRequestedAt: new Date(),
+        updatedAt: new Date(),
+        ...(reason ? { errorCode: reason.code, errorMessage: reason.message } : {}),
+      })
       .where(
         and(
           eq(workflowRuns.id, runId),

@@ -43,11 +43,12 @@ import {
   type FederationAssetRef,
   FederationDelegationSchema,
   type FederationEnvironmentLock,
+  FederationError,
   type FederationInputManifest,
   federationCanonicalJson,
   federationExecutionDeadline,
 } from "@kuintessence/shared/federation";
-import { and, eq, inArray, sql } from "drizzle-orm";
+import { and, count, eq, inArray, sql } from "drizzle-orm";
 import { Hono } from "hono";
 import { exportSPKI } from "jose";
 import pino from "pino";
@@ -69,6 +70,7 @@ import {
   FederationExecutionBindingService,
   loadFederationWorkflowBinding,
 } from "./execution-binding";
+import { FederationExecutionMonitor } from "./execution-monitor";
 import { FederationPermissionService } from "./permissions";
 import { FederationPreparationService } from "./preparation";
 import { FederationPreparationWorker } from "./preparation-worker";
@@ -343,7 +345,7 @@ test("mapping does not grant use permission and detects mutated or revoked local
     .set({ lifecycle: "revoked" })
     .where(eq(softwareAssets.id, assetId));
   try {
-    await expect(assets.resolve(identity, scriptRef)).rejects.toThrow("ASSET_UNAVAILABLE");
+    await expect(assets.resolve(identity, scriptRef)).rejects.toThrow("POLICY_DENIED");
   } finally {
     await db
       .update(softwareAssets)
@@ -353,7 +355,7 @@ test("mapping does not grant use permission and detects mutated or revoked local
   const reference = { ...scriptRef, id: crypto.randomUUID() };
   const mapping = await assets.register(actor, { reference, localRevisionId: revisionId });
   await assets.revoke(actor, mapping.id);
-  await expect(assets.resolve(identity, reference)).rejects.toThrow("ASSET_UNAVAILABLE");
+  await expect(assets.resolve(identity, reference)).rejects.toThrow("POLICY_DENIED");
   await expect(assets.register(actor, { reference, localRevisionId: revisionId })).rejects.toThrow(
     "OPERATION_CONFLICT",
   );
@@ -369,6 +371,12 @@ test("dataset mapping waits for a usable location and preserves data authorizati
     await expect(assets.resolve(identity, datasetRef)).rejects.toThrow("POLICY_DENIED");
   } finally {
     await db.update(dataAssets).set({ visibility: "public" }).where(eq(dataAssets.id, datasetId));
+  }
+  await db.update(dataAssets).set({ lifecycle: "revoked" }).where(eq(dataAssets.id, datasetId));
+  try {
+    await expect(assets.resolve(identity, datasetRef)).rejects.toThrow("POLICY_DENIED");
+  } finally {
+    await db.update(dataAssets).set({ lifecycle: "published" }).where(eq(dataAssets.id, datasetId));
   }
   await db.delete(dataLocations).where(eq(dataLocations.id, locationId));
 });
@@ -1442,4 +1450,268 @@ test("accepted preparation survives its admission window only until the signed e
   await expect(f.preparation.executionSnapshot(f.reservationId)).rejects.toThrow(
     "AUTHORIZATION_EXPIRED",
   );
+});
+
+async function scanExecutions(monitor: FederationExecutionMonitor) {
+  const [total] = await db.select({ value: count() }).from(workflowRuns);
+  for (let page = 0; page <= Math.ceil((total?.value ?? 0) / 25); page++) await monitor.tick();
+}
+
+async function monitoredExecution(executionExpiresAt?: string) {
+  const f = await executionFixture(executionExpiresAt);
+  const binding = await f.bindings.stage(f.reservationId);
+  const runId = binding.workflowRunId;
+  await db
+    .update(workflowRuns)
+    .set({ status: "running", startedAt: testNow })
+    .where(eq(workflowRuns.id, runId));
+  const registry = new WorkflowRunRegistry(db);
+  const pending: (() => Promise<void>)[] = [];
+  let stopped = false;
+  const cancellations: string[] = [];
+  const makeRunner = () =>
+    new WorkflowAsyncRunner({
+      registry,
+      schedule: (task) => pending.push(task),
+      makeRunner: () => async () => {
+        throw new Error("Monitor must never activate federation execution");
+      },
+      cancelSubmittedJobs: async (id) => {
+        if (id !== runId) return;
+        cancellations.push(id);
+        if (!stopped) throw new Error("Agent stop acknowledgement unavailable");
+      },
+    });
+  const runner = makeRunner();
+  const authorization = new FederationDispatchAuthorization(db, f.preparation);
+  const monitor = new FederationExecutionMonitor(db, authorization, runner);
+  return {
+    ...f,
+    runId,
+    registry,
+    runner,
+    makeRunner,
+    authorization,
+    monitor,
+    cancellations,
+    confirmStopped: () => {
+      stopped = true;
+    },
+    drain: async () => {
+      for (const task of pending.splice(0)) await task();
+    },
+  };
+}
+
+test.each([
+  ["agreement", "AGREEMENT_UNAVAILABLE"],
+  ["source-key", "UNTRUSTED_IDENTITY"],
+  ["receipt-key", "UNTRUSTED_IDENTITY"],
+  ["site", "UNTRUSTED_IDENTITY"],
+  ["identity", "POLICY_DENIED"],
+  ["mapping", "POLICY_DENIED"],
+  ["software", "POLICY_DENIED"],
+  ["software-permission", "POLICY_DENIED"],
+  ["binding", "OPERATION_CONFLICT"],
+] as const)("execution monitor propagates %s loss to durable cancellation with reason %s", async (change, reason) => {
+  const f = await monitoredExecution();
+  try {
+    if (change === "agreement")
+      await db
+        .update(federationAgreements)
+        .set({ state: "suspended" })
+        .where(eq(federationAgreements.revisionId, agreement.agreementRevisionId));
+    if (change === "source-key" || change === "receipt-key")
+      await new FederationTrustRegistry(db).revoke(
+        change === "source-key" ? source.signing.siteId : target.signing.siteId,
+        { keyId: change === "source-key" ? source.signing.keyId : target.signing.keyId },
+        actor.userId,
+      );
+    if (change === "site")
+      await new FederationTrustRegistry(db).setState(
+        source.signing.siteId,
+        "suspended",
+        actor.userId,
+      );
+    if (change === "identity")
+      await db.update(users).set({ suspended: true }).where(eq(users.id, identity.userId));
+    if (change === "mapping")
+      await db
+        .update(federationAssetMappings)
+        .set({ revokedAt: testNow })
+        .where(eq(federationAssetMappings.softwareRevisionId, revisionId));
+    if (change === "software")
+      await db
+        .update(softwareAssets)
+        .set({ lifecycle: "revoked" })
+        .where(eq(softwareAssets.id, assetId));
+    if (change === "software-permission")
+      await db
+        .update(softwareAssets)
+        .set({ visibility: "private" })
+        .where(eq(softwareAssets.id, assetId));
+    if (change === "binding")
+      await db
+        .delete(federationWorkflowBindings)
+        .where(eq(federationWorkflowBindings.reservationId, f.reservationId));
+    await scanExecutions(f.monitor);
+    expect(await f.registry.getById(f.runId)).toMatchObject({
+      status: "cancelling",
+      errorCode: "FEDERATION_AUTHORIZATION_REVOKED",
+      errorMessage: reason,
+      completedAt: null,
+    });
+    await f.drain();
+    expect(f.cancellations).toContain(f.runId);
+    expect((await f.registry.getById(f.runId))?.status).toBe("cancelling");
+    // A new runner recovers the persisted intent; restoration never revives the old execution.
+    f.confirmStopped();
+    await f.makeRunner().recoverInterruptedRuns(true);
+    await f.drain();
+    expect(await f.registry.getById(f.runId)).toMatchObject({
+      status: "cancelled",
+      errorCode: "FEDERATION_AUTHORIZATION_REVOKED",
+      errorMessage: reason,
+    });
+  } finally {
+    await db
+      .update(federationAgreements)
+      .set({ state: "active" })
+      .where(eq(federationAgreements.revisionId, agreement.agreementRevisionId));
+    await db
+      .update(federationSigningKeys)
+      .set({ revokedAt: null })
+      .where(inArray(federationSigningKeys.siteId, [source.signing.siteId, target.signing.siteId]));
+    await db
+      .update(federationSites)
+      .set({ state: "active" })
+      .where(eq(federationSites.id, source.signing.siteId));
+    await db.update(users).set({ suspended: false }).where(eq(users.id, identity.userId));
+    await db
+      .update(federationAssetMappings)
+      .set({ revokedAt: null })
+      .where(eq(federationAssetMappings.softwareRevisionId, revisionId));
+    await db
+      .update(softwareAssets)
+      .set({ lifecycle: "published", visibility: "platform-public" })
+      .where(eq(softwareAssets.id, assetId));
+    await f.monitor.stop();
+  }
+});
+
+test.each([
+  undefined,
+  "2026-01-01T02:00:00.000Z",
+])("execution monitor cancels at signed deadline %s, independent of admission and Fabric", async (deadline) => {
+  const f = await monitoredExecution(deadline);
+  const expires = deadline ?? "2026-01-01T00:10:00.000Z";
+  f.advanceTo(new Date(Date.parse(expires) - 1));
+  await scanExecutions(f.monitor);
+  expect((await f.registry.getById(f.runId))?.status).toBe("running");
+  f.advanceTo(new Date(expires));
+  await scanExecutions(f.monitor);
+  expect(await f.registry.getById(f.runId)).toMatchObject({
+    status: "cancelling",
+    errorMessage: "AUTHORIZATION_EXPIRED",
+    completedAt: null,
+  });
+  await f.drain();
+  expect((await f.registry.getById(f.runId))?.status).toBe("cancelling");
+  f.confirmStopped();
+  await f.makeRunner().cancel(f.runId);
+  await f.drain();
+  expect((await f.registry.getById(f.runId))?.status).toBe("cancelled");
+});
+
+test("execution monitor checks the final fence after material resolution", async () => {
+  const f = await monitoredExecution();
+  const prepare = f.authorization.prepare.bind(f.authorization);
+  const injected = spyOn(f.authorization, "prepare").mockImplementation(async (runId) => {
+    const fence = await prepare(runId);
+    if (runId === f.runId) f.expire();
+    return fence;
+  });
+  try {
+    await scanExecutions(f.monitor);
+    expect(await f.registry.getById(f.runId)).toMatchObject({
+      status: "cancelling",
+      errorMessage: "AUTHORIZATION_EXPIRED",
+    });
+  } finally {
+    injected.mockRestore();
+  }
+});
+
+test.each([
+  new Error("database unavailable"),
+  new FederationError("DATA_WAITING"),
+  new FederationError("ASSET_UNAVAILABLE"),
+])("execution monitor retries %s without cancelling and resumes after recovery", async (error) => {
+  const f = await monitoredExecution();
+  const injected = spyOn(f.authorization, "prepare").mockRejectedValue(error);
+  await scanExecutions(f.monitor);
+  expect((await f.registry.getById(f.runId))?.status).toBe("running");
+  injected.mockRestore();
+  f.expire();
+  await scanExecutions(f.monitor);
+  expect((await f.registry.getById(f.runId))?.status).toBe("cancelling");
+});
+
+test("disabling federation cancels persisted runs instead of disabling their authority monitor", async () => {
+  const f = await monitoredExecution();
+  await scanExecutions(new FederationExecutionMonitor(db, undefined, f.runner));
+  expect(await f.registry.getById(f.runId)).toMatchObject({
+    status: "cancelling",
+    errorMessage: "POLICY_DENIED",
+  });
+});
+
+test("monitor pagination skips ordinary and terminal runs, and failures never starve later runs", async () => {
+  const registry = new WorkflowRunRegistry(db);
+  const runIds: string[] = [];
+  const ordinary = await registry.createRun("ordinary", identity.userId, { nodes: [], edges: [] });
+  for (let index = 0; index < 27; index++) {
+    runIds.push(
+      await registry.createRun(
+        "monitor pagination",
+        identity.userId,
+        { nodes: [], edges: [] },
+        {
+          executionModel: "durable-v2",
+          federationReservationId: crypto.randomUUID(),
+          yaml: "name: fixture\nspec:\n  nodeDrafts: []\n",
+          role: "user",
+        },
+      ),
+    );
+  }
+  const terminalId = runIds.pop();
+  if (!terminalId) throw new Error("Missing terminal fixture");
+  await db.update(workflowRuns).set({ status: "completed" }).where(eq(workflowRuns.id, terminalId));
+  const checked = new Set<string>();
+  const cancelled: string[] = [];
+  const monitor = new FederationExecutionMonitor(
+    db,
+    {
+      prepare: async (id) => {
+        checked.add(id);
+        throw new Error("Transient authorization backend failure");
+      },
+    },
+    {
+      cancel: async (id) => {
+        cancelled.push(id);
+        return "cancelling";
+      },
+    },
+  );
+  const first = monitor.tick();
+  expect(monitor.tick()).toBe(first);
+  await first;
+  await scanExecutions(monitor);
+  expect(runIds.every((id) => checked.has(id))).toBe(true);
+  expect(checked.has(ordinary)).toBe(false);
+  expect(checked.has(terminalId)).toBe(false);
+  expect(cancelled).toEqual([]);
+  await db.delete(workflowRuns).where(inArray(workflowRuns.id, [...runIds, terminalId, ordinary]));
 });

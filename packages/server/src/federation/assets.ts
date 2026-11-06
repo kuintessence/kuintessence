@@ -22,7 +22,7 @@ import {
   FederationInputManifestSchema,
   federationCanonicalJson,
 } from "@kuintessence/shared/federation";
-import { and, desc, eq, isNull } from "drizzle-orm";
+import { and, desc, eq } from "drizzle-orm";
 import type { BoundPrincipal } from "../middleware/principal-binder";
 import { PgDataPrerequisiteRepository } from "../services/data-prerequisite-repository-drizzle";
 import { type ExecutionIdentity, requireExecutionIdentity } from "./execution-identity";
@@ -281,17 +281,13 @@ export class FederationAssetService {
     const [mapping] = await tx
       .select()
       .from(federationAssetMappings)
-      .where(
-        and(
-          this.referenceCondition(identity.orgId, reference),
-          isNull(federationAssetMappings.revokedAt),
-        ),
-      )
+      .where(this.referenceCondition(identity.orgId, reference))
       .for("share");
     if (!mapping)
       throw new FederationError(
         reference.kind === "dataset" ? "DATA_WAITING" : "ASSET_UNAVAILABLE",
       );
+    if (mapping.revokedAt) throw new FederationError("POLICY_DENIED");
     if (
       mapping.digest !== reference.digest ||
       (expectedMappingId && mapping.id !== expectedMappingId)
@@ -339,6 +335,7 @@ export class FederationAssetService {
         .innerJoin(dataAssets, eq(dataAssets.id, dataAssetVersions.dataAssetId))
         .where(eq(dataAssetVersions.id, id))
         .for("share", { of: [dataAssetVersions, dataAssets] });
+      if (row?.asset.lifecycle === "revoked") throw new FederationError("POLICY_DENIED");
       if (
         !row?.version.immutableAt ||
         row.asset.lifecycle !== "published" ||
@@ -355,6 +352,7 @@ export class FederationAssetService {
       .innerJoin(softwareAssets, eq(softwareAssets.id, softwareAssetRevisions.assetId))
       .where(eq(softwareAssetRevisions.id, id))
       .for("share", { of: [softwareAssetRevisions, softwareAssets] });
+    if (row?.asset.lifecycle === "revoked") throw new FederationError("POLICY_DENIED");
     if (
       !row ||
       row.asset.kind !== assetKinds[reference.kind] ||

@@ -59,6 +59,7 @@ import {
   FederationExecutionBindingService,
   loadFederationWorkflowBinding,
 } from "./federation/execution-binding";
+import { FederationExecutionMonitor } from "./federation/execution-monitor";
 import { createFederationPackageResolver } from "./federation/package-resolver";
 import { FederationPermissionService } from "./federation/permissions";
 import { FederationPreparationService } from "./federation/preparation";
@@ -2092,6 +2093,12 @@ const federationPreparationWorker = federationPreparation
     )
   : undefined;
 federationPreparationWorker?.start();
+const federationExecutionMonitor = new FederationExecutionMonitor(
+  db,
+  federationDispatchAuthorization,
+  workflowAsyncRunner,
+);
+federationExecutionMonitor.start();
 const federationAttestationWorker =
   federationAttestation && config.FEDERATION_ATTESTATION_SOCKET_PATH
     ? new FederationAttestationWorker(federationAttestation)
@@ -2134,6 +2141,7 @@ async function shutdown(signal: string): Promise<void> {
   logger.info({ signal }, "Server shutting down");
   try {
     grpcServer.close();
+    await federationExecutionMonitor.stop();
     await workflowAsyncRunner.stop();
     await federationIngress?.stop(true);
     await federationPreparationWorker?.stop();

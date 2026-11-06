@@ -179,8 +179,11 @@ export class WorkflowAsyncRunner {
     return "queued";
   }
 
-  async cancel(runId: string): Promise<WorkflowRunStatus | null> {
-    const status = await this.deps.registry.requestCancel(runId);
+  async cancel(
+    runId: string,
+    reason?: { code: string; message: string },
+  ): Promise<WorkflowRunStatus | null> {
+    const status = await this.deps.registry.requestCancel(runId, reason);
     if (status !== "cancelling") return status;
     const run = await this.deps.registry.getById(runId);
     if (
