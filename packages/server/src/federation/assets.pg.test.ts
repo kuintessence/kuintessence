@@ -39,6 +39,7 @@ import {
   workflowRuns,
 } from "@kuintessence/db";
 import {
+  DataDeliveryBindingSchema,
   FederationExecutionDecision,
   FederationExecutionRequestSchema,
   type FederationExecutionResponse,
@@ -1726,7 +1727,7 @@ test("monitor pagination skips ordinary and terminal runs, and failures never st
   await db.delete(workflowRuns).where(inArray(workflowRuns.id, [...runIds, terminalId, ordinary]));
 });
 
-async function monitoredJob(status: "pending" | "running" | "completed" = "running") {
+async function monitoredJob(status: "pending" | "queued" | "running" | "completed" = "running") {
   await assets.register(actor, { reference: scriptRef, localRevisionId: revisionId });
   const f = await monitoredExecution();
   const jobId = crypto.randomUUID();
@@ -2185,5 +2186,194 @@ test("temporary material failure cannot hide active queue revocation", async () 
   } finally {
     unavailable.mockRestore();
     await f.cleanup();
+  }
+});
+
+test.each([
+  "active",
+  "queue-revoked",
+  "epoch-revoked",
+  "completed",
+  "cancel-race",
+  "data-active",
+  "data-revoked",
+  "data-binding",
+  "default-queue",
+] as const)("runtime renewal keeps the original acknowledged attempt and checks %s", async (change) => {
+  const f = await monitoredJob("queued");
+  const dispatcher = new AgentDispatcher();
+  const outbox = new JobDispatchOutbox(
+    db,
+    dispatcher,
+    (runId, target) => f.authorization.prepare(runId, target),
+    async () => {
+      throw new Error("Runtime renewal must not sign download credentials");
+    },
+  );
+  await db.update(jobs).set({ dispatchEpoch: 1 }).where(eq(jobs.id, f.jobId));
+  const lease = await new WorkflowExecutionJournalStore(db).acquire(f.runId);
+  if (!lease) throw new Error("Missing runtime test lease");
+  const message = dispatcher.buildDispatchJob(f.jobId, {
+    federationExecution: true,
+    jobIdInternal: f.jobId,
+    name: "Runtime grant",
+    command: "true",
+    resources: { cpus: 1, memoryMb: 128, wallTimeSec: 30 },
+    queueName: change === "default-queue" ? "resolved-default" : "approved",
+    queueTargetMode: change === "default-queue" ? "default" : "named",
+    dispatchEpoch: 1,
+  });
+  const bindingId = crypto.randomUUID();
+  const data = change.startsWith("data-");
+  let pushed = 0;
+  let clock: ReturnType<typeof spyOn<typeof Date, "now">> | undefined;
+  let permission: ReturnType<typeof spyOn<typeof f.queues, "assertExecutionAccess">> | undefined;
+  try {
+    if (change === "default-queue") {
+      await db
+        .update(schedulerQueues)
+        .set({ targetMode: "default", queueName: null })
+        .where(eq(schedulerQueues.queueId, approvedTarget.queueId));
+      await db
+        .update(jobs)
+        .set({ queueTargetMode: "default", schedulerQueueName: "resolved-default" })
+        .where(eq(jobs.id, f.jobId));
+    }
+    if (data) {
+      await db.insert(jobDataBindings).values({
+        id: bindingId,
+        jobId: f.jobId,
+        inputDescriptor: "reads",
+        source: "data-market",
+        assetId: datasetId,
+        versionId,
+        manifestDigest: datasetRef.digest,
+        assetKind: "scientific-dataset",
+        sensitivity: "open",
+        egressPolicy: "allow",
+        stagePath: "inputs/reads",
+        selectedEntries: ["reads.txt"],
+      });
+      if (message.payload.case !== "dispatchJob") throw new Error("Missing original dispatch");
+      message.payload.value.dataDeliveries.push(
+        create(DataDeliveryBindingSchema, {
+          bindingId,
+          assetId: datasetId,
+          versionId,
+          manifestDigest: datasetRef.digest,
+          stagePath: "inputs/reads",
+          leaseExpiresAtUnixMs: 1n,
+          selectedEntries: [{ path: "reads.txt", sha256: "a".repeat(64), sizeBytes: 1n }],
+        }),
+      );
+    }
+    await outbox.enqueue(approvedTarget.agentId, message, f.runId, lease);
+    await lease.release();
+    await outbox.acknowledge(approvedTarget.agentId, f.jobId);
+    await db.update(jobs).set({ status: "running" }).where(eq(jobs.id, f.jobId));
+    await db
+      .update(agents)
+      .set({ status: "offline" })
+      .where(eq(agents.agentId, approvedTarget.agentId));
+    dispatcher.register(approvedTarget.agentId, {
+      federationExecutionV1: true,
+      verifiedCertFingerprint: "verified",
+      close: () => {},
+      push: () => {
+        pushed++;
+      },
+    });
+    clock = spyOn(Date, "now").mockReturnValue(testNow.getTime());
+    if (change === "queue-revoked")
+      await db
+        .update(schedulerQueues)
+        .set({ enabled: false })
+        .where(eq(schedulerQueues.queueId, approvedTarget.queueId));
+    if (change === "epoch-revoked")
+      await db.update(jobs).set({ revokedEpoch: 1 }).where(eq(jobs.id, f.jobId));
+    if (change === "completed")
+      await db.update(jobs).set({ status: "completed" }).where(eq(jobs.id, f.jobId));
+    if (change === "cancel-race") {
+      const check = f.queues.assertExecutionAccess.bind(f.queues);
+      permission = spyOn(f.queues, "assertExecutionAccess").mockImplementation(async (...args) => {
+        await check(...args);
+        await db.update(jobs).set({ status: "cancelled" }).where(eq(jobs.id, f.jobId));
+      });
+    }
+    if (change === "data-revoked")
+      await db
+        .update(dataAssets)
+        .set({ accessMode: "request" })
+        .where(eq(dataAssets.id, datasetId));
+    if (change === "data-binding")
+      await db
+        .update(jobDataBindings)
+        .set({ selectedEntries: ["other.txt"] })
+        .where(eq(jobDataBindings.id, bindingId));
+    const replies: FederationExecutionResponse[] = [];
+    const request = create(FederationExecutionRequestSchema, {
+      requestId: crypto.randomUUID(),
+      jobId: f.jobId,
+      dispatchEpoch: 1n,
+      runtimeRenewal: true,
+    });
+    const result = outbox.renewExecution(approvedTarget.agentId, request, (reply) => {
+      if (change === "data-active") {
+        const probe = Bun.spawnSync(
+          [
+            "bun",
+            "-e",
+            `import postgres from "postgres";
+          const db = postgres(process.env.DATABASE_URL, {max: 1});
+          try { await db.begin(tx => tx.unsafe('select id from data_assets where id=$1 for update nowait', [process.env.PROBE_ASSET])); process.stdout.write("unlocked"); }
+          catch (error) { process.stdout.write(error.code); } await db.end();`,
+          ],
+          { env: { ...process.env, DATABASE_URL: url, PROBE_ASSET: datasetId }, timeout: 5000 },
+        );
+        expect(probe.exitCode).toBe(0);
+        expect(probe.stdout.toString()).toBe("55P03");
+      }
+      replies.push(reply);
+    });
+    const granted = change === "active" || change === "data-active" || change === "default-queue";
+    if (["queue-revoked", "data-revoked", "data-binding"].includes(change))
+      await expect(result).rejects.toThrow();
+    else expect(await result).toBe(granted);
+    expect(pushed).toBe(0);
+    expect(replies).toHaveLength(granted ? 1 : 0);
+    if (granted) {
+      expect(replies[0]).toMatchObject({
+        runtimeRenewal: true,
+        expiresAtUnixMs: BigInt(testNow.getTime() + 10_000),
+      });
+      expect(replies[0]?.dispatch).toBeUndefined();
+      expect(replies[0]?.installation).toBeUndefined();
+      const [saved] = await db
+        .select()
+        .from(jobDispatchOutbox)
+        .where(eq(jobDispatchOutbox.jobId, f.jobId));
+      expect(saved?.acknowledgedAt).not.toBeNull();
+      expect(saved?.dispatchEpoch).toBe(1);
+    }
+  } finally {
+    permission?.mockRestore();
+    clock?.mockRestore();
+    await lease.release();
+    await f.cleanup();
+    if (data)
+      await db.update(dataAssets).set({ accessMode: "open" }).where(eq(dataAssets.id, datasetId));
+  }
+});
+
+test("running mapped data keeps its use authorization after source locations disappear", async () => {
+  await assets.register(actor, { reference: datasetRef, localRevisionId: versionId });
+  await db.delete(dataLocations).where(eq(dataLocations.dataAssetVersionId, versionId));
+  await expect(assets.resolve(identity, datasetRef)).rejects.toThrow("DATA_WAITING");
+  expect((await assets.resolve(identity, datasetRef, true)).local.kind).toBe("dataset");
+  await db.update(dataAssets).set({ accessMode: "request" }).where(eq(dataAssets.id, datasetId));
+  try {
+    await expect(assets.resolve(identity, datasetRef, true)).rejects.toThrow("POLICY_DENIED");
+  } finally {
+    await db.update(dataAssets).set({ accessMode: "open" }).where(eq(dataAssets.id, datasetId));
   }
 });

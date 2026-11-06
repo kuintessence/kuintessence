@@ -81,6 +81,19 @@ export class FederationExecutionClient {
     return grant.response.dispatch;
   }
 
+  /** Runtime permission cannot be used to submit or download another copy of the Job. */
+  async renewRuntime(jobId: string, dispatchEpoch: bigint, signal: AbortSignal): Promise<number> {
+    const grant = await this.renewGrant(
+      jobId,
+      dispatchEpoch,
+      "",
+      signal,
+      (response) => !response.dispatch && !response.installation,
+      true,
+    );
+    return grant.expiresAt;
+  }
+
   async renewInstallation(
     original: SoftwareOperationRequest,
     signal: AbortSignal,
@@ -130,6 +143,7 @@ export class FederationExecutionClient {
     operationId: string,
     signal: AbortSignal,
     validate: (response: FederationExecutionResponse) => boolean,
+    runtimeRenewal = false,
   ) {
     for (;;) {
       signal.throwIfAborted();
@@ -138,13 +152,15 @@ export class FederationExecutionClient {
         jobId,
         dispatchEpoch,
         operationId,
+        runtimeRenewal,
       });
       const response = await this.request(request, signal);
       if (response) {
         if (
           response.jobId !== jobId ||
           response.dispatchEpoch !== dispatchEpoch ||
-          response.operationId !== operationId
+          response.operationId !== operationId ||
+          response.runtimeRenewal !== runtimeRenewal
         )
           throw new Error("Federation execution response does not match its request");
         if (response.decision === FederationExecutionDecision.DENIED)

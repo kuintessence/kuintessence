@@ -20,6 +20,41 @@ const original = create(DispatchJobSchema, {
   cpus: 1,
 });
 const options = { now: () => 1000, timeoutMs: 20, retryMs: 1 };
+
+test.each([
+  "grant",
+  "dispatch",
+  "installation",
+  "legacy",
+  "epoch",
+] as const)("runtime grant accepts only continuation authority: %s", async (kind) => {
+  const client: FederationExecutionClient = new FederationExecutionClient((request) => {
+    expect(request.runtimeRenewal).toBe(true);
+    expect(request.operationId).toBe("");
+    client.receive(
+      create(FederationExecutionResponseSchema, {
+        requestId: request.requestId,
+        jobId: request.jobId,
+        dispatchEpoch: kind === "epoch" ? request.dispatchEpoch + 1n : request.dispatchEpoch,
+        runtimeRenewal: kind !== "legacy",
+        decision: Decision.GRANTED,
+        expiresAtUnixMs: 2000n,
+        ...(kind === "dispatch" ? { dispatch: original } : {}),
+        ...(kind === "installation"
+          ? { installation: create(SoftwareOperationRequestSchema) }
+          : {}),
+      }),
+    );
+    return true;
+  }, options);
+  const result = client.renewRuntime(
+    original.jobId,
+    original.dispatchEpoch,
+    new AbortController().signal,
+  );
+  if (kind === "grant") expect(await result).toBe(2000);
+  else await expect(result).rejects.toThrow();
+});
 function response(request: FederationExecutionRequest) {
   return create(FederationExecutionResponseSchema, {
     requestId: request.requestId,

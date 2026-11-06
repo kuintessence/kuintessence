@@ -1,10 +1,13 @@
 import {
   agents,
+  dataAccessPolicies,
   dataAssets,
   dataAssetVersions,
+  dataGrants,
   jobDataBindings,
   jobs,
   type PgDb,
+  type PgTransaction,
   schedulerQueues,
   softwareOperations,
   workflowExecutionJobs,
@@ -89,7 +92,7 @@ export async function checkFederationExecutionPolicy(
         );
       } else if (job.status !== "pending") throw new FederationError("OPERATION_CONFLICT");
     });
-    await inspect(() => checkData(db, job.id, identity));
+    await inspect(() => checkFederationJobData(db, job.id, identity));
   }
   for (const { operation, job, intent } of installations) {
     checkOwner(job);
@@ -154,7 +157,53 @@ async function checkTarget(
   throw new FederationError("POLICY_DENIED");
 }
 
-async function checkData(db: PgDb, jobId: string, identity: { userId: string; orgId: string }) {
+export async function checkFederationJobData(
+  db: PgDb | PgTransaction,
+  jobId: string,
+  identity: { userId: string; orgId: string },
+  lock = false,
+) {
+  if (lock) {
+    // The caller holds the Job UPDATE lock, fencing new bindings. NOWAIT avoids revoke lock inversion.
+    const bound = await db
+      .select()
+      .from(jobDataBindings)
+      .where(and(eq(jobDataBindings.jobId, jobId), eq(jobDataBindings.source, "data-market")))
+      .orderBy(jobDataBindings.id)
+      .for("update", { noWait: true });
+    const assetIds = [
+      ...new Set(bound.flatMap((row) => (row.assetId ? [row.assetId] : []))),
+    ].sort();
+    const versionIds = [
+      ...new Set(bound.flatMap((row) => (row.versionId ? [row.versionId] : []))),
+    ].sort();
+    if (assetIds.length) {
+      await db
+        .select()
+        .from(dataAssets)
+        .where(inArray(dataAssets.id, assetIds))
+        .orderBy(dataAssets.id)
+        .for("update", { noWait: true });
+      await db
+        .select()
+        .from(dataAssetVersions)
+        .where(inArray(dataAssetVersions.id, versionIds))
+        .orderBy(dataAssetVersions.id)
+        .for("update", { noWait: true });
+      await db
+        .select()
+        .from(dataGrants)
+        .where(inArray(dataGrants.dataAssetId, assetIds))
+        .orderBy(dataGrants.id)
+        .for("update", { noWait: true });
+      await db
+        .select()
+        .from(dataAccessPolicies)
+        .where(inArray(dataAccessPolicies.dataAssetId, assetIds))
+        .orderBy(dataAccessPolicies.id)
+        .for("update", { noWait: true });
+    }
+  }
   const bindings = await db
     .select({ binding: jobDataBindings, asset: dataAssets, version: dataAssetVersions })
     .from(jobDataBindings)

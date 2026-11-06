@@ -1114,12 +1114,14 @@ export function registerAgentHandler(router: ConnectRouter, deps: AgentHandlerDe
                       jobId: request.jobId,
                       dispatchEpoch: request.dispatchEpoch,
                       operationId: request.operationId,
+                      runtimeRenewal: request.runtimeRenewal,
                       decision,
                     }),
                   },
                 }),
               );
             if (
+              (request.operationId && request.runtimeRenewal) ||
               !(request.operationId
                 ? channel.federationInstallationV1 && channel.federationInstallationLeaseV1
                 : channel.federationExecutionV1) ||

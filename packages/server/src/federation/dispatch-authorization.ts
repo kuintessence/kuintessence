@@ -3,6 +3,7 @@ import {
   jobs,
   type PgDb,
   type PgTransaction,
+  schedulerQueues,
   workflowExecutionJobs,
 } from "@kuintessence/db";
 import { WorkflowExecutionInterrupted } from "@kuintessence/shared";
@@ -13,7 +14,7 @@ import type { SoftwareAvailabilityService } from "../services/software-availabil
 import { constrainWorkflowResources } from "../workflow/resource-limits";
 import { federationMaterialDigest } from "./assets";
 import { federationExecutionSnapshot, loadFederationWorkflowBinding } from "./execution-binding";
-import { checkFederationExecutionPolicy } from "./execution-policy";
+import { checkFederationExecutionPolicy, checkFederationJobData } from "./execution-policy";
 import { lockFederationTarget, resolveFederationTargets } from "./execution-targets";
 import type { FederationPreparationService } from "./preparation";
 import { prepareFederationSoftware } from "./software-authorization";
@@ -21,7 +22,7 @@ import { prepareFederationSoftware } from "./software-authorization";
 export type FederationDeliveryTarget = {
   jobId: string;
   agentId: string;
-} & ({ kind: "install"; spec: string } | { kind: "compute"; qos?: string });
+} & ({ kind: "install"; spec: string } | { kind: "compute"; qos?: string; running?: boolean });
 
 /** Reauthorize every delivery; the returned check holds local revocations through channel enqueue. */
 export class FederationDispatchAuthorization {
@@ -51,8 +52,13 @@ export class FederationDispatchAuthorization {
       throw new WorkflowExecutionInterrupted("Federation dispatch lacks its saved binding", {
         retryable: false,
       });
+    const running = delivery?.kind === "compute" && delivery.running === true;
     // External software authorization happens outside the final delivery transaction.
-    const current = await this.preparation.executionSnapshot(binding.reservationId);
+    const current = await this.preparation.executionSnapshot(
+      binding.reservationId,
+      undefined,
+      running,
+    );
     if (federationMaterialDigest(federationExecutionSnapshot(current)) !== binding.snapshotDigest)
       throw new FederationError("OPERATION_CONFLICT");
     const targets = binding.snapshot.executionTargets ?? [];
@@ -61,7 +67,7 @@ export class FederationDispatchAuthorization {
         retryable: false,
       });
     const eligible =
-      delivery && this.queues
+      delivery && this.queues && !running
         ? await resolveFederationTargets(this.db, this.queues, targets, {
             ...binding.snapshot.identity,
             role: "user",
@@ -79,6 +85,21 @@ export class FederationDispatchAuthorization {
           )
       : [];
     if (delivery && !invocation) throw new FederationError("OPERATION_CONFLICT");
+    const [runtimeQueue] =
+      running && delivery
+        ? await this.db
+            .select({ queue: schedulerQueues })
+            .from(jobs)
+            .innerJoin(schedulerQueues, eq(schedulerQueues.queueId, jobs.queueId))
+            .where(eq(jobs.id, delivery.jobId))
+        : [];
+    if (running) {
+      if (!runtimeQueue || !this.queues) throw new FederationError("OPERATION_CONFLICT");
+      await this.queues.assertExecutionAccess(runtimeQueue.queue.queueId, {
+        ...binding.snapshot.identity,
+        role: "user",
+      });
+    }
     const softwareFence =
       delivery && invocation
         ? await prepareFederationSoftware(
@@ -86,6 +107,7 @@ export class FederationDispatchAuthorization {
             binding.snapshot.identity,
             delivery,
             this.software,
+            running,
           )
         : undefined;
     return async (tx) => {
@@ -101,14 +123,14 @@ export class FederationDispatchAuthorization {
         saved.snapshotDigest !== binding.snapshotDigest
       )
         throw new FederationError("OPERATION_CONFLICT");
-      await this.preparation.lockExecutionSnapshot(tx, current);
+      await this.preparation.lockExecutionSnapshot(tx, current, running);
       if (delivery) {
         const [job] = await tx
           .select({ job: jobs, intent: workflowExecutionJobs.intent })
           .from(jobs)
           .innerJoin(workflowExecutionJobs, eq(workflowExecutionJobs.jobId, jobs.id))
           .where(and(eq(jobs.id, delivery.jobId), eq(workflowExecutionJobs.runId, runId)))
-          .for("share", { of: [jobs, workflowExecutionJobs] });
+          .for(running ? "update" : "share", { of: [jobs, workflowExecutionJobs] });
         if (
           !job ||
           !invocation ||
@@ -119,6 +141,8 @@ export class FederationDispatchAuthorization {
             (job.job.agentId !== delivery.agentId || !job.job.queueId))
         )
           throw new FederationError("OPERATION_CONFLICT");
+        if (running && !["queued", "running"].includes(job.job.status))
+          throw new FederationError("POLICY_DENIED");
         constrainWorkflowResources(
           {
             cpus: job.job.cpus,
@@ -128,22 +152,35 @@ export class FederationDispatchAuthorization {
           },
           binding.snapshot.request.resources,
         );
-        const queue = eligible?.selections.find(
-          (selection) =>
-            selection.agentId === delivery.agentId &&
-            (delivery.kind === "install" || selection.queueId === job.job.queueId),
-        );
+        const queue = runtimeQueue
+          ? {
+              queueId: runtimeQueue.queue.queueId,
+              targetUpdatedAt: runtimeQueue.queue.updatedAt,
+              targetMode: runtimeQueue.queue.targetMode,
+              resolvedQueueName:
+                runtimeQueue.queue.targetMode === "named"
+                  ? runtimeQueue.queue.queueName
+                  : undefined,
+              queueName: runtimeQueue.queue.queueName,
+            }
+          : eligible?.selections.find(
+              (selection) =>
+                selection.agentId === delivery.agentId &&
+                (delivery.kind === "install" || selection.queueId === job.job.queueId),
+            );
         if (!queue) throw new FederationError("POLICY_DENIED");
         if (
           delivery.kind === "compute" &&
           ((queue.targetMode ?? "default") !== job.job.queueTargetMode ||
-            (queue.resolvedQueueName ?? queue.queueName ?? null) !== job.job.schedulerQueueName)
+            ((!running || queue.targetMode === "named") &&
+              (queue.resolvedQueueName ?? queue.queueName ?? null) !== job.job.schedulerQueueName))
         )
           throw new FederationError("OPERATION_CONFLICT");
         const target = await lockFederationTarget(tx, targets, {
           agentId: delivery.agentId,
           queueId: queue.queueId,
           updatedAt: queue.targetUpdatedAt,
+          running,
           ...(delivery.kind === "compute"
             ? {
                 targetMode: job.job.queueTargetMode,
@@ -153,6 +190,8 @@ export class FederationDispatchAuthorization {
             : {}),
         });
         await softwareFence?.(tx, target.providerOrgId);
+        if (running)
+          await checkFederationJobData(tx, delivery.jobId, binding.snapshot.identity, true);
       }
     };
   }

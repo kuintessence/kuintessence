@@ -76,6 +76,7 @@ export async function lockFederationTarget(
     queueName?: string | null;
     qos?: string | null;
     updatedAt?: Date;
+    running?: boolean;
   },
 ) {
   const allowed = requireFederationTargets(targets).filter(
@@ -91,7 +92,7 @@ export async function lockFederationTarget(
       .for("share", { of: [agents, schedulerQueues] });
     if (
       !row ||
-      row.agent.status !== "online" ||
+      (!input.running && row.agent.status !== "online") ||
       !matchesFederationTarget(target, row.agent, row.queue)
     )
       continue;

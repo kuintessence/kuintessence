@@ -3,6 +3,7 @@ import {
   federationAgreements,
   federationReservations,
   federationWorkflowBindings,
+  jobDataBindings,
   jobDispatchOutbox,
   jobs,
   type PgDb,
@@ -11,6 +12,7 @@ import {
   workflowRuns,
 } from "@kuintessence/db";
 import {
+  type DispatchJob,
   FederationExecutionDecision,
   type FederationExecutionRequest,
   type FederationExecutionResponse,
@@ -24,6 +26,7 @@ import { federationExecutionDeadline } from "@kuintessence/shared/federation";
 import { and, asc, eq, isNull, lt, lte, or, sql } from "drizzle-orm";
 import type { PreparedFederationDataDispatch } from "../federation/data-dispatch";
 import type { FederationDeliveryTarget } from "../federation/dispatch-authorization";
+import { factsRequireRestrictedNoEgress } from "../services/restricted-no-egress";
 import type { LeasedWorkflowJournal } from "../workflow/execution-journal";
 import type { AgentDispatcher } from "./dispatcher";
 
@@ -250,6 +253,7 @@ export class JobDispatchOutbox {
     );
     if (preparedMessage.payload.case !== "dispatchJob") throw new Error("Invalid dispatch payload");
     const originalDispatch = preparedMessage.payload.value;
+    const running = grant?.request.runtimeRenewal === true;
     if (Boolean(reservationId) !== preparedMessage.payload.value.federationExecution)
       throw new WorkflowExecutionInterrupted(
         "Dispatch federation capability does not match its binding",
@@ -262,6 +266,11 @@ export class JobDispatchOutbox {
         preparedMessage.payload.value.dispatchEpoch !== grant.request.dispatchEpoch)
     )
       return false;
+    if (
+      running &&
+      (originalDispatch.sandboxExecution || originalDispatch.licensedMaterialMounts.length > 0)
+    )
+      throw new WorkflowExecutionInterrupted("Protected runtime authorization is unavailable");
     if (reservationId && (!identity.runId || !this.prepareFederationDispatch))
       throw new WorkflowExecutionInterrupted("Federation dispatch authorization is unavailable", {
         retryable: false,
@@ -273,13 +282,16 @@ export class JobDispatchOutbox {
             jobId,
             agentId: identity.agentId,
             qos: preparedMessage.payload.value.qos,
+            running,
           })
         : undefined;
-    const data = reservationId
-      ? await this.prepareFederationData?.(identity.agentId, preparedMessage)
-      : undefined;
+    const data =
+      reservationId && !running
+        ? await this.prepareFederationData?.(identity.agentId, preparedMessage)
+        : undefined;
     if (
       reservationId &&
+      !running &&
       !data &&
       (preparedMessage.payload.value.dataDeliveries.length > 0 ||
         preparedMessage.payload.value.inputStaging.some(
@@ -316,7 +328,7 @@ export class JobDispatchOutbox {
       if (
         !job ||
         !saved ||
-        job.status !== "queued" ||
+        !(running ? ["queued", "running"].includes(job.status) : job.status === "queued") ||
         job.agentId !== saved.agentId ||
         job.dispatchEpoch !== saved.dispatchEpoch ||
         job.revokedEpoch >= saved.dispatchEpoch ||
@@ -345,12 +357,14 @@ export class JobDispatchOutbox {
         throw new WorkflowExecutionInterrupted("Credential renewal changed dispatch intent", {
           retryable: false,
         });
-      await tx
-        .update(jobDispatchOutbox)
-        .set({ nextAttemptAt: sql`clock_timestamp() + interval '10 seconds'` })
-        .where(eq(jobDispatchOutbox.jobId, jobId));
+      if (!running)
+        await tx
+          .update(jobDispatchOutbox)
+          .set({ nextAttemptAt: sql`clock_timestamp() + interval '10 seconds'` })
+          .where(eq(jobDispatchOutbox.jobId, jobId));
       await authorize?.(tx);
       await data?.authorize(tx);
+      if (running) await assertRunningDataBindings(tx, originalDispatch);
       if (grant) {
         const [binding] = await tx
           .select({
@@ -373,10 +387,14 @@ export class JobDispatchOutbox {
           Date.now() + 10_000,
           federationExecutionDeadline(binding.snapshot.request),
           Date.parse(binding.terms.validUntil),
-          ...dispatch.dataDeliveries.map((item) => Number(item.leaseExpiresAtUnixMs)),
-          ...dispatch.inputStaging
-            .filter((item) => item.deliveryLeaseId)
-            .map((item) => Number(item.deliveryLeaseExpiresAtUnixMs)),
+          ...(running
+            ? []
+            : dispatch.dataDeliveries.map((item) => Number(item.leaseExpiresAtUnixMs))),
+          ...(running
+            ? []
+            : dispatch.inputStaging
+                .filter((item) => item.deliveryLeaseId)
+                .map((item) => Number(item.deliveryLeaseExpiresAtUnixMs))),
           ...(dispatch.sandboxExecution?.envelope
             ? [Number(dispatch.sandboxExecution.envelope.expiresAtUnixMs)]
             : []),
@@ -389,7 +407,8 @@ export class JobDispatchOutbox {
             dispatchEpoch: grant.request.dispatchEpoch,
             decision: FederationExecutionDecision.GRANTED,
             expiresAtUnixMs: BigInt(expiry),
-            dispatch,
+            runtimeRenewal: running,
+            ...(running ? {} : { dispatch }),
           }),
         );
         return true;
@@ -423,5 +442,56 @@ export class JobDispatchOutbox {
     if (this.timer) clearInterval(this.timer);
     this.timer = undefined;
     await this.running;
+  }
+}
+
+async function assertRunningDataBindings(tx: PgTransaction, dispatch: DispatchJob): Promise<void> {
+  function reject(): never {
+    throw new WorkflowExecutionInterrupted("Running data binding changed", { retryable: false });
+  }
+  if (
+    dispatch.inputStaging.some(
+      (input) => input.deliveryLeaseId || input.deliveryLeaseExpiresAtUnixMs !== 0n,
+    )
+  )
+    reject();
+  const bindings = await tx
+    .select()
+    .from(jobDataBindings)
+    .where(
+      and(eq(jobDataBindings.jobId, dispatch.jobId), eq(jobDataBindings.source, "data-market")),
+    )
+    .for("share");
+  const deliveries = new Map(dispatch.dataDeliveries.map((item) => [item.bindingId, item]));
+  if (deliveries.size !== dispatch.dataDeliveries.length || deliveries.size !== bindings.length)
+    reject();
+  for (const binding of bindings) {
+    const delivery = deliveries.get(binding.id);
+    if (
+      !delivery ||
+      delivery.assetId !== binding.assetId ||
+      delivery.versionId !== binding.versionId ||
+      delivery.manifestDigest !== binding.manifestDigest ||
+      delivery.stagePath !== binding.stagePath
+    )
+      reject();
+    const paths = delivery.selectedEntries.map((entry) => entry.path).sort();
+    if (
+      !paths.length ||
+      new Set(paths).size !== paths.length ||
+      (binding.selectedEntries.length &&
+        JSON.stringify([...binding.selectedEntries].sort()) !== JSON.stringify(paths))
+    )
+      reject();
+    const restricted = factsRequireRestrictedNoEgress({
+      assetKind: binding.assetKind === "licensed-material" ? "licensed-material" : null,
+      sensitivity:
+        binding.sensitivity === "restricted" || binding.sensitivity === "regulated"
+          ? binding.sensitivity
+          : null,
+      egressPolicy: binding.egressPolicy === "allow" ? "allow" : "deny",
+    });
+    if (delivery.restricted !== restricted || (restricted && !dispatch.restrictedNoEgress))
+      reject();
   }
 }

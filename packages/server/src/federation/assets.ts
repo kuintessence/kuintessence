@@ -248,10 +248,10 @@ export class FederationAssetService {
   }
 
   /** This resolves and authorizes a snapshot. Dispatch must recheck it using assertResolved. */
-  async resolve(identity: ExecutionIdentity, reference: FederationAssetRef) {
+  async resolve(identity: ExecutionIdentity, reference: FederationAssetRef, running = false) {
     const snapshot = await this.db.transaction(async (tx) => {
       await requireExecutionIdentity(tx, identity);
-      return this.assertResolved(tx, identity, reference);
+      return this.assertResolved(tx, identity, reference, undefined, running);
     });
     if (snapshot.local.kind === "software")
       await this.authorization.authorizeSoftware(
@@ -276,6 +276,7 @@ export class FederationAssetService {
     identity: ExecutionIdentity,
     reference: FederationAssetRef,
     expectedMappingId?: string,
+    running = false,
   ) {
     await this.requireOrigin(tx, reference.originSiteId);
     const [mapping] = await tx
@@ -296,8 +297,12 @@ export class FederationAssetService {
     const local = await this.inspectLocal(tx, reference, this.localId(mapping));
     if (local.kind === "dataset") {
       await this.requireDatasetAccess(tx, local, identity);
-      const locations = await new PgDataPrerequisiteRepository(tx).listLocations(local.version.id);
-      if (!locations.length) throw new FederationError("DATA_WAITING");
+      if (!running) {
+        const locations = await new PgDataPrerequisiteRepository(tx).listLocations(
+          local.version.id,
+        );
+        if (!locations.length) throw new FederationError("DATA_WAITING");
+      }
     }
     return { mapping, local };
   }

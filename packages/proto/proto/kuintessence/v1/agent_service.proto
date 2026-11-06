@@ -331,6 +331,8 @@ message FederationExecutionRequest {
   int64 dispatch_epoch = 3;
   // Installation requests use the owning job, operation ID and a zero dispatch epoch.
   string operation_id = 4;
+  // Continue the same submitted compute attempt; grants no dispatch or download authority.
+  bool runtime_renewal = 5;
 }
 
 enum FederationExecutionDecision {
@@ -350,6 +352,7 @@ message FederationExecutionResponse {
   DispatchJob dispatch = 6;
   string operation_id = 7;
   SoftwareOperationRequest installation = 8;
+  bool runtime_renewal = 9;
 }
 
 message SpackJobExecution {

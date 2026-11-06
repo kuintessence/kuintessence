@@ -120,6 +120,7 @@ export class FederationPreparationService {
   async executionSnapshot(
     reservationId: string,
     reviewer?: FederationActor,
+    running = false,
   ): Promise<FederationExecutionPreparation> {
     const saved = await this.loadReservation(reservationId);
     const resolved = await this.resolveReservation(saved);
@@ -127,7 +128,7 @@ export class FederationPreparationService {
     for (const reference of resolved.references.values()) {
       local.set(
         federationCanonicalJson(reference),
-        await this.assets.resolve(resolved.identity, reference),
+        await this.assets.resolve(resolved.identity, reference, running),
       );
       if (reviewer) await this.assets.assertView(reviewer, reference);
     }
@@ -156,7 +157,11 @@ export class FederationPreparationService {
   }
 
   /** Recheck after external policy resolution, while the caller atomically binds the run. */
-  async lockExecutionSnapshot(tx: PgTransaction, snapshot: FederationExecutionPreparation) {
+  async lockExecutionSnapshot(
+    tx: PgTransaction,
+    snapshot: FederationExecutionPreparation,
+    running = false,
+  ) {
     const { saved, request, identity } = snapshot;
     const trust = new FederationTrustRegistry(this.db);
     await trust.assertKey(
@@ -210,6 +215,7 @@ export class FederationPreparationService {
         identity,
         mapping.reference,
         mapping.mappingId,
+        running,
       );
       if (
         (current.local.kind === "dataset"

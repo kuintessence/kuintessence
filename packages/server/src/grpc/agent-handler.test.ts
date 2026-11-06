@@ -269,6 +269,9 @@ describe("agent-handler", () => {
       "asset-unavailable",
       "legacy",
       ...(installation ? ["startup-only" as const] : []),
+      ...(installation
+        ? ["runtime-install" as const]
+        : ["runtime-grant" as const, "runtime-retry" as const]),
       "unverified",
     ] as const)(`federation ${installation ? "installation" : "execution"} grant RPC: %s`, async (outcome) => {
       const { router, handlers } = createMockRouter();
@@ -281,7 +284,8 @@ describe("agent-handler", () => {
         send: (response: FederationExecutionResponse) => void,
       ) => {
         calledBy.push(agentId);
-        if (outcome === "retry") throw new Error("private infrastructure detail");
+        if (outcome === "retry" || outcome === "runtime-retry")
+          throw new Error("private infrastructure detail");
         if (outcome === "authz-unavailable")
           throw new AuthorizationUnavailableError(
             "Authorization unavailable: private infrastructure detail",
@@ -296,6 +300,7 @@ describe("agent-handler", () => {
             jobId: request.jobId,
             dispatchEpoch: request.dispatchEpoch,
             operationId: request.operationId,
+            runtimeRenewal: request.runtimeRenewal,
             decision: FederationExecutionDecision.GRANTED,
             expiresAtUnixMs: BigInt(Date.now() + 1000),
           }),
@@ -333,13 +338,14 @@ describe("agent-handler", () => {
         jobId: testJobId,
         dispatchEpoch: installation ? 0n : 1n,
         operationId: installation ? crypto.randomUUID() : "",
+        runtimeRenewal: ["runtime-grant", "runtime-retry", "runtime-install"].includes(outcome),
       });
       async function* messages() {
         yield register;
         yield create(AgentMessageSchema, {
           payload: { case: "federationExecutionRequest", value: request },
         });
-        if (outcome === "grant")
+        if (outcome === "grant" || outcome === "runtime-grant")
           yield create(AgentMessageSchema, {
             payload: {
               case: "heartbeat",
@@ -376,15 +382,24 @@ describe("agent-handler", () => {
         jobId: testJobId,
         dispatchEpoch: request.dispatchEpoch,
         operationId: request.operationId,
+        runtimeRenewal: request.runtimeRenewal,
         decision:
-          outcome === "grant"
+          outcome === "grant" || outcome === "runtime-grant"
             ? FederationExecutionDecision.GRANTED
-            : ["retry", "authz-unavailable", "data-waiting", "asset-unavailable"].includes(outcome)
+            : [
+                  "retry",
+                  "runtime-retry",
+                  "authz-unavailable",
+                  "data-waiting",
+                  "asset-unavailable",
+                ].includes(outcome)
               ? FederationExecutionDecision.RETRY
               : FederationExecutionDecision.DENIED,
       });
       expect(calledBy).toEqual(
-        ["legacy", "startup-only", "unverified"].includes(outcome) ? [] : ["grpc-test-agent-1"],
+        ["legacy", "startup-only", "unverified", "runtime-install"].includes(outcome)
+          ? []
+          : ["grpc-test-agent-1"],
       );
       expect(
         JSON.stringify(reply, (_key, value: unknown) =>

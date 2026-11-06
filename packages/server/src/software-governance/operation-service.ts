@@ -720,6 +720,7 @@ export class SoftwareOperationService {
     if (
       ![request.requestId, request.operationId, request.jobId].every((value) => uuid.test(value)) ||
       request.dispatchEpoch !== 0n ||
+      request.runtimeRenewal ||
       !this.dispatcher.supportsFederationInstallation(agentId)
     )
       return false;
