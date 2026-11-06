@@ -125,6 +125,7 @@ async function fixture(install = false) {
       spackPinnedExecutionV1: true,
       spackMaterialDeliveryV1: true,
       softwareOperationReplayV1: true,
+      federationInstallationV1: true,
       verifiedCertFingerprint: "d".repeat(64),
       push: (message) => {
         sent.push({ agentId, message });

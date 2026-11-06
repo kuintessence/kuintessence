@@ -641,3 +641,27 @@ test("federation dispatch requires both renewal capability and verified transpor
   expect(dispatcher.pushPreparedDispatch("agent", message)).toBe(true);
   expect(channel.messages).toHaveLength(1);
 });
+
+test("federation installation cannot reach a legacy Agent even with durable replay support", () => {
+  const dispatcher = new AgentDispatcher();
+  const channel = {
+    ...mockChannel(),
+    softwareOperationReplayV1: true,
+    spackMaterialDeliveryV1: true,
+    verifiedCertFingerprint: "verified",
+  };
+  const payload = {
+    operationId: "operation",
+    federationJobId: "job",
+    action: SoftwareOperationAction.INSTALL,
+    spec: "hello@1",
+    requestedBy: "owner",
+    durableReplay: true,
+  };
+  dispatcher.register("agent", channel);
+  expect(dispatcher.pushSoftwareOperation("agent", payload)).toBe(false);
+  expect(channel.messages).toHaveLength(0);
+  dispatcher.register("agent", { ...channel, federationInstallationV1: true });
+  expect(dispatcher.pushSoftwareOperation("agent", payload)).toBe(true);
+  expect(channel.messages[0]?.payload.value).toMatchObject({ federationJobId: "job" });
+});

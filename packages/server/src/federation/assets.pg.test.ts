@@ -26,6 +26,7 @@ import {
   schedulerQueues,
   softwareAssetRevisions,
   softwareAssets,
+  softwareOperations,
   userOrgMemberships,
   users,
   workflowExecutionJobs,
@@ -55,6 +56,8 @@ import { createErrorHandler } from "../middleware/error-handler";
 import { createFederationAssetRoutes } from "../routes/federation-assets";
 import { QueueRegistryService } from "../services/queue-registry";
 import { SoftwareAvailabilityService } from "../services/software-availability";
+import { InstalledRegistry } from "../software-governance/installed-registry";
+import { SoftwareOperationService } from "../software-governance/operation-service";
 import { WorkflowAsyncRunner } from "../workflow/async-runner";
 import { WorkflowExecutionJournalStore } from "../workflow/execution-journal";
 import { WorkflowRunRegistry } from "../workflow/run-registry";
@@ -1252,6 +1255,160 @@ test("real federation authorization fences outbox retries and holds agreement re
     await db.delete(workflowExecutionJobs).where(eq(workflowExecutionJobs.jobId, jobId));
     await db.delete(jobs).where(eq(jobs.id, jobId));
     await db.delete(schedulerQueues).where(eq(schedulerQueues.queueId, approvedTarget.queueId));
+    await db.delete(agents).where(eq(agents.agentId, agentId));
+  }
+});
+
+test("installation renewal rechecks its real federation agreement and original pending job", async () => {
+  const f = await executionFixture();
+  const binding = await f.bindings.stage(f.reservationId);
+  const jobId = crypto.randomUUID(),
+    operationId = crypto.randomUUID();
+  const agentId = `grant-${crypto.randomUUID()}`;
+  const pin = {
+    dagHash: "a".repeat(32),
+    manifestDigest: `sha256:${"b".repeat(64)}`,
+    lockfileDigest: `sha256:${"c".repeat(64)}`,
+    spackVersion: "1.0.0" as const,
+    target: "linux-ubuntu24.04-x86_64",
+  };
+  const dispatcher = new AgentDispatcher();
+  const channel = {
+    close: () => {},
+    push: () => {},
+    federationInstallationV1: true,
+    softwareOperationReplayV1: true,
+    spackMaterialDeliveryV1: true,
+    verifiedCertFingerprint: "verified",
+  };
+  dispatcher.register(agentId, channel);
+  dispatcher.register("other", { ...channel });
+  let change: "none" | "cancel" | "anchor" | "ticket" = "none";
+  const operations = new SoftwareOperationService(
+    db,
+    dispatcher,
+    new InstalledRegistry(db),
+    async () => {
+      if (change === "cancel")
+        await db.update(jobs).set({ status: "cancelled" }).where(eq(jobs.id, jobId));
+      if (change === "anchor")
+        await db
+          .update(softwareOperations)
+          .set({ federationJobId: crypto.randomUUID() })
+          .where(eq(softwareOperations.id, operationId));
+      return {
+        spackMaterialTicket: "new-ticket",
+        spackManifestDigest: change === "ticket" ? `sha256:${"d".repeat(64)}` : pin.manifestDigest,
+      };
+    },
+    async () => {},
+    async () => {
+      const snapshot = await f.preparation.executionSnapshot(f.reservationId);
+      return (tx) => f.preparation.lockExecutionSnapshot(tx, snapshot);
+    },
+  );
+  await db.insert(agents).values({
+    agentId,
+    siteName: "Test",
+    schedulerType: "slurm",
+    schedulerVersion: "test",
+    providerOrgId: actor.orgId,
+  });
+  await db.insert(jobs).values({
+    id: jobId,
+    name: "Install grant",
+    command: "exit 126",
+    cpus: 1,
+    memoryMb: 128,
+    submittedBy: identity.userId,
+    orgId: identity.orgId,
+    softwareRequirements: [{ name: "hello", spec: "hello@1", installable: true, operationId }],
+  });
+  await db.insert(softwareOperations).values({
+    id: operationId,
+    agentId,
+    requestedBy: identity.userId,
+    action: "install",
+    spec: "hello@1",
+    replayEnabled: true,
+    federationJobId: jobId,
+    manifestDigest: pin.manifestDigest,
+  });
+  await db
+    .update(workflowRuns)
+    .set({ status: "running" })
+    .where(eq(workflowRuns.id, binding.workflowRunId));
+  const lease = await new WorkflowExecutionJournalStore(db).acquire(binding.workflowRunId);
+  if (!lease) throw new Error("Missing installation lease");
+  await db.insert(workflowExecutionJobs).values({
+    runId: binding.workflowRunId,
+    jobId,
+    nodeId: "install",
+    pathHash: "a".repeat(64),
+    path: '["node","install"]',
+    intent: {
+      nodeId: "install",
+      name: "Install",
+      command: "exit 126",
+      envVars: {},
+      inputStaging: [],
+      expectedOutputs: [],
+      spackExecution: { spec: "hello@1", command: "hello", pin },
+    },
+  });
+  const clock = spyOn(Date, "now").mockReturnValue(testNow.getTime());
+  const request = create(FederationExecutionRequestSchema, {
+    requestId: crypto.randomUUID(),
+    jobId,
+    operationId,
+  });
+  const grants: FederationExecutionResponse[] = [];
+  const send = (grant: FederationExecutionResponse) => {
+    grants.push(grant);
+  };
+  try {
+    expect(await operations.renewFederationInstallation(agentId, request, send)).toBe(true);
+    expect(grants[0]?.installation).toMatchObject({
+      operationId,
+      federationJobId: jobId,
+      durableReplay: true,
+      spackMaterialTicket: "new-ticket",
+      spackManifestDigest: pin.manifestDigest,
+    });
+    expect(grants[0]?.expiresAtUnixMs).toBe(BigInt(testNow.getTime() + 10_000));
+    expect(await operations.renewFederationInstallation("other", request, send)).toBe(false);
+    expect(
+      await operations.renewFederationInstallation(
+        agentId,
+        { ...request, dispatchEpoch: 1n },
+        send,
+      ),
+    ).toBe(false);
+    for (change of ["cancel", "anchor", "ticket"] as const) {
+      expect(await operations.renewFederationInstallation(agentId, request, send)).toBe(false);
+      await db.update(jobs).set({ status: "pending" }).where(eq(jobs.id, jobId));
+      await db
+        .update(softwareOperations)
+        .set({ federationJobId: jobId })
+        .where(eq(softwareOperations.id, operationId));
+    }
+    change = "none";
+    await db
+      .update(federationAgreements)
+      .set({ state: "suspended" })
+      .where(eq(federationAgreements.revisionId, agreement.agreementRevisionId));
+    await expect(operations.renewFederationInstallation(agentId, request, send)).rejects.toThrow();
+    expect(grants).toHaveLength(1);
+  } finally {
+    clock.mockRestore();
+    await lease.release();
+    await db
+      .update(federationAgreements)
+      .set({ state: "active" })
+      .where(eq(federationAgreements.revisionId, agreement.agreementRevisionId));
+    await db.delete(softwareOperations).where(eq(softwareOperations.id, operationId));
+    await db.delete(workflowExecutionJobs).where(eq(workflowExecutionJobs.jobId, jobId));
+    await db.delete(jobs).where(eq(jobs.id, jobId));
     await db.delete(agents).where(eq(agents.agentId, agentId));
   }
 });

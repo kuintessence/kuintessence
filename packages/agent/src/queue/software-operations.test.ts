@@ -267,3 +267,21 @@ test("SQLite migration adds nullable identity to old receipts and can run twice"
     old.close();
   }
 });
+
+test("federation install receipts cannot be reassigned or downgraded on replay", async () => {
+  const request = {
+    ...input(),
+    requestedBy: "owner",
+    manifestDigest: `sha256:${"a".repeat(64)}`,
+    durableReplay: true,
+    federationJobId: randomUUID(),
+  };
+  expect(await ledger.receive(request)).toBeDefined();
+  expect(await ledger.receive(request)).toBeUndefined();
+  await expect(ledger.receive({ ...request, federationJobId: randomUUID() })).rejects.toThrow(
+    SoftwareOperationIntentConflict,
+  );
+  await expect(ledger.receive({ ...request, federationJobId: undefined })).rejects.toThrow(
+    SoftwareOperationIntentConflict,
+  );
+});

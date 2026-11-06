@@ -355,7 +355,11 @@ function makeReplayReconnectClient(
 function makePendingRegisteredClient(
   heartbeatAckSupported = false,
   jobStatusAckSupported = false,
-  federation?: { supported: boolean; onMessage: (message: AgentMessage) => Promise<void> },
+  federation?: {
+    supported: boolean;
+    installationSupported?: boolean;
+    onMessage: (message: AgentMessage) => Promise<void>;
+  },
 ) {
   const accepted = create(ServerMessageSchema, {
     payload: {
@@ -366,6 +370,7 @@ function makePendingRegisteredClient(
         heartbeatAckSupported,
         jobStatusAckSupported,
         federationExecutionV1Supported: federation?.supported ?? false,
+        federationInstallationV1Supported: federation?.installationSupported ?? false,
       }),
     },
   });
@@ -8174,4 +8179,100 @@ describe("federation execution boundaries", () => {
       await running;
     }
   });
+});
+
+test.each([
+  "grant",
+  "deny",
+  "unsupported",
+] as const)("federation installation receives fresh authority at both boundaries: %s", async (outcome) => {
+  const db = createSqliteDb(":memory:");
+  const spackManager = await SpackManager.bootstrap({
+    requireServerMaterials: true,
+    spawner: { run: async () => ({ exitCode: 0, stdout: "1.0.0", stderr: "" }) },
+  });
+  const request = create(SoftwareOperationRequestSchema, {
+    operationId: crypto.randomUUID(),
+    federationJobId: crypto.randomUUID(),
+    action: SoftwareOperationAction.INSTALL,
+    spec: "hello@1",
+    requestedBy: "owner",
+    spackMaterialTicket: "expired",
+    spackManifestDigest: `sha256:${"a".repeat(64)}`,
+    durableReplay: true,
+  });
+  let grants = 0;
+  let prepared = false;
+  let started = false;
+  spackManager.runSoftwareOperation = async (_action, _spec, materials, signal) => {
+    prepared = true;
+    expect(materials?.ticket).toBe("renewed");
+    if (!materials?.authorizeInstallation || !signal)
+      throw new Error("Missing installation authority");
+    await materials.authorizeInstallation(signal);
+    started = true;
+    return { outcome: "succeeded", stdout: "", installed: [] };
+  };
+  const stream = new AgentStream({
+    client: makePendingRegisteredClient(false, false, {
+      supported: true,
+      installationSupported: outcome !== "unsupported",
+      onMessage: async (message) => {
+        if (message.payload.case !== "federationExecutionRequest") return;
+        grants++;
+        const renewal = message.payload.value;
+        await deliverServerMessage(
+          stream,
+          create(ServerMessageSchema, {
+            payload: {
+              case: "federationExecutionResponse",
+              value: create(FederationExecutionResponseSchema, {
+                requestId: renewal.requestId,
+                jobId: renewal.jobId,
+                operationId: renewal.operationId,
+                decision:
+                  grants === 2 && outcome === "deny"
+                    ? FederationExecutionDecision.DENIED
+                    : FederationExecutionDecision.GRANTED,
+                expiresAtUnixMs: BigInt(Date.now() + 10_000),
+                installation: { ...request, spackMaterialTicket: "renewed" },
+              }),
+            },
+          }),
+        );
+      },
+    }),
+    adapter: makeAdapter(),
+    agentId: "install-agent",
+    siteName: "test",
+    logger: silent,
+    heartbeatIntervalMs: 60_000,
+    spackManager,
+    inboundAcks: new InboundAcks(db),
+    cleanupIntents: new JobCleanupIntents(db),
+    revocationTombstones: new JobRevocationTombstones(db),
+    outboundQueue: new OutboundQueue(db),
+  });
+  activeStreams.push(stream);
+  const running = stream.start();
+  try {
+    await settle(20);
+    await deliverServerMessage(
+      stream,
+      create(ServerMessageSchema, {
+        payload: { case: "softwareOperationRequest", value: request },
+      }),
+    );
+    await waitForCondition(async () => {
+      for await (const result of new OutboundQueue(db).softwareOperations.results())
+        if (result.operationId === request.operationId) return true;
+      return false;
+    });
+    expect(grants).toBe(outcome === "unsupported" ? 0 : 2);
+    expect(prepared).toBe(outcome !== "unsupported");
+    expect(started).toBe(outcome === "grant");
+  } finally {
+    stream.stop();
+    await running;
+  }
 });

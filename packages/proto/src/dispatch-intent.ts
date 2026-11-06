@@ -4,6 +4,8 @@ import {
   DataDeliveryBindingSchema,
   type DispatchJob,
   DispatchJobSchema,
+  type SoftwareOperationRequest,
+  SoftwareOperationRequestSchema,
 } from "./generated/kuintessence/v1/agent_service_pb.js";
 
 function dataIntent(binding: DataDeliveryBinding): DataDeliveryBinding {
@@ -39,4 +41,15 @@ export function sameDispatchIntent(original: DispatchJob, renewed: DispatchJob):
     return copy;
   };
   return equals(DispatchJobSchema, redact(original), redact(renewed));
+}
+
+export function sameInstallationIntent(
+  original: SoftwareOperationRequest,
+  renewed: SoftwareOperationRequest,
+): boolean {
+  return equals(
+    SoftwareOperationRequestSchema,
+    { ...original, spackMaterialTicket: "" },
+    { ...renewed, spackMaterialTicket: "" },
+  );
 }

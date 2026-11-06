@@ -166,6 +166,7 @@ export class JobDispatchOutbox {
     send: ExecutionGrantDelivery["send"],
   ): Promise<boolean> {
     if (
+      request.operationId ||
       !UUID.test(request.jobId) ||
       !UUID.test(request.requestId) ||
       request.dispatchEpoch < 1n ||

@@ -3,5 +3,9 @@
 // Use: createClient(AgentService, transport) on the Agent side,
 //      createRoutes(AgentService, handlers) on the Server side.
 
-export { sameDataDeliveryIntent, sameDispatchIntent } from "./dispatch-intent.js";
+export {
+  sameDataDeliveryIntent,
+  sameDispatchIntent,
+  sameInstallationIntent,
+} from "./dispatch-intent.js";
 export * from "./generated/kuintessence/v1/agent_service_pb.js";

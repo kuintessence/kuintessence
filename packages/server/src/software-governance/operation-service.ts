@@ -1,7 +1,10 @@
 import { createHash } from "node:crypto";
+import { create } from "@bufbuild/protobuf";
 import {
   agents,
   auditLog,
+  federationAgreements,
+  federationReservations,
   federationWorkflowBindings,
   jobs,
   type PgDb,
@@ -13,7 +16,12 @@ import {
   workflowRuns,
 } from "@kuintessence/db";
 import {
+  FederationExecutionDecision,
+  type FederationExecutionRequest,
+  type FederationExecutionResponse,
+  FederationExecutionResponseSchema,
   SoftwareOperationAction as ProtoSoftwareOperationAction,
+  SoftwareOperationRequestSchema,
   type SoftwareOperationResult,
   SoftwareOperationStatus,
 } from "@kuintessence/proto";
@@ -678,6 +686,7 @@ export class SoftwareOperationService {
           requestedBy: due.requestedBy ?? "",
           ...ticket,
           durableReplay: true,
+          federationJobId: due.federationJobId ?? undefined,
         });
       });
     } catch (cause) {
@@ -695,6 +704,159 @@ export class SoftwareOperationService {
       });
     }
     return (await this.getOperation(operation.id)) ?? rowToView(operation);
+  }
+
+  async renewFederationInstallation(
+    agentId: string,
+    request: FederationExecutionRequest,
+    send: (response: FederationExecutionResponse) => void,
+  ): Promise<boolean> {
+    const uuid = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
+    if (
+      ![request.requestId, request.operationId, request.jobId].every((value) => uuid.test(value)) ||
+      request.dispatchEpoch !== 0n ||
+      !this.dispatcher.supportsFederationInstallation(agentId)
+    )
+      return false;
+    const [original] = await this.db
+      .select()
+      .from(softwareOperations)
+      .where(eq(softwareOperations.id, request.operationId));
+    if (
+      !original ||
+      original.agentId !== agentId ||
+      original.federationJobId !== request.jobId ||
+      original.action !== "install" ||
+      !original.replayEnabled ||
+      !original.requestedBy ||
+      !["queued", "running"].includes(original.status)
+    )
+      return false;
+    const requestedBy = original.requestedBy;
+    const scope = await installationWorkflowScope(this.db, request.jobId);
+    const pin = scope?.intent.spackExecution?.pin;
+    if (
+      !scope?.reservationId ||
+      scope.reservationId !== scope.boundReservationId ||
+      !pin ||
+      pin.manifestDigest !== original.manifestDigest ||
+      scope.intent.spackExecution?.spec !== original.spec ||
+      !this.prepareFederationDispatch ||
+      !this.authorizeJobInstall ||
+      !this.prepareSpackInstall
+    )
+      return false;
+    const fence = await this.prepareFederationDispatch(scope.runId, {
+      kind: "install",
+      spec: original.spec,
+      jobId: request.jobId,
+      agentId,
+    });
+    const agent = await this.assertAgentExists(agentId);
+    await this.authorizeJobInstall({
+      agentId,
+      requestedBy,
+      providerOrgId: agent.providerOrgId,
+    });
+    if (await this.policyRejection(agentId, "install", original.spec)) return false;
+    const ticket = await this.prepareSpackInstall({
+      operationId: original.id,
+      agentId,
+      requestedBy,
+      spec: original.spec,
+      expectedPin: pin,
+    });
+    if (!ticket.spackMaterialTicket || ticket.spackManifestDigest !== original.manifestDigest)
+      return false;
+    return this.db.transaction(async (tx) => {
+      const [run] = await tx
+        .select()
+        .from(workflowRuns)
+        .where(eq(workflowRuns.id, scope.runId))
+        .for("update");
+      const [job] = await tx.select().from(jobs).where(eq(jobs.id, request.jobId)).for("update");
+      const [current] = await tx
+        .select()
+        .from(softwareOperations)
+        .where(eq(softwareOperations.id, original.id))
+        .for("update");
+      if (
+        !run ||
+        run.status !== "running" ||
+        run.input?.federationReservationId !== scope.reservationId ||
+        !job ||
+        job.status !== "pending" ||
+        job.submittedBy !== original.requestedBy ||
+        run.submittedBy !== job.submittedBy ||
+        !job.softwareRequirements?.some(
+          (requirement) =>
+            requirement.operationId === original.id &&
+            requirement.installable === true &&
+            normalizeSoftwareOperationSpec(
+              requirement.spec ??
+                (requirement.version
+                  ? `${requirement.name}@${requirement.version}`
+                  : requirement.name),
+            ) === original.spec,
+        ) ||
+        !current ||
+        !["queued", "running"].includes(current.status)
+      )
+        return false;
+      if (
+        current.agentId !== original.agentId ||
+        current.federationJobId !== request.jobId ||
+        current.requestedBy !== original.requestedBy ||
+        current.spec !== original.spec ||
+        current.manifestDigest !== original.manifestDigest ||
+        current.action !== "install" ||
+        !current.replayEnabled ||
+        current.idempotencyKey !== original.idempotencyKey
+      )
+        return false;
+      await fence(tx);
+      const [binding] = await tx
+        .select({
+          snapshot: federationWorkflowBindings.snapshot,
+          terms: federationAgreements.terms,
+        })
+        .from(federationWorkflowBindings)
+        .innerJoin(
+          federationReservations,
+          eq(federationReservations.id, federationWorkflowBindings.reservationId),
+        )
+        .innerJoin(
+          federationAgreements,
+          eq(federationAgreements.revisionId, federationReservations.agreementRevisionId),
+        )
+        .where(eq(federationWorkflowBindings.workflowRunId, scope.runId));
+      if (!binding) return false;
+      const expiresAt = Math.min(
+        Date.now() + 10_000,
+        Date.parse(binding.snapshot.request.expiresAt),
+        Date.parse(binding.terms.validUntil),
+      );
+      if (!Number.isSafeInteger(expiresAt) || expiresAt <= Date.now()) return false;
+      send(
+        create(FederationExecutionResponseSchema, {
+          requestId: request.requestId,
+          jobId: request.jobId,
+          operationId: original.id,
+          decision: FederationExecutionDecision.GRANTED,
+          expiresAtUnixMs: BigInt(expiresAt),
+          installation: create(SoftwareOperationRequestSchema, {
+            operationId: original.id,
+            federationJobId: request.jobId,
+            action: ProtoSoftwareOperationAction.INSTALL,
+            spec: original.spec,
+            requestedBy,
+            durableReplay: true,
+            ...ticket,
+          }),
+        }),
+      );
+      return true;
+    });
   }
 
   async getOperation(id: string): Promise<SoftwareOperationView | null> {
@@ -958,6 +1120,7 @@ export function pushSoftwareOperationSafely(
     spackMaterialTicket?: string;
     spackManifestDigest?: string;
     durableReplay?: boolean;
+    federationJobId?: string;
   },
 ): { pushed: boolean; error?: string } {
   try {

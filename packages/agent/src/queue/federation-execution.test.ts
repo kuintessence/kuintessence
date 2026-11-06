@@ -6,6 +6,8 @@ import {
   type FederationExecutionRequest,
   FederationExecutionResponseSchema,
   InputStagingSchema,
+  SoftwareOperationAction,
+  SoftwareOperationRequestSchema,
 } from "@kuintessence/proto";
 import { FederationExecutionClient } from "./federation-execution";
 
@@ -149,4 +151,50 @@ test.each(["ordinary-url", "federation-flag"])("renewal cannot rewrite %s", asyn
     return true;
   }, options);
   await expect(client.renew(initial, new AbortController().signal)).rejects.toThrow("invalid");
+});
+
+test.each([
+  "ticket",
+  "owner",
+  "operation",
+  "spec",
+  "manifest",
+  "missing-marker",
+  "wrong-response-kind",
+] as const)("installation renewal preserves authority: %s", async (change) => {
+  const initial = create(SoftwareOperationRequestSchema, {
+    operationId: crypto.randomUUID(),
+    federationJobId: crypto.randomUUID(),
+    action: SoftwareOperationAction.INSTALL,
+    spec: "hello@1",
+    requestedBy: "owner",
+    durableReplay: true,
+    spackManifestDigest: `sha256:${"a".repeat(64)}`,
+    spackMaterialTicket: "old",
+  });
+  const client: FederationExecutionClient = new FederationExecutionClient((request) => {
+    const installation = clone(SoftwareOperationRequestSchema, initial);
+    installation.spackMaterialTicket = "new";
+    if (change === "owner") installation.federationJobId = crypto.randomUUID();
+    if (change === "operation") installation.operationId = crypto.randomUUID();
+    if (change === "spec") installation.spec = "other@1";
+    if (change === "manifest") installation.spackManifestDigest = `sha256:${"b".repeat(64)}`;
+    if (change === "missing-marker") installation.federationJobId = "";
+    client.receive(
+      create(FederationExecutionResponseSchema, {
+        requestId: request.requestId,
+        jobId: request.jobId,
+        dispatchEpoch: request.dispatchEpoch,
+        operationId: request.operationId,
+        decision: Decision.GRANTED,
+        expiresAtUnixMs: 2000n,
+        installation,
+        ...(change === "wrong-response-kind" ? { dispatch: original } : {}),
+      }),
+    );
+    return true;
+  }, options);
+  const pending = client.renewInstallation(initial, new AbortController().signal);
+  if (change === "ticket") expect((await pending).installation.spackMaterialTicket).toBe("new");
+  else await expect(pending).rejects.toThrow("invalid");
 });

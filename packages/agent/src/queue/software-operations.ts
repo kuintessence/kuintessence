@@ -41,6 +41,7 @@ export class SoftwareOperations {
       requestedBy?: string;
       manifestDigest?: string;
       durableReplay?: boolean;
+      federationJobId?: string;
     },
   ): Promise<ExecutionIdentity | undefined> {
     if (
@@ -57,6 +58,7 @@ export class SoftwareOperations {
           input.spec,
           input.requestedBy ?? "",
           input.manifestDigest ?? "",
+          ...(input.federationJobId ? [input.federationJobId] : []),
         ]),
       )
       .digest("hex");

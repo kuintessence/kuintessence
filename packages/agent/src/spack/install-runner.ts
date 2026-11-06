@@ -222,6 +222,8 @@ export class IsolatedSpackInstallRunner implements SpackInstallRunner {
       await verifySpackAuditRuntime(this.options.runtime, signal, this.options.runtimeDeps);
       await admitSpackManagedMemory(signal, this.options.runtimeDeps, managedMemoryMib);
       signal.throwIfAborted();
+      const authorizedUntil = await input.authorizeInstallation?.(signal);
+      signal.throwIfAborted();
       const remainingMs = Math.floor(expiresAt - performance.now());
       if (remainingMs <= 0) throw new Error("Managed Spack operation timed out");
       const uid = this.options.runtimeDeps?.uid ?? process.getuid?.();
@@ -236,6 +238,13 @@ export class IsolatedSpackInstallRunner implements SpackInstallRunner {
       );
       const execution = installWorkerExecution.getStore();
       await execution?.start(basename(storePath));
+      if (
+        authorizedUntil !== undefined &&
+        (!Number.isSafeInteger(authorizedUntil) || authorizedUntil <= Date.now())
+      ) {
+        await execution?.finish();
+        throw new Error("Federation installation grant expired before worker startup");
+      }
       const result = await (this.options.process ?? realSpackAuditProcess)
         .run(command, {
           cwd: directory,

@@ -215,6 +215,7 @@ message RegisterRequest {
   bool software_operation_replay_v1 = 21;
   // Reauthorizes received federation work before preparation and scheduler submission.
   bool federation_execution_v1 = 22;
+  bool federation_installation_v1 = 23;
 }
 
 message RegisterResponse {
@@ -233,6 +234,7 @@ message RegisterResponse {
   // until the Server has persisted their idempotent counter increment.
   bool queue_validation_shadow_rejection_ack_supported = 7;
   bool federation_execution_v1_supported = 8;
+  bool federation_installation_v1_supported = 9;
 }
 
 // tags 7–10 carry extended monitoring + installed-software
@@ -325,6 +327,8 @@ message FederationExecutionRequest {
   string request_id = 1;
   string job_id = 2;
   int64 dispatch_epoch = 3;
+  // Installation requests use the owning job, operation ID and a zero dispatch epoch.
+  string operation_id = 4;
 }
 
 enum FederationExecutionDecision {
@@ -342,6 +346,8 @@ message FederationExecutionResponse {
   int64 expires_at_unix_ms = 5;
   // Original intent with renewed transport credentials. Never a replacement Job.
   DispatchJob dispatch = 6;
+  string operation_id = 7;
+  SoftwareOperationRequest installation = 8;
 }
 
 message SpackJobExecution {
@@ -782,6 +788,7 @@ message SoftwareOperationRequest {
   string spack_material_ticket = 5;
   string spack_manifest_digest = 6;
   bool durable_replay = 7;
+  string federation_job_id = 8;
 }
 
 message SoftwareOperationResult {

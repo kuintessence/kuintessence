@@ -543,3 +543,38 @@ test.each([
   ).rejects.toThrow("fixture");
   expect(events).toEqual(neverStarted ? ["persist", "spawn", "stopped"] : ["persist", "spawn"]);
 });
+
+test.each([
+  "granted",
+  "denied",
+  "expired",
+] as const)("installation worker obeys fresh authority after preparation: %s", async (decision) => {
+  const f = await fixture();
+  let authorized = false;
+  let started = false;
+  const r = runner({
+    async run() {
+      expect(authorized).toBe(true);
+      started = true;
+      return {
+        exitCode: 0,
+        stdout: SPACK_INSTALL_RESULT_PREFIX + JSON.stringify(f.report("install", f.path)),
+        stderr: "",
+      };
+    },
+  });
+  const input = {
+    ...f.input,
+    authorizeInstallation: async () => {
+      authorized = true;
+      if (decision === "denied") throw new Error("authorization denied");
+      return Date.now() + (decision === "expired" ? -1 : 10_000);
+    },
+  };
+  const operation = r.run("install", f.prepared, input, f.site, f.path);
+  if (decision === "granted") await operation;
+  else await expect(operation).rejects.toThrow();
+  expect(authorized).toBe(true);
+  expect(started).toBe(decision === "granted");
+  expect(await readdir(join(f.cacheDir, "installs"))).toEqual([]);
+});

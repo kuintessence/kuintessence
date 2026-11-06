@@ -20,6 +20,7 @@ export interface SpackMaterialContext {
   operationId: string;
   ticket?: string;
   manifestDigest?: string;
+  authorizeInstallation?: (signal: AbortSignal) => Promise<number>;
 }
 
 export interface SpackMaterialPrepareInput {
@@ -29,6 +30,7 @@ export interface SpackMaterialPrepareInput {
   spec: string;
   spackVersion: string;
   signal?: AbortSignal;
+  authorizeInstallation?: (signal: AbortSignal) => Promise<number>;
 }
 
 export interface PreparedSpackMaterials {

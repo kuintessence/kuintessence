@@ -178,6 +178,7 @@ export interface AgentChannel {
   spackPinnedExecutionV1?: boolean;
   softwareOperationReplayV1?: boolean;
   federationExecutionV1?: boolean;
+  federationInstallationV1?: boolean;
   verifiedCertFingerprint?: string;
 }
 
@@ -279,6 +280,13 @@ export class AgentDispatcher {
   supportsFederationExecution(agentId: string): boolean {
     const channel = this.getChannel(agentId);
     return channel?.federationExecutionV1 === true && !!channel.verifiedCertFingerprint;
+  }
+
+  supportsFederationInstallation(agentId: string): boolean {
+    return (
+      this.getChannel(agentId)?.federationInstallationV1 === true &&
+      this.supportsSoftwareOperationReplay(agentId)
+    );
   }
 
   supportsSoftwareOperationReplay(agentId: string): boolean {
@@ -584,9 +592,11 @@ export class AgentDispatcher {
       spackMaterialTicket?: string;
       spackManifestDigest?: string;
       durableReplay?: boolean;
+      federationJobId?: string;
     },
   ): boolean {
     if (payload.durableReplay && !this.supportsSoftwareOperationReplay(agentId)) return false;
+    if (payload.federationJobId && !this.supportsFederationInstallation(agentId)) return false;
     if (payload.spackMaterialTicket) {
       const channel = this.channels.get(agentId);
       if (!channel?.spackMaterialDeliveryV1 || !channel.verifiedCertFingerprint) return false;

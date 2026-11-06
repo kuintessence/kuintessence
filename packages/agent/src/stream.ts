@@ -675,6 +675,7 @@ export class AgentStream {
   private running = true;
   private connected = false;
   private federationExecutionSupported = false;
+  private federationInstallationSupported = false;
   // shortcut: live reconnect only; persist full dispatches before enabling process-restart replay.
   private readonly federationDispatches = new Map<
     string,
@@ -682,7 +683,13 @@ export class AgentStream {
   >();
   private readonly federationSpecs = new WeakSet<JobSpec>();
   private readonly federationExecution = new FederationExecutionClient((request) => {
-    if (!this.connected || !this.federationExecutionSupported) return false;
+    if (
+      !this.connected ||
+      !(request.operationId
+        ? this.federationInstallationSupported
+        : this.federationExecutionSupported)
+    )
+      return false;
     this.outboundQueue.push({ kind: "federationExecutionRequest", request });
     this.signalOutbound();
     return true;
@@ -1619,6 +1626,7 @@ export class AgentStream {
             !!this.persistentQueue?.softwareOperations,
           managedDatasetRootIds: [...(this.deps.managedDatasetRootIds ?? [])],
           federationExecutionV1: this.federationExecutionCapable(),
+          federationInstallationV1: this.federationInstallationCapable(),
         }),
       },
     });
@@ -2246,6 +2254,8 @@ export class AgentStream {
               this.connected = true;
               this.federationExecutionSupported =
                 message.payload.value.federationExecutionV1Supported;
+              this.federationInstallationSupported =
+                message.payload.value.federationInstallationV1Supported;
               this.heartbeatAckSupported = message.payload.value.heartbeatAckSupported;
               this.jobStatusAckSupported = message.payload.value.jobStatusAckSupported;
               this.queueValidationShadowRejectionAckSupported =
@@ -2292,6 +2302,7 @@ export class AgentStream {
       }
       this.connected = false;
       this.federationExecutionSupported = false;
+      this.federationInstallationSupported = false;
       this.federationExecution.disconnect();
       this.stopHeartbeatTimer(controller);
       this.heartbeatAckSupported = false;
@@ -3098,6 +3109,22 @@ export class AgentStream {
         { operationId: request.operationId, action: request.action, spec: request.spec },
         "Software operation received",
       );
+      if (
+        request.federationJobId &&
+        (!this.federationInstallationSupported ||
+          !this.federationInstallationCapable() ||
+          !request.durableReplay ||
+          request.action !== SoftwareOperationAction.INSTALL)
+      ) {
+        await this.enqueueSoftwareOperationResult({
+          operationId: request.operationId,
+          action: request.action,
+          spec: request.spec,
+          status: SoftwareOperationStatus.REJECTED,
+          error: "Federation installation renewal is unavailable",
+        });
+        return;
+      }
       const managed = this.spackManager?.requireServerMaterials === true;
       const ledger = managed ? this.persistentQueue?.softwareOperations : undefined;
       if ((managed || request.durableReplay) && !ledger) {
@@ -3119,6 +3146,7 @@ export class AgentStream {
           requestedBy: request.requestedBy,
           manifestDigest: request.spackManifestDigest,
           durableReplay: request.durableReplay,
+          federationJobId: request.federationJobId,
         });
       } catch (error) {
         if (error instanceof SoftwareOperationIntentConflict) {
@@ -3166,12 +3194,38 @@ export class AgentStream {
             });
             return;
           }
+          const authorized = request.federationJobId
+            ? (
+                await this.federationExecution.renewInstallation(
+                  request,
+                  this.lifecycleController.signal,
+                )
+              ).installation
+            : request;
           await ledger?.start(request.operationId);
           const run = () =>
             this.handleSoftwareOperation(request.operationId, request.action, request.spec, {
               operationId: request.operationId,
-              ticket: request.spackMaterialTicket,
-              manifestDigest: request.spackManifestDigest,
+              ticket: authorized.spackMaterialTicket,
+              manifestDigest: authorized.spackManifestDigest,
+              ...(request.federationJobId
+                ? {
+                    authorizeInstallation: async (signal: AbortSignal) => {
+                      // Bound online checks while the install-store lock is held.
+                      const grant = await this.federationExecution.renewInstallation(
+                        request,
+                        AbortSignal.any([
+                          signal,
+                          this.lifecycleController.signal,
+                          AbortSignal.timeout(15_000),
+                        ]),
+                      );
+                      if (grant.expiresAt <= Date.now())
+                        throw new Error("Federation installation grant expired");
+                      return grant.expiresAt;
+                    },
+                  }
+                : {}),
             });
           if (execution) await softwareExecution.run(execution, run);
           else await run();
@@ -3372,6 +3426,14 @@ export class AgentStream {
     }
     this.outboundQueue.push(item);
     this.signalOutbound();
+  }
+
+  private federationInstallationCapable(): boolean {
+    return (
+      this.federationExecutionCapable() &&
+      this.spackManager?.requireServerMaterials === true &&
+      !!this.persistentQueue?.softwareOperations
+    );
   }
 
   private federationExecutionCapable(): boolean {

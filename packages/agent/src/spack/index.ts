@@ -283,6 +283,9 @@ export class SpackManager {
       manifestDigest: context.manifestDigest,
       spec,
       spackVersion: this.version,
+      ...(context.authorizeInstallation
+        ? { authorizeInstallation: context.authorizeInstallation }
+        : {}),
       ...(signal ? { signal } : {}),
     };
     let prepared: PreparedSpackMaterials;

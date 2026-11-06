@@ -6,6 +6,7 @@ import {
   type ComputeHealth,
   ComputeHealthState,
   FederationExecutionDecision,
+  type FederationExecutionResponse,
   FederationExecutionResponseSchema,
   HeartbeatAckSchema,
   JobStatusAckSchema,
@@ -263,7 +264,8 @@ export interface AgentHandlerDeps {
   dispatcher: AgentDispatcher;
   /** Optional: when present, heartbeat installed_software is mirrored here. */
   installedRegistry?: InstalledRegistry;
-  softwareOperations?: Pick<SoftwareOperationService, "applyAgentResult">;
+  softwareOperations?: Pick<SoftwareOperationService, "applyAgentResult"> &
+    Partial<Pick<SoftwareOperationService, "renewFederationInstallation">>;
   policyStore?: Pick<PolicyStore, "getForAgent">;
   policyPusher?: Pick<PolicyPusher, "pushToAgent">;
   /** Optional: when present, GPU/disk/queue-depth samples land here. */
@@ -395,6 +397,7 @@ export function registerAgentHandler(router: ConnectRouter, deps: AgentHandlerDe
         spackPinnedExecutionV1: false,
         softwareOperationReplayV1: false,
         federationExecutionV1: false,
+        federationInstallationV1: false,
         verifiedCertFingerprint: undefined as string | undefined,
         push: (m: ServerMessage) => {
           if (!active) {
@@ -509,6 +512,7 @@ export function registerAgentHandler(router: ConnectRouter, deps: AgentHandlerDe
               channel.spackPinnedExecutionV1 = reg.spackPinnedExecutionV1;
               channel.softwareOperationReplayV1 = reg.softwareOperationReplayV1;
               channel.federationExecutionV1 = reg.federationExecutionV1;
+              channel.federationInstallationV1 = reg.federationInstallationV1;
               channel.verifiedCertFingerprint =
                 mtlsContext.getStore()?.fingerprintSha256 ?? undefined;
               dispatcher.register(registeredAgentId, channel);
@@ -529,6 +533,8 @@ export function registerAgentHandler(router: ConnectRouter, deps: AgentHandlerDe
                       queueInventoryV1Supported: queueInventory !== undefined,
                       queueValidationShadowRejectionAckSupported: queueObservability !== undefined,
                       federationExecutionV1Supported: jobDispatches?.renewExecution !== undefined,
+                      federationInstallationV1Supported:
+                        softwareOperations?.renewFederationInstallation !== undefined,
                     }),
                   },
                 }),
@@ -1088,6 +1094,7 @@ export function registerAgentHandler(router: ConnectRouter, deps: AgentHandlerDe
             if (
               request.requestId.length > 128 ||
               request.jobId.length > 128 ||
+              request.operationId.length > 128 ||
               pendingFederationGrants.has(request.requestId)
             )
               continue;
@@ -1101,12 +1108,18 @@ export function registerAgentHandler(router: ConnectRouter, deps: AgentHandlerDe
                       requestId: request.requestId,
                       jobId: request.jobId,
                       dispatchEpoch: request.dispatchEpoch,
+                      operationId: request.operationId,
                       decision,
                     }),
                   },
                 }),
               );
-            if (!channel.federationExecutionV1 || !channel.verifiedCertFingerprint) {
+            if (
+              !(request.operationId
+                ? channel.federationInstallationV1
+                : channel.federationExecutionV1) ||
+              !channel.verifiedCertFingerprint
+            ) {
               respond(FederationExecutionDecision.DENIED);
               continue;
             }
@@ -1117,16 +1130,15 @@ export function registerAgentHandler(router: ConnectRouter, deps: AgentHandlerDe
             pendingFederationGrants.add(request.requestId);
             void (async () => {
               try {
-                const granted = await jobDispatches?.renewExecution?.(
-                  agentId,
-                  request,
-                  (response) =>
-                    channel.push(
-                      create(ServerMessageSchema, {
-                        payload: { case: "federationExecutionResponse", value: response },
-                      }),
-                    ),
-                );
+                const send = (response: FederationExecutionResponse) =>
+                  channel.push(
+                    create(ServerMessageSchema, {
+                      payload: { case: "federationExecutionResponse", value: response },
+                    }),
+                  );
+                const granted = request.operationId
+                  ? await softwareOperations?.renewFederationInstallation?.(agentId, request, send)
+                  : await jobDispatches?.renewExecution?.(agentId, request, send);
                 if (!granted) respond(FederationExecutionDecision.DENIED);
               } catch (error) {
                 const denied =

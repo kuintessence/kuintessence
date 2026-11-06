@@ -6,7 +6,10 @@ import {
   type FederationExecutionRequest,
   FederationExecutionRequestSchema,
   type FederationExecutionResponse,
+  SoftwareOperationAction,
+  type SoftwareOperationRequest,
   sameDispatchIntent,
+  sameInstallationIntent,
 } from "@kuintessence/proto";
 
 /** Grants are memory-only. Every preparation/submission boundary asks the current Server again. */
@@ -36,30 +39,76 @@ export class FederationExecutionClient {
   ): Promise<{ dispatch: DispatchJob; expiresAt: number }> {
     if (!original.federationExecution)
       throw new Error("Execution grant requires a federation dispatch");
+    const grant = await this.renewGrant(
+      original.jobId,
+      original.dispatchEpoch,
+      "",
+      signal,
+      (response) =>
+        !response.installation &&
+        !!response.dispatch &&
+        sameDispatchIntent(original, response.dispatch),
+    );
+    if (!grant.response.dispatch) throw new Error("Missing federation dispatch grant");
+    return { dispatch: grant.response.dispatch, expiresAt: grant.expiresAt };
+  }
+
+  async renewInstallation(
+    original: SoftwareOperationRequest,
+    signal: AbortSignal,
+  ): Promise<{ installation: SoftwareOperationRequest; expiresAt: number }> {
+    if (
+      !original.federationJobId ||
+      !original.durableReplay ||
+      original.action !== SoftwareOperationAction.INSTALL
+    )
+      throw new Error("Installation grant requires a durable federation install");
+    const grant = await this.renewGrant(
+      original.federationJobId,
+      0n,
+      original.operationId,
+      signal,
+      (response) =>
+        !response.dispatch &&
+        !!response.installation &&
+        !!response.installation.spackMaterialTicket &&
+        sameInstallationIntent(original, response.installation),
+    );
+    if (!grant.response.installation) throw new Error("Missing federation installation grant");
+    return { installation: grant.response.installation, expiresAt: grant.expiresAt };
+  }
+
+  private async renewGrant(
+    jobId: string,
+    dispatchEpoch: bigint,
+    operationId: string,
+    signal: AbortSignal,
+    validate: (response: FederationExecutionResponse) => boolean,
+  ) {
     for (;;) {
       signal.throwIfAborted();
       const request = create(FederationExecutionRequestSchema, {
         requestId: crypto.randomUUID(),
-        jobId: original.jobId,
-        dispatchEpoch: original.dispatchEpoch,
+        jobId,
+        dispatchEpoch,
+        operationId,
       });
       const response = await this.request(request, signal);
       if (response) {
-        if (response.jobId !== original.jobId || response.dispatchEpoch !== original.dispatchEpoch)
+        if (
+          response.jobId !== jobId ||
+          response.dispatchEpoch !== dispatchEpoch ||
+          response.operationId !== operationId
+        )
           throw new Error("Federation execution response does not match its request");
         if (response.decision === FederationExecutionDecision.DENIED)
           throw new Error("Federation execution authorization denied");
         if (response.decision === FederationExecutionDecision.GRANTED) {
           const now = (this.options.now ?? Date.now)();
           const expiresAt = Number(response.expiresAtUnixMs);
-          if (
-            !response.dispatch ||
-            !sameDispatchIntent(original, response.dispatch) ||
-            !Number.isSafeInteger(expiresAt) ||
-            expiresAt > now + 30_000
-          )
+          if (!validate(response) || !Number.isSafeInteger(expiresAt) || expiresAt > now + 30_000)
             throw new Error("Federation execution grant is invalid");
-          if (expiresAt > now) return { dispatch: response.dispatch, expiresAt };
+          if (expiresAt > now) return { response, expiresAt };
         } else if (response.decision !== FederationExecutionDecision.RETRY) {
           throw new Error("Federation execution decision is unspecified");
         }
