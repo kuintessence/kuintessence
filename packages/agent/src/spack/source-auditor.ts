@@ -1,7 +1,11 @@
 /// <reference path="./python.d.ts" />
 import { link, lstat, mkdir, mkdtemp, readlink, realpath, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import { realSpackAuditProcess, type SpackAuditProcess } from "./audit-process";
+import {
+  realSpackAuditProcess,
+  type SpackAuditProcess,
+  SpackProcessNotStartedError,
+} from "./audit-process";
 import {
   buildSpackAuditCommand,
   isSpackAuditPath,
@@ -81,6 +85,7 @@ export class SpackSourceAuditor implements SpackMaterialAuditor {
     const deadline = AbortSignal.timeout(30 * 60_000);
     const signal = input.signal ? AbortSignal.any([input.signal, deadline]) : deadline;
     let directory: string | undefined;
+    let workerUncertain = false;
     try {
       const preflight = await preflightSpackMaterials(prepared, { ...input, signal });
       if (!preflight.valid) throw new Error("Spack source audit requires a valid static lock");
@@ -125,9 +130,10 @@ export class SpackSourceAuditor implements SpackMaterialAuditor {
       await verifySpackAuditRuntime(this.options.profile, signal, this.options.runtimeDeps);
       signal.throwIfAborted();
       const uid = this.options.runtimeDeps?.uid ?? process.getuid?.();
-      const result = await this.process.run(
-        buildSpackAuditCommand(this.options.profile, inputs, input.manifestDigest),
-        {
+      const command = buildSpackAuditCommand(this.options.profile, inputs, input.manifestDigest);
+      workerUncertain = true;
+      const result = await this.process
+        .run(command, {
           cwd: directory,
           env: {
             PATH: "/usr/bin:/bin",
@@ -140,8 +146,12 @@ export class SpackSourceAuditor implements SpackMaterialAuditor {
           timeoutMs: 30 * 60_000,
           maxOutputBytes: 2 * 1024 ** 2,
           signal,
-        },
-      );
+        })
+        .catch((error: unknown) => {
+          if (error instanceof SpackProcessNotStartedError) workerUncertain = false;
+          throw error;
+        });
+      workerUncertain = false;
       signal.throwIfAborted();
       const output = result.stdout.trim();
       if (!output.startsWith(SPACK_AUDIT_RESULT_PREFIX)) {
@@ -167,9 +177,9 @@ export class SpackSourceAuditor implements SpackMaterialAuditor {
       return report;
     } finally {
       try {
-        if (directory) await rm(directory, { recursive: true, force: true });
+        if (directory && !workerUncertain) await rm(directory, { recursive: true, force: true });
       } finally {
-        this.active = false;
+        this.active = workerUncertain;
       }
     }
   }

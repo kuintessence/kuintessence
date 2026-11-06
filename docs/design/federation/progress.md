@@ -446,6 +446,16 @@ Script 的 File/FileBatch 到下游受管文件转换、Checkpoint 文件持久�
 
 测试中的停止边界是受控回调，不代表已执行真实 Slurm/PBS 停止验收或真实 Server 进程崩溃。资源目标/队列、完整运行许可和数据租约主动监控、安装 worker 运行中停止、锁内超时的持久等待、长下载与 Sandbox 续签等仍待完成；自动激活保护继续开启，PR 预览尚未发布。
 
+## Agent 安装操作的撤销归属与停止门槛
+
+- [软件执行收据](../../../packages/agent/src/queue/software-operations.ts)新增持久 `jobScope` 与 `stoppedAt`。SQLite 沿用项目自有的幂等迁移，旧记录保留未知归属，只有匹配原请求指纹的重放可补齐，不为旧记录猜测 Job；不同 Job/普通安装的归属不能互换。
+- [AgentStream](../../../packages/agent/src/stream.ts)将 Job 取消和数据撤权传给原安装的信号。未执行操作直接保存失败并封锁队首，取消不等待无关安装；已执行操作等处理收尾，再由原 store writer fence 证明无活动/未知 worker。终态失败不视为停止，无证明不发取消确认；启动/心跳根据原收据和撤销记录重试，已确认的收据不会重复创建 store 锁代次。
+- [安装 runner](../../../packages/agent/src/spack/install-runner.ts)和[源码审计器](../../../packages/agent/src/spack/source-auditor.ts)不再在 transport 异常时直接删除输入。明确未启动或正常返回可以清理；未知 worker 保留私有目录，源码审计器在当前进程中不再复用执行槽。未引入不经停止证明的目录清理或强行解锁。
+
+验证：AgentStream **173 项**、软件收据 **18 项**、SQLite 集成/编译迁移 **14 项**、安装 runner/源码审计/安装事务 **176 项**，共 **381 项不同检查**通过。最初 3 个 runner 测试仍要求异常时删除目录，已改为验证保留，最终 runner 的 54 项单独通过。覆盖运行中取消、排队/续期中取消、先撤销后到达、数据撤权、其他操作隔离、SQLite 重开后的 writer fence 与历史归属。全仓类型检查与最终 Agent 类型复查通过；lint 无错误（原有 47 warnings、1 info）。
+
+这里的 worker/transport 是测试替身，不能作为真实编译停止验收。仍需完成 Server 按安装操作找到全部 Agent 并持久投递取消/等待证明（安装 Agent 不一定等于 compute Job.agentId，待安装 Job 也可能还没有 Agent）、进程监督和原宿主机重启后的停止恢复。当前原生 transport 异常没有完整子进程停止证明，会保守保留恢复状态；源码审计输入保留后的自动回收也未实现。自动激活保护保留，未发布 PR 预览。
+
 ## 尚未接通，不能宣称支持
 
 协议审批与机构信任管理 UI、源站发送与状态查询、额度结算/退款、联邦目标/数据最终授权与实际激活连接、完整生产持久 Workflow 端到端验收、完整的数据/软件物化与介质交付、双方证据确认与完整用量/结算记录、商业/市场链码及真实联邦作业与 Fabric 联合运行、归档恢复、Web/CLI 和部署配置均未完成。

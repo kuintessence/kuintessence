@@ -297,7 +297,7 @@ describe("isolated persistent Spack worker", () => {
   test.each([
     "timeout",
     "cancel",
-  ])("propagates %s to the running transport and cleans staging", async (kind) => {
+  ])("propagates %s while retaining staging without positive stop proof", async (kind) => {
     const f = await fixture();
     const controller = new AbortController();
     let invoked = false;
@@ -320,7 +320,7 @@ describe("isolated persistent Spack worker", () => {
       r.run("install", f.prepared, { ...f.input, signal: controller.signal }, f.site, f.path),
     ).rejects.toThrow();
     expect(invoked).toBe(true);
-    expect(await readdir(join(f.cacheDir, "installs"))).toEqual([]);
+    expect(await readdir(join(f.cacheDir, "installs"))).toHaveLength(1);
   });
 
   test.each([
@@ -442,7 +442,7 @@ describe("isolated persistent Spack worker", () => {
     "no-report",
     "throw",
     "cancel",
-  ] as const)("cleans private staging on %s without exposing worker output", async (kind) => {
+  ] as const)("cleans private staging only after confirmed process return: %s", async (kind) => {
     const f = await fixture();
     const controller = new AbortController();
     const r = runner({
@@ -462,7 +462,7 @@ describe("isolated persistent Spack worker", () => {
     await expect(
       r.run("verify", f.prepared, { ...f.input, signal: controller.signal }, f.site, f.path),
     ).rejects.toThrow();
-    expect(await readdir(join(f.cacheDir, "installs"))).toEqual([]);
+    expect(await readdir(join(f.cacheDir, "installs"))).toHaveLength(kind === "throw" ? 1 : 0);
   });
 
   test("refuses replaced source bytes and a symlinked output prefix before starting a worker", async () => {
@@ -542,6 +542,7 @@ test.each([
     ),
   ).rejects.toThrow("fixture");
   expect(events).toEqual(neverStarted ? ["persist", "spawn", "stopped"] : ["persist", "spawn"]);
+  expect(await readdir(join(f.cacheDir, "installs"))).toHaveLength(neverStarted ? 0 : 1);
 });
 
 test.each([

@@ -14,10 +14,12 @@ import { drizzle } from "drizzle-orm/bun-sqlite";
 import {
   executionIdentity,
   INTERRUPTED,
+  installWorkerExecution,
   RECOVERY_REQUIRED,
   softwareExecution,
 } from "../spack/execution-identity";
 import { SpackInstallStore } from "../spack/install-store";
+import { JobRevocationTombstones } from "./job-cleanup-intents";
 import { SoftwareOperationIntentConflict, SoftwareOperations } from "./software-operations";
 
 let base: string;
@@ -260,9 +262,13 @@ test("SQLite migration adds nullable identity to old receipts and can run twice"
     );
     runSqliteMigrations(old);
     runSqliteMigrations(old);
-    expect(old.query("SELECT operation_id, request_digest FROM software_executions").get()).toEqual(
-      { operation_id: "old", request_digest: null },
-    );
+    expect(
+      old
+        .query(
+          "SELECT operation_id, request_digest, job_scope, stopped_at FROM software_executions",
+        )
+        .get(),
+    ).toEqual({ operation_id: "old", request_digest: null, job_scope: null, stopped_at: null });
   } finally {
     old.close();
   }
@@ -284,4 +290,90 @@ test("federation install receipts cannot be reassigned or downgraded on replay",
   await expect(ledger.receive({ ...request, federationJobId: undefined })).rejects.toThrow(
     SoftwareOperationIntentConflict,
   );
+});
+
+test.each([
+  false,
+  true,
+])("installation cancellation requires store stop proof across reopen: confirmed=%s", async (confirmed) => {
+  const request = { ...durable(), federationJobId: randomUUID() };
+  const identity = await ledger.receive(request);
+  if (!identity) throw new Error("Missing receipt");
+  await ledger.start(request.operationId);
+  const store = new SpackInstallStore(join(base, "store"));
+  await store.initialize();
+  await softwareExecution.run(
+    {
+      identity,
+      operationId: request.operationId,
+      bindStore: (root) => ledger.bindStore(request.operationId, root),
+    },
+    () =>
+      store.withLock(async () => {
+        const worker = installWorkerExecution.getStore();
+        if (!worker) throw new Error("Missing worker fence");
+        await worker.start(randomUUID());
+        if (confirmed) await worker.finish();
+      }),
+  );
+  await ledger.finish({ ...request, status: Status.FAILED, error: RECOVERY_REQUIRED });
+  await new JobRevocationTombstones(drizzle(sqlite)).record(request.federationJobId, 1);
+  sqlite.close();
+  sqlite = new Database(join(base, "agent.db"));
+  ledger = new SoftwareOperations(drizzle(sqlite));
+  expect(await ledger.revokedJobs()).toEqual([{ jobId: request.federationJobId, revokedEpoch: 1 }]);
+  if (confirmed) {
+    await ledger.assertJobStopped(request.federationJobId);
+    expect(await ledger.revokedJobs()).toEqual([]);
+    const first = sqlite.query("SELECT stopped_at FROM software_executions").get();
+    await ledger.assertJobStopped(request.federationJobId);
+    expect(sqlite.query("SELECT stopped_at FROM software_executions").get()).toEqual(first);
+  } else {
+    await expect(ledger.assertJobStopped(request.federationJobId)).rejects.toThrow(
+      RECOVERY_REQUIRED,
+    );
+    expect(sqlite.query("SELECT stopped_at FROM software_executions").get()).toEqual({
+      stopped_at: null,
+    });
+  }
+});
+
+test("pending and failed started installation receipts cannot be mistaken for a stopped unknown job", async () => {
+  const request = { ...durable(), federationJobId: randomUUID() };
+  await ledger.receive(request);
+  await expect(ledger.assertJobStopped(request.federationJobId)).rejects.toThrow(RECOVERY_REQUIRED);
+  await ledger.start(request.operationId);
+  await ledger.finish({ ...request, status: Status.FAILED, error: RECOVERY_REQUIRED });
+  await expect(ledger.assertJobStopped(request.federationJobId)).rejects.toThrow(RECOVERY_REQUIRED);
+  await ledger.assertJobStopped(randomUUID());
+});
+
+test("queued cancellation proves no worker started and ordinary installations do not block another job", async () => {
+  const ordinary = durable();
+  await ledger.receive(ordinary);
+  await ledger.start(ordinary.operationId);
+  const request = { ...durable(), federationJobId: randomUUID() };
+  await ledger.receive(request);
+  await ledger.finish({ ...request, status: Status.FAILED });
+  await ledger.assertJobStopped(request.federationJobId);
+  expect(
+    sqlite
+      .query("SELECT job_scope FROM software_executions WHERE operation_id = ?")
+      .get(ordinary.operationId),
+  ).toEqual({ job_scope: "local" });
+});
+
+test("historical unknown owners remain fenced until the original fingerprint identifies their scope", async () => {
+  const request = { ...durable(), federationJobId: randomUUID() };
+  await ledger.receive(request);
+  await ledger.start(request.operationId);
+  await ledger.finish({ ...request, status: Status.FAILED, error: RECOVERY_REQUIRED });
+  sqlite.run("UPDATE software_executions SET job_scope = NULL");
+  await expect(ledger.assertJobStopped(randomUUID())).rejects.toThrow(RECOVERY_REQUIRED);
+  await expect(ledger.receive({ ...request, federationJobId: randomUUID() })).rejects.toThrow(
+    SoftwareOperationIntentConflict,
+  );
+  expect(await ledger.receive(request)).toBeUndefined();
+  await ledger.assertJobStopped(randomUUID());
+  await expect(ledger.assertJobStopped(request.federationJobId)).rejects.toThrow(RECOVERY_REQUIRED);
 });

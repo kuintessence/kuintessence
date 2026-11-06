@@ -68,6 +68,7 @@ import { JobCleanupIntents, JobRevocationTombstones } from "./queue/job-cleanup-
 import { type OutboundItem, OutboundQueue } from "./queue/outbound-queue";
 import type { AgentSandboxCapability } from "./sandbox/capability";
 import { type PreparedSpackMaterials, SpackManager, type SpackMaterialPrepareInput } from "./spack";
+import { installWorkerExecution } from "./spack/execution-identity";
 import { SpackInstallStore } from "./spack/install-store";
 import type { SoftwareOperationOutcome } from "./spack/installer";
 import { SPACK_ACTIVATION_FAILURE, SPACK_ACTIVATION_TIMEOUT } from "./spack/workflow-activation";
@@ -8796,4 +8797,179 @@ test.each([
   expect((await intents.list())[0]?.revoked).toBe(false);
   expect(await active.listActive()).toHaveLength(1);
   await stream.stop();
+});
+
+test.each([
+  "before-receive",
+  "queued",
+  "renewal",
+  "running",
+  "uncertain",
+  "data",
+] as const)("federation installation cancellation waits for its own stopped worker: %s", async (kind) => {
+  const db = createSqliteDb(":memory:");
+  const directory = await mkdtemp(join(tmpdir(), "kq-install-cancel-"));
+  const store = new SpackInstallStore(join(directory, "store"));
+  await store.initialize();
+  const tombstones = new JobRevocationTombstones(db);
+  const outbound = new OutboundQueue(db);
+  const spackManager = await SpackManager.bootstrap({
+    requireServerMaterials: true,
+    spawner: { run: async () => ({ exitCode: 0, stdout: "1.0.0", stderr: "" }) },
+  });
+  const request = create(SoftwareOperationRequestSchema, {
+    operationId: crypto.randomUUID(),
+    federationJobId: crypto.randomUUID(),
+    action: SoftwareOperationAction.INSTALL,
+    spec: "hello@1",
+    requestedBy: "owner",
+    spackMaterialTicket: "initial",
+    spackManifestDigest: `sha256:${"a".repeat(64)}`,
+    durableReplay: true,
+  });
+  const begun = Promise.withResolvers<void>();
+  const aborted = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  let installs = 0;
+  spackManager.runSoftwareOperation = async (_action, spec, _materials, signal) => {
+    if (spec === "blocker") {
+      begun.resolve();
+      await release.promise;
+      return { outcome: "succeeded", stdout: "", installed: [] };
+    }
+    installs++;
+    if (!signal) throw new Error("Missing cancellation signal");
+    return store.withLock(async () => {
+      const worker = installWorkerExecution.getStore();
+      if (!worker) throw new Error("Missing worker binding");
+      await worker.start(crypto.randomUUID());
+      begun.resolve();
+      signal.addEventListener("abort", () => aborted.resolve(), { once: true });
+      if (signal.aborted) aborted.resolve();
+      await aborted.promise;
+      await release.promise;
+      if (kind !== "uncertain") await worker.finish();
+      return { outcome: "failed", exitCode: 1, stderr: "cancelled" };
+    });
+  };
+  let grants = 0;
+  const acknowledgements: string[] = [];
+  const stream = new AgentStream({
+    client: makePendingRegisteredClient(false, false, {
+      supported: true,
+      installationSupported: true,
+      onMessage: async (message) => {
+        if (
+          message.payload.case === "cancelJobAck" ||
+          message.payload.case === "dataDeliveryRevokeAck"
+        )
+          acknowledgements.push(message.payload.case);
+        if (message.payload.case !== "federationExecutionRequest") return;
+        grants++;
+        if (kind === "renewal") return;
+        const renewal = message.payload.value;
+        await deliverServerMessage(
+          stream,
+          create(ServerMessageSchema, {
+            payload: {
+              case: "federationExecutionResponse",
+              value: {
+                requestId: renewal.requestId,
+                jobId: renewal.jobId,
+                operationId: renewal.operationId,
+                decision: FederationExecutionDecision.GRANTED,
+                expiresAtUnixMs: BigInt(Date.now() + 10_000),
+                installation: { ...request, spackMaterialTicket: "renewed" },
+              },
+            },
+          }),
+        );
+      },
+    }),
+    adapter: makeAdapter(),
+    agentId: "install-agent",
+    siteName: "test",
+    logger: silent,
+    heartbeatIntervalMs: 20,
+    spackManager,
+    inboundAcks: new InboundAcks(db),
+    activeRemoteJobs: new ActiveRemoteJobs(db),
+    cleanupIntents: new JobCleanupIntents(db),
+    revocationTombstones: tombstones,
+    outboundQueue: outbound,
+  });
+  activeStreams.push(stream);
+  const running = stream.start();
+  try {
+    await settle(20);
+    if (kind === "before-receive") {
+      await deliverServerMessage(stream, cancelJobMessage(request.federationJobId, 1));
+    }
+    if (kind === "queued") {
+      await deliverServerMessage(
+        stream,
+        create(ServerMessageSchema, {
+          payload: {
+            case: "softwareOperationRequest",
+            value: {
+              ...request,
+              operationId: crypto.randomUUID(),
+              federationJobId: "",
+              spec: "blocker",
+            },
+          },
+        }),
+      );
+      await begun.promise;
+    }
+    await deliverServerMessage(
+      stream,
+      create(ServerMessageSchema, {
+        payload: { case: "softwareOperationRequest", value: request },
+      }),
+    );
+    if (kind === "renewal") await waitForCondition(() => grants === 1);
+    if (["running", "uncertain", "data"].includes(kind)) await begun.promise;
+    const cancellation = deliverServerMessage(
+      stream,
+      kind === "data"
+        ? create(ServerMessageSchema, {
+            payload: {
+              case: "dataDeliveryRevoke",
+              value: {
+                jobId: request.federationJobId,
+                reasonCode: "DATA_GRANT_REVOKED",
+                revokedEpoch: 1n,
+              },
+            },
+          })
+        : cancelJobMessage(request.federationJobId, 1),
+    );
+    if (["running", "uncertain", "data"].includes(kind)) {
+      await aborted.promise;
+      await settle(20);
+      expect(acknowledgements).toEqual([]);
+      release.resolve();
+    }
+    await cancellation;
+    if (kind === "uncertain") {
+      await settle(60);
+      expect(acknowledgements).toEqual([]);
+      expect(await outbound.softwareOperations.revokedJobs()).toHaveLength(1);
+    } else {
+      await waitForCondition(() => acknowledgements.length > 0);
+      expect(acknowledgements).toContain(
+        kind === "data" ? "dataDeliveryRevokeAck" : "cancelJobAck",
+      );
+      await outbound.softwareOperations.assertJobStopped(request.federationJobId);
+    }
+    expect(installs).toBe(["running", "uncertain", "data"].includes(kind) ? 1 : 0);
+    if (kind === "queued" || kind === "before-receive") expect(grants).toBe(0);
+  } finally {
+    release.resolve();
+    aborted.resolve();
+    await stream.stop();
+    await running;
+    await rm(directory, { recursive: true, force: true });
+  }
 });

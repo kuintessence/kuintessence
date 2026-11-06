@@ -288,6 +288,9 @@ export const sandboxReplayNonces = sqliteTable(
 
 /** Durable software execution receipt and terminal replay; no tickets or credentials. */
 export const softwareExecutions = sqliteTable("software_executions", {
+  // UUID for federation, "local" for ordinary operations, null for historical receipts.
+  jobScope: text("job_scope"),
+  stoppedAt: integer("stopped_at", { mode: "timestamp_ms" }),
   requestDigest: text("request_digest"),
   operationId: text("operation_id").primaryKey(),
   action: integer("action").notNull(),

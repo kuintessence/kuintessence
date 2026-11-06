@@ -1,8 +1,8 @@
 import { createHash } from "node:crypto";
-import { type SqliteDb, softwareExecutions } from "@kuintessence/db";
+import { jobRevocationTombstones, type SqliteDb, softwareExecutions } from "@kuintessence/db";
 import { SoftwareOperationAction, SoftwareOperationStatus } from "@kuintessence/proto";
 import { InstalledSpecSchema } from "@kuintessence/shared";
-import { and, asc, eq, gt, isNotNull, isNull } from "drizzle-orm";
+import { and, asc, eq, gt, isNotNull, isNull, or } from "drizzle-orm";
 import { z } from "zod";
 import {
   type ExecutionIdentity,
@@ -45,6 +45,13 @@ export class SoftwareOperations {
     },
   ): Promise<ExecutionIdentity | undefined> {
     if (
+      input.federationJobId &&
+      (!input.durableReplay ||
+        input.action !== SoftwareOperationAction.INSTALL ||
+        !z.uuid().safeParse(input.federationJobId).success)
+    )
+      throw new SoftwareOperationIntentConflict("Invalid federation installation owner");
+    if (
       input.durableReplay &&
       (!input.requestedBy || !/^sha256:[0-9a-f]{64}$/.test(input.manifestDigest ?? ""))
     )
@@ -66,6 +73,7 @@ export class SoftwareOperations {
     const inserted = await this.db
       .insert(softwareExecutions)
       .values({
+        jobScope: input.federationJobId || "local",
         operationId: input.operationId,
         action: input.action,
         spec: input.spec,
@@ -84,12 +92,76 @@ export class SoftwareOperations {
       saved.action !== input.action ||
       saved.spec !== input.spec ||
       (saved.requestDigest && saved.requestDigest !== requestDigest) ||
+      (saved.jobScope !== null && saved.jobScope !== (input.federationJobId || "local")) ||
       (input.durableReplay && !saved.requestDigest)
     )
       throw new SoftwareOperationIntentConflict(
         "Software operation ID cannot change its request identity",
       );
+    // Only the original fingerprint can establish ownership of a historical receipt.
+    if (saved.jobScope === null && saved.requestDigest === requestDigest)
+      await this.db
+        .update(softwareExecutions)
+        .set({ jobScope: input.federationJobId || "local" })
+        .where(
+          and(
+            eq(softwareExecutions.operationId, input.operationId),
+            isNull(softwareExecutions.jobScope),
+          ),
+        );
     return undefined;
+  }
+
+  async revokedJobs(): Promise<{ jobId: string; revokedEpoch: number }[]> {
+    return this.db
+      .selectDistinct({
+        jobId: jobRevocationTombstones.jobId,
+        revokedEpoch: jobRevocationTombstones.revokedEpoch,
+      })
+      .from(softwareExecutions)
+      .innerJoin(
+        jobRevocationTombstones,
+        eq(softwareExecutions.jobScope, jobRevocationTombstones.jobId),
+      )
+      .where(isNull(softwareExecutions.stoppedAt));
+  }
+
+  /** A terminal operation result can still describe an unconfirmed store writer. */
+  async assertJobStopped(jobId: string): Promise<void> {
+    const rows = await this.db
+      .select()
+      .from(softwareExecutions)
+      .where(
+        and(
+          isNull(softwareExecutions.stoppedAt),
+          or(
+            eq(softwareExecutions.jobScope, jobId),
+            and(isNull(softwareExecutions.jobScope), eq(softwareExecutions.started, true)),
+          ),
+        ),
+      );
+    if (!rows.length) return;
+    const current = await executionIdentity();
+    for (const row of rows) {
+      if (!row.result) throw new Error(RECOVERY_REQUIRED);
+      if (row.started && row.storeRoot) {
+        // The existing writer fence refuses active/uncertain workers, including after restart.
+        await new SpackInstallStore(row.storeRoot).withLock(async () => {});
+      } else if (row.started) {
+        const result = ResultSchema.parse(row.result);
+        if (
+          result.status !== SoftwareOperationStatus.SUCCEEDED &&
+          result.status !== SoftwareOperationStatus.REJECTED &&
+          (await executionState(ExecutionIdentitySchema.parse(row.identity), current)) !==
+            "rebooted"
+        )
+          throw new Error(RECOVERY_REQUIRED);
+      }
+      await this.db
+        .update(softwareExecutions)
+        .set({ stoppedAt: new Date() })
+        .where(eq(softwareExecutions.operationId, row.operationId));
+    }
   }
 
   async start(operationId: string): Promise<void> {

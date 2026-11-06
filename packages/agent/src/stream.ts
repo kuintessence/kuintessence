@@ -43,6 +43,7 @@ import {
   ServerMessageSchema,
   ShellExecResponseSchema,
   SoftwareOperationAction,
+  type SoftwareOperationRequest,
   SoftwareOperationResultSchema,
   SoftwareOperationStatus,
   SoftwarePolicyAckSchema,
@@ -703,6 +704,15 @@ export class AgentStream {
   private schedulerRecovery: Promise<void> | undefined;
   private readonly jobCancellationSettlements = new Map<string, Promise<void>>();
   private readonly jobPreparations = new Map<string, Promise<void>>();
+  private readonly federationInstallations = new Map<
+    string,
+    {
+      request: SoftwareOperationRequest;
+      controller: AbortController;
+      started: boolean;
+      settled: Promise<void>;
+    }
+  >();
   private readonly federationExecution = new FederationExecutionClient((request) => {
     if (
       !this.connected ||
@@ -1328,6 +1338,16 @@ export class AgentStream {
           this.logger.warn(
             { err, jobId: intent.jobId },
             "Revoked job stop or cleanup remains pending",
+          );
+        }
+      }
+      for (const revoked of (await this.persistentQueue?.softwareOperations.revokedJobs()) ?? []) {
+        try {
+          await this.requestJobCancellation(revoked.jobId, revoked.revokedEpoch);
+        } catch (err) {
+          this.logger.warn(
+            { err, jobId: revoked.jobId },
+            "Federation installation stop remains unconfirmed",
           );
         }
       }
@@ -3405,52 +3425,65 @@ export class AgentStream {
               bindStore: (root: string) => ledger.bindStore(request.operationId, root),
             }
           : undefined;
+      const installation = request.federationJobId
+        ? { request, controller: new AbortController(), started: false, settled: Promise.resolve() }
+        : undefined;
+      const operationSignal = installation
+        ? AbortSignal.any([installation.controller.signal, this.lifecycleController.signal])
+        : this.lifecycleController.signal;
       // Include inventory updates in the queue so an older success cannot undo a later withdrawal.
       this.softwareOperationQueue = this.softwareOperationQueue
         .then(async () => {
-          if (this.lifecycleController.signal.aborted) {
+          if (installation) {
+            installation.started = true;
+            if (
+              (await this.revocationTombstones?.revokedEpoch(request.federationJobId)) !== undefined
+            )
+              installation.controller.abort();
+          }
+          if (operationSignal.aborted) {
             await this.enqueueSoftwareOperationResult({
               operationId: request.operationId,
               action: request.action,
               status: SoftwareOperationStatus.FAILED,
               spec: request.spec,
-              error: "Agent stopped before queued software operation could begin",
+              error: this.lifecycleController.signal.aborted
+                ? "Agent stopped before queued software operation could begin"
+                : "Federation installation cancelled before execution",
             });
             return;
           }
           const authorized = request.federationJobId
-            ? (
-                await this.federationExecution.renewInstallation(
-                  request,
-                  this.lifecycleController.signal,
-                )
-              ).installation
+            ? (await this.federationExecution.renewInstallation(request, operationSignal))
+                .installation
             : request;
           await ledger?.start(request.operationId);
           const run = () =>
-            this.handleSoftwareOperation(request.operationId, request.action, request.spec, {
-              operationId: request.operationId,
-              ticket: authorized.spackMaterialTicket,
-              manifestDigest: authorized.spackManifestDigest,
-              ...(request.federationJobId
-                ? {
-                    authorizeInstallation: async (signal: AbortSignal) => {
-                      // Bound online checks while the install-store lock is held.
-                      const grant = await this.federationExecution.renewInstallation(
-                        request,
-                        AbortSignal.any([
-                          signal,
-                          this.lifecycleController.signal,
-                          AbortSignal.timeout(15_000),
-                        ]),
-                      );
-                      if (grant.expiresAt <= Date.now())
-                        throw new Error("Federation installation grant expired");
-                      return grant.expiresAt;
-                    },
-                  }
-                : {}),
-            });
+            this.handleSoftwareOperation(
+              request.operationId,
+              request.action,
+              request.spec,
+              {
+                operationId: request.operationId,
+                ticket: authorized.spackMaterialTicket,
+                manifestDigest: authorized.spackManifestDigest,
+                ...(request.federationJobId
+                  ? {
+                      authorizeInstallation: async (signal: AbortSignal) => {
+                        // Bound online checks while the install-store lock is held.
+                        const grant = await this.federationExecution.renewInstallation(
+                          request,
+                          AbortSignal.any([signal, operationSignal, AbortSignal.timeout(15_000)]),
+                        );
+                        if (grant.expiresAt <= Date.now())
+                          throw new Error("Federation installation grant expired");
+                        return grant.expiresAt;
+                      },
+                    }
+                  : {}),
+              },
+              operationSignal,
+            );
           if (execution) await softwareExecution.run(execution, run);
           else await run();
         })
@@ -3466,7 +3499,14 @@ export class AgentStream {
             spec: request.spec,
             error: RECOVERY_REQUIRED,
           });
+        })
+        .finally(() => {
+          this.federationInstallations.delete(request.operationId);
         });
+      if (installation) {
+        installation.settled = this.softwareOperationQueue;
+        this.federationInstallations.set(request.operationId, installation);
+      }
       return;
     }
 
@@ -4077,6 +4117,24 @@ export class AgentStream {
   }
 
   private async performJobCancellation(jobId: string): Promise<void> {
+    const installations = [...this.federationInstallations.values()].filter(
+      (entry) => entry.request.federationJobId === jobId,
+    );
+    for (const entry of installations) entry.controller.abort();
+    await Promise.all(
+      installations.map(async (entry) => {
+        if (entry.started) return entry.settled;
+        // A queued operation has no worker; its aborted signal also fences the eventual queue head.
+        await this.enqueueSoftwareOperationResult({
+          operationId: entry.request.operationId,
+          action: entry.request.action,
+          spec: entry.request.spec,
+          status: SoftwareOperationStatus.FAILED,
+          error: "Federation installation cancelled before execution",
+        });
+      }),
+    );
+    await this.persistentQueue?.softwareOperations.assertJobStopped(jobId);
     await this.jobPreparations.get(jobId);
     const hadActiveRunner = this.pool.get(jobId) !== undefined;
     const runnerCancelled = hadActiveRunner ? await this.pool.cancel(jobId) : false;
@@ -4856,6 +4914,7 @@ export class AgentStream {
     protoAction: SoftwareOperationAction,
     spec: string,
     materials?: SpackMaterialContext,
+    signal: AbortSignal = this.lifecycleController.signal,
   ): Promise<void> {
     const normalizedSpec = spec.trim();
     const action = softwareOperationActionToAgent(protoAction);
@@ -4912,7 +4971,7 @@ export class AgentStream {
         action,
         normalizedSpec,
         action === "install" ? materials : undefined,
-        this.lifecycleController.signal,
+        signal,
       );
     } catch {
       await this.enqueueSoftwareOperationResult({
@@ -4922,7 +4981,9 @@ export class AgentStream {
         spec: normalizedSpec,
         error: this.lifecycleController.signal.aborted
           ? "Software operation cancelled during Agent shutdown"
-          : "SPACK_OPERATION_FAILED: managed software operation failed",
+          : signal.aborted
+            ? "Federation installation cancelled"
+            : "SPACK_OPERATION_FAILED: managed software operation failed",
       });
       return;
     }

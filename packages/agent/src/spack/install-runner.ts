@@ -136,6 +136,7 @@ export class IsolatedSpackInstallRunner implements SpackInstallRunner {
     const signal = input.signal ? AbortSignal.any([input.signal, deadline]) : deadline;
     signal.throwIfAborted();
     let directory: string | undefined;
+    let workerUncertain = false;
     try {
       const preflight = await preflightSpackMaterials(prepared, { ...input, signal });
       if (!preflight.valid || site.profile.target !== prepared.manifest.target) {
@@ -245,6 +246,7 @@ export class IsolatedSpackInstallRunner implements SpackInstallRunner {
         await execution?.finish();
         throw new Error("Federation installation grant expired before worker startup");
       }
+      workerUncertain = true;
       const result = await (this.options.process ?? realSpackAuditProcess)
         .run(command, {
           cwd: directory,
@@ -261,9 +263,13 @@ export class IsolatedSpackInstallRunner implements SpackInstallRunner {
           signal,
         })
         .catch(async (error: unknown) => {
-          if (error instanceof SpackProcessNotStartedError) await execution?.finish();
+          if (error instanceof SpackProcessNotStartedError) {
+            workerUncertain = false;
+            await execution?.finish();
+          }
           throw error;
         });
+      workerUncertain = false;
       await execution?.finish();
       signal.throwIfAborted();
       if (result.exitCode !== 0 || !result.stdout.trim().startsWith(SPACK_INSTALL_RESULT_PREFIX)) {
@@ -293,7 +299,7 @@ export class IsolatedSpackInstallRunner implements SpackInstallRunner {
       }
       return report;
     } finally {
-      if (directory) await rm(directory, { recursive: true, force: true });
+      if (directory && !workerUncertain) await rm(directory, { recursive: true, force: true });
     }
   }
 }

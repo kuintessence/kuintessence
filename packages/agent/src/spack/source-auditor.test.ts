@@ -15,7 +15,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { SpackMaterialManifest } from "@kuintessence/shared";
-import type { SpackAuditProcess } from "./audit-process";
+import { type SpackAuditProcess, SpackProcessNotStartedError } from "./audit-process";
 import type {
   SpackAuditFileIdentity,
   SpackAuditRuntimeDeps,
@@ -605,16 +605,25 @@ describe("SpackSourceAuditor report boundary", () => {
 });
 
 describe("SpackSourceAuditor lifecycle", () => {
-  test("cleans up after process rejection and releases the slot for the next audit", async () => {
+  test.each([
+    true,
+    false,
+  ])("only proven spawn failure releases source audit inputs and its slot: %s", async (notStarted) => {
     const f = await fixture();
     const h = harness(f, {
       run: async () => {
-        throw new Error("fixture process failed");
+        throw notStarted
+          ? new SpackProcessNotStartedError("fixture process failed")
+          : new Error("fixture process failed");
       },
     });
     await expect(h.auditor.audit(f.prepared, f.input)).rejects.toThrow("fixture process failed");
-    await expectClean(f);
+    expect(await runDirectories(f)).toHaveLength(notStarted ? 0 : 1);
     h.setRun(async () => wire(report(f)));
+    if (!notStarted) {
+      await expect(h.auditor.audit(f.prepared, f.input)).rejects.toThrow("already running");
+      return;
+    }
     expect((await h.auditor.audit(f.prepared, f.input)).passed).toBe(true);
     expect(h.calls[0]?.options.cwd).not.toBe(h.calls[1]?.options.cwd);
     await expectClean(f);
@@ -661,7 +670,7 @@ describe("SpackSourceAuditor lifecycle", () => {
     expect((await h.auditor.audit(f.prepared, f.input)).passed).toBe(true);
   });
 
-  test("forwards cancellation to a running process, cleans input and permits the next audit", async () => {
+  test("forwards cancellation but preserves input and its slot until the source audit worker is proven stopped", async () => {
     const f = await fixture();
     const controller = new AbortController();
     const entered = deferred<void>();
@@ -680,9 +689,9 @@ describe("SpackSourceAuditor lifecycle", () => {
     controller.abort(new Error("fixture canceled"));
     await expect(result).rejects.toThrow("fixture canceled");
     expect(h.calls[0]?.options.signal?.aborted).toBe(true);
-    await expectClean(f);
+    expect(await runDirectories(f)).toHaveLength(1);
     h.setRun(async () => wire(report(f)));
-    expect((await h.auditor.audit(f.prepared, f.input)).passed).toBe(true);
+    await expect(h.auditor.audit(f.prepared, f.input)).rejects.toThrow("already running");
   });
 
   test("rejects cancellation even when the process returns a valid successful report", async () => {
