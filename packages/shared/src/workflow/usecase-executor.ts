@@ -7,6 +7,7 @@ import {
   type NodeExecutor,
   REQUIRED_COLLECTED_OUTPUTS_KEY,
 } from "./engine";
+import type { NodeInvocation } from "./journal";
 import {
   SPACK_EXECUTION_PLACEHOLDER,
   type SpackExecution,
@@ -39,6 +40,7 @@ export interface ResolvedPackage {
 
 export interface JobSubmission {
   nodeId: string;
+  invocation?: NodeInvocation;
   usecasePackageId?: string;
   usecaseVersionId?: string;
   /** Human-readable job name (the node's name) for the jobs list / audit. */
@@ -86,6 +88,7 @@ export interface UsecaseExecutorDeps {
   executeScript?(
     node: Extract<workflowDsl.WorkflowNode, { type: "Script" }>,
     ctx: Record<string, CelValue>,
+    invocation?: NodeInvocation,
   ): Promise<NodeExecutionResult>;
 }
 
@@ -95,12 +98,12 @@ export interface UsecaseExecutorDeps {
  * The engine (engine) handles control flow; this is the per-leaf execution.
  */
 export function createUsecaseExecutor(deps: UsecaseExecutorDeps): NodeExecutor {
-  return async (node, ctx) => {
+  return async (node, ctx, invocation) => {
     if (node.type === "NoAction") {
       return { status: "Succeeded", values: {} };
     }
     if (node.type === "Script" && deps.executeScript) {
-      const result = await deps.executeScript(node, ctx);
+      const result = await deps.executeScript(node, ctx, invocation);
       return result.status === "Failed" && !result.failure
         ? { ...result, failure: { message: "Script execution failed." } }
         : result;
@@ -153,6 +156,7 @@ export function createUsecaseExecutor(deps: UsecaseExecutorDeps): NodeExecutor {
     const { status, collected, collectedFiles, errorMessage, reason, exitCode, jobId } =
       await deps.submitJob({
         nodeId: node.id,
+        ...(invocation ? { invocation } : {}),
         ...(pkg.usecaseVersionId ? { usecaseVersionId: pkg.usecaseVersionId } : {}),
         ...(pkg.usecasePackageId ? { usecasePackageId: pkg.usecasePackageId } : {}),
         name: node.name,

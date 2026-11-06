@@ -5,7 +5,15 @@ import * as schemaFederation from "./schema-federation";
 import * as schemaMetering from "./schema-metering";
 import * as schemaSpackMaterials from "./schema-spack-materials";
 
-const fullSchema = { ...schema, ...schemaMetering, ...schemaSpackMaterials, ...schemaFederation };
+import * as schemaWorkflowExecution from "./schema-workflow-execution";
+
+const fullSchema = {
+  ...schema,
+  ...schemaMetering,
+  ...schemaSpackMaterials,
+  ...schemaFederation,
+  ...schemaWorkflowExecution,
+};
 
 export type PgConnectionOptions = Pick<
   postgres.Options<Record<string, postgres.PostgresType>>,

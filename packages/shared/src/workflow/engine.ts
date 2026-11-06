@@ -1,6 +1,13 @@
 import { coerceTyped, extractTyped } from "../usecase/value-extract";
 import { createLogger } from "../utils/logger";
 import * as workflowDsl from "../workflow-dsl";
+import {
+  bindWorkflowJournal,
+  journalOperation,
+  type NodeInvocation,
+  WorkflowExecutionInterrupted,
+  type WorkflowJournal,
+} from "./journal";
 import type { WorkflowNodeFailure } from "./run-store";
 
 const logger = createLogger("workflow-engine");
@@ -51,10 +58,16 @@ export interface NodeExecutionResult {
 export type NodeExecutor = (
   node: workflowDsl.WorkflowNode,
   ctx: Record<string, CelValue>,
+  invocation?: NodeInvocation,
 ) => Promise<NodeExecutionResult>;
 
 export interface RunWorkflowOptions {
+  journal?: WorkflowJournal;
   resolveWorkflowVersion?: (workflowVersionId: string) => Promise<workflowDsl.Workflow | null>;
+}
+
+interface ExecutionOptions extends RunWorkflowOptions {
+  control: { interruption?: WorkflowExecutionInterrupted };
 }
 
 interface NodeCtxEntry {
@@ -90,8 +103,15 @@ export async function runWorkflow(
   executor: NodeExecutor,
   options: RunWorkflowOptions = {},
 ): Promise<RunResult> {
+  if (options.journal) await bindWorkflowJournal(options.journal, wf);
   const params = buildParamDefaults(wf.parameters);
-  const res = await runScope(wf.spec, executor, { params, nodes: {} }, options);
+  const res = await runScope(
+    wf.spec,
+    executor,
+    { params, nodes: {} },
+    { ...options, control: {} },
+    [],
+  );
   return { status: res.status, values: stripReserved(res.nodes) };
 }
 
@@ -129,7 +149,23 @@ async function runScope(
   spec: Spec,
   executor: NodeExecutor,
   parentCtx: Record<string, CelValue>,
-  options: RunWorkflowOptions,
+  options: ExecutionOptions,
+  scopePath: readonly (string | number)[],
+): Promise<ScopeResult> {
+  try {
+    return await executeScope(spec, executor, parentCtx, options, scopePath);
+  } catch (error) {
+    if (error instanceof WorkflowExecutionInterrupted) options.control.interruption ??= error;
+    throw error;
+  }
+}
+
+async function executeScope(
+  spec: Spec,
+  executor: NodeExecutor,
+  parentCtx: Record<string, CelValue>,
+  options: ExecutionOptions,
+  scopePath: readonly (string | number)[],
 ): Promise<ScopeResult> {
   const nodes = spec.nodeDrafts;
   const byId = new Map(nodes.map((n) => [n.id, n]));
@@ -170,72 +206,116 @@ async function runScope(
     [REQUIRED_COLLECTED_OUTPUTS_KEY]: requiredCollectedOutputs(parentCtx),
   };
 
-  const record = (
+  const record = async (
     id: string,
     s: NodeStatus,
     values: Record<string, CelValue>,
     failure?: WorkflowNodeFailure,
-  ): void => {
+  ): Promise<void> => {
+    const journal = options.journal;
+    if (journal) {
+      await journalOperation(() =>
+        journal.write(JSON.stringify([...scopePath, "node", id]), {
+          kind: "node",
+          status: s,
+          values,
+          ...(failure ? { failure } : {}),
+          ...(chosen.get(id) !== undefined ? { selectedTarget: chosen.get(id) } : {}),
+        }),
+      );
+    }
     status.set(id, s);
     nodeCtx[id] = { status: s, values, ...(failure ? { failure } : {}) };
   };
 
   for (const id of executionOrder) {
+    if (options.control.interruption) throw options.control.interruption;
     const node = byId.get(id);
     if (!node) {
       continue;
     }
+    const nodePath = [...scopePath, "node", id];
+    const invocation = { path: JSON.stringify(nodePath) };
+    const journal = options.journal;
+    const saved = journal ? await journalOperation(() => journal.read(invocation.path)) : null;
+    if (options.control.interruption) throw options.control.interruption;
+    if (saved) {
+      if (saved.kind !== "node") throw new WorkflowExecutionInterrupted("Invalid node checkpoint");
+      status.set(id, saved.status);
+      nodeCtx[id] = {
+        status: saved.status,
+        values: saved.values,
+        ...(saved.failure ? { failure: saved.failure } : {}),
+      };
+      if (node.type === "Switch") chosen.set(id, saved.selectedTarget);
+      continue;
+    }
     if (unresolved.has(id)) {
-      record(id, "Failed", {}, { message: "Workflow graph contains unresolved dependencies." });
+      await record(
+        id,
+        "Failed",
+        {},
+        { message: "Workflow graph contains unresolved dependencies." },
+      );
       continue;
     }
     const predStatuses = (preds.get(id) ?? []).map((p) => status.get(p));
     if (predStatuses.some((s) => s === "Failed" || s === "Cancelled")) {
-      record(id, "Cancelled", {});
+      await record(id, "Cancelled", {});
       continue;
     }
     if (predStatuses.some((s) => s === "Skipped")) {
-      record(id, "Skipped", {});
+      await record(id, "Skipped", {});
       continue;
     }
     const controllingSwitch = targetToSwitch.get(id);
     if (controllingSwitch !== undefined && chosen.get(controllingSwitch) !== id) {
-      record(id, "Skipped", {});
+      await record(id, "Skipped", {});
       continue;
     }
     const relationReadiness = evaluateRelationReadiness(id, incoming.get(id) ?? [], ctx);
     if (relationReadiness === "Failed") {
-      record(id, "Failed", {}, { message: "A node dependency condition could not be evaluated." });
+      await record(
+        id,
+        "Failed",
+        {},
+        { message: "A node dependency condition could not be evaluated." },
+      );
       continue;
     }
     if (relationReadiness === "Skipped") {
-      record(id, "Skipped", {});
+      await record(id, "Skipped", {});
       continue;
     }
     if (node.when) {
       const guard = evalExpr(node.when.expr, ctx, id, "Node when guard failed");
       if (guard === "Error") {
-        record(id, "Failed", {}, { message: "The node run condition could not be evaluated." });
+        await record(
+          id,
+          "Failed",
+          {},
+          { message: "The node run condition could not be evaluated." },
+        );
         continue;
       }
       if (guard !== true) {
-        record(id, "Skipped", {});
+        await record(id, "Skipped", {});
         continue;
       }
     }
     const inputReadiness = evaluateInputReadiness(node, nodeCtx, ctx);
     if (inputReadiness === "Failed") {
-      record(id, "Failed", {}, { message: "A required node input is unavailable." });
+      await record(id, "Failed", {}, { message: "A required node input is unavailable." });
       continue;
     }
     if (inputReadiness === "Skipped") {
-      record(id, "Skipped", {});
+      await record(id, "Skipped", {});
       continue;
     }
     if (node.type === "Switch") {
       const selected = evaluateSwitch(node, ctx);
       if (selected === "Error") {
-        record(
+        await record(
           id,
           "Failed",
           {},
@@ -244,16 +324,17 @@ async function runScope(
         continue;
       }
       chosen.set(id, selected);
-      record(id, "Succeeded", {});
+      await record(id, "Succeeded", {});
       continue;
     }
     if (node.type === "Generate") {
       try {
-        record(id, "Succeeded", {
+        await record(id, "Succeeded", {
           [node.output.descriptor]: workflowDsl.expandGenerate(node.rule),
         });
       } catch (error) {
-        record(
+        if (error instanceof WorkflowExecutionInterrupted) throw error;
+        await record(
           id,
           "Failed",
           {},
@@ -273,8 +354,9 @@ async function runScope(
           [REQUIRED_COLLECTED_OUTPUTS_KEY]: requiredCollectedOutputsForLoop(spec, node.id),
         },
         options,
+        nodePath,
       );
-      record(
+      await record(
         id,
         loopStatus,
         loopValues,
@@ -286,7 +368,7 @@ async function runScope(
     }
     if (node.type === "Reduce") {
       const [reduceStatus, reduceValues] = reduceNode(node, nodeCtx);
-      record(
+      await record(
         id,
         reduceStatus,
         reduceValues,
@@ -300,8 +382,9 @@ async function runScope(
         executor,
         ctx,
         options,
+        nodePath,
       );
-      record(
+      await record(
         id,
         subWorkflowStatus,
         subWorkflowValues,
@@ -312,14 +395,15 @@ async function runScope(
       continue;
     }
     try {
-      const res = await executor(node, ctx);
-      record(id, res.status, res.values ?? {}, res.failure);
+      const res = await executor(node, ctx, invocation);
+      await record(id, res.status, res.values ?? {}, res.failure);
     } catch (err) {
+      if (err instanceof WorkflowExecutionInterrupted) throw err;
       // An executor rejection (e.g. resolvePackage / materialize blowing up) is
       // a single-node failure, not a reason to reject the whole run — record it
       // Failed so downstream cancels, consistent with a returned Failed status.
       logger.error({ nodeId: id, err }, "Node executor threw — recording node Failed");
-      record(
+      await record(
         id,
         "Failed",
         {},
@@ -470,18 +554,20 @@ async function runLoop(
   node: Extract<workflowDsl.WorkflowNode, { type: "Loop" }>,
   executor: NodeExecutor,
   ctx: Record<string, CelValue>,
-  options: RunWorkflowOptions,
+  options: ExecutionOptions,
+  nodePath: readonly (string | number)[],
 ): Promise<ControlFlowRet> {
   return node.mode === "ForEach"
-    ? runForEach(node, executor, ctx, options)
-    : runWhile(node, executor, ctx, options);
+    ? runForEach(node, executor, ctx, options, nodePath)
+    : runWhile(node, executor, ctx, options, nodePath);
 }
 
 async function runForEach(
   node: Extract<workflowDsl.WorkflowNode, { type: "Loop" }>,
   executor: NodeExecutor,
   ctx: Record<string, CelValue>,
-  options: RunWorkflowOptions,
+  options: ExecutionOptions,
+  nodePath: readonly (string | number)[],
 ): Promise<ControlFlowRet> {
   if (!node.over) {
     return ["Failed", {}];
@@ -505,7 +591,7 @@ async function runForEach(
   for (const out of outputs) {
     collected[out.descriptor] = [];
   }
-  const children = await runForEachIterations(node, list, executor, ctx, options);
+  const children = await runForEachIterations(node, list, executor, ctx, options, nodePath);
   let failed = false;
   let failure: WorkflowNodeFailure | undefined;
   for (let i = 0; i < children.length; i++) {
@@ -554,7 +640,8 @@ async function runForEachIterations(
   list: CelValue[],
   executor: NodeExecutor,
   ctx: Record<string, CelValue>,
-  options: RunWorkflowOptions,
+  options: ExecutionOptions,
+  nodePath: readonly (string | number)[],
 ): Promise<Array<ScopeResult | undefined>> {
   const children: Array<ScopeResult | undefined> = new Array(list.length);
   if (list.length === 0) {
@@ -562,8 +649,10 @@ async function runForEachIterations(
   }
   const concurrency = Math.min(node.maxParallel ?? list.length, list.length);
   let nextIndex = 0;
+  let interruption: unknown;
+  let interrupted = false;
   const workers = Array.from({ length: concurrency }, async () => {
-    while (true) {
+    while (!interrupted) {
       const index = nextIndex;
       nextIndex += 1;
       if (index >= list.length) {
@@ -580,10 +669,20 @@ async function runForEachIterations(
         loop: { item, index, iteration: index },
         [REQUIRED_COLLECTED_OUTPUTS_KEY]: ctx[REQUIRED_COLLECTED_OUTPUTS_KEY] ?? [],
       };
-      children[index] = await runScope(node.body, executor, childCtx, options);
+      try {
+        children[index] = await runScope(node.body, executor, childCtx, options, [
+          ...nodePath,
+          "iteration",
+          index,
+        ]);
+      } catch (error) {
+        if (!interrupted) interruption = error;
+        interrupted = true;
+      }
     }
   });
   await Promise.all(workers);
+  if (interrupted) throw interruption;
   return children;
 }
 
@@ -610,7 +709,8 @@ async function runWhile(
   node: Extract<workflowDsl.WorkflowNode, { type: "Loop" }>,
   executor: NodeExecutor,
   ctx: Record<string, CelValue>,
-  options: RunWorkflowOptions,
+  options: ExecutionOptions,
+  nodePath: readonly (string | number)[],
 ): Promise<ControlFlowRet> {
   if (!node.until) {
     return ["Failed", {}];
@@ -644,7 +744,7 @@ async function runWhile(
       loop: loopState,
       [REQUIRED_COLLECTED_OUTPUTS_KEY]: ctx[REQUIRED_COLLECTED_OUTPUTS_KEY] ?? [],
     };
-    const child = await runScope(body, executor, childCtx, options);
+    const child = await runScope(body, executor, childCtx, options, [...nodePath, "iteration", i]);
     if (anyFailed(child)) {
       return ["Failed", {}, contextualizeScopeFailure(child, `While iteration ${i}`)];
     }
@@ -913,7 +1013,8 @@ async function runSubWorkflow(
   node: Extract<workflowDsl.WorkflowNode, { type: "SubWorkflow" }>,
   executor: NodeExecutor,
   ctx: Record<string, CelValue>,
-  options: RunWorkflowOptions,
+  options: ExecutionOptions,
+  nodePath: readonly (string | number)[],
 ): Promise<ControlFlowRet> {
   const depth = ((ctx.depth as number | undefined) ?? 0) + 1;
   if (depth > node.maxDepth) {
@@ -947,6 +1048,7 @@ async function runSubWorkflow(
       [REQUIRED_COLLECTED_OUTPUTS_KEY]: [],
     },
     options,
+    [...nodePath, "subworkflow"],
   );
   return anyFailed(child)
     ? ["Failed", {}, contextualizeScopeFailure(child, "Sub-workflow")]
@@ -980,22 +1082,35 @@ function requiredCollectedOutputsForLoop(spec: Spec, loopId: string): string[] {
 
 async function resolveSubWorkflowSpec(
   node: Extract<workflowDsl.WorkflowNode, { type: "SubWorkflow" }>,
-  options: RunWorkflowOptions,
+  options: ExecutionOptions,
 ): Promise<{ spec: Spec; paramDefaults: Record<string, CelValue> } | null> {
   if (node.ref.kind === "Inline") {
     return { spec: node.ref.body, paramDefaults: {} };
   }
-  if (!options.resolveWorkflowVersion) {
-    return null;
-  }
   try {
-    const wf = await options.resolveWorkflowVersion(node.ref.workflowVersionId);
+    const versionId = node.ref.workflowVersionId;
+    const journal = options.journal;
+    const key = JSON.stringify(["version", versionId]);
+    const saved = journal ? await journalOperation(() => journal.read(key)) : null;
+    if (saved && saved.kind !== "version")
+      throw new WorkflowExecutionInterrupted("Invalid sub-workflow checkpoint");
+    const wf =
+      saved?.kind === "version"
+        ? saved.workflow
+        : ((await options.resolveWorkflowVersion?.(versionId)) ?? null);
+    if (journal && !saved)
+      await journalOperation(() => journal.write(key, { kind: "version", workflow: wf }));
     if (!wf) {
       return null;
     }
     const paramDefaults = buildParamDefaults(wf.parameters);
     return { spec: wf.spec, paramDefaults };
   } catch (err) {
+    if (err instanceof WorkflowExecutionInterrupted) throw err;
+    if (options.journal)
+      throw new WorkflowExecutionInterrupted("Sub-workflow resolution is unavailable", {
+        cause: err,
+      });
     logger.error(
       { nodeId: node.id, workflowVersionId: node.ref.workflowVersionId, err },
       "SubWorkflow ByVersion resolver failed",

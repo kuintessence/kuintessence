@@ -12,6 +12,7 @@ export interface JobSubmitterDeps {
   prepare?(spec: JobSubmission): Promise<JobSubmission>;
   submit(spec: {
     nodeId: string;
+    invocation?: JobSubmission["invocation"];
     name: string;
     usecasePackageId?: string;
     usecaseVersionId?: string;
@@ -81,6 +82,7 @@ export function createJobSubmitter(deps: JobSubmitterDeps): (spec: JobSubmission
         : undefined;
     const job = await deps.submit({
       nodeId: prepared.nodeId,
+      ...(prepared.invocation ? { invocation: prepared.invocation } : {}),
       name: prepared.name,
       ...(prepared.usecaseVersionId ? { usecaseVersionId: prepared.usecaseVersionId } : {}),
       ...(prepared.usecasePackageId ? { usecasePackageId: prepared.usecasePackageId } : {}),

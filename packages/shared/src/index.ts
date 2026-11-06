@@ -55,6 +55,7 @@ export * from "./utils/logger";
 // Control-flow engine core — a pure function over an injected NodeExecutor,
 // reused by both the Server and the all-in-one embedded kernel.
 export * from "./workflow/engine";
+export * from "./workflow/journal";
 // Storage-agnostic workflow-run persistence contract (Server PG + local SQLite).
 export * from "./workflow/run-store";
 export * from "./workflow/spack-execution";

@@ -54,6 +54,35 @@ const deps = (capture: { spec?: JobSubmission }): UsecaseExecutorDeps => ({
 });
 
 describe("createUsecaseExecutor", () => {
+  test("passes invocation identity to the governed Script executor", async () => {
+    const invocation = { path: JSON.stringify(["node", "sub", "subworkflow", "node", "script"]) };
+    const script = workflowDsl.WorkflowNodeSchema.parse({
+      type: "Script",
+      id: "script",
+      name: "script",
+      source: { type: "Inline", language: "python", content: "print(1)" },
+      runtimeProfileId: UUID,
+    });
+    const executor = createUsecaseExecutor({
+      ...deps({}),
+      executeScript: async (_node, _ctx, context) => {
+        expect(context).toEqual(invocation);
+        return { status: "Succeeded" };
+      },
+    });
+    expect((await executor(script, {}, invocation)).status).toBe("Succeeded");
+  });
+  test("preserves dynamic invocation identity through software materialization", async () => {
+    const capture: { spec?: JobSubmission } = {};
+    const invocation = { path: JSON.stringify(["node", "loop", "iteration", 2, "node", "solve"]) };
+    await createUsecaseExecutor(deps(capture))(
+      node,
+      { params: { endTime: "500" }, nodes: {} },
+      invocation,
+    );
+    expect(capture.spec?.invocation).toEqual(invocation);
+  });
+
   test("fails closed when named asset references were not frozen before execution", async () => {
     const executor = createUsecaseExecutor(deps({}));
 

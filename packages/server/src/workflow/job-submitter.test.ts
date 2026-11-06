@@ -3,6 +3,28 @@ import { SPACK_EXECUTION_PLACEHOLDER } from "@kuintessence/shared";
 import { createJobSubmitter, type JobSubmitterDeps } from "./job-submitter";
 
 describe("createJobSubmitter", () => {
+  test("preserves invocation identity through prepare and submission", async () => {
+    const invocation = { path: JSON.stringify(["node", "loop", "iteration", 2, "node", "solve"]) };
+    const submit = createJobSubmitter({
+      prepare: async (spec) => ({ ...spec, command: "prepared" }),
+      submit: async (spec) => {
+        expect(spec.invocation).toEqual(invocation);
+        expect(spec.nodeId).toBe("solve");
+        return { id: "job-invocation" };
+      },
+      dispatch: async () => {},
+      awaitCompletion: async () => ({ status: "completed", collected: {} }),
+    });
+    await submit({
+      nodeId: "solve",
+      invocation,
+      name: "solve",
+      command: "true",
+      envVars: {},
+      inputStaging: [],
+      expectedOutputs: [],
+    });
+  });
   test("persists only the placeholder and forwards prepared Spack intent transiently", async () => {
     const execution = { spec: "hello@1.0 +mpi", command: "hello --count 2" };
     let dispatched = false;
