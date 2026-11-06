@@ -76,7 +76,11 @@ export class SoftwareAvailabilityService {
     private readonly authz?: AuthzService,
   ) {}
 
-  async resolve(input: SoftwareAvailabilityRequest, principal: BoundPrincipal) {
+  async resolve(
+    input: SoftwareAvailabilityRequest,
+    principal: BoundPrincipal,
+    options: { requireInstallation?: boolean } = {},
+  ) {
     const asset = await this.resolveAsset(input);
     const spec = this.resolveSpec(input, asset);
     if (!spec) {
@@ -144,13 +148,13 @@ export class SoftwareAvailabilityService {
         accessAllowed: access.allowed,
         installAllowed: installAccess.allowed,
         installRequested: input.installable,
-        installedSpec,
+        installedSpec: options.requireInstallation ? undefined : installedSpec,
         usecaseRef: input.usecaseRef,
         controlChannelOnline: controlChannelOnline.get(agent.agentId) ?? null,
       });
       const licenseBlocks = await this.evaluateLicense(
         asset,
-        !installedSpec && input.installable,
+        (options.requireInstallation === true || !installedSpec) && input.installable,
         principal,
         spec,
         agent.providerOrgId ?? asset?.providerOrgId ?? null,

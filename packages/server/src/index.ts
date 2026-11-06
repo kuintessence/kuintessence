@@ -1591,7 +1591,12 @@ const federationPreparation = federationSigningKey
   ? new FederationPreparationService(db, federationSigningKey.siteId, federationAssets)
   : undefined;
 const federationDispatchAuthorization = federationPreparation
-  ? new FederationDispatchAuthorization(db, federationPreparation, queueRegistry)
+  ? new FederationDispatchAuthorization(
+      db,
+      federationPreparation,
+      queueRegistry,
+      softwareAvailability,
+    )
   : undefined;
 jobDispatchOutbox.start();
 protectedApi.route("/", createFederationAssetRoutes(federationAssets, federationPreparation));

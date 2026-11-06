@@ -1112,6 +1112,25 @@ test("real federation authorization fences outbox retries and holds agreement re
     expect(delivered).toBe(1);
     expect(probe?.exitCode).toBe(0);
     expect(probe?.stdout?.toString()).toBe("55P03");
+    const fence = await authorization.prepare(binding.workflowRunId, {
+      kind: "compute",
+      jobId,
+      agentId,
+    });
+    const [invocation] = await db
+      .select()
+      .from(workflowExecutionJobs)
+      .where(eq(workflowExecutionJobs.jobId, jobId));
+    if (!invocation) throw new Error("Missing test invocation");
+    await db
+      .update(workflowExecutionJobs)
+      .set({ intent: { ...invocation.intent, command: "changed" } })
+      .where(eq(workflowExecutionJobs.jobId, jobId));
+    await expect(db.transaction(fence)).rejects.toMatchObject({ code: "OPERATION_CONFLICT" });
+    await db
+      .update(workflowExecutionJobs)
+      .set({ intent: invocation.intent })
+      .where(eq(workflowExecutionJobs.jobId, jobId));
     await db
       .update(federationAgreements)
       .set({ state: "suspended" })

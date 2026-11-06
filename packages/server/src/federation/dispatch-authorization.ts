@@ -9,18 +9,18 @@ import { WorkflowExecutionInterrupted } from "@kuintessence/shared";
 import { FederationError } from "@kuintessence/shared/federation";
 import { and, eq } from "drizzle-orm";
 import type { QueueRegistryService } from "../services/queue-registry";
+import type { SoftwareAvailabilityService } from "../services/software-availability";
 import { constrainWorkflowResources } from "../workflow/resource-limits";
 import { federationMaterialDigest } from "./assets";
 import { federationExecutionSnapshot, loadFederationWorkflowBinding } from "./execution-binding";
 import { lockFederationTarget, resolveFederationTargets } from "./execution-targets";
 import type { FederationPreparationService } from "./preparation";
+import { prepareFederationSoftware } from "./software-authorization";
 
-export interface FederationDeliveryTarget {
-  kind: "install" | "compute";
+export type FederationDeliveryTarget = {
   jobId: string;
   agentId: string;
-  qos?: string;
-}
+} & ({ kind: "install"; spec: string } | { kind: "compute"; qos?: string });
 
 /** Reauthorize every delivery; the returned check holds local revocations through channel enqueue. */
 export class FederationDispatchAuthorization {
@@ -28,6 +28,7 @@ export class FederationDispatchAuthorization {
     private readonly db: PgDb,
     private readonly preparation: FederationPreparationService,
     private readonly queues?: Pick<QueueRegistryService, "inspectPreferredForSubmit">,
+    private readonly software?: Pick<SoftwareAvailabilityService, "resolve">,
   ) {}
 
   async prepare(
@@ -55,6 +56,27 @@ export class FederationDispatchAuthorization {
             role: "user",
           })
         : undefined;
+    const [invocation] = delivery
+      ? await this.db
+          .select({ intent: workflowExecutionJobs.intent })
+          .from(workflowExecutionJobs)
+          .where(
+            and(
+              eq(workflowExecutionJobs.jobId, delivery.jobId),
+              eq(workflowExecutionJobs.runId, runId),
+            ),
+          )
+      : [];
+    if (delivery && !invocation) throw new FederationError("OPERATION_CONFLICT");
+    const softwareFence =
+      delivery && invocation
+        ? await prepareFederationSoftware(
+            invocation.intent,
+            binding.snapshot.identity,
+            delivery,
+            this.software,
+          )
+        : undefined;
     return async (tx) => {
       await tx
         .select({ id: federationWorkflowBindings.reservationId })
@@ -71,13 +93,15 @@ export class FederationDispatchAuthorization {
       await this.preparation.lockExecutionSnapshot(tx, current);
       if (delivery) {
         const [job] = await tx
-          .select({ job: jobs })
+          .select({ job: jobs, intent: workflowExecutionJobs.intent })
           .from(jobs)
           .innerJoin(workflowExecutionJobs, eq(workflowExecutionJobs.jobId, jobs.id))
           .where(and(eq(jobs.id, delivery.jobId), eq(workflowExecutionJobs.runId, runId)))
-          .for("share", { of: [jobs] });
+          .for("share", { of: [jobs, workflowExecutionJobs] });
         if (
           !job ||
+          !invocation ||
+          federationMaterialDigest(job.intent) !== federationMaterialDigest(invocation.intent) ||
           job.job.submittedBy !== binding.snapshot.identity.userId ||
           job.job.orgId !== binding.snapshot.identity.orgId ||
           (delivery.kind === "compute" &&
@@ -105,7 +129,7 @@ export class FederationDispatchAuthorization {
             (queue.resolvedQueueName ?? queue.queueName ?? null) !== job.job.schedulerQueueName)
         )
           throw new FederationError("OPERATION_CONFLICT");
-        await lockFederationTarget(tx, targets, {
+        const target = await lockFederationTarget(tx, targets, {
           agentId: delivery.agentId,
           queueId: queue.queueId,
           updatedAt: queue.targetUpdatedAt,
@@ -117,6 +141,7 @@ export class FederationDispatchAuthorization {
               }
             : {}),
         });
+        await softwareFence?.(tx, target.providerOrgId);
       }
     };
   }

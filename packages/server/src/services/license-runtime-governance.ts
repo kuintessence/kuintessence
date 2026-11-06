@@ -4,6 +4,7 @@ import {
   licensedMaterialMappings,
   licenseEntitlementClaims,
   type PgDb,
+  type PgTransaction,
   sandboxRuntimeContractBindings,
   softwareAssetRevisions,
   softwareAssets,
@@ -432,10 +433,13 @@ function licensePolicyRequired(): GovernanceBlock {
 /** PostgreSQL adapter. It intentionally returns metadata only: no evidence or
  * licensed bytes are selected from the database. */
 export class PgGovernanceRepository implements GovernanceRepository {
-  constructor(private readonly db: PgDb) {}
+  constructor(
+    private readonly db: PgDb | PgTransaction,
+    private readonly lockReads = false,
+  ) {}
 
   async getCanonicalLicensePolicy(assetId: string): Promise<LicensePolicySnapshot | null> {
-    const rows = await this.db
+    const rowsQuery = this.db
       .select({ licensePolicy: ecosystemReleaseAssets.licensePolicy })
       .from(ecosystemReleaseAssets)
       .innerJoin(
@@ -447,6 +451,7 @@ export class PgGovernanceRepository implements GovernanceRepository {
       )
       .where(eq(ecosystemReleaseAssets.assetId, assetId))
       .limit(2);
+    const rows = await (this.lockReads ? rowsQuery.for("share") : rowsQuery);
     if (rows.length === 1 && rows[0]) return licensePolicySnapshot(rows[0].licensePolicy);
     if (rows.length > 0) return null;
     return (
@@ -458,7 +463,7 @@ export class PgGovernanceRepository implements GovernanceRepository {
   private async getSnapshotUpstreamLicensePolicy(
     assetId: string,
   ): Promise<LicensePolicySnapshot | null> {
-    const [snapshot] = await this.db
+    const snapshotQuery = this.db
       .select({
         id: softwareAssets.id,
         kind: softwareAssets.kind,
@@ -474,6 +479,7 @@ export class PgGovernanceRepository implements GovernanceRepository {
       .from(softwareAssets)
       .where(eq(softwareAssets.id, assetId))
       .limit(1);
+    const [snapshot] = await (this.lockReads ? snapshotQuery.for("share") : snapshotQuery);
     const provenance = UpstreamVersionSnapshotProvenanceSchema.safeParse(snapshot?.provenance);
     const payload = SoftwareAssetPayloadSchema.safeParse(snapshot?.payload);
     if (
@@ -494,7 +500,7 @@ export class PgGovernanceRepository implements GovernanceRepository {
       return null;
     }
 
-    const revisions = await this.db
+    const revisionsQuery = this.db
       .select({
         payload: softwareAssetRevisions.payload,
         provenance: softwareAssetRevisions.provenance,
@@ -502,6 +508,7 @@ export class PgGovernanceRepository implements GovernanceRepository {
       .from(softwareAssetRevisions)
       .where(eq(softwareAssetRevisions.assetId, snapshot.id))
       .limit(2);
+    const revisions = await (this.lockReads ? revisionsQuery.for("share") : revisionsQuery);
     const revision = revisions[0];
     if (
       revisions.length !== 1 ||
@@ -513,7 +520,7 @@ export class PgGovernanceRepository implements GovernanceRepository {
     }
 
     const source = provenance.data.licensePolicySource;
-    const rows = await this.db
+    const rowsQuery = this.db
       .select({
         kind: ecosystemReleaseAssets.kind,
         licensePolicy: ecosystemReleaseAssets.licensePolicy,
@@ -535,6 +542,7 @@ export class PgGovernanceRepository implements GovernanceRepository {
         ),
       )
       .limit(2);
+    const rows = await (this.lockReads ? rowsQuery.for("share") : rowsQuery);
     const policySource = rows[0];
     const sourcePayload = SoftwareAssetPayloadSchema.safeParse(policySource?.payload);
     if (
@@ -555,7 +563,7 @@ export class PgGovernanceRepository implements GovernanceRepository {
   private async getSupersededUpstreamLicensePolicy(
     assetId: string,
   ): Promise<LicensePolicySnapshot | null> {
-    const [replacement] = await this.db
+    const replacementQuery = this.db
       .select({
         id: softwareAssets.id,
         kind: softwareAssets.kind,
@@ -569,6 +577,7 @@ export class PgGovernanceRepository implements GovernanceRepository {
       .from(softwareAssets)
       .where(eq(softwareAssets.id, assetId))
       .limit(1);
+    const [replacement] = await (this.lockReads ? replacementQuery.for("share") : replacementQuery);
     if (
       !replacement ||
       replacement.kind !== "spack-package" ||
@@ -580,7 +589,7 @@ export class PgGovernanceRepository implements GovernanceRepository {
       return null;
     }
 
-    const candidates = await this.db
+    const candidatesQuery = this.db
       .select({
         assetRevisionId: ecosystemReleaseAssets.assetRevisionId,
         kind: softwareAssets.kind,
@@ -607,6 +616,7 @@ export class PgGovernanceRepository implements GovernanceRepository {
         ),
       )
       .limit(2);
+    const candidates = await (this.lockReads ? candidatesQuery.for("share") : candidatesQuery);
     const candidate = candidates[0];
     if (
       candidates.length !== 1 ||
@@ -629,7 +639,7 @@ export class PgGovernanceRepository implements GovernanceRepository {
     ) {
       return null;
     }
-    const [replacementRevision] = await this.db
+    const replacementRevisionQuery = this.db
       .select({ id: softwareAssetRevisions.id })
       .from(softwareAssetRevisions)
       .where(
@@ -639,6 +649,9 @@ export class PgGovernanceRepository implements GovernanceRepository {
         ),
       )
       .limit(1);
+    const [replacementRevision] = await (this.lockReads
+      ? replacementRevisionQuery.for("share")
+      : replacementRevisionQuery);
     if (!replacementRevision) return null;
     return licensePolicySnapshot(candidate.licensePolicy);
   }
@@ -650,7 +663,7 @@ export class PgGovernanceRepository implements GovernanceRepository {
     scope: LicenseEntitlementScope;
   }): Promise<LicenseEntitlementSnapshot[]> {
     if (input.subjectIds.length === 0) return [];
-    const rows = await this.db
+    const rowsQuery = this.db
       .select({
         claimantId: licenseEntitlementClaims.claimantId,
         entitlement: licenseEntitlementClaims.entitlement,
@@ -666,6 +679,7 @@ export class PgGovernanceRepository implements GovernanceRepository {
           inArray(licenseEntitlementClaims.claimantId, input.subjectIds),
         ),
       );
+    const rows = await (this.lockReads ? rowsQuery.for("share") : rowsQuery);
     return rows.map((row) => ({
       subjectId: row.claimantId,
       scope: row.entitlement as LicenseEntitlementScope,

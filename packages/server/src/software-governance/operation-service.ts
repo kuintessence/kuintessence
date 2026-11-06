@@ -360,6 +360,7 @@ export class SoftwareOperationService {
       reservationId && workflow
         ? await this.prepareFederationDispatch?.(workflow.runId, {
             kind: "install",
+            spec: input.spec,
             jobId: input.jobId,
             agentId: input.agentId,
           })

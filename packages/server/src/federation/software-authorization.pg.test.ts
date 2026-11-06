@@ -1,0 +1,273 @@
+import { afterEach, beforeEach, expect, test } from "bun:test";
+import {
+  agentInstalledSoftware,
+  agents,
+  createPgDb,
+  ecosystemReleaseAssets,
+  ecosystemReleases,
+  licenseEntitlementClaims,
+  orgs,
+  softwareAssetRevisions,
+  softwareAssets,
+  softwarePolicies,
+  users,
+} from "@kuintessence/db";
+import type { JobSubmission } from "@kuintessence/shared";
+import { eq, sql } from "drizzle-orm";
+import {
+  LicenseRuntimeGovernanceService,
+  PgGovernanceRepository,
+} from "../services/license-runtime-governance";
+import { SoftwareAvailabilityService } from "../services/software-availability";
+import { prepareFederationSoftware } from "./software-authorization";
+
+const url = process.env.DATABASE_URL;
+if (!url || !/^\/kuintessence_unit_[a-z0-9_]+$/.test(new URL(url).pathname))
+  throw new Error("Federation PG tests require an isolated kuintessence_unit_* DATABASE_URL");
+const db = createPgDb(url, { max: 4, idle_timeout: 1 });
+const other = createPgDb(url, { max: 1, idle_timeout: 1 });
+const identity = { userId: crypto.randomUUID(), orgId: crypto.randomUUID() };
+const assetId = crypto.randomUUID();
+const releaseId = crypto.randomUUID();
+const claimId = crypto.randomUUID();
+const agentId = `software-fence-${crypto.randomUUID()}`;
+const name = `federation-test-${crypto.randomUUID()}`;
+const spec = `${name}@1`;
+const delivery = { kind: "compute" as const, jobId: crypto.randomUUID(), agentId };
+const intent: JobSubmission = {
+  nodeId: "software",
+  name: "Governed software",
+  command: "true",
+  envVars: {},
+  inputStaging: [],
+  expectedOutputs: [],
+  softwareRequirements: [{ assetId, name, version: "1", spec, installable: true }],
+};
+const policy = {
+  classification: "proprietary",
+  identifiers: [{ kind: "custom", value: "test-license" }],
+  provenance: { source: "sp-published", reference: "Test license contract" },
+  acceptanceRequired: false,
+  providerEntitlements: [],
+  consumerEntitlements: ["use"],
+  redistribution: "prohibited",
+  autoInstall: "allowed",
+};
+const software = new SoftwareAvailabilityService(db, {
+  governance: new LicenseRuntimeGovernanceService(new PgGovernanceRepository(db)),
+});
+
+beforeEach(async () => {
+  await db.insert(orgs).values({ id: identity.orgId, name: "Software authorization test" });
+  await db.insert(users).values({
+    id: identity.userId,
+    orgId: identity.orgId,
+    email: `${identity.userId}@test.invalid`,
+    role: "user",
+  });
+  const payload = { kind: "spack-package", spack: { packageName: name, defaultSpec: spec } };
+  await db.insert(softwareAssets).values({
+    id: assetId,
+    kind: "spack-package",
+    name,
+    version: "1",
+    source: "sp-published",
+    lifecycle: "published",
+    visibility: "platform-public",
+    ownerUserId: identity.userId,
+    payload,
+  });
+  await db.insert(ecosystemReleases).values({
+    id: releaseId,
+    releaseKey: name,
+    version: "1",
+    artifactDigest: `sha256:${"a".repeat(64)}`,
+    manifest: {},
+    provenance: {},
+    signature: "test-signature",
+    signingKeyId: "test-key",
+    status: "active",
+    importedBy: identity.userId,
+  });
+  const [revision] = await db
+    .insert(softwareAssetRevisions)
+    .values({ assetId, revision: 1, payload, provenance: {} })
+    .returning();
+  if (!revision) throw new Error("Missing fixture revision");
+  await db.insert(ecosystemReleaseAssets).values({
+    assetRevisionId: revision.id,
+    materializedAt: new Date(),
+    releaseId,
+    assetId,
+    ecosystemKey: `software/${name}`,
+    kind: "spack-package",
+    name,
+    version: "1",
+    payload,
+    provenance: {},
+    licensePolicy: policy,
+    manifestEntryDigest: `sha256:${"b".repeat(64)}`,
+  });
+  await db.insert(licenseEntitlementClaims).values({
+    id: claimId,
+    assetId,
+    licenseSubject: "test-license",
+    entitlement: "consumer-use",
+    claimantKind: "user",
+    claimantId: identity.userId,
+    evidenceReference: "test-contract",
+    evidenceSummary: "Test authorization",
+    status: "approved",
+    submittedBy: identity.userId,
+  });
+  await db.insert(agents).values({
+    agentId,
+    siteName: "Test receiver",
+    schedulerType: "slurm",
+    schedulerVersion: "test",
+    providerOrgId: identity.orgId,
+    status: "online",
+  });
+  await db
+    .insert(agentInstalledSoftware)
+    .values({ agentId, name, version: "1", spec, hash: "a".repeat(32) });
+});
+
+afterEach(async () => {
+  await db.delete(agents).where(eq(agents.agentId, agentId));
+  await db.delete(licenseEntitlementClaims).where(eq(licenseEntitlementClaims.id, claimId));
+  await db.delete(ecosystemReleases).where(eq(ecosystemReleases.id, releaseId));
+  await db.delete(softwareAssets).where(eq(softwareAssets.id, assetId));
+  await db.delete(users).where(eq(users.id, identity.userId));
+  await db.delete(orgs).where(eq(orgs.id, identity.orgId));
+});
+
+test("compute authorization holds license and release evidence until delivery commits", async () => {
+  const fence = await prepareFederationSoftware(intent, identity, delivery, software);
+  await db.transaction(async (tx) => {
+    await fence(tx, identity.orgId);
+    for (const query of [
+      sql`select id from license_entitlement_claims where id=${claimId} for update nowait`,
+      sql`select id from ecosystem_releases where id=${releaseId} for update nowait`,
+    ]) {
+      let code: string | undefined;
+      try {
+        await other.execute(query);
+      } catch (error) {
+        const cause = error instanceof Error ? error.cause : undefined;
+        if (cause && typeof cause === "object" && "code" in cause) code = String(cause.code);
+      }
+      expect(code).toBe("55P03");
+    }
+  });
+});
+
+test.each([
+  "revoked",
+  "expired",
+] as const)("license %s after preparation blocks final delivery", async (change) => {
+  const fence = await prepareFederationSoftware(intent, identity, delivery, software);
+  await db
+    .update(licenseEntitlementClaims)
+    .set(change === "revoked" ? { status: "revoked" } : { expiresAt: new Date(Date.now() - 1000) })
+    .where(eq(licenseEntitlementClaims.id, claimId));
+  await expect(db.transaction((tx) => fence(tx, identity.orgId))).rejects.toMatchObject({
+    code: "POLICY_DENIED",
+  });
+  await expect(
+    prepareFederationSoftware(intent, identity, delivery, software),
+  ).rejects.toMatchObject({ code: "POLICY_DENIED" });
+});
+
+test("withdrawn license policy blocks the final fence", async () => {
+  const fence = await prepareFederationSoftware(intent, identity, delivery, software);
+  await db
+    .update(ecosystemReleases)
+    .set({ status: "inactive" })
+    .where(eq(ecosystemReleases.id, releaseId));
+  await expect(db.transaction((tx) => fence(tx, identity.orgId))).rejects.toMatchObject({
+    code: "POLICY_DENIED",
+  });
+});
+
+test("installable software permits installation but never a compute dispatch", async () => {
+  await db.delete(agentInstalledSoftware).where(eq(agentInstalledSoftware.agentId, agentId));
+  await expect(
+    prepareFederationSoftware(intent, identity, delivery, software),
+  ).rejects.toMatchObject({ code: "POLICY_DENIED" });
+  const fence = await prepareFederationSoftware(
+    intent,
+    identity,
+    { ...delivery, kind: "install", spec },
+    software,
+  );
+  await db.transaction((tx) => fence(tx, identity.orgId));
+});
+
+test("an installed copy does not bypass revoked installation permission", async () => {
+  await db.update(softwareAssets).set({ ownerUserId: null }).where(eq(softwareAssets.id, assetId));
+  await prepareFederationSoftware(intent, identity, delivery, software);
+  await expect(
+    prepareFederationSoftware(intent, identity, { ...delivery, kind: "install", spec }, software),
+  ).rejects.toMatchObject({ code: "POLICY_DENIED" });
+});
+
+test("an installed copy does not bypass installation license restrictions", async () => {
+  const fence = await prepareFederationSoftware(
+    intent,
+    identity,
+    { ...delivery, kind: "install", spec },
+    software,
+  );
+  await db
+    .update(ecosystemReleaseAssets)
+    .set({ licensePolicy: { ...policy, autoInstall: "denied" } })
+    .where(eq(ecosystemReleaseAssets.assetId, assetId));
+  await expect(db.transaction((tx) => fence(tx, identity.orgId))).rejects.toMatchObject({
+    code: "POLICY_DENIED",
+  });
+});
+
+test("target policy is freshly checked on retry", async () => {
+  await prepareFederationSoftware(intent, identity, delivery, software);
+  await db.insert(softwarePolicies).values({ agentId, denyList: [name] });
+  await expect(
+    prepareFederationSoftware(intent, identity, delivery, software),
+  ).rejects.toMatchObject({ code: "POLICY_DENIED" });
+});
+
+test("missing asset, missing service, wrong target and undeclared installation fail closed", async () => {
+  await expect(prepareFederationSoftware(intent, identity, delivery)).rejects.toMatchObject({
+    code: "POLICY_DENIED",
+  });
+  await expect(
+    prepareFederationSoftware(
+      { ...intent, softwareRequirements: [{ name, spec, installable: true }] },
+      identity,
+      delivery,
+      software,
+    ),
+  ).rejects.toMatchObject({ code: "OPERATION_CONFLICT" });
+  await expect(
+    prepareFederationSoftware(intent, identity, { ...delivery, agentId: "other-agent" }, software),
+  ).rejects.toMatchObject({ code: "POLICY_DENIED" });
+  await expect(
+    prepareFederationSoftware(
+      intent,
+      identity,
+      { ...delivery, kind: "install", spec: "other@1" },
+      software,
+    ),
+  ).rejects.toMatchObject({ code: "OPERATION_CONFLICT" });
+  await expect(
+    prepareFederationSoftware(
+      {
+        ...intent,
+        softwareRequirements: [{ assetId: crypto.randomUUID(), name, spec, installable: true }],
+      },
+      identity,
+      delivery,
+      software,
+    ),
+  ).rejects.toMatchObject({ code: "OPERATION_CONFLICT" });
+});
