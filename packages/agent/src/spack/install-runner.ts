@@ -14,6 +14,7 @@ import {
   SpackInstallationPending,
   softwareExecution,
 } from "./execution-identity";
+import { InstallationAuthorization } from "./install-authorization";
 import {
   SPACK_INSTALL_RESULT_PREFIX,
   type SpackInstallReport,
@@ -26,6 +27,7 @@ import type { PreparedSpackMaterials, SpackMaterialPrepareInput } from "./materi
 import { preflightSpackMaterials } from "./material-preflight";
 import {
   prepareSpackProcessSupervision,
+  renewSpackProcessAuthorization,
   runSpackSupervisedProcess,
   SpackProcessStoppedError,
   type SpackProcessSupervision,
@@ -143,6 +145,9 @@ export class IsolatedSpackInstallRunner implements SpackInstallRunner {
     let directory: string | undefined;
     let workerUncertain = false;
     let supervisor: SpackProcessSupervision | undefined;
+    let authorization: InstallationAuthorization | undefined;
+    const execution = installWorkerExecution.getStore();
+    let executionStarted = false;
     try {
       const preflight = await preflightSpackMaterials(prepared, { ...input, signal });
       if (!preflight.valid || site.profile.target !== prepared.manifest.target) {
@@ -231,6 +236,13 @@ export class IsolatedSpackInstallRunner implements SpackInstallRunner {
       signal.throwIfAborted();
       const authorizedUntil = await input.authorizeInstallation?.(signal);
       signal.throwIfAborted();
+      if (
+        authorizedUntil !== undefined &&
+        (!Number.isSafeInteger(authorizedUntil) || authorizedUntil > Date.now() + 30_000)
+      )
+        throw new Error("Invalid federation installation grant expiry");
+      if (authorizedUntil !== undefined && authorizedUntil <= Date.now())
+        throw new SpackInstallationPending();
       const remainingMs = Math.floor(expiresAt - performance.now());
       if (remainingMs <= 0) throw new Error("Managed Spack operation timed out");
       const uid = this.options.runtimeDeps?.uid ?? process.getuid?.();
@@ -243,18 +255,28 @@ export class IsolatedSpackInstallRunner implements SpackInstallRunner {
         action,
       );
       if (!this.options.process)
-        supervisor = await prepareSpackProcessSupervision(directory, managedMemoryMib * 1024 ** 2);
+        supervisor = await prepareSpackProcessSupervision(
+          directory,
+          managedMemoryMib * 1024 ** 2,
+          authorizedUntil,
+        );
       if (supervisor) await softwareExecution.getStore()?.bindSupervisor?.(supervisor);
-      const execution = installWorkerExecution.getStore();
-      await execution?.start(basename(storePath), supervisor);
-      if (authorizedUntil !== undefined && !Number.isSafeInteger(authorizedUntil)) {
-        await execution?.finish();
-        throw new Error("Invalid federation installation grant expiry");
-      }
       if (authorizedUntil !== undefined && authorizedUntil <= Date.now()) {
-        await execution?.finish();
         throw new SpackInstallationPending();
       }
+      if (authorizedUntil !== undefined && input.authorizeInstallation) {
+        const ref = supervisor;
+        authorization = new InstallationAuthorization(
+          authorizedUntil,
+          input.authorizeInstallation,
+          signal,
+          ref ? (expiresAt) => renewSpackProcessAuthorization(ref, expiresAt) : undefined,
+        );
+      }
+      const workerSignal = authorization?.signal ?? signal;
+      await execution?.start(basename(storePath), supervisor);
+      executionStarted = true;
+      workerSignal.throwIfAborted();
       workerUncertain = true;
       const transport: SpackAuditProcess = this.options.process ?? {
         run: (command, options) => {
@@ -275,21 +297,21 @@ export class IsolatedSpackInstallRunner implements SpackInstallRunner {
           },
           timeoutMs: remainingMs,
           maxOutputBytes: 2 * 1024 ** 2,
-          signal,
+          signal: workerSignal,
         })
-        .catch(async (error: unknown) => {
+        .catch((error: unknown) => {
           if (
             error instanceof SpackProcessNotStartedError ||
             error instanceof SpackProcessStoppedError
           ) {
             workerUncertain = false;
-            await execution?.finish();
           }
+          workerSignal.throwIfAborted();
           throw error;
         });
       workerUncertain = false;
-      await execution?.finish();
-      signal.throwIfAborted();
+      authorization?.assertValid();
+      workerSignal.throwIfAborted();
       if (result.exitCode !== 0 || !result.stdout.trim().startsWith(SPACK_INSTALL_RESULT_PREFIX)) {
         throw new Error("Managed Spack worker did not complete successfully");
       }
@@ -317,7 +339,9 @@ export class IsolatedSpackInstallRunner implements SpackInstallRunner {
       }
       return report;
     } finally {
+      await authorization?.close();
       if (supervisor && !workerUncertain) await stopSpackSupervisedProcess(supervisor);
+      if (executionStarted && !workerUncertain) await execution?.finish();
       if (directory && !workerUncertain) await rm(directory, { recursive: true, force: true });
     }
   }

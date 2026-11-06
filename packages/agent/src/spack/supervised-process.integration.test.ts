@@ -1,6 +1,6 @@
 import { Database } from "bun:sqlite";
 import { afterEach, expect, test } from "bun:test";
-import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runSqliteMigrations } from "@kuintessence/db";
@@ -11,6 +11,7 @@ import { SpackInstallStore } from "./install-store";
 import {
   prepareSpackProcessSupervision,
   recoverSpackSupervisedProcesses,
+  renewSpackProcessAuthorization,
   runSpackSupervisedProcess,
   SpackProcessStoppedError,
   type SpackProcessSupervision,
@@ -19,9 +20,9 @@ import {
 
 const integration = process.env.KQ_TEST_SYSTEMD_USER === "1" ? test : test.skip;
 const fixtures: { cwd: string; ref: SpackProcessSupervision }[] = [];
-async function fixture() {
+async function fixture(authorizedUntil?: number) {
   const cwd = await mkdtemp(join(tmpdir(), "run-"));
-  const ref = await prepareSpackProcessSupervision(cwd, 1024 ** 3);
+  const ref = await prepareSpackProcessSupervision(cwd, 1024 ** 3, authorizedUntil);
   fixtures.push({ cwd, ref });
   return { cwd, ref, options: { cwd, env: {}, timeoutMs: 10000, maxOutputBytes: 16384 } };
 }
@@ -32,6 +33,136 @@ afterEach(async () => {
     await rm(ref.directory, { recursive: true, force: true });
   }
 });
+
+integration("expired installation authority cannot be renewed or launched", async () => {
+  const f = await fixture(Date.now() + 500);
+  await Bun.sleep(550);
+  await expect(renewSpackProcessAuthorization(f.ref, Date.now() + 1000)).rejects.toThrow("expired");
+  await expect(
+    runSpackSupervisedProcess(
+      ["/usr/bin/python3", "-c", "open('unexpected', 'w').write('ran')"],
+      f.options,
+      f.ref,
+    ),
+  ).rejects.toThrow("Expired");
+  expect(await Bun.file(join(f.cwd, "unexpected")).exists()).toBe(false);
+});
+
+integration(
+  "expiry while preparing supervision closes the launch gate without leaving a live owner",
+  async () => {
+    const base = await mkdtemp(join(tmpdir(), "kq-expired-lease-"));
+    const cwd = join(base, "run-worker");
+    await mkdir(cwd, { mode: 0o700 });
+    try {
+      await expect(prepareSpackProcessSupervision(cwd, 1024 ** 3, Date.now() - 1)).rejects.toThrow(
+        "SPACK_AUTHORIZATION_PENDING",
+      );
+      const units = await readdir(join(base, ".supervisors"));
+      expect(units).toHaveLength(1);
+      const unit = units[0];
+      if (!unit) throw new Error("Missing failed preparation record");
+      expect(
+        JSON.parse(await readFile(join(base, ".supervisors", unit, "stopped.json"), "utf8")),
+      ).toBe(unit);
+      await recoverSpackSupervisedProcesses(base);
+      expect(await Bun.file(join(cwd, "unexpected")).exists()).toBe(false);
+    } finally {
+      await rm(base, { recursive: true, force: true });
+    }
+  },
+);
+
+integration.each(["agent-exit", "guard-frozen", "operation-deadline"] as const)(
+  "renewed installation stops independently after %s without a recovery Agent",
+  async (kind) => {
+    const base = await mkdtemp(join(tmpdir(), "kq-lease-guard-"));
+    const cwd = join(base, "run-worker");
+    await mkdir(cwd, { mode: 0o700 });
+    const program = `
+      import { writeFile } from 'node:fs/promises';
+      import { prepareSpackProcessSupervision, renewSpackProcessAuthorization, runSpackSupervisedProcess } from ${JSON.stringify(join(import.meta.dir, "supervised-process.ts"))};
+      const ref = await prepareSpackProcessSupervision(${JSON.stringify(cwd)}, 1024 ** 3, Date.now() + ${kind === "operation-deadline" ? 10_000 : 1500});
+      await writeFile(${JSON.stringify(join(base, "ref.json"))}, JSON.stringify(ref));
+      let stopped = false;
+      const renew = (async () => {
+        while (!stopped) {
+          await Bun.sleep(400);
+          if (!stopped) await renewSpackProcessAuthorization(ref, Date.now() + ${kind === "operation-deadline" ? 10_000 : 1500});
+        }
+      })();
+      try {
+        await runSpackSupervisedProcess(['/usr/bin/python3', '-c',
+          "import os,pathlib,time; pid=os.fork(); os.setsid() if pid==0 else None; pathlib.Path('pid.tmp').write_text(str(os.getpid())) if pid==0 else None; os.rename('pid.tmp','pid') if pid==0 else None; time.sleep(60)"],
+          {cwd: ${JSON.stringify(cwd)}, env: {}, timeoutMs: ${kind === "operation-deadline" ? 3500 : 60000}, maxOutputBytes: 4096}, ref);
+      } finally { stopped = true; await renew; }
+    `;
+    const child = Bun.spawn([process.execPath, "--eval", program], {
+      env: { PATH: "/usr/bin:/bin" },
+      stdout: "ignore",
+      stderr: "pipe",
+    });
+    let ref: SpackProcessSupervision | undefined;
+    const alive = async (pid: number) => {
+      try {
+        return (await readFile(`/proc/${pid}/stat`, "utf8")).split(") ")[1]?.split(" ")[0] !== "Z";
+      } catch (error) {
+        if (error instanceof Error && "code" in error && error.code === "ENOENT") return false;
+        throw error;
+      }
+    };
+    try {
+      for (let i = 0; i < 300 && !(await Bun.file(join(cwd, "pid")).exists()); i++) {
+        if (child.exitCode !== null) throw new Error(await new Response(child.stderr).text());
+        await Bun.sleep(10);
+      }
+      const pid = Number(await readFile(join(cwd, "pid"), "utf8"));
+      ref = JSON.parse(await readFile(join(base, "ref.json"), "utf8"));
+      if (!ref) throw new Error("Missing authorization supervision");
+      await Bun.sleep(2100);
+      expect(await alive(pid)).toBe(true);
+      if (kind === "guard-frozen") {
+        const freeze = Bun.spawn(
+          [
+            "/usr/bin/systemctl",
+            "--user",
+            "kill",
+            "--kill-whom=main",
+            "--signal=SIGSTOP",
+            ref.unit,
+          ],
+          {
+            env: {
+              PATH: "/usr/bin:/bin",
+              XDG_RUNTIME_DIR: `/run/user/${process.getuid?.()}`,
+              DBUS_SESSION_BUS_ADDRESS: `unix:path=/run/user/${process.getuid?.()}/bus`,
+            },
+            stdout: "ignore",
+            stderr: "pipe",
+          },
+        );
+        expect(await freeze.exited).toBe(0);
+      }
+      child.kill("SIGKILL");
+      await child.exited;
+      for (let i = 0; i < (kind === "operation-deadline" ? 250 : 800) && (await alive(pid)); i++)
+        await Bun.sleep(10);
+      expect(await alive(pid)).toBe(false);
+      // No Agent recovered the unit or fabricated a stop receipt during expiry.
+      expect(await Bun.file(join(ref.directory, "stopped.json")).exists()).toBe(false);
+      await stopSpackSupervisedProcess(ref);
+      expect(await Bun.file(join(ref.directory, "stopped.json")).exists()).toBe(true);
+    } finally {
+      child.kill("SIGKILL");
+      await child.exited;
+      if (!ref && (await Bun.file(join(base, "ref.json")).exists()))
+        ref = JSON.parse(await readFile(join(base, "ref.json"), "utf8"));
+      if (ref) await stopSpackSupervisedProcess(ref);
+      await rm(base, { recursive: true, force: true });
+    }
+  },
+  15000,
+);
 
 integration(
   "real systemd unit preserves literal arguments and clean env, enforces limits, and records stop",

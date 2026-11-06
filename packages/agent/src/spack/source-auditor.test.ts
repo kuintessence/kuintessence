@@ -14,6 +14,7 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import type { SpackMaterialManifest } from "@kuintessence/shared";
 import { type SpackAuditProcess, SpackProcessNotStartedError } from "./audit-process";
 import type {
@@ -21,6 +22,7 @@ import type {
   SpackAuditRuntimeDeps,
   SpackAuditRuntimeProfile,
 } from "./audit-runtime";
+import { SpackInstallationPending } from "./execution-identity";
 import { type PreparedSpackMaterials, SpackMaterialClient } from "./material-client";
 import type { SpackSourceAuditReport } from "./source-audit-report";
 import { SpackSourceAuditor, type SpackSourceAuditorOptions } from "./source-auditor";
@@ -41,6 +43,61 @@ const digest = (text: string | Uint8Array) =>
   `sha256:${createHash("sha256").update(text).digest("hex")}`;
 const blob = (text: string) => ({ digest: digest(text), size: Buffer.byteLength(text) });
 const roots: string[] = [];
+
+test.each([
+  "offline",
+  "revoked",
+  "renewed",
+] as const)("source audit observes running installation authority: %s", async (kind) => {
+  const f = await fixture();
+  const h = harness(f, {
+    run: async (_command, options) => {
+      try {
+        await delay(kind === "renewed" ? 350 : 10000, undefined, { signal: options.signal });
+        return wire(report(f));
+      } catch {
+        throw new SpackProcessStoppedError("audit stopped");
+      }
+    },
+  });
+  let renewals = 0;
+  const task = h.auditor.audit(f.prepared, {
+    ...f.input,
+    authorizeInstallation: async (signal) => {
+      if (++renewals === 1 || kind === "renewed") return Date.now() + 200;
+      if (kind === "revoked") throw new Error("denied");
+      await delay(10000, undefined, { signal });
+      return Date.now() + 200;
+    },
+  });
+  if (kind === "renewed") expect((await task).passed).toBe(true);
+  else
+    await expect(task).rejects.toThrow(
+      kind === "revoked" ? "renewal failed" : "authorization expired",
+    );
+  expect(renewals).toBeGreaterThan(1);
+  expect(h.calls).toHaveLength(1);
+  await expectClean(f);
+  // A proven stopped audit releases the execution slot for another operation.
+  h.setRun(async () => wire(report(f)));
+  expect((await h.auditor.audit(f.prepared, f.input)).passed).toBe(true);
+});
+
+test("source audit waits on pre-start authorization without spawning a worker", async () => {
+  const f = await fixture();
+  const h = harness(f);
+  await expect(
+    h.auditor.audit(f.prepared, {
+      ...f.input,
+      authorizeInstallation: async () => {
+        throw new SpackInstallationPending();
+      },
+    }),
+  ).rejects.toBeInstanceOf(SpackInstallationPending);
+  expect(h.calls).toHaveLength(0);
+  await expectClean(f);
+  expect((await h.auditor.audit(f.prepared, f.input)).passed).toBe(true);
+});
 
 afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));

@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { chmod, lstat, mkdir, readdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import { loadAgentConfig } from "../config";
 import { type SpackAuditProcess, SpackProcessNotStartedError } from "./audit-process";
 import { installWorkerExecution } from "./execution-identity";
@@ -13,6 +14,59 @@ import { SpackProcessStoppedError } from "./supervised-process";
 const fixtures: Awaited<ReturnType<typeof makeInstallFixture>>[] = [];
 afterEach(async () => {
   await Promise.all(fixtures.splice(0).map((fixture) => fixture.dispose()));
+});
+
+test.each([
+  "offline",
+  "revoked",
+  "unknown-stop",
+] as const)("running install stops on authority loss and preserves uncertain worker state: %s", async (kind) => {
+  const f = await fixture();
+  let authorizations = 0;
+  let started = false;
+  let stopped = false;
+  const r = runner({
+    async run(_command, options) {
+      started = true;
+      try {
+        await delay(10000, undefined, { signal: options.signal });
+      } catch {
+        if (kind === "unknown-stop") throw new Error("transport lost");
+        throw new SpackProcessStoppedError("worker stopped");
+      }
+      throw new Error("worker outlived authority");
+    },
+  });
+  const operation = installWorkerExecution.run(
+    {
+      start: async () => {},
+      finish: async () => {
+        stopped = true;
+      },
+    },
+    () =>
+      r.run(
+        "install",
+        f.prepared,
+        {
+          ...f.input,
+          authorizeInstallation: async (signal) => {
+            if (++authorizations === 1) return Date.now() + 200;
+            if (kind === "revoked") throw new Error("denied");
+            await delay(10000, undefined, { signal });
+            throw new Error("unexpected renewal");
+          },
+        },
+        f.site,
+        f.path,
+      ),
+  );
+  await expect(operation).rejects.toThrow(
+    kind === "revoked" ? "renewal failed" : "authorization expired",
+  );
+  expect(started).toBe(true);
+  expect(stopped).toBe(kind !== "unknown-stop");
+  expect(await readdir(join(f.cacheDir, "installs"))).toHaveLength(kind === "unknown-stop" ? 1 : 0);
 });
 async function fixture() {
   const f = await makeInstallFixture();

@@ -216,6 +216,8 @@ message RegisterRequest {
   // Reauthorizes received federation work before preparation and scheduler submission.
   bool federation_execution_v1 = 22;
   bool federation_installation_v1 = 23;
+  // Renews running audit/install/verify authority and independently stops expired workers.
+  bool federation_installation_lease_v1 = 24;
 }
 
 message RegisterResponse {

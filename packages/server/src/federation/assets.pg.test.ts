@@ -1306,6 +1306,7 @@ test.each([
     close: () => {},
     push: () => {},
     federationInstallationV1: true,
+    federationInstallationLeaseV1: true,
     softwareOperationReplayV1: true,
     spackMaterialDeliveryV1: true,
     verifiedCertFingerprint: "verified",

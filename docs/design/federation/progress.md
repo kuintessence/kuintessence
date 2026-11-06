@@ -499,6 +499,16 @@ Script 的 File/FileBatch 到下游受管文件转换、Checkpoint 文件持久�
 
 这仍不是完整运行许可交付：Sandbox 运行契约/映像、执行账户及受限材料的持续授权检查、Agent 与 Server 断联期间的本地许可到期停止、长下载和 Sandbox 逐文件续签尚待接通。当前轮询不能承诺固定的最大撤权延迟，真实 Slurm/PBS/Fabric 联合运行未验收。自动激活保护保留，PR 预览未发布。
 
+## 受管安装运行中的本地续期与独立到期停止
+
+- [运行许可](../../../packages/agent/src/spack/install-authorization.ts)复用原安装授权 RPC，在源码审计、安装和验证期间持续续期；墙钟与单调时钟共同限制期限。暂时故障可以等待到原许可到期，明确拒绝立即中断；迟到响应不能复活旧许可。worker 启动前仍可持久等待，启动后的许可丢失按失败停止，不把不完整编译当作检查点重跑。
+- [进程监督](../../../packages/agent/src/spack/supervised-process.ts)对联邦 worker 使用宿主 Python 守护和 systemd notify 服务。守护仅读取原 unit 的私有原子租约，按墙钟与 CLOCK_BOOTTIME 过期；隔离 worker 不接收租约或通知 socket。Agent 被 SIGKILL 后仍会停止，守护冻结时由 systemd 运行时限兜底，续期不会突破安装总超时。先确认 cgroup 停止再释放 writer，过期事件本身不是停止回执。
+- 普通非联邦 worker 沿原监督路径；未证明停止的传输异常仍保留输入、锁和未知状态。联邦路径增加宿主 `/usr/bin/python3` 要求，监督记录新增可选字段，共享写入者需要一致升级。注册新增 `federation_installation_lease_v1`，Server 在派发及续期入口拒绝仅有旧启动检查能力的 Agent；历史正在执行的旧进程须先停止，不能通过升级自动补装守护。具体限制和维护规则见[安装恢复说明](../../spack-install-recovery.md)。
+
+验证：最终源码审计/安装 worker **152 项**、许可计时器 **8 项**、Agent 注册与授权边界 **3 项**通过。真实 systemd 集成累计覆盖 **18 个不同用例**（包含原有回归和分次新增检查），其中新用例验证迟到启动、准备中到期、持续续期后 Agent SIGKILL、守护冻结、以及续期不能突破总超时；未启动真实编译。受管安装/Manager/源码审计/授权 client 组合回归 **173 项**通过，与上述测试有重叠，不相加。隔离 PostgreSQL 中 Agent RPC、Dispatcher、联邦材料/监视器与 placement 恢复 **146 项**通过，数据库已停止清理。全仓类型检查通过，最终 Agent/Server 类型复查及 lint 通过（原有 47 warnings、1 info）；protobuf 使用生成命令更新，Python 语法与新增文档链接静态检查通过。
+
+验证仅使用受控 worker/网络替身和本机真实轻量 Python 进程；未执行真实 Apptainer/Spack 编译或远端集群作业。调度器计算作业的本地续期/到期停止、长材料下载续租、Sandbox 契约与文件授权仍待完成；系统管理器或内核故障时仍需保守核对，不声称绝对即时停止。自动激活保护保留，PR 预览未发布。
+
 ## 尚未接通，不能宣称支持
 
 协议审批与机构信任管理 UI、源站发送与状态查询、额度结算/退款、联邦目标/数据最终授权与实际激活连接、完整生产持久 Workflow 端到端验收、完整的数据/软件物化与介质交付、双方证据确认与完整用量/结算记录、商业/市场链码及真实联邦作业与 Fabric 联合运行、归档恢复、Web/CLI 和部署配置均未完成。

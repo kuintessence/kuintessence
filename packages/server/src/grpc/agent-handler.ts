@@ -399,6 +399,7 @@ export function registerAgentHandler(router: ConnectRouter, deps: AgentHandlerDe
         softwareOperationReplayV1: false,
         federationExecutionV1: false,
         federationInstallationV1: false,
+        federationInstallationLeaseV1: false,
         verifiedCertFingerprint: undefined as string | undefined,
         push: (m: ServerMessage) => {
           if (!active) {
@@ -514,6 +515,7 @@ export function registerAgentHandler(router: ConnectRouter, deps: AgentHandlerDe
               channel.softwareOperationReplayV1 = reg.softwareOperationReplayV1;
               channel.federationExecutionV1 = reg.federationExecutionV1;
               channel.federationInstallationV1 = reg.federationInstallationV1;
+              channel.federationInstallationLeaseV1 = reg.federationInstallationLeaseV1;
               channel.verifiedCertFingerprint =
                 mtlsContext.getStore()?.fingerprintSha256 ?? undefined;
               dispatcher.register(registeredAgentId, channel);
@@ -535,7 +537,8 @@ export function registerAgentHandler(router: ConnectRouter, deps: AgentHandlerDe
                       queueValidationShadowRejectionAckSupported: queueObservability !== undefined,
                       federationExecutionV1Supported: jobDispatches?.renewExecution !== undefined,
                       federationInstallationV1Supported:
-                        softwareOperations?.renewFederationInstallation !== undefined,
+                        softwareOperations?.renewFederationInstallation !== undefined &&
+                        reg.federationInstallationLeaseV1,
                     }),
                   },
                 }),
@@ -1118,7 +1121,7 @@ export function registerAgentHandler(router: ConnectRouter, deps: AgentHandlerDe
               );
             if (
               !(request.operationId
-                ? channel.federationInstallationV1
+                ? channel.federationInstallationV1 && channel.federationInstallationLeaseV1
                 : channel.federationExecutionV1) ||
               !channel.verifiedCertFingerprint
             ) {

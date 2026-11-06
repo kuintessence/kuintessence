@@ -10,7 +10,8 @@ import {
   type SpackAuditRuntimeProfile,
   verifySpackAuditRuntime,
 } from "./audit-runtime";
-import { softwareExecution } from "./execution-identity";
+import { SpackInstallationPending, softwareExecution } from "./execution-identity";
+import { InstallationAuthorization } from "./install-authorization";
 import { SpackMaterialCache } from "./material-cache";
 import type { PreparedSpackMaterials, SpackMaterialPrepareInput } from "./material-client";
 import { preflightSpackMaterials } from "./material-preflight";
@@ -23,6 +24,7 @@ import {
   prepareSpackProcessSupervision,
   recoverSpackSupervisedProcesses,
   removeSpackSupervisedInputs,
+  renewSpackProcessAuthorization,
   runSpackSupervisedProcess,
   SpackProcessStoppedError,
   type SpackProcessSupervision,
@@ -102,6 +104,7 @@ export class SpackSourceAuditor implements SpackMaterialAuditor {
     let directory: string | undefined;
     let workerUncertain = false;
     let supervisor: SpackProcessSupervision | undefined;
+    let authorization: InstallationAuthorization | undefined;
     try {
       const preflight = await preflightSpackMaterials(prepared, { ...input, signal });
       if (!preflight.valid) throw new Error("Spack source audit requires a valid static lock");
@@ -146,11 +149,31 @@ export class SpackSourceAuditor implements SpackMaterialAuditor {
       // Runtime hashing is repeated immediately before execution, never cached across operations.
       await verifySpackAuditRuntime(this.options.profile, signal, this.options.runtimeDeps);
       signal.throwIfAborted();
+      const authorizedUntil = await input.authorizeInstallation?.(signal);
+      signal.throwIfAborted();
+      if (authorizedUntil !== undefined && authorizedUntil <= Date.now())
+        throw new SpackInstallationPending();
       const uid = this.options.runtimeDeps?.uid ?? process.getuid?.();
       const command = buildSpackAuditCommand(this.options.profile, inputs, input.manifestDigest);
       if (!this.options.process)
-        supervisor = await prepareSpackProcessSupervision(directory, SPACK_AUDIT_MEMORY_BYTES);
+        supervisor = await prepareSpackProcessSupervision(
+          directory,
+          SPACK_AUDIT_MEMORY_BYTES,
+          authorizedUntil,
+        );
       if (supervisor) await softwareExecution.getStore()?.bindSupervisor?.(supervisor);
+      if (authorizedUntil !== undefined && input.authorizeInstallation) {
+        if (authorizedUntil <= Date.now()) throw new SpackInstallationPending();
+        const ref = supervisor;
+        authorization = new InstallationAuthorization(
+          authorizedUntil,
+          input.authorizeInstallation,
+          signal,
+          ref ? (expiresAt) => renewSpackProcessAuthorization(ref, expiresAt) : undefined,
+        );
+      }
+      const workerSignal = authorization?.signal ?? signal;
+      workerSignal.throwIfAborted();
       const transport: SpackAuditProcess = this.options.process ?? {
         run: (command, options) => {
           if (!supervisor) throw new Error("Missing Spack process supervision");
@@ -171,7 +194,7 @@ export class SpackSourceAuditor implements SpackMaterialAuditor {
           },
           timeoutMs: 30 * 60_000,
           maxOutputBytes: 2 * 1024 ** 2,
-          signal,
+          signal: workerSignal,
         })
         .catch((error: unknown) => {
           if (
@@ -179,10 +202,12 @@ export class SpackSourceAuditor implements SpackMaterialAuditor {
             error instanceof SpackProcessStoppedError
           )
             workerUncertain = false;
+          workerSignal.throwIfAborted();
           throw error;
         });
       workerUncertain = false;
-      signal.throwIfAborted();
+      authorization?.assertValid();
+      workerSignal.throwIfAborted();
       const output = result.stdout.trim();
       if (!output.startsWith(SPACK_AUDIT_RESULT_PREFIX)) {
         throw new Error("Spack source audit failed without a valid report");
@@ -216,6 +241,7 @@ export class SpackSourceAuditor implements SpackMaterialAuditor {
       }
       throw error;
     } finally {
+      await authorization?.close();
       try {
         if (directory && !workerUncertain) await rm(directory, { recursive: true, force: true });
       } finally {

@@ -1,6 +1,17 @@
 import { randomUUID } from "node:crypto";
 import { constants } from "node:fs";
-import { lstat, mkdir, open, opendir, readFile, realpath, rm, statfs } from "node:fs/promises";
+import {
+  lstat,
+  mkdir,
+  open,
+  opendir,
+  readFile,
+  realpath,
+  rename,
+  rm,
+  statfs,
+  writeFile,
+} from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { z } from "zod";
 import {
@@ -15,9 +26,16 @@ import {
   executionState,
   LOCK_HELD,
   RECOVERY_REQUIRED,
+  SpackInstallationPending,
 } from "./execution-identity";
+import authorizationGuard from "./worker/authorization_guard.py" with { type: "text" };
 
 const UnitSchema = z.string().regex(/^kq-spack-[a-f0-9-]{36}\.service$/);
+const AuthorizationSchema = z.strictObject({
+  unit: UnitSchema,
+  expiresAt: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+  bootDeadline: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+});
 export const SpackProcessSupervisionSchema = z.strictObject({
   directory: z.string().refine(isSpackAuditPath),
   unit: UnitSchema,
@@ -29,6 +47,7 @@ const RecordSchema = z.strictObject({
   identity: ExecutionIdentitySchema,
   cwd: z.string().refine(isSpackAuditPath),
   managerGroup: z.string().regex(/^\/user\.slice\/user-\d+\.slice\/user@\d+\.service$/),
+  authorizationRequired: z.literal(true).optional(),
   memoryBytes: z
     .number()
     .int()
@@ -163,6 +182,7 @@ async function managerGroup(): Promise<string> {
 export async function prepareSpackProcessSupervision(
   cwd: string,
   memoryBytes: number,
+  authorizedUntil?: number,
 ): Promise<SpackProcessSupervision> {
   RecordSchema.shape.memoryBytes.parse(memoryBytes);
   await privateDirectory(cwd);
@@ -174,6 +194,7 @@ export async function prepareSpackProcessSupervision(
     memoryBytes,
     identity: await executionIdentity(),
     managerGroup: await managerGroup(),
+    ...(authorizedUntil !== undefined ? { authorizationRequired: true } : {}),
   });
   const root = join(dirname(cwd), ".supervisors");
   await privateDirectory(root, true);
@@ -182,7 +203,78 @@ export async function prepareSpackProcessSupervision(
   await mkdir(directory, { mode: 0o700 });
   await syncDirectory(root);
   await save(join(directory, "record.json"), record);
-  return { directory, unit };
+  const ref = { directory, unit };
+  if (authorizedUntil !== undefined) {
+    try {
+      await writeSpackProcessAuthorization(ref, authorizedUntil, true);
+      await writeFile(join(directory, "authorization_guard.py"), authorizationGuard, {
+        mode: 0o400,
+        flag: "wx",
+      });
+    } catch (error) {
+      await stopSpackSupervisedProcess(ref);
+      throw error;
+    }
+  }
+  return ref;
+}
+
+/** Only the original live Agent can extend its unit; expiry alone never grants restart rights. */
+export async function renewSpackProcessAuthorization(
+  ref: SpackProcessSupervision,
+  expiresAt: number,
+): Promise<void> {
+  await writeSpackProcessAuthorization(ref, expiresAt, false);
+}
+
+async function writeSpackProcessAuthorization(
+  ref: SpackProcessSupervision,
+  expiresAt: number,
+  initial: boolean,
+): Promise<void> {
+  const record = await load(ref);
+  if (
+    !record.authorizationRequired ||
+    record.identity.instance !== (await executionIdentity()).instance
+  )
+    throw new Error(RECOVERY_REQUIRED);
+  try {
+    await read(join(ref.directory, "revoked.json"));
+    throw new Error("Spack process authorization revoked");
+  } catch (error) {
+    if (!hasCode(error, "ENOENT")) throw error;
+  }
+  // /proc uptime and Python CLOCK_BOOTTIME share a host clock, including suspend time.
+  const uptime = Number((await readFile("/proc/uptime", "utf8")).split(" ")[0]);
+  const remaining = expiresAt - Date.now();
+  if (!Number.isFinite(uptime) || !Number.isSafeInteger(expiresAt) || remaining > 30_000)
+    throw new Error("Invalid federation installation grant expiry");
+  if (remaining <= 0) {
+    if (initial) throw new SpackInstallationPending();
+    throw new Error("Spack process authorization expired");
+  }
+  if (!initial) {
+    const previous = AuthorizationSchema.parse(
+      await read(join(ref.directory, "authorization.json")),
+    );
+    if (
+      previous.unit !== ref.unit ||
+      previous.expiresAt <= Date.now() ||
+      previous.bootDeadline <= uptime * 1000
+    )
+      throw new Error("Spack process authorization expired");
+  }
+  const temporary = join(ref.directory, `lease-${randomUUID()}.json`);
+  try {
+    await save(temporary, {
+      unit: ref.unit,
+      expiresAt,
+      bootDeadline: Math.floor(uptime * 1000) + remaining,
+    });
+    await rename(temporary, join(ref.directory, "authorization.json"));
+  } finally {
+    await rm(temporary, { force: true });
+  }
 }
 
 async function load(ref: SpackProcessSupervision): Promise<Record> {
@@ -314,6 +406,34 @@ export async function runSpackSupervisedProcess(
   const env = validatedEnvironment(command, options);
   const record = await load(ref);
   if (record.cwd !== options.cwd) throw new Error(RECOVERY_REQUIRED);
+  let runtimeMs = options.timeoutMs;
+  let operationDeadline: number | undefined;
+  if (record.authorizationRequired) {
+    const lease = AuthorizationSchema.parse(await read(join(ref.directory, "authorization.json")));
+    const uptime = Number((await readFile("/proc/uptime", "utf8")).split(" ")[0]);
+    operationDeadline = Math.floor(uptime * 1000) + options.timeoutMs;
+    runtimeMs = Math.floor(
+      Math.min(runtimeMs, lease.expiresAt - Date.now(), lease.bootDeadline - uptime * 1000),
+    );
+    if (
+      lease.unit !== ref.unit ||
+      !Number.isSafeInteger(runtimeMs) ||
+      runtimeMs <= 0 ||
+      runtimeMs > 30_000
+    ) {
+      await stopSpackSupervisedProcess(ref);
+      throw new SpackProcessStoppedError("Expired Spack process authorization");
+    }
+  }
+  const commandPrefix = record.authorizationRequired
+    ? [
+        "/usr/bin/python3",
+        join(ref.directory, "authorization_guard.py"),
+        join(ref.directory, "authorization.json"),
+        ref.unit,
+        String(operationDeadline),
+      ]
+    : [];
   let result: Awaited<ReturnType<SpackAuditProcess["run"]>> | undefined;
   let failed = false;
   try {
@@ -326,7 +446,7 @@ export async function runSpackSupervisedProcess(
         "--pipe",
         "--wait",
         "--collect",
-        "--service-type=exec",
+        `--service-type=${record.authorizationRequired ? "notify" : "exec"}`,
         "--expand-environment=no",
         `--unit=${ref.unit}`,
         "--slice=app.slice",
@@ -336,13 +456,17 @@ export async function runSpackSupervisedProcess(
         "--property=SendSIGKILL=yes",
         "--property=TimeoutStopSec=5s",
         "--property=Restart=no",
+        ...(record.authorizationRequired
+          ? ["--property=NotifyAccess=main", `--property=TimeoutStartSec=${runtimeMs / 1000}s`]
+          : []),
         "--property=Delegate=no",
         "--property=TasksMax=128",
         `--property=MemoryMax=${record.memoryBytes}`,
         "--property=MemorySwapMax=0",
         "--property=CPUQuota=200%",
-        `--property=RuntimeMaxSec=${Math.ceil(options.timeoutMs / 1000)}s`,
+        `--property=RuntimeMaxSec=${runtimeMs / 1000}s`,
         "--",
+        ...commandPrefix,
         "/usr/bin/env",
         "-i",
         "--",

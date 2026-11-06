@@ -1855,6 +1855,7 @@ export class AgentStream {
           managedDatasetRootIds: [...(this.deps.managedDatasetRootIds ?? [])],
           federationExecutionV1: this.federationExecutionCapable(),
           federationInstallationV1: this.federationInstallationCapable(),
+          federationInstallationLeaseV1: this.federationInstallationCapable(),
         }),
       },
     });

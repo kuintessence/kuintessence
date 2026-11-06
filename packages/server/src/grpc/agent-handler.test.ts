@@ -268,6 +268,7 @@ describe("agent-handler", () => {
       "data-waiting",
       "asset-unavailable",
       "legacy",
+      ...(installation ? ["startup-only" as const] : []),
       "unverified",
     ] as const)(`federation ${installation ? "installation" : "execution"} grant RPC: %s`, async (outcome) => {
       const { router, handlers } = createMockRouter();
@@ -325,6 +326,8 @@ describe("agent-handler", () => {
       if (register.payload.case !== "register") throw new Error("Missing register");
       register.payload.value.federationExecutionV1 = outcome !== "legacy";
       register.payload.value.federationInstallationV1 = outcome !== "legacy";
+      register.payload.value.federationInstallationLeaseV1 =
+        outcome !== "legacy" && outcome !== "startup-only";
       const request = create(FederationExecutionRequestSchema, {
         requestId: crypto.randomUUID(),
         jobId: testJobId,
@@ -381,7 +384,7 @@ describe("agent-handler", () => {
               : FederationExecutionDecision.DENIED,
       });
       expect(calledBy).toEqual(
-        ["legacy", "unverified"].includes(outcome) ? [] : ["grpc-test-agent-1"],
+        ["legacy", "startup-only", "unverified"].includes(outcome) ? [] : ["grpc-test-agent-1"],
       );
       expect(
         JSON.stringify(reply, (_key, value: unknown) =>

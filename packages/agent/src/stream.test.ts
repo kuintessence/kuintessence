@@ -8233,6 +8233,7 @@ test.each([
     durableReplay: true,
   });
   let grants = 0;
+  let leasesSupported = false;
   let prepared = false;
   let started = false;
   spackManager.runSoftwareOperation = async (_action, _spec, materials, signal) => {
@@ -8249,6 +8250,8 @@ test.each([
       supported: true,
       installationSupported: outcome !== "unsupported",
       onMessage: async (message) => {
+        if (message.payload.case === "register")
+          leasesSupported = message.payload.value.federationInstallationLeaseV1;
         if (message.payload.case !== "federationExecutionRequest") return;
         grants++;
         const renewal = message.payload.value;
@@ -8300,6 +8303,7 @@ test.each([
         if (result.operationId === request.operationId) return true;
       return false;
     });
+    expect(leasesSupported).toBe(true);
     expect(grants).toBe(outcome === "unsupported" ? 0 : 2);
     expect(prepared).toBe(outcome !== "unsupported");
     expect(started).toBe(outcome === "grant");

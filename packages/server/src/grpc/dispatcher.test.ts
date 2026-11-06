@@ -662,6 +662,13 @@ test("federation installation cannot reach a legacy Agent even with durable repl
   expect(dispatcher.pushSoftwareOperation("agent", payload)).toBe(false);
   expect(channel.messages).toHaveLength(0);
   dispatcher.register("agent", { ...channel, federationInstallationV1: true });
+  expect(dispatcher.pushSoftwareOperation("agent", payload)).toBe(false);
+  expect(channel.messages).toHaveLength(0);
+  dispatcher.register("agent", {
+    ...channel,
+    federationInstallationV1: true,
+    federationInstallationLeaseV1: true,
+  });
   expect(dispatcher.pushSoftwareOperation("agent", payload)).toBe(true);
   expect(channel.messages[0]?.payload.value).toMatchObject({ federationJobId: "job" });
 });
