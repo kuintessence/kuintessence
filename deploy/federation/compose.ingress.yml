@@ -1,0 +1,39 @@
+# Overlay for deploy/compose/docker-compose.yml. No Fabric service or dependency.
+# Socket directory and certificates are deployment-owned; use the same UID for both processes.
+services:
+  server:
+    environment:
+      FEDERATION_ENABLED: "true"
+      FEDERATION_SITE_ID: ${FEDERATION_SITE_ID:?set institution UUID}
+      FEDERATION_SIGNING_KEY_ID: ${FEDERATION_SIGNING_KEY_ID:?set registered signing key ID}
+      FEDERATION_SIGNING_KEY_FILE: /run/kq-federation/signing.key
+      FEDERATION_SOCKET_PATH: /run/kq-federation-socket/private/ingress.sock
+    volumes:
+      - federation-socket:/run/kq-federation-socket
+      - ${FEDERATION_SIGNING_KEY_FILE:?set private signing key file}:/run/kq-federation/signing.key:ro
+  federation-gateway:
+    build:
+      context: .
+      dockerfile: deploy/federation/gateway.Dockerfile
+    environment:
+      FEDERATION_TLS_PORT: "3443"
+      FEDERATION_TLS_CA_FILE: /run/kq-federation/ca.pem
+      FEDERATION_TLS_CERT_FILE: /run/kq-federation/tls.pem
+      FEDERATION_TLS_KEY_FILE: /run/kq-federation/tls.key
+      FEDERATION_SOCKET_PATH: /run/kq-federation-socket/private/ingress.sock
+    volumes:
+      - federation-socket:/run/kq-federation-socket:ro
+      - ${FEDERATION_TLS_CA_FILE:?set federation CA file}:/run/kq-federation/ca.pem:ro
+      - ${FEDERATION_TLS_CERT_FILE:?set gateway certificate file}:/run/kq-federation/tls.pem:ro
+      - ${FEDERATION_TLS_KEY_FILE:?set gateway private key file}:/run/kq-federation/tls.key:ro
+    ports:
+      - "${FEDERATION_TLS_BIND:-127.0.0.1}:${FEDERATION_TLS_PORT:-3443}:3443"
+    depends_on:
+      server:
+        condition: service_started
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    restart: unless-stopped
+volumes:
+  federation-socket:

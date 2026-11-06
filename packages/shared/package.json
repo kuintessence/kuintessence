@@ -11,6 +11,11 @@
       "types": "./src/index.ts",
       "default": "./src/index.ts"
     },
+    "./federation": {
+      "bun": "./src/federation/index.ts",
+      "types": "./src/federation/index.ts",
+      "default": "./src/federation/index.ts"
+    },
     "./browser": {
       "bun": "./src/browser.ts",
       "types": "./src/browser.ts",

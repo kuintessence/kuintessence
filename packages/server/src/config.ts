@@ -35,6 +35,14 @@ const ecosystemTrustedKeysSchema = z
 
 const ServerConfigSchema = z.object({
   DATABASE_URL: z.string().url(),
+  FEDERATION_ENABLED: envBool(false),
+  FEDERATION_SITE_ID: z.uuid().optional(),
+  FEDERATION_SOCKET_PATH: z.string().min(1).optional(),
+  FEDERATION_SIGNING_KEY_ID: z
+    .string()
+    .regex(/^[a-zA-Z0-9_.:-]{1,128}$/)
+    .optional(),
+  FEDERATION_SIGNING_KEY_FILE: z.string().min(1).optional(),
   DB_MAX_CONNECTIONS: positiveInt(10),
   DB_IDLE_TIMEOUT_SEC: nonNegativeInt(0),
   REDIS_URL: z.string(),
@@ -328,6 +336,23 @@ const ServerConfigSchema = z.object({
 });
 
 const ValidatedServerConfigSchema = ServerConfigSchema.superRefine((cfg, ctx) => {
+  if (cfg.FEDERATION_ENABLED) {
+    for (const key of [
+      "FEDERATION_SITE_ID",
+      "FEDERATION_SOCKET_PATH",
+      "FEDERATION_SIGNING_KEY_ID",
+      "FEDERATION_SIGNING_KEY_FILE",
+    ] as const) {
+      if (!cfg[key])
+        ctx.addIssue({ code: "custom", path: [key], message: "required for federation ingress" });
+    }
+    if (cfg.FEDERATION_SOCKET_PATH && !cfg.FEDERATION_SOCKET_PATH.startsWith("/"))
+      ctx.addIssue({
+        code: "custom",
+        path: ["FEDERATION_SOCKET_PATH"],
+        message: "must be an absolute Unix socket path",
+      });
+  }
   if (!cfg.SPACK_MATERIAL_DELIVERY_ENABLED) return;
   for (const key of [
     "SPACK_REGISTRY_URL",

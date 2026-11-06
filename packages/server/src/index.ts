@@ -46,6 +46,8 @@ import {
 import { AuthzService, type AuthzTuple } from "./authz/service";
 import { loadServerConfig } from "./config";
 import { EventBus } from "./events/event-bus";
+import { startFederationIngress } from "./federation/runtime";
+import { FederationTrustRegistry } from "./federation/trust-registry";
 import {
   AgentDispatcher,
   JobCancellationOutbox,
@@ -65,6 +67,7 @@ import { createAdminAuthzRoutes } from "./routes/admin-authz";
 import { createAdminBrandingRoutes } from "./routes/admin-branding";
 import { createAdminDataMarketRoutes } from "./routes/admin-data-market";
 import { createAdminDesensitizeRoutes } from "./routes/admin-desensitize";
+import { createAdminFederationRoutes } from "./routes/admin-federation";
 import { createAdminFileTransferAuditConfigRoutes } from "./routes/admin-file-transfer-audit-config";
 import { createAdminSshCredentialRoutes } from "./routes/admin-ssh-credentials";
 import { createAdminSshRecordingRoutes } from "./routes/admin-ssh-recordings";
@@ -1367,6 +1370,7 @@ protectedApi.route(
 );
 
 protectedApi.route("/", createAdminAgentRoutes(certService, { authz: authzService }));
+protectedApi.route("/", createAdminFederationRoutes(new FederationTrustRegistry(db), authzService));
 protectedApi.route("/", createActiveOrganizationRoutes(db));
 protectedApi.route("/", createPlatformUserRoutes(db, authzService));
 protectedApi.route(
@@ -1831,6 +1835,7 @@ async function readRequiredGrpcTlsFile(
   return readFile(path, "utf8");
 }
 
+const federationIngress = await startFederationIngress(db, config);
 logger.info({ port: config.SERVER_PORT }, "Server starting");
 
 const httpTrustedProxyCidrs = parseTrustedProxyCidrs(config.HTTP_TRUSTED_PROXY_CIDRS);
@@ -1868,6 +1873,7 @@ async function shutdown(signal: string): Promise<void> {
   logger.info({ signal }, "Server shutting down");
   try {
     grpcServer.close();
+    await federationIngress?.stop(true);
     fileService.shutdown();
     // Stop the metering rollup cron so an in-flight tick can drain
     // before exit; the cron internally catches and logs errors so this

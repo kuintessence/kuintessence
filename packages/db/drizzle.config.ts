@@ -12,6 +12,7 @@ export default defineConfig({
     "./src/pg/schema.ts",
     "./src/pg/schema-metering.ts",
     "./src/pg/schema-spack-materials.ts",
+    "./src/pg/schema-federation.ts",
   ],
   out: "./migrations",
   dialect: "postgresql",

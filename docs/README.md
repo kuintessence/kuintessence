@@ -43,3 +43,4 @@
 
 - [算力提供者资料](compute-providers.md)：平台管理与提供方自助维护。
 - [算网一览](compute-interconnect.md)：资源档案、统计口径、地图与互联状态。
+- [算力联邦 V2](design/federation/README.md)：实现方案、风险评估、验收契约及实现进展；完整功能尚未交付。
