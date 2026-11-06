@@ -193,3 +193,20 @@ test("denied Agent operate permission cannot create or reuse an installation", a
     operateAllowed = true;
   }
 });
+
+test("a failed shared operation stays bound for every waiter instead of creating a replacement install", async () => {
+  const spec = "example@shared-failure";
+  const first = await makeJob(spec);
+  const second = await makeJob(spec);
+  const operation = await request(first.id, spec);
+  expect((await request(second.id, spec)).id).toBe(operation.id);
+  await db
+    .update(softwareOperations)
+    .set({ status: "failed", error: "controlled failure" })
+    .where(eq(softwareOperations.id, operation.id));
+  const before = messages.length;
+  expect(await request(second.id, spec)).toMatchObject({ id: operation.id, status: "failed" });
+  expect(messages).toHaveLength(before);
+  const rows = await db.select().from(softwareOperations).where(eq(softwareOperations.spec, spec));
+  expect(rows).toHaveLength(1);
+});

@@ -184,7 +184,7 @@ PG 测试必须指定 `kuintessence_unit_*` 隔离数据库，拒绝默认连接
 
 全仓 lint 无错误（原有 47 warnings、1 info）；全仓 typecheck 通过，最后的执行器调整按 Server 范围复查。当时生产 `makeRunner` 尚未传入 `executionLease`；后续内部持久模式接入见下文。只有普通 Script 的按 Job 分离产物行为已接入现有调用路径。
 
-**自动恢复仍有明确依赖**：生产 lease 心跳已在下文接通，原子运行创建/联邦预留映射仍待接通；下文已补齐已分配 Job 的准备恢复与派发终点校验，分配前的软件安装等待恢复仍需衔接；执行统计已改为按 Job 幂等贡献（见下），但其他恢复依赖尚未完成。当时 Script 的 File 输出返回 `artifactId`，下游只接受 `fileMetadataId`；下文已接通受管文件解析，实际文件传输端到端仍待验收。
+**自动恢复仍有明确依赖**：生产 lease 心跳已在下文接通，原子运行创建/联邦预留映射仍待接通；下文已补齐已分配 Job 的准备恢复与派发终点校验，分配前的软件安装等待恢复已在后文接通，安装指令可靠补投仍待完成；执行统计已改为按 Job 幂等贡献（见下），但其他恢复依赖尚未完成。当时 Script 的 File 输出返回 `artifactId`，下游只接受 `fileMetadataId`；下文已接通受管文件解析，实际文件传输端到端仍待验收。
 
 ## Script 执行统计按 Job 去重
 
@@ -210,7 +210,7 @@ PG 测试必须指定 `kuintessence_unit_*` 隔离数据库，拒绝默认连接
 
 验证：新增[准备恢复 PostgreSQL 测试](../../../packages/server/src/services/placement-recovery.pg.test.ts) 4 项通过，实际使用 JobService、placement、租约事务和 outbox；在文件准备、epoch 检查后主动释放租约模拟执行权丢失。验证原 Job/Agent/epoch、固定 Spack pin 保留、原 Agent 离线等待、已有 outbox 不重做准备、旧 token 无法再写失败或提交指令，以及不同运行/身份与缺少 outbox 的拒绝。Script 恢复 6 项、派发 13 项、原有调度 23 项、JobService 33 项均通过，共 79 项数据库相关检查；提交桥接与 Script 的 17 项单元测试通过。测试使用受控通道和下载 URL，没有运行真实调度器、安装科学软件或传输实际文件。全仓 lint 无错误（原有 47 warnings、1 info）；全仓类型检查发现测试 Spack 版本字面量需显式类型，修正后 Server 复查通过，其余包、Fabric 脚本和派发测试脚本的严格检查均通过。529 个本地文档链接通过；本轮临时 PostgreSQL 已停止并清理。
 
-**本节当时的剩余项**：下文接通 `makeRunner`/异步运行器的内部持久模式、心跳与重启扫描、用例原子绑定和动态调用取消清单；Script 文件产物转换已在后续章节接通。此次恢复覆盖已分配 Agent 后的准备中断；分配前的软件安装等待、跨实例联邦预留到 Workflow 的原子映射仍待完成，不能据此认定联邦作业已经可用。
+**本节当时的剩余项**：下文接通 `makeRunner`/异步运行器的内部持久模式、心跳与重启扫描、用例原子绑定和动态调用取消清单；Script 文件产物转换已在后续章节接通。此次恢复覆盖已分配 Agent 后的准备中断；分配前的软件安装等待已在后文接回，可靠补投和跨实例联邦预留到 Workflow 的原子映射仍待完成，不能据此认定联邦作业已经可用。
 
 ## 内部持久执行接入生产运行器
 
@@ -221,7 +221,7 @@ PG 测试必须指定 `kuintessence_unit_*` 隔离数据库，拒绝默认连接
 
 验证：[持久运行器 PostgreSQL 测试](../../../packages/server/src/workflow/durable-runner.pg.test.ts) 7 项、journal 9 项、运行登记 6 项，共 **22 项数据库检查**，另 **38 项相关单元测试**通过。覆盖循环中断后复用原 Job、全部动态调用取消、定义漂移停止重试、真实 5 秒扫描不影响 legacy 运行、500ms 租约实际续期、文件清单跨租约恢复和旧 token 写入拒绝。使用真实 PostgreSQL 与受控 Job 完成，不等同于完整 Server 进程重启、文件传输或 Slurm/PBS 验收。全仓 lint 无错误（原有 47 warnings、1 info）；类型检查中新增导出类型的可移植性问题已修正，DB、Server、shared 和脚本复查通过，其余包此前已通过。
 
-Script 的 File/FileBatch 到下游受管文件转换、Checkpoint 文件持久化恢复已在下文补齐；分配 Agent 前的软件安装等待、联邦预留到运行的事务映射仍待完成。
+Script 的 File/FileBatch 到下游受管文件转换、Checkpoint 文件持久化恢复已在下文补齐；分配 Agent 前的安装等待已在后文接回，安装指令可靠补投、联邦预留到运行的事务映射仍待完成。
 
 ## Checkpoint 上传从数据库恢复
 
@@ -245,7 +245,19 @@ Script 的 File/FileBatch 到下游受管文件转换、Checkpoint 文件持久�
 
 全仓 lint 无错误（原有 47 warnings、1 info）；全仓类型检查首轮定位到 Server 的 schema 引用与测试字段问题，修正后 Server、shared 及 Fabric 脚本复查通过，其余包此前已通过。537 个本地文档链接与差异格式检查通过，自建 PostgreSQL 已停止并清理。
 
-本轮上传器受控，没有实际连接 Slurm/PBS、NetDrive 网络后端，也未进行完整 Server 进程重启；不能据此认为跨集群工作流或 A01–A10 已通过。仍需接通安装等待恢复、联邦预留 → Workflow，并运行真实传输和调度联合验收。
+本轮上传器受控，没有实际连接 Slurm/PBS、NetDrive 网络后端，也未进行完整 Server 进程重启；不能据此认为跨集群工作流或 A01–A10 已通过。仍需完成安装指令可靠补投、联邦预留 → Workflow，并运行真实传输和调度联合验收。
+
+## 安装等待恢复固定原操作与原 Agent
+
+- [Placement](../../../packages/server/src/services/placement-orchestrator.ts)读取 Job 已保存的安装操作关联。恢复尚未分配的 Job 时，使用原安装 Agent；目标离线或暂时不符合调度条件时保留等待。不同 Agent 的混杂关联、操作丢失或 spec 不符进入核对，失败/拒绝操作不触发新安装。已有完整派发 envelope 或终态 Job 不依赖历史安装操作继续保留。
+- [安装服务](../../../packages/server/src/software-governance/operation-service.ts)优先复用 Job 的关联，即使这项共享安装由另一个 Job 创建且现已失败。修复原查询只认创建者幂等键、导致其他等待者可能重建失败安装的问题。操作与 Job 关联在事务中加锁；持久工作流的关联写入受当前执行租约保护，最终投递再次校验租约和 Job 未取消。
+- [等待器](../../../packages/server/src/software-governance/wait-for-installation.ts)接收租约 AbortSignal；停止执行器或失去租约立即结束轮询等待。超时/基础设施中断在持久模式下等待恢复；明确安装失败仍按失败处理。取消某个 Job 不取消被其他 Job 共享的安装。
+
+验证：准备恢复 7 项、安装共享 4 项、原调度 23 项，共 **34 项 PostgreSQL 检查**通过；等待器 **8 项单元测试**通过。新增覆盖安装过程中换执行器、原 Agent 离线时不改派、安装完成后按原目标派发、失败共享操作不重建、旧租约不能新增关联、材料准备后失去租约不能晚发指令，以及已派发 Job 不依赖被清理的安装历史。使用受控 Agent 通道与库存状态，不进行 Spack 编译或真实调度器作业。
+
+全仓 lint 无错误（原有 47 warnings、1 info）；全仓类型检查发现闭包中的 requester 可空类型，捕获已验证值后 Server 复查通过，其余包和 Fabric 脚本检查通过。540 个本地文档链接与差异格式检查通过。测试使用的自建 PostgreSQL 已停止并清理。
+
+**仍有关键缺口**：安装操作写入后、发给 Agent 前的中断只保留原 `queued` 操作，不会自动重发。尚需安装指令的持久补投、Agent 去重能力的明确协商以及断点联合验证；不能把本节称为完整无人值守安装恢复。尚未交付的联邦执行、结算/市场、加密交付、UI/CLI 和预览验收范围保持不变。
 
 ## 尚未接通，不能宣称支持
 

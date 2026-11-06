@@ -4,6 +4,7 @@ import {
   jobDispatchOutbox,
   jobs,
   type PgDb,
+  softwareOperations,
   usageQuotas,
   workflowExecutionJobs,
 } from "@kuintessence/db";
@@ -39,7 +40,10 @@ import { UrgencyFilter } from "../scheduler/filters/urgency";
 import { runPlacementWithTrace } from "../scheduler/placement-trace";
 import type { AgentRow, FilterStage, RejectionTrace } from "../scheduler/types";
 import type { SoftwareOperationService } from "../software-governance/operation-service";
-import { waitForSoftwareInstallation } from "../software-governance/wait-for-installation";
+import {
+  SoftwareInstallationWaitError,
+  waitForSoftwareInstallation,
+} from "../software-governance/wait-for-installation";
 import type { LeasedWorkflowJournal } from "../workflow/execution-journal";
 import type { AgentManager } from "./agent-manager";
 import type { ResolvedDataDelivery, RestrictedSandboxDeliveryBinding } from "./data-delivery";
@@ -372,13 +376,14 @@ export class PlacementOrchestrator {
           })),
         }
       : requestedJob;
+    const fixedAgentId = resume?.agentId ?? durable?.installationAgentId;
     const onlineCandidates = await this.deps.agentManager.listOnline();
     const liveCandidates = onlineCandidates.filter(
       (agent) =>
         this.deps.dispatcher.isOnline(agent.agentId) &&
-        (!resume || agent.agentId === resume.agentId),
+        (!fixedAgentId || agent.agentId === fixedAgentId),
     );
-    if (resume && liveCandidates.length === 0)
+    if (fixedAgentId && liveCandidates.length === 0)
       throw new WorkflowExecutionInterrupted(
         "Original Agent is unavailable for preparation recovery",
       );
@@ -552,6 +557,10 @@ export class PlacementOrchestrator {
     );
 
     if (!trace.finalDecision) {
+      if (durable?.installationAgentId)
+        throw new WorkflowExecutionInterrupted(
+          "Original software installation target is not currently eligible",
+        );
       logger.info({ jobId, rejections: rejections.length }, "Placement found no eligible agent");
       // Preserve rejection traces so callers can explain why no target was selected.
       try {
@@ -884,7 +893,45 @@ export class PlacementOrchestrator {
         throw new WorkflowExecutionInterrupted("Bound Job has an inconsistent dispatch envelope", {
           retryable: false,
         });
-      return { job, enqueued: !!envelope };
+      if (envelope || ["completed", "failed", "cancelled"].includes(job.status))
+        return { job, enqueued: !!envelope, installationAgentId: undefined };
+      const associations = (job.softwareRequirements ?? []).filter((req) => req.operationId);
+      const ids = [
+        ...new Set(associations.map((req) => req.operationId).filter((id): id is string => !!id)),
+      ];
+      const operations = ids.length
+        ? await tx.select().from(softwareOperations).where(inArray(softwareOperations.id, ids))
+        : [];
+      if (
+        operations.length !== ids.length ||
+        associations.some(
+          (req) =>
+            !operations.some(
+              (op) =>
+                op.id === req.operationId &&
+                op.action === "install" &&
+                op.spec ===
+                  (req.spec ?? (req.version ? `${req.name}@${req.version}` : req.name)).trim(),
+            ),
+        )
+      )
+        throw new WorkflowExecutionInterrupted("Workflow installation binding is inconsistent", {
+          retryable: false,
+        });
+      const installationAgents = new Set(operations.map((op) => op.agentId));
+      if (
+        installationAgents.size > 1 ||
+        (job.agentId && operations.some((op) => op.agentId !== job.agentId))
+      )
+        throw new WorkflowExecutionInterrupted("Workflow installation targets conflict", {
+          retryable: false,
+        });
+      const failure = operations.find((op) => op.status === "failed" || op.status === "rejected");
+      if (failure)
+        throw new Error(
+          `Software installation ${failure.id} ${failure.status}: ${failure.error ?? "installation failed"}`,
+        );
+      return { job, enqueued: !!envelope, installationAgentId: operations[0]?.agentId };
     });
   }
 
@@ -1048,6 +1095,7 @@ export class PlacementOrchestrator {
     agentId: string,
   ): Promise<boolean> {
     let installed = false;
+    const saved = input.executionLease ? await this.deps.jobService.getById(input.jobId) : null;
     for (const requirement of input.job.softwareRequirements ?? []) {
       if (!requirement.installable) continue;
       const availability = this.deps.softwareAvailability;
@@ -1066,8 +1114,15 @@ export class PlacementOrchestrator {
       };
       const request = availabilityRequestForRequirement(requirement, [agentId]);
       const resolved = await availability.resolve(request, principal);
-      if (resolved.installedAvailable.some((node) => node.agentId === agentId)) continue;
-      if (!resolved.installableAvailable.some((node) => node.agentId === agentId)) {
+      const linked = saved?.softwareRequirements?.some(
+        (req) =>
+          req.operationId &&
+          (req.spec ?? (req.version ? `${req.name}@${req.version}` : req.name)).trim() ===
+            resolved.spec,
+      );
+      const ready = resolved.installedAvailable.some((node) => node.agentId === agentId);
+      if (ready && !linked) continue;
+      if (!ready && !resolved.installableAvailable.some((node) => node.agentId === agentId)) {
         throw new Error(
           `Software installation denied: ${resolved.blocked.flatMap((node) => node.reasons).join("; ")}`,
         );
@@ -1077,18 +1132,35 @@ export class PlacementOrchestrator {
         agentId,
         spec: resolved.spec,
         requestedBy: input.userId,
+        executionLease: input.executionLease,
       });
-      await waitForSoftwareInstallation({
-        operationId: operation.id,
-        timeoutMs: this.deps.softwareInstallTimeoutMs ?? 24 * 60 * 60 * 1000,
-        readJobStatus: async () =>
-          (await this.deps.jobService.getById(input.jobId))?.status ?? "failed",
-        readOperation: () => operations.getOperation(operation.id),
-        inventoryReady: async () =>
-          (
-            await availability.resolve({ ...request, installable: false }, principal)
-          ).installedAvailable.some((node) => node.agentId === agentId),
-      });
+      try {
+        await waitForSoftwareInstallation({
+          operationId: operation.id,
+          signal: input.executionLease?.signal,
+          timeoutMs: this.deps.softwareInstallTimeoutMs ?? 24 * 60 * 60 * 1000,
+          readJobStatus: async () =>
+            (await this.deps.jobService.getById(input.jobId))?.status ?? "failed",
+          readOperation: () => operations.getOperation(operation.id),
+          inventoryReady: async () =>
+            (
+              await availability.resolve({ ...request, installable: false }, principal)
+            ).installedAvailable.some((node) => node.agentId === agentId),
+        });
+      } catch (cause) {
+        if (
+          !input.executionLease ||
+          cause instanceof WorkflowExecutionInterrupted ||
+          (cause instanceof SoftwareInstallationWaitError && cause.reason === "failed")
+        )
+          throw cause;
+        throw new WorkflowExecutionInterrupted("Waiting for the original software installation", {
+          cause,
+          retryable: !(
+            cause instanceof SoftwareInstallationWaitError && cause.reason === "missing"
+          ),
+        });
+      }
       installed = true;
     }
     return installed;

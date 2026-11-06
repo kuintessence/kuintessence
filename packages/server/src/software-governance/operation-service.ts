@@ -4,19 +4,28 @@ import {
   auditLog,
   jobs,
   type PgDb,
+  type PgTransaction,
   softwareOperations,
   softwarePolicies,
   softwarePolicyOverlays,
+  workflowExecutionJobs,
 } from "@kuintessence/db";
 import {
   SoftwareOperationAction as ProtoSoftwareOperationAction,
   type SoftwareOperationResult,
   SoftwareOperationStatus,
 } from "@kuintessence/proto";
-import { AppError, decideSpackPolicy, ErrorCode, type SpackPolicy } from "@kuintessence/shared";
+import {
+  AppError,
+  decideSpackPolicy,
+  ErrorCode,
+  type SpackPolicy,
+  WorkflowExecutionInterrupted,
+} from "@kuintessence/shared";
 import { and, desc, eq, inArray, isNull, or, sql } from "drizzle-orm";
 import type { AgentDispatcher } from "../grpc/dispatcher";
 import type { CpScope } from "../middleware/cp-rbac";
+import type { LeasedWorkflowJournal } from "../workflow/execution-journal";
 import type { InstalledRegistry } from "./installed-registry";
 import type { SpackInstallPreparation, SpackInstallTicket } from "./spack-material-delivery";
 
@@ -213,11 +222,13 @@ export class SoftwareOperationService {
 
   private async dispatchOperation(
     created: typeof softwareOperations.$inferSelect,
+    execution?: { lease: LeasedWorkflowJournal; jobId: string },
   ): Promise<SoftwareOperationView> {
     const input = created;
     const spec = created.spec;
     const action = normalizeSoftwareOperationAction(created.action);
     if (!input.requestedBy) throw new Error("Software operation has no requester");
+    const requestedBy = input.requestedBy;
     let policyRejection: string | null;
     try {
       policyRejection = await this.policyRejection(input.agentId, action, spec);
@@ -256,7 +267,7 @@ export class SoftwareOperationService {
         materialTicket = await this.prepareSpackInstall({
           operationId: created.id,
           agentId: input.agentId,
-          requestedBy: input.requestedBy,
+          requestedBy,
           spec,
         });
       } catch (error) {
@@ -276,13 +287,28 @@ export class SoftwareOperationService {
         return rowToView(updated ?? created);
       }
     }
-    const dispatch = pushSoftwareOperationSafely(this.dispatcher, input.agentId, {
-      operationId: created.id,
-      action: actionToProto(action),
-      spec,
-      requestedBy: input.requestedBy,
-      ...materialTicket,
-    });
+    const send = () =>
+      pushSoftwareOperationSafely(this.dispatcher, input.agentId, {
+        operationId: created.id,
+        action: actionToProto(action),
+        spec,
+        requestedBy,
+        ...materialTicket,
+      });
+    const dispatch = execution
+      ? await execution.lease.transaction(async (tx) => {
+          const [job] = await tx
+            .select()
+            .from(jobs)
+            .where(eq(jobs.id, execution.jobId))
+            .for("update");
+          if (!job || job.status !== "pending")
+            throw new WorkflowExecutionInterrupted(
+              "Job stopped before software operation dispatch",
+            );
+          return send();
+        })
+      : send();
     if (dispatch.pushed) {
       return rowToView(created);
     }
@@ -305,6 +331,7 @@ export class SoftwareOperationService {
     agentId: string;
     spec: string;
     requestedBy: string;
+    executionLease?: LeasedWorkflowJournal;
   }): Promise<SoftwareOperationView> {
     if (!this.authorizeJobInstall) throw new Error("Workflow install authorization is unavailable");
     const agent = await this.assertAgentExists(input.agentId);
@@ -315,7 +342,23 @@ export class SoftwareOperationService {
     });
     input = { ...input, spec: normalizeSoftwareOperationSpec(input.spec) };
     const idempotencyKey = `workflow:${input.jobId}:${createHash("sha256").update(input.spec).digest("hex")}`;
-    const result = await this.db.transaction(async (tx) => {
+    const write = async (tx: PgTransaction) => {
+      if (input.executionLease) {
+        const [binding] = await tx
+          .select()
+          .from(workflowExecutionJobs)
+          .where(
+            and(
+              eq(workflowExecutionJobs.jobId, input.jobId),
+              eq(workflowExecutionJobs.runId, input.executionLease.runId),
+            ),
+          );
+        if (!binding)
+          throw new WorkflowExecutionInterrupted(
+            "Software installation lacks its workflow binding",
+            { retryable: false },
+          );
+      }
       await tx.execute(
         sql`select pg_advisory_xact_lock(hashtextextended(${`software-install:${input.agentId}:${input.spec}`}, 0))`,
       );
@@ -323,9 +366,43 @@ export class SoftwareOperationService {
         .select()
         .from(jobs)
         .where(and(eq(jobs.id, input.jobId), eq(jobs.submittedBy, input.requestedBy)))
+        .for("update")
         .limit(1);
       if (!job || job.status !== "pending")
         throw new Error("Job is no longer waiting for software installation");
+      const requirements = job.softwareRequirements ?? [];
+      const matches = requirements.filter(
+        (req) =>
+          normalizeSoftwareOperationSpec(
+            req.spec ?? (req.version ? `${req.name}@${req.version}` : req.name),
+          ) === input.spec,
+      );
+      if (matches.length === 0)
+        throw new Error("Software installation does not match a Job requirement");
+      const linkedIds = [
+        ...new Set(matches.flatMap((req) => (req.operationId ? [req.operationId] : []))),
+      ];
+      if (linkedIds.length > 1)
+        throw new WorkflowExecutionInterrupted("Job has conflicting software operation bindings", {
+          retryable: false,
+        });
+      const linkedId = linkedIds[0];
+      if (linkedId) {
+        const [linked] = await tx
+          .select()
+          .from(softwareOperations)
+          .where(eq(softwareOperations.id, linkedId));
+        if (
+          !linked ||
+          linked.agentId !== input.agentId ||
+          linked.spec !== input.spec ||
+          linked.action !== "install"
+        )
+          throw new WorkflowExecutionInterrupted("Job software operation binding changed", {
+            retryable: false,
+          });
+        return { operation: linked, created: false };
+      }
       const [existing] = await tx
         .select()
         .from(softwareOperations)
@@ -366,16 +443,26 @@ export class SoftwareOperationService {
         .update(jobs)
         .set({
           softwareRequirements: (job.softwareRequirements ?? []).map((req) =>
-            (req.spec ?? (req.version ? `${req.name}@${req.version}` : req.name)) === input.spec
+            normalizeSoftwareOperationSpec(
+              req.spec ?? (req.version ? `${req.name}@${req.version}` : req.name),
+            ) === input.spec
               ? { ...req, operationId: operation.id }
               : req,
           ),
         })
         .where(and(eq(jobs.id, input.jobId), eq(jobs.status, "pending")));
       return { operation, created: !existing };
-    });
+    };
+    const result = input.executionLease
+      ? await input.executionLease.transaction(write)
+      : await this.db.transaction(write);
     // Commit the operation and job link before material delivery reads them on another connection.
-    return result.created ? this.dispatchOperation(result.operation) : rowToView(result.operation);
+    return result.created
+      ? this.dispatchOperation(
+          result.operation,
+          input.executionLease ? { lease: input.executionLease, jobId: input.jobId } : undefined,
+        )
+      : rowToView(result.operation);
   }
 
   async getOperation(id: string): Promise<SoftwareOperationView | null> {
