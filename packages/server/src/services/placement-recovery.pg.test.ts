@@ -797,3 +797,161 @@ test.each([
     await f.lease.release();
   }
 });
+
+async function markFederationInstallation(f: Awaited<ReturnType<typeof fixture>>) {
+  await db
+    .update(workflowRuns)
+    .set({
+      input: { yaml: "fixture", role: "user", federationReservationId: randomUUID() },
+    })
+    .where(eq(workflowRuns.id, f.runId));
+}
+
+function federationInstallationService(
+  f: Awaited<ReturnType<typeof fixture>>,
+  beforeTicket?: (operationId: string) => Promise<void>,
+) {
+  const expectedPin = f.spec.spackExecution?.pin;
+  if (!expectedPin) throw new Error("Missing fixture pin");
+  return new SoftwareOperationService(
+    db,
+    f.dispatcher,
+    new InstalledRegistry(db),
+    async (input) => {
+      await beforeTicket?.(input.operationId);
+      return { spackMaterialTicket: "test", spackManifestDigest: expectedPin.manifestDigest };
+    },
+    async () => {},
+    async () => async () => {},
+  );
+}
+
+// Protocol authorization is injected here; real protocol checks are covered by assets.pg.test.ts.
+test.each([
+  [true, true],
+  [true, false],
+  [false, true],
+] as const)("installation authority is not shared across jobs: federation=%s/%s", async (firstFederated, secondFederated) => {
+  const first = await fixture(true);
+  const second = await fixture(true);
+  try {
+    if (firstFederated) await markFederationInstallation(first);
+    if (secondFederated) await markFederationInstallation(second);
+    const operations = federationInstallationService(first);
+    const a = await operations.requestInstallForJob({
+      ...installationRequest(first),
+      expectedPin: first.spec.spackExecution?.pin,
+    });
+    const b = await operations.requestInstallForJob({
+      ...installationRequest(second),
+      expectedPin: second.spec.spackExecution?.pin,
+    });
+    expect(a.id).not.toBe(b.id);
+    const rows = await db
+      .select()
+      .from(softwareOperations)
+      .where(inArray(softwareOperations.id, [a.id, b.id]));
+    expect(rows.find((row) => row.id === a.id)?.federationJobId).toBe(
+      firstFederated ? first.jobId : null,
+    );
+    expect(rows.find((row) => row.id === b.id)?.federationJobId).toBe(
+      secondFederated ? second.jobId : null,
+    );
+    expect(first.sent).toHaveLength(2);
+    await dueAgain(a.id);
+    expect(
+      (
+        await operations.requestInstallForJob({
+          ...installationRequest(first),
+          expectedPin: first.spec.spackExecution?.pin,
+        })
+      ).id,
+    ).toBe(a.id);
+    expect(first.sent).toHaveLength(3);
+  } finally {
+    await first.lease.release();
+    await second.lease.release();
+  }
+});
+
+test("a foreign or legacy installation association cannot replace federation authority", async () => {
+  const owner = await fixture(true);
+  const other = await fixture(true);
+  try {
+    await markFederationInstallation(owner);
+    await markFederationInstallation(other);
+    const operations = federationInstallationService(owner);
+    const operation = await operations.requestInstallForJob({
+      ...installationRequest(owner),
+      expectedPin: owner.spec.spackExecution?.pin,
+    });
+    await db
+      .update(jobs)
+      .set({
+        softwareRequirements: [
+          { name: "hello", spec: "hello@1.0", installable: true, operationId: operation.id },
+        ],
+      })
+      .where(eq(jobs.id, other.jobId));
+    await expect(
+      operations.requestInstallForJob({
+        ...installationRequest(other),
+        expectedPin: other.spec.spackExecution?.pin,
+      }),
+    ).rejects.toThrow("binding changed");
+    await db
+      .update(softwareOperations)
+      .set({ federationJobId: null })
+      .where(eq(softwareOperations.id, operation.id));
+    await expect(
+      operations.requestInstallForJob({
+        ...installationRequest(owner),
+        expectedPin: owner.spec.spackExecution?.pin,
+      }),
+    ).rejects.toThrow("binding changed");
+    expect(owner.sent).toHaveLength(1);
+    expect(
+      await db.select().from(softwareOperations).where(eq(softwareOperations.agentId, agentIds[0])),
+    ).toHaveLength(1);
+  } finally {
+    await owner.lease.release();
+    await other.lease.release();
+  }
+});
+
+test("changing the installation authority during ticket preparation prevents delivery", async () => {
+  const f = await fixture(true);
+  try {
+    await markFederationInstallation(f);
+    const operations = federationInstallationService(f, async (operationId) => {
+      await db
+        .update(softwareOperations)
+        .set({ federationJobId: null })
+        .where(eq(softwareOperations.id, operationId));
+    });
+    await expect(
+      operations.requestInstallForJob({
+        ...installationRequest(f),
+        expectedPin: f.spec.spackExecution?.pin,
+      }),
+    ).rejects.toThrow("immutable intent");
+    expect(f.sent).toHaveLength(0);
+  } finally {
+    await f.lease.release();
+  }
+});
+
+test("database rejects a federation installation without durable material authority", async () => {
+  await expect(
+    db
+      .insert(softwareOperations)
+      .values({
+        agentId: agentIds[0],
+        requestedBy: userId,
+        action: "install",
+        spec: "hello@1.0",
+        federationJobId: randomUUID(),
+      })
+      .execute(),
+  ).rejects.toThrow();
+});

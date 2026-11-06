@@ -1773,6 +1773,8 @@ export const softwareOperations = pgTable(
     action: varchar("action", { length: 32 }).notNull(),
     spec: varchar("spec", { length: 500 }).notNull(),
     replayEnabled: boolean("replay_enabled").notNull().default(false),
+    // Retain the authority identity even after Job cleanup; missing Jobs cannot renew it.
+    federationJobId: uuid("federation_job_id"),
     nextDispatchAt: timestamp("next_dispatch_at"),
     manifestDigest: varchar("manifest_digest", { length: 71 }),
     status: varchar("status", { length: 32 }).notNull().default("queued"),
@@ -1792,6 +1794,10 @@ export const softwareOperations = pgTable(
       t.requestedBy,
       t.idempotencyKey,
       t.idempotencyItemIndex,
+    ),
+    federationAuthorityCheck: check(
+      "software_operations_federation_authority_check",
+      sql`${t.federationJobId} IS NULL OR (${t.action} = 'install' AND ${t.replayEnabled} AND ${t.requestedBy} IS NOT NULL AND ${t.manifestDigest} IS NOT NULL)`,
     ),
     actionCheck: check(
       "software_operations_action_check",

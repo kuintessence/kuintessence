@@ -234,6 +234,11 @@ export class SoftwareOperationService {
     created: typeof softwareOperations.$inferSelect,
     expectedPin?: SpackExecutionPin,
   ): Promise<SoftwareOperationView> {
+    if (created.federationJobId)
+      throw new WorkflowExecutionInterrupted(
+        "Federation installation requires its workflow authority",
+        { retryable: false },
+      );
     const input = created;
     const spec = created.spec;
     const action = normalizeSoftwareOperationAction(created.action);
@@ -344,6 +349,7 @@ export class SoftwareOperationService {
       });
     const workflow = await installationWorkflowScope(this.db, input.jobId);
     const reservationId = workflow?.reservationId ?? workflow?.boundReservationId;
+    const federationJobId = reservationId ? input.jobId : null;
     if (
       reservationId &&
       (!this.prepareFederationDispatch ||
@@ -466,6 +472,8 @@ export class SoftwareOperationService {
           linked.agentId !== input.agentId ||
           linked.spec !== input.spec ||
           linked.action !== "install" ||
+          linked.federationJobId !== federationJobId ||
+          (federationJobId !== null && linked.requestedBy !== input.requestedBy) ||
           (input.expectedPin && linked.manifestDigest !== input.expectedPin.manifestDigest)
         )
           throw new WorkflowExecutionInterrupted("Job software operation binding changed", {
@@ -481,6 +489,12 @@ export class SoftwareOperationService {
             eq(softwareOperations.agentId, input.agentId),
             eq(softwareOperations.spec, input.spec),
             eq(softwareOperations.action, "install"),
+            federationJobId
+              ? and(
+                  eq(softwareOperations.federationJobId, federationJobId),
+                  eq(softwareOperations.requestedBy, input.requestedBy),
+                )
+              : isNull(softwareOperations.federationJobId),
             or(
               inArray(softwareOperations.status, ["queued", "running"]),
               and(
@@ -499,6 +513,7 @@ export class SoftwareOperationService {
             .insert(softwareOperations)
             .values({
               replayEnabled: !!input.executionLease,
+              federationJobId,
               manifestDigest: input.expectedPin?.manifestDigest,
               agentId: input.agentId,
               requestedBy: input.requestedBy,
@@ -591,6 +606,13 @@ export class SoftwareOperationService {
       return claimed;
     });
     if (!due) return (await this.getOperation(operation.id)) ?? rowToView(operation);
+    if (
+      due.federationJobId !== operation.federationJobId ||
+      (due.federationJobId !== null && due.federationJobId !== jobId)
+    )
+      throw new WorkflowExecutionInterrupted("Installation authority changed", {
+        retryable: false,
+      });
     if (!due.requestedBy || !this.prepareSpackInstall)
       throw new WorkflowExecutionInterrupted(
         "Durable installation material authorization is unavailable",
@@ -635,6 +657,8 @@ export class SoftwareOperationService {
           current.spec !== due.spec ||
           current.requestedBy !== due.requestedBy ||
           current.action !== "install" ||
+          current.federationJobId !== due.federationJobId ||
+          (current.federationJobId !== null && current.federationJobId !== jobId) ||
           (current.manifestDigest && current.manifestDigest !== ticket.spackManifestDigest)
         )
           throw new WorkflowExecutionInterrupted(
