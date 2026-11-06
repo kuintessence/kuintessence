@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { jobRevocationTombstones, type SqliteDb, softwareExecutions } from "@kuintessence/db";
 import { SoftwareOperationAction, SoftwareOperationStatus } from "@kuintessence/proto";
 import { InstalledSpecSchema } from "@kuintessence/shared";
-import { and, asc, eq, gt, isNotNull, isNull, or } from "drizzle-orm";
+import { and, asc, eq, gt, isNotNull, isNull, or, sql } from "drizzle-orm";
 import { z } from "zod";
 import {
   type ExecutionIdentity,
@@ -13,6 +13,11 @@ import {
   RECOVERY_REQUIRED,
 } from "../spack/execution-identity";
 import { SpackInstallStore } from "../spack/install-store";
+import {
+  removeSpackSupervisedInputs,
+  type SpackProcessSupervision,
+  SpackProcessSupervisionSchema,
+} from "../spack/supervised-process";
 import type { OutboundItem } from "./outbound-queue";
 
 export type SoftwareResult = Omit<
@@ -144,6 +149,8 @@ export class SoftwareOperations {
     const current = await executionIdentity();
     for (const row of rows) {
       if (!row.result) throw new Error(RECOVERY_REQUIRED);
+      const supervisors = z.array(SpackProcessSupervisionSchema).parse(row.supervisors ?? []);
+      for (const ref of supervisors) await removeSpackSupervisedInputs(ref);
       if (row.started && row.storeRoot) {
         // The existing writer fence refuses active/uncertain workers, including after restart.
         await new SpackInstallStore(row.storeRoot).withLock(async () => {});
@@ -152,6 +159,7 @@ export class SoftwareOperations {
         if (
           result.status !== SoftwareOperationStatus.SUCCEEDED &&
           result.status !== SoftwareOperationStatus.REJECTED &&
+          supervisors.length === 0 &&
           (await executionState(ExecutionIdentitySchema.parse(row.identity), current)) !==
             "rebooted"
         )
@@ -184,6 +192,24 @@ export class SoftwareOperations {
       .update(softwareExecutions)
       .set({ storeRoot })
       .where(eq(softwareExecutions.operationId, operationId));
+  }
+
+  async bindSupervisor(operationId: string, supervisor: SpackProcessSupervision): Promise<void> {
+    const ref = SpackProcessSupervisionSchema.parse(supervisor);
+    const updated = await this.db
+      .update(softwareExecutions)
+      .set({
+        supervisors: sql`json_insert(coalesce(${softwareExecutions.supervisors}, '[]'), '$[#]', json(${JSON.stringify(ref)}))`,
+      })
+      .where(
+        and(
+          eq(softwareExecutions.operationId, operationId),
+          eq(softwareExecutions.started, true),
+          isNull(softwareExecutions.result),
+        ),
+      )
+      .returning({ operationId: softwareExecutions.operationId });
+    if (updated.length !== 1) throw new Error(RECOVERY_REQUIRED);
   }
 
   async finish(result: SoftwareResult): Promise<SoftwareResult> {
@@ -247,13 +273,15 @@ export class SoftwareOperations {
       // A reconnect does not end a live execution; remote hosts are never inferred dead.
       if (state === "alive" || state === "unknown") continue;
       let error = INTERRUPTED;
-      if (row.storeRoot) {
-        try {
+      try {
+        const supervisors = z.array(SpackProcessSupervisionSchema).parse(row.supervisors ?? []);
+        for (const ref of supervisors) await removeSpackSupervisedInputs(ref);
+        if (row.storeRoot) {
           await new SpackInstallStore(row.storeRoot).withLock(async () => {});
-        } catch {
+        } else if (row.started && state !== "rebooted" && !supervisors.length) {
           error = RECOVERY_REQUIRED;
         }
-      } else if (row.started && state !== "rebooted") {
+      } catch {
         error = RECOVERY_REQUIRED;
       }
       await this.finish({

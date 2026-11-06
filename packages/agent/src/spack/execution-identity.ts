@@ -4,6 +4,7 @@ import { constants } from "node:fs";
 import { lstat, open, readFile, readlink, statfs } from "node:fs/promises";
 import { hostname } from "node:os";
 import { z } from "zod";
+import type { SpackProcessSupervision } from "./supervised-process";
 
 export const RECOVERY_REQUIRED = "SPACK_RECOVERY_REQUIRED: store writer recovery required";
 export const LOCK_HELD = "SPACK_LOCK_HELD: store writer lock held";
@@ -125,8 +126,9 @@ export const softwareExecution = new AsyncLocalStorage<{
   identity: ExecutionIdentity;
   operationId: string;
   bindStore: (root: string) => Promise<void>;
+  bindSupervisor?: (ref: SpackProcessSupervision) => Promise<void>;
 }>();
 export const installWorkerExecution = new AsyncLocalStorage<{
-  start: (recordId: string) => Promise<void>;
+  start: (recordId: string, supervisor?: SpackProcessSupervision) => Promise<void>;
   finish: () => Promise<void>;
 }>();

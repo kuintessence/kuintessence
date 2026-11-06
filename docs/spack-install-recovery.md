@@ -56,17 +56,40 @@ runner 准备、内存准入及命令校验失败时尚未置位；系统明确�
 进程传输正常完成后才能按正常业务结果释放。异常退出、超时或取消后若无法证明
 全部 worker 已停止，保留文件与锁；不会在 `finally` 无条件解锁。
 
-现有 Apptainer 使用 `--containall` 的 PID namespace，worker 还校验 namespace 与
-cgroup 限额；现有进程传输仍是 detached process group，并没有启动前可持久绑定、
-可查询全体后代的命名 systemd unit。不能把 Agent PID 消失、进程组 kill 成功、
-某个 Apptainer 启动进程退出或本机查不到远端 PID 当作全部后代已退出的证据。
-本实现没有新增 supervisor/cgroup 管理系统，采用以下保守判定：
+安装、verify/load 和源码审计使用同一套命名的用户级 systemd service（要求 systemd 254+、
+可用的用户 DBus 与可见的 cgroup v2）。启动前在缓存的 `installs/.supervisors/` 或
+`audits/.supervisors/` 下 fsync 单元名、执行身份、工作目录和资源预算，再把引用写入
+SQLite 软件执行账本；安装还写入对应 store 锁代次。记录不包含材料 ticket 或凭据。
 
-- 同一主机、不同真实 boot ID：旧 Agent 及其所有本机 worker 已停止，可恢复。
-- 同一 boot、Agent PID/starttime 已失效，且从未标记 worker 启动：可恢复。
-- 同一 boot、worker 曾启动而没有正常释放标记：保持待维护，即使看不到 Agent PID。
-- fallback 的同一 instance：视为活执行；其他 instance（包括可信 native 与未知身份混用）：不自动恢复。
-- 活 Agent、其他主机、权限不足、空锁或损坏身份：不抢锁。
+资源限制由该单元提供：`KillMode=control-group`、禁止 delegation、最多 128 个任务、
+2 核 CPU、配置的内存上限及禁用 swap。Apptainer 保留 PID/network/user namespace，
+不再自行创建另一套资源 scope；容器内 worker 仍核验实际 cgroup 限额。
+
+取消、超时和异常先持久保存禁止启动标记，再停止原单元，并确认单元已停止且完整
+cgroup 未被占用或已消失。延迟到达的启动请求由 systemd 的路径条件阻止，不能在确认
+停止后重新开始。单元和 cgroup 查询失败、身份不匹配、仍有后代时均保留输入和写锁。
+不能把 Agent PID 消失、发送 kill 成功或单个父进程退出当作完整停止证据。
+
+- 同一可信主机、不同 boot：仍沿用原重启停止证据。
+- 同一 boot、原 Agent 已退出：有完整监督记录时停止并核对原单元，再恢复锁；未启动 worker 的记录仍可恢复。
+- 当前 instance 已完成控制调用、但留下 uncertain：通过监督记录重试停止，确认前不接管。
+- 历史未监督 worker、其他主机、未知 instance 或损坏记录：继续保守拒绝，不推测停止。
+- 活着的其他 Agent 不能被恢复者终止；fallback 身份跨进程仍不能证明宿主归属。
+
+停止确认后可以回收关联的私有输入目录。源码审计在下一次审计前核对旧记录；软件操作
+恢复及取消也通过 SQLite 引用执行核对，包括尚无 storeRoot 的源码审计。
+`.supervisors` 中的禁止启动和停止记录不在线删除，避免晚到启动请求越过保护；其数量会
+随操作增长，归档须在全部 Agent 与相应启动进程停止的维护窗口进行。已退出的 systemd
+单元自动收集，不无限保留失败单元。旧缓存丢失或身份不可核对时仍须人工维护。
+
+本地真实进程验证可显式运行（要求当前 UID 已有 systemd 用户管理器）：
+
+```sh
+KQ_TEST_SYSTEMD_USER=1 bun test packages/agent/src/spack/supervised-process.integration.test.ts
+```
+
+该测试创建独立随机命名单元，使用轻量 Python 进程验证 cgroup 停止、晚到启动封锁、
+Agent SIGKILL 后的恢复与 SQLite 重开。它不是 Apptainer/Spack 编译或真实集群联合验收。
 
 恢复持锁后把遗留 `building`/`verifying` 记录变为 `failed`，保留部分文件作证据；
 继续已授权的 `removing` 清理并保存 `removed`。不删除 ready 软件，不自动重启编译，

@@ -24,6 +24,7 @@ import type {
 import { type PreparedSpackMaterials, SpackMaterialClient } from "./material-client";
 import type { SpackSourceAuditReport } from "./source-audit-report";
 import { SpackSourceAuditor, type SpackSourceAuditorOptions } from "./source-auditor";
+import { SpackProcessStoppedError } from "./supervised-process";
 
 type Run = SpackAuditProcess["run"];
 type RunResult = Awaited<ReturnType<Run>>;
@@ -250,14 +251,6 @@ describe("SpackSourceAuditor input boundary", () => {
           "all",
           "--security",
           "no-new-privs",
-          "--pids-limit",
-          "128",
-          "--memory",
-          "2147483648",
-          "--memory-swap",
-          "2147483648",
-          "--cpus",
-          "2",
           "--pwd",
           "/kq/work",
           "--bind",
@@ -605,6 +598,18 @@ describe("SpackSourceAuditor report boundary", () => {
 });
 
 describe("SpackSourceAuditor lifecycle", () => {
+  test("confirmed supervised stop releases input and allows another audit", async () => {
+    const f = await fixture();
+    const h = harness(f, {
+      run: async () => {
+        throw new SpackProcessStoppedError("fixture stop");
+      },
+    });
+    await expect(h.auditor.audit(f.prepared, f.input)).rejects.toThrow("fixture stop");
+    await expectClean(f);
+    h.setRun(async () => wire(report(f)));
+    expect((await h.auditor.audit(f.prepared, f.input)).passed).toBe(true);
+  });
   test.each([
     true,
     false,

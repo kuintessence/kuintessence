@@ -8,6 +8,7 @@ import { SPACK_INSTALL_RESULT_PREFIX } from "./install-contract";
 import { buildSpackInstallCommand, IsolatedSpackInstallRunner } from "./install-runner";
 import { SpackInstallStore } from "./install-store";
 import { installMemoryFixture, installRuntime, makeInstallFixture } from "./install-test-fixture";
+import { SpackProcessStoppedError } from "./supervised-process";
 
 const fixtures: Awaited<ReturnType<typeof makeInstallFixture>>[] = [];
 afterEach(async () => {
@@ -94,7 +95,7 @@ describe("isolated persistent Spack worker", () => {
     "install",
     "verify",
     "load",
-  ] as const)("passes configured 1024 MiB through admission, command and private worker input for %s", async (action) => {
+  ] as const)("passes configured 1024 MiB through admission and private worker input for %s", async (action) => {
     const f = await fixture();
     const config = loadAgentConfig({
       SERVER_GRPC_URL: "http://localhost:3001",
@@ -108,7 +109,7 @@ describe("isolated persistent Spack worker", () => {
         async run(command, options) {
           invoked = true;
           for (const flag of ["--memory", "--memory-swap"]) {
-            expect(command[command.indexOf(flag) + 1]).toBe("1073741824");
+            expect(command).not.toContain(flag);
           }
           const path = join(options.cwd, "input", "managed-memory.json");
           expect(JSON.parse(await readFile(path, "utf8"))).toEqual({ memoryMib: 1024 });
@@ -343,10 +344,6 @@ describe("isolated persistent Spack worker", () => {
         ]);
         expect(command).toContain("bind-paths,hostfs,cwd,home,sys");
         for (const [flag, expected] of [
-          ["--memory", "4294967296"],
-          ["--memory-swap", "4294967296"],
-          ["--pids-limit", "128"],
-          ["--cpus", "2"],
           ["--network", "none"],
           ["--security", "no-new-privs"],
         ]) {
@@ -515,17 +512,17 @@ describe("isolated persistent Spack worker", () => {
 });
 
 test.each([
-  true,
-  false,
-])("worker lifecycle distinguishes proven spawn failure: %s", async (neverStarted) => {
+  SpackProcessNotStartedError,
+  SpackProcessStoppedError,
+  Error,
+])("worker lifecycle distinguishes stop evidence: %s", async (Failure) => {
+  const provenStopped = Failure !== Error;
   const f = await fixture();
   const events: string[] = [];
   const r = runner({
     async run() {
       events.push("spawn");
-      throw neverStarted
-        ? new SpackProcessNotStartedError("fixture")
-        : new Error("fixture uncertain worker");
+      throw new Failure("fixture process failure");
     },
   });
   await expect(
@@ -541,8 +538,8 @@ test.each([
       () => r.run("install", f.prepared, f.input, f.site, f.path),
     ),
   ).rejects.toThrow("fixture");
-  expect(events).toEqual(neverStarted ? ["persist", "spawn", "stopped"] : ["persist", "spawn"]);
-  expect(await readdir(join(f.cacheDir, "installs"))).toHaveLength(neverStarted ? 0 : 1);
+  expect(events).toEqual(provenStopped ? ["persist", "spawn", "stopped"] : ["persist", "spawn"]);
+  expect(await readdir(join(f.cacheDir, "installs"))).toHaveLength(provenStopped ? 0 : 1);
 });
 
 test.each([

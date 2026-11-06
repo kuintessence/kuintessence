@@ -19,6 +19,7 @@ import {
   type SpackInstallRecord,
   SpackInstallRecordSchema,
 } from "./install-contract";
+import { removeSpackSupervisedInputs, SpackProcessSupervisionSchema } from "./supervised-process";
 
 type CreateInput = Pick<
   SpackInstallRecord,
@@ -267,11 +268,24 @@ export class SpackInstallStore {
           } else {
             recovering = true;
             const state = await executionState(owner.identity, identity);
-            if (uncertain && state !== "rebooted") throw new Error(RECOVERY_REQUIRED);
-            if (state === "alive") throw new Error(LOCK_HELD);
-            // shortcut: same-boot workers stay fenced until a supervised cgroup can prove them stopped.
-            if (state === "unknown" || (state !== "rebooted" && worker)) {
-              throw new Error(RECOVERY_REQUIRED);
+            const settledOwner = uncertain && owner.identity.instance === identity.instance;
+            if (state === "alive" && !settledOwner) throw new Error(LOCK_HELD);
+            if (state === "unknown") throw new Error(RECOVERY_REQUIRED);
+            if (state !== "rebooted" && worker) {
+              if (await optionalStat(join(previousPath, "unsupervised.json")))
+                throw new Error(RECOVERY_REQUIRED);
+              const supervisors = join(previousPath, "supervisors");
+              await directory(supervisors, false, 0o700);
+              let count = 0;
+              for await (const entry of await opendir(supervisors)) {
+                const ref = SpackProcessSupervisionSchema.parse(
+                  await this.lockJson(join(supervisors, entry.name)),
+                );
+                if (entry.name !== `${ref.unit}.json`) throw new Error(RECOVERY_REQUIRED);
+                await removeSpackSupervisedInputs(ref);
+                count++;
+              }
+              if (!count) throw new Error(RECOVERY_REQUIRED);
             }
           }
         } catch (error) {
@@ -314,8 +328,16 @@ export class SpackInstallStore {
         reconciled = true;
         return installWorkerExecution.run(
           {
-            start: async (recordId) => {
+            start: async (recordId, supervisor) => {
               await this.assertLocked();
+              if (supervisor) {
+                const ref = SpackProcessSupervisionSchema.parse(supervisor);
+                const supervisors = join(active.path, "supervisors");
+                await directory(supervisors, true, 0o700);
+                await this.lockWrite(join(supervisors, `${ref.unit}.json`), ref);
+              } else if (!(await optionalStat(join(active.path, "unsupervised.json")))) {
+                await this.lockWrite(join(active.path, "unsupervised.json"), identity.token);
+              }
               // Persist before spawn; even a crash in the spawn/PID-registration gap is fenced.
               if (!(await optionalStat(join(active.path, "worker.json")))) {
                 await this.lockWrite(join(active.path, "worker.json"), {

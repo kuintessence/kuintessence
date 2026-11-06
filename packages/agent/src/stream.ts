@@ -3425,6 +3425,8 @@ export class AgentStream {
               identity,
               operationId: request.operationId,
               bindStore: (root: string) => ledger.bindStore(request.operationId, root),
+              bindSupervisor: (ref: { directory: string; unit: string }) =>
+                ledger.bindSupervisor(request.operationId, ref),
             }
           : undefined;
       const installation = request.federationJobId

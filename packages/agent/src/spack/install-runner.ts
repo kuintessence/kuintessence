@@ -1,20 +1,15 @@
 /// <reference path="./python.d.ts" />
 import { link, lstat, mkdir, mkdtemp, readlink, realpath, rm, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
-import {
-  realSpackAuditProcess,
-  type SpackAuditProcess,
-  SpackProcessNotStartedError,
-} from "./audit-process";
+import { type SpackAuditProcess, SpackProcessNotStartedError } from "./audit-process";
 import {
   buildSpackAuditCommand,
   isSpackAuditPath,
-  SPACK_MANAGED_MEMORY_BYTES,
   type SpackAuditRuntimeDeps,
   type SpackAuditRuntimeProfile,
   verifySpackAuditRuntime,
 } from "./audit-runtime";
-import { installWorkerExecution } from "./execution-identity";
+import { installWorkerExecution, softwareExecution } from "./execution-identity";
 import {
   SPACK_INSTALL_RESULT_PREFIX,
   type SpackInstallReport,
@@ -25,6 +20,13 @@ import { admitSpackManagedMemory } from "./install-memory";
 import { SpackMaterialCache } from "./material-cache";
 import type { PreparedSpackMaterials, SpackMaterialPrepareInput } from "./material-client";
 import { preflightSpackMaterials } from "./material-preflight";
+import {
+  prepareSpackProcessSupervision,
+  runSpackSupervisedProcess,
+  SpackProcessStoppedError,
+  type SpackProcessSupervision,
+  stopSpackSupervisedProcess,
+} from "./supervised-process";
 import installWorker from "./worker/install_worker.py" with { type: "text" };
 import auditWorker from "./worker/source_audit.py" with { type: "text" };
 
@@ -51,7 +53,6 @@ export function buildSpackInstallCommand(
   site: SpackInstallSiteProfile,
   storePath: string,
   action: SpackInstallReport["action"],
-  managedMemoryMib = SPACK_MANAGED_MEMORY_BYTES / 1024 ** 2,
 ): string[] {
   const prefix = `${site.storeRoot}/releases/`;
   if (
@@ -64,7 +65,7 @@ export function buildSpackInstallCommand(
   ) {
     throw new Error("Invalid managed Spack store binding");
   }
-  const command = buildSpackAuditCommand(runtime, inputs, digest, managedMemoryMib * 1024 ** 2);
+  const command = buildSpackAuditCommand(runtime, inputs, digest);
   // Retain the audit isolation flags, replacing only its fixed Python entrypoint.
   return [
     ...command.slice(0, -5).filter((argument) => argument !== "--writable-tmpfs"),
@@ -137,6 +138,7 @@ export class IsolatedSpackInstallRunner implements SpackInstallRunner {
     signal.throwIfAborted();
     let directory: string | undefined;
     let workerUncertain = false;
+    let supervisor: SpackProcessSupervision | undefined;
     try {
       const preflight = await preflightSpackMaterials(prepared, { ...input, signal });
       if (!preflight.valid || site.profile.target !== prepared.manifest.target) {
@@ -235,10 +237,12 @@ export class IsolatedSpackInstallRunner implements SpackInstallRunner {
         site.profile,
         storePath,
         action,
-        managedMemoryMib,
       );
+      if (!this.options.process)
+        supervisor = await prepareSpackProcessSupervision(directory, managedMemoryMib * 1024 ** 2);
+      if (supervisor) await softwareExecution.getStore()?.bindSupervisor?.(supervisor);
       const execution = installWorkerExecution.getStore();
-      await execution?.start(basename(storePath));
+      await execution?.start(basename(storePath), supervisor);
       if (
         authorizedUntil !== undefined &&
         (!Number.isSafeInteger(authorizedUntil) || authorizedUntil <= Date.now())
@@ -247,7 +251,13 @@ export class IsolatedSpackInstallRunner implements SpackInstallRunner {
         throw new Error("Federation installation grant expired before worker startup");
       }
       workerUncertain = true;
-      const result = await (this.options.process ?? realSpackAuditProcess)
+      const transport: SpackAuditProcess = this.options.process ?? {
+        run: (command, options) => {
+          if (!supervisor) throw new Error("Missing Spack process supervision");
+          return runSpackSupervisedProcess(command, options, supervisor);
+        },
+      };
+      const result = await transport
         .run(command, {
           cwd: directory,
           env: {
@@ -263,7 +273,10 @@ export class IsolatedSpackInstallRunner implements SpackInstallRunner {
           signal,
         })
         .catch(async (error: unknown) => {
-          if (error instanceof SpackProcessNotStartedError) {
+          if (
+            error instanceof SpackProcessNotStartedError ||
+            error instanceof SpackProcessStoppedError
+          ) {
             workerUncertain = false;
             await execution?.finish();
           }
@@ -299,6 +312,7 @@ export class IsolatedSpackInstallRunner implements SpackInstallRunner {
       }
       return report;
     } finally {
+      if (supervisor && !workerUncertain) await stopSpackSupervisedProcess(supervisor);
       if (directory && !workerUncertain) await rm(directory, { recursive: true, force: true });
     }
   }

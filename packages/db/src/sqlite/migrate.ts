@@ -44,6 +44,7 @@ export function runSqliteMigrations(db: Database): void {
   addColumnIfMissing(db, "software_executions", "request_digest", "TEXT");
   addColumnIfMissing(db, "software_executions", "job_scope", "TEXT");
   addColumnIfMissing(db, "software_executions", "stopped_at", "INTEGER");
+  addColumnIfMissing(db, "software_executions", "supervisors", "TEXT");
   for (const col of LOCAL_JOBS_ADDED_COLUMNS) {
     addColumnIfMissing(db, "local_jobs", col.name, col.def);
   }

@@ -186,6 +186,7 @@ CREATE INDEX IF NOT EXISTS sandbox_replay_nonces_expires_at_idx
 CREATE TABLE IF NOT EXISTS software_executions (
   job_scope TEXT,
   stopped_at INTEGER,
+  supervisors TEXT,
   request_digest TEXT,
   operation_id TEXT PRIMARY KEY NOT NULL,
   action INTEGER NOT NULL,

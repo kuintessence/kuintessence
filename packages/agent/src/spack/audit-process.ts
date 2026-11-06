@@ -36,7 +36,10 @@ type RunOptions = Parameters<SpackAuditProcess["run"]>[1];
 const CLOSE_GRACE_MS = 250;
 const processError = (message: string) => new Error(`Spack audit process ${message}`);
 
-function validatedEnvironment(command: string[], options: RunOptions): Record<string, string> {
+export function validatedEnvironment(
+  command: string[],
+  options: RunOptions,
+): Record<string, string> {
   const invalid = () => new Error("Invalid Spack audit process options");
   if (
     !Array.isArray(command) ||

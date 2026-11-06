@@ -112,10 +112,8 @@ describe("Spack audit runtime identity and argv", () => {
     expect(value("--network")).toBe("none");
     expect(value("--security")).toBe("no-new-privs");
     expect(value("--drop-caps")).toBe("all");
-    expect(value("--memory")).toBe("2147483648");
-    expect(value("--memory-swap")).toBe("2147483648");
-    expect(value("--pids-limit")).toBe("128");
-    expect(value("--cpus")).toBe("2");
+    for (const flag of ["--memory", "--memory-swap", "--pids-limit", "--cpus"])
+      expect(command).not.toContain(flag);
     expect(value("--no-mount")).toBe("bind-paths,hostfs,cwd,home,sys");
     expect(command.filter((arg) => arg === "--bind")).toHaveLength(2);
     expect(value("--bind")).toBe("/srv/kq/input:/kq/input:ro");
@@ -129,39 +127,5 @@ describe("Spack audit runtime identity and argv", () => {
     ]);
     expect(command).not.toContain("install");
     expect(command.some((arg) => arg.includes(":rw"))).toBe(false);
-  });
-
-  test.each([
-    1024, 1537, 4096,
-  ])("allows a bounded integer MiB budget %i without changing other isolation arguments", (memoryMib) => {
-    const baseline = buildSpackAuditCommand(profile, "/srv/kq/input", `sha256:${"d".repeat(64)}`);
-    const managed = buildSpackAuditCommand(
-      profile,
-      "/srv/kq/input",
-      `sha256:${"d".repeat(64)}`,
-      memoryMib * 1024 ** 2,
-    );
-    expect(managed).toEqual(
-      baseline.map((value, index) =>
-        ["--memory", "--memory-swap"].includes(baseline[index - 1] ?? "")
-          ? String(memoryMib * 1024 ** 2)
-          : value,
-      ),
-    );
-    for (const memory of [
-      0,
-      -1,
-      1.5,
-      NaN,
-      Infinity,
-      1023 * 1024 ** 2,
-      1024.5 * 1024 ** 2,
-      2_147_483_647,
-      4_294_967_297,
-    ]) {
-      expect(() =>
-        buildSpackAuditCommand(profile, "/srv/kq/input", `sha256:${"d".repeat(64)}`, memory),
-      ).toThrow("memory budget");
-    }
   });
 });

@@ -491,7 +491,7 @@ Server ticket、下载校验和静态预检仍然必须先通过；没有 runtim
   模式 `0700`，允许该 UID 在 writable-tmpfs 内写入。不同站点 UID 可能需要不同镜像。
   镜像环境不得提前往该目录写文件。
 - 要求 user/network/PID namespace、cgroup v2 及该 UID 的 rootless cgroup delegation；
-  需要可用的用户 systemd/DBus 管理环境。当前固定限制为内存 2 GiB、memory+swap 2 GiB、
+  需要可用的用户 systemd 254+/DBus 管理环境。进程、资源限制与停止证明统一由命名单元管理，见[恢复说明](spack-install-recovery.md)。当前固定限制为内存 2 GiB、memory+swap 2 GiB、
   PID 128、CPU 2、单次 30 分钟、合计 stdout/stderr 2 MiB，每个 Agent auditor 串行执行。
   worker 会检查 namespace、当前 network namespace 内仅有 loopback、NoNewPrivs 和实际 cgroup 限额，
   无法证明限额生效或不支持的 cgroup 布局都直接失败。
@@ -541,7 +541,7 @@ recipe 是可执行 Python，可以影响同进程的审计逻辑和输出，因
 并继承 source audit 的固定 Apptainer/SIF、namespace、cgroup 与输出预算。
 独立 source audit 保持内存 2 GiB/30 分钟，不受此配置影响。managed install/verify/load
 默认内存 4 GiB；`AGENT_SPACK_MANAGED_MEMORY_MIB` 可设为整数 `1024..4096`。
-Apptainer 的 memory 与 memory+swap 均等于配置预算，即不允许 swap。Agent 将同一预算
+systemd 单元的 `MemoryMax` 等于配置预算，`MemorySwapMax=0`，即不允许 swap。Agent 将同一预算
 写入私有目录中的只读 `managed-memory.json`；worker 只读取该输入，不从环境或材料取值，
 缺失、非法类型（含布尔、字符串、小数）或越界均拒绝。worker 核验实际 cgroup 的
 `memory.max` 必须为正数且不超过声明预算，`memory.swap.max` 必须为 0。

@@ -1,18 +1,16 @@
 /// <reference path="./python.d.ts" />
 import { link, lstat, mkdir, mkdtemp, readlink, realpath, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import {
-  realSpackAuditProcess,
-  type SpackAuditProcess,
-  SpackProcessNotStartedError,
-} from "./audit-process";
+import { type SpackAuditProcess, SpackProcessNotStartedError } from "./audit-process";
 import {
   buildSpackAuditCommand,
   isSpackAuditPath,
+  SPACK_AUDIT_MEMORY_BYTES,
   type SpackAuditRuntimeDeps,
   type SpackAuditRuntimeProfile,
   verifySpackAuditRuntime,
 } from "./audit-runtime";
+import { softwareExecution } from "./execution-identity";
 import { SpackMaterialCache } from "./material-cache";
 import type { PreparedSpackMaterials, SpackMaterialPrepareInput } from "./material-client";
 import { preflightSpackMaterials } from "./material-preflight";
@@ -21,6 +19,15 @@ import {
   type SpackSourceAuditReport,
   SpackSourceAuditReportSchema,
 } from "./source-audit-report";
+import {
+  prepareSpackProcessSupervision,
+  recoverSpackSupervisedProcesses,
+  removeSpackSupervisedInputs,
+  runSpackSupervisedProcess,
+  SpackProcessStoppedError,
+  type SpackProcessSupervision,
+  stopSpackSupervisedProcess,
+} from "./supervised-process";
 import workerSource from "./worker/source_audit.py" with { type: "text" };
 
 export interface SpackMaterialAuditor {
@@ -70,22 +77,31 @@ async function runtimeContext(): Promise<RuntimeContext> {
 /** An opt-in source auditor, not an installation executor or a trust certificate for recipes. */
 export class SpackSourceAuditor implements SpackMaterialAuditor {
   private active = false;
-  private readonly process: SpackAuditProcess;
-
-  constructor(private readonly options: SpackSourceAuditorOptions) {
-    this.process = options.process ?? realSpackAuditProcess;
-  }
+  private uncertain?: SpackProcessSupervision;
+  constructor(private readonly options: SpackSourceAuditorOptions) {}
 
   async audit(
     prepared: PreparedSpackMaterials,
     input: SpackMaterialPrepareInput,
   ): Promise<SpackSourceAuditReport> {
+    if (this.uncertain) {
+      const ref = this.uncertain;
+      this.uncertain = undefined;
+      try {
+        await removeSpackSupervisedInputs(ref);
+        this.active = false;
+      } catch (error) {
+        this.uncertain = ref;
+        throw error;
+      }
+    }
     if (this.active) throw new Error("Spack source audit is already running on this Agent");
     this.active = true;
     const deadline = AbortSignal.timeout(30 * 60_000);
     const signal = input.signal ? AbortSignal.any([input.signal, deadline]) : deadline;
     let directory: string | undefined;
     let workerUncertain = false;
+    let supervisor: SpackProcessSupervision | undefined;
     try {
       const preflight = await preflightSpackMaterials(prepared, { ...input, signal });
       if (!preflight.valid) throw new Error("Spack source audit requires a valid static lock");
@@ -103,6 +119,7 @@ export class SpackSourceAuditor implements SpackMaterialAuditor {
       await cache.initialize();
       const runs = join(cacheDir, "audits");
       await privateDirectory(runs);
+      if (!this.options.process) await recoverSpackSupervisedProcesses(runs);
       directory = await mkdtemp(join(runs, "run-"));
       const inputs = join(directory, "input");
       await privateDirectory(inputs);
@@ -131,8 +148,17 @@ export class SpackSourceAuditor implements SpackMaterialAuditor {
       signal.throwIfAborted();
       const uid = this.options.runtimeDeps?.uid ?? process.getuid?.();
       const command = buildSpackAuditCommand(this.options.profile, inputs, input.manifestDigest);
+      if (!this.options.process)
+        supervisor = await prepareSpackProcessSupervision(directory, SPACK_AUDIT_MEMORY_BYTES);
+      if (supervisor) await softwareExecution.getStore()?.bindSupervisor?.(supervisor);
+      const transport: SpackAuditProcess = this.options.process ?? {
+        run: (command, options) => {
+          if (!supervisor) throw new Error("Missing Spack process supervision");
+          return runSpackSupervisedProcess(command, options, supervisor);
+        },
+      };
       workerUncertain = true;
-      const result = await this.process
+      const result = await transport
         .run(command, {
           cwd: directory,
           env: {
@@ -148,7 +174,11 @@ export class SpackSourceAuditor implements SpackMaterialAuditor {
           signal,
         })
         .catch((error: unknown) => {
-          if (error instanceof SpackProcessNotStartedError) workerUncertain = false;
+          if (
+            error instanceof SpackProcessNotStartedError ||
+            error instanceof SpackProcessStoppedError
+          )
+            workerUncertain = false;
           throw error;
         });
       workerUncertain = false;
@@ -175,10 +205,21 @@ export class SpackSourceAuditor implements SpackMaterialAuditor {
         throw new Error("Spack source audit report binding or exit status mismatch");
       }
       return report;
+    } catch (error) {
+      if (supervisor && !workerUncertain) {
+        try {
+          await stopSpackSupervisedProcess(supervisor);
+        } catch (stopError) {
+          workerUncertain = true;
+          throw stopError;
+        }
+      }
+      throw error;
     } finally {
       try {
         if (directory && !workerUncertain) await rm(directory, { recursive: true, force: true });
       } finally {
+        if (workerUncertain && supervisor) this.uncertain = supervisor;
         this.active = workerUncertain;
       }
     }
