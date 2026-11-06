@@ -151,6 +151,7 @@ export interface AgentChannel {
   softwareOperationReplayV1?: boolean;
   federationExecutionV1?: boolean;
   federationComputeLeaseV1?: boolean;
+  federationSandboxSignatureRenewalV1?: boolean;
   federationInstallationV1?: boolean;
   federationInstallationLeaseV1?: boolean;
   verifiedCertFingerprint?: string;
@@ -243,6 +244,12 @@ export class AgentDispatcher {
     if (message.payload.value.federationExecution && !this.supportsFederationExecution(agentId))
       return false;
     if (
+      message.payload.value.federationExecution &&
+      message.payload.value.sandboxExecution &&
+      !this.supportsFederationSandboxSignatureRenewal(agentId)
+    )
+      return false;
+    if (
       message.payload.value.spackExecution?.pin &&
       (message.payload.value.command !== SPACK_PINNED_EXECUTION_PLACEHOLDER ||
         !this.supportsPinnedSpack(agentId))
@@ -257,6 +264,13 @@ export class AgentDispatcher {
       channel?.federationExecutionV1 === true &&
       channel.federationComputeLeaseV1 === true &&
       !!channel.verifiedCertFingerprint
+    );
+  }
+
+  supportsFederationSandboxSignatureRenewal(agentId: string): boolean {
+    return (
+      this.supportsFederationExecution(agentId) &&
+      this.getChannel(agentId)?.federationSandboxSignatureRenewalV1 === true
     );
   }
 

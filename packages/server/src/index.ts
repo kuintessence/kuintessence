@@ -291,6 +291,11 @@ const jobDispatchOutbox = new JobDispatchOutbox(
   async (agentId, message) => {
     return federationDataDispatch.prepare(agentId, message);
   },
+  (manifest) => {
+    if (!sandboxManifestSigner)
+      throw new WorkflowExecutionInterrupted("Sandbox signature renewal is unavailable");
+    return sandboxManifestSigner.sign(manifest);
+  },
 );
 const jobWorkRootReleaseOutbox = new JobWorkRootReleaseOutbox(db, dispatcher);
 const dataScanCoordinator = new DataScanCoordinator(

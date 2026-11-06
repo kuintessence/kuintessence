@@ -185,7 +185,7 @@ test("restricted input renewal preserves the signed sandbox contract", () => {
   expect(result.inputStaging[0]?.deliveryLeaseId).toBe(next.leaseId);
 });
 
-test("restricted renewal rejects unsigned data changes, orphan leases and expired signatures", () => {
+test("restricted data renewal rejects content changes and leaves signature renewal to dispatch authorization", () => {
   const f = restrictedFixture();
   const entry = f.next.selectedEntries[0];
   if (!entry) throw new Error("Expected entry");
@@ -198,5 +198,5 @@ test("restricted renewal rejects unsigned data changes, orphan leases and expire
   const envelope = f.dispatch.sandboxExecution?.envelope;
   if (!envelope) throw new Error("Expected envelope");
   envelope.expiresAtUnixMs = 1n;
-  expect(() => refreshDataCredentials(f.message, [f.next])).toThrow("need renewal");
+  expect(() => refreshDataCredentials(f.message, [f.next])).not.toThrow();
 });

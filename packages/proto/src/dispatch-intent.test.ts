@@ -1,7 +1,10 @@
 import { expect, test } from "bun:test";
 import { clone, create } from "@bufbuild/protobuf";
 import { sameDispatchIntent } from "./dispatch-intent";
-import { DispatchJobSchema } from "./generated/kuintessence/v1/agent_service_pb";
+import {
+  DispatchJobSchema,
+  SandboxExecutionSchema,
+} from "./generated/kuintessence/v1/agent_service_pb";
 
 const original = create(DispatchJobSchema, {
   jobId: "job",
@@ -90,4 +93,42 @@ test.each([
       break;
   }
   expect(sameDispatchIntent(original, renewed)).toBe(false);
+});
+
+test("Sandbox renewal changes only envelope credentials and requires the original signed content", () => {
+  const dispatch = clone(DispatchJobSchema, original);
+  dispatch.sandboxExecution = create(SandboxExecutionSchema, {
+    runtime: { digest: "original-image" },
+    networkDisabled: true,
+    envelope: {
+      keyId: "old-key",
+      nonce: "old-nonce",
+      issuedAtUnixMs: 1n,
+      expiresAtUnixMs: 2n,
+      manifestSha256: "fixed-content",
+      signature: new Uint8Array([1]),
+    },
+  });
+  const renewed = clone(DispatchJobSchema, dispatch);
+  const execution = renewed.sandboxExecution;
+  if (!execution?.envelope || !execution.runtime) throw new Error("Missing fixture");
+  Object.assign(execution.envelope, {
+    keyId: "new-key",
+    nonce: "new-nonce",
+    issuedAtUnixMs: 3n,
+    expiresAtUnixMs: 4n,
+    signature: new Uint8Array([2]),
+  });
+  expect(sameDispatchIntent(dispatch, renewed)).toBe(true);
+  execution.runtime.digest = "changed-image";
+  expect(sameDispatchIntent(dispatch, renewed)).toBe(false);
+  execution.runtime.digest = "original-image";
+  execution.envelope.manifestSha256 = "changed-content";
+  expect(sameDispatchIntent(dispatch, renewed)).toBe(false);
+  execution.envelope.manifestSha256 = "fixed-content";
+  dispatch.federationExecution = renewed.federationExecution = false;
+  expect(sameDispatchIntent(dispatch, renewed)).toBe(false);
+  dispatch.federationExecution = renewed.federationExecution = true;
+  execution.envelope = undefined;
+  expect(sameDispatchIntent(dispatch, renewed)).toBe(false);
 });

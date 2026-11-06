@@ -1,4 +1,4 @@
-import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
+import { clone, create, fromBinary, toBinary } from "@bufbuild/protobuf";
 import {
   federationAgreements,
   federationReservations,
@@ -19,7 +19,13 @@ import {
   ServerMessageSchema,
   sameDispatchIntent,
 } from "@kuintessence/proto";
-import { createLogger, WorkflowExecutionInterrupted } from "@kuintessence/shared";
+import {
+  createLogger,
+  type SandboxSignedManifest,
+  SandboxSignedManifestSchema,
+  type SandboxUnsignedManifest,
+  WorkflowExecutionInterrupted,
+} from "@kuintessence/shared";
 import { federationExecutionDeadline } from "@kuintessence/shared/federation";
 import { and, asc, eq, isNull, lt, lte, or, sql } from "drizzle-orm";
 import {
@@ -28,7 +34,7 @@ import {
 } from "../federation/data-dispatch";
 import type { FederationDeliveryTarget } from "../federation/dispatch-authorization";
 import type { LeasedWorkflowJournal } from "../workflow/execution-journal";
-import type { AgentDispatcher } from "./dispatcher";
+import { type AgentDispatcher, sandboxExecutionToProto } from "./dispatcher";
 
 const logger = createLogger("job-dispatch-outbox");
 const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
@@ -39,7 +45,7 @@ interface ExecutionGrantDelivery {
   send: (response: FederationExecutionResponse) => void;
 }
 
-/** Stores the original envelope. Renewed data credentials never change its execution intent. */
+/** Stores the original envelope; renewed data/signature credentials never change execution intent. */
 export class JobDispatchOutbox {
   private timer?: ReturnType<typeof setInterval>;
   private running?: Promise<void>;
@@ -55,6 +61,7 @@ export class JobDispatchOutbox {
       agentId: string,
       message: ServerMessage,
     ) => Promise<PreparedFederationDataDispatch>,
+    private readonly signSandbox?: (input: SandboxUnsignedManifest) => SandboxSignedManifest,
   ) {}
 
   async enqueue(
@@ -270,6 +277,13 @@ export class JobDispatchOutbox {
       throw new WorkflowExecutionInterrupted("Federation dispatch authorization is unavailable", {
         retryable: false,
       });
+    if (
+      reservationId &&
+      !running &&
+      originalDispatch.sandboxExecution &&
+      !this.dispatcher.supportsFederationSandboxSignatureRenewal(identity.agentId)
+    )
+      throw new WorkflowExecutionInterrupted("Agent does not support Sandbox signature renewal");
     const authorize =
       reservationId && identity.runId
         ? await this.prepareFederationDispatch?.(identity.runId, {
@@ -341,23 +355,41 @@ export class JobDispatchOutbox {
         throw new WorkflowExecutionInterrupted("Federation dispatch binding changed", {
           retryable: false,
         });
-      const message = data?.message ?? preparedMessage;
+      const message = data?.message ?? clone(ServerMessageSchema, preparedMessage);
       if (
         message.payload.case !== "dispatchJob" ||
         message.payload.value.jobId !== jobId ||
         message.payload.value.dispatchEpoch !== BigInt(saved.dispatchEpoch)
       )
         throw new Error("Invalid persisted dispatch envelope");
-      if (!sameDispatchIntent(originalDispatch, message.payload.value))
-        throw new WorkflowExecutionInterrupted("Credential renewal changed dispatch intent", {
-          retryable: false,
-        });
       if (!running)
         await tx
           .update(jobDispatchOutbox)
           .set({ nextAttemptAt: sql`clock_timestamp() + interval '10 seconds'` })
           .where(eq(jobDispatchOutbox.jobId, jobId));
       const authorizationDeadline = await authorize?.(tx);
+      if (reservationId && !running && originalDispatch.sandboxExecution) {
+        if (!this.signSandbox)
+          throw new WorkflowExecutionInterrupted("Sandbox signature renewal is unavailable");
+        const { envelope: _envelope, ...unsigned } = SandboxSignedManifestSchema.parse(
+          job.sandboxExecution,
+        );
+        message.payload.value.sandboxExecution = sandboxExecutionToProto(
+          this.signSandbox(unsigned),
+        );
+      }
+      if (!sameDispatchIntent(originalDispatch, message.payload.value))
+        throw new WorkflowExecutionInterrupted("Credential renewal changed dispatch intent", {
+          retryable: false,
+        });
+      if (
+        reservationId &&
+        !running &&
+        message.payload.value.sandboxExecution &&
+        (!message.payload.value.sandboxExecution.envelope ||
+          message.payload.value.sandboxExecution.envelope.expiresAtUnixMs <= BigInt(Date.now()))
+      )
+        throw new WorkflowExecutionInterrupted("Sandbox signature needs renewal");
       await data?.authorize(tx);
       if (running) await assertRunningDataBindings(tx, originalDispatch);
       if (grant) {

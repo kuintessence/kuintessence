@@ -308,9 +308,7 @@ export function assertFreshDataCredentials(message: ServerMessage): void {
     dispatch.dataDeliveries.some((item) => !item.leaseId || item.leaseExpiresAtUnixMs <= now) ||
     dispatch.inputStaging.some(
       (item) => item.deliveryLeaseId && item.deliveryLeaseExpiresAtUnixMs <= now,
-    ) ||
-    (dispatch.sandboxExecution?.envelope &&
-      dispatch.sandboxExecution.envelope.expiresAtUnixMs <= now)
+    )
   )
     throw new WorkflowExecutionInterrupted("Dispatch credentials need renewal");
 }

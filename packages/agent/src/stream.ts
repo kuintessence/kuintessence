@@ -1973,6 +1973,8 @@ export class AgentStream {
           managedDatasetRootIds: [...(this.deps.managedDatasetRootIds ?? [])],
           federationExecutionV1: this.federationExecutionCapable(),
           federationComputeLeaseV1: this.federationExecutionCapable(),
+          federationSandboxSignatureRenewalV1:
+            this.federationExecutionCapable() && !!this.deps.sandboxProcessor,
           federationInstallationV1: this.federationInstallationCapable(),
           federationInstallationLeaseV1: this.federationInstallationCapable(),
         }),
@@ -3136,7 +3138,6 @@ export class AgentStream {
         return;
       }
       if (dj.sandboxExecution) {
-        const sandboxExecution = dj.sandboxExecution;
         if (dj.licensedMaterialMounts.length > 0) {
           await this.onJobTransition({
             jobId: dj.jobId,
@@ -3158,7 +3159,7 @@ export class AgentStream {
           const authorized = (await this.renewFederationExecution(dj))?.dispatch ?? dj;
           return processor.prepare(
             dj.jobId,
-            sandboxExecution,
+            authorized.sandboxExecution,
             authorized.inputStaging.map((input) => ({
               stagePath: input.stagePath,
               sourceUrl: input.sourceUrl,

@@ -13,10 +13,11 @@ export const FederationDispatchReceiptSchema = z.object({
   epoch: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
   digest: z.string().regex(/^[a-f0-9]{64}$/),
   renewableInputs: z.array(z.number().int().nonnegative()),
+  renewableSandboxSignature: z.boolean().optional(),
 });
 
-function digest(dispatch: DispatchJob, renewableInputs: number[]): string {
-  const intent = dispatchIntent(dispatch, renewableInputs);
+function digest(dispatch: DispatchJob, renewableInputs: number[], renewSandbox: boolean): string {
+  const intent = dispatchIntent(dispatch, renewableInputs, renewSandbox);
   intent.envVars = Object.fromEntries(
     Object.entries(intent.envVars).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)),
   );
@@ -26,11 +27,14 @@ function digest(dispatch: DispatchJob, renewableInputs: number[]): string {
 /** Store an immutable fingerprint, not downloads, environment secrets or a reusable grant. */
 export function federationDispatchReceipt(dispatch: DispatchJob) {
   const renewableInputs = renewableDispatchInputs(dispatch);
+  const renewableSandboxSignature =
+    dispatch.federationExecution && !!dispatch.sandboxExecution?.envelope;
   return {
     version: 1 as const,
     epoch: Number(dispatch.dispatchEpoch),
-    digest: digest(dispatch, renewableInputs),
+    digest: digest(dispatch, renewableInputs, renewableSandboxSignature),
     renewableInputs,
+    renewableSandboxSignature,
   };
 }
 
@@ -40,7 +44,8 @@ export function matchesFederationReceipt(
 ): boolean {
   return (
     dispatch.dispatchEpoch === BigInt(receipt.epoch) &&
-    digest(dispatch, receipt.renewableInputs) === receipt.digest
+    digest(dispatch, receipt.renewableInputs, receipt.renewableSandboxSignature === true) ===
+      receipt.digest
   );
 }
 

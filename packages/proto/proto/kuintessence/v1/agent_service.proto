@@ -220,6 +220,8 @@ message RegisterRequest {
   bool federation_installation_lease_v1 = 24;
   // Persists runtime deadlines and requires an independent scheduler watchdog.
   bool federation_compute_lease_v1 = 25;
+  // Accepts a refreshed Sandbox envelope while pinning the original execution content.
+  bool federation_sandbox_signature_renewal_v1 = 26;
 }
 
 message RegisterResponse {

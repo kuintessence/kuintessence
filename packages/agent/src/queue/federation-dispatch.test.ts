@@ -1,6 +1,13 @@
 import { expect, test } from "bun:test";
-import { clone, create } from "@bufbuild/protobuf";
-import { DispatchJobSchema, InputStagingSchema, sameDispatchIntent } from "@kuintessence/proto";
+import { createHash } from "node:crypto";
+import { clone, create, toBinary } from "@bufbuild/protobuf";
+import {
+  DispatchJobSchema,
+  dispatchIntent,
+  InputStagingSchema,
+  SandboxExecutionSchema,
+  sameDispatchIntent,
+} from "@kuintessence/proto";
 import { federationDispatchReceipt, matchesFederationReceipt } from "./federation-dispatch";
 
 test("restart fingerprint permits only the original renewable credentials", () => {
@@ -37,4 +44,33 @@ test("restart fingerprint permits only the original renewable credentials", () =
   ordinary.deliveryLeaseId = "new-lease-source";
   expect(matchesFederationReceipt(renewed, receipt)).toBe(false);
   expect(sameDispatchIntent(original, renewed)).toBe(false);
+});
+
+test("Sandbox receipts opt into envelope renewal and retain legacy identity checks", () => {
+  const original = create(DispatchJobSchema, {
+    jobId: "sandbox",
+    dispatchEpoch: 1n,
+    federationExecution: true,
+    sandboxExecution: create(SandboxExecutionSchema, {
+      networkDisabled: true,
+      envelope: { manifestSha256: "content", nonce: "original", expiresAtUnixMs: 1n },
+    }),
+  });
+  const receipt = federationDispatchReceipt(original);
+  const legacy = {
+    ...receipt,
+    renewableSandboxSignature: undefined,
+    digest: createHash("sha256")
+      .update(toBinary(DispatchJobSchema, dispatchIntent(original, [])))
+      .digest("hex"),
+  };
+  const renewed = clone(DispatchJobSchema, original);
+  if (!renewed.sandboxExecution?.envelope) throw new Error("Missing fixture");
+  renewed.sandboxExecution.envelope.nonce = "renewed";
+  renewed.sandboxExecution.envelope.expiresAtUnixMs = 2n;
+  expect(matchesFederationReceipt(renewed, receipt)).toBe(true);
+  expect(matchesFederationReceipt(original, legacy)).toBe(true);
+  expect(matchesFederationReceipt(renewed, legacy)).toBe(false);
+  renewed.sandboxExecution.networkDisabled = false;
+  expect(matchesFederationReceipt(renewed, receipt)).toBe(false);
 });

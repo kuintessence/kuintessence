@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, expect, spyOn, test } from "bun:test";
-import { createHash, generateKeyPairSync } from "node:crypto";
+import { createHash, generateKeyPairSync, verify } from "node:crypto";
 import { create, toBinary } from "@bufbuild/protobuf";
 import {
   agents,
@@ -52,7 +52,7 @@ import {
   LicensedMaterialMountSchema,
   ServerMessageSchema,
 } from "@kuintessence/proto";
-import { AppError, ErrorCode, workflowDsl } from "@kuintessence/shared";
+import { AppError, canonicalJson, ErrorCode, workflowDsl } from "@kuintessence/shared";
 import {
   FederationAcceptanceSchema,
   FederationAgreementSchema,
@@ -84,6 +84,7 @@ import { WorkflowExecutionJournalStore } from "../workflow/execution-journal";
 import { WorkflowRunRegistry } from "../workflow/run-registry";
 import { FederationAdmission } from "./admission";
 import { FederationAssetService, federationMaterialDigest } from "./assets";
+import { FederationDataDispatch } from "./data-dispatch";
 import { FederationDispatchAuthorization } from "./dispatch-authorization";
 import {
   FederationExecutionBindingService,
@@ -2720,6 +2721,11 @@ test("licensed material withdrawal cancels an active workflow even with a tempor
 
 test.each([
   "active",
+  "startup",
+  "startup-policy-revoked",
+  "startup-legacy",
+  "startup-signer-unavailable",
+  "startup-changed",
   "mapping-deadline",
   "account-revoked",
   "policy-revoked",
@@ -2727,6 +2733,7 @@ test.each([
   "environment-lock",
 ] as const)("Sandbox runtime renewal preserves the original manifest and checks %s", async (change) => {
   const f = await monitoredJob("queued");
+  const startup = change.startsWith("startup");
   const profileId = crypto.randomUUID(),
     accountId = crypto.randomUUID();
   const runtime = environment().sandboxRuntime;
@@ -2756,8 +2763,29 @@ test.each([
     policies,
   );
   const dispatcher = new AgentDispatcher();
-  const outbox = new JobDispatchOutbox(db, dispatcher, (runId, target) =>
-    authorization.prepare(runId, target),
+  const { privateKey, publicKey } = generateKeyPairSync("ed25519");
+  const renewalSigner = new SandboxManifestSigner({
+    keyId: "renewed",
+    privateKeyPem: privateKey.export({ type: "pkcs8", format: "pem" }).toString(),
+    now: () => testNow.getTime(),
+  });
+  let signatures = 0;
+  const data = new FederationDataDispatch(db);
+  const outbox = new JobDispatchOutbox(
+    db,
+    dispatcher,
+    (runId, target) => authorization.prepare(runId, target),
+    (id, message) => data.prepare(id, message),
+    change === "startup-signer-unavailable"
+      ? undefined
+      : (manifest) => {
+          signatures++;
+          return renewalSigner.sign(
+            change === "startup-changed"
+              ? { ...manifest, limits: { ...manifest.limits, pids: 9 } }
+              : manifest,
+          );
+        },
   );
   const lease = await new WorkflowExecutionJournalStore(db).acquire(f.runId);
   if (!lease) throw new Error("Missing Sandbox lease");
@@ -2843,7 +2871,6 @@ test.each([
       .update(workflowExecutionJobs)
       .set({ intent })
       .where(eq(workflowExecutionJobs.jobId, f.jobId));
-    const { privateKey } = generateKeyPairSync("ed25519");
     const signer = new SandboxManifestSigner({
       keyId: "fixture",
       privateKeyPem: privateKey.export({ type: "pkcs8", format: "pem" }).toString(),
@@ -2890,9 +2917,13 @@ test.each([
     await outbox.enqueue(approvedTarget.agentId, build(), f.runId, lease);
     await lease.release();
     await outbox.acknowledge(approvedTarget.agentId, f.jobId);
-    await db.update(jobs).set({ status: "running" }).where(eq(jobs.id, f.jobId));
+    await db
+      .update(jobs)
+      .set({ status: startup ? "queued" : "running" })
+      .where(eq(jobs.id, f.jobId));
     dispatcher.register(approvedTarget.agentId, {
       federationComputeLeaseV1: true,
+      federationSandboxSignatureRenewalV1: change !== "startup-legacy",
       federationExecutionV1: true,
       verifiedCertFingerprint: "fixture",
       close: () => {},
@@ -2911,7 +2942,7 @@ test.each([
         .update(clusterExecutionAccounts)
         .set({ enabled: false })
         .where(eq(clusterExecutionAccounts.id, accountId));
-    if (change === "policy-revoked")
+    if (change === "policy-revoked" || change === "startup-policy-revoked")
       await db.insert(sandboxPolicyOverlays).values({
         scope: "agent",
         agentId: approvedTarget.agentId,
@@ -2946,12 +2977,48 @@ test.each([
       requestId: crypto.randomUUID(),
       jobId: f.jobId,
       dispatchEpoch: 1n,
-      runtimeRenewal: true,
+      runtimeRenewal: !startup,
     });
     const result = outbox.renewExecution(approvedTarget.agentId, request, (reply) =>
       replies.push(reply),
     );
-    if (change === "active" || change === "mapping-deadline") {
+    if (change === "startup") {
+      expect(await result).toBe(true);
+      const envelope = replies[0]?.dispatch?.sandboxExecution?.envelope;
+      expect(envelope?.nonce).not.toBe(manifest.envelope.nonce);
+      expect(envelope?.keyId).toBe("renewed");
+      expect(envelope?.expiresAtUnixMs).toBe(BigInt(testNow.getTime() + 300_000));
+      const { envelope: _original, ...unsigned } = manifest;
+      expect(
+        verify(
+          null,
+          Buffer.from(canonicalJson(unsigned)),
+          publicKey,
+          envelope?.signature ?? new Uint8Array(),
+        ),
+      ).toBe(true);
+      expect(replies[0]?.expiresAtUnixMs).toBe(BigInt(testNow.getTime() + 10_000));
+      expect(signatures).toBe(1);
+      const [savedJob] = await db.select().from(jobs).where(eq(jobs.id, f.jobId));
+      const [savedMessage] = await db
+        .select()
+        .from(jobDispatchOutbox)
+        .where(eq(jobDispatchOutbox.jobId, f.jobId));
+      expect(savedJob?.sandboxExecution).toEqual(manifest);
+      expect(savedMessage?.payloadBase64).toBe(
+        Buffer.from(toBinary(ServerMessageSchema, build())).toString("base64"),
+      );
+      expect(
+        await outbox.renewExecution(approvedTarget.agentId, request, (reply) =>
+          replies.push(reply),
+        ),
+      ).toBe(true);
+      expect(replies[1]?.dispatch?.sandboxExecution?.envelope?.nonce).not.toBe(envelope?.nonce);
+    } else if (change === "startup-legacy") {
+      await expect(result).rejects.toThrow("does not support Sandbox signature renewal");
+      expect(signatures).toBe(0);
+      expect(replies).toHaveLength(0);
+    } else if (change === "active" || change === "mapping-deadline") {
       expect(await result).toBe(true);
       expect(replies[0]).toMatchObject({
         runtimeRenewal: true,
@@ -2960,10 +3027,12 @@ test.each([
         ),
       });
       expect(replies[0]?.dispatch).toBeUndefined();
+      expect(signatures).toBe(0);
       expect(manifest.envelope.expiresAtUnixMs).toBeLessThan(testNow.getTime());
     } else {
       await expect(result).rejects.toThrow();
       expect(replies).toHaveLength(0);
+      if (change === "startup-policy-revoked") expect(signatures).toBe(0);
     }
   } finally {
     clock?.mockRestore();

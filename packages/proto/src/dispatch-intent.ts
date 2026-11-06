@@ -28,9 +28,18 @@ export function sameDataDeliveryIntent(
 export function dispatchIntent(
   dispatch: DispatchJob,
   renewableInputs: readonly number[],
+  renewSandboxSignature = false,
 ): DispatchJob {
   const copy = clone(DispatchJobSchema, dispatch);
   copy.dataDeliveries = copy.dataDeliveries.map(dataIntent);
+  if (renewSandboxSignature && copy.federationExecution && copy.sandboxExecution?.envelope) {
+    const envelope = copy.sandboxExecution.envelope;
+    envelope.keyId = "";
+    envelope.nonce = "";
+    envelope.issuedAtUnixMs = 0n;
+    envelope.expiresAtUnixMs = 0n;
+    envelope.signature = new Uint8Array();
+  }
   for (const index of renewableInputs) {
     const staged = copy.inputStaging[index];
     if (staged) {
@@ -48,13 +57,14 @@ export function renewableDispatchInputs(dispatch: DispatchJob): number[] {
   );
 }
 
-/** Only the originally declared data credentials may change; commands and signatures stay fixed. */
+/** Renew credentials only; the signed Sandbox content and all execution fields stay fixed. */
 export function sameDispatchIntent(original: DispatchJob, renewed: DispatchJob): boolean {
   const inputs = renewableDispatchInputs(original);
+  const renewSandbox = original.federationExecution && !!original.sandboxExecution?.envelope;
   return equals(
     DispatchJobSchema,
-    dispatchIntent(original, inputs),
-    dispatchIntent(renewed, inputs),
+    dispatchIntent(original, inputs, renewSandbox),
+    dispatchIntent(renewed, inputs, renewSandbox),
   );
 }
 

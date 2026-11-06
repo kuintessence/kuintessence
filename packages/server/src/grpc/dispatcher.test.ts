@@ -674,3 +674,20 @@ test("federation installation cannot reach a legacy Agent even with durable repl
   expect(dispatcher.pushSoftwareOperation("agent", payload)).toBe(true);
   expect(channel.messages[0]?.payload.value).toMatchObject({ federationJobId: "job" });
 });
+
+test("Sandbox signature renewal requires the advertised Agent capability", () => {
+  const dispatcher = new AgentDispatcher();
+  const channel = {
+    ...mockChannel(),
+    federationExecutionV1: true,
+    federationComputeLeaseV1: true,
+    verifiedCertFingerprint: "verified",
+    federationSandboxSignatureRenewalV1: false,
+  };
+  dispatcher.register("agent", channel);
+  expect(dispatcher.supportsFederationSandboxSignatureRenewal("agent")).toBe(false);
+  channel.federationSandboxSignatureRenewalV1 = true;
+  expect(dispatcher.supportsFederationSandboxSignatureRenewal("agent")).toBe(true);
+  channel.verifiedCertFingerprint = "";
+  expect(dispatcher.supportsFederationSandboxSignatureRenewal("agent")).toBe(false);
+});

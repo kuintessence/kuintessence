@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import { mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { create } from "@bufbuild/protobuf";
+import { clone, create } from "@bufbuild/protobuf";
 import * as schema from "@kuintessence/db";
 import { createSqliteDb, runSqliteMigrations } from "@kuintessence/db";
 import {
@@ -9501,4 +9501,99 @@ test.each([
     await expect(harness.performJobCancellation(jobId)).rejects.toThrow("identities disagree");
   else await harness.performJobCancellation(jobId);
   expect(cancelled).toBe(!conflict);
+});
+
+test.each([
+  false,
+  true,
+])("federated Sandbox preparation uses a renewed envelope and rejects changed content (%s)", async (changed) => {
+  const db = createSqliteDb(":memory:");
+  const original = create(DispatchJobSchema, {
+    jobId: crypto.randomUUID(),
+    dispatchEpoch: 1n,
+    federationExecution: true,
+    cpus: 1,
+    memoryMb: 128n,
+    sandboxExecution: {
+      networkDisabled: true,
+      envelope: { nonce: "original", manifestSha256: "fixed", expiresAtUnixMs: 1n },
+    },
+  });
+  const renewed = clone(DispatchJobSchema, original);
+  if (!renewed.sandboxExecution?.envelope) throw new Error("Missing fixture");
+  renewed.sandboxExecution.networkDisabled = !changed;
+  renewed.sandboxExecution.envelope.nonce = "renewed";
+  renewed.sandboxExecution.envelope.expiresAtUnixMs = BigInt(Date.now() + 60_000);
+  let advertised = false;
+  let preparedNonce: string | undefined;
+  const reports: JobStatusReport[] = [];
+  const stream = new AgentStream({
+    client: makePendingRegisteredClient(false, false, {
+      supported: true,
+      onMessage: async (message) => {
+        if (message.payload.case === "register")
+          advertised = message.payload.value.federationSandboxSignatureRenewalV1;
+        if (message.payload.case !== "federationExecutionRequest") return;
+        const request = message.payload.value;
+        await deliverServerMessage(
+          stream,
+          create(ServerMessageSchema, {
+            payload: {
+              case: "federationExecutionResponse",
+              value: {
+                requestId: request.requestId,
+                jobId: request.jobId,
+                dispatchEpoch: request.dispatchEpoch,
+                decision: FederationExecutionDecision.GRANTED,
+                expiresAtUnixMs: BigInt(Date.now() + 10_000),
+                dispatch: renewed,
+              },
+            },
+          }),
+        );
+      },
+    }),
+    adapter: makeAdapter({
+      submit: async () => {
+        throw new Error("This test stops after preparation");
+      },
+    }),
+    agentId: "agent",
+    siteName: "site",
+    logger: silent,
+    heartbeatIntervalMs: 60_000,
+    inboundAcks: new InboundAcks(db),
+    activeRemoteJobs: new ActiveRemoteJobs(db),
+    cleanupIntents: new JobCleanupIntents(db),
+    revocationTombstones: new JobRevocationTombstones(db),
+    assertFederationRuntimeWatchdog: async () => {},
+    sandboxProcessor: {
+      prepare: async (_jobId, execution) => {
+        preparedNonce = execution?.envelope?.nonce;
+        throw new Error("Verified routing; stop before staging");
+      },
+    },
+  });
+  stream.enqueueStatusUpdate = async (report) => {
+    reports.push(report);
+  };
+  activeStreams.push(stream);
+  const running = stream.start();
+  try {
+    await settle(20);
+    await deliverServerMessage(
+      stream,
+      create(ServerMessageSchema, { payload: { case: "dispatchJob", value: original } }),
+    );
+    await waitForCondition(() => reports.some((report) => report.status === "failed"));
+    expect(advertised).toBe(true);
+    expect(reports.find((report) => report.status === "failed")?.message).toContain(
+      changed ? "grant is invalid" : "stop before staging",
+    );
+    expect(preparedNonce).toBe(changed ? undefined : "renewed");
+    expect(original.sandboxExecution?.envelope?.nonce).toBe("original");
+  } finally {
+    await stream.stop();
+    await running;
+  }
 });
