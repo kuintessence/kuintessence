@@ -4,7 +4,9 @@ import {
   federationAgreements,
   federationPreparations,
   federationReservations,
+  federationWorkflowBindings,
   type PgDb,
+  workflowRuns,
 } from "@kuintessence/db";
 import {
   type FederationAgreement,
@@ -84,12 +86,23 @@ export class FederationAgreementService {
             blocker: federationPreparations.blocker,
             updatedAt: federationPreparations.updatedAt,
           },
+          workflow: {
+            runId: workflowRuns.id,
+            status: workflowRuns.status,
+            errorCode: workflowRuns.errorCode,
+            updatedAt: workflowRuns.updatedAt,
+          },
         })
         .from(federationReservations)
         .leftJoin(
           federationPreparations,
           eq(federationPreparations.reservationId, federationReservations.id),
         )
+        .leftJoin(
+          federationWorkflowBindings,
+          eq(federationWorkflowBindings.reservationId, federationReservations.id),
+        )
+        .leftJoin(workflowRuns, eq(workflowRuns.id, federationWorkflowBindings.workflowRunId))
         .where(eq(federationReservations.agreementRevisionId, revisionId))
         .orderBy(desc(federationReservations.createdAt), desc(federationReservations.id))
         .limit(limit)

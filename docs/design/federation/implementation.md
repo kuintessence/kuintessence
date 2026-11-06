@@ -73,6 +73,8 @@
 
 ### 接单的事务边界
 
+接收方的 `GET /api/federation/agreements/:revisionId/reservations` 分别返回接单预留、材料准备和本地 Workflow 状态。`preparation.state=resolved` 只表示引用已解析，不能据此显示“执行成功”；`workflow` 在未绑定运行时为 null，绑定后包含 `runId/status/errorCode/updatedAt`。查询沿用协议读取能力与当前组织检查，不返回脚本、输入、结果或原始错误文本；此接口是接收方本地管理查询，不是已接通的跨机构状态回传。
+
 接收方一个事务内完成：去重 → 锁协议/预算行并核验 revision → 预留额度 → 建 task/attempt → 保存接单回执待签材料与发送待办。机器签名失败时不得发出“已完成接单”的虚假签名回执；恢复 worker 仍只能处理这个原有 attempt。
 
 生成最终签名可采用事务前构造稳定材料并签名、事务内 CAS 验证版本后写入，冲突则重做；或事务内保存不可变材料，由恢复 worker 签名并标记可发送。选后者时，B 只有在必要签名证据已可靠保存后才允许启动，避免“运行了但没有可验证接单凭证”。

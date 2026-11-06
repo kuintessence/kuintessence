@@ -90,6 +90,7 @@ import { WorkflowExecutionJournalStore } from "../workflow/execution-journal";
 import { WorkflowRunRegistry } from "../workflow/run-registry";
 import { createWorkflowRunner } from "../workflow/runner";
 import { FederationAdmission } from "./admission";
+import { FederationAgreementService } from "./agreements";
 import { FederationAssetService, federationMaterialDigest } from "./assets";
 import { FederationDataDispatch } from "./data-dispatch";
 import { FederationDispatchAuthorization } from "./dispatch-authorization";
@@ -3232,4 +3233,53 @@ test("federation activation worker recovers a previously bound held run after te
   await worker.tick();
   expect((await new WorkflowRunRegistry(db).getById(binding.workflowRunId))?.status).toBe("queued");
   await worker.stop();
+});
+
+test("reservation status includes the bound workflow failure without exposing execution inputs", async () => {
+  const f = await executionFixture();
+  const permissions = new FederationPermissionService(db);
+  for (const subject of [actor, outsider])
+    await permissions.set(
+      { ...subject, capability: "agreement.read", enabled: true },
+      actor.userId,
+    );
+  const service = new FederationAgreementService(db, target.signing, () => testNow);
+  const status = async () =>
+    (await service.listReservations(actor, agreement.agreementRevisionId, 100)).find(
+      (row) => row.id === f.reservationId,
+    );
+  expect((await status())?.workflow).toBeNull();
+  await f.preparation.prepare(f.reservationId);
+  const binding = await f.bindings.stage(f.reservationId);
+  expect((await status())?.workflow).toMatchObject({
+    runId: binding.workflowRunId,
+    status: "submitted",
+    errorCode: null,
+  });
+  await new WorkflowRunRegistry(db).failRun(
+    binding.workflowRunId,
+    new Error("Private script input must not appear in agreement status"),
+    "WORKFLOW_NODE_FAILED",
+  );
+  const saved = await status();
+  expect(saved?.preparation?.state).toBe("resolved");
+  expect(saved?.workflow).toEqual({
+    runId: binding.workflowRunId,
+    status: "failed",
+    errorCode: "WORKFLOW_NODE_FAILED",
+    updatedAt: expect.any(Date),
+  });
+  expect(await service.listReservations(actor, agreement.agreementRevisionId, 1)).toHaveLength(1);
+  expect(await service.listReservations(actor, agreement.agreementRevisionId, 1, 1000)).toEqual([]);
+  await expect(service.listReservations(outsider, agreement.agreementRevisionId)).rejects.toThrow(
+    "AGREEMENT_UNAVAILABLE",
+  );
+  await permissions.set({ ...actor, capability: "agreement.read", enabled: false }, actor.userId);
+  try {
+    await expect(service.listReservations(actor, agreement.agreementRevisionId)).rejects.toThrow(
+      "POLICY_DENIED",
+    );
+  } finally {
+    await permissions.set({ ...actor, capability: "agreement.read", enabled: true }, actor.userId);
+  }
 });

@@ -681,6 +681,19 @@ Script 的 File/FileBatch 到下游受管文件转换、Checkpoint 文件持久�
 
 边界：本轮接通现有接收端本地映射路径，源站发送与状态、跨机构字节物化/物理介质、商业/市场账本、归档恢复、UI/CLI 和完整多机构验收仍未完成。没有推送、合并或部署 PR 预览。日志为本地 `temp/federation-activation-*.log`，不纳入版本控制。
 
+## 真实接单联调与运行状态查询
+
+在本机独立 k3s namespace 中复用 Slurm 镜像并挂载本分支源码，启动完整 Server、临时 PostgreSQL、生产 Agent 与 Node 机构 mTLS 网关。证书、机构签名密钥和测试用户独立生成；调度器 Pod 限制 1 CPU/768 MiB。没有连接部署数据库或改动腾讯云、main、现有预览环境。
+
+- **真实传输与调度基线**：通过生产注册服务和 CLI 注册 Agent，以直接 mTLS 连接完整 Server；HTTP 提交轻量 `printf` 原生任务，Slurm 实际返回 schedulerJobId `2`，平台状态 completed。它是原生任务基线，不是联邦 Workflow 或科学软件验收。
+- **真实接单与自动启动**：接收方登记本地脚本映射、签署协议并附加源机构签名；源端探针经真实 Node TLS 网关发送 JWS，完整 Server 接单。重复发送返回完全相同的原回执，只生成一个预留、一个绑定和一个 Workflow。后台自动入队、恢复扫描及共享引擎均实际运行，没有手工将 Workflow 改成 queued。未配置 Fabric。
+- **缺少执行环境的拒绝**：实验未启用 Sandbox，也没有伪造已验证的 SIF/运行时能力。Script 以 WORKFLOW_NODE_FAILED 结束，执行身份没有产生任何 Job。此结果只证明未配置时没有绕过执行保护；尚未验证启用 Sandbox 后的真实联邦脚本、原生依赖锁或软件安装。
+- **修复状态查询缺口**：[接单查询](../../../packages/server/src/federation/agreements.ts)现在连接原有 Workflow 绑定，返回 `workflow.runId/status/errorCode/updatedAt`，未绑定时为 null。材料 resolved 与 Workflow failed 可以同时正确显示，避免把材料就绪当作运行成功。保持协议读取能力、当前机构范围、分页；不返回 YAML、输入、结果或原始错误文本。它仍是接收方本地接口，不是源站状态回传。
+
+验证：新增隔离 PostgreSQL 用例 **1 项通过**，覆盖未绑定、已绑定、真实 registry 写入失败、分页、跨机构拒绝和撤权拒绝，并检查返回字段不包含执行内容。完整 Server HTTP 联调验证状态查询确实返回 resolved + failed，且重复签名交付没有新增预留/运行。初次实验中的只读 Agent 数据库路径、首次队列上报等待、未登记队列和登录时尚无机构成员关系均已修正为正式配置/会话流程；未因此放宽产品权限。新增测试首轮格式问题修正后 lint 无错误（原有 47 warnings、1 info）；全仓 typecheck 及 Fabric 测试类型检查通过。临时 Server、数据库、网关、namespace 与凭据已清理。
+
+本机记录位于 `temp/federation-live/`、`temp/federation-reservation-status.log`、`temp/federation-status-{lint,typecheck}.log`，均不纳入版本控制。尚未推送、合并或部署 PR 预览；下一项需要配置真实受信任运行时后，验证联邦 Script 的实际派发、执行与结果，而不是重复原生任务基线。
+
 ## 尚未接通，不能宣称支持
 
 协议审批与机构信任管理 UI、源站发送与状态查询、额度结算/退款、完整生产持久 Workflow 端到端验收、完整的数据/软件物化与介质交付、双方证据确认与完整用量/结算记录、商业/市场链码及真实联邦作业与 Fabric 联合运行、归档恢复、Web/CLI 和部署配置均未完成。
