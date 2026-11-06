@@ -1,3 +1,4 @@
+import { NativeSelect } from "../ui/native-select";
 /**
  * Three-pane visual editor shell that owns graph<->YAML synchronization.
  *
@@ -426,8 +427,8 @@ export function WorkflowEditorShell({ actions, value, onChange }: WorkflowEditor
           <label className="relative flex h-8 items-center rounded-md border border-input bg-background pl-8 pr-2 text-xs">
             <Activity className="pointer-events-none absolute left-2.5 h-3.5 w-3.5 text-muted-foreground" />
             <span className="sr-only">{t("workflow.editor.flowAnimation.label")}</span>
-            <select
-              className="h-full max-w-28 bg-transparent pr-1 outline-none"
+            <NativeSelect
+              className="h-full max-w-28 pr-1"
               aria-label={t("workflow.editor.flowAnimation.label")}
               title={t("workflow.editor.flowAnimation.label")}
               value={flowAnimationMode}
@@ -441,7 +442,7 @@ export function WorkflowEditorShell({ actions, value, onChange }: WorkflowEditor
                   {t(`workflow.editor.flowAnimation.${mode}`)}
                 </option>
               ))}
-            </select>
+            </NativeSelect>
           </label>
           <Button
             type="button"

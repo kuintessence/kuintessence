@@ -16,8 +16,9 @@ import { useMediaQuery } from "../../lib/use-media-query";
 import { toUserFacingError } from "../../lib/user-facing-error";
 import { Button } from "../ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "../ui/dialog";
-import { Input } from "../ui/input";
+import { Input, Textarea } from "../ui/input";
 import { PageHeader, PageShell } from "../ui/page";
+import { PaginationControls } from "../ui/pagination-controls";
 
 const fields = ["description", "contactName", "email", "phone", "address", "website"] as const;
 type Mode = "provider" | "operator";
@@ -180,29 +181,26 @@ function Directory({ mode, orgId }: { mode: Mode; orgId: string | null }) {
           </div>
           <div className="flex flex-wrap items-center justify-between gap-2 text-sm">
             <span>{t("providers.total", { count: data.total })}</span>
-            <div className="flex items-center gap-2">
-              <Button
-                variant="outline"
-                disabled={page === 1}
-                onClick={() => {
+            <PaginationControls
+              previous={{
+                disabled: page === 1,
+                onClick: () => {
                   setPage(page - 1);
                   setSelected(null);
-                }}
-              >
-                {t("providers.previous")}
-              </Button>
-              <span>{page}</span>
-              <Button
-                variant="outline"
-                disabled={page * 20 >= data.total}
-                onClick={() => {
+                },
+                children: t("providers.previous"),
+              }}
+              next={{
+                disabled: page * 20 >= data.total,
+                onClick: () => {
                   setPage(page + 1);
                   setSelected(null);
-                }}
-              >
-                {t("providers.next")}
-              </Button>
-            </div>
+                },
+                children: t("providers.next"),
+              }}
+            >
+              <span>{page}</span>
+            </PaginationControls>
           </div>
           {item && !editing && (
             <Dialog
@@ -364,14 +362,14 @@ function ProviderEditor({
               <label key={key} htmlFor={`${id}-${key}`} className="grid gap-1.5 text-sm">
                 {t(`providers.${key}`)}
                 {key === "description" ? (
-                  <textarea
+                  <Textarea
                     id={`${id}-${key}`}
                     name={key}
                     rows={3}
                     maxLength={2000}
                     defaultValue={defaults[key]}
                     disabled={busy}
-                    className="w-full rounded-md border border-border bg-background p-2"
+                    className="w-full"
                   />
                 ) : (
                   <Input

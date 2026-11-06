@@ -25,6 +25,8 @@ import { toUserFacingError } from "../../lib/user-facing-error";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { Input, Textarea } from "../ui/input";
+import { NativeSelect } from "../ui/native-select";
+import { PaginationControls } from "../ui/pagination-controls";
 
 interface LicenseEntitlementPanelProps {
   canReview: boolean;
@@ -125,9 +127,9 @@ export function LicenseEntitlementPanel({
             placeholder={t("software.license.subjectPlaceholder")}
             aria-label={t("software.license.subject")}
           />
-          <select
+          <NativeSelect
             aria-label={t("software.license.entitlement")}
-            className="flex h-9 w-full rounded-md border border-border bg-card px-3 py-1 text-sm shadow-sm"
+            className="flex w-full"
             value={entitlement}
             onChange={(event) =>
               setEntitlement(event.target.value as "provider-source-install" | "consumer-use")
@@ -137,7 +139,7 @@ export function LicenseEntitlementPanel({
             <option value="provider-source-install">
               {t("software.license.providerSourceInstall")}
             </option>
-          </select>
+          </NativeSelect>
           <Input
             value={providerOrgId}
             onChange={(event) => setProviderOrgId(event.target.value)}
@@ -395,7 +397,7 @@ function RuntimeAndMaterialEditor({
         <>
           <label className="grid gap-1 text-sm">
             {t("cp.accounts.registration.agent")}
-            <select
+            <NativeSelect
               aria-label={t("cp.accounts.registration.agent")}
               value={agentId}
               onChange={(event) => {
@@ -407,7 +409,7 @@ function RuntimeAndMaterialEditor({
                 setElements("");
                 setFingerprint("");
               }}
-              className="h-9 w-full rounded-md border bg-background px-3"
+              className="w-full"
             >
               <option value="">{t("cp.accounts.registration.selectAgent")}</option>
               {agents.map((item) => (
@@ -415,7 +417,7 @@ function RuntimeAndMaterialEditor({
                   {item.siteName} · {item.agentId} ({item.schedulerType})
                 </option>
               ))}
-            </select>
+            </NativeSelect>
           </label>
           {!agents.length && (
             <p className="text-sm text-muted-foreground">
@@ -441,12 +443,12 @@ function RuntimeAndMaterialEditor({
               <p className="text-xs text-muted-foreground">Python 3.12 · python-3.12-stdlib-v1</p>
               <label className="grid gap-1 text-sm">
                 {t("software.license.runtimeProfile")}
-                <select
+                <NativeSelect
                   aria-label={t("software.license.runtimeProfile")}
                   value={runtimeProfileId}
                   disabled={!baseReady || bind.isPending}
                   onChange={(event) => setRuntimeProfileId(event.target.value)}
-                  className="h-9 w-full min-w-0 rounded-md border bg-background px-3"
+                  className="w-full min-w-0"
                 >
                   <option value="">{t("software.license.selectRuntime")}</option>
                   {profiles.map((item) => (
@@ -454,7 +456,7 @@ function RuntimeAndMaterialEditor({
                       {item.name} · {item.languageVersion}
                     </option>
                   ))}
-                </select>
+                </NativeSelect>
               </label>
               {agent && !profiles.length && (
                 <p className="text-sm text-muted-foreground">
@@ -507,12 +509,12 @@ function RuntimeAndMaterialEditor({
               <fieldset disabled={!baseReady || register.isPending} className="grid gap-2">
                 <label className="grid gap-1 text-sm">
                   {t("software.license.materialSoftware")}
-                  <select
+                  <NativeSelect
                     aria-label={t("software.license.materialSoftware")}
                     value={assetId}
                     onChange={(event) => setAssetId(event.target.value)}
                     disabled={assetsQ.isPending || !!assetsQ.error}
-                    className="h-9 w-full min-w-0 rounded-md border bg-background px-3"
+                    className="w-full min-w-0"
                   >
                     <option value="">{t("software.license.selectMaterialSoftware")}</option>
                     {assets.map((item) => (
@@ -520,7 +522,7 @@ function RuntimeAndMaterialEditor({
                         {item.name} · {item.asset?.version}
                       </option>
                     ))}
-                  </select>
+                  </NativeSelect>
                 </label>
                 {assetsQ.error ? (
                   <div role="alert" className="flex items-center gap-2 text-sm">
@@ -537,30 +539,22 @@ function RuntimeAndMaterialEditor({
                   </p>
                 ) : null}
                 {assetPage > 1 || assetsQ.data?.hasNext ? (
-                  <div className="flex gap-2">
-                    <Button
-                      type="button"
-                      variant="outline"
-                      disabled={assetPage === 1 || assetsQ.isPending}
-                      onClick={() => {
+                  <PaginationControls
+                    previous={{
+                      disabled: assetPage === 1 || assetsQ.isPending,
+                      onClick: () => {
                         setAssetId("");
                         setAssetPage(assetPage - 1);
-                      }}
-                    >
-                      {t("common.pagination.previous")}
-                    </Button>
-                    <Button
-                      type="button"
-                      variant="outline"
-                      disabled={!assetsQ.data?.hasNext || assetsQ.isPending}
-                      onClick={() => {
+                      },
+                    }}
+                    next={{
+                      disabled: !assetsQ.data?.hasNext || assetsQ.isPending,
+                      onClick: () => {
                         setAssetId("");
                         setAssetPage(assetPage + 1);
-                      }}
-                    >
-                      {t("common.pagination.next")}
-                    </Button>
-                  </div>
+                      },
+                    }}
+                  />
                 ) : null}
                 <Input
                   value={selector}

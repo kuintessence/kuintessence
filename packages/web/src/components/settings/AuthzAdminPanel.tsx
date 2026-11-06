@@ -9,6 +9,7 @@ import { toUserFacingError } from "../../lib/user-facing-error";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
+import { Textarea } from "../ui/input";
 import { OrganizationMembershipPanel } from "./OrganizationMembershipPanel";
 
 interface AuthzHealth {
@@ -296,9 +297,9 @@ export function AuthzAdminPanel({ showBreakGlass = false }: { showBreakGlass?: b
               {showBreakGlass ? (
                 <div className="space-y-3" data-testid="authz-raw-tuple-break-glass">
                   <h3 className="text-sm font-medium">{t("adminAccess.rawTitle")}</h3>
-                  <textarea
+                  <Textarea
                     aria-label={t("adminAccess.rawLabel")}
-                    className="min-h-40 w-full rounded-md border bg-background p-3 font-mono text-xs"
+                    className="min-h-40 w-full font-mono text-xs"
                     value={rawTuple}
                     disabled={mobileReadOnly}
                     onChange={(event) => setRawTuple(event.target.value)}

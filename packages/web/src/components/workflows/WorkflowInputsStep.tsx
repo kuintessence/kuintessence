@@ -9,7 +9,6 @@ import {
   GripVertical,
   Loader2,
   RefreshCw,
-  Search,
   Sparkles,
   UploadCloud,
   X,
@@ -45,6 +44,8 @@ import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
 import { Input, Textarea } from "../ui/input";
+import { NativeSelect } from "../ui/native-select";
+import { SearchInput } from "../ui/search-input";
 
 interface NetDriveListResp {
   success: true;
@@ -554,9 +555,9 @@ export const WorkflowInputsStep = forwardRef<WorkflowInputsStepHandle, WorkflowI
                         ) : null}
                       </span>
                       {requirement.type === "bool" ? (
-                        <select
+                        <NativeSelect
                           id={`workflow-value-${requirement.key}`}
-                          className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm"
+                          className="w-full"
                           value={values[requirement.key] ?? ""}
                           onChange={(event) =>
                             onValuesChange({ ...values, [requirement.key]: event.target.value })
@@ -565,7 +566,7 @@ export const WorkflowInputsStep = forwardRef<WorkflowInputsStepHandle, WorkflowI
                           <option value="">{t("workflows.creation.inputs.notSet")}</option>
                           <option value="true">true</option>
                           <option value="false">false</option>
-                        </select>
+                        </NativeSelect>
                       ) : requirement.type === "string" || requirement.type === "json" ? (
                         <Textarea
                           id={`workflow-value-${requirement.key}`}
@@ -1143,19 +1144,16 @@ function DatasetInputPicker({
             : t("workflows.creation.inputs.datasetRequired")}
         </Badge>
       </div>
-      <div className="relative min-w-0">
-        <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
-        <Input
-          className="pl-8"
-          data-testid={`workflow-dataset-search-${requirement.key}`}
-          onChange={(event) => setQuery(event.target.value)}
-          placeholder={t("workflows.creation.inputs.datasetSearchPlaceholder")}
-          value={query}
-        />
-      </div>
+      <SearchInput
+        aria-label={t("workflows.creation.inputs.datasetSearchPlaceholder")}
+        data-testid={`workflow-dataset-search-${requirement.key}`}
+        onChange={(event) => setQuery(event.target.value)}
+        placeholder={t("workflows.creation.inputs.datasetSearchPlaceholder")}
+        value={query}
+      />
       <div className="flex items-center gap-2">
-        <select
-          className="h-9 min-w-0 flex-1 rounded-md border border-input bg-background px-3 text-sm"
+        <NativeSelect
+          className="min-w-0 flex-1"
           data-testid={`workflow-dataset-select-${requirement.key}`}
           disabled={optionsQ.isLoading || optionsQ.isError || displayedOptions.length === 0}
           onChange={(event) => {
@@ -1179,7 +1177,7 @@ function DatasetInputPicker({
               {option.assetName} / {option.version}
             </option>
           ))}
-        </select>
+        </NativeSelect>
         <Button
           aria-label={t("workflows.creation.inputs.refreshDatasets")}
           data-testid={`workflow-dataset-refresh-${requirement.key}`}

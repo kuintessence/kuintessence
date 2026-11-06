@@ -7,6 +7,7 @@ import { useId, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
+import { NativeSelect } from "../ui/native-select";
 import { SpackInstallBindingForm } from "./SpackInstallBindingForm";
 import { SpackInstallBindingHistory } from "./SpackInstallBindingHistory";
 import { useSpackInstallBinding } from "./use-spack-install-binding";
@@ -50,9 +51,9 @@ export function SpackInstallBindingEditor({
           <label htmlFor={`${id}-scope`} className="block">
             {t("materials.installBinding.scope")}
           </label>
-          <select
+          <NativeSelect
             id={`${id}-scope`}
-            className="h-9 w-full min-w-0 rounded-md border border-input bg-background px-2 text-sm"
+            className="w-full min-w-0"
             value={scope}
             disabled={locked}
             onChange={(event) => {
@@ -64,7 +65,7 @@ export function SpackInstallBindingEditor({
             {canInspectScope("platform") ? (
               <option value="platform">{t("materials.installBinding.platform")}</option>
             ) : null}
-          </select>
+          </NativeSelect>
         </div>
         <label htmlFor={`${id}-spec`} className="min-w-0 space-y-1 text-xs">
           <span>{t("materials.installBinding.spec")}</span>

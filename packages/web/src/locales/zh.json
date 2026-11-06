@@ -27,6 +27,7 @@
     "close": "关闭",
     "empty": "暂无记录",
     "pagination": {
+      "rowsPerPage": "每页条数",
       "next": "下一页",
       "page": "第 {{page}} / {{pages}} 页",
       "previous": "上一页",

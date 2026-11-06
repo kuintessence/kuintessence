@@ -9,6 +9,8 @@ import { toUserFacingError } from "../../lib/user-facing-error";
 import { cn } from "../../lib/utils";
 import { Button } from "../ui/button";
 
+import { ToggleGroup, ToggleGroupItem } from "../ui/toggle-group";
+
 type Filter = "ACTIVE" | "FAILED" | "COMPLETED" | "ALL";
 
 const TRANSFER_ERROR_KEYS: Record<string, string> = {
@@ -129,25 +131,26 @@ export function TransfersTray({
         {!embedded ? (
           <span className="text-sm font-semibold">{t("files.transfers.title")}</span>
         ) : null}
-        <div className="flex flex-wrap items-center gap-1 text-[11px]">
+        <ToggleGroup
+          type="single"
+          role="radiogroup"
+          aria-label={t("files.transfers.ariaLabel")}
+          value={filter}
+          onValueChange={(value) => {
+            if (value) setFilter(value as Filter);
+          }}
+        >
           {(["ACTIVE", "FAILED", "COMPLETED", "ALL"] as const).map((f) => (
-            <button
+            <ToggleGroupItem
               key={f}
-              type="button"
+              value={f}
               data-testid={`files-transfers-filter-${f.toLowerCase()}`}
-              aria-pressed={filter === f}
-              onClick={() => setFilter(f)}
-              className={cn(
-                "min-h-11 rounded-full border px-2 py-1 font-mono uppercase tracking-wide sm:min-h-0 sm:py-0.5",
-                filter === f
-                  ? "border-brand bg-brand-soft text-foreground"
-                  : "border-border text-muted-foreground hover:bg-muted/60",
-              )}
+              className="min-h-11 px-2 text-xs sm:min-h-0"
             >
               {filterLabel(f, t)} ({counts[f]})
-            </button>
+            </ToggleGroupItem>
           ))}
-        </div>
+        </ToggleGroup>
       </div>
 
       {loadError ? (

@@ -1,16 +1,17 @@
 import { useQuery } from "@tanstack/react-query";
 import { Link, useNavigate } from "@tanstack/react-router";
-import { FilePenLine, Plus, RefreshCw, Search, Trash2, X } from "lucide-react";
+import { FilePenLine, Plus, RefreshCw, Trash2, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-
 import { api } from "../../lib/api-client";
 import { toUserFacingError } from "../../lib/user-facing-error";
 import { cn } from "../../lib/utils";
 import { Button } from "../ui/button";
 import { Card, CardContent } from "../ui/card";
-import { Input } from "../ui/input";
-import { PageHeader } from "../ui/page";
+import { PageHeader, PageShell } from "../ui/page";
+import { PaginationControls } from "../ui/pagination-controls";
+import { SearchInput } from "../ui/search-input";
+import { ToggleGroup, ToggleGroupItem } from "../ui/toggle-group";
 import { DeleteWorkflowDraftDialog } from "./DeleteWorkflowDraftDialog";
 import { type WorkflowRunRow, WorkflowsTable } from "./WorkflowsTable";
 
@@ -161,7 +162,7 @@ export function WorkflowsPage() {
   }
 
   return (
-    <div className="space-y-5" data-testid="workflows-page">
+    <PageShell data-testid="workflows-page">
       <DeleteWorkflowDraftDialog
         draft={deletingDraft}
         pending={deletePending}
@@ -292,56 +293,49 @@ export function WorkflowsPage() {
         <CardContent className="space-y-4 p-4">
           <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
             <div className="flex min-w-0 flex-1 flex-col gap-3 2xl:flex-row 2xl:items-center">
-              <div className="relative w-full 2xl:w-96">
-                <Search className="absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
-                <Input
-                  value={search}
-                  onChange={(e) => {
-                    setSearch(e.target.value);
-                    setOffset(0);
-                  }}
-                  placeholder={t("workflows.searchPlaceholder")}
-                  className="h-10 rounded-lg bg-background pl-9"
-                  data-testid="workflows-search"
-                />
-              </div>
-              <fieldset
-                className="flex min-w-0 max-w-full flex-wrap gap-1"
+              <SearchInput
+                containerClassName="w-full 2xl:w-96"
+                aria-label={t("workflows.searchPlaceholder")}
+                value={search}
+                onChange={(e) => {
+                  setSearch(e.target.value);
+                  setOffset(0);
+                }}
+                placeholder={t("workflows.searchPlaceholder")}
+                className="h-10 rounded-lg bg-background"
+                data-testid="workflows-search"
+              />
+              <ToggleGroup
+                type="single"
+                role="radiogroup"
+                value={status}
+                onValueChange={(value) => {
+                  if (!value) return;
+                  setStatus(value as WorkflowFilter);
+                  setOffset(0);
+                }}
                 aria-label={t("dashboard.status")}
                 data-testid="workflows-status-filter"
               >
-                {WORKFLOW_FILTERS.map((s) => {
-                  const selected = s === status;
-                  return (
-                    <button
-                      key={s}
-                      type="button"
-                      data-testid={`workflows-chip-${s.toLowerCase()}`}
-                      aria-pressed={selected}
-                      onClick={() => {
-                        setStatus(s);
-                        setOffset(0);
-                      }}
-                      className={cn(
-                        "inline-flex h-9 items-center gap-2 whitespace-nowrap rounded-md px-3 text-xs font-medium transition-colors focus-visible:outline-2 focus-visible:outline-ring",
-                        selected
-                          ? "bg-brand-soft text-brand"
-                          : "text-muted-foreground hover:bg-card/70 hover:text-foreground",
-                      )}
-                    >
-                      {s === "ALL" ? t("common.all") : t(`workflows.filters.${s.toLowerCase()}`)}
-                      {s !== "ALL" ? (
-                        <span
-                          className="tabular-nums"
-                          data-testid={`workflows-summary-${s.toLowerCase()}`}
-                        >
-                          {loadError ? "—" : statusCounts[s]}
-                        </span>
-                      ) : null}
-                    </button>
-                  );
-                })}
-              </fieldset>
+                {WORKFLOW_FILTERS.map((s) => (
+                  <ToggleGroupItem
+                    key={s}
+                    value={s}
+                    data-testid={`workflows-chip-${s.toLowerCase()}`}
+                    className="text-xs"
+                  >
+                    {s === "ALL" ? t("common.all") : t(`workflows.filters.${s.toLowerCase()}`)}
+                    {s !== "ALL" ? (
+                      <span
+                        className="tabular-nums"
+                        data-testid={`workflows-summary-${s.toLowerCase()}`}
+                      >
+                        {loadError ? "—" : statusCounts[s]}
+                      </span>
+                    ) : null}
+                  </ToggleGroupItem>
+                ))}
+              </ToggleGroup>
             </div>
             {hasFilters ? (
               <Button
@@ -389,32 +383,24 @@ export function WorkflowsPage() {
               <span className="text-sm text-muted-foreground">
                 {t("workflows.pagination.page", { page, pages })}
               </span>
-              <div className="flex items-center gap-2">
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  disabled={offset === 0 || runsQ.isFetching}
-                  onClick={() => setOffset((value) => Math.max(0, value - PAGE_SIZE))}
-                  data-testid="workflows-previous-page"
-                >
-                  {t("common.previous")}
-                </Button>
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  disabled={offset + PAGE_SIZE >= total || runsQ.isFetching}
-                  onClick={() => setOffset((value) => value + PAGE_SIZE)}
-                  data-testid="workflows-next-page"
-                >
-                  {t("common.next")}
-                </Button>
-              </div>
+              <PaginationControls
+                previous={{
+                  disabled: offset === 0 || runsQ.isFetching,
+                  onClick: () => setOffset((value) => Math.max(0, value - PAGE_SIZE)),
+                  "data-testid": "workflows-previous-page",
+                  children: t("common.previous"),
+                }}
+                next={{
+                  disabled: offset + PAGE_SIZE >= total || runsQ.isFetching,
+                  onClick: () => setOffset((value) => value + PAGE_SIZE),
+                  "data-testid": "workflows-next-page",
+                  children: t("common.next"),
+                }}
+              />
             </div>
           ) : null}
         </CardContent>
       </Card>
-    </div>
+    </PageShell>
   );
 }

@@ -18,6 +18,7 @@ import { toUserFacingError } from "../../lib/user-facing-error";
 import { useTheme } from "../ThemeProvider";
 import { Button } from "../ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "../ui/dialog";
+import { NativeSelect } from "../ui/native-select";
 import { PageHeader } from "../ui/page";
 import { InterconnectMap } from "./InterconnectMap";
 import { type EditTarget, MetadataEditor } from "./MetadataEditor";
@@ -577,9 +578,9 @@ function DashboardContent({
         </div>
         <div className="flex flex-wrap items-center gap-2 border-b border-border p-4 text-sm">
           <span>{t("interconnect.filter")}</span>
-          <select
+          <NativeSelect
             aria-label={t("interconnect.filterCenter")}
-            className="max-w-full rounded border border-border bg-background p-1.5"
+            className="max-w-full p-1.5"
             value={filter.centerId ?? ""}
             onChange={(e) =>
               setFilter({
@@ -596,7 +597,7 @@ function DashboardContent({
                 {c.metadata.name}
               </option>
             ))}
-          </select>
+          </NativeSelect>
           {[
             filter.clusterId ? clusterName(filter.clusterId) : null,
             filter.centerIds

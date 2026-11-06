@@ -16,7 +16,6 @@ import {
   Folder,
   Loader2,
   RefreshCw,
-  Search,
   SlidersHorizontal,
   TerminalSquare,
   X,
@@ -55,6 +54,8 @@ import {
   DialogTitle,
 } from "../ui/dialog";
 import { Input, Textarea } from "../ui/input";
+import { NativeSelect } from "../ui/native-select";
+import { SearchInput } from "../ui/search-input";
 import {
   Sheet,
   SheetBody,
@@ -376,19 +377,16 @@ function DatasetInputPicker({
 
   return (
     <div className="space-y-2" data-testid={`submit-usecase-dataset-${descriptor}`}>
-      <div className="relative min-w-0">
-        <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
-        <Input
-          className="pl-8"
-          data-testid={`submit-usecase-dataset-search-${descriptor}`}
-          onChange={(event) => setQuery(event.target.value)}
-          placeholder={t("jobs.usecase.datasetSearchPlaceholder")}
-          value={query}
-        />
-      </div>
+      <SearchInput
+        aria-label={t("jobs.usecase.datasetSearchPlaceholder")}
+        data-testid={`submit-usecase-dataset-search-${descriptor}`}
+        onChange={(event) => setQuery(event.target.value)}
+        placeholder={t("jobs.usecase.datasetSearchPlaceholder")}
+        value={query}
+      />
       <div className="flex items-center gap-2">
-        <select
-          className="h-9 min-w-0 flex-1 rounded-md border border-input bg-background px-3 text-sm"
+        <NativeSelect
+          className="min-w-0 flex-1"
           data-testid={`submit-usecase-dataset-select-${descriptor}`}
           disabled={optionsQ.isLoading || optionsQ.isError || displayedOptions.length === 0}
           onChange={(event) => {
@@ -413,7 +411,7 @@ function DatasetInputPicker({
               {option.assetName} / {option.version}
             </option>
           ))}
-        </select>
+        </NativeSelect>
         <Button
           aria-label={t("jobs.usecase.refreshDatasets")}
           data-testid={`submit-usecase-dataset-refresh-${descriptor}`}
@@ -1589,7 +1587,7 @@ export function SubmitJobDialog({
                   })}
                 </p>
               ) : (
-                <select
+                <NativeSelect
                   id="submit-job-queue-select"
                   value={placementSelection.queueId}
                   onChange={(event) => {
@@ -1600,7 +1598,7 @@ export function SubmitJobDialog({
                     setInvalidQueueId(null);
                     setQueueSubmitError(null);
                   }}
-                  className="h-11 w-full rounded-md border border-input bg-background px-3 text-sm text-foreground sm:h-9"
+                  className="h-11 w-full sm:h-9"
                   data-testid="submit-job-queue-select"
                 >
                   <option value="">
@@ -1625,7 +1623,7 @@ export function SubmitJobDialog({
                       );
                     },
                   )}
-                </select>
+                </NativeSelect>
               )}
               {!queuesQ.isLoading && !queuesQ.error && queues.length === 0 ? (
                 <p className="text-xs text-muted-foreground" data-testid="submit-job-queue-empty">
@@ -1822,21 +1820,17 @@ function UsecasePickerDialog({
         </DialogHeader>
         <DialogBody className="flex flex-col gap-3">
           <div className="grid gap-2 lg:grid-cols-[minmax(0,1fr)_160px_160px_minmax(180px,240px)]">
-            <div className="relative min-w-0">
-              <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
-              <Input
-                value={query}
-                onChange={(event) => setQuery(event.target.value)}
-                placeholder={t("software.usecaseSearchPlaceholder")}
-                className="pl-8"
-                data-testid="submit-usecase-catalog-search"
-              />
-            </div>
-            <select
+            <SearchInput
+              aria-label={t("software.usecaseSearchPlaceholder")}
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+              placeholder={t("software.usecaseSearchPlaceholder")}
+              data-testid="submit-usecase-catalog-search"
+            />
+            <NativeSelect
               aria-label={t("jobs.usecase.runtimeFilter", {
                 defaultValue: "Runtime filter",
               })}
-              className="h-9 rounded-md border border-input bg-background px-3 text-sm text-foreground"
               value={runtime}
               onChange={(event) => setRuntime(event.target.value as UsecaseRuntimeFilter)}
               data-testid="submit-usecase-runtime-filter"
@@ -1846,10 +1840,9 @@ function UsecasePickerDialog({
                   {runtimeFilterLabel(t, filter)}
                 </option>
               ))}
-            </select>
-            <select
+            </NativeSelect>
+            <NativeSelect
               aria-label={t("jobs.usecase.inputFilter", { defaultValue: "Input filter" })}
-              className="h-9 rounded-md border border-input bg-background px-3 text-sm text-foreground"
               value={input}
               onChange={(event) => setInput(event.target.value as UsecaseInputFilter)}
               data-testid="submit-usecase-input-filter"
@@ -1859,7 +1852,7 @@ function UsecasePickerDialog({
                   {inputFilterLabel(t, filter)}
                 </option>
               ))}
-            </select>
+            </NativeSelect>
             <Input
               value={software}
               onChange={(event) => setSoftware(event.target.value)}

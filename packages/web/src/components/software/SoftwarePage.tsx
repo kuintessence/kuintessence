@@ -21,7 +21,6 @@ import {
   PackagePlus,
   RefreshCw,
   Save,
-  Search,
   ShieldAlert,
   Star,
   Trash2,
@@ -95,7 +94,10 @@ import {
   DialogTitle,
 } from "../ui/dialog";
 import { Input, Textarea } from "../ui/input";
+import { NativeSelect } from "../ui/native-select";
 import { PageHeader, PageShell } from "../ui/page";
+import { PaginationControls } from "../ui/pagination-controls";
+import { SearchInput } from "../ui/search-input";
 import {
   Sheet,
   SheetBody,
@@ -1284,9 +1286,15 @@ function TagButton({
   onClick: () => void;
 }) {
   return (
-    <button type="button" onClick={onClick}>
-      <Badge variant={active ? "brand" : "outline"}>{children}</Badge>
-    </button>
+    <Button
+      type="button"
+      variant={active ? "default" : "outline"}
+      size="sm"
+      aria-pressed={active}
+      onClick={onClick}
+    >
+      {children}
+    </Button>
   );
 }
 
@@ -1323,23 +1331,25 @@ function ListToolbar({
     >
       <div className="flex flex-col gap-2 lg:flex-row lg:items-center lg:justify-between">
         <div className="relative min-w-0 flex-1 lg:max-w-lg">
-          <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
-          <Input
+          <SearchInput
+            aria-label={searchPlaceholder}
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             placeholder={searchPlaceholder}
-            className="pl-8 pr-8"
+            className="pr-9"
             data-testid={searchTestId}
           />
           {search ? (
-            <button
+            <Button
               type="button"
-              className="absolute right-2 top-1/2 -translate-y-1/2 rounded-sm p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
+              variant="ghost"
+              size="icon"
+              className="absolute right-1 top-1/2 h-7 w-7 -translate-y-1/2"
               onClick={() => setSearch("")}
               aria-label={t("software.clearSearch")}
             >
               <X className="h-3.5 w-3.5" />
-            </button>
+            </Button>
           ) : null}
         </div>
       </div>
@@ -1377,36 +1387,37 @@ function ServerPagination({
   return (
     <div className="flex flex-col gap-2 text-xs text-muted-foreground sm:flex-row sm:items-center sm:justify-between">
       <span>{t("software.pageResultCount", { shown, total })}</span>
-      <div className="flex items-center gap-2">
+      <PaginationControls
+        previous={{
+          disabled: page <= 1,
+          onClick: () => setPage(Math.max(1, page - 1)),
+          "data-testid": "software-template-previous-page",
+          children: (
+            <>
+              <ChevronLeft />
+              {t("software.manage.previousPage")}
+            </>
+          ),
+        }}
+        next={{
+          disabled: !hasNext,
+          onClick: () => setPage(page + 1),
+          "data-testid": "software-template-next-page",
+          children: (
+            <>
+              {t("software.manage.nextPage")}
+              <ChevronRight />
+            </>
+          ),
+        }}
+      >
         <span className="font-mono text-[11px]">
           {t("software.manage.catalogPageStatus", {
             page,
             total: Math.max(1, Math.ceil(total / WORKFLOW_TEMPLATE_PAGE_SIZE)),
           })}
         </span>
-        <Button
-          type="button"
-          variant="outline"
-          size="sm"
-          disabled={page <= 1}
-          onClick={() => setPage(Math.max(1, page - 1))}
-          data-testid="software-template-previous-page"
-        >
-          <ChevronLeft />
-          {t("software.manage.previousPage")}
-        </Button>
-        <Button
-          type="button"
-          variant="outline"
-          size="sm"
-          disabled={!hasNext}
-          onClick={() => setPage(page + 1)}
-          data-testid="software-template-next-page"
-        >
-          {t("software.manage.nextPage")}
-          <ChevronRight />
-        </Button>
-      </div>
+      </PaginationControls>
     </div>
   );
 }
@@ -2493,16 +2504,13 @@ function SpackCatalogPickerDialog({
         </DialogHeader>
         <DialogBody className="flex flex-col gap-3">
           <div className="grid gap-2 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-center">
-            <div className="relative min-w-0">
-              <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
-              <Input
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-                placeholder={t("software.manage.catalogSearch")}
-                className="pl-8"
-                data-testid="software-usecase-catalog-search"
-              />
-            </div>
+            <SearchInput
+              aria-label={t("software.manage.catalogSearch")}
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder={t("software.manage.catalogSearch")}
+              data-testid="software-usecase-catalog-search"
+            />
             <div className="flex flex-wrap gap-1.5" data-testid="software-usecase-source-filters">
               {(["all", "upstream", "official", "vendor"] satisfies SpackCatalogSourceFilter[]).map(
                 (item) => (
@@ -2622,40 +2630,41 @@ function CatalogPickerPagination({
           : t("common.loading")}
       </div>
       {catalog ? (
-        <div className="flex shrink-0 items-center gap-2">
+        <PaginationControls
+          previous={{
+            disabled: !catalog.hasPrevious,
+            onClick: () => onPageChange(Math.max(1, catalog.page - 1)),
+            "data-testid": compact
+              ? "software-usecase-catalog-prev-bottom"
+              : "software-usecase-catalog-prev",
+            children: (
+              <>
+                <ChevronLeft />
+                {t("software.manage.previousPage")}
+              </>
+            ),
+          }}
+          next={{
+            disabled: !catalog.hasNext,
+            onClick: () => onPageChange(catalog.page + 1),
+            "data-testid": compact
+              ? "software-usecase-catalog-next-bottom"
+              : "software-usecase-catalog-next",
+            children: (
+              <>
+                {t("software.manage.nextPage")}
+                <ChevronRight />
+              </>
+            ),
+          }}
+        >
           <span className="font-mono text-[11px] text-muted-foreground">
             {t("software.manage.catalogPageStatus", {
               page: catalog.page,
               total: catalog.totalPages,
             })}
           </span>
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            disabled={!catalog.hasPrevious}
-            onClick={() => onPageChange(Math.max(1, catalog.page - 1))}
-            data-testid={
-              compact ? "software-usecase-catalog-prev-bottom" : "software-usecase-catalog-prev"
-            }
-          >
-            <ChevronLeft />
-            {t("software.manage.previousPage")}
-          </Button>
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            disabled={!catalog.hasNext}
-            onClick={() => onPageChange(catalog.page + 1)}
-            data-testid={
-              compact ? "software-usecase-catalog-next-bottom" : "software-usecase-catalog-next"
-            }
-          >
-            {t("software.manage.nextPage")}
-            <ChevronRight />
-          </Button>
-        </div>
+        </PaginationControls>
       ) : null}
     </div>
   );
@@ -2817,36 +2826,37 @@ function SpackCatalogPackageList({
             })}
           </div>
         </div>
-        <div className="flex shrink-0 items-center gap-2">
+        <PaginationControls
+          previous={{
+            disabled: !catalog.hasPrevious,
+            onClick: () => setPage(Math.max(1, catalog.page - 1)),
+            "data-testid": "software-spack-catalog-prev",
+            children: (
+              <>
+                <ChevronLeft />
+                {t("software.manage.previousPage")}
+              </>
+            ),
+          }}
+          next={{
+            disabled: !catalog.hasNext,
+            onClick: () => setPage(catalog.page + 1),
+            "data-testid": "software-spack-catalog-next",
+            children: (
+              <>
+                {t("software.manage.nextPage")}
+                <ChevronRight />
+              </>
+            ),
+          }}
+        >
           <span className="font-mono text-[11px] text-muted-foreground">
             {t("software.manage.catalogPageStatus", {
               page: catalog.page,
               total: catalog.totalPages,
             })}
           </span>
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            disabled={!catalog.hasPrevious}
-            onClick={() => setPage(Math.max(1, catalog.page - 1))}
-            data-testid="software-spack-catalog-prev"
-          >
-            <ChevronLeft />
-            {t("software.manage.previousPage")}
-          </Button>
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            disabled={!catalog.hasNext}
-            onClick={() => setPage(catalog.page + 1)}
-            data-testid="software-spack-catalog-next"
-          >
-            {t("software.manage.nextPage")}
-            <ChevronRight />
-          </Button>
-        </div>
+        </PaginationControls>
       </div>
       <div
         className="grid auto-rows-max content-start gap-2 md:grid-cols-2 2xl:grid-cols-3"
@@ -3150,16 +3160,15 @@ export function SpackCatalogPackageForm({
         </label>
         <label htmlFor={`${id}-source`} className="grid min-w-0 gap-1.5 text-sm">
           <span>{t("software.manage.catalogPackageSource")}</span>
-          <select
+          <NativeSelect
             id={`${id}-source`}
-            className="h-9 rounded-md border border-border bg-card px-3 text-sm text-foreground"
             value={source}
             onChange={(e) => setSource(e.target.value as SpackCatalogPackageCreate["source"])}
             aria-label={t("software.manage.catalogPackageSource")}
           >
             <option value="official">{sourceLabel(t, "official")}</option>
             <option value="vendor">{sourceLabel(t, "vendor")}</option>
-          </select>
+          </NativeSelect>
         </label>
       </div>
       {source === "vendor" && requiresActiveOrganizationForVendor ? (
@@ -3295,16 +3304,15 @@ function SpackCatalogPackageEditForm({
         </label>
         <label htmlFor={`${id}-source`} className="grid min-w-0 gap-1.5 text-sm">
           <span>{t("software.manage.catalogPackageSource")}</span>
-          <select
+          <NativeSelect
             id={`${id}-source`}
-            className="h-9 rounded-md border border-border bg-card px-3 text-sm text-foreground"
             value={source}
             onChange={(e) => setSource(e.target.value as SpackCatalogPackageCreate["source"])}
             aria-label={t("software.manage.catalogPackageSource")}
           >
             <option value="official">{sourceLabel(t, "official")}</option>
             <option value="vendor">{sourceLabel(t, "vendor")}</option>
-          </select>
+          </NativeSelect>
         </label>
       </div>
       <label htmlFor={`${id}-description`} className="grid min-w-0 gap-1.5 text-sm">

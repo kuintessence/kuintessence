@@ -7,6 +7,7 @@ import { toUserFacingError } from "../../lib/user-facing-error";
 import { Button } from "../ui/button";
 import { Card, CardContent } from "../ui/card";
 import { PageHeader, PageShell } from "../ui/page";
+import { PaginationControls } from "../ui/pagination-controls";
 import { ImportJobJsonDialog } from "./ImportJobJsonDialog";
 import { JobDetailSheet } from "./JobDetailSheet";
 import { JobsTable } from "./JobsTable";
@@ -228,17 +229,20 @@ export function JobsPage({ agentId, onClearAgentFilter }: JobsPageProps = {}) {
               defaultValue: `${pageStart}-${pageEnd} / ${total}`,
             })}
           </span>
-          <div className="flex items-center justify-end gap-2">
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              disabled={pageIndex === 0 || jobsQ.isFetching}
-              onClick={() => setPageIndex((current) => Math.max(0, current - 1))}
-              data-testid="jobs-prev-page"
-            >
-              {t("jobs.pagination.previous", { defaultValue: "上一页" })}
-            </Button>
+          <PaginationControls
+            previous={{
+              disabled: pageIndex === 0 || jobsQ.isFetching,
+              onClick: () => setPageIndex((current) => Math.max(0, current - 1)),
+              "data-testid": "jobs-prev-page",
+              children: t("jobs.pagination.previous", { defaultValue: "上一页" }),
+            }}
+            next={{
+              disabled: pageIndex + 1 >= pageCount || jobsQ.isFetching,
+              onClick: () => setPageIndex((current) => Math.min(pageCount - 1, current + 1)),
+              "data-testid": "jobs-next-page",
+              children: t("jobs.pagination.next", { defaultValue: "下一页" }),
+            }}
+          >
             <span
               className="min-w-20 text-center text-xs tabular-nums"
               data-testid="jobs-page-index"
@@ -249,17 +253,7 @@ export function JobsPage({ agentId, onClearAgentFilter }: JobsPageProps = {}) {
                 defaultValue: `${pageIndex + 1} / ${pageCount}`,
               })}
             </span>
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              disabled={pageIndex + 1 >= pageCount || jobsQ.isFetching}
-              onClick={() => setPageIndex((current) => Math.min(pageCount - 1, current + 1))}
-              data-testid="jobs-next-page"
-            >
-              {t("jobs.pagination.next", { defaultValue: "下一页" })}
-            </Button>
-          </div>
+          </PaginationControls>
         </div>
       )}
 

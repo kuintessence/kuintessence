@@ -568,14 +568,14 @@ describe("transfer list freshness and accessibility", () => {
 
   test("exposes the selected transfer filter", () => {
     render(<TransfersTray transfers={[]} onChanged={vi.fn()} />);
-    expect(screen.getByTestId("files-transfers-filter-active").getAttribute("aria-pressed")).toBe(
+    expect(screen.getByTestId("files-transfers-filter-active").getAttribute("aria-checked")).toBe(
       "true",
     );
     fireEvent.click(screen.getByTestId("files-transfers-filter-failed"));
-    expect(screen.getByTestId("files-transfers-filter-active").getAttribute("aria-pressed")).toBe(
+    expect(screen.getByTestId("files-transfers-filter-active").getAttribute("aria-checked")).toBe(
       "false",
     );
-    expect(screen.getByTestId("files-transfers-filter-failed").getAttribute("aria-pressed")).toBe(
+    expect(screen.getByTestId("files-transfers-filter-failed").getAttribute("aria-checked")).toBe(
       "true",
     );
   });

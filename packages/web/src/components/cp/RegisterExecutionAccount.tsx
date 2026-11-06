@@ -9,6 +9,7 @@ import { toUserFacingError } from "../../lib/user-facing-error";
 import { Button } from "../ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "../ui/dialog";
 import { Input } from "../ui/input";
+import { NativeSelect } from "../ui/native-select";
 
 export function RegisterExecutionAccount({
   providerOrgId,
@@ -129,7 +130,7 @@ export function RegisterExecutionAccount({
           <fieldset disabled={busy || query.isPending || !!query.error} className="space-y-4">
             <div className="grid gap-1.5 text-sm">
               <label htmlFor={`${id}-agent`}>{t("cp.accounts.registration.agent")}</label>
-              <select
+              <NativeSelect
                 id={`${id}-agent`}
                 required
                 value={agentId}
@@ -137,7 +138,7 @@ export function RegisterExecutionAccount({
                   setAgentId(event.target.value);
                   setError("");
                 }}
-                className="h-9 w-full rounded-md border border-input bg-background px-3"
+                className="w-full"
               >
                 <option value="">{t("cp.accounts.registration.selectAgent")}</option>
                 {agents.map((agent) => (
@@ -145,7 +146,7 @@ export function RegisterExecutionAccount({
                     {agent.siteName} · {agent.agentId} ({agent.schedulerType})
                   </option>
                 ))}
-              </select>
+              </NativeSelect>
             </div>
             <label className="grid gap-1.5 text-sm" htmlFor={`${id}-name`}>
               {t("cp.accounts.registration.displayName")}

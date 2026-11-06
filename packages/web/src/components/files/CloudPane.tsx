@@ -15,6 +15,7 @@ import { toast } from "sonner";
 import { relativeFromNow } from "../../lib/format";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
+import { NativeSelect } from "../ui/native-select";
 import { type FileContextAction, FileContextMenu, type FileContextTarget } from "./FileContextMenu";
 import { buildCloudBrowserRows, fmtBytes, parentCloudPrefix } from "./path-picker-utils";
 
@@ -227,17 +228,17 @@ export function CloudPane({
             className="h-8 font-mono text-xs"
             data-testid="files-cloud-search"
           />
-          <select
+          <NativeSelect
             value={sortKey}
             onChange={(event) => setSortKey(event.target.value as SortKey)}
             aria-label={t("files.sortBy")}
-            className="h-8 rounded-md border border-border bg-card px-2 font-mono text-[11px]"
+            className="h-8 font-mono text-[11px]"
             data-testid="files-cloud-sort"
           >
             <option value="name">{t("files.sort.name")}</option>
             <option value="modified">{t("files.sort.modified")}</option>
             <option value="size">{t("files.sort.size")}</option>
-          </select>
+          </NativeSelect>
         </div>
         {onUpload ? (
           <div

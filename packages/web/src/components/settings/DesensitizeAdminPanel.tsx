@@ -7,7 +7,8 @@ import { useMobileMutationBlocked } from "../../lib/use-mobile-mutation-blocked"
 import { toUserFacingError } from "../../lib/user-facing-error";
 import { Button } from "../ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
-import { Input } from "../ui/input";
+import { Input, Textarea } from "../ui/input";
+import { NativeSelect } from "../ui/native-select";
 
 type RuleScope = "global" | "provider" | "cluster";
 type RuleAction = "passthrough" | "hash" | "alias" | "redact" | "hide";
@@ -180,8 +181,7 @@ export function DesensitizeAdminPanel() {
                   className="grid gap-2 rounded-md border p-3 md:grid-cols-[130px_1fr_1fr_140px_36px]"
                   data-testid={`desensitize-rule-${rule.id}`}
                 >
-                  <select
-                    className="h-9 rounded-md border bg-background px-2 text-sm"
+                  <NativeSelect
                     value={rule.scope}
                     aria-label={t("settings.desensitize.scope")}
                     onChange={(event) => {
@@ -194,7 +194,7 @@ export function DesensitizeAdminPanel() {
                         {t(`settings.desensitize.scopes.${scope}`)}
                       </option>
                     ))}
-                  </select>
+                  </NativeSelect>
                   <Input
                     value={rule.scopeId ?? ""}
                     disabled={rule.scope === "global"}
@@ -208,8 +208,7 @@ export function DesensitizeAdminPanel() {
                     aria-label={t("settings.desensitize.fieldPath")}
                     onChange={(event) => updateRule(rule.id, { fieldPath: event.target.value })}
                   />
-                  <select
-                    className="h-9 rounded-md border bg-background px-2 text-sm"
+                  <NativeSelect
                     value={rule.action}
                     aria-label={t("settings.desensitize.action")}
                     onChange={(event) =>
@@ -221,7 +220,7 @@ export function DesensitizeAdminPanel() {
                         {action}
                       </option>
                     ))}
-                  </select>
+                  </NativeSelect>
                   <Button
                     type="button"
                     size="icon"
@@ -287,8 +286,8 @@ export function DesensitizeAdminPanel() {
                   {t("settings.desensitize.exportDescription")}
                 </p>
               </div>
-              <textarea
-                className="min-h-20 w-full resize-y rounded-md border bg-background p-3 font-mono text-xs"
+              <Textarea
+                className="min-h-20 w-full resize-y font-mono text-xs"
                 value={aliasIds}
                 onChange={(event) => {
                   setAliasIds(event.target.value);
@@ -334,9 +333,9 @@ export function DesensitizeAdminPanel() {
                       <Copy className="h-4 w-4" />
                     </Button>
                   </div>
-                  <textarea
+                  <Textarea
                     readOnly
-                    className="min-h-24 w-full resize-y rounded-md border bg-muted/35 p-3 font-mono text-xs"
+                    className="min-h-24 w-full resize-y bg-muted/35 font-mono text-xs"
                     value={envelope.token}
                   />
                 </div>

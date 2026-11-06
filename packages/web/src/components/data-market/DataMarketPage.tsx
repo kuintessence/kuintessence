@@ -13,6 +13,7 @@ import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
 import { Input } from "../ui/input";
+import { NativeSelect } from "../ui/native-select";
 import { PageHeader, PageShell } from "../ui/page";
 
 export function DataMarketPage() {
@@ -198,8 +199,7 @@ export function DataMarketPage() {
               </label>
               <label className="grid gap-1 text-sm font-medium">
                 {t("dataMarket.privateKind")}
-                <select
-                  className="h-9 rounded-md border border-input bg-background px-3 text-sm"
+                <NativeSelect
                   value={privateKind}
                   onChange={(event) =>
                     setPrivateKind(event.target.value as "scientific-dataset" | "licensed-material")
@@ -207,7 +207,7 @@ export function DataMarketPage() {
                 >
                   <option value="scientific-dataset">{t("dataMarket.kindScientific")}</option>
                   <option value="licensed-material">{t("dataMarket.kindLicensed")}</option>
-                </select>
+                </NativeSelect>
               </label>
               {privateKind === "licensed-material" ? (
                 <div className="space-y-2 rounded-md border border-amber-300 bg-amber-50 p-3 text-sm text-amber-950 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-100">
