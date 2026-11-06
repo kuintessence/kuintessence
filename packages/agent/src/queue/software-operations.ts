@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { type SqliteDb, softwareExecutions } from "@kuintessence/db";
 import { SoftwareOperationAction, SoftwareOperationStatus } from "@kuintessence/proto";
 import { InstalledSpecSchema } from "@kuintessence/shared";
@@ -30,19 +31,63 @@ const ResultSchema = z.object({
   installed: z.array(InstalledSpecSchema).optional(),
 });
 
+export class SoftwareOperationIntentConflict extends Error {}
+
 export class SoftwareOperations {
   constructor(private readonly db: SqliteDb) {}
 
   async receive(
-    input: Pick<SoftwareResult, "operationId" | "action" | "spec">,
+    input: Pick<SoftwareResult, "operationId" | "action" | "spec"> & {
+      requestedBy?: string;
+      manifestDigest?: string;
+      durableReplay?: boolean;
+    },
   ): Promise<ExecutionIdentity | undefined> {
+    if (
+      input.durableReplay &&
+      (!input.requestedBy || !/^sha256:[0-9a-f]{64}$/.test(input.manifestDigest ?? ""))
+    )
+      throw new SoftwareOperationIntentConflict(
+        "Durable software request lacks its immutable material identity",
+      );
+    const requestDigest = createHash("sha256")
+      .update(
+        JSON.stringify([
+          input.action,
+          input.spec,
+          input.requestedBy ?? "",
+          input.manifestDigest ?? "",
+        ]),
+      )
+      .digest("hex");
     const identity = await executionIdentity();
     const inserted = await this.db
       .insert(softwareExecutions)
-      .values({ ...input, identity })
+      .values({
+        operationId: input.operationId,
+        action: input.action,
+        spec: input.spec,
+        identity,
+        requestDigest,
+      })
       .onConflictDoNothing()
       .returning({ operationId: softwareExecutions.operationId });
-    return inserted.length ? identity : undefined;
+    if (inserted.length) return identity;
+    const [saved] = await this.db
+      .select()
+      .from(softwareExecutions)
+      .where(eq(softwareExecutions.operationId, input.operationId));
+    if (!saved) throw new Error(RECOVERY_REQUIRED);
+    if (
+      saved.action !== input.action ||
+      saved.spec !== input.spec ||
+      (saved.requestDigest && saved.requestDigest !== requestDigest) ||
+      (input.durableReplay && !saved.requestDigest)
+    )
+      throw new SoftwareOperationIntentConflict(
+        "Software operation ID cannot change its request identity",
+      );
+    return undefined;
   }
 
   async start(operationId: string): Promise<void> {

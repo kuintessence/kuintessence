@@ -222,7 +222,6 @@ export class SoftwareOperationService {
 
   private async dispatchOperation(
     created: typeof softwareOperations.$inferSelect,
-    execution?: { lease: LeasedWorkflowJournal; jobId: string },
   ): Promise<SoftwareOperationView> {
     const input = created;
     const spec = created.spec;
@@ -287,28 +286,13 @@ export class SoftwareOperationService {
         return rowToView(updated ?? created);
       }
     }
-    const send = () =>
-      pushSoftwareOperationSafely(this.dispatcher, input.agentId, {
-        operationId: created.id,
-        action: actionToProto(action),
-        spec,
-        requestedBy,
-        ...materialTicket,
-      });
-    const dispatch = execution
-      ? await execution.lease.transaction(async (tx) => {
-          const [job] = await tx
-            .select()
-            .from(jobs)
-            .where(eq(jobs.id, execution.jobId))
-            .for("update");
-          if (!job || job.status !== "pending")
-            throw new WorkflowExecutionInterrupted(
-              "Job stopped before software operation dispatch",
-            );
-          return send();
-        })
-      : send();
+    const dispatch = pushSoftwareOperationSafely(this.dispatcher, input.agentId, {
+      operationId: created.id,
+      action: actionToProto(action),
+      spec,
+      requestedBy,
+      ...materialTicket,
+    });
     if (dispatch.pushed) {
       return rowToView(created);
     }
@@ -333,6 +317,15 @@ export class SoftwareOperationService {
     requestedBy: string;
     executionLease?: LeasedWorkflowJournal;
   }): Promise<SoftwareOperationView> {
+    if (input.executionLease) {
+      if (!this.dispatcher.isOnline(input.agentId))
+        throw new WorkflowExecutionInterrupted("Original installation Agent is offline");
+      if (!this.dispatcher.supportsSoftwareOperationReplay(input.agentId))
+        throw new WorkflowExecutionInterrupted(
+          "Durable installation requires software_operation_replay_v1",
+          { retryable: false },
+        );
+    }
     if (!this.authorizeJobInstall) throw new Error("Workflow install authorization is unavailable");
     const agent = await this.assertAgentExists(input.agentId);
     await this.authorizeJobInstall({
@@ -428,6 +421,7 @@ export class SoftwareOperationService {
           await tx
             .insert(softwareOperations)
             .values({
+              replayEnabled: !!input.executionLease,
               agentId: input.agentId,
               requestedBy: input.requestedBy,
               action: "install",
@@ -439,6 +433,10 @@ export class SoftwareOperationService {
             .returning()
         )[0];
       if (!operation) throw new Error("Software operation insert failed");
+      if (input.executionLease && !operation.replayEnabled)
+        throw new WorkflowExecutionInterrupted(
+          "Waiting for an existing installation without durable delivery",
+        );
       await tx
         .update(jobs)
         .set({
@@ -456,13 +454,128 @@ export class SoftwareOperationService {
     const result = input.executionLease
       ? await input.executionLease.transaction(write)
       : await this.db.transaction(write);
-    // Commit the operation and job link before material delivery reads them on another connection.
-    return result.created
-      ? this.dispatchOperation(
-          result.operation,
-          input.executionLease ? { lease: input.executionLease, jobId: input.jobId } : undefined,
+    // The persistent operation and Job association are the delivery intent.
+    if (input.executionLease) {
+      if (!result.operation.replayEnabled)
+        throw new WorkflowExecutionInterrupted("Legacy installation delivery cannot be replayed", {
+          retryable: false,
+        });
+      return this.deliverWorkflowInstallation(result.operation, input.executionLease, input.jobId);
+    }
+    return result.created ? this.dispatchOperation(result.operation) : rowToView(result.operation);
+  }
+
+  private async deliverWorkflowInstallation(
+    operation: typeof softwareOperations.$inferSelect,
+    lease: LeasedWorkflowJournal,
+    jobId: string,
+  ): Promise<SoftwareOperationView> {
+    const active = ["queued", "running"];
+    if (!active.includes(operation.status)) return rowToView(operation);
+    const due = await lease.transaction(async (tx) => {
+      const [job] = await tx.select().from(jobs).where(eq(jobs.id, jobId)).for("update");
+      if (
+        !job ||
+        job.status !== "pending" ||
+        !job.softwareRequirements?.some((req) => req.operationId === operation.id)
+      )
+        throw new WorkflowExecutionInterrupted("Job stopped before installation delivery");
+      const [claimed] = await tx
+        .update(softwareOperations)
+        .set({ nextDispatchAt: sql`clock_timestamp() + interval '5 seconds'` })
+        .where(
+          and(
+            eq(softwareOperations.id, operation.id),
+            eq(softwareOperations.replayEnabled, true),
+            inArray(softwareOperations.status, active),
+            or(
+              isNull(softwareOperations.nextDispatchAt),
+              sql`${softwareOperations.nextDispatchAt} <= clock_timestamp()`,
+            ),
+          ),
         )
-      : rowToView(result.operation);
+        .returning();
+      return claimed;
+    });
+    if (!due) return (await this.getOperation(operation.id)) ?? rowToView(operation);
+    if (!due.requestedBy || !this.prepareSpackInstall)
+      throw new WorkflowExecutionInterrupted(
+        "Durable installation material authorization is unavailable",
+        { retryable: false },
+      );
+    try {
+      const rejection = await this.policyRejection(due.agentId, "install", due.spec);
+      if (rejection) throw new WorkflowExecutionInterrupted(rejection, { retryable: false });
+      const ticket = await this.prepareSpackInstall({
+        operationId: due.id,
+        agentId: due.agentId,
+        requestedBy: due.requestedBy,
+        spec: due.spec,
+      });
+      if (!/^sha256:[0-9a-f]{64}$/.test(ticket.spackManifestDigest) || !ticket.spackMaterialTicket)
+        throw new WorkflowExecutionInterrupted(
+          "Durable installation lacks a verified material manifest",
+          { retryable: false },
+        );
+      await lease.transaction(async (tx) => {
+        const [job] = await tx.select().from(jobs).where(eq(jobs.id, jobId)).for("update");
+        if (
+          !job ||
+          job.status !== "pending" ||
+          !job.softwareRequirements?.some((req) => req.operationId === due.id)
+        )
+          throw new WorkflowExecutionInterrupted("Job stopped before installation delivery");
+        const [current] = await tx
+          .select()
+          .from(softwareOperations)
+          .where(eq(softwareOperations.id, due.id))
+          .for("update");
+        if (!current)
+          throw new WorkflowExecutionInterrupted("Installation operation disappeared", {
+            retryable: false,
+          });
+        if (!active.includes(current.status)) return;
+        if (
+          !current.replayEnabled ||
+          current.agentId !== due.agentId ||
+          current.spec !== due.spec ||
+          current.requestedBy !== due.requestedBy ||
+          current.action !== "install" ||
+          (current.manifestDigest && current.manifestDigest !== ticket.spackManifestDigest)
+        )
+          throw new WorkflowExecutionInterrupted(
+            "Installation replay changed its immutable intent",
+            { retryable: false },
+          );
+        await tx
+          .update(softwareOperations)
+          .set({ manifestDigest: ticket.spackManifestDigest })
+          .where(eq(softwareOperations.id, current.id));
+        // The verified Agent records this identity before executing; a lost commit may resend it.
+        pushSoftwareOperationSafely(this.dispatcher, due.agentId, {
+          operationId: due.id,
+          action: actionToProto("install"),
+          spec: due.spec,
+          requestedBy: due.requestedBy ?? "",
+          ...ticket,
+          durableReplay: true,
+        });
+      });
+    } catch (cause) {
+      // Completion may revoke the material ticket while a replay is being prepared.
+      const current = await this.getOperation(operation.id);
+      if (current && !active.includes(current.status)) return current;
+      if (cause instanceof WorkflowExecutionInterrupted) throw cause;
+      throw new WorkflowExecutionInterrupted("Software installation delivery is pending", {
+        cause,
+        retryable: !(
+          cause instanceof AppError &&
+          cause.statusCode >= 400 &&
+          cause.statusCode < 500
+        ),
+      });
+    }
+    return (await this.getOperation(operation.id)) ?? rowToView(operation);
   }
 
   async getOperation(id: string): Promise<SoftwareOperationView | null> {
@@ -536,6 +649,7 @@ export class SoftwareOperationService {
           eq(softwareOperations.id, result.operationId),
           eq(softwareOperations.agentId, agentId),
           eq(softwareOperations.action, action),
+          eq(softwareOperations.spec, result.spec),
           inArray(softwareOperations.status, allowedCurrentStatusesForIncomingResult(status)),
         ),
       )
@@ -724,6 +838,7 @@ export function pushSoftwareOperationSafely(
     requestedBy: string;
     spackMaterialTicket?: string;
     spackManifestDigest?: string;
+    durableReplay?: boolean;
   },
 ): { pushed: boolean; error?: string } {
   try {

@@ -209,6 +209,8 @@ message RegisterRequest {
   repeated string managed_dataset_root_ids = 19;
   // Enforces immutable managed Spack execution pins; absent means unsupported.
   bool spack_pinned_execution_v1 = 20;
+  // Durable installation receipts reject changed intent and replay the original operation.
+  bool software_operation_replay_v1 = 21;
 }
 
 message RegisterResponse {
@@ -749,6 +751,7 @@ message SoftwareOperationRequest {
   // Short-lived, operation-scoped download credential, never a Registry credential.
   string spack_material_ticket = 5;
   string spack_manifest_digest = 6;
+  bool durable_replay = 7;
 }
 
 message SoftwareOperationResult {

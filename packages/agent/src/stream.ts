@@ -103,6 +103,7 @@ import type {
   OutboundQueue,
   OutboundItem as PersistedOutboundItem,
 } from "./queue/outbound-queue";
+import { SoftwareOperationIntentConflict } from "./queue/software-operations";
 import type { AgentSandboxCapability } from "./sandbox/capability";
 import type { SandboxDispatchProcessor } from "./sandbox/dispatch-processor";
 import {
@@ -1586,6 +1587,9 @@ export class AgentStream {
           queueInventoryV1: this.queueInventoryV1Capable,
           spackMaterialDeliveryV1: this.spackManager?.requireServerMaterials === true,
           spackPinnedExecutionV1: this.spackManager?.pinnedExecutionAvailable === true,
+          softwareOperationReplayV1:
+            this.spackManager?.requireServerMaterials === true &&
+            !!this.persistentQueue?.softwareOperations,
           managedDatasetRootIds: [...(this.deps.managedDatasetRootIds ?? [])],
         }),
       },
@@ -3033,7 +3037,7 @@ export class AgentStream {
       );
       const managed = this.spackManager?.requireServerMaterials === true;
       const ledger = managed ? this.persistentQueue?.softwareOperations : undefined;
-      if (managed && !ledger) {
+      if ((managed || request.durableReplay) && !ledger) {
         await this.enqueueSoftwareOperationResult({
           operationId: request.operationId,
           action: request.action,
@@ -3049,8 +3053,18 @@ export class AgentStream {
           operationId: request.operationId,
           action: request.action,
           spec: request.spec,
+          requestedBy: request.requestedBy,
+          manifestDigest: request.spackManifestDigest,
+          durableReplay: request.durableReplay,
         });
-      } catch {
+      } catch (error) {
+        if (error instanceof SoftwareOperationIntentConflict) {
+          this.logger.error(
+            { operationId: request.operationId },
+            "Rejected conflicting software operation replay",
+          );
+          return;
+        }
         await this.enqueueSoftwareOperationResult({
           operationId: request.operationId,
           action: request.action,

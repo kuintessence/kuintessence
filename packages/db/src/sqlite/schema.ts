@@ -288,6 +288,7 @@ export const sandboxReplayNonces = sqliteTable(
 
 /** Durable software execution receipt and terminal replay; no tickets or credentials. */
 export const softwareExecutions = sqliteTable("software_executions", {
+  requestDigest: text("request_digest"),
   operationId: text("operation_id").primaryKey(),
   action: integer("action").notNull(),
   spec: text("spec").notNull(),

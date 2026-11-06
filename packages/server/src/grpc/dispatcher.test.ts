@@ -75,6 +75,42 @@ describe("AgentDispatcher", () => {
     dispatcher.register("a", { ...legacy, spackMaterialDeliveryV1: true });
     expect(dispatcher.pushSoftwareOperation("a", payload)).toBe(false);
   });
+  test("durable software delivery requires replay capability on the current verified channel", () => {
+    const dispatcher = new AgentDispatcher();
+    const payload = {
+      operationId: "op",
+      action: SoftwareOperationAction.INSTALL,
+      spec: "hello@1",
+      requestedBy: "user",
+      durableReplay: true,
+    };
+    for (const capabilities of [
+      {},
+      { softwareOperationReplayV1: true },
+      { softwareOperationReplayV1: true, spackMaterialDeliveryV1: true },
+      { spackMaterialDeliveryV1: true, verifiedCertFingerprint: "verified" },
+    ]) {
+      const channel = { ...mockChannel(), ...capabilities };
+      dispatcher.register("a", channel);
+      expect(dispatcher.pushSoftwareOperation("a", payload)).toBe(false);
+      expect(channel.messages).toHaveLength(0);
+    }
+    const channel = {
+      ...mockChannel(),
+      softwareOperationReplayV1: true,
+      spackMaterialDeliveryV1: true,
+      verifiedCertFingerprint: "verified",
+    };
+    dispatcher.register("a", channel);
+    expect(dispatcher.pushSoftwareOperation("a", payload)).toBe(true);
+    const message = channel.messages[0];
+    if (!message) throw new Error("Missing software request");
+    const decoded = fromBinary(ServerMessageSchema, toBinary(ServerMessageSchema, message));
+    expect(decoded.payload.value).toMatchObject({ durableReplay: true });
+    dispatcher.register("a", mockChannel());
+    expect(dispatcher.pushSoftwareOperation("a", payload)).toBe(false);
+  });
+
   const sandboxExecution: SandboxSignedManifest = {
     jobId: "00000000-0000-0000-0000-000000000111",
     script: {

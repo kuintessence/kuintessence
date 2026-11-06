@@ -1,6 +1,6 @@
 import { Database } from "bun:sqlite";
 import { afterAll, beforeAll, expect, test } from "bun:test";
-import { toBinary } from "@bufbuild/protobuf";
+import { create, toBinary } from "@bufbuild/protobuf";
 import * as schema from "@kuintessence/db";
 import {
   agents,
@@ -10,7 +10,12 @@ import {
   runSqliteMigrations,
   users,
 } from "@kuintessence/db";
-import { type ServerMessage, ServerMessageSchema } from "@kuintessence/proto";
+import {
+  type ServerMessage,
+  ServerMessageSchema,
+  SoftwareOperationResultSchema,
+  SoftwareOperationStatus,
+} from "@kuintessence/proto";
 import {
   SPACK_EXECUTION_PLACEHOLDER,
   SPACK_PINNED_EXECUTION_PLACEHOLDER,
@@ -19,10 +24,13 @@ import {
 import { eq, inArray, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/bun-sqlite";
 import { InboundAcks } from "../packages/agent/src/queue/inbound-acks";
+import { SoftwareOperations } from "../packages/agent/src/queue/software-operations";
 import { workflowSpackIntent } from "../packages/agent/src/spack/workflow-activation";
 import { AgentDispatcher } from "../packages/server/src/grpc/dispatcher";
 import { JobDispatchOutbox } from "../packages/server/src/grpc/job-dispatch-outbox";
 import { JobService } from "../packages/server/src/services/job-service";
+import { InstalledRegistry } from "../packages/server/src/software-governance/installed-registry";
+import { SoftwareOperationService } from "../packages/server/src/software-governance/operation-service";
 import { WorkflowExecutionJournalStore } from "../packages/server/src/workflow/execution-journal";
 import {
   completionFromJob,
@@ -561,5 +569,123 @@ test("pinned dispatch survives restart without downgrading to a legacy channel o
     });
   } finally {
     sqlite.close();
+  }
+});
+
+test("software redelivery uses the real Agent receipt once and recovers a lost terminal result", async () => {
+  const runId = crypto.randomUUID();
+  const job = await jobService.submit(
+    {
+      name: "Install recovery",
+      command: "exit 125",
+      resources: { cpus: 1, memoryMb: 16 },
+      softwareRequirements: [{ name: "hello", spec: "hello@1.0", installable: true }],
+    },
+    userId,
+  );
+  jobIds.push(job.id);
+  await db
+    .insert(schema.workflowRuns)
+    .values({ id: runId, name: "Install recovery", status: "running", submittedBy: userId });
+  await db.insert(schema.workflowExecutionLeases).values({ runId });
+  await db.insert(schema.workflowExecutionJobs).values({
+    runId,
+    jobId: job.id,
+    pathHash: "b".repeat(64),
+    path: '["node","install"]',
+    nodeId: "install",
+    intent: {
+      nodeId: "install",
+      name: "install",
+      command: "exit 125",
+      envVars: {},
+      inputStaging: [],
+      expectedOutputs: [],
+    },
+  });
+  const lease = await new WorkflowExecutionJournalStore(db).acquire(runId);
+  if (!lease) throw new Error("Missing install lease");
+  const dispatcher = new AgentDispatcher();
+  const messages: ServerMessage[] = [];
+  dispatcher.register(agentId, {
+    softwareOperationReplayV1: true,
+    spackMaterialDeliveryV1: true,
+    verifiedCertFingerprint: "verified",
+    push: (message) => {
+      messages.push(message);
+    },
+    close: () => {},
+  });
+  let tickets = 0;
+  const operations = new SoftwareOperationService(
+    db,
+    dispatcher,
+    new InstalledRegistry(db),
+    async () => ({
+      spackMaterialTicket: `ticket-${++tickets}`,
+      spackManifestDigest: `sha256:${"a".repeat(64)}`,
+    }),
+    async () => {},
+  );
+  const input = {
+    jobId: job.id,
+    agentId,
+    spec: "hello@1.0",
+    requestedBy: userId,
+    executionLease: lease,
+  };
+  const sqlite = new Database(":memory:");
+  runSqliteMigrations(sqlite);
+  let executions = 0;
+  try {
+    const operation = await operations.requestInstallForJob(input);
+    for (let round = 0; round < 2; round++) {
+      const message = messages.at(-1);
+      if (message?.payload.case !== "softwareOperationRequest")
+        throw new Error("Missing install request");
+      const request = message.payload.value;
+      expect(request).toMatchObject({
+        operationId: operation.id,
+        durableReplay: true,
+        spackMaterialTicket: `ticket-${round + 1}`,
+      });
+      const ledger = new SoftwareOperations(drizzle(sqlite));
+      if (await ledger.receive({ ...request, manifestDigest: request.spackManifestDigest })) {
+        executions++;
+        await ledger.finish({
+          operationId: request.operationId,
+          action: request.action,
+          spec: request.spec,
+          status: SoftwareOperationStatus.SUCCEEDED,
+        });
+      }
+      if (round === 0) {
+        // Lose the first result; make the saved operation due without replacing its identity.
+        await db
+          .update(schema.softwareOperations)
+          .set({ nextDispatchAt: new Date(0) })
+          .where(eq(schema.softwareOperations.id, operation.id));
+        await operations.requestInstallForJob(input);
+      } else {
+        for await (const receipt of ledger.results())
+          await operations.applyAgentResult(
+            agentId,
+            create(SoftwareOperationResultSchema, { ...receipt, replayed: true }),
+          );
+      }
+    }
+    expect(executions).toBe(1);
+    expect(await operations.requestInstallForJob(input)).toMatchObject({
+      id: operation.id,
+      status: "succeeded",
+    });
+    expect(messages).toHaveLength(2);
+  } finally {
+    sqlite.close();
+    await lease.release();
+    await db.delete(schema.workflowRuns).where(eq(schema.workflowRuns.id, runId));
+    await db
+      .delete(schema.softwareOperations)
+      .where(eq(schema.softwareOperations.agentId, agentId));
   }
 });

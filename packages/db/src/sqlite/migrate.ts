@@ -41,6 +41,7 @@ function addColumnIfMissing(db: Database, table: string, column: string, def: st
  */
 export function runSqliteMigrations(db: Database): void {
   db.exec(INIT_SQL);
+  addColumnIfMissing(db, "software_executions", "request_digest", "TEXT");
   for (const col of LOCAL_JOBS_ADDED_COLUMNS) {
     addColumnIfMissing(db, "local_jobs", col.name, col.def);
   }

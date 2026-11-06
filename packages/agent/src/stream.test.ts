@@ -5397,6 +5397,7 @@ describe("AgentStream", () => {
     "standalone",
     "managed",
     "managed-disabled",
+    "managed-without-ledger",
   ] as const)("advertises Spack material delivery only for a managed manager: %s", async (mode) => {
     const { client, sent } = makeMockClient([
       create(ServerMessageSchema, {
@@ -5418,7 +5419,11 @@ describe("AgentStream", () => {
               },
             },
           });
-    const stream = softwareStream({
+    const streamFactory =
+      mode === "managed-without-ledger"
+        ? (deps: AgentStreamDeps) => new AgentStream(deps)
+        : softwareStream;
+    const stream = streamFactory({
       client,
       adapter: makeAdapter(),
       agentId: "agent-001",
@@ -5438,6 +5443,9 @@ describe("AgentStream", () => {
     expect(register?.payload.case).toBe("register");
     if (register?.payload.case === "register") {
       expect(register.payload.value.spackMaterialDeliveryV1).toBe(mode.startsWith("managed"));
+      expect(register.payload.value.softwareOperationReplayV1).toBe(
+        mode.startsWith("managed") && mode !== "managed-without-ledger",
+      );
     }
   });
 
@@ -6726,7 +6734,10 @@ describe("AgentStream", () => {
     expect(failed?.payload.value.error).toBe("spack is unavailable on this Agent");
   });
 
-  test("managed receipt survives online queue loss and replays without rerunning execution", async () => {
+  test.each([
+    false,
+    true,
+  ])("managed receipt survives queue loss and replays without rerunning execution (durable=%s)", async (durableReplay) => {
     const sqlite = new Database(":memory:");
     runSqliteMigrations(sqlite);
     const db = drizzle(sqlite, { schema });
@@ -6751,6 +6762,10 @@ describe("AgentStream", () => {
           operationId,
           action: SoftwareOperationAction.LOAD,
           spec: "fixture@1",
+          durableReplay,
+          requestedBy: "requester",
+          spackManifestDigest: `sha256:${"a".repeat(64)}`,
+          spackMaterialTicket: "first-ticket",
         }),
       },
     });
@@ -6793,6 +6808,20 @@ describe("AgentStream", () => {
           item.status === SoftwareOperationStatus.SUCCEEDED,
       ),
     ).toBe(true);
+    const resultCount = state.outboundQueue.length;
+    if (request.payload.case !== "softwareOperationRequest") throw new Error("Missing request");
+    await deliverServerMessage(
+      before,
+      create(ServerMessageSchema, {
+        payload: {
+          case: "softwareOperationRequest",
+          value: { ...request.payload.value, requestedBy: "changed-requester" },
+        },
+      }),
+    );
+    await state.softwareOperationQueue;
+    expect(state.outboundQueue).toHaveLength(resultCount);
+    request.payload.value.spackMaterialTicket = "renewed-ticket";
     state.outboundQueue.length = 0;
     await before.stop();
     const restarted = new AgentStream(deps);

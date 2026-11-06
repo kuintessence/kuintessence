@@ -1,5 +1,6 @@
-import { afterAll, beforeAll, expect, spyOn, test } from "bun:test";
+import { afterAll, beforeAll, beforeEach, expect, spyOn, test } from "bun:test";
 import { randomUUID } from "node:crypto";
+import { create } from "@bufbuild/protobuf";
 import {
   agents,
   createPgDb,
@@ -10,7 +11,11 @@ import {
   workflowExecutionJobs,
   workflowRuns,
 } from "@kuintessence/db";
-import type { ServerMessage } from "@kuintessence/proto";
+import {
+  type ServerMessage,
+  SoftwareOperationResultSchema,
+  SoftwareOperationStatus,
+} from "@kuintessence/proto";
 import {
   type JobSubmission,
   type JobSubmit,
@@ -53,6 +58,9 @@ beforeAll(async () => {
       schedulerType: "slurm",
       schedulerVersion: "test",
     });
+});
+beforeEach(async () => {
+  await db.delete(softwareOperations).where(inArray(softwareOperations.agentId, [...agentIds]));
 });
 afterAll(async () => {
   if (runIds.length) {
@@ -116,6 +124,7 @@ async function fixture(install = false) {
     dispatcher.register(agentId, {
       spackPinnedExecutionV1: true,
       spackMaterialDeliveryV1: true,
+      softwareOperationReplayV1: true,
       verifiedCertFingerprint: "d".repeat(64),
       push: (message) => {
         sent.push({ agentId, message });
@@ -201,7 +210,7 @@ async function fixture(install = false) {
     softwareReady: () => {
       softwareReady = true;
     },
-    installInterrupt: (callback: () => Promise<void>) => {
+    installInterrupt: (callback: (() => Promise<void>) | undefined) => {
       installInterrupt = callback;
     },
     runId,
@@ -450,5 +459,210 @@ test("lease loss during material preparation prevents late install delivery and 
     }),
   ).toMatchObject({ id: operationId, status: "queued" });
   expect(f.sent).toHaveLength(0);
+  f.installInterrupt(undefined);
+  const deadline = Date.now() + 7000;
+  while (f.sent.length === 0) {
+    if (Date.now() > deadline) throw new Error("Saved delivery deadline was not retried");
+    await Bun.sleep(100);
+    expect(await f.operations.requestInstallForJob(installationRequest(f, next))).toMatchObject({
+      id: operationId,
+    });
+  }
+  expect(f.sent).toHaveLength(1);
   await next.release();
+});
+
+function installationRequest(f: Awaited<ReturnType<typeof fixture>>, lease = f.lease) {
+  return {
+    jobId: f.jobId,
+    agentId: agentIds[0],
+    spec: "hello@1.0",
+    requestedBy: userId,
+    executionLease: lease,
+  };
+}
+async function dueAgain(operationId: string) {
+  await db
+    .update(softwareOperations)
+    .set({ nextDispatchAt: new Date(0) })
+    .where(eq(softwareOperations.id, operationId));
+}
+
+test("pending delivery survives service replacement and retains the same operation with renewed tickets", async () => {
+  const f = await fixture(true);
+  f.installInterrupt(async () => {
+    throw new Error("material service unavailable");
+  });
+  await expect(f.operations.requestInstallForJob(installationRequest(f))).rejects.toThrow(
+    "delivery is pending",
+  );
+  const job = await service.getById(f.jobId);
+  const id = job?.softwareRequirements?.[0]?.operationId;
+  if (!id) throw new Error("Missing durable install intent");
+  expect((await f.operations.getOperation(id))?.status).toBe("queued");
+  expect(f.sent).toHaveLength(0);
+  await f.lease.release();
+  const next = await f.reacquire();
+  let tickets = 0;
+  const resumed = new SoftwareOperationService(
+    db,
+    f.dispatcher,
+    new InstalledRegistry(db),
+    async () => ({
+      spackMaterialTicket: `renewed-ticket-${++tickets}`,
+      spackManifestDigest: `sha256:${"b".repeat(64)}`,
+    }),
+    async () => {},
+  );
+  try {
+    // The saved delivery deadline, rather than a new operation, controls concurrent recovery.
+    await dueAgain(id);
+    await Promise.all(
+      Array.from({ length: 8 }, () => resumed.requestInstallForJob(installationRequest(f, next))),
+    );
+    expect(f.sent).toHaveLength(1);
+    for (let round = 0; round < 2; round++) {
+      const message = f.sent.at(-1)?.message;
+      if (message?.payload.case !== "softwareOperationRequest")
+        throw new Error("Missing install request");
+      const request = message.payload.value;
+      expect(request).toMatchObject({
+        operationId: id,
+        durableReplay: true,
+        spackMaterialTicket: `renewed-ticket-${round + 1}`,
+      });
+      if (round === 0) {
+        // No result has arrived, so recovery must resend the original operation.
+        await dueAgain(id);
+        await resumed.requestInstallForJob(installationRequest(f, next));
+      }
+    }
+    await resumed.applyAgentResult(
+      agentIds[0],
+      create(SoftwareOperationResultSchema, {
+        operationId: id,
+        action: 1,
+        spec: "hello@1.0",
+        status: SoftwareOperationStatus.SUCCEEDED,
+        replayed: true,
+      }),
+    );
+    expect(await resumed.requestInstallForJob(installationRequest(f, next))).toMatchObject({
+      id,
+      status: "succeeded",
+    });
+    expect(f.sent).toHaveLength(2);
+    expect(
+      await db.select().from(softwareOperations).where(eq(softwareOperations.agentId, agentIds[0])),
+    ).toHaveLength(1);
+  } finally {
+    await next.release();
+  }
+});
+
+test("durable installation does not create an intent on an old Agent or send after cancellation", async () => {
+  const f = await fixture(true);
+  f.dispatcher.register(agentIds[0], {
+    push: () => {
+      throw new Error("Unexpected delivery");
+    },
+    close: () => {},
+  });
+  await expect(f.operations.requestInstallForJob(installationRequest(f))).rejects.toThrow(
+    "software_operation_replay_v1",
+  );
+  expect((await service.getById(f.jobId))?.softwareRequirements?.[0]?.operationId).toBeUndefined();
+  f.connect(agentIds[0]);
+  f.installInterrupt(async () => {
+    await db.update(jobs).set({ status: "cancelled" }).where(eq(jobs.id, f.jobId));
+  });
+  await expect(f.operations.requestInstallForJob(installationRequest(f))).rejects.toThrow(
+    "Job stopped",
+  );
+  expect(f.sent).toHaveLength(0);
+  await f.lease.release();
+});
+
+test("failed channel push stays queued; manifest changes and wrong-spec results cannot alter the operation", async () => {
+  const f = await fixture(true);
+  f.dispatcher.register(agentIds[0], {
+    spackMaterialDeliveryV1: true,
+    softwareOperationReplayV1: true,
+    verifiedCertFingerprint: "verified",
+    push: () => {
+      throw new Error("channel closed");
+    },
+    close: () => {},
+  });
+  const op = await f.operations.requestInstallForJob(installationRequest(f));
+  expect(op.status).toBe("queued");
+  f.connect(agentIds[0]);
+  await dueAgain(op.id);
+  const changed = new SoftwareOperationService(
+    db,
+    f.dispatcher,
+    new InstalledRegistry(db),
+    async () => ({
+      spackMaterialTicket: "changed-ticket",
+      spackManifestDigest: `sha256:${"c".repeat(64)}`,
+    }),
+    async () => {},
+  );
+  await expect(changed.requestInstallForJob(installationRequest(f))).rejects.toThrow(
+    "immutable intent",
+  );
+  expect(f.sent).toHaveLength(0);
+  await f.operations.applyAgentResult(
+    agentIds[0],
+    create(SoftwareOperationResultSchema, {
+      operationId: op.id,
+      action: 1,
+      status: SoftwareOperationStatus.SUCCEEDED,
+      spec: "other@1",
+    }),
+  );
+  expect((await f.operations.getOperation(op.id))?.status).toBe("queued");
+  await dueAgain(op.id);
+  await f.operations.requestInstallForJob(installationRequest(f));
+  expect(f.sent).toHaveLength(1);
+  await f.lease.release();
+});
+
+test("completion during material renewal returns the saved terminal result", async () => {
+  const f = await fixture(true);
+  const op = await f.operations.requestInstallForJob(installationRequest(f));
+  await dueAgain(op.id);
+  f.installInterrupt(async () => {
+    await db
+      .update(softwareOperations)
+      .set({ status: "succeeded" })
+      .where(eq(softwareOperations.id, op.id));
+    throw new Error("terminal operations cannot renew credentials");
+  });
+  expect(await f.operations.requestInstallForJob(installationRequest(f))).toMatchObject({
+    id: op.id,
+    status: "succeeded",
+  });
+  expect(f.sent).toHaveLength(1);
+  await f.lease.release();
+});
+
+test("legacy pending installations are not silently upgraded into replayable operations", async () => {
+  const f = await fixture(true);
+  const legacy = await f.operations.requestInstallForJob({
+    jobId: f.jobId,
+    agentId: agentIds[0],
+    spec: "hello@1.0",
+    requestedBy: userId,
+  });
+  await expect(f.operations.requestInstallForJob(installationRequest(f))).rejects.toThrow(
+    "Legacy installation",
+  );
+  const [saved] = await db
+    .select()
+    .from(softwareOperations)
+    .where(eq(softwareOperations.id, legacy.id));
+  expect(saved).toMatchObject({ replayEnabled: false, manifestDigest: null });
+  expect(f.sent).toHaveLength(1);
+  await f.lease.release();
 });

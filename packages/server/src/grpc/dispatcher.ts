@@ -176,6 +176,7 @@ export interface AgentChannel {
   close(): void;
   spackMaterialDeliveryV1?: boolean;
   spackPinnedExecutionV1?: boolean;
+  softwareOperationReplayV1?: boolean;
   verifiedCertFingerprint?: string;
 }
 
@@ -270,6 +271,15 @@ export class AgentDispatcher {
     )
       return false;
     return this.pushToAgent(agentId, message);
+  }
+
+  supportsSoftwareOperationReplay(agentId: string): boolean {
+    const channel = this.getChannel(agentId);
+    return (
+      channel?.softwareOperationReplayV1 === true &&
+      channel.spackMaterialDeliveryV1 === true &&
+      !!channel.verifiedCertFingerprint
+    );
   }
 
   supportsPinnedSpack(agentId: string): boolean {
@@ -586,8 +596,10 @@ export class AgentDispatcher {
       requestedBy: string;
       spackMaterialTicket?: string;
       spackManifestDigest?: string;
+      durableReplay?: boolean;
     },
   ): boolean {
+    if (payload.durableReplay && !this.supportsSoftwareOperationReplay(agentId)) return false;
     if (payload.spackMaterialTicket) {
       const channel = this.channels.get(agentId);
       if (!channel?.spackMaterialDeliveryV1 || !channel.verifiedCertFingerprint) return false;

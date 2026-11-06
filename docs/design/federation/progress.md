@@ -257,7 +257,21 @@ Script 的 File/FileBatch 到下游受管文件转换、Checkpoint 文件持久�
 
 全仓 lint 无错误（原有 47 warnings、1 info）；全仓类型检查发现闭包中的 requester 可空类型，捕获已验证值后 Server 复查通过，其余包和 Fabric 脚本检查通过。540 个本地文档链接与差异格式检查通过。测试使用的自建 PostgreSQL 已停止并清理。
 
-**仍有关键缺口**：安装操作写入后、发给 Agent 前的中断只保留原 `queued` 操作，不会自动重发。尚需安装指令的持久补投、Agent 去重能力的明确协商以及断点联合验证；不能把本节称为完整无人值守安装恢复。尚未交付的联邦执行、结算/市场、加密交付、UI/CLI 和预览验收范围保持不变。
+**本节当时的缺口**：安装操作写入后、发给 Agent 前的中断只保留原 `queued` 操作。下文已补齐持久模式的安装补投和 Agent 能力协商；真实软件安装、跨进程及联邦执行联合验收仍待完成。
+
+## 安装指令补投与 Agent 不可变收据
+
+- [安装服务](../../../packages/server/src/software-governance/operation-service.ts)复用操作行和 Job 关联作为持久投递意图。内部持久 Workflow 等待器按原操作、Agent 和 spec 补投；`nextDispatchAt` 将并发补投间隔限制为至少 5 秒。通道关闭或材料服务暂时不可用保留 queued/running，恢复不会生成替代操作。投递前在同一执行租约事务中锁定 Job 与操作，检查取消和原关联；旧租约不能晚发。
+- 每次补投重新授权并取得短期下载凭据，凭据不写数据库。材料 manifest 摘要首次发送时保存，后续不得替换。安装恰好完成导致凭据续期失败时，读取已有终态；不将这一竞争误报为准备失败。Server 的结果更新同时匹配 Agent、操作、动作和 spec。
+- [协议](../../../packages/proto/proto/kuintessence/v1/agent_service.proto)新增 `software_operation_replay_v1` 和请求的 `durable_replay`。只有启用受管材料且有 SQLite 安装账本的 Agent 才声明能力，Server 还要求当前连接经 mTLS 验证。旧 Agent、不具备账本的 Agent 和旧操作不自动获得可重放资格；普通非持久工作流仍沿用既有投递路径。
+- [Agent 收据](../../../packages/agent/src/queue/software-operations.ts)保存动作、spec、请求人和 manifest 摘要的请求指纹，排除可续期凭据。重复请求只恢复/返回原收据；改变意图的请求拒绝执行，也不覆盖原结果。同一操作实际执行中断时仍按既有进程身份和写锁规则报告失败或待人工恢复，不自动重新编译。
+- [0089](../../../packages/db/migrations/0089_simple_gamma_corps.sql)由 Drizzle 生成，增加 Server 投递标记、下次投递时间与 manifest 摘要；SQLite 升级为旧收据增加可空指纹，不推断历史身份。必须保留 Agent 的持久数据库；丢失账本不在此重放保证范围内。
+
+验证：**253 项相关检查通过**：安装收据、通道和等待器 44 项，完整 Agent 消息处理 143 项，准备恢复 12 项、安装共享 4 项及安装服务 36 项，另有[派发与安装跨包联合测试](../../../scripts/workflow-dispatch.pg.test.ts) 14 项。使用隔离 PostgreSQL 完整迁移与真实 SQLite，覆盖材料准备前中断、服务/租约替换、8 路并发补投、丢失终态后只执行一次、票据更换、意图冲突、旧数据库升级、旧能力拒绝、取消、发送异常及完成/续期竞争。一个恢复用例等待数据库中真实 5 秒投递期限自然到期；其他并发/重发用例主动推进投递期限，未冒充实际耗时验证。临时 PostgreSQL 已停止并清理。
+
+全仓 lint 无错误（原有 47 warnings、1 info）；全仓类型检查发现联合测试跨越 Server 的 rootDir，已将跨包部分移入既有派发测试脚本。修正后 Server、Agent 和联合脚本的严格类型检查通过，其余包此前通过；546 个本地文档目标及差异格式检查通过。
+
+联合用例中的安装执行、材料授权和消息通道为受控边界；另有 AgentStream 自身的重建/重复请求测试。没有执行真实 Spack 编译、启动完整 Server/Agent 进程做故障注入或运行 Slurm/PBS 作业，不能据此声称联邦无人值守端到端已验收。下一步仍为联邦预留到持久 Workflow 的原子映射及真实派发、传输联合验证。
 
 ## 尚未接通，不能宣称支持
 

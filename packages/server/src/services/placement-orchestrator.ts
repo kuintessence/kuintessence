@@ -1141,7 +1141,16 @@ export class PlacementOrchestrator {
           timeoutMs: this.deps.softwareInstallTimeoutMs ?? 24 * 60 * 60 * 1000,
           readJobStatus: async () =>
             (await this.deps.jobService.getById(input.jobId))?.status ?? "failed",
-          readOperation: () => operations.getOperation(operation.id),
+          readOperation: () =>
+            input.executionLease
+              ? operations.requestInstallForJob({
+                  jobId: input.jobId,
+                  agentId,
+                  spec: resolved.spec,
+                  requestedBy: input.userId,
+                  executionLease: input.executionLease,
+                })
+              : operations.getOperation(operation.id),
           inventoryReady: async () =>
             (
               await availability.resolve({ ...request, installable: false }, principal)

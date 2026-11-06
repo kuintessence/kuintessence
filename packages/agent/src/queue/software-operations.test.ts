@@ -18,7 +18,7 @@ import {
   softwareExecution,
 } from "../spack/execution-identity";
 import { SpackInstallStore } from "../spack/install-store";
-import { SoftwareOperations } from "./software-operations";
+import { SoftwareOperationIntentConflict, SoftwareOperations } from "./software-operations";
 
 let base: string;
 let sqlite: Database;
@@ -191,4 +191,79 @@ test("a terminal refusal without a runnable identity is still durable", async ()
   expect(await results()).toMatchObject([
     { ...request, status: Status.FAILED, error: RECOVERY_REQUIRED },
   ]);
+});
+
+const durable = () => ({
+  ...input(),
+  requestedBy: "requester",
+  manifestDigest: `sha256:${"a".repeat(64)}`,
+  durableReplay: true,
+});
+
+test("durable request identity survives reopen and rejects changed intent without losing its result", async () => {
+  const request = durable();
+  expect(await ledger.receive(request)).toBeDefined();
+  const success = {
+    operationId: request.operationId,
+    action: request.action,
+    spec: request.spec,
+    status: Status.SUCCEEDED,
+  };
+  await ledger.finish(success);
+  sqlite.close();
+  sqlite = new Database(join(base, "agent.db"));
+  ledger = new SoftwareOperations(drizzle(sqlite));
+  expect(await ledger.receive(request)).toBeUndefined();
+  for (const change of [
+    { action: Action.UNINSTALL },
+    { spec: "fixture@2" },
+    { requestedBy: "other" },
+    { manifestDigest: `sha256:${"b".repeat(64)}` },
+  ])
+    await expect(ledger.receive({ ...request, ...change })).rejects.toBeInstanceOf(
+      SoftwareOperationIntentConflict,
+    );
+  expect(await results()).toEqual([success]);
+});
+
+test("durable replay rejects incomplete identity and legacy receipts without backfilling them", async () => {
+  const request = durable();
+  for (const change of [{ requestedBy: "" }, { manifestDigest: "invalid" }])
+    await expect(ledger.receive({ ...request, ...change })).rejects.toBeInstanceOf(
+      SoftwareOperationIntentConflict,
+    );
+  expect(sqlite.query("SELECT count(*) AS count FROM software_executions").get()).toEqual({
+    count: 0,
+  });
+  await drizzle(sqlite)
+    .insert(softwareExecutions)
+    .values({
+      operationId: request.operationId,
+      action: request.action,
+      spec: request.spec,
+      identity: await executionIdentity(),
+    });
+  await expect(ledger.receive(request)).rejects.toBeInstanceOf(SoftwareOperationIntentConflict);
+  expect(sqlite.query("SELECT request_digest FROM software_executions").get()).toEqual({
+    request_digest: null,
+  });
+});
+
+test("SQLite migration adds nullable identity to old receipts and can run twice", () => {
+  const old = new Database(":memory:");
+  try {
+    old.exec(
+      "CREATE TABLE software_executions (operation_id TEXT PRIMARY KEY, action INTEGER NOT NULL, spec TEXT NOT NULL, identity TEXT NOT NULL, store_root TEXT, started INTEGER NOT NULL DEFAULT 0, result TEXT)",
+    );
+    old.exec(
+      "INSERT INTO software_executions (operation_id, action, spec, identity) VALUES ('old', 1, 'fixture@1', '{}')",
+    );
+    runSqliteMigrations(old);
+    runSqliteMigrations(old);
+    expect(old.query("SELECT operation_id, request_digest FROM software_executions").get()).toEqual(
+      { operation_id: "old", request_digest: null },
+    );
+  } finally {
+    old.close();
+  }
 });
