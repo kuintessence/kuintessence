@@ -147,8 +147,9 @@ seed:
       cpu: "1"
       memory: "512Mi"
 
-# Single-container Slurm + Agent. The image must include /workspace
-# and installed dependencies, preserving kq-slurm-entrypoint as its ENTRYPOINT.
+# Single-container Slurm + independently supervised Agent/watchdog. The image must
+# include /workspace, installed dependencies and kq-supervise-agent.py, preserving
+# kq-slurm-entrypoint as its ENTRYPOINT.
 scheduler:
   enabled: false
   image:

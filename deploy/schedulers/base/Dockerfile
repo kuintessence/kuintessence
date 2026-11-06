@@ -65,6 +65,8 @@ RUN if [[ -n "${APT_MIRROR}" ]]; then sed -i "s|http://ports.ubuntu.com/ubuntu-p
   && printf "%s\n" "${target_architecture}" >/etc/kuintessence/image-architecture \
   && chown -R kq:kq /workspace /var/lib/kuintessence /var/cache/bun
 
+COPY common/supervise-agent.py /usr/local/bin/kq-supervise-agent.py
+
 COPY common/verify-architecture.sh /usr/local/bin/kq-verify-architecture
 
 RUN chmod +x /usr/local/bin/kq-verify-architecture \

@@ -30,11 +30,12 @@ if [[ ! -f package.json || ! -d packages/agent ]]; then
   exit 2
 fi
 
-mkdir -p "$(dirname "${AGENT_DB_PATH:-/var/lib/kuintessence/agent.db}")" "${BUN_INSTALL_CACHE_DIR:-/var/cache/bun}"
+export AGENT_DB_PATH="${AGENT_DB_PATH:-/var/lib/kuintessence/agent.db}"
+mkdir -p "$(dirname "${AGENT_DB_PATH}")" "${BUN_INSTALL_CACHE_DIR:-/var/cache/bun}"
 
 if [[ ! -d node_modules/pino || ! -d node_modules/ssh2 || ! -e node_modules/@kuintessence/db ]]; then
   echo "workspace dependencies are missing; bootstrapping node_modules"
   kq-install-agent-deps /workspace /workspace/node_modules
 fi
 
-exec bun run --filter @kuintessence/agent start
+exec python3 /usr/local/bin/kq-supervise-agent.py

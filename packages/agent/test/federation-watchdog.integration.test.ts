@@ -53,7 +53,7 @@ async function waitFor(check: () => Promise<boolean>, timeoutMs = 8000) {
 test.each([
   "slurm",
   "pbs-pro",
-] as const)("independent watchdog executable stops real lightweight work after actual AgentStream SIGKILL (%s CLI double)", async (schedulerType) => {
+] as const)("container supervisor keeps the independent watchdog stopping real work after AgentStream SIGKILL (%s CLI double)", async (schedulerType) => {
   const directory = await mkdtemp(join(tmpdir(), "kq-watchdog-"));
   const path = join(directory, "agent.sqlite");
   const sqlite = new Database(path);
@@ -115,24 +115,43 @@ test.each([
   await writeFile(cli, schedulerCli, { mode: 0o700 });
   for (const command of ["sbatch", "squeue", "scancel", "qsub", "qstat", "qdel"])
     await symlink(cli, join(directory, command));
-  const writer = Bun.spawn(
-    [
-      process.execPath,
-      new URL("./fixtures/federation-runtime-renewer.ts", import.meta.url).pathname,
-      path,
-      statePath,
-    ],
-    { stdout: "ignore", stderr: "pipe" },
-  );
   const binary = process.env.KQ_TEST_WATCHDOG_BINARY;
-  const watchdog = Bun.spawn(
-    binary
-      ? [resolve(binary), "--federation-watchdog"]
-      : [
-          process.execPath,
-          new URL("../src/index.ts", import.meta.url).pathname,
-          "--federation-watchdog",
-        ],
+  const watchdogCommand = binary
+    ? [resolve(binary), "--federation-watchdog"]
+    : [
+        process.execPath,
+        new URL("../src/index.ts", import.meta.url).pathname,
+        "--federation-watchdog",
+      ];
+  const writerCommand = [
+    process.execPath,
+    new URL("./fixtures/federation-runtime-renewer.ts", import.meta.url).pathname,
+    path,
+    statePath,
+  ];
+  const shim = `#!/usr/bin/python3
+import json, os, sys
+from pathlib import Path
+folder = Path(os.environ['KQ_TEST_SUPERVISOR_DIR'])
+if '--federation-watchdog' in sys.argv:
+    (folder / 'watchdog.pid').write_text(str(os.getpid()))
+    command = json.loads(os.environ['KQ_TEST_WATCHDOG_COMMAND'])
+else:
+    marker = folder / 'agent.pid'
+    if marker.exists():
+        # Simulate an Agent that cannot restart while the independent watchdog must still act.
+        (folder / 'restart-attempted').touch()
+        sys.exit(19)
+    marker.write_text(str(os.getpid()))
+    command = json.loads(os.environ['KQ_TEST_AGENT_COMMAND'])
+os.execv(command[0], command)
+`;
+  await writeFile(join(directory, "bun"), shim, { mode: 0o700 });
+  const supervisor = Bun.spawn(
+    [
+      "python3",
+      new URL("../../../deploy/schedulers/common/supervise-agent.py", import.meta.url).pathname,
+    ],
     {
       env: {
         ...process.env,
@@ -141,16 +160,18 @@ test.each([
         AGENT_SPAWNER_BACKEND: "host",
         LOG_LEVEL: "error",
         KQ_TEST_SCHEDULER_STATE: statePath,
+        KQ_TEST_SUPERVISOR_DIR: directory,
+        KQ_TEST_WATCHDOG_COMMAND: JSON.stringify(watchdogCommand),
+        KQ_TEST_AGENT_COMMAND: JSON.stringify(writerCommand),
       },
-      stdout: "pipe",
+      stdout: "ignore",
       stderr: "pipe",
     },
   );
-  const watchdogError = new Response(watchdog.stderr).text();
-  const writerError = new Response(writer.stderr).text();
+  const supervisorError = new Response(supervisor.stderr).text();
   try {
     await waitFor(async () => {
-      if (watchdog.exitCode !== null) throw new Error(await watchdogError);
+      if (supervisor.exitCode !== null) throw new Error(await supervisorError);
       try {
         await inbox.assertWatchdogReady(schedulerType);
         return true;
@@ -159,26 +180,29 @@ test.each([
       }
     });
     await waitFor(async () => {
-      if (writer.exitCode !== null) throw new Error(await writerError);
+      if (supervisor.exitCode !== null) throw new Error(await supervisorError);
       const counter = Bun.file(`${statePath}.renewals`);
       return (await counter.exists()) && Number(await counter.text()) >= 2;
     });
     await Bun.sleep(1100);
-    expect(writer.exitCode, writer.exitCode === null ? "" : await writerError).toBeNull();
+    const writerPid = Number(await Bun.file(join(directory, "agent.pid")).text());
+    const watchdogPid = Number(await Bun.file(join(directory, "watchdog.pid")).text());
+    expect(process.kill(writerPid, 0)).toBe(true);
     expect(worker.exitCode).toBeNull();
-    writer.kill("SIGKILL");
-    await writer.exited;
+    process.kill(writerPid, "SIGKILL");
     await waitFor(async () => !!(await inbox.get(dispatchId))?.payload.federationRuntimeStop);
     expect(await worker.exited).not.toBe(0);
     expect((await inbox.get(dispatchId))?.payload.federationRuntime).toMatchObject({
       state: "stopping",
     });
     expect(await new ActiveRemoteJobs(db).listActive()).toHaveLength(1);
+    await waitFor(async () => Bun.file(join(directory, "restart-attempted")).exists());
+    expect(Number(await Bun.file(join(directory, "watchdog.pid")).text())).toBe(watchdogPid);
+    expect(process.kill(watchdogPid, 0)).toBe(true);
   } finally {
-    writer.kill("SIGKILL");
     worker.kill("SIGKILL");
-    watchdog.kill("SIGTERM");
-    await Promise.all([writer.exited, worker.exited, watchdog.exited, watchdogError, writerError]);
+    supervisor.kill("SIGTERM");
+    await Promise.all([worker.exited, supervisor.exited, supervisorError]);
     sqlite.close();
     await rm(directory, { recursive: true, force: true });
   }

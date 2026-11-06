@@ -27,7 +27,7 @@ k3s_pid=""
 agent_pid=""
 
 shutdown() {
-  trap - TERM INT
+  trap - EXIT
 
   for pid in "${agent_pid}" "${k3s_pid}"; do
     if [[ -n "${pid}" ]] && kill -0 "${pid}" 2>/dev/null; then
@@ -42,12 +42,13 @@ shutdown() {
   done
 }
 
-trap 'shutdown; exit 143' TERM
-trap 'shutdown; exit 130' INT
+trap shutdown EXIT
+trap 'exit 143' TERM
+trap 'exit 130' INT
 
 k3s server \
   --write-kubeconfig /etc/rancher/k3s/k3s.yaml \
-  --write-kubeconfig-mode 0644 \
+  --write-kubeconfig-mode 0600 \
   --disable traefik \
   --disable servicelb \
   --kubelet-arg cgroups-per-qos=false \
@@ -78,5 +79,4 @@ wait -n "${k3s_pid}" "${agent_pid}"
 status="$?"
 set -e
 
-shutdown
 exit "${status}"

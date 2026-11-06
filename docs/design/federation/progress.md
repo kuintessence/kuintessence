@@ -555,6 +555,20 @@ Script 的 File/FileBatch 到下游受管文件转换、Checkpoint 文件持久�
 
 边界：这是 Kubernetes 作业身份与独立停止机制的实际验证，不是完整联邦任务、Sandbox 隔离或 Fabric 联合验收。看守自身冻结、宿主机掉电、控制面不可达仍无固定停止时限；Compose/Helm 独立监督接线及 PR 预览仍待完成。自动激活保护继续保留。部署前需按 [systemd 说明](../../../deploy/systemd/README.md#联邦计算的独立看守)配置受控 Kubernetes 凭据和权限。
 
+## 容器部署的独立监督与真实 Slurm 停止验证
+
+- [共用启动脚本](../../../deploy/schedulers/common/start-agent.sh)在加载已有注册环境后启动[独立监督脚本](../../../deploy/schedulers/common/supervise-agent.py)。Agent 和看守分别运行在自己的进程组，退出后单独重启；Agent 反复启动失败时，看守保持原进程继续工作。容器退出时发送 TERM，限时回收后清理残留子进程。复用镜像已有 Python 标准库，没有新增运行依赖。
+- Slurm/PBS/K3s 入口补齐信号转发；PBS 保留 CI 外层的 EXIT 诊断。scheduler-base 打包监督脚本，因此 Compose 和 Helm 使用同一条启动路径；Helm 准备容器检查镜像是否具备新脚本。启动收紧现有 SQLite/WAL/SHM 到 `0600`，拒绝符号链接、硬链接或其他账号文件，保留数据；K3s kubeconfig 改为 `0600`。
+- 实际旧版 Slurm 暴露 `squeue --me` 不兼容，现改为通过同一个 Spawner 查询调度器端 UID，再用 `--user`，容器内外账号不同也不扩大查询范围。任务退出队列后，未启用 accounting 的集群补查 `scontrol` 保留记录，仍同时核对 UUID、代次名称和用户/账户；其他任务不能充当停止证明。记录已被调度器清除且无会计历史时继续保留待核对。
+
+实际验证：在本机 k3s 的独立临时命名空间复用已缓存 Slurm 镜像，挂载本分支启动脚本和代码，启动真实 slurmctld/slurmd、Agent 和看守。提交受限 `sleep` 作业并 SIGKILL Agent，独立看守在持久许可到期后取消作业；原生记录为 CANCELLED，具有实际运行时间，SQLite 保存停止证明。测试未连接 Server/Fabric；收据由测试写入，因此不是完整联邦派发验收。测试结束已删除命名空间。
+
+编译入口进程测试同时覆盖 Slurm/PBS CLI 替身：实际 AgentStream 多次续期后 SIGKILL，监督脚本模拟 Agent 持续重启失败，看守 PID 保持不变并停止真实轻量进程。该结果不等于真实 PBS 验收。独立生命周期测试覆盖单独重启、注册环境继承、私有状态权限、链接拒绝和终止回收；Helm 渲染覆盖实际模板，未部署完整 Chart。
+
+验证结果：相关单元/部署检查 **121 项通过**，Helm 实际渲染 **38 项通过**，编译入口进程检查 **2 项通过**，另完成上述真实 Slurm 验证。全仓类型检查、最终 Agent 类型复查、Python/Shell 语法检查和 Agent 编译通过；lint 无错误（已有 47 warnings、1 info）。本地证据保存在 `temp/scheduler-*.log`。
+
+边界：容器内的两组进程仍共享容器和宿主机；看守本身冻结、容器被移除或宿主机故障没有固定停止时限。本轮仅接通独立监督部署，完整多机构 Compose/Helm 配置、授权/实际激活、Fabric 联合验收与 PR 预览仍待完成，未解除自动激活保护。部署操作见[部署说明](../../deployment.md#初始化与持久化)。
+
 ## 尚未接通，不能宣称支持
 
 协议审批与机构信任管理 UI、源站发送与状态查询、额度结算/退款、联邦目标/数据最终授权与实际激活连接、完整生产持久 Workflow 端到端验收、完整的数据/软件物化与介质交付、双方证据确认与完整用量/结算记录、商业/市场链码及真实联邦作业与 Fabric 联合运行、归档恢复、Web/CLI 和部署配置均未完成。

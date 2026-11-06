@@ -506,6 +506,7 @@ describe("SlurmAdapter.getJobLogs (with mock spawner)", () => {
 describe("SlurmAdapter.listJobs (with mock spawner)", () => {
   test("parses squeue rows into ListedJob[] and maps states", async () => {
     const { spawner, calls } = mockSpawner([
+      { exitCode: 0, stdout: "1000\n" },
       {
         exitCode: 0,
         stdout:
@@ -517,8 +518,10 @@ describe("SlurmAdapter.listJobs (with mock spawner)", () => {
     const adapter = new SlurmAdapter("23.02.7", { spawner });
     const jobs = await adapter.listJobs();
 
-    expect(calls[0]?.[0]).toBe("squeue");
-    expect(calls[0]).toContain("--me");
+    expect(calls[0]).toEqual(["id", "-u"]);
+    expect(calls[1]?.[0]).toBe("squeue");
+    expect(calls[1]).toContain("--user");
+    expect(calls[1]).toContain("1000");
     expect(jobs).toEqual([
       {
         schedulerJobId: "12345",
@@ -545,13 +548,17 @@ describe("SlurmAdapter.listJobs (with mock spawner)", () => {
   });
 
   test("returns empty array when the queue is empty", async () => {
-    const { spawner } = mockSpawner([{ exitCode: 0, stdout: "\n" }]);
+    const { spawner } = mockSpawner([
+      { exitCode: 0, stdout: "1000\n" },
+      { exitCode: 0, stdout: "\n" },
+    ]);
     const adapter = new SlurmAdapter("23.02.7", { spawner });
     expect(await adapter.listJobs()).toEqual([]);
   });
 
   test("throws when squeue exits non-zero", async () => {
     const { spawner } = mockSpawner([
+      { exitCode: 0, stdout: "1000\n" },
       {
         exitCode: 1,
         stdout: "",
@@ -1084,8 +1091,10 @@ test("submission recovery finds a completed Slurm job by exact UUID in retained 
 
 test("unavailable Slurm accounting cannot prove an uncertain submission absent", async () => {
   const { spawner } = mockSpawner([
+    { exitCode: 0, stdout: "1000\n" },
     { exitCode: 0, stdout: "" },
     { exitCode: 1, stdout: "", stderr: "accounting unavailable" },
+    { exitCode: 1, stdout: "", stderr: "controller unavailable" },
   ]);
   const adapter = new SlurmAdapter("23.02.7", { spawner });
   expect(
@@ -1095,13 +1104,14 @@ test("unavailable Slurm accounting cannot prove an uncertain submission absent",
 
 test("an exact live Slurm job can be resumed without requiring accounting", async () => {
   const { spawner, calls } = mockSpawner([
+    { exitCode: 0, stdout: "1000\n" },
     { exitCode: 0, stdout: "42|kq-original|KQ_JOB_ID=original|account\n" },
   ]);
   const adapter = new SlurmAdapter("23.02.7", { spawner });
   expect(
     await adapter.findByKuintessenceJobId({ jobId: "original", submittedAfterUnixMs: Date.now() }),
   ).toEqual({ status: "found", schedulerJobId: "42" });
-  expect(calls).toHaveLength(1);
+  expect(calls).toHaveLength(2);
 });
 
 test("Slurm stop confirmation excludes resumable and unknown states", async () => {
@@ -1116,4 +1126,38 @@ test("Slurm stop confirmation excludes resumable and unknown states", async () =
   await expect(adapter.confirmStopped("42")).rejects.toThrow("Unknown Slurm");
   expect(await adapter.confirmStopped("42")).toBe(true);
   expect(calls.at(-1)).toContain("--format=State%64,ExitCode");
+});
+
+test("failed scheduler-side identity lookup cannot broaden Slurm recovery to other users", async () => {
+  const { spawner, calls } = mockSpawner([{ exitCode: 1, stdout: "", stderr: "unavailable" }]);
+  expect(
+    await new SlurmAdapter("19", { spawner }).findByKuintessenceJobId({ jobId: "original" }),
+  ).toMatchObject({ status: "indeterminate" });
+  expect(calls).toEqual([["id", "-u"]]);
+});
+
+test.each([
+  "original",
+  "other-user",
+  "other-uuid",
+  "other-epoch",
+])("Slurm without accounting recovers retained stop identity: %s", async (variant) => {
+  const { spawner, calls } = mockSpawner([
+    { exitCode: 0, stdout: "1000\n" },
+    { exitCode: 0, stdout: "" },
+    { exitCode: 1, stdout: "", stderr: "accounting disabled" },
+    {
+      exitCode: 0,
+      stdout: `JobId=42 JobName=${variant === "other-epoch" ? "kf6" : "kf5"} UserId=worker(${variant === "other-user" ? "1001" : "1000"}) Account=default JobState=CANCELLED Comment=KQ_JOB_ID=${variant === "other-uuid" ? "other" : "original"}\n`,
+    },
+  ]);
+  const result = await new SlurmAdapter("19", { spawner }).findByKuintessenceJobId({
+    jobId: "original",
+    schedulerName: "kf5",
+    submittedAfterUnixMs: Date.now(),
+  });
+  expect(result).toEqual(
+    variant === "original" ? { status: "found", schedulerJobId: "42" } : { status: "not_found" },
+  );
+  expect(calls[3]).toEqual(["scontrol", "show", "jobs", "-o"]);
 });

@@ -25,6 +25,23 @@ sed \
   /etc/slurm-llnl/slurm.conf.template >/etc/slurm-llnl/slurm.conf
 chown slurm:slurm /etc/slurm-llnl/slurm.conf
 
+slurmctld_pid=""
+slurmd_pid=""
+agent_pid=""
+shutdown() {
+  local pid
+  trap - EXIT
+  for pid in "${agent_pid}" "${slurmctld_pid}" "${slurmd_pid}"; do
+    [[ -z "${pid}" ]] || kill -TERM "${pid}" 2>/dev/null || true
+  done
+  for pid in "${agent_pid}" "${slurmctld_pid}" "${slurmd_pid}"; do
+    [[ -z "${pid}" ]] || wait "${pid}" 2>/dev/null || true
+  done
+}
+trap shutdown EXIT
+trap 'exit 143' TERM
+trap 'exit 130' INT
+
 munged --force
 slurmctld -D &
 slurmctld_pid="$!"

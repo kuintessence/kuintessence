@@ -301,6 +301,7 @@ export class SlurmAdapter implements SchedulerAdapter {
   readonly type = "slurm";
   private spawner: Spawner;
   private logDir: string;
+  private schedulerUser: string | undefined;
   private terminalStatusBackend: "sacct" | "scontrol";
   private queueInventoryTimeoutMs: number;
   private queueInventoryCache: SchedulerQueueInventoryCache;
@@ -402,13 +403,23 @@ export class SlurmAdapter implements SchedulerAdapter {
     }
   }
 
+  private async currentSchedulerUser(): Promise<string> {
+    if (this.schedulerUser !== undefined) return this.schedulerUser;
+    // Resolve on the scheduler side: ContainerSpawner may use a different UID than this process.
+    const result = await this.spawner.run(["id", "-u"], { timeoutMs: 5_000 });
+    const uid = result.stdout.trim();
+    if (result.exitCode !== 0 || !/^\d+$/.test(uid))
+      throw new Error("Cannot determine scheduler execution user");
+    this.schedulerUser = uid;
+    return uid;
+  }
+
   async listJobs(): Promise<ListedJob[]> {
-    // Stable across Slurm 20.x/23.x: the old-style `-o` template with `%T`
-    // (full state name) avoids the version-sensitive `--json` schema. `--me`
-    // scopes to the current user. Fields: jobid|name|state|partition|submit.
+    // --user and the old-style output template also work on Slurm versions without --me.
     const { exitCode, stdout, stderr } = await this.spawner.run([
       "squeue",
-      "--me",
+      "--user",
+      await this.currentSchedulerUser(),
       "--noheader",
       "-o",
       "%i|%j|%T|%P|%V",
@@ -436,14 +447,16 @@ export class SlurmAdapter implements SchedulerAdapter {
   async findByKuintessenceJobId(
     lookup: KuintessenceJobLookup,
   ): Promise<KuintessenceJobLookupResult> {
-    const command = [
-      "squeue",
-      "--noheader",
-      ...(lookup.schedulerName ? ["--name", lookup.schedulerName] : []),
-      ...(lookup.schedulerAccount ? ["--account", lookup.schedulerAccount] : ["--me"]),
-      "--format=%i|%j|%k|%a",
-    ];
     try {
+      const command = [
+        "squeue",
+        "--noheader",
+        ...(lookup.schedulerName ? ["--name", lookup.schedulerName] : []),
+        ...(lookup.schedulerAccount
+          ? ["--account", lookup.schedulerAccount]
+          : ["--user", await this.currentSchedulerUser()]),
+        "--format=%i|%j|%k|%a",
+      ];
       const { exitCode, stdout, stderr } = await this.spawner.run(command, { timeoutMs: 5_000 });
       if (exitCode !== 0) {
         return { status: "indeterminate", reason: `squeue failed: ${stderr.trim()}` };
@@ -488,8 +501,32 @@ export class SlurmAdapter implements SchedulerAdapter {
           ],
           { timeoutMs: 5_000 },
         );
-        if (history.exitCode !== 0) throw new Error("Slurm accounting lookup is unavailable");
-        ids = exactIds(history.stdout);
+        if (history.exitCode === 0) ids = exactIds(history.stdout);
+        if (ids.length === 0) {
+          // A completed Job leaves squeue before the next stop check; AIO has no accounting DB.
+          const retained = await this.spawner.run(["scontrol", "show", "jobs", "-o"], {
+            timeoutMs: 5_000,
+          });
+          if (retained.exitCode !== 0) throw new Error("Slurm retained job lookup is unavailable");
+          const uid = lookup.schedulerAccount ? undefined : await this.currentSchedulerUser();
+          ids = [
+            ...new Set(
+              retained.stdout
+                .split("\n")
+                .filter(
+                  (line) =>
+                    slurmField(line, "Comment") === `KQ_JOB_ID=${lookup.jobId}` &&
+                    (!lookup.schedulerName ||
+                      slurmField(line, "JobName") === lookup.schedulerName) &&
+                    (lookup.schedulerAccount
+                      ? slurmField(line, "Account") === lookup.schedulerAccount
+                      : /\((\d+)\)$/.exec(slurmField(line, "UserId") ?? "")?.[1] === uid),
+                )
+                .map((line) => slurmField(line, "JobId"))
+                .filter((id): id is string => !!id),
+            ),
+          ];
+        }
       }
       if (ids.length === 0) return { status: "not_found" };
       if (ids.length !== 1) {

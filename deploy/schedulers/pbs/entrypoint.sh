@@ -28,6 +28,17 @@ PBS_CORE_LIMIT=unlimited
 PBS_SCP=/usr/bin/scp
 EOF
 
+agent_pid=""
+shutdown() {
+  if [[ -n "${agent_pid}" ]]; then
+    kill -TERM "${agent_pid}" 2>/dev/null || true
+    wait "${agent_pid}" 2>/dev/null || true
+  fi
+  /etc/init.d/pbs stop
+}
+trap 'shutdown; exit 143' TERM
+trap 'shutdown; exit 130' INT
+
 /etc/init.d/pbs start
 
 for _ in {1..90}; do
@@ -39,6 +50,7 @@ done
 
 if ! qstat -B >/dev/null 2>&1; then
   echo "PBS did not become ready" >&2
+  shutdown
   exit 1
 fi
 
@@ -57,4 +69,9 @@ runuser -u kq --preserve-environment -- /usr/local/bin/kq-register-compose-agent
 runuser -u kq --preserve-environment -- /usr/local/bin/kq-start-agent &
 agent_pid="$!"
 
+set +e
 wait "${agent_pid}"
+status="$?"
+set -e
+shutdown
+exit "${status}"

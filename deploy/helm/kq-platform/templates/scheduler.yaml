@@ -92,6 +92,7 @@ spec:
             - /bin/sh
             - -ec
             - |
+              test -f /usr/local/bin/kq-supervise-agent.py
               test -f /workspace/package.json
               test -d /workspace/packages/cli
               test -d /workspace/packages/agent
@@ -119,7 +120,7 @@ spec:
         - name: scheduler
           image: {{ include "kq.image" .Values.scheduler.image | quote }}
           imagePullPolicy: {{ .Values.scheduler.image.pullPolicy }}
-          # Existing Slurm entrypoint starts munge, slurmctld, slurmd and Agent.
+          # Slurm entrypoint starts scheduler services; kq-start-agent independently supervises Agent and watchdog.
           securityContext:
             runAsUser: 0
             privileged: false
