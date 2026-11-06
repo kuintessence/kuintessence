@@ -1,15 +1,21 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import { clone, create } from "@bufbuild/protobuf";
 import {
   DataDeliveryBindingSchema,
   DataDeliveryEntrySchema,
   DataDeliveryMethod,
 } from "@kuintessence/proto";
-import { DataDeliveryExecutor, type TrustedReadonlyMountDriver } from "./data-delivery";
+import { ExecutionAuthorization } from "../execution-authorization";
+import {
+  DataDeliveryExecutor,
+  LinuxBindReadonlyMountDriver,
+  type TrustedReadonlyMountDriver,
+} from "./data-delivery";
 import { AgentDataRoots } from "./local-data-security";
 
 const temporaryRoots: string[] = [];
@@ -304,4 +310,142 @@ test("rejects changed data identity before any download", async () => {
     }),
   ).rejects.toThrow("immutable intent");
   expect(downloaded).toBe(false);
+});
+
+test.each([
+  "renewed",
+  "offline",
+  "denied",
+  "cancelled",
+] as const)("slow Data Market transfer observes continuing authority: %s", async (mode) => {
+  const { roots, jobRoot } = await fixture();
+  const parent = new AbortController();
+  let renewals = 0;
+  const authorization = new ExecutionAuthorization(
+    Date.now() + 400,
+    async (signal) => {
+      renewals++;
+      if (mode === "offline") await delay(10_000, undefined, { signal });
+      if (mode === "denied") throw new Error("permission withdrawn");
+      return Date.now() + 400;
+    },
+    parent.signal,
+  );
+  let producing: ReturnType<typeof setTimeout> | undefined;
+  const server = Bun.serve({
+    port: 0,
+    fetch: () =>
+      new Response(
+        new ReadableStream({
+          start(controller) {
+            controller.enqueue(Buffer.from("a"));
+            if (mode === "cancelled") parent.abort(new Error("cancelled"));
+            producing = setTimeout(() => {
+              controller.enqueue(Buffer.from("b"));
+              controller.close();
+            }, 900);
+          },
+          cancel() {
+            clearTimeout(producing);
+          },
+        }),
+      ),
+  });
+  const executor = new DataDeliveryExecutor({ roots });
+  const original = binding({
+    method: DataDeliveryMethod.OBJECT_DOWNLOAD,
+    entries: [{ path: "input", value: "ab", url: `http://127.0.0.1:${server.port}/data` }],
+  });
+  try {
+    const preparing = executor.prepare("slow", [original], { signal: authorization.signal });
+    if (mode === "renewed") {
+      await preparing;
+      expect(renewals).toBeGreaterThan(1);
+      expect(await readFile(join(jobRoot, "slow/inputs/dataset/input"), "utf8")).toBe("ab");
+    } else {
+      await expect(preparing).rejects.toThrow();
+      expect(await readdir(join(jobRoot, "slow/inputs/dataset"))).toEqual([]);
+    }
+  } finally {
+    clearTimeout(producing);
+    await authorization.close();
+    server.stop(true);
+  }
+});
+
+test("cancelled local verification cannot publish a copied file", async () => {
+  const { roots, jobRoot, datasetRoot } = await fixture();
+  await writeFile(join(datasetRoot, "managed/input"), "content");
+  const controller = new AbortController();
+  const executor = new DataDeliveryExecutor({ roots });
+  await expect(
+    executor.prepare(
+      "cancelled-copy",
+      [
+        binding({
+          method: DataDeliveryMethod.STAGE_COPY,
+          entries: [{ path: "input", value: "content" }],
+        }),
+      ],
+      {
+        signal: controller.signal,
+        beforeSideEffect: async () => {
+          controller.abort(new Error("permission withdrawn"));
+        },
+      },
+    ),
+  ).rejects.toThrow("permission withdrawn");
+  expect(await Bun.file(join(jobRoot, "cancelled-copy/inputs/dataset/input")).exists()).toBe(false);
+});
+
+test("failed preparation retains cleanup until unmount actually succeeds", async () => {
+  const { roots, jobRoot, datasetRoot } = await fixture();
+  await writeFile(join(datasetRoot, "managed/input"), "content");
+  let unmounts = 0;
+  const executor = new DataDeliveryExecutor({
+    roots,
+    readonlyMountDriver: {
+      trusted: true,
+      mountReadonly: async () => {
+        throw new Error("Mount outcome uncertain");
+      },
+      unmount: async () => {
+        if (++unmounts < 3) throw new Error("Mount still busy");
+      },
+    },
+  });
+  await expect(
+    executor.prepare("retry-cleanup", [
+      binding({
+        method: DataDeliveryMethod.READONLY_MOUNT,
+        entries: [{ path: "input", value: "content" }],
+      }),
+    ]),
+  ).rejects.toThrow("preparation and cleanup failed");
+  await expect(executor.release("retry-cleanup")).rejects.toThrow("cleanup failed");
+  expect(await Bun.file(join(jobRoot, "retry-cleanup/inputs/dataset/input")).exists()).toBe(true);
+  await executor.release("retry-cleanup");
+  expect(unmounts).toBe(3);
+  expect(await Bun.file(join(jobRoot, "retry-cleanup/inputs/dataset/input")).exists()).toBe(false);
+  await executor.release("retry-cleanup");
+  expect(unmounts).toBe(3);
+});
+
+test.each([
+  0, 1, 32,
+])("failed umount is accepted only after mountpoint confirms absence (%i)", async (exitCode) => {
+  const commands: string[][] = [];
+  const driver = new LinuxBindReadonlyMountDriver({
+    run: async (command) => {
+      commands.push([...command]);
+      return { exitCode: command[0] === "umount" ? 1 : exitCode, stdout: "", stderr: "busy" };
+    },
+  });
+  const releasing = driver.unmount("/managed/input");
+  if (exitCode === 32) await releasing;
+  else await expect(releasing).rejects.toThrow("bind unmount failed");
+  expect(commands).toEqual([
+    ["umount", "/managed/input"],
+    ["mountpoint", "-q", "--", "/managed/input"],
+  ]);
 });

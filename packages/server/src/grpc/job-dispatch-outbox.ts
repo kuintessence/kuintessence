@@ -292,6 +292,15 @@ export class JobDispatchOutbox {
       !this.dispatcher.supportsFederationSandboxInputLease(identity.agentId)
     )
       throw new WorkflowExecutionInterrupted("Agent does not support Sandbox input leases");
+    if (
+      reservationId &&
+      !running &&
+      originalDispatch.dataDeliveries.length > 0 &&
+      !this.dispatcher.supportsFederationDataPreparationLease(identity.agentId)
+    )
+      throw new WorkflowExecutionInterrupted(
+        "Agent does not support Data Market preparation leases",
+      );
     const authorize =
       reservationId && identity.runId
         ? await this.prepareFederationDispatch?.(identity.runId, {

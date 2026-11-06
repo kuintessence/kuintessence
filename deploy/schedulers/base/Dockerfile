@@ -27,6 +27,7 @@ RUN if [[ -n "${APT_MIRROR}" ]]; then sed -i "s|http://ports.ubuntu.com/ubuntu-p
     sudo \
     tini \
     unzip \
+    util-linux \
     xz-utils \
   && rm -rf /var/lib/apt/lists/* \
   && locale-gen en_US.UTF-8 \

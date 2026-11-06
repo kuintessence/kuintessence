@@ -718,3 +718,30 @@ test("Sandbox input dispatch waits for an Agent that can stop expired preparatio
   expect(dispatcher.pushPreparedDispatch("agent", message)).toBe(true);
   expect(channel.messages).toHaveLength(1);
 });
+
+test("Data Market preparation requires advertised authority support only before federation dispatch", () => {
+  const dispatcher = new AgentDispatcher();
+  const channel = {
+    ...mockChannel(),
+    federationExecutionV1: true,
+    federationComputeLeaseV1: true,
+    federationDataPreparationLeaseV1: false,
+    verifiedCertFingerprint: "verified",
+  };
+  dispatcher.register("agent", channel);
+  const message = create(ServerMessageSchema, {
+    payload: {
+      case: "dispatchJob",
+      value: { federationExecution: true, dataDeliveries: [{ bindingId: "input" }] },
+    },
+  });
+  expect(dispatcher.pushPreparedDispatch("agent", message)).toBe(false);
+  channel.federationDataPreparationLeaseV1 = true;
+  expect(dispatcher.pushPreparedDispatch("agent", message)).toBe(true);
+  channel.verifiedCertFingerprint = "";
+  expect(dispatcher.pushPreparedDispatch("agent", message)).toBe(false);
+  if (message.payload.case !== "dispatchJob") throw new Error("Missing dispatch");
+  message.payload.value.federationExecution = false;
+  expect(dispatcher.pushPreparedDispatch("agent", message)).toBe(true);
+  expect(channel.messages).toHaveLength(2);
+});

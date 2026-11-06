@@ -153,6 +153,7 @@ export interface AgentChannel {
   federationComputeLeaseV1?: boolean;
   federationSandboxSignatureRenewalV1?: boolean;
   federationSandboxInputLeaseV1?: boolean;
+  federationDataPreparationLeaseV1?: boolean;
   federationInstallationV1?: boolean;
   federationInstallationLeaseV1?: boolean;
   verifiedCertFingerprint?: string;
@@ -246,6 +247,12 @@ export class AgentDispatcher {
       return false;
     if (
       message.payload.value.federationExecution &&
+      message.payload.value.dataDeliveries.length > 0 &&
+      !this.supportsFederationDataPreparationLease(agentId)
+    )
+      return false;
+    if (
+      message.payload.value.federationExecution &&
       message.payload.value.sandboxExecution &&
       !this.supportsFederationSandboxSignatureRenewal(agentId)
     )
@@ -286,6 +293,13 @@ export class AgentDispatcher {
     return (
       this.supportsFederationSandboxSignatureRenewal(agentId) &&
       this.getChannel(agentId)?.federationSandboxInputLeaseV1 === true
+    );
+  }
+
+  supportsFederationDataPreparationLease(agentId: string): boolean {
+    return (
+      this.supportsFederationExecution(agentId) &&
+      this.getChannel(agentId)?.federationDataPreparationLeaseV1 === true
     );
   }
 

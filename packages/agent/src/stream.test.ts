@@ -13,6 +13,7 @@ import {
   CancelJobSchema,
   ComputeHealthState,
   DataDeliveryBindingSchema,
+  DataDeliveryMethod,
   DataScanRequestSchema,
   DispatchJobSchema,
   FederationExecutionDecision,
@@ -4357,6 +4358,7 @@ describe("AgentStream", () => {
       sleep: async () => {},
       logger: silent,
       sandboxProcessor: {
+        cleanup: async () => {},
         prepare: async (_jobId, _execution, inputSources) => {
           sandboxInputSources.push(inputSources);
           return {
@@ -4455,6 +4457,7 @@ describe("AgentStream", () => {
       sleep: async () => {},
       logger: silent,
       sandboxProcessor: {
+        cleanup: async () => {},
         prepare: async () => ({
           workingDir: "/managed/sandbox/job",
           runtimeDigest: `sha256:${"1".repeat(64)}`,
@@ -9569,6 +9572,7 @@ test.each([
     revocationTombstones: new JobRevocationTombstones(db),
     assertFederationRuntimeWatchdog: async () => {},
     sandboxProcessor: {
+      cleanup: async () => {},
       prepare: async (_jobId, execution) => {
         preparedNonce = execution?.envelope?.nonce;
         throw new Error("Verified routing; stop before staging");
@@ -9599,124 +9603,190 @@ test.each([
   }
 });
 
-test.each([
-  "long",
-  "offline",
-  "denied",
-] as const)("Sandbox preparation maintains authority and handles %s renewal", async (mode) => {
-  const db = createSqliteDb(":memory:");
-  const original = create(DispatchJobSchema, {
-    jobId: crypto.randomUUID(),
-    dispatchEpoch: 1n,
-    federationExecution: true,
-    cpus: 1,
-    memoryMb: 128n,
-    inputStaging: [
-      {
-        stagePath: "inputs/data",
-        sourceUrl: "https://objects.test/original",
-        deliveryLeaseId: crypto.randomUUID(),
-        deliveryLeaseExpiresAtUnixMs: 1n,
+for (const kind of ["Sandbox", "Data Market"] as const)
+  test.each(
+    kind === "Sandbox"
+      ? (["long", "offline", "denied"] as const)
+      : (["long", "offline", "denied", "late"] as const),
+  )(`${kind} preparation maintains authority and handles %s renewal`, async (mode) => {
+    const db = createSqliteDb(":memory:");
+    const original = create(DispatchJobSchema, {
+      jobId: crypto.randomUUID(),
+      dispatchEpoch: 1n,
+      federationExecution: true,
+      cpus: 1,
+      memoryMb: 128n,
+      inputStaging: [
+        {
+          stagePath: "inputs/data",
+          sourceUrl: "https://objects.test/original",
+          deliveryLeaseId: crypto.randomUUID(),
+          deliveryLeaseExpiresAtUnixMs: 1n,
+        },
+      ],
+      sandboxExecution: {
+        networkDisabled: true,
+        envelope: { nonce: "original", manifestSha256: "fixed", expiresAtUnixMs: 1n },
       },
-    ],
-    sandboxExecution: {
-      networkDisabled: true,
-      envelope: { nonce: "original", manifestSha256: "fixed", expiresAtUnixMs: 1n },
-    },
-  });
-  let requests = 0,
-    attempts = 0,
-    advertised = false;
-  const reports: JobStatusReport[] = [];
-  const stream = new AgentStream({
-    client: makePendingRegisteredClient(false, false, {
-      supported: true,
-      onMessage: async (message) => {
-        if (message.payload.case === "register")
-          advertised = message.payload.value.federationSandboxInputLeaseV1;
-        if (message.payload.case !== "federationExecutionRequest") return;
-        requests++;
-        if (mode === "offline" && requests === 2) return;
-        const request = message.payload.value;
-        await deliverServerMessage(
-          stream,
-          create(ServerMessageSchema, {
-            payload: {
-              case: "federationExecutionResponse",
-              value: {
-                requestId: request.requestId,
-                jobId: request.jobId,
-                dispatchEpoch: request.dispatchEpoch,
-                decision:
-                  mode === "denied" && requests > 1
-                    ? FederationExecutionDecision.DENIED
-                    : FederationExecutionDecision.GRANTED,
-                dispatch: create(DispatchJobSchema, {
-                  ...original,
-                  inputStaging: original.inputStaging.map((input) => ({
-                    ...input,
-                    sourceUrl: `https://objects.test/renewed-${requests}`,
-                    deliveryLeaseId: crypto.randomUUID(),
-                    deliveryLeaseExpiresAtUnixMs: BigInt(Date.now() + 400),
-                  })),
-                }),
-                expiresAtUnixMs: BigInt(Date.now() + 400),
-              },
+    });
+    if (kind === "Data Market") {
+      original.sandboxExecution = undefined;
+      original.inputStaging = [];
+      original.dataDeliveries = [
+        create(DataDeliveryBindingSchema, {
+          bindingId: "input",
+          versionId: "version",
+          manifestDigest: "fixed",
+          stagePath: "inputs/data",
+          method: DataDeliveryMethod.OBJECT_DOWNLOAD,
+          leaseId: crypto.randomUUID(),
+          leaseExpiresAtUnixMs: 1n,
+          selectedEntries: [
+            {
+              path: "input",
+              sha256: "a".repeat(64),
+              sizeBytes: 1n,
+              objectDownloadUrl: "https://objects.test/original",
             },
-          }),
-        );
+          ],
+        }),
+      ];
+    }
+    let released = 0;
+    let requests = 0,
+      attempts = 0,
+      advertised = false;
+    const reports: JobStatusReport[] = [];
+    const stream = new AgentStream({
+      client: makePendingRegisteredClient(false, false, {
+        supported: true,
+        onMessage: async (message) => {
+          if (message.payload.case === "register")
+            advertised =
+              kind === "Sandbox"
+                ? message.payload.value.federationSandboxInputLeaseV1
+                : message.payload.value.federationDataPreparationLeaseV1;
+          if (message.payload.case !== "federationExecutionRequest") return;
+          requests++;
+          if ((mode === "offline" || mode === "late") && requests === (kind === "Sandbox" ? 2 : 3))
+            return;
+          if (mode === "late" && requests === 4) expect(released).toBe(1);
+          const request = message.payload.value;
+          await deliverServerMessage(
+            stream,
+            create(ServerMessageSchema, {
+              payload: {
+                case: "federationExecutionResponse",
+                value: {
+                  requestId: request.requestId,
+                  jobId: request.jobId,
+                  dispatchEpoch: request.dispatchEpoch,
+                  decision:
+                    mode === "denied" && attempts > 0
+                      ? FederationExecutionDecision.DENIED
+                      : FederationExecutionDecision.GRANTED,
+                  dispatch: create(DispatchJobSchema, {
+                    ...original,
+                    dataDeliveries: original.dataDeliveries.map((binding) => ({
+                      ...binding,
+                      leaseId: crypto.randomUUID(),
+                      leaseExpiresAtUnixMs: BigInt(Date.now() + 400),
+                      selectedEntries: binding.selectedEntries.map((entry) => ({
+                        ...entry,
+                        objectDownloadUrl: `https://objects.test/renewed-${requests}`,
+                      })),
+                    })),
+                    inputStaging: original.inputStaging.map((input) => ({
+                      ...input,
+                      sourceUrl: `https://objects.test/renewed-${requests}`,
+                      deliveryLeaseId: crypto.randomUUID(),
+                      deliveryLeaseExpiresAtUnixMs: BigInt(Date.now() + 400),
+                    })),
+                  }),
+                  expiresAtUnixMs: BigInt(Date.now() + 400),
+                },
+              },
+            }),
+          );
+        },
+      }),
+      adapter: makeAdapter({
+        submit: async () => {
+          throw new Error("Must not submit during download test");
+        },
+      }),
+      agentId: "agent",
+      siteName: "site",
+      logger: silent,
+      heartbeatIntervalMs: 60_000,
+      inboundAcks: new InboundAcks(db),
+      activeRemoteJobs: new ActiveRemoteJobs(db),
+      cleanupIntents: new JobCleanupIntents(db),
+      revocationTombstones: new JobRevocationTombstones(db),
+      assertFederationRuntimeWatchdog: async () => {},
+      dataDeliveryExecutor: {
+        release: async () => {
+          released++;
+        },
+        recover: async () => {},
+        prepare: async (_jobId, bindings, preparation) => {
+          attempts++;
+          const binding = bindings[0];
+          if (!binding || !preparation?.renew) throw new Error("Missing renewable data binding");
+          expect(binding.selectedEntries[0]?.objectDownloadUrl).toBe(
+            `https://objects.test/renewed-${requests}`,
+          );
+          if (mode === "late" && attempts === 1) {
+            await delay(900);
+            return [];
+          }
+          if (attempts === 1) await delay(900, undefined, { signal: preparation.signal });
+          const current = await preparation.renew(binding);
+          expect(current.selectedEntries[0]?.objectDownloadUrl).toBe(
+            `https://objects.test/renewed-${requests}`,
+          );
+          expect(current.leaseExpiresAtUnixMs).toBeGreaterThan(BigInt(Date.now()));
+          if (mode === "long") expect(current.leaseId).not.toBe(binding.leaseId);
+          throw new Error("Download test completed without scheduler submission");
+        },
       },
-    }),
-    adapter: makeAdapter({
-      submit: async () => {
-        throw new Error("Must not submit during download test");
+      sandboxProcessor: {
+        cleanup: async () => {},
+        prepare: async (_jobId, _execution, inputs, preparation) => {
+          attempts++;
+          expect(preparation?.restart).toBe(true);
+          const input = inputs?.[0];
+          if (!input || !preparation?.renewInput) throw new Error("Missing renewable input");
+          expect(input.sourceUrl).toBe(`https://objects.test/renewed-${requests}`);
+          if (attempts === 1) await delay(900, undefined, { signal: preparation.signal });
+          const current = await preparation.renewInput(input);
+          expect(current.sourceUrl).toBe(`https://objects.test/renewed-${requests}`);
+          expect(current.deliveryLeaseExpiresAtUnixMs).toBeGreaterThan(BigInt(Date.now()));
+          if (mode === "long") expect(current.deliveryLeaseId).not.toBe(input.deliveryLeaseId);
+          throw new Error("Download test completed without scheduler submission");
+        },
       },
-    }),
-    agentId: "agent",
-    siteName: "site",
-    logger: silent,
-    heartbeatIntervalMs: 60_000,
-    inboundAcks: new InboundAcks(db),
-    activeRemoteJobs: new ActiveRemoteJobs(db),
-    cleanupIntents: new JobCleanupIntents(db),
-    revocationTombstones: new JobRevocationTombstones(db),
-    assertFederationRuntimeWatchdog: async () => {},
-    sandboxProcessor: {
-      prepare: async (_jobId, _execution, inputs, preparation) => {
-        attempts++;
-        expect(preparation?.restart).toBe(true);
-        const input = inputs?.[0];
-        if (!input || !preparation?.renewInput) throw new Error("Missing renewable input");
-        expect(input.sourceUrl).toBe(`https://objects.test/renewed-${requests}`);
-        if (attempts === 1) await delay(900, undefined, { signal: preparation.signal });
-        const current = await preparation.renewInput(input);
-        expect(current.sourceUrl).toBe(`https://objects.test/renewed-${requests}`);
-        expect(current.deliveryLeaseExpiresAtUnixMs).toBeGreaterThan(BigInt(Date.now()));
-        if (mode === "long") expect(current.deliveryLeaseId).not.toBe(input.deliveryLeaseId);
-        throw new Error("Download test completed without scheduler submission");
-      },
-    },
+    });
+    stream.enqueueStatusUpdate = async (report) => {
+      reports.push(report);
+    };
+    activeStreams.push(stream);
+    const running = stream.start();
+    try {
+      await settle(20);
+      await deliverServerMessage(
+        stream,
+        create(ServerMessageSchema, { payload: { case: "dispatchJob", value: original } }),
+      );
+      await waitForCondition(() => reports.some((report) => report.status === "failed"));
+      expect(advertised).toBe(true);
+      expect(attempts).toBe(mode === "offline" || mode === "late" ? 2 : 1);
+      expect(requests).toBeGreaterThan(1);
+      expect(reports.find((report) => report.status === "failed")?.message).toContain(
+        mode === "denied" ? "renewal failed" : "test completed",
+      );
+    } finally {
+      await stream.stop();
+      await running;
+    }
   });
-  stream.enqueueStatusUpdate = async (report) => {
-    reports.push(report);
-  };
-  activeStreams.push(stream);
-  const running = stream.start();
-  try {
-    await settle(20);
-    await deliverServerMessage(
-      stream,
-      create(ServerMessageSchema, { payload: { case: "dispatchJob", value: original } }),
-    );
-    await waitForCondition(() => reports.some((report) => report.status === "failed"));
-    expect(advertised).toBe(true);
-    expect(attempts).toBe(mode === "offline" ? 2 : 1);
-    expect(requests).toBeGreaterThan(1);
-    expect(reports.find((report) => report.status === "failed")?.message).toContain(
-      mode === "denied" ? "renewal failed" : "test completed",
-    );
-  } finally {
-    await stream.stop();
-    await running;
-  }
-});

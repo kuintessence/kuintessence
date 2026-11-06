@@ -16,6 +16,10 @@ export class SandboxDispatchProcessor {
     private readonly stager: SandboxStager,
   ) {}
 
+  async cleanup(jobId: string): Promise<void> {
+    await this.stager.cleanup(jobId);
+  }
+
   async prepare(
     jobId: string,
     execution: SandboxExecution | undefined,

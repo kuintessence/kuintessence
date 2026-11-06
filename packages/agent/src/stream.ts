@@ -647,7 +647,7 @@ export interface AgentStreamDeps {
   fileTransferRetryBackoffSec?: number;
   fileTransferConnectTo?: string;
   containerFileTransferConnectTo?: string;
-  sandboxProcessor?: Pick<SandboxDispatchProcessor, "prepare">;
+  sandboxProcessor?: Pick<SandboxDispatchProcessor, "prepare" | "cleanup">;
   assertSandboxRuntimeAttestation?: (
     sandbox: SandboxJobSpec,
     runtimeDigest: string,
@@ -1977,6 +1977,8 @@ export class AgentStream {
             this.federationExecutionCapable() && !!this.deps.sandboxProcessor,
           federationSandboxInputLeaseV1:
             this.federationExecutionCapable() && !!this.deps.sandboxProcessor,
+          federationDataPreparationLeaseV1:
+            this.federationExecutionCapable() && !!this.deps.dataDeliveryExecutor,
           federationInstallationV1: this.federationInstallationCapable(),
           federationInstallationLeaseV1: this.federationInstallationCapable(),
         }),
@@ -3157,81 +3159,37 @@ export class AgentStream {
           });
           return;
         }
-        const preparation = (async () => {
-          const pending = this.federationDispatches.get(dj.jobId);
-          const parent = pending
-            ? AbortSignal.any([this.lifecycleController.signal, pending.controller.signal])
-            : this.lifecycleController.signal;
-          const inputs = (dispatch: DispatchJob) =>
-            dispatch.inputStaging.map((input) => ({
-              stagePath: input.stagePath,
-              sourceUrl: input.sourceUrl,
-              ...(input.deliveryLeaseId
+        const preparation = this.prepareWithFederationAuthorization(
+          dj,
+          async (current, signal) => {
+            const inputs = () =>
+              current().inputStaging.map((input) => ({
+                stagePath: input.stagePath,
+                sourceUrl: input.sourceUrl,
+                ...(input.deliveryLeaseId
+                  ? {
+                      deliveryLeaseId: input.deliveryLeaseId,
+                      deliveryLeaseExpiresAtUnixMs: input.deliveryLeaseExpiresAtUnixMs,
+                    }
+                  : {}),
+              }));
+            return processor.prepare(dj.jobId, current().sandboxExecution, inputs(), {
+              signal,
+              restart: dj.federationExecution,
+              ...(dj.federationExecution
                 ? {
-                    deliveryLeaseId: input.deliveryLeaseId,
-                    deliveryLeaseExpiresAtUnixMs: input.deliveryLeaseExpiresAtUnixMs,
+                    renewInput: async (source) => {
+                      const latest = inputs().find((input) => input.stagePath === source.stagePath);
+                      if (!latest)
+                        throw new Error("Sandbox input renewal lost its original binding");
+                      return latest;
+                    },
                   }
                 : {}),
-            }));
-          for (;;) {
-            parent.throwIfAborted();
-            const grant = await this.renewFederationExecution(dj, parent);
-            let authorized = grant?.dispatch ?? dj;
-            const authorization = grant
-              ? new ExecutionAuthorization(
-                  grant.expiresAt,
-                  async (signal) => {
-                    const next = await this.renewFederationExecution(dj, signal);
-                    if (!next) throw new Error("Sandbox preparation authority is missing");
-                    authorized = next.dispatch;
-                    return next.expiresAt;
-                  },
-                  parent,
-                )
-              : undefined;
-            try {
-              const prepared = await processor.prepare(
-                dj.jobId,
-                authorized.sandboxExecution,
-                inputs(authorized),
-                {
-                  signal: authorization?.signal ?? parent,
-                  restart: Boolean(grant),
-                  ...(authorization
-                    ? {
-                        renewInput: async (source) => {
-                          authorization.assertValid();
-                          const current = inputs(authorized).find(
-                            (input) => input.stagePath === source.stagePath,
-                          );
-                          if (!current)
-                            throw new Error("Sandbox input renewal lost its original binding");
-                          return current;
-                        },
-                      }
-                    : {}),
-                },
-              );
-              authorization?.assertValid();
-              return prepared;
-            } catch (error) {
-              parent.throwIfAborted();
-              const reason: unknown = authorization?.signal.reason;
-              if (
-                !reason ||
-                (error !== reason && !(error instanceof Error && error.cause === reason))
-              )
-                throw error;
-              if (!(reason instanceof ExecutionAuthorizationExpired)) throw reason;
-              this.logger.info(
-                { jobId: dj.jobId },
-                "Sandbox preparation awaits fresh authorization",
-              );
-            } finally {
-              await authorization?.close();
-            }
-          }
-        })()
+            });
+          },
+          () => processor.cleanup(dj.jobId),
+        )
           .then(async (prepared) => {
             const profile = this.deps.restrictedExecutionProfile;
             if (
@@ -4130,6 +4088,56 @@ export class AgentStream {
     return true;
   }
 
+  private async prepareWithFederationAuthorization<T>(
+    dispatch: DispatchJob,
+    prepare: (current: () => DispatchJob, signal: AbortSignal) => Promise<T>,
+    discardPrepared: () => Promise<void>,
+  ): Promise<T> {
+    const pending = this.federationDispatches.get(dispatch.jobId);
+    const parent = pending
+      ? AbortSignal.any([this.lifecycleController.signal, pending.controller.signal])
+      : this.lifecycleController.signal;
+    for (;;) {
+      parent.throwIfAborted();
+      const grant = await this.renewFederationExecution(dispatch, parent);
+      let authorized = grant?.dispatch ?? dispatch;
+      const authorization = grant
+        ? new ExecutionAuthorization(
+            grant.expiresAt,
+            async (signal) => {
+              const next = await this.renewFederationExecution(dispatch, signal);
+              if (!next) throw new Error("Preparation authority is missing");
+              authorized = next.dispatch;
+              return next.expiresAt;
+            },
+            parent,
+          )
+        : undefined;
+      let prepared = false;
+      try {
+        const result = await prepare(() => {
+          authorization?.assertValid();
+          return authorized;
+        }, authorization?.signal ?? parent);
+        prepared = true;
+        parent.throwIfAborted();
+        authorization?.assertValid();
+        return result;
+      } catch (error) {
+        // The preparer rolls back failures; also discard a result that lost authority on return.
+        if (prepared) await discardPrepared();
+        parent.throwIfAborted();
+        const reason: unknown = authorization?.signal.reason;
+        if (!reason || (error !== reason && !(error instanceof Error && error.cause === reason)))
+          throw error;
+        if (!(reason instanceof ExecutionAuthorizationExpired)) throw reason;
+        this.logger.info({ jobId: dispatch.jobId }, "Job preparation awaits fresh authorization");
+      } finally {
+        await authorization?.close();
+      }
+    }
+  }
+
   private async renewFederationExecution(dispatch: DispatchJob, renewalSignal?: AbortSignal) {
     if (!dispatch.federationExecution) return undefined;
     const pending = this.federationDispatches.get(dispatch.jobId);
@@ -4218,37 +4226,37 @@ export class AgentStream {
       throw new Error("Data Market delivery is unavailable on this Agent");
     }
     try {
-      const delivered = deliveryExecutor
-        ? await deliveryExecutor.prepare(managedSpec.jobId, dispatch.dataDeliveries, {
-            signal: dispatch.federationExecution
-              ? AbortSignal.any([
-                  this.lifecycleController.signal,
-                  this.federationDispatches.get(dispatch.jobId)?.controller.signal ??
-                    AbortSignal.abort(),
-                ])
-              : this.lifecycleController.signal,
-            ...(dispatch.federationExecution
-              ? {
-                  renew: async (binding) => {
-                    const renewed = await this.renewFederationExecution(dispatch);
-                    const current = renewed?.dispatch.dataDeliveries.find(
-                      (item) => item.bindingId === binding.bindingId,
-                    );
-                    if (!current) throw new Error("Federation data renewal is missing its binding");
-                    return current;
+      const delivered =
+        deliveryExecutor && dispatch.dataDeliveries.length > 0
+          ? await this.prepareWithFederationAuthorization(
+              dispatch,
+              async (current, signal) =>
+                deliveryExecutor.prepare(managedSpec.jobId, current().dataDeliveries, {
+                  signal,
+                  ...(dispatch.federationExecution
+                    ? {
+                        renew: async (binding) => {
+                          const latest = current().dataDeliveries.find(
+                            (item) => item.bindingId === binding.bindingId,
+                          );
+                          if (!latest)
+                            throw new Error("Federation data renewal is missing its binding");
+                          return latest;
+                        },
+                      }
+                    : {}),
+                  beforeSideEffect: async (delivery) => {
+                    await this.assertDispatchEpochAllowed(managedSpec.jobId, dispatchEpoch);
+                    await this.cleanupIntents?.recordDataDelivery(managedSpec.jobId, {
+                      bindingId: delivery.bindingId,
+                      targetPath: delivery.targetPath,
+                      method: delivery.method,
+                    });
                   },
-                }
-              : {}),
-            beforeSideEffect: async (delivery) => {
-              await this.assertDispatchEpochAllowed(managedSpec.jobId, dispatchEpoch);
-              await this.cleanupIntents?.recordDataDelivery(managedSpec.jobId, {
-                bindingId: delivery.bindingId,
-                targetPath: delivery.targetPath,
-                method: delivery.method,
-              });
-            },
-          })
-        : [];
+                }),
+              () => deliveryExecutor.release(managedSpec.jobId),
+            )
+          : [];
       const dataDeliveryCleanup = delivered.map(({ bindingId, targetPath, method }) => ({
         bindingId,
         targetPath,

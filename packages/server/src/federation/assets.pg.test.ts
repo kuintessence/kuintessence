@@ -2405,6 +2405,7 @@ test.each([
   "completed",
   "cancel-race",
   "data-active",
+  "data-preparation-legacy",
   "data-deadline",
   "data-expired",
   "data-revoked",
@@ -2490,7 +2491,10 @@ test.each([
     await outbox.enqueue(approvedTarget.agentId, message, f.runId, lease);
     await lease.release();
     await outbox.acknowledge(approvedTarget.agentId, f.jobId);
-    await db.update(jobs).set({ status: "running" }).where(eq(jobs.id, f.jobId));
+    await db
+      .update(jobs)
+      .set({ status: change === "data-preparation-legacy" ? "queued" : "running" })
+      .where(eq(jobs.id, f.jobId));
     await db
       .update(agents)
       .set({ status: "offline" })
@@ -2580,7 +2584,7 @@ test.each([
       requestId: crypto.randomUUID(),
       jobId: f.jobId,
       dispatchEpoch: 1n,
-      runtimeRenewal: true,
+      runtimeRenewal: change !== "data-preparation-legacy",
     });
     const result = outbox.renewExecution(approvedTarget.agentId, request, (reply) => {
       if (change === "data-active") {
@@ -2608,7 +2612,9 @@ test.each([
       "material-active",
       "material-deadline",
     ].includes(change);
-    if (
+    if (change === "data-preparation-legacy")
+      await expect(result).rejects.toThrow("does not support Data Market preparation leases");
+    else if (
       [
         "queue-revoked",
         "data-revoked",

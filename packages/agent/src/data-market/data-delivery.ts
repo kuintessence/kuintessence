@@ -1,7 +1,8 @@
 import { createHash, randomUUID } from "node:crypto";
-import { createReadStream } from "node:fs";
-import { copyFile, lstat, mkdir, open, readdir, rename, rm, unlink } from "node:fs/promises";
+import { createReadStream, createWriteStream } from "node:fs";
+import { lstat, mkdir, open, rename, rm, unlink } from "node:fs/promises";
 import { dirname, isAbsolute, resolve, sep } from "node:path";
+import { pipeline } from "node:stream/promises";
 import { type DataDeliveryBinding, sameDataDeliveryIntent } from "@kuintessence/proto";
 import type { Spawner } from "../adapters/base";
 import type { AgentDataRoots } from "./local-data-security";
@@ -32,7 +33,15 @@ export class LinuxBindReadonlyMountDriver implements TrustedReadonlyMountDriver 
   }
 
   async unmount(targetPath: string): Promise<void> {
-    await runChecked(this.spawner, ["umount", targetPath], "bind unmount");
+    try {
+      await runChecked(this.spawner, ["umount", targetPath], "bind unmount");
+    } catch (error) {
+      const state = await this.spawner.run(["mountpoint", "-q", "--", targetPath], {
+        timeoutMs: 10_000,
+      });
+      // util-linux mountpoint uses 32 only for a path that is not a mount point.
+      if (state.exitCode !== 32) throw error;
+    }
   }
 }
 
@@ -79,12 +88,13 @@ export class DataDeliveryExecutor {
     bindings: readonly DataDeliveryBinding[],
     options: DataDeliveryPrepareOptions = {},
   ): Promise<PreparedDataDelivery[]> {
+    options.signal?.throwIfAborted();
     const jobRoot = await this.options.roots.prepareJobRoot(jobId);
     const prepared: PreparedDataDelivery[] = [];
     try {
       for (const binding of bindings) {
         const current = await this.currentBinding(binding, options);
-        prepared.push(...(await this.prepareOne(jobRoot, current, options)));
+        await this.prepareOne(jobRoot, current, options, prepared);
       }
       const previous = this.preparedMounts.get(jobId);
       this.preparedMounts.set(jobId, {
@@ -93,15 +103,26 @@ export class DataDeliveryExecutor {
       });
       return prepared;
     } catch (error) {
-      await this.releasePrepared(jobRoot, prepared);
+      try {
+        await this.releasePrepared(jobRoot, prepared);
+      } catch (cleanupError) {
+        const previous = this.preparedMounts.get(jobId);
+        this.preparedMounts.set(jobId, {
+          jobRoot,
+          items: [...(previous?.items ?? []), ...prepared],
+        });
+        throw new AggregateError([error, cleanupError], "Data preparation and cleanup failed");
+      }
       throw error;
     }
   }
 
   async release(jobId: string): Promise<void> {
     const prepared = this.preparedMounts.get(jobId);
-    this.preparedMounts.delete(jobId);
-    if (prepared) await this.releasePrepared(prepared.jobRoot, prepared.items);
+    if (prepared) {
+      await this.releasePrepared(prepared.jobRoot, prepared.items);
+      this.preparedMounts.delete(jobId);
+    }
   }
 
   async recover(
@@ -121,7 +142,8 @@ export class DataDeliveryExecutor {
     jobRoot: string,
     binding: DataDeliveryBinding,
     options: DataDeliveryPrepareOptions,
-  ): Promise<PreparedDataDelivery[]> {
+    prepared: PreparedDataDelivery[],
+  ): Promise<void> {
     const method = deliveryMethod(binding);
     const stageRoot = resolveTarget(jobRoot, binding.stagePath);
     if (!binding.bindingId || !binding.versionId || !binding.manifestDigest) {
@@ -134,41 +156,35 @@ export class DataDeliveryExecutor {
       if (binding.managedRootId || binding.relativePath) {
         throw new Error("Object data delivery must not contain CP-local path fields");
       }
-      const prepared: PreparedDataDelivery[] = [];
-      try {
-        for (const original of binding.selectedEntries) {
-          let entry = original;
-          if (!entry.objectDownloadUrl) {
-            throw new Error("Object data delivery entry is missing a presigned URL");
-          }
-          const target = resolveTarget(stageRoot, entry.path);
-          const cleanup: PreparedDataDelivery = {
-            bindingId: binding.bindingId,
-            targetPath: target,
-            method,
-            protectedPath: binding.restricted,
-          };
-          await options.beforeSideEffect?.(cleanup);
-          binding = await this.currentBinding(binding, options);
-          const renewedEntry = binding.selectedEntries.find((item) => item.path === original.path);
-          if (!renewedEntry) throw new Error("Renewed data delivery is missing its entry");
-          entry = renewedEntry;
-          await downloadVerified(
-            this.fetchImpl,
-            entry.objectDownloadUrl,
-            target,
-            entry.sha256,
-            entry.sizeBytes,
-            options.signal,
-          );
-          prepared.push(cleanup);
-          binding = await this.currentBinding(binding, options);
+      for (const original of binding.selectedEntries) {
+        let entry = original;
+        if (!entry.objectDownloadUrl) {
+          throw new Error("Object data delivery entry is missing a presigned URL");
         }
-        return prepared;
-      } catch (error) {
-        await this.releasePrepared(jobRoot, prepared);
-        throw error;
+        const target = resolveTarget(stageRoot, entry.path);
+        const cleanup: PreparedDataDelivery = {
+          bindingId: binding.bindingId,
+          targetPath: target,
+          method,
+          protectedPath: binding.restricted,
+        };
+        await options.beforeSideEffect?.(cleanup);
+        binding = await this.currentBinding(binding, options);
+        const renewedEntry = binding.selectedEntries.find((item) => item.path === original.path);
+        if (!renewedEntry) throw new Error("Renewed data delivery is missing its entry");
+        entry = renewedEntry;
+        await downloadVerified(
+          this.fetchImpl,
+          entry.objectDownloadUrl,
+          target,
+          entry.sha256,
+          entry.sizeBytes,
+          options.signal,
+        );
+        prepared.push(cleanup);
+        binding = await this.currentBinding(binding, options);
       }
+      return;
     }
     if (!binding.managedRootId || !binding.relativePath) {
       throw new Error("CP-local data delivery is missing its managed root selector");
@@ -177,54 +193,39 @@ export class DataDeliveryExecutor {
       binding.managedRootId,
       binding.relativePath,
     );
-    const prepared: PreparedDataDelivery[] = [];
-    try {
-      for (const entry of binding.selectedEntries) {
-        const source = resolveTarget(sourceRoot, entry.path);
-        await verifyLocalEntry(source, entry.sha256, entry.sizeBytes);
-        const target = resolveTarget(stageRoot, entry.path);
-        const cleanup: PreparedDataDelivery = {
-          bindingId: binding.bindingId,
-          targetPath: target,
-          method,
-          protectedPath: method === "readonly-mount",
-        };
-        if (method === "stage-copy") {
-          if (binding.restricted)
-            throw new Error("Restricted CP-local data requires a readonly mount");
-          await options.beforeSideEffect?.(cleanup);
-          binding = await this.currentBinding(binding, options);
-          await copyManagedData(source, target);
-          await verifyLocalEntry(target, entry.sha256, entry.sizeBytes).catch(async (error) => {
-            await removeDeliveryTarget(jobRoot, target);
-            throw error;
-          });
-          prepared.push(cleanup);
-          binding = await this.currentBinding(binding, options);
-          continue;
-        }
-        if (method !== "readonly-mount") throw new Error("Unsupported data delivery method");
-        const driver = this.options.readonlyMountDriver;
-        if (!driver?.trusted)
-          throw new Error("Readonly data delivery requires a trusted mount driver");
+    for (const entry of binding.selectedEntries) {
+      const source = resolveTarget(sourceRoot, entry.path);
+      await verifyLocalEntry(source, entry.sha256, entry.sizeBytes, options.signal);
+      const target = resolveTarget(stageRoot, entry.path);
+      const cleanup: PreparedDataDelivery = {
+        bindingId: binding.bindingId,
+        targetPath: target,
+        method,
+        protectedPath: method === "readonly-mount",
+      };
+      if (method === "stage-copy") {
+        if (binding.restricted)
+          throw new Error("Restricted CP-local data requires a readonly mount");
         await options.beforeSideEffect?.(cleanup);
         binding = await this.currentBinding(binding, options);
-        try {
-          await createMountTarget(source, target);
-          await driver.mountReadonly(source, target);
-          await verifyLocalEntry(source, entry.sha256, entry.sizeBytes);
-        } catch (error) {
-          await driver.unmount(target).catch(() => undefined);
-          await removeDeliveryTarget(jobRoot, target);
-          throw error;
-        }
+        await copyManagedData(source, target, options.signal);
         prepared.push(cleanup);
+        await verifyLocalEntry(target, entry.sha256, entry.sizeBytes, options.signal);
         binding = await this.currentBinding(binding, options);
+        continue;
       }
-      return prepared;
-    } catch (error) {
-      await this.releasePrepared(jobRoot, prepared);
-      throw error;
+      if (method !== "readonly-mount") throw new Error("Unsupported data delivery method");
+      const driver = this.options.readonlyMountDriver;
+      if (!driver?.trusted)
+        throw new Error("Readonly data delivery requires a trusted mount driver");
+      await options.beforeSideEffect?.(cleanup);
+      binding = await this.currentBinding(binding, options);
+      prepared.push(cleanup);
+      await createMountTarget(source, target);
+      options.signal?.throwIfAborted();
+      await driver.mountReadonly(source, target);
+      await verifyLocalEntry(source, entry.sha256, entry.sizeBytes, options.signal);
+      binding = await this.currentBinding(binding, options);
     }
   }
 
@@ -259,7 +260,10 @@ export class DataDeliveryExecutor {
       [...prepared].reverse().map(async (item) => {
         if (item.method === "readonly-mount") {
           if (!driver) throw new Error("Readonly data mount driver is unavailable during cleanup");
-          const target = await lstat(item.targetPath).catch(() => undefined);
+          const target = await lstat(item.targetPath).catch((error: NodeJS.ErrnoException) => {
+            if (error.code === "ENOENT") return undefined;
+            throw error;
+          });
           if (target) await driver.unmount(item.targetPath);
         }
         await removeDeliveryTarget(jobRoot, item.targetPath);
@@ -327,60 +331,77 @@ async function downloadVerified(
     }
     const contentLength = response.headers.get("content-length");
     if (contentLength !== null && BigInt(contentLength) !== expectedSize) {
+      await response.body.cancel();
       throw new Error("Downloaded data content length does not match");
     }
     const hash = createHash("sha256");
     let size = 0n;
-    const handle = await open(temporary, "wx", 0o600);
+    const reader = response.body.getReader();
+    const abort = () => {
+      void reader.cancel(signal?.reason).catch(() => undefined);
+    };
+    signal?.addEventListener("abort", abort, { once: true });
     try {
-      const reader = response.body.getReader();
-      while (true) {
-        const next = await reader.read();
-        if (next.done) break;
-        size += BigInt(next.value.byteLength);
-        if (size > expectedSize) {
-          await reader.cancel("Data object exceeds the frozen manifest size");
-          throw new Error("Downloaded data exceeds the frozen manifest size");
+      signal?.throwIfAborted();
+      const handle = await open(temporary, "wx", 0o600);
+      try {
+        while (true) {
+          const next = await reader.read();
+          signal?.throwIfAborted();
+          if (next.done) break;
+          size += BigInt(next.value.byteLength);
+          if (size > expectedSize)
+            throw new Error("Downloaded data exceeds the frozen manifest size");
+          hash.update(next.value);
+          await handle.writeFile(next.value);
         }
-        hash.update(next.value);
-        await handle.write(next.value);
+      } finally {
+        await handle.close();
       }
     } finally {
-      await handle.close();
+      signal?.removeEventListener("abort", abort);
+      await reader.cancel().catch(() => undefined);
+      reader.releaseLock();
     }
     const digest = hash.digest("hex");
     if (digest !== expectedSha256.toLowerCase())
       throw new Error("Downloaded data digest does not match");
     if (size !== expectedSize) throw new Error("Downloaded data size does not match");
+    signal?.throwIfAborted();
     await rename(temporary, target);
+  } catch (error) {
+    signal?.throwIfAborted();
+    throw error;
   } finally {
     await unlink(temporary).catch(() => undefined);
   }
 }
 
-async function copyManagedData(source: string, target: string): Promise<void> {
+async function copyManagedData(
+  source: string,
+  target: string,
+  signal?: AbortSignal,
+): Promise<void> {
+  signal?.throwIfAborted();
   const sourceStat = await lstat(source);
-  if (sourceStat.isSymbolicLink())
-    throw new Error("CP-local data source cannot be a symbolic link");
-  if (sourceStat.isDirectory()) {
-    try {
-      await copyDirectory(source, target);
-    } catch (error) {
-      await rm(target, { recursive: true, force: true });
-      throw error;
-    }
-    return;
-  }
-  if (!sourceStat.isFile())
-    throw new Error("CP-local data source must be a regular file or directory");
+  if (!sourceStat.isFile() || sourceStat.isSymbolicLink())
+    throw new Error("CP-local selected data entry must be a regular non-symlink file");
   await mkdir(dirname(target), { recursive: true, mode: 0o700 });
   await assertNoSymlinkAncestor(dirname(target));
   const existing = await lstat(target).catch(() => undefined);
   if (existing) throw new Error("CP-local delivery target must not already exist");
   const temporary = `${target}.part-${randomUUID()}`;
   try {
-    await copyFile(source, temporary, 0);
+    await pipeline(
+      createReadStream(source),
+      createWriteStream(temporary, { flags: "wx", mode: 0o600 }),
+      { signal },
+    );
+    signal?.throwIfAborted();
     await rename(temporary, target);
+  } catch (error) {
+    signal?.throwIfAborted();
+    throw error;
   } finally {
     await unlink(temporary).catch(() => undefined);
   }
@@ -390,7 +411,9 @@ async function verifyLocalEntry(
   source: string,
   expectedSha256: string,
   expectedSize: bigint,
+  signal?: AbortSignal,
 ): Promise<void> {
+  signal?.throwIfAborted();
   if (!/^[a-f0-9]{64}$/i.test(expectedSha256)) throw new Error("Data delivery digest is invalid");
   const sourceStat = await lstat(source);
   if (!sourceStat.isFile() || sourceStat.isSymbolicLink()) {
@@ -399,27 +422,10 @@ async function verifyLocalEntry(
   if (BigInt(sourceStat.size) !== expectedSize)
     throw new Error("CP-local data size does not match");
   const hash = createHash("sha256");
-  for await (const chunk of createReadStream(source)) hash.update(chunk);
+  for await (const chunk of createReadStream(source, { signal })) hash.update(chunk);
   const digest = hash.digest("hex");
   if (digest !== expectedSha256.toLowerCase())
     throw new Error("CP-local data digest does not match");
-}
-
-async function copyDirectory(source: string, target: string): Promise<void> {
-  await mkdir(target, { recursive: true, mode: 0o700 });
-  const entries = await readdir(source, { withFileTypes: true });
-  for (const entry of entries) {
-    const sourceChild = resolve(source, entry.name);
-    const targetChild = resolve(target, entry.name);
-    if (entry.isSymbolicLink()) throw new Error("CP-local data source contains a symbolic link");
-    if (entry.isDirectory()) {
-      await copyDirectory(sourceChild, targetChild);
-    } else if (entry.isFile()) {
-      await copyFile(sourceChild, targetChild);
-    } else {
-      throw new Error("CP-local data source contains a non-regular entry");
-    }
-  }
 }
 
 async function createMountTarget(source: string, target: string): Promise<void> {
@@ -460,7 +466,10 @@ async function assertNoSymlinkAncestor(path: string): Promise<void> {
 
 async function removeDeliveryTarget(jobRoot: string, targetPath: string): Promise<void> {
   assertInside(jobRoot, targetPath, "Data delivery cleanup target");
-  const target = await lstat(targetPath).catch(() => undefined);
+  const target = await lstat(targetPath).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === "ENOENT") return undefined;
+    throw error;
+  });
   if (!target) return;
   if (target.isSymbolicLink()) {
     throw new Error("Data delivery cleanup refuses a symbolic link target");
