@@ -1,6 +1,6 @@
-import { artifactReplicas, type PgDb, workflowArtifacts } from "@kuintessence/db";
+import { artifactReplicas, type PgDb, workflowArtifacts, workflowRuns } from "@kuintessence/db";
 import { type ArtifactDurability, createLogger, type ScriptIoType } from "@kuintessence/shared";
-import { and, eq, inArray, isNotNull, isNull, lte } from "drizzle-orm";
+import { and, eq, inArray, isNotNull, isNull, lte, or } from "drizzle-orm";
 
 export interface ArtifactRecord {
   id: string;
@@ -47,7 +47,14 @@ export interface LocalArtifactRegistration {
   storageRef: string;
 }
 
+export interface PendingArtifactPersistence {
+  artifact: ArtifactRecord;
+  replica: ArtifactReplicaRecord | null;
+  ownerId: string | null;
+}
+
 export interface ArtifactStore {
+  pendingPersistence(workflowRunId: string): Promise<PendingArtifactPersistence[]>;
   registerLocal(
     input: LocalArtifactRegistration,
   ): Promise<{ artifact: ArtifactRecord; replica: ArtifactReplicaRecord }>;
@@ -207,6 +214,34 @@ export class PgArtifactStore implements ArtifactStore {
     });
   }
 
+  async pendingPersistence(workflowRunId: string): Promise<PendingArtifactPersistence[]> {
+    const rows = await this.db
+      .select({ artifact: workflowArtifacts, ownerId: workflowRuns.submittedBy })
+      .from(workflowArtifacts)
+      .innerJoin(workflowRuns, eq(workflowRuns.id, workflowArtifacts.workflowRunId))
+      .where(
+        and(
+          eq(workflowArtifacts.workflowRunId, workflowRunId),
+          inArray(workflowArtifacts.durability, ["Checkpoint", "Persistent"]),
+          or(isNull(workflowArtifacts.persistentAt), isNull(workflowArtifacts.netdriveFileId)),
+        ),
+      );
+    const replicas = await this.availableReplicas(rows.map(({ artifact }) => artifact.id));
+    const now = Date.now();
+    return rows.map(({ artifact, ownerId }) => ({
+      artifact: artifactRecord(artifact),
+      ownerId,
+      replica:
+        replicas.find(
+          (replica) =>
+            replica.artifactId === artifact.id &&
+            replica.storageKind === "agent-local" &&
+            replica.verifiedAt !== null &&
+            (replica.expiresAt === null || replica.expiresAt.getTime() > now),
+        ) ?? null,
+    }));
+  }
+
   async beginPersistence(
     artifact: ArtifactRecord,
     localReplica: ArtifactReplicaRecord,
@@ -360,11 +395,15 @@ export class WorkflowArtifactService {
 
   async awaitCheckpointPersistence(workflowRunId: string): Promise<void> {
     const tasks = [...(this.checkpointTasks.get(workflowRunId) ?? [])];
-    if (tasks.length === 0) return;
-    try {
-      await Promise.all(tasks);
-    } finally {
-      this.checkpointTasks.delete(workflowRunId);
+    // Wait for all local transfers before retrying their persisted records.
+    const results = await Promise.allSettled(tasks);
+    this.checkpointTasks.delete(workflowRunId);
+    const failed = results.find((result) => result.status === "rejected");
+    if (failed?.status === "rejected") throw failed.reason;
+    for (const pending of await this.store.pendingPersistence(workflowRunId)) {
+      if (!pending.ownerId) throw new Error("Durable artifact has no workflow owner");
+      if (!pending.replica) throw new Error("Durable artifact has no verified local replica");
+      await this.persist({ artifact: pending.artifact, replica: pending.replica }, pending.ownerId);
     }
   }
 

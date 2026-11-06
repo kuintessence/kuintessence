@@ -333,7 +333,15 @@ export class WorkflowAsyncRunner {
         input.orgId,
         active?.lease,
       )(input.yaml);
-      await this.deps.awaitCheckpointPersistence?.(runId);
+      try {
+        await this.deps.awaitCheckpointPersistence?.(runId);
+      } catch (cause) {
+        if (durable && !(cause instanceof WorkflowExecutionInterrupted))
+          throw new WorkflowExecutionInterrupted("Workflow checkpoint publication is pending", {
+            cause,
+          });
+        throw cause;
+      }
       const afterRun = await this.deps.registry.getById(runId);
       if (afterRun?.status === "cancelling" || afterRun?.status === "cancelled") {
         await this.finishCancellation(runId);

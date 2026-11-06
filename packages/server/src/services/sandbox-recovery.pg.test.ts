@@ -2,9 +2,11 @@ import { afterAll, beforeAll, expect, spyOn, test } from "bun:test";
 import { createHash, generateKeyPairSync, randomUUID } from "node:crypto";
 import {
   agents,
+  artifactReplicas,
   createPgDb,
   jobDispatchOutbox,
   jobs,
+  netdriveFiles,
   users,
   workflowArtifacts,
   workflowExecutionJobs,
@@ -366,4 +368,105 @@ test("cancellation during completion prevents a late Script worker from publishi
   expect(
     await db.select().from(workflowArtifacts).where(eq(workflowArtifacts.workflowRunId, f.runId)),
   ).toHaveLength(0);
+});
+
+test("fresh artifact service resumes a DB checkpoint after publication fails and skips completed or unrelated artifacts", async () => {
+  const f = await fixture();
+  const other = await fixture();
+  const registration = {
+    workflowRunId: f.runId,
+    producerNodeId: "checkpoint",
+    descriptor: "result",
+    ioType: "File" as const,
+    contentHash: "b".repeat(64),
+    sizeBytes: 8,
+    durability: "Checkpoint" as const,
+    ownerId: userId,
+    agentId,
+    siteId: "test-site",
+    clusterId: "test-cluster",
+    storageRef: "/isolated/checkpoint",
+  };
+  const { artifact } = await artifacts.registerLocal(registration);
+  await artifacts.registerLocal({ ...registration, workflowRunId: other.runId });
+  await artifacts.registerLocal({
+    ...registration,
+    descriptor: "scratch",
+    durability: "Ephemeral",
+  });
+  const interrupted = new WorkflowArtifactService(new PgArtifactStore(db), {
+    persist: async () => {
+      throw new Error("interrupted transfer");
+    },
+  });
+  await expect(interrupted.awaitCheckpointPersistence(f.runId)).rejects.toThrow(
+    "interrupted transfer",
+  );
+  expect(await artifacts.pendingPersistence(f.runId)).toHaveLength(1);
+  let copies = 0;
+  const recovered = new WorkflowArtifactService(new PgArtifactStore(db), {
+    persist: async (input) => {
+      expect(input.ownerId).toBe(userId);
+      expect(input.artifact.id).toBe(artifact.id);
+      expect(input.localReplica.storageRef).toBe(registration.storageRef);
+      copies++;
+      const [file] = await db
+        .insert(netdriveFiles)
+        .values({
+          ownerId: input.ownerId,
+          path: `checkpoint/${artifact.id}`,
+          storageKey: `checkpoint/${artifact.id}`,
+          size: 8,
+          sha256: registration.contentHash,
+        })
+        .returning();
+      if (!file) throw new Error("Missing test file");
+      return { netdriveFileId: file.id, storageRef: file.path };
+    },
+  });
+  await recovered.awaitCheckpointPersistence(f.runId);
+  await new WorkflowArtifactService(new PgArtifactStore(db)).awaitCheckpointPersistence(f.runId);
+  expect(copies).toBe(1);
+  expect(await artifacts.pendingPersistence(f.runId)).toEqual([]);
+  expect(await artifacts.pendingPersistence(other.runId)).toHaveLength(1);
+  await f.lease.release();
+  await other.lease.release();
+});
+
+test("DB checkpoint without a verified unexpired source remains pending", async () => {
+  const f = await fixture();
+  const { replica } = await artifacts.registerLocal({
+    workflowRunId: f.runId,
+    producerNodeId: "checkpoint",
+    descriptor: "result",
+    ioType: "File",
+    contentHash: "b".repeat(64),
+    sizeBytes: 8,
+    durability: "Checkpoint",
+    ownerId: userId,
+    agentId,
+    siteId: "test-site",
+    clusterId: "test-cluster",
+    storageRef: "/isolated/checkpoint",
+  });
+  const recovered = new WorkflowArtifactService(new PgArtifactStore(db), {
+    persist: async () => {
+      throw new Error("Must not upload an invalid source");
+    },
+  });
+  for (const invalid of [
+    { verifiedAt: null, expiresAt: null },
+    { verifiedAt: new Date(), expiresAt: new Date(0) },
+  ]) {
+    await db.update(artifactReplicas).set(invalid).where(eq(artifactReplicas.id, replica.id));
+    await expect(recovered.awaitCheckpointPersistence(f.runId)).rejects.toThrow(
+      "no verified local replica",
+    );
+  }
+  await db.delete(artifactReplicas).where(eq(artifactReplicas.id, replica.id));
+  await expect(recovered.awaitCheckpointPersistence(f.runId)).rejects.toThrow(
+    "no verified local replica",
+  );
+  expect(await artifacts.pendingPersistence(f.runId)).toHaveLength(1);
+  await f.lease.release();
 });

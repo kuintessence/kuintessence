@@ -221,7 +221,17 @@ PG 测试必须指定 `kuintessence_unit_*` 隔离数据库，拒绝默认连接
 
 验证：[持久运行器 PostgreSQL 测试](../../../packages/server/src/workflow/durable-runner.pg.test.ts) 7 项、journal 9 项、运行登记 6 项，共 **22 项数据库检查**，另 **38 项相关单元测试**通过。覆盖循环中断后复用原 Job、全部动态调用取消、定义漂移停止重试、真实 5 秒扫描不影响 legacy 运行、500ms 租约实际续期、文件清单跨租约恢复和旧 token 写入拒绝。使用真实 PostgreSQL 与受控 Job 完成，不等同于完整 Server 进程重启、文件传输或 Slurm/PBS 验收。全仓 lint 无错误（原有 47 warnings、1 info）；类型检查中新增导出类型的可移植性问题已修正，DB、Server、shared 和脚本复查通过，其余包此前已通过。
 
-Script 的 File/FileBatch 到下游受管文件转换、重启后的 Checkpoint 文件持久化恢复、分配 Agent 前的软件安装等待、联邦预留到运行的事务映射仍待完成。
+Script 的 File/FileBatch 到下游受管文件转换、分配 Agent 前的软件安装等待、联邦预留到运行的事务映射仍待完成；Checkpoint 文件持久化的数据库恢复已在下文补齐。
+
+## Checkpoint 上传从数据库恢复
+
+- [产物服务](../../../packages/server/src/services/workflow-artifact.ts)在工作流完成前读取数据库中尚未持久化的 Checkpoint/Persistent 产物，使用原工作流归属与经校验、未过期的 Agent 本地副本补传。没有内存任务的新服务实例也能恢复 `persisting`/`failed` 上传；已持久化及其他运行的产物不重复处理。
+- 缺少所属用户、本地副本失效或上传失败时拒绝完成检查。内部持久模式保留 `WORKFLOW_RECOVERY_PENDING`，下一次恢复只补文件，已完成的计算节点仍从检查点读取；普通模式保留原失败处理。复用既有产物及副本表，无新增迁移。
+- 新增 2 项产物单元测试、2 项真实 PostgreSQL 产物恢复测试及 1 项持久运行器恢复测试。连同受影响的原测试共 **25 项单元测试、16 项 PostgreSQL 测试通过**，覆盖不同服务实例、失败重试、缺失/未验证/已过期副本、运行隔离和恢复不重复运行 Job。首次联合运行发现前一测试留下的运行也被扫描，已将运行器测试改为逐项清理，避免跨测试累计作业数。
+
+全仓类型检查（含 protobuf 生成和 Fabric 脚本检查）通过；lint 无错误，原有 47 warnings、1 info 未增加；534 个本地文档链接通过。自建 PostgreSQL 已停止、临时数据已清理。
+
+测试使用受控文件上传器，并非真实 Agent/NetDrive 传输或完整 Server 进程重启验收。Script FileBatch 成员保留与逐文件传输、File 输出到下游受管输入转换仍未完成。
 
 ## 尚未接通，不能宣称支持
 

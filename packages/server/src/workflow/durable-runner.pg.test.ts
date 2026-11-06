@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
 import { createPgDb, jobs, users, workflowExecutionJobs, workflowRuns } from "@kuintessence/db";
 import { extractRunGraph, WorkflowExecutionInterrupted, workflowDsl } from "@kuintessence/shared";
@@ -63,15 +63,20 @@ function definition(parallel = 1) {
 beforeAll(async () => {
   await db.insert(users).values({ id: userId, email: `${userId}@test.invalid`, role: "user" });
 });
-afterAll(async () => {
-  await Promise.all(runners.map((runner) => runner.stop()));
+afterEach(async () => {
+  await Promise.all(runners.splice(0).map((runner) => runner.stop()));
   if (runIds.length) await db.delete(workflowRuns).where(inArray(workflowRuns.id, runIds));
+  runIds.length = 0;
   await db.delete(jobs).where(eq(jobs.submittedBy, userId));
+});
+afterAll(async () => {
   await db.delete(users).where(eq(users.id, userId));
   await db.$client.end({ timeout: 5 });
 });
 
-function harness(options: { restartAt?: number; hold?: boolean } = {}) {
+function harness(
+  options: { restartAt?: number; hold?: boolean; checkpoint?: () => Promise<void> } = {},
+) {
   const scheduled: Array<() => Promise<void>> = [];
   const executed: string[] = [];
   const submitted = new Set<string>();
@@ -81,6 +86,7 @@ function harness(options: { restartAt?: number; hold?: boolean } = {}) {
     const runner = new WorkflowAsyncRunner({
       registry,
       journal,
+      awaitCheckpointPersistence: options.checkpoint,
       schedule: (task) => {
         scheduled.push(task);
       },
@@ -379,4 +385,30 @@ test("stale executors cannot finalize a run owned by a new lease", async () => {
   expect((await registry.getById(id))?.status).toBe("running");
   expect(await registry.completeRun(id, { status: {}, values: {} }, next)).toBe(true);
   await next.release();
+});
+
+test("checkpoint upload failure suspends a durable run and recovery does not execute completed Jobs again", async () => {
+  let storageAvailable = false;
+  const h = harness({
+    checkpoint: async () => {
+      if (!storageAvailable) throw new Error("NetDrive offline");
+    },
+  });
+  const first = h.make();
+  const id = await h.submit(first);
+  await h.drain();
+  expect(await registry.getById(id)).toMatchObject({
+    status: "running",
+    errorCode: "WORKFLOW_RECOVERY_PENDING",
+    errorMessage: "Workflow checkpoint publication is pending",
+  });
+  expect(h.executed).toHaveLength(3);
+  await first.stop();
+  storageAvailable = true;
+  const restarted = h.make();
+  await restarted.recoverInterruptedRuns(true);
+  await h.drain();
+  expect(await registry.getById(id)).toMatchObject({ status: "completed", errorCode: null });
+  expect(h.executed).toHaveLength(3);
+  expect(await registry.listJobIds(id)).toHaveLength(3);
 });

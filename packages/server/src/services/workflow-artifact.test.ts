@@ -46,6 +46,17 @@ class MemoryArtifactStore implements ArtifactStore {
     return { artifact: this.artifact, replica: this.local };
   }
 
+  async pendingPersistence(workflowRunId: string) {
+    if (
+      !this.artifact ||
+      this.artifact.workflowRunId !== workflowRunId ||
+      this.artifact.durability === "Ephemeral" ||
+      (this.artifact.netdriveFileId && this.artifact.persistentAt)
+    )
+      return [];
+    return [{ artifact: this.artifact, replica: this.local ?? null, ownerId: "owner-1" }];
+  }
+
   async beginPersistence(artifact: ArtifactRecord, local: ArtifactReplicaRecord) {
     this.persistent = {
       ...local,
@@ -192,4 +203,42 @@ test("re-registering a persisted job artifact keeps its NetDrive reference and d
   });
   expect(await service.registerLocal(input)).toEqual(saved.artifact);
   expect(copied).toBe(0);
+});
+
+test("a fresh service recovers a checkpoint upload from saved records", async () => {
+  const store = new MemoryArtifactStore();
+  const saved = await store.registerLocal(registration("Checkpoint"));
+  await store.beginPersistence(saved.artifact, saved.replica);
+  let uploads = 0;
+  const recovered = new WorkflowArtifactService(store, {
+    persist: async (input) => {
+      expect(input.ownerId).toBe("owner-1");
+      expect(input.localReplica.storageRef).toBe("/managed/output/result");
+      uploads++;
+      return { netdriveFileId: "file-1", storageRef: "saved/result" };
+    },
+  });
+  await recovered.awaitCheckpointPersistence("unrelated-run");
+  expect(uploads).toBe(0);
+  await recovered.awaitCheckpointPersistence("run-1");
+  await recovered.awaitCheckpointPersistence("run-1");
+  expect(uploads).toBe(1);
+  expect(store.persistent?.status).toBe("available");
+});
+
+test("failed checkpoint publication remains retryable and missing source cannot count as persisted", async () => {
+  const store = new MemoryArtifactStore();
+  await store.registerLocal(registration("Checkpoint"));
+  const unavailable = new WorkflowArtifactService(store, {
+    persist: async () => {
+      throw new Error("storage offline");
+    },
+  });
+  await expect(unavailable.awaitCheckpointPersistence("run-1")).rejects.toThrow("storage offline");
+  expect(store.persistent?.status).toBe("failed");
+  expect(store.artifact?.persistentAt).toBeNull();
+  store.local = undefined;
+  await expect(unavailable.awaitCheckpointPersistence("run-1")).rejects.toThrow(
+    "no verified local replica",
+  );
 });
