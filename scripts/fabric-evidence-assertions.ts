@@ -3,8 +3,10 @@ import { randomBytes } from "node:crypto";
 import { readFile, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { z } from "zod";
+import { verifyDatabaseAttestation } from "./fabric-evidence-database";
 
 interface NetworkControls {
+  onCleanup(cleanup: () => Promise<void>): void;
   stopOrderer(): Promise<void>;
   startOrderer(): Promise<void>;
 }
@@ -167,6 +169,9 @@ export async function verifyEvidenceNetwork(root: string, controls: NetworkContr
   assert.equal(resumed.state, "anchored");
   assert.equal(resumed.transactionId, outage.transactionId);
   pass("real orderer outage remains pending; restart recovers the original transaction");
+
+  if (process.env.KQ_FABRIC_DATABASE_URL)
+    await verifyDatabaseAttestation(root, process.env.KQ_FABRIC_DATABASE_URL, controls, pass);
 
   for (const [identity, administrator, reason] of [
     ["A", false, "UNTRUSTED_IDENTITY"],

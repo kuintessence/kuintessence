@@ -15,6 +15,8 @@ import { verifyEvidenceNetwork } from "./fabric-evidence-assertions";
 const repo = resolve(import.meta.dir, "..");
 const toolsRoot = process.env.KQ_FABRIC_TOOLS;
 if (!toolsRoot) throw new Error("Set KQ_FABRIC_TOOLS to a verified Fabric 3.1.5 release directory");
+if (process.argv.includes("--database") && !process.env.KQ_FABRIC_DATABASE_URL)
+  throw new Error("Set KQ_FABRIC_DATABASE_URL for the database integration check");
 const binaries = join(resolve(toolsRoot), "bin");
 const defaults = join(resolve(toolsRoot), "config");
 await mkdir(join(repo, "temp"), { recursive: true });
@@ -22,6 +24,7 @@ const root = await mkdtemp(join(repo, "temp", "fabric-network-"));
 await chmod(root, 0o700);
 const children: { name: string; process: Bun.Subprocess; log: string }[] = [];
 let closing: Promise<void> | undefined;
+const additionalCleanups: (() => Promise<void>)[] = [];
 const environment = {
   ...process.env,
   FABRIC_LOGGING_SPEC: "warning",
@@ -138,7 +141,10 @@ async function stop(name: string) {
 
 function cleanup() {
   closing ??= (async () => {
+    const results = await Promise.allSettled(additionalCleanups.map((cleanup) => cleanup()));
     for (const child of [...children].reverse()) await stop(child.name);
+    if (results.some((result) => result.status === "rejected"))
+      throw new Error("Additional test cleanup failed; inspect retained private artifacts");
   })();
   return closing;
 }
@@ -657,6 +663,9 @@ async function setup() {
   });
   console.log(`Fabric network initialized: ${root}`);
   return {
+    onCleanup: (cleanup: () => Promise<void>) => {
+      additionalCleanups.push(cleanup);
+    },
     stopOrderer: () => stop("orderer"),
     startOrderer: async () => {
       start("orderer", [join(binaries, "orderer")], { FABRIC_CFG_PATH: root });

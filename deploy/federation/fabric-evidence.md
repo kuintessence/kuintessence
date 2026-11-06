@@ -1,6 +1,6 @@
 # Fabric 证据链码与独立 Adapter
 
-当前已接通 Server 存证 outbox、批次/序号、数据库恢复检查点、独立 Node Adapter 和证据链码的代码路径。**证据链已通过 Fabric 3.1.5 的 A/B/C 真实 Peer 验证，平台作业与数据库补交的联合验收仍未完成**。配置私有 Adapter socket 后，后台 worker 会消费现有待办；此路径不创建联邦作业，也不修改任务额度。直接模式不创建待办、不调用 Adapter，不要求链连接。
+当前已接通 Server 存证 outbox、批次/序号、数据库恢复检查点、独立 Node Adapter 和证据链码的代码路径。**证据链与 PostgreSQL 补交 worker 已通过 Fabric 3.1.5 联合验证，真实平台作业验收仍未完成**。配置私有 Adapter socket 后，后台 worker 会消费现有待办；此路径不创建联邦作业，也不修改任务额度。直接模式不创建待办、不调用 Adapter，不要求链连接。
 
 代码位置：[证据链码](../../contracts/fabric/evidence/src/contract.ts)、[Adapter](../../packages/fabric-adapter/src/evidence.ts)、[私有进程入口](../../packages/fabric-adapter/src/runtime.ts)、[协议与集合配置](../../packages/shared/src/federation/ledger.ts)。Node 至少 22.12，Gateway 固定 1.13.0，fabric-shim 固定 2.5.8。Peer/Orderer 已使用官方 Fabric 3.1.5 验证；测试证书由 cryptogen 与 OpenSSL 生成，没有运行 Fabric CA 服务，不代表生产 CA 运维或高可用共识已验收。
 
@@ -146,6 +146,24 @@ bun run test:fabric:network
 
 测试仅监听本机动态端口；按进程句柄停止本次启动的服务。成功清理测试账本和随机凭据；失败保留 0700 临时目录以供本机排查，不能公开上传整个目录。`KQ_FABRIC_REPORT` 可选，只输出通过项目和时间；`KQ_FABRIC_KEEP_ARTIFACTS=1` 可保留成功现场，`--hold` 仅初始化网络供开发调试，不等于通过测试。
 
-[GitHub 检查](../../.github/workflows/fabric-evidence-network.yml)对相关 PR 改动运行相同测试，固定官方发布包 SHA-256，只上传无私有材料的断言摘要。本地已验证；远端 CI 尚待分支推送后执行。
+[数据库联合验证](../../scripts/fabric-evidence-database.ts)另启动生产 Node Adapter 入口和独立 Bun worker，连接实际 PostgreSQL；使用既有迁移器创建随机 `kuintessence_unit_*` 数据库，结束时只删除本次数据库。需要在隔离 PostgreSQL 上有创建数据库权限：
 
-**仍不代表完整存证闭环**：本次无 PostgreSQL worker 与真实链的联合执行，也没有三套 KQ、真实 Slurm/PBS 作业、商业字段/日志/备份的全通道隐私测试或多 Orderer 容灾。完整 L02/L04/L05/L06 及 A02 等验收不能因此标为全部通过。
+```sh
+KQ_FABRIC_TOOLS=/path/to/fabric-3.1.5 \
+KQ_FABRIC_DATABASE_URL=postgres://kq:kq@127.0.0.1:5432/postgres \
+KQ_FABRIC_REPORT=/path/to/result.json \
+bun run test:fabric:integration
+```
+
+联合入口缺少数据库配置会立即失败，不静默退回纯链测试。新增四组检查与原十二项一起通过，共 16 项：
+
+1. Orderer 和 Adapter 均未运行时，直接接单成功且没有上链 outbox。
+2. 存证接单产生真实证据和数据库检查点；Orderer 停机时保存 `LEDGER_PENDING` 和原 txId，同时第二个存证请求继续接单、记录待补交证据。
+3. 强制结束并重启 Node Adapter，保留恢复密钥；再强制结束刚取得真实 VALID、尚未写入数据库的 worker。数据库仍保留原 transaction 检查点和租约。
+4. 新后台 worker 等待真实 90 秒数据库租约到期后，自动确认原交易，再提交下一批。两批序号分别从 1、3 开始，四条 outbox 全部 anchored，只有两个交易尝试；额度不变，Job 表仍为空。
+
+测试没有缩短租约、回写成功状态或模拟 Gateway。正常结束及收到终止信号时，由父进程清理本次 worker、Adapter、Peer/Orderer 和数据库。首次检查修正了独立测试 worker 缺少常驻事件句柄的问题；生产 worker 仍由 Server 生命周期承载，没有调整其重试/租约时间。
+
+[GitHub 检查](../../.github/workflows/fabric-evidence-network.yml)已加入 PostgreSQL 服务，相关 PR 改动运行相同联合入口，固定官方 Fabric 发布包 SHA-256，只上传无私有材料的断言摘要。本地已验证；远端 CI 尚待分支推送后执行。
+
+**仍不代表完整联邦业务闭环**：已验证接单和证据补交，但没有三套完整 KQ、真实 Slurm/PBS 作业、商业字段/日志/备份的全通道隐私测试或多 Orderer 容灾。完整 L02/L04/L05/L06 及 A02 等验收不能因此标为全部通过。

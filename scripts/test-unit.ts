@@ -70,7 +70,7 @@ export function unitChildEnvironment(
   baseEnvironment: Record<string, string | undefined>,
   databaseUrl: string,
 ): Record<string, string | undefined> {
-  const environment = {
+  const environment: Record<string, string | undefined> = {
     ...baseEnvironment,
     DATABASE_URL: databaseUrl,
     KQ_PG_URL: databaseUrl,

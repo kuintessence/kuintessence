@@ -8,8 +8,11 @@ on:
       - contracts/fabric/**
       - packages/fabric-adapter/**
       - packages/shared/src/federation/**
-      - packages/server/src/federation/attestation-client.ts
+      - packages/server/src/federation/**
+      - packages/db/src/pg/schema-federation.ts
+      - packages/db/migrations/**
       - scripts/fabric-evidence-*.ts
+      - scripts/test-unit.ts
       - scripts/tsconfig.fabric.json
       - package.json
       - bun.lock
@@ -25,6 +28,20 @@ jobs:
   evidence:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: kq
+          POSTGRES_PASSWORD: kq
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U kq -d postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     steps:
       - uses: actions/checkout@v4
         with:
@@ -51,11 +68,12 @@ jobs:
             --output "$FABRIC_TEST_TOOLS/release.tar.gz"
           echo "b9c31fd490991e76f8acb1835dee09fc19fee5428cb13e190ee6e0bdd2c37858  $FABRIC_TEST_TOOLS/release.tar.gz" | sha256sum --check
           tar -xzf "$FABRIC_TEST_TOOLS/release.tar.gz" -C "$FABRIC_TEST_TOOLS"
-      - name: Verify native privacy, endorsements and recovery
+      - name: Verify native privacy and database worker recovery
         env:
           KQ_FABRIC_TOOLS: ${{ runner.temp }}/kq-fabric-3.1.5
+          KQ_FABRIC_DATABASE_URL: postgres://kq:kq@localhost:5432/postgres
           KQ_FABRIC_REPORT: ${{ runner.temp }}/fabric-evidence-result.json
-        run: bun run test:fabric:network
+        run: bun run test:fabric:integration
       - name: Preserve assertion summary
         uses: actions/upload-artifact@v4
         with:

@@ -13,7 +13,6 @@ import { common, ledger, msp, peer, gateway as proto } from "@hyperledger/fabric
 import {
   type EvidenceAdvanceResult,
   EvidenceProposalInputSchema,
-  FabricEvidenceTrustSchema,
   FabricProposalCheckpointSchema,
   FederationEvidenceBatchSchema,
 } from "@kuintessence/shared/federation/ledger";
@@ -27,21 +26,8 @@ import {
   UnixAttestationClient,
 } from "../packages/server/src/federation/attestation-client";
 
-const Site = z.object({
-  name: z.enum(["A", "B", "C"]),
-  siteId: z.uuid(),
-  peerPort: z.number().int(),
-  tls: z.string(),
-  adminMsp: z.string(),
-  userMsp: z.string(),
-  businessKeyFile: z.string(),
-});
-const Network = z.object({
-  channel: z.literal("kq-evidence-test"),
-  chaincode: z.literal("kq-evidence"),
-  trust: FabricEvidenceTrustSchema,
-  sites: z.array(Site).length(3),
-});
+import { Network, Site } from "./fabric-evidence-fixture";
+
 const Request = z.discriminatedUnion("action", [
   z.object({ action: z.literal("ready") }),
   z.object({
