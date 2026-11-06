@@ -376,7 +376,14 @@ export class TorqueAdapter implements SchedulerAdapter {
       }
       const matches = stdout
         .split(/(?=^Job Id:\s*)/m)
-        .filter((record) => hasKuintessenceJobId(record, lookup.jobId))
+        .filter(
+          (record) =>
+            hasKuintessenceJobId(record, lookup.jobId) &&
+            (!lookup.schedulerName ||
+              parseQstatAttribute(record, "Job_Name") === lookup.schedulerName) &&
+            (!lookup.schedulerAccount ||
+              parseQstatAttribute(record, "Account_Name") === lookup.schedulerAccount),
+        )
         .map((record) => /^Job Id:\s*(\S+)/m.exec(record)?.[1])
         .filter((schedulerJobId): schedulerJobId is string => !!schedulerJobId);
       if (matches.length === 0) return { status: "not_found" };

@@ -218,6 +218,8 @@ message RegisterRequest {
   bool federation_installation_v1 = 23;
   // Renews running audit/install/verify authority and independently stops expired workers.
   bool federation_installation_lease_v1 = 24;
+  // Persists runtime deadlines and requires an independent scheduler watchdog.
+  bool federation_compute_lease_v1 = 25;
 }
 
 message RegisterResponse {

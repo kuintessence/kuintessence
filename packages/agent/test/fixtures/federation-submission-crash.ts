@@ -79,6 +79,7 @@ const stream = new AgentStream({
   heartbeatIntervalMs: 60_000,
   logger: pino({ level: "silent" }),
   inboundAcks: new InboundAcks(db),
+  assertFederationRuntimeWatchdog: async () => {},
   activeRemoteJobs: new ActiveRemoteJobs(db),
   cleanupIntents: new JobCleanupIntents(db),
   revocationTombstones: new JobRevocationTombstones(db),

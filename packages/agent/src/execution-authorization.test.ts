@@ -1,10 +1,10 @@
 import { expect, spyOn, test } from "bun:test";
 import { setTimeout as delay } from "node:timers/promises";
-import { InstallationAuthorization } from "./install-authorization";
+import { ExecutionAuthorization } from "./execution-authorization";
 
 test("a backward wall clock and delayed timer cannot revive an expired lease", async () => {
   const now = Date.now();
-  const lease = new InstallationAuthorization(
+  const lease = new ExecutionAuthorization(
     now + 100,
     async () => now + 1000,
     new AbortController().signal,
@@ -26,7 +26,7 @@ test("installation stays alive across renewals and closes its outstanding reques
   let renewals = 0;
   let accepted = 0;
   let pending: AbortSignal | undefined;
-  const lease = new InstallationAuthorization(
+  const lease = new ExecutionAuthorization(
     Date.now() + 200,
     async (signal) => {
       renewals++;
@@ -55,7 +55,7 @@ test("installation stays alive across renewals and closes its outstanding reques
 
 test("an unresponsive renewal cannot outlive the previous grant", async () => {
   let waiting: AbortSignal | undefined;
-  const lease = new InstallationAuthorization(
+  const lease = new ExecutionAuthorization(
     Date.now() + 100,
     async (signal) => {
       waiting = signal;
@@ -78,7 +78,7 @@ test.each([
   "invalid",
   "supervisor-rejected",
 ] as const)("running renewal fails closed on %s", async (kind) => {
-  const lease = new InstallationAuthorization(
+  const lease = new ExecutionAuthorization(
     Date.now() + 200,
     async () => {
       if (kind === "denied") throw new Error("denied");
@@ -99,7 +99,7 @@ test.each([
 
 test("late success after expiry does not publish a fresh supervisor lease", async () => {
   let accept = 0;
-  const lease = new InstallationAuthorization(
+  const lease = new ExecutionAuthorization(
     Date.now() + 100,
     async () => {
       await delay(100);
@@ -122,7 +122,7 @@ test("late success after expiry does not publish a fresh supervisor lease", asyn
 test("cancellation aborts renewal without waiting for its remote timeout", async () => {
   const controller = new AbortController();
   let waiting: AbortSignal | undefined;
-  const lease = new InstallationAuthorization(
+  const lease = new ExecutionAuthorization(
     Date.now() + 200,
     async (signal) => {
       waiting = signal;

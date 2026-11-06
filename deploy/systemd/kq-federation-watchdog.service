@@ -1,0 +1,39 @@
+# Independent of the Agent service: do not add PartOf= or BindsTo=kq-agent.service.
+[Unit]
+Description=Kuintessence Federation Scheduler Watchdog
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=kq-agent
+Group=kq-agent
+WorkingDirectory=/var/lib/kq-agent
+EnvironmentFile=/etc/kq-agent/kq-agent.env
+ExecStart=/usr/local/bin/kq-agent --federation-watchdog
+UMask=0077
+Restart=always
+RestartSec=1s
+TimeoutStopSec=15s
+MemoryMax=512M
+TasksMax=128
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+ReadWritePaths=/var/lib/kq-agent
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=kq-federation-watchdog
+
+[Install]
+WantedBy=multi-user.target

@@ -1,6 +1,7 @@
 /// <reference path="./python.d.ts" />
 import { link, lstat, mkdir, mkdtemp, readlink, realpath, rm, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
+import { ExecutionAuthorization } from "../execution-authorization";
 import { type SpackAuditProcess, SpackProcessNotStartedError } from "./audit-process";
 import {
   buildSpackAuditCommand,
@@ -14,7 +15,6 @@ import {
   SpackInstallationPending,
   softwareExecution,
 } from "./execution-identity";
-import { InstallationAuthorization } from "./install-authorization";
 import {
   SPACK_INSTALL_RESULT_PREFIX,
   type SpackInstallReport,
@@ -145,7 +145,7 @@ export class IsolatedSpackInstallRunner implements SpackInstallRunner {
     let directory: string | undefined;
     let workerUncertain = false;
     let supervisor: SpackProcessSupervision | undefined;
-    let authorization: InstallationAuthorization | undefined;
+    let authorization: ExecutionAuthorization | undefined;
     const execution = installWorkerExecution.getStore();
     let executionStarted = false;
     try {
@@ -266,7 +266,7 @@ export class IsolatedSpackInstallRunner implements SpackInstallRunner {
       }
       if (authorizedUntil !== undefined && input.authorizeInstallation) {
         const ref = supervisor;
-        authorization = new InstallationAuthorization(
+        authorization = new ExecutionAuthorization(
           authorizedUntil,
           input.authorizeInstallation,
           signal,

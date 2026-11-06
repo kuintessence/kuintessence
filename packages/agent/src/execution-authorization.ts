@@ -1,7 +1,7 @@
 import { setTimeout as delay } from "node:timers/promises";
 
-/** A running worker cannot turn a lost renewal into a resumable, unverified build. */
-export class InstallationAuthorization {
+/** A running job or worker cannot turn a lost renewal into a resumable, unverified build. */
+export class ExecutionAuthorization {
   private readonly controller = new AbortController();
   private readonly stopped = new AbortController();
   private timer: ReturnType<typeof setTimeout> | undefined;
@@ -36,9 +36,7 @@ export class InstallationAuthorization {
         }
       } catch (error) {
         if (!signal.aborted)
-          this.controller.abort(
-            new Error("Federation installation renewal failed", { cause: error }),
-          );
+          this.controller.abort(new Error("Federation execution renewal failed", { cause: error }));
       }
     })();
   }
@@ -50,7 +48,7 @@ export class InstallationAuthorization {
   private validate(expiresAt: number): number {
     const remaining = expiresAt - Date.now();
     if (!Number.isSafeInteger(expiresAt) || remaining <= 0 || remaining > 30_000)
-      throw new Error("Invalid federation installation grant expiry");
+      throw new Error("Invalid federation execution grant expiry");
     return remaining;
   }
 
@@ -60,14 +58,14 @@ export class InstallationAuthorization {
     this.deadline = performance.now() + remaining;
     clearTimeout(this.timer);
     this.timer = setTimeout(() => {
-      this.controller.abort(new Error("Federation installation authorization expired"));
+      this.controller.abort(new Error("Federation execution authorization expired"));
     }, remaining);
   }
 
   assertValid(): void {
     this.signal.throwIfAborted();
     if (this.remaining() <= 0) {
-      this.controller.abort(new Error("Federation installation authorization expired"));
+      this.controller.abort(new Error("Federation execution authorization expired"));
       this.signal.throwIfAborted();
     }
   }

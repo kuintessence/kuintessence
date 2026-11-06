@@ -347,10 +347,20 @@ export class PbsProAdapter implements SchedulerAdapter {
       } catch {
         return { status: "indeterminate", reason: "qstat returned non-JSON output" };
       }
-      const jobs = (parsed as { Jobs?: Record<string, { Variable_List?: unknown }> }).Jobs;
+      const jobs = (
+        parsed as {
+          Jobs?: Record<
+            string,
+            { Variable_List?: unknown; Job_Name?: string; Account_Name?: string }
+          >;
+        }
+      ).Jobs;
       if (!jobs) return { status: "not_found" };
-      const matches = Object.entries(jobs).filter(([, job]) =>
-        hasKuintessenceJobId(job.Variable_List, lookup.jobId),
+      const matches = Object.entries(jobs).filter(
+        ([, job]) =>
+          hasKuintessenceJobId(job.Variable_List, lookup.jobId) &&
+          (!lookup.schedulerName || job.Job_Name === lookup.schedulerName) &&
+          (!lookup.schedulerAccount || job.Account_Name === lookup.schedulerAccount),
       );
       if (matches.length === 0) return { status: "not_found" };
       if (matches.length !== 1) {

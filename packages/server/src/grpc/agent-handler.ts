@@ -398,6 +398,7 @@ export function registerAgentHandler(router: ConnectRouter, deps: AgentHandlerDe
         spackPinnedExecutionV1: false,
         softwareOperationReplayV1: false,
         federationExecutionV1: false,
+        federationComputeLeaseV1: false,
         federationInstallationV1: false,
         federationInstallationLeaseV1: false,
         verifiedCertFingerprint: undefined as string | undefined,
@@ -514,6 +515,7 @@ export function registerAgentHandler(router: ConnectRouter, deps: AgentHandlerDe
               channel.spackPinnedExecutionV1 = reg.spackPinnedExecutionV1;
               channel.softwareOperationReplayV1 = reg.softwareOperationReplayV1;
               channel.federationExecutionV1 = reg.federationExecutionV1;
+              channel.federationComputeLeaseV1 = reg.federationComputeLeaseV1;
               channel.federationInstallationV1 = reg.federationInstallationV1;
               channel.federationInstallationLeaseV1 = reg.federationInstallationLeaseV1;
               channel.verifiedCertFingerprint =
@@ -535,7 +537,8 @@ export function registerAgentHandler(router: ConnectRouter, deps: AgentHandlerDe
                       computeHealthV1Supported: true,
                       queueInventoryV1Supported: queueInventory !== undefined,
                       queueValidationShadowRejectionAckSupported: queueObservability !== undefined,
-                      federationExecutionV1Supported: jobDispatches?.renewExecution !== undefined,
+                      federationExecutionV1Supported:
+                        jobDispatches?.renewExecution !== undefined && reg.federationComputeLeaseV1,
                       federationInstallationV1Supported:
                         softwareOperations?.renewFederationInstallation !== undefined &&
                         reg.federationInstallationLeaseV1,
@@ -1124,7 +1127,7 @@ export function registerAgentHandler(router: ConnectRouter, deps: AgentHandlerDe
               (request.operationId && request.runtimeRenewal) ||
               !(request.operationId
                 ? channel.federationInstallationV1 && channel.federationInstallationLeaseV1
-                : channel.federationExecutionV1) ||
+                : channel.federationExecutionV1 && channel.federationComputeLeaseV1) ||
               !channel.verifiedCertFingerprint
             ) {
               respond(FederationExecutionDecision.DENIED);

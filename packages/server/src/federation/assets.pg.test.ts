@@ -1118,6 +1118,7 @@ test.each([
       pending: true,
     });
     dispatcher.register(agentId, {
+      federationComputeLeaseV1: true,
       federationExecutionV1: true,
       verifiedCertFingerprint: "test-verified-certificate",
       close: () => {},
@@ -1169,6 +1170,7 @@ test.each([
       expect(grants[0]?.dispatch?.command).toBe("true");
       expect(grants[0]?.expiresAtUnixMs).toBe(BigInt(grantNow + 10_000));
       dispatcher.register("different-agent", {
+        federationComputeLeaseV1: true,
         federationExecutionV1: true,
         verifiedCertFingerprint: "other-verified",
         close: () => {},
@@ -2276,6 +2278,7 @@ test.each([
       .set({ status: "offline" })
       .where(eq(agents.agentId, approvedTarget.agentId));
     dispatcher.register(approvedTarget.agentId, {
+      federationComputeLeaseV1: true,
       federationExecutionV1: true,
       verifiedCertFingerprint: "verified",
       close: () => {},

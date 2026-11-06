@@ -501,7 +501,7 @@ Script 的 File/FileBatch 到下游受管文件转换、Checkpoint 文件持久�
 
 ## 受管安装运行中的本地续期与独立到期停止
 
-- [运行许可](../../../packages/agent/src/spack/install-authorization.ts)复用原安装授权 RPC，在源码审计、安装和验证期间持续续期；墙钟与单调时钟共同限制期限。暂时故障可以等待到原许可到期，明确拒绝立即中断；迟到响应不能复活旧许可。worker 启动前仍可持久等待，启动后的许可丢失按失败停止，不把不完整编译当作检查点重跑。
+- [运行许可](../../../packages/agent/src/execution-authorization.ts)复用原安装授权 RPC，在源码审计、安装和验证期间持续续期；墙钟与单调时钟共同限制期限。暂时故障可以等待到原许可到期，明确拒绝立即中断；迟到响应不能复活旧许可。worker 启动前仍可持久等待，启动后的许可丢失按失败停止，不把不完整编译当作检查点重跑。
 - [进程监督](../../../packages/agent/src/spack/supervised-process.ts)对联邦 worker 使用宿主 Python 守护和 systemd notify 服务。守护仅读取原 unit 的私有原子租约，按墙钟与 CLOCK_BOOTTIME 过期；隔离 worker 不接收租约或通知 socket。Agent 被 SIGKILL 后仍会停止，守护冻结时由 systemd 运行时限兜底，续期不会突破安装总超时。先确认 cgroup 停止再释放 writer，过期事件本身不是停止回执。
 - 普通非联邦 worker 沿原监督路径；未证明停止的传输异常仍保留输入、锁和未知状态。联邦路径增加宿主 `/usr/bin/python3` 要求，监督记录新增可选字段，共享写入者需要一致升级。注册新增 `federation_installation_lease_v1`，Server 在派发及续期入口拒绝仅有旧启动检查能力的 Agent；历史正在执行的旧进程须先停止，不能通过升级自动补装守护。具体限制和维护规则见[安装恢复说明](../../spack-install-recovery.md)。
 
@@ -519,6 +519,27 @@ Script 的 File/FileBatch 到下游受管文件转换、Checkpoint 文件持久�
 验证：Agent 执行许可 client **33 项**通过；隔离 PostgreSQL 中最终运行续期/Agent RPC **29 项**、默认队列定向 **1 项**通过，包含已确认原 outbox、运行态/离线库存、取消竞争、原 epoch、过期下载地址与有效 use 授权、数据撤权/绑定篡改、跨连接 UPDATE NOWAIT 证明发送边界仍持有数据授权锁，以及运行/安装用途隔离。初次五文件组合回归 **139 项通过、1 项 protobuf 可选字段断言失败**，断言已修正并通过上述定向复查；软件许可、派发数据与执行目标的未受后续改动影响的检查未重复执行。隔离数据库均已停止清理；上述集合有重叠，不累计为独立检查总数。全仓类型检查通过，最后一处默认队列调整后的 Server 复查通过；lint 在调整期间发现一处格式错误，格式化后全仓错误级别检查通过，原有 warnings/info 保留。
 
 这轮完成的是 Server 运行续期及 Agent client，尚未由 Agent 的作业生命周期自动调用。调度器计算任务的持久本地到期、取消和重启恢复，以及独立进程/调度器侧的失联停止仍待接通；不能据此声称运行中的 Slurm/PBS 作业已具备完整本地到期控制。Sandbox 持续授权、长下载、全部已知授权截止时间对许可上限的收敛、实际联合运行及 PR 预览仍待完成，自动激活保护保留。
+
+## 计算作业在 Agent 内的持久续期、到期停止与重启恢复
+
+- [AgentStream](../../../packages/agent/src/stream.ts)在提交边界保存初始许可，随后调用已有的独立运行续期 RPC。复用安装路径的[许可计时器](../../../packages/agent/src/execution-authorization.ts)，同时检查墙钟和单调时间；续期不重派 Job、不重复下载输入，也不连接 Fabric。普通非联邦任务保持原行为。
+- [SQLite 收件记录](../../../packages/agent/src/queue/inbound-acks.ts)沿用原 JSON payload，保存原 dispatch epoch 对应的许可截止时间、恢复 owner 和 active/stopping/finished 状态，不新增表、不落盘可复用票据。已确认收件的任务也读取原记录；新进程接管不延长旧期限，过期、已停止续期或历史缺少许可的记录进入停止流程。旧 owner 的续期、取消计时器及终态写入不能覆盖新 owner；旧进程失去归属后停止自身轮询，不取消新进程接管的作业或清理其输入。
+- 明确拒绝、无有效续期直至到期、运行中取消和数据撤权均关闭续期，复用原 epoch 的持久撤销、调度器停止确认及清理链路。停止失败保留记录，额外的本地重试不依赖 Server 心跳；仅到期不能冒充已经停止。恢复材料期间若许可已失效或收到撤销，不再接回运行监控。
+
+验证：AgentStream、SQLite 收件记录及共用计时器共 **206 项检查通过**，涵盖续期、无响应到期、明确拒绝、停止失败重试、停止未确认时保留输入、迟到响应与 owner 接管，以及 SQLite 文件关闭重开后的 active/expired/stopping/历史记录。专项重试关闭了短周期心跳，确认由本地计时器继续处理。安装 worker 的 4 项启动许可检查通过；重用计时器期间误改的一处安装专用错误断言已还原并定向复查。全仓类型检查及最终 Agent 类型复查通过，lint 无错误（原有 47 warnings、1 info）。调度器及 Server 使用受控替身，没有启动实际集群任务。
+
+边界：这轮只有 Agent 进程内的运行监督与重启恢复。Agent 被 SIGKILL、宿主机掉电或长时间不恢复时，调度器计算作业仍缺独立守护/调度器侧到期停止，不能声称完整失联控制。跨进程持久截止时间依赖宿主时钟，进程内单调时钟保护不能代替宿主时间管理。旧版 Agent 不识别新收据，不支持在活动联邦作业期间直接降级。完整运行许可能力协商、Sandbox 持续授权、长下载、真实 Slurm/PBS/Fabric 联合验收及实际联邦激活仍待完成；自动激活保护保留，未发布或部署。
+
+## 独立调度器看守与 Agent 进程退出后的计算停止
+
+- 新增[独立可执行入口](../../../packages/agent/src/federation-watchdog.ts)和[看守扫描器](../../../packages/agent/src/queue/federation-runtime-watchdog.ts)，由[独立 systemd unit](../../../deploy/systemd/kq-federation-watchdog.service)监督，与 Agent 服务的进程和停止关系分离。它只读取现有 SQLite、封锁许可和请求停止，不访问 Server/Fabric、不派发任务、不迁移数据库、不清理输入。复用 Slurm/PBS Pro/Torque 的作业查找及正向停止确认，CLI 调用设置上限；未知提交、调度器故障和未停止均保留重试。
+- 过期封锁使用原收据的条件更新，与 Agent 续期竞争只有一个获胜。活跃许可按已持久期限监视，未变化的许可不能因墙钟回拨获得更多时间；已及时持久续期不会因为某次调度器查询较慢被当作迟到响应。确认停止后单独保存原调度器 ID 的证明，重启后的 Agent 可以接回取消与清理，避免对已确认停止、可能被调度器回收的 ID 再次发送取消。
+- 新提交的调度名称包含 dispatch epoch，并与完整 Job UUID 一起匹配。PBS Pro/Torque 恢复查找补齐名称和账户条件；出现另一代次或不同调度器 ID 时不猜测取消。历史缺少代次名称的记录保持待维护。
+- 看守沿用 `agent_config` 保存扫描心跳，提交与运行续期检查其时效与调度器类型。新增 `federation_compute_lease_v1` 注册能力，Server 最终派发和许可 RPC 均拒绝只支持启动检查的旧 Agent；安装继续使用已有的独立安装租约能力。配置与升级方法见[systemd 部署说明](../../../deploy/systemd/README.md#联邦计算的独立看守)。
+
+验证：AgentStream、收件记录、看守、PBS/Torque 和 Dispatcher 的 **338 项检查通过**；隔离 PostgreSQL 中 RPC、数据派发和执行目标 **60 项通过**，包含旧能力拒绝，数据库已停止清理。最终 **2 项编译入口进程测试通过**：实际 AgentStream 进程在独立看守存活时多次续期，随后被 SIGKILL；看守经 Slurm/PBS CLI 替身停止真实轻量 `sleep` 进程，并保留输入清理记录。这些不是实际 Slurm/PBS 集群验收，Server 协议端也是受控替身。首次编译缺少本机可选 `cpu-features` 插件，改用项目发布脚本已有的 external 参数完成；强化进程夹具时一处参数传递错误已修复。全仓类型检查通过，lint 无错误（原有 47 warnings、1 info）；protobuf 通过生成命令更新。
+
+剩余边界：Kubernetes 独立看守、看守自身冻结/宿主故障的停止保障、同宿主不同任务身份的完整隔离、真实调度器与 Fabric 联合验收、Compose/Helm 联邦部署和预览环境尚未完成。不承诺固定停止时限；控制面与调度器均不可用时仍保留待核对。自动激活保护继续保留，没有将此轮结果当作完整联邦交付。
 
 ## 尚未接通，不能宣称支持
 

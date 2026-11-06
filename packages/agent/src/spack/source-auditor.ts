@@ -1,6 +1,7 @@
 /// <reference path="./python.d.ts" />
 import { link, lstat, mkdir, mkdtemp, readlink, realpath, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import { ExecutionAuthorization } from "../execution-authorization";
 import { type SpackAuditProcess, SpackProcessNotStartedError } from "./audit-process";
 import {
   buildSpackAuditCommand,
@@ -11,7 +12,6 @@ import {
   verifySpackAuditRuntime,
 } from "./audit-runtime";
 import { SpackInstallationPending, softwareExecution } from "./execution-identity";
-import { InstallationAuthorization } from "./install-authorization";
 import { SpackMaterialCache } from "./material-cache";
 import type { PreparedSpackMaterials, SpackMaterialPrepareInput } from "./material-client";
 import { preflightSpackMaterials } from "./material-preflight";
@@ -104,7 +104,7 @@ export class SpackSourceAuditor implements SpackMaterialAuditor {
     let directory: string | undefined;
     let workerUncertain = false;
     let supervisor: SpackProcessSupervision | undefined;
-    let authorization: InstallationAuthorization | undefined;
+    let authorization: ExecutionAuthorization | undefined;
     try {
       const preflight = await preflightSpackMaterials(prepared, { ...input, signal });
       if (!preflight.valid) throw new Error("Spack source audit requires a valid static lock");
@@ -165,7 +165,7 @@ export class SpackSourceAuditor implements SpackMaterialAuditor {
       if (authorizedUntil !== undefined && input.authorizeInstallation) {
         if (authorizedUntil <= Date.now()) throw new SpackInstallationPending();
         const ref = supervisor;
-        authorization = new InstallationAuthorization(
+        authorization = new ExecutionAuthorization(
           authorizedUntil,
           input.authorizeInstallation,
           signal,

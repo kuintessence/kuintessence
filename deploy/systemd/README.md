@@ -142,6 +142,37 @@ sudo systemctl restart kq-agent
 
 日志写入 journal，可通过 `journalctl -u kq-agent` 查看。
 
+## 联邦计算的独立看守
+
+Slurm、PBS Pro 和 Torque 的联邦计算需要独立运行的
+[kq-federation-watchdog.service](kq-federation-watchdog.service)。安装脚本复制该 unit，
+不自动启动。Agent 首次启动并建立 SQLite 后，由站点管理员启用：
+
+```bash
+sudo systemctl enable --now kq-federation-watchdog
+sudo journalctl -u kq-federation-watchdog -f
+```
+
+看守使用同一二进制的 `--federation-watchdog` 模式，与 Agent 分别运行。两者必须使用
+同一个服务账号、`AGENT_DB_PATH`、调度器 CLI 环境和集群目标；容器后端还必须使用相同的
+`AGENT_SPAWNER_BACKEND` 与 `AGENT_SLURM_CONTAINER_ID`。看守不连接 Server、Fabric，
+不注册 Agent，也不创建或迁移数据库。数据库须已存在、归服务账号所有且权限为 `0600`；
+不要将控制面数据库目录挂给计算任务。Kubernetes 独立看守尚未接入，此模式会拒绝启动。
+
+新 Agent 在联邦计算提交前和运行续期时检查看守最近 2 秒内完成的扫描。缺少看守、
+扫描停顿或调度器类型不匹配时，不提交新任务，也不延长运行许可；普通本地任务不受影响。
+Server 通过 `federation_compute_lease_v1` 拒绝只支持启动检查的旧 Agent。
+
+看守按原 Job UUID、执行代次对应的调度名称和账户核对任务，持久封锁过期续期，再请求停止。
+找不到任务、查询失败或尚未确认停止时保留待处理记录。确认后保存停止证明，输入与其他资源
+由 Agent 原恢复链路清理；看守本身不删除作业输入。Agent 服务停机不应连带停止看守，
+不要为两个 unit 添加 `PartOf` 或 `BindsTo` 关系。
+
+升级前应结束或取消现有联邦计算，并确认停止；旧作业没有新的代次名称，不能凭名称猜测迁移。
+升级 Server/Agent 后同时更新看守二进制并重启看守。活动联邦任务期间不能直接降级。
+看守的进程崩溃可由 systemd 重启，但宿主机掉电、看守冻结和调度器控制面不可用仍需运维处理；
+此机制不承诺在这些故障下即时停止计算，也不提供固定的全局停止时限。
+
 ## 证书轮换
 
 通过[证书管理 API](../../docs/security.md#agent)提交以 Agent ID 为 CN 的新 CSR。
@@ -152,9 +183,11 @@ sudo systemctl restart kq-agent
 
 ## 卸载
 
+先在平台取消所有活动任务并确认停止；停止 Agent 服务不会自动终止调度器中的普通作业。
+
 ```bash
-sudo systemctl disable --now kq-agent
-sudo rm /etc/systemd/system/kq-agent.service /usr/local/bin/kq-agent
+sudo systemctl disable --now kq-agent kq-federation-watchdog
+sudo rm /etc/systemd/system/kq-agent.service /etc/systemd/system/kq-federation-watchdog.service /usr/local/bin/kq-agent
 sudo systemctl daemon-reload
 ```
 

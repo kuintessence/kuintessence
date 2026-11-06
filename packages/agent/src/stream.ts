@@ -80,6 +80,7 @@ import type {
 } from "./data-market/data-scan";
 import { ExecutorPool } from "./embedded/executor-pool";
 import type { JobStatusReport } from "./embedded/job-executor";
+import { ExecutionAuthorization } from "./execution-authorization";
 import {
   buildCloudToClusterArgv,
   buildHostCloudToClusterArgv,
@@ -99,10 +100,15 @@ import { type ActiveRemoteJobs, jsonToPreparedRemoteJob } from "./queue/active-r
 import {
   FederationDispatchReceiptSchema,
   federationDispatchReceipt,
+  federationSchedulerName,
   matchesFederationReceipt,
 } from "./queue/federation-dispatch";
 import { FederationExecutionClient } from "./queue/federation-execution";
-import type { InboundAcks, PendingInboundRow } from "./queue/inbound-acks";
+import type {
+  FederationRuntimeReceipt,
+  InboundAcks,
+  PendingInboundRow,
+} from "./queue/inbound-acks";
 import type {
   JobCleanupIntent,
   JobCleanupIntents,
@@ -510,6 +516,7 @@ export function jobStatusReportToProto(report: JobStatusReport, eventId = ""): A
 // ---------------------------------------------------------------------------
 
 export interface AgentStreamDeps {
+  assertFederationRuntimeWatchdog?: () => Promise<void>;
   client: ServerClient;
   /**
    * Rebuilds the HTTP/2 transport for each reconnect attempt. A transport
@@ -703,6 +710,17 @@ export class AgentStream {
     { dispatch: DispatchJob; controller: AbortController }
   >();
   private readonly federationSpecs = new WeakSet<JobSpec>();
+  private readonly federationRuntimes = new Map<
+    string,
+    {
+      dispatchId: string;
+      epoch: number;
+      receipt: FederationRuntimeReceipt;
+      authorization?: ExecutionAuthorization;
+      retry?: ReturnType<typeof setTimeout>;
+      superseded?: boolean;
+    }
+  >();
   private schedulerRecovery: Promise<void> | undefined;
   private readonly jobCancellationSettlements = new Map<string, Promise<void>>();
   private readonly jobPreparations = new Map<string, Promise<void>>();
@@ -890,15 +908,34 @@ export class AgentStream {
         if (this.federationSpecs.has(spec)) {
           const pending = this.federationDispatches.get(spec.jobId);
           if (!pending) throw new Error("Federation dispatch authority is missing");
+          await this.assertFederationRuntimeWatchdog();
           const grant = await this.renewFederationExecution(pending.dispatch);
           const dispatchId = this.dispatchIdsByJob.get(spec.jobId);
           if (!dispatchId || !this.inboundAcks)
             throw new Error("Federation dispatch receipt is missing");
-          await this.inboundAcks.markSubmissionStarted(dispatchId, { spec, expectedOutputs });
-          pending.controller.signal.throwIfAborted();
-          this.lifecycleController.signal.throwIfAborted();
           if (!grant || grant.expiresAt <= Date.now())
             throw new Error("Federation execution grant expired before submission");
+          const runtime: FederationRuntimeReceipt = {
+            owner: crypto.randomUUID(),
+            expiresAt: grant.expiresAt,
+            state: "active",
+          };
+          await this.inboundAcks.markSubmissionStarted(
+            dispatchId,
+            { spec, expectedOutputs },
+            runtime,
+          );
+          this.startFederationRuntime(
+            spec.jobId,
+            dispatchId,
+            Number(pending.dispatch.dispatchEpoch),
+            runtime,
+          );
+          const authorization = this.federationRuntimes.get(spec.jobId)?.authorization;
+          if (!authorization) throw new Error("Federation runtime authority is unavailable");
+          authorization.assertValid();
+          pending.controller.signal.throwIfAborted();
+          this.lifecycleController.signal.throwIfAborted();
         }
       },
       onSubmissionUncertain: async (spec, err) => {
@@ -961,6 +998,7 @@ export class AgentStream {
         }
       },
       onJobFinished: async (jobId) => {
+        if (this.federationRuntimes.get(jobId)?.superseded) return;
         const unreconciledSchedulerJobId = this.unreconciledSubmittedJobs.get(jobId);
         if (unreconciledSchedulerJobId) {
           this.logger.error(
@@ -1046,7 +1084,9 @@ export class AgentStream {
    * routes the report onto the outbound queue / persistent spillover.
    */
   private async onJobTransition(report: JobStatusReport): Promise<void> {
+    if (this.federationRuntimes.get(report.jobId)?.superseded) return;
     if (["completed", "failed", "cancelled"].includes(report.status)) {
+      if (!(await this.finishFederationRuntime(report.jobId))) return;
       this.federationDispatches.get(report.jobId)?.controller.abort();
       this.federationDispatches.delete(report.jobId);
     }
@@ -1151,6 +1191,7 @@ export class AgentStream {
     if (this.softwareOperationShutdown) return this.softwareOperationShutdown;
     this.running = false;
     this.lifecycleController.abort(new Error("agent shutdown"));
+    for (const entry of this.federationRuntimes.values()) clearTimeout(entry.retry);
     this.currentStreamController?.abort(new Error("agent shutdown"));
     this.stopHeartbeatTimer();
     this.clearHeartbeatAckDeadlines();
@@ -1182,6 +1223,7 @@ export class AgentStream {
           ...this.pendingSoftwareResultSpills,
           ...this.pendingSpackPreparations,
           ...this.pendingSpackLoadCleanups,
+          ...[...this.federationRuntimes.values()].map((entry) => entry.authorization?.close()),
         ]);
       } while (
         pending !== this.softwareOperationQueue ||
@@ -1257,6 +1299,7 @@ export class AgentStream {
           if (prepared.spec.jobId !== row.jobId)
             throw new Error("Prepared federation job identity is invalid");
           const intent = await this.findCleanupIntent(row.jobId);
+          if (!(await this.recoverFederationRuntime(row.jobId, row.dispatchId))) continue;
           const revoked = !allowed || intent?.revoked === true;
           if (active.has(row.jobId) && !revoked) continue;
           let schedulerJobId =
@@ -1394,6 +1437,7 @@ export class AgentStream {
           this.logger.warn({ jobId: job.jobId }, "Skipping revoked job recovery");
           continue;
         }
+        if (dispatchId && !(await this.recoverFederationRuntime(job.jobId, dispatchId))) continue;
         const mounts =
           job.spec.licensedMaterialCleanup ??
           protectedMountsFromExpectedOutputs(job.expectedOutputs);
@@ -1408,6 +1452,18 @@ export class AgentStream {
           })),
         );
         if (!this.running) return;
+        if (this.federationRuntimes.has(job.jobId)) {
+          const runtime = this.federationRuntimes.get(job.jobId);
+          if (runtime?.superseded || runtime?.receipt.state !== "active") continue;
+          runtime.authorization?.assertValid();
+        }
+        if (
+          !(await this.isDispatchEpochAllowed(
+            job.jobId,
+            epochFromDispatchId(job.jobId, dispatchId) ?? 0,
+          ))
+        )
+          continue;
         await this.pool.resume(spec, job.schedulerJobId, {
           expectedOutputs: job.expectedOutputs,
         });
@@ -1854,6 +1910,7 @@ export class AgentStream {
             !!this.persistentQueue?.softwareOperations,
           managedDatasetRootIds: [...(this.deps.managedDatasetRootIds ?? [])],
           federationExecutionV1: this.federationExecutionCapable(),
+          federationComputeLeaseV1: this.federationExecutionCapable(),
           federationInstallationV1: this.federationInstallationCapable(),
           federationInstallationLeaseV1: this.federationInstallationCapable(),
         }),
@@ -2899,7 +2956,9 @@ export class AgentStream {
             jobId: dj.jobId,
             payload: {
               name: dj.name,
-              schedulerName: schedulerSubmissionTag(dj.jobId),
+              schedulerName: dj.federationExecution
+                ? federationSchedulerName(dj.dispatchEpoch)
+                : schedulerSubmissionTag(dj.jobId),
               command: dj.command,
               ...(dj.spackExecution
                 ? {
@@ -3096,7 +3155,9 @@ export class AgentStream {
             const spec: JobSpec = {
               jobId: dj.jobId,
               name: dj.name,
-              schedulerName: schedulerSubmissionTag(dj.jobId),
+              schedulerName: dj.federationExecution
+                ? federationSchedulerName(dj.dispatchEpoch)
+                : schedulerSubmissionTag(dj.jobId),
               command: "sandbox-manifest",
               cpus: dj.cpus,
               memoryMb: Number(dj.memoryMb),
@@ -3145,7 +3206,9 @@ export class AgentStream {
       const spec: JobSpec = {
         jobId: dj.jobId,
         name: dj.name,
-        schedulerName: schedulerSubmissionTag(dj.jobId),
+        schedulerName: dj.federationExecution
+          ? federationSchedulerName(dj.dispatchEpoch)
+          : schedulerSubmissionTag(dj.jobId),
         command: dj.command,
         cpus: dj.cpus,
         memoryMb: Number(dj.memoryMb),
@@ -3790,6 +3853,153 @@ export class AgentStream {
     );
   }
 
+  private async assertFederationRuntimeWatchdog(): Promise<void> {
+    if (this.deps.assertFederationRuntimeWatchdog)
+      return this.deps.assertFederationRuntimeWatchdog();
+    if (!this.inboundAcks) throw new Error("Federation runtime store is unavailable");
+    await this.inboundAcks.assertWatchdogReady(this.deps.adapter.type);
+  }
+
+  private startFederationRuntime(
+    jobId: string,
+    dispatchId: string,
+    epoch: number,
+    receipt: FederationRuntimeReceipt,
+  ): void {
+    const entry = {
+      dispatchId,
+      epoch,
+      receipt,
+      authorization: undefined as ExecutionAuthorization | undefined,
+    };
+    this.federationRuntimes.set(jobId, entry);
+    if (receipt.state !== "active") return;
+    try {
+      const authorization = new ExecutionAuthorization(
+        receipt.expiresAt,
+        async (signal) => {
+          await this.assertFederationRuntimeWatchdog();
+          return this.federationExecution.renewRuntime(jobId, BigInt(epoch), signal);
+        },
+        this.lifecycleController.signal,
+        async (expiresAt) => {
+          if (!this.inboundAcks) throw new Error("Federation runtime store is unavailable");
+          await this.inboundAcks.renewRuntime(dispatchId, receipt.owner, expiresAt);
+          receipt.expiresAt = expiresAt;
+        },
+      );
+      entry.authorization = authorization;
+      authorization.signal.addEventListener(
+        "abort",
+        () => {
+          if (!this.running || this.lifecycleController.signal.aborted) return;
+          void this.expireFederationRuntime(jobId, entry.receipt.owner).catch((err: unknown) => {
+            this.logger.warn({ err, jobId }, "Federation runtime stop remains pending");
+          });
+        },
+        { once: true },
+      );
+    } catch (err) {
+      receipt.state = "stopping";
+      this.logger.warn({ err, jobId }, "Cannot resume expired federation runtime authority");
+    }
+  }
+
+  private async recoverFederationRuntime(jobId: string, dispatchId: string): Promise<boolean> {
+    if (!this.inboundAcks) return true;
+    if (!this.federationRuntimes.has(jobId)) {
+      const row = await this.inboundAcks.get(dispatchId);
+      if (row?.payload.federationExecution !== true) return true;
+      const fingerprint = FederationDispatchReceiptSchema.parse(row.payload.federationReceipt);
+      if (row.jobId !== jobId || dispatchId !== `${jobId}:${fingerprint.epoch}`)
+        throw new Error("Federation runtime identity is invalid");
+      const receipt = await this.inboundAcks.claimRuntime(dispatchId);
+      if (receipt.state === "finished") return true;
+      this.startFederationRuntime(jobId, dispatchId, fingerprint.epoch, receipt);
+    }
+    const entry = this.federationRuntimes.get(jobId);
+    if (!entry) return true;
+    if (entry.superseded) return false;
+    if (entry.receipt.state === "active") {
+      try {
+        entry.authorization?.assertValid();
+        return true;
+      } catch {
+        // The original deadline also applies while reconnecting or querying the scheduler.
+      }
+    }
+    await this.expireFederationRuntime(jobId, entry.receipt.owner);
+    return false;
+  }
+
+  private async expireFederationRuntime(jobId: string, owner: string): Promise<void> {
+    const entry = this.federationRuntimes.get(jobId);
+    if (!entry || entry.receipt.owner !== owner || !this.inboundAcks) return;
+    try {
+      const owned = await this.inboundAcks.setRuntimeState(
+        entry.dispatchId,
+        entry.receipt.owner,
+        "stopping",
+      );
+      if (!owned) {
+        await this.detachFederationRuntime(jobId);
+        return;
+      }
+      entry.receipt.state = "stopping";
+      await this.requestJobCancellation(jobId, entry.epoch);
+      if (this.federationRuntimes.get(jobId) === entry)
+        await this.onJobTransition({ jobId, status: "cancelled" });
+    } catch (error) {
+      // Stop retries must also run without a connected Server heartbeat.
+      if (this.running && this.federationRuntimes.get(jobId) === entry && !entry.retry) {
+        entry.retry = setTimeout(() => {
+          entry.retry = undefined;
+          void this.expireFederationRuntime(jobId, entry.receipt.owner).catch((err: unknown) => {
+            this.logger.warn({ err, jobId }, "Federation runtime stop remains pending");
+          });
+        }, 1000);
+      }
+      throw error;
+    }
+  }
+
+  private async pauseFederationRuntime(jobId: string): Promise<void> {
+    const entry = this.federationRuntimes.get(jobId);
+    if (!entry) return;
+    if (
+      !(await this.inboundAcks?.setRuntimeState(entry.dispatchId, entry.receipt.owner, "stopping"))
+    ) {
+      await this.detachFederationRuntime(jobId);
+      throw new Error("Federation runtime ownership was replaced");
+    }
+    entry.receipt.state = "stopping";
+    await entry.authorization?.close();
+  }
+
+  private async detachFederationRuntime(jobId: string): Promise<void> {
+    const entry = this.federationRuntimes.get(jobId);
+    if (!entry) return;
+    entry.superseded = true;
+    clearTimeout(entry.retry);
+    this.pool.get(jobId)?.cancel();
+    await entry.authorization?.close();
+  }
+
+  private async finishFederationRuntime(jobId: string): Promise<boolean> {
+    const entry = this.federationRuntimes.get(jobId);
+    if (!entry) return true;
+    if (
+      !(await this.inboundAcks?.setRuntimeState(entry.dispatchId, entry.receipt.owner, "finished"))
+    ) {
+      await this.detachFederationRuntime(jobId);
+      return false;
+    }
+    clearTimeout(entry.retry);
+    await entry.authorization?.close();
+    if (this.federationRuntimes.get(jobId) === entry) this.federationRuntimes.delete(jobId);
+    return true;
+  }
+
   private async renewFederationExecution(dispatch: DispatchJob) {
     if (!dispatch.federationExecution) return undefined;
     const pending = this.federationDispatches.get(dispatch.jobId);
@@ -4077,6 +4287,7 @@ export class AgentStream {
       this.signalOutbound();
       return;
     }
+    await this.pauseFederationRuntime(jobId);
     const recovering = this.recoveringFederationDispatches.get(jobId);
     if (recovering && recovering.epoch <= revokedEpoch) recovering.controller.abort();
     const federation = this.federationDispatches.get(jobId);
@@ -4176,7 +4387,24 @@ export class AgentStream {
       return;
     }
 
-    if (!runnerCancelled) {
+    const watchdogStopped =
+      !hadActiveRunner &&
+      activeJob?.dispatchId &&
+      schedulerJobId &&
+      (await this.inboundAcks?.hasConfirmedRuntimeStop(activeJob.dispatchId, schedulerJobId));
+    if (
+      watchdogStopped &&
+      activeJob?.dispatchId &&
+      this.inboundAcks &&
+      !this.federationRuntimes.has(jobId)
+    ) {
+      const epoch = epochFromDispatchId(jobId, activeJob.dispatchId);
+      if (epoch === undefined)
+        throw new Error("Federation watchdog stop receipt has no dispatch epoch");
+      const receipt = await this.inboundAcks.claimRuntime(activeJob.dispatchId);
+      this.startFederationRuntime(jobId, activeJob.dispatchId, epoch, receipt);
+    }
+    if (!runnerCancelled && !watchdogStopped) {
       if (schedulerJobId) {
         if (activeJob) await this.deps.adapter.prepareResume?.(activeJob.spec, schedulerJobId);
         await cancelAndConfirmStopped(this.deps.adapter, schedulerJobId, {
@@ -4202,6 +4430,10 @@ export class AgentStream {
     this.unreconciledSubmittedJobs.delete(jobId);
     await this.releaseImplicitJobWorkRoot(jobId);
     if (schedulerJobId) await this.deps.adapter.releaseJob?.(schedulerJobId);
+    const runtime = this.federationRuntimes.get(jobId);
+    if (runtime?.receipt.state === "stopping") {
+      await this.onJobTransition({ jobId, status: "cancelled", schedulerJobId });
+    }
   }
 
   private async lookupSchedulerJob(
@@ -4297,6 +4529,7 @@ export class AgentStream {
     destroyRestrictedWorkRoot: boolean,
     reasonCode: string,
   ): Promise<void> {
+    await this.pauseFederationRuntime(jobId);
     this.recoveringFederationDispatches.get(jobId)?.controller.abort();
     this.federationDispatches.get(jobId)?.controller.abort();
     this.spackActivations.get(jobId)?.controller.abort();

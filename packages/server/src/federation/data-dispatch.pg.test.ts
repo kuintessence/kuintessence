@@ -183,6 +183,7 @@ test("reconnect renews credentials while retaining the original outbox and immut
   const outbox = makeOutbox();
   expect(await outbox.enqueue(agentId, original, runId)).toEqual({ sent: false, pending: true });
   dispatcher.register(agentId, {
+    federationComputeLeaseV1: true,
     federationExecutionV1: true,
     verifiedCertFingerprint: "test-verified-certificate",
     close: () => {},
@@ -332,6 +333,7 @@ test("data-bearing federation dispatch cannot bypass an absent renewal service",
   const dispatcher = new AgentDispatcher();
   let sent = 0;
   dispatcher.register(agentId, {
+    federationComputeLeaseV1: true,
     federationExecutionV1: true,
     verifiedCertFingerprint: "test-verified-certificate",
     close: () => {},

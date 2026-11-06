@@ -19,6 +19,7 @@ import {
 import { DataDeliveryExecutor, LinuxBindReadonlyMountDriver } from "./data-market/data-delivery";
 import { createCpLocalDataScanner, createCpLocalDataScanSigner } from "./data-market/data-scan";
 import { AgentDataRoots } from "./data-market/local-data-security";
+import { runFederationWatchdog } from "./federation-watchdog";
 import { LicensedMaterialResolver } from "./licensed-material-resolver";
 import {
   createOutputCollector,
@@ -645,7 +646,7 @@ async function main() {
   logger.info("Agent stopped cleanly");
 }
 
-main().catch((err) => {
+(process.argv.includes("--federation-watchdog") ? runFederationWatchdog() : main()).catch((err) => {
   console.error("Agent failed to start:", err);
   process.exit(1);
 });

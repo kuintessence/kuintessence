@@ -43,3 +43,10 @@ export function matchesFederationReceipt(
     digest(dispatch, receipt.renewableInputs) === receipt.digest
   );
 }
+
+/** The scheduler also stores the full Job UUID; this short name separates dispatch epochs. */
+export function federationSchedulerName(epoch: bigint): string {
+  if (epoch < 0n || epoch > BigInt(Number.MAX_SAFE_INTEGER))
+    throw new Error("Invalid federation dispatch epoch");
+  return `kf${epoch.toString(36)}`;
+}

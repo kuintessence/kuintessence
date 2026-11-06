@@ -179,6 +179,7 @@ export interface AgentChannel {
   spackPinnedExecutionV1?: boolean;
   softwareOperationReplayV1?: boolean;
   federationExecutionV1?: boolean;
+  federationComputeLeaseV1?: boolean;
   federationInstallationV1?: boolean;
   federationInstallationLeaseV1?: boolean;
   verifiedCertFingerprint?: string;
@@ -281,7 +282,11 @@ export class AgentDispatcher {
 
   supportsFederationExecution(agentId: string): boolean {
     const channel = this.getChannel(agentId);
-    return channel?.federationExecutionV1 === true && !!channel.verifiedCertFingerprint;
+    return (
+      channel?.federationExecutionV1 === true &&
+      channel.federationComputeLeaseV1 === true &&
+      !!channel.verifiedCertFingerprint
+    );
   }
 
   supportsFederationInstallation(agentId: string): boolean {

@@ -63,6 +63,7 @@ import {
 } from "./adapters/base";
 import type { JobStatusReport } from "./embedded/job-executor";
 import { ActiveRemoteJobs } from "./queue/active-remote-jobs";
+import { federationDispatchReceipt } from "./queue/federation-dispatch";
 import { InboundAcks, type PersistInboundInput } from "./queue/inbound-acks";
 import { JobCleanupIntents, JobRevocationTombstones } from "./queue/job-cleanup-intents";
 import { type OutboundItem, OutboundQueue } from "./queue/outbound-queue";
@@ -3844,6 +3845,7 @@ describe("AgentStream", () => {
       siteName: "test-site",
       heartbeatIntervalMs: 60_000,
       logger: silent,
+      assertFederationRuntimeWatchdog: async () => {},
       activeRemoteJobs: new ActiveRemoteJobs(db),
       cleanupIntents: intents,
       dataDeliveryExecutor: {
@@ -3895,6 +3897,7 @@ describe("AgentStream", () => {
       siteName: "test-site",
       heartbeatIntervalMs: 60_000,
       logger: silent,
+      assertFederationRuntimeWatchdog: async () => {},
       activeRemoteJobs: new ActiveRemoteJobs(db),
       cleanupIntents: intents,
       dataDeliveryExecutor: {
@@ -3943,6 +3946,7 @@ describe("AgentStream", () => {
       siteName: "test-site",
       heartbeatIntervalMs: 60_000,
       logger: silent,
+      assertFederationRuntimeWatchdog: async () => {},
       activeRemoteJobs: new ActiveRemoteJobs(db),
       cleanupIntents: intents,
       dataDeliveryExecutor: {
@@ -3991,6 +3995,7 @@ describe("AgentStream", () => {
       siteName: "test-site",
       heartbeatIntervalMs: 60_000,
       logger: silent,
+      assertFederationRuntimeWatchdog: async () => {},
       activeRemoteJobs: new ActiveRemoteJobs(db),
       cleanupIntents: intents,
       dataDeliveryExecutor: {
@@ -4092,6 +4097,7 @@ describe("AgentStream", () => {
       siteName: "test-site",
       heartbeatIntervalMs: 60_000,
       logger: silent,
+      assertFederationRuntimeWatchdog: async () => {},
       activeRemoteJobs: new FailingActiveRemoteJobs(db),
       cleanupIntents: new JobCleanupIntents(db),
       reconnectBackoffMs: 1,
@@ -8105,6 +8111,7 @@ describe("federation execution boundaries", () => {
     "deny",
     "cancel",
     "unsupported",
+    "watchdog-missing",
   ] as const)("%s at the final submission boundary", async (outcome) => {
     const db = createSqliteDb(":memory:");
     const validated = Promise.withResolvers<void>();
@@ -8169,6 +8176,9 @@ describe("federation execution boundaries", () => {
       jobSleep: async () => {},
       logger: silent,
       inboundAcks: new InboundAcks(db),
+      ...(outcome === "watchdog-missing"
+        ? {}
+        : { assertFederationRuntimeWatchdog: async () => {} }),
       activeRemoteJobs: new ActiveRemoteJobs(db),
       revocationTombstones: new JobRevocationTombstones(db),
       cleanupIntents: new JobCleanupIntents(db),
@@ -8192,7 +8202,7 @@ describe("federation execution boundaries", () => {
         expect(grants).toHaveLength(1);
         expect(submitted).toHaveLength(0);
         releaseValidation.resolve();
-        await waitForCondition(() => grants.length === 2);
+        await waitForCondition(() => grants.length === (outcome === "watchdog-missing" ? 1 : 2));
         if (outcome === "cancel") {
           expect(submitted).toHaveLength(0);
           await deliverServerMessage(stream, cancelJobMessage(dispatch.jobId, 1));
@@ -8200,7 +8210,7 @@ describe("federation execution boundaries", () => {
         await waitForCondition(() =>
           reports.some((report) => ["completed", "failed", "cancelled"].includes(report.status)),
         );
-        expect(new Set(grants).size).toBe(2);
+        expect(new Set(grants).size).toBe(outcome === "watchdog-missing" ? 1 : 2);
       }
       expect(submitted).toHaveLength(outcome === "grant" ? 1 : 0);
       if (outcome === "grant") expect(submitted[0]?.command).toBe("echo immutable");
@@ -8283,6 +8293,7 @@ test.each([
     heartbeatIntervalMs: 60_000,
     spackManager,
     inboundAcks: new InboundAcks(db),
+    assertFederationRuntimeWatchdog: async () => {},
     activeRemoteJobs: new ActiveRemoteJobs(db),
     cleanupIntents: new JobCleanupIntents(db),
     revocationTombstones: new JobRevocationTombstones(db),
@@ -8354,6 +8365,7 @@ test.each([
     logger: silent,
     heartbeatIntervalMs: 60_000,
     inboundAcks: inbox,
+    assertFederationRuntimeWatchdog: async () => {},
     activeRemoteJobs: new ActiveRemoteJobs(db),
     cleanupIntents: new JobCleanupIntents(db),
     revocationTombstones: new JobRevocationTombstones(db),
@@ -8448,6 +8460,7 @@ test.each([
     heartbeatIntervalMs: 60_000,
     jobSleep: async () => {},
     inboundAcks: reopenedInbox,
+    assertFederationRuntimeWatchdog: async () => {},
     activeRemoteJobs: new ActiveRemoteJobs(reopenedDb),
     cleanupIntents: new JobCleanupIntents(reopenedDb),
     revocationTombstones: new JobRevocationTombstones(reopenedDb),
@@ -8539,6 +8552,7 @@ test.each([
     heartbeatIntervalMs: 20,
     logger: silent,
     inboundAcks: inbox,
+    assertFederationRuntimeWatchdog: async () => {},
     activeRemoteJobs: active,
     cleanupIntents: cleanup,
     revocationTombstones: tombstones,
@@ -8681,6 +8695,7 @@ test.each([
     logger: silent,
     heartbeatIntervalMs: 20,
     inboundAcks: new InboundAcks(db),
+    assertFederationRuntimeWatchdog: async () => {},
     activeRemoteJobs: active,
     cleanupIntents: intents,
     revocationTombstones: tombstones,
@@ -8776,6 +8791,7 @@ test.each([
     siteName: "site",
     heartbeatIntervalMs: 60_000,
     logger: silent,
+    assertFederationRuntimeWatchdog: async () => {},
     activeRemoteJobs: active,
     cleanupIntents: intents,
     revocationTombstones: new JobRevocationTombstones(db),
@@ -8900,6 +8916,7 @@ test.each([
     heartbeatIntervalMs: 20,
     spackManager,
     inboundAcks: new InboundAcks(db),
+    assertFederationRuntimeWatchdog: async () => {},
     activeRemoteJobs: new ActiveRemoteJobs(db),
     cleanupIntents: new JobCleanupIntents(db),
     revocationTombstones: tombstones,
@@ -9061,6 +9078,7 @@ test.each([
     heartbeatIntervalMs: 20,
     spackManager,
     inboundAcks: new InboundAcks(db),
+    assertFederationRuntimeWatchdog: async () => {},
     activeRemoteJobs: new ActiveRemoteJobs(db),
     cleanupIntents: new JobCleanupIntents(db),
     revocationTombstones: new JobRevocationTombstones(db),
@@ -9124,5 +9142,284 @@ test.each([
     release.resolve();
     await stream.stop();
     await running;
+  }
+});
+
+test.each([
+  "denied",
+  "timeout",
+  "stop-retry",
+  "takeover",
+] as const)("running federation job renews without redispatch and stops on %s", async (outcome) => {
+  const db = createSqliteDb(":memory:");
+  const inbox = new InboundAcks(db);
+  const active = new ActiveRemoteJobs(db);
+  const cleanup = new JobCleanupIntents(db);
+  const reports: JobStatusReport[] = [];
+  let runtimeRequests = 0;
+  let submissions = 0;
+  let cancels = 0;
+  let stopped = outcome !== "stop-retry";
+  const dispatch = create(DispatchJobSchema, {
+    jobId: crypto.randomUUID(),
+    dispatchEpoch: 7n,
+    federationExecution: true,
+    command: "sleep 1",
+    cpus: 1,
+    memoryMb: 128n,
+  });
+  const stream = new AgentStream({
+    client: makePendingRegisteredClient(false, false, {
+      supported: true,
+      onMessage: async (message) => {
+        if (message.payload.case !== "federationExecutionRequest") return;
+        const request = message.payload.value;
+        if (request.runtimeRenewal) runtimeRequests++;
+        if (runtimeRequests >= 3 && outcome === "timeout") return;
+        await deliverServerMessage(
+          stream,
+          create(ServerMessageSchema, {
+            payload: {
+              case: "federationExecutionResponse",
+              value: create(FederationExecutionResponseSchema, {
+                requestId: request.requestId,
+                jobId: request.jobId,
+                dispatchEpoch: request.dispatchEpoch,
+                operationId: request.operationId,
+                runtimeRenewal: request.runtimeRenewal,
+                decision:
+                  runtimeRequests >= 3 && outcome !== "takeover"
+                    ? FederationExecutionDecision.DENIED
+                    : FederationExecutionDecision.GRANTED,
+                expiresAtUnixMs: BigInt(Date.now() + 250),
+                ...(request.runtimeRenewal ? {} : { dispatch }),
+              }),
+            },
+          }),
+        );
+      },
+    }),
+    adapter: {
+      ...makeAdapter({
+        submit: async () => {
+          submissions++;
+          return { schedulerJobId: "runtime-job" };
+        },
+        cancel: async () => {
+          cancels++;
+        },
+        confirmStopped: async () => stopped,
+      }),
+      status: async () => ({ status: "running" }),
+    },
+    agentId: "agent",
+    siteName: "site",
+    logger: silent,
+    heartbeatIntervalMs: outcome === "stop-retry" ? 60_000 : 20,
+    jobPollIntervalMs: 10,
+    inboundAcks: inbox,
+    assertFederationRuntimeWatchdog: async () => {},
+    activeRemoteJobs: active,
+    cleanupIntents: cleanup,
+    revocationTombstones: new JobRevocationTombstones(db),
+  });
+  stream.enqueueStatusUpdate = async (report) => {
+    reports.push(report);
+  };
+  activeStreams.push(stream);
+  const running = stream.start();
+  try {
+    await settle(20);
+    await deliverServerMessage(
+      stream,
+      create(ServerMessageSchema, { payload: { case: "dispatchJob", value: dispatch } }),
+    );
+    await waitForCondition(() => runtimeRequests >= 2);
+    expect(cancels).toBe(0);
+    expect((await inbox.get(`${dispatch.jobId}:7`))?.payload.federationRuntime).toMatchObject({
+      state: "active",
+    });
+    if (outcome === "takeover") {
+      const next = await inbox.claimRuntime(`${dispatch.jobId}:7`);
+      await waitForCondition(() => runtimeRequests === 3);
+      await Bun.sleep(150);
+      expect(cancels).toBe(0);
+      expect(submissions).toBe(1);
+      expect(await active.listActive()).toHaveLength(1);
+      expect(
+        reports.some((report) => ["cancelled", "failed", "completed"].includes(report.status)),
+      ).toBe(false);
+      expect((await inbox.get(`${dispatch.jobId}:7`))?.payload.federationRuntime).toMatchObject({
+        owner: next.owner,
+        state: "active",
+      });
+      return;
+    }
+    await waitForCondition(() => cancels > 0);
+    if (!stopped) {
+      expect((await inbox.get(`${dispatch.jobId}:7`))?.payload.federationRuntime).toMatchObject({
+        state: "stopping",
+      });
+      expect(await active.listActive()).toHaveLength(1);
+      expect(await cleanup.list()).toHaveLength(1);
+      expect(reports.some((report) => report.status === "cancelled")).toBe(false);
+      stopped = true;
+    }
+    await waitForCondition(() => reports.some((report) => report.status === "cancelled"), 2500);
+    expect(submissions).toBe(1);
+    expect(runtimeRequests).toBe(3);
+    expect(await active.listActive()).toHaveLength(0);
+    expect((await inbox.get(`${dispatch.jobId}:7`))?.payload.federationRuntime).toMatchObject({
+      state: "finished",
+    });
+  } finally {
+    await stream.stop();
+    await running;
+  }
+});
+
+test.each([
+  "active",
+  "expired",
+  "stopping",
+  "legacy",
+  "watchdog-stopped",
+] as const)("acknowledged federation runtime survives SQLite reopen: %s", async (outcome) => {
+  const root = await mkdtemp(join(tmpdir(), "kq-runtime-restart-"));
+  const path = join(root, "agent.sqlite");
+  const sqlite = new Database(path);
+  runSqliteMigrations(sqlite);
+  const firstDb = drizzle(sqlite, { schema });
+  const inbox = new InboundAcks(firstDb);
+  const jobId = crypto.randomUUID();
+  const dispatchId = `${jobId}:9`;
+  const dispatch = create(DispatchJobSchema, {
+    jobId,
+    dispatchEpoch: 9n,
+    federationExecution: true,
+  });
+  const spec: JobSpec = {
+    jobId,
+    name: "original",
+    command: "sleep 1",
+    cpus: 1,
+    memoryMb: 128,
+    gpus: 0,
+    wallTimeSec: 60,
+    envVars: {},
+    workingDir: "/tmp",
+  };
+  await inbox.persistInbound({
+    dispatchId,
+    jobId,
+    payload: {
+      federationExecution: true,
+      federationReceipt: federationDispatchReceipt(dispatch),
+    },
+  });
+  await inbox.markSubmissionStarted(
+    dispatchId,
+    { spec, expectedOutputs: [] },
+    outcome === "legacy"
+      ? undefined
+      : { owner: "previous-process", expiresAt: Date.now() + 400, state: "active" },
+  );
+  if (outcome === "stopping")
+    await inbox.setRuntimeState(dispatchId, "previous-process", "stopping");
+  if (outcome === "watchdog-stopped") {
+    await inbox.setRuntimeState(dispatchId, "previous-process", "stopping");
+    await inbox.recordRuntimeStop(dispatchId, "original-scheduler-job");
+    await new JobRevocationTombstones(firstDb).record(jobId, 9);
+  }
+  await inbox.markAcked(dispatchId);
+  await new ActiveRemoteJobs(firstDb).recordSubmitted({
+    spec,
+    schedulerJobId: "original-scheduler-job",
+    expectedOutputs: [],
+    dispatchId,
+  });
+  await new JobCleanupIntents(firstDb).recordSchedulerSubmitted(jobId, "original-scheduler-job");
+  sqlite.close();
+  if (outcome === "expired") await Bun.sleep(450);
+  const reopened = new Database(path);
+  const db = drizzle(reopened, { schema });
+  const restoredInbox = new InboundAcks(db);
+  const reports: JobStatusReport[] = [];
+  let renewals = 0;
+  let cancels = 0;
+  const stream = new AgentStream({
+    client: makePendingRegisteredClient(false, false, {
+      supported: true,
+      onMessage: async (message) => {
+        if (message.payload.case !== "federationExecutionRequest") return;
+        const request = message.payload.value;
+        expect(request.runtimeRenewal).toBe(true);
+        expect(request.jobId).toBe(jobId);
+        expect(request.dispatchEpoch).toBe(9n);
+        renewals++;
+        await deliverServerMessage(
+          stream,
+          create(ServerMessageSchema, {
+            payload: {
+              case: "federationExecutionResponse",
+              value: create(FederationExecutionResponseSchema, {
+                requestId: request.requestId,
+                jobId: request.jobId,
+                dispatchEpoch: request.dispatchEpoch,
+                operationId: request.operationId,
+                runtimeRenewal: request.runtimeRenewal,
+                decision:
+                  renewals === 1
+                    ? FederationExecutionDecision.GRANTED
+                    : FederationExecutionDecision.DENIED,
+                expiresAtUnixMs: BigInt(Date.now() + 300),
+              }),
+            },
+          }),
+        );
+      },
+    }),
+    adapter: {
+      ...makeAdapter({
+        submit: async () => {
+          throw new Error("Recovered runtime must not resubmit");
+        },
+        cancel: async (id) => {
+          expect(id).toBe("original-scheduler-job");
+          cancels++;
+        },
+      }),
+      status: async () => ({ status: "running" }),
+    },
+    agentId: "agent",
+    siteName: "site",
+    logger: silent,
+    heartbeatIntervalMs: 20,
+    jobPollIntervalMs: 10,
+    inboundAcks: restoredInbox,
+    assertFederationRuntimeWatchdog: async () => {},
+    activeRemoteJobs: new ActiveRemoteJobs(db),
+    cleanupIntents: new JobCleanupIntents(db),
+    revocationTombstones: new JobRevocationTombstones(db),
+  });
+  stream.enqueueStatusUpdate = async (report) => {
+    reports.push(report);
+  };
+  activeStreams.push(stream);
+  const running = stream.start();
+  try {
+    await waitForCondition(() => reports.some((report) => report.status === "cancelled"));
+    if (outcome === "watchdog-stopped") expect(cancels).toBe(0);
+    else expect(cancels).toBeGreaterThan(0);
+    expect(renewals).toBe(outcome === "active" ? 2 : 0);
+    expect((await restoredInbox.get(dispatchId))?.payload.federationRuntime).toMatchObject({
+      state: "finished",
+    });
+  } finally {
+    await stream.stop();
+    await running;
+    await settle();
+    reopened.close();
+    await rm(root, { recursive: true, force: true });
   }
 });

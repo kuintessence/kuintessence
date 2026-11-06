@@ -268,7 +268,7 @@ describe("agent-handler", () => {
       "data-waiting",
       "asset-unavailable",
       "legacy",
-      ...(installation ? ["startup-only" as const] : []),
+      "startup-only",
       ...(installation
         ? ["runtime-install" as const]
         : ["runtime-grant" as const, "runtime-retry" as const]),
@@ -330,6 +330,8 @@ describe("agent-handler", () => {
       const register = registerFrame();
       if (register.payload.case !== "register") throw new Error("Missing register");
       register.payload.value.federationExecutionV1 = outcome !== "legacy";
+      register.payload.value.federationComputeLeaseV1 =
+        outcome !== "legacy" && outcome !== "startup-only";
       register.payload.value.federationInstallationV1 = outcome !== "legacy";
       register.payload.value.federationInstallationLeaseV1 =
         outcome !== "legacy" && outcome !== "startup-only";

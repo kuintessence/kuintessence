@@ -724,3 +724,32 @@ test("a PBS cancellation acknowledgement alone does not prove execution has stop
   expect(await adapter.confirmStopped("12345.server")).toBe(true);
   await expect(adapter.confirmStopped("12345.server")).rejects.toThrow();
 });
+
+test("recovery lookup binds PBS Job UUID, dispatch epoch name and scheduler account", async () => {
+  const jobs = {
+    "101.server": {
+      Job_Name: "kf1",
+      Account_Name: "approved",
+      Variable_List: { KQ_JOB_ID: "original" },
+    },
+    "102.server": {
+      Job_Name: "kf2",
+      Account_Name: "approved",
+      Variable_List: { KQ_JOB_ID: "original" },
+    },
+    "103.server": {
+      Job_Name: "kf1",
+      Account_Name: "different",
+      Variable_List: { KQ_JOB_ID: "original" },
+    },
+  };
+  const { spawner } = mockSpawner([{ exitCode: 0, stdout: JSON.stringify({ Jobs: jobs }) }]);
+  const adapter = new PbsProAdapter("test", { spawner });
+  expect(
+    await adapter.findByKuintessenceJobId({
+      jobId: "original",
+      schedulerName: "kf1",
+      schedulerAccount: "approved",
+    }),
+  ).toEqual({ status: "found", schedulerJobId: "101.server" });
+});

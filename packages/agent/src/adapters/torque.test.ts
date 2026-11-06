@@ -636,3 +636,20 @@ describe("TorqueAdapter.inspectComputeHealth", () => {
     });
   });
 });
+
+test("recovery lookup binds Torque Job UUID, dispatch epoch name and scheduler account", async () => {
+  const stdout = [
+    "Job Id: 101.server\n    Job_Name = kf1\n    Account_Name = approved\n    Variable_List = KQ_JOB_ID=original",
+    "Job Id: 102.server\n    Job_Name = kf2\n    Account_Name = approved\n    Variable_List = KQ_JOB_ID=original",
+    "Job Id: 103.server\n    Job_Name = kf1\n    Account_Name = different\n    Variable_List = KQ_JOB_ID=original",
+  ].join("\n");
+  const { spawner } = mockSpawner([{ exitCode: 0, stdout }]);
+  const adapter = new TorqueAdapter("test", { spawner });
+  expect(
+    await adapter.findByKuintessenceJobId({
+      jobId: "original",
+      schedulerName: "kf1",
+      schedulerAccount: "approved",
+    }),
+  ).toEqual({ status: "found", schedulerJobId: "101.server" });
+});

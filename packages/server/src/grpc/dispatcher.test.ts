@@ -624,8 +624,9 @@ test("federation dispatch requires both renewal capability and verified transpor
   });
   for (const capabilities of [
     {},
-    { federationExecutionV1: true },
+    { federationComputeLeaseV1: true, federationExecutionV1: true },
     { verifiedCertFingerprint: "verified" },
+    { federationExecutionV1: true, verifiedCertFingerprint: "verified" },
   ]) {
     const channel = { ...mockChannel(), ...capabilities };
     dispatcher.register("agent", channel);
@@ -634,6 +635,7 @@ test("federation dispatch requires both renewal capability and verified transpor
   }
   const channel = {
     ...mockChannel(),
+    federationComputeLeaseV1: true,
     federationExecutionV1: true,
     verifiedCertFingerprint: "verified",
   };
