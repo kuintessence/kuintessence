@@ -80,6 +80,9 @@ import {
   DialogTitle,
 } from "../ui/dialog";
 import { Input, Textarea } from "../ui/input";
+import { NativeSelect } from "../ui/native-select";
+import { PageHeader, PageShell } from "../ui/page";
+import { SearchInput } from "../ui/search-input";
 import {
   Sheet,
   SheetBody,
@@ -273,26 +276,25 @@ export function SoftwarePolicyTable({
   };
 
   return (
-    <div className="space-y-5" data-testid="cp-software-policy-table">
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <h1 className="text-2xl font-semibold tracking-tight">{t("cp.software.title")}</h1>
-        </div>
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={() => overviewQuery.refetch()}
-          disabled={overviewQuery.isFetching}
-          title={t("cp.software.refresh")}
-        >
-          <RefreshCw className={overviewQuery.isFetching ? "animate-spin" : ""} />
-          {t("cp.software.refresh")}
-        </Button>
-      </div>
+    <PageShell data-testid="cp-software-policy-table">
+      <PageHeader
+        title={t("cp.software.title")}
+        actions={
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => overviewQuery.refetch()}
+            disabled={overviewQuery.isFetching}
+            title={t("cp.software.refresh")}
+          >
+            <RefreshCw className={overviewQuery.isFetching ? "animate-spin" : ""} />
+            {t("cp.software.refresh")}
+          </Button>
+        }
+      />
       {mobileReadOnly && (
         <p className="text-sm text-muted-foreground">{t("cp.software.desktopManage")}</p>
       )}
-      <RuntimeAndMaterialPanel canManage={canManage && !!overview} />
 
       {overviewQuery.error ? (
         <div className="rounded-md border border-status-failed/40 bg-[color-mix(in_oklab,var(--status-failed)_10%,transparent)] p-3 text-sm">
@@ -335,6 +337,8 @@ export function SoftwarePolicyTable({
         </>
       ) : null}
 
+      <RuntimeAndMaterialPanel canManage={canManage && !!overview} />
+
       <AgentDetailSheet
         agent={selectedAgent}
         open={selectedAgent !== null}
@@ -353,7 +357,7 @@ export function SoftwarePolicyTable({
           isSaving={saveProvider.isPending || saveCluster.isPending || saveAgent.isPending}
         />
       ) : null}
-    </div>
+    </PageShell>
   );
 }
 
@@ -1349,8 +1353,7 @@ function AgentDetailSheet({
                   onSubmit={submitOperation}
                   data-testid="cp-software-operation-form"
                 >
-                  <select
-                    className="h-9 rounded-md border border-border bg-card px-3 text-sm"
+                  <NativeSelect
                     value={operationAction}
                     data-testid="cp-software-operation-action"
                     onChange={(event) =>
@@ -1362,7 +1365,7 @@ function AgentDetailSheet({
                         {t(`cp.software.operations.action.${action}`)}
                       </option>
                     ))}
-                  </select>
+                  </NativeSelect>
                   <Input
                     value={operationSpec}
                     data-testid="cp-software-operation-spec"
@@ -1417,8 +1420,7 @@ function AgentDetailSheet({
                     </Badge>
                   </div>
                   <div className="grid gap-2 md:grid-cols-[180px_1fr_auto]">
-                    <select
-                      className="h-9 rounded-md border border-border bg-card px-3 text-sm"
+                    <NativeSelect
                       value={batchAction}
                       onChange={(event) =>
                         setBatchAction(event.target.value as BulkSoftwareOperationAction)
@@ -1430,7 +1432,7 @@ function AgentDetailSheet({
                           {t(`cp.software.operations.action.${action}`)}
                         </option>
                       ))}
-                    </select>
+                    </NativeSelect>
                     <Textarea
                       value={batchSpecText}
                       onChange={(event) => setBatchSpecText(event.target.value)}
@@ -1862,19 +1864,17 @@ function SpecList({
   return (
     <div className="grid gap-2">
       {showFilter ? (
-        <div className="relative">
-          <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
-          <Input
-            value={filter}
-            onChange={(event) => {
-              setFilter(event.target.value);
-              setExpanded(false);
-            }}
-            placeholder={t("cp.software.agent.installedFilterPlaceholder")}
-            className="h-9 pl-8 font-mono text-xs"
-            data-testid="cp-software-installed-filter"
-          />
-        </div>
+        <SearchInput
+          aria-label={t("cp.software.agent.installedFilterPlaceholder")}
+          value={filter}
+          onChange={(event) => {
+            setFilter(event.target.value);
+            setExpanded(false);
+          }}
+          placeholder={t("cp.software.agent.installedFilterPlaceholder")}
+          className="h-9 font-mono text-xs"
+          data-testid="cp-software-installed-filter"
+        />
       ) : null}
       {visibleSpecs.length > 0 ? (
         visibleSpecs.map((spec) => {
@@ -2104,15 +2104,15 @@ function OperationHistory({
       {showFilter ? (
         <div className="grid gap-1.5">
           <div className="relative">
-            <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
-            <Input
+            <SearchInput
+              aria-label={t("cp.software.operations.historyFilterPlaceholder")}
               value={filter}
               onChange={(event) => {
                 setFilter(event.target.value);
                 setExpanded(false);
               }}
               placeholder={t("cp.software.operations.historyFilterPlaceholder")}
-              className="h-9 pl-8 pr-9 font-mono text-xs"
+              className="pr-9 font-mono text-xs"
               data-testid="cp-software-operation-history-filter"
             />
             {normalizedFilter.length > 0 ? (
@@ -2214,7 +2214,7 @@ function OperationHistoryStatusSummary({
   const { t } = useTranslation();
   const counts = countSoftwareOperationStatuses(operations);
   return (
-    <div className="flex flex-wrap gap-1.5" data-testid="cp-software-operation-status-summary">
+    <div className="kq-fill-row gap-1.5" data-testid="cp-software-operation-status-summary">
       {SOFTWARE_OPERATION_STATUS_ORDER.map((status) => {
         const count = counts[status] ?? 0;
         if (count === 0) return null;
@@ -2282,9 +2282,9 @@ function OperationHistoryToolbar({
           {t("cp.software.operations.historySubtitle")}
         </div>
       </div>
-      <div className="flex flex-wrap items-center gap-2">
-        <select
-          className="h-8 rounded-md border border-border bg-card px-2 text-xs"
+      <div className="kq-fill-row">
+        <NativeSelect
+          className="h-8 text-xs"
           value={actionFilter ?? "all"}
           onChange={(event) =>
             onActionFilterChange(
@@ -2300,7 +2300,7 @@ function OperationHistoryToolbar({
               {t(`cp.software.operations.action.${action}`)}
             </option>
           ))}
-        </select>
+        </NativeSelect>
         <Button
           type="button"
           variant="outline"
@@ -2666,21 +2666,18 @@ function SpackCatalogPickerDialog({
         </DialogHeader>
         <DialogBody className="flex flex-col gap-3">
           <div className="grid gap-2 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-center">
-            <div className="relative min-w-0">
-              <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
-              <Input
-                value={search}
-                onChange={(event) => {
-                  resetCatalogSelection();
-                  setSearch(event.target.value);
-                  onPageChange(1);
-                }}
-                placeholder={t("cp.software.operations.catalogSearch")}
-                className="pl-8"
-                data-testid="cp-software-catalog-search"
-              />
-            </div>
-            <div className="flex flex-wrap gap-1.5">
+            <SearchInput
+              aria-label={t("cp.software.operations.catalogSearch")}
+              value={search}
+              onChange={(event) => {
+                resetCatalogSelection();
+                setSearch(event.target.value);
+                onPageChange(1);
+              }}
+              placeholder={t("cp.software.operations.catalogSearch")}
+              data-testid="cp-software-catalog-search"
+            />
+            <div className="kq-fill-row gap-1.5">
               {(["all", "upstream", "official", "vendor"] satisfies SpackCatalogSourceFilter[]).map(
                 (item) => (
                   <Button
@@ -2793,9 +2790,8 @@ function SpackCatalogPickerDialog({
                     <label className="text-xs font-medium" htmlFor="cp-spack-catalog-version">
                       {t("cp.software.operations.catalogVersion")}
                     </label>
-                    <select
+                    <NativeSelect
                       id="cp-spack-catalog-version"
-                      className="h-9 rounded-md border border-border bg-card px-3 text-sm"
                       value={selectedVersion}
                       onChange={(event) => setSelectedVersion(event.target.value)}
                       data-testid="cp-software-catalog-version"
@@ -2806,7 +2802,7 @@ function SpackCatalogPickerDialog({
                           {version}
                         </option>
                       ))}
-                    </select>
+                    </NativeSelect>
                   </div>
                   <div className="min-h-0">
                     <div className="mb-1.5 text-xs font-medium">
@@ -2838,9 +2834,9 @@ function SpackCatalogPickerDialog({
                                   ) : null}
                                 </span>
                                 {booleanVariant ? (
-                                  <select
+                                  <NativeSelect
                                     id={variantInputId}
-                                    className="h-8 max-w-32 rounded-md border border-border bg-background px-2 text-xs"
+                                    className="h-8 max-w-32 text-xs"
                                     value={variantOverrides[variant.name] ?? ""}
                                     onChange={(event) =>
                                       setVariantOverride(variant.name, event.target.value)
@@ -2856,7 +2852,7 @@ function SpackCatalogPickerDialog({
                                     <option value="~">
                                       {t("cp.software.operations.catalogVariantDisable")}
                                     </option>
-                                  </select>
+                                  </NativeSelect>
                                 ) : (
                                   <span className="grid gap-1">
                                     <Input
@@ -3048,8 +3044,7 @@ function PolicyEditorSheet({
             {target?.type === "provider" && providerOrgIds.length > 1 ? (
               <label className="grid gap-1 text-sm">
                 <span>{t("cp.software.edit.providerOrg")}</span>
-                <select
-                  className="h-9 rounded-md border border-border bg-card px-3 text-sm"
+                <NativeSelect
                   value={draft.providerOrgId}
                   onChange={(event) => setDraft({ ...draft, providerOrgId: event.target.value })}
                 >
@@ -3059,13 +3054,12 @@ function PolicyEditorSheet({
                       {orgId}
                     </option>
                   ))}
-                </select>
+                </NativeSelect>
               </label>
             ) : null}
             <label className="grid gap-1 text-sm">
               <span>{t("cp.software.col.installMode")}</span>
-              <select
-                className="h-9 rounded-md border border-border bg-card px-3 text-sm"
+              <NativeSelect
                 value={draft.installMode}
                 onChange={(event) =>
                   setDraft({ ...draft, installMode: event.target.value as InstallMode })
@@ -3076,7 +3070,7 @@ function PolicyEditorSheet({
                     {t(`cp.software.installMode.${mode}`)}
                   </option>
                 ))}
-              </select>
+              </NativeSelect>
             </label>
             <div className="grid gap-3 sm:grid-cols-2">
               <label className="flex items-center gap-2 text-sm">

@@ -7,6 +7,7 @@ import defaultLogoUrl from "../assets/logo.svg";
 import { Button } from "../components/ui/button";
 import { Card, CardContent, CardFooter } from "../components/ui/card";
 import { Input } from "../components/ui/input";
+import { NativeSelect } from "../components/ui/native-select";
 import { api } from "../lib/api-client";
 import { getAuthState, setAuth } from "../lib/auth";
 import { readLoginRedirect, savePostLoginRedirect } from "../lib/auth-redirect";
@@ -245,20 +246,20 @@ export function Login({
                   >
                     {t("login.roleLabel", { defaultValue: "Role" })}
                   </label>
-                  <select
+                  <NativeSelect
                     id="login-role"
                     value={role}
                     onChange={(e) => setRole(e.target.value as DevLoginRole)}
                     disabled={loading}
                     data-testid="login-role"
-                    className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-xs outline-none transition-colors focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50 disabled:cursor-not-allowed disabled:opacity-50"
+                    className="flex w-full shadow-xs transition-colors focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50"
                   >
                     {DEV_LOGIN_ROLES.map((r) => (
                       <option key={r} value={r}>
                         {r}
                       </option>
                     ))}
-                  </select>
+                  </NativeSelect>
                 </div>
 
                 {error ? (

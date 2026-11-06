@@ -12,6 +12,7 @@ import { toUserFacingError } from "../../lib/user-facing-error";
 import { Button } from "../ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
 import { Input } from "../ui/input";
+import { NativeSelect } from "../ui/native-select";
 import { PageHeader, PageShell } from "../ui/page";
 import { MeteringChart } from "./MeteringChart";
 import { MeteringWebhooks } from "./MeteringWebhooks";
@@ -147,10 +148,9 @@ export function MeteringPage({
             <label htmlFor="metering-period" className="text-xs font-medium">
               {t("cp.metering.periodLabel")}
             </label>
-            <select
+            <NativeSelect
               id="metering-period"
               data-testid="metering-period"
-              className="h-9 rounded-md border border-input bg-background px-2 text-sm"
               value={period}
               onChange={(e) => setPeriod(e.target.value as MeteringPeriod)}
             >
@@ -159,16 +159,15 @@ export function MeteringPage({
                   {t(`cp.metering.period.${p}`)}
                 </option>
               ))}
-            </select>
+            </NativeSelect>
           </div>
           <div className="flex flex-col gap-1">
             <label htmlFor="metering-grouping" className="text-xs font-medium">
               {t("cp.metering.groupingLabel")}
             </label>
-            <select
+            <NativeSelect
               id="metering-grouping"
               data-testid="metering-grouping"
-              className="h-9 rounded-md border border-input bg-background px-2 text-sm"
               value={grouping}
               onChange={(e) => setGrouping(e.target.value as MeteringGrouping)}
             >
@@ -177,7 +176,7 @@ export function MeteringPage({
                   {t(`cp.metering.grouping.${g}`)}
                 </option>
               ))}
-            </select>
+            </NativeSelect>
           </div>
           <div className="flex flex-col gap-1">
             <label htmlFor="metering-from" className="text-xs font-medium">

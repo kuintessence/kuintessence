@@ -7,7 +7,7 @@ import { Archive, Loader2, RotateCcw, Search, Square } from "lucide-react";
 import { useId, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Button } from "../ui/button";
-import { Input } from "../ui/input";
+import { Input, Textarea } from "../ui/input";
 import { MaterialLifecycleHistory } from "./MaterialLifecycleHistory";
 import { useMaterialLifecycle } from "./use-material-lifecycle";
 
@@ -167,9 +167,9 @@ export function MaterialLifecycle({
           >
             <label htmlFor={`${id}-reason`} className="block space-y-1 text-xs">
               <span id={`${id}-reason-label`}>{t("materials.lifecycleReason")}</span>
-              <textarea
+              <Textarea
                 id={`${id}-reason`}
-                className="min-h-20 w-full resize-y rounded-md border border-input bg-transparent p-2 text-sm"
+                className="min-h-20 w-full resize-y"
                 rows={2}
                 maxLength={1000}
                 value={reason}

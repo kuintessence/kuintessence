@@ -498,10 +498,7 @@ export function FilesPage() {
             </span>
           </div>
         </div>
-        <div
-          className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:flex lg:items-center"
-          data-testid="files-actions"
-        >
+        <div className="kq-fill-row" data-testid="files-actions">
           <Button
             variant="outline"
             className="justify-center"

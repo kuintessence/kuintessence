@@ -4,6 +4,7 @@ import { useTranslation } from "react-i18next";
 import type { SoftwarePolicyEdit, SoftwarePolicyList } from "../../lib/cp-client";
 import { Button } from "../ui/button";
 import { Textarea } from "../ui/input";
+import { NativeSelect } from "../ui/native-select";
 
 export interface EditPolicyDialogProps {
   open: boolean;
@@ -89,16 +90,15 @@ export function EditPolicyDialog(props: EditPolicyDialogProps) {
             <label htmlFor="edit-policy-list" className="text-xs font-medium">
               {t("cp.software.edit.listLabel")}
             </label>
-            <select
+            <NativeSelect
               id="edit-policy-list"
               data-testid="edit-policy-list"
               value={currentList}
               onChange={(e) => setCurrentList(e.target.value as SoftwarePolicyList)}
-              className="h-9 rounded-md border border-border bg-card px-3 text-sm shadow-sm"
             >
               <option value="whitelist">{t("cp.software.edit.listWhitelist")}</option>
               <option value="blacklist">{t("cp.software.edit.listBlacklist")}</option>
-            </select>
+            </NativeSelect>
           </div>
 
           <div className="flex flex-col gap-1">

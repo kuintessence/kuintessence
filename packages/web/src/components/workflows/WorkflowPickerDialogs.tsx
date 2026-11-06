@@ -1,4 +1,4 @@
-import { Check, Search, Star } from "lucide-react";
+import { Check, Star } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import type { UsecasePackage, WorkflowTemplate } from "../../lib/software-client";
@@ -15,7 +15,9 @@ import {
   DialogHeader,
   DialogTitle,
 } from "../ui/dialog";
-import { Input } from "../ui/input";
+import { NativeSelect } from "../ui/native-select";
+import { PaginationControls } from "../ui/pagination-controls";
+import { SearchInput } from "../ui/search-input";
 
 type UsecaseRuntime = "all" | "Spack" | "Singularity" | "Bare";
 type UsecaseInput = "all" | "Text" | "File";
@@ -104,21 +106,18 @@ export function WorkflowTemplatePickerDialog({
         </DialogHeader>
         <DialogBody className="flex flex-col gap-3">
           <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_220px]">
-            <div className="relative min-w-0">
-              <Search className="absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-              <Input
-                value={query}
-                onChange={(event) => {
-                  const nextQuery = event.target.value;
-                  setQuery(nextQuery);
-                  onFiltersChange({ query: nextQuery, tag });
-                }}
-                placeholder={t("workflows.templates.searchPlaceholder")}
-                className="pl-8"
-                data-testid="workflow-template-search"
-              />
-            </div>
-            <select
+            <SearchInput
+              aria-label={t("workflows.templates.searchPlaceholder")}
+              value={query}
+              onChange={(event) => {
+                const nextQuery = event.target.value;
+                setQuery(nextQuery);
+                onFiltersChange({ query: nextQuery, tag });
+              }}
+              placeholder={t("workflows.templates.searchPlaceholder")}
+              data-testid="workflow-template-search"
+            />
+            <NativeSelect
               value={tag}
               onChange={(event) => {
                 const nextTag = event.target.value;
@@ -126,7 +125,6 @@ export function WorkflowTemplatePickerDialog({
                 onFiltersChange({ query, tag: nextTag });
               }}
               aria-label={t("workflows.templates.tagFilter")}
-              className="h-9 rounded-md border border-input bg-background px-3 text-sm text-foreground"
               data-testid="workflow-template-tag-filter"
             >
               <option value="">{t("workflows.templates.allTags")}</option>
@@ -135,7 +133,7 @@ export function WorkflowTemplatePickerDialog({
                   {value}
                 </option>
               ))}
-            </select>
+            </NativeSelect>
           </div>
           <div
             className="grid min-h-72 flex-1 auto-rows-max content-start gap-3 overflow-auto rounded-md border border-border bg-background p-2 sm:grid-cols-2 lg:grid-cols-3"
@@ -214,28 +212,20 @@ export function WorkflowTemplatePickerDialog({
           {!loading && !error && total > 0 ? (
             <div className="flex items-center justify-between gap-2 text-xs text-muted-foreground">
               <span>{t("workflows.templates.resultCount", { count: total })}</span>
-              <div className="flex gap-2">
-                <Button
-                  disabled={page === 1}
-                  onClick={() => onPageChange(page - 1)}
-                  size="sm"
-                  type="button"
-                  variant="outline"
-                  data-testid="workflow-template-previous-page"
-                >
-                  {t("common.previous")}
-                </Button>
-                <Button
-                  disabled={!hasNext}
-                  onClick={() => onPageChange(page + 1)}
-                  size="sm"
-                  type="button"
-                  variant="outline"
-                  data-testid="workflow-template-next-page"
-                >
-                  {t("common.next")}
-                </Button>
-              </div>
+              <PaginationControls
+                previous={{
+                  disabled: page === 1,
+                  onClick: () => onPageChange(page - 1),
+                  "data-testid": "workflow-template-previous-page",
+                  children: t("common.previous"),
+                }}
+                next={{
+                  disabled: !hasNext,
+                  onClick: () => onPageChange(page + 1),
+                  "data-testid": "workflow-template-next-page",
+                  children: t("common.next"),
+                }}
+              />
             </div>
           ) : null}
         </DialogBody>
@@ -245,7 +235,7 @@ export function WorkflowTemplatePickerDialog({
               ? t("workflows.templates.pendingSelection", { name: draft.name })
               : t("workflows.templates.noSelection")}
           </span>
-          <div className="flex justify-end gap-2">
+          <div className="kq-fill-row">
             <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
               {t("common.cancel")}
             </Button>
@@ -337,39 +327,34 @@ export function WorkflowUsecasePickerDialog({
         </DialogHeader>
         <DialogBody className="flex flex-col gap-3">
           <div className="grid gap-2 md:grid-cols-[minmax(0,1fr)_180px_180px]">
-            <div className="relative min-w-0">
-              <Search className="absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-              <Input
-                value={query}
-                onChange={(event) => setQuery(event.target.value)}
-                placeholder={t("software.usecaseSearchPlaceholder")}
-                className="pl-8"
-                data-testid="workflow-usecase-search"
-              />
-            </div>
-            <select
+            <SearchInput
+              aria-label={t("software.usecaseSearchPlaceholder")}
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+              placeholder={t("software.usecaseSearchPlaceholder")}
+              data-testid="workflow-usecase-search"
+            />
+            <NativeSelect
               value={runtime}
               onChange={(event) => setRuntime(event.target.value as UsecaseRuntime)}
               aria-label={t("jobs.usecase.runtimeFilter")}
-              className="h-9 rounded-md border border-input bg-background px-3 text-sm"
               data-testid="workflow-usecase-runtime-filter"
             >
               <option value="all">{t("jobs.usecase.allRuntimes")}</option>
               <option value="Spack">Spack</option>
               <option value="Singularity">Apptainer</option>
               <option value="Bare">Bare</option>
-            </select>
-            <select
+            </NativeSelect>
+            <NativeSelect
               value={input}
               onChange={(event) => setInput(event.target.value as UsecaseInput)}
               aria-label={t("jobs.usecase.inputFilter")}
-              className="h-9 rounded-md border border-input bg-background px-3 text-sm"
               data-testid="workflow-usecase-input-filter"
             >
               <option value="all">{t("jobs.usecase.allInputs")}</option>
               <option value="Text">{t("jobs.usecase.textInputs")}</option>
               <option value="File">{t("jobs.usecase.fileInputs")}</option>
-            </select>
+            </NativeSelect>
           </div>
           <div className="grid min-h-72 flex-1 auto-rows-max content-start gap-3 overflow-auto rounded-md border border-border bg-background p-2 sm:grid-cols-2 lg:grid-cols-3">
             {loading ? (
@@ -440,7 +425,7 @@ export function WorkflowUsecasePickerDialog({
               ? t("workflow.editor.usecasePicker.pendingSelection", { name: draft.name })
               : t("workflow.editor.usecasePicker.noSelection")}
           </span>
-          <div className="flex justify-end gap-2">
+          <div className="kq-fill-row">
             <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
               {t("common.cancel")}
             </Button>

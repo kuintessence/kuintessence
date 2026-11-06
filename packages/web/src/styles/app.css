@@ -8,6 +8,7 @@
  * Status tokens (pending/running/...) are referenced by the Badge component.
  */
 :root {
+  color-scheme: light;
   --radius: 0.625rem;
 
   --kq-motion-enter: 160ms;
@@ -48,6 +49,7 @@
 }
 
 .dark {
+  color-scheme: dark;
   --background: oklch(0.16 0.01 260);
   --foreground: oklch(0.96 0.005 260);
   --muted: oklch(0.22 0.015 260);
@@ -114,6 +116,18 @@
   --font-mono:
     "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono",
     "Courier New", monospace;
+}
+
+/* Opt in for controls/actions only; utilities can keep icon buttons fixed. */
+@layer components {
+  .kq-fill-row {
+    @apply flex min-w-0 flex-wrap items-center gap-2;
+  }
+
+  .kq-fill-row > :where(*) {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
 }
 
 @layer base {

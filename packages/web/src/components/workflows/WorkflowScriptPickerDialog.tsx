@@ -1,4 +1,4 @@
-import { Check, Search } from "lucide-react";
+import { Check } from "lucide-react";
 import { useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import type { SandboxScriptAsset } from "../../lib/sandbox-client";
@@ -13,7 +13,8 @@ import {
   DialogHeader,
   DialogTitle,
 } from "../ui/dialog";
-import { Input } from "../ui/input";
+import { NativeSelect } from "../ui/native-select";
+import { SearchInput } from "../ui/search-input";
 
 type LanguageFilter = "all" | "python" | "nodejs" | "bash";
 
@@ -68,28 +69,24 @@ export function WorkflowScriptPickerDialog({
         </DialogHeader>
         <DialogBody className="flex flex-col gap-3">
           <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_220px]">
-            <div className="relative min-w-0">
-              <Search className="absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-              <Input
-                value={query}
-                onChange={(event) => setQuery(event.target.value)}
-                placeholder={t("workflow.editor.scriptPicker.search")}
-                className="pl-8"
-                data-testid="workflow-script-search"
-              />
-            </div>
-            <select
+            <SearchInput
+              aria-label={t("workflow.editor.scriptPicker.search")}
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+              placeholder={t("workflow.editor.scriptPicker.search")}
+              data-testid="workflow-script-search"
+            />
+            <NativeSelect
               value={language}
               onChange={(event) => setLanguage(event.target.value as LanguageFilter)}
               aria-label={t("sandbox.catalog.language")}
-              className="h-9 rounded-md border border-input bg-background px-3 text-sm"
               data-testid="workflow-script-language-filter"
             >
               <option value="all">{t("sandbox.catalog.allLanguages")}</option>
               <option value="python">Python</option>
               <option value="nodejs">Node.js</option>
               <option value="bash">Bash</option>
-            </select>
+            </NativeSelect>
           </div>
           <div className="grid min-h-72 flex-1 auto-rows-max content-start gap-3 overflow-auto rounded-md border border-border bg-background p-2 sm:grid-cols-2 lg:grid-cols-3">
             {loading ? (
@@ -146,7 +143,7 @@ export function WorkflowScriptPickerDialog({
               ? t("workflow.editor.scriptPicker.pendingSelection", { name: selected.name })
               : t("workflow.editor.scriptPicker.noSelection")}
           </span>
-          <div className="flex justify-end gap-2">
+          <div className="kq-fill-row">
             <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
               {t("common.cancel")}
             </Button>

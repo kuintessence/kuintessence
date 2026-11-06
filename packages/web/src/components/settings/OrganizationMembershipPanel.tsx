@@ -18,6 +18,7 @@ import {
   DialogTitle,
 } from "../ui/dialog";
 import { Input } from "../ui/input";
+import { NativeSelect } from "../ui/native-select";
 
 const ROLES = {
   owner: "adminAccess.owner",
@@ -45,7 +46,6 @@ interface MemberOptions {
 }
 const key = ["admin", "authz", "memberships"] as const;
 const PAGE_SIZE = 20;
-const selectClass = "min-h-11 w-full min-w-0 rounded-md border bg-background px-3 py-2 text-sm";
 
 export function OrganizationMembershipPanel() {
   const { t } = useTranslation();
@@ -284,9 +284,9 @@ export function OrganizationMembershipPanel() {
                       setEditor((current) => current && { ...current, userId: "" });
                     }}
                   />
-                  <select
+                  <NativeSelect
                     id="membership-user"
-                    className={selectClass}
+                    className="min-h-11 w-full"
                     disabled={mutation.isPending || options.isFetching || options.isError}
                     value={editor?.userId ?? ""}
                     onChange={(event) =>
@@ -306,7 +306,7 @@ export function OrganizationMembershipPanel() {
                           {user.displayName ? `${user.displayName} · ${user.email}` : user.email}
                         </option>
                       ))}
-                  </select>
+                  </NativeSelect>
                   {options.data?.data.moreUsers ? (
                     <p className="text-xs text-muted-foreground">{t("adminAccess.moreUsers")}</p>
                   ) : null}
@@ -325,9 +325,9 @@ export function OrganizationMembershipPanel() {
                       setEditor((current) => current && { ...current, orgId: "" });
                     }}
                   />
-                  <select
+                  <NativeSelect
                     id="membership-org"
-                    className={selectClass}
+                    className="min-h-11 w-full"
                     disabled={mutation.isPending || options.isFetching || options.isError}
                     value={editor?.orgId ?? ""}
                     onChange={(event) =>
@@ -347,7 +347,7 @@ export function OrganizationMembershipPanel() {
                           {org.name}
                         </option>
                       ))}
-                  </select>
+                  </NativeSelect>
                   {options.data?.data.moreOrganizations ? (
                     <p className="text-xs text-muted-foreground">{t("adminAccess.moreOrgs")}</p>
                   ) : null}
@@ -366,10 +366,10 @@ export function OrganizationMembershipPanel() {
               <label htmlFor="membership-role" className="text-sm font-medium">
                 {t("adminAccess.orgRole")}
               </label>
-              <select
+              <NativeSelect
                 id="membership-role"
                 disabled={mutation.isPending}
-                className={selectClass}
+                className="min-h-11 w-full"
                 value={editor?.role ?? "member"}
                 onChange={(event) =>
                   setEditor(
@@ -382,7 +382,7 @@ export function OrganizationMembershipPanel() {
                     {t(label)}
                   </option>
                 ))}
-              </select>
+              </NativeSelect>
             </div>
             {privileged ? (
               <p className="text-sm text-muted-foreground">

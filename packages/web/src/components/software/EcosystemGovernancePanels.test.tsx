@@ -214,9 +214,38 @@ test("mobile and revoked management permission block runtime writes", async () =
   fireEvent.change(await screen.findByLabelText("cp.accounts.registration.agent"), {
     target: { value: "agent-1" },
   });
-  expect(screen.getByLabelText("software.license.runtimeProfile")).toHaveProperty("disabled", true);
+  expect(screen.getByTestId("runtime-material-readonly-summary")).toBeTruthy();
+  expect(screen.queryByLabelText("software.license.runtimeProfile")).toBeNull();
+  expect(screen.queryByLabelText("software.license.materialSelector")).toBeNull();
+  expect(screen.queryByRole("button", { name: "software.license.bindRuntime" })).toBeNull();
+  expect(softwareClient.listSpackCatalog).not.toHaveBeenCalled();
   scope.mobile = false;
   view.rerender(<RuntimeAndMaterialPanel canManage={false} />);
   expect(screen.getByLabelText("software.license.runtimeProfile")).toHaveProperty("disabled", true);
   expect(softwareClient.bindRuntimeContract).not.toHaveBeenCalled();
+});
+
+test("mobile runtime summaries keep existing bindings and filter by agent", async () => {
+  scope.mobile = true;
+  softwareClient.listRuntimeContractBindings.mockResolvedValue([
+    {
+      runtimeContractRef: "python-3.12-stdlib-v1",
+      runtimeProfileId: "profile",
+      agentId: "agent-1",
+    },
+    { runtimeContractRef: "other-runtime", runtimeProfileId: "profile", agentId: "agent-2" },
+  ]);
+  softwareClient.listLicensedMaterialMappings.mockResolvedValue([
+    { selector: "local-pbe", materialVersion: "2025", elementSet: ["Si"], agentId: "agent-1" },
+  ]);
+  render(<RuntimeAndMaterialPanel canManage />, { wrapper: wrapper() });
+  await screen.findByText(/local-pbe/);
+  expect(screen.getByText(/other-runtime/)).toBeTruthy();
+  fireEvent.change(screen.getByLabelText("cp.accounts.registration.agent"), {
+    target: { value: "agent-1" },
+  });
+  expect(screen.queryByText(/other-runtime/)).toBeNull();
+  expect(screen.getByText(/python-3.12-stdlib-v1/)).toBeTruthy();
+  expect(softwareClient.bindRuntimeContract).not.toHaveBeenCalled();
+  expect(softwareClient.registerLicensedMaterialMapping).not.toHaveBeenCalled();
 });

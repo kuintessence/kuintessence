@@ -89,10 +89,10 @@ describe("JobsPage pagination", () => {
       vi.fn(() => Promise.resolve(Response.json({ jobs: [], total: 0, limit: 25, offset: 0 }))),
     );
     render(<JobsPage />, { wrapper: makeWrapper() });
-    expect(screen.getByTestId("status-chip-all").getAttribute("aria-pressed")).toBe("true");
+    expect(screen.getByTestId("status-chip-all").getAttribute("aria-checked")).toBe("true");
     fireEvent.click(screen.getByTestId("status-chip-failed"));
-    expect(screen.getByTestId("status-chip-all").getAttribute("aria-pressed")).toBe("false");
-    expect(screen.getByTestId("status-chip-failed").getAttribute("aria-pressed")).toBe("true");
+    expect(screen.getByTestId("status-chip-all").getAttribute("aria-checked")).toBe("false");
+    expect(screen.getByTestId("status-chip-failed").getAttribute("aria-checked")).toBe("true");
   });
 
   test("builds a server-paginated access-scope query", () => {

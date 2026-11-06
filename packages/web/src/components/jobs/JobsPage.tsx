@@ -1,12 +1,14 @@
 import { useQuery } from "@tanstack/react-query";
-import { Loader2, X } from "lucide-react";
+import { X } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { api } from "../../lib/api-client";
 import { toUserFacingError } from "../../lib/user-facing-error";
 import { Button } from "../ui/button";
 import { Card, CardContent } from "../ui/card";
+import { ErrorState, LoadingState } from "../ui/content-state";
 import { PageHeader, PageShell } from "../ui/page";
+import { PaginationControls } from "../ui/pagination-controls";
 import { ImportJobJsonDialog } from "./ImportJobJsonDialog";
 import { JobDetailSheet } from "./JobDetailSheet";
 import { JobsTable } from "./JobsTable";
@@ -175,36 +177,36 @@ export function JobsPage({ agentId, onClearAgentFilter }: JobsPageProps = {}) {
       ) : null}
 
       {loadError ? (
-        <div
-          role="alert"
-          data-state="open"
-          className="kq-motion kq-motion--notice flex flex-wrap items-center justify-between gap-3 rounded-md border border-status-failed/40 bg-[color-mix(in_oklab,var(--status-failed)_10%,transparent)] p-3 text-sm"
+        <ErrorState
           data-testid="jobs-list-error"
+          data-state="open"
+          className="kq-motion kq-motion--notice"
+          actions={
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => void jobsQ.refetch()}
+              disabled={jobsQ.isFetching}
+            >
+              {t("globalError.retry")}
+            </Button>
+          }
         >
           {toUserFacingError(
             loadError,
             t("jobs.loadFailed", { defaultValue: "无法加载作业列表，请稍后重试。" }),
           )}
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => void jobsQ.refetch()}
-            disabled={jobsQ.isFetching}
-          >
-            {t("globalError.retry")}
-          </Button>
-        </div>
+        </ErrorState>
       ) : null}
 
       {jobsQ.isLoading ? (
-        <div
-          role="status"
+        <LoadingState
           data-testid="jobs-list-loading"
-          className="flex items-center justify-center gap-2 rounded-lg border border-border bg-card px-4 py-16 text-sm text-muted-foreground"
+          className="rounded-lg border border-border bg-card px-4 py-16"
         >
-          <Loader2 className="h-4 w-4 animate-spin motion-reduce:animate-none" aria-hidden="true" />
           {t("jobs.loading")}
-        </div>
+        </LoadingState>
       ) : loadError ? null : (
         <JobsTable
           jobs={jobs}
@@ -228,17 +230,20 @@ export function JobsPage({ agentId, onClearAgentFilter }: JobsPageProps = {}) {
               defaultValue: `${pageStart}-${pageEnd} / ${total}`,
             })}
           </span>
-          <div className="flex items-center justify-end gap-2">
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              disabled={pageIndex === 0 || jobsQ.isFetching}
-              onClick={() => setPageIndex((current) => Math.max(0, current - 1))}
-              data-testid="jobs-prev-page"
-            >
-              {t("jobs.pagination.previous", { defaultValue: "上一页" })}
-            </Button>
+          <PaginationControls
+            previous={{
+              disabled: pageIndex === 0 || jobsQ.isFetching,
+              onClick: () => setPageIndex((current) => Math.max(0, current - 1)),
+              "data-testid": "jobs-prev-page",
+              children: t("jobs.pagination.previous", { defaultValue: "上一页" }),
+            }}
+            next={{
+              disabled: pageIndex + 1 >= pageCount || jobsQ.isFetching,
+              onClick: () => setPageIndex((current) => Math.min(pageCount - 1, current + 1)),
+              "data-testid": "jobs-next-page",
+              children: t("jobs.pagination.next", { defaultValue: "下一页" }),
+            }}
+          >
             <span
               className="min-w-20 text-center text-xs tabular-nums"
               data-testid="jobs-page-index"
@@ -249,17 +254,7 @@ export function JobsPage({ agentId, onClearAgentFilter }: JobsPageProps = {}) {
                 defaultValue: `${pageIndex + 1} / ${pageCount}`,
               })}
             </span>
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              disabled={pageIndex + 1 >= pageCount || jobsQ.isFetching}
-              onClick={() => setPageIndex((current) => Math.min(pageCount - 1, current + 1))}
-              data-testid="jobs-next-page"
-            >
-              {t("jobs.pagination.next", { defaultValue: "下一页" })}
-            </Button>
-          </div>
+          </PaginationControls>
         </div>
       )}
 

@@ -8,6 +8,7 @@ import { toUserFacingError } from "../../lib/user-facing-error";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
+import { PaginationControls } from "../ui/pagination-controls";
 
 function localToIso(local: string): string | null {
   if (!local) return null;
@@ -389,32 +390,26 @@ export function AuditSearchPanel() {
         </div>
       ) : null}
       {m.data && !hasSearchError && total > PAGE_SIZE ? (
-        <nav
-          className="flex flex-wrap items-center justify-end gap-3"
+        <PaginationControls
+          role="navigation"
           data-testid="cp-audit-pagination"
+          previous={{
+            disabled: m.isPending || offset === 0,
+            onClick: () => changePage(Math.max(0, offset - PAGE_SIZE)),
+            "data-testid": "cp-audit-previous",
+            children: t("jobs.pagination.previous"),
+          }}
+          next={{
+            disabled: m.isPending || offset + PAGE_SIZE >= total,
+            onClick: () => changePage(offset + PAGE_SIZE),
+            "data-testid": "cp-audit-next",
+            children: t("jobs.pagination.next"),
+          }}
         >
           <span className="text-xs tabular-nums text-muted-foreground">
             {t("jobs.pagination.range", { start: offset + 1, end: offset + items.length, total })}
           </span>
-          <Button
-            variant="outline"
-            size="sm"
-            disabled={m.isPending || offset === 0}
-            onClick={() => changePage(Math.max(0, offset - PAGE_SIZE))}
-            data-testid="cp-audit-previous"
-          >
-            {t("jobs.pagination.previous")}
-          </Button>
-          <Button
-            variant="outline"
-            size="sm"
-            disabled={m.isPending || offset + PAGE_SIZE >= total}
-            onClick={() => changePage(offset + PAGE_SIZE)}
-            data-testid="cp-audit-next"
-          >
-            {t("jobs.pagination.next")}
-          </Button>
-        </nav>
+        </PaginationControls>
       ) : null}
     </div>
   );

@@ -105,7 +105,7 @@ export function AuditDrawer({ session, open, onOpenChange }: AuditDrawerProps) {
             </div>
 
             <div className="flex flex-wrap items-center gap-2">
-              <div className="flex flex-wrap gap-1" data-testid="terminal-audit-filter">
+              <div className="kq-fill-row flex-1 gap-1" data-testid="terminal-audit-filter">
                 {KIND_FILTERS.map((k) => {
                   const active = filter === k;
                   const n = counts[k] ?? 0;

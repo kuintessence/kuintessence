@@ -1,3 +1,4 @@
+import { NativeSelect } from "../ui/native-select";
 /**
  * Right-side panel for the selected workflow node.
  *
@@ -22,7 +23,7 @@ import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import type { GraphEdge, GraphNode, GraphNodeData } from "../../lib/yaml-graph-sync";
 import { Button } from "../ui/button";
-import { Input } from "../ui/input";
+import { Input, Textarea } from "../ui/input";
 
 type UsecaseNode = Extract<workflowDsl.WorkflowNode, { type: "SoftwareUsecaseComputing" }>;
 type Requirements = NonNullable<UsecaseNode["requirements"]>;
@@ -593,9 +594,6 @@ interface ScriptFieldsProps {
   onPatch: (id: string, patch: NodePatch) => void;
 }
 
-const SELECT_CLASS =
-  "h-9 rounded-md border border-input bg-background px-3 py-1 text-[11px] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
-
 /** Structured form for the `Script` inline-script authoring node. */
 function ScriptFields({ id, raw, onPatch }: ScriptFieldsProps) {
   const { t } = useTranslation();
@@ -626,9 +624,9 @@ function ScriptFields({ id, raw, onPatch }: ScriptFieldsProps) {
         label={t("workflow.editor.properties.scriptSource", { defaultValue: "Script source" })}
         testId="rf-prop-script-kind-row"
       >
-        <select
+        <NativeSelect
           data-testid="rf-prop-script-source"
-          className={SELECT_CLASS}
+          className="text-xs"
           value={source?.type ?? "AssetRevision"}
           disabled
         >
@@ -636,7 +634,7 @@ function ScriptFields({ id, raw, onPatch }: ScriptFieldsProps) {
           <option value="AssetRevision">
             {t("workflow.editor.properties.sourceAssetRevision")}
           </option>
-        </select>
+        </NativeSelect>
       </FieldRow>
       <FieldRow
         label={t("workflow.editor.properties.scriptRuntime", { defaultValue: "Runtime profile" })}
@@ -683,9 +681,9 @@ function ScriptFields({ id, raw, onPatch }: ScriptFieldsProps) {
           <FieldRow
             label={t("workflow.editor.properties.scriptContent", { defaultValue: "Script body" })}
           >
-            <textarea
+            <Textarea
               data-testid="rf-prop-script-content"
-              className="min-h-40 resize-y rounded-md border border-input bg-background px-3 py-2 font-mono text-[11px] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+              className="min-h-40 resize-y font-mono text-[11px]"
               value={content}
               onChange={(e: ChangeEvent<HTMLTextAreaElement>) => setContent(e.target.value)}
               onBlur={commitContent}
@@ -755,9 +753,9 @@ function MilestoneFields({ id, raw, onPatch }: MilestoneFieldsProps) {
           defaultValue: "Custom message",
         })}
       >
-        <textarea
+        <Textarea
           data-testid="rf-prop-milestone-message"
-          className="min-h-24 resize-y rounded-md border border-input bg-background px-3 py-2 text-[11px] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+          className="min-h-24 resize-y text-[11px]"
           value={customMessage}
           onChange={(e: ChangeEvent<HTMLTextAreaElement>) => setCustomMessage(e.target.value)}
           onBlur={commitMessage}
@@ -1007,15 +1005,15 @@ function LoopFields({ id, raw, onPatch }: LoopFieldsProps) {
   return (
     <>
       <FieldRow label={t("workflow.editor.properties.loopMode", { defaultValue: "Mode" })}>
-        <select
+        <NativeSelect
           data-testid="rf-prop-loop-mode"
-          className={SELECT_CLASS}
+          className="text-xs"
           value={raw.mode}
           onChange={(e: ChangeEvent<HTMLSelectElement>) => changeMode(e.target.value as LoopMode)}
         >
           <option value="While">While</option>
           <option value="ForEach">ForEach</option>
-        </select>
+        </NativeSelect>
       </FieldRow>
       <FieldRow
         label={t("workflow.editor.properties.loopMaxIterations", {
@@ -1059,16 +1057,16 @@ function LoopFields({ id, raw, onPatch }: LoopFieldsProps) {
       <FieldRow
         label={t("workflow.editor.properties.loopOnExhausted", { defaultValue: "On exhausted" })}
       >
-        <select
+        <NativeSelect
           data-testid="rf-prop-loop-on-exhausted"
-          className={SELECT_CLASS}
+          className="text-xs"
           value={raw.onExhausted ?? ""}
           onChange={(e: ChangeEvent<HTMLSelectElement>) => changeOnExhausted(e.target.value)}
         >
           <option value="">(default)</option>
           <option value="Fail">Fail</option>
           <option value="SucceedWithLast">SucceedWithLast</option>
-        </select>
+        </NativeSelect>
       </FieldRow>
       <FieldRow
         label={t("workflow.editor.properties.loopMaxParallel", { defaultValue: "Max parallel" })}
@@ -1168,29 +1166,29 @@ function ReduceFields({ id, raw, onPatch }: ReduceFieldsProps) {
       <FieldRow
         label={t("workflow.editor.properties.reduceOrdering", { defaultValue: "Ordering" })}
       >
-        <select
+        <NativeSelect
           data-testid="rf-prop-reduce-ordering"
-          className={SELECT_CLASS}
+          className="text-xs"
           value={raw.ordering ?? ""}
           onChange={(e: ChangeEvent<HTMLSelectElement>) => changeOrdering(e.target.value)}
         >
           <option value="">(default)</option>
           <option value="ByIndex">ByIndex</option>
           <option value="Unordered">Unordered</option>
-        </select>
+        </NativeSelect>
       </FieldRow>
       <FieldRow
         label={t("workflow.editor.properties.reduceOutputKind", { defaultValue: "Output kind" })}
       >
-        <select
+        <NativeSelect
           data-testid="rf-prop-reduce-output-kind"
-          className={SELECT_CLASS}
+          className="text-xs"
           value={raw.output.kind}
           onChange={(e: ChangeEvent<HTMLSelectElement>) => changeOutputKind(e.target.value)}
         >
           <option value="SingleFile">SingleFile</option>
           <option value="OrderedFolder">OrderedFolder</option>
-        </select>
+        </NativeSelect>
       </FieldRow>
       <FieldRow
         label={t("workflow.editor.properties.reduceOutputDescriptor", {
@@ -1274,9 +1272,9 @@ function SubWorkflowFields({ id, raw, onPatch }: SubWorkflowFieldsProps) {
           defaultValue: "ByVersion points at a published workflow; Inline embeds a body",
         })}
       >
-        <select
+        <NativeSelect
           data-testid="rf-prop-subworkflow-ref-kind"
-          className={SELECT_CLASS}
+          className="text-xs"
           value={ref.kind}
           onChange={(e: ChangeEvent<HTMLSelectElement>) =>
             changeRefKind(e.target.value as SubWorkflowRef["kind"])
@@ -1284,7 +1282,7 @@ function SubWorkflowFields({ id, raw, onPatch }: SubWorkflowFieldsProps) {
         >
           <option value="ByVersion">ByVersion</option>
           <option value="Inline">Inline</option>
-        </select>
+        </NativeSelect>
       </FieldRow>
       {ref.kind === "ByVersion" ? (
         <FieldRow
@@ -1330,16 +1328,16 @@ function SubWorkflowFields({ id, raw, onPatch }: SubWorkflowFieldsProps) {
           defaultValue: "On depth exceeded",
         })}
       >
-        <select
+        <NativeSelect
           data-testid="rf-prop-subworkflow-on-depth-exceeded"
-          className={SELECT_CLASS}
+          className="text-xs"
           value={raw.onDepthExceeded ?? ""}
           onChange={(e: ChangeEvent<HTMLSelectElement>) => changeOnDepthExceeded(e.target.value)}
         >
           <option value="">(default)</option>
           <option value="Fail">Fail</option>
           <option value="SucceedWithLast">SucceedWithLast</option>
-        </select>
+        </NativeSelect>
       </FieldRow>
       <ReadOnlyBody value={{ inputs: raw.inputs, outputs: raw.outputs }} />
     </>
@@ -1389,15 +1387,15 @@ function GenerateFields({ id, raw, onPatch }: GenerateFieldsProps) {
       <FieldRow
         label={t("workflow.editor.properties.generateOutputAs", { defaultValue: "Output as" })}
       >
-        <select
+        <NativeSelect
           data-testid="rf-prop-generate-output-as"
-          className={SELECT_CLASS}
+          className="text-xs"
           value={raw.output.as}
           onChange={(e: ChangeEvent<HTMLSelectElement>) => changeAs(e.target.value)}
         >
           <option value="List">List</option>
           <option value="BatchFiles">BatchFiles</option>
-        </select>
+        </NativeSelect>
       </FieldRow>
       <ReadOnlyBody value={{ rule: raw.rule }} />
     </>

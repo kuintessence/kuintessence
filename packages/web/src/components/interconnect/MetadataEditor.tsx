@@ -11,10 +11,10 @@ import { toUserFacingError } from "../../lib/user-facing-error";
 import { Button } from "../ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "../ui/dialog";
 import { Input } from "../ui/input";
+import { NativeSelect } from "../ui/native-select";
 import { computeTypeLabel, getStatusLabels } from "./model";
 
 export type EditTarget = { kind: "centers" | "clusters" | "links"; id?: string };
-const selectClass = "w-full min-w-0 rounded-md border border-border bg-background p-2 text-sm";
 function Field({ label, children }: { label: string; children: ReactElement<{ id?: string }> }) {
   const id = useId();
   return (
@@ -203,9 +203,9 @@ export function MetadataEditor({
               <Input name="name" required maxLength={120} defaultValue={metadata?.name ?? ""} />
             </Field>
             <Field label={t("interconnect.runningStatus")}>
-              <select
+              <NativeSelect
                 name="status"
-                className={selectClass}
+                className="w-full"
                 defaultValue={metadata?.status ?? "unknown"}
               >
                 {Object.entries(statusLabels).map(([s, label]) => (
@@ -213,14 +213,14 @@ export function MetadataEditor({
                     {label}
                   </option>
                 ))}
-              </select>
+              </NativeSelect>
             </Field>
             {target.kind === "centers" && (
               <>
                 <Field label={t("interconnect.organization")}>
-                  <select
+                  <NativeSelect
                     name="orgId"
-                    className={selectClass}
+                    className="w-full"
                     defaultValue={center?.orgId ?? snapshot.organizations[0]?.id}
                     required
                   >
@@ -231,7 +231,7 @@ export function MetadataEditor({
                           {o.name}
                         </option>
                       ))}
-                  </select>
+                  </NativeSelect>
                 </Field>
                 <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
                   <Field label={t("interconnect.country")}>
@@ -279,8 +279,8 @@ export function MetadataEditor({
             {target.kind === "clusters" && (
               <>
                 <Field label={t("interconnect.parentCenter")}>
-                  <select
-                    className={selectClass}
+                  <NativeSelect
+                    className="w-full"
                     value={centerId}
                     onChange={(e) => setCenterId(e.target.value)}
                     required
@@ -290,7 +290,7 @@ export function MetadataEditor({
                         {c.metadata.name}
                       </option>
                     ))}
-                  </select>
+                  </NativeSelect>
                 </Field>
                 <fieldset className="space-y-2">
                   <legend className="mb-2 text-sm">{t("interconnect.computeTypes")}</legend>
@@ -389,8 +389,8 @@ export function MetadataEditor({
                       key={name}
                       label={index === 0 ? t("interconnect.from") : t("interconnect.to")}
                     >
-                      <select
-                        className={selectClass}
+                      <NativeSelect
+                        className="w-full"
                         name={name}
                         required
                         defaultValue={index === 0 ? link?.fromCenterId : link?.toCenterId}
@@ -401,7 +401,7 @@ export function MetadataEditor({
                             {c.metadata.name}
                           </option>
                         ))}
-                      </select>
+                      </NativeSelect>
                     </Field>
                   ))}
                 </div>

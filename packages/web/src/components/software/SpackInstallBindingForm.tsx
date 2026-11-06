@@ -9,7 +9,8 @@ import { useId, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { sameInstallBinding } from "../../lib/spack-install-bindings-client";
 import { Button } from "../ui/button";
-import { Input } from "../ui/input";
+import { Input, Textarea } from "../ui/input";
+import { NativeSelect } from "../ui/native-select";
 
 export function SpackInstallBindingForm({
   view,
@@ -65,9 +66,9 @@ export function SpackInstallBindingForm({
         <label htmlFor={`${id}-action`} className="block">
           {t("materials.installBinding.action")}
         </label>
-        <select
+        <NativeSelect
           id={`${id}-action`}
-          className="h-9 w-full rounded-md border border-input bg-background px-2 text-sm"
+          className="w-full"
           value={action}
           disabled={!canWrite}
           onChange={(event) => {
@@ -79,7 +80,7 @@ export function SpackInstallBindingForm({
         >
           <option value="bind">{t("materials.installBinding.bind")}</option>
           <option value="disable">{t("materials.installBinding.disable")}</option>
-        </select>
+        </NativeSelect>
       </div>
       {action === "bind" ? (
         <div className="grid min-w-0 gap-2 sm:grid-cols-2">
@@ -122,9 +123,9 @@ export function SpackInstallBindingForm({
       ) : null}
       <label htmlFor={`${id}-reason`} className="block space-y-1 text-xs">
         <span>{t("materials.installBinding.reason")}</span>
-        <textarea
+        <Textarea
           id={`${id}-reason`}
-          className="min-h-20 w-full resize-y rounded-md border border-input bg-transparent p-2 text-sm"
+          className="min-h-20 w-full resize-y"
           rows={2}
           maxLength={1000}
           value={reason}

@@ -16,6 +16,7 @@ import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
 import { Input } from "../ui/input";
+import { NativeSelect } from "../ui/native-select";
 import { PageHeader, PageShell } from "../ui/page";
 
 export function CpDataPage() {
@@ -270,8 +271,8 @@ export function CpDataPage() {
             <p className="text-xs text-muted-foreground">{t("cp.data.cpLocalOnly")}</p>
             <label className="space-y-1 text-sm">
               <span className="font-medium">{t("cp.data.agent")}</span>
-              <select
-                className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
+              <NativeSelect
+                className="h-10 w-full"
                 value={agentId}
                 onChange={(event) => {
                   setAgentId(event.target.value);
@@ -286,7 +287,7 @@ export function CpDataPage() {
                     {agent.hostname} ({agent.siteId})
                   </option>
                 ))}
-              </select>
+              </NativeSelect>
             </label>
             <QueryFeedback query={agents} onRetry={() => void agents.refetch()} />
             {!agents.isLoading && !agents.isError && (agents.data?.length ?? 0) === 0 ? (
@@ -294,8 +295,8 @@ export function CpDataPage() {
             ) : null}
             <label className="space-y-1 text-sm">
               <span className="font-medium">{t("cp.data.managedRoot")}</span>
-              <select
-                className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
+              <NativeSelect
+                className="h-10 w-full"
                 value={managedRootId}
                 onChange={(event) => setManagedRootId(event.target.value)}
                 disabled={!agentId || roots.isLoading || roots.isError || enabledRoots.length === 0}
@@ -307,7 +308,7 @@ export function CpDataPage() {
                     {root.label} - {root.path}
                   </option>
                 ))}
-              </select>
+              </NativeSelect>
             </label>
             {agentId ? <QueryFeedback query={roots} onRetry={() => void roots.refetch()} /> : null}
             {agentId && !roots.isLoading && !roots.isError && enabledRoots.length === 0 ? (
