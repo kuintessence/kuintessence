@@ -44,7 +44,7 @@ import {
   FederationExecutionRequestSchema,
   type FederationExecutionResponse,
 } from "@kuintessence/proto";
-import { AppError, ErrorCode } from "@kuintessence/shared";
+import { AppError, ErrorCode, workflowDsl } from "@kuintessence/shared";
 import {
   FederationAcceptanceSchema,
   FederationAgreementSchema,
@@ -2187,6 +2187,71 @@ test("temporary material failure cannot hide active queue revocation", async () 
     });
   } finally {
     unavailable.mockRestore();
+    await f.cleanup();
+  }
+});
+
+test("temporary preparation and queue failures cannot hide a Sandbox script withdrawal", async () => {
+  const f = await monitoredJob();
+  const unavailable = spyOn(f.authorization, "prepare").mockRejectedValue(
+    new FederationError("DATA_WAITING"),
+  );
+  const queueUnavailable = spyOn(f.queues, "assertExecutionAccess").mockRejectedValue(
+    new AuthorizationUnavailableError("Authorization unavailable"),
+  );
+  try {
+    const node = workflowDsl.WorkflowNodeSchema.parse({
+      type: "Script",
+      id: "monitor",
+      name: "Pinned script",
+      source: {
+        type: "AssetRevision",
+        assetId,
+        assetRevisionId: revisionId,
+        revision: 1,
+        sha256: payload.sha256,
+      },
+      runtimeProfileId: crypto.randomUUID(),
+      executionIdentity: { type: "MappedAuto" },
+      outputs: {},
+    });
+    const intent = {
+      nodeId: "monitor",
+      name: "Monitored",
+      command: "true",
+      envVars: {},
+      inputStaging: [],
+      expectedOutputs: [],
+      sandbox: {
+        node,
+        executionIdentity: { type: "MappedAuto" },
+        submittedBy: identity.userId,
+        orgId: identity.orgId,
+      },
+    };
+    await db
+      .update(workflowExecutionJobs)
+      .set({ intent })
+      .where(eq(workflowExecutionJobs.jobId, f.jobId));
+    await db
+      .update(softwareAssets)
+      .set({ lifecycle: "revoked" })
+      .where(eq(softwareAssets.id, assetId));
+    await scanExecutions(f.monitor);
+    expect(await f.registry.getById(f.runId)).toMatchObject({
+      status: "cancelling",
+      errorCode: "FEDERATION_AUTHORIZATION_REVOKED",
+      errorMessage: "POLICY_DENIED",
+    });
+    await f.drain();
+    expect(f.cancellations).toContain(f.runId);
+  } finally {
+    unavailable.mockRestore();
+    queueUnavailable.mockRestore();
+    await db
+      .update(softwareAssets)
+      .set({ lifecycle: "published" })
+      .where(eq(softwareAssets.id, assetId));
     await f.cleanup();
   }
 });

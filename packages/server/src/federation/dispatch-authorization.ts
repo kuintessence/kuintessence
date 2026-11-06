@@ -10,6 +10,7 @@ import { WorkflowExecutionInterrupted } from "@kuintessence/shared";
 import { FederationError } from "@kuintessence/shared/federation";
 import { and, eq } from "drizzle-orm";
 import type { QueueRegistryService } from "../services/queue-registry";
+import type { SandboxPolicyService } from "../services/sandbox-policy";
 import type { SoftwareAvailabilityService } from "../services/software-availability";
 import { constrainWorkflowResources } from "../workflow/resource-limits";
 import { federationMaterialDigest } from "./assets";
@@ -37,10 +38,17 @@ export class FederationDispatchAuthorization {
       SoftwareAvailabilityService,
       "resolve" | "assertExecutionAccess"
     >,
+    private readonly sandboxPolicies?: Pick<SandboxPolicyService, "effectiveFor">,
   ) {}
 
   async checkActiveJobs(runId: string): Promise<void> {
-    await checkFederationExecutionPolicy(this.db, runId, this.queues, this.software);
+    await checkFederationExecutionPolicy(
+      this.db,
+      runId,
+      this.queues,
+      this.software,
+      this.sandboxPolicies,
+    );
   }
 
   async prepare(

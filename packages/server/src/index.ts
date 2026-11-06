@@ -1587,6 +1587,7 @@ const federationDispatchAuthorization = federationPreparation
       federationPreparation,
       queueRegistry,
       softwareAvailability,
+      sandboxPolicyService,
     )
   : undefined;
 jobDispatchOutbox.start();

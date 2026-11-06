@@ -22,11 +22,8 @@ import {
   SandboxArtifactReleaseItemSchema,
   SandboxArtifactReleaseSchema,
   SandboxBatchEntrySchema,
-  SandboxExecutionIdentitySchema,
   SandboxExecutionSchema,
-  SandboxIdentityMode,
   SandboxIoType,
-  SandboxKubernetesAccountSchema,
   SandboxLanguage,
   SandboxMountMode,
   SandboxResourceLimitsSchema,
@@ -34,7 +31,6 @@ import {
   SandboxRuntimeRefSchema,
   SandboxScriptBundleSchema,
   SandboxSignatureEnvelopeSchema,
-  SandboxUnixAccountSchema,
   type ServerMessage,
   ServerMessageSchema,
   ShellExecRequestSchema,
@@ -53,6 +49,8 @@ import { createLogger, SPACK_PINNED_EXECUTION_PLACEHOLDER } from "@kuintessence/
 import { and, asc, eq, isNotNull, isNull } from "drizzle-orm";
 import type { ResolvedDataDelivery } from "../services/data-delivery";
 import { enqueueJobCancellation } from "../services/job-cancellation";
+
+import { sandboxIdentityToProto } from "./sandbox-identity";
 
 const logger = createLogger("dispatcher");
 
@@ -85,7 +83,6 @@ function sandboxIoType(value: SandboxSignedManifest["mounts"][number]["ioType"])
 }
 
 function sandboxExecutionToProto(manifest: SandboxSignedManifest) {
-  const identity = manifest.identity;
   return create(SandboxExecutionSchema, {
     script: create(SandboxScriptBundleSchema, {
       language: sandboxLanguage(manifest.script.language),
@@ -106,33 +103,7 @@ function sandboxExecutionToProto(manifest: SandboxSignedManifest) {
           executionProfile: manifest.executionProfile,
         }
       : {}),
-    executionIdentity: create(SandboxExecutionIdentitySchema, {
-      mode:
-        identity.mode === "SharedService"
-          ? SandboxIdentityMode.SHARED_SERVICE
-          : SandboxIdentityMode.MAPPED_ACCOUNT,
-      accountId: identity.accountId,
-      backend:
-        identity.backend === "Unix"
-          ? {
-              case: "unix",
-              value: create(SandboxUnixAccountSchema, {
-                username: identity.username,
-                uid: identity.uid,
-                gid: identity.gid,
-                schedulerAccount: identity.schedulerAccount ?? "",
-                allowedQueues: identity.allowedQueues,
-              }),
-            }
-          : {
-              case: "kubernetes",
-              value: create(SandboxKubernetesAccountSchema, {
-                namespace: identity.namespace,
-                serviceAccount: identity.serviceAccount,
-                quotaPolicy: identity.quotaPolicy ?? "",
-              }),
-            },
-    }),
+    executionIdentity: sandboxIdentityToProto(manifest.identity),
     artifactMounts: manifest.mounts.map((mount) =>
       create(SandboxArtifactMountSchema, {
         descriptor: mount.descriptor,

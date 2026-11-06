@@ -18,10 +18,13 @@ import { and, eq, inArray } from "drizzle-orm";
 import { AuthorizationUnavailableError } from "../authz/service";
 import { PgDataPrerequisiteRepository } from "../services/data-prerequisite-repository-drizzle";
 import type { QueueRegistryService } from "../services/queue-registry";
+import { SandboxAuthorizationError } from "../services/sandbox-execution-resolver";
+import type { SandboxPolicyService } from "../services/sandbox-policy";
 import type { SoftwareAvailabilityService } from "../services/software-availability";
 import type { FederationDeliveryTarget } from "./dispatch-authorization";
 import { loadFederationWorkflowBinding } from "./execution-binding";
 import { matchesFederationTarget } from "./execution-targets";
+import { checkFederationSandboxJob } from "./sandbox-authorization";
 import { prepareFederationSoftware } from "./software-authorization";
 
 /** Observe active authorization without requiring a live transport or reissuing download credentials. */
@@ -30,6 +33,7 @@ export async function checkFederationExecutionPolicy(
   runId: string,
   queues: Pick<QueueRegistryService, "assertExecutionAccess"> | undefined,
   software: Pick<SoftwareAvailabilityService, "resolve" | "assertExecutionAccess"> | undefined,
+  sandboxPolicies?: Pick<SandboxPolicyService, "effectiveFor">,
 ): Promise<void> {
   const binding = await loadFederationWorkflowBinding(db, runId);
   if (!binding) throw new FederationError("OPERATION_CONFLICT");
@@ -93,6 +97,7 @@ export async function checkFederationExecutionPolicy(
       } else if (job.status !== "pending") throw new FederationError("OPERATION_CONFLICT");
     });
     await inspect(() => checkFederationJobData(db, job.id, identity));
+    await inspect(() => checkFederationSandboxJob(db, job.id, intent, identity, sandboxPolicies));
   }
   for (const { operation, job, intent } of installations) {
     checkOwner(job);
@@ -246,6 +251,7 @@ export async function checkFederationJobData(
 }
 
 export function federationExecutionDenial(error: unknown): string | undefined {
+  if (error instanceof SandboxAuthorizationError) return "POLICY_DENIED";
   if (error instanceof AuthorizationUnavailableError) return undefined;
   if (
     error instanceof FederationError &&

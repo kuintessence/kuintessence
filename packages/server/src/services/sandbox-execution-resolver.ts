@@ -22,6 +22,8 @@ import { and, desc, eq, gt, inArray, isNull, or } from "drizzle-orm";
 import { sandboxRuntimeContractKey } from "./license-runtime-governance";
 import { hashSandboxScript } from "./sandbox-script";
 
+export class SandboxAuthorizationError extends Error {}
+
 export interface ResolvedSandboxSource {
   language: workflowDsl.SandboxLanguage;
   entrypoint: string;
@@ -61,7 +63,7 @@ function dispatchIdentity(
   row: typeof clusterExecutionAccounts.$inferSelect,
   mode: "SharedService" | "MappedAccount",
 ): SandboxDispatchIdentity {
-  if (!row.enabled) throw new Error("Sandbox execution account is disabled");
+  if (!row.enabled) throw new SandboxAuthorizationError("Sandbox execution account is disabled");
   if (row.backendType === "unix" && row.username && row.uid && row.gid) {
     return {
       mode,
@@ -84,7 +86,7 @@ function dispatchIdentity(
       quotaPolicy: Object.keys(row.quotaPolicy).length > 0 ? JSON.stringify(row.quotaPolicy) : null,
     };
   }
-  throw new Error("Sandbox execution account backend facts are incomplete");
+  throw new SandboxAuthorizationError("Sandbox execution account backend facts are incomplete");
 }
 
 export class SandboxExecutionResolver {
@@ -93,10 +95,13 @@ export class SandboxExecutionResolver {
   async resolveSource(
     node: Extract<workflowDsl.WorkflowNode, { type: "Script" }>,
     userId: string,
+    orgId?: string,
   ): Promise<ResolvedSandboxSource> {
     const source = node.source;
     if (!source) {
-      throw new Error("Sandbox Script must resolve its source before execution");
+      throw new SandboxAuthorizationError(
+        "Sandbox Script must resolve its source before execution",
+      );
     }
     if (source.type === "Inline") {
       return {
@@ -124,20 +129,25 @@ export class SandboxExecutionResolver {
         ),
       )
       .limit(1);
-    if (!row) throw new Error("Pinned Sandbox script revision was not found");
-    if (!(await this.canUseAsset(row.asset, userId))) {
-      throw new Error("User is not authorized to use this Sandbox script revision");
+    if (!row) throw new SandboxAuthorizationError("Pinned Sandbox script revision was not found");
+    if (!(await this.canUseAsset(row.asset, userId, orgId))) {
+      throw new SandboxAuthorizationError(
+        "User is not authorized to use this Sandbox script revision",
+      );
     }
-    const payload = SoftwareAssetPayloadSchema.parse(row.revision.payload);
-    if (payload.kind !== "sandbox-script")
-      throw new Error("Asset revision is not a Sandbox script");
+    const parsed = SoftwareAssetPayloadSchema.safeParse(row.revision.payload);
+    if (!parsed.success || parsed.data.kind !== "sandbox-script")
+      throw new SandboxAuthorizationError("Asset revision is not a Sandbox script");
+    const payload = parsed.data;
     const sha256 = hashSandboxScript(payload.content);
     if (
       sha256 !== payload.sha256 ||
       sha256 !== source.sha256 ||
       (row.revision.contentSha256 != null && row.revision.contentSha256 !== sha256)
     ) {
-      throw new Error("Pinned Sandbox script revision hash does not match its content");
+      throw new SandboxAuthorizationError(
+        "Pinned Sandbox script revision hash does not match its content",
+      );
     }
     return {
       language: payload.language,
@@ -161,7 +171,7 @@ export class SandboxExecutionResolver {
         ),
       )
       .limit(1);
-    if (!row) throw new Error("Sandbox runtime profile is not active");
+    if (!row) throw new SandboxAuthorizationError("Sandbox runtime profile is not active");
     return {
       id: row.id,
       language: row.language as workflowDsl.SandboxLanguage,
@@ -173,7 +183,9 @@ export class SandboxExecutionResolver {
 
   async resolveRuntimeForTarget(target: RuntimeTarget): Promise<ResolvedSandboxRuntime> {
     if (!target.providerOrgId) {
-      throw new Error("A provider organization is required to bind a Sandbox runtime contract");
+      throw new SandboxAuthorizationError(
+        "A provider organization is required to bind a Sandbox runtime contract",
+      );
     }
     const rows = await this.db
       .select({ binding: sandboxRuntimeContractBindings, profile: sandboxRuntimeProfiles })
@@ -190,6 +202,7 @@ export class SandboxExecutionResolver {
             sandboxRuntimeContractKey(target.runtimeContractRef),
           ),
           eq(sandboxRuntimeContractBindings.status, "active"),
+          isNull(sandboxRuntimeContractBindings.revokedAt),
           eq(sandboxRuntimeProfiles.lifecycle, "active"),
         ),
       );
@@ -204,7 +217,9 @@ export class SandboxExecutionResolver {
     const candidates = matching.filter(({ binding }) => rank(binding) === highestRank);
     const selected = candidates[0];
     if (!selected || candidates.length !== 1) {
-      throw new Error("Sandbox runtime contract has no unambiguous active binding for the target");
+      throw new SandboxAuthorizationError(
+        "Sandbox runtime contract has no unambiguous active binding for the target",
+      );
     }
     const runtime: ResolvedSandboxRuntime = {
       id: selected.profile.id,
@@ -215,7 +230,7 @@ export class SandboxExecutionResolver {
     };
     const schedulerRuntime = this.runtimeForScheduler(runtime, target.schedulerType);
     if (schedulerRuntime.digest !== selected.binding.runtimeDigest) {
-      throw new Error(
+      throw new SandboxAuthorizationError(
         "Sandbox runtime contract binding digest does not match its concrete profile",
       );
     }
@@ -240,22 +255,28 @@ export class SandboxExecutionResolver {
       .from(agents)
       .where(eq(agents.agentId, input.agentId))
       .limit(1);
-    if (!agent) throw new Error("Planned Sandbox Agent is unavailable");
+    if (!agent) throw new SandboxAuthorizationError("Planned Sandbox Agent is unavailable");
     return this.resolveRuntimeForTarget({ ...input, ...agent });
   }
 
   runtimeForScheduler(runtime: ResolvedSandboxRuntime, schedulerType: string) {
     const adapter = this.adapterName(schedulerType);
     if (!adapter || !runtime.adapters.includes(adapter)) {
-      throw new Error("Sandbox runtime does not support the selected scheduler adapter");
+      throw new SandboxAuthorizationError(
+        "Sandbox runtime does not support the selected scheduler adapter",
+      );
     }
     const digest = adapter === "kubernetes" ? runtime.ociDigest : runtime.sifDigest;
-    if (!digest) throw new Error("Sandbox runtime lacks the required adapter image digest");
+    if (!digest)
+      throw new SandboxAuthorizationError(
+        "Sandbox runtime lacks the required adapter image digest",
+      );
     return { kind: adapter === "kubernetes" ? ("OCI" as const) : ("SIF" as const), digest };
   }
 
   async resolveIdentity(input: {
     requested: ExecutionIdentity;
+    pinnedAccountId?: string;
     userId: string;
     agentId: string;
     providerOrgId: string | null;
@@ -263,8 +284,16 @@ export class SandboxExecutionResolver {
     runtimeProfileId: string;
     runtimeDigest: string;
   }): Promise<SandboxDispatchIdentity> {
+    if (!input.providerOrgId)
+      throw new SandboxAuthorizationError("Sandbox execution requires a provider organization");
+    const accountScope = and(
+      eq(clusterExecutionAccounts.providerOrgId, input.providerOrgId),
+      input.pinnedAccountId ? eq(clusterExecutionAccounts.id, input.pinnedAccountId) : undefined,
+    );
     if (input.requested.type === "Inherit") {
-      throw new Error("Sandbox execution identity must be resolved before dispatch");
+      throw new SandboxAuthorizationError(
+        "Sandbox execution identity must be resolved before dispatch",
+      );
     }
     if (input.requested.type === "SharedService") {
       await this.assertSharedServiceEligible(input);
@@ -275,11 +304,13 @@ export class SandboxExecutionResolver {
           and(
             eq(clusterExecutionAccounts.agentId, input.agentId),
             eq(clusterExecutionAccounts.sharedService, true),
+            accountScope,
             eq(clusterExecutionAccounts.enabled, true),
           ),
         )
         .limit(1);
-      if (!account) throw new Error("Selected Agent has no enabled shared service account");
+      if (!account)
+        throw new SandboxAuthorizationError("Selected Agent has no enabled shared service account");
       return dispatchIdentity(account, "SharedService");
     }
     const mappingFilter =
@@ -299,13 +330,17 @@ export class SandboxExecutionResolver {
           eq(clusterExecutionAccounts.agentId, input.agentId),
           eq(clusterExecutionAccounts.enabled, true),
           activeMappingCondition(),
+          accountScope,
           mappingFilter,
         ),
       )
       .orderBy(desc(userClusterAccountMappings.isDefault), userClusterAccountMappings.requestedAt)
       .limit(1);
     const selected = rows[0];
-    if (!selected) throw new Error("No approved mapped account exists for the selected Agent");
+    if (!selected)
+      throw new SandboxAuthorizationError(
+        "No approved mapped account exists for the selected Agent",
+      );
     return dispatchIdentity(selected.account, "MappedAccount");
   }
 
@@ -327,13 +362,20 @@ export class SandboxExecutionResolver {
   private async canUseAsset(
     asset: typeof softwareAssets.$inferSelect,
     userId: string,
+    orgId?: string,
   ): Promise<boolean> {
+    if (["revoked", "archived"].includes(asset.lifecycle)) return false;
     if (asset.ownerUserId === userId) return true;
     if (asset.visibility === "platform-public" && asset.lifecycle === "published") return true;
     const orgRows = await this.db
       .select({ orgId: userOrgMemberships.orgId })
       .from(userOrgMemberships)
-      .where(eq(userOrgMemberships.userId, userId));
+      .where(
+        and(
+          eq(userOrgMemberships.userId, userId),
+          orgId ? eq(userOrgMemberships.orgId, orgId) : undefined,
+        ),
+      );
     const orgIds = orgRows.map((row) => row.orgId);
     const grants = await this.db
       .select({ capabilities: softwareAssetGrants.capabilities })
@@ -369,7 +411,9 @@ export class SandboxExecutionResolver {
     runtimeDigest: string;
   }): Promise<void> {
     if (!input.source.assetRevisionId || input.source.assetLifecycle !== "published") {
-      throw new Error("Inline, draft, and unpublished scripts cannot use a shared service account");
+      throw new SandboxAuthorizationError(
+        "Inline, draft, and unpublished scripts cannot use a shared service account",
+      );
     }
     const rows = await this.db
       .select()
@@ -381,6 +425,7 @@ export class SandboxExecutionResolver {
           eq(scriptAttestations.runtimeProfileId, input.runtimeProfileId),
           eq(scriptAttestations.runtimeDigest, input.runtimeDigest),
           eq(scriptAttestations.status, "active"),
+          isNull(scriptAttestations.revokedAt),
           or(isNull(scriptAttestations.expiresAt), gt(scriptAttestations.expiresAt, new Date())),
         ),
       );
@@ -392,6 +437,9 @@ export class SandboxExecutionResolver {
             typeof identity === "object" && identity !== null && identity.type === "SharedService",
         ),
     );
-    if (!eligible) throw new Error("No valid attestation allows shared service execution here");
+    if (!eligible)
+      throw new SandboxAuthorizationError(
+        "No valid attestation allows shared service execution here",
+      );
   }
 }
