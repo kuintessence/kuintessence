@@ -307,6 +307,130 @@ test("two recovery workers claim a due envelope only once before the retry inter
   ).toHaveLength(1);
 });
 
+test("final channel enqueue holds both Workflow and Job cancellation locks", async () => {
+  const { jobId, dispatcher, message, outbox } = await dispatchFixture();
+  const runId = crypto.randomUUID();
+  await db.insert(schema.workflowRuns).values({
+    id: runId,
+    name: "Dispatch cancellation fence",
+    status: "running",
+    submittedBy: userId,
+  });
+  let probe: ReturnType<typeof Bun.spawnSync> | undefined;
+  const delivered: ServerMessage[] = [];
+  dispatcher.register(agentId, {
+    push: (value) => {
+      if (value.payload.case !== "dispatchJob" || value.payload.value.jobId !== jobId) return;
+      // A separate connection tests the locks at the exact synchronous send boundary.
+      probe = Bun.spawnSync(
+        [
+          "bun",
+          "-e",
+          `import postgres from "postgres";
+          const db = postgres(process.env.DATABASE_URL, {max: 1});
+          const codes = [];
+          for (const [table, id] of [["workflow_runs", process.env.PROBE_RUN], ["jobs", process.env.PROBE_JOB]]) {
+            try {
+              await db.begin(tx => tx.unsafe('select id from "' + table + '" where id = $1 for update nowait', [id]));
+              codes.push("unlocked");
+            } catch (error) { codes.push(error.code); }
+          }
+          await db.end();
+          process.stdout.write(JSON.stringify(codes));`,
+        ],
+        {
+          env: { ...process.env, DATABASE_URL: url, PROBE_RUN: runId, PROBE_JOB: jobId },
+          timeout: 5000,
+        },
+      );
+      delivered.push(value);
+    },
+    close: () => {},
+  });
+  try {
+    expect(await outbox.enqueue(agentId, message, runId)).toEqual({ sent: true, pending: false });
+    expect(probe?.exitCode).toBe(0);
+    expect(JSON.parse(probe?.stdout?.toString() ?? "null")).toEqual(["55P03", "55P03"]);
+    await db
+      .update(schema.workflowRuns)
+      .set({ status: "cancelling" })
+      .where(eq(schema.workflowRuns.id, runId));
+    await outbox.redeliver(agentId);
+    expect(delivered).toHaveLength(1);
+  } finally {
+    await db.delete(jobDispatchOutbox).where(eq(jobDispatchOutbox.jobId, jobId));
+    await db.delete(schema.workflowRuns).where(eq(schema.workflowRuns.id, runId));
+  }
+});
+
+test.each([
+  "enqueue",
+  "redelivery",
+] as const)("a concurrent Workflow cancellation wins before %s can authorize delivery", async (operation) => {
+  const { jobId, dispatcher, message, outbox } = await dispatchFixture();
+  const runId = crypto.randomUUID();
+  await db.insert(schema.workflowRuns).values({
+    id: runId,
+    name: "Concurrent cancellation",
+    status: "running",
+    submittedBy: userId,
+  });
+  if (operation === "redelivery") await outbox.enqueue(agentId, message, runId);
+  const delivered: ServerMessage[] = [];
+  dispatcher.register(agentId, {
+    push: (value) => {
+      if (value.payload.case === "dispatchJob" && value.payload.value.jobId === jobId)
+        delivered.push(value);
+    },
+    close: () => {},
+  });
+  const locked = Promise.withResolvers<number>();
+  const release = Promise.withResolvers<void>();
+  const cancelling = db.transaction(async (tx) => {
+    const [connection] = await tx.execute<{ pid: number }>(sql`select pg_backend_pid() as pid`);
+    if (!connection) throw new Error("Missing cancellation connection");
+    await tx
+      .update(schema.workflowRuns)
+      .set({ status: "cancelling" })
+      .where(eq(schema.workflowRuns.id, runId));
+    locked.resolve(connection.pid);
+    await release.promise;
+  });
+  void cancelling.catch(locked.reject);
+  let dispatching: Promise<unknown> | undefined;
+  try {
+    const blocker = await locked.promise;
+    dispatching =
+      operation === "enqueue" ? outbox.enqueue(agentId, message, runId) : outbox.redeliver(agentId);
+    const deadline = Date.now() + 5000;
+    while (true) {
+      const [waiting] = await db.execute<{ blocked: boolean }>(sql`
+          select exists(select 1 from pg_stat_activity
+            where datname = current_database()
+              and ${blocker} = any(pg_blocking_pids(pid))) as blocked`);
+      if (waiting?.blocked) break;
+      if (Date.now() >= deadline) throw new Error("Dispatch did not wait for cancellation lock");
+      await Bun.sleep(10);
+    }
+    release.resolve();
+    await cancelling;
+    const result = await dispatching;
+    expect(delivered).toHaveLength(0);
+    if (operation === "enqueue") {
+      expect(result).toEqual({ sent: false, pending: false });
+      expect(
+        await db.select().from(jobDispatchOutbox).where(eq(jobDispatchOutbox.jobId, jobId)),
+      ).toHaveLength(0);
+    }
+  } finally {
+    release.resolve();
+    await cancelling;
+    await dispatching;
+    await db.delete(jobDispatchOutbox).where(eq(jobDispatchOutbox.jobId, jobId));
+    await db.delete(schema.workflowRuns).where(eq(schema.workflowRuns.id, runId));
+  }
+});
+
 test("a legacy workflow that times out cannot start a queued job after Agent reconnection", async () => {
   const { jobId, dispatcher, message, outbox } = await dispatchFixture();
   const runId = crypto.randomUUID();

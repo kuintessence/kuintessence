@@ -36,6 +36,21 @@ export class JobDispatchOutbox {
     if (bytes.byteLength > 16 * 1024 * 1024) throw new Error("Dispatch envelope exceeds 16 MiB");
     const encoded = Buffer.from(bytes).toString("base64");
     const accepted = await this.db.transaction(async (tx) => {
+      const [invocation] = await tx
+        .select({ runId: workflowExecutionJobs.runId })
+        .from(workflowExecutionJobs)
+        .where(eq(workflowExecutionJobs.jobId, payload.jobId));
+      if (workflowRunId && invocation && invocation.runId !== workflowRunId)
+        throw new Error("Dispatch workflow does not match the persisted invocation");
+      const runId = workflowRunId ?? invocation?.runId;
+      // Match journal lock order: Workflow first, then Job and its outbox.
+      const [run] = runId
+        ? await tx
+            .select({ status: workflowRuns.status, submittedBy: workflowRuns.submittedBy })
+            .from(workflowRuns)
+            .where(eq(workflowRuns.id, runId))
+            .for("update")
+        : [];
       const [job] = await tx.select().from(jobs).where(eq(jobs.id, payload.jobId)).for("update");
       if (
         !job ||
@@ -45,20 +60,8 @@ export class JobDispatchOutbox {
         job.revokedEpoch >= epoch
       )
         return false;
-      const [invocation] = await tx
-        .select({ runId: workflowExecutionJobs.runId })
-        .from(workflowExecutionJobs)
-        .where(eq(workflowExecutionJobs.jobId, job.id));
-      if (workflowRunId && invocation && invocation.runId !== workflowRunId)
-        throw new Error("Dispatch workflow does not match the persisted invocation");
-      const runId = workflowRunId ?? invocation?.runId;
-      if (runId) {
-        const [run] = await tx
-          .select({ status: workflowRuns.status, submittedBy: workflowRuns.submittedBy })
-          .from(workflowRuns)
-          .where(eq(workflowRuns.id, runId));
-        if (!run || run.status !== "running" || run.submittedBy !== job.submittedBy) return false;
-      }
+      if (runId && (!run || run.status !== "running" || run.submittedBy !== job.submittedBy))
+        return false;
       await tx
         .insert(jobDispatchOutbox)
         .values({
@@ -146,7 +149,19 @@ export class JobDispatchOutbox {
   }
 
   private async deliver(jobId: string, force: boolean): Promise<boolean> {
-    const delivery = await this.db.transaction(async (tx) => {
+    return this.db.transaction(async (tx) => {
+      const [identity] = await tx
+        .select({ runId: jobDispatchOutbox.workflowRunId })
+        .from(jobDispatchOutbox)
+        .where(eq(jobDispatchOutbox.jobId, jobId));
+      if (!identity) return false;
+      const [run] = identity.runId
+        ? await tx
+            .select({ status: workflowRuns.status, submittedBy: workflowRuns.submittedBy })
+            .from(workflowRuns)
+            .where(eq(workflowRuns.id, identity.runId))
+            .for("update")
+        : [];
       const [job] = await tx.select().from(jobs).where(eq(jobs.id, jobId)).for("update");
       const [saved] = await tx
         .select()
@@ -165,31 +180,30 @@ export class JobDispatchOutbox {
         job.status !== "queued" ||
         job.agentId !== saved.agentId ||
         job.dispatchEpoch !== saved.dispatchEpoch ||
-        job.revokedEpoch >= saved.dispatchEpoch
+        job.revokedEpoch >= saved.dispatchEpoch ||
+        saved.workflowRunId !== identity.runId
       )
-        return null;
-      if (saved.workflowRunId) {
-        const [run] = await tx
-          .select({ status: workflowRuns.status })
-          .from(workflowRuns)
-          .where(eq(workflowRuns.id, saved.workflowRunId));
-        if (run?.status !== "running") return null;
-      }
+        return false;
+      if (
+        saved.workflowRunId &&
+        (!run || run.status !== "running" || run.submittedBy !== job.submittedBy)
+      )
+        return false;
+      const message = fromBinary(ServerMessageSchema, Buffer.from(saved.payloadBase64, "base64"));
+      if (
+        message.payload.case !== "dispatchJob" ||
+        message.payload.value.jobId !== jobId ||
+        message.payload.value.dispatchEpoch !== BigInt(saved.dispatchEpoch)
+      )
+        throw new Error("Invalid persisted dispatch envelope");
       await tx
         .update(jobDispatchOutbox)
         .set({ nextAttemptAt: sql`clock_timestamp() + interval '10 seconds'` })
         .where(eq(jobDispatchOutbox.jobId, jobId));
-      return { agentId: saved.agentId, epoch: saved.dispatchEpoch, encoded: saved.payloadBase64 };
+      // Synchronous channel enqueue stays inside the cancellation fence; no network await here.
+      // A failed commit may replay the same epoch, which the Agent's durable inbox deduplicates.
+      return this.dispatcher.pushPreparedDispatch(saved.agentId, message);
     });
-    if (!delivery) return false;
-    const message = fromBinary(ServerMessageSchema, Buffer.from(delivery.encoded, "base64"));
-    if (
-      message.payload.case !== "dispatchJob" ||
-      message.payload.value.jobId !== jobId ||
-      message.payload.value.dispatchEpoch !== BigInt(delivery.epoch)
-    )
-      throw new Error("Invalid persisted dispatch envelope");
-    return this.dispatcher.pushPreparedDispatch(delivery.agentId, message);
   }
 
   start(): void {
