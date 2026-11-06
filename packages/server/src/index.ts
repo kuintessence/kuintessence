@@ -16,6 +16,7 @@ import {
   type JobSubmission,
   type RoleName,
   usecase,
+  WorkflowExecutionInterrupted,
   type WorkflowPlacementConfig,
   WorkflowPlacementConfigSchema,
 } from "@kuintessence/shared";
@@ -206,6 +207,11 @@ import { WorkflowAsyncRunner } from "./workflow/async-runner";
 import { createDatasetPreflight } from "./workflow/dataset-preflight";
 import { createDbPackageStore } from "./workflow/db-package-store";
 import { WorkflowDraftService } from "./workflow/draft-service";
+import { readWorkflowPublishedFiles, saveWorkflowPublishedFiles } from "./workflow/execution-jobs";
+import {
+  type LeasedWorkflowJournal,
+  WorkflowExecutionJournalStore,
+} from "./workflow/execution-journal";
 import { createFileStager } from "./workflow/file-stager";
 import { completionFromJob, JobCompletionRegistry } from "./workflow/job-completion-registry";
 import { createJobSubmitter } from "./workflow/job-submitter";
@@ -218,6 +224,7 @@ import { parseWorkflowYaml } from "./workflow/parser";
 import { WorkflowRunRegistry } from "./workflow/run-registry";
 import { createWorkflowRunner } from "./workflow/runner";
 import { stageWorkflowInputs } from "./workflow/stage-inputs";
+import { submitWorkflowJob } from "./workflow/submit-job";
 
 const config = loadServerConfig();
 const logger = createLogger("server", config.LOG_LEVEL);
@@ -801,7 +808,31 @@ const makeRunner = (
   activeRunId?: string,
   rawPlacementConfig?: WorkflowPlacementConfig,
   activeOrgId?: string | null,
+  executionLease?: LeasedWorkflowJournal,
 ) => {
+  if (executionLease && (executionLease.runId !== activeRunId || activeOrgId === undefined))
+    throw new WorkflowExecutionInterrupted(
+      "Workflow runner requires its run and organization scope",
+      { retryable: false },
+    );
+  const awaitWorkflowJob = async (jobId: string) => {
+    try {
+      const result = await jobCompletionRegistry.awaitCompletion(
+        jobId,
+        config.SERVER_JOB_COMPLETION_TIMEOUT_SEC * 1000,
+        executionLease?.signal,
+      );
+      await executionLease?.renew();
+      return result;
+    } catch (cause) {
+      if (cause instanceof WorkflowExecutionInterrupted) throw cause;
+      if (executionLease)
+        throw new WorkflowExecutionInterrupted("Waiting for the original workflow Job result", {
+          cause,
+        });
+      throw cause;
+    }
+  };
   const placementConfig = WorkflowPlacementConfigSchema.parse(rawPlacementConfig ?? {});
   const authorizeJobSubmission = async (input: {
     jobId: string;
@@ -812,10 +843,19 @@ const makeRunner = (
       ...input,
       userId: submittedBy,
     });
-    if (authzService.mode === "enforce") {
-      await authzService.writeRelationships(authorizationTuples);
+    try {
+      if (authzService.mode === "enforce") {
+        await authzService.writeRelationships(authorizationTuples);
+      }
+      await authzService.enqueueMany(authorizationTuples);
+    } catch (cause) {
+      if (executionLease)
+        throw new WorkflowExecutionInterrupted(
+          "Workflow Job authorization projection is unavailable",
+          { cause },
+        );
+      throw cause;
     }
-    await authzService.enqueueMany(authorizationTuples);
   };
   const sandboxExecutor =
     sandboxManifestSigner && activeRunId
@@ -826,11 +866,8 @@ const makeRunner = (
           jobService,
           orchestrator,
           artifactService: workflowArtifactService,
-          awaitCompletion: (jobId) =>
-            jobCompletionRegistry.awaitCompletion(
-              jobId,
-              config.SERVER_JOB_COMPLETION_TIMEOUT_SEC * 1000,
-            ),
+          awaitCompletion: awaitWorkflowJob,
+          executionLease,
           submittedBy,
           ...(activeOrgId !== undefined ? { orgId: activeOrgId } : {}),
           userRole,
@@ -853,6 +890,7 @@ const makeRunner = (
         })
       : undefined;
   return createWorkflowRunner({
+    journal: executionLease,
     deferSpackActivation: true,
     // Persist runs for audit and visibility in `workflow list`.
     ...(persistRun
@@ -935,51 +973,17 @@ const makeRunner = (
         };
       },
       submit: async (spec) => {
-        const job = await jobService.submit(
-          {
-            name: spec.name,
-            ...(spec.usecasePackageId ? { usecasePackageId: spec.usecasePackageId } : {}),
-            ...(spec.dataInputs ? { dataInputs: spec.dataInputs } : {}),
-            command: spec.command,
-            // Preserve declared workflow resources before applying defaults.
-            resources: {
-              cpus: spec.resources?.cpus ?? 1,
-              memoryMb: spec.resources?.memoryMb ?? 1024,
-              ...(spec.resources?.wallTimeSec != null
-                ? { wallTimeSec: spec.resources.wallTimeSec }
-                : {}),
-            },
-            envVars: spec.envVars,
-            ...(spec.softwareRequirements
-              ? { softwareRequirements: spec.softwareRequirements }
-              : {}),
-            inputStaging: spec.inputStaging,
-            expectedOutputs: spec.expectedOutputs,
-            fileOutputDescriptors: spec.fileOutputDescriptors,
-            ...(spec.stdinText !== undefined ? { stdinText: spec.stdinText } : {}),
-            ...(spec.schedulingStrategy && "queueId" in spec.schedulingStrategy
-              ? { schedulingStrategy: spec.schedulingStrategy }
-              : {}),
-          },
+        const job = await submitWorkflowJob({
+          jobService,
+          spec,
           submittedBy,
-          {
-            ...(activeOrgId !== undefined ? { orgId: activeOrgId } : {}),
-            trustedMaterialization: true,
-            trustedUsecaseRevisionId:
-              spec.usecaseVersionId !== spec.usecasePackageId ? spec.usecaseVersionId : undefined,
-            ...(activeRunId ? { workflow: { runId: activeRunId, nodeId: spec.nodeId } } : {}),
-          },
-        );
-        // Stamp a per-job run directory so input staging, the job cwd, and
-        // relative output collection all target the same place.
-        if (config.WORKFLOW_RUN_BASE) {
-          await jobService.setWorkingDir(job.id, `${config.WORKFLOW_RUN_BASE}/${job.id}`);
-        }
-        await authorizeJobSubmission({
-          jobId: job.id,
-          orgId: job.orgId,
-          queueId: job.queueId,
+          role: userRole,
+          orgId: activeOrgId,
+          runId: activeRunId,
+          workingDirBase: config.WORKFLOW_RUN_BASE,
+          lease: executionLease,
         });
+        await authorizeJobSubmission({ jobId: job.id, orgId: job.orgId, queueId: job.queueId });
         return { id: job.id };
       },
       dispatch: async (
@@ -1004,6 +1008,7 @@ const makeRunner = (
         try {
           const result = await orchestrator.placeAndDispatch({
             jobId,
+            executionLease,
             spackExecution,
             restrictedNoEgress: job.restrictedNoEgress,
             ...(activeRunId ? { workflowRunId: activeRunId } : {}),
@@ -1064,10 +1069,23 @@ const makeRunner = (
             }
           }
         } catch (err) {
+          if (err instanceof WorkflowExecutionInterrupted) throw err;
           const errorMessage = err instanceof Error ? err.message : "Workflow job dispatch failed.";
           const failedJob = await jobService
-            .updateStatus(jobId, "failed", undefined, undefined, errorMessage)
+            .updateStatus(
+              jobId,
+              "failed",
+              undefined,
+              undefined,
+              errorMessage,
+              undefined,
+              undefined,
+              undefined,
+              undefined,
+              executionLease,
+            )
             .catch((updateErr) => {
+              if (executionLease) throw updateErr;
               logger.warn(
                 { err: updateErr, jobId },
                 "Failed to mark workflow job failed after dispatch error",
@@ -1085,39 +1103,45 @@ const makeRunner = (
           throw err;
         }
       },
-      awaitCompletion: (jobId) =>
-        jobCompletionRegistry.awaitCompletion(
-          jobId,
-          config.SERVER_JOB_COMPLETION_TIMEOUT_SEC * 1000,
-        ),
-      collectFiles: (jobId, spec, collected) =>
-        collectWorkflowOutputFiles({
-          jobId,
-          spec,
-          collected,
-          ownerId: submittedBy,
-          workflowRunId: activeRunId,
-        }),
+      awaitCompletion: awaitWorkflowJob,
+      collectFiles: async (jobId, spec, collected) => {
+        try {
+          return await collectWorkflowOutputFiles({
+            jobId,
+            spec,
+            collected,
+            ownerId: submittedBy,
+            workflowRunId: activeRunId,
+            executionLease,
+          });
+        } catch (cause) {
+          if (executionLease && !(cause instanceof WorkflowExecutionInterrupted))
+            throw new WorkflowExecutionInterrupted("Workflow file publication is pending", {
+              cause,
+            });
+          throw cause;
+        }
+      },
     }),
   });
 };
 const workflowAsyncRunner = new WorkflowAsyncRunner({
   registry: workflowRegistry,
+  journal: new WorkflowExecutionJournalStore(db),
   resolveNamedReferences: (workflow, principal) =>
     namedReferenceResolver.resolve(workflow, principal),
   validateWorkflow: validateWorkflowDatasetInputs,
   assertExecutionPrincipal: assertWorkflowExecutionMembership,
   preparePlacement: (runId, workflow, placementConfig) =>
     placementPlanService.prepare(runId, workflow, placementConfig),
-  makeRunner: (submittedBy, role, runId, placementConfig, orgId) =>
-    makeRunner(submittedBy, role, false, runId, placementConfig, orgId),
+  makeRunner: (submittedBy, role, runId, placementConfig, orgId, lease) =>
+    makeRunner(submittedBy, role, false, runId, placementConfig, orgId, lease),
   awaitCheckpointPersistence: (runId) => workflowArtifactService.awaitCheckpointPersistence(runId),
   markArtifactsTerminal: (runId) => workflowArtifactService.markWorkflowTerminal(runId),
   cancelSubmittedJobs: async (runId) => {
-    const run = await workflowRegistry.getById(runId);
-    const stepJobs = run?.stepJobs ?? {};
+    const jobIds = await workflowRegistry.listJobIds(runId);
     const results = await Promise.allSettled(
-      Object.values(stepJobs).map(async (jobId) => {
+      jobIds.map(async (jobId) => {
         const job = await jobService.getById(jobId);
         if (!job || job.status === "completed" || job.status === "failed") return;
         const cancelled = await jobService.updateStatus(jobId, "cancelled");
@@ -1133,7 +1157,7 @@ const workflowAsyncRunner = new WorkflowAsyncRunner({
       if (result.status === "rejected") {
         failures.push(result.reason);
         logger.warn(
-          { err: result.reason, jobId: Object.values(stepJobs)[index], runId },
+          { err: result.reason, jobId: jobIds[index], runId },
           "Failed to cancel submitted workflow job",
         );
       }
@@ -1150,18 +1174,44 @@ async function collectWorkflowOutputFiles(input: {
   collected: Record<string, string>;
   ownerId: string;
   workflowRunId?: string;
+  executionLease?: LeasedWorkflowJournal;
 }): Promise<Record<string, usecase.FileInputValue>> {
+  const saved = input.executionLease
+    ? await readWorkflowPublishedFiles(input.executionLease, input.jobId)
+    : null;
   const job = await jobService.getById(input.jobId);
+  if (saved !== null) {
+    if (job?.agentId) {
+      await jobWorkRootReleaseOutbox.enqueue(job.agentId, input.jobId);
+      await jobWorkRootReleaseOutbox.redeliver(job.agentId);
+    }
+    return saved;
+  }
   if (!job?.workingDir || !job.agentId) {
+    if (input.executionLease && (input.spec.fileOutputDescriptors?.length ?? 0) > 0)
+      throw new WorkflowExecutionInterrupted("Workflow output location is unavailable", {
+        retryable: false,
+      });
+    if (input.executionLease)
+      await saveWorkflowPublishedFiles(input.executionLease, input.jobId, {});
     logger.warn({ jobId: input.jobId }, "Workflow output files cannot be published");
     return {};
   }
   const outputJob = { workingDir: job.workingDir, agentId: job.agentId };
+  let releasable = !input.executionLease;
   try {
     if (!transferRunner || !netdriveServiceForWorkflowOutputs) {
+      if (input.executionLease && (input.spec.fileOutputDescriptors?.length ?? 0) > 0)
+        throw new WorkflowExecutionInterrupted("Workflow file publication is unavailable");
+      if (input.executionLease)
+        await saveWorkflowPublishedFiles(input.executionLease, input.jobId, {});
+      releasable = true;
       return {};
     }
     if (job.restrictedNoEgress) {
+      if (input.executionLease)
+        await saveWorkflowPublishedFiles(input.executionLease, input.jobId, {});
+      releasable = true;
       logger.warn({ jobId: input.jobId }, "Restricted no-egress job outputs cannot be published");
       return {};
     }
@@ -1199,6 +1249,8 @@ async function collectWorkflowOutputFiles(input: {
         target: workflowOutputPath(input.workflowRunId, input.jobId, out),
         fileName: posixPath.basename(out.path) || out.descriptor,
       });
+      if (!file && input.executionLease)
+        throw new WorkflowExecutionInterrupted("Published workflow file metadata is unavailable");
       if (file) {
         files[out.descriptor] = {
           fileMetadataId: file.id,
@@ -1206,10 +1258,19 @@ async function collectWorkflowOutputFiles(input: {
         };
       }
     }
+    if (input.executionLease)
+      await saveWorkflowPublishedFiles(input.executionLease, input.jobId, files);
+    releasable = true;
     return files;
+  } catch (cause) {
+    if (input.executionLease && !(cause instanceof WorkflowExecutionInterrupted))
+      throw new WorkflowExecutionInterrupted("Workflow file publication is pending", { cause });
+    throw cause;
   } finally {
-    await jobWorkRootReleaseOutbox.enqueue(job.agentId, input.jobId);
-    await jobWorkRootReleaseOutbox.redeliver(job.agentId);
+    if (releasable) {
+      await jobWorkRootReleaseOutbox.enqueue(job.agentId, input.jobId);
+      await jobWorkRootReleaseOutbox.redeliver(job.agentId);
+    }
   }
 }
 
@@ -1219,17 +1280,20 @@ async function publishBatchWorkflowOutputFiles(input: {
   collected: Record<string, string>;
   ownerId: string;
   workflowRunId?: string;
+  executionLease?: LeasedWorkflowJournal;
   job: { workingDir: string; agentId: string };
 }): Promise<usecase.FileValue[] | undefined> {
   const pathsJson = input.collected[usecase.batchOutputPathsDescriptor(input.out.descriptor)];
   if (!pathsJson) {
+    if (input.executionLease)
+      throw new WorkflowExecutionInterrupted("Workflow output batch path metadata is unavailable");
     logger.warn(
       { jobId: input.jobId, descriptor: input.out.descriptor },
       "Batched workflow output lacks path metadata; cannot publish artifacts",
     );
     return undefined;
   }
-  const paths = parseBatchOutputPaths(pathsJson);
+  const paths = parseBatchOutputPaths(pathsJson, !!input.executionLease);
   const files: usecase.FileValue[] = [];
   for (const relPath of paths) {
     const source = relPath.startsWith("/")
@@ -1250,6 +1314,8 @@ async function publishBatchWorkflowOutputFiles(input: {
       job: input.job,
       fileName: posixPath.basename(relPath) || input.out.descriptor,
     });
+    if (!file && input.executionLease)
+      throw new WorkflowExecutionInterrupted("Published workflow batch metadata is unavailable");
     if (file) {
       files.push({ fileMetadataId: file.id, fileMetadataName: file.name });
     }
@@ -1257,11 +1323,18 @@ async function publishBatchWorkflowOutputFiles(input: {
   return files;
 }
 
-function parseBatchOutputPaths(pathsJson: string): string[] {
+function parseBatchOutputPaths(pathsJson: string, strict = false): string[] {
   try {
     const parsed = JSON.parse(pathsJson);
+    if (strict && (!Array.isArray(parsed) || !parsed.every((item) => typeof item === "string")))
+      throw new Error("Invalid batch metadata");
     return Array.isArray(parsed) ? parsed.filter((item) => typeof item === "string") : [];
-  } catch {
+  } catch (cause) {
+    if (strict)
+      throw new WorkflowExecutionInterrupted("Workflow output batch metadata is invalid", {
+        cause,
+        retryable: false,
+      });
     return [];
   }
 }
@@ -1365,7 +1438,8 @@ workflowAsyncRunner
       logger.warn(report, "Recovered interrupted workflow runs");
     }
   })
-  .catch((err) => logger.error({ err }, "Failed to recover interrupted workflow runs"));
+  .catch((err) => logger.error({ err }, "Failed to recover interrupted workflow runs"))
+  .finally(() => workflowAsyncRunner.startRecovery());
 fileService
   .reconcileInterruptedTransfers()
   .then((interrupted) => {
@@ -1935,6 +2009,7 @@ async function shutdown(signal: string): Promise<void> {
   logger.info({ signal }, "Server shutting down");
   try {
     grpcServer.close();
+    await workflowAsyncRunner.stop();
     await federationIngress?.stop(true);
     await federationPreparationWorker?.stop();
     await federationAttestationWorker?.stop();

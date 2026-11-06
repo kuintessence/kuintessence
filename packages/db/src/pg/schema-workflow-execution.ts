@@ -1,4 +1,4 @@
-import type { JobSubmission, WorkflowJournalEntry } from "@kuintessence/shared";
+import type { FileInputValue, JobSubmission, WorkflowJournalEntry } from "@kuintessence/shared";
 import { sql } from "drizzle-orm";
 import {
   check,
@@ -88,6 +88,7 @@ export const workflowExecutionJobs = pgTable(
       .notNull()
       .references(() => jobs.id),
     intent: jsonb("intent").$type<JobSubmission>().notNull(),
+    publishedFiles: jsonb("published_files").$type<Record<string, FileInputValue>>(),
     dispatchState: varchar("dispatch_state", { length: 16 }).notNull().default("pending"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },

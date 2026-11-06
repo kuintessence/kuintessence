@@ -303,10 +303,12 @@ export class SandboxNodeExecutor {
     if (lease && this.options.orgId === undefined)
       throw new WorkflowExecutionInterrupted(
         "A durable Sandbox job requires an explicit organization scope",
+        { retryable: false },
       );
     if (lease && (lease.runId !== this.options.workflowRunId || !invocation?.path))
       throw new WorkflowExecutionInterrupted(
         "Sandbox job requires the current run lease and invocation",
+        { retryable: false },
       );
     if (!node.source) {
       throw new Error("Sandbox Script must resolve source and runtime references before execution");
@@ -431,7 +433,10 @@ export class SandboxNodeExecutor {
         ),
       );
       const saved = await this.options.jobService.getById(bound.jobId);
-      if (!saved) throw new WorkflowExecutionInterrupted("Bound Sandbox job is unavailable");
+      if (!saved)
+        throw new WorkflowExecutionInterrupted("Bound Sandbox job is unavailable", {
+          retryable: false,
+        });
       job = saved;
       reused = bound.reused;
     } else {
@@ -636,7 +641,9 @@ export class SandboxNodeExecutor {
       };
     }
     if (!dispatch.selectedAgentId)
-      throw new WorkflowExecutionInterrupted("Completed Sandbox job has no execution Agent");
+      throw new WorkflowExecutionInterrupted("Completed Sandbox job has no execution Agent", {
+        retryable: false,
+      });
     const [agent] = await this.options.db
       .select({ siteId: agents.siteId, clusterId: agents.clusterId })
       .from(agents)
@@ -698,6 +705,7 @@ export class SandboxNodeExecutor {
       if (pending.agentId !== job.agentId || pending.dispatchEpoch !== job.dispatchEpoch)
         throw new WorkflowExecutionInterrupted(
           "Bound Sandbox job has an inconsistent dispatch envelope",
+          { retryable: false },
         );
     }
     if (reused && (job.agentId || alreadyTerminal))

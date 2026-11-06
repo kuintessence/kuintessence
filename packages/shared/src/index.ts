@@ -45,6 +45,7 @@ export * from "./spack-upstream";
 export * from "./storage-quota";
 // P4 usecase→command materialization (namespaced).
 export * as usecase from "./usecase";
+export type { FileInputValue, FileValue } from "./usecase/materialize";
 export * from "./utils/api-error";
 export * from "./utils/canonical-json";
 export * from "./utils/config-schemas";

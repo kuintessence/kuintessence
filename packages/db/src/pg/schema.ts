@@ -1390,6 +1390,7 @@ export const workflowRuns = pgTable(
     status: varchar("status", { length: 20 }).notNull().default("submitted"),
     stepJobs: jsonb("step_jobs").$type<Record<string, string>>().notNull().default({}),
     input: jsonb("input").$type<{
+      executionModel?: "durable-v2";
       yaml: string;
       role: string;
       orgId?: string | null;

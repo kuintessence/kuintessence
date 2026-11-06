@@ -48,10 +48,12 @@ export class JobDispatchOutbox {
       if (invocation && !executionLease)
         throw new WorkflowExecutionInterrupted(
           "Durable dispatch requires the current execution lease",
+          { retryable: false },
         );
       if (executionLease && (!invocation || runId !== executionLease.runId))
         throw new WorkflowExecutionInterrupted(
           "Dispatch lease does not match the bound invocation",
+          { retryable: false },
         );
       // Match journal lock order: Workflow first, then Job and its outbox.
       const [run] = runId

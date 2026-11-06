@@ -1,13 +1,36 @@
-import { type PgDb, workflowRuns } from "@kuintessence/db";
+import {
+  type PgDb,
+  type PgTransaction,
+  workflowExecutionJobs,
+  workflowExecutionLeases,
+  workflowRuns,
+} from "@kuintessence/db";
 import {
   createLogger,
   type RoleName,
+  type WorkflowExecutionInterrupted,
   type WorkflowPlacementConfig,
   type WorkflowRunGraph,
   type WorkflowRunRecordResult,
   type WorkflowRunStore,
 } from "@kuintessence/shared";
-import { and, count, desc, eq, ilike, inArray, or, type SQL, sql } from "drizzle-orm";
+import {
+  and,
+  asc,
+  count,
+  desc,
+  eq,
+  ilike,
+  inArray,
+  isNull,
+  lte,
+  ne,
+  or,
+  type SQL,
+  sql,
+} from "drizzle-orm";
+
+import type { LeasedWorkflowJournal } from "./execution-journal";
 
 export type { WorkflowRunRecordResult } from "@kuintessence/shared";
 
@@ -42,6 +65,7 @@ function failedNodeSummary(result: WorkflowRunRecordResult): string | null {
 }
 
 export interface WorkflowRunInput {
+  executionModel?: "durable-v2";
   yaml: string;
   role: RoleName;
   orgId?: string | null;
@@ -199,22 +223,31 @@ export class WorkflowRunRegistry implements WorkflowRunStore {
     return queued.length === 1;
   }
 
-  async completeRun(runId: string, result: WorkflowRunRecordResult): Promise<boolean> {
-    const status = terminalStatusFromResult(result);
-    const errorMessage = failedNodeSummary(result);
-    const finalized = await this.db
-      .update(workflowRuns)
-      .set({
-        status,
-        result,
-        completedAt: new Date(),
-        updatedAt: new Date(),
-        ...(errorMessage ? { errorCode: "WORKFLOW_NODE_FAILED", errorMessage } : {}),
-      })
-      .where(and(eq(workflowRuns.id, runId), eq(workflowRuns.status, "running")))
-      .returning({ id: workflowRuns.id });
-    if (finalized.length === 1) logger.info({ runId, status }, "Workflow run finalized");
-    return finalized.length === 1;
+  async completeRun(
+    runId: string,
+    result: WorkflowRunRecordResult,
+    lease?: LeasedWorkflowJournal,
+  ): Promise<boolean> {
+    if (lease && lease.runId !== runId) throw new Error("Workflow lease belongs to another run");
+    const write = async (db: PgDb | PgTransaction) => {
+      const status = terminalStatusFromResult(result);
+      const errorMessage = failedNodeSummary(result);
+      const finalized = await db
+        .update(workflowRuns)
+        .set({
+          status,
+          result,
+          completedAt: new Date(),
+          updatedAt: new Date(),
+          errorCode: errorMessage ? "WORKFLOW_NODE_FAILED" : null,
+          errorMessage,
+        })
+        .where(and(eq(workflowRuns.id, runId), eq(workflowRuns.status, "running")))
+        .returning({ id: workflowRuns.id });
+      if (finalized.length === 1) logger.info({ runId, status }, "Workflow run finalized");
+      return finalized.length === 1;
+    };
+    return lease ? lease.transaction(write) : write(this.db);
   }
 
   async failRun(
@@ -278,19 +311,27 @@ export class WorkflowRunRegistry implements WorkflowRunStore {
     return run ? (run.status as WorkflowRunStatus) : null;
   }
 
-  async requestInterrupt(runId: string, errorMessage: string): Promise<boolean> {
-    const interrupted = await this.db
-      .update(workflowRuns)
-      .set({
-        status: "cancelling",
-        errorCode: "WORKFLOW_INTERRUPTED",
-        errorMessage,
-        cancelRequestedAt: new Date(),
-        updatedAt: new Date(),
-      })
-      .where(and(eq(workflowRuns.id, runId), eq(workflowRuns.status, "running")))
-      .returning({ id: workflowRuns.id });
-    return interrupted.length === 1;
+  async requestInterrupt(
+    runId: string,
+    errorMessage: string,
+    lease?: LeasedWorkflowJournal,
+  ): Promise<boolean> {
+    if (lease && lease.runId !== runId) throw new Error("Workflow lease belongs to another run");
+    const write = async (db: PgDb | PgTransaction) => {
+      const interrupted = await db
+        .update(workflowRuns)
+        .set({
+          status: "cancelling",
+          errorCode: "WORKFLOW_INTERRUPTED",
+          errorMessage,
+          cancelRequestedAt: new Date(),
+          updatedAt: new Date(),
+        })
+        .where(and(eq(workflowRuns.id, runId), eq(workflowRuns.status, "running")))
+        .returning({ id: workflowRuns.id });
+      return interrupted.length === 1;
+    };
+    return lease ? lease.transaction(write) : write(this.db);
   }
 
   async failInterruptedRun(runId: string): Promise<boolean> {
@@ -330,6 +371,66 @@ export class WorkflowRunRegistry implements WorkflowRunStore {
       .from(workflowRuns)
       .where(inArray(workflowRuns.status, ACTIVE_WORKFLOW_STATUSES))
       .limit(limit);
+  }
+
+  async listRunnableDurableRuns(limit = 100) {
+    const rows = await this.db
+      .select({ run: workflowRuns })
+      .from(workflowRuns)
+      .leftJoin(workflowExecutionLeases, eq(workflowExecutionLeases.runId, workflowRuns.id))
+      .where(
+        and(
+          sql`${workflowRuns.input}->>'executionModel' = 'durable-v2'`,
+          inArray(workflowRuns.status, ["queued", "running", "cancelling"]),
+          or(
+            eq(workflowRuns.status, "cancelling"),
+            and(
+              or(
+                isNull(workflowRuns.errorCode),
+                ne(workflowRuns.errorCode, "WORKFLOW_RECONCILING"),
+              ),
+              or(
+                isNull(workflowExecutionLeases.token),
+                lte(workflowExecutionLeases.expiresAt, sql`clock_timestamp()`),
+              ),
+            ),
+          ),
+        ),
+      )
+      .orderBy(asc(workflowRuns.updatedAt), asc(workflowRuns.id))
+      .limit(limit);
+    return rows.map((row) => row.run);
+  }
+
+  async recordInterruption(
+    runId: string,
+    error: WorkflowExecutionInterrupted,
+    lease: LeasedWorkflowJournal,
+  ): Promise<void> {
+    if (lease.runId !== runId) throw new Error("Workflow lease belongs to another run");
+    await lease.transaction(async (tx) => {
+      await tx
+        .update(workflowRuns)
+        .set({
+          errorCode: error.retryable ? "WORKFLOW_RECOVERY_PENDING" : "WORKFLOW_RECONCILING",
+          errorMessage: error.message,
+          updatedAt: new Date(),
+        })
+        .where(eq(workflowRuns.id, runId));
+    });
+  }
+
+  async listJobIds(runId: string): Promise<string[]> {
+    const [run, invocations] = await Promise.all([
+      this.getById(runId),
+      this.db
+        .select({ jobId: workflowExecutionJobs.jobId })
+        .from(workflowExecutionJobs)
+        .where(eq(workflowExecutionJobs.runId, runId)),
+    ]);
+    return [
+      ...new Set([...Object.values(run?.stepJobs ?? {}), ...invocations.map((row) => row.jobId)]),
+    ];
   }
 
   async recordStepJob(runId: string, nodeId: string, jobId: string): Promise<boolean> {

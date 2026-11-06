@@ -46,6 +46,8 @@ export class WorkflowExecutionJournalStore {
 }
 
 export class LeasedWorkflowJournal implements WorkflowJournal {
+  private readonly interruption = new AbortController();
+  readonly signal = this.interruption.signal;
   constructor(
     private readonly db: PgDb,
     readonly runId: string,
@@ -55,6 +57,7 @@ export class LeasedWorkflowJournal implements WorkflowJournal {
 
   /** The same fence can surround an atomic invocation → Job binding transaction. */
   async transaction<T>(operation: (tx: PgTransaction) => Promise<T>): Promise<T> {
+    this.signal.throwIfAborted();
     return this.db.transaction(async (tx) => {
       // Use the same lock order as acquisition, and observe cancellation before any write.
       const [run] = await tx
@@ -76,6 +79,7 @@ export class LeasedWorkflowJournal implements WorkflowJournal {
           "Workflow execution lease expired or run was stopped",
         );
       const result = await operation(tx);
+      this.signal.throwIfAborted();
       // An operation that outlives its lease must roll back, even without a competing worker.
       const [stillValid] = await tx
         .select({ valid: sql<boolean>`${workflowExecutionLeases.expiresAt} > clock_timestamp()` })
@@ -98,7 +102,32 @@ export class LeasedWorkflowJournal implements WorkflowJournal {
     });
   }
 
+  startHeartbeat(): () => Promise<void> {
+    let running: Promise<void> | undefined;
+    const timer = setInterval(
+      () => {
+        if (running || this.signal.aborted) return;
+        running = this.renew()
+          .catch((cause) => {
+            this.interruption.abort(
+              new WorkflowExecutionInterrupted("Workflow lease heartbeat failed", { cause }),
+            );
+          })
+          .finally(() => {
+            running = undefined;
+          });
+      },
+      Math.max(25, Math.floor(this.leaseMs / 3)),
+    );
+    timer.unref();
+    return async () => {
+      clearInterval(timer);
+      await running;
+    };
+  }
+
   async release(): Promise<void> {
+    this.interruption.abort(new WorkflowExecutionInterrupted("Workflow execution lease released"));
     await this.db
       .update(workflowExecutionLeases)
       .set({ token: null, expiresAt: null })
@@ -123,7 +152,9 @@ export class LeasedWorkflowJournal implements WorkflowJournal {
           ),
         );
       if (saved && saved.key !== key)
-        throw new WorkflowExecutionInterrupted("Workflow journal key collision");
+        throw new WorkflowExecutionInterrupted("Workflow journal key collision", {
+          retryable: false,
+        });
       return saved?.entry ?? null;
     });
   }
@@ -134,6 +165,7 @@ export class LeasedWorkflowJournal implements WorkflowJournal {
     if (Buffer.byteLength(encoded) > 8 * 1024 * 1024)
       throw new WorkflowExecutionInterrupted(
         "Workflow checkpoint exceeds 8 MiB; store artifacts as file references",
+        { retryable: false },
       );
     await this.transaction(async (tx) => {
       await tx
@@ -150,13 +182,17 @@ export class LeasedWorkflowJournal implements WorkflowJournal {
           ),
         );
       if (!saved || saved.key !== key || canonicalJson(saved.entry) !== encoded)
-        throw new WorkflowExecutionInterrupted("Workflow checkpoint is immutable");
+        throw new WorkflowExecutionInterrupted("Workflow checkpoint is immutable", {
+          retryable: false,
+        });
     });
   }
 }
 
 function keyHash(key: string): string {
   if (key.length === 0 || Buffer.byteLength(key) > 16_384)
-    throw new WorkflowExecutionInterrupted("Invalid workflow journal key size");
+    throw new WorkflowExecutionInterrupted("Invalid workflow journal key size", {
+      retryable: false,
+    });
   return createHash("sha256").update(key).digest("hex");
 }

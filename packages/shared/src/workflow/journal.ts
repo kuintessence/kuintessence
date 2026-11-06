@@ -27,8 +27,11 @@ export interface WorkflowJournal {
 
 /** Infrastructure uncertainty must suspend execution, never become a scientific failure. */
 export class WorkflowExecutionInterrupted extends Error {
-  constructor(message: string, options?: ErrorOptions) {
+  readonly retryable: boolean;
+
+  constructor(message: string, options?: ErrorOptions & { retryable?: boolean }) {
     super(message, options);
+    this.retryable = options?.retryable ?? true;
     this.name = "WorkflowExecutionInterrupted";
   }
 }
@@ -51,7 +54,9 @@ export async function bindWorkflowJournal(journal: WorkflowJournal, workflow: Wo
         saved.kind !== "definition" ||
         canonicalJson(saved.workflow) !== canonicalJson(workflow)
       ) {
-        throw new WorkflowExecutionInterrupted("Workflow definition changed during recovery");
+        throw new WorkflowExecutionInterrupted("Workflow definition changed during recovery", {
+          retryable: false,
+        });
       }
     } else {
       await journal.write(key, { kind: "definition", workflow });

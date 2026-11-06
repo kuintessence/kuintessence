@@ -360,7 +360,9 @@ export class PlacementOrchestrator {
       };
     const resume = durable?.job.agentId ? durable.job : undefined;
     if (resume && (resume.status !== "queued" || resume.revokedEpoch >= resume.dispatchEpoch))
-      throw new WorkflowExecutionInterrupted("Assigned Job cannot resume dispatch preparation");
+      throw new WorkflowExecutionInterrupted("Assigned Job cannot resume dispatch preparation", {
+        retryable: false,
+      });
     const job = resume
       ? {
           ...requestedJob,
@@ -614,6 +616,7 @@ export class PlacementOrchestrator {
     )
       throw new WorkflowExecutionInterrupted(
         "Assigned Job target changed during preparation recovery",
+        { retryable: false },
       );
     const assigned =
       resume ??
@@ -851,6 +854,7 @@ export class PlacementOrchestrator {
     if (!this.deps.dispatchOutbox || lease.runId !== input.workflowRunId)
       throw new WorkflowExecutionInterrupted(
         "Durable placement requires its run and dispatch outbox",
+        { retryable: false },
       );
     return lease.transaction(async (tx) => {
       const [binding] = await tx
@@ -864,7 +868,9 @@ export class PlacementOrchestrator {
         );
       const [job] = await tx.select().from(jobs).where(eq(jobs.id, input.jobId));
       if (!binding || !job || job.submittedBy !== input.userId || job.orgId !== input.orgId)
-        throw new WorkflowExecutionInterrupted("Placement does not match the bound Job principal");
+        throw new WorkflowExecutionInterrupted("Placement does not match the bound Job principal", {
+          retryable: false,
+        });
       const [envelope] = await tx
         .select()
         .from(jobDispatchOutbox)
@@ -875,7 +881,9 @@ export class PlacementOrchestrator {
           envelope.dispatchEpoch !== job.dispatchEpoch ||
           envelope.workflowRunId !== lease.runId)
       )
-        throw new WorkflowExecutionInterrupted("Bound Job has an inconsistent dispatch envelope");
+        throw new WorkflowExecutionInterrupted("Bound Job has an inconsistent dispatch envelope", {
+          retryable: false,
+        });
       return { job, enqueued: !!envelope };
     });
   }

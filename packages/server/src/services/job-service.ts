@@ -856,8 +856,11 @@ export class JobService {
   /** Set the job's run directory (the workflow runner composes `<base>/<jobId>` after
    *  submit, once the id exists). Read back by placeAndDispatch for staging and
    *  by the agent for `--chdir`. */
-  async setWorkingDir(jobId: string, workingDir: string) {
-    await this.db.update(jobs).set({ workingDir }).where(eq(jobs.id, jobId));
+  async setWorkingDir(jobId: string, workingDir: string, fence?: JobMutationFence) {
+    const write = async (db: PgDb | PgTransaction) => {
+      await db.update(jobs).set({ workingDir }).where(eq(jobs.id, jobId));
+    };
+    return fence ? fence.transaction(write) : write(this.db);
   }
 
   async updateStatus(

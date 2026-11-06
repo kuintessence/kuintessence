@@ -240,7 +240,8 @@ async function executeScope(
     const saved = journal ? await journalOperation(() => journal.read(invocation.path)) : null;
     if (options.control.interruption) throw options.control.interruption;
     if (saved) {
-      if (saved.kind !== "node") throw new WorkflowExecutionInterrupted("Invalid node checkpoint");
+      if (saved.kind !== "node")
+        throw new WorkflowExecutionInterrupted("Invalid node checkpoint", { retryable: false });
       status.set(id, saved.status);
       nodeCtx[id] = {
         status: saved.status,
@@ -1093,7 +1094,9 @@ async function resolveSubWorkflowSpec(
     const key = JSON.stringify(["version", versionId]);
     const saved = journal ? await journalOperation(() => journal.read(key)) : null;
     if (saved && saved.kind !== "version")
-      throw new WorkflowExecutionInterrupted("Invalid sub-workflow checkpoint");
+      throw new WorkflowExecutionInterrupted("Invalid sub-workflow checkpoint", {
+        retryable: false,
+      });
     const wf =
       saved?.kind === "version"
         ? saved.workflow
