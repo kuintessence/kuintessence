@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { SPACK_EXECUTION_PLACEHOLDER } from "@kuintessence/shared";
+import { SPACK_PINNED_EXECUTION_PLACEHOLDER, type SpackExecution } from "@kuintessence/shared";
 import { createJobSubmitter, type JobSubmitterDeps } from "./job-submitter";
 
 describe("createJobSubmitter", () => {
@@ -25,14 +25,24 @@ describe("createJobSubmitter", () => {
       expectedOutputs: [],
     });
   });
-  test("persists only the placeholder and forwards prepared Spack intent transiently", async () => {
-    const execution = { spec: "hello@1.0 +mpi", command: "hello --count 2" };
+  test("passes the complete prepared Spack intent to submission and dispatch", async () => {
+    const execution: SpackExecution = {
+      spec: "hello@1.0 +mpi",
+      command: "hello --count 2",
+      pin: {
+        dagHash: "a".repeat(32),
+        manifestDigest: `sha256:${"b".repeat(64)}`,
+        lockfileDigest: `sha256:${"c".repeat(64)}`,
+        spackVersion: "1.0.0",
+        target: "linux-ubuntu24.04-x86_64",
+      },
+    };
     let dispatched = false;
     const submit = createJobSubmitter({
       prepare: async (spec) => ({ ...spec, spackExecution: execution }),
       submit: async (spec) => {
-        expect(spec.command).toBe(SPACK_EXECUTION_PLACEHOLDER);
-        expect("spackExecution" in spec).toBe(false);
+        expect(spec.command).toBe(SPACK_PINNED_EXECUTION_PLACEHOLDER);
+        expect(spec.spackExecution).toEqual(execution);
         return { id: "job-spack" };
       },
       dispatch: async (
@@ -54,7 +64,7 @@ describe("createJobSubmitter", () => {
     await submit({
       nodeId: "spack",
       name: "spack",
-      command: SPACK_EXECUTION_PLACEHOLDER,
+      command: SPACK_PINNED_EXECUTION_PLACEHOLDER,
       spackExecution: { spec: "hello@1.0", command: "hello" },
       envVars: {},
       inputStaging: [],
@@ -155,7 +165,10 @@ describe("createJobSubmitter", () => {
     let submittedQueueId: string | undefined;
     const deps: JobSubmitterDeps = {
       submit: async (spec) => {
-        submittedQueueId = spec.schedulingStrategy?.queueId;
+        submittedQueueId =
+          spec.schedulingStrategy && "queueId" in spec.schedulingStrategy
+            ? spec.schedulingStrategy.queueId
+            : undefined;
         return { id: "job-queue" };
       },
       dispatch: async () => {},
@@ -271,7 +284,12 @@ describe("createJobSubmitter", () => {
   test("passes preferred schedulingStrategy queues to dispatch", async () => {
     let dispatchedPreferredQueueIds: string[] | undefined;
     const deps: JobSubmitterDeps = {
-      submit: async () => ({ id: "job-prefer" }),
+      submit: async (spec) => {
+        expect(spec.schedulingStrategy).toEqual({
+          preferredQueueIds: ["queue-fast", "queue-backup"],
+        });
+        return { id: "job-prefer" };
+      },
       dispatch: async (
         _jobId,
         _staging,

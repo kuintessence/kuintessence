@@ -176,7 +176,7 @@ PG 测试必须指定 `kuintessence_unit_*` 隔离数据库，拒绝默认连接
 ## Script 调用的原子 Job 绑定与独立产物
 
 - [SandboxNodeExecutor](../../../packages/server/src/services/sandbox-node-executor.ts)接收既有引擎传递的动态 invocation path。传入内部 `executionLease` 时，复用[原子绑定方法](../../../packages/server/src/workflow/execution-jobs.ts)，在同一受租约保护的事务内创建 Job、保存完整意图和关联。意图包含脚本/运行环境、输入挂载与摘要、请求资源、输出定义、身份和限制；同路径改代码、runtime 或身份拒绝，循环/子工作流路径不同则分别创建。
-- 恢复已有终态 Job 时只读取原结果；已有同 Agent/epoch 的派发 outbox 时交给原待办重放，不重新选择 Agent 或签署指令。Job 尚未分配时可以继续原准备路径；已分配但缺少完整派发检查点时抛出执行中断，等待后续准备恢复处理，不能偷偷另起 Job。授权检查保留，派发前与完成后重新核验租约；取消后的晚到结果不发布新产物。
+- 恢复已有终态 Job 时只读取原结果；已有同 Agent/epoch 的派发 outbox 时交给原待办重放，不重新选择 Agent 或签署指令。Job 尚未分配时可以继续原准备路径；初次实现中已分配但缺少完整派发检查点会等待准备恢复；下文已接通这一恢复路径，始终复用原 Job。授权检查保留，派发前与完成后重新核验租约；取消后的晚到结果不发布新产物。
 - 修复普通 Script 循环输出覆盖问题：[产物表](../../../packages/db/src/pg/schema.ts)增加可空 `producerJobId`，新产物按 Job＋输出名唯一；原节点 ID 保留用于展示。旧产物沿用 NULL 分组，不推断不存在的历史 Job 归属。[0085](../../../packages/db/migrations/0085_quick_psynapse.sql)由 Drizzle 生成，未手改迁移或快照。
 - [产物服务](../../../packages/server/src/services/workflow-artifact.ts)对同 Job 的既有内容、类型、大小和归属做不可变校验，并发注册返回同一 artifactId。不同 Job 的同名输出分别保存；重放不清空已持久化标记，也不重复复制已经持久化的文件。共享产物 schema 同步包含可选 Job ID。
 
@@ -184,7 +184,7 @@ PG 测试必须指定 `kuintessence_unit_*` 隔离数据库，拒绝默认连接
 
 全仓 lint 无错误（原有 47 warnings、1 info）；全仓 typecheck 通过，最后的执行器调整按 Server 范围复查。生产 `makeRunner` 尚未传入 `executionLease`，现有重启取消规则不因此改为自动续跑。只有普通 Script 的按 Job 分离产物行为已接入现有调用路径。
 
-**自动恢复仍有明确依赖**：生产 lease 心跳、原子运行创建/联邦预留映射、完整指令保存前的准备恢复和派发终点校验仍待接通；执行统计已改为按 Job 幂等贡献（见下），但其他恢复依赖尚未完成。另已确认 Script 的 File 输出返回 `artifactId`，下游输入当前只接受 `fileMetadataId`，需要接通受管副本/文件解析，不能把这次绑定测试当成文件工作流端到端通过。
+**自动恢复仍有明确依赖**：生产 lease 心跳、原子运行创建/联邦预留映射仍待接通；下文已补齐已分配 Job 的准备恢复与派发终点校验，分配前的软件安装等待恢复仍需衔接；执行统计已改为按 Job 幂等贡献（见下），但其他恢复依赖尚未完成。另已确认 Script 的 File 输出返回 `artifactId`，下游输入当前只接受 `fileMetadataId`，需要接通受管副本/文件解析，不能把这次绑定测试当成文件工作流端到端通过。
 
 ## Script 执行统计按 Job 去重
 
@@ -198,7 +198,19 @@ PG 测试必须指定 `kuintessence_unit_*` 隔离数据库，拒绝默认连接
 - 不在数据库事务内等待网络回执。若已入通道但事务提交失败，仍按原始指令/epoch 重投，由 Agent 持久 inbox 去重；取消只能阻止尚未投递的指令，已投递任务仍须走原有取消协议。
 - [真实 PostgreSQL/Agent SQLite 测试](../../../scripts/workflow-dispatch.pg.test.ts) 13 项通过，包括原有断线重放、重复回执、并发补投、停止运行和固定 Spack 意图保护。新增三项验证：在实际入队边界用独立进程探测 Workflow 和 Job 行锁，均返回 `55P03`；取消事务先取得锁时，首次授权落库和已有 outbox 补投都实际等待该事务，取消提交后均不发出指令。检查使用数据库阻塞关系确认先后顺序，不靠固定等待时间碰运气。全仓 lint 无错误（原有 47 warnings、1 info）；全仓类型检查和新增测试脚本的独立严格类型检查通过，524 个本地文档链接通过。临时 PostgreSQL 已停止，其自建数据目录已清理。
 
-**仍待接通**：这次修复运行/Job 取消与投递的竞争；执行租约代次在最终授权提交处的检查，以及没有完整 envelope 时的准备恢复仍未完成。Script 的 File 输出转换也尚待实现；FileBatch 的 Agent 校验结果已有成员摘要，但 Server 尚未保留成员和逐文件持久映射，不能把目录当成单个云盘文件交给下游。
+**仍待接通**：这次修复运行/Job 取消与投递的竞争；下文已补齐执行租约代次在最终授权提交处的检查，以及已分配 Job 没有完整 envelope 时的准备恢复。Script 的 File 输出转换也尚待实现；FileBatch 的 Agent 校验结果已有成员摘要，但 Server 尚未保留成员和逐文件持久映射，不能把目录当成单个云盘文件交给下游。
+
+## 已分配 Job 的准备恢复与最终租约检查
+
+- [提交桥接](../../../packages/server/src/workflow/job-submitter.ts)直接传递完整的 `JobSubmission`，保留准备后的 Spack pin、软件/用例修订、输入、资源及候选队列；不再通过手写字段投影丢掉恢复所需信息。生产 Job 行仍使用不可直接执行的 Spack 占位命令，手动队列的提取保留在 JobService 调用处。
+- [Placement](../../../packages/server/src/services/placement-orchestrator.ts)接收内部执行租约，核对持久 invocation、运行、用户与组织。已有完整 outbox 或终态 Job 不重做准备；已有分配但尚无 outbox 的 Job，只允许原 Agent、provider、队列目标和原 epoch 继续准备。原 Agent 不在线时抛出可恢复中断，不改派，也不标成计算失败。恢复重新检查目标的软件与授权条件；不会为已经分配的 Job 另起软件安装。
+- [JobService](../../../packages/server/src/services/job-service.ts)为调度记录、分配、Sandbox manifest、epoch 检查及准备失败状态增加可选事务边界，使用现有租约事务的前后检查。旧 token 不能通过晚到失败把新执行器的 Job 终结。普通调用保留原写入方式，状态通知与计量仍在事务提交后执行。
+- [Outbox](../../../packages/server/src/grpc/job-dispatch-outbox.ts)对持久 invocation 强制要求匹配的当前租约，完整指令落库与租约检查在同一事务内完成。即使 epoch 检查刚成功后旧执行器失去租约，也不能提交或发送新指令。已经获准并落库的指令仍可由 outbox 独立补投，不因运行器换代重新签名或重新安装。
+- Script 已将内部租约传入 placement。没有完整指令时交由上述恢复路径处理，已有指令时继续等待原结果。
+
+验证：新增[准备恢复 PostgreSQL 测试](../../../packages/server/src/services/placement-recovery.pg.test.ts) 4 项通过，实际使用 JobService、placement、租约事务和 outbox；在文件准备、epoch 检查后主动释放租约模拟执行权丢失。验证原 Job/Agent/epoch、固定 Spack pin 保留、原 Agent 离线等待、已有 outbox 不重做准备、旧 token 无法再写失败或提交指令，以及不同运行/身份与缺少 outbox 的拒绝。Script 恢复 6 项、派发 13 项、原有调度 23 项、JobService 33 项均通过，共 79 项数据库相关检查；提交桥接与 Script 的 17 项单元测试通过。测试使用受控通道和下载 URL，没有运行真实调度器、安装科学软件或传输实际文件。全仓 lint 无错误（原有 47 warnings、1 info）；全仓类型检查发现测试 Spack 版本字面量需显式类型，修正后 Server 复查通过，其余包、Fabric 脚本和派发测试脚本的严格检查均通过。529 个本地文档链接通过；本轮临时 PostgreSQL 已停止并清理。
+
+**生产自动续跑尚未启用**：`makeRunner`/异步运行器还需接入持久模式、心跳与重启扫描、用例的原子绑定、动态调用取消清单和文件产物转换。此次恢复覆盖已分配 Agent 后的准备中断；分配前的软件安装等待、跨实例联邦预留到 Workflow 的原子映射仍待完成，不能据此认定联邦作业已经可用。
 
 ## 尚未接通，不能宣称支持
 

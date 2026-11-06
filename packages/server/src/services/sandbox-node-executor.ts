@@ -451,6 +451,7 @@ export class SandboxNodeExecutor {
     });
     const alreadyTerminal = reused && ["completed", "failed", "cancelled"].includes(job.status);
     const dispatch = await this.dispatchJob(job, reused, {
+      executionLease: lease,
       jobId: job.id,
       restrictedNoEgress: job.restrictedNoEgress,
       workflowRunId: this.options.workflowRunId,
@@ -693,13 +694,10 @@ export class SandboxNodeExecutor {
         .select()
         .from(jobDispatchOutbox)
         .where(eq(jobDispatchOutbox.jobId, job.id));
-      if (
-        !pending ||
-        pending.agentId !== job.agentId ||
-        pending.dispatchEpoch !== job.dispatchEpoch
-      )
+      if (!pending) return this.options.orchestrator.placeAndDispatch(input);
+      if (pending.agentId !== job.agentId || pending.dispatchEpoch !== job.dispatchEpoch)
         throw new WorkflowExecutionInterrupted(
-          "Bound Sandbox job is awaiting dispatch preparation recovery",
+          "Bound Sandbox job has an inconsistent dispatch envelope",
         );
     }
     if (reused && (job.agentId || alreadyTerminal))

@@ -957,7 +957,9 @@ const makeRunner = (
             expectedOutputs: spec.expectedOutputs,
             fileOutputDescriptors: spec.fileOutputDescriptors,
             ...(spec.stdinText !== undefined ? { stdinText: spec.stdinText } : {}),
-            ...(spec.schedulingStrategy ? { schedulingStrategy: spec.schedulingStrategy } : {}),
+            ...(spec.schedulingStrategy && "queueId" in spec.schedulingStrategy
+              ? { schedulingStrategy: spec.schedulingStrategy }
+              : {}),
           },
           submittedBy,
           {

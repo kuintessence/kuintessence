@@ -120,6 +120,10 @@ export interface JobListOptions {
   };
 }
 
+export interface JobMutationFence {
+  transaction<T>(operation: (tx: PgTransaction) => Promise<T>): Promise<T>;
+}
+
 export interface JobSubmitOptions {
   orgId?: string | null;
   trustedMaterialization?: boolean;
@@ -866,6 +870,7 @@ export class JobService {
     collectedOutputs?: Record<string, string>,
     agentEventId?: string,
     schedulerDetails?: SchedulerRuntimeDetails,
+    fence?: JobMutationFence,
   ) {
     const idWhere = expectedAgentId
       ? and(eq(jobs.id, jobId), eq(jobs.agentId, expectedAgentId))
@@ -877,7 +882,7 @@ export class JobService {
       status === JobStatus.CANCELLED;
     const now = new Date();
     let changed = false;
-    const updated = await this.db.transaction(async (tx) => {
+    const updated = await (fence ?? this.db).transaction(async (tx) => {
       const [current] = await tx.select().from(jobs).where(idWhere).limit(1).for("update");
       if (!current) {
         throw new AppError(ErrorCode.NOT_FOUND, `Job ${jobId} not found`, 404);
@@ -1212,55 +1217,66 @@ export class JobService {
     agentId: string,
     providerOrgId: string | null = null,
     queueSnapshot?: QueueAuditSnapshot,
+    fence?: JobMutationFence,
   ) {
-    const providerMatch = providerOrgId
-      ? or(isNull(jobs.providerOrgId), eq(jobs.providerOrgId, providerOrgId))
-      : isNull(jobs.providerOrgId);
-    const [updated] = await this.db
-      .update(jobs)
-      .set({
-        agentId,
-        providerOrgId: sql`coalesce(${jobs.providerOrgId}, ${providerOrgId})`,
-        status: JobStatus.QUEUED,
-        dispatchEpoch: sql`${jobs.dispatchEpoch} + 1`,
-        ...(queueSnapshot
-          ? {
-              queueTargetMode: queueSnapshot.targetMode,
-              schedulerQueueName: queueSnapshot.schedulerQueueName,
-              queueObservedAt: queueSnapshot.observedAt,
-            }
-          : {}),
-      })
-      .where(and(eq(jobs.id, jobId), eq(jobs.status, JobStatus.PENDING), providerMatch))
-      .returning();
-    if (!updated) {
-      const [existing] = await this.db.select().from(jobs).where(eq(jobs.id, jobId)).limit(1);
-      if (!existing) {
-        throw new AppError(ErrorCode.NOT_FOUND, `Job ${jobId} not found`, 404);
+    const write = async (db: PgDb | PgTransaction) => {
+      const providerMatch = providerOrgId
+        ? or(isNull(jobs.providerOrgId), eq(jobs.providerOrgId, providerOrgId))
+        : isNull(jobs.providerOrgId);
+      const [updated] = await db
+        .update(jobs)
+        .set({
+          agentId,
+          providerOrgId: sql`coalesce(${jobs.providerOrgId}, ${providerOrgId})`,
+          status: JobStatus.QUEUED,
+          dispatchEpoch: sql`${jobs.dispatchEpoch} + 1`,
+          ...(queueSnapshot
+            ? {
+                queueTargetMode: queueSnapshot.targetMode,
+                schedulerQueueName: queueSnapshot.schedulerQueueName,
+                queueObservedAt: queueSnapshot.observedAt,
+              }
+            : {}),
+        })
+        .where(and(eq(jobs.id, jobId), eq(jobs.status, JobStatus.PENDING), providerMatch))
+        .returning();
+      if (!updated) {
+        const [existing] = await db.select().from(jobs).where(eq(jobs.id, jobId)).limit(1);
+        if (!existing) {
+          throw new AppError(ErrorCode.NOT_FOUND, `Job ${jobId} not found`, 404);
+        }
+        throw new AppError(
+          ErrorCode.JOB_DISPATCH_FAILED,
+          `Job ${jobId} is no longer pending or is already bound to a different provider`,
+          409,
+        );
       }
-      throw new AppError(
-        ErrorCode.JOB_DISPATCH_FAILED,
-        `Job ${jobId} is no longer pending or is already bound to a different provider`,
-        409,
-      );
-    }
-    return updated;
+      return updated;
+    };
+    return fence ? fence.transaction(write) : write(this.db);
   }
 
-  async claimDispatchEpoch(jobId: string, dispatchEpoch: number): Promise<boolean> {
-    const [claimed] = await this.db
-      .update(jobs)
-      .set({ status: JobStatus.QUEUED })
-      .where(
-        and(
-          eq(jobs.id, jobId),
-          eq(jobs.status, JobStatus.QUEUED),
-          eq(jobs.dispatchEpoch, dispatchEpoch),
-          lt(jobs.revokedEpoch, dispatchEpoch),
-        ),
-      )
-      .returning({ id: jobs.id });
-    return claimed !== undefined;
+  async claimDispatchEpoch(
+    jobId: string,
+    dispatchEpoch: number,
+    fence?: JobMutationFence,
+  ): Promise<boolean> {
+    const write = async (db: PgDb | PgTransaction) => {
+      const [claimed] = await db
+        .update(jobs)
+        .set({ status: JobStatus.QUEUED })
+        .where(
+          and(
+            eq(jobs.id, jobId),
+            eq(jobs.status, JobStatus.QUEUED),
+            eq(jobs.dispatchEpoch, dispatchEpoch),
+            lt(jobs.revokedEpoch, dispatchEpoch),
+          ),
+        )
+        .returning({ id: jobs.id });
+      return claimed !== undefined;
+    };
+    return fence ? fence.transaction(write) : write(this.db);
   }
 
   /**
@@ -1271,28 +1287,38 @@ export class JobService {
    *
    * @throws AppError NOT_FOUND if job does not exist.
    */
-  async setPlacementTrace(jobId: string, trace: PlacementTrace) {
-    const [updated] = await this.db
-      .update(jobs)
-      .set({ placementTrace: trace })
-      .where(eq(jobs.id, jobId))
-      .returning();
-    if (!updated) {
-      throw new AppError(ErrorCode.NOT_FOUND, `Job ${jobId} not found`, 404);
-    }
-    return updated;
+  async setPlacementTrace(jobId: string, trace: PlacementTrace, fence?: JobMutationFence) {
+    const write = async (db: PgDb | PgTransaction) => {
+      const [updated] = await db
+        .update(jobs)
+        .set({ placementTrace: trace })
+        .where(eq(jobs.id, jobId))
+        .returning();
+      if (!updated) {
+        throw new AppError(ErrorCode.NOT_FOUND, `Job ${jobId} not found`, 404);
+      }
+      return updated;
+    };
+    return fence ? fence.transaction(write) : write(this.db);
   }
 
-  async setSandboxExecution(jobId: string, manifest: SandboxSignedManifest) {
-    const [updated] = await this.db
-      .update(jobs)
-      .set({ sandboxExecution: manifest })
-      .where(eq(jobs.id, jobId))
-      .returning();
-    if (!updated) {
-      throw new AppError(ErrorCode.NOT_FOUND, `Job ${jobId} not found`, 404);
-    }
-    return updated;
+  async setSandboxExecution(
+    jobId: string,
+    manifest: SandboxSignedManifest,
+    fence?: JobMutationFence,
+  ) {
+    const write = async (db: PgDb | PgTransaction) => {
+      const [updated] = await db
+        .update(jobs)
+        .set({ sandboxExecution: manifest })
+        .where(eq(jobs.id, jobId))
+        .returning();
+      if (!updated) {
+        throw new AppError(ErrorCode.NOT_FOUND, `Job ${jobId} not found`, 404);
+      }
+      return updated;
+    };
+    return fence ? fence.transaction(write) : write(this.db);
   }
 
   /**

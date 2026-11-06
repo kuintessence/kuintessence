@@ -99,6 +99,7 @@ async function fixture() {
   spyOn(resolver, "resolveRuntime").mockImplementation(async () => runtime);
   const dispatched: string[] = [];
   let interrupt = false;
+  let interruptPreparation = false;
   let refuseAuthorization = false;
   let cancelOnCompletion = false;
   async function complete(jobId: string) {
@@ -146,6 +147,8 @@ async function fixture() {
       orchestrator: {
         placeAndDispatch: async (input) => {
           dispatched.push(input.jobId);
+          if (interruptPreparation)
+            throw new WorkflowExecutionInterrupted("Preparation interrupted");
           await complete(input.jobId);
           return { selectedAgentId: agentId, dispatched: true, rejections: [] };
         },
@@ -164,6 +167,9 @@ async function fixture() {
       },
     });
   return {
+    interruptPreparation: (value: boolean) => {
+      interruptPreparation = value;
+    },
     runId,
     lease,
     runtime,
@@ -248,7 +254,7 @@ test("a saved Job before authorization/placement is resumed once; changed code/r
   await f.lease.release();
 });
 
-test("assigned Script waits for durable dispatch recovery; an existing outbox never triggers another placement", async () => {
+test("assigned Script resumes original preparation; an existing outbox never triggers another placement", async () => {
   const f = await fixture();
   f.refuseAuthorization(true);
   await expect(f.executor(f.lease).execute(node, {}, invocation())).rejects.toThrow(
@@ -264,8 +270,9 @@ test("assigned Script waits for durable dispatch recovery; an existing outbox ne
     .update(jobs)
     .set({ agentId, status: "queued", dispatchEpoch: 1 })
     .where(eq(jobs.id, binding.jobId));
+  f.interruptPreparation(true);
   await expect(f.executor(f.lease).execute(node, {}, invocation())).rejects.toThrow(
-    "dispatch preparation recovery",
+    "Preparation interrupted",
   );
   await db.insert(jobDispatchOutbox).values({
     jobId: binding.jobId,
@@ -277,10 +284,10 @@ test("assigned Script waits for durable dispatch recovery; an existing outbox ne
   await expect(f.executor(f.lease).execute(node, {}, invocation())).rejects.toThrow(
     "Awaiting original job result",
   );
-  expect(f.dispatched).toHaveLength(0);
+  expect(f.dispatched).toEqual([binding.jobId]);
   await f.complete(binding.jobId);
   expect((await f.executor(f.lease).execute(node, {}, invocation())).status).toBe("Succeeded");
-  expect(f.dispatched).toHaveLength(0);
+  expect(f.dispatched).toEqual([binding.jobId]);
   await f.lease.release();
 });
 

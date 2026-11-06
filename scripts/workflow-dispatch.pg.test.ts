@@ -23,6 +23,7 @@ import { workflowSpackIntent } from "../packages/agent/src/spack/workflow-activa
 import { AgentDispatcher } from "../packages/server/src/grpc/dispatcher";
 import { JobDispatchOutbox } from "../packages/server/src/grpc/job-dispatch-outbox";
 import { JobService } from "../packages/server/src/services/job-service";
+import { WorkflowExecutionJournalStore } from "../packages/server/src/workflow/execution-journal";
 import {
   completionFromJob,
   JobCompletionRegistry,
@@ -250,7 +251,10 @@ test("stopped durable runs cannot dispatch and Agent receipts update the durable
         expectedOutputs: [],
       },
     });
-    await outbox.enqueue(agentId, message);
+    const lease = await new WorkflowExecutionJournalStore(db).acquire(runId);
+    if (!lease) throw new Error("Missing dispatch lease");
+    await expect(outbox.enqueue(agentId, message)).rejects.toThrow("current execution lease");
+    await outbox.enqueue(agentId, message, runId, lease);
     await db
       .update(schema.workflowRuns)
       .set({ status: "cancelling" })

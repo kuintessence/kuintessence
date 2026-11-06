@@ -1,9 +1,11 @@
 import {
   agentInstalledSoftware,
   agentSoftware,
+  jobDispatchOutbox,
   jobs,
   type PgDb,
   usageQuotas,
+  workflowExecutionJobs,
 } from "@kuintessence/db";
 import type {
   JobSubmit,
@@ -15,7 +17,7 @@ import type {
   SoftwareAvailabilityRequest,
   SpackExecution,
 } from "@kuintessence/shared";
-import { createLogger } from "@kuintessence/shared";
+import { createLogger, WorkflowExecutionInterrupted } from "@kuintessence/shared";
 import { and, eq, inArray, or } from "drizzle-orm";
 import type { AgentDispatcher, JobCancellationOutbox } from "../grpc/dispatcher";
 import type { JobDispatchOutbox } from "../grpc/job-dispatch-outbox";
@@ -38,6 +40,7 @@ import { runPlacementWithTrace } from "../scheduler/placement-trace";
 import type { AgentRow, FilterStage, RejectionTrace } from "../scheduler/types";
 import type { SoftwareOperationService } from "../software-governance/operation-service";
 import { waitForSoftwareInstallation } from "../software-governance/wait-for-installation";
+import type { LeasedWorkflowJournal } from "../workflow/execution-journal";
 import type { AgentManager } from "./agent-manager";
 import type { ResolvedDataDelivery, RestrictedSandboxDeliveryBinding } from "./data-delivery";
 import type { DataPrerequisitePlacementGate, DataRequirement } from "./data-prerequisite";
@@ -80,8 +83,9 @@ export type DispatchInputStaging = {
 export interface PlaceAndDispatchInput {
   jobId: string;
   workflowRunId?: string;
+  executionLease?: LeasedWorkflowJournal;
   job: JobSubmit;
-  /** Transient workflow-only intent; the durable job command remains fail-closed. */
+  /** The durable invocation retains this intent; the Job command remains fail-closed. */
   spackExecution?: SpackExecution;
   userId: string;
   userRole: RoleName;
@@ -334,7 +338,7 @@ export class PlacementOrchestrator {
     const {
       jobId,
       workflowRunId,
-      job,
+      job: requestedJob,
       userId,
       userRole,
       orgId,
@@ -343,10 +347,39 @@ export class PlacementOrchestrator {
       restrictedNoEgress = false,
     } = input;
 
+    const durable = await this.durablePreparation(input);
+    if (
+      durable &&
+      (durable.enqueued || ["completed", "failed", "cancelled"].includes(durable.job.status))
+    )
+      return {
+        selectedAgentId: durable.job.agentId,
+        dispatched: !durable.enqueued,
+        pendingDelivery: durable.enqueued,
+        rejections: [],
+      };
+    const resume = durable?.job.agentId ? durable.job : undefined;
+    if (resume && (resume.status !== "queued" || resume.revokedEpoch >= resume.dispatchEpoch))
+      throw new WorkflowExecutionInterrupted("Assigned Job cannot resume dispatch preparation");
+    const job = resume
+      ? {
+          ...requestedJob,
+          softwareRequirements: requestedJob.softwareRequirements?.map((item) => ({
+            ...item,
+            installable: false,
+          })),
+        }
+      : requestedJob;
     const onlineCandidates = await this.deps.agentManager.listOnline();
-    const liveCandidates = onlineCandidates.filter((agent) =>
-      this.deps.dispatcher.isOnline(agent.agentId),
+    const liveCandidates = onlineCandidates.filter(
+      (agent) =>
+        this.deps.dispatcher.isOnline(agent.agentId) &&
+        (!resume || agent.agentId === resume.agentId),
     );
+    if (resume && liveCandidates.length === 0)
+      throw new WorkflowExecutionInterrupted(
+        "Original Agent is unavailable for preparation recovery",
+      );
     let candidates = sandboxExecution
       ? liveCandidates.filter((agent) => {
           if (agent.sandboxReadiness !== "ready") return false;
@@ -369,8 +402,8 @@ export class PlacementOrchestrator {
         const reason =
           "Pinned Spack execution requires a verified Agent with spack_pinned_execution_v1";
         const trace = preflightRejectionTrace("spack-execution-pin", liveCandidates, reason);
-        await this.deps.jobService.setPlacementTrace(jobId, trace);
-        await this.deps.jobService.updateStatus(jobId, "failed", undefined, undefined, reason);
+        await this.deps.jobService.setPlacementTrace(jobId, trace, input.executionLease);
+        await this.failPreparation(input, reason);
         return {
           selectedAgentId: null,
           dispatched: false,
@@ -390,11 +423,11 @@ export class PlacementOrchestrator {
           "Restricted no-egress jobs require an Agent advertising trusted restricted-data isolation";
         const trace = preflightRejectionTrace("restricted-data-isolation", liveCandidates, reason);
         try {
-          await this.deps.jobService.setPlacementTrace(jobId, trace);
+          await this.deps.jobService.setPlacementTrace(jobId, trace, input.executionLease);
         } catch (error) {
           logger.warn({ error, jobId }, "Failed to persist restricted isolation rejection trace");
         }
-        await this.deps.jobService.updateStatus(jobId, "failed", undefined, undefined, reason);
+        await this.failPreparation(input, reason);
         return {
           selectedAgentId: null,
           rejections: liveCandidates.map((agent) => ({
@@ -422,7 +455,7 @@ export class PlacementOrchestrator {
         candidates = candidates.filter((candidate) => eligible.has(candidate.agentId));
       } catch (err) {
         const reason = `Data prerequisites block placement: ${errorMessage(err)}`;
-        await this.deps.jobService.updateStatus(jobId, "failed", undefined, undefined, reason);
+        await this.failPreparation(input, reason);
         return {
           selectedAgentId: null,
           rejections: [{ stage: "data-prerequisite", agentId: "", reason }],
@@ -433,7 +466,7 @@ export class PlacementOrchestrator {
     if (candidates.length === 0) {
       if (sandboxExecution && liveCandidates.length > 0) {
         const reason = "No live Agent satisfies the Sandbox capability and signed runtime cache";
-        await this.deps.jobService.updateStatus(jobId, "failed", undefined, undefined, reason);
+        await this.failPreparation(input, reason);
         return {
           selectedAgentId: null,
           rejections: liveCandidates.map((agent) => ({
@@ -446,11 +479,8 @@ export class PlacementOrchestrator {
       }
       if (onlineCandidates.length > 0) {
         logger.warn({ jobId }, "Online agents have no live Server channel; marking job failed");
-        await this.deps.jobService.updateStatus(
-          jobId,
-          "failed",
-          undefined,
-          undefined,
+        await this.failPreparation(
+          input,
           "No live agent channel is available for this job. Wait for the agent to reconnect and retry.",
         );
         return { selectedAgentId: null, rejections: [], dispatched: false };
@@ -523,15 +553,12 @@ export class PlacementOrchestrator {
       logger.info({ jobId, rejections: rejections.length }, "Placement found no eligible agent");
       // Preserve rejection traces so callers can explain why no target was selected.
       try {
-        await this.deps.jobService.setPlacementTrace(jobId, trace);
+        await this.deps.jobService.setPlacementTrace(jobId, trace, input.executionLease);
       } catch (err) {
         logger.warn({ jobId, err }, "Failed to persist placement trace for unplaced job");
       }
-      await this.deps.jobService.updateStatus(
-        jobId,
-        "failed",
-        undefined,
-        undefined,
+      await this.failPreparation(
+        input,
         "No eligible agent found for this job. Open the placement tab for rejection details.",
       );
       return { selectedAgentId: null, rejections, dispatched: false, trace };
@@ -543,11 +570,11 @@ export class PlacementOrchestrator {
       throw new Error(`Placement selected unknown agent ${agentId}`);
     }
     try {
-      await this.deps.jobService.setPlacementTrace(jobId, trace);
+      await this.deps.jobService.setPlacementTrace(jobId, trace, input.executionLease);
     } catch (err) {
       logger.warn({ jobId, err }, "Failed to persist placement trace");
     }
-    if (await this.installMissingSoftware(input, agentId)) {
+    if (!resume && (await this.installMissingSoftware(input, agentId))) {
       return this.placeAndDispatch({
         ...input,
         job: {
@@ -573,20 +600,34 @@ export class PlacementOrchestrator {
       );
     } catch (error) {
       const reason = `Queue validation blocks dispatch: ${errorMessage(error)}`;
-      await this.deps.jobService.updateStatus(jobId, "failed", undefined, undefined, reason);
+      await this.failPreparation(input, reason);
       return { selectedAgentId: null, rejections, dispatched: false, trace };
     }
     const queueTargetMode = dispatchQueue?.targetMode ?? "default";
-    const assigned = await this.deps.jobService.assignToAgent(
-      jobId,
-      agentId,
-      selectedAgent.providerOrgId,
-      {
-        targetMode: queueTargetMode,
-        schedulerQueueName: dispatchQueue?.resolvedQueueName ?? dispatchQueue?.queueName ?? null,
-        observedAt: dispatchQueue?.queueObservedAt ?? null,
-      },
-    );
+    if (
+      resume &&
+      (resume.agentId !== agentId ||
+        resume.providerOrgId !== selectedAgent.providerOrgId ||
+        resume.queueTargetMode !== queueTargetMode ||
+        resume.schedulerQueueName !==
+          (dispatchQueue?.resolvedQueueName ?? dispatchQueue?.queueName ?? null))
+    )
+      throw new WorkflowExecutionInterrupted(
+        "Assigned Job target changed during preparation recovery",
+      );
+    const assigned =
+      resume ??
+      (await this.deps.jobService.assignToAgent(
+        jobId,
+        agentId,
+        selectedAgent.providerOrgId,
+        {
+          targetMode: queueTargetMode,
+          schedulerQueueName: dispatchQueue?.resolvedQueueName ?? dispatchQueue?.queueName ?? null,
+          observedAt: dispatchQueue?.queueObservedAt ?? null,
+        },
+        input.executionLease,
+      ));
 
     let licensedMaterialMounts: LicensedMaterialDispatchMount[] = [];
     if (this.deps.dataPrerequisites && dataRequirements.length > 0) {
@@ -599,14 +640,14 @@ export class PlacementOrchestrator {
         });
       } catch (err) {
         const reason = `Data prerequisites block dispatch: ${errorMessage(err)}`;
-        await this.deps.jobService.updateStatus(jobId, "failed", undefined, agentId, reason);
+        await this.failPreparation(input, reason, agentId);
         return { selectedAgentId: agentId, rejections, dispatched: false, trace };
       }
     }
     if ((job.licensedMaterials?.length ?? 0) > 0) {
       if (!this.deps.resolveLicensedMaterials) {
         const reason = "Licensed material resolution is unavailable";
-        await this.deps.jobService.updateStatus(jobId, "failed", undefined, agentId, reason);
+        await this.failPreparation(input, reason, agentId);
         return { selectedAgentId: agentId, rejections, dispatched: false, trace };
       }
       try {
@@ -618,7 +659,7 @@ export class PlacementOrchestrator {
         });
       } catch (error) {
         const reason = `Licensed material prerequisites block dispatch: ${errorMessage(error)}`;
-        await this.deps.jobService.updateStatus(jobId, "failed", undefined, agentId, reason);
+        await this.failPreparation(input, reason, agentId);
         return { selectedAgentId: agentId, rejections, dispatched: false, trace };
       }
     }
@@ -626,7 +667,7 @@ export class PlacementOrchestrator {
     if (dataRequirements.length > 0) {
       if (!this.dataDeliveryResolver) {
         const reason = "Data Market delivery resolver is unavailable";
-        await this.deps.jobService.updateStatus(jobId, "failed", undefined, agentId, reason);
+        await this.failPreparation(input, reason, agentId);
         return { selectedAgentId: agentId, rejections, dispatched: false, trace };
       }
       try {
@@ -638,7 +679,7 @@ export class PlacementOrchestrator {
         });
       } catch (error) {
         const reason = `Data delivery prerequisites block dispatch: ${errorMessage(error)}`;
-        await this.deps.jobService.updateStatus(jobId, "failed", undefined, agentId, reason);
+        await this.failPreparation(input, reason, agentId);
         return { selectedAgentId: agentId, rejections, dispatched: false, trace };
       }
     }
@@ -666,10 +707,10 @@ export class PlacementOrchestrator {
           restrictedSandboxInputs = bound.inputStaging;
           dataDeliveries = [];
         }
-        await this.deps.jobService.setSandboxExecution(jobId, signedSandbox);
+        await this.deps.jobService.setSandboxExecution(jobId, signedSandbox, input.executionLease);
       } catch (err) {
         const reason = `Sandbox manifest construction failed: ${errorMessage(err)}`;
-        await this.deps.jobService.updateStatus(jobId, "failed", undefined, agentId, reason);
+        await this.failPreparation(input, reason, agentId);
         return { selectedAgentId: agentId, rejections, dispatched: false, trace };
       }
     }
@@ -681,7 +722,7 @@ export class PlacementOrchestrator {
     ) {
       const reason =
         "Data Market execution cannot mix Agent-managed data with NetDrive file inputs or artifact outputs";
-      await this.deps.jobService.updateStatus(jobId, "failed", undefined, agentId, reason);
+      await this.failPreparation(input, reason, agentId);
       return { selectedAgentId: agentId, rejections, dispatched: false, trace };
     }
     let dispatchInputStaging: DispatchInputStaging[] | undefined = job.inputStaging;
@@ -690,7 +731,7 @@ export class PlacementOrchestrator {
     if (needsDispatchInputUrls) {
       if (!this.inputUrlResolver) {
         const reason = "Artifact inputs require signed NetDrive download URLs";
-        await this.deps.jobService.updateStatus(jobId, "failed", undefined, agentId, reason);
+        await this.failPreparation(input, reason, agentId);
         return { selectedAgentId: agentId, rejections, dispatched: false, trace };
       }
       try {
@@ -705,12 +746,10 @@ export class PlacementOrchestrator {
           { jobId, agentId, err },
           "Input URL resolution failed — job will not be dispatched",
         );
-        await this.deps.jobService.updateStatus(
-          jobId,
-          "failed",
-          undefined,
-          agentId,
+        await this.failPreparation(
+          input,
           `Input URL resolution failed: ${errorMessage(err)}`,
+          agentId,
         );
         return { selectedAgentId: agentId, rejections, dispatched: false, trace };
       }
@@ -726,13 +765,7 @@ export class PlacementOrchestrator {
         });
       } catch (err) {
         logger.error({ jobId, agentId, err }, "Input staging failed — job will not be dispatched");
-        await this.deps.jobService.updateStatus(
-          jobId,
-          "failed",
-          undefined,
-          undefined,
-          `Input staging failed: ${errorMessage(err)}`,
-        );
+        await this.failPreparation(input, `Input staging failed: ${errorMessage(err)}`);
         return { selectedAgentId: agentId, rejections, dispatched: false, trace };
       }
     }
@@ -748,12 +781,13 @@ export class PlacementOrchestrator {
       });
     } catch (error) {
       const reason = `Queue validation blocks dispatch: ${errorMessage(error)}`;
-      await this.deps.jobService.updateStatus(jobId, "failed", undefined, agentId, reason);
+      await this.failPreparation(input, reason, agentId);
       return { selectedAgentId: agentId, rejections, dispatched: false, trace };
     }
     const dispatchClaimed = await this.deps.jobService.claimDispatchEpoch(
       jobId,
       assigned.dispatchEpoch,
+      input.executionLease,
     );
     if (!dispatchClaimed) {
       return { selectedAgentId: agentId, rejections, dispatched: false, trace };
@@ -781,7 +815,12 @@ export class PlacementOrchestrator {
       dataDeliveries,
     });
     const delivery = this.deps.dispatchOutbox
-      ? await this.deps.dispatchOutbox.enqueue(agentId, message, workflowRunId)
+      ? await this.deps.dispatchOutbox.enqueue(
+          agentId,
+          message,
+          workflowRunId,
+          input.executionLease,
+        )
       : { sent: this.deps.dispatcher.pushPreparedDispatch(agentId, message), pending: false };
     const ok = delivery.sent;
     if (!ok && !delivery.pending) {
@@ -789,12 +828,10 @@ export class PlacementOrchestrator {
       // agent will ever run. Mark failed so it matches the workflow node outcome.
       // Dispatch fails immediately when no Agent channel is available.
       logger.warn({ jobId, agentId }, "Selected agent has no live channel; marking job failed");
-      await this.deps.jobService.updateStatus(
-        jobId,
-        "failed",
-        undefined,
-        agentId,
+      await this.failPreparation(
+        input,
         "Selected agent channel is unavailable; the job was not dispatched.",
+        agentId,
       );
     }
 
@@ -806,6 +843,56 @@ export class PlacementOrchestrator {
       ...(delivery.pending ? { pendingDelivery: true } : {}),
       trace,
     };
+  }
+
+  private async durablePreparation(input: PlaceAndDispatchInput) {
+    const lease = input.executionLease;
+    if (!lease) return undefined;
+    if (!this.deps.dispatchOutbox || lease.runId !== input.workflowRunId)
+      throw new WorkflowExecutionInterrupted(
+        "Durable placement requires its run and dispatch outbox",
+      );
+    return lease.transaction(async (tx) => {
+      const [binding] = await tx
+        .select()
+        .from(workflowExecutionJobs)
+        .where(
+          and(
+            eq(workflowExecutionJobs.runId, lease.runId),
+            eq(workflowExecutionJobs.jobId, input.jobId),
+          ),
+        );
+      const [job] = await tx.select().from(jobs).where(eq(jobs.id, input.jobId));
+      if (!binding || !job || job.submittedBy !== input.userId || job.orgId !== input.orgId)
+        throw new WorkflowExecutionInterrupted("Placement does not match the bound Job principal");
+      const [envelope] = await tx
+        .select()
+        .from(jobDispatchOutbox)
+        .where(eq(jobDispatchOutbox.jobId, input.jobId));
+      if (
+        envelope &&
+        (envelope.agentId !== job.agentId ||
+          envelope.dispatchEpoch !== job.dispatchEpoch ||
+          envelope.workflowRunId !== lease.runId)
+      )
+        throw new WorkflowExecutionInterrupted("Bound Job has an inconsistent dispatch envelope");
+      return { job, enqueued: !!envelope };
+    });
+  }
+
+  private failPreparation(input: PlaceAndDispatchInput, reason: string, agentId?: string) {
+    return this.deps.jobService.updateStatus(
+      input.jobId,
+      "failed",
+      undefined,
+      agentId,
+      reason,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      input.executionLease,
+    );
   }
 
   /**

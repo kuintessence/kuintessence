@@ -1,4 +1,4 @@
-import type { DataInputRef, JobStatusName, JobSubmission, usecase } from "@kuintessence/shared";
+import type { JobStatusName, JobSubmission, usecase } from "@kuintessence/shared";
 
 /**
  * Seams for turning a materialized JobSubmission into a real, completed job.
@@ -10,29 +10,7 @@ import type { DataInputRef, JobStatusName, JobSubmission, usecase } from "@kuint
  */
 export interface JobSubmitterDeps {
   prepare?(spec: JobSubmission): Promise<JobSubmission>;
-  submit(spec: {
-    nodeId: string;
-    invocation?: JobSubmission["invocation"];
-    name: string;
-    usecasePackageId?: string;
-    usecaseVersionId?: string;
-    dataInputs?: Record<string, DataInputRef>;
-    command: string;
-    envVars: Record<string, string>;
-    inputStaging?: { fileMetadataId: string; stagePath: string }[];
-    expectedOutputs?: {
-      descriptor: string;
-      path: string;
-      isBatch: boolean;
-      pathsOnly?: boolean;
-    }[];
-    fileOutputDescriptors?: string[];
-    stdinText?: string;
-    licensedMaterials?: JobSubmission["licensedMaterials"];
-    softwareRequirements?: JobSubmission["softwareRequirements"];
-    resources?: JobSubmission["resources"];
-    schedulingStrategy?: { queueId: string };
-  }): Promise<{ id: string }>;
+  submit(spec: JobSubmission): Promise<{ id: string }>;
   dispatch(
     jobId: string,
     inputStaging: { fileMetadataId: string; stagePath: string }[],
@@ -76,28 +54,7 @@ export function createJobSubmitter(deps: JobSubmitterDeps): (spec: JobSubmission
 }> {
   return async (spec) => {
     const prepared = (await deps.prepare?.(spec)) ?? spec;
-    const manualSchedulingStrategy =
-      prepared.schedulingStrategy && "queueId" in prepared.schedulingStrategy
-        ? prepared.schedulingStrategy
-        : undefined;
-    const job = await deps.submit({
-      nodeId: prepared.nodeId,
-      ...(prepared.invocation ? { invocation: prepared.invocation } : {}),
-      name: prepared.name,
-      ...(prepared.usecaseVersionId ? { usecaseVersionId: prepared.usecaseVersionId } : {}),
-      ...(prepared.usecasePackageId ? { usecasePackageId: prepared.usecasePackageId } : {}),
-      ...(prepared.dataInputs ? { dataInputs: prepared.dataInputs } : {}),
-      command: prepared.command,
-      envVars: prepared.envVars,
-      inputStaging: prepared.inputStaging,
-      expectedOutputs: prepared.expectedOutputs,
-      fileOutputDescriptors: prepared.fileOutputDescriptors,
-      stdinText: prepared.stdinText,
-      licensedMaterials: prepared.licensedMaterials,
-      softwareRequirements: prepared.softwareRequirements,
-      ...(prepared.resources ? { resources: prepared.resources } : {}),
-      ...(manualSchedulingStrategy ? { schedulingStrategy: manualSchedulingStrategy } : {}),
-    });
+    const job = await deps.submit(prepared);
     await deps.onSubmitted?.(prepared.nodeId, job.id);
     await deps.dispatch(
       job.id,

@@ -7,8 +7,9 @@ import {
   workflowRuns,
 } from "@kuintessence/db";
 import { type ServerMessage, ServerMessageSchema } from "@kuintessence/proto";
-import { createLogger } from "@kuintessence/shared";
+import { createLogger, WorkflowExecutionInterrupted } from "@kuintessence/shared";
 import { and, asc, eq, isNull, lt, lte, or, sql } from "drizzle-orm";
+import type { LeasedWorkflowJournal } from "../workflow/execution-journal";
 import type { AgentDispatcher } from "./dispatcher";
 
 const logger = createLogger("job-dispatch-outbox");
@@ -27,6 +28,7 @@ export class JobDispatchOutbox {
     agentId: string,
     message: ServerMessage,
     workflowRunId?: string,
+    executionLease?: LeasedWorkflowJournal,
   ): Promise<{ sent: boolean; pending: boolean }> {
     if (message.payload.case !== "dispatchJob") throw new Error("Expected a job dispatch message");
     const payload = message.payload.value;
@@ -35,7 +37,7 @@ export class JobDispatchOutbox {
     const bytes = toBinary(ServerMessageSchema, message);
     if (bytes.byteLength > 16 * 1024 * 1024) throw new Error("Dispatch envelope exceeds 16 MiB");
     const encoded = Buffer.from(bytes).toString("base64");
-    const accepted = await this.db.transaction(async (tx) => {
+    const accepted = await (executionLease ?? this.db).transaction(async (tx) => {
       const [invocation] = await tx
         .select({ runId: workflowExecutionJobs.runId })
         .from(workflowExecutionJobs)
@@ -43,6 +45,14 @@ export class JobDispatchOutbox {
       if (workflowRunId && invocation && invocation.runId !== workflowRunId)
         throw new Error("Dispatch workflow does not match the persisted invocation");
       const runId = workflowRunId ?? invocation?.runId;
+      if (invocation && !executionLease)
+        throw new WorkflowExecutionInterrupted(
+          "Durable dispatch requires the current execution lease",
+        );
+      if (executionLease && (!invocation || runId !== executionLease.runId))
+        throw new WorkflowExecutionInterrupted(
+          "Dispatch lease does not match the bound invocation",
+        );
       // Match journal lock order: Workflow first, then Job and its outbox.
       const [run] = runId
         ? await tx
