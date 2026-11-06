@@ -116,3 +116,24 @@ describe("InboundAcks", () => {
     expect(row.payload).toEqual({ name: "blast", cpus: 4 });
   });
 });
+
+test("submission fence is durable, monotonic and cannot resurrect an acknowledged dispatch", async () => {
+  const db = freshDb();
+  const acks = new InboundAcks(db);
+  await acks.persistInbound({
+    dispatchId: "job:1",
+    jobId: "job",
+    payload: { federationExecution: true },
+  });
+  await acks.markSubmissionStarted("job:1");
+  const reopened = new InboundAcks(db);
+  expect((await reopened.pendingInbound())[0]?.payload.federationSubmissionStarted).toBe(true);
+  expect(await reopened.persistInbound({ dispatchId: "job:1", jobId: "job", payload: {} })).toBe(
+    false,
+  );
+  expect((await reopened.pendingInbound())[0]?.payload.federationSubmissionStarted).toBe(true);
+  await reopened.markAcked("job:1");
+  await expect(reopened.markSubmissionStarted("job:1")).rejects.toThrow("receipt is missing");
+  await expect(reopened.markSubmissionStarted("missing")).rejects.toThrow("receipt is missing");
+  expect(await reopened.pendingInbound()).toEqual([]);
+});

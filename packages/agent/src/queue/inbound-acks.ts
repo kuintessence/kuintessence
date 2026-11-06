@@ -39,7 +39,7 @@ export interface PersistInboundInput {
   dispatchId: string;
   /** The job-id this dispatch is about. */
   jobId: string;
-  /** Original DispatchJob payload, persisted for diagnostics and (future) restart replay. */
+  /** Diagnostics and, for federation dispatches, an immutable recovery fingerprint. */
   payload: Record<string, unknown>;
 }
 
@@ -103,6 +103,20 @@ export class InboundAcks {
       // path from clobbering an earlier acked_at timestamp with a later one.
       sql`${inboundDispatchPending.dispatchId} = ${dispatchId} AND ${inboundDispatchPending.ackedAt} IS NULL`,
     );
+  }
+
+  /** Survives cleanup-journal deletion: an ambiguous submission must never be replayed. */
+  async markSubmissionStarted(dispatchId: string): Promise<void> {
+    const updated = await this.db
+      .update(inboundDispatchPending)
+      .set({
+        payload: sql`json_set(${inboundDispatchPending.payload}, '$.federationSubmissionStarted', json('true'))`,
+      })
+      .where(
+        sql`${inboundDispatchPending.dispatchId} = ${dispatchId} AND ${inboundDispatchPending.ackedAt} IS NULL`,
+      )
+      .returning({ dispatchId: inboundDispatchPending.dispatchId });
+    if (updated.length !== 1) throw new Error("Pending federation dispatch receipt is missing");
   }
 
   /**

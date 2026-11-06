@@ -4,6 +4,8 @@
 //      createRoutes(AgentService, handlers) on the Server side.
 
 export {
+  dispatchIntent,
+  renewableDispatchInputs,
   sameDataDeliveryIntent,
   sameDispatchIntent,
   sameInstallationIntent,

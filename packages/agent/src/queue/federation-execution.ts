@@ -53,6 +53,28 @@ export class FederationExecutionClient {
     return { dispatch: grant.response.dispatch, expiresAt: grant.expiresAt };
   }
 
+  async recover(
+    jobId: string,
+    dispatchEpoch: bigint,
+    signal: AbortSignal,
+    matchesReceipt: (dispatch: DispatchJob) => boolean,
+  ): Promise<DispatchJob> {
+    const grant = await this.renewGrant(
+      jobId,
+      dispatchEpoch,
+      "",
+      signal,
+      (response) =>
+        !response.installation &&
+        !!response.dispatch?.federationExecution &&
+        response.dispatch.jobId === jobId &&
+        response.dispatch.dispatchEpoch === dispatchEpoch &&
+        matchesReceipt(response.dispatch),
+    );
+    if (!grant.response.dispatch) throw new Error("Missing federation recovery grant");
+    return grant.response.dispatch;
+  }
+
   async renewInstallation(
     original: SoftwareOperationRequest,
     signal: AbortSignal,

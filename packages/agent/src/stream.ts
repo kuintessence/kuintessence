@@ -40,6 +40,7 @@ import {
   SchedulerQueueFactSchema,
   SchedulerType,
   type ServerMessage,
+  ServerMessageSchema,
   ShellExecResponseSchema,
   SoftwareOperationAction,
   SoftwareOperationResultSchema,
@@ -93,8 +94,13 @@ import { readMetrics } from "./monitor/metrics";
 import { createCachedSchedulerQueueDepthReader } from "./monitor/queue-depth";
 import type { ExpectedOutput } from "./output-collector";
 import type { ActiveRemoteJobs } from "./queue/active-remote-jobs";
+import {
+  FederationDispatchReceiptSchema,
+  federationDispatchReceipt,
+  matchesFederationReceipt,
+} from "./queue/federation-dispatch";
 import { FederationExecutionClient } from "./queue/federation-execution";
-import type { InboundAcks } from "./queue/inbound-acks";
+import type { InboundAcks, PendingInboundRow } from "./queue/inbound-acks";
 import type {
   JobCleanupIntent,
   JobCleanupIntents,
@@ -676,7 +682,10 @@ export class AgentStream {
   private connected = false;
   private federationExecutionSupported = false;
   private federationInstallationSupported = false;
-  // shortcut: live reconnect only; persist full dispatches before enabling process-restart replay.
+  private readonly recoveringFederationDispatches = new Map<
+    string,
+    { controller: AbortController; epoch: number }
+  >();
   private readonly federationDispatches = new Map<
     string,
     { dispatch: DispatchJob; controller: AbortController }
@@ -858,6 +867,12 @@ export class AgentStream {
           const pending = this.federationDispatches.get(spec.jobId);
           if (!pending) throw new Error("Federation dispatch authority is missing");
           const grant = await this.renewFederationExecution(pending.dispatch);
+          const dispatchId = this.dispatchIdsByJob.get(spec.jobId);
+          if (!dispatchId || !this.inboundAcks)
+            throw new Error("Federation dispatch receipt is missing");
+          await this.inboundAcks.markSubmissionStarted(dispatchId);
+          pending.controller.signal.throwIfAborted();
+          this.lifecycleController.signal.throwIfAborted();
           if (!grant || grant.expiresAt <= Date.now())
             throw new Error("Federation execution grant expired before submission");
         }
@@ -1649,7 +1664,9 @@ export class AgentStream {
     // reports land in the same connection as any other queued reports.
     // We synthesize one report per pending dispatch:
     //
-    //   - Live Spack preparations retain their pending receipt until their real first report.
+    //   - Live Spack/federation preparations retain their pending receipt until their first report.
+    //   - Restarted federation preparations fetch the original intent under fresh authorization;
+    //     ambiguous submissions retain their receipt without resubmitting.
     //   - If a runner is still alive locally for that jobId, replay
     //     `running` (the runner will continue emitting real updates,
     //     idempotent on the Server side).
@@ -1669,6 +1686,10 @@ export class AgentStream {
           if (this.preparingSpackDispatches.has(row.dispatchId)) continue;
           if (this.federationDispatches.has(row.jobId)) continue;
           const haveLocalRunner = this.pool.get(row.jobId) !== undefined;
+          if (row.payload.federationExecution === true && !haveLocalRunner) {
+            this.recoverFederationDispatch(row);
+            continue;
+          }
           const replayReport: JobStatusReport = haveLocalRunner
             ? { jobId: row.jobId, status: "running" }
             : {
@@ -2556,7 +2577,10 @@ export class AgentStream {
   // Inbound message handler
   // ---------------------------------------------------------------------------
 
-  private async handleServerMessage(msg: ServerMessage): Promise<void> {
+  private async handleServerMessage(
+    msg: ServerMessage,
+    recoveredDispatchId?: string,
+  ): Promise<void> {
     const { payload } = msg;
     if (!payload || payload.case === undefined) {
       this.logger.warn("Received ServerMessage with no payload");
@@ -2652,7 +2676,7 @@ export class AgentStream {
       // dispatch_id field, so we use jobId — onConflictDoNothing makes the
       // duplicate-delivery case (Server re-dispatches mid-recovery) safe.
       const dispatchId = `${dj.jobId}:${dispatchEpoch}`;
-      if (this.inboundAcks) {
+      if (this.inboundAcks && recoveredDispatchId !== dispatchId) {
         try {
           const accepted = await this.inboundAcks.persistInbound({
             dispatchId,
@@ -2677,6 +2701,9 @@ export class AgentStream {
               qos: dj.qos,
               stdinText: dj.stdinText,
               federationExecution: dj.federationExecution,
+              ...(dj.federationExecution
+                ? { federationReceipt: federationDispatchReceipt(dj) }
+                : {}),
             },
           });
           if (!accepted) {
@@ -3428,6 +3455,73 @@ export class AgentStream {
     this.signalOutbound();
   }
 
+  private recoverFederationDispatch(row: PendingInboundRow): void {
+    if (this.recoveringFederationDispatches.has(row.jobId)) return;
+    // shortcut: ambiguous submissions stay pending until scheduler reconciliation can prove their outcome.
+    if (row.payload.federationSubmissionStarted === true) {
+      this.logger.warn(
+        { jobId: row.jobId },
+        "Federation submission requires scheduler reconciliation; not replaying",
+      );
+      return;
+    }
+    const parsed = FederationDispatchReceiptSchema.safeParse(row.payload.federationReceipt);
+    if (!parsed.success || row.dispatchId !== `${row.jobId}:${parsed.data.epoch}`) {
+      this.logger.error(
+        { jobId: row.jobId },
+        "Federation recovery receipt is missing or invalid; not replaying",
+      );
+      return;
+    }
+    if (!this.federationExecutionSupported || !this.federationExecutionCapable()) return;
+    const receipt = parsed.data;
+    const controller = new AbortController();
+    const signal = AbortSignal.any([controller.signal, this.lifecycleController.signal]);
+    this.recoveringFederationDispatches.set(row.jobId, { controller, epoch: receipt.epoch });
+    const recover = async () => {
+      await this.assertDispatchEpochAllowed(row.jobId, receipt.epoch);
+      if (await this.findCleanupIntent(row.jobId)) {
+        this.logger.warn(
+          { jobId: row.jobId },
+          "Federation preparation awaits durable cleanup; not replaying",
+        );
+        return;
+      }
+      const dispatch = await this.federationExecution.recover(
+        row.jobId,
+        BigInt(receipt.epoch),
+        signal,
+        (renewed) => matchesFederationReceipt(renewed, receipt),
+      );
+      await this.assertDispatchEpochAllowed(row.jobId, receipt.epoch);
+      signal.throwIfAborted();
+      await this.handleServerMessage(
+        create(ServerMessageSchema, { payload: { case: "dispatchJob", value: dispatch } }),
+        row.dispatchId,
+      );
+    };
+    void recover()
+      .catch(async (err: unknown) => {
+        if (signal.aborted) return;
+        this.logger.error({ err, jobId: row.jobId }, "Federation preparation recovery rejected");
+        this.dispatchIdsByJob.set(row.jobId, row.dispatchId);
+        await this.onJobTransition({
+          jobId: row.jobId,
+          status: "failed",
+          message: "Federation preparation recovery rejected",
+        });
+      })
+      .catch((err: unknown) => {
+        this.logger.error(
+          { err, jobId: row.jobId },
+          "Failed to persist federation recovery rejection",
+        );
+      })
+      .finally(() => {
+        this.recoveringFederationDispatches.delete(row.jobId);
+      });
+  }
+
   private federationInstallationCapable(): boolean {
     return (
       this.federationExecutionCapable() &&
@@ -3694,6 +3788,8 @@ export class AgentStream {
     const tombstones = this.revocationTombstones;
     if (!tombstones) throw new Error("durable revocation tombstone store is not configured");
     await tombstones.record(jobId, revokedEpoch);
+    const recovering = this.recoveringFederationDispatches.get(jobId);
+    if (recovering && recovering.epoch <= revokedEpoch) recovering.controller.abort();
     const federation = this.federationDispatches.get(jobId);
     if (federation && federation.dispatch.dispatchEpoch <= BigInt(revokedEpoch))
       federation.controller.abort();
@@ -3893,6 +3989,7 @@ export class AgentStream {
     destroyRestrictedWorkRoot: boolean,
     reasonCode: string,
   ): Promise<void> {
+    this.recoveringFederationDispatches.get(jobId)?.controller.abort();
     this.federationDispatches.get(jobId)?.controller.abort();
     const schedulerCancellation = this.pool.get(jobId)
       ? this.pool.cancel(jobId)

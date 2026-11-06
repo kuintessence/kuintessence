@@ -8276,3 +8276,174 @@ test.each([
     await running;
   }
 });
+
+test.each([
+  "grant",
+  "deny",
+  "rewrite",
+  "revoked",
+  "submitting",
+  "cleanup-uncertain",
+  "legacy",
+] as const)("federation preparation survives reopening its SQLite receipt: %s", async (outcome) => {
+  const root = await mkdtemp(join(tmpdir(), "kq-fed-restart-"));
+  const path = join(root, "agent.sqlite");
+  const firstSqlite = new Database(path);
+  runSqliteMigrations(firstSqlite);
+  const db = drizzle(firstSqlite, { schema });
+  const inbox = new InboundAcks(db);
+  const dispatch = create(DispatchJobSchema, {
+    jobId: crypto.randomUUID(),
+    dispatchEpoch: 1n,
+    federationExecution: true,
+    command: "echo original",
+    cpus: 1,
+    memoryMb: 128n,
+  });
+  let initialRequests = 0;
+  const first = new AgentStream({
+    client: makePendingRegisteredClient(false, false, {
+      supported: true,
+      onMessage: async (message) => {
+        if (message.payload.case === "federationExecutionRequest") initialRequests++;
+      },
+    }),
+    adapter: makeAdapter({
+      submit: async () => {
+        throw new Error("must wait for authority");
+      },
+    }),
+    agentId: "agent",
+    siteName: "site",
+    logger: silent,
+    heartbeatIntervalMs: 60_000,
+    inboundAcks: inbox,
+    cleanupIntents: new JobCleanupIntents(db),
+    revocationTombstones: new JobRevocationTombstones(db),
+  });
+  activeStreams.push(first);
+  const firstRunning = first.start();
+  try {
+    await settle(20);
+    await deliverServerMessage(
+      first,
+      create(ServerMessageSchema, { payload: { case: "dispatchJob", value: dispatch } }),
+    );
+    await waitForCondition(() => initialRequests === 1);
+    expect(await inbox.pendingInbound()).toHaveLength(1);
+  } finally {
+    await first.stop();
+    await firstRunning;
+    await settle();
+  }
+  const dispatchId = `${dispatch.jobId}:1`;
+  if (outcome === "submitting") await inbox.markSubmissionStarted(dispatchId);
+  if (outcome === "revoked") await new JobRevocationTombstones(db).record(dispatch.jobId, 1);
+  if (outcome === "cleanup-uncertain") {
+    await new JobCleanupIntents(db).recordDataDelivery(dispatch.jobId, {
+      bindingId: "binding",
+      targetPath: "/managed/input",
+      method: "object-download",
+    });
+  }
+  if (outcome === "legacy") {
+    firstSqlite.run("UPDATE inbound_dispatch_pending SET payload = ? WHERE dispatch_id = ?", [
+      JSON.stringify({ federationExecution: true }),
+      dispatchId,
+    ]);
+  }
+  firstSqlite.close();
+  const reopenedSqlite = new Database(path);
+  const reopenedDb = drizzle(reopenedSqlite, { schema });
+  const reopenedInbox = new InboundAcks(reopenedDb);
+  const reports: JobStatusReport[] = [];
+  let grants = 0;
+  let submitted = 0;
+  const renewed = create(DispatchJobSchema, {
+    ...dispatch,
+    command: outcome === "rewrite" ? "replacement" : dispatch.command,
+  });
+  const second = new AgentStream({
+    client: makePendingRegisteredClient(false, false, {
+      supported: true,
+      onMessage: async (message) => {
+        if (message.payload.case !== "federationExecutionRequest") return;
+        grants++;
+        const request = message.payload.value;
+        await deliverServerMessage(
+          second,
+          create(ServerMessageSchema, {
+            payload: {
+              case: "federationExecutionResponse",
+              value: create(FederationExecutionResponseSchema, {
+                requestId: request.requestId,
+                jobId: request.jobId,
+                dispatchEpoch: request.dispatchEpoch,
+                decision:
+                  outcome === "deny"
+                    ? FederationExecutionDecision.DENIED
+                    : FederationExecutionDecision.GRANTED,
+                dispatch: renewed,
+                expiresAtUnixMs: BigInt(Date.now() + 10_000),
+              }),
+            },
+          }),
+        );
+      },
+    }),
+    adapter: makeAdapter({
+      findByKuintessenceJobId: async () => ({
+        status: "indeterminate",
+        reason: "scheduler unavailable",
+      }),
+      submit: async (spec) => {
+        expect(spec.command).toBe(dispatch.command);
+        expect((await reopenedInbox.pendingInbound())[0]?.payload.federationSubmissionStarted).toBe(
+          true,
+        );
+        submitted++;
+        return { schedulerJobId: "scheduler-recovered" };
+      },
+    }),
+    agentId: "agent",
+    siteName: "site",
+    logger: silent,
+    heartbeatIntervalMs: 60_000,
+    jobSleep: async () => {},
+    inboundAcks: reopenedInbox,
+    cleanupIntents: new JobCleanupIntents(reopenedDb),
+    revocationTombstones: new JobRevocationTombstones(reopenedDb),
+  });
+  second.enqueueStatusUpdate = async (report) => {
+    reports.push(report);
+  };
+  activeStreams.push(second);
+  const secondRunning = second.start();
+  try {
+    if (["submitting", "cleanup-uncertain", "legacy"].includes(outcome)) {
+      await settle(30);
+      expect(grants).toBe(0);
+      expect(reports).toEqual([]);
+      expect(await reopenedInbox.pendingInbound()).toHaveLength(1);
+    } else {
+      await waitForCondition(() =>
+        reports.some((report) => ["completed", "failed"].includes(report.status)),
+      );
+      expect(await reopenedInbox.pendingInbound()).toHaveLength(0);
+      expect(reports.some((report) => report.status === "failed")).toBe(outcome !== "grant");
+      expect(grants).toBe(outcome === "grant" ? 3 : outcome === "revoked" ? 0 : 1);
+    }
+    await deliverServerMessage(
+      second,
+      create(ServerMessageSchema, { payload: { case: "dispatchJob", value: dispatch } }),
+    );
+    await settle();
+    expect(submitted).toBe(outcome === "grant" ? 1 : 0);
+  } finally {
+    await second.stop();
+    await secondRunning;
+    await settle();
+    reopenedSqlite.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
