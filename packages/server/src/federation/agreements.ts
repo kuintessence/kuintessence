@@ -2,6 +2,8 @@ import {
   auditLog,
   federationAgreementApprovals,
   federationAgreements,
+  federationPreparations,
+  federationReservations,
   type PgDb,
 } from "@kuintessence/db";
 import {
@@ -50,6 +52,46 @@ export class FederationAgreementService {
           desc(federationAgreementApprovals.createdAt),
           desc(federationAgreementApprovals.revisionId),
         )
+        .limit(limit)
+        .offset(offset);
+    });
+  }
+
+  async listReservations(actor: FederationActor, revisionId: string, limit = 50, offset = 0) {
+    return this.db.transaction(async (tx) => {
+      await requireFederationCapability(tx, actor, "agreement.read");
+      const [agreement] = await tx
+        .select({ id: federationAgreements.revisionId })
+        .from(federationAgreements)
+        .where(
+          and(
+            eq(federationAgreements.revisionId, revisionId),
+            eq(federationAgreements.localOrgId, actor.orgId),
+            eq(federationAgreements.targetSiteId, this.signingKey.siteId),
+          ),
+        );
+      if (!agreement) throw new FederationError("AGREEMENT_UNAVAILABLE");
+      return tx
+        .select({
+          id: federationReservations.id,
+          taskId: federationReservations.taskId,
+          attempt: federationReservations.attempt,
+          receiptState: federationReservations.state,
+          reservedAmount: federationReservations.amount,
+          createdAt: federationReservations.createdAt,
+          preparation: {
+            state: federationPreparations.state,
+            blocker: federationPreparations.blocker,
+            updatedAt: federationPreparations.updatedAt,
+          },
+        })
+        .from(federationReservations)
+        .leftJoin(
+          federationPreparations,
+          eq(federationPreparations.reservationId, federationReservations.id),
+        )
+        .where(eq(federationReservations.agreementRevisionId, revisionId))
+        .orderBy(desc(federationReservations.createdAt), desc(federationReservations.id))
         .limit(limit)
         .offset(offset);
     });

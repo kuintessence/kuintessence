@@ -201,6 +201,10 @@ test("both institutional signatures activate one recipient budget, never a sourc
     .where(eq(federationBudgets.domainId, value.budgetDomainId));
   expect(budgets).toHaveLength(1);
   expect(budgets[0]?.available).toBe("100");
+  expect(await bService.listReservations(bActor, value.agreementRevisionId)).toEqual([]);
+  await expect(bService.listReservations(aActor, value.agreementRevisionId)).rejects.toThrow(
+    "AGREEMENT_UNAVAILABLE",
+  );
   expect((await bService.get(bActor, value.agreementRevisionId)).counterpartyApprovalJws).toBe(
     aApproval.approvalJws,
   );

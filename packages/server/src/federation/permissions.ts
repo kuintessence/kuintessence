@@ -10,7 +10,12 @@ import { and, asc, eq, inArray } from "drizzle-orm";
 import { z } from "zod";
 import type { FederationTransaction } from "./trust-registry";
 
-export const FederationCapabilitySchema = z.enum(["agreement.read", "agreement.approve"]);
+export const FederationCapabilitySchema = z.enum([
+  "agreement.read",
+  "agreement.approve",
+  "asset.read",
+  "asset.map",
+]);
 export type FederationCapability = z.infer<typeof FederationCapabilitySchema>;
 export interface FederationActor {
   userId: string;
@@ -39,7 +44,11 @@ export async function requireFederationCapability(
 ) {
   await requireHumanMember(tx, actor);
   const allowed =
-    capability === "agreement.read" ? ["agreement.read", "agreement.approve"] : [capability];
+    capability === "agreement.read"
+      ? ["agreement.read", "agreement.approve"]
+      : capability === "asset.read"
+        ? ["asset.read", "asset.map"]
+        : [capability];
   const [grant] = await tx
     .select()
     .from(federationCapabilities)

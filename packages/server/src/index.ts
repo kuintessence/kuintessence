@@ -47,7 +47,10 @@ import { AuthzService, type AuthzTuple } from "./authz/service";
 import { loadServerConfig } from "./config";
 import { EventBus } from "./events/event-bus";
 import { FederationAgreementService } from "./federation/agreements";
+import { FederationAssetService } from "./federation/assets";
 import { FederationPermissionService } from "./federation/permissions";
+import { FederationPreparationService } from "./federation/preparation";
+import { FederationPreparationWorker } from "./federation/preparation-worker";
 import { loadFederationSigningKey, startFederationIngress } from "./federation/runtime";
 import { FederationTrustRegistry } from "./federation/trust-registry";
 import {
@@ -88,6 +91,7 @@ import { buildCpRouter } from "./routes/cp";
 import { createDataMarketRoutes } from "./routes/data-market";
 import { dslRoutes } from "./routes/dsl";
 import { createFederationAgreementRoutes } from "./routes/federation-agreements";
+import { createFederationAssetRoutes } from "./routes/federation-assets";
 import { createFileRoutes } from "./routes/files";
 import { healthRoutes } from "./routes/health";
 import { createInterconnectRoutes } from "./routes/interconnect";
@@ -1379,6 +1383,11 @@ protectedApi.route(
   "/",
   createAdminFederationPermissionRoutes(new FederationPermissionService(db), authzService),
 );
+const federationAssets = new FederationAssetService(db, {
+  authorizeSoftware: (assetId, principal, capability) =>
+    softwareAvailability.assertAssetCapability(assetId, principal, capability),
+});
+protectedApi.route("/", createFederationAssetRoutes(federationAssets));
 const federationSigningKey = await loadFederationSigningKey(config);
 if (federationSigningKey)
   protectedApi.route(
@@ -1850,6 +1859,13 @@ async function readRequiredGrpcTlsFile(
 }
 
 const federationIngress = await startFederationIngress(db, config, federationSigningKey);
+const federationPreparationWorker = federationSigningKey
+  ? new FederationPreparationWorker(
+      db,
+      new FederationPreparationService(db, federationSigningKey.siteId, federationAssets),
+    )
+  : undefined;
+federationPreparationWorker?.start();
 logger.info({ port: config.SERVER_PORT }, "Server starting");
 
 const httpTrustedProxyCidrs = parseTrustedProxyCidrs(config.HTTP_TRUSTED_PROXY_CIDRS);
@@ -1888,6 +1904,7 @@ async function shutdown(signal: string): Promise<void> {
   try {
     grpcServer.close();
     await federationIngress?.stop(true);
+    await federationPreparationWorker?.stop();
     fileService.shutdown();
     // Stop the metering rollup cron so an in-flight tick can drain
     // before exit; the cron internally catches and logs errors so this

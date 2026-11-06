@@ -1,4 +1,15 @@
 import { z } from "zod";
+import {
+  type FederationAssetRef,
+  FederationAssetRefSchema,
+  FederationDigestSchema,
+} from "./references";
+
+export {
+  type FederationAssetRef,
+  FederationAssetRefSchema,
+  FederationDigestSchema,
+} from "./references";
 
 export const FederationModeSchema = z.enum([
   "bilateral_direct",
@@ -9,19 +20,9 @@ export type FederationMode = z.infer<typeof FederationModeSchema>;
 
 /** Fixed-point amounts: the agreement defines the unit; never round through a JS number. */
 export const FederationAmountSchema = z.string().regex(/^(0|[1-9][0-9]{0,37})$/);
-export const FederationDigestSchema = z.string().regex(/^sha256:[a-f0-9]{64}$/);
 const Id = z.uuid();
 const Time = z.iso.datetime();
 const Unit = z.string().regex(/^[a-zA-Z][a-zA-Z0-9_.:-]{0,63}$/);
-
-export const FederationAssetRefSchema = z.strictObject({
-  originSiteId: Id,
-  kind: z.enum(["workflow", "script", "software", "dataset"]),
-  id: Id,
-  revision: z.string().min(1).max(128),
-  digest: FederationDigestSchema,
-});
-export type FederationAssetRef = z.infer<typeof FederationAssetRefSchema>;
 
 export const FederationResourcesSchema = z.strictObject({
   cpus: z.number().int().min(1).max(1_000_000),
@@ -123,7 +124,9 @@ export class FederationError extends Error {
       | "POLICY_DENIED"
       | "BUDGET_EXHAUSTED"
       | "OPERATION_CONFLICT"
-      | "LEDGER_REQUIRED",
+      | "LEDGER_REQUIRED"
+      | "ASSET_UNAVAILABLE"
+      | "DATA_WAITING",
   ) {
     super(code);
     this.name = "FederationError";
@@ -170,3 +173,5 @@ export function assertDelegationPolicy(
   )
     throw new FederationError("POLICY_DENIED");
 }
+
+export * from "./assets";

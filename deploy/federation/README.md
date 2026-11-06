@@ -94,3 +94,26 @@ docker compose --project-directory . \
 `orgId`、审批人和签名私钥不能从请求正文指定；机构 ID 来自部署配置，组织及审批人来自当前会话和数据库成员/授权校验。本站用于协议签署的登记公钥还须有 `agreement` 用途。签名密钥轮换后，旧批准仍按原 keyId 验证，不静默改写旧证据。
 
 两端可交换返回的 `approvalJws`，分别导入对方签名。目前这一步是明确的 API 操作，尚无自动协议协商发送器或 UI。源方只记录双签，额度以接收方已安装协议为准。接收方本地暂停会阻止继续接单；源方本地暂停不证明远端运行任务已停止，跨站撤销确认尚待实现。链协调模式当前仍明确拒绝，不会降级为双边模式。
+
+## 资源映射和材料准备
+
+管理员可以为组织成员分配 `asset.read`、`asset.map`，后者包含读取权，仍不自动授予本地软件或数据的使用权。以下入口均要求人类登录会话，并只作用于活动组织：
+
+| 方法与完整路径 | 内容 |
+| --- | --- |
+| `GET /api/federation/assets/mappings` | 映射清单，支持 limit/offset |
+| `POST /api/federation/assets/mappings` | `{reference,localRevisionId}`；来源 ref 包含 originSiteId/kind/id/revision/digest |
+| `POST /api/federation/assets/mappings/:id/revoke` | 永久撤销映射，不改写旧版本 |
+| `POST /api/federation/assets/materials` | `{originSiteId,content}`；保存 inputs 或 environment-lock 清单，返回摘要 |
+| `GET /api/federation/assets/materials/:originSiteId/:digest` | 在本地组织范围读取并验证摘要 |
+| `GET /api/federation/agreements/:revisionId/reservations` | 接收方协议的预留与准备状态、阻断原因、更新时间，要求 agreement.read |
+
+软件、脚本、工作流、用例分别映射到本地 `software_asset_revisions.id`；数据集映射到 `data_asset_versions.id`，不接受可变的 latest 或最新版本跟随。普通映射登记不能覆盖已有来源机构/资源/版本组合，即使替换版本恰有相同内容，也必须明确采用新的来源 revision。
+
+软件类 ref.digest 是 SHA-256(`federationCanonicalJson(software_asset_revisions.payload)`)；该函数按确定的键顺序编码 JSON，保留数组顺序，拒绝非 JSON 值及超过 32 层/一 MiB 的材料。它仅服务于联邦材料，不修改旧生态包签名和 JWS 原字节签名。数据集 ref.digest 采用现有不可变版本的 manifestDigest，数据位置与使用授权仍由 Data Market 检查；真正的文件字节验证在后续传输/执行时进行。
+
+输入清单含 `protocolVersion:1, kind:inputs, parameters, datasets, bindings`，datasets 每项为 `{descriptor,asset,selectedEntries,targetPath?}`，bindings 每项为 `{sourceRevisionId,asset}`。后续执行器只能按明确的版本绑定解析工作流引用，不能全局字符串替换 UUID。
+
+环境锁清单含 `protocolVersion:1, kind:environment-lock, target:{platform,architecture}, nativeLockDigest, software, sandboxRuntime?`；software 每项为 `{asset,concreteSpec,dagHash}`，sandboxRuntime 为 `{kind:OCI或SIF,digest}`。当前只存储/解析这些引用，native lock 文件、真实目标环境和安装材料验证仍待接通，不能据此声称支持完整离线安装。
+
+启用联邦后，引用 worker 每十秒检查一批，每批最多八条预留，等待/阻断项至少间隔三十秒重试。准备状态为 `waiting`、`blocked`、`resolved`，无记录表示尚未处理。查询会返回更新时间；resolved 是引用快照，不是环境已装好或已批准运行。缺输入清单、映射或可用数据位置不会创建占位 Job。协议/签名租期过期后不会自动延长授权，跨站续租仍待实现。

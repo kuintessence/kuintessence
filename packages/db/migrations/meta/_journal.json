@@ -540,6 +540,20 @@
       "when": 1793943799988,
       "tag": "0076_curvy_senator_kelly",
       "breakpoints": true
+    },
+    {
+      "idx": 77,
+      "version": "7",
+      "when": 1793944725038,
+      "tag": "0077_slippery_karnak",
+      "breakpoints": true
+    },
+    {
+      "idx": 78,
+      "version": "7",
+      "when": 1793944869047,
+      "tag": "0078_nosy_masked_marvel",
+      "breakpoints": true
     }
   ]
 }

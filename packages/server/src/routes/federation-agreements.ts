@@ -42,6 +42,23 @@ export function createFederationAgreementRoutes(service: FederationAgreementServ
       data: await service.list(c.get("federationActor"), limit, offset),
     });
   });
+  r.get(
+    "/federation/agreements/:revisionId/reservations",
+    kqValidator("param", id),
+    kqValidator("query", page),
+    async (c) => {
+      const { limit, offset } = c.req.valid("query");
+      return c.json({
+        success: true,
+        data: await service.listReservations(
+          c.get("federationActor"),
+          c.req.valid("param").revisionId,
+          limit,
+          offset,
+        ),
+      });
+    },
+  );
   r.get("/federation/agreements/:revisionId", kqValidator("param", id), async (c) =>
     c.json({
       success: true,

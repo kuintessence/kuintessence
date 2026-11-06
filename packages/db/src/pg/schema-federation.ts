@@ -15,7 +15,7 @@ import {
   uuid,
   varchar,
 } from "drizzle-orm/pg-core";
-import { orgs, users } from "./schema";
+import { dataAssetVersions, orgs, softwareAssetRevisions, users } from "./schema";
 
 export const federationSites = pgTable(
   "federation_sites",
@@ -90,7 +90,7 @@ export const federationCapabilities = pgTable(
     primaryKey({ columns: [t.orgId, t.userId, t.capability] }),
     check(
       "federation_capability_kind",
-      sql`${t.capability} IN ('agreement.read', 'agreement.approve')`,
+      sql`${t.capability} IN ('agreement.read', 'agreement.approve', 'asset.read', 'asset.map')`,
     ),
   ],
 );
@@ -243,4 +243,98 @@ export const federationAttestationOutbox = pgTable(
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [check("federation_attestation_state", sql`${t.state} = 'pending'`)],
+);
+
+/** A mapping never grants permission and never silently follows a newer local revision. */
+export const federationAssetMappings = pgTable(
+  "federation_asset_mappings",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    localOrgId: uuid("local_org_id")
+      .notNull()
+      .references(() => orgs.id),
+    originSiteId: uuid("origin_site_id")
+      .notNull()
+      .references(() => federationSites.id),
+    kind: varchar("kind", { length: 16 }).notNull(),
+    originId: uuid("origin_id").notNull(),
+    originRevision: varchar("origin_revision", { length: 128 }).notNull(),
+    digest: varchar("digest", { length: 71 }).notNull(),
+    softwareRevisionId: uuid("software_revision_id").references(() => softwareAssetRevisions.id),
+    dataVersionId: uuid("data_version_id").references(() => dataAssetVersions.id),
+    createdBy: uuid("created_by")
+      .notNull()
+      .references(() => users.id),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
+  },
+  (t) => [
+    uniqueIndex("federation_asset_origin").on(
+      t.localOrgId,
+      t.originSiteId,
+      t.kind,
+      t.originId,
+      t.originRevision,
+    ),
+    check("federation_asset_digest", sql`${t.digest} ~ '^sha256:[a-f0-9]{64}$'`),
+    check(
+      "federation_asset_target",
+      sql`(${t.kind} = 'dataset' AND ${t.dataVersionId} IS NOT NULL AND ${t.softwareRevisionId} IS NULL)
+    OR (${t.kind} IN ('workflow', 'script', 'software', 'usecase') AND ${t.softwareRevisionId} IS NOT NULL AND ${t.dataVersionId} IS NULL)`,
+    ),
+  ],
+);
+
+/** Exact canonical bytes are retained separately from JSONB to keep content addressing stable. */
+export const federationMaterials = pgTable(
+  "federation_materials",
+  {
+    localOrgId: uuid("local_org_id")
+      .notNull()
+      .references(() => orgs.id),
+    originSiteId: uuid("origin_site_id")
+      .notNull()
+      .references(() => federationSites.id),
+    digest: varchar("digest", { length: 71 }).notNull(),
+    kind: varchar("kind", { length: 24 }).notNull(),
+    content: text("content").notNull(),
+    createdBy: uuid("created_by")
+      .notNull()
+      .references(() => users.id),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.localOrgId, t.originSiteId, t.digest] }),
+    check("federation_material_kind", sql`${t.kind} IN ('inputs', 'environment-lock')`),
+    check("federation_material_digest", sql`${t.digest} ~ '^sha256:[a-f0-9]{64}$'`),
+    check("federation_material_size", sql`octet_length(${t.content}) <= 1048576`),
+  ],
+);
+
+export const federationPreparations = pgTable(
+  "federation_preparations",
+  {
+    reservationId: uuid("reservation_id")
+      .primaryKey()
+      .references(() => federationReservations.id),
+    state: varchar("state", { length: 16 }).notNull(),
+    blocker: varchar("blocker", { length: 64 }),
+    mappings: jsonb("mappings")
+      .$type<
+        Array<{
+          reference: import("@kuintessence/shared/federation").FederationAssetRef;
+          mappingId: string;
+          localRevisionId: string;
+        }>
+      >()
+      .notNull()
+      .default([]),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    check(
+      "federation_preparation_state",
+      sql`(${t.state} = 'resolved' AND ${t.blocker} IS NULL) OR (${t.state} IN ('waiting', 'blocked') AND ${t.blocker} IS NOT NULL)`,
+    ),
+  ],
 );
