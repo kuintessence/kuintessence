@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { detectScheduler } from "./adapters/detect";
 import { loadAgentConfig } from "./config";
 
 describe("loadAgentConfig", () => {
@@ -29,6 +30,27 @@ describe("loadAgentConfig", () => {
   test("coerces HEARTBEAT_INTERVAL_SEC from string", () => {
     const cfg = loadAgentConfig({ ...baseEnv, HEARTBEAT_INTERVAL_SEC: "60" });
     expect(cfg.HEARTBEAT_INTERVAL_SEC).toBe(60);
+  });
+
+  test("preserves the registered scheduler on a host with multiple scheduler clients", async () => {
+    expect(loadAgentConfig(baseEnv).AGENT_SCHEDULER_TYPE).toBeUndefined();
+    const config = loadAgentConfig({
+      ...baseEnv,
+      AGENT_SCHEDULER_TYPE: "kubernetes",
+      AGENT_SCHEDULER_VERSION: "1.36",
+    });
+    const adapter = await detectScheduler({
+      forceType: config.AGENT_SCHEDULER_TYPE,
+      forceVersion: config.AGENT_SCHEDULER_VERSION,
+      spawner: {
+        async run() {
+          throw new Error("A registered scheduler must not be replaced by auto-detection");
+        },
+      },
+    });
+    expect(adapter.type).toBe("kubernetes");
+    expect(adapter.version).toBe("1.36");
+    expect(() => loadAgentConfig({ ...baseEnv, AGENT_SCHEDULER_TYPE: "unknown" })).toThrow();
   });
 
   test("managed memory defaults to 4096 MiB and accepts integer budgets from 1024 to 4096", () => {

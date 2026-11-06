@@ -83,6 +83,7 @@ import { QueueRegistryService } from "../services/queue-registry";
 import { SandboxManifestSigner, sandboxBundleSha256 } from "../services/sandbox-manifest-signer";
 import { SandboxPolicyService } from "../services/sandbox-policy";
 import { SoftwareAvailabilityService } from "../services/software-availability";
+import { createWorkflowPlacementBuilder } from "../services/workflow-placement-builder";
 import { InstalledRegistry } from "../software-governance/installed-registry";
 import { SoftwareOperationService } from "../software-governance/operation-service";
 import { WorkflowAsyncRunner } from "../workflow/async-runner";
@@ -3281,5 +3282,89 @@ test("reservation status includes the bound workflow failure without exposing ex
     );
   } finally {
     await permissions.set({ ...actor, capability: "agreement.read", enabled: true }, actor.userId);
+  }
+});
+
+test("federation placement only plans signed targets with the locked runtime", async () => {
+  const f = await executionFixture();
+  const binding = await f.bindings.stage(f.reservationId);
+  const runtime = environment().sandboxRuntime;
+  if (!runtime) throw new Error("Missing runtime");
+  const profileId = crypto.randomUUID();
+  const otherAgentId = crypto.randomUUID();
+  const ids = [approvedTarget.agentId, otherAgentId];
+  await db.insert(agents).values(
+    ids.map((agentId) => ({
+      agentId,
+      siteName: "Placement probe",
+      siteId: "local",
+      providerOrgId: actor.orgId,
+      clusterId: approvedTarget.clusterId,
+      schedulerType: "kubernetes",
+      schedulerVersion: "test",
+      status: "online",
+      sandboxReadiness: "ready",
+      sandboxRuntimeCache: [{ ...runtime, signatureVerified: true }],
+    })),
+  );
+  await db.insert(sandboxRuntimeProfiles).values({
+    id: profileId,
+    name: "Placement probe",
+    language: "bash",
+    languageVersion: "5",
+    securityRequirements: {},
+    ociDigest: runtime.digest,
+    signature: "fixture",
+    adapters: ["kubernetes"],
+    lifecycle: "active",
+  });
+  await db.insert(sandboxRuntimeContractBindings).values({
+    providerOrgId: actor.orgId,
+    runtimeContractRef: "bash@1",
+    runtimeProfileId: profileId,
+    runtimeDigest: runtime.digest,
+    boundBy: actor.userId,
+    attestationKeyId: "fixture",
+    attestationSignature: "fixture",
+    attestedAt: testNow,
+  });
+  try {
+    const builder = createWorkflowPlacementBuilder(db);
+    const candidates = async () =>
+      (await builder(binding.workflowRunId, "test")).request.nodes[0]?.candidates.map(
+        (candidate) => candidate.agentId,
+      );
+    expect(await candidates()).toEqual([approvedTarget.agentId]);
+    await db
+      .update(agents)
+      .set({ clusterId: "different-cluster" })
+      .where(eq(agents.agentId, approvedTarget.agentId));
+    expect(await candidates()).toEqual([]);
+    await db
+      .update(agents)
+      .set({ clusterId: approvedTarget.clusterId })
+      .where(eq(agents.agentId, approvedTarget.agentId));
+    const differentDigest = `sha256:${"e".repeat(64)}`;
+    await db
+      .update(sandboxRuntimeProfiles)
+      .set({ ociDigest: differentDigest })
+      .where(eq(sandboxRuntimeProfiles.id, profileId));
+    await db
+      .update(sandboxRuntimeContractBindings)
+      .set({ runtimeDigest: differentDigest })
+      .where(eq(sandboxRuntimeContractBindings.runtimeProfileId, profileId));
+    await db
+      .update(agents)
+      .set({
+        sandboxRuntimeCache: [{ kind: "OCI", digest: differentDigest, signatureVerified: true }],
+      })
+      .where(inArray(agents.agentId, ids));
+    expect(await candidates()).toEqual([]);
+  } finally {
+    await db
+      .delete(sandboxRuntimeContractBindings)
+      .where(eq(sandboxRuntimeContractBindings.runtimeProfileId, profileId));
+    await db.delete(sandboxRuntimeProfiles).where(eq(sandboxRuntimeProfiles.id, profileId));
+    await db.delete(agents).where(inArray(agents.agentId, ids));
   }
 });

@@ -41,6 +41,8 @@ describe("writeAgentRegistrationFiles", () => {
         serverGrpcUrl: "https://server.example.com/grpc",
         agentId: "agent-cli-test",
         siteName: "cli-site",
+        schedulerType: "kubernetes",
+        schedulerVersion: "1.36",
         certPem: "cert-pem",
         keyPem: "key-pem",
         caCertPem: "ca-pem",
@@ -50,6 +52,8 @@ describe("writeAgentRegistrationFiles", () => {
       expect(env).toContain('SERVER_GRPC_URL="https://server.example.com/grpc"');
       expect(env).toContain('SERVER_HTTP_URL="https://server.example.com"');
       expect(env).toContain('AGENT_ID="agent-cli-test"');
+      expect(env).toContain('AGENT_SCHEDULER_TYPE="kubernetes"');
+      expect(env).toContain('AGENT_SCHEDULER_VERSION="1.36"');
       expect(env).toContain('AGENT_MTLS_REQUIRED="true"');
       expect(await readFile(join(dir, "certs", "client.crt"), "utf8")).toBe("cert-pem");
       expect(await readFile(join(dir, "certs", "client.key"), "utf8")).toBe("key-pem");

@@ -10,6 +10,7 @@ import {
   detectLocalAdapter,
   localSchedulerErrorMessage,
   parseScheduler,
+  type SchedulerType,
 } from "../lib/local-scheduler";
 import { expandTilde, selectBackend } from "../tui/backend/select";
 
@@ -153,6 +154,8 @@ export function registerAgentCommand(program: Command): void {
           serverGrpcUrl: opts.grpcUrl,
           agentId: completed.agentId,
           siteName: completed.siteName,
+          schedulerType: parseScheduler(adapter.type),
+          schedulerVersion: adapter.version,
           certPem: completed.certPem,
           keyPem: privateKeyPem,
           caCertPem: completed.caCertPem,
@@ -288,6 +291,8 @@ export async function writeAgentRegistrationFiles(input: {
   serverGrpcUrl: string;
   agentId: string;
   siteName: string;
+  schedulerType: SchedulerType;
+  schedulerVersion: string;
   certPem: string;
   keyPem: string;
   caCertPem: string;
@@ -307,6 +312,8 @@ export async function writeAgentRegistrationFiles(input: {
     envLine("SERVER_HTTP_URL", input.serverHttpUrl),
     envLine("AGENT_ID", input.agentId),
     envLine("AGENT_SITE_NAME", input.siteName),
+    envLine("AGENT_SCHEDULER_TYPE", input.schedulerType),
+    envLine("AGENT_SCHEDULER_VERSION", input.schedulerVersion),
     envLine("AGENT_MTLS_REQUIRED", "true"),
     envLine("AGENT_CERT_DIR", certDir),
     envLine("AGENT_DB_PATH", dbPath),

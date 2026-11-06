@@ -4,6 +4,7 @@ import {
   logLevelSchema,
   nonNegativeInt,
   positiveInt,
+  SchedulerTypeEnum,
 } from "@kuintessence/shared";
 import { z } from "zod";
 import { SandboxRuntimeCacheConfigSchema } from "./sandbox/runtime-reference";
@@ -83,6 +84,8 @@ const AgentConfigSchema = z
     SERVER_GRPC_URL: z.string().url(),
     AGENT_ID: z.string().min(1),
     AGENT_SITE_NAME: z.string().min(1),
+    AGENT_SCHEDULER_TYPE: SchedulerTypeEnum.optional(),
+    AGENT_SCHEDULER_VERSION: z.string().min(1).optional(),
     AGENT_DB_PATH: z.string().default("./agent.db"),
     HEARTBEAT_INTERVAL_SEC: positiveInt(30),
     AGENT_GRPC_PING_INTERVAL_SEC: boundedPositiveInt(30, 7_200),

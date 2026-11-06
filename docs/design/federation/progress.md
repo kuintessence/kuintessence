@@ -694,6 +694,23 @@ Script 的 File/FileBatch 到下游受管文件转换、Checkpoint 文件持久�
 
 本机记录位于 `temp/federation-live/`、`temp/federation-reservation-status.log`、`temp/federation-status-{lint,typecheck}.log`，均不纳入版本控制。尚未推送、合并或部署 PR 预览；下一项需要配置真实受信任运行时后，验证联邦 Script 的实际派发、执行与结果，而不是重复原生任务基线。
 
+## 真实 Kubernetes 联邦脚本与接线修复
+
+沿上一轮完整 Server 联调继续测试，修复两个真实路径中暴露的接线缺口：
+
+- CLI `agent register --scheduler` 原来只影响登记请求，生成的 env 不含调度器选择，Agent 启动又自动探测。混合客户端环境会注册 Kubernetes 却运行 Slurm。现在 CLI 保存类型/版本，Agent 与独立联邦看守均使用同一配置；旧未设置配置保持自动探测。复用现有 detectScheduler 的强制类型入口，没有替换调度器 CLI 或测试伪装。
+- 自动联邦入队原来遗漏普通提交时的资源规划，已启用 Sandbox 的 Script 仍因缺少 planned Agent 失败。现在准备 worker 入队回调先调用原 PlacementPlanService；规划器读取原联邦绑定，只允许双签目标的机构/集群/Agent 和环境锁中的镜像类型/摘要。原具体派发、执行身份与运行续期检查保持有效。
+
+完整联调使用独立 namespace、临时 PostgreSQL、完整 Server、真实 Node mTLS 网关、生产 Agent 与独立 Python supervisor/watchdog。Agent 只有该测试 namespace 的作业管理、执行账号读取和集群节点只读权限，业务 Pod 不挂载 API token。运行镜像使用本机缓存的固定 OCI digest，由实验管理员对核实的 manifest digest 签名并验签；它不是对第三方发布者签名的认证。原脚本、机构协议和委派固定摘要，重复请求保持同一回执、预留与运行。
+
+**实际成功记录**：Job `b0cb8bb3-05c9-45a0-b617-5261460479f3`，Kubernetes Job `kq-b0cb8bb3-05c9-45a0-b617-5261460479f3-1`，Workflow `451acb46-60a6-4363-a782-dbb44f4b9527`。Pod 退出码 0，平台 Job/Workflow 和接单查询均为 completed。真实 stdout 为 `federation-sandbox-ok:42`；脚本实际检查非 root UID、NoNewPrivs=1、Seccomp=2、外网 TCP 建连失败及 `6 * 7 = 42`。保存的 Pod 规格显示只读根目录、丢弃全部 capabilities、Localhost seccomp、1 CPU/128 MiB 限制。全程未配置 Fabric，没有跳过短期许可或独立看守门槛。
+
+初始实验缺少执行账号读取 RBAC、未启动看守，以及测试 Agent 预留 100m CPU 导致总预留超出节点 10m，均在独立实验配置中修正；最终 Agent 仅预留 10m CPU，作业仍为 1 CPU，现有预览服务未调整。一次首次节点健康上报尚未就绪也触发了原拒绝路径；这不被计为成功执行。
+
+验证：Agent 配置、调度器选择和 CLI 注册组合 **70 项通过**；新增隔离 PostgreSQL 规划用例 **1 项通过**，覆盖协议外 Agent、归属变化和本地合法绑定但摘要与签署锁不一致时的排除。新增夹具最初缺少 securityRequirements，补齐后定向复查通过。全仓 typecheck 及 Fabric 测试类型检查通过，后续修改的 Server/Agent 类型复查通过；最终 lint 无错误（原有 47 warnings、1 info）。真实联邦 Script 成功不是 mock 回调。临时数据库、Server、网关、namespace、RBAC、seccomp 文件和凭据均已清理；本机证据保存在 `temp/federation-k8s/` 及 `temp/federation-{scheduler,runtime,placement}*`，不纳入版本控制。
+
+Slurm 方向已取得并核对仓库既有 Apptainer 1.4.3 包 SHA-256，构建约 1.9 MiB 的本机 Bash SIF，并真实运行成功。现有缓存 Slurm 19.05 镜像配置 task/none，没有作业 cgroup；本轮没有把安全能力布尔值伪造成已验证能力，也没有将这份 SIF 宣称为完整 Slurm 联邦验收。仍须完成 Slurm/PBS 受限运行环境、跨机构文件产物、真实软件与依赖锁安装，以及其他完整蓝图功能和 PR 预览。
+
 ## 尚未接通，不能宣称支持
 
 协议审批与机构信任管理 UI、源站发送与状态查询、额度结算/退款、完整生产持久 Workflow 端到端验收、完整的数据/软件物化与介质交付、双方证据确认与完整用量/结算记录、商业/市场链码及真实联邦作业与 Fabric 联合运行、归档恢复、Web/CLI 和部署配置均未完成。

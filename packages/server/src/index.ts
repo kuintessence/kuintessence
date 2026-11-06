@@ -2120,6 +2120,11 @@ const federationPreparationWorker = federationPreparation
           binding.snapshot.identity.userId,
           binding.snapshot.identity.orgId,
         );
+        await placementPlanService.prepare(
+          runId,
+          binding.snapshot.workflow,
+          WorkflowPlacementConfigSchema.parse({}),
+        );
         return queueFederationWorkflow(db, federationDispatchAuthorization, runId);
       },
     )

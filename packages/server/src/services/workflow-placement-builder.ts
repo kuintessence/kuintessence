@@ -17,6 +17,7 @@ import {
   WorkflowPlacementConfigSchema,
 } from "@kuintessence/shared";
 import { eq, inArray } from "drizzle-orm";
+import { loadFederationWorkflowBinding } from "../federation/execution-binding";
 import type { SandboxPlannerCandidate, SandboxPlannerNode } from "../scheduler/sandbox-planner";
 import { parseWorkflowYaml } from "../workflow/parser";
 import { sandboxRuntimeContractKey } from "./license-runtime-governance";
@@ -179,7 +180,17 @@ export function createWorkflowPlacementBuilder(db: PgDb): PlacementPlanBuilder {
   const executionStats = new SandboxExecutionStatsService(db);
   return async (workflowRunId, _trigger, suppliedContext): Promise<PlacementPlanBuildInput> => {
     const { workflow, config } = await loadContext(db, workflowRunId, suppliedContext);
-    const agentRows = await db.select().from(agents);
+    const federation = await loadFederationWorkflowBinding(db, workflowRunId);
+    const agentRows = (await db.select().from(agents)).filter(
+      (agent) =>
+        !federation ||
+        federation.snapshot.executionTargets?.some(
+          (target) =>
+            target.agentId === agent.agentId &&
+            target.clusterId === agent.clusterId &&
+            target.providerOrgId === agent.providerOrgId,
+        ),
+    );
     const scriptNodes = workflow.spec.nodeDrafts.filter(isResolvedScriptNode);
     const profileIds = [
       ...new Set(
@@ -292,6 +303,14 @@ export function createWorkflowPlacementBuilder(db: PgDb): PlacementPlanBuilder {
           }
           const digest =
             adapter === "kubernetes" ? candidateProfile.ociDigest : candidateProfile.sifDigest;
+          const lockedRuntime = federation?.snapshot.environment.sandboxRuntime;
+          if (
+            federation &&
+            (!lockedRuntime ||
+              lockedRuntime.kind !== (adapter === "kubernetes" ? "OCI" : "SIF") ||
+              lockedRuntime.digest !== digest)
+          )
+            return [];
           if (bound && digest !== bound.binding.runtimeDigest) return [];
           if (!digest || !cachedDigest(agent.sandboxRuntimeCache, digest)) return [];
           return [{ ...candidate, runtimeCached: true }];

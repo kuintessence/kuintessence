@@ -201,6 +201,8 @@ async function main() {
     !!kubernetesSeccompProfile.localhostProfile &&
     !!kubernetesSeccompProfile.nodeName;
   const adapter = await detectScheduler({
+    forceType: config.AGENT_SCHEDULER_TYPE,
+    forceVersion: config.AGENT_SCHEDULER_VERSION,
     spawner,
     slurmDeps,
     pbsProDeps,

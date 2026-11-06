@@ -2,7 +2,7 @@ import { Database } from "bun:sqlite";
 import { lstat, realpath } from "node:fs/promises";
 import { resolve } from "node:path";
 import * as schema from "@kuintessence/db";
-import { createLogger, loadConfig, logLevelSchema } from "@kuintessence/shared";
+import { createLogger, loadConfig, logLevelSchema, SchedulerTypeEnum } from "@kuintessence/shared";
 import { drizzle } from "drizzle-orm/bun-sqlite";
 import { z } from "zod";
 import { realSpawner, type Spawner } from "./adapters/base";
@@ -12,6 +12,8 @@ import { FederationRuntimeWatchdog } from "./queue/federation-runtime-watchdog";
 
 const WatchdogConfig = z.object({
   AGENT_DB_PATH: z.string().min(1),
+  AGENT_SCHEDULER_TYPE: SchedulerTypeEnum.optional(),
+  AGENT_SCHEDULER_VERSION: z.string().min(1).optional(),
   AGENT_SPAWNER_BACKEND: z.enum(["host", "container"]).default("host"),
   AGENT_SLURM_CONTAINER_ID: z.string().min(1).optional(),
   LOG_LEVEL: logLevelSchema,
@@ -41,7 +43,11 @@ export async function runFederationWatchdog(): Promise<void> {
     run: (args, options) =>
       transport.run(args, { ...options, timeoutMs: Math.min(options?.timeoutMs ?? 5000, 5000) }),
   };
-  const adapter = await detectScheduler({ spawner });
+  const adapter = await detectScheduler({
+    spawner,
+    forceType: config.AGENT_SCHEDULER_TYPE,
+    forceVersion: config.AGENT_SCHEDULER_VERSION,
+  });
   if (!["slurm", "pbs-pro", "torque", "kubernetes"].includes(adapter.type))
     throw new Error(
       "Independent federation watchdog requires Slurm, PBS Pro, Torque or Kubernetes",
