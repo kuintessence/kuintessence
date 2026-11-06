@@ -39,6 +39,7 @@ export interface WorkflowAsyncRunnerDeps {
   validateWorkflow?: (
     workflow: Workflow,
     principal?: { userId: string | null; orgId: string | null; sub?: string },
+    runId?: string,
   ) => Promise<void>;
   assertExecutionPrincipal?: (input: { userId: string; orgId: string | null }) => Promise<void>;
 }
@@ -322,11 +323,15 @@ export class WorkflowAsyncRunner {
         orgId: input.orgId ?? null,
       });
       const workflow = parseWorkflowYaml(input.yaml);
-      await this.deps.validateWorkflow?.(workflow, {
-        userId: input.submittedBy,
-        orgId: input.orgId ?? null,
-        ...(input.principal?.sub ? { sub: input.principal.sub } : {}),
-      });
+      await this.deps.validateWorkflow?.(
+        workflow,
+        {
+          userId: input.submittedBy,
+          orgId: input.orgId ?? null,
+          ...(input.principal?.sub ? { sub: input.principal.sub } : {}),
+        },
+        runId,
+      );
       await this.deps.assertExecutionPrincipal?.({
         userId: input.submittedBy,
         orgId: input.orgId ?? null,

@@ -551,7 +551,8 @@ describe("WorkflowAsyncRunner", () => {
     } as unknown as WorkflowRunRegistry;
     const runner = new WorkflowAsyncRunner({
       registry,
-      validateWorkflow: async (_workflow, principal) => {
+      validateWorkflow: async (_workflow, principal, runId) => {
+        expect(runId).toBe("run-approved");
         expect(principal).toEqual({ userId: "user-1", orgId: "org-approved" });
         throw new Error("Usecase package is outside the active organization");
       },

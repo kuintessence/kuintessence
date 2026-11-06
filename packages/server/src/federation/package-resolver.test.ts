@@ -8,7 +8,9 @@ import {
   workflowDsl,
 } from "@kuintessence/shared";
 import type { FederationAssetRef } from "@kuintessence/shared/federation";
+import type { DatasetPreflightDeps } from "../workflow/dataset-preflight";
 import type { FederationAssetService } from "./assets";
+import { createFederationDatasetPreflight } from "./dataset-preflight";
 import { createFederationPackageResolver } from "./package-resolver";
 import { testAgreement, testDelegation } from "./test-fixtures";
 
@@ -133,6 +135,7 @@ function fixture() {
     );
   return {
     snapshot,
+    assets,
     pin,
     spec,
     resolver,
@@ -202,4 +205,117 @@ test.each([
     ),
   ).rejects.toThrow();
   expect(f.installChecks).toEqual([]);
+});
+
+test.each([
+  "allowed",
+  "missing-child",
+  "wrong-identity",
+  "data-denied",
+  "usecase-revoked",
+  "changed-workflow",
+] as const)("federation dataset preflight uses immutable nested definitions and local grants: %s", async (scenario) => {
+  const f = fixture();
+  const childId = crypto.randomUUID();
+  const data = {
+    source: "data-market" as const,
+    assetId: crypto.randomUUID(),
+    versionId: crypto.randomUUID(),
+    manifestDigest: `sha256:${"d".repeat(64)}`,
+    selectedEntries: ["input.txt"],
+  };
+  f.spec.inputs = [{ descriptor: "input", type: "Dataset", required: true }];
+  f.snapshot.workflow = workflowDsl.WorkflowSchema.parse({
+    name: "Parent",
+    spec: {
+      nodeDrafts: [
+        {
+          type: "SubWorkflow",
+          id: "child",
+          name: "Child",
+          maxDepth: 2,
+          ref: { kind: "ByVersion", workflowVersionId: childId },
+        },
+      ],
+    },
+  });
+  f.snapshot.workflowVersions[childId] = workflowDsl.WorkflowSchema.parse({
+    name: "Frozen child",
+    spec: {
+      nodeDrafts: [
+        {
+          type: "Loop",
+          id: "repeat",
+          name: "Repeat",
+          mode: "ForEach",
+          maxIterations: 1,
+          over: { expr: "[1]", lang: "cel" },
+          body: {
+            nodeDrafts: [
+              {
+                type: "SoftwareUsecaseComputing",
+                id: "hello",
+                name: "Hello",
+                usecaseVersionId: f.usecaseRevision,
+                softwareVersionId: f.softwareRevision,
+                inputSlots: [
+                  { type: "Dataset", descriptor: "input", optional: false, contents: data },
+                ],
+              },
+            ],
+          },
+        },
+      ],
+    },
+  });
+  const calls: string[] = [];
+  const deps: DatasetPreflightDeps = {
+    loadUsecasePackage: async () => {
+      throw new Error("Mutable package lookup must not run");
+    },
+    resolveWorkflowVersion: async () => {
+      throw new Error("Mutable child lookup must not run");
+    },
+    assertUsecaseExecutionAccess: async (input) => {
+      expect(input).toMatchObject({
+        usecaseVersionId: f.usecaseRevision,
+        requester: f.snapshot.identity,
+      });
+      calls.push("usecase");
+    },
+    verifyAccess: async (input) => {
+      expect(input).toEqual({
+        actorUserId: f.snapshot.identity.userId,
+        orgId: f.snapshot.identity.orgId,
+        assetId: data.assetId,
+        versionId: data.versionId,
+      });
+      calls.push("dataset");
+      return scenario !== "data-denied";
+    },
+    validateUsecase: async (input) => {
+      expect(input.pkg).toEqual(f.spec);
+      expect(input.dataInputs).toEqual({ input: data });
+      calls.push("shape");
+    },
+  };
+  if (scenario === "missing-child") delete f.snapshot.workflowVersions[childId];
+  if (scenario === "usecase-revoked") f.deny();
+  const workflow =
+    scenario === "changed-workflow"
+      ? { ...f.snapshot.workflow, name: "Changed" }
+      : f.snapshot.workflow;
+  const principal = {
+    ...f.snapshot.identity,
+    ...(scenario === "wrong-identity" ? { userId: crypto.randomUUID() } : {}),
+  };
+  const validate = createFederationDatasetPreflight(f.snapshot, f.assets, deps);
+  if (scenario === "allowed") {
+    await validate(workflow, principal);
+    expect(calls).toEqual(["usecase", "dataset", "shape"]);
+    expect(f.authorizations).toEqual(["usecase"]);
+  } else {
+    await expect(validate(workflow, principal)).rejects.toThrow();
+    expect(calls).not.toContain("shape");
+  }
 });

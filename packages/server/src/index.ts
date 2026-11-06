@@ -52,6 +52,7 @@ import { FederationAssetService } from "./federation/assets";
 import { FederationAttestationService } from "./federation/attestation";
 import { UnixAttestationClient } from "./federation/attestation-client";
 import { FederationAttestationWorker } from "./federation/attestation-worker";
+import { createFederationDatasetPreflight } from "./federation/dataset-preflight";
 import { FederationDispatchAuthorization } from "./federation/dispatch-authorization";
 import {
   FederationExecutionBindingService,
@@ -211,7 +212,7 @@ import {
 import { SpackMaterialDelivery } from "./software-governance/spack-material-delivery";
 import { createRealMinioBackend, loadMinioConfigFromEnv } from "./storage/minio-client";
 import { WorkflowAsyncRunner } from "./workflow/async-runner";
-import { createDatasetPreflight } from "./workflow/dataset-preflight";
+import { createDatasetPreflight, type DatasetPreflightDeps } from "./workflow/dataset-preflight";
 import { createDbPackageStore } from "./workflow/db-package-store";
 import { WorkflowDraftService } from "./workflow/draft-service";
 import { readWorkflowPublishedFiles, saveWorkflowPublishedFiles } from "./workflow/execution-jobs";
@@ -790,7 +791,7 @@ const resolveWorkflowVersion = async (workflowVersionId: string) => {
   return parseWorkflowYaml(row.yamlContent);
 };
 
-const validateWorkflowDatasetInputs = createDatasetPreflight({
+const workflowDatasetPreflightDeps: DatasetPreflightDeps = {
   loadUsecasePackage: async (usecaseVersionId) =>
     (await workflowPackageStore.getById(usecaseVersionId))?.spec ?? null,
   assertUsecaseExecutionAccess: (input) =>
@@ -798,7 +799,8 @@ const validateWorkflowDatasetInputs = createDatasetPreflight({
   resolveWorkflowVersion,
   verifyAccess: (input) => dataPrerequisiteRepository.verifyAccess(input),
   validateUsecase: (input) => workflowDataSelectionValidator.validateUsecase(input),
-});
+};
+const validateWorkflowDatasetInputs = createDatasetPreflight(workflowDatasetPreflightDeps);
 
 async function assertWorkflowExecutionMembership(input: {
   userId: string;
@@ -1214,7 +1216,17 @@ const workflowAsyncRunner = new WorkflowAsyncRunner({
   journal: new WorkflowExecutionJournalStore(db),
   resolveNamedReferences: (workflow, principal) =>
     namedReferenceResolver.resolve(workflow, principal),
-  validateWorkflow: validateWorkflowDatasetInputs,
+  validateWorkflow: async (workflow, principal, runId) => {
+    const binding = runId ? await loadFederationWorkflowBinding(db, runId) : null;
+    const validate = binding
+      ? createFederationDatasetPreflight(
+          binding.snapshot,
+          federationAssets,
+          workflowDatasetPreflightDeps,
+        )
+      : validateWorkflowDatasetInputs;
+    await validate(workflow, principal);
+  },
   assertExecutionPrincipal: assertWorkflowExecutionMembership,
   preparePlacement: (runId, workflow, placementConfig) =>
     placementPlanService.prepare(runId, workflow, placementConfig),
