@@ -573,6 +573,7 @@ export const jobs = pgTable(
     submittedAt: timestamp("submitted_at").defaultNow().notNull(),
     startedAt: timestamp("started_at"),
     completedAt: timestamp("completed_at"),
+    sandboxStatsRecordedAt: timestamp("sandbox_stats_recorded_at"),
     /**
      * Workflow-runtime-populated app template key. Mirrors
      * `metering_usage_raw.app_template_key` so CP-Console "top apps" can

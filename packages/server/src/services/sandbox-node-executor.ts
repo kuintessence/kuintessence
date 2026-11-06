@@ -90,6 +90,7 @@ export interface SandboxNodeExecutorOptions {
   }): Promise<EffectiveSandboxPolicy>;
   resolvePlannedAgents?(nodeId: string): Promise<string[]>;
   recordExecutionStats?(input: {
+    jobId: string;
     assetRevisionId: string | null;
     inlineScriptHash: string | null;
     runtimeProfileId: string;
@@ -612,9 +613,9 @@ export class SandboxNodeExecutor {
     }
     const completion = await this.options.awaitCompletion(job.id);
     await lease?.renew();
-    // shortcut: statistics may repeat after recovery; add per-Job accounting before enabling auto-resume.
     if (completion.status !== "completed") {
       await this.recordStats({
+        jobId: job.id,
         assetRevisionId: source.assetRevisionId,
         inlineScriptHash: source.assetRevisionId ? null : source.sha256,
         runtimeProfileId: runtime.id,
@@ -669,6 +670,7 @@ export class SandboxNodeExecutor {
       else values[descriptor] = { artifactId: artifact.id, type: output.type };
     }
     await this.recordStats({
+      jobId: job.id,
       assetRevisionId: source.assetRevisionId,
       inlineScriptHash: source.assetRevisionId ? null : source.sha256,
       runtimeProfileId: runtime.id,
@@ -829,6 +831,7 @@ export class SandboxNodeExecutor {
   }
 
   private async recordStats(input: {
+    jobId: string;
     assetRevisionId: string | null;
     inlineScriptHash: string | null;
     runtimeProfileId: string;

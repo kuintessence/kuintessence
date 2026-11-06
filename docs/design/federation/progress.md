@@ -184,7 +184,13 @@ PG 测试必须指定 `kuintessence_unit_*` 隔离数据库，拒绝默认连接
 
 全仓 lint 无错误（原有 47 warnings、1 info）；全仓 typecheck 通过，最后的执行器调整按 Server 范围复查。生产 `makeRunner` 尚未传入 `executionLease`，现有重启取消规则不因此改为自动续跑。只有普通 Script 的按 Job 分离产物行为已接入现有调用路径。
 
-**自动恢复仍有明确依赖**：生产 lease 心跳、原子运行创建/联邦预留映射、完整指令保存前的准备恢复和派发终点校验仍待接通；执行统计目前按完成调用累加，已标注恢复可能重复统计，须改为按 Job 幂等贡献后才能启用自动续跑。另已确认 Script 的 File 输出返回 `artifactId`，下游输入当前只接受 `fileMetadataId`，需要接通受管副本/文件解析，不能把这次绑定测试当成文件工作流端到端通过。
+**自动恢复仍有明确依赖**：生产 lease 心跳、原子运行创建/联邦预留映射、完整指令保存前的准备恢复和派发终点校验仍待接通；执行统计已改为按 Job 幂等贡献（见下），但其他恢复依赖尚未完成。另已确认 Script 的 File 输出返回 `artifactId`，下游输入当前只接受 `fileMetadataId`，需要接通受管副本/文件解析，不能把这次绑定测试当成文件工作流端到端通过。
+
+## Script 执行统计按 Job 去重
+
+- [统计服务](../../../packages/server/src/services/sandbox-execution-stats.ts)锁定终态 Job，在同一事务内写入统计标记与聚合值；重复完成回调和恢复重放只贡献一次。执行器传递实际 Job ID，普通生产调用同样生效；不引入独立记账队列。缺失/运行中的 Job 或与终态不一致的成功标记拒绝计数。
+- [0086](../../../packages/db/migrations/0086_gorgeous_pestilence.sql)由 Drizzle 生成，新增可空统计时间戳；不追溯归因旧聚合值。此统计用于输出量预测，不是联邦计费或结算账本。
+- 新增 [PostgreSQL 测试](../../../packages/server/src/services/sandbox-execution-stats.pg.test.ts) 3 项通过：24 路回调对成功、失败、取消的 3 个 Job 只累计 3 个样本；聚合写入外键失败回滚 Job 标记，重试成功；不存在/非终态 Job 拒绝。统计和执行器的 9 项相关单元测试通过。全仓 lint 无错误（原有 47 warnings、1 info）；全仓类型检查发现测试数组索引可能为空，改用明确的成功 Job 参数后 Server 范围复查通过，其余包与 Fabric 脚本检查均通过。
 
 ## 尚未接通，不能宣称支持
 
