@@ -22,6 +22,7 @@ import {
   WorkflowExecutionInterrupted,
   workflowDsl,
 } from "@kuintessence/shared";
+import type { FederationExecutionTarget } from "@kuintessence/shared/federation";
 import { and, eq, inArray, isNull } from "drizzle-orm";
 import { bindWorkflowExecutionJob } from "../workflow/execution-jobs";
 import type { LeasedWorkflowJournal } from "../workflow/execution-journal";
@@ -92,6 +93,7 @@ export interface SandboxNodeExecutorOptions {
   workflowRunId: string;
   executionLease?: LeasedWorkflowJournal;
   resourceLimits?: WorkflowResourceLimits;
+  federationTargets?: readonly FederationExecutionTarget[];
   requiredRuntime?: RuntimeConstraint;
   defaultExecutionIdentity: ExecutionIdentity;
   resolvePolicy(target: {
@@ -466,6 +468,7 @@ export class SandboxNodeExecutor {
       jobId: job.id,
       restrictedNoEgress: job.restrictedNoEgress,
       workflowRunId: this.options.workflowRunId,
+      federationTargets: this.options.federationTargets,
       job: {
         name: job.name,
         command: job.command,

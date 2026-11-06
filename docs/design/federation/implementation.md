@@ -12,6 +12,8 @@
 - `bilateral_attested`：完整复用直接模式；业务事务内保存证据和 outbox，后台补交 PDC；链离线不影响有效双边授权内任务。
 - `ledger_coordinated`：接收请求前核验链上认领/锁额/许可；无有效提交不得新启动。
 
+协议的 `executionTargets` 明确列出接收方允许的 `providerOrgId + clusterId + agentId + queueId`。这些本地资源 ID 属于双方签署的接收方资源范围，不接受委派请求另填目标。调度只能在其中继续通过本地队列授权的目标上选择；已批准队列不可用时保留等待，不能把它当软偏好退回其他集群。最终投递再次核对 Agent 归属、队列配置与资源上限，并强制 Agent 执行队列校验。历史协议缺少该字段可以读取和核对，但不获得执行范围，需要通过新协议修订明确批准，不能给旧运行自动补全全部资源。
+
 每次调用和持久化记录绑定 `agreementRevisionId + budgetDomainId + epoch + taskId + attempt`。模式不可由请求参数任意覆盖，协议续期生成新 revision，旧任务与待存证义务继续收尾。
 
 金额用单位明确的整数定点值，接口用十进制字符串传输，数据库用 `numeric(38,0)` 并做范围约束，Node/Bun 内用 BigInt 计算；不能复用 JavaScript number 作为跨机构计费金额。资源量独立记录单位与来源，不能把 CPU 核时和 GPU 时直接相加。

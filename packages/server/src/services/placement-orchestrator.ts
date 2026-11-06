@@ -19,7 +19,9 @@ import type {
   SpackExecution,
 } from "@kuintessence/shared";
 import { createLogger, WorkflowExecutionInterrupted } from "@kuintessence/shared";
+import type { FederationExecutionTarget } from "@kuintessence/shared/federation";
 import { and, eq, inArray, or } from "drizzle-orm";
+import { resolveFederationTargets } from "../federation/execution-targets";
 import type { AgentDispatcher, JobCancellationOutbox } from "../grpc/dispatcher";
 import type { JobDispatchOutbox } from "../grpc/job-dispatch-outbox";
 import type { PreferenceService } from "../preferences/preference-service";
@@ -88,6 +90,7 @@ export interface PlaceAndDispatchInput {
   jobId: string;
   workflowRunId?: string;
   executionLease?: LeasedWorkflowJournal;
+  federationTargets?: readonly FederationExecutionTarget[];
   job: JobSubmit;
   /** The durable invocation retains this intent; the Job command remains fail-closed. */
   spackExecution?: SpackExecution;
@@ -377,10 +380,35 @@ export class PlacementOrchestrator {
         }
       : requestedJob;
     const fixedAgentId = resume?.agentId ?? durable?.installationAgentId;
+    if (input.federationTargets && (!this.deps.db || !this.deps.queueRegistry))
+      throw new WorkflowExecutionInterrupted("Federation target authorization is unavailable", {
+        retryable: false,
+      });
+    const scoped =
+      input.federationTargets && this.deps.db && this.deps.queueRegistry
+        ? await resolveFederationTargets(
+            this.deps.db,
+            this.deps.queueRegistry,
+            input.federationTargets,
+            { role: userRole, orgId, userId },
+          )
+        : undefined;
+    if (scoped && scoped.selections.length === 0)
+      throw new WorkflowExecutionInterrupted("No approved federation queue is currently eligible");
+    if (
+      scoped &&
+      job.schedulingStrategy?.queueId &&
+      !scoped.selections.some((queue) => queue.queueId === job.schedulingStrategy?.queueId)
+    )
+      throw new WorkflowExecutionInterrupted(
+        "Requested queue is outside the federation authorization",
+        { retryable: false },
+      );
     const onlineCandidates = await this.deps.agentManager.listOnline();
     const liveCandidates = onlineCandidates.filter(
       (agent) =>
         this.deps.dispatcher.isOnline(agent.agentId) &&
+        (!scoped || scoped.selections.some((queue) => queue.agentId === agent.agentId)) &&
         (!fixedAgentId || agent.agentId === fixedAgentId),
     );
     if (fixedAgentId && liveCandidates.length === 0)
@@ -497,7 +525,15 @@ export class PlacementOrchestrator {
     }
 
     const preferences = await this.deps.preferenceService.resolveEffective(orgId, userId);
-    const schedulingIntent = await this.validateSchedulingIntent({ job, userId, userRole, orgId });
+    const schedulingIntent = scoped
+      ? {
+          queueSelection:
+            scoped.selections.find((queue) => queue.queueId === job.schedulingStrategy?.queueId) ??
+            null,
+          preferredQueueSelections: scoped.selections,
+          preferredQueueRejections: scoped.rejections,
+        }
+      : await this.validateSchedulingIntent({ job, userId, userRole, orgId });
 
     const placedJob = await this.withDerivedDataSites(job);
 
@@ -511,7 +547,9 @@ export class PlacementOrchestrator {
     });
     const quotaMap = await this.loadQuotas(userId, orgId);
     const activeJobsByAgent = await this.loadActiveJobsByAgent(agentIds);
-    const autoQueueRejections = await this.loadAutoQueueRejections(candidates);
+    const autoQueueRejections = scoped
+      ? new Map<string, string>()
+      : await this.loadAutoQueueRejections(candidates);
 
     const sink = new Map<string, number>();
     const stages = this.buildStages(
@@ -580,6 +618,16 @@ export class PlacementOrchestrator {
     if (!selectedAgent) {
       throw new Error(`Placement selected unknown agent ${agentId}`);
     }
+    const selectedQueue =
+      schedulingIntent.queueSelection ??
+      schedulingIntent.preferredQueueSelections.find(
+        (queue) =>
+          queue.agentId === agentId && queue.schedulerType === trace.finalDecision?.schedulerType,
+      );
+    if (scoped && !selectedQueue)
+      throw new WorkflowExecutionInterrupted("Federation target has no approved queue", {
+        retryable: false,
+      });
     try {
       await this.deps.jobService.setPlacementTrace(jobId, trace, input.executionLease);
     } catch (err) {
@@ -597,12 +645,6 @@ export class PlacementOrchestrator {
         },
       });
     }
-    const selectedQueue =
-      schedulingIntent.queueSelection ??
-      schedulingIntent.preferredQueueSelections.find(
-        (queue) =>
-          queue.agentId === agentId && queue.schedulerType === trace.finalDecision?.schedulerType,
-      );
     let dispatchQueue: QueueDispatchTarget | QueueSelection | undefined = selectedQueue;
     try {
       dispatchQueue ??= await this.deps.queueRegistry?.resolveAutoTarget(
@@ -618,6 +660,7 @@ export class PlacementOrchestrator {
     if (
       resume &&
       (resume.agentId !== agentId ||
+        (scoped && resume.queueId !== selectedQueue?.queueId) ||
         resume.providerOrgId !== selectedAgent.providerOrgId ||
         resume.queueTargetMode !== queueTargetMode ||
         resume.schedulerQueueName !==
@@ -634,6 +677,7 @@ export class PlacementOrchestrator {
         agentId,
         selectedAgent.providerOrgId,
         {
+          ...(scoped && selectedQueue ? { queueId: selectedQueue.queueId } : {}),
           targetMode: queueTargetMode,
           schedulerQueueName: dispatchQueue?.resolvedQueueName ?? dispatchQueue?.queueName ?? null,
           observedAt: dispatchQueue?.queueObservedAt ?? null,
@@ -818,7 +862,7 @@ export class PlacementOrchestrator {
       stdinText: job.stdinText,
       queueName: dispatchQueue?.queueName,
       queueTargetMode,
-      queueValidationMode: dispatchQueue?.validationMode ?? "off",
+      queueValidationMode: scoped ? "enforce" : (dispatchQueue?.validationMode ?? "off"),
       qos: dispatchQueue?.qos,
       sandboxExecution: signedSandbox,
       spackExecution: input.spackExecution,

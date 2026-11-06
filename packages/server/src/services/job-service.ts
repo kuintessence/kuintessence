@@ -3,6 +3,7 @@ import {
   type AuthorizationSubjectId,
   agentJobStatusEvents,
   agents,
+  authzOutbox,
   dataAssets,
   dataAssetVersions,
   ecosystemReleaseAssets,
@@ -55,6 +56,7 @@ import {
   type SQL,
   sql,
 } from "drizzle-orm";
+import { jobQueueTuple } from "../authz/projection";
 import type { EventBus } from "../events/event-bus";
 import { frozenAuthorizationSubjects } from "./authorization-subjects";
 import type { DataRequirement } from "./data-prerequisite";
@@ -144,6 +146,7 @@ export interface SchedulerRuntimeDetails {
 }
 
 export interface QueueAuditSnapshot {
+  queueId?: string;
   targetMode: QueueTargetMode;
   schedulerQueueName: string | null;
   observedAt: Date | null;
@@ -1236,12 +1239,22 @@ export class JobService {
           ...(queueSnapshot
             ? {
                 queueTargetMode: queueSnapshot.targetMode,
+                ...(queueSnapshot.queueId ? { queueId: queueSnapshot.queueId } : {}),
                 schedulerQueueName: queueSnapshot.schedulerQueueName,
                 queueObservedAt: queueSnapshot.observedAt,
               }
             : {}),
         })
-        .where(and(eq(jobs.id, jobId), eq(jobs.status, JobStatus.PENDING), providerMatch))
+        .where(
+          and(
+            eq(jobs.id, jobId),
+            eq(jobs.status, JobStatus.PENDING),
+            providerMatch,
+            queueSnapshot?.queueId
+              ? or(isNull(jobs.queueId), eq(jobs.queueId, queueSnapshot.queueId))
+              : undefined,
+          ),
+        )
         .returning();
       if (!updated) {
         const [existing] = await db.select().from(jobs).where(eq(jobs.id, jobId)).limit(1);
@@ -1254,9 +1267,26 @@ export class JobService {
           409,
         );
       }
+      if (queueSnapshot?.queueId) {
+        const tuple = jobQueueTuple({ jobId, queueId: queueSnapshot.queueId });
+        await db.insert(authzOutbox).values({
+          operation: tuple.operation,
+          resourceType: tuple.resource.type,
+          resourceId: tuple.resource.id,
+          relation: tuple.relation,
+          subjectType: tuple.subject.type,
+          subjectId: tuple.subject.id,
+          subjectRelation: tuple.subject.relation ?? null,
+          payload: tuple.payload ?? {},
+        });
+      }
       return updated;
     };
-    return fence ? fence.transaction(write) : write(this.db);
+    return fence
+      ? fence.transaction(write)
+      : queueSnapshot?.queueId
+        ? this.db.transaction(write)
+        : write(this.db);
   }
 
   async claimDispatchEpoch(

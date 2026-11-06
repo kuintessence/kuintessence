@@ -31,6 +31,15 @@ export const FederationResourcesSchema = z.strictObject({
   wallTimeSec: z.number().int().min(1).max(31_536_000),
 });
 
+/** Receiver-owned resource identities, explicitly included in the signed agreement. */
+export const FederationExecutionTargetSchema = z.strictObject({
+  providerOrgId: Id,
+  clusterId: z.string().min(1).max(255),
+  agentId: z.string().min(1).max(255),
+  queueId: z.string().min(1).max(255),
+});
+export type FederationExecutionTarget = z.infer<typeof FederationExecutionTargetSchema>;
+
 export const FederationAgreementSchema = z
   .strictObject({
     protocolVersion: z.literal(1),
@@ -49,6 +58,7 @@ export const FederationAgreementSchema = z
     validUntil: Time,
     templates: z.array(FederationAssetRefSchema).min(1).max(100),
     resourceLimit: FederationResourcesSchema,
+    executionTargets: z.array(FederationExecutionTargetSchema).min(1).max(128).optional(),
     termsDigest: FederationDigestSchema,
   })
   .superRefine((value, ctx) => {
@@ -58,6 +68,9 @@ export const FederationAgreementSchema = z
       ctx.addIssue({ code: "custom", message: "Agreement interval must be positive" });
     if (BigInt(value.maxTaskAmount) > BigInt(value.budgetLimit))
       ctx.addIssue({ code: "custom", message: "Task limit exceeds budget" });
+    const targets = value.executionTargets ?? [];
+    if (new Set(targets.map((target) => target.queueId)).size !== targets.length)
+      ctx.addIssue({ code: "custom", message: "Execution queues must be unique" });
     if (value.templates.some((ref) => ref.kind !== "workflow" && ref.kind !== "script"))
       ctx.addIssue({
         code: "custom",

@@ -11,6 +11,7 @@ import {
 import { type ServerMessage, ServerMessageSchema } from "@kuintessence/proto";
 import { createLogger, WorkflowExecutionInterrupted } from "@kuintessence/shared";
 import { and, asc, eq, isNull, lt, lte, or, sql } from "drizzle-orm";
+import type { FederationDeliveryTarget } from "../federation/dispatch-authorization";
 import type { LeasedWorkflowJournal } from "../workflow/execution-journal";
 import type { AgentDispatcher } from "./dispatcher";
 
@@ -26,6 +27,7 @@ export class JobDispatchOutbox {
     private readonly dispatcher: AgentDispatcher,
     private readonly prepareFederationDispatch?: (
       runId: string,
+      target: FederationDeliveryTarget,
     ) => Promise<(tx: PgTransaction) => Promise<void>>,
   ) {}
 
@@ -171,6 +173,8 @@ export class JobDispatchOutbox {
         runId: jobDispatchOutbox.workflowRunId,
         input: workflowRuns.input,
         boundReservationId: federationWorkflowBindings.reservationId,
+        payloadBase64: jobDispatchOutbox.payloadBase64,
+        agentId: jobDispatchOutbox.agentId,
       })
       .from(jobDispatchOutbox)
       .leftJoin(workflowRuns, eq(workflowRuns.id, jobDispatchOutbox.workflowRunId))
@@ -182,13 +186,23 @@ export class JobDispatchOutbox {
     if (!identity) return false;
     const reservationId =
       identity.input?.federationReservationId ?? identity.boundReservationId ?? undefined;
+    const preparedMessage = fromBinary(
+      ServerMessageSchema,
+      Buffer.from(identity.payloadBase64, "base64"),
+    );
+    if (preparedMessage.payload.case !== "dispatchJob") throw new Error("Invalid dispatch payload");
     if (reservationId && (!identity.runId || !this.prepareFederationDispatch))
       throw new WorkflowExecutionInterrupted("Federation dispatch authorization is unavailable", {
         retryable: false,
       });
     const authorize =
       reservationId && identity.runId
-        ? await this.prepareFederationDispatch?.(identity.runId)
+        ? await this.prepareFederationDispatch?.(identity.runId, {
+            kind: "compute",
+            jobId,
+            agentId: identity.agentId,
+            qos: preparedMessage.payload.value.qos,
+          })
         : undefined;
     return this.db.transaction(async (tx) => {
       const [run] = identity.runId
@@ -224,6 +238,8 @@ export class JobDispatchOutbox {
         saved.workflowRunId !== identity.runId
       )
         return false;
+      if (saved.payloadBase64 !== identity.payloadBase64 || saved.agentId !== identity.agentId)
+        throw new WorkflowExecutionInterrupted("Prepared dispatch changed", { retryable: false });
       if (
         saved.workflowRunId &&
         (!run || run.status !== "running" || run.submittedBy !== job.submittedBy)
@@ -233,7 +249,7 @@ export class JobDispatchOutbox {
         throw new WorkflowExecutionInterrupted("Federation dispatch binding changed", {
           retryable: false,
         });
-      const message = fromBinary(ServerMessageSchema, Buffer.from(saved.payloadBase64, "base64"));
+      const message = preparedMessage;
       if (
         message.payload.case !== "dispatchJob" ||
         message.payload.value.jobId !== jobId ||

@@ -1,19 +1,39 @@
-import { federationWorkflowBindings, type PgDb, type PgTransaction } from "@kuintessence/db";
+import {
+  federationWorkflowBindings,
+  jobs,
+  type PgDb,
+  type PgTransaction,
+  workflowExecutionJobs,
+} from "@kuintessence/db";
 import { WorkflowExecutionInterrupted } from "@kuintessence/shared";
 import { FederationError } from "@kuintessence/shared/federation";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
+import type { QueueRegistryService } from "../services/queue-registry";
+import { constrainWorkflowResources } from "../workflow/resource-limits";
 import { federationMaterialDigest } from "./assets";
 import { federationExecutionSnapshot, loadFederationWorkflowBinding } from "./execution-binding";
+import { lockFederationTarget, resolveFederationTargets } from "./execution-targets";
 import type { FederationPreparationService } from "./preparation";
+
+export interface FederationDeliveryTarget {
+  kind: "install" | "compute";
+  jobId: string;
+  agentId: string;
+  qos?: string;
+}
 
 /** Reauthorize every delivery; the returned check holds local revocations through channel enqueue. */
 export class FederationDispatchAuthorization {
   constructor(
     private readonly db: PgDb,
     private readonly preparation: FederationPreparationService,
+    private readonly queues?: Pick<QueueRegistryService, "inspectPreferredForSubmit">,
   ) {}
 
-  async prepare(runId: string): Promise<(tx: PgTransaction) => Promise<void>> {
+  async prepare(
+    runId: string,
+    delivery?: FederationDeliveryTarget,
+  ): Promise<(tx: PgTransaction) => Promise<void>> {
     const binding = await loadFederationWorkflowBinding(this.db, runId);
     if (!binding)
       throw new WorkflowExecutionInterrupted("Federation dispatch lacks its saved binding", {
@@ -23,6 +43,18 @@ export class FederationDispatchAuthorization {
     const current = await this.preparation.executionSnapshot(binding.reservationId);
     if (federationMaterialDigest(federationExecutionSnapshot(current)) !== binding.snapshotDigest)
       throw new FederationError("OPERATION_CONFLICT");
+    const targets = binding.snapshot.executionTargets ?? [];
+    if (delivery && !this.queues)
+      throw new WorkflowExecutionInterrupted("Federation queue authorization is unavailable", {
+        retryable: false,
+      });
+    const eligible =
+      delivery && this.queues
+        ? await resolveFederationTargets(this.db, this.queues, targets, {
+            ...binding.snapshot.identity,
+            role: "user",
+          })
+        : undefined;
     return async (tx) => {
       await tx
         .select({ id: federationWorkflowBindings.reservationId })
@@ -37,6 +69,55 @@ export class FederationDispatchAuthorization {
       )
         throw new FederationError("OPERATION_CONFLICT");
       await this.preparation.lockExecutionSnapshot(tx, current);
+      if (delivery) {
+        const [job] = await tx
+          .select({ job: jobs })
+          .from(jobs)
+          .innerJoin(workflowExecutionJobs, eq(workflowExecutionJobs.jobId, jobs.id))
+          .where(and(eq(jobs.id, delivery.jobId), eq(workflowExecutionJobs.runId, runId)))
+          .for("share", { of: [jobs] });
+        if (
+          !job ||
+          job.job.submittedBy !== binding.snapshot.identity.userId ||
+          job.job.orgId !== binding.snapshot.identity.orgId ||
+          (delivery.kind === "compute" &&
+            (job.job.agentId !== delivery.agentId || !job.job.queueId))
+        )
+          throw new FederationError("OPERATION_CONFLICT");
+        constrainWorkflowResources(
+          {
+            cpus: job.job.cpus,
+            memoryMb: job.job.memoryMb,
+            gpus: job.job.gpus ?? 0,
+            wallTimeSec: job.job.wallTimeSec ?? 0,
+          },
+          binding.snapshot.request.resources,
+        );
+        const queue = eligible?.selections.find(
+          (selection) =>
+            selection.agentId === delivery.agentId &&
+            (delivery.kind === "install" || selection.queueId === job.job.queueId),
+        );
+        if (!queue) throw new FederationError("POLICY_DENIED");
+        if (
+          delivery.kind === "compute" &&
+          ((queue.targetMode ?? "default") !== job.job.queueTargetMode ||
+            (queue.resolvedQueueName ?? queue.queueName ?? null) !== job.job.schedulerQueueName)
+        )
+          throw new FederationError("OPERATION_CONFLICT");
+        await lockFederationTarget(tx, targets, {
+          agentId: delivery.agentId,
+          queueId: queue.queueId,
+          updatedAt: queue.targetUpdatedAt,
+          ...(delivery.kind === "compute"
+            ? {
+                targetMode: job.job.queueTargetMode,
+                queueName: job.job.schedulerQueueName,
+                qos: delivery.qos ?? "",
+              }
+            : {}),
+        });
+      }
     };
   }
 }

@@ -23,6 +23,7 @@ export function federationExecutionSnapshot(prepared: FederationExecutionPrepara
       ...prepared.projection,
       ...prepared.material,
       mappings: prepared.mappings,
+      executionTargets: prepared.saved.agreement.terms.executionTargets ?? [],
     }),
   );
   return snapshot;

@@ -4,6 +4,7 @@ import type {
   FederationAgreement,
   FederationDelegation,
   FederationEnvironmentLock,
+  FederationExecutionTarget,
   FederationInputManifest,
 } from "@kuintessence/shared/federation";
 import type { FederationEvidenceBatch } from "@kuintessence/shared/federation/ledger";
@@ -468,6 +469,7 @@ export const federationWorkflowBindings = pgTable(
         workflowVersions: Record<string, workflowDsl.Workflow>;
         inputs: FederationInputManifest;
         environment: FederationEnvironmentLock;
+        executionTargets?: FederationExecutionTarget[];
         mappings: typeof federationPreparations.$inferSelect.mappings;
       }>()
       .notNull(),

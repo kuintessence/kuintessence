@@ -28,6 +28,7 @@ import {
 } from "@kuintessence/shared";
 import { federationCanonicalJson } from "@kuintessence/shared/federation";
 import { and, desc, eq, inArray, isNull, or, sql } from "drizzle-orm";
+import type { FederationDeliveryTarget } from "../federation/dispatch-authorization";
 import type { AgentDispatcher } from "../grpc/dispatcher";
 import type { CpScope } from "../middleware/cp-rbac";
 import type { LeasedWorkflowJournal } from "../workflow/execution-journal";
@@ -74,6 +75,7 @@ export class SoftwareOperationService {
     }) => Promise<void>,
     private readonly prepareFederationDispatch?: (
       runId: string,
+      target: FederationDeliveryTarget,
     ) => Promise<(tx: PgTransaction) => Promise<void>>,
   ) {}
 
@@ -356,7 +358,11 @@ export class SoftwareOperationService {
       );
     const federationFence =
       reservationId && workflow
-        ? await this.prepareFederationDispatch?.(workflow.runId)
+        ? await this.prepareFederationDispatch?.(workflow.runId, {
+            kind: "install",
+            jobId: input.jobId,
+            agentId: input.agentId,
+          })
         : undefined;
     const authorizeWorkflow = async (tx: PgTransaction) => {
       const current = await installationWorkflowScope(tx, input.jobId);

@@ -21,10 +21,12 @@ import {
   federationWorkflowBindings,
   jobs,
   orgs,
+  schedulerQueues,
   softwareAssetRevisions,
   softwareAssets,
   userOrgMemberships,
   users,
+  workflowExecutionJobs,
   workflowRuns,
 } from "@kuintessence/db";
 import {
@@ -44,6 +46,7 @@ import { AgentDispatcher } from "../grpc/dispatcher";
 import { JobDispatchOutbox } from "../grpc/job-dispatch-outbox";
 import { createErrorHandler } from "../middleware/error-handler";
 import { createFederationAssetRoutes } from "../routes/federation-assets";
+import { QueueRegistryService } from "../services/queue-registry";
 import { SoftwareAvailabilityService } from "../services/software-availability";
 import { WorkflowAsyncRunner } from "../workflow/async-runner";
 import { WorkflowExecutionJournalStore } from "../workflow/execution-journal";
@@ -68,6 +71,12 @@ if (!url || !/^\/kuintessence_unit_[a-z0-9_]+$/.test(new URL(url).pathname))
 const db = createPgDb(url, { max: 8, idle_timeout: 1 });
 const actor = { orgId: crypto.randomUUID(), userId: crypto.randomUUID() };
 const identity = { orgId: actor.orgId, userId: crypto.randomUUID() };
+const approvedTarget = {
+  providerOrgId: actor.orgId,
+  clusterId: "federation-test-cluster",
+  agentId: `federation-target-${crypto.randomUUID()}`,
+  queueId: `federation-queue-${crypto.randomUUID()}`,
+};
 const outsider = { orgId: crypto.randomUUID(), userId: crypto.randomUUID() };
 const assetId = crypto.randomUUID(),
   revisionId = crypto.randomUUID(),
@@ -194,6 +203,7 @@ beforeAll(async () => {
   agreement = {
     ...testAgreement(source.signing.siteId, target.signing.siteId),
     templates: [scriptRef],
+    executionTargets: [approvedTarget],
   };
   admission = new FederationAdmission(db, target.signing, target.verification, () => testNow);
   await admission.installApprovedAgreement({
@@ -988,16 +998,33 @@ test.each([
 test("real federation authorization fences outbox retries and holds agreement revocation through enqueue", async () => {
   const f = await executionFixture();
   const binding = await f.bindings.stage(f.reservationId);
-  const agentId = `federation-fence-${crypto.randomUUID()}`;
+  const agentId = approvedTarget.agentId;
   const jobId = crypto.randomUUID();
   const dispatcher = new AgentDispatcher();
-  const authorization = new FederationDispatchAuthorization(db, f.preparation);
-  const outbox = new JobDispatchOutbox(db, dispatcher, (runId) => authorization.prepare(runId));
+  const authorization = new FederationDispatchAuthorization(
+    db,
+    f.preparation,
+    new QueueRegistryService(db),
+  );
+  const outbox = new JobDispatchOutbox(db, dispatcher, (runId, target) =>
+    authorization.prepare(runId, target),
+  );
   await db.insert(agents).values({
     agentId,
     siteName: "Test receiver",
     schedulerType: "slurm",
     schedulerVersion: "test",
+    providerOrgId: actor.orgId,
+    clusterId: approvedTarget.clusterId,
+    status: "online",
+  });
+  await db.insert(schedulerQueues).values({
+    queueId: approvedTarget.queueId,
+    agentId,
+    name: "Approved test queue",
+    providerOrgId: actor.orgId,
+    schedulerType: "slurm",
+    queueName: "approved",
   });
   await db.insert(jobs).values({
     id: jobId,
@@ -1005,28 +1032,52 @@ test("real federation authorization fences outbox retries and holds agreement re
     command: "true",
     cpus: 1,
     memoryMb: 128,
+    wallTimeSec: 30,
+    queueId: approvedTarget.queueId,
+    queueTargetMode: "named",
+    schedulerQueueName: "approved",
     agentId,
     dispatchEpoch: 1,
     status: "queued",
     submittedBy: identity.userId,
     orgId: identity.orgId,
   });
+
   // Exercise the final boundary directly; this does not enable production federation runs.
   await db
     .update(workflowRuns)
     .set({ status: "running" })
     .where(eq(workflowRuns.id, binding.workflowRunId));
+  const lease = await new WorkflowExecutionJournalStore(db).acquire(binding.workflowRunId);
+  if (!lease) throw new Error("Missing test lease");
+  await db.insert(workflowExecutionJobs).values({
+    runId: binding.workflowRunId,
+    jobId,
+    pathHash: "a".repeat(64),
+    path: '["node","test"]',
+    nodeId: "test",
+    intent: {
+      nodeId: "test",
+      name: "Test",
+      command: "true",
+      envVars: {},
+      inputStaging: [],
+      expectedOutputs: [],
+    },
+  });
   let delivered = 0;
   let probe: ReturnType<typeof Bun.spawnSync> | undefined;
   const message = dispatcher.buildDispatchJob(jobId, {
     jobIdInternal: jobId,
     name: "Fence test",
     command: "true",
-    resources: { cpus: 1, memoryMb: 128 },
+    resources: { cpus: 1, memoryMb: 128, wallTimeSec: 30 },
+    queueName: "approved",
+    queueTargetMode: "named",
     dispatchEpoch: 1,
   });
   try {
-    expect(await outbox.enqueue(agentId, message, binding.workflowRunId)).toEqual({
+    expect(await outbox.enqueue(agentId, message, binding.workflowRunId, lease)).toEqual({
       sent: false,
       pending: true,
     });
@@ -1065,14 +1116,24 @@ test("real federation authorization fences outbox retries and holds agreement re
       .update(federationAgreements)
       .set({ state: "suspended" })
       .where(eq(federationAgreements.revisionId, agreement.agreementRevisionId));
-    await new JobDispatchOutbox(db, dispatcher, (id) => authorization.prepare(id)).redeliver(
-      agentId,
-    );
+    await new JobDispatchOutbox(db, dispatcher, (id, target) =>
+      authorization.prepare(id, target),
+    ).redeliver(agentId);
     expect(delivered).toBe(1);
     await db
       .update(federationAgreements)
       .set({ state: "active" })
       .where(eq(federationAgreements.revisionId, agreement.agreementRevisionId));
+    await db
+      .update(schedulerQueues)
+      .set({ enabled: false })
+      .where(eq(schedulerQueues.queueId, approvedTarget.queueId));
+    await outbox.redeliver(agentId);
+    expect(delivered).toBe(1);
+    await db
+      .update(schedulerQueues)
+      .set({ enabled: true })
+      .where(eq(schedulerQueues.queueId, approvedTarget.queueId));
     const [run] = await db
       .select()
       .from(workflowRuns)
@@ -1083,11 +1144,14 @@ test("real federation authorization fences outbox retries and holds agreement re
     await outbox.redeliver(agentId);
     expect(delivered).toBe(1);
   } finally {
+    await lease.release();
     await db
       .update(federationAgreements)
       .set({ state: "active" })
       .where(eq(federationAgreements.revisionId, agreement.agreementRevisionId));
+    await db.delete(workflowExecutionJobs).where(eq(workflowExecutionJobs.jobId, jobId));
     await db.delete(jobs).where(eq(jobs.id, jobId));
+    await db.delete(schedulerQueues).where(eq(schedulerQueues.queueId, approvedTarget.queueId));
     await db.delete(agents).where(eq(agents.agentId, agentId));
   }
 });

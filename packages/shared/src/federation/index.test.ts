@@ -110,3 +110,25 @@ test("unrecognized command, identity, money and protocol fields cannot slip thro
   ])
     expect(FederationDelegationSchema.safeParse({ ...request, ...override }).success).toBe(false);
 });
+
+test("execution targets bind provider, cluster, Agent and unique receiver queue IDs", () => {
+  const target = {
+    providerOrgId: crypto.randomUUID(),
+    clusterId: "cluster-a",
+    agentId: "agent-a",
+    queueId: "queue-a",
+  };
+  expect(
+    FederationAgreementSchema.parse({ ...agreement, executionTargets: [target] }).executionTargets,
+  ).toEqual([target]);
+  expect(FederationAgreementSchema.parse(agreement).executionTargets).toBeUndefined();
+  for (const targets of [
+    [],
+    [target, target],
+    [{ ...target, providerOrgId: "invalid" }],
+    [{ ...target, clusterId: "" }],
+  ])
+    expect(
+      FederationAgreementSchema.safeParse({ ...agreement, executionTargets: targets }).success,
+    ).toBe(false);
+});

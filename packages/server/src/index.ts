@@ -274,12 +274,12 @@ const eventBus = new EventBus();
 const preferenceService = new PreferenceService(db);
 const dispatcher = new AgentDispatcher();
 const jobCancellationOutbox = new JobCancellationOutbox(db, dispatcher);
-const jobDispatchOutbox = new JobDispatchOutbox(db, dispatcher, async (runId) => {
+const jobDispatchOutbox = new JobDispatchOutbox(db, dispatcher, async (runId, target) => {
   if (!federationDispatchAuthorization)
     throw new WorkflowExecutionInterrupted("Federation dispatch authorization is unavailable", {
       retryable: false,
     });
-  return federationDispatchAuthorization.prepare(runId);
+  return federationDispatchAuthorization.prepare(runId, target);
 });
 const jobWorkRootReleaseOutbox = new JobWorkRootReleaseOutbox(db, dispatcher);
 const dataScanCoordinator = new DataScanCoordinator(
@@ -440,7 +440,7 @@ const softwareOperations = new SoftwareOperationService(
       throw new AppError(ErrorCode.FORBIDDEN, "Agent operation permission denied", 403);
     }
   },
-  async (runId) => {
+  async (runId, target) => {
     if (!federationDispatchAuthorization)
       throw new WorkflowExecutionInterrupted(
         "Federation installation authorization is unavailable",
@@ -448,7 +448,7 @@ const softwareOperations = new SoftwareOperationService(
           retryable: false,
         },
       );
-    return federationDispatchAuthorization.prepare(runId);
+    return federationDispatchAuthorization.prepare(runId, target);
   },
 );
 const metricsRecorder = new PgAgentMetricsRecorder(db);
@@ -920,6 +920,9 @@ const makeRunner =
             awaitCompletion: awaitWorkflowJob,
             executionLease,
             resourceLimits: federationSnapshot?.request.resources,
+            federationTargets: federationSnapshot
+              ? (federationSnapshot.executionTargets ?? [])
+              : undefined,
             requiredRuntime: federationSnapshot?.environment.sandboxRuntime,
             submittedBy,
             ...(activeOrgId !== undefined ? { orgId: activeOrgId } : {}),
@@ -1095,6 +1098,9 @@ const makeRunner =
               jobId,
               executionLease,
               spackExecution,
+              federationTargets: federationSnapshot
+                ? (federationSnapshot.executionTargets ?? [])
+                : undefined,
               restrictedNoEgress: job.restrictedNoEgress,
               ...(activeRunId ? { workflowRunId: activeRunId } : {}),
               job: {
@@ -1585,7 +1591,7 @@ const federationPreparation = federationSigningKey
   ? new FederationPreparationService(db, federationSigningKey.siteId, federationAssets)
   : undefined;
 const federationDispatchAuthorization = federationPreparation
-  ? new FederationDispatchAuthorization(db, federationPreparation)
+  ? new FederationDispatchAuthorization(db, federationPreparation, queueRegistry)
   : undefined;
 jobDispatchOutbox.start();
 protectedApi.route("/", createFederationAssetRoutes(federationAssets, federationPreparation));
