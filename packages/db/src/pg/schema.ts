@@ -1392,6 +1392,7 @@ export const workflowRuns = pgTable(
     stepJobs: jsonb("step_jobs").$type<Record<string, string>>().notNull().default({}),
     input: jsonb("input").$type<{
       executionModel?: "durable-v2";
+      federationReservationId?: string;
       yaml: string;
       role: string;
       orgId?: string | null;

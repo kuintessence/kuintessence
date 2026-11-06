@@ -311,6 +311,12 @@ export class WorkflowAsyncRunner {
             retryable: false,
           });
       }
+      const savedRun = await this.deps.registry.getById(runId);
+      if (savedRun?.input?.federationReservationId)
+        throw new WorkflowExecutionInterrupted(
+          "Federation execution requires its local dispatch authorization",
+          { retryable: false },
+        );
       await this.deps.assertExecutionPrincipal?.({
         userId: input.submittedBy,
         orgId: input.orgId ?? null,

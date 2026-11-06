@@ -52,6 +52,7 @@ import { FederationAssetService } from "./federation/assets";
 import { FederationAttestationService } from "./federation/attestation";
 import { UnixAttestationClient } from "./federation/attestation-client";
 import { FederationAttestationWorker } from "./federation/attestation-worker";
+import { FederationExecutionBindingService } from "./federation/execution-binding";
 import { FederationPermissionService } from "./federation/permissions";
 import { FederationPreparationService } from "./federation/preparation";
 import { FederationPreparationWorker } from "./federation/preparation-worker";
@@ -1975,7 +1976,11 @@ async function readRequiredGrpcTlsFile(
 
 const federationIngress = await startFederationIngress(db, config, federationSigningKey);
 const federationPreparationWorker = federationPreparation
-  ? new FederationPreparationWorker(db, federationPreparation)
+  ? new FederationPreparationWorker(
+      db,
+      federationPreparation,
+      new FederationExecutionBindingService(db, federationPreparation),
+    )
   : undefined;
 federationPreparationWorker?.start();
 const federationAttestationWorker =

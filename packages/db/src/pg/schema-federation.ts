@@ -1,4 +1,11 @@
-import type { FederationAcceptance, FederationAgreement } from "@kuintessence/shared/federation";
+import type { workflowDsl } from "@kuintessence/shared";
+import type {
+  FederationAcceptance,
+  FederationAgreement,
+  FederationDelegation,
+  FederationEnvironmentLock,
+  FederationInputManifest,
+} from "@kuintessence/shared/federation";
 import type { FederationEvidenceBatch } from "@kuintessence/shared/federation/ledger";
 import { sql } from "drizzle-orm";
 import {
@@ -16,7 +23,7 @@ import {
   uuid,
   varchar,
 } from "drizzle-orm/pg-core";
-import { dataAssetVersions, orgs, softwareAssetRevisions, users } from "./schema";
+import { dataAssetVersions, orgs, softwareAssetRevisions, users, workflowRuns } from "./schema";
 
 export const federationSites = pgTable(
   "federation_sites",
@@ -437,6 +444,40 @@ export const federationPreparations = pgTable(
     check(
       "federation_preparation_state",
       sql`(${t.state} = 'resolved' AND ${t.blocker} IS NULL) OR (${t.state} IN ('waiting', 'blocked') AND ${t.blocker} IS NOT NULL)`,
+    ),
+  ],
+);
+
+/** Receiver-local execution intent. Creation alone never authorizes dispatch. */
+export const federationWorkflowBindings = pgTable(
+  "federation_workflow_bindings",
+  {
+    reservationId: uuid("reservation_id")
+      .primaryKey()
+      .references(() => federationReservations.id),
+    workflowRunId: uuid("workflow_run_id")
+      .notNull()
+      .references(() => workflowRuns.id),
+    snapshotDigest: varchar("snapshot_digest", { length: 71 }).notNull(),
+    snapshot: jsonb("snapshot")
+      .$type<{
+        request: FederationDelegation;
+        requestDigest: string;
+        identity: { orgId: string; userId: string };
+        workflow: workflowDsl.Workflow;
+        workflowVersions: Record<string, workflowDsl.Workflow>;
+        inputs: FederationInputManifest;
+        environment: FederationEnvironmentLock;
+        mappings: typeof federationPreparations.$inferSelect.mappings;
+      }>()
+      .notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("federation_workflow_run").on(t.workflowRunId),
+    check(
+      "federation_workflow_snapshot_digest",
+      sql`${t.snapshotDigest} ~ '^sha256:[a-f0-9]{64}$'`,
     ),
   ],
 );

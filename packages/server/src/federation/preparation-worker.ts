@@ -2,21 +2,26 @@ import {
   federationAgreements,
   federationPreparations,
   federationReservations,
+  federationWorkflowBindings,
   type PgDb,
 } from "@kuintessence/db";
 import { createLogger } from "@kuintessence/shared";
+import { FederationError } from "@kuintessence/shared/federation";
 import { and, asc, eq, isNull, lt, ne, or, sql } from "drizzle-orm";
+import type { FederationExecutionBindingService } from "./execution-binding";
+import { FederationMaterializationError } from "./materialize";
 import type { FederationPreparationService } from "./preparation";
 
 const logger = createLogger("federation-preparation");
 
-/** Reference resolution is repeatable; this worker never submits jobs or calls a ledger. */
+/** Resolve and bind held runs; this worker never queues compute jobs or calls a ledger. */
 export class FederationPreparationWorker {
   private timer?: ReturnType<typeof setInterval>;
   private running?: Promise<void>;
   constructor(
     private readonly db: PgDb,
     private readonly service: FederationPreparationService,
+    private readonly bindings?: FederationExecutionBindingService,
   ) {}
 
   start() {
@@ -60,6 +65,10 @@ export class FederationPreparationWorker {
         federationPreparations,
         eq(federationPreparations.reservationId, federationReservations.id),
       )
+      .leftJoin(
+        federationWorkflowBindings,
+        eq(federationWorkflowBindings.reservationId, federationReservations.id),
+      )
       .where(
         and(
           eq(federationAgreements.targetSiteId, this.service.localSiteId),
@@ -67,7 +76,10 @@ export class FederationPreparationWorker {
           or(
             isNull(federationPreparations.reservationId),
             and(
-              ne(federationPreparations.state, "resolved"),
+              or(
+                ne(federationPreparations.state, "resolved"),
+                this.bindings ? isNull(federationWorkflowBindings.reservationId) : sql`false`,
+              ),
               lt(federationPreparations.updatedAt, cutoff),
             ),
           ),
@@ -82,8 +94,24 @@ export class FederationPreparationWorker {
       .limit(8);
     for (const row of rows) {
       try {
-        await this.service.prepare(row.id);
-      } catch {
+        const prepared = await this.service.prepare(row.id);
+        if (prepared.state === "resolved") await this.bindings?.stage(row.id);
+      } catch (error) {
+        if (error instanceof FederationError || error instanceof FederationMaterializationError) {
+          await this.db
+            .update(federationPreparations)
+            .set({
+              state:
+                error instanceof FederationError &&
+                ["DATA_WAITING", "ASSET_UNAVAILABLE"].includes(error.code)
+                  ? "waiting"
+                  : "blocked",
+              blocker: error instanceof FederationError ? error.code : "WORKFLOW_INCOMPATIBLE",
+              updatedAt: new Date(),
+            })
+            .where(eq(federationPreparations.reservationId, row.id));
+          continue;
+        }
         logger.warn(
           { reservationId: row.id },
           "Federation reference resolution failed; will retry",

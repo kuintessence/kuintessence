@@ -3,22 +3,41 @@ import {
   federationPreparations,
   federationReservations,
   type PgDb,
+  type PgTransaction,
 } from "@kuintessence/db";
 import { AppError } from "@kuintessence/shared";
 import {
   assertDelegationPolicy,
+  FederationAcceptanceSchema,
   FederationAgreementSchema,
+  type FederationAssetRef,
+  type FederationDelegation,
   FederationDelegationSchema,
+  type FederationEnvironmentLock,
   FederationError,
+  type FederationInputManifest,
   federationCanonicalJson,
 } from "@kuintessence/shared/federation";
 import { and, eq } from "drizzle-orm";
-import type { FederationAssetService } from "./assets";
-import { requireExecutionIdentity } from "./execution-identity";
-import { materializeFederationWorkflow } from "./materialize";
+import { type FederationAssetService, federationMaterialDigest } from "./assets";
+import { type ExecutionIdentity, requireExecutionIdentity } from "./execution-identity";
+import { type FederationWorkflowProjection, materializeFederationWorkflow } from "./materialize";
 import { type FederationActor, requireFederationCapability } from "./permissions";
 import { federationMessageKeyId, verifyFederationMessage } from "./signatures";
 import { FederationTrustRegistry } from "./trust-registry";
+
+export interface FederationExecutionPreparation {
+  saved: {
+    reservation: typeof federationReservations.$inferSelect;
+    agreement: typeof federationAgreements.$inferSelect;
+  };
+  request: FederationDelegation;
+  identity: ExecutionIdentity;
+  material: { inputs: FederationInputManifest; environment: FederationEnvironmentLock };
+  references: Map<string, FederationAssetRef>;
+  projection: FederationWorkflowProjection;
+  mappings: typeof federationPreparations.$inferSelect.mappings;
+}
 
 /** Durable reference readiness only. This record is never a permit to dispatch a Job. */
 export class FederationPreparationService {
@@ -83,24 +102,8 @@ export class FederationPreparationService {
         .for("share", { of: [federationReservations, federationAgreements] });
       if (!row) throw new FederationError("AGREEMENT_UNAVAILABLE");
     });
-    const { request, identity, material, references } = await this.resolveReservation(
-      await this.loadReservation(reservationId),
-    );
-    const resolved = new Map<string, Awaited<ReturnType<FederationAssetService["resolve"]>>>();
-    for (const reference of references.values()) {
-      const snapshot = await this.assets.resolve(identity, reference);
-      await this.assets.assertView(actor, reference);
-      resolved.set(federationCanonicalJson(reference), snapshot);
-    }
-    const projection = await materializeFederationWorkflow({
-      template: request.template,
-      ...material,
-      resolve: async (reference) => {
-        const snapshot = resolved.get(federationCanonicalJson(reference));
-        if (!snapshot) throw new FederationError("ASSET_UNAVAILABLE");
-        return snapshot;
-      },
-    });
+    const snapshot = await this.executionSnapshot(reservationId, actor);
+    const { request, projection } = snapshot;
     return {
       ...projection,
       executionReady: false as const,
@@ -109,6 +112,136 @@ export class FederationPreparationService {
       inputManifestDigest: request.inputManifestDigest,
       environmentLockDigest: request.environmentLockDigest,
     };
+  }
+
+  /** Internal immutable preparation input; it grants no dispatch authority. */
+  async executionSnapshot(
+    reservationId: string,
+    reviewer?: FederationActor,
+  ): Promise<FederationExecutionPreparation> {
+    const saved = await this.loadReservation(reservationId);
+    const resolved = await this.resolveReservation(saved);
+    const local = new Map<string, Awaited<ReturnType<FederationAssetService["resolve"]>>>();
+    for (const reference of resolved.references.values()) {
+      local.set(
+        federationCanonicalJson(reference),
+        await this.assets.resolve(resolved.identity, reference),
+      );
+      if (reviewer) await this.assets.assertView(reviewer, reference);
+    }
+    const projection = await materializeFederationWorkflow({
+      template: resolved.request.template,
+      ...resolved.material,
+      resolve: async (reference) => {
+        const snapshot = local.get(federationCanonicalJson(reference));
+        if (!snapshot) throw new FederationError("ASSET_UNAVAILABLE");
+        return snapshot;
+      },
+    });
+    const mappings = [...resolved.references.values()].map((reference) => {
+      const snapshot = local.get(federationCanonicalJson(reference));
+      if (!snapshot) throw new FederationError("ASSET_UNAVAILABLE");
+      return {
+        reference,
+        mappingId: snapshot.mapping.id,
+        localRevisionId:
+          snapshot.local.kind === "dataset"
+            ? snapshot.local.version.id
+            : snapshot.local.revision.id,
+      };
+    });
+    return { ...resolved, saved, projection, mappings };
+  }
+
+  /** Recheck after external policy resolution, while the caller atomically binds the run. */
+  async lockExecutionSnapshot(tx: PgTransaction, snapshot: FederationExecutionPreparation) {
+    const { saved, request, identity } = snapshot;
+    const trust = new FederationTrustRegistry(this.db);
+    await trust.assertKey(
+      tx,
+      saved.agreement.sourceSiteId,
+      federationMessageKeyId(saved.reservation.requestJws),
+      this.clock(),
+    );
+    await requireExecutionIdentity(tx, identity);
+    const [agreement] = await tx
+      .select()
+      .from(federationAgreements)
+      .where(eq(federationAgreements.revisionId, saved.agreement.revisionId))
+      .for("share");
+    const [reservation] = await tx
+      .select()
+      .from(federationReservations)
+      .where(eq(federationReservations.id, saved.reservation.id))
+      .for("update");
+    if (
+      !agreement ||
+      agreement.state !== "active" ||
+      !reservation ||
+      reservation.state !== "reserved" ||
+      !reservation.receiptJws
+    )
+      throw new FederationError("AGREEMENT_UNAVAILABLE");
+    if (
+      agreement.localOrgId !== identity.orgId ||
+      agreement.executionUserId !== identity.userId ||
+      agreement.targetSiteId !== this.localSiteId ||
+      agreement.sourceSiteId !== request.senderSiteId ||
+      federationMaterialDigest(agreement.terms) !==
+        federationMaterialDigest(saved.agreement.terms) ||
+      reservation.agreementRevisionId !== agreement.revisionId ||
+      reservation.requestDigest !== saved.reservation.requestDigest ||
+      reservation.requestJws !== saved.reservation.requestJws ||
+      reservation.receiptJws !== saved.reservation.receiptJws ||
+      federationCanonicalJson(reservation.receipt) !==
+        federationCanonicalJson(saved.reservation.receipt) ||
+      reservation.amount !== saved.reservation.amount ||
+      reservation.senderSiteId !== request.senderSiteId ||
+      reservation.operationId !== request.operationId ||
+      reservation.taskId !== request.taskId ||
+      reservation.attempt !== request.attempt
+    )
+      throw new FederationError("OPERATION_CONFLICT");
+    for (const mapping of snapshot.mappings) {
+      const current = await this.assets.assertResolved(
+        tx,
+        identity,
+        mapping.reference,
+        mapping.mappingId,
+      );
+      if (
+        (current.local.kind === "dataset"
+          ? current.local.version.id
+          : current.local.revision.id) !== mapping.localRevisionId
+      )
+        throw new FederationError("OPERATION_CONFLICT");
+    }
+    // These rows also stay locked through the binding commit.
+    await this.assets.readMaterial(
+      tx,
+      identity.orgId,
+      request.senderSiteId,
+      request.inputManifestDigest,
+    );
+    await this.assets.readMaterial(
+      tx,
+      identity.orgId,
+      request.senderSiteId,
+      request.environmentLockDigest,
+    );
+    assertDelegationPolicy(FederationAgreementSchema.parse(agreement.terms), request, this.clock());
+    await trust.assertKey(
+      tx,
+      saved.agreement.sourceSiteId,
+      federationMessageKeyId(reservation.requestJws),
+      this.clock(),
+    );
+    await trust.assertKey(
+      tx,
+      this.localSiteId,
+      federationMessageKeyId(reservation.receiptJws),
+      this.clock(),
+    );
   }
 
   private async loadReservation(reservationId: string) {
@@ -145,7 +278,45 @@ export class FederationPreparationService {
     const request = verified.payload;
     if (
       verified.digest !== saved.reservation.requestDigest ||
-      request.recipientSiteId !== this.localSiteId
+      request.recipientSiteId !== this.localSiteId ||
+      request.agreementRevisionId !== saved.reservation.agreementRevisionId ||
+      request.senderSiteId !== saved.reservation.senderSiteId ||
+      request.operationId !== saved.reservation.operationId ||
+      request.taskId !== saved.reservation.taskId ||
+      request.attempt !== saved.reservation.attempt
+    )
+      throw new FederationError("OPERATION_CONFLICT");
+    const receiptKey = await trust.resolveKey(
+      this.localSiteId,
+      federationMessageKeyId(saved.reservation.receiptJws),
+      this.clock(),
+    );
+    const receipt = (
+      await verifyFederationMessage(
+        FederationAcceptanceSchema,
+        saved.reservation.receiptJws,
+        receiptKey,
+        this.clock(),
+      )
+    ).payload;
+    if (
+      federationCanonicalJson(receipt) !== federationCanonicalJson(saved.reservation.receipt) ||
+      receipt.reservationId !== saved.reservation.id ||
+      receipt.requestDigest !== verified.digest ||
+      receipt.senderSiteId !== this.localSiteId ||
+      receipt.recipientSiteId !== request.senderSiteId ||
+      receipt.operationId !== request.operationId ||
+      receipt.agreementRevisionId !== request.agreementRevisionId ||
+      receipt.taskId !== request.taskId ||
+      receipt.attempt !== request.attempt ||
+      receipt.mode !== request.mode ||
+      receipt.budgetDomainId !== request.budgetDomainId ||
+      receipt.epoch !== request.epoch ||
+      receipt.unit !== request.unit ||
+      receipt.reservedAmount !== request.maxAmount ||
+      receipt.reservedAmount !== saved.reservation.amount ||
+      Date.parse(receipt.acceptedAt) < Date.parse(request.issuedAt) - 60000 ||
+      Date.parse(receipt.acceptedAt) >= Date.parse(request.expiresAt)
     )
       throw new FederationError("OPERATION_CONFLICT");
     const identity = {

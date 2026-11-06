@@ -66,6 +66,7 @@ function failedNodeSummary(result: WorkflowRunRecordResult): string | null {
 
 export interface WorkflowRunInput {
   executionModel?: "durable-v2";
+  federationReservationId?: string;
   yaml: string;
   role: RoleName;
   orgId?: string | null;
@@ -149,9 +150,10 @@ export class WorkflowRunRegistry implements WorkflowRunStore {
     graph: WorkflowRunGraph,
     input?: WorkflowRunInput,
     description: string | null = null,
+    tx?: PgTransaction,
   ): Promise<string> {
     const now = new Date();
-    const [row] = await this.db
+    const [row] = await (tx ?? this.db)
       .insert(workflowRuns)
       .values({
         name,
@@ -166,7 +168,7 @@ export class WorkflowRunRegistry implements WorkflowRunStore {
       })
       .returning();
     if (!row) throw new Error("Failed to insert workflow_run row");
-    logger.info({ runId: row.id, name }, "Workflow run submitted");
+    if (!tx) logger.info({ runId: row.id, name }, "Workflow run submitted");
     return row.id;
   }
 
@@ -218,7 +220,13 @@ export class WorkflowRunRegistry implements WorkflowRunStore {
     const queued = await this.db
       .update(workflowRuns)
       .set({ status: "queued", queuedAt: now, updatedAt: now })
-      .where(and(eq(workflowRuns.id, runId), eq(workflowRuns.status, "submitted")))
+      .where(
+        and(
+          eq(workflowRuns.id, runId),
+          eq(workflowRuns.status, "submitted"),
+          sql`${workflowRuns.input}->>'federationReservationId' IS NULL`,
+        ),
+      )
       .returning({ id: workflowRuns.id });
     return queued.length === 1;
   }

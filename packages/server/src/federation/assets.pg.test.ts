@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, expect, test } from "bun:test";
+import { afterAll, beforeAll, expect, spyOn, test } from "bun:test";
 import { createHash } from "node:crypto";
 import {
   auditLog,
@@ -17,14 +17,17 @@ import {
   federationReservations,
   federationSigningKeys,
   federationSites,
+  federationWorkflowBindings,
   jobs,
   orgs,
   softwareAssetRevisions,
   softwareAssets,
   userOrgMemberships,
   users,
+  workflowRuns,
 } from "@kuintessence/db";
 import {
+  FederationAcceptanceSchema,
   FederationAgreementSchema,
   type FederationAssetRef,
   FederationDelegationSchema,
@@ -39,8 +42,12 @@ import pino from "pino";
 import { createErrorHandler } from "../middleware/error-handler";
 import { createFederationAssetRoutes } from "../routes/federation-assets";
 import { SoftwareAvailabilityService } from "../services/software-availability";
+import { WorkflowAsyncRunner } from "../workflow/async-runner";
+import { WorkflowExecutionJournalStore } from "../workflow/execution-journal";
+import { WorkflowRunRegistry } from "../workflow/run-registry";
 import { FederationAdmission } from "./admission";
 import { FederationAssetService, federationMaterialDigest } from "./assets";
+import { FederationExecutionBindingService } from "./execution-binding";
 import { FederationPermissionService } from "./permissions";
 import { FederationPreparationService } from "./preparation";
 import { FederationPreparationWorker } from "./preparation-worker";
@@ -200,6 +207,10 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
+  await db
+    .delete(federationWorkflowBindings)
+    .where(inArray(federationWorkflowBindings.reservationId, reservations));
+  await db.delete(workflowRuns).where(eq(workflowRuns.submittedBy, identity.userId));
   if (reservations.length) {
     const evidence = db
       .select({ id: federationEvidence.id })
@@ -631,4 +642,271 @@ test("plan API reports a specific incompatible field and refuses automation and 
     () => new Date(testNow.getTime() + 3600001),
   );
   await expect(expired.plan(actor, id)).rejects.toThrow("AUTHORIZATION_EXPIRED");
+});
+
+async function executionFixture() {
+  const manifest: FederationInputManifest = {
+    protocolVersion: 1,
+    kind: "inputs",
+    parameters: { count: "3" },
+    datasets: [],
+    bindings: [],
+  };
+  await assets.putMaterial(actor, source.signing.siteId, manifest);
+  await assets.putMaterial(actor, source.signing.siteId, environment());
+  const reservationId = await receive(manifest);
+  let now = testNow;
+  const preparation = new FederationPreparationService(
+    db,
+    target.signing.siteId,
+    assets,
+    () => now,
+  );
+  return {
+    reservationId,
+    preparation,
+    bindings: new FederationExecutionBindingService(db, preparation),
+    expire: () => {
+      now = new Date(testNow.getTime() + 3600001);
+    },
+  };
+}
+
+test("concurrent federation preparation atomically binds one held run and never spends the reservation twice", async () => {
+  const f = await executionFixture();
+  const [budget] = await db
+    .select()
+    .from(federationBudgets)
+    .where(eq(federationBudgets.domainId, agreement.budgetDomainId));
+  const prepared = await Promise.all(
+    Array.from({ length: 8 }, () => f.bindings.stage(f.reservationId)),
+  );
+  expect(new Set(prepared.map((row) => row.workflowRunId)).size).toBe(1);
+  const binding = prepared[0];
+  if (!binding) throw new Error("Missing binding");
+  expect(binding.snapshot).toMatchObject({
+    identity,
+    environment: environment(),
+    inputs: { parameters: { count: "3" } },
+    workflow: { parameters: [{ name: "count", default: "3" }] },
+  });
+  const registry = new WorkflowRunRegistry(db);
+  expect(await registry.getById(binding.workflowRunId)).toMatchObject({
+    submittedBy: identity.userId,
+    status: "submitted",
+    input: {
+      executionModel: "durable-v2",
+      federationReservationId: f.reservationId,
+      role: "user",
+      orgId: identity.orgId,
+    },
+  });
+  expect(await registry.queueAuthorizedRun(binding.workflowRunId)).toBe(false);
+  const scheduled: Array<() => Promise<void>> = [];
+  let executions = 0;
+  const runner = new WorkflowAsyncRunner({
+    registry,
+    journal: new WorkflowExecutionJournalStore(db),
+    schedule: (task) => {
+      scheduled.push(task);
+    },
+    makeRunner: () => async () => {
+      executions++;
+      throw new Error("Unvalidated federation run executed");
+    },
+  });
+  expect((await runner.recoverInterruptedRuns(true)).resumed).toBe(0);
+  expect(scheduled).toHaveLength(0);
+  // Even an erroneously queued row cannot bypass the receiver-specific execution authorization.
+  await db
+    .update(workflowRuns)
+    .set({ status: "queued" })
+    .where(eq(workflowRuns.id, binding.workflowRunId));
+  await runner.recoverInterruptedRuns(true);
+  for (const task of scheduled) await task();
+  expect(executions).toBe(0);
+  expect((await registry.getById(binding.workflowRunId))?.errorCode).toBe("WORKFLOW_RECONCILING");
+  await runner.stop();
+  expect(
+    await new FederationExecutionBindingService(db, f.preparation).stage(f.reservationId),
+  ).toEqual(binding);
+  expect(await db.select().from(jobs).where(eq(jobs.submittedBy, identity.userId))).toHaveLength(0);
+  expect(
+    (
+      await db
+        .select()
+        .from(federationBudgets)
+        .where(eq(federationBudgets.domainId, agreement.budgetDomainId))
+    )[0],
+  ).toEqual(budget);
+});
+
+test("failure between run insertion and binding rolls both back, then recovery creates only one run", async () => {
+  const f = await executionFixture();
+  const registry = new WorkflowRunRegistry(db);
+  const create = registry.createRun.bind(registry);
+  const before = await db
+    .select()
+    .from(workflowRuns)
+    .where(eq(workflowRuns.submittedBy, identity.userId));
+  const interrupted = spyOn(WorkflowRunRegistry.prototype, "createRun").mockImplementation(
+    async (...args) => {
+      await create(...args);
+      throw new Error("interrupted after run insert");
+    },
+  );
+  try {
+    await expect(f.bindings.stage(f.reservationId)).rejects.toThrow("interrupted after run insert");
+  } finally {
+    interrupted.mockRestore();
+  }
+  expect(
+    await db
+      .select()
+      .from(federationWorkflowBindings)
+      .where(eq(federationWorkflowBindings.reservationId, f.reservationId)),
+  ).toHaveLength(0);
+  expect(
+    await db.select().from(workflowRuns).where(eq(workflowRuns.submittedBy, identity.userId)),
+  ).toHaveLength(before.length);
+  const binding = await f.bindings.stage(f.reservationId);
+  await db
+    .update(workflowRuns)
+    .set({ status: "cancelled" })
+    .where(eq(workflowRuns.id, binding.workflowRunId));
+  f.expire();
+  expect((await f.bindings.stage(f.reservationId)).workflowRunId).toBe(binding.workflowRunId);
+  expect((await registry.getById(binding.workflowRunId))?.status).toBe("cancelled");
+  expect(
+    await db.select().from(workflowRuns).where(eq(workflowRuns.submittedBy, identity.userId)),
+  ).toHaveLength(before.length + 1);
+});
+
+test.each([
+  "agreement",
+  "identity",
+  "mapping",
+  "expiry",
+] as const)("binding rechecks %s after projection and creates no run when authorization changed", async (change) => {
+  const f = await executionFixture();
+  const snapshot = f.preparation.executionSnapshot.bind(f.preparation);
+  const injected = spyOn(f.preparation, "executionSnapshot").mockImplementation(async (...args) => {
+    const result = await snapshot(...args);
+    if (change === "agreement")
+      await db
+        .update(federationAgreements)
+        .set({ state: "suspended" })
+        .where(eq(federationAgreements.revisionId, agreement.agreementRevisionId));
+    if (change === "identity")
+      await db.update(users).set({ suspended: true }).where(eq(users.id, identity.userId));
+    if (change === "mapping")
+      await db
+        .update(federationAssetMappings)
+        .set({ revokedAt: new Date() })
+        .where(eq(federationAssetMappings.softwareRevisionId, revisionId));
+    if (change === "expiry") f.expire();
+    return result;
+  });
+  const before = await db
+    .select()
+    .from(workflowRuns)
+    .where(eq(workflowRuns.submittedBy, identity.userId));
+  try {
+    await expect(f.bindings.stage(f.reservationId)).rejects.toThrow();
+    expect(
+      await db
+        .select()
+        .from(federationWorkflowBindings)
+        .where(eq(federationWorkflowBindings.reservationId, f.reservationId)),
+    ).toHaveLength(0);
+    expect(
+      await db.select().from(workflowRuns).where(eq(workflowRuns.submittedBy, identity.userId)),
+    ).toHaveLength(before.length);
+  } finally {
+    injected.mockRestore();
+    await db
+      .update(federationAgreements)
+      .set({ state: "active" })
+      .where(eq(federationAgreements.revisionId, agreement.agreementRevisionId));
+    await db.update(users).set({ suspended: false }).where(eq(users.id, identity.userId));
+    await db
+      .update(federationAssetMappings)
+      .set({ revokedAt: null })
+      .where(eq(federationAssetMappings.softwareRevisionId, revisionId));
+  }
+});
+
+test("binding refuses an acceptance for a different operation even when the local signature is valid", async () => {
+  const f = await executionFixture();
+  const [row] = await db
+    .select()
+    .from(federationReservations)
+    .where(eq(federationReservations.id, f.reservationId));
+  if (!row) throw new Error("Missing reservation");
+  const receipt = { ...row.receipt, operationId: crypto.randomUUID() };
+  await db
+    .update(federationReservations)
+    .set({
+      receipt,
+      receiptJws: await signFederationMessage(FederationAcceptanceSchema, receipt, target.signing),
+    })
+    .where(eq(federationReservations.id, f.reservationId));
+  await expect(f.bindings.stage(f.reservationId)).rejects.toThrow("OPERATION_CONFLICT");
+  expect(
+    await db
+      .select()
+      .from(federationWorkflowBindings)
+      .where(eq(federationWorkflowBindings.reservationId, f.reservationId)),
+  ).toHaveLength(0);
+});
+
+test("recovery detects modified workflow inputs or saved snapshots instead of creating another run", async () => {
+  const f = await executionFixture();
+  const binding = await f.bindings.stage(f.reservationId);
+  const registry = new WorkflowRunRegistry(db);
+  const run = await registry.getById(binding.workflowRunId);
+  if (!run?.input) throw new Error("Missing workflow input");
+  await db
+    .update(workflowRuns)
+    .set({ input: { ...run.input, role: "platform_admin" } })
+    .where(eq(workflowRuns.id, run.id));
+  await expect(f.bindings.stage(f.reservationId)).rejects.toThrow("OPERATION_CONFLICT");
+  await db.update(workflowRuns).set({ input: run.input }).where(eq(workflowRuns.id, run.id));
+  await db
+    .update(federationWorkflowBindings)
+    .set({
+      snapshot: {
+        ...binding.snapshot,
+        inputs: { ...binding.snapshot.inputs, parameters: { count: "99" } },
+      },
+    })
+    .where(eq(federationWorkflowBindings.reservationId, f.reservationId));
+  await expect(f.bindings.stage(f.reservationId)).rejects.toThrow("OPERATION_CONFLICT");
+  expect(
+    await db
+      .select()
+      .from(federationWorkflowBindings)
+      .where(eq(federationWorkflowBindings.reservationId, f.reservationId)),
+  ).toHaveLength(1);
+});
+
+test("the production preparation worker stages a bound run without invoking the workflow executor", async () => {
+  const f = await executionFixture();
+  const worker = new FederationPreparationWorker(db, f.preparation, f.bindings);
+  let binding: typeof federationWorkflowBindings.$inferSelect | undefined;
+  for (let batch = 0; batch <= Math.ceil(reservations.length / 8); batch++) {
+    await worker.tick();
+    [binding] = await db
+      .select()
+      .from(federationWorkflowBindings)
+      .where(eq(federationWorkflowBindings.reservationId, f.reservationId));
+    if (binding) break;
+  }
+  await worker.stop();
+  expect(binding).toBeDefined();
+  if (!binding) throw new Error("Missing worker binding");
+  expect((await new WorkflowRunRegistry(db).getById(binding.workflowRunId))?.status).toBe(
+    "submitted",
+  );
+  expect(await db.select().from(jobs).where(eq(jobs.submittedBy, identity.userId))).toHaveLength(0);
 });
