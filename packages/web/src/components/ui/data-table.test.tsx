@@ -14,6 +14,22 @@ const data = Array.from({ length: 32 }, (_, id) => ({
 }));
 const columns: ColumnDef<(typeof data)[number]>[] = [{ accessorKey: "name", header: "Name" }];
 
+test("filtering retains pagination when the selected page size is smaller than the default", async () => {
+  const rows = data.map((row) => ({
+    ...row,
+    name: `${row.id < 20 ? "CPU" : "GPU"} ${row.name}`,
+  }));
+  const view = render(<DataTable columns={columns} data={rows} pageSize={25} />);
+  fireEvent.change(screen.getByRole("combobox", { name: "common.pagination.rowsPerPage" }), {
+    target: { value: "10" },
+  });
+  view.rerender(<DataTable columns={columns} data={rows} pageSize={25} globalFilter="CPU" />);
+  await waitFor(() => expect(screen.getAllByRole("cell")[0]?.textContent).toBe("CPU Job 00"));
+  fireEvent.click(screen.getByRole("button", { name: "common.pagination.next" }));
+  await waitFor(() => expect(screen.getAllByRole("cell")[0]?.textContent).toBe("CPU Job 10"));
+  expect(screen.getAllByRole("cell")).toHaveLength(10);
+});
+
 test("sort and pagination controls do not submit their enclosing form", async () => {
   const submit = vi.fn((event: React.FormEvent) => event.preventDefault());
   render(
