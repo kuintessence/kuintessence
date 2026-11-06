@@ -1,5 +1,12 @@
 import { setTimeout as delay } from "node:timers/promises";
 
+export class ExecutionAuthorizationExpired extends Error {
+  constructor() {
+    super("Federation execution authorization expired");
+    this.name = "ExecutionAuthorizationExpired";
+  }
+}
+
 /** A running job or worker cannot turn a lost renewal into a resumable, unverified build. */
 export class ExecutionAuthorization {
   private readonly controller = new AbortController();
@@ -58,14 +65,14 @@ export class ExecutionAuthorization {
     this.deadline = performance.now() + remaining;
     clearTimeout(this.timer);
     this.timer = setTimeout(() => {
-      this.controller.abort(new Error("Federation execution authorization expired"));
+      this.controller.abort(new ExecutionAuthorizationExpired());
     }, remaining);
   }
 
   assertValid(): void {
     this.signal.throwIfAborted();
     if (this.remaining() <= 0) {
-      this.controller.abort(new Error("Federation execution authorization expired"));
+      this.controller.abort(new ExecutionAuthorizationExpired());
       this.signal.throwIfAborted();
     }
   }

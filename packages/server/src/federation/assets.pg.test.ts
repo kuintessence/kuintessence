@@ -2724,6 +2724,7 @@ test.each([
   "startup",
   "startup-policy-revoked",
   "startup-legacy",
+  "startup-input-legacy",
   "startup-signer-unavailable",
   "startup-changed",
   "mapping-deadline",
@@ -2913,6 +2914,17 @@ test.each([
         queueTargetMode: "named",
         dispatchEpoch: 1,
         sandboxExecution: manifest,
+        ...(change === "startup-input-legacy"
+          ? {
+              inputStaging: [
+                {
+                  fileMetadataId: "00000000-0000-4000-8000-000000000111",
+                  stagePath: "inputs/data",
+                  sourceUrl: "https://objects.test/data",
+                },
+              ],
+            }
+          : {}),
       });
     await outbox.enqueue(approvedTarget.agentId, build(), f.runId, lease);
     await lease.release();
@@ -3016,6 +3028,10 @@ test.each([
       expect(replies[1]?.dispatch?.sandboxExecution?.envelope?.nonce).not.toBe(envelope?.nonce);
     } else if (change === "startup-legacy") {
       await expect(result).rejects.toThrow("does not support Sandbox signature renewal");
+      expect(signatures).toBe(0);
+      expect(replies).toHaveLength(0);
+    } else if (change === "startup-input-legacy") {
+      await expect(result).rejects.toThrow("does not support Sandbox input leases");
       expect(signatures).toBe(0);
       expect(replies).toHaveLength(0);
     } else if (change === "active" || change === "mapping-deadline") {

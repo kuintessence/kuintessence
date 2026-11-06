@@ -447,3 +447,60 @@ describe("SandboxStager", () => {
     );
   });
 });
+
+test.each([
+  "renewed",
+  "path",
+  "drop-lease",
+  "denied-after-download",
+] as const)("Sandbox input refresh retains the signed binding: %s", async (mode) => {
+  const root = await mkdtemp(join(tmpdir(), "kq-sandbox-renewed-"));
+  roots.push(root);
+  const jobId = crypto.randomUUID();
+  const content = "authorized input";
+  let downloads = 0,
+    refreshes = 0;
+  const stager = new SandboxStager({
+    root,
+    ownerUid: process.getuid?.() ?? 0,
+    downloadInput: async (input) => {
+      expect(input.sourceUrl).toBe("https://storage.example/current");
+      downloads++;
+      await writeFile(input.targetPath, content);
+    },
+  });
+  const input = {
+    stagePath: "inputs/data.txt",
+    sourceUrl: "https://storage.example/expired",
+    deliveryLeaseId: crypto.randomUUID(),
+    deliveryLeaseExpiresAtUnixMs: 1n,
+  };
+  const result = stager.prepare(verified(hash(content), jobId), [input], {
+    renewInput: async (source) => {
+      refreshes++;
+      if (mode === "denied-after-download" && refreshes > 1)
+        throw new Error("permission withdrawn");
+      if (mode === "drop-lease")
+        return { stagePath: source.stagePath, sourceUrl: "https://storage.example/current" };
+      return {
+        ...source,
+        stagePath: mode === "path" ? "inputs/replaced" : source.stagePath,
+        sourceUrl: "https://storage.example/current",
+        deliveryLeaseExpiresAtUnixMs: BigInt(Date.now() + 10_000),
+      };
+    },
+  });
+  if (mode === "renewed") {
+    await result;
+    expect(downloads).toBe(1);
+    expect(refreshes).toBe(2);
+  } else {
+    await expect(result).rejects.toThrow(
+      mode === "denied-after-download" ? "permission withdrawn" : "original binding",
+    );
+    expect(downloads).toBe(mode === "denied-after-download" ? 1 : 0);
+    await expect(readFile(join(root, jobId, "inputs/data.txt"))).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+  }
+});

@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { chmod, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { chmod, chown, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Spawner } from "../adapters/base";
@@ -8,6 +8,11 @@ import { loadAgentConfig } from "../config";
 import { attestSandboxRuntimeEnvironment } from "./runtime-attestation";
 
 const roots: string[] = [];
+const identity = {
+  username: "kqagent",
+  uid: process.getuid?.() || 501,
+  gid: process.getgid?.() || 20,
+};
 
 afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
@@ -21,6 +26,7 @@ async function fixture() {
   const root = await mkdtemp(join(tmpdir(), "kq-runtime-attestation-"));
   roots.push(root);
   await chmod(root, 0o700);
+  if (process.getuid?.() === 0) await chown(root, identity.uid, identity.gid);
   const runtimePath = join(root, "runtime.sif");
   const negativeRuntimePath = join(root, "unauthorized.sif");
   const seccompPath = join(root, "seccomp.json");
@@ -90,11 +96,6 @@ describe("Sandbox runtime attestation", () => {
         return { exitCode: 0, stdout: "42\n", stderr: "" };
       },
     };
-    const identity = {
-      username: "kqagent",
-      uid: process.getuid?.() ?? 501,
-      gid: process.getgid?.() ?? 20,
-    };
     const result = await attestSandboxRuntimeEnvironment(config, "slurm", spawner, identity, {
       now: () => 1_000,
       inspectFile,
@@ -143,11 +144,7 @@ describe("Sandbox runtime attestation", () => {
           stderr: "invalid signature",
         }),
       },
-      {
-        username: "kqagent",
-        uid: process.getuid?.() ?? 501,
-        gid: process.getgid?.() ?? 20,
-      },
+      identity,
       { inspectFile, validateAncestors: async () => undefined },
     );
 

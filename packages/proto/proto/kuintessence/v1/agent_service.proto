@@ -222,6 +222,8 @@ message RegisterRequest {
   bool federation_compute_lease_v1 = 25;
   // Accepts a refreshed Sandbox envelope while pinning the original execution content.
   bool federation_sandbox_signature_renewal_v1 = 26;
+  // Stops Sandbox input downloads when live preparation authority expires.
+  bool federation_sandbox_input_lease_v1 = 27;
 }
 
 message RegisterResponse {

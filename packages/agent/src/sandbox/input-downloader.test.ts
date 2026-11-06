@@ -1,7 +1,9 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
+import { ExecutionAuthorization } from "../execution-authorization";
 import { downloadSandboxInput } from "./input-downloader";
 
 const roots: string[] = [];
@@ -71,4 +73,69 @@ describe("downloadSandboxInput", () => {
       }),
     ).rejects.toThrow("HTTP 302");
   });
+});
+
+test.each([
+  "renewed",
+  "offline",
+  "denied",
+  "cancelled",
+] as const)("slow HTTP input observes live authority: %s", async (mode) => {
+  const root = await mkdtemp(join(tmpdir(), "kq-sandbox-http-"));
+  roots.push(root);
+  const parent = new AbortController();
+  let renewals = 0;
+  const lease = new ExecutionAuthorization(
+    Date.now() + 400,
+    async (signal) => {
+      renewals++;
+      if (mode === "offline") await delay(10_000, undefined, { signal });
+      if (mode === "denied") throw new Error("permission withdrawn");
+      return Date.now() + 400;
+    },
+    parent.signal,
+  );
+  let producing: ReturnType<typeof setTimeout> | undefined;
+  const server = Bun.serve({
+    port: 0,
+    fetch: () =>
+      new Response(
+        new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(new Uint8Array([1]));
+            if (mode === "cancelled") parent.abort(new Error("cancelled"));
+            producing = setTimeout(() => {
+              controller.enqueue(new Uint8Array([2]));
+              controller.close();
+            }, 900);
+          },
+          cancel() {
+            clearTimeout(producing);
+          },
+        }),
+      ),
+  });
+  const targetPath = join(root, "input");
+  try {
+    const download = downloadSandboxInput({
+      sourceUrl: `http://127.0.0.1:${server.port}/input`,
+      targetPath,
+      maxBytes: 2,
+      signal: lease.signal,
+    });
+    if (mode === "renewed") {
+      await download;
+      expect(renewals).toBeGreaterThan(1);
+      expect(await readFile(targetPath)).toEqual(Buffer.from([1, 2]));
+      lease.assertValid();
+    } else {
+      await expect(download).rejects.toThrow();
+      await expect(readFile(targetPath)).rejects.toMatchObject({ code: "ENOENT" });
+      expect((await readdir(root)).filter((name) => name.includes(".part-"))).toEqual([]);
+    }
+  } finally {
+    clearTimeout(producing);
+    await lease.close();
+    server.stop(true);
+  }
 });

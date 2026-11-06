@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { fromBinary, toBinary } from "@bufbuild/protobuf";
+import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
 import type { PgDb } from "@kuintessence/db";
 import {
   QueueTargetMode,
@@ -690,4 +690,31 @@ test("Sandbox signature renewal requires the advertised Agent capability", () =>
   expect(dispatcher.supportsFederationSandboxSignatureRenewal("agent")).toBe(true);
   channel.verifiedCertFingerprint = "";
   expect(dispatcher.supportsFederationSandboxSignatureRenewal("agent")).toBe(false);
+});
+
+test("Sandbox input dispatch waits for an Agent that can stop expired preparation", () => {
+  const dispatcher = new AgentDispatcher();
+  const channel = {
+    ...mockChannel(),
+    federationExecutionV1: true,
+    federationComputeLeaseV1: true,
+    federationSandboxSignatureRenewalV1: true,
+    federationSandboxInputLeaseV1: false,
+    verifiedCertFingerprint: "verified",
+  };
+  dispatcher.register("agent", channel);
+  const message = create(ServerMessageSchema, {
+    payload: {
+      case: "dispatchJob",
+      value: {
+        federationExecution: true,
+        sandboxExecution: { networkDisabled: true },
+        inputStaging: [{ stagePath: "inputs/data", sourceUrl: "https://objects.test/data" }],
+      },
+    },
+  });
+  expect(dispatcher.pushPreparedDispatch("agent", message)).toBe(false);
+  channel.federationSandboxInputLeaseV1 = true;
+  expect(dispatcher.pushPreparedDispatch("agent", message)).toBe(true);
+  expect(channel.messages).toHaveLength(1);
 });

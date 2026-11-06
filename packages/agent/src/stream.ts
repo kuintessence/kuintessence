@@ -80,7 +80,7 @@ import type {
 } from "./data-market/data-scan";
 import { ExecutorPool } from "./embedded/executor-pool";
 import type { JobStatusReport } from "./embedded/job-executor";
-import { ExecutionAuthorization } from "./execution-authorization";
+import { ExecutionAuthorization, ExecutionAuthorizationExpired } from "./execution-authorization";
 import {
   buildCloudToClusterArgv,
   buildHostCloudToClusterArgv,
@@ -1975,6 +1975,8 @@ export class AgentStream {
           federationComputeLeaseV1: this.federationExecutionCapable(),
           federationSandboxSignatureRenewalV1:
             this.federationExecutionCapable() && !!this.deps.sandboxProcessor,
+          federationSandboxInputLeaseV1:
+            this.federationExecutionCapable() && !!this.deps.sandboxProcessor,
           federationInstallationV1: this.federationInstallationCapable(),
           federationInstallationLeaseV1: this.federationInstallationCapable(),
         }),
@@ -3156,11 +3158,12 @@ export class AgentStream {
           return;
         }
         const preparation = (async () => {
-          const authorized = (await this.renewFederationExecution(dj))?.dispatch ?? dj;
-          return processor.prepare(
-            dj.jobId,
-            authorized.sandboxExecution,
-            authorized.inputStaging.map((input) => ({
+          const pending = this.federationDispatches.get(dj.jobId);
+          const parent = pending
+            ? AbortSignal.any([this.lifecycleController.signal, pending.controller.signal])
+            : this.lifecycleController.signal;
+          const inputs = (dispatch: DispatchJob) =>
+            dispatch.inputStaging.map((input) => ({
               stagePath: input.stagePath,
               sourceUrl: input.sourceUrl,
               ...(input.deliveryLeaseId
@@ -3169,8 +3172,65 @@ export class AgentStream {
                     deliveryLeaseExpiresAtUnixMs: input.deliveryLeaseExpiresAtUnixMs,
                   }
                 : {}),
-            })),
-          );
+            }));
+          for (;;) {
+            parent.throwIfAborted();
+            const grant = await this.renewFederationExecution(dj, parent);
+            let authorized = grant?.dispatch ?? dj;
+            const authorization = grant
+              ? new ExecutionAuthorization(
+                  grant.expiresAt,
+                  async (signal) => {
+                    const next = await this.renewFederationExecution(dj, signal);
+                    if (!next) throw new Error("Sandbox preparation authority is missing");
+                    authorized = next.dispatch;
+                    return next.expiresAt;
+                  },
+                  parent,
+                )
+              : undefined;
+            try {
+              const prepared = await processor.prepare(
+                dj.jobId,
+                authorized.sandboxExecution,
+                inputs(authorized),
+                {
+                  signal: authorization?.signal ?? parent,
+                  restart: Boolean(grant),
+                  ...(authorization
+                    ? {
+                        renewInput: async (source) => {
+                          authorization.assertValid();
+                          const current = inputs(authorized).find(
+                            (input) => input.stagePath === source.stagePath,
+                          );
+                          if (!current)
+                            throw new Error("Sandbox input renewal lost its original binding");
+                          return current;
+                        },
+                      }
+                    : {}),
+                },
+              );
+              authorization?.assertValid();
+              return prepared;
+            } catch (error) {
+              parent.throwIfAborted();
+              const reason: unknown = authorization?.signal.reason;
+              if (
+                !reason ||
+                (error !== reason && !(error instanceof Error && error.cause === reason))
+              )
+                throw error;
+              if (!(reason instanceof ExecutionAuthorizationExpired)) throw reason;
+              this.logger.info(
+                { jobId: dj.jobId },
+                "Sandbox preparation awaits fresh authorization",
+              );
+            } finally {
+              await authorization?.close();
+            }
+          }
         })()
           .then(async (prepared) => {
             const profile = this.deps.restrictedExecutionProfile;
@@ -4070,11 +4130,15 @@ export class AgentStream {
     return true;
   }
 
-  private async renewFederationExecution(dispatch: DispatchJob) {
+  private async renewFederationExecution(dispatch: DispatchJob, renewalSignal?: AbortSignal) {
     if (!dispatch.federationExecution) return undefined;
     const pending = this.federationDispatches.get(dispatch.jobId);
     if (!pending) throw new Error("Federation dispatch authority is missing");
-    const signal = AbortSignal.any([this.lifecycleController.signal, pending.controller.signal]);
+    const signal = AbortSignal.any([
+      this.lifecycleController.signal,
+      pending.controller.signal,
+      ...(renewalSignal ? [renewalSignal] : []),
+    ]);
     signal.throwIfAborted();
     await this.assertDispatchEpochAllowed(dispatch.jobId, Number(dispatch.dispatchEpoch));
     for (;;) {

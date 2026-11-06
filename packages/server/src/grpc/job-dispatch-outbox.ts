@@ -284,6 +284,14 @@ export class JobDispatchOutbox {
       !this.dispatcher.supportsFederationSandboxSignatureRenewal(identity.agentId)
     )
       throw new WorkflowExecutionInterrupted("Agent does not support Sandbox signature renewal");
+    if (
+      reservationId &&
+      !running &&
+      originalDispatch.sandboxExecution &&
+      originalDispatch.inputStaging.length > 0 &&
+      !this.dispatcher.supportsFederationSandboxInputLease(identity.agentId)
+    )
+      throw new WorkflowExecutionInterrupted("Agent does not support Sandbox input leases");
     const authorize =
       reservationId && identity.runId
         ? await this.prepareFederationDispatch?.(identity.runId, {

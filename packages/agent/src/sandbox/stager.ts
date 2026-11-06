@@ -27,6 +27,12 @@ export interface SandboxInputSource {
   deliveryLeaseExpiresAtUnixMs?: bigint;
 }
 
+export interface SandboxPreparationOptions {
+  restart?: boolean;
+  signal?: AbortSignal;
+  renewInput?: (source: SandboxInputSource) => Promise<SandboxInputSource>;
+}
+
 export interface SandboxStagerOptions {
   root: string;
   kubernetesArtifactPvc?: string;
@@ -280,6 +286,7 @@ async function materializeExternalInputs(
   collectionDir: string,
   sources: SandboxInputSource[],
   downloadInput: SandboxStagerOptions["downloadInput"],
+  preparation: SandboxPreparationOptions,
 ): Promise<void> {
   const expected = expectedExternalInputs(verified.unsigned);
   if (downloadInput) {
@@ -294,31 +301,41 @@ async function materializeExternalInputs(
       ) {
         throw new Error("Sandbox input source path or URL is invalid");
       }
-      assertDeliveryLease(source);
+      if (!preparation.renewInput) assertDeliveryLease(source);
       if (supplied.has(source.stagePath)) throw new Error("Sandbox input source is duplicated");
       supplied.set(source.stagePath, source);
     }
     if (supplied.size !== expected.size) {
       throw new Error("Sandbox input sources do not match the signed manifest");
     }
-    for (const [stagePath, limits] of expected) {
-      const source = supplied.get(stagePath);
-      if (!source) throw new Error("Sandbox input sources do not match the signed manifest");
-      const targetPath = resolve(collectionDir, stagePath);
-      if (!pathInside(collectionDir, targetPath)) {
-        throw new Error("Sandbox input source escaped the managed run directory");
+    const downloaded: string[] = [];
+    try {
+      for (const [stagePath, limits] of expected) {
+        const source = supplied.get(stagePath);
+        if (!source) throw new Error("Sandbox input sources do not match the signed manifest");
+        const targetPath = resolve(collectionDir, stagePath);
+        if (!pathInside(collectionDir, targetPath)) {
+          throw new Error("Sandbox input source escaped the managed run directory");
+        }
+        const parent = dirname(targetPath);
+        await assertNoSymlink(collectionDir, parent);
+        await mkdir(parent, { recursive: true, mode: 0o700 });
+        await assertNoSymlink(collectionDir, parent);
+        await assertNoSymlink(collectionDir, targetPath);
+        const current = await currentInput(source, preparation);
+        downloaded.push(targetPath);
+        await downloadInput({
+          sourceUrl: current.sourceUrl,
+          targetPath,
+          maxBytes: limits.maxBytes,
+          ...(preparation.signal ? { signal: preparation.signal } : {}),
+        });
+        await currentInput(source, preparation);
+        await assertNoSymlink(collectionDir, targetPath);
       }
-      const parent = dirname(targetPath);
-      await assertNoSymlink(collectionDir, parent);
-      await mkdir(parent, { recursive: true, mode: 0o700 });
-      await assertNoSymlink(collectionDir, parent);
-      await assertNoSymlink(collectionDir, targetPath);
-      await downloadInput({
-        sourceUrl: source.sourceUrl,
-        targetPath,
-        maxBytes: limits.maxBytes,
-      });
-      await assertNoSymlink(collectionDir, targetPath);
+    } catch (error) {
+      for (const path of downloaded) await rm(path, { force: true });
+      throw error;
     }
   } else if (sources.length > 0) {
     throw new Error("Sandbox input downloader is unavailable");
@@ -342,6 +359,26 @@ async function materializeExternalInputs(
   }
 }
 
+async function currentInput(
+  source: SandboxInputSource,
+  preparation: SandboxPreparationOptions,
+): Promise<SandboxInputSource> {
+  preparation.signal?.throwIfAborted();
+  const current = preparation.renewInput ? await preparation.renewInput(source) : source;
+  preparation.signal?.throwIfAborted();
+  if (
+    current.stagePath !== source.stagePath ||
+    Boolean(current.deliveryLeaseId) !== Boolean(source.deliveryLeaseId) ||
+    (!source.deliveryLeaseId &&
+      (current.sourceUrl !== source.sourceUrl ||
+        current.deliveryLeaseId ||
+        current.deliveryLeaseExpiresAtUnixMs !== undefined))
+  )
+    throw new Error("Sandbox input renewal changed its original binding");
+  assertDeliveryLease(current);
+  return current;
+}
+
 function assertDeliveryLease(source: SandboxInputSource): void {
   const hasLease =
     source.deliveryLeaseId !== undefined || source.deliveryLeaseExpiresAtUnixMs !== undefined;
@@ -359,10 +396,16 @@ function assertDeliveryLease(source: SandboxInputSource): void {
 export class SandboxStager {
   constructor(private readonly options: SandboxStagerOptions) {}
 
+  async cleanup(jobId: string): Promise<void> {
+    await removeSandboxRun(this.options.root, jobId);
+  }
+
   async prepare(
     verified: VerifiedSandboxManifest,
     inputSources: SandboxInputSource[] = [],
+    preparation: SandboxPreparationOptions = {},
   ): Promise<{ workingDir: string; sandbox: SandboxJobSpec }> {
+    preparation.signal?.throwIfAborted();
     const identity = verified.unsigned.identity;
     const selfAccount =
       verified.unsigned.executionMode === "SelfAccount"
@@ -390,7 +433,9 @@ export class SandboxStager {
       collectionDir,
       inputSources,
       this.options.downloadInput,
+      preparation,
     );
+    preparation.signal?.throwIfAborted();
     if (identity.backend === "Kubernetes") {
       const mounts = verified.unsigned.mounts.map((mount) =>
         jobMount(mount, resolve(collectionDir, mount.relativePath)),
@@ -509,7 +554,11 @@ export async function removeSandboxRun(rootPath: string, jobId: string): Promise
   if (!jobId || posix.basename(jobId) !== jobId || jobId === "." || jobId === "..") {
     throw new Error("Sandbox job id is invalid for managed work-root cleanup");
   }
-  const root = await realpath(rootPath);
+  const root = await realpath(rootPath).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === "ENOENT") return undefined;
+    throw error;
+  });
+  if (!root) return;
   const target = resolve(root, jobId);
   if (!pathInside(root, target) || target === root) {
     throw new Error("Sandbox work-root cleanup escapes the managed root");

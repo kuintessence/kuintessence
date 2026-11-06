@@ -400,6 +400,7 @@ export function registerAgentHandler(router: ConnectRouter, deps: AgentHandlerDe
         federationExecutionV1: false,
         federationComputeLeaseV1: false,
         federationSandboxSignatureRenewalV1: false,
+        federationSandboxInputLeaseV1: false,
         federationInstallationV1: false,
         federationInstallationLeaseV1: false,
         verifiedCertFingerprint: undefined as string | undefined,
@@ -518,6 +519,7 @@ export function registerAgentHandler(router: ConnectRouter, deps: AgentHandlerDe
               channel.federationExecutionV1 = reg.federationExecutionV1;
               channel.federationComputeLeaseV1 = reg.federationComputeLeaseV1;
               channel.federationSandboxSignatureRenewalV1 = reg.federationSandboxSignatureRenewalV1;
+              channel.federationSandboxInputLeaseV1 = reg.federationSandboxInputLeaseV1;
               channel.federationInstallationV1 = reg.federationInstallationV1;
               channel.federationInstallationLeaseV1 = reg.federationInstallationLeaseV1;
               channel.verifiedCertFingerprint =
