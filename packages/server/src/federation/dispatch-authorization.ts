@@ -17,6 +17,7 @@ import { federationMaterialDigest } from "./assets";
 import { federationExecutionSnapshot, loadFederationWorkflowBinding } from "./execution-binding";
 import { checkFederationExecutionPolicy, checkFederationJobData } from "./execution-policy";
 import { lockFederationTarget, resolveFederationTargets } from "./execution-targets";
+import { checkFederationLicensedMaterials } from "./licensed-material-authorization";
 import type { FederationPreparationService } from "./preparation";
 import { prepareFederationSoftware } from "./software-authorization";
 
@@ -54,7 +55,7 @@ export class FederationDispatchAuthorization {
   async prepare(
     runId: string,
     delivery?: FederationDeliveryTarget,
-  ): Promise<(tx: PgTransaction) => Promise<void>> {
+  ): Promise<(tx: PgTransaction) => Promise<number>> {
     const binding = await loadFederationWorkflowBinding(this.db, runId);
     if (!binding)
       throw new WorkflowExecutionInterrupted("Federation dispatch lacks its saved binding", {
@@ -119,6 +120,7 @@ export class FederationDispatchAuthorization {
           )
         : undefined;
     return async (tx) => {
+      let expiresAtUnixMs = Number.POSITIVE_INFINITY;
       await tx
         .select({ id: federationWorkflowBindings.reservationId })
         .from(federationWorkflowBindings)
@@ -197,10 +199,26 @@ export class FederationDispatchAuthorization {
               }
             : {}),
         });
-        await softwareFence?.(tx, target.providerOrgId);
+        expiresAtUnixMs = Math.min(
+          expiresAtUnixMs,
+          (await softwareFence?.(tx, target.providerOrgId)) ?? Number.POSITIVE_INFINITY,
+        );
+        if (delivery.kind === "compute")
+          expiresAtUnixMs = Math.min(
+            expiresAtUnixMs,
+            await checkFederationLicensedMaterials(
+              tx,
+              delivery.jobId,
+              job.intent,
+              binding.snapshot.identity,
+              target,
+              true,
+            ),
+          );
         if (running)
           await checkFederationJobData(tx, delivery.jobId, binding.snapshot.identity, true);
       }
+      return expiresAtUnixMs;
     };
   }
 }

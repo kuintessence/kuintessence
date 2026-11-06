@@ -16,7 +16,7 @@ export async function prepareFederationSoftware(
   delivery: FederationDeliveryTarget,
   availability?: Pick<SoftwareAvailabilityService, "resolve" | "assertExecutionAccess">,
   running = false,
-): Promise<(tx: PgTransaction, providerOrgId: string) => Promise<void>> {
+): Promise<(tx: PgTransaction, providerOrgId: string) => Promise<number>> {
   const requirements = intent.softwareRequirements ?? [];
   const selected =
     delivery.kind === "install"
@@ -74,19 +74,23 @@ export async function prepareFederationSoftware(
   }
   return async (tx, providerOrgId) => {
     const governance = new LicenseRuntimeGovernanceService(new PgGovernanceRepository(tx, true));
+    let expiresAtUnixMs = Number.POSITIVE_INFINITY;
     for (const requirement of selected) {
       if (!requirement.assetId) throw new FederationError("OPERATION_CONFLICT");
       const policy = await governance.getCanonicalLicensePolicy(requirement.assetId);
       const spec = availabilityRequestForRequirement(requirement, []).rawSpec;
-      const blocks = await governance.evaluateLicense({
+      const authorization = await governance.evaluateLicenseAuthorization({
         assetKey: policy?.identifiers?.[0] ?? spec ?? requirement.name,
         assetId: requirement.assetId,
         policy: policy ?? undefined,
         providerEntitlementSubjectIds: [providerOrgId],
         consumerEntitlementSubjectIds: [identity.userId, identity.orgId],
         installRequested: delivery.kind === "install",
+        now: new Date(Date.now()),
       });
-      if (blocks.length > 0) throw new FederationError("POLICY_DENIED");
+      if (authorization.blocks.length > 0) throw new FederationError("POLICY_DENIED");
+      expiresAtUnixMs = Math.min(expiresAtUnixMs, authorization.expiresAtUnixMs);
     }
+    return expiresAtUnixMs;
   };
 }

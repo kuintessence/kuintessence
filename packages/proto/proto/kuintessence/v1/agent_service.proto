@@ -433,6 +433,10 @@ message LicensedMaterialMount {
   string target_path = 2;
   string expected_fingerprint = 3;
   repeated string required_elements = 4;
+  // Pins the local authorization identity for federation renewals; not a bearer credential.
+  string mapping_id = 5;
+  string asset_id = 6;
+  string license_subject = 7;
 }
 
 enum SandboxLanguage {

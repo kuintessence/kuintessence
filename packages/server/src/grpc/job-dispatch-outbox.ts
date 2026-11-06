@@ -50,7 +50,7 @@ export class JobDispatchOutbox {
     private readonly prepareFederationDispatch?: (
       runId: string,
       target: FederationDeliveryTarget,
-    ) => Promise<(tx: PgTransaction) => Promise<void>>,
+    ) => Promise<(tx: PgTransaction) => Promise<number>>,
     private readonly prepareFederationData?: (
       agentId: string,
       message: ServerMessage,
@@ -266,10 +266,7 @@ export class JobDispatchOutbox {
         preparedMessage.payload.value.dispatchEpoch !== grant.request.dispatchEpoch)
     )
       return false;
-    if (
-      running &&
-      (originalDispatch.sandboxExecution || originalDispatch.licensedMaterialMounts.length > 0)
-    )
+    if (running && originalDispatch.sandboxExecution)
       throw new WorkflowExecutionInterrupted("Protected runtime authorization is unavailable");
     if (reservationId && (!identity.runId || !this.prepareFederationDispatch))
       throw new WorkflowExecutionInterrupted("Federation dispatch authorization is unavailable", {
@@ -362,7 +359,7 @@ export class JobDispatchOutbox {
           .update(jobDispatchOutbox)
           .set({ nextAttemptAt: sql`clock_timestamp() + interval '10 seconds'` })
           .where(eq(jobDispatchOutbox.jobId, jobId));
-      await authorize?.(tx);
+      const authorizationDeadline = await authorize?.(tx);
       await data?.authorize(tx);
       if (running) await assertRunningDataBindings(tx, originalDispatch);
       if (grant) {
@@ -385,6 +382,7 @@ export class JobDispatchOutbox {
         const dispatch = message.payload.value;
         const expiry = Math.min(
           Date.now() + 10_000,
+          authorizationDeadline ?? Number.POSITIVE_INFINITY,
           federationExecutionDeadline(binding.snapshot.request),
           Date.parse(binding.terms.validUntil),
           ...(running

@@ -176,7 +176,7 @@ test("reconnect renews credentials while retaining the original outbox and immut
     new JobDispatchOutbox(
       db,
       dispatcher,
-      async () => async () => {},
+      async () => async () => Number.POSITIVE_INFINITY,
       (id, message) => service.prepare(id, message),
     );
   const bytes = Buffer.from(toBinary(ServerMessageSchema, original)).toString("base64");
@@ -341,7 +341,11 @@ test("data-bearing federation dispatch cannot bypass an absent renewal service",
       sent++;
     },
   });
-  const outbox = new JobDispatchOutbox(db, dispatcher, async () => async () => {});
+  const outbox = new JobDispatchOutbox(
+    db,
+    dispatcher,
+    async () => async () => Number.POSITIVE_INFINITY,
+  );
   expect(await outbox.enqueue(agentId, original, runId)).toEqual({ sent: false, pending: true });
   expect(sent).toBe(0);
   const [pending] = await db
@@ -363,7 +367,7 @@ test("a failed retry timestamp write cannot turn an accepted durable dispatch in
     const outbox = new JobDispatchOutbox(
       db,
       dispatcher,
-      async () => async () => {},
+      async () => async () => Number.POSITIVE_INFINITY,
       (id, message) => service.prepare(id, message),
     );
     expect(await outbox.enqueue(agentId, original, runId)).toEqual({ sent: false, pending: true });

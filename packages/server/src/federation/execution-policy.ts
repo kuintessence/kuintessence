@@ -24,6 +24,7 @@ import type { SoftwareAvailabilityService } from "../services/software-availabil
 import type { FederationDeliveryTarget } from "./dispatch-authorization";
 import { loadFederationWorkflowBinding } from "./execution-binding";
 import { matchesFederationTarget } from "./execution-targets";
+import { checkFederationLicensedMaterials } from "./licensed-material-authorization";
 import { checkFederationSandboxJob } from "./sandbox-authorization";
 import { prepareFederationSoftware } from "./software-authorization";
 
@@ -95,6 +96,14 @@ export async function checkFederationExecutionPolicy(
           target.providerOrgId,
         );
       } else if (job.status !== "pending") throw new FederationError("OPERATION_CONFLICT");
+    });
+    await inspect(async () => {
+      if (!job.agentId) return;
+      const target = targets.find(
+        (target) => target.agentId === job.agentId && target.queueId === job.queueId,
+      );
+      if (!target) throw new FederationError("POLICY_DENIED");
+      await checkFederationLicensedMaterials(db, job.id, intent, identity, target);
     });
     await inspect(() => checkFederationJobData(db, job.id, identity));
     await inspect(() => checkFederationSandboxJob(db, job.id, intent, identity, sandboxPolicies));

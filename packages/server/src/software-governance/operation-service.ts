@@ -88,7 +88,7 @@ export class SoftwareOperationService {
     private readonly prepareFederationDispatch?: (
       runId: string,
       target: FederationDeliveryTarget,
-    ) => Promise<(tx: PgTransaction) => Promise<void>>,
+    ) => Promise<(tx: PgTransaction) => Promise<number>>,
   ) {}
 
   async closeInterruptedOperation(input: {
@@ -820,7 +820,7 @@ export class SoftwareOperationService {
         current.idempotencyKey !== original.idempotencyKey
       )
         return false;
-      await fence(tx);
+      const authorizationDeadline = await fence(tx);
       const [binding] = await tx
         .select({
           snapshot: federationWorkflowBindings.snapshot,
@@ -839,6 +839,7 @@ export class SoftwareOperationService {
       if (!binding) return false;
       const expiresAt = Math.min(
         Date.now() + 10_000,
+        authorizationDeadline ?? Number.POSITIVE_INFINITY,
         federationExecutionDeadline(binding.snapshot.request),
         Date.parse(binding.terms.validUntil),
       );

@@ -295,6 +295,9 @@ export class AgentDispatcher {
       spackExecution?: SpackExecution;
       licensedMaterialMounts?: Array<{
         selector: string;
+        mappingId?: string;
+        assetId?: string;
+        licenseSubject?: string;
         targetPath: string;
         expectedFingerprint: string;
         requiredElements: string[];

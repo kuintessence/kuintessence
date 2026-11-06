@@ -26,6 +26,7 @@ import {
   jobDataBindings,
   jobDispatchOutbox,
   jobs,
+  licensedMaterialMappings,
   licenseEntitlementClaims,
   orgs,
   schedulerQueues,
@@ -43,6 +44,7 @@ import {
   FederationExecutionDecision,
   FederationExecutionRequestSchema,
   type FederationExecutionResponse,
+  LicensedMaterialMountSchema,
 } from "@kuintessence/proto";
 import { AppError, ErrorCode, workflowDsl } from "@kuintessence/shared";
 import {
@@ -1292,6 +1294,7 @@ test.each([
   undefined,
   "2026-01-01T02:00:00.000Z",
 ])("installation renewal uses its signed execution deadline %s and original pending job", async (executionExpiresAt) => {
+  await assets.register(actor, { reference: scriptRef, localRevisionId: revisionId });
   const f = await executionFixture(executionExpiresAt);
   const binding = await f.bindings.stage(f.reservationId);
   const jobId = crypto.randomUUID(),
@@ -1317,6 +1320,7 @@ test.each([
   dispatcher.register(agentId, channel);
   dispatcher.register("other", { ...channel });
   let change: "none" | "cancel" | "anchor" | "ticket" = "none";
+  let localAuthorizationDeadline = Number.POSITIVE_INFINITY;
   const operations = new SoftwareOperationService(
     db,
     dispatcher,
@@ -1337,7 +1341,10 @@ test.each([
     async () => {},
     async () => {
       const snapshot = await f.preparation.executionSnapshot(f.reservationId);
-      return (tx) => f.preparation.lockExecutionSnapshot(tx, snapshot);
+      return async (tx) => {
+        await f.preparation.lockExecutionSnapshot(tx, snapshot);
+        return localAuthorizationDeadline;
+      };
     },
   );
   await db.insert(agents).values({
@@ -1411,6 +1418,12 @@ test.each([
       spackManifestDigest: pin.manifestDigest,
     });
     expect(grants[0]?.expiresAtUnixMs).toBe(BigInt(grantNow + 10_000));
+    localAuthorizationDeadline = grantNow + 3_000;
+    expect(await operations.renewFederationInstallation(agentId, request, send)).toBe(true);
+    expect(grants[1]?.expiresAtUnixMs).toBe(BigInt(localAuthorizationDeadline));
+    localAuthorizationDeadline = grantNow;
+    expect(await operations.renewFederationInstallation(agentId, request, send)).toBe(false);
+    localAuthorizationDeadline = Number.POSITIVE_INFINITY;
     expect(await operations.renewFederationInstallation("other", request, send)).toBe(false);
     expect(
       await operations.renewFederationInstallation(
@@ -1433,7 +1446,7 @@ test.each([
       .set({ state: "suspended" })
       .where(eq(federationAgreements.revisionId, agreement.agreementRevisionId));
     await expect(operations.renewFederationInstallation(agentId, request, send)).rejects.toThrow();
-    expect(grants).toHaveLength(1);
+    expect(grants).toHaveLength(2);
   } finally {
     clock.mockRestore();
     await lease.release();
@@ -2256,6 +2269,126 @@ test("temporary preparation and queue failures cannot hide a Sandbox script with
   }
 });
 
+async function runtimeMaterial(f: Awaited<ReturnType<typeof monitoredJob>>) {
+  const softwareId = crypto.randomUUID(),
+    releaseId = crypto.randomUUID(),
+    claimId = crypto.randomUUID();
+  const name = `runtime-material-${softwareId}`;
+  const softwarePayload = {
+    kind: "spack-package",
+    spack: { packageName: name, defaultSpec: `${name}@1` },
+  };
+  await db.insert(softwareAssets).values({
+    id: softwareId,
+    kind: "spack-package",
+    name,
+    version: "1",
+    source: "sp-published",
+    lifecycle: "published",
+    visibility: "platform-public",
+    payload: softwarePayload,
+  });
+  const [revision] = await db
+    .insert(softwareAssetRevisions)
+    .values({ assetId: softwareId, revision: 1, payload: softwarePayload })
+    .returning();
+  if (!revision) throw new Error("Missing material software revision");
+  await db.insert(ecosystemReleases).values({
+    id: releaseId,
+    releaseKey: name,
+    version: "1",
+    artifactDigest: `sha256:${"a".repeat(64)}`,
+    manifest: {},
+    provenance: {},
+    signature: "fixture",
+    signingKeyId: "fixture",
+    status: "active",
+    importedBy: actor.userId,
+  });
+  await db.insert(ecosystemReleaseAssets).values({
+    releaseId,
+    assetId: softwareId,
+    assetRevisionId: revision.id,
+    materializedAt: new Date(),
+    ecosystemKey: `software/${name}`,
+    kind: "spack-package",
+    name,
+    version: "1",
+    payload: softwarePayload,
+    provenance: {},
+    manifestEntryDigest: `sha256:${"b".repeat(64)}`,
+    licensePolicy: {
+      classification: "proprietary",
+      identifiers: [{ kind: "custom", value: name }],
+      provenance: { source: "sp-published", reference: "test-contract" },
+      acceptanceRequired: false,
+      providerEntitlements: [],
+      consumerEntitlements: ["use"],
+      redistribution: "prohibited",
+      autoInstall: "allowed",
+    },
+  });
+  await db.insert(licenseEntitlementClaims).values({
+    id: claimId,
+    assetId: softwareId,
+    licenseSubject: name,
+    entitlement: "consumer-use",
+    claimantKind: "user",
+    claimantId: identity.userId,
+    evidenceReference: "fixture",
+    evidenceSummary: "fixture",
+    status: "approved",
+    submittedBy: identity.userId,
+  });
+  const request = {
+    selector: "potential",
+    targetPath: "inputs/potential",
+    requiredElements: ["Si"],
+  };
+  const [mapping] = await db
+    .insert(licensedMaterialMappings)
+    .values({
+      providerOrgId: approvedTarget.providerOrgId,
+      agentId: approvedTarget.agentId,
+      assetId: softwareId,
+      selector: request.selector,
+      licenseSubject: name,
+      materialName: name,
+      materialVersion: "1",
+      elementSet: ["Si"],
+      fingerprint: `sha256:${"d".repeat(64)}`,
+      createdBy: actor.userId,
+    })
+    .returning();
+  if (!mapping) throw new Error("Missing material mapping");
+  const [invocation] = await db
+    .select()
+    .from(workflowExecutionJobs)
+    .where(eq(workflowExecutionJobs.jobId, f.jobId));
+  if (!invocation) throw new Error("Missing invocation");
+  await db
+    .update(workflowExecutionJobs)
+    .set({ intent: { ...invocation.intent, licensedMaterials: [request] } })
+    .where(eq(workflowExecutionJobs.jobId, f.jobId));
+  return {
+    mappingId: mapping.id,
+    claimId,
+    mount: {
+      ...request,
+      mappingId: mapping.id,
+      assetId: softwareId,
+      licenseSubject: name,
+      expectedFingerprint: mapping.fingerprint,
+    },
+    cleanup: async () => {
+      await db.delete(licensedMaterialMappings).where(eq(licensedMaterialMappings.id, mapping.id));
+      await db.delete(licenseEntitlementClaims).where(eq(licenseEntitlementClaims.id, claimId));
+      await db.delete(ecosystemReleases).where(eq(ecosystemReleases.id, releaseId));
+      await db.delete(softwareAssets).where(eq(softwareAssets.id, softwareId));
+    },
+  };
+}
+
 test.each([
   "active",
   "queue-revoked",
@@ -2266,6 +2399,10 @@ test.each([
   "data-revoked",
   "data-binding",
   "default-queue",
+  "material-active",
+  "material-deadline",
+  "material-revoked",
+  "material-remapped",
 ] as const)("runtime renewal keeps the original acknowledged attempt and checks %s", async (change) => {
   const f = await monitoredJob("queued");
   const dispatcher = new AgentDispatcher();
@@ -2292,6 +2429,11 @@ test.each([
   });
   const bindingId = crypto.randomUUID();
   const data = change.startsWith("data-");
+  const material = change.startsWith("material-") ? await runtimeMaterial(f) : undefined;
+  if (material && message.payload.case === "dispatchJob")
+    message.payload.value.licensedMaterialMounts.push(
+      create(LicensedMaterialMountSchema, material.mount),
+    );
   let pushed = 0;
   let clock: ReturnType<typeof spyOn<typeof Date, "now">> | undefined;
   let permission: ReturnType<typeof spyOn<typeof f.queues, "assertExecutionAccess">> | undefined;
@@ -2352,6 +2494,21 @@ test.each([
       },
     });
     clock = spyOn(Date, "now").mockReturnValue(testNow.getTime());
+    if (material && change === "material-deadline")
+      await db
+        .update(licenseEntitlementClaims)
+        .set({ expiresAt: new Date(testNow.getTime() + 5_000) })
+        .where(eq(licenseEntitlementClaims.id, material.claimId));
+    if (material && change === "material-revoked")
+      await db
+        .update(licenseEntitlementClaims)
+        .set({ status: "revoked" })
+        .where(eq(licenseEntitlementClaims.id, material.claimId));
+    if (material && change === "material-remapped")
+      await db
+        .update(licensedMaterialMappings)
+        .set({ fingerprint: `sha256:${"e".repeat(64)}` })
+        .where(eq(licensedMaterialMappings.id, material.mappingId));
     if (change === "queue-revoked")
       await db
         .update(schedulerQueues)
@@ -2403,8 +2560,22 @@ test.each([
       }
       replies.push(reply);
     });
-    const granted = change === "active" || change === "data-active" || change === "default-queue";
-    if (["queue-revoked", "data-revoked", "data-binding"].includes(change))
+    const granted = [
+      "active",
+      "data-active",
+      "default-queue",
+      "material-active",
+      "material-deadline",
+    ].includes(change);
+    if (
+      [
+        "queue-revoked",
+        "data-revoked",
+        "data-binding",
+        "material-revoked",
+        "material-remapped",
+      ].includes(change)
+    )
       await expect(result).rejects.toThrow();
     else expect(await result).toBe(granted);
     expect(pushed).toBe(0);
@@ -2412,7 +2583,9 @@ test.each([
     if (granted) {
       expect(replies[0]).toMatchObject({
         runtimeRenewal: true,
-        expiresAtUnixMs: BigInt(testNow.getTime() + 10_000),
+        expiresAtUnixMs: BigInt(
+          testNow.getTime() + (change === "material-deadline" ? 5_000 : 10_000),
+        ),
       });
       expect(replies[0]?.dispatch).toBeUndefined();
       expect(replies[0]?.installation).toBeUndefined();
@@ -2428,6 +2601,7 @@ test.each([
     clock?.mockRestore();
     await lease.release();
     await f.cleanup();
+    await material?.cleanup();
     if (data)
       await db.update(dataAssets).set({ accessMode: "open" }).where(eq(dataAssets.id, datasetId));
   }
@@ -2443,5 +2617,59 @@ test("running mapped data keeps its use authorization after source locations dis
     await expect(assets.resolve(identity, datasetRef, true)).rejects.toThrow("POLICY_DENIED");
   } finally {
     await db.update(dataAssets).set({ accessMode: "open" }).where(eq(dataAssets.id, datasetId));
+  }
+});
+
+test("licensed material withdrawal cancels an active workflow even with a temporary queue outage", async () => {
+  const f = await monitoredJob("queued");
+  const material = await runtimeMaterial(f);
+  const dispatcher = new AgentDispatcher();
+  const outbox = new JobDispatchOutbox(db, dispatcher, (runId, target) =>
+    f.authorization.prepare(runId, target),
+  );
+  const lease = await new WorkflowExecutionJournalStore(db).acquire(f.runId);
+  if (!lease) throw new Error("Missing material fixture lease");
+  let unavailable: ReturnType<typeof spyOn<typeof f.queues, "assertExecutionAccess">> | undefined;
+  try {
+    await db.update(jobs).set({ dispatchEpoch: 1 }).where(eq(jobs.id, f.jobId));
+    await outbox.enqueue(
+      approvedTarget.agentId,
+      dispatcher.buildDispatchJob(f.jobId, {
+        federationExecution: true,
+        jobIdInternal: f.jobId,
+        name: "Runtime material",
+        command: "true",
+        resources: { cpus: 1, memoryMb: 128, wallTimeSec: 30 },
+        dispatchEpoch: 1,
+        queueName: "approved",
+        queueTargetMode: "named",
+        licensedMaterialMounts: [material.mount],
+      }),
+      f.runId,
+      lease,
+    );
+    await lease.release();
+    await db.update(jobs).set({ status: "running" }).where(eq(jobs.id, f.jobId));
+    await f.authorization.checkActiveJobs(f.runId);
+    unavailable = spyOn(f.queues, "assertExecutionAccess").mockRejectedValue(
+      new AuthorizationUnavailableError("Authorization unavailable"),
+    );
+    await db
+      .update(licensedMaterialMappings)
+      .set({ revokedAt: new Date() })
+      .where(eq(licensedMaterialMappings.id, material.mappingId));
+    await scanExecutions(f.monitor);
+    expect(await f.registry.getById(f.runId)).toMatchObject({
+      status: "cancelling",
+      errorCode: "FEDERATION_AUTHORIZATION_REVOKED",
+      errorMessage: "POLICY_DENIED",
+    });
+    await f.drain();
+    expect(f.cancellations).toContain(f.runId);
+  } finally {
+    unavailable?.mockRestore();
+    await lease.release();
+    await f.cleanup();
+    await material.cleanup();
   }
 });

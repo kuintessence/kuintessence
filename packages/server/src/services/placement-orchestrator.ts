@@ -127,6 +127,8 @@ export interface PlaceAndDispatchResult {
 
 export interface LicensedMaterialDispatchMount extends LicensedMaterialRequest {
   expectedFingerprint: string;
+  mappingId?: string;
+  assetId?: string;
 }
 
 export function restrictToIsolatedAgents<T extends { restrictedDataIsolation: boolean }>(

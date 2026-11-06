@@ -1,9 +1,79 @@
 import { describe, expect, test } from "bun:test";
 import {
   type GovernanceRepository,
+  type LicenseEntitlementSnapshot,
   type LicensePolicySnapshot,
   LicenseRuntimeGovernanceService,
 } from "./license-runtime-governance";
+
+test("license deadlines use alternatives within a scope and the earliest required scope", async () => {
+  const now = new Date("2026-01-01T00:00:00Z");
+  const claims: LicenseEntitlementSnapshot[] = [
+    {
+      subjectId: "provider",
+      scope: "provider-source-install",
+      status: "approved",
+      expiresAt: new Date(now.getTime() + 4_000),
+    },
+    {
+      subjectId: "consumer",
+      scope: "consumer-use",
+      status: "approved",
+      expiresAt: new Date(now.getTime() + 1_000),
+    },
+    {
+      subjectId: "consumer",
+      scope: "consumer-use",
+      status: "approved",
+      expiresAt: new Date(now.getTime() + 8_000),
+    },
+    { subjectId: "consumer", scope: "consumer-use", status: "revoked" },
+    { subjectId: "other-org", scope: "consumer-use", status: "approved" },
+  ];
+  const service = new LicenseRuntimeGovernanceService(
+    repository({ listEntitlements: async () => claims }),
+  );
+  const input = {
+    assetKey: "licensed-software",
+    providerEntitlementSubjectIds: ["provider"],
+    consumerEntitlementSubjectIds: ["consumer"],
+    policy: {
+      classification: "proprietary" as const,
+      provenance: "contract",
+      providerEntitlementRequiredForUse: true,
+      consumerUseEntitlementRequired: true,
+    },
+    installRequested: false,
+    now,
+  };
+  expect(await service.evaluateLicenseAuthorization(input)).toEqual({
+    blocks: [],
+    expiresAtUnixMs: now.getTime() + 4_000,
+  });
+  expect(
+    await service.evaluateLicenseAuthorization({
+      ...input,
+      policy: { ...input.policy, providerEntitlementRequiredForUse: false },
+    }),
+  ).toEqual({ blocks: [], expiresAtUnixMs: now.getTime() + 8_000 });
+  claims.push({ subjectId: "consumer", scope: "consumer-use", status: "approved" });
+  expect(
+    (
+      await service.evaluateLicenseAuthorization({
+        ...input,
+        policy: { ...input.policy, providerEntitlementRequiredForUse: false },
+      })
+    ).expiresAtUnixMs,
+  ).toBe(Number.POSITIVE_INFINITY);
+  expect(
+    (
+      await service.evaluateLicenseAuthorization({
+        ...input,
+        now: new Date(now.getTime() + 10_000),
+      })
+    ).expiresAtUnixMs,
+  ).toBe(0);
+});
 
 function repository(overrides: Partial<GovernanceRepository> = {}): GovernanceRepository {
   return {
@@ -67,6 +137,7 @@ describe("LicenseRuntimeGovernanceService", () => {
     const service = new LicenseRuntimeGovernanceService(
       repository({
         getLicensedMaterial: async () => ({
+          mappingId: "mapping-1",
           id: "vasp-potcar-pbe",
           providerOrgId: "provider",
           agentId: "agent-a",
@@ -116,6 +187,7 @@ describe("LicenseRuntimeGovernanceService", () => {
           },
         ],
         getLicensedMaterial: async () => ({
+          mappingId: "mapping-1",
           id: "vasp-potcar-pbe",
           providerOrgId: "provider",
           agentId: "agent-a",
@@ -158,6 +230,8 @@ describe("LicenseRuntimeGovernanceService", () => {
         targetPath: "POTCAR",
         requiredElements: ["Si"],
         expectedFingerprint: "sha256:verified",
+        mappingId: "mapping-1",
+        assetId: "asset-1",
       },
     ]);
   });
@@ -264,6 +338,7 @@ describe("LicenseRuntimeGovernanceService", () => {
     const service = new LicenseRuntimeGovernanceService(
       repository({
         getLicensedMaterial: async () => ({
+          mappingId: "mapping-1",
           id: "potcar-pbe",
           providerOrgId: "provider",
           agentId: "agent-a",

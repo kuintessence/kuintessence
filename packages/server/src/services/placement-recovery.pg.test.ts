@@ -719,7 +719,7 @@ test("federation installation requires its authorization service, lease and orig
         spackManifestDigest: expectedPin.manifestDigest,
       }),
       async () => {},
-      async () => async () => {},
+      async () => async () => Number.POSITIVE_INFINITY,
     );
     await expect(
       service.requestInstallForJob({ ...request, executionLease: undefined }),
@@ -772,6 +772,7 @@ test.each([
           throw new WorkflowExecutionInterrupted("Federation authority revoked", {
             retryable: false,
           });
+        return Number.POSITIVE_INFINITY;
       };
     },
   );
@@ -824,7 +825,7 @@ function federationInstallationService(
       return { spackMaterialTicket: "test", spackManifestDigest: expectedPin.manifestDigest };
     },
     async () => {},
-    async () => async () => {},
+    async () => async () => Number.POSITIVE_INFINITY,
   );
 }
 
