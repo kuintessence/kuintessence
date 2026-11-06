@@ -2404,6 +2404,8 @@ test.each([
   "completed",
   "cancel-race",
   "data-active",
+  "data-deadline",
+  "data-expired",
   "data-revoked",
   "data-binding",
   "default-queue",
@@ -2502,6 +2504,35 @@ test.each([
       },
     });
     clock = spyOn(Date, "now").mockReturnValue(testNow.getTime());
+    if (change === "data-deadline" || change === "data-expired") {
+      await db
+        .update(dataAssets)
+        .set({ accessMode: "request" })
+        .where(eq(dataAssets.id, datasetId));
+      await db.insert(dataGrants).values({
+        dataAssetId: datasetId,
+        dataAssetVersionId: versionId,
+        subjectKind: "user",
+        subjectId: identity.userId,
+        capabilities: ["use"],
+        startsAt: new Date(testNow.getTime() - 1_000),
+        expiresAt: new Date(testNow.getTime() + (change === "data-expired" ? 0 : 5_000)),
+        status: "active",
+      });
+      // The same final authorization also bounds an initial compute permit.
+      await db
+        .update(agents)
+        .set({ status: "online" })
+        .where(eq(agents.agentId, approvedTarget.agentId));
+      const initial = await f.authorization.prepare(f.runId, {
+        kind: "compute",
+        jobId: f.jobId,
+        agentId: approvedTarget.agentId,
+      });
+      if (change === "data-deadline")
+        expect(await db.transaction(initial)).toBe(testNow.getTime() + 5_000);
+      else await expect(db.transaction(initial)).rejects.toThrow("POLICY_DENIED");
+    }
     if (material && change === "material-deadline")
       await db
         .update(licenseEntitlementClaims)
@@ -2571,6 +2602,7 @@ test.each([
     const granted = [
       "active",
       "data-active",
+      "data-deadline",
       "default-queue",
       "material-active",
       "material-deadline",
@@ -2579,6 +2611,7 @@ test.each([
       [
         "queue-revoked",
         "data-revoked",
+        "data-expired",
         "data-binding",
         "material-revoked",
         "material-remapped",
@@ -2592,7 +2625,8 @@ test.each([
       expect(replies[0]).toMatchObject({
         runtimeRenewal: true,
         expiresAtUnixMs: BigInt(
-          testNow.getTime() + (change === "material-deadline" ? 5_000 : 10_000),
+          testNow.getTime() +
+            (["material-deadline", "data-deadline"].includes(change) ? 5_000 : 10_000),
         ),
       });
       expect(replies[0]?.dispatch).toBeUndefined();
@@ -2610,8 +2644,10 @@ test.each([
     await lease.release();
     await f.cleanup();
     await material?.cleanup();
-    if (data)
+    if (data) {
+      await db.delete(dataGrants).where(eq(dataGrants.dataAssetId, datasetId));
       await db.update(dataAssets).set({ accessMode: "open" }).where(eq(dataAssets.id, datasetId));
+    }
   }
 });
 

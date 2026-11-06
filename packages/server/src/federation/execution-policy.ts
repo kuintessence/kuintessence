@@ -235,6 +235,7 @@ export async function checkFederationJobData(
     .leftJoin(dataAssetVersions, eq(dataAssetVersions.id, jobDataBindings.versionId))
     .where(and(eq(jobDataBindings.jobId, jobId), eq(jobDataBindings.source, "data-market")));
   const access = new PgDataPrerequisiteRepository(db);
+  let expiresAtUnixMs = Number.POSITIVE_INFINITY;
   for (const { binding, asset, version } of bindings) {
     if (
       !asset ||
@@ -257,16 +258,16 @@ export async function checkFederationJobData(
       throw new FederationError("OPERATION_CONFLICT");
     if (JSON.stringify(currentPolicy.data) !== JSON.stringify(boundPolicy.data))
       throw new FederationError("POLICY_DENIED");
-    if (
-      !(await access.verifyAccess({
-        actorUserId: identity.userId,
-        orgId: identity.orgId,
-        assetId: asset.id,
-        versionId: version.id,
-      }))
-    )
-      throw new FederationError("POLICY_DENIED");
+    const authorization = await access.authorizeAccess({
+      actorUserId: identity.userId,
+      orgId: identity.orgId,
+      assetId: asset.id,
+      versionId: version.id,
+    });
+    if (!authorization.allowed) throw new FederationError("POLICY_DENIED");
+    expiresAtUnixMs = Math.min(expiresAtUnixMs, authorization.expiresAtUnixMs);
   }
+  return expiresAtUnixMs;
 }
 
 export function federationExecutionDenial(error: unknown): string | undefined {

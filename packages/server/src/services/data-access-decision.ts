@@ -22,7 +22,19 @@ export async function hasActiveDataAccess(
   db: PgDb | PgTransaction,
   input: ActiveDataAccessInput,
 ): Promise<boolean> {
-  const now = input.now ?? new Date();
+  return (await evaluateActiveDataAccess(db, input)).allowed;
+}
+
+export interface DataAccessAuthorization {
+  allowed: boolean;
+  expiresAtUnixMs: number;
+}
+
+export async function evaluateActiveDataAccess(
+  db: PgDb | PgTransaction,
+  input: ActiveDataAccessInput,
+): Promise<DataAccessAuthorization> {
+  const now = input.now ?? new Date(Date.now());
   const check = async (tx: PgTransaction) => {
     const subject = or(
       and(eq(dataGrants.subjectKind, "user"), eq(dataGrants.subjectId, input.actorUserId)),
@@ -114,19 +126,26 @@ export async function hasActiveDataAccess(
         (policy) => policy.effect === "deny" && allows(policy.capabilities, input.capability),
       )
     ) {
-      return false;
+      return { allowed: false, expiresAtUnixMs: 0 };
     }
-    return (
-      grants.some(
+    const alternatives = [
+      ...grants.filter(
         (grant) =>
           grant.startsAt <= now &&
           (grant.expiresAt === null || grant.expiresAt > now) &&
           allows(grant.capabilities, input.capability),
-      ) ||
-      activePolicies.some(
+      ),
+      ...activePolicies.filter(
         (policy) => policy.effect === "allow" && allows(policy.capabilities, input.capability),
-      )
-    );
+      ),
+    ];
+    return {
+      allowed: alternatives.length > 0,
+      expiresAtUnixMs: Math.max(
+        0,
+        ...alternatives.map((row) => row.expiresAt?.getTime() ?? Number.POSITIVE_INFINITY),
+      ),
+    };
   };
   return "rollback" in db ? check(db) : db.transaction(check);
 }

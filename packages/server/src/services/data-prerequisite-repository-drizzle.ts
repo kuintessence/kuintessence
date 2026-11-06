@@ -12,7 +12,7 @@ import {
 import { and, eq, inArray, or } from "drizzle-orm";
 import { dataAssetGrantTuples } from "../authz/projection";
 import type { AuthzTuple } from "../authz/service";
-import { hasActiveDataAccess } from "./data-access-decision";
+import { type DataAccessAuthorization, evaluateActiveDataAccess } from "./data-access-decision";
 import type {
   DataCandidateLocation,
   DataPrerequisiteRepository,
@@ -22,15 +22,15 @@ import type {
 export class PgDataPrerequisiteRepository implements DataPrerequisiteRepository {
   private readonly replicaMaxAgeMs: number;
   private readonly now: () => Date;
-  private readonly hasActiveAccess: typeof hasActiveDataAccess;
+  private readonly evaluateAccess: typeof evaluateActiveDataAccess;
 
   constructor(
     private readonly db: PgDb | PgTransaction,
     options: DataPrerequisiteRepositoryOptions = {},
   ) {
     this.replicaMaxAgeMs = options.replicaMaxAgeMs ?? DEFAULT_REPLICA_MAX_AGE_MS;
-    this.now = options.now ?? (() => new Date());
-    this.hasActiveAccess = options.hasActiveAccess ?? hasActiveDataAccess;
+    this.now = options.now ?? (() => new Date(Date.now()));
+    this.evaluateAccess = options.evaluateAccess ?? evaluateActiveDataAccess;
   }
 
   async resolveVersion(input: DataRequirement) {
@@ -270,42 +270,51 @@ export class PgDataPrerequisiteRepository implements DataPrerequisiteRepository 
     assetId: string;
     versionId: string;
   }): Promise<boolean> {
+    return (await this.authorizeAccess(input)).allowed;
+  }
+
+  async authorizeAccess(
+    input: Parameters<PgDataPrerequisiteRepository["verifyAccess"]>[0],
+  ): Promise<DataAccessAuthorization> {
     const [asset] = await this.db
       .select()
       .from(dataAssets)
       .where(eq(dataAssets.id, input.assetId))
       .limit(1);
-    if (!asset) return false;
+    if (!asset) return { allowed: false, expiresAtUnixMs: 0 };
     if (requiresActiveEntitlementUse(asset.kind, asset.accessMode)) {
-      return this.hasActiveAccess(this.db, {
+      return this.evaluateAccess(this.db, {
         assetId: input.assetId,
         versionId: input.versionId,
         actorUserId: input.actorUserId,
         orgIds: input.orgId ? [input.orgId] : [],
         capability: "use",
+        now: this.now(),
       });
     }
-    if (asset.ownerUserId === input.actorUserId) return true;
+    if (asset.ownerUserId === input.actorUserId)
+      return { allowed: true, expiresAtUnixMs: Number.POSITIVE_INFINITY };
     if (
       input.orgId !== null &&
       (asset.ownerOrgId === input.orgId || asset.providerOrgId === input.orgId)
     ) {
-      return true;
+      return { allowed: true, expiresAtUnixMs: Number.POSITIVE_INFINITY };
     }
-    if (asset.visibility === "private") return false;
+    if (asset.visibility === "private") return { allowed: false, expiresAtUnixMs: 0 };
     if (
       asset.visibility === "public" &&
       asset.lifecycle === "published" &&
       asset.accessMode === "open"
     ) {
-      return true;
+      return { allowed: true, expiresAtUnixMs: Number.POSITIVE_INFINITY };
     }
-    return this.hasActiveAccess(this.db, {
+    return this.evaluateAccess(this.db, {
       assetId: input.assetId,
       versionId: input.versionId,
       actorUserId: input.actorUserId,
       orgIds: input.orgId ? [input.orgId] : [],
       capability: "use",
+      now: this.now(),
     });
   }
 }
@@ -433,7 +442,7 @@ const DEFAULT_REPLICA_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 export interface DataPrerequisiteRepositoryOptions {
   replicaMaxAgeMs?: number;
   now?: () => Date;
-  hasActiveAccess?: typeof hasActiveDataAccess;
+  evaluateAccess?: typeof evaluateActiveDataAccess;
 }
 
 export function requiresActiveEntitlementUse(kind: string, accessMode: string): boolean {

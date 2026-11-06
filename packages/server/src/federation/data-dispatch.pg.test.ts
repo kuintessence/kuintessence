@@ -27,9 +27,11 @@ import {
 import { eq, sql } from "drizzle-orm";
 import { AgentDispatcher } from "../grpc/dispatcher";
 import { JobDispatchOutbox } from "../grpc/job-dispatch-outbox";
+import { evaluateActiveDataAccess } from "../services/data-access-decision";
 import { DataDeliveryResolver } from "../services/data-delivery";
 import { PgDataPrerequisiteRepository } from "../services/data-prerequisite-repository-drizzle";
 import { assertRunningDataBindings, FederationDataDispatch } from "./data-dispatch";
+import { checkFederationJobData } from "./execution-policy";
 
 const url = process.env.DATABASE_URL;
 if (!url || !/^\/kuintessence_unit_[a-z0-9_]+$/.test(new URL(url).pathname))
@@ -453,4 +455,223 @@ test.each([
         ),
       ).rejects.toMatchObject({ cause: { code: "55P03" } });
     });
+});
+
+test("data authority uses only current matching grants and allow policies, with deny precedence", async () => {
+  const now = new Date();
+  const deadline = now.getTime() + 5_000;
+  const input = {
+    assetId,
+    versionId,
+    actorUserId: userId,
+    orgIds: [],
+    capability: "use" as const,
+    now,
+  };
+  await db
+    .update(dataGrants)
+    .set({ expiresAt: new Date(deadline) })
+    .where(eq(dataGrants.id, grantId));
+  await db.insert(dataGrants).values([
+    {
+      dataAssetId: assetId,
+      subjectKind: "user",
+      subjectId: userId,
+      capabilities: ["use"],
+      startsAt: new Date(deadline + 1),
+      status: "active",
+    },
+    {
+      dataAssetId: assetId,
+      subjectKind: "user",
+      subjectId: crypto.randomUUID(),
+      capabilities: ["use"],
+      startsAt: now,
+      status: "active",
+    },
+    {
+      dataAssetId: assetId,
+      subjectKind: "user",
+      subjectId: userId,
+      capabilities: ["view"],
+      startsAt: now,
+      status: "active",
+    },
+    {
+      dataAssetId: assetId,
+      subjectKind: "user",
+      subjectId: userId,
+      capabilities: ["use"],
+      startsAt: now,
+      status: "revoked",
+    },
+  ]);
+  const otherVersion = crypto.randomUUID();
+  await db.insert(dataAssetVersions).values({
+    id: otherVersion,
+    dataAssetId: assetId,
+    version: "2",
+    status: "ready",
+    manifestDigest: digest,
+    immutableAt: new Date(),
+  });
+  await db.insert(dataGrants).values({
+    dataAssetId: assetId,
+    dataAssetVersionId: otherVersion,
+    subjectKind: "user",
+    subjectId: userId,
+    capabilities: ["use"],
+    startsAt: now,
+    status: "active",
+  });
+  expect(await evaluateActiveDataAccess(db, input)).toEqual({
+    allowed: true,
+    expiresAtUnixMs: deadline,
+  });
+  const [allow] = await db
+    .insert(dataAccessPolicies)
+    .values({
+      dataAssetId: assetId,
+      subjectKind: "user",
+      subjectId: userId,
+      capabilities: ["use"],
+      effect: "allow",
+      expiresAt: new Date(deadline + 2_000),
+      status: "active",
+    })
+    .returning();
+  if (!allow) throw new Error("Missing policy");
+  expect(await evaluateActiveDataAccess(db, input)).toEqual({
+    allowed: true,
+    expiresAtUnixMs: deadline + 2_000,
+  });
+  const [deny] = await db
+    .insert(dataAccessPolicies)
+    .values({
+      dataAssetId: assetId,
+      subjectKind: "user",
+      subjectId: userId,
+      capabilities: ["use"],
+      effect: "deny",
+      expiresAt: new Date(deadline),
+      status: "active",
+    })
+    .returning();
+  if (!deny) throw new Error("Missing denial");
+  expect(await evaluateActiveDataAccess(db, input)).toEqual({ allowed: false, expiresAtUnixMs: 0 });
+  await db
+    .update(dataAccessPolicies)
+    .set({ expiresAt: now })
+    .where(eq(dataAccessPolicies.id, deny.id));
+  expect(await evaluateActiveDataAccess(db, input)).toEqual({
+    allowed: true,
+    expiresAtUnixMs: deadline + 2_000,
+  });
+  await db
+    .update(dataAccessPolicies)
+    .set({ expiresAt: null })
+    .where(eq(dataAccessPolicies.id, allow.id));
+  expect(await evaluateActiveDataAccess(db, input)).toEqual({
+    allowed: true,
+    expiresAtUnixMs: Number.POSITIVE_INFINITY,
+  });
+});
+
+test("expired data permission cannot extend a permit, while public and owner access keep their semantics", async () => {
+  const now = new Date();
+  const access = new PgDataPrerequisiteRepository(db, { now: () => now });
+  const input = { actorUserId: userId, orgId: null, assetId, versionId };
+  await db.update(dataGrants).set({ expiresAt: now }).where(eq(dataGrants.id, grantId));
+  expect(await access.authorizeAccess(input)).toEqual({ allowed: false, expiresAtUnixMs: 0 });
+  await db
+    .update(dataAssets)
+    .set({ visibility: "public", accessMode: "open" })
+    .where(eq(dataAssets.id, assetId));
+  expect(await access.authorizeAccess(input)).toEqual({
+    allowed: true,
+    expiresAtUnixMs: Number.POSITIVE_INFINITY,
+  });
+  await db
+    .update(dataAssets)
+    .set({ visibility: "private", accessMode: "request" })
+    .where(eq(dataAssets.id, assetId));
+  expect(await access.authorizeAccess(input)).toEqual({ allowed: false, expiresAtUnixMs: 0 });
+  await db
+    .update(dataAssets)
+    .set({ ownerKind: "user", ownerUserId: userId })
+    .where(eq(dataAssets.id, assetId));
+  expect(await access.authorizeAccess(input)).toEqual({
+    allowed: true,
+    expiresAtUnixMs: Number.POSITIVE_INFINITY,
+  });
+  await db
+    .update(dataAssets)
+    .set({ kind: "licensed-material", accessMode: "entitlement" })
+    .where(eq(dataAssets.id, assetId));
+  expect(await access.authorizeAccess(input)).toEqual({ allowed: false, expiresAtUnixMs: 0 });
+});
+
+test("a Job's data authority ends at its earliest required dataset deadline", async () => {
+  const secondAsset = crypto.randomUUID(),
+    secondVersion = crypto.randomUUID();
+  const firstDeadline = Date.now() + 60_000,
+    secondDeadline = firstDeadline - 10_000;
+  try {
+    await db
+      .update(dataGrants)
+      .set({ expiresAt: new Date(firstDeadline) })
+      .where(eq(dataGrants.id, grantId));
+    await db.insert(dataAssets).values({
+      id: secondAsset,
+      name: "Second input",
+      ownerKind: "platform",
+      kind: "reference-data",
+      lifecycle: "published",
+      visibility: "organization",
+      accessMode: "request",
+      sensitivity: "internal",
+    });
+    await db.insert(dataAssetVersions).values({
+      id: secondVersion,
+      dataAssetId: secondAsset,
+      immutableAt: new Date(),
+      version: "1",
+      status: "ready",
+      manifestDigest: digest,
+    });
+    await db.insert(dataGrants).values({
+      dataAssetId: secondAsset,
+      subjectKind: "user",
+      subjectId: userId,
+      capabilities: ["use"],
+      startsAt: new Date(Date.now() - 1000),
+      expiresAt: new Date(secondDeadline),
+      status: "active",
+    });
+    await db.insert(jobDataBindings).values({
+      jobId,
+      inputDescriptor: "second",
+      source: "data-market",
+      assetId: secondAsset,
+      versionId: secondVersion,
+      manifestDigest: digest,
+      assetKind: "reference-data",
+      sensitivity: "internal",
+      egressPolicy: "deny",
+    });
+    await db.transaction(async (tx) => {
+      await tx.select().from(jobs).where(eq(jobs.id, jobId)).for("update");
+      expect(
+        await checkFederationJobData(tx, jobId, { userId, orgId: crypto.randomUUID() }, true),
+      ).toBe(secondDeadline);
+      await expect(
+        Promise.resolve(
+          other.execute(sql`select id from data_grants where id=${grantId} for update nowait`),
+        ),
+      ).rejects.toMatchObject({ cause: { code: "55P03" } });
+    });
+  } finally {
+    await db.delete(jobDataBindings).where(eq(jobDataBindings.assetId, secondAsset));
+    await db.delete(dataAssets).where(eq(dataAssets.id, secondAsset));
+  }
 });

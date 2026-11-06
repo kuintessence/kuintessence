@@ -229,8 +229,11 @@ export class FederationDispatchAuthorization {
               binding.snapshot.environment.sandboxRuntime,
             ),
           );
-        if (running)
-          await checkFederationJobData(tx, delivery.jobId, binding.snapshot.identity, true);
+        if (delivery.kind === "compute")
+          expiresAtUnixMs = Math.min(
+            expiresAtUnixMs,
+            await checkFederationJobData(tx, delivery.jobId, binding.snapshot.identity, true),
+          );
       }
       return expiresAtUnixMs;
     };
