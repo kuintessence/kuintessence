@@ -7,6 +7,7 @@ import {
   dataLocations,
   dataReplicas,
   type PgDb,
+  type PgTransaction,
 } from "@kuintessence/db";
 import { and, eq, inArray, or } from "drizzle-orm";
 import { dataAssetGrantTuples } from "../authz/projection";
@@ -24,7 +25,7 @@ export class PgDataPrerequisiteRepository implements DataPrerequisiteRepository 
   private readonly hasActiveAccess: typeof hasActiveDataAccess;
 
   constructor(
-    private readonly db: PgDb,
+    private readonly db: PgDb | PgTransaction,
     options: DataPrerequisiteRepositoryOptions = {},
   ) {
     this.replicaMaxAgeMs = options.replicaMaxAgeMs ?? DEFAULT_REPLICA_MAX_AGE_MS;
@@ -310,7 +311,7 @@ export class PgDataPrerequisiteRepository implements DataPrerequisiteRepository 
 }
 
 async function expireAccessRows(
-  db: PgDb,
+  db: PgDb | PgTransaction,
   grants: readonly BatchGrant[],
   policies: readonly BatchPolicy[],
   now: Date,

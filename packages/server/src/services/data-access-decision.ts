@@ -1,4 +1,10 @@
-import { authzOutbox, dataAccessPolicies, dataGrants, type PgDb } from "@kuintessence/db";
+import {
+  authzOutbox,
+  dataAccessPolicies,
+  dataGrants,
+  type PgDb,
+  type PgTransaction,
+} from "@kuintessence/db";
 import { and, eq, isNull, or } from "drizzle-orm";
 import { dataAssetGrantTuples } from "../authz/projection";
 import type { AuthzTuple } from "../authz/service";
@@ -13,11 +19,11 @@ export interface ActiveDataAccessInput {
 }
 
 export async function hasActiveDataAccess(
-  db: PgDb,
+  db: PgDb | PgTransaction,
   input: ActiveDataAccessInput,
 ): Promise<boolean> {
   const now = input.now ?? new Date();
-  return db.transaction(async (tx) => {
+  const check = async (tx: PgTransaction) => {
     const subject = or(
       and(eq(dataGrants.subjectKind, "user"), eq(dataGrants.subjectId, input.actorUserId)),
       ...input.orgIds.map((orgId) =>
@@ -121,7 +127,8 @@ export async function hasActiveDataAccess(
         (policy) => policy.effect === "allow" && allows(policy.capabilities, input.capability),
       )
     );
-  });
+  };
+  return "rollback" in db ? check(db) : db.transaction(check);
 }
 
 function allows(capabilities: string[], requested: "view" | "use"): boolean {

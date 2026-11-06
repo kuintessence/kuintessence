@@ -13,6 +13,7 @@ import {
   netdriveFiles,
   netdriveTransferLog,
   type PgDb,
+  type PgTransaction,
   softwareAssetRevisions,
   softwareAssets,
   usecasePackageRevisions,
@@ -191,7 +192,7 @@ function jobListFilters(options: JobListOptions): SQL[] {
 }
 
 async function dataBindingValues(
-  db: PgDb,
+  db: PgDb | PgTransaction,
   data: JobSubmit,
   authorizationSubjectIds: AuthorizationSubjectId[],
   actor: { userId: string; orgId: string | null },
@@ -484,7 +485,7 @@ function digestCanonicalJson(value: unknown): string {
 }
 
 async function isTrustedEcosystemUsecase(
-  db: PgDb,
+  db: PgDb | PgTransaction,
   usecasePackageId: string | undefined,
   trustedPublicKeys: Readonly<Record<string, string>>,
   assetRevisionId?: string,
@@ -534,7 +535,7 @@ async function isTrustedEcosystemUsecase(
 }
 
 async function isTrustedEcosystemSandboxScript(
-  db: PgDb,
+  db: PgDb | PgTransaction,
   source: JobSubmitOptions["trustedSandboxScript"],
   trustedPublicKeys: Readonly<Record<string, string>>,
 ) {
@@ -638,23 +639,33 @@ export class JobService {
    * @param submittedBy - UUID of the submitting user (caller resolves email → UUID from JWT).
    */
   async submit(data: JobSubmit, submittedBy: string, options: JobSubmitOptions = {}) {
+    return this.db.transaction((tx) => this.submitInTransaction(tx, data, submittedBy, options));
+  }
+
+  /** Internal transaction seam: callers must bind their invocation in this same transaction. */
+  async submitInTransaction(
+    tx: PgTransaction,
+    data: JobSubmit,
+    submittedBy: string,
+    options: JobSubmitOptions = {},
+  ) {
     const orgId =
-      options.orgId !== undefined ? options.orgId : await this.resolveOrgId(submittedBy);
+      options.orgId !== undefined ? options.orgId : await this.resolveOrgId(submittedBy, tx);
     const bindingValues = await dataBindingValues(
-      this.db,
+      tx,
       data,
       frozenAuthorizationSubjects(submittedBy, orgId),
       { userId: submittedBy, orgId },
     );
     const trustedExecutable =
       (await isTrustedEcosystemUsecase(
-        this.db,
+        tx,
         data.usecasePackageId,
         this.ecosystemReleaseTrustedKeys,
         options.trustedUsecaseRevisionId,
       )) ||
       (await isTrustedEcosystemSandboxScript(
-        this.db,
+        tx,
         options.trustedSandboxScript,
         this.ecosystemReleaseTrustedKeys,
       ));
@@ -670,69 +681,61 @@ export class JobService {
       fileOutputDescriptorCount: data.fileOutputDescriptors?.length ?? 0,
     });
     const jobId = randomUUID();
-    const job = await this.db.transaction(async (tx) => {
-      if (options.workflow) {
-        const [linked] = await tx
-          .update(workflowRuns)
-          .set({
-            stepJobs: sql`coalesce(${workflowRuns.stepJobs}, '{}'::jsonb) || ${JSON.stringify({
-              [options.workflow.nodeId]: jobId,
-            })}::jsonb`,
-            updatedAt: new Date(),
-          })
-          .where(
-            and(eq(workflowRuns.id, options.workflow.runId), eq(workflowRuns.status, "running")),
-          )
-          .returning({ id: workflowRuns.id });
-        if (!linked) {
-          throw new AppError(
-            ErrorCode.JOB_DISPATCH_FAILED,
-            `Workflow run ${options.workflow.runId} is not accepting new jobs`,
-            409,
-          );
-        }
-      }
-      const [created] = await tx
-        .insert(jobs)
-        .values({
-          id: jobId,
-          name: data.name,
-          command: data.command,
-          cpus: data.resources.cpus,
-          memoryMb: data.resources.memoryMb,
-          gpus: data.resources.gpus ?? 0,
-          wallTimeSec: data.resources.wallTimeSec ?? null,
-          workingDir: data.workingDir ?? null,
-          envVars: data.envVars ?? null,
-          submittedBy,
-          appTemplateKey: data.appTemplateKey ?? null,
-          softwareRequirements: data.softwareRequirements ?? null,
-          usecasePackageId: data.usecasePackageId ?? null,
-          usecasePackageName: data.usecasePackageName ?? null,
-          usecasePackageVersion: data.usecasePackageVersion ?? null,
-          usecaseInputs: data.usecaseInputs ?? null,
-          inputStaging: data.inputStaging ?? null,
-          expectedOutputs: data.expectedOutputs ?? null,
-          fileOutputDescriptors: data.fileOutputDescriptors ?? null,
-          stdinText: data.stdinText ?? null,
-          queueId: data.schedulingStrategy?.queueId ?? null,
-          orgId,
-          restrictedNoEgress,
-          status: JobStatus.PENDING,
+    if (options.workflow) {
+      const [linked] = await tx
+        .update(workflowRuns)
+        .set({
+          stepJobs: sql`coalesce(${workflowRuns.stepJobs}, '{}'::jsonb) || ${JSON.stringify({
+            [options.workflow.nodeId]: jobId,
+          })}::jsonb`,
+          updatedAt: new Date(),
         })
-        .returning();
-      if (!created) throw new AppError(ErrorCode.INTERNAL_ERROR, "Insert returned no rows", 500);
-      if (bindingValues.length > 0) {
-        await tx
-          .insert(jobDataBindings)
-          .values(bindingValues.map((binding) => ({ ...binding, jobId: created.id })));
+        .where(and(eq(workflowRuns.id, options.workflow.runId), eq(workflowRuns.status, "running")))
+        .returning({ id: workflowRuns.id });
+      if (!linked) {
+        throw new AppError(
+          ErrorCode.JOB_DISPATCH_FAILED,
+          `Workflow run ${options.workflow.runId} is not accepting new jobs`,
+          409,
+        );
       }
-      return created;
-    });
-    if (!job) {
-      throw new AppError(ErrorCode.INTERNAL_ERROR, "Insert returned no rows", 500);
     }
-    return job;
+    const [created] = await tx
+      .insert(jobs)
+      .values({
+        id: jobId,
+        name: data.name,
+        command: data.command,
+        cpus: data.resources.cpus,
+        memoryMb: data.resources.memoryMb,
+        gpus: data.resources.gpus ?? 0,
+        wallTimeSec: data.resources.wallTimeSec ?? null,
+        workingDir: data.workingDir ?? null,
+        envVars: data.envVars ?? null,
+        submittedBy,
+        appTemplateKey: data.appTemplateKey ?? null,
+        softwareRequirements: data.softwareRequirements ?? null,
+        usecasePackageId: data.usecasePackageId ?? null,
+        usecasePackageName: data.usecasePackageName ?? null,
+        usecasePackageVersion: data.usecasePackageVersion ?? null,
+        usecaseInputs: data.usecaseInputs ?? null,
+        inputStaging: data.inputStaging ?? null,
+        expectedOutputs: data.expectedOutputs ?? null,
+        fileOutputDescriptors: data.fileOutputDescriptors ?? null,
+        stdinText: data.stdinText ?? null,
+        queueId: data.schedulingStrategy?.queueId ?? null,
+        orgId,
+        restrictedNoEgress,
+        status: JobStatus.PENDING,
+      })
+      .returning();
+    if (!created) throw new AppError(ErrorCode.INTERNAL_ERROR, "Insert returned no rows", 500);
+    if (bindingValues.length > 0) {
+      await tx
+        .insert(jobDataBindings)
+        .values(bindingValues.map((binding) => ({ ...binding, jobId: created.id })));
+    }
+    return created;
   }
 
   async listDataPrerequisites(jobId: string): Promise<DataRequirement[]> {
@@ -766,9 +769,12 @@ export class JobService {
    * legacy rows pre-migration-0013, so org-scoped queries treat both
    * identically.
    */
-  private async resolveOrgId(userId: string): Promise<string | null> {
+  private async resolveOrgId(
+    userId: string,
+    db: PgDb | PgTransaction = this.db,
+  ): Promise<string | null> {
     try {
-      const [row] = await this.db
+      const [row] = await db
         .select({ orgId: userOrgMemberships.orgId })
         .from(userOrgMemberships)
         .where(eq(userOrgMemberships.userId, userId))

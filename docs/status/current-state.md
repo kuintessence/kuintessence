@@ -1,6 +1,6 @@
 # 当前功能与使用边界
 
-算力联邦 V2 分支已有内部协议校验、机构签名、双签协议登记和事务额度预留基础，详见[实现进展](../design/federation/progress.md)。已加入可选的独立 mTLS 接单入口和信任管理 API，但尚未接入 Job/Workflow 或连接 Fabric，不提供当前可用的跨机构作业功能。
+算力联邦 V2 分支已有内部协议校验、机构签名、双签协议登记和事务额度预留基础，详见[实现进展](../design/federation/progress.md)。已加入可选的独立 mTLS 接单入口、信任管理与按组织授权的双签审批 API，并提取共用 Job 事务方法；联邦尚未自动创建/派发 Job、接入持久 Workflow 或连接 Fabric，不提供当前可用的跨机构作业功能。
 
 GitHub Deployments 仅新增 main 正式发布记录，使用 `production` 环境及 Actions 原生状态。PR 预览保留独立地址、固定评论、检查和资源清理；旧预览部署历史保留，清理时仍标为停用。
 

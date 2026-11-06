@@ -5,8 +5,6 @@ import {
   federationEvidence,
   federationReservations,
   type PgDb,
-  userOrgMemberships,
-  users,
 } from "@kuintessence/db";
 import {
   assertDelegationPolicy,
@@ -17,6 +15,7 @@ import {
   FederationError,
 } from "@kuintessence/shared/federation";
 import { and, count, eq, sql } from "drizzle-orm";
+import { type ExecutionIdentity, requireExecutionIdentity } from "./execution-identity";
 import {
   type FederationSigningKey,
   type FederationVerificationKey,
@@ -26,28 +25,6 @@ import {
 
 type Transaction = Parameters<Parameters<PgDb["transaction"]>[0]>[0];
 type Reservation = typeof federationReservations.$inferSelect;
-type ExecutionIdentity = { orgId: string; userId: string };
-
-async function requireExecutionIdentity(tx: Transaction, identity: ExecutionIdentity) {
-  const [user] = await tx
-    .select({ id: users.id })
-    .from(users)
-    .innerJoin(
-      userOrgMemberships,
-      and(eq(userOrgMemberships.userId, users.id), eq(userOrgMemberships.orgId, identity.orgId)),
-    )
-    .where(
-      and(
-        eq(users.id, identity.userId),
-        eq(users.role, "user"),
-        eq(users.serviceAccount, true),
-        eq(users.suspended, false),
-        eq(userOrgMemberships.role, "member"),
-      ),
-    )
-    .for("share", { of: [users, userOrgMemberships] });
-  if (!user) throw new FederationError("POLICY_DENIED");
-}
 
 /** Internal admission only. A reservation is not a Job or permission to dispatch one. */
 export class FederationAdmission {
@@ -71,6 +48,7 @@ export class FederationAdmission {
     sourceKey: FederationVerificationKey;
     targetKey: FederationVerificationKey;
     identity: ExecutionIdentity;
+    authorize?: (tx: Transaction, now: Date) => Promise<void>;
   }): Promise<void> {
     const now = this.clock();
     const source = await verifyFederationMessage(
@@ -98,6 +76,7 @@ export class FederationAdmission {
       throw new FederationError("AUTHORIZATION_EXPIRED");
 
     await this.db.transaction(async (tx) => {
+      await input.authorize?.(tx, this.clock());
       // Serializes initial creation and retries without holding a network/crypto call in a transaction.
       await tx.execute(
         sql`select pg_advisory_xact_lock(hashtextextended(${terms.agreementRevisionId}, 0))`,
@@ -116,6 +95,8 @@ export class FederationAdmission {
         return;
       }
       await requireExecutionIdentity(tx, input.identity);
+      if (Date.parse(terms.validUntil) <= this.clock().getTime())
+        throw new FederationError("AUTHORIZATION_EXPIRED");
       const [budget] = await tx
         .insert(federationBudgets)
         .values({

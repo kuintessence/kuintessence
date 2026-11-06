@@ -46,7 +46,9 @@ import {
 import { AuthzService, type AuthzTuple } from "./authz/service";
 import { loadServerConfig } from "./config";
 import { EventBus } from "./events/event-bus";
-import { startFederationIngress } from "./federation/runtime";
+import { FederationAgreementService } from "./federation/agreements";
+import { FederationPermissionService } from "./federation/permissions";
+import { loadFederationSigningKey, startFederationIngress } from "./federation/runtime";
 import { FederationTrustRegistry } from "./federation/trust-registry";
 import {
   AgentDispatcher,
@@ -68,6 +70,7 @@ import { createAdminBrandingRoutes } from "./routes/admin-branding";
 import { createAdminDataMarketRoutes } from "./routes/admin-data-market";
 import { createAdminDesensitizeRoutes } from "./routes/admin-desensitize";
 import { createAdminFederationRoutes } from "./routes/admin-federation";
+import { createAdminFederationPermissionRoutes } from "./routes/admin-federation-permissions";
 import { createAdminFileTransferAuditConfigRoutes } from "./routes/admin-file-transfer-audit-config";
 import { createAdminSshCredentialRoutes } from "./routes/admin-ssh-credentials";
 import { createAdminSshRecordingRoutes } from "./routes/admin-ssh-recordings";
@@ -84,6 +87,7 @@ import { createComputeProviderRoutes } from "./routes/compute-providers";
 import { buildCpRouter } from "./routes/cp";
 import { createDataMarketRoutes } from "./routes/data-market";
 import { dslRoutes } from "./routes/dsl";
+import { createFederationAgreementRoutes } from "./routes/federation-agreements";
 import { createFileRoutes } from "./routes/files";
 import { healthRoutes } from "./routes/health";
 import { createInterconnectRoutes } from "./routes/interconnect";
@@ -1371,6 +1375,16 @@ protectedApi.route(
 
 protectedApi.route("/", createAdminAgentRoutes(certService, { authz: authzService }));
 protectedApi.route("/", createAdminFederationRoutes(new FederationTrustRegistry(db), authzService));
+protectedApi.route(
+  "/",
+  createAdminFederationPermissionRoutes(new FederationPermissionService(db), authzService),
+);
+const federationSigningKey = await loadFederationSigningKey(config);
+if (federationSigningKey)
+  protectedApi.route(
+    "/",
+    createFederationAgreementRoutes(new FederationAgreementService(db, federationSigningKey)),
+  );
 protectedApi.route("/", createActiveOrganizationRoutes(db));
 protectedApi.route("/", createPlatformUserRoutes(db, authzService));
 protectedApi.route(
@@ -1835,7 +1849,7 @@ async function readRequiredGrpcTlsFile(
   return readFile(path, "utf8");
 }
 
-const federationIngress = await startFederationIngress(db, config);
+const federationIngress = await startFederationIngress(db, config, federationSigningKey);
 logger.info({ port: config.SERVER_PORT }, "Server starting");
 
 const httpTrustedProxyCidrs = parseTrustedProxyCidrs(config.HTTP_TRUSTED_PROXY_CIDRS);

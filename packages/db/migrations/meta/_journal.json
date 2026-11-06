@@ -533,6 +533,13 @@
       "when": 1793942904381,
       "tag": "0075_panoramic_justice",
       "breakpoints": true
+    },
+    {
+      "idx": 76,
+      "version": "7",
+      "when": 1793943799988,
+      "tag": "0076_curvy_senator_kelly",
+      "breakpoints": true
     }
   ]
 }

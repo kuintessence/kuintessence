@@ -1,5 +1,5 @@
 export * from "./pg/data-market-0043-upgrade";
-export { createPgDb, type PgDb } from "./pg/index";
+export { createPgDb, type PgDb, type PgTransaction } from "./pg/index";
 export * from "./pg/migrate";
 export * from "./pg/schema";
 export * from "./pg/schema-federation";

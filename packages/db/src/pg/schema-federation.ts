@@ -70,6 +70,59 @@ export const federationCertificates = pgTable(
   ],
 );
 
+/** Business authority is assigned explicitly per local organization, independent of platform roles. */
+export const federationCapabilities = pgTable(
+  "federation_capabilities",
+  {
+    orgId: uuid("org_id")
+      .notNull()
+      .references(() => orgs.id),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id),
+    capability: varchar("capability", { length: 32 }).notNull(),
+    grantedBy: uuid("granted_by")
+      .notNull()
+      .references(() => users.id),
+    grantedAt: timestamp("granted_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.orgId, t.userId, t.capability] }),
+    check(
+      "federation_capability_kind",
+      sql`${t.capability} IN ('agreement.read', 'agreement.approve')`,
+    ),
+  ],
+);
+
+export const federationAgreementApprovals = pgTable(
+  "federation_agreement_approvals",
+  {
+    localSiteId: uuid("local_site_id")
+      .notNull()
+      .references(() => federationSites.id),
+    revisionId: uuid("revision_id").notNull(),
+    localOrgId: uuid("local_org_id")
+      .notNull()
+      .references(() => orgs.id),
+    executionUserId: uuid("execution_user_id").references(() => users.id),
+    terms: jsonb("terms").$type<FederationAgreement>().notNull(),
+    termsDigest: varchar("terms_digest", { length: 71 }).notNull(),
+    approvalJws: text("approval_jws").notNull(),
+    counterpartyApprovalJws: text("counterparty_approval_jws"),
+    approvedBy: uuid("approved_by")
+      .notNull()
+      .references(() => users.id),
+    state: varchar("state", { length: 16 }).notNull().default("active"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.localSiteId, t.revisionId] }),
+    index("federation_approval_org").on(t.localOrgId, t.createdAt),
+    check("federation_approval_state", sql`${t.state} IN ('active', 'suspended', 'revoked')`),
+  ],
+);
+
 export const federationBudgets = pgTable(
   "federation_budgets",
   {

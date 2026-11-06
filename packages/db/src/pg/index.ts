@@ -18,3 +18,5 @@ export function createPgDb(connectionString: string, options: PgConnectionOption
 }
 
 export type PgDb = ReturnType<typeof createPgDb>;
+
+export type PgTransaction = Parameters<Parameters<PgDb["transaction"]>[0]>[0];
