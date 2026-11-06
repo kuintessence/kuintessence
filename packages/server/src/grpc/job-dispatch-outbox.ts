@@ -1,8 +1,10 @@
 import { fromBinary, toBinary } from "@bufbuild/protobuf";
 import {
+  federationWorkflowBindings,
   jobDispatchOutbox,
   jobs,
   type PgDb,
+  type PgTransaction,
   workflowExecutionJobs,
   workflowRuns,
 } from "@kuintessence/db";
@@ -22,6 +24,9 @@ export class JobDispatchOutbox {
   constructor(
     private readonly db: PgDb,
     private readonly dispatcher: AgentDispatcher,
+    private readonly prepareFederationDispatch?: (
+      runId: string,
+    ) => Promise<(tx: PgTransaction) => Promise<void>>,
   ) {}
 
   async enqueue(
@@ -161,15 +166,38 @@ export class JobDispatchOutbox {
   }
 
   private async deliver(jobId: string, force: boolean): Promise<boolean> {
+    const [identity] = await this.db
+      .select({
+        runId: jobDispatchOutbox.workflowRunId,
+        input: workflowRuns.input,
+        boundReservationId: federationWorkflowBindings.reservationId,
+      })
+      .from(jobDispatchOutbox)
+      .leftJoin(workflowRuns, eq(workflowRuns.id, jobDispatchOutbox.workflowRunId))
+      .leftJoin(
+        federationWorkflowBindings,
+        eq(federationWorkflowBindings.workflowRunId, jobDispatchOutbox.workflowRunId),
+      )
+      .where(eq(jobDispatchOutbox.jobId, jobId));
+    if (!identity) return false;
+    const reservationId =
+      identity.input?.federationReservationId ?? identity.boundReservationId ?? undefined;
+    if (reservationId && (!identity.runId || !this.prepareFederationDispatch))
+      throw new WorkflowExecutionInterrupted("Federation dispatch authorization is unavailable", {
+        retryable: false,
+      });
+    const authorize =
+      reservationId && identity.runId
+        ? await this.prepareFederationDispatch?.(identity.runId)
+        : undefined;
     return this.db.transaction(async (tx) => {
-      const [identity] = await tx
-        .select({ runId: jobDispatchOutbox.workflowRunId })
-        .from(jobDispatchOutbox)
-        .where(eq(jobDispatchOutbox.jobId, jobId));
-      if (!identity) return false;
       const [run] = identity.runId
         ? await tx
-            .select({ status: workflowRuns.status, submittedBy: workflowRuns.submittedBy })
+            .select({
+              status: workflowRuns.status,
+              submittedBy: workflowRuns.submittedBy,
+              input: workflowRuns.input,
+            })
             .from(workflowRuns)
             .where(eq(workflowRuns.id, identity.runId))
             .for("update")
@@ -201,6 +229,10 @@ export class JobDispatchOutbox {
         (!run || run.status !== "running" || run.submittedBy !== job.submittedBy)
       )
         return false;
+      if (run?.input?.federationReservationId !== reservationId)
+        throw new WorkflowExecutionInterrupted("Federation dispatch binding changed", {
+          retryable: false,
+        });
       const message = fromBinary(ServerMessageSchema, Buffer.from(saved.payloadBase64, "base64"));
       if (
         message.payload.case !== "dispatchJob" ||
@@ -212,6 +244,7 @@ export class JobDispatchOutbox {
         .update(jobDispatchOutbox)
         .set({ nextAttemptAt: sql`clock_timestamp() + interval '10 seconds'` })
         .where(eq(jobDispatchOutbox.jobId, jobId));
+      await authorize?.(tx);
       // Synchronous channel enqueue stays inside the cancellation fence; no network await here.
       // A failed commit may replay the same epoch, which the Agent's durable inbox deduplicates.
       return this.dispatcher.pushPreparedDispatch(saved.agentId, message);

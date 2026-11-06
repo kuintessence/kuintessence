@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, expect, spyOn, test } from "bun:test";
 import { createHash } from "node:crypto";
 import {
+  agents,
   auditLog,
   createPgDb,
   dataAssets,
@@ -39,6 +40,8 @@ import { and, eq, inArray, sql } from "drizzle-orm";
 import { Hono } from "hono";
 import { exportSPKI } from "jose";
 import pino from "pino";
+import { AgentDispatcher } from "../grpc/dispatcher";
+import { JobDispatchOutbox } from "../grpc/job-dispatch-outbox";
 import { createErrorHandler } from "../middleware/error-handler";
 import { createFederationAssetRoutes } from "../routes/federation-assets";
 import { SoftwareAvailabilityService } from "../services/software-availability";
@@ -47,6 +50,7 @@ import { WorkflowExecutionJournalStore } from "../workflow/execution-journal";
 import { WorkflowRunRegistry } from "../workflow/run-registry";
 import { FederationAdmission } from "./admission";
 import { FederationAssetService, federationMaterialDigest } from "./assets";
+import { FederationDispatchAuthorization } from "./dispatch-authorization";
 import {
   FederationExecutionBindingService,
   loadFederationWorkflowBinding,
@@ -927,4 +931,163 @@ test("the production preparation worker stages a bound run without invoking the 
     "submitted",
   );
   expect(await db.select().from(jobs).where(eq(jobs.submittedBy, identity.userId))).toHaveLength(0);
+});
+
+test.each([
+  "agreement",
+  "identity",
+  "mapping",
+  "expiry",
+  "binding",
+] as const)("dispatch fence rechecks %s after external preparation and before channel delivery", async (change) => {
+  const f = await executionFixture();
+  const binding = await f.bindings.stage(f.reservationId);
+  const authorization = new FederationDispatchAuthorization(db, f.preparation);
+  const fence = await authorization.prepare(binding.workflowRunId);
+  await db.transaction(fence);
+  try {
+    if (change === "agreement")
+      await db
+        .update(federationAgreements)
+        .set({ state: "suspended" })
+        .where(eq(federationAgreements.revisionId, agreement.agreementRevisionId));
+    if (change === "identity")
+      await db.update(users).set({ suspended: true }).where(eq(users.id, identity.userId));
+    if (change === "mapping")
+      await db
+        .update(federationAssetMappings)
+        .set({ revokedAt: new Date() })
+        .where(eq(federationAssetMappings.softwareRevisionId, revisionId));
+    if (change === "expiry") f.expire();
+    if (change === "binding")
+      await db
+        .delete(federationWorkflowBindings)
+        .where(eq(federationWorkflowBindings.reservationId, f.reservationId));
+    let delivered = false;
+    await expect(
+      db.transaction(async (tx) => {
+        await fence(tx);
+        delivered = true;
+      }),
+    ).rejects.toThrow();
+    expect(delivered).toBe(false);
+    await expect(authorization.prepare(binding.workflowRunId)).rejects.toThrow();
+  } finally {
+    await db
+      .update(federationAgreements)
+      .set({ state: "active" })
+      .where(eq(federationAgreements.revisionId, agreement.agreementRevisionId));
+    await db.update(users).set({ suspended: false }).where(eq(users.id, identity.userId));
+    await db
+      .update(federationAssetMappings)
+      .set({ revokedAt: null })
+      .where(eq(federationAssetMappings.softwareRevisionId, revisionId));
+  }
+});
+
+test("real federation authorization fences outbox retries and holds agreement revocation through enqueue", async () => {
+  const f = await executionFixture();
+  const binding = await f.bindings.stage(f.reservationId);
+  const agentId = `federation-fence-${crypto.randomUUID()}`;
+  const jobId = crypto.randomUUID();
+  const dispatcher = new AgentDispatcher();
+  const authorization = new FederationDispatchAuthorization(db, f.preparation);
+  const outbox = new JobDispatchOutbox(db, dispatcher, (runId) => authorization.prepare(runId));
+  await db.insert(agents).values({
+    agentId,
+    siteName: "Test receiver",
+    schedulerType: "slurm",
+    schedulerVersion: "test",
+  });
+  await db.insert(jobs).values({
+    id: jobId,
+    name: "Fence test",
+    command: "true",
+    cpus: 1,
+    memoryMb: 128,
+    agentId,
+    dispatchEpoch: 1,
+    status: "queued",
+    submittedBy: identity.userId,
+    orgId: identity.orgId,
+  });
+  // Exercise the final boundary directly; this does not enable production federation runs.
+  await db
+    .update(workflowRuns)
+    .set({ status: "running" })
+    .where(eq(workflowRuns.id, binding.workflowRunId));
+  let delivered = 0;
+  let probe: ReturnType<typeof Bun.spawnSync> | undefined;
+  const message = dispatcher.buildDispatchJob(jobId, {
+    jobIdInternal: jobId,
+    name: "Fence test",
+    command: "true",
+    resources: { cpus: 1, memoryMb: 128 },
+    dispatchEpoch: 1,
+  });
+  try {
+    expect(await outbox.enqueue(agentId, message, binding.workflowRunId)).toEqual({
+      sent: false,
+      pending: true,
+    });
+    dispatcher.register(agentId, {
+      close: () => {},
+      push: () => {
+        probe = Bun.spawnSync(
+          [
+            "bun",
+            "-e",
+            `import postgres from "postgres";
+          const db = postgres(process.env.DATABASE_URL, {max: 1});
+          try {
+            await db.begin(tx => tx.unsafe('select revision_id from federation_agreements where revision_id=$1 for update nowait', [process.env.PROBE_AGREEMENT]));
+            process.stdout.write("unlocked");
+          } catch (error) { process.stdout.write(error.code); }
+          await db.end();`,
+          ],
+          {
+            env: {
+              ...process.env,
+              DATABASE_URL: url,
+              PROBE_AGREEMENT: agreement.agreementRevisionId,
+            },
+            timeout: 5000,
+          },
+        );
+        delivered++;
+      },
+    });
+    await outbox.redeliver(agentId);
+    expect(delivered).toBe(1);
+    expect(probe?.exitCode).toBe(0);
+    expect(probe?.stdout?.toString()).toBe("55P03");
+    await db
+      .update(federationAgreements)
+      .set({ state: "suspended" })
+      .where(eq(federationAgreements.revisionId, agreement.agreementRevisionId));
+    await new JobDispatchOutbox(db, dispatcher, (id) => authorization.prepare(id)).redeliver(
+      agentId,
+    );
+    expect(delivered).toBe(1);
+    await db
+      .update(federationAgreements)
+      .set({ state: "active" })
+      .where(eq(federationAgreements.revisionId, agreement.agreementRevisionId));
+    const [run] = await db
+      .select()
+      .from(workflowRuns)
+      .where(eq(workflowRuns.id, binding.workflowRunId));
+    if (!run?.input) throw new Error("Missing test run");
+    const { federationReservationId: _removed, ...input } = run.input;
+    await db.update(workflowRuns).set({ input }).where(eq(workflowRuns.id, binding.workflowRunId));
+    await outbox.redeliver(agentId);
+    expect(delivered).toBe(1);
+  } finally {
+    await db
+      .update(federationAgreements)
+      .set({ state: "active" })
+      .where(eq(federationAgreements.revisionId, agreement.agreementRevisionId));
+    await db.delete(jobs).where(eq(jobs.id, jobId));
+    await db.delete(agents).where(eq(agents.agentId, agentId));
+  }
 });

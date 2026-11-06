@@ -689,3 +689,64 @@ test("software redelivery uses the real Agent receipt once and recovers a lost t
       .where(eq(schema.softwareOperations.agentId, agentId));
   }
 });
+
+test("federation outbox requires fresh authorization on initial delivery and every restart retry", async () => {
+  const { jobId, dispatcher, message, outbox } = await dispatchFixture();
+  const runId = crypto.randomUUID();
+  const reservationId = crypto.randomUUID();
+  await db.insert(schema.workflowRuns).values({
+    id: runId,
+    name: "Federation delivery fence",
+    status: "running",
+    submittedBy: userId,
+    input: { federationReservationId: reservationId, yaml: "fixture", role: "user" },
+  });
+  const delivered: ServerMessage[] = [];
+  dispatcher.register(agentId, {
+    push: (value) => {
+      if (value.payload.case === "dispatchJob" && value.payload.value.jobId === jobId)
+        delivered.push(value);
+    },
+    close: () => {},
+  });
+  let checks = 0;
+  let revoked = false;
+  const prepare = async (id: string) => {
+    expect(id).toBe(runId);
+    return async () => {
+      checks++;
+      if (revoked) throw new Error("Agreement revoked");
+    };
+  };
+  try {
+    expect(await outbox.enqueue(agentId, message, runId)).toEqual({ sent: false, pending: true });
+    expect(delivered).toHaveLength(0);
+    await new JobDispatchOutbox(db, dispatcher, prepare).redeliver(agentId);
+    expect(delivered).toHaveLength(1);
+    revoked = true;
+    await new JobDispatchOutbox(db, dispatcher, prepare).redeliver(agentId);
+    expect(checks).toBe(2);
+    expect(delivered).toHaveLength(1);
+    expect(
+      (await db.select().from(jobDispatchOutbox).where(eq(jobDispatchOutbox.jobId, jobId)))[0]
+        ?.acknowledgedAt,
+    ).toBeNull();
+    revoked = false;
+    const changed = new JobDispatchOutbox(db, dispatcher, async (id) => {
+      const fence = await prepare(id);
+      await db
+        .update(schema.workflowRuns)
+        .set({
+          input: { federationReservationId: crypto.randomUUID(), yaml: "fixture", role: "user" },
+        })
+        .where(eq(schema.workflowRuns.id, runId));
+      return fence;
+    });
+    await changed.redeliver(agentId);
+    expect(delivered).toHaveLength(1);
+    expect(checks).toBe(2);
+  } finally {
+    await db.delete(jobDispatchOutbox).where(eq(jobDispatchOutbox.jobId, jobId));
+    await db.delete(schema.workflowRuns).where(eq(schema.workflowRuns.id, runId));
+  }
+});

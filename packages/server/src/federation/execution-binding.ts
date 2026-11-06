@@ -11,7 +11,22 @@ import { stringify } from "yaml";
 import { parseWorkflowYaml } from "../workflow/parser";
 import { WorkflowRunRegistry } from "../workflow/run-registry";
 import { federationMaterialDigest } from "./assets";
-import type { FederationPreparationService } from "./preparation";
+import type { FederationExecutionPreparation, FederationPreparationService } from "./preparation";
+
+export function federationExecutionSnapshot(prepared: FederationExecutionPreparation) {
+  // Projection removes foreign IDs with undefined; persist only its JSON meaning.
+  const snapshot: typeof federationWorkflowBindings.$inferInsert.snapshot = JSON.parse(
+    JSON.stringify({
+      request: prepared.request,
+      requestDigest: prepared.saved.reservation.requestDigest,
+      identity: prepared.identity,
+      ...prepared.projection,
+      ...prepared.material,
+      mappings: prepared.mappings,
+    }),
+  );
+  return snapshot;
+}
 
 /** Creates a held run and immutable receiver projection, never queues or dispatches it. */
 export class FederationExecutionBindingService {
@@ -27,17 +42,7 @@ export class FederationExecutionBindingService {
     );
     if (prior) return prior;
     const prepared = await this.preparation.executionSnapshot(reservationId);
-    // Projection deliberately removes foreign IDs with undefined; store only its JSON meaning.
-    const snapshot: typeof federationWorkflowBindings.$inferInsert.snapshot = JSON.parse(
-      JSON.stringify({
-        request: prepared.request,
-        requestDigest: prepared.saved.reservation.requestDigest,
-        identity: prepared.identity,
-        ...prepared.projection,
-        ...prepared.material,
-        mappings: prepared.mappings,
-      }),
-    );
+    const snapshot = federationExecutionSnapshot(prepared);
     const snapshotDigest = federationMaterialDigest(snapshot);
     return this.db.transaction(async (tx) => {
       await this.preparation.lockExecutionSnapshot(tx, prepared);
@@ -99,7 +104,7 @@ async function readBinding(db: PgDb | PgTransaction, condition: SQL) {
 }
 
 /** Normal runs have no binding; a lost or mismatched federation marker is never ignored. */
-export async function loadFederationWorkflowBinding(db: PgDb, runId: string) {
+export async function loadFederationWorkflowBinding(db: PgDb | PgTransaction, runId: string) {
   const binding = await readBinding(db, eq(federationWorkflowBindings.workflowRunId, runId));
   if (binding) return binding;
   const [run] = await db

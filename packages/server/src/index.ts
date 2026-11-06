@@ -52,6 +52,7 @@ import { FederationAssetService } from "./federation/assets";
 import { FederationAttestationService } from "./federation/attestation";
 import { UnixAttestationClient } from "./federation/attestation-client";
 import { FederationAttestationWorker } from "./federation/attestation-worker";
+import { FederationDispatchAuthorization } from "./federation/dispatch-authorization";
 import {
   FederationExecutionBindingService,
   loadFederationWorkflowBinding,
@@ -272,8 +273,13 @@ const eventBus = new EventBus();
 const preferenceService = new PreferenceService(db);
 const dispatcher = new AgentDispatcher();
 const jobCancellationOutbox = new JobCancellationOutbox(db, dispatcher);
-const jobDispatchOutbox = new JobDispatchOutbox(db, dispatcher);
-jobDispatchOutbox.start();
+const jobDispatchOutbox = new JobDispatchOutbox(db, dispatcher, async (runId) => {
+  if (!federationDispatchAuthorization)
+    throw new WorkflowExecutionInterrupted("Federation dispatch authorization is unavailable", {
+      retryable: false,
+    });
+  return federationDispatchAuthorization.prepare(runId);
+});
 const jobWorkRootReleaseOutbox = new JobWorkRootReleaseOutbox(db, dispatcher);
 const dataScanCoordinator = new DataScanCoordinator(
   new PgDataImportCoordinator(db),
@@ -1556,6 +1562,10 @@ const federationAttestation = federationSigningKey
 const federationPreparation = federationSigningKey
   ? new FederationPreparationService(db, federationSigningKey.siteId, federationAssets)
   : undefined;
+const federationDispatchAuthorization = federationPreparation
+  ? new FederationDispatchAuthorization(db, federationPreparation)
+  : undefined;
+jobDispatchOutbox.start();
 protectedApi.route("/", createFederationAssetRoutes(federationAssets, federationPreparation));
 if (federationSigningKey)
   protectedApi.route(
