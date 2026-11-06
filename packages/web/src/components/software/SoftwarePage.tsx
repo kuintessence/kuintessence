@@ -1197,7 +1197,7 @@ function SoftwareGovernancePanel({
                     : t("software.governance.untrusted")}
                 </Badge>
               </div>
-              <div className="flex flex-wrap justify-end gap-1 border-t border-border pt-2">
+              <div className="kq-fill-row gap-1 border-t border-border pt-2">
                 <Button
                   type="button"
                   size="sm"
@@ -1332,7 +1332,6 @@ function CatalogToolbar({
     >
       <ListToolbar
         search={{
-          containerClassName: "w-full lg:max-w-lg",
           "aria-label": searchPlaceholder,
           value: search,
           onChange: (e) => setSearch(e.target.value),
@@ -1349,7 +1348,7 @@ function CatalogToolbar({
         }
       />
       {tags.length > 0 || children ? (
-        <div className="flex flex-wrap items-center gap-1.5" data-testid={tagTestId}>
+        <div className="kq-fill-row gap-1.5" data-testid={tagTestId}>
           <TagButton active={activeTag === null} onClick={() => setActiveTag(null)}>
             {t("common.all", { defaultValue: "全部" })}
           </TagButton>
@@ -2300,7 +2299,7 @@ function SpackMetadataChoices({
       {visibleVersions.length > 0 ? (
         <div className="space-y-1">
           <div className="text-[11px] text-muted-foreground">{t("software.manage.versions")}</div>
-          <div className="flex flex-wrap gap-1.5">
+          <div className="kq-fill-row gap-1.5">
             {visibleVersions.map((version) => (
               <Button
                 key={version}
@@ -2418,7 +2417,7 @@ function CompilerParseBox({ onCompilerChange }: { onCompilerChange: (value: stri
         {error ? <span className="text-xs text-status-failed">{error}</span> : null}
       </div>
       {compilers.length > 0 ? (
-        <div className="flex flex-wrap gap-1.5" data-testid="software-usecase-compiler-options">
+        <div className="kq-fill-row gap-1.5" data-testid="software-usecase-compiler-options">
           {compilers.map((compiler) => (
             <Button
               key={compiler.spec}
@@ -2485,7 +2484,7 @@ function SpackCatalogPickerDialog({
               placeholder={t("software.manage.catalogSearch")}
               data-testid="software-usecase-catalog-search"
             />
-            <div className="flex flex-wrap gap-1.5" data-testid="software-usecase-source-filters">
+            <div className="kq-fill-row gap-1.5" data-testid="software-usecase-source-filters">
               {(["all", "upstream", "official", "vendor"] satisfies SpackCatalogSourceFilter[]).map(
                 (item) => (
                   <Button
@@ -2919,7 +2918,7 @@ function SpackCatalogPackageList({
                   </div>
                 </div>
                 <div
-                  className={`flex flex-wrap justify-end gap-1 border-t border-border pt-2 ${cardActionLayerClass}`}
+                  className={`kq-fill-row gap-1 border-t border-border pt-2 ${cardActionLayerClass}`}
                 >
                   <Button
                     asChild
@@ -3357,7 +3356,7 @@ function UsecaseCard({
         <InfoTile label={t("software.manage.module")} value={moduleName} />
         <InfoTile label={t("software.manage.variantRef")} value={variantRef} />
       </div>
-      <div className={`mt-3 flex flex-wrap justify-end gap-2 ${cardActionLayerClass}`}>
+      <div className={`mt-3 kq-fill-row ${cardActionLayerClass}`}>
         <Button asChild variant="outline" size="sm" data-testid={`software-view-usecase-${pkg.id}`}>
           <Link to="/software/usecases/$usecaseId" params={{ usecaseId: pkg.id }}>
             <Eye />

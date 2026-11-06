@@ -235,7 +235,7 @@ export function WorkflowTemplatePickerDialog({
               ? t("workflows.templates.pendingSelection", { name: draft.name })
               : t("workflows.templates.noSelection")}
           </span>
-          <div className="flex justify-end gap-2">
+          <div className="kq-fill-row">
             <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
               {t("common.cancel")}
             </Button>
@@ -425,7 +425,7 @@ export function WorkflowUsecasePickerDialog({
               ? t("workflow.editor.usecasePicker.pendingSelection", { name: draft.name })
               : t("workflow.editor.usecasePicker.noSelection")}
           </span>
-          <div className="flex justify-end gap-2">
+          <div className="kq-fill-row">
             <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
               {t("common.cancel")}
             </Button>

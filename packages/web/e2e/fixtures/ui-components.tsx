@@ -7,9 +7,11 @@ import type { AccessScopeFilter, StatusFilter } from "../../src/components/jobs/
 import { Badge } from "../../src/components/ui/badge";
 import { Button } from "../../src/components/ui/button";
 import { DataTable } from "../../src/components/ui/data-table";
+import { DialogFooter } from "../../src/components/ui/dialog";
 import { Textarea } from "../../src/components/ui/input";
 import { NativeSelect } from "../../src/components/ui/native-select";
 import { PageHeader, PageShell } from "../../src/components/ui/page";
+import { Tabs, TabsList, TabsTrigger } from "../../src/components/ui/tabs";
 import { setLang } from "../../src/lib/i18n";
 
 setLang("zh");
@@ -60,6 +62,28 @@ function Fixture() {
           onImportJson={() => setAction("导入 JSON")}
           onCreateFromUsecase={() => setAction("从用例创建")}
         />
+        <Tabs defaultValue="overview">
+          <TabsList aria-label="演示详情">
+            {(
+              [
+                ["overview", "概览"],
+                ["resources", "计算资源"],
+                ["inputs", "输入文件"],
+                ["logs", "运行日志"],
+                ["outputs", "结果与制品"],
+                ["history", "历史记录"],
+              ] as const
+            ).map(([value, label]) => (
+              <TabsTrigger key={value} value={value}>
+                {label}
+              </TabsTrigger>
+            ))}
+          </TabsList>
+        </Tabs>
+        <DialogFooter data-testid="demo-footer">
+          <Button variant="outline">取消</Button>
+          <Button>确认选择</Button>
+        </DialogFooter>
         {action ? <p role="status">演示操作：{action}</p> : null}
         <DataTable columns={columns} data={data} globalFilter={filter} pageSize={10} />
         <div className="h-64">

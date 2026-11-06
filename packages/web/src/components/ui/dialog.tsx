@@ -146,7 +146,7 @@ export function DialogFooter({ className, ...props }: React.HTMLAttributes<HTMLD
   return (
     <div
       className={cn(
-        "shrink-0 border-t border-border bg-card/95 px-4 py-3 backdrop-blur sm:px-5",
+        "kq-fill-row items-stretch shrink-0 border-t border-border bg-card/95 px-4 py-3 backdrop-blur sm:items-center sm:px-5",
         className,
       )}
       {...props}

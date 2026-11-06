@@ -135,7 +135,7 @@ export function SoftwareCard({
             ))}
           </div>
         ) : null}
-        <div className={`mt-auto flex flex-wrap justify-end gap-2 pt-2 ${cardActionLayerClass}`}>
+        <div className={`mt-auto kq-fill-row pt-2 ${cardActionLayerClass}`}>
           <Button asChild variant="outline" size="sm" data-testid={`software-view-${template.id}`}>
             <Link
               to="/software/workflow-templates/$templateId"

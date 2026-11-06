@@ -6,11 +6,7 @@ export const ToggleGroup = React.forwardRef<
   React.ComponentRef<typeof ToggleGroupPrimitive.Root>,
   React.ComponentPropsWithoutRef<typeof ToggleGroupPrimitive.Root>
 >(({ className, ...props }, ref) => (
-  <ToggleGroupPrimitive.Root
-    ref={ref}
-    className={cn("flex min-w-0 flex-wrap items-center gap-1", className)}
-    {...props}
-  />
+  <ToggleGroupPrimitive.Root ref={ref} className={cn("kq-fill-row gap-1", className)} {...props} />
 ));
 ToggleGroup.displayName = "ToggleGroup";
 

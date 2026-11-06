@@ -136,7 +136,7 @@ export function ProviderOrganizationSelector() {
       <span className="shrink-0 text-muted-foreground">{t("cp.organizationSelector.label")}</span>
       <NativeSelect
         aria-label={t("cp.organizationSelector.ariaLabel")}
-        className="min-w-48 max-w-full"
+        className="min-w-0 flex-[1_1_12rem]"
         disabled={update.isPending}
         value={activeOrganizationId ?? ""}
         onChange={(event) => update.mutate(event.target.value || null)}

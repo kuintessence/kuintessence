@@ -1,7 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { mkdirSync, readdirSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { expect, test } from "patchright/test";
+import { expect, type Locator, test } from "patchright/test";
 
 const webRoot = resolve(import.meta.dirname, "..");
 let css = "";
@@ -134,3 +134,55 @@ test("transfer filters share keyboard selection and retain the selected status",
   await expect(failed).toHaveAttribute("aria-checked", "true");
   await expect(active).toHaveAttribute("aria-checked", "false");
 });
+
+async function expectFilledRows(container: Locator) {
+  const rows = await container.evaluate((node) => {
+    const bounds = node.getBoundingClientRect();
+    const style = getComputedStyle(node);
+    const left =
+      bounds.left + Number.parseFloat(style.paddingLeft) + Number.parseFloat(style.borderLeftWidth);
+    const right =
+      bounds.right -
+      Number.parseFloat(style.paddingRight) -
+      Number.parseFloat(style.borderRightWidth);
+    const rows: { center: number; left: number; right: number }[] = [];
+    for (const child of node.children) {
+      const box = child.getBoundingClientRect();
+      if (box.width === 0 || box.height === 0) continue;
+      const row = rows.find((row) => Math.abs(row.center - (box.top + box.height / 2)) < 2);
+      if (row) {
+        row.left = Math.min(row.left, box.left);
+        row.right = Math.max(row.right, box.right);
+      } else {
+        rows.push({ center: box.top + box.height / 2, left: box.left, right: box.right });
+      }
+    }
+    return rows.map((row) => ({ leftGap: row.left - left, rightGap: right - row.right }));
+  });
+  expect(rows.length).toBeGreaterThan(0);
+  for (const row of rows) {
+    expect(Math.abs(row.leftGap)).toBeLessThan(2);
+    expect(Math.abs(row.rightGap)).toBeLessThan(2);
+  }
+}
+
+for (const width of [320, 360, 390, 480, 640, 768, 1024, 1280]) {
+  test(`wrapped controls fill each row at ${width}px`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 960 });
+    await expectFilledRows(page.getByTestId("jobs-search").locator("../.."));
+    await expectFilledRows(page.getByTestId("jobs-submit-button").locator(".."));
+    if (width >= 640) await expectFilledRows(page.getByTestId("jobs-status-filter"));
+    await expectFilledRows(page.getByRole("tablist", { name: "演示详情" }));
+    await expectFilledRows(page.getByRole("radiogroup", { name: "传输列表" }));
+    await expectFilledRows(page.getByRole("button", { name: "下一页", exact: true }).locator(".."));
+    await expectFilledRows(page.getByTestId("demo-footer"));
+    const menu = await page.getByTestId("jobs-submit-menu").boundingBox();
+    expect(menu?.width).toBe(36);
+    await page.getByTestId("jobs-submit-menu").click();
+    await page.getByTestId("jobs-submit-upload").click();
+    await expect(page.getByRole("status")).toHaveText("演示操作：导入 JSON");
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(
+      true,
+    );
+  });
+}

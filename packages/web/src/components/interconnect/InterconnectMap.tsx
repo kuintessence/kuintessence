@@ -227,7 +227,7 @@ export function InterconnectMap({
       className="overflow-hidden rounded-xl border border-border bg-card"
       aria-label={t("interconnect.mapLabel")}
     >
-      <div className="flex flex-wrap items-center gap-2 border-b border-border p-3">
+      <div className="kq-fill-row border-b border-border p-3">
         <h2 className="mr-auto font-semibold">{t("interconnect.mapTitle")}</h2>
         <NativeSelect
           aria-label={t("interconnect.mapLevel")}
@@ -252,6 +252,7 @@ export function InterconnectMap({
         <Button
           variant="outline"
           size="sm"
+          className="flex-none"
           aria-label={t("interconnect.zoomOut")}
           onClick={() => onView({ ...view, zoom: Math.max(0.5, view.zoom / 1.5) })}
         >
@@ -260,6 +261,7 @@ export function InterconnectMap({
         <Button
           variant="outline"
           size="sm"
+          className="flex-none"
           aria-label={t("interconnect.zoomIn")}
           onClick={() => onView({ ...view, zoom: Math.min(64, view.zoom * 1.5) })}
         >

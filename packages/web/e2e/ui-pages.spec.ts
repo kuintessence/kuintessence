@@ -7,7 +7,7 @@ const webRoot = resolve(import.meta.dirname, "..");
 let css = "";
 let javascript = "";
 test.beforeAll(() => {
-  const bundle = resolve(webRoot, "test-results/ui-pages.js");
+  const bundleDir = resolve(webRoot, "test-results/ui-pages-bundle");
   mkdirSync(resolve(webRoot, "test-results"), { recursive: true });
   execFileSync(
     "bun",
@@ -16,12 +16,12 @@ test.beforeAll(() => {
       "e2e/fixtures/ui-pages.tsx",
       "--target=browser",
       "--format=iife",
-      "--outfile",
-      bundle,
+      "--outdir",
+      bundleDir,
     ],
     { cwd: webRoot },
   );
-  javascript = readFileSync(bundle, "utf8");
+  javascript = readFileSync(resolve(bundleDir, "ui-pages.js"), "utf8");
   css = readdirSync(resolve(webRoot, "dist/assets"))
     .filter((name) => name.endsWith(".css"))
     .map((name) => readFileSync(resolve(webRoot, "dist/assets", name), "utf8"))
@@ -29,7 +29,7 @@ test.beforeAll(() => {
 });
 for (const width of [320, 768, 1280]) {
   for (const theme of ["light", "dark"]) {
-    for (const route of ["software", "workflows", ...(width === 320 ? ["runtime"] : [])]) {
+    for (const route of ["jobs", "software", "workflows", ...(width === 320 ? ["runtime"] : [])]) {
       test(`${route} page at ${width}px in ${theme}`, async ({ page }) => {
         await page.setViewportSize({ width, height: 960 });
         await page.clock.setFixedTime(new Date("2026-01-02T08:00:00Z"));
@@ -55,7 +55,26 @@ for (const width of [320, 768, 1280]) {
             ':root { --font-sans: "Noto Sans CJK SC", sans-serif; --font-mono: "Liberation Mono", monospace; }',
         });
         await page.addScriptTag({ content: javascript });
-        if (route === "software") {
+        if (route === "jobs") {
+          await expect(page.getByTestId("jobs-pagination")).toBeVisible();
+          if (width === 320) {
+            const boxes = await Promise.all(
+              [
+                "jobs-status-select",
+                "jobs-scope-filter",
+                "jobs-submit-button",
+                "jobs-submit-menu",
+              ].map((id) => page.getByTestId(id).boundingBox()),
+            );
+            const [status, scope, submit, menu] = boxes;
+            if (!status || !scope || !submit || !menu) throw new Error("Missing job controls");
+            expect(Math.abs(status.y - scope.y)).toBeLessThan(2);
+            expect(Math.abs(status.x - submit.x)).toBeLessThan(2);
+            expect(Math.abs(scope.x + scope.width - menu.x - menu.width)).toBeLessThan(2);
+            expect(submit.width).toBeGreaterThan(180);
+            expect(menu.width).toBe(36);
+          }
+        } else if (route === "software") {
           await expect(page.getByTestId("software-card-demo-template-0")).toBeVisible();
           const widths = await page
             .getByTestId("software-grid")

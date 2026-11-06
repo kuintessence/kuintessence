@@ -143,7 +143,7 @@ export function WorkflowScriptPickerDialog({
               ? t("workflow.editor.scriptPicker.pendingSelection", { name: selected.name })
               : t("workflow.editor.scriptPicker.noSelection")}
           </span>
-          <div className="flex justify-end gap-2">
+          <div className="kq-fill-row">
             <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
               {t("common.cancel")}
             </Button>

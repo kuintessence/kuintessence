@@ -22,8 +22,8 @@ export function PageHeader({
 }: PageHeaderProps) {
   return (
     <div className={cn("border-b border-border pb-5", className)} {...props}>
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <div className="min-w-0">
+      <div className="flex min-w-0 flex-wrap items-center gap-3">
+        <div className="min-w-0 flex-[3_1_20rem]">
           <h1 className="break-words text-2xl font-semibold tracking-tight [overflow-wrap:anywhere]">
             {title}
           </h1>
@@ -33,7 +33,9 @@ export function PageHeader({
           ) : null}
         </div>
         {actions ? (
-          <div className="flex shrink-0 flex-wrap items-center gap-2 sm:justify-end">{actions}</div>
+          <div className="kq-fill-row max-w-full flex-[1_1_auto] sm:justify-end [&>span]:flex-none">
+            {actions}
+          </div>
         ) : null}
       </div>
     </div>

@@ -294,7 +294,6 @@ export function WorkflowsPage() {
         <CardContent className="space-y-4 p-4">
           <ListToolbar
             search={{
-              containerClassName: "w-full 2xl:w-96",
               "aria-label": t("workflows.searchPlaceholder"),
               value: search,
               onChange: (e) => {

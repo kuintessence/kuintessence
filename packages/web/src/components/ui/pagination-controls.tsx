@@ -23,7 +23,7 @@ export function PaginationControls({
   return (
     <div
       className={cn(
-        "flex flex-wrap items-center justify-end gap-2 text-xs text-muted-foreground",
+        "kq-fill-row w-full max-w-full text-xs text-muted-foreground sm:w-auto",
         className,
       )}
       {...props}

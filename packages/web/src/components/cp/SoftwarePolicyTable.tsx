@@ -2214,7 +2214,7 @@ function OperationHistoryStatusSummary({
   const { t } = useTranslation();
   const counts = countSoftwareOperationStatuses(operations);
   return (
-    <div className="flex flex-wrap gap-1.5" data-testid="cp-software-operation-status-summary">
+    <div className="kq-fill-row gap-1.5" data-testid="cp-software-operation-status-summary">
       {SOFTWARE_OPERATION_STATUS_ORDER.map((status) => {
         const count = counts[status] ?? 0;
         if (count === 0) return null;
@@ -2282,7 +2282,7 @@ function OperationHistoryToolbar({
           {t("cp.software.operations.historySubtitle")}
         </div>
       </div>
-      <div className="flex flex-wrap items-center gap-2">
+      <div className="kq-fill-row">
         <NativeSelect
           className="h-8 text-xs"
           value={actionFilter ?? "all"}
@@ -2677,7 +2677,7 @@ function SpackCatalogPickerDialog({
               placeholder={t("cp.software.operations.catalogSearch")}
               data-testid="cp-software-catalog-search"
             />
-            <div className="flex flex-wrap gap-1.5">
+            <div className="kq-fill-row gap-1.5">
               {(["all", "upstream", "official", "vendor"] satisfies SpackCatalogSourceFilter[]).map(
                 (item) => (
                   <Button

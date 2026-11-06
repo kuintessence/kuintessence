@@ -550,7 +550,7 @@ export function PathPickerSheet({
           >
             {selection?.path ?? (location === "cloud" ? cloudPrefix || "/" : clusterPath)}
           </div>
-          <div className="flex flex-col-reverse gap-2 sm:flex-row sm:items-center">
+          <div className="kq-fill-row flex-col-reverse items-stretch sm:flex-row sm:items-center">
             <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
               {t("files.pathPicker.cancel")}
             </Button>

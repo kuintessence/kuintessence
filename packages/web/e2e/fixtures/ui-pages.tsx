@@ -8,6 +8,7 @@ import {
   RouterProvider,
 } from "@tanstack/react-router";
 import { createRoot } from "react-dom/client";
+import { JobsPage } from "../../src/components/jobs/JobsPage";
 import { RuntimeAndMaterialPanel } from "../../src/components/software/EcosystemGovernancePanels";
 import { SoftwarePage } from "../../src/components/software/SoftwarePage";
 import { WorkflowsPage } from "../../src/components/workflows/WorkflowsPage";
@@ -68,6 +69,7 @@ client.setQueryData(["software-usecases", "demo-provider", 1, ""], {
 });
 client.setQueryData(["software-spack-catalog", "", "all", 1], { packages: [], total: 0 });
 client.setQueryData(["software-access-requests", "mine"], []);
+client.setQueryData(["jobs-list", 0, "", "ALL", "all", null], { jobs: [], total: 0 });
 client.setQueryData(["workflow-drafts"], { drafts: [] });
 client.setQueryData(["workflows-list", { offset: 0, search: "", status: "ALL" }], {
   runs: [
@@ -147,6 +149,7 @@ function Shell() {
 }
 const rootRoute = createRootRoute({ component: Shell });
 const routeTree = rootRoute.addChildren([
+  createRoute({ getParentRoute: () => rootRoute, path: "/jobs", component: JobsPage }),
   createRoute({ getParentRoute: () => rootRoute, path: "/software", component: SoftwarePage }),
   createRoute({ getParentRoute: () => rootRoute, path: "/workflows", component: WorkflowsPage }),
   createRoute({

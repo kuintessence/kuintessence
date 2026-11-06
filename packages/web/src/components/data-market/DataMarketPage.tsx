@@ -119,7 +119,7 @@ export function DataMarketPage() {
           <CardHeader className="gap-3">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <CardTitle>{t("dataMarket.catalog")}</CardTitle>
-              <div className="flex gap-2">
+              <div className="kq-fill-row flex-[1_1_16rem]">
                 <Button
                   size="sm"
                   variant={scope === "catalog" ? "default" : "outline"}

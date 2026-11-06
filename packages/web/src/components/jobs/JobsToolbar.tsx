@@ -50,7 +50,6 @@ export function JobsToolbar({
   return (
     <ListToolbar
       search={{
-        containerClassName: "w-full flex-none sm:w-auto sm:flex-1 sm:max-w-80",
         value: search,
         onChange: (e) => onSearchChange(e.target.value),
         placeholder: t("jobs.searchPlaceholder"),
@@ -136,7 +135,7 @@ export function JobsToolbar({
       </ToggleGroup>
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
-          <Button variant="outline" size="sm" data-testid="jobs-scope-filter">
+          <Button variant="outline" size="sm" className="h-9" data-testid="jobs-scope-filter">
             <ShieldCheck className="h-4 w-4" />
             {t(`jobs.scope.${scope}`)}
             <ChevronDown className="h-3.5 w-3.5" />

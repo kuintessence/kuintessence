@@ -11,12 +11,12 @@ export function ListToolbar({
   actions?: ReactNode;
 }) {
   return (
-    <div className="flex min-w-0 flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
-      <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
-        <SearchInput containerClassName="w-full sm:max-w-80" {...search} />
+    <div className="flex min-w-0 flex-wrap items-start gap-3">
+      <div className="kq-fill-row flex-[4_1_32rem]">
+        <SearchInput containerClassName="basis-full sm:basis-64" {...search} />
         {children}
       </div>
-      {actions ? <div className="flex shrink-0 flex-wrap items-center gap-2">{actions}</div> : null}
+      {actions ? <div className="kq-fill-row flex-[1_1_auto]">{actions}</div> : null}
     </div>
   );
 }

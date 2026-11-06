@@ -139,7 +139,7 @@ export function DataTable<TData, TValue>({
       </div>
 
       {total > pageSize || table.getPageCount() > 1 ? (
-        <div className="flex flex-wrap items-center justify-between gap-3 text-xs text-muted-foreground">
+        <div className="kq-fill-row gap-3 text-xs text-muted-foreground">
           <label className="flex items-center gap-2">
             {t("common.pagination.rowsPerPage")}
             <NativeSelect

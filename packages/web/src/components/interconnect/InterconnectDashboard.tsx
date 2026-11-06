@@ -370,7 +370,7 @@ function DashboardContent({
   return (
     <div className="space-y-5" data-testid="interconnect-dashboard">
       <PageHeader title={t("workspace.nav.interconnect")} />
-      <div className="flex flex-wrap items-center gap-2 text-sm">
+      <div className="kq-fill-row text-sm">
         <span className="mr-auto text-muted-foreground">
           {mode === "operator"
             ? t("interconnect.platformScope")
@@ -483,7 +483,7 @@ function DashboardContent({
           onLink={(id) => setSelection({ kind: "link", id })}
         />
       )}
-      <div className="flex flex-wrap items-center gap-2">
+      <div className="kq-fill-row">
         <h2 className="mr-auto font-semibold">{t("interconnect.distributions")}</h2>
         {(
           [
@@ -556,7 +556,7 @@ function DashboardContent({
         className="rounded-xl border border-border bg-card"
         aria-label={t("interconnect.details")}
       >
-        <div className="flex flex-wrap items-center gap-2 border-b border-border p-4">
+        <div className="kq-fill-row border-b border-border p-4">
           <h2 className="mr-auto font-semibold">{t("interconnect.details")}</h2>
           {(
             [
@@ -576,7 +576,7 @@ function DashboardContent({
             </Button>
           ))}
         </div>
-        <div className="flex flex-wrap items-center gap-2 border-b border-border p-4 text-sm">
+        <div className="kq-fill-row border-b border-border p-4 text-sm">
           <span>{t("interconnect.filter")}</span>
           <NativeSelect
             aria-label={t("interconnect.filterCenter")}

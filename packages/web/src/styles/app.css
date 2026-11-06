@@ -118,6 +118,18 @@
     "Courier New", monospace;
 }
 
+/* Opt in for controls/actions only; utilities can keep icon buttons fixed. */
+@layer components {
+  .kq-fill-row {
+    @apply flex min-w-0 flex-wrap items-center gap-2;
+  }
+
+  .kq-fill-row > :where(*) {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+}
+
 @layer base {
   * {
     border-color: var(--border);

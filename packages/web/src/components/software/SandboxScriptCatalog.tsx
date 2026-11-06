@@ -85,7 +85,7 @@ export function SandboxScriptCatalog({ embedded = false }: { embedded?: boolean 
         />
       )}
 
-      <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_220px]">
+      <div className="grid gap-3 sm:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]">
         <label htmlFor="sandbox-script-search" className="grid gap-1 text-xs text-muted-foreground">
           <span>{t("sandbox.catalog.search")}</span>
           <SearchInput
@@ -197,7 +197,7 @@ export function SandboxScriptCatalog({ embedded = false }: { embedded?: boolean 
                     <div className="tabular-nums">{Object.keys(script.payload.outputs).length}</div>
                   </div>
                 </div>
-                <div className={`mt-auto flex justify-end pt-1 ${cardActionLayerClass}`}>
+                <div className={`mt-auto kq-fill-row pt-1 ${cardActionLayerClass}`}>
                   <Button asChild variant="outline" size="sm">
                     <Link to="/software/scripts/$scriptId" params={{ scriptId: script.id }}>
                       {t("sandbox.catalog.open")}

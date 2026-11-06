@@ -78,9 +78,9 @@ function Directory({ mode, orgId }: { mode: Mode; orgId: string | null }) {
   return (
     <PageShell data-testid="compute-providers-page">
       <PageHeader title={title} />
-      <div className="flex flex-wrap items-center gap-2">
+      <div className="kq-fill-row">
         <form
-          className="flex min-w-0 flex-1 gap-2"
+          className="flex min-w-0 basis-full gap-2 sm:basis-80"
           onSubmit={(event) => {
             event.preventDefault();
             setSearch(String(new FormData(event.currentTarget).get("search") ?? "").trim());
@@ -95,7 +95,7 @@ function Directory({ mode, orgId }: { mode: Mode; orgId: string | null }) {
             aria-label={t("providers.search")}
             placeholder={t("providers.search")}
             maxLength={255}
-            className="max-w-sm"
+            className="min-w-0 flex-1"
           />
           <Button type="submit" variant="outline">
             {t("providers.searchButton")}
