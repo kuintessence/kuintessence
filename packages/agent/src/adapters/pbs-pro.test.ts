@@ -575,14 +575,13 @@ describe("PbsProAdapter.status", () => {
     expect(r.exitCode).toBe(1);
   });
 
-  test("qstat non-zero exit -> failed", async () => {
+  test("qstat failure remains an unknown observation", async () => {
     const { spawner } = mockSpawner([
       { exitCode: 1, stdout: "", stderr: "Unknown job" },
       { exitCode: 1, stdout: "", stderr: "Unknown job" },
     ]);
     const adapter = new PbsProAdapter("19.0.0", { spawner });
-    const r = await adapter.status("12345.server");
-    expect(r.status).toBe("failed");
+    await expect(adapter.status("12345.server")).rejects.toThrow("no data");
   });
 
   test("falls back to qstat -x for finished jobs", async () => {
@@ -597,18 +596,16 @@ describe("PbsProAdapter.status", () => {
     expect(r.exitCode).toBe(0);
   });
 
-  test("qstat returns non-JSON -> failed", async () => {
+  test("invalid qstat response is retried", async () => {
     const { spawner } = mockSpawner([
       { exitCode: 0, stdout: "not json at all" },
       { exitCode: 0, stdout: "not json either" },
     ]);
     const adapter = new PbsProAdapter("19.0.0", { spawner });
-    const r = await adapter.status("12345.server");
-    expect(r.status).toBe("failed");
-    expect(r.message).toContain("non-JSON");
+    await expect(adapter.status("12345.server")).rejects.toThrow("non-JSON");
   });
 
-  test("uses first job in Jobs map when key doesn't match exactly", async () => {
+  test("matches the original short job id to its server-qualified identity", async () => {
     // PBS Pro may include full server suffix in keys even if user queries with short id
     const stdout = JSON.stringify({
       Jobs: { "12345.pbs-server": { job_state: "R" } },
@@ -686,4 +683,44 @@ describe("PbsProAdapter.inspectComputeHealth", () => {
       reason: "invalid_scheduler_state",
     });
   });
+});
+
+test("submission recovery includes PBS history and rejects unrelated status records", async () => {
+  const { spawner, calls } = mockSpawner([
+    {
+      exitCode: 0,
+      stdout: JSON.stringify({
+        Jobs: { "42.server": { job_state: "F", Variable_List: "KQ_JOB_ID=original" } },
+      }),
+    },
+    {
+      exitCode: 0,
+      stdout: JSON.stringify({ Jobs: { "other.server": { job_state: "F", Exit_status: 0 } } }),
+    },
+  ]);
+  const adapter = new PbsProAdapter("19.0.0", { spawner });
+  expect(
+    await adapter.findByKuintessenceJobId({ jobId: "original", submittedAfterUnixMs: Date.now() }),
+  ).toEqual({ status: "found", schedulerJobId: "42.server" });
+  expect(calls[0]).toEqual(["qstat", "-x", "-f", "-F", "json"]);
+  await expect(adapter.status("42.server")).rejects.toThrow("not found");
+});
+
+test("a PBS cancellation acknowledgement alone does not prove execution has stopped", async () => {
+  const { spawner } = mockSpawner([
+    {
+      exitCode: 0,
+      stdout: JSON.stringify({ Jobs: { "12345.server": { job_state: "E", Exit_status: 0 } } }),
+    },
+    {
+      exitCode: 0,
+      stdout: JSON.stringify({ Jobs: { "12345.server": { job_state: "F", Exit_status: 0 } } }),
+    },
+    { exitCode: 1, stdout: "", stderr: "offline" },
+    { exitCode: 1, stdout: "", stderr: "offline" },
+  ]);
+  const adapter = new PbsProAdapter("19.0.0", { spawner });
+  expect(await adapter.confirmStopped("12345.server")).toBe(false);
+  expect(await adapter.confirmStopped("12345.server")).toBe(true);
+  await expect(adapter.confirmStopped("12345.server")).rejects.toThrow();
 });

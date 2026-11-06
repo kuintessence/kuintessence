@@ -93,7 +93,7 @@ import { readGpuMetrics as defaultReadGpuMetrics, type GpuMetric } from "./monit
 import { readMetrics } from "./monitor/metrics";
 import { createCachedSchedulerQueueDepthReader } from "./monitor/queue-depth";
 import type { ExpectedOutput } from "./output-collector";
-import type { ActiveRemoteJobs } from "./queue/active-remote-jobs";
+import { type ActiveRemoteJobs, jsonToPreparedRemoteJob } from "./queue/active-remote-jobs";
 import {
   FederationDispatchReceiptSchema,
   federationDispatchReceipt,
@@ -691,6 +691,7 @@ export class AgentStream {
     { dispatch: DispatchJob; controller: AbortController }
   >();
   private readonly federationSpecs = new WeakSet<JobSpec>();
+  private schedulerRecovery: Promise<void> | undefined;
   private readonly federationExecution = new FederationExecutionClient((request) => {
     if (
       !this.connected ||
@@ -838,7 +839,7 @@ export class AgentStream {
       sleep: deps.jobSleep,
       collectOutputs: deps.collectOutputs,
       ensureWorkingDir: deps.ensureWorkingDir,
-      onSchedulerSubmitting: async (spec) => {
+      onSchedulerSubmitting: async (spec, expectedOutputs) => {
         await this.cleanupIntents?.recordSchedulerSubmitting(
           spec.jobId,
           schedulerLookupForSpec(spec),
@@ -870,20 +871,39 @@ export class AgentStream {
           const dispatchId = this.dispatchIdsByJob.get(spec.jobId);
           if (!dispatchId || !this.inboundAcks)
             throw new Error("Federation dispatch receipt is missing");
-          await this.inboundAcks.markSubmissionStarted(dispatchId);
+          await this.inboundAcks.markSubmissionStarted(dispatchId, { spec, expectedOutputs });
           pending.controller.signal.throwIfAborted();
           this.lifecycleController.signal.throwIfAborted();
           if (!grant || grant.expiresAt <= Date.now())
             throw new Error("Federation execution grant expired before submission");
         }
       },
+      onSubmissionUncertain: async (spec, err) => {
+        if (!this.federationSpecs.has(spec)) return false;
+        this.federationDispatches.get(spec.jobId)?.controller.abort();
+        this.federationDispatches.delete(spec.jobId);
+        this.logger.warn(
+          { err, jobId: spec.jobId },
+          "Retaining uncertain federation submission for reconciliation",
+        );
+        return true;
+      },
       onQueueValidationShadowRejection: (failureCode) =>
         this.enqueueQueueValidationShadowRejection(failureCode),
       onSchedulerSubmitted: async (spec, schedulerJobId, expectedOutputs) => {
         try {
           await this.cleanupIntents?.recordSchedulerSubmitted(spec.jobId, schedulerJobId);
-          await this.activeRemoteJobs?.recordSubmitted({ spec, schedulerJobId, expectedOutputs });
+          await this.activeRemoteJobs?.recordSubmitted({
+            spec,
+            schedulerJobId,
+            expectedOutputs,
+            dispatchId: this.dispatchIdsByJob.get(spec.jobId),
+          });
         } catch (err) {
+          if (this.federationSpecs.has(spec)) {
+            this.unreconciledSubmittedJobs.set(spec.jobId, schedulerJobId);
+            throw err;
+          }
           const recoveryErrors: unknown[] = [err];
           try {
             await deps.adapter.cancel(schedulerJobId);
@@ -1075,6 +1095,7 @@ export class AgentStream {
 
   async start(): Promise<void> {
     await this.recoverSoftwareOperations();
+    await this.reconcileFederationSubmissions();
     await this.recoverOrphanedCleanupIntents();
     await this.recoverActiveRemoteJobs();
     while (this.running) {
@@ -1133,6 +1154,7 @@ export class AgentStream {
         pending = this.softwareOperationQueue;
         await Promise.all([
           pending,
+          this.schedulerRecovery,
           ...this.pendingSoftwareResultSpills,
           ...this.pendingSpackPreparations,
           ...this.pendingSpackLoadCleanups,
@@ -1184,16 +1206,125 @@ export class AgentStream {
     });
   }
 
+  private reconcileFederationSubmissions(): Promise<void> {
+    if (this.schedulerRecovery) return this.schedulerRecovery;
+    const recover = async () => {
+      if (!this.inboundAcks || !this.activeRemoteJobs || !this.running) return;
+      const pending = await this.inboundAcks.pendingInbound();
+      const active = new Map(
+        (await this.activeRemoteJobs.listActive()).map((job) => [job.jobId, job]),
+      );
+      for (const row of pending) {
+        if (!this.running) return;
+        if (
+          row.payload.federationExecution !== true ||
+          row.payload.federationSubmissionStarted !== true ||
+          this.pool.get(row.jobId) ||
+          this.federationDispatches.has(row.jobId)
+        )
+          continue;
+        try {
+          const receipt = FederationDispatchReceiptSchema.parse(row.payload.federationReceipt);
+          if (row.dispatchId !== `${row.jobId}:${receipt.epoch}`)
+            throw new Error("Federation submission receipt identity is invalid");
+          this.dispatchIdsByJob.set(row.jobId, row.dispatchId);
+          const allowed = await this.isDispatchEpochAllowed(row.jobId, receipt.epoch);
+          const prepared = jsonToPreparedRemoteJob(row.payload.federationSubmission);
+          if (prepared.spec.jobId !== row.jobId)
+            throw new Error("Prepared federation job identity is invalid");
+          const intent = await this.findCleanupIntent(row.jobId);
+          const revoked = !allowed || intent?.revoked === true;
+          if (active.has(row.jobId) && !revoked) continue;
+          let schedulerJobId =
+            active.get(row.jobId)?.schedulerJobId ??
+            intent?.schedulerJobId ??
+            this.unreconciledSubmittedJobs.get(row.jobId);
+          if (!schedulerJobId) {
+            const lookup = await this.deps.adapter.findByKuintessenceJobId?.({
+              ...schedulerLookupForSpec(prepared.spec),
+              submittedAfterUnixMs: row.receivedAt.getTime(),
+            });
+            if (lookup?.status !== "found") continue;
+            schedulerJobId = lookup.schedulerJobId;
+          }
+          if (!this.running) return;
+          await this.activeRemoteJobs.recordSubmitted({
+            ...prepared,
+            schedulerJobId,
+            dispatchId: row.dispatchId,
+          });
+          await this.cleanupIntents?.recordSchedulerSubmitted(row.jobId, schedulerJobId);
+          this.unreconciledSubmittedJobs.delete(row.jobId);
+          if (revoked) {
+            await this.cleanupIntents?.recordRevoked(row.jobId, {
+              reason: "JOB_CANCELLED",
+              destroyRestrictedWorkRoot: false,
+            });
+            await this.deps.adapter.prepareResume?.(prepared.spec, schedulerJobId);
+            await this.cancelAndConfirmStopped(schedulerJobId);
+            await this.onJobTransition({
+              jobId: row.jobId,
+              status: "cancelled",
+              schedulerJobId,
+              workingDir: prepared.spec.workingDir,
+            });
+            const cleanup = await this.findCleanupIntent(row.jobId);
+            if (cleanup) await this.cleanupCancellationIntent(cleanup);
+            await this.activeRemoteJobs.markFinished(row.jobId);
+            await this.cleanupIntents?.clear(row.jobId);
+          }
+        } catch (err) {
+          this.logger.warn(
+            { err, jobId: row.jobId },
+            "Federation submission reconciliation remains pending",
+          );
+        }
+      }
+      await this.recoverActiveRemoteJobs();
+    };
+    const pending = recover()
+      .catch((err: unknown) => {
+        this.logger.error({ err }, "Failed to reconcile federation submissions");
+      })
+      .finally(() => {
+        this.schedulerRecovery = undefined;
+      });
+    this.schedulerRecovery = pending;
+    return pending;
+  }
+
+  private async cancelAndConfirmStopped(schedulerJobId: string): Promise<void> {
+    let cancelError: unknown;
+    try {
+      await this.deps.adapter.cancel(schedulerJobId);
+    } catch (err) {
+      cancelError = err;
+    }
+    if (await this.deps.adapter.confirmStopped?.(schedulerJobId)) return;
+    throw new AggregateError(
+      cancelError ? [cancelError] : [],
+      "Scheduler stop is not confirmed; retaining job inputs",
+    );
+  }
+
   private async recoverActiveRemoteJobs(): Promise<void> {
     if (!this.activeRemoteJobs) return;
     try {
       const active = await this.activeRemoteJobs.listActive();
+      const pending = (await this.inboundAcks?.pendingInbound()) ?? [];
       const revokedJobIds = new Set(
         ((await this.cleanupIntents?.list()) ?? [])
           .filter((intent) => intent.revoked)
           .map((intent) => intent.jobId),
       );
+      let recovered = 0;
       for (const job of active) {
+        if (!this.running) return;
+        if (this.pool.get(job.jobId)) continue;
+        const receipts = pending.filter((row) => row.jobId === job.jobId);
+        const dispatchId =
+          job.dispatchId ?? (receipts.length === 1 ? receipts[0]?.dispatchId : undefined);
+        if (dispatchId) this.dispatchIdsByJob.set(job.jobId, dispatchId);
         if (
           revokedJobIds.has(job.jobId) ||
           ((await this.revocationTombstones?.revokedEpoch(job.jobId)) ?? 0) > 0
@@ -1214,12 +1345,14 @@ export class AgentStream {
             protectedPath: true,
           })),
         );
+        if (!this.running) return;
         await this.pool.resume(spec, job.schedulerJobId, {
           expectedOutputs: job.expectedOutputs,
         });
+        recovered++;
       }
-      if (active.length > 0) {
-        this.logger.info({ count: active.length }, "Recovered active remote jobs");
+      if (recovered > 0) {
+        this.logger.info({ count: recovered }, "Recovered active remote jobs");
       }
     } catch (err) {
       this.logger.error({ err }, "Failed to recover active remote jobs");
@@ -1229,12 +1362,19 @@ export class AgentStream {
   private async recoverOrphanedCleanupIntents(): Promise<void> {
     if (!this.cleanupIntents) return;
     try {
-      const [intents, active] = await Promise.all([
+      const [intents, active, pending] = await Promise.all([
         this.cleanupIntents.list(),
         this.activeRemoteJobs?.listActive() ?? Promise.resolve([]),
+        this.inboundAcks?.pendingInbound() ?? Promise.resolve([]),
       ]);
       const activeJobIds = new Set(active.map((job) => job.jobId));
+      const uncertainJobs = new Set(
+        pending
+          .filter((row) => row.payload.federationSubmissionStarted === true)
+          .map((row) => row.jobId),
+      );
       for (const intent of intents) {
+        if (uncertainJobs.has(intent.jobId)) continue;
         if (activeJobIds.has(intent.jobId) && !intent.revoked) continue;
         try {
           const find = this.deps.adapter.findByKuintessenceJobId;
@@ -1686,8 +1826,8 @@ export class AgentStream {
           if (this.preparingSpackDispatches.has(row.dispatchId)) continue;
           if (this.federationDispatches.has(row.jobId)) continue;
           const haveLocalRunner = this.pool.get(row.jobId) !== undefined;
-          if (row.payload.federationExecution === true && !haveLocalRunner) {
-            this.recoverFederationDispatch(row);
+          if (row.payload.federationExecution === true) {
+            if (!haveLocalRunner) this.recoverFederationDispatch(row);
             continue;
           }
           const replayReport: JobStatusReport = haveLocalRunner
@@ -2462,6 +2602,7 @@ export class AgentStream {
         return;
       }
       this.enqueueHeartbeat();
+      void this.reconcileFederationSubmissions();
     }, this.deps.heartbeatIntervalMs);
     this.heartbeatTimer = { owner, handle };
   }
@@ -3457,7 +3598,7 @@ export class AgentStream {
 
   private recoverFederationDispatch(row: PendingInboundRow): void {
     if (this.recoveringFederationDispatches.has(row.jobId)) return;
-    // shortcut: ambiguous submissions stay pending until scheduler reconciliation can prove their outcome.
+    // Submission reconciliation owns these receipts; preparation replay must never submit them again.
     if (row.payload.federationSubmissionStarted === true) {
       this.logger.warn(
         { jobId: row.jobId },
@@ -3531,7 +3672,9 @@ export class AgentStream {
   }
 
   private federationExecutionCapable(): boolean {
-    return Boolean(this.inboundAcks && this.revocationTombstones && this.cleanupIntents);
+    return Boolean(
+      this.inboundAcks && this.revocationTombstones && this.cleanupIntents && this.activeRemoteJobs,
+    );
   }
 
   private async renewFederationExecution(dispatch: DispatchJob) {

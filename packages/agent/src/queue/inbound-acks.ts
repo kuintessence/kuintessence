@@ -33,6 +33,7 @@
 
 import { inboundDispatchPending, type SqliteDb } from "@kuintessence/db";
 import { asc, eq, isNull, sql } from "drizzle-orm";
+import { type PreparedRemoteJob, preparedRemoteJobToJson } from "./active-remote-jobs";
 
 export interface PersistInboundInput {
   /** Stable id of the DispatchJob delivery. Falls back to jobId when proto omits one. */
@@ -106,14 +107,15 @@ export class InboundAcks {
   }
 
   /** Survives cleanup-journal deletion: an ambiguous submission must never be replayed. */
-  async markSubmissionStarted(dispatchId: string): Promise<void> {
+  async markSubmissionStarted(dispatchId: string, prepared?: PreparedRemoteJob): Promise<void> {
+    const submission = prepared ? JSON.stringify(preparedRemoteJobToJson(prepared)) : "null";
     const updated = await this.db
       .update(inboundDispatchPending)
       .set({
-        payload: sql`json_set(${inboundDispatchPending.payload}, '$.federationSubmissionStarted', json('true'))`,
+        payload: sql`json_set(${inboundDispatchPending.payload}, '$.federationSubmissionStarted', json('true'), '$.federationSubmission', json(${submission}))`,
       })
       .where(
-        sql`${inboundDispatchPending.dispatchId} = ${dispatchId} AND ${inboundDispatchPending.ackedAt} IS NULL`,
+        sql`${inboundDispatchPending.dispatchId} = ${dispatchId} AND ${inboundDispatchPending.ackedAt} IS NULL AND coalesce(json_extract(${inboundDispatchPending.payload}, '$.federationSubmissionStarted'), 0) = 0`,
       )
       .returning({ dispatchId: inboundDispatchPending.dispatchId });
     if (updated.length !== 1) throw new Error("Pending federation dispatch receipt is missing");

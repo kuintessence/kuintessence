@@ -63,3 +63,64 @@ describe("ActiveRemoteJobs", () => {
     ]);
   });
 });
+
+test("recovers Sandbox identity, isolation and output-validation metadata without dropping fields", async () => {
+  const db = createSqliteDb(":memory:");
+  const store = new ActiveRemoteJobs(db);
+  const spec = {
+    jobId: "job",
+    name: "sandbox",
+    command: "",
+    cpus: 1,
+    memoryMb: 128,
+    gpus: 0,
+    wallTimeSec: 60,
+    workingDir: "/managed/job",
+    envVars: {},
+    schedulerName: "kq-job",
+    queueTargetMode: "named" as const,
+    queueValidationMode: "enforce" as const,
+    sandbox: {
+      language: "python" as const,
+      entrypoint: "main.py",
+      scriptContent: "print('ok')",
+      scriptHostPath: "/managed/job/main.py",
+      contextHostPath: "/managed/job/context.json",
+      runtimeKind: "OCI" as const,
+      runtimePath: `registry.test/runtime@sha256:${"a".repeat(64)}`,
+      executionMode: "RootImpersonation" as const,
+      identity: {
+        backend: "Kubernetes" as const,
+        mode: "MappedAccount" as const,
+        accountId: "00000000-0000-0000-0000-000000000001",
+        namespace: "original-ns",
+        serviceAccount: "original-account",
+      },
+      mounts: [
+        {
+          descriptor: "output",
+          ioType: "File" as const,
+          mode: "WriteOnly" as const,
+          relativePath: "output",
+          containerPath: "/kq/outputs/output",
+          hostPath: "/managed/job/output",
+          sizeLimitBytes: 100,
+          required: true,
+          batchEntries: [],
+        },
+      ],
+      limits: { pids: 8, outputBytes: 100, logBytes: 100 },
+      kubernetesArtifactPvc: "original-pvc",
+    },
+  };
+  await store.recordSubmitted({
+    spec,
+    schedulerJobId: "scheduler",
+    dispatchId: "job:7",
+    expectedOutputs: [],
+  });
+  const [restored] = await new ActiveRemoteJobs(db).listActive();
+  expect(restored?.dispatchId).toBe("job:7");
+  expect(restored?.spec).toMatchObject(spec);
+  expect(restored?.spec.sandbox?.mounts).toHaveLength(1);
+});

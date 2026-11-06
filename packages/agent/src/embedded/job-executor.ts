@@ -63,7 +63,12 @@ export interface JobRunnerDeps {
     schedulerJobId: string,
     expectedOutputs: ExpectedOutput[],
   ) => void | Promise<void>;
-  onSchedulerSubmitting?: (spec: JobSpec) => void | Promise<void>;
+  onSchedulerSubmitting?: (
+    spec: JobSpec,
+    expectedOutputs: ExpectedOutput[],
+  ) => void | Promise<void>;
+  /** True retains a durable submission for reconciliation instead of reporting failure/cleaning inputs. */
+  onSubmissionUncertain?: (spec: JobSpec, error: unknown) => Promise<boolean>;
   onQueueValidationShadowRejection?: (failureCode: QueueFailureCode) => void | Promise<void>;
   onJobFinished?: (jobId: string) => void | Promise<void>;
   validateSandboxOutputs?: (
@@ -107,7 +112,7 @@ export class JobRunner {
 
     let attempt: SubmissionAttempt;
     try {
-      attempt = await this.submitIfReady(spec);
+      attempt = await this.submitIfReady(spec, expectedOutputs);
     } catch (err) {
       if (this.stopRequested && !this.userCancelRequested) {
         this.markSchedulerSubmissionSettled();
@@ -153,7 +158,10 @@ export class JobRunner {
     return schedulerJobId;
   }
 
-  private async submitIfReady(spec: JobSpec): Promise<SubmissionAttempt> {
+  private async submitIfReady(
+    spec: JobSpec,
+    expectedOutputs: ExpectedOutput[],
+  ): Promise<SubmissionAttempt> {
     const { adapter, ensureWorkingDir } = this.deps;
     let interruption = this.submissionInterruption();
     if (interruption) return interruption;
@@ -173,7 +181,7 @@ export class JobRunner {
     await this.validateQueueTarget(spec);
     interruption = this.submissionInterruption();
     if (interruption) return interruption;
-    await this.deps.onSchedulerSubmitting?.(spec);
+    await this.deps.onSchedulerSubmitting?.(spec, expectedOutputs);
     interruption = this.submissionInterruption();
     if (interruption) return interruption;
     this.schedulerSubmissionStarted = true;
@@ -200,8 +208,10 @@ export class JobRunner {
   }
 
   private async reportSubmissionFailure(spec: JobSpec, err: unknown): Promise<null> {
-    this.logger.error({ jobId: spec.jobId, err }, "Job submission failed");
     try {
+      if (this.schedulerSubmissionStarted && (await this.deps.onSubmissionUncertain?.(spec, err)))
+        return null;
+      this.logger.error({ jobId: spec.jobId, err }, "Job submission failed");
       await this.deps.onStatusUpdate({
         jobId: spec.jobId,
         status: "failed",
@@ -265,7 +275,7 @@ export class JobRunner {
     this.schedulerJobId = schedulerJobId;
     await this.deps.adapter.prepareResume?.(spec, schedulerJobId);
     this.logger.info({ jobId: spec.jobId, schedulerJobId }, "Resuming scheduler job polling");
-    await this.pollUntilTerminal(spec, schedulerJobId, expectedOutputs);
+    await this.pollUntilTerminal(spec, schedulerJobId, expectedOutputs, true);
     return schedulerJobId;
   }
 
@@ -273,10 +283,13 @@ export class JobRunner {
     spec: JobSpec,
     schedulerJobId: string,
     expectedOutputs: ExpectedOutput[],
+    reportInitialStatus = false,
   ): Promise<void> {
     const { adapter, onStatusUpdate, pollIntervalMs = 10_000 } = this.deps;
     const sleep = this.deps.sleep ?? ((ms: number) => Bun.sleep(ms));
-    let lastStatus: JobStatusReport["status"] = "queued";
+    let lastStatus: JobStatusReport["status"] | undefined = reportInitialStatus
+      ? undefined
+      : "queued";
     // Also track node/reason: a queued job's `reason` ("why isn't it running")
     // and a running job's `node` often change *without* a status transition, and
     // the Server should see those updates too — emit on any of the three changing.

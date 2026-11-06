@@ -528,19 +528,16 @@ describe("K8sAdapter.status", () => {
     expect(r.status).toBe("queued");
   });
 
-  test("kubectl get returns non-zero exit -> failed", async () => {
+  test("kubectl failure remains an unknown observation", async () => {
     const { spawner } = mockSpawner([{ exitCode: 1, stdout: "", stderr: "not found" }]);
     const adapter = new K8sAdapter("v1.28.0", { spawner, namespace: "kq-ns" });
-    const r = await adapter.status("kq-job-abc-123");
-    expect(r.status).toBe("failed");
+    await expect(adapter.status("kq-job-abc-123")).rejects.toThrow("no data");
   });
 
-  test("kubectl returns non-JSON -> failed", async () => {
+  test("invalid kubectl response is retried", async () => {
     const { spawner } = mockSpawner([{ exitCode: 0, stdout: "Error from server" }]);
     const adapter = new K8sAdapter("v1.28.0", { spawner, namespace: "kq-ns" });
-    const r = await adapter.status("kq-job-abc-123");
-    expect(r.status).toBe("failed");
-    expect(r.message).toContain("non-JSON");
+    await expect(adapter.status("kq-job-abc-123")).rejects.toThrow("non-JSON");
   });
 });
 

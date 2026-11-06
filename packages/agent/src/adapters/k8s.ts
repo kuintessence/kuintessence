@@ -810,14 +810,14 @@ export class K8sAdapter implements SchedulerAdapter {
       "json",
     ]);
     if (exitCode !== 0 || !stdout.trim()) {
-      return { status: "failed", message: "kubectl get returned no data" };
+      throw new Error("kubectl get returned no data");
     }
 
     let parsed: unknown;
     try {
       parsed = JSON.parse(stdout);
     } catch {
-      return { status: "failed", message: "kubectl returned non-JSON" };
+      throw new Error("kubectl returned non-JSON");
     }
 
     const data = parsed as {

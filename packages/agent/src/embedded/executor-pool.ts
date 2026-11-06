@@ -11,6 +11,7 @@ export interface ExecutorPoolDeps {
   ensureWorkingDir?: JobRunnerDeps["ensureWorkingDir"];
   onSchedulerSubmitted?: JobRunnerDeps["onSchedulerSubmitted"];
   onSchedulerSubmitting?: JobRunnerDeps["onSchedulerSubmitting"];
+  onSubmissionUncertain?: JobRunnerDeps["onSubmissionUncertain"];
   onQueueValidationShadowRejection?: JobRunnerDeps["onQueueValidationShadowRejection"];
   onJobFinished?: JobRunnerDeps["onJobFinished"];
   validateSandboxOutputs?: JobRunnerDeps["validateSandboxOutputs"];
@@ -52,6 +53,7 @@ export class ExecutorPool {
       ensureWorkingDir: this.deps.ensureWorkingDir,
       onSchedulerSubmitted: this.deps.onSchedulerSubmitted,
       onSchedulerSubmitting: this.deps.onSchedulerSubmitting,
+      onSubmissionUncertain: this.deps.onSubmissionUncertain,
       onQueueValidationShadowRejection: this.deps.onQueueValidationShadowRejection,
       onJobFinished: this.deps.onJobFinished,
       validateSandboxOutputs: this.deps.validateSandboxOutputs,
@@ -88,6 +90,7 @@ export class ExecutorPool {
       ensureWorkingDir: this.deps.ensureWorkingDir,
       onSchedulerSubmitted: this.deps.onSchedulerSubmitted,
       onSchedulerSubmitting: this.deps.onSchedulerSubmitting,
+      onSubmissionUncertain: this.deps.onSubmissionUncertain,
       onQueueValidationShadowRejection: this.deps.onQueueValidationShadowRejection,
       onJobFinished: this.deps.onJobFinished,
       validateSandboxOutputs: this.deps.validateSandboxOutputs,

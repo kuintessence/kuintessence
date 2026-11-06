@@ -559,20 +559,16 @@ describe("TorqueAdapter.status (plain-text qstat -f parser)", () => {
     expect(r.exitCode).toBe(2);
   });
 
-  test("qstat non-zero exit -> failed", async () => {
+  test("qstat failure remains an unknown observation", async () => {
     const { spawner } = mockSpawner([{ exitCode: 1, stdout: "", stderr: "Unknown job id" }]);
     const adapter = new TorqueAdapter("6.1.0", { spawner });
-    const r = await adapter.status("99999.torque-head");
-    expect(r.status).toBe("failed");
-    expect(r.message).toContain("no data");
+    await expect(adapter.status("99999.torque-head")).rejects.toThrow("no data");
   });
 
-  test("unknown state -> failed with state in message", async () => {
+  test("unknown state is retried", async () => {
     const { spawner } = mockSpawner([{ exitCode: 0, stdout: makeQstatOutput("X") }]);
     const adapter = new TorqueAdapter("6.1.0", { spawner });
-    const r = await adapter.status("99999.torque-head");
-    expect(r.status).toBe("failed");
-    expect(r.message).toContain("X");
+    await expect(adapter.status("99999.torque-head")).rejects.toThrow("X");
   });
 });
 

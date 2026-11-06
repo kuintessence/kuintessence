@@ -1,19 +1,47 @@
 import { activeRemoteJobs, type SqliteDb } from "@kuintessence/db";
+import { QueueTargetModeSchema, QueueValidationModeSchema } from "@kuintessence/shared";
 import { asc, eq } from "drizzle-orm";
+import { z } from "zod";
 import type { JobSpec } from "../adapters/base";
 import type { ExpectedOutput, ProtectedPathMount } from "../output-collector";
+import { SandboxJobSpecSchema } from "./sandbox-job-spec";
 
 export interface ActiveRemoteJobRecord {
   jobId: string;
   schedulerJobId: string;
+  dispatchId?: string;
   spec: JobSpec;
   expectedOutputs: ExpectedOutput[];
 }
 
-export interface RecordSubmittedInput {
+export interface PreparedRemoteJob {
   spec: JobSpec;
-  schedulerJobId: string;
   expectedOutputs: ExpectedOutput[];
+}
+
+export interface RecordSubmittedInput extends PreparedRemoteJob {
+  schedulerJobId: string;
+  dispatchId?: string;
+}
+
+export function preparedRemoteJobToJson(input: PreparedRemoteJob): Record<string, unknown> {
+  return {
+    spec: jobSpecToJson(input.spec),
+    expectedOutputs: input.expectedOutputs.map(expectedOutputToJson),
+  };
+}
+
+export function jsonToPreparedRemoteJob(value: unknown): PreparedRemoteJob {
+  const parsed = z
+    .object({
+      spec: z.record(z.string(), z.unknown()),
+      expectedOutputs: z.array(z.record(z.string(), z.unknown())),
+    })
+    .parse(value);
+  return {
+    spec: jsonToJobSpec(parsed.spec),
+    expectedOutputs: parsed.expectedOutputs.map(jsonToExpectedOutput),
+  };
 }
 
 export class ActiveRemoteJobs {
@@ -26,7 +54,7 @@ export class ActiveRemoteJobs {
       .values({
         jobId: input.spec.jobId,
         schedulerJobId: input.schedulerJobId,
-        spec: jobSpecToJson(input.spec),
+        spec: { ...jobSpecToJson(input.spec), dispatchId: input.dispatchId },
         expectedOutputs: input.expectedOutputs.map(expectedOutputToJson),
         createdAt: now,
         updatedAt: now,
@@ -35,7 +63,7 @@ export class ActiveRemoteJobs {
         target: activeRemoteJobs.jobId,
         set: {
           schedulerJobId: input.schedulerJobId,
-          spec: jobSpecToJson(input.spec),
+          spec: { ...jobSpecToJson(input.spec), dispatchId: input.dispatchId },
           expectedOutputs: input.expectedOutputs.map(expectedOutputToJson),
           updatedAt: now,
         },
@@ -50,6 +78,7 @@ export class ActiveRemoteJobs {
     return rows.map((row) => ({
       jobId: row.jobId,
       schedulerJobId: row.schedulerJobId,
+      dispatchId: optionalString(row.spec.dispatchId),
       spec: jsonToJobSpec(row.spec),
       expectedOutputs: row.expectedOutputs.map(jsonToExpectedOutput),
     }));
@@ -61,23 +90,7 @@ export class ActiveRemoteJobs {
 }
 
 function jobSpecToJson(spec: JobSpec): Record<string, unknown> {
-  return {
-    jobId: spec.jobId,
-    name: spec.name,
-    command: spec.command,
-    cpus: spec.cpus,
-    memoryMb: spec.memoryMb,
-    gpus: spec.gpus,
-    wallTimeSec: spec.wallTimeSec,
-    workingDir: spec.workingDir,
-    envVars: spec.envVars,
-    queueName: spec.queueName,
-    qos: spec.qos,
-    stdinText: spec.stdinText,
-    restrictedNoEgress: spec.restrictedNoEgress,
-    dataDeliveryCleanup: spec.dataDeliveryCleanup?.map((delivery) => ({ ...delivery })),
-    licensedMaterialCleanup: spec.licensedMaterialCleanup?.map((mount) => ({ ...mount })),
-  };
+  return { ...spec };
 }
 
 function expectedOutputToJson(output: ExpectedOutput): Record<string, unknown> {
@@ -103,6 +116,10 @@ function jsonToJobSpec(value: Record<string, unknown>): JobSpec {
     workingDir: requireString(value.workingDir, "workingDir"),
     envVars: jsonToStringMap(value.envVars),
     queueName: optionalString(value.queueName),
+    schedulerName: optionalString(value.schedulerName),
+    queueTargetMode: QueueTargetModeSchema.optional().parse(value.queueTargetMode),
+    queueValidationMode: QueueValidationModeSchema.optional().parse(value.queueValidationMode),
+    sandbox: SandboxJobSpecSchema.optional().parse(value.sandbox),
     qos: optionalString(value.qos),
     stdinText: optionalString(value.stdinText),
     restrictedNoEgress: value.restrictedNoEgress === true,

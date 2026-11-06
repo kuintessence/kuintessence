@@ -127,6 +127,7 @@ test("submission fence is durable, monotonic and cannot resurrect an acknowledge
   });
   await acks.markSubmissionStarted("job:1");
   const reopened = new InboundAcks(db);
+  await expect(reopened.markSubmissionStarted("job:1")).rejects.toThrow("receipt is missing");
   expect((await reopened.pendingInbound())[0]?.payload.federationSubmissionStarted).toBe(true);
   expect(await reopened.persistInbound({ dispatchId: "job:1", jobId: "job", payload: {} })).toBe(
     false,

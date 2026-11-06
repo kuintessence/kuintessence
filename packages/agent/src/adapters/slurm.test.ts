@@ -696,7 +696,7 @@ describe("SlurmAdapter — terminalStatusBackend: scontrol", () => {
     expect((await adapter.status("42")).status).toBe("running");
   });
 
-  test("scontrol non-zero exit -> failed with message", async () => {
+  test("scontrol failure remains an unknown observation", async () => {
     const { spawner } = mockSpawner([
       { exitCode: 0, stdout: "" }, // squeue empty
       { exitCode: 1, stdout: "", stderr: "Invalid job id specified" }, // scontrol
@@ -705,12 +705,10 @@ describe("SlurmAdapter — terminalStatusBackend: scontrol", () => {
       spawner,
       terminalStatusBackend: "scontrol",
     });
-    const r = await adapter.status("99");
-    expect(r.status).toBe("failed");
-    expect(r.message).toMatch(/scontrol show job failed/);
+    await expect(adapter.status("99")).rejects.toThrow("scontrol show job failed");
   });
 
-  test("scontrol output missing JobState -> failed with message", async () => {
+  test("missing JobState remains an unknown observation", async () => {
     const { spawner } = mockSpawner([
       { exitCode: 0, stdout: "" }, // squeue empty
       { exitCode: 0, stdout: "garbage output with no fields" }, // scontrol
@@ -719,9 +717,7 @@ describe("SlurmAdapter — terminalStatusBackend: scontrol", () => {
       spawner,
       terminalStatusBackend: "scontrol",
     });
-    const r = await adapter.status("77");
-    expect(r.status).toBe("failed");
-    expect(r.message).toMatch(/JobState/);
+    await expect(adapter.status("77")).rejects.toThrow("JobState");
   });
 });
 
@@ -1063,4 +1059,61 @@ describe("SlurmAdapter.status", () => {
     expect(r.status).toBe("failed");
     expect(r.exitCode).toBe(1);
   });
+});
+
+test("submission recovery finds a completed Slurm job by exact UUID in retained accounting", async () => {
+  const { spawner, calls } = mockSpawner([
+    { exitCode: 0, stdout: "" },
+    {
+      exitCode: 0,
+      stdout: "42|kq-job|KQ_JOB_ID=original|account\n43|other|KQ_JOB_ID=other|account\n",
+    },
+  ]);
+  const adapter = new SlurmAdapter("23.02.7", { spawner });
+  expect(
+    await adapter.findByKuintessenceJobId({
+      jobId: "original",
+      schedulerName: "kq-job",
+      schedulerAccount: "account",
+      submittedAfterUnixMs: Date.parse("2026-11-06T00:00:00Z"),
+    }),
+  ).toEqual({ status: "found", schedulerJobId: "42" });
+  expect(calls[1]).toContain("--allocations");
+  expect(calls[1]).toContain("2026-11-05");
+});
+
+test("unavailable Slurm accounting cannot prove an uncertain submission absent", async () => {
+  const { spawner } = mockSpawner([
+    { exitCode: 0, stdout: "" },
+    { exitCode: 1, stdout: "", stderr: "accounting unavailable" },
+  ]);
+  const adapter = new SlurmAdapter("23.02.7", { spawner });
+  expect(
+    await adapter.findByKuintessenceJobId({ jobId: "original", submittedAfterUnixMs: Date.now() }),
+  ).toMatchObject({ status: "indeterminate" });
+});
+
+test("an exact live Slurm job can be resumed without requiring accounting", async () => {
+  const { spawner, calls } = mockSpawner([
+    { exitCode: 0, stdout: "42|kq-original|KQ_JOB_ID=original|account\n" },
+  ]);
+  const adapter = new SlurmAdapter("23.02.7", { spawner });
+  expect(
+    await adapter.findByKuintessenceJobId({ jobId: "original", submittedAfterUnixMs: Date.now() }),
+  ).toEqual({ status: "found", schedulerJobId: "42" });
+  expect(calls).toHaveLength(1);
+});
+
+test("Slurm stop confirmation excludes resumable and unknown states", async () => {
+  const { spawner, calls } = mockSpawner([
+    { exitCode: 0, stdout: JSON.stringify({ jobs: [{ job_id: 42, job_state: "SPECIAL_EXIT" }] }) },
+    { exitCode: 0, stdout: JSON.stringify({ jobs: [{ job_id: 42, job_state: "UNKNOWN" }] }) },
+    { exitCode: 0, stdout: "" },
+    { exitCode: 0, stdout: "OUT_OF_MEMORY|1:0\n" },
+  ]);
+  const adapter = new SlurmAdapter("23.02.7", { spawner });
+  expect(await adapter.confirmStopped("42")).toBe(false);
+  await expect(adapter.confirmStopped("42")).rejects.toThrow("Unknown Slurm");
+  expect(await adapter.confirmStopped("42")).toBe(true);
+  expect(calls.at(-1)).toContain("--format=State%64,ExitCode");
 });

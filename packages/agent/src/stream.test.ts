@@ -8139,6 +8139,7 @@ describe("federation execution boundaries", () => {
       jobSleep: async () => {},
       logger: silent,
       inboundAcks: new InboundAcks(db),
+      activeRemoteJobs: new ActiveRemoteJobs(db),
       revocationTombstones: new JobRevocationTombstones(db),
       cleanupIntents: new JobCleanupIntents(db),
     });
@@ -8249,6 +8250,7 @@ test.each([
     heartbeatIntervalMs: 60_000,
     spackManager,
     inboundAcks: new InboundAcks(db),
+    activeRemoteJobs: new ActiveRemoteJobs(db),
     cleanupIntents: new JobCleanupIntents(db),
     revocationTombstones: new JobRevocationTombstones(db),
     outboundQueue: new OutboundQueue(db),
@@ -8318,6 +8320,7 @@ test.each([
     logger: silent,
     heartbeatIntervalMs: 60_000,
     inboundAcks: inbox,
+    activeRemoteJobs: new ActiveRemoteJobs(db),
     cleanupIntents: new JobCleanupIntents(db),
     revocationTombstones: new JobRevocationTombstones(db),
   });
@@ -8411,6 +8414,7 @@ test.each([
     heartbeatIntervalMs: 60_000,
     jobSleep: async () => {},
     inboundAcks: reopenedInbox,
+    activeRemoteJobs: new ActiveRemoteJobs(reopenedDb),
     cleanupIntents: new JobCleanupIntents(reopenedDb),
     revocationTombstones: new JobRevocationTombstones(reopenedDb),
   });
@@ -8447,3 +8451,130 @@ test.each([
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test.each([
+  "found",
+  "retry",
+  "revoked",
+  "revoked-pending",
+] as const)("reconciles a submission after abrupt Agent process exit: %s", async (outcome) => {
+  const root = await mkdtemp(join(tmpdir(), "kq-fed-crash-"));
+  const databasePath = join(root, "agent.sqlite");
+  const schedulerPath = join(root, "scheduler.json");
+  const jobId = crypto.randomUUID();
+  const child = Bun.spawn(
+    [
+      process.execPath,
+      new URL("../test/fixtures/federation-submission-crash.ts", import.meta.url).pathname,
+      databasePath,
+      jobId,
+      schedulerPath,
+    ],
+    { stdout: "pipe", stderr: "pipe", timeout: 10_000 },
+  );
+  const childError = new Response(child.stderr).text();
+  expect(await child.exited, await childError).toBe(73);
+  expect(JSON.parse(readFileSync(schedulerPath, "utf8"))).toEqual({
+    jobId,
+    schedulerJobId: "accepted-before-crash",
+  });
+  const sqlite = new Database(databasePath);
+  const db = drizzle(sqlite, { schema });
+  const inbox = new InboundAcks(db);
+  const active = new ActiveRemoteJobs(db);
+  const cleanup = new JobCleanupIntents(db);
+  const tombstones = new JobRevocationTombstones(db);
+  expect((await inbox.pendingInbound())[0]?.payload.federationSubmissionStarted).toBe(true);
+  expect(await active.listActive()).toHaveLength(0);
+  const revoked = outcome.startsWith("revoked");
+  if (revoked) await tombstones.record(jobId, 1);
+  let lookups = 0;
+  let available = outcome !== "retry";
+  let stopped = outcome !== "revoked-pending";
+  let submits = 0;
+  let cancels = 0;
+  let polls = 0;
+  const reports: JobStatusReport[] = [];
+  const stream = new AgentStream({
+    client: makePendingRegisteredClient(false, false, {
+      supported: true,
+      onMessage: async () => {},
+    }),
+    agentId: "agent",
+    siteName: "site",
+    heartbeatIntervalMs: 20,
+    logger: silent,
+    inboundAcks: inbox,
+    activeRemoteJobs: active,
+    cleanupIntents: cleanup,
+    revocationTombstones: tombstones,
+    jobSleep: async () => {},
+    adapter: {
+      type: "test",
+      version: "1",
+      findByKuintessenceJobId: async (lookup) => {
+        expect(lookup.jobId).toBe(jobId);
+        expect(lookup.submittedAfterUnixMs).toBeGreaterThan(0);
+        lookups++;
+        return available
+          ? { status: "found", schedulerJobId: "accepted-before-crash" }
+          : { status: "indeterminate", reason: "scheduler unavailable" };
+      },
+      submit: async () => {
+        submits++;
+        return { schedulerJobId: "duplicate" };
+      },
+      cancel: async () => {
+        cancels++;
+      },
+      confirmStopped: async () => stopped,
+      status: async (id) => {
+        expect(id).toBe("accepted-before-crash");
+        polls++;
+        if (polls === 1) throw new Error("temporary status outage");
+        return { status: "completed", exitCode: 0 };
+      },
+    },
+  });
+  stream.enqueueStatusUpdate = async (report) => {
+    reports.push(report);
+  };
+  activeStreams.push(stream);
+  const running = stream.start();
+  try {
+    if (revoked) {
+      if (!stopped) {
+        await waitForCondition(() => cancels > 0);
+        expect(reports).toEqual([]);
+        expect(await cleanup.list()).toHaveLength(1);
+        expect(await inbox.pendingInbound()).toHaveLength(1);
+        stopped = true;
+      }
+      await waitForCondition(() => reports.some((report) => report.status === "cancelled"));
+      await waitForCondition(async () => (await cleanup.list()).length === 0);
+      expect(polls).toBe(0);
+      expect(await inbox.pendingInbound()).toHaveLength(0);
+    } else {
+      if (outcome === "retry") {
+        await waitForCondition(() => lookups > 0);
+        expect(reports).toEqual([]);
+        expect(await cleanup.list()).toHaveLength(1);
+        available = true;
+      }
+      await waitForCondition(() => reports.some((report) => report.status === "completed"));
+      await waitForCondition(async () => (await cleanup.list()).length === 0);
+      expect(await inbox.pendingInbound()).toHaveLength(0);
+      expect(reports.some((report) => report.status === "failed")).toBe(false);
+      expect(polls).toBe(2);
+      expect(await active.listActive()).toHaveLength(0);
+    }
+    expect(submits).toBe(0);
+    expect(cancels > 0).toBe(revoked);
+  } finally {
+    await stream.stop();
+    await running;
+    await settle();
+    sqlite.close();
+    await rm(root, { recursive: true, force: true });
+  }
+}, 15_000);

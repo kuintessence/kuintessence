@@ -334,7 +334,10 @@ export class PbsProAdapter implements SchedulerAdapter {
     lookup: KuintessenceJobLookup,
   ): Promise<KuintessenceJobLookupResult> {
     try {
-      const { exitCode, stdout, stderr } = await this.spawner.run(["qstat", "-f", "-F", "json"]);
+      const { exitCode, stdout, stderr } = await this.spawner.run(
+        ["qstat", ...(lookup.submittedAfterUnixMs !== undefined ? ["-x"] : []), "-f", "-F", "json"],
+        { timeoutMs: 5_000 },
+      );
       if (exitCode !== 0) {
         return { status: "indeterminate", reason: `qstat failed: ${stderr.trim()}` };
       }
@@ -456,14 +459,13 @@ export class PbsProAdapter implements SchedulerAdapter {
     }));
   }
 
+  async confirmStopped(schedulerJobId: string): Promise<boolean> {
+    const result = await this.status(schedulerJobId);
+    return result.status === "completed" || result.status === "failed";
+  }
+
   async status(schedulerJobId: string): Promise<JobStatusResult> {
-    let parsed: unknown;
-    try {
-      parsed = await this.queryJob(schedulerJobId);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "qstat returned no data";
-      return { status: "failed", message };
-    }
+    const parsed = await this.queryJob(schedulerJobId);
     const data = parsed as {
       Jobs?: Record<
         string,
@@ -471,8 +473,12 @@ export class PbsProAdapter implements SchedulerAdapter {
       >;
     };
     const jobs = data.Jobs ?? {};
-    const job = jobs[schedulerJobId] ?? Object.values(jobs)[0];
-    if (!job) return { status: "failed", message: "job not found" };
+    const shortMatches = schedulerJobId.includes(".")
+      ? []
+      : Object.entries(jobs).filter(([id]) => id.split(".")[0] === schedulerJobId);
+    const job =
+      jobs[schedulerJobId] ?? (shortMatches.length === 1 ? shortMatches[0]?.[1] : undefined);
+    if (!job) throw new Error("job not found or ambiguous");
 
     const state = job.job_state ?? "";
     const node = parseExecHost(job.exec_host);
@@ -493,7 +499,7 @@ export class PbsProAdapter implements SchedulerAdapter {
       if (exitStatus === 0) return withNode({ status: "completed", exitCode: 0 });
       return withNode({ status: "failed", exitCode: exitStatus, message: `Exit ${exitStatus}` });
     }
-    return withNode({ status: "failed", message: `State: ${state}` });
+    throw new Error(`Unknown PBS job state: ${state}`);
   }
 
   private async queryJob(schedulerJobId: string): Promise<unknown> {

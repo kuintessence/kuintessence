@@ -824,3 +824,84 @@ describe("JobRunner", () => {
     expect(cancelCalls).toEqual([]);
   });
 });
+
+test.each([
+  "submit",
+  "receipt",
+] as const)("uncertain %s retains durable job inputs without publishing a failure", async (boundary) => {
+  const reports: JobStatusReport[] = [];
+  let cleaned = false;
+  let reconciled = false;
+  const runner = new JobRunner({
+    adapter: makeAdapter({
+      submit: async () => {
+        if (boundary === "submit") throw new Error("submission response lost");
+        return { schedulerJobId: "accepted" };
+      },
+    }),
+    onSchedulerSubmitted: async () => {
+      throw new Error("receipt write failed");
+    },
+    onSubmissionUncertain: async (spec) => {
+      expect(spec.jobId).toBe(baseSpec.jobId);
+      reconciled = true;
+      return true;
+    },
+    onStatusUpdate: (report) => {
+      reports.push(report);
+    },
+    onJobFinished: () => {
+      cleaned = true;
+    },
+    sleep: noSleep,
+  });
+  await runner.run(baseSpec);
+  expect(reconciled).toBe(true);
+  expect(reports).toEqual([]);
+  expect(cleaned).toBe(false);
+});
+
+test("a failed status query during recovery waits without releasing inputs or reporting failure", async () => {
+  const reports: JobStatusReport[] = [];
+  const events: string[] = [];
+  let polls = 0;
+  const adapter = makeAdapter({});
+  adapter.status = async () => {
+    polls++;
+    if (polls === 1) {
+      events.push("unavailable");
+      throw new Error("scheduler unavailable");
+    }
+    return { status: "completed", exitCode: 0 };
+  };
+  const runner = new JobRunner({
+    adapter,
+    sleep: noSleep,
+    onStatusUpdate: (report) => {
+      reports.push(report);
+      events.push(report.status);
+    },
+    onJobFinished: () => {
+      events.push("cleanup");
+    },
+  });
+  await runner.resume(baseSpec, "original-scheduler-job");
+  expect(events).toEqual(["unavailable", "completed", "cleanup"]);
+  expect(reports[0]?.schedulerJobId).toBe("original-scheduler-job");
+});
+
+test("a resumed queued job acknowledges its original scheduler id using the observed state", async () => {
+  const reports: JobStatusReport[] = [];
+  const runner = new JobRunner({
+    adapter: makeAdapter({
+      statuses: [{ status: "queued" }, { status: "completed", exitCode: 0 }],
+    }),
+    onStatusUpdate: (report) => {
+      reports.push(report);
+    },
+    sleep: noSleep,
+  });
+  await runner.resume(baseSpec, "original");
+  expect(reports.map(({ status }) => status)).toEqual(["queued", "completed"]);
+  expect(reports[0]?.schedulerJobId).toBe("original");
+});

@@ -488,6 +488,8 @@ export interface ListedJob {
 /** Scheduler-specific context retained with a pre-submit cleanup intent. */
 export interface KuintessenceJobLookup {
   jobId: string;
+  /** Include retained completed jobs during submission recovery, starting at this receipt time. */
+  submittedAfterUnixMs?: number;
   schedulerName?: string;
   schedulerAccount?: string;
   namespace?: string;
@@ -543,6 +545,8 @@ export interface SchedulerAdapter {
   submit(spec: JobSpec): Promise<JobResult>;
   cancel(schedulerJobId: string): Promise<void>;
   status(schedulerJobId: string): Promise<JobStatusResult>;
+  /** Positive proof that execution stopped; missing/failed queries must not return true. */
+  confirmStopped?(schedulerJobId: string): Promise<boolean>;
 
   inspectQueues?(): Promise<SchedulerQueueInventory>;
   validateQueueTarget?(target: QueueTargetValidation): Promise<QueueTargetValidationResult>;

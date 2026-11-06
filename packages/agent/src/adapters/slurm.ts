@@ -50,6 +50,7 @@ const SLURM_QUEUED = new Set([
   "REQUEUE_HOLD",
   "REQUEUE_FED",
   "RESV_DEL_HOLD",
+  "SPECIAL_EXIT",
 ]);
 const SLURM_RUNNING = new Set([
   "RUNNING",
@@ -236,9 +237,26 @@ function slurmEpochToIso(value: unknown): string | undefined {
 }
 
 function mapSlurmState(state: string, exitCode: number): JobStatusResult {
-  if (SLURM_QUEUED.has(state)) return { status: "queued" };
-  if (SLURM_RUNNING.has(state)) return { status: "running" };
-  if (state === "COMPLETED" && exitCode === 0) return { status: "completed", exitCode: 0 };
+  const terminalState = state.trim().replace(/\+$/, "").split(" ")[0];
+  if (terminalState && SLURM_QUEUED.has(terminalState)) return { status: "queued" };
+  if (terminalState && SLURM_RUNNING.has(terminalState)) return { status: "running" };
+  if (terminalState === "COMPLETED" && exitCode === 0) return { status: "completed", exitCode: 0 };
+  if (
+    !terminalState ||
+    ![
+      "COMPLETED",
+      "CANCELLED",
+      "FAILED",
+      "TIMEOUT",
+      "NODE_FAIL",
+      "PREEMPTED",
+      "BOOT_FAIL",
+      "DEADLINE",
+      "OUT_OF_MEMORY",
+      "REVOKED",
+    ].includes(terminalState)
+  )
+    throw new Error(`Unknown Slurm job state: ${state}`);
   return { status: "failed", exitCode, message: `Slurm state: ${state}` };
 }
 
@@ -426,31 +444,58 @@ export class SlurmAdapter implements SchedulerAdapter {
       "--format=%i|%j|%k|%a",
     ];
     try {
-      const { exitCode, stdout, stderr } = await this.spawner.run(command);
+      const { exitCode, stdout, stderr } = await this.spawner.run(command, { timeoutMs: 5_000 });
       if (exitCode !== 0) {
         return { status: "indeterminate", reason: `squeue failed: ${stderr.trim()}` };
       }
-      const expectedComment = `KQ_JOB_ID=${lookup.jobId}`;
-      const matches = stdout
-        .split("\n")
-        .map((line) =>
-          line
-            .trim()
-            .split("|")
-            .map((field) => field.trim()),
-        )
-        .filter(
-          ([schedulerJobId, name, comment, account]) =>
-            !!schedulerJobId &&
-            comment === expectedComment &&
-            (!lookup.schedulerName || name === lookup.schedulerName) &&
-            (!lookup.schedulerAccount || account === lookup.schedulerAccount),
+      const exactIds = (output: string) => [
+        ...new Set(
+          output
+            .split("\n")
+            .map((line) =>
+              line
+                .trim()
+                .split("|")
+                .map((field) => field.trim()),
+            )
+            .filter(
+              ([id, name, comment, account]) =>
+                !!id &&
+                comment === `KQ_JOB_ID=${lookup.jobId}` &&
+                (!lookup.schedulerName || name === lookup.schedulerName) &&
+                (!lookup.schedulerAccount || account === lookup.schedulerAccount),
+            )
+            .map(([id]) => id),
+        ),
+      ];
+      let ids = exactIds(stdout);
+      if (ids.length === 0 && lookup.submittedAfterUnixMs !== undefined) {
+        if (!Number.isFinite(lookup.submittedAfterUnixMs))
+          throw new Error("Invalid submission receipt time");
+        const history = await this.spawner.run(
+          [
+            "sacct",
+            "--noheader",
+            "--parsable2",
+            "--allocations",
+            "--starttime",
+            new Date(lookup.submittedAfterUnixMs - 86_400_000).toISOString().slice(0, 10),
+            ...(lookup.schedulerName ? ["--name", lookup.schedulerName] : []),
+            ...(lookup.schedulerAccount
+              ? ["--allusers", "--accounts", lookup.schedulerAccount]
+              : []),
+            "--format=JobIDRaw,JobName%128,Comment%128,Account%128",
+          ],
+          { timeoutMs: 5_000 },
         );
-      if (matches.length === 0) return { status: "not_found" };
-      if (matches.length !== 1) {
+        if (history.exitCode !== 0) throw new Error("Slurm accounting lookup is unavailable");
+        ids = exactIds(history.stdout);
+      }
+      if (ids.length === 0) return { status: "not_found" };
+      if (ids.length !== 1) {
         return { status: "indeterminate", reason: "multiple Slurm jobs share Kuintessence UUID" };
       }
-      const schedulerJobId = matches[0]?.[0];
+      const schedulerJobId = ids[0];
       if (!schedulerJobId) {
         return { status: "indeterminate", reason: "Slurm lookup returned an invalid job id" };
       }
@@ -571,6 +616,11 @@ export class SlurmAdapter implements SchedulerAdapter {
     throw result.error;
   }
 
+  async confirmStopped(schedulerJobId: string): Promise<boolean> {
+    const result = await this.status(schedulerJobId);
+    return result.status === "completed" || result.status === "failed";
+  }
+
   async status(schedulerJobId: string): Promise<JobStatusResult> {
     const { exitCode, stdout } = await this.spawner.run(["squeue", "--json", "-j", schedulerJobId]);
 
@@ -603,7 +653,7 @@ export class SlurmAdapter implements SchedulerAdapter {
     // (older format / a correctly-filtered single result).
     const job =
       jobsArr.find((j) => j.job_id != null && String(j.job_id) === schedulerJobId) ??
-      (jobsArr.length === 1 ? jobsArr[0] : undefined);
+      (jobsArr.length === 1 && jobsArr[0]?.job_id == null ? jobsArr[0] : undefined);
     if (!job) return this.checkCompleted(schedulerJobId);
 
     const state = slurmStateName(job.job_state);
@@ -631,7 +681,7 @@ export class SlurmAdapter implements SchedulerAdapter {
       "sacct",
       "-j",
       schedulerJobId,
-      "--format=State,ExitCode",
+      "--format=State%64,ExitCode",
       "--noheader",
       "--parsable2",
     ]);
@@ -659,17 +709,14 @@ export class SlurmAdapter implements SchedulerAdapter {
     } = await this.spawner.run(["scontrol", "show", "job", schedulerJobId]);
 
     if (spawnExit !== 0) {
-      return {
-        status: "failed",
-        message: `scontrol show job failed (exit ${spawnExit}): ${stderr.trim()}`,
-      };
+      throw new Error(`scontrol show job failed (exit ${spawnExit}): ${stderr.trim()}`);
     }
 
     const stateMatch = /JobState=(\w+)/.exec(stdout);
     const exitCodeMatch = /ExitCode=(\d+):(\d+)/.exec(stdout);
 
     if (!stateMatch) {
-      return { status: "failed", message: "scontrol output did not contain JobState" };
+      throw new Error("scontrol output did not contain JobState");
     }
 
     const jobState = stateMatch[1] ?? "";

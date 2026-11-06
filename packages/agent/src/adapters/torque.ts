@@ -485,10 +485,15 @@ export class TorqueAdapter implements SchedulerAdapter {
     return jobs;
   }
 
+  async confirmStopped(schedulerJobId: string): Promise<boolean> {
+    const result = await this.status(schedulerJobId);
+    return result.status === "completed" || result.status === "failed";
+  }
+
   async status(schedulerJobId: string): Promise<JobStatusResult> {
     const { exitCode, stdout } = await this.spawner.run(["qstat", "-f", schedulerJobId]);
     if (exitCode !== 0 || !stdout.trim()) {
-      return { status: "failed", message: "qstat returned no data" };
+      throw new Error("qstat returned no data");
     }
     // Torque qstat -f output is plain "key = value" lines (not JSON)
     const lines = stdout.split("\n").map((l) => l.trim());
@@ -521,6 +526,6 @@ export class TorqueAdapter implements SchedulerAdapter {
       if (rawExitCode === 0) return withNode({ status: "completed", exitCode: 0 });
       return withNode({ status: "failed", exitCode: rawExitCode, message: `Exit ${rawExitCode}` });
     }
-    return withNode({ status: "failed", message: `State: ${state}` });
+    throw new Error(`Unknown Torque job state: ${state}`);
   }
 }
