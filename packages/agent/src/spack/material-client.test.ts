@@ -14,7 +14,9 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import type { SpackMaterialManifest } from "@kuintessence/shared";
+import { SpackInstallationPending } from "./execution-identity";
 import {
   configureSpackMaterialClient,
   SpackMaterialClient,
@@ -483,4 +485,153 @@ test("v2 evidence is downloaded and a corrupt notice is rejected by the Agent ca
   await rm(f.cacheDir, { recursive: true, force: true });
   corrupt = true;
   await expect(client.prepare({ ...input, manifestDigest: digest(text) })).rejects.toThrow();
+});
+
+test.each([
+  "renewed",
+  "offline",
+  "denied",
+  "cancelled",
+  "invalid-ticket",
+] as const)("Spack material transfer renews its original ticket and handles %s", async (mode) => {
+  const f = await fixture();
+  const parent = new AbortController();
+  let grants = 0;
+  let resumed = false;
+  const headers: string[] = [];
+  const timers = new Set<ReturnType<typeof setTimeout>>();
+  const server = Bun.serve({
+    port: 0,
+    fetch: (request) => {
+      headers.push(request.headers.get("authorization") ?? "");
+      const isManifest = request.url.endsWith("/manifest");
+      const content = isManifest ? manifestBytes : body;
+      if (resumed) return new Response(content);
+      return new Response(
+        new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(Buffer.from(content.slice(0, 1)));
+            if (!isManifest && mode === "cancelled") parent.abort(new Error("cancelled"));
+            const timer = setTimeout(
+              () => {
+                timers.delete(timer);
+                controller.enqueue(Buffer.from(content.slice(1)));
+                controller.close();
+              },
+              isManifest ? 300 : 900,
+            );
+            timers.add(timer);
+            request.signal.addEventListener(
+              "abort",
+              () => {
+                clearTimeout(timer);
+                timers.delete(timer);
+              },
+              { once: true },
+            );
+          },
+        }),
+      );
+    },
+  });
+  const client = new SpackMaterialClient({
+    serverUrl: `http://127.0.0.1:${server.port}`,
+    cacheDir: f.cacheDir,
+  });
+  const authorizeMaterialTransfer = async (signal: AbortSignal) => {
+    grants++;
+    if (!resumed && grants > 1) {
+      if (mode === "offline") await delay(10_000, undefined, { signal });
+      if (mode === "denied") throw new Error("permission withdrawn");
+      if (mode === "invalid-ticket") return { ticket: "bad ticket", expiresAt: Date.now() + 400 };
+    }
+    return { ticket: `ticket-${grants}`, expiresAt: Date.now() + 400 };
+  };
+  try {
+    const preparing = client.prepare({
+      ...input,
+      signal: parent.signal,
+      authorizeMaterialTransfer,
+    });
+    if (mode === "renewed") {
+      const prepared = await preparing;
+      expect(await readFile(prepared.blobs[0]?.path ?? "", "utf8")).toBe(body);
+      expect(grants).toBeGreaterThan(3);
+      expect(headers[0]).toBe("Bearer ticket-1");
+      expect(headers[1]).not.toBe(headers[0]);
+    } else {
+      if (mode === "offline")
+        await expect(preparing).rejects.toBeInstanceOf(SpackInstallationPending);
+      else {
+        let failure: unknown;
+        try {
+          await preparing;
+        } catch (error) {
+          failure = error;
+        }
+        expect(failure).toBeInstanceOf(Error);
+        expect(failure).not.toBeInstanceOf(SpackInstallationPending);
+      }
+      expect(await Bun.file(join(f.cacheDir, "sha256", blob.digest.slice(7))).exists()).toBe(false);
+      expect(
+        (await readdir(join(f.cacheDir, "sha256"))).some((name) => name.endsWith(".tmp")),
+      ).toBe(false);
+      if (mode === "offline") {
+        resumed = true;
+        const recovered = await client.prepare({ ...input, authorizeMaterialTransfer });
+        expect(recovered.manifestDigest).toBe(input.manifestDigest);
+        expect(await readFile(recovered.blobs[0]?.path ?? "", "utf8")).toBe(body);
+        expect(headers.at(-1)).toBe(`Bearer ticket-${grants}`);
+      }
+    }
+  } finally {
+    for (const timer of timers) clearTimeout(timer);
+    parent.abort();
+    server.stop(true);
+  }
+});
+
+test("federation installation cannot silently use an unrenewable material client", async () => {
+  const f = await fixture();
+  await expect(
+    f.client.prepare({ ...input, authorizeInstallation: async () => Date.now() + 1000 }),
+  ).rejects.toThrow("transfer authorization is unavailable");
+  expect(f.calls).toEqual([]);
+});
+
+test("a progressing material body can outlast the request idle timeout", async () => {
+  const f = await fixture();
+  let producing: ReturnType<typeof setInterval> | undefined;
+  const client = new SpackMaterialClient({
+    serverUrl: "https://server.example",
+    cacheDir: f.cacheDir,
+    requestTimeoutMs: 200,
+    fetch: async (url) =>
+      url.endsWith("/manifest")
+        ? new Response(manifestBytes)
+        : new Response(
+            new ReadableStream<Uint8Array>({
+              start(controller) {
+                let offset = 0;
+                producing = setInterval(() => {
+                  controller.enqueue(Buffer.from(body.slice(offset, offset + 5)));
+                  offset += 5;
+                  if (offset >= body.length) {
+                    clearInterval(producing);
+                    controller.close();
+                  }
+                }, 80);
+              },
+              cancel() {
+                clearInterval(producing);
+              },
+            }),
+          ),
+  });
+  try {
+    const result = await client.prepare(input);
+    expect(await readFile(result.blobs[0]?.path ?? "", "utf8")).toBe(body);
+  } finally {
+    clearInterval(producing);
+  }
 });

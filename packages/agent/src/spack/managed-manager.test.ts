@@ -392,6 +392,32 @@ test("manager preserves retryable installation wait and inventory withdrawal", a
     f.manager.runSoftwareOperation("install", f.input.spec, {
       ...f.input,
       authorizeInstallation: async () => Date.now() + 10_000,
+      authorizeMaterialTransfer: async () => ({
+        ticket: f.input.ticket,
+        expiresAt: Date.now() + 10_000,
+      }),
     }),
   ).rejects.toBe(pending);
+});
+
+test("manager preserves a material authorization wait before audit or install", async () => {
+  const f = await fixture();
+  const pending = new SpackInstallationPending();
+  let materialGrants = 0;
+  f.materialClient.prepare = async (input) => {
+    await input.authorizeMaterialTransfer?.(new AbortController().signal);
+    throw pending;
+  };
+  await expect(
+    f.manager.runSoftwareOperation("install", f.input.spec, {
+      ...f.input,
+      authorizeMaterialTransfer: async () => {
+        materialGrants++;
+        return { ticket: f.input.ticket, expiresAt: Date.now() + 10_000 };
+      },
+    }),
+  ).rejects.toBe(pending);
+  expect(materialGrants).toBe(1);
+  expect(f.calls).not.toContain("audit");
+  expect(f.calls.some((call) => call.startsWith("install:"))).toBe(false);
 });

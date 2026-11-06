@@ -404,6 +404,7 @@ export function registerAgentHandler(router: ConnectRouter, deps: AgentHandlerDe
         federationDataPreparationLeaseV1: false,
         federationInstallationV1: false,
         federationInstallationLeaseV1: false,
+        federationInstallationMaterialLeaseV1: false,
         verifiedCertFingerprint: undefined as string | undefined,
         push: (m: ServerMessage) => {
           if (!active) {
@@ -524,6 +525,8 @@ export function registerAgentHandler(router: ConnectRouter, deps: AgentHandlerDe
               channel.federationDataPreparationLeaseV1 = reg.federationDataPreparationLeaseV1;
               channel.federationInstallationV1 = reg.federationInstallationV1;
               channel.federationInstallationLeaseV1 = reg.federationInstallationLeaseV1;
+              channel.federationInstallationMaterialLeaseV1 =
+                reg.federationInstallationMaterialLeaseV1;
               channel.verifiedCertFingerprint =
                 mtlsContext.getStore()?.fingerprintSha256 ?? undefined;
               dispatcher.register(registeredAgentId, channel);
@@ -547,7 +550,8 @@ export function registerAgentHandler(router: ConnectRouter, deps: AgentHandlerDe
                         jobDispatches?.renewExecution !== undefined && reg.federationComputeLeaseV1,
                       federationInstallationV1Supported:
                         softwareOperations?.renewFederationInstallation !== undefined &&
-                        reg.federationInstallationLeaseV1,
+                        reg.federationInstallationLeaseV1 &&
+                        reg.federationInstallationMaterialLeaseV1,
                     }),
                   },
                 }),
@@ -1132,7 +1136,9 @@ export function registerAgentHandler(router: ConnectRouter, deps: AgentHandlerDe
             if (
               (request.operationId && request.runtimeRenewal) ||
               !(request.operationId
-                ? channel.federationInstallationV1 && channel.federationInstallationLeaseV1
+                ? channel.federationInstallationV1 &&
+                  channel.federationInstallationLeaseV1 &&
+                  channel.federationInstallationMaterialLeaseV1
                 : channel.federationExecutionV1 && channel.federationComputeLeaseV1) ||
               !channel.verifiedCertFingerprint
             ) {

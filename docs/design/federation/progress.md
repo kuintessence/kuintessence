@@ -648,6 +648,17 @@ Script 的 File/FileBatch 到下游受管文件转换、Checkpoint 文件持久�
 
 边界：本轮覆盖 Sandbox 与 DataMarket 准备，不包含 Spack 材料票据刷新、普通 Workflow 的 NetDrive inputStaging 持续授权或 URL 重签；中断文件仍从头下载。没有重建调度器镜像，也没有运行真实科研软件、跨机构完整作业或 Fabric 联合任务，整体自动激活与 PR 预览仍待完成。
 
+## Spack 材料下载票据刷新与原操作恢复
+
+- 安装续租响应中的新 operation ticket 已传到材料下载器。下载器在同一 operationId、spec、Spack 版本及 manifest 摘要下持续持有短期许可；每个新请求使用最近的有效票据，原请求/安装操作不改写。原 FederationExecutionClient 继续核对完整安装意图，票据刷新不能替换安装内容。
+- 材料传输与缓存校验复用现有 ExecutionAuthorization。许可到期取消传输、移除未完成文件并抛出已有 SpackInstallationPending；SpackManager 保留该状态，Stream 使用原持久账本记录授权等待，释放队列后按原操作重投。明确拒绝、非法新票据、取消及内容失败不按断线重试；缓存复用仍须获得当前授权并重新校验，不因有缓存跳过 manifest 请求。
+- 修正长传输被固定单请求时限误截断的问题：60 秒改为请求/响应无进度超时，非空 chunk 才刷新时限；原 10 分钟准备总上限继续生效。每个未完成 blob 重下，已验证缓存可复用，没有引入 Range 或无限时下载。
+- 新能力 federation_installation_material_lease_v1 接入 Agent 注册、Server 能力响应、安装投递与授权 RPC/服务。旧 Agent 不能接收或续期联邦安装；已有旧联邦 worker 失去许可后由原守护停止，需升级 Agent 后遵守原操作恢复规则。非联邦安装继续使用原模式。详情见[材料下载说明](../../spack-material-delivery.md)。
+
+验证：材料客户端/Manager/Dispatcher **99 项通过**；Agent Stream、授权客户端及材料 preflight **248 项通过**；隔离 PostgreSQL 的安装授权、RPC 能力、原操作恢复与准备重投 **43 项通过**。无进度超时调整后材料客户端 **54 项通过**，其中 **1 项为新增用例**，其余不重复累计。包含本机慢速 HTTP、下载中持续续租、后续请求的新票据、授权失联后的清理和原操作恢复、明确拒绝/非法票据不重试、缓存授权检查、缺少新能力拒绝签发，以及迟到授权/取消/协议截止边界。全仓类型检查、最终 Agent 类型复查通过；lint 无错误（原有 47 warnings、1 info），本地文档链接与 diff 检查通过。隔离数据库已停止清理，本地日志为 `temp/spack-transfer-*.log`。
+
+边界：没有运行真实 Spack 编译或新调度器/Fabric 联合任务。普通 Workflow NetDrive 输入的持续授权、跨机构材料物化与物理介质交付、整体自动激活和完整联合验收继续待完成；PR 预览尚未发布。单次准备仍有 10 分钟上限，超出时限与普通网络故障不自动当作授权等待。
+
 ## 尚未接通，不能宣称支持
 
 协议审批与机构信任管理 UI、源站发送与状态查询、额度结算/退款、联邦目标/数据最终授权与实际激活连接、完整生产持久 Workflow 端到端验收、完整的数据/软件物化与介质交付、双方证据确认与完整用量/结算记录、商业/市场链码及真实联邦作业与 Fabric 联合运行、归档恢复、Web/CLI 和部署配置均未完成。

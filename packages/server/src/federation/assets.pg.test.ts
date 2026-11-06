@@ -1322,6 +1322,7 @@ test.each([
     push: () => {},
     federationInstallationV1: true,
     federationInstallationLeaseV1: true,
+    federationInstallationMaterialLeaseV1: true,
     softwareOperationReplayV1: true,
     spackMaterialDeliveryV1: true,
     verifiedCertFingerprint: "verified",
@@ -1418,6 +1419,10 @@ test.each([
     grants.push(grant);
   };
   try {
+    channel.federationInstallationMaterialLeaseV1 = false;
+    expect(await operations.renewFederationInstallation(agentId, request, send)).toBe(false);
+    expect(grants).toHaveLength(0);
+    channel.federationInstallationMaterialLeaseV1 = true;
     expect(await operations.renewFederationInstallation(agentId, request, send)).toBe(true);
     expect(grants[0]?.installation).toMatchObject({
       operationId,

@@ -1981,6 +1981,7 @@ export class AgentStream {
             this.federationExecutionCapable() && !!this.deps.dataDeliveryExecutor,
           federationInstallationV1: this.federationInstallationCapable(),
           federationInstallationLeaseV1: this.federationInstallationCapable(),
+          federationInstallationMaterialLeaseV1: this.federationInstallationCapable(),
         }),
       },
     });
@@ -3615,6 +3616,14 @@ export class AgentStream {
                 .installation
             : request;
           await ledger?.start(request.operationId);
+          const renewInstallation = async (signal: AbortSignal) => {
+            const grant = await this.federationExecution.renewInstallation(
+              request,
+              AbortSignal.any([signal, operationSignal]),
+            );
+            if (grant.expiresAt <= Date.now()) throw new SpackInstallationPending();
+            return grant;
+          };
           const run = () =>
             this.handleSoftwareOperation(
               request.operationId,
@@ -3626,14 +3635,16 @@ export class AgentStream {
                 manifestDigest: authorized.spackManifestDigest,
                 ...(request.federationJobId
                   ? {
+                      authorizeMaterialTransfer: async (signal: AbortSignal) => {
+                        const grant = await renewInstallation(signal);
+                        return {
+                          ticket: grant.installation.spackMaterialTicket,
+                          expiresAt: grant.expiresAt,
+                        };
+                      },
                       authorizeInstallation: async (signal: AbortSignal) => {
                         // Bound online checks while the install-store lock is held.
-                        const grant = await this.federationExecution.renewInstallation(
-                          request,
-                          AbortSignal.any([signal, operationSignal]),
-                        );
-                        if (grant.expiresAt <= Date.now()) throw new SpackInstallationPending();
-                        return grant.expiresAt;
+                        return (await renewInstallation(signal)).expiresAt;
                       },
                     }
                   : {}),

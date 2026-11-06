@@ -9030,12 +9030,15 @@ test.each([
   let cancelAck = false;
   let terminalDelivered = false;
   const release = Promise.withResolvers<void>();
-  spackManager.runSoftwareOperation = async (_action, spec) => {
+  spackManager.runSoftwareOperation = async (_action, spec, context) => {
     if (spec === "unrelated") {
       unrelated++;
       return { outcome: "succeeded", stdout: "", installed: [] };
     }
     installs++;
+    const grant = await context?.authorizeMaterialTransfer?.(new AbortController().signal);
+    expect(grant?.ticket).toBe("fresh");
+    expect(grant?.expiresAt).toBeGreaterThan(Date.now());
     if (installs === 1) throw new SpackInstallationPending();
     await release.promise;
     return { outcome: "succeeded", stdout: "", installed: [] };

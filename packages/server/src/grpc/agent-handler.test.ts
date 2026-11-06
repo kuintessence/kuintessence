@@ -270,7 +270,7 @@ describe("agent-handler", () => {
       "legacy",
       "startup-only",
       ...(installation
-        ? ["runtime-install" as const]
+        ? ["runtime-install" as const, "worker-only" as const]
         : ["runtime-grant" as const, "runtime-retry" as const]),
       "unverified",
     ] as const)(`federation ${installation ? "installation" : "execution"} grant RPC: %s`, async (outcome) => {
@@ -335,6 +335,7 @@ describe("agent-handler", () => {
       register.payload.value.federationInstallationV1 = outcome !== "legacy";
       register.payload.value.federationInstallationLeaseV1 =
         outcome !== "legacy" && outcome !== "startup-only";
+      register.payload.value.federationInstallationMaterialLeaseV1 = outcome !== "worker-only";
       const request = create(FederationExecutionRequestSchema, {
         requestId: crypto.randomUUID(),
         jobId: testJobId,
@@ -399,7 +400,7 @@ describe("agent-handler", () => {
               : FederationExecutionDecision.DENIED,
       });
       expect(calledBy).toEqual(
-        ["legacy", "startup-only", "unverified", "runtime-install"].includes(outcome)
+        ["legacy", "startup-only", "unverified", "runtime-install", "worker-only"].includes(outcome)
           ? []
           : ["grpc-test-agent-1"],
       );

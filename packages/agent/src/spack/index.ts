@@ -287,6 +287,9 @@ export class SpackManager {
       ...(context.authorizeInstallation
         ? { authorizeInstallation: context.authorizeInstallation }
         : {}),
+      ...(context.authorizeMaterialTransfer
+        ? { authorizeMaterialTransfer: context.authorizeMaterialTransfer }
+        : {}),
       ...(signal ? { signal } : {}),
     };
     let prepared: PreparedSpackMaterials;
@@ -294,6 +297,7 @@ export class SpackManager {
       prepared = await this.materialClient.prepare(input);
     } catch (error) {
       if (signal?.aborted) return cancelledSoftwareOperation();
+      if (error instanceof SpackInstallationPending) throw error;
       return {
         outcome: "failed",
         exitCode: 1,

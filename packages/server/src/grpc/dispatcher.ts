@@ -156,6 +156,7 @@ export interface AgentChannel {
   federationDataPreparationLeaseV1?: boolean;
   federationInstallationV1?: boolean;
   federationInstallationLeaseV1?: boolean;
+  federationInstallationMaterialLeaseV1?: boolean;
   verifiedCertFingerprint?: string;
 }
 
@@ -307,6 +308,7 @@ export class AgentDispatcher {
     return (
       this.getChannel(agentId)?.federationInstallationV1 === true &&
       this.getChannel(agentId)?.federationInstallationLeaseV1 === true &&
+      this.getChannel(agentId)?.federationInstallationMaterialLeaseV1 === true &&
       this.supportsSoftwareOperationReplay(agentId)
     );
   }

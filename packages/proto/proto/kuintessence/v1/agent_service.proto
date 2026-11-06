@@ -226,6 +226,8 @@ message RegisterRequest {
   bool federation_sandbox_input_lease_v1 = 27;
   // Stops Data Market transfer, copy and verification when preparation authority expires.
   bool federation_data_preparation_lease_v1 = 28;
+  // Renews material tickets and stops installation downloads on expired authority.
+  bool federation_installation_material_lease_v1 = 29;
 }
 
 message RegisterResponse {
