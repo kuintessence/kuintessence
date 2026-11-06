@@ -1,0 +1,9 @@
+{
+  "extends": "../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": "..",
+    "types": ["bun-types"],
+    "lib": ["ESNext"]
+  },
+  "include": ["fabric-evidence-*.ts"]
+}

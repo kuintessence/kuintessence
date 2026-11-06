@@ -1,0 +1,65 @@
+name: Fabric evidence network
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - .github/workflows/fabric-evidence-network.yml
+      - contracts/fabric/**
+      - packages/fabric-adapter/**
+      - packages/shared/src/federation/**
+      - packages/server/src/federation/attestation-client.ts
+      - scripts/fabric-evidence-*.ts
+      - scripts/tsconfig.fabric.json
+      - package.json
+      - bun.lock
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fabric-evidence-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  evidence:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Install locked dependencies
+        run: bun install --frozen-lockfile --ignore-scripts
+      - name: Verify isolated test types and local contracts
+        run: |
+          bun run typecheck:fabric-tests
+          bun run test:fabric
+      - name: Install verified Fabric test binaries
+        env:
+          FABRIC_TEST_TOOLS: ${{ runner.temp }}/kq-fabric-3.1.5
+        run: |
+          mkdir -p "$FABRIC_TEST_TOOLS"
+          curl --fail --location --retry 3 --proto '=https' --tlsv1.2 \
+            https://github.com/hyperledger/fabric/releases/download/v3.1.5/hyperledger-fabric-linux-amd64-3.1.5.tar.gz \
+            --output "$FABRIC_TEST_TOOLS/release.tar.gz"
+          echo "b9c31fd490991e76f8acb1835dee09fc19fee5428cb13e190ee6e0bdd2c37858  $FABRIC_TEST_TOOLS/release.tar.gz" | sha256sum --check
+          tar -xzf "$FABRIC_TEST_TOOLS/release.tar.gz" -C "$FABRIC_TEST_TOOLS"
+      - name: Verify native privacy, endorsements and recovery
+        env:
+          KQ_FABRIC_TOOLS: ${{ runner.temp }}/kq-fabric-3.1.5
+          KQ_FABRIC_REPORT: ${{ runner.temp }}/fabric-evidence-result.json
+        run: bun run test:fabric:network
+      - name: Preserve assertion summary
+        uses: actions/upload-artifact@v4
+        with:
+          name: fabric-evidence-result
+          path: ${{ runner.temp }}/fabric-evidence-result.json
+          if-no-files-found: error
+          retention-days: 14

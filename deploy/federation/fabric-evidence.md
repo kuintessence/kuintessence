@@ -1,8 +1,8 @@
 # Fabric 证据链码与独立 Adapter
 
-当前已接通 Server 存证 outbox、批次/序号、数据库恢复检查点、独立 Node Adapter 和证据链码的代码路径。**真实 Fabric 网络验收尚未完成**。配置私有 Adapter socket 后，后台 worker 会消费现有待办；此路径不创建联邦作业，也不修改任务额度。直接模式不创建待办、不调用 Adapter，不要求链连接。
+当前已接通 Server 存证 outbox、批次/序号、数据库恢复检查点、独立 Node Adapter 和证据链码的代码路径。**证据链已通过 Fabric 3.1.5 的 A/B/C 真实 Peer 验证，平台作业与数据库补交的联合验收仍未完成**。配置私有 Adapter socket 后，后台 worker 会消费现有待办；此路径不创建联邦作业，也不修改任务额度。直接模式不创建待办、不调用 Adapter，不要求链连接。
 
-代码位置：[证据链码](../../contracts/fabric/evidence/src/contract.ts)、[Adapter](../../packages/fabric-adapter/src/evidence.ts)、[私有进程入口](../../packages/fabric-adapter/src/runtime.ts)、[协议与集合配置](../../packages/shared/src/federation/ledger.ts)。Node 至少 22.12，Gateway 固定 1.13.0，fabric-shim 固定 2.5.8。Fabric Peer/Orderer/CA 版本仍需与真实网络联合验证，不能以依赖安装成功代替兼容性验收。
+代码位置：[证据链码](../../contracts/fabric/evidence/src/contract.ts)、[Adapter](../../packages/fabric-adapter/src/evidence.ts)、[私有进程入口](../../packages/fabric-adapter/src/runtime.ts)、[协议与集合配置](../../packages/shared/src/federation/ledger.ts)。Node 至少 22.12，Gateway 固定 1.13.0，fabric-shim 固定 2.5.8。Peer/Orderer 已使用官方 Fabric 3.1.5 验证；测试证书由 cryptogen 与 OpenSSL 生成，没有运行 Fabric CA 服务，不代表生产 CA 运维或高可用共识已验收。
 
 ## 信任与原生策略
 
@@ -127,4 +127,25 @@ Server 启用联邦并配置 `FEDERATION_ATTESTATION_SOCKET_PATH`（Adapter 的�
 
 隔离 PostgreSQL 测试验证并发组批、链故障期间继续接单、检查点先落库再提交、重启沿用原交易、过期 worker 被隔离、INVALID 人工重试保留历史、SQL 约束及 HTTP 权限。两个迁移由 Drizzle 生成，测试从空库应用。
 
-这些测试没有模拟出真实的 Fabric 共识、私有数据分发或 MVCC 验证。仍须在独立 A/B/C Peer 网络证明：C 无法取得 AB 私有数据、缺少 B 背书不能提交、并发序号与撤销产生正确验证结果、链离线期间平台作业仍运行、重启后 outbox 自动补交。当前不把此模块视为完整存证验收通过。
+新增的[真实网络验证](../../scripts/fabric-evidence-network.ts)运行三个独立 Peer/私有状态库、三个双向 TLS 链码进程和一个测试 Raft Orderer，调用实际链码、官方 Gateway、Server Unix client 和 Adapter HTTP 实现。12 项断言通过：
+
+- 删掉 B 背书后重新签署的交易得到 `ENDORSEMENT_POLICY_FAILURE=10`；正常两方交易 VALID。重放原批次仍需要两方背书。
+- 直接读取 Fabric block/private-data delivery：A/A、B/B 能读取正文；C/A、A/C、C/C 均无私有写入；公共区块不含私有 JWS。此检查绕过应用查询接口。
+- 每个检查点由新 Node 进程推进；已确认交易恢复仍返回原 txId/区块。Orderer 真实停止时保持 pending，重启并完成 Raft 选主后原交易 VALID。
+- 同序号两份已背书交易仅一份 VALID，另一份为 `MVCC_READ_CONFLICT=11`；重新提交过期序号明确拒绝。非管理员/其他机构不能撤销 A 密钥；A 自己的管理员仅经 A 背书成功撤销，已背书但未提交的旧密钥交易因读集冲突失效，后续背书拒绝。
+
+发现并修复 Adapter 的错误分类：来自实际链码的明确身份、策略、内容或顺序拒绝转换为脱敏错误码，交由现有 Server worker 进入人工复核；未知/混合错误、网络故障和私有数据等待仍重试。不会返回原始 Peer 错误详情。
+
+需要 Linux x86_64、Bun 1.4.2、Node 22.12+、Python 3、OpenSSL、tar，以及已经校验的官方 Fabric 3.1.5 解压目录。无需 Docker 或现有联盟链：
+
+```sh
+KQ_FABRIC_TOOLS=/path/to/fabric-3.1.5 \
+KQ_FABRIC_REPORT=/path/to/result.json \
+bun run test:fabric:network
+```
+
+测试仅监听本机动态端口；按进程句柄停止本次启动的服务。成功清理测试账本和随机凭据；失败保留 0700 临时目录以供本机排查，不能公开上传整个目录。`KQ_FABRIC_REPORT` 可选，只输出通过项目和时间；`KQ_FABRIC_KEEP_ARTIFACTS=1` 可保留成功现场，`--hold` 仅初始化网络供开发调试，不等于通过测试。
+
+[GitHub 检查](../../.github/workflows/fabric-evidence-network.yml)对相关 PR 改动运行相同测试，固定官方发布包 SHA-256，只上传无私有材料的断言摘要。本地已验证；远端 CI 尚待分支推送后执行。
+
+**仍不代表完整存证闭环**：本次无 PostgreSQL worker 与真实链的联合执行，也没有三套 KQ、真实 Slurm/PBS 作业、商业字段/日志/备份的全通道隐私测试或多 Orderer 容灾。完整 L02/L04/L05/L06 及 A02 等验收不能因此标为全部通过。

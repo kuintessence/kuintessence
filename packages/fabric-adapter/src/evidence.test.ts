@@ -1,8 +1,9 @@
 import { afterEach, beforeAll, expect, spyOn, test } from "bun:test";
 import { generateKeyPairSync, randomBytes, randomUUID } from "node:crypto";
-import { Client, credentials } from "@grpc/grpc-js";
+import { Client, credentials, Metadata } from "@grpc/grpc-js";
 import {
   connect,
+  EndorseError,
   type Proposal,
   type Status,
   StatusCode,
@@ -112,6 +113,7 @@ function setup() {
   let committed: Status["code"] | null = null;
   let nextCode: Status["code"] | null = StatusCode.VALID;
   let proposed: proto.ProposedTransaction | undefined;
+  let endorsementError: Error | undefined;
   const originalProposal = gateway.newSignedProposal.bind(gateway);
   const originalTransaction = gateway.newSignedTransaction.bind(gateway);
   const originalCommit = gateway.newSignedCommit.bind(gateway);
@@ -155,6 +157,7 @@ function setup() {
     const proposal = originalProposal(bytes, signature);
     spyOn(proposal, "endorse").mockImplementation(async () => {
       endorsements++;
+      if (endorsementError) throw endorsementError;
       return endorsed(proposal);
     });
     return proposal;
@@ -188,6 +191,9 @@ function setup() {
     signer,
     recoveryKey,
     proposed: () => proposed,
+    endorseError: (error: Error) => {
+      endorsementError = error;
+    },
     counts: () => ({ submits, endorsements }),
     nextCode: (code: Status["code"] | null) => {
       nextCode = code;
@@ -295,4 +301,47 @@ test("tampered recovery, changed policy, wrong key and foreign domain fail befor
     fixture.adapter.prepare({ ...input, digest: `sha256:${"0".repeat(64)}` }),
   ).rejects.toThrow("POLICY_DENIED");
   expect(fixture.counts()).toEqual({ submits: 0, endorsements: 0 });
+});
+
+test("explicit chaincode refusals are sanitized terminal errors; RPC and ambiguous failures remain retryable", async () => {
+  const fixture = setup();
+  const checkpoint = await fixture.adapter.prepare(input);
+  const failure = (code: number, messages: string[]) =>
+    new EndorseError({
+      code,
+      transactionId: checkpoint.transactionId,
+      cause: Object.assign(new Error("private transport details"), {
+        code,
+        details: "private",
+        metadata: new Metadata(),
+      }),
+      details: messages.map((message) => ({ address: "private-peer", mspId: "AMSP", message })),
+    });
+  for (const code of [
+    "POLICY_DENIED",
+    "UNTRUSTED_IDENTITY",
+    "OPERATION_CONFLICT",
+    "INVALID_MESSAGE",
+  ]) {
+    fixture.endorseError(failure(10, [`chaincode response 500, ${code}`]));
+    try {
+      await fixture.adapter.advance(checkpoint.recovery);
+      throw new Error("Expected terminal refusal");
+    } catch (error) {
+      expect(error).toBeInstanceOf(Error);
+      expect((error as Error).message).toBe(code);
+      expect(error).not.toBeInstanceOf(EndorseError);
+    }
+  }
+  for (const error of [
+    failure(14, ["chaincode response 500, POLICY_DENIED"]),
+    failure(10, []),
+    failure(10, ["private POLICY_DENIED detail"]),
+    failure(10, ["chaincode response 500, DATA_WAITING"]),
+    failure(10, ["chaincode response 500, POLICY_DENIED", "peer unavailable"]),
+  ]) {
+    fixture.endorseError(error);
+    await expect(fixture.adapter.advance(checkpoint.recovery)).rejects.toBe(error);
+  }
+  expect(fixture.counts().submits).toBe(0);
 });

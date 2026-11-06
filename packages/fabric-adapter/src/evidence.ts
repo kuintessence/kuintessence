@@ -1,6 +1,6 @@
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:crypto";
 import type { Gateway, Identity, Signable, Signer } from "@hyperledger/fabric-gateway";
-import { StatusCode } from "@hyperledger/fabric-gateway";
+import { EndorseError, StatusCode } from "@hyperledger/fabric-gateway";
 import { msp, gateway as proto } from "@hyperledger/fabric-protos";
 import {
   type EvidenceAdvanceResult,
@@ -126,7 +126,22 @@ export class FabricEvidenceAdapter {
       );
       if (proposal.getTransactionId() !== recovery.transactionId)
         throw new Error("INVALID_RECOVERY");
-      const transaction = await proposal.endorse({ deadline: Date.now() + 15_000 });
+      const transaction = await proposal
+        .endorse({ deadline: Date.now() + 15_000 })
+        .catch((error: unknown) => {
+          // Keep terminal chaincode refusals distinct from temporary RPC failures, without raw details.
+          if (error instanceof EndorseError && error.code === 10 && error.details.length) {
+            const codes = error.details.map(
+              (detail) =>
+                /^chaincode response 500, (POLICY_DENIED|UNTRUSTED_IDENTITY|OPERATION_CONFLICT|INVALID_MESSAGE)$/.exec(
+                  detail.message,
+                )?.[1],
+            );
+            const code = codes[0];
+            if (code && codes.every((value) => value === code)) throw new Error(code);
+          }
+          throw error;
+        });
       if (transaction.getTransactionId() !== recovery.transactionId)
         throw new Error("INVALID_LEDGER_RESPONSE");
       const receipt = FabricAnchorReceiptSchema.parse(
