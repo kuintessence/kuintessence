@@ -175,3 +175,21 @@ describe("WorkflowArtifactService", () => {
     expect(store.local?.status).toBe("expired");
   });
 });
+
+test("re-registering a persisted job artifact keeps its NetDrive reference and does not copy it again", async () => {
+  const store = new MemoryArtifactStore();
+  const input = { ...registration("Persistent"), producerJobId: "job-1" };
+  const saved = await store.registerLocal(input);
+  saved.artifact.netdriveFileId = "file-1";
+  saved.artifact.persistentAt = new Date();
+  store.registerLocal = async () => saved;
+  let copied = 0;
+  const service = new WorkflowArtifactService(store, {
+    persist: async () => {
+      copied++;
+      throw new Error("Existing persistent artifact must not be recopied");
+    },
+  });
+  expect(await service.registerLocal(input)).toEqual(saved.artifact);
+  expect(copied).toBe(0);
+});

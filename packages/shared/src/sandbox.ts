@@ -166,6 +166,7 @@ export const WorkflowArtifactSchema = z.strictObject({
   id: UuidSchema,
   workflowRunId: UuidSchema,
   producerNodeId: z.string().min(1),
+  producerJobId: UuidSchema.nullish(),
   descriptor: z.string().min(1),
   ioType: ScriptIoTypeSchema,
   contentHash: z.string().regex(/^[0-9a-f]{64}$/),

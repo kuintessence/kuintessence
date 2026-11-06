@@ -1,11 +1,12 @@
 import { artifactReplicas, type PgDb, workflowArtifacts } from "@kuintessence/db";
 import { type ArtifactDurability, createLogger, type ScriptIoType } from "@kuintessence/shared";
-import { and, eq, inArray, lte } from "drizzle-orm";
+import { and, eq, inArray, isNotNull, isNull, lte } from "drizzle-orm";
 
 export interface ArtifactRecord {
   id: string;
   workflowRunId: string;
   producerNodeId: string;
+  producerJobId?: string | null;
   descriptor: string;
   ioType: ScriptIoType;
   contentHash: string;
@@ -33,6 +34,7 @@ export interface ArtifactReplicaRecord {
 export interface LocalArtifactRegistration {
   workflowRunId: string;
   producerNodeId: string;
+  producerJobId?: string | null;
   descriptor: string;
   ioType: ScriptIoType;
   contentHash: string;
@@ -104,34 +106,72 @@ export class PgArtifactStore implements ArtifactStore {
     input: LocalArtifactRegistration,
   ): Promise<{ artifact: ArtifactRecord; replica: ArtifactReplicaRecord }> {
     return this.db.transaction(async (tx) => {
-      const [artifact] = await tx
-        .insert(workflowArtifacts)
-        .values({
-          workflowRunId: input.workflowRunId,
-          producerNodeId: input.producerNodeId,
-          descriptor: input.descriptor,
-          ioType: input.ioType,
-          contentHash: input.contentHash,
-          sizeBytes: input.sizeBytes,
-          durability: input.durability,
-        })
-        .onConflictDoUpdate({
-          target: [
-            workflowArtifacts.workflowRunId,
-            workflowArtifacts.producerNodeId,
-            workflowArtifacts.descriptor,
-          ],
-          set: {
-            ioType: input.ioType,
-            contentHash: input.contentHash,
-            sizeBytes: input.sizeBytes,
-            durability: input.durability,
-            netdriveFileId: null,
-            persistentAt: null,
-          },
-        })
-        .returning();
+      const values = {
+        workflowRunId: input.workflowRunId,
+        producerNodeId: input.producerNodeId,
+        producerJobId: input.producerJobId ?? null,
+        descriptor: input.descriptor,
+        ioType: input.ioType,
+        contentHash: input.contentHash,
+        sizeBytes: input.sizeBytes,
+        durability: input.durability,
+      };
+      const [inserted] = input.producerJobId
+        ? await tx
+            .insert(workflowArtifacts)
+            .values(values)
+            .onConflictDoNothing({
+              target: [workflowArtifacts.producerJobId, workflowArtifacts.descriptor],
+              where: isNotNull(workflowArtifacts.producerJobId),
+            })
+            .returning()
+        : await tx
+            .insert(workflowArtifacts)
+            .values(values)
+            .onConflictDoUpdate({
+              target: [
+                workflowArtifacts.workflowRunId,
+                workflowArtifacts.producerNodeId,
+                workflowArtifacts.descriptor,
+              ],
+              targetWhere: isNull(workflowArtifacts.producerJobId),
+              set: {
+                ioType: input.ioType,
+                contentHash: input.contentHash,
+                sizeBytes: input.sizeBytes,
+                durability: input.durability,
+                netdriveFileId: null,
+                persistentAt: null,
+              },
+            })
+            .returning();
+      const artifact =
+        inserted ??
+        (input.producerJobId
+          ? (
+              await tx
+                .select()
+                .from(workflowArtifacts)
+                .where(
+                  and(
+                    eq(workflowArtifacts.producerJobId, input.producerJobId),
+                    eq(workflowArtifacts.descriptor, input.descriptor),
+                  ),
+                )
+                .for("update")
+            )[0]
+          : undefined);
       if (!artifact) throw new Error("workflow artifact was not persisted");
+      if (
+        input.producerJobId &&
+        (artifact.workflowRunId !== input.workflowRunId ||
+          artifact.producerNodeId !== input.producerNodeId ||
+          artifact.ioType !== input.ioType ||
+          artifact.contentHash !== input.contentHash ||
+          artifact.sizeBytes !== input.sizeBytes ||
+          artifact.durability !== input.durability)
+      )
+        throw new Error("A completed job's artifact is immutable");
       const [replica] = await tx
         .insert(artifactReplicas)
         .values({
@@ -303,7 +343,11 @@ export class WorkflowArtifactService {
       throw new Error("artifact size must be a non-negative safe integer");
     }
     const registered = await this.store.registerLocal(input);
-    if (input.durability === "Ephemeral") return registered.artifact;
+    if (
+      input.durability === "Ephemeral" ||
+      (registered.artifact.netdriveFileId && registered.artifact.persistentAt)
+    )
+      return registered.artifact;
     if (!this.persister) throw new Error("durable artifacts require a NetDrive persister");
     const task = this.persist(registered, input.ownerId);
     if (input.durability === "Persistent") {

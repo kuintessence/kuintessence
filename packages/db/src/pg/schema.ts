@@ -3037,6 +3037,7 @@ export const workflowArtifacts = pgTable(
     workflowRunId: uuid("workflow_run_id")
       .references(() => workflowRuns.id, { onDelete: "cascade" })
       .notNull(),
+    producerJobId: uuid("producer_job_id").references(() => jobs.id),
     producerNodeId: varchar("producer_node_id", { length: 255 }).notNull(),
     descriptor: varchar("descriptor", { length: 255 }).notNull(),
     ioType: varchar("io_type", { length: 20 }).notNull(),
@@ -3050,11 +3051,12 @@ export const workflowArtifacts = pgTable(
     persistentAt: timestamp("persistent_at"),
   },
   (t) => ({
-    runNodeDescriptorIdx: uniqueIndex("workflow_artifacts_run_node_descriptor_idx").on(
-      t.workflowRunId,
-      t.producerNodeId,
-      t.descriptor,
-    ),
+    runNodeDescriptorIdx: uniqueIndex("workflow_artifacts_run_node_descriptor_idx")
+      .on(t.workflowRunId, t.producerNodeId, t.descriptor)
+      .where(sql`${t.producerJobId} IS NULL`),
+    jobDescriptorIdx: uniqueIndex("workflow_artifacts_job_descriptor_idx")
+      .on(t.producerJobId, t.descriptor)
+      .where(sql`${t.producerJobId} IS NOT NULL`),
     hashIdx: index("workflow_artifacts_hash_idx").on(t.contentHash),
     durabilityIdx: index("workflow_artifacts_durability_idx").on(t.durability, t.createdAt),
     ioTypeCheck: check(

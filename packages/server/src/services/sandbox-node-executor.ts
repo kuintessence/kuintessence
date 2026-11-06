@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { agents, netdriveFiles, type PgDb } from "@kuintessence/db";
+import { agents, jobDispatchOutbox, netdriveFiles, type PgDb } from "@kuintessence/db";
 import {
   createLogger,
   DataInputRefSchema,
@@ -7,7 +7,10 @@ import {
   type ExecutionIdentity,
   type JobDataInputs,
   type JobStatusName,
+  type JobSubmission,
+  type JobSubmit,
   type NodeExecutionResult,
+  type NodeInvocation,
   type RoleName,
   type SandboxDispatchIdentity,
   type SandboxDispatchMount,
@@ -15,15 +18,22 @@ import {
   SandboxRuntimeAttestationIdSchema,
   SandboxSelfAccountSchema,
   SandboxTrustedExecutionProfileSchema,
+  WorkflowExecutionInterrupted,
   workflowDsl,
 } from "@kuintessence/shared";
 import { and, eq, inArray, isNull } from "drizzle-orm";
-import type { JobService } from "./job-service";
+import { bindWorkflowExecutionJob } from "../workflow/execution-jobs";
+import type { LeasedWorkflowJournal } from "../workflow/execution-journal";
+import type { JobService, JobSubmitOptions } from "./job-service";
 import {
   type LicenseRuntimeGovernanceService,
   sandboxRuntimeContractKey,
 } from "./license-runtime-governance";
-import type { PlacementOrchestrator } from "./placement-orchestrator";
+import type {
+  PlaceAndDispatchInput,
+  PlaceAndDispatchResult,
+  PlacementOrchestrator,
+} from "./placement-orchestrator";
 import type {
   ResolvedSandboxRuntime,
   ResolvedSandboxSource,
@@ -59,7 +69,7 @@ export interface SandboxNodeExecutorOptions {
   resolver: SandboxExecutionResolver;
   signer: SandboxManifestSigner;
   jobService: JobService;
-  orchestrator: PlacementOrchestrator;
+  orchestrator: Pick<PlacementOrchestrator, "placeAndDispatch">;
   artifactService: WorkflowArtifactService;
   awaitCompletion(jobId: string): Promise<CompletionResult>;
   submittedBy: string;
@@ -71,6 +81,7 @@ export interface SandboxNodeExecutorOptions {
     queueId: string | null;
   }): Promise<void>;
   workflowRunId: string;
+  executionLease?: LeasedWorkflowJournal;
   defaultExecutionIdentity: ExecutionIdentity;
   resolvePolicy(target: {
     providerOrgId: string | null;
@@ -89,6 +100,20 @@ export interface SandboxNodeExecutorOptions {
   }): Promise<void>;
   limits: { pids: number; outputBytes: number; logBytes: number };
   governance?: LicenseRuntimeGovernanceService;
+}
+
+interface SandboxJobSubmission extends JobSubmission {
+  sandbox: {
+    node: Extract<workflowDsl.WorkflowNode, { type: "Script" }>;
+    source: ResolvedSandboxSource;
+    runtime: ResolvedSandboxRuntime;
+    mounts: SandboxDispatchMount[];
+    executionIdentity: ExecutionIdentity;
+    limits: SandboxNodeExecutorOptions["limits"];
+    submittedBy: string;
+    orgId: string | null;
+    role: RoleName;
+  };
 }
 
 interface PreparedInputs {
@@ -271,7 +296,17 @@ export class SandboxNodeExecutor {
   async execute(
     node: Extract<workflowDsl.WorkflowNode, { type: "Script" }>,
     ctx: Record<string, workflowDsl.CelValue>,
+    invocation?: NodeInvocation,
   ): Promise<NodeExecutionResult> {
+    const lease = this.options.executionLease;
+    if (lease && this.options.orgId === undefined)
+      throw new WorkflowExecutionInterrupted(
+        "A durable Sandbox job requires an explicit organization scope",
+      );
+    if (lease && (lease.runId !== this.options.workflowRunId || !invocation?.path))
+      throw new WorkflowExecutionInterrupted(
+        "Sandbox job requires the current run lease and invocation",
+      );
     if (!node.source) {
       throw new Error("Sandbox Script must resolve source and runtime references before execution");
     }
@@ -316,63 +351,105 @@ export class SandboxNodeExecutor {
       node.executionIdentity.type === "Inherit"
         ? this.options.defaultExecutionIdentity
         : node.executionIdentity;
-    const job = await this.options.jobService.submit(
-      {
-        name: node.name,
-        command: "sandbox-manifest",
-        resources: {
-          cpus: Math.max(1, node.requirements?.cpuCores ?? 1),
-          memoryMb: 1024,
-          ...(node.requirements?.maxWallTime != null
-            ? { wallTimeSec: node.requirements.maxWallTime }
-            : {}),
-        },
+    const jobData: JobSubmit = {
+      name: node.name,
+      command: "sandbox-manifest",
+      resources: {
+        cpus: Math.max(1, node.requirements?.cpuCores ?? 1),
+        memoryMb: 1024,
+        ...(node.requirements?.maxWallTime != null
+          ? { wallTimeSec: node.requirements.maxWallTime }
+          : {}),
+      },
+      envVars: {},
+      inputStaging: preparedInputs.inputStaging,
+      ...(Object.keys(preparedInputs.dataInputs).length > 0
+        ? { dataInputs: preparedInputs.dataInputs }
+        : {}),
+      expectedOutputs: Object.entries(node.outputs)
+        .filter(([, output]) => output.type === "Text" || output.type === "JSON")
+        .map(([descriptor]) => ({
+          descriptor,
+          path: `outputs/${descriptor}`,
+          isBatch: false,
+        })),
+      ...(node.schedulingStrategy.type === "Manual" && node.schedulingStrategy.queues[0]
+        ? { schedulingStrategy: { queueId: node.schedulingStrategy.queues[0] } }
+        : {}),
+    };
+    const jobOptions: JobSubmitOptions = {
+      ...(this.options.orgId !== undefined ? { orgId: this.options.orgId } : {}),
+      trustedMaterialization: source.assetRevisionId !== null,
+      ...(source.assetRevisionId
+        ? {
+            trustedSandboxScript: {
+              revisionId: source.assetRevisionId,
+              sha256: source.sha256,
+            },
+          }
+        : {}),
+      workflow: {
+        runId: this.options.workflowRunId,
+        nodeId: node.id,
+      },
+    };
+    let reused = false;
+    let job: Awaited<ReturnType<JobService["submit"]>>;
+    if (lease) {
+      const intent: SandboxJobSubmission = {
+        nodeId: node.id,
+        invocation,
+        name: jobData.name,
+        command: jobData.command,
+        resources: jobData.resources,
         envVars: {},
         inputStaging: preparedInputs.inputStaging,
-        ...(Object.keys(preparedInputs.dataInputs).length > 0
-          ? { dataInputs: preparedInputs.dataInputs }
+        dataInputs: preparedInputs.dataInputs,
+        expectedOutputs: jobData.expectedOutputs ?? [],
+        ...(jobData.schedulingStrategy?.queueId
+          ? { schedulingStrategy: { queueId: jobData.schedulingStrategy.queueId } }
           : {}),
-        expectedOutputs: Object.entries(node.outputs)
-          .filter(([, output]) => output.type === "Text" || output.type === "JSON")
-          .map(([descriptor]) => ({
-            descriptor,
-            path: `outputs/${descriptor}`,
-            isBatch: false,
-          })),
-        ...(node.schedulingStrategy.type === "Manual" && node.schedulingStrategy.queues[0]
-          ? { schedulingStrategy: { queueId: node.schedulingStrategy.queues[0] } }
-          : {}),
-      },
-      this.options.submittedBy,
-      {
-        ...(this.options.orgId !== undefined ? { orgId: this.options.orgId } : {}),
-        trustedMaterialization: source.assetRevisionId !== null,
-        ...(source.assetRevisionId
-          ? {
-              trustedSandboxScript: {
-                revisionId: source.assetRevisionId,
-                sha256: source.sha256,
-              },
-            }
-          : {}),
-        workflow: {
-          runId: this.options.workflowRunId,
-          nodeId: node.id,
+        sandbox: {
+          node,
+          source,
+          runtime,
+          mounts: preparedInputs.mounts,
+          executionIdentity: requestedIdentity,
+          limits: this.options.limits,
+          submittedBy: this.options.submittedBy,
+          orgId: this.options.orgId ?? null,
+          role: this.options.userRole,
         },
-      },
-    );
+      };
+      const bound = await bindWorkflowExecutionJob(lease, intent, (tx) =>
+        this.options.jobService.submitInTransaction(
+          tx,
+          jobData,
+          this.options.submittedBy,
+          jobOptions,
+        ),
+      );
+      const saved = await this.options.jobService.getById(bound.jobId);
+      if (!saved) throw new WorkflowExecutionInterrupted("Bound Sandbox job is unavailable");
+      job = saved;
+      reused = bound.reused;
+    } else {
+      job = await this.options.jobService.submit(jobData, this.options.submittedBy, jobOptions);
+    }
     await this.options.authorizeJobSubmission({
       jobId: job.id,
       orgId: job.orgId,
       queueId: job.queueId,
     });
+    await lease?.renew();
     const scriptContent = Buffer.from(source.content, "utf8");
     const bundleSha256 = sandboxBundleSha256({
       language: source.language,
       entrypoint: source.entrypoint,
       sha256: source.sha256,
     });
-    const dispatch = await this.options.orchestrator.placeAndDispatch({
+    const alreadyTerminal = reused && ["completed", "failed", "cancelled"].includes(job.status);
+    const dispatch = await this.dispatchJob(job, reused, {
       jobId: job.id,
       restrictedNoEgress: job.restrictedNoEgress,
       workflowRunId: this.options.workflowRunId,
@@ -523,7 +600,10 @@ export class SandboxNodeExecutor {
         },
       },
     });
-    if ((!dispatch.dispatched && !dispatch.pendingDelivery) || !dispatch.selectedAgentId) {
+    if (
+      !alreadyTerminal &&
+      ((!dispatch.dispatched && !dispatch.pendingDelivery) || !dispatch.selectedAgentId)
+    ) {
       return {
         status: "Failed",
         values: {},
@@ -531,6 +611,8 @@ export class SandboxNodeExecutor {
       };
     }
     const completion = await this.options.awaitCompletion(job.id);
+    await lease?.renew();
+    // shortcut: statistics may repeat after recovery; add per-Job accounting before enabling auto-resume.
     if (completion.status !== "completed") {
       await this.recordStats({
         assetRevisionId: source.assetRevisionId,
@@ -551,6 +633,8 @@ export class SandboxNodeExecutor {
         },
       };
     }
+    if (!dispatch.selectedAgentId)
+      throw new WorkflowExecutionInterrupted("Completed Sandbox job has no execution Agent");
     const [agent] = await this.options.db
       .select({ siteId: agents.siteId, clusterId: agents.clusterId })
       .from(agents)
@@ -567,6 +651,7 @@ export class SandboxNodeExecutor {
       const artifact = await this.options.artifactService.registerLocal({
         workflowRunId: this.options.workflowRunId,
         producerNodeId: node.id,
+        producerJobId: job.id,
         descriptor,
         ioType: output.type,
         contentHash: fact.sha256,
@@ -593,6 +678,36 @@ export class SandboxNodeExecutor {
       succeeded: true,
     });
     return { status: "Succeeded", values };
+  }
+
+  private async dispatchJob(
+    job: Awaited<ReturnType<JobService["submit"]>>,
+    reused: boolean,
+    input: PlaceAndDispatchInput,
+  ): Promise<PlaceAndDispatchResult> {
+    const alreadyTerminal = reused && ["completed", "failed", "cancelled"].includes(job.status);
+    if (reused && job.agentId && !alreadyTerminal) {
+      const [pending] = await this.options.db
+        .select()
+        .from(jobDispatchOutbox)
+        .where(eq(jobDispatchOutbox.jobId, job.id));
+      if (
+        !pending ||
+        pending.agentId !== job.agentId ||
+        pending.dispatchEpoch !== job.dispatchEpoch
+      )
+        throw new WorkflowExecutionInterrupted(
+          "Bound Sandbox job is awaiting dispatch preparation recovery",
+        );
+    }
+    if (reused && (job.agentId || alreadyTerminal))
+      return {
+        dispatched: alreadyTerminal,
+        pendingDelivery: !alreadyTerminal,
+        selectedAgentId: job.agentId,
+        rejections: [],
+      };
+    return this.options.orchestrator.placeAndDispatch(input);
   }
 
   private async restrictedExecutionProfileForAgent(agentId: string) {
