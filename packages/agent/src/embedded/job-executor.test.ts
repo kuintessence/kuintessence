@@ -21,6 +21,7 @@ function makeAdapter(opts: {
     version: "0.0",
     submit: opts.submit ?? (async () => ({ schedulerJobId: "scheduler-1" })),
     cancel: async () => {},
+    confirmStopped: async () => true,
     status: async () => {
       const s = opts.statuses?.[i++] ?? { status: "completed" };
       return s;
@@ -244,7 +245,7 @@ describe("JobRunner", () => {
     finishPersist?.();
     await runPromise;
 
-    expect(events).toEqual(["persist-start", "persist-done", "release", "finished"]);
+    expect(events).toEqual(["persist-start", "persist-done", "finished", "release"]);
   });
 
   test("does not release or finish a job when terminal durability fails", async () => {
@@ -424,6 +425,7 @@ describe("JobRunner", () => {
       version: "0",
       submit: async () => ({ schedulerJobId: "x" }),
       cancel: async () => {},
+      confirmStopped: async () => true,
       status: async () => {
         if (i++ === 0) throw new Error("transient");
         return { status: "completed", exitCode: 0 };
@@ -565,6 +567,7 @@ describe("JobRunner", () => {
           return { schedulerJobId: "x" };
         },
         cancel: async () => {},
+        confirmStopped: async () => true,
         status: async () => ({ status: "completed" }),
       },
       ensureWorkingDir: async (p) => {
@@ -623,6 +626,7 @@ describe("JobRunner", () => {
       version: "0",
       submit: async () => ({ schedulerJobId: "x" }),
       cancel: async () => {},
+      confirmStopped: async () => true,
       status: async () => {
         polls++;
         return { status: "running" };
@@ -792,6 +796,7 @@ describe("JobRunner", () => {
       cancel: async (id) => {
         cancelCalls.push(id);
       },
+      confirmStopped: async () => true,
       status: async () => ({ status: "running" }), // never terminal
     };
     ref.runner = new JobRunner({
@@ -904,4 +909,34 @@ test("a resumed queued job acknowledges its original scheduler id using the obse
   await runner.resume(baseSpec, "original");
   expect(reports.map(({ status }) => status)).toEqual(["queued", "completed"]);
   expect(reports[0]?.schedulerJobId).toBe("original");
+});
+
+test("unconfirmed cancellation retains inputs and can be retried after the scheduler stops", async () => {
+  const poll = Promise.withResolvers<void>();
+  const polling = Promise.withResolvers<void>();
+  let stopped = false;
+  let cleanups = 0;
+  const adapter = makeAdapter({});
+  adapter.confirmStopped = async () => stopped;
+  const runner = new JobRunner({
+    adapter,
+    onStatusUpdate: () => {},
+    onJobFinished: () => {
+      cleanups++;
+    },
+    sleep: () => {
+      polling.resolve();
+      return poll.promise;
+    },
+  });
+  const running = runner.run(baseSpec);
+  await polling.promise;
+  await expect(runner.cancelAndKill()).rejects.toThrow("stop is not confirmed");
+  expect(cleanups).toBe(0);
+  stopped = true;
+  await runner.cancelAndKill();
+  expect(cleanups).toBe(0);
+  poll.resolve();
+  await running;
+  expect(cleanups).toBe(1);
 });

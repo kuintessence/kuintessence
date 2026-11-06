@@ -61,6 +61,7 @@ import type { Logger } from "pino";
 import {
   COMPUTE_HEALTH_REASONS,
   type ComputeHealthObservation,
+  cancelAndConfirmStopped,
   JobLogUnavailableError,
   type JobSpec,
   type KuintessenceJobLookup,
@@ -364,6 +365,14 @@ const MAX_JOB_LOG_LINES = 5_000;
 const MAX_JOB_LOG_BYTES = 1024 * 1024;
 const DEFAULT_DATA_SCAN_TIMEOUT_MS = 300_000;
 const MAX_COMPLETED_DATA_SCANS = 512;
+
+function epochFromDispatchId(jobId: string, dispatchId?: string): number | undefined {
+  if (!dispatchId?.startsWith(`${jobId}:`)) return undefined;
+  const value = dispatchId.slice(jobId.length + 1);
+  if (!/^\d+$/.test(value)) return undefined;
+  const epoch = Number(value);
+  return Number.isSafeInteger(epoch) ? epoch : undefined;
+}
 
 function schedulerSubmissionTag(jobId: string): string {
   return `kq-${jobId.replaceAll("-", "").slice(0, 11)}`;
@@ -692,6 +701,8 @@ export class AgentStream {
   >();
   private readonly federationSpecs = new WeakSet<JobSpec>();
   private schedulerRecovery: Promise<void> | undefined;
+  private readonly jobCancellationSettlements = new Map<string, Promise<void>>();
+  private readonly jobPreparations = new Map<string, Promise<void>>();
   private readonly federationExecution = new FederationExecutionClient((request) => {
     if (
       !this.connected ||
@@ -879,7 +890,8 @@ export class AgentStream {
         }
       },
       onSubmissionUncertain: async (spec, err) => {
-        if (!this.federationSpecs.has(spec)) return false;
+        if (!this.federationSpecs.has(spec) && !this.unreconciledSubmittedJobs.has(spec.jobId))
+          return false;
         this.federationDispatches.get(spec.jobId)?.controller.abort();
         this.federationDispatches.delete(spec.jobId);
         this.logger.warn(
@@ -906,7 +918,7 @@ export class AgentStream {
           }
           const recoveryErrors: unknown[] = [err];
           try {
-            await deps.adapter.cancel(schedulerJobId);
+            await cancelAndConfirmStopped(deps.adapter, schedulerJobId);
           } catch (cancelError) {
             recoveryErrors.push(cancelError);
             try {
@@ -1261,7 +1273,11 @@ export class AgentStream {
               destroyRestrictedWorkRoot: false,
             });
             await this.deps.adapter.prepareResume?.(prepared.spec, schedulerJobId);
-            await this.cancelAndConfirmStopped(schedulerJobId);
+            await cancelAndConfirmStopped(
+              this.deps.adapter,
+              schedulerJobId,
+              schedulerLookupForSpec(prepared.spec),
+            );
             await this.onJobTransition({
               jobId: row.jobId,
               status: "cancelled",
@@ -1280,6 +1296,41 @@ export class AgentStream {
           );
         }
       }
+      const uncertain = new Set(
+        pending
+          .filter((row) => row.payload.federationSubmissionStarted === true)
+          .map((row) => row.jobId),
+      );
+      for (const intent of (await this.cleanupIntents?.list()) ?? []) {
+        if (!this.running) return;
+        if (uncertain.has(intent.jobId)) continue;
+        try {
+          const epoch = await this.revocationTombstones?.revokedEpoch(intent.jobId);
+          const dispatchEpoch = epochFromDispatchId(
+            intent.jobId,
+            active.get(intent.jobId)?.dispatchId,
+          );
+          const tombstoneApplies =
+            epoch !== undefined && (dispatchEpoch === undefined || epoch >= dispatchEpoch);
+          if (!intent.revoked && !tombstoneApplies) continue;
+          if (intent.revokeReason === "JOB_CANCELLED" || (!intent.revoked && tombstoneApplies)) {
+            if (epoch === undefined)
+              throw new Error("Revoked job has no durable cancellation epoch");
+            await this.requestJobCancellation(intent.jobId, epoch);
+          } else {
+            await this.revokeDataDelivery(
+              intent.jobId,
+              intent.restrictedWorkRoot,
+              intent.revokeReason ?? "DATA_GRANT_REVOKED",
+            );
+          }
+        } catch (err) {
+          this.logger.warn(
+            { err, jobId: intent.jobId },
+            "Revoked job stop or cleanup remains pending",
+          );
+        }
+      }
       await this.recoverActiveRemoteJobs();
     };
     const pending = recover()
@@ -1291,20 +1342,6 @@ export class AgentStream {
       });
     this.schedulerRecovery = pending;
     return pending;
-  }
-
-  private async cancelAndConfirmStopped(schedulerJobId: string): Promise<void> {
-    let cancelError: unknown;
-    try {
-      await this.deps.adapter.cancel(schedulerJobId);
-    } catch (err) {
-      cancelError = err;
-    }
-    if (await this.deps.adapter.confirmStopped?.(schedulerJobId)) return;
-    throw new AggregateError(
-      cancelError ? [cancelError] : [],
-      "Scheduler stop is not confirmed; retaining job inputs",
-    );
   }
 
   private async recoverActiveRemoteJobs(): Promise<void> {
@@ -1327,7 +1364,10 @@ export class AgentStream {
         if (dispatchId) this.dispatchIdsByJob.set(job.jobId, dispatchId);
         if (
           revokedJobIds.has(job.jobId) ||
-          ((await this.revocationTombstones?.revokedEpoch(job.jobId)) ?? 0) > 0
+          !(await this.isDispatchEpochAllowed(
+            job.jobId,
+            epochFromDispatchId(job.jobId, dispatchId) ?? 0,
+          ))
         ) {
           this.logger.warn({ jobId: job.jobId }, "Skipping revoked job recovery");
           continue;
@@ -1390,8 +1430,19 @@ export class AgentStream {
           if (lookup.status === "indeterminate") {
             throw new Error(`scheduler UUID lookup is indeterminate: ${lookup.reason}`);
           }
-          if (lookup.status === "found") {
-            await this.deps.adapter.cancel(lookup.schedulerJobId);
+          const activeJob = active.find((job) => job.jobId === intent.jobId);
+          const schedulerJobId =
+            activeJob?.schedulerJobId ??
+            intent.schedulerJobId ??
+            (lookup.status === "found" ? lookup.schedulerJobId : undefined);
+          if (schedulerJobId) {
+            if (activeJob) await this.deps.adapter.prepareResume?.(activeJob.spec, schedulerJobId);
+            await cancelAndConfirmStopped(this.deps.adapter, schedulerJobId, {
+              jobId: intent.jobId,
+              namespace: intent.schedulerNamespace,
+            });
+          } else if (intent.schedulerSubmissionTag) {
+            throw new Error("Scheduler submission outcome is unknown; retaining cleanup intent");
           }
           const cleanupResults = await Promise.allSettled([
             (async () => {
@@ -2955,7 +3006,7 @@ export class AgentStream {
           });
           return;
         }
-        (async () => {
+        const preparation = (async () => {
           const authorized = (await this.renewFederationExecution(dj))?.dispatch ?? dj;
           return processor.prepare(
             dj.jobId,
@@ -3064,6 +3115,7 @@ export class AgentStream {
             this.logger.warn({ jobId: dj.jobId, err }, "Sandbox dispatch rejected");
             await this.onJobTransition({ jobId: dj.jobId, status: "failed", message });
           });
+        this.trackJobPreparation(dj.jobId, preparation);
         return;
       }
       const spec: JobSpec = {
@@ -3109,10 +3161,8 @@ export class AgentStream {
         );
         await this.onJobTransition({ jobId: dj.jobId, status: "failed", message });
       });
+      const tracked = this.trackJobPreparation(dj.jobId, preparation);
       if (dj.spackExecution) {
-        const tracked = preparation.catch(() => {
-          this.logger.error({ jobId: dj.jobId }, "Failed to report Spack dispatch failure");
-        });
         this.pendingSpackPreparations.add(tracked);
         void tracked.then(() => {
           this.pendingSpackPreparations.delete(tracked);
@@ -3178,6 +3228,12 @@ export class AgentStream {
           throw new Error("durable revocation tombstone store is not configured");
         }
         await this.revocationTombstones.record(jobId, revokedEpoch);
+        const currentEpoch = await this.currentDispatchEpoch(jobId);
+        if (currentEpoch !== undefined && currentEpoch > revokedEpoch) {
+          this.outboundQueue.push({ kind: "dataDeliveryRevokeAck", jobId, reasonCode });
+          this.signalOutbound();
+          return;
+        }
         await this.cleanupIntents.recordRevoked(jobId, {
           reason: reasonCode,
           destroyRestrictedWorkRoot,
@@ -3927,10 +3983,43 @@ export class AgentStream {
     await remove(jobId);
   }
 
+  private trackJobPreparation(jobId: string, preparation: Promise<unknown>): Promise<void> {
+    const tracked = preparation.then(
+      () => {},
+      (err: unknown) => {
+        this.logger.error({ err, jobId }, "Failed to settle job preparation");
+      },
+    );
+    this.jobPreparations.set(jobId, tracked);
+    void tracked.then(() => {
+      if (this.jobPreparations.get(jobId) === tracked) this.jobPreparations.delete(jobId);
+    });
+    return tracked;
+  }
+
+  private async currentDispatchEpoch(jobId: string): Promise<number | undefined> {
+    const live = this.federationDispatches.get(jobId)?.dispatch.dispatchEpoch;
+    if (live !== undefined) return Number(live);
+    const preparing =
+      this.recoveringFederationDispatches.get(jobId)?.epoch ??
+      this.spackActivations.get(jobId)?.epoch;
+    if (preparing !== undefined) return preparing;
+    const local = epochFromDispatchId(jobId, this.dispatchIdsByJob.get(jobId));
+    if (local !== undefined) return local;
+    const active = (await this.activeRemoteJobs?.listActive())?.find((job) => job.jobId === jobId);
+    return epochFromDispatchId(jobId, active?.dispatchId);
+  }
+
   private async requestJobCancellation(jobId: string, revokedEpoch: number): Promise<void> {
     const tombstones = this.revocationTombstones;
     if (!tombstones) throw new Error("durable revocation tombstone store is not configured");
     await tombstones.record(jobId, revokedEpoch);
+    const currentEpoch = await this.currentDispatchEpoch(jobId);
+    if (currentEpoch !== undefined && currentEpoch > revokedEpoch) {
+      this.outboundQueue.push({ kind: "cancelJobAck", jobId, revokedEpoch });
+      this.signalOutbound();
+      return;
+    }
     const recovering = this.recoveringFederationDispatches.get(jobId);
     if (recovering && recovering.epoch <= revokedEpoch) recovering.controller.abort();
     const federation = this.federationDispatches.get(jobId);
@@ -3977,12 +4066,21 @@ export class AgentStream {
     await entry.settle;
   }
 
-  private async settleJobCancellation(jobId: string): Promise<void> {
+  private settleJobCancellation(jobId: string): Promise<void> {
+    const pending = this.jobCancellationSettlements.get(jobId);
+    if (pending) return pending;
+    const settle = this.performJobCancellation(jobId).finally(() => {
+      this.jobCancellationSettlements.delete(jobId);
+    });
+    this.jobCancellationSettlements.set(jobId, settle);
+    return settle;
+  }
+
+  private async performJobCancellation(jobId: string): Promise<void> {
+    await this.jobPreparations.get(jobId);
     const hadActiveRunner = this.pool.get(jobId) !== undefined;
-    if (hadActiveRunner) {
-      await this.pool.cancel(jobId);
-      await this.pool.await(jobId);
-    }
+    const runnerCancelled = hadActiveRunner ? await this.pool.cancel(jobId) : false;
+    if (hadActiveRunner) await this.pool.await(jobId);
 
     const [active, intent] = await Promise.all([
       this.activeRemoteJobs?.listActive() ?? Promise.resolve([]),
@@ -3998,12 +4096,23 @@ export class AgentStream {
       return;
     }
 
-    if (schedulerJobId) {
-      await this.cancelSchedulerJobOrConfirmAbsent(jobId, schedulerJobId, intent);
-    } else {
-      const lookup = await this.lookupSchedulerJob(jobId, intent);
-      if (lookup.status === "found") {
-        await this.deps.adapter.cancel(lookup.schedulerJobId);
+    if (!runnerCancelled) {
+      if (schedulerJobId) {
+        if (activeJob) await this.deps.adapter.prepareResume?.(activeJob.spec, schedulerJobId);
+        await cancelAndConfirmStopped(this.deps.adapter, schedulerJobId, {
+          jobId,
+          namespace: intent?.schedulerNamespace,
+        });
+      } else {
+        const lookup = await this.lookupSchedulerJob(jobId, intent);
+        if (lookup.status === "found") {
+          await cancelAndConfirmStopped(this.deps.adapter, lookup.schedulerJobId, {
+            jobId,
+            namespace: intent?.schedulerNamespace,
+          });
+        } else if (intent?.schedulerSubmissionTag) {
+          throw new Error("Scheduler submission outcome is unknown; retaining job inputs");
+        }
       }
     }
 
@@ -4012,31 +4121,7 @@ export class AgentStream {
     if (intent) await this.cleanupIntents?.clear(jobId);
     this.unreconciledSubmittedJobs.delete(jobId);
     await this.releaseImplicitJobWorkRoot(jobId);
-  }
-
-  private async cancelSchedulerJobOrConfirmAbsent(
-    jobId: string,
-    schedulerJobId: string,
-    intent: JobCleanupIntent | undefined,
-  ): Promise<void> {
-    try {
-      await this.deps.adapter.cancel(schedulerJobId);
-    } catch (cancelError) {
-      let lookup: Awaited<ReturnType<NonNullable<SchedulerAdapter["findByKuintessenceJobId"]>>>;
-      try {
-        lookup = await this.lookupSchedulerJob(jobId, intent);
-      } catch (lookupError) {
-        throw new AggregateError(
-          [cancelError, lookupError],
-          "Scheduler cancellation failed and its final state could not be reconciled",
-        );
-      }
-      if (lookup.status === "not_found") return;
-      throw new AggregateError(
-        [cancelError],
-        "Scheduler cancellation failed while the job remains present",
-      );
-    }
+    if (schedulerJobId) await this.deps.adapter.releaseJob?.(schedulerJobId);
   }
 
   private async lookupSchedulerJob(
@@ -4134,37 +4219,17 @@ export class AgentStream {
   ): Promise<void> {
     this.recoveringFederationDispatches.get(jobId)?.controller.abort();
     this.federationDispatches.get(jobId)?.controller.abort();
-    const schedulerCancellation = this.pool.get(jobId)
-      ? this.pool.cancel(jobId)
-      : Promise.resolve();
-    const mounts = this.licensedMaterialMounts.get(jobId);
-    const cleanup = await Promise.allSettled([
-      schedulerCancellation,
-      this.deps.dataDeliveryExecutor?.release(jobId) ?? Promise.resolve(),
-      mounts && this.deps.licensedMaterialResolver
-        ? this.deps.licensedMaterialResolver.release(mounts)
-        : Promise.resolve(),
-      destroyRestrictedWorkRoot ? this.removeRestrictedWorkRoot(jobId) : Promise.resolve(),
-    ]);
-    const failures = cleanup.flatMap((result) =>
-      result.status === "rejected" ? [result.reason] : [],
-    );
-    if (failures.length > 0) {
-      this.logger.error(
-        { err: new AggregateError(failures), jobId },
-        "Data delivery revocation cleanup failed; durable intent retained",
-      );
-      return;
-    }
-    this.licensedMaterialMounts.delete(jobId);
-    if (destroyRestrictedWorkRoot) this.restrictedWorkRoots.delete(jobId);
+    this.spackActivations.get(jobId)?.controller.abort();
+    if (destroyRestrictedWorkRoot) this.restrictedWorkRoots.add(jobId);
     try {
-      await this.activeRemoteJobs?.markFinished(jobId);
-      await this.cleanupIntents?.clear(jobId);
+      await this.settleJobCancellation(jobId);
       this.outboundQueue.push({ kind: "dataDeliveryRevokeAck", jobId, reasonCode });
       this.signalOutbound();
     } catch (error) {
-      this.logger.error({ err: error, jobId }, "Data delivery cleanup state could not be cleared");
+      this.logger.error(
+        { err: error, jobId },
+        "Data delivery stop or cleanup is unconfirmed; retaining durable intent",
+      );
     }
   }
 

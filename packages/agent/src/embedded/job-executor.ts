@@ -1,6 +1,11 @@
 import { createLogger, type QueueFailureCode } from "@kuintessence/shared";
 import type { Logger } from "pino";
-import { type JobSpec, QueueValidationError, type SchedulerAdapter } from "../adapters/base";
+import {
+  cancelAndConfirmStopped,
+  type JobSpec,
+  QueueValidationError,
+  type SchedulerAdapter,
+} from "../adapters/base";
 import { queueFailureCode } from "../adapters/queue-inventory";
 import type { ExpectedOutput } from "../output-collector";
 
@@ -87,6 +92,7 @@ export class JobRunner {
   private userCancelRequested = false;
   private killRequested = false;
   private killed = false;
+  private pendingKill: Promise<void> | undefined;
   private schedulerJobId: string | null = null;
   private jobId: string | null = null;
   private jobFinished = false;
@@ -149,10 +155,11 @@ export class JobRunner {
       return this.reportSubmissionFailure(spec, err);
     }
 
-    if (this.killRequested) {
-      await this.killScheduler();
+    try {
+      if (this.killRequested) await this.killScheduler();
+    } finally {
+      this.markSchedulerSubmissionSettled();
     }
-    this.markSchedulerSubmissionSettled();
 
     await this.pollUntilTerminal(spec, schedulerJobId, expectedOutputs);
     return schedulerJobId;
@@ -367,9 +374,13 @@ export class JobRunner {
       }
     }
 
+    if (!terminal && this.userCancelRequested) {
+      await this.killScheduler();
+      terminal = this.killed;
+    }
     if (terminal) {
-      await adapter.releaseJob?.(schedulerJobId);
       await this.notifyJobFinished(spec.jobId);
+      await adapter.releaseJob?.(schedulerJobId);
     }
   }
 
@@ -410,7 +421,7 @@ export class JobRunner {
 
   /**
    * User-initiated cancel: stop polling AND kill the cluster job (scancel/qdel).
-   * Idempotent — the scheduler is asked to cancel at most once.
+   * Concurrent requests share one stop check; an unconfirmed stop remains retryable.
    */
   async cancelAndKill(): Promise<void> {
     this.userCancelRequested = true;
@@ -423,29 +434,26 @@ export class JobRunner {
   }
 
   async waitForPendingCancellation(): Promise<void> {
-    if (!this.killRequested || this.killed || this.schedulerSubmissionSettled) return;
-    await this.schedulerSubmission;
+    if (!this.killRequested || this.killed) return;
+    if (!this.schedulerSubmissionSettled) await this.schedulerSubmission;
+    if (this.schedulerSubmissionStarted && !this.schedulerJobId)
+      throw new Error("Scheduler submission outcome is unknown; cancellation remains pending");
+    await this.killScheduler();
   }
 
-  /** Ask the scheduler to cancel the job at most once. No-op without an id. */
   private async killScheduler(): Promise<void> {
     if (this.killed || !this.schedulerJobId) return;
-    this.killed = true;
-    try {
-      await this.deps.adapter.cancel(this.schedulerJobId);
-      this.logger.info(
-        { jobId: this.jobId, schedulerJobId: this.schedulerJobId },
-        "Scheduler job cancelled",
-      );
-      if (this.jobId) {
-        await this.notifyJobFinished(this.jobId);
-      }
-    } catch (err) {
-      this.logger.warn(
-        { jobId: this.jobId, schedulerJobId: this.schedulerJobId, err },
-        "Failed to cancel scheduler job",
-      );
-    }
+    if (this.pendingKill) return this.pendingKill;
+    const schedulerJobId = this.schedulerJobId;
+    const kill = async () => {
+      await cancelAndConfirmStopped(this.deps.adapter, schedulerJobId);
+      this.killed = true;
+      this.logger.info({ jobId: this.jobId, schedulerJobId }, "Scheduler job stop confirmed");
+    };
+    this.pendingKill = kill().finally(() => {
+      this.pendingKill = undefined;
+    });
+    return this.pendingKill;
   }
 
   private async notifyJobFinished(jobId: string): Promise<void> {

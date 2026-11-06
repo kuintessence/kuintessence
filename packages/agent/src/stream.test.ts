@@ -90,6 +90,7 @@ function makeAdapter(
   opts: {
     submit?: (spec: JobSpec) => Promise<{ schedulerJobId: string }>;
     cancel?: (schedulerJobId: string) => Promise<void>;
+    confirmStopped?: SchedulerAdapter["confirmStopped"];
     findByKuintessenceJobId?: (
       lookup: KuintessenceJobLookup,
     ) => Promise<KuintessenceJobLookupResult>;
@@ -111,6 +112,7 @@ function makeAdapter(
     version: "23.02.7",
     submit: opts.submit ?? (async () => ({ schedulerJobId: "sched-1" })),
     cancel: opts.cancel ?? (async () => {}),
+    confirmStopped: opts.confirmStopped ?? (async () => true),
     status: async () => opts.statusSeq?.[i++] ?? { status: "completed", exitCode: 0 },
     findByKuintessenceJobId:
       opts.findByKuintessenceJobId ?? (async () => ({ status: "not_found" })),
@@ -1987,7 +1989,10 @@ describe("AgentStream", () => {
     ]);
   });
 
-  test("durable cancellation during pre-run preparation emits cancelled after cleanup", async () => {
+  test.each([
+    "job",
+    "data",
+  ] as const)("durable %s cancellation during pre-run preparation waits for cleanup", async (kind) => {
     const db = createSqliteDb(":memory:");
     const inboundAcks = new InboundAcks(db);
     const outboundQueue = new OutboundQueue(db);
@@ -2022,6 +2027,7 @@ describe("AgentStream", () => {
       inboundAcks,
       outboundQueue,
       revocationTombstones,
+      cleanupIntents: new JobCleanupIntents(db),
       prepareJobWorkRoot: async () => {
         markPreparationStarted?.();
         await preparation;
@@ -2056,8 +2062,30 @@ describe("AgentStream", () => {
     );
     await preparationStarted;
 
-    await harness.handleServerMessage(cancelJobMessage("cancel-preparation", 1));
+    let cancellationComplete = false;
+    const cancelling = harness
+      .handleServerMessage(
+        kind === "job"
+          ? cancelJobMessage("cancel-preparation", 1)
+          : create(ServerMessageSchema, {
+              payload: {
+                case: "dataDeliveryRevoke",
+                value: {
+                  jobId: "cancel-preparation",
+                  revokedEpoch: 1n,
+                  reasonCode: "DATA_GRANT_REVOKED",
+                  destroyRestrictedWorkRoot: false,
+                },
+              },
+            }),
+      )
+      .then(() => {
+        cancellationComplete = true;
+      });
+    await settle();
+    expect(cancellationComplete).toBe(false);
     releasePreparation?.();
+    await cancelling;
     await waitForCondition(async () => (await outboundQueue.pendingCount()) === 1);
 
     const replay = (await outboundQueue.loadForReplay()).map((entry) => entry.item);
@@ -3956,6 +3984,7 @@ describe("AgentStream", () => {
         cancel: async () => {
           throw new Error("scheduler rejected cancellation");
         },
+        confirmStopped: async () => false,
       }),
       agentId: "agent-001",
       siteName: "test-site",
@@ -8578,3 +8607,193 @@ test.each([
     await rm(root, { recursive: true, force: true });
   }
 }, 15_000);
+
+test.each([
+  "job",
+  "data",
+  "tombstone-only",
+] as const)("retries %s revocation until stop and cleanup are confirmed", async (kind) => {
+  const db = createSqliteDb(":memory:");
+  const active = new ActiveRemoteJobs(db);
+  const intents = new JobCleanupIntents(db);
+  const tombstones = new JobRevocationTombstones(db);
+  const jobId = crypto.randomUUID();
+  await active.recordSubmitted({
+    schedulerJobId: "original-id",
+    dispatchId: `${jobId}:3`,
+    expectedOutputs: [],
+    spec: {
+      jobId,
+      name: "original",
+      command: "true",
+      cpus: 1,
+      memoryMb: 128,
+      gpus: 0,
+      wallTimeSec: 60,
+      workingDir: "/managed/original",
+      envVars: {},
+    },
+  });
+  await intents.recordSchedulerSubmitting(jobId, {
+    schedulerName: "original",
+    schedulerNamespace: "original-ns",
+  });
+  await intents.recordSchedulerSubmitted(jobId, "original-id");
+  await intents.recordDataDelivery(jobId, {
+    bindingId: "input",
+    targetPath: "/managed/original/input",
+    method: "stage-copy",
+  });
+  let stopped = false;
+  let failCleanup = true;
+  let cancelled = 0;
+  let cleanupCalls = 0;
+  const acknowledgements: string[] = [];
+  const adapter = makeAdapter({
+    cancel: async (id) => {
+      expect(id).toBe("original-id");
+      cancelled++;
+    },
+    confirmStopped: async () => stopped,
+    submit: async () => {
+      throw new Error("revocation must not submit");
+    },
+  });
+  const stream = new AgentStream({
+    client: makePendingRegisteredClient(false, false, {
+      supported: false,
+      onMessage: async (message) => {
+        if (
+          message.payload.case === "cancelJobAck" ||
+          message.payload.case === "dataDeliveryRevokeAck"
+        )
+          acknowledgements.push(message.payload.case);
+      },
+    }),
+    adapter,
+    agentId: "agent",
+    siteName: "site",
+    logger: silent,
+    heartbeatIntervalMs: 20,
+    inboundAcks: new InboundAcks(db),
+    activeRemoteJobs: active,
+    cleanupIntents: intents,
+    revocationTombstones: tombstones,
+    dataDeliveryExecutor: {
+      prepare: async () => [],
+      recover: async () => {},
+      release: async () => {
+        cleanupCalls++;
+        if (failCleanup) throw new Error("temporary cleanup failure");
+      },
+    },
+  });
+  activeStreams.push(stream);
+  if (kind === "tombstone-only") {
+    await tombstones.record(jobId, 3);
+  } else {
+    await deliverServerMessage(
+      stream,
+      kind === "job"
+        ? cancelJobMessage(jobId, 3)
+        : create(ServerMessageSchema, {
+            payload: {
+              case: "dataDeliveryRevoke",
+              value: {
+                jobId,
+                reasonCode: "DATA_GRANT_REVOKED",
+                revokedEpoch: 3n,
+                destroyRestrictedWorkRoot: false,
+              },
+            },
+          }),
+    );
+    expect(cancelled).toBe(1);
+    expect(cleanupCalls).toBe(0);
+  }
+  const running = stream.start();
+  try {
+    await waitForCondition(() => cancelled >= 2);
+    expect(cleanupCalls).toBe(0);
+    expect(acknowledgements).toEqual([]);
+    expect(await active.listActive()).toHaveLength(1);
+    stopped = true;
+    await waitForCondition(() => cleanupCalls > 0);
+    expect(acknowledgements).toEqual([]);
+    expect(await intents.list()).toHaveLength(1);
+    failCleanup = false;
+    await waitForCondition(() => acknowledgements.length > 0);
+    expect(new Set(acknowledgements)).toEqual(
+      new Set([kind === "data" ? "dataDeliveryRevokeAck" : "cancelJobAck"]),
+    );
+    expect(await active.listActive()).toHaveLength(0);
+    expect(await intents.list()).toHaveLength(0);
+  } finally {
+    await stream.stop();
+    await running;
+  }
+});
+
+test.each([
+  "job",
+  "data",
+] as const)("a delayed %s revocation cannot cancel a newer dispatch epoch", async (kind) => {
+  const db = createSqliteDb(":memory:");
+  const active = new ActiveRemoteJobs(db);
+  const intents = new JobCleanupIntents(db);
+  const jobId = crypto.randomUUID();
+  await active.recordSubmitted({
+    schedulerJobId: "new-id",
+    dispatchId: `${jobId}:3`,
+    expectedOutputs: [],
+    spec: {
+      jobId,
+      name: "new",
+      command: "true",
+      cpus: 1,
+      memoryMb: 128,
+      gpus: 0,
+      wallTimeSec: 60,
+      workingDir: "",
+      envVars: {},
+    },
+  });
+  await intents.recordSchedulerSubmitted(jobId, "new-id");
+  let cancelled = 0;
+  const stream = new AgentStream({
+    client: makeMockClient([]).client,
+    adapter: makeAdapter({
+      cancel: async () => {
+        cancelled++;
+      },
+    }),
+    agentId: "agent",
+    siteName: "site",
+    heartbeatIntervalMs: 60_000,
+    logger: silent,
+    activeRemoteJobs: active,
+    cleanupIntents: intents,
+    revocationTombstones: new JobRevocationTombstones(db),
+  });
+  activeStreams.push(stream);
+  await deliverServerMessage(
+    stream,
+    kind === "job"
+      ? cancelJobMessage(jobId, 2)
+      : create(ServerMessageSchema, {
+          payload: {
+            case: "dataDeliveryRevoke",
+            value: {
+              jobId,
+              reasonCode: "DATA_GRANT_REVOKED",
+              revokedEpoch: 2n,
+              destroyRestrictedWorkRoot: false,
+            },
+          },
+        }),
+  );
+  expect(cancelled).toBe(0);
+  expect((await intents.list())[0]?.revoked).toBe(false);
+  expect(await active.listActive()).toHaveLength(1);
+  await stream.stop();
+});

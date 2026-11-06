@@ -11,6 +11,9 @@ function fakeAdapter(): SchedulerAdapter {
       return { schedulerJobId: "S1" };
     },
     async cancel() {},
+    async confirmStopped() {
+      return true;
+    },
     async status() {
       polls += 1;
       return polls >= 2 ? { status: "completed", exitCode: 0 } : { status: "running" };

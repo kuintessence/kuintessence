@@ -380,21 +380,100 @@ export class K8sAdapter implements SchedulerAdapter {
     return { schedulerJobId: jobName };
   }
 
-  async cancel(schedulerJobId: string): Promise<void> {
-    const namespace = this.namespaceFor(schedulerJobId);
-    const { exitCode, stderr } = await this.spawner.run([
-      "kubectl",
-      "delete",
-      "job",
-      schedulerJobId,
-      "-n",
-      namespace,
-      "--ignore-not-found",
-    ]);
+  async cancel(schedulerJobId: string, lookup?: KuintessenceJobLookup): Promise<void> {
+    const namespace = lookup?.namespace ?? this.namespaceFor(schedulerJobId);
+    const { exitCode, stderr } = await this.spawner.run(
+      [
+        "kubectl",
+        "delete",
+        "job",
+        schedulerJobId,
+        "-n",
+        namespace,
+        "--ignore-not-found",
+        "--cascade=foreground",
+        "--wait=false",
+      ],
+      { timeoutMs: 5_000 },
+    );
     if (exitCode !== 0) {
       throw new Error(`kubectl delete failed (exit ${exitCode}): ${stderr.trim()}`);
     }
-    this.jobNamespaces.delete(schedulerJobId);
+  }
+
+  async confirmStopped(schedulerJobId: string, lookup?: KuintessenceJobLookup): Promise<boolean> {
+    const namespace = lookup?.namespace ?? this.namespaceFor(schedulerJobId);
+    const job = await this.spawner.run(
+      [
+        "kubectl",
+        "get",
+        "job",
+        schedulerJobId,
+        "-n",
+        namespace,
+        "--ignore-not-found",
+        "-o",
+        "json",
+      ],
+      { timeoutMs: 5_000 },
+    );
+    if (job.exitCode !== 0) throw new Error("Kubernetes job stop query failed");
+    if (job.stdout.trim()) {
+      const value: unknown = JSON.parse(job.stdout);
+      if (
+        !isRecord(value) ||
+        !isRecord(value.metadata) ||
+        value.metadata.name !== schedulerJobId ||
+        !isRecord(value.status)
+      )
+        throw new Error("Kubernetes job stop query returned an invalid identity or status");
+      const conditions = value.status.conditions;
+      if (
+        !Array.isArray(conditions) ||
+        !conditions.some(
+          (condition: unknown) =>
+            isRecord(condition) &&
+            (condition.type === "Complete" || condition.type === "Failed") &&
+            condition.status === "True",
+        )
+      )
+        return false;
+      if (value.status.active !== undefined && value.status.active !== 0) return false;
+    }
+    // Pods can outlive deletion of their Job. Owner references also cover pods whose labels changed.
+    const pods = await this.spawner.run(["kubectl", "get", "pods", "-n", namespace, "-o", "json"], {
+      timeoutMs: 5_000,
+    });
+    if (pods.exitCode !== 0) throw new Error("Kubernetes pod stop query failed");
+    const value: unknown = JSON.parse(pods.stdout);
+    if (!isRecord(value) || !Array.isArray(value.items))
+      throw new Error("Kubernetes pod stop query returned invalid data");
+    for (const pod of value.items) {
+      if (!isRecord(pod) || !isRecord(pod.metadata))
+        throw new Error("Kubernetes pod metadata is invalid");
+      const owners = pod.metadata.ownerReferences ?? [];
+      if (
+        !Array.isArray(owners) ||
+        owners.some(
+          (owner: unknown) =>
+            !isRecord(owner) || typeof owner.kind !== "string" || typeof owner.name !== "string",
+        )
+      )
+        throw new Error("Kubernetes pod owner references are invalid");
+      const labels = pod.metadata.labels;
+      const labeled =
+        isRecord(labels) &&
+        (labels["job-name"] === schedulerJobId ||
+          labels["batch.kubernetes.io/job-name"] === schedulerJobId);
+      const owned = owners.some(
+        (owner: unknown) =>
+          isRecord(owner) && owner.kind === "Job" && owner.name === schedulerJobId,
+      );
+      if (!labeled && !owned) continue;
+      if (!isRecord(pod.status) || !["Succeeded", "Failed"].includes(String(pod.status.phase)))
+        return false;
+    }
+    return true;
   }
 
   async inspectComputeHealth(): Promise<ComputeHealthObservation> {

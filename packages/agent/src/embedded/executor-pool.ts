@@ -111,11 +111,12 @@ export class ExecutorPool {
   }
 
   /** User-initiated cancel: stop polling AND kill the cluster job. */
-  async cancel(jobId: string): Promise<void> {
+  async cancel(jobId: string): Promise<boolean> {
     const runner = this.active.get(jobId);
-    if (!runner) return;
+    if (!runner) return false;
     await runner.cancelAndKill();
     await runner.waitForPendingCancellation();
+    return true;
   }
 
   get(jobId: string): JobRunner | undefined {

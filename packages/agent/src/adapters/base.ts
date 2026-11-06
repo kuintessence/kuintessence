@@ -543,10 +543,10 @@ export interface SchedulerAdapter {
   readonly version: string;
 
   submit(spec: JobSpec): Promise<JobResult>;
-  cancel(schedulerJobId: string): Promise<void>;
+  cancel(schedulerJobId: string, lookup?: KuintessenceJobLookup): Promise<void>;
   status(schedulerJobId: string): Promise<JobStatusResult>;
   /** Positive proof that execution stopped; missing/failed queries must not return true. */
-  confirmStopped?(schedulerJobId: string): Promise<boolean>;
+  confirmStopped?(schedulerJobId: string, lookup?: KuintessenceJobLookup): Promise<boolean>;
 
   inspectQueues?(): Promise<SchedulerQueueInventory>;
   validateQueueTarget?(target: QueueTargetValidation): Promise<QueueTargetValidationResult>;
@@ -581,4 +581,24 @@ export interface SchedulerAdapter {
   releaseJob?(schedulerJobId: string): void | Promise<void>;
   stageSandboxInputs?(sandbox: SandboxJobSpec, jobId: string): Promise<void>;
   stageSandboxOutputs?(sandbox: SandboxJobSpec, schedulerJobId: string): Promise<void>;
+}
+
+/** A cancellation response is not proof that processes have stopped. */
+export async function cancelAndConfirmStopped(
+  adapter: SchedulerAdapter,
+  schedulerJobId: string,
+  lookup?: KuintessenceJobLookup,
+): Promise<void> {
+  const failures: unknown[] = [];
+  try {
+    await adapter.cancel(schedulerJobId, lookup);
+  } catch (error) {
+    failures.push(error);
+  }
+  try {
+    if (await adapter.confirmStopped?.(schedulerJobId, lookup)) return;
+  } catch (error) {
+    failures.push(error);
+  }
+  throw new AggregateError(failures, "Scheduler stop is not confirmed; retaining job inputs");
 }

@@ -626,3 +626,101 @@ describe("K8sAdapter.inspectComputeHealth", () => {
     });
   });
 });
+
+describe("Kubernetes stop confirmation", () => {
+  const pod = (phase: string) => ({
+    metadata: { name: "job-pod", ownerReferences: [{ kind: "Job", name: "original-job" }] },
+    status: { phase },
+  });
+  test.each([
+    "Running",
+    "Pending",
+    "Unknown",
+    "Succeeded",
+    "Failed",
+  ])("deleted Job with a %s pod", async (phase) => {
+    const { spawner } = mockSpawner([
+      { exitCode: 0, stdout: "" },
+      { exitCode: 0, stdout: JSON.stringify({ items: [pod(phase)] }) },
+    ]);
+    const adapter = new K8sAdapter("v1.28.0", { spawner, namespace: "original-ns" });
+    expect(await adapter.confirmStopped("original-job")).toBe(
+      ["Succeeded", "Failed"].includes(phase),
+    );
+  });
+  test.each([
+    "job-unavailable",
+    "pods-unavailable",
+    "bad-json",
+    "missing-list",
+    "wrong-job",
+  ])("%s cannot prove a stop", async (fault) => {
+    const { spawner } = mockSpawner([
+      {
+        exitCode: fault === "job-unavailable" ? 1 : 0,
+        stdout:
+          fault === "wrong-job"
+            ? JSON.stringify({ metadata: { name: "other" }, status: {} })
+            : fault === "bad-json"
+              ? "invalid"
+              : "",
+      },
+      {
+        exitCode: fault === "pods-unavailable" ? 1 : 0,
+        stdout: JSON.stringify(fault === "missing-list" ? {} : { items: [] }),
+      },
+    ]);
+    const adapter = new K8sAdapter("v1.28.0", { spawner });
+    await expect(adapter.confirmStopped("original-job")).rejects.toThrow();
+  });
+  test("failed pod count is not a terminal Job condition", async () => {
+    const { spawner } = mockSpawner([
+      {
+        exitCode: 0,
+        stdout: JSON.stringify({ metadata: { name: "original-job" }, status: { failed: 1 } }),
+      },
+    ]);
+    expect(await new K8sAdapter("v1.28.0", { spawner }).confirmStopped("original-job")).toBe(false);
+  });
+  test("foreground cancellation retains the recovered namespace through pod confirmation", async () => {
+    const { spawner, calls } = mockSpawner([
+      { exitCode: 0, stdout: JSON.stringify({ items: [{ metadata: { name: "original-job" } }] }) },
+      { exitCode: 0, stdout: "" },
+      { exitCode: 0, stdout: "" },
+      { exitCode: 0, stdout: JSON.stringify({ items: [] }) },
+    ]);
+    const adapter = new K8sAdapter("v1.28.0", { spawner, namespace: "default" });
+    await adapter.findByKuintessenceJobId({ jobId: "original", namespace: "tenant-ns" });
+    await adapter.cancel("original-job");
+    expect(await adapter.confirmStopped("original-job")).toBe(true);
+    expect(calls[1]).toContain("--cascade=foreground");
+    expect(calls[1]).toContain("--wait=false");
+    expect(calls.every((call) => call.includes("tenant-ns"))).toBe(true);
+  });
+});
+
+test("a known scheduler id uses the durable namespace even without a restored local JobSpec", async () => {
+  const { spawner, calls } = mockSpawner([
+    { exitCode: 0, stdout: "" },
+    { exitCode: 0, stdout: "" },
+    { exitCode: 0, stdout: JSON.stringify({ items: [] }) },
+  ]);
+  const adapter = new K8sAdapter("v1.28.0", { spawner, namespace: "default" });
+  const lookup = { jobId: "original", namespace: "persisted-ns" };
+  await adapter.cancel("original-job", lookup);
+  expect(await adapter.confirmStopped("original-job", lookup)).toBe(true);
+  expect(calls.every((call) => call.includes("persisted-ns"))).toBe(true);
+});
+
+test("a remaining job-labeled Pod is not ignored when its owner reference is missing", async () => {
+  const { spawner } = mockSpawner([
+    { exitCode: 0, stdout: "" },
+    {
+      exitCode: 0,
+      stdout: JSON.stringify({
+        items: [{ metadata: { labels: { "job-name": "original" } }, status: { phase: "Running" } }],
+      }),
+    },
+  ]);
+  expect(await new K8sAdapter("v1.28.0", { spawner }).confirmStopped("original")).toBe(false);
+});
