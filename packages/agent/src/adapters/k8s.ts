@@ -232,15 +232,37 @@ export class K8sAdapter implements SchedulerAdapter {
       memory: `${spec.memoryMb}Mi`,
     };
     if (spec.gpus > 0) limits["nvidia.com/gpu"] = String(spec.gpus);
-    const artifactMounts = sandbox.mounts.map((mount) => ({
-      name: mount.mode === "ReadOnly" && mount.inlineContentBase64 ? "script" : "artifacts",
-      mountPath: mount.containerPath,
-      subPath:
-        mount.mode === "ReadOnly" && mount.inlineContentBase64
-          ? `input-${mount.descriptor}`
-          : mount.relativePath,
-      readOnly: mount.mode === "ReadOnly",
-    }));
+    const artifactMounts = sandbox.mounts
+      .filter((mount) => mount.mode === "ReadOnly")
+      .map((mount) => ({
+        name: mount.mode === "ReadOnly" && mount.inlineContentBase64 ? "script" : "artifacts",
+        mountPath: mount.containerPath,
+        subPath:
+          mount.mode === "ReadOnly" && mount.inlineContentBase64
+            ? `input-${mount.descriptor}`
+            : mount.relativePath,
+        readOnly: mount.mode === "ReadOnly",
+      }));
+    const outputs = sandbox.mounts.filter((mount) => mount.mode === "WriteOnly");
+    const firstOutput = outputs[0];
+    if (firstOutput) {
+      const outputDirectory = dirname(firstOutput.relativePath);
+      if (
+        outputs.some(
+          (mount) =>
+            dirname(mount.relativePath) !== outputDirectory ||
+            mount.relativePath !== `${outputDirectory}/${mount.descriptor}` ||
+            mount.containerPath !== `/kq/outputs/${mount.descriptor}`,
+        )
+      )
+        throw new Error("Kubernetes Sandbox outputs require a prepared job output directory");
+      artifactMounts.push({
+        name: "artifacts",
+        mountPath: "/kq/outputs",
+        subPath: outputDirectory,
+        readOnly: false,
+      });
+    }
     const volumes: Record<string, unknown>[] = [
       { name: "script", configMap: { name: scriptConfigName, defaultMode: 0o444 } },
       { name: "tmp", emptyDir: { sizeLimit: "64Mi" } },
@@ -720,7 +742,8 @@ export class K8sAdapter implements SchedulerAdapter {
     const inputs = sandbox.mounts.filter(
       (mount) => mount.mode === "ReadOnly" && !mount.inlineContentBase64,
     );
-    if (inputs.length === 0) return;
+    const outputs = sandbox.mounts.filter((mount) => mount.mode === "WriteOnly");
+    if (inputs.length === 0 && outputs.length === 0) return;
     if (
       sandbox.runtimeKind !== "OCI" ||
       sandbox.identity.backend !== "Kubernetes" ||
@@ -758,6 +781,7 @@ export class K8sAdapter implements SchedulerAdapter {
           metadata: { name: stagerName, namespace, labels },
           spec: {
             restartPolicy: "Never",
+            terminationGracePeriodSeconds: 5,
             serviceAccountName: sandbox.identity.serviceAccount,
             automountServiceAccountToken: false,
             nodeName: sandboxSeccompProfile.nodeName,
@@ -824,6 +848,30 @@ export class K8sAdapter implements SchedulerAdapter {
       ]);
       if (ready.exitCode !== 0) {
         throw new Error(`Kubernetes Sandbox input stager was not ready: ${ready.stderr.trim()}`);
+      }
+      for (const directory of new Set(
+        outputs.map(
+          (mount) =>
+            `/artifacts/${mount.ioType === "FileBatch" ? mount.relativePath : dirname(mount.relativePath)}`,
+        ),
+      )) {
+        const prepared = await this.spawner.run([
+          "kubectl",
+          "exec",
+          stagerName,
+          "-n",
+          namespace,
+          "-c",
+          "stager",
+          "--",
+          "mkdir",
+          "-p",
+          directory,
+        ]);
+        if (prepared.exitCode !== 0)
+          throw new Error(
+            `Kubernetes Sandbox output directory create failed: ${prepared.stderr.trim()}`,
+          );
       }
       for (const mount of inputs) {
         const targetPath = `/artifacts/${mount.relativePath}`;
@@ -901,6 +949,7 @@ export class K8sAdapter implements SchedulerAdapter {
       metadata: { name: collectorName, namespace, labels },
       spec: {
         restartPolicy: "Never",
+        terminationGracePeriodSeconds: 5,
         serviceAccountName: sandbox.identity.serviceAccount,
         automountServiceAccountToken: false,
         nodeName: sandboxSeccompProfile.nodeName,
@@ -969,6 +1018,28 @@ export class K8sAdapter implements SchedulerAdapter {
         );
       }
       for (const mount of sandbox.mounts.filter((item) => item.mode === "WriteOnly")) {
+        if (!mount.required) {
+          const exists = await this.spawner.run([
+            "kubectl",
+            "exec",
+            collectorName,
+            "-n",
+            namespace,
+            "-c",
+            "collector",
+            "--",
+            "/bin/sh",
+            "-c",
+            'if [ -e "$1" ]; then printf present; else printf absent; fi',
+            "sh",
+            `/artifacts/${mount.relativePath}`,
+          ]);
+          if (exists.exitCode === 0 && exists.stdout === "absent") continue;
+          if (exists.exitCode !== 0 || exists.stdout !== "present")
+            throw new Error(
+              `Kubernetes Sandbox optional output check failed: ${exists.stderr.trim()}`,
+            );
+        }
         await mkdir(dirname(mount.hostPath), { recursive: true });
         const copied = await this.spawner.run([
           "kubectl",

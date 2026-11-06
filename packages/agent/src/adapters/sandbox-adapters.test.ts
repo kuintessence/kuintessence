@@ -70,6 +70,10 @@ function kubernetesSandbox(): SandboxJobSpec {
       namespace: "kq-user-a",
       serviceAccount: "user-a",
     },
+    mounts: unixSandbox().mounts.map((mount) => ({
+      ...mount,
+      relativePath: `jobs/00000000-0000-0000-0000-000000000111/00000000-0000-0000-0000-000000000222/${mount.mode === "WriteOnly" ? `outputs/${mount.descriptor}` : mount.relativePath}`,
+    })),
     kubernetesArtifactPvc: "kq-artifacts",
   };
 }
@@ -364,6 +368,12 @@ describe("Kubernetes Sandbox adapter", () => {
             }>;
             containers: Array<{
               command: string[];
+              volumeMounts: Array<{
+                name: string;
+                mountPath: string;
+                subPath?: string;
+                readOnly?: boolean;
+              }>;
               securityContext: {
                 allowPrivilegeEscalation: boolean;
                 readOnlyRootFilesystem: boolean;
@@ -375,6 +385,18 @@ describe("Kubernetes Sandbox adapter", () => {
       };
     };
     const pod = resource.spec.template.spec;
+    expect(
+      pod.containers[0]?.volumeMounts.find((mount) => mount.mountPath === "/kq/outputs"),
+    ).toEqual({
+      name: "artifacts",
+      mountPath: "/kq/outputs",
+      subPath:
+        "jobs/00000000-0000-0000-0000-000000000111/00000000-0000-0000-0000-000000000222/outputs",
+      readOnly: false,
+    });
+    expect(pod.containers[0]?.volumeMounts.some((mount) => mount.subPath === "outputs")).toBe(
+      false,
+    );
     expect(pod.serviceAccountName).toBe("user-a");
     expect(pod.nodeName).toBe("k3s-1");
     expect(pod.automountServiceAccountToken).toBe(false);
@@ -411,6 +433,7 @@ describe("Kubernetes Sandbox adapter", () => {
       { exitCode: 0, stdout: "", stderr: "" },
       { exitCode: 0, stdout: "", stderr: "" },
       { exitCode: 0, stdout: "", stderr: "" },
+      { exitCode: 0, stdout: "", stderr: "" },
     ];
     const adapter = new K8sAdapter("1.30", {
       tmpDir: "/tmp",
@@ -435,11 +458,12 @@ describe("Kubernetes Sandbox adapter", () => {
     expect(calls[0]).toContain("apply");
     expect(calls[1]).toContain("pod/kq-00000000-0000-0000-0000-000000000111-stage");
     expect(calls[2]).toContain("mkdir");
-    expect(calls[3]).toContain("/managed/job/inputs/data.csv");
-    expect(calls[3]).toContain(
-      "kq-user-a/kq-00000000-0000-0000-0000-000000000111-stage:/artifacts/inputs/data.csv",
+    expect(calls[2]?.at(-1)).toEndWith("/outputs");
+    expect(calls[4]).toContain("/managed/job/inputs/data.csv");
+    expect(calls[4]).toContain(
+      "kq-user-a/kq-00000000-0000-0000-0000-000000000111-stage:/artifacts/jobs/00000000-0000-0000-0000-000000000111/00000000-0000-0000-0000-000000000222/inputs/data.csv",
     );
-    expect(calls[4]).toContain("--ignore-not-found");
+    expect(calls[5]).toContain("--ignore-not-found");
     const stager = (stagerManifest?.items as Array<Record<string, unknown>>).find(
       (item) => item.kind === "Pod",
     ) as { spec: Record<string, unknown> };
@@ -452,6 +476,69 @@ describe("Kubernetes Sandbox adapter", () => {
         },
       },
     });
+  });
+
+  test("prepares an output-only job without creating an optional result file", async () => {
+    const calls: string[][] = [];
+    const sandbox = kubernetesSandbox();
+    sandbox.mounts = sandbox.mounts.filter((mount) => mount.mode === "WriteOnly");
+    const output = sandbox.mounts[0];
+    if (!output) throw new Error("Missing output fixture");
+    output.required = false;
+    const adapter = new K8sAdapter("1.30", {
+      tmpDir: "/tmp",
+      sandboxSeccompProfile: {
+        localhostProfile: "kuintessence/kq-no-network.json",
+        nodeName: "k3s-1",
+        assertCurrent: async () => {},
+      },
+      spawner: {
+        run: async (command) => {
+          calls.push(command);
+          return { exitCode: 0, stdout: "", stderr: "" };
+        },
+      },
+    });
+    await adapter.stageSandboxInputs(sandbox, job().jobId);
+    const preparation = calls.find((command) => command.includes("mkdir"));
+    expect(preparation?.at(-1)).toBe(`/artifacts/${output.relativePath.replace(/\/[^/]+$/, "")}`);
+    expect(calls.some((command) => command.includes("cp") || command.includes("touch"))).toBe(
+      false,
+    );
+  });
+
+  test("skips an absent optional output but rejects a failed collector check", async () => {
+    const sandbox = kubernetesSandbox();
+    sandbox.mounts = sandbox.mounts.filter((mount) => mount.mode === "WriteOnly");
+    const output = sandbox.mounts[0];
+    if (!output) throw new Error("Missing output fixture");
+    output.required = false;
+    let failCheck = false;
+    let copies = 0;
+    const adapter = new K8sAdapter("1.30", {
+      tmpDir: "/tmp",
+      sandboxSeccompProfile: {
+        localhostProfile: "kuintessence/kq-no-network.json",
+        nodeName: "k3s-1",
+        assertCurrent: async () => {},
+      },
+      spawner: {
+        run: async (command) => {
+          if (command[1] === "cp") copies++;
+          if (command[1] === "exec")
+            return failCheck
+              ? { exitCode: 1, stdout: "", stderr: "connection lost" }
+              : { exitCode: 0, stdout: "absent", stderr: "" };
+          return { exitCode: 0, stdout: "", stderr: "" };
+        },
+      },
+    });
+    await expect(adapter.stageSandboxOutputs(sandbox, "kq-job-1")).resolves.toBeUndefined();
+    expect(copies).toBe(0);
+    failCheck = true;
+    await expect(adapter.stageSandboxOutputs(sandbox, "kq-job-1")).rejects.toThrow(
+      "optional output check failed",
+    );
   });
 
   test("rechecks and binds the collector before creating its Pod", async () => {

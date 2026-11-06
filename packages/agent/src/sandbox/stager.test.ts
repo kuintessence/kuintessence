@@ -304,11 +304,28 @@ describe("SandboxStager", () => {
       root,
       kubernetesArtifactPvc: "artifacts",
     }).prepare(fixture);
-    expect(prepared.workingDir).toBe("/kq");
+    expect(prepared.workingDir).toBe(join(await realpath(root), jobId));
     expect(prepared.sandbox.mounts[0]?.hostPath).toBe(
       join(await realpath(root), jobId, "inputs/data.txt"),
     );
     expect(prepared.sandbox.kubernetesArtifactPvc).toBe("artifacts");
+    const next = await new SandboxStager({ root, kubernetesArtifactPvc: "artifacts" }).prepare(
+      fixture,
+    );
+    const paths = prepared.sandbox.mounts.map((mount) => mount.relativePath);
+    expect(paths.every((path) => path.startsWith(`jobs/${jobId}/`))).toBe(true);
+    expect(paths[1]).toEndWith("/outputs/result");
+    expect(next.sandbox.mounts.every((mount) => !paths.includes(mount.relativePath))).toBe(true);
+    expect(prepared.sandbox.mounts[1]?.hostPath).toBe(next.sandbox.mounts[1]?.hostPath);
+    for (const descriptor of [".", ".."]) {
+      const invalid = structuredClone(fixture);
+      invalid.unsigned.mounts = invalid.unsigned.mounts.map((mount) =>
+        mount.mode === "WriteOnly" ? { ...mount, descriptor } : mount,
+      );
+      await expect(new SandboxStager({ root }).prepare(invalid)).rejects.toThrow(
+        "descriptor must name a file",
+      );
+    }
   });
 
   test("rejects a symlinked input even when its target hash matches", async () => {

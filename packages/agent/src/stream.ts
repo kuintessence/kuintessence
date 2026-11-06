@@ -3225,13 +3225,20 @@ export class AgentStream {
               )(profile);
             }
             const sandboxOutputs: ExpectedOutput[] = prepared.sandbox.mounts
-              .filter((mount) => mount.mode === "WriteOnly")
+              .filter(
+                (mount) =>
+                  mount.mode === "WriteOnly" &&
+                  (mount.ioType === "Text" || mount.ioType === "JSON"),
+              )
               .map((mount) => ({
                 descriptor: mount.descriptor,
-                path: mount.relativePath,
-                isBatch: mount.ioType === "FileBatch",
+                path: mount.hostPath,
+                isBatch: false,
               }));
-            if (dj.restrictedNoEgress && sandboxOutputs.length > 0) {
+            if (
+              dj.restrictedNoEgress &&
+              prepared.sandbox.mounts.some((mount) => mount.mode === "WriteOnly")
+            ) {
               throw new Error("Restricted no-egress Sandbox cannot expose output mounts");
             }
             if (

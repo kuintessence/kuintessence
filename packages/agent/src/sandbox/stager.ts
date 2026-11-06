@@ -437,9 +437,18 @@ export class SandboxStager {
     );
     preparation.signal?.throwIfAborted();
     if (identity.backend === "Kubernetes") {
-      const mounts = verified.unsigned.mounts.map((mount) =>
-        jobMount(mount, resolve(collectionDir, mount.relativePath)),
-      );
+      // Persist this preparation's PVC paths with the job; retries never reuse another run's bytes.
+      const pvcRoot = `jobs/${verified.unsigned.jobId}/${randomUUID()}`;
+      const mounts = verified.unsigned.mounts.map((mount) => {
+        if (mount.descriptor === "." || mount.descriptor === "..")
+          throw new Error(
+            "Sandbox artifact descriptor must name a file within its output directory",
+          );
+        return {
+          ...jobMount(mount, resolve(collectionDir, mount.relativePath)),
+          relativePath: `${pvcRoot}/${mount.mode === "WriteOnly" ? `outputs/${mount.descriptor}` : mount.relativePath}`,
+        };
+      });
       for (const mount of mounts.filter(
         (item) => item.mode === "ReadOnly" && !item.inlineContentBase64,
       )) {
@@ -447,7 +456,7 @@ export class SandboxStager {
         await verifyReadOnlyMount(mount, mount.hostPath);
       }
       return {
-        workingDir: "/kq",
+        workingDir: collectionDir,
         sandbox: {
           language: verified.unsigned.script.language,
           entrypoint: verified.unsigned.script.entrypoint,

@@ -1,5 +1,7 @@
 # 当前功能与使用边界
 
+已有一个接收站点内的真实 Kubernetes 联邦文件流水线通过：两个脚本按依赖顺序执行，首个文件经 RustFS 上传、下载与摘要校验后被下游读取，结果产物发布为 Persistent；重复委派保持一个运行，无 Fabric 依赖。修复 PVC 路径共用、输出目录未准备、可选输出误报和 Agent 文本读取路径错误。仍未完成两个完整平台之间或 Slurm/PBS 跨站验收，PVC 自动回收也待补，见[文件联调记录](../design/federation/progress.md#kubernetes-联邦文件流水线)。
+
 已有一个真实 Kubernetes 联邦 Script 联调通过：机构 mTLS/JWS 接单、自动规划/入队、生产 Agent 与独立看守、实际 Pod 执行和 HTTP 完成状态串联成功，未配置 Fabric。脚本验证非 root、禁止提权、seccomp 与禁网，输出固定计算结果；作业限制为 1 CPU/128 MiB。修复了自动接单遗漏资源计划，以及 CLI 注册的调度器选择未传递给 Agent/看守的问题。此次未覆盖跨机构文件产物、软件安装、Slurm/PBS 的完整联邦执行或 PR 预览，见[实际脚本验收](../design/federation/progress.md#真实-kubernetes-联邦脚本与接线修复)。
 
 独立本机环境已验证完整 Server、生产 Agent 注册与双向证书连接，以及真实 Slurm 轻量原生任务完成。真实机构 mTLS 网关接收签名委派后，后台能自动绑定并启动 Workflow；重复委派保持同一回执和一个运行。上一轮未配置 Sandbox 的实验中，Script 被阻止且没有产生调度器 Job，不能据此宣称联邦脚本执行通过。联调发现并修复接单查询缺少运行状态的问题：现在分别展示材料准备和 Workflow 状态/错误码，不暴露执行内容。详见[真实接单联调](../design/federation/progress.md#真实接单联调与运行状态查询)。

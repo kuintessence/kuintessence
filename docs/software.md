@@ -338,7 +338,11 @@ Agent 使用 `AGENT_SANDBOX_ENABLED`、专用绝对 `AGENT_SANDBOX_ROOT`、
 以及 `AGENT_SANDBOX_ROOT_IMPERSONATION`、`AGENT_SANDBOX_SHARED_SERVICE_ALLOWED`、
 `AGENT_SANDBOX_NETWORK_ISOLATION`、`AGENT_SANDBOX_CGROUPS`、`AGENT_SANDBOX_SECCOMP`、
 `AGENT_SANDBOX_SIF_SIGNATURE_VERIFICATION`、`AGENT_SANDBOX_ECL`。
-Kubernetes 另配 `AGENT_SANDBOX_K8S_ARTIFACT_PVC`。
+Kubernetes 文件输入或输出另配 `AGENT_SANDBOX_K8S_ARTIFACT_PVC`。PVC 位于执行账号的 namespace，须预先绑定到已证明 seccomp 的执行节点，并允许受信任镜像的非 root UID 写入。使用 `WaitForFirstConsumer` 的存储类时，应由部署配置完成节点选定与卷绑定；Sandbox 固定 nodeName，不会触发默认调度器替它选卷。
+
+每次准备在 PVC 中分配 `jobs/<jobId>/<随机准备ID>/`，该路径随原作业快照保存；业务 Pod 只挂载自己的输入和输出目录。输入经原摘要校验后复制，输出准备器只创建目录，不制造空的可选文件。产物收集到 Agent 本地后按原大小、摘要及类型规则检查，Text/JSON 从本地受管目录读取，File/FileBatch 通过产物服务发布，不读入普通日志。未生成的可选输出跳过；收集命令失败仍报错。准备器和收集器沿用禁网、非 root、只读根目录和固定节点要求，辅助 Pod 退出宽限为 5 秒。
+
+PVC 内的运行目录尚未接入自动回收，不能将 Agent 本地副本释放当作 PVC 字节已经删除。生产配置应为此卷设置容量与保留管理，清理前确认对应作业已终止且所需产物已发布。
 任何 capability、签名、账号、隔离或 policy 不满足时拒绝，不降级普通 command。
 Git 固化导入与隐式 usecase pre/main/post 编排尚未完成，生产 GA 验收也未完成。
 

@@ -4340,10 +4340,13 @@ describe("AgentStream", () => {
     ];
     const { client } = makeMockClient(serverMsgs);
     const submitted: JobSpec[] = [];
+    const db = createSqliteDb(":memory:");
+    const activeRemoteJobs = new ActiveRemoteJobs(db);
     const schedulerSubmissionSteps: string[] = [];
     const sandboxInputSources: unknown[] = [];
     const stream = new AgentStream({
       client,
+      activeRemoteJobs,
       adapter: makeAdapter({
         submit: async (spec) => {
           schedulerSubmissionSteps.push("submit");
@@ -4382,7 +4385,16 @@ describe("AgentStream", () => {
                 gid: 1001,
                 allowedQueues: [],
               },
-              mounts: [],
+              mounts: ["Text", "File"].map((ioType) => ({
+                descriptor: ioType.toLowerCase(),
+                ioType: ioType as "Text" | "File",
+                mode: "WriteOnly",
+                hostPath: `/managed/sandbox/job/outputs/${ioType.toLowerCase()}`,
+                relativePath: `jobs/pvc-scope/outputs/${ioType.toLowerCase()}`,
+                containerPath: `/kq/outputs/${ioType.toLowerCase()}`,
+                required: true,
+                sizeLimitBytes: 1000,
+              })),
               limits: { pids: 32, outputBytes: 1_000, logBytes: 1_000 },
             },
           };
@@ -4400,6 +4412,10 @@ describe("AgentStream", () => {
     stream.stop();
     await running;
     expect(submitted.length).toBeGreaterThan(0);
+    expect((await activeRemoteJobs.listActive())[0]?.expectedOutputs).toMatchObject([
+      { descriptor: "text", path: "/managed/sandbox/job/outputs/text", isBatch: false },
+    ]);
+    db.$client.close();
     expect(submitted[0]?.command).toBe("sandbox-manifest");
     expect(submitted[0]?.schedulerName).toBe("kq-00000000000");
     expect(submitted[0]?.workingDir).toBe("/managed/sandbox/job");
