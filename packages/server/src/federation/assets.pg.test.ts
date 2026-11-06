@@ -1,9 +1,10 @@
 import { afterAll, beforeAll, expect, spyOn, test } from "bun:test";
-import { createHash } from "node:crypto";
-import { create } from "@bufbuild/protobuf";
+import { createHash, generateKeyPairSync } from "node:crypto";
+import { create, toBinary } from "@bufbuild/protobuf";
 import {
   agents,
   auditLog,
+  clusterExecutionAccounts,
   createPgDb,
   dataAssets,
   dataAssetVersions,
@@ -29,11 +30,15 @@ import {
   licensedMaterialMappings,
   licenseEntitlementClaims,
   orgs,
+  sandboxPolicyOverlays,
+  sandboxRuntimeContractBindings,
+  sandboxRuntimeProfiles,
   schedulerQueues,
   softwareAssetRevisions,
   softwareAssets,
   softwareOperations,
   softwarePolicies,
+  userClusterAccountMappings,
   userOrgMemberships,
   users,
   workflowExecutionJobs,
@@ -45,6 +50,7 @@ import {
   FederationExecutionRequestSchema,
   type FederationExecutionResponse,
   LicensedMaterialMountSchema,
+  ServerMessageSchema,
 } from "@kuintessence/proto";
 import { AppError, ErrorCode, workflowDsl } from "@kuintessence/shared";
 import {
@@ -68,6 +74,8 @@ import { JobDispatchOutbox } from "../grpc/job-dispatch-outbox";
 import { createErrorHandler } from "../middleware/error-handler";
 import { createFederationAssetRoutes } from "../routes/federation-assets";
 import { QueueRegistryService } from "../services/queue-registry";
+import { SandboxManifestSigner, sandboxBundleSha256 } from "../services/sandbox-manifest-signer";
+import { SandboxPolicyService } from "../services/sandbox-policy";
 import { SoftwareAvailabilityService } from "../services/software-availability";
 import { InstalledRegistry } from "../software-governance/installed-registry";
 import { SoftwareOperationService } from "../software-governance/operation-service";
@@ -2671,5 +2679,260 @@ test("licensed material withdrawal cancels an active workflow even with a tempor
     await lease.release();
     await f.cleanup();
     await material.cleanup();
+  }
+});
+
+test.each([
+  "active",
+  "mapping-deadline",
+  "account-revoked",
+  "policy-revoked",
+  "snapshot-changed",
+  "environment-lock",
+] as const)("Sandbox runtime renewal preserves the original manifest and checks %s", async (change) => {
+  const f = await monitoredJob("queued");
+  const profileId = crypto.randomUUID(),
+    accountId = crypto.randomUUID();
+  const runtime = environment().sandboxRuntime;
+  if (!runtime) throw new Error("Missing environment runtime");
+  const policies = new SandboxPolicyService(db, {
+    sandboxEnabled: true,
+    impersonationEnabled: true,
+    selfAccountEnabled: false,
+    sharedServiceAllowed: false,
+    degradedImpersonationAllowed: false,
+    runtimePrecacheRequired: true,
+    disabledRuntimeProfileIds: [],
+    limits: {
+      maxCpuCores: 2,
+      maxMemoryMb: 256,
+      maxWallTimeSec: 60,
+      maxPids: 16,
+      maxOutputBytes: 256,
+      maxLogBytes: 256,
+    },
+  });
+  const authorization = new FederationDispatchAuthorization(
+    db,
+    f.preparation,
+    f.queues,
+    availability,
+    policies,
+  );
+  const dispatcher = new AgentDispatcher();
+  const outbox = new JobDispatchOutbox(db, dispatcher, (runId, target) =>
+    authorization.prepare(runId, target),
+  );
+  const lease = await new WorkflowExecutionJournalStore(db).acquire(f.runId);
+  if (!lease) throw new Error("Missing Sandbox lease");
+  let clock: ReturnType<typeof spyOn<typeof Date, "now">> | undefined;
+  try {
+    await db
+      .update(agents)
+      .set({
+        schedulerType: "kubernetes",
+        sandboxCapabilities: { executionMode: "RootImpersonation" },
+      })
+      .where(eq(agents.agentId, approvedTarget.agentId));
+    await db
+      .update(schedulerQueues)
+      .set({ schedulerType: "kubernetes" })
+      .where(eq(schedulerQueues.queueId, approvedTarget.queueId));
+    await db.insert(sandboxRuntimeProfiles).values({
+      id: profileId,
+      name: "Federation runtime",
+      language: "bash",
+      languageVersion: "5",
+      ociDigest: runtime.digest,
+      signature: "fixture",
+      adapters: ["kubernetes"],
+      securityRequirements: {},
+      lifecycle: "active",
+    });
+    await db.insert(sandboxRuntimeContractBindings).values({
+      providerOrgId: actor.orgId,
+      agentId: approvedTarget.agentId,
+      runtimeContractRef: "bash@1",
+      runtimeProfileId: profileId,
+      runtimeDigest: runtime.digest,
+      boundBy: actor.userId,
+      attestationKeyId: "fixture",
+      attestationSignature: "fixture",
+      attestedAt: new Date(),
+    });
+    await db.insert(clusterExecutionAccounts).values({
+      id: accountId,
+      providerOrgId: actor.orgId,
+      agentId: approvedTarget.agentId,
+      displayName: "Sandbox worker",
+      backendType: "kubernetes",
+      namespace: "science",
+      serviceAccount: "worker",
+    });
+    const [mapping] = await db
+      .insert(userClusterAccountMappings)
+      .values({ userId: identity.userId, accountId, status: "approved" })
+      .returning();
+    if (!mapping) throw new Error("Missing identity mapping");
+    const node = workflowDsl.WorkflowNodeSchema.parse({
+      type: "Script",
+      id: "monitor",
+      name: "Script",
+      source: {
+        type: "AssetRevision",
+        assetId,
+        assetRevisionId: revisionId,
+        revision: 1,
+        sha256: payload.sha256,
+      },
+      runtimeProfileId: profileId,
+      executionIdentity: { type: "MappedAuto" },
+      outputs: {},
+    });
+    const intent = {
+      nodeId: "monitor",
+      name: "Sandbox",
+      command: "true",
+      envVars: {},
+      inputStaging: [],
+      expectedOutputs: [],
+      sandbox: {
+        node,
+        executionIdentity: { type: "MappedAuto" },
+        submittedBy: identity.userId,
+        orgId: identity.orgId,
+      },
+    };
+    await db
+      .update(workflowExecutionJobs)
+      .set({ intent })
+      .where(eq(workflowExecutionJobs.jobId, f.jobId));
+    const { privateKey } = generateKeyPairSync("ed25519");
+    const signer = new SandboxManifestSigner({
+      keyId: "fixture",
+      privateKeyPem: privateKey.export({ type: "pkcs8", format: "pem" }).toString(),
+      now: () => testNow.getTime() - 600_000,
+    });
+    const script = { language: "bash" as const, entrypoint: "main.sh", sha256: payload.sha256 };
+    const manifest = signer.sign({
+      jobId: f.jobId,
+      script: {
+        ...script,
+        contentBase64: Buffer.from(content).toString("base64"),
+        bundleSha256: sandboxBundleSha256(script),
+      },
+      runtime: { ...runtime, profileId },
+      executionMode: "RootImpersonation",
+      identity: {
+        mode: "MappedAccount",
+        accountId,
+        backend: "Kubernetes",
+        namespace: "science",
+        serviceAccount: "worker",
+        quotaPolicy: null,
+      },
+      mounts: [],
+      limits: { pids: 8, outputBytes: 128, logBytes: 128 },
+      networkDisabled: true,
+    });
+    await db
+      .update(jobs)
+      .set({ dispatchEpoch: 1, sandboxExecution: manifest })
+      .where(eq(jobs.id, f.jobId));
+    const build = () =>
+      dispatcher.buildDispatchJob(f.jobId, {
+        federationExecution: true,
+        jobIdInternal: f.jobId,
+        name: "Sandbox",
+        command: "true",
+        resources: { cpus: 1, memoryMb: 128, wallTimeSec: 30 },
+        queueName: "approved",
+        queueTargetMode: "named",
+        dispatchEpoch: 1,
+        sandboxExecution: manifest,
+      });
+    await outbox.enqueue(approvedTarget.agentId, build(), f.runId, lease);
+    await lease.release();
+    await outbox.acknowledge(approvedTarget.agentId, f.jobId);
+    await db.update(jobs).set({ status: "running" }).where(eq(jobs.id, f.jobId));
+    dispatcher.register(approvedTarget.agentId, {
+      federationComputeLeaseV1: true,
+      federationExecutionV1: true,
+      verifiedCertFingerprint: "fixture",
+      close: () => {},
+      push: () => {
+        throw new Error("Runtime renewal must not redispatch");
+      },
+    });
+    clock = spyOn(Date, "now").mockReturnValue(testNow.getTime());
+    if (change === "mapping-deadline")
+      await db
+        .update(userClusterAccountMappings)
+        .set({ expiresAt: new Date(testNow.getTime() + 5_000) })
+        .where(eq(userClusterAccountMappings.id, mapping.id));
+    if (change === "account-revoked")
+      await db
+        .update(clusterExecutionAccounts)
+        .set({ enabled: false })
+        .where(eq(clusterExecutionAccounts.id, accountId));
+    if (change === "policy-revoked")
+      await db.insert(sandboxPolicyOverlays).values({
+        scope: "agent",
+        agentId: approvedTarget.agentId,
+        policy: { sandboxEnabled: false },
+        updatedBy: actor.userId,
+      });
+    if (change === "snapshot-changed")
+      await db
+        .update(jobs)
+        .set({ sandboxExecution: { ...manifest, networkDisabled: false } })
+        .where(eq(jobs.id, f.jobId));
+    if (change === "environment-lock") {
+      manifest.runtime.digest = `sha256:${"e".repeat(64)}`;
+      await db.update(jobs).set({ sandboxExecution: manifest }).where(eq(jobs.id, f.jobId));
+      await db
+        .update(sandboxRuntimeProfiles)
+        .set({ ociDigest: manifest.runtime.digest })
+        .where(eq(sandboxRuntimeProfiles.id, profileId));
+      await db
+        .update(sandboxRuntimeContractBindings)
+        .set({ runtimeDigest: manifest.runtime.digest })
+        .where(eq(sandboxRuntimeContractBindings.runtimeProfileId, profileId));
+      await db
+        .update(jobDispatchOutbox)
+        .set({
+          payloadBase64: Buffer.from(toBinary(ServerMessageSchema, build())).toString("base64"),
+        })
+        .where(eq(jobDispatchOutbox.jobId, f.jobId));
+    }
+    const replies: FederationExecutionResponse[] = [];
+    const request = create(FederationExecutionRequestSchema, {
+      requestId: crypto.randomUUID(),
+      jobId: f.jobId,
+      dispatchEpoch: 1n,
+      runtimeRenewal: true,
+    });
+    const result = outbox.renewExecution(approvedTarget.agentId, request, (reply) =>
+      replies.push(reply),
+    );
+    if (change === "active" || change === "mapping-deadline") {
+      expect(await result).toBe(true);
+      expect(replies[0]).toMatchObject({
+        runtimeRenewal: true,
+        expiresAtUnixMs: BigInt(
+          testNow.getTime() + (change === "mapping-deadline" ? 5_000 : 10_000),
+        ),
+      });
+      expect(replies[0]?.dispatch).toBeUndefined();
+      expect(manifest.envelope.expiresAtUnixMs).toBeLessThan(testNow.getTime());
+    } else {
+      await expect(result).rejects.toThrow();
+      expect(replies).toHaveLength(0);
+    }
+  } finally {
+    clock?.mockRestore();
+    await lease.release();
+    await f.cleanup();
+    await db.delete(sandboxRuntimeProfiles).where(eq(sandboxRuntimeProfiles.id, profileId));
   }
 });

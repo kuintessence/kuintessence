@@ -19,6 +19,7 @@ import { checkFederationExecutionPolicy, checkFederationJobData } from "./execut
 import { lockFederationTarget, resolveFederationTargets } from "./execution-targets";
 import { checkFederationLicensedMaterials } from "./licensed-material-authorization";
 import type { FederationPreparationService } from "./preparation";
+import { checkFederationSandboxJob } from "./sandbox-authorization";
 import { prepareFederationSoftware } from "./software-authorization";
 
 export type FederationDeliveryTarget = {
@@ -213,6 +214,19 @@ export class FederationDispatchAuthorization {
               binding.snapshot.identity,
               target,
               true,
+            ),
+          );
+        if (delivery.kind === "compute")
+          expiresAtUnixMs = Math.min(
+            expiresAtUnixMs,
+            await checkFederationSandboxJob(
+              this.db,
+              delivery.jobId,
+              job.intent,
+              binding.snapshot.identity,
+              this.sandboxPolicies,
+              tx,
+              binding.snapshot.environment.sandboxRuntime,
             ),
           );
         if (running)

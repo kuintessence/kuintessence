@@ -25,6 +25,7 @@ import {
   PgGovernanceRepository,
 } from "../services/license-runtime-governance";
 import { SoftwareAvailabilityService } from "../services/software-availability";
+import { federationExecutionDenial } from "./execution-policy";
 import { checkFederationLicensedMaterials } from "./licensed-material-authorization";
 import { prepareFederationSoftware } from "./software-authorization";
 
@@ -585,4 +586,21 @@ test.each([
   await expect(
     prepareFederationSoftware(intent, identity, target, software, true),
   ).rejects.toMatchObject({ statusCode: 403 });
+});
+
+test("incomplete placement retries without masking withdrawn material authorization", async () => {
+  const f = await materialJob();
+  await db.delete(jobDispatchOutbox).where(eq(jobDispatchOutbox.jobId, delivery.jobId));
+  await db.update(jobs).set({ status: "queued" }).where(eq(jobs.id, delivery.jobId));
+  const error = await f.check().catch((error: unknown) => error);
+  expect(error).toBeInstanceOf(Error);
+  expect(federationExecutionDenial(error)).toBeUndefined();
+  await db.update(jobs).set({ status: "running" }).where(eq(jobs.id, delivery.jobId));
+  await expect(f.check()).rejects.toThrow("OPERATION_CONFLICT");
+  await db.update(jobs).set({ status: "queued" }).where(eq(jobs.id, delivery.jobId));
+  await db
+    .update(licenseEntitlementClaims)
+    .set({ status: "revoked" })
+    .where(eq(licenseEntitlementClaims.id, claimId));
+  await expect(f.check()).rejects.toMatchObject({ code: "POLICY_DENIED" });
 });

@@ -2,6 +2,7 @@ import {
   agents,
   clusterExecutionAccounts,
   type PgDb,
+  type PgTransaction,
   sandboxRuntimeContractBindings,
   sandboxRuntimeProfiles,
   scriptAttestations,
@@ -18,7 +19,7 @@ import {
   SoftwareAssetPayloadSchema,
   type workflowDsl,
 } from "@kuintessence/shared";
-import { and, desc, eq, gt, inArray, isNull, or } from "drizzle-orm";
+import { and, desc, eq, gt, inArray, isNull, or, sql } from "drizzle-orm";
 import { sandboxRuntimeContractKey } from "./license-runtime-governance";
 import { hashSandboxScript } from "./sandbox-script";
 
@@ -51,7 +52,7 @@ interface RuntimeTarget {
 }
 
 function activeMappingCondition() {
-  const now = new Date();
+  const now = new Date(Date.now());
   return and(
     eq(userClusterAccountMappings.status, "approved"),
     isNull(userClusterAccountMappings.revokedAt),
@@ -90,7 +91,10 @@ function dispatchIdentity(
 }
 
 export class SandboxExecutionResolver {
-  constructor(private readonly db: PgDb) {}
+  constructor(
+    private readonly db: PgDb | PgTransaction,
+    private readonly lockReads = false,
+  ) {}
 
   async resolveSource(
     node: Extract<workflowDsl.WorkflowNode, { type: "Script" }>,
@@ -114,7 +118,7 @@ export class SandboxExecutionResolver {
         runtimeContractRef: null,
       };
     }
-    const [row] = await this.db
+    const query = this.db
       .select({ asset: softwareAssets, revision: softwareAssetRevisions })
       .from(softwareAssetRevisions)
       .innerJoin(softwareAssets, eq(softwareAssets.id, softwareAssetRevisions.assetId))
@@ -129,6 +133,7 @@ export class SandboxExecutionResolver {
         ),
       )
       .limit(1);
+    const [row] = await (this.lockReads ? query.for("share", { noWait: true }) : query);
     if (!row) throw new SandboxAuthorizationError("Pinned Sandbox script revision was not found");
     if (!(await this.canUseAsset(row.asset, userId, orgId))) {
       throw new SandboxAuthorizationError(
@@ -161,7 +166,7 @@ export class SandboxExecutionResolver {
   }
 
   async resolveRuntime(profileId: string): Promise<ResolvedSandboxRuntime> {
-    const [row] = await this.db
+    const query = this.db
       .select()
       .from(sandboxRuntimeProfiles)
       .where(
@@ -171,6 +176,7 @@ export class SandboxExecutionResolver {
         ),
       )
       .limit(1);
+    const [row] = await (this.lockReads ? query.for("share", { noWait: true }) : query);
     if (!row) throw new SandboxAuthorizationError("Sandbox runtime profile is not active");
     return {
       id: row.id,
@@ -187,7 +193,10 @@ export class SandboxExecutionResolver {
         "A provider organization is required to bind a Sandbox runtime contract",
       );
     }
-    const rows = await this.db
+    // A newly inserted, more-specific binding can change the selected runtime.
+    if (this.lockReads)
+      await this.db.execute(sql`lock table sandbox_runtime_contract_bindings in share mode nowait`);
+    const query = this.db
       .select({ binding: sandboxRuntimeContractBindings, profile: sandboxRuntimeProfiles })
       .from(sandboxRuntimeContractBindings)
       .innerJoin(
@@ -206,6 +215,7 @@ export class SandboxExecutionResolver {
           eq(sandboxRuntimeProfiles.lifecycle, "active"),
         ),
       );
+    const rows = await (this.lockReads ? query.for("share", { noWait: true }) : query);
     const matching = rows.filter(
       ({ binding }) =>
         (binding.agentId === null || binding.agentId === target.agentId) &&
@@ -245,7 +255,7 @@ export class SandboxExecutionResolver {
     runtimeContractRef: SandboxRuntimeContractRef;
     agentId: string;
   }): Promise<ResolvedSandboxRuntime> {
-    const [agent] = await this.db
+    const query = this.db
       .select({
         agentId: agents.agentId,
         providerOrgId: agents.providerOrgId,
@@ -255,6 +265,7 @@ export class SandboxExecutionResolver {
       .from(agents)
       .where(eq(agents.agentId, input.agentId))
       .limit(1);
+    const [agent] = await (this.lockReads ? query.for("share", { noWait: true }) : query);
     if (!agent) throw new SandboxAuthorizationError("Planned Sandbox Agent is unavailable");
     return this.resolveRuntimeForTarget({ ...input, ...agent });
   }
@@ -284,6 +295,15 @@ export class SandboxExecutionResolver {
     runtimeProfileId: string;
     runtimeDigest: string;
   }): Promise<SandboxDispatchIdentity> {
+    return (await this.resolveIdentityAuthorization(input)).identity;
+  }
+
+  async resolveIdentityAuthorization(
+    input: Parameters<SandboxExecutionResolver["resolveIdentity"]>[0],
+  ): Promise<{
+    identity: SandboxDispatchIdentity;
+    expiresAtUnixMs: number;
+  }> {
     if (!input.providerOrgId)
       throw new SandboxAuthorizationError("Sandbox execution requires a provider organization");
     const accountScope = and(
@@ -296,8 +316,8 @@ export class SandboxExecutionResolver {
       );
     }
     if (input.requested.type === "SharedService") {
-      await this.assertSharedServiceEligible(input);
-      const [account] = await this.db
+      const expiresAtUnixMs = await this.assertSharedServiceEligible(input);
+      const accountQuery = this.db
         .select()
         .from(clusterExecutionAccounts)
         .where(
@@ -309,15 +329,18 @@ export class SandboxExecutionResolver {
           ),
         )
         .limit(1);
+      const [account] = await (this.lockReads
+        ? accountQuery.for("share", { noWait: true })
+        : accountQuery);
       if (!account)
         throw new SandboxAuthorizationError("Selected Agent has no enabled shared service account");
-      return dispatchIdentity(account, "SharedService");
+      return { identity: dispatchIdentity(account, "SharedService"), expiresAtUnixMs };
     }
     const mappingFilter =
       input.requested.type === "MappedAccount"
         ? eq(userClusterAccountMappings.id, input.requested.mappingId)
         : undefined;
-    const rows = await this.db
+    const mappingQuery = this.db
       .select({ account: clusterExecutionAccounts, mapping: userClusterAccountMappings })
       .from(userClusterAccountMappings)
       .innerJoin(
@@ -336,12 +359,18 @@ export class SandboxExecutionResolver {
       )
       .orderBy(desc(userClusterAccountMappings.isDefault), userClusterAccountMappings.requestedAt)
       .limit(1);
+    const rows = await (this.lockReads
+      ? mappingQuery.for("share", { noWait: true })
+      : mappingQuery);
     const selected = rows[0];
     if (!selected)
       throw new SandboxAuthorizationError(
         "No approved mapped account exists for the selected Agent",
       );
-    return dispatchIdentity(selected.account, "MappedAccount");
+    return {
+      identity: dispatchIdentity(selected.account, "MappedAccount"),
+      expiresAtUnixMs: selected.mapping.expiresAt?.getTime() ?? Number.POSITIVE_INFINITY,
+    };
   }
 
   private defaultEntrypoint(language: workflowDsl.SandboxLanguage): string {
@@ -367,7 +396,7 @@ export class SandboxExecutionResolver {
     if (["revoked", "archived"].includes(asset.lifecycle)) return false;
     if (asset.ownerUserId === userId) return true;
     if (asset.visibility === "platform-public" && asset.lifecycle === "published") return true;
-    const orgRows = await this.db
+    const orgQuery = this.db
       .select({ orgId: userOrgMemberships.orgId })
       .from(userOrgMemberships)
       .where(
@@ -376,8 +405,9 @@ export class SandboxExecutionResolver {
           orgId ? eq(userOrgMemberships.orgId, orgId) : undefined,
         ),
       );
+    const orgRows = await (this.lockReads ? orgQuery.for("share", { noWait: true }) : orgQuery);
     const orgIds = orgRows.map((row) => row.orgId);
-    const grants = await this.db
+    const grantsQuery = this.db
       .select({ capabilities: softwareAssetGrants.capabilities })
       .from(softwareAssetGrants)
       .where(
@@ -399,6 +429,9 @@ export class SandboxExecutionResolver {
           ),
         ),
       );
+    const grants = await (this.lockReads
+      ? grantsQuery.for("share", { noWait: true })
+      : grantsQuery);
     return grants.some((grant) =>
       grant.capabilities.some((capability) => capability === "use" || capability === "admin"),
     );
@@ -409,13 +442,13 @@ export class SandboxExecutionResolver {
     providerOrgId: string | null;
     runtimeProfileId: string;
     runtimeDigest: string;
-  }): Promise<void> {
+  }): Promise<number> {
     if (!input.source.assetRevisionId || input.source.assetLifecycle !== "published") {
       throw new SandboxAuthorizationError(
         "Inline, draft, and unpublished scripts cannot use a shared service account",
       );
     }
-    const rows = await this.db
+    const attestationQuery = this.db
       .select()
       .from(scriptAttestations)
       .where(
@@ -426,10 +459,16 @@ export class SandboxExecutionResolver {
           eq(scriptAttestations.runtimeDigest, input.runtimeDigest),
           eq(scriptAttestations.status, "active"),
           isNull(scriptAttestations.revokedAt),
-          or(isNull(scriptAttestations.expiresAt), gt(scriptAttestations.expiresAt, new Date())),
+          or(
+            isNull(scriptAttestations.expiresAt),
+            gt(scriptAttestations.expiresAt, new Date(Date.now())),
+          ),
         ),
       );
-    const eligible = rows.some(
+    const rows = await (this.lockReads
+      ? attestationQuery.for("share", { noWait: true })
+      : attestationQuery);
+    const eligible = rows.filter(
       (row) =>
         (row.scope === "platform" || row.providerOrgId === input.providerOrgId) &&
         row.allowedIdentities.some(
@@ -437,9 +476,10 @@ export class SandboxExecutionResolver {
             typeof identity === "object" && identity !== null && identity.type === "SharedService",
         ),
     );
-    if (!eligible)
+    if (!eligible.length)
       throw new SandboxAuthorizationError(
         "No valid attestation allows shared service execution here",
       );
+    return Math.max(...eligible.map((row) => row.expiresAt?.getTime() ?? Number.POSITIVE_INFINITY));
   }
 }

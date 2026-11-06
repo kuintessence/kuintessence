@@ -65,7 +65,7 @@ export async function checkFederationExecutionPolicy(
   const defer = (error: unknown) => {
     transient ??= error;
   };
-  const inspect = async (check: () => Promise<void>) => {
+  const inspect = async (check: () => Promise<unknown>) => {
     try {
       await check();
     } catch (error) {
@@ -106,7 +106,17 @@ export async function checkFederationExecutionPolicy(
       await checkFederationLicensedMaterials(db, job.id, intent, identity, target);
     });
     await inspect(() => checkFederationJobData(db, job.id, identity));
-    await inspect(() => checkFederationSandboxJob(db, job.id, intent, identity, sandboxPolicies));
+    await inspect(() =>
+      checkFederationSandboxJob(
+        db,
+        job.id,
+        intent,
+        identity,
+        sandboxPolicies,
+        undefined,
+        binding.snapshot.environment.sandboxRuntime,
+      ),
+    );
   }
   for (const { operation, job, intent } of installations) {
     checkOwner(job);

@@ -16,6 +16,7 @@ import {
 import {
   type DataDeliveryBinding,
   DataDeliveryBindingSchema,
+  type DispatchJob,
   SandboxIoType,
   SandboxMountMode,
   type ServerMessage,
@@ -26,6 +27,7 @@ import { and, eq, inArray } from "drizzle-orm";
 import { dataDeliveryToProto } from "../grpc/dispatcher";
 import { DataDeliveryResolver, type ResolvedDataDelivery } from "../services/data-delivery";
 import { PgDataPrerequisiteRepository } from "../services/data-prerequisite-repository-drizzle";
+import { factsRequireRestrictedNoEgress } from "../services/restricted-no-egress";
 
 export interface PreparedFederationDataDispatch {
   message: ServerMessage;
@@ -317,4 +319,115 @@ function rejectDataDispatch(): never {
   throw new WorkflowExecutionInterrupted("Data dispatch no longer matches its authorized binding", {
     retryable: false,
   });
+}
+
+export async function assertRunningDataBindings(
+  tx: PgTransaction,
+  dispatch: DispatchJob,
+): Promise<void> {
+  function reject(): never {
+    throw new WorkflowExecutionInterrupted("Running data binding changed", { retryable: false });
+  }
+  const bindings = await tx
+    .select()
+    .from(jobDataBindings)
+    .where(
+      and(eq(jobDataBindings.jobId, dispatch.jobId), eq(jobDataBindings.source, "data-market")),
+    )
+    .for("share");
+  const deliveries = new Map(dispatch.dataDeliveries.map((item) => [item.bindingId, item]));
+  if (deliveries.size !== dispatch.dataDeliveries.length) reject();
+  const staged = new Set<number>();
+  for (const binding of bindings) {
+    const delivery = deliveries.get(binding.id);
+    if (!delivery) {
+      const manifest = dispatch.sandboxExecution;
+      const mount = manifest?.artifactMounts.find(
+        (mount) => mount.descriptor === binding.inputDescriptor,
+      );
+      if (
+        !manifest?.networkDisabled ||
+        !dispatch.restrictedNoEgress ||
+        !mount ||
+        mount.mode !== SandboxMountMode.READ_ONLY ||
+        mount.ioType !== SandboxIoType.FILE_BATCH ||
+        mount.relativePath !== `inputs/${binding.inputDescriptor}` ||
+        mount.containerPath !== `/kq/inputs/${binding.inputDescriptor}` ||
+        !binding.versionId
+      )
+        reject();
+      const entries = await tx
+        .select()
+        .from(dataAssetManifestEntries)
+        .where(eq(dataAssetManifestEntries.dataAssetVersionId, binding.versionId))
+        .for("share", { noWait: true });
+      const selected = binding.selectedEntries.length
+        ? entries.filter((entry) => binding.selectedEntries.includes(entry.entryPath))
+        : entries;
+      if (
+        !selected.length ||
+        selected.length !== mount.batchEntries.length ||
+        (binding.selectedEntries.length && selected.length !== binding.selectedEntries.length)
+      )
+        reject();
+      for (const expected of mount.batchEntries) {
+        if (
+          !selected.some(
+            (entry) =>
+              entry.entryPath === expected.relativePath &&
+              entry.digest.replace(/^sha256:/, "") === expected.sha256 &&
+              Number.isSafeInteger(entry.sizeBytes) &&
+              BigInt(entry.sizeBytes) === expected.sizeBytes,
+          )
+        )
+          reject();
+        const index = dispatch.inputStaging.findIndex(
+          (input) =>
+            input.stagePath === `${mount.relativePath}/${expected.relativePath}` &&
+            input.fileMetadataId.startsWith(`data-delivery-${binding.id}-`) &&
+            input.deliveryLeaseId &&
+            input.deliveryLeaseExpiresAtUnixMs > 0n,
+        );
+        if (index < 0 || staged.has(index)) reject();
+        staged.add(index);
+      }
+      continue;
+    }
+    if (dispatch.sandboxExecution) reject();
+    deliveries.delete(binding.id);
+    if (
+      !delivery ||
+      delivery.assetId !== binding.assetId ||
+      delivery.versionId !== binding.versionId ||
+      delivery.manifestDigest !== binding.manifestDigest ||
+      delivery.stagePath !== binding.stagePath
+    )
+      reject();
+    const paths = delivery.selectedEntries.map((entry) => entry.path).sort();
+    if (
+      !paths.length ||
+      new Set(paths).size !== paths.length ||
+      (binding.selectedEntries.length &&
+        JSON.stringify([...binding.selectedEntries].sort()) !== JSON.stringify(paths))
+    )
+      reject();
+    const restricted = factsRequireRestrictedNoEgress({
+      assetKind: binding.assetKind === "licensed-material" ? "licensed-material" : null,
+      sensitivity:
+        binding.sensitivity === "restricted" || binding.sensitivity === "regulated"
+          ? binding.sensitivity
+          : null,
+      egressPolicy: binding.egressPolicy === "allow" ? "allow" : "deny",
+    });
+    if (delivery.restricted !== restricted || (restricted && !dispatch.restrictedNoEgress))
+      reject();
+  }
+  if (
+    deliveries.size ||
+    dispatch.inputStaging.some(
+      (input, index) =>
+        (input.deliveryLeaseId || input.deliveryLeaseExpiresAtUnixMs !== 0n) && !staged.has(index),
+    )
+  )
+    reject();
 }

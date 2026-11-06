@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { toBinary } from "@bufbuild/protobuf";
+import { create, toBinary } from "@bufbuild/protobuf";
 import {
   agents,
   createPgDb,
@@ -16,13 +16,20 @@ import {
   users,
   workflowRuns,
 } from "@kuintessence/db";
-import { type ServerMessage, ServerMessageSchema } from "@kuintessence/proto";
+import {
+  InputStagingSchema,
+  SandboxExecutionSchema,
+  SandboxIoType,
+  SandboxMountMode,
+  type ServerMessage,
+  ServerMessageSchema,
+} from "@kuintessence/proto";
 import { eq, sql } from "drizzle-orm";
 import { AgentDispatcher } from "../grpc/dispatcher";
 import { JobDispatchOutbox } from "../grpc/job-dispatch-outbox";
 import { DataDeliveryResolver } from "../services/data-delivery";
 import { PgDataPrerequisiteRepository } from "../services/data-prerequisite-repository-drizzle";
-import { FederationDataDispatch } from "./data-dispatch";
+import { assertRunningDataBindings, FederationDataDispatch } from "./data-dispatch";
 
 const url = process.env.DATABASE_URL;
 if (!url || !/^\/kuintessence_unit_[a-z0-9_]+$/.test(new URL(url).pathname))
@@ -381,4 +388,69 @@ test("a failed retry timestamp write cannot turn an accepted durable dispatch in
     await db.execute(sql`drop trigger test_data_dispatch_backoff_failure on job_dispatch_outbox`);
     await db.execute(sql`drop function test_data_dispatch_backoff_failure()`);
   }
+});
+
+test.each([
+  "active",
+  "hash",
+  "size",
+  "missing",
+  "unbound",
+  "extra",
+] as const)("running Sandbox data validates %s against immutable entries without renewing downloads", async (change) => {
+  if (original.payload.case !== "dispatchJob") throw new Error("Missing dispatch");
+  const dispatch = original.payload.value;
+  const delivered = dispatch.dataDeliveries[0];
+  const file = delivered?.selectedEntries[0];
+  if (!delivered || !file) throw new Error("Missing delivery");
+  dispatch.sandboxExecution = create(SandboxExecutionSchema, {
+    networkDisabled: true,
+    artifactMounts: [
+      {
+        descriptor: "data",
+        mode: SandboxMountMode.READ_ONLY,
+        ioType: SandboxIoType.FILE_BATCH,
+        relativePath: "inputs/data",
+        containerPath: "/kq/inputs/data",
+        sizeLimitBytes: 4n,
+        batchEntries: [{ relativePath: file.path, sha256: file.sha256, sizeBytes: file.sizeBytes }],
+      },
+    ],
+  });
+  dispatch.inputStaging = [
+    create(InputStagingSchema, {
+      fileMetadataId: `data-delivery-${bindingId}-0`,
+      stagePath: "inputs/data/input.txt",
+      sourceUrl: "https://expired.invalid/input",
+      deliveryLeaseId: "original-lease",
+      deliveryLeaseExpiresAtUnixMs: 1n,
+    }),
+  ];
+  dispatch.dataDeliveries = [];
+  dispatch.restrictedNoEgress = true;
+  await db.delete(dataLocations).where(eq(dataLocations.id, locationId));
+  await db.transaction((tx) => assertRunningDataBindings(tx, dispatch));
+  const entry = dispatch.sandboxExecution.artifactMounts[0]?.batchEntries[0];
+  const input = dispatch.inputStaging[0];
+  if (!entry || !input) throw new Error("Missing Sandbox data");
+  if (change === "hash") entry.sha256 = "e".repeat(64);
+  if (change === "size") entry.sizeBytes += 1n;
+  if (change === "missing") dispatch.inputStaging = [];
+  if (change === "unbound") input.fileMetadataId = `data-delivery-${crypto.randomUUID()}-0`;
+  if (change === "extra") dispatch.inputStaging.push({ ...input, stagePath: "inputs/data/extra" });
+  if (change !== "active")
+    await expect(db.transaction((tx) => assertRunningDataBindings(tx, dispatch))).rejects.toThrow(
+      "Running data binding changed",
+    );
+  else
+    await db.transaction(async (tx) => {
+      await assertRunningDataBindings(tx, dispatch);
+      await expect(
+        Promise.resolve(
+          other.execute(
+            sql`select id from data_asset_manifest_entries where data_asset_version_id=${versionId} for update nowait`,
+          ),
+        ),
+      ).rejects.toMatchObject({ cause: { code: "55P03" } });
+    });
 });

@@ -82,7 +82,7 @@ function sandboxIoType(value: SandboxSignedManifest["mounts"][number]["ioType"])
   return SandboxIoType.FILE_BATCH;
 }
 
-function sandboxExecutionToProto(manifest: SandboxSignedManifest) {
+export function sandboxExecutionToProto(manifest: SandboxSignedManifest) {
   return create(SandboxExecutionSchema, {
     script: create(SandboxScriptBundleSchema, {
       language: sandboxLanguage(manifest.script.language),

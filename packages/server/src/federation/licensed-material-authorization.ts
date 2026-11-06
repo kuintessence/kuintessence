@@ -49,7 +49,7 @@ export async function checkFederationLicensedMaterials(
   const mounts =
     message?.payload.case === "dispatchJob" ? message.payload.value.licensedMaterialMounts : [];
   if (!requests.length && !mounts.length) return Number.POSITIVE_INFINITY;
-  if ((!outbox && job.status !== "pending") || (outbox && mounts.length !== requests.length))
+  if ((!outbox && job.status === "running") || (outbox && mounts.length !== requests.length))
     throw new FederationError("OPERATION_CONFLICT");
   const repository = new PgGovernanceRepository(db, lock);
   const governance = new LicenseRuntimeGovernanceService(repository);
@@ -97,5 +97,7 @@ export async function checkFederationLicensedMaterials(
     if (authorization.blocks.length) throw new FederationError("POLICY_DENIED");
     expiresAtUnixMs = Math.min(expiresAtUnixMs, authorization.expiresAtUnixMs);
   }
+  if (!outbox && job.status === "queued")
+    throw new Error("Material dispatch is still being prepared");
   return expiresAtUnixMs;
 }
