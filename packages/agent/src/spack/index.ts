@@ -1,4 +1,9 @@
-import type { InstalledSpec, MirrorSpec, SpackPolicy } from "@kuintessence/shared";
+import type {
+  InstalledSpec,
+  MirrorSpec,
+  SpackExecutionPin,
+  SpackPolicy,
+} from "@kuintessence/shared";
 import type { Spawner } from "../adapters/base";
 import { Buildcache, type ExportOutcome, type ImportResult } from "./buildcache";
 import { MANAGED_SPACK_EXECUTION_DISABLED, SpackCli } from "./cli";
@@ -234,6 +239,26 @@ export class SpackManager {
       case "import_preinstalled":
         return this.withManagedInventory(await this.installer.importPreinstalled(spec));
     }
+  }
+
+  get pinnedExecutionAvailable(): boolean {
+    return this.available && this.managedInstallation?.loadPinned !== undefined;
+  }
+
+  async loadPinnedWorkflow(
+    spec: string,
+    pin: SpackExecutionPin,
+    signal: AbortSignal,
+  ): Promise<SoftwareOperationOutcome> {
+    if (signal.aborted) return cancelledSoftwareOperation();
+    if (!this.available || !this.managedInstallation?.loadPinned)
+      return { outcome: "rejected", reason: "Pinned managed Spack execution is unavailable" };
+    return this.managedInstallation.loadPinned(
+      spec,
+      pin,
+      this.cachedPolicy ?? { lockEnabled: false },
+      signal,
+    );
   }
 
   private async prepareManagedInstall(

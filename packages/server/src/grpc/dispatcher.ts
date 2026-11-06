@@ -49,7 +49,7 @@ import type {
   SandboxSignedManifest,
   SpackExecution,
 } from "@kuintessence/shared";
-import { createLogger } from "@kuintessence/shared";
+import { createLogger, SPACK_PINNED_EXECUTION_PLACEHOLDER } from "@kuintessence/shared";
 import { and, asc, eq, gte, isNotNull, isNull, lt } from "drizzle-orm";
 import type { ResolvedDataDelivery } from "../services/data-delivery";
 
@@ -175,6 +175,7 @@ export interface AgentChannel {
   push(msg: ServerMessage): void;
   close(): void;
   spackMaterialDeliveryV1?: boolean;
+  spackPinnedExecutionV1?: boolean;
   verifiedCertFingerprint?: string;
 }
 
@@ -262,7 +263,18 @@ export class AgentDispatcher {
 
   pushPreparedDispatch(agentId: string, message: ServerMessage): boolean {
     if (message.payload.case !== "dispatchJob") throw new Error("Expected a job dispatch message");
+    if (
+      message.payload.value.spackExecution?.pin &&
+      (message.payload.value.command !== SPACK_PINNED_EXECUTION_PLACEHOLDER ||
+        !this.supportsPinnedSpack(agentId))
+    )
+      return false;
     return this.pushToAgent(agentId, message);
+  }
+
+  supportsPinnedSpack(agentId: string): boolean {
+    const channel = this.getChannel(agentId);
+    return channel?.spackPinnedExecutionV1 === true && !!channel.verifiedCertFingerprint;
   }
 
   buildDispatchJob(
@@ -293,6 +305,8 @@ export class AgentDispatcher {
       dataDeliveries?: ResolvedDataDelivery[];
     },
   ): ServerMessage {
+    if (job.spackExecution?.pin && job.command !== SPACK_PINNED_EXECUTION_PLACEHOLDER)
+      throw new Error("Pinned Spack execution requires its fail-closed command placeholder");
     return create(ServerMessageSchema, {
       payload: {
         case: "dispatchJob",

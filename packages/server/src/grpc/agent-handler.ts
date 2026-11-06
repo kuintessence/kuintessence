@@ -384,6 +384,7 @@ export function registerAgentHandler(router: ConnectRouter, deps: AgentHandlerDe
 
       const channel = {
         spackMaterialDeliveryV1: false,
+        spackPinnedExecutionV1: false,
         verifiedCertFingerprint: undefined as string | undefined,
         push: (m: ServerMessage) => {
           if (!active) {
@@ -495,6 +496,7 @@ export function registerAgentHandler(router: ConnectRouter, deps: AgentHandlerDe
               computeHealthV1 = reg.computeHealthV1;
               queueInventoryV1 = reg.queueInventoryV1;
               channel.spackMaterialDeliveryV1 = reg.spackMaterialDeliveryV1;
+              channel.spackPinnedExecutionV1 = reg.spackPinnedExecutionV1;
               channel.verifiedCertFingerprint =
                 mtlsContext.getStore()?.fingerprintSha256 ?? undefined;
               dispatcher.register(registeredAgentId, channel);

@@ -125,6 +125,7 @@ import {
   activateWorkflowSpack,
   SPACK_ACTIVATION_FAILURE,
   SPACK_ACTIVATION_TIMEOUT,
+  workflowSpackIntent,
 } from "./spack/workflow-activation";
 import type { SshHandler, SshOutgoingMessage } from "./ssh";
 import { multipartUploadFromFile } from "./staging/multipart-upload-from-file";
@@ -1584,6 +1585,7 @@ export class AgentStream {
           computeHealthV1: this.computeHealthV1Capable,
           queueInventoryV1: this.queueInventoryV1Capable,
           spackMaterialDeliveryV1: this.spackManager?.requireServerMaterials === true,
+          spackPinnedExecutionV1: this.spackManager?.pinnedExecutionAvailable === true,
           managedDatasetRootIds: [...(this.deps.managedDatasetRootIds ?? [])],
         }),
       },
@@ -2592,10 +2594,7 @@ export class AgentStream {
               command: dj.command,
               ...(dj.spackExecution
                 ? {
-                    spackExecution: {
-                      spec: dj.spackExecution.spec,
-                      command: dj.spackExecution.command,
-                    },
+                    spackExecution: workflowSpackIntent(dj.spackExecution),
                   }
                 : {}),
               cpus: dj.cpus,
@@ -3311,10 +3310,7 @@ export class AgentStream {
       this.spackActivations.set(spec.jobId, { epoch: dispatchEpoch, controller });
       try {
         const command = await activateWorkflowSpack({
-          execution: {
-            spec: dispatch.spackExecution.spec,
-            command: dispatch.spackExecution.command,
-          },
+          execution: workflowSpackIntent(dispatch.spackExecution),
           command: dispatch.command,
           manager: this.spackManager,
           signal: AbortSignal.any([this.lifecycleController.signal, controller.signal]),

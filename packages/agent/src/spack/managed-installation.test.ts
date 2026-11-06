@@ -617,3 +617,83 @@ test("uncertain load worker withdraws ready inventory while retaining files and 
   expect(await backend.installedList()).toEqual([]);
   await expect(store.withLock(async () => {})).rejects.toThrow(RECOVERY_REQUIRED);
 });
+
+test("pinned workflow loads only its exact managed material and DAG, preserving healthy installs on mismatches", async () => {
+  const f = await makeInstallFixture({ evidence: true });
+  fixtures.push(f);
+  let loads = 0;
+  const backend = new ManagedSpackInstallation({
+    cacheDir: f.cacheDir,
+    site: f.siteOptions,
+    loadSite: async () => f.site,
+    runner: {
+      run: async (action, _prepared, _input, _site, path) => {
+        if (action === "install") await mkdir(f.report(action, path).prefix);
+        if (action === "load") loads++;
+        return f.report(action, path);
+      },
+    },
+  });
+  expect((await backend.install(f.prepared, f.input)).outcome).toBe("succeeded");
+  const pin = {
+    dagHash: f.report("load", "/unused").root.hash,
+    manifestDigest: f.input.manifestDigest,
+    lockfileDigest: f.prepared.manifest.lockfile.digest,
+    spackVersion: "1.0.0" as const,
+    target: f.site.profile.target,
+  };
+  const policy = { lockEnabled: false };
+  for (const change of [
+    { dagHash: "b".repeat(32) },
+    { manifestDigest: `sha256:${"c".repeat(64)}` },
+    { lockfileDigest: `sha256:${"d".repeat(64)}` },
+    { target: "linux-ubuntu24.04-aarch64" },
+  ]) {
+    expect((await backend.loadPinned(f.input.spec, { ...pin, ...change }, policy)).outcome).toBe(
+      "rejected",
+    );
+    expect((await new SpackInstallStore(f.site.profile.storeRoot).list())[0]?.state).toBe("ready");
+  }
+  expect((await backend.loadPinned("hello", pin, policy)).outcome).toBe("rejected");
+  expect(
+    (await backend.loadPinned(f.input.spec, pin, { lockEnabled: true, allowList: ["other*"] }))
+      .outcome,
+  ).toBe("rejected");
+  expect(loads).toBe(0);
+  expect((await backend.loadPinned(f.input.spec, pin, policy)).outcome).toBe("succeeded");
+  expect(loads).toBe(1);
+});
+
+test("pinned workflow refuses legacy material without license/provenance evidence", async () => {
+  const f = await fixture();
+  let loads = 0;
+  const backend = new ManagedSpackInstallation({
+    cacheDir: f.cacheDir,
+    site: f.siteOptions,
+    loadSite: async () => f.site,
+    runner: {
+      run: async (action, _prepared, _input, _site, path) => {
+        if (action === "install") await mkdir(f.report(action, path).prefix);
+        if (action === "load") loads++;
+        return f.report(action, path);
+      },
+    },
+  });
+  expect((await backend.install(f.prepared, f.input)).outcome).toBe("succeeded");
+  expect(
+    (
+      await backend.loadPinned(
+        f.input.spec,
+        {
+          dagHash: f.report("load", "/unused").root.hash,
+          manifestDigest: f.input.manifestDigest,
+          lockfileDigest: f.prepared.manifest.lockfile.digest,
+          spackVersion: "1.0.0",
+          target: f.site.profile.target,
+        },
+        { lockEnabled: false },
+      )
+    ).outcome,
+  ).toBe("rejected");
+  expect(loads).toBe(0);
+});

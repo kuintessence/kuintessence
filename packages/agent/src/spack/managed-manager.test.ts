@@ -347,3 +347,36 @@ describe("managed Spack manager integration", () => {
     expect(f.calls.some((call) => call.startsWith("spack load"))).toBe(false);
   });
 });
+
+test("pinned workflow loading never falls back to the CLI and forwards current policy", async () => {
+  const f = await fixture();
+  const pin = {
+    dagHash: installRootHash,
+    manifestDigest: f.input.manifestDigest,
+    lockfileDigest: f.prepared.manifest.lockfile.digest,
+    spackVersion: "1.0.0" as const,
+    target: f.site.profile.target,
+  };
+  const before = [...f.calls];
+  const signal = new AbortController().signal;
+  expect(f.manager.pinnedExecutionAvailable).toBe(false);
+  expect((await f.manager.loadPinnedWorkflow(f.input.spec, pin, signal)).outcome).toBe("rejected");
+  expect(f.calls).toEqual(before);
+  let loaded = 0;
+  f.backend.loadPinned = async (spec, actual, policy, passedSignal) => {
+    loaded++;
+    expect(spec).toBe(f.input.spec);
+    expect(actual).toEqual(pin);
+    expect(policy.lockEnabled).toBe(true);
+    expect(passedSignal).toBe(signal);
+    return success;
+  };
+  await f.manager.applyPolicy({
+    policyVersion: "pinned-policy",
+    lockEnabled: true,
+    allowList: ["hello@*"],
+  });
+  expect(f.manager.pinnedExecutionAvailable).toBe(true);
+  expect((await f.manager.loadPinnedWorkflow(f.input.spec, pin, signal)).outcome).toBe("succeeded");
+  expect(loaded).toBe(1);
+});

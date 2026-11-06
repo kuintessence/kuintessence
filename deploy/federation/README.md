@@ -130,3 +130,11 @@ docker compose --project-directory . \
 不兼容的模板返回 HTTP 409：`{error:{code:TEMPLATE_NOT_PORTABLE,path,reason}}`。原站队列、执行账号映射、站点/集群/输出存储 ID、静态文件/文本记录 ID、未声明参数、缺失版本映射、已有执行器不支持的 Milestone/Command Reduce 均明确拒绝。文件型输入暂只接受上游文件输出，拒绝参数/CEL 输入及单脚本外部文件输入；完整受管文件交付和运行时 provenance 检查待接通。模板的 skipStaticValidation 不能绕过接收方校验。
 
 这仍是输入转换检查：用例内部 packageId/packageRevisionId、软件 providerOrgId 等来源本地引用的完整可移植导入、用例命名空间/许可证检查、native lock 和安装材料、目标环境校验及真正派发尚待连接。不得把转换结果直接作为 trusted materialization 提交 Job；既有包、软件许可、数据授权和可信生态验证仍然必须执行。
+
+## 固定安装的 Agent 兼容性
+
+内部工作流执行 intent 现可携带 Spack pin（DAG、材料发布与锁文件摘要、引擎版本、目标三元组）。Server 只向通过 mTLS 验证且声明 `spack_pinned_execution_v1` 的 Agent 派发，重连重放也重新检查。Agent 使用材料 v2 的受管安装，并复用现有 worker 对实际环境进行校验和加载；不能改用普通宿主 Spack 或同名软件。
+
+带 pin 的 Job 命令为不可直接运行科学软件的 `exit 126` 占位，只有新 Agent 完整检查 pin 后才生成实际命令；旧工作流的 `exit 125` 行为保留。应同时升级 Server 和 Agent：旧 Agent 不执行带 pin 的任务，连接降级时已持久化指令保持等待，不删除 pin 重试。
+
+目前联邦环境清单还没有接通该内部 pin 的构造与自动安装绑定。这项能力不意味着 native lock 已导入、联邦任务可执行，或已有一次真实离线安装验收。

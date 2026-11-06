@@ -11,10 +11,15 @@ import {
   users,
 } from "@kuintessence/db";
 import { type ServerMessage, ServerMessageSchema } from "@kuintessence/proto";
-import { SPACK_EXECUTION_PLACEHOLDER } from "@kuintessence/shared";
+import {
+  SPACK_EXECUTION_PLACEHOLDER,
+  SPACK_PINNED_EXECUTION_PLACEHOLDER,
+  type SpackExecutionPin,
+} from "@kuintessence/shared";
 import { eq, inArray, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/bun-sqlite";
 import { InboundAcks } from "../packages/agent/src/queue/inbound-acks";
+import { workflowSpackIntent } from "../packages/agent/src/spack/workflow-activation";
 import { AgentDispatcher } from "../packages/server/src/grpc/dispatcher";
 import { JobDispatchOutbox } from "../packages/server/src/grpc/job-dispatch-outbox";
 import { JobService } from "../packages/server/src/services/job-service";
@@ -50,11 +55,11 @@ afterAll(async () => {
   await db.$client.end({ timeout: 5 });
 });
 
-async function dispatchFixture() {
+async function dispatchFixture(pin?: SpackExecutionPin) {
   const job = await jobService.submit(
     {
       name: "Durable dispatch",
-      command: SPACK_EXECUTION_PLACEHOLDER,
+      command: pin ? SPACK_PINNED_EXECUTION_PLACEHOLDER : SPACK_EXECUTION_PLACEHOLDER,
       resources: { cpus: 1, memoryMb: 16 },
     },
     userId,
@@ -68,7 +73,7 @@ async function dispatchFixture() {
     name: job.name,
     command: job.command,
     resources: { cpus: 1, memoryMb: 16 },
-    spackExecution: { spec: "hello@1.0", command: "hello --count 1" },
+    spackExecution: { spec: "hello@1.0", command: "hello --count 1", ...(pin ? { pin } : {}) },
   });
   return { jobId: job.id, dispatcher, message, outbox: new JobDispatchOutbox(db, dispatcher) };
 }
@@ -374,4 +379,59 @@ test("a new completion registry reads the sticky result committed before the pro
     crypto.randomUUID(),
   );
   expect(await registry.awaitCompletion(jobId, 1000)).toEqual(result);
+});
+
+test("pinned dispatch survives restart without downgrading to a legacy channel or losing its SQLite intent", async () => {
+  const pin: SpackExecutionPin = {
+    dagHash: "a".repeat(32),
+    manifestDigest: `sha256:${"b".repeat(64)}`,
+    lockfileDigest: `sha256:${"c".repeat(64)}`,
+    spackVersion: "1.0.0",
+    target: "linux-ubuntu24.04-x86_64",
+  };
+  const { jobId, message, outbox } = await dispatchFixture(pin);
+  expect(await outbox.enqueue(agentId, message)).toEqual({ sent: false, pending: true });
+  const dispatcher = new AgentDispatcher();
+  const delivered: ServerMessage[] = [];
+  const channel = {
+    push: (value: ServerMessage) => {
+      if (value.payload.case === "dispatchJob" && value.payload.value.jobId === jobId)
+        delivered.push(value);
+    },
+    close: () => {},
+  };
+  dispatcher.register(agentId, channel);
+  const restarted = new JobDispatchOutbox(db, dispatcher);
+  await restarted.redeliver(agentId);
+  expect(delivered).toHaveLength(0);
+  dispatcher.register(agentId, {
+    ...channel,
+    spackPinnedExecutionV1: true,
+    verifiedCertFingerprint: "d".repeat(64),
+  });
+  await restarted.redeliver(agentId);
+  expect(delivered).toHaveLength(1);
+  const replay = delivered[0];
+  if (!replay || replay.payload.case !== "dispatchJob" || !replay.payload.value.spackExecution)
+    throw new Error("missing pinned replay");
+  expect(toBinary(ServerMessageSchema, replay)).toEqual(toBinary(ServerMessageSchema, message));
+  const sqlite = new Database(":memory:");
+  try {
+    runSqliteMigrations(sqlite);
+    const inbox = new InboundAcks(drizzle(sqlite, { schema }));
+    await inbox.persistInbound({
+      dispatchId: `${jobId}:${replay.payload.value.dispatchEpoch}`,
+      jobId,
+      payload: {
+        command: replay.payload.value.command,
+        spackExecution: workflowSpackIntent(replay.payload.value.spackExecution),
+      },
+    });
+    expect((await inbox.pendingInbound())[0]?.payload).toMatchObject({
+      command: SPACK_PINNED_EXECUTION_PLACEHOLDER,
+      spackExecution: { pin },
+    });
+  } finally {
+    sqlite.close();
+  }
 });

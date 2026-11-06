@@ -361,6 +361,28 @@ export class PlacementOrchestrator {
           );
         })
       : liveCandidates;
+    if (input.spackExecution?.pin) {
+      candidates = candidates.filter((agent) =>
+        this.deps.dispatcher.supportsPinnedSpack(agent.agentId),
+      );
+      if (candidates.length === 0 && liveCandidates.length > 0) {
+        const reason =
+          "Pinned Spack execution requires a verified Agent with spack_pinned_execution_v1";
+        const trace = preflightRejectionTrace("spack-execution-pin", liveCandidates, reason);
+        await this.deps.jobService.setPlacementTrace(jobId, trace);
+        await this.deps.jobService.updateStatus(jobId, "failed", undefined, undefined, reason);
+        return {
+          selectedAgentId: null,
+          dispatched: false,
+          trace,
+          rejections: liveCandidates.map((agent) => ({
+            stage: "spack-execution-pin",
+            agentId: agent.agentId,
+            reason,
+          })),
+        };
+      }
+    }
     if (restrictedNoEgress) {
       candidates = restrictToIsolatedAgents(candidates, true);
       if (candidates.length === 0) {

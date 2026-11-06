@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import * as workflowDsl from "../workflow-dsl";
 import { REQUIRED_COLLECTED_OUTPUTS_KEY, runWorkflow } from "./engine";
-import { SPACK_EXECUTION_PLACEHOLDER } from "./spack-execution";
+import { SPACK_EXECUTION_PLACEHOLDER, SPACK_PINNED_EXECUTION_PLACEHOLDER } from "./spack-execution";
 import {
   createUsecaseExecutor,
   type JobSubmission,
@@ -1194,4 +1194,34 @@ describe("createUsecaseExecutor", () => {
     expect(r.status.solve).toBe("Succeeded");
     expect(r.values.solve?.values.residual).toBe(0.001);
   });
+});
+
+test("pinned packages preserve their installation identity in Agent intent and refuse legacy shell wrapping", async () => {
+  const capture: { spec?: JobSubmission } = {};
+  const dependencies = deps(capture);
+  const pin = {
+    dagHash: "a".repeat(32),
+    manifestDigest: `sha256:${"b".repeat(64)}`,
+    lockfileDigest: `sha256:${"c".repeat(64)}`,
+    spackVersion: "1.0.0" as const,
+    target: "linux-ubuntu24.04-x86_64",
+  };
+  const resolvePackage = async () => ({
+    ...(await dependencies.resolvePackage(UUID, UUID)),
+    spackExecutionPin: pin,
+  });
+  const executor = createUsecaseExecutor({
+    ...dependencies,
+    resolvePackage,
+    deferSpackActivation: true,
+  });
+  await executor(node, { params: { endTime: "50" }, nodes: {} });
+  expect(capture.spec?.spackExecution?.pin).toEqual(pin);
+  expect(capture.spec?.command).toBe(SPACK_PINNED_EXECUTION_PLACEHOLDER);
+  await expect(
+    createUsecaseExecutor({ ...dependencies, resolvePackage })(node, {
+      params: { endTime: "50" },
+      nodes: {},
+    }),
+  ).rejects.toThrow("requires managed Agent activation");
 });

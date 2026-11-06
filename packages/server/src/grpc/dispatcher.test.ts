@@ -1,12 +1,18 @@
 import { describe, expect, test } from "bun:test";
+import { fromBinary, toBinary } from "@bufbuild/protobuf";
 import type { PgDb } from "@kuintessence/db";
 import {
   QueueTargetMode,
   QueueValidationMode,
   type ServerMessage,
+  ServerMessageSchema,
   SoftwareOperationAction,
 } from "@kuintessence/proto";
-import { type SandboxSignedManifest, SPACK_EXECUTION_PLACEHOLDER } from "@kuintessence/shared";
+import {
+  type SandboxSignedManifest,
+  SPACK_EXECUTION_PLACEHOLDER,
+  SPACK_PINNED_EXECUTION_PLACEHOLDER,
+} from "@kuintessence/shared";
 import { AgentDispatcher, JobCancellationOutbox, JobWorkRootReleaseOutbox } from "./dispatcher";
 
 function mockChannel() {
@@ -512,4 +518,61 @@ describe("AgentDispatcher", () => {
     expect(ch1.messages).toHaveLength(1);
     expect(ch2.messages).toHaveLength(1);
   });
+});
+
+test("pinned dispatch survives encoding and refuses a legacy or unverified replacement channel", () => {
+  const dispatcher = new AgentDispatcher();
+  const pin = {
+    dagHash: "a".repeat(32),
+    manifestDigest: `sha256:${"b".repeat(64)}`,
+    lockfileDigest: `sha256:${"c".repeat(64)}`,
+    spackVersion: "1.0.0" as const,
+    target: "linux-ubuntu24.04-x86_64",
+  };
+  const message = dispatcher.buildDispatchJob("pinned-job", {
+    jobIdInternal: "pinned-job",
+    name: "pinned",
+    command: SPACK_PINNED_EXECUTION_PLACEHOLDER,
+    resources: { cpus: 1, memoryMb: 128 },
+    spackExecution: { spec: "hello@1.0", command: "hello", pin },
+  });
+  const legacy = mockChannel();
+  dispatcher.register("a", legacy);
+  expect(
+    dispatcher.pushPreparedDispatch(
+      "a",
+      fromBinary(ServerMessageSchema, toBinary(ServerMessageSchema, message)),
+    ),
+  ).toBe(false);
+  dispatcher.register("a", { ...legacy, spackPinnedExecutionV1: true });
+  expect(
+    dispatcher.pushPreparedDispatch(
+      "a",
+      fromBinary(ServerMessageSchema, toBinary(ServerMessageSchema, message)),
+    ),
+  ).toBe(false);
+  expect(legacy.messages).toHaveLength(0);
+  const modern = {
+    ...mockChannel(),
+    spackPinnedExecutionV1: true,
+    verifiedCertFingerprint: "a".repeat(64),
+  };
+  dispatcher.register("a", modern);
+  expect(
+    dispatcher.pushPreparedDispatch(
+      "a",
+      fromBinary(ServerMessageSchema, toBinary(ServerMessageSchema, message)),
+    ),
+  ).toBe(true);
+  const sent = modern.messages[0];
+  expect(
+    sent?.payload.case === "dispatchJob" ? sent.payload.value.spackExecution?.pin : undefined,
+  ).toMatchObject(pin);
+  dispatcher.register("a", legacy);
+  expect(
+    dispatcher.pushPreparedDispatch(
+      "a",
+      fromBinary(ServerMessageSchema, toBinary(ServerMessageSchema, message)),
+    ),
+  ).toBe(false);
 });

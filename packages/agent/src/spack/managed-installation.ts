@@ -2,6 +2,8 @@ import { lstat, realpath } from "node:fs/promises";
 import { join } from "node:path";
 import {
   type InstalledSpec,
+  type SpackExecutionPin,
+  SpackExecutionPinSchema,
   SpackMaterialManifestSchema,
   type SpackPolicy,
   spackMaterialBlobs,
@@ -314,11 +316,23 @@ export class ManagedSpackInstallation implements SpackManagedInstallation {
     input?: SpackMaterialPrepareInput,
     materials?: PreparedSpackMaterials,
     signal?: AbortSignal,
+    pin?: SpackExecutionPin,
   ): Promise<SoftwareOperationOutcome> {
     try {
       const abortSignal = input?.signal ?? signal;
       abortSignal?.throwIfAborted();
       const prepared = materials ?? (await this.materials(record, abortSignal));
+      if (
+        pin &&
+        (prepared.manifest.version !== 2 ||
+          prepared.manifest.lockfile.digest !== pin.lockfileDigest ||
+          prepared.manifest.spackVersion !== pin.spackVersion ||
+          prepared.manifest.target !== pin.target)
+      )
+        return {
+          outcome: "rejected",
+          reason: "Managed Spack material differs from the execution pin",
+        };
       const request = input ?? {
         operationId: record.id,
         ticket: "",
@@ -406,11 +420,28 @@ export class ManagedSpackInstallation implements SpackManagedInstallation {
     };
   }
 
+  async loadPinned(
+    spec: string,
+    rawPin: SpackExecutionPin,
+    policy: SpackPolicy,
+    signal?: AbortSignal,
+  ): Promise<SoftwareOperationOutcome> {
+    const pin = SpackExecutionPinSchema.safeParse(rawPin);
+    if (!pin.success) return { outcome: "rejected", reason: "Invalid Spack execution pin" };
+    return (
+      (await this.operation("load", spec, policy, signal, pin.data)) ?? {
+        outcome: "rejected",
+        reason: "Pinned managed Spack installation is unavailable",
+      }
+    );
+  }
+
   async operation(
     action: "load" | "uninstall" | "import_preinstalled",
     spec: string,
     policy: SpackPolicy = { lockEnabled: false },
     signal?: AbortSignal,
+    pin?: SpackExecutionPin,
   ): Promise<SoftwareOperationOutcome | null> {
     let invalidatedHashes: string[] | undefined;
     try {
@@ -423,10 +454,22 @@ export class ManagedSpackInstallation implements SpackManagedInstallation {
         return this.withdrawAfterSiteFailure(spec, action, policy);
       }
       const store = await this.store(site);
+      if (pin && (action !== "load" || site.profile.target !== pin.target))
+        return {
+          outcome: "rejected",
+          reason: "Spack execution pin does not match the verified site",
+        };
       return await store.withLock(async () => {
         signal?.throwIfAborted();
         const records = (await store.list()).filter((record) => record.state !== "removed");
-        const matches = matchRecords(records, spec);
+        const matches = pin
+          ? records.filter(
+              (record) =>
+                record.spec === spec &&
+                record.rootHash === pin.dagHash &&
+                record.manifestDigest === pin.manifestDigest,
+            )
+          : matchRecords(records, spec);
         if (matches.length === 0) {
           const name = spec
             .trim()
@@ -497,6 +540,7 @@ export class ManagedSpackInstallation implements SpackManagedInstallation {
           undefined,
           undefined,
           signal,
+          pin,
         );
         if ("invalidatedHashes" in result) invalidatedHashes = result.invalidatedHashes;
         return result;

@@ -14,6 +14,7 @@ import {
   type SandboxSignedManifest,
   type SoftwareAvailabilityResponse,
   SPACK_EXECUTION_PLACEHOLDER,
+  SPACK_PINNED_EXECUTION_PLACEHOLDER,
 } from "@kuintessence/shared";
 import { eq, like, notLike } from "drizzle-orm";
 import { AgentDispatcher } from "../grpc/dispatcher";
@@ -277,6 +278,68 @@ describe("PlacementOrchestrator", () => {
       expect(message.payload.value.command).toBe("exit 125");
       expect(message.payload.value.spackExecution).toMatchObject(spackExecution);
       expect((await jobService.getById(job.id))?.command).toBe("exit 125");
+    } finally {
+      dispatcher.unregister("po-agent-1");
+    }
+  });
+
+  test.each([
+    false,
+    true,
+  ])("pinned execution requires a verified capable Agent (supported=%s)", async (supported) => {
+    await agentManager.register({
+      agentId: "po-agent-1",
+      siteName: "po-site",
+      providerOrgId: orgId,
+      schedulerType: "slurm",
+      schedulerVersion: "23.02.7",
+    });
+    await db.update(agents).set({ status: "offline" }).where(eq(agents.agentId, "po-agent-2"));
+    const channel = {
+      ...mockChannel(),
+      spackPinnedExecutionV1: supported,
+      verifiedCertFingerprint: "a".repeat(64),
+    };
+    dispatcher.register("po-agent-1", channel);
+    try {
+      const spec = {
+        name: "po-test-pinned-spack",
+        command: SPACK_PINNED_EXECUTION_PLACEHOLDER,
+        resources: { cpus: 1, memoryMb: 128 },
+      };
+      const job = await jobService.submit(spec, userId);
+      cleanupJobIds.push(job.id);
+      const pin = {
+        dagHash: "a".repeat(32),
+        manifestDigest: `sha256:${"b".repeat(64)}`,
+        lockfileDigest: `sha256:${"c".repeat(64)}`,
+        spackVersion: "1.0.0" as const,
+        target: "linux-ubuntu24.04-x86_64",
+      };
+      const result = await orchestrator.placeAndDispatch({
+        jobId: job.id,
+        job: spec,
+        spackExecution: { spec: "hello@1.0", command: "hello", pin },
+        userId,
+        userRole: "user",
+        orgId,
+      });
+      expect(result.dispatched).toBe(supported);
+      if (supported) {
+        const message = channel.messages[0];
+        expect(
+          message?.payload.case === "dispatchJob"
+            ? message.payload.value.spackExecution?.pin
+            : null,
+        ).toMatchObject(pin);
+        expect((await jobService.getById(job.id))?.command).toBe(
+          SPACK_PINNED_EXECUTION_PLACEHOLDER,
+        );
+      } else {
+        expect(channel.messages).toHaveLength(0);
+        expect(result.trace?.stages[0]?.name).toBe("spack-execution-pin");
+        expect((await jobService.getById(job.id))?.status).toBe("failed");
+      }
     } finally {
       dispatcher.unregister("po-agent-1");
     }

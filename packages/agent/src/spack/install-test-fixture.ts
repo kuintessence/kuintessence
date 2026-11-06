@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { mkdtemp, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { SpackMaterialManifest } from "@kuintessence/shared";
+import { SpackMaterialManifestSchema } from "@kuintessence/shared";
 import type { SpackAuditRuntimeProfile } from "./audit-runtime";
 import type { SpackInstallReport, SpackInstallSiteProfile } from "./install-contract";
 import type { VerifiedSpackInstallSite } from "./install-runner";
@@ -34,7 +34,7 @@ export function installMemoryFixture(overrides: Record<string, string | undefine
   };
 }
 
-export async function makeInstallFixture() {
+export async function makeInstallFixture(options: { evidence?: boolean } = {}) {
   const root = await realpath(await mkdtemp(join(tmpdir(), "kq-install-")));
   const cacheDir = join(root, "cache");
   const lock = JSON.stringify({
@@ -54,7 +54,8 @@ export async function makeInstallFixture() {
   });
   const recipe = "opaque recipe; fixture never executes Python";
   const source = "opaque source; fixture never runs Spack";
-  const manifest: SpackMaterialManifest = {
+  const evidence = "fixture provenance and license attachment; no executable content";
+  const manifest = SpackMaterialManifestSchema.parse({
     version: 1,
     repository: "public/test",
     spec: "hello@1.0",
@@ -71,7 +72,29 @@ export async function makeInstallFixture() {
     ],
     sources: [{ path: "hello/hello-1.0.tar.gz", blob: blob(source) }],
     lockfile: blob(lock),
-  };
+    ...(options.evidence
+      ? {
+          version: 2 as const,
+          evidence: {
+            version: 1 as const,
+            materials: [
+              {
+                subject: blob(source),
+                license: { expression: "MIT", status: "approved" as const },
+                provenance: [
+                  {
+                    origin: "https://sources.example.invalid/hello",
+                    original: blob(source),
+                    evidence: blob(evidence),
+                  },
+                ],
+                attachments: [{ path: "LICENSE", kind: "license" as const, blob: blob(evidence) }],
+              },
+            ],
+          },
+        }
+      : {}),
+  });
   const text = JSON.stringify(manifest);
   const input = {
     operationId: "9ff66f65-ec50-4ca6-8a9b-1ed1c8ddfb04",
@@ -80,7 +103,9 @@ export async function makeInstallFixture() {
     spec: manifest.spec,
     spackVersion: manifest.spackVersion,
   };
-  const values = new Map([recipe, source, lock].map((value) => [installDigest(value), value]));
+  const values = new Map(
+    [recipe, source, lock, evidence].map((value) => [installDigest(value), value]),
+  );
   const client = new SpackMaterialClient({
     cacheDir,
     serverUrl: "https://server.example",

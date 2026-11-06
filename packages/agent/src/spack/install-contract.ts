@@ -1,5 +1,6 @@
 import {
   InstalledSpecSchema,
+  type SpackExecutionPin,
   SpackMaterialDigestSchema,
   type SpackPolicy,
 } from "@kuintessence/shared";
@@ -137,6 +138,12 @@ export const SpackInstallRecordSchema = z.strictObject({
 export type SpackInstallRecord = z.infer<typeof SpackInstallRecordSchema>;
 
 export interface SpackManagedInstallation {
+  loadPinned?(
+    spec: string,
+    pin: SpackExecutionPin,
+    policy: SpackPolicy,
+    signal?: AbortSignal,
+  ): Promise<SoftwareOperationOutcome>;
   install(
     prepared: PreparedSpackMaterials,
     input: SpackMaterialPrepareInput,

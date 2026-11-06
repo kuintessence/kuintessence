@@ -43,7 +43,11 @@ import {
   SshOpenSchema,
   SshResizeSchema,
 } from "@kuintessence/proto";
-import { type InstalledSpec, SPACK_EXECUTION_PLACEHOLDER } from "@kuintessence/shared";
+import {
+  type InstalledSpec,
+  SPACK_EXECUTION_PLACEHOLDER,
+  SPACK_PINNED_EXECUTION_PLACEHOLDER,
+} from "@kuintessence/shared";
 import { drizzle } from "drizzle-orm/bun-sqlite";
 import pino from "pino";
 import {
@@ -7444,6 +7448,7 @@ describe("AgentStream workflow Spack dispatch", () => {
     };
     return {
       stream,
+      spackManager,
       inboundAcks,
       tombstones,
       submitted,
@@ -7452,6 +7457,43 @@ describe("AgentStream workflow Spack dispatch", () => {
       drain: () => Promise.all([...harness.pendingSpackPreparations]),
     };
   }
+
+  test("persists pinned execution and rejects a mismatched environment before scheduler submission", async () => {
+    let legacy = 0;
+    const f = await fixture(async () => {
+      legacy++;
+      return loadSuccess;
+    });
+    const pin = {
+      dagHash: "a".repeat(32),
+      manifestDigest: `sha256:${"b".repeat(64)}`,
+      lockfileDigest: `sha256:${"c".repeat(64)}`,
+      spackVersion: "1.0.0" as const,
+      target: "linux-ubuntu24.04-x86_64",
+    };
+    const release = Promise.withResolvers<SoftwareOperationOutcome>();
+    f.spackManager.loadPinnedWorkflow = async (_spec, actual) => {
+      expect(actual).toEqual(pin);
+      return release.promise;
+    };
+    await deliverServerMessage(
+      f.stream,
+      dispatch({ command: SPACK_PINNED_EXECUTION_PLACEHOLDER, spackExecution: { ...intent, pin } }),
+    );
+    expect((await f.inboundAcks.pendingInbound())[0]?.payload.spackExecution).toEqual({
+      ...intent,
+      pin,
+    });
+    release.resolve({ outcome: "rejected", reason: "wrong material release" });
+    await f.drain();
+    expect(legacy).toBe(0);
+    expect(f.submitted).toHaveLength(0);
+    expect(
+      f.reports.some(
+        (report) => report.status === "failed" && report.message === SPACK_ACTIVATION_FAILURE,
+      ),
+    ).toBe(true);
+  });
 
   test("pending load survives reconnect without false failure or duplicate submit", async () => {
     const closeFirst = Promise.withResolvers<void>();

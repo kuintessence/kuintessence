@@ -10,7 +10,9 @@ import {
 import type { NodeInvocation } from "./journal";
 import {
   SPACK_EXECUTION_PLACEHOLDER,
+  SPACK_PINNED_EXECUTION_PLACEHOLDER,
   type SpackExecution,
+  type SpackExecutionPin,
   SpackExecutionSchema,
 } from "./spack-execution";
 
@@ -28,6 +30,7 @@ export interface ResolvedPackage {
   filesomeOutputs: usecase.FilesomeOutputMaterial[];
   valueOutputs: workflowDsl.ValueOutput[];
   resources?: { memoryMiB?: number };
+  spackExecutionPin?: SpackExecutionPin;
   licensedMaterials?: usecase.MaterializedTask["licensedMaterials"];
   softwareRequirements?: Array<{
     assetId?: string;
@@ -132,14 +135,21 @@ export function createUsecaseExecutor(deps: UsecaseExecutorDeps): NodeExecutor {
       licensedMaterials: pkg.licensedMaterials,
       inputs,
     });
+    if (pkg.spackExecutionPin && (!deps.deferSpackActivation || task.facility.kind !== "Spack"))
+      throw new Error("Pinned Spack execution requires managed Agent activation");
     const spackExecution =
       deps.deferSpackActivation && task.facility.kind === "Spack"
         ? SpackExecutionSchema.parse({
             spec: [task.facility.name, ...task.facility.argumentList].join(" "),
             command: usecase.wrapCommand({ ...task, facility: { kind: "Bare" } }),
+            ...(pkg.spackExecutionPin ? { pin: pkg.spackExecutionPin } : {}),
           })
         : undefined;
-    const command = spackExecution ? SPACK_EXECUTION_PLACEHOLDER : usecase.wrapCommand(task);
+    const command = spackExecution?.pin
+      ? SPACK_PINNED_EXECUTION_PLACEHOLDER
+      : spackExecution
+        ? SPACK_EXECUTION_PLACEHOLDER
+        : usecase.wrapCommand(task);
     const dataInputs = collectDatasetInputs(node);
     const resources = mapResources(node.requirements, pkg.resources?.memoryMiB);
     const schedulingStrategy = mapSchedulingStrategy(node.schedulingStrategy);

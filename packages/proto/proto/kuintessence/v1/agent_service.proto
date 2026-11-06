@@ -207,6 +207,8 @@ message RegisterRequest {
   bool spack_material_delivery_v1 = 18;
   // IDs of dataset roots validated locally at startup. Paths remain on the Agent.
   repeated string managed_dataset_root_ids = 19;
+  // Enforces immutable managed Spack execution pins; absent means unsupported.
+  bool spack_pinned_execution_v1 = 20;
 }
 
 message RegisterResponse {
@@ -306,13 +308,22 @@ message DispatchJob {
   repeated string file_output_descriptors = 21;
   QueueTargetMode queue_target_mode = 22;
   QueueValidationMode queue_validation_mode = 23;
-  // Workflow-only intent. command MUST remain "exit 125" for older Agents.
+  // Workflow-only intent. command is "exit 125", or "exit 126" when pin is set.
   SpackJobExecution spack_execution = 24;
 }
 
 message SpackJobExecution {
   string spec = 1;
   string command = 2;
+  SpackExecutionPin pin = 3;
+}
+
+message SpackExecutionPin {
+  string dag_hash = 1;
+  string manifest_digest = 2;
+  string lockfile_digest = 3;
+  string spack_version = 4;
+  string target = 5;
 }
 
 enum DataDeliveryMethod {

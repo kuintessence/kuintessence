@@ -131,6 +131,8 @@ Loop、Switch、子工作流和相同节点重复调用都必须覆盖，不能�
 
 新联邦引用 `FederationAssetRef` 包含源 site、kind、源 ID、不可变 revision、digest。A/B 的本地 UUID 不互认；接收方解析为自己的 Registry/Data Market ID，结合签名发布、recipe commit、目标架构锁和本地许可证验证。
 
+本地物化后的 Spack intent 必须携带完整 DAG、material manifest、原始 lockfile 摘要、引擎版本与目标三元组的 pin。安装选择和运行激活须引用同一授权材料；Agent 使用受管安装校验，不能以同名软件代替。旧 Agent 通过能力协商和专用失败占位被拒绝，升级/重连不得丢弃 pin。
+
 源端只传批准模板及参数/版本，不通过“预授权”允许任意远端 command、绝对路径或环境变量。内部物化后的 Job 可以复用现有命令执行，但模板解析必须发生在已验证的本地权限边界内。
 
 数据授权租期不等于文件已到，文件已到也不等于授权有效。DATA_WAITING 是联邦 invocation 的持久等待，缺少输入时不调用当前会抛 NOT_FOUND 的本地数据规划器去假装运行；导入并映射成功后再进入本地前置检查。
