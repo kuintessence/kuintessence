@@ -210,3 +210,37 @@ test("a failed shared operation stays bound for every waiter instead of creating
   const rows = await db.select().from(softwareOperations).where(eq(softwareOperations.spec, spec));
   expect(rows).toHaveLength(1);
 });
+
+test("pinned ordinary installations reject missing delivery or a mismatched ticket before dispatch", async () => {
+  const spec = "example@5";
+  const job = await makeJob(spec);
+  const input = {
+    jobId: job.id,
+    agentId,
+    spec,
+    requestedBy: userId,
+    expectedPin: {
+      dagHash: "a".repeat(32),
+      manifestDigest: `sha256:${"b".repeat(64)}`,
+      lockfileDigest: `sha256:${"c".repeat(64)}`,
+      spackVersion: "1.0.0" as const,
+      target: "linux-ubuntu24.04-x86_64",
+    },
+  };
+  const before = messages.length;
+  const unmanaged = new SoftwareOperationService(
+    db,
+    dispatcher,
+    installed,
+    undefined,
+    async () => {},
+  );
+  await expect(unmanaged.requestInstallForJob(input)).rejects.toThrow("requires managed materials");
+  expect(
+    (await db.select().from(jobs).where(eq(jobs.id, job.id)))[0]?.softwareRequirements?.[0]
+      ?.operationId,
+  ).toBeUndefined();
+  const rejected = await operations.requestInstallForJob(input);
+  expect(rejected.status).toBe("rejected");
+  expect(messages).toHaveLength(before);
+});

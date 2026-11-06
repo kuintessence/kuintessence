@@ -131,3 +131,44 @@ test("named bindings pin one revision and reject ambiguous aliases without chang
     }).success,
   ).toBe(false);
 });
+
+test("execution pins bind the native lock, full DAG and target without upgrading legacy references", () => {
+  const pin = {
+    dagHash: "a".repeat(32),
+    manifestDigest: reference.digest,
+    lockfileDigest: reference.digest,
+    spackVersion: "1.0.0" as const,
+    target: "linux-ubuntu24.04-x86_64",
+  };
+  const lock = {
+    protocolVersion: 1,
+    kind: "environment-lock",
+    target: { platform: "linux", architecture: "x86_64" },
+    nativeLockDigest: reference.digest,
+    software: [
+      {
+        asset: { ...reference, kind: "software" },
+        concreteSpec: "gzip@1.13",
+        dagHash: pin.dagHash,
+        executionPin: pin,
+      },
+    ],
+  };
+  expect(FederationEnvironmentLockSchema.parse(lock).software[0]?.executionPin).toEqual(pin);
+  for (const change of [
+    { dagHash: "b".repeat(32) },
+    { lockfileDigest: `sha256:${"c".repeat(64)}` },
+    { target: "linux-ubuntu24.04-aarch64" },
+  ])
+    expect(
+      FederationEnvironmentLockSchema.safeParse({
+        ...lock,
+        software: [{ ...lock.software[0], executionPin: { ...pin, ...change } }],
+      }).success,
+    ).toBe(false);
+  const legacy = FederationEnvironmentLockSchema.parse({
+    ...lock,
+    software: [{ ...lock.software[0], executionPin: undefined }],
+  });
+  expect(legacy.software[0]?.executionPin).toBeUndefined();
+});

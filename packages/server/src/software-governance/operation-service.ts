@@ -19,6 +19,8 @@ import {
   AppError,
   decideSpackPolicy,
   ErrorCode,
+  type SpackExecutionPin,
+  SpackExecutionPinSchema,
   type SpackPolicy,
   WorkflowExecutionInterrupted,
 } from "@kuintessence/shared";
@@ -222,6 +224,7 @@ export class SoftwareOperationService {
 
   private async dispatchOperation(
     created: typeof softwareOperations.$inferSelect,
+    expectedPin?: SpackExecutionPin,
   ): Promise<SoftwareOperationView> {
     const input = created;
     const spec = created.spec;
@@ -268,7 +271,14 @@ export class SoftwareOperationService {
           agentId: input.agentId,
           requestedBy,
           spec,
+          ...(expectedPin ? { expectedPin } : {}),
         });
+        if (
+          expectedPin &&
+          (!materialTicket.spackMaterialTicket ||
+            materialTicket.spackManifestDigest !== expectedPin.manifestDigest)
+        )
+          throw new Error("Prepared installation differs from the required material release");
       } catch (error) {
         const [updated] = await this.db
           .update(softwareOperations)
@@ -316,7 +326,14 @@ export class SoftwareOperationService {
     spec: string;
     requestedBy: string;
     executionLease?: LeasedWorkflowJournal;
+    expectedPin?: SpackExecutionPin;
   }): Promise<SoftwareOperationView> {
+    if (input.expectedPin)
+      input = { ...input, expectedPin: SpackExecutionPinSchema.parse(input.expectedPin) };
+    if (input.expectedPin && !this.prepareSpackInstall)
+      throw new WorkflowExecutionInterrupted("Pinned installation requires managed materials", {
+        retryable: false,
+      });
     if (input.executionLease) {
       if (!this.dispatcher.isOnline(input.agentId))
         throw new WorkflowExecutionInterrupted("Original installation Agent is offline");
@@ -389,7 +406,8 @@ export class SoftwareOperationService {
           !linked ||
           linked.agentId !== input.agentId ||
           linked.spec !== input.spec ||
-          linked.action !== "install"
+          linked.action !== "install" ||
+          (input.expectedPin && linked.manifestDigest !== input.expectedPin.manifestDigest)
         )
           throw new WorkflowExecutionInterrupted("Job software operation binding changed", {
             retryable: false,
@@ -422,6 +440,7 @@ export class SoftwareOperationService {
             .insert(softwareOperations)
             .values({
               replayEnabled: !!input.executionLease,
+              manifestDigest: input.expectedPin?.manifestDigest,
               agentId: input.agentId,
               requestedBy: input.requestedBy,
               action: "install",
@@ -433,6 +452,11 @@ export class SoftwareOperationService {
             .returning()
         )[0];
       if (!operation) throw new Error("Software operation insert failed");
+      if (input.expectedPin && operation.manifestDigest !== input.expectedPin.manifestDigest)
+        throw new WorkflowExecutionInterrupted(
+          "Existing installation uses a different material release",
+          { retryable: false },
+        );
       if (input.executionLease && !operation.replayEnabled)
         throw new WorkflowExecutionInterrupted(
           "Waiting for an existing installation without durable delivery",
@@ -460,15 +484,23 @@ export class SoftwareOperationService {
         throw new WorkflowExecutionInterrupted("Legacy installation delivery cannot be replayed", {
           retryable: false,
         });
-      return this.deliverWorkflowInstallation(result.operation, input.executionLease, input.jobId);
+      return this.deliverWorkflowInstallation(
+        result.operation,
+        input.executionLease,
+        input.jobId,
+        input.expectedPin,
+      );
     }
-    return result.created ? this.dispatchOperation(result.operation) : rowToView(result.operation);
+    return result.created
+      ? this.dispatchOperation(result.operation, input.expectedPin)
+      : rowToView(result.operation);
   }
 
   private async deliverWorkflowInstallation(
     operation: typeof softwareOperations.$inferSelect,
     lease: LeasedWorkflowJournal,
     jobId: string,
+    expectedPin?: SpackExecutionPin,
   ): Promise<SoftwareOperationView> {
     const active = ["queued", "running"];
     if (!active.includes(operation.status)) return rowToView(operation);
@@ -511,6 +543,7 @@ export class SoftwareOperationService {
         agentId: due.agentId,
         requestedBy: due.requestedBy,
         spec: due.spec,
+        ...(expectedPin ? { expectedPin } : {}),
       });
       if (!/^sha256:[0-9a-f]{64}$/.test(ticket.spackManifestDigest) || !ticket.spackMaterialTicket)
         throw new WorkflowExecutionInterrupted(

@@ -52,7 +52,11 @@ import { FederationAssetService } from "./federation/assets";
 import { FederationAttestationService } from "./federation/attestation";
 import { UnixAttestationClient } from "./federation/attestation-client";
 import { FederationAttestationWorker } from "./federation/attestation-worker";
-import { FederationExecutionBindingService } from "./federation/execution-binding";
+import {
+  FederationExecutionBindingService,
+  loadFederationWorkflowBinding,
+} from "./federation/execution-binding";
+import { createFederationPackageResolver } from "./federation/package-resolver";
 import { FederationPermissionService } from "./federation/permissions";
 import { FederationPreparationService } from "./federation/preparation";
 import { FederationPreparationWorker } from "./federation/preparation-worker";
@@ -223,6 +227,7 @@ import {
 } from "./workflow/named-reference-resolver";
 import { createPackageResolver } from "./workflow/package-resolver";
 import { parseWorkflowYaml } from "./workflow/parser";
+import { constrainWorkflowResources } from "./workflow/resource-limits";
 import { WorkflowRunRegistry } from "./workflow/run-registry";
 import { createWorkflowRunner } from "./workflow/runner";
 import { stageWorkflowInputs } from "./workflow/stage-inputs";
@@ -800,118 +805,126 @@ async function assertWorkflowExecutionMembership(input: {
   }
 }
 
-const makeRunner = (
-  submittedBy: string,
-  userRole: RoleName,
-  persistRun = true,
-  activeRunId?: string,
-  rawPlacementConfig?: WorkflowPlacementConfig,
-  activeOrgId?: string | null,
-  executionLease?: LeasedWorkflowJournal,
-) => {
-  if (executionLease && (executionLease.runId !== activeRunId || activeOrgId === undefined))
-    throw new WorkflowExecutionInterrupted(
-      "Workflow runner requires its run and organization scope",
-      { retryable: false },
-    );
-  const awaitWorkflowJob = async (jobId: string) => {
-    try {
-      const result = await jobCompletionRegistry.awaitCompletion(
-        jobId,
-        config.SERVER_JOB_COMPLETION_TIMEOUT_SEC * 1000,
-        executionLease?.signal,
+const makeRunner =
+  (
+    submittedBy: string,
+    userRole: RoleName,
+    persistRun = true,
+    activeRunId?: string,
+    rawPlacementConfig?: WorkflowPlacementConfig,
+    activeOrgId?: string | null,
+    executionLease?: LeasedWorkflowJournal,
+  ) =>
+  async (yaml: string) => {
+    if (executionLease && (executionLease.runId !== activeRunId || activeOrgId === undefined))
+      throw new WorkflowExecutionInterrupted(
+        "Workflow runner requires its run and organization scope",
+        { retryable: false },
+      );
+    const federationBinding = activeRunId
+      ? await loadFederationWorkflowBinding(db, activeRunId)
+      : null;
+    const federationSnapshot = federationBinding?.snapshot;
+    if (
+      federationSnapshot &&
+      (submittedBy !== federationSnapshot.identity.userId ||
+        activeOrgId !== federationSnapshot.identity.orgId ||
+        userRole !== "user" ||
+        !executionLease)
+    )
+      throw new WorkflowExecutionInterrupted(
+        "Federation workflow requires its original restricted identity and lease",
+        { retryable: false },
+      );
+    const awaitWorkflowJob = async (jobId: string) => {
+      try {
+        const result = await jobCompletionRegistry.awaitCompletion(
+          jobId,
+          config.SERVER_JOB_COMPLETION_TIMEOUT_SEC * 1000,
+          executionLease?.signal,
+        );
+        await executionLease?.renew();
+        return result;
+      } catch (cause) {
+        if (cause instanceof WorkflowExecutionInterrupted) throw cause;
+        if (executionLease)
+          throw new WorkflowExecutionInterrupted("Waiting for the original workflow Job result", {
+            cause,
+          });
+        throw cause;
+      }
+    };
+    const placementConfig = WorkflowPlacementConfigSchema.parse(rawPlacementConfig ?? {});
+    const authorizeJobSubmission = async (input: {
+      jobId: string;
+      orgId: string | null;
+      queueId: string | null;
+    }): Promise<void> => {
+      const authorizationTuples = jobSubmissionTuples({
+        ...input,
+        userId: submittedBy,
+      });
+      try {
+        if (authzService.mode === "enforce") {
+          await authzService.writeRelationships(authorizationTuples);
+        }
+        await authzService.enqueueMany(authorizationTuples);
+      } catch (cause) {
+        if (executionLease)
+          throw new WorkflowExecutionInterrupted(
+            "Workflow Job authorization projection is unavailable",
+            { cause },
+          );
+        throw cause;
+      }
+    };
+    const resolveFileInput = async (value: unknown) => {
+      if (!activeRunId) return value;
+      await executionLease?.renew();
+      const resolved = await workflowArtifactFiles.resolve(
+        value,
+        { workflowRunId: activeRunId, ownerId: submittedBy },
+        workflowArtifactService,
       );
       await executionLease?.renew();
-      return result;
-    } catch (cause) {
-      if (cause instanceof WorkflowExecutionInterrupted) throw cause;
-      if (executionLease)
-        throw new WorkflowExecutionInterrupted("Waiting for the original workflow Job result", {
-          cause,
-        });
-      throw cause;
-    }
-  };
-  const placementConfig = WorkflowPlacementConfigSchema.parse(rawPlacementConfig ?? {});
-  const authorizeJobSubmission = async (input: {
-    jobId: string;
-    orgId: string | null;
-    queueId: string | null;
-  }): Promise<void> => {
-    const authorizationTuples = jobSubmissionTuples({
-      ...input,
-      userId: submittedBy,
-    });
-    try {
-      if (authzService.mode === "enforce") {
-        await authzService.writeRelationships(authorizationTuples);
-      }
-      await authzService.enqueueMany(authorizationTuples);
-    } catch (cause) {
-      if (executionLease)
-        throw new WorkflowExecutionInterrupted(
-          "Workflow Job authorization projection is unavailable",
-          { cause },
-        );
-      throw cause;
-    }
-  };
-  const resolveFileInput = async (value: unknown) => {
-    if (!activeRunId) return value;
-    await executionLease?.renew();
-    const resolved = await workflowArtifactFiles.resolve(
-      value,
-      { workflowRunId: activeRunId, ownerId: submittedBy },
-      workflowArtifactService,
-    );
-    await executionLease?.renew();
-    return resolved;
-  };
-  const sandboxExecutor =
-    sandboxManifestSigner && activeRunId
-      ? new SandboxNodeExecutor({
-          db,
-          resolver: sandboxExecutionResolver,
-          signer: sandboxManifestSigner,
-          jobService,
-          orchestrator,
-          artifactService: workflowArtifactService,
-          resolveFileInput,
-          awaitCompletion: awaitWorkflowJob,
-          executionLease,
-          submittedBy,
-          ...(activeOrgId !== undefined ? { orgId: activeOrgId } : {}),
-          userRole,
-          authorizeJobSubmission,
-          workflowRunId: activeRunId,
-          defaultExecutionIdentity: placementConfig.defaultExecutionIdentity,
-          resolvePolicy: (target) => sandboxPolicyService.effectiveFor(target),
-          governance: licenseRuntimeGovernance,
-          resolvePlannedAgents: async (nodeId) => {
-            const [latest] = await placementPlanService.list(activeRunId);
-            const planned = latest?.nodes.find((candidate) => candidate.nodeId === nodeId);
-            return planned ? [planned.preferredAgentId, ...planned.fallbackAgentIds] : [];
-          },
-          recordExecutionStats: (input) => sandboxExecutionStats.record(input),
-          limits: {
-            pids: config.SANDBOX_MAX_PIDS,
-            outputBytes: config.SANDBOX_MAX_OUTPUT_BYTES,
-            logBytes: config.SANDBOX_MAX_LOG_BYTES,
-          },
-        })
-      : undefined;
-  return createWorkflowRunner({
-    resolveFileInput,
-    journal: executionLease,
-    deferSpackActivation: true,
-    // Persist runs for audit and visibility in `workflow list`.
-    ...(persistRun
-      ? {
-          persistRun: (name, result, graph) =>
-            workflowRegistry.recordRun(name, submittedBy, result, graph),
-        }
-      : {}),
-    resolvePackage: createPackageResolver(workflowPackageStore, async (assetId, spec) => {
+      return resolved;
+    };
+    const sandboxExecutor =
+      sandboxManifestSigner && activeRunId
+        ? new SandboxNodeExecutor({
+            db,
+            resolver: sandboxExecutionResolver,
+            signer: sandboxManifestSigner,
+            jobService,
+            orchestrator,
+            artifactService: workflowArtifactService,
+            resolveFileInput,
+            awaitCompletion: awaitWorkflowJob,
+            executionLease,
+            resourceLimits: federationSnapshot?.request.resources,
+            requiredRuntime: federationSnapshot?.environment.sandboxRuntime,
+            submittedBy,
+            ...(activeOrgId !== undefined ? { orgId: activeOrgId } : {}),
+            userRole,
+            authorizeJobSubmission,
+            workflowRunId: activeRunId,
+            defaultExecutionIdentity: placementConfig.defaultExecutionIdentity,
+            resolvePolicy: (target) => sandboxPolicyService.effectiveFor(target),
+            governance: licenseRuntimeGovernance,
+            resolvePlannedAgents: async (nodeId) => {
+              const [latest] = await placementPlanService.list(activeRunId);
+              const planned = latest?.nodes.find((candidate) => candidate.nodeId === nodeId);
+              return planned ? [planned.preferredAgentId, ...planned.fallbackAgentIds] : [];
+            },
+            recordExecutionStats: (input) => sandboxExecutionStats.record(input),
+            limits: {
+              pids: config.SANDBOX_MAX_PIDS,
+              outputBytes: config.SANDBOX_MAX_OUTPUT_BYTES,
+              logBytes: config.SANDBOX_MAX_LOG_BYTES,
+            },
+          })
+        : undefined;
+    const canInstallSoftware = async (assetId: string, spec: string) => {
       const availability = await softwareAvailability.resolve(
         {
           assetRef: { id: assetId, kind: "spack-package" },
@@ -930,213 +943,256 @@ const makeRunner = (
         },
       );
       return availability.installableAvailable.length > 0;
-    }),
-    resolveWorkflowVersion,
-    ...(sandboxExecutor ? { executeScript: sandboxExecutor.execute.bind(sandboxExecutor) } : {}),
-    submitJob: createJobSubmitter({
-      prepare: async (spec) => {
-        await assertWorkflowExecutionMembership({
-          userId: submittedBy,
-          orgId: activeOrgId ?? null,
-        });
-        if (!spec.usecasePackageId) return spec;
-        await assertUsecasePackageExecutionAccess(db, spec.usecasePackageId, {
-          userId: submittedBy,
-          orgId: activeOrgId ?? null,
-        });
-        const row = await workflowPackageStore.getById(
-          spec.usecaseVersionId ?? spec.usecasePackageId,
-        );
-        if (!row) throw new Error(`usecase package not found: ${spec.usecasePackageId}`);
-        const pkg = usecase.UsecasePackageSchema.parse(row.spec);
-        if (!("softwareRef" in pkg)) {
-          throw new Error(
-            "Workflow execution requires a governed usecase package with a software selector",
-          );
-        }
-        const dataSelections = await workflowDataSelectionValidator.validateUsecase({
-          pkg,
-          dataInputs: spec.dataInputs ?? {},
-        });
-        const selectedDataInputs = Object.fromEntries(
-          Object.entries(spec.dataInputs ?? {}).map(([descriptor, input]) => {
-            const selection = dataSelections.find((item) => item.descriptor === descriptor);
-            return [
-              descriptor,
-              selection && input.targetPath === undefined
-                ? { ...input, targetPath: selection.stagePath }
-                : input,
-            ];
-          }),
-        );
-        const marketBackedLicensedMaterials = new Set(
-          dataSelections.flatMap((selection) => selection.satisfiedLicensedMaterialSelectors),
-        );
-        return {
-          ...spec,
-          ...(Object.keys(selectedDataInputs).length > 0 ? { dataInputs: selectedDataInputs } : {}),
-          ...(spec.licensedMaterials
-            ? {
-                licensedMaterials: spec.licensedMaterials.filter(
-                  (material) => !marketBackedLicensedMaterials.has(material.selector),
-                ),
-              }
-            : {}),
-        };
-      },
-      submit: async (spec) => {
-        const job = await submitWorkflowJob({
-          jobService,
-          spec,
-          submittedBy,
-          role: userRole,
-          orgId: activeOrgId,
-          runId: activeRunId,
-          workingDirBase: config.WORKFLOW_RUN_BASE,
-          lease: executionLease,
-        });
-        await authorizeJobSubmission({ jobId: job.id, orgId: job.orgId, queueId: job.queueId });
-        return { id: job.id };
-      },
-      dispatch: async (
-        jobId,
-        inputStaging,
-        expectedOutputs,
-        stdinText,
-        licensedMaterials,
-        softwareRequirements,
-        schedulingStrategy,
-        spackExecution,
-      ) => {
-        const job = await jobService.getById(jobId);
-        if (!job) {
-          jobCompletionRegistry.complete(jobId, {
-            status: "failed",
-            collected: {},
-            errorMessage: "Workflow job record is unavailable.",
-          });
-          return;
-        }
-        try {
-          const result = await orchestrator.placeAndDispatch({
-            jobId,
-            executionLease,
-            spackExecution,
-            restrictedNoEgress: job.restrictedNoEgress,
-            ...(activeRunId ? { workflowRunId: activeRunId } : {}),
-            job: {
-              name: job.name,
-              command: job.command,
-              resources: {
-                cpus: job.cpus,
-                memoryMb: job.memoryMb,
-                gpus: job.gpus ?? 0,
-                wallTimeSec: Number(job.wallTimeSec ?? 0),
-              },
-              workingDir: job.workingDir ?? undefined,
-              envVars: job.envVars ?? undefined,
-              ...(job.queueId
-                ? { schedulingStrategy: { queueId: job.queueId } }
-                : schedulingStrategy
-                  ? { schedulingStrategy }
-                  : {}),
-              inputStaging,
-              expectedOutputs,
-              fileOutputDescriptors: job.fileOutputDescriptors ?? undefined,
-              stdinText,
-              ...(licensedMaterials ? { licensedMaterials } : {}),
-              ...(softwareRequirements ? { softwareRequirements } : {}),
+    };
+    return createWorkflowRunner({
+      resolveFileInput,
+      journal: executionLease,
+      deferSpackActivation: true,
+      // Persist runs for audit and visibility in `workflow list`.
+      ...(persistRun
+        ? {
+            persistRun: (name, result, graph) =>
+              workflowRegistry.recordRun(name, submittedBy, result, graph),
+          }
+        : {}),
+      resolvePackage: federationSnapshot
+        ? createFederationPackageResolver(
+            federationSnapshot,
+            federationAssets,
+            workflowPackageStore,
+            canInstallSoftware,
+          )
+        : createPackageResolver(workflowPackageStore, canInstallSoftware),
+      resolveWorkflowVersion: federationSnapshot
+        ? async (id) => federationSnapshot.workflowVersions[id] ?? null
+        : resolveWorkflowVersion,
+      ...(sandboxExecutor
+        ? {
+            executeScript: async (node, ctx, invocation) => {
+              if (federationSnapshot && !federationSnapshot.environment.sandboxRuntime)
+                throw new WorkflowExecutionInterrupted(
+                  "Federation Script lacks a locked sandbox runtime",
+                  { retryable: false },
+                );
+              return sandboxExecutor.execute(node, ctx, invocation);
             },
+          }
+        : {}),
+      submitJob: createJobSubmitter({
+        prepare: async (spec) => {
+          if (federationSnapshot)
+            spec = {
+              ...spec,
+              resources: constrainWorkflowResources(
+                spec.resources,
+                federationSnapshot.request.resources,
+              ),
+            };
+          await assertWorkflowExecutionMembership({
             userId: submittedBy,
-            userRole,
-            // The job row carries the submitter's org (stamped at submit); use it
-            // so org-level scheduling preferences and quotas apply to workflow jobs.
-            orgId: job.orgId ?? null,
+            orgId: activeOrgId ?? null,
           });
-          // The job will never run (no eligible agent / closed channel): resolve
-          // the completion as failed so awaitCompletion — and the workflow node — fails
-          // fast instead of hanging until the request times out.
-          if (!result.dispatched && !result.pendingDelivery) {
-            const failedJob = await jobService.getById(jobId);
+          if (!spec.usecasePackageId) return spec;
+          await assertUsecasePackageExecutionAccess(db, spec.usecasePackageId, {
+            userId: submittedBy,
+            orgId: activeOrgId ?? null,
+          });
+          const row = await workflowPackageStore.getById(
+            spec.usecaseVersionId ?? spec.usecasePackageId,
+          );
+          if (!row) throw new Error(`usecase package not found: ${spec.usecasePackageId}`);
+          const pkg = usecase.UsecasePackageSchema.parse(row.spec);
+          if (!("softwareRef" in pkg)) {
+            throw new Error(
+              "Workflow execution requires a governed usecase package with a software selector",
+            );
+          }
+          const dataSelections = await workflowDataSelectionValidator.validateUsecase({
+            pkg,
+            dataInputs: spec.dataInputs ?? {},
+          });
+          const selectedDataInputs = Object.fromEntries(
+            Object.entries(spec.dataInputs ?? {}).map(([descriptor, input]) => {
+              const selection = dataSelections.find((item) => item.descriptor === descriptor);
+              return [
+                descriptor,
+                selection && input.targetPath === undefined
+                  ? { ...input, targetPath: selection.stagePath }
+                  : input,
+              ];
+            }),
+          );
+          const marketBackedLicensedMaterials = new Set(
+            dataSelections.flatMap((selection) => selection.satisfiedLicensedMaterialSelectors),
+          );
+          return {
+            ...spec,
+            ...(Object.keys(selectedDataInputs).length > 0
+              ? { dataInputs: selectedDataInputs }
+              : {}),
+            ...(spec.licensedMaterials
+              ? {
+                  licensedMaterials: spec.licensedMaterials.filter(
+                    (material) => !marketBackedLicensedMaterials.has(material.selector),
+                  ),
+                }
+              : {}),
+          };
+        },
+        submit: async (spec) => {
+          const job = await submitWorkflowJob({
+            jobService,
+            spec,
+            submittedBy,
+            role: userRole,
+            orgId: activeOrgId,
+            runId: activeRunId,
+            workingDirBase: config.WORKFLOW_RUN_BASE,
+            lease: executionLease,
+          });
+          await authorizeJobSubmission({ jobId: job.id, orgId: job.orgId, queueId: job.queueId });
+          return { id: job.id };
+        },
+        dispatch: async (
+          jobId,
+          inputStaging,
+          expectedOutputs,
+          stdinText,
+          licensedMaterials,
+          softwareRequirements,
+          schedulingStrategy,
+          spackExecution,
+        ) => {
+          const job = await jobService.getById(jobId);
+          if (!job) {
             jobCompletionRegistry.complete(jobId, {
               status: "failed",
               collected: {},
-              errorMessage:
-                failedJob?.errorMessage ?? "No eligible compute resource accepted the job.",
+              errorMessage: "Workflow job record is unavailable.",
+            });
+            return;
+          }
+          try {
+            const result = await orchestrator.placeAndDispatch({
+              jobId,
+              executionLease,
+              spackExecution,
+              restrictedNoEgress: job.restrictedNoEgress,
+              ...(activeRunId ? { workflowRunId: activeRunId } : {}),
+              job: {
+                name: job.name,
+                command: job.command,
+                resources: {
+                  cpus: job.cpus,
+                  memoryMb: job.memoryMb,
+                  gpus: job.gpus ?? 0,
+                  wallTimeSec: Number(job.wallTimeSec ?? 0),
+                },
+                workingDir: job.workingDir ?? undefined,
+                envVars: job.envVars ?? undefined,
+                ...(job.queueId
+                  ? { schedulingStrategy: { queueId: job.queueId } }
+                  : schedulingStrategy
+                    ? { schedulingStrategy }
+                    : {}),
+                inputStaging,
+                expectedOutputs,
+                fileOutputDescriptors: job.fileOutputDescriptors ?? undefined,
+                stdinText,
+                ...(licensedMaterials ? { licensedMaterials } : {}),
+                ...(softwareRequirements ? { softwareRequirements } : {}),
+              },
+              userId: submittedBy,
+              userRole,
+              // The job row carries the submitter's org (stamped at submit); use it
+              // so org-level scheduling preferences and quotas apply to workflow jobs.
+              orgId: job.orgId ?? null,
+            });
+            // The job will never run (no eligible agent / closed channel): resolve
+            // the completion as failed so awaitCompletion — and the workflow node — fails
+            // fast instead of hanging until the request times out.
+            if (!result.dispatched && !result.pendingDelivery) {
+              const failedJob = await jobService.getById(jobId);
+              jobCompletionRegistry.complete(jobId, {
+                status: "failed",
+                collected: {},
+                errorMessage:
+                  failedJob?.errorMessage ?? "No eligible compute resource accepted the job.",
+                ...(failedJob?.exitCode !== null && failedJob?.exitCode !== undefined
+                  ? { exitCode: failedJob.exitCode }
+                  : {}),
+              });
+            } else {
+              const placedJob = await jobService.getById(jobId);
+              if (placedJob?.providerOrgId) {
+                await authzService
+                  .enqueue(jobProviderTuple({ jobId, providerOrgId: placedJob.providerOrgId }))
+                  .catch((err) => {
+                    logger.warn(
+                      { err, jobId, providerOrgId: placedJob.providerOrgId },
+                      "Failed to enqueue workflow job provider authorization",
+                    );
+                  });
+              }
+            }
+          } catch (err) {
+            if (err instanceof WorkflowExecutionInterrupted) throw err;
+            const errorMessage =
+              err instanceof Error ? err.message : "Workflow job dispatch failed.";
+            const failedJob = await jobService
+              .updateStatus(
+                jobId,
+                "failed",
+                undefined,
+                undefined,
+                errorMessage,
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+                executionLease,
+              )
+              .catch((updateErr) => {
+                if (executionLease) throw updateErr;
+                logger.warn(
+                  { err: updateErr, jobId },
+                  "Failed to mark workflow job failed after dispatch error",
+                );
+                return null;
+              });
+            jobCompletionRegistry.complete(jobId, {
+              status: "failed",
+              collected: {},
+              errorMessage,
               ...(failedJob?.exitCode !== null && failedJob?.exitCode !== undefined
                 ? { exitCode: failedJob.exitCode }
                 : {}),
             });
-          } else {
-            const placedJob = await jobService.getById(jobId);
-            if (placedJob?.providerOrgId) {
-              await authzService
-                .enqueue(jobProviderTuple({ jobId, providerOrgId: placedJob.providerOrgId }))
-                .catch((err) => {
-                  logger.warn(
-                    { err, jobId, providerOrgId: placedJob.providerOrgId },
-                    "Failed to enqueue workflow job provider authorization",
-                  );
-                });
-            }
+            throw err;
           }
-        } catch (err) {
-          if (err instanceof WorkflowExecutionInterrupted) throw err;
-          const errorMessage = err instanceof Error ? err.message : "Workflow job dispatch failed.";
-          const failedJob = await jobService
-            .updateStatus(
+        },
+        awaitCompletion: awaitWorkflowJob,
+        collectFiles: async (jobId, spec, collected) => {
+          try {
+            return await collectWorkflowOutputFiles({
               jobId,
-              "failed",
-              undefined,
-              undefined,
-              errorMessage,
-              undefined,
-              undefined,
-              undefined,
-              undefined,
+              spec,
+              collected,
+              ownerId: submittedBy,
+              workflowRunId: activeRunId,
               executionLease,
-            )
-            .catch((updateErr) => {
-              if (executionLease) throw updateErr;
-              logger.warn(
-                { err: updateErr, jobId },
-                "Failed to mark workflow job failed after dispatch error",
-              );
-              return null;
             });
-          jobCompletionRegistry.complete(jobId, {
-            status: "failed",
-            collected: {},
-            errorMessage,
-            ...(failedJob?.exitCode !== null && failedJob?.exitCode !== undefined
-              ? { exitCode: failedJob.exitCode }
-              : {}),
-          });
-          throw err;
-        }
-      },
-      awaitCompletion: awaitWorkflowJob,
-      collectFiles: async (jobId, spec, collected) => {
-        try {
-          return await collectWorkflowOutputFiles({
-            jobId,
-            spec,
-            collected,
-            ownerId: submittedBy,
-            workflowRunId: activeRunId,
-            executionLease,
-          });
-        } catch (cause) {
-          if (executionLease && !(cause instanceof WorkflowExecutionInterrupted))
-            throw new WorkflowExecutionInterrupted("Workflow file publication is pending", {
-              cause,
-            });
-          throw cause;
-        }
-      },
-    }),
-  });
-};
+          } catch (cause) {
+            if (executionLease && !(cause instanceof WorkflowExecutionInterrupted))
+              throw new WorkflowExecutionInterrupted("Workflow file publication is pending", {
+                cause,
+              });
+            throw cause;
+          }
+        },
+      }),
+    })(yaml);
+  };
 const workflowAsyncRunner = new WorkflowAsyncRunner({
   registry: workflowRegistry,
   journal: new WorkflowExecutionJournalStore(db),

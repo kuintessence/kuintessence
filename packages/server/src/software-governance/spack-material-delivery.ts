@@ -3,6 +3,8 @@ import {
   AppError,
   createLogger,
   ErrorCode,
+  type SpackExecutionPin,
+  SpackExecutionPinSchema,
   type SpackMaterialBinding,
   SpackMaterialBindingSchema,
   SpackMaterialDigestSchema,
@@ -42,6 +44,7 @@ export interface SpackDeliveryAccess {
 }
 
 export interface SpackInstallPreparation {
+  expectedPin?: SpackExecutionPin;
   operationId: string;
   agentId: string;
   requestedBy: string;
@@ -150,12 +153,26 @@ export class SpackMaterialDelivery {
     }
     const claims = claimsSchema.parse({
       ...binding,
-      ...input,
+      operationId: input.operationId,
+      agentId: input.agentId,
+      requestedBy: input.requestedBy,
+      spec: input.spec,
       providerOrgId: access.providerOrgId,
       certificateFingerprint: channel.verifiedCertFingerprint,
     });
     await this.authorize(claims);
-    await this.manifest(claims);
+    const manifest = await this.manifest(claims);
+    if (input.expectedPin) {
+      const pin = SpackExecutionPinSchema.parse(input.expectedPin);
+      if (
+        pin.manifestDigest !== claims.manifestDigest ||
+        manifest.value.version !== 2 ||
+        pin.lockfileDigest !== manifest.value.lockfile.digest ||
+        pin.spackVersion !== manifest.value.spackVersion ||
+        pin.target !== manifest.value.target
+      )
+        throw denied("Spack material release differs from the authorized execution pin");
+    }
     await this.acquireReference(claims);
     const ticket = await new SignJWT({ material: claims })
       .setProtectedHeader({ alg: "HS256", typ: "JWT" })

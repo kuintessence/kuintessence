@@ -6,7 +6,7 @@ import {
 } from "@kuintessence/db";
 import { extractRunGraph, WorkflowPlacementConfigSchema } from "@kuintessence/shared";
 import { FederationError } from "@kuintessence/shared/federation";
-import { eq } from "drizzle-orm";
+import { eq, type SQL } from "drizzle-orm";
 import { stringify } from "yaml";
 import { parseWorkflowYaml } from "../workflow/parser";
 import { WorkflowRunRegistry } from "../workflow/run-registry";
@@ -21,7 +21,10 @@ export class FederationExecutionBindingService {
   ) {}
 
   async stage(reservationId: string) {
-    const prior = await this.find(this.db, reservationId);
+    const prior = await readBinding(
+      this.db,
+      eq(federationWorkflowBindings.reservationId, reservationId),
+    );
     if (prior) return prior;
     const prepared = await this.preparation.executionSnapshot(reservationId);
     // Projection deliberately removes foreign IDs with undefined; store only its JSON meaning.
@@ -38,7 +41,10 @@ export class FederationExecutionBindingService {
     const snapshotDigest = federationMaterialDigest(snapshot);
     return this.db.transaction(async (tx) => {
       await this.preparation.lockExecutionSnapshot(tx, prepared);
-      const existing = await this.find(tx, reservationId);
+      const existing = await readBinding(
+        tx,
+        eq(federationWorkflowBindings.reservationId, reservationId),
+      );
       if (existing) {
         if (existing.snapshotDigest !== snapshotDigest)
           throw new FederationError("OPERATION_CONFLICT");
@@ -67,27 +73,39 @@ export class FederationExecutionBindingService {
       return binding;
     });
   }
+}
 
-  private async find(db: PgDb | PgTransaction, reservationId: string) {
-    const [saved] = await db
-      .select({ binding: federationWorkflowBindings, run: workflowRuns })
-      .from(federationWorkflowBindings)
-      .innerJoin(workflowRuns, eq(workflowRuns.id, federationWorkflowBindings.workflowRunId))
-      .where(eq(federationWorkflowBindings.reservationId, reservationId));
-    if (!saved) return null;
-    const { binding, run } = saved;
-    const { snapshot } = binding;
-    if (
-      federationMaterialDigest(snapshot) !== binding.snapshotDigest ||
-      run.input?.federationReservationId !== reservationId ||
-      run.input.executionModel !== "durable-v2" ||
-      run.input.role !== "user" ||
-      run.input.orgId !== snapshot.identity.orgId ||
-      run.submittedBy !== snapshot.identity.userId ||
-      federationMaterialDigest(JSON.parse(JSON.stringify(parseWorkflowYaml(run.input.yaml)))) !==
-        federationMaterialDigest(snapshot.workflow)
-    )
-      throw new FederationError("OPERATION_CONFLICT");
-    return binding;
-  }
+async function readBinding(db: PgDb | PgTransaction, condition: SQL) {
+  const [saved] = await db
+    .select({ binding: federationWorkflowBindings, run: workflowRuns })
+    .from(federationWorkflowBindings)
+    .innerJoin(workflowRuns, eq(workflowRuns.id, federationWorkflowBindings.workflowRunId))
+    .where(condition);
+  if (!saved) return null;
+  const { binding, run } = saved;
+  const { snapshot } = binding;
+  if (
+    federationMaterialDigest(snapshot) !== binding.snapshotDigest ||
+    run.input?.federationReservationId !== binding.reservationId ||
+    run.input.executionModel !== "durable-v2" ||
+    run.input.role !== "user" ||
+    run.input.orgId !== snapshot.identity.orgId ||
+    run.submittedBy !== snapshot.identity.userId ||
+    federationMaterialDigest(JSON.parse(JSON.stringify(parseWorkflowYaml(run.input.yaml)))) !==
+      federationMaterialDigest(snapshot.workflow)
+  )
+    throw new FederationError("OPERATION_CONFLICT");
+  return binding;
+}
+
+/** Normal runs have no binding; a lost or mismatched federation marker is never ignored. */
+export async function loadFederationWorkflowBinding(db: PgDb, runId: string) {
+  const binding = await readBinding(db, eq(federationWorkflowBindings.workflowRunId, runId));
+  if (binding) return binding;
+  const [run] = await db
+    .select({ input: workflowRuns.input })
+    .from(workflowRuns)
+    .where(eq(workflowRuns.id, runId));
+  if (run?.input?.federationReservationId) throw new FederationError("OPERATION_CONFLICT");
+  return null;
 }

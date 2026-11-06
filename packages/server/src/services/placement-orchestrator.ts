@@ -1127,12 +1127,15 @@ export class PlacementOrchestrator {
           `Software installation denied: ${resolved.blocked.flatMap((node) => node.reasons).join("; ")}`,
         );
       }
+      const expectedPin =
+        input.spackExecution?.spec === resolved.spec ? input.spackExecution.pin : undefined;
       const operation = await operations.requestInstallForJob({
         jobId: input.jobId,
         agentId,
         spec: resolved.spec,
         requestedBy: input.userId,
         executionLease: input.executionLease,
+        expectedPin,
       });
       try {
         await waitForSoftwareInstallation({
@@ -1149,6 +1152,7 @@ export class PlacementOrchestrator {
                   spec: resolved.spec,
                   requestedBy: input.userId,
                   executionLease: input.executionLease,
+                  expectedPin,
                 })
               : operations.getOperation(operation.id),
           inventoryReady: async () =>

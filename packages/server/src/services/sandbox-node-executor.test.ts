@@ -1,7 +1,12 @@
 import { describe, expect, test } from "bun:test";
 import { generateKeyPairSync } from "node:crypto";
 import type { PgDb } from "@kuintessence/db";
-import { type RoleName, type SandboxSignedManifest, workflowDsl } from "@kuintessence/shared";
+import {
+  type JobSubmit,
+  type RoleName,
+  type SandboxSignedManifest,
+  workflowDsl,
+} from "@kuintessence/shared";
 import type { JobService } from "./job-service";
 import type { PlacementOrchestrator } from "./placement-orchestrator";
 import type { SandboxExecutionResolver } from "./sandbox-execution-resolver";
@@ -36,9 +41,15 @@ function fakeDb(
 
 describe("SandboxNodeExecutor", () => {
   test.each([
-    false,
-    true,
-  ])("dispatches a signed manifest and waits for its result (pending delivery: %s)", async (pendingDelivery) => {
+    { pendingDelivery: false, constraint: "none" },
+    { pendingDelivery: true, constraint: "none" },
+    { pendingDelivery: false, constraint: "locked" },
+    { pendingDelivery: false, constraint: "wrong-runtime" },
+    { pendingDelivery: false, constraint: "excess-cpu" },
+  ])("signed manifest delivery: $constraint, pending=$pendingDelivery", async ({
+    pendingDelivery,
+    constraint,
+  }) => {
     const node = workflowDsl.WorkflowNodeSchema.parse({
       type: "Script",
       id: "transform",
@@ -137,20 +148,25 @@ describe("SandboxNodeExecutor", () => {
     } as unknown as WorkflowArtifactService;
     const jobService = {
       submit: async (
-        input: { command: string },
+        input: {
+          command: string;
+          resources: JobSubmit["resources"];
+        },
         _submittedBy: string,
         options: Parameters<JobService["submit"]>[2],
       ) => {
         lifecycle.push("submit");
+        if (constraint === "locked")
+          expect(input.resources).toEqual({ cpus: 1, memoryMb: 128, gpus: 0, wallTimeSec: 30 });
         submitOptions = options;
         return {
           id: JOB_ID,
           name: "transform",
           command: input.command,
-          cpus: 1,
-          memoryMb: 1024,
+          cpus: input.resources.cpus,
+          memoryMb: input.resources.memoryMb,
           gpus: 0,
-          wallTimeSec: 60,
+          wallTimeSec: input.resources.wallTimeSec ?? 60,
           workingDir: null,
           queueId: null,
           orgId: null,
@@ -158,8 +174,19 @@ describe("SandboxNodeExecutor", () => {
         };
       },
     } as unknown as JobService;
+    const delegated = constraint !== "none";
+    if (constraint === "excess-cpu") node.requirements = { ...node.requirements, cpuCores: 3 };
     const executor = new SandboxNodeExecutor({
       db: fakeDb(),
+      ...(delegated
+        ? {
+            resourceLimits: { cpus: 2, memoryMb: 128, gpus: 0, wallTimeSec: 30 },
+            requiredRuntime: {
+              kind: "SIF" as const,
+              digest: `sha256:${(constraint === "wrong-runtime" ? "b" : "a").repeat(64)}`,
+            },
+          }
+        : {}),
       resolver,
       signer,
       jobService,
@@ -205,6 +232,14 @@ describe("SandboxNodeExecutor", () => {
       limits: { pids: 64, outputBytes: 1_024, logBytes: 1_024 },
     });
 
+    if (constraint === "wrong-runtime" || constraint === "excess-cpu") {
+      await expect(executor.execute(node, { nodes: {}, params: {} })).rejects.toThrow(
+        constraint === "wrong-runtime" ? "runtime differs" : "authorized limit",
+      );
+      expect(signedManifest).toBeUndefined();
+      if (constraint === "excess-cpu") expect(lifecycle).toEqual([]);
+      return;
+    }
     const result = await executor.execute(node, { nodes: {}, params: {} });
 
     expect(dispatchedCommand).toBe("sandbox-manifest");

@@ -47,7 +47,10 @@ import { WorkflowExecutionJournalStore } from "../workflow/execution-journal";
 import { WorkflowRunRegistry } from "../workflow/run-registry";
 import { FederationAdmission } from "./admission";
 import { FederationAssetService, federationMaterialDigest } from "./assets";
-import { FederationExecutionBindingService } from "./execution-binding";
+import {
+  FederationExecutionBindingService,
+  loadFederationWorkflowBinding,
+} from "./execution-binding";
 import { FederationPermissionService } from "./permissions";
 import { FederationPreparationService } from "./preparation";
 import { FederationPreparationWorker } from "./preparation-worker";
@@ -863,6 +866,7 @@ test("binding refuses an acceptance for a different operation even when the loca
 test("recovery detects modified workflow inputs or saved snapshots instead of creating another run", async () => {
   const f = await executionFixture();
   const binding = await f.bindings.stage(f.reservationId);
+  expect(await loadFederationWorkflowBinding(db, binding.workflowRunId)).toEqual(binding);
   const registry = new WorkflowRunRegistry(db);
   const run = await registry.getById(binding.workflowRunId);
   if (!run?.input) throw new Error("Missing workflow input");
@@ -871,6 +875,7 @@ test("recovery detects modified workflow inputs or saved snapshots instead of cr
     .set({ input: { ...run.input, role: "platform_admin" } })
     .where(eq(workflowRuns.id, run.id));
   await expect(f.bindings.stage(f.reservationId)).rejects.toThrow("OPERATION_CONFLICT");
+  await expect(loadFederationWorkflowBinding(db, run.id)).rejects.toThrow("OPERATION_CONFLICT");
   await db.update(workflowRuns).set({ input: run.input }).where(eq(workflowRuns.id, run.id));
   await db
     .update(federationWorkflowBindings)
@@ -882,12 +887,25 @@ test("recovery detects modified workflow inputs or saved snapshots instead of cr
     })
     .where(eq(federationWorkflowBindings.reservationId, f.reservationId));
   await expect(f.bindings.stage(f.reservationId)).rejects.toThrow("OPERATION_CONFLICT");
+  await expect(loadFederationWorkflowBinding(db, run.id)).rejects.toThrow("OPERATION_CONFLICT");
   expect(
     await db
       .select()
       .from(federationWorkflowBindings)
       .where(eq(federationWorkflowBindings.reservationId, f.reservationId)),
   ).toHaveLength(1);
+});
+
+test("a federation marker with a missing binding cannot fall back to ordinary execution", async () => {
+  const f = await executionFixture();
+  const binding = await f.bindings.stage(f.reservationId);
+  await db
+    .delete(federationWorkflowBindings)
+    .where(eq(federationWorkflowBindings.reservationId, f.reservationId));
+  await expect(loadFederationWorkflowBinding(db, binding.workflowRunId)).rejects.toThrow(
+    "OPERATION_CONFLICT",
+  );
+  expect(await loadFederationWorkflowBinding(db, crypto.randomUUID())).toBeNull();
 });
 
 test("the production preparation worker stages a bound run without invoking the workflow executor", async () => {

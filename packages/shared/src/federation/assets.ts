@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { SpackExecutionPinSchema } from "../workflow/spack-execution";
 import { AssetSelectorSchema } from "../workflow-dsl/refs";
 import { SandboxRuntimeContractRefSchema } from "../workflow-dsl/script";
 import { FederationAssetRefSchema, FederationDigestSchema } from "./references";
@@ -74,6 +75,7 @@ export const FederationEnvironmentLockSchema = z
           asset: FederationAssetRefSchema.refine((ref) => ref.kind === "software"),
           concreteSpec: z.string().min(1).max(4096),
           dagHash: z.string().regex(/^[a-z0-9]{7,64}$/),
+          executionPin: SpackExecutionPinSchema.optional(),
         }),
       )
       .max(1000),
@@ -91,6 +93,21 @@ export const FederationEnvironmentLockSchema = z
       .optional(),
   })
   .superRefine((value, ctx) => {
+    for (const [index, entry] of value.software.entries()) {
+      const pin = entry.executionPin;
+      if (
+        pin &&
+        (pin.dagHash !== entry.dagHash ||
+          pin.lockfileDigest !== value.nativeLockDigest ||
+          !pin.target.startsWith(`${value.target.platform}-`) ||
+          !pin.target.endsWith(`-${value.target.architecture}`))
+      )
+        ctx.addIssue({
+          code: "custom",
+          path: ["software", index, "executionPin"],
+          message: "Execution pin must match the DAG, native lock and target",
+        });
+    }
     const profiles = value.runtimeBindings?.map((binding) => binding.sourceProfileId) ?? [];
     if (new Set(profiles).size !== profiles.length)
       ctx.addIssue({ code: "custom", message: "Runtime profile bindings must be unique" });

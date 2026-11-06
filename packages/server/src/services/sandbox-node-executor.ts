@@ -25,6 +25,10 @@ import {
 import { and, eq, inArray, isNull } from "drizzle-orm";
 import { bindWorkflowExecutionJob } from "../workflow/execution-jobs";
 import type { LeasedWorkflowJournal } from "../workflow/execution-journal";
+import {
+  constrainWorkflowResources,
+  type WorkflowResourceLimits,
+} from "../workflow/resource-limits";
 import { artifactBatchHash, validateArtifactMembers } from "./artifact-members";
 import type { JobService, JobSubmitOptions } from "./job-service";
 import {
@@ -66,6 +70,8 @@ function completionFailureMessage(completion: CompletionResult): string {
   return `Sandbox job ended with status '${completion.status}'.`;
 }
 
+type RuntimeConstraint = { kind: "OCI" | "SIF"; digest: string };
+
 export interface SandboxNodeExecutorOptions {
   db: PgDb;
   resolver: SandboxExecutionResolver;
@@ -85,6 +91,8 @@ export interface SandboxNodeExecutorOptions {
   }): Promise<void>;
   workflowRunId: string;
   executionLease?: LeasedWorkflowJournal;
+  resourceLimits?: WorkflowResourceLimits;
+  requiredRuntime?: RuntimeConstraint;
   defaultExecutionIdentity: ExecutionIdentity;
   resolvePolicy(target: {
     providerOrgId: string | null;
@@ -345,6 +353,13 @@ export class SandboxNodeExecutor {
       sizeLimitBytes: this.options.limits.outputBytes,
       required: output.required,
     }));
+    const requestedResources = {
+      cpus: Math.max(1, node.requirements?.cpuCores ?? 1),
+      memoryMb: this.options.resourceLimits?.memoryMb ?? 1024,
+      ...(node.requirements?.maxWallTime != null
+        ? { wallTimeSec: node.requirements.maxWallTime }
+        : {}),
+    };
     const requestedIdentity =
       node.executionIdentity.type === "Inherit"
         ? this.options.defaultExecutionIdentity
@@ -352,13 +367,9 @@ export class SandboxNodeExecutor {
     const jobData: JobSubmit = {
       name: node.name,
       command: "sandbox-manifest",
-      resources: {
-        cpus: Math.max(1, node.requirements?.cpuCores ?? 1),
-        memoryMb: 1024,
-        ...(node.requirements?.maxWallTime != null
-          ? { wallTimeSec: node.requirements.maxWallTime }
-          : {}),
-      },
+      resources: this.options.resourceLimits
+        ? constrainWorkflowResources(requestedResources, this.options.resourceLimits)
+        : requestedResources,
       envVars: {},
       inputStaging: preparedInputs.inputStaging,
       ...(Object.keys(preparedInputs.dataInputs).length > 0
@@ -475,10 +486,12 @@ export class SandboxNodeExecutor {
       orgId: job.orgId,
       ...(preferredAgentIds && preferredAgentIds.length > 0 ? { preferredAgentIds } : {}),
       sandboxExecution: {
-        runtimeDigests: {
-          ...(runtime.ociDigest ? { OCI: runtime.ociDigest } : {}),
-          ...(runtime.sifDigest ? { SIF: runtime.sifDigest } : {}),
-        },
+        runtimeDigests: this.options.requiredRuntime
+          ? { [this.options.requiredRuntime.kind]: this.options.requiredRuntime.digest }
+          : {
+              ...(runtime.ociDigest ? { OCI: runtime.ociDigest } : {}),
+              ...(runtime.sifDigest ? { SIF: runtime.sifDigest } : {}),
+            },
         build: async (selected) => {
           const selectedRuntime = runtimeContractRef
             ? await this.options.resolver.resolveRuntimeForTarget({
@@ -523,6 +536,15 @@ export class SandboxNodeExecutor {
             selectedRuntime,
             selected.schedulerType,
           );
+          if (
+            this.options.requiredRuntime &&
+            (selectedRuntimeDigest.kind !== this.options.requiredRuntime.kind ||
+              selectedRuntimeDigest.digest !== this.options.requiredRuntime.digest)
+          )
+            throw new WorkflowExecutionInterrupted(
+              "Sandbox runtime differs from the authorized environment lock",
+              { retryable: false },
+            );
           const identity = await this.options.resolver.resolveIdentity({
             requested: requestedIdentity,
             userId: this.options.submittedBy,

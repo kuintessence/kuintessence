@@ -666,3 +666,31 @@ test("legacy pending installations are not silently upgraded into replayable ope
   expect(f.sent).toHaveLength(1);
   await f.lease.release();
 });
+
+test("pinned installation persists the required material before preparation and cannot join a different pin", async () => {
+  const f = await fixture(true);
+  const expectedPin = f.spec.spackExecution?.pin;
+  if (!expectedPin) throw new Error("Missing test execution pin");
+  f.installInterrupt(async () => {
+    const [saved] = await db
+      .select()
+      .from(softwareOperations)
+      .where(eq(softwareOperations.agentId, agentIds[0]));
+    expect(saved?.manifestDigest).toBe(expectedPin.manifestDigest);
+  });
+  const operation = await f.operations.requestInstallForJob({
+    ...installationRequest(f),
+    expectedPin,
+  });
+  await expect(
+    f.operations.requestInstallForJob({
+      ...installationRequest(f),
+      expectedPin: { ...expectedPin, manifestDigest: `sha256:${"e".repeat(64)}` },
+    }),
+  ).rejects.toThrow("binding changed");
+  expect(
+    (await f.operations.requestInstallForJob({ ...installationRequest(f), expectedPin })).id,
+  ).toBe(operation.id);
+  expect(f.sent).toHaveLength(1);
+  await f.lease.release();
+});

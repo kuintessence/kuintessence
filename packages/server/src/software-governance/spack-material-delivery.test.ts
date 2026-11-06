@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { AppError, type SpackMaterialManifest } from "@kuintessence/shared";
+import { AppError, type SpackExecutionPin, type SpackMaterialManifest } from "@kuintessence/shared";
 import { Hono } from "hono";
 import { decodeJwt, SignJWT } from "jose";
 import { createAgentSpackMaterialRoutes } from "../routes/agent-spack-materials";
@@ -19,8 +19,8 @@ const blob = { digest: hash(blobBytes), size: blobBytes.length };
 const ticketKey = "ticket-only-secret".repeat(3);
 const registryKey = "registry-secret".repeat(3);
 
-function fixture(repository = "org/provider-a/sources", downloadLifetimeMs?: number) {
-  const manifest: SpackMaterialManifest = {
+function fixture(repository = "org/provider-a/sources", downloadLifetimeMs?: number, v2 = false) {
+  let manifest: SpackMaterialManifest = {
     version: 1,
     repository,
     spec: "zlib@1.3.1",
@@ -38,6 +38,23 @@ function fixture(repository = "org/provider-a/sources", downloadLifetimeMs?: num
     sources: [{ path: "zlib/zlib-1.3.1.tar.gz", blob }],
     lockfile: blob,
   };
+  if (v2)
+    manifest = {
+      ...manifest,
+      version: 2,
+      target: "linux-ubuntu24.04-x86_64",
+      evidence: {
+        version: 1,
+        materials: [
+          {
+            subject: blob,
+            license: { expression: "MIT", status: "approved" },
+            provenance: [{ origin: "https://example.test/source", original: blob, evidence: blob }],
+            attachments: [{ path: "LICENSE", kind: "license", blob }],
+          },
+        ],
+      },
+    };
   const bytes = Buffer.from(JSON.stringify(manifest));
   const binding = {
     repositoryId: createHash("sha256").update(repository).digest("hex"),
@@ -128,12 +145,13 @@ function fixture(repository = "org/provider-a/sources", downloadLifetimeMs?: num
     return c.json({ error: "internal" }, 500);
   });
   app.route("/api", createAgentSpackMaterialRoutes(delivery));
-  const prepare = () =>
+  const prepare = (expectedPin?: SpackExecutionPin) =>
     delivery.prepareOperation({
       operationId,
       agentId: "agent-a",
       requestedBy: userId,
       spec: manifest.spec,
+      ...(expectedPin ? { expectedPin } : {}),
     });
   return {
     delivery,
@@ -409,4 +427,30 @@ describe("Server Spack material delivery", () => {
       );
     }
   }, 1000);
+});
+
+test("locked installations issue tickets only for the exact v2 manifest, native lock and target", async () => {
+  const f = fixture(undefined, undefined, true);
+  const pin: SpackExecutionPin = {
+    dagHash: "a".repeat(32),
+    manifestDigest: f.binding.manifestDigest,
+    lockfileDigest: blob.digest,
+    spackVersion: "1.0.0",
+    target: "linux-ubuntu24.04-x86_64",
+  };
+  expect((await f.prepare(pin)).spackManifestDigest).toBe(pin.manifestDigest);
+  for (const change of [
+    { manifestDigest: hash("other manifest") },
+    { lockfileDigest: hash("other lock") },
+    { target: "linux-ubuntu24.04-aarch64" },
+  ]) {
+    const before = f.operationReferences.length;
+    await expect(f.prepare({ ...pin, ...change })).rejects.toThrow("execution pin");
+    expect(f.operationReferences).toHaveLength(before);
+  }
+  const legacy = fixture();
+  await expect(
+    legacy.prepare({ ...pin, manifestDigest: legacy.binding.manifestDigest }),
+  ).rejects.toThrow("execution pin");
+  expect(legacy.operationReferences).toHaveLength(0);
 });

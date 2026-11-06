@@ -1,4 +1,11 @@
-import { type ResolvedPackage, SoftwareAssetPayloadSchema, usecase } from "@kuintessence/shared";
+import {
+  type ResolvedPackage,
+  SoftwareAssetPayloadSchema,
+  type SpackExecutionPin,
+  SpackExecutionPinSchema,
+  SpackExecutionSchema,
+  usecase,
+} from "@kuintessence/shared";
 
 export interface StoredSoftwareRevision {
   asset: {
@@ -28,6 +35,7 @@ export interface PackageStore {
 export function createPackageResolver(
   store: PackageStore,
   canInstall?: (assetId: string, spec: string) => Promise<boolean>,
+  lockedExecution?: { spec: string; pin: SpackExecutionPin },
 ): (usecaseVersionId: string, softwareVersionId: string) => Promise<ResolvedPackage> {
   return async (usecaseVersionId, softwareVersionId) => {
     const row = await store.getById(usecaseVersionId);
@@ -63,8 +71,18 @@ export function createPackageResolver(
     const spackSpec = (
       payload.spack.defaultSpec ?? `${payload.spack.packageName}@${revision.asset.version}`
     ).trim();
+    const pin = lockedExecution ? SpackExecutionPinSchema.parse(lockedExecution.pin) : undefined;
+    const installationSpec = lockedExecution
+      ? SpackExecutionSchema.shape.spec.parse(lockedExecution.spec)
+      : spackSpec;
+    if (
+      lockedExecution &&
+      [spackSpec, ...pkg.software.argumentList].join(" ").trim() !== installationSpec
+    )
+      throw new Error("Frozen software specification differs from the authorized environment lock");
     return {
       ...pkg,
+      ...(pin ? { spackExecutionPin: pin } : {}),
       usecaseVersionId,
       ...(row.usecasePackageId ? { usecasePackageId: row.usecasePackageId } : {}),
       software: {
@@ -74,10 +92,10 @@ export function createPackageResolver(
       softwareRequirements: [
         {
           assetId: revision.asset.id,
-          spec: spackSpec,
+          spec: installationSpec,
           name: payload.spack.packageName,
           version: revision.asset.version,
-          installable: (await canInstall?.(revision.asset.id, spackSpec)) ?? false,
+          installable: (await canInstall?.(revision.asset.id, installationSpec)) ?? false,
         },
       ],
     };
