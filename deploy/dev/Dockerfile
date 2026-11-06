@@ -16,5 +16,7 @@ COPY packages/agent/package.json ./packages/agent/
 COPY packages/cli/package.json ./packages/cli/
 COPY packages/web/package.json ./packages/web/
 COPY packages/docs-site/package.json ./packages/docs-site/
+COPY packages/fabric-adapter/package.json ./packages/fabric-adapter/
+COPY contracts/fabric/evidence/package.json ./contracts/fabric/evidence/
 
 RUN bun install --frozen-lockfile --ignore-scripts

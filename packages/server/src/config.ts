@@ -43,6 +43,7 @@ const ServerConfigSchema = z.object({
     .regex(/^[a-zA-Z0-9_.:-]{1,128}$/)
     .optional(),
   FEDERATION_SIGNING_KEY_FILE: z.string().min(1).optional(),
+  FEDERATION_ATTESTATION_SOCKET_PATH: z.string().startsWith("/").optional(),
   DB_MAX_CONNECTIONS: positiveInt(10),
   DB_IDLE_TIMEOUT_SEC: nonNegativeInt(0),
   REDIS_URL: z.string(),

@@ -12,6 +12,8 @@ COPY packages/web/package.json packages/web/tsconfig.json ./packages/web/
 COPY packages/agent/package.json packages/agent/tsconfig.json ./packages/agent/
 COPY packages/cli/package.json packages/cli/tsconfig.json ./packages/cli/
 COPY packages/docs-site/package.json ./packages/docs-site/
+COPY packages/fabric-adapter/package.json ./packages/fabric-adapter/
+COPY contracts/fabric/evidence/package.json ./contracts/fabric/evidence/
 
 RUN bun install --frozen-lockfile --ignore-scripts
 

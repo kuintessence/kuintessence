@@ -176,6 +176,8 @@ export class EvidenceLedger {
     if (prior) {
       if (prior.receipt.batchId !== batchId || prior.receipt.digest !== issuer.digest)
         return fail("OPERATION_CONFLICT");
+      // Keep replay under the collection's two-party write policy, including a new tx after INVALID.
+      await stub.putPrivateData(domain.collection, anchorKey, priorBytes);
       return encode(receipt);
     }
     const cursorKey = stub.createCompositeKey("cursor", [org.siteId]);

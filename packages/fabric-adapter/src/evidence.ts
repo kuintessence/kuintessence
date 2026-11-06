@@ -3,10 +3,12 @@ import type { Gateway, Identity, Signable, Signer } from "@hyperledger/fabric-ga
 import { StatusCode } from "@hyperledger/fabric-gateway";
 import { msp, gateway as proto } from "@hyperledger/fabric-protos";
 import {
+  type EvidenceAdvanceResult,
+  type EvidenceProposalInput,
+  EvidenceProposalInputSchema,
   FabricAnchorReceiptSchema,
   FabricEvidenceTrustSchema,
   FederationEvidenceBatchSchema,
-  FederationEvidenceEnvelopeSchema,
 } from "@kuintessence/shared/federation/ledger";
 import {
   federationMessageKeyId,
@@ -23,13 +25,11 @@ export const EvidenceAdapterConfigSchema = z.strictObject({
 });
 export type EvidenceAdapterConfig = z.infer<typeof EvidenceAdapterConfigSchema>;
 
-export const EvidenceProposalInputSchema = z.strictObject({
-  domainId: z.uuid(),
-  batchId: z.uuid(),
-  digest: FabricAnchorReceiptSchema.shape.digest,
-  envelope: FederationEvidenceEnvelopeSchema,
-});
-export type EvidenceProposalInput = z.infer<typeof EvidenceProposalInputSchema>;
+export {
+  type EvidenceAdvanceResult,
+  type EvidenceProposalInput,
+  EvidenceProposalInputSchema,
+} from "@kuintessence/shared/federation/ledger";
 
 const EncodedBytes = z.string().min(1).max(4_194_304).base64();
 const SignedMessageSchema = z.strictObject({ bytes: EncodedBytes, signature: EncodedBytes });
@@ -44,12 +44,6 @@ const RecoverySchema = z.strictObject({
   commit: SignedMessageSchema.optional(),
 });
 type Recovery = z.infer<typeof RecoverySchema>;
-
-export type EvidenceAdvanceResult =
-  | { state: "prepared"; transactionId: string; recovery: string }
-  | { state: "pending"; transactionId: string; recovery: string }
-  | { state: "anchored"; transactionId: string; blockNumber: string }
-  | { state: "invalid"; transactionId: string; validationCode: number; blockNumber: string };
 
 /** No database and no arbitrary invoke API. The caller persists each checkpoint before advancing. */
 export class FabricEvidenceAdapter {

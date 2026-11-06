@@ -139,3 +139,33 @@ export const FabricAnchorReceiptSchema = z.strictObject({
 
 /** No pricing, terms, record identities, counts or private signatures in transaction responses. */
 export type FabricAnchorReceipt = z.infer<typeof FabricAnchorReceiptSchema>;
+
+export const EvidenceProposalInputSchema = z.strictObject({
+  domainId: z.uuid(),
+  batchId: z.uuid(),
+  digest: FederationDigestSchema,
+  envelope: FederationEvidenceEnvelopeSchema,
+});
+export type EvidenceProposalInput = z.infer<typeof EvidenceProposalInputSchema>;
+export const FabricRecoveryTokenSchema = z.string().min(1).max(4_194_304).base64();
+const TransactionId = z.string().regex(/^[a-f0-9]{64}$/);
+export const FabricProposalCheckpointSchema = z.strictObject({
+  transactionId: TransactionId,
+  recovery: FabricRecoveryTokenSchema,
+});
+export const FabricEvidenceAdvanceResultSchema = z.discriminatedUnion("state", [
+  FabricProposalCheckpointSchema.extend({ state: z.literal("prepared") }),
+  FabricProposalCheckpointSchema.extend({ state: z.literal("pending") }),
+  z.strictObject({
+    state: z.literal("anchored"),
+    transactionId: TransactionId,
+    blockNumber: z.string().regex(/^(0|[1-9][0-9]{0,19})$/),
+  }),
+  z.strictObject({
+    state: z.literal("invalid"),
+    transactionId: TransactionId,
+    validationCode: z.number().int().min(1).max(255),
+    blockNumber: z.string().regex(/^(0|[1-9][0-9]{0,19})$/),
+  }),
+]);
+export type EvidenceAdvanceResult = z.infer<typeof FabricEvidenceAdvanceResultSchema>;

@@ -1,6 +1,6 @@
 # Fabric 证据链码与独立 Adapter
 
-当前交付的是可构建的链码、官方 Gateway 接口与本地恢复协议。**Server 的批次组装、数据库检查点 worker 和真实 Fabric 网络验收尚未接入**；启动这些进程不会自动消费现有存证 outbox，也不会创建联邦作业。直接模式不导入 Gateway SDK、不启动 Adapter。
+当前已接通 Server 存证 outbox、批次/序号、数据库恢复检查点、独立 Node Adapter 和证据链码的代码路径。**真实 Fabric 网络验收尚未完成**。配置私有 Adapter socket 后，后台 worker 会消费现有待办；此路径不创建联邦作业，也不修改任务额度。直接模式不创建待办、不调用 Adapter，不要求链连接。
 
 代码位置：[证据链码](../../contracts/fabric/evidence/src/contract.ts)、[Adapter](../../packages/fabric-adapter/src/evidence.ts)、[私有进程入口](../../packages/fabric-adapter/src/runtime.ts)、[协议与集合配置](../../packages/shared/src/federation/ledger.ts)。Node 至少 22.12，Gateway 固定 1.13.0，fabric-shim 固定 2.5.8。Fabric Peer/Orderer/CA 版本仍需与真实网络联合验证，不能以依赖安装成功代替兼容性验收。
 
@@ -100,10 +100,31 @@ Adapter 仅监听 `runDirectory/evidence.sock`，权限 0600，没有 TCP API。
 
 加密恢复记录包含完整签名 proposal/transaction 和预先建立的 commit 查询请求，由 AES-256-GCM 保护，绑定部署策略、channel 和调用身份。Adapter 没有第二套数据库；Server 应在其已有数据库中保存该 opaque token。提交/查询超时返回 pending 并保留原交易；背书失败不会自动改选第三方机构。调用方不得把 prepared、HTTP 成功或 submit 成功显示为已上链，也不得因 invalid 自动退款或重复执行任务。
 
-恢复密钥必须与检查点一起纳入受控备份。替换配置、业务证书或恢复密钥会使旧 token 无法恢复；当前应先处理待办再轮换，不能直接覆盖旧凭据。重启不自动删除已有 Unix socket，以免误删另一进程；异常退出留下的 socket 须先确认进程不存在再清理。数据库 worker、凭据轮换恢复及批次终态核对仍待接通。
+恢复密钥必须与检查点一起纳入受控备份。替换配置、业务证书或恢复密钥会使旧 token 无法恢复；当前应先处理待办再轮换，不能直接覆盖旧凭据。重启不自动删除已有 Unix socket，以免误删另一进程；异常退出留下的 socket 须先确认进程不存在再清理。数据库 worker 已接通，凭据轮换恢复、归档后的批次终态核对仍待完善。
+
+## Server 后台补交和人工复核
+
+Server 启用联邦并配置 `FEDERATION_ATTESTATION_SOCKET_PATH`（Adapter 的绝对 Unix socket 路径）后启动补交 worker。未配置时原证据仍保留 pending，列表可以查看未组批数量，Server 不探测链。socket 临时缺失、Adapter 不可达、背书或提交超时只影响存证状态，不进入接单同步路径。
+
+本站签名公钥必须在平台登记 `evidence-batch` 用途，并出现在链码共同批准的 trust.json 中；用途登记不可覆盖旧 keyId，既有密钥缺用途时须按原信任登记规则新增 keyId。当前合作域采用原协议的 `budgetDomainId`，须对应预先批准的 domainId 和机构对，不自动创建/扩大集合。worker 签署的是单方批次；即使原始委派与回执各有机构签名，也不会冒充双方确认同一批次。
+
+每十秒扫描，每轮最多推进八个检查点。每个 domainId＋issuerSiteId 同时只有一个未完成批次；同一批次限定一个协议版本/epoch，最多 100 项。分配连续序号、固定 manifest/随机盐和关联原证据在同一 PostgreSQL 事务内完成。独立数据库租约使用 DB 时间，超时持有者不能写入晚到结果；网络请求不占用数据库事务。
+
+处理依次为：固定批次 → 签名落库 → proposal 检查点落库 → transaction 检查点落库 → 原 txId 的 VALID 确认。只有最后一步把批次、交易记录和对应 outbox 一起置为 anchored。失败至少间隔三十秒重试；身份/策略/内容不兼容及明确 INVALID 进入 needs_review，停止后续同流批次，不删除原证据或退回预算。
+
+人类会话 API：
+
+| 路径 | 权限与内容 |
+| --- | --- |
+| `GET /api/federation/agreements/:revisionId/attestation?limit=50&offset=0` | 本组织 `agreement.read`；返回是否配置 worker、未组批证据数、批次状态/摘要/数量/错误码/更新时间，不返回恢复密文、私钥或租约 token |
+| `POST /api/federation/agreements/:revisionId/attestation/:batchId/retry` | 本组织 `agreement.approve`；仅恢复 needs_review，记录操作者与原错误码 |
+
+人工重试不会修改批次内容、签名或序号。已经送交或可能送交的 transaction 必须继续核对原交易，不能因为超时另起交易。只有明确 INVALID 后才创建新交易记录，旧记录保留；从未达到可提交检查点的 proposal 可以标记 abandoned 后重新创建。平台角色名称、受限执行账号或自动化 token 不能代替人工复核权。当前 UI 和凭据迁移流程尚未接通，完整功能不因此视为交付。
 
 ## 已执行检查与真实网络验收边界
 
 本地测试覆盖链码的机构边界、签名、序号、重复提交、密钥撤销；Gateway 测试使用真实 SDK 编码/签名/恢复方法和受控 RPC 返回，覆盖精确两方 transient 路由、提交回执丢失、VALID/INVALID 区分、加密 token 篡改以及重启恢复。Unix HTTP 测试验证路由与字段白名单和错误脱敏。
+
+隔离 PostgreSQL 测试验证并发组批、链故障期间继续接单、检查点先落库再提交、重启沿用原交易、过期 worker 被隔离、INVALID 人工重试保留历史、SQL 约束及 HTTP 权限。两个迁移由 Drizzle 生成，测试从空库应用。
 
 这些测试没有模拟出真实的 Fabric 共识、私有数据分发或 MVCC 验证。仍须在独立 A/B/C Peer 网络证明：C 无法取得 AB 私有数据、缺少 B 背书不能提交、并发序号与撤销产生正确验证结果、链离线期间平台作业仍运行、重启后 outbox 自动补交。当前不把此模块视为完整存证验收通过。

@@ -48,6 +48,9 @@ import { loadServerConfig } from "./config";
 import { EventBus } from "./events/event-bus";
 import { FederationAgreementService } from "./federation/agreements";
 import { FederationAssetService } from "./federation/assets";
+import { FederationAttestationService } from "./federation/attestation";
+import { UnixAttestationClient } from "./federation/attestation-client";
+import { FederationAttestationWorker } from "./federation/attestation-worker";
 import { FederationPermissionService } from "./federation/permissions";
 import { FederationPreparationService } from "./federation/preparation";
 import { FederationPreparationWorker } from "./federation/preparation-worker";
@@ -1397,6 +1400,15 @@ const federationAssets = new FederationAssetService(db, {
     softwareAvailability.assertAssetCapability(assetId, principal, capability),
 });
 const federationSigningKey = await loadFederationSigningKey(config);
+const federationAttestation = federationSigningKey
+  ? new FederationAttestationService(
+      db,
+      federationSigningKey,
+      config.FEDERATION_ATTESTATION_SOCKET_PATH
+        ? new UnixAttestationClient(config.FEDERATION_ATTESTATION_SOCKET_PATH)
+        : undefined,
+    )
+  : undefined;
 const federationPreparation = federationSigningKey
   ? new FederationPreparationService(db, federationSigningKey.siteId, federationAssets)
   : undefined;
@@ -1404,7 +1416,10 @@ protectedApi.route("/", createFederationAssetRoutes(federationAssets, federation
 if (federationSigningKey)
   protectedApi.route(
     "/",
-    createFederationAgreementRoutes(new FederationAgreementService(db, federationSigningKey)),
+    createFederationAgreementRoutes(
+      new FederationAgreementService(db, federationSigningKey),
+      federationAttestation,
+    ),
   );
 protectedApi.route("/", createActiveOrganizationRoutes(db));
 protectedApi.route("/", createPlatformUserRoutes(db, authzService));
@@ -1876,6 +1891,11 @@ const federationPreparationWorker = federationPreparation
   ? new FederationPreparationWorker(db, federationPreparation)
   : undefined;
 federationPreparationWorker?.start();
+const federationAttestationWorker =
+  federationAttestation && config.FEDERATION_ATTESTATION_SOCKET_PATH
+    ? new FederationAttestationWorker(federationAttestation)
+    : undefined;
+federationAttestationWorker?.start();
 logger.info({ port: config.SERVER_PORT }, "Server starting");
 
 const httpTrustedProxyCidrs = parseTrustedProxyCidrs(config.HTTP_TRUSTED_PROXY_CIDRS);
@@ -1915,6 +1935,7 @@ async function shutdown(signal: string): Promise<void> {
     grpcServer.close();
     await federationIngress?.stop(true);
     await federationPreparationWorker?.stop();
+    await federationAttestationWorker?.stop();
     await jobDispatchOutbox.stop();
     fileService.shutdown();
     // Stop the metering rollup cron so an in-flight tick can drain

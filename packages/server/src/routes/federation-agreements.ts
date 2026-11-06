@@ -4,11 +4,15 @@ import { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { z } from "zod";
 import type { FederationAgreementService } from "../federation/agreements";
+import type { FederationAttestationService } from "../federation/attestation";
 import type { FederationActor } from "../federation/permissions";
 import type { BoundPrincipal } from "../middleware/principal-binder";
 import { kqValidator } from "../middleware/validator";
 
-export function createFederationAgreementRoutes(service: FederationAgreementService) {
+export function createFederationAgreementRoutes(
+  service: FederationAgreementService,
+  attestation?: FederationAttestationService,
+) {
   const r = new Hono<{ Variables: { federationActor: FederationActor } }>();
   r.use("/federation/agreements/*", async (c, next) => {
     const principal = c.get("principal" as never) as BoundPrincipal | undefined;
@@ -35,6 +39,34 @@ export function createFederationAgreementRoutes(service: FederationAgreementServ
     limit: z.coerce.number().int().min(1).max(100).default(50),
     offset: z.coerce.number().int().min(0).default(0),
   });
+  if (attestation) {
+    r.get(
+      "/federation/agreements/:revisionId/attestation",
+      kqValidator("param", id),
+      kqValidator("query", page),
+      async (c) => {
+        const { limit, offset } = c.req.valid("query");
+        return c.json({
+          success: true,
+          data: await attestation.list(
+            c.get("federationActor"),
+            c.req.valid("param").revisionId,
+            limit,
+            offset,
+          ),
+        });
+      },
+    );
+    r.post(
+      "/federation/agreements/:revisionId/attestation/:batchId/retry",
+      kqValidator("param", id.extend({ batchId: z.uuid() })),
+      async (c) => {
+        const { revisionId, batchId } = c.req.valid("param");
+        await attestation.retry(c.get("federationActor"), revisionId, batchId);
+        return c.json({ success: true });
+      },
+    );
+  }
   r.get("/federation/agreements", kqValidator("query", page), async (c) => {
     const { limit, offset } = c.req.valid("query");
     return c.json({

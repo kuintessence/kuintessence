@@ -1,4 +1,5 @@
 import type { FederationAcceptance, FederationAgreement } from "@kuintessence/shared/federation";
+import type { FederationEvidenceBatch } from "@kuintessence/shared/federation/ledger";
 import { sql } from "drizzle-orm";
 import {
   check,
@@ -233,6 +234,98 @@ export const federationEvidence = pgTable(
   ],
 );
 
+export const federationEvidenceStreams = pgTable(
+  "federation_evidence_streams",
+  {
+    domainId: uuid("domain_id").notNull(),
+    issuerSiteId: uuid("issuer_site_id").notNull(),
+    nextSequence: numeric("next_sequence", { precision: 20, scale: 0 }).notNull().default("1"),
+  },
+  (t) => [
+    primaryKey({ columns: [t.domainId, t.issuerSiteId] }),
+    check("federation_evidence_sequence_positive", sql`${t.nextSequence} > 0`),
+  ],
+);
+
+export const federationEvidenceBatches = pgTable(
+  "federation_evidence_batches",
+  {
+    id: uuid("id").primaryKey(),
+    domainId: uuid("domain_id").notNull(),
+    issuerSiteId: uuid("issuer_site_id").notNull(),
+    localOrgId: uuid("local_org_id")
+      .notNull()
+      .references(() => orgs.id),
+    agreementRevisionId: uuid("agreement_revision_id")
+      .notNull()
+      .references(() => federationAgreements.revisionId),
+    firstSequence: numeric("first_sequence", { precision: 20, scale: 0 }).notNull(),
+    manifest: jsonb("manifest").$type<FederationEvidenceBatch>().notNull(),
+    issuerJws: text("issuer_jws"),
+    digest: varchar("digest", { length: 71 }),
+    state: varchar("state", { length: 24 }).notNull().default("pending"),
+    lastError: varchar("last_error", { length: 64 }),
+    leaseToken: uuid("lease_token"),
+    leaseUntil: timestamp("lease_until", { withTimezone: true }),
+    nextAttemptAt: timestamp("next_attempt_at", { withTimezone: true }).notNull().defaultNow(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    foreignKey({
+      columns: [t.domainId, t.issuerSiteId],
+      foreignColumns: [federationEvidenceStreams.domainId, federationEvidenceStreams.issuerSiteId],
+    }),
+    uniqueIndex("federation_batch_sequence").on(t.domainId, t.issuerSiteId, t.firstSequence),
+    uniqueIndex("federation_batch_unresolved_stream")
+      .on(t.domainId, t.issuerSiteId)
+      .where(sql`${t.state} <> 'anchored'`),
+    index("federation_batch_pending").on(t.issuerSiteId, t.state, t.nextAttemptAt),
+    index("federation_batch_agreement").on(t.agreementRevisionId, t.createdAt),
+    check("federation_batch_state", sql`${t.state} IN ('pending','anchored','needs_review')`),
+    check(
+      "federation_batch_signature",
+      sql`((${t.issuerJws} IS NULL AND ${t.digest} IS NULL) OR (${t.issuerJws} IS NOT NULL AND ${t.digest} ~ '^sha256:[a-f0-9]{64}$')) IS TRUE`,
+    ),
+    check("federation_batch_lease", sql`(${t.leaseToken} IS NULL) = (${t.leaseUntil} IS NULL)`),
+    check(
+      "federation_batch_manifest",
+      sql`(${t.firstSequence} > 0 AND ${t.manifest}->>'batchId' = ${t.id}::text AND ${t.manifest}->>'domainId' = ${t.domainId}::text AND ${t.manifest}->>'issuerSiteId' = ${t.issuerSiteId}::text AND ${t.manifest}->>'agreementRevisionId' = ${t.agreementRevisionId}::text AND ${t.manifest}->'records'->0->>'sequence' = ${t.firstSequence}::text AND jsonb_array_length(${t.manifest}->'records') BETWEEN 1 AND 100) IS TRUE`,
+    ),
+  ],
+);
+
+/** Every submitted transaction is retained, including confirmed INVALID attempts. */
+export const federationAttestationAttempts = pgTable(
+  "federation_attestation_attempts",
+  {
+    id: uuid("id").primaryKey(),
+    batchId: uuid("batch_id")
+      .notNull()
+      .references(() => federationEvidenceBatches.id),
+    number: integer("number").notNull(),
+    transactionId: varchar("transaction_id", { length: 64 }).notNull(),
+    recovery: text("recovery").notNull(),
+    stage: varchar("stage", { length: 24 }).notNull().default("proposal"),
+    validationCode: integer("validation_code"),
+    blockNumber: numeric("block_number", { precision: 20, scale: 0 }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("federation_attestation_tx").on(t.transactionId),
+    uniqueIndex("federation_attestation_attempt_number").on(t.batchId, t.number),
+    check(
+      "federation_attestation_attempt",
+      sql`${t.number} > 0 AND ${t.transactionId} ~ '^[a-f0-9]{64}$' AND octet_length(${t.recovery}) BETWEEN 1 AND 4194304`,
+    ),
+    check(
+      "federation_attestation_result",
+      sql`((${t.stage} IN ('proposal','transaction','abandoned') AND ${t.validationCode} IS NULL AND ${t.blockNumber} IS NULL) OR (${t.stage} = 'anchored' AND ${t.validationCode} = 0 AND ${t.blockNumber} >= 0) OR (${t.stage} = 'invalid' AND ${t.validationCode} BETWEEN 1 AND 255 AND ${t.blockNumber} >= 0)) IS TRUE`,
+    ),
+  ],
+);
+
 export const federationAttestationOutbox = pgTable(
   "federation_attestation_outbox",
   {
@@ -240,9 +333,18 @@ export const federationAttestationOutbox = pgTable(
       .primaryKey()
       .references(() => federationEvidence.id),
     state: varchar("state", { length: 24 }).notNull().default("pending"),
+    batchId: uuid("batch_id").references(() => federationEvidenceBatches.id),
+    sequence: numeric("sequence", { precision: 20, scale: 0 }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
-  (t) => [check("federation_attestation_state", sql`${t.state} = 'pending'`)],
+  (t) => [
+    uniqueIndex("federation_outbox_batch_sequence").on(t.batchId, t.sequence),
+    index("federation_outbox_pending").on(t.state, t.createdAt),
+    check(
+      "federation_attestation_state",
+      sql`((${t.state} = 'pending' AND ${t.batchId} IS NULL AND ${t.sequence} IS NULL) OR (${t.state} IN ('batched','anchored') AND ${t.batchId} IS NOT NULL AND ${t.sequence} > 0)) IS TRUE`,
+    ),
+  ],
 );
 
 /** A mapping never grants permission and never silently follows a newer local revision. */

@@ -582,6 +582,20 @@
       "when": 1793947908636,
       "tag": "0082_volatile_smiling_tiger",
       "breakpoints": true
+    },
+    {
+      "idx": 83,
+      "version": "7",
+      "when": 1793953463766,
+      "tag": "0083_spotty_wolfpack",
+      "breakpoints": true
+    },
+    {
+      "idx": 84,
+      "version": "7",
+      "when": 1793953788591,
+      "tag": "0084_foamy_dazzler",
+      "breakpoints": true
     }
   ]
 }

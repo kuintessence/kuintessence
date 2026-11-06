@@ -1,6 +1,6 @@
 # 联邦机构认证入口
 
-当前只接通签名委派的额度预留，不创建或执行 Job。另有独立的 [Fabric 证据链码与 Adapter](fabric-evidence.md)，尚未连接 Server outbox 或完成真实链验收。完整目标与边界见[实现进展](../../docs/design/federation/progress.md)。不要将入口连通作为完整联邦验收结果。
+当前只接通签名委派的额度预留，不创建或执行 Job。另有独立的 [Fabric 证据链码与 Adapter](fabric-evidence.md)，已接通 Server outbox 和恢复 worker，真实链验收仍未完成。完整目标与边界见[实现进展](../../docs/design/federation/progress.md)。不要将入口连通作为完整联邦验收结果。
 
 ## 认证路径
 
