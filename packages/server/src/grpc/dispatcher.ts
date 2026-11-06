@@ -50,8 +50,9 @@ import type {
   SpackExecution,
 } from "@kuintessence/shared";
 import { createLogger, SPACK_PINNED_EXECUTION_PLACEHOLDER } from "@kuintessence/shared";
-import { and, asc, eq, gte, isNotNull, isNull, lt } from "drizzle-orm";
+import { and, asc, eq, isNotNull, isNull } from "drizzle-orm";
 import type { ResolvedDataDelivery } from "../services/data-delivery";
+import { enqueueJobCancellation } from "../services/job-cancellation";
 
 const logger = createLogger("dispatcher");
 
@@ -623,6 +624,8 @@ interface CancellationWaiter {
  */
 export class JobCancellationOutbox {
   private readonly waiters = new Map<string, Set<CancellationWaiter>>();
+  private timer?: ReturnType<typeof setInterval>;
+  private delivering?: Promise<void>;
 
   constructor(
     private readonly db: PgDb,
@@ -630,37 +633,71 @@ export class JobCancellationOutbox {
   ) {}
 
   async enqueue(agentId: string, jobId: string, revokedEpoch: number): Promise<void> {
-    assertCancellationEpoch(revokedEpoch);
-    const inserted = await this.db
-      .insert(jobCancellations)
-      .values({ agentId, jobId, revokedEpoch })
-      .onConflictDoNothing({ target: jobCancellations.jobId })
-      .returning({ jobId: jobCancellations.jobId });
-    if (inserted.length > 0) return;
-
-    // A later epoch supersedes an earlier acknowledgement. The Agent binding
-    // remains immutable after the cancellation intent is first recorded.
-    await this.db
-      .update(jobCancellations)
-      .set({ revokedEpoch, acknowledgedAt: null })
-      .where(
-        and(eq(jobCancellations.jobId, jobId), lt(jobCancellations.revokedEpoch, revokedEpoch)),
-      );
+    await enqueueJobCancellation(this.db, { agentId, jobId, revokedEpoch });
   }
 
-  async redeliver(agentId: string): Promise<number> {
+  start() {
+    if (this.timer) return;
+    const tick = () => {
+      if (this.delivering) return;
+      this.delivering = this.redeliver()
+        .then(() => {})
+        .catch(() => {
+          logger.warn("Job cancellation delivery failed; durable intents remain pending");
+        })
+        .finally(() => {
+          this.delivering = undefined;
+        });
+    };
+    this.timer = setInterval(tick, 10000);
+    this.timer.unref();
+    tick();
+  }
+
+  async stop() {
+    if (this.timer) clearInterval(this.timer);
+    this.timer = undefined;
+    await this.delivering;
+  }
+
+  async deliverJob(jobId: string): Promise<number> {
     const rows = await this.db
-      .select({ jobId: jobCancellations.jobId, revokedEpoch: jobCancellations.revokedEpoch })
+      .select()
       .from(jobCancellations)
-      .where(and(eq(jobCancellations.agentId, agentId), isNull(jobCancellations.acknowledgedAt)))
+      .where(eq(jobCancellations.jobId, jobId));
+    for (const row of rows)
+      if (!row.acknowledgedAt)
+        this.dispatcher.pushCancelJob(row.agentId, row.jobId, row.revokedEpoch);
+    return rows.length;
+  }
+
+  async redeliver(agentId?: string): Promise<number> {
+    const rows = await this.db
+      .select({
+        agentId: jobCancellations.agentId,
+        jobId: jobCancellations.jobId,
+        revokedEpoch: jobCancellations.revokedEpoch,
+      })
+      .from(jobCancellations)
+      .where(
+        and(
+          agentId ? eq(jobCancellations.agentId, agentId) : undefined,
+          isNull(jobCancellations.acknowledgedAt),
+        ),
+      )
       .orderBy(asc(jobCancellations.createdAt), asc(jobCancellations.id));
     for (const row of rows) {
-      this.dispatcher.pushCancelJob(agentId, row.jobId, row.revokedEpoch);
+      this.dispatcher.pushCancelJob(row.agentId, row.jobId, row.revokedEpoch);
     }
     return rows.length;
   }
 
-  async acknowledge(agentId: string, jobId: string, revokedEpoch: number): Promise<boolean> {
+  async acknowledge(
+    agentId: string,
+    jobId: string,
+    revokedEpoch: number,
+    installationsStopped = false,
+  ): Promise<boolean> {
     assertCancellationEpoch(revokedEpoch);
     const [updated] = await this.db
       .update(jobCancellations)
@@ -670,6 +707,7 @@ export class JobCancellationOutbox {
           eq(jobCancellations.agentId, agentId),
           eq(jobCancellations.jobId, jobId),
           eq(jobCancellations.revokedEpoch, revokedEpoch),
+          installationsStopped ? undefined : eq(jobCancellations.requiresInstallationStop, false),
           isNull(jobCancellations.acknowledgedAt),
         ),
       )
@@ -687,6 +725,7 @@ export class JobCancellationOutbox {
           eq(jobCancellations.agentId, agentId),
           eq(jobCancellations.jobId, jobId),
           eq(jobCancellations.revokedEpoch, revokedEpoch),
+          installationsStopped ? undefined : eq(jobCancellations.requiresInstallationStop, false),
           isNotNull(jobCancellations.acknowledgedAt),
         ),
       )
@@ -698,24 +737,33 @@ export class JobCancellationOutbox {
 
   async waitForAcknowledgement(jobId: string, revokedEpoch: number): Promise<void> {
     assertCancellationEpoch(revokedEpoch);
-    const waiter = this.addWaiter(jobId, revokedEpoch);
-    try {
-      const [acknowledged] = await this.db
-        .select({ revokedEpoch: jobCancellations.revokedEpoch })
-        .from(jobCancellations)
-        .where(
-          and(
-            eq(jobCancellations.jobId, jobId),
-            gte(jobCancellations.revokedEpoch, revokedEpoch),
-            isNotNull(jobCancellations.acknowledgedAt),
-          ),
+    const deadline = Date.now() + 15000;
+    while (Date.now() < deadline) {
+      const waiter = this.addWaiter(jobId, revokedEpoch);
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        const rows = await this.db
+          .select()
+          .from(jobCancellations)
+          .where(eq(jobCancellations.jobId, jobId));
+        if (
+          rows.length &&
+          rows.every((row) => row.revokedEpoch >= revokedEpoch && row.acknowledgedAt)
         )
-        .limit(1);
-      if (acknowledged) return;
-      await waiter.promise;
-    } finally {
-      this.removeWaiter(jobId, waiter.entry);
+          return;
+        // Another Server can receive the ACK; re-read durable state instead of waiting only in memory.
+        await Promise.race([
+          waiter.promise,
+          new Promise<void>((resolve) => {
+            timer = setTimeout(resolve, 1000);
+          }),
+        ]);
+      } finally {
+        if (timer) clearTimeout(timer);
+        this.removeWaiter(jobId, waiter.entry);
+      }
     }
+    throw new Error("Job cancellation acknowledgement pending; recovery must retry");
   }
 
   private addWaiter(

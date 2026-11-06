@@ -627,6 +627,8 @@ message CancelJob {
 message CancelJobAck {
   string job_id = 1;
   int64 revoked_epoch = 2;
+  // True only after durable software receipts prove this Job's installations stopped.
+  bool installations_stopped = 3;
 }
 
 message ReleaseJobWorkRoot {

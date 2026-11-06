@@ -244,6 +244,7 @@ export const jobCancellations = pgTable(
       .notNull(),
     revokedEpoch: integer("revoked_epoch").notNull().default(0),
     acknowledgedAt: timestamp("acknowledged_at"),
+    requiresInstallationStop: boolean("requires_installation_stop").notNull().default(false),
     createdAt: timestamp("created_at").defaultNow().notNull(),
   },
   (t) => ({
@@ -252,7 +253,7 @@ export const jobCancellations = pgTable(
       t.acknowledgedAt,
       t.createdAt,
     ),
-    jobUnique: uniqueIndex("job_cancellations_job_idx").on(t.jobId),
+    jobAgentUnique: uniqueIndex("job_cancellations_job_agent_idx").on(t.jobId, t.agentId),
     revokedEpochCheck: check("job_cancellations_revoked_epoch_check", sql`${t.revokedEpoch} >= 0`),
   }),
 );

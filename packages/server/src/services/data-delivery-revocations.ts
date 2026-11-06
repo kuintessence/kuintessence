@@ -12,6 +12,7 @@ import { dataAssetGrantDeltaTuples, normalizeDataGrantCapabilities } from "../au
 import type { AuthzTuple } from "../authz/service";
 import type { AgentDispatcher } from "../grpc/dispatcher";
 import { canonicalAuthorizationSubject } from "./authorization-subjects";
+import { persistJobCancellations } from "./job-cancellation";
 
 export class DataDeliveryRevocationOutbox {
   constructor(
@@ -187,6 +188,17 @@ export class DataGrantRevocationCoordinator {
                 revokedEpoch: jobs.revokedEpoch,
               });
       const remote = cancelled.filter((job) => job.agentId !== null);
+      for (const job of cancelled)
+        await persistJobCancellations(
+          tx,
+          {
+            id: job.jobId,
+            agentId: job.agentId,
+            status: "cancelled",
+            revokedEpoch: job.revokedEpoch,
+          },
+          false,
+        );
       if (remote.length > 0) {
         await tx
           .insert(dataDeliveryRevocations)

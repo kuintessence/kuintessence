@@ -456,6 +456,16 @@ Script 的 File/FileBatch 到下游受管文件转换、Checkpoint 文件持久�
 
 这里的 worker/transport 是测试替身，不能作为真实编译停止验收。仍需完成 Server 按安装操作找到全部 Agent 并持久投递取消/等待证明（安装 Agent 不一定等于 compute Job.agentId，待安装 Job 也可能还没有 Agent）、进程监督和原宿主机重启后的停止恢复。当前原生 transport 异常没有完整子进程停止证明，会保守保留恢复状态；源码审计输入保留后的自动回收也未实现。自动激活保护保留，未发布 PR 预览。
 
+## Server 跨安装 Agent 的持久取消与 Workflow 结束门槛
+
+- Job 取消在同一事务中查出该 Job 的全部安装操作，覆盖尚未分配计算 Agent、安装与计算不在同一 Agent，以及已失败但尚未证明停止的安装。取消收件记录改为 `(jobId, agentId)` 唯一，保留原计算取消，并按接收方保存撤销代次。新增 PostgreSQL 迁移 0092，由项目生成命令生成。
+- 普通取消、Workflow 取消、数据资产撤销和数据使用授权撤销共用安装取消记录。启动与每 10 秒重投未确认消息，离线 Agent 重连后可继续接收；加强停止要求会使旧的普通确认失效，不会被后续普通重投降级。新协议 `installations_stopped` 只在 Agent 完成持久安装停止检查后发送，旧 Agent 的普通确认不能满足此要求。
+- Workflow 取消等待所有安装/计算接收方，跨 Server 回执通过数据库收敛；单轮等待最多 15 秒，未确认保留 cancelling，交给现有恢复逻辑继续。已完成或失败的 Job 保留结果，同时仍撤销其遗留安装。数据撤销后的正常运行器返回也在结束事务中检查待确认记录，沿用 Workflow → Job 加锁顺序；先保存节点结果并进入 cancelling，全部停止后才结束，失败节点与原因不会被改成成功或丢失。
+
+验证：本轮 AgentStream/Agent handler **191 项**、Dispatcher/WorkflowAsyncRunner **45 项**、新取消 PostgreSQL **10 项**、运行注册表/持久运行器 PostgreSQL **15 项**通过；此前 JobService 与安装授权等隔离检查已通过，不重复运行未受最终改动影响的部分。新用例覆盖多个安装 Agent、部分确认、错误 Agent/代次、旧回执拒绝、实例替换与跨 Server 确认、事务回滚，以及数据撤销后真实 WorkflowAsyncRunner 等待安装确认、失败结果保留。全仓类型检查通过，最终 Server 类型检查通过；lint 无错误（已有 47 warnings、1 info）。隔离 PostgreSQL 已停止清理。
+
+这些测试使用受控 Agent 回执，尚未完成真实安装进程停止及 Slurm/PBS/Fabric 联合验收。Server 已具备跨安装 Agent 的取消传递和等待，真实进程监督、同宿主机进程退出后的停止恢复、源码审计保留输入回收仍待完成。新协议需配套升级 Agent；旧 Agent 会保持待确认，不会伪造停止成功。联邦自动激活保护继续保留，PR 预览尚未发布。
+
 ## 尚未接通，不能宣称支持
 
 协议审批与机构信任管理 UI、源站发送与状态查询、额度结算/退款、联邦目标/数据最终授权与实际激活连接、完整生产持久 Workflow 端到端验收、完整的数据/软件物化与介质交付、双方证据确认与完整用量/结算记录、商业/市场链码及真实联邦作业与 Fabric 联合运行、归档恢复、Web/CLI 和部署配置均未完成。

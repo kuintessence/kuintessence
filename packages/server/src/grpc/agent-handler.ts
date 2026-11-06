@@ -933,6 +933,7 @@ export function registerAgentHandler(router: ConnectRouter, deps: AgentHandlerDe
               registeredAgentId,
               payload.value.jobId,
               revokedEpoch,
+              payload.value.installationsStopped,
             );
             if (acknowledged === false) {
               logger.warn(

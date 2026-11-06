@@ -8,7 +8,6 @@ import {
   dataAssetVersions,
   ecosystemReleaseAssets,
   ecosystemReleases,
-  jobCancellations,
   jobDataBindings,
   jobs,
   netdriveFiles,
@@ -61,6 +60,7 @@ import type { EventBus } from "../events/event-bus";
 import { frozenAuthorizationSubjects } from "./authorization-subjects";
 import type { DataRequirement } from "./data-prerequisite";
 import { PgDataPrerequisiteRepository } from "./data-prerequisite-repository-drizzle";
+import { persistJobCancellations } from "./job-cancellation";
 import type { JobUsageRecord } from "./metering";
 import { assertRestrictedNoEgressSubmission } from "./restricted-no-egress";
 
@@ -912,7 +912,19 @@ export class JobService {
         current.status === JobStatus.COMPLETED ||
         current.status === JobStatus.FAILED ||
         current.status === JobStatus.CANCELLED;
-      if (currentIsTerminal) return current;
+      if (currentIsTerminal) {
+        if (status !== JobStatus.CANCELLED) return current;
+        const [fenced] = await tx
+          .update(jobs)
+          .set({
+            revokedEpoch: Math.max(current.revokedEpoch, current.dispatchEpoch + 1),
+          })
+          .where(idWhere)
+          .returning();
+        if (!fenced) throw new Error("Cancelled Job disappeared");
+        await persistJobCancellations(tx, fenced);
+        return fenced;
+      }
 
       const statusChanged =
         current.status !== status ||
@@ -950,6 +962,7 @@ export class JobService {
       if (!written) {
         throw new AppError(ErrorCode.NOT_FOUND, `Job ${jobId} not found`, 404);
       }
+      if (status === JobStatus.CANCELLED) await persistJobCancellations(tx, written);
       changed = true;
       return written;
     });
@@ -989,16 +1002,7 @@ export class JobService {
       if (!written) {
         throw new AppError(ErrorCode.NOT_FOUND, `Job ${jobId} not found`, 404);
       }
-      if (written.agentId) {
-        await tx
-          .insert(jobCancellations)
-          .values({
-            agentId: written.agentId,
-            jobId: written.id,
-            revokedEpoch: written.revokedEpoch,
-          })
-          .onConflictDoNothing({ target: jobCancellations.jobId });
-      }
+      await persistJobCancellations(tx, written);
       return written;
     });
 

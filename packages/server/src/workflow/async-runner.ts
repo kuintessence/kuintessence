@@ -363,6 +363,8 @@ export class WorkflowAsyncRunner {
       }
       if (await this.deps.registry.completeRun(runId, result, active?.lease)) {
         await this.markArtifactsTerminal(runId);
+      } else {
+        await this.finishCancellation(runId);
       }
     } catch (err) {
       if (durable) {

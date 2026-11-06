@@ -443,8 +443,8 @@ describe("AgentDispatcher", () => {
         from: () => ({
           where: () => ({
             orderBy: async () => [
-              { jobId: "job-first", revokedEpoch: 3 },
-              { jobId: "job-second", revokedEpoch: 4 },
+              { agentId: "agent-reconnect", jobId: "job-first", revokedEpoch: 3 },
+              { agentId: "agent-reconnect", jobId: "job-second", revokedEpoch: 4 },
             ],
           }),
         }),

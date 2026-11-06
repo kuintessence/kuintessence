@@ -87,7 +87,10 @@ function registerMsg(agentId: string) {
 }
 
 describe("agent-handler identity pinning", () => {
-  test("redelivers cancellations on register and accepts only the registered Agent ACK", async () => {
+  test.each([
+    false,
+    true,
+  ])("redelivers cancellations and binds stop proof to the registered Agent: %s", async (installationsStopped) => {
     const calls: string[] = [];
     const { router, handlers } = createMockRouter();
     registerAgentHandler(router, {
@@ -100,8 +103,8 @@ describe("agent-handler identity pinning", () => {
           calls.push(`redeliver:${agentId}`);
           return 1;
         },
-        acknowledge: async (agentId, jobId, revokedEpoch) => {
-          calls.push(`ack:${agentId}:${jobId}:${revokedEpoch}`);
+        acknowledge: async (agentId, jobId, revokedEpoch, proof) => {
+          calls.push(`ack:${agentId}:${jobId}:${revokedEpoch}:${proof}`);
           return true;
         },
       },
@@ -109,14 +112,18 @@ describe("agent-handler identity pinning", () => {
     const acknowledgement = create(AgentMessageSchema, {
       payload: {
         case: "cancelJobAck",
-        value: create(CancelJobAckSchema, { jobId: "job-1", revokedEpoch: 7n }),
+        value: create(CancelJobAckSchema, {
+          jobId: "job-1",
+          revokedEpoch: 7n,
+          installationsStopped,
+        }),
       },
     });
 
     if (!handlers.connect) throw new Error("connect handler not registered");
     await drain(handlers.connect(iter(registerMsg("agent-1"), acknowledgement)));
 
-    expect(calls).toEqual(["redeliver:agent-1", "ack:agent-1:job-1:7"]);
+    expect(calls).toEqual(["redeliver:agent-1", `ack:agent-1:job-1:7:${installationsStopped}`]);
   });
 
   test("redelivers Job work-root releases and accepts the registered Agent ACK", async () => {

@@ -1,4 +1,6 @@
 import {
+  jobCancellations,
+  jobs,
   type PgDb,
   type PgTransaction,
   workflowExecutionJobs,
@@ -237,25 +239,60 @@ export class WorkflowRunRegistry implements WorkflowRunStore {
     lease?: LeasedWorkflowJournal,
   ): Promise<boolean> {
     if (lease && lease.runId !== runId) throw new Error("Workflow lease belongs to another run");
-    const write = async (db: PgDb | PgTransaction) => {
+    const write = async (db: PgTransaction) => {
+      const [run] = await db
+        .select()
+        .from(workflowRuns)
+        .where(eq(workflowRuns.id, runId))
+        .for("update");
+      if (run?.status !== "running") return false;
+      const invocations = await db
+        .select({ jobId: workflowExecutionJobs.jobId })
+        .from(workflowExecutionJobs)
+        .where(eq(workflowExecutionJobs.runId, runId));
+      const jobIds = [
+        ...new Set([
+          ...Object.values(run.stepJobs ?? {}),
+          ...invocations.map(({ jobId }) => jobId),
+        ]),
+      ];
+      // Serialize with revocation and installation creation, in Workflow -> Job lock order.
+      if (jobIds.length)
+        await db
+          .select({ id: jobs.id })
+          .from(jobs)
+          .where(inArray(jobs.id, jobIds))
+          .orderBy(asc(jobs.id))
+          .for("update");
+      const pending = jobIds.length
+        ? await db
+            .select({ id: jobCancellations.id })
+            .from(jobCancellations)
+            .where(
+              and(inArray(jobCancellations.jobId, jobIds), isNull(jobCancellations.acknowledgedAt)),
+            )
+            .limit(1)
+        : [];
       const status = terminalStatusFromResult(result);
       const errorMessage = failedNodeSummary(result);
       const finalized = await db
         .update(workflowRuns)
         .set({
-          status,
+          status: pending.length ? "cancelling" : status,
           result,
-          completedAt: new Date(),
+          completedAt: pending.length ? null : new Date(),
+          ...(pending.length ? { cancelRequestedAt: new Date() } : {}),
           updatedAt: new Date(),
           errorCode: errorMessage ? "WORKFLOW_NODE_FAILED" : null,
           errorMessage,
         })
         .where(and(eq(workflowRuns.id, runId), eq(workflowRuns.status, "running")))
         .returning({ id: workflowRuns.id });
-      if (finalized.length === 1) logger.info({ runId, status }, "Workflow run finalized");
-      return finalized.length === 1;
+      if (finalized.length === 1 && !pending.length)
+        logger.info({ runId, status }, "Workflow run finalized");
+      return finalized.length === 1 && !pending.length;
     };
-    return lease ? lease.transaction(write) : write(this.db);
+    return lease ? lease.transaction(write) : this.db.transaction(write);
   }
 
   async failRun(
@@ -294,12 +331,15 @@ export class WorkflowRunRegistry implements WorkflowRunStore {
   }
 
   async cancelRun(runId: string): Promise<boolean> {
+    const run = await this.getById(runId);
+    const status =
+      run?.result && terminalStatusFromResult(run.result) === "failed" ? "failed" : "cancelled";
     const cancelled = await this.db
       .update(workflowRuns)
-      .set({ status: "cancelled", completedAt: new Date(), updatedAt: new Date() })
+      .set({ status, completedAt: new Date(), updatedAt: new Date() })
       .where(and(eq(workflowRuns.id, runId), eq(workflowRuns.status, "cancelling")))
       .returning({ id: workflowRuns.id });
-    if (cancelled.length === 1) logger.info({ runId }, "Workflow run cancelled");
+    if (cancelled.length === 1) logger.info({ runId, status }, "Workflow cancellation completed");
     return cancelled.length === 1;
   }
 

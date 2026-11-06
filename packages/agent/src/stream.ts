@@ -247,6 +247,7 @@ type OutboundItem =
       kind: "cancelJobAck";
       jobId: string;
       revokedEpoch: number;
+      installationsStopped?: boolean;
     }
   | {
       kind: "jobWorkRootReleaseAck";
@@ -2077,6 +2078,7 @@ export class AgentStream {
                 value: create(CancelJobAckSchema, {
                   jobId: item.jobId,
                   revokedEpoch: BigInt(item.revokedEpoch),
+                  installationsStopped: item.installationsStopped ?? false,
                 }),
               },
             });
@@ -4094,6 +4096,7 @@ export class AgentStream {
         kind: "cancelJobAck",
         jobId,
         revokedEpoch: entry.revokedEpoch,
+        ...(this.persistentQueue ? { installationsStopped: true } : {}),
       });
       this.signalOutbound();
     });

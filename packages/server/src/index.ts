@@ -214,6 +214,7 @@ import {
 import { SpackMaterialDelivery } from "./software-governance/spack-material-delivery";
 import { createRealMinioBackend, loadMinioConfigFromEnv } from "./storage/minio-client";
 import { WorkflowAsyncRunner } from "./workflow/async-runner";
+import { cancelWorkflowJobs } from "./workflow/cancel-jobs";
 import { createDatasetPreflight, type DatasetPreflightDeps } from "./workflow/dataset-preflight";
 import { createDbPackageStore } from "./workflow/db-package-store";
 import { WorkflowDraftService } from "./workflow/draft-service";
@@ -1250,34 +1251,14 @@ const workflowAsyncRunner = new WorkflowAsyncRunner({
     makeRunner(submittedBy, role, false, runId, placementConfig, orgId, lease),
   awaitCheckpointPersistence: (runId) => workflowArtifactService.awaitCheckpointPersistence(runId),
   markArtifactsTerminal: (runId) => workflowArtifactService.markWorkflowTerminal(runId),
-  cancelSubmittedJobs: async (runId) => {
-    const jobIds = await workflowRegistry.listJobIds(runId);
-    const results = await Promise.allSettled(
-      jobIds.map(async (jobId) => {
-        const job = await jobService.getById(jobId);
-        if (!job || job.status === "completed" || job.status === "failed") return;
-        const cancelled = await jobService.updateStatus(jobId, "cancelled");
-        if (cancelled.agentId) {
-          await orchestrator.cancelJob(cancelled.agentId, jobId, cancelled.revokedEpoch);
-          await jobCancellationOutbox.waitForAcknowledgement(jobId, cancelled.revokedEpoch);
-        }
-        jobCompletionRegistry.complete(jobId, { status: "cancelled", collected: {} });
-      }),
-    );
-    const failures: unknown[] = [];
-    for (const [index, result] of results.entries()) {
-      if (result.status === "rejected") {
-        failures.push(result.reason);
-        logger.warn(
-          { err: result.reason, jobId: jobIds[index], runId },
-          "Failed to cancel submitted workflow job",
-        );
-      }
-    }
-    if (failures.length > 0) {
-      throw new AggregateError(failures, `Workflow ${runId} job cancellation did not converge`);
-    }
-  },
+  cancelSubmittedJobs: (runId) =>
+    cancelWorkflowJobs(
+      runId,
+      workflowRegistry,
+      jobService,
+      jobCancellationOutbox,
+      jobCompletionRegistry,
+    ),
 });
 
 async function collectWorkflowOutputFiles(input: {
@@ -1609,6 +1590,7 @@ const federationDispatchAuthorization = federationPreparation
     )
   : undefined;
 jobDispatchOutbox.start();
+jobCancellationOutbox.start();
 protectedApi.route("/", createFederationAssetRoutes(federationAssets, federationPreparation));
 if (federationSigningKey)
   protectedApi.route(
@@ -2147,6 +2129,7 @@ async function shutdown(signal: string): Promise<void> {
     await federationPreparationWorker?.stop();
     await federationAttestationWorker?.stop();
     await jobDispatchOutbox.stop();
+    await jobCancellationOutbox.stop();
     fileService.shutdown();
     // Stop the metering rollup cron so an in-flight tick can drain
     // before exit; the cron internally catches and logs errors so this

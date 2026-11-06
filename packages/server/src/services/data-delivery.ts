@@ -22,6 +22,7 @@ import { and, eq, inArray, sql } from "drizzle-orm";
 import type { AgentDispatcher } from "../grpc/dispatcher";
 import type { MinioBackend } from "../storage/minio-client";
 import { isReplicaEligible } from "./data-prerequisite-repository-drizzle";
+import { persistJobCancellations } from "./job-cancellation";
 import { factsRequireRestrictedNoEgress } from "./restricted-no-egress";
 import type { SandboxManifestSigner } from "./sandbox-manifest-signer";
 
@@ -499,7 +500,7 @@ export async function revokeDataDeliveryJobs(input: {
       .for("update");
     if (rows.length === 0) return rows;
     const now = new Date();
-    await tx
+    const cancelled = await tx
       .update(jobs)
       .set({
         status: "cancelled",
@@ -512,7 +513,9 @@ export async function revokeDataDeliveryJobs(input: {
           jobs.id,
           rows.map((row) => row.jobId),
         ),
-      );
+      )
+      .returning();
+    for (const job of cancelled) await persistJobCancellations(tx, job, false);
     const remote = rows.filter((row) => row.agentId !== null);
     if (remote.length > 0) {
       await tx

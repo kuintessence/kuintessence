@@ -8854,6 +8854,7 @@ test.each([
   };
   let grants = 0;
   const acknowledgements: string[] = [];
+  const installationStopProofs: boolean[] = [];
   const stream = new AgentStream({
     client: makePendingRegisteredClient(false, false, {
       supported: true,
@@ -8864,6 +8865,8 @@ test.each([
           message.payload.case === "dataDeliveryRevokeAck"
         )
           acknowledgements.push(message.payload.case);
+        if (message.payload.case === "cancelJobAck")
+          installationStopProofs.push(message.payload.value.installationsStopped);
         if (message.payload.case !== "federationExecutionRequest") return;
         grants++;
         if (kind === "renewal") return;
@@ -8962,6 +8965,7 @@ test.each([
         kind === "data" ? "dataDeliveryRevokeAck" : "cancelJobAck",
       );
       await outbound.softwareOperations.assertJobStopped(request.federationJobId);
+      if (kind !== "data") expect(installationStopProofs).toContain(true);
     }
     expect(installs).toBe(["running", "uncertain", "data"].includes(kind) ? 1 : 0);
     if (kind === "queued" || kind === "before-receive") expect(grants).toBe(0);
