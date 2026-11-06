@@ -694,3 +694,106 @@ test("pinned installation persists the required material before preparation and 
   expect(f.sent).toHaveLength(1);
   await f.lease.release();
 });
+
+test("federation installation requires its authorization service, lease and original execution pin", async () => {
+  const f = await fixture(true);
+  await db
+    .update(workflowRuns)
+    .set({ input: { yaml: "fixture", role: "user", federationReservationId: randomUUID() } })
+    .where(eq(workflowRuns.id, f.runId));
+  const expectedPin = f.spec.spackExecution?.pin;
+  if (!expectedPin) throw new Error("Missing fixture pin");
+  const request = { ...installationRequest(f), expectedPin };
+  try {
+    await expect(f.operations.requestInstallForJob(request)).rejects.toThrow(
+      "authorization is unavailable",
+    );
+    const service = new SoftwareOperationService(
+      db,
+      f.dispatcher,
+      new InstalledRegistry(db),
+      async () => ({
+        spackMaterialTicket: "test",
+        spackManifestDigest: expectedPin.manifestDigest,
+      }),
+      async () => {},
+      async () => async () => {},
+    );
+    await expect(
+      service.requestInstallForJob({ ...request, executionLease: undefined }),
+    ).rejects.toThrow("authorization is unavailable");
+    await expect(
+      service.requestInstallForJob({ ...request, expectedPin: undefined }),
+    ).rejects.toThrow("saved software pin");
+    await expect(
+      service.requestInstallForJob({
+        ...request,
+        expectedPin: { ...expectedPin, dagHash: "b".repeat(32) },
+      }),
+    ).rejects.toThrow("saved software pin");
+    expect(
+      await db.select().from(softwareOperations).where(eq(softwareOperations.agentId, agentIds[0])),
+    ).toHaveLength(0);
+    expect(f.sent).toHaveLength(0);
+  } finally {
+    await f.lease.release();
+  }
+});
+
+test.each([
+  "material-preparation",
+  "retry",
+] as const)("federation installation revoked during %s does not send or replace its durable operation", async (boundary) => {
+  const f = await fixture(true);
+  await db
+    .update(workflowRuns)
+    .set({ input: { yaml: "fixture", role: "user", federationReservationId: randomUUID() } })
+    .where(eq(workflowRuns.id, f.runId));
+  const expectedPin = f.spec.spackExecution?.pin;
+  if (!expectedPin) throw new Error("Missing fixture pin");
+  let revoked = false;
+  let prepareCount = 0;
+  const operations = new SoftwareOperationService(
+    db,
+    f.dispatcher,
+    new InstalledRegistry(db),
+    async () => {
+      if (boundary === "material-preparation") revoked = true;
+      return { spackMaterialTicket: "test", spackManifestDigest: expectedPin.manifestDigest };
+    },
+    async () => {},
+    async (runId) => {
+      expect(runId).toBe(f.runId);
+      prepareCount++;
+      return async () => {
+        if (revoked)
+          throw new WorkflowExecutionInterrupted("Federation authority revoked", {
+            retryable: false,
+          });
+      };
+    },
+  );
+  const request = { ...installationRequest(f), expectedPin };
+  try {
+    if (boundary === "material-preparation") {
+      await expect(operations.requestInstallForJob(request)).rejects.toThrow("authority revoked");
+      expect(f.sent).toHaveLength(0);
+    } else {
+      const first = await operations.requestInstallForJob(request);
+      expect(f.sent).toHaveLength(1);
+      await dueAgain(first.id);
+      revoked = true;
+      await expect(operations.requestInstallForJob(request)).rejects.toThrow("authority revoked");
+      expect(prepareCount).toBe(2);
+      expect(f.sent).toHaveLength(1);
+    }
+    const rows = await db
+      .select()
+      .from(softwareOperations)
+      .where(eq(softwareOperations.agentId, agentIds[0]));
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.status).toBe("queued");
+  } finally {
+    await f.lease.release();
+  }
+});

@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import {
   agents,
   auditLog,
+  federationWorkflowBindings,
   jobs,
   type PgDb,
   type PgTransaction,
@@ -9,6 +10,7 @@ import {
   softwarePolicies,
   softwarePolicyOverlays,
   workflowExecutionJobs,
+  workflowRuns,
 } from "@kuintessence/db";
 import {
   SoftwareOperationAction as ProtoSoftwareOperationAction,
@@ -24,6 +26,7 @@ import {
   type SpackPolicy,
   WorkflowExecutionInterrupted,
 } from "@kuintessence/shared";
+import { federationCanonicalJson } from "@kuintessence/shared/federation";
 import { and, desc, eq, inArray, isNull, or, sql } from "drizzle-orm";
 import type { AgentDispatcher } from "../grpc/dispatcher";
 import type { CpScope } from "../middleware/cp-rbac";
@@ -69,6 +72,9 @@ export class SoftwareOperationService {
       requestedBy: string;
       providerOrgId: string | null;
     }) => Promise<void>,
+    private readonly prepareFederationDispatch?: (
+      runId: string,
+    ) => Promise<(tx: PgTransaction) => Promise<void>>,
   ) {}
 
   async closeInterruptedOperation(input: {
@@ -334,6 +340,51 @@ export class SoftwareOperationService {
       throw new WorkflowExecutionInterrupted("Pinned installation requires managed materials", {
         retryable: false,
       });
+    const workflow = await installationWorkflowScope(this.db, input.jobId);
+    const reservationId = workflow?.reservationId ?? workflow?.boundReservationId;
+    if (
+      reservationId &&
+      (!this.prepareFederationDispatch ||
+        !input.executionLease ||
+        input.executionLease.runId !== workflow?.runId)
+    )
+      throw new WorkflowExecutionInterrupted(
+        "Federation installation authorization is unavailable",
+        {
+          retryable: false,
+        },
+      );
+    const federationFence =
+      reservationId && workflow
+        ? await this.prepareFederationDispatch?.(workflow.runId)
+        : undefined;
+    const authorizeWorkflow = async (tx: PgTransaction) => {
+      const current = await installationWorkflowScope(tx, input.jobId);
+      if (
+        current?.runId !== workflow?.runId ||
+        current?.reservationId !== workflow?.reservationId ||
+        current?.boundReservationId !== workflow?.boundReservationId
+      )
+        throw new WorkflowExecutionInterrupted("Installation workflow binding changed", {
+          retryable: false,
+        });
+      if (reservationId) {
+        if (
+          !input.expectedPin ||
+          !current?.intent.spackExecution?.pin ||
+          normalizeSoftwareOperationSpec(current.intent.spackExecution.spec) !== input.spec ||
+          federationCanonicalJson(current.intent.spackExecution.pin) !==
+            federationCanonicalJson(input.expectedPin)
+        )
+          throw new WorkflowExecutionInterrupted(
+            "Federation installation requires its saved software pin",
+            {
+              retryable: false,
+            },
+          );
+        await federationFence?.(tx);
+      }
+    };
     if (input.executionLease) {
       if (!this.dispatcher.isOnline(input.agentId))
         throw new WorkflowExecutionInterrupted("Original installation Agent is offline");
@@ -369,6 +420,7 @@ export class SoftwareOperationService {
             { retryable: false },
           );
       }
+      await authorizeWorkflow(tx);
       await tx.execute(
         sql`select pg_advisory_xact_lock(hashtextextended(${`software-install:${input.agentId}:${input.spec}`}, 0))`,
       );
@@ -489,6 +541,7 @@ export class SoftwareOperationService {
         input.executionLease,
         input.jobId,
         input.expectedPin,
+        authorizeWorkflow,
       );
     }
     return result.created
@@ -501,6 +554,7 @@ export class SoftwareOperationService {
     lease: LeasedWorkflowJournal,
     jobId: string,
     expectedPin?: SpackExecutionPin,
+    authorizeWorkflow?: (tx: PgTransaction) => Promise<void>,
   ): Promise<SoftwareOperationView> {
     const active = ["queued", "running"];
     if (!active.includes(operation.status)) return rowToView(operation);
@@ -584,6 +638,7 @@ export class SoftwareOperationService {
           .update(softwareOperations)
           .set({ manifestDigest: ticket.spackManifestDigest })
           .where(eq(softwareOperations.id, current.id));
+        await authorizeWorkflow?.(tx);
         // The verified Agent records this identity before executing; a lost commit may resend it.
         pushSoftwareOperationSafely(this.dispatcher, due.agentId, {
           operationId: due.id,
@@ -1036,4 +1091,22 @@ function rowToView(row: typeof softwareOperations.$inferSelect): SoftwareOperati
     finishedAt: row.finishedAt?.toISOString() ?? null,
     updatedAt: row.updatedAt.toISOString(),
   };
+}
+
+async function installationWorkflowScope(db: PgDb | PgTransaction, jobId: string) {
+  const [row] = await db
+    .select({
+      runId: workflowExecutionJobs.runId,
+      intent: workflowExecutionJobs.intent,
+      input: workflowRuns.input,
+      boundReservationId: federationWorkflowBindings.reservationId,
+    })
+    .from(workflowExecutionJobs)
+    .innerJoin(workflowRuns, eq(workflowRuns.id, workflowExecutionJobs.runId))
+    .leftJoin(
+      federationWorkflowBindings,
+      eq(federationWorkflowBindings.workflowRunId, workflowRuns.id),
+    )
+    .where(eq(workflowExecutionJobs.jobId, jobId));
+  return row ? { ...row, reservationId: row.input?.federationReservationId } : undefined;
 }

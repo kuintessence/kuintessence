@@ -439,6 +439,16 @@ const softwareOperations = new SoftwareOperationService(
       throw new AppError(ErrorCode.FORBIDDEN, "Agent operation permission denied", 403);
     }
   },
+  async (runId) => {
+    if (!federationDispatchAuthorization)
+      throw new WorkflowExecutionInterrupted(
+        "Federation installation authorization is unavailable",
+        {
+          retryable: false,
+        },
+      );
+    return federationDispatchAuthorization.prepare(runId);
+  },
 );
 const metricsRecorder = new PgAgentMetricsRecorder(db);
 const queueObservability = new QueueObservabilityService(db, queueInventory);
