@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { clone, equals } from "@bufbuild/protobuf";
 import {
   dataAccessPolicies,
@@ -29,6 +30,8 @@ import { DataDeliveryResolver, type ResolvedDataDelivery } from "../services/dat
 import { PgDataPrerequisiteRepository } from "../services/data-prerequisite-repository-drizzle";
 import { factsRequireRestrictedNoEgress } from "../services/restricted-no-egress";
 
+import { assertNetdriveSnapshots } from "./netdrive-inputs";
+
 export interface PreparedFederationDataDispatch {
   message: ServerMessage;
   authorize: (tx: PgTransaction) => Promise<void>;
@@ -46,6 +49,9 @@ export class FederationDataDispatch {
         throw new WorkflowExecutionInterrupted("Immutable object storage is unavailable");
       },
     },
+    private readonly renewNetdriveUrl?: (
+      storageKey: string,
+    ) => Promise<{ sourceUrl: string; expiresAt: number }>,
   ) {}
 
   async prepare(agentId: string, message: ServerMessage): Promise<PreparedFederationDataDispatch> {
@@ -68,6 +74,20 @@ export class FederationDataDispatch {
     const bindings = await this.bindings(this.db, input.jobId);
     const deliveries = await this.resolver(this.db).resolveForDispatch(input, { locations });
     const refreshed = refreshDataCredentials(message, deliveries);
+    if (refreshed.payload.case !== "dispatchJob") throw new Error("Expected dispatch");
+    const netdrive = refreshed.payload.value.inputStaging.filter((input) => input.netdriveInput);
+    const files = await assertNetdriveSnapshots(this.db, netdrive, input.actorUserId);
+    for (const staged of netdrive) {
+      const file = files.find((file) => file.id === staged.fileMetadataId);
+      if (!file || !this.renewNetdriveUrl)
+        throw new WorkflowExecutionInterrupted("NetDrive URL renewal is unavailable");
+      const next = await this.renewNetdriveUrl(file.storageKey);
+      if (!Number.isSafeInteger(next.expiresAt) || next.expiresAt <= Date.now())
+        throw new WorkflowExecutionInterrupted("NetDrive URL renewal has expired");
+      staged.sourceUrl = next.sourceUrl;
+      staged.deliveryLeaseId = randomUUID();
+      staged.deliveryLeaseExpiresAtUnixMs = BigInt(next.expiresAt);
+    }
     return {
       message: refreshed,
       authorize: async (tx) => {
@@ -86,6 +106,14 @@ export class FederationDataDispatch {
           currentJob.revokedEpoch >= currentJob.dispatchEpoch
         )
           rejectDataDispatch();
+        const currentFiles = await assertNetdriveSnapshots(tx, netdrive, input.actorUserId, true);
+        if (
+          currentFiles.some(
+            (file) =>
+              files.find((original) => original.id === file.id)?.storageKey !== file.storageKey,
+          )
+        )
+          throw new WorkflowExecutionInterrupted("NetDrive object moved during URL renewal");
         const currentBindings = await this.bindings(tx, input.jobId, true);
         if (JSON.stringify(currentBindings) !== JSON.stringify(bindings)) rejectDataDispatch();
         if (deliveries.length === 0) {
@@ -265,11 +293,13 @@ export function refreshDataCredentials(
   if (
     dispatch.inputStaging.some(
       (input, index) =>
-        (input.deliveryLeaseId || input.deliveryLeaseExpiresAtUnixMs !== 0n) && !staged.has(index),
+        !input.netdriveInput &&
+        (input.deliveryLeaseId || input.deliveryLeaseExpiresAtUnixMs !== 0n) &&
+        !staged.has(index),
     )
   )
     rejectDataDispatch();
-  assertFreshDataCredentials(refreshed);
+  assertFreshDataCredentials(refreshed, true);
   return refreshed;
 }
 
@@ -300,14 +330,17 @@ function sameResolvedData(
   return JSON.stringify(stable(left)) === JSON.stringify(stable(right));
 }
 
-export function assertFreshDataCredentials(message: ServerMessage): void {
+export function assertFreshDataCredentials(message: ServerMessage, pendingNetdrive = false): void {
   if (message.payload.case !== "dispatchJob") throw new Error("Expected a dispatch");
   const dispatch = message.payload.value;
   const now = BigInt(Date.now());
   if (
     dispatch.dataDeliveries.some((item) => !item.leaseId || item.leaseExpiresAtUnixMs <= now) ||
     dispatch.inputStaging.some(
-      (item) => item.deliveryLeaseId && item.deliveryLeaseExpiresAtUnixMs <= now,
+      (item) =>
+        !(pendingNetdrive && item.netdriveInput) &&
+        item.deliveryLeaseId &&
+        item.deliveryLeaseExpiresAtUnixMs <= now,
     )
   )
     throw new WorkflowExecutionInterrupted("Dispatch credentials need renewal");
@@ -424,7 +457,9 @@ export async function assertRunningDataBindings(
     deliveries.size ||
     dispatch.inputStaging.some(
       (input, index) =>
-        (input.deliveryLeaseId || input.deliveryLeaseExpiresAtUnixMs !== 0n) && !staged.has(index),
+        !input.netdriveInput &&
+        (input.deliveryLeaseId || input.deliveryLeaseExpiresAtUnixMs !== 0n) &&
+        !staged.has(index),
     )
   )
     reject();

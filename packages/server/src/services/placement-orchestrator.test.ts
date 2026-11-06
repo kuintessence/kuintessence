@@ -23,7 +23,11 @@ import { PreferenceService } from "../preferences/preference-service";
 import { AgentManager } from "./agent-manager";
 import { DataPrerequisitePlacementGate, DataPrerequisitePlanner } from "./data-prerequisite";
 import { JobService } from "./job-service";
-import { availabilityRequestForRequirement, PlacementOrchestrator } from "./placement-orchestrator";
+import {
+  availabilityRequestForRequirement,
+  type InputUrlResolver,
+  PlacementOrchestrator,
+} from "./placement-orchestrator";
 import { QueueInventoryService } from "./queue-inventory";
 import { type QueueAccessContext, QueueRegistryService } from "./queue-registry";
 
@@ -1215,12 +1219,7 @@ describe("PlacementOrchestrator", () => {
     });
     const ch = mockChannel();
     dispatcher.register("po-agent-1", ch);
-    const resolved: Array<{
-      jobId: string;
-      actorUserId: string;
-      workflowRunId?: string;
-      files: Array<{ fileMetadataId: string; stagePath: string }>;
-    }> = [];
+    const resolved: Parameters<InputUrlResolver>[0][] = [];
     orchestrator.setInputUrlResolver(async (input) => {
       resolved.push(input);
       throw new Error("presign denied");
@@ -1261,6 +1260,7 @@ describe("PlacementOrchestrator", () => {
         jobId: job.id,
         workflowRunId: "00000000-0000-4000-8000-000000000102",
         actorUserId: userId,
+        federation: false,
         files: [
           { fileMetadataId: "fm-1", stagePath: "inputs/data-a" },
           { fileMetadataId: "fm-revoked", stagePath: "inputs/data-b" },

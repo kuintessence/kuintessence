@@ -145,7 +145,10 @@ export class DataDeliveryExecutor {
     prepared: PreparedDataDelivery[],
   ): Promise<void> {
     const method = deliveryMethod(binding);
-    const stageRoot = resolveTarget(jobRoot, binding.stagePath);
+    const stageRoot =
+      method === "object-download" && binding.stagePath === "."
+        ? jobRoot
+        : resolveTarget(jobRoot, binding.stagePath);
     if (!binding.bindingId || !binding.versionId || !binding.manifestDigest) {
       throw new Error("Data delivery binding is missing immutable identifiers");
     }

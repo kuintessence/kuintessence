@@ -402,6 +402,7 @@ export function registerAgentHandler(router: ConnectRouter, deps: AgentHandlerDe
         federationSandboxSignatureRenewalV1: false,
         federationSandboxInputLeaseV1: false,
         federationDataPreparationLeaseV1: false,
+        federationNetdriveInputLeaseV1: false,
         federationInstallationV1: false,
         federationInstallationLeaseV1: false,
         federationInstallationMaterialLeaseV1: false,
@@ -523,6 +524,7 @@ export function registerAgentHandler(router: ConnectRouter, deps: AgentHandlerDe
               channel.federationSandboxSignatureRenewalV1 = reg.federationSandboxSignatureRenewalV1;
               channel.federationSandboxInputLeaseV1 = reg.federationSandboxInputLeaseV1;
               channel.federationDataPreparationLeaseV1 = reg.federationDataPreparationLeaseV1;
+              channel.federationNetdriveInputLeaseV1 = reg.federationNetdriveInputLeaseV1;
               channel.federationInstallationV1 = reg.federationInstallationV1;
               channel.federationInstallationLeaseV1 = reg.federationInstallationLeaseV1;
               channel.federationInstallationMaterialLeaseV1 =

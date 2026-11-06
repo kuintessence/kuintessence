@@ -25,6 +25,7 @@ import type { FederationDeliveryTarget } from "./dispatch-authorization";
 import { loadFederationWorkflowBinding } from "./execution-binding";
 import { matchesFederationTarget } from "./execution-targets";
 import { checkFederationLicensedMaterials } from "./licensed-material-authorization";
+import { checkFederationNetdriveJob } from "./netdrive-inputs";
 import { checkFederationSandboxJob } from "./sandbox-authorization";
 import { prepareFederationSoftware } from "./software-authorization";
 
@@ -106,6 +107,7 @@ export async function checkFederationExecutionPolicy(
       await checkFederationLicensedMaterials(db, job.id, intent, identity, target);
     });
     await inspect(() => checkFederationJobData(db, job.id, identity));
+    await inspect(() => checkFederationNetdriveJob(db, job.id, intent, identity));
     await inspect(() =>
       checkFederationSandboxJob(
         db,

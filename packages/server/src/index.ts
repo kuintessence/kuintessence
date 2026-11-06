@@ -1817,7 +1817,10 @@ if (config.NETDRIVE_ENABLED) {
   const dataDeliveryResolver = new DataDeliveryResolver(db, minioBackend, {
     verifyAccess: (input) => dataPrerequisiteRepository.verifyAccess(input),
   });
-  federationDataDispatch = new FederationDataDispatch(db, minioBackend);
+  federationDataDispatch = new FederationDataDispatch(db, minioBackend, async (key) => {
+    const expiresAt = Date.now() + 60_000;
+    return { sourceUrl: await minioBackend.presignDownload(key, 60), expiresAt };
+  });
   orchestrator.setDataDeliveryResolver((input) => dataDeliveryResolver.resolveForDispatch(input));
   if (sandboxManifestSigner) {
     const restrictedSandboxDeliveryBinder = new RestrictedSandboxDeliveryBinder(
@@ -1846,21 +1849,39 @@ if (config.NETDRIVE_ENABLED) {
       stageOne(agentId, actorUserId, file, targetPath, { jobId, workflowRunId }),
     ),
   );
-  orchestrator.setInputUrlResolver(async ({ jobId, workflowRunId, actorUserId, files }) =>
-    Promise.all(
-      files.map(async (file) => {
-        const { downloadUrl } = await mintAuthorizedNetDriveDownload(
-          actorUserId,
-          file.fileMetadataId,
-          {
-            jobId,
-            workflowRunId,
-            netdriveFileIds: [file.fileMetadataId],
-          },
-        );
-        return { ...file, sourceUrl: downloadUrl };
-      }),
-    ),
+  orchestrator.setInputUrlResolver(
+    async ({ jobId, workflowRunId, actorUserId, files, federation }) =>
+      Promise.all(
+        files.map(async (file) => {
+          const snapshot = federation
+            ? await netdriveService.getFile(actorUserId, file.fileMetadataId)
+            : undefined;
+          if (federation && !snapshot)
+            throw new Error("Federation NetDrive input must belong to its execution identity");
+          const { downloadUrl, expiresAt } = await mintAuthorizedNetDriveDownload(
+            actorUserId,
+            file.fileMetadataId,
+            {
+              jobId,
+              workflowRunId,
+              netdriveFileIds: [file.fileMetadataId],
+            },
+          );
+          return {
+            ...file,
+            sourceUrl: downloadUrl,
+            ...(snapshot
+              ? {
+                  netdriveInput: true,
+                  expectedSha256: snapshot.sha256,
+                  expectedSizeBytes: snapshot.size,
+                  deliveryLeaseId: crypto.randomUUID(),
+                  deliveryLeaseExpiresAtUnixMs: Date.parse(expiresAt),
+                }
+              : {}),
+          };
+        }),
+      ),
   );
   transferRunner = new TransferRunner({
     db,

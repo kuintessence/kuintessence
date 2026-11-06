@@ -752,3 +752,45 @@ test("Data Market preparation requires advertised authority support only before 
   expect(dispatcher.pushPreparedDispatch("agent", message)).toBe(true);
   expect(channel.messages).toHaveLength(2);
 });
+
+test("NetDrive preparation requires advertised authority support and verified transport", () => {
+  const dispatcher = new AgentDispatcher();
+  const channel = {
+    ...mockChannel(),
+    federationExecutionV1: true,
+    federationComputeLeaseV1: true,
+    federationNetdriveInputLeaseV1: false,
+    verifiedCertFingerprint: "verified",
+  };
+  dispatcher.register("agent", channel);
+  const message = dispatcher.buildDispatchJob("job", {
+    jobIdInternal: "job",
+    name: "NetDrive",
+    command: "true",
+    resources: { cpus: 1, memoryMb: 128 },
+    federationExecution: true,
+    inputStaging: [
+      {
+        fileMetadataId: crypto.randomUUID(),
+        stagePath: "input.txt",
+        sourceUrl: "https://objects.test/input",
+        netdriveInput: true,
+        expectedSha256: "a".repeat(64),
+        expectedSizeBytes: 4,
+        deliveryLeaseId: crypto.randomUUID(),
+        deliveryLeaseExpiresAtUnixMs: Date.now() + 60_000,
+      },
+    ],
+  });
+  expect(dispatcher.pushPreparedDispatch("agent", message)).toBe(false);
+  channel.federationNetdriveInputLeaseV1 = true;
+  expect(dispatcher.pushPreparedDispatch("agent", message)).toBe(true);
+  expect(channel.messages[0]?.payload.value).toMatchObject({
+    inputStaging: [expect.objectContaining({ expectedSizeBytes: 4n, netdriveInput: true })],
+  });
+  channel.verifiedCertFingerprint = "";
+  expect(dispatcher.pushPreparedDispatch("agent", message)).toBe(false);
+  if (message.payload.case !== "dispatchJob") throw new Error("Missing dispatch");
+  message.payload.value.federationExecution = false;
+  expect(dispatcher.pushPreparedDispatch("agent", message)).toBe(true);
+});

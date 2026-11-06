@@ -18,6 +18,7 @@ import { federationExecutionSnapshot, loadFederationWorkflowBinding } from "./ex
 import { checkFederationExecutionPolicy, checkFederationJobData } from "./execution-policy";
 import { lockFederationTarget, resolveFederationTargets } from "./execution-targets";
 import { checkFederationLicensedMaterials } from "./licensed-material-authorization";
+import { checkFederationNetdriveJob } from "./netdrive-inputs";
 import type { FederationPreparationService } from "./preparation";
 import { checkFederationSandboxJob } from "./sandbox-authorization";
 import { prepareFederationSoftware } from "./software-authorization";
@@ -228,6 +229,14 @@ export class FederationDispatchAuthorization {
               tx,
               binding.snapshot.environment.sandboxRuntime,
             ),
+          );
+        if (delivery.kind === "compute")
+          await checkFederationNetdriveJob(
+            tx,
+            delivery.jobId,
+            job.intent,
+            binding.snapshot.identity,
+            true,
           );
         if (delivery.kind === "compute")
           expiresAtUnixMs = Math.min(

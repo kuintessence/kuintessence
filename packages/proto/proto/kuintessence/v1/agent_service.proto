@@ -228,6 +228,7 @@ message RegisterRequest {
   bool federation_data_preparation_lease_v1 = 28;
   // Renews material tickets and stops installation downloads on expired authority.
   bool federation_installation_material_lease_v1 = 29;
+  bool federation_netdrive_input_lease_v1 = 30;
 }
 
 message RegisterResponse {
@@ -626,6 +627,10 @@ message InputStaging {
   string source_url = 3;
   string delivery_lease_id = 4;
   int64 delivery_lease_expires_at_unix_ms = 5;
+  string expected_sha256 = 6;
+  int64 expected_size_bytes = 7;
+  // Pins a NetDrive file separately from a Data Market delivery binding.
+  bool netdrive_input = 8;
 }
 
 // P4-f: one output the agent is expected to surface after the run.

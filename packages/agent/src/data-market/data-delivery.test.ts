@@ -9,6 +9,7 @@ import {
   DataDeliveryBindingSchema,
   DataDeliveryEntrySchema,
   DataDeliveryMethod,
+  InputStagingSchema,
 } from "@kuintessence/proto";
 import { ExecutionAuthorization } from "../execution-authorization";
 import {
@@ -17,6 +18,7 @@ import {
   type TrustedReadonlyMountDriver,
 } from "./data-delivery";
 import { AgentDataRoots } from "./local-data-security";
+import { netdriveDeliveries } from "./netdrive-inputs";
 
 const temporaryRoots: string[] = [];
 
@@ -448,4 +450,38 @@ test.each([
     ["umount", "/managed/input"],
     ["mountpoint", "-q", "--", "/managed/input"],
   ]);
+});
+
+test.each([
+  "valid",
+  "hash",
+  "size",
+] as const)("NetDrive materialization verifies %s and cleans root and nested inputs", async (mode) => {
+  const { roots, jobRoot } = await fixture();
+  const executor = new DataDeliveryExecutor({
+    roots,
+    fetchImpl: (async () => new Response("data")) as unknown as typeof fetch,
+  });
+  const bindings = netdriveDeliveries(
+    ["input.txt", "nested/input.txt"].map((stagePath, index) =>
+      create(InputStagingSchema, {
+        fileMetadataId: crypto.randomUUID(),
+        netdriveInput: true,
+        stagePath,
+        expectedSha256: mode === "hash" && index === 1 ? "f".repeat(64) : digest("data"),
+        expectedSizeBytes: mode === "size" && index === 1 ? 5n : 4n,
+        sourceUrl: "https://objects.test/input",
+        deliveryLeaseId: crypto.randomUUID(),
+        deliveryLeaseExpiresAtUnixMs: BigInt(Date.now() + 60_000),
+      }),
+    ),
+  );
+  if (mode === "valid") {
+    await executor.prepare("netdrive-job", bindings);
+    expect(await readFile(join(jobRoot, "netdrive-job/input.txt"), "utf8")).toBe("data");
+    expect(await readFile(join(jobRoot, "netdrive-job/nested/input.txt"), "utf8")).toBe("data");
+    await executor.release("netdrive-job");
+  } else await expect(executor.prepare("netdrive-job", bindings)).rejects.toThrow();
+  await expect(readFile(join(jobRoot, "netdrive-job/input.txt"))).rejects.toThrow();
+  await expect(readFile(join(jobRoot, "netdrive-job/nested/input.txt"))).rejects.toThrow();
 });

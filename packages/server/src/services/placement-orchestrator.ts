@@ -75,8 +75,9 @@ export type InputUrlResolver = (args: {
   jobId: string;
   workflowRunId?: string;
   actorUserId: string;
+  federation?: boolean;
   files: { fileMetadataId: string; stagePath: string }[];
-}) => Promise<Array<{ fileMetadataId: string; stagePath: string; sourceUrl: string }>>;
+}) => Promise<DispatchInputStaging[]>;
 
 export type DispatchInputStaging = {
   fileMetadataId: string;
@@ -84,6 +85,9 @@ export type DispatchInputStaging = {
   sourceUrl?: string;
   deliveryLeaseId?: string;
   deliveryLeaseExpiresAtUnixMs?: number;
+  expectedSha256?: string;
+  expectedSizeBytes?: number;
+  netdriveInput?: boolean;
 };
 
 export interface PlaceAndDispatchInput {
@@ -785,7 +789,7 @@ export class PlacementOrchestrator {
     }
     let dispatchInputStaging: DispatchInputStaging[] | undefined = job.inputStaging;
     const needsDispatchInputUrls =
-      files.length > 0 && (sandboxExecution !== undefined || !job.workingDir);
+      files.length > 0 && (Boolean(scoped) || sandboxExecution !== undefined || !job.workingDir);
     if (needsDispatchInputUrls) {
       if (!this.inputUrlResolver) {
         const reason = "Artifact inputs require signed NetDrive download URLs";
@@ -797,6 +801,7 @@ export class PlacementOrchestrator {
           jobId,
           workflowRunId,
           actorUserId: userId,
+          federation: Boolean(scoped),
           files,
         });
       } catch (err) {

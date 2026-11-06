@@ -307,7 +307,8 @@ async function checkSandboxFiles(
   )
     throw new FederationError("OPERATION_CONFLICT");
   const staged = dispatch.inputStaging.filter(
-    (input) => !input.deliveryLeaseId && input.deliveryLeaseExpiresAtUnixMs === 0n,
+    (input) =>
+      input.netdriveInput || (!input.deliveryLeaseId && input.deliveryLeaseExpiresAtUnixMs === 0n),
   );
   if (
     staged.length !== intent.inputStaging.length ||

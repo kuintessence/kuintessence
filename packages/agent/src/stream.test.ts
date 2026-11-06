@@ -9606,11 +9606,13 @@ test.each([
   }
 });
 
-for (const kind of ["Sandbox", "Data Market"] as const)
+for (const kind of ["Sandbox", "Data Market", "NetDrive"] as const)
   test.each(
     kind === "Sandbox"
       ? (["long", "offline", "denied"] as const)
-      : (["long", "offline", "denied", "late"] as const),
+      : kind === "NetDrive"
+        ? (["long", "offline", "denied", "late", "completed"] as const)
+        : (["long", "offline", "denied", "late"] as const),
   )(`${kind} preparation maintains authority and handles %s renewal`, async (mode) => {
     const db = createSqliteDb(":memory:");
     const original = create(DispatchJobSchema, {
@@ -9655,11 +9657,23 @@ for (const kind of ["Sandbox", "Data Market"] as const)
         }),
       ];
     }
+    if (kind === "NetDrive") {
+      original.sandboxExecution = undefined;
+      original.workingDir = "/unmanaged/original";
+      original.command = "cat inputs/data";
+      const input = original.inputStaging[0];
+      if (!input) throw new Error("Missing input");
+      input.fileMetadataId = crypto.randomUUID();
+      input.netdriveInput = true;
+      input.expectedSha256 = "a".repeat(64);
+      input.expectedSizeBytes = 1n;
+    }
     let released = 0;
     let requests = 0,
       attempts = 0,
       advertised = false;
     const reports: JobStatusReport[] = [];
+    const submitted: JobSpec[] = [];
     const stream = new AgentStream({
       client: makePendingRegisteredClient(false, false, {
         supported: true,
@@ -9668,7 +9682,9 @@ for (const kind of ["Sandbox", "Data Market"] as const)
             advertised =
               kind === "Sandbox"
                 ? message.payload.value.federationSandboxInputLeaseV1
-                : message.payload.value.federationDataPreparationLeaseV1;
+                : kind === "NetDrive"
+                  ? message.payload.value.federationNetdriveInputLeaseV1
+                  : message.payload.value.federationDataPreparationLeaseV1;
           if (message.payload.case !== "federationExecutionRequest") return;
           requests++;
           if ((mode === "offline" || mode === "late") && requests === (kind === "Sandbox" ? 2 : 3))
@@ -9714,19 +9730,27 @@ for (const kind of ["Sandbox", "Data Market"] as const)
         },
       }),
       adapter: makeAdapter({
-        submit: async () => {
-          throw new Error("Must not submit during download test");
+        submit: async (spec) => {
+          if (mode !== "completed") throw new Error("Must not submit during download test");
+          submitted.push(spec);
+          return { schedulerJobId: "netdrive-scheduler-job" };
         },
       }),
       agentId: "agent",
       siteName: "site",
       logger: silent,
       heartbeatIntervalMs: 60_000,
+      jobSleep: async () => {},
+      stageInputFile: async () => {
+        throw new Error("Federated NetDrive must use verified delivery");
+      },
       inboundAcks: new InboundAcks(db),
       activeRemoteJobs: new ActiveRemoteJobs(db),
       cleanupIntents: new JobCleanupIntents(db),
       revocationTombstones: new JobRevocationTombstones(db),
       assertFederationRuntimeWatchdog: async () => {},
+      prepareJobWorkRoot: async (jobId) => `/managed/${jobId}`,
+      removeJobWorkRoot: async () => {},
       dataDeliveryExecutor: {
         release: async () => {
           released++;
@@ -9739,6 +9763,15 @@ for (const kind of ["Sandbox", "Data Market"] as const)
           expect(binding.selectedEntries[0]?.objectDownloadUrl).toBe(
             `https://objects.test/renewed-${requests}`,
           );
+          if (mode === "completed")
+            return [
+              {
+                bindingId: binding.bindingId,
+                targetPath: `/managed/${original.jobId}/inputs/data`,
+                method: "object-download",
+                protectedPath: false,
+              },
+            ];
           if (mode === "late" && attempts === 1) {
             await delay(900);
             return [];
@@ -9781,13 +9814,27 @@ for (const kind of ["Sandbox", "Data Market"] as const)
         stream,
         create(ServerMessageSchema, { payload: { case: "dispatchJob", value: original } }),
       );
-      await waitForCondition(() => reports.some((report) => report.status === "failed"));
+      await waitForCondition(() =>
+        reports.some((report) => report.status === (mode === "completed" ? "completed" : "failed")),
+      );
       expect(advertised).toBe(true);
       expect(attempts).toBe(mode === "offline" || mode === "late" ? 2 : 1);
       expect(requests).toBeGreaterThan(1);
-      expect(reports.find((report) => report.status === "failed")?.message).toContain(
-        mode === "denied" ? "renewal failed" : "test completed",
-      );
+      if (mode === "completed") {
+        expect(submitted).toHaveLength(1);
+        expect(submitted[0]).toMatchObject({
+          workingDir: `/managed/${original.jobId}`,
+          command: "cat inputs/data",
+          dataDeliveryCleanup: [
+            expect.objectContaining({ targetPath: `/managed/${original.jobId}/inputs/data` }),
+          ],
+        });
+      } else {
+        expect(submitted).toHaveLength(0);
+        expect(reports.find((report) => report.status === "failed")?.message).toContain(
+          mode === "denied" ? "renewal failed" : "test completed",
+        );
+      }
     } finally {
       await stream.stop();
       await running;

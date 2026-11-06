@@ -1,6 +1,6 @@
 import { afterAll, expect, spyOn, test } from "bun:test";
 import { randomUUID } from "node:crypto";
-import { toBinary } from "@bufbuild/protobuf";
+import { fromBinary, toBinary } from "@bufbuild/protobuf";
 import {
   agents,
   clusterExecutionAccounts,
@@ -563,6 +563,7 @@ test.each([
   "delete",
   "hash",
   "owner",
+  "renewable",
 ] as const)("Sandbox file authorization is retained and rejects %s after dispatch", async (change) => {
   const f = await fixture();
   const otherUser = randomUUID();
@@ -592,6 +593,29 @@ test.each([
       required: true,
     });
     await f.persist();
+    if (change === "renewable") {
+      const [saved] = await db
+        .select()
+        .from(jobDispatchOutbox)
+        .where(eq(jobDispatchOutbox.jobId, f.jobId));
+      if (!saved) throw new Error("Missing outbox");
+      const message = fromBinary(ServerMessageSchema, Buffer.from(saved.payloadBase64, "base64"));
+      if (message.payload.case !== "dispatchJob" || !message.payload.value.inputStaging[0])
+        throw new Error("Missing input");
+      Object.assign(message.payload.value.inputStaging[0], {
+        netdriveInput: true,
+        expectedSha256: file.sha256,
+        expectedSizeBytes: 4n,
+        deliveryLeaseId: randomUUID(),
+        deliveryLeaseExpiresAtUnixMs: 1n,
+      });
+      await db
+        .update(jobDispatchOutbox)
+        .set({
+          payloadBase64: Buffer.from(toBinary(ServerMessageSchema, message)).toString("base64"),
+        })
+        .where(eq(jobDispatchOutbox.jobId, f.jobId));
+    }
     await db.transaction(async (tx) => {
       await f.check(tx);
       await expect(

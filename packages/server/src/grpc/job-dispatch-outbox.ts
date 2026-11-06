@@ -301,6 +301,13 @@ export class JobDispatchOutbox {
       throw new WorkflowExecutionInterrupted(
         "Agent does not support Data Market preparation leases",
       );
+    if (
+      reservationId &&
+      !running &&
+      originalDispatch.inputStaging.some((input) => input.netdriveInput) &&
+      !this.dispatcher.supportsFederationNetdriveInputLease(identity.agentId)
+    )
+      throw new WorkflowExecutionInterrupted("Agent does not support NetDrive input leases");
     const authorize =
       reservationId && identity.runId
         ? await this.prepareFederationDispatch?.(identity.runId, {

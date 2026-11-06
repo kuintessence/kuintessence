@@ -154,6 +154,7 @@ export interface AgentChannel {
   federationSandboxSignatureRenewalV1?: boolean;
   federationSandboxInputLeaseV1?: boolean;
   federationDataPreparationLeaseV1?: boolean;
+  federationNetdriveInputLeaseV1?: boolean;
   federationInstallationV1?: boolean;
   federationInstallationLeaseV1?: boolean;
   federationInstallationMaterialLeaseV1?: boolean;
@@ -248,6 +249,12 @@ export class AgentDispatcher {
       return false;
     if (
       message.payload.value.federationExecution &&
+      message.payload.value.inputStaging.some((input) => input.netdriveInput) &&
+      !this.supportsFederationNetdriveInputLease(agentId)
+    )
+      return false;
+    if (
+      message.payload.value.federationExecution &&
       message.payload.value.dataDeliveries.length > 0 &&
       !this.supportsFederationDataPreparationLease(agentId)
     )
@@ -297,6 +304,13 @@ export class AgentDispatcher {
     );
   }
 
+  supportsFederationNetdriveInputLease(agentId: string): boolean {
+    return (
+      this.supportsFederationExecution(agentId) &&
+      this.getChannel(agentId)?.federationNetdriveInputLeaseV1 === true
+    );
+  }
+
   supportsFederationDataPreparationLease(agentId: string): boolean {
     return (
       this.supportsFederationExecution(agentId) &&
@@ -329,7 +343,7 @@ export class AgentDispatcher {
 
   buildDispatchJob(
     jobId: string,
-    job: JobSubmit & {
+    job: Omit<JobSubmit, "inputStaging"> & {
       jobIdInternal: string;
       dispatchEpoch?: number;
       queueName?: string;
@@ -354,6 +368,9 @@ export class AgentDispatcher {
         sourceUrl?: string;
         deliveryLeaseId?: string;
         deliveryLeaseExpiresAtUnixMs?: number;
+        expectedSha256?: string;
+        expectedSizeBytes?: number;
+        netdriveInput?: boolean;
       }>;
       dataDeliveries?: ResolvedDataDelivery[];
       federationExecution?: boolean;
@@ -374,19 +391,18 @@ export class AgentDispatcher {
           wallTimeSec: BigInt(job.resources.wallTimeSec ?? 0),
           workingDir: job.workingDir ?? "",
           envVars: job.envVars ?? {},
-          inputStaging: (job.inputStaging ?? []).map((input) => {
-            const staged = input as typeof input & {
-              deliveryLeaseId?: string;
-              deliveryLeaseExpiresAtUnixMs?: number;
-            };
-            return create(InputStagingSchema, {
-              fileMetadataId: staged.fileMetadataId,
-              stagePath: staged.stagePath,
-              sourceUrl: staged.sourceUrl ?? "",
-              deliveryLeaseId: staged.deliveryLeaseId ?? "",
-              deliveryLeaseExpiresAtUnixMs: BigInt(staged.deliveryLeaseExpiresAtUnixMs ?? 0),
-            });
-          }),
+          inputStaging: (job.inputStaging ?? []).map((input) =>
+            create(InputStagingSchema, {
+              fileMetadataId: input.fileMetadataId,
+              stagePath: input.stagePath,
+              sourceUrl: input.sourceUrl ?? "",
+              deliveryLeaseId: input.deliveryLeaseId ?? "",
+              deliveryLeaseExpiresAtUnixMs: BigInt(input.deliveryLeaseExpiresAtUnixMs ?? 0),
+              expectedSha256: input.expectedSha256 ?? "",
+              expectedSizeBytes: BigInt(input.expectedSizeBytes ?? 0),
+              netdriveInput: input.netdriveInput ?? false,
+            }),
+          ),
           expectedOutputs: (job.expectedOutputs ?? []).map((output) => ({
             ...output,
             pathsOnly: output.pathsOnly ?? false,

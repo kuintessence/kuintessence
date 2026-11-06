@@ -78,6 +78,7 @@ import type {
   CpLocalDataScanRequest,
   CpLocalDataScanResult,
 } from "./data-market/data-scan";
+import { netdriveDeliveries } from "./data-market/netdrive-inputs";
 import { ExecutorPool } from "./embedded/executor-pool";
 import type { JobStatusReport } from "./embedded/job-executor";
 import { ExecutionAuthorization, ExecutionAuthorizationExpired } from "./execution-authorization";
@@ -1979,6 +1980,11 @@ export class AgentStream {
             this.federationExecutionCapable() && !!this.deps.sandboxProcessor,
           federationDataPreparationLeaseV1:
             this.federationExecutionCapable() && !!this.deps.dataDeliveryExecutor,
+          federationNetdriveInputLeaseV1:
+            this.federationExecutionCapable() &&
+            !!this.deps.dataDeliveryExecutor &&
+            !!this.deps.prepareJobWorkRoot &&
+            !!this.deps.removeJobWorkRoot,
           federationInstallationV1: this.federationInstallationCapable(),
           federationInstallationLeaseV1: this.federationInstallationCapable(),
           federationInstallationMaterialLeaseV1: this.federationInstallationCapable(),
@@ -4212,10 +4218,21 @@ export class AgentStream {
         this.spackActivations.delete(spec.jobId);
       }
     }
+    const federatedNetdrive =
+      dispatch.federationExecution &&
+      !dispatch.sandboxExecution &&
+      dispatch.inputStaging.length > 0;
+    const deliveries = (current: DispatchJob) =>
+      federatedNetdrive ? netdriveDeliveries(current.inputStaging) : current.dataDeliveries;
+    if (
+      federatedNetdrive &&
+      (dispatch.dataDeliveries.length || dispatch.licensedMaterialMounts.length)
+    )
+      throw new Error("NetDrive inputs cannot mix with other managed material deliveries");
     const hasSpecializedManagedRoot =
       dispatch.dataDeliveries.length > 0 || dispatch.licensedMaterialMounts.length > 0;
     const requiresImplicitFileWorkRoot =
-      !spec.workingDir &&
+      (federatedNetdrive || !spec.workingDir) &&
       !hasSpecializedManagedRoot &&
       (dispatch.inputStaging.length > 0 ||
         dispatch.fileOutputDescriptors.length > 0 ||
@@ -4233,21 +4250,21 @@ export class AgentStream {
       this.managedWorkRootsAwaitingServerRelease.add(spec.jobId);
     }
     const deliveryExecutor = this.deps.dataDeliveryExecutor;
-    if (dispatch.dataDeliveries.length > 0 && !deliveryExecutor) {
+    if ((federatedNetdrive || dispatch.dataDeliveries.length > 0) && !deliveryExecutor) {
       throw new Error("Data Market delivery is unavailable on this Agent");
     }
     try {
       const delivered =
-        deliveryExecutor && dispatch.dataDeliveries.length > 0
+        deliveryExecutor && (federatedNetdrive || dispatch.dataDeliveries.length > 0)
           ? await this.prepareWithFederationAuthorization(
               dispatch,
               async (current, signal) =>
-                deliveryExecutor.prepare(managedSpec.jobId, current().dataDeliveries, {
+                deliveryExecutor.prepare(managedSpec.jobId, deliveries(current()), {
                   signal,
                   ...(dispatch.federationExecution
                     ? {
                         renew: async (binding) => {
-                          const latest = current().dataDeliveries.find(
+                          const latest = deliveries(current()).find(
                             (item) => item.bindingId === binding.bindingId,
                           );
                           if (!latest)
@@ -4277,7 +4294,7 @@ export class AgentStream {
         ...managedSpec,
         ...(dataDeliveryCleanup.length > 0 ? { dataDeliveryCleanup } : {}),
       };
-      if (requiresImplicitFileWorkRoot) {
+      if (requiresImplicitFileWorkRoot && !federatedNetdrive) {
         await this.stageDispatchInputs(dispatch, deliveredSpec);
       }
       const mounts = dispatch.licensedMaterialMounts;

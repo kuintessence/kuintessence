@@ -132,3 +132,46 @@ test("Sandbox renewal changes only envelope credentials and requires the origina
   execution.envelope = undefined;
   expect(sameDispatchIntent(dispatch, renewed)).toBe(false);
 });
+
+test("NetDrive renewal preserves file identity, digest, size, marker and target path", () => {
+  const dispatch = create(DispatchJobSchema, {
+    federationExecution: true,
+    inputStaging: [
+      {
+        fileMetadataId: crypto.randomUUID(),
+        stagePath: "input.txt",
+        netdriveInput: true,
+        expectedSha256: "a".repeat(64),
+        expectedSizeBytes: 4n,
+        sourceUrl: "https://objects.test/old",
+        deliveryLeaseId: "old",
+        deliveryLeaseExpiresAtUnixMs: 1n,
+      },
+    ],
+  });
+  const renewed = clone(DispatchJobSchema, dispatch);
+  const input = renewed.inputStaging[0];
+  if (!input) throw new Error("Missing input");
+  input.sourceUrl = "https://objects.test/new";
+  input.deliveryLeaseId = "new";
+  input.deliveryLeaseExpiresAtUnixMs = 100n;
+  expect(sameDispatchIntent(dispatch, renewed)).toBe(true);
+  for (const change of [
+    { fileMetadataId: crypto.randomUUID() },
+    { expectedSha256: "b".repeat(64) },
+    { expectedSizeBytes: 5n },
+    { netdriveInput: false },
+    { stagePath: "other.txt" },
+  ]) {
+    const changed = clone(DispatchJobSchema, renewed);
+    Object.assign(changed.inputStaging[0] ?? {}, change);
+    expect(sameDispatchIntent(dispatch, changed)).toBe(false);
+  }
+  const legacy = clone(DispatchJobSchema, dispatch);
+  Object.assign(legacy.inputStaging[0] ?? {}, {
+    netdriveInput: false,
+    expectedSha256: "",
+    expectedSizeBytes: 0n,
+  });
+  expect(sameDispatchIntent(legacy, renewed)).toBe(false);
+});
