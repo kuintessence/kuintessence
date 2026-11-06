@@ -8,9 +8,11 @@ import {
 } from "@kuintessence/db";
 import { FederationError } from "@kuintessence/shared/federation";
 import { and, asc, eq } from "drizzle-orm";
-import { exportSPKI, importSPKI } from "jose";
+import { exportSPKI } from "jose";
 import { z } from "zod";
-import type { FederationVerificationKey } from "./signatures";
+import { type FederationVerificationKey, parseFederationPublicKey } from "./signatures";
+
+export { parseFederationPublicKey } from "./signatures";
 
 export type FederationTransaction = Parameters<Parameters<PgDb["transaction"]>[0]>[0];
 export const FederationSiteInput = z.strictObject({
@@ -37,9 +39,9 @@ export const FederationKeyInput = z
     keyId: z.string().regex(/^[a-zA-Z0-9_.:-]{1,128}$/),
     publicKeyPem: z.string().min(1).max(16384),
     allowedKinds: z
-      .array(z.enum(["agreement", "delegation", "acceptance"]))
+      .array(z.enum(["agreement", "delegation", "acceptance", "evidence-batch"]))
       .min(1)
-      .max(3),
+      .max(4),
     validFrom: z.iso.datetime(),
     validUntil: z.iso.datetime(),
   })
@@ -59,23 +61,6 @@ function requireValid(
     now >= row.validUntil
   )
     throw new FederationError("UNTRUSTED_IDENTITY");
-}
-
-export async function parseFederationPublicKey(pem: string): Promise<CryptoKey> {
-  try {
-    const key = await importSPKI(pem, "RS256", { extractable: true });
-    const algorithm = key.algorithm;
-    if (
-      algorithm.name !== "RSASSA-PKCS1-v1_5" ||
-      !("modulusLength" in algorithm) ||
-      typeof algorithm.modulusLength !== "number" ||
-      algorithm.modulusLength < 2048
-    )
-      throw new Error("Invalid RSA key");
-    return key;
-  } catch {
-    throw new FederationError("INVALID_MESSAGE");
-  }
 }
 
 /** Local administrator trust decisions; incoming messages can never create or replace trust. */

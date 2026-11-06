@@ -21,4 +21,4 @@
 - [无人值守与异步存证](assets/kq-federation-v2-unattended.svg)
 - [历史归档与 Peer 替换](assets/kq-federation-v2-storage.svg)
 
-此目录区分目标设计与实现进展，不声明当前平台已经具有完整联邦能力。分支已有接单预留、信任管理 API、独立 mTLS 入口及生成的迁移；尚无跨机构作业执行与 Fabric 连接，没有生产部署或生产数据操作。
+此目录区分目标设计与实现进展，不声明当前平台已经具有完整联邦能力。分支已有接单预留、信任管理 API、独立 mTLS 入口及生成的迁移；另有独立 Fabric 证据链码与 Adapter，但尚无跨机构作业执行、Server 上链 worker 或真实链网络验收，没有生产部署或生产数据操作。

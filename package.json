@@ -7,11 +7,12 @@
   },
   "packageManager": "bun@1.4.2",
   "workspaces": [
-    "packages/*"
+    "packages/*",
+    "contracts/fabric/*"
   ],
   "scripts": {
     "dev": "bun run --filter '*' dev",
-    "test": "bun test packages/{shared,proto,db,server,agent,registry,cli}",
+    "test": "bun test packages/{shared,proto,db,server,agent,registry,cli,fabric-adapter} contracts/fabric",
     "test:unit": "bun scripts/test-unit.ts",
     "test:helm": "bun test scripts/helm-*.test.ts",
     "test:integration": "bun test packages/agent/test",
@@ -42,7 +43,8 @@
     "infra:reset-data": "docker compose --project-directory . -f deploy/compose/docker-compose.dev.yml down -v && docker compose --project-directory . -f deploy/compose/docker-compose.dev.yml up -d",
     "db:generate": "cd packages/db && DATABASE_URL=\"${DATABASE_URL:-postgres://kq:kq@localhost:5432/kuintessence}\" bunx drizzle-kit generate",
     "db:migrate": "DATABASE_URL=\"${DATABASE_URL:-postgres://kq:kq@localhost:5432/kuintessence}\" bun run packages/db/src/pg/migrate.ts",
-    "db:studio": "cd packages/db && DATABASE_URL=\"${DATABASE_URL:-postgres://kq:kq@localhost:5432/kuintessence}\" bunx drizzle-kit studio"
+    "db:studio": "cd packages/db && DATABASE_URL=\"${DATABASE_URL:-postgres://kq:kq@localhost:5432/kuintessence}\" bunx drizzle-kit studio",
+    "test:fabric": "bun test contracts/fabric packages/fabric-adapter"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.4.13",

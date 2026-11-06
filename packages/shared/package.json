@@ -20,6 +20,16 @@
       "bun": "./src/browser.ts",
       "types": "./src/browser.ts",
       "default": "./src/browser.ts"
+    },
+    "./federation/signatures": {
+      "bun": "./src/federation/signatures.ts",
+      "types": "./src/federation/signatures.ts",
+      "default": "./src/federation/signatures.ts"
+    },
+    "./federation/ledger": {
+      "bun": "./src/federation/ledger.ts",
+      "types": "./src/federation/ledger.ts",
+      "default": "./src/federation/ledger.ts"
     }
   },
   "scripts": {
@@ -29,7 +39,8 @@
   "dependencies": {
     "pino": "^10.3.1",
     "yaml": "^2.8.3",
-    "zod": "^4.3.6"
+    "zod": "^4.3.6",
+    "jose": "^6.2.2"
   },
   "devDependencies": {
     "ajv": "^8.20.0"

@@ -19,6 +19,8 @@ const slices: TestSlice[] = [
     name: "core",
     paths: [
       "packages/shared",
+      "packages/fabric-adapter",
+      "contracts/fabric",
       "packages/proto",
       "packages/db",
       "packages/cli",

@@ -1,0 +1,25 @@
+{
+  "name": "@kuintessence/fabric-adapter",
+  "version": "0.1.0-rc.1",
+  "private": true,
+  "license": "AGPL-3.0-only",
+  "type": "module",
+  "engines": {
+    "node": ">=22.12"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "bun test",
+    "build": "bun build src/main.ts --target=node --format=esm --external @hyperledger/fabric-gateway --external @hyperledger/fabric-protos --external @grpc/grpc-js --outdir=dist"
+  },
+  "dependencies": {
+    "@kuintessence/shared": "workspace:*",
+    "zod": "^4.3.6",
+    "@hyperledger/fabric-gateway": "1.13.0",
+    "@grpc/grpc-js": "^1.14.0",
+    "@hyperledger/fabric-protos": "0.3.7"
+  },
+  "devDependencies": {
+    "jose": "^6.2.2"
+  }
+}

@@ -1,6 +1,6 @@
 # 联邦机构认证入口
 
-当前只接通签名委派的额度预留，不创建或执行 Job，也没有 Fabric Adapter。完整目标与边界见[实现进展](../../docs/design/federation/progress.md)。不要将入口连通作为完整联邦验收结果。
+当前只接通签名委派的额度预留，不创建或执行 Job。另有独立的 [Fabric 证据链码与 Adapter](fabric-evidence.md)，尚未连接 Server outbox 或完成真实链验收。完整目标与边界见[实现进展](../../docs/design/federation/progress.md)。不要将入口连通作为完整联邦验收结果。
 
 ## 认证路径
 
@@ -62,7 +62,7 @@ docker compose --project-directory . \
 | `GET /sites/:siteId` | 机构详情、登记公钥和证书及其有效期/撤销状态 |
 | `PUT /sites/:siteId` | `{name,endpoint}`；不能改机构 ID |
 | `POST /sites/:siteId/state` | `{state: active或suspended或revoked}`；revoked 不可恢复 |
-| `POST /sites/:siteId/keys` | `{keyId,publicKeyPem,allowedKinds,validFrom,validUntil}`；用途为 agreement/delegation/acceptance |
+| `POST /sites/:siteId/keys` | `{keyId,publicKeyPem,allowedKinds,validFrom,validUntil}`；用途为 agreement/delegation/acceptance/evidence-batch |
 | `POST /sites/:siteId/certificates` | `{certificatePem}`；服务端计算指纹及有效期 |
 | `POST /sites/:siteId/revoke` | `{keyId}` 或 `{fingerprint}`；永久撤销 |
 
