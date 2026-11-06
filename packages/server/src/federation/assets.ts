@@ -262,6 +262,15 @@ export class FederationAssetService {
     return snapshot;
   }
 
+  async assertView(actor: FederationActor, reference: FederationAssetRef) {
+    const { local } = await this.db.transaction(async (tx) => {
+      await requireFederationCapability(tx, actor, "asset.read");
+      return this.assertResolved(tx, actor, reference);
+    });
+    if (local.kind === "software")
+      await this.authorization.authorizeSoftware(local.asset.id, executionPrincipal(actor), "view");
+  }
+
   async assertResolved(
     tx: PgTransaction,
     identity: ExecutionIdentity,

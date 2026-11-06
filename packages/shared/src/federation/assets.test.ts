@@ -88,3 +88,46 @@ test("environment locks require a target, native lock digest and pinned software
     }).success,
   ).toBe(false);
 });
+
+test("named bindings pin one revision and reject ambiguous aliases without changing old manifests", () => {
+  const sourceSelector = { source: "official-upstream", name: "gzip", version: "1.13" };
+  const binding = { sourceSelector, asset: { ...reference, kind: "software" } };
+  expect(FederationInputManifestSchema.safeParse({ ...inputs, bindings: [binding] }).success).toBe(
+    true,
+  );
+  expect(
+    FederationInputManifestSchema.safeParse({
+      ...inputs,
+      bindings: [binding, { ...binding, asset: { ...binding.asset, id: crypto.randomUUID() } }],
+    }).success,
+  ).toBe(false);
+  expect(
+    FederationInputManifestSchema.safeParse({ ...inputs, bindings: [{ asset: reference }] })
+      .success,
+  ).toBe(false);
+  const runtimeBinding = {
+    sourceProfileId: crypto.randomUUID(),
+    contract: { name: "python", version: "1" },
+  };
+  const lock = {
+    protocolVersion: 1,
+    kind: "environment-lock",
+    target: { platform: "linux", architecture: "x86_64" },
+    nativeLockDigest: reference.digest,
+    software: [],
+    runtimeBindings: [runtimeBinding, runtimeBinding],
+  };
+  expect(FederationEnvironmentLockSchema.safeParse(lock).success).toBe(false);
+  const software = {
+    asset: { ...reference, kind: "software" },
+    concreteSpec: "gzip@1.13",
+    dagHash: "abcdefg",
+  };
+  expect(
+    FederationEnvironmentLockSchema.safeParse({
+      ...lock,
+      runtimeBindings: [],
+      software: [software, software],
+    }).success,
+  ).toBe(false);
+});

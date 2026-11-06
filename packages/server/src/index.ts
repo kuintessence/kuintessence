@@ -1396,8 +1396,11 @@ const federationAssets = new FederationAssetService(db, {
   authorizeSoftware: (assetId, principal, capability) =>
     softwareAvailability.assertAssetCapability(assetId, principal, capability),
 });
-protectedApi.route("/", createFederationAssetRoutes(federationAssets));
 const federationSigningKey = await loadFederationSigningKey(config);
+const federationPreparation = federationSigningKey
+  ? new FederationPreparationService(db, federationSigningKey.siteId, federationAssets)
+  : undefined;
+protectedApi.route("/", createFederationAssetRoutes(federationAssets, federationPreparation));
 if (federationSigningKey)
   protectedApi.route(
     "/",
@@ -1869,11 +1872,8 @@ async function readRequiredGrpcTlsFile(
 }
 
 const federationIngress = await startFederationIngress(db, config, federationSigningKey);
-const federationPreparationWorker = federationSigningKey
-  ? new FederationPreparationWorker(
-      db,
-      new FederationPreparationService(db, federationSigningKey.siteId, federationAssets),
-    )
+const federationPreparationWorker = federationPreparation
+  ? new FederationPreparationWorker(db, federationPreparation)
   : undefined;
 federationPreparationWorker?.start();
 logger.info({ port: config.SERVER_PORT }, "Server starting");

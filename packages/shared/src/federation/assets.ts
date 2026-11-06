@@ -1,4 +1,6 @@
 import { z } from "zod";
+import { AssetSelectorSchema } from "../workflow-dsl/refs";
+import { SandboxRuntimeContractRefSchema } from "../workflow-dsl/script";
 import { FederationAssetRefSchema, FederationDigestSchema } from "./references";
 
 const Descriptor = z.string().regex(/^[a-zA-Z][a-zA-Z0-9_.-]{0,127}$/);
@@ -30,40 +32,74 @@ export const FederationInputManifestSchema = z
         }),
       )
       .max(100),
-    // Source revision IDs used in the workflow DSL are resolved only through these explicit bindings.
+    // Both UUID and named DSL references resolve to an explicit immutable revision, never latest.
     bindings: z
-      .array(z.strictObject({ sourceRevisionId: z.uuid(), asset: FederationAssetRefSchema }))
+      .array(
+        z
+          .strictObject({
+            sourceRevisionId: z.uuid().optional(),
+            sourceSelector: AssetSelectorSchema.optional(),
+            asset: FederationAssetRefSchema,
+          })
+          .refine((binding) => binding.sourceRevisionId || binding.sourceSelector, {
+            message: "A source revision ID or selector is required",
+          }),
+      )
       .max(1000),
   })
   .superRefine((value, ctx) => {
     if (new Set(value.datasets.map((v) => v.descriptor)).size !== value.datasets.length)
       ctx.addIssue({ code: "custom", message: "Dataset descriptors must be unique" });
-    if (new Set(value.bindings.map((v) => v.sourceRevisionId)).size !== value.bindings.length)
+    const ids = value.bindings.flatMap((v) => (v.sourceRevisionId ? [v.sourceRevisionId] : []));
+    const selectors = value.bindings.flatMap((v) =>
+      v.sourceSelector ? [federationCanonicalJson([v.asset.kind, v.sourceSelector])] : [],
+    );
+    if (new Set(ids).size !== ids.length || new Set(selectors).size !== selectors.length)
       ctx.addIssue({ code: "custom", message: "Source revision bindings must be unique" });
   });
 export type FederationInputManifest = z.infer<typeof FederationInputManifestSchema>;
 
-export const FederationEnvironmentLockSchema = z.strictObject({
-  protocolVersion: z.literal(1),
-  kind: z.literal("environment-lock"),
-  target: z.strictObject({
-    platform: z.string().min(1).max(128),
-    architecture: z.string().min(1).max(128),
-  }),
-  nativeLockDigest: FederationDigestSchema,
-  software: z
-    .array(
-      z.strictObject({
-        asset: FederationAssetRefSchema.refine((ref) => ref.kind === "software"),
-        concreteSpec: z.string().min(1).max(4096),
-        dagHash: z.string().regex(/^[a-z0-9]{7,64}$/),
-      }),
-    )
-    .max(1000),
-  sandboxRuntime: z
-    .strictObject({ kind: z.enum(["OCI", "SIF"]), digest: FederationDigestSchema })
-    .optional(),
-});
+export const FederationEnvironmentLockSchema = z
+  .strictObject({
+    protocolVersion: z.literal(1),
+    kind: z.literal("environment-lock"),
+    target: z.strictObject({
+      platform: z.string().min(1).max(128),
+      architecture: z.string().min(1).max(128),
+    }),
+    nativeLockDigest: FederationDigestSchema,
+    software: z
+      .array(
+        z.strictObject({
+          asset: FederationAssetRefSchema.refine((ref) => ref.kind === "software"),
+          concreteSpec: z.string().min(1).max(4096),
+          dagHash: z.string().regex(/^[a-z0-9]{7,64}$/),
+        }),
+      )
+      .max(1000),
+    sandboxRuntime: z
+      .strictObject({ kind: z.enum(["OCI", "SIF"]), digest: FederationDigestSchema })
+      .optional(),
+    runtimeBindings: z
+      .array(
+        z.strictObject({
+          sourceProfileId: z.uuid(),
+          contract: SandboxRuntimeContractRefSchema,
+        }),
+      )
+      .max(100)
+      .optional(),
+  })
+  .superRefine((value, ctx) => {
+    const profiles = value.runtimeBindings?.map((binding) => binding.sourceProfileId) ?? [];
+    if (new Set(profiles).size !== profiles.length)
+      ctx.addIssue({ code: "custom", message: "Runtime profile bindings must be unique" });
+    const software = value.software.map((entry) =>
+      federationCanonicalJson([entry.asset.originSiteId, entry.asset.id, entry.asset.revision]),
+    );
+    if (new Set(software).size !== software.length)
+      ctx.addIssue({ code: "custom", message: "Software lock entries must be unique" });
+  });
 export type FederationEnvironmentLock = z.infer<typeof FederationEnvironmentLockSchema>;
 
 /** Content addressing for portable material only; the JWS wire format remains byte-preserving. */

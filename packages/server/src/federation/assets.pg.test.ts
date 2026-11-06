@@ -62,12 +62,13 @@ const assetId = crypto.randomUUID(),
   locationId = crypto.randomUUID();
 const content = "printf 'ready\\n'";
 const payload = {
+  runtimeContractRef: { name: "bash", version: "1" },
   kind: "sandbox-script",
   language: "bash",
   content,
   entrypoint: "main.sh",
   sha256: createHash("sha256").update(content).digest("hex"),
-  inputs: {},
+  inputs: { count: { type: "Text", required: true } },
   outputs: {},
 };
 const availability = new SoftwareAvailabilityService(db);
@@ -349,6 +350,7 @@ function environment(): FederationEnvironmentLock {
     target: { platform: "linux", architecture: "x86_64" },
     nativeLockDigest: `sha256:${"c".repeat(64)}`,
     software: [],
+    sandboxRuntime: { kind: "OCI", digest: `sha256:${"d".repeat(64)}` },
   };
 }
 async function addLocation() {
@@ -363,12 +365,12 @@ async function addLocation() {
     })
     .onConflictDoNothing();
 }
-async function receive() {
+async function receive(input = inputs(), lock = environment()) {
   const request = {
     ...testDelegation(agreement),
     maxAmount: "1",
-    inputManifestDigest: federationMaterialDigest(inputs()),
-    environmentLockDigest: federationMaterialDigest(environment()),
+    inputManifestDigest: federationMaterialDigest(input),
+    environmentLockDigest: federationMaterialDigest(lock),
   };
   const result = await admission.receive({
     requestJws: await signFederationMessage(FederationDelegationSchema, request, source.signing),
@@ -516,4 +518,117 @@ test("asset API takes organization from the session, refuses automation and vali
       })
     ).status,
   ).toBe(400);
+});
+
+test("read-only plan uses the restricted execution identity and requires the reviewer's own view access", async () => {
+  const permissions = new FederationPermissionService(db);
+  for (const subject of [actor, outsider])
+    await permissions.set(
+      { ...subject, capability: "agreement.read", enabled: true },
+      actor.userId,
+    );
+  const input: FederationInputManifest = {
+    protocolVersion: 1,
+    kind: "inputs",
+    parameters: { count: "2" },
+    datasets: [],
+    bindings: [],
+  };
+  await assets.putMaterial(actor, source.signing.siteId, input);
+  const id = await receive(input);
+  const preparation = new FederationPreparationService(
+    db,
+    target.signing.siteId,
+    assets,
+    () => testNow,
+  );
+  const plan = await preparation.plan(actor, id);
+  expect(plan).toMatchObject({
+    reservationId: id,
+    executionReady: false,
+    workflow: {
+      parameters: [{ name: "count", default: "2" }],
+      spec: {
+        nodeDrafts: [
+          {
+            type: "Script",
+            source: { assetId, assetRevisionId: revisionId },
+            runtimeContractRef: { name: "bash", version: "1" },
+          },
+        ],
+      },
+    },
+  });
+  await expect(preparation.plan(outsider, id)).rejects.toThrow("AGREEMENT_UNAVAILABLE");
+  await permissions.set({ ...actor, capability: "asset.map", enabled: false }, actor.userId);
+  try {
+    await expect(preparation.plan(actor, id)).rejects.toThrow("POLICY_DENIED");
+  } finally {
+    await permissions.set({ ...actor, capability: "asset.map", enabled: true }, actor.userId);
+  }
+  const guardedAssets = new FederationAssetService(db, {
+    authorizeSoftware: async (id, principal, capability) => {
+      if (capability === "view") throw new Error("reviewer cannot view code");
+      await availability.assertAssetCapability(id, principal, capability);
+    },
+  });
+  const guarded = new FederationPreparationService(
+    db,
+    target.signing.siteId,
+    guardedAssets,
+    () => testNow,
+  );
+  await expect(guarded.plan(actor, id)).rejects.toThrow("reviewer cannot view code");
+  expect(await db.select().from(jobs).where(eq(jobs.submittedBy, identity.userId))).toHaveLength(0);
+  expect(
+    await db
+      .select()
+      .from(federationPreparations)
+      .where(eq(federationPreparations.reservationId, id)),
+  ).toHaveLength(0);
+  const [reservation] = await db
+    .select()
+    .from(federationReservations)
+    .where(eq(federationReservations.id, id));
+  expect(reservation?.state).toBe("reserved");
+});
+
+test("plan API reports a specific incompatible field and refuses automation and expired delegations", async () => {
+  const id = await receive();
+  const preparation = new FederationPreparationService(
+    db,
+    target.signing.siteId,
+    assets,
+    () => testNow,
+  );
+  const app = (automation = false) => {
+    const r = new Hono();
+    r.onError(createErrorHandler(pino({ level: "silent" })));
+    r.use("*", async (c, next) => {
+      c.set("principal" as never, actor);
+      if (automation) c.set("automation" as never, { userId: actor.userId });
+      await next();
+    });
+    r.route("/api", createFederationAssetRoutes(assets, preparation));
+    return r;
+  };
+  const response = await app().request(`/api/federation/assets/reservations/${id}/plan`);
+  expect(response.status).toBe(409);
+  expect(await response.json()).toMatchObject({
+    error: {
+      code: "TEMPLATE_NOT_PORTABLE",
+      path: "parameters.count",
+      reason: "parameter type mismatch",
+    },
+  });
+  expect((await app(true).request(`/api/federation/assets/reservations/${id}/plan`)).status).toBe(
+    403,
+  );
+  const expired = new FederationPreparationService(
+    db,
+    target.signing.siteId,
+    assets,
+    () => new Date(testNow.getTime() + 3600001),
+  );
+  await expect(expired.plan(actor, id)).rejects.toThrow("AUTHORIZATION_EXPIRED");
 });

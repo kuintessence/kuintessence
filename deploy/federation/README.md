@@ -106,14 +106,27 @@ docker compose --project-directory . \
 | `POST /api/federation/assets/mappings/:id/revoke` | 永久撤销映射，不改写旧版本 |
 | `POST /api/federation/assets/materials` | `{originSiteId,content}`；保存 inputs 或 environment-lock 清单，返回摘要 |
 | `GET /api/federation/assets/materials/:originSiteId/:digest` | 在本地组织范围读取并验证摘要 |
+| `GET /api/federation/assets/reservations/:id/plan` | 只读转换为本地工作流，要求 agreement.read、asset.read 及操作者自己的资源查看权；仅启用联邦时注册 |
 | `GET /api/federation/agreements/:revisionId/reservations` | 接收方协议的预留与准备状态、阻断原因、更新时间，要求 agreement.read |
 
 软件、脚本、工作流、用例分别映射到本地 `software_asset_revisions.id`；数据集映射到 `data_asset_versions.id`，不接受可变的 latest 或最新版本跟随。普通映射登记不能覆盖已有来源机构/资源/版本组合，即使替换版本恰有相同内容，也必须明确采用新的来源 revision。
 
 软件类 ref.digest 是 SHA-256(`federationCanonicalJson(software_asset_revisions.payload)`)；该函数按确定的键顺序编码 JSON，保留数组顺序，拒绝非 JSON 值及超过 32 层/一 MiB 的材料。它仅服务于联邦材料，不修改旧生态包签名和 JWS 原字节签名。数据集 ref.digest 采用现有不可变版本的 manifestDigest，数据位置与使用授权仍由 Data Market 检查；真正的文件字节验证在后续传输/执行时进行。
 
-输入清单含 `protocolVersion:1, kind:inputs, parameters, datasets, bindings`，datasets 每项为 `{descriptor,asset,selectedEntries,targetPath?}`，bindings 每项为 `{sourceRevisionId,asset}`。后续执行器只能按明确的版本绑定解析工作流引用，不能全局字符串替换 UUID。
+输入清单含 `protocolVersion:1, kind:inputs, parameters, datasets, bindings`，datasets 每项为 `{descriptor,asset,selectedEntries,targetPath?}`，bindings 每项为 `{sourceRevisionId?,sourceSelector?,asset}`，至少提供一种来源标识。sourceSelector 使用现有工作流的 `{source,name,version,providerOrgId?}`；同一种资源的 selector 不可重复绑定，不查询 latest。原 UUID 格式继续有效。转换仅处理 DSL 中的类型化引用，不替换脚本、参数或文本中的 UUID。
 
-环境锁清单含 `protocolVersion:1, kind:environment-lock, target:{platform,architecture}, nativeLockDigest, software, sandboxRuntime?`；software 每项为 `{asset,concreteSpec,dagHash}`，sandboxRuntime 为 `{kind:OCI或SIF,digest}`。当前只存储/解析这些引用，native lock 文件、真实目标环境和安装材料验证仍待接通，不能据此声称支持完整离线安装。
+环境锁清单含 `protocolVersion:1, kind:environment-lock, target:{platform,architecture}, nativeLockDigest, software, sandboxRuntime?, runtimeBindings?`；software 每项为 `{asset,concreteSpec,dagHash}`，sandboxRuntime 为 `{kind:OCI或SIF,digest}`。当前只存储/解析这些引用，native lock 文件、真实目标环境和安装材料验证仍待接通，不能据此声称支持完整离线安装。
 
 启用联邦后，引用 worker 每十秒检查一批，每批最多八条预留，等待/阻断项至少间隔三十秒重试。准备状态为 `waiting`、`blocked`、`resolved`，无记录表示尚未处理。查询会返回更新时间；resolved 是引用快照，不是环境已装好或已批准运行。缺输入清单、映射或可用数据位置不会创建占位 Job。协议/签名租期过期后不会自动延长授权，跨站续租仍待实现。
+
+## 工作流转换检查
+
+`GET /api/federation/assets/reservations/:id/plan` 重新验证接收方协议、委派签名/租期、受限执行账号和所有资源映射。操作者须具有本组织协议与材料读取权限，并独立通过每项资源的查看授权；不能借用执行账号的权限读出模板。接口返回 `workflow`、`workflowVersions`、原 template 引用和输入/环境清单摘要，`executionReady` 固定为 false，不创建工作流、Job 或更新预留状态。
+
+转换支持 UUID/命名用例与软件引用、固定脚本版本、内联脚本、循环、内联和 ByVersion 子工作流、参数及 Dataset 输入。ByVersion 转换后的 ID 属于本地软件资产修订，须从返回的 `workflowVersions` 解析，不能拿它查询普通工作流版本表。自引用保持版本引用，由原引擎 maxDepth 控制执行，不无限展开定义。Dataset 的 descriptor 在整张图中表示同一份签名输入选择；同名槽复用该选择，无消费槽的输入会拒绝。
+
+来源 runtimeProfileId 不能直接使用，可在 environment-lock 的 `runtimeBindings` 中提供 `{sourceProfileId,contract:{name,version}}`，转换为由接收方配置的运行环境契约。仍必须声明 sandboxRuntime 摘要；真实 Agent 的运行环境绑定和摘要检查属于后续派发门禁，不能用这一步替代。
+
+不兼容的模板返回 HTTP 409：`{error:{code:TEMPLATE_NOT_PORTABLE,path,reason}}`。原站队列、执行账号映射、站点/集群/输出存储 ID、静态文件/文本记录 ID、未声明参数、缺失版本映射、已有执行器不支持的 Milestone/Command Reduce 均明确拒绝。文件型输入暂只接受上游文件输出，拒绝参数/CEL 输入及单脚本外部文件输入；完整受管文件交付和运行时 provenance 检查待接通。模板的 skipStaticValidation 不能绕过接收方校验。
+
+这仍是输入转换检查：用例内部 packageId/packageRevisionId、软件 providerOrgId 等来源本地引用的完整可移植导入、用例命名空间/许可证检查、native lock 和安装材料、目标环境校验及真正派发尚待连接。不得把转换结果直接作为 trusted materialization 提交 Job；既有包、软件许可、数据授权和可信生态验证仍然必须执行。

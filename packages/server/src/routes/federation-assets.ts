@@ -8,11 +8,16 @@ import { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { z } from "zod";
 import type { FederationAssetService } from "../federation/assets";
+import { FederationMaterializationError } from "../federation/materialize";
 import type { FederationActor } from "../federation/permissions";
+import type { FederationPreparationService } from "../federation/preparation";
 import type { BoundPrincipal } from "../middleware/principal-binder";
 import { kqValidator } from "../middleware/validator";
 
-export function createFederationAssetRoutes(service: FederationAssetService) {
+export function createFederationAssetRoutes(
+  service: FederationAssetService,
+  preparation?: FederationPreparationService,
+) {
   const r = new Hono<{ Variables: { federationActor: FederationActor } }>();
   r.use("/federation/assets/*", async (c, next) => {
     const principal = c.get("principal" as never) as BoundPrincipal | undefined;
@@ -27,6 +32,11 @@ export function createFederationAssetRoutes(service: FederationAssetService) {
   });
   r.use("/federation/assets/*", bodyLimit({ maxSize: 1100000 }));
   r.onError((error, c) => {
+    if (error instanceof FederationMaterializationError)
+      return c.json(
+        { error: { code: "TEMPLATE_NOT_PORTABLE", path: error.path, reason: error.reason } },
+        409,
+      );
     if (error instanceof FederationError) {
       const status =
         error.code === "POLICY_DENIED" ? 403 : error.code === "INVALID_MESSAGE" ? 400 : 409;
@@ -34,6 +44,16 @@ export function createFederationAssetRoutes(service: FederationAssetService) {
     }
     throw error;
   });
+  if (preparation)
+    r.get(
+      "/federation/assets/reservations/:id/plan",
+      kqValidator("param", z.object({ id: z.uuid() })),
+      async (c) =>
+        c.json({
+          success: true,
+          data: await preparation.plan(c.get("federationActor"), c.req.valid("param").id),
+        }),
+    );
   r.get(
     "/federation/assets/mappings",
     kqValidator(
