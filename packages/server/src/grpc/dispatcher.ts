@@ -363,30 +363,7 @@ export class AgentDispatcher {
             create(LicensedMaterialMountSchema, mount),
           ),
           restrictedNoEgress: job.restrictedNoEgress ?? false,
-          dataDeliveries: (job.dataDeliveries ?? []).map((delivery) =>
-            create(DataDeliveryBindingSchema, {
-              bindingId: delivery.bindingId,
-              locationId: delivery.locationId,
-              assetId: delivery.assetId,
-              versionId: delivery.versionId,
-              manifestDigest: delivery.manifestDigest,
-              selectedEntries: delivery.selectedEntries.map((entry) =>
-                create(DataDeliveryEntrySchema, {
-                  path: entry.path,
-                  sha256: entry.sha256,
-                  sizeBytes: BigInt(entry.sizeBytes),
-                  objectDownloadUrl: entry.objectDownloadUrl ?? "",
-                }),
-              ),
-              stagePath: delivery.stagePath,
-              method: dataDeliveryMethodToProto(delivery.method),
-              managedRootId: delivery.managedRootId ?? "",
-              relativePath: delivery.relativePath ?? "",
-              restricted: delivery.restricted,
-              leaseId: delivery.leaseId,
-              leaseExpiresAtUnixMs: BigInt(delivery.leaseExpiresAtUnixMs),
-            }),
-          ),
+          dataDeliveries: (job.dataDeliveries ?? []).map(dataDeliveryToProto),
           dispatchEpoch: BigInt(job.dispatchEpoch ?? 0),
         }),
       },
@@ -827,4 +804,29 @@ function dataDeliveryMethodToProto(method: ResolvedDataDelivery["method"]): Data
     case "readonly-mount":
       return DataDeliveryMethod.READONLY_MOUNT;
   }
+}
+
+export function dataDeliveryToProto(delivery: ResolvedDataDelivery) {
+  return create(DataDeliveryBindingSchema, {
+    bindingId: delivery.bindingId,
+    locationId: delivery.locationId,
+    assetId: delivery.assetId,
+    versionId: delivery.versionId,
+    manifestDigest: delivery.manifestDigest,
+    selectedEntries: delivery.selectedEntries.map((entry) =>
+      create(DataDeliveryEntrySchema, {
+        path: entry.path,
+        sha256: entry.sha256,
+        sizeBytes: BigInt(entry.sizeBytes),
+        objectDownloadUrl: entry.objectDownloadUrl ?? "",
+      }),
+    ),
+    stagePath: delivery.stagePath,
+    method: dataDeliveryMethodToProto(delivery.method),
+    managedRootId: delivery.managedRootId ?? "",
+    relativePath: delivery.relativePath ?? "",
+    restricted: delivery.restricted,
+    leaseId: delivery.leaseId,
+    leaseExpiresAtUnixMs: BigInt(delivery.leaseExpiresAtUnixMs),
+  });
 }

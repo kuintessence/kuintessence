@@ -11,13 +11,14 @@ import {
 import { type ServerMessage, ServerMessageSchema } from "@kuintessence/proto";
 import { createLogger, WorkflowExecutionInterrupted } from "@kuintessence/shared";
 import { and, asc, eq, isNull, lt, lte, or, sql } from "drizzle-orm";
+import type { PreparedFederationDataDispatch } from "../federation/data-dispatch";
 import type { FederationDeliveryTarget } from "../federation/dispatch-authorization";
 import type { LeasedWorkflowJournal } from "../workflow/execution-journal";
 import type { AgentDispatcher } from "./dispatcher";
 
 const logger = createLogger("job-dispatch-outbox");
 
-/** Stores the exact authorized envelope. Retries never change Agent, epoch, URLs or signatures. */
+/** Stores the original envelope. Renewed data credentials never change its execution intent. */
 export class JobDispatchOutbox {
   private timer?: ReturnType<typeof setInterval>;
   private running?: Promise<void>;
@@ -29,6 +30,10 @@ export class JobDispatchOutbox {
       runId: string,
       target: FederationDeliveryTarget,
     ) => Promise<(tx: PgTransaction) => Promise<void>>,
+    private readonly prepareFederationData?: (
+      agentId: string,
+      message: ServerMessage,
+    ) => Promise<PreparedFederationDataDispatch>,
   ) {}
 
   async enqueue(
@@ -111,6 +116,7 @@ export class JobDispatchOutbox {
       const sent = await this.deliver(payload.jobId, true);
       return { sent, pending: !sent };
     } catch {
+      await this.defer(payload.jobId);
       logger.warn({ jobId: payload.jobId }, "Dispatch retained for retry after delivery failure");
       return { sent: false, pending: true };
     }
@@ -162,8 +168,21 @@ export class JobDispatchOutbox {
       try {
         await this.deliver(row.jobId, agentId !== undefined);
       } catch {
+        await this.defer(row.jobId);
         logger.warn({ jobId: row.jobId }, "Dispatch retry deferred");
       }
+    }
+  }
+
+  private async defer(jobId: string): Promise<void> {
+    // Failed authorization rolls back deliver's backoff; keep blocked rows from starving later work.
+    try {
+      await this.db
+        .update(jobDispatchOutbox)
+        .set({ nextAttemptAt: sql`clock_timestamp() + interval '30 seconds'` })
+        .where(and(eq(jobDispatchOutbox.jobId, jobId), isNull(jobDispatchOutbox.acknowledgedAt)));
+    } catch {
+      logger.warn({ jobId }, "Dispatch retained but retry backoff could not be saved");
     }
   }
 
@@ -204,6 +223,20 @@ export class JobDispatchOutbox {
             qos: preparedMessage.payload.value.qos,
           })
         : undefined;
+    const data = reservationId
+      ? await this.prepareFederationData?.(identity.agentId, preparedMessage)
+      : undefined;
+    if (
+      reservationId &&
+      !data &&
+      (preparedMessage.payload.value.dataDeliveries.length > 0 ||
+        preparedMessage.payload.value.inputStaging.some(
+          (input) => input.deliveryLeaseId || input.deliveryLeaseExpiresAtUnixMs !== 0n,
+        ))
+    )
+      throw new WorkflowExecutionInterrupted("Federation data authorization is unavailable", {
+        retryable: false,
+      });
     return this.db.transaction(async (tx) => {
       const [run] = identity.runId
         ? await tx
@@ -249,7 +282,7 @@ export class JobDispatchOutbox {
         throw new WorkflowExecutionInterrupted("Federation dispatch binding changed", {
           retryable: false,
         });
-      const message = preparedMessage;
+      const message = data?.message ?? preparedMessage;
       if (
         message.payload.case !== "dispatchJob" ||
         message.payload.value.jobId !== jobId ||
@@ -261,6 +294,7 @@ export class JobDispatchOutbox {
         .set({ nextAttemptAt: sql`clock_timestamp() + interval '10 seconds'` })
         .where(eq(jobDispatchOutbox.jobId, jobId));
       await authorize?.(tx);
+      await data?.authorize(tx);
       // Synchronous channel enqueue stays inside the cancellation fence; no network await here.
       // A failed commit may replay the same epoch, which the Agent's durable inbox deduplicates.
       return this.dispatcher.pushPreparedDispatch(saved.agentId, message);

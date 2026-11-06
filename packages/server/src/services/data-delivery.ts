@@ -10,6 +10,7 @@ import {
   jobDataBindings,
   jobs,
   type PgDb,
+  type PgTransaction,
 } from "@kuintessence/db";
 import {
   AppError,
@@ -105,7 +106,7 @@ export class DataDeliveryResolver {
   private readonly now: () => Date;
 
   constructor(
-    private readonly db: PgDb,
+    private readonly db: PgDb | PgTransaction,
     private readonly minio: Pick<
       MinioBackend,
       "dataMarketImmutableBucket" | "presignImmutableDownload"
@@ -118,12 +119,15 @@ export class DataDeliveryResolver {
     this.now = options.now ?? (() => new Date());
   }
 
-  async resolveForDispatch(input: {
-    jobId: string;
-    actorUserId: string;
-    orgId: string | null;
-    agentId: string;
-  }): Promise<ResolvedDataDelivery[]> {
+  async resolveForDispatch(
+    input: {
+      jobId: string;
+      actorUserId: string;
+      orgId: string | null;
+      agentId: string;
+    },
+    options: { locations?: ReadonlyMap<string, string>; issueCredentials?: boolean } = {},
+  ): Promise<ResolvedDataDelivery[]> {
     const bindings = await this.loadBindings(input.jobId);
     const resolved: ResolvedDataDelivery[] = [];
     for (const binding of bindings) {
@@ -141,8 +145,10 @@ export class DataDeliveryResolver {
       if (binding.allowedLocationIds.length === 0) {
         throw new AppError(ErrorCode.VALIDATION_ERROR, "DATA_LOCATION_UNAVAILABLE", 409);
       }
-      const permitted = candidates.filter((location) =>
-        binding.allowedLocationIds.includes(location.id),
+      const permitted = candidates.filter(
+        (location) =>
+          binding.allowedLocationIds.includes(location.id) &&
+          (!options.locations || options.locations.get(binding.id) === location.id),
       );
       const restricted = factsRequireRestrictedNoEgress({
         assetKind: binding.assetKind as "licensed-material" | null,
@@ -195,11 +201,14 @@ export class DataDeliveryResolver {
         selectedEntries: await Promise.all(
           entries.map(async (entry) => ({
             ...entry,
-            objectDownloadUrl: await this.minio.presignImmutableDownload(
-              immutableObjectKey(entry.objectKey ?? fallbackKey ?? missingObjectKey()),
-              this.presignTtlSec,
-              requiredObjectVersionId(entry.objectVersionId),
-            ),
+            objectDownloadUrl:
+              options.issueCredentials === false
+                ? undefined
+                : await this.minio.presignImmutableDownload(
+                    immutableObjectKey(entry.objectKey ?? fallbackKey ?? missingObjectKey()),
+                    this.presignTtlSec,
+                    requiredObjectVersionId(entry.objectVersionId),
+                  ),
           })),
         ),
         stagePath: binding.stagePath,
@@ -322,7 +331,13 @@ export class DataDeliveryResolver {
         fileMetadata: dataAssetFiles.metadata,
       })
       .from(dataAssetManifestEntries)
-      .leftJoin(dataAssetFiles, eq(dataAssetManifestEntries.dataAssetFileId, dataAssetFiles.id))
+      .leftJoin(
+        dataAssetFiles,
+        and(
+          eq(dataAssetManifestEntries.dataAssetFileId, dataAssetFiles.id),
+          eq(dataAssetFiles.dataAssetVersionId, binding.versionId),
+        ),
+      )
       .where(eq(dataAssetManifestEntries.dataAssetVersionId, binding.versionId));
     const paths = binding.selectedEntries.length > 0 ? new Set(binding.selectedEntries) : null;
     return rows.flatMap((row) => {

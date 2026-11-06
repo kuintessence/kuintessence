@@ -52,6 +52,7 @@ import { FederationAssetService } from "./federation/assets";
 import { FederationAttestationService } from "./federation/attestation";
 import { UnixAttestationClient } from "./federation/attestation-client";
 import { FederationAttestationWorker } from "./federation/attestation-worker";
+import { FederationDataDispatch } from "./federation/data-dispatch";
 import { createFederationDatasetPreflight } from "./federation/dataset-preflight";
 import { FederationDispatchAuthorization } from "./federation/dispatch-authorization";
 import {
@@ -274,13 +275,21 @@ const eventBus = new EventBus();
 const preferenceService = new PreferenceService(db);
 const dispatcher = new AgentDispatcher();
 const jobCancellationOutbox = new JobCancellationOutbox(db, dispatcher);
-const jobDispatchOutbox = new JobDispatchOutbox(db, dispatcher, async (runId, target) => {
-  if (!federationDispatchAuthorization)
-    throw new WorkflowExecutionInterrupted("Federation dispatch authorization is unavailable", {
-      retryable: false,
-    });
-  return federationDispatchAuthorization.prepare(runId, target);
-});
+let federationDataDispatch = new FederationDataDispatch(db);
+const jobDispatchOutbox = new JobDispatchOutbox(
+  db,
+  dispatcher,
+  async (runId, target) => {
+    if (!federationDispatchAuthorization)
+      throw new WorkflowExecutionInterrupted("Federation dispatch authorization is unavailable", {
+        retryable: false,
+      });
+    return federationDispatchAuthorization.prepare(runId, target);
+  },
+  async (agentId, message) => {
+    return federationDataDispatch.prepare(agentId, message);
+  },
+);
 const jobWorkRootReleaseOutbox = new JobWorkRootReleaseOutbox(db, dispatcher);
 const dataScanCoordinator = new DataScanCoordinator(
   new PgDataImportCoordinator(db),
@@ -1819,6 +1828,7 @@ if (config.NETDRIVE_ENABLED) {
   const dataDeliveryResolver = new DataDeliveryResolver(db, minioBackend, {
     verifyAccess: (input) => dataPrerequisiteRepository.verifyAccess(input),
   });
+  federationDataDispatch = new FederationDataDispatch(db, minioBackend);
   orchestrator.setDataDeliveryResolver((input) => dataDeliveryResolver.resolveForDispatch(input));
   if (sandboxManifestSigner) {
     const restrictedSandboxDeliveryBinder = new RestrictedSandboxDeliveryBinder(
