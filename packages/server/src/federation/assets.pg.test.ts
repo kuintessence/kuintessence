@@ -45,6 +45,7 @@ import {
   type FederationEnvironmentLock,
   type FederationInputManifest,
   federationCanonicalJson,
+  federationExecutionDeadline,
 } from "@kuintessence/shared/federation";
 import { and, eq, inArray, sql } from "drizzle-orm";
 import { Hono } from "hono";
@@ -403,9 +404,10 @@ async function addLocation() {
     })
     .onConflictDoNothing();
 }
-async function receive(input = inputs(), lock = environment()) {
+async function receive(input = inputs(), lock = environment(), executionExpiresAt?: string) {
   const request = {
     ...testDelegation(agreement),
+    ...(executionExpiresAt ? { executionExpiresAt } : {}),
     maxAmount: "1",
     inputManifestDigest: federationMaterialDigest(input),
     environmentLockDigest: federationMaterialDigest(lock),
@@ -671,7 +673,7 @@ test("plan API reports a specific incompatible field and refuses automation and 
   await expect(expired.plan(actor, id)).rejects.toThrow("AUTHORIZATION_EXPIRED");
 });
 
-async function executionFixture() {
+async function executionFixture(executionExpiresAt?: string) {
   const manifest: FederationInputManifest = {
     protocolVersion: 1,
     kind: "inputs",
@@ -681,7 +683,7 @@ async function executionFixture() {
   };
   await assets.putMaterial(actor, source.signing.siteId, manifest);
   await assets.putMaterial(actor, source.signing.siteId, environment());
-  const reservationId = await receive(manifest);
+  const reservationId = await receive(manifest, environment(), executionExpiresAt);
   let now = testNow;
   const preparation = new FederationPreparationService(
     db,
@@ -693,6 +695,9 @@ async function executionFixture() {
     reservationId,
     preparation,
     bindings: new FederationExecutionBindingService(db, preparation),
+    advanceTo: (value: Date) => {
+      now = value;
+    },
     expire: () => {
       now = new Date(testNow.getTime() + 3600001);
     },
@@ -1005,8 +1010,11 @@ test.each([
   }
 });
 
-test("real federation authorization fences outbox retries and holds agreement revocation through enqueue", async () => {
-  const f = await executionFixture();
+test.each([
+  undefined,
+  "2026-01-01T02:00:00.000Z",
+])("real federation authorization fences outbox retries with execution deadline %s", async (executionExpiresAt) => {
+  const f = await executionFixture(executionExpiresAt);
   const binding = await f.bindings.stage(f.reservationId);
   const agentId = approvedTarget.agentId;
   const jobId = crypto.randomUUID();
@@ -1125,7 +1133,9 @@ test("real federation authorization fences outbox retries and holds agreement re
     expect(delivered).toBe(1);
     expect(probe?.exitCode).toBe(0);
     expect(probe?.stdout?.toString()).toBe("55P03");
-    const clock = spyOn(Date, "now").mockReturnValue(testNow.getTime());
+    const grantNow = testNow.getTime() + (executionExpiresAt ? 3_600_000 : 0);
+    f.advanceTo(new Date(grantNow));
+    const clock = spyOn(Date, "now").mockReturnValue(grantNow);
     const request = create(FederationExecutionRequestSchema, {
       requestId: crypto.randomUUID(),
       jobId,
@@ -1140,7 +1150,7 @@ test("real federation authorization fences outbox retries and holds agreement re
       expect(grants).toHaveLength(1);
       expect(grants[0]?.decision).toBe(FederationExecutionDecision.GRANTED);
       expect(grants[0]?.dispatch?.command).toBe("true");
-      expect(grants[0]?.expiresAtUnixMs).toBe(BigInt(testNow.getTime() + 10_000));
+      expect(grants[0]?.expiresAtUnixMs).toBe(BigInt(grantNow + 10_000));
       dispatcher.register("different-agent", {
         federationExecutionV1: true,
         verifiedCertFingerprint: "other-verified",
@@ -1164,7 +1174,7 @@ test("real federation authorization fences outbox retries and holds agreement re
       await db.update(jobs).set({ revokedEpoch: 0 }).where(eq(jobs.id, jobId));
       const snapshot = await loadFederationWorkflowBinding(db, binding.workflowRunId);
       if (!snapshot) throw new Error("Missing binding snapshot");
-      const expiresAt = Date.parse(snapshot.snapshot.request.expiresAt);
+      const expiresAt = federationExecutionDeadline(snapshot.snapshot.request);
       clock.mockReturnValue(expiresAt - 500);
       expect(await outbox.renewExecution(agentId, request, (grant) => grants.push(grant))).toBe(
         true,
@@ -1176,7 +1186,7 @@ test("real federation authorization fences outbox retries and holds agreement re
       );
       expect(grants).toHaveLength(2);
       grants.pop();
-      clock.mockReturnValue(testNow.getTime());
+      clock.mockReturnValue(grantNow);
       await db
         .update(federationAgreements)
         .set({ state: "suspended" })
@@ -1259,8 +1269,11 @@ test("real federation authorization fences outbox retries and holds agreement re
   }
 });
 
-test("installation renewal rechecks its real federation agreement and original pending job", async () => {
-  const f = await executionFixture();
+test.each([
+  undefined,
+  "2026-01-01T02:00:00.000Z",
+])("installation renewal uses its signed execution deadline %s and original pending job", async (executionExpiresAt) => {
+  const f = await executionFixture(executionExpiresAt);
   const binding = await f.bindings.stage(f.reservationId);
   const jobId = crypto.randomUUID(),
     operationId = crypto.randomUUID();
@@ -1356,7 +1369,9 @@ test("installation renewal rechecks its real federation agreement and original p
       spackExecution: { spec: "hello@1", command: "hello", pin },
     },
   });
-  const clock = spyOn(Date, "now").mockReturnValue(testNow.getTime());
+  const grantNow = testNow.getTime() + (executionExpiresAt ? 3_600_000 : 0);
+  f.advanceTo(new Date(grantNow));
+  const clock = spyOn(Date, "now").mockReturnValue(grantNow);
   const request = create(FederationExecutionRequestSchema, {
     requestId: crypto.randomUUID(),
     jobId,
@@ -1375,7 +1390,7 @@ test("installation renewal rechecks its real federation agreement and original p
       spackMaterialTicket: "new-ticket",
       spackManifestDigest: pin.manifestDigest,
     });
-    expect(grants[0]?.expiresAtUnixMs).toBe(BigInt(testNow.getTime() + 10_000));
+    expect(grants[0]?.expiresAtUnixMs).toBe(BigInt(grantNow + 10_000));
     expect(await operations.renewFederationInstallation("other", request, send)).toBe(false);
     expect(
       await operations.renewFederationInstallation(
@@ -1411,4 +1426,20 @@ test("installation renewal rechecks its real federation agreement and original p
     await db.delete(jobs).where(eq(jobs.id, jobId));
     await db.delete(agents).where(eq(agents.agentId, agentId));
   }
+});
+
+test("accepted preparation survives its admission window only until the signed execution deadline", async () => {
+  const deadline = "2026-01-01T02:00:00.000Z";
+  const f = await executionFixture(deadline);
+  f.advanceTo(new Date("2026-01-01T01:00:00.000Z"));
+  const binding = await f.bindings.stage(f.reservationId);
+  expect(binding.snapshot.request.executionExpiresAt).toBe(deadline);
+  const snapshot = await f.preparation.executionSnapshot(f.reservationId);
+  f.advanceTo(new Date(deadline));
+  await expect(
+    db.transaction((tx) => f.preparation.lockExecutionSnapshot(tx, snapshot)),
+  ).rejects.toThrow("AUTHORIZATION_EXPIRED");
+  await expect(f.preparation.executionSnapshot(f.reservationId)).rejects.toThrow(
+    "AUTHORIZATION_EXPIRED",
+  );
 });

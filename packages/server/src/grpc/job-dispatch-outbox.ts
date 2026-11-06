@@ -20,6 +20,7 @@ import {
   sameDispatchIntent,
 } from "@kuintessence/proto";
 import { createLogger, WorkflowExecutionInterrupted } from "@kuintessence/shared";
+import { federationExecutionDeadline } from "@kuintessence/shared/federation";
 import { and, asc, eq, isNull, lt, lte, or, sql } from "drizzle-orm";
 import type { PreparedFederationDataDispatch } from "../federation/data-dispatch";
 import type { FederationDeliveryTarget } from "../federation/dispatch-authorization";
@@ -370,7 +371,7 @@ export class JobDispatchOutbox {
         const dispatch = message.payload.value;
         const expiry = Math.min(
           Date.now() + 10_000,
-          Date.parse(binding.snapshot.request.expiresAt),
+          federationExecutionDeadline(binding.snapshot.request),
           Date.parse(binding.terms.validUntil),
           ...dispatch.dataDeliveries.map((item) => Number(item.leaseExpiresAtUnixMs)),
           ...dispatch.inputStaging

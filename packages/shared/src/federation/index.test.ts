@@ -4,6 +4,7 @@ import {
   FederationAgreementSchema,
   FederationAmountSchema,
   FederationDelegationSchema,
+  federationExecutionDeadline,
 } from "./index";
 
 const now = new Date("2026-01-01T00:00:00.000Z");
@@ -131,4 +132,47 @@ test("execution targets bind provider, cluster, Agent and unique receiver queue 
     expect(
       FederationAgreementSchema.safeParse({ ...agreement, executionTargets: targets }).success,
     ).toBe(false);
+});
+
+test("a signed execution deadline never extends first admission or the agreement", () => {
+  const extended = FederationDelegationSchema.parse({
+    ...request,
+    executionExpiresAt: "2026-01-01T12:00:00.000Z",
+  });
+  const later = new Date("2026-01-01T02:00:00.000Z");
+  expect(() => assertDelegationPolicy(agreement, extended, now)).not.toThrow();
+  expect(() => assertDelegationPolicy(agreement, extended, later)).toThrow("AUTHORIZATION_EXPIRED");
+  expect(() => assertDelegationPolicy(agreement, extended, later, "execution")).not.toThrow();
+  expect(() =>
+    assertDelegationPolicy(
+      agreement,
+      extended,
+      new Date(extended.executionExpiresAt ?? ""),
+      "execution",
+    ),
+  ).toThrow("AUTHORIZATION_EXPIRED");
+  expect(() =>
+    assertDelegationPolicy(
+      agreement,
+      { ...extended, executionExpiresAt: "2026-01-03T00:00:00.000Z" },
+      now,
+    ),
+  ).toThrow("AUTHORIZATION_EXPIRED");
+  expect(
+    FederationDelegationSchema.safeParse({
+      ...extended,
+      executionExpiresAt: "2026-01-01T00:09:59.999Z",
+    }).success,
+  ).toBe(false);
+  expect(
+    FederationDelegationSchema.safeParse({ ...extended, executionExpiresAt: "unbounded" }).success,
+  ).toBe(false);
+});
+
+test("legacy execution authority ends at the original request deadline", () => {
+  expect(federationExecutionDeadline(request)).toBe(Date.parse(request.expiresAt));
+  expect(FederationDelegationSchema.parse(request)).not.toHaveProperty("executionExpiresAt");
+  expect(() =>
+    assertDelegationPolicy(agreement, request, new Date(request.expiresAt), "execution"),
+  ).toThrow("AUTHORIZATION_EXPIRED");
 });

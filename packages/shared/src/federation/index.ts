@@ -98,6 +98,8 @@ export const FederationDelegationSchema = z
     kind: z.literal("delegation"),
     issuedAt: Time,
     expiresAt: Time,
+    // Signed deadline for preparation and new worker/submission permits after acceptance.
+    executionExpiresAt: Time.optional(),
     template: FederationAssetRefSchema,
     // Parameters, software locks and input manifests are immutable, separately authorized assets.
     inputManifestDigest: FederationDigestSchema,
@@ -110,6 +112,14 @@ export const FederationDelegationSchema = z
     const lifetime = Date.parse(value.expiresAt) - Date.parse(value.issuedAt);
     if (lifetime <= 0 || lifetime > 3_600_000)
       ctx.addIssue({ code: "custom", message: "Delegation lifetime must be within one hour" });
+    if (
+      value.executionExpiresAt &&
+      Date.parse(value.executionExpiresAt) < Date.parse(value.expiresAt)
+    )
+      ctx.addIssue({
+        code: "custom",
+        message: "Execution deadline must cover the admission window",
+      });
     if (value.senderSiteId === value.recipientSiteId)
       ctx.addIssue({ code: "custom", message: "Delegation requires different sites" });
   });
@@ -146,11 +156,17 @@ export class FederationError extends Error {
   }
 }
 
-/** Only admission policy; local software/data/queue authorization remains mandatory before dispatch. */
+/** Legacy requests retain their original deadline; no implicit extension after acceptance. */
+export function federationExecutionDeadline(request: FederationDelegation): number {
+  return Date.parse(request.executionExpiresAt ?? request.expiresAt);
+}
+
+/** Execution phase requires a separately verified acceptance; local dispatch policy remains mandatory. */
 export function assertDelegationPolicy(
   agreement: FederationAgreement,
   request: FederationDelegation,
   now: Date,
+  phase: "admission" | "execution" = "admission",
 ): void {
   if (agreement.mode === "ledger_coordinated") throw new FederationError("LEDGER_REQUIRED");
   if (
@@ -166,9 +182,13 @@ export function assertDelegationPolicy(
   if (
     now.getTime() < Date.parse(agreement.validFrom) ||
     now.getTime() >= Date.parse(agreement.validUntil) ||
-    now.getTime() >= Date.parse(request.expiresAt) ||
+    now.getTime() >=
+      (phase === "execution"
+        ? federationExecutionDeadline(request)
+        : Date.parse(request.expiresAt)) ||
     Date.parse(request.issuedAt) > now.getTime() + 60_000 ||
-    Date.parse(request.expiresAt) > Date.parse(agreement.validUntil)
+    Date.parse(request.expiresAt) > Date.parse(agreement.validUntil) ||
+    federationExecutionDeadline(request) > Date.parse(agreement.validUntil)
   )
     throw new FederationError("AUTHORIZATION_EXPIRED");
   const templateAllowed = agreement.templates.some((ref) =>

@@ -354,3 +354,34 @@ test("authorization is checked again after verification and blocking locks", asy
   );
   expect((await rows(terms)).reservations).toHaveLength(0);
 });
+
+test("a signed long execution window cannot admit late work or rewrite an accepted deadline", async () => {
+  const terms = await install();
+  const request = { ...testDelegation(terms), executionExpiresAt: "2026-01-01T12:00:00.000Z" };
+  const input = await requestInput(request);
+  const accepted = await service.receive(input);
+  const late = new FederationAdmission(
+    db,
+    b.signing,
+    b.verification,
+    () => new Date("2026-01-01T02:00:00.000Z"),
+  );
+  expect(await late.receive(input)).toEqual(accepted);
+  await expect(
+    late.receive(
+      await requestInput({
+        ...request,
+        maxAmount: "1",
+        operationId: crypto.randomUUID(),
+        taskId: crypto.randomUUID(),
+      }),
+    ),
+  ).rejects.toThrow("AUTHORIZATION_EXPIRED");
+  await expect(
+    service.receive(
+      await requestInput({ ...request, executionExpiresAt: "2026-01-01T18:00:00.000Z" }),
+    ),
+  ).rejects.toThrow("OPERATION_CONFLICT");
+  expect((await rows(terms)).reservations).toHaveLength(1);
+  expect((await rows(terms)).budget?.reserved).toBe("60");
+});

@@ -34,7 +34,10 @@ import {
   type SpackPolicy,
   WorkflowExecutionInterrupted,
 } from "@kuintessence/shared";
-import { federationCanonicalJson } from "@kuintessence/shared/federation";
+import {
+  federationCanonicalJson,
+  federationExecutionDeadline,
+} from "@kuintessence/shared/federation";
 import { and, desc, eq, inArray, isNull, or, sql } from "drizzle-orm";
 import type { FederationDeliveryTarget } from "../federation/dispatch-authorization";
 import type { AgentDispatcher } from "../grpc/dispatcher";
@@ -833,7 +836,7 @@ export class SoftwareOperationService {
       if (!binding) return false;
       const expiresAt = Math.min(
         Date.now() + 10_000,
-        Date.parse(binding.snapshot.request.expiresAt),
+        federationExecutionDeadline(binding.snapshot.request),
         Date.parse(binding.terms.validUntil),
       );
       if (!Number.isSafeInteger(expiresAt) || expiresAt <= Date.now()) return false;

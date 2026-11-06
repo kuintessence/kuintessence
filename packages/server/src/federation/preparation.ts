@@ -229,7 +229,12 @@ export class FederationPreparationService {
       request.senderSiteId,
       request.environmentLockDigest,
     );
-    assertDelegationPolicy(FederationAgreementSchema.parse(agreement.terms), request, this.clock());
+    assertDelegationPolicy(
+      FederationAgreementSchema.parse(agreement.terms),
+      request,
+      this.clock(),
+      "execution",
+    );
     await trust.assertKey(
       tx,
       saved.agreement.sourceSiteId,
@@ -333,7 +338,12 @@ export class FederationPreparationService {
         .for("share");
       if (!current || current.state !== "active")
         throw new FederationError("AGREEMENT_UNAVAILABLE");
-      assertDelegationPolicy(FederationAgreementSchema.parse(current.terms), request, this.clock());
+      assertDelegationPolicy(
+        FederationAgreementSchema.parse(current.terms),
+        request,
+        this.clock(),
+        "execution",
+      );
       const inputs = await this.assets.readMaterial(
         tx,
         identity.orgId,

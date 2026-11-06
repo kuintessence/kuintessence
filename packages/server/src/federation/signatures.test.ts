@@ -123,3 +123,15 @@ test("Node and Bun agree on signed bytes and schema without importing the shared
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+test("execution deadline is covered by the original signed bytes", async () => {
+  const extended = { ...payload, executionExpiresAt: "2026-01-01T12:00:00.000Z" };
+  const signed = await signFederationMessage(FederationDelegationSchema, extended, keys.signing);
+  expect((await verify(signed)).payload.executionExpiresAt).toBe(extended.executionExpiresAt);
+  const [header, bytes, signature] = signed.split(".");
+  if (!header || !bytes || !signature) throw new Error("Missing signed fixture");
+  const changed = Buffer.from(
+    JSON.stringify({ ...extended, executionExpiresAt: "2026-01-01T18:00:00.000Z" }),
+  ).toString("base64url");
+  await expect(verify(`${header}.${changed}.${signature}`)).rejects.toThrow("INVALID_MESSAGE");
+});

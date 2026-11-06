@@ -93,7 +93,12 @@
 
 写请求返回持久操作 ID 与可核对状态，不能用 HTTP 202 代表任务已运行。查询返回签名回执或明确的未知/待核对结果；重复委派返回原结果，相同 ID 换正文为 409。403 表示授权拒绝，版本冲突和需要人工处理各有机器可识别错误码。
 
-信封字段：`protocolVersion, operationId, senderSiteId, recipientSiteId, agreementRevisionId, mode, budgetDomainId, epoch, taskId, attempt, issuedAt, expiresAt, payload`。JWS protected header 限定 `alg=RS256`、`kid`、类型和版本；对实际 UTF-8 payload 字节签名并保存原始 JWS，使用原字节摘要，不在接收端重排 JSON 验签。
+信封字段：`protocolVersion, operationId, senderSiteId, recipientSiteId, agreementRevisionId, mode, budgetDomainId, epoch, taskId, attempt, issuedAt, expiresAt, executionExpiresAt?, payload`。JWS protected header 限定 `alg=RS256`、`kid`、类型和版本；对实际 UTF-8 payload 字节签名并保存原始 JWS，使用原字节摘要，不在接收端重排 JSON 验签。
+
+委派的 `expiresAt` 只限定首次接单窗口，仍须在 `issuedAt` 后一小时内；可选 `executionExpiresAt` 限定已经接单后允许准备材料、启动安装/验证 worker、提交调度器的最终期限。它必须覆盖接单窗口且不超过协议 `validUntil`，由原请求签名和接单回执的 `requestDigest` 共同绑定。缺少该字段的历史请求继续使用原 `expiresAt`，不自动延长；同一 operationId 不能用重新签名的不同期限覆盖原接单记录。接单超时后的同请求重放只返回原回执，不重新预留或授予新执行权。
+
+执行期限不代替逐次许可：当前协议、机构密钥、资源、软件及数据授权仍须有效，计算/安装的短期许可不得超出执行期限，数据/Sandbox 的更早期限继续生效。到期后禁止新许可，不把它描述为运行中调度器作业或编译进程已停止；运行中撤权、停止确认和恢复另行实现，单个计算作业继续受已声明 wall time 约束。
+
 
 不要直接复用现有通用 `canonicalJson()` 作为跨机构密码协议：它用 `localeCompare` 排序，且忽略 undefined；也不要更改旧生态包签名算法以适配联邦。批次签署精确编码的 manifest 字节，严格 schema、重复字段/非法值处理、固定定点金额和跨运行时测试向量一起交付。
 
