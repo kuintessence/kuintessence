@@ -128,6 +128,28 @@ jobs:
         working-directory: packages/web
         run: bun run test src/lib/use-cp-software.test.ts
 
+      - name: Generate protobuf stubs for Web build
+        run: bun run --filter @kuintessence/proto generate
+      - name: Build Web for isolated UI regression tests
+        working-directory: packages/web
+        run: bun run build
+      - name: Install Chromium and screenshot fonts
+        working-directory: packages/web
+        run: |
+          bunx --no-install patchright install --with-deps chromium
+          sudo apt-get install -y fonts-noto-cjk fonts-liberation
+      - name: Verify shared UI and key page screenshots
+        working-directory: packages/web
+        run: bunx --no-install patchright test --config=e2e/ui-components.config.ts
+      - name: Upload UI browser results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ui-browser-${{ github.run_id }}
+          path: packages/web/test-results/ui-components/
+          retention-days: 7
+          if-no-files-found: warn
+
   lint-and-typecheck:
     name: Full typecheck + Helm validation
     if: inputs.run_runtime_checks || inputs.source_sha

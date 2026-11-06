@@ -295,7 +295,6 @@ export function SoftwarePolicyTable({
       {mobileReadOnly && (
         <p className="text-sm text-muted-foreground">{t("cp.software.desktopManage")}</p>
       )}
-      <RuntimeAndMaterialPanel canManage={canManage && !!overview} />
 
       {overviewQuery.error ? (
         <div className="rounded-md border border-status-failed/40 bg-[color-mix(in_oklab,var(--status-failed)_10%,transparent)] p-3 text-sm">
@@ -337,6 +336,8 @@ export function SoftwarePolicyTable({
           />
         </>
       ) : null}
+
+      <RuntimeAndMaterialPanel canManage={canManage && !!overview} />
 
       <AgentDetailSheet
         agent={selectedAgent}

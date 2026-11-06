@@ -264,18 +264,19 @@ export function RuntimeAndMaterialPanel({ canManage = false }: { canManage?: boo
   const { t } = useTranslation();
   const providerOrgId = useActiveOrganizationId();
   const compact = useMediaQuery("(max-width: 767px)");
-  const writable =
-    canManage &&
-    !(compact && isMobileHighRiskMutationBlocked("/software/runtime-contract-bindings"));
+  const compactReadOnly =
+    compact && isMobileHighRiskMutationBlocked("/software/runtime-contract-bindings");
+  const writable = canManage && !compactReadOnly;
   if (!providerOrgId)
     return (
       <p className="text-sm text-muted-foreground">{t("software.license.selectOrganization")}</p>
     );
   return (
     <RuntimeAndMaterialEditor
-      key={`${providerOrgId}:${writable}`}
+      key={`${providerOrgId}:${writable}:${compactReadOnly}`}
       providerOrgId={providerOrgId}
       canManage={writable}
+      compactReadOnly={compactReadOnly}
     />
   );
 }
@@ -283,9 +284,11 @@ export function RuntimeAndMaterialPanel({ canManage = false }: { canManage?: boo
 function RuntimeAndMaterialEditor({
   providerOrgId,
   canManage,
+  compactReadOnly,
 }: {
   providerOrgId: string;
   canManage: boolean;
+  compactReadOnly: boolean;
 }) {
   const { t } = useTranslation();
   const client = useQueryClient();
@@ -333,6 +336,7 @@ function RuntimeAndMaterialEditor({
   const assetsQ = useQuery({
     queryKey: ["licensed-material-software", providerOrgId, assetPage],
     queryFn: () => listSpackCatalog("vasp", 100, "official", assetPage),
+    enabled: !compactReadOnly,
     retry: false,
   });
   const assets = (assetsQ.data?.packages ?? []).filter(
@@ -367,6 +371,18 @@ function RuntimeAndMaterialEditor({
     !!materialVersion.trim() &&
     !!fingerprint.trim() &&
     elementSet.length > 0;
+  const runtimeRows = (bindingsQ.data ?? [])
+    .filter((binding) => !agentId || !binding.agentId || binding.agentId === agentId)
+    .map(
+      (binding) =>
+        `${binding.runtimeContractRef} → ${profilesQ.data?.find((item) => item.id === binding.runtimeProfileId)?.name ?? binding.runtimeProfileId} (${agents.find((item) => item.agentId === binding.agentId)?.siteName ?? binding.agentId ?? binding.clusterId ?? "provider"})`,
+    );
+  const materialRows = (materialsQ.data ?? [])
+    .filter((material) => !agentId || !material.agentId || material.agentId === agentId)
+    .map(
+      (material) =>
+        `${material.selector} · ${material.materialVersion} · ${material.elementSet.join(", ")}`,
+    );
   return (
     <section
       className="space-y-4 rounded-md border border-border bg-card p-4"
@@ -424,179 +440,190 @@ function RuntimeAndMaterialEditor({
               {t("cp.accounts.registration.noAgents")}
             </p>
           )}
-          <div className="grid gap-3 xl:grid-cols-2">
-            <form
-              className="grid gap-2 rounded-md border border-border bg-background p-3"
-              onSubmit={(event) => {
-                event.preventDefault();
-                if (baseReady && profile && runtimeDigest)
-                  bind.mutate({
-                    providerOrgId: providerOrgId.trim(),
-                    agentId: agentId.trim(),
-                    runtimeContractRef: "python-3.12-stdlib-v1",
-                    runtimeProfileId: profile.id,
-                    runtimeDigest,
-                  });
-              }}
-            >
-              <h3 className="text-sm font-medium">{t("software.license.runtimeBinding")}</h3>
-              <p className="text-xs text-muted-foreground">Python 3.12 · python-3.12-stdlib-v1</p>
-              <label className="grid gap-1 text-sm">
-                {t("software.license.runtimeProfile")}
-                <NativeSelect
-                  aria-label={t("software.license.runtimeProfile")}
-                  value={runtimeProfileId}
-                  disabled={!baseReady || bind.isPending}
-                  onChange={(event) => setRuntimeProfileId(event.target.value)}
-                  className="w-full min-w-0"
-                >
-                  <option value="">{t("software.license.selectRuntime")}</option>
-                  {profiles.map((item) => (
-                    <option key={item.id} value={item.id}>
-                      {item.name} · {item.languageVersion}
-                    </option>
-                  ))}
-                </NativeSelect>
-              </label>
-              {agent && !profiles.length && (
-                <p className="text-sm text-muted-foreground">
-                  {t("software.license.noCompatibleRuntime")}
-                </p>
-              )}
-              {runtimeDigest && (
-                <p
-                  className="break-all font-mono text-xs text-muted-foreground"
-                  title={t("software.license.runtimeDigest")}
-                >
-                  {runtimeDigest}
-                </p>
-              )}
-              <Button
-                type="submit"
-                size="sm"
-                disabled={!baseReady || !runtimeDigest || bind.isPending}
+          {compactReadOnly ? (
+            <div className="space-y-4" data-testid="runtime-material-readonly-summary">
+              <section aria-label={t("software.license.runtimeBinding")} className="space-y-2">
+                <h3 className="text-sm font-medium">{t("software.license.runtimeBinding")}</h3>
+                <GovernanceRows
+                  rows={runtimeRows}
+                  empty={t("software.license.noRuntimeBindings")}
+                />
+              </section>
+              <section aria-label={t("software.license.materialMapping")} className="space-y-2">
+                <h3 className="text-sm font-medium">{t("software.license.materialMapping")}</h3>
+                <GovernanceRows
+                  rows={materialRows}
+                  empty={t("software.license.noMaterialMappings")}
+                />
+              </section>
+            </div>
+          ) : (
+            <div className="grid gap-3 xl:grid-cols-2">
+              <form
+                className="grid gap-2 rounded-md border border-border bg-background p-3"
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  if (baseReady && profile && runtimeDigest)
+                    bind.mutate({
+                      providerOrgId: providerOrgId.trim(),
+                      agentId: agentId.trim(),
+                      runtimeContractRef: "python-3.12-stdlib-v1",
+                      runtimeProfileId: profile.id,
+                      runtimeDigest,
+                    });
+                }}
               >
-                {t("software.license.bindRuntime")}
-              </Button>
-              <GovernanceRows
-                rows={(bindingsQ.data ?? [])
-                  .filter((binding) => !agentId || !binding.agentId || binding.agentId === agentId)
-                  .map(
-                    (binding) =>
-                      `${binding.runtimeContractRef} → ${profilesQ.data?.find((item) => item.id === binding.runtimeProfileId)?.name ?? binding.runtimeProfileId} (${agents.find((item) => item.agentId === binding.agentId)?.siteName ?? binding.agentId ?? binding.clusterId ?? "provider"})`,
-                  )}
-                empty={t("software.license.noRuntimeBindings")}
-              />
-            </form>
-            <form
-              className="grid gap-2 rounded-md border border-border bg-background p-3"
-              onSubmit={(event) => {
-                event.preventDefault();
-                if (materialReady)
-                  register.mutate({
-                    providerOrgId: providerOrgId.trim(),
-                    agentId: agentId.trim(),
-                    assetId,
-                    selector: selector.trim(),
-                    materialName: "VASP POTCAR",
-                    materialVersion: materialVersion.trim(),
-                    elementSet,
-                    fingerprint: fingerprint.trim(),
-                  });
-              }}
-            >
-              <h3 className="text-sm font-medium">{t("software.license.materialMapping")}</h3>
-              <fieldset disabled={!baseReady || register.isPending} className="grid gap-2">
+                <h3 className="text-sm font-medium">{t("software.license.runtimeBinding")}</h3>
+                <p className="text-xs text-muted-foreground">Python 3.12 · python-3.12-stdlib-v1</p>
                 <label className="grid gap-1 text-sm">
-                  {t("software.license.materialSoftware")}
+                  {t("software.license.runtimeProfile")}
                   <NativeSelect
-                    aria-label={t("software.license.materialSoftware")}
-                    value={assetId}
-                    onChange={(event) => setAssetId(event.target.value)}
-                    disabled={assetsQ.isPending || !!assetsQ.error}
+                    aria-label={t("software.license.runtimeProfile")}
+                    value={runtimeProfileId}
+                    disabled={!baseReady || bind.isPending}
+                    onChange={(event) => setRuntimeProfileId(event.target.value)}
                     className="w-full min-w-0"
                   >
-                    <option value="">{t("software.license.selectMaterialSoftware")}</option>
-                    {assets.map((item) => (
-                      <option key={item.asset?.id} value={item.asset?.id}>
-                        {item.name} · {item.asset?.version}
+                    <option value="">{t("software.license.selectRuntime")}</option>
+                    {profiles.map((item) => (
+                      <option key={item.id} value={item.id}>
+                        {item.name} · {item.languageVersion}
                       </option>
                     ))}
                   </NativeSelect>
                 </label>
-                {assetsQ.error ? (
-                  <div role="alert" className="flex items-center gap-2 text-sm">
-                    <span>{t("software.license.loadFailed")}</span>
-                    <Button type="button" variant="outline" onClick={() => void assetsQ.refetch()}>
-                      {t("cp.common.retry")}
-                    </Button>
-                  </div>
-                ) : assetsQ.isPending ? (
-                  <p role="status">{t("cp.common.loading")}</p>
-                ) : !assets.length ? (
+                {agent && !profiles.length && (
                   <p className="text-sm text-muted-foreground">
-                    {t("software.license.noMaterialSoftware")}
+                    {t("software.license.noCompatibleRuntime")}
                   </p>
-                ) : null}
-                {assetPage > 1 || assetsQ.data?.hasNext ? (
-                  <PaginationControls
-                    previous={{
-                      disabled: assetPage === 1 || assetsQ.isPending,
-                      onClick: () => {
-                        setAssetId("");
-                        setAssetPage(assetPage - 1);
-                      },
-                    }}
-                    next={{
-                      disabled: !assetsQ.data?.hasNext || assetsQ.isPending,
-                      onClick: () => {
-                        setAssetId("");
-                        setAssetPage(assetPage + 1);
-                      },
-                    }}
-                  />
-                ) : null}
-                <Input
-                  value={selector}
-                  onChange={(event) => setSelector(event.target.value)}
-                  placeholder={t("software.license.materialSelector")}
-                  aria-label={t("software.license.materialSelector")}
-                />
-                <Input
-                  value={materialVersion}
-                  onChange={(event) => setMaterialVersion(event.target.value)}
-                  placeholder={t("software.license.materialVersion")}
-                  aria-label={t("software.license.materialVersion")}
-                />
-                <Input
-                  value={elements}
-                  onChange={(event) => setElements(event.target.value)}
-                  placeholder={t("software.license.elements")}
-                  aria-label={t("software.license.elements")}
-                />
-                <Input
-                  value={fingerprint}
-                  onChange={(event) => setFingerprint(event.target.value)}
-                  placeholder={t("software.license.fingerprint")}
-                  aria-label={t("software.license.fingerprint")}
-                />
-                <Button type="submit" size="sm" disabled={!materialReady || register.isPending}>
-                  {t("software.license.registerMaterial")}
+                )}
+                {runtimeDigest && (
+                  <p
+                    className="break-all font-mono text-xs text-muted-foreground"
+                    title={t("software.license.runtimeDigest")}
+                  >
+                    {runtimeDigest}
+                  </p>
+                )}
+                <Button
+                  type="submit"
+                  size="sm"
+                  disabled={!baseReady || !runtimeDigest || bind.isPending}
+                >
+                  {t("software.license.bindRuntime")}
                 </Button>
-              </fieldset>
-              <GovernanceRows
-                rows={(materialsQ.data ?? [])
-                  .filter(
-                    (material) => !agentId || !material.agentId || material.agentId === agentId,
-                  )
-                  .map(
-                    (material) =>
-                      `${material.selector} · ${material.materialVersion} · ${material.elementSet.join(", ")}`,
-                  )}
-                empty={t("software.license.noMaterialMappings")}
-              />
-            </form>
-          </div>
+                <GovernanceRows
+                  rows={runtimeRows}
+                  empty={t("software.license.noRuntimeBindings")}
+                />
+              </form>
+              <form
+                className="grid gap-2 rounded-md border border-border bg-background p-3"
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  if (materialReady)
+                    register.mutate({
+                      providerOrgId: providerOrgId.trim(),
+                      agentId: agentId.trim(),
+                      assetId,
+                      selector: selector.trim(),
+                      materialName: "VASP POTCAR",
+                      materialVersion: materialVersion.trim(),
+                      elementSet,
+                      fingerprint: fingerprint.trim(),
+                    });
+                }}
+              >
+                <h3 className="text-sm font-medium">{t("software.license.materialMapping")}</h3>
+                <fieldset disabled={!baseReady || register.isPending} className="grid gap-2">
+                  <label className="grid gap-1 text-sm">
+                    {t("software.license.materialSoftware")}
+                    <NativeSelect
+                      aria-label={t("software.license.materialSoftware")}
+                      value={assetId}
+                      onChange={(event) => setAssetId(event.target.value)}
+                      disabled={assetsQ.isPending || !!assetsQ.error}
+                      className="w-full min-w-0"
+                    >
+                      <option value="">{t("software.license.selectMaterialSoftware")}</option>
+                      {assets.map((item) => (
+                        <option key={item.asset?.id} value={item.asset?.id}>
+                          {item.name} · {item.asset?.version}
+                        </option>
+                      ))}
+                    </NativeSelect>
+                  </label>
+                  {assetsQ.error ? (
+                    <div role="alert" className="flex items-center gap-2 text-sm">
+                      <span>{t("software.license.loadFailed")}</span>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        onClick={() => void assetsQ.refetch()}
+                      >
+                        {t("cp.common.retry")}
+                      </Button>
+                    </div>
+                  ) : assetsQ.isPending ? (
+                    <p role="status">{t("cp.common.loading")}</p>
+                  ) : !assets.length ? (
+                    <p className="text-sm text-muted-foreground">
+                      {t("software.license.noMaterialSoftware")}
+                    </p>
+                  ) : null}
+                  {assetPage > 1 || assetsQ.data?.hasNext ? (
+                    <PaginationControls
+                      previous={{
+                        disabled: assetPage === 1 || assetsQ.isPending,
+                        onClick: () => {
+                          setAssetId("");
+                          setAssetPage(assetPage - 1);
+                        },
+                      }}
+                      next={{
+                        disabled: !assetsQ.data?.hasNext || assetsQ.isPending,
+                        onClick: () => {
+                          setAssetId("");
+                          setAssetPage(assetPage + 1);
+                        },
+                      }}
+                    />
+                  ) : null}
+                  <Input
+                    value={selector}
+                    onChange={(event) => setSelector(event.target.value)}
+                    placeholder={t("software.license.materialSelector")}
+                    aria-label={t("software.license.materialSelector")}
+                  />
+                  <Input
+                    value={materialVersion}
+                    onChange={(event) => setMaterialVersion(event.target.value)}
+                    placeholder={t("software.license.materialVersion")}
+                    aria-label={t("software.license.materialVersion")}
+                  />
+                  <Input
+                    value={elements}
+                    onChange={(event) => setElements(event.target.value)}
+                    placeholder={t("software.license.elements")}
+                    aria-label={t("software.license.elements")}
+                  />
+                  <Input
+                    value={fingerprint}
+                    onChange={(event) => setFingerprint(event.target.value)}
+                    placeholder={t("software.license.fingerprint")}
+                    aria-label={t("software.license.fingerprint")}
+                  />
+                  <Button type="submit" size="sm" disabled={!materialReady || register.isPending}>
+                    {t("software.license.registerMaterial")}
+                  </Button>
+                </fieldset>
+                <GovernanceRows
+                  rows={materialRows}
+                  empty={t("software.license.noMaterialMappings")}
+                />
+              </form>
+            </div>
+          )}
         </>
       )}
     </section>
@@ -609,7 +636,7 @@ function GovernanceRows({ rows, empty }: { rows: string[]; empty: string }) {
   ) : (
     <ul className="space-y-1 text-xs text-muted-foreground">
       {rows.map((row) => (
-        <li key={row} className="break-all">
+        <li key={row} className="break-words [overflow-wrap:anywhere]">
           {row}
         </li>
       ))}

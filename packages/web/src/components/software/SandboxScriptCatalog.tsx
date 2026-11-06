@@ -9,6 +9,7 @@ import { toUserFacingError } from "../../lib/user-facing-error";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { Card, CardContent, CardHeader } from "../ui/card";
+import { EmptyState, ErrorState, LoadingState } from "../ui/content-state";
 import { NativeSelect } from "../ui/native-select";
 import { PageHeader, PageShell } from "../ui/page";
 import { SearchInput } from "../ui/search-input";
@@ -19,6 +20,7 @@ import {
   cardSurfaceLinkClass,
   clickableCardClass,
 } from "./card-navigation";
+import { SoftwareCardGrid } from "./SoftwareCardGrid";
 
 type LanguageFilter = "all" | "python" | "nodejs" | "bash";
 
@@ -112,11 +114,9 @@ export function SandboxScriptCatalog({ embedded = false }: { embedded?: boolean 
       </div>
 
       {scriptsQuery.isLoading ? (
-        <div className="py-12 text-center text-sm text-muted-foreground">{t("common.loading")}</div>
+        <LoadingState>{t("common.loading")}</LoadingState>
       ) : scriptsQuery.error instanceof Error ? (
-        <div className="rounded-md border border-status-failed/40 p-4 text-sm text-[var(--status-failed)]">
-          {toUserFacingError(scriptsQuery.error, t("software.unreachable"))}
-        </div>
+        <ErrorState>{toUserFacingError(scriptsQuery.error, t("software.unreachable"))}</ErrorState>
       ) : scripts.length === 0 ? (
         <CatalogEmptyState
           actionLabel={t("sandbox.catalog.create")}
@@ -128,13 +128,13 @@ export function SandboxScriptCatalog({ embedded = false }: { embedded?: boolean 
           title={t("sandbox.catalog.emptyLibraryTitle")}
         />
       ) : visible.length === 0 ? (
-        <div className="rounded-lg border border-dashed border-border py-16 text-center">
-          <Code2 className="mx-auto h-8 w-8 text-muted-foreground" />
-          <h2 className="mt-3 text-sm font-semibold">{t("sandbox.catalog.empty")}</h2>
-          <p className="mt-1 text-xs text-muted-foreground">{t("sandbox.catalog.emptyHint")}</p>
-        </div>
+        <EmptyState
+          icon={<Code2 />}
+          title={t("sandbox.catalog.empty")}
+          description={t("sandbox.catalog.emptyHint")}
+        />
       ) : (
-        <div className="grid gap-4 lg:grid-cols-2 2xl:grid-cols-3">
+        <SoftwareCardGrid className="gap-4">
           {visible.map((script) => (
             <Card
               key={script.id}
@@ -207,7 +207,7 @@ export function SandboxScriptCatalog({ embedded = false }: { embedded?: boolean 
               </CardContent>
             </Card>
           ))}
-        </div>
+        </SoftwareCardGrid>
       )}
     </PageShell>
   );

@@ -2,6 +2,7 @@ import { Link } from "@tanstack/react-router";
 import { PackagePlus } from "lucide-react";
 import type { ReactNode } from "react";
 import { Button } from "../ui/button";
+import { EmptyState } from "../ui/content-state";
 
 type CatalogCreateRoute =
   | "/software/workflow-templates/new"
@@ -27,25 +28,21 @@ export function CatalogEmptyState({
   title: string;
 }) {
   return (
-    <div
-      className="overflow-hidden rounded-lg border border-dashed border-border bg-muted/20"
+    <EmptyState
       data-testid={testId}
-    >
-      <div className="flex flex-col items-center px-5 py-9 text-center">
-        <div className="flex h-11 w-11 items-center justify-center rounded-lg border border-border bg-card text-brand shadow-sm [&_svg]:h-5 [&_svg]:w-5">
-          {icon}
-        </div>
-        <h3 className="mt-3 text-sm font-semibold text-foreground">{title}</h3>
-        <p className="mt-1 max-w-md text-sm text-muted-foreground">{description}</p>
-        {showAction ? (
-          <Button asChild size="sm" className="mt-4">
+      icon={icon}
+      title={title}
+      description={description}
+      actions={
+        showAction ? (
+          <Button asChild size="sm">
             <Link to={actionTo}>
               <PackagePlus />
               {actionLabel}
             </Link>
           </Button>
-        ) : null}
-      </div>
-    </div>
+        ) : null
+      }
+    />
   );
 }

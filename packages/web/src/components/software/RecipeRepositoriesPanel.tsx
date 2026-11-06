@@ -16,6 +16,7 @@ import { useMobileMutationBlocked } from "../../lib/use-mobile-mutation-blocked"
 import { toUserFacingError } from "../../lib/user-facing-error";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
+import { EmptyState, ErrorState, LoadingState } from "../ui/content-state";
 import { RecipeBundleImport } from "./RecipeBundleImport";
 import { RecipeRepositoryDetail } from "./RecipeRepositoryDetail";
 import { SpackOnlineImport } from "./SpackOnlineImport";
@@ -177,15 +178,11 @@ function RepositoryPanel({
         />
       ) : null}
       {repositories.isPending ? (
-        <p role="status" className="text-xs">
-          {t("recipes.loading")}
-        </p>
+        <LoadingState>{t("recipes.loading")}</LoadingState>
       ) : repositories.error ? (
-        <p role="alert" className="text-xs text-status-failed">
-          {toUserFacingError(repositories.error, t("recipes.loadFailed"))}
-        </p>
+        <ErrorState>{toUserFacingError(repositories.error, t("recipes.loadFailed"))}</ErrorState>
       ) : repositories.data?.length === 0 ? (
-        <p className="text-xs text-muted-foreground">{t("recipes.empty")}</p>
+        <EmptyState title={t("recipes.empty")} />
       ) : (
         <div className="max-h-[28rem] overflow-auto">
           <table className="w-full text-left text-xs" aria-label={t("recipes.title")}>

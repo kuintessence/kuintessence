@@ -67,3 +67,33 @@ bunx --no-install patchright test --config=e2e/ui-components.config.ts
 ```
 
 可通过 `KQ_UI_CHROMIUM_EXECUTABLE` 指定本机 Chromium。测试覆盖桌面、平板、窄屏和明暗主题，验证排序、分页、键盘选择、原生表单及空状态的横向溢出。截图输出到 `packages/web/test-results/ui-components/`。
+
+## 业务组合与响应式页面
+
+- `ListToolbar` 组合现有 `SearchInput`、筛选内容和操作区，已用于作业、工作流及软件目录。通过 `search` 传输入框属性，筛选传 `children`，按钮传 `actions`；查询、清空、重置页码和权限判断由页面负责。
+- `FormField` 统一 label、说明和错误布局，已替换软件创建／版本表单中 32 处重复字段。子函数接收自动生成的 `id`、`aria-describedby`、`aria-invalid`，展开到已有 `Input`、`Textarea` 或 `NativeSelect`；需要稳定 ID 时传 `id`。校验规则仍在业务表单中。
+- `LoadingState`、`ErrorState`、`EmptyState` 统一列表状态，分别提供 status、alert 和空状态标题／说明／操作组合。`CatalogEmptyState` 只保留软件目录的创建链接语义，视觉复用公共空状态。
+- `SoftwareCardGrid` 按实际内容区宽度排列卡片，每列至少 20rem；窄于 20rem 时占满容器。模板、Spack 目录、脚本目录共用，不根据整个视口盲目增加列数。
+- 手机只读策略生效时，提供者软件页优先显示策略、Agent 状态和配置摘要。运行环境及材料映射保留 Agent 筛选和现有记录，省去禁用的编辑表单；材料管理区默认折叠，仍可展开查询。允许写入的桌面视图保留编辑流程。
+
+```tsx
+<FormField label={t("software.manage.templateName")} description={help} error={error}>
+  {(field) => <Input {...field} value={name} onChange={onNameChange} />}
+</FormField>
+```
+
+## CI 截图回归
+
+CI 的 Static checks 在每个 PR 上构建真实 Web 样式并执行 `e2e/ui-components.config.ts`，共 23 项浏览器检查。已有组件交互测试与关键页面截图一起执行；软件、工作流页面覆盖 320 / 768 / 1280px 和明暗主题，提供者运行环境摘要覆盖手机明暗主题。
+
+页面夹具挂载真实页面组件，查询缓存预填固定演示数据，不连接业务服务。左侧仅模拟导航占用的宽度，导航本身由预览验收覆盖。固定时间、时区和测试字体，截图基线保存在 `packages/web/e2e/snapshots/ui/`；字体约束只用于测试。CI 上传截图差异及失败 trace，保留 7 天。没有基线或像素差异超过 1% 时检查失败。
+
+布局／主题有意修改后，在 Linux、对应版本 Chromium 和 `fonts-noto-cjk` / `fonts-liberation` 环境更新基线，并人工审阅图片：
+
+```sh
+cd packages/web
+bun run build
+bunx --no-install patchright test --config=e2e/ui-components.config.ts --update-snapshots
+```
+
+普通验证不加 `--update-snapshots`；不要用更新基线掩盖非预期变化。预览站仍需检查登录、真实接口、权限和筛选，这些不由离线截图替代。

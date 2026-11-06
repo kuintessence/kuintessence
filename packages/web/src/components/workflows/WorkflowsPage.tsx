@@ -8,9 +8,10 @@ import { toUserFacingError } from "../../lib/user-facing-error";
 import { cn } from "../../lib/utils";
 import { Button } from "../ui/button";
 import { Card, CardContent } from "../ui/card";
+import { ErrorState } from "../ui/content-state";
+import { ListToolbar } from "../ui/list-toolbar";
 import { PageHeader, PageShell } from "../ui/page";
 import { PaginationControls } from "../ui/pagination-controls";
-import { SearchInput } from "../ui/search-input";
 import { ToggleGroup, ToggleGroupItem } from "../ui/toggle-group";
 import { DeleteWorkflowDraftDialog } from "./DeleteWorkflowDraftDialog";
 import { type WorkflowRunRow, WorkflowsTable } from "./WorkflowsTable";
@@ -291,80 +292,78 @@ export function WorkflowsPage() {
 
       <Card className="rounded-xl shadow-none">
         <CardContent className="space-y-4 p-4">
-          <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
-            <div className="flex min-w-0 flex-1 flex-col gap-3 2xl:flex-row 2xl:items-center">
-              <SearchInput
-                containerClassName="w-full 2xl:w-96"
-                aria-label={t("workflows.searchPlaceholder")}
-                value={search}
-                onChange={(e) => {
-                  setSearch(e.target.value);
-                  setOffset(0);
-                }}
-                placeholder={t("workflows.searchPlaceholder")}
-                className="h-10 rounded-lg bg-background"
-                data-testid="workflows-search"
-              />
-              <ToggleGroup
-                type="single"
-                role="radiogroup"
-                value={status}
-                onValueChange={(value) => {
-                  if (!value) return;
-                  setStatus(value as WorkflowFilter);
-                  setOffset(0);
-                }}
-                aria-label={t("dashboard.status")}
-                data-testid="workflows-status-filter"
-              >
-                {WORKFLOW_FILTERS.map((s) => (
-                  <ToggleGroupItem
-                    key={s}
-                    value={s}
-                    data-testid={`workflows-chip-${s.toLowerCase()}`}
-                    className="text-xs"
-                  >
-                    {s === "ALL" ? t("common.all") : t(`workflows.filters.${s.toLowerCase()}`)}
-                    {s !== "ALL" ? (
-                      <span
-                        className="tabular-nums"
-                        data-testid={`workflows-summary-${s.toLowerCase()}`}
-                      >
-                        {loadError ? "—" : statusCounts[s]}
-                      </span>
-                    ) : null}
-                  </ToggleGroupItem>
-                ))}
-              </ToggleGroup>
-            </div>
-            {hasFilters ? (
-              <Button
-                type="button"
-                variant="ghost"
-                size="sm"
-                onClick={() => {
-                  setSearch("");
-                  setStatus("ALL");
-                  setOffset(0);
-                }}
-                data-testid="workflows-clear-filters"
-              >
-                <X />
-                {t("workflows.clearFilters")}
-              </Button>
-            ) : null}
-          </div>
+          <ListToolbar
+            search={{
+              containerClassName: "w-full 2xl:w-96",
+              "aria-label": t("workflows.searchPlaceholder"),
+              value: search,
+              onChange: (e) => {
+                setSearch(e.target.value);
+                setOffset(0);
+              },
+              placeholder: t("workflows.searchPlaceholder"),
+              className: "h-10 rounded-lg bg-background",
+              "data-testid": "workflows-search",
+            }}
+            actions={
+              hasFilters ? (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => {
+                    setSearch("");
+                    setStatus("ALL");
+                    setOffset(0);
+                  }}
+                  data-testid="workflows-clear-filters"
+                >
+                  <X />
+                  {t("workflows.clearFilters")}
+                </Button>
+              ) : null
+            }
+          >
+            <ToggleGroup
+              type="single"
+              role="radiogroup"
+              value={status}
+              onValueChange={(value) => {
+                if (!value) return;
+                setStatus(value as WorkflowFilter);
+                setOffset(0);
+              }}
+              aria-label={t("dashboard.status")}
+              data-testid="workflows-status-filter"
+            >
+              {WORKFLOW_FILTERS.map((s) => (
+                <ToggleGroupItem
+                  key={s}
+                  value={s}
+                  data-testid={`workflows-chip-${s.toLowerCase()}`}
+                  className="text-xs"
+                >
+                  {s === "ALL" ? t("common.all") : t(`workflows.filters.${s.toLowerCase()}`)}
+                  {s !== "ALL" ? (
+                    <span
+                      className="tabular-nums"
+                      data-testid={`workflows-summary-${s.toLowerCase()}`}
+                    >
+                      {loadError ? "—" : statusCounts[s]}
+                    </span>
+                  ) : null}
+                </ToggleGroupItem>
+              ))}
+            </ToggleGroup>
+          </ListToolbar>
 
           {loadError ? (
-            <div
-              className="rounded-lg border border-status-failed/40 bg-[color-mix(in_oklab,var(--status-failed)_10%,transparent)] p-3 text-sm"
-              data-testid="workflows-list-error"
-            >
+            <ErrorState data-testid="workflows-list-error">
               {toUserFacingError(
                 loadError,
                 t("workflows.loadFailed", { defaultValue: "无法加载工作流列表，请稍后重试。" }),
               )}
-            </div>
+            </ErrorState>
           ) : null}
 
           {loadError ? null : (
