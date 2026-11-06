@@ -26,6 +26,7 @@ export interface WorkflowAsyncRunnerDeps {
     orgId?: string | null,
     executionLease?: LeasedWorkflowJournal,
   ) => (yaml: string) => Promise<RunResult>;
+  authorizeFederationExecution?: (runId: string, lease: LeasedWorkflowJournal) => Promise<void>;
   cancelSubmittedJobs?: (runId: string) => Promise<void>;
   preparePlacement?: (
     runId: string,
@@ -316,11 +317,14 @@ export class WorkflowAsyncRunner {
           });
       }
       const savedRun = await this.deps.registry.getById(runId);
-      if (savedRun?.input?.federationReservationId)
-        throw new WorkflowExecutionInterrupted(
-          "Federation execution requires its local dispatch authorization",
-          { retryable: false },
-        );
+      if (savedRun?.input?.federationReservationId) {
+        if (!active || !this.deps.authorizeFederationExecution)
+          throw new WorkflowExecutionInterrupted(
+            "Federation execution requires its local dispatch authorization",
+            { retryable: false },
+          );
+        await this.deps.authorizeFederationExecution(runId, active.lease);
+      }
       await this.deps.assertExecutionPrincipal?.({
         userId: input.submittedBy,
         orgId: input.orgId ?? null,

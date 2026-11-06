@@ -58,6 +58,7 @@ import { FederationDispatchAuthorization } from "./federation/dispatch-authoriza
 import {
   FederationExecutionBindingService,
   loadFederationWorkflowBinding,
+  queueFederationWorkflow,
 } from "./federation/execution-binding";
 import { FederationExecutionMonitor } from "./federation/execution-monitor";
 import { createFederationPackageResolver } from "./federation/package-resolver";
@@ -199,6 +200,7 @@ import { TransferRunner } from "./services/transfer-runner";
 import { assertUsecasePackageExecutionAccess } from "./services/usecase-execution-authorizer";
 import { PgArtifactStore, WorkflowArtifactService } from "./services/workflow-artifact";
 import { WorkflowArtifactFiles } from "./services/workflow-artifact-files";
+import { registerWorkflowAuthorization } from "./services/workflow-authorization";
 import { createWorkflowPlacementBuilder } from "./services/workflow-placement-builder";
 import {
   InstalledRegistry,
@@ -277,6 +279,7 @@ const eventBus = new EventBus();
 const preferenceService = new PreferenceService(db);
 const dispatcher = new AgentDispatcher();
 const jobCancellationOutbox = new JobCancellationOutbox(db, dispatcher);
+let federationDispatchAuthorization: FederationDispatchAuthorization | undefined;
 let federationDataDispatch = new FederationDataDispatch(db);
 const jobDispatchOutbox = new JobDispatchOutbox(
   db,
@@ -1234,6 +1237,11 @@ const makeRunner =
     })(yaml);
   };
 const workflowAsyncRunner = new WorkflowAsyncRunner({
+  authorizeFederationExecution: async (runId, lease) => {
+    if (!federationDispatchAuthorization)
+      throw new WorkflowExecutionInterrupted("Federation workflow authorization is unavailable");
+    await federationDispatchAuthorization.authorizeWorkflow(runId, lease);
+  },
   registry: workflowRegistry,
   journal: new WorkflowExecutionJournalStore(db),
   resolveNamedReferences: (workflow, principal) =>
@@ -1586,7 +1594,7 @@ const federationAttestation = federationSigningKey
 const federationPreparation = federationSigningKey
   ? new FederationPreparationService(db, federationSigningKey.siteId, federationAssets)
   : undefined;
-const federationDispatchAuthorization = federationPreparation
+federationDispatchAuthorization = federationPreparation
   ? new FederationDispatchAuthorization(
       db,
       federationPreparation,
@@ -2099,6 +2107,21 @@ const federationPreparationWorker = federationPreparation
       db,
       federationPreparation,
       new FederationExecutionBindingService(db, federationPreparation),
+      async (runId) => {
+        if (!federationDispatchAuthorization)
+          throw new WorkflowExecutionInterrupted(
+            "Federation workflow authorization is unavailable",
+          );
+        const binding = await loadFederationWorkflowBinding(db, runId);
+        if (!binding) throw new Error("Federation workflow binding is unavailable");
+        await registerWorkflowAuthorization(
+          authzService,
+          runId,
+          binding.snapshot.identity.userId,
+          binding.snapshot.identity.orgId,
+        );
+        return queueFederationWorkflow(db, federationDispatchAuthorization, runId);
+      },
     )
   : undefined;
 federationPreparationWorker?.start();

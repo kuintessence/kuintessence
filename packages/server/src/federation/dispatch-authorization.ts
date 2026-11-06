@@ -12,10 +12,15 @@ import { and, eq } from "drizzle-orm";
 import type { QueueRegistryService } from "../services/queue-registry";
 import type { SandboxPolicyService } from "../services/sandbox-policy";
 import type { SoftwareAvailabilityService } from "../services/software-availability";
+import type { LeasedWorkflowJournal } from "../workflow/execution-journal";
 import { constrainWorkflowResources } from "../workflow/resource-limits";
 import { federationMaterialDigest } from "./assets";
 import { federationExecutionSnapshot, loadFederationWorkflowBinding } from "./execution-binding";
-import { checkFederationExecutionPolicy, checkFederationJobData } from "./execution-policy";
+import {
+  checkFederationExecutionPolicy,
+  checkFederationJobData,
+  federationExecutionDenial,
+} from "./execution-policy";
 import { lockFederationTarget, resolveFederationTargets } from "./execution-targets";
 import { checkFederationLicensedMaterials } from "./licensed-material-authorization";
 import { checkFederationNetdriveJob } from "./netdrive-inputs";
@@ -43,6 +48,20 @@ export class FederationDispatchAuthorization {
     >,
     private readonly sandboxPolicies?: Pick<SandboxPolicyService, "effectiveFor">,
   ) {}
+
+  async authorizeWorkflow(runId: string, lease: LeasedWorkflowJournal): Promise<void> {
+    if (lease.runId !== runId) throw new FederationError("OPERATION_CONFLICT");
+    try {
+      const authorize = await this.prepare(runId);
+      await lease.transaction(authorize);
+    } catch (cause) {
+      if (cause instanceof WorkflowExecutionInterrupted || federationExecutionDenial(cause))
+        throw cause;
+      throw new WorkflowExecutionInterrupted("Federation workflow authorization is pending", {
+        cause,
+      });
+    }
+  }
 
   async checkActiveJobs(runId: string): Promise<void> {
     await checkFederationExecutionPolicy(

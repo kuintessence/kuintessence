@@ -52,7 +52,13 @@ import {
   LicensedMaterialMountSchema,
   ServerMessageSchema,
 } from "@kuintessence/proto";
-import { AppError, canonicalJson, ErrorCode, workflowDsl } from "@kuintessence/shared";
+import {
+  AppError,
+  canonicalJson,
+  ErrorCode,
+  WorkflowExecutionInterrupted,
+  workflowDsl,
+} from "@kuintessence/shared";
 import {
   FederationAcceptanceSchema,
   FederationAgreementSchema,
@@ -82,6 +88,7 @@ import { SoftwareOperationService } from "../software-governance/operation-servi
 import { WorkflowAsyncRunner } from "../workflow/async-runner";
 import { WorkflowExecutionJournalStore } from "../workflow/execution-journal";
 import { WorkflowRunRegistry } from "../workflow/run-registry";
+import { createWorkflowRunner } from "../workflow/runner";
 import { FederationAdmission } from "./admission";
 import { FederationAssetService, federationMaterialDigest } from "./assets";
 import { FederationDataDispatch } from "./data-dispatch";
@@ -89,6 +96,7 @@ import { FederationDispatchAuthorization } from "./dispatch-authorization";
 import {
   FederationExecutionBindingService,
   loadFederationWorkflowBinding,
+  queueFederationWorkflow,
 } from "./execution-binding";
 import { FederationExecutionMonitor } from "./execution-monitor";
 import { FederationPermissionService } from "./permissions";
@@ -702,6 +710,7 @@ test("plan API reports a specific incompatible field and refuses automation and 
 });
 
 async function executionFixture(executionExpiresAt?: string) {
+  await assets.register(actor, { reference: scriptRef, localRevisionId: revisionId });
   const manifest: FederationInputManifest = {
     protocolVersion: 1,
     kind: "inputs",
@@ -3067,4 +3076,160 @@ test.each([
     await f.cleanup();
     await db.delete(sandboxRuntimeProfiles).where(eq(sandboxRuntimeProfiles.id, profileId));
   }
+});
+
+test("federation activation queues one original run and never revives a terminal run", async () => {
+  const f = await executionFixture();
+  const binding = await f.bindings.stage(f.reservationId);
+  const authorization = new FederationDispatchAuthorization(db, f.preparation);
+  const results = await Promise.all(
+    Array.from({ length: 5 }, () =>
+      queueFederationWorkflow(db, authorization, binding.workflowRunId),
+    ),
+  );
+  expect(results.filter(Boolean)).toHaveLength(1);
+  expect((await new WorkflowRunRegistry(db).getById(binding.workflowRunId))?.status).toBe("queued");
+  await db
+    .update(workflowRuns)
+    .set({ status: "cancelled" })
+    .where(eq(workflowRuns.id, binding.workflowRunId));
+  expect(await queueFederationWorkflow(db, authorization, binding.workflowRunId)).toBe(false);
+  expect((await f.bindings.stage(f.reservationId)).workflowRunId).toBe(binding.workflowRunId);
+});
+
+test("federation activation rechecks revocation between preparation and the queue transaction", async () => {
+  const f = await executionFixture();
+  const binding = await f.bindings.stage(f.reservationId);
+  const authorization = new FederationDispatchAuthorization(db, f.preparation);
+  try {
+    await expect(
+      queueFederationWorkflow(
+        db,
+        {
+          prepare: async (...args) => {
+            const fence = await authorization.prepare(...args);
+            await db.update(users).set({ suspended: true }).where(eq(users.id, identity.userId));
+            return fence;
+          },
+        },
+        binding.workflowRunId,
+      ),
+    ).rejects.toThrow();
+    expect((await new WorkflowRunRegistry(db).getById(binding.workflowRunId))?.status).toBe(
+      "submitted",
+    );
+  } finally {
+    await db.update(users).set({ suspended: false }).where(eq(users.id, identity.userId));
+  }
+});
+
+test.each([
+  "granted",
+  "revoked",
+  "unavailable",
+  "checkpoint",
+] as const)("federation activation recovery obtains current authority: %s", async (mode) => {
+  const f = await executionFixture();
+  const binding = await f.bindings.stage(f.reservationId);
+  const authorization = new FederationDispatchAuthorization(db, f.preparation);
+  await queueFederationWorkflow(db, authorization, binding.workflowRunId);
+  const registry = new WorkflowRunRegistry(db);
+  let executions = 0;
+  const pending: Array<() => Promise<void>> = [];
+  let checkpointPending = mode === "checkpoint";
+  const makeRunner = () =>
+    new WorkflowAsyncRunner({
+      registry,
+      awaitCheckpointPersistence: async () => {
+        if (checkpointPending)
+          throw new WorkflowExecutionInterrupted("checkpoint publication pending");
+      },
+      journal: new WorkflowExecutionJournalStore(db),
+      schedule: (task) => {
+        pending.push(task);
+      },
+      authorizeFederationExecution: (id, lease) => authorization.authorizeWorkflow(id, lease),
+      makeRunner: (_user, _role, _runId, _placement, _orgId, lease) =>
+        createWorkflowRunner({
+          journal: lease,
+          resolvePackage: async () => {
+            throw new Error("Unexpected package");
+          },
+          submitJob: async () => {
+            throw new Error("Unexpected software Job");
+          },
+          executeScript: async () => {
+            executions++;
+            return { status: "Succeeded", values: {} };
+          },
+        }),
+    });
+  let runner = makeRunner();
+  const snapshot = f.preparation.executionSnapshot.bind(f.preparation);
+  const injected = spyOn(f.preparation, "executionSnapshot").mockImplementation(async (...args) => {
+    if (mode === "unavailable") throw new Error("temporary database connection loss");
+    return snapshot(...args);
+  });
+  try {
+    if (mode === "revoked")
+      await db.update(users).set({ suspended: true }).where(eq(users.id, identity.userId));
+    await runner.recoverInterruptedRuns(true);
+    for (const task of pending.splice(0)) await task();
+    const run = await registry.getById(binding.workflowRunId);
+    expect(executions).toBe(mode === "granted" || mode === "checkpoint" ? 1 : 0);
+    expect(run?.status).toBe(
+      mode === "granted" ? "completed" : mode === "revoked" ? "failed" : "running",
+    );
+    if (mode === "unavailable" || mode === "checkpoint") {
+      expect(run?.errorCode).toBe("WORKFLOW_RECOVERY_PENDING");
+      injected.mockRestore();
+      await runner.stop();
+      checkpointPending = false;
+      runner = makeRunner();
+      await runner.recoverInterruptedRuns(true);
+      for (const task of pending.splice(0)) await task();
+      expect((await registry.getById(binding.workflowRunId))?.status).toBe("completed");
+      expect(executions).toBe(1);
+    }
+    expect(
+      await queueFederationWorkflow(db, authorization, binding.workflowRunId).catch(() => false),
+    ).toBe(false);
+  } finally {
+    injected.mockRestore();
+    await runner.stop();
+    await db.update(users).set({ suspended: false }).where(eq(users.id, identity.userId));
+  }
+});
+
+test("federation activation worker recovers a previously bound held run after temporary failure", async () => {
+  const f = await executionFixture();
+  const binding = await f.bindings.stage(f.reservationId);
+  await f.preparation.prepare(f.reservationId);
+  const authorization = new FederationDispatchAuthorization(db, f.preparation);
+  let available = false;
+  const worker = new FederationPreparationWorker(db, f.preparation, f.bindings, async (id) => {
+    if (id !== binding.workflowRunId) return false;
+    if (!available) throw new Error("temporary activation outage");
+    return queueFederationWorkflow(db, authorization, id);
+  });
+  const readyForRetry = () =>
+    db
+      .update(federationPreparations)
+      .set({ updatedAt: new Date(0) })
+      .where(eq(federationPreparations.reservationId, f.reservationId));
+  await readyForRetry();
+  await worker.tick();
+  expect((await new WorkflowRunRegistry(db).getById(binding.workflowRunId))?.status).toBe(
+    "submitted",
+  );
+  const [state] = await db
+    .select()
+    .from(federationPreparations)
+    .where(eq(federationPreparations.reservationId, f.reservationId));
+  expect(state?.updatedAt.getTime()).toBeGreaterThan(Date.now() - 10_000);
+  available = true;
+  await readyForRetry();
+  await worker.tick();
+  expect((await new WorkflowRunRegistry(db).getById(binding.workflowRunId))?.status).toBe("queued");
+  await worker.stop();
 });

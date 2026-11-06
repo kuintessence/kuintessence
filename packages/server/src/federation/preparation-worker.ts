@@ -4,6 +4,7 @@ import {
   federationReservations,
   federationWorkflowBindings,
   type PgDb,
+  workflowRuns,
 } from "@kuintessence/db";
 import { createLogger } from "@kuintessence/shared";
 import { FederationError } from "@kuintessence/shared/federation";
@@ -14,7 +15,7 @@ import type { FederationPreparationService } from "./preparation";
 
 const logger = createLogger("federation-preparation");
 
-/** Resolve and bind held runs; this worker never queues compute jobs or calls a ledger. */
+/** Resolve, bind and authorize workflows; compute dispatch retains its own authorization. */
 export class FederationPreparationWorker {
   private timer?: ReturnType<typeof setInterval>;
   private running?: Promise<void>;
@@ -22,6 +23,7 @@ export class FederationPreparationWorker {
     private readonly db: PgDb,
     private readonly service: FederationPreparationService,
     private readonly bindings?: FederationExecutionBindingService,
+    private readonly queueRun?: (runId: string) => Promise<boolean>,
   ) {}
 
   start() {
@@ -69,6 +71,7 @@ export class FederationPreparationWorker {
         federationWorkflowBindings,
         eq(federationWorkflowBindings.reservationId, federationReservations.id),
       )
+      .leftJoin(workflowRuns, eq(workflowRuns.id, federationWorkflowBindings.workflowRunId))
       .where(
         and(
           eq(federationAgreements.targetSiteId, this.service.localSiteId),
@@ -79,6 +82,7 @@ export class FederationPreparationWorker {
               or(
                 ne(federationPreparations.state, "resolved"),
                 this.bindings ? isNull(federationWorkflowBindings.reservationId) : sql`false`,
+                this.queueRun ? eq(workflowRuns.status, "submitted") : sql`false`,
               ),
               lt(federationPreparations.updatedAt, cutoff),
             ),
@@ -95,7 +99,10 @@ export class FederationPreparationWorker {
     for (const row of rows) {
       try {
         const prepared = await this.service.prepare(row.id);
-        if (prepared.state === "resolved") await this.bindings?.stage(row.id);
+        if (prepared.state === "resolved") {
+          const binding = await this.bindings?.stage(row.id);
+          if (binding) await this.queueRun?.(binding.workflowRunId);
+        }
       } catch (error) {
         if (error instanceof FederationError || error instanceof FederationMaterializationError) {
           await this.db
@@ -112,6 +119,10 @@ export class FederationPreparationWorker {
             .where(eq(federationPreparations.reservationId, row.id));
           continue;
         }
+        await this.db
+          .update(federationPreparations)
+          .set({ updatedAt: new Date() })
+          .where(eq(federationPreparations.reservationId, row.id));
         logger.warn(
           { reservationId: row.id },
           "Federation reference resolution failed; will retry",

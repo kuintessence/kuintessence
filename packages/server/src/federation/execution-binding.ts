@@ -6,11 +6,12 @@ import {
 } from "@kuintessence/db";
 import { extractRunGraph, WorkflowPlacementConfigSchema } from "@kuintessence/shared";
 import { FederationError } from "@kuintessence/shared/federation";
-import { eq, type SQL } from "drizzle-orm";
+import { and, eq, type SQL } from "drizzle-orm";
 import { stringify } from "yaml";
 import { parseWorkflowYaml } from "../workflow/parser";
 import { WorkflowRunRegistry } from "../workflow/run-registry";
 import { federationMaterialDigest } from "./assets";
+import type { FederationDispatchAuthorization } from "./dispatch-authorization";
 import type { FederationExecutionPreparation, FederationPreparationService } from "./preparation";
 
 export function federationExecutionSnapshot(prepared: FederationExecutionPreparation) {
@@ -114,4 +115,29 @@ export async function loadFederationWorkflowBinding(db: PgDb | PgTransaction, ru
     .where(eq(workflowRuns.id, runId));
   if (run?.input?.federationReservationId) throw new FederationError("OPERATION_CONFLICT");
   return null;
+}
+
+/** Queue only the original held run; per-Job authorization remains mandatory at dispatch. */
+export async function queueFederationWorkflow(
+  db: PgDb,
+  authorization: Pick<FederationDispatchAuthorization, "prepare">,
+  runId: string,
+): Promise<boolean> {
+  const authorize = await authorization.prepare(runId);
+  return db.transaction(async (tx) => {
+    const [run] = await tx
+      .select()
+      .from(workflowRuns)
+      .where(eq(workflowRuns.id, runId))
+      .for("update");
+    if (!run || run.status !== "submitted") return false;
+    await authorize(tx);
+    const now = new Date();
+    const queued = await tx
+      .update(workflowRuns)
+      .set({ status: "queued", queuedAt: now, updatedAt: now })
+      .where(and(eq(workflowRuns.id, runId), eq(workflowRuns.status, "submitted")))
+      .returning({ id: workflowRuns.id });
+    return queued.length === 1;
+  });
 }
