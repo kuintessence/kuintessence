@@ -14,7 +14,9 @@ import {
   users,
 } from "@kuintessence/db";
 import {
+  FederationAgreementContextSchema,
   FederationAgreementSchema,
+  FederationExecutionAccountsSchema,
   FederationMemberOptionsSchema,
 } from "@kuintessence/shared/federation";
 import { and, eq, inArray, sql } from "drizzle-orm";
@@ -146,6 +148,67 @@ afterAll(async () => {
   await db.delete(userOrgMemberships).where(inArray(userOrgMemberships.orgId, orgIds));
   await db.delete(users).where(inArray(users.id, userIds));
   await db.delete(orgs).where(inArray(orgs.id, orgIds));
+});
+
+test("agreement context is read-authorized and account choices match receiver eligibility", async () => {
+  expect(FederationAgreementContextSchema.parse(await aService.context(aActor))).toEqual({
+    localSiteId: a.signing.siteId,
+    supportedModes: ["bilateral_direct", "bilateral_attested"],
+  });
+  const admin = { orgId: aActor.orgId, userId: adminId };
+  await expect(aService.context(admin)).rejects.toThrow("POLICY_DENIED");
+  await permissions.set({ ...admin, capability: "agreement.read", enabled: true }, adminId);
+  try {
+    expect((await aService.context(admin)).localSiteId).toBe(a.signing.siteId);
+    await expect(aService.executionAccounts(admin, "", 20, 0)).rejects.toThrow("POLICY_DENIED");
+  } finally {
+    await permissions.set({ ...admin, capability: "agreement.read", enabled: false }, adminId);
+  }
+  expect(await aService.executionAccounts(aActor, "", 20, 0)).toEqual({ data: [], hasMore: false });
+  const available = FederationExecutionAccountsSchema.parse(
+    await bService.executionAccounts(bActor, "", 20, 0),
+  );
+  expect(available.data.map((row) => row.userId)).toEqual([executionUserId]);
+  expect((await bService.executionAccounts(bActor, executionUserId, 20, 0)).data).toHaveLength(1);
+  expect((await bService.executionAccounts(bActor, "missing-account", 20, 0)).data).toHaveLength(0);
+  expect((await bService.executionAccounts(bActor, "", 1, 1)).data).toHaveLength(0);
+  for (const change of [
+    { suspended: true },
+    { serviceAccount: false },
+    { role: "operator" as const },
+  ]) {
+    await db.update(users).set(change).where(eq(users.id, executionUserId));
+    try {
+      expect((await bService.executionAccounts(bActor, "", 20, 0)).data).toHaveLength(0);
+    } finally {
+      await db
+        .update(users)
+        .set({ suspended: false, serviceAccount: true, role: "user" })
+        .where(eq(users.id, executionUserId));
+    }
+  }
+  await db
+    .update(userOrgMemberships)
+    .set({ role: "admin" })
+    .where(
+      and(
+        eq(userOrgMemberships.orgId, bActor.orgId),
+        eq(userOrgMemberships.userId, executionUserId),
+      ),
+    );
+  try {
+    expect((await bService.executionAccounts(bActor, "", 20, 0)).data).toHaveLength(0);
+  } finally {
+    await db
+      .update(userOrgMemberships)
+      .set({ role: "member" })
+      .where(
+        and(
+          eq(userOrgMemberships.orgId, bActor.orgId),
+          eq(userOrgMemberships.userId, executionUserId),
+        ),
+      );
+  }
 });
 
 test("platform admin is not a business approver; grant requires a current human member", async () => {
@@ -329,6 +392,28 @@ test("approval HTTP routes use the session organization and explicit grants, inc
     return r;
   }
   expect((await app(aActor).request("/api/federation/agreements")).status).toBe(200);
+  const context = await app(aActor).request("/api/federation/agreements/context");
+  expect(context.status).toBe(200);
+  expect(context.headers.get("cache-control")).toBe("no-store");
+  const contextBody = (await context.json()) as { data: unknown };
+  expect(FederationAgreementContextSchema.parse(contextBody.data).localSiteId).toBe(
+    a.signing.siteId,
+  );
+  const accounts = await app(aActor).request(
+    `/api/federation/agreements/execution-accounts?orgId=${bActor.orgId}`,
+  );
+  expect(accounts.status).toBe(200);
+  expect(FederationExecutionAccountsSchema.parse(await accounts.json()).data).toEqual([]);
+  expect(
+    (await app(aActor).request("/api/federation/agreements/execution-accounts?limit=0")).status,
+  ).toBe(400);
+  expect(
+    (await app(aActor, "user", true).request("/api/federation/agreements/context")).status,
+  ).toBe(403);
+  expect(
+    (await app(aActor, "user", true).request("/api/federation/agreements/execution-accounts"))
+      .status,
+  ).toBe(403);
   expect(
     (
       await app({ orgId: aActor.orgId, userId: adminId }, "platform_admin").request(

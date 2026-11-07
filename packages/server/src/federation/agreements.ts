@@ -6,6 +6,8 @@ import {
   federationReservations,
   federationWorkflowBindings,
   type PgDb,
+  userOrgMemberships,
+  users,
   workflowRuns,
 } from "@kuintessence/db";
 import {
@@ -13,9 +15,9 @@ import {
   FederationAgreementSchema,
   FederationError,
 } from "@kuintessence/shared/federation";
-import { and, desc, eq } from "drizzle-orm";
+import { and, asc, desc, eq, ilike, or } from "drizzle-orm";
 import { FederationAdmission } from "./admission";
-import { requireExecutionIdentity } from "./execution-identity";
+import { executionIdentityEligibility, requireExecutionIdentity } from "./execution-identity";
 import { type FederationActor, requireFederationCapability } from "./permissions";
 import {
   type FederationSigningKey,
@@ -56,6 +58,41 @@ export class FederationAgreementService {
         )
         .limit(limit)
         .offset(offset);
+    });
+  }
+
+  async context(actor: FederationActor) {
+    return this.db.transaction(async (tx) => {
+      await requireFederationCapability(tx, actor, "agreement.read");
+      return {
+        localSiteId: this.signingKey.siteId,
+        supportedModes: ["bilateral_direct", "bilateral_attested"] as const,
+      };
+    });
+  }
+
+  async executionAccounts(actor: FederationActor, search: string, limit: number, offset: number) {
+    return this.db.transaction(async (tx) => {
+      await requireFederationCapability(tx, actor, "agreement.approve");
+      const rows = await tx
+        .select({ userId: users.id, email: users.email, displayName: users.displayName })
+        .from(users)
+        .innerJoin(
+          userOrgMemberships,
+          and(eq(userOrgMemberships.userId, users.id), eq(userOrgMemberships.orgId, actor.orgId)),
+        )
+        .where(
+          and(
+            executionIdentityEligibility(),
+            search
+              ? or(ilike(users.email, `%${search}%`), ilike(users.displayName, `%${search}%`))
+              : undefined,
+          ),
+        )
+        .orderBy(asc(users.email), asc(users.id))
+        .limit(limit + 1)
+        .offset(offset);
+      return { data: rows.slice(0, limit), hasMore: rows.length > limit };
     });
   }
 

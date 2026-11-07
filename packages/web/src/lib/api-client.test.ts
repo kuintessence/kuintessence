@@ -300,3 +300,73 @@ describe("local mode (window.__KQ_LOCAL__)", () => {
     expect(getInit(spy)?.headers).toEqual({ Authorization: "Bearer tok-xyz" });
   });
 });
+
+describe("organization-bound requests", () => {
+  const organizationId = "00000000-0000-4000-8000-000000000123";
+  function scope() {
+    setAuth({ token: null, email: "signer@example.test", role: "user", expiresIn: 60 });
+    localStorage.setItem("kq_active_organization_id", organizationId);
+    return { organizationId, authRevision: getAuthState().revision };
+  }
+
+  test("rejects a stale organization before sending a write", async () => {
+    const bound = scope();
+    const spy = makeFetchSpy("{}", { status: 200 });
+    vi.stubGlobal("fetch", spy);
+    localStorage.setItem("kq_active_organization_id", "another-org");
+    await expect(api.post("/federation/agreements/approve", {}, bound)).rejects.toMatchObject({
+      code: "ORGANIZATION_CONTEXT_CHANGED",
+    });
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  test("rejects a stale login before sending a read", async () => {
+    const bound = scope();
+    const spy = makeFetchSpy("{}", { status: 200 });
+    vi.stubGlobal("fetch", spy);
+    setAuth({ token: null, email: "other@example.test", role: "user" });
+    await expect(api.get("/federation/agreements", bound)).rejects.toMatchObject({
+      code: "ORGANIZATION_CONTEXT_CHANGED",
+    });
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  test.each([
+    "organization",
+    "login",
+    "unchanged",
+  ])("checks %s scope again after 401 refresh", async (change) => {
+    const bound = scope();
+    const spy = vi
+      .fn()
+      .mockResolvedValueOnce(new Response("{}", { status: 401 }))
+      .mockImplementationOnce(async () => {
+        if (change === "organization")
+          localStorage.setItem("kq_active_organization_id", "other-org");
+        return new Response(
+          JSON.stringify({
+            authenticated: true,
+            expiresIn: 900,
+            user: {
+              email: change === "login" ? "other@example.test" : "signer@example.test",
+              role: "user",
+            },
+          }),
+        );
+      })
+      .mockResolvedValueOnce(new Response('{"success":true}'));
+    vi.stubGlobal("fetch", spy);
+    const result = api.post("/federation/agreements/approve", { terms: "reviewed" }, bound);
+    if (change === "unchanged") {
+      await expect(result).resolves.toEqual({ success: true });
+      expect(spy).toHaveBeenCalledTimes(3);
+      expect(spy.mock.calls[2]?.[1]).toMatchObject({
+        headers: { "X-KQ-Active-Organization": organizationId },
+        body: '{"terms":"reviewed"}',
+      });
+    } else {
+      await expect(result).rejects.toMatchObject({ code: "ORGANIZATION_CONTEXT_CHANGED" });
+      expect(spy).toHaveBeenCalledTimes(2);
+    }
+  });
+});

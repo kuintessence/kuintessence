@@ -91,6 +91,29 @@ export const FederationAgreementSchema = z
   });
 export type FederationAgreement = z.infer<typeof FederationAgreementSchema>;
 
+export const FederationAgreementApprovalSchema = z.object({
+  localSiteId: Id,
+  revisionId: Id,
+  localOrgId: Id,
+  executionUserId: Id.nullable(),
+  terms: FederationAgreementSchema,
+  termsDigest: FederationDigestSchema,
+  approvalJws: z.string().min(1),
+  counterpartyApprovalJws: z.string().nullable(),
+  approvedBy: Id,
+  state: z.enum(["active", "suspended", "revoked"]),
+  createdAt: Time,
+});
+export type FederationAgreementApproval = z.infer<typeof FederationAgreementApprovalSchema>;
+export const FederationAgreementContextSchema = z.object({
+  localSiteId: Id,
+  supportedModes: z.array(FederationModeSchema),
+});
+export const FederationExecutionAccountsSchema = z.object({
+  data: z.array(z.object({ userId: Id, email: z.string(), displayName: z.string().nullable() })),
+  hasMore: z.boolean(),
+});
+
 const OperationFields = {
   protocolVersion: z.literal(1),
   operationId: Id,

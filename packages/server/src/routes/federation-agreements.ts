@@ -23,6 +23,7 @@ export function createFederationAgreementRoutes(
         403,
       );
     c.set("federationActor", { userId: principal.userId, orgId: principal.orgId });
+    c.header("cache-control", "no-store");
     await next();
   });
   r.use("/federation/agreements/*", bodyLimit({ maxSize: 600000 }));
@@ -39,6 +40,19 @@ export function createFederationAgreementRoutes(
     limit: z.coerce.number().int().min(1).max(100).default(50),
     offset: z.coerce.number().int().min(0).default(0),
   });
+  r.get("/federation/agreements/context", async (c) =>
+    c.json({ success: true, data: await service.context(c.get("federationActor")) }),
+  );
+  r.get(
+    "/federation/agreements/execution-accounts",
+    kqValidator("query", page.extend({ search: z.string().trim().max(200).default("") })),
+    async (c) => {
+      const { search, limit, offset } = c.req.valid("query");
+      return c.json(
+        await service.executionAccounts(c.get("federationActor"), search, limit, offset),
+      );
+    },
+  );
   if (attestation) {
     r.get(
       "/federation/agreements/:revisionId/attestation",

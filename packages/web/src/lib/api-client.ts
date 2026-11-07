@@ -14,13 +14,30 @@ import {
   unwrapApiResponse,
 } from "@kuintessence/shared/browser";
 import { getStoredActiveOrganizationId } from "./active-organization";
+import { getAuthState } from "./auth";
 import { authenticatedHeaders, fetchAuthed } from "./authenticated-fetch";
 import { assertMobileMutationAllowed } from "./mobile-management-policy";
 
 export { ApiError } from "@kuintessence/shared/browser";
 
-function authHeaders(): Record<string, string> {
+export interface ApiOrganizationScope {
+  organizationId: string;
+  authRevision: string | null;
+}
+
+function authHeaders(scope?: ApiOrganizationScope): Record<string, string> {
   const activeOrganizationId = getStoredActiveOrganizationId();
+  if (
+    scope &&
+    (activeOrganizationId !== scope.organizationId ||
+      getAuthState().revision !== scope.authRevision)
+  ) {
+    throw new ApiError(
+      409,
+      "ORGANIZATION_CONTEXT_CHANGED",
+      "The organization or login session changed; review this action again",
+    );
+  }
   return authenticatedHeaders(
     activeOrganizationId ? { "X-KQ-Active-Organization": activeOrganizationId } : {},
   );
@@ -76,16 +93,16 @@ export async function downloadAuthedFile(path: string, filename: string): Promis
 }
 
 export const api = {
-  get: <T>(path: string) =>
+  get: <T>(path: string, scope?: ApiOrganizationScope) =>
     request<T>(path, () => ({
       credentials: "same-origin",
-      headers: authHeaders(),
+      headers: authHeaders(scope),
     })),
-  post: <T>(path: string, body?: unknown) =>
+  post: <T>(path: string, body?: unknown, scope?: ApiOrganizationScope) =>
     mutationRequest<T>(path, () => ({
       credentials: "same-origin",
       method: "POST",
-      headers: { "Content-Type": "application/json", ...authHeaders() },
+      headers: { "Content-Type": "application/json", ...authHeaders(scope) },
       body: body ? JSON.stringify(body) : undefined,
     })),
   patch: <T>(path: string, body?: unknown) =>

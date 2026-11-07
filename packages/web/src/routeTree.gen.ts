@@ -18,6 +18,7 @@ import { Route as LoginRouteImport } from './routes/login'
 import { Route as JobsRouteImport } from './routes/jobs'
 import { Route as InterconnectRouteImport } from './routes/interconnect'
 import { Route as FilesRouteImport } from './routes/files'
+import { Route as FederationRouteImport } from './routes/federation'
 import { Route as DataMarketRouteImport } from './routes/data-market'
 import { Route as CpRouteImport } from './routes/cp'
 import { Route as AgentsRouteImport } from './routes/agents'
@@ -94,6 +95,11 @@ const InterconnectRoute = InterconnectRouteImport.update({
 const FilesRoute = FilesRouteImport.update({
   id: '/files',
   path: '/files',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const FederationRoute = FederationRouteImport.update({
+  id: '/federation',
+  path: '/federation',
   getParentRoute: () => rootRouteImport,
 } as any)
 const DataMarketRoute = DataMarketRouteImport.update({
@@ -265,6 +271,7 @@ export interface FileRoutesByFullPath {
   '/agents': typeof AgentsRouteWithChildren
   '/cp': typeof CpRouteWithChildren
   '/data-market': typeof DataMarketRoute
+  '/federation': typeof FederationRoute
   '/files': typeof FilesRoute
   '/interconnect': typeof InterconnectRoute
   '/jobs': typeof JobsRoute
@@ -307,6 +314,7 @@ export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/agents': typeof AgentsRouteWithChildren
   '/data-market': typeof DataMarketRoute
+  '/federation': typeof FederationRoute
   '/files': typeof FilesRoute
   '/interconnect': typeof InterconnectRoute
   '/jobs': typeof JobsRoute
@@ -351,6 +359,7 @@ export interface FileRoutesById {
   '/agents': typeof AgentsRouteWithChildren
   '/cp': typeof CpRouteWithChildren
   '/data-market': typeof DataMarketRoute
+  '/federation': typeof FederationRoute
   '/files': typeof FilesRoute
   '/interconnect': typeof InterconnectRoute
   '/jobs': typeof JobsRoute
@@ -396,6 +405,7 @@ export interface FileRouteTypes {
     | '/agents'
     | '/cp'
     | '/data-market'
+    | '/federation'
     | '/files'
     | '/interconnect'
     | '/jobs'
@@ -438,6 +448,7 @@ export interface FileRouteTypes {
     | '/'
     | '/agents'
     | '/data-market'
+    | '/federation'
     | '/files'
     | '/interconnect'
     | '/jobs'
@@ -481,6 +492,7 @@ export interface FileRouteTypes {
     | '/agents'
     | '/cp'
     | '/data-market'
+    | '/federation'
     | '/files'
     | '/interconnect'
     | '/jobs'
@@ -525,6 +537,7 @@ export interface RootRouteChildren {
   AgentsRoute: typeof AgentsRouteWithChildren
   CpRoute: typeof CpRouteWithChildren
   DataMarketRoute: typeof DataMarketRoute
+  FederationRoute: typeof FederationRoute
   FilesRoute: typeof FilesRoute
   InterconnectRoute: typeof InterconnectRoute
   JobsRoute: typeof JobsRoute
@@ -603,6 +616,13 @@ declare module '@tanstack/react-router' {
       path: '/files'
       fullPath: '/files'
       preLoaderRoute: typeof FilesRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/federation': {
+      id: '/federation'
+      path: '/federation'
+      fullPath: '/federation'
+      preLoaderRoute: typeof FederationRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/data-market': {
@@ -923,6 +943,7 @@ const rootRouteChildren: RootRouteChildren = {
   AgentsRoute: AgentsRouteWithChildren,
   CpRoute: CpRouteWithChildren,
   DataMarketRoute: DataMarketRoute,
+  FederationRoute: FederationRoute,
   FilesRoute: FilesRoute,
   InterconnectRoute: InterconnectRoute,
   JobsRoute: JobsRoute,

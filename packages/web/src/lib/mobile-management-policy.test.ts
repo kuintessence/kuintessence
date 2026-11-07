@@ -14,6 +14,8 @@ describe("mobile management policy", () => {
     vi.spyOn(window, "matchMedia").mockReturnValue({ matches: true } as MediaQueryList);
     setMobileManagementPolicy(true);
     expect(isMobileHighRiskMutationBlocked("/admin/sso")).toBe(true);
+    expect(isMobileHighRiskMutationBlocked("/federation/agreements/approve")).toBe(true);
+    expect(isMobileHighRiskMutationBlocked("/federation/agreements/revision/state")).toBe(true);
     expect(isMobileHighRiskMutationBlocked("/preferences/global")).toBe(true);
     expect(isMobileHighRiskMutationBlocked("/preferences/user")).toBe(false);
     expect(isMobileHighRiskMutationBlocked("/interconnect/provider/centers")).toBe(true);
@@ -30,5 +32,6 @@ describe("mobile management policy", () => {
     expect(isMobileHighRiskMutationBlocked("/cp/software/preinstalled/r1/review")).toBe(false);
     media.mockReturnValue({ matches: false } as MediaQueryList);
     expect(isMobileHighRiskMutationBlocked("/admin/sso")).toBe(false);
+    expect(isMobileHighRiskMutationBlocked("/federation/agreements/approve")).toBe(false);
   });
 });
