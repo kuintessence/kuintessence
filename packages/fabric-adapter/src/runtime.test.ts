@@ -3,12 +3,18 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { request } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createCommercialHttpServer } from "./commercial-runtime";
 import { createEvidenceHttpServer } from "./runtime";
 
-test("Unix HTTP surface is allowlisted, strict and never exposes SDK errors or private details", async () => {
+test.each([
+  "evidence",
+  "commercial",
+] as const)("%s Unix HTTP surface is allowlisted, strict and never exposes private details", async (kind) => {
   const directory = await mkdtemp(join(tmpdir(), "kq-evidence-http-"));
   let calls = 0;
-  const server = createEvidenceHttpServer({
+  const createHttpServer =
+    kind === "evidence" ? createEvidenceHttpServer : createCommercialHttpServer;
+  const server = createHttpServer({
     prepare: async () => {
       throw new Error("unexpected prepare");
     },
@@ -44,14 +50,21 @@ test("Unix HTTP surface is allowlisted, strict and never exposes SDK errors or p
       text: '{"configured":true}',
     });
     expect((await send("/invoke", { channel: "other", chaincode: "other" })).status).toBe(404);
+    expect((await send(`/v1/${kind}/advance`, { recovery: "eA==", channel: "other" })).status).toBe(
+      409,
+    );
     expect(
-      (await send("/v1/evidence/advance", { recovery: "eA==", channel: "other" })).status,
+      (await send(`/v1/${kind}/proposal`, { envelope: { issuerJws: "sensitive" } })).status,
     ).toBe(409);
     expect(
-      (await send("/v1/evidence/proposal", { envelope: { issuerJws: "sensitive" } })).status,
-    ).toBe(409);
+      (
+        await send(`/v1/${kind === "evidence" ? "commercial" : "evidence"}/advance`, {
+          recovery: "eA==",
+        })
+      ).status,
+    ).toBe(404);
     expect(calls).toBe(0);
-    const response = await send("/v1/evidence/advance", { recovery: "eA==" });
+    const response = await send(`/v1/${kind}/advance`, { recovery: "eA==" });
     expect(response).toEqual({ status: 503, text: '{"code":"LEDGER_UNAVAILABLE"}' });
     expect(calls).toBe(1);
   } finally {

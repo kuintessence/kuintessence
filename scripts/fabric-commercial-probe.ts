@@ -7,7 +7,7 @@ import {
   X509Certificate,
 } from "node:crypto";
 import { readdir, readFile, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { Client, credentials } from "@grpc/grpc-js";
 import { connect, EndorseError, signers } from "@hyperledger/fabric-gateway";
 import { common, ledger, msp, peer, gateway as proto } from "@hyperledger/fabric-protos";
@@ -307,6 +307,17 @@ async function run() {
     chainRejection("UNTRUSTED_IDENTITY"),
   );
   passed.push("nonmember and trust-admin clients cannot query commercial receipts");
+  await writeFile(
+    join(dirname(z.string().parse(process.argv[3])), "commercial-proposal.json"),
+    JSON.stringify({
+      operation: "register-agreement",
+      domainId: domain.domainId,
+      recordId: receipt.recordId,
+      digest: receipt.digest,
+      envelope,
+    }),
+    { mode: 0o600 },
+  );
   const probes = [
     contractProbe,
     priceProbe,

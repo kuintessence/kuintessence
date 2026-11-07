@@ -1,6 +1,11 @@
 import { z } from "zod";
 import { FederationAgreementSchema, FederationAmountSchema } from "./index";
-import { FabricEvidenceTrustSchema, fabricEvidenceCollections } from "./ledger";
+import {
+  FabricEvidenceAdvanceResultSchema,
+  FabricEvidenceTrustSchema,
+  FabricProposalCheckpointSchema,
+  fabricEvidenceCollections,
+} from "./ledger";
 import { FederationDigestSchema } from "./references";
 
 const Id = z.uuid();
@@ -143,3 +148,29 @@ export function fabricCommercialCollections(input: FabricCommercialTrust) {
     domains: trust.domains,
   });
 }
+
+const ProposalIdentity = { domainId: Id, recordId: Id, digest: FederationDigestSchema };
+export const CommercialProposalInputSchema = z.discriminatedUnion("operation", [
+  z.strictObject({
+    ...ProposalIdentity,
+    operation: z.literal("register-agreement"),
+    envelope: CommercialAgreementEnvelopeSchema,
+  }),
+  z.strictObject({
+    ...ProposalIdentity,
+    operation: z.literal("record-usage"),
+    envelope: CommercialUsageEnvelopeSchema,
+  }),
+]);
+export type CommercialProposalInput = z.infer<typeof CommercialProposalInputSchema>;
+export const FabricCommercialAdvanceResultSchema = z.discriminatedUnion("state", [
+  FabricProposalCheckpointSchema.extend({ state: z.literal("prepared") }),
+  FabricProposalCheckpointSchema.extend({ state: z.literal("pending") }),
+  z.strictObject({
+    state: z.literal("committed"),
+    transactionId: z.string().regex(/^[a-f0-9]{64}$/),
+    blockNumber: z.string().regex(/^(0|[1-9][0-9]{0,19})$/),
+  }),
+  FabricEvidenceAdvanceResultSchema.options[3],
+]);
+export type CommercialAdvanceResult = z.infer<typeof FabricCommercialAdvanceResultSchema>;

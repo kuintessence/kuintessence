@@ -1226,3 +1226,14 @@ input-storage 新增下载/上传 grant 路径，先按原尝试授权、在共�
 共用真实网络 runner 新增 --commercial，默认存证路径保持不变；CI 增加商业网络检查，只上传脱敏断言，不上传私有 fixture、证书或账本。bun install 正常生成新工作区锁项，无新第三方版本。全仓其他包类型及 protobuf 生成通过；商业测试中可能未找到原记录的类型断言已修正，商业包定向类型通过。扩大签名用途联合类型导致既有存证数据库夹具的数组类型过宽，改为 satisfies 保留其原来四种实际用途，Fabric 测试类型最终通过，未扩大 Server 信任或旧公钥权限。lint 无错误（既有 47 warnings/1 info），655 个文档目标及 workflow uses 静态检查通过。
 
 此项完成私有商业记录的链级基础，不是完整结算或链上执行闭环。Server 商业审批、独立 Adapter 恢复检查点、公共市场与商业 gate、锁额/账单/争议/结算、合同编辑器、介质交付、归档恢复、真实 Slurm/PBS/Fabric 联合验收和 PR 预览仍须继续；不放宽当前 ledger_coordinated 执行拒绝。实现分支保持，未推送或部署 main。证据日志在忽略目录 temp/federation-commercial-*。
+
+
+## 商业 Adapter、私有客户端与提交恢复
+
+商业链码现有独立 Node Adapter：验证双方同文合同/执行方用量签名、专用公钥用途与固定合作域后创建 proposal，敏感内容仅进入 transient，背书目标固定为两家机构。启动以 KQ_FABRIC_ADAPTER_KIND=commercial 选择商业通道，默认 evidence 行为不变；Server 类型化客户端仅访问本 UID 的私有 Unix socket，不引入 Fabric SDK。商业审批路由、数据库待办和后台 worker 尚未接入。
+
+两通道复用原有有界 HTTP/证书启动与加密检查点提交实现，保留旧证据版本 1 token 的字段和 AAD，并保留 anchored 对外状态。商业 token 额外绑定用途与商业配置，不能跨通道、机构、证书或恢复密钥重放。每步先返回可持久化检查点；未确认提交结果时保持原签名交易与 txID，不重新生成交易。只有 VALID 返回商业 committed，不能将其视为账单确认或执行授权。
+
+14 个 Adapter/客户端测试通过，覆盖固定端点、私有 socket、脱敏错误、跨通道响应拒绝、精确 transient/指定背书机构、签名/用途/摘要拒绝、恢复隔离及独立构造的旧版本证据检查点兼容。真实 Fabric 3.1.5 商业网络通过 11 组断言，包括生产 Unix 客户端每步新进程、已提交未保存响应时退出、重启原交易恢复，以及 Orderer 停机 pending 后恢复同一交易。原商业隐私/背书/MVCC 检查保持通过；原证据真实网络 12 组断言也通过。测试中发现并修正夹具误将 state 字段写入严格检查点 schema 的问题；生产提交逻辑无此问题。
+
+全仓类型检查及新增 Adapter/Fabric 脚本定向类型检查通过；lint 无错误，保留既有 47 warnings/1 info；657 个本地文档目标与 workflow uses 静态检查通过。真实网络全部在隔离临时目录运行，所属进程与成功材料已清理。本轮没有重跑 PostgreSQL worker 联合测试，没有执行平台作业或部署 PR 预览；不改变完整蓝图待完成状态。日志保存在忽略目录 temp/federation-commercial-*。

@@ -75,7 +75,7 @@ bun run --filter @kuintessence/fabric-adapter build
 
 部署方须将批准的 trust.json 与链码镜像/版本摘要一同固定，并以只读文件挂载；不能把可修改的公共配置卷当作治理审批。不要启用会输出请求或私有数据的 gRPC/Peer/shim 调试追踪。当前尚无本链码的 Compose/Helm 安装器或通用升级命令。
 
-Adapter 由 `KQ_FABRIC_ADAPTER_CONFIG` 指向本地 JSON 文件：
+Adapter 由 `KQ_FABRIC_ADAPTER_CONFIG` 指向本地 JSON 文件；`KQ_FABRIC_ADAPTER_KIND` 省略或设为 evidence 均保留此通道，商业通道另起独立进程并按[商业配置](fabric-commercial.md#独立-adapter-与恢复)运行：
 
 ```text
 adapter: {siteId, channel, chaincode, trust: <完整 trust.json 对象>}

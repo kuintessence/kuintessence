@@ -1,5 +1,11 @@
 import { afterEach, beforeAll, expect, spyOn, test } from "bun:test";
-import { generateKeyPairSync, randomBytes, randomUUID } from "node:crypto";
+import {
+  createCipheriv,
+  createHash,
+  generateKeyPairSync,
+  randomBytes,
+  randomUUID,
+} from "node:crypto";
 import { Client, credentials, Metadata } from "@grpc/grpc-js";
 import {
   connect,
@@ -344,4 +350,45 @@ test("explicit chaincode refusals are sanitized terminal errors; RPC and ambiguo
     await expect(fixture.adapter.advance(checkpoint.recovery)).rejects.toBe(error);
   }
   expect(fixture.counts().submits).toBe(0);
+});
+
+test("legacy evidence v1 checkpoint bytes and associated data survive the shared transport extraction", async () => {
+  const fixture = setup();
+  const proposal = fixture.gateway
+    .getNetwork(config.channel)
+    .getContract(config.chaincode)
+    .newProposal("AnchorBatch", {
+      arguments: [input.domainId, input.batchId],
+      transientData: { evidence: JSON.stringify(input.envelope) },
+      endorsingOrganizations: ["AMSP", "BMSP"],
+    });
+  const legacy = {
+    version: 1,
+    stage: "proposal",
+    transactionId: proposal.getTransactionId(),
+    batchId: input.batchId,
+    domainId: input.domainId,
+    digest: input.digest,
+    message: {
+      bytes: Buffer.from(proposal.getBytes()).toString("base64"),
+      signature: Buffer.from(await fixture.signer(proposal.getDigest())).toString("base64"),
+    },
+  };
+  const nonce = randomBytes(12);
+  const cipher = createCipheriv("aes-256-gcm", fixture.recoveryKey, nonce);
+  cipher.setAAD(
+    createHash("sha256")
+      .update(JSON.stringify(config))
+      .update(fixture.identity.credentials)
+      .digest(),
+  );
+  const ciphertext = Buffer.concat([
+    cipher.update(Buffer.from(JSON.stringify(legacy))),
+    cipher.final(),
+  ]);
+  const token = Buffer.concat([nonce, cipher.getAuthTag(), ciphertext]).toString("base64");
+  const restored = await fixture.adapter.advance(token);
+  expect(restored.state).toBe("prepared");
+  expect(restored.transactionId).toBe(proposal.getTransactionId());
+  expect(fixture.counts()).toEqual({ submits: 0, endorsements: 1 });
 });

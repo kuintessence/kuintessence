@@ -734,7 +734,7 @@ try {
     });
     process.stdin.pause();
   } else {
-    if (commercial) await verifyCommercialNetwork(root);
+    if (commercial) await verifyCommercialNetwork(root, controls);
     else await verifyEvidenceNetwork(root, controls);
   }
   succeeded = true;
