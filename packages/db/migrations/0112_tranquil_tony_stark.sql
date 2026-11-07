@@ -1,0 +1,20 @@
+ALTER TABLE "federation_input_attempts" DROP CONSTRAINT "federation_input_attempt_state";--> statement-breakpoint
+ALTER TABLE "federation_input_attempts" DROP CONSTRAINT "federation_input_attempt_upload";--> statement-breakpoint
+ALTER TABLE "federation_input_attempts" DROP CONSTRAINT "federation_input_attempt_parts";--> statement-breakpoint
+ALTER TABLE "federation_input_attempts" DROP CONSTRAINT "federation_input_attempt_destination";--> statement-breakpoint
+ALTER TABLE "federation_input_attempts" DROP CONSTRAINT "federation_input_attempt_verified";--> statement-breakpoint
+ALTER TABLE "federation_input_imports" DROP CONSTRAINT "federation_input_import_state";--> statement-breakpoint
+ALTER TABLE "federation_input_transfers" DROP CONSTRAINT "federation_input_transfer_state";--> statement-breakpoint
+DROP INDEX "federation_input_import_pending";--> statement-breakpoint
+ALTER TABLE "federation_input_imports" ADD COLUMN "published_at" timestamp with time zone;--> statement-breakpoint
+ALTER TABLE "federation_input_imports" ADD COLUMN "next_publish_at" timestamp with time zone DEFAULT now() NOT NULL;--> statement-breakpoint
+CREATE INDEX "federation_input_import_publication" ON "federation_input_imports" USING btree ("local_site_id","next_publish_at") WHERE "federation_input_imports"."state" IN ('pending', 'transferring');--> statement-breakpoint
+CREATE INDEX "federation_input_import_pending" ON "federation_input_imports" USING btree ("local_site_id","next_check_at") WHERE "federation_input_imports"."state" IN ('pending', 'transferring', 'available');--> statement-breakpoint
+ALTER TABLE "federation_input_attempts" ADD CONSTRAINT "federation_input_attempt_state" CHECK ("federation_input_attempts"."state" IN ('preparing', 'copying', 'assembling', 'verifying', 'verified', 'available', 'cleanup_pending', 'cleaned'));--> statement-breakpoint
+ALTER TABLE "federation_input_attempts" ADD CONSTRAINT "federation_input_attempt_upload" CHECK ("federation_input_attempts"."state" NOT IN ('copying', 'assembling', 'verifying', 'verified', 'available') OR ("federation_input_attempts"."upload_id" IS NOT NULL AND "federation_input_attempts"."allocation_started_at" IS NOT NULL));--> statement-breakpoint
+ALTER TABLE "federation_input_attempts" ADD CONSTRAINT "federation_input_attempt_parts" CHECK ("federation_input_attempts"."state" NOT IN ('assembling', 'verifying', 'verified', 'available') OR "federation_input_attempts"."parts" IS NOT NULL);--> statement-breakpoint
+ALTER TABLE "federation_input_attempts" ADD CONSTRAINT "federation_input_attempt_destination" CHECK ("federation_input_attempts"."state" NOT IN ('verifying', 'verified', 'available') OR ("federation_input_attempts"."completion_settled_at" IS NOT NULL AND "federation_input_attempts"."destination_version_id" IS NOT NULL AND "federation_input_attempts"."destination_version_id" != 'null'));--> statement-breakpoint
+ALTER TABLE "federation_input_attempts" ADD CONSTRAINT "federation_input_attempt_verified" CHECK ("federation_input_attempts"."state" NOT IN ('verified', 'available') OR "federation_input_attempts"."verified_at" IS NOT NULL);--> statement-breakpoint
+ALTER TABLE "federation_input_imports" ADD CONSTRAINT "federation_input_import_published" CHECK ("federation_input_imports"."state" != 'available' OR ("federation_input_imports"."published_at" IS NOT NULL AND "federation_input_imports"."reserved_bytes" = 0));--> statement-breakpoint
+ALTER TABLE "federation_input_imports" ADD CONSTRAINT "federation_input_import_state" CHECK ("federation_input_imports"."state" IN ('pending', 'transferring', 'available', 'cancelling', 'cancelled'));--> statement-breakpoint
+ALTER TABLE "federation_input_transfers" ADD CONSTRAINT "federation_input_transfer_state" CHECK ("federation_input_transfers"."state" IN ('pending', 'copying', 'assembling', 'verifying', 'verified', 'available', 'cleanup_pending', 'cancelled'));

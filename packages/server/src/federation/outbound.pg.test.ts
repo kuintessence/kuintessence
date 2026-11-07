@@ -100,7 +100,8 @@ import { FederationCancellationMonitor } from "./cancellation-monitor";
 import { readFederationCancellationState } from "./cancellation-state";
 import type { FederationDownloadStorage } from "./download-credential";
 import { createFederationIngress } from "./ingress";
-import { FederationInputImports } from "./input-imports";
+import { cancelFederationInputImport, FederationInputImports } from "./input-imports";
+import { FederationInputPublication } from "./input-publication";
 import { FederationInputReader } from "./input-reader";
 import { FederationInputStorage, type FederationInputStorageBackend } from "./input-storage";
 import { FederationInputTransfers } from "./input-transfers";
@@ -160,6 +161,9 @@ afterEach(async () => {
     .select({ id: federationInputTransfers.id })
     .from(federationInputTransfers)
     .where(inArray(federationInputTransfers.importId, inputIds));
+  await db
+    .delete(netdriveFiles)
+    .where(and(eq(netdriveFiles.ownerId, executionUserId), inArray(netdriveFiles.id, transferIds)));
   await db
     .delete(federationInputAttempts)
     .where(inArray(federationInputAttempts.transferId, transferIds));
@@ -4509,8 +4513,17 @@ async function inputInventoryFixture(
     );
   return { ...f, fileId, files, source, enqueue };
 }
-async function acceptedInputInventory(longExecution = false) {
+async function acceptedInputInventory(longExecution = false, batch = false) {
   const f = await inputInventoryFixture(inputPolicy, longExecution);
+  if (batch)
+    f.files.splice(0, 1, {
+      descriptor: "input",
+      type: "FileBatch",
+      files: [
+        { fileId: f.fileId, path: "first.dat" },
+        { fileId: f.fileId, path: "second.dat" },
+      ],
+    });
   const operation = await f.enqueue();
   await f.source.deliverNext();
   const saved = await row(operation.operationId);
@@ -5053,8 +5066,8 @@ test("input downloads recheck current permissions and both signing purposes afte
   }
 });
 
-async function inputImportFixture(longExecution = false) {
-  const f = await acceptedInputInventory(longExecution);
+async function inputImportFixture(longExecution = false, batch = false) {
+  const f = await acceptedInputInventory(longExecution, batch);
   const preparation = new FederationPreparationService(db, b.signing.siteId, assets, clock);
   let calls = 0;
   const transport: FederationSend = async (_endpoint, jws, path) => {
@@ -5379,6 +5392,20 @@ test("input imports keep empty batches explicit and reject a changed manifest on
     expect(received.manifest.inputs).toEqual([
       { descriptor: "input", type: "FileBatch", files: [] },
     ]);
+    expect(
+      await new FederationInputPublication(
+        db,
+        preparation,
+        imports,
+        exchange,
+        {
+          head: async () => {
+            throw new Error("Empty batch must not read storage");
+          },
+        },
+        clock,
+      ).publish(saved.receipt.reservationId),
+    ).toMatchObject({ state: "available" });
     await db
       .update(federationInputImports)
       .set({
@@ -5436,8 +5463,8 @@ test("input imports reject transport signing purposes revoked while receiving a 
   }
 });
 
-async function inputTransferFixture() {
-  const f = await inputImportFixture(true);
+async function inputTransferFixture(batch = false) {
+  const f = await inputImportFixture(true, batch);
   const imported = await f.imports.ensure(f.reservationId);
   if (!imported) throw new Error("Expected input inventory");
   const [member] = await db
@@ -5996,8 +6023,8 @@ test("transfer renewals serialize with Agent acquisition and cannot revive an ex
   }
 });
 
-async function inputGrantFixture() {
-  const f = await inputTransferFixture();
+async function inputGrantFixture(batch = false) {
+  const f = await inputTransferFixture(batch);
   const sourceStorage = inputDownloadStorage();
   let sends = 0,
     uploads = 0;
@@ -6371,8 +6398,8 @@ test("input grants pin multipart target and reject long-lived URLs, late revocat
   }
 });
 
-async function inputVerificationFixture() {
-  const f = await inputGrantFixture();
+async function inputVerificationFixture(batch = false) {
+  const f = await inputGrantFixture(batch);
   let object: ObjectStat | null = null,
     completions = 0,
     cleanups = 0;
@@ -7059,6 +7086,304 @@ test("input worker backs off denied transfers and does not recreate a cancelled 
   } finally {
     await worker.stop();
     await db.update(users).set({ suspended: false }).where(eq(users.id, executionUserId));
+    await f.lease.release();
+  }
+});
+
+async function inputPublicationFixture(batch = false) {
+  const f = await inputVerificationFixture(batch);
+  const publisher = () =>
+    new FederationInputPublication(db, f.preparation, f.imports, f.exchange, f.backend, clock);
+  const verify = async () => {
+    await f.transfers.copied(f.agentId, f.copied);
+    const { task } = await f.storage.assemble(f.agentId, f.binding.generation);
+    const receipt = { ...task, sizeBytes: f.binding.sizeBytes, sha256: f.binding.sha256 };
+    await f.storage.verified(f.agentId, receipt);
+    return receipt;
+  };
+  const published = () => db.select().from(netdriveFiles).where(eq(netdriveFiles.id, f.member.id));
+  return { ...f, publisher, verify, published };
+}
+
+test("input publication atomically converts reserved quota to pinned files exactly once across concurrent restarts", async () => {
+  const f = await inputPublicationFixture();
+  try {
+    await expect(f.publisher().publish(f.reservationId)).rejects.toThrow("DATA_WAITING");
+    expect(await f.published()).toHaveLength(0);
+    const before = await new StorageQuotaService(db, clock).getSummary(executionUserId);
+    const receipt = await f.verify();
+    const results = await Promise.all([
+      f.publisher().publish(f.reservationId),
+      f.publisher().publish(f.reservationId),
+    ]);
+    expect(results[0]).toEqual(results[1]);
+    expect(results[0]?.state).toBe("available");
+    expect(await f.published()).toMatchObject([
+      {
+        id: f.member.id,
+        ownerId: executionUserId,
+        size: 4,
+        sha256: f.binding.sha256,
+        storageVersionId: "input-version",
+        etag: "input-object",
+        deletedAt: null,
+        path: `federation-inputs/${f.imported.importId}/input/input.dat`,
+      },
+    ]);
+    const after = await new StorageQuotaService(db, clock).getSummary(executionUserId);
+    expect(after.usedBytes - before.usedBytes).toBe(4);
+    expect((before.reservedBytes ?? 0) - (after.reservedBytes ?? 0)).toBe(4);
+    expect(after.availableBytes).toBe(before.availableBytes);
+    await f.storage.verified(f.agentId, receipt);
+    expect(await f.transfers.copied(f.agentId, f.copied)).toEqual({ state: "available" });
+    expect((await f.attempt())?.state).toBe("available");
+    expect((await f.inventory())[0]?.publishedAt).toBeInstanceOf(Date);
+    expect(await f.publisher().publish(f.reservationId)).toEqual(results[0]);
+    expect(
+      await db
+        .select()
+        .from(auditLog)
+        .where(
+          and(
+            eq(auditLog.target, f.imported.importId),
+            eq(auditLog.action, "federation.input.published"),
+          ),
+        ),
+    ).toHaveLength(1);
+    // Publication does not bypass the separate execution projection gate.
+    await expect(f.preparation.executionSnapshot(f.reservationId)).rejects.toThrow("DATA_WAITING");
+  } finally {
+    await f.lease.release();
+  }
+});
+
+test("input publication refuses storage drift and source or receiver revocation during external checks", async () => {
+  for (const failure of ["version", "source", "receiver", "cancel", "member"] as const) {
+    const f = await inputPublicationFixture();
+    try {
+      await f.verify();
+      const head = f.backend.head;
+      f.backend.head = async (...args) => {
+        const stat = await head(...args);
+        if (failure === "version") return stat && { ...stat, versionId: "replaced" };
+        if (failure === "source") await f.registry.requestCancel(f.runId);
+        if (failure === "receiver")
+          await db.update(users).set({ suspended: true }).where(eq(users.id, executionUserId));
+        if (failure === "cancel")
+          await db.transaction((tx) =>
+            cancelFederationInputImport(tx, f.reservationId, "CANCELLATION_REQUESTED", clock()),
+          );
+        if (failure === "member")
+          await db
+            .update(federationInputTransfers)
+            .set({ sha256: "b".repeat(64) })
+            .where(eq(federationInputTransfers.id, f.member.id));
+        return stat;
+      };
+      await expect(f.publisher().publish(f.reservationId)).rejects.toThrow();
+      expect(await f.published()).toHaveLength(0);
+      expect((await f.inventory())[0]?.reservedBytes).toBe(4);
+    } finally {
+      await db.update(users).set({ suspended: false }).where(eq(users.id, executionUserId));
+      await f.lease.release();
+    }
+  }
+});
+
+test("input publication rolls back on path collision and retries through the worker", async () => {
+  const f = await inputPublicationFixture();
+  const collisionId = crypto.randomUUID();
+  try {
+    await f.verify();
+    await db.insert(netdriveFiles).values({
+      id: collisionId,
+      ownerId: executionUserId,
+      path: `federation-inputs/${f.imported.importId}/input/input.dat`,
+      size: 1,
+      sha256: "b".repeat(64),
+      storageKey: `netdrive/objects/${collisionId}`,
+    });
+    const transport = new FederationInputTransport(f.transfers, f.storage, new AgentDispatcher());
+    const worker = () => new FederationInputWorker(f.transfers, transport, f.publisher());
+    time = new Date(time.getTime() + 31_000);
+    await worker().tick();
+    expect((await f.inventory())[0]).toMatchObject({
+      lastError: "OPERATION_CONFLICT",
+      reservedBytes: 4,
+      state: "transferring",
+    });
+    expect(await f.published()).toHaveLength(0);
+    await db.delete(netdriveFiles).where(eq(netdriveFiles.id, collisionId));
+    await worker().tick();
+    expect(await f.published()).toHaveLength(0);
+    time = new Date(time.getTime() + 31_000);
+    await worker().tick();
+    expect((await f.inventory())[0]).toMatchObject({
+      lastError: null,
+      reservedBytes: 0,
+      state: "available",
+    });
+    expect(await f.published()).toHaveLength(1);
+  } finally {
+    await db.delete(netdriveFiles).where(eq(netdriveFiles.id, collisionId));
+    await f.lease.release();
+  }
+});
+
+test("input publication cancellation hides files and retains cleanup quota until execution and storage stop", async () => {
+  const f = await inputPublicationFixture();
+  const runId = crypto.randomUUID();
+  sourceRunIds.push(runId);
+  try {
+    await f.verify();
+    await f.publisher().publish(f.reservationId);
+    await db.insert(workflowRuns).values({
+      id: runId,
+      name: "Receiver input consumer",
+      status: "running",
+      submittedBy: executionUserId,
+      input: {
+        federationReservationId: f.reservationId,
+        yaml: "",
+        role: "user",
+        orgId: receiver.orgId,
+      },
+    });
+    const cancel = () =>
+      db.transaction((tx) =>
+        cancelFederationInputImport(tx, f.reservationId, "CANCELLATION_REQUESTED", clock()),
+      );
+    await cancel();
+    await cancel();
+    expect((await f.published())[0]?.deletedAt).toBeInstanceOf(Date);
+    expect((await f.inventory())[0]).toMatchObject({ state: "cancelling", reservedBytes: 4 });
+    const attempt = await f.attempt();
+    if (!attempt) throw new Error("Missing attempt");
+    time = new Date(attempt.leaseUntil.getTime() + 1);
+    expect(await f.storage.cleanup()).toBe(0);
+    expect(f.cleanups()).toBe(0);
+    await db.update(workflowRuns).set({ status: "cancelled" }).where(eq(workflowRuns.id, runId));
+    const purge = f.backend.cleanupFederationInput;
+    f.backend.cleanupFederationInput = async () => {
+      throw new Error("Storage unavailable");
+    };
+    expect(await f.storage.cleanup()).toBe(0);
+    expect((await f.inventory())[0]?.reservedBytes).toBe(4);
+    f.backend.cleanupFederationInput = purge;
+    expect(await f.storage.cleanup()).toBe(1);
+    expect((await f.inventory())[0]).toMatchObject({ state: "cancelled", reservedBytes: 0 });
+    expect(f.cleanups()).toBe(1);
+  } finally {
+    await f.lease.release();
+  }
+});
+
+test("input publication rolls back all files and quota if source disclosure expires before commit", async () => {
+  const f = await inputPublicationFixture();
+  try {
+    await f.verify();
+    const receive = f.exchange.inputFiles.bind(f.exchange);
+    f.exchange.inputFiles = async (...args) => {
+      const received = await receive(...args);
+      let checks = 0;
+      return {
+        ...received,
+        authorize: async (tx) => {
+          if (++checks === 2) time = new Date(time.getTime() + 61_000);
+          await received.authorize(tx);
+        },
+      };
+    };
+    await expect(f.publisher().publish(f.reservationId)).rejects.toThrow();
+    expect(await f.published()).toHaveLength(0);
+    expect((await f.inventory())[0]).toMatchObject({
+      state: "transferring",
+      reservedBytes: 4,
+      publishedAt: null,
+    });
+    expect((await f.attempt())?.state).toBe("verified");
+  } finally {
+    await f.lease.release();
+  }
+});
+
+test("input publication rechecks reduced quota and cancellation preserves a replacement file", async () => {
+  const f = await inputPublicationFixture();
+  let policyId: string | undefined;
+  try {
+    await f.verify();
+    const before = await new StorageQuotaService(db, clock).getSummary(executionUserId);
+    const [policy] = await db
+      .insert(storageQuotaPolicies)
+      .values({
+        scope: "cloud",
+        scopeId: "global",
+        defaultQuotaBytes: before.usedBytes + (before.reservedBytes ?? 0) - 1,
+      })
+      .returning();
+    if (!policy) throw new Error("Missing quota policy");
+    policyId = policy.id;
+    await expect(f.publisher().publish(f.reservationId)).rejects.toThrow();
+    expect(await f.published()).toHaveLength(0);
+    expect((await f.inventory())[0]?.reservedBytes).toBe(4);
+    await db.delete(storageQuotaPolicies).where(eq(storageQuotaPolicies.id, policyId));
+    policyId = undefined;
+    await f.publisher().publish(f.reservationId);
+    await db
+      .update(netdriveFiles)
+      .set({ storageKey: "netdrive/objects/replacement", storageVersionId: "replacement" })
+      .where(eq(netdriveFiles.id, f.member.id));
+    await db.transaction((tx) =>
+      cancelFederationInputImport(tx, f.reservationId, "CANCELLATION_REQUESTED", clock()),
+    );
+    expect((await f.published())[0]?.deletedAt).toBeNull();
+    const after = await new StorageQuotaService(db, clock).getSummary(executionUserId);
+    expect(after.usedBytes - before.usedBytes).toBe(4);
+    expect(after.reservedBytes).toBe(before.reservedBytes);
+  } finally {
+    if (policyId)
+      await db.delete(storageQuotaPolicies).where(eq(storageQuotaPolicies.id, policyId));
+    await f.lease.release();
+  }
+});
+
+test("input publication waits for every FileBatch member and publishes the complete inventory together", async () => {
+  const f = await inputPublicationFixture(true);
+  try {
+    await f.verify();
+    await expect(f.publisher().publish(f.reservationId)).rejects.toThrow("DATA_WAITING");
+    expect(await f.published()).toHaveLength(0);
+    expect((await f.inventory())[0]?.reservedBytes).toBe(8);
+    const [second] = await db
+      .select()
+      .from(federationInputTransfers)
+      .where(
+        and(
+          eq(federationInputTransfers.importId, f.imported.importId),
+          ne(federationInputTransfers.id, f.member.id),
+        ),
+      );
+    if (!second) throw new Error("Missing second member");
+    const { task: copy } = await f.storage.allocate(second.id, f.agentId);
+    await f.transfers.copied(f.agentId, { ...f.copied, binding: copy.binding });
+    const { task } = await f.storage.assemble(f.agentId, copy.binding.generation);
+    await f.storage.verified(f.agentId, {
+      ...task,
+      sizeBytes: second.sizeBytes,
+      sha256: second.sha256,
+    });
+    await f.publisher().publish(f.reservationId);
+    const files = await db
+      .select()
+      .from(netdriveFiles)
+      .where(inArray(netdriveFiles.id, [f.member.id, second.id]));
+    expect(files).toHaveLength(2);
+    expect(files.map((file) => file.path).sort()).toEqual([
+      `federation-inputs/${f.imported.importId}/input/first.dat`,
+      `federation-inputs/${f.imported.importId}/input/second.dat`,
+    ]);
+    expect((await f.inventory())[0]).toMatchObject({ state: "available", reservedBytes: 0 });
+  } finally {
     await f.lease.release();
   }
 });

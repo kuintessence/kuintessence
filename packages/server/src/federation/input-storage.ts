@@ -242,7 +242,8 @@ export class FederationInputStorage {
         availableUntil: receipt.availableUntil,
       });
       const before = await this.transfers.verification(agentId, task);
-      if (before.state !== "verified") await this.assertObject(before.storageKey, task);
+      if (!["verified", "available"].includes(before.state))
+        await this.assertObject(before.storageKey, task);
       await this.transfers.verified(agentId, receipt);
     } catch (error) {
       if (error instanceof FederationError) throw error;

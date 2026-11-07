@@ -4,6 +4,7 @@ import {
   federationInputAttempts,
   federationInputImports,
   federationInputTransfers,
+  federationReservations,
   federationResultAttempts,
   type PgDb,
   type PgTransaction,
@@ -23,6 +24,7 @@ import {
 import { and, asc, eq, gte, inArray, isNotNull, isNull, lte, ne, notExists, or } from "drizzle-orm";
 import { z } from "zod";
 import { federationMaterialDigest } from "./assets";
+import { readFederationExecutionStopState } from "./cancellation-state";
 import { type FederationInputImports, finishCancelledInputImport } from "./input-imports";
 import type { FederationPreparationService } from "./preparation";
 import { lockFederationTransferAgent, lockFederationTransferSlot } from "./transfer-agent";
@@ -261,6 +263,7 @@ export class FederationInputTransfers {
         "assembling",
         "verifying",
         "verified",
+        "available",
       ]);
       const binding = this.binding(rows, scope);
       if (
@@ -387,7 +390,7 @@ export class FederationInputTransfers {
         scope,
         task.binding.generation,
         agentId,
-        renew ? ["verifying"] : ["verifying", "verified"],
+        renew ? ["verifying"] : ["verifying", "verified", "available"],
         renew,
       );
       if (
@@ -412,6 +415,7 @@ export class FederationInputTransfers {
       const rows = await this.authorizedAttempt(tx, scope, receipt.binding.generation, agentId, [
         "verifying",
         "verified",
+        "available",
       ]);
       if (
         federationMaterialDigest(this.verificationTask(rows, scope)) !==
@@ -424,7 +428,7 @@ export class FederationInputTransfers {
         receipt.sha256 !== rows.transfer.sha256
       )
         throw new FederationError("OPERATION_CONFLICT");
-      if (rows.attempt.state === "verified") return;
+      if (["verified", "available"].includes(rows.attempt.state)) return;
       await tx
         .update(federationInputAttempts)
         .set({ state: "verified", verifiedAt: this.clock(), updatedAt: this.clock() })
@@ -649,6 +653,17 @@ export class FederationInputTransfers {
     return this.db.transaction(async (tx) => {
       const rows = await this.lockAttempt(tx, generation);
       this.assertCleanable(rows.attempt);
+      if (rows.parent.publishedAt) {
+        const [reservation] = await tx
+          .select({
+            senderSiteId: federationReservations.senderSiteId,
+            operationId: federationReservations.operationId,
+          })
+          .from(federationReservations)
+          .where(eq(federationReservations.id, rows.parent.reservationId));
+        if (!reservation || !(await readFederationExecutionStopState(tx, reservation)).stopped)
+          throw new FederationError("DATA_WAITING");
+      }
       const token = crypto.randomUUID();
       await tx
         .update(federationInputAttempts)
@@ -784,7 +799,7 @@ export class FederationInputTransfers {
   }
   private async assertAttempt(tx: PgTransaction, rows: Rows, agentId: string, state: string) {
     if (
-      rows.parent.state !== "transferring" ||
+      rows.parent.state !== (state === "available" ? "available" : "transferring") ||
       rows.transfer.state !== (state === "preparing" ? "copying" : state) ||
       rows.attempt.agentId !== agentId ||
       rows.attempt.state !== state ||

@@ -63,6 +63,7 @@ import {
 } from "./federation/execution-binding";
 import { FederationExecutionMonitor } from "./federation/execution-monitor";
 import { FederationInputImports } from "./federation/input-imports";
+import { FederationInputPublication } from "./federation/input-publication";
 import { FederationInputReader } from "./federation/input-reader";
 import {
   FederationInputStorage,
@@ -2165,8 +2166,23 @@ const federationInputs =
     ? new FederationInputTransport(federationInputTransfers, federationInputStorage, dispatcher)
     : undefined;
 const federationInputWorker =
-  federationInputTransfers && federationInputs
-    ? new FederationInputWorker(federationInputTransfers, federationInputs)
+  federationInputTransfers &&
+  federationInputs &&
+  federationPreparation &&
+  federationInputImports &&
+  federationMaterialExchange &&
+  federationInputStorageBackend
+    ? new FederationInputWorker(
+        federationInputTransfers,
+        federationInputs,
+        new FederationInputPublication(
+          db,
+          federationPreparation,
+          federationInputImports,
+          federationMaterialExchange,
+          federationInputStorageBackend,
+        ),
+      )
     : undefined;
 
 // connectRPC server for Agent bidirectional streaming.

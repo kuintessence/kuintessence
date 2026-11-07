@@ -214,4 +214,4 @@ Server 已接结果传输服务、Agent RPC 与自动扫描。配置上述值并
 
 内部 input-reader 使用接收机构的 input-download-query 专用密钥请求源站 /federation/v1/input-downloads，核对 source 的 input-download-grant 专用签名。请求和响应同时绑定已接受委派、原清单成员、接收方当前 transferId/generation 和 Agent 租约；不能仅凭源站签名跳过本地活动尝试。响应返回前再次持锁检查接收身份、协议、Agent、源站地址与双方当前密钥用途。URL 必须属于允许的源站 HTTPS origin，带唯一真实 versionId，实际 S3 凭据与签名信封的期限一致且最多 30 秒，不越过查询、任务、当前尝试或签名密钥期限。
 
-上传地址绑定当前接收方 multipart uploadId/partNumber、固定分片大小及目标 origin，签发后复查当前授权和尝试。地址与 JWS 不进入持久记录或审计；已发地址有剩余短期有效窗口。以上只是传输凭据与内部驱动，尚未开放输入 Agent 消息/能力或自动派发，完整文件发布/Workflow 使用仍需后续接通。
+上传地址绑定当前接收方 multipart uploadId/partNumber、固定分片大小及目标 origin，签发后复查当前授权和尝试。地址与 JWS 不进入持久记录或审计；已发地址有剩余短期有效窗口。输入 Agent 消息、能力协商、自动派发和整单发布已接入。全部文件校验后由后台复查固定版本及源站授权，在原执行账号下登记本地文件；失败至少 30 秒后重试。取消先隐藏原文件并保留清理额度，等执行停止、传输租约到期及对象清理确认后释放。尚未接入 Workflow 文件映射，带输入文件的任务继续 DATA_WAITING；启用这些配置不等于文件型任务已经可执行。

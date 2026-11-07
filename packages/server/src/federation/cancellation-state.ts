@@ -12,7 +12,7 @@ import {
 } from "@kuintessence/db";
 import { and, eq, inArray, isNull, or, sql } from "drizzle-orm";
 
-export async function readFederationCancellationState(
+export async function readFederationExecutionStopState(
   db: PgDb | PgTransaction,
   request: { senderSiteId: string; operationId: string },
 ) {
@@ -76,17 +76,26 @@ export async function readFederationCancellationState(
       pending.length === 0 &&
       revocations.length === 0;
   }
-  if (stopped && reservation) {
-    const [input] = await db
-      .select({ state: federationInputImports.state })
-      .from(federationInputImports)
-      .where(eq(federationInputImports.reservationId, reservation.id));
-    if (input && input.state !== "cancelled") stopped = false;
-  }
   return {
     reservationId: reservation?.id ?? null,
     runs: runs.map((v) => v.run.id),
     stopped,
     workflow: run ? { status: run.status, updatedAt: run.updatedAt.toISOString() } : null,
   };
+}
+
+/** A stopped execution still owes storage cleanup before a cancellation receipt can be confirmed. */
+export async function readFederationCancellationState(
+  db: PgDb | PgTransaction,
+  request: { senderSiteId: string; operationId: string },
+) {
+  const state = await readFederationExecutionStopState(db, request);
+  if (state.stopped && state.reservationId) {
+    const [input] = await db
+      .select({ state: federationInputImports.state })
+      .from(federationInputImports)
+      .where(eq(federationInputImports.reservationId, state.reservationId));
+    if (input && input.state !== "cancelled") return { ...state, stopped: false };
+  }
+  return state;
 }

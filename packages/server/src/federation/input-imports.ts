@@ -3,6 +3,7 @@ import {
   federationInputAttempts,
   federationInputImports,
   federationInputTransfers,
+  netdriveFiles,
   type PgDb,
   type PgTransaction,
 } from "@kuintessence/db";
@@ -12,7 +13,7 @@ import {
   FederationInputFilesSchema,
   federationExecutionDeadline,
 } from "@kuintessence/shared/federation";
-import { and, asc, eq, inArray, lte, ne } from "drizzle-orm";
+import { and, asc, eq, inArray, isNull, lte, ne } from "drizzle-orm";
 import { lockCloudWrites, StorageQuotaService } from "../services/storage-quota";
 import { federationMaterialDigest } from "./assets";
 import type { FederationMaterialExchange } from "./material-exchange";
@@ -38,6 +39,43 @@ export async function cancelFederationInputImport(
     .select({ id: federationInputTransfers.id })
     .from(federationInputTransfers)
     .where(eq(federationInputTransfers.importId, row.id));
+  if (row.state === "available") {
+    await lockCloudWrites(tx, row.ownerId);
+    const published = await tx
+      .select({ member: federationInputTransfers, attempt: federationInputAttempts })
+      .from(federationInputTransfers)
+      .innerJoin(
+        federationInputAttempts,
+        eq(federationInputAttempts.transferId, federationInputTransfers.id),
+      )
+      .where(
+        and(
+          eq(federationInputTransfers.importId, row.id),
+          eq(federationInputAttempts.state, "available"),
+        ),
+      );
+    // Hide only the original published versions; a later unrelated file must not be overwritten.
+    for (const { member, attempt } of published)
+      await tx
+        .update(netdriveFiles)
+        .set({ deletedAt: now })
+        .where(
+          and(
+            eq(netdriveFiles.id, member.id),
+            eq(netdriveFiles.ownerId, row.ownerId),
+            eq(netdriveFiles.storageKey, attempt.storageKey),
+            eq(netdriveFiles.storageVersionId, attempt.destinationVersionId ?? ""),
+            isNull(netdriveFiles.deletedAt),
+          ),
+        );
+    const bytes = row.manifest.inputs
+      .flatMap((input) => input.files)
+      .reduce((sum, file) => sum + file.sizeBytes, 0);
+    await tx
+      .update(federationInputImports)
+      .set({ state: "cancelling", reservedBytes: bytes })
+      .where(eq(federationInputImports.id, row.id));
+  }
   await tx
     .update(federationInputAttempts)
     .set({ state: "cleanup_pending", updatedAt: now })
@@ -91,7 +129,7 @@ export async function finishCancelledInputImport(tx: PgTransaction, row: Import,
     .where(eq(federationInputImports.id, row.id));
 }
 
-/** Receiver-local, task-owned inventory and storage reservation. No file is published here. */
+/** Receiver-local, task-owned inventory and storage reservation. */
 export class FederationInputImports {
   constructor(
     private readonly db: PgDb,
@@ -146,6 +184,7 @@ export class FederationInputImports {
           reservedBytes: bytes,
           expiresAt: new Date(federationExecutionDeadline(request)),
           nextCheckAt: this.clock(),
+          nextPublishAt: this.clock(),
           createdAt: this.clock(),
           updatedAt: this.clock(),
         })
@@ -184,9 +223,11 @@ export class FederationInputImports {
       throw new FederationError("CANCELLATION_REQUESTED");
     if (
       row.reservedBytes !==
-        row.manifest.inputs
-          .flatMap((input) => input.files)
-          .reduce((sum, file) => sum + file.sizeBytes, 0) ||
+        (row.state === "available"
+          ? 0
+          : row.manifest.inputs
+              .flatMap((input) => input.files)
+              .reduce((sum, file) => sum + file.sizeBytes, 0)) ||
       row.expiresAt.getTime() !== federationExecutionDeadline(scope.request)
     )
       throw new FederationError("OPERATION_CONFLICT");
@@ -260,7 +301,7 @@ export class FederationInputImports {
         .where(
           and(
             eq(federationInputImports.localSiteId, this.preparation.localSiteId),
-            inArray(federationInputImports.state, ["pending", "transferring"]),
+            inArray(federationInputImports.state, ["pending", "transferring", "available"]),
             lte(federationInputImports.nextCheckAt, this.clock()),
           ),
         )
@@ -286,7 +327,7 @@ export class FederationInputImports {
             .where(
               and(
                 eq(federationInputImports.id, row.id),
-                inArray(federationInputImports.state, ["pending", "transferring"]),
+                inArray(federationInputImports.state, ["pending", "transferring", "available"]),
               ),
             );
         });
@@ -312,7 +353,7 @@ export class FederationInputImports {
             .where(
               and(
                 eq(federationInputImports.id, row.id),
-                inArray(federationInputImports.state, ["pending", "transferring"]),
+                inArray(federationInputImports.state, ["pending", "transferring", "available"]),
               ),
             );
       }

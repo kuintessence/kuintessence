@@ -128,7 +128,7 @@ export class FederationInputTransport {
       throw new FederationError("INVALID_MESSAGE");
     const channel = this.dispatcher.getChannel(agentId);
     const state = await this.transfers.copied(agentId, copied);
-    if (state.state === "verified") return;
+    if (["verified", "available"].includes(state.state)) return;
     const verification = await this.storage.assemble(agentId, report.generation);
     if (
       !channel?.federationInputCopyV1 ||

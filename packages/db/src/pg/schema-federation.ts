@@ -678,6 +678,8 @@ export const federationInputImports = pgTable(
     state: varchar("state", { length: 16 }).notNull().default("pending"),
     reservedBytes: bigint("reserved_bytes", { mode: "number" }).notNull(),
     expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    publishedAt: timestamp("published_at", { withTimezone: true }),
+    nextPublishAt: timestamp("next_publish_at", { withTimezone: true }).notNull().defaultNow(),
     nextCheckAt: timestamp("next_check_at", { withTimezone: true }).notNull().defaultNow(),
     lastError: varchar("last_error", { length: 64 }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
@@ -687,11 +689,18 @@ export const federationInputImports = pgTable(
     uniqueIndex("federation_input_import_reservation").on(t.reservationId),
     index("federation_input_import_pending")
       .on(t.localSiteId, t.nextCheckAt)
+      .where(sql`${t.state} IN ('pending', 'transferring', 'available')`),
+    index("federation_input_import_publication")
+      .on(t.localSiteId, t.nextPublishAt)
       .where(sql`${t.state} IN ('pending', 'transferring')`),
+    check(
+      "federation_input_import_published",
+      sql`${t.state} != 'available' OR (${t.publishedAt} IS NOT NULL AND ${t.reservedBytes} = 0)`,
+    ),
     check("federation_input_import_digest", sql`${t.manifestDigest} ~ '^sha256:[a-f0-9]{64}$'`),
     check(
       "federation_input_import_state",
-      sql`${t.state} IN ('pending', 'transferring', 'cancelling', 'cancelled')`,
+      sql`${t.state} IN ('pending', 'transferring', 'available', 'cancelling', 'cancelled')`,
     ),
     check(
       "federation_input_import_quota",
@@ -720,7 +729,7 @@ export const federationInputTransfers = pgTable(
     uniqueIndex("federation_input_transfer_member").on(t.importId, t.descriptor, t.path),
     check(
       "federation_input_transfer_state",
-      sql`${t.state} IN ('pending', 'copying', 'assembling', 'verifying', 'verified', 'cleanup_pending', 'cancelled')`,
+      sql`${t.state} IN ('pending', 'copying', 'assembling', 'verifying', 'verified', 'available', 'cleanup_pending', 'cancelled')`,
     ),
     check(
       "federation_input_transfer_size",
@@ -768,15 +777,15 @@ export const federationInputAttempts = pgTable(
     index("federation_input_attempt_lease").on(t.state, t.leaseUntil),
     check(
       "federation_input_attempt_state",
-      sql`${t.state} IN ('preparing', 'copying', 'assembling', 'verifying', 'verified', 'cleanup_pending', 'cleaned')`,
+      sql`${t.state} IN ('preparing', 'copying', 'assembling', 'verifying', 'verified', 'available', 'cleanup_pending', 'cleaned')`,
     ),
     check(
       "federation_input_attempt_upload",
-      sql`${t.state} NOT IN ('copying', 'assembling', 'verifying', 'verified') OR (${t.uploadId} IS NOT NULL AND ${t.allocationStartedAt} IS NOT NULL)`,
+      sql`${t.state} NOT IN ('copying', 'assembling', 'verifying', 'verified', 'available') OR (${t.uploadId} IS NOT NULL AND ${t.allocationStartedAt} IS NOT NULL)`,
     ),
     check(
       "federation_input_attempt_parts",
-      sql`${t.state} NOT IN ('assembling', 'verifying', 'verified') OR ${t.parts} IS NOT NULL`,
+      sql`${t.state} NOT IN ('assembling', 'verifying', 'verified', 'available') OR ${t.parts} IS NOT NULL`,
     ),
     check(
       "federation_input_completion_started",
@@ -788,11 +797,11 @@ export const federationInputAttempts = pgTable(
     ),
     check(
       "federation_input_attempt_destination",
-      sql`${t.state} NOT IN ('verifying', 'verified') OR (${t.completionSettledAt} IS NOT NULL AND ${t.destinationVersionId} IS NOT NULL AND ${t.destinationVersionId} != 'null')`,
+      sql`${t.state} NOT IN ('verifying', 'verified', 'available') OR (${t.completionSettledAt} IS NOT NULL AND ${t.destinationVersionId} IS NOT NULL AND ${t.destinationVersionId} != 'null')`,
     ),
     check(
       "federation_input_attempt_verified",
-      sql`${t.state} != 'verified' OR ${t.verifiedAt} IS NOT NULL`,
+      sql`${t.state} NOT IN ('verified', 'available') OR ${t.verifiedAt} IS NOT NULL`,
     ),
     check(
       "federation_input_attempt_allocated",
