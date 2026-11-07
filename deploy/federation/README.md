@@ -189,7 +189,7 @@ Server 另行配置 `FEDERATION_CLIENT_CERT_FILE`、`FEDERATION_CLIENT_KEY_FILE`
 
 Agent 输入搬运独立默认关闭。可向接收端 Agent 进程注入 `AGENT_FEDERATION_INPUT_COPY='{"stagingRoot":"/var/lib/kq/input-staging","maxStagingBytes":1073741824,"allowedSourceOrigins":["https://source-storage.example.org"],"allowedDestinationOrigins":["https://receiver-storage.example.org"]}'`；目录须归 Agent 独占（0700、无符号链接），地址与 Server 的输入 origins 对应，使用 Agent 实际可访问的 HTTPS 域名。输入和结果客户端共用一个传输槽，限制同时暂存/读写的文件数；原结果配置不会自动开启输入搬运。Server 与 Agent 同步升级后才能协商输入复制和目的校验能力，要求 mTLS。两端 Server 的协议/材料/签名信任和存储权限仍须配置。
 
-输入后台每 10 秒扫描，成员至少间隔 30 秒尝试派发，单轮至多使用 4 个不同 Agent；重连/到期未完成的传输先清理旧代次再重传。当前已接到 verified，整单发布和 Workflow 文件映射仍待完成；开启输入搬运不会让缺少映射的文件任务直接运行。停用输入配置不阻止遗留清理。
+输入后台每 10 秒扫描，成员至少间隔 30 秒尝试派发，单轮至多使用 4 个不同 Agent；重连/到期未完成的传输先清理旧代次再重传。整单发布和 Workflow 文件映射已接通；开启输入搬运不会让缺少模板映射或本地授权的任务直接运行。停用输入配置不阻止遗留清理。
 
 Agent 结果搬运配置默认关闭。`AGENT_FEDERATION_RESULT_COPY` 是 JSON，例如 `{"stagingRoot":"/var/lib/kq/result-staging","maxStagingBytes":1073741824,"allowedSourceOrigins":["https://remote-storage.example.org"],"allowedDestinationOrigins":["https://local-storage.example.org"]}`。暂存路径须是 Agent 用户独占的绝对目录（0700，无符号链接），需要完整单文件空间；容量是文件上限，不是已验证支持 TB 级搬运。当前运行结果不跨进程续传。双方服务都需升级以协商复制与目的校验两项能力；仅支持复制的旧 Agent 不领取新任务，Agent 到 Server 必须通过 mTLS；缺失任一条件不派发。
 
@@ -214,4 +214,4 @@ Server 已接结果传输服务、Agent RPC 与自动扫描。配置上述值并
 
 内部 input-reader 使用接收机构的 input-download-query 专用密钥请求源站 /federation/v1/input-downloads，核对 source 的 input-download-grant 专用签名。请求和响应同时绑定已接受委派、原清单成员、接收方当前 transferId/generation 和 Agent 租约；不能仅凭源站签名跳过本地活动尝试。响应返回前再次持锁检查接收身份、协议、Agent、源站地址与双方当前密钥用途。URL 必须属于允许的源站 HTTPS origin，带唯一真实 versionId，实际 S3 凭据与签名信封的期限一致且最多 30 秒，不越过查询、任务、当前尝试或签名密钥期限。
 
-上传地址绑定当前接收方 multipart uploadId/partNumber、固定分片大小及目标 origin，签发后复查当前授权和尝试。地址与 JWS 不进入持久记录或审计；已发地址有剩余短期有效窗口。输入 Agent 消息、能力协商、自动派发和整单发布已接入。全部文件校验后由后台复查固定版本及源站授权，在原执行账号下登记本地文件；失败至少 30 秒后重试。取消先隐藏原文件并保留清理额度，等执行停止、传输租约到期及对象清理确认后释放。Workflow 文件映射已接入：源端 File 槽走签名导出，接收端在全部发布后按原执行身份读取固定版本，并在创建/恢复/派发时复查。还须批准远端模板映射、执行账号及软件/沙箱/队列策略；输入未齐全时继续 DATA_WAITING。真实双平台输入作业验收仍待完成，启用配置不代表完整交付已验收。
+上传地址绑定当前接收方 multipart uploadId/partNumber、固定分片大小及目标 origin，签发后复查当前授权和尝试。地址与 JWS 不进入持久记录或审计；已发地址有剩余短期有效窗口。输入 Agent 消息、能力协商、自动派发和整单发布已接入。全部文件校验后由后台复查固定版本及源站授权，在原执行账号下登记本地文件；失败至少 30 秒后重试。取消先隐藏原文件并保留清理额度，等执行停止、传输租约到期及对象清理确认后释放。Workflow 文件映射已接入：源端 File 槽走签名导出，接收端在全部发布后按原执行身份读取固定版本，并在创建/恢复/派发时复查。还须批准远端模板映射、执行账号及软件/沙箱/队列策略；输入未齐全时继续 DATA_WAITING。真实双平台小文件输入、两个 Script、结果回传及源站强制重启恢复已通过（同机隔离 Kubernetes、独立数据库与存储）；未覆盖 Spack/Slurm/PBS/Fabric 联合运行，启用配置不代表完整交付已验收。
