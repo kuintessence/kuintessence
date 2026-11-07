@@ -359,6 +359,14 @@ Loop、Switch、子工作流和相同节点重复调用都必须覆盖，不能�
 
 源站须配置独立 FEDERATION_INPUT_DOWNLOAD_ORIGINS，默认关闭。新云盘单次/分片上传均使用 netdrive/objects/随机UUID 对象 key，不携带用户身份；所有权、配额、commit token 和原文件路径仍按现有数据库规则检查。旧含用户 UUID 的对象不对外签发输入下载地址，普通本地读写兼容；匿名导出副本转换仍待实现，须绑定原固定版本并受存储留存/清理规则约束，不能改写活动快照。完整接收端协议还须验证每份授权对应本地活动尝试、当前执行身份与接收方存储来源白名单，拒绝重放/串单/撤权后的迟到响应，不能直接信任源站 URL。
 
+### 输入文件的 Agent 搬运与目的校验
+
+Agent 的 `input-copy` / `input-verify` 内部入口已有独立输入任务、授权及回报 schema，绑定 transferId/generation、operationId、manifestDigest、descriptor/path、SHA-256 与大小，不接受结果 outputId 或伪造 result-report。Server 将来派发前必须核对清单成员与本地活动尝试；内部函数本身不替代接收端授权或发布事务。
+
+输入与结果仅共用 `file-copy` / `file-verify` 的底层字节操作。Agent 使用受限私有临时目录、1 MiB Range 和当前逐次短期授权，完整下载校验后才上传 multipart，返回未提交 parts；取消/到期中止并清理本地临时文件。授权必须精确匹配原任务身份、方向及 partNumber，源/目的 origin 分开允许，禁止重定向；复制、校验错误与回报不包含下载凭据。Server 尚须确认 multipart/对象清理，不能凭 Agent 临时文件已删除就释放接收端配额。
+
+目标对象完成后，另行按固定 versionId 和 ETag 条件重新读取，核对真实字节与摘要。输入对象必须有真实版本（拒绝 null 和字符串 "null"），空文件也需授权和目的读取；原结果路径的无版本存储兼容行为保留。本轮只验证内部 Agent 与两个本机 HTTPS 服务，授权回调为替身，未开放输入能力协商、后台搬运或 DSL 文件输入；仍需接收端持久尝试/授权复核、实际传输协议、整单发布与真实双平台作业验收。
+
 ### 接收端输入导入意图与配额
 
 准备后台现自动取得第三份 workflow-input-files 清单，复用原分块验签、查询绑定、规范 JSON 和摘要检查，并在接收/登记前后检查当前签名用途、执行身份和授权。清单保存到独立 federation_input_imports（工具生成迁移 0109），按 reservationId 唯一绑定本地机构与原执行服务账号，避免把任务私有输入写入组织材料目录。只保留原签署委派已绑定的清单正文/摘要、导入状态、期限和配额；不保存源站用户、对象地址或下载凭据。
