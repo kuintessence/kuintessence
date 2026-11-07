@@ -1,6 +1,7 @@
 import { createLogger } from "@kuintessence/shared";
 import type { FederationAccountingCollection } from "./accounting-collection";
 import type { FederationCommercialSubmissionService } from "./commercial-submissions";
+import type { FederationMarketService } from "./market";
 import type { FederationUsageService } from "./usage";
 import type { FederationUsageExchange } from "./usage-exchange";
 
@@ -14,6 +15,7 @@ export class FederationCommercialWorker {
     private readonly usage?: FederationUsageService,
     private readonly exchange?: FederationUsageExchange,
     private readonly accounting?: FederationAccountingCollection,
+    private readonly market?: FederationMarketService,
   ) {}
 
   start() {
@@ -53,6 +55,16 @@ export class FederationCommercialWorker {
             if (!(await this.exchange.advanceNext())) break;
         } catch {
           logger.error("Usage exchange scan failed; received evidence remains in PostgreSQL");
+        }
+      }
+      if (this.market) {
+        try {
+          for (let i = 0; i < 8 && !this.stopped; i++)
+            if (!(await this.market.advanceNext())) break;
+        } catch {
+          logger.error(
+            "Market submission failed; original intent and checkpoints remain in PostgreSQL",
+          );
         }
       }
       for (let i = 0; i < 8 && !this.stopped; i++) if (!(await this.service.advanceNext())) break;

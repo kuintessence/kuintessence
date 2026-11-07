@@ -179,6 +179,11 @@
         },
         "result": {
           "read": "View delivered results"
+        },
+        "market": {
+          "read": "View market operations",
+          "publish": "Publish market demands",
+          "claim": "Claim market demands"
         }
       },
       "effects": {
@@ -197,6 +202,11 @@
         },
         "result": {
           "read": "Read delivered results within this organization’s authorized scope; does not permit contract approval."
+        },
+        "market": {
+          "read": "View this organization’s market submission, claim and cancellation records.",
+          "publish": "Publish public demands, cancel unclaimed demands and retry those operations for this organization. Includes viewing.",
+          "claim": "Claim public demands and retry claims for this organization. Includes viewing; does not authorize funds or execution."
         }
       }
     },

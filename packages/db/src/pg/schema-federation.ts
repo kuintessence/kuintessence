@@ -27,6 +27,7 @@ import type {
   CommercialUsageGap,
 } from "@kuintessence/shared/federation/commercial";
 import type { FederationEvidenceBatch } from "@kuintessence/shared/federation/ledger";
+import type { MarketProposalInput } from "@kuintessence/shared/federation/market";
 import { sql } from "drizzle-orm";
 import {
   bigint,
@@ -152,7 +153,7 @@ export const federationCapabilities = pgTable(
     primaryKey({ columns: [t.orgId, t.userId, t.capability] }),
     check(
       "federation_capability_kind",
-      sql`${t.capability} IN ('agreement.read', 'agreement.approve', 'asset.read', 'asset.map', 'delegation.read', 'delegation.submit', 'delegation.cancel', 'result.read')`,
+      sql`${t.capability} IN ('agreement.read', 'agreement.approve', 'asset.read', 'asset.map', 'delegation.read', 'delegation.submit', 'delegation.cancel', 'result.read', 'market.read', 'market.publish', 'market.claim')`,
     ),
   ],
 );
@@ -1123,6 +1124,81 @@ export const federationCommercialAttempts = pgTable(
     ),
     check(
       "federation_commercial_result",
+      sql`((${t.stage} IN ('proposal','transaction','abandoned') AND ${t.validationCode} IS NULL AND ${t.blockNumber} IS NULL) OR (${t.stage} = 'committed' AND ${t.validationCode} = 0 AND ${t.blockNumber} >= 0) OR (${t.stage} = 'invalid' AND ${t.validationCode} BETWEEN 1 AND 255 AND ${t.blockNumber} >= 0)) IS TRUE`,
+    ),
+  ],
+);
+
+export const federationMarketSubmissions = pgTable(
+  "federation_market_submissions",
+  {
+    id: uuid("id").primaryKey(),
+    localSiteId: uuid("local_site_id").notNull(),
+    localOrgId: uuid("local_org_id")
+      .notNull()
+      .references(() => orgs.id),
+    requestedBy: uuid("requested_by")
+      .notNull()
+      .references(() => users.id),
+    demandId: uuid("demand_id").notNull(),
+    digest: varchar("digest", { length: 71 }).notNull(),
+    input: jsonb("input").$type<MarketProposalInput>().notNull(),
+    state: varchar("state", { length: 24 }).notNull().default("pending"),
+    lastError: varchar("last_error", { length: 64 }),
+    leaseToken: uuid("lease_token"),
+    leaseUntil: timestamp("lease_until", { withTimezone: true }),
+    nextAttemptAt: timestamp("next_attempt_at", { withTimezone: true }).notNull().defaultNow(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index("federation_market_org").on(t.localSiteId, t.localOrgId, t.createdAt),
+    index("federation_market_demand").on(t.localSiteId, t.demandId),
+    index("federation_market_pending").on(t.localSiteId, t.state, t.nextAttemptAt),
+    check(
+      "federation_market_submission_state",
+      sql`${t.state} IN ('pending','committed','needs_review')`,
+    ),
+    check(
+      "federation_market_submission_input",
+      sql`(${t.digest} ~ '^sha256:[a-f0-9]{64}$' AND (
+        (${t.input}->>'operation' = 'publish-demand' AND ${t.input}->'demand'->>'demandId' = ${t.id}::text AND ${t.input}->'demand'->>'demandId' = ${t.demandId}::text AND ${t.input}->'demand'->>'sourceSiteId' = ${t.localSiteId}::text)
+        OR (${t.input}->>'operation' = 'claim-demand' AND ${t.input}->'claim'->>'claimId' = ${t.id}::text AND ${t.input}->'claim'->>'demandId' = ${t.demandId}::text AND ${t.input}->'claim'->>'providerSiteId' = ${t.localSiteId}::text)
+        OR (${t.input}->>'operation' = 'cancel-open-demand' AND ${t.input}->'cancellation'->>'cancellationId' = ${t.id}::text AND ${t.input}->'cancellation'->>'demandId' = ${t.demandId}::text)
+      )) IS TRUE`,
+    ),
+    check(
+      "federation_market_submission_lease",
+      sql`(${t.leaseToken} IS NULL) = (${t.leaseUntil} IS NULL)`,
+    ),
+  ],
+);
+
+export const federationMarketAttempts = pgTable(
+  "federation_market_attempts",
+  {
+    id: uuid("id").primaryKey(),
+    submissionId: uuid("submission_id")
+      .notNull()
+      .references(() => federationMarketSubmissions.id),
+    number: integer("number").notNull(),
+    transactionId: varchar("transaction_id", { length: 64 }).notNull(),
+    recovery: text("recovery").notNull(),
+    stage: varchar("stage", { length: 24 }).notNull().default("proposal"),
+    validationCode: integer("validation_code"),
+    blockNumber: numeric("block_number", { precision: 20, scale: 0 }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("federation_market_tx").on(t.transactionId),
+    uniqueIndex("federation_market_attempt_number").on(t.submissionId, t.number),
+    check(
+      "federation_market_attempt",
+      sql`${t.number} > 0 AND ${t.transactionId} ~ '^[a-f0-9]{64}$' AND octet_length(${t.recovery}) BETWEEN 1 AND 4194304`,
+    ),
+    check(
+      "federation_market_result",
       sql`((${t.stage} IN ('proposal','transaction','abandoned') AND ${t.validationCode} IS NULL AND ${t.blockNumber} IS NULL) OR (${t.stage} = 'committed' AND ${t.validationCode} = 0 AND ${t.blockNumber} >= 0) OR (${t.stage} = 'invalid' AND ${t.validationCode} BETWEEN 1 AND 255 AND ${t.blockNumber} >= 0)) IS TRUE`,
     ),
   ],

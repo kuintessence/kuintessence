@@ -446,7 +446,7 @@ raw transaction args、chaincode response、events、trace 均不能携带私有
 
 公共交易 MAJORITY、合作域 AND、关键治理 ALL 及指定仲裁模板由部署/lifecycle 策略表达。ALL 导致成员离线时升级受阻，这属于明确选择的治理边界，不由平台管理员绕过。
 
-公共市场链码已增加 OPEN → CLAIMED 或 CANCELLED；按同一需求键的版本读取和写入，由 Fabric 提交时 MVCC 保证单一认领。原请求重试不覆盖，不因截止时间过去自动重新开放；CLAIMED 当前不能激活或释放。真实三机构验证多数背书和竞争认领，见[部署与验证说明](../../../deploy/federation/fabric-market.md)。市场 Adapter/本机客户端已连接，平台入口与私有锁额/gate 仍待连接，保留 ledger_coordinated 拒绝门槛。
+公共市场链码已增加 OPEN → CLAIMED 或 CANCELLED；按同一需求键的版本读取和写入，由 Fabric 提交时 MVCC 保证单一认领。原请求重试不覆盖，不因截止时间过去自动重新开放；CLAIMED 当前不能激活或释放。真实三机构验证多数背书和竞争认领，见[部署与验证说明](../../../deploy/federation/fabric-market.md)。市场 Adapter/本机客户端和 Server 持久操作 API 已连接，公共目录/Web 与私有锁额/gate 仍待连接，保留 ledger_coordinated 拒绝门槛。
 
 ## 10. UI 与配置
 
@@ -700,4 +700,11 @@ GET /api/federation/commercial-agreements/:revisionId/received-usage 及 /:opera
 
 独立 Market Adapter 复用 FabricSubmission 的签名提案、加密检查点、提交状态查询及按原 txId 恢复，采用 kq-market-v1 独立恢复用途。输入严格限定发布/认领/撤回未认领需求，固定本机构和配置中的通道/链码；载荷 canonical SHA-256 与链码回执核对，公开需求使用 Gateway 原生背书发现。检查点中的遗留 domainId 字段用于绑定治理 generationId，不是商业钱包，也不创造额度。
 
-Node 私有 runtime 已支持 KQ_FABRIC_ADAPTER_KIND=market，套接字 market.sock；Server 已有 UnixMarketClient，仅实现类型化本机传输，尚未接持久市场待办、公开 API 或 Web。prepared/pending/committed/invalid 与商业提交保持相同语义，committed 不授予执行权；认领还必须经过私有锁额和公共激活。配置与恢复方法见[部署说明](../../../deploy/federation/fabric-market.md)。
+Node 私有 runtime 已支持 KQ_FABRIC_ADAPTER_KIND=market，套接字 market.sock；Server 已有 UnixMarketClient，并接入持久市场待办、机构范围操作 API；公共需求同步与 Web 仍待实现。prepared/pending/committed/invalid 与商业提交保持相同语义，committed 不授予执行权；认领还必须经过私有锁额和公共激活。配置与恢复方法见[部署说明](../../../deploy/federation/fabric-market.md)。
+
+
+### 市场操作持久待办
+
+迁移 0120 新增 federation_market_submissions/attempts 和 market.read/publish/claim capability。请求内容与 SHA-256、当前机构/请求人、审计同事务保存；相同 ID 同内容重试返回原状态，跨机构或内容冲突拒绝。撤回需要本机构已 committed 的发布，链码最终检查尚未认领。后台复用商业 worker，每轮最多八步；加密 proposal/transaction 检查点先持久保存，原交易 VALID 才 committed。网络在数据库事务外，保存时前后核验 90 秒租约；迟到 owner 不能覆盖新 owner。可复核原操作，未知提交保留原交易 ID；历史尝试不覆盖。
+
+操作 API 使用真人/当前组织和独立 capability，平台角色不默认授权，GET 与重试也重验当前权限。公开字段投影及 no-store，不返回租约/恢复密文；列表与交易历史分页。已受理操作代表机构持久授权，不因原请求人离职自动丢弃；此语义与执行租约撤销不同，既有执行 gate 不因此放宽。配置、接口与边界见[市场部署说明](../../../deploy/federation/fabric-market.md#server-持久提交与权限)。

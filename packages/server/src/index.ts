@@ -77,6 +77,8 @@ import {
 import { FederationInputTransfers } from "./federation/input-transfers";
 import { FederationInputTransport } from "./federation/input-transport";
 import { FederationInputWorker } from "./federation/input-worker";
+import { FederationMarketService } from "./federation/market";
+import { UnixMarketClient } from "./federation/market-client";
 import { FederationMaterialExchange } from "./federation/material-exchange";
 import { FederationOutboundService, FederationOutboundWorker } from "./federation/outbound";
 import { createFederationPackageResolver } from "./federation/package-resolver";
@@ -137,6 +139,7 @@ import { dslRoutes } from "./routes/dsl";
 import { createFederationAgreementRoutes } from "./routes/federation-agreements";
 import { createFederationAssetRoutes } from "./routes/federation-assets";
 import { createFederationCommercialRoutes } from "./routes/federation-commercial";
+import { createFederationMarketRoutes } from "./routes/federation-market";
 import { createFederationOutboundRoutes } from "./routes/federation-outbound";
 import { createFileRoutes } from "./routes/files";
 import { healthRoutes } from "./routes/health";
@@ -1667,6 +1670,16 @@ const federationCommercial = federationSigningKey
         : undefined,
     )
   : undefined;
+const federationMarket = federationSigningKey
+  ? new FederationMarketService(
+      db,
+      federationSigningKey.siteId,
+      config.FEDERATION_MARKET_SOCKET_PATH
+        ? new UnixMarketClient(config.FEDERATION_MARKET_SOCKET_PATH)
+        : undefined,
+    )
+  : undefined;
+if (federationMarket) protectedApi.route("/", createFederationMarketRoutes(federationMarket));
 const federationAccounting = federationSigningKey
   ? new FederationAccountingCollection(db, federationSigningKey.siteId, (agentId, request) =>
       dispatcher.pushFederationAccounting(agentId, request),
@@ -2411,6 +2424,7 @@ const federationCommercialWorker = federationCommercial
       federationUsage,
       federationUsageExchange,
       federationAccounting,
+      federationMarket,
     )
   : undefined;
 federationCommercialWorker?.start();

@@ -62,6 +62,7 @@ const ServerConfigSchema = z.object({
   FEDERATION_CLIENT_CERT_FILE: z.string().startsWith("/").optional(),
   FEDERATION_CLIENT_KEY_FILE: z.string().startsWith("/").optional(),
   FEDERATION_CLIENT_CA_FILE: z.string().startsWith("/").optional(),
+  FEDERATION_MARKET_SOCKET_PATH: z.string().startsWith("/").optional(),
   FEDERATION_COMMERCIAL_SOCKET_PATH: z.string().startsWith("/").optional(),
   FEDERATION_ATTESTATION_SOCKET_PATH: z.string().startsWith("/").optional(),
   DB_MAX_CONNECTIONS: positiveInt(10),
