@@ -23,7 +23,9 @@ import { and, eq } from "drizzle-orm";
 import { AuthorizationUnavailableError } from "../authz/service";
 import { type FederationAssetService, federationMaterialDigest } from "./assets";
 import { assertFederationNotCancelled } from "./cancellation-fence";
+import type { FederationExecutionConfirmationService } from "./execution-confirmation";
 import { type ExecutionIdentity, requireExecutionIdentity } from "./execution-identity";
+import { FabricClientFailure } from "./fabric-client";
 import { type FederationWorkflowProjection, materializeFederationWorkflow } from "./materialize";
 import { type FederationActor, requireFederationCapability } from "./permissions";
 import { readFederationPublishedInputs } from "./published-inputs";
@@ -54,6 +56,7 @@ export class FederationPreparationService {
     readonly localSiteId: string,
     private readonly assets: FederationAssetService,
     private readonly clock: () => Date = () => new Date(),
+    private readonly confirmations?: FederationExecutionConfirmationService,
   ) {}
 
   async prepare(reservationId: string) {
@@ -205,7 +208,7 @@ export class FederationPreparationService {
       request.senderSiteId,
       request.environmentLockDigest,
     );
-    await this.lockMaterialScope(tx, snapshot);
+    return this.lockMaterialScope(tx, snapshot);
   }
 
   async lockMaterialScope(
@@ -220,6 +223,14 @@ export class FederationPreparationService {
       federationMessageKeyId(saved.reservation.requestJws),
       this.clock(),
     );
+    if (request.mode === "ledger_coordinated" && !this.confirmations)
+      throw new FederationError("LEDGER_REQUIRED");
+    const confirmation =
+      request.mode === "ledger_coordinated"
+        ? await this.confirmations?.authorize(tx, identity.orgId, request)
+        : undefined;
+    if (confirmation && confirmation.reservationId !== saved.reservation.id)
+      throw new FederationError("OPERATION_CONFLICT");
     await requireExecutionIdentity(tx, identity);
     const [agreement] = await tx
       .select()
@@ -260,12 +271,13 @@ export class FederationPreparationService {
     )
       throw new FederationError("OPERATION_CONFLICT");
     await assertFederationNotCancelled(tx, request);
-    assertDelegationPolicy(
-      FederationAgreementSchema.parse(agreement.terms),
-      request,
-      this.clock(),
-      "execution",
-    );
+    if (!confirmation)
+      assertDelegationPolicy(
+        FederationAgreementSchema.parse(agreement.terms),
+        request,
+        this.clock(),
+        "execution",
+      );
     await trust.assertKey(
       tx,
       saved.agreement.sourceSiteId,
@@ -278,6 +290,9 @@ export class FederationPreparationService {
       federationMessageKeyId(reservation.receiptJws),
       this.clock(),
     );
+    if (confirmation && confirmation.expiresAtUnixMs <= this.clock().getTime())
+      throw new FabricClientFailure("LEDGER_PENDING");
+    return confirmation?.expiresAtUnixMs ?? Number.POSITIVE_INFINITY;
   }
 
   private async loadReservation(reservationId: string) {
@@ -369,6 +384,10 @@ export class FederationPreparationService {
       userId: saved.agreement.executionUserId,
     };
     const scope = { saved, request, identity };
+    if (request.mode === "ledger_coordinated") {
+      if (!this.confirmations) throw new FederationError("LEDGER_REQUIRED");
+      await this.confirmations.refreshForExecution(identity.orgId, request);
+    }
     await this.db.transaction((tx) => this.lockMaterialScope(tx, scope));
     return scope;
   }

@@ -1,6 +1,6 @@
 # 私有额度与公共执行许可
 
-本页说明同一 Fabric 通道中的 kq-commercial / kq-market 协议。链码、生产 Adapter 与 Server Unix 客户端已通过隔离真实网络验收；Server 已接通预留/释放的业务双签审批和持久待办，源站公开激活也已接入持久市场待办；执行方验权尚未接入，协调接单入口仍拒绝执行，不能把链码 ACTIVE 当作平台已提交真实计算任务。
+本页说明同一 Fabric 通道中的 kq-commercial / kq-market 协议。链码、生产 Adapter 与 Server Unix 客户端已通过隔离真实网络验收；Server 已接通预留/释放的业务双签审批和持久待办，源站公开激活也已接入持久市场待办；执行方验权已接入有期限的 VALID 确认与本地当前授权；真实 Agent 作业联合验收尚未完成，不能把链码 ACTIVE 当作平台已提交真实计算任务。
 
 ## 私有边界与背书
 
@@ -119,11 +119,15 @@ Server 从本组织原双签预留生成公开 gate，不接受调用者提交�
 
 商业 gate.expiresAt 是原激活窗口，已成功激活的执行续期不使用它作为运行终止时间；运行截止由原私有委派控制。链故障期间不能把 prepared/pending 或过期 VALID 当作新许可，超时也不证明旧作业已停止，不自动释放锁额或重新开放需求。
 
-生产 Node Market Adapter 和 Server Unix 客户端已支持该固定操作并复用加密检查点、原交易恢复；通用市场 HTTP 输入保持原三操作。迁移 0124 允许专用确认意图进入现有市场待办，绑定行 ID、申请站点和需求。Server 的 `FederationExecutionConfirmationService` 提供申请、续期与事务内验权；协调接单、材料授权和派发尚未调用该服务，仍拒绝 LEDGER_REQUIRED。本节不表示已放行实际作业。
+生产 Node Market Adapter 和 Server Unix 客户端已支持该固定操作并复用加密检查点、原交易恢复；通用市场 HTTP 输入保持原三操作。迁移 0124 允许专用确认意图进入现有市场待办，绑定行 ID、申请站点和需求。Server 的 `FederationExecutionConfirmationService` 提供申请、续期与事务内验权，已接入源站发送/材料披露、提供方接单/准备和派发。缺少服务配置时仍拒绝 LEDGER_REQUIRED；尚未完成真实 Agent 作业与 Web 联合验收。
 
 人工申请入口为 `POST /api/federation/commercial-agreements/:revisionId/execution-approvals/:recordId/confirm`，请求体必须为 `{}`，返回 202 和确认 ID、状态、绝对期限。需要当前组织的 agreement.approve 权限；gate、activationId 和时间均由服务端生成。内部调用方仍须独立检查自己所执行动作的权限。申请会核对同组织的双签执行同意、商业合同、精确私有委派及已提交预留；提供方还须有当前有效的受限执行账户。查询 ACTIVE 只用于构造意图，不能授权工作。
 
 同一预留的并发申请复用待办；剩余期限超过一分钟时复用最近一份确认，否则生成新 ID 续期，保留旧意图与交易。续期未完成时旧 VALID 仍可用至原截止时间，不能在恢复时延长旧期限。最终消费在调用方事务内重新检查本地同意、签名信任、撤销和精确绑定，并要求持久交易检查点为 committed、validationCode=0 且存在区块号。授权截止取确认期限、私有执行期限、协议期限和相关签名密钥期限的最小值；本地暂停立即否决，即使链上确认仍有效。该服务不创建或扣减本地预算。
+
+消费者在事务外尝试续期、最终操作事务内重新验权。短暂 Adapter 故障时只允许仍有效的原 VALID 确认继续使用，不降级为直连，不以断线证明已停止。提供方接单回执采用原商业预留 ID，并发重试保持同一份回执；已接单回执可离线恢复，但不会恢复材料或派发权限。协调模式不创建/扣减本地余额，仍检查私有委派精确金额、资源上限和本地接单数量。源站下载凭据与提供方派发/运行续租均取链确认的最短截止时间；现有 Agent 租约仍进一步限制有效期。
+
+自动运行的前提仍是已经完成双方商业审批、私有预留、公开激活和执行同意；本次没有把这些步骤自动化，也未实现 ACTIVE 停止、结算释放或重新开放。Web supportedModes 仍只展示两个双边模式。新的跨站消费检查使用真实 PostgreSQL 与测试 Adapter/传输回调，不能视为真实多 Server、mTLS、Fabric 和 Agent 的整条作业验收。
 
 
 确认验证已纳入两个真实网络入口：`test:fabric:gate` 覆盖原生读集/MVCC、第三方拒绝及 Adapter 故障恢复；`test:fabric:gate:integration` 在真实数据库审批/激活之后验证服务端申请、VALID 消费、本地暂停拒绝，再运行 Adapter 确认恢复，CI 使用后者。没有 Agent 或实际作业，亦未实现作业自动确认消费和 ACTIVE 停止状态转移。

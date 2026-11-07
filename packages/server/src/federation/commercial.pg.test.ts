@@ -1,5 +1,5 @@
 import { afterAll, expect, test } from "bun:test";
-import { randomBytes, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import {
   federationCommercialAttempts as attempts,
   auditLog,
@@ -8,18 +8,31 @@ import {
   federationCommercialExecutionApprovals as executionApprovals,
   federationAgreementApprovals,
   federationAgreements,
+  federationAssetMappings,
   federationBudgets,
   federationCapabilities,
+  federationEvidence,
+  federationMaterials,
+  federationOutbound,
+  federationReservations,
   federationSigningKeys,
   federationSites,
+  federationWorkflowBindings,
   federationMarketAttempts as marketAttempts,
   federationMarketSubmissions as marketSubmissions,
   orgs,
+  softwareAssetRevisions,
+  softwareAssets,
   federationCommercialSubmissions as submissions,
   userOrgMemberships,
   users,
+  workflowRuns,
 } from "@kuintessence/db";
-import { FederationAgreementSchema, type FederationMode } from "@kuintessence/shared/federation";
+import {
+  FederationAgreementSchema,
+  FederationDelegationSchema,
+  type FederationMode,
+} from "@kuintessence/shared/federation";
 import {
   type CommercialAdapterProposalInput,
   type CommercialAdvanceResult,
@@ -42,18 +55,25 @@ import { exportSPKI } from "jose";
 import pino from "pino";
 import { createErrorHandler } from "../middleware/error-handler";
 import { createFederationCommercialRoutes } from "../routes/federation-commercial";
+import { createFederationOutboundRoutes } from "../routes/federation-outbound";
+import { SoftwareAvailabilityService } from "../services/software-availability";
+import { FederationAdmission } from "./admission";
 import { FederationAgreementService } from "./agreements";
-import { federationMaterialDigest } from "./assets";
+import { FederationAssetService, federationMaterialDigest } from "./assets";
 import { FederationCommercialAgreementService } from "./commercial-agreements";
 import type { CommercialClient } from "./commercial-client";
 import { FederationCommercialExecutionService } from "./commercial-execution";
 import { FederationCommercialSubmissionService } from "./commercial-submissions";
 import { FederationCommercialWorker } from "./commercial-worker";
+import { FederationDispatchAuthorization } from "./dispatch-authorization";
+import { FederationExecutionBindingService } from "./execution-binding";
 import { FederationExecutionConfirmationService } from "./execution-confirmation";
 import { FabricClientFailure } from "./fabric-client";
 import { FederationMarketService } from "./market";
 import type { MarketClient } from "./market-client";
+import { FederationOutboundService } from "./outbound";
 import { FederationPermissionService } from "./permissions";
+import { FederationPreparationService } from "./preparation";
 import { signFederationMessage } from "./signatures";
 import { testAgreement, testKeys } from "./test-fixtures";
 import { FederationTrustRegistry } from "./trust-registry";
@@ -240,6 +260,36 @@ afterAll(async () => {
       );
     await db.delete(marketSubmissions).where(inArray(marketSubmissions.localSiteId, siteIds));
     await db.delete(executionApprovals).where(inArray(executionApprovals.localSiteId, siteIds));
+    const reservations = db
+      .select({ id: federationReservations.id })
+      .from(federationReservations)
+      .where(inArray(federationReservations.senderSiteId, siteIds));
+    const runs = await db
+      .select({ id: federationWorkflowBindings.workflowRunId })
+      .from(federationWorkflowBindings)
+      .where(inArray(federationWorkflowBindings.reservationId, reservations));
+    await db
+      .delete(federationWorkflowBindings)
+      .where(inArray(federationWorkflowBindings.reservationId, reservations));
+    if (runs.length)
+      await db.delete(workflowRuns).where(
+        inArray(
+          workflowRuns.id,
+          runs.map((run) => run.id),
+        ),
+      );
+    await db
+      .delete(federationEvidence)
+      .where(inArray(federationEvidence.reservationId, reservations));
+    await db
+      .delete(federationReservations)
+      .where(inArray(federationReservations.senderSiteId, siteIds));
+    await db.delete(federationOutbound).where(inArray(federationOutbound.localSiteId, siteIds));
+    await db
+      .delete(federationAssetMappings)
+      .where(eq(federationAssetMappings.localOrgId, f.actor.orgId));
+    await db.delete(federationMaterials).where(eq(federationMaterials.localOrgId, f.actor.orgId));
+    await db.delete(softwareAssets).where(eq(softwareAssets.ownerUserId, f.actor.userId));
     await db
       .delete(federationAgreements)
       .where(inArray(federationAgreements.targetSiteId, siteIds));
@@ -500,8 +550,77 @@ test("HTTP requires human scope, rejects unknown fields, hides private data from
   expect(f.adapter.prepares).toHaveLength(0);
 });
 
-async function executionFixture(explicitPurpose = true) {
+async function executionFixture(explicitPurpose = true, withMaterials = false) {
   const f = await fixture("ledger_coordinated", true, explicitPurpose);
+  const availability = new SoftwareAvailabilityService(db);
+  const assets = new FederationAssetService(db, {
+    authorizeSoftware: (id, principal, capability) =>
+      availability.assertAssetCapability(id, principal, capability),
+  });
+  let inputManifestDigest = `sha256:${"c".repeat(64)}`;
+  let environmentLockDigest = `sha256:${"d".repeat(64)}`;
+  if (withMaterials) {
+    for (const capability of ["asset.map", "delegation.submit"] as const)
+      await new FederationPermissionService(db).set(
+        { ...f.actor, capability, enabled: true },
+        f.actor.userId,
+      );
+    const content = "printf 'confirmed\\n'";
+    const payload = {
+      kind: "sandbox-script",
+      language: "bash",
+      content,
+      entrypoint: "main.sh",
+      sha256: createHash("sha256").update(content).digest("hex"),
+      runtimeContractRef: { name: "bash", version: "1" },
+      inputs: {},
+      outputs: {},
+    };
+    const assetId = randomUUID(),
+      revisionId = randomUUID();
+    await db.insert(softwareAssets).values({
+      id: assetId,
+      kind: "sandbox-script",
+      name: "Confirmed test script",
+      version: "1",
+      source: "sp-published",
+      lifecycle: "published",
+      visibility: "platform-public",
+      ownerUserId: f.actor.userId,
+      payload,
+    });
+    await db
+      .insert(softwareAssetRevisions)
+      .values({ id: revisionId, assetId, revision: 1, payload });
+    const reference = {
+      originSiteId: f.a.signing.siteId,
+      kind: "script" as const,
+      id: assetId,
+      revision: "1",
+      digest: federationMaterialDigest(payload),
+    };
+    f.terms.agreement.templates = [reference];
+    await assets.register(f.actor, { reference, localRevisionId: revisionId });
+    inputManifestDigest = (
+      await assets.putMaterial(f.actor, f.a.signing.siteId, {
+        protocolVersion: 1,
+        kind: "inputs",
+        parameters: {},
+        datasets: [],
+        bindings: [],
+      })
+    ).digest;
+    environmentLockDigest = (
+      await assets.putMaterial(f.actor, f.a.signing.siteId, {
+        protocolVersion: 1,
+        kind: "environment-lock",
+        target: { platform: "linux", architecture: "x86_64" },
+        nativeLockDigest: `sha256:${"c".repeat(64)}`,
+        software: [],
+        sandboxRuntime: { kind: "OCI", digest: `sha256:${"d".repeat(64)}` },
+      })
+    ).digest;
+  }
   const { own } = await approveBoth(f);
   const reservation = CommercialReservationSchema.parse({
     protocolVersion: 1,
@@ -531,8 +650,8 @@ async function executionFixture(explicitPurpose = true) {
       template: f.terms.agreement.templates[0],
       resources: f.terms.agreement.resourceLimit,
       maxAmount: "60",
-      inputManifestDigest: `sha256:${"c".repeat(64)}`,
-      environmentLockDigest: `sha256:${"d".repeat(64)}`,
+      inputManifestDigest,
+      environmentLockDigest,
     },
   });
   const state = MarketDemandStateSchema.parse({
@@ -584,6 +703,7 @@ async function executionFixture(explicitPurpose = true) {
   return {
     ...f,
     reservation,
+    assets,
     state,
     execution: service,
     queries: () => queries,
@@ -983,8 +1103,8 @@ class ActivationAdapter implements MarketClient {
     return { state: "committed", transactionId, blockNumber: "10" };
   }
 }
-async function activationFixture() {
-  const f = await executionFixture();
+async function activationFixture(withMaterials = false) {
+  const f = await executionFixture(true, withMaterials);
   await approveReservation(f);
   for (let step = 0; step < 6; step++) expect(await f.service.advanceNext()).toBe(true);
   await new FederationPermissionService(db).set(
@@ -1000,8 +1120,8 @@ async function activationFixture() {
   return { ...f, market, marketAdapter, activationId: randomUUID() };
 }
 
-async function confirmationFixture(provider = false) {
-  const f = await activationFixture();
+async function confirmationFixture(provider = false, withMaterials = false) {
+  const f = await activationFixture(withMaterials);
   const ordinary = new FederationAgreementService(db, f.a.signing);
   const own = await ordinary.approve(f.actor, { terms: f.terms.agreement });
   let executionUserId: string | undefined;
@@ -1103,6 +1223,199 @@ async function confirmationFixture(provider = false) {
   };
 }
 
+test("coordinated admission waits for VALID, preserves one chain reservation and creates no local budget", async () => {
+  const f = await confirmationFixture(true);
+  const input = {
+    requestJws: await signFederationMessage(
+      FederationDelegationSchema,
+      f.reservation.request,
+      f.a.signing,
+    ),
+    authenticatedPeerSiteId: f.a.signing.siteId,
+    senderKey: f.a.verification,
+  };
+  const admission = new FederationAdmission(
+    db,
+    f.b.signing,
+    f.b.verification,
+    undefined,
+    f.confirmation,
+  );
+  await expect(
+    admission.receive({ ...input, authenticatedPeerSiteId: randomUUID() }),
+  ).rejects.toMatchObject({ code: "UNTRUSTED_IDENTITY" });
+  expect(f.queryCount()).toBe(0);
+  await expect(
+    new FederationAdmission(db, f.b.signing, f.b.verification).receive(input),
+  ).rejects.toMatchObject({ code: "LEDGER_REQUIRED" });
+  await expect(admission.receive(input)).rejects.toMatchObject({ code: "LEDGER_PENDING" });
+  expect(
+    await db
+      .select()
+      .from(federationReservations)
+      .where(eq(federationReservations.senderSiteId, f.a.signing.siteId)),
+  ).toHaveLength(0);
+  for (let i = 0; i < 3; i++) await f.market.advanceNext();
+  const received = await Promise.all(Array.from({ length: 4 }, () => admission.receive(input)));
+  expect(new Set(received.map((row) => row.reservationId))).toEqual(
+    new Set([f.reservation.reservationId]),
+  );
+  expect(new Set(received.map((row) => row.receiptJws)).size).toBe(1);
+  expect(
+    await db
+      .select()
+      .from(federationBudgets)
+      .where(eq(federationBudgets.domainId, f.terms.agreement.budgetDomainId)),
+  ).toHaveLength(0);
+  await expect(
+    admission.receive({
+      ...input,
+      requestJws: await signFederationMessage(
+        FederationDelegationSchema,
+        {
+          ...f.reservation.request,
+          maxAmount: "59",
+        },
+        f.a.signing,
+      ),
+    }),
+  ).rejects.toMatchObject({ code: "OPERATION_CONFLICT" });
+  const count = f.queryCount();
+  f.beforeQuery(async () => {
+    throw new FabricClientFailure("LEDGER_UNAVAILABLE");
+  });
+  const first = received[0];
+  if (!first) throw new Error("Missing acceptance");
+  expect(await admission.receive(input)).toEqual(first);
+  expect(f.queryCount()).toBe(count);
+});
+
+test("coordinated source delivery and provider preparation share exact reservations and bounded dispatch authority", async () => {
+  const f = await confirmationFixture(true, true);
+  const source = new FederationExecutionConfirmationService(db, f.a.signing.siteId, {
+    query: async () => ({ operation: "get-demand", demand: f.state }),
+  });
+  const sourceWorker = new FederationMarketService(db, f.a.signing.siteId, f.marketAdapter);
+  const admission = new FederationAdmission(
+    db,
+    f.b.signing,
+    f.b.verification,
+    undefined,
+    f.confirmation,
+  );
+  let deliveries = 0;
+  const outbound = new FederationOutboundService(
+    db,
+    f.a.signing,
+    async (_endpoint, requestJws) => {
+      deliveries++;
+      return (
+        await admission.receive({
+          requestJws,
+          authenticatedPeerSiteId: f.a.signing.siteId,
+          senderKey: f.a.verification,
+        })
+      ).receiptJws;
+    },
+    f.assets,
+    undefined,
+    source,
+  );
+  const app = new Hono();
+  app.use("*", async (c, next) => {
+    c.set("principal" as never, f.actor as never);
+    await next();
+  });
+  app.route("/", createFederationOutboundRoutes(outbound));
+  const pending = await app.request("/federation/outbound", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(f.reservation.request),
+  });
+  expect(pending.status).toBe(503);
+  expect(pending.headers.get("cache-control")).toBe("no-store");
+  expect(await pending.json()).toEqual({ error: { code: "LEDGER_PENDING" } });
+  expect(deliveries).toBe(0);
+  for (let i = 0; i < 3; i++) await sourceWorker.advanceNext();
+  const queued = await Promise.all(
+    Array.from({ length: 3 }, () => outbound.enqueue(f.actor, f.reservation.request)),
+  );
+  expect(new Set(queued.map((row) => row.operationId))).toEqual(
+    new Set([f.reservation.request.operationId]),
+  );
+  await f.requestConfirmation();
+  for (let i = 0; i < 3; i++) await f.market.advanceNext();
+  expect(await outbound.deliverNext()).toBe(true);
+  expect(deliveries).toBe(1);
+  const [saved] = await db
+    .select()
+    .from(federationOutbound)
+    .where(eq(federationOutbound.localSiteId, f.a.signing.siteId));
+  expect(saved?.state).toBe("accepted");
+  expect(saved?.receipt?.reservationId).toBe(f.reservation.reservationId);
+  if (!saved?.receipt || !saved.receiptJws) throw new Error("Missing accepted delivery");
+  const preparation = new FederationPreparationService(
+    db,
+    f.b.signing.siteId,
+    f.assets,
+    undefined,
+    f.confirmation,
+  );
+  const binding = await new FederationExecutionBindingService(db, preparation).stage(
+    f.reservation.reservationId,
+  );
+  const dispatch = new FederationDispatchAuthorization(db, preparation);
+  const final = await dispatch.prepare(binding.workflowRunId);
+  const deadline = await db.transaction(final);
+  expect(deadline).toBe((await f.authorizeConfirmation()).expiresAtUnixMs);
+  expect(deadline).toBeLessThanOrEqual(Date.now() + 300000);
+  expect(
+    await db
+      .select()
+      .from(federationBudgets)
+      .where(eq(federationBudgets.domainId, f.terms.agreement.budgetDomainId)),
+  ).toHaveLength(0);
+  f.setClock(new Date(deadline + 1));
+  await expect(db.transaction(final)).rejects.toMatchObject({ code: "LEDGER_PENDING" });
+  // Receipt recovery is observation only; it cannot renew material or dispatch authority.
+  expect(await admission.completeReceipt(f.reservation.reservationId)).toEqual({
+    reservationId: saved.receipt.reservationId,
+    receiptJws: saved.receiptJws,
+  });
+});
+
+test("coordinated admission rechecks local identity after chain confirmation and before creating a receipt", async () => {
+  const f = await confirmationFixture(true);
+  await f.requestConfirmation();
+  for (let i = 0; i < 3; i++) await f.market.advanceNext();
+  if (!f.executionUserId) throw new Error("Missing execution identity");
+  await db.update(users).set({ suspended: true }).where(eq(users.id, f.executionUserId));
+  const admission = new FederationAdmission(
+    db,
+    f.b.signing,
+    f.b.verification,
+    undefined,
+    f.confirmation,
+  );
+  await expect(
+    admission.receive({
+      requestJws: await signFederationMessage(
+        FederationDelegationSchema,
+        f.reservation.request,
+        f.a.signing,
+      ),
+      authenticatedPeerSiteId: f.a.signing.siteId,
+      senderKey: f.a.verification,
+    }),
+  ).rejects.toMatchObject({ code: "POLICY_DENIED" });
+  expect(
+    await db
+      .select()
+      .from(federationReservations)
+      .where(eq(federationReservations.senderSiteId, f.a.signing.siteId)),
+  ).toHaveLength(0);
+});
+
 test("confirmation persists one public intent across concurrent refreshes and requires VALID before consumption", async () => {
   const f = await confirmationFixture();
   const rows = await Promise.all(Array.from({ length: 4 }, () => f.requestConfirmation()));
@@ -1147,6 +1460,12 @@ test("confirmation renewal creates a new bounded intent while the old proof expi
     .from(marketSubmissions)
     .where(eq(marketSubmissions.id, first.id));
   f.setClock(new Date(Date.parse(first.expiresAt) - 30000));
+  f.beforeQuery(async () => {
+    throw new FabricClientFailure("LEDGER_UNAVAILABLE");
+  });
+  await f.confirmation.refreshForExecution(f.actor.orgId, f.reservation.request);
+  expect((await f.authorizeConfirmation()).authorizationId).toBe(first.id);
+  f.beforeQuery(async () => {});
   const next = await f.requestConfirmation();
   expect(next.id).not.toBe(first.id);
   expect((await f.authorizeConfirmation()).authorizationId).toBe(first.id);

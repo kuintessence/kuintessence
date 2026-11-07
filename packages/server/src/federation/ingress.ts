@@ -6,6 +6,7 @@ import { bodyLimit } from "hono/body-limit";
 import { FederationAdmission } from "./admission";
 import { FederationCancellationReceiver } from "./cancellation";
 import type { FederationDownloadStorage } from "./download-credential";
+import type { FederationExecutionConfirmationService } from "./execution-confirmation";
 import type { FederationOutboundService } from "./outbound";
 import { FederationResultReceiptReceiver } from "./result-receipts";
 import { type FederationResultDownloadStorage, FederationResultResponder } from "./results";
@@ -23,6 +24,7 @@ export function createFederationIngress(
   downloads?: FederationResultDownloadStorage,
   materials?: Pick<FederationOutboundService, "materialChunk" | "inputDownload">,
   inputDownloads?: FederationDownloadStorage,
+  confirmations?: FederationExecutionConfirmationService,
 ) {
   const r = new Hono();
   const trust = new FederationTrustRegistry(db);
@@ -53,7 +55,7 @@ export function createFederationIngress(
     const localKey = await trust.resolveKey(signingKey.siteId, signingKey.keyId, now);
     if (!localKey.allowedKinds.includes("acceptance"))
       throw new FederationError("UNTRUSTED_IDENTITY");
-    const admission = new FederationAdmission(db, signingKey, localKey);
+    const admission = new FederationAdmission(db, signingKey, localKey, undefined, confirmations);
     const result = await admission.receive({
       requestJws,
       senderKey,

@@ -12,6 +12,7 @@ import {
 import { AppError, createLogger, type NodeInvocation } from "@kuintessence/shared";
 import {
   assertDelegationPolicy,
+  assertDelegationTerms,
   assertFederationStatusQueryFresh,
   assertFederationStatusReport,
   FEDERATION_MATERIAL_CHUNK_BYTES,
@@ -38,6 +39,8 @@ import type { LeasedWorkflowJournal } from "../workflow/execution-journal";
 import type { FederationAssetService } from "./assets";
 import { cancellationSummary, FederationCancellationSender } from "./cancellation-outbound";
 import { type FederationDownloadStorage, signedDownloadExpiry } from "./download-credential";
+import type { FederationExecutionConfirmationService } from "./execution-confirmation";
+import { FabricClientFailure } from "./fabric-client";
 import { FederationWorkflowInputExports } from "./input-exports";
 import { FederationDeliveryError, type FederationSend } from "./outbound-client";
 import { type FederationActor, requireFederationCapability } from "./permissions";
@@ -97,6 +100,7 @@ export class FederationOutboundService {
     private readonly send: FederationSend,
     private readonly assets: FederationAssetService,
     private readonly clock: () => Date = () => new Date(),
+    private readonly confirmations?: FederationExecutionConfirmationService,
   ) {
     this.trust = new FederationTrustRegistry(db);
     this.resultReceipts = new FederationResultReceiptSender(db, signingKey, send, clock);
@@ -173,6 +177,21 @@ export class FederationOutboundService {
     for (const material of materials)
       await this.assets.assertResolved(tx, actor, material.reference, material.mappingId);
     if (request.senderSiteId !== this.signingKey.siteId) throw new FederationError("POLICY_DENIED");
+    if (request.mode === "ledger_coordinated" && !this.confirmations)
+      throw new FederationError("LEDGER_REQUIRED");
+    if (request.mode === "ledger_coordinated")
+      await tx.execute(
+        sql`select pg_advisory_xact_lock(hashtextextended(${request.agreementRevisionId}, 0))`,
+      );
+    const confirmation =
+      request.mode === "ledger_coordinated"
+        ? await this.confirmations?.authorize(
+            tx,
+            actor.orgId,
+            request,
+            allowReplay ? "execution" : "admission",
+          )
+        : undefined;
     const [approval] = await tx
       .select()
       .from(federationAgreementApprovals)
@@ -190,7 +209,7 @@ export class FederationOutboundService {
     const now = this.clock();
     // Expired delivery may only replay the original request to recover an already issued receipt.
     // A receiver that has no reservation still applies the original admission deadline.
-    assertDelegationPolicy(
+    (confirmation ? assertDelegationTerms : assertDelegationPolicy)(
       terms,
       request,
       allowReplay ? new Date(Math.min(now.getTime(), Date.parse(request.expiresAt) - 1)) : now,
@@ -225,7 +244,9 @@ export class FederationOutboundService {
       .where(eq(federationSites.id, terms.targetSiteId));
     if (!target) throw new FederationError("UNTRUSTED_IDENTITY");
     const inputExport = await this.inputExports.forDelegation(tx, actor, request, terms);
-    return { terms, ownKey, endpoint: target.endpoint, inputExport };
+    if (confirmation && confirmation.expiresAtUnixMs <= this.clock().getTime())
+      throw new FabricClientFailure("LEDGER_PENDING");
+    return { terms, ownKey, endpoint: target.endpoint, inputExport, confirmation };
   }
 
   async enqueue(actor: FederationActor, raw: FederationDelegation) {
@@ -313,6 +334,10 @@ export class FederationOutboundService {
     });
     if (prior) return prior;
     const materials = await this.materials(actor, request);
+    if (request.mode === "ledger_coordinated") {
+      if (!this.confirmations) throw new FederationError("LEDGER_REQUIRED");
+      await this.confirmations.refreshForExecution(actor.orgId, request, "admission");
+    }
     const authorized = await this.db.transaction((tx) =>
       this.authorize(tx, actor, request, materials, true),
     );
@@ -328,7 +353,13 @@ export class FederationOutboundService {
       this.clock(),
     );
     return transaction(async (tx) => {
-      const { terms, endpoint } = await this.authorize(tx, actor, request, materials, true);
+      const { terms, endpoint, confirmation } = await this.authorize(
+        tx,
+        actor,
+        request,
+        materials,
+        true,
+      );
       const [existing] = await tx
         .select()
         .from(federationOutbound)
@@ -342,7 +373,7 @@ export class FederationOutboundService {
           throw new FederationError("OPERATION_CONFLICT");
         return summary(existing);
       }
-      assertDelegationPolicy(terms, request, this.clock());
+      (confirmation ? assertDelegationTerms : assertDelegationPolicy)(terms, request, this.clock());
       // One source budget epoch cannot be copied to another agreement or recipient.
       await tx.execute(
         sql`select pg_advisory_xact_lock(hashtextextended(${`${this.signingKey.siteId}:${request.budgetDomainId}:${request.epoch}`}, 0))`,
@@ -357,17 +388,23 @@ export class FederationOutboundService {
         .where(
           and(
             eq(federationOutbound.localSiteId, this.signingKey.siteId),
-            eq(federationOutbound.budgetDomainId, request.budgetDomainId),
-            eq(federationOutbound.epoch, request.epoch),
+            ...(confirmation
+              ? [eq(federationOutbound.agreementRevisionId, request.agreementRevisionId)]
+              : [
+                  eq(federationOutbound.budgetDomainId, request.budgetDomainId),
+                  eq(federationOutbound.epoch, request.epoch),
+                ]),
           ),
         );
       if (!held) throw new Error("Source budget aggregate is unavailable");
       if (held.conflictingRevision) throw new FederationError("OPERATION_CONFLICT");
       if (
         held.count >= terms.maxReservations ||
-        BigInt(held.amount) + BigInt(request.maxAmount) > BigInt(terms.budgetLimit)
+        (!confirmation &&
+          BigInt(held.amount) + BigInt(request.maxAmount) > BigInt(terms.budgetLimit))
       )
         throw new FederationError("BUDGET_EXHAUSTED");
+      if (confirmation) await this.confirmations?.authorize(tx, actor.orgId, request, "admission");
       const [created] = await tx
         .insert(federationOutbound)
         .values({
@@ -709,14 +746,20 @@ export class FederationOutboundService {
       throw new FederationError("POLICY_DENIED");
     const actor = { userId: saved.submittedBy, orgId: saved.localOrgId };
     const materials = await this.materials(actor, saved.request);
+    if (saved.request.mode === "ledger_coordinated") {
+      if (!this.confirmations) throw new FederationError("LEDGER_REQUIRED");
+      await this.confirmations.refreshForExecution(actor.orgId, saved.request);
+    }
     return async (tx: FederationTransaction) => {
-      const { terms, ownKey, endpoint, inputExport } = await this.authorize(
+      const { terms, ownKey, endpoint, inputExport, confirmation } = await this.authorize(
         tx,
         actor,
         saved.request,
         materials,
         true,
       );
+      if (confirmation && saved.receipt?.reservationId !== confirmation.reservationId)
+        throw new FederationError("OPERATION_CONFLICT");
       await this.trust.assertPeer(tx, fingerprint, peer.siteId, peer.keyId, this.clock());
       const currentPeer = await this.trust.resolveKey(peer.siteId, peer.keyId, this.clock(), tx);
       const queryKind =
@@ -769,7 +812,12 @@ export class FederationOutboundService {
               this.signingKey.siteId,
               query.materialDigest,
             );
-      assertDelegationPolicy(terms, saved.request, this.clock(), "execution");
+      (confirmation ? assertDelegationTerms : assertDelegationPolicy)(
+        terms,
+        saved.request,
+        this.clock(),
+        "execution",
+      );
       assertFederationStatusQueryFresh(query, this.clock());
       const now = this.clock();
       if (
@@ -779,11 +827,14 @@ export class FederationOutboundService {
       )
         throw new FederationError("UNTRUSTED_IDENTITY");
       await this.trust.assertPeer(tx, fingerprint, peer.siteId, peer.keyId, now);
+      if (confirmation && confirmation.expiresAtUnixMs <= this.clock().getTime())
+        throw new FabricClientFailure("LEDGER_PENDING");
       return {
         content: Buffer.from(federationCanonicalJson(content), "utf8"),
         inputExport,
         inputFilesDigest: saved.request.inputFilesDigest,
         deadline: Math.min(
+          confirmation?.expiresAtUnixMs ?? Number.POSITIVE_INFINITY,
           federationExecutionDeadline(saved.request),
           Date.parse(terms.validUntil),
           ownKey.validUntil.getTime(),
@@ -990,8 +1041,12 @@ export class FederationOutboundService {
         { userId: claimed.submittedBy, orgId: claimed.localOrgId },
         claimed.request,
       );
+      if (claimed.request.mode === "ledger_coordinated") {
+        if (!this.confirmations) throw new FederationError("LEDGER_REQUIRED");
+        await this.confirmations.refreshForExecution(claimed.localOrgId, claimed.request);
+      }
       const current = await this.db.transaction(async (tx) => {
-        const { ownKey, endpoint } = await this.authorize(
+        const { ownKey, endpoint, confirmation } = await this.authorize(
           tx,
           { userId: claimed.submittedBy, orgId: claimed.localOrgId },
           claimed.request,
@@ -1034,7 +1089,7 @@ export class FederationOutboundService {
             JSON.stringify(FederationDelegationSchema.parse(current.request))
         )
           throw new FederationError("OPERATION_CONFLICT");
-        return current;
+        return { ...current, confirmationReservationId: confirmation?.reservationId };
       });
       if (!current) return true;
       // No network I/O holds a database connection. A lost response replays only this original JWS.
@@ -1049,6 +1104,8 @@ export class FederationOutboundService {
       );
       const expected = current.request;
       if (
+        (current.confirmationReservationId !== undefined &&
+          receipt.reservationId !== current.confirmationReservationId) ||
         receipt.senderSiteId !== expected.recipientSiteId ||
         receipt.recipientSiteId !== expected.senderSiteId ||
         receipt.requestDigest !== current.requestDigest ||
@@ -1094,7 +1151,9 @@ export class FederationOutboundService {
         !(error instanceof FederationError) &&
         !(error instanceof FederationDeliveryError && error.code === "INVALID_RECEIPT_RESPONSE");
       const lastError =
-        error instanceof FederationError || error instanceof FederationDeliveryError
+        error instanceof FederationError ||
+        error instanceof FederationDeliveryError ||
+        error instanceof FabricClientFailure
           ? error.code
           : denied
             ? "POLICY_DENIED"

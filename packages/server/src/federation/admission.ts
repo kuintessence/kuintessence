@@ -17,6 +17,7 @@ import {
 import { and, count, eq, sql } from "drizzle-orm";
 import { assertFederationNotCancelled } from "./cancellation-fence";
 import { requireCoordinatedCommercialAgreement } from "./commercial-execution-policy";
+import type { FederationExecutionConfirmationService } from "./execution-confirmation";
 import { type ExecutionIdentity, requireExecutionIdentity } from "./execution-identity";
 import {
   type FederationSigningKey,
@@ -36,6 +37,7 @@ export class FederationAdmission {
     private readonly signingKey: FederationSigningKey,
     private readonly receiptVerificationKey: FederationVerificationKey,
     private readonly clock: () => Date = () => new Date(),
+    private readonly confirmations?: FederationExecutionConfirmationService,
   ) {
     if (
       signingKey.siteId !== receiptVerificationKey.siteId ||
@@ -160,6 +162,35 @@ export class FederationAdmission {
     )
       throw new FederationError("UNTRUSTED_IDENTITY");
 
+    let coordinatedOrgId: string | undefined;
+    if (request.mode === "ledger_coordinated") {
+      if (!this.confirmations) throw new FederationError("LEDGER_REQUIRED");
+      const scope = await this.db.transaction(async (tx) => {
+        await input.authorize?.(tx, this.clock());
+        const [prior] = await tx
+          .select()
+          .from(federationReservations)
+          .where(
+            and(
+              eq(federationReservations.senderSiteId, request.senderSiteId),
+              eq(federationReservations.operationId, request.operationId),
+            ),
+          );
+        if (prior) return { prior: this.requireSameRequest(prior, verified.digest) };
+        const [agreement] = await tx
+          .select()
+          .from(federationAgreements)
+          .where(eq(federationAgreements.revisionId, request.agreementRevisionId));
+        if (!agreement || agreement.targetSiteId !== this.signingKey.siteId)
+          throw new FederationError("AGREEMENT_UNAVAILABLE");
+        return { orgId: agreement.localOrgId };
+      });
+      if (scope.prior) return this.completeReceipt(scope.prior.id);
+      coordinatedOrgId = scope.orgId;
+      if (!coordinatedOrgId) throw new FederationError("AGREEMENT_UNAVAILABLE");
+      await this.confirmations.refreshForExecution(coordinatedOrgId, request, "admission");
+    }
+
     const reservation = await this.db.transaction(async (tx) => {
       await input.authorize?.(tx, this.clock());
       const [prior] = await tx
@@ -174,6 +205,14 @@ export class FederationAdmission {
       if (prior) {
         await input.authorize?.(tx, this.clock());
         return this.requireSameRequest(prior, verified.digest);
+      }
+
+      // Serialize admissions before confirmation's consent/installed-agreement locks.
+      if (coordinatedOrgId) {
+        await tx.execute(
+          sql`select pg_advisory_xact_lock(hashtextextended(${request.agreementRevisionId}, 0))`,
+        );
+        await this.confirmations?.authorize(tx, coordinatedOrgId, request, "admission");
       }
 
       const [agreement] = await tx
@@ -199,7 +238,8 @@ export class FederationAdmission {
       if (agreement.state !== "active") throw new FederationError("AGREEMENT_UNAVAILABLE");
       await assertFederationNotCancelled(tx, request);
       const terms = FederationAgreementSchema.parse(agreement.terms);
-      if (terms.mode === "ledger_coordinated") throw new FederationError("LEDGER_REQUIRED");
+      if (terms.mode === "ledger_coordinated" && !coordinatedOrgId)
+        throw new FederationError("LEDGER_REQUIRED");
       await requireExecutionIdentity(tx, {
         orgId: agreement.localOrgId,
         userId: agreement.executionUserId,
@@ -210,25 +250,30 @@ export class FederationAdmission {
         .where(eq(federationReservations.agreementRevisionId, agreement.revisionId));
       if (!open || open.total >= terms.maxReservations)
         throw new FederationError("BUDGET_EXHAUSTED");
-      const [budget] = await tx
-        .select()
-        .from(federationBudgets)
-        .where(
-          and(
-            eq(federationBudgets.domainId, terms.budgetDomainId),
-            eq(federationBudgets.epoch, terms.epoch),
-          ),
-        )
-        .for("update");
-      if (!budget || budget.unit !== request.unit)
+      const [budget] = coordinatedOrgId
+        ? []
+        : await tx
+            .select()
+            .from(federationBudgets)
+            .where(
+              and(
+                eq(federationBudgets.domainId, terms.budgetDomainId),
+                eq(federationBudgets.epoch, terms.epoch),
+              ),
+            )
+            .for("update");
+      if (!coordinatedOrgId && (!budget || budget.unit !== request.unit))
         throw new FederationError("AGREEMENT_UNAVAILABLE");
-      if (BigInt(budget.available) < BigInt(request.maxAmount))
+      if (budget && BigInt(budget.available) < BigInt(request.maxAmount))
         throw new FederationError("BUDGET_EXHAUSTED");
       // Recheck after all potentially blocking locks, not just before signature verification.
+      await input.authorize?.(tx, this.clock());
+      const confirmation = coordinatedOrgId
+        ? await this.confirmations?.authorize(tx, coordinatedOrgId, request, "admission")
+        : undefined;
       const admittedAt = this.clock();
-      await input.authorize?.(tx, admittedAt);
-      assertDelegationPolicy(terms, request, admittedAt);
-      const id = crypto.randomUUID();
+      if (!confirmation) assertDelegationPolicy(terms, request, admittedAt);
+      const id = confirmation?.reservationId ?? crypto.randomUUID();
       const receipt: FederationAcceptance = {
         protocolVersion: 1,
         kind: "acceptance",
@@ -265,18 +310,19 @@ export class FederationAdmission {
         .onConflictDoNothing()
         .returning();
       if (!created) throw new FederationError("OPERATION_CONFLICT");
-      await tx
-        .update(federationBudgets)
-        .set({
-          available: (BigInt(budget.available) - BigInt(request.maxAmount)).toString(),
-          reserved: (BigInt(budget.reserved) + BigInt(request.maxAmount)).toString(),
-        })
-        .where(
-          and(
-            eq(federationBudgets.domainId, terms.budgetDomainId),
-            eq(federationBudgets.epoch, terms.epoch),
-          ),
-        );
+      if (budget)
+        await tx
+          .update(federationBudgets)
+          .set({
+            available: (BigInt(budget.available) - BigInt(request.maxAmount)).toString(),
+            reserved: (BigInt(budget.reserved) + BigInt(request.maxAmount)).toString(),
+          })
+          .where(
+            and(
+              eq(federationBudgets.domainId, terms.budgetDomainId),
+              eq(federationBudgets.epoch, terms.epoch),
+            ),
+          );
       await this.saveEvidence(tx, created, "delegation", verified.jws, verified.digest);
       return created;
     });

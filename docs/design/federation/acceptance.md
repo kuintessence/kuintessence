@@ -78,3 +78,5 @@
 ## 执行 gate 的当前验证覆盖
 
 [真实 gate 验收入口](../../../deploy/federation/fabric-execution-gate.md)覆盖 L06 的激活/激活前释放双向并发、延迟旧许可拒绝，以及私有预算并发锁额；通过实际 VALID/MVCC_READ_CONFLICT 和私有区块写入核验。C 能读取 gate 哈希但不能读取正文，A/B 原生 AND 背书缺任一方时 INVALID。另已通过生产 Node Adapter/Server Unix 客户端验证预留、释放、激活跨进程及提交响应丢失恢复，预留还覆盖 Orderer 中断；查询核对 gate 哈希和 ACTIVE 状态。Server 预留/释放的持久双签审批及源站公开激活待办已通过独立 PostgreSQL 检查（Adapter 替身），追加真实数据库/Fabric 联合入口已验证双方业务审批、私有预留/释放及公开激活的 Orderer 中断和响应丢失恢复；尚未覆盖到实际 Job/Agent 的完整流程：L06 的终态释放、重新开放和第二 attempt 尚未完成，A03 的 Server/Agent 无未授权实际执行仍须联合验证，不能将整行标记完成。市场浏览及旧唯一认领由独立入口覆盖，PR 预览仍未发布。
+
+追加覆盖：真实 PostgreSQL/Fabric 联合入口验证 Server 执行确认待办、只有 VALID 可消费及本地暂停覆盖链确认。独立数据库测试已贯通协调源站提交、提供方接单、固定商业预留 ID、材料准备、工作流绑定及派发期限；覆盖并发不重复预留、不生成本地预算、过期拒绝与断链续期仅复用有效旧证明。后一组使用测试 Adapter 和进程内传输，并未运行 Agent 作业，不能据此将 A03、W01、W04 或 L06 标记为完成。

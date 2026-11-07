@@ -8,7 +8,7 @@ import { federationExecutionDenial } from "./execution-policy";
 
 const logger = createLogger("federation-execution-monitor");
 
-/** Reuses dispatch authority and durable Workflow cancellation; never depends on a ledger. */
+/** Reuses dispatch authority; unavailable confirmations await retry and never imply proven stop. */
 export class FederationExecutionMonitor {
   private timer?: ReturnType<typeof setInterval>;
   private running?: Promise<void>;

@@ -1645,9 +1645,25 @@ const federationAssets = new FederationAssetService(db, {
 });
 const federationSigningKey = await loadFederationSigningKey(config);
 const federationSender = await loadFederationSender(config);
+const federationConfirmations = federationSigningKey
+  ? new FederationExecutionConfirmationService(
+      db,
+      federationSigningKey.siteId,
+      config.FEDERATION_MARKET_SOCKET_PATH
+        ? new UnixMarketClient(config.FEDERATION_MARKET_SOCKET_PATH)
+        : undefined,
+    )
+  : undefined;
 const federationOutbound =
   federationSigningKey && federationSender
-    ? new FederationOutboundService(db, federationSigningKey, federationSender, federationAssets)
+    ? new FederationOutboundService(
+        db,
+        federationSigningKey,
+        federationSender,
+        federationAssets,
+        undefined,
+        federationConfirmations,
+      )
     : undefined;
 const federationWorkflowExecutor =
   federationSigningKey && federationOutbound
@@ -1708,17 +1724,17 @@ if (federationSigningKey && federationCommercial)
           ? new UnixMarketClient(config.FEDERATION_MARKET_SOCKET_PATH)
           : undefined,
       ),
-      new FederationExecutionConfirmationService(
-        db,
-        federationSigningKey.siteId,
-        config.FEDERATION_MARKET_SOCKET_PATH
-          ? new UnixMarketClient(config.FEDERATION_MARKET_SOCKET_PATH)
-          : undefined,
-      ),
+      federationConfirmations,
     ),
   );
 const federationPreparation = federationSigningKey
-  ? new FederationPreparationService(db, federationSigningKey.siteId, federationAssets)
+  ? new FederationPreparationService(
+      db,
+      federationSigningKey.siteId,
+      federationAssets,
+      undefined,
+      federationConfirmations,
+    )
   : undefined;
 federationDispatchAuthorization = federationPreparation
   ? new FederationDispatchAuthorization(
@@ -2362,6 +2378,7 @@ const federationIngress = await startFederationIngress(
   federationResultDownloads,
   federationOutbound,
   federationInputDownloads,
+  federationConfirmations,
 );
 const federationPreparationWorker = federationPreparation
   ? new FederationPreparationWorker(

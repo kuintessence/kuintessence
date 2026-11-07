@@ -5,6 +5,7 @@ import { withPrivateUnixSocketStartup } from "@kuintessence/shared/unix-socket";
 import { importPKCS8 } from "jose";
 import type { ServerConfig } from "../config";
 import type { FederationDownloadStorage } from "./download-credential";
+import type { FederationExecutionConfirmationService } from "./execution-confirmation";
 import { createFederationIngress } from "./ingress";
 import type { FederationOutboundService } from "./outbound";
 import { createFederationSender } from "./outbound-client";
@@ -18,6 +19,7 @@ export async function startFederationIngress(
   downloads?: FederationResultDownloadStorage,
   materials?: Pick<FederationOutboundService, "materialChunk" | "inputDownload">,
   inputDownloads?: FederationDownloadStorage,
+  confirmations?: FederationExecutionConfirmationService,
 ) {
   if (!config.FEDERATION_ENABLED) return undefined;
   const socketPath = config.FEDERATION_SOCKET_PATH;
@@ -30,7 +32,14 @@ export async function startFederationIngress(
     );
   const signingKey = key ?? (await loadFederationSigningKey(config));
   if (!signingKey) throw new Error("Federation signing key is required");
-  const app = createFederationIngress(db, signingKey, downloads, materials, inputDownloads);
+  const app = createFederationIngress(
+    db,
+    signingKey,
+    downloads,
+    materials,
+    inputDownloads,
+    confirmations,
+  );
   return withPrivateUnixSocketStartup(socketPath, async () => {
     const server = Bun.serve({ unix: socketPath, fetch: app.fetch, maxRequestBodySize: 524288 });
     try {

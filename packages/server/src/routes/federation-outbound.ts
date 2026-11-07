@@ -3,6 +3,7 @@ import { FederationDelegationSchema, FederationError } from "@kuintessence/share
 import { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { z } from "zod";
+import { FabricClientFailure } from "../federation/fabric-client";
 import type { FederationOutboundService } from "../federation/outbound";
 import { FederationDeliveryError } from "../federation/outbound-client";
 import type { FederationActor } from "../federation/permissions";
@@ -24,6 +25,10 @@ export function createFederationOutboundRoutes(service: FederationOutboundServic
   });
   r.use("/federation/outbound/*", bodyLimit({ maxSize: 524288 }));
   r.onError((error, c) => {
+    if (error instanceof FabricClientFailure) {
+      c.header("cache-control", "no-store");
+      return c.json({ error: { code: error.code } }, error.needsReview ? 502 : 503);
+    }
     if (error instanceof FederationDeliveryError)
       return c.json(
         { error: { code: error.code } },

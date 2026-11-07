@@ -178,8 +178,37 @@ afterEach(async () => {
   await db
     .delete(federationInputImports)
     .where(eq(federationInputImports.ownerId, executionUserId));
-  // Binding tests deliberately leave pending tasks; subsequent fixtures must not dispatch them.
-  if (!sourceRunIds.length) return;
+  // Finished fixtures remain for final FK cleanup, but must not enter a later worker's page.
+  const reservations = await db
+    .select({ reservationId: federationReservations.id })
+    .from(federationReservations)
+    .where(eq(federationReservations.senderSiteId, a.signing.siteId));
+  const deferred = new Date("2030-01-01T00:00:00Z");
+  if (reservations.length)
+    await db
+      .insert(federationPreparations)
+      .values(
+        reservations.map(({ reservationId }) => ({
+          reservationId,
+          state: "blocked",
+          blocker: "POLICY_DENIED",
+          updatedAt: deferred,
+        })),
+      )
+      .onConflictDoUpdate({
+        target: federationPreparations.reservationId,
+        set: { updatedAt: deferred },
+      });
+  await db
+    .update(federationCancellations)
+    .set({ nextCheckAt: deferred })
+    .where(
+      and(
+        eq(federationCancellations.localSiteId, b.signing.siteId),
+        eq(federationCancellations.senderSiteId, a.signing.siteId),
+      ),
+    );
+  // Source delivery must also exclude every previous fixture, including standalone API tasks.
   await db
     .update(federationOutbound)
     .set({
@@ -187,15 +216,7 @@ afterEach(async () => {
       statusNextAttemptAt: new Date("2030-01-01T00:00:00Z"),
       cancelNextAttemptAt: new Date("2030-01-01T00:00:00Z"),
     })
-    .where(
-      inArray(
-        federationOutbound.operationId,
-        db
-          .select({ operationId: workflowExecutionDelegations.operationId })
-          .from(workflowExecutionDelegations)
-          .where(inArray(workflowExecutionDelegations.runId, sourceRunIds)),
-      ),
-    );
+    .where(eq(federationOutbound.localSiteId, a.signing.siteId));
 });
 
 beforeAll(async () => {

@@ -479,6 +479,21 @@ export class FederationExecutionConfirmationService {
     });
   }
 
+  /** Opportunistic renewal outside the consumer's final operation transaction. */
+  async refreshForExecution(
+    orgId: string,
+    request: FederationDelegation,
+    phase: Phase = "execution",
+  ) {
+    try {
+      await this.refresh(orgId, request, phase);
+    } catch (error) {
+      if (!(error instanceof FabricClientFailure) || error.needsReview) throw error;
+      // A renewal outage does not shorten an existing VALID proof; final callers still recheck it.
+      await this.db.transaction((tx) => this.authorize(tx, orgId, request, phase));
+    }
+  }
+
   /** Called inside the operation's final transaction; no network I/O or cached boolean authorizes work. */
   async authorize(
     tx: PgTransaction,

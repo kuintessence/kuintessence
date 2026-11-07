@@ -141,7 +141,6 @@ export class FederationDispatchAuthorization {
           )
         : undefined;
     return async (tx) => {
-      let expiresAtUnixMs = Number.POSITIVE_INFINITY;
       await tx
         .select({ id: federationWorkflowBindings.reservationId })
         .from(federationWorkflowBindings)
@@ -154,7 +153,7 @@ export class FederationDispatchAuthorization {
         saved.snapshotDigest !== binding.snapshotDigest
       )
         throw new FederationError("OPERATION_CONFLICT");
-      await this.preparation.lockExecutionSnapshot(tx, current, running);
+      let expiresAtUnixMs = await this.preparation.lockExecutionSnapshot(tx, current, running);
       if (delivery) {
         const [job] = await tx
           .select({ job: jobs, intent: workflowExecutionJobs.intent })

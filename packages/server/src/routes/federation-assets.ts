@@ -8,6 +8,7 @@ import { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { z } from "zod";
 import type { FederationAssetService } from "../federation/assets";
+import { FabricClientFailure } from "../federation/fabric-client";
 import { FederationMaterializationError } from "../federation/materialize";
 import type { FederationActor } from "../federation/permissions";
 import type { FederationPreparationService } from "../federation/preparation";
@@ -32,6 +33,10 @@ export function createFederationAssetRoutes(
   });
   r.use("/federation/assets/*", bodyLimit({ maxSize: 1100000 }));
   r.onError((error, c) => {
+    if (error instanceof FabricClientFailure) {
+      c.header("cache-control", "no-store");
+      return c.json({ error: { code: error.code } }, error.needsReview ? 502 : 503);
+    }
     if (error instanceof FederationMaterializationError)
       return c.json(
         { error: { code: "TEMPLATE_NOT_PORTABLE", path: error.path, reason: error.reason } },
