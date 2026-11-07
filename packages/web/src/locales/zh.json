@@ -1678,6 +1678,7 @@
           "title": "调度解释",
           "description": "从作业详情查看权限、软件、计量、负载、成本等选址流水线解释。"
         },
+        "federationStorage": { "title": "输入存储核对", "description": "核对未知请求与存储清理" },
         "federationTrust": {
           "title": "联邦信任",
           "description": "机构、公钥和客户端证书"
@@ -1894,6 +1895,7 @@
       "ssh-recordings": "SSH 录像",
       "cluster-file-roots": "集群文件根目录",
       "cost-rates": "成本费率",
+      "federation-storage": "输入存储核对",
       "federation-trust": "联邦信任"
     }
   },

@@ -8,6 +8,7 @@
  * Status tokens (pending/running/...) are referenced by the Badge component.
  */
 :root {
+  color-scheme: light;
   --radius: 0.625rem;
 
   --kq-motion-enter: 160ms;
@@ -48,6 +49,7 @@
 }
 
 .dark {
+  color-scheme: dark;
   --background: oklch(0.16 0.01 260);
   --foreground: oklch(0.96 0.005 260);
   --muted: oklch(0.22 0.015 260);

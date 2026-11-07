@@ -1677,6 +1677,10 @@
           "title": "Scheduler explanations",
           "description": "Inspect placement reasoning for permission, software, metering, load, and cost filters."
         },
+        "federationStorage": {
+          "title": "Input storage reconciliation",
+          "description": "Reconcile unknown requests and storage cleanup"
+        },
         "federationTrust": {
           "title": "Federation trust",
           "description": "Institutions, signing keys, and client certificates"
@@ -1893,6 +1897,7 @@
       "ssh-recordings": "SSH recordings",
       "cluster-file-roots": "Cluster file roots",
       "cost-rates": "Cost rates",
+      "federation-storage": "Input storage reconciliation",
       "federation-trust": "Federation trust"
     }
   },

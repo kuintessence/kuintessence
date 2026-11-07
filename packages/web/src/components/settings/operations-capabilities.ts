@@ -47,6 +47,13 @@ export const OPERATIONS_AREAS: ReadonlyArray<OperationsArea> = [
 
 export const OPERATIONS_LINKS: ReadonlyArray<OperationsLink> = [
   {
+    key: "federationStorage",
+    area: "security",
+    href: "/settings#security/federation-storage",
+    requiredRole: "platform_admin",
+    icon: HardDrive,
+  },
+  {
     key: "federationTrust",
     area: "security",
     href: "/settings#security/federation-trust",

@@ -20,6 +20,9 @@ vi.mock("../../lib/auth", () => ({
 }));
 vi.mock("../ThemeProvider", () => ({ useTheme: () => ({ theme: "system", setTheme: vi.fn() }) }));
 
+vi.mock("./FederationStoragePanel", () => ({
+  FederationStoragePanel: () => <div data-testid="FederationStoragePanel" />,
+}));
 vi.mock("./FederationTrustPanel", () => ({
   FederationTrustPanel: () => <div data-testid="FederationTrustPanel" />,
 }));
@@ -74,6 +77,7 @@ describe("SettingsPage deep links", () => {
   test.each([
     ["#infrastructure/cluster-file-roots", "cluster-file-roots", "ClusterFileRootsPanel"],
     ["#security/sandbox-security", "sandbox-security", "SandboxSecurityPanel"],
+    ["#security/federation-storage", "federation-storage", "FederationStoragePanel"],
     ["#security/federation-trust", "federation-trust", "FederationTrustPanel"],
   ])("opens and scrolls to the requested section after a refresh: %s", async (hash, sectionId, panel) => {
     router.hash = hash;
@@ -98,6 +102,7 @@ describe("SettingsPage deep links", () => {
     "#infrastructure/cluster-file-roots",
     "#security/sandbox-security",
     "#security/federation-trust",
+    "#security/federation-storage",
   ])("keeps a restricted platform hash explicit instead of falling back to personal settings: %s", (hash) => {
     router.hash = hash;
     router.role = "org_admin";
