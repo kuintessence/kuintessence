@@ -20,6 +20,11 @@ const KnownFailure = z.strictObject({
     "INVALID_RECOVERY",
     "INVALID_LEDGER_RESPONSE",
     "AUTHORIZATION_EXPIRED",
+    "BUDGET_EXHAUSTED",
+    "AGREEMENT_UNAVAILABLE",
+    "ASSET_UNAVAILABLE",
+    "LEDGER_REQUIRED",
+    "DATA_WAITING",
     "LEDGER_UNAVAILABLE",
     "ADAPTER_BUSY",
   ]),
@@ -84,7 +89,9 @@ export class UnixFabricClient {
               reject(
                 new FabricClientFailure(
                   code,
-                  code !== "LEDGER_UNAVAILABLE" && code !== "ADAPTER_BUSY",
+                  code !== "LEDGER_UNAVAILABLE" &&
+                    code !== "ADAPTER_BUSY" &&
+                    code !== "DATA_WAITING",
                 ),
               );
             } catch {

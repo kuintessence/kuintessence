@@ -265,3 +265,52 @@ test("market query only evaluates fixed public methods and rejects wrong or over
     f.adapter.query({ operation: "get-demand", demandId: f.demand.demandId }),
   ).rejects.toThrow("INVALID_LEDGER_RESPONSE");
 });
+
+test("activation transport preserves the exact public gate and cannot accept private fields", async () => {
+  const f = fixture();
+  const activation = {
+    demandId: f.demand.demandId,
+    activationId: randomUUID(),
+    expectedVersion: 2,
+    gate: {
+      domainId: randomUUID(),
+      reservationId: randomUUID(),
+      demandId: f.demand.demandId,
+      claimVersion: 2,
+      version: 1,
+      state: "READY" as const,
+      reservationDigest: `sha256:${"b".repeat(64)}`,
+      expiresAt: f.demand.expiresAt,
+    },
+  };
+  const checkpoint = await f.adapter.prepare({ operation: "activate-demand", activation });
+  const stored = decode(f, checkpoint.recovery);
+  expect(stored.batchId).toBe(activation.activationId);
+  expect(stored.digest).toBe(
+    `sha256:${createHash("sha256").update(federationCanonicalJson(activation)).digest("hex")}`,
+  );
+  const proposed = proto.ProposedTransaction.deserializeBinary(
+    Buffer.from(stored.message.bytes, "base64"),
+  );
+  expect(proposed.getEndorsingOrganizationsList()).toEqual([]);
+  const signed = proposed.getProposal();
+  if (!signed) throw new Error("Missing proposal");
+  const payload = peer.ChaincodeProposalPayload.deserializeBinary(
+    peer.Proposal.deserializeBinary(signed.getProposalBytes_asU8()).getPayload_asU8(),
+  );
+  expect(Buffer.from(payload.getTransientmapMap().get("market") ?? []).toString()).toBe(
+    federationCanonicalJson(activation),
+  );
+  expect(
+    peer.ChaincodeInvocationSpec.deserializeBinary(payload.getInput_asU8())
+      .getChaincodeSpec()
+      ?.getInput()
+      ?.getArgsList_asU8()
+      .map((value) => Buffer.from(value).toString()),
+  ).toEqual(["ActivateDemand", f.demand.demandId]);
+  const privateInput = {
+    operation: "activate-demand" as const,
+    activation: { ...activation, gate: { ...activation.gate, amount: "1" } },
+  };
+  await expect(f.adapter.prepare(privateInput)).rejects.toThrow();
+});

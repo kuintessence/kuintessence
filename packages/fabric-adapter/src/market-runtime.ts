@@ -1,5 +1,5 @@
 import {
-  MarketProposalInputSchema,
+  MarketAdapterProposalInputSchema,
   MarketQueryInputSchema,
 } from "@kuintessence/shared/federation/market";
 import { z } from "zod";
@@ -18,7 +18,7 @@ export const MarketRuntimeConfigSchema = z.strictObject({
 export function createMarketHttpServer(
   adapter: Pick<FabricMarketAdapter, "prepare" | "advance" | "query">,
 ) {
-  return createFabricHttpServer("market", MarketProposalInputSchema, adapter, (input) =>
+  return createFabricHttpServer("market", MarketAdapterProposalInputSchema, adapter, (input) =>
     adapter.query(MarketQueryInputSchema.parse(input)),
   );
 }

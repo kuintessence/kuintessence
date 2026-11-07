@@ -14,17 +14,7 @@ test.each([
 ] as const)("%s Unix HTTP surface is allowlisted, strict and never exposes private details", async (kind) => {
   const directory = await mkdtemp(join(tmpdir(), "kq-evidence-http-"));
   let calls = 0;
-  const createHttpServer =
-    kind === "market"
-      ? createMarketHttpServer
-      : kind === "evidence"
-        ? createEvidenceHttpServer
-        : createCommercialHttpServer;
-  const server = createHttpServer({
-    query: async () => {
-      calls++;
-      return { operation: "list-demands", demands: [], bookmark: "" };
-    },
+  const adapter = {
     prepare: async () => {
       throw new Error("unexpected prepare");
     },
@@ -32,7 +22,25 @@ test.each([
       calls++;
       throw new Error("private-price=12; signature=secret");
     },
-  });
+  };
+  const server =
+    kind === "market"
+      ? createMarketHttpServer({
+          ...adapter,
+          query: async () => {
+            calls++;
+            return { operation: "list-demands" as const, demands: [], bookmark: "" };
+          },
+        })
+      : kind === "commercial"
+        ? createCommercialHttpServer({
+            ...adapter,
+            query: async () => {
+              calls++;
+              return { hash: null };
+            },
+          })
+        : createEvidenceHttpServer(adapter);
   const socket = join(directory, "adapter.sock");
   try {
     await new Promise<void>((resolve, reject) => {
@@ -77,12 +85,19 @@ test.each([
     const response = await send(`/v1/${kind}/advance`, { recovery: "eA==" });
     expect(response).toEqual({ status: 503, text: '{"code":"LEDGER_UNAVAILABLE"}' });
     expect(calls).toBe(1);
-    const query = { operation: "list-demands", limit: 10, bookmark: "" };
-    expect((await send(`/v1/${kind}/query`, query)).status).toBe(kind === "market" ? 200 : 404);
+    const query =
+      kind === "commercial"
+        ? {
+            operation: "get-execution-gate-hash",
+            domainId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+            reservationId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+          }
+        : { operation: "list-demands", limit: 10, bookmark: "" };
+    expect((await send(`/v1/${kind}/query`, query)).status).toBe(kind === "evidence" ? 404 : 200);
     expect((await send(`/v1/${kind}/query`, { ...query, chaincode: "other" })).status).toBe(
-      kind === "market" ? 409 : 404,
+      kind === "evidence" ? 404 : 409,
     );
-    expect(calls).toBe(kind === "market" ? 2 : 1);
+    expect(calls).toBe(kind === "evidence" ? 1 : 2);
   } finally {
     await new Promise<void>((resolve) => server.close(() => resolve()));
     await rm(directory, { recursive: true, force: true });

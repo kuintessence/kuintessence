@@ -698,7 +698,7 @@ GET /api/federation/commercial-agreements/:revisionId/received-usage 及 /:opera
 
 ### 公共市场提交适配
 
-独立 Market Adapter 复用 FabricSubmission 的签名提案、加密检查点、提交状态查询及按原 txId 恢复，采用 kq-market-v1 独立恢复用途。输入严格限定发布/认领/撤回未认领需求，固定本机构和配置中的通道/链码；载荷 canonical SHA-256 与链码回执核对，公开需求使用 Gateway 原生背书发现。检查点中的遗留 domainId 字段用于绑定治理 generationId，不是商业钱包，也不创造额度。
+独立 Market Adapter 复用 FabricSubmission 的签名提案、加密检查点、提交状态查询及按原 txId 恢复，采用 kq-market-v1 独立恢复用途。用户输入严格限定发布/认领/撤回未认领需求，本机 Adapter 另支持公开激活；固定本机构和配置中的通道/链码，载荷 canonical SHA-256 与链码回执核对，公开需求使用 Gateway 原生背书发现。检查点中的遗留 domainId 字段用于绑定治理 generationId，不是商业钱包，也不创造额度。
 
 Node 私有 runtime 已支持 KQ_FABRIC_ADAPTER_KIND=market，套接字 market.sock；Server 已有 UnixMarketClient，并接入持久市场待办、机构范围操作 API；已支持公共需求实时分页查询，后台同步与 Web 仍待实现。prepared/pending/committed/invalid 与商业提交保持相同语义，committed 不授予执行权；认领还必须经过私有锁额和公共激活。配置与恢复方法见[部署说明](../../../deploy/federation/fabric-market.md)。
 
@@ -720,3 +720,5 @@ kq-market ListDemands 使用 Fabric 原生分页，GetDemand 保留原单条语�
 商业预留按双方签署的 CommercialReservation 固定完整委派；复用条款校验并明确限定 ledger_coordinated。原 assertDelegationPolicy 仍先拒绝链上协调模式，新增 assertDelegationTerms 仅供链码核对条款，不授予运行权。预算按 domain/budgetDomain/epoch 唯一，修订不能重置额度；私有预算/预留/任务与操作映射/gate 同事务写入。ReleaseExecution 仅处理未激活需求，保持原证据并升版 REVOKED，不把自然到期视为停止。
 
 为避免公开 gate 初次创建需要更宽背书而暴露 transient，gate 存于双方 PDC；Market ActivateDemand 读取 Commercial GetExecutionGateHash 并比较批准公开的原文哈希。真实 Fabric 的同通道 hashed read 与反向公共状态 read 用于激活/释放互斥，不依赖应用先查后写。许可原文只含路由、版本、期限与带盐私有预留摘要，不能带金额、条款或完整委派。部署/边界见[执行许可](../../../deploy/federation/fabric-execution-gate.md)。
+
+生产 Commercial Adapter/Unix 客户端增加 reserve-execution、release-execution 及固定哈希查询，Market Adapter 增加 activate-demand。执行载荷另用 Adapter schema，原 HTTP/持久市场服务输入不扩大；业务签署用途、双方签名、摘要、域/操作标识在发送私有数据前校验。预留/释放明确只向双方 MSP 背书，激活只传批准公开的 gate。复用原恢复协议与加密用途；DATA_WAITING 可重试，其余明确政策/预算拒绝进入复核。真实网络覆盖三操作跨新进程及丢失成功响应恢复，预留经历 Orderer 停机后仍恢复相同 txId；固定查询核对释放/可用许可哈希及 ACTIVE 需求。此处未接通 Server 双签审批、持久协调或实际执行。

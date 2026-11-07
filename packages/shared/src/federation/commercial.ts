@@ -207,6 +207,39 @@ export const CommercialProposalInputSchema = z.discriminatedUnion("operation", [
   }),
 ]);
 export type CommercialProposalInput = z.infer<typeof CommercialProposalInputSchema>;
+/** Transport-only operations; accepting these at a user API requires separate bilateral approval. */
+export const CommercialExecutionProposalInputSchema = z.discriminatedUnion("operation", [
+  z.strictObject({
+    ...ProposalIdentity,
+    operation: z.literal("reserve-execution"),
+    envelope: CommercialAgreementEnvelopeSchema,
+  }),
+  z.strictObject({
+    ...ProposalIdentity,
+    operation: z.literal("release-execution"),
+    envelope: CommercialAgreementEnvelopeSchema,
+  }),
+]);
+export type CommercialExecutionProposalInput = z.infer<
+  typeof CommercialExecutionProposalInputSchema
+>;
+export const CommercialAdapterProposalInputSchema = z.discriminatedUnion("operation", [
+  ...CommercialProposalInputSchema.options,
+  ...CommercialExecutionProposalInputSchema.options,
+]);
+export type CommercialAdapterProposalInput = z.infer<typeof CommercialAdapterProposalInputSchema>;
+export const CommercialGateQuerySchema = z.strictObject({
+  operation: z.literal("get-execution-gate-hash"),
+  domainId: Id,
+  reservationId: Id,
+});
+export const CommercialGateHashSchema = z.strictObject({
+  hash: z
+    .string()
+    .regex(/^[a-f0-9]{64}$/)
+    .nullable(),
+});
+
 export const FabricCommercialAdvanceResultSchema = z.discriminatedUnion("state", [
   FabricProposalCheckpointSchema.extend({ state: z.literal("prepared") }),
   FabricProposalCheckpointSchema.extend({ state: z.literal("pending") }),

@@ -1453,3 +1453,13 @@ ReserveExecution 同事务写私有预算/预留/唯一映射/READY gate。gate 
 新增 test:fabric:gate 与 CI 入口，部署说明和验收覆盖映射已同步。完整类型检查通过（含所有包、protobuf 和 Fabric 脚本）；全仓 lint 无错误、保留既有 47 warnings/1 info。最终修改文件 lint、676 个文档目标、workflow 引用和 diff 检查通过。
 
 这仍只证明链码协调，不是 Server/Agent 真实执行。新用途的 Server 信任管理、双签审批、Adapter/数据库待办与执行验权、ACTIVE 终态/结算/重开、物理介质、容量/归档恢复、完整 Web 和 PR 预览均未完成。没有合并或部署 main，目标继续保持完整范围。
+
+## 执行许可生产 Adapter 与恢复
+
+Commercial Adapter/Server Unix 客户端接入双签预留、释放和固定 gate 哈希查询；Market Adapter 接入公开激活。私有操作绑定摘要、域、记录标识、双方与专用密钥用途，并只向 PDC 的两个 MSP 发送 transient。恢复继续使用原加密协议；DATA_WAITING 重试，明确预算/政策拒绝进入复核，混合错误保留基础设施失败语义。现有用户 HTTP、商业业务接口和市场持久输入不扩大，不能用发布权限直接激活。
+
+本增量 23 个不同单元场景通过：原批次 21 项成功、一项旧 DATA_WAITING 错误预期失败，修正后定向通过；新增激活与哈希错误分类各自定向通过，哈希场景属于原集合内扩展而非新增计数。哈希测试首次引用 SDK 不存在的 EvaluateError，改用实际 GatewayError 后通过。未重复跑未改动的合同链网络。
+
+真实 Fabric 3.1.5 三机构七组断言全部通过，证据 temp/fabric-network-pklZKA，摘要 temp/federation-gate-adapter-report.json。五组链码/私有区块回归后，通过生产 Node runtime 和 Server Unix 客户端以新进程分别完成释放、预留、激活，成功提交后故意丢失响应，再恢复相同 txId/区块；预留额外在 Orderer 停机期间保持 pending，恢复后提交。查询核对 REVOKED/READY 哈希、明确不存在与完整匹配的 ACTIVE 需求。私有区块遍历覆盖前五组，不把后续 Adapter 恢复当成另一次私有区块覆盖。网络所属进程已清理。
+
+完整类型检查通过（所有包、protobuf 生成与 Fabric 脚本）；全仓 lint 无错误，保留既有 47 warnings/1 info，最终新脚本与扩展测试 lint 无诊断；676 个文档目标、workflow 引用及 diff 检查通过。仍未接通 Server 双边审批/持久协调和 Agent 实际执行，亦未完成终态结算、重新开放、物理介质、归档与完整 Web/PR 预览。未合并、未部署 main。

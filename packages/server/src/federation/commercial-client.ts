@@ -1,7 +1,10 @@
 import {
+  type CommercialAdapterProposalInput,
+  CommercialAdapterProposalInputSchema,
   type CommercialAdvanceResult,
+  CommercialGateHashSchema,
+  CommercialGateQuerySchema,
   type CommercialProposalInput,
-  CommercialProposalInputSchema,
   FabricCommercialAdvanceResultSchema,
 } from "@kuintessence/shared/federation/commercial";
 import {
@@ -20,12 +23,17 @@ export class UnixCommercialClient implements CommercialClient {
   constructor(socketPath: string) {
     this.transport = new UnixFabricClient(socketPath);
   }
-  async prepare(input: CommercialProposalInput) {
+  async prepare(input: CommercialAdapterProposalInput) {
     return FabricProposalCheckpointSchema.parse(
       await this.transport.call(
         "/v1/commercial/proposal",
-        CommercialProposalInputSchema.parse(input),
+        CommercialAdapterProposalInputSchema.parse(input),
       ),
+    );
+  }
+  async query(input: z.infer<typeof CommercialGateQuerySchema>) {
+    return CommercialGateHashSchema.parse(
+      await this.transport.call("/v1/commercial/query", CommercialGateQuerySchema.parse(input)),
     );
   }
   async advance(recovery: string) {

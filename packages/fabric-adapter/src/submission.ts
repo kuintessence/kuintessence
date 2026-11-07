@@ -77,7 +77,7 @@ export class FabricSubmission {
           if (error instanceof EndorseError && error.code === 10 && error.details.length) {
             const codes = error.details.map(
               (detail) =>
-                /^chaincode response 500, (POLICY_DENIED|UNTRUSTED_IDENTITY|OPERATION_CONFLICT|INVALID_MESSAGE|AUTHORIZATION_EXPIRED)$/.exec(
+                /^chaincode response 500, (POLICY_DENIED|UNTRUSTED_IDENTITY|OPERATION_CONFLICT|INVALID_MESSAGE|AUTHORIZATION_EXPIRED|BUDGET_EXHAUSTED|AGREEMENT_UNAVAILABLE|ASSET_UNAVAILABLE|LEDGER_REQUIRED|DATA_WAITING)$/.exec(
                   detail.message,
                 )?.[1],
             );

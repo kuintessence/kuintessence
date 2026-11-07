@@ -8,13 +8,14 @@ import {
 import { federationCanonicalJson } from "@kuintessence/shared/federation";
 import {
   FabricMarketTrustSchema,
+  type MarketActivationSchema,
+  type MarketAdapterProposalInput,
+  MarketAdapterProposalInputSchema,
   type MarketCancelOpenSchema,
   type MarketClaim,
   type MarketDemand,
   MarketDemandStateSchema,
   MarketPageSchema,
-  type MarketProposalInput,
-  MarketProposalInputSchema,
   type MarketQueryInput,
   MarketQueryInputSchema,
   type MarketQueryResult,
@@ -56,10 +57,14 @@ export class FabricMarketAdapter {
       (value) => MarketReceiptSchema.parse(value),
     );
   }
-  async prepare(raw: MarketProposalInput) {
-    const input = MarketProposalInputSchema.parse(raw);
+  async prepare(raw: MarketAdapterProposalInput) {
+    const input = MarketAdapterProposalInputSchema.parse(raw);
     let name: string, recordId: string;
-    let value: MarketDemand | MarketClaim | z.infer<typeof MarketCancelOpenSchema>;
+    let value:
+      | MarketDemand
+      | MarketClaim
+      | z.infer<typeof MarketCancelOpenSchema>
+      | z.infer<typeof MarketActivationSchema>;
     if (input.operation === "publish-demand") {
       if (input.demand.sourceSiteId !== this.config.siteId) throw new Error("POLICY_DENIED");
       name = "PublishDemand";
@@ -70,6 +75,10 @@ export class FabricMarketAdapter {
       name = "ClaimDemand";
       recordId = input.claim.claimId;
       value = input.claim;
+    } else if (input.operation === "activate-demand") {
+      name = "ActivateDemand";
+      recordId = input.activation.activationId;
+      value = input.activation;
     } else {
       // Publisher authorization needs current committed state and remains enforced by chaincode.
       name = "CancelOpenDemand";

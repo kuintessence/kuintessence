@@ -309,7 +309,7 @@ test("tampered recovery, changed policy, wrong key and foreign domain fail befor
   expect(fixture.counts()).toEqual({ submits: 0, endorsements: 0 });
 });
 
-test("explicit chaincode refusals are sanitized terminal errors; RPC and ambiguous failures remain retryable", async () => {
+test("explicit chaincode error codes are sanitized; RPC and ambiguous failures retain transport semantics", async () => {
   const fixture = setup();
   const checkpoint = await fixture.adapter.prepare(input);
   const failure = (code: number, messages: string[]) =>
@@ -328,6 +328,11 @@ test("explicit chaincode refusals are sanitized terminal errors; RPC and ambiguo
     "UNTRUSTED_IDENTITY",
     "OPERATION_CONFLICT",
     "INVALID_MESSAGE",
+    "BUDGET_EXHAUSTED",
+    "AGREEMENT_UNAVAILABLE",
+    "ASSET_UNAVAILABLE",
+    "LEDGER_REQUIRED",
+    "DATA_WAITING",
   ]) {
     fixture.endorseError(failure(10, [`chaincode response 500, ${code}`]));
     try {
@@ -343,7 +348,6 @@ test("explicit chaincode refusals are sanitized terminal errors; RPC and ambiguo
     failure(14, ["chaincode response 500, POLICY_DENIED"]),
     failure(10, []),
     failure(10, ["private POLICY_DENIED detail"]),
-    failure(10, ["chaincode response 500, DATA_WAITING"]),
     failure(10, ["chaincode response 500, POLICY_DENIED", "peer unavailable"]),
   ]) {
     fixture.endorseError(error);

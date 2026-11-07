@@ -1,4 +1,7 @@
-import { CommercialProposalInputSchema } from "@kuintessence/shared/federation/commercial";
+import {
+  CommercialAdapterProposalInputSchema,
+  CommercialGateQuerySchema,
+} from "@kuintessence/shared/federation/commercial";
 import { z } from "zod";
 import { CommercialAdapterConfigSchema, FabricCommercialAdapter } from "./commercial";
 import {
@@ -13,9 +16,14 @@ export const CommercialRuntimeConfigSchema = z.strictObject({
   ...FabricConnectionConfigSchema.shape,
 });
 export function createCommercialHttpServer(
-  adapter: Pick<FabricCommercialAdapter, "prepare" | "advance">,
+  adapter: Pick<FabricCommercialAdapter, "prepare" | "advance" | "query">,
 ) {
-  return createFabricHttpServer("commercial", CommercialProposalInputSchema, adapter);
+  return createFabricHttpServer(
+    "commercial",
+    CommercialAdapterProposalInputSchema,
+    adapter,
+    (input) => adapter.query(CommercialGateQuerySchema.parse(input)),
+  );
 }
 export async function startCommercialAdapter(configFile: string) {
   const config = CommercialRuntimeConfigSchema.parse(await readAdapterConfigFile(configFile));

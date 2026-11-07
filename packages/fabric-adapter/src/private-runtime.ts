@@ -33,6 +33,11 @@ const publicErrors = new Set([
   "INVALID_RECOVERY",
   "INVALID_LEDGER_RESPONSE",
   "AUTHORIZATION_EXPIRED",
+  "BUDGET_EXHAUSTED",
+  "AGREEMENT_UNAVAILABLE",
+  "ASSET_UNAVAILABLE",
+  "LEDGER_REQUIRED",
+  "DATA_WAITING",
 ]);
 
 /** Only local socket callers; no generic chaincode/channel/identity/collection selection. */

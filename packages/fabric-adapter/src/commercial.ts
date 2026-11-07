@@ -1,9 +1,19 @@
-import type { Gateway, Identity, Signer } from "@hyperledger/fabric-gateway";
 import {
+  type Gateway,
+  GatewayError,
+  type Identity,
+  type Signer,
+} from "@hyperledger/fabric-gateway";
+import {
+  type CommercialAdapterProposalInput,
+  CommercialAdapterProposalInputSchema,
+  type CommercialAgreementEnvelopeSchema,
   CommercialAgreementSchema,
-  type CommercialProposalInput,
-  CommercialProposalInputSchema,
+  CommercialGateHashSchema,
+  CommercialGateQuerySchema,
   CommercialReceiptSchema,
+  CommercialReleaseSchema,
+  CommercialReservationSchema,
   CommercialUsageSchema,
   FabricCommercialTrustSchema,
 } from "@kuintessence/shared/federation/commercial";
@@ -48,22 +58,23 @@ export class FabricCommercialAdapter {
       (value) => CommercialReceiptSchema.parse(value),
     );
   }
-  async prepare(raw: CommercialProposalInput) {
-    const input = CommercialProposalInputSchema.parse(raw);
+  async prepare(raw: CommercialAdapterProposalInput) {
+    const input = CommercialAdapterProposalInputSchema.parse(raw);
     const domain = this.config.trust.domains.find((domain) => domain.domainId === input.domainId);
     if (!domain?.siteIds.includes(this.config.siteId)) throw new Error("POLICY_DENIED");
     const now = new Date();
-    if (input.operation === "register-agreement") {
-      const { sourceSiteId, targetSiteId, sourceJws, targetJws } = input.envelope;
+    if (input.operation !== "record-usage") {
+      const { sourceSiteId, targetSiteId } = input.envelope;
       if (
         sourceSiteId === targetSiteId ||
         !domain.siteIds.includes(sourceSiteId) ||
         !domain.siteIds.includes(targetSiteId)
       )
         throw new Error("POLICY_DENIED");
-      const source = await this.verify(CommercialAgreementSchema, sourceJws, sourceSiteId, now);
-      const target = await this.verify(CommercialAgreementSchema, targetJws, targetSiteId, now);
-      if (source.digest !== target.digest) throw new Error("OPERATION_CONFLICT");
+    }
+    if (input.operation === "register-agreement") {
+      const { sourceSiteId, targetSiteId } = input.envelope;
+      const source = await this.verifyPair(CommercialAgreementSchema, input.envelope, now);
       if (
         source.digest !== input.digest ||
         source.payload.domainId !== input.domainId ||
@@ -71,6 +82,31 @@ export class FabricCommercialAdapter {
         source.payload.agreement.sourceSiteId !== sourceSiteId ||
         source.payload.agreement.targetSiteId !== targetSiteId ||
         Date.parse(source.payload.createdAt) > now.getTime() + 60000
+      )
+        throw new Error("POLICY_DENIED");
+    } else if (input.operation === "reserve-execution") {
+      const signed = await this.verifyPair(CommercialReservationSchema, input.envelope, now),
+        value = signed.payload;
+      if (
+        signed.digest !== input.digest ||
+        value.domainId !== input.domainId ||
+        value.reservationId !== input.recordId ||
+        value.request.senderSiteId !== input.envelope.sourceSiteId ||
+        value.request.recipientSiteId !== input.envelope.targetSiteId ||
+        value.request.mode !== "ledger_coordinated" ||
+        Date.parse(value.request.issuedAt) > now.getTime() + 60000
+      )
+        throw new Error("POLICY_DENIED");
+    } else if (input.operation === "release-execution") {
+      const signed = await this.verifyPair(CommercialReleaseSchema, input.envelope, now),
+        value = signed.payload;
+      if (
+        signed.digest !== input.digest ||
+        value.domainId !== input.domainId ||
+        value.releaseId !== input.recordId ||
+        value.sourceSiteId !== input.envelope.sourceSiteId ||
+        value.targetSiteId !== input.envelope.targetSiteId ||
+        Date.parse(value.issuedAt) > now.getTime() + 60000
       )
         throw new Error("POLICY_DENIED");
     } else {
@@ -90,10 +126,16 @@ export class FabricCommercialAdapter {
       )
         throw new Error("POLICY_DENIED");
     }
+    const methods = {
+      "register-agreement": "RegisterAgreement",
+      "record-usage": "RecordUsage",
+      "reserve-execution": "ReserveExecution",
+      "release-execution": "ReleaseExecution",
+    } as const;
     const proposal = this.gateway
       .getNetwork(this.config.channel)
       .getContract(this.config.chaincode)
-      .newProposal(input.operation === "register-agreement" ? "RegisterAgreement" : "RecordUsage", {
+      .newProposal(methods[input.operation], {
         arguments: [input.domainId, input.recordId],
         transientData: { commercial: JSON.stringify(input.envelope) },
         endorsingOrganizations: this.config.trust.organizations
@@ -101,6 +143,49 @@ export class FabricCommercialAdapter {
           .map((org) => org.mspId),
       });
     return this.submission.prepare(proposal, input);
+  }
+  async query(raw: z.infer<typeof CommercialGateQuerySchema>) {
+    const input = CommercialGateQuerySchema.parse(raw);
+    const domain = this.config.trust.domains.find((domain) => domain.domainId === input.domainId);
+    if (!domain?.siteIds.includes(this.config.siteId)) throw new Error("POLICY_DENIED");
+    let bytes: Uint8Array;
+    try {
+      bytes = await this.gateway
+        .getNetwork(this.config.channel)
+        .getContract(this.config.chaincode)
+        .newProposal("GetExecutionGateHash", { arguments: [input.domainId, input.reservationId] })
+        .evaluate({ deadline: Date.now() + 10000 });
+    } catch (error) {
+      if (
+        error instanceof GatewayError &&
+        error.details.length > 0 &&
+        error.details.every(
+          (detail) => detail.message === "chaincode response 500, ASSET_UNAVAILABLE",
+        )
+      )
+        return { hash: null };
+      throw error;
+    }
+    try {
+      if (bytes.length > 1024) throw new Error("Oversized gate response");
+      const result = CommercialGateHashSchema.parse(
+        JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)),
+      );
+      if (!result.hash) throw new Error("Missing committed hash");
+      return result;
+    } catch {
+      throw new Error("INVALID_LEDGER_RESPONSE");
+    }
+  }
+  private async verifyPair<T extends { kind: string }>(
+    schema: z.ZodType<T>,
+    envelope: z.infer<typeof CommercialAgreementEnvelopeSchema>,
+    now: Date,
+  ) {
+    const source = await this.verify(schema, envelope.sourceJws, envelope.sourceSiteId, now);
+    const target = await this.verify(schema, envelope.targetJws, envelope.targetSiteId, now);
+    if (source.digest !== target.digest) throw new Error("OPERATION_CONFLICT");
+    return source;
   }
   advance(recovery: string) {
     return this.submission.advance(recovery);

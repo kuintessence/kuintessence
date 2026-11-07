@@ -25,6 +25,8 @@ test.each([
     expect(JSON.parse(Buffer.concat(parts).toString())).toEqual({ recovery });
     res.setHeader("content-type", "application/json");
     if (mode === "offline") res.writeHead(503).end('{"code":"LEDGER_UNAVAILABLE"}');
+    else if (["BUDGET_EXHAUSTED", "DATA_WAITING", "AGREEMENT_UNAVAILABLE"].includes(mode))
+      res.writeHead(409).end(JSON.stringify({ code: mode }));
     else if (mode === "bad") res.writeHead(500).end('{"error":"private contract payload"}');
     else if (mode === "committed" || mode === "anchored")
       res.end(JSON.stringify({ state: mode, transactionId, blockNumber: "1" }));
@@ -57,6 +59,13 @@ test.each([
       code: "LEDGER_UNAVAILABLE",
       needsReview: false,
     });
+    for (const code of ["BUDGET_EXHAUSTED", "DATA_WAITING", "AGREEMENT_UNAVAILABLE"]) {
+      mode = code;
+      await expect(client.advance(recovery)).rejects.toMatchObject({
+        code,
+        needsReview: code !== "DATA_WAITING",
+      });
+    }
     mode = "bad";
     await expect(client.advance(recovery)).rejects.toMatchObject({
       code: "INVALID_ADAPTER_RESPONSE",

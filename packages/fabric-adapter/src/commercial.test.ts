@@ -6,12 +6,16 @@ import {
   randomBytes,
   randomUUID,
 } from "node:crypto";
-import { Client, credentials } from "@grpc/grpc-js";
-import { connect, signers } from "@hyperledger/fabric-gateway";
+import { Client, credentials, Metadata } from "@grpc/grpc-js";
+import { connect, GatewayError, signers } from "@hyperledger/fabric-gateway";
 import { peer, gateway as proto } from "@hyperledger/fabric-protos";
 import {
   CommercialAgreementSchema,
+  type CommercialExecutionProposalInput,
+  CommercialExecutionProposalInputSchema,
   type CommercialProposalInput,
+  CommercialReleaseSchema,
+  CommercialReservationSchema,
   CommercialUsageSchema,
 } from "@kuintessence/shared/federation/commercial";
 import {
@@ -68,7 +72,12 @@ beforeAll(async () => {
       keyPurposes: keys.map((key) => ({
         siteId: key.siteId,
         keyId: key.keyId,
-        kinds: ["commercial-agreement", "commercial-usage"],
+        kinds: [
+          "commercial-agreement",
+          "commercial-usage",
+          "commercial-reservation",
+          "commercial-release",
+        ],
       })),
     },
   });
@@ -304,4 +313,223 @@ test("only the executing institution can propose its signed usage", async () => 
   await expect(setup().adapter.prepare(request)).rejects.toThrow();
   const receiver = setup({ siteId: target.siteId });
   expect((await receiver.adapter.prepare(request)).transactionId).toMatch(/^[a-f0-9]{64}$/);
+});
+
+async function executionFixture() {
+  const source = keys[0],
+    target = keys[1];
+  if (!source || !target || input.operation !== "register-agreement")
+    throw new Error("Missing signers");
+  const raw = input.envelope.sourceJws.split(".")[1];
+  if (!raw) throw new Error("Missing fixture payload");
+  const terms = CommercialAgreementSchema.parse(
+    JSON.parse(Buffer.from(raw, "base64url").toString()),
+  );
+  const reservation = CommercialReservationSchema.parse({
+    protocolVersion: 1,
+    kind: "commercial-reservation",
+    domainId: input.domainId,
+    reservationId: randomUUID(),
+    demandId: randomUUID(),
+    claimVersion: 2,
+    agreementDigest: input.digest,
+    salt: randomBytes(32).toString("hex"),
+    request: {
+      protocolVersion: 1,
+      kind: "delegation",
+      operationId: randomUUID(),
+      senderSiteId: source.siteId,
+      recipientSiteId: target.siteId,
+      agreementRevisionId: input.recordId,
+      mode: "ledger_coordinated",
+      budgetDomainId: terms.agreement.budgetDomainId,
+      epoch: terms.agreement.epoch,
+      unit: terms.agreement.unit,
+      taskId: randomUUID(),
+      attempt: 1,
+      issuedAt: new Date().toISOString(),
+      expiresAt: new Date(Date.now() + 600000).toISOString(),
+      template: terms.agreement.templates[0],
+      resources: terms.agreement.resourceLimit,
+      inputManifestDigest: `sha256:${"c".repeat(64)}`,
+      environmentLockDigest: `sha256:${"d".repeat(64)}`,
+      maxAmount: "100",
+    },
+  });
+  const signed = async <T extends { domainId: string }>(
+    schema: z.ZodType<T>,
+    payload: T,
+    operation: CommercialExecutionProposalInput["operation"],
+    recordId: string,
+  ) => {
+    const sourceJws = await signFederationMessage(schema, payload, source),
+      bytes = sourceJws.split(".")[1];
+    if (!bytes) throw new Error("Missing signature payload");
+    return CommercialExecutionProposalInputSchema.parse({
+      operation,
+      domainId: payload.domainId,
+      recordId,
+      digest: `sha256:${createHash("sha256").update(Buffer.from(bytes, "base64url")).digest("hex")}`,
+      envelope: {
+        sourceSiteId: source.siteId,
+        targetSiteId: target.siteId,
+        sourceJws,
+        targetJws: await signFederationMessage(schema, payload, target),
+      },
+    });
+  };
+  const reserve = await signed(
+    CommercialReservationSchema,
+    reservation,
+    "reserve-execution",
+    reservation.reservationId,
+  );
+  const release = CommercialReleaseSchema.parse({
+    protocolVersion: 1,
+    kind: "commercial-release",
+    domainId: input.domainId,
+    releaseId: randomUUID(),
+    reservationId: reservation.reservationId,
+    reservationDigest: reserve.digest,
+    sourceSiteId: source.siteId,
+    targetSiteId: target.siteId,
+    expectedGateVersion: 1,
+    issuedAt: new Date().toISOString(),
+    salt: randomBytes(32).toString("hex"),
+    reason: "PRIVATE-RELEASE-FIXTURE",
+  });
+  return {
+    reserve,
+    release: await signed(CommercialReleaseSchema, release, "release-execution", release.releaseId),
+    reservation,
+    signed,
+  };
+}
+test("execution adapter binds both signatures and recovery to exact private operation and member-only endorsement", async () => {
+  const f = setup(),
+    values = await executionFixture();
+  for (const input of [values.reserve, values.release]) {
+    const checkpoint = await f.adapter.prepare(input),
+      stored = decode(f, checkpoint.recovery);
+    expect(stored).toMatchObject({ batchId: input.recordId, digest: input.digest });
+    expect(
+      Buffer.from(checkpoint.recovery, "base64").includes(Buffer.from(input.envelope.sourceJws)),
+    ).toBe(false);
+    const proposed = proto.ProposedTransaction.deserializeBinary(
+      Buffer.from(stored.message.bytes, "base64"),
+    );
+    expect(proposed.getEndorsingOrganizationsList()).toEqual(["AMSP", "BMSP"]);
+    const signed = proposed.getProposal();
+    if (!signed) throw new Error("Missing SDK proposal");
+    const payload = peer.ChaincodeProposalPayload.deserializeBinary(
+      peer.Proposal.deserializeBinary(signed.getProposalBytes_asU8()).getPayload_asU8(),
+    );
+    expect(Buffer.from(payload.getTransientmapMap().get("commercial") ?? []).toString()).toBe(
+      JSON.stringify(input.envelope),
+    );
+    const args = peer.ChaincodeInvocationSpec.deserializeBinary(payload.getInput_asU8())
+      .getChaincodeSpec()
+      ?.getInput()
+      ?.getArgsList_asU8()
+      .map((value) => Buffer.from(value).toString());
+    expect(args).toEqual([
+      input.operation === "reserve-execution" ? "ReserveExecution" : "ReleaseExecution",
+      input.domainId,
+      input.recordId,
+    ]);
+  }
+});
+test("execution adapter rejects crossed signatures, binding and signing authority before private disclosure", async () => {
+  const f = setup(),
+    values = await executionFixture();
+  for (const input of [values.reserve, values.release]) {
+    await expect(f.adapter.prepare({ ...input, recordId: randomUUID() })).rejects.toThrow(
+      "POLICY_DENIED",
+    );
+    await expect(
+      f.adapter.prepare({ ...input, digest: `sha256:${"0".repeat(64)}` }),
+    ).rejects.toThrow("POLICY_DENIED");
+    await expect(
+      f.adapter.prepare({
+        ...input,
+        envelope: { ...input.envelope, targetJws: input.envelope.sourceJws },
+      }),
+    ).rejects.toThrow();
+  }
+  const changed = {
+    ...values.reservation,
+    request: { ...values.reservation.request, mode: "bilateral_direct" as const },
+  };
+  await expect(
+    f.adapter.prepare(
+      await values.signed(
+        CommercialReservationSchema,
+        changed,
+        "reserve-execution",
+        changed.reservationId,
+      ),
+    ),
+  ).rejects.toThrow("POLICY_DENIED");
+  expect(f.sdk).not.toHaveBeenCalled();
+  const trust = structuredClone(config.trust);
+  for (const purpose of trust.keyPurposes)
+    purpose.kinds = ["commercial-agreement", "commercial-usage"];
+  const denied = setup({ trust });
+  await expect(denied.adapter.prepare(values.reserve)).rejects.toThrow("UNTRUSTED_IDENTITY");
+  await expect(denied.adapter.prepare(values.release)).rejects.toThrow("UNTRUSTED_IDENTITY");
+  expect(denied.sdk).not.toHaveBeenCalled();
+});
+test("commercial gate query exposes only a bounded current hash and rejects unowned domains before SDK access", async () => {
+  const f = setup(),
+    query = {
+      operation: "get-execution-gate-hash" as const,
+      domainId: input.domainId,
+      reservationId: randomUUID(),
+    };
+  await expect(f.adapter.query({ ...query, domainId: randomUUID() })).rejects.toThrow(
+    "POLICY_DENIED",
+  );
+  expect(f.sdk).not.toHaveBeenCalled();
+  const network = f.gateway.getNetwork(config.channel),
+    contract = network.getContract(config.chaincode);
+  f.sdk.mockReturnValue(network);
+  spyOn(network, "getContract").mockReturnValue(contract);
+  const original = contract.newProposal.bind(contract);
+  let output: unknown = { hash: "a".repeat(64) };
+  let failure: Error | undefined;
+  spyOn(contract, "newProposal").mockImplementation((name, options) => {
+    expect(name).toBe("GetExecutionGateHash");
+    expect(options).toEqual({ arguments: [query.domainId, query.reservationId] });
+    const proposal = original(name, options);
+    spyOn(proposal, "evaluate").mockImplementation(async () => {
+      if (failure) throw failure;
+      return Buffer.from(JSON.stringify(output));
+    });
+    return proposal;
+  });
+  expect(await f.adapter.query(query)).toEqual({ hash: "a".repeat(64) });
+  for (const value of [{ hash: null }, { hash: "a".repeat(64), amount: "100" }, "x".repeat(1025)]) {
+    output = value;
+    await expect(f.adapter.query(query)).rejects.toThrow("INVALID_LEDGER_RESPONSE");
+  }
+  const unavailable = (messages: string[]) =>
+    new GatewayError({
+      code: 2,
+      cause: Object.assign(new Error("private peer detail"), {
+        code: 2,
+        details: "private",
+        metadata: new Metadata(),
+      }),
+      details: messages.map((message) => ({ address: "private-peer", mspId: "AMSP", message })),
+    });
+  failure = unavailable(["chaincode response 500, ASSET_UNAVAILABLE"]);
+  expect(await f.adapter.query(query)).toEqual({ hash: null });
+  for (const error of [
+    new Error("offline"),
+    unavailable([]),
+    unavailable(["chaincode response 500, ASSET_UNAVAILABLE", "peer unavailable"]),
+  ]) {
+    failure = error;
+    await expect(f.adapter.query(query)).rejects.toBe(error);
+  }
 });

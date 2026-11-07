@@ -4,9 +4,10 @@ import {
 } from "@kuintessence/shared/federation/ledger";
 import {
   FabricMarketAdvanceResultSchema,
+  type MarketAdapterProposalInput,
+  MarketAdapterProposalInputSchema,
   type MarketAdvanceResult,
   type MarketProposalInput,
-  MarketProposalInputSchema,
   type MarketQueryInput,
   MarketQueryInputSchema,
   type MarketQueryResult,
@@ -30,9 +31,12 @@ export class UnixMarketClient implements MarketClient {
       await this.transport.call("/v1/market/query", MarketQueryInputSchema.parse(input)),
     );
   }
-  async prepare(input: MarketProposalInput) {
+  async prepare(input: MarketAdapterProposalInput) {
     return FabricProposalCheckpointSchema.parse(
-      await this.transport.call("/v1/market/proposal", MarketProposalInputSchema.parse(input)),
+      await this.transport.call(
+        "/v1/market/proposal",
+        MarketAdapterProposalInputSchema.parse(input),
+      ),
     );
   }
   async advance(recovery: string) {

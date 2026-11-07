@@ -618,6 +618,58 @@ async function run() {
   passed.push(
     "committed private budget is exact after races; C sees gate hashes but no private data or plaintext in public blocks",
   );
+  // Reuse the remaining funded slot: release it, reserve a fresh task, then activate it via runtimes.
+  const fundedGate = MarketExecutionGateSchema.parse({
+    domainId: domain.domainId,
+    reservationId: funded.reservation.reservationId,
+    demandId: funded.demand.demandId,
+    claimVersion: 2,
+    version: 1,
+    state: "READY",
+    reservationDigest: fundedReceipt.digest,
+    expiresAt: funded.reservation.request.expiresAt,
+  });
+  const adapterRelease = await release({ ...funded, receipt: fundedReceipt, gate: fundedGate });
+  const fresh = await claimed();
+  const digest = (value: unknown) =>
+    `sha256:${createHash("sha256").update(JSON.stringify(value)).digest("hex")}`;
+  const freshGate = MarketExecutionGateSchema.parse({
+    ...fundedGate,
+    reservationId: fresh.reservation.reservationId,
+    demandId: fresh.demand.demandId,
+    reservationDigest: digest(fresh.reservation),
+    expiresAt: fresh.reservation.request.expiresAt,
+  });
+  await writeFile(
+    join(dirname(z.string().parse(process.argv[2])), "gate-adapter-fixture.json"),
+    JSON.stringify({
+      release: {
+        operation: "release-execution",
+        domainId: domain.domainId,
+        recordId: adapterRelease.value.releaseId,
+        digest: digest(adapterRelease.value),
+        envelope: adapterRelease.signed,
+      },
+      reserve: {
+        operation: "reserve-execution",
+        domainId: domain.domainId,
+        recordId: fresh.reservation.reservationId,
+        digest: digest(fresh.reservation),
+        envelope: fresh.signed,
+      },
+      activate: {
+        operation: "activate-demand",
+        activation: {
+          demandId: fresh.demand.demandId,
+          activationId: randomUUID(),
+          expectedVersion: 2,
+          gate: freshGate,
+        },
+      },
+      releasedGate: { ...fundedGate, state: "REVOKED", version: 2 },
+    }),
+    { mode: 0o600 },
+  );
   await writeFile(z.string().parse(process.argv[3]), JSON.stringify({ passed, probes }, null, 2), {
     mode: 0o600,
   });

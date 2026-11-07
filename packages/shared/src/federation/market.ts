@@ -100,6 +100,12 @@ export const MarketProposalInputSchema = z.discriminatedUnion("operation", [
   }),
 ]);
 export type MarketProposalInput = z.infer<typeof MarketProposalInputSchema>;
+/** Public HTTP intent remains narrower until execution approval is wired. */
+export const MarketAdapterProposalInputSchema = z.discriminatedUnion("operation", [
+  ...MarketProposalInputSchema.options,
+  z.strictObject({ operation: z.literal("activate-demand"), activation: MarketActivationSchema }),
+]);
+export type MarketAdapterProposalInput = z.infer<typeof MarketAdapterProposalInputSchema>;
 
 export const FabricMarketAdvanceResultSchema = z.discriminatedUnion("state", [
   FabricProposalCheckpointSchema.extend({ state: z.literal("prepared") }),

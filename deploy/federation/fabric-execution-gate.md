@@ -1,6 +1,6 @@
 # 私有额度与公共执行许可
 
-本页说明同一 Fabric 通道中的 kq-commercial / kq-market 协议。当前交付的是链码与隔离真实网络验收；Server 的协调接单入口仍拒绝执行，Adapter、业务审批和执行方验权尚未接入，不能把链码 ACTIVE 当作平台已提交真实计算任务。
+本页说明同一 Fabric 通道中的 kq-commercial / kq-market 协议。链码、生产 Adapter 与 Server Unix 客户端已通过隔离真实网络验收；Server 的协调接单入口仍拒绝执行，业务审批、持久待办和执行方验权尚未接入，不能把链码 ACTIVE 当作平台已提交真实计算任务。
 
 ## 私有边界与背书
 
@@ -38,8 +38,16 @@ ReleaseExecution 使用专用 commercial-release 双签正文，绑定原预留�
 
 ## 复现真实网络验证
 
+Commercial Adapter 的固定 proposal 接口增加 reserve-execution/release-execution，验过双方专用签署用途、相同摘要及路由绑定后，才把 transient 发给该域的两个 MSP。固定 query 接口只允许 get-execution-gate-hash，返回 hash 或明确不存在的 null；连接故障和含混错误不会变成不存在，响应不允许夹带私有字段。配置机构必须属于该域。
+
+Market Adapter 增加 activate-demand，恢复检查点绑定规范化公开载荷与 activationId。两类操作均复用原加密检查点，不改变已有恢复用途或密钥文件。必须先保存 proposal，再保存 prepared transaction，最后才提交；提交响应丢失时继续恢复原交易，不能重新创建预留。
+
+这些是本机私有套接字能力。现有 CommercialClient/MarketClient 业务接口和用户 HTTP 输入仍只接受原来的合同/用量及发布/认领/撤回操作，不能通过 market.publish 绕过后续审批。DATA_WAITING 保留原交易并等待重试；预算不足、授权或对象冲突进入复核，原始私有错误不会返回用户。
+
     KQ_FABRIC_TOOLS=/path/to/verified-fabric-3.1.5 bun run test:fabric:gate
 
 复用隔离三机构网络，新增同通道第二份链码及分开的 market/commercial 证书，不使用同一证书冒充不同角色。保留商业全机构默认策略、私有集合双方 AND、市场 MAJORITY、lifecycle ALL。测试进程有现有限额，结束清理所属资源；KQ_FABRIC_KEEP_ARTIFACTS=1 仅保留本机含测试凭据的诊断目录，KQ_FABRIC_REPORT 仅输出无私有正文的断言摘要。
 
 检查提交验证码、原生 MVCC 读集竞态及真实区块中的 PDC 写入：缺 B 背书、释放先提交、激活先提交、并发超额、重复预留/释放及第三方不可见。A/B 应取得私有写入；C 本地查询、C 请求 A 的私有区块及 A 请求没有私有副本的 C 均不能取到正文；公共区块与服务日志也不得出现金额、合同探针或签名。该入口已接入现有 Fabric CI。
+
+同一入口随后通过生产 Node runtime 与 Server Unix 客户端释放一个已锁定但未激活的槽位，预留新任务并激活。每一步使用新进程；提交成功后主动退出、不保存响应，再恢复并核对相同交易和区块。预留额外经历 Orderer 停机/恢复；查询验证 REVOKED/READY 哈希、明确不存在及匹配的 ACTIVE 需求。前述私有区块遍历覆盖链码竞态交易，后续 Adapter 交易验证恢复与公开查询，不能据此宣称完成 Server 数据库或 Agent 的联合验收。
