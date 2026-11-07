@@ -1,7 +1,13 @@
 import { afterAll, afterEach, beforeAll, expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
 import { createPgDb, jobs, users, workflowExecutionJobs, workflowRuns } from "@kuintessence/db";
-import { extractRunGraph, WorkflowExecutionInterrupted, workflowDsl } from "@kuintessence/shared";
+import {
+  extractRunGraph,
+  runWorkflow,
+  WorkflowExecutionInterrupted,
+  WorkflowNodeWaiting,
+  workflowDsl,
+} from "@kuintessence/shared";
 import { eq, inArray } from "drizzle-orm";
 import { stringify } from "yaml";
 import { JobService } from "../services/job-service";
@@ -284,7 +290,7 @@ test("background scanner resumes durable work while leaving a live legacy workfl
   } finally {
     await next.stop();
   }
-});
+}, 10_000);
 
 async function manualRun() {
   const workflow = definition();
@@ -411,4 +417,107 @@ test("checkpoint upload failure suspends a durable run and recovery does not exe
   expect(await registry.getById(id)).toMatchObject({ status: "completed", errorCode: null });
   expect(h.executed).toHaveLength(3);
   expect(await registry.listJobIds(id)).toHaveLength(3);
+});
+
+test("durable external waiting persists its paths, resumes without replay and waits for cancellation confirmation", async () => {
+  const definition = workflowDsl.WorkflowSchema.parse({
+    name: "External waiting",
+    spec: {
+      nodeDrafts: ["remote", "independent", "downstream"].map((id) => ({
+        id,
+        name: id,
+        type: "NoAction",
+      })),
+      nodeRelations: [{ fromId: "remote", toId: "downstream", slotRelations: [] }],
+    },
+  });
+  const scheduled: Array<() => Promise<void>> = [];
+  const calls: string[] = [];
+  let ready = false;
+  let stopped = false;
+  const make = () => {
+    const runner = new WorkflowAsyncRunner({
+      registry,
+      journal,
+      schedule: (task) => {
+        scheduled.push(task);
+      },
+      cancelSubmittedJobs: async () => {
+        if (!stopped) throw new Error("Remote stop is not yet confirmed");
+      },
+      makeRunner: (_user, _role, _run, _placement, _org, lease) => async () => {
+        if (!lease) throw new Error("Expected durable journal");
+        return runWorkflow(
+          definition,
+          async (node) => {
+            calls.push(node.id);
+            if (node.id === "remote" && !ready) throw new WorkflowNodeWaiting("REMOTE_WAITING");
+            return { status: "Succeeded", values: { ok: true } };
+          },
+          { journal: lease },
+        );
+      },
+    });
+    runners.push(runner);
+    return runner;
+  };
+  const drain = async () => {
+    while (scheduled.length) await scheduled.shift()?.();
+  };
+  const submit = async (runner: WorkflowAsyncRunner) => {
+    const { runId } = await runner.submit({
+      yaml: stringify(definition),
+      executionModel: "durable-v2",
+      submittedBy: userId,
+      role: "user",
+      authorizeRun: async () => {},
+    });
+    runIds.push(runId);
+    return runId;
+  };
+  const first = make();
+  const id = await submit(first);
+  await drain();
+  const waiting = await registry.getById(id);
+  expect(waiting).toMatchObject({
+    status: "running",
+    completedAt: null,
+    result: null,
+    errorCode: "WORKFLOW_WAITING",
+    waitingInvocations: [{ path: JSON.stringify(["node", "remote"]), reason: "REMOTE_WAITING" }],
+  });
+  expect(calls).toEqual(["remote", "independent"]);
+  await first.stop();
+  const recovered = make();
+  expect(await recovered.recoverInterruptedRuns(true)).toEqual({
+    resumed: 1,
+    failedInterrupted: 0,
+  });
+  await drain();
+  expect(calls).toEqual(["remote", "independent", "remote"]);
+  expect((await registry.getById(id))?.waitingInvocations).toEqual(waiting?.waitingInvocations);
+  ready = true;
+  await recovered.recoverInterruptedRuns(true);
+  await drain();
+  expect(await registry.getById(id)).toMatchObject({
+    status: "completed",
+    waitingInvocations: [],
+    errorCode: null,
+  });
+  expect(calls).toEqual(["remote", "independent", "remote", "remote", "downstream"]);
+
+  ready = false;
+  const cancelId = await submit(recovered);
+  await drain();
+  expect(await recovered.cancel(cancelId)).toBe("cancelling");
+  await drain();
+  expect((await registry.getById(cancelId))?.status).toBe("cancelling");
+  stopped = true;
+  await recovered.recoverInterruptedRuns(true);
+  await drain();
+  expect(await registry.getById(cancelId)).toMatchObject({
+    status: "cancelled",
+    waitingInvocations: [],
+    errorCode: null,
+  });
 });

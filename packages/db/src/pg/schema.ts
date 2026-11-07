@@ -5,6 +5,7 @@ import type {
   MapView,
   ProviderProfile,
   SandboxArtifactMember,
+  WorkflowWaitingInvocation,
 } from "@kuintessence/shared";
 import { sql } from "drizzle-orm";
 import {
@@ -1416,6 +1417,10 @@ export const workflowRuns = pgTable(
       nodes: Array<{ id: string; name: string; kind: string }>;
       edges: Array<{ source: string; target: string; when?: string }>;
     }>(),
+    waitingInvocations: jsonb("waiting_invocations")
+      .$type<WorkflowWaitingInvocation[]>()
+      .notNull()
+      .default([]),
     errorCode: varchar("error_code", { length: 80 }),
     errorMessage: text("error_message"),
     createdAt: timestamp("created_at").defaultNow().notNull(),

@@ -285,6 +285,12 @@ checkpoint 保存：固定 Workflow/引用软件修订、动态 scope path、已
 
 例如 `/root/loop:align/iteration:3/script:solve` 与下一迭代是不同 invocation，即使静态 nodeId 相同。每个有外部副作用的 invocation 使用唯一键；写入意图后再委派，完成 checkpoint 落库后再推进下一个节点。
 
+引擎现已支持专门的 WorkflowNodeWaiting，原因限定为 DATA_WAITING、SOFTWARE_WAITING、REMOTE_WAITING、RESULT_WAITING、LEDGER_WAITING。调用者必须先持久化外部意图，才可报告等待；这个信号本身不创建任务或发送委派。仅 durable journal 运行接受等待，旧内存执行不能以从头重跑代替恢复。
+
+一个 scope 中的等待节点及其下游不写终态 checkpoint，无关分支继续完成并保存检查点；ForEach 的等待迭代仍占用 maxParallel 名额，不因释放本地调用栈而无限派发其他迭代。嵌套 SubWorkflow/While/ForEach 传播带动态路径的等待；While 不提前进入下一次依赖迭代，Switch 不用缺失结果选择分支。数据库或执行租约故障仍中断所有后续副作用，不能冒充正常业务等待。
+
+可运行分支收尾后，Server 用当前 lease 将等待快照写入 workflow_runs.waiting_invocations（迁移 0106），每项含 path 和 reason，保留 status=running、completedAt=null，errorCode=WORKFLOW_WAITING。已有运行查询权限下可读取快照；后台按原恢复机制重建运行并复用完成检查点。成功/失败终态清除等待快照，取消仍经过既有停止确认回调再结束。该快照是最近一次让出执行时的等待观测，不是外部任务绑定；普通 Workflow 联邦 invocation 的独立持久绑定和真实取消转发仍待接入。
+
 恢复先读取 checkpoint、已绑定任务和持久状态，重新订阅事件/查询远端；不得从头重新执行已完成脚本。完成事件可能早于等待注册，数据库是事实来源，现有内存 JobCompletionRegistry 仅作为通知加速，不承担唯一状态。
 
 等待数据、软件、链许可和远端结果保存在 node invocation 的 `waitingReason`。实际 Job 仍使用现有 pending/queued/running/terminal 状态，避免直接把联邦等待状态塞进 Agent 协议。无关可运行节点继续，取消先停止新 invocation，再确认所有已委派 attempt 的结果。

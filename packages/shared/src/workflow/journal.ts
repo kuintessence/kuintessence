@@ -36,6 +36,33 @@ export class WorkflowExecutionInterrupted extends Error {
   }
 }
 
+export type WorkflowWaitingReason =
+  | "DATA_WAITING"
+  | "SOFTWARE_WAITING"
+  | "REMOTE_WAITING"
+  | "RESULT_WAITING"
+  | "LEDGER_WAITING";
+
+export interface WorkflowWaitingInvocation extends NodeInvocation {
+  reason: WorkflowWaitingReason;
+}
+
+/** An executor has persisted its external intent, but has no terminal result yet. */
+export class WorkflowNodeWaiting extends Error {
+  constructor(readonly reason: WorkflowWaitingReason) {
+    super(reason);
+    this.name = "WorkflowNodeWaiting";
+  }
+}
+
+/** Runnable siblings have checkpointed; the run can release its lease until recovery. */
+export class WorkflowExecutionWaiting extends WorkflowExecutionInterrupted {
+  constructor(readonly invocations: WorkflowWaitingInvocation[]) {
+    super("Workflow is waiting for external prerequisites");
+    this.name = "WorkflowExecutionWaiting";
+  }
+}
+
 export async function journalOperation<T>(operation: () => Promise<T>): Promise<T> {
   try {
     return await operation();

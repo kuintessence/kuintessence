@@ -11,6 +11,7 @@ import {
   createLogger,
   type RoleName,
   type WorkflowExecutionInterrupted,
+  WorkflowExecutionWaiting,
   type WorkflowPlacementConfig,
   type WorkflowRunGraph,
   type WorkflowRunRecordResult,
@@ -279,6 +280,7 @@ export class WorkflowRunRegistry implements WorkflowRunStore {
         .update(workflowRuns)
         .set({
           status: pending.length ? "cancelling" : status,
+          waitingInvocations: [],
           result,
           completedAt: pending.length ? null : new Date(),
           ...(pending.length ? { cancelRequestedAt: new Date() } : {}),
@@ -305,6 +307,7 @@ export class WorkflowRunRegistry implements WorkflowRunStore {
       .update(workflowRuns)
       .set({
         status: "failed",
+        waitingInvocations: [],
         errorCode,
         errorMessage,
         result: {
@@ -336,7 +339,14 @@ export class WorkflowRunRegistry implements WorkflowRunStore {
       run?.result && terminalStatusFromResult(run.result) === "failed" ? "failed" : "cancelled";
     const cancelled = await this.db
       .update(workflowRuns)
-      .set({ status, completedAt: new Date(), updatedAt: new Date() })
+      .set({
+        status,
+        waitingInvocations: [],
+        errorCode: sql`CASE WHEN ${workflowRuns.errorCode} = 'WORKFLOW_WAITING' THEN NULL ELSE ${workflowRuns.errorCode} END`,
+        errorMessage: sql`CASE WHEN ${workflowRuns.errorCode} = 'WORKFLOW_WAITING' THEN NULL ELSE ${workflowRuns.errorMessage} END`,
+        completedAt: new Date(),
+        updatedAt: new Date(),
+      })
       .where(and(eq(workflowRuns.id, runId), eq(workflowRuns.status, "cancelling")))
       .returning({ id: workflowRuns.id });
     if (cancelled.length === 1) logger.info({ runId, status }, "Workflow cancellation completed");
@@ -397,6 +407,7 @@ export class WorkflowRunRegistry implements WorkflowRunStore {
       .update(workflowRuns)
       .set({
         status: "failed",
+        waitingInvocations: [],
         result: {
           status: { __run__: "Failed" },
           values: {
@@ -464,11 +475,22 @@ export class WorkflowRunRegistry implements WorkflowRunStore {
     lease: LeasedWorkflowJournal,
   ): Promise<void> {
     if (lease.runId !== runId) throw new Error("Workflow lease belongs to another run");
+    if (
+      error instanceof WorkflowExecutionWaiting &&
+      Buffer.byteLength(JSON.stringify(error.invocations)) > 8 * 1024 * 1024
+    )
+      throw new Error("Workflow waiting snapshot exceeds 8 MiB");
     await lease.transaction(async (tx) => {
       await tx
         .update(workflowRuns)
         .set({
-          errorCode: error.retryable ? "WORKFLOW_RECOVERY_PENDING" : "WORKFLOW_RECONCILING",
+          errorCode:
+            error instanceof WorkflowExecutionWaiting
+              ? "WORKFLOW_WAITING"
+              : error.retryable
+                ? "WORKFLOW_RECOVERY_PENDING"
+                : "WORKFLOW_RECONCILING",
+          waitingInvocations: error instanceof WorkflowExecutionWaiting ? error.invocations : [],
           errorMessage: error.message,
           updatedAt: new Date(),
         })

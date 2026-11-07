@@ -743,6 +743,13 @@
       "when": 1794020015379,
       "tag": "0105_bright_maddog",
       "breakpoints": true
+    },
+    {
+      "idx": 106,
+      "version": "7",
+      "when": 1794021459704,
+      "tag": "0106_fantastic_imperial_guard",
+      "breakpoints": true
     }
   ]
 }

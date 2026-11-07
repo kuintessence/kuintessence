@@ -912,6 +912,16 @@ Slurm 方向已取得并核对仓库既有 Apptainer 1.4.3 包 SHA-256，构建�
 
 下一项接入普通 Workflow 的联邦节点/执行位置、动态 invocation 持久绑定、取消及恢复，并将已回传文件转换为下游可用的受管产物。输入清单交换已经接通，但本地云盘 File/FileBatch 到跨站受管输入的自动授权交付仍需完成。
 
+## Workflow 的可恢复外部等待
+
+接入源站 Workflow 前发现现有引擎只能终态或整体中断，无法让一个远端等待节点让出本地执行而继续无关分支。已增加 WorkflowNodeWaiting 与聚合的 WorkflowExecutionWaiting：执行者须先持久化外部意图，引擎记录动态路径及受限原因，在完成可运行分支后让出。等待节点及其下游不写成功/失败/跳过 checkpoint，恢复时仅重新进入未完成节点；已完成节点及选定分支复用原 journal。ForEach 等待迭代仍占 maxParallel 名额，避免把等待释放误当成可无限提交新远端作业；While 顺序及 SubWorkflow 路径不变。真正的基础设施中断仍停止其他副作用。
+
+迁移 0106 由 drizzle 生成，在运行表保存 waitingInvocations 快照，受原执行 lease 保护；状态继续为 running，完成时间/result 不提前填写，错误码区分 WORKFLOW_WAITING 与恢复故障。最终完成/失败/取消时清除；取消仍等待已有停止回调确认。快照不是 invocation→远端操作的唯一绑定，这项持久绑定及源站联邦节点/取消转发尚未实现。
+
+引擎/检查点组合 81 个不同测试通过（新增 4 项），覆盖独立分支、等待下游、循环并发槽位、恢复不重跑、嵌套 While/SubWorkflow/Switch、直接输入引用与基础设施故障。嵌套夹具最初错误使用不存在的 Last 聚合值，改用 While 原输出语义后定向通过。隔离 PostgreSQL 的新等待用例已验证持久路径/原因、服务重建、恢复不重放以及未确认停止时保持 cancelling；新增关系夹具补齐必填 slotRelations 后通过。原有后台恢复测试暴露 5 秒扫描周期与 Bun 默认 5 秒超时冲突，已将该测试上限设为 10 秒，未调整生产周期。
+
+隔离 PostgreSQL 的 execution-journal/durable-runner 共 18 个不同用例最终通过（新增 1 项），修正夹具与扫描超时后只复查失败项。全仓类型检查通过（含 protobuf 生成和 Fabric 测试）；最终 lint 无错误，保留原有 47 warnings、1 info，637 个本地文档目标检查通过。证据为本机 temp/federation-workflow-wait-*.log；临时数据库已清理。等待用例使用生产 runner/engine 与数据库，执行者和停止确认回调为替身，尚不构成普通 Workflow 真实跨站验收。
+
 ## 尚未接通，不能宣称支持
 
 协议审批与机构信任管理 UI、源站 Workflow 状态消费、额度结算/退款、完整生产持久 Workflow 端到端验收、完整的数据/软件物化与介质交付、双方证据确认与完整用量/结算记录、商业/市场链码及真实联邦作业与 Fabric 联合运行、归档恢复、Web/CLI 和部署配置均未完成。

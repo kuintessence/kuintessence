@@ -6,7 +6,10 @@ import {
   journalOperation,
   type NodeInvocation,
   WorkflowExecutionInterrupted,
+  WorkflowExecutionWaiting,
   type WorkflowJournal,
+  WorkflowNodeWaiting,
+  type WorkflowWaitingInvocation,
 } from "./journal";
 import type { WorkflowNodeFailure } from "./run-store";
 
@@ -155,7 +158,11 @@ async function runScope(
   try {
     return await executeScope(spec, executor, parentCtx, options, scopePath);
   } catch (error) {
-    if (error instanceof WorkflowExecutionInterrupted) options.control.interruption ??= error;
+    if (
+      error instanceof WorkflowExecutionInterrupted &&
+      !(error instanceof WorkflowExecutionWaiting)
+    )
+      options.control.interruption ??= error;
     throw error;
   }
 }
@@ -197,6 +204,8 @@ async function executeScope(
     incoming.get(e.toId)?.push(e);
   }
 
+  const waiting: WorkflowWaitingInvocation[] = [];
+  const pending = new Set<string>();
   const status = new Map<string, NodeStatus>();
   const chosen = new Map<string, string | undefined>();
   const nodeCtx: Record<string, NodeCtxEntry> = {};
@@ -260,7 +269,12 @@ async function executeScope(
       );
       continue;
     }
-    const predStatuses = (preds.get(id) ?? []).map((p) => status.get(p));
+    const dependencies = preds.get(id) ?? [];
+    if (dependencies.some((id) => pending.has(id)) || hasPendingInput(node, pending)) {
+      pending.add(id);
+      continue;
+    }
+    const predStatuses = dependencies.map((p) => status.get(p));
     if (predStatuses.some((s) => s === "Failed" || s === "Cancelled")) {
       await record(id, "Cancelled", {});
       continue;
@@ -346,76 +360,111 @@ async function executeScope(
       }
       continue;
     }
-    if (node.type === "Loop") {
-      const [loopStatus, loopValues, loopFailure] = await runLoop(
-        node,
-        executor,
-        {
-          ...ctx,
-          [REQUIRED_COLLECTED_OUTPUTS_KEY]: requiredCollectedOutputsForLoop(spec, node.id),
-        },
-        options,
-        nodePath,
-      );
-      await record(
-        id,
-        loopStatus,
-        loopValues,
-        loopStatus === "Failed"
-          ? (loopFailure ?? { message: "Loop execution failed." })
-          : undefined,
-      );
-      continue;
-    }
-    if (node.type === "Reduce") {
-      const [reduceStatus, reduceValues] = reduceNode(node, nodeCtx);
-      await record(
-        id,
-        reduceStatus,
-        reduceValues,
-        reduceStatus === "Failed" ? { message: "Result reduction failed." } : undefined,
-      );
-      continue;
-    }
-    if (node.type === "SubWorkflow") {
-      const [subWorkflowStatus, subWorkflowValues, subWorkflowFailure] = await runSubWorkflow(
-        node,
-        executor,
-        ctx,
-        options,
-        nodePath,
-      );
-      await record(
-        id,
-        subWorkflowStatus,
-        subWorkflowValues,
-        subWorkflowStatus === "Failed"
-          ? (subWorkflowFailure ?? { message: "Sub-workflow execution failed." })
-          : undefined,
-      );
-      continue;
-    }
     try {
-      const res = await executor(node, ctx, invocation);
-      await record(id, res.status, res.values ?? {}, res.failure);
-    } catch (err) {
-      if (err instanceof WorkflowExecutionInterrupted) throw err;
-      // An executor rejection (e.g. resolvePackage / materialize blowing up) is
-      // a single-node failure, not a reason to reject the whole run — record it
-      // Failed so downstream cancels, consistent with a returned Failed status.
-      logger.error({ nodeId: id, err }, "Node executor threw — recording node Failed");
-      await record(
-        id,
-        "Failed",
-        {},
-        {
-          message: err instanceof Error ? err.message : "Node execution failed.",
-        },
-      );
+      if (node.type === "Loop") {
+        const [loopStatus, loopValues, loopFailure] = await runLoop(
+          node,
+          executor,
+          {
+            ...ctx,
+            [REQUIRED_COLLECTED_OUTPUTS_KEY]: requiredCollectedOutputsForLoop(spec, node.id),
+          },
+          options,
+          nodePath,
+        );
+        await record(
+          id,
+          loopStatus,
+          loopValues,
+          loopStatus === "Failed"
+            ? (loopFailure ?? { message: "Loop execution failed." })
+            : undefined,
+        );
+        continue;
+      }
+      if (node.type === "Reduce") {
+        const [reduceStatus, reduceValues] = reduceNode(node, nodeCtx);
+        await record(
+          id,
+          reduceStatus,
+          reduceValues,
+          reduceStatus === "Failed" ? { message: "Result reduction failed." } : undefined,
+        );
+        continue;
+      }
+      if (node.type === "SubWorkflow") {
+        const [subWorkflowStatus, subWorkflowValues, subWorkflowFailure] = await runSubWorkflow(
+          node,
+          executor,
+          ctx,
+          options,
+          nodePath,
+        );
+        await record(
+          id,
+          subWorkflowStatus,
+          subWorkflowValues,
+          subWorkflowStatus === "Failed"
+            ? (subWorkflowFailure ?? { message: "Sub-workflow execution failed." })
+            : undefined,
+        );
+        continue;
+      }
+      try {
+        const res = await executor(node, ctx, invocation);
+        await record(id, res.status, res.values ?? {}, res.failure);
+      } catch (err) {
+        if (err instanceof WorkflowExecutionInterrupted || err instanceof WorkflowNodeWaiting)
+          throw err;
+        // An executor rejection (e.g. resolvePackage / materialize blowing up) is
+        // a single-node failure, not a reason to reject the whole run — record it
+        // Failed so downstream cancels, consistent with a returned Failed status.
+        logger.error({ nodeId: id, err }, "Node executor threw — recording node Failed");
+        await record(
+          id,
+          "Failed",
+          {},
+          {
+            message: err instanceof Error ? err.message : "Node execution failed.",
+          },
+        );
+      }
+    } catch (error) {
+      if (error instanceof WorkflowNodeWaiting) {
+        if (!options.journal)
+          throw new WorkflowExecutionInterrupted(
+            "External node waiting requires durable workflow execution",
+            { retryable: false },
+          );
+        waiting.push({ ...invocation, reason: error.reason });
+      } else if (error instanceof WorkflowExecutionWaiting) {
+        waiting.push(...error.invocations);
+      } else {
+        throw error;
+      }
+      pending.add(id);
     }
   }
+  if (waiting.length) throw new WorkflowExecutionWaiting(waiting);
 
   return { status: Object.fromEntries(status), nodes: nodeCtx };
+}
+
+function hasPendingInput(node: workflowDsl.WorkflowNode, pending: ReadonlySet<string>): boolean {
+  const fromPending = (ref: unknown) =>
+    ref !== null &&
+    typeof ref === "object" &&
+    "node" in ref &&
+    typeof ref.node === "string" &&
+    pending.has(ref.node);
+  if (
+    "inputSlots" in node &&
+    node.inputSlots?.some((slot) => fromPending(slot.from) || slot.sources?.some(fromPending))
+  )
+    return true;
+  if (node.type === "SubWorkflow" && node.inputs?.some((input) => fromPending(input.from)))
+    return true;
+  return node.type === "Reduce" && pending.has(node.from.loop);
 }
 
 type InputReadiness = "Ready" | "Skipped" | "Failed";
@@ -652,6 +701,7 @@ async function runForEachIterations(
   let nextIndex = 0;
   let interruption: unknown;
   let interrupted = false;
+  const waiting: WorkflowWaitingInvocation[] = [];
   const workers = Array.from({ length: concurrency }, async () => {
     while (!interrupted) {
       const index = nextIndex;
@@ -677,13 +727,20 @@ async function runForEachIterations(
           index,
         ]);
       } catch (error) {
-        if (!interrupted) interruption = error;
-        interrupted = true;
+        if (error instanceof WorkflowExecutionWaiting) {
+          waiting.push(...error.invocations);
+          // A waiting external attempt still occupies its ForEach concurrency slot.
+          return;
+        } else {
+          if (!interrupted) interruption = error;
+          interrupted = true;
+        }
       }
     }
   });
   await Promise.all(workers);
   if (interrupted) throw interruption;
+  if (waiting.length) throw new WorkflowExecutionWaiting(waiting);
   return children;
 }
 

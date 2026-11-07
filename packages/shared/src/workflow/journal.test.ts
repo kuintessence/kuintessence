@@ -4,8 +4,10 @@ import { WorkflowSchema } from "../workflow-dsl";
 import { NODE_COLLECTED_KEY, type NodeExecutor, runWorkflow } from "./engine";
 import {
   WorkflowExecutionInterrupted,
+  WorkflowExecutionWaiting,
   type WorkflowJournal,
   type WorkflowJournalEntry,
+  WorkflowNodeWaiting,
 } from "./journal";
 
 const work = (id: string) => ({ id, name: id, type: "NoAction" });
@@ -334,5 +336,180 @@ describe("workflow durable journal", () => {
     expect(await caught).toBeInstanceOf(WorkflowExecutionInterrupted);
     expect(finished).toBe(true);
     expect(calls).toEqual([0, 1]);
+  });
+});
+
+describe("durable external waiting", () => {
+  test("checkpoints independent branches and leaves waiting descendants unfinished", async () => {
+    const { journal, entries } = memoryJournal();
+    const definition = wf(
+      [work("remote"), work("independent"), work("downstream"), work("tail")],
+      [edge("remote", "downstream"), edge("downstream", "tail")],
+    );
+    let ready = false;
+    const calls: string[] = [];
+    const executor: NodeExecutor = async (node) => {
+      calls.push(node.id);
+      if (node.id === "remote" && !ready) throw new WorkflowNodeWaiting("REMOTE_WAITING");
+      return { status: "Succeeded", values: { out: 7 } };
+    };
+    await expect(runWorkflow(definition, executor, { journal })).rejects.toMatchObject({
+      invocations: [{ path: JSON.stringify(["node", "remote"]), reason: "REMOTE_WAITING" }],
+      retryable: true,
+    });
+    expect(calls).toEqual(["remote", "independent"]);
+    expect(entries.has(JSON.stringify(["node", "remote"]))).toBe(false);
+    expect(entries.has(JSON.stringify(["node", "downstream"]))).toBe(false);
+    ready = true;
+    const result = await runWorkflow(definition, executor, { journal });
+    expect(result.status).toEqual({
+      remote: "Succeeded",
+      independent: "Succeeded",
+      downstream: "Succeeded",
+      tail: "Succeeded",
+    });
+    expect(calls).toEqual(["remote", "independent", "remote", "downstream", "tail"]);
+  });
+
+  test("ForEach retains waiting concurrency slots, completes siblings and restores each dynamic invocation", async () => {
+    const { journal } = memoryJournal();
+    const definition = wf([loop([work("work"), work("sibling")], 2), work("outside")]);
+    const calls: string[] = [];
+    const ready = new Set<number>();
+    const executor: NodeExecutor = async (node, ctx, invocation) => {
+      const index = (ctx.loop as { index?: number } | undefined)?.index;
+      calls.push(invocation?.path ?? "missing");
+      if (node.id === "work" && index !== undefined && !ready.has(index))
+        throw new WorkflowNodeWaiting("DATA_WAITING");
+      return { status: "Succeeded", values: { out: index ?? 0 } };
+    };
+    const path = (i: number, id = "work") =>
+      JSON.stringify(["node", "loop", "iteration", i, "node", id]);
+    await expect(runWorkflow(definition, executor, { journal })).rejects.toBeInstanceOf(
+      WorkflowExecutionWaiting,
+    );
+    expect(calls).toContain(path(0));
+    expect(calls).toContain(path(1));
+    expect(calls).not.toContain(path(2));
+    expect(calls).toContain(path(0, "sibling"));
+    expect(calls).toContain(JSON.stringify(["node", "outside"]));
+    ready.add(0);
+    await expect(runWorkflow(definition, executor, { journal })).rejects.toBeInstanceOf(
+      WorkflowExecutionWaiting,
+    );
+    expect(calls).toContain(path(2));
+    ready.add(1);
+    ready.add(2);
+    const result = await runWorkflow(definition, executor, { journal });
+    expect(result.values.loop?.values.all).toEqual([0, 1, 2]);
+    for (let i = 0; i < 3; i++)
+      expect(calls.filter((value) => value === path(i, "sibling"))).toHaveLength(1);
+    expect(calls.filter((value) => value === JSON.stringify(["node", "outside"]))).toHaveLength(1);
+  });
+
+  test("nested SubWorkflow While and Switch preserve paths and never choose branches from missing results", async () => {
+    const { journal } = memoryJournal();
+    const definition = wf([
+      {
+        id: "sub",
+        name: "sub",
+        type: "SubWorkflow",
+        maxDepth: 2,
+        ref: {
+          kind: "Inline",
+          body: {
+            nodeDrafts: [
+              {
+                id: "while",
+                name: "while",
+                type: "Loop",
+                mode: "While",
+                maxIterations: 3,
+                until: { expr: "nodes.work.values.out == 2" },
+                body: { nodeDrafts: [work("work")] },
+                outputs: [{ descriptor: "last", from: { node: "work", output: "out" } }],
+              },
+              {
+                id: "choose",
+                name: "choose",
+                type: "Switch",
+                cases: [{ when: { expr: "nodes.while.values.last == 2" }, to: "yes" }],
+                default: "no",
+              },
+              work("yes"),
+              work("no"),
+              work("innerSibling"),
+            ],
+            nodeRelations: [edge("while", "choose")],
+          },
+        },
+      },
+      work("outside"),
+    ]);
+    let ready = false;
+    const calls: string[] = [];
+    const executor: NodeExecutor = async (node, ctx, invocation) => {
+      calls.push(invocation?.path ?? "missing");
+      const iteration = (ctx.loop as { iteration?: number } | undefined)?.iteration;
+      if (node.id === "work" && iteration === 1 && !ready)
+        throw new WorkflowNodeWaiting("RESULT_WAITING");
+      return { status: "Succeeded", values: { out: (iteration ?? 0) + 1 } };
+    };
+    const expectedPath = JSON.stringify([
+      "node",
+      "sub",
+      "subworkflow",
+      "node",
+      "while",
+      "iteration",
+      1,
+      "node",
+      "work",
+    ]);
+    await expect(runWorkflow(definition, executor, { journal })).rejects.toMatchObject({
+      invocations: [{ path: expectedPath, reason: "RESULT_WAITING" }],
+    });
+    expect(calls.some((path) => path.endsWith('"yes"]'))).toBe(false);
+    expect(calls.some((path) => path.endsWith('"no"]'))).toBe(false);
+    ready = true;
+    expect((await runWorkflow(definition, executor, { journal })).status.sub).toBe("Succeeded");
+    expect(calls.filter((path) => path.endsWith('"innerSibling"]'))).toHaveLength(1);
+    expect(calls.filter((path) => path.endsWith('"outside"]'))).toHaveLength(1);
+    expect(calls.filter((path) => path.endsWith('"yes"]'))).toHaveLength(1);
+    expect(calls.some((path) => path.endsWith('"no"]'))).toBe(false);
+  });
+
+  test("input references wait without being checkpointed as skipped and infrastructure loss still halts work", async () => {
+    const { journal, entries } = memoryJournal();
+    const definition = wf([
+      work("remote"),
+      {
+        ...work("consumer"),
+        inputSlots: [{ type: "Text", descriptor: "in", from: { node: "remote", output: "out" } }],
+      },
+      work("database"),
+      work("after"),
+    ]);
+    const calls: string[] = [];
+    await expect(
+      runWorkflow(
+        definition,
+        async (node) => {
+          calls.push(node.id);
+          if (node.id === "remote") throw new WorkflowNodeWaiting("LEDGER_WAITING");
+          if (node.id === "database")
+            throw new WorkflowExecutionInterrupted("Database unavailable");
+          return { status: "Succeeded" };
+        },
+        { journal },
+      ),
+    ).rejects.toThrow("Database unavailable");
+    expect(calls).toEqual(["remote", "database"]);
+    expect(entries.has(JSON.stringify(["node", "consumer"]))).toBe(false);
+    await expect(
+      runWorkflow(wf([work("remote")]), async () => {
+        throw new WorkflowNodeWaiting("REMOTE_WAITING");
+      }),
+    ).rejects.toMatchObject({ retryable: false });
   });
 });
