@@ -658,6 +658,45 @@ export const federationPreparations = pgTable(
   ],
 );
 
+/** Receiver input staging intent; pending currently has no storage side effects. */
+export const federationInputImports = pgTable(
+  "federation_input_imports",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    reservationId: uuid("reservation_id")
+      .notNull()
+      .references(() => federationReservations.id),
+    localSiteId: uuid("local_site_id").notNull(),
+    localOrgId: uuid("local_org_id")
+      .notNull()
+      .references(() => orgs.id),
+    ownerId: uuid("owner_id")
+      .notNull()
+      .references(() => users.id),
+    manifestDigest: varchar("manifest_digest", { length: 71 }).notNull(),
+    manifest: jsonb("manifest").$type<FederationInputFiles>().notNull(),
+    state: varchar("state", { length: 16 }).notNull().default("pending"),
+    reservedBytes: bigint("reserved_bytes", { mode: "number" }).notNull(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    nextCheckAt: timestamp("next_check_at", { withTimezone: true }).notNull().defaultNow(),
+    lastError: varchar("last_error", { length: 64 }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("federation_input_import_reservation").on(t.reservationId),
+    index("federation_input_import_pending")
+      .on(t.localSiteId, t.nextCheckAt)
+      .where(sql`${t.state} = 'pending'`),
+    check("federation_input_import_digest", sql`${t.manifestDigest} ~ '^sha256:[a-f0-9]{64}$'`),
+    check("federation_input_import_state", sql`${t.state} IN ('pending', 'cancelled')`),
+    check(
+      "federation_input_import_quota",
+      sql`${t.reservedBytes} BETWEEN 0 AND 9007199254740991 AND (${t.state} != 'cancelled' OR ${t.reservedBytes} = 0)`,
+    ),
+  ],
+);
+
 /** Receiver-local execution intent. Creation alone never authorizes dispatch. */
 export const federationWorkflowBindings = pgTable(
   "federation_workflow_bindings",

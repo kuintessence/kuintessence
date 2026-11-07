@@ -13,6 +13,7 @@ import {
   federationCapabilities,
   federationCertificates,
   federationEvidence,
+  federationInputImports,
   federationMaterials,
   federationOutbound,
   federationPreparations,
@@ -91,8 +92,10 @@ import { FederationAgreementService } from "./agreements";
 import { FederationAssetService, federationMaterialDigest } from "./assets";
 import { FederationCancellationReceiver } from "./cancellation";
 import { FederationCancellationMonitor } from "./cancellation-monitor";
+import { readFederationCancellationState } from "./cancellation-state";
 import type { FederationDownloadStorage } from "./download-credential";
 import { createFederationIngress } from "./ingress";
+import { FederationInputImports } from "./input-imports";
 import { FederationMaterialExchange } from "./material-exchange";
 import { FederationOutboundService, FederationOutboundWorker } from "./outbound";
 import { FederationDeliveryError, type FederationSend } from "./outbound-client";
@@ -138,6 +141,9 @@ const sourceFingerprint = "ab".repeat(32);
 const targetFingerprint = "cd".repeat(32);
 
 afterEach(async () => {
+  await db
+    .delete(federationInputImports)
+    .where(eq(federationInputImports.ownerId, executionUserId));
   // Binding tests deliberately leave pending tasks; subsequent fixtures must not dispatch them.
   if (!sourceRunIds.length) return;
   await db
@@ -4996,6 +5002,389 @@ test("input downloads recheck current permissions and both signing purposes afte
       return url;
     };
     await expect(f.read()).rejects.toThrow("CANCELLATION_REQUESTED");
+  } finally {
+    await f.lease.release();
+  }
+});
+
+async function inputImportFixture() {
+  const f = await acceptedInputInventory();
+  const preparation = new FederationPreparationService(db, b.signing.siteId, assets, clock);
+  let calls = 0;
+  const transport: FederationSend = async (_endpoint, jws, path) => {
+    if (path !== "/federation/v1/materials") throw new Error("Expected materials route");
+    calls++;
+    return f.source.materialChunk(jws, targetFingerprint);
+  };
+  const exchange = new FederationMaterialExchange(
+    db,
+    b.signing,
+    transport,
+    preparation,
+    assets,
+    clock,
+  );
+  const imports = new FederationInputImports(db, preparation, exchange, clock);
+  const inventory = async () =>
+    db
+      .select()
+      .from(federationInputImports)
+      .where(eq(federationInputImports.reservationId, f.reservationId));
+  return { ...f, preparation, transport, exchange, imports, inventory, calls: () => calls };
+}
+
+test("input imports persist a private task-owned inventory through the preparation worker and recover idempotently", async () => {
+  const f = await inputImportFixture();
+  try {
+    const worker = new FederationPreparationWorker(
+      db,
+      f.preparation,
+      undefined,
+      undefined,
+      async (id) => {
+        if (id !== f.reservationId) return;
+        await f.exchange.ensure(id);
+        await f.imports.ensure(id);
+      },
+      () => f.imports.sweep(),
+    );
+    await worker.tick();
+    await worker.stop();
+    const [saved] = await f.inventory();
+    if (!saved) throw new Error("Missing input import");
+    expect(saved).toMatchObject({
+      ownerId: executionUserId,
+      localOrgId: receiver.orgId,
+      manifestDigest: f.saved.request.inputFilesDigest,
+      state: "pending",
+      reservedBytes: 4,
+    });
+    for (const privateValue of [
+      actor.userId,
+      f.fileId,
+      "storageKey",
+      "versionId",
+      "private/source.dat",
+    ])
+      expect(JSON.stringify(saved.manifest)).not.toContain(privateValue);
+    const beforeCalls = f.calls();
+    const repeats = await Promise.all([
+      f.imports.ensure(f.reservationId),
+      new FederationInputImports(db, f.preparation, f.exchange, clock).ensure(f.reservationId),
+    ]);
+    expect(repeats.map((row) => row?.importId)).toEqual([saved.id, saved.id]);
+    expect(f.calls()).toBe(beforeCalls);
+    expect(
+      (await new StorageQuotaService(db, clock).getSummary(executionUserId)).reservedBytes,
+    ).toBe(4);
+    expect(
+      await db
+        .select()
+        .from(auditLog)
+        .where(and(eq(auditLog.target, saved.id), eq(auditLog.action, "federation.input.receive"))),
+    ).toHaveLength(1);
+    expect(await f.preparation.prepare(f.reservationId)).toMatchObject({
+      state: "waiting",
+      blocker: "DATA_WAITING",
+    });
+    expect(
+      await db
+        .select()
+        .from(federationWorkflowBindings)
+        .where(eq(federationWorkflowBindings.reservationId, f.reservationId)),
+    ).toHaveLength(0);
+  } finally {
+    await f.lease.release();
+  }
+});
+
+test("input imports reserve shared cloud quota atomically across concurrent tasks and ordinary uploads", async () => {
+  const first = await inputImportFixture(),
+    second = await inputImportFixture();
+  const quota = new StorageQuotaService(db, clock);
+  const before = await quota.getSummary(executionUserId);
+  const [policy] = await db
+    .insert(storageQuotaPolicies)
+    .values({
+      scope: "cloud",
+      scopeId: "global",
+      defaultQuotaBytes: before.usedBytes + (before.reservedBytes ?? 0) + 6,
+    })
+    .returning();
+  if (!policy) throw new Error("Missing quota policy");
+  try {
+    const results = await Promise.allSettled([
+      first.imports.ensure(first.reservationId),
+      second.imports.ensure(second.reservationId),
+    ]);
+    expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+    const rejected = results.find((result) => result.status === "rejected");
+    expect(rejected?.status === "rejected" && rejected.reason.code).toBe("STORAGE_QUOTA_EXCEEDED");
+    expect((await quota.getSummary(executionUserId)).reservedBytes).toBe(4);
+    await expect(
+      quota.assertCloudWriteAllowed(executionUserId, "normal.dat", 3),
+    ).rejects.toMatchObject({ code: "STORAGE_QUOTA_EXCEEDED" });
+    expect((await first.inventory()).length + (await second.inventory()).length).toBe(1);
+  } finally {
+    await db.delete(storageQuotaPolicies).where(eq(storageQuotaPolicies.id, policy.id));
+    await first.lease.release();
+    await second.lease.release();
+  }
+});
+
+test("input imports cancel without a bound workflow and release quota before a stopped acknowledgement", async () => {
+  const f = await inputImportFixture();
+  try {
+    await f.imports.ensure(f.reservationId);
+    const target = new FederationCancellationReceiver(db, b.signing, clock);
+    const source = f.service(async (endpoint, jws, path) =>
+      path === "/federation/v1/cancellations"
+        ? target.receive(jws, sourceFingerprint)
+        : f.receive(endpoint, jws),
+    );
+    await source.cancellations.request(actor, f.saved.operationId);
+    await source.cancellations.deliverNext();
+    expect((await readFederationCancellationState(db, f.saved.request)).stopped).toBe(false);
+    const monitor = new FederationCancellationMonitor(
+      db,
+      {
+        cancel: async () => {
+          throw new Error("No run expected");
+        },
+      },
+      async () => {},
+      clock,
+    );
+    await monitor.tick();
+    await monitor.stop();
+    expect((await f.inventory())[0]).toMatchObject({
+      state: "cancelled",
+      reservedBytes: 0,
+      lastError: "CANCELLATION_REQUESTED",
+    });
+    expect((await readFederationCancellationState(db, f.saved.request)).stopped).toBe(true);
+    expect(
+      (await new StorageQuotaService(db, clock).getSummary(executionUserId)).reservedBytes,
+    ).toBe(0);
+    await expect(f.imports.ensure(f.reservationId)).rejects.toThrow("CANCELLATION_REQUESTED");
+    expect((await row(f.saved.operationId)).state).toBe("accepted");
+  } finally {
+    await f.lease.release();
+  }
+});
+
+test("input imports reject corrupted or no-longer-authorized inventory before reserving space", async () => {
+  const f = await inputImportFixture();
+  try {
+    const corrupt = new FederationMaterialExchange(
+      db,
+      b.signing,
+      async (...args) => {
+        const jws = await f.transport(...args);
+        const key = await trust.resolveKey(a.signing.siteId, a.signing.keyId, clock());
+        const { payload } = await verifyFederationMessage(
+          FederationMaterialChunkSchema,
+          jws,
+          key,
+          clock(),
+        );
+        return signFederationMessage(
+          FederationMaterialChunkSchema,
+          {
+            ...payload,
+            bytes: Buffer.alloc(Buffer.from(payload.bytes, "base64").length, 97).toString("base64"),
+          },
+          a.signing,
+        );
+      },
+      f.preparation,
+      assets,
+      clock,
+    );
+    await expect(
+      new FederationInputImports(db, f.preparation, corrupt, clock).ensure(f.reservationId),
+    ).rejects.toThrow("INVALID_MESSAGE");
+    const revoked = new FederationMaterialExchange(
+      db,
+      b.signing,
+      async (...args) => {
+        const response = await f.transport(...args);
+        await db.update(users).set({ suspended: true }).where(eq(users.id, executionUserId));
+        return response;
+      },
+      f.preparation,
+      assets,
+      clock,
+    );
+    try {
+      await expect(
+        new FederationInputImports(db, f.preparation, revoked, clock).ensure(f.reservationId),
+      ).rejects.toThrow("POLICY_DENIED");
+    } finally {
+      await db.update(users).set({ suspended: false }).where(eq(users.id, executionUserId));
+    }
+    expect(await f.inventory()).toHaveLength(0);
+    expect(
+      (await new StorageQuotaService(db, clock).getSummary(executionUserId)).reservedBytes,
+    ).toBe(0);
+  } finally {
+    await f.lease.release();
+  }
+});
+
+test("input imports reconcile expiry and revoked execution identity without reopening a cancelled intent", async () => {
+  const f = await inputImportFixture();
+  try {
+    await f.imports.ensure(f.reservationId);
+    await db.update(users).set({ suspended: true }).where(eq(users.id, executionUserId));
+    try {
+      await f.imports.sweep();
+    } finally {
+      await db.update(users).set({ suspended: false }).where(eq(users.id, executionUserId));
+    }
+    expect((await f.inventory())[0]).toMatchObject({
+      state: "cancelled",
+      reservedBytes: 0,
+      lastError: "POLICY_DENIED",
+    });
+    await expect(f.imports.ensure(f.reservationId)).rejects.toThrow("CANCELLATION_REQUESTED");
+    expect(await f.preparation.prepare(f.reservationId)).toMatchObject({
+      state: "blocked",
+      blocker: "CANCELLATION_REQUESTED",
+    });
+  } finally {
+    await f.lease.release();
+  }
+  const expired = await inputImportFixture();
+  try {
+    await expired.imports.ensure(expired.reservationId);
+    time = new Date(time.getTime() + 61_000);
+    await expired.imports.sweep();
+    expect((await expired.inventory())[0]).toMatchObject({
+      state: "cancelled",
+      reservedBytes: 0,
+      lastError: "AUTHORIZATION_EXPIRED",
+    });
+  } finally {
+    await expired.lease.release();
+  }
+});
+
+test("input imports preserve quota on temporary authority failure, recover, and reject damaged reservation metadata", async () => {
+  const f = await inputImportFixture();
+  try {
+    await f.imports.ensure(f.reservationId);
+    class UnavailablePreparation extends FederationPreparationService {
+      override async materialScope(): Promise<never> {
+        throw new Error("Temporary backend failure");
+      }
+    }
+    const unavailable = new UnavailablePreparation(db, b.signing.siteId, assets, clock);
+    await new FederationInputImports(db, unavailable, f.exchange, clock).sweep();
+    expect((await f.inventory())[0]).toMatchObject({
+      state: "pending",
+      reservedBytes: 4,
+      lastError: "AUTHORIZATION_UNAVAILABLE",
+    });
+    time = new Date(time.getTime() + 31_000);
+    await f.imports.sweep();
+    expect((await f.inventory())[0]).toMatchObject({
+      state: "pending",
+      reservedBytes: 4,
+      lastError: null,
+    });
+    await db
+      .update(federationInputImports)
+      .set({ reservedBytes: 0 })
+      .where(eq(federationInputImports.reservationId, f.reservationId));
+    await expect(f.imports.ensure(f.reservationId)).rejects.toThrow("OPERATION_CONFLICT");
+  } finally {
+    await f.lease.release();
+  }
+});
+
+test("input imports keep empty batches explicit and reject a changed manifest on recovery", async () => {
+  const f = await inputInventoryFixture({ ...inputPolicy, maxBytes: 0 });
+  try {
+    f.files.splice(0, 1, { descriptor: "input", type: "FileBatch", files: [] });
+    const operation = await f.enqueue();
+    await f.source.deliverNext();
+    const saved = await row(operation.operationId);
+    if (!saved.receipt) throw new Error("Missing empty-input acceptance");
+    const preparation = new FederationPreparationService(db, b.signing.siteId, assets, clock);
+    const exchange = new FederationMaterialExchange(
+      db,
+      b.signing,
+      (_endpoint, jws) => f.source.materialChunk(jws, targetFingerprint),
+      preparation,
+      assets,
+      clock,
+    );
+    const imports = new FederationInputImports(db, preparation, exchange, clock);
+    expect(await imports.ensure(saved.receipt.reservationId)).toMatchObject({
+      state: "pending",
+      reservedBytes: 0,
+    });
+    const [received] = await db
+      .select()
+      .from(federationInputImports)
+      .where(eq(federationInputImports.reservationId, saved.receipt.reservationId));
+    if (!received) throw new Error("Missing empty input inventory");
+    expect(received.manifest.inputs).toEqual([
+      { descriptor: "input", type: "FileBatch", files: [] },
+    ]);
+    await db
+      .update(federationInputImports)
+      .set({
+        manifest: {
+          ...received.manifest,
+          inputs: [{ descriptor: "changed", type: "FileBatch", files: [] }],
+        },
+      })
+      .where(eq(federationInputImports.id, received.id));
+    await expect(imports.ensure(saved.receipt.reservationId)).rejects.toThrow("OPERATION_CONFLICT");
+  } finally {
+    await f.lease.release();
+  }
+});
+
+test("input imports reject transport signing purposes revoked while receiving a manifest", async () => {
+  const f = await inputImportFixture();
+  try {
+    for (const [siteId, keyId, purpose] of [
+      [a.signing.siteId, a.signing.keyId, "material-chunk"],
+      [b.signing.siteId, b.signing.keyId, "material-query"],
+    ] as const) {
+      const where = and(
+        eq(federationSigningKeys.siteId, siteId),
+        eq(federationSigningKeys.keyId, keyId),
+      );
+      const [key] = await db.select().from(federationSigningKeys).where(where);
+      if (!key) throw new Error("Missing material signing key");
+      const exchange = new FederationMaterialExchange(
+        db,
+        b.signing,
+        async (...args) => {
+          const response = await f.transport(...args);
+          await db
+            .update(federationSigningKeys)
+            .set({ allowedKinds: key.allowedKinds.filter((kind) => kind !== purpose) })
+            .where(where);
+          return response;
+        },
+        f.preparation,
+        assets,
+        clock,
+      );
+      try {
+        await expect(
+          new FederationInputImports(db, f.preparation, exchange, clock).ensure(f.reservationId),
+        ).rejects.toThrow("UNTRUSTED_IDENTITY");
+      } finally {
+        await db.update(federationSigningKeys).set({ allowedKinds: key.allowedKinds }).where(where);
+      }
+    }
+    expect(await f.inventory()).toHaveLength(0);
   } finally {
     await f.lease.release();
   }

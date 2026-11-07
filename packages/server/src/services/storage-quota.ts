@@ -1,4 +1,5 @@
 import {
+  federationInputImports,
   federationResultImports,
   netdriveFiles,
   netdriveTransferLog,
@@ -63,7 +64,16 @@ export class StorageQuotaService {
             .from(federationResultImports)
             .where(eq(federationResultImports.requestedBy, userId))
         : [];
-    const reservedBytes = Number(reservation?.bytes ?? 0);
+    const [inputs] =
+      scope === "cloud"
+        ? await this.db
+            .select({
+              bytes: sql<number>`coalesce(sum(${federationInputImports.reservedBytes}), 0)`,
+            })
+            .from(federationInputImports)
+            .where(eq(federationInputImports.ownerId, userId))
+        : [];
+    const reservedBytes = Number(reservation?.bytes ?? 0) + Number(inputs?.bytes ?? 0);
     const usage =
       scope === "cloud"
         ? await this.getCloudUsage(userId)

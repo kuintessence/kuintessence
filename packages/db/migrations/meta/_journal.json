@@ -764,6 +764,13 @@
       "when": 1794025608750,
       "tag": "0108_typical_vapor",
       "breakpoints": true
+    },
+    {
+      "idx": 109,
+      "version": "7",
+      "when": 1794027384564,
+      "tag": "0109_tiresome_steel_serpent",
+      "breakpoints": true
     }
   ]
 }

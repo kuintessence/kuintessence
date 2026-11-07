@@ -1,5 +1,6 @@
 import {
   dataDeliveryRevocations,
+  federationInputImports,
   federationReservations,
   federationWorkflowBindings,
   jobCancellations,
@@ -74,6 +75,13 @@ export async function readFederationCancellationState(
       states.every((v) => ["completed", "failed", "cancelled"].includes(v.status)) &&
       pending.length === 0 &&
       revocations.length === 0;
+  }
+  if (stopped && reservation) {
+    const [input] = await db
+      .select({ state: federationInputImports.state })
+      .from(federationInputImports)
+      .where(eq(federationInputImports.reservationId, reservation.id));
+    if (input && input.state !== "cancelled") stopped = false;
   }
   return {
     reservationId: reservation?.id ?? null,

@@ -62,6 +62,7 @@ import {
   queueFederationWorkflow,
 } from "./federation/execution-binding";
 import { FederationExecutionMonitor } from "./federation/execution-monitor";
+import { FederationInputImports } from "./federation/input-imports";
 import { FederationMaterialExchange } from "./federation/material-exchange";
 import { FederationOutboundService, FederationOutboundWorker } from "./federation/outbound";
 import { createFederationPackageResolver } from "./federation/package-resolver";
@@ -2211,6 +2212,10 @@ const federationMaterialExchange =
         federationAssets,
       )
     : undefined;
+const federationInputImports =
+  federationPreparation && federationMaterialExchange
+    ? new FederationInputImports(db, federationPreparation, federationMaterialExchange)
+    : undefined;
 const federationPreparationWorker = federationPreparation
   ? new FederationPreparationWorker(
       db,
@@ -2236,7 +2241,13 @@ const federationPreparationWorker = federationPreparation
         );
         return queueFederationWorkflow(db, federationDispatchAuthorization, runId);
       },
-      federationMaterialExchange ? (id) => federationMaterialExchange.ensure(id) : undefined,
+      federationMaterialExchange
+        ? async (id) => {
+            await federationMaterialExchange.ensure(id);
+            await federationInputImports?.ensure(id);
+          }
+        : undefined,
+      federationInputImports ? () => federationInputImports.sweep() : undefined,
     )
   : undefined;
 federationPreparationWorker?.start();

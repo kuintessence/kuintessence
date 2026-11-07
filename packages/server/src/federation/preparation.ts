@@ -1,5 +1,6 @@
 import {
   federationAgreements,
+  federationInputImports,
   federationPreparations,
   federationReservations,
   type PgDb,
@@ -367,7 +368,14 @@ export class FederationPreparationService {
     const scope = await this.verifyReservation(saved);
     const { request, identity } = scope;
     // shortcut: wait until receiver copy/verification can produce authorized managed inputs.
-    if (request.inputFilesDigest) throw new FederationError("DATA_WAITING");
+    if (request.inputFilesDigest) {
+      const [input] = await this.db
+        .select({ state: federationInputImports.state })
+        .from(federationInputImports)
+        .where(eq(federationInputImports.reservationId, saved.reservation.id));
+      if (input?.state === "cancelled") throw new FederationError("CANCELLATION_REQUESTED");
+      throw new FederationError("DATA_WAITING");
+    }
     const material = await this.db.transaction(async (tx) => {
       await this.lockMaterialScope(tx, scope);
       const inputs = await this.assets.readMaterial(

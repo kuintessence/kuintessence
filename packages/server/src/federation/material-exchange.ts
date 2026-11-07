@@ -10,6 +10,7 @@ import {
   FEDERATION_MATERIAL_CHUNK_BYTES,
   FederationEnvironmentLockSchema,
   FederationError,
+  FederationInputFilesSchema,
   FederationInputManifestSchema,
   FederationMaterialChunkSchema,
   FederationMaterialQuerySchema,
@@ -43,7 +44,7 @@ export class FederationMaterialExchange {
 
   async ensure(reservationId: string) {
     const scope = await this.preparation.materialScope(reservationId);
-    const { request, identity, saved } = scope;
+    const { request, identity } = scope;
     if (request.recipientSiteId !== this.signing.siteId) throw new FederationError("POLICY_DENIED");
     const references = [
       { digest: request.inputManifestDigest, kind: "inputs" as const },
@@ -69,6 +70,82 @@ export class FederationMaterialExchange {
       return result;
     });
     if (!missing.length) return;
+    const { complete, authorize, disclosureExpiresAt } = await this.receive(scope, missing);
+    const source = { id: request.senderSiteId };
+    await this.db.transaction(async (tx) => {
+      await authorize(tx);
+      if (this.clock().getTime() >= disclosureExpiresAt)
+        throw new FederationError("AUTHORIZATION_EXPIRED");
+      for (const material of complete) {
+        if (material.kind === "workflow-input-files") throw new FederationError("INVALID_MESSAGE");
+        const [created] = await tx
+          .insert(federationMaterials)
+          .values({
+            ...material,
+            localOrgId: identity.orgId,
+            originSiteId: source.id,
+            createdBy: identity.userId,
+          })
+          .onConflictDoNothing()
+          .returning({ digest: federationMaterials.digest });
+        // A concurrent importer must have stored the same valid material, never silently replace it.
+        const stored = await this.assets.readMaterial(
+          tx,
+          identity.orgId,
+          source.id,
+          material.digest,
+        );
+        if (stored.kind !== material.kind) throw new FederationError("INVALID_MESSAGE");
+        if (created)
+          await tx.insert(auditLog).values({
+            actor: identity.userId,
+            orgId: identity.orgId,
+            action: "federation.material.receive",
+            target: material.digest,
+            diff: {
+              after: {
+                originSiteId: source.id,
+                operationId: request.operationId,
+                kind: material.kind,
+              },
+            },
+          });
+      }
+      await authorize(tx);
+      if (this.clock().getTime() >= disclosureExpiresAt)
+        throw new FederationError("AUTHORIZATION_EXPIRED");
+    });
+  }
+
+  async inputFiles(reservationId: string) {
+    const scope = await this.preparation.materialScope(reservationId);
+    const digest = scope.request.inputFilesDigest;
+    if (!digest || scope.request.recipientSiteId !== this.signing.siteId)
+      throw new FederationError("POLICY_DENIED");
+    const received = await this.receive(scope, [{ digest, kind: "workflow-input-files" }]);
+    const material = received.complete[0];
+    if (!material) throw new FederationError("DATA_WAITING");
+    const manifest = FederationInputFilesSchema.parse(JSON.parse(material.content));
+    return {
+      scope,
+      manifest,
+      authorize: async (tx: PgTransaction) => {
+        await received.authorize(tx);
+        if (this.clock().getTime() >= received.disclosureExpiresAt)
+          throw new FederationError("AUTHORIZATION_EXPIRED");
+      },
+    };
+  }
+
+  private async receive(
+    scope: Awaited<ReturnType<FederationPreparationService["materialScope"]>>,
+    references: Array<{
+      digest: string;
+      kind: "inputs" | "environment-lock" | "workflow-input-files";
+    }>,
+  ) {
+    const { request, saved } = scope;
+    const reservationId = saved.reservation.id;
     const [source] = await this.db
       .select()
       .from(federationSites)
@@ -85,8 +162,20 @@ export class FederationMaterialExchange {
     const authorize = async (tx: PgTransaction) => {
       await this.preparation.lockMaterialScope(tx, scope);
       await this.trust.assertKey(tx, this.signing.siteId, this.signing.keyId, this.clock());
-      for (const keyId of [...peerKeys].sort())
+      const local = await this.trust.resolveKey(
+        this.signing.siteId,
+        this.signing.keyId,
+        this.clock(),
+        tx,
+      );
+      if (!local.allowedKinds.includes("material-query"))
+        throw new FederationError("UNTRUSTED_IDENTITY");
+      for (const keyId of [...peerKeys].sort()) {
         await this.trust.assertKey(tx, source.id, keyId, this.clock());
+        const key = await this.trust.resolveKey(source.id, keyId, this.clock(), tx);
+        if (!key.allowedKinds.includes("material-chunk"))
+          throw new FederationError("UNTRUSTED_IDENTITY");
+      }
       const [current] = await tx
         .select()
         .from(federationSites)
@@ -97,11 +186,11 @@ export class FederationMaterialExchange {
     };
     const complete: Array<{
       digest: string;
-      kind: "inputs" | "environment-lock";
+      kind: "inputs" | "environment-lock" | "workflow-input-files";
       content: string;
     }> = [];
     let disclosureExpiresAt = 0;
-    for (const ref of missing) {
+    for (const ref of references) {
       const chunks: Buffer[] = [];
       let total: number | undefined;
       let offset = 0;
@@ -177,54 +266,15 @@ export class FederationMaterialExchange {
           federationMaterialDigest(raw) !== ref.digest
         )
           throw new Error("Material digest mismatch");
-        const parsed = FederationInputManifestSchema.or(FederationEnvironmentLockSchema).parse(raw);
+        const parsed = FederationInputManifestSchema.or(FederationEnvironmentLockSchema)
+          .or(FederationInputFilesSchema)
+          .parse(raw);
         if (parsed.kind !== ref.kind) throw new Error("Material kind mismatch");
       } catch {
         throw new FederationError("INVALID_MESSAGE");
       }
       complete.push({ ...ref, content });
     }
-    await this.db.transaction(async (tx) => {
-      await authorize(tx);
-      if (this.clock().getTime() >= disclosureExpiresAt)
-        throw new FederationError("AUTHORIZATION_EXPIRED");
-      for (const material of complete) {
-        const [created] = await tx
-          .insert(federationMaterials)
-          .values({
-            ...material,
-            localOrgId: identity.orgId,
-            originSiteId: source.id,
-            createdBy: identity.userId,
-          })
-          .onConflictDoNothing()
-          .returning({ digest: federationMaterials.digest });
-        // A concurrent importer must have stored the same valid material, never silently replace it.
-        const stored = await this.assets.readMaterial(
-          tx,
-          identity.orgId,
-          source.id,
-          material.digest,
-        );
-        if (stored.kind !== material.kind) throw new FederationError("INVALID_MESSAGE");
-        if (created)
-          await tx.insert(auditLog).values({
-            actor: identity.userId,
-            orgId: identity.orgId,
-            action: "federation.material.receive",
-            target: material.digest,
-            diff: {
-              after: {
-                originSiteId: source.id,
-                operationId: request.operationId,
-                kind: material.kind,
-              },
-            },
-          });
-      }
-      await authorize(tx);
-      if (this.clock().getTime() >= disclosureExpiresAt)
-        throw new FederationError("AUTHORIZATION_EXPIRED");
-    });
+    return { complete, authorize, disclosureExpiresAt };
   }
 }

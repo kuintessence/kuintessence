@@ -26,6 +26,7 @@ export class FederationPreparationWorker {
     private readonly bindings?: FederationExecutionBindingService,
     private readonly queueRun?: (runId: string) => Promise<boolean>,
     private readonly ensureMaterials?: (reservationId: string) => Promise<void>,
+    private readonly reconcileInputs?: () => Promise<void>,
   ) {}
 
   start() {
@@ -57,6 +58,7 @@ export class FederationPreparationWorker {
   }
 
   private async run() {
+    await this.reconcileInputs?.();
     const cutoff = new Date(Date.now() - 30000);
     const rows = await this.db
       .select({ id: federationReservations.id })

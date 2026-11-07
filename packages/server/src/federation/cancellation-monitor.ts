@@ -3,6 +3,7 @@ import { createLogger } from "@kuintessence/shared";
 import { and, asc, eq, isNull, lte } from "drizzle-orm";
 import type { WorkflowAsyncRunner } from "../workflow/async-runner";
 import { readFederationCancellationState } from "./cancellation-state";
+import { retirePendingInputImport } from "./input-imports";
 
 const logger = createLogger("federation-cancellation");
 
@@ -58,6 +59,11 @@ export class FederationCancellationMonitor {
         .where(key);
       try {
         const before = await readFederationCancellationState(this.db, row.request);
+        const reservationId = before.reservationId;
+        if (reservationId)
+          await this.db.transaction((tx) =>
+            retirePendingInputImport(tx, reservationId, "CANCELLATION_REQUESTED", this.clock()),
+          );
         for (const runId of before.runs) {
           await this.runner.cancel(runId, {
             code: "FEDERATION_CANCELLATION_REQUESTED",
