@@ -148,9 +148,15 @@ export class FederationInputTransfers {
   }
 
   async assertCopyLease(agentId: string, input: FederationInputCopyBinding, renew = false) {
+    const current = await this.copyAuthorization(agentId, input, renew);
+    return this.db.transaction(current.authorize);
+  }
+
+  /** Lets a remote grant reader hold transfer and trust locks together for its final disclosure check. */
+  async copyAuthorization(agentId: string, input: FederationInputCopyBinding, renew = false) {
     const binding = FederationInputCopyBindingSchema.parse(input);
     const scope = await this.attemptScope(binding.generation);
-    return this.db.transaction(async (tx) => {
+    const authorize = async (tx: PgTransaction) => {
       await this.imports.lock(tx, scope);
       const rows = await this.lockAttempt(tx, binding.generation);
       if (rows.parent.reservationId !== scope.saved.reservation.id)
@@ -172,7 +178,8 @@ export class FederationInputTransfers {
         partSize: rows.transfer.partSize,
         leaseUntil,
       };
-    });
+    };
+    return { scope, binding, authorize };
   }
 
   async failed(agentId: string, generation: string) {

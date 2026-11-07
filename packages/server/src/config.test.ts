@@ -371,6 +371,7 @@ describe("queue inventory config", () => {
 for (const field of [
   "FEDERATION_RESULT_DOWNLOAD_ORIGINS",
   "FEDERATION_INPUT_DOWNLOAD_ORIGINS",
+  "FEDERATION_INPUT_IMPORT_SOURCE_ORIGINS",
 ] as const) {
   test(`${field} defaults to closed and requires clean HTTPS origins`, () => {
     expect(loadServerConfig(VALID_BASE)[field]).toEqual([]);
@@ -404,4 +405,19 @@ test("federation result import source origins stay independent of local download
       FEDERATION_RESULT_IMPORT_SOURCE_ORIGINS: "http://remote.example.org",
     }),
   ).toThrow();
+});
+
+test("input import source origins never inherit export or result origins", () => {
+  const config = loadServerConfig({
+    ...VALID_BASE,
+    FEDERATION_INPUT_DOWNLOAD_ORIGINS: "https://local.example.org",
+    FEDERATION_RESULT_IMPORT_SOURCE_ORIGINS: "https://results.example.org",
+  });
+  expect(config.FEDERATION_INPUT_IMPORT_SOURCE_ORIGINS).toEqual([]);
+  expect(
+    loadServerConfig({
+      ...VALID_BASE,
+      FEDERATION_INPUT_IMPORT_SOURCE_ORIGINS: "https://source.example.org",
+    }).FEDERATION_INPUT_DOWNLOAD_ORIGINS,
+  ).toEqual([]);
 });

@@ -31,6 +31,7 @@ Server 设置：
 | `FEDERATION_SOCKET_PATH` | 私有 Unix socket 绝对路径 |
 | `FEDERATION_RESULT_DOWNLOAD_ORIGINS` | 本机构存储的 HTTPS origin，逗号分隔；用于结果下载和本端上传地址验证，默认空 |
 | `FEDERATION_INPUT_DOWNLOAD_ORIGINS` | 本机构输入文件存储的 HTTPS origin，逗号分隔；独立于结果授权，默认空（关闭） |
+| `FEDERATION_INPUT_IMPORT_SOURCE_ORIGINS` | 接收输入文件允许访问的源站存储 HTTPS origin，逗号分隔；独立于本地/结果存储配置，默认空（不发输入搬运凭据） |
 | `FEDERATION_RESULT_IMPORT_SOURCE_ORIGINS` | 导入结果允许访问的对端存储 HTTPS origin，逗号分隔；默认空，不启用 Agent 结果传输服务 |
 
 Gateway 设置 `FEDERATION_TLS_CA_FILE`、`FEDERATION_TLS_CERT_FILE`、`FEDERATION_TLS_KEY_FILE`、`FEDERATION_SOCKET_PATH`、`FEDERATION_TLS_PORT`。服务端证书须含正确 DNS SAN 和 serverAuth；机构客户端证书须含 clientAuth。CA 信任与本站证书登记都要满足；仅持有某受信任 CA 签发的证书仍不能接单。JWS 私钥和 TLS 私钥分别管理，均不进入镜像、仓库或 seed。
@@ -201,3 +202,12 @@ Server 已接结果传输服务、Agent RPC 与自动扫描。配置上述值并
 存储初始化现在默认对 NETDRIVE_BUCKET 启用版本管理，Docker 与 Helm 脚本一致。已有部署须重新执行初始化或由存储管理员启用；已经写成无版本的对象不会自动获得新版本，旧的未发布导入应取消并重新导入。不要设置会删除仍被云盘记录引用的历史版本的自动过期规则；用户逻辑删除与物理历史版本回收是不同操作，当前云盘配额按已发布文件及导入预留计量，不代表存储后端实际占用。
 
 源站签名密钥轮换后，可由拥有该导入且具有 result.read 的用户调用 POST /api/federation/outbound/:operationId/result-imports/:importId/receipt-retry。它保留收到时间与原正文，仅允许后台采用当前密钥重新签署；已获确认的回执不重开。接收方切换密钥后，会为原登记事实重签确认，保持原 recordedAt 与回执摘要，避免返回已经撤销密钥签署的旧确认。
+
+
+### 接收端输入凭据
+
+接收方需要单独配置 FEDERATION_INPUT_IMPORT_SOURCE_ORIGINS（对端源存储）与 FEDERATION_INPUT_DOWNLOAD_ORIGINS（本地目标存储），Compose 叠加文件已传递两项变量。两者默认空，不从结果传输设置继承。缺少配置时，清单准备和已有尝试清理仍可进行，但不发输入搬运凭据。
+
+内部 input-reader 使用接收机构的 input-download-query 专用密钥请求源站 /federation/v1/input-downloads，核对 source 的 input-download-grant 专用签名。请求和响应同时绑定已接受委派、原清单成员、接收方当前 transferId/generation 和 Agent 租约；不能仅凭源站签名跳过本地活动尝试。响应返回前再次持锁检查接收身份、协议、Agent、源站地址与双方当前密钥用途。URL 必须属于允许的源站 HTTPS origin，带唯一真实 versionId，实际 S3 凭据与签名信封的期限一致且最多 30 秒，不越过查询、任务、当前尝试或签名密钥期限。
+
+上传地址绑定当前接收方 multipart uploadId/partNumber、固定分片大小及目标 origin，签发后复查当前授权和尝试。地址与 JWS 不进入持久记录或审计；已发地址有剩余短期有效窗口。以上只是传输凭据与内部驱动，尚未开放输入 Agent 消息/能力或自动派发，完整文件发布/Workflow 使用仍需后续接通。

@@ -63,6 +63,7 @@ import {
 } from "./federation/execution-binding";
 import { FederationExecutionMonitor } from "./federation/execution-monitor";
 import { FederationInputImports } from "./federation/input-imports";
+import { FederationInputReader } from "./federation/input-reader";
 import {
   FederationInputStorage,
   type FederationInputStorageBackend,
@@ -2227,9 +2228,29 @@ const federationInputTransfers =
   federationPreparation && federationInputImports
     ? new FederationInputTransfers(db, federationPreparation, federationInputImports)
     : undefined;
+const federationInputReader =
+  federationInputTransfers && federationSigningKey && federationSender
+    ? new FederationInputReader(
+        db,
+        federationSigningKey,
+        federationSender,
+        federationInputTransfers,
+      )
+    : undefined;
 const federationInputStorage =
   federationInputTransfers && federationInputStorageBackend
-    ? new FederationInputStorage(federationInputTransfers, federationInputStorageBackend)
+    ? new FederationInputStorage(federationInputTransfers, federationInputStorageBackend, {
+        grants:
+          federationInputReader &&
+          config.FEDERATION_INPUT_IMPORT_SOURCE_ORIGINS.length &&
+          config.FEDERATION_INPUT_DOWNLOAD_ORIGINS.length
+            ? {
+                reader: federationInputReader,
+                sourceOrigins: config.FEDERATION_INPUT_IMPORT_SOURCE_ORIGINS,
+                destinationOrigins: config.FEDERATION_INPUT_DOWNLOAD_ORIGINS,
+              }
+            : undefined,
+      })
     : undefined;
 const federationPreparationWorker = federationPreparation
   ? new FederationPreparationWorker(

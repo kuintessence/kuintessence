@@ -58,6 +58,7 @@ import {
   type FederationAssetRef,
   FederationCancellationReceiptSchema,
   FederationCancellationSchema,
+  FederationError,
   FederationInputDownloadGrantSchema,
   FederationInputDownloadQuerySchema,
   FederationMaterialChunkSchema,
@@ -98,6 +99,7 @@ import { readFederationCancellationState } from "./cancellation-state";
 import type { FederationDownloadStorage } from "./download-credential";
 import { createFederationIngress } from "./ingress";
 import { FederationInputImports } from "./input-imports";
+import { FederationInputReader } from "./input-reader";
 import { FederationInputStorage } from "./input-storage";
 import { FederationInputTransfers } from "./input-transfers";
 import { FederationMaterialExchange } from "./material-exchange";
@@ -4724,24 +4726,7 @@ test("input inventory cannot be borrowed from a different invocation or an unbou
   }
 });
 
-async function inputDownloadFixture() {
-  const f = await acceptedInputInventory();
-  const { kind: _kind, materialDigest, offset: _offset, ...identity } = f.query;
-  const query = FederationInputDownloadQuerySchema.parse({
-    ...identity,
-    kind: "input-download-query",
-    binding: {
-      transferId: crypto.randomUUID(),
-      generation: crypto.randomUUID(),
-      operationId: f.saved.operationId,
-      manifestDigest: materialDigest,
-      descriptor: "input",
-      path: "input.dat",
-      sha256: "a".repeat(64),
-      sizeBytes: 4,
-    },
-  });
-  const jws = await signFederationMessage(FederationInputDownloadQuerySchema, query, b.signing);
+function inputDownloadStorage() {
   const calls: Array<{ key: string; seconds?: number; version?: string }> = [];
   const downloads: FederationDownloadStorage = {
     allowedOrigins: ["https://storage.test.invalid"],
@@ -4773,6 +4758,28 @@ async function inputDownloadFixture() {
       },
     },
   };
+  return { calls, downloads };
+}
+
+async function inputDownloadFixture() {
+  const f = await acceptedInputInventory();
+  const { kind: _kind, materialDigest, offset: _offset, ...identity } = f.query;
+  const query = FederationInputDownloadQuerySchema.parse({
+    ...identity,
+    kind: "input-download-query",
+    binding: {
+      transferId: crypto.randomUUID(),
+      generation: crypto.randomUUID(),
+      operationId: f.saved.operationId,
+      manifestDigest: materialDigest,
+      descriptor: "input",
+      path: "input.dat",
+      sha256: "a".repeat(64),
+      sizeBytes: 4,
+    },
+  });
+  const jws = await signFederationMessage(FederationInputDownloadQuerySchema, query, b.signing);
+  const { calls, downloads } = inputDownloadStorage();
   const read = async () =>
     (
       await verifyFederationMessage(
@@ -5745,6 +5752,9 @@ test("input storage allocates outside locks, fences late revocation and releases
     failPurge = true;
   try {
     const storage = new FederationInputStorage(f.transfers, {
+      presignUploadPart: async () => {
+        throw new Error("No grant expected");
+      },
       createMultipartUpload: async () => {
         created++;
         // This would deadlock if storage I/O ran under the execution identity locks.
@@ -5794,6 +5804,9 @@ test("input storage keeps timed-out allocation ownership and cleans a late respo
   const storage = new FederationInputStorage(
     f.transfers,
     {
+      presignUploadPart: async () => {
+        throw new Error("No grant expected");
+      },
       createMultipartUpload: async () => {
         creates++;
         return allocated.promise;
@@ -5802,7 +5815,7 @@ test("input storage keeps timed-out allocation ownership and cleans a late respo
         deletes++;
       },
     },
-    10,
+    { timeoutMs: 10 },
   );
   try {
     await expect(storage.allocate(f.member.id, f.agentId)).rejects.toThrow(
@@ -5838,6 +5851,9 @@ test("input storage cleans an unissued allocation permit without storage effects
   let creates = 0,
     deletes = 0;
   const storage = new FederationInputStorage(f.transfers, {
+    presignUploadPart: async () => {
+      throw new Error("No grant expected");
+    },
     createMultipartUpload: async () => {
       creates++;
       return { uploadId: "retry-upload" };
@@ -5944,5 +5960,379 @@ test("transfer renewals serialize with Agent acquisition and cannot revive an ex
     ).toEqual(outgoing.attempt.leaseUntil);
   } finally {
     await input.lease.release();
+  }
+});
+
+async function inputGrantFixture() {
+  const f = await inputTransferFixture();
+  const sourceStorage = inputDownloadStorage();
+  let sends = 0,
+    uploads = 0;
+  const send: FederationSend = async (_endpoint, jws, path) => {
+    expect(path).toBe("/federation/v1/input-downloads");
+    sends++;
+    return f.source.inputDownload(jws, targetFingerprint, sourceStorage.downloads);
+  };
+  const reader = (transport = send) =>
+    new FederationInputReader(db, b.signing, transport, f.transfers, clock);
+  const backend = {
+    createMultipartUpload: async () => ({ uploadId: "receiver-upload" }),
+    cleanupFederationInput: async () => {},
+    presignUploadPart: async (
+      key: string,
+      uploadId: string,
+      partNumber: number,
+      seconds: number,
+    ) => {
+      uploads++;
+      const url = new URL(`https://destination.test.invalid/${key}`);
+      url.searchParams.set("uploadId", uploadId);
+      url.searchParams.set("partNumber", String(partNumber));
+      url.searchParams.set(
+        "X-Amz-Date",
+        clock()
+          .toISOString()
+          .replace(/[-:]/g, "")
+          .replace(/\.\d{3}/, ""),
+      );
+      url.searchParams.set("X-Amz-Expires", String(seconds));
+      url.searchParams.set("X-Amz-Signature", "private-upload-ticket");
+      return url.toString();
+    },
+  };
+  const storage = new FederationInputStorage(f.transfers, backend, {
+    clock,
+    grants: {
+      reader: reader(),
+      sourceOrigins: sourceStorage.downloads.allowedOrigins,
+      destinationOrigins: ["https://destination.test.invalid"],
+    },
+  });
+  const allocated = await storage.allocate(f.member.id, f.agentId);
+  return {
+    ...f,
+    ...sourceStorage,
+    reader,
+    backend,
+    storage,
+    binding: allocated.task.binding,
+    send,
+    sends: () => sends,
+    uploads: () => uploads,
+  };
+}
+
+test("input grants verify source signatures against the active attempt and issue separately bounded multipart credentials", async () => {
+  const f = await inputGrantFixture();
+  try {
+    const downloaded = await f.storage.grant(f.agentId, f.binding, "download");
+    expect(downloaded.grant).toMatchObject({ binding: f.binding, direction: "download" });
+    expect(Date.parse(downloaded.grant.expiresAt) - clock().getTime()).toBe(30_000);
+    expect(new URL(downloaded.grant.url).searchParams.get("versionId")).toBe("original-version");
+    expect(f.sends()).toBe(1);
+    const uploaded = await f.storage.grant(f.agentId, f.binding, "upload", 1);
+    expect(uploaded.grant).toMatchObject({
+      binding: f.binding,
+      direction: "upload",
+      partNumber: 1,
+    });
+    expect(new URL(uploaded.grant.url).searchParams.get("uploadId")).toBe("receiver-upload");
+    expect(Date.parse(uploaded.grant.expiresAt) - clock().getTime()).toBe(30_000);
+    expect(f.uploads()).toBe(1);
+    expect(f.sends()).toBe(1);
+    const stored = await db
+      .select()
+      .from(federationInputAttempts)
+      .where(eq(federationInputAttempts.generation, f.binding.generation));
+    const audit = await db.select().from(auditLog).where(eq(auditLog.target, f.imported.importId));
+    expect(JSON.stringify({ stored, audit, inventory: await f.inventory() })).not.toMatch(
+      /private-input-ticket|private-upload-ticket|X-Amz-Signature/,
+    );
+  } finally {
+    await f.lease.release();
+  }
+});
+
+test("input grants reject signed replay, member substitution, unsafe versions and mismatched credential lifetimes", async () => {
+  const f = await inputGrantFixture();
+  try {
+    let previous: string | undefined;
+    const replay = f.reader(async (...args) => {
+      if (previous) return previous;
+      previous = await f.send(...args);
+      return previous;
+    });
+    await replay.downloadGrant(f.agentId, f.binding, f.downloads.allowedOrigins);
+    await expect(
+      replay.downloadGrant(f.agentId, f.binding, f.downloads.allowedOrigins),
+    ).rejects.toThrow("INVALID_MESSAGE");
+    for (const failure of [
+      "generation",
+      "descriptor",
+      "manifest",
+      "request",
+      "recipient",
+      "origin",
+      "no-version",
+      "null-version",
+      "duplicate-version",
+      "long-credential",
+      "envelope",
+    ] as const) {
+      const reader = f.reader(async (...args) => {
+        const response = await f.send(...args);
+        const { payload } = await verifyFederationMessage(
+          FederationInputDownloadGrantSchema,
+          response,
+          await trust.resolveKey(a.signing.siteId, a.signing.keyId, clock()),
+          clock(),
+        );
+        if (failure === "generation") payload.binding.generation = crypto.randomUUID();
+        if (failure === "descriptor") payload.binding.descriptor = "another";
+        if (failure === "manifest") payload.binding.manifestDigest = `sha256:${"b".repeat(64)}`;
+        if (failure === "request") payload.requestDigest = `sha256:${"b".repeat(64)}`;
+        if (failure === "recipient") payload.recipientSiteId = crypto.randomUUID();
+        const url = new URL(payload.url);
+        if (failure === "origin") url.hostname = "foreign.invalid";
+        if (failure === "no-version") url.searchParams.delete("versionId");
+        if (failure === "null-version") url.searchParams.set("versionId", "null");
+        if (failure === "duplicate-version") url.searchParams.append("versionId", "another");
+        if (failure === "long-credential") url.searchParams.set("X-Amz-Expires", "60");
+        if (failure === "envelope")
+          payload.expiresAt = new Date(clock().getTime() + 20_000).toISOString();
+        payload.url = url.toString();
+        return signFederationMessage(FederationInputDownloadGrantSchema, payload, a.signing);
+      });
+      let rejected: unknown;
+      try {
+        await reader.downloadGrant(f.agentId, f.binding, f.downloads.allowedOrigins);
+      } catch (error) {
+        rejected = error;
+      }
+      expect(rejected).toBeInstanceOf(FederationError);
+      expect(String(rejected)).toContain(
+        failure === "long-credential" ? "POLICY_DENIED" : "INVALID_MESSAGE",
+      );
+      expect(String(rejected)).not.toContain("private-input-ticket");
+    }
+  } finally {
+    await f.lease.release();
+  }
+}, 20_000);
+
+test("input grants recheck local identity, Agent, endpoint and signing purposes after the source response", async () => {
+  const f = await inputGrantFixture();
+  try {
+    for (const failure of [
+      "query-purpose",
+      "grant-purpose",
+      "endpoint",
+      "identity",
+      "agent",
+      "agreement",
+    ] as const) {
+      const siteId = failure === "query-purpose" ? b.signing.siteId : a.signing.siteId;
+      const keyId = failure === "query-purpose" ? b.signing.keyId : a.signing.keyId;
+      const keyFilter = and(
+        eq(federationSigningKeys.siteId, siteId),
+        eq(federationSigningKeys.keyId, keyId),
+      );
+      const [key] = await db.select().from(federationSigningKeys).where(keyFilter);
+      const [site] = await db
+        .select()
+        .from(federationSites)
+        .where(eq(federationSites.id, a.signing.siteId));
+      if (!key || !site) throw new Error("Missing trust fixture");
+      const reader = f.reader(async (...args) => {
+        const response = await f.send(...args);
+        if (failure === "query-purpose" || failure === "grant-purpose")
+          await db
+            .update(federationSigningKeys)
+            .set({
+              allowedKinds: key.allowedKinds.filter(
+                (k) =>
+                  k !==
+                  (failure === "query-purpose" ? "input-download-query" : "input-download-grant"),
+              ),
+            })
+            .where(keyFilter);
+        if (failure === "endpoint")
+          await db
+            .update(federationSites)
+            .set({ endpoint: "https://changed.test.invalid" })
+            .where(eq(federationSites.id, a.signing.siteId));
+        if (failure === "identity")
+          await db.update(users).set({ suspended: true }).where(eq(users.id, executionUserId));
+        if (failure === "agent")
+          await db
+            .update(agents)
+            .set({ providerOrgId: actor.orgId })
+            .where(eq(agents.agentId, f.agentId));
+        if (failure === "agreement")
+          await db
+            .update(federationAgreements)
+            .set({ state: "suspended" })
+            .where(eq(federationAgreements.revisionId, f.terms.agreementRevisionId));
+        return response;
+      });
+      try {
+        const expected =
+          failure === "identity" || failure === "agent"
+            ? "POLICY_DENIED"
+            : failure === "agreement"
+              ? "AGREEMENT_UNAVAILABLE"
+              : "UNTRUSTED_IDENTITY";
+        await expect(
+          reader.downloadGrant(f.agentId, f.binding, f.downloads.allowedOrigins),
+        ).rejects.toThrow(expected);
+      } finally {
+        await db
+          .update(federationSigningKeys)
+          .set({ allowedKinds: key.allowedKinds })
+          .where(keyFilter);
+        await db
+          .update(federationSites)
+          .set({ endpoint: site.endpoint })
+          .where(eq(federationSites.id, a.signing.siteId));
+        await db.update(users).set({ suspended: false }).where(eq(users.id, executionUserId));
+        await db
+          .update(agents)
+          .set({ providerOrgId: receiver.orgId })
+          .where(eq(agents.agentId, f.agentId));
+        await db
+          .update(federationAgreements)
+          .set({ state: "active" })
+          .where(eq(federationAgreements.revisionId, f.terms.agreementRevisionId));
+      }
+    }
+    const stopped = f.reader(async (...args) => {
+      const response = await f.send(...args);
+      await f.transfers.failed(f.agentId, f.binding.generation);
+      return response;
+    });
+    await expect(
+      stopped.downloadGrant(f.agentId, f.binding, f.downloads.allowedOrigins),
+    ).rejects.toThrow("OPERATION_CONFLICT");
+  } finally {
+    await f.lease.release();
+  }
+}, 20_000);
+
+test("input grants bound downloads to current signing key expiry and reject a key shortened during transport", async () => {
+  const f = await inputGrantFixture();
+  const localFilter = and(
+    eq(federationSigningKeys.siteId, b.signing.siteId),
+    eq(federationSigningKeys.keyId, b.signing.keyId),
+  );
+  const peerFilter = and(
+    eq(federationSigningKeys.siteId, a.signing.siteId),
+    eq(federationSigningKeys.keyId, a.signing.keyId),
+  );
+  const [local] = await db.select().from(federationSigningKeys).where(localFilter);
+  const [peer] = await db.select().from(federationSigningKeys).where(peerFilter);
+  if (!local || !peer) throw new Error("Missing signing keys");
+  try {
+    await db
+      .update(federationSigningKeys)
+      .set({ validUntil: new Date(clock().getTime() + 5_000) })
+      .where(localFilter);
+    const bounded = await f.storage.grant(f.agentId, f.binding, "download");
+    expect(Date.parse(bounded.grant.expiresAt) - clock().getTime()).toBe(5_000);
+    await db.update(federationSigningKeys).set({ validUntil: local.validUntil }).where(localFilter);
+    const shortened = f.reader(async (...args) => {
+      const response = await f.send(...args);
+      await db
+        .update(federationSigningKeys)
+        .set({ validUntil: new Date(clock().getTime() + 5_000) })
+        .where(peerFilter);
+      return response;
+    });
+    await expect(
+      shortened.downloadGrant(f.agentId, f.binding, f.downloads.allowedOrigins),
+    ).rejects.toThrow("AUTHORIZATION_EXPIRED");
+  } finally {
+    await db.update(federationSigningKeys).set({ validUntil: local.validUntil }).where(localFilter);
+    await db.update(federationSigningKeys).set({ validUntil: peer.validUntil }).where(peerFilter);
+    await f.lease.release();
+  }
+});
+
+test("input grants refuse unconfigured, stale, wrong-Agent and out-of-range requests without storage credentials", async () => {
+  const f = await inputGrantFixture();
+  try {
+    const closed = new FederationInputStorage(f.transfers, f.backend, { clock });
+    await expect(closed.grant(f.agentId, f.binding, "download")).rejects.toThrow("POLICY_DENIED");
+    await expect(f.storage.grant("other-agent", f.binding, "download")).rejects.toThrow(
+      "OPERATION_CONFLICT",
+    );
+    await expect(
+      f.storage.grant(f.agentId, { ...f.binding, path: "other-file" }, "download"),
+    ).rejects.toThrow("OPERATION_CONFLICT");
+    await expect(f.storage.grant(f.agentId, f.binding, "download", 1)).rejects.toThrow(
+      "INVALID_MESSAGE",
+    );
+    for (const part of [undefined, 0, 2, 1.5, 10_001])
+      await expect(f.storage.grant(f.agentId, f.binding, "upload", part)).rejects.toThrow(
+        "INVALID_MESSAGE",
+      );
+    expect(f.sends()).toBe(0);
+    expect(f.uploads()).toBe(0);
+    await f.transfers.failed(f.agentId, f.binding.generation);
+    await expect(f.storage.grant(f.agentId, f.binding, "download")).rejects.toThrow(
+      "OPERATION_CONFLICT",
+    );
+    expect(f.sends()).toBe(0);
+  } finally {
+    await f.lease.release();
+  }
+});
+
+test("input grants pin multipart target and reject long-lived URLs, late revocation and raw storage errors", async () => {
+  const f = await inputGrantFixture();
+  const presign = f.backend.presignUploadPart;
+  try {
+    for (const failure of [
+      "upload",
+      "part",
+      "duplicate",
+      "origin",
+      "lifetime",
+      "identity",
+      "sdk",
+    ] as const) {
+      f.backend.presignUploadPart = async (...args) => {
+        const url = new URL(await presign(...args));
+        if (failure === "upload") url.searchParams.set("uploadId", "different-upload");
+        if (failure === "part") url.searchParams.set("partNumber", "2");
+        if (failure === "duplicate") url.searchParams.append("uploadId", "receiver-upload");
+        if (failure === "origin") url.hostname = "foreign.invalid";
+        if (failure === "lifetime") url.searchParams.set("X-Amz-Expires", "60");
+        if (failure === "identity")
+          await db.update(users).set({ suspended: true }).where(eq(users.id, executionUserId));
+        if (failure === "sdk")
+          throw new Error("https://private.invalid/?secret=private-upload-ticket");
+        return url.toString();
+      };
+      let rejected: unknown;
+      try {
+        await f.storage.grant(f.agentId, f.binding, "upload", 1);
+      } catch (error) {
+        rejected = error;
+      } finally {
+        await db.update(users).set({ suspended: false }).where(eq(users.id, executionUserId));
+      }
+      expect(rejected).toBeInstanceOf(Error);
+      const expected =
+        failure === "sdk"
+          ? "FEDERATION_INPUT_STORAGE_UNAVAILABLE"
+          : failure === "origin" || failure === "lifetime" || failure === "identity"
+            ? "POLICY_DENIED"
+            : "INVALID_MESSAGE";
+      expect(String(rejected)).toContain(expected);
+      expect(String(rejected)).not.toContain("private-upload-ticket");
+    }
+  } finally {
+    f.backend.presignUploadPart = presign;
+    await f.lease.release();
   }
 });

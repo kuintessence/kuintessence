@@ -385,7 +385,7 @@ Agent 的 `input-copy` / `input-verify` 内部入口已有独立输入任务、�
 
 准备后台已接通到期封锁和清理：等旧租约到期后，仅对未发出分配或已确认 uploadId 的尝试处理。真实 MinIO backend 使用独立输入清理入口，按精确 key 删除所有 multipart、对象版本和 delete marker，再检查为空；拒绝宽泛前缀、结果 key 和普通云盘 key。未发出分配的尝试无需调用存储。失败保留重试；独立清理 token 拒绝旧 worker 的迟到确认。全部尝试确认清理后，取消导入才释放完整配额；普通重试继续沿用原预留。
 
-这些状态与分配/清理驱动已经实现，实际输入 grant 读取、Agent 能力与派发、multipart 完成/独立目的校验、整单发布、文件映射和普通 Workflow 文件输入仍待接通。目前后台只做清单准备、撤权检查与遗留尝试清理，不自动发起输入上传，任务仍保持 DATA_WAITING。
+这些状态、分配/清理驱动与短期输入凭据已实现；Agent 能力与派发、multipart 完成/独立目的校验、整单发布、文件映射和普通 Workflow 文件输入仍待接通。目前后台只做清单准备、撤权检查与遗留尝试清理，不自动发起输入上传，任务仍保持 DATA_WAITING。
 
 
 **仍未完成实际搬运或发布。** 在引入外部存储效果时，传输尝试必须原子离开 pending；当前仅可直接释放无副作用的 pending 意图，不能将此方法用于正在上传或尚未清理的对象。下一项必须加入成员/尝试持久状态、实际下载授权的接收端验证、Agent 搬运与独立目的校验、清理确认及整单发布，然后接通执行身份的本地文件映射。文件型委派目前继续 DATA_WAITING，不创建远端运行。
@@ -495,3 +495,14 @@ direct 模式不要求 Fabric URL、镜像或证书；attested 模式任务 read
 回执密钥轮换：源站所有者具有 result.read 时可调用 receipt-retry，让后台对原接收事实用当前配置的密钥重新签署；权限、组织与 operation 范围均检查并审计。在途旧签署流程不能覆盖重试后的状态。接收方当前密钥与已存确认的 keyId 不同时，重新签署同一确认正文，保留原 recordedAt，不重复登记或认可新的收到声明。
 
 Docker/Helm 存储初始化默认启用云盘 bucket 版本管理；无版本旧对象需要重新写入才能得到真实版本。保留版本可能使后端物理占用大于用户逻辑配额，不自动按年龄清除仍被记录引用的版本；历史版本回收仍需要运维策略。
+
+
+### 接收端输入下载验签与上传凭据
+
+input-reader 在接收方当前 Agent/活动尝试授权通过后，使用独立 input-download-query 签名请求源站 input-downloads 固定路由。它核对 input-download-grant 签名、查询摘要/随机标识、双方站点、接单/任务、原清单摘要、descriptor/path/大小/SHA-256 及 transferId/generation；旧响应、结果身份和其他成员不能混用。最终事务同时持有当前传输、身份/协议、站点与密钥锁，并复查双方专用用途及源站 endpoint，防止网络等待期间撤权或换代后释放凭据。
+
+只接受配置的 FEDERATION_INPUT_IMPORT_SOURCE_ORIGINS 下的 HTTPS URL，要求唯一、非空且非字符串 null 的 versionId。签名信封与实际 X-Amz-Date/X-Amz-Expires 必须一致，最长 30 秒且受查询、执行/尝试和当前密钥截止约束；密钥期限在网络期间缩短也重新检查。下载地址/JWS 仅返回内部 Agent 路径，不保存进清单、尝试或审计。
+
+input-storage.grant 对下载和上传均先验证当前尝试并在共用 Agent 锁内续租。上传只允许当前文件所需的 partNumber，签发给本地 FEDERATION_INPUT_DOWNLOAD_ORIGINS 下的原 uploadId/partNumber；实际凭据最长 30 秒，存储 I/O 后再次核对身份、Agent、协议、尝试、uploadId 和截止。两个配置缺失任一项时不发搬运凭据，清单与清理不因此停用。异常 SDK/网络信息不直接返回，避免泄漏票据。
+
+Server 启动已装配这些内部服务与配置。验证使用隔离 PostgreSQL、真实双方签名及受控传输/存储替身；尚非真实 Agent 网络搬运。配置这些变量不等于可以执行文件工作流，还需 Agent 消息/能力协商、上传完成、独立目的校验、整单发布与本地文件映射。

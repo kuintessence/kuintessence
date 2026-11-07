@@ -1,22 +1,55 @@
 import { createLogger } from "@kuintessence/shared";
-import { FederationError } from "@kuintessence/shared/federation";
+import {
+  FederationDataOriginSchema,
+  FederationDownloadUrlSchema,
+  FederationError,
+  type FederationInputCopyBinding,
+  FederationInputCopyBindingSchema,
+} from "@kuintessence/shared/federation";
 import type { MinioBackend } from "../storage/minio-client";
+import { signedDownloadExpiry } from "./download-credential";
+import type { FederationInputReader } from "./input-reader";
 import type { FederationInputTransfers } from "./input-transfers";
 
 const logger = createLogger("federation-input-storage");
 export type FederationInputStorageBackend = Pick<
   MinioBackend,
-  "createMultipartUpload" | "cleanupFederationInput"
+  "createMultipartUpload" | "cleanupFederationInput" | "presignUploadPart"
 >;
+
+interface InputGrantOptions {
+  reader: FederationInputReader;
+  sourceOrigins: readonly string[];
+  destinationOrigins: readonly string[];
+}
+export interface FederationInputStorageOptions {
+  timeoutMs?: number;
+  clock?: () => Date;
+  grants?: InputGrantOptions;
+}
 
 /** Storage creation and deletion are fenced by durable attempts, never performed under DB locks. */
 export class FederationInputStorage {
+  private readonly clock: () => Date;
+  private readonly sourceOrigins: string[];
+  private readonly destinationOrigins: Set<string>;
   constructor(
     private readonly transfers: FederationInputTransfers,
     private readonly storage: FederationInputStorageBackend,
-    private readonly timeoutMs = 10_000,
+    private readonly options: FederationInputStorageOptions = {},
   ) {
     if (!storage.cleanupFederationInput) throw new Error("FEDERATION_INPUT_STORAGE_UNAVAILABLE");
+    this.clock = options.clock ?? (() => new Date());
+    this.sourceOrigins = (options.grants?.sourceOrigins ?? []).map(
+      (v) => new URL(FederationDataOriginSchema.parse(v)).origin,
+    );
+    this.destinationOrigins = new Set(
+      (options.grants?.destinationOrigins ?? []).map(
+        (v) => new URL(FederationDataOriginSchema.parse(v)).origin,
+      ),
+    );
+    if (options.grants && (!this.sourceOrigins.length || !this.destinationOrigins.size))
+      throw new Error("FEDERATION_INPUT_STORAGE_UNAVAILABLE");
   }
 
   async allocate(transferId: string, agentId: string) {
@@ -35,6 +68,81 @@ export class FederationInputStorage {
       if (error instanceof FederationError) throw error;
       throw new Error("FEDERATION_INPUT_STORAGE_UNAVAILABLE");
     }
+  }
+
+  async grant(
+    agentId: string,
+    input: FederationInputCopyBinding,
+    direction: "download" | "upload",
+    partNumber?: number,
+  ) {
+    if (!this.options.grants) throw new FederationError("POLICY_DENIED");
+    const parsed = FederationInputCopyBindingSchema.safeParse(input);
+    if (
+      !parsed.success ||
+      (direction !== "download" && direction !== "upload") ||
+      (direction === "download" && partNumber !== undefined) ||
+      (direction === "upload" &&
+        (!Number.isSafeInteger(partNumber) || !partNumber || partNumber < 1 || partNumber > 10_000))
+    )
+      throw new FederationError("INVALID_MESSAGE");
+    const binding = parsed.data;
+    const before = await this.transfers.assertCopyLease(agentId, binding);
+    if (
+      direction === "upload" &&
+      (partNumber as number) > Math.max(1, Math.ceil(binding.sizeBytes / before.partSize))
+    )
+      throw new FederationError("INVALID_MESSAGE");
+    const renewed = await this.transfers.assertCopyLease(agentId, binding, true);
+    try {
+      if (direction === "download")
+        return await this.bounded(
+          this.options.grants.reader.downloadGrant(agentId, binding, this.sourceOrigins),
+        );
+      return await this.uploadGrant(agentId, binding, partNumber as number, renewed);
+    } catch (error) {
+      if (error instanceof FederationError) throw error;
+      throw new Error("FEDERATION_INPUT_STORAGE_UNAVAILABLE");
+    }
+  }
+
+  private async uploadGrant(
+    agentId: string,
+    binding: FederationInputCopyBinding,
+    partNumber: number,
+    before: Awaited<ReturnType<FederationInputTransfers["assertCopyLease"]>>,
+  ) {
+    if (!before.uploadId) throw new FederationError("OPERATION_CONFLICT");
+    const deadline = Math.min(this.clock().getTime() + 30_000, before.leaseUntil.getTime());
+    const seconds = Math.floor((deadline - this.clock().getTime()) / 1000);
+    if (seconds < 1) throw new FederationError("AUTHORIZATION_EXPIRED");
+    const url = await this.bounded(
+      this.storage.presignUploadPart(before.storageKey, before.uploadId, partNumber, seconds),
+    );
+    if (!FederationDownloadUrlSchema.safeParse(url).success)
+      throw new FederationError("INVALID_MESSAGE");
+    const parsed = new URL(url);
+    if (!this.destinationOrigins.has(parsed.origin)) throw new FederationError("POLICY_DENIED");
+    if (
+      parsed.searchParams.get("uploadId") !== before.uploadId ||
+      parsed.searchParams.getAll("uploadId").length !== 1 ||
+      parsed.searchParams.get("partNumber") !== String(partNumber) ||
+      parsed.searchParams.getAll("partNumber").length !== 1
+    )
+      throw new FederationError("INVALID_MESSAGE");
+    const expiresAt = signedDownloadExpiry(url, this.clock().getTime(), deadline);
+    const after = await this.transfers.assertCopyLease(agentId, binding);
+    if (
+      after.storageKey !== before.storageKey ||
+      after.uploadId !== before.uploadId ||
+      Date.parse(expiresAt) <= this.clock().getTime() ||
+      Date.parse(expiresAt) > after.leaseUntil.getTime()
+    )
+      throw new FederationError("OPERATION_CONFLICT");
+    return {
+      grant: { binding, direction: "upload" as const, partNumber, url, expiresAt },
+      leaseExpiresAt: before.leaseUntil.toISOString(),
+    };
   }
 
   async cleanup(limit = 8) {
@@ -65,7 +173,7 @@ export class FederationInputStorage {
         new Promise<never>((_, reject) => {
           timer = setTimeout(
             () => reject(new Error("FEDERATION_INPUT_STORAGE_UNAVAILABLE")),
-            this.timeoutMs,
+            this.options.timeoutMs ?? 10_000,
           );
         }),
       ]);
