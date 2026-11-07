@@ -6,6 +6,7 @@ import {
   federationCommercialAgreements as contracts,
   createPgDb,
   federationCommercialExecutionApprovals as executionApprovals,
+  federationAgreementApprovals,
   federationAgreements,
   federationBudgets,
   federationCapabilities,
@@ -18,7 +19,7 @@ import {
   userOrgMemberships,
   users,
 } from "@kuintessence/db";
-import type { FederationMode } from "@kuintessence/shared/federation";
+import { FederationAgreementSchema, type FederationMode } from "@kuintessence/shared/federation";
 import {
   type CommercialAdapterProposalInput,
   type CommercialAdvanceResult,
@@ -41,12 +42,14 @@ import { exportSPKI } from "jose";
 import pino from "pino";
 import { createErrorHandler } from "../middleware/error-handler";
 import { createFederationCommercialRoutes } from "../routes/federation-commercial";
+import { FederationAgreementService } from "./agreements";
 import { federationMaterialDigest } from "./assets";
 import { FederationCommercialAgreementService } from "./commercial-agreements";
 import type { CommercialClient } from "./commercial-client";
 import { FederationCommercialExecutionService } from "./commercial-execution";
 import { FederationCommercialSubmissionService } from "./commercial-submissions";
 import { FederationCommercialWorker } from "./commercial-worker";
+import { FederationExecutionConfirmationService } from "./execution-confirmation";
 import { FabricClientFailure } from "./fabric-client";
 import { FederationMarketService } from "./market";
 import type { MarketClient } from "./market-client";
@@ -137,6 +140,9 @@ async function fixture(
               "commercial-usage",
               "commercial-reservation",
               "commercial-release",
+              "agreement",
+              "acceptance",
+              "delegation",
             ]
           : ["commercial-agreement", "commercial-usage"],
         validFrom: "2020-01-01T00:00:00Z",
@@ -234,13 +240,19 @@ afterAll(async () => {
       );
     await db.delete(marketSubmissions).where(inArray(marketSubmissions.localSiteId, siteIds));
     await db.delete(executionApprovals).where(inArray(executionApprovals.localSiteId, siteIds));
+    await db
+      .delete(federationAgreements)
+      .where(inArray(federationAgreements.targetSiteId, siteIds));
+    await db
+      .delete(federationAgreementApprovals)
+      .where(inArray(federationAgreementApprovals.localSiteId, siteIds));
     await db.delete(contracts).where(inArray(contracts.localSiteId, siteIds));
     await db.delete(auditLog).where(eq(auditLog.actor, f.actor.userId));
     await db
       .delete(federationCapabilities)
       .where(eq(federationCapabilities.userId, f.actor.userId));
-    await db.delete(userOrgMemberships).where(eq(userOrgMemberships.userId, f.actor.userId));
-    await db.delete(users).where(eq(users.id, f.actor.userId));
+    await db.delete(userOrgMemberships).where(eq(userOrgMemberships.orgId, f.actor.orgId));
+    await db.delete(users).where(eq(users.orgId, f.actor.orgId));
     await db.delete(orgs).where(eq(orgs.id, f.actor.orgId));
     for (const key of [f.a, f.b]) {
       await db
@@ -987,6 +999,302 @@ async function activationFixture() {
   const market = new FederationMarketService(db, f.a.signing.siteId, marketAdapter);
   return { ...f, market, marketAdapter, activationId: randomUUID() };
 }
+
+async function confirmationFixture(provider = false) {
+  const f = await activationFixture();
+  const ordinary = new FederationAgreementService(db, f.a.signing);
+  const own = await ordinary.approve(f.actor, { terms: f.terms.agreement });
+  let executionUserId: string | undefined;
+  let otherJws = await signFederationMessage(
+    FederationAgreementSchema,
+    f.terms.agreement,
+    f.b.signing,
+  );
+  if (provider) {
+    const commercial = new FederationCommercialAgreementService(db, f.b.signing);
+    await commercial.approve(f.actor, f.terms);
+    await commercial.attachCounterparty(
+      f.actor,
+      f.revisionId,
+      (await f.approvals.get(f.actor, f.revisionId)).approvalJws,
+    );
+    if (!f.state.claim) throw new Error("Missing fixture claim");
+    const input = { operation: "claim-demand" as const, claim: f.state.claim };
+    await db.insert(marketSubmissions).values({
+      id: f.reservation.reservationId,
+      localSiteId: f.b.signing.siteId,
+      localOrgId: f.actor.orgId,
+      requestedBy: f.actor.userId,
+      demandId: f.reservation.demandId,
+      input,
+      digest: federationMaterialDigest(input),
+      state: "committed",
+    });
+    const execution = new FederationCommercialExecutionService(db, f.b.signing, {
+      query: async () => ({ operation: "get-demand", demand: f.state }),
+    });
+    await execution.approve(f.actor, f.revisionId, f.reservation);
+    await execution.attachCounterparty(
+      f.actor,
+      f.revisionId,
+      f.reservation.reservationId,
+      (await f.execution.get(f.actor, f.revisionId, f.reservation.reservationId)).approvalJws,
+    );
+    const worker = new FederationCommercialSubmissionService(db, f.b.signing.siteId, f.adapter);
+    for (let i = 0; i < 6; i++) expect(await worker.advanceNext()).toBe(true);
+    executionUserId = randomUUID();
+    await db.insert(users).values({
+      id: executionUserId,
+      orgId: f.actor.orgId,
+      email: `${executionUserId}@test.invalid`,
+      role: "user",
+      serviceAccount: true,
+    });
+    await db
+      .insert(userOrgMemberships)
+      .values({ userId: executionUserId, orgId: f.actor.orgId, role: "member" });
+    const receiver = new FederationAgreementService(db, f.b.signing);
+    otherJws = (await receiver.approve(f.actor, { terms: f.terms.agreement, executionUserId }))
+      .approvalJws;
+    await receiver.attachCounterparty(f.actor, f.revisionId, own.approvalJws);
+  }
+  await ordinary.attachCounterparty(f.actor, f.revisionId, otherJws);
+  await f.execution.activate(f.actor, f.revisionId, f.reservation.reservationId, f.activationId);
+  for (let i = 0; i < 3; i++) expect(await f.market.advanceNext()).toBe(true);
+  const activation = f.marketAdapter.inputs.find((input) => input.operation === "activate-demand");
+  if (activation?.operation !== "activate-demand") throw new Error("Missing fixture activation");
+  f.state.status = "ACTIVE";
+  f.state.version = 3;
+  f.state.activation = activation.activation;
+  let clock = new Date();
+  let onQuery: (() => Promise<void>) | undefined;
+  let queries = 0;
+  const siteId = provider ? f.b.signing.siteId : f.a.signing.siteId;
+  const confirmation = new FederationExecutionConfirmationService(
+    db,
+    siteId,
+    {
+      query: async () => {
+        queries++;
+        await onQuery?.();
+        return { operation: "get-demand", demand: f.state };
+      },
+    },
+    () => clock,
+  );
+  return {
+    ...f,
+    ordinary,
+    confirmation,
+    executionUserId,
+    siteId,
+    market: new FederationMarketService(db, siteId, f.marketAdapter),
+    queryCount: () => queries,
+    beforeQuery: (callback: () => Promise<void>) => {
+      onQuery = callback;
+    },
+    setClock: (date: Date) => {
+      clock = date;
+    },
+    requestConfirmation: () =>
+      confirmation.request(f.actor, f.revisionId, f.reservation.reservationId),
+    authorizeConfirmation: () =>
+      db.transaction((tx) => confirmation.authorize(tx, f.actor.orgId, f.reservation.request)),
+  };
+}
+
+test("confirmation persists one public intent across concurrent refreshes and requires VALID before consumption", async () => {
+  const f = await confirmationFixture();
+  const rows = await Promise.all(Array.from({ length: 4 }, () => f.requestConfirmation()));
+  expect(new Set(rows.map((row) => row.id)).size).toBe(1);
+  const id = rows[0]?.id;
+  if (!id) throw new Error("Missing confirmation");
+  await expect(f.authorizeConfirmation()).rejects.toMatchObject({ code: "LEDGER_PENDING" });
+  await f.market.advanceNext();
+  await f.market.advanceNext();
+  await expect(f.authorizeConfirmation()).rejects.toMatchObject({ code: "LEDGER_PENDING" });
+  await f.market.advanceNext();
+  const confirmed = await f.authorizeConfirmation();
+  expect(confirmed.authorizationId).toBe(id);
+  expect(confirmed.reservationId).toBe(f.reservation.reservationId);
+  const count = f.queryCount();
+  expect((await f.requestConfirmation()).id).toBe(id);
+  expect(f.queryCount()).toBe(count);
+  const [row] = await db.select().from(marketSubmissions).where(eq(marketSubmissions.id, id));
+  expect(row?.input.operation).toBe("authorize-execution");
+  for (const secret of [
+    "maxAmount",
+    "inputManifestDigest",
+    "environmentLockDigest",
+    "sourceJws",
+    "termsText",
+  ])
+    expect(JSON.stringify(row?.input)).not.toContain(secret);
+  expect(
+    await db
+      .select()
+      .from(federationBudgets)
+      .where(eq(federationBudgets.domainId, f.terms.agreement.budgetDomainId)),
+  ).toHaveLength(0);
+});
+
+test("confirmation renewal creates a new bounded intent while the old proof expires unchanged", async () => {
+  const f = await confirmationFixture();
+  const first = await f.requestConfirmation();
+  for (let i = 0; i < 3; i++) await f.market.advanceNext();
+  const [original] = await db
+    .select()
+    .from(marketSubmissions)
+    .where(eq(marketSubmissions.id, first.id));
+  f.setClock(new Date(Date.parse(first.expiresAt) - 30000));
+  const next = await f.requestConfirmation();
+  expect(next.id).not.toBe(first.id);
+  expect((await f.authorizeConfirmation()).authorizationId).toBe(first.id);
+  f.setClock(new Date(Date.parse(first.expiresAt) + 1));
+  await expect(f.authorizeConfirmation()).rejects.toMatchObject({ code: "LEDGER_PENDING" });
+  for (let i = 0; i < 3; i++) await f.market.advanceNext();
+  expect((await f.authorizeConfirmation()).authorizationId).toBe(next.id);
+  expect(
+    (await db.select().from(marketSubmissions).where(eq(marketSubmissions.id, first.id)))[0],
+  ).toEqual(original);
+});
+
+test("confirmation binds the exact delegation, organization and current consent across network I/O", async () => {
+  const f = await confirmationFixture();
+  await expect(
+    f.confirmation.refresh(f.actor.orgId, {
+      ...f.reservation.request,
+      inputManifestDigest: `sha256:${"f".repeat(64)}`,
+    }),
+  ).rejects.toMatchObject({ code: "OPERATION_CONFLICT" });
+  await expect(f.confirmation.refresh(randomUUID(), f.reservation.request)).rejects.toMatchObject({
+    code: "AGREEMENT_UNAVAILABLE",
+  });
+  f.beforeQuery(() => f.ordinary.setState(f.actor, f.revisionId, "suspended"));
+  await expect(f.requestConfirmation()).rejects.toMatchObject({ code: "AGREEMENT_UNAVAILABLE" });
+  expect(
+    await db
+      .select()
+      .from(marketSubmissions)
+      .where(
+        and(
+          eq(marketSubmissions.localSiteId, f.siteId),
+          sql`${marketSubmissions.input}->>'operation' = 'authorize-execution'`,
+        ),
+      ),
+  ).toHaveLength(0);
+});
+
+test("confirmation refuses revoked signing trust and receiver identities even with a committed proof", async () => {
+  const f = await confirmationFixture(true);
+  await f.requestConfirmation();
+  for (let i = 0; i < 3; i++) await f.market.advanceNext();
+  expect((await f.authorizeConfirmation()).reservationId).toBe(f.reservation.reservationId);
+  if (!f.executionUserId) throw new Error("Missing receiver identity");
+  await db.update(users).set({ suspended: true }).where(eq(users.id, f.executionUserId));
+  await expect(f.authorizeConfirmation()).rejects.toMatchObject({ code: "POLICY_DENIED" });
+  await db.update(users).set({ suspended: false }).where(eq(users.id, f.executionUserId));
+  await f.trust.revoke(f.b.signing.siteId, { keyId: f.b.signing.keyId }, f.actor.userId);
+  await expect(f.authorizeConfirmation()).rejects.toMatchObject({ code: "UNTRUSTED_IDENTITY" });
+});
+
+test("confirmation validates transaction evidence, payload digest and activation identity", async () => {
+  const f = await confirmationFixture();
+  const result = await f.requestConfirmation();
+  await db
+    .update(marketSubmissions)
+    .set({ state: "committed" })
+    .where(eq(marketSubmissions.id, result.id));
+  await expect(f.authorizeConfirmation()).rejects.toMatchObject({
+    code: "INVALID_ADAPTER_RESPONSE",
+  });
+  await db
+    .update(marketSubmissions)
+    .set({ state: "pending" })
+    .where(eq(marketSubmissions.id, result.id));
+  for (let i = 0; i < 3; i++) await f.market.advanceNext();
+  await db
+    .update(marketSubmissions)
+    .set({ digest: `sha256:${"0".repeat(64)}` })
+    .where(eq(marketSubmissions.id, result.id));
+  await expect(f.authorizeConfirmation()).rejects.toMatchObject({ code: "OPERATION_CONFLICT" });
+  const g = await confirmationFixture();
+  if (!g.state.activation) throw new Error("Missing activation");
+  g.state.activation = { ...g.state.activation, activationId: randomUUID() };
+  await expect(g.requestConfirmation()).rejects.toMatchObject({ code: "OPERATION_CONFLICT" });
+});
+
+test("confirmation audit failure rolls back the intent and revocation during query cannot sign new work", async () => {
+  const f = await confirmationFixture();
+  await db.execute(
+    sql`CREATE FUNCTION confirmation_test_audit_fail() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.action = 'federation.execution.confirm' THEN RAISE EXCEPTION 'injected failure'; END IF; RETURN NEW; END $$`,
+  );
+  await db.execute(
+    sql`CREATE TRIGGER confirmation_test_audit_fail BEFORE INSERT ON audit_log FOR EACH ROW EXECUTE FUNCTION confirmation_test_audit_fail()`,
+  );
+  try {
+    await expect(f.requestConfirmation()).rejects.toThrow();
+  } finally {
+    await db.execute(sql`DROP TRIGGER confirmation_test_audit_fail ON audit_log`);
+    await db.execute(sql`DROP FUNCTION confirmation_test_audit_fail()`);
+  }
+  expect(
+    await db
+      .select()
+      .from(marketSubmissions)
+      .where(
+        and(
+          eq(marketSubmissions.localSiteId, f.siteId),
+          sql`${marketSubmissions.input}->>'operation' = 'authorize-execution'`,
+        ),
+      ),
+  ).toHaveLength(0);
+  f.beforeQuery(() =>
+    new FederationPermissionService(db).set(
+      { ...f.actor, capability: "agreement.approve", enabled: false },
+      f.actor.userId,
+    ),
+  );
+  await expect(f.requestConfirmation()).rejects.toMatchObject({ code: "POLICY_DENIED" });
+});
+
+test("confirmation HTTP accepts only an empty renewal intent and preserves human organization authorization", async () => {
+  const f = await confirmationFixture();
+  const app = new Hono();
+  app.onError(createErrorHandler(pino({ level: "silent" })));
+  app.use("*", async (c, next) => {
+    c.set("principal" as never, { ...f.actor, role: "platform_admin" });
+    await next();
+  });
+  app.route(
+    "/api",
+    createFederationCommercialRoutes(
+      f.approvals,
+      f.service,
+      undefined,
+      undefined,
+      f.execution,
+      f.confirmation,
+    ),
+  );
+  const path = `/api/federation/commercial-agreements/${f.revisionId}/execution-approvals/${f.reservation.reservationId}/confirm`;
+  const call = (body: unknown) =>
+    app.request(path, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  expect((await call({ gate: f.state.activation?.gate })).status).toBe(400);
+  const response = await call({});
+  expect(response.status).toBe(202);
+  expect(response.headers.get("cache-control")).toBe("no-store");
+  expect(await response.text()).not.toContain("recovery");
+  await new FederationPermissionService(db).set(
+    { ...f.actor, capability: "agreement.approve", enabled: false },
+    f.actor.userId,
+  );
+  expect((await call({})).status).toBe(403);
+});
 
 test("activation requires two capabilities and confirmed private reservation; public payload contains no private delegation", async () => {
   const f = await executionFixture();

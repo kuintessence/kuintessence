@@ -52,9 +52,11 @@ export async function requireCoordinatedCommercialAgreement(
     federationCanonicalJson(current.terms) !== federationCanonicalJson(commercial)
   )
     throw new FederationError("OPERATION_CONFLICT");
+  let validUntil = Number.POSITIVE_INFINITY;
   for (const { siteId, jws } of signatures) {
     const keyId = federationMessageKeyId(jws);
     const key = await trust.resolveKey(siteId, keyId, clock(), tx);
+    validUntil = Math.min(validUntil, key.validUntil.getTime());
     const verified = await verifyFederationMessage(CommercialAgreementSchema, jws, key, clock());
     if (
       verified.digest !== contract.digest ||
@@ -62,4 +64,5 @@ export async function requireCoordinatedCommercialAgreement(
     )
       throw new FederationError("OPERATION_CONFLICT");
   }
+  return { contract: current, validUntil };
 }

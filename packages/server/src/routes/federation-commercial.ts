@@ -11,6 +11,7 @@ import { z } from "zod";
 import type { FederationCommercialAgreementService } from "../federation/commercial-agreements";
 import type { FederationCommercialExecutionService } from "../federation/commercial-execution";
 import type { FederationCommercialSubmissionService } from "../federation/commercial-submissions";
+import type { FederationExecutionConfirmationService } from "../federation/execution-confirmation";
 import { FabricClientFailure } from "../federation/fabric-client";
 import type { FederationActor } from "../federation/permissions";
 import type { FederationUsageService } from "../federation/usage";
@@ -24,6 +25,7 @@ export function createFederationCommercialRoutes(
   usage?: FederationUsageService,
   exchange?: FederationUsageExchange,
   execution?: FederationCommercialExecutionService,
+  confirmation?: FederationExecutionConfirmationService,
 ) {
   const r = new Hono<{ Variables: { federationActor: FederationActor } }>();
   r.use("/federation/commercial-agreements/*", async (c, next) => {
@@ -122,6 +124,24 @@ export function createFederationCommercialRoutes(
   if (execution) {
     const record = id.extend({ recordId: z.uuid() });
     const path = "/federation/commercial-agreements/:revisionId/execution-approvals";
+    if (confirmation)
+      r.post(
+        `${path}/:recordId/confirm`,
+        kqValidator("param", record),
+        kqValidator("json", z.strictObject({})),
+        async (c) =>
+          c.json(
+            {
+              success: true,
+              data: await confirmation.request(
+                c.get("federationActor"),
+                c.req.valid("param").revisionId,
+                c.req.valid("param").recordId,
+              ),
+            },
+            202,
+          ),
+      );
     r.post(
       `${path}/:recordId/activate`,
       kqValidator("param", record),

@@ -1521,3 +1521,13 @@ Market 链码与生产 Adapter 新增 AuthorizeExecution/authorize-execution。�
 test:fabric:gate:integration 通过 9 组检查，包含真实 PostgreSQL 双签审批、私有预留/释放/替换及公开激活，随后从实际激活结果取得原 gate 并申请执行确认，验证同一原交易恢复。CI 联合入口已纳入该确认恢复检查。两入口有重叠，不把分组数相加为独立场景。全仓 typecheck（含 protobuf 与 Fabric 脚本）通过；全仓 lint 无错误，仍为原有 47 warning / 1 info；最终修改文件的 Biome 与差异格式检查通过。
 
 本轮没有 Server 自动确认待办、接单/材料/派发消费或 Agent 作业；已有生产协调执行入口仍拒绝。未增加 ACTIVE 停止/终态释放或重新开放，不能用这轮确认竞态代替这些未实现转移的验收。未发布 PR 预览或部署 main。真实网络与临时数据库均已由测试清理，私有诊断材料仅在忽略目录。
+
+## Server 执行确认待办与事务内验权
+
+新增 FederationExecutionConfirmationService：按当前组织和精确双签私有委派构造确认，复用原市场 worker 的持久检查点；人工 confirm API 只接受空请求体并要求 agreement.approve。并发申请去重，余期不足一分钟时创建新确认，旧确认不会被延长。事务内 authorize 重查本地执行同意、商业双签、已提交预留、签名信任、取消状态及提供方受限账户，只消费匹配的 VALID 交易证据，返回最短绝对期限。迁移 0124 由 db:generate 生成，新增固定操作约束和查询索引；不创建本地预算。
+
+隔离 PostgreSQL 37 项测试通过（7 项新增确认测试及原商业/市场回归），覆盖并发、未提交拒绝、续期、期限、组织/精确委派、暂停、签名与执行身份失效、交易证据和摘要、审计回滚、跨网络权限变更及 HTTP 空请求体。全仓 typecheck 通过，lint 无错误（原有 47 warning / 1 info）；最后新增联动脚本再通过 Fabric 脚本类型检查及 Biome，684 个本地文档目标检查通过。
+
+真实 test:fabric:gate:integration 通过 10 组检查。新增服务端真实申请及消费测试经过生产 Node Adapter、真实 Peer/Orderer 与随机 PostgreSQL：pending 和 prepared 均拒绝，只有 VALID 后返回有期限证明，暂停本地协议后再次拒绝。原真实私有预留/释放/激活竞态、公开区块隐私及确认原交易恢复继续通过。本轮各组是同一联合网络中的检查，不能算作 10 个完整端到端作业。网络和测试库已清理，私有材料仅留在忽略目录。
+
+接单、材料授权和派发尚未接入新服务，协调作业仍关闭；尚无 Agent/科研作业验收，未发布 PR 预览或部署 main。下一项是把确认接入实际消费者和执行租约，保留双边流程不依赖 Fabric。

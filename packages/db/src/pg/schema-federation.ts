@@ -1146,6 +1146,9 @@ export const federationCommercialExecutionApprovals = pgTable(
       t.agreementRevisionId,
       t.createdAt,
     ),
+    index("federation_execution_approval_operation")
+      .on(t.localSiteId, t.localOrgId, sql`(${t.payload}->'request'->>'operationId')`)
+      .where(sql`${t.payload}->>'kind' = 'commercial-reservation'`),
     check(
       "federation_execution_approval_payload",
       sql`(
@@ -1219,6 +1222,14 @@ export const federationMarketSubmissions = pgTable(
     uniqueIndex("federation_market_activation")
       .on(t.localSiteId, sql`(${t.input}->'activation'->'gate'->>'reservationId')`)
       .where(sql`${t.input}->>'operation' = 'activate-demand'`),
+    index("federation_market_execution_confirmation")
+      .on(
+        t.localSiteId,
+        t.localOrgId,
+        sql`(${t.input}->'authorization'->'gate'->>'reservationId')`,
+        t.createdAt,
+      )
+      .where(sql`${t.input}->>'operation' = 'authorize-execution'`),
     check(
       "federation_market_submission_state",
       sql`${t.state} IN ('pending','committed','needs_review')`,
@@ -1230,6 +1241,7 @@ export const federationMarketSubmissions = pgTable(
         OR (${t.input}->>'operation' = 'claim-demand' AND ${t.input}->'claim'->>'claimId' = ${t.id}::text AND ${t.input}->'claim'->>'demandId' = ${t.demandId}::text AND ${t.input}->'claim'->>'providerSiteId' = ${t.localSiteId}::text)
         OR (${t.input}->>'operation' = 'cancel-open-demand' AND ${t.input}->'cancellation'->>'cancellationId' = ${t.id}::text AND ${t.input}->'cancellation'->>'demandId' = ${t.demandId}::text)
         OR (${t.input}->>'operation' = 'activate-demand' AND ${t.input}->'activation'->>'activationId' = ${t.id}::text AND ${t.input}->'activation'->>'demandId' = ${t.demandId}::text)
+        OR (${t.input}->>'operation' = 'authorize-execution' AND ${t.input}->'authorization'->>'authorizationId' = ${t.id}::text AND ${t.input}->'authorization'->>'demandId' = ${t.demandId}::text AND ${t.input}->'authorization'->'gate'->>'demandId' = ${t.demandId}::text AND ${t.input}->'authorization'->>'issuerSiteId' = ${t.localSiteId}::text)
       )) IS TRUE`,
     ),
     check(

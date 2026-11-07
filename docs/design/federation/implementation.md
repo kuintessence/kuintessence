@@ -760,4 +760,6 @@ kq-market ListDemands 使用 Fabric 原生分页，GetDemand 保留原单条语�
 
 新增有绝对期限的 Market AuthorizeExecution，只有 VALID 交易才构成链状态确认。固定公开输入绑定申请机构、需求、原 activationId 和同通道私有 gate 哈希；最长 5 分钟，当前状态每需求每机构只留最新一份，历史仍在区块中。旧确认不能被改内容、覆盖更新记录或在恢复时延长期限。Server 消费必须再核对原双签私有委派、本地当前授权和绝对期限，取最短执行租约；Peer 查询和 committed 布尔值均不够。协议、时钟和存储边界见[执行确认](../../../deploy/federation/fabric-execution-gate.md#有期限的链上执行确认)。
 
-链码与生产 Adapter 已接通，Server 持久待办和接单/材料/派发消费仍待实现，协调入口仍关闭。新操作不会额外复制预算，也不会因超时释放 ACTIVE 锁额。
+链码、生产 Adapter 与 Server 专用确认服务已接通。迁移 0124 扩展现有市场待办约束与预留/确认查询索引；人工 confirm API 只接受空请求体，要求当前组织 agreement.approve。内部 refresh 在网络查询前后重新校验精确双签委派和本地当前授权，以预留为单位去重，正常市场 worker 完成背书/提交/恢复。最终 authorize 只消费匹配的持久 VALID 交易，期限取链确认与当前私有委派、协议、签名信任的最短值。续期使用新 ID，不改变旧交易或原截止时间；撤销本地同意或执行身份立即拒绝。
+
+接单、材料和派发消费者尚未接入该服务，协调入口仍关闭，Web 不提前开放运行模式。新操作不会额外复制预算，也不会因超时释放 ACTIVE 锁额。后续消费者必须在最终操作事务内调用 authorize，并将返回截止时间约束到材料凭据或 Agent 执行租约；不能仅根据 refresh 返回 committed 放行。

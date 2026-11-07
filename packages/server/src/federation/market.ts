@@ -409,7 +409,11 @@ export class FederationMarketService {
       await requireFederationCapability(
         tx,
         actor,
-        row.input.operation === "claim-demand" ? "market.claim" : "market.publish",
+        row.input.operation === "authorize-execution"
+          ? "agreement.approve"
+          : row.input.operation === "claim-demand"
+            ? "market.claim"
+            : "market.publish",
       );
       if (row.input.operation === "activate-demand")
         await requireFederationCapability(tx, actor, "agreement.approve");

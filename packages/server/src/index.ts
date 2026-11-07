@@ -67,6 +67,7 @@ import {
   loadFederationWorkflowBinding,
   queueFederationWorkflow,
 } from "./federation/execution-binding";
+import { FederationExecutionConfirmationService } from "./federation/execution-confirmation";
 import { FederationExecutionMonitor } from "./federation/execution-monitor";
 import { FederationInputImports } from "./federation/input-imports";
 import { FederationInputPublication } from "./federation/input-publication";
@@ -1703,6 +1704,13 @@ if (federationSigningKey && federationCommercial)
       new FederationCommercialExecutionService(
         db,
         federationSigningKey,
+        config.FEDERATION_MARKET_SOCKET_PATH
+          ? new UnixMarketClient(config.FEDERATION_MARKET_SOCKET_PATH)
+          : undefined,
+      ),
+      new FederationExecutionConfirmationService(
+        db,
+        federationSigningKey.siteId,
         config.FEDERATION_MARKET_SOCKET_PATH
           ? new UnixMarketClient(config.FEDERATION_MARKET_SOCKET_PATH)
           : undefined,

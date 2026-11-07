@@ -12,6 +12,7 @@ import {
   userOrgMemberships,
   users,
 } from "@kuintessence/db";
+import { FederationAgreementSchema, FederationError } from "@kuintessence/shared/federation";
 import {
   CommercialAgreementSchema,
   CommercialReleaseSchema,
@@ -28,14 +29,18 @@ import { importPKCS8 } from "jose";
 import postgres from "postgres";
 import { z } from "zod";
 import { migratePostgresDatabase } from "../packages/db/src/pg/migrate";
+import { FederationAgreementService } from "../packages/server/src/federation/agreements";
 import { federationMaterialDigest } from "../packages/server/src/federation/assets";
 import { FederationCommercialAgreementService } from "../packages/server/src/federation/commercial-agreements";
 import { UnixCommercialClient } from "../packages/server/src/federation/commercial-client";
 import { FederationCommercialExecutionService } from "../packages/server/src/federation/commercial-execution";
 import { FederationCommercialSubmissionService } from "../packages/server/src/federation/commercial-submissions";
+import { FederationExecutionConfirmationService } from "../packages/server/src/federation/execution-confirmation";
+import { FabricClientFailure } from "../packages/server/src/federation/fabric-client";
 import { FederationMarketService } from "../packages/server/src/federation/market";
 import { UnixMarketClient } from "../packages/server/src/federation/market-client";
 import { FederationPermissionService } from "../packages/server/src/federation/permissions";
+import { signFederationMessage } from "../packages/server/src/federation/signatures";
 import { FederationTrustRegistry } from "../packages/server/src/federation/trust-registry";
 import { Site } from "./fabric-evidence-fixture";
 import { databaseUrlWithName, unitDatabaseName } from "./test-unit";
@@ -204,7 +209,11 @@ export async function verifyGateDatabase(
         { id: site.siteId, name: `Institution ${site.name}`, endpoint: "https://test.invalid" },
         actor.userId,
       );
-      await trust.addKey(site.siteId, { ...key, allowedKinds: purposes.kinds }, actor.userId);
+      await trust.addKey(
+        site.siteId,
+        { ...key, allowedKinds: [...purposes.kinds, "agreement"] },
+        actor.userId,
+      );
       institutions.push({
         actor,
         key: {
@@ -368,6 +377,47 @@ export async function verifyGateDatabase(
     );
     pass(
       "real database activation survives Orderer outage and lost VALID response with one original transaction and matching ACTIVE demand",
+    );
+    const ordinary = new FederationAgreementService(db, a.key);
+    await ordinary.approve(a.actor, { terms: fixture.agreement.agreement });
+    await ordinary.attachCounterparty(
+      a.actor,
+      revision,
+      await signFederationMessage(FederationAgreementSchema, fixture.agreement.agreement, b.key),
+    );
+    const confirmation = new FederationExecutionConfirmationService(db, a.key.siteId, marketClient);
+    const intent = await confirmation.request(
+      a.actor,
+      revision,
+      fixture.freshReservation.reservationId,
+    );
+    const authorize = () =>
+      db.transaction((tx) =>
+        confirmation.authorize(tx, a.actor.orgId, fixture.freshReservation.request),
+      );
+    const pendingProof = (error: unknown) =>
+      error instanceof FabricClientFailure && error.code === "LEDGER_PENDING";
+    await assert.rejects(authorize, pendingProof);
+    for (let stage = 0; stage < 3; stage++) {
+      assert(await market.advanceNext());
+      if (stage < 2) await assert.rejects(authorize, pendingProof);
+    }
+    const proof = await authorize();
+    assert.equal(proof.authorizationId, intent.id);
+    assert.equal(proof.reservationId, fixture.freshReservation.reservationId);
+    assert(proof.expiresAtUnixMs > Date.now() && proof.expiresAtUnixMs <= Date.now() + 300000);
+    assert.equal(
+      (await confirmation.request(a.actor, revision, fixture.freshReservation.reservationId)).id,
+      intent.id,
+    );
+    await ordinary.setState(a.actor, revision, "suspended");
+    await assert.rejects(
+      authorize,
+      (error: unknown) =>
+        error instanceof FederationError && error.code === "AGREEMENT_UNAVAILABLE",
+    );
+    pass(
+      "real Server confirmation persists and consumes only VALID bounded authority; local suspension overrides committed chain proof",
     );
   } finally {
     await cleanup();
