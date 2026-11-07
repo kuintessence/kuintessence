@@ -1,8 +1,10 @@
 import {
+  federationOutbound,
   jobCancellations,
   jobs,
   type PgDb,
   type PgTransaction,
+  workflowExecutionDelegations,
   workflowExecutionJobs,
   workflowExecutionLeases,
   workflowRuns,
@@ -38,6 +40,16 @@ import type { LeasedWorkflowJournal } from "./execution-journal";
 export type { WorkflowRunRecordResult } from "@kuintessence/shared";
 
 const logger = createLogger("workflow-run-registry");
+
+function pendingDelegations(runId: string, requireStopReceipt = false) {
+  return sql<boolean>`EXISTS (
+    SELECT 1 FROM ${workflowExecutionDelegations} AS wd
+    JOIN ${federationOutbound} AS fo
+      ON fo.local_site_id = wd.local_site_id AND fo.operation_id = wd.operation_id
+    WHERE wd.run_id = ${runId} AND fo.cancel_state IS DISTINCT FROM 'stopped'
+      ${requireStopReceipt ? sql`` : sql`AND coalesce(fo.status_report->'workflow'->>'status', '') NOT IN ('completed', 'failed', 'cancelled')`}
+  )`;
+}
 
 export type WorkflowRunStatus =
   | "submitted"
@@ -276,23 +288,28 @@ export class WorkflowRunRegistry implements WorkflowRunStore {
         : [];
       const status = terminalStatusFromResult(result);
       const errorMessage = failedNodeSummary(result);
+      const [remote] = await db
+        .select({ pending: pendingDelegations(runId) })
+        .from(workflowRuns)
+        .where(eq(workflowRuns.id, runId));
+      const stopping = pending.length > 0 || remote?.pending === true;
       const finalized = await db
         .update(workflowRuns)
         .set({
-          status: pending.length ? "cancelling" : status,
+          status: stopping ? "cancelling" : status,
           waitingInvocations: [],
           result,
-          completedAt: pending.length ? null : new Date(),
-          ...(pending.length ? { cancelRequestedAt: new Date() } : {}),
+          completedAt: stopping ? null : new Date(),
+          ...(stopping ? { cancelRequestedAt: new Date() } : {}),
           updatedAt: new Date(),
           errorCode: errorMessage ? "WORKFLOW_NODE_FAILED" : null,
           errorMessage,
         })
         .where(and(eq(workflowRuns.id, runId), eq(workflowRuns.status, "running")))
         .returning({ id: workflowRuns.id });
-      if (finalized.length === 1 && !pending.length)
+      if (finalized.length === 1 && !stopping)
         logger.info({ runId, status }, "Workflow run finalized");
-      return finalized.length === 1 && !pending.length;
+      return finalized.length === 1 && !stopping;
     };
     return lease ? lease.transaction(write) : this.db.transaction(write);
   }
@@ -303,34 +320,43 @@ export class WorkflowRunRegistry implements WorkflowRunStore {
     errorCode = "WORKFLOW_EXECUTION_FAILED",
   ): Promise<boolean> {
     const errorMessage = err instanceof Error ? err.message : String(err);
-    const failed = await this.db
-      .update(workflowRuns)
-      .set({
-        status: "failed",
-        waitingInvocations: [],
-        errorCode,
-        errorMessage,
-        result: {
-          status: { __run__: "Failed" },
-          values: {
-            __run__: {
-              status: "Failed",
-              values: { error: errorMessage },
+    const failed = await this.db.transaction(async (tx) => {
+      await tx
+        .select({ id: workflowRuns.id })
+        .from(workflowRuns)
+        .where(eq(workflowRuns.id, runId))
+        .for("update");
+      return tx
+        .update(workflowRuns)
+        .set({
+          status: sql`CASE WHEN ${pendingDelegations(runId, true)} THEN 'cancelling' ELSE 'failed' END`,
+          waitingInvocations: [],
+          errorCode,
+          errorMessage,
+          result: {
+            status: { __run__: "Failed" },
+            values: {
+              __run__: {
+                status: "Failed",
+                values: { error: errorMessage },
+              },
             },
           },
-        },
-        completedAt: new Date(),
-        updatedAt: new Date(),
-      })
-      .where(
-        and(
-          eq(workflowRuns.id, runId),
-          inArray(workflowRuns.status, ["submitted", "queued", "awaiting_approval", "running"]),
-        ),
-      )
-      .returning({ id: workflowRuns.id });
-    if (failed.length === 1) logger.error({ runId, err }, "Workflow run failed");
-    return failed.length === 1;
+          completedAt: sql`CASE WHEN ${pendingDelegations(runId, true)} THEN NULL ELSE now() END`,
+          cancelRequestedAt: sql`CASE WHEN ${pendingDelegations(runId, true)} THEN now() ELSE ${workflowRuns.cancelRequestedAt} END`,
+          updatedAt: new Date(),
+        })
+        .where(
+          and(
+            eq(workflowRuns.id, runId),
+            inArray(workflowRuns.status, ["submitted", "queued", "awaiting_approval", "running"]),
+          ),
+        )
+        .returning({ id: workflowRuns.id, status: workflowRuns.status });
+    });
+    if (failed.length === 1)
+      logger.error({ runId, err, status: failed[0]?.status }, "Workflow execution failed");
+    return failed[0]?.status === "failed";
   }
 
   async cancelRun(runId: string): Promise<boolean> {
@@ -347,7 +373,13 @@ export class WorkflowRunRegistry implements WorkflowRunStore {
         completedAt: new Date(),
         updatedAt: new Date(),
       })
-      .where(and(eq(workflowRuns.id, runId), eq(workflowRuns.status, "cancelling")))
+      .where(
+        and(
+          eq(workflowRuns.id, runId),
+          eq(workflowRuns.status, "cancelling"),
+          sql`NOT ${pendingDelegations(runId, true)}`,
+        ),
+      )
       .returning({ id: workflowRuns.id });
     if (cancelled.length === 1) logger.info({ runId, status }, "Workflow cancellation completed");
     return cancelled.length === 1;
@@ -425,6 +457,7 @@ export class WorkflowRunRegistry implements WorkflowRunStore {
           eq(workflowRuns.id, runId),
           eq(workflowRuns.status, "cancelling"),
           eq(workflowRuns.errorCode, "WORKFLOW_INTERRUPTED"),
+          sql`NOT ${pendingDelegations(runId, true)}`,
         ),
       )
       .returning({ id: workflowRuns.id });

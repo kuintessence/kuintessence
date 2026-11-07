@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { create } from "@bufbuild/protobuf";
 import {
@@ -34,6 +34,7 @@ import {
   users,
   workflowArtifactFiles,
   workflowArtifacts,
+  workflowExecutionDelegations,
   workflowRuns,
 } from "@kuintessence/db";
 import {
@@ -41,11 +42,12 @@ import {
   FederationResultGrantRequestSchema,
   type ServerMessage,
 } from "@kuintessence/proto";
-import { workflowDsl } from "@kuintessence/shared";
+import { WorkflowExecutionInterrupted, workflowDsl } from "@kuintessence/shared";
 import {
   FederationAcceptanceSchema,
   type FederationAgreement,
   FederationAgreementSchema,
+  type FederationAssetRef,
   FederationCancellationReceiptSchema,
   FederationCancellationSchema,
   FederationMaterialChunkSchema,
@@ -72,6 +74,7 @@ import { StorageQuotaService } from "../services/storage-quota";
 import type { ObjectStat } from "../storage/minio-client";
 import { FakeMinioBackend } from "../storage/minio-client.test";
 import { WorkflowAsyncRunner } from "../workflow/async-runner";
+import { WorkflowExecutionJournalStore } from "../workflow/execution-journal";
 import { WorkflowRunRegistry } from "../workflow/run-registry";
 import { FederationAdmission } from "./admission";
 import { FederationAgreementService } from "./agreements";
@@ -95,6 +98,7 @@ import { signFederationMessage, verifyFederationMessage } from "./signatures";
 import { FederationStatusResponder } from "./status";
 import { testAgreement, testDelegation, testKeys, testNow } from "./test-fixtures";
 import { FederationTrustRegistry } from "./trust-registry";
+import { bindWorkflowDelegation, type WorkflowDelegationPlan } from "./workflow-delegations";
 
 const url = process.env.DATABASE_URL;
 if (!url || !/^\/kuintessence_unit_[a-z0-9_]+$/.test(new URL(url).pathname))
@@ -112,12 +116,33 @@ let aService: FederationAgreementService;
 let bService: FederationAgreementService;
 let time = new Date(testNow);
 const clock = () => time;
+const sourceRunIds: string[] = [];
 const revisions: string[] = [];
 const transferAgentIds: string[] = [];
 const assetIds: string[] = [];
 const agreements: FederationAgreement[] = [];
 const sourceFingerprint = "ab".repeat(32);
 const targetFingerprint = "cd".repeat(32);
+
+afterEach(async () => {
+  // Binding tests deliberately leave pending tasks; subsequent fixtures must not dispatch them.
+  if (!sourceRunIds.length) return;
+  await db
+    .update(federationOutbound)
+    .set({
+      nextAttemptAt: new Date("2030-01-01T00:00:00Z"),
+      cancelNextAttemptAt: new Date("2030-01-01T00:00:00Z"),
+    })
+    .where(
+      inArray(
+        federationOutbound.operationId,
+        db
+          .select({ operationId: workflowExecutionDelegations.operationId })
+          .from(workflowExecutionDelegations)
+          .where(inArray(workflowExecutionDelegations.runId, sourceRunIds)),
+      ),
+    );
+});
 
 beforeAll(async () => {
   await db
@@ -297,6 +322,8 @@ afterAll(async () => {
   await db.delete(auditLog).where(inArray(auditLog.orgId, orgIds));
   await db.delete(jobs).where(eq(jobs.submittedBy, executionUserId));
   await db.delete(workflowRuns).where(eq(workflowRuns.submittedBy, executionUserId));
+  if (sourceRunIds.length)
+    await db.delete(workflowRuns).where(inArray(workflowRuns.id, sourceRunIds));
   await db.delete(userOrgMemberships).where(inArray(userOrgMemberships.orgId, orgIds));
   await db.delete(users).where(inArray(users.id, [actor.userId, receiver.userId, executionUserId]));
   await db.delete(orgs).where(inArray(orgs.id, orgIds));
@@ -396,6 +423,301 @@ async function row(operationId: string) {
   if (!value) throw new Error("Missing outbound test row");
   return value;
 }
+
+async function workflowDelegationFixture() {
+  const f = await fixture();
+  const registry = new WorkflowRunRegistry(db);
+  const runId = crypto.randomUUID();
+  sourceRunIds.push(runId);
+  await db.insert(workflowRuns).values({
+    id: runId,
+    name: "Source delegated workflow",
+    status: "running",
+    submittedBy: actor.userId,
+    startedAt: new Date(),
+    input: { executionModel: "durable-v2", orgId: actor.orgId, role: "user", yaml: "" },
+  });
+  const journal = new WorkflowExecutionJournalStore(db);
+  const lease = await journal.acquire(runId);
+  if (!lease) throw new Error("Missing source execution lease");
+  const {
+    operationId: _op,
+    taskId: _task,
+    attempt: _attempt,
+    issuedAt: _issued,
+    expiresAt: _expires,
+    ...plan
+  } = f.request;
+  const invocation = { path: JSON.stringify(["node", "remote"]) };
+  return { ...f, registry, runId, journal, lease, plan, invocation };
+}
+
+test("workflow delegation keeps one immutable operation across concurrent calls and recovery, with separate loop invocations", async () => {
+  const f = await workflowDelegationFixture();
+  const plan = { ...f.plan, maxAmount: "20" };
+  const results = await Promise.all(
+    Array.from({ length: 4 }, () =>
+      f.service().enqueueForWorkflow(actor, f.lease, "remote", f.invocation, plan, 600),
+    ),
+  );
+  expect(new Set(results.map((r) => r.operationId)).size).toBe(1);
+  const first = results[0];
+  if (!first) throw new Error("Missing delegation");
+  const original = await row(first.operationId);
+  await f.lease.release();
+  time = new Date(time.getTime() + 120_000);
+  const lease = await new WorkflowExecutionJournalStore(db).acquire(f.runId);
+  if (!lease) throw new Error("Missing recovery lease");
+  const recovered = await f
+    .service()
+    .enqueueForWorkflow(actor, lease, "remote", f.invocation, plan, 600);
+  expect(recovered.operationId).toBe(first.operationId);
+  expect((await row(first.operationId)).request).toEqual(original.request);
+  const loop = await f
+    .service()
+    .enqueueForWorkflow(
+      actor,
+      lease,
+      "remote",
+      { path: JSON.stringify(["loop", "each", 1, "node", "remote"]) },
+      plan,
+      600,
+    );
+  expect(loop.operationId).not.toBe(first.operationId);
+  expect((await row(loop.operationId)).taskId).not.toBe(original.taskId);
+  expect(
+    await db
+      .select()
+      .from(workflowExecutionDelegations)
+      .where(eq(workflowExecutionDelegations.runId, f.runId)),
+  ).toHaveLength(2);
+  await lease.release();
+});
+
+test("workflow delegation rejects changed intent, foreign owners, stale leases and implicit onward delegation", async () => {
+  const f = await workflowDelegationFixture();
+  const service = f.service();
+  const first = await service.enqueueForWorkflow(
+    actor,
+    f.lease,
+    "remote",
+    f.invocation,
+    f.plan,
+    600,
+  );
+  await expect(
+    service.enqueueForWorkflow(
+      actor,
+      f.lease,
+      "remote",
+      f.invocation,
+      { ...f.plan, maxAmount: "59" },
+      600,
+    ),
+  ).rejects.toThrow("changed its delegation intent");
+  await expect(
+    service.enqueueForWorkflow(actor, f.lease, "remote", f.invocation, f.plan, 601),
+  ).rejects.toThrow("changed its delegation intent");
+  await expect(
+    service.enqueueForWorkflow(receiver, f.lease, "remote", f.invocation, f.plan, 600),
+  ).rejects.toThrow("POLICY_DENIED");
+  await expect(service.enqueue(actor, (await row(first.operationId)).request)).rejects.toThrow(
+    "POLICY_DENIED",
+  );
+  const run = await f.registry.getById(f.runId);
+  if (!run?.input) throw new Error("Missing input");
+  await db
+    .update(workflowRuns)
+    .set({ input: { ...run.input, federationReservationId: crypto.randomUUID() } })
+    .where(eq(workflowRuns.id, f.runId));
+  await expect(
+    service.enqueueForWorkflow(actor, f.lease, "remote", f.invocation, f.plan, 600),
+  ).rejects.toThrow("POLICY_DENIED");
+  await db.update(workflowRuns).set({ input: run.input }).where(eq(workflowRuns.id, f.runId));
+  await f.lease.release();
+  await expect(
+    service.enqueueForWorkflow(actor, f.lease, "remote", f.invocation, f.plan, 600),
+  ).rejects.toBeInstanceOf(WorkflowExecutionInterrupted);
+});
+
+test("workflow delegation cancellation between binding and outbox commit prevents every late enqueue", async () => {
+  const f = await workflowDelegationFixture();
+  let entered!: () => void;
+  let release!: () => void;
+  const reached = new Promise<void>((resolve) => {
+    entered = resolve;
+  });
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  class PausedAssets extends FederationAssetService {
+    override async resolveForDelegation(who: typeof actor, reference: FederationAssetRef) {
+      const result = await super.resolveForDelegation(who, reference);
+      entered();
+      await gate;
+      return result;
+    }
+  }
+  const service = new FederationOutboundService(
+    db,
+    a.signing,
+    f.receive,
+    new PausedAssets(db, { authorizeSoftware: async () => {} }),
+    clock,
+  );
+  const submission = service
+    .enqueueForWorkflow(actor, f.lease, "remote", f.invocation, f.plan, 600)
+    .then(
+      () => null,
+      (error: unknown) => error,
+    );
+  try {
+    await reached;
+    expect(await f.registry.requestCancel(f.runId)).toBe("cancelling");
+    await service.cancelWorkflow(f.runId);
+    expect(await f.registry.cancelRun(f.runId)).toBe(true);
+  } finally {
+    release();
+  }
+  expect(await submission).toBeInstanceOf(Error);
+  const [binding] = await db
+    .select()
+    .from(workflowExecutionDelegations)
+    .where(eq(workflowExecutionDelegations.runId, f.runId));
+  if (!binding) throw new Error("Missing durable binding");
+  expect(
+    await db
+      .select()
+      .from(federationOutbound)
+      .where(eq(federationOutbound.operationId, binding.operationId)),
+  ).toHaveLength(0);
+  await expect(service.enqueue(actor, binding.request)).rejects.toThrow("POLICY_DENIED");
+  expect(f.sent).toHaveLength(0);
+  await f.lease.release();
+});
+
+test("workflow delegation recovers a bound intent without an outbox and never extends an expired admission window", async () => {
+  const f = await workflowDelegationFixture();
+  const request = await bindWorkflowDelegation(
+    f.lease,
+    actor,
+    "remote",
+    f.invocation,
+    f.plan,
+    600,
+    clock,
+  );
+  await f.lease.release();
+  const lease = await f.journal.acquire(f.runId);
+  if (!lease) throw new Error("Missing recovery lease");
+  expect(
+    (await f.service().enqueueForWorkflow(actor, lease, "remote", f.invocation, f.plan, 600))
+      .operationId,
+  ).toBe(request.operationId);
+  const next = { path: JSON.stringify(["node", "expired"]) };
+  const plan: WorkflowDelegationPlan = { ...f.plan, maxAmount: "10" };
+  const expired = await bindWorkflowDelegation(lease, actor, "expired", next, plan, 1, clock);
+  time = new Date(time.getTime() + 2000);
+  await expect(
+    f.service().enqueueForWorkflow(actor, lease, "expired", next, plan, 1),
+  ).rejects.toThrow("AUTHORIZATION_EXPIRED");
+  expect(
+    await db
+      .select()
+      .from(federationOutbound)
+      .where(eq(federationOutbound.operationId, expired.operationId)),
+  ).toHaveLength(0);
+  expect(
+    (await bindWorkflowDelegation(lease, actor, "expired", next, plan, 1, clock)).expiresAt,
+  ).toBe(expired.expiresAt);
+  await lease.release();
+});
+
+test("workflow delegation cancellation survives submitter revocation and requires signed remote stop confirmation", async () => {
+  const f = await workflowDelegationFixture();
+  const receiver = new FederationCancellationReceiver(db, b.signing, clock);
+  const transmit: FederationSend = (endpoint, jws, path) =>
+    path === "/federation/v1/cancellations"
+      ? receiver.receive(jws, sourceFingerprint)
+      : f.receive(endpoint, jws);
+  const service = f.service(transmit);
+  const submitted = await service.enqueueForWorkflow(
+    actor,
+    f.lease,
+    "remote",
+    f.invocation,
+    f.plan,
+    600,
+  );
+  await service.deliverNext();
+  expect((await row(submitted.operationId)).state).toBe("accepted");
+  await expect(
+    service.cancellations.requestForWorkflow(f.runId, submitted.operationId),
+  ).rejects.toThrow("POLICY_DENIED");
+  await f.registry.requestCancel(f.runId);
+  await permission.set({ ...actor, capability: "delegation.submit", enabled: false }, actor.userId);
+  try {
+    await expect(service.cancelWorkflow(f.runId)).rejects.toThrow("awaiting stop confirmation");
+    expect(await f.registry.cancelRun(f.runId)).toBe(false);
+    await service.cancellations.deliverNext();
+    const monitor = new FederationCancellationMonitor(
+      db,
+      {
+        cancel: async () => {
+          throw new Error("No receiver run expected");
+        },
+      },
+      async () => {},
+      clock,
+    );
+    await monitor.tick();
+    time = new Date(time.getTime() + 11_000);
+    await f.service(transmit).cancellations.deliverNext();
+    await f.service(transmit).cancelWorkflow(f.runId);
+    expect(await f.registry.cancelRun(f.runId)).toBe(true);
+    expect((await f.registry.getById(f.runId))?.status).toBe("cancelled");
+  } finally {
+    await permission.set(
+      { ...actor, capability: "delegation.submit", enabled: true },
+      actor.userId,
+    );
+    await f.lease.release();
+  }
+});
+
+test("workflow delegation prevents success or failure from abandoning an unconfirmed remote task", async () => {
+  const f = await workflowDelegationFixture();
+  const submitted = await f
+    .service()
+    .enqueueForWorkflow(actor, f.lease, "remote", f.invocation, f.plan, 600);
+  expect(
+    await f.registry.completeRun(
+      f.runId,
+      { status: { remote: "Succeeded" }, values: { remote: { status: "Succeeded", values: {} } } },
+      f.lease,
+    ),
+  ).toBe(false);
+  expect((await f.registry.getById(f.runId))?.status).toBe("cancelling");
+  expect(await f.registry.cancelRun(f.runId)).toBe(false);
+  await f.service().deliverNext();
+  expect(f.sent).toHaveLength(0);
+  expect((await row(submitted.operationId)).lastError).toBe("CANCELLATION_REQUESTED");
+  await f.lease.release();
+  const g = await workflowDelegationFixture();
+  await g.service().enqueueForWorkflow(actor, g.lease, "remote", g.invocation, g.plan, 600);
+  expect(await g.registry.failRun(g.runId, new Error("Source execution failed"))).toBe(false);
+  expect(await g.registry.getById(g.runId)).toMatchObject({
+    status: "cancelling",
+    completedAt: null,
+    result: { status: { __run__: "Failed" } },
+  });
+  await db
+    .update(workflowRuns)
+    .set({ errorCode: "WORKFLOW_INTERRUPTED" })
+    .where(eq(workflowRuns.id, g.runId));
+  expect(await g.registry.failInterruptedRun(g.runId)).toBe(false);
+  await g.lease.release();
+});
 
 test("concurrent submission is durable, scoped and idempotent; one task attempt cannot be renamed", async () => {
   const f = await fixture();

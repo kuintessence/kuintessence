@@ -4,8 +4,11 @@ import {
   federationOutbound,
   federationSites,
   type PgDb,
+  type PgTransaction,
+  workflowExecutionDelegations,
+  workflowRuns,
 } from "@kuintessence/db";
-import { AppError, createLogger } from "@kuintessence/shared";
+import { AppError, createLogger, type NodeInvocation } from "@kuintessence/shared";
 import {
   assertDelegationPolicy,
   assertFederationStatusQueryFresh,
@@ -24,6 +27,7 @@ import {
   federationCanonicalJson,
 } from "@kuintessence/shared/federation";
 import { and, asc, desc, eq, isNull, lte, or, sql } from "drizzle-orm";
+import type { LeasedWorkflowJournal } from "../workflow/execution-journal";
 import type { FederationAssetService } from "./assets";
 import { cancellationSummary, FederationCancellationSender } from "./cancellation-outbound";
 import { FederationDeliveryError, type FederationSend } from "./outbound-client";
@@ -38,6 +42,11 @@ import {
   verifyFederationMessage,
 } from "./signatures";
 import { type FederationTransaction, FederationTrustRegistry } from "./trust-registry";
+import {
+  assertWorkflowDelegationOwner,
+  bindWorkflowDelegation,
+  type WorkflowDelegationPlan,
+} from "./workflow-delegations";
 
 type Outbound = typeof federationOutbound.$inferSelect;
 const logger = createLogger("federation-outbound");
@@ -134,6 +143,21 @@ export class FederationOutboundService {
     materials: Awaited<ReturnType<FederationOutboundService["materials"]>>,
     allowReplay = false,
   ) {
+    const [binding] = await tx
+      .select()
+      .from(workflowExecutionDelegations)
+      .where(
+        and(
+          eq(workflowExecutionDelegations.localSiteId, this.signingKey.siteId),
+          eq(workflowExecutionDelegations.operationId, request.operationId),
+        ),
+      );
+    if (binding) {
+      const run = await assertWorkflowDelegationOwner(tx, binding.runId, actor);
+      if (run.status !== "running") throw new FederationError("CANCELLATION_REQUESTED");
+      if (federationCanonicalJson(binding.request) !== federationCanonicalJson(request))
+        throw new FederationError("OPERATION_CONFLICT");
+    }
     await requireFederationCapability(tx, actor, "delegation.submit");
     for (const material of materials)
       await this.assets.assertResolved(tx, actor, material.reference, material.mappingId);
@@ -193,9 +217,57 @@ export class FederationOutboundService {
   }
 
   async enqueue(actor: FederationActor, raw: FederationDelegation) {
+    return this.enqueueRequest(actor, raw);
+  }
+
+  async enqueueForWorkflow(
+    actor: FederationActor,
+    lease: LeasedWorkflowJournal,
+    nodeId: string,
+    invocation: NodeInvocation,
+    plan: WorkflowDelegationPlan,
+    admissionWindowSec: number,
+  ) {
+    if (plan.senderSiteId !== this.signingKey.siteId) throw new FederationError("POLICY_DENIED");
+    const request = await bindWorkflowDelegation(
+      lease,
+      actor,
+      nodeId,
+      invocation,
+      plan,
+      admissionWindowSec,
+      this.clock,
+    );
+    return this.enqueueRequest(actor, request, lease);
+  }
+
+  private async enqueueRequest(
+    actor: FederationActor,
+    raw: FederationDelegation,
+    lease?: LeasedWorkflowJournal,
+  ) {
     const request = FederationDelegationSchema.parse(raw);
-    const prior = await this.db.transaction(async (tx) => {
+    const transaction = <T>(operation: (tx: PgTransaction) => Promise<T>) =>
+      lease
+        ? lease.transaction(async (tx) => {
+            await assertWorkflowDelegationOwner(tx, lease.runId, actor);
+            return operation(tx);
+          })
+        : this.db.transaction(operation);
+    const prior = await transaction(async (tx) => {
       await requireFederationCapability(tx, actor, "delegation.submit");
+      if (!lease) {
+        const [binding] = await tx
+          .select({ runId: workflowExecutionDelegations.runId })
+          .from(workflowExecutionDelegations)
+          .where(
+            and(
+              eq(workflowExecutionDelegations.localSiteId, this.signingKey.siteId),
+              eq(workflowExecutionDelegations.operationId, request.operationId),
+            ),
+          );
+        if (binding) throw new FederationError("POLICY_DENIED");
+      }
       const [row] = await tx.select().from(federationOutbound).where(this.key(request.operationId));
       if (!row) return undefined;
       if (
@@ -222,7 +294,7 @@ export class FederationOutboundService {
       authorized.ownKey,
       this.clock(),
     );
-    return this.db.transaction(async (tx) => {
+    return transaction(async (tx) => {
       const { terms, endpoint } = await this.authorize(tx, actor, request, materials, true);
       const [existing] = await tx
         .select()
@@ -299,6 +371,47 @@ export class FederationOutboundService {
       });
       return summary(created);
     });
+  }
+
+  /** Called only after the parent run has durably entered cancelling. */
+  async cancelWorkflow(runId: string): Promise<void> {
+    const operations = await this.db.transaction(async (tx) => {
+      const [run] = await tx
+        .select()
+        .from(workflowRuns)
+        .where(eq(workflowRuns.id, runId))
+        .for("update");
+      if (run?.status !== "cancelling") throw new FederationError("POLICY_DENIED");
+      return tx
+        .select({ operationId: workflowExecutionDelegations.operationId })
+        .from(workflowExecutionDelegations)
+        .innerJoin(
+          federationOutbound,
+          and(
+            eq(federationOutbound.localSiteId, workflowExecutionDelegations.localSiteId),
+            eq(federationOutbound.operationId, workflowExecutionDelegations.operationId),
+          ),
+        )
+        .where(
+          and(
+            eq(workflowExecutionDelegations.runId, runId),
+            eq(workflowExecutionDelegations.localSiteId, this.signingKey.siteId),
+          ),
+        );
+    });
+    let pending = false;
+    const errors: unknown[] = [];
+    for (const { operationId } of operations) {
+      try {
+        const cancellation = await this.cancellations.requestForWorkflow(runId, operationId);
+        if (cancellation?.state !== "stopped") pending = true;
+      } catch (error) {
+        errors.push(error);
+      }
+    }
+    if (errors.length)
+      throw new AggregateError(errors, "Workflow remote cancellation could not be queued");
+    if (pending) throw new Error("Workflow remote cancellation is awaiting stop confirmation");
   }
 
   async list(actor: FederationActor, limit = 50, offset = 0) {

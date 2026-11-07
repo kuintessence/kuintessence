@@ -1,4 +1,11 @@
-import { auditLog, federationOutbound, federationSites, type PgDb } from "@kuintessence/db";
+import {
+  auditLog,
+  federationOutbound,
+  federationSites,
+  type PgDb,
+  workflowExecutionDelegations,
+  workflowRuns,
+} from "@kuintessence/db";
 import {
   FederationCancellationReceiptSchema,
   FederationCancellationSchema,
@@ -15,6 +22,7 @@ import {
   verifyFederationMessage,
 } from "./signatures";
 import { type FederationTransaction, FederationTrustRegistry } from "./trust-registry";
+import { assertWorkflowDelegationOwner } from "./workflow-delegations";
 
 export function cancellationSummary(row: typeof federationOutbound.$inferSelect) {
   return row.cancelState
@@ -41,17 +49,73 @@ export class FederationCancellationSender {
   }
 
   async request(actor: FederationActor, operationId: string, retry = false) {
-    const authorize = async (tx: FederationTransaction) => {
-      await requireFederationCapability(tx, actor, "delegation.cancel");
-      const [row] = await tx
-        .select()
-        .from(federationOutbound)
-        .where(and(this.key(operationId), eq(federationOutbound.localOrgId, actor.orgId)))
-        .for("update");
-      if (!row) throw new FederationError("POLICY_DENIED");
-      return row;
-    };
-    const row = await this.db.transaction(authorize);
+    return this.requestAuthorized(
+      async (tx) => {
+        await requireFederationCapability(tx, actor, "delegation.cancel");
+        const [row] = await tx
+          .select()
+          .from(federationOutbound)
+          .where(and(this.key(operationId), eq(federationOutbound.localOrgId, actor.orgId)))
+          .for("update");
+        if (!row) throw new FederationError("POLICY_DENIED");
+        return { row, actor };
+      },
+      operationId,
+      retry,
+    );
+  }
+
+  /** A cancelling durable run carries stop authority even if its submitter was revoked. */
+  async requestForWorkflow(runId: string, operationId: string) {
+    return this.requestAuthorized(
+      async (tx) => {
+        const [run] = await tx
+          .select()
+          .from(workflowRuns)
+          .where(eq(workflowRuns.id, runId))
+          .for("update");
+        if (run?.status !== "cancelling" || !run.submittedBy || !run.input?.orgId)
+          throw new FederationError("POLICY_DENIED");
+        const actor = { userId: run.submittedBy, orgId: run.input.orgId };
+        await assertWorkflowDelegationOwner(tx, runId, actor);
+        const [binding] = await tx
+          .select()
+          .from(workflowExecutionDelegations)
+          .where(
+            and(
+              eq(workflowExecutionDelegations.runId, runId),
+              eq(workflowExecutionDelegations.localSiteId, this.signingKey.siteId),
+              eq(workflowExecutionDelegations.operationId, operationId),
+            ),
+          );
+        const [row] = await tx
+          .select()
+          .from(federationOutbound)
+          .where(this.key(operationId))
+          .for("update");
+        if (
+          !binding ||
+          !row ||
+          row.submittedBy !== actor.userId ||
+          row.localOrgId !== actor.orgId ||
+          federationCanonicalJson(binding.request) !== federationCanonicalJson(row.request)
+        )
+          throw new FederationError("POLICY_DENIED");
+        return { row, actor };
+      },
+      operationId,
+      false,
+    );
+  }
+
+  private async requestAuthorized(
+    authorize: (
+      tx: FederationTransaction,
+    ) => Promise<{ row: typeof federationOutbound.$inferSelect; actor: FederationActor }>,
+    operationId: string,
+    retry: boolean,
+  ) {
+    const { row } = await this.db.transaction(authorize);
     if (row.cancelState && (!retry || row.cancelState === "stopped"))
       return cancellationSummary(row);
     if (retry && (!row.cancelState || row.cancelState === "sending"))
@@ -84,7 +148,7 @@ export class FederationCancellationSender {
       this.clock(),
     );
     return this.db.transaction(async (tx) => {
-      const current = await authorize(tx);
+      const { row: current, actor } = await authorize(tx);
       if (current.cancelState && (!retry || current.cancelState === "stopped"))
         return cancellationSummary(current);
       if (retry && (current.cancelState === "sending" || current.cancelDigest !== verified.digest))

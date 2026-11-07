@@ -1,4 +1,5 @@
 import type { FileInputValue, JobSubmission, WorkflowJournalEntry } from "@kuintessence/shared";
+import type { FederationDelegation } from "@kuintessence/shared/federation";
 import { sql } from "drizzle-orm";
 import {
   check,
@@ -99,6 +100,36 @@ export const workflowExecutionJobs = pgTable(
     check(
       "workflow_execution_job_dispatch_state",
       sql`${t.dispatchState} IN ('pending', 'acknowledged')`,
+    ),
+  ],
+);
+
+/** An invocation fixes its remote identity before preparing the signed outbox message. */
+export const workflowExecutionDelegations = pgTable(
+  "workflow_execution_delegations",
+  {
+    runId: uuid("run_id")
+      .notNull()
+      .references(() => workflowExecutionLeases.runId, { onDelete: "cascade" }),
+    pathHash: varchar("path_hash", { length: 64 }).notNull(),
+    path: text("path").notNull(),
+    nodeId: text("node_id").notNull(),
+    localSiteId: uuid("local_site_id").notNull(),
+    operationId: uuid("operation_id").notNull(),
+    intentDigest: varchar("intent_digest", { length: 64 }).notNull(),
+    request: jsonb("request").$type<FederationDelegation>().notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.runId, t.pathHash] }),
+    uniqueIndex("workflow_execution_delegation_operation").on(t.localSiteId, t.operationId),
+    check(
+      "workflow_execution_delegation_hash",
+      sql`${t.pathHash} ~ '^[0-9a-f]{64}$' AND ${t.intentDigest} ~ '^[0-9a-f]{64}$'`,
+    ),
+    check(
+      "workflow_execution_delegation_request",
+      sql`${t.request}->>'operationId' = ${t.operationId}::text AND ${t.request}->>'senderSiteId' = ${t.localSiteId}::text`,
     ),
   ],
 );

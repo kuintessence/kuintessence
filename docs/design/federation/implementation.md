@@ -289,7 +289,13 @@ checkpoint 保存：固定 Workflow/引用软件修订、动态 scope path、已
 
 一个 scope 中的等待节点及其下游不写终态 checkpoint，无关分支继续完成并保存检查点；ForEach 的等待迭代仍占用 maxParallel 名额，不因释放本地调用栈而无限派发其他迭代。嵌套 SubWorkflow/While/ForEach 传播带动态路径的等待；While 不提前进入下一次依赖迭代，Switch 不用缺失结果选择分支。数据库或执行租约故障仍中断所有后续副作用，不能冒充正常业务等待。
 
-可运行分支收尾后，Server 用当前 lease 将等待快照写入 workflow_runs.waiting_invocations（迁移 0106），每项含 path 和 reason，保留 status=running、completedAt=null，errorCode=WORKFLOW_WAITING。已有运行查询权限下可读取快照；后台按原恢复机制重建运行并复用完成检查点。成功/失败终态清除等待快照，取消仍经过既有停止确认回调再结束。该快照是最近一次让出执行时的等待观测，不是外部任务绑定；普通 Workflow 联邦 invocation 的独立持久绑定和真实取消转发仍待接入。
+可运行分支收尾后，Server 用当前 lease 将等待快照写入 workflow_runs.waiting_invocations（迁移 0106），每项含 path 和 reason，保留 status=running、completedAt=null，errorCode=WORKFLOW_WAITING。已有运行查询权限下可读取快照；后台按原恢复机制重建运行并复用完成检查点。成功/失败终态清除等待快照，取消仍经过既有停止确认回调再结束。该快照是最近一次让出执行时的等待观测，不是外部任务绑定。独立绑定及取消转发的服务边界现已实现，普通 Workflow 联邦节点执行者及结果消费仍待接入。
+
+源站内部 enqueueForWorkflow 入口先在执行 lease 下写入 workflow_execution_delegations（迁移 0107），以 runId + 动态路径 SHA-256 唯一定位，同时保存原路径以检查碰撞。首次分配 operationId/taskId/attempt=1、issuedAt/expiresAt，固定协议、模板、输入摘要、环境锁、预算和资源参数；相同 invocation 恢复复用原请求，不延长截止时间或生成新 attempt。更改意图/节点身份、其他用户或组织、旧租约及接收站点的隐式再委派均拒绝。材料检查与签名完成后，入队事务再次锁定运行和 lease；取消与入队因此有明确先后，绑定但尚未入队的窗口可安全恢复或取消。
+
+普通委派 API 不得重放已绑定 Workflow 的请求来绕过 lease。后台发送及输入材料披露也检查父运行仍为 running。服务端取消回调同时推进本地 Job 和远端操作，不因一方等待而阻止另一方发出停止请求。内部 requestForWorkflow 只允许已进入 cancelling 的 durable run，核对原提交者、组织及完整绑定请求；其停止权限来自持久运行取消意图，不因原用户被撤权而丢失，但机构签名/信任要求继续有效。未入队的绑定没有远端副作用；已入队的操作必须拿到签名 stopped 回执才可结束取消。接收未知操作的永久撤回机制仍用于防止迟到派单。
+
+运行完成检查会把尚无可信远端终态的活动委派转入取消；执行失败也不能绕过清理直接终态。取消和中断收尾在数据库再次检查停止回执，即便取消回调未配置，也不会提前把运行标为已停止。这里尚未实现将远端 completed 与已回传文件组合成节点成功的执行者；签名状态不能代替结果文件就绪。
 
 恢复先读取 checkpoint、已绑定任务和持久状态，重新订阅事件/查询远端；不得从头重新执行已完成脚本。完成事件可能早于等待注册，数据库是事实来源，现有内存 JobCompletionRegistry 仅作为通知加速，不承担唯一状态。
 

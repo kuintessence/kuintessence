@@ -1275,14 +1275,22 @@ const workflowAsyncRunner = new WorkflowAsyncRunner({
     makeRunner(submittedBy, role, false, runId, placementConfig, orgId, lease),
   awaitCheckpointPersistence: (runId) => workflowArtifactService.awaitCheckpointPersistence(runId),
   markArtifactsTerminal: (runId) => workflowArtifactService.markWorkflowTerminal(runId),
-  cancelSubmittedJobs: (runId) =>
-    cancelWorkflowJobs(
-      runId,
-      workflowRegistry,
-      jobService,
-      jobCancellationOutbox,
-      jobCompletionRegistry,
-    ),
+  cancelSubmittedJobs: async (runId) => {
+    const results = await Promise.allSettled([
+      cancelWorkflowJobs(
+        runId,
+        workflowRegistry,
+        jobService,
+        jobCancellationOutbox,
+        jobCompletionRegistry,
+      ),
+      federationOutbound?.cancelWorkflow(runId),
+    ]);
+    const errors = results
+      .filter((result) => result.status === "rejected")
+      .map((result) => result.reason);
+    if (errors.length) throw new AggregateError(errors, "Workflow cancellation is pending");
+  },
 });
 
 async function collectWorkflowOutputFiles(input: {
