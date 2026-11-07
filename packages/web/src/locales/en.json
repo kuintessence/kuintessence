@@ -1676,6 +1676,10 @@
         "placement": {
           "title": "Scheduler explanations",
           "description": "Inspect placement reasoning for permission, software, metering, load, and cost filters."
+        },
+        "federationTrust": {
+          "title": "Federation trust",
+          "description": "Institutions, signing keys, and client certificates"
         }
       },
       "auditSettings": "Audit settings",
@@ -1888,7 +1892,8 @@
       "ssh-sessions": "SSH sessions",
       "ssh-recordings": "SSH recordings",
       "cluster-file-roots": "Cluster file roots",
-      "cost-rates": "Cost rates"
+      "cost-rates": "Cost rates",
+      "federation-trust": "Federation trust"
     }
   },
   "terminal": {

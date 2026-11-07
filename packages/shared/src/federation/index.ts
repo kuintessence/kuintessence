@@ -233,3 +233,5 @@ export * from "./results";
 export * from "./status";
 
 export * from "./storage-reconciliation";
+
+export * from "./trust";

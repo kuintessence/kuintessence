@@ -6,70 +6,25 @@ import {
   federationSites,
   type PgDb,
 } from "@kuintessence/db";
-import { FederationError } from "@kuintessence/shared/federation";
+import {
+  FederationCertificateInput,
+  FederationError,
+  FederationKeyInput,
+  FederationSiteInput,
+} from "@kuintessence/shared/federation";
 import { and, asc, eq } from "drizzle-orm";
 import { exportSPKI } from "jose";
-import { z } from "zod";
+import type { z } from "zod";
 import { type FederationVerificationKey, parseFederationPublicKey } from "./signatures";
 
 export { parseFederationPublicKey } from "./signatures";
 
 export type FederationTransaction = Parameters<Parameters<PgDb["transaction"]>[0]>[0];
-export const FederationSiteInput = z.strictObject({
-  id: z.uuid(),
-  name: z.string().trim().min(1).max(200),
-  endpoint: z
-    .string()
-    .max(2048)
-    .url()
-    .refine((value) => {
-      const url = new URL(value);
-      return (
-        url.protocol === "https:" &&
-        !url.username &&
-        !url.password &&
-        !url.search &&
-        !url.hash &&
-        url.pathname === "/"
-      );
-    }, "Expected HTTPS origin without credentials, path or query"),
-});
-export const FederationKeyInput = z
-  .strictObject({
-    keyId: z.string().regex(/^[a-zA-Z0-9_.:-]{1,128}$/),
-    publicKeyPem: z.string().min(1).max(16384),
-    allowedKinds: z
-      .array(
-        z.enum([
-          "agreement",
-          "delegation",
-          "acceptance",
-          "evidence-batch",
-          "status-query",
-          "status-report",
-          "cancellation",
-          "cancellation-receipt",
-          "result-query",
-          "result-report",
-          "result-download-query",
-          "result-download-grant",
-          "result-receipt",
-          "result-receipt-ack",
-          "material-query",
-          "material-chunk",
-          "input-download-query",
-          "input-download-grant",
-        ]),
-      )
-      .min(1)
-      .max(18),
-    validFrom: z.iso.datetime(),
-    validUntil: z.iso.datetime(),
-  })
-  .refine((v) => Date.parse(v.validFrom) < Date.parse(v.validUntil), "Invalid validity interval");
-export const FederationCertificateInput = z.strictObject({
-  certificatePem: z.string().min(1).max(16384),
-});
+export {
+  FederationCertificateInput,
+  FederationKeyInput,
+  FederationSiteInput,
+} from "@kuintessence/shared/federation";
 
 function requireValid(
   row: { validFrom: Date; validUntil: Date; revokedAt: Date | null },
