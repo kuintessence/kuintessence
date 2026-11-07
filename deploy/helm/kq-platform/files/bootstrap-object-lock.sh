@@ -157,7 +157,7 @@ cat >"${work_dir}/policy.json" <<EOF
       "Sid": "ReadNetDriveObjectVersions",
       "Effect": "Allow",
       "Action": "s3:GetObjectVersion",
-      "Resource": ["arn:aws:s3:::${netdrive_bucket}/netdrive/*", "arn:aws:s3:::${netdrive_bucket}/federation-results/*"]
+      "Resource": ["arn:aws:s3:::${netdrive_bucket}/netdrive/*", "arn:aws:s3:::${netdrive_bucket}/federation-results/*", "arn:aws:s3:::${netdrive_bucket}/federation-inputs/*"]
     },
     {
       "Sid": "ListFederationResultResidue",
@@ -171,6 +171,19 @@ cat >"${work_dir}/policy.json" <<EOF
       "Effect": "Allow",
       "Action": "s3:DeleteObjectVersion",
       "Resource": "arn:aws:s3:::${netdrive_bucket}/federation-results/*"
+    },
+    {
+      "Sid": "ListFederationInputResidue",
+      "Effect": "Allow",
+      "Action": ["s3:ListBucketMultipartUploads", "s3:ListBucketVersions"],
+      "Resource": "arn:aws:s3:::${netdrive_bucket}",
+      "Condition": {"StringLike": {"s3:prefix": "federation-inputs/*"}}
+    },
+    {
+      "Sid": "DeleteFederationInputVersions",
+      "Effect": "Allow",
+      "Action": "s3:DeleteObjectVersion",
+      "Resource": "arn:aws:s3:::${netdrive_bucket}/federation-inputs/*"
     },
     {
       "Sid": "ReadImmutableBucketControls",

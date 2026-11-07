@@ -720,7 +720,7 @@ export const federationInputTransfers = pgTable(
     uniqueIndex("federation_input_transfer_member").on(t.importId, t.descriptor, t.path),
     check(
       "federation_input_transfer_state",
-      sql`${t.state} IN ('pending', 'copying', 'cleanup_pending', 'cancelled')`,
+      sql`${t.state} IN ('pending', 'copying', 'assembling', 'verifying', 'verified', 'cleanup_pending', 'cancelled')`,
     ),
     check(
       "federation_input_transfer_size",
@@ -746,6 +746,12 @@ export const federationInputAttempts = pgTable(
     allocationStartedAt: timestamp("allocation_started_at", { withTimezone: true }),
     cleanupToken: uuid("cleanup_token"),
     uploadId: text("upload_id"),
+    parts: jsonb("parts").$type<Array<{ partNumber: number; etag: string }>>(),
+    completionStartedAt: timestamp("completion_started_at", { withTimezone: true }),
+    completionSettledAt: timestamp("completion_settled_at", { withTimezone: true }),
+    destinationVersionId: text("destination_version_id"),
+    destinationEtag: varchar("destination_etag", { length: 255 }),
+    verifiedAt: timestamp("verified_at", { withTimezone: true }),
     leaseUntil: timestamp("lease_until", { withTimezone: true }).notNull(),
     lastError: varchar("last_error", { length: 64 }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
@@ -758,15 +764,35 @@ export const federationInputAttempts = pgTable(
       .where(sql`${t.state} != 'cleaned'`),
     uniqueIndex("federation_input_attempt_active_agent")
       .on(t.agentId)
-      .where(sql`${t.state} IN ('preparing', 'copying')`),
+      .where(sql`${t.state} IN ('preparing', 'copying', 'assembling', 'verifying')`),
     index("federation_input_attempt_lease").on(t.state, t.leaseUntil),
     check(
       "federation_input_attempt_state",
-      sql`${t.state} IN ('preparing', 'copying', 'cleanup_pending', 'cleaned')`,
+      sql`${t.state} IN ('preparing', 'copying', 'assembling', 'verifying', 'verified', 'cleanup_pending', 'cleaned')`,
     ),
     check(
       "federation_input_attempt_upload",
-      sql`${t.state} != 'copying' OR (${t.uploadId} IS NOT NULL AND ${t.allocationStartedAt} IS NOT NULL)`,
+      sql`${t.state} NOT IN ('copying', 'assembling', 'verifying', 'verified') OR (${t.uploadId} IS NOT NULL AND ${t.allocationStartedAt} IS NOT NULL)`,
+    ),
+    check(
+      "federation_input_attempt_parts",
+      sql`${t.state} NOT IN ('assembling', 'verifying', 'verified') OR ${t.parts} IS NOT NULL`,
+    ),
+    check(
+      "federation_input_completion_started",
+      sql`${t.completionStartedAt} IS NULL OR (${t.uploadId} IS NOT NULL AND ${t.parts} IS NOT NULL)`,
+    ),
+    check(
+      "federation_input_completion_settled",
+      sql`${t.completionSettledAt} IS NULL OR (${t.completionStartedAt} IS NOT NULL AND ${t.destinationEtag} IS NOT NULL)`,
+    ),
+    check(
+      "federation_input_attempt_destination",
+      sql`${t.state} NOT IN ('verifying', 'verified') OR (${t.completionSettledAt} IS NOT NULL AND ${t.destinationVersionId} IS NOT NULL AND ${t.destinationVersionId} != 'null')`,
+    ),
+    check(
+      "federation_input_attempt_verified",
+      sql`${t.state} != 'verified' OR ${t.verifiedAt} IS NOT NULL`,
     ),
     check(
       "federation_input_attempt_allocated",

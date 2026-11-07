@@ -217,6 +217,22 @@ test("result recovery IAM lists only its prefix and cannot delete ordinary NetDr
     Resource: `arn:aws:s3:::\${netdrive_bucket}/federation-results/*`,
   });
   expect(
+    policy.Statement.find((statement) => statement.Sid === "ListFederationInputResidue"),
+  ).toMatchObject({
+    Action: ["s3:ListBucketMultipartUploads", "s3:ListBucketVersions"],
+    Resource: `arn:aws:s3:::\${netdrive_bucket}`,
+    Condition: { StringLike: { "s3:prefix": "federation-inputs/*" } },
+  });
+  expect(
+    policy.Statement.find((statement) => statement.Sid === "DeleteFederationInputVersions"),
+  ).toMatchObject({
+    Action: "s3:DeleteObjectVersion",
+    Resource: `arn:aws:s3:::\${netdrive_bucket}/federation-inputs/*`,
+  });
+  expect(
+    policy.Statement.find((statement) => statement.Sid === "ReadNetDriveObjectVersions")?.Resource,
+  ).toContain(`arn:aws:s3:::\${netdrive_bucket}/federation-inputs/*`);
+  expect(
     policy.Statement.find((statement) => statement.Sid === "DenyImmutableDeletes")?.Effect,
   ).toBe("Deny");
 });

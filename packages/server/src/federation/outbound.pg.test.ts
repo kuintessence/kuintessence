@@ -100,7 +100,7 @@ import type { FederationDownloadStorage } from "./download-credential";
 import { createFederationIngress } from "./ingress";
 import { FederationInputImports } from "./input-imports";
 import { FederationInputReader } from "./input-reader";
-import { FederationInputStorage } from "./input-storage";
+import { FederationInputStorage, type FederationInputStorageBackend } from "./input-storage";
 import { FederationInputTransfers } from "./input-transfers";
 import { FederationMaterialExchange } from "./material-exchange";
 import { FederationOutboundService, FederationOutboundWorker } from "./outbound";
@@ -5745,6 +5745,21 @@ test("input transfers recheck identity, Agent ownership and manifest before each
   }
 });
 
+const unassembledInputStorage: Pick<
+  FederationInputStorageBackend,
+  "head" | "completeMultipartUpload" | "presignDownload"
+> = {
+  head: async () => {
+    throw new Error("No completed object expected");
+  },
+  completeMultipartUpload: async () => {
+    throw new Error("No completion expected");
+  },
+  presignDownload: async () => {
+    throw new Error("No verification expected");
+  },
+};
+
 test("input storage allocates outside locks, fences late revocation and releases nothing after a failed purge", async () => {
   const f = await inputTransferFixture();
   let created = 0,
@@ -5755,6 +5770,7 @@ test("input storage allocates outside locks, fences late revocation and releases
       presignUploadPart: async () => {
         throw new Error("No grant expected");
       },
+      ...unassembledInputStorage,
       createMultipartUpload: async () => {
         created++;
         // This would deadlock if storage I/O ran under the execution identity locks.
@@ -5807,6 +5823,7 @@ test("input storage keeps timed-out allocation ownership and cleans a late respo
       presignUploadPart: async () => {
         throw new Error("No grant expected");
       },
+      ...unassembledInputStorage,
       createMultipartUpload: async () => {
         creates++;
         return allocated.promise;
@@ -5854,6 +5871,7 @@ test("input storage cleans an unissued allocation permit without storage effects
     presignUploadPart: async () => {
       throw new Error("No grant expected");
     },
+    ...unassembledInputStorage,
     createMultipartUpload: async () => {
       creates++;
       return { uploadId: "retry-upload" };
@@ -5975,7 +5993,8 @@ async function inputGrantFixture() {
   };
   const reader = (transport = send) =>
     new FederationInputReader(db, b.signing, transport, f.transfers, clock);
-  const backend = {
+  const backend: FederationInputStorageBackend = {
+    ...unassembledInputStorage,
     createMultipartUpload: async () => ({ uploadId: "receiver-upload" }),
     cleanupFederationInput: async () => {},
     presignUploadPart: async (
@@ -6333,6 +6352,439 @@ test("input grants pin multipart target and reject long-lived URLs, late revocat
     }
   } finally {
     f.backend.presignUploadPart = presign;
+    await f.lease.release();
+  }
+});
+
+async function inputVerificationFixture() {
+  const f = await inputGrantFixture();
+  let object: ObjectStat | null = null,
+    completions = 0,
+    cleanups = 0;
+  f.backend.completeMultipartUpload = async (_key, uploadId, parts) => {
+    expect(uploadId).toBe("receiver-upload");
+    expect(parts).toEqual([{ partNumber: 1, etag: "input-part" }]);
+    completions++;
+    object = {
+      size: f.binding.sizeBytes,
+      etag: "input-object",
+      versionId: "input-version",
+      contentType: "application/octet-stream",
+      lastModified: clock(),
+    };
+    return { etag: object.etag, versionId: object.versionId };
+  };
+  f.backend.head = async (_key, version) =>
+    !object || (version && version !== object.versionId) ? null : { ...object };
+  f.backend.cleanupFederationInput = async () => {
+    cleanups++;
+    object = null;
+  };
+  f.backend.presignDownload = async (key, seconds, _filename, version) => {
+    const url = new URL(`https://destination.test.invalid/${key}`);
+    url.searchParams.set("versionId", version ?? "");
+    url.searchParams.set(
+      "X-Amz-Date",
+      clock()
+        .toISOString()
+        .replace(/[-:]/g, "")
+        .replace(/\.\d{3}/, ""),
+    );
+    url.searchParams.set("X-Amz-Expires", String(seconds));
+    url.searchParams.set("X-Amz-Signature", "private-verification-ticket");
+    return url.toString();
+  };
+  const copied = {
+    binding: f.binding,
+    sizeBytes: f.binding.sizeBytes,
+    sha256: f.binding.sha256,
+    parts: [{ partNumber: 1, etag: "input-part" }],
+  };
+  const attempt = async () =>
+    (
+      await db
+        .select()
+        .from(federationInputAttempts)
+        .where(eq(federationInputAttempts.generation, f.binding.generation))
+    )[0];
+  const storage = (timeoutMs = 10_000) =>
+    new FederationInputStorage(f.transferService(), f.backend, {
+      clock,
+      timeoutMs,
+      grants: {
+        reader: f.reader(),
+        sourceOrigins: f.downloads.allowedOrigins,
+        destinationOrigins: ["https://destination.test.invalid"],
+      },
+    });
+  return {
+    ...f,
+    copied,
+    attempt,
+    recoverStorage: storage,
+    object: () => object,
+    setObject: (value: ObjectStat | null) => {
+      object = value;
+    },
+    completions: () => completions,
+    cleanups: () => cleanups,
+  };
+}
+
+test("input verification persists copied parts and independently pinned verification without publishing a file", async () => {
+  const f = await inputVerificationFixture();
+  try {
+    expect(await f.transfers.copied(f.agentId, f.copied)).toEqual({ state: "assembling" });
+    expect(await f.transfers.copied(f.agentId, f.copied)).toEqual({ state: "assembling" });
+    expect(f.completions()).toBe(0);
+    await expect(f.storage.grant(f.agentId, f.binding, "upload", 1)).rejects.toThrow(
+      "OPERATION_CONFLICT",
+    );
+    const assembled = await f.storage.assemble(f.agentId, f.binding.generation);
+    expect(f.completions()).toBe(1);
+    expect((await f.attempt())?.verifiedAt).toBeNull();
+    expect((await f.attempt())?.state).toBe("verifying");
+    expect(await f.recoverStorage().assemble(f.agentId, f.binding.generation)).toEqual(assembled);
+    expect(f.completions()).toBe(1);
+    const grant = await f.storage.verificationGrant(f.agentId, assembled.task);
+    expect(grant.grant).toMatchObject({ ...assembled.task, direction: "verify" });
+    expect(new URL(grant.grant.url).searchParams.get("versionId")).toBe("input-version");
+    expect(Date.parse(grant.grant.expiresAt) - clock().getTime()).toBe(30_000);
+    const receipt = { ...assembled.task, sizeBytes: f.binding.sizeBytes, sha256: f.binding.sha256 };
+    await f.storage.verified(f.agentId, receipt);
+    await f.recoverStorage().verified(f.agentId, receipt);
+    expect((await f.attempt())?.state).toBe("verified");
+    expect((await f.attempt())?.verifiedAt).toBeInstanceOf(Date);
+    await expect(f.transfers.failed(f.agentId, f.binding.generation)).rejects.toThrow(
+      "OPERATION_CONFLICT",
+    );
+    expect((await f.inventory())[0]).toMatchObject({
+      state: "transferring",
+      reservedBytes: f.binding.sizeBytes,
+    });
+    expect(
+      await db.select().from(netdriveFiles).where(eq(netdriveFiles.ownerId, executionUserId)),
+    ).toHaveLength(0);
+    expect(JSON.stringify(await f.attempt())).not.toContain("private-verification-ticket");
+  } finally {
+    await f.lease.release();
+  }
+});
+
+test("input verification refuses changed multipart reports and verification receipts", async () => {
+  const f = await inputVerificationFixture();
+  try {
+    for (const receipt of [
+      { ...f.copied, sha256: "b".repeat(64) },
+      { ...f.copied, sizeBytes: f.binding.sizeBytes + 1 },
+      { ...f.copied, binding: { ...f.binding, descriptor: "other" } },
+      { ...f.copied, parts: [{ partNumber: 2, etag: "input-part" }] },
+    ])
+      await expect(f.transfers.copied(f.agentId, receipt)).rejects.toThrow("INVALID_MESSAGE");
+    await f.transfers.copied(f.agentId, f.copied);
+    await expect(
+      f.transfers.copied(f.agentId, { ...f.copied, parts: [{ partNumber: 1, etag: "changed" }] }),
+    ).rejects.toThrow("OPERATION_CONFLICT");
+    const { task } = await f.storage.assemble(f.agentId, f.binding.generation);
+    const receipt = { ...task, sizeBytes: f.binding.sizeBytes, sha256: f.binding.sha256 };
+    for (const changed of [
+      { ...receipt, sha256: "b".repeat(64) },
+      { ...receipt, sizeBytes: receipt.sizeBytes + 1 },
+      { ...receipt, object: { ...receipt.object, versionId: "changed" } },
+      { ...receipt, binding: { ...receipt.binding, manifestDigest: `sha256:${"b".repeat(64)}` } },
+    ])
+      await expect(f.storage.verified(f.agentId, changed)).rejects.toThrow("OPERATION_CONFLICT");
+    await expect(f.storage.verified("another-agent", receipt)).rejects.toThrow(
+      "OPERATION_CONFLICT",
+    );
+    expect((await f.attempt())?.state).toBe("verifying");
+    expect((await f.attempt())?.verifiedAt).toBeNull();
+  } finally {
+    await f.lease.release();
+  }
+});
+
+test("input verification issues only one completion request and retains cancelled quota across a late response", async () => {
+  const f = await inputVerificationFixture();
+  const release = Promise.withResolvers<void>(),
+    issued = Promise.withResolvers<void>(),
+    recorded = Promise.withResolvers<void>();
+  const complete = f.backend.completeMultipartUpload;
+  f.backend.completeMultipartUpload = async (...args) => {
+    issued.resolve();
+    await release.promise;
+    return complete(...args);
+  };
+  const transfers = f.transferService();
+  const record = transfers.completed.bind(transfers);
+  transfers.completed = async (...args) => {
+    await record(...args);
+    recorded.resolve();
+  };
+  const storage = new FederationInputStorage(transfers, f.backend, { clock, timeoutMs: 20 });
+  try {
+    await f.transfers.copied(f.agentId, f.copied);
+    const first = storage.assemble(f.agentId, f.binding.generation).then(
+      () => "unexpected",
+      (error) => String(error),
+    );
+    await issued.promise;
+    await expect(storage.assemble(f.agentId, f.binding.generation)).rejects.toThrow("DATA_WAITING");
+    expect(await first).toBe("Error: FEDERATION_INPUT_STORAGE_UNAVAILABLE");
+    await db.update(users).set({ suspended: true }).where(eq(users.id, executionUserId));
+    await f.imports.sweep();
+    const attempt = await f.attempt();
+    if (!attempt) throw new Error("Missing completion attempt");
+    time = new Date(attempt.leaseUntil.getTime() + 1);
+    expect(await storage.cleanup()).toBe(0);
+    expect(f.cleanups()).toBe(0);
+    expect((await f.inventory())[0]).toMatchObject({
+      state: "cancelling",
+      reservedBytes: f.binding.sizeBytes,
+    });
+    await expect(f.transfers.beginCleanup(f.binding.generation)).rejects.toThrow("DATA_WAITING");
+    release.resolve();
+    await recorded.promise;
+    expect(f.completions()).toBe(1);
+    expect(await storage.cleanup()).toBe(1);
+    expect((await f.inventory())[0]).toMatchObject({ state: "cancelled", reservedBytes: 0 });
+    expect((await f.attempt())?.state).toBe("cleaned");
+    await f.transfers.completed(f.binding.generation, {
+      etag: "input-object",
+      versionId: "input-version",
+    });
+    expect((await f.attempt())?.state).toBe("cleaned");
+  } finally {
+    release.resolve();
+    await recorded.promise;
+    await db.update(users).set({ suspended: false }).where(eq(users.id, executionUserId));
+    await f.lease.release();
+  }
+});
+
+test("input verification recovers a completed object after a lost response without reissuing completion", async () => {
+  const f = await inputVerificationFixture();
+  try {
+    await f.transfers.copied(f.agentId, f.copied);
+    expect(await f.transfers.startCompletion(f.agentId, f.binding.generation)).toBe(true);
+    const attempt = await f.attempt();
+    if (!attempt?.uploadId) throw new Error("Missing upload");
+    // Simulate a crash after storage completed, before the process recorded its successful response.
+    await f.backend.completeMultipartUpload(attempt.storageKey, attempt.uploadId, f.copied.parts);
+    expect((await f.attempt())?.completionSettledAt).toBeNull();
+    const recovered = await f.recoverStorage().assemble(f.agentId, f.binding.generation);
+    expect(f.completions()).toBe(1);
+    expect(recovered.task.object).toEqual({ etag: "input-object", versionId: "input-version" });
+    expect((await f.attempt())?.state).toBe("verifying");
+    expect((await f.attempt())?.verifiedAt).toBeNull();
+  } finally {
+    await f.lease.release();
+  }
+});
+
+test("input verification cleanup reconciles positive completion evidence but never treats missing HEAD as settled", async () => {
+  const f = await inputVerificationFixture();
+  try {
+    await f.transfers.copied(f.agentId, f.copied);
+    await f.transfers.startCompletion(f.agentId, f.binding.generation);
+    const attempt = await f.attempt();
+    if (!attempt?.uploadId) throw new Error("Missing upload");
+    time = new Date(attempt.leaseUntil.getTime() + 1);
+    expect(await f.storage.cleanup()).toBe(0);
+    expect((await f.attempt())?.lastError).toBe("COMPLETION_UNCONFIRMED");
+    expect((await f.attempt())?.completionSettledAt).toBeNull();
+    expect((await f.inventory())[0]?.reservedBytes).toBe(f.binding.sizeBytes);
+    await f.backend.completeMultipartUpload(attempt.storageKey, attempt.uploadId, f.copied.parts);
+    expect(await f.recoverStorage().cleanup()).toBe(1);
+    expect(f.completions()).toBe(1);
+    expect(f.cleanups()).toBe(1);
+    expect((await f.attempt())?.state).toBe("cleaned");
+    expect((await f.attempt())?.verifiedAt).toBeNull();
+    expect((await f.inventory())[0]?.reservedBytes).toBe(f.binding.sizeBytes);
+  } finally {
+    await f.lease.release();
+  }
+});
+
+test.each([
+  "size",
+  "version",
+] as const)("input verification quarantines invalid %s on completed objects for cleanup", async (failure) => {
+  const f = await inputVerificationFixture();
+  try {
+    const complete = f.backend.completeMultipartUpload;
+    f.backend.completeMultipartUpload = async (...args) => {
+      await complete(...args);
+      const object = f.object();
+      if (!object) throw new Error("Missing completed object");
+      if (failure === "size") object.size++;
+      else delete object.versionId;
+      return { etag: object.etag, versionId: object.versionId };
+    };
+    await f.transfers.copied(f.agentId, f.copied);
+    await expect(f.storage.assemble(f.agentId, f.binding.generation)).rejects.toThrow(
+      "POLICY_DENIED",
+    );
+    const attempt = await f.attempt();
+    if (!attempt) throw new Error("Missing attempt");
+    expect(attempt.state).toBe("cleanup_pending");
+    expect(attempt.verifiedAt).toBeNull();
+    expect(attempt.completionSettledAt).toBeInstanceOf(Date);
+    time = new Date(attempt.leaseUntil.getTime() + 1);
+    expect(await f.storage.cleanup()).toBe(1);
+  } finally {
+    await f.lease.release();
+  }
+});
+
+test("input verification retains verified objects until cancellation cleanup is confirmed", async () => {
+  const f = await inputVerificationFixture();
+  try {
+    await f.transfers.copied(f.agentId, f.copied);
+    const { task } = await f.storage.assemble(f.agentId, f.binding.generation);
+    const receipt = { ...task, sizeBytes: f.binding.sizeBytes, sha256: f.binding.sha256 };
+    await f.storage.verified(f.agentId, receipt);
+    const attempt = await f.attempt();
+    if (!attempt) throw new Error("Missing verified attempt");
+    time = new Date(attempt.leaseUntil.getTime() + 1);
+    expect(await f.storage.cleanup()).toBe(0);
+    expect((await f.attempt())?.state).toBe("verified");
+    await db.update(users).set({ suspended: true }).where(eq(users.id, executionUserId));
+    await f.imports.sweep();
+    expect((await f.attempt())?.state).toBe("cleanup_pending");
+    await expect(f.storage.verified(f.agentId, receipt)).rejects.toThrow("POLICY_DENIED");
+    const purge = f.backend.cleanupFederationInput;
+    f.backend.cleanupFederationInput = async () => {
+      throw new Error("Storage temporarily unavailable");
+    };
+    expect(await f.storage.cleanup()).toBe(0);
+    expect((await f.inventory())[0]).toMatchObject({
+      state: "cancelling",
+      reservedBytes: f.binding.sizeBytes,
+    });
+    f.backend.cleanupFederationInput = purge;
+    expect(await f.recoverStorage().cleanup()).toBe(1);
+    expect((await f.inventory())[0]).toMatchObject({ state: "cancelled", reservedBytes: 0 });
+    expect((await f.attempt())?.state).toBe("cleaned");
+    expect(f.cleanups()).toBe(1);
+  } finally {
+    await db.update(users).set({ suspended: false }).where(eq(users.id, executionUserId));
+    await f.lease.release();
+  }
+});
+
+test("input verification grants recheck object versions, URL scope and current authority", async () => {
+  const f = await inputVerificationFixture();
+  try {
+    await f.transfers.copied(f.agentId, f.copied);
+    const { task } = await f.storage.assemble(f.agentId, f.binding.generation);
+    const original = f.object();
+    if (!original) throw new Error("Missing object");
+    f.setObject({ ...original, etag: "replaced" });
+    await expect(f.storage.verificationGrant(f.agentId, task)).rejects.toThrow(
+      "OPERATION_CONFLICT",
+    );
+    f.setObject(original);
+    const presign = f.backend.presignDownload;
+    for (const failure of ["version", "duplicate", "origin", "expiry", "identity"] as const) {
+      f.backend.presignDownload = async (...args) => {
+        const url = new URL(await presign(...args));
+        if (failure === "version") url.searchParams.set("versionId", "changed");
+        if (failure === "duplicate") url.searchParams.append("versionId", task.object.versionId);
+        if (failure === "origin") url.hostname = "foreign.invalid";
+        if (failure === "expiry") url.searchParams.set("X-Amz-Expires", "60");
+        if (failure === "identity")
+          await db.update(users).set({ suspended: true }).where(eq(users.id, executionUserId));
+        return url.toString();
+      };
+      try {
+        await expect(f.storage.verificationGrant(f.agentId, task)).rejects.toThrow(
+          failure === "version" || failure === "duplicate" ? "INVALID_MESSAGE" : "POLICY_DENIED",
+        );
+      } finally {
+        await db.update(users).set({ suspended: false }).where(eq(users.id, executionUserId));
+      }
+    }
+    f.backend.presignDownload = presign;
+    const head = f.backend.head;
+    f.backend.head = async (...args) => {
+      const stat = await head(...args);
+      await db.update(users).set({ suspended: true }).where(eq(users.id, executionUserId));
+      return stat;
+    };
+    await expect(
+      f.storage.verified(f.agentId, {
+        ...task,
+        sizeBytes: f.binding.sizeBytes,
+        sha256: f.binding.sha256,
+      }),
+    ).rejects.toThrow("POLICY_DENIED");
+    expect((await f.attempt())?.verifiedAt).toBeNull();
+  } finally {
+    await db.update(users).set({ suspended: false }).where(eq(users.id, executionUserId));
+    await f.lease.release();
+  }
+});
+
+test("input allocation recovery retains unknown quota and cleans the discovered original upload after restart", async () => {
+  const f = await inputTransferFixture();
+  let uploadId: string | undefined;
+  let scans = 0;
+  let purges = 0;
+  const started = await f.transfers.begin(f.member.id, f.agentId);
+  const permit = await f.transfers.preparing(f.agentId, started.attempt.generation);
+  const backend: FederationInputStorageBackend = {
+    ...unassembledInputStorage,
+    createMultipartUpload: async () => {
+      throw new Error("Recovery must not create an upload");
+    },
+    presignUploadPart: async () => {
+      throw new Error("Recovery must not grant an upload");
+    },
+    findFederationInputUpload: async (key) => {
+      expect(key).toBe(permit.storageKey);
+      scans++;
+      return uploadId;
+    },
+    cleanupFederationInput: async (key) => {
+      expect(key).toBe(permit.storageKey);
+      purges++;
+    },
+  };
+  const storage = () => new FederationInputStorage(f.transferService(), backend, { clock });
+  try {
+    expect(await storage().cleanup()).toBe(0);
+    expect(scans).toBe(0);
+    await db.update(users).set({ suspended: true }).where(eq(users.id, executionUserId));
+    await f.imports.sweep();
+    time = new Date(started.attempt.leaseUntil.getTime() + 1);
+    expect(await storage().cleanup()).toBe(0);
+    expect(scans).toBe(1);
+    expect(purges).toBe(0);
+    expect((await f.inventory())[0]).toMatchObject({
+      state: "cancelling",
+      reservedBytes: f.member.sizeBytes,
+    });
+    const find = backend.findFederationInputUpload;
+    backend.findFederationInputUpload = async () => {
+      throw new Error("Storage unavailable");
+    };
+    expect(await storage().cleanup()).toBe(0);
+    expect(purges).toBe(0);
+    backend.findFederationInputUpload = find;
+    uploadId = "original-upload-found-after-restart";
+    expect(await storage().cleanup()).toBe(1);
+    expect(purges).toBe(1);
+    expect((await f.inventory())[0]).toMatchObject({ state: "cancelled", reservedBytes: 0 });
+    expect(await f.transfers.allocated(started.attempt.generation, uploadId)).toBe(false);
+    await expect(
+      f.transfers.allocated(started.attempt.generation, "different-upload"),
+    ).rejects.toThrow("OPERATION_CONFLICT");
+    expect(await storage().cleanup()).toBe(0);
+    expect(purges).toBe(1);
+    expect(await f.transfers.allocationPending(started.attempt.generation)).toBeUndefined();
+  } finally {
+    await db.update(users).set({ suspended: false }).where(eq(users.id, executionUserId));
     await f.lease.release();
   }
 });

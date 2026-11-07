@@ -3,6 +3,7 @@ import {
   cleanupFederationInputKey,
   cleanupFederationResultKey,
   type FederationResultCleanupClient,
+  findFederationInputUpload,
 } from "./federation-result-cleanup";
 
 function fixture(kind = "federation-results") {
@@ -92,4 +93,46 @@ test("input cleanup uses a separate exact namespace and preserves adjacent attem
   expect(f.removed).toEqual(["lost-upload", "known-upload", "old-version", "delete-marker"]);
   expect([...f.uploads.keys()]).toEqual(["neighbor-upload"]);
   expect([...f.versions.keys()]).toEqual(["neighbor-version"]);
+});
+
+test("input allocation recovery returns only a unique exact-key upload without changing storage", async () => {
+  const f = fixture("federation-inputs");
+  await expect(findFederationInputUpload(f.client, "bucket", f.key)).rejects.toThrow(
+    "FEDERATION_STORAGE_RECOVERY_UNCONFIRMED",
+  );
+  f.uploads.delete("known-upload");
+  expect(await findFederationInputUpload(f.client, "bucket", f.key)).toBe("lost-upload");
+  f.uploads.delete("lost-upload");
+  expect(await findFederationInputUpload(f.client, "bucket", f.key)).toBeUndefined();
+  expect(f.removed).toEqual([]);
+  expect([...f.uploads.keys()]).toEqual(["neighbor-upload"]);
+  expect(f.versions.size).toBe(3);
+  for (const key of ["federation-inputs/", `${f.key}/extra`, f.key.replace("inputs", "results")])
+    await expect(findFederationInputUpload(f.client, "bucket", key)).rejects.toThrow(
+      "INVALID_FEDERATION_STORAGE_KEY",
+    );
+});
+
+test("input allocation recovery waits for a complete bounded listing and strips storage errors", async () => {
+  const f = fixture("federation-inputs");
+  f.client.listIncompleteUploads = async function* () {
+    yield { key: f.key, uploadId: "found" };
+    throw new Error("private storage credentials");
+  };
+  await expect(findFederationInputUpload(f.client, "bucket", f.key)).rejects.toThrow(
+    /^FEDERATION_STORAGE_RECOVERY_UNCONFIRMED$/,
+  );
+  f.client.listIncompleteUploads = async function* () {
+    for (let i = 0; i < 1001; i++) yield { key: f.key, uploadId: "repeated" };
+  };
+  await expect(findFederationInputUpload(f.client, "bucket", f.key)).rejects.toThrow(
+    "FEDERATION_STORAGE_RECOVERY_UNCONFIRMED",
+  );
+  f.client.listIncompleteUploads = async function* () {
+    yield { key: f.key, uploadId: "" };
+  };
+  await expect(findFederationInputUpload(f.client, "bucket", f.key)).rejects.toThrow(
+    "FEDERATION_STORAGE_RECOVERY_UNCONFIRMED",
+  );
+  expect(f.removed).toEqual([]);
 });

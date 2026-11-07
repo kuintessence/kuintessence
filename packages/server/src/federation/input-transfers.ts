@@ -9,9 +9,15 @@ import {
 } from "@kuintessence/db";
 import {
   FederationError,
+  FederationInputCopiedSchema,
   type FederationInputCopyBinding,
   FederationInputCopyBindingSchema,
   FederationInputCopyTaskSchema,
+  type FederationInputVerified,
+  FederationInputVerifiedSchema,
+  type FederationInputVerifyTask,
+  FederationInputVerifyTaskSchema,
+  FederationResultObjectSchema,
 } from "@kuintessence/shared/federation";
 import { and, asc, eq, inArray, isNotNull, isNull, lte, ne, or } from "drizzle-orm";
 import { z } from "zod";
@@ -24,6 +30,8 @@ type Parent = typeof federationInputImports.$inferSelect;
 type Transfer = typeof federationInputTransfers.$inferSelect;
 type Attempt = typeof federationInputAttempts.$inferSelect;
 type Rows = { parent: Parent; transfer: Transfer; attempt: Attempt };
+const activeStates = ["preparing", "copying", "assembling", "verifying"];
+
 type Scope = Awaited<ReturnType<FederationPreparationService["materialScope"]>>;
 
 /** Receiver-owned input attempts; all storage I/O must happen outside these transactions. */
@@ -182,17 +190,280 @@ export class FederationInputTransfers {
     return { scope, binding, authorize };
   }
 
+  async copied(agentId: string, input: z.infer<typeof FederationInputCopiedSchema>) {
+    const receipt = FederationInputCopiedSchema.parse(input);
+    const scope = await this.attemptScope(receipt.binding.generation);
+    return this.db.transaction(async (tx) => {
+      const rows = await this.authorizedAttempt(tx, scope, receipt.binding.generation, agentId, [
+        "copying",
+        "assembling",
+        "verifying",
+        "verified",
+      ]);
+      const binding = this.binding(rows, scope);
+      if (
+        federationMaterialDigest(binding) !== federationMaterialDigest(receipt.binding) ||
+        receipt.sizeBytes !== binding.sizeBytes ||
+        receipt.sha256 !== binding.sha256 ||
+        receipt.parts.length !==
+          Math.max(1, Math.ceil(binding.sizeBytes / rows.transfer.partSize)) ||
+        receipt.parts.some((part, i) => part.partNumber !== i + 1)
+      )
+        throw new FederationError("INVALID_MESSAGE");
+      if (rows.attempt.state !== "copying") {
+        if (
+          federationMaterialDigest(rows.attempt.parts) !== federationMaterialDigest(receipt.parts)
+        )
+          throw new FederationError("OPERATION_CONFLICT");
+        return { state: rows.attempt.state };
+      }
+      await tx
+        .update(federationInputAttempts)
+        .set({ state: "assembling", parts: receipt.parts, updatedAt: this.clock() })
+        .where(eq(federationInputAttempts.generation, receipt.binding.generation));
+      await tx
+        .update(federationInputTransfers)
+        .set({ state: "assembling", updatedAt: this.clock() })
+        .where(eq(federationInputTransfers.id, rows.transfer.id));
+      await this.audit(tx, rows.parent, "bytes_copied", { generation: rows.attempt.generation });
+      return { state: "assembling" };
+    });
+  }
+
+  async assembling(agentId: string, generation: string) {
+    const scope = await this.attemptScope(generation);
+    return this.db.transaction(async (tx) => {
+      const rows = await this.authorizedAttempt(tx, scope, generation, agentId, [
+        "assembling",
+        "verifying",
+      ]);
+      return { ...rows, binding: this.binding(rows, scope) };
+    });
+  }
+
+  /** One CompleteMultipart request per generation; retries inspect its object instead of reissuing it. */
+  async startCompletion(agentId: string, generation: string) {
+    // shortcut: a permit without an object retains quota; add confirmed recovery before automatic dispatch.
+    const scope = await this.attemptScope(generation);
+    return this.db.transaction(async (tx) => {
+      const rows = await this.authorizedAttempt(tx, scope, generation, agentId, [
+        "assembling",
+        "verifying",
+      ]);
+      if (rows.attempt.completionStartedAt) return false;
+      await tx
+        .update(federationInputAttempts)
+        .set({ completionStartedAt: this.clock(), updatedAt: this.clock() })
+        .where(eq(federationInputAttempts.generation, generation));
+      return true;
+    });
+  }
+
+  /** Records a positive storage outcome even after cancellation; never grants use or skips verification. */
+  async completed(generation: string, object: z.infer<typeof FederationResultObjectSchema>) {
+    const pin = FederationResultObjectSchema.parse(object);
+    return this.db.transaction(async (tx) => {
+      const rows = await this.lockAttempt(tx, generation);
+      if (!rows.attempt.completionStartedAt) throw new FederationError("OPERATION_CONFLICT");
+      if (rows.attempt.completionSettledAt) {
+        if (
+          rows.attempt.destinationVersionId !== pin.versionId ||
+          rows.attempt.destinationEtag !== pin.etag
+        )
+          throw new FederationError("OPERATION_CONFLICT");
+        return;
+      }
+      if (!["assembling", "cleanup_pending"].includes(rows.attempt.state))
+        throw new FederationError("OPERATION_CONFLICT");
+      await tx
+        .update(federationInputAttempts)
+        .set({
+          completionSettledAt: this.clock(),
+          destinationVersionId: pin.versionId,
+          destinationEtag: pin.etag,
+          updatedAt: this.clock(),
+        })
+        .where(eq(federationInputAttempts.generation, generation));
+    });
+  }
+
+  async assembled(agentId: string, generation: string) {
+    const scope = await this.attemptScope(generation);
+    return this.db.transaction(async (tx) => {
+      const rows = await this.authorizedAttempt(
+        tx,
+        scope,
+        generation,
+        agentId,
+        ["assembling", "verifying"],
+        true,
+      );
+      if (!rows.attempt.completionSettledAt) throw new FederationError("DATA_WAITING");
+      const task = this.verificationTask(rows, scope);
+      if (rows.attempt.state === "verifying")
+        return { task, leaseExpiresAt: rows.attempt.leaseUntil.toISOString() };
+      const leaseUntil = this.lease(rows.parent);
+      await tx
+        .update(federationInputAttempts)
+        .set({ state: "verifying", leaseUntil, updatedAt: this.clock() })
+        .where(eq(federationInputAttempts.generation, generation));
+      await tx
+        .update(federationInputTransfers)
+        .set({ state: "verifying", updatedAt: this.clock() })
+        .where(eq(federationInputTransfers.id, rows.transfer.id));
+      await this.audit(tx, rows.parent, "assembled", { generation });
+      return { task, leaseExpiresAt: leaseUntil.toISOString() };
+    });
+  }
+
+  async verification(agentId: string, input: FederationInputVerifyTask, renew = false) {
+    const task = FederationInputVerifyTaskSchema.parse(input);
+    const scope = await this.attemptScope(task.binding.generation);
+    return this.db.transaction(async (tx) => {
+      const rows = await this.authorizedAttempt(
+        tx,
+        scope,
+        task.binding.generation,
+        agentId,
+        renew ? ["verifying"] : ["verifying", "verified"],
+        renew,
+      );
+      if (
+        federationMaterialDigest(this.verificationTask(rows, scope)) !==
+        federationMaterialDigest(task)
+      )
+        throw new FederationError("OPERATION_CONFLICT");
+      const leaseUntil = renew ? this.lease(rows.parent) : rows.attempt.leaseUntil;
+      if (renew)
+        await tx
+          .update(federationInputAttempts)
+          .set({ leaseUntil, updatedAt: this.clock() })
+          .where(eq(federationInputAttempts.generation, task.binding.generation));
+      return { storageKey: rows.attempt.storageKey, leaseUntil, state: rows.attempt.state };
+    });
+  }
+
+  async verified(agentId: string, input: FederationInputVerified) {
+    const receipt = FederationInputVerifiedSchema.parse(input);
+    const scope = await this.attemptScope(receipt.binding.generation);
+    await this.db.transaction(async (tx) => {
+      const rows = await this.authorizedAttempt(tx, scope, receipt.binding.generation, agentId, [
+        "verifying",
+        "verified",
+      ]);
+      if (
+        federationMaterialDigest(this.verificationTask(rows, scope)) !==
+          federationMaterialDigest({
+            binding: receipt.binding,
+            object: receipt.object,
+            availableUntil: receipt.availableUntil,
+          }) ||
+        receipt.sizeBytes !== rows.transfer.sizeBytes ||
+        receipt.sha256 !== rows.transfer.sha256
+      )
+        throw new FederationError("OPERATION_CONFLICT");
+      if (rows.attempt.state === "verified") return;
+      await tx
+        .update(federationInputAttempts)
+        .set({ state: "verified", verifiedAt: this.clock(), updatedAt: this.clock() })
+        .where(eq(federationInputAttempts.generation, receipt.binding.generation));
+      await tx
+        .update(federationInputTransfers)
+        .set({ state: "verified", updatedAt: this.clock() })
+        .where(eq(federationInputTransfers.id, rows.transfer.id));
+      await this.audit(tx, rows.parent, "destination_verified", {
+        generation: receipt.binding.generation,
+      });
+    });
+  }
+
+  async completionCandidates(limit = 8) {
+    z.number().int().min(1).max(100).parse(limit);
+    return this.db
+      .select({ generation: federationInputAttempts.generation })
+      .from(federationInputAttempts)
+      .innerJoin(
+        federationInputTransfers,
+        eq(federationInputTransfers.id, federationInputAttempts.transferId),
+      )
+      .innerJoin(
+        federationInputImports,
+        eq(federationInputImports.id, federationInputTransfers.importId),
+      )
+      .where(
+        and(
+          eq(federationInputImports.localSiteId, this.preparation.localSiteId),
+          inArray(federationInputAttempts.state, ["assembling", "cleanup_pending"]),
+          isNotNull(federationInputAttempts.completionStartedAt),
+          isNull(federationInputAttempts.completionSettledAt),
+        ),
+      )
+      .orderBy(asc(federationInputAttempts.updatedAt), asc(federationInputAttempts.generation))
+      .limit(limit);
+  }
+
+  async completionPending(generation: string) {
+    return this.db.transaction(async (tx) => {
+      const rows = await this.lockAttempt(tx, generation);
+      if (
+        !["assembling", "cleanup_pending"].includes(rows.attempt.state) ||
+        !rows.attempt.completionStartedAt ||
+        rows.attempt.completionSettledAt
+      )
+        return undefined;
+      await tx
+        .update(federationInputAttempts)
+        .set({ updatedAt: this.clock() })
+        .where(eq(federationInputAttempts.generation, generation));
+      return { storageKey: rows.attempt.storageKey };
+    });
+  }
+
+  private async authorizedAttempt(
+    tx: PgTransaction,
+    scope: Scope,
+    generation: string,
+    agentId: string,
+    states: readonly string[],
+    renewing = false,
+  ) {
+    await this.imports.lock(tx, scope);
+    const rows = await this.lockAttempt(tx, generation);
+    if (
+      rows.parent.reservationId !== scope.saved.reservation.id ||
+      !states.includes(rows.attempt.state)
+    )
+      throw new FederationError("OPERATION_CONFLICT");
+    if (renewing) await lockFederationTransferSlot(tx, agentId);
+    await this.assertAttempt(tx, rows, agentId, rows.attempt.state);
+    return rows;
+  }
+
+  private verificationTask(rows: Rows, scope: Scope) {
+    const task = FederationInputVerifyTaskSchema.safeParse({
+      binding: this.binding(rows, scope),
+      object: { versionId: rows.attempt.destinationVersionId, etag: rows.attempt.destinationEtag },
+      availableUntil: rows.parent.expiresAt.toISOString(),
+    });
+    if (!task.success) throw new FederationError("OPERATION_CONFLICT");
+    return task.data;
+  }
+
   async failed(agentId: string, generation: string) {
     await this.db.transaction(async (tx) => {
       const rows = await this.lockAttempt(tx, generation);
       if (rows.attempt.agentId !== agentId) throw new FederationError("POLICY_DENIED");
       if (["cleanup_pending", "cleaned"].includes(rows.attempt.state)) return;
+      if (!activeStates.includes(rows.attempt.state))
+        throw new FederationError("OPERATION_CONFLICT");
       await this.fence(
         tx,
         rows,
-        rows.attempt.allocationStartedAt && !rows.attempt.uploadId
-          ? "ALLOCATION_UNCONFIRMED"
-          : "TRANSFER_FAILED",
+        rows.attempt.completionStartedAt && !rows.attempt.completionSettledAt
+          ? "COMPLETION_UNCONFIRMED"
+          : rows.attempt.allocationStartedAt && !rows.attempt.uploadId
+            ? "ALLOCATION_UNCONFIRMED"
+            : "TRANSFER_FAILED",
       );
     });
   }
@@ -213,7 +484,7 @@ export class FederationInputTransfers {
       .where(
         and(
           eq(federationInputImports.localSiteId, this.preparation.localSiteId),
-          inArray(federationInputAttempts.state, ["preparing", "copying"]),
+          inArray(federationInputAttempts.state, activeStates),
           lte(federationInputAttempts.leaseUntil, this.clock()),
         ),
       )
@@ -222,19 +493,62 @@ export class FederationInputTransfers {
     for (const candidate of candidates)
       await this.db.transaction(async (tx) => {
         const rows = await this.lockAttempt(tx, candidate.generation);
-        if (
-          !["preparing", "copying"].includes(rows.attempt.state) ||
-          rows.attempt.leaseUntil > this.clock()
-        )
+        if (!activeStates.includes(rows.attempt.state) || rows.attempt.leaseUntil > this.clock())
           return;
         await this.fence(
           tx,
           rows,
-          rows.attempt.allocationStartedAt && !rows.attempt.uploadId
-            ? "ALLOCATION_UNCONFIRMED"
-            : "LEASE_EXPIRED",
+          rows.attempt.completionStartedAt && !rows.attempt.completionSettledAt
+            ? "COMPLETION_UNCONFIRMED"
+            : rows.attempt.allocationStartedAt && !rows.attempt.uploadId
+              ? "ALLOCATION_UNCONFIRMED"
+              : "LEASE_EXPIRED",
         );
       });
+  }
+
+  async allocationCandidates(limit = 8) {
+    z.number().int().min(1).max(100).parse(limit);
+    return this.db
+      .select({ generation: federationInputAttempts.generation })
+      .from(federationInputAttempts)
+      .innerJoin(
+        federationInputTransfers,
+        eq(federationInputTransfers.id, federationInputAttempts.transferId),
+      )
+      .innerJoin(
+        federationInputImports,
+        eq(federationInputImports.id, federationInputTransfers.importId),
+      )
+      .where(
+        and(
+          eq(federationInputImports.localSiteId, this.preparation.localSiteId),
+          eq(federationInputAttempts.state, "cleanup_pending"),
+          lte(federationInputAttempts.leaseUntil, this.clock()),
+          isNotNull(federationInputAttempts.allocationStartedAt),
+          isNull(federationInputAttempts.uploadId),
+        ),
+      )
+      .orderBy(asc(federationInputAttempts.updatedAt), asc(federationInputAttempts.generation))
+      .limit(limit);
+  }
+
+  async allocationPending(generation: string) {
+    return this.db.transaction(async (tx) => {
+      const rows = await this.lockAttempt(tx, generation);
+      if (
+        rows.attempt.state !== "cleanup_pending" ||
+        rows.attempt.leaseUntil > this.clock() ||
+        !rows.attempt.allocationStartedAt ||
+        rows.attempt.uploadId
+      )
+        return undefined;
+      await tx
+        .update(federationInputAttempts)
+        .set({ updatedAt: this.clock() })
+        .where(eq(federationInputAttempts.generation, generation));
+      return { storageKey: rows.attempt.storageKey };
+    });
   }
 
   async cleanupCandidates(limit = 20) {
@@ -258,6 +572,10 @@ export class FederationInputTransfers {
           or(
             isNull(federationInputAttempts.allocationStartedAt),
             isNotNull(federationInputAttempts.uploadId),
+          ),
+          or(
+            isNull(federationInputAttempts.completionStartedAt),
+            isNotNull(federationInputAttempts.completionSettledAt),
           ),
         ),
       )
@@ -314,7 +632,11 @@ export class FederationInputTransfers {
     if (attempt.state !== "cleanup_pending" || attempt.leaseUntil > this.clock())
       throw new FederationError("OPERATION_CONFLICT");
     // A lost create response cannot be proven harmless by one empty object listing.
-    if (attempt.allocationStartedAt && !attempt.uploadId) throw new FederationError("DATA_WAITING");
+    if (
+      (attempt.allocationStartedAt && !attempt.uploadId) ||
+      (attempt.completionStartedAt && !attempt.completionSettledAt)
+    )
+      throw new FederationError("DATA_WAITING");
   }
 
   private async fence(tx: PgTransaction, rows: Rows, reason: string) {
@@ -401,7 +723,7 @@ export class FederationInputTransfers {
   private async assertAttempt(tx: PgTransaction, rows: Rows, agentId: string, state: string) {
     if (
       rows.parent.state !== "transferring" ||
-      rows.transfer.state !== "copying" ||
+      rows.transfer.state !== (state === "preparing" ? "copying" : state) ||
       rows.attempt.agentId !== agentId ||
       rows.attempt.state !== state ||
       rows.attempt.leaseUntil <= this.clock()

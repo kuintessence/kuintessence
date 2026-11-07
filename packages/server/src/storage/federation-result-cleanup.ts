@@ -33,6 +33,29 @@ export function cleanupFederationInputKey(
   return cleanupFederationKey(client, bucket, key, "federation-inputs");
 }
 
+/** Positive recovery only: an empty listing does not prove CreateMultipartUpload never ran. */
+export async function findFederationInputUpload(
+  client: Pick<FederationResultCleanupClient, "listIncompleteUploads">,
+  bucket: string,
+  key: string,
+): Promise<string | undefined> {
+  if (!new RegExp(`^federation-inputs/${uuid}/${uuid}$`).test(key))
+    throw new Error("INVALID_FEDERATION_STORAGE_KEY");
+  try {
+    const ids = new Set<string>();
+    let count = 0;
+    for await (const raw of client.listIncompleteUploads(bucket, key, true)) {
+      if (++count > 1000) throw new Error("RECOVERY_SCAN_LIMIT");
+      const item = Upload.parse(raw);
+      if (item.key === key) ids.add(item.uploadId);
+      if (ids.size > 1) throw new Error("AMBIGUOUS_UPLOAD");
+    }
+    return ids.values().next().value;
+  } catch {
+    throw new Error("FEDERATION_STORAGE_RECOVERY_UNCONFIRMED");
+  }
+}
+
 async function cleanupFederationKey(
   client: FederationResultCleanupClient,
   bucket: string,

@@ -1,0 +1,19 @@
+ALTER TABLE "federation_input_attempts" DROP CONSTRAINT "federation_input_attempt_state";--> statement-breakpoint
+ALTER TABLE "federation_input_attempts" DROP CONSTRAINT "federation_input_attempt_upload";--> statement-breakpoint
+ALTER TABLE "federation_input_transfers" DROP CONSTRAINT "federation_input_transfer_state";--> statement-breakpoint
+DROP INDEX "federation_input_attempt_active_agent";--> statement-breakpoint
+ALTER TABLE "federation_input_attempts" ADD COLUMN "parts" jsonb;--> statement-breakpoint
+ALTER TABLE "federation_input_attempts" ADD COLUMN "completion_started_at" timestamp with time zone;--> statement-breakpoint
+ALTER TABLE "federation_input_attempts" ADD COLUMN "completion_settled_at" timestamp with time zone;--> statement-breakpoint
+ALTER TABLE "federation_input_attempts" ADD COLUMN "destination_version_id" text;--> statement-breakpoint
+ALTER TABLE "federation_input_attempts" ADD COLUMN "destination_etag" varchar(255);--> statement-breakpoint
+ALTER TABLE "federation_input_attempts" ADD COLUMN "verified_at" timestamp with time zone;--> statement-breakpoint
+CREATE UNIQUE INDEX "federation_input_attempt_active_agent" ON "federation_input_attempts" USING btree ("agent_id") WHERE "federation_input_attempts"."state" IN ('preparing', 'copying', 'assembling', 'verifying');--> statement-breakpoint
+ALTER TABLE "federation_input_attempts" ADD CONSTRAINT "federation_input_attempt_parts" CHECK ("federation_input_attempts"."state" NOT IN ('assembling', 'verifying', 'verified') OR "federation_input_attempts"."parts" IS NOT NULL);--> statement-breakpoint
+ALTER TABLE "federation_input_attempts" ADD CONSTRAINT "federation_input_completion_started" CHECK ("federation_input_attempts"."completion_started_at" IS NULL OR ("federation_input_attempts"."upload_id" IS NOT NULL AND "federation_input_attempts"."parts" IS NOT NULL));--> statement-breakpoint
+ALTER TABLE "federation_input_attempts" ADD CONSTRAINT "federation_input_completion_settled" CHECK ("federation_input_attempts"."completion_settled_at" IS NULL OR ("federation_input_attempts"."completion_started_at" IS NOT NULL AND "federation_input_attempts"."destination_etag" IS NOT NULL));--> statement-breakpoint
+ALTER TABLE "federation_input_attempts" ADD CONSTRAINT "federation_input_attempt_destination" CHECK ("federation_input_attempts"."state" NOT IN ('verifying', 'verified') OR ("federation_input_attempts"."completion_settled_at" IS NOT NULL AND "federation_input_attempts"."destination_version_id" IS NOT NULL AND "federation_input_attempts"."destination_version_id" != 'null'));--> statement-breakpoint
+ALTER TABLE "federation_input_attempts" ADD CONSTRAINT "federation_input_attempt_verified" CHECK ("federation_input_attempts"."state" != 'verified' OR "federation_input_attempts"."verified_at" IS NOT NULL);--> statement-breakpoint
+ALTER TABLE "federation_input_attempts" ADD CONSTRAINT "federation_input_attempt_state" CHECK ("federation_input_attempts"."state" IN ('preparing', 'copying', 'assembling', 'verifying', 'verified', 'cleanup_pending', 'cleaned'));--> statement-breakpoint
+ALTER TABLE "federation_input_attempts" ADD CONSTRAINT "federation_input_attempt_upload" CHECK ("federation_input_attempts"."state" NOT IN ('copying', 'assembling', 'verifying', 'verified') OR ("federation_input_attempts"."upload_id" IS NOT NULL AND "federation_input_attempts"."allocation_started_at" IS NOT NULL));--> statement-breakpoint
+ALTER TABLE "federation_input_transfers" ADD CONSTRAINT "federation_input_transfer_state" CHECK ("federation_input_transfers"."state" IN ('pending', 'copying', 'assembling', 'verifying', 'verified', 'cleanup_pending', 'cancelled'));
