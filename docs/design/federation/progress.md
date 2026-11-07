@@ -1712,3 +1712,21 @@ Market 新增 RequestExecutionStop、Adapter 新增 request-execution-stop，双
 本轮 20 个不同 PostgreSQL 用例通过：15 个新增策略用例，5 个原预留审批、释放、对签和提交顺序回归。覆盖默认关闭、范围/机构/模式边界、无偿合同、超安全整数精确金额、零金额任务数、并发最后额度、重复请求、个人角色与机构撤销区别、查询期间撤销/到期、原签名/用途/合同信任变化、本地市场意图、断链、审计回滚和严格 HTTP。首轮 17 项通过，1 项测试误按不存在的站点列查询本地预算表；改用实际预算域列后只补跑该项通过，再追加两个金额/合同边界用例，未重复累计。证据在忽略目录 temp/reservation-policy-pg.log、temp/reservation-policy-replay-pg.log、temp/reservation-policy-bounds-pg.log。
 
 全仓 typecheck（含 protobuf/Fabric 脚本）通过，最终补充用例另做 Server 定向检查；全仓 lint 无错误，保留原有 47 warning / 1 info；701 个本地文档目标及差异格式检查通过。本轮没有重复运行真实 Fabric/Kubernetes 联合场景，没有触碰 main。完整自动商务编排、结算/争议与重开、物理介质、Peer 容量归档、完整 Web/CLI 和 PR 预览仍待完成。
+
+## 新任务提案跨站传输与自动预留批准
+
+迁移 0134 新增持久任务提案，源方保存人工任务意图和本机构策略，提供方保存原源方业务 JWS、接收证书指纹及自己选择的机构策略。源方提交要求当前人工组织 delegation.submit；签署不使用提交人或授权人的个人会话。后台复用机构预授权和原 CLAIMED/合同/本地市场意图检查；提供方在链查询后还重新验证原接收证书。签名、累计授权消耗、提案批准进度和审计同事务提交，租约过期不能保存迟到批准或覆盖复核重试。
+
+原业务 JWS 经固定 mTLS 路径发送，不嵌套大型签名信封，原正文/JOSE 限额不变。新增 reservation-proposal-receipt 用途仅用于传输回执，明确与 Fabric 商业签署用途分开，并更新信任配置和中英文标签。回执只证明提案持久落库，不证明批准、双签、链提交或执行。源方 pending/sending/delivered 与提供方 pending/approved 分别保存；原商业交换自动取得两边新签名并入队私有预留。签署后撤销策略不抹除既有同意，发送仍受原截止时间、合同和当前信任约束。
+
+人工组织接口提供创建、分页进度与空正文复核重试，不返回原 JWS、证书指纹或租约 token；自动化会话不能授予策略或伪装人工提交。默认无发送配置时不批准源方排队请求，但提供方可处理已接收的提案。每个政策限制 128 份未批准积压，不能通过接收回执绕过机构额度或原市场许可。没有增加市场自动发布/认领、合同或基础执行协议自动批准、激活和准入确认授权。
+
+隔离 PostgreSQL 共 32 个不同用例通过：14 个新提案/生产 worker 集成用例，15 个原机构策略回归和 3 个原签署/对签回归。覆盖自动批准到原双签提交队列、接收与批准分离、丢回包/重启/并发、人工/组织/策略边界、原签名/证书/端点变化、链断线、活租约与迟到成功/失败隔离、人工批准恢复不追扣策略额度、审计原子回滚、发送禁用和私有 HTTP 入口。首轮 28 项通过，1 项故障注入约束错误覆盖前面测试的既存审计记录；将约束限定到本用例政策后，该项与 3 个后补恢复/集成用例共 4 项通过，重复用例不累加。证据 temp/reservation-proposals-pg.log、temp/reservation-proposals-recovery-pg.log。
+
+协议与真实 Node TLS 共 10 项通过，证据 temp/reservation-proposals-wire.log；全仓 typecheck、lint 和 702 个本地文档目标检查通过，lint 保留原有 47 warning / 1 info。最终新增数据库用例另做 Server 定向类型检查。真实联合脚本已改成双方在任务创建前预授策略，源方只入队任务；不再调用双方逐笔预留批准服务，并保存 reservation-proposals.json 原提案、回执和策略消耗证据。真实运行结果在本节后续记录。
+
+本轮真实联合成功场景一次通过，日志 temp/reservation-proposals-execution.log，完整隔离证据 temp/federation-execution-success-6w0j8tnb，测试链材料 temp/fabric-network-o1XKbk。实际双 Server/PostgreSQL/Agent、Node mTLS、RustFS、Fabric 和 Kubernetes 跑通：任务发布前双方各自授予 1 次、金额 1 的机构策略；源方仅提交新提案，生产 worker 自动签署与交付，提供方持久接收后自动批准。两边各消耗一次授权；源方 delivered、提供方 approved，两边保存完全相同的原源方 JWS，源方保留签名接收回执。原商业交换随后自动补齐双签并提交两份私有预留。
+
+在原有显式市场激活与执行确认后，两个真实轻量 Bash Job 完成，接收方从零份清单拉取源端输入及环境锁，源方通过独立 Agent 和独立桶实际下载 verified:42 的 12 字节结果并核对 SHA-256，原签名结果回执被对方确认。既有终态预授权自动完成提供方证据归集、源方独立复核与双签回传，交换 complete；私有终态 VALID 在区块 20（bdffa0c6ba0b372ebe232f7589cdb9f54de29b164e1a1fc2555543e6439bdfe7），公共关闭 VALID 在区块 21（9b04bdfbb98cf78b0578196c62c23aa716f394928e005757559b8d2ea4e96edf）。本次未触发重复商业提交的 MVCC 人工复核分支，不能据此声称该生产异常已自动处理。
+
+运行退出 0，自建进程、数据库、临时凭据和集群 namespace/RBAC 已清理。没有重跑先前断链/主动停止、Slurm/PBS 或 Spack/真实科学软件；本次证据证明新任务提案自动签署与传输及其后续轻量链路，仍不是完整无人值守平台验收。自动市场与执行准入、基础执行同意交换、普通 Workflow 协调编排、账单/结算/争议与重开、物理介质、Peer 容量归档、完整 Web/CLI 及 PR 预览继续待完成，未合并或部署 main。

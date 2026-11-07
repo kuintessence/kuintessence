@@ -5,6 +5,7 @@ import {
   federationCommercialAttempts,
   federationCommercialSubmissions,
   federationMarketSubmissions,
+  federationReservationProposals,
 } from "@kuintessence/db";
 import type { FederationAgreement } from "@kuintessence/shared/federation";
 import {
@@ -23,7 +24,10 @@ import { FederationCommercialSubmissionService } from "../../packages/server/src
 import { FederationExecutionConfirmationService } from "../../packages/server/src/federation/execution-confirmation";
 import { FederationMarketService } from "../../packages/server/src/federation/market";
 import { UnixMarketClient } from "../../packages/server/src/federation/market-client";
+import { createFederationSender } from "../../packages/server/src/federation/outbound-client";
 import { FederationPermissionService } from "../../packages/server/src/federation/permissions";
+import { FederationReservationPolicyService } from "../../packages/server/src/federation/reservation-policy";
+import { FederationReservationProposalService } from "../../packages/server/src/federation/reservation-proposals";
 import type { FederationSigningKey } from "../../packages/server/src/federation/signatures";
 
 export async function approveContract(
@@ -86,7 +90,7 @@ if (import.meta.main) {
         keyId: "batch-1",
         privateKey: await importPKCS8(await Bun.file(site.businessKeyFile).text(), "RS256"),
       };
-      for (const capability of ["market.publish", "market.claim"] as const)
+      for (const capability of ["market.publish", "market.claim", "delegation.submit"] as const)
         await new FederationPermissionService(db).set(
           { ...actor, capability, enabled: true },
           actor.userId,
@@ -193,6 +197,20 @@ if (import.meta.main) {
       config.terms.agreementRevisionId,
       sourceConsent.approvalJws,
     );
+    const reservationPolicies = [];
+    for (const p of parties)
+      reservationPolicies.push(
+        await new FederationReservationPolicyService(p.db, p.key.siteId).grant(
+          p.actor,
+          config.terms.agreementRevisionId,
+          {
+            maxTaskAmount: config.request.maxAmount,
+            maxTotalAmount: config.request.maxAmount,
+            maxTasks: 1,
+            validUntil: config.request.executionExpiresAt ?? config.request.expiresAt,
+          },
+        ),
+      );
     const demandId = randomUUID(),
       reservationId = randomUUID(),
       activationId = randomUUID();
@@ -239,8 +257,49 @@ if (import.meta.main) {
       salt: randomBytes(32).toString("hex"),
       request: config.request,
     });
-    const own = await a.execution.approve(a.actor, config.terms.agreementRevisionId, reserve);
-    const other = await b.execution.approve(b.actor, config.terms.agreementRevisionId, reserve);
+    const sourcePolicy = reservationPolicies[0],
+      providerPolicy = reservationPolicies[1];
+    assert(sourcePolicy && providerPolicy);
+    const sourceProposals = new FederationReservationProposalService(
+      a.db,
+      a.key,
+      createFederationSender({
+        cert: await Bun.file(`${root}/peer.crt`).text(),
+        key: await Bun.file(`${root}/peer.key`).text(),
+        ca: await Bun.file(`${root}/ca/ca.crt`).text(),
+      }),
+    );
+    await sourceProposals.submit(
+      a.actor,
+      config.terms.agreementRevisionId,
+      sourcePolicy.id,
+      reserve,
+    );
+    await wait(async () => {
+      const source = (await a.db.select().from(federationReservationProposals))[0];
+      const provider = (await b.db.select().from(federationReservationProposals))[0];
+      assert(source?.state !== "needs_review", source?.lastError ?? "Source proposal failed");
+      assert(provider?.state !== "needs_review", provider?.lastError ?? "Provider proposal failed");
+      return source?.state === "delivered" && provider?.state === "approved";
+    }, "new task preauthorized and delivered by production workers");
+    const own = await a.execution.get(a.actor, config.terms.agreementRevisionId, reservationId);
+    const other = await b.execution.get(b.actor, config.terms.agreementRevisionId, reservationId);
+    assert.equal(own.authorizationPolicyId, sourcePolicy.id);
+    assert.equal(other.authorizationPolicyId, providerPolicy.id);
+    const proposalEvidence = [];
+    for (const p of parties)
+      proposalEvidence.push({
+        siteId: p.key.siteId,
+        policies: await new FederationReservationPolicyService(p.db, p.key.siteId).list(
+          p.actor,
+          config.terms.agreementRevisionId,
+        ),
+        proposals: await p.db.select().from(federationReservationProposals),
+      });
+    await Bun.write(
+      `${root}/reservation-proposals.json`,
+      JSON.stringify(proposalEvidence, null, 2),
+    );
     await wait(async () => {
       const source = await a.execution.get(
         a.actor,

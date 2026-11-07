@@ -1734,6 +1734,7 @@ await Bun.write(process.env.LAB_ROOT+'/registration.json',JSON.stringify({token:
     run(["bun", "--no-env-file", "run", "scripts/federation-live/business.ts"], timeout=1200)
     (logs / "ledger-proof.json").write_text((root / "ledger-proof.json").read_text())
     (logs / "approval-exchange.json").write_text((root / "approval-exchange.json").read_text())
+    (logs / "reservation-proposals.json").write_text((root / "reservation-proposals.json").read_text())
     terminal_policies = {}
     if scenario == "success":
         policy_path = "federation/commercial-agreements/" + configuration["request"]["agreementRevisionId"] + "/terminal-policies"

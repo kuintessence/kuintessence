@@ -65,6 +65,7 @@ if (process.argv[2] === "inspect") {
         allowedKinds: [
           "commercial-approval-query",
           "commercial-approval-waiting",
+          "reservation-proposal-receipt",
           "commercial-agreement",
           "commercial-reservation",
           "commercial-release",

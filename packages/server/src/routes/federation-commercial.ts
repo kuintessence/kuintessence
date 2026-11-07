@@ -3,6 +3,7 @@ import { FederationError } from "@kuintessence/shared/federation";
 import {
   CommercialAgreementSchema,
   CommercialExecutionApprovalSchema,
+  CommercialReservationSchema,
   CommercialUsageCorrectionInputSchema,
 } from "@kuintessence/shared/federation/commercial";
 import { CommercialApprovalRecordKindSchema } from "@kuintessence/shared/federation/commercial-approval-exchange";
@@ -24,6 +25,7 @@ import {
   type FederationReservationPolicyService,
   ReservationPolicyInputSchema,
 } from "../federation/reservation-policy";
+import type { FederationReservationProposalService } from "../federation/reservation-proposals";
 import {
   type FederationTerminalPolicyService,
   TerminalPolicyInputSchema,
@@ -46,6 +48,7 @@ export function createFederationCommercialRoutes(
   terminalPolicies?: FederationTerminalPolicyService,
   approvalExchange?: FederationCommercialApprovalExchange,
   reservationPolicies?: FederationReservationPolicyService,
+  reservationProposals?: FederationReservationProposalService,
 ) {
   const r = new Hono<{ Variables: { federationActor: FederationActor } }>();
   r.use("/federation/commercial-agreements/*", async (c, next) => {
@@ -80,6 +83,55 @@ export function createFederationCommercialRoutes(
     limit: z.coerce.number().int().min(1).max(100).default(50),
     offset: z.coerce.number().int().min(0).default(0),
   });
+  if (reservationProposals) {
+    const path = "/federation/commercial-agreements/:revisionId/reservation-proposals";
+    r.get(path, kqValidator("param", id), kqValidator("query", page), async (c) =>
+      c.json({
+        success: true,
+        data: await reservationProposals.list(
+          c.get("federationActor"),
+          c.req.valid("param").revisionId,
+          c.req.valid("query").limit,
+          c.req.valid("query").offset,
+        ),
+      }),
+    );
+    r.post(
+      path,
+      kqValidator("param", id),
+      kqValidator(
+        "json",
+        z.strictObject({ policyId: z.uuid(), proposal: CommercialReservationSchema }),
+      ),
+      async (c) =>
+        c.json(
+          {
+            success: true,
+            data: await reservationProposals.submit(
+              c.get("federationActor"),
+              c.req.valid("param").revisionId,
+              c.req.valid("json").policyId,
+              c.req.valid("json").proposal,
+            ),
+          },
+          202,
+        ),
+    );
+    r.post(
+      `${path}/:reservationId/retry`,
+      kqValidator("param", id.extend({ reservationId: z.uuid() })),
+      kqValidator("json", z.strictObject({})),
+      async (c) =>
+        c.json({
+          success: true,
+          data: await reservationProposals.retry(
+            c.get("federationActor"),
+            c.req.valid("param").revisionId,
+            c.req.valid("param").reservationId,
+          ),
+        }),
+    );
+  }
   if (reservationPolicies) {
     const path = "/federation/commercial-agreements/:revisionId/reservation-policies";
     r.get(path, kqValidator("param", id), kqValidator("query", page), async (c) =>

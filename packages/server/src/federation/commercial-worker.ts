@@ -5,6 +5,7 @@ import type { FederationCommercialSubmissionService } from "./commercial-submiss
 import type { FederationExecutionStopService } from "./execution-stop";
 import type { FederationTerminalExchange } from "./execution-terminal-exchange";
 import type { FederationMarketService } from "./market";
+import type { FederationReservationProposalService } from "./reservation-proposals";
 import type { FederationTerminalAutomation } from "./terminal-automation";
 import type { FederationUsageService } from "./usage";
 import type { FederationUsageExchange } from "./usage-exchange";
@@ -24,6 +25,7 @@ export class FederationCommercialWorker {
     private readonly terminals?: FederationTerminalExchange,
     private readonly terminalAutomation?: FederationTerminalAutomation,
     private readonly approvals?: FederationCommercialApprovalExchange,
+    private readonly proposals?: FederationReservationProposalService,
   ) {}
 
   start() {
@@ -39,6 +41,16 @@ export class FederationCommercialWorker {
   tick() {
     if (this.running) return this.running;
     this.running = (async () => {
+      if (this.proposals) {
+        try {
+          for (let i = 0; i < 8 && !this.stopped; i++)
+            if (!(await this.proposals.advanceNext())) break;
+        } catch {
+          logger.error(
+            "Reservation proposal processing failed; original intent remains in PostgreSQL",
+          );
+        }
+      }
       if (this.approvals) {
         try {
           await this.approvals.discover();

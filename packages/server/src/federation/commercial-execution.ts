@@ -38,6 +38,11 @@ import {
 } from "./signatures";
 import { FederationTrustRegistry } from "./trust-registry";
 
+export interface ReservationApprovalGuard {
+  authorize(tx: PgTransaction): Promise<void>;
+  complete(tx: PgTransaction, approval: typeof approvals.$inferSelect): Promise<void>;
+}
+
 function identity(payload: CommercialExecutionApproval) {
   return payload.kind === "commercial-reservation"
     ? {
@@ -65,14 +70,18 @@ export class FederationCommercialExecutionService {
   ) {
     this.trust = new FederationTrustRegistry(db);
   }
-  private scope(actor: FederationActor, revisionId: string) {
+  private scope(actor: Pick<FederationActor, "orgId">, revisionId: string) {
     return and(
       eq(approvals.localSiteId, this.signingKey.siteId),
       eq(approvals.localOrgId, actor.orgId),
       eq(approvals.agreementRevisionId, revisionId),
     );
   }
-  private async contract(tx: PgTransaction, actor: FederationActor, revisionId: string) {
+  private async contract(
+    tx: PgTransaction,
+    actor: Pick<FederationActor, "orgId">,
+    revisionId: string,
+  ) {
     const [row] = await tx
       .select()
       .from(agreements)
@@ -89,7 +98,7 @@ export class FederationCommercialExecutionService {
   }
   private async local(
     tx: PgTransaction,
-    actor: FederationActor,
+    actor: Pick<FederationActor, "orgId">,
     revisionId: string,
     recordId: string,
   ) {
@@ -172,9 +181,16 @@ export class FederationCommercialExecutionService {
       };
     });
   }
+  async validatePreauthorizedIntent(
+    tx: PgTransaction,
+    orgId: string,
+    payload: CommercialReservation,
+  ) {
+    await this.validate(tx, { orgId }, payload.request.agreementRevisionId, payload);
+  }
   private async validate(
     tx: PgTransaction,
-    actor: FederationActor,
+    actor: Pick<FederationActor, "orgId">,
     revisionId: string,
     payload: CommercialExecutionApproval,
   ) {
@@ -268,7 +284,12 @@ export class FederationCommercialExecutionService {
   async approve(actor: FederationActor, revisionId: string, raw: CommercialExecutionApproval) {
     return this.approveAuthorized(actor, revisionId, raw);
   }
-  async approvePreauthorized(policyId: string, raw: CommercialReservation, sourceJws?: string) {
+  async approvePreauthorized(
+    policyId: string,
+    raw: CommercialReservation,
+    sourceJws?: string,
+    guard?: ReservationApprovalGuard,
+  ) {
     const payload = CommercialReservationSchema.parse(raw);
     const [policy] = await this.db
       .select()
@@ -285,14 +306,14 @@ export class FederationCommercialExecutionService {
       { orgId: policy.localOrgId, userId: policy.grantedBy },
       payload.request.agreementRevisionId,
       payload,
-      { policyId, sourceJws },
+      { policyId, sourceJws, guard },
     );
   }
   private async approveAuthorized(
     actor: FederationActor,
     revisionId: string,
     raw: CommercialExecutionApproval,
-    automatic?: { policyId: string; sourceJws?: string },
+    automatic?: { policyId: string; sourceJws?: string; guard?: ReservationApprovalGuard },
   ) {
     const payload = CommercialExecutionApprovalSchema.parse(raw);
     const expectedDigest = `sha256:${createHash("sha256").update(JSON.stringify(payload)).digest("hex")}`;
@@ -306,6 +327,7 @@ export class FederationCommercialExecutionService {
         await requireFederationCapability(tx, actor, "agreement.approve");
         return null;
       }
+      await automatic.guard?.authorize(tx);
       if (payload.kind !== "commercial-reservation") throw new FederationError("POLICY_DENIED");
       if (payload.request.senderSiteId !== this.signingKey.siteId || automatic.sourceJws) {
         if (!automatic.sourceJws) throw new FederationError("UNTRUSTED_IDENTITY");
@@ -333,6 +355,7 @@ export class FederationCommercialExecutionService {
         );
       if (existing) {
         if (existing.digest !== expectedDigest) throw new FederationError("OPERATION_CONFLICT");
+        await automatic?.guard?.complete(tx, existing);
         return { existing, reserve: null };
       }
       return { existing: null, reserve: await this.validate(tx, actor, revisionId, payload) };
@@ -387,6 +410,7 @@ export class FederationCommercialExecutionService {
       if (!created) {
         const existing = await this.local(tx, actor, revisionId, recordId);
         if (existing.digest !== digest) throw new FederationError("OPERATION_CONFLICT");
+        await automatic?.guard?.complete(tx, existing);
         return existing;
       }
       if (policy && payload.kind === "commercial-reservation")
@@ -398,6 +422,7 @@ export class FederationCommercialExecutionService {
         recordId,
         digest,
       );
+      await automatic?.guard?.complete(tx, created);
       return created;
     });
   }

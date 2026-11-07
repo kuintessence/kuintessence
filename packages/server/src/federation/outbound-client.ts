@@ -13,6 +13,7 @@ export type FederationSend = (
   path?:
     | "/federation/v1/delegations"
     | "/federation/v1/commercial-approvals"
+    | "/federation/v1/reservation-proposals"
     | "/federation/v1/usage"
     | "/federation/v1/terminals"
     | "/federation/v1/terminal-signatures"
@@ -36,6 +37,7 @@ export function createFederationSender(tls: {
     if (
       path !== "/federation/v1/delegations" &&
       path !== "/federation/v1/commercial-approvals" &&
+      path !== "/federation/v1/reservation-proposals" &&
       path !== "/federation/v1/usage" &&
       path !== "/federation/v1/terminals" &&
       path !== "/federation/v1/terminal-signatures" &&

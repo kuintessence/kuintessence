@@ -61,6 +61,11 @@
       "types": "./src/federation/terminal-exchange.ts",
       "default": "./src/federation/terminal-exchange.ts"
     },
+    "./federation/reservation-proposal": {
+      "bun": "./src/federation/reservation-proposal.ts",
+      "types": "./src/federation/reservation-proposal.ts",
+      "default": "./src/federation/reservation-proposal.ts"
+    },
     "./federation/commercial-approval-exchange": {
       "bun": "./src/federation/commercial-approval-exchange.ts",
       "types": "./src/federation/commercial-approval-exchange.ts",

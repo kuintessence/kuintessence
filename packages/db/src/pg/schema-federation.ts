@@ -24,6 +24,7 @@ import type {
   CommercialAdapterProposalInput,
   CommercialAgreement,
   CommercialExecutionApproval,
+  CommercialReservation,
   CommercialTerminal,
   CommercialUsage,
   CommercialUsageCorrectionEvidence,
@@ -90,6 +91,7 @@ export const federationSigningKeys = pgTable(
           | "evidence-batch"
           | "commercial-approval-query"
           | "commercial-approval-waiting"
+          | "reservation-proposal-receipt"
           | "commercial-agreement"
           | "commercial-usage"
           | "commercial-reservation"
@@ -1169,6 +1171,73 @@ export const federationReservationPolicies = pgTable(
       AND ${t.authorizedAmount} BETWEEN 0 AND ${t.maxTotalAmount}
       AND ${t.authorizedTasks} BETWEEN 0 AND ${t.maxTasks}
       AND ((${t.revokedAt} IS NULL) = (${t.revokedBy} IS NULL))) IS TRUE`,
+    ),
+  ],
+);
+
+/** Signed task proposals survive both sender restart and provider approval delay. */
+export const federationReservationProposals = pgTable(
+  "federation_reservation_proposals",
+  {
+    localSiteId: uuid("local_site_id").notNull(),
+    reservationId: uuid("reservation_id").notNull(),
+    agreementRevisionId: uuid("agreement_revision_id").notNull(),
+    localOrgId: uuid("local_org_id")
+      .notNull()
+      .references(() => orgs.id),
+    policyId: uuid("policy_id")
+      .notNull()
+      .references(() => federationReservationPolicies.id),
+    direction: varchar("direction", { length: 16 }).notNull(),
+    payload: jsonb("payload").$type<CommercialReservation>().notNull(),
+    digest: varchar("digest", { length: 71 }).notNull(),
+    sourceJws: text("source_jws"),
+    sourceFingerprint: varchar("source_fingerprint", { length: 64 }),
+    requestedBy: uuid("requested_by").references(() => users.id),
+    state: varchar("state", { length: 24 }).notNull().default("pending"),
+    receiptJws: text("receipt_jws"),
+    approvedAt: timestamp("approved_at", { withTimezone: true }),
+    deliveredAt: timestamp("delivered_at", { withTimezone: true }),
+    lastError: varchar("last_error", { length: 64 }),
+    leaseToken: uuid("lease_token"),
+    leaseUntil: timestamp("lease_until", { withTimezone: true }),
+    nextAttemptAt: timestamp("next_attempt_at", { withTimezone: true }).notNull().defaultNow(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.localSiteId, t.reservationId] }),
+    foreignKey({
+      columns: [t.localSiteId, t.agreementRevisionId],
+      foreignColumns: [
+        federationCommercialAgreements.localSiteId,
+        federationCommercialAgreements.revisionId,
+      ],
+    }),
+    index("federation_reservation_proposal_pending").on(t.localSiteId, t.state, t.nextAttemptAt),
+    index("federation_reservation_proposal_org").on(
+      t.localSiteId,
+      t.localOrgId,
+      t.agreementRevisionId,
+    ),
+    check(
+      "federation_reservation_proposal_identity",
+      sql`(
+      ${t.payload}->>'kind' = 'commercial-reservation' AND ${t.payload}->>'reservationId' = ${t.reservationId}::text
+      AND ${t.payload}->'request'->>'agreementRevisionId' = ${t.agreementRevisionId}::text
+      AND ${t.digest} ~ '^sha256:[a-f0-9]{64}$'
+      AND ((${t.direction} = 'outbound' AND ${t.requestedBy} IS NOT NULL AND ${t.sourceFingerprint} IS NULL)
+        OR (${t.direction} = 'inbound' AND ${t.requestedBy} IS NULL AND ${t.sourceFingerprint} ~ '^[a-f0-9]{64}$' AND ${t.sourceJws} IS NOT NULL))) IS TRUE`,
+    ),
+    check(
+      "federation_reservation_proposal_state",
+      sql`(
+      ${t.state} IN ('pending','sending','delivered','approved','needs_review')
+      AND ((${t.leaseToken} IS NULL) = (${t.leaseUntil} IS NULL))
+      AND (${t.state} <> 'pending' OR ${t.approvedAt} IS NULL)
+      AND (${t.state} NOT IN ('sending','delivered') OR (${t.direction} = 'outbound' AND ${t.approvedAt} IS NOT NULL AND ${t.sourceJws} IS NOT NULL))
+      AND (${t.state} <> 'approved' OR (${t.direction} = 'inbound' AND ${t.approvedAt} IS NOT NULL))
+      AND ((${t.deliveredAt} IS NULL) = (${t.receiptJws} IS NULL))
+      AND (${t.state} <> 'delivered' OR ${t.deliveredAt} IS NOT NULL)) IS TRUE`,
     ),
   ],
 );

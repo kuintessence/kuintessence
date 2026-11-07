@@ -21,6 +21,7 @@ import {
   federationMaterials,
   federationOutbound,
   federationReservationPolicies,
+  federationReservationProposals,
   federationReservations,
   federationResultImports,
   federationResultReceipts,
@@ -80,6 +81,7 @@ import {
   type MarketProposalInput,
   MarketProposalInputSchema,
 } from "@kuintessence/shared/federation/market";
+import { ReservationProposalReceiptSchema } from "@kuintessence/shared/federation/reservation-proposal";
 import {
   TERMINAL_MAX_BYTES,
   TerminalChunkSchema,
@@ -113,6 +115,7 @@ import { FederationExecutionStopService } from "./execution-stop";
 import { FederationExecutionTerminalService } from "./execution-terminal";
 import { FederationTerminalExchange } from "./execution-terminal-exchange";
 import { FabricClientFailure } from "./fabric-client";
+import { createFederationIngress } from "./ingress";
 import { FederationMarketService } from "./market";
 import type { MarketClient } from "./market-client";
 import { FederationOutboundService } from "./outbound";
@@ -123,6 +126,7 @@ import {
   FederationReservationPolicyService,
   ReservationPolicyInputSchema,
 } from "./reservation-policy";
+import { FederationReservationProposalService } from "./reservation-proposals";
 import { signFederationMessage, verifyFederationMessage } from "./signatures";
 import { FederationTerminalAutomation } from "./terminal-automation";
 import { FederationTerminalPolicyService, TerminalPolicyInputSchema } from "./terminal-policy";
@@ -293,6 +297,9 @@ async function ready(f: Awaited<ReturnType<typeof fixture>>) {
 afterAll(async () => {
   for (const f of fixtures) {
     const siteIds = [f.a.signing.siteId, f.b.signing.siteId];
+    await db
+      .delete(federationReservationProposals)
+      .where(inArray(federationReservationProposals.localSiteId, siteIds));
     await db
       .delete(federationCommercialApprovalSyncs)
       .where(inArray(federationCommercialApprovalSyncs.localSiteId, siteIds));
@@ -5708,4 +5715,529 @@ test("reservation preauthorization grants require dual coordinated consent and c
       maxTotalAmount: "0",
     }),
   ).toMatchObject({ authorizedAmount: "0", maxTotalAmount: "0" });
+});
+
+async function reservationProposalFixture() {
+  const f = await reservationPolicyFixture(true);
+  await new FederationPermissionService(db).set(
+    { ...f.actor, capability: "delegation.submit", enabled: true },
+    f.actor.userId,
+  );
+  const sourcePolicies = new FederationReservationPolicyService(db, f.a.signing.siteId);
+  const sourcePolicy = await sourcePolicies.grant(f.actor, f.revisionId, f.policyInput);
+  const targetPolicy = await f.grant();
+  const fingerprints: string[] = [];
+  for (const site of [f.a, f.b]) {
+    const fingerprint = randomBytes(32).toString("hex");
+    fingerprints.push(fingerprint);
+    await db.insert(federationCertificates).values({
+      fingerprint,
+      siteId: site.signing.siteId,
+      certificatePem: "fixture; transport certificates covered by real TLS tests",
+      validFrom: new Date("2020-01-01"),
+      validUntil: new Date("2099-01-01"),
+    });
+    const [key] = await db
+      .select()
+      .from(federationSigningKeys)
+      .where(eq(federationSigningKeys.siteId, site.signing.siteId));
+    if (!key) throw new Error("Missing key");
+    await db
+      .update(federationSigningKeys)
+      .set({ allowedKinds: [...key.allowedKinds, "reservation-proposal-receipt"] })
+      .where(eq(federationSigningKeys.siteId, site.signing.siteId));
+  }
+  let queryHook: () => Promise<void> = async () => {};
+  const market: Pick<MarketClient, "query"> = {
+    query: async () => {
+      await queryHook();
+      return { operation: "get-demand", demand: f.state };
+    },
+  };
+  const target = new FederationReservationProposalService(db, f.b.signing, undefined, market);
+  let sendHook: ((response: string) => Promise<string>) | undefined;
+  const send: FederationSend = async (_endpoint, jws, path) => {
+    expect(path).toBe("/federation/v1/reservation-proposals");
+    const result = await target.receive(jws, fingerprints[0] ?? "");
+    return sendHook ? sendHook(result) : result;
+  };
+  const source = new FederationReservationProposalService(db, f.a.signing, send, market);
+  const view = async (provider = false) =>
+    (
+      await db
+        .select()
+        .from(federationReservationProposals)
+        .where(
+          eq(
+            federationReservationProposals.localSiteId,
+            provider ? f.b.signing.siteId : f.a.signing.siteId,
+          ),
+        )
+    )[0];
+  const due = () =>
+    db
+      .update(federationReservationProposals)
+      .set({ nextAttemptAt: new Date(0) })
+      .where(
+        inArray(federationReservationProposals.localSiteId, [
+          f.a.signing.siteId,
+          f.b.signing.siteId,
+        ]),
+      );
+  return {
+    ...f,
+    source,
+    target,
+    sourcePolicies,
+    sourcePolicy,
+    targetPolicy,
+    fingerprints,
+    send,
+    market,
+    view,
+    due,
+    submit: () => source.submit(f.actor, f.revisionId, sourcePolicy.id, f.reservation),
+    beforeClaim: (fn: () => Promise<void>) => {
+      queryHook = fn;
+    },
+    afterSend: (fn: (response: string) => Promise<string>) => {
+      sendHook = fn;
+    },
+  };
+}
+
+test("reservation proposal queue automatically approves both institutions but a delivery receipt is not approval", async () => {
+  const f = await reservationProposalFixture();
+  const queued = await f.submit();
+  expect(queued.state).toBe("pending");
+  expect(await f.rows()).toHaveLength(0);
+  await f.source.advanceNext();
+  expect(await f.view()).toMatchObject({ state: "sending", policyId: f.sourcePolicy.id });
+  expect((await f.sourcePolicies.list(f.actor, f.revisionId))[0]).toMatchObject({
+    authorizedTasks: 1,
+    authorizedAmount: "60",
+  });
+  await f.source.advanceNext();
+  expect(await f.view()).toMatchObject({ state: "delivered" });
+  expect(await f.view(true)).toMatchObject({
+    state: "pending",
+    approvedAt: null,
+    sourceFingerprint: f.fingerprints[0],
+  });
+  expect(await f.rows()).toHaveLength(0);
+  await f.target.advanceNext();
+  expect(await f.view(true)).toMatchObject({ state: "approved" });
+  expect((await f.rows())[0]).toMatchObject({
+    authorizationPolicyId: f.targetPolicy.id,
+    counterpartyJws: null,
+  });
+  expect((await f.policies.list(f.actor, f.revisionId))[0]).toMatchObject({
+    authorizedTasks: 1,
+    authorizedAmount: "60",
+  });
+  expect(await f.target.advanceNext()).toBe(false);
+  const list = await f.source.list(f.actor, f.revisionId);
+  expect(JSON.stringify(list)).not.toContain("sourceJws");
+  expect(JSON.stringify(list)).not.toContain("leaseToken");
+  expect(
+    await db
+      .select()
+      .from(submissions)
+      .where(
+        and(
+          eq(submissions.localSiteId, f.b.signing.siteId),
+          sql`${submissions.input}->>'operation' = 'reserve-execution'`,
+        ),
+      ),
+  ).toHaveLength(0);
+});
+
+test("reservation proposal replay and lost delivery responses survive restarts without signing twice", async () => {
+  const f = await reservationProposalFixture();
+  await Promise.all([f.submit(), f.submit()]);
+  await Promise.all([f.source.advanceNext(), f.source.advanceNext()]);
+  f.afterSend(async () => {
+    throw new Error("lost receipt");
+  });
+  await f.source.advanceNext();
+  expect(await f.view()).toMatchObject({ state: "sending", lastError: "PROPOSAL_RETRY" });
+  expect(await f.view(true)).toMatchObject({ state: "pending" });
+  await f.target.advanceNext();
+  await f.due();
+  f.afterSend(async (receipt) => receipt);
+  const restarted = new FederationReservationProposalService(db, f.a.signing, f.send, f.market);
+  await restarted.advanceNext();
+  expect(await f.view()).toMatchObject({ state: "delivered" });
+  expect((await f.rows()).length).toBe(1);
+  expect((await f.policies.list(f.actor, f.revisionId))[0]?.authorizedTasks).toBe(1);
+  const audits = await db
+    .select()
+    .from(auditLog)
+    .where(
+      and(
+        eq(auditLog.orgId, f.actor.orgId),
+        eq(auditLog.action, "federation.reservation_proposal.receive"),
+      ),
+    );
+  expect(audits).toHaveLength(1);
+});
+
+test("reservation proposal source requires human submit authority, correct organization, immutable intent and an active policy", async () => {
+  const f = await reservationProposalFixture();
+  await new FederationPermissionService(db).set(
+    { ...f.actor, capability: "delegation.submit", enabled: false },
+    f.actor.userId,
+  );
+  await expect(f.submit()).rejects.toMatchObject({ code: "POLICY_DENIED" });
+  await new FederationPermissionService(db).set(
+    { ...f.actor, capability: "delegation.submit", enabled: true },
+    f.actor.userId,
+  );
+  await expect(
+    f.source.submit(
+      { ...f.actor, orgId: randomUUID() },
+      f.revisionId,
+      f.sourcePolicy.id,
+      f.reservation,
+    ),
+  ).rejects.toMatchObject({ code: "POLICY_DENIED" });
+  await expect(
+    f.source.submit(f.actor, f.revisionId, f.targetPolicy.id, f.reservation),
+  ).rejects.toMatchObject({ code: "POLICY_DENIED" });
+  await f.submit();
+  await expect(
+    f.source.submit(f.actor, f.revisionId, f.sourcePolicy.id, {
+      ...f.reservation,
+      salt: "1".repeat(64),
+    }),
+  ).rejects.toMatchObject({ code: "OPERATION_CONFLICT" });
+  await f.sourcePolicies.revoke(f.actor, f.revisionId, f.sourcePolicy.id);
+  await f.source.advanceNext();
+  expect(await f.view()).toMatchObject({
+    state: "needs_review",
+    lastError: "POLICY_DENIED",
+    approvedAt: null,
+  });
+  expect((await f.sourcePolicies.list(f.actor, f.revisionId))[0]?.authorizedTasks).toBe(0);
+});
+
+test("reservation proposal reception checks its own policy, original signature and TLS institutional identity", async () => {
+  const f = await reservationProposalFixture();
+  await f.submit();
+  await f.source.advanceNext();
+  const row = await f.view();
+  if (!row?.sourceJws) throw new Error("Missing approval");
+  await expect(f.target.receive(row.sourceJws, f.fingerprints[1] ?? "")).rejects.toMatchObject({
+    code: "UNTRUSTED_IDENTITY",
+  });
+  await f.policies.revoke(f.actor, f.revisionId, f.targetPolicy.id);
+  await expect(f.target.receive(row.sourceJws, f.fingerprints[0] ?? "")).rejects.toMatchObject({
+    code: "POLICY_DENIED",
+  });
+  expect(await f.view(true)).toBeUndefined();
+  const replacement = await f.grant();
+  await f.target.receive(row.sourceJws, f.fingerprints[0] ?? "");
+  expect(await f.view(true)).toMatchObject({ policyId: replacement.id });
+  const changed = await signFederationMessage(
+    CommercialReservationSchema,
+    { ...f.reservation, salt: "2".repeat(64) },
+    f.a.signing,
+  );
+  await expect(f.target.receive(changed, f.fingerprints[0] ?? "")).rejects.toMatchObject({
+    code: "OPERATION_CONFLICT",
+  });
+});
+
+test("reservation proposal provider rechecks the source certificate after the chain query", async () => {
+  const f = await reservationProposalFixture();
+  await f.submit();
+  await f.source.advanceNext();
+  await f.source.advanceNext();
+  f.beforeClaim(async () => {
+    await db
+      .update(federationCertificates)
+      .set({ revokedAt: new Date() })
+      .where(eq(federationCertificates.fingerprint, f.fingerprints[0] ?? ""));
+  });
+  await f.target.advanceNext();
+  expect(await f.view(true)).toMatchObject({
+    state: "needs_review",
+    lastError: "UNTRUSTED_IDENTITY",
+    approvedAt: null,
+  });
+  expect(await f.rows()).toHaveLength(0);
+  expect((await f.policies.list(f.actor, f.revisionId))[0]?.authorizedTasks).toBe(0);
+});
+
+test("reservation proposal source rejects misbound receipts and endpoint changes during delivery", async () => {
+  const f = await reservationProposalFixture();
+  await f.submit();
+  await f.source.advanceNext();
+  f.afterSend(async (jws) => {
+    const key = await f.trust.resolveKey(f.b.signing.siteId, f.b.signing.keyId, new Date());
+    const { payload } = await verifyFederationMessage(
+      ReservationProposalReceiptSchema,
+      jws,
+      key,
+      new Date(),
+    );
+    return signFederationMessage(
+      ReservationProposalReceiptSchema,
+      { ...payload, reservationId: randomUUID() },
+      f.b.signing,
+    );
+  });
+  await f.source.advanceNext();
+  expect(await f.view()).toMatchObject({
+    state: "needs_review",
+    lastError: "OPERATION_CONFLICT",
+    deliveredAt: null,
+  });
+  await f.source.retry(f.actor, f.revisionId, f.reservation.reservationId);
+  f.afterSend(async (jws) => {
+    await db
+      .update(federationSites)
+      .set({ endpoint: "https://changed.test.invalid" })
+      .where(eq(federationSites.id, f.b.signing.siteId));
+    return jws;
+  });
+  await f.source.advanceNext();
+  expect(await f.view()).toMatchObject({
+    state: "needs_review",
+    lastError: "UNTRUSTED_IDENTITY",
+    deliveredAt: null,
+  });
+});
+
+test("reservation proposal lease loss before approval fences signatures and late failures cannot erase retry", async () => {
+  const f = await reservationProposalFixture();
+  await f.submit();
+  f.beforeClaim(async () => {
+    await db
+      .update(federationReservationProposals)
+      .set({ leaseUntil: new Date(0) })
+      .where(eq(federationReservationProposals.localSiteId, f.a.signing.siteId));
+    await f.source.retry(f.actor, f.revisionId, f.reservation.reservationId);
+  });
+  await f.source.advanceNext();
+  expect(await f.view()).toMatchObject({ state: "pending", lastError: null, leaseToken: null });
+  expect((await f.sourcePolicies.list(f.actor, f.revisionId))[0]?.authorizedTasks).toBe(0);
+  f.beforeClaim(async () => {});
+  await f.source.advanceNext();
+  f.afterSend(async () => {
+    await db
+      .update(federationReservationProposals)
+      .set({ leaseUntil: new Date(0) })
+      .where(eq(federationReservationProposals.localSiteId, f.a.signing.siteId));
+    await f.source.retry(f.actor, f.revisionId, f.reservation.reservationId);
+    throw new Error("late failure");
+  });
+  await f.source.advanceNext();
+  expect(await f.view()).toMatchObject({ state: "sending", lastError: null, leaseToken: null });
+});
+
+test("reservation proposal cannot steal a live lease and transient chain failure consumes no authority", async () => {
+  const f = await reservationProposalFixture();
+  await f.submit();
+  f.beforeClaim(async () => {
+    await expect(
+      f.source.retry(f.actor, f.revisionId, f.reservation.reservationId),
+    ).rejects.toMatchObject({ code: "OPERATION_CONFLICT" });
+    throw new FabricClientFailure("LEDGER_UNAVAILABLE");
+  });
+  await f.source.advanceNext();
+  expect(await f.view()).toMatchObject({
+    state: "pending",
+    lastError: "LEDGER_UNAVAILABLE",
+    approvedAt: null,
+  });
+  expect((await f.sourcePolicies.list(f.actor, f.revisionId))[0]?.authorizedTasks).toBe(0);
+});
+
+test("reservation proposal approval progress, signature, allowance and audit commit together", async () => {
+  const f = await reservationProposalFixture();
+  await f.submit();
+  await db.execute(
+    sql`alter table audit_log add constraint test_proposal_audit check (action <> 'federation.reservation_proposal.approve' OR actor <> ${sql.raw(`'reservation-policy:${f.sourcePolicy.id}'`)})`,
+  );
+  try {
+    await f.source.advanceNext();
+    expect(await f.view()).toMatchObject({ state: "pending", approvedAt: null, sourceJws: null });
+    expect((await f.sourcePolicies.list(f.actor, f.revisionId))[0]?.authorizedTasks).toBe(0);
+    expect(
+      await db
+        .select()
+        .from(executionApprovals)
+        .where(eq(executionApprovals.localSiteId, f.a.signing.siteId)),
+    ).toHaveLength(0);
+  } finally {
+    await db.execute(sql`alter table audit_log drop constraint test_proposal_audit`);
+  }
+  await f.due();
+  await f.source.advanceNext();
+  expect(await f.view()).toMatchObject({ state: "sending" });
+});
+
+test("reservation proposal disabled sender does not sign queued source work but inbound approval remains available", async () => {
+  const f = await reservationProposalFixture();
+  const disabled = new FederationReservationProposalService(db, f.a.signing, undefined, f.market);
+  await expect(
+    disabled.submit(f.actor, f.revisionId, f.sourcePolicy.id, f.reservation),
+  ).rejects.toMatchObject({ code: "ASSET_UNAVAILABLE" });
+  await f.submit();
+  expect(await disabled.advanceNext()).toBe(false);
+  expect((await disabled.list(f.actor, f.revisionId)).sendEnabled).toBe(false);
+  await f.source.advanceNext();
+  await f.source.advanceNext();
+  await f.target.advanceNext();
+  expect(await f.view(true)).toMatchObject({ state: "approved" });
+});
+
+test("reservation proposal HTTP separates human submission from private signed transport", async () => {
+  const f = await reservationProposalFixture();
+  const app = new Hono();
+  app.onError(createErrorHandler(pino({ enabled: false })));
+  let automated = false;
+  app.use("*", async (c, next) => {
+    c.set("principal" as never, f.actor as never);
+    c.set("automation" as never, automated as never);
+    await next();
+  });
+  app.route(
+    "/",
+    createFederationCommercialRoutes(
+      f.approvals,
+      f.service,
+      undefined,
+      undefined,
+      f.execution,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      f.policies,
+      f.source,
+    ),
+  );
+  const path = `/federation/commercial-agreements/${f.revisionId}/reservation-proposals`;
+  const post = (body: unknown) =>
+    app.request(path, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  const input = { policyId: f.sourcePolicy.id, proposal: f.reservation };
+  automated = true;
+  expect((await post(input)).status).toBe(403);
+  automated = false;
+  expect((await post({ ...input, approvedBy: f.actor.userId })).status).toBe(400);
+  expect((await post(input)).status).toBe(202);
+  expect((await app.request(path)).status).toBe(200);
+  await f.source.advanceNext();
+  const row = await f.view();
+  const ingress = createFederationIngress(db, f.b.signing);
+  const peerPath = "/federation/v1/reservation-proposals";
+  expect(
+    (await ingress.request(peerPath, { method: "POST", body: row?.sourceJws ?? "" })).status,
+  ).toBe(415);
+  const response = await ingress.request(peerPath, {
+    method: "POST",
+    body: row?.sourceJws ?? "",
+    headers: {
+      "content-type": "application/jose",
+      "x-kq-federation-cert": f.fingerprints[0] ?? "",
+    },
+  });
+  expect(response.status).toBe(200);
+  expect(response.headers.get("content-type")).toBe("application/jose");
+  expect(response.headers.get("cache-control")).toBe("no-store");
+  expect((await f.view(true))?.state).toBe("pending");
+});
+
+test("reservation proposal production worker feeds signature exchange and queues both private reservations", async () => {
+  const f = await reservationProposalFixture();
+  const exchange = await approvalTransport(f);
+  const sourceWorker = new FederationCommercialWorker(
+    f.service,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    exchange.a,
+    f.source,
+  );
+  const providerWorker = new FederationCommercialWorker(
+    new FederationCommercialSubmissionService(db, f.b.signing.siteId, f.adapter),
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    exchange.b,
+    f.target,
+  );
+  await f.submit();
+  await sourceWorker.tick();
+  await providerWorker.tick();
+  await exchange.due();
+  await sourceWorker.tick();
+  expect(await f.view()).toMatchObject({ state: "delivered" });
+  expect(await f.view(true)).toMatchObject({ state: "approved" });
+  const rows = await db
+    .select()
+    .from(executionApprovals)
+    .where(inArray(executionApprovals.localSiteId, [f.a.signing.siteId, f.b.signing.siteId]));
+  expect(rows).toHaveLength(2);
+  expect(rows.every((row) => !!row.counterpartyJws)).toBe(true);
+  const work = await db
+    .select()
+    .from(submissions)
+    .where(
+      and(
+        inArray(submissions.localSiteId, [f.a.signing.siteId, f.b.signing.siteId]),
+        sql`${submissions.input}->>'operation' = 'reserve-execution'`,
+      ),
+    );
+  expect(work).toHaveLength(2);
+  expect(
+    (await exchange.a.list(f.actor, f.revisionId, 50, 0)).records.every(
+      (row) => row.state === "complete",
+    ),
+  ).toBe(true);
+});
+
+test("reservation proposal resumes an existing human approval without charging institutional allowance", async () => {
+  const f = await reservationProposalFixture();
+  const sourceExecution = new FederationCommercialExecutionService(db, f.a.signing, f.market);
+  const manual = await sourceExecution.approve(f.actor, f.revisionId, f.reservation);
+  await f.submit();
+  await f.source.advanceNext();
+  expect(await f.view()).toMatchObject({ state: "sending", sourceJws: manual.approvalJws });
+  expect((await f.sourcePolicies.list(f.actor, f.revisionId))[0]?.authorizedTasks).toBe(0);
+});
+
+test("reservation proposal expired delivery success cannot finish a replacement lease", async () => {
+  const f = await reservationProposalFixture();
+  await f.submit();
+  await f.source.advanceNext();
+  f.afterSend(async (receipt) => {
+    await db
+      .update(federationReservationProposals)
+      .set({ leaseUntil: new Date(0) })
+      .where(eq(federationReservationProposals.localSiteId, f.a.signing.siteId));
+    await f.source.retry(f.actor, f.revisionId, f.reservation.reservationId);
+    return receipt;
+  });
+  await f.source.advanceNext();
+  expect(await f.view()).toMatchObject({ state: "sending", deliveredAt: null, lastError: null });
+  f.afterSend(async (receipt) => receipt);
+  await f.source.advanceNext();
+  expect(await f.view()).toMatchObject({ state: "delivered" });
 });
