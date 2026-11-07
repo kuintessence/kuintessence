@@ -207,7 +207,12 @@ export const CommercialProposalInputSchema = z.discriminatedUnion("operation", [
   }),
 ]);
 export type CommercialProposalInput = z.infer<typeof CommercialProposalInputSchema>;
-/** Transport-only operations; accepting these at a user API requires separate bilateral approval. */
+export const CommercialExecutionApprovalSchema = z.discriminatedUnion("kind", [
+  CommercialReservationSchema,
+  CommercialReleaseSchema,
+]);
+export type CommercialExecutionApproval = z.infer<typeof CommercialExecutionApprovalSchema>;
+/** Signed transport inputs are assembled only after both institutions approve the same payload. */
 export const CommercialExecutionProposalInputSchema = z.discriminatedUnion("operation", [
   z.strictObject({
     ...ProposalIdentity,

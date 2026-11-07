@@ -78,6 +78,8 @@
       "input-download-query": "输入下载请求",
       "commercial-agreement": "商业合同",
       "commercial-usage": "商业用量",
+      "commercial-reservation": "商业额度预留",
+      "commercial-release": "商业额度释放",
       "commercial-usage-query": "用量查询",
       "commercial-usage-page": "用量交换响应",
       "input-download-grant": "输入下载授权"

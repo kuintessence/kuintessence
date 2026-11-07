@@ -1,6 +1,6 @@
 # 私有额度与公共执行许可
 
-本页说明同一 Fabric 通道中的 kq-commercial / kq-market 协议。链码、生产 Adapter 与 Server Unix 客户端已通过隔离真实网络验收；Server 的协调接单入口仍拒绝执行，业务审批、持久待办和执行方验权尚未接入，不能把链码 ACTIVE 当作平台已提交真实计算任务。
+本页说明同一 Fabric 通道中的 kq-commercial / kq-market 协议。链码、生产 Adapter 与 Server Unix 客户端已通过隔离真实网络验收；Server 已接通预留/释放的业务双签审批和持久待办，协调激活与执行方验权尚未接入，协调接单入口仍拒绝执行，不能把链码 ACTIVE 当作平台已提交真实计算任务。
 
 ## 私有边界与背书
 
@@ -34,7 +34,7 @@ CommercialReservation 由双方对相同正文签名，签署用途必须显式�
 
 ReleaseExecution 使用专用 commercial-release 双签正文，绑定原预留摘要及 gate 版本。只允许尚未激活的 CLAIMED 需求：同一交易减少 locked/预留计数，保留原始记录，追加释放回执，并将 gate 升版为 REVOKED。重复释放不重复退款；旧预留重放不会把 REVOKED 改回 READY。自然到期不等于已经停止执行，ACTIVE 不能沿此接口释放。
 
-当前没有 ACTIVE 的终态结算/停止证明、公共重新开放、预算扩额/跨域划拨或自动代际迁移。新签署用途已进入链信任 schema，但 Server 信任管理与审批流程尚未接入；既有链信任清单的治理升级/迁移工具也仍须补齐。未放开现有 Server 的 LEDGER_REQUIRED 门槛。
+当前没有 ACTIVE 的终态结算/停止证明、公共重新开放、预算扩额/跨域划拨或自动代际迁移。新签署用途已进入链与 Server 信任管理，预留/释放双签审批已接入；既有链信任清单的治理升级/迁移工具仍须补齐。未放开现有 Server 的 LEDGER_REQUIRED 门槛。
 
 ## 复现真实网络验证
 
@@ -42,7 +42,7 @@ Commercial Adapter 的固定 proposal 接口增加 reserve-execution/release-exe
 
 Market Adapter 增加 activate-demand，恢复检查点绑定规范化公开载荷与 activationId。两类操作均复用原加密检查点，不改变已有恢复用途或密钥文件。必须先保存 proposal，再保存 prepared transaction，最后才提交；提交响应丢失时继续恢复原交易，不能重新创建预留。
 
-这些是本机私有套接字能力。现有 CommercialClient/MarketClient 业务接口和用户 HTTP 输入仍只接受原来的合同/用量及发布/认领/撤回操作，不能通过 market.publish 绕过后续审批。DATA_WAITING 保留原交易并等待重试；预算不足、授权或对象冲突进入复核，原始私有错误不会返回用户。
+这些是本机私有套接字能力。CommercialClient 与持久商业待办现已接受经双签审批组装的预留/释放；公共市场业务接口和用户输入仍只允许发布/认领/撤回，不能通过 market.publish 激活。DATA_WAITING 保留原交易并等待重试；预算不足、授权或对象冲突进入复核，原始私有错误不会返回用户。
 
     KQ_FABRIC_TOOLS=/path/to/verified-fabric-3.1.5 bun run test:fabric:gate
 
@@ -51,3 +51,26 @@ Market Adapter 增加 activate-demand，恢复检查点绑定规范化公开载�
 检查提交验证码、原生 MVCC 读集竞态及真实区块中的 PDC 写入：缺 B 背书、释放先提交、激活先提交、并发超额、重复预留/释放及第三方不可见。A/B 应取得私有写入；C 本地查询、C 请求 A 的私有区块及 A 请求没有私有副本的 C 均不能取到正文；公共区块与服务日志也不得出现金额、合同探针或签名。该入口已接入现有 Fabric CI。
 
 同一入口随后通过生产 Node runtime 与 Server Unix 客户端释放一个已锁定但未激活的槽位，预留新任务并激活。每一步使用新进程；提交成功后主动退出、不保存响应，再恢复并核对相同交易和区块。预留额外经历 Orderer 停机/恢复；查询验证 REVOKED/READY 哈希、明确不存在及匹配的 ACTIVE 需求。前述私有区块遍历覆盖链码竞态交易，后续 Adapter 交易验证恢复与公开查询，不能据此宣称完成 Server 数据库或 Agent 的联合验收。
+
+
+## Server 双签审批与持久待办
+
+迁移 0121 增加按本机构/组织/合同归属的不可变预留与释放审批，商业待办接受两种新操作。双方须已批准同一 ledger_coordinated 商业合同，当前真人具有该组织 agreement.approve，机构签名密钥显式具备 commercial-reservation 或 commercial-release。信任管理页面可为新密钥选择这两个用途；既有密钥记录不可变，须登记并轮换，旧合同/用量用途不会自动扩权。双方及链信任配置须分别同步，平台登记不会擅自修改链治理。
+
+合同下的 API 前缀为 /api/federation/commercial-agreements/:revisionId：
+
+| 路径 | 用途 |
+| --- | --- |
+| GET /execution-approvals | 本机构组织的审批分页 |
+| POST /execution-approvals | 对完整 CommercialReservation 或 CommercialRelease 确认并签名 |
+| GET /execution-approvals/:recordId | 原签名、对方签名和最近提交状态，不含恢复密文/租约 |
+| POST /execution-approvals/:recordId/counterparty | 提交 approvalJws；同文双签与待办同事务落库 |
+| POST /submissions/:submissionId/retry | 复核失败后重排，未知交易继续恢复原 txId |
+
+读取要求 agreement.read（approve 包含读取），写入要求 agreement.approve；平台角色不会自动获得此权。请求必须来自真人活动组织，禁止自动化凭据；接口 no-store。双方目前通过导出/交换签名再附加，不是无人值守的机构握手。审批属于机构业务承诺，原审批人离职不删除原记录；真正运行授权另由执行方策略控制。
+
+新增预留签名前核对合同摘要、双方、资源/模板、私有封顶与期限，并查询当前公共 CLAIMED/版本/claimId/商业域和资源。链不可用返回 503，非法响应返回 502，不生成签名；远程查询前后重新核对组织权限。查询只是预检，最终正确性由提交时的链码读集保证。相同 ID/内容重试返回原审批，即使需求后来激活，也不会另签或重复入队；改内容或跨组织使用原 ID 拒绝。
+
+释放须引用同合同已双签的原预留摘要及 READY 版本；ACTIVE 的新释放审批拒绝。自然到期不自动释放。后台先等合同登记 committed，预留才能推进；释放再等对应预留 committed。发送提案前重新验双方当前密钥信任与专用签署用途；已有未知提交仍按原交易恢复，不能因撤权创建新交易。原有 90 秒租约、检查点先落库、迟到响应隔离和 INVALID 历史保留继续适用。
+
+此审批不创建本地双边预算、不激活执行协议，也不提交 Job。独立数据库已覆盖权限变化、重复审批/附签、错签/错摘要、事务回滚、合同→预留→释放依赖、重启恢复及 HTTP 隔离；Adapter 使用替身，尚未进行这条数据库审批到真实 Fabric 的联合验收。公开激活协调、执行授权与 Web 审批界面继续待接。

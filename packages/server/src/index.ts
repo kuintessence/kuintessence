@@ -56,6 +56,7 @@ import { FederationAttestationWorker } from "./federation/attestation-worker";
 import { FederationCancellationMonitor } from "./federation/cancellation-monitor";
 import { FederationCommercialAgreementService } from "./federation/commercial-agreements";
 import { UnixCommercialClient } from "./federation/commercial-client";
+import { FederationCommercialExecutionService } from "./federation/commercial-execution";
 import { FederationCommercialSubmissionService } from "./federation/commercial-submissions";
 import { FederationCommercialWorker } from "./federation/commercial-worker";
 import { FederationDataDispatch } from "./federation/data-dispatch";
@@ -1699,6 +1700,13 @@ if (federationSigningKey && federationCommercial)
       federationCommercial,
       federationUsage,
       federationUsageExchange,
+      new FederationCommercialExecutionService(
+        db,
+        federationSigningKey,
+        config.FEDERATION_MARKET_SOCKET_PATH
+          ? new UnixMarketClient(config.FEDERATION_MARKET_SOCKET_PATH)
+          : undefined,
+      ),
     ),
   );
 const federationPreparation = federationSigningKey

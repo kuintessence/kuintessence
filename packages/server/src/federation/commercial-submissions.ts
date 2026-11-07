@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import {
   federationCommercialAgreements as agreements,
+  federationCommercialExecutionApprovals as approvals,
   federationCommercialAttempts as attempts,
   auditLog,
   type PgDb,
@@ -10,9 +11,10 @@ import {
 } from "@kuintessence/db";
 import { FederationError } from "@kuintessence/shared/federation";
 import {
+  type CommercialAdapterProposalInput,
+  CommercialAdapterProposalInputSchema,
   CommercialAgreementSchema,
-  type CommercialProposalInput,
-  CommercialProposalInputSchema,
+  CommercialExecutionApprovalSchema,
   CommercialUsageSchema,
   FabricCommercialAdvanceResultSchema,
 } from "@kuintessence/shared/federation/commercial";
@@ -53,6 +55,22 @@ export class FederationCommercialSubmissionService {
                 AND dependency.agreement_revision_id = ${submissions.agreementRevisionId}
                 AND dependency.input->>'operation' = 'register-agreement'
                 AND dependency.state = 'committed'
+            ))`,
+            sql`(${submissions.input}->>'operation' NOT IN ('reserve-execution','release-execution') OR EXISTS (
+              SELECT 1 FROM ${approvals} approval
+              WHERE approval.local_site_id = ${submissions.localSiteId}
+                AND approval.agreement_revision_id = ${submissions.agreementRevisionId}
+                AND approval.record_id::text = ${submissions.input}->>'recordId'
+                AND approval.digest = ${submissions.input}->>'digest'
+                AND approval.counterparty_jws IS NOT NULL
+                AND (${submissions.input}->>'operation' = 'reserve-execution' OR EXISTS (
+                  SELECT 1 FROM ${submissions} reservation
+                  WHERE reservation.local_site_id = ${submissions.localSiteId}
+                    AND reservation.agreement_revision_id = ${submissions.agreementRevisionId}
+                    AND reservation.input->>'operation' = 'reserve-execution'
+                    AND reservation.input->>'recordId' = approval.payload->>'reservationId'
+                    AND reservation.state = 'committed'
+                ))
             ))`,
             sql`NOT EXISTS (
               SELECT 1 FROM ${reports} usage_report
@@ -241,9 +259,14 @@ export class FederationCommercialSubmissionService {
       .where(eq(submissions.id, id));
   }
 
-  private async beforeDisclosure(raw: CommercialProposalInput) {
-    const input = CommercialProposalInputSchema.parse(raw);
-    if (input.operation === "register-agreement") {
+  private async beforeDisclosure(raw: CommercialAdapterProposalInput) {
+    const input = CommercialAdapterProposalInputSchema.parse(raw);
+    if (input.operation !== "record-usage") {
+      const kinds = {
+        "register-agreement": "commercial-agreement",
+        "reserve-execution": "commercial-reservation",
+        "release-execution": "commercial-release",
+      } as const;
       for (const [siteId, jws] of [
         [input.envelope.sourceSiteId, input.envelope.sourceJws],
         [input.envelope.targetSiteId, input.envelope.targetJws],
@@ -251,12 +274,13 @@ export class FederationCommercialSubmissionService {
         if (!siteId || !jws) throw new FederationError("INVALID_MESSAGE");
         const key = await this.trust.resolveKey(siteId, federationMessageKeyId(jws), new Date());
         const verified = await verifyFederationMessage(
-          CommercialAgreementSchema,
+          z.union([CommercialAgreementSchema, CommercialExecutionApprovalSchema]),
           jws,
           key,
           new Date(),
         );
-        if (verified.digest !== input.digest) throw new FederationError("OPERATION_CONFLICT");
+        if (verified.payload.kind !== kinds[input.operation] || verified.digest !== input.digest)
+          throw new FederationError("OPERATION_CONFLICT");
       }
     } else {
       const jws = input.envelope.providerJws;

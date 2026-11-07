@@ -39,5 +39,7 @@ test("usage exchange signing purposes are explicit and the trust catalog accepts
   const kinds = FederationKeyInput.shape.allowedKinds.element.options;
   expect(kinds).toContain("commercial-usage-query");
   expect(kinds).toContain("commercial-usage-page");
+  expect(kinds).toContain("commercial-reservation");
+  expect(kinds).toContain("commercial-release");
   expect(FederationKeyInput.shape.allowedKinds.safeParse(kinds).success).toBe(true);
 });

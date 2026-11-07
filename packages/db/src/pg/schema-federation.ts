@@ -19,8 +19,9 @@ import type {
   FederationTerminalEvidence,
 } from "@kuintessence/shared/federation";
 import type {
+  CommercialAdapterProposalInput,
   CommercialAgreement,
-  CommercialProposalInput,
+  CommercialExecutionApproval,
   CommercialUsage,
   CommercialUsageCorrectionEvidence,
   CommercialUsageEvidenceSet,
@@ -85,6 +86,8 @@ export const federationSigningKeys = pgTable(
           | "evidence-batch"
           | "commercial-agreement"
           | "commercial-usage"
+          | "commercial-reservation"
+          | "commercial-release"
           | "commercial-usage-query"
           | "commercial-usage-page"
           | "status-query"
@@ -1061,7 +1064,7 @@ export const federationCommercialSubmissions = pgTable(
     id: uuid("id").primaryKey(),
     localSiteId: uuid("local_site_id").notNull(),
     agreementRevisionId: uuid("agreement_revision_id").notNull(),
-    input: jsonb("input").$type<CommercialProposalInput>().notNull(),
+    input: jsonb("input").$type<CommercialAdapterProposalInput>().notNull(),
     state: varchar("state", { length: 24 }).notNull().default("pending"),
     lastError: varchar("last_error", { length: 64 }),
     leaseToken: uuid("lease_token"),
@@ -1090,11 +1093,59 @@ export const federationCommercialSubmissions = pgTable(
     ),
     check(
       "federation_commercial_submission_input",
-      sql`(${t.input}->>'operation' IN ('register-agreement','record-usage') AND ${t.input}->>'recordId' IS NOT NULL AND ${t.input}->>'domainId' IS NOT NULL AND ${t.input}->>'digest' ~ '^sha256:[a-f0-9]{64}$') IS TRUE`,
+      sql`(${t.input}->>'operation' IN ('register-agreement','record-usage','reserve-execution','release-execution') AND ${t.input}->>'recordId' IS NOT NULL AND ${t.input}->>'domainId' IS NOT NULL AND ${t.input}->>'digest' ~ '^sha256:[a-f0-9]{64}$') IS TRUE`,
     ),
     check(
       "federation_commercial_submission_lease",
       sql`(${t.leaseToken} IS NULL) = (${t.leaseUntil} IS NULL)`,
+    ),
+  ],
+);
+
+/** Each signed approval is immutable; attaching the other signature creates durable ledger work. */
+export const federationCommercialExecutionApprovals = pgTable(
+  "federation_commercial_execution_approvals",
+  {
+    localSiteId: uuid("local_site_id").notNull(),
+    recordId: uuid("record_id").notNull(),
+    agreementRevisionId: uuid("agreement_revision_id").notNull(),
+    localOrgId: uuid("local_org_id")
+      .notNull()
+      .references(() => orgs.id),
+    payload: jsonb("payload").$type<CommercialExecutionApproval>().notNull(),
+    digest: varchar("digest", { length: 71 }).notNull(),
+    approvalJws: text("approval_jws").notNull(),
+    counterpartyJws: text("counterparty_jws"),
+    approvedBy: uuid("approved_by")
+      .notNull()
+      .references(() => users.id),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.localSiteId, t.recordId] }),
+    foreignKey({
+      columns: [t.localSiteId, t.agreementRevisionId],
+      foreignColumns: [
+        federationCommercialAgreements.localSiteId,
+        federationCommercialAgreements.revisionId,
+      ],
+    }),
+    index("federation_execution_approval_org").on(
+      t.localSiteId,
+      t.localOrgId,
+      t.agreementRevisionId,
+      t.createdAt,
+    ),
+    check(
+      "federation_execution_approval_payload",
+      sql`(
+      ${t.digest} ~ '^sha256:[a-f0-9]{64}$'
+      AND ((${t.payload}->>'kind' = 'commercial-reservation'
+        AND ${t.payload}->>'reservationId' = ${t.recordId}::text
+        AND ${t.payload}->'request'->>'agreementRevisionId' = ${t.agreementRevisionId}::text)
+      OR (${t.payload}->>'kind' = 'commercial-release'
+        AND ${t.payload}->>'releaseId' = ${t.recordId}::text))
+    ) IS TRUE`,
     ),
   ],
 );

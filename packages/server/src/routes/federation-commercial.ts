@@ -2,13 +2,16 @@ import { AppError, ErrorCode } from "@kuintessence/shared";
 import { FederationError } from "@kuintessence/shared/federation";
 import {
   CommercialAgreementSchema,
+  CommercialExecutionApprovalSchema,
   CommercialUsageCorrectionInputSchema,
 } from "@kuintessence/shared/federation/commercial";
 import { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { z } from "zod";
 import type { FederationCommercialAgreementService } from "../federation/commercial-agreements";
+import type { FederationCommercialExecutionService } from "../federation/commercial-execution";
 import type { FederationCommercialSubmissionService } from "../federation/commercial-submissions";
+import { FabricClientFailure } from "../federation/fabric-client";
 import type { FederationActor } from "../federation/permissions";
 import type { FederationUsageService } from "../federation/usage";
 import type { FederationUsageExchange } from "../federation/usage-exchange";
@@ -20,6 +23,7 @@ export function createFederationCommercialRoutes(
   submissions: FederationCommercialSubmissionService,
   usage?: FederationUsageService,
   exchange?: FederationUsageExchange,
+  execution?: FederationCommercialExecutionService,
 ) {
   const r = new Hono<{ Variables: { federationActor: FederationActor } }>();
   r.use("/federation/commercial-agreements/*", async (c, next) => {
@@ -36,6 +40,8 @@ export function createFederationCommercialRoutes(
   });
   r.use("/federation/commercial-agreements/*", bodyLimit({ maxSize: 600000 }));
   r.onError((error, c) => {
+    if (error instanceof FabricClientFailure)
+      return c.json({ error: { code: error.code } }, error.needsReview ? 502 : 503);
     if (error instanceof FederationError)
       return c.json(
         { error: { code: error.code } },
@@ -113,6 +119,64 @@ export function createFederationCommercialRoutes(
       return c.json({ success: true });
     },
   );
+  if (execution) {
+    const record = id.extend({ recordId: z.uuid() });
+    const path = "/federation/commercial-agreements/:revisionId/execution-approvals";
+    r.get(path, kqValidator("param", id), kqValidator("query", page), async (c) => {
+      const { limit, offset } = c.req.valid("query");
+      return c.json({
+        success: true,
+        data: await execution.list(
+          c.get("federationActor"),
+          c.req.valid("param").revisionId,
+          limit,
+          offset,
+        ),
+      });
+    });
+    r.post(
+      path,
+      kqValidator("param", id),
+      kqValidator("json", CommercialExecutionApprovalSchema),
+      async (c) =>
+        c.json(
+          {
+            success: true,
+            data: await execution.approve(
+              c.get("federationActor"),
+              c.req.valid("param").revisionId,
+              c.req.valid("json"),
+            ),
+          },
+          201,
+        ),
+    );
+    r.get(`${path}/:recordId`, kqValidator("param", record), async (c) =>
+      c.json({
+        success: true,
+        data: await execution.get(
+          c.get("federationActor"),
+          c.req.valid("param").revisionId,
+          c.req.valid("param").recordId,
+        ),
+      }),
+    );
+    r.post(
+      `${path}/:recordId/counterparty`,
+      kqValidator("param", record),
+      kqValidator("json", z.strictObject({ approvalJws: z.string().min(1).max(524288) })),
+      async (c) =>
+        c.json({
+          success: true,
+          data: await execution.attachCounterparty(
+            c.get("federationActor"),
+            c.req.valid("param").revisionId,
+            c.req.valid("param").recordId,
+            c.req.valid("json").approvalJws,
+          ),
+        }),
+    );
+  }
   if (usage) {
     const task = id.extend({ reservationId: z.uuid() });
     r.get(

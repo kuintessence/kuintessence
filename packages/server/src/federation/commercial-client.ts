@@ -4,7 +4,6 @@ import {
   type CommercialAdvanceResult,
   CommercialGateHashSchema,
   CommercialGateQuerySchema,
-  type CommercialProposalInput,
   FabricCommercialAdvanceResultSchema,
 } from "@kuintessence/shared/federation/commercial";
 import {
@@ -15,7 +14,9 @@ import type { z } from "zod";
 import { UnixFabricClient } from "./fabric-client";
 
 export interface CommercialClient {
-  prepare(input: CommercialProposalInput): Promise<z.infer<typeof FabricProposalCheckpointSchema>>;
+  prepare(
+    input: CommercialAdapterProposalInput,
+  ): Promise<z.infer<typeof FabricProposalCheckpointSchema>>;
   advance(recovery: string): Promise<CommercialAdvanceResult>;
 }
 export class UnixCommercialClient implements CommercialClient {
