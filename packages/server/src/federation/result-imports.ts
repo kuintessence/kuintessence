@@ -5,6 +5,7 @@ import {
   federationResultAttempts,
   federationResultImports,
   federationResultTransfers,
+  netdriveFiles,
   type PgDb,
 } from "@kuintessence/db";
 import {
@@ -17,13 +18,14 @@ import {
   type FederationResultVerifyTask,
   FederationResultVerifyTaskSchema,
 } from "@kuintessence/shared/federation";
-import { and, asc, eq, gte, inArray, lte, ne, or } from "drizzle-orm";
+import { and, asc, eq, gte, inArray, isNull, lte, ne, or } from "drizzle-orm";
 import { z } from "zod";
 import { lockCloudWrites, StorageQuotaService } from "../services/storage-quota";
 import { federationMaterialDigest } from "./assets";
 import { type FederationActor, requireFederationCapability } from "./permissions";
 import type { FederationResultReader } from "./result-reader";
-import type { FederationTransaction } from "./trust-registry";
+import { federationMessageKeyId } from "./signatures";
+import { type FederationTransaction, FederationTrustRegistry } from "./trust-registry";
 
 type Import = typeof federationResultImports.$inferSelect;
 type Transfer = typeof federationResultTransfers.$inferSelect;
@@ -468,6 +470,202 @@ export class FederationResultImports {
       throw new FederationError("OPERATION_CONFLICT");
   }
 
+  /** Snapshot for storage checks; no network operations run under these locks. */
+  async publication(actor: FederationActor, importId: string) {
+    return this.db.transaction(async (tx) => {
+      const parent = await this.lockImport(tx, actor, importId);
+      await requireFederationCapability(tx, actor, "result.read");
+      if (parent.state === "available")
+        return { state: "available" as const, summary: await this.summary(tx, parent) };
+      await this.authorize(tx, parent);
+      return {
+        state: "ready" as const,
+        operationId: parent.operationId,
+        manifestDigest: parent.manifestDigest,
+        files: await this.publicationFiles(tx, parent),
+      };
+    });
+  }
+
+  /** Internal commit after fresh peer authorization and version-pinned storage checks. */
+  async publish(
+    actor: FederationActor,
+    importId: string,
+    snapshot: Extract<
+      Awaited<ReturnType<FederationResultImports["publication"]>>,
+      { state: "ready" }
+    >,
+    verified: Awaited<ReturnType<FederationResultReader["read"]>>,
+  ) {
+    return this.db.transaction(async (tx) => {
+      const parent = await this.lockImport(tx, actor, importId);
+      await requireFederationCapability(tx, actor, "result.read");
+      if (parent.state === "available") return this.summary(tx, parent);
+      await this.authorize(tx, parent);
+      const report = verified.report;
+      const assertFresh = () => {
+        const verifiedAt = Date.parse(verified.verifiedAt);
+        if (
+          !Number.isFinite(verifiedAt) ||
+          verifiedAt > this.clock().getTime() ||
+          verifiedAt + 30_000 <= this.clock().getTime() ||
+          Date.parse(parent.report.manifest.availableUntil) <= this.clock().getTime()
+        )
+          throw new FederationError("AUTHORIZATION_EXPIRED");
+      };
+      assertFresh();
+      if (
+        report.operationId !== parent.operationId ||
+        report.manifestDigest !== parent.manifestDigest ||
+        federationMaterialDigest(report.manifest) !== parent.manifestDigest ||
+        snapshot.operationId !== parent.operationId ||
+        snapshot.manifestDigest !== parent.manifestDigest ||
+        report.senderSiteId !== parent.report.senderSiteId ||
+        report.recipientSiteId !== this.siteId
+      )
+        throw new FederationError("OPERATION_CONFLICT");
+      await new FederationTrustRegistry(this.db).assertKey(
+        tx,
+        report.senderSiteId,
+        federationMessageKeyId(verified.reportJws),
+        this.clock(),
+      );
+      const files = await this.publicationFiles(tx, parent);
+      if (federationMaterialDigest(files) !== federationMaterialDigest(snapshot.files))
+        throw new FederationError("OPERATION_CONFLICT");
+      await lockCloudWrites(tx, actor.userId);
+      if (files.length) {
+        const [collision] = await tx
+          .select({ id: netdriveFiles.id })
+          .from(netdriveFiles)
+          .where(
+            and(
+              eq(netdriveFiles.ownerId, actor.userId),
+              isNull(netdriveFiles.deletedAt),
+              inArray(
+                netdriveFiles.path,
+                files.map((file) => file.path),
+              ),
+            ),
+          )
+          .limit(1);
+        if (collision) throw new FederationError("OPERATION_CONFLICT");
+      }
+      // Reservation and all visible files change atomically, so quota is counted exactly once.
+      await tx
+        .update(federationResultImports)
+        .set({ reservedBytes: 0 })
+        .where(eq(federationResultImports.id, parent.id));
+      await new StorageQuotaService(tx, this.clock).assertCloudWritesAllowed(actor.userId, files);
+      if (files.length) {
+        await tx.insert(netdriveFiles).values(
+          files.map((file) => ({
+            id: file.id,
+            ownerId: actor.userId,
+            path: file.path,
+            size: file.size,
+            sha256: file.sha256,
+            storageKey: file.storageKey,
+            storageVersionId: file.versionId,
+            etag: file.etag,
+            mtime: this.clock(),
+            createdAt: this.clock(),
+          })),
+        );
+        await tx
+          .update(federationResultAttempts)
+          .set({ state: "available", updatedAt: this.clock() })
+          .where(
+            inArray(
+              federationResultAttempts.generation,
+              files.map((file) => file.generation),
+            ),
+          );
+        await tx
+          .update(federationResultTransfers)
+          .set({ state: "available", updatedAt: this.clock() })
+          .where(eq(federationResultTransfers.importId, parent.id));
+      }
+      assertFresh();
+      const [published] = await tx
+        .update(federationResultImports)
+        .set({ state: "available", updatedAt: this.clock() })
+        .where(eq(federationResultImports.id, parent.id))
+        .returning();
+      if (!published) throw new FederationError("OPERATION_CONFLICT");
+      await this.audit(tx, parent, "published", { manifestDigest: parent.manifestDigest });
+      return this.summary(tx, published);
+    });
+  }
+
+  private async lockImport(tx: FederationTransaction, actor: FederationActor, importId: string) {
+    const [parent] = await tx
+      .select()
+      .from(federationResultImports)
+      .where(eq(federationResultImports.id, importId))
+      .for("update");
+    if (!parent) throw new FederationError("POLICY_DENIED");
+    this.assertOwner(parent, actor, parent.operationId);
+    return parent;
+  }
+
+  private async publicationFiles(tx: FederationTransaction, parent: Import) {
+    const members = await tx
+      .select()
+      .from(federationResultTransfers)
+      .where(eq(federationResultTransfers.importId, parent.id))
+      .orderBy(asc(federationResultTransfers.outputId), asc(federationResultTransfers.path));
+    const expected = parent.report.manifest.outputs.flatMap((output) =>
+      output.files.map((file) => ({ outputId: output.outputId, ...file })),
+    );
+    if (
+      members.length !== expected.length ||
+      members.some(
+        (member) =>
+          !expected.some(
+            (file) =>
+              file.outputId === member.outputId &&
+              file.path === member.path &&
+              file.sizeBytes === member.sizeBytes &&
+              file.sha256 === member.sha256,
+          ),
+      )
+    )
+      throw new FederationError("OPERATION_CONFLICT");
+    const attempts = members.length
+      ? await tx
+          .select()
+          .from(federationResultAttempts)
+          .where(
+            and(
+              inArray(
+                federationResultAttempts.transferId,
+                members.map((member) => member.id),
+              ),
+              eq(federationResultAttempts.state, "verified"),
+            ),
+          )
+      : [];
+    return members.map((member) => {
+      const attempt = attempts.find((row) => row.transferId === member.id);
+      if (member.state !== "verified" || !attempt?.verifiedAt || !attempt.destinationEtag)
+        throw new FederationError("DATA_WAITING");
+      // Cloud downloads must keep serving the verified bytes after a same-key overwrite.
+      if (!attempt.destinationVersionId || attempt.destinationVersionId === "null")
+        throw new FederationError("POLICY_DENIED");
+      return {
+        id: member.id,
+        generation: attempt.generation,
+        path: `federation-results/${parent.id}/${member.outputId.replace("sha256:", "")}/${member.path}`,
+        size: member.sizeBytes,
+        sha256: member.sha256,
+        storageKey: attempt.storageKey,
+        versionId: attempt.destinationVersionId,
+        etag: attempt.destinationEtag,
+      };
+    });
+  }
+
   async cancel(actor: FederationActor, importId: string, operationId?: string) {
     return this.db.transaction(async (tx) => {
       const [row] = await tx
@@ -865,7 +1063,10 @@ export class FederationResultImports {
       state: row.state,
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,
-      members,
+      members: members.map((member) => ({
+        ...member,
+        fileId: member.state === "available" ? member.id : null,
+      })),
     };
   }
   private async audit(

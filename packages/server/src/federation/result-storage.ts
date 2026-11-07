@@ -9,6 +9,7 @@ import {
   FederationResultVerifyTaskSchema,
 } from "@kuintessence/shared/federation";
 import type { MinioBackend } from "../storage/minio-client";
+import type { FederationActor } from "./permissions";
 import { signedDownloadExpiry } from "./result-download-credential";
 import type { FederationResultImports } from "./result-imports";
 import type { FederationResultReader } from "./result-reader";
@@ -213,6 +214,23 @@ export class FederationResultStorage {
         task.object.versionId
     )
       throw new FederationError("OPERATION_CONFLICT");
+  }
+
+  async publish(actor: FederationActor, importId: string) {
+    const snapshot = await this.imports.publication(actor, importId);
+    if (snapshot.state === "available") return snapshot.summary;
+    for (const file of snapshot.files) {
+      const stat = await this.bounded(this.storage.head(file.storageKey, file.versionId));
+      if (
+        !stat ||
+        stat.size !== file.size ||
+        stat.etag !== file.etag ||
+        stat.versionId !== file.versionId
+      )
+        throw new FederationError("OPERATION_CONFLICT");
+    }
+    const verified = await this.reader.read(actor, snapshot.operationId);
+    return this.imports.publish(actor, importId, snapshot, verified);
   }
 
   async cleanup(limit = 20) {

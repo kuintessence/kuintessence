@@ -1616,8 +1616,40 @@ test("result downloads require separately registered key purposes on both sites"
   ).rejects.toThrow();
 });
 
-async function resultImportFixture() {
+async function resultImportFixture(fileCount = 1) {
   const f = await resultFixture();
+  if (fileCount === 2) {
+    const secondId = crypto.randomUUID();
+    await db.insert(netdriveFiles).values({
+      id: secondId,
+      ownerId: executionUserId,
+      path: `private/${secondId}`,
+      storageKey: `private/${secondId}`,
+      size: 3,
+      sha256: "b".repeat(64),
+    });
+    const members = [
+      { relativePath: "one.dat", sizeBytes: 3, sha256: "a".repeat(64) },
+      { relativePath: "nested/two.dat", sizeBytes: 3, sha256: "b".repeat(64) },
+    ];
+    await db
+      .update(workflowArtifacts)
+      .set({
+        ioType: "FileBatch",
+        contentHash: artifactBatchHash(members),
+        fileMembers: members,
+        sizeBytes: 6,
+        netdriveFileId: null,
+      })
+      .where(eq(workflowArtifacts.id, f.artifactId));
+    await db.insert(workflowArtifactFiles).values(
+      members.map((member, i) => ({
+        artifactId: f.artifactId,
+        relativePath: member.relativePath,
+        netdriveFileId: i === 0 ? f.fileId : secondId,
+      })),
+    );
+  }
   const service = () =>
     new FederationResultImports(db, a.signing.siteId, f.service(f.send).results, clock);
   const imports = service();
@@ -1871,8 +1903,8 @@ test("result imports accept only an identical copied receipt replay and cap each
   expect((await second.imports.begin(second.member.id, f.agentId)).attempt.agentId).toBe(f.agentId);
 });
 
-async function resultStorageFixture() {
-  const f = await resultImportFixture();
+async function resultStorageFixture(fileCount = 1) {
+  const f = await resultImportFixture(fileCount);
   const signedUrl = (origin: string, seconds: number) => {
     const url = new URL(`${origin}/opaque-object`);
     url.searchParams.set(
@@ -1900,8 +1932,10 @@ async function resultStorageFixture() {
         signedUrl("https://source-storage.test.invalid", seconds).toString(),
     },
   };
-  const reader = f.service((_endpoint, jws) =>
-    f.responder.receiveDownload(jws, sourceFingerprint, downloads),
+  const reader = f.service((_endpoint, jws, path) =>
+    path === "/federation/v1/results"
+      ? f.responder.receive(jws, sourceFingerprint)
+      : f.responder.receiveDownload(jws, sourceFingerprint, downloads),
   ).results;
   const uploads = new Map<string, string>();
   const objects = new Map<string, ObjectStat>();
@@ -2458,4 +2492,219 @@ test("result downloads honor the committed file version and reject a changed pin
     return url;
   };
   await expect(f.download()).rejects.toThrow("OPERATION_CONFLICT");
+});
+
+async function publishableResults(fileCount = 1) {
+  const f = await resultStorageFixture(fileCount);
+  for (const member of f.imported.members) {
+    const allocated = await f.bridge.allocate(member.id, f.agentId);
+    const binding = {
+      ...f.bindingFor(allocated.task.generation),
+      transferId: member.id,
+      outputId: member.outputId,
+      path: member.path,
+      sha256: member.sha256,
+      sizeBytes: member.sizeBytes,
+    };
+    await f.imports.copied(f.agentId, {
+      binding,
+      sizeBytes: member.sizeBytes,
+      sha256: member.sha256,
+      parts: [{ partNumber: 1, etag: "copied" }],
+    });
+    const assembled = await f.bridge.assemble(f.agentId, binding.generation);
+    await f.bridge.verified(f.agentId, {
+      ...assembled.task,
+      sizeBytes: member.sizeBytes,
+      sha256: member.sha256,
+    });
+  }
+  const publishedFiles = () =>
+    db
+      .select()
+      .from(netdriveFiles)
+      .where(
+        inArray(
+          netdriveFiles.id,
+          f.imported.members.map((member) => member.id),
+        ),
+      );
+  return { ...f, publishedFiles };
+}
+
+test("result publication commits the whole batch once with provenance, pinned versions and quota conversion", async () => {
+  const f = await publishableResults(2);
+  const quota = new StorageQuotaService(db, clock);
+  const before = await quota.getSummary(actor.userId);
+  expect(await f.publishedFiles()).toHaveLength(0);
+  const responses = await Promise.all([
+    f.bridge.publish(actor, f.imported.id),
+    f.bridge.publish(actor, f.imported.id),
+  ]);
+  expect(responses.every((response) => response.state === "available")).toBe(true);
+  const files = await f.publishedFiles();
+  expect(files).toHaveLength(2);
+  for (const member of responses[0]?.members ?? []) {
+    const file = files.find((row) => row.id === member.fileId);
+    expect(file).toMatchObject({
+      ownerId: actor.userId,
+      size: member.sizeBytes,
+      sha256: member.sha256,
+      storageVersionId: "v1",
+      etag: "completed",
+    });
+    expect(file?.path).toBe(
+      `federation-results/${f.imported.id}/${member.outputId.replace("sha256:", "")}/${member.path}`,
+    );
+  }
+  const after = await quota.getSummary(actor.userId);
+  expect(after.usedBytes - before.usedBytes).toBe(6);
+  expect((before.reservedBytes ?? 0) - (after.reservedBytes ?? 0)).toBe(6);
+  expect(after.availableBytes).toBe(before.availableBytes);
+  await expect(f.imports.cancel(actor, f.imported.id)).rejects.toThrow("OPERATION_CONFLICT");
+  time = new Date(time.getTime() + 24 * 60 * 60_000);
+  await f.bridge.cleanup();
+  expect(f.objects.size).toBe(2);
+  expect((await f.serviceImports().get(actor, f.imported.id)).members).toEqual(
+    responses[0]?.members ?? [],
+  );
+});
+
+test("result publication keeps every file hidden when a member, object or destination path conflicts", async () => {
+  const pending = await resultStorageFixture(2);
+  await expect(pending.bridge.publish(actor, pending.imported.id)).rejects.toThrow("DATA_WAITING");
+  const f = await publishableResults(2);
+  const snapshot = await f.imports.publication(actor, f.imported.id);
+  if (snapshot.state !== "ready") throw new Error("Missing publication snapshot");
+  const file = snapshot.files[1];
+  if (!file) throw new Error("Missing second member");
+  const original = f.objects.get(file.storageKey);
+  if (!original) throw new Error("Missing stored object");
+  f.objects.set(file.storageKey, { ...original, etag: "changed" });
+  await expect(f.bridge.publish(actor, f.imported.id)).rejects.toThrow("OPERATION_CONFLICT");
+  expect(await f.publishedFiles()).toHaveLength(0);
+  f.objects.set(file.storageKey, original);
+  const collisionId = crypto.randomUUID();
+  await db.insert(netdriveFiles).values({
+    id: collisionId,
+    ownerId: actor.userId,
+    path: file.path,
+    storageKey: "user-existing",
+    size: 1,
+    sha256: "c".repeat(64),
+  });
+  await expect(f.bridge.publish(actor, f.imported.id)).rejects.toThrow("OPERATION_CONFLICT");
+  expect(await f.publishedFiles()).toHaveLength(0);
+  const [parent] = await db
+    .select()
+    .from(federationResultImports)
+    .where(eq(federationResultImports.id, f.imported.id));
+  expect(parent?.reservedBytes).toBe(6);
+  await db.delete(netdriveFiles).where(eq(netdriveFiles.id, collisionId));
+  expect((await f.bridge.publish(actor, f.imported.id)).state).toBe("available");
+});
+
+test("result publication rejects cancellation and revoked remote authority during storage checks", async () => {
+  for (const boundary of ["cancel", "revoke"] as const) {
+    const f = await publishableResults();
+    const head = f.storage.head;
+    f.storage.head = async (...args) => {
+      const stat = await head(...args);
+      if (boundary === "cancel") await f.imports.cancel(actor, f.imported.id);
+      else
+        await db
+          .update(federationAgreements)
+          .set({ state: "revoked" })
+          .where(eq(federationAgreements.revisionId, f.terms.agreementRevisionId));
+      return stat;
+    };
+    await expect(f.bridge.publish(actor, f.imported.id)).rejects.toThrow();
+    expect(await f.publishedFiles()).toHaveLength(0);
+  }
+});
+
+test("result publication rejects foreign owners, changed manifests and unversioned destinations", async () => {
+  const f = await publishableResults();
+  await expect(f.bridge.publish(receiver, f.imported.id)).rejects.toThrow("POLICY_DENIED");
+  await db.update(netdriveFiles).set({ deletedAt: clock() }).where(eq(netdriveFiles.id, f.fileId));
+  await expect(f.bridge.publish(actor, f.imported.id)).rejects.toThrow();
+  expect(await f.publishedFiles()).toHaveLength(0);
+  await db.update(netdriveFiles).set({ deletedAt: null }).where(eq(netdriveFiles.id, f.fileId));
+  await db
+    .update(federationResultAttempts)
+    .set({ destinationVersionId: null })
+    .where(eq(federationResultAttempts.transferId, f.member.id));
+  await expect(f.bridge.publish(actor, f.imported.id)).rejects.toThrow("POLICY_DENIED");
+  expect(await f.publishedFiles()).toHaveLength(0);
+});
+
+test("result publication rolls back quota conversion when policy shrinks and handles an empty manifest", async () => {
+  const f = await publishableResults(2);
+  const quota = new StorageQuotaService(db, clock);
+  const before = await quota.getSummary(actor.userId);
+  await db
+    .insert(storageQuotaPolicies)
+    .values({ scope: "cloud", scopeId: "global", defaultQuotaBytes: 0 });
+  try {
+    await expect(f.bridge.publish(actor, f.imported.id)).rejects.toThrow();
+    expect(await f.publishedFiles()).toHaveLength(0);
+    const [parent] = await db
+      .select()
+      .from(federationResultImports)
+      .where(eq(federationResultImports.id, f.imported.id));
+    expect(parent?.reservedBytes).toBe(6);
+    expect(parent?.state).not.toBe("available");
+  } finally {
+    await db
+      .delete(storageQuotaPolicies)
+      .where(
+        and(eq(storageQuotaPolicies.scope, "cloud"), eq(storageQuotaPolicies.scopeId, "global")),
+      );
+  }
+  expect((await quota.getSummary(actor.userId)).usedBytes).toBe(before.usedBytes);
+  await f.imports.cancel(actor, f.imported.id);
+  await db
+    .update(workflowRuns)
+    .set({
+      result: {
+        status: { producer: "Succeeded" },
+        values: { producer: { status: "Succeeded", values: {} } },
+      },
+    })
+    .where(eq(workflowRuns.id, f.runId));
+  await db.delete(workflowArtifactFiles).where(eq(workflowArtifactFiles.artifactId, f.artifactId));
+  await db.delete(workflowArtifacts).where(eq(workflowArtifacts.id, f.artifactId));
+  const empty = await f.imports.enqueue(actor, f.request.operationId, crypto.randomUUID());
+  expect(empty.members).toHaveLength(0);
+  const published = await f.bridge.publish(actor, empty.id);
+  expect(published.state).toBe("available");
+  expect(published.members).toHaveLength(0);
+});
+
+test("result publication fences stale verification snapshots and expired peer authorization", async () => {
+  const f = await publishableResults();
+  const snapshot = await f.imports.publication(actor, f.imported.id);
+  if (snapshot.state !== "ready") throw new Error("Missing publication snapshot");
+  const verified = await f.service(f.send).results.read(actor, f.request.operationId);
+  await db
+    .update(federationResultAttempts)
+    .set({ destinationEtag: "changed-after-head" })
+    .where(eq(federationResultAttempts.transferId, f.member.id));
+  await expect(f.imports.publish(actor, f.imported.id, snapshot, verified)).rejects.toThrow(
+    "OPERATION_CONFLICT",
+  );
+  await db
+    .update(federationResultAttempts)
+    .set({ destinationEtag: "completed" })
+    .where(eq(federationResultAttempts.transferId, f.member.id));
+  time = new Date(time.getTime() + 30_001);
+  await expect(f.imports.publish(actor, f.imported.id, snapshot, verified)).rejects.toThrow(
+    "AUTHORIZATION_EXPIRED",
+  );
+  expect(await f.publishedFiles()).toHaveLength(0);
+  const [parent] = await db
+    .select()
+    .from(federationResultImports)
+    .where(eq(federationResultImports.id, f.imported.id));
+  expect(parent?.reservedBytes).toBe(3);
 });
