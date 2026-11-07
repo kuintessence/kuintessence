@@ -110,6 +110,7 @@ import { createAdminDataMarketRoutes } from "./routes/admin-data-market";
 import { createAdminDesensitizeRoutes } from "./routes/admin-desensitize";
 import { createAdminFederationRoutes } from "./routes/admin-federation";
 import { createAdminFederationPermissionRoutes } from "./routes/admin-federation-permissions";
+import { createAdminFederationStorageRoutes } from "./routes/admin-federation-storage";
 import { createAdminFileTransferAuditConfigRoutes } from "./routes/admin-file-transfer-audit-config";
 import { createAdminSshCredentialRoutes } from "./routes/admin-ssh-credentials";
 import { createAdminSshRecordingRoutes } from "./routes/admin-ssh-recordings";
@@ -2115,9 +2116,6 @@ protectedApi.route(
   "/compute-providers",
   createComputeProviderRoutes(new ComputeProviderService(db), authzService),
 );
-app.route("/api", protectedApi);
-// NOTE: any future PUBLIC routes must be registered BEFORE app.route("/api", protectedApi)
-// to avoid being shadowed by the auth middleware on protectedApi.
 
 const federationMaterialExchange =
   federationSigningKey && federationSender && federationPreparation
@@ -2188,6 +2186,15 @@ const federationInputWorker =
         ),
       )
     : undefined;
+
+if (federationInputTransfers)
+  protectedApi.route(
+    "/",
+    createAdminFederationStorageRoutes(federationInputTransfers, authzService),
+  );
+app.route("/api", protectedApi);
+// NOTE: any future PUBLIC routes must be registered BEFORE app.route("/api", protectedApi)
+// to avoid being shadowed by the auth middleware on protectedApi.
 
 // connectRPC server for Agent bidirectional streaming.
 const grpcDeps = {

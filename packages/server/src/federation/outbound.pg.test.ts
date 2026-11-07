@@ -81,8 +81,11 @@ import {
 import { and, eq, inArray, ne, sql } from "drizzle-orm";
 import { Hono } from "hono";
 import { exportSPKI } from "jose";
+import pino from "pino";
 import { stringify } from "yaml";
 import { AgentDispatcher } from "../grpc/dispatcher";
+import { createErrorHandler } from "../middleware/error-handler";
+import { createAdminFederationStorageRoutes } from "../routes/admin-federation-storage";
 import { createFederationOutboundRoutes } from "../routes/federation-outbound";
 import { artifactBatchHash } from "../services/artifact-members";
 import { NetDriveService } from "../services/netdrive";
@@ -6492,6 +6495,11 @@ async function inputVerificationFixture(batch = false) {
 test("input verification persists copied parts and independently pinned verification without publishing a file", async () => {
   const f = await inputVerificationFixture();
   try {
+    const beforeFiles = await db
+      .select()
+      .from(netdriveFiles)
+      .where(eq(netdriveFiles.ownerId, executionUserId))
+      .orderBy(netdriveFiles.id);
     expect(await f.transfers.copied(f.agentId, f.copied)).toEqual({ state: "assembling" });
     expect(await f.transfers.copied(f.agentId, f.copied)).toEqual({ state: "assembling" });
     expect(f.completions()).toBe(0);
@@ -6521,8 +6529,12 @@ test("input verification persists copied parts and independently pinned verifica
       reservedBytes: f.binding.sizeBytes,
     });
     expect(
-      await db.select().from(netdriveFiles).where(eq(netdriveFiles.ownerId, executionUserId)),
-    ).toHaveLength(0);
+      await db
+        .select()
+        .from(netdriveFiles)
+        .where(eq(netdriveFiles.ownerId, executionUserId))
+        .orderBy(netdriveFiles.id),
+    ).toEqual(beforeFiles);
     expect(JSON.stringify(await f.attempt())).not.toContain("private-verification-ticket");
   } finally {
     await f.lease.release();
@@ -7625,6 +7637,257 @@ test("published input execution rejects changed ownership, deleted files and mis
       "OPERATION_CONFLICT",
     );
   } finally {
+    await f.lease.release();
+  }
+});
+
+async function inputReconciliationDecision(
+  transfers: FederationInputTransfers,
+  generation: string,
+) {
+  const plan = await transfers.reconciliationPlan(generation);
+  return {
+    snapshotDigest: plan.snapshotDigest,
+    stoppedAt: clock().toISOString(),
+    incidentId: "storage-maintenance-42",
+    evidenceDigest: `sha256:${"e".repeat(64)}`,
+    allWritersStopped: true as const,
+    storageRequestsDrained: true as const,
+  };
+}
+
+test("input reconciliation retains unknown allocation quota until attested drain and successful storage cleanup", async () => {
+  const f = await inputTransferFixture();
+  try {
+    const started = await f.transfers.begin(f.member.id, f.agentId);
+    const generation = started.attempt.generation;
+    await f.transfers.preparing(f.agentId, generation);
+    time = new Date(started.attempt.leaseUntil.getTime() + 1);
+    await f.transfers.expire();
+    const decision = await inputReconciliationDecision(f.transfers, generation);
+    await expect(f.transfers.reconcile(generation, decision, actor.userId)).rejects.toThrow(
+      "OPERATION_CONFLICT",
+    );
+    await db.transaction((tx) =>
+      cancelFederationInputImport(tx, f.reservationId, "CANCELLATION_REQUESTED", clock()),
+    );
+    expect(await f.transfers.reconciliationCandidates()).toContainEqual(
+      expect.objectContaining({ generation }),
+    );
+    expect((await f.transfers.reconciliationPlan(generation)).executionStopped).toBe(true);
+    for (const invalid of [
+      { ...decision, snapshotDigest: `sha256:${"f".repeat(64)}` },
+      { ...decision, stoppedAt: new Date(started.attempt.leaseUntil.getTime() - 1).toISOString() },
+      { ...decision, stoppedAt: new Date(time.getTime() + 1).toISOString() },
+    ])
+      await expect(f.transfers.reconcile(generation, invalid, actor.userId)).rejects.toThrow(
+        "OPERATION_CONFLICT",
+      );
+    let purges = 0,
+      fail = true;
+    const storage = new FederationInputStorage(
+      f.transferService(),
+      {
+        ...unassembledInputStorage,
+        createMultipartUpload: async () => {
+          throw Error("Must not allocate again");
+        },
+        presignUploadPart: async () => {
+          throw Error("Must not grant again");
+        },
+        findFederationInputUpload: async () => undefined,
+        cleanupFederationInput: async (key) => {
+          expect(key).toBe(started.attempt.storageKey);
+          purges++;
+          if (fail) throw Error("Storage unavailable");
+        },
+      },
+      { clock },
+    );
+    expect(await storage.cleanup()).toBe(0);
+    expect(purges).toBe(0);
+    const [first, replay] = await Promise.all([
+      f.transfers.reconcile(generation, decision, actor.userId),
+      f.transferService().reconcile(generation, decision, actor.userId),
+    ]);
+    expect(replay).toEqual(first);
+    expect((await f.inventory())[0]?.reservedBytes).toBe(f.member.sizeBytes);
+    expect(await storage.cleanup()).toBe(0);
+    expect(purges).toBe(1);
+    expect((await f.inventory())[0]?.reservedBytes).toBe(f.member.sizeBytes);
+    fail = false;
+    expect(await storage.cleanup()).toBe(1);
+    expect((await f.inventory())[0]).toMatchObject({ state: "cancelled", reservedBytes: 0 });
+    expect(await f.transferService().reconcile(generation, decision, actor.userId)).toEqual(first);
+    await expect(
+      f.transfers.reconcile(generation, { ...decision, incidentId: "changed" }, actor.userId),
+    ).rejects.toThrow("OPERATION_CONFLICT");
+    const events = await db
+      .select()
+      .from(auditLog)
+      .where(
+        and(
+          eq(auditLog.target, generation),
+          eq(auditLog.action, "federation.input.storage_reconciled"),
+        ),
+      );
+    expect(events).toHaveLength(1);
+    expect(events[0]?.actor).toBe(actor.userId);
+    const [attempt] = await db
+      .select()
+      .from(federationInputAttempts)
+      .where(eq(federationInputAttempts.generation, generation));
+    expect(attempt).toMatchObject({
+      state: "cleaned",
+      uploadId: null,
+      completionSettledAt: null,
+      reconciliation: first,
+    });
+  } finally {
+    await f.lease.release();
+  }
+});
+
+test("input reconciliation handles absent completion without inventing an object or publishing files", async () => {
+  const f = await inputVerificationFixture();
+  try {
+    const generation = f.binding.generation;
+    await f.transfers.copied(f.agentId, f.copied);
+    expect(await f.transfers.startCompletion(f.agentId, generation)).toBe(true);
+    await db.transaction((tx) =>
+      cancelFederationInputImport(tx, f.reservationId, "CANCELLATION_REQUESTED", clock()),
+    );
+    const attempt = await f.attempt();
+    if (!attempt) throw Error("Missing attempt");
+    const early = await inputReconciliationDecision(f.transfers, generation);
+    await expect(f.transfers.reconcile(generation, early, actor.userId)).rejects.toThrow(
+      "OPERATION_CONFLICT",
+    );
+    time = new Date(attempt.leaseUntil.getTime() + 1);
+    const decision = await inputReconciliationDecision(f.transfers, generation);
+    await expect(f.transfers.reconcile(generation, decision, executionUserId)).rejects.toThrow(
+      "POLICY_DENIED",
+    );
+    await f.transfers.reconcile(generation, decision, actor.userId);
+    f.backend.head = async () => {
+      throw Error("Attested drain must not need invented HEAD success");
+    };
+    expect(await f.recoverStorage().cleanup()).toBe(1);
+    expect(f.cleanups()).toBe(1);
+    expect(await f.attempt()).toMatchObject({
+      state: "cleaned",
+      completionSettledAt: null,
+      destinationVersionId: null,
+      verifiedAt: null,
+    });
+    expect((await f.inventory())[0]).toMatchObject({ state: "cancelled", reservedBytes: 0 });
+  } finally {
+    await f.lease.release();
+  }
+});
+
+test("input reconciliation rejects stale snapshots and invalidates cleanup tokens after late allocation facts", async () => {
+  const f = await inputTransferFixture();
+  try {
+    const started = await f.transfers.begin(f.member.id, f.agentId);
+    const generation = started.attempt.generation;
+    await f.transfers.preparing(f.agentId, generation);
+    await db.transaction((tx) =>
+      cancelFederationInputImport(tx, f.reservationId, "CANCELLATION_REQUESTED", clock()),
+    );
+    time = new Date(started.attempt.leaseUntil.getTime() + 1);
+    const decision = await inputReconciliationDecision(f.transfers, generation);
+    await f.transfers.reconcile(generation, decision, actor.userId);
+    const oldCleanup = await f.transfers.beginCleanup(generation);
+    expect(await f.transfers.allocated(generation, "late-upload")).toBe(false);
+    expect((await f.transfers.reconciliationPlan(generation)).reconciliation).toBeNull();
+    await expect(f.transfers.storageCleaned(generation, oldCleanup.token)).rejects.toThrow(
+      "OPERATION_CONFLICT",
+    );
+    await expect(f.transfers.reconcile(generation, decision, actor.userId)).rejects.toThrow(
+      "OPERATION_CONFLICT",
+    );
+    expect((await f.inventory())[0]?.reservedBytes).toBe(f.member.sizeBytes);
+    const cleanup = await f.transfers.beginCleanup(generation);
+    await f.transfers.storageCleaned(generation, cleanup.token);
+    expect((await f.inventory())[0]?.reservedBytes).toBe(0);
+  } finally {
+    await f.lease.release();
+  }
+});
+
+test("input reconciliation refuses a live receiver workflow and enforces platform browser permissions", async () => {
+  const f = await inputTransferFixture();
+  let runId: string | undefined;
+  try {
+    const started = await f.transfers.begin(f.member.id, f.agentId);
+    const generation = started.attempt.generation;
+    await f.transfers.preparing(f.agentId, generation);
+    await db.transaction((tx) =>
+      cancelFederationInputImport(tx, f.reservationId, "CANCELLATION_REQUESTED", clock()),
+    );
+    time = new Date(started.attempt.leaseUntil.getTime() + 1);
+    const decision = await inputReconciliationDecision(f.transfers, generation);
+    runId = crypto.randomUUID();
+    await db.insert(workflowRuns).values({
+      id: runId,
+      name: "Waiting receiver",
+      status: "running",
+      submittedBy: executionUserId,
+      input: {
+        yaml: "name: waiting",
+        role: "user",
+        orgId: receiver.orgId,
+        federationReservationId: f.reservationId,
+      },
+    });
+    expect((await f.transfers.reconciliationPlan(generation)).executionStopped).toBe(false);
+    await expect(f.transfers.reconcile(generation, decision, actor.userId)).rejects.toThrow(
+      "DATA_WAITING",
+    );
+    function app(role: string, bound = true) {
+      const h = new Hono();
+      h.onError(createErrorHandler(pino({ level: "silent" })));
+      h.use("*", async (c, next) => {
+        c.set("principal" as never, { role, userId: bound ? actor.userId : null });
+        await next();
+      });
+      h.route("/api", createAdminFederationStorageRoutes(f.transfers));
+      return h;
+    }
+    const path = "/api/admin/federation/input-reconciliation";
+    for (const role of ["user", "operator", "compute_provider", "guest"]) {
+      expect((await app(role).request(path)).status).toBe(403);
+      expect((await app(role).request(`${path}/${generation}`)).status).toBe(403);
+      expect(
+        (
+          await app(role).request(`${path}/${generation}`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify(decision),
+          })
+        ).status,
+      ).toBe(403);
+    }
+    expect((await app("platform_admin", false).request(path)).status).toBe(403);
+    expect((await app("platform_admin").request(path)).status).toBe(200);
+    expect((await app("platform_admin").request(`${path}/${generation}`)).status).toBe(200);
+    await db.update(workflowRuns).set({ status: "cancelled" }).where(eq(workflowRuns.id, runId));
+    const invalid = await app("platform_admin").request(`${path}/${generation}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ ...decision, storageRequestsDrained: false }),
+    });
+    expect(invalid.status).toBe(400);
+    const accepted = await app("platform_admin").request(`${path}/${generation}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(decision),
+    });
+    expect(accepted.status).toBe(202);
+    expect((await f.inventory())[0]?.reservedBytes).toBe(f.member.sizeBytes);
+  } finally {
+    if (runId) await db.delete(workflowRuns).where(eq(workflowRuns.id, runId));
     await f.lease.release();
   }
 });

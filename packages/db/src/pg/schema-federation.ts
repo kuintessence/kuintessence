@@ -14,6 +14,7 @@ import type {
   FederationResultReceiptAck,
   FederationResultReport,
   FederationStatusReport,
+  FederationStorageReconciliationRecord,
 } from "@kuintessence/shared/federation";
 import type { FederationEvidenceBatch } from "@kuintessence/shared/federation/ledger";
 import { sql } from "drizzle-orm";
@@ -754,6 +755,7 @@ export const federationInputAttempts = pgTable(
     state: varchar("state", { length: 24 }).notNull().default("preparing"),
     storageKey: varchar("storage_key", { length: 512 }).notNull(),
     allocationStartedAt: timestamp("allocation_started_at", { withTimezone: true }),
+    reconciliation: jsonb("reconciliation").$type<FederationStorageReconciliationRecord>(),
     cleanupToken: uuid("cleanup_token"),
     uploadId: text("upload_id"),
     parts: jsonb("parts").$type<Array<{ partNumber: number; etag: string }>>(),

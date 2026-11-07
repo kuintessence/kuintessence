@@ -8,6 +8,7 @@ import {
   federationResultAttempts,
   type PgDb,
   type PgTransaction,
+  users,
 } from "@kuintessence/db";
 import {
   FederationError,
@@ -20,6 +21,8 @@ import {
   type FederationInputVerifyTask,
   FederationInputVerifyTaskSchema,
   FederationResultObjectSchema,
+  type FederationStorageReconciliation,
+  FederationStorageReconciliationSchema,
 } from "@kuintessence/shared/federation";
 import { and, asc, eq, gte, inArray, isNotNull, isNull, lte, ne, notExists, or } from "drizzle-orm";
 import { z } from "zod";
@@ -205,6 +208,7 @@ export class FederationInputTransfers {
         .update(federationInputAttempts)
         .set({
           uploadId,
+          reconciliation: null,
           state: active ? "copying" : "cleanup_pending",
           cleanupToken: null,
           updatedAt: this.clock(),
@@ -308,7 +312,7 @@ export class FederationInputTransfers {
 
   /** One CompleteMultipart request per generation; retries inspect its object instead of reissuing it. */
   async startCompletion(agentId: string, generation: string) {
-    // shortcut: no positive storage evidence means retained quota; add operator-confirmed reconciliation.
+    // Unobserved outcomes need explicit operator reconciliation before cleanup can release quota.
     const scope = await this.attemptScope(generation);
     return this.db.transaction(async (tx) => {
       const rows = await this.authorizedAttempt(tx, scope, generation, agentId, [
@@ -343,6 +347,8 @@ export class FederationInputTransfers {
       await tx
         .update(federationInputAttempts)
         .set({
+          reconciliation: null,
+          cleanupToken: null,
           completionSettledAt: this.clock(),
           destinationVersionId: pin.versionId,
           destinationEtag: pin.etag,
@@ -462,6 +468,7 @@ export class FederationInputTransfers {
           inArray(federationInputAttempts.state, ["assembling", "cleanup_pending"]),
           isNotNull(federationInputAttempts.completionStartedAt),
           isNull(federationInputAttempts.completionSettledAt),
+          isNull(federationInputAttempts.reconciliation),
         ),
       )
       .orderBy(asc(federationInputAttempts.updatedAt), asc(federationInputAttempts.generation))
@@ -474,7 +481,8 @@ export class FederationInputTransfers {
       if (
         !["assembling", "cleanup_pending"].includes(rows.attempt.state) ||
         !rows.attempt.completionStartedAt ||
-        rows.attempt.completionSettledAt
+        rows.attempt.completionSettledAt ||
+        rows.attempt.reconciliation
       )
         return undefined;
       await tx
@@ -573,6 +581,141 @@ export class FederationInputTransfers {
       });
   }
 
+  async reconciliationCandidates(limit = 50) {
+    z.number().int().min(1).max(100).parse(limit);
+    return this.db
+      .select({
+        generation: federationInputAttempts.generation,
+        importId: federationInputImports.id,
+        reservationId: federationInputImports.reservationId,
+        leaseUntil: federationInputAttempts.leaseUntil,
+        reconciliation: federationInputAttempts.reconciliation,
+      })
+      .from(federationInputAttempts)
+      .innerJoin(
+        federationInputTransfers,
+        eq(federationInputTransfers.id, federationInputAttempts.transferId),
+      )
+      .innerJoin(
+        federationInputImports,
+        eq(federationInputImports.id, federationInputTransfers.importId),
+      )
+      .where(
+        and(
+          eq(federationInputImports.localSiteId, this.preparation.localSiteId),
+          eq(federationInputAttempts.state, "cleanup_pending"),
+          or(
+            and(
+              isNotNull(federationInputAttempts.allocationStartedAt),
+              isNull(federationInputAttempts.uploadId),
+            ),
+            and(
+              isNotNull(federationInputAttempts.completionStartedAt),
+              isNull(federationInputAttempts.completionSettledAt),
+            ),
+          ),
+        ),
+      )
+      .orderBy(asc(federationInputAttempts.updatedAt), asc(federationInputAttempts.generation))
+      .limit(limit);
+  }
+
+  /** Local platform maintenance only. The route checks platform manage permission. */
+  async reconciliationPlan(generation: string) {
+    return this.db.transaction(async (tx) => {
+      const rows = await this.lockAttempt(tx, generation);
+      const stopped = await this.executionStopped(tx, rows.parent);
+      return {
+        ...this.reconciliationSnapshot(rows),
+        snapshotDigest: federationMaterialDigest(this.reconciliationSnapshot(rows)),
+        state: rows.attempt.state,
+        importState: rows.parent.state,
+        executionStopped: stopped,
+        reconciliation: rows.attempt.reconciliation,
+      };
+    });
+  }
+
+  async reconcile(generation: string, input: FederationStorageReconciliation, actorId: string) {
+    const decision = FederationStorageReconciliationSchema.parse(input);
+    return this.db.transaction(async (tx) => {
+      const [actor] = await tx.select().from(users).where(eq(users.id, actorId)).for("share");
+      if (!actor || actor.suspended || actor.serviceAccount)
+        throw new FederationError("POLICY_DENIED");
+      const rows = await this.lockAttempt(tx, generation);
+      if (rows.attempt.reconciliation) {
+        const { actorId: originalActor, recordedAt, ...prior } = rows.attempt.reconciliation;
+        if (federationMaterialDigest(prior) !== federationMaterialDigest(decision))
+          throw new FederationError("OPERATION_CONFLICT");
+        return { ...prior, actorId: originalActor, recordedAt };
+      }
+      const stoppedAt = Date.parse(decision.stoppedAt);
+      if (
+        rows.parent.state !== "cancelling" ||
+        rows.attempt.state !== "cleanup_pending" ||
+        rows.attempt.leaseUntil > this.clock() ||
+        stoppedAt < rows.attempt.leaseUntil.getTime() ||
+        stoppedAt > this.clock().getTime() ||
+        decision.snapshotDigest !== federationMaterialDigest(this.reconciliationSnapshot(rows)) ||
+        !(
+          (rows.attempt.allocationStartedAt && !rows.attempt.uploadId) ||
+          (rows.attempt.completionStartedAt && !rows.attempt.completionSettledAt)
+        )
+      )
+        throw new FederationError("OPERATION_CONFLICT");
+      if (!(await this.executionStopped(tx, rows.parent)))
+        throw new FederationError("DATA_WAITING");
+      const record = { ...decision, actorId, recordedAt: this.clock().toISOString() };
+      await tx
+        .update(federationInputAttempts)
+        .set({
+          reconciliation: record,
+          cleanupToken: null,
+          updatedAt: this.clock(),
+        })
+        .where(eq(federationInputAttempts.generation, generation));
+      await tx.insert(auditLog).values({
+        actor: actorId,
+        orgId: rows.parent.localOrgId,
+        action: "federation.input.storage_reconciled",
+        target: generation,
+        diff: { after: record },
+      });
+      return record;
+    });
+  }
+
+  private reconciliationSnapshot({ parent, transfer, attempt }: Rows) {
+    return {
+      localSiteId: parent.localSiteId,
+      importId: parent.id,
+      reservationId: parent.reservationId,
+      transferId: transfer.id,
+      generation: attempt.generation,
+      storageKey: attempt.storageKey,
+      sizeBytes: transfer.sizeBytes,
+      sha256: transfer.sha256,
+      allocationStartedAt: attempt.allocationStartedAt?.toISOString() ?? null,
+      uploadId: attempt.uploadId,
+      completionStartedAt: attempt.completionStartedAt?.toISOString() ?? null,
+      completionSettledAt: attempt.completionSettledAt?.toISOString() ?? null,
+      destinationVersionId: attempt.destinationVersionId,
+      destinationEtag: attempt.destinationEtag,
+      leaseUntil: attempt.leaseUntil.toISOString(),
+    };
+  }
+
+  private async executionStopped(tx: PgTransaction, parent: Parent) {
+    const [reservation] = await tx
+      .select({
+        senderSiteId: federationReservations.senderSiteId,
+        operationId: federationReservations.operationId,
+      })
+      .from(federationReservations)
+      .where(eq(federationReservations.id, parent.reservationId));
+    return !!reservation && (await readFederationExecutionStopState(tx, reservation)).stopped;
+  }
+
   async allocationCandidates(limit = 8) {
     z.number().int().min(1).max(100).parse(limit);
     return this.db
@@ -593,6 +736,7 @@ export class FederationInputTransfers {
           lte(federationInputAttempts.leaseUntil, this.clock()),
           isNotNull(federationInputAttempts.allocationStartedAt),
           isNull(federationInputAttempts.uploadId),
+          isNull(federationInputAttempts.reconciliation),
         ),
       )
       .orderBy(asc(federationInputAttempts.updatedAt), asc(federationInputAttempts.generation))
@@ -606,7 +750,8 @@ export class FederationInputTransfers {
         rows.attempt.state !== "cleanup_pending" ||
         rows.attempt.leaseUntil > this.clock() ||
         !rows.attempt.allocationStartedAt ||
-        rows.attempt.uploadId
+        rows.attempt.uploadId ||
+        rows.attempt.reconciliation
       )
         return undefined;
       await tx
@@ -636,12 +781,17 @@ export class FederationInputTransfers {
           eq(federationInputAttempts.state, "cleanup_pending"),
           lte(federationInputAttempts.leaseUntil, this.clock()),
           or(
-            isNull(federationInputAttempts.allocationStartedAt),
-            isNotNull(federationInputAttempts.uploadId),
-          ),
-          or(
-            isNull(federationInputAttempts.completionStartedAt),
-            isNotNull(federationInputAttempts.completionSettledAt),
+            isNotNull(federationInputAttempts.reconciliation),
+            and(
+              or(
+                isNull(federationInputAttempts.allocationStartedAt),
+                isNotNull(federationInputAttempts.uploadId),
+              ),
+              or(
+                isNull(federationInputAttempts.completionStartedAt),
+                isNotNull(federationInputAttempts.completionSettledAt),
+              ),
+            ),
           ),
         ),
       )
@@ -653,17 +803,11 @@ export class FederationInputTransfers {
     return this.db.transaction(async (tx) => {
       const rows = await this.lockAttempt(tx, generation);
       this.assertCleanable(rows.attempt);
-      if (rows.parent.publishedAt) {
-        const [reservation] = await tx
-          .select({
-            senderSiteId: federationReservations.senderSiteId,
-            operationId: federationReservations.operationId,
-          })
-          .from(federationReservations)
-          .where(eq(federationReservations.id, rows.parent.reservationId));
-        if (!reservation || !(await readFederationExecutionStopState(tx, reservation)).stopped)
-          throw new FederationError("DATA_WAITING");
-      }
+      if (
+        (rows.parent.publishedAt || rows.attempt.reconciliation) &&
+        !(await this.executionStopped(tx, rows.parent))
+      )
+        throw new FederationError("DATA_WAITING");
       const token = crypto.randomUUID();
       await tx
         .update(federationInputAttempts)
@@ -710,8 +854,9 @@ export class FederationInputTransfers {
       throw new FederationError("OPERATION_CONFLICT");
     // A lost create response cannot be proven harmless by one empty object listing.
     if (
-      (attempt.allocationStartedAt && !attempt.uploadId) ||
-      (attempt.completionStartedAt && !attempt.completionSettledAt)
+      !attempt.reconciliation &&
+      ((attempt.allocationStartedAt && !attempt.uploadId) ||
+        (attempt.completionStartedAt && !attempt.completionSettledAt))
     )
       throw new FederationError("DATA_WAITING");
   }

@@ -215,3 +215,35 @@ Server 已接结果传输服务、Agent RPC 与自动扫描。配置上述值并
 内部 input-reader 使用接收机构的 input-download-query 专用密钥请求源站 /federation/v1/input-downloads，核对 source 的 input-download-grant 专用签名。请求和响应同时绑定已接受委派、原清单成员、接收方当前 transferId/generation 和 Agent 租约；不能仅凭源站签名跳过本地活动尝试。响应返回前再次持锁检查接收身份、协议、Agent、源站地址与双方当前密钥用途。URL 必须属于允许的源站 HTTPS origin，带唯一真实 versionId，实际 S3 凭据与签名信封的期限一致且最多 30 秒，不越过查询、任务、当前尝试或签名密钥期限。
 
 上传地址绑定当前接收方 multipart uploadId/partNumber、固定分片大小及目标 origin，签发后复查当前授权和尝试。地址与 JWS 不进入持久记录或审计；已发地址有剩余短期有效窗口。输入 Agent 消息、能力协商、自动派发和整单发布已接入。全部文件校验后由后台复查固定版本及源站授权，在原执行账号下登记本地文件；失败至少 30 秒后重试。取消先隐藏原文件并保留清理额度，等执行停止、传输租约到期及对象清理确认后释放。Workflow 文件映射已接入：源端 File 槽走签名导出，接收端在全部发布后按原执行身份读取固定版本，并在创建/恢复/派发时复查。还须批准远端模板映射、执行账号及软件/沙箱/队列策略；输入未齐全时继续 DATA_WAITING。真实双平台小文件输入、两个 Script、结果回传及源站强制重启恢复已通过（同机隔离 Kubernetes、独立数据库与存储）；未覆盖 Spack/Slurm/PBS/Fabric 联合运行，启用配置不代表完整交付已验收。
+
+
+### 输入存储未知请求的运维核对
+
+输入创建上传或合并的请求结果未知，且始终没有 uploadId/对象的正向证据时，默认继续占用原清单预留。管理员可使用以下本地平台 API（正常登录鉴权，要求 platform manage；机构 mTLS 入口不开放）：
+
+- `GET /api/admin/federation/input-reconciliation?limit=50`：待核对代次。
+- `GET /api/admin/federation/input-reconciliation/:generation`：原站点、清单、对象 key、请求时间、租约、状态与 snapshotDigest。
+- `POST /api/admin/federation/input-reconciliation/:generation`：登记运维停止声明，返回 202。不会直接删除数据、释放配额或伪造上传/合并成功记录。
+
+操作顺序：
+
+1. 取消原委派，确认接收端 Workflow/全部 Job 已停止，相关取消和撤权回执已确认，等待原传输租约到期。由于存储未收尾，远端取消总回执仍可能 pending，不能要求它先变 stopped。
+2. 对原尝试的所有写入者做运维隔离：停止原 Server/Agent 进程与在途回调，禁用相关派发；必要时撤销旧存储凭据或在存储侧永久禁止原 key 的新写入。与存储管理员确认已受理的创建/合并请求也已处理结束，不能只凭重启 Server、断网、单次 HEAD 或空列表推断。保留重启/隔离、存储排空的核查证据。可启动干净的管理进程保留清理权限；不恢复原代次写入。
+3. 重新读取快照。保存工单号、完整证据文件的 SHA-256，以及完成上述隔离和存储排空的 stoppedAt。使用返回的 snapshotDigest 提交：
+
+```json
+{
+  "snapshotDigest": "sha256:<GET 返回的 64 位摘要>",
+  "stoppedAt": "2026-11-07T08:00:00.000Z",
+  "incidentId": "storage-maintenance-42",
+  "evidenceDigest": "sha256:<核查材料的 64 位摘要>",
+  "allWritersStopped": true,
+  "storageRequestsDrained": true
+}
+```
+
+4. 后台使用既有存储权限清理该代次的精确 key（全部 multipart、版本和删除标记），确认无残留后才标记 cleaned 并释放清单预留。失败保留记录与配额、继续重试；检查原导入 cancelled/reservedBytes=0 和取消回执，不把 POST 202 当完成。
+
+这是受信任平台管理员对外部运维事实的声明，软件不能独立核验工单内容或证明外部存储已排空；无法取得可信停止依据时不得提交。SHA-256 用于关联核查材料，不使声明自动成为存储证明。API 不接收口令、预签名 URL 或证据正文。决定与审计原子保存，重复提交相同正文幂等；状态快照变化、未取消、租约未到期、运行未停止或服务身份均拒绝。迟到的上传/合并事实在实际清理提交前使原决定及清理 token 失效，要求重新核对。原 key 永不复用；不得在清理后恢复旧写入进程或撤销原 key 的隔离。
+
+迁移 0113 增加独立 reconciliation 字段。此入口仅处理接收端输入的未知分配/合并，不是结果导入、普通云盘或账单额度的通用强制释放接口；Web 操作界面仍待接入。
