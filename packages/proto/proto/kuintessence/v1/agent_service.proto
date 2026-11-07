@@ -152,6 +152,7 @@ message ServerMessage {
     FederationExecutionResponse federation_execution_response = 23;
     FederationResultCopy federation_result_copy = 24;
     FederationResultGrantResponse federation_result_grant_response = 25;
+    FederationResultVerify federation_result_verify = 26;
   }
 }
 
@@ -234,6 +235,7 @@ message RegisterRequest {
   bool federation_installation_material_lease_v1 = 29;
   bool federation_netdrive_input_lease_v1 = 30;
   bool federation_result_copy_v1 = 31;
+  bool federation_result_verify_v1 = 32;
 }
 
 message RegisterResponse {
@@ -1035,6 +1037,7 @@ message FederationResultGrantRequest {
   string binding_json = 2; // At most 8 KiB.
   bool upload = 3;
   optional uint32 part_number = 4;
+  string verification_json = 5; // When set, binding_json must be empty; at most 16 KiB.
 }
 message FederationResultGrantResponse {
   string request_id = 1;
@@ -1045,4 +1048,10 @@ message FederationResultCopyReport {
   string generation = 1;
   string copied_json = 2; // At most 4 MiB; metadata only, never a publication receipt.
   bool failed = 3;
+  string verified_json = 4; // Exclusive with copied_json/failed; at most 16 KiB.
+}
+
+message FederationResultVerify {
+  string task_json = 1; // FederationResultVerifyTask, at most 16 KiB.
+  int64 lease_expires_at_unix_ms = 2;
 }

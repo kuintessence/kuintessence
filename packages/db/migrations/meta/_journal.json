@@ -701,6 +701,13 @@
       "when": 1794013649486,
       "tag": "0099_shocking_sway",
       "breakpoints": true
+    },
+    {
+      "idx": 100,
+      "version": "7",
+      "when": 1794015997926,
+      "tag": "0100_swift_king_cobra",
+      "breakpoints": true
     }
   ]
 }

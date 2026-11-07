@@ -215,7 +215,7 @@ export async function copyFederationResultFile(opts: FederationResultCopyOptions
     if (directory) await rm(directory, { recursive: true, force: true });
   }
 }
-function origins(values: readonly string[]) {
+export function origins(values: readonly string[]) {
   try {
     if (!values.length) throw new Error("Empty origins");
     return new Set(
@@ -228,7 +228,10 @@ function origins(values: readonly string[]) {
     throw new FederationResultCopyError("UNTRUSTED_ORIGIN");
   }
 }
-async function boundedAuthorization<T>(operation: Promise<T>, signal: AbortSignal): Promise<T> {
+export async function boundedAuthorization<T>(
+  operation: Promise<T>,
+  signal: AbortSignal,
+): Promise<T> {
   signal.throwIfAborted();
   let abort = () => {};
   const stopped = new Promise<never>((_, reject) => {

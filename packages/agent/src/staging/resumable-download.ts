@@ -82,21 +82,7 @@ export async function resumableDownload(
         signal: opts.signal,
         redirect: "error",
       });
-      const length = end - offset + 1;
-      const contentRange = res.headers["content-range"] ?? res.headers["Content-Range"];
-      const contentLength = res.headers["content-length"] ?? res.headers["Content-Length"];
-      const encoding = res.headers["content-encoding"] ?? res.headers["Content-Encoding"];
-      if (
-        !res.ok ||
-        res.status !== 206 ||
-        contentRange !== `bytes ${offset}-${end}/${opts.size}` ||
-        (contentLength !== undefined && Number(contentLength) !== length) ||
-        (encoding && encoding !== "identity")
-      ) {
-        await res.body?.cancel();
-        throw new Error("Download server did not return the exact unencoded requested range");
-      }
-      const chunk = await readRange(res, length, opts.signal);
+      const chunk = await readDownloadRange(res, offset, end, opts.size, opts.signal);
       let written = 0;
       while (written < chunk.length) {
         opts.signal?.throwIfAborted();
@@ -133,7 +119,35 @@ export async function resumableDownload(
   return { localPath: opts.localPath, size: opts.size, sha256: actual };
 }
 
-async function readRange(res: HttpResponse, length: number, signal?: AbortSignal): Promise<Buffer> {
+export async function readDownloadRange(
+  res: HttpResponse,
+  offset: number,
+  end: number,
+  size: number,
+  signal?: AbortSignal,
+) {
+  const length = end - offset + 1;
+  const contentRange = res.headers["content-range"] ?? res.headers["Content-Range"];
+  const contentLength = res.headers["content-length"] ?? res.headers["Content-Length"];
+  const encoding = res.headers["content-encoding"] ?? res.headers["Content-Encoding"];
+  if (
+    !res.ok ||
+    res.status !== 206 ||
+    contentRange !== `bytes ${offset}-${end}/${size}` ||
+    (contentLength !== undefined && Number(contentLength) !== length) ||
+    (encoding && encoding !== "identity")
+  ) {
+    await res.body?.cancel();
+    throw new Error("Download server did not return the exact unencoded requested range");
+  }
+  return readBoundedResponse(res, length, signal);
+}
+
+export async function readBoundedResponse(
+  res: HttpResponse,
+  length: number,
+  signal?: AbortSignal,
+): Promise<Buffer> {
   // Injected legacy clients return an already buffered response; real HTTP always exposes its stream.
   if (!res.body) {
     const bytes = Buffer.from(await res.arrayBuffer());

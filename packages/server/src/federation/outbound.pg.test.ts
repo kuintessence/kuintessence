@@ -50,6 +50,7 @@ import {
   FederationResultDownloadQuerySchema,
   FederationResultQuerySchema,
   FederationResultReportSchema,
+  FederationResultVerifyTaskSchema,
   FederationStatusQuerySchema,
   FederationStatusReportSchema,
 } from "@kuintessence/shared/federation";
@@ -59,6 +60,7 @@ import { exportSPKI } from "jose";
 import { AgentDispatcher } from "../grpc/dispatcher";
 import { createFederationOutboundRoutes } from "../routes/federation-outbound";
 import { artifactBatchHash } from "../services/artifact-members";
+import type { ObjectStat } from "../storage/minio-client";
 import { WorkflowAsyncRunner } from "../workflow/async-runner";
 import { WorkflowRunRegistry } from "../workflow/run-registry";
 import { FederationAdmission } from "./admission";
@@ -1898,9 +1900,36 @@ async function resultStorageFixture() {
     f.responder.receiveDownload(jws, sourceFingerprint, downloads),
   ).results;
   const uploads = new Map<string, string>();
+  const objects = new Map<string, ObjectStat>();
   const purged: string[] = [];
   const quota: { owner: string; path: string; size: number }[] = [];
   const storage = {
+    head: async (key: string, _versionId?: string): Promise<ObjectStat | null> =>
+      objects.get(key) ?? null,
+    completeMultipartUpload: async (
+      key: string,
+      _uploadId: string,
+      _parts: Array<{ partNumber: number; etag: string }>,
+    ) => {
+      objects.set(key, {
+        size: 3,
+        etag: "completed",
+        versionId: "v1",
+        contentType: "text/plain",
+        lastModified: clock(),
+      });
+      return { etag: "completed", versionId: "v1" };
+    },
+    presignDownload: async (
+      _key: string,
+      seconds: number,
+      _filename?: string,
+      versionId?: string,
+    ) => {
+      const url = signedUrl("https://destination-storage.test.invalid", seconds);
+      if (versionId) url.searchParams.set("versionId", versionId);
+      return url.toString();
+    },
     createMultipartUpload: async (key: string, _contentType: string) => {
       const uploadId = crypto.randomUUID();
       uploads.set(key, uploadId);
@@ -1920,6 +1949,7 @@ async function resultStorageFixture() {
     cleanupFederationResult: async (key: string) => {
       purged.push(key);
       uploads.delete(key);
+      objects.delete(key);
     },
   };
   const options = {
@@ -1932,7 +1962,7 @@ async function resultStorageFixture() {
     timeoutMs: 5000,
   };
   const bridge = new FederationResultStorage(f.imports, reader, storage, options);
-  return { ...f, storage, bridge, uploads, purged, quota, options, reader };
+  return { ...f, storage, bridge, uploads, objects, purged, quota, options, reader };
 }
 
 test("result storage binds both credentials to the current copy and preserves cleanup after failure", async () => {
@@ -2058,6 +2088,7 @@ test("result transport dispatches only to authenticated capable Agents and binds
     },
     close: () => {},
     federationResultCopyV1: false,
+    federationResultVerifyV1: false,
     verifiedCertFingerprint: undefined as string | undefined,
   };
   dispatcher.register(f.agentId, channel);
@@ -2067,6 +2098,8 @@ test("result transport dispatches only to authenticated capable Agents and binds
   expect(await transport.dispatch(f.member.id, f.agentId)).toBe(false);
   expect(f.uploads.size).toBe(0);
   channel.verifiedCertFingerprint = "verified";
+  expect(await transport.dispatch(f.member.id, f.agentId)).toBe(false);
+  channel.federationResultVerifyV1 = true;
   expect(await transport.dispatch(f.member.id, f.agentId)).toBe(true);
   const message = messages[0];
   if (message?.payload.case !== "federationResultCopy") throw new Error("Missing copy dispatch");
@@ -2106,7 +2139,52 @@ test("result transport dispatches only to authenticated capable Agents and binds
       copiedJson: JSON.stringify(copied),
     }),
   );
-  expect((await f.imports.get(actor, f.imported.id)).members[0]?.state).toBe("assembling");
+  expect((await f.imports.get(actor, f.imported.id)).members[0]?.state).toBe("verifying");
+  const verify = messages[1];
+  if (verify?.payload.case !== "federationResultVerify")
+    throw new Error("Missing verification dispatch");
+  const verification = FederationResultVerifyTaskSchema.parse(
+    JSON.parse(verify.payload.value.taskJson),
+  );
+  await transport.report(
+    f.agentId,
+    create(FederationResultCopyReportSchema, {
+      generation: task.generation,
+      copiedJson: JSON.stringify(copied),
+    }),
+  );
+  expect(messages.filter((item) => item.payload.case === "federationResultVerify")).toHaveLength(2);
+  const read = await transport.grant(
+    f.agentId,
+    create(FederationResultGrantRequestSchema, {
+      requestId: crypto.randomUUID(),
+      verificationJson: JSON.stringify(verification),
+    }),
+  );
+  expect(JSON.parse(read.grantJson)).toMatchObject({ ...verification, direction: "verify" });
+  await expect(transport.grant(f.agentId, request)).rejects.toThrow("OPERATION_CONFLICT");
+  await transport.report(
+    f.agentId,
+    create(FederationResultCopyReportSchema, {
+      generation: task.generation,
+      verifiedJson: JSON.stringify({ ...verification, sizeBytes: 3, sha256: binding.sha256 }),
+    }),
+  );
+  await transport.report(
+    f.agentId,
+    create(FederationResultCopyReportSchema, {
+      generation: task.generation,
+      verifiedJson: JSON.stringify({ ...verification, sizeBytes: 3, sha256: binding.sha256 }),
+    }),
+  );
+  await transport.report(
+    f.agentId,
+    create(FederationResultCopyReportSchema, {
+      generation: task.generation,
+      copiedJson: JSON.stringify(copied),
+    }),
+  );
+  expect((await f.imports.get(actor, f.imported.id)).members[0]?.state).toBe("verified");
   expect((await f.imports.get(actor, f.imported.id)).state).not.toBe("available");
 });
 
@@ -2120,6 +2198,7 @@ test("result transport retains cleanup if the Agent reconnects during upload all
     },
     close: () => {},
     federationResultCopyV1: true,
+    federationResultVerifyV1: true,
     verifiedCertFingerprint: "verified",
   };
   dispatcher.register(f.agentId, channel);
@@ -2133,4 +2212,137 @@ test("result transport retains cleanup if the Agent reconnects during upload all
   expect(pushes).toBe(0);
   expect(f.uploads.size).toBe(1);
   expect((await f.imports.get(actor, f.imported.id)).members[0]?.state).toBe("cleanup_pending");
+});
+
+async function assemblingResultFixture() {
+  const f = await resultStorageFixture();
+  const allocation = await f.bridge.allocate(f.member.id, f.agentId);
+  const binding = f.bindingFor(allocation.task.generation);
+  await f.imports.copied(f.agentId, {
+    binding,
+    sizeBytes: 3,
+    sha256: binding.sha256,
+    parts: [{ partNumber: 1, etag: "copied" }],
+  });
+  const [attempt] = await db
+    .select()
+    .from(federationResultAttempts)
+    .where(eq(federationResultAttempts.generation, binding.generation));
+  if (!attempt) throw new Error("Missing copy attempt");
+  return { ...f, binding, attempt };
+}
+
+test("result verification recovers an already completed object without trusting its HEAD as a byte hash", async () => {
+  const f = await assemblingResultFixture();
+  await f.storage.completeMultipartUpload(f.attempt.storageKey, "unknown-response", [
+    { partNumber: 1, etag: "copied" },
+  ]);
+  f.storage.completeMultipartUpload = async () => {
+    throw new Error("Do not complete a consumed upload twice");
+  };
+  const assembled = await f.bridge.assemble(f.agentId, f.binding.generation);
+  expect(assembled.task.object).toEqual({ versionId: "v1", etag: "completed" });
+  expect((await f.imports.get(actor, f.imported.id)).members[0]?.state).toBe("verifying");
+  await expect(f.bridge.verificationGrant("other-agent", assembled.task)).rejects.toThrow(
+    "OPERATION_CONFLICT",
+  );
+  await expect(
+    f.bridge.verificationGrant(f.agentId, {
+      ...assembled.task,
+      object: { versionId: "other", etag: "completed" },
+    }),
+  ).rejects.toThrow("OPERATION_CONFLICT");
+  await expect(
+    f.bridge.verified(f.agentId, { ...assembled.task, sizeBytes: 3, sha256: "0".repeat(64) }),
+  ).rejects.toThrow("INVALID_MESSAGE");
+  const before = f.objects.get(f.attempt.storageKey);
+  if (!before) throw new Error("Missing completed object");
+  f.objects.set(f.attempt.storageKey, { ...before, etag: "replaced" });
+  await expect(
+    f.bridge.verified(f.agentId, { ...assembled.task, sizeBytes: 3, sha256: f.binding.sha256 }),
+  ).rejects.toThrow("OPERATION_CONFLICT");
+  expect((await f.imports.get(actor, f.imported.id)).members[0]?.state).toBe("verifying");
+});
+
+test("result verification rechecks cancellation during completion and grant signing", async () => {
+  for (const boundary of ["complete", "presign"] as const) {
+    const f = await assemblingResultFixture();
+    if (boundary === "complete") {
+      const complete = f.storage.completeMultipartUpload;
+      f.storage.completeMultipartUpload = async (...args) => {
+        const result = await complete(...args);
+        await f.imports.cancel(actor, f.imported.id);
+        return result;
+      };
+      await expect(f.bridge.assemble(f.agentId, f.binding.generation)).rejects.toThrow();
+    } else {
+      const assembled = await f.bridge.assemble(f.agentId, f.binding.generation);
+      const presign = f.storage.presignDownload;
+      f.storage.presignDownload = async (...args) => {
+        const url = await presign(...args);
+        await f.imports.cancel(actor, f.imported.id);
+        return url;
+      };
+      await expect(f.bridge.verificationGrant(f.agentId, assembled.task)).rejects.toThrow(
+        "OPERATION_CONFLICT",
+      );
+    }
+    expect((await f.imports.get(actor, f.imported.id)).state).toBe("cancelled");
+    expect(f.objects.size).toBe(1);
+    time = new Date(time.getTime() + 120_001);
+    await f.bridge.cleanup();
+    expect(f.objects.size).toBe(0);
+  }
+});
+
+test("result verification retains cleanup for a completion that finishes after timeout and an earlier cleanup", async () => {
+  const f = await assemblingResultFixture();
+  const entered = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  const finished = Promise.withResolvers<void>();
+  const complete = f.storage.completeMultipartUpload;
+  f.storage.completeMultipartUpload = async (...args) => {
+    entered.resolve();
+    await release.promise;
+    const result = await complete(...args);
+    finished.resolve();
+    return result;
+  };
+  const bridge = new FederationResultStorage(f.imports, f.reader, f.storage, {
+    ...f.options,
+    timeoutMs: 50,
+  });
+  const assembly = bridge.assemble(f.agentId, f.binding.generation);
+  const failure = expect(assembly).rejects.toThrow("FEDERATION_RESULT_STORAGE_UNAVAILABLE");
+  await entered.promise;
+  await failure;
+  time = new Date(time.getTime() + 120_001);
+  await bridge.cleanup();
+  release.resolve();
+  await finished.promise;
+  expect(f.objects.size).toBe(1);
+  time = new Date(time.getTime() + 24 * 60 * 60_000 + 1);
+  await bridge.cleanup();
+  expect(f.objects.size).toBe(0);
+  expect((await f.imports.get(actor, f.imported.id)).members[0]?.state).toBe("pending");
+});
+
+test("concurrent result completions cannot mark a successfully assembled object for cleanup", async () => {
+  const f = await assemblingResultFixture();
+  const entered = Promise.withResolvers<void>();
+  let calls = 0;
+  const complete = f.storage.completeMultipartUpload;
+  f.storage.completeMultipartUpload = async (...args) => {
+    if (++calls === 2) entered.resolve();
+    await entered.promise;
+    return complete(...args);
+  };
+  const results = await Promise.allSettled([
+    f.bridge.assemble(f.agentId, f.binding.generation),
+    f.bridge.assemble(f.agentId, f.binding.generation),
+  ]);
+  expect(results.some((result) => result.status === "fulfilled")).toBe(true);
+  expect((await f.imports.get(actor, f.imported.id)).members[0]?.state).toBe("verifying");
+  expect(await f.bridge.cleanup()).toBe(0);
+  expect(f.objects.size).toBe(1);
 });

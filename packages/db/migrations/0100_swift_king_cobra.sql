@@ -1,0 +1,5 @@
+ALTER TABLE "federation_result_attempts" ADD COLUMN "destination_version_id" text;--> statement-breakpoint
+ALTER TABLE "federation_result_attempts" ADD COLUMN "destination_etag" varchar(255);--> statement-breakpoint
+ALTER TABLE "federation_result_attempts" ADD COLUMN "verified_at" timestamp with time zone;--> statement-breakpoint
+ALTER TABLE "federation_result_attempts" ADD CONSTRAINT "federation_result_attempt_destination" CHECK ("federation_result_attempts"."state" NOT IN ('verifying','verified','available') OR "federation_result_attempts"."destination_etag" IS NOT NULL);--> statement-breakpoint
+ALTER TABLE "federation_result_attempts" ADD CONSTRAINT "federation_result_attempt_verified" CHECK ("federation_result_attempts"."state" NOT IN ('verified','available') OR "federation_result_attempts"."verified_at" IS NOT NULL);

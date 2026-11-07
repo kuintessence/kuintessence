@@ -2001,6 +2001,7 @@ export class AgentStream {
             !!this.persistentQueue?.softwareOperations,
           managedDatasetRootIds: [...(this.deps.managedDatasetRootIds ?? [])],
           federationResultCopyV1: !!this.federationResultCopy,
+          federationResultVerifyV1: !!this.federationResultCopy,
           federationExecutionV1: this.federationExecutionCapable(),
           federationComputeLeaseV1: this.federationExecutionCapable(),
           federationSandboxSignatureRenewalV1:
@@ -3021,6 +3022,11 @@ export class AgentStream {
 
     if (payload.case === "federationResultCopy") {
       if (this.federationResultCopySupported) this.federationResultCopy?.start(payload.value);
+      return;
+    }
+    if (payload.case === "federationResultVerify") {
+      if (this.federationResultCopySupported)
+        this.federationResultCopy?.startVerification(payload.value);
       return;
     }
     if (payload.case === "federationResultGrantResponse") {

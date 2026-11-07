@@ -11,6 +11,11 @@ import {
   FederationResultCopiedSchema as CopiedSchema,
   FederationError,
   type FederationResultCopyBinding,
+  FederationResultObjectSchema,
+  type FederationResultVerified,
+  FederationResultVerifiedSchema,
+  type FederationResultVerifyTask,
+  FederationResultVerifyTaskSchema,
 } from "@kuintessence/shared/federation";
 import { and, asc, eq, gte, inArray, lte, ne, or } from "drizzle-orm";
 import { z } from "zod";
@@ -163,7 +168,7 @@ export class FederationResultImports {
         .where(
           and(
             eq(federationResultAttempts.agentId, agentId),
-            ne(federationResultAttempts.state, "cleaned"),
+            inArray(federationResultAttempts.state, [...activeStates, "cleanup_pending"]),
             gte(federationResultAttempts.leaseUntil, this.clock()),
           ),
         )
@@ -286,7 +291,7 @@ export class FederationResultImports {
     const receipt = CopiedSchema.parse(input);
     return this.db.transaction(async (tx) => {
       const rows = await this.lockAttempt(tx, receipt.binding.generation);
-      if (rows.attempt.state !== "copying" && rows.attempt.state !== "assembling")
+      if (!["copying", "assembling", "verifying", "verified"].includes(rows.attempt.state))
         throw new FederationError("OPERATION_CONFLICT");
       await this.assertAttempt(tx, rows, agentId, rows.attempt.state);
       const binding = this.binding(rows);
@@ -298,12 +303,12 @@ export class FederationResultImports {
         receipt.parts.some((part, i) => part.partNumber !== i + 1)
       )
         throw new FederationError("INVALID_MESSAGE");
-      if (rows.attempt.state === "assembling") {
+      if (rows.attempt.state !== "copying") {
         if (
           federationMaterialDigest(rows.attempt.parts) !== federationMaterialDigest(receipt.parts)
         )
           throw new FederationError("OPERATION_CONFLICT");
-        return { state: "assembling" as const };
+        return { state: rows.attempt.state };
       }
       await tx
         .update(federationResultAttempts)
@@ -320,6 +325,122 @@ export class FederationResultImports {
       // An Agent upload report is not independent destination verification or publication.
       return { state: "assembling" as const };
     });
+  }
+
+  async assembling(agentId: string, generation: string) {
+    return this.db.transaction(async (tx) => {
+      const rows = await this.lockAttempt(tx, generation);
+      await this.assertAttempt(tx, rows, agentId, "assembling");
+      return { ...rows, binding: this.binding(rows) };
+    });
+  }
+
+  async assembled(
+    agentId: string,
+    generation: string,
+    object: z.infer<typeof FederationResultObjectSchema>,
+  ) {
+    const pin = FederationResultObjectSchema.parse(object);
+    return this.db.transaction(async (tx) => {
+      const rows = await this.lockAttempt(tx, generation);
+      await this.assertAttempt(tx, rows, agentId, "assembling");
+      const leaseUntil = this.lease(rows.parent);
+      await tx
+        .update(federationResultAttempts)
+        .set({
+          destinationVersionId: pin.versionId,
+          destinationEtag: pin.etag,
+          state: "verifying",
+          leaseUntil,
+          updatedAt: this.clock(),
+        })
+        .where(eq(federationResultAttempts.generation, generation));
+      await tx
+        .update(federationResultTransfers)
+        .set({ state: "verifying", updatedAt: this.clock() })
+        .where(eq(federationResultTransfers.id, rows.transfer.id));
+      await this.audit(tx, rows.parent, "assembled", { generation });
+      return {
+        task: {
+          binding: this.binding(rows),
+          object: pin,
+          availableUntil: rows.parent.report.manifest.availableUntil,
+        },
+        leaseExpiresAt: leaseUntil.toISOString(),
+      };
+    });
+  }
+
+  async verificationTask(agentId: string, generation: string) {
+    return this.db.transaction(async (tx) => {
+      const rows = await this.lockAttempt(tx, generation);
+      await this.assertAttempt(tx, rows, agentId, "verifying");
+      const task = FederationResultVerifyTaskSchema.parse({
+        binding: this.binding(rows),
+        object: {
+          etag: rows.attempt.destinationEtag,
+          versionId: rows.attempt.destinationVersionId,
+        },
+        availableUntil: rows.parent.report.manifest.availableUntil,
+      });
+      return { task, leaseExpiresAt: rows.attempt.leaseUntil.toISOString() };
+    });
+  }
+
+  async verification(agentId: string, input: FederationResultVerifyTask, renew = false) {
+    const task = FederationResultVerifyTaskSchema.parse(input);
+    return this.db.transaction(async (tx) => {
+      const rows = await this.lockAttempt(tx, task.binding.generation);
+      if (!(renew ? ["verifying"] : ["verifying", "verified"]).includes(rows.attempt.state))
+        throw new FederationError("OPERATION_CONFLICT");
+      await this.assertAttempt(tx, rows, agentId, rows.attempt.state);
+      this.assertVerification(rows, task);
+      const leaseUntil = renew ? this.lease(rows.parent) : rows.attempt.leaseUntil;
+      if (renew)
+        await tx
+          .update(federationResultAttempts)
+          .set({ leaseUntil, updatedAt: this.clock() })
+          .where(eq(federationResultAttempts.generation, task.binding.generation));
+      return { storageKey: rows.attempt.storageKey, leaseUntil, state: rows.attempt.state };
+    });
+  }
+
+  async verified(agentId: string, input: FederationResultVerified) {
+    const receipt = FederationResultVerifiedSchema.parse(input);
+    return this.db.transaction(async (tx) => {
+      const rows = await this.lockAttempt(tx, receipt.binding.generation);
+      if (!["verifying", "verified"].includes(rows.attempt.state))
+        throw new FederationError("OPERATION_CONFLICT");
+      await this.assertAttempt(tx, rows, agentId, rows.attempt.state);
+      this.assertVerification(rows, receipt);
+      if (receipt.sha256 !== rows.transfer.sha256 || receipt.sizeBytes !== rows.transfer.sizeBytes)
+        throw new FederationError("INVALID_MESSAGE");
+      if (rows.attempt.state === "verified") return;
+      await tx
+        .update(federationResultAttempts)
+        .set({ state: "verified", verifiedAt: this.clock(), updatedAt: this.clock() })
+        .where(eq(federationResultAttempts.generation, receipt.binding.generation));
+      await tx
+        .update(federationResultTransfers)
+        .set({ state: "verified", updatedAt: this.clock() })
+        .where(eq(federationResultTransfers.id, rows.transfer.id));
+      await this.audit(tx, rows.parent, "destination_verified", {
+        generation: receipt.binding.generation,
+      });
+    });
+  }
+
+  private assertVerification(
+    rows: { parent: Import; transfer: Transfer; attempt: Attempt },
+    task: FederationResultVerifyTask,
+  ) {
+    if (
+      federationMaterialDigest(this.binding(rows)) !== federationMaterialDigest(task.binding) ||
+      rows.attempt.destinationEtag !== task.object.etag ||
+      rows.attempt.destinationVersionId !== task.object.versionId ||
+      task.availableUntil !== rows.parent.report.manifest.availableUntil
+    )
+      throw new FederationError("OPERATION_CONFLICT");
   }
 
   async cancel(actor: FederationActor, importId: string, operationId?: string) {

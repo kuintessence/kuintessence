@@ -10,6 +10,7 @@ import {
   FederationResultCopySchema,
   type FederationResultGrantRequest,
   FederationResultGrantResponseSchema,
+  FederationResultVerifySchema,
   RegisterResponseSchema,
   type ServerMessage,
   ServerMessageSchema,
@@ -26,6 +27,7 @@ import {
   FederationResultCopyError,
   type FederationResultCopyOptions,
 } from "./result-copy";
+import { verifyFederationResultFile } from "./result-verify";
 
 let root: string, ca: string;
 let source: ReturnType<typeof Bun.serve>, target: ReturnType<typeof Bun.serve>;
@@ -95,6 +97,32 @@ beforeAll(async () => {
     tls,
     fetch: async (req) => {
       targetRequests++;
+      if (req.method === "GET") {
+        const bytes = Buffer.concat(
+          [...received.entries()].sort(([a], [b]) => a - b).map(([, value]) => value),
+        );
+        if (req.headers.get("if-match") !== '"completed-object"')
+          return new Response(null, { status: 412 });
+        const headers: Record<string, string> = { etag: '"completed-object"' };
+        if (mode !== "unversioned")
+          headers["x-amz-version-id"] = mode === "version-changed" ? "v2" : "v1";
+        if (!bytes.length || mode === "ignore-range") return new Response(bytes, { headers });
+        const range = /^bytes=(\d+)-(\d+)$/.exec(req.headers.get("range") ?? "");
+        if (!range) return new Response(null, { status: 416 });
+        const start = Number(range[1]),
+          end = Number(range[2]);
+        headers["content-range"] = `bytes ${start}-${end}/${bytes.length}`;
+        if (mode === "stall-verification")
+          return new Response(
+            new ReadableStream({
+              start(controller) {
+                controller.enqueue(bytes.subarray(start, start + 1));
+              },
+            }),
+            { status: 206, headers },
+          );
+        return new Response(bytes.subarray(start, end + 1), { status: 206, headers });
+      }
       const partNumber = Number(new URL(req.url).searchParams.get("part"));
       if (req.method !== "PUT" || !partNumber) return new Response(null, { status: 400 });
       received.set(partNumber, Buffer.from(await req.arrayBuffer()));
@@ -487,5 +515,111 @@ test("AgentStream negotiates result copy and carries grants and failure reports 
   } finally {
     await stream.stop();
     await running;
+  }
+});
+
+async function verificationFixture(
+  bytes = Buffer.from("destination"),
+  versionId: string | null = "v1",
+) {
+  const f = fixture(bytes);
+  const copied = await copyFederationResultFile(f.options);
+  const task = {
+    binding: copied.binding,
+    object: { etag: "completed-object", versionId },
+    availableUntil: f.options.task.report.manifest.availableUntil,
+  };
+  if (versionId === null) mode = "unversioned";
+  const options: Parameters<typeof verifyFederationResultFile>[0] = {
+    task,
+    signal: new AbortController().signal,
+    allowedDestinationOrigins: f.options.allowedDestinationOrigins,
+    fetcher: f.options.fetcher,
+    authorize: async (input) => ({
+      ...input,
+      direction: "verify",
+      url: `${target.url}completed${versionId ? `?versionId=${versionId}` : ""}`,
+      expiresAt: new Date(Date.now() + 10_000).toISOString(),
+    }),
+  };
+  return { f, task, options };
+}
+
+test("destination verification reads completed HTTPS bytes with a pinned object and supports empty and unversioned stores", async () => {
+  for (const [bytes, version] of [
+    [Buffer.alloc(1024 * 1024 + 3, 17), "v1"],
+    [Buffer.alloc(0), "v1"],
+    [Buffer.from("unversioned"), null],
+  ] as const) {
+    const { options, task } = await verificationFixture(bytes, version);
+    const verified = await verifyFederationResultFile(options);
+    expect(verified).toEqual({ ...task, sizeBytes: bytes.length, sha256: hash(bytes) });
+  }
+});
+
+test("destination verification rejects same-size corruption, wrong versions, full responses and expired in-flight reads", async () => {
+  for (const failure of [
+    "corrupt",
+    "version-changed",
+    "unexpected-version",
+    "ignore-range",
+    "stall-verification",
+  ] as const) {
+    const { options } = await verificationFixture(
+      Buffer.from("destination"),
+      failure === "unexpected-version" ? null : "v1",
+    );
+    if (failure === "corrupt") received.set(1, Buffer.alloc(content.length, 0));
+    else mode = failure === "unexpected-version" ? "version-changed" : failure;
+    if (failure === "stall-verification") {
+      const authorize = options.authorize;
+      options.authorize = async (...args) => ({
+        ...(await authorize(...args)),
+        expiresAt: new Date(Date.now() + 50).toISOString(),
+      });
+    }
+    await expect(verifyFederationResultFile(options)).rejects.toBeInstanceOf(
+      FederationResultCopyError,
+    );
+  }
+});
+
+test("result client completes a separate destination read and returns a verification report", async () => {
+  const { f, task, options } = await verificationFixture();
+  const completed = Promise.withResolvers<FederationResultCopyReport>();
+  const client = new FederationResultClient(
+    f.options,
+    (request) => {
+      expect(request.bindingJson).toBe("");
+      void options
+        .authorize(JSON.parse(request.verificationJson), new AbortController().signal)
+        .then((grant) =>
+          client.receive(
+            create(FederationResultGrantResponseSchema, {
+              requestId: request.requestId,
+              grantJson: JSON.stringify(grant),
+              leaseExpiresAtUnixMs: BigInt(Date.now() + 90_000),
+            }),
+          ),
+        );
+      return true;
+    },
+    (report) => completed.resolve(report),
+    copyFederationResultFile,
+    (opts) => verifyFederationResultFile({ ...opts, fetcher: options.fetcher }),
+  );
+  try {
+    client.startVerification(
+      create(FederationResultVerifySchema, {
+        taskJson: JSON.stringify(task),
+        leaseExpiresAtUnixMs: BigInt(Date.now() + 90_000),
+      }),
+    );
+    const result = await completed.promise;
+    expect(result.failed).toBe(false);
+    expect(result.copiedJson).toBe("");
+    expect(JSON.parse(result.verifiedJson).sha256).toBe(hash(content));
+  } finally {
+    await client.disconnect();
   }
 });

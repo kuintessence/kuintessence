@@ -838,6 +838,18 @@ Slurm 方向已取得并核对仓库既有 Apptainer 1.4.3 包 SHA-256，构建�
 
 下一项是 CompleteMultipart、固定目的版本的实际字节复验、配额与整份清单原子发布、接收完成回执；随后才启动后台与重做双平台真实回传。本轮不发布预览，不变更 main 或现有部署。
 
+## 分片完成与独立目的读取
+
+已接 CompleteMultipart 与 Agent 目的校验通道，持久保存目的 ETag/versionId 和验证时间。完成响应丢失时可以找到对象并重新读取；完成超时或取消保留独立 key 的清理责任。目的授权限制当前 generation、对象、HTTPS origin 和短期期限，签发前后重查权限。Agent 按精确 1 MiB 范围流式重读并计算 SHA-256，校验 ETag/版本，空对象也真实 GET；Server 不转发文件正文。相同 copied/verified 回报重放不重复组装或回退状态。
+
+验证：Agent 搬运/校验与共用 Range 下载 **17 项通过**，含真实 HTTPS 大于 1 MiB、空文件和无版本对象，损坏同大小内容、错误版本、忽略 Range 和读取到期均拒绝。隔离 PostgreSQL **6 个不同用例通过**，覆盖传输到 verified、失去完成响应、取消竞态、错误对象/摘要、完成晚于清理和并发完成。并发失败不再将另一个已成功完成的尝试标为待清理，由原租约到期机制保留失败尝试的清理责任；首轮两个失败暴露严格 task schema 不接受回报额外字段，已显式提取任务字段并定向通过。补充重放后传输用例单独通过，不重复累加。另有 6 项 Server 通道能力/身份测试通过，新增的 copy-only 用例确认旧版只会上传、不会复验的 Agent 不领取新任务。迁移 0100 由 drizzle 生成并在隔离数据库执行。
+
+真实 RustFS 新增 **1 项通过**：生产 bootstrap 创建的非 root committer 实际上传并 CompleteMultipart；随后同 key 写入另一版本，Agent 通过限定路径的本机 HTTPS 代理仍按原 versionId/ETag 读取旧版本，实读 1 MiB + 37 字节、两次 Range，SHA-256 一致。此用例使用真实生产存储 backend 和 Agent 校验函数，授权回调为测试替身，不冒充完整 Server/Agent 双平台验收。专用 namespace、数据、临时 CA 与凭据均清理，证据在 `temp/federation-result-verification-real.log`，不入库。
+
+静态检查发现跨包真实存储测试不应放入 Server 的 src/rootDir，已迁至 `scripts/federation-result-storage.integration.test.ts`，复用现有跨包测试类型检查配置；没有用类型忽略绕过。其余包全仓类型检查通过，Agent/Server 与跨包测试最终定向类型检查通过；lint 无错误，保留原有 47 warnings、1 info；protobuf lint 和本地文档链接检查通过。
+
+当前只推进到内部 verified；API 仍只排队，后台自动派发尚未启动。下一项补齐配额、整份清单原子发布和签名接收回执，再做双平台完整结果交付验收与其他蓝图工作。没有发布预览或修改 main 部署。
+
 ## 尚未接通，不能宣称支持
 
 协议审批与机构信任管理 UI、源站后台状态同步/结果交付、额度结算/退款、完整生产持久 Workflow 端到端验收、完整的数据/软件物化与介质交付、双方证据确认与完整用量/结算记录、商业/市场链码及真实联邦作业与 Fabric 联合运行、归档恢复、Web/CLI 和部署配置均未完成。

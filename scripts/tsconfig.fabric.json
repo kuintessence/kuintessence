@@ -5,5 +5,5 @@
     "types": ["bun-types"],
     "lib": ["ESNext"]
   },
-  "include": ["fabric-evidence-*.ts"]
+  "include": ["fabric-evidence-*.ts", "federation-result-storage.integration.test.ts"]
 }

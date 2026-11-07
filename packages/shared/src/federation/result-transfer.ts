@@ -103,3 +103,36 @@ export const FederationResultCopiedSchema = z.strictObject({
     .min(1)
     .max(10_000),
 });
+
+/** A completed object is read conditionally; a version is pinned when the store provides one. */
+export const FederationResultObjectSchema = z.strictObject({
+  versionId: z.string().min(1).max(2048).nullable(),
+  etag: z
+    .string()
+    .min(1)
+    .max(255)
+    .refine((value) =>
+      Array.from(value).every(
+        (c) => c.charCodeAt(0) >= 33 && c.charCodeAt(0) <= 126 && c !== '"' && c !== "\\",
+      ),
+    ),
+});
+export const FederationResultVerifyTaskSchema = z.strictObject({
+  binding: FederationResultCopyBindingSchema,
+  object: FederationResultObjectSchema,
+  availableUntil: z.iso.datetime(),
+});
+export type FederationResultVerifyTask = z.infer<typeof FederationResultVerifyTaskSchema>;
+export const FederationResultVerificationGrantSchema = FederationResultVerifyTaskSchema.extend({
+  direction: z.literal("verify"),
+  url: z.string().max(8192),
+  expiresAt: z.iso.datetime(),
+});
+export type FederationResultVerificationGrant = z.infer<
+  typeof FederationResultVerificationGrantSchema
+>;
+export const FederationResultVerifiedSchema = FederationResultVerifyTaskSchema.extend({
+  sizeBytes: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+  sha256: z.string().regex(/^[a-f0-9]{64}$/),
+});
+export type FederationResultVerified = z.infer<typeof FederationResultVerifiedSchema>;

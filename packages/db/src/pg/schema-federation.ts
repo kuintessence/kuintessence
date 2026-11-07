@@ -703,6 +703,9 @@ export const federationResultAttempts = pgTable(
     storageKey: varchar("storage_key", { length: 512 }).notNull(),
     uploadId: text("upload_id"),
     parts: jsonb("parts").$type<Array<{ partNumber: number; etag: string }>>(),
+    destinationVersionId: text("destination_version_id"),
+    destinationEtag: varchar("destination_etag", { length: 255 }),
+    verifiedAt: timestamp("verified_at", { withTimezone: true }),
     leaseUntil: timestamp("lease_until", { withTimezone: true }).notNull(),
     lastError: varchar("last_error", { length: 64 }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
@@ -724,6 +727,14 @@ export const federationResultAttempts = pgTable(
     check(
       "federation_result_attempt_upload",
       sql`${t.state} NOT IN ('copying','assembling','verifying','verified','available') OR ${t.uploadId} IS NOT NULL`,
+    ),
+    check(
+      "federation_result_attempt_destination",
+      sql`${t.state} NOT IN ('verifying','verified','available') OR ${t.destinationEtag} IS NOT NULL`,
+    ),
+    check(
+      "federation_result_attempt_verified",
+      sql`${t.state} NOT IN ('verified','available') OR ${t.verifiedAt} IS NOT NULL`,
     ),
   ],
 );

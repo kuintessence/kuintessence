@@ -402,6 +402,7 @@ export function registerAgentHandler(router: ConnectRouter, deps: AgentHandlerDe
         spackPinnedExecutionV1: false,
         softwareOperationReplayV1: false,
         federationResultCopyV1: false,
+        federationResultVerifyV1: false,
         federationExecutionV1: false,
         federationComputeLeaseV1: false,
         federationSandboxSignatureRenewalV1: false,
@@ -525,6 +526,7 @@ export function registerAgentHandler(router: ConnectRouter, deps: AgentHandlerDe
               channel.spackPinnedExecutionV1 = reg.spackPinnedExecutionV1;
               channel.softwareOperationReplayV1 = reg.softwareOperationReplayV1;
               channel.federationResultCopyV1 = reg.federationResultCopyV1;
+              channel.federationResultVerifyV1 = reg.federationResultVerifyV1;
               channel.federationExecutionV1 = reg.federationExecutionV1;
               channel.federationComputeLeaseV1 = reg.federationComputeLeaseV1;
               channel.federationSandboxSignatureRenewalV1 = reg.federationSandboxSignatureRenewalV1;
@@ -557,6 +559,7 @@ export function registerAgentHandler(router: ConnectRouter, deps: AgentHandlerDe
                       federationResultCopyV1Supported:
                         !!deps.federationResults &&
                         reg.federationResultCopyV1 &&
+                        reg.federationResultVerifyV1 &&
                         !!channel.verifiedCertFingerprint,
                       federationExecutionV1Supported:
                         jobDispatches?.renewExecution !== undefined && reg.federationComputeLeaseV1,
@@ -1126,6 +1129,7 @@ export function registerAgentHandler(router: ConnectRouter, deps: AgentHandlerDe
               !registeredAgentId ||
               !active ||
               !channel.federationResultCopyV1 ||
+              !channel.federationResultVerifyV1 ||
               !channel.verifiedCertFingerprint ||
               !deps.federationResults ||
               !dispatcher.isCurrentChannel(registeredAgentId, channel)

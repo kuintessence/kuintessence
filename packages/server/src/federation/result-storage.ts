@@ -4,6 +4,9 @@ import {
   FederationError,
   type FederationResultCopyBinding,
   FederationResultCopyBindingSchema,
+  type FederationResultVerified,
+  type FederationResultVerifyTask,
+  FederationResultVerifyTaskSchema,
 } from "@kuintessence/shared/federation";
 import type { MinioBackend } from "../storage/minio-client";
 import { signedDownloadExpiry } from "./result-download-credential";
@@ -12,7 +15,12 @@ import type { FederationResultReader } from "./result-reader";
 
 type Storage = Pick<
   MinioBackend,
-  "createMultipartUpload" | "presignUploadPart" | "cleanupFederationResult"
+  | "createMultipartUpload"
+  | "presignUploadPart"
+  | "cleanupFederationResult"
+  | "completeMultipartUpload"
+  | "head"
+  | "presignDownload"
 >;
 const logger = createLogger("federation-result-storage");
 export interface FederationResultStorageOptions {
@@ -116,6 +124,107 @@ export class FederationResultStorage {
     )
       throw new FederationError("OPERATION_CONFLICT");
     return { grant, leaseExpiresAt: after.leaseUntil.toISOString() };
+  }
+
+  async assemble(agentId: string, generation: string) {
+    try {
+      const before = await this.imports.assembling(agentId, generation);
+      if (!before.attempt.uploadId || !before.attempt.parts)
+        throw new FederationError("OPERATION_CONFLICT");
+      // A prior CompleteMultipart response may have been lost. HEAD only selects a verification target.
+      let stat = await this.bounded(this.storage.head(before.attempt.storageKey));
+      if (!stat) {
+        const completed = await this.bounded(
+          this.storage.completeMultipartUpload(
+            before.attempt.storageKey,
+            before.attempt.uploadId,
+            before.attempt.parts,
+          ),
+        );
+        stat = await this.bounded(
+          this.storage.head(before.attempt.storageKey, completed.versionId),
+        );
+        if (stat && completed.etag !== stat.etag) throw new FederationError("OPERATION_CONFLICT");
+      }
+      if (!stat || stat.size !== before.binding.sizeBytes)
+        throw new FederationError("INVALID_MESSAGE");
+      return await this.imports.assembled(agentId, generation, {
+        etag: stat.etag,
+        versionId: stat.versionId && stat.versionId !== "null" ? stat.versionId : null,
+      });
+    } catch (error) {
+      // Concurrent completion may already have advanced this attempt. Expiry retains cleanup responsibility.
+      if (error instanceof FederationError) throw error;
+      throw new Error("FEDERATION_RESULT_STORAGE_UNAVAILABLE");
+    }
+  }
+
+  async verificationGrant(agentId: string, input: FederationResultVerifyTask) {
+    const task = FederationResultVerifyTaskSchema.parse(input);
+    const before = await this.imports.verification(agentId, task, true);
+    await this.assertObject(before.storageKey, task);
+    const deadline = Math.min(this.clock().getTime() + 30_000, before.leaseUntil.getTime());
+    const seconds = Math.floor((deadline - this.clock().getTime()) / 1000);
+    if (seconds < 1) throw new FederationError("AUTHORIZATION_EXPIRED");
+    const url = await this.bounded(
+      this.storage.presignDownload(
+        before.storageKey,
+        seconds,
+        undefined,
+        task.object.versionId ?? undefined,
+      ),
+    );
+    const parsed = new URL(url);
+    if (
+      parsed.protocol !== "https:" ||
+      parsed.username ||
+      parsed.password ||
+      parsed.hash ||
+      !this.destinationOrigins.has(parsed.origin)
+    )
+      throw new FederationError("POLICY_DENIED");
+    if (
+      (task.object.versionId !== null &&
+        (parsed.searchParams.get("versionId") !== task.object.versionId ||
+          parsed.searchParams.getAll("versionId").length !== 1)) ||
+      (task.object.versionId === null && parsed.searchParams.has("versionId"))
+    )
+      throw new FederationError("INVALID_MESSAGE");
+    const expiresAt = signedDownloadExpiry(url, this.clock().getTime(), deadline);
+    const after = await this.imports.verification(agentId, task);
+    if (
+      after.state !== "verifying" ||
+      before.storageKey !== after.storageKey ||
+      Date.parse(expiresAt) <= this.clock().getTime() ||
+      Date.parse(expiresAt) > after.leaseUntil.getTime()
+    )
+      throw new FederationError("OPERATION_CONFLICT");
+    return {
+      grant: { ...task, direction: "verify" as const, url, expiresAt },
+      leaseExpiresAt: after.leaseUntil.toISOString(),
+    };
+  }
+
+  async verified(agentId: string, receipt: FederationResultVerified) {
+    const before = await this.imports.verification(agentId, {
+      binding: receipt.binding,
+      object: receipt.object,
+      availableUntil: receipt.availableUntil,
+    });
+    if (before.state !== "verified") await this.assertObject(before.storageKey, receipt);
+    await this.imports.verified(agentId, receipt);
+  }
+
+  private async assertObject(key: string, task: FederationResultVerifyTask) {
+    const stat = await this.bounded(this.storage.head(key, task.object.versionId ?? undefined));
+    if (
+      !stat ||
+      stat.size !== task.binding.sizeBytes ||
+      stat.etag !== task.object.etag ||
+      (stat.versionId && stat.versionId !== "null" ? stat.versionId : null) !==
+        task.object.versionId
+    )
+      throw new FederationError("OPERATION_CONFLICT");
   }
 
   async cleanup(limit = 20) {

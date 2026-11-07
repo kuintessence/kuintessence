@@ -265,6 +265,7 @@ describe("agent-handler", () => {
     "granted",
     "denied",
     "legacy",
+    "copy-only",
     "unverified",
     "replaced",
   ] as const)("result copy RPC trust and nonblocking delivery: %s", async (mode) => {
@@ -300,6 +301,7 @@ describe("agent-handler", () => {
     const register = registerFrame();
     if (register.payload.case !== "register") throw new Error("Missing register");
     register.payload.value.federationResultCopyV1 = mode !== "legacy";
+    register.payload.value.federationResultVerifyV1 = mode !== "copy-only";
     async function* messages() {
       yield register;
       yield create(AgentMessageSchema, {
@@ -335,18 +337,20 @@ describe("agent-handler", () => {
             if (mode === "replaced")
               dispatcher.register("grpc-test-agent-1", { push: () => {}, close: () => {} });
             heartbeat.resolve();
-            if (["legacy", "unverified", "replaced"].includes(mode)) done.resolve();
+            if (["legacy", "copy-only", "unverified", "replaced"].includes(mode)) done.resolve();
           }
           if (message.payload.case === "federationResultGrantResponse") done.resolve();
         }
         return responses;
       },
     );
-    expect(calls).toEqual(["legacy", "unverified"].includes(mode) ? [] : ["grpc-test-agent-1"]);
+    expect(calls).toEqual(
+      ["legacy", "copy-only", "unverified"].includes(mode) ? [] : ["grpc-test-agent-1"],
+    );
     const registration = output.find((message) => message.payload.case === "registerResponse");
     if (registration?.payload.case !== "registerResponse") throw new Error("Missing registration");
     expect(registration.payload.value.federationResultCopyV1Supported).toBe(
-      !["legacy", "unverified"].includes(mode),
+      !["legacy", "copy-only", "unverified"].includes(mode),
     );
     const grants = output.flatMap((message) =>
       message.payload.case === "federationResultGrantResponse"

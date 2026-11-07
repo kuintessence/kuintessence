@@ -172,11 +172,21 @@ Agent 的 `copyFederationResultFile` 已提供内部文件搬运函数：绑定�
 
 ### 结果搬运 AgentStream 通道
 
-新增兼容 protobuf 消息与 `federationResultCopyV1` 协商。Agent 显式配置 `AGENT_FEDERATION_RESULT_COPY` JSON 后才上报能力，包含 stagingRoot、maxStagingBytes、allowedSourceOrigins、allowedDestinationOrigins；默认 null。Server 同时要求 mTLS 已认证且为当前连接，旧 Agent/Server 不会误接派发。
+新增兼容 protobuf 消息与 `federationResultCopyV1`/`federationResultVerifyV1` 协商；Server 只给同时支持复制和目的校验的 Agent 分配任务。Agent 显式配置 `AGENT_FEDERATION_RESULT_COPY` JSON 后才上报能力，包含 stagingRoot、maxStagingBytes、allowedSourceOrigins、allowedDestinationOrigins；默认 null。Server 同时要求 mTLS 已认证且为当前连接，旧 Agent/Server 不会误接派发。
 
 任务、绑定、grant 与 copied 回报使用共享严格 schema；正文分别限制为 256 KiB、8 KiB、16 KiB 与 4 MiB，仅传元数据。Server 每连接最多同时处理两条结果请求，机构网络/S3 调用不阻塞心跳；响应只发给原连接，重连期间分配成功的旧上传保留清理责任。Agent 同时只搬一个文件，重复同 generation 不重启；不同 generation 在忙碌时报告失败。短期地址不入持久队列，断线、退出或两分钟租约结束停止当前搬运，迟到 grant 按 requestId 丢弃。上传报告丢失时由持久租约过期后清理和重新尝试，不承诺跨进程续传。
 
-Server 启用 NetDrive、联邦签名/发送器并同时配置 `FEDERATION_RESULT_IMPORT_SOURCE_ORIGINS`（对端存储）及 `FEDERATION_RESULT_DOWNLOAD_ORIGINS`（本端存储）后构造传输服务；仍不会自动派发 pending 导入，须待分片组装、目的字节校验和整单发布接齐后启动后台。端到端业务交付尚未完成。
+Server 启用 NetDrive、联邦签名/发送器并同时配置 `FEDERATION_RESULT_IMPORT_SOURCE_ORIGINS`（对端存储）及 `FEDERATION_RESULT_DOWNLOAD_ORIGINS`（本端存储）后构造传输服务；仍不会自动派发 pending 导入，须待配额与整单发布接齐后启动后台。端到端业务交付尚未完成。
+
+### 分片组装与目的对象字节校验
+
+上传报告持久保存后，协调器重新检查尝试/权限并执行 CompleteMultipart。完成结果丢失时可通过该尝试的独立 key 找到待校验对象，HEAD 只用于绑定大小、ETag 和可用的 versionId，不能据此发布。对象定位信息与 verifying 状态一起持久保存；完成调用超时不改变可能由并发完成者推进的状态，旧 key 仍由租约到期清理负责，原定期复扫处理清理后才完成的副作用。
+
+Server 通过相同 mTLS Agent 通道派发独立校验任务，逐次签发最多 30 秒的目的 GET grant，限定当前尝试、对象、期限、HTTPS origin 和 versionId；签发前后再次授权。Agent 以 If-Match 读取，检查响应 ETag；有版本号时同时检查 URL 和响应版本。每次只读取准确的 1 MiB 范围并累计 SHA-256，不写临时完整文件，也不把对象正文经过 Server。空文件同样通过真实授权 GET 验证零字节；错误范围、超量/截短正文、损坏内容、过期与撤权均拒绝。
+
+Server 接收校验报告后重新检查当前权限、租约、对象 HEAD 和报告摘要，再记录 verifiedAt/verified。在授权与租约有效时，完全相同的 copied/verified 回报可以重放，复制回报不会让 verified 回退，校验过程中重复 copied 可重新派发原对象。存储支持版本时读取已选定历史版本，不受同名新版本覆盖影响；无版本号时使用条件读取和摘要校验，不承诺历史版本保留。
+
+迁移 0100 增加目的 ETag/versionId 和 verifiedAt 约束，由生成命令产生。上述为字节搬运完整性，尚无整份清单发布、源站云盘文件登记或接收完成回执；后台自动派发保持关闭。
 
 ### 持久结果导入与传输尝试
 
@@ -190,9 +200,9 @@ Server 启用 NetDrive、联邦签名/发送器并同时配置 `FEDERATION_RESUL
 
 每个成员每次尝试有独立 generation、预先落库的目标 storageKey、Agent、uploadId、parts 和两分钟租约，租约不能越过结果披露期限。当前只允许本组织拥有且 online 的 Agent，传输层另要求当前 mTLS 连接及 federationResultCopyV1 能力协商；不允许任意用户指定其他组织的节点。数据库防止同一成员/Agent 重复领取活动尝试，取消后尚未到期的旧租约仍占用 Agent 名额。每次授权续发及上传报告均重查所有者当前权限、原协议、Agent 归属和 generation。
 
-过期、失败或取消后保留旧尝试，等待独立存储清理，不覆盖 uploadId 或删除历史。创建上传的响应即使迟到到新尝试之后，也保留到旧 storageKey 下并重新等待清理，不改变新尝试状态。已复制报告必须匹配文件摘要/大小和完整有序 parts；完全相同的重放幂等，不同报告拒绝。上传报告仅进入 assembling，不能视为目的文件已独立校验，更不能发布可用副本。
+过期、失败或取消后保留旧尝试，等待独立存储清理，不覆盖 uploadId 或删除历史。创建上传的响应即使迟到到新尝试之后，也保留到旧 storageKey 下并重新等待清理，不改变新尝试状态。已复制报告必须匹配文件摘要/大小和完整有序 parts；完全相同的重放幂等，不同报告拒绝。上传报告先记录 assembling，存储协调器随后组装对象并派发独立目的读取；只有版本/ETag、完整字节数及 SHA-256 均通过才记录 verified，仍不能发布可用副本。
 
-当前 API 只持久排队；存储协调器已实现 S3 分配、目的端短期授权和精确残留清理，并通过 AgentStream 传输层连接；尚未接入后台自动扫描，分片完成也未实现。`storageCleaned` 是内部状态入口，由存储协调器在确认旧 key 的全部对象版本、delete markers 和所有 multipart 上传均不存在后调用；没有公开接口允许用户或 Agent 自报清理完成；已清理 key 每 24 小时可复扫，保留迟到副作用的清理责任。六项隔离数据库/生产路由测试证明状态与隔离，不是实际 Server/Agent 进程崩溃恢复或存储清理验收。配额预留、目的对象实际字节校验、整份清单原子发布和签名接收回执仍待完成。
+当前 API 只持久排队；存储协调器已实现 S3 分配、目的端短期授权和精确残留清理，并通过 AgentStream 传输层连接；尚未接入后台自动扫描与整单原子发布。`storageCleaned` 是内部状态入口，由存储协调器在确认旧 key 的全部对象版本、delete markers 和所有 multipart 上传均不存在后调用；没有公开接口允许用户或 Agent 自报清理完成；已清理 key 每 24 小时可复扫，保留迟到副作用的清理责任。六项隔离数据库/生产路由测试证明状态与隔离，不是实际 Server/Agent 进程崩溃恢复或存储清理验收。配额预留、整份清单原子发布和签名接收回执仍待完成。
 
 ### 远端取消与停止确认
 

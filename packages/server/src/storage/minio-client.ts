@@ -120,7 +120,7 @@ export interface MinioBackend {
     key: string,
     uploadId: string,
     parts: UploadPartRef[],
-  ): Promise<{ etag: string }>;
+  ): Promise<{ etag: string; versionId?: string }>;
   /** Discard an in-flight multipart upload and its staged parts. */
   abortMultipartUpload(key: string, uploadId: string): Promise<void>;
 }
@@ -355,7 +355,7 @@ export async function createRealMinioBackend(cfg: MinioBackendConfig): Promise<M
         .sort((a, b) => a.partNumber - b.partNumber)
         .map((p) => ({ part: p.partNumber, etag: p.etag }));
       const result = await client.completeMultipartUpload(cfg.bucket, key, uploadId, etags);
-      return { etag: stripQuotes(result.etag ?? "") };
+      return { etag: stripQuotes(result.etag ?? ""), versionId: copyResultVersionId(result) };
     },
 
     async abortMultipartUpload(key, uploadId) {
