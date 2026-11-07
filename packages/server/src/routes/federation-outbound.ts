@@ -81,6 +81,20 @@ export function createFederationOutboundRoutes(service: FederationOutboundServic
       });
     },
   );
+  r.get(
+    "/federation/outbound/:operationId/results",
+    kqValidator("param", z.object({ operationId: z.uuid() })),
+    async (c) => {
+      c.header("cache-control", "no-store");
+      return c.json({
+        success: true,
+        data: await service.results.read(
+          c.get("federationActor"),
+          c.req.valid("param").operationId,
+        ),
+      });
+    },
+  );
   for (const action of ["cancel", "cancel-retry"] as const) {
     r.post(
       `/federation/outbound/:operationId/${action}`,

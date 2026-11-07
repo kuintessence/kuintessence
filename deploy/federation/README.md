@@ -14,7 +14,7 @@
                               PostgreSQL 原子预留
 ```
 
-Gateway 使用 Node 22，强制校验客户端证书链，按实际 TLS 证书计算 SHA-256 指纹。客户端提供的身份头、Authorization、Cookie、代理头均不转发。Bun 私有入口按指纹查本地登记，验证机构签名，并在接单事务中锁定、复查信任状态。网关只允许 `/federation/v1/delegations` 、`/federation/v1/status` 和 `/federation/v1/cancellations`；普通 Server HTTP 端口不挂载这些机构路由。
+Gateway 使用 Node 22，强制校验客户端证书链，按实际 TLS 证书计算 SHA-256 指纹。客户端提供的身份头、Authorization、Cookie、代理头均不转发。Bun 私有入口按指纹查本地登记，验证机构签名，并在接单事务中锁定、复查信任状态。网关只允许 `/federation/v1/delegations` 、`/federation/v1/status`、`/federation/v1/cancellations` 和 `/federation/v1/results`；普通 Server HTTP 端口不挂载这些机构路由。
 
 Unix socket 只允许 Server 与 Gateway 的相同系统 UID 访问。独立目录须为该 UID 所有、权限 0700；socket 为 0600。运行时拒绝公开目录和权限过宽的签名私钥。Gateway 与 Server 属于同一机构的信任边界，不能把此 socket 挂给其他机构容器。各机构使用独立目录、数据库和签名密钥。
 
@@ -63,6 +63,7 @@ Server 另行配置 `FEDERATION_CLIENT_CERT_FILE`、`FEDERATION_CLIENT_KEY_FILE`
 | `GET /api/federation/outbound` | 组织内出站操作分页清单，accepted 仅表示可信接单 |
 | `POST /api/federation/outbound/:operationId/retry` | 按原操作/JWS 重试，并确认采用同一对端当前登记端点 |
 | `GET /api/federation/outbound/:operationId/remote-status` | 按需取得签名准备/运行状态，响应含观测时间及验签时间 |
+| `GET /api/federation/outbound/:operationId/results` | 查看协议允许的签名结果清单，尚不传输文件 |
 | `POST /api/federation/outbound/:operationId/cancel` | 持久请求停止，202 不代表已经停止 |
 | `POST /api/federation/outbound/:operationId/cancel-retry` | 修复信任/端点后明确重试同一停止意图 |
 
@@ -70,7 +71,9 @@ Server 另行配置 `FEDERATION_CLIENT_CERT_FILE`、`FEDERATION_CLIENT_KEY_FILE`
 
 取消须为源/接收签名密钥分别登记 `cancellation`/`cancellation-receipt` 用途，并授予操作者 `delegation.cancel`（submit 包含 cancel，cancel 包含 read）。原接单状态与 cancellation 分别展示；只有 cancellation.state=stopped 才表示已确认停止。接单未知也可取消，接收方永久阻止迟到委派；在途接单仍保留，预算不自动释放。停止意图不因操作者随后离职而丢弃，机构信任异常需人工核对。
 
-出站、状态与取消接口不依赖 Fabric。额度尚未接通结算释放；源站结果交付、后台状态同步、普通 Workflow 自动委派和已接单端点迁移仍待完成。详细契约见[实现说明](../../docs/design/federation/implementation.md#源站持久发送)。
+结果清单需要双方新签协议的 `resultPolicy`（持久文件范围、总文件数/字节数上限及结果披露截止时间）、源站用户的独立 `result.read` 权限，以及两端密钥分别登记 `result-query`/`result-report` 用途。没有结果条款的旧协议拒绝开放；普通委派读取权不允许读取结果清单。暂时只返回已完成运行的 Persistent File/FileBatch 元数据和 SHA-256，清单签名不等于文件已经传回，不生成下载链接。详见[结果清单契约](../../docs/design/federation/implementation.md#签名结果清单)。
+
+出站、状态、取消与结果清单接口不依赖 Fabric。额度尚未接通结算释放；源站结果交付、后台状态同步、普通 Workflow 自动委派和已接单端点迁移仍待完成。详细契约见[实现说明](../../docs/design/federation/implementation.md#源站持久发送)。
 
 ## 本地信任管理 API
 

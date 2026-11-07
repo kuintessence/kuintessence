@@ -60,6 +60,8 @@ export const federationSigningKeys = pgTable(
           | "status-report"
           | "cancellation"
           | "cancellation-receipt"
+          | "result-query"
+          | "result-report"
         )[]
       >()
       .notNull(),
@@ -112,7 +114,7 @@ export const federationCapabilities = pgTable(
     primaryKey({ columns: [t.orgId, t.userId, t.capability] }),
     check(
       "federation_capability_kind",
-      sql`${t.capability} IN ('agreement.read', 'agreement.approve', 'asset.read', 'asset.map', 'delegation.read', 'delegation.submit', 'delegation.cancel')`,
+      sql`${t.capability} IN ('agreement.read', 'agreement.approve', 'asset.read', 'asset.map', 'delegation.read', 'delegation.submit', 'delegation.cancel', 'result.read')`,
     ),
   ],
 );

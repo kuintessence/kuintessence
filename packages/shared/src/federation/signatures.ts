@@ -53,6 +53,8 @@ export interface FederationVerificationKey {
     | "status-report"
     | "cancellation"
     | "cancellation-receipt"
+    | "result-query"
+    | "result-report"
   )[];
 }
 

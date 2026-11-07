@@ -17,20 +17,27 @@ import {
   federationReservations,
   federationSigningKeys,
   federationSites,
+  federationWorkflowBindings,
   jobs,
+  netdriveFiles,
   orgs,
   softwareAssetRevisions,
   softwareAssets,
   userOrgMemberships,
   users,
+  workflowArtifactFiles,
+  workflowArtifacts,
   workflowRuns,
 } from "@kuintessence/db";
+import { workflowDsl } from "@kuintessence/shared";
 import {
   FederationAcceptanceSchema,
   type FederationAgreement,
   FederationAgreementSchema,
   FederationCancellationReceiptSchema,
   FederationCancellationSchema,
+  FederationResultQuerySchema,
+  FederationResultReportSchema,
   FederationStatusQuerySchema,
   FederationStatusReportSchema,
 } from "@kuintessence/shared/federation";
@@ -38,6 +45,7 @@ import { and, eq, inArray } from "drizzle-orm";
 import { Hono } from "hono";
 import { exportSPKI } from "jose";
 import { createFederationOutboundRoutes } from "../routes/federation-outbound";
+import { artifactBatchHash } from "../services/artifact-members";
 import { WorkflowAsyncRunner } from "../workflow/async-runner";
 import { WorkflowRunRegistry } from "../workflow/run-registry";
 import { FederationAdmission } from "./admission";
@@ -49,6 +57,7 @@ import { FederationOutboundService } from "./outbound";
 import { FederationDeliveryError, type FederationSend } from "./outbound-client";
 import { FederationPermissionService } from "./permissions";
 import { FederationPreparationService } from "./preparation";
+import { FederationResultResponder } from "./results";
 import { signFederationMessage, verifyFederationMessage } from "./signatures";
 import { FederationStatusResponder } from "./status";
 import { testAgreement, testDelegation, testKeys, testNow } from "./test-fixtures";
@@ -120,6 +129,8 @@ beforeAll(async () => {
           "status-report",
           "cancellation",
           "cancellation-receipt",
+          "result-query",
+          "result-report",
         ],
         validFrom: key.verification.validFrom.toISOString(),
         validUntil: key.verification.validUntil.toISOString(),
@@ -164,6 +175,23 @@ afterAll(async () => {
       reservations.map((v) => v.id),
     ),
   );
+  await db.delete(federationWorkflowBindings).where(
+    inArray(
+      federationWorkflowBindings.reservationId,
+      reservations.map((v) => v.id),
+    ),
+  );
+  const runs = await db
+    .select({ id: workflowRuns.id })
+    .from(workflowRuns)
+    .where(eq(workflowRuns.submittedBy, executionUserId));
+  await db.delete(workflowArtifacts).where(
+    inArray(
+      workflowArtifacts.workflowRunId,
+      runs.map((v) => v.id),
+    ),
+  );
+  await db.delete(netdriveFiles).where(eq(netdriveFiles.ownerId, executionUserId));
   await db
     .delete(federationReservations)
     .where(inArray(federationReservations.agreementRevisionId, termsIds));
@@ -208,9 +236,10 @@ afterAll(async () => {
   await db.$client.end();
 });
 
-async function fixture() {
+async function fixture(resultPolicy?: FederationAgreement["resultPolicy"]) {
   time = new Date(testNow);
   const terms = testAgreement(a.signing.siteId, b.signing.siteId);
+  if (resultPolicy) terms.resultPolicy = resultPolicy;
   agreements.push(terms);
   const assetId = crypto.randomUUID(),
     revisionId = crypto.randomUUID();
@@ -286,7 +315,7 @@ async function fixture() {
   };
   const service = (send: FederationSend = receive) =>
     new FederationOutboundService(db, a.signing, send, assets, clock);
-  return { terms, request, receive, sent, service };
+  return { terms, request, receive, sent, service, reference };
 }
 
 async function row(operationId: string) {
@@ -482,6 +511,7 @@ test("source budget cannot be copied into another signed agreement or overbooked
   expect(attempted.filter((result) => result.status === "fulfilled")).toHaveLength(1);
   await service.deliverNext();
   const terms = { ...f.terms, agreementRevisionId: crypto.randomUUID() };
+  if (resultPolicy) terms.resultPolicy = resultPolicy;
   agreements.push(terms);
   await aService.approve(actor, { terms });
   await aService.attachCounterparty(
@@ -1006,4 +1036,291 @@ test("cancellation preserves an acceptance that arrives after the stop intent", 
   if (!saved.receipt || !saved.cancelReceipt?.reservationId)
     throw new Error("Missing matching remote receipts");
   expect(saved.receipt.reservationId).toBe(saved.cancelReceipt.reservationId);
+});
+
+const resultPolicy: NonNullable<FederationAgreement["resultPolicy"]> = {
+  scope: "persistent-files",
+  maxFiles: 4,
+  maxBytes: 20,
+  availableUntil: "2026-01-04T00:00:00.000Z",
+};
+async function resultFixture(policy = resultPolicy) {
+  const f = await fixture(policy);
+  await permission.set({ ...actor, capability: "result.read", enabled: true }, actor.userId);
+  await f.service().enqueue(actor, f.request);
+  await f.service().deliverNext();
+  const saved = await row(f.request.operationId);
+  if (!saved.receipt) throw new Error("Expected acceptance");
+  const runId = crypto.randomUUID(),
+    jobId = crypto.randomUUID(),
+    artifactId = crypto.randomUUID(),
+    fileId = crypto.randomUUID();
+  await db.insert(jobs).values({
+    id: jobId,
+    name: "Result producer",
+    submittedBy: executionUserId,
+    orgId: receiver.orgId,
+    status: "completed",
+    command: "true",
+    cpus: 1,
+    memoryMb: 128,
+  });
+  await db.insert(workflowRuns).values({
+    id: runId,
+    name: "Results",
+    submittedBy: executionUserId,
+    status: "completed",
+    completedAt: clock(),
+    stepJobs: { producer: jobId },
+    result: {
+      status: { producer: "Succeeded" },
+      values: {
+        producer: { status: "Succeeded", values: { result: { type: "File", artifactId } } },
+      },
+    },
+    input: {
+      yaml: "",
+      role: "user",
+      executionModel: "durable-v2",
+      federationReservationId: saved.receipt.reservationId,
+    },
+  });
+  const snapshot: typeof federationWorkflowBindings.$inferInsert.snapshot = {
+    request: f.request,
+    requestDigest: saved.requestDigest,
+    identity: { orgId: receiver.orgId, userId: executionUserId },
+    workflow: workflowDsl.WorkflowSchema.parse({
+      name: "Result fixture",
+      spec: { nodeDrafts: [], nodeRelations: [] },
+    }),
+    workflowVersions: {},
+    inputs: { protocolVersion: 1, kind: "inputs", parameters: {}, datasets: [], bindings: [] },
+    environment: {
+      protocolVersion: 1,
+      kind: "environment-lock",
+      target: { platform: "linux", architecture: "x86_64" },
+      nativeLockDigest: f.terms.termsDigest,
+      software: [],
+    },
+    mappings: [],
+  };
+  await db.insert(federationWorkflowBindings).values({
+    reservationId: saved.receipt.reservationId,
+    workflowRunId: runId,
+    snapshot,
+    snapshotDigest: federationMaterialDigest(snapshot),
+  });
+  await db.insert(netdriveFiles).values({
+    id: fileId,
+    ownerId: executionUserId,
+    path: "private/local/result",
+    storageKey: "private/object/key",
+    size: 3,
+    sha256: "a".repeat(64),
+    contentType: "application/octet-stream",
+  });
+  await db.insert(workflowArtifacts).values({
+    id: artifactId,
+    workflowRunId: runId,
+    producerJobId: jobId,
+    producerNodeId: "producer",
+    descriptor: "result",
+    ioType: "File",
+    contentHash: "a".repeat(64),
+    sizeBytes: 3,
+    durability: "Persistent",
+    persistentAt: clock(),
+    netdriveFileId: fileId,
+  });
+  const responder = new FederationResultResponder(db, b.signing, clock);
+  const send: FederationSend = (_endpoint, jws) => responder.receive(jws, sourceFingerprint);
+  const read = () => f.service(send).results.read(actor, f.request.operationId);
+  return { ...f, saved, runId, jobId, artifactId, fileId, responder, send, read };
+}
+
+test("result inventory requires explicit bilateral scope and independent current source permission", async () => {
+  const legacy = await fixture();
+  await legacy.service().enqueue(actor, legacy.request);
+  await legacy.service().deliverNext();
+  await permission.set({ ...actor, capability: "result.read", enabled: true }, actor.userId);
+  await expect(legacy.service().results.read(actor, legacy.request.operationId)).rejects.toThrow(
+    "POLICY_DENIED",
+  );
+  const f = await resultFixture();
+  await permission.set({ ...actor, capability: "result.read", enabled: false }, actor.userId);
+  await expect(f.read()).rejects.toThrow("POLICY_DENIED");
+  await permission.set({ ...actor, capability: "result.read", enabled: true }, actor.userId);
+  const result = await f.read();
+  expect(result.report.manifest.outputs).toHaveLength(1);
+  expect(result.report.manifest.outputs[0]?.files).toEqual([
+    { path: "result", sizeBytes: 3, sha256: "a".repeat(64) },
+  ]);
+  for (const secret of [
+    executionUserId,
+    f.fileId,
+    f.runId,
+    f.jobId,
+    f.artifactId,
+    "private/object/key",
+    "private/local/result",
+  ])
+    expect(JSON.stringify(result)).not.toContain(secret);
+  expect(await row(f.request.operationId)).toEqual(f.saved);
+  await permission.set({ ...receiver, capability: "result.read", enabled: true }, actor.userId);
+  await expect(f.service(f.send).results.read(receiver, f.request.operationId)).rejects.toThrow(
+    "POLICY_DENIED",
+  );
+  time = new Date("2026-01-03T00:00:00.000Z");
+  expect((await f.read()).report.manifestDigest).toBe(result.report.manifestDigest);
+  time = new Date(resultPolicy.availableUntil);
+  await expect(f.read()).rejects.toThrow("AUTHORIZATION_EXPIRED");
+});
+
+test("result inventory rejects unavailable, foreign and prohibited artifacts instead of dropping entries", async () => {
+  const f = await resultFixture();
+  await db.update(workflowRuns).set({ status: "running" }).where(eq(workflowRuns.id, f.runId));
+  await expect(f.read()).rejects.toThrow("DATA_WAITING");
+  await db.update(workflowRuns).set({ status: "completed" }).where(eq(workflowRuns.id, f.runId));
+  await db.update(jobs).set({ restrictedNoEgress: true }).where(eq(jobs.id, f.jobId));
+  await expect(f.read()).rejects.toThrow("POLICY_DENIED");
+  await db.update(jobs).set({ restrictedNoEgress: false }).where(eq(jobs.id, f.jobId));
+  await db
+    .update(netdriveFiles)
+    .set({ sha256: "b".repeat(64) })
+    .where(eq(netdriveFiles.id, f.fileId));
+  await expect(f.read()).rejects.toThrow("ASSET_UNAVAILABLE");
+  await db
+    .update(netdriveFiles)
+    .set({ sha256: "a".repeat(64), deletedAt: clock() })
+    .where(eq(netdriveFiles.id, f.fileId));
+  await expect(f.read()).rejects.toThrow("ASSET_UNAVAILABLE");
+  await db
+    .update(netdriveFiles)
+    .set({ deletedAt: null, ownerId: actor.userId })
+    .where(eq(netdriveFiles.id, f.fileId));
+  try {
+    await expect(f.read()).rejects.toThrow("ASSET_UNAVAILABLE");
+  } finally {
+    await db
+      .update(netdriveFiles)
+      .set({ ownerId: executionUserId })
+      .where(eq(netdriveFiles.id, f.fileId));
+  }
+  await db.update(workflowRuns).set({ stepJobs: {} }).where(eq(workflowRuns.id, f.runId));
+  await expect(f.read()).rejects.toThrow("POLICY_DENIED");
+  await db
+    .update(workflowRuns)
+    .set({ stepJobs: { producer: f.jobId } })
+    .where(eq(workflowRuns.id, f.runId));
+  await db.delete(workflowArtifacts).where(eq(workflowArtifacts.id, f.artifactId));
+  await expect(f.read()).rejects.toThrow("ASSET_UNAVAILABLE");
+});
+
+test("result FileBatch inventories verify every published member and enforce signed limits", async () => {
+  const f = await resultFixture({ ...resultPolicy, maxFiles: 1, maxBytes: 3 });
+  const members = [{ relativePath: "nested/result.dat", sizeBytes: 3, sha256: "a".repeat(64) }];
+  await db
+    .update(workflowArtifacts)
+    .set({
+      ioType: "FileBatch",
+      contentHash: artifactBatchHash(members),
+      fileMembers: members,
+      netdriveFileId: null,
+    })
+    .where(eq(workflowArtifacts.id, f.artifactId));
+  await expect(f.read()).rejects.toThrow("ASSET_UNAVAILABLE");
+  await db.insert(workflowArtifactFiles).values({
+    artifactId: f.artifactId,
+    relativePath: "nested/result.dat",
+    netdriveFileId: f.fileId,
+  });
+  expect((await f.read()).report.manifest.outputs[0]?.files[0]?.path).toBe("nested/result.dat");
+  const extra = [...members, { relativePath: "extra.dat", sizeBytes: 3, sha256: "a".repeat(64) }];
+  await db
+    .update(workflowArtifacts)
+    .set({ contentHash: artifactBatchHash(extra), fileMembers: extra, sizeBytes: 6 })
+    .where(eq(workflowArtifacts.id, f.artifactId));
+  await expect(f.read()).rejects.toThrow("POLICY_DENIED");
+});
+
+test("result reports reject replay, changed provenance, foreign peer and revoked authorization", async () => {
+  const f = await resultFixture();
+  let previous = "";
+  const replay = f.service(
+    async (_endpoint, jws) => (previous ||= await f.responder.receive(jws, sourceFingerprint)),
+  );
+  await replay.results.read(actor, f.request.operationId);
+  await expect(replay.results.read(actor, f.request.operationId)).rejects.toThrow(
+    "INVALID_MESSAGE",
+  );
+  const bad = f.service(async (_endpoint, jws) => {
+    await expect(f.responder.receive(jws, targetFingerprint)).rejects.toThrow("UNTRUSTED_IDENTITY");
+    const key = await trust.resolveKey(b.signing.siteId, b.signing.keyId, clock());
+    const { payload } = await verifyFederationMessage(
+      FederationResultReportSchema,
+      await f.responder.receive(jws, sourceFingerprint),
+      key,
+      clock(),
+    );
+    const manifest = { ...payload.manifest, environmentLockDigest: `sha256:${"0".repeat(64)}` };
+    return signFederationMessage(
+      FederationResultReportSchema,
+      { ...payload, manifest, manifestDigest: federationMaterialDigest(manifest) },
+      b.signing,
+    );
+  });
+  await expect(bad.results.read(actor, f.request.operationId)).rejects.toThrow("INVALID_MESSAGE");
+  const revoke = f.service(async (_endpoint, jws) => {
+    const response = await f.responder.receive(jws, sourceFingerprint);
+    await permission.set({ ...actor, capability: "result.read", enabled: false }, actor.userId);
+    return response;
+  });
+  await expect(revoke.results.read(actor, f.request.operationId)).rejects.toThrow("POLICY_DENIED");
+  await permission.set({ ...actor, capability: "result.read", enabled: true }, actor.userId);
+  await db
+    .update(federationAgreements)
+    .set({ state: "suspended" })
+    .where(eq(federationAgreements.revisionId, f.terms.agreementRevisionId));
+  await expect(f.read()).rejects.toThrow("POLICY_DENIED");
+  expect(await row(f.request.operationId)).toEqual(f.saved);
+});
+
+test("result queries cannot change task identity or bypass receiver agreement and execution ownership", async () => {
+  const f = await resultFixture();
+  const probe = f.service(async (_endpoint, jws) => {
+    const key = await trust.resolveKey(a.signing.siteId, a.signing.keyId, clock());
+    const { payload } = await verifyFederationMessage(
+      FederationResultQuerySchema,
+      jws,
+      key,
+      clock(),
+    );
+    for (const change of [
+      { taskId: crypto.randomUUID() },
+      { requestDigest: `sha256:${"0".repeat(64)}` },
+      { reservationId: crypto.randomUUID() },
+    ]) {
+      const altered = await signFederationMessage(
+        FederationResultQuerySchema,
+        { ...payload, ...change },
+        a.signing,
+      );
+      await expect(f.responder.receive(altered, sourceFingerprint)).rejects.toThrow(
+        "POLICY_DENIED",
+      );
+    }
+    return f.responder.receive(jws, sourceFingerprint);
+  });
+  await probe.results.read(actor, f.request.operationId);
+  await db.update(users).set({ suspended: true }).where(eq(users.id, executionUserId));
+  try {
+    await expect(f.read()).rejects.toThrow("POLICY_DENIED");
+  } finally {
+    await db.update(users).set({ suspended: false }).where(eq(users.id, executionUserId));
+  }
+  await db
+    .update(federationAgreements)
+    .set({ terms: { ...f.terms, resultPolicy: { ...resultPolicy, maxBytes: 100 } } })
+    .where(eq(federationAgreements.revisionId, f.terms.agreementRevisionId));
+  await expect(f.read()).rejects.toThrow("OPERATION_CONFLICT");
 });

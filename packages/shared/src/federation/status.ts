@@ -15,6 +15,16 @@ const Identity = {
   requestDigest: FederationDigestSchema,
 };
 
+export function hasFederationQueryWindow(q: {
+  issuedAt: string;
+  expiresAt: string;
+  senderSiteId: string;
+  recipientSiteId: string;
+}) {
+  const lifetime = Date.parse(q.expiresAt) - Date.parse(q.issuedAt);
+  return lifetime > 0 && lifetime <= 60_000 && q.senderSiteId !== q.recipientSiteId;
+}
+
 export const FederationStatusQuerySchema = z
   .strictObject({
     ...Identity,
@@ -22,10 +32,10 @@ export const FederationStatusQuerySchema = z
     issuedAt: z.iso.datetime(),
     expiresAt: z.iso.datetime(),
   })
-  .refine((q) => {
-    const lifetime = Date.parse(q.expiresAt) - Date.parse(q.issuedAt);
-    return lifetime > 0 && lifetime <= 60_000 && q.senderSiteId !== q.recipientSiteId;
-  }, "Status queries require distinct sites and a lifetime of at most one minute");
+  .refine(
+    hasFederationQueryWindow,
+    "Queries require distinct sites and a lifetime of at most one minute",
+  );
 export type FederationStatusQuery = z.infer<typeof FederationStatusQuerySchema>;
 
 /** Operational metadata only: no local identities, paths, raw errors, logs or result contents. */
@@ -58,7 +68,10 @@ export const FederationStatusReportSchema = z.strictObject({
 });
 export type FederationStatusReport = z.infer<typeof FederationStatusReportSchema>;
 
-export function assertFederationStatusQueryFresh(query: FederationStatusQuery, now: Date) {
+export function assertFederationStatusQueryFresh(
+  query: Omit<FederationStatusQuery, "kind">,
+  now: Date,
+) {
   if (
     !Number.isFinite(now.getTime()) ||
     Date.parse(query.issuedAt) > now.getTime() + 60_000 ||
@@ -67,10 +80,10 @@ export function assertFederationStatusQueryFresh(query: FederationStatusQuery, n
     throw new FederationError("AUTHORIZATION_EXPIRED");
 }
 
-export function assertFederationStatusReport(
-  query: FederationStatusQuery,
+export function assertFederationReportIdentity(
+  query: Omit<FederationStatusQuery, "kind">,
   queryDigest: string,
-  report: FederationStatusReport,
+  report: Omit<FederationStatusReport, "kind" | "preparation" | "workflow">,
   now: Date,
 ) {
   assertFederationStatusQueryFresh(query, now);
@@ -94,3 +107,5 @@ export function assertFederationStatusReport(
   )
     throw new FederationError("INVALID_MESSAGE");
 }
+
+export const assertFederationStatusReport = assertFederationReportIdentity;

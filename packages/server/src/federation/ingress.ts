@@ -5,6 +5,7 @@ import { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { FederationAdmission } from "./admission";
 import { FederationCancellationReceiver } from "./cancellation";
+import { FederationResultResponder } from "./results";
 import { type FederationSigningKey, federationMessageKeyId } from "./signatures";
 import { FederationStatusResponder } from "./status";
 import { FederationTrustRegistry } from "./trust-registry";
@@ -82,6 +83,15 @@ export function createFederationIngress(db: PgDb, signingKey: FederationSigningK
       "content-type": "application/jose",
       "cache-control": "no-store",
     });
+  });
+  r.post("/federation/v1/results", async (c) => {
+    if (c.req.header("content-type") !== "application/jose")
+      return c.json({ error: { code: "INVALID_MESSAGE" } }, 415);
+    const report = await new FederationResultResponder(db, signingKey).receive(
+      await c.req.text(),
+      c.req.header("x-kq-federation-cert") ?? "",
+    );
+    return c.body(report, 200, { "content-type": "application/jose", "cache-control": "no-store" });
   });
   return r;
 }

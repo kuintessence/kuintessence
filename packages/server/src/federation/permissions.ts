@@ -18,6 +18,7 @@ export const FederationCapabilitySchema = z.enum([
   "delegation.read",
   "delegation.submit",
   "delegation.cancel",
+  "result.read",
 ]);
 export type FederationCapability = z.infer<typeof FederationCapabilitySchema>;
 export interface FederationActor {

@@ -34,7 +34,8 @@ export function createFederationGateway(options: FederationGatewayOptions) {
         req.method !== "POST" ||
         (req.url !== "/federation/v1/delegations" &&
           req.url !== "/federation/v1/status" &&
-          req.url !== "/federation/v1/cancellations")
+          req.url !== "/federation/v1/cancellations" &&
+          req.url !== "/federation/v1/results")
       ) {
         res.writeHead(404).end();
         return;

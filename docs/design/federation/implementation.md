@@ -132,6 +132,24 @@ worker 用短事务领取最多 60 秒的处理租约，在网络发送前完成
 
 接口按需向原登记端点请求，不缓存/持久化为最新运行状态；无通用后台状态轮询、结果下载或自动推进源站 Workflow。网络故障返回 503，坏传输响应为 502，签名/身份冲突拒绝；均不改写 accepted、预算或任务状态。返回 report、reportJws 和 verifiedAt，HTTP 设置 no-store。端点与委派记录不符时返回冲突，目前已接单操作的端点迁移仍待专用维护流程。
 
+### 签名结果清单
+
+双方在新的协议修订中显式签署 `resultPolicy`，例如：
+
+```json
+{"scope":"persistent-files","maxFiles":256,"maxBytes":1073741824,"availableUntil":"2027-01-01T00:00:00.000Z"}
+```
+
+范围仅为原 Workflow 的 Persistent File/FileBatch 产物，不包含 Checkpoint、Ephemeral、日志或任意目录。`maxFiles` 为全部批次成员加单文件的总数（协议清单当前最多 256 个文件和 256 个输出，且受统一 256 KiB 签名正文限制）；`maxBytes` 为所有输出的合计字节数。超限明确拒绝，不截断。`availableUntil` 是独立的结果披露期限，允许晚于计算协议的执行窗口；仍要求协议未暂停/撤销、原双签密钥与当前机构信任有效。缺少该字段的旧协议不开放清单，不能编辑已签署 JSON 来补权；应签署新修订并用于新任务。
+
+源站 `GET /api/federation/outbound/:operationId/results` 需要当前组织的独立 `result.read` 权限，submit/read/cancel 不隐含数据读取权。源站签署一分钟内有效的 `result-query`，经固定 mTLS `/federation/v1/results` 请求接收方 `result-report`。密钥用途分别显式登记。请求/响应绑定随机 queryId、原任务/attempt、预留和请求摘要；运行状态查询仍只返回状态。
+
+接收方核对原签署协议、原委派、执行身份、不可变运行快照和 completed 运行，只列已持久发布且仍属于该执行身份的文件。生产 Job 必须属于该运行、已完成且允许导出；批次逐成员核对已发布云盘记录、大小和 SHA-256。缺失记录、被删文件、所有权或摘要变化、未持久化和禁止导出均拒绝整个清单；原结果引用的产物被删不能被误报为空结果。签署后再次读取并复查，状态或清单改变即拒绝返回旧快照。
+
+清单包含稳定的输出摘要 ID、节点/输出名称、类型、相对成员路径、大小、SHA-256，以及原模板、输入清单和环境锁引用；不包含本地 Workflow/Job/用户/云盘 ID、存储路径或下载凭据。源站核对清单摘要、原输入/模板/环境锁、时间和协议限额，并在网络返回后重查当前结果读取权限与签名信任。该签名是机构对清单的声明，不证明科学结论正确，也不新增数据所有权或第三方再分发权。
+
+本接口目前只提供**签名清单**，不发送文件字节、不登记源站副本，也不把任务改为“已交付”或“已结算”。接下来以这份清单绑定独立的数据搬运和接收回执，复用云盘/Agent 的流式传输及校验路径；大文件不得通过 Server 全量缓冲或以任意对端 URL 绕过登记端点与授权。
+
 ### 远端取消与停止确认
 
 源站 `POST /api/federation/outbound/:operationId/cancel` 要求当前组织的 `delegation.cancel`（submit 包含 cancel，cancel 包含 read）。HTTP 202 表示永久停止意图已保存，不能直接显示“已停止”。`cancel-retry` 在机构密钥或登记端点修复后重签同一停止正文并审计，不更改原 operation/task/attempt/请求摘要；已确认停止不重启。列表中的 `cancellation` 与原接单 state 分开：queued/sending/pending/needs_review 都不等于 stopped，原 accepted 和额度保持。

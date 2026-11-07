@@ -10,7 +10,11 @@ export class FederationDeliveryError extends Error {
 export type FederationSend = (
   endpoint: string,
   jws: string,
-  path?: "/federation/v1/delegations" | "/federation/v1/status" | "/federation/v1/cancellations",
+  path?:
+    | "/federation/v1/delegations"
+    | "/federation/v1/status"
+    | "/federation/v1/cancellations"
+    | "/federation/v1/results",
 ) => Promise<string>;
 
 /** Only registry-approved HTTPS origins; no redirects, proxies or peer-provided URLs. */
@@ -24,7 +28,8 @@ export function createFederationSender(tls: {
     if (
       path !== "/federation/v1/delegations" &&
       path !== "/federation/v1/status" &&
-      path !== "/federation/v1/cancellations"
+      path !== "/federation/v1/cancellations" &&
+      path !== "/federation/v1/results"
     )
       throw new FederationDeliveryError("INVALID_RECEIPT_RESPONSE");
     const endpoint = FederationSiteInput.shape.endpoint.parse(origin);

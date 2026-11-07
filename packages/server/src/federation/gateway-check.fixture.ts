@@ -94,6 +94,7 @@ try {
         "/federation/v1/delegations",
         "/federation/v1/status",
         "/federation/v1/cancellations",
+        "/federation/v1/results",
       ].includes(req.url ?? ""),
     );
     assert.equal(
@@ -171,7 +172,9 @@ try {
       413,
     );
     assert.equal((await call({ cert, key }, "/federation/v1/cancellations")).status, 200);
-    assert.equal(calls, 3);
+    assert.equal((await call({ cert, key }, "/federation/v1/results")).status, 200);
+    assert.equal((await call({ cert, key }, "/federation/v1/results?peer=forged")).status, 404);
+    assert.equal(calls, 4);
     await new Promise<void>((resolve, reject) =>
       backend.close((error) => (error ? reject(error) : resolve())),
     );

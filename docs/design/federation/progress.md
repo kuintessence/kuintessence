@@ -776,6 +776,20 @@ Slurm 方向已取得并核对仓库既有 Apptainer 1.4.3 包 SHA-256，构建�
 
 边界：这是同一主机内两个独立平台的 Kubernetes 轻量任务验收，未覆盖真实编译取消、Slurm/PBS、多主机或 Fabric 联合作业。远端停止不等于结果交付或结算；源站后台状态同步、普通 Workflow 自动委派、其他蓝图功能及 PR 预览仍待完成。
 
+## 双方授权的签名结果清单
+
+已新增源站 `GET /api/federation/outbound/:operationId/results` 和接收方固定 mTLS `/federation/v1/results`。采用独立 result-query/result-report 密钥用途、随机一分钟 challenge、原任务/预留/请求摘要绑定与源站返回前重新授权。源站必须具有独立 `result.read` 权限，原 submit/read/cancel 不隐含结果读取权；双方须在新协议修订显式签署 resultPolicy，包含持久文件范围、总文件数/字节上限及披露截止时间。旧协议无该字段时拒绝导出，不能直接改已签署条款扩权。结果期限可晚于计算窗口，协议暂停/撤销、签名信任失效或结果期限结束仍拒绝。
+
+接收端检查原签署委派、执行身份、不可变运行绑定与 completed 状态，筛选 Persistent File/FileBatch。每项产物核对本运行的生产 Job、完成状态和导出限制，并检查全部已发布云盘文件的归属、大小和 SHA-256。丢失产物元数据不能变成空清单；文件删除、批次缺项、摘要变化、超限等均拒绝整个请求。签署后重新读取检查，不能返回授权或产物已改变的旧快照。清单只含稳定输出摘要 ID、节点/输出、相对文件路径、大小/摘要及原模板/输入清单/环境锁引用，不包含内部用户/Job/Workflow/云盘 ID、存储路径或下载凭据。
+
+验证：新增隔离 PostgreSQL **5 项通过**，覆盖旧协议、权限隔离、计算期限过后读取、结果期限、待完成、禁止导出、文件所有权/删除/摘要变化、缺失产物、FileBatch 全成员核对、限额、响应重放、错误 provenance、网络返回前撤权、错误 TLS 机构、请求串单、执行身份停用及修改已签条款。协议与真实 Node TLS 组合 **11 个不同用例通过**；网关初次只因新增第四条合法路径后计数断言仍为 3 失败，更新后定向复查通过。新增测试生成时误插入 schema 参数的问题已修正，最终上述五项通过。共享 schema 初次使用 safeExtend 更换 literal 类型被 TypeScript 正确拒绝，已改为复用查询字段及共同期限校验；最终其他包全仓类型检查通过，Server 与 Fabric 测试类型复查通过。lint 无错误，保留原有 47 warnings、1 info。0096 迁移经生成命令产生并在隔离数据库实际执行。
+
+真实双平台联调通过：两个生产 Server/独立数据库、机构 mTLS 网关、生产 Agent/独立看守、Kubernetes 和 RustFS 完成 `42\n` → `verified:42\n` 文件链。源站随后经生产 HTTP API 得到签名运行完成报告和签名结果清单，仅含消费者的一个 Persistent 文件，12 字节，SHA-256 为 `87730d8e29a90b06728319cb30fcf8dbae523f785f3043c82ea4df6386c83f7f`；生产者的 3 字节 Checkpoint 文件不被披露，清单不含两个内部 Job ID。操作 `15ecb312-4de3-4c91-b33f-967167626d23`，Workflow `4b0abe27-3887-4ac6-87f7-5719bec62188`。清单摘要为 `sha256:9042c07b0b14b2b4487ced016e1521de20a067243cf72451a21dcfe30269fb1f`。未使用 Fabric 或 Spack 编译；轻量作业限制为 1 CPU/128 MiB。两个平台在同一主机，不是多主机/Slurm/PBS 联合验收。
+
+本机证据为 `temp/federation-results-platforms/source-result-manifest.json`、同目录运行记录及 `temp/federation-results-*.log`，不入库。临时数据库、服务、凭据与 Kubernetes namespace/PVC 已按实验清理流程回收，未修改现有部署。
+
+本轮仍是结果交付的清单与授权接线，**没有传输文件字节、登记源站副本或签署接收完成回执**；不得据此显示已交付/已验收/已结算。大文件数据通道、后台恢复、普通 Workflow 的结果消费，以及其他完整蓝图功能和 PR 预览继续推进。
+
 ## 尚未接通，不能宣称支持
 
 协议审批与机构信任管理 UI、源站后台状态同步/结果交付、额度结算/退款、完整生产持久 Workflow 端到端验收、完整的数据/软件物化与介质交付、双方证据确认与完整用量/结算记录、商业/市场链码及真实联邦作业与 Fabric 联合运行、归档恢复、Web/CLI 和部署配置均未完成。

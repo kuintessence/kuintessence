@@ -4,6 +4,7 @@ import {
   FederationAssetRefSchema,
   FederationDigestSchema,
 } from "./references";
+import { FederationResultPolicySchema } from "./results";
 
 export {
   type FederationAssetRef,
@@ -59,6 +60,7 @@ export const FederationAgreementSchema = z
     templates: z.array(FederationAssetRefSchema).min(1).max(100),
     resourceLimit: FederationResourcesSchema,
     executionTargets: z.array(FederationExecutionTargetSchema).min(1).max(128).optional(),
+    resultPolicy: FederationResultPolicySchema.optional(),
     termsDigest: FederationDigestSchema,
   })
   .superRefine((value, ctx) => {
@@ -68,6 +70,14 @@ export const FederationAgreementSchema = z
       ctx.addIssue({ code: "custom", message: "Agreement interval must be positive" });
     if (BigInt(value.maxTaskAmount) > BigInt(value.budgetLimit))
       ctx.addIssue({ code: "custom", message: "Task limit exceeds budget" });
+    if (
+      value.resultPolicy &&
+      Date.parse(value.resultPolicy.availableUntil) <= Date.parse(value.validFrom)
+    )
+      ctx.addIssue({
+        code: "custom",
+        message: "Result release deadline must follow agreement start",
+      });
     const targets = value.executionTargets ?? [];
     if (new Set(targets.map((target) => target.queueId)).size !== targets.length)
       ctx.addIssue({ code: "custom", message: "Execution queues must be unique" });
@@ -210,4 +220,5 @@ export function assertDelegationPolicy(
 
 export * from "./assets";
 export * from "./cancellation";
+export * from "./results";
 export * from "./status";
