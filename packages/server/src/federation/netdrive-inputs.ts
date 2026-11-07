@@ -13,7 +13,12 @@ import { FederationError } from "@kuintessence/shared/federation";
 import { eq, inArray } from "drizzle-orm";
 import { z } from "zod";
 
-async function ownedFiles(db: PgDb | PgTransaction, ids: string[], userId: string, lock: boolean) {
+export async function ownedNetdriveFiles(
+  db: PgDb | PgTransaction,
+  ids: string[],
+  userId: string,
+  lock: boolean,
+) {
   if (ids.some((id) => !z.uuid().safeParse(id).success))
     throw new FederationError("OPERATION_CONFLICT");
   if (!ids.length) return [];
@@ -54,7 +59,7 @@ export async function assertNetdriveSnapshots(
     )
   )
     throw new FederationError("OPERATION_CONFLICT");
-  const files = await ownedFiles(
+  const files = await ownedNetdriveFiles(
     db,
     inputs.map((input) => input.fileMetadataId),
     userId,
@@ -90,7 +95,7 @@ export async function checkFederationNetdriveJob(
   if (saved.job.submittedBy !== identity.userId || saved.job.orgId !== identity.orgId)
     throw new FederationError("OPERATION_CONFLICT");
   if (!saved.outbox) {
-    await ownedFiles(
+    await ownedNetdriveFiles(
       db,
       intent.inputStaging.map((input) => input.fileMetadataId),
       identity.userId,

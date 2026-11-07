@@ -7,6 +7,7 @@ import type {
   FederationDelegation,
   FederationEnvironmentLock,
   FederationExecutionTarget,
+  FederationInputFiles,
   FederationInputManifest,
   FederationResultReceipt,
   FederationResultReceiptAck,
@@ -572,6 +573,58 @@ export const federationMaterials = pgTable(
     check("federation_material_kind", sql`${t.kind} IN ('inputs', 'environment-lock')`),
     check("federation_material_digest", sql`${t.digest} ~ '^sha256:[a-f0-9]{64}$'`),
     check("federation_material_size", sql`octet_length(${t.content}) <= 1048576`),
+  ],
+);
+
+/** Local-only version pins; this preparation record is not a cross-site download or use permit. */
+export const federationWorkflowInputExports = pgTable(
+  "federation_workflow_input_exports",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    runId: uuid("run_id")
+      .notNull()
+      .references(() => workflowRuns.id, { onDelete: "cascade" }),
+    pathHash: varchar("path_hash", { length: 64 }).notNull(),
+    path: text("path").notNull(),
+    nodeId: varchar("node_id", { length: 1024 }).notNull(),
+    localOrgId: uuid("local_org_id")
+      .notNull()
+      .references(() => orgs.id),
+    ownerId: uuid("owner_id")
+      .notNull()
+      .references(() => users.id),
+    intentDigest: varchar("intent_digest", { length: 71 }).notNull(),
+    manifest: jsonb("manifest").$type<FederationInputFiles>().notNull(),
+    manifestDigest: varchar("manifest_digest", { length: 71 }).notNull(),
+    bindings: jsonb("bindings")
+      .$type<
+        Array<{
+          descriptor: string;
+          path: string;
+          fileId: string;
+          storageKey: string;
+          versionId: string;
+          sha256: string;
+          sizeBytes: number;
+        }>
+      >()
+      .notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("federation_input_export_invocation").on(t.runId, t.pathHash),
+    check(
+      "federation_input_export_path",
+      sql`${t.pathHash} ~ '^[a-f0-9]{64}$' AND octet_length(${t.path}) BETWEEN 1 AND 16384`,
+    ),
+    check(
+      "federation_input_export_digest",
+      sql`${t.intentDigest} ~ '^sha256:[a-f0-9]{64}$' AND ${t.manifestDigest} ~ '^sha256:[a-f0-9]{64}$'`,
+    ),
+    check(
+      "federation_input_export_bindings",
+      sql`jsonb_typeof(${t.bindings}) = 'array' AND jsonb_array_length(${t.bindings}) <= 256`,
+    ),
   ],
 );
 

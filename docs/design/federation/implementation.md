@@ -345,6 +345,16 @@ spec:
 
 Loop、Switch、子工作流和相同节点重复调用都必须覆盖，不能用只支持单层 DAG 的实现宣称完成当前 Workflow DSL 的联邦支持。缺失/矛盾 checkpoint 标记 RECONCILING，不自动重复作业。
 
+### 源站动态文件快照与清单披露
+
+内部 `enqueueForWorkflow` 现可接收显式文件选择，格式为 `[{ descriptor, type: "File" | "FileBatch", files: [{ path, fileId }] }]`。`path` 是本次交付的相对别名，不自动使用源云盘路径。源站在原执行租约内固定所有者、云盘文件 UUID、对象 key、versionId、SHA-256 和字节数，保存到 `federation_workflow_input_exports`（工具生成迁移 0108）。未启用对象版本管理的文件保持 DATA_WAITING；文件必须属于原提交者，且未删除。相同 runId/动态路径复用原记录，节点、选择、版本或内容发生变化时拒绝继续，不偷偷替换输入。File 必须恰有一项，FileBatch 可为空；单次最多 256 个成员，拒绝路径穿越、同槽重名/父子路径冲突及不安全整数总量。
+
+双方协议须明确签署 `inputPolicy: { scope: "workflow-input-files", maxFiles, maxBytes }`；无此字段的旧协议不允许输入文件披露。委派签署 `inputFilesDigest`，只绑定可传输清单的内容摘要，不传本地 exportId/fileId、存储 key、versionId 或用户身份。源站按原运行、动态路径和节点找到对应快照，再检查签名协议的成员数/总字节上限；仅提供已有摘要不能借用其他 invocation 的快照，也不能通过普通委派 API 绕过绑定。
+
+已接受任务的接收机构可通过既有 `/federation/v1/materials` 与 `material-query/material-chunk` 专用签名用途，按摘要读取第三份 `workflow-input-files` 清单。沿用 mTLS、随机查询标识、任务/预留/请求摘要、64 KiB 分块与 1 MiB 清单上限。清单只包含输入描述符、类型、相对别名、大小及 SHA-256；签署响应前后检查当前双签协议、双方信任、原委派签名、运行取消、提交者权限和固定文件版本。有效期继续受原委派的执行截止与协议期限约束，接单过期不自动延长。
+
+**当前仅完成源站快照、委派绑定和授权清单披露。** 清单不是字节下载或数据使用许可。接收端遇到 `inputFilesDigest` 明确保留 DATA_WAITING，尚未创建执行；普通 Federation YAML 的 File/FileBatch 输入仍拒绝。接下来须完成绑定原任务/接收机构的短期下载授权、目标配额预留、Agent 实际搬运与独立校验、整单原子发布，以及面向原执行身份的本地文件映射，再开放 DSL 并做真实双平台文件作业验收。输入交付使用独立业务身份，不能伪造结果回传清单或借用其外键。对象存储仍须保留被活动任务引用的固定版本；本表不负责存储生命周期回收。
+
 ## 7. 计量与证据必须独立
 
 现有 `recordUsage()` 是终态后尽力写计量，失败仅记日志；默认 raw 记录 7 天后汇总删除。因此联邦不能用“以后定时扫 metering_usage_raw”实现可靠存证。

@@ -24,6 +24,7 @@ import {
   federationSigningKeys,
   federationSites,
   federationWorkflowBindings,
+  federationWorkflowInputExports,
   jobs,
   netdriveFiles,
   orgs,
@@ -125,6 +126,7 @@ let bService: FederationAgreementService;
 let time = new Date(testNow);
 const clock = () => time;
 const sourceRunIds: string[] = [];
+const sourceInputFileIds: string[] = [];
 const revisions: string[] = [];
 const transferAgentIds: string[] = [];
 const assetIds: string[] = [];
@@ -334,6 +336,8 @@ afterAll(async () => {
   if (sourceRunIds.length)
     await db.delete(workflowRuns).where(inArray(workflowRuns.id, sourceRunIds));
   await db.delete(userOrgMemberships).where(inArray(userOrgMemberships.orgId, orgIds));
+  if (sourceInputFileIds.length)
+    await db.delete(netdriveFiles).where(inArray(netdriveFiles.id, sourceInputFileIds));
   await db.delete(users).where(inArray(users.id, [actor.userId, receiver.userId, executionUserId]));
   await db.delete(orgs).where(inArray(orgs.id, orgIds));
   await db.$client.end();
@@ -342,10 +346,12 @@ afterAll(async () => {
 async function fixture(
   resultPolicy?: FederationAgreement["resultPolicy"],
   parameters: Record<string, string | number> = {},
+  inputPolicy?: FederationAgreement["inputPolicy"],
 ) {
   time = new Date(testNow);
   const terms = testAgreement(a.signing.siteId, b.signing.siteId);
   if (resultPolicy) terms.resultPolicy = resultPolicy;
+  if (inputPolicy) terms.inputPolicy = inputPolicy;
   agreements.push(terms);
   const assetId = crypto.randomUUID(),
     revisionId = crypto.randomUUID();
@@ -436,8 +442,9 @@ async function row(operationId: string) {
 async function workflowDelegationFixture(
   policy?: FederationAgreement["resultPolicy"],
   parameters: Record<string, string | number> = {},
+  inputPolicy?: FederationAgreement["inputPolicy"],
 ) {
-  const f = await fixture(policy, parameters);
+  const f = await fixture(policy, parameters, inputPolicy);
   const registry = new WorkflowRunRegistry(db);
   const runId = crypto.randomUUID();
   sourceRunIds.push(runId);
@@ -1062,6 +1069,7 @@ test("source budget cannot be copied into another signed agreement or overbooked
   await service.deliverNext();
   const terms = { ...f.terms, agreementRevisionId: crypto.randomUUID() };
   if (resultPolicy) terms.resultPolicy = resultPolicy;
+  if (inputPolicy) terms.inputPolicy = inputPolicy;
   agreements.push(terms);
   await aService.approve(actor, { terms });
   await aService.attachCounterparty(
@@ -4411,3 +4419,256 @@ test("material exchange supports the exact one MiB limit and requires separate s
     FederationMaterialChunkSchema.safeParse({ ...payload, totalBytes: 1_048_577 }).success,
   ).toBe(false);
 }, 20_000);
+
+const inputPolicy: NonNullable<FederationAgreement["inputPolicy"]> = {
+  scope: "workflow-input-files",
+  maxFiles: 4,
+  maxBytes: 16,
+};
+async function inputInventoryFixture(
+  policy: FederationAgreement["inputPolicy"] | null = inputPolicy,
+) {
+  const f = await workflowDelegationFixture(undefined, {}, policy ?? undefined);
+  const fileId = crypto.randomUUID();
+  sourceInputFileIds.push(fileId);
+  await db.insert(netdriveFiles).values({
+    id: fileId,
+    ownerId: actor.userId,
+    path: "private/source.dat",
+    size: 4,
+    sha256: "a".repeat(64),
+    storageKey: `private/${fileId}`,
+    storageVersionId: "original-version",
+  });
+  const files = [{ descriptor: "input", type: "File", files: [{ fileId, path: "input.dat" }] }];
+  const source = f.service();
+  const enqueue = (invocation = f.invocation) =>
+    source.enqueueForWorkflow(actor, f.lease, "remote", invocation, f.plan, 60, {}, files);
+  return { ...f, fileId, files, source, enqueue };
+}
+async function acceptedInputInventory() {
+  const f = await inputInventoryFixture();
+  const operation = await f.enqueue();
+  await f.source.deliverNext();
+  const saved = await row(operation.operationId);
+  if (!saved.receipt || !saved.request.inputFilesDigest)
+    throw new Error("Missing input acceptance");
+  const query = FederationMaterialQuerySchema.parse({
+    protocolVersion: 1,
+    kind: "material-query",
+    queryId: crypto.randomUUID(),
+    senderSiteId: b.signing.siteId,
+    recipientSiteId: a.signing.siteId,
+    operationId: saved.operationId,
+    agreementRevisionId: saved.agreementRevisionId,
+    taskId: saved.taskId,
+    attempt: saved.attempt,
+    reservationId: saved.receipt.reservationId,
+    requestDigest: saved.requestDigest,
+    materialDigest: saved.request.inputFilesDigest,
+    offset: 0,
+    issuedAt: clock().toISOString(),
+    expiresAt: new Date(clock().getTime() + 30_000).toISOString(),
+  });
+  const jws = await signFederationMessage(FederationMaterialQuerySchema, query, b.signing);
+  return { ...f, saved, query, jws, reservationId: saved.receipt.reservationId };
+}
+
+test("input inventory is signed and invocation-bound, and receiver waits for actual managed copies", async () => {
+  const f = await acceptedInputInventory();
+  try {
+    const query = await verifyFederationMessage(
+      FederationMaterialQuerySchema,
+      f.jws,
+      await trust.resolveKey(b.signing.siteId, b.signing.keyId, clock()),
+      clock(),
+    );
+    const chunk = await verifyFederationMessage(
+      FederationMaterialChunkSchema,
+      await f.source.materialChunk(f.jws, targetFingerprint),
+      await trust.resolveKey(a.signing.siteId, a.signing.keyId, clock()),
+      clock(),
+    );
+    expect(chunk.payload.queryDigest).toBe(query.digest);
+    const portable = JSON.parse(Buffer.from(chunk.payload.bytes, "base64").toString("utf8"));
+    expect(federationMaterialDigest(portable)).toBe(f.query.materialDigest);
+    expect(portable.inputs).toEqual([
+      {
+        descriptor: "input",
+        type: "File",
+        files: [{ path: "input.dat", sha256: "a".repeat(64), sizeBytes: 4 }],
+      },
+    ]);
+    for (const privateValue of [f.fileId, "private/", "original-version", actor.userId])
+      expect(JSON.stringify(portable)).not.toContain(privateValue);
+    expect((await f.enqueue()).operationId).toBe(f.saved.operationId);
+    const prep = new FederationPreparationService(db, b.signing.siteId, assets, clock);
+    expect(await prep.prepare(f.reservationId)).toMatchObject({
+      state: "waiting",
+      blocker: "DATA_WAITING",
+    });
+    await expect(prep.executionSnapshot(f.reservationId)).rejects.toThrow("DATA_WAITING");
+    expect(
+      await db
+        .select()
+        .from(federationWorkflowBindings)
+        .where(eq(federationWorkflowBindings.reservationId, f.reservationId)),
+    ).toHaveLength(0);
+    await db
+      .update(federationWorkflowInputExports)
+      .set({ nodeId: "different" })
+      .where(eq(federationWorkflowInputExports.runId, f.runId));
+    await expect(f.source.materialChunk(f.jws, targetFingerprint)).rejects.toThrow("POLICY_DENIED");
+  } finally {
+    await f.lease.release();
+  }
+});
+
+test("input inventory requires bilateral consent and signed size limits before outbox creation", async () => {
+  for (const policy of [null, { ...inputPolicy, maxBytes: 3 }, { ...inputPolicy, maxFiles: 1 }]) {
+    const f = await inputInventoryFixture(policy);
+    try {
+      const selected =
+        policy?.maxFiles === 1
+          ? [
+              {
+                ...f.files[0],
+                type: "FileBatch",
+                files: [
+                  { fileId: f.fileId, path: "a" },
+                  { fileId: f.fileId, path: "b" },
+                ],
+              },
+            ]
+          : f.files;
+      await expect(
+        f.source.enqueueForWorkflow(
+          actor,
+          f.lease,
+          "remote",
+          f.invocation,
+          f.plan,
+          60,
+          {},
+          selected,
+        ),
+      ).rejects.toThrow("POLICY_DENIED");
+      const [binding] = await db
+        .select()
+        .from(workflowExecutionDelegations)
+        .where(eq(workflowExecutionDelegations.runId, f.runId));
+      if (!binding) throw new Error("Missing durable intent");
+      expect(
+        await db
+          .select()
+          .from(federationOutbound)
+          .where(eq(federationOutbound.operationId, binding.operationId)),
+      ).toHaveLength(0);
+    } finally {
+      await f.lease.release();
+    }
+  }
+});
+
+test("input inventory disclosure rechecks task, file versions, ownership, cancellation and current authority", async () => {
+  const f = await acceptedInputInventory();
+  try {
+    await expect(f.source.materialChunk(f.jws, sourceFingerprint)).rejects.toThrow(
+      "UNTRUSTED_IDENTITY",
+    );
+    for (const change of [
+      { taskId: crypto.randomUUID() },
+      { materialDigest: `sha256:${"f".repeat(64)}` },
+      { reservationId: crypto.randomUUID() },
+    ]) {
+      const wrong = await signFederationMessage(
+        FederationMaterialQuerySchema,
+        { ...f.query, ...change },
+        b.signing,
+      );
+      await expect(f.source.materialChunk(wrong, targetFingerprint)).rejects.toThrow(
+        "POLICY_DENIED",
+      );
+    }
+    for (const change of [
+      { storageVersionId: "replaced" },
+      { deletedAt: new Date() },
+      { ownerId: receiver.userId },
+    ]) {
+      await db.update(netdriveFiles).set(change).where(eq(netdriveFiles.id, f.fileId));
+      await expect(f.source.materialChunk(f.jws, targetFingerprint)).rejects.toThrow();
+      await db
+        .update(netdriveFiles)
+        .set({ storageVersionId: "original-version", deletedAt: null, ownerId: actor.userId })
+        .where(eq(netdriveFiles.id, f.fileId));
+    }
+    await permission.set(
+      { ...actor, capability: "delegation.submit", enabled: false },
+      actor.userId,
+    );
+    try {
+      await expect(f.source.materialChunk(f.jws, targetFingerprint)).rejects.toThrow(
+        "POLICY_DENIED",
+      );
+    } finally {
+      await permission.set(
+        { ...actor, capability: "delegation.submit", enabled: true },
+        actor.userId,
+      );
+    }
+    await f.registry.requestCancel(f.runId);
+    await expect(f.source.materialChunk(f.jws, targetFingerprint)).rejects.toThrow(
+      "CANCELLATION_REQUESTED",
+    );
+  } finally {
+    await f.lease.release();
+  }
+});
+
+test("input inventory cannot be borrowed from a different invocation or an unbound API request", async () => {
+  const f = await inputInventoryFixture();
+  try {
+    const accepted = await f.enqueue();
+    const saved = await row(accepted.operationId);
+    const digest = saved.request.inputFilesDigest;
+    if (!digest) throw new Error("Missing file digest");
+    await expect(
+      f.source.enqueue(actor, {
+        ...f.request,
+        operationId: crypto.randomUUID(),
+        taskId: crypto.randomUUID(),
+        inputFilesDigest: digest,
+      }),
+    ).rejects.toThrow("POLICY_DENIED");
+    await expect(
+      f.source.enqueueForWorkflow(
+        actor,
+        f.lease,
+        "remote",
+        { path: "another-invocation" },
+        { ...f.plan, inputFilesDigest: digest },
+        60,
+      ),
+    ).rejects.toThrow("POLICY_DENIED");
+    await expect(
+      f.source.enqueueForWorkflow(
+        actor,
+        f.lease,
+        "remote",
+        f.invocation,
+        { ...f.plan, inputFilesDigest: `sha256:${"f".repeat(64)}` },
+        60,
+        {},
+        f.files,
+      ),
+    ).rejects.toThrow("OPERATION_CONFLICT");
+    expect(
+      await db
+        .select()
+        .from(federationOutbound)
+        .where(eq(federationOutbound.agreementRevisionId, f.terms.agreementRevisionId)),
+    ).toHaveLength(1);
+  } finally {
+    await f.lease.release();
+  }
+});

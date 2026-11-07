@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { FederationInputPolicySchema } from "./input-files";
 import {
   type FederationAssetRef,
   FederationAssetRefSchema,
@@ -61,6 +62,7 @@ export const FederationAgreementSchema = z
     resourceLimit: FederationResourcesSchema,
     executionTargets: z.array(FederationExecutionTargetSchema).min(1).max(128).optional(),
     resultPolicy: FederationResultPolicySchema.optional(),
+    inputPolicy: FederationInputPolicySchema.optional(),
     termsDigest: FederationDigestSchema,
   })
   .superRefine((value, ctx) => {
@@ -113,6 +115,7 @@ export const FederationDelegationSchema = z
     template: FederationAssetRefSchema,
     // Parameters, software locks and input manifests are immutable, separately authorized assets.
     inputManifestDigest: FederationDigestSchema,
+    inputFilesDigest: FederationDigestSchema.optional(),
     environmentLockDigest: FederationDigestSchema,
     resources: FederationResourcesSchema,
     maxAmount: FederationAmountSchema,
@@ -208,6 +211,7 @@ export function assertDelegationPolicy(
     ),
   );
   if (
+    (request.inputFilesDigest && !agreement.inputPolicy) ||
     !templateAllowed ||
     BigInt(request.maxAmount) > BigInt(agreement.maxTaskAmount) ||
     request.resources.cpus > agreement.resourceLimit.cpus ||
@@ -220,6 +224,7 @@ export function assertDelegationPolicy(
 
 export * from "./assets";
 export * from "./cancellation";
+export * from "./input-files";
 export * from "./material-exchange";
 export * from "./result-receipts";
 export * from "./result-transfer";

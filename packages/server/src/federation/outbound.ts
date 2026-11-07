@@ -32,6 +32,7 @@ import { and, asc, desc, eq, isNull, lte, or, sql } from "drizzle-orm";
 import type { LeasedWorkflowJournal } from "../workflow/execution-journal";
 import type { FederationAssetService } from "./assets";
 import { cancellationSummary, FederationCancellationSender } from "./cancellation-outbound";
+import { FederationWorkflowInputExports } from "./input-exports";
 import { FederationDeliveryError, type FederationSend } from "./outbound-client";
 import { type FederationActor, requireFederationCapability } from "./permissions";
 import { FederationResultImports } from "./result-imports";
@@ -78,6 +79,7 @@ function summary(row: Outbound) {
 /** Durable source delivery. Acceptance is not execution, settlement or permission to retry a task. */
 export class FederationOutboundService {
   private readonly trust: FederationTrustRegistry;
+  private readonly inputExports = new FederationWorkflowInputExports();
   readonly cancellations: FederationCancellationSender;
   readonly results: FederationResultReader;
   readonly resultReceipts: FederationResultReceiptSender;
@@ -215,7 +217,8 @@ export class FederationOutboundService {
       .from(federationSites)
       .where(eq(federationSites.id, terms.targetSiteId));
     if (!target) throw new FederationError("UNTRUSTED_IDENTITY");
-    return { terms, ownKey, endpoint: target.endpoint };
+    const inputExport = await this.inputExports.forDelegation(tx, actor, request, terms);
+    return { terms, ownKey, endpoint: target.endpoint, inputExport };
   }
 
   async enqueue(actor: FederationActor, raw: FederationDelegation) {
@@ -230,8 +233,15 @@ export class FederationOutboundService {
     plan: WorkflowDelegationPlan,
     admissionWindowSec: number,
     parameters: FederationParameterOverrides = {},
+    files?: unknown,
   ) {
     if (plan.senderSiteId !== this.signingKey.siteId) throw new FederationError("POLICY_DENIED");
+    if (files !== undefined) {
+      const snapshot = await this.inputExports.capture(actor, lease, nodeId, invocation, files);
+      if (plan.inputFilesDigest && plan.inputFilesDigest !== snapshot.manifestDigest)
+        throw new FederationError("OPERATION_CONFLICT");
+      plan = { ...plan, inputFilesDigest: snapshot.manifestDigest };
+    }
     if (Object.keys(parameters).length) {
       const inputs = await lease.transaction(async (tx) => {
         await assertWorkflowDelegationOwner(tx, lease.runId, actor);
@@ -517,7 +527,7 @@ export class FederationOutboundService {
     });
   }
 
-  /** Only the accepted recipient may retrieve the two digests bound to its original task. */
+  /** Only the accepted recipient may retrieve inventory digests bound to its original task. */
   async materialChunk(requestJws: string, fingerprint: string) {
     const peer = await this.trust.resolvePeer(
       fingerprint,
@@ -548,15 +558,17 @@ export class FederationOutboundService {
       query.agreementRevisionId !== saved.agreementRevisionId ||
       query.taskId !== saved.taskId ||
       query.attempt !== saved.attempt ||
-      ![saved.request.inputManifestDigest, saved.request.environmentLockDigest].includes(
-        query.materialDigest,
-      )
+      ![
+        saved.request.inputManifestDigest,
+        saved.request.environmentLockDigest,
+        saved.request.inputFilesDigest,
+      ].includes(query.materialDigest)
     )
       throw new FederationError("POLICY_DENIED");
     const actor = { userId: saved.submittedBy, orgId: saved.localOrgId };
     const materials = await this.materials(actor, saved.request);
     const authorize = async (tx: FederationTransaction) => {
-      const { terms, ownKey, endpoint } = await this.authorize(
+      const { terms, ownKey, endpoint, inputExport } = await this.authorize(
         tx,
         actor,
         saved.request,
@@ -600,12 +612,15 @@ export class FederationOutboundService {
         federationCanonicalJson(original.payload) !== federationCanonicalJson(saved.request)
       )
         throw new FederationError("OPERATION_CONFLICT");
-      const content = await this.assets.readMaterial(
-        tx,
-        actor.orgId,
-        this.signingKey.siteId,
-        query.materialDigest,
-      );
+      const content =
+        query.materialDigest === saved.request.inputFilesDigest && inputExport
+          ? inputExport.manifest
+          : await this.assets.readMaterial(
+              tx,
+              actor.orgId,
+              this.signingKey.siteId,
+              query.materialDigest,
+            );
       assertDelegationPolicy(terms, saved.request, this.clock(), "execution");
       assertFederationStatusQueryFresh(query, this.clock());
       const now = this.clock();
