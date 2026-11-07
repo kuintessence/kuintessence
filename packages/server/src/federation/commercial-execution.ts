@@ -4,6 +4,7 @@ import {
   federationCommercialExecutionApprovals as approvals,
   federationCommercialAttempts as attempts,
   auditLog,
+  federationMarketSubmissions as marketSubmissions,
   type PgDb,
   type PgTransaction,
   federationCommercialSubmissions as submissions,
@@ -165,6 +166,22 @@ export class FederationCommercialExecutionService {
     )
       throw new FederationError("POLICY_DENIED");
     if (payload.kind === "commercial-reservation") {
+      const source = parties.sourceSiteId === this.signingKey.siteId;
+      const [intent] = await tx
+        .select({ input: marketSubmissions.input })
+        .from(marketSubmissions)
+        .where(
+          and(
+            eq(marketSubmissions.localSiteId, this.signingKey.siteId),
+            eq(marketSubmissions.localOrgId, actor.orgId),
+            eq(marketSubmissions.id, source ? payload.demandId : payload.reservationId),
+            eq(marketSubmissions.demandId, payload.demandId),
+            eq(marketSubmissions.state, "committed"),
+          ),
+        )
+        .for("share");
+      if (!intent || intent.input.operation !== (source ? "publish-demand" : "claim-demand"))
+        throw new FederationError("ASSET_UNAVAILABLE");
       if (terms.consideration === "charity" && payload.request.maxAmount !== "0")
         throw new FederationError("POLICY_DENIED");
       if (payload.agreementDigest !== contract.digest)

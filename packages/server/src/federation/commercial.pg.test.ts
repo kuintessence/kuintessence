@@ -11,6 +11,7 @@ import {
   federationCapabilities,
   federationSigningKeys,
   federationSites,
+  federationMarketSubmissions as marketSubmissions,
   orgs,
   federationCommercialSubmissions as submissions,
   userOrgMemberships,
@@ -33,6 +34,7 @@ import { exportSPKI } from "jose";
 import pino from "pino";
 import { createErrorHandler } from "../middleware/error-handler";
 import { createFederationCommercialRoutes } from "../routes/federation-commercial";
+import { federationMaterialDigest } from "./assets";
 import { FederationCommercialAgreementService } from "./commercial-agreements";
 import type { CommercialClient } from "./commercial-client";
 import { FederationCommercialExecutionService } from "./commercial-execution";
@@ -197,10 +199,11 @@ async function ready(f: Awaited<ReturnType<typeof fixture>>) {
 }
 afterAll(async () => {
   for (const f of fixtures) {
+    const siteIds = [f.a.signing.siteId, f.b.signing.siteId];
     const rows = await db
       .select({ id: submissions.id })
       .from(submissions)
-      .where(eq(submissions.localSiteId, f.a.signing.siteId));
+      .where(inArray(submissions.localSiteId, siteIds));
     if (rows.length)
       await db.delete(attempts).where(
         inArray(
@@ -208,11 +211,10 @@ afterAll(async () => {
           rows.map((row) => row.id),
         ),
       );
-    await db.delete(submissions).where(eq(submissions.localSiteId, f.a.signing.siteId));
-    await db
-      .delete(executionApprovals)
-      .where(eq(executionApprovals.localSiteId, f.a.signing.siteId));
-    await db.delete(contracts).where(eq(contracts.localSiteId, f.a.signing.siteId));
+    await db.delete(submissions).where(inArray(submissions.localSiteId, siteIds));
+    await db.delete(marketSubmissions).where(inArray(marketSubmissions.localSiteId, siteIds));
+    await db.delete(executionApprovals).where(inArray(executionApprovals.localSiteId, siteIds));
+    await db.delete(contracts).where(inArray(contracts.localSiteId, siteIds));
     await db.delete(auditLog).where(eq(auditLog.actor, f.actor.userId));
     await db
       .delete(federationCapabilities)
@@ -526,6 +528,17 @@ async function executionFixture(explicitPurpose = true) {
       expiresAt: new Date(Date.now() + 900000).toISOString(),
     },
     cancellation: null,
+  });
+  const publication = { operation: "publish-demand" as const, demand: state.demand };
+  await db.insert(marketSubmissions).values({
+    id: reservation.demandId,
+    demandId: reservation.demandId,
+    localSiteId: f.a.signing.siteId,
+    localOrgId: f.actor.orgId,
+    requestedBy: f.actor.userId,
+    input: publication,
+    digest: federationMaterialDigest(publication),
+    state: "committed",
   });
   let queries = 0;
   let onQuery: (() => Promise<void>) | undefined;
@@ -843,4 +856,66 @@ test("execution preflight preserves infrastructure errors, claim expiry and revo
   expect(value.submission?.lastError).toBe("UNTRUSTED_IDENTITY");
   expect(value.submission?.state).toBe("needs_review");
   expect(f.adapter.prepares.map((input) => input.operation)).toEqual(["register-agreement"]);
+});
+
+test("execution approval cannot fund another organization's public intent or an uncommitted publication", async () => {
+  const f = await executionFixture();
+  const other = await fixture();
+  await db
+    .update(marketSubmissions)
+    .set({ localOrgId: other.actor.orgId })
+    .where(eq(marketSubmissions.id, f.reservation.demandId));
+  await expect(f.execution.approve(f.actor, f.revisionId, f.reservation)).rejects.toMatchObject({
+    code: "ASSET_UNAVAILABLE",
+  });
+  await db
+    .update(marketSubmissions)
+    .set({ localOrgId: f.actor.orgId, state: "pending" })
+    .where(eq(marketSubmissions.id, f.reservation.demandId));
+  await expect(f.execution.approve(f.actor, f.revisionId, f.reservation)).rejects.toMatchObject({
+    code: "ASSET_UNAVAILABLE",
+  });
+  expect(f.queries()).toBe(0);
+  await db
+    .update(marketSubmissions)
+    .set({ state: "committed" })
+    .where(eq(marketSubmissions.id, f.reservation.demandId));
+  expect((await f.execution.approve(f.actor, f.revisionId, f.reservation)).recordId).toBe(
+    f.reservation.reservationId,
+  );
+  const targetContract = new FederationCommercialAgreementService(db, f.b.signing);
+  await targetContract.approve(f.actor, f.terms);
+  await targetContract.attachCounterparty(
+    f.actor,
+    f.revisionId,
+    (await f.approvals.get(f.actor, f.revisionId)).approvalJws,
+  );
+  const target = new FederationCommercialExecutionService(db, f.b.signing, {
+    query: async () => ({ operation: "get-demand", demand: f.state }),
+  });
+  await expect(target.approve(f.actor, f.revisionId, f.reservation)).rejects.toMatchObject({
+    code: "ASSET_UNAVAILABLE",
+  });
+  if (!f.state.claim) throw new Error("Missing fixture claim");
+  const claim = { operation: "claim-demand" as const, claim: f.state.claim };
+  await db.insert(marketSubmissions).values({
+    id: f.reservation.reservationId,
+    demandId: f.reservation.demandId,
+    localSiteId: f.b.signing.siteId,
+    localOrgId: other.actor.orgId,
+    requestedBy: other.actor.userId,
+    input: claim,
+    digest: federationMaterialDigest(claim),
+    state: "committed",
+  });
+  await expect(target.approve(f.actor, f.revisionId, f.reservation)).rejects.toMatchObject({
+    code: "ASSET_UNAVAILABLE",
+  });
+  await db
+    .update(marketSubmissions)
+    .set({ localOrgId: f.actor.orgId })
+    .where(eq(marketSubmissions.id, f.reservation.reservationId));
+  expect((await target.approve(f.actor, f.revisionId, f.reservation)).recordId).toBe(
+    f.reservation.reservationId,
+  );
 });
