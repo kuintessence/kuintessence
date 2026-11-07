@@ -2,9 +2,11 @@ import type {
   FederationAgreement,
   FederationAgreementApproval,
 } from "@kuintessence/shared/federation";
+import type { AgreementApprovalExchangeViewSchema } from "@kuintessence/shared/federation/agreement-exchange";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, expect, test, vi } from "vitest";
+import type { z } from "zod";
 import { api } from "../../lib/api-client";
 import i18n from "../../lib/i18n";
 import { AgreementPanel } from "./AgreementPanel";
@@ -66,6 +68,14 @@ const approval: FederationAgreementApproval = {
 let localSiteId: string;
 let grants: string[];
 let rows: FederationAgreementApproval[];
+const pendingExchange = {
+  state: "pending" as const,
+  lastError: null,
+  nextAttemptAt: "2026-11-08T12:00:00.000Z",
+  verifiedAt: null,
+};
+let exchange: z.infer<typeof AgreementApprovalExchangeViewSchema>;
+let exchangeError: Error | null;
 function mount(switching = false) {
   const client = new QueryClient({
     defaultOptions: {
@@ -101,6 +111,16 @@ beforeEach(async () => {
   localSiteId = source;
   grants = ["agreement.read", "agreement.approve"];
   rows = [];
+  exchange = {
+    enabled: true,
+    sync: {
+      state: "pending",
+      lastError: null,
+      nextAttemptAt: "2026-11-08T12:00:00.000Z",
+      verifiedAt: null,
+    },
+  };
+  exchangeError = null;
   await i18n.changeLanguage("en");
   vi.mocked(api.get).mockImplementation(async (path) => {
     if (path === "/federation/capabilities")
@@ -113,9 +133,119 @@ beforeEach(async () => {
         hasMore: false,
       };
     if (path.includes("?limit=")) return { data: rows };
-    return { data: approval };
+    if (path.endsWith("/exchange")) {
+      if (exchangeError) throw exchangeError;
+      return { data: exchange };
+    }
+    return { data: rows.find((row) => path.endsWith(`/${row.revisionId}`)) ?? approval };
   });
   vi.mocked(api.post).mockResolvedValue({ success: true });
+});
+
+test("shows automatic exchange waiting without offering an unnecessary retry", async () => {
+  rows = [approval];
+  mount();
+  await openDetail();
+  await screen.findByText("Waiting for signature exchange");
+  expect(screen.getByText(/Next automatic attempt/)).toBeTruthy();
+  expect(screen.queryByRole("button", { name: "Retry signature exchange" })).toBeNull();
+  expect(api.post).not.toHaveBeenCalled();
+});
+
+test("reviews retry of the original signatures and refreshes the current agreement scope", async () => {
+  rows = [approval];
+  exchange.sync = { ...pendingExchange, state: "needs_review", lastError: "UNTRUSTED_IDENTITY" };
+  const { client } = mount();
+  await openDetail();
+  await screen.findByText(/Check the institution certificate/);
+  fireEvent.click(screen.getByRole("button", { name: "Retry signature exchange" }));
+  expect(api.post).not.toHaveBeenCalled();
+  expect(screen.getByRole("dialog").textContent).toContain("does not sign new terms");
+  exchange.sync = { ...pendingExchange, state: "pending", lastError: null };
+  fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Confirm" }));
+  await waitFor(() =>
+    expect(api.post).toHaveBeenCalledWith(
+      `/federation/agreements/${revisionId}/exchange/retry`,
+      {},
+      scope,
+    ),
+  );
+  await screen.findByText("Waiting for signature exchange");
+  expect(
+    client.getQueryData([
+      "federation",
+      "agreements",
+      orgId,
+      scope.authRevision,
+      "exchange",
+      revisionId,
+    ]),
+  ).toEqual(exchange);
+});
+
+test.each([
+  "read-only",
+  "mobile",
+  "suspended",
+  "disabled",
+  "complete",
+])("does not offer signature retry when %s", async (mode) => {
+  rows = [approval];
+  exchange.sync = { ...pendingExchange, state: "needs_review", lastError: "POLICY_DENIED" };
+  if (mode === "read-only") grants = ["agreement.read"];
+  if (mode === "mobile") device.readOnly = true;
+  if (mode === "suspended") rows = [{ ...approval, state: "suspended" }];
+  if (mode === "disabled") exchange.enabled = false;
+  if (mode === "complete")
+    exchange.sync = {
+      ...pendingExchange,
+      state: "complete",
+      lastError: null,
+      verifiedAt: "2026-11-08T11:00:00.000Z",
+    };
+  mount();
+  await openDetail();
+  await screen.findByRole("heading", { name: "Signature exchange" });
+  await waitFor(() =>
+    expect(api.get).toHaveBeenCalledWith(`/federation/agreements/${revisionId}/exchange`, scope),
+  );
+  if (mode === "complete") await screen.findByText("Counterparty signature verified and imported");
+  else await screen.findByText("Review required");
+  expect(screen.queryByRole("button", { name: "Retry signature exchange" })).toBeNull();
+  expect(api.post).not.toHaveBeenCalled();
+});
+
+test("keeps historical verification visible when communication is disabled", async () => {
+  rows = [approval];
+  exchange = {
+    enabled: false,
+    sync: {
+      ...pendingExchange,
+      state: "complete",
+      lastError: null,
+      verifiedAt: "2026-11-08T11:00:00.000Z",
+    },
+  };
+  mount();
+  await openDetail();
+  await screen.findByText("Counterparty signature verified and imported");
+  expect(screen.getByText(/Historical status remains available/)).toBeTruthy();
+  expect(screen.getByText(/Verified at/)).toBeTruthy();
+  expect(screen.queryByText(/Next automatic attempt/)).toBeNull();
+});
+
+test("failed status refresh hides stale retry controls and preserves signed terms", async () => {
+  rows = [approval];
+  exchange.sync = { ...pendingExchange, state: "needs_review", lastError: "OPERATION_CONFLICT" };
+  mount();
+  await openDetail();
+  await screen.findByRole("button", { name: "Retry signature exchange" });
+  exchangeError = new Error("permission revoked");
+  fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
+  await screen.findByText("Could not load. Refresh to try again.");
+  expect(screen.queryByRole("button", { name: "Retry signature exchange" })).toBeNull();
+  expect(screen.getByLabelText("Our signature")).toBeTruthy();
+  expect(api.post).not.toHaveBeenCalled();
 });
 
 test("reviews exact integer allowances then signs only after explicit confirmation under the captured organization", async () => {

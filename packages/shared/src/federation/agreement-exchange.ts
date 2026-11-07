@@ -26,3 +26,15 @@ export const AgreementApprovalWaitingSchema = z.strictObject({
   queryDigest: FederationDigestSchema,
   observedAt: z.iso.datetime(),
 });
+
+export const AgreementApprovalExchangeViewSchema = z.strictObject({
+  enabled: z.boolean(),
+  sync: z
+    .strictObject({
+      state: z.enum(["pending", "needs_review", "complete"]),
+      lastError: z.string().nullable(),
+      nextAttemptAt: z.iso.datetime(),
+      verifiedAt: z.iso.datetime().nullable(),
+    })
+    .nullable(),
+});

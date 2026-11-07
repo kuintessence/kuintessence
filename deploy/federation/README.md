@@ -292,4 +292,4 @@ Server 已接结果传输服务、Agent RPC 与自动扫描。配置上述值并
 - `GET /api/federation/agreements/:revisionId/exchange`：当前人工组织读取权限；返回 `enabled` 和 `sync`，后者为 `null` 或 `pending/complete/needs_review`、脱敏错误、下次尝试与确认时间，不返回原签名、证书或租约 token。
 - `POST /api/federation/agreements/:revisionId/exchange/retry {}`：当前人工审批权限；不能替换 revision、原签名、执行账户，不能抢占活租约或重置 complete。修正信任/恢复暂停协议后，可复核原记录。
 
-`complete` 仅表示本站取得并安装了所需同意，不保证另一方已完成交换，更不表示任务、材料、链 VALID 或结算已完成。现有 UI 仍保留人工导入操作，自动交换专用进度展示将在完整 Web/CLI 交付中接入。
+`complete` 仅表示本站取得并安装了所需同意，不保证另一方已完成交换，更不表示任务、材料、链 VALID 或结算已完成。Web 的“机构合作 → 合作协议 → 协议详情”现已展示签名交换进度、脱敏错误及下次尝试/验证时间；页面刷新读取当前状态，不把自动交换完成当作任务或账单完成。修复信任或权限后，有审批权限的电脑端用户可对需复核记录确认重试，仍使用原 revision 与空正文。暂停/撤销、只读和手机端不提供该操作；通信未配置时保留历史展示，接口读取失败时不提供旧状态重试。人工导入操作继续保留；CLI 入口待补。

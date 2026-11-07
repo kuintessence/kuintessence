@@ -309,14 +309,37 @@
         "attach": "Verify and import counterparty signature",
         "active": "Enable locally",
         "suspended": "Suspend locally",
-        "revoked": "Permanently revoke"
+        "revoked": "Permanently revoke",
+        "exchange": "Retry signature exchange"
       },
       "effects": {
         "sign": "Sign the reviewed terms using this institution’s signing key. The revision is immutable; execution still requires both signatures, valid trust and local resource authorization.",
         "attach": "Verify the counterparty identity and matching terms. The receiver installs the agreed allowance after verification.",
         "active": "Enable this local agreement. Both signatures, validity, trust and resource policies must still pass checks.",
         "suspended": "Suspend local agreement authorization. This does not confirm remote or running tasks have stopped.",
-        "revoked": "Permanently revoke this local agreement. This cannot be undone and does not confirm remote or running tasks have stopped."
+        "revoked": "Permanently revoke this local agreement. This cannot be undone and does not confirm remote or running tasks have stopped.",
+        "exchange": "Retry exchange of the original approved signatures after resolving the issue. This does not sign new terms or bypass local execution permission."
+      },
+      "exchange": {
+        "title": "Signature exchange",
+        "unavailable": "Signature exchange is unavailable on this server.",
+        "disabled": "Institution communication is not configured. Historical status remains available.",
+        "verifiedAt": "Verified at",
+        "nextAttemptAt": "Next automatic attempt",
+        "states": {
+          "pending": "Waiting for signature exchange",
+          "needs_review": "Review required",
+          "complete": "Counterparty signature verified and imported",
+          "absent": "No automatic exchange record"
+        },
+        "errors": {
+          "trust": "Check the institution certificate and signing-key trust.",
+          "agreement": "Check that the agreement is active and has not expired.",
+          "permission": "Check institution permissions and the restricted execution account.",
+          "conflict": "The agreement or original signature does not match. Check the original terms.",
+          "invalid": "The received signature or response is invalid. Check the counterparty configuration.",
+          "connection": "Exchange has not completed. Check institution connectivity and trust configuration."
+        }
       }
     },
     "commercial": {

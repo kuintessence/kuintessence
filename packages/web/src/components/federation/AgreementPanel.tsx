@@ -23,6 +23,7 @@ import {
   DialogTitle,
 } from "../ui/dialog";
 import { Textarea } from "../ui/input";
+import { AgreementExchangeStatus } from "./AgreementExchangeStatus";
 import { AgreementImport } from "./AgreementImport";
 import { AgreementFact, AgreementTerms } from "./AgreementTerms";
 
@@ -30,7 +31,7 @@ const path = "/federation/agreements";
 type Action =
   | { kind: "sign"; terms: FederationAgreement; executionUserId?: string }
   | { kind: "attach"; revisionId: string; approvalJws: string }
-  | { kind: "active" | "suspended" | "revoked"; revisionId: string };
+  | { kind: "active" | "suspended" | "revoked" | "exchange"; revisionId: string };
 
 export function AgreementPanel({
   scope,
@@ -104,6 +105,8 @@ export function AgreementPanel({
           { approvalJws: action.approvalJws },
           scope,
         );
+      else if (action.kind === "exchange")
+        await api.post(`${path}/${action.revisionId}/exchange/retry`, {}, scope);
       else await api.post(`${path}/${action.revisionId}/state`, { state: action.kind }, scope);
     },
     onSuccess: async (_, action) => {
@@ -215,6 +218,7 @@ export function AgreementPanel({
             <AgreementDetail
               key={detail.data.revisionId}
               approval={detail.data}
+              scope={scope}
               writable={canApprove}
               busy={busy || detail.isFetching}
               onAction={confirm}
@@ -342,11 +346,13 @@ export function AgreementPanel({
 
 function AgreementDetail({
   approval,
+  scope,
   writable,
   busy,
   onAction,
 }: {
   approval: FederationAgreementApproval;
+  scope: ApiOrganizationScope;
   writable: boolean;
   busy: boolean;
   onAction: (action: Action) => void;
@@ -408,6 +414,13 @@ function AgreementDetail({
             </Button>
           </div>
         ) : null}
+        <AgreementExchangeStatus
+          scope={scope}
+          revisionId={approval.revisionId}
+          writable={writable && approval.state === "active"}
+          busy={busy}
+          onRetry={() => onAction({ kind: "exchange", revisionId: approval.revisionId })}
+        />
         <AgreementTerms terms={approval.terms} />
         <section className="space-y-3 border-t border-border pt-4">
           <h3 className="text-sm font-semibold">{t("federation.agreements.localSignature")}</h3>
