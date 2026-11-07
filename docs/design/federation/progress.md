@@ -1489,3 +1489,11 @@ Commercial Adapter/Server Unix 客户端接入双签预留、释放和固定 gat
 隔离 PostgreSQL 新增五项激活场景及九项市场回归全部通过，覆盖锁额前拒绝、公开载荷隐私、并发幂等、原期限后的重复读取、双签释放/密钥撤销拒绝、检查点恢复、INVALID 历史和通用入口绕过拒绝。唯一约束初稿过宽地按 demandId 限制，复核后改为 reservationId；未提交的生成材料移至忽略目录，从上个已提交快照重新运行 db:generate 得到最终单份 0122，未手改 SQL/快照。最终迁移在新随机库应用，幂等/唯一场景定向通过；重跑不计新增覆盖。
 
 完整类型检查通过（protobuf、全部包及 Fabric 脚本）；全仓 lint 无错误，保留既有 47 warnings/1 info；最终七个修改源码文件 lint 无诊断，678 个文档目标、workflow 引用和 diff 检查通过。此轮数据库检查使用 Adapter 替身，没有重复跑未变更的真实链码/Adapter 网络。尚未验证本审批数据库到真实 Fabric 的联合流程，亦未开放实际 Job 执行。自动机构握手、实际执行授权、终态结算/重开、物理介质、容量/归档、完整 Web 与 PR 预览继续待办。
+
+### 真实 PostgreSQL/Fabric 激活联合检查
+
+新增 test:fabric:gate:integration，保留原无数据库入口。复用五组原生链码竞态/私有区块检查，随后启动生产 Node Commercial/Market Adapter 和随机隔离 PostgreSQL。两家机构使用不同组织、真实业务签名和显式权限，经生产商业与执行审批服务确认合同、原预留、释放和新预留，真实链确认后生成公开激活待办。历史发布/认领来自本轮原生链探针，以对应内容导入本地夹具，未声称从所有市场 HTTP 入口启动。
+
+真实链第一次联合运行即通过。旧私有预留幂等确认，释放后的 gate 哈希匹配；新预留成功后，激活 prepared 检查点先保存，再停 Orderer，数据库保留 pending/原交易。恢复 Orderer 后故意丢失 VALID 响应，新的服务实例按生产退避继续恢复，最终只有原交易一个尝试，真实需求 ACTIVE 的 activationId 和预留一致。此处是服务实例/响应故障，不是完整 Server SIGKILL，亦无 Agent/Job。公开日志检查包含新增生产 Adapter 日志；私有区块完整遍历仍只覆盖前置竞态交易。
+
+最终七组断言通过，证据 temp/fabric-network-7aYWxs，摘要 temp/federation-gate-database-report.json。所属 Adapter/Peer/Orderer/CCAAS、随机数据库和本机数据库转发均已清理。Fabric CI 的 gate 项改为联合入口，无数据库跨进程恢复入口保留。完整类型/lint 在本轮业务增量已通过，新增联合脚本另经 Fabric 脚本类型检查、五个相关文件 lint、679 个文档目标、workflow 引用及 diff 检查通过；没有再跑未修改的整个项目测试。源站实际委派、提供方执行验权、自动握手、终态结算/重开、物理介质、容量/归档、完整 Web 和 PR 预览仍未完成，目标保持完整范围。

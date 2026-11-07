@@ -643,6 +643,12 @@ async function run() {
   await writeFile(
     join(dirname(z.string().parse(process.argv[2])), "gate-adapter-fixture.json"),
     JSON.stringify({
+      agreement: terms,
+      fundedReservation: funded.reservation,
+      fundedDemand: await current(funded.demand.demandId),
+      freshReservation: fresh.reservation,
+      freshDemand: await current(fresh.demand.demandId),
+      releasePayload: adapterRelease.value,
       release: {
         operation: "release-execution",
         domainId: domain.domainId,

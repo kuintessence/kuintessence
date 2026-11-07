@@ -43,10 +43,7 @@ const channel = "kq-evidence-test";
 const gate = process.argv.includes("--gate");
 const commercial = gate || process.argv.includes("--commercial");
 const market = process.argv.includes("--market");
-if (
-  (market && (commercial || process.argv.includes("--database"))) ||
-  (gate && process.argv.includes("--database"))
-)
+if (market && (commercial || process.argv.includes("--database")))
   throw new Error("Market probe is independent of commercial/database checks");
 const kind = market ? "market" : commercial ? "commercial" : "evidence";
 const chaincode = `kq-${kind}`;

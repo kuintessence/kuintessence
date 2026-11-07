@@ -73,7 +73,7 @@ Market Adapter 增加 activate-demand，恢复检查点绑定规范化公开载�
 
 释放须引用同合同已双签的原预留摘要及 READY 版本；ACTIVE 的新释放审批拒绝。自然到期不自动释放。后台先等合同登记 committed，预留才能推进；释放再等对应预留 committed。发送提案前重新验双方当前密钥信任与专用签署用途；已有未知提交仍按原交易恢复，不能因撤权创建新交易。原有 90 秒租约、检查点先落库、迟到响应隔离和 INVALID 历史保留继续适用。
 
-此审批不创建本地双边预算、不激活执行协议，也不提交 Job。独立数据库已覆盖权限变化、重复审批/附签、错签/错摘要、事务回滚、合同→预留→释放依赖、重启恢复及 HTTP 隔离；Adapter 使用替身，尚未进行这条数据库审批到真实 Fabric 的联合验收。公开激活待办已接通，执行授权与 Web 审批界面继续待接。
+此审批不创建本地双边预算、不激活执行协议，也不提交 Job。独立数据库已覆盖权限变化、重复审批/附签、错签/错摘要、事务回滚、合同→预留→释放依赖、重启恢复及 HTTP 隔离；基础数据库检查使用 Adapter 替身，追加的真实 Fabric 联合入口已验证双签预留/释放与公开激活。公开激活待办已接通，执行授权与 Web 审批界面继续待接。
 
 
 ## 源站公开激活
@@ -86,4 +86,17 @@ Server 从本组织原双签预留生成公开 gate，不接受调用者提交�
 
 激活复用既有 Market worker 的先持久化检查点、原交易恢复、90 秒租约与迟到响应隔离。accepted 意图是已批准的机构操作，原请求人离职不会删除后台待办；新执行仍须提供方独立验权。最近状态与历史从 /api/federation/market/operations/:activationId 读取；复核 retry 也同时要求上述两个权限。未知提交不允许换 txId，明确 INVALID 后才可新增交易尝试，保留历史与原公开载荷。
 
-隔离 PostgreSQL 验证权限、锁额前拒绝、私有字段不进入公开意图、并发幂等、过期后读原意图、已有释放/密钥撤销拒绝、原交易恢复、INVALID 历史与通用接口绕过拒绝。这里使用 Adapter 替身；真实链的激活/释放 MVCC 竞态和生产 Adapter 恢复由独立网络入口验证，尚不是完整数据库→Fabric→Agent 执行验收。
+隔离 PostgreSQL 验证权限、锁额前拒绝、私有字段不进入公开意图、并发幂等、过期后读原意图、已有释放/密钥撤销拒绝、原交易恢复、INVALID 历史与通用接口绕过拒绝。基础检查使用 Adapter 替身；追加入口已联通真实 PostgreSQL 与生产 Adapter/Fabric，仍不是数据库→Fabric→Agent 的实际执行验收。
+
+
+## 数据库与真实 Fabric 联合检查
+
+    KQ_FABRIC_TOOLS=/path/to/verified-fabric-3.1.5 \
+    KQ_FABRIC_DATABASE_URL=postgres://user:password@localhost/postgres \
+    bun run test:fabric:gate:integration
+
+该入口先验证原生竞态与私有区块，再创建随机隔离 PostgreSQL 库，启动生产 Node Commercial/Market Adapter；数据库账号需要创建和删除测试库的权限。双方业务服务使用各自真实签名密钥、不同组织和显式权限，确认同文合同、原预留、释放及新预留，再通过源站激活 API 对应的生产服务入队。历史市场发布/认领由前置真实链探针创建，并以对应内容导入本机测试数据库；并非全部市场发布也经 Server 完成。
+
+检查释放后的真实 gate 哈希，以及原私有预留、释放和新预留的提交确认。公开激活保存 prepared 检查点后停止 Orderer，保持原待办；恢复后模拟丢失 VALID 响应，新的服务实例继续使用原交易，最终数据库只有一个交易尝试，链上 ACTIVE 关联同一 activationId/预留。这里的恢复是服务实例和响应故障，不是完整 Server 进程 SIGKILL；单独的 test:fabric:gate 入口仍覆盖生产 Adapter 跨进程恢复。
+
+测试结束清理所属 Node/Fabric 进程与临时数据库。该入口已接入 Fabric CI，报告仅含断言摘要；本机含密钥、签名和私有材料的诊断文件只保留在忽略目录。原生私有区块遍历覆盖前置竞态交易，数据库后的检查覆盖真实提交、gate 哈希和公开 ACTIVE，不额外宣称遍历了所有后续私有区块。未启动 Agent 或计算 Job，不代表真实科研软件和 Workflow 已通过联邦执行验收。

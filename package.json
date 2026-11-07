@@ -51,7 +51,8 @@
     "test:fabric:commercial": "bun scripts/fabric-evidence-network.ts --commercial",
     "test:fabric:commercial:integration": "bun scripts/fabric-evidence-network.ts --commercial --database",
     "test:fabric:market": "bun scripts/fabric-evidence-network.ts --market",
-    "test:fabric:gate": "bun scripts/fabric-evidence-network.ts --gate"
+    "test:fabric:gate": "bun scripts/fabric-evidence-network.ts --gate",
+    "test:fabric:gate:integration": "bun scripts/fabric-evidence-network.ts --gate --database"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.4.13",

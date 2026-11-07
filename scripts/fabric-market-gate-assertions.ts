@@ -3,10 +3,15 @@ import { randomBytes } from "node:crypto";
 import { readdir, readFile, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { z } from "zod";
+import { verifyGateDatabase } from "./fabric-market-gate-database";
 
 export async function verifyExecutionGateNetwork(
   root: string,
-  controls: { stopOrderer(): Promise<void>; startOrderer(): Promise<void> },
+  controls: {
+    stopOrderer(): Promise<void>;
+    startOrderer(): Promise<void>;
+    onCleanup(cleanup: () => Promise<void>): void;
+  },
 ) {
   const build = await Bun.build({
     entrypoints: [resolve(import.meta.dir, "fabric-market-gate-probe.ts")],
@@ -29,18 +34,28 @@ export async function verifyExecutionGateNetwork(
       new Response(child.stdout).text(),
       new Response(child.stderr).text(),
     ]);
+    clearTimeout(timer);
     await writeFile(join(root, "gate-probe.log"), out + err, { mode: 0o600 });
     assert.equal(code, 0, "Execution gate probe failed; inspect private artifacts");
     const report = z
       .object({ passed: z.array(z.string()), probes: z.array(z.string()) })
       .parse(JSON.parse(await readFile(result, "utf8")));
-    await verifyAdapterRecovery(root, controls);
-    report.passed.push(
-      "production commercial and market runtimes recover release/reserve/activate across process loss; reserve survives Orderer outage with the original transaction",
-      "Server Unix clients read the released and ready gate hashes, confirmed absence and matching ACTIVE demand",
-    );
+    if (process.argv.includes("--database")) {
+      await verifyGateDatabase(
+        root,
+        z.string().parse(process.env.KQ_FABRIC_DATABASE_URL),
+        controls,
+        (message) => report.passed.push(message),
+      );
+    } else {
+      await verifyAdapterRecovery(root, controls);
+      report.passed.push(
+        "production commercial and market runtimes recover release/reserve/activate across process loss; reserve survives Orderer outage with the original transaction",
+        "Server Unix clients read the released and ready gate hashes, confirmed absence and matching ACTIVE demand",
+      );
+    }
     for (const file of await readdir(root)) {
-      if (!/^(peer-|chaincode-|gate-chaincode-|orderer).*\.log$/.test(file)) continue;
+      if (!/^(peer-|chaincode-|gate-chaincode-|gate-db-|orderer).*\.log$/.test(file)) continue;
       const log = await readFile(join(root, file));
       for (const probe of report.probes)
         assert(
