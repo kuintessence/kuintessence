@@ -34,6 +34,7 @@ export const FederationKeyInput = z
           "commercial-usage",
           "commercial-reservation",
           "commercial-release",
+          "commercial-terminal",
           "commercial-usage-query",
           "commercial-usage-page",
           "status-query",

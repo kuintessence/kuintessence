@@ -11,6 +11,7 @@ import {
   CommercialReceiptSchema,
   CommercialReleaseSchema,
   CommercialReservationSchema,
+  CommercialTerminalSchema,
   CommercialUsageEnvelopeSchema,
   CommercialUsageSchema,
   type FabricCommercialTrust,
@@ -45,7 +46,14 @@ const StoredReservation = z.strictObject({
   receipt: CommercialReceiptSchema,
   envelope: CommercialAgreementEnvelopeSchema,
   reservation: CommercialReservationSchema,
-  state: z.enum(["locked", "released"]),
+  state: z.enum(["locked", "released", "terminal"]),
+  terminal: z
+    .strictObject({
+      receipt: CommercialReceiptSchema,
+      envelope: CommercialAgreementEnvelopeSchema,
+      terms: CommercialTerminalSchema,
+    })
+    .optional(),
   release: z
     .strictObject({
       receipt: CommercialReceiptSchema,
@@ -451,6 +459,109 @@ export class CommercialLedger {
     );
     return encode(receipt);
   }
+  private async terminal(
+    stub: Stub,
+    domain: FabricCommercialTrust["domains"][number],
+    recordId: string,
+  ) {
+    const envelope = this.input(stub, CommercialAgreementEnvelopeSchema),
+      now = stub.getDateTimestamp();
+    if (
+      envelope.sourceSiteId === envelope.targetSiteId ||
+      !domain.siteIds.includes(envelope.sourceSiteId) ||
+      !domain.siteIds.includes(envelope.targetSiteId)
+    )
+      return fail("POLICY_DENIED");
+    const signed = await this.verify(
+      stub,
+      CommercialTerminalSchema,
+      envelope.sourceJws,
+      envelope.sourceSiteId,
+      now,
+    );
+    const other = await this.verify(
+      stub,
+      CommercialTerminalSchema,
+      envelope.targetJws,
+      envelope.targetSiteId,
+      now,
+    );
+    if (signed.digest !== other.digest) return fail("OPERATION_CONFLICT");
+    const terms = signed.payload;
+    if (
+      terms.terminalId !== recordId ||
+      terms.domainId !== domain.domainId ||
+      terms.sourceSiteId !== envelope.sourceSiteId ||
+      terms.targetSiteId !== envelope.targetSiteId ||
+      Date.parse(terms.issuedAt) > now.getTime() + 60000
+    )
+      return fail("POLICY_DENIED");
+    const key = stub.createCompositeKey("reservation", [domain.domainId, terms.reservationId]);
+    const bytes = await this.privateValue(stub, domain.collection, key);
+    if (!bytes.length) return fail("ASSET_UNAVAILABLE");
+    const stored = StoredReservation.parse(JSON.parse(Buffer.from(bytes).toString()));
+    const { reservation } = stored;
+    if (
+      stored.receipt.digest !== terms.reservationDigest ||
+      reservation.request.senderSiteId !== terms.sourceSiteId ||
+      reservation.request.recipientSiteId !== terms.targetSiteId ||
+      Date.parse(terms.observedAt) < Date.parse(reservation.request.issuedAt)
+    )
+      return fail("POLICY_DENIED");
+    if (stored.terminal) {
+      if (stored.terminal.receipt.digest !== signed.digest) return fail("OPERATION_CONFLICT");
+      await stub.putPrivateData(domain.collection, key, bytes);
+      return encode(stored.terminal.receipt);
+    }
+    const terminalKey = stub.createCompositeKey("terminal", [domain.domainId, recordId]);
+    if ((await this.privateValue(stub, domain.collection, terminalKey)).length)
+      return fail("OPERATION_CONFLICT");
+    const gateKey = stub.createCompositeKey("execution-gate", [
+      domain.domainId,
+      terms.reservationId,
+    ]);
+    const gate = MarketExecutionGateSchema.parse(
+      JSON.parse(Buffer.from(await this.privateValue(stub, domain.collection, gateKey)).toString()),
+    );
+    const market = await this.market(stub, reservation.demandId);
+    if (
+      stored.state !== "locked" ||
+      stored.release ||
+      gate.state !== "READY" ||
+      gate.version !== terms.expectedGateVersion ||
+      gate.reservationDigest !== stored.receipt.digest ||
+      !["ACTIVE", "STOPPING"].includes(market.status) ||
+      market.activation?.activationId !== terms.activationId ||
+      market.activation.expectedVersion !== reservation.claimVersion ||
+      market.claim?.claimId !== reservation.reservationId ||
+      market.claim.commercialDomainId !== domain.domainId ||
+      market.claim.providerSiteId !== terms.targetSiteId ||
+      market.demand.sourceSiteId !== terms.sourceSiteId ||
+      federationCanonicalJson(market.activation.gate) !== federationCanonicalJson(gate)
+    )
+      return fail("OPERATION_CONFLICT");
+    const receipt = { recordId, digest: signed.digest };
+    const terminal = { receipt, envelope, terms };
+    // This hashed write invalidates uncommitted renewals; terminal acknowledgment never changes money.
+    const closedGate = MarketExecutionGateSchema.parse({
+      ...gate,
+      version: gate.version + 1,
+      state: "TERMINAL",
+      terminal: { terminalId: recordId, activationId: terms.activationId, digest: signed.digest },
+    });
+    await stub.putPrivateData(domain.collection, gateKey, encode(closedGate));
+    await stub.putPrivateData(
+      domain.collection,
+      key,
+      encode({ ...stored, state: "terminal", terminal }),
+    );
+    await stub.putPrivateData(
+      domain.collection,
+      terminalKey,
+      encode({ reservationId: terms.reservationId, receipt, salt: terms.salt }),
+    );
+    return encode(receipt);
+  }
   async initialize(stub: Stub, identity: Identity): Promise<Buffer> {
     this.organization(identity, "trust-admin");
     const { fcn, params } = stub.getFunctionAndParameters();
@@ -513,6 +624,7 @@ export class CommercialLedger {
         "GetUsageReceipt",
         "ReserveExecution",
         "ReleaseExecution",
+        "RecordExecutionTerminal",
       ].includes(fcn)
     )
       return fail("INVALID_MESSAGE");
@@ -522,6 +634,7 @@ export class CommercialLedger {
     if (!domain?.siteIds.includes(org.siteId)) return fail("POLICY_DENIED");
     if (fcn === "ReserveExecution") return this.reserve(stub, domain, recordId);
     if (fcn === "ReleaseExecution") return this.release(stub, domain, recordId);
+    if (fcn === "RecordExecutionTerminal") return this.terminal(stub, domain, recordId);
     const agreementOperation = fcn === "RegisterAgreement" || fcn === "GetAgreementReceipt";
     const key = stub.createCompositeKey(agreementOperation ? "agreement" : "usage", [
       domainId,

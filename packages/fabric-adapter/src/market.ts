@@ -13,6 +13,7 @@ import {
   MarketAdapterProposalInputSchema,
   type MarketCancelOpenSchema,
   type MarketClaim,
+  type MarketClosure,
   type MarketDemand,
   MarketDemandStateSchema,
   type MarketExecutionAuthorization,
@@ -68,7 +69,8 @@ export class FabricMarketAdapter {
       | z.infer<typeof MarketCancelOpenSchema>
       | z.infer<typeof MarketActivationSchema>
       | MarketExecutionAuthorization
-      | MarketExecutionStop;
+      | MarketExecutionStop
+      | MarketClosure;
     if (input.operation === "publish-demand") {
       if (input.demand.sourceSiteId !== this.config.siteId) throw new Error("POLICY_DENIED");
       name = "PublishDemand";
@@ -93,6 +95,10 @@ export class FabricMarketAdapter {
       name = "RequestExecutionStop";
       recordId = input.stop.stopId;
       value = input.stop;
+    } else if (input.operation === "close-demand") {
+      name = "CloseDemand";
+      recordId = input.closure.closureId;
+      value = input.closure;
     } else {
       // Publisher authorization needs current committed state and remains enforced by chaincode.
       name = "CancelOpenDemand";

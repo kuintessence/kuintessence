@@ -1587,3 +1587,15 @@ Market 新增 RequestExecutionStop、Adapter 新增 request-execution-stop，双
 最终主动停止复验退出 0，私有证据 temp/federation-execution-stop-igwwckad，网络材料 temp/fabric-network-5VNoiS。实际读取到 sleep 600 进程后停自建 Orderer；提供方 HTTP 在 2026-11-07 16:02:17.097 UTC 保存停止，两次调用返回同一 ID，Kubernetes Job 删除时间为同一秒。Pod 原终止宽限 30 秒；16:03:18 UTC 观测时 Job/Pod 均消失，平台 Job 和 Workflow 均 cancelled，无下游与产物，此时原 VALID 仍要到 16:06:43.834 UTC 才到期。事务内 authorize 明确返回 CANCELLATION_REQUESTED，期间私有 gate 与 ACTIVE 均不变，双方没有本地预算。恢复 Orderer 后同一停止 ID 的唯一交易取得 VALID（区块 20），需求变为 STOPPING，私有 gate 未改变；再观察 15 秒旧作业未重启。所有自建进程、数据库、namespace/RBAC 与临时凭据清理成功，保留的诊断与测试链材料仅在忽略目录。
 
 全仓 lint 无错误（原有 47 warning / 1 info）；全仓 typecheck 首次仅发现两处新测试的可空数组断言，修正后 Server 定向类型检查及 Fabric 脚本检查通过，其余包与 protobuf 已通过。最终 Python 格式、语法、文档链接/workflow 引用与差异格式检查通过。本轮只重跑失败的主动停止场景，没有重复此前成功的文件回传与自然到期场景；不覆盖 Slurm/PBS、Spack、真实科研计算或独立机构。终态停止/完成证明、结算释放与重开、自动商务握手、物理介质、容量归档、完整 Web/CLI 与 PR 预览仍待完成；未合并或部署 main。
+
+## 双方终态确认与公共关闭协议
+
+新增 CommercialTerminal 与独立 commercial-terminal 签署用途，正文绑定原私有预留摘要、原 activation、gate 版本、执行证据/可选结果摘要、终态结果、观测时间和随机盐。RecordExecutionTerminal 要求双方同文签名及双方集合原生背书，只接受精确 ACTIVE/STOPPING 激活。完整原文留在预留私有记录中，唯一 ID 索引只存预留标识/回执/盐，避免重复存储签名正文；gate 升版为 TERMINAL，不修改 locked、spent 或预留数量。公共 CloseDemand 只传不含终态明细的 gate 原文，经同通道私有哈希检查推进 CLOSED；双方任一方可提交固定 terminalId，同文重放不增版，旧停止或关闭不能重开任务。
+
+54 项链码/Adapter 用例通过，其中 8 项新增：完成/失败/取消三种终态、合作窗口到期后的确认、错激活/错版本/第三方/错签/撤销密钥拒绝、预算不变及旧释放拒绝、ACTIVE 与 STOPPING 两条关闭路径、重复确认和关闭、终态专用签署用途、私有 transient 和公开载荷隔离。后续私有唯一索引缩减为回执标记，4 项终态用例与 Commercial 类型检查定向复验通过，未重复累加用例数。
+
+真实 test:fabric:gate 退出 0，通过 10 组检查，证据 temp/terminal-network-report.json、temp/terminal-network.log，网络材料 temp/fabric-network-ZRqlCf。新增真实私有终态提交先于已背书续期，后者得到 MVCC_READ_CONFLICT；新续期被拒绝，原两方可关闭同一激活并保持 CLOSED，终态重放不释放资金。零金额预留仍占用一个名额，原生 PDC 区块遍历确认预算精确且计数保持占用；第三机构包括跨 Peer 身份读取均无法取得私有正文，公开区块和服务日志未泄漏新终态签名、执行证据摘要或盐。原锁额、停止和释放竞态继续通过。生产 Node Adapter 与 Server Unix 客户端新增 terminal/close，在 Orderer 中断、进程提交后退出和重复恢复时保留原交易 ID，最终读取 TERMINAL gate 哈希与 CLOSED 状态。网络已清理，私有材料只在忽略目录；最终索引去重不改变 gate、公有载荷、预算、签名验证或读写依赖，仅另做上述定向检查。
+
+全仓 lint 无错误（原有 47 warning / 1 info）；全仓类型检查首次发现非法输入测试的 TypeScript 多余属性报错，改为沿用变量传递的边界测试形式后 Adapter 定向类型检查通过，其余包、protobuf 和最终 Fabric 脚本类型检查均通过。最终修改文件格式、差异及本地文档/workflow 引用检查通过。数据库仅扩展签署用途的 TypeScript 类型，没有 SQL 结构变化；没有重跑数据库集成或 Agent 作业。Server 通用商业 worker 明确拒绝尚未接入证据审批流程的 terminal 操作，通用市场入口也不开放 close，数据库提交约束未放开。
+
+这一轮真实链使用双方签署的测试终态声明，不是由真实作业证据自动产生的业务闭环。下一项仍是 Server 证据归集与永久禁止新执行的事务约束、双方终态审批/自动交换和持久提交，随后接独立账单确认、结算、争议与重开。完整 Web/CLI、自动商务握手、物理介质、容量归档及 PR 预览继续待办；未合并或部署 main。

@@ -16,10 +16,12 @@ import {
   CommercialReceiptSchema,
   CommercialReleaseSchema,
   CommercialReservationSchema,
+  CommercialTerminalSchema,
   FabricCommercialTrustSchema,
 } from "@kuintessence/shared/federation/commercial";
 import {
   MarketActivationSchema,
+  MarketClosureSchema,
   MarketDemandSchema,
   MarketDemandStateSchema,
   MarketExecutionAuthorizationSchema,
@@ -284,7 +286,7 @@ async function run() {
         return false;
       }
     });
-  const claimed = async () => {
+  const claimed = async (maxAmount = amount) => {
     const demand = MarketDemandSchema.parse({
       protocolVersion: 1,
       demandId: randomUUID(),
@@ -343,7 +345,7 @@ async function run() {
         executionExpiresAt: new Date(time + 1200000).toISOString(),
         template: terms.agreement.templates[0],
         resources: demand.resources,
-        maxAmount: amount,
+        maxAmount,
         inputManifestDigest: `sha256:${"c".repeat(64)}`,
         environmentLockDigest: `sha256:${"d".repeat(64)}`,
       },
@@ -714,6 +716,153 @@ async function run() {
     ).endorse(),
     rejected("OPERATION_CONFLICT"),
   );
+  // A zero-cap fixture still occupies a reservation slot; terminal evidence must not free that slot.
+  const terminalTask = await lock(await claimed("0"));
+  const terminalActivation = activation(terminalTask);
+  assert.equal(
+    (
+      await commit(
+        await market(
+          am,
+          "ActivateDemand",
+          terminalTask.demand.demandId,
+          terminalActivation,
+        ).endorse(),
+      )
+    ).successful,
+    true,
+  );
+  await synced(terminalTask.demand.demandId, "ACTIVE");
+  const terminal = CommercialTerminalSchema.parse({
+    protocolVersion: 1,
+    kind: "commercial-terminal",
+    terminalId: randomUUID(),
+    domainId: domain.domainId,
+    reservationId: terminalTask.reservation.reservationId,
+    reservationDigest: terminalTask.receipt.digest,
+    activationId: terminalActivation.activationId,
+    sourceSiteId: source.siteId,
+    targetSiteId: target.siteId,
+    expectedGateVersion: 1,
+    outcome: "completed",
+    executionEvidenceDigest: `sha256:${randomBytes(32).toString("hex")}`,
+    resultManifestDigest: null,
+    observedAt: new Date().toISOString(),
+    issuedAt: new Date().toISOString(),
+    salt: randomBytes(32).toString("hex"),
+  });
+  const terminalSignatures = await bilateral(CommercialTerminalSchema, terminal);
+  probes.push(
+    terminalSignatures.sourceJws,
+    terminalSignatures.targetJws,
+    terminal.executionEvidenceDigest,
+    terminal.salt,
+  );
+  await assert.rejects(
+    commercial(c, "RecordExecutionTerminal", terminal.terminalId, terminalSignatures).endorse(),
+    rejected("POLICY_DENIED"),
+  );
+  const authorization = MarketExecutionAuthorizationSchema.parse({
+    authorizationId: randomUUID(),
+    demandId: terminalTask.demand.demandId,
+    issuerSiteId: target.siteId,
+    activationId: terminalActivation.activationId,
+    gate: terminalTask.gate,
+    issuedAt: new Date().toISOString(),
+    expiresAt: new Date(Date.now() + 299000).toISOString(),
+  });
+  const [terminalTx, obsoleteAuthorization] = await Promise.all([
+    commercial(a, "RecordExecutionTerminal", terminal.terminalId, terminalSignatures).endorse(),
+    market(bm, "AuthorizeExecution", terminalTask.demand.demandId, authorization, [
+      "AMSP",
+      "CMSP",
+    ]).endorse(),
+  ]);
+  const terminalReceipt = CommercialReceiptSchema.parse(
+    JSON.parse(Buffer.from(terminalTx.getResult()).toString()),
+  );
+  assert.equal((await commit(terminalTx)).successful, true);
+  assert.equal(
+    (await commit(obsoleteAuthorization)).code,
+    peer.TxValidationCode.MVCC_READ_CONFLICT,
+  );
+  const terminalGate = MarketExecutionGateSchema.parse({
+    ...terminalTask.gate,
+    version: 2,
+    state: "TERMINAL",
+    terminal: {
+      terminalId: terminal.terminalId,
+      activationId: terminal.activationId,
+      digest: terminalReceipt.digest,
+    },
+  });
+  const terminalHash = createHash("sha256").update(JSON.stringify(terminalGate)).digest("hex");
+  await retryRead(async () =>
+    (await Promise.all([a, b, c].map((client) => hash(terminal.reservationId, client)))).every(
+      (value) => value === terminalHash,
+    ),
+  );
+  await assert.rejects(
+    market(bm, "AuthorizeExecution", terminalTask.demand.demandId, authorization).endorse(),
+    rejected("OPERATION_CONFLICT"),
+  );
+  const closure = MarketClosureSchema.parse({
+    demandId: terminalTask.demand.demandId,
+    closureId: terminal.terminalId,
+    expectedVersion: 3,
+    gate: terminalGate,
+  });
+  await assert.rejects(
+    market(cm, "CloseDemand", terminalTask.demand.demandId, closure).endorse(),
+    rejected("POLICY_DENIED"),
+  );
+  assert.equal(
+    (
+      await commit(
+        await market(am, "CloseDemand", terminalTask.demand.demandId, closure, [
+          "AMSP",
+          "CMSP",
+        ]).endorse(),
+      )
+    ).successful,
+    true,
+  );
+  await synced(terminalTask.demand.demandId, "CLOSED");
+  const closed = await current(terminalTask.demand.demandId);
+  assert.equal(closed.version, 4);
+  assert.deepEqual(closed.closure, closure);
+  assert.equal(
+    (await commit(await market(bm, "CloseDemand", terminalTask.demand.demandId, closure).endorse()))
+      .successful,
+    true,
+  );
+  assert.equal((await current(terminalTask.demand.demandId)).version, 4);
+  assert.equal(
+    (
+      await commit(
+        await commercial(
+          b,
+          "RecordExecutionTerminal",
+          terminal.terminalId,
+          terminalSignatures,
+        ).endorse(),
+      )
+    ).successful,
+    true,
+  );
+  const terminalRelease = await release(terminalTask);
+  await assert.rejects(
+    commercial(
+      a,
+      "ReleaseExecution",
+      terminalRelease.value.releaseId,
+      terminalRelease.signed,
+    ).endorse(),
+    rejected("OPERATION_CONFLICT"),
+  );
+  passed.push(
+    "bilateral private terminal acknowledgment invalidates an endorsed renewal by hashed MVCC; either participant closes the exact activation, replay stays CLOSED and funds remain locked",
+  );
   // Read actual committed PDC writes, independently of application projections.
   const outsiders = [c, await connection("C", false, "A"), await connection("A", false, "C")];
   let latestBudget: { locked: string; spent: string; reservations: number } | undefined;
@@ -769,7 +918,7 @@ async function run() {
   assert.deepEqual(latestBudget, {
     locked: (BigInt(amount) * 2n).toString(),
     spent: "0",
-    reservations: 2,
+    reservations: 3,
   });
   passed.push(
     "committed private budget is exact after races; C sees gate hashes but no private data or plaintext in public blocks",

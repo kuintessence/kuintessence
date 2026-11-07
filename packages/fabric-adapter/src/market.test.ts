@@ -429,3 +429,51 @@ test("activation transport preserves the exact public gate and cannot accept pri
   };
   await expect(f.adapter.prepare(privateInput)).rejects.toThrow();
 });
+
+test("closure adapter carries only the public terminal commitment and rejects private evidence", async () => {
+  const f = fixture(),
+    terminalId = randomUUID();
+  const closure = {
+    demandId: f.demand.demandId,
+    closureId: terminalId,
+    expectedVersion: 3,
+    gate: {
+      domainId: randomUUID(),
+      reservationId: randomUUID(),
+      demandId: f.demand.demandId,
+      claimVersion: 2,
+      version: 2,
+      state: "TERMINAL" as const,
+      reservationDigest: `sha256:${"a".repeat(64)}`,
+      expiresAt: f.demand.expiresAt,
+      terminal: { terminalId, activationId: randomUUID(), digest: `sha256:${"b".repeat(64)}` },
+    },
+  };
+  const checkpoint = await f.adapter.prepare({ operation: "close-demand", closure });
+  const stored = decode(f, checkpoint.recovery);
+  expect(stored.batchId).toBe(terminalId);
+  expect(stored.digest).toBe(
+    `sha256:${createHash("sha256").update(federationCanonicalJson(closure)).digest("hex")}`,
+  );
+  const proposed = proto.ProposedTransaction.deserializeBinary(
+    Buffer.from(stored.message.bytes, "base64"),
+  );
+  expect(proposed.getEndorsingOrganizationsList()).toEqual([]);
+  const signed = proposed.getProposal();
+  if (!signed) throw new Error("Missing proposal");
+  const payload = peer.ChaincodeProposalPayload.deserializeBinary(
+    peer.Proposal.deserializeBinary(signed.getProposalBytes_asU8()).getPayload_asU8(),
+  );
+  expect(
+    peer.ChaincodeInvocationSpec.deserializeBinary(payload.getInput_asU8())
+      .getChaincodeSpec()
+      ?.getInput()
+      ?.getArgsList_asU8()
+      .map((v) => Buffer.from(v).toString()),
+  ).toEqual(["CloseDemand", f.demand.demandId]);
+  const privateInput = {
+    operation: "close-demand" as const,
+    closure: { ...closure, gate: { ...closure.gate, outcome: "completed" } },
+  };
+  await expect(f.adapter.prepare(privateInput)).rejects.toThrow();
+});

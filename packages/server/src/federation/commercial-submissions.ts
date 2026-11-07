@@ -261,6 +261,8 @@ export class FederationCommercialSubmissionService {
 
   private async beforeDisclosure(raw: CommercialAdapterProposalInput) {
     const input = CommercialAdapterProposalInputSchema.parse(raw);
+    // Dedicated terminal-evidence approval is not yet exposed through generic submissions.
+    if (input.operation === "record-execution-terminal") throw new FederationError("POLICY_DENIED");
     if (input.operation !== "record-usage") {
       const kinds = {
         "register-agreement": "commercial-agreement",

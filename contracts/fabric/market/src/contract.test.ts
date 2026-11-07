@@ -344,7 +344,7 @@ async function activated() {
     issuedAt: now.toISOString(),
     expiresAt: new Date(+now + 300000).toISOString(),
   });
-  return { ...f, authorization };
+  return { ...f, authorization, gate, activationId };
 }
 
 test("either execution participant can stop; both requests converge without releasing or renewing", async () => {
@@ -566,4 +566,87 @@ test("confirmation requires ACTIVE, enforces a five-minute ceiling and rejects s
   await expect(f.invoke("AuthorizeExecution", f.authorization, 1)).rejects.toThrow(
     "OPERATION_CONFLICT",
   );
+});
+
+test.each([
+  false,
+  true,
+])("terminal gate closes an activation once, including after stop=%s", async (stopped) => {
+  const f = await activated();
+  if (stopped)
+    await f.invoke("RequestExecutionStop", {
+      demandId: f.demand.demandId,
+      stopId: randomUUID(),
+      issuerSiteId: sites[0],
+      activationId: f.activationId,
+      expectedVersion: 3,
+    });
+  const gate = MarketExecutionGateSchema.parse({
+    ...f.gate,
+    state: "TERMINAL",
+    version: 2,
+    terminal: {
+      terminalId: randomUUID(),
+      activationId: f.activationId,
+      digest: `sha256:${"f".repeat(64)}`,
+    },
+  });
+  if (!gate.terminal) throw new Error("Missing terminal");
+  const closure = {
+    demandId: f.demand.demandId,
+    closureId: gate.terminal.terminalId,
+    expectedVersion: 3,
+    gate,
+  };
+  await expect(f.invoke("CloseDemand", closure, 2)).rejects.toThrow("POLICY_DENIED");
+  await expect(f.invoke("CloseDemand", closure)).rejects.toThrow("OPERATION_CONFLICT");
+  f.stub.onInvoke = async (name, args, channel) => {
+    expect([name, ...args, channel]).toEqual([
+      "kq-commercial",
+      "GetExecutionGateHash",
+      gate.domainId,
+      gate.reservationId,
+      "cooperation",
+    ]);
+    return {
+      status: 200,
+      payload: Buffer.from(
+        JSON.stringify({ hash: createHash("sha256").update(JSON.stringify(gate)).digest("hex") }),
+      ),
+    };
+  };
+  for (const patch of [
+    { expectedVersion: 4 },
+    { gate: { ...gate, version: 3 } },
+    { gate: { ...gate, terminal: { ...gate.terminal, activationId: randomUUID() } } },
+  ])
+    await expect(f.invoke("CloseDemand", { ...closure, ...patch })).rejects.toThrow(
+      "OPERATION_CONFLICT",
+    );
+  const receipt = await f.invoke("CloseDemand", closure, 1);
+  const state = await f.invoke("GetDemand", undefined);
+  expect(state).toMatchObject({ status: "CLOSED", version: stopped ? 5 : 4, closure });
+  expect(MarketDemandStateSchema.safeParse(state).success).toBe(true);
+  f.stub.onInvoke = async () => {
+    throw new Error("Historical replay must not require current gate");
+  };
+  expect(await f.invoke("CloseDemand", closure)).toEqual(receipt);
+  await expect(f.invoke("AuthorizeExecution", f.authorization, 1)).rejects.toThrow(
+    "OPERATION_CONFLICT",
+  );
+  await expect(f.invoke("ClaimDemand", f.claim(2), 2)).rejects.toThrow("OPERATION_CONFLICT");
+  await expect(
+    f.invoke(
+      "RequestExecutionStop",
+      {
+        demandId: f.demand.demandId,
+        stopId: randomUUID(),
+        issuerSiteId: sites[1],
+        activationId: f.activationId,
+        expectedVersion: 3,
+      },
+      1,
+    ),
+  ).rejects.toThrow("OPERATION_CONFLICT");
+  expect((await f.invoke("GetDemand", undefined)).version).toBe(state.version);
 });

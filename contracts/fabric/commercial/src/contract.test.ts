@@ -6,13 +6,17 @@ import {
   CommercialReceiptSchema,
   CommercialReleaseSchema,
   CommercialReservationSchema,
+  CommercialTerminalSchema,
   type CommercialUsage,
   CommercialUsageSchema,
   type FabricCommercialTrust,
   FabricCommercialTrustSchema,
   fabricCommercialCollections,
 } from "@kuintessence/shared/federation/commercial";
-import { MarketActivationSchema } from "@kuintessence/shared/federation/market";
+import {
+  MarketActivationSchema,
+  MarketExecutionGateSchema,
+} from "@kuintessence/shared/federation/market";
 import {
   type FederationSigningKey,
   signFederationMessage,
@@ -58,6 +62,7 @@ beforeAll(async () => {
         "commercial-usage",
         "commercial-reservation",
         "commercial-release",
+        "commercial-terminal",
       ],
     })),
   });
@@ -826,4 +831,159 @@ test("a later agreement revision cannot refill or enlarge an existing private bu
     spent: "0",
     reservations: 1,
   });
+});
+
+async function terminalFixture() {
+  const f = await reservationFixture();
+  const receipt = await f.reserve();
+  const gateKey = f.stub.createCompositeKey("execution-gate", [
+    domainId,
+    f.reservation.reservationId,
+  ]);
+  const gate = MarketExecutionGateSchema.parse(
+    JSON.parse(Buffer.from(await f.stub.getPrivateData("commercial_AB_v1", gateKey)).toString()),
+  );
+  const activation = MarketActivationSchema.parse({
+    demandId: f.reservation.demandId,
+    activationId: randomUUID(),
+    expectedVersion: 2,
+    gate,
+  });
+  const active = { ...f.market, status: "ACTIVE", version: 3, activation };
+  f.stub.market = active;
+  const terminal = CommercialTerminalSchema.parse({
+    protocolVersion: 1,
+    kind: "commercial-terminal",
+    terminalId: randomUUID(),
+    domainId,
+    reservationId: f.reservation.reservationId,
+    reservationDigest: receipt.digest,
+    activationId: activation.activationId,
+    sourceSiteId: sites[0],
+    targetSiteId: sites[1],
+    expectedGateVersion: 1,
+    outcome: "completed",
+    executionEvidenceDigest: `sha256:${"b".repeat(64)}`,
+    resultManifestDigest: `sha256:${"c".repeat(64)}`,
+    observedAt: now.toISOString(),
+    issuedAt: now.toISOString(),
+    salt: randomBytes(32).toString("hex"),
+  });
+  const record = async (value = terminal) =>
+    f.call(
+      "RecordExecutionTerminal",
+      value.terminalId,
+      await bilateral(CommercialTerminalSchema, value),
+    );
+  return { ...f, gate, gateKey, active, terminal, record };
+}
+
+test.each([
+  "completed",
+  "failed",
+  "cancelled",
+] as const)("terminal %s requires bilateral evidence and never settles money", async (outcome) => {
+  const f = await terminalFixture();
+  if (outcome === "cancelled")
+    f.stub.market = {
+      ...f.active,
+      status: "STOPPING",
+      version: 4,
+      stopRequest: {
+        demandId: f.reservation.demandId,
+        stopId: randomUUID(),
+        issuerSiteId: sites[1],
+        activationId: f.active.activation.activationId,
+        expectedVersion: 3,
+      },
+    };
+  const budget = f.budget(),
+    publicState = new Map(f.stub.state);
+  // Historical execution expiry does not prevent acknowledging already completed work.
+  f.stub.timestamp = new Date(+now + 86400000);
+  const value = { ...f.terminal, outcome, issuedAt: f.stub.timestamp.toISOString() };
+  const receipt = await f.record(value);
+  const after = new Map(f.stub.privateState);
+  expect(await f.record(value)).toEqual(receipt);
+  expect(f.stub.privateState).toEqual(after);
+  expect(f.stub.state).toEqual(publicState);
+  expect(f.budget()).toEqual(budget);
+  const closed = MarketExecutionGateSchema.parse(
+    JSON.parse(Buffer.from(await f.stub.getPrivateData("commercial_AB_v1", f.gateKey)).toString()),
+  );
+  expect(closed).toMatchObject({
+    state: "TERMINAL",
+    version: 2,
+    terminal: { terminalId: value.terminalId, activationId: value.activationId },
+  });
+  for (const secret of [
+    "outcome",
+    "executionEvidenceDigest",
+    "resultManifestDigest",
+    "amount",
+    "salt",
+  ])
+    expect(JSON.stringify(closed)).not.toContain(secret);
+  await expect(f.record({ ...value, terminalId: randomUUID() })).rejects.toThrow(
+    "OPERATION_CONFLICT",
+  );
+  await expect(
+    f.record({ ...value, executionEvidenceDigest: `sha256:${"d".repeat(64)}` }),
+  ).rejects.toThrow("OPERATION_CONFLICT");
+  await f.reserve();
+  expect(await f.stub.getPrivateData("commercial_AB_v1", f.gateKey)).toEqual(
+    Buffer.from(JSON.stringify(closed)),
+  );
+  const release = CommercialReleaseSchema.parse({
+    protocolVersion: 1,
+    kind: "commercial-release",
+    releaseId: randomUUID(),
+    domainId,
+    reservationId: value.reservationId,
+    reservationDigest: value.reservationDigest,
+    sourceSiteId: sites[0],
+    targetSiteId: sites[1],
+    expectedGateVersion: 2,
+    issuedAt: f.stub.timestamp.toISOString(),
+    salt: randomBytes(32).toString("hex"),
+    reason: "A terminal declaration cannot refund funds",
+  });
+  await expect(
+    f.call(
+      "ReleaseExecution",
+      release.releaseId,
+      await bilateral(CommercialReleaseSchema, release),
+    ),
+  ).rejects.toThrow("OPERATION_CONFLICT");
+  expect(f.budget()).toEqual(budget);
+});
+
+test("terminal binds exact activation and both signatures; third parties and early declarations are rejected", async () => {
+  const f = await terminalFixture();
+  const before = new Map(f.stub.privateState);
+  const envelope = await bilateral(CommercialTerminalSchema, f.terminal);
+  await expect(
+    f.call("RecordExecutionTerminal", f.terminal.terminalId, envelope, identity(2)),
+  ).rejects.toThrow("POLICY_DENIED");
+  await expect(
+    f.call("RecordExecutionTerminal", f.terminal.terminalId, {
+      ...envelope,
+      targetJws: envelope.sourceJws,
+    }),
+  ).rejects.toThrow();
+  for (const change of [
+    { activationId: randomUUID() },
+    { expectedGateVersion: 2 },
+    { reservationDigest: `sha256:${"f".repeat(64)}` },
+    { issuedAt: new Date(+now + 60001).toISOString() },
+    { observedAt: new Date(+now - 1).toISOString() },
+  ])
+    await expect(f.record({ ...f.terminal, ...change })).rejects.toThrow();
+  f.stub.market = f.market;
+  await expect(f.record()).rejects.toThrow("OPERATION_CONFLICT");
+  f.stub.market = f.active;
+  const revoked = f.stub.createCompositeKey("revoked", [sites[1], keys[1]?.keyId ?? "missing"]);
+  await f.stub.putState(revoked, Buffer.from("revoked"));
+  await expect(f.record()).rejects.toThrow("UNTRUSTED_IDENTITY");
+  expect(f.stub.privateState).toEqual(before);
 });

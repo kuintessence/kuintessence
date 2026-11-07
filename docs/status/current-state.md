@@ -1,5 +1,7 @@
 # 当前功能与使用边界
 
+双方终态确认协议新增 CommercialTerminal / RecordExecutionTerminal 与公共 CloseDemand：完整终态材料和双签只进入双方 PDC，私有 gate 升版后阻断续期，公共任务进入 CLOSED；预算 locked/spent 和预留数量不变。链码与 Adapter 已实现，Server 真实证据归集、终态审批/交换/待办及结算释放仍待完成，通用审批入口未开放。详见[终态确认与公共关闭](../../deploy/federation/fabric-execution-gate.md#双方终态确认与公共关闭)。
+
 链级停止协议新增 RequestExecutionStop：委派方或执行方可以把原 ACTIVE 激活改为 STOPPING，保留双方各自不可变的请求回执；拒绝新执行确认，旧已背书确认与停止通过 Fabric 原生读写冲突互斥。STOPPING 不等于进程已停止，也不释放或重新开放私有预留；旧 VALID 仍有原绝对期限。链码、生产 Adapter 和 Server 专用停止待办/API 已实现（迁移 0125）：先保存本地停止与审计，阻断旧 VALID 消费和续期；后台上链与本地 Workflow 取消独立进行，源站原取消事务同步保存停止意图。机构专用停止不冒充对方用户发取消消息；终态证明、结算与重开仍待办，通用市场 HTTP 提交仍拒绝它。真实断链主动停止已通过：原 VALID 尚有效时提供方停止 API 触发真实 Kubernetes Job/Pod 退出，链恢复后原停止意图提交为 STOPPING，私有锁额保留且旧任务不重启。协议见[停止意图](../../deploy/federation/fabric-execution-gate.md#active-的停止意图)。
 
 Market 有期限的链上执行确认已接通 Server 专用申请/续期服务、持久市场待办和事务内验权（迁移 0124），并接入源站发送/材料披露、提供方接单/准备和派发租约。仅精确匹配的 VALID 确认可用，本地暂停或身份失效仍会拒绝；协调模式不复制本地额度。人工预批准后的真实 Fabric、双 Server/独立数据库与双 Agent 联合执行已通过：生产 worker 完成发布/认领/预留/激活/确认，提供方拉取两份签名清单，实际 Kubernetes 两节点文件计算，源站实读结果并取得签名回执；没有本地预算。它使用直接委派 API 和轻量 Bash，不覆盖自动商务握手、普通源站 Workflow 动态调用、Spack 或 Slurm/PBS；自动商务流程及 Web 联合验收仍未完成。详见[执行确认](../../deploy/federation/fabric-execution-gate.md#有期限的链上执行确认)。

@@ -16,6 +16,7 @@ import {
   type CommercialProposalInput,
   CommercialReleaseSchema,
   CommercialReservationSchema,
+  CommercialTerminalSchema,
   CommercialUsageSchema,
 } from "@kuintessence/shared/federation/commercial";
 import {
@@ -77,6 +78,7 @@ beforeAll(async () => {
           "commercial-usage",
           "commercial-reservation",
           "commercial-release",
+          "commercial-terminal",
         ],
       })),
     },
@@ -532,4 +534,77 @@ test("commercial gate query exposes only a bounded current hash and rejects unow
     failure = error;
     await expect(f.adapter.query(query)).rejects.toBe(error);
   }
+});
+
+test("terminal adapter confines dual signatures to PDC members and binds recovery to terminal identity", async () => {
+  const f = setup(),
+    values = await executionFixture(),
+    source = keys[0],
+    target = keys[1];
+  if (!source || !target) throw new Error("Missing signers");
+  const terminal = CommercialTerminalSchema.parse({
+    protocolVersion: 1,
+    kind: "commercial-terminal",
+    terminalId: randomUUID(),
+    domainId: input.domainId,
+    reservationId: values.reservation.reservationId,
+    reservationDigest: values.reserve.digest,
+    activationId: randomUUID(),
+    sourceSiteId: source.siteId,
+    targetSiteId: target.siteId,
+    expectedGateVersion: 1,
+    outcome: "completed",
+    executionEvidenceDigest: `sha256:${"b".repeat(64)}`,
+    resultManifestDigest: null,
+    observedAt: new Date().toISOString(),
+    issuedAt: new Date().toISOString(),
+    salt: randomBytes(32).toString("hex"),
+  });
+  const request = {
+    operation: "record-execution-terminal" as const,
+    recordId: terminal.terminalId,
+    domainId: input.domainId,
+    digest: `sha256:${createHash("sha256").update(JSON.stringify(terminal)).digest("hex")}`,
+    envelope: {
+      sourceSiteId: source.siteId,
+      targetSiteId: target.siteId,
+      sourceJws: await signFederationMessage(CommercialTerminalSchema, terminal, source),
+      targetJws: await signFederationMessage(CommercialTerminalSchema, terminal, target),
+    },
+  };
+  const checkpoint = await f.adapter.prepare(request),
+    stored = decode(f, checkpoint.recovery);
+  expect(stored).toMatchObject({ batchId: request.recordId, digest: request.digest });
+  const proposed = proto.ProposedTransaction.deserializeBinary(
+    Buffer.from(stored.message.bytes, "base64"),
+  );
+  expect(proposed.getEndorsingOrganizationsList()).toEqual(["AMSP", "BMSP"]);
+  const signed = proposed.getProposal();
+  if (!signed) throw new Error("Missing proposal");
+  const payload = peer.ChaincodeProposalPayload.deserializeBinary(
+    peer.Proposal.deserializeBinary(signed.getProposalBytes_asU8()).getPayload_asU8(),
+  );
+  expect(Buffer.from(payload.getTransientmapMap().get("commercial") ?? []).toString()).toBe(
+    JSON.stringify(request.envelope),
+  );
+  expect(
+    peer.ChaincodeInvocationSpec.deserializeBinary(payload.getInput_asU8())
+      .getChaincodeSpec()
+      ?.getInput()
+      ?.getArgsList_asU8()
+      .map((v) => Buffer.from(v).toString()),
+  ).toEqual(["RecordExecutionTerminal", request.domainId, request.recordId]);
+  await expect(f.adapter.prepare({ ...request, recordId: randomUUID() })).rejects.toThrow(
+    "POLICY_DENIED",
+  );
+  await expect(
+    f.adapter.prepare({
+      ...request,
+      envelope: { ...request.envelope, targetJws: request.envelope.sourceJws },
+    }),
+  ).rejects.toThrow();
+  const trust = structuredClone(config.trust);
+  for (const purpose of trust.keyPurposes)
+    purpose.kinds = purpose.kinds.filter((k) => k !== "commercial-terminal");
+  await expect(setup({ trust }).adapter.prepare(request)).rejects.toThrow("UNTRUSTED_IDENTITY");
 });

@@ -410,7 +410,8 @@ export class FederationMarketService {
         tx,
         actor,
         row.input.operation === "authorize-execution" ||
-          row.input.operation === "request-execution-stop"
+          row.input.operation === "request-execution-stop" ||
+          row.input.operation === "close-demand"
           ? "agreement.approve"
           : row.input.operation === "claim-demand"
             ? "market.claim"

@@ -6,6 +6,7 @@ import {
   MarketActivationSchema,
   MarketCancelOpenSchema,
   MarketClaimSchema,
+  MarketClosureSchema,
   MarketDemandSchema,
   MarketDemandStateSchema,
   MarketExecutionAuthorizationSchema,
@@ -87,6 +88,7 @@ export class MarketLedger {
         "ActivateDemand",
         "AuthorizeExecution",
         "RequestExecutionStop",
+        "CloseDemand",
       ].includes(fcn)
     )
       return fail("INVALID_MESSAGE");
@@ -160,6 +162,55 @@ export class MarketLedger {
       return encode({ recordId: id, digest: hash });
     }
     if (!prior) return fail("ASSET_UNAVAILABLE");
+    if (fcn === "CloseDemand") {
+      const closure = this.input(stub, MarketClosureSchema);
+      if (
+        closure.demandId !== id ||
+        ![prior.demand.sourceSiteId, prior.claim?.providerSiteId].includes(org.siteId)
+      )
+        return fail("POLICY_DENIED");
+      if (prior.closure) {
+        if (digest(prior.closure) !== digest(closure)) return fail("OPERATION_CONFLICT");
+        return encode({ recordId: closure.closureId, digest: digest(closure) });
+      }
+      const gate = closure.gate;
+      if (
+        !["ACTIVE", "STOPPING"].includes(prior.status) ||
+        !prior.activation ||
+        closure.expectedVersion !== prior.activation.expectedVersion + 1 ||
+        gate.terminal?.activationId !== prior.activation.activationId ||
+        gate.domainId !== prior.claim?.commercialDomainId ||
+        gate.reservationId !== prior.claim.claimId ||
+        gate.claimVersion !== prior.activation.expectedVersion ||
+        gate.version !== prior.activation.gate.version + 1 ||
+        gate.reservationDigest !== prior.activation.gate.reservationDigest ||
+        gate.expiresAt !== prior.activation.gate.expiresAt
+      )
+        return fail("OPERATION_CONFLICT");
+      const response = await stub.invokeChaincode(
+        "kq-commercial",
+        ["GetExecutionGateHash", gate.domainId, gate.reservationId],
+        stub.getChannelID(),
+      );
+      if (response.status !== 200 || !response.payload) return fail("LEDGER_REQUIRED");
+      const current = z
+        .strictObject({ hash: z.string().regex(/^[a-f0-9]{64}$/) })
+        .parse(JSON.parse(Buffer.from(response.payload).toString()));
+      if (current.hash !== createHash("sha256").update(JSON.stringify(gate)).digest("hex"))
+        return fail("OPERATION_CONFLICT");
+      await stub.putState(
+        key,
+        encode(
+          MarketDemandStateSchema.parse({
+            ...prior,
+            version: prior.version + 1,
+            status: "CLOSED",
+            closure,
+          }),
+        ),
+      );
+      return encode({ recordId: closure.closureId, digest: digest(closure) });
+    }
     if (fcn === "RequestExecutionStop") {
       const stop = this.input(stub, MarketExecutionStopSchema);
       if (stop.demandId !== id || stop.issuerSiteId !== org.siteId) return fail("POLICY_DENIED");

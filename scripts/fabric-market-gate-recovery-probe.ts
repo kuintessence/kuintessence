@@ -1,19 +1,24 @@
 import assert from "node:assert/strict";
-import { createHash, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import {
+  type CommercialAdapterProposalInput,
   CommercialExecutionProposalInputSchema,
+  CommercialTerminalSchema,
   FabricCommercialTrustSchema,
 } from "@kuintessence/shared/federation/commercial";
 import { FabricProposalCheckpointSchema } from "@kuintessence/shared/federation/ledger";
 import {
   FabricMarketTrustSchema,
   MarketAdapterProposalInputSchema,
+  MarketClosureSchema,
   MarketExecutionAuthorizationSchema,
   MarketExecutionGateSchema,
   MarketExecutionStopSchema,
 } from "@kuintessence/shared/federation/market";
+import { signFederationMessage } from "@kuintessence/shared/federation/signatures";
+import { importPKCS8 } from "jose";
 import { z } from "zod";
 import { startCommercialAdapter } from "../packages/fabric-adapter/src/commercial-runtime";
 import { startMarketAdapter } from "../packages/fabric-adapter/src/market-runtime";
@@ -23,7 +28,7 @@ import { Site } from "./fabric-evidence-fixture";
 
 const root = z.string().parse(process.argv[2]);
 const operation = z
-  .enum(["release", "reserve", "activate", "authorize", "stop"])
+  .enum(["release", "reserve", "activate", "authorize", "stop", "terminal", "close"])
   .parse(process.argv[3]);
 const action = z.enum(["prepare", "advance", "crash", "query"]).parse(process.argv[4]);
 const replyFile = z.string().parse(process.argv[5]);
@@ -44,7 +49,11 @@ const network = z
   })
   .parse(JSON.parse(await readFile(join(root, "network.json"), "utf8")));
 const site = Site.parse(network.sites.find((site) => site.name === "A"));
-const isMarket = operation === "activate" || operation === "authorize" || operation === "stop";
+const isMarket =
+  operation === "activate" ||
+  operation === "authorize" ||
+  operation === "stop" ||
+  operation === "close";
 const kind = isMarket ? "market" : "commercial";
 const user = isMarket ? "User2" : "User1";
 const msp = join(dirname(dirname(site.userMsp)), `${user}@a.kq.test`, "msp");
@@ -115,15 +124,87 @@ try {
     });
     if (operation === "stop")
       await writeFile(join(root, "gate-stop-input.json"), JSON.stringify(stop), { mode: 0o600 });
-    const checkpoint = isMarket
-      ? await market.prepare(
-          operation === "stop"
-            ? { operation: "request-execution-stop", stop }
-            : operation === "authorize"
-              ? { operation: "authorize-execution", authorization }
-              : fixture.activate,
-        )
-      : await commercial.prepare(fixture[operation === "release" ? "release" : "reserve"]);
+    let terminalInput:
+      | Extract<CommercialAdapterProposalInput, { operation: "record-execution-terminal" }>
+      | undefined;
+    if (operation === "terminal") {
+      const stopped = MarketExecutionStopSchema.parse(
+        JSON.parse(await readFile(join(root, "gate-stop-input.json"), "utf8")),
+      );
+      const terminal = CommercialTerminalSchema.parse({
+        protocolVersion: 1,
+        kind: "commercial-terminal",
+        terminalId: randomUUID(),
+        domainId: fixture.reserve.domainId,
+        reservationId: fixture.reserve.recordId,
+        reservationDigest: fixture.reserve.digest,
+        activationId: stopped.activationId,
+        sourceSiteId: fixture.reserve.envelope.sourceSiteId,
+        targetSiteId: fixture.reserve.envelope.targetSiteId,
+        expectedGateVersion: 1,
+        outcome: "cancelled",
+        executionEvidenceDigest: `sha256:${randomBytes(32).toString("hex")}`,
+        resultManifestDigest: null,
+        observedAt: new Date().toISOString(),
+        issuedAt: new Date().toISOString(),
+        salt: randomBytes(32).toString("hex"),
+      });
+      const signature = async (siteId: string) => {
+        const signer = Site.parse(network.sites.find((s) => s.siteId === siteId));
+        return signFederationMessage(CommercialTerminalSchema, terminal, {
+          siteId,
+          keyId: "batch-1",
+          privateKey: await importPKCS8(await readFile(signer.businessKeyFile, "utf8"), "RS256"),
+        });
+      };
+      const digest = `sha256:${createHash("sha256").update(JSON.stringify(terminal)).digest("hex")}`;
+      terminalInput = {
+        operation: "record-execution-terminal" as const,
+        domainId: terminal.domainId,
+        recordId: terminal.terminalId,
+        digest,
+        envelope: {
+          sourceSiteId: terminal.sourceSiteId,
+          targetSiteId: terminal.targetSiteId,
+          sourceJws: await signature(terminal.sourceSiteId),
+          targetJws: await signature(terminal.targetSiteId),
+        },
+      };
+      const gate = MarketExecutionGateSchema.parse({
+        ...activation.gate,
+        version: 2,
+        state: "TERMINAL",
+        terminal: { terminalId: terminal.terminalId, activationId: terminal.activationId, digest },
+      });
+      await writeFile(join(root, "gate-terminal-gate.json"), JSON.stringify(gate), { mode: 0o600 });
+    }
+    const terminalGate =
+      operation === "close"
+        ? MarketExecutionGateSchema.parse(
+            JSON.parse(await readFile(join(root, "gate-terminal-gate.json"), "utf8")),
+          )
+        : undefined;
+    const checkpoint = terminalInput
+      ? await commercial.prepare(terminalInput)
+      : isMarket
+        ? await market.prepare(
+            terminalGate
+              ? {
+                  operation: "close-demand",
+                  closure: MarketClosureSchema.parse({
+                    demandId: terminalGate.demandId,
+                    closureId: terminalGate.terminal?.terminalId,
+                    expectedVersion: terminalGate.claimVersion + 1,
+                    gate: terminalGate,
+                  }),
+                }
+              : operation === "stop"
+                ? { operation: "request-execution-stop", stop }
+                : operation === "authorize"
+                  ? { operation: "authorize-execution", authorization }
+                  : fixture.activate,
+          )
+        : await commercial.prepare(fixture[operation === "release" ? "release" : "reserve"]);
     await writeFile(checkpointFile, JSON.stringify(checkpoint), { mode: 0o600 });
     await writeFile(
       replyFile,
@@ -140,9 +221,17 @@ try {
         });
         if (
           result.operation === "get-demand" &&
-          result.demand?.status === (operation === "stop" ? "STOPPING" : "ACTIVE")
+          result.demand?.status ===
+            (operation === "close" ? "CLOSED" : operation === "stop" ? "STOPPING" : "ACTIVE")
         ) {
-          if (operation === "stop")
+          if (operation === "close")
+            assert.deepEqual(
+              result.demand.closure?.gate,
+              MarketExecutionGateSchema.parse(
+                JSON.parse(await readFile(join(root, "gate-terminal-gate.json"), "utf8")),
+              ),
+            );
+          else if (operation === "stop")
             assert.deepEqual(
               result.demand.stopRequest,
               MarketExecutionStopSchema.parse(
@@ -156,7 +245,13 @@ try {
         }
       } else {
         const gate =
-          operation === "release" ? fixture.releasedGate : fixture.activate.activation.gate;
+          operation === "terminal"
+            ? MarketExecutionGateSchema.parse(
+                JSON.parse(await readFile(join(root, "gate-terminal-gate.json"), "utf8")),
+              )
+            : operation === "release"
+              ? fixture.releasedGate
+              : fixture.activate.activation.gate;
         const result = await commercial.query({
           operation: "get-execution-gate-hash",
           domainId: gate.domainId,

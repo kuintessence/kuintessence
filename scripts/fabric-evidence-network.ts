@@ -339,7 +339,9 @@ async function setup() {
               kinds: [
                 "commercial-agreement",
                 "commercial-usage",
-                ...(gate ? ["commercial-reservation", "commercial-release"] : []),
+                ...(gate
+                  ? ["commercial-reservation", "commercial-release", "commercial-terminal"]
+                  : []),
               ],
             })),
           ),

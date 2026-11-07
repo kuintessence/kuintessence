@@ -14,6 +14,7 @@ import {
   CommercialReceiptSchema,
   CommercialReleaseSchema,
   CommercialReservationSchema,
+  CommercialTerminalSchema,
   CommercialUsageSchema,
   FabricCommercialTrustSchema,
 } from "@kuintessence/shared/federation/commercial";
@@ -109,6 +110,18 @@ export class FabricCommercialAdapter {
         Date.parse(value.issuedAt) > now.getTime() + 60000
       )
         throw new Error("POLICY_DENIED");
+    } else if (input.operation === "record-execution-terminal") {
+      const signed = await this.verifyPair(CommercialTerminalSchema, input.envelope, now),
+        value = signed.payload;
+      if (
+        signed.digest !== input.digest ||
+        value.domainId !== input.domainId ||
+        value.terminalId !== input.recordId ||
+        value.sourceSiteId !== input.envelope.sourceSiteId ||
+        value.targetSiteId !== input.envelope.targetSiteId ||
+        Date.parse(value.issuedAt) > now.getTime() + 60000
+      )
+        throw new Error("POLICY_DENIED");
     } else {
       const provider = await this.verify(
         CommercialUsageSchema,
@@ -131,6 +144,7 @@ export class FabricCommercialAdapter {
       "record-usage": "RecordUsage",
       "reserve-execution": "ReserveExecution",
       "release-execution": "ReleaseExecution",
+      "record-execution-terminal": "RecordExecutionTerminal",
     } as const;
     const proposal = this.gateway
       .getNetwork(this.config.channel)

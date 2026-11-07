@@ -774,3 +774,8 @@ Web 仍不开放协调运行模式。人工预批准合同后的真实联合执�
 Market 新增 RequestExecutionStop、STOPPING 和原始 stopRequest；公开字段绑定请求机构、原需求/activation 与原 ACTIVE 版本。源/目标机构都能提出停止，最多各保留一份不可变请求。同机构原文重放恢复原回执，换 ID 或内容拒绝；双方请求收敛到第一份 STOPPING，不通过同意方数量生成停止或资金证明。原生交易读取并写公共需求；旧 ACTIVE 上背书的执行确认在停止先提交时必须 MVCC INVALID。STOPPING 之后的新确认、普通撤回或认领均拒绝，私有释放仍只允许未激活的 CLAIMED。
 
 生产 Market Adapter 与 Unix 客户端支持这个固定操作及原交易恢复；通用市场意图 schema 不开放它。Server 专用停止入口验证原组织/预留归属，在审批记录上原子保存本地停止与审计；旧 VALID 不能绕过本地停止。后台查询精确 activation 后复用市场待办，原源站取消同步保存链停止意图，独立执行监控复用 Workflow 取消。迁移 0125 和接口边界见[平台停止接口](../../../deploy/federation/fabric-execution-gate.md#平台停止接口与本地约束)；终态证明和结算继续待办。不能只发一个链上停止请求就把界面或私有额度改为已停止/已释放，亦不能将旧 VALID 的期限改短来伪造远端已停。
+
+
+### 双方终态确认与关闭执行许可
+
+新增独立 commercial-terminal 签署用途。双方签署同一原预留/activation/gate 版本及带盐终态材料摘要，RecordExecutionTerminal 验证当前 ACTIVE/STOPPING 后在双方 PDC 保存不可变正文并升版为 TERMINAL gate。预算不变，既有待提交续期通过私有哈希原生读集被否决。原两方任一方提交固定 terminalId 的 CloseDemand，公共链仅校验 gate 哈希与原激活并进入 CLOSED，不披露终态明细。重复终态/关闭不增版或退款，重开和资金结算须另行批准。完整字段、签署用途、升级边界与尚待完成的 Server 证据流程见[终态协议](../../../deploy/federation/fabric-execution-gate.md#双方终态确认与公共关闭)。

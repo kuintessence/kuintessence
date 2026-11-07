@@ -39,16 +39,28 @@ export const MarketCancelOpenSchema = z.strictObject({
   expectedVersion: Version,
 });
 /** Public preimage of a private gate hash; contains no amount, price or contract body. */
-export const MarketExecutionGateSchema = z.strictObject({
-  domainId: Id,
-  reservationId: Id,
-  demandId: Id,
-  claimVersion: Version,
-  version: Version,
-  state: z.enum(["READY", "REVOKED"]),
-  reservationDigest: FederationDigestSchema,
-  expiresAt: z.iso.datetime(),
-});
+export const MarketExecutionGateSchema = z
+  .strictObject({
+    domainId: Id,
+    reservationId: Id,
+    demandId: Id,
+    claimVersion: Version,
+    version: Version,
+    state: z.enum(["READY", "REVOKED", "TERMINAL"]),
+    reservationDigest: FederationDigestSchema,
+    expiresAt: z.iso.datetime(),
+    terminal: z
+      .strictObject({
+        terminalId: Id,
+        activationId: Id,
+        digest: FederationDigestSchema,
+      })
+      .optional(),
+  })
+  .refine(
+    (value) => (value.state === "TERMINAL") === (value.terminal !== undefined),
+    "Terminal gate requires its immutable acknowledgment",
+  );
 export const MarketActivationSchema = z.strictObject({
   demandId: Id,
   activationId: Id,
@@ -81,34 +93,70 @@ export const MarketExecutionStopSchema = z.strictObject({
   expectedVersion: Version,
 });
 export type MarketExecutionStop = z.infer<typeof MarketExecutionStopSchema>;
+export const MarketClosureSchema = z
+  .strictObject({
+    demandId: Id,
+    closureId: Id,
+    expectedVersion: Version,
+    gate: MarketExecutionGateSchema,
+  })
+  .refine(
+    (value) =>
+      value.gate.state === "TERMINAL" &&
+      value.closureId === value.gate.terminal?.terminalId &&
+      value.demandId === value.gate.demandId,
+    "Closure must bind the exact terminal gate",
+  );
+export type MarketClosure = z.infer<typeof MarketClosureSchema>;
 export const MarketDemandStateSchema = z
   .strictObject({
     demand: MarketDemandSchema,
     digest: FederationDigestSchema,
     version: Version,
-    status: z.enum(["OPEN", "CLAIMED", "CANCELLED", "ACTIVE", "STOPPING"]),
+    status: z.enum(["OPEN", "CLAIMED", "CANCELLED", "ACTIVE", "STOPPING", "CLOSED"]),
     claim: MarketClaimSchema.nullable(),
     cancellation: MarketCancelOpenSchema.nullable(),
     activation: MarketActivationSchema.nullable().default(null),
     stopRequest: MarketExecutionStopSchema.optional(),
+    closure: MarketClosureSchema.optional(),
   })
   .superRefine((value, ctx) => {
     const stop = value.stopRequest;
-    if (value.status !== "STOPPING") {
-      if (stop) ctx.addIssue({ code: "custom", message: "Unexpected execution stop" });
+    if (value.status === "STOPPING" && !stop)
+      ctx.addIssue({ code: "custom", message: "Missing execution stop" });
+    if (
+      stop &&
+      (!["STOPPING", "CLOSED"].includes(value.status) ||
+        !value.activation ||
+        !value.claim ||
+        stop.demandId !== value.demand.demandId ||
+        stop.activationId !== value.activation.activationId ||
+        stop.expectedVersion !== value.activation.expectedVersion + 1 ||
+        value.version !== stop.expectedVersion + (value.status === "CLOSED" ? 2 : 1) ||
+        ![value.demand.sourceSiteId, value.claim.providerSiteId].includes(stop.issuerSiteId))
+    )
+      ctx.addIssue({ code: "custom", message: "Invalid execution stop binding" });
+    const closure = value.closure;
+    if (value.status !== "CLOSED") {
+      if (closure) ctx.addIssue({ code: "custom", message: "Unexpected execution closure" });
       return;
     }
     if (
-      !stop ||
+      !closure ||
       !value.activation ||
       !value.claim ||
-      stop.demandId !== value.demand.demandId ||
-      stop.activationId !== value.activation.activationId ||
-      stop.expectedVersion !== value.activation.expectedVersion + 1 ||
-      value.version !== stop.expectedVersion + 1 ||
-      ![value.demand.sourceSiteId, value.claim.providerSiteId].includes(stop.issuerSiteId)
+      closure.demandId !== value.demand.demandId ||
+      closure.gate.terminal?.activationId !== value.activation.activationId ||
+      closure.expectedVersion !== value.activation.expectedVersion + 1 ||
+      closure.gate.reservationId !== value.claim.claimId ||
+      closure.gate.domainId !== value.claim.commercialDomainId ||
+      closure.gate.claimVersion !== value.activation.expectedVersion ||
+      closure.gate.reservationDigest !== value.activation.gate.reservationDigest ||
+      closure.gate.version !== value.activation.gate.version + 1 ||
+      closure.gate.expiresAt !== value.activation.gate.expiresAt ||
+      value.version !== closure.expectedVersion + (stop ? 2 : 1)
     )
-      ctx.addIssue({ code: "custom", message: "Invalid execution stop binding" });
+      ctx.addIssue({ code: "custom", message: "Invalid execution closure binding" });
   });
 export const MarketReceiptSchema = z.strictObject({
   recordId: Id,
@@ -158,6 +206,7 @@ export const MarketAdapterProposalInputSchema = z.discriminatedUnion("operation"
     operation: z.literal("request-execution-stop"),
     stop: MarketExecutionStopSchema,
   }),
+  z.strictObject({ operation: z.literal("close-demand"), closure: MarketClosureSchema }),
 ]);
 export type MarketAdapterProposalInput = z.infer<typeof MarketAdapterProposalInputSchema>;
 

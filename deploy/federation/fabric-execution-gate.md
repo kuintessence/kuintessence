@@ -34,7 +34,7 @@ CommercialReservation 由双方对相同正文签名，签署用途必须显式�
 
 ReleaseExecution 使用专用 commercial-release 双签正文，绑定原预留摘要及 gate 版本。只允许尚未激活的 CLAIMED 需求：同一交易减少 locked/预留计数，保留原始记录，追加释放回执，并将 gate 升版为 REVOKED。重复释放不重复退款；旧预留重放不会把 REVOKED 改回 READY。自然到期不等于已经停止执行，ACTIVE 不能沿此接口释放。
 
-当前没有 ACTIVE 的终态结算/停止证明、公共重新开放、预算扩额/跨域划拨或自动代际迁移。新签署用途已进入链与 Server 信任管理，预留/释放双签审批已接入；既有链信任清单的治理升级/迁移工具仍须补齐。协调执行另外必须经过有期限的 VALID 确认和本地当前授权。
+ACTIVE/STOPPING 已有下文的双方终态确认与公共关闭协议，但 Server 真实证据审批尚待接入；终态结算、公共重新开放、预算扩额/跨域划拨或自动代际迁移仍未完成。新签署用途已进入链与 Server 信任管理，预留/释放双签审批已接入；既有链信任清单的治理升级/迁移工具仍须补齐。协调执行另外必须经过有期限的 VALID 确认和本地当前授权。
 
 ## ACTIVE 的停止意图
 
@@ -154,3 +154,15 @@ Server 从本组织原双签预留生成公开 gate，不接受调用者提交�
 后台在事务外查询精确激活并生成固定公开停止载荷，再复用市场检查点提交和恢复。链不可用时保留本地停止，查询失败写入 stopLastError 并退避；未激活的预留显示 ACTIVATION_PENDING，不能借停止触发新激活或释放资金。审批详情返回 stopId、stopRequestedAt、stopLastError 和 stopSubmission；后者可进一步通过市场详情查看交易状态。已进入市场 needs_review 的请求使用原 retry 接口，要求 market.read 和 agreement.approve，不以 market.publish 替代业务批准。未知已提交交易仍恢复原交易。
 
 源站普通委派取消在原授权事务内同步记录该停止意图，沿用 delegation.cancel 或持久 Workflow 取消授权，不额外要求用户成为商业审批人。原签名取消通道仍独立投递。机构专用停止接口不会冒充源站用户签署远端取消：提供方本地由监控停止，另一方受 STOPPING 与既有 VALID 的绝对期限约束。没有自动把既往取消记录回填为链停止，也没有声称断链时能立即撤销另一机构已经持有的离线证明。终态证明、额度结算和重新开放仍待实现。
+
+## 双方终态确认与公共关闭
+
+`CommercialTerminal` 是双方对同一份终态材料的签署，不是自动证明科研计算正确，也不是账单、付款或退款。新用途 `commercial-terminal` 必须在双方业务密钥的信任配置中显式列出，旧 reservation/release 用途不会自动包含它。正文绑定原私有预留摘要、activationId、gate 版本、完成/失败/取消结果、执行证据摘要、可选结果清单摘要、观测/签署时间与随机盐；只通过 commercial transient 发送至双方集合成员并存入 PDC。观测不得早于原委派，终态确认允许在原执行窗口结束后提交。
+
+`RecordExecutionTerminal` 核对两份同文签名、原预留和 ACTIVE/STOPPING 激活，不接受第三机构、错激活、未激活或已释放预留。它保留不可变终态正文，将原私有 gate 从 READY 升版为 TERMINAL，但不修改预算的 locked、spent 或预留数量。该 gate 写入与执行确认读取的私有哈希冲突：终态先提交，旧状态上已背书的续期必须 MVCC INVALID。旧已 VALID 证明不会被历史改写；平台还必须先持久停止本地派发并验证所有执行与清理回执，不能用双方签名替代实际调度器观测。
+
+公共 `CloseDemand` 只携带 TERMINAL gate 的可公开原文。gate 保留原公开路由与预留摘要，仅新增 terminalId、activationId 和带盐终态正文摘要；不公开 outcome、执行证据、结果清单、签名、用量或金额。原两方任一机构可按固定 terminalId 关闭对应 ACTIVE/STOPPING；链码通过同通道 GetExecutionGateHash 验证双方终态确认已提交，随后写 CLOSED。关闭保留原激活及可选停止请求；同文重试不增版，不依赖后来 gate 的变化，且不会允许新认领或续期。
+
+这一协议已接入链码、生产 Adapter 与 Server Unix 客户端的固定传输类型；普通市场创建接口和商业审批接口仍不接受终态正文。Server 尚需根据真实执行/清理证据生成终态材料、双方审批与自动交换、专用持久待办及 Web/CLI。商业提交 worker 明确拒绝未经该流程接入的新操作，数据库操作约束尚不开放它。不能仅通过原审批 API 上传一个自行构造的摘要就释放资金。
+
+CLOSED 表示双方确认的执行终态已登记，不表示已结算。预算结算须另有双方账单批准，技术更正、商务减免与支付分别记录；争议中的预留保持锁定。公共重新开放还须检查对应财务终结，旧终态/停止原文不能作用于新激活。这些资金与重新开放转移继续待实现。升级前须同步读取 TERMINAL/CLOSED 的链码、Adapter 和 Server，并登记新签署用途；本轮没有自动修改既有治理配置。

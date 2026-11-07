@@ -27,6 +27,7 @@ export const CommercialSigningKindSchema = z.enum([
   "commercial-usage",
   "commercial-reservation",
   "commercial-release",
+  "commercial-terminal",
 ]);
 
 /** Private rates use integer amount per integer quantity; the execution agreement fixes the money unit. */
@@ -96,6 +97,34 @@ export const CommercialReleaseSchema = z.strictObject({
 });
 export type CommercialRelease = z.infer<typeof CommercialReleaseSchema>;
 
+/** Both parties acknowledge immutable terminal evidence; this is neither a bill nor payment. */
+export const CommercialTerminalSchema = z
+  .strictObject({
+    protocolVersion: z.literal(1),
+    kind: z.literal("commercial-terminal"),
+    terminalId: Id,
+    domainId: Id,
+    reservationId: Id,
+    reservationDigest: FederationDigestSchema,
+    activationId: Id,
+    sourceSiteId: Id,
+    targetSiteId: Id,
+    expectedGateVersion: z.number().int().min(1).max(2147483646),
+    outcome: z.enum(["completed", "failed", "cancelled"]),
+    executionEvidenceDigest: FederationDigestSchema,
+    resultManifestDigest: FederationDigestSchema.nullable(),
+    observedAt: z.iso.datetime(),
+    issuedAt: z.iso.datetime(),
+    salt: Salt,
+  })
+  .refine(
+    (value) =>
+      value.sourceSiteId !== value.targetSiteId &&
+      Date.parse(value.observedAt) <= Date.parse(value.issuedAt),
+    "Invalid terminal identity or observation",
+  );
+export type CommercialTerminal = z.infer<typeof CommercialTerminalSchema>;
+
 /** Provider assertions and technical corrections remain immutable; neither confirms a bill or payment. */
 export const CommercialUsageSchema = z
   .strictObject({
@@ -155,7 +184,10 @@ export const FabricCommercialTrustSchema = FabricEvidenceTrustSchema.safeExtend(
       z.strictObject({
         siteId: Id,
         keyId: z.string().regex(/^[a-zA-Z0-9_.:-]{1,128}$/),
-        kinds: z.array(CommercialSigningKindSchema).min(1).max(4),
+        kinds: z
+          .array(CommercialSigningKindSchema)
+          .min(1)
+          .max(CommercialSigningKindSchema.options.length),
       }),
     )
     .min(2)
@@ -231,6 +263,11 @@ export type CommercialExecutionProposalInput = z.infer<
 export const CommercialAdapterProposalInputSchema = z.discriminatedUnion("operation", [
   ...CommercialProposalInputSchema.options,
   ...CommercialExecutionProposalInputSchema.options,
+  z.strictObject({
+    ...ProposalIdentity,
+    operation: z.literal("record-execution-terminal"),
+    envelope: CommercialAgreementEnvelopeSchema,
+  }),
 ]);
 export type CommercialAdapterProposalInput = z.infer<typeof CommercialAdapterProposalInputSchema>;
 export const CommercialGateQuerySchema = z.strictObject({
