@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { FederationAmountSchema, FederationResourcesSchema } from "../federation";
+import { FederationParameterOverridesSchema } from "../federation/assets";
 import { FederationAssetRefSchema, FederationDigestSchema } from "../federation/references";
 import { RequirementsSchema, SchedulingStrategySchema, SlugSchema, UuidSchema } from "./common";
 import { ExprSchema, IntOrExprSchema } from "./expr";
@@ -89,6 +90,26 @@ export const WorkflowNodeSchema = z.union([
     maxAmount: FederationAmountSchema,
     admissionWindowSec: z.number().int().min(1).max(3600).default(600),
     executionExpiresAt: z.iso.datetime().optional(),
+    inputSlots: z
+      .array(NodeInputSlotSchema)
+      .superRefine((slots, ctx) => {
+        for (const [index, slot] of slots.entries()) {
+          if (!FederationParameterOverridesSchema.keyType.safeParse(slot.descriptor).success)
+            ctx.addIssue({
+              code: "custom",
+              path: [index, "descriptor"],
+              message: "Invalid federation parameter descriptor",
+            });
+          if (slot.type !== "Text" || slot.contents != null || (!slot.from && !slot.sources))
+            ctx.addIssue({
+              code: "custom",
+              path: [index],
+              message:
+                "Federation parameters require Text slots with from or sources; files require authorized delivery",
+            });
+        }
+      })
+      .optional(),
     outputs: z
       .array(
         z.strictObject({

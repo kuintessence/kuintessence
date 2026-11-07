@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { randomBytes, randomUUID } from "node:crypto";
 import { closeSync, openSync } from "node:fs";
-import { chmod, lstat, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, lstat, readdir, readFile, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import {
   federationAttestationAttempts as attempts,
@@ -96,11 +96,27 @@ export async function verifyDatabaseAttestation(
       async () => {
         assert.equal(child.exitCode, null, "Node adapter must remain running");
         try {
-          return (await lstat(socket)).isSocket();
+          if (!(await lstat(socket)).isSocket()) return false;
         } catch (error) {
           if (error && typeof error === "object" && "code" in error && error.code === "ENOENT")
             return false;
           throw error;
+        }
+        try {
+          const response = await fetch("http://localhost/health", {
+            unix: socket,
+            signal: AbortSignal.timeout(1000),
+          });
+          const health: unknown = await response.json();
+          return (
+            response.ok &&
+            typeof health === "object" &&
+            health !== null &&
+            "configured" in health &&
+            health.configured === true
+          );
+        } catch {
+          return false;
         }
       },
       10_000,
@@ -194,8 +210,7 @@ export async function verifyDatabaseAttestation(
     pass("chain outage persists the original transaction and allows another attested admission");
 
     await stop(adapter, "SIGKILL");
-    // The previous owned process is confirmed dead before removing its crash-left socket.
-    await rm(socket, { force: true });
+    assert((await lstat(socket)).isSocket(), "Crash leaves a socket for automatic recovery");
     adapter = await startAdapter();
     await controls.startOrderer();
     await until(

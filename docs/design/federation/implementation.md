@@ -301,10 +301,14 @@ checkpoint 保存：固定 Workflow/引用软件修订、动态 scope path、已
 
 节点初次/远端未完成时让出 REMOTE_WAITING；准备状态 waiting 对应 DATA_WAITING。声明结果输出的节点在远端完成后自动以 operationId 为稳定 importId 排队接收，未发布时让出 RESULT_WAITING；相同已存在清单可以复用原导入 ID。仅在整单 available 后映射输出，检查原任务、组织、所有者、每项成员大小/摘要、本地文件未删除，以及发布尝试记录的 storageKey 和 versionId。下游获得源站 FileInputValue，不包含远端内部文件 ID、对象路径或凭据。输出只支持协议已支持的 Persistent File/FileBatch；远端失败/撤回使源节点失败，并先走停止与结果传输清理再结束父运行。已发布的用户文件保留；取消只处理原提交者的派生导入，不触及其他用户的副本。短期搬运租约过期并清理确认前，父运行继续 cancelling。
 
-当前 YAML 契约如下；UUID、摘要及模板修订必须替换为当前组织已批准的真实记录。inputManifestDigest 引用预先登记的输入清单，暂不接受 inputSlots 或自动把源云盘文件转成跨站输入；JSON 严格 schema 会拒绝这些未实现的字段。outputs.from 指向远端模板的节点及 Persistent 输出，不是源站节点。无 outputs 的节点只等待远端可信计算完成，不主动导入文件。Web 画布已能显示节点和文件输出端口，协议/材料选择表单尚待完成，当前通过 YAML 配置。
+当前 YAML 契约如下；UUID、摘要及模板修订必须替换为当前组织已批准的真实记录。inputManifestDigest 引用预先登记的基础输入清单。可选 inputSlots 只接受 Text 参数绑定，通过 from.param、from.node/output、from.expr 或 sources/select 获取字符串、有限数值或布尔值，保留原类型；未提供的 optional 参数保留基础值。文件句柄、数组、对象、null 及非有限数值均拒绝，File/Dataset 槽和静态 contents 也拒绝；源云盘文件须另行完成授权交付，不能靠传递本地 ID 跨站使用。outputs.from 指向远端模板的节点及 Persistent 输出，不是源站节点。无 outputs 的节点只等待远端可信计算完成，不主动导入文件。Web 画布已能显示节点和文件输出端口，协议/材料选择表单尚待完成，当前通过 YAML 配置。
+
+动态参数与基础清单合并后按内容摘要持久保存，基础清单、数据集、软件绑定及环境锁保持原值。派生权限使用原提交者的 delegation.submit，不要求额外的 asset.map；审计只记录摘要和来源，不写参数正文。每个循环调用分别固定派生摘要，恢复沿用原操作和截止时间；同一调用参数变化会报意图冲突，不重新派单。源清单缺失时为 DATA_WAITING，结果搬运等待仍为 RESULT_WAITING。单清单合并后仍不得超过 1 MiB。
 
 ```yaml
 name: 跨机构计算
+parameters:
+  - { name: sampleCount, type: int, default: 6 }
 spec:
   nodeDrafts:
     - id: remote
@@ -322,12 +326,18 @@ spec:
       resources: { cpus: 1, memoryMb: 128, gpus: 0, wallTimeSec: 30 }
       maxAmount: "1"
       admissionWindowSec: 600
+      inputSlots:
+        - descriptor: sampleCount
+          type: Text
+          from: { param: sampleCount }
       outputs:
         - descriptor: result
           type: File
           from: { nodeId: consumer, descriptor: result }
   nodeRelations: []
 ```
+
+示例的远端模板也须声明 sampleCount 参数；实际参数名和类型以双方批准的模板为准。
 
 恢复先读取 checkpoint、已绑定任务和持久状态，重新订阅事件/查询远端；不得从头重新执行已完成脚本。完成事件可能早于等待注册，数据库是事实来源，现有内存 JobCompletionRegistry 仅作为通知加速，不承担唯一状态。
 

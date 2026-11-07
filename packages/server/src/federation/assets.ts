@@ -20,6 +20,8 @@ import {
   FederationError,
   type FederationInputManifest,
   FederationInputManifestSchema,
+  type FederationParameterOverrides,
+  FederationParameterOverridesSchema,
   federationCanonicalJson,
 } from "@kuintessence/shared/federation";
 import { and, desc, eq } from "drizzle-orm";
@@ -180,32 +182,74 @@ export class FederationAssetService {
     }
     const parsed = FederationInputManifestSchema.or(FederationEnvironmentLockSchema).safeParse(raw);
     if (!parsed.success) throw new FederationError("INVALID_MESSAGE");
-    const digest = federationMaterialDigest(raw);
     return this.db.transaction(async (tx) => {
       await requireFederationCapability(tx, actor, "asset.map");
       await this.requireOrigin(tx, originSiteId);
-      const [created] = await tx
-        .insert(federationMaterials)
-        .values({
-          localOrgId: actor.orgId,
-          originSiteId,
-          digest,
-          kind: parsed.data.kind,
-          content,
-          createdBy: actor.userId,
-        })
-        .onConflictDoNothing()
-        .returning();
-      if (created)
-        await tx.insert(auditLog).values({
-          actor: actor.userId,
-          orgId: actor.orgId,
-          action: "federation.material.store",
-          target: digest,
-          diff: { after: { originSiteId, kind: parsed.data.kind } },
-        });
-      return { digest, kind: parsed.data.kind };
+      return this.storeMaterial(tx, actor, originSiteId, parsed.data.kind, content);
     });
+  }
+
+  /** Only parameter values may change; dataset and software bindings remain from the base. */
+  async deriveWorkflowInputs(
+    tx: PgTransaction,
+    actor: FederationActor,
+    originSiteId: string,
+    baseDigest: string,
+    overrides: FederationParameterOverrides,
+  ) {
+    await requireFederationCapability(tx, actor, "delegation.submit");
+    await this.requireOrigin(tx, originSiteId);
+    try {
+      federationCanonicalJson(overrides);
+    } catch {
+      throw new FederationError("INVALID_MESSAGE");
+    }
+    const checked = FederationParameterOverridesSchema.safeParse(overrides);
+    if (!checked.success) throw new FederationError("INVALID_MESSAGE");
+    const base = await this.readMaterial(tx, actor.orgId, originSiteId, baseDigest);
+    if (base.kind !== "inputs") throw new FederationError("INVALID_MESSAGE");
+    let content: string;
+    try {
+      content = federationCanonicalJson({
+        ...base,
+        parameters: { ...base.parameters, ...checked.data },
+      });
+    } catch {
+      throw new FederationError("INVALID_MESSAGE");
+    }
+    return this.storeMaterial(tx, actor, originSiteId, "inputs", content, baseDigest);
+  }
+
+  private async storeMaterial(
+    tx: PgTransaction,
+    actor: FederationActor,
+    originSiteId: string,
+    kind: FederationInputManifest["kind"] | FederationEnvironmentLock["kind"],
+    content: string,
+    derivedFrom?: string,
+  ) {
+    const digest = `sha256:${createHash("sha256").update(content).digest("hex")}`;
+    const [created] = await tx
+      .insert(federationMaterials)
+      .values({
+        localOrgId: actor.orgId,
+        originSiteId,
+        digest,
+        kind,
+        content,
+        createdBy: actor.userId,
+      })
+      .onConflictDoNothing()
+      .returning();
+    if (created)
+      await tx.insert(auditLog).values({
+        actor: actor.userId,
+        orgId: actor.orgId,
+        action: derivedFrom ? "federation.material.derive" : "federation.material.store",
+        target: digest,
+        diff: { after: { originSiteId, kind, ...(derivedFrom ? { derivedFrom } : {}) } },
+      });
+    return { digest, kind };
   }
 
   async getMaterial(

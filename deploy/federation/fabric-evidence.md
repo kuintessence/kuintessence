@@ -2,7 +2,7 @@
 
 当前已接通 Server 存证 outbox、批次/序号、数据库恢复检查点、独立 Node Adapter 和证据链码的代码路径。**证据链与 PostgreSQL 补交 worker 已通过 Fabric 3.1.5 联合验证，真实平台作业验收仍未完成**。配置私有 Adapter socket 后，后台 worker 会消费现有待办；此路径不创建联邦作业，也不修改任务额度。直接模式不创建待办、不调用 Adapter，不要求链连接。
 
-代码位置：[证据链码](../../contracts/fabric/evidence/src/contract.ts)、[Adapter](../../packages/fabric-adapter/src/evidence.ts)、[私有进程入口](../../packages/fabric-adapter/src/runtime.ts)、[协议与集合配置](../../packages/shared/src/federation/ledger.ts)。Node 至少 22.12，Gateway 固定 1.13.0，fabric-shim 固定 2.5.8。Peer/Orderer 已使用官方 Fabric 3.1.5 验证；测试证书由 cryptogen 与 OpenSSL 生成，没有运行 Fabric CA 服务，不代表生产 CA 运维或高可用共识已验收。
+代码位置：[证据链码](../../contracts/fabric/evidence/src/contract.ts)、[Adapter](../../packages/fabric-adapter/src/evidence.ts)、[私有进程入口](../../packages/fabric-adapter/src/runtime.ts)、[协议与集合配置](../../packages/shared/src/federation/ledger.ts)。Linux 运行环境还须安装 util-linux（flock）。Node 至少 22.12，Gateway 固定 1.13.0，fabric-shim 固定 2.5.8。Peer/Orderer 已使用官方 Fabric 3.1.5 验证；测试证书由 cryptogen 与 OpenSSL 生成，没有运行 Fabric CA 服务，不代表生产 CA 运维或高可用共识已验收。
 
 ## 信任与原生策略
 
@@ -100,7 +100,7 @@ Adapter 仅监听 `runDirectory/evidence.sock`，权限 0600，没有 TCP API。
 
 加密恢复记录包含完整签名 proposal/transaction 和预先建立的 commit 查询请求，由 AES-256-GCM 保护，绑定部署策略、channel 和调用身份。Adapter 没有第二套数据库；Server 应在其已有数据库中保存该 opaque token。提交/查询超时返回 pending 并保留原交易；背书失败不会自动改选第三方机构。调用方不得把 prepared、HTTP 成功或 submit 成功显示为已上链，也不得因 invalid 自动退款或重复执行任务。
 
-恢复密钥必须与检查点一起纳入受控备份。替换配置、业务证书或恢复密钥会使旧 token 无法恢复；当前应先处理待办再轮换，不能直接覆盖旧凭据。重启不自动删除已有 Unix socket，以免误删另一进程；异常退出留下的 socket 须先确认进程不存在再清理。数据库 worker 已接通，凭据轮换恢复、归档后的批次终态核对仍待完善。
+恢复密钥必须与检查点一起纳入受控备份。替换配置、业务证书或恢复密钥会使旧 token 无法恢复；当前应先处理待办再轮换，不能直接覆盖旧凭据。Linux 重启现使用与 Server 相同的私有目录/文件锁检查，仅自动清理确定没有监听者的本 UID socket；活跃监听、文件/符号链接及不确定探测均保留并拒绝启动。锁由内核在进程退出时释放，不能删除仍使用中的 evidence.sock.lock。非 Linux 仍需管理员确认无监听者后处理遗留路径。数据库 worker 已接通，凭据轮换恢复、归档后的批次终态核对仍待完善。
 
 ## Server 后台补交和人工复核
 

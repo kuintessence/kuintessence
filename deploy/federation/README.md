@@ -14,9 +14,9 @@
                               PostgreSQL 原子预留
 ```
 
-Gateway 使用 Node 22，强制校验客户端证书链，按实际 TLS 证书计算 SHA-256 指纹。客户端提供的身份头、Authorization、Cookie、代理头均不转发。Bun 私有入口按指纹查本地登记，验证机构签名，并在接单事务中锁定、复查信任状态。网关只允许 `/federation/v1/delegations` 、`/federation/v1/status`、`/federation/v1/cancellations` 、`/federation/v1/results` 、`/federation/v1/result-downloads` 和 `/federation/v1/result-receipts`；普通 Server HTTP 端口不挂载这些机构路由。
+Gateway 使用 Node 22，强制校验客户端证书链，按实际 TLS 证书计算 SHA-256 指纹。客户端提供的身份头、Authorization、Cookie、代理头均不转发。Bun 私有入口按指纹查本地登记，验证机构签名，并在接单事务中锁定、复查信任状态。网关只允许 `/federation/v1/delegations` 、`/federation/v1/status`、`/federation/v1/cancellations` 、`/federation/v1/results` 、`/federation/v1/result-downloads` 、`/federation/v1/result-receipts` 和 `/federation/v1/materials`；普通 Server HTTP 端口不挂载这些机构路由。
 
-Unix socket 只允许 Server 与 Gateway 的相同系统 UID 访问。独立目录须为该 UID 所有、权限 0700；socket 为 0600。运行时拒绝公开目录和权限过宽的签名私钥。Gateway 与 Server 属于同一机构的信任边界，不能把此 socket 挂给其他机构容器。各机构使用独立目录、数据库和签名密钥。
+Unix socket 只允许 Server 与 Gateway 的相同系统 UID 访问。独立目录须为该 UID 所有、权限 0700；socket 为 0600。运行时拒绝公开目录和权限过宽的签名私钥。Gateway 与 Server 属于同一机构的信任边界，不能把此 socket 挂给其他机构容器。各机构使用独立目录、数据库和签名密钥。Linux 启动依赖 util-linux 的 flock（Server、开发及 AIO 镜像已包含）。Server 与 Fabric Adapter 在同目录的持久 .lock 文件上串行化检查、清理和绑定：仅清理本 UID 所有且连接明确被拒绝的遗留 socket；仍有监听、探测超时、普通文件、符号链接或锁异常时拒绝替换。进程退出自动释放锁，.lock 文件不能在运行中删除；跨容器共享目录使用同一文件锁，存储须支持可靠的 flock 语义。非 Linux 保留原有拒绝占用路径的行为，不自动清理。
 
 ## 本地运行与 Compose
 

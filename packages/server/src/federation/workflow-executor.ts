@@ -15,7 +15,11 @@ import {
   WorkflowNodeWaiting,
   type workflowDsl,
 } from "@kuintessence/shared";
-import { FederationAgreementSchema, FederationError } from "@kuintessence/shared/federation";
+import {
+  FederationAgreementSchema,
+  FederationError,
+  type FederationParameterOverrides,
+} from "@kuintessence/shared/federation";
 import { and, eq } from "drizzle-orm";
 import type { LeasedWorkflowJournal } from "../workflow/execution-journal";
 import type { FederationOutboundService } from "./outbound";
@@ -43,7 +47,9 @@ export class FederationWorkflowExecutor {
     lease: LeasedWorkflowJournal,
     node: Node,
     invocation: NodeInvocation,
+    parameters: FederationParameterOverrides = {},
   ): Promise<NodeExecutionResult> {
+    let waitingReason: "DATA_WAITING" | "RESULT_WAITING" = "DATA_WAITING";
     try {
       const terms = await lease.transaction(async (tx) => {
         await assertWorkflowDelegationOwner(tx, lease.runId, actor);
@@ -84,6 +90,7 @@ export class FederationWorkflowExecutor {
           executionExpiresAt: node.executionExpiresAt ?? terms.validUntil,
         },
         node.admissionWindowSec,
+        parameters,
       );
       const observed = await lease.transaction(async (tx) => {
         await requireFederationCapability(tx, actor, "delegation.read");
@@ -135,6 +142,7 @@ export class FederationWorkflowExecutor {
             : "REMOTE_WAITING",
         );
       if (!node.outputs.length) return { status: "Succeeded", values: {} };
+      waitingReason = "RESULT_WAITING";
       // The operation UUID is a stable import key; an existing identical manifest may deduplicate it.
       const imported = await this.outbound.resultImports.enqueue(
         actor,
@@ -157,7 +165,7 @@ export class FederationWorkflowExecutor {
       if (error instanceof WorkflowNodeWaiting || error instanceof WorkflowExecutionInterrupted)
         throw error;
       if (error instanceof FederationError) {
-        if (error.code === "DATA_WAITING") throw new WorkflowNodeWaiting("RESULT_WAITING");
+        if (error.code === "DATA_WAITING") throw new WorkflowNodeWaiting(waitingReason);
         return {
           status: "Failed",
           values: {},

@@ -11,6 +11,24 @@ import {
 const UUID = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
 const USECASE_PACKAGE_ID = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 
+const federationNode = {
+  id: "remote",
+  name: "Remote",
+  type: "Federation",
+  agreementRevisionId: USECASE_PACKAGE_ID,
+  template: {
+    originSiteId: USECASE_PACKAGE_ID,
+    kind: "workflow",
+    id: USECASE_PACKAGE_ID,
+    revision: "1",
+    digest: `sha256:${"a".repeat(64)}`,
+  },
+  inputManifestDigest: `sha256:${"b".repeat(64)}`,
+  environmentLockDigest: `sha256:${"c".repeat(64)}`,
+  resources: { cpus: 1, memoryMb: 128, gpus: 0, wallTimeSec: 30 },
+  maxAmount: "1",
+};
+
 const node = workflowDsl.WorkflowNodeSchema.parse({
   type: "SoftwareUsecaseComputing",
   id: "solve",
@@ -54,6 +72,99 @@ const deps = (capture: { spec?: JobSubmission }): UsecaseExecutorDeps => ({
 });
 
 describe("createUsecaseExecutor", () => {
+  test("federation inputs preserve scalar types, source selection and loop invocation values", async () => {
+    const captured: Array<{ path: string | undefined; parameters: unknown }> = [];
+    const executor = createUsecaseExecutor({
+      ...deps({}),
+      executeFederation: async (_node, invocation, parameters) => {
+        captured.push({ path: invocation?.path, parameters });
+        return { status: "Succeeded", values: {} };
+      },
+    });
+    const wf = workflowDsl.WorkflowSchema.parse({
+      name: "Loop delegation",
+      parameters: [{ name: "enabled", type: "bool", default: true }],
+      spec: {
+        nodeDrafts: [
+          {
+            id: "each",
+            name: "Each",
+            type: "Loop",
+            mode: "ForEach",
+            maxIterations: 2,
+            maxParallel: 2,
+            over: { expr: "[6, 7]" },
+            body: {
+              nodeDrafts: [
+                {
+                  ...federationNode,
+                  inputSlots: [
+                    { descriptor: "value", type: "Text", from: { expr: "loop.item" } },
+                    { descriptor: "enabled", type: "Text", from: { param: "enabled" } },
+                  ],
+                },
+              ],
+            },
+          },
+        ],
+      },
+    });
+    expect((await runWorkflow(wf, executor)).status.each).toBe("Succeeded");
+    expect(captured.map((item) => item.parameters)).toEqual([
+      { value: 6, enabled: true },
+      { value: 7, enabled: true },
+    ]);
+    expect(new Set(captured.map((item) => item.path)).size).toBe(2);
+    const selected = workflowDsl.WorkflowNodeSchema.parse({
+      ...federationNode,
+      inputSlots: [
+        {
+          descriptor: "label",
+          type: "Text",
+          sources: [
+            { node: "left", output: "value" },
+            { node: "right", output: "value" },
+          ],
+          select: "FirstAvailable",
+        },
+        {
+          descriptor: "optional",
+          type: "Text",
+          from: { node: "left", output: "missing" },
+          optional: true,
+        },
+      ],
+    });
+    await executor(selected, {
+      nodes: {
+        left: { status: "Skipped", values: {} },
+        right: { status: "Succeeded", values: { value: "chosen" } },
+      },
+    });
+    expect(captured.at(-1)?.parameters).toEqual({ label: "chosen" });
+  });
+
+  test("federation inputs reject file handles and non-finite values before submitting", async () => {
+    let submitted = 0;
+    const executor = createUsecaseExecutor({
+      ...deps({}),
+      executeFederation: async () => {
+        submitted++;
+        return { status: "Succeeded", values: {} };
+      },
+    });
+    const node = workflowDsl.WorkflowNodeSchema.parse({
+      ...federationNode,
+      inputSlots: [{ descriptor: "value", type: "Text", from: { param: "value" } }],
+    });
+    for (const value of [
+      { fileMetadataId: USECASE_PACKAGE_ID, fileMetadataName: "private.dat" },
+      Infinity,
+      null,
+    ])
+      await expect(executor(node, { params: { value } })).rejects.toThrow("finite scalar");
+    expect(submitted).toBe(0);
+  });
   test("passes invocation identity to the governed Script executor", async () => {
     const invocation = { path: JSON.stringify(["node", "sub", "subworkflow", "node", "script"]) };
     const script = workflowDsl.WorkflowNodeSchema.parse({

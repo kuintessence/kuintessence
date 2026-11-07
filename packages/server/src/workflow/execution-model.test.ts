@@ -46,6 +46,59 @@ test("federation DSL exposes only explicitly mapped file outputs and rejects uns
   );
 });
 
+test("federation parameter slots validate bindings, descriptors and relation targets", () => {
+  const slot = { descriptor: "value", type: "Text", from: { param: "value" } };
+  for (const invalid of [
+    { ...slot, descriptor: "__proto__" },
+    { ...slot, type: "File" },
+    { ...slot, from: undefined },
+    { ...slot, contents: [id] },
+  ])
+    expect(
+      workflowDsl.WorkflowNodeSchema.safeParse({ ...node, inputSlots: [invalid] }).success,
+    ).toBe(false);
+
+  const workflow = workflowDsl.WorkflowSchema.parse({
+    name: "Dynamic federation",
+    parameters: [{ name: "value", type: "int", default: 6 }],
+    spec: {
+      nodeDrafts: [
+        {
+          id: "before",
+          name: "Before",
+          type: "NoAction",
+          outputSlots: [{ type: "Text", descriptor: "value" }],
+        },
+        { ...node, inputSlots: [slot] },
+      ],
+      nodeRelations: [
+        {
+          fromId: "before",
+          toId: "remote",
+          slotRelations: [
+            { fromSlot: "value", toSlot: "value", transferStrategy: { type: "Network" } },
+          ],
+        },
+      ],
+    },
+  });
+  expect(workflowDsl.validateWorkflow(workflow)).toEqual([]);
+  const relation = workflow.spec.nodeRelations[0]?.slotRelations[0];
+  if (!relation) throw new Error("Missing relation");
+  relation.toSlot = "unknown";
+  expect(
+    workflowDsl.validateWorkflow(workflow).some((error) => error.includes('toSlot "unknown"')),
+  ).toBe(true);
+  const remote = workflow.spec.nodeDrafts[1];
+  if (remote?.type !== "Federation") throw new Error("Missing federation node");
+  const input = remote.inputSlots?.[0];
+  if (!input) throw new Error("Missing input");
+  remote.inputSlots?.push(input);
+  expect(workflowDsl.validateWorkflow(workflow).some((error) => error.includes("duplicate"))).toBe(
+    true,
+  );
+});
+
 test("durable selection follows nested loops and inline sub-workflows", async () => {
   const wf = workflowDsl.WorkflowSchema.parse({
     name: "Nested",

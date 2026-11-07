@@ -56,6 +56,7 @@ import {
   FederationCancellationSchema,
   FederationMaterialChunkSchema,
   FederationMaterialQuerySchema,
+  type FederationParameterOverrides,
   FederationResultDownloadGrantSchema,
   FederationResultDownloadQuerySchema,
   FederationResultQuerySchema,
@@ -432,8 +433,11 @@ async function row(operationId: string) {
   return value;
 }
 
-async function workflowDelegationFixture(policy?: FederationAgreement["resultPolicy"]) {
-  const f = await fixture(policy);
+async function workflowDelegationFixture(
+  policy?: FederationAgreement["resultPolicy"],
+  parameters: Record<string, string | number> = {},
+) {
+  const f = await fixture(policy, parameters);
   const registry = new WorkflowRunRegistry(db);
   const runId = crypto.randomUUID();
   sourceRunIds.push(runId);
@@ -500,6 +504,152 @@ test("workflow delegation keeps one immutable operation across concurrent calls 
       .where(eq(workflowExecutionDelegations.runId, f.runId)),
   ).toHaveLength(2);
   await lease.release();
+});
+
+test("workflow parameter derivation preserves the base, keeps scalar types and does not require asset-map authority", async () => {
+  const f = await workflowDelegationFixture(undefined, { preserved: "base" });
+  const plan = { ...f.plan, maxAmount: "20" };
+  await permission.set({ ...actor, capability: "asset.map", enabled: false }, actor.userId);
+  try {
+    const queued = await f
+      .service()
+      .enqueueForWorkflow(actor, f.lease, "remote", f.invocation, plan, 600, {
+        value: 6,
+        enabled: true,
+        label: "confidential-input",
+      });
+    const request = (await row(queued.operationId)).request;
+    expect(request.inputManifestDigest).not.toBe(plan.inputManifestDigest);
+    const base = await db.transaction((tx) =>
+      assets.readMaterial(tx, actor.orgId, a.signing.siteId, plan.inputManifestDigest),
+    );
+    const derived = await db.transaction((tx) =>
+      assets.readMaterial(tx, actor.orgId, a.signing.siteId, request.inputManifestDigest),
+    );
+    if (base.kind !== "inputs" || derived.kind !== "inputs")
+      throw new Error("Expected input manifests");
+    expect(base).toMatchObject({ parameters: { preserved: "base" } });
+    expect(derived).toEqual({
+      ...base,
+      parameters: { preserved: "base", value: 6, enabled: true, label: "confidential-input" },
+    });
+    const audit = await db
+      .select()
+      .from(auditLog)
+      .where(eq(auditLog.target, request.inputManifestDigest));
+    expect(audit).toHaveLength(1);
+    expect(audit[0]).toMatchObject({
+      action: "federation.material.derive",
+      diff: { after: { derivedFrom: plan.inputManifestDigest } },
+    });
+    expect(JSON.stringify(audit)).not.toContain("confidential-input");
+    await f.lease.release();
+    const lease = await f.journal.acquire(f.runId);
+    if (!lease) throw new Error("Missing restored lease");
+    expect(
+      (
+        await f.service().enqueueForWorkflow(actor, lease, "remote", f.invocation, plan, 600, {
+          enabled: true,
+          label: "confidential-input",
+          value: 6,
+        })
+      ).operationId,
+    ).toBe(queued.operationId);
+    await expect(
+      f.service().enqueueForWorkflow(actor, lease, "remote", f.invocation, plan, 600, { value: 7 }),
+    ).rejects.toThrow("changed its delegation intent");
+    const other = await f
+      .service()
+      .enqueueForWorkflow(
+        actor,
+        lease,
+        "remote",
+        { path: JSON.stringify(["node", "loop", "iteration", 1, "node", "remote"]) },
+        plan,
+        600,
+        { value: 7 },
+      );
+    expect(other.operationId).not.toBe(queued.operationId);
+    expect((await row(other.operationId)).request.inputManifestDigest).not.toBe(
+      request.inputManifestDigest,
+    );
+    await lease.release();
+  } finally {
+    await permission.set({ ...actor, capability: "asset.map", enabled: true }, actor.userId);
+  }
+});
+
+test("workflow parameter derivation refuses files, oversized content, foreign scope, environment edits and cancelled leases", async () => {
+  const f = await workflowDelegationFixture();
+  const service = f.service();
+  const file = {
+    value: { fileMetadataId: crypto.randomUUID(), fileMetadataName: "secret.dat" },
+  } as unknown as FederationParameterOverrides;
+  await expect(
+    service.enqueueForWorkflow(actor, f.lease, "remote", f.invocation, f.plan, 600, file),
+  ).rejects.toThrow("INVALID_MESSAGE");
+  await expect(
+    service.enqueueForWorkflow(actor, f.lease, "remote", f.invocation, f.plan, 600, {
+      value: "x".repeat(1024 * 1024 + 1),
+    }),
+  ).rejects.toThrow("INVALID_MESSAGE");
+  await expect(
+    service.enqueueForWorkflow(receiver, f.lease, "remote", f.invocation, f.plan, 600, {
+      value: "secret",
+    }),
+  ).rejects.toThrow("POLICY_DENIED");
+  await expect(
+    service.enqueueForWorkflow(
+      actor,
+      f.lease,
+      "remote",
+      f.invocation,
+      { ...f.plan, inputManifestDigest: f.plan.environmentLockDigest },
+      600,
+      { value: "new" },
+    ),
+  ).rejects.toThrow("INVALID_MESSAGE");
+  await f.registry.requestCancel(f.runId);
+  await expect(
+    service.enqueueForWorkflow(actor, f.lease, "remote", f.invocation, f.plan, 600, {
+      value: "new",
+    }),
+  ).rejects.toBeInstanceOf(WorkflowExecutionInterrupted);
+  expect(
+    await db
+      .select()
+      .from(workflowExecutionDelegations)
+      .where(eq(workflowExecutionDelegations.runId, f.runId)),
+  ).toHaveLength(0);
+  expect(
+    await db
+      .select()
+      .from(federationOutbound)
+      .where(eq(federationOutbound.agreementRevisionId, f.plan.agreementRevisionId)),
+  ).toHaveLength(0);
+  await f.lease.release();
+});
+
+test("workflow parameter source prerequisites wait for data instead of reporting a result-transfer wait", async () => {
+  const f = await workflowDelegationFixture();
+  const node = workflowDsl.WorkflowNodeSchema.parse({
+    type: "Federation",
+    id: "remote",
+    name: "Remote",
+    agreementRevisionId: f.terms.agreementRevisionId,
+    template: f.reference,
+    inputManifestDigest: `sha256:${"f".repeat(64)}`,
+    environmentLockDigest: f.request.environmentLockDigest,
+    resources: f.request.resources,
+    maxAmount: "1",
+  });
+  if (node.type !== "Federation") throw new Error("Missing federation node");
+  const executor = new FederationWorkflowExecutor(db, a.signing.siteId, f.service(), clock);
+  await expect(
+    executor.execute(actor, f.lease, node, f.invocation, { value: "input" }),
+  ).rejects.toThrow("DATA_WAITING");
+  expect(f.sent).toHaveLength(0);
+  await f.lease.release();
 });
 
 test("workflow delegation rejects changed intent, foreign owners, stale leases and implicit onward delegation", async () => {

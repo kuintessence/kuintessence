@@ -55,6 +55,7 @@ RUN apk add --no-cache \
     su-exec \
     tini \
     tzdata \
+    util-linux \
     wget
 
 # Bun runtime (statically built, lift binary out of the official image)

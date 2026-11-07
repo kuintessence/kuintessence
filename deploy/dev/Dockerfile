@@ -1,6 +1,6 @@
 FROM oven/bun:1.4.2-alpine
 
-RUN apk add --no-cache git curl ca-certificates
+RUN apk add --no-cache git curl ca-certificates util-linux
 ENV GIT_CONFIG_GLOBAL=/dev/null \
     GIT_CONFIG_NOSYSTEM=1
 

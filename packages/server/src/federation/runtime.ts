@@ -1,6 +1,7 @@
-import { chmod, lstat, mkdir, readFile } from "node:fs/promises";
-import { dirname, isAbsolute } from "node:path";
+import { chmod, lstat, readFile } from "node:fs/promises";
+import { isAbsolute } from "node:path";
 import type { PgDb } from "@kuintessence/db";
+import { withPrivateUnixSocketStartup } from "@kuintessence/shared/unix-socket";
 import { importPKCS8 } from "jose";
 import type { ServerConfig } from "../config";
 import { createFederationIngress } from "./ingress";
@@ -25,22 +26,19 @@ export async function startFederationIngress(
     throw new Error(
       "Federation requires absolute socket path, site ID and signing key configuration",
     );
-  const directory = dirname(socketPath);
-  await mkdir(directory, { mode: 0o700, recursive: true });
-  const stat = await lstat(directory);
-  if (!stat.isDirectory() || (stat.mode & 0o077) !== 0 || stat.uid !== process.getuid?.())
-    throw new Error("Federation socket directory must be private (0700), owned by the Server UID");
   const signingKey = key ?? (await loadFederationSigningKey(config));
   if (!signingKey) throw new Error("Federation signing key is required");
   const app = createFederationIngress(db, signingKey, downloads, materials);
-  const server = Bun.serve({ unix: socketPath, fetch: app.fetch, maxRequestBodySize: 524288 });
-  try {
-    await chmod(socketPath, 0o600);
-  } catch (error) {
-    await server.stop(true);
-    throw error;
-  }
-  return server;
+  return withPrivateUnixSocketStartup(socketPath, async () => {
+    const server = Bun.serve({ unix: socketPath, fetch: app.fetch, maxRequestBodySize: 524288 });
+    try {
+      await chmod(socketPath, 0o600);
+    } catch (error) {
+      await server.stop(true);
+      throw error;
+    }
+    return server;
+  });
 }
 
 export async function loadFederationSigningKey(

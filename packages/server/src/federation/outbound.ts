@@ -23,6 +23,7 @@ import {
   FederationError,
   FederationMaterialChunkSchema,
   FederationMaterialQuerySchema,
+  type FederationParameterOverrides,
   FederationStatusQuerySchema,
   FederationStatusReportSchema,
   federationCanonicalJson,
@@ -228,8 +229,22 @@ export class FederationOutboundService {
     invocation: NodeInvocation,
     plan: WorkflowDelegationPlan,
     admissionWindowSec: number,
+    parameters: FederationParameterOverrides = {},
   ) {
     if (plan.senderSiteId !== this.signingKey.siteId) throw new FederationError("POLICY_DENIED");
+    if (Object.keys(parameters).length) {
+      const inputs = await lease.transaction(async (tx) => {
+        await assertWorkflowDelegationOwner(tx, lease.runId, actor);
+        return this.assets.deriveWorkflowInputs(
+          tx,
+          actor,
+          this.signingKey.siteId,
+          plan.inputManifestDigest,
+          parameters,
+        );
+      });
+      plan = { ...plan, inputManifestDigest: inputs.digest };
+    }
     const request = await bindWorkflowDelegation(
       lease,
       actor,

@@ -1,9 +1,10 @@
 import { createHash, createPrivateKey, createPublicKey, X509Certificate } from "node:crypto";
-import { chmod, lstat, mkdir, readFile } from "node:fs/promises";
+import { chmod, lstat, readFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { isAbsolute, join } from "node:path";
 import { Client, credentials } from "@grpc/grpc-js";
 import { connect, signers } from "@hyperledger/fabric-gateway";
+import { withPrivateUnixSocketStartup } from "@kuintessence/shared/unix-socket";
 import { z } from "zod";
 import {
   EvidenceAdapterConfigSchema,
@@ -151,22 +152,17 @@ export async function startEvidenceAdapter(configFile: string) {
     new FabricEvidenceAdapter(config.adapter, gateway, identity, signer, recoveryKey),
   );
   try {
-    await mkdir(config.runDirectory, { recursive: true, mode: 0o700 });
-    const stat = await lstat(config.runDirectory);
-    if (!stat.isDirectory() || (stat.mode & 0o077) !== 0 || stat.uid !== process.getuid?.())
-      throw new Error(
-        "Adapter runtime directory must be owned by this process user with mode 0700",
-      );
     const socket = join(config.runDirectory, "evidence.sock");
-    // Existing sockets are not removed automatically: another adapter might still own them.
-    await new Promise<void>((resolve, reject) => {
-      server.once("error", reject);
-      server.listen(socket, () => {
-        server.off("error", reject);
-        resolve();
+    await withPrivateUnixSocketStartup(socket, async () => {
+      await new Promise<void>((resolve, reject) => {
+        server.once("error", reject);
+        server.listen(socket, () => {
+          server.off("error", reject);
+          resolve();
+        });
       });
+      await chmod(socket, 0o600);
     });
-    await chmod(socket, 0o600);
   } catch (error) {
     server.close();
     gateway.close();

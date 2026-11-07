@@ -1,4 +1,5 @@
 import type { JobStatusName } from "../constants/job-status";
+import type { FederationParameterOverrides } from "../federation/assets";
 import * as usecase from "../usecase";
 import * as workflowDsl from "../workflow-dsl";
 import {
@@ -97,6 +98,7 @@ export interface UsecaseExecutorDeps {
   executeFederation?(
     node: Extract<workflowDsl.WorkflowNode, { type: "Federation" }>,
     invocation?: NodeInvocation,
+    parameters?: FederationParameterOverrides,
   ): Promise<NodeExecutionResult>;
 }
 
@@ -108,7 +110,7 @@ export interface UsecaseExecutorDeps {
 export function createUsecaseExecutor(deps: UsecaseExecutorDeps): NodeExecutor {
   return async (node, ctx, invocation) => {
     if (node.type === "Federation" && deps.executeFederation)
-      return deps.executeFederation(node, invocation);
+      return deps.executeFederation(node, invocation, federationParameters(node, ctx));
     if (node.type === "NoAction") {
       return { status: "Succeeded", values: {} };
     }
@@ -280,6 +282,31 @@ function mapResources(
     resources.memoryMb = memoryMiB;
   }
   return Object.keys(resources).length > 0 ? resources : undefined;
+}
+
+function federationParameters(
+  node: Extract<workflowDsl.WorkflowNode, { type: "Federation" }>,
+  ctx: Record<string, CelValue>,
+): FederationParameterOverrides {
+  const parameters: FederationParameterOverrides = {};
+  for (const slot of node.inputSlots ?? []) {
+    const value = slot.sources
+      ? resolveSources(slot.sources, slot.select, ctx)
+      : slot.from
+        ? resolveBinding(slot.from, ctx)
+        : undefined;
+    if (value === undefined && slot.optional) continue;
+    if (
+      typeof value !== "string" &&
+      typeof value !== "boolean" &&
+      !(typeof value === "number" && Number.isFinite(value))
+    )
+      throw new Error(
+        `workflow: federation parameter "${slot.descriptor}" requires a finite scalar value`,
+      );
+    parameters[slot.descriptor] = value;
+  }
+  return parameters;
 }
 
 async function resolveNodeInputs(

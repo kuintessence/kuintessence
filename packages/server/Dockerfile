@@ -35,6 +35,7 @@ ARG KQ_BUILD_REVISION=unknown
 RUN bun scripts/build-agent-bundle.cjs /opt/kuintessence/agent "$KQ_BUILD_REVISION"
 
 FROM oven/bun:1.4.2-alpine
+RUN apk add --no-cache util-linux
 WORKDIR /app
 COPY --from=build /app /app
 COPY --from=agent-binaries /opt/kuintessence/agent /opt/kuintessence/agent

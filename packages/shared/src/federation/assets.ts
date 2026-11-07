@@ -5,6 +5,11 @@ import { SandboxRuntimeContractRefSchema } from "../workflow-dsl/script";
 import { FederationAssetRefSchema, FederationDigestSchema } from "./references";
 
 const Descriptor = z.string().regex(/^[a-zA-Z][a-zA-Z0-9_.-]{0,127}$/);
+export const FederationParameterOverridesSchema = z.record(
+  Descriptor,
+  z.union([z.string(), z.number().finite(), z.boolean()]),
+);
+export type FederationParameterOverrides = z.infer<typeof FederationParameterOverridesSchema>;
 const RelativePath = z
   .string()
   .min(1)

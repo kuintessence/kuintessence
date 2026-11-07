@@ -950,8 +950,30 @@ Slurm 方向已取得并核对仓库既有 Apptainer 1.4.3 包 SHA-256，构建�
 
 全仓其余包类型检查通过；Server 两个新增终态类型问题修正后，最终 Server 定向类型检查通过，Fabric 测试类型检查通过；lint 无错误、保留原有 47 warnings/1 info，639 个本地文档目标检查通过。临时服务、数据库、凭据已清理，并确认 namespace 已删除；未推送、发布预览或修改 main 部署。
 
+## Workflow 动态标量输入
+
+Federation 节点新增可选 Text inputSlots，复用普通工作流的参数、上游输出、sources/select 和循环 CEL 绑定，保留字符串、有限数值与布尔类型。optional 缺失时保留基础清单参数；文件句柄、对象/数组、null、非有限数值以及 File/Dataset/contents 输入拒绝。参数描述符与联邦清单使用同一校验，静态检查覆盖重复输入和关系目标，不能靠本机文件 ID 绕过跨机构交付。
+
+源站在原运行租约和所有者检查下，以 delegation.submit 权限派生不可变输入清单，无需额外 asset.map 权限。只覆盖 parameters，数据/软件绑定和环境锁不变，合并后仍限制为 1 MiB。审计仅记录摘要和 derivedFrom，不包含参数正文；原清单不修改。不同循环调用分别绑定，恢复重用相同规范化摘要和原操作；同一 invocation 输入变化明确拒绝。源清单缺失保持 DATA_WAITING，不再误标为 RESULT_WAITING。
+
+本轮数据库验证沿用已完成的 5 个隔离 PostgreSQL 用例结果，未重复运行：参数类型和基础清单保留、审计不含正文、无 asset.map 仍可提交、恢复及不同循环调用、意图冲突、文件/超限/跨组织/环境锁修改/取消拒绝与等待原因；另含既有并发幂等回归。共享执行器两项动态输入用例已通过，涵盖实际循环执行、来源选择、可选值和提交前拒绝；新增一项 DSL 用例验证输入约束、关系目标和重复描述符。初次来源选择夹具缺少节点成功状态，修正后定向通过；新增 DSL 夹具初次使用错误的参数类型和传输策略格式，按现有契约修正后通过。原单元运行中的其他 39 项已通过，不重复累计。
+
+全仓各包类型检查最终通过（含 protobuf 生成和 Fabric 测试）：首次 Server 检查发现测试缺少 inputs/environment-lock 类型收窄，补显式检查后仅复查 Server 通过。Lint 无错误，保留原有 47 warnings/1 info；640 个本地文档目标及文档内动态参数 YAML 静态校验通过。本机日志为 temp/federation-workflow-parameters-*.log，未推送、合并或部署。
+
+本轮未启动真实双平台、集群作业或 Fabric，数据库跨站发送仍为服务内替身；这些结果不等于动态参数的真实跨平台验收。源站动态 File/FileBatch 输入的授权交付仍待完成。实现和用法见 [普通 Workflow 联邦节点](implementation.md)，当前以 YAML 配置，无新增管理表单。
+
+## 动态参数真实双平台与进程恢复
+
+普通源站 Workflow API 提交 Generate → Federation → NoAction，源站生成 8，覆盖基础输入清单的整数 6；目标站从零清单自动取得派生清单与环境锁，两个真实 Kubernetes Script 计算 56 并生成 verified:56\n。源站在已接受委派且 invocation 持久等待后被 SIGKILL，原数据库启动新的生产 Server 后恢复，三个节点均 Succeeded，waitingInvocations 清空。委派 UUID、预留和目标 Workflow 均保持唯一，实际回传 12 字节，经普通云盘下载核对 SHA-256 eef7fb5680468789fb1baa5c3478620cd7bfe6ae579385380f7c2dfb152fe4c6，对端签名接收回执 recorded。
+
+源站运行 4b5fdcc9-28db-4860-aa2d-5136ddeff405，委派 208c5a73-0933-4ae8-b598-573704973d56。本机证据 temp/federation-parameters-live-platforms/dynamic-parameters-evidence.json、source-workflow-evidence.json、result-delivery-evidence.json 及 temp/federation-parameters-live-run.log。两个独立 Server/数据库、真实 mTLS 网关、Agent 与 RustFS 位于同一主机，计算限 1 CPU/128 MiB；源站下游为文件就绪检查，无 Fabric/Spack/Slurm/PBS，不作为全套联邦交付或所有崩溃窗口的证明。临时进程、数据库、凭据均清理，已确认 namespace 消失。
+
+第一次验收在源站重启失败：SIGKILL 遗留 ingress.sock 导致 EADDRINUSE，已保留失败日志 temp/federation-parameters-live-run-before-socket-fix.log。修复后上述用例通过。最终 Server/Adapter 共用私有 Unix socket 启动工具：Linux 上持有稳定 .lock 文件的内核 flock，探测 ECONNREFUSED 后才清理本 UID socket，再完成绑定及权限设置；活跃监听、探测不确定、普通文件/符号链接、锁不安全或缺 flock 均拒绝。锁文件保留但文件描述符关闭/进程死亡即释放，不使用网络命名空间内的锁代替共享卷锁；非 Linux 保持原路径占用拒绝行为。
+
+最终公共工具已通过 3 项真实 Node 进程测试，包含 SIGKILL 的启动锁释放、活跃监听保护、缺 flock 拒绝以及实际 unshare 独立网络命名空间竞争；Server/Adapter 相关 5 项测试通过，Bun ingress 用真实子进程留下 socket、并发恢复、活跃监听和非 socket 路径保护。双平台测试完成后，仅对改用共享文件锁的最终实现定向验证，未重复跑整套远端计算。Fabric 数据库验收脚本去掉手工删除 socket，并改为实际 /health 就绪探测；该修改后的真实 Fabric 联合脚本尚未重跑。镜像增加 util-linux，尚未构建新镜像。源站动态文件输入授权交付及其后续完整目标仍待完成。全仓各包类型检查通过；Fabric 验收脚本健康响应的 unknown 类型收窄修正后，Fabric 测试定向类型检查通过。Lint 无错误，仍为原有 47 warnings/1 info；641 个文档目标检查通过。检查证据在本机 temp/federation-unix-startup-*.log。
+
 ## 尚未接通，不能宣称支持
 
-协议审批与机构信任管理 UI、源站 Workflow 动态输入交付、额度结算/退款、完整生产持久 Workflow 端到端验收、完整的数据/软件物化与介质交付、双方证据确认与完整用量/结算记录、商业/市场链码及真实联邦作业与 Fabric 联合运行、归档恢复、Web/CLI 和部署配置均未完成。
+协议审批与机构信任管理 UI、源站 Workflow 动态文件输入交付、额度结算/退款、完整生产持久 Workflow 端到端验收、完整的数据/软件物化与介质交付、双方证据确认与完整用量/结算记录、商业/市场链码及真实联邦作业与 Fabric 联合运行、归档恢复、Web/CLI 和部署配置均未完成。
 
-接下来连接普通 Workflow 自动委派和状态消费，并验证 Slurm/PBS 跨站执行、材料与环境锁，以及真实运行的恢复和撤权。已有接收站点 Kubernetes 文件流水线通过，不能替代这些验收。同时仍须补全用例内部标识与受管文件转换、native lock/Agent 检查，将本地输入连接到既有授权执行路径，并接通联邦任务/工作流映射与派发待办消费；只有本地资源、数据和软件授权及 Job 映射完整后，预留才能进入执行。完整交付仍须通过所有端到端验收，不将本轮基础模块单独宣传成可用联邦平台。
+接下来完成源站动态文件输入的授权交付，并验证 Slurm/PBS 跨站执行、材料与环境锁，以及真实运行的恢复和撤权。普通 Workflow 自动委派和状态消费已接通，验收范围见上文。已有接收站点 Kubernetes 文件流水线通过，不能替代这些验收。同时仍须补全用例内部标识与受管文件转换、native lock/Agent 检查，将本地输入连接到既有授权执行路径，并接通联邦任务/工作流映射与派发待办消费；只有本地资源、数据和软件授权及 Job 映射完整后，预留才能进入执行。完整交付仍须通过所有端到端验收，不将本轮基础模块单独宣传成可用联邦平台。

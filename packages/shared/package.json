@@ -11,6 +11,11 @@
       "types": "./src/index.ts",
       "default": "./src/index.ts"
     },
+    "./unix-socket": {
+      "bun": "./src/unix-socket.ts",
+      "types": "./src/unix-socket.ts",
+      "default": "./src/unix-socket.ts"
+    },
     "./federation": {
       "bun": "./src/federation/index.ts",
       "types": "./src/federation/index.ts",

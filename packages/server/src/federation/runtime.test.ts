@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { chmod, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createPgDb } from "@kuintessence/db";
@@ -62,6 +62,78 @@ test("private ingress only binds a mode-0600 Unix socket in an owned mode-0700 d
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test.skipIf(process.platform !== "linux")(
+  "ingress recovers a killed process socket without replacing a live listener or other files",
+  async () => {
+    const dir = await mkdtemp(join(tmpdir(), "kq-federation-restart-"));
+    const socket = join(dir, "ingress.sock");
+    const pair = await generateKeyPair("RS256", { extractable: true });
+    const key = { siteId: crypto.randomUUID(), keyId: "test", privateKey: pair.privateKey };
+    const config = loadServerConfig({
+      ...base,
+      FEDERATION_ENABLED: "true",
+      FEDERATION_SITE_ID: key.siteId,
+      FEDERATION_SOCKET_PATH: socket,
+      FEDERATION_SIGNING_KEY_ID: key.keyId,
+      FEDERATION_SIGNING_KEY_FILE: join(dir, "unused.key"),
+    });
+    const child = Bun.spawn(
+      [
+        process.execPath,
+        "-e",
+        'Bun.serve({unix:process.argv[1],fetch:()=>new Response("live")}); console.log("ready");',
+        socket,
+      ],
+      { stdout: "pipe", stderr: "pipe" },
+    );
+    let server: Awaited<ReturnType<typeof startFederationIngress>>;
+    try {
+      const reader = child.stdout.getReader();
+      expect(new TextDecoder().decode((await reader.read()).value).trim()).toBe("ready");
+      reader.releaseLock();
+      const before = await stat(socket);
+      await expect(startFederationIngress(db, config, key)).rejects.toThrow("active listener");
+      expect((await stat(socket)).ino).toBe(before.ino);
+      expect(await (await fetch("http://localhost/", { unix: socket })).text()).toBe("live");
+      child.kill("SIGKILL");
+      await child.exited;
+      expect((await stat(socket)).isSocket()).toBe(true);
+      // Concurrent restarts must not remove the winner's newly bound socket.
+      const attempts = await Promise.allSettled([
+        startFederationIngress(db, config, key),
+        startFederationIngress(db, config, key),
+      ]);
+      const started = attempts.filter((entry) => entry.status === "fulfilled");
+      server = started[0]?.value;
+      expect(started).toHaveLength(1);
+      expect(server).toBeDefined();
+      expect((await stat(socket)).mode & 0o777).toBe(0o600);
+      expect((await fetch("http://localhost/", { unix: socket })).status).toBe(404);
+      await expect(startFederationIngress(db, config, key)).rejects.toThrow("active listener");
+      expect((await fetch("http://localhost/", { unix: socket })).status).toBe(404);
+      await server?.stop(true);
+      server = undefined;
+      await rm(socket, { force: true });
+      await writeFile(socket, "retain", { mode: 0o600 });
+      await expect(startFederationIngress(db, config, key)).rejects.toThrow("must be a socket");
+      expect(await readFile(socket, "utf8")).toBe("retain");
+      await rm(socket);
+      const target = join(dir, "target");
+      await writeFile(target, "private", { mode: 0o600 });
+      await symlink(target, socket);
+      await expect(startFederationIngress(db, config, key)).rejects.toThrow("must be a socket");
+      expect((await lstat(socket)).isSymbolicLink()).toBe(true);
+      expect(await readFile(target, "utf8")).toBe("private");
+    } finally {
+      child.kill();
+      await child.exited;
+      await server?.stop(true);
+      await rm(dir, { recursive: true, force: true });
+    }
+  },
+  15000,
+);
 
 test("outbound requires federation plus all three TLS files and a private client key", async () => {
   expect(await loadFederationSender(loadServerConfig(base))).toBeUndefined();
