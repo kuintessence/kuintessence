@@ -28,7 +28,7 @@ concurrency:
 jobs:
   evidence:
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 15
     services:
       postgres:
         image: postgres:16-alpine
@@ -75,11 +75,12 @@ jobs:
           KQ_FABRIC_DATABASE_URL: postgres://kq:kq@localhost:5432/postgres
           KQ_FABRIC_REPORT: ${{ runner.temp }}/fabric-evidence-result.json
         run: bun run test:fabric:integration
-      - name: Verify private commercial agreements and usage
+      - name: Verify private commercial agreements and database recovery
         env:
           KQ_FABRIC_TOOLS: ${{ runner.temp }}/kq-fabric-3.1.5
+          KQ_FABRIC_DATABASE_URL: postgres://kq:kq@localhost:5432/postgres
           KQ_FABRIC_REPORT: ${{ runner.temp }}/fabric-commercial-result.json
-        run: bun run test:fabric:commercial
+        run: bun run test:fabric:commercial:integration
       - name: Preserve commercial assertion summary
         uses: actions/upload-artifact@v4
         with:

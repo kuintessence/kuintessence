@@ -53,6 +53,10 @@ import { FederationAttestationService } from "./federation/attestation";
 import { UnixAttestationClient } from "./federation/attestation-client";
 import { FederationAttestationWorker } from "./federation/attestation-worker";
 import { FederationCancellationMonitor } from "./federation/cancellation-monitor";
+import { FederationCommercialAgreementService } from "./federation/commercial-agreements";
+import { UnixCommercialClient } from "./federation/commercial-client";
+import { FederationCommercialSubmissionService } from "./federation/commercial-submissions";
+import { FederationCommercialWorker } from "./federation/commercial-worker";
 import { FederationDataDispatch } from "./federation/data-dispatch";
 import { createFederationDatasetPreflight } from "./federation/dataset-preflight";
 import { FederationDispatchAuthorization } from "./federation/dispatch-authorization";
@@ -129,6 +133,7 @@ import { createDataMarketRoutes } from "./routes/data-market";
 import { dslRoutes } from "./routes/dsl";
 import { createFederationAgreementRoutes } from "./routes/federation-agreements";
 import { createFederationAssetRoutes } from "./routes/federation-assets";
+import { createFederationCommercialRoutes } from "./routes/federation-commercial";
 import { createFederationOutboundRoutes } from "./routes/federation-outbound";
 import { createFileRoutes } from "./routes/files";
 import { healthRoutes } from "./routes/health";
@@ -1650,6 +1655,23 @@ const federationAttestation = federationSigningKey
         : undefined,
     )
   : undefined;
+const federationCommercial = federationSigningKey
+  ? new FederationCommercialSubmissionService(
+      db,
+      federationSigningKey.siteId,
+      config.FEDERATION_COMMERCIAL_SOCKET_PATH
+        ? new UnixCommercialClient(config.FEDERATION_COMMERCIAL_SOCKET_PATH)
+        : undefined,
+    )
+  : undefined;
+if (federationSigningKey && federationCommercial)
+  protectedApi.route(
+    "/",
+    createFederationCommercialRoutes(
+      new FederationCommercialAgreementService(db, federationSigningKey),
+      federationCommercial,
+    ),
+  );
 const federationPreparation = federationSigningKey
   ? new FederationPreparationService(db, federationSigningKey.siteId, federationAssets)
   : undefined;
@@ -2366,6 +2388,11 @@ const federationAttestationWorker =
     ? new FederationAttestationWorker(federationAttestation)
     : undefined;
 federationAttestationWorker?.start();
+const federationCommercialWorker =
+  federationCommercial && config.FEDERATION_COMMERCIAL_SOCKET_PATH
+    ? new FederationCommercialWorker(federationCommercial)
+    : undefined;
+federationCommercialWorker?.start();
 logger.info({ port: config.SERVER_PORT }, "Server starting");
 
 const httpTrustedProxyCidrs = parseTrustedProxyCidrs(config.HTTP_TRUSTED_PROXY_CIDRS);
@@ -2412,6 +2439,7 @@ async function shutdown(signal: string): Promise<void> {
     await federationInputWorker?.stop();
     await federationResultWorker?.stop();
     await federationAttestationWorker?.stop();
+    await federationCommercialWorker?.stop();
     await jobDispatchOutbox.stop();
     await jobCancellationOutbox.stop();
     fileService.shutdown();

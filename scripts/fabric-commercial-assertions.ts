@@ -3,10 +3,15 @@ import { randomBytes } from "node:crypto";
 import { readdir, readFile, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { z } from "zod";
+import { verifyCommercialDatabase } from "./fabric-commercial-database";
 
 export async function verifyCommercialNetwork(
   root: string,
-  controls: { stopOrderer(): Promise<void>; startOrderer(): Promise<void> },
+  controls: {
+    stopOrderer(): Promise<void>;
+    startOrderer(): Promise<void>;
+    onCleanup(cleanup: () => Promise<void>): void;
+  },
 ) {
   const build = await Bun.build({
     entrypoints: [resolve(import.meta.dir, "fabric-commercial-probe.ts")],
@@ -118,6 +123,12 @@ export async function verifyCommercialNetwork(
     result.passed.push(
       "orderer outage retains the same encrypted checkpoint and transaction ID until VALID after restart",
     );
+    if (process.argv.includes("--database")) {
+      assert(process.env.KQ_FABRIC_DATABASE_URL);
+      await verifyCommercialDatabase(root, process.env.KQ_FABRIC_DATABASE_URL, controls, (name) =>
+        result.passed.push(name),
+      );
+    }
     for (const filename of await readdir(root))
       if (filename.endsWith(".log")) {
         const bytes = await readFile(join(root, filename));

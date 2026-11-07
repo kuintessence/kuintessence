@@ -16,6 +16,10 @@ import type {
   FederationStatusReport,
   FederationStorageReconciliationRecord,
 } from "@kuintessence/shared/federation";
+import type {
+  CommercialAgreement,
+  CommercialProposalInput,
+} from "@kuintessence/shared/federation/commercial";
 import type { FederationEvidenceBatch } from "@kuintessence/shared/federation/ledger";
 import { sql } from "drizzle-orm";
 import {
@@ -71,6 +75,8 @@ export const federationSigningKeys = pgTable(
           | "delegation"
           | "acceptance"
           | "evidence-batch"
+          | "commercial-agreement"
+          | "commercial-usage"
           | "status-query"
           | "status-report"
           | "cancellation"
@@ -1006,5 +1012,109 @@ export const federationResultReceipts = pgTable(
   (t) => [
     primaryKey({ columns: [t.localSiteId, t.senderSiteId, t.receiptId] }),
     index("federation_result_receipt_reservation").on(t.reservationId),
+  ],
+);
+
+/** Commercial approval records never activate execution agreements or transfer a balance. */
+export const federationCommercialAgreements = pgTable(
+  "federation_commercial_agreements",
+  {
+    localSiteId: uuid("local_site_id")
+      .notNull()
+      .references(() => federationSites.id),
+    revisionId: uuid("revision_id").notNull(),
+    localOrgId: uuid("local_org_id")
+      .notNull()
+      .references(() => orgs.id),
+    terms: jsonb("terms").$type<CommercialAgreement>().notNull(),
+    digest: varchar("digest", { length: 71 }).notNull(),
+    approvalJws: text("approval_jws").notNull(),
+    counterpartyJws: text("counterparty_jws"),
+    approvedBy: uuid("approved_by")
+      .notNull()
+      .references(() => users.id),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.localSiteId, t.revisionId] }),
+    index("federation_commercial_org").on(t.localSiteId, t.localOrgId, t.createdAt),
+    check(
+      "federation_commercial_terms",
+      sql`(${t.digest} ~ '^sha256:[a-f0-9]{64}$' AND ${t.terms}->'agreement'->>'agreementRevisionId' = ${t.revisionId}::text AND (${t.terms}->'agreement'->>'sourceSiteId' = ${t.localSiteId}::text OR ${t.terms}->'agreement'->>'targetSiteId' = ${t.localSiteId}::text)) IS TRUE`,
+    ),
+  ],
+);
+
+export const federationCommercialSubmissions = pgTable(
+  "federation_commercial_submissions",
+  {
+    id: uuid("id").primaryKey(),
+    localSiteId: uuid("local_site_id").notNull(),
+    agreementRevisionId: uuid("agreement_revision_id").notNull(),
+    input: jsonb("input").$type<CommercialProposalInput>().notNull(),
+    state: varchar("state", { length: 24 }).notNull().default("pending"),
+    lastError: varchar("last_error", { length: 64 }),
+    leaseToken: uuid("lease_token"),
+    leaseUntil: timestamp("lease_until", { withTimezone: true }),
+    nextAttemptAt: timestamp("next_attempt_at", { withTimezone: true }).notNull().defaultNow(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    foreignKey({
+      columns: [t.localSiteId, t.agreementRevisionId],
+      foreignColumns: [
+        federationCommercialAgreements.localSiteId,
+        federationCommercialAgreements.revisionId,
+      ],
+    }),
+    uniqueIndex("federation_commercial_record").on(
+      t.localSiteId,
+      sql`(${t.input}->>'operation')`,
+      sql`(${t.input}->>'recordId')`,
+    ),
+    index("federation_commercial_pending").on(t.localSiteId, t.state, t.nextAttemptAt),
+    check(
+      "federation_commercial_submission_state",
+      sql`${t.state} IN ('pending','committed','needs_review')`,
+    ),
+    check(
+      "federation_commercial_submission_input",
+      sql`(${t.input}->>'operation' IN ('register-agreement','record-usage') AND ${t.input}->>'recordId' IS NOT NULL AND ${t.input}->>'domainId' IS NOT NULL AND ${t.input}->>'digest' ~ '^sha256:[a-f0-9]{64}$') IS TRUE`,
+    ),
+    check(
+      "federation_commercial_submission_lease",
+      sql`(${t.leaseToken} IS NULL) = (${t.leaseUntil} IS NULL)`,
+    ),
+  ],
+);
+
+export const federationCommercialAttempts = pgTable(
+  "federation_commercial_attempts",
+  {
+    id: uuid("id").primaryKey(),
+    submissionId: uuid("submission_id")
+      .notNull()
+      .references(() => federationCommercialSubmissions.id),
+    number: integer("number").notNull(),
+    transactionId: varchar("transaction_id", { length: 64 }).notNull(),
+    recovery: text("recovery").notNull(),
+    stage: varchar("stage", { length: 24 }).notNull().default("proposal"),
+    validationCode: integer("validation_code"),
+    blockNumber: numeric("block_number", { precision: 20, scale: 0 }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("federation_commercial_tx").on(t.transactionId),
+    uniqueIndex("federation_commercial_attempt_number").on(t.submissionId, t.number),
+    check(
+      "federation_commercial_attempt",
+      sql`${t.number} > 0 AND ${t.transactionId} ~ '^[a-f0-9]{64}$' AND octet_length(${t.recovery}) BETWEEN 1 AND 4194304`,
+    ),
+    check(
+      "federation_commercial_result",
+      sql`((${t.stage} IN ('proposal','transaction','abandoned') AND ${t.validationCode} IS NULL AND ${t.blockNumber} IS NULL) OR (${t.stage} = 'committed' AND ${t.validationCode} = 0 AND ${t.blockNumber} >= 0) OR (${t.stage} = 'invalid' AND ${t.validationCode} BETWEEN 1 AND 255 AND ${t.blockNumber} >= 0)) IS TRUE`,
+    ),
   ],
 );

@@ -38,8 +38,6 @@ const environment = {
 };
 const channel = "kq-evidence-test";
 const commercial = process.argv.includes("--commercial");
-if (commercial && process.argv.includes("--database"))
-  throw new Error("Commercial Server integration is not implemented");
 const chaincode = commercial ? "kq-commercial" : "kq-evidence";
 const record = z.record(z.string(), z.unknown());
 const section = (parent: Record<string, unknown>, key: string) => {

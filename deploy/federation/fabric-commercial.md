@@ -1,6 +1,6 @@
 # Fabric 私有合同与用量链码
 
-`kq-commercial` 是独立链码，当前提供双方商业合同的不可变登记、提供方用量报告和追加更正。价格、合同字段、用量与签名仅进入两方机构 PDC；公开交易仅有随机域/记录 ID 和带盐摘要。已用 Fabric 3.1.5 的真实 Peer、Orderer、MSP、Gateway 和私有区块投递验证，**已接独立 Node Adapter、Server 类型化私有客户端与跨进程恢复；尚未接 Server 商业审批/数据库待办、市场激活、余额、账单及支付**。登记合同不是执行许可，用量报告不是计费事实或双方确认账单；Server 对 ledger_coordinated 的执行拒绝继续有效。
+`kq-commercial` 是独立链码，当前提供双方商业合同的不可变登记、提供方用量报告和追加更正。价格、合同字段、用量与签名仅进入两方机构 PDC；公开交易仅有随机域/记录 ID 和带盐摘要。已用 Fabric 3.1.5 的真实 Peer、Orderer、MSP、Gateway 和私有区块投递验证，**已接独立 Node Adapter、Server 类型化私有客户端与跨进程恢复；Server 商业审批、数据库待办与后台提交已接入；市场激活、余额、账单及支付仍待完成**。登记合同不是执行许可，用量报告不是计费事实或双方确认账单；Server 对 ledger_coordinated 的执行拒绝继续有效。
 
 实现：[商业协议](../../packages/shared/src/federation/commercial.ts)、[链码](../../contracts/fabric/commercial/src/contract.ts)、[Node 入口](../../contracts/fabric/commercial/src/main.ts)。构建：
 
@@ -27,7 +27,7 @@ bun run --filter @kuintessence/fabric-commercial build
 
 `fabricCommercialCollections(trust)` 从同一配置生成集合定义：AB 集合读取 OR(A.member,B.member)、memberOnlyRead/memberOnlyWrite=true，写入背书 AND(A.peer,B.peer)。集合成员与组织背书是两套独立配置，不能以一个机构的两台 Peer 替代两家机构。集合只写 PDC，让集合写策略覆盖链码默认 ALL；业务请求不得把私有 transient 转发给 C 或其他非成员。所需集合、链码与 channel 固定于部署配置，不能让外部请求选择任意背书目标。
 
-业务客户端证书必须同时含 kq.federation.site 与 kq.federation.role=commercial；平台信任管理员没有该业务角色。每个合同还须源/目标机构两把获批准业务公钥对**同一份精确条款字节**签名。Peer 背书不是业务签署，不自动补签合同；商用公钥用途目前独立由商业链码的部署配置管理，不自动扩大平台信任登记或旧 evidence-batch 公钥的用途。
+业务客户端证书必须同时含 kq.federation.site 与 kq.federation.role=commercial；平台信任管理员没有该业务角色。每个合同还须源/目标机构两把获批准业务公钥对**同一份精确条款字节**签名。Peer 背书不是业务签署，不自动补签合同；商用公钥用途须分别在商业链码部署配置和平台信任登记中明确批准；平台现接受 commercial-agreement、commercial-usage 两种用途，不自动扩大旧 evidence-batch 或 agreement 公钥的用途。旧 keyId 不可覆盖，须按既有轮换规则配置新 keyId。
 
 ## 接口与私有输入
 
@@ -51,7 +51,7 @@ bun run --filter @kuintessence/fabric-commercial build
 
 复用 [Fabric Adapter 构建与连接配置](fabric-evidence.md#构建和进程配置)，另起独立 Node 进程，设置 `KQ_FABRIC_ADAPTER_KIND=commercial`、`KQ_FABRIC_ADAPTER_CONFIG=/absolute/path/commercial.json`。省略 kind 仍启动既有 evidence 模式。商业配置中的 adapter 固定 siteId、channel、chaincode=kq-commercial 及包含 keyPurposes 的完整商业 trust；Fabric 客户端身份须有 commercial 属性。为商业进程配置独立的 recoveryKeyFile；私有目录与 socket 仍分别要求 0700、0600。
 
-进程仅监听 runDirectory/commercial.sock，不提供任意链码调用或 TCP API。Server 客户端 `UnixCommercialClient` 不依赖 Fabric SDK；目前由隔离测试调用，生产 Server 尚未启动商业 worker。
+进程仅监听 runDirectory/commercial.sock，不提供任意链码调用或 TCP API。Server 客户端 `UnixCommercialClient` 不依赖 Fabric SDK；Server 配置 FEDERATION_COMMERCIAL_SOCKET_PATH 后启动商业后台提交，省略该项仍可审批与保存待办。
 
 | 接口 | 行为 |
 | --- | --- |
@@ -61,14 +61,37 @@ bun run --filter @kuintessence/fabric-commercial build
 
 私有信封只放 commercial transient，背书目标固定为合作域的两家 MSP。检查点绑定商业用途、配置代次、调用证书和恢复密钥，无法跨机构或与证据通道互换；配置/证书/密钥轮换前须处理待办并备份旧材料。提交超时或进程退出后继续使用同一交易号，不重新构造交易。committed 只表示链上记录成立，不是余额锁定、执行授权、双方确认账单或支付成功。证据通道保留旧版检查点格式及 anchored 状态，不要求迁移已有待办。
 
+## 平台审批与后台提交
+
+迁移 0114 建立独立商业审批、待办与提交尝试表；执行协议、作业额度与预算表不因商业审批改变。Server 沿用现有联邦签名身份，公钥须在本地信任登记及链码配置中均有 commercial-agreement 用途。平台管理员登记密钥不等于获得签署权限，人员必须有活动组织的 agreement.approve 授权；agreement.read 可查看同组织条款，普通机构/平台角色不自动获得此权限。
+
+| 平台接口（/api 前缀） | 行为 |
+| --- | --- |
+| GET /federation/commercial-agreements | 组织内分页摘要，不返回正文和签名 |
+| POST /federation/commercial-agreements/approve | {terms: CommercialAgreement}；核对本机构为合同一方、有效期与公钥用途后签署，不可覆盖原修订 |
+| GET /federation/commercial-agreements/:revisionId | 同组织完整条款、摘要与已有签名 |
+| POST /federation/commercial-agreements/:revisionId/counterparty | {approvalJws}；验证对方对同一精确条款的有效签名，事务保存双签和待办 |
+| GET /federation/commercial-agreements/:revisionId/submissions | 后台状态、脱敏错误及最近交易号/区块/验证码，不返回恢复 token 或私有正文 |
+| POST /federation/commercial-agreements/:revisionId/submissions/:submissionId/retry | 有批准权的人员复核 needs_review 后重试，保留历史尝试并写审计 |
+
+这些接口只允许人类会话，受机构范围、输入大小和严格 schema 限制。签署商业条款是独立机构批准记录，不隐式安装执行协议。当前 ledger_coordinated 仍不能执行，不能将商业 committed 当作额度锁定、唯一认领或执行 gate 已满足。合同原件与签名在本地 PostgreSQL 中属受控私有记录，须纳入机构备份和访问管理；平台审计只存记录 ID、摘要、状态，不复制价格和条款正文。
+
+双签后的处理由合同 mode 决定：bilateral_direct 不生成链待办；bilateral_attested 与 ledger_coordinated 生成 pending，但 HTTP 响应不等待链。未配置 socket、链不可达及提交结果未知不会撤销双签或影响已有双边接单。各方可登记同一不可变合同；同时提交可能产生 Fabric MVCC INVALID，进入人工复核后可重试原内容，不自动替换商业条款。
+
+配置 FEDERATION_COMMERCIAL_SOCKET_PATH=/private/run/commercial.sock 后，每十秒扫描、每轮至多推进八次检查点。90 秒数据库租约防止多个 Server 同时推进；网络 I/O 不持有事务，保存结果前后均验证租约。proposal 与背书后的 transaction 必须先事务保存，之后才能提交；pending 保留原 transactionId 与 recovery，至少退避 30 秒。VALID 才标记 committed，INVALID 或不可自动处理的错误进入 needs_review。人工重试只能放弃未提交 proposal，或在已确认 INVALID 后开始新尝试；未知的 transaction 仍须恢复原交易。
+
+机构批准是持久签署事实，后台不以批准人员离职抹除原批准。创建新 proposal、向 Peer 披露前检查当前平台机构/签名信任与用途；已背书的交易按原检查点恢复和核对终态，不通过更换签名或重新授权掩盖未知结果。暂停/撤销合作的执行权仍由执行协议及本地策略控制，商业记录不替代它们。当前审批支持完整商业 wrapper；平台用量自动采集/报告、商业编辑页面、合同修订生效切换仍待接入。
+
 ## 已验证范围
 
 ```sh
 KQ_FABRIC_TOOLS=/path/to/verified/fabric-3.1.5 bun run test:fabric:commercial
+# 增加真实 PostgreSQL 审批/后台恢复；连接须有隔离测试库创建与删除权限
+KQ_FABRIC_TOOLS=/path/to/verified/fabric-3.1.5 KQ_FABRIC_DATABASE_URL=postgres://user:password@localhost/postgres bun run test:fabric:commercial:integration
 ```
 
 命令创建随机端口的隔离 A/B/C 网络、独立账本与临时证书，运行真实 Node 链码与 Gateway 后清理全部所属进程。失败材料保留在忽略的 temp/fabric-network-*，含测试私钥与私有 PDC，不公开上传。可选 KQ_FABRIC_REPORT 只写脱敏断言清单，不含探针、JWS 或 transient。
 
-已验证双签、缺 B 背书的 INVALID 交易、合法合同/用量 VALID、并发初始报告 MVCC 冲突、非成员和信任管理员接口拒绝、A/B 私有区块可见、C 经本机构或 A Peer 均无私有区块，以及公开块和进程日志不含合同/价格/用量/签名探针。生产 Unix 客户端与每步新建的 Node Adapter 还验证了提交后未写回检查点即退出的恢复，以及 Orderer 停机时保留原检查点、重启后取得原交易 VALID；日志检查也覆盖这些子进程。CI 沿用 Fabric 网络工作流，包含商业检查和脱敏断言产物。
+已验证双签、缺 B 背书的 INVALID 交易、合法合同/用量 VALID、并发初始报告 MVCC 冲突、非成员和信任管理员接口拒绝、A/B 私有区块可见、C 经本机构或 A Peer 均无私有区块，以及公开块和进程日志不含合同/价格/用量/签名探针。生产 Unix 客户端与每步新建的 Node Adapter 还验证了提交后未写回检查点即退出的恢复，以及 Orderer 停机时保留原检查点、重启后取得原交易 VALID；日志检查也覆盖这些子进程。真实 PostgreSQL 联合检查进一步通过：链与 Adapter 均停机时直接合同仍可双签且无待办；存证合同原子入队，Orderer 停机时保持原检查点；链已提交但进程在写回数据库前退出，经真实 90 秒租约到期后，新进程恢复原 VALID 交易且仅有一个提交尝试。CI 沿用 Fabric 网络工作流，包含商业数据库联合检查和脱敏断言产物。
 
 本测试使用单机三个机构容器外进程及单个 Raft Orderer，不证明独立机构信任或 SmartBFT 高可用。PDC 仍暴露成员关系、MSP、时间及哈希等元数据；关系也需保密时采用私有 channel。blockToLive=0 防止未经归档删除，容量治理与快照恢复仍待完成。合同变更、新密钥/机构迁移、执行 gate、账单认可、争议处理和结算路径还须继续实现；当前不能发起真实有偿执行。

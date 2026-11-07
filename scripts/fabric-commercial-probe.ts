@@ -180,12 +180,34 @@ async function run() {
     chainRejection("INVALID_MESSAGE"),
   );
   passed.push("both real peers reject missing counterparty business approval");
-  const endorsed = await proposal(
+  const initialProposal = proposal(
     a,
     "RegisterAgreement",
     terms.agreement.agreementRevisionId,
     envelope,
-  ).endorse();
+  );
+  const disseminationDeadline = Date.now() + 45000;
+  const endorsed = await (async () => {
+    for (;;) {
+      try {
+        return await initialProposal.endorse();
+      } catch (error) {
+        // Read-only readiness does not establish the peer gossip required by PDC dissemination.
+        if (
+          !(error instanceof EndorseError) ||
+          !error.details.length ||
+          !error.details.every((detail) =>
+            detail.message.includes(
+              "required to disseminate to at least 1 peers, but know of only 0 eligible peers",
+            ),
+          ) ||
+          Date.now() >= disseminationDeadline
+        )
+          throw error;
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+      }
+    }
+  })();
   const prepared = proto.PreparedTransaction.deserializeBinary(endorsed.getBytes());
   const outer = prepared.getEnvelope();
   assert(outer);
@@ -401,7 +423,7 @@ try {
   await run();
 } catch (error) {
   process.stderr.write(
-    `Commercial probe failed: ${error instanceof Error ? error.name : "Error"}${error instanceof Error && error.name === "AssertionError" ? ` (${error.message})` : ""}\n`,
+    `Commercial probe failed after ${passed.length} checks: ${error instanceof Error ? error.name : "Error"}${error instanceof Error && error.name === "AssertionError" ? ` (${error.message})` : ""}\n`,
   );
   process.exitCode = 1;
 } finally {

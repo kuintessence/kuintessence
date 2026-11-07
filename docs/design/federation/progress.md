@@ -1237,3 +1237,18 @@ input-storage 新增下载/上传 grant 路径，先按原尝试授权、在共�
 14 个 Adapter/客户端测试通过，覆盖固定端点、私有 socket、脱敏错误、跨通道响应拒绝、精确 transient/指定背书机构、签名/用途/摘要拒绝、恢复隔离及独立构造的旧版本证据检查点兼容。真实 Fabric 3.1.5 商业网络通过 11 组断言，包括生产 Unix 客户端每步新进程、已提交未保存响应时退出、重启原交易恢复，以及 Orderer 停机 pending 后恢复同一交易。原商业隐私/背书/MVCC 检查保持通过；原证据真实网络 12 组断言也通过。测试中发现并修正夹具误将 state 字段写入严格检查点 schema 的问题；生产提交逻辑无此问题。
 
 全仓类型检查及新增 Adapter/Fabric 脚本定向类型检查通过；lint 无错误，保留既有 47 warnings/1 info；657 个本地文档目标与 workflow uses 静态检查通过。真实网络全部在隔离临时目录运行，所属进程与成功材料已清理。本轮没有重跑 PostgreSQL worker 联合测试，没有执行平台作业或部署 PR 预览；不改变完整蓝图待完成状态。日志保存在忽略目录 temp/federation-commercial-*。
+
+
+## 商业合同审批、持久待办与真实数据库恢复
+
+新增组织范围的商业合同管理 API、独立商业审批/待办/提交尝试表和后台 worker。签署须有显式 agreement.approve 与 commercial-agreement 公钥用途；双方对同一精确条款签名后，事务保存对签与待办。条款不可覆盖，大整数价格保留字符串；列表、状态及审计不复制合同正文、价格或恢复 token。平台信任登记及中英用途选项支持 commercial-agreement/commercial-usage，旧公钥不自动获得新用途。迁移 0114 由 bun run db:generate 生成，未手改迁移或快照。
+
+直接模式不创建链待办；bilateral_attested 与 ledger_coordinated 在双签后排队，但合同批准/登记不安装执行协议、不建立预算、不触发付款，原 ledger_coordinated 执行拒绝保持。Server 配置 FEDERATION_COMMERCIAL_SOCKET_PATH 后后台每十秒消费，90 秒数据库租约、检查点先持久化、网络调用不持锁、提交不确定保留原交易。VALID 才 committed；INVALID/需处理错误进入 needs_review，人工复核保留旧尝试，未知 transaction 不能被放弃。人工重试也按数据库时间判断活动租约，避免应用时钟偏差抢占。既有机构批准记录不因原人员离职消失，新 proposal/披露仍检查当前机构签名信任，商业记录不替代执行授权。
+
+隔离 PostgreSQL 的 9 项测试通过：权限/用途、组织隔离/同文签名/不可覆盖、三模式差异与无执行/预算副作用、检查点持久化/并发/重建、撤权阻止新披露、INVALID 历史保留、未知结果与失效租约、HTTP 严格输入/人类身份/审计脱敏。新增真实数据库 runner 使用已有商业网络，分别由新 Bun 进程处理审批与每次检查点，连接生产 Node Adapter。最终 Fabric 3.1.5 联合运行通过 14 组断言，包含既有 PDC/背书/MVCC/公开块与日志隐私，以及链和 Adapter 离线时直接合同成功且无待办、链停机原检查点保留、提交后写回前退出并等待真实 90 秒租约后恢复原 VALID 交易（数据库仅一个尝试）。临时库、所属网络进程与成功测试材料已清理。
+
+联测修正了两处夹具时序：可读链码不意味着私有传播 peer 已就绪，首次背书只对明确的尚无 eligible peer 错误有界等待；Orderer 进程启动也不意味着 Raft 已选主，测试按数据库原重试间隔继续原 pending 交易，不能假定第一次重启后调用立即 committed。没有降低 requiredPeerCount 或双机构背书策略，没有用新的 txID 绕过未知结果。
+
+全仓其他 package 类型与 protobuf 生成通过；新测试 fixture 的循环推导声明已改成明确的清理记录类型，Server 与 Fabric 测试脚本定向复查通过。配置/签名 45 项、信任 Web 组件 11 项回归通过；lint 无错误（既有 47 warnings/1 info），657 文档目标与 workflow uses 静态检查通过。CI 商业检查改为数据库联合测试，仅上传脱敏断言。日志与报告留在忽略的 temp/federation-commercial-*。
+
+仍需商业合同编辑/审批页面、用量自动采集与报告、市场/唯一认领与商业 gate、锁额/账单/争议/结算、介质交付、归档恢复、完整 Slurm/PBS/Fabric 联合验收及 PR 预览。当前未推送或部署 main，完整蓝图目标保持进行中。
