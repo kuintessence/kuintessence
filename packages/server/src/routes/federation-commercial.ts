@@ -5,11 +5,13 @@ import {
   CommercialExecutionApprovalSchema,
   CommercialUsageCorrectionInputSchema,
 } from "@kuintessence/shared/federation/commercial";
+import { CommercialApprovalRecordKindSchema } from "@kuintessence/shared/federation/commercial-approval-exchange";
 import { FederationTerminalProposalSchema } from "@kuintessence/shared/federation/terminal-proposal";
 import { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { z } from "zod";
 import type { FederationCommercialAgreementService } from "../federation/commercial-agreements";
+import type { FederationCommercialApprovalExchange } from "../federation/commercial-approval-exchange";
 import type { FederationCommercialExecutionService } from "../federation/commercial-execution";
 import type { FederationCommercialSubmissionService } from "../federation/commercial-submissions";
 import type { FederationExecutionConfirmationService } from "../federation/execution-confirmation";
@@ -38,6 +40,7 @@ export function createFederationCommercialRoutes(
   terminals?: FederationExecutionTerminalService,
   terminalExchange?: FederationTerminalExchange,
   terminalPolicies?: FederationTerminalPolicyService,
+  approvalExchange?: FederationCommercialApprovalExchange,
 ) {
   const r = new Hono<{ Variables: { federationActor: FederationActor } }>();
   r.use("/federation/commercial-agreements/*", async (c, next) => {
@@ -72,6 +75,37 @@ export function createFederationCommercialRoutes(
     limit: z.coerce.number().int().min(1).max(100).default(50),
     offset: z.coerce.number().int().min(0).default(0),
   });
+  if (approvalExchange) {
+    const path = "/federation/commercial-agreements/:revisionId/approval-exchange";
+    r.get(path, kqValidator("param", id), kqValidator("query", page), async (c) =>
+      c.json({
+        success: true,
+        data: await approvalExchange.list(
+          c.get("federationActor"),
+          c.req.valid("param").revisionId,
+          c.req.valid("query").limit,
+          c.req.valid("query").offset,
+        ),
+      }),
+    );
+    r.post(
+      `${path}/:recordKind/:recordId/retry`,
+      kqValidator(
+        "param",
+        id.extend({ recordKind: CommercialApprovalRecordKindSchema, recordId: z.uuid() }),
+      ),
+      kqValidator("json", z.strictObject({})),
+      async (c) => {
+        const { revisionId, recordKind, recordId } = c.req.valid("param");
+        await approvalExchange.retry(c.get("federationActor"), {
+          agreementRevisionId: revisionId,
+          recordKind,
+          recordId,
+        });
+        return c.json({ success: true });
+      },
+    );
+  }
   if (terminalPolicies) {
     const path = "/federation/commercial-agreements/:revisionId/terminal-policies";
     r.get(path, kqValidator("param", id), kqValidator("query", page), async (c) =>

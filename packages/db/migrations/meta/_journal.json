@@ -925,6 +925,13 @@
       "when": 1794074403211,
       "tag": "0131_white_abomination",
       "breakpoints": true
+    },
+    {
+      "idx": 132,
+      "version": "7",
+      "when": 1794075552162,
+      "tag": "0132_worried_talon",
+      "breakpoints": true
     }
   ]
 }

@@ -33,6 +33,7 @@ export function createFederationGateway(options: FederationGatewayOptions) {
       if (
         req.method !== "POST" ||
         (req.url !== "/federation/v1/delegations" &&
+          req.url !== "/federation/v1/commercial-approvals" &&
           req.url !== "/federation/v1/usage" &&
           req.url !== "/federation/v1/terminals" &&
           req.url !== "/federation/v1/terminal-signatures" &&

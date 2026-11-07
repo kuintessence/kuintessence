@@ -69,7 +69,7 @@ export const FederationStatusReportSchema = z.strictObject({
 export type FederationStatusReport = z.infer<typeof FederationStatusReportSchema>;
 
 export function assertFederationStatusQueryFresh(
-  query: Omit<FederationStatusQuery, "kind">,
+  query: Pick<FederationStatusQuery, "issuedAt" | "expiresAt">,
   now: Date,
 ) {
   if (

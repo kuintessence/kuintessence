@@ -55,6 +55,7 @@ import { UnixAttestationClient } from "./federation/attestation-client";
 import { FederationAttestationWorker } from "./federation/attestation-worker";
 import { FederationCancellationMonitor } from "./federation/cancellation-monitor";
 import { FederationCommercialAgreementService } from "./federation/commercial-agreements";
+import { FederationCommercialApprovalExchange } from "./federation/commercial-approval-exchange";
 import { UnixCommercialClient } from "./federation/commercial-client";
 import { FederationCommercialExecutionService } from "./federation/commercial-execution";
 import { FederationCommercialSubmissionService } from "./federation/commercial-submissions";
@@ -1736,6 +1737,9 @@ const federationTerminalAutomation =
   federationSigningKey && federationTerminals
     ? new FederationTerminalAutomation(db, federationSigningKey.siteId, federationTerminals)
     : undefined;
+const federationApprovalExchange = federationSigningKey
+  ? new FederationCommercialApprovalExchange(db, federationSigningKey, federationSender)
+  : undefined;
 const federationTerminalExchange = federationSigningKey
   ? new FederationTerminalExchange(db, federationSigningKey, federationSender)
   : undefined;
@@ -1762,6 +1766,7 @@ if (federationSigningKey && federationCommercial)
       federationTerminals,
       federationTerminalExchange,
       federationTerminalPolicies,
+      federationApprovalExchange,
     ),
   );
 const federationPreparation = federationSigningKey
@@ -2498,6 +2503,7 @@ const federationCommercialWorker = federationCommercial
       federationStops,
       federationTerminalExchange,
       federationTerminalAutomation,
+      federationApprovalExchange,
     )
   : undefined;
 federationCommercialWorker?.start();

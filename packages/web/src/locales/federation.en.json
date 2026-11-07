@@ -76,6 +76,8 @@
       "material-query": "Material query",
       "material-chunk": "Material chunk",
       "input-download-query": "Input download query",
+      "commercial-approval-query": "Commercial approval query",
+      "commercial-approval-waiting": "Commercial approval waiting receipt",
       "commercial-agreement": "Commercial agreement",
       "commercial-usage": "Commercial usage",
       "commercial-reservation": "Commercial reservation",

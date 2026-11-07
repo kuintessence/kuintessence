@@ -1,6 +1,6 @@
 # Fabric 私有合同与用量链码
 
-`kq-commercial` 是独立链码，当前提供双方商业合同的不可变登记、提供方用量报告和追加更正。价格、合同字段、用量与签名仅进入两方机构 PDC；公开交易仅有随机域/记录 ID 和带盐摘要。已用 Fabric 3.1.5 的真实 Peer、Orderer、MSP、Gateway 和私有区块投递验证，**已接独立 Node Adapter、Server 类型化私有客户端与跨进程恢复；Server 商业审批、数据库待办与后台提交已接入；私有预算/gate/激活已有链码，应用执行接入、账单及支付仍待完成**。登记合同不是执行许可，用量报告不是计费事实或双方确认账单；Server 对 ledger_coordinated 的执行拒绝继续有效。
+`kq-commercial` 是独立链码，当前提供双方商业合同的不可变登记、提供方用量报告和追加更正。价格、合同字段、用量与签名仅进入两方机构 PDC；公开交易仅有随机域/记录 ID 和带盐摘要。已用 Fabric 3.1.5 的真实 Peer、Orderer、MSP、Gateway 和私有区块投递验证，**已接独立 Node Adapter、Server 类型化私有客户端与跨进程恢复；Server 商业审批、数据库待办与后台提交已接入；私有预算/gate/激活及真实协调执行、终态和关闭已接入，账单及支付仍待完成**。登记合同不是执行许可，用量报告不是计费事实或双方确认账单；协调执行仍须原激活对应的有效执行确认，商业签名本身不能放行作业。
 
 实现：[商业协议](../../packages/shared/src/federation/commercial.ts)、[链码](../../contracts/fabric/commercial/src/contract.ts)、[Node 入口](../../contracts/fabric/commercial/src/main.ts)。构建：
 
@@ -27,7 +27,7 @@ bun run --filter @kuintessence/fabric-commercial build
 
 `fabricCommercialCollections(trust)` 从同一配置生成集合定义：AB 集合读取 OR(A.member,B.member)、memberOnlyRead/memberOnlyWrite=true，写入背书 AND(A.peer,B.peer)。集合成员与组织背书是两套独立配置，不能以一个机构的两台 Peer 替代两家机构。集合只写 PDC，让集合写策略覆盖链码默认 ALL；业务请求不得把私有 transient 转发给 C 或其他非成员。所需集合、链码与 channel 固定于部署配置，不能让外部请求选择任意背书目标。
 
-业务客户端证书必须同时含 kq.federation.site 与 kq.federation.role=commercial；平台信任管理员没有该业务角色。每个合同还须源/目标机构两把获批准业务公钥对**同一份精确条款字节**签名。Peer 背书不是业务签署，不自动补签合同；商用公钥用途须分别在商业链码部署配置和平台信任登记中明确批准；平台现接受 commercial-agreement、commercial-usage 两种用途，不自动扩大旧 evidence-batch 或 agreement 公钥的用途。旧 keyId 不可覆盖，须按既有轮换规则配置新 keyId。
+业务客户端证书必须同时含 kq.federation.site 与 kq.federation.role=commercial；平台信任管理员没有该业务角色。每个合同还须源/目标机构两把获批准业务公钥对**同一份精确条款字节**签名。Peer 背书不是业务签署，不自动补签合同；商用公钥用途须分别在商业链码部署配置和平台信任登记中明确批准；平台还支持专门的预留、释放和终态用途，见[执行授权说明](fabric-execution-gate.md)，不自动扩大旧 evidence-batch 或 agreement 公钥的用途。旧 keyId 不可覆盖，须按既有轮换规则配置新 keyId。
 
 ## 接口与私有输入
 
@@ -141,3 +141,24 @@ KQ_FABRIC_TOOLS=/path/to/verified/fabric-3.1.5 KQ_FABRIC_DATABASE_URL=postgres:/
 ## 协调模式的私有额度与执行 gate
 
 链码另已增加双签 ReserveExecution/ReleaseExecution 和仅返回哈希的 GetExecutionGateHash，见[执行许可协议与真实网络验证](fabric-execution-gate.md)。金额和完整委派只存双方 PDC，固定合作域预算不随合同修订重置；激活与释放依赖同通道跨链码读集。生产 Adapter、Server 双签审批/持久待办已支持预留和激活前释放；新密钥用途可在线登记。源站公开激活已接入独立审批入口与市场持久待办，实际执行尚未接通，详见上述执行许可说明。
+
+## 已批准商业签名的自动交换
+
+迁移 0132 增加按本机构、协议 revision、记录类型/ID 唯一的签名交换待办。双方先独立批准同一份商业合同、预留或释放正文；后台只取得对方原签名，不调用新的批准/签名接口。已有本地同文批准是前提：对方未批准时保留等待，不生成本地或对方批准。该通道不批准新任务、激活需求或授权派发。
+
+机构间入口固定为 `POST /federation/v1/commercial-approvals`，仅在私有 Unix/mTLS 通道注册。双方平台信任登记分别配置 `commercial-approval-query` 与 `commercial-approval-waiting` 用途；业务签名仍要求原 `commercial-agreement`、`commercial-reservation` 或 `commercial-release` 用途。这两个传输用途不加入 Fabric 商业链码的业务签署清单，也不会扩权已有密钥；旧 keyId 不可覆盖，须按既有轮换规则登记。未配置发送通道时不发现/发送新待办，历史可读取，仍可被动响应获授权对端。
+
+查询含双方、合同版本、私有域、记录类型/ID、精确正文摘要和最长 60 秒窗口。接收方重新检查 TLS 证书、机构与查询密钥；仅向原合同另一方返回已批准的完全同文记录。尚无批准时返回绑定原查询的签名等待回执，不包含价格、条款或业务签名。已有批准时直接返回原业务 JWS，避免嵌套签名使大合同超出限额；正文仍限 256 KiB、通道 JOSE 仍限 512 KiB。原签名可重复交付，因为必须匹配本地不可变正文、双方、类型及摘要；它不代表新批准时间。历史业务密钥仍须当前有效、未撤销且具备原用途，不能仅凭旧签署日期绕过当前信任。合同到期阻止新的合同/预留签名交换，但已批准释放按原释放条件补交，不把合作到期误当成禁止清理锁额；最终能否释放仍由链上原预留、READY gate 和未激活状态决定。
+
+源端在披露查询前和保存响应时重查机构、原端点、密钥用途、本地原文及有效期；响应验签后，复用人工签名导入服务的原组织/合同/预留校验。补齐对签、交换完成、审计与可选链上待办在同一事务提交，失败全部回滚。签名交换审计使用 `commercial-exchange:<siteId>`，不会把自动传输伪装成一次人工批准。原批准人的角色变化不抹除该项已签业务同意，但不因此允许创建新批准。
+
+直接合作只补齐本地签名，不生成链待办、不连接 Fabric；异步存证和协调模式交由既有商业 worker 处理原提交。交换 complete 表示本地已持久取得签名，不代表链上 VALID，也不证明对方已经收到己方签名；双方各自的交换状态独立保存。原生 MVCC 导致的链 INVALID 仍需原提交复核，不会因为传输成功自动认定链交易有效。
+
+商业 worker 每轮有限发现/推进，采用 60 秒租约、SKIP LOCKED 和原记录恢复。断线及短暂数据库失败退避；错误正文、身份/用途或端点冲突进入 needs_review。迟到响应/错误不能覆盖后继 worker 或人工复核的新状态。已通过人工入口补齐签名时，后台可核对原记录后收尾，不再次提交业务意图。
+
+当前人工组织 API：
+
+- `GET /api/federation/commercial-agreements/:revisionId/approval-exchange?limit=50&offset=0`：需要 `agreement.read`，返回开关、各记录进度、脱敏错误和核验时间，不返回租约 token、合同或签名正文。
+- `POST .../:revisionId/approval-exchange/:recordKind/:recordId/retry`：需要 `agreement.approve`，正文仅 `{}`；recordKind 为 agreement/reservation/release。不能抢占活动租约或重置完成记录，过期租约重排时清除旧 token，保留复核审计。
+
+这一步消除已有商业批准的人工签名搬运。长期协议下的新任务自动批准、执行同意交换、市场动作/准入自动编排，以及对应 Web/CLI 操作还需接入；不会把它当作完整无人值守商务握手。

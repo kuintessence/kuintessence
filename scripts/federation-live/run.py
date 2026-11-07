@@ -113,9 +113,9 @@ profilepath = None
 clusterrole = None
 
 
-def run(args, **kw):
+def run(args, timeout=120, **kw):
     return subprocess.run(
-        args, cwd=repo, env=env, check=True, stdout=log, stderr=log, timeout=120, **kw
+        args, cwd=repo, env=env, check=True, stdout=log, stderr=log, timeout=timeout, **kw
     )
 
 
@@ -1731,8 +1731,9 @@ await Bun.write(process.env.LAB_ROOT+'/registration.json',JSON.stringify({token:
         time.sleep(2)
     else:
         raise RuntimeError("Lab node is busy; retry without concurrent builds")
-    run(["bun", "--no-env-file", "run", "scripts/federation-live/business.ts"])
+    run(["bun", "--no-env-file", "run", "scripts/federation-live/business.ts"], timeout=1200)
     (logs / "ledger-proof.json").write_text((root / "ledger-proof.json").read_text())
+    (logs / "approval-exchange.json").write_text((root / "approval-exchange.json").read_text())
     terminal_policies = {}
     if scenario == "success":
         policy_path = "federation/commercial-agreements/" + configuration["request"]["agreementRevisionId"] + "/terminal-policies"

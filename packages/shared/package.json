@@ -60,6 +60,11 @@
       "bun": "./src/federation/terminal-exchange.ts",
       "types": "./src/federation/terminal-exchange.ts",
       "default": "./src/federation/terminal-exchange.ts"
+    },
+    "./federation/commercial-approval-exchange": {
+      "bun": "./src/federation/commercial-approval-exchange.ts",
+      "types": "./src/federation/commercial-approval-exchange.ts",
+      "default": "./src/federation/commercial-approval-exchange.ts"
     }
   },
   "scripts": {

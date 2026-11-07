@@ -138,7 +138,34 @@ export class FederationCommercialAgreementService {
     });
   }
   async attachCounterparty(actor: FederationActor, revisionId: string, counterpartyJws: string) {
-    const local = await this.get(actor, revisionId);
+    return this.attach(actor, revisionId, counterpartyJws);
+  }
+
+  /** Only the authenticated exchange worker calls this; it cannot create a local business approval. */
+  async attachExchanged(
+    revisionId: string,
+    counterpartyJws: string,
+    authorize: (tx: PgTransaction) => Promise<void>,
+  ) {
+    const [local] = await this.db.select().from(agreements).where(this.key(revisionId));
+    if (!local) throw new FederationError("AGREEMENT_UNAVAILABLE");
+    return this.attach(
+      { orgId: local.localOrgId, userId: local.approvedBy },
+      revisionId,
+      counterpartyJws,
+      local,
+      authorize,
+    );
+  }
+
+  private async attach(
+    actor: FederationActor,
+    revisionId: string,
+    counterpartyJws: string,
+    snapshot?: typeof agreements.$inferSelect,
+    authorize?: (tx: PgTransaction) => Promise<void>,
+  ) {
+    const local = snapshot ?? (await this.get(actor, revisionId));
     const terms = CommercialAgreementSchema.parse(local.terms);
     this.validTime(terms);
     const otherSite =
@@ -170,8 +197,11 @@ export class FederationCommercialAgreementService {
     return this.db.transaction(async (tx) => {
       const keys = [ownKey, otherKey].sort((a, b) => a.siteId.localeCompare(b.siteId));
       for (const key of keys) await this.trust.assertKey(tx, key.siteId, key.keyId, this.clock());
-      await requireFederationCapability(tx, actor, "agreement.approve");
+      if (authorize) await authorize(tx);
+      else await requireFederationCapability(tx, actor, "agreement.approve");
       const current = await this.local(tx, actor, revisionId);
+      if (current.digest !== local.digest || current.approvalJws !== local.approvalJws)
+        throw new FederationError("OPERATION_CONFLICT");
       for (const key of keys) await this.trust.assertKey(tx, key.siteId, key.keyId, this.clock());
       this.validTime(terms);
       if (current.counterpartyJws) {
@@ -206,7 +236,13 @@ export class FederationCommercialAgreementService {
           }),
         });
       }
-      await this.audit(tx, actor, "counterparty", revisionId, { digest: local.digest });
+      await this.audit(
+        tx,
+        authorize ? { ...actor, userId: `commercial-exchange:${this.signingKey.siteId}` } : actor,
+        "counterparty",
+        revisionId,
+        { digest: local.digest },
+      );
       return updated;
     });
   }

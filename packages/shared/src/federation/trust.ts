@@ -30,6 +30,8 @@ export const FederationKeyInput = z
           "delegation",
           "acceptance",
           "evidence-batch",
+          "commercial-approval-query",
+          "commercial-approval-waiting",
           "commercial-agreement",
           "commercial-usage",
           "commercial-reservation",
@@ -58,7 +60,7 @@ export const FederationKeyInput = z
         ]),
       )
       .min(1)
-      .max(29),
+      .max(31),
     validFrom: z.iso.datetime(),
     validUntil: z.iso.datetime(),
   })

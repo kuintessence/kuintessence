@@ -76,6 +76,8 @@
       "material-query": "材料查询",
       "material-chunk": "材料数据块",
       "input-download-query": "输入下载请求",
+      "commercial-approval-query": "商业批准查询",
+      "commercial-approval-waiting": "商业批准等待回执",
       "commercial-agreement": "商业合同",
       "commercial-usage": "商业用量",
       "commercial-reservation": "商业额度预留",

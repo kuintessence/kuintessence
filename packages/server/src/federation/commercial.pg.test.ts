@@ -1,4 +1,4 @@
-import { afterAll, expect, test } from "bun:test";
+import { afterAll, expect, setSystemTime, test } from "bun:test";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import {
   agents,
@@ -15,6 +15,7 @@ import {
   federationCancellations,
   federationCapabilities,
   federationCertificates,
+  federationCommercialApprovalSyncs,
   federationEvidence,
   federationExecutionTerminals,
   federationMaterials,
@@ -68,6 +69,10 @@ import {
   CommercialTerminalSchema,
 } from "@kuintessence/shared/federation/commercial";
 import {
+  CommercialApprovalQuerySchema,
+  CommercialApprovalWaitingSchema,
+} from "@kuintessence/shared/federation/commercial-approval-exchange";
+import {
   type MarketAdapterProposalInput,
   type MarketAdvanceResult,
   MarketDemandStateSchema,
@@ -94,6 +99,7 @@ import { FederationAdmission } from "./admission";
 import { FederationAgreementService } from "./agreements";
 import { FederationAssetService, federationMaterialDigest } from "./assets";
 import { FederationCommercialAgreementService } from "./commercial-agreements";
+import { FederationCommercialApprovalExchange } from "./commercial-approval-exchange";
 import type { CommercialClient } from "./commercial-client";
 import { FederationCommercialExecutionService } from "./commercial-execution";
 import { FederationCommercialSubmissionService } from "./commercial-submissions";
@@ -282,6 +288,9 @@ async function ready(f: Awaited<ReturnType<typeof fixture>>) {
 afterAll(async () => {
   for (const f of fixtures) {
     const siteIds = [f.a.signing.siteId, f.b.signing.siteId];
+    await db
+      .delete(federationCommercialApprovalSyncs)
+      .where(inArray(federationCommercialApprovalSyncs.localSiteId, siteIds));
     await db
       .delete(federationTerminalChunks)
       .where(inArray(federationTerminalChunks.localSiteId, siteIds));
@@ -4603,5 +4612,554 @@ test("terminal policy grant and revocation are atomic with their audit records",
     expect((await f.policies.list(f.actor, f.revisionId))[0]?.revokedAt).toBeNull();
   } finally {
     await db.execute(sql`alter table audit_log drop constraint test_terminal_policy_revoke`);
+  }
+});
+
+async function approvalTransport(f: Awaited<ReturnType<typeof fixture>>) {
+  const fingerprints: string[] = [];
+  for (const site of [f.a, f.b]) {
+    const fingerprint = randomBytes(32).toString("hex");
+    fingerprints.push(fingerprint);
+    await db.insert(federationCertificates).values({
+      fingerprint,
+      siteId: site.signing.siteId,
+      certificatePem: "fixture; TLS handshake covered by gateway tests",
+      validFrom: new Date("2020-01-01"),
+      validUntil: new Date("2099-01-01"),
+    });
+    const [key] = await db
+      .select()
+      .from(federationSigningKeys)
+      .where(eq(federationSigningKeys.siteId, site.signing.siteId));
+    if (!key) throw new Error("Missing test key");
+    await db
+      .update(federationSigningKeys)
+      .set({
+        allowedKinds: [
+          ...key.allowedKinds,
+          "commercial-approval-query",
+          "commercial-approval-waiting",
+        ],
+      })
+      .where(eq(federationSigningKeys.siteId, site.signing.siteId));
+  }
+  const aReceiver = new FederationCommercialApprovalExchange(db, f.a.signing);
+  const bReceiver = new FederationCommercialApprovalExchange(db, f.b.signing);
+  let hook: ((jws: string, response: string) => Promise<string>) | undefined;
+  let lost = false;
+  let requests = 0;
+  const send: FederationSend = async (_endpoint, jws, path) => {
+    expect(path).toBe("/federation/v1/commercial-approvals");
+    requests++;
+    const response = await bReceiver.receive(jws, fingerprints[0] ?? "");
+    if (lost) throw new Error("response lost");
+    return hook ? hook(jws, response) : response;
+  };
+  const a = new FederationCommercialApprovalExchange(db, f.a.signing, send);
+  const b = new FederationCommercialApprovalExchange(db, f.b.signing, async (_endpoint, jws) =>
+    aReceiver.receive(jws, fingerprints[1] ?? ""),
+  );
+  const due = () =>
+    db
+      .update(federationCommercialApprovalSyncs)
+      .set({ nextAttemptAt: new Date(0) })
+      .where(
+        inArray(federationCommercialApprovalSyncs.localSiteId, [
+          f.a.signing.siteId,
+          f.b.signing.siteId,
+        ]),
+      );
+  return {
+    a,
+    b,
+    aReceiver,
+    bReceiver,
+    fingerprints,
+    send,
+    due,
+    lose: (value: boolean) => {
+      lost = value;
+    },
+    hook: (fn: typeof hook) => {
+      hook = fn;
+    },
+    requests: () => requests,
+  };
+}
+async function approvalExchangeFixture(
+  mode: FederationMode = "bilateral_attested",
+  peerApproved = true,
+) {
+  const f = await fixture(mode);
+  const own = await f.approvals.approve(f.actor, f.terms);
+  const other = new FederationCommercialAgreementService(db, f.b.signing);
+  if (peerApproved) await other.approve(f.actor, f.terms);
+  const transport = await approvalTransport(f);
+  await Promise.all([transport.a.discover(), transport.b.discover()]);
+  const view = async () => (await transport.a.list(f.actor, f.revisionId, 50, 0)).records[0];
+  return { ...f, transport, own, other, view };
+}
+
+test("approval exchange waits for independent consent then attaches exact signatures with no resigning", async () => {
+  const f = await approvalExchangeFixture("bilateral_attested", false);
+  await f.transport.a.advanceNext();
+  expect(await f.view()).toMatchObject({ state: "pending", lastError: null });
+  expect((await f.approvals.get(f.actor, f.revisionId)).counterpartyJws).toBeNull();
+  const other = await f.other.approve(f.actor, f.terms);
+  await f.transport.due();
+  await f.transport.b.discover();
+  await Promise.all([f.transport.a.advanceNext(), f.transport.b.advanceNext()]);
+  const own = await f.approvals.get(f.actor, f.revisionId);
+  expect(own.approvalJws).toBe(f.own.approvalJws);
+  expect(own.counterpartyJws).toBe(other.approvalJws);
+  expect((await f.other.get(f.actor, f.revisionId)).counterpartyJws).toBe(f.own.approvalJws);
+  expect(await f.view()).toMatchObject({ state: "complete" });
+  expect(
+    await db.select().from(submissions).where(eq(submissions.localSiteId, f.a.signing.siteId)),
+  ).toHaveLength(1);
+  expect(await f.transport.a.advanceNext()).toBe(false);
+});
+
+test("approval exchange direct cooperation creates no ledger work and recovers lost responses once", async () => {
+  const f = await approvalExchangeFixture("bilateral_direct");
+  f.transport.lose(true);
+  await f.transport.a.advanceNext();
+  expect(await f.view()).toMatchObject({ state: "pending", lastError: "EXCHANGE_RETRY" });
+  expect((await f.approvals.get(f.actor, f.revisionId)).counterpartyJws).toBeNull();
+  f.transport.lose(false);
+  await f.transport.due();
+  const restarted = new FederationCommercialApprovalExchange(db, f.a.signing, f.transport.send);
+  await Promise.all([restarted.advanceNext(), f.transport.a.advanceNext()]);
+  expect(await f.view()).toMatchObject({ state: "complete" });
+  expect(
+    await db
+      .select()
+      .from(submissions)
+      .where(inArray(submissions.localSiteId, [f.a.signing.siteId, f.b.signing.siteId])),
+  ).toHaveLength(0);
+  expect(
+    await db
+      .select()
+      .from(auditLog)
+      .where(
+        and(
+          eq(auditLog.orgId, f.actor.orgId),
+          eq(auditLog.action, "federation.commercial.counterparty"),
+        ),
+      ),
+  ).toHaveLength(1);
+});
+
+test("approval exchange refuses altered contract and a valid signature from another institution", async () => {
+  const f = await approvalExchangeFixture();
+  const altered = CommercialAgreementSchema.parse({
+    ...f.terms,
+    termsText: "different obligation",
+  });
+  f.transport.hook(async () =>
+    signFederationMessage(CommercialAgreementSchema, altered, f.b.signing),
+  );
+  await f.transport.a.advanceNext();
+  expect(await f.view()).toMatchObject({ state: "needs_review", lastError: "OPERATION_CONFLICT" });
+  expect((await f.approvals.get(f.actor, f.revisionId)).counterpartyJws).toBeNull();
+  await f.transport.a.retry(f.actor, {
+    agreementRevisionId: f.revisionId,
+    recordKind: "agreement",
+    recordId: f.revisionId,
+  });
+  f.transport.hook(async () => f.own.approvalJws);
+  await f.transport.a.advanceNext();
+  expect(await f.view()).toMatchObject({ state: "needs_review", lastError: "UNTRUSTED_IDENTITY" });
+});
+
+test("approval exchange enforces certificate, recipient, record digest and freshness at the private receiver", async () => {
+  const f = await approvalExchangeFixture();
+  const query = CommercialApprovalQuerySchema.parse({
+    protocolVersion: 1,
+    kind: "commercial-approval-query",
+    queryId: randomUUID(),
+    senderSiteId: f.a.signing.siteId,
+    recipientSiteId: f.b.signing.siteId,
+    agreementRevisionId: f.revisionId,
+    domainId: f.terms.domainId,
+    recordKind: "agreement",
+    recordId: f.revisionId,
+    recordDigest: f.own.digest,
+    issuedAt: new Date().toISOString(),
+    expiresAt: new Date(Date.now() + 60000).toISOString(),
+  });
+  const receive = async (value: typeof query, fingerprint = f.transport.fingerprints[0] ?? "") =>
+    f.transport.bReceiver.receive(
+      await signFederationMessage(CommercialApprovalQuerySchema, value, f.a.signing),
+      fingerprint,
+    );
+  await expect(receive(query, f.transport.fingerprints[1])).rejects.toMatchObject({
+    code: "UNTRUSTED_IDENTITY",
+  });
+  await expect(receive({ ...query, recipientSiteId: randomUUID() })).rejects.toMatchObject({
+    code: "UNTRUSTED_IDENTITY",
+  });
+  await expect(
+    receive({ ...query, recordDigest: `sha256:${"f".repeat(64)}` }),
+  ).rejects.toMatchObject({ code: "OPERATION_CONFLICT" });
+  await expect(
+    receive({
+      ...query,
+      issuedAt: new Date(Date.now() - 120000).toISOString(),
+      expiresAt: new Date(Date.now() - 60000).toISOString(),
+    }),
+  ).rejects.toMatchObject({ code: "AUTHORIZATION_EXPIRED" });
+  await db
+    .update(federationCertificates)
+    .set({ revokedAt: new Date() })
+    .where(eq(federationCertificates.fingerprint, f.transport.fingerprints[0] ?? ""));
+  await expect(receive(query)).rejects.toMatchObject({ code: "UNTRUSTED_IDENTITY" });
+});
+
+test("approval exchange rejects a signed waiting response for another query", async () => {
+  const f = await approvalExchangeFixture("bilateral_attested", false);
+  f.transport.hook(async (_query, response) => {
+    const key = await f.trust.resolveKey(f.b.signing.siteId, f.b.signing.keyId, new Date());
+    const { payload } = await verifyFederationMessage(
+      CommercialApprovalWaitingSchema,
+      response,
+      key,
+      new Date(),
+    );
+    return signFederationMessage(
+      CommercialApprovalWaitingSchema,
+      { ...payload, queryId: randomUUID() },
+      f.b.signing,
+    );
+  });
+  await f.transport.a.advanceNext();
+  expect(await f.view()).toMatchObject({ state: "needs_review", lastError: "OPERATION_CONFLICT" });
+});
+
+test("approval exchange rechecks purpose and endpoint changes during network IO", async () => {
+  const f = await approvalExchangeFixture();
+  f.transport.hook(async (_request, response) => {
+    await db
+      .update(federationSigningKeys)
+      .set({ allowedKinds: ["commercial-agreement"] })
+      .where(eq(federationSigningKeys.siteId, f.a.signing.siteId));
+    return response;
+  });
+  await f.transport.a.advanceNext();
+  expect(await f.view()).toMatchObject({ state: "needs_review", lastError: "UNTRUSTED_IDENTITY" });
+  const g = await approvalExchangeFixture();
+  g.transport.hook(async (_request, response) => {
+    await g.trust.updateSite(
+      g.b.signing.siteId,
+      { name: "Changed endpoint", endpoint: "https://changed.invalid" },
+      g.actor.userId,
+    );
+    return response;
+  });
+  await g.transport.a.advanceNext();
+  expect(await g.view()).toMatchObject({ state: "needs_review", lastError: "UNTRUSTED_IDENTITY" });
+  expect((await g.approvals.get(g.actor, g.revisionId)).counterpartyJws).toBeNull();
+});
+
+test("approval exchange stale leases and explicit retry cannot be overwritten by late responses", async () => {
+  const f = await approvalExchangeFixture();
+  f.transport.hook(async (_request, response) => {
+    await db
+      .update(federationCommercialApprovalSyncs)
+      .set({ leaseUntil: new Date(0) })
+      .where(eq(federationCommercialApprovalSyncs.localSiteId, f.a.signing.siteId));
+    await f.transport.a.retry(f.actor, {
+      agreementRevisionId: f.revisionId,
+      recordKind: "agreement",
+      recordId: f.revisionId,
+    });
+    return response;
+  });
+  await f.transport.a.advanceNext();
+  expect(await f.view()).toMatchObject({ state: "pending", lastError: null });
+  expect((await f.approvals.get(f.actor, f.revisionId)).counterpartyJws).toBeNull();
+  f.transport.hook(undefined);
+  await f.transport.a.advanceNext();
+  expect(await f.view()).toMatchObject({ state: "complete" });
+});
+
+test("approval exchange rolls back the attachment, sync and ledger intent on audit failure", async () => {
+  const f = await approvalExchangeFixture();
+  await db.execute(
+    sql`alter table audit_log add constraint test_approval_exchange_audit check (actor <> ${sql.raw(`'commercial-exchange:${f.a.signing.siteId}'`)})`,
+  );
+  try {
+    await f.transport.a.advanceNext();
+    expect((await f.approvals.get(f.actor, f.revisionId)).counterpartyJws).toBeNull();
+    expect(await f.view()).toMatchObject({ state: "pending", lastError: "EXCHANGE_RETRY" });
+    expect(
+      await db.select().from(submissions).where(eq(submissions.localSiteId, f.a.signing.siteId)),
+    ).toHaveLength(0);
+  } finally {
+    await db.execute(sql`alter table audit_log drop constraint test_approval_exchange_audit`);
+  }
+  await f.transport.due();
+  await f.transport.a.advanceNext();
+  expect(await f.view()).toMatchObject({ state: "complete" });
+});
+
+test("approval exchange disabled transport and foreign org cannot operate on another contract", async () => {
+  const f = await approvalExchangeFixture();
+  const disabled = new FederationCommercialApprovalExchange(db, f.a.signing);
+  await disabled.discover();
+  expect(await disabled.advanceNext()).toBe(false);
+  expect((await disabled.list(f.actor, f.revisionId, 50, 0)).enabled).toBe(false);
+  expect(f.transport.requests()).toBe(0);
+  await expect(
+    f.transport.a.list({ ...f.actor, orgId: randomUUID() }, f.revisionId, 50, 0),
+  ).rejects.toMatchObject({ code: "POLICY_DENIED" });
+  await expect(
+    f.transport.a.retry(
+      { ...f.actor, orgId: randomUUID() },
+      { agreementRevisionId: f.revisionId, recordKind: "agreement", recordId: f.revisionId },
+    ),
+  ).rejects.toMatchObject({ code: "POLICY_DENIED" });
+});
+
+test("approval exchange recovers a manually attached signature without repeating the ledger intent", async () => {
+  const f = await approvalExchangeFixture();
+  const other = await f.other.get(f.actor, f.revisionId);
+  await f.approvals.attachCounterparty(f.actor, f.revisionId, other.approvalJws);
+  await f.transport.a.advanceNext();
+  expect(f.transport.requests()).toBe(0);
+  expect(await f.view()).toMatchObject({ state: "complete" });
+  expect(
+    await db.select().from(submissions).where(eq(submissions.localSiteId, f.a.signing.siteId)),
+  ).toHaveLength(1);
+});
+
+test("approval exchange existing consent survives personal role changes without granting new approval", async () => {
+  const f = await approvalExchangeFixture();
+  await new FederationPermissionService(db).set(
+    { ...f.actor, capability: "agreement.approve", enabled: false },
+    f.actor.userId,
+  );
+  await f.transport.a.advanceNext();
+  const [saved] = await db
+    .select()
+    .from(contracts)
+    .where(
+      and(eq(contracts.localSiteId, f.a.signing.siteId), eq(contracts.revisionId, f.revisionId)),
+    );
+  expect(saved?.counterpartyJws).not.toBeNull();
+  await expect(
+    f.approvals.approve(f.actor, {
+      ...f.terms,
+      agreement: { ...f.terms.agreement, agreementRevisionId: randomUUID() },
+    }),
+  ).rejects.toMatchObject({ code: "POLICY_DENIED" });
+});
+
+async function executionApprovalExchangeFixture() {
+  const f = await executionFixture();
+  const other = new FederationCommercialAgreementService(db, f.b.signing);
+  await other.approve(f.actor, f.terms);
+  await other.attachCounterparty(
+    f.actor,
+    f.revisionId,
+    (await f.approvals.get(f.actor, f.revisionId)).approvalJws,
+  );
+  if (!f.state.claim) throw new Error("Missing fixture claim");
+  const claim = { operation: "claim-demand" as const, claim: f.state.claim };
+  await db.insert(marketSubmissions).values({
+    id: f.reservation.reservationId,
+    localSiteId: f.b.signing.siteId,
+    localOrgId: f.actor.orgId,
+    requestedBy: f.actor.userId,
+    demandId: f.reservation.demandId,
+    input: claim,
+    digest: federationMaterialDigest(claim),
+    state: "committed",
+  });
+  const executionB = new FederationCommercialExecutionService(db, f.b.signing, {
+    query: async () => ({ operation: "get-demand", demand: f.state }),
+  });
+  const original = await f.execution.approve(f.actor, f.revisionId, f.reservation);
+  const counterpart = await executionB.approve(f.actor, f.revisionId, f.reservation);
+  const transport = await approvalTransport(f);
+  return { ...f, executionB, original, counterpart, transport };
+}
+
+test("approval exchange completes preapproved reservations and releases without activating execution", async () => {
+  const f = await executionApprovalExchangeFixture();
+  await Promise.all([f.transport.a.discover(), f.transport.b.discover()]);
+  await Promise.all([f.transport.a.advanceNext(), f.transport.b.advanceNext()]);
+  expect(
+    (await f.execution.get(f.actor, f.revisionId, f.reservation.reservationId)).counterpartyJws,
+  ).toBe(f.counterpart.approvalJws);
+  expect(
+    (await f.executionB.get(f.actor, f.revisionId, f.reservation.reservationId)).counterpartyJws,
+  ).toBe(f.original.approvalJws);
+  const release = await releasePayload(f);
+  await f.execution.approve(f.actor, f.revisionId, release);
+  await f.executionB.approve(f.actor, f.revisionId, release);
+  await Promise.all([f.transport.a.discover(), f.transport.b.discover()]);
+  await Promise.all([f.transport.a.advanceNext(), f.transport.b.advanceNext()]);
+  expect(
+    (await f.execution.get(f.actor, f.revisionId, release.releaseId)).counterpartyJws,
+  ).not.toBeNull();
+  expect(
+    (await f.transport.a.list(f.actor, f.revisionId, 50, 0)).records.every(
+      (row) => row.state === "complete",
+    ),
+  ).toBe(true);
+  expect(
+    await db
+      .select()
+      .from(marketSubmissions)
+      .where(
+        and(
+          eq(marketSubmissions.localSiteId, f.a.signing.siteId),
+          sql`${marketSubmissions.input}->>'operation' = 'activate-demand'`,
+        ),
+      ),
+  ).toHaveLength(0);
+  expect(
+    await db
+      .select()
+      .from(federationBudgets)
+      .where(eq(federationBudgets.domainId, f.terms.agreement.budgetDomainId)),
+  ).toHaveLength(0);
+});
+
+test("approval exchange authenticated unrelated institutions cannot obtain private contract signatures", async () => {
+  const f = await approvalExchangeFixture();
+  const outsider = await approvalExchangeFixture();
+  const query = CommercialApprovalQuerySchema.parse({
+    protocolVersion: 1,
+    kind: "commercial-approval-query",
+    queryId: randomUUID(),
+    senderSiteId: outsider.a.signing.siteId,
+    recipientSiteId: f.b.signing.siteId,
+    agreementRevisionId: f.revisionId,
+    domainId: f.terms.domainId,
+    recordKind: "agreement",
+    recordId: f.revisionId,
+    recordDigest: f.own.digest,
+    issuedAt: new Date().toISOString(),
+    expiresAt: new Date(Date.now() + 60000).toISOString(),
+  });
+  await expect(
+    f.transport.bReceiver.receive(
+      await signFederationMessage(CommercialApprovalQuerySchema, query, outsider.a.signing),
+      outsider.transport.fingerprints[0] ?? "",
+    ),
+  ).rejects.toMatchObject({ code: "POLICY_DENIED" });
+});
+
+test("approval exchange expired network failures retain a recoverable original pending record", async () => {
+  const f = await approvalExchangeFixture();
+  f.transport.hook(async () => {
+    await db
+      .update(federationCommercialApprovalSyncs)
+      .set({ leaseUntil: new Date(0) })
+      .where(eq(federationCommercialApprovalSyncs.localSiteId, f.a.signing.siteId));
+    throw new Error("late failed request");
+  });
+  await f.transport.a.advanceNext();
+  expect(await f.view()).toMatchObject({ state: "pending", lastError: null });
+  f.transport.hook(undefined);
+  await f.transport.a.advanceNext();
+  expect(await f.view()).toMatchObject({ state: "complete" });
+});
+
+test("approval exchange HTTP exposes only progress and human retry cannot steal a live lease", async () => {
+  const f = await approvalExchangeFixture();
+  const app = new Hono();
+  let automated = false;
+  app.onError(createErrorHandler(pino({ enabled: false })));
+  app.use("*", async (c, next) => {
+    c.set("principal" as never, f.actor as never);
+    c.set("automation" as never, automated as never);
+    await next();
+  });
+  app.route(
+    "/",
+    createFederationCommercialRoutes(
+      f.approvals,
+      f.service,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      f.transport.a,
+    ),
+  );
+  const path = `/federation/commercial-agreements/${f.revisionId}/approval-exchange`;
+  const response = await app.request(path);
+  expect(response.status).toBe(200);
+  expect(response.headers.get("cache-control")).toBe("no-store");
+  const text = JSON.stringify(await response.json());
+  for (const forbidden of ["leaseToken", "termsText", "approvalJws", "prices"])
+    expect(text).not.toContain(forbidden);
+  const retry = (body: string) =>
+    app.request(`${path}/agreement/${f.revisionId}/retry`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body,
+    });
+  expect((await retry('{"approve":true}')).status).toBe(400);
+  automated = true;
+  expect((await retry("{}")).status).toBe(403);
+  automated = false;
+  await db
+    .update(federationCommercialApprovalSyncs)
+    .set({ leaseToken: randomUUID(), leaseUntil: new Date(Date.now() + 60000) })
+    .where(eq(federationCommercialApprovalSyncs.localSiteId, f.a.signing.siteId));
+  expect((await retry("{}")).status).toBe(409);
+  await db
+    .update(federationCommercialApprovalSyncs)
+    .set({ leaseUntil: new Date(0) })
+    .where(eq(federationCommercialApprovalSyncs.localSiteId, f.a.signing.siteId));
+  expect((await retry("{}")).status).toBe(200);
+  await f.transport.a.advanceNext();
+  expect((await retry("{}")).status).toBe(409);
+});
+
+test("approval exchange preserves preapproved release recovery after the cooperation contract expires", async () => {
+  const f = await executionApprovalExchangeFixture();
+  await f.transport.a.discover();
+  await f.transport.b.discover();
+  await f.transport.a.advanceNext();
+  await f.transport.b.advanceNext();
+  const release = await releasePayload(f);
+  await f.execution.approve(f.actor, f.revisionId, release);
+  const peer = await f.executionB.approve(f.actor, f.revisionId, release);
+  await db
+    .update(federationSigningKeys)
+    .set({ validUntil: new Date("2101-01-01T00:00:00Z") })
+    .where(inArray(federationSigningKeys.siteId, [f.a.signing.siteId, f.b.signing.siteId]));
+  try {
+    await db
+      .update(federationCertificates)
+      .set({ validUntil: new Date("2101-01-01T00:00:00Z") })
+      .where(inArray(federationCertificates.siteId, [f.a.signing.siteId, f.b.signing.siteId]));
+    setSystemTime(new Date("2100-01-01T00:00:00Z"));
+    await f.transport.a.discover();
+    expect(await f.transport.a.advanceNext()).toBe(true);
+    expect(
+      (await f.transport.a.list(f.actor, f.revisionId, 50, 0)).records.find(
+        (r) => r.recordKind === "release",
+      ),
+    ).toMatchObject({ state: "complete", lastError: null });
+    expect((await f.execution.get(f.actor, f.revisionId, release.releaseId)).counterpartyJws).toBe(
+      peer.approvalJws,
+    );
+    expect(
+      (await f.transport.a.list(f.actor, f.revisionId, 50, 0)).records.find(
+        (r) => r.recordKind === "release",
+      )?.state,
+    ).toBe("complete");
+  } finally {
+    setSystemTime();
   }
 });

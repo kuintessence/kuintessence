@@ -88,6 +88,8 @@ export const federationSigningKeys = pgTable(
           | "delegation"
           | "acceptance"
           | "evidence-batch"
+          | "commercial-approval-query"
+          | "commercial-approval-waiting"
           | "commercial-agreement"
           | "commercial-usage"
           | "commercial-reservation"
@@ -1664,6 +1666,53 @@ export const federationTerminalChunks = pgTable(
     check(
       "federation_terminal_chunk_size",
       sql`${t.offset} BETWEEN 0 AND 16777215 AND ${t.offset} % 65536 = 0 AND octet_length(${t.bytes}) BETWEEN 4 AND 87384`,
+    ),
+  ],
+);
+
+/** Exchange of existing business signatures grants no new signing or execution authority. */
+export const federationCommercialApprovalSyncs = pgTable(
+  "federation_commercial_approval_syncs",
+  {
+    localSiteId: uuid("local_site_id").notNull(),
+    agreementRevisionId: uuid("agreement_revision_id").notNull(),
+    recordKind: varchar("record_kind", { length: 16 })
+      .$type<"agreement" | "reservation" | "release">()
+      .notNull(),
+    recordId: uuid("record_id").notNull(),
+    state: varchar("state", { length: 24 }).notNull().default("pending"),
+    lastError: varchar("last_error", { length: 64 }),
+    leaseToken: uuid("lease_token"),
+    leaseUntil: timestamp("lease_until", { withTimezone: true }),
+    nextAttemptAt: timestamp("next_attempt_at", { withTimezone: true }).notNull().defaultNow(),
+    verifiedAt: timestamp("verified_at", { withTimezone: true }),
+  },
+  (t) => [
+    primaryKey({ columns: [t.localSiteId, t.recordKind, t.recordId] }),
+    foreignKey({
+      name: "federation_approval_sync_contract_fk",
+      columns: [t.localSiteId, t.agreementRevisionId],
+      foreignColumns: [
+        federationCommercialAgreements.localSiteId,
+        federationCommercialAgreements.revisionId,
+      ],
+    }),
+    index("federation_approval_sync_pending").on(t.localSiteId, t.state, t.nextAttemptAt),
+    check(
+      "federation_approval_sync_identity",
+      sql`(${t.recordKind} IN ('agreement','reservation','release') AND (${t.recordKind} <> 'agreement' OR ${t.recordId} = ${t.agreementRevisionId})) IS TRUE`,
+    ),
+    check(
+      "federation_approval_sync_state",
+      sql`${t.state} IN ('pending','complete','needs_review')`,
+    ),
+    check(
+      "federation_approval_sync_lease",
+      sql`(${t.leaseToken} IS NULL) = (${t.leaseUntil} IS NULL)`,
+    ),
+    check(
+      "federation_approval_sync_receipt",
+      sql`(${t.state} = 'complete') = (${t.verifiedAt} IS NOT NULL)`,
     ),
   ],
 );

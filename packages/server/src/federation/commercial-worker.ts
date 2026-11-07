@@ -1,5 +1,6 @@
 import { createLogger } from "@kuintessence/shared";
 import type { FederationAccountingCollection } from "./accounting-collection";
+import type { FederationCommercialApprovalExchange } from "./commercial-approval-exchange";
 import type { FederationCommercialSubmissionService } from "./commercial-submissions";
 import type { FederationExecutionStopService } from "./execution-stop";
 import type { FederationTerminalExchange } from "./execution-terminal-exchange";
@@ -22,6 +23,7 @@ export class FederationCommercialWorker {
     private readonly stops?: FederationExecutionStopService,
     private readonly terminals?: FederationTerminalExchange,
     private readonly terminalAutomation?: FederationTerminalAutomation,
+    private readonly approvals?: FederationCommercialApprovalExchange,
   ) {}
 
   start() {
@@ -37,6 +39,17 @@ export class FederationCommercialWorker {
   tick() {
     if (this.running) return this.running;
     this.running = (async () => {
+      if (this.approvals) {
+        try {
+          await this.approvals.discover();
+          for (let i = 0; i < 8 && !this.stopped; i++)
+            if (!(await this.approvals.advanceNext())) break;
+        } catch {
+          logger.error(
+            "Commercial signature exchange failed; approved records remain in PostgreSQL",
+          );
+        }
+      }
       if (this.stops) {
         try {
           for (let i = 0; i < 8 && !this.stopped; i++) if (!(await this.stops.advanceNext())) break;

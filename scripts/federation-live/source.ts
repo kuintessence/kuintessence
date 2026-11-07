@@ -9,7 +9,6 @@ import {
 } from "@kuintessence/db";
 import { importPKCS8 } from "jose";
 import { z } from "zod";
-import { FederationAgreementService } from "../../packages/server/src/federation/agreements";
 import { FederationAssetService } from "../../packages/server/src/federation/assets";
 import { FederationPermissionService } from "../../packages/server/src/federation/permissions";
 import { FederationTrustRegistry } from "../../packages/server/src/federation/trust-registry";
@@ -64,6 +63,8 @@ if (process.argv[2] === "inspect") {
         keyId: peer.keyId,
         publicKeyPem: peer.publicKeyPem,
         allowedKinds: [
+          "commercial-approval-query",
+          "commercial-approval-waiting",
           "commercial-agreement",
           "commercial-reservation",
           "commercial-release",
@@ -139,22 +140,7 @@ if (process.argv[2] === "inspect") {
     keyId: config.source.keyId,
     privateKey: await importPKCS8(await Bun.file(`${root}/source-signing.pem`).text(), "RS256"),
   };
-  const targetKey = {
-    siteId: config.target.siteId,
-    keyId: config.target.keyId,
-    privateKey: await importPKCS8(
-      await Bun.file(z.string().min(1).parse(process.env.FEDERATION_SIGNING_KEY_FILE)).text(),
-      "RS256",
-    ),
-  };
-  await approveContract(db, actor, key, targetKey, config.terms, config.commercial);
-  const agreements = new FederationAgreementService(db, key);
-  await agreements.approve(actor, { terms: config.terms });
-  await agreements.attachCounterparty(
-    actor,
-    config.terms.agreementRevisionId,
-    config.targetApprovalJws,
-  );
+  await approveContract(db, actor, key, config.terms, config.commercial);
   await Bun.write(`${root}/source-actor.json`, JSON.stringify(actor));
 }
 await db.$client.end();

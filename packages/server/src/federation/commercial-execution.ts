@@ -332,10 +332,48 @@ export class FederationCommercialExecutionService {
     recordId: string,
     counterpartyJws: string,
   ) {
-    const local = await this.db.transaction(async (tx) => {
-      await requireFederationCapability(tx, actor, "agreement.approve");
-      return this.local(tx, actor, revisionId, recordId);
-    });
+    return this.attach(actor, revisionId, recordId, counterpartyJws);
+  }
+  async attachExchanged(
+    revisionId: string,
+    recordId: string,
+    counterpartyJws: string,
+    authorize: (tx: PgTransaction) => Promise<void>,
+  ) {
+    const [local] = await this.db
+      .select()
+      .from(approvals)
+      .where(
+        and(
+          eq(approvals.localSiteId, this.signingKey.siteId),
+          eq(approvals.agreementRevisionId, revisionId),
+          eq(approvals.recordId, recordId),
+        ),
+      );
+    if (!local) throw new FederationError("ASSET_UNAVAILABLE");
+    return this.attach(
+      { orgId: local.localOrgId, userId: local.approvedBy },
+      revisionId,
+      recordId,
+      counterpartyJws,
+      local,
+      authorize,
+    );
+  }
+  private async attach(
+    actor: FederationActor,
+    revisionId: string,
+    recordId: string,
+    counterpartyJws: string,
+    snapshot?: typeof approvals.$inferSelect,
+    authorize?: (tx: PgTransaction) => Promise<void>,
+  ) {
+    const local =
+      snapshot ??
+      (await this.db.transaction(async (tx) => {
+        await requireFederationCapability(tx, actor, "agreement.approve");
+        return this.local(tx, actor, revisionId, recordId);
+      }));
     const payload = CommercialExecutionApprovalSchema.parse(local.payload);
     const parties = identity(payload);
     const ownIsSource = parties.sourceSiteId === this.signingKey.siteId;
@@ -360,10 +398,13 @@ export class FederationCommercialExecutionService {
       if (result.digest !== local.digest) throw new FederationError("OPERATION_CONFLICT");
     }
     return this.db.transaction(async (tx) => {
-      await requireFederationCapability(tx, actor, "agreement.approve");
+      if (authorize) await authorize(tx);
+      else await requireFederationCapability(tx, actor, "agreement.approve");
       for (const key of keys.sort((a, b) => a.siteId.localeCompare(b.siteId)))
         await this.trust.assertKey(tx, key.siteId, key.keyId, this.clock());
       const current = await this.local(tx, actor, revisionId, recordId);
+      if (current.digest !== local.digest || current.approvalJws !== local.approvalJws)
+        throw new FederationError("OPERATION_CONFLICT");
       if (current.counterpartyJws) {
         if (current.counterpartyJws !== counterpartyJws)
           throw new FederationError("OPERATION_CONFLICT");
@@ -393,7 +434,13 @@ export class FederationCommercialExecutionService {
           },
         }),
       });
-      await this.audit(tx, actor, "counterparty", recordId, local.digest);
+      await this.audit(
+        tx,
+        authorize ? { ...actor, userId: `commercial-exchange:${this.signingKey.siteId}` } : actor,
+        "counterparty",
+        recordId,
+        local.digest,
+      );
       return updated;
     });
   }

@@ -5,6 +5,7 @@ import { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { FederationAdmission } from "./admission";
 import { FederationCancellationReceiver } from "./cancellation";
+import { FederationCommercialApprovalExchange } from "./commercial-approval-exchange";
 import type { FederationDownloadStorage } from "./download-credential";
 import type { FederationExecutionConfirmationService } from "./execution-confirmation";
 import { FederationTerminalExchange } from "./execution-terminal-exchange";
@@ -117,6 +118,18 @@ export function createFederationIngress(
       });
     });
   }
+  r.post("/federation/v1/commercial-approvals", async (c) => {
+    if (c.req.header("content-type") !== "application/jose")
+      return c.json({ error: { code: "INVALID_MESSAGE" } }, 415);
+    const response = await new FederationCommercialApprovalExchange(db, signingKey).receive(
+      await c.req.text(),
+      c.req.header("x-kq-federation-cert") ?? "",
+    );
+    return c.body(response, 200, {
+      "content-type": "application/jose",
+      "cache-control": "no-store",
+    });
+  });
   r.post("/federation/v1/usage", async (c) => {
     if (c.req.header("content-type") !== "application/jose")
       return c.json({ error: { code: "INVALID_MESSAGE" } }, 415);

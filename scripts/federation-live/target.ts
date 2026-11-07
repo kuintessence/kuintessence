@@ -30,7 +30,6 @@ import { eq } from "drizzle-orm";
 import { exportPKCS8, exportSPKI, importPKCS8, importSPKI } from "jose";
 import { stringify } from "yaml";
 import { z } from "zod";
-import { FederationAgreementService } from "../../packages/server/src/federation/agreements";
 import {
   FederationAssetService,
   federationMaterialDigest,
@@ -155,6 +154,8 @@ if (process.argv[2] === "inspect") {
         keyId: key.keyId,
         publicKeyPem: pem,
         allowedKinds: [
+          "commercial-approval-query",
+          "commercial-approval-waiting",
           "commercial-agreement",
           "commercial-reservation",
           "commercial-release",
@@ -384,14 +385,7 @@ printf 'federation-file-consumed:42\\n'
     },
     termsDigest: federationMaterialDigest({ purpose: "live runtime gate" }),
   });
-  const commercial = await approveContract(db, actor, target, source, terms);
-  const agreements = new FederationAgreementService(db, target);
-  await agreements.approve(actor, { terms, executionUserId: identity.userId });
-  await agreements.attachCounterparty(
-    actor,
-    terms.agreementRevisionId,
-    await signFederationMessage(FederationAgreementSchema, terms, source),
-  );
+  const commercial = await approveContract(db, actor, target, terms);
   const request = FederationDelegationSchema.parse({
     protocolVersion: 1,
     kind: "delegation",
@@ -437,7 +431,6 @@ printf 'federation-file-consumed:42\\n'
       payload,
       reference,
       request,
-      targetApprovalJws: (await agreements.get(actor, terms.agreementRevisionId)).approvalJws,
     }),
   );
   await Bun.write(

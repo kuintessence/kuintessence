@@ -14,24 +14,22 @@ import {
 import { desc, eq } from "drizzle-orm";
 import { importPKCS8 } from "jose";
 import { z } from "zod";
+import { FederationAgreementService } from "../../packages/server/src/federation/agreements";
 import { federationMaterialDigest } from "../../packages/server/src/federation/assets";
 import { FederationCommercialAgreementService } from "../../packages/server/src/federation/commercial-agreements";
+import { FederationCommercialApprovalExchange } from "../../packages/server/src/federation/commercial-approval-exchange";
 import { FederationCommercialExecutionService } from "../../packages/server/src/federation/commercial-execution";
 import { FederationCommercialSubmissionService } from "../../packages/server/src/federation/commercial-submissions";
 import { FederationExecutionConfirmationService } from "../../packages/server/src/federation/execution-confirmation";
 import { FederationMarketService } from "../../packages/server/src/federation/market";
 import { UnixMarketClient } from "../../packages/server/src/federation/market-client";
 import { FederationPermissionService } from "../../packages/server/src/federation/permissions";
-import {
-  type FederationSigningKey,
-  signFederationMessage,
-} from "../../packages/server/src/federation/signatures";
+import type { FederationSigningKey } from "../../packages/server/src/federation/signatures";
 
 export async function approveContract(
   db: ReturnType<typeof createPgDb>,
   actor: { userId: string; orgId: string },
   own: FederationSigningKey,
-  other: FederationSigningKey,
   terms: FederationAgreement,
   existing?: unknown,
 ) {
@@ -59,11 +57,6 @@ export async function approveContract(
   );
   const service = new FederationCommercialAgreementService(db, own);
   await service.approve(actor, contract);
-  await service.attachCounterparty(
-    actor,
-    terms.agreementRevisionId,
-    await signFederationMessage(CommercialAgreementSchema, contract, other),
-  );
   return contract;
 }
 
@@ -182,6 +175,24 @@ if (import.meta.main) {
       async () => (await commercialReady(a)) && (await commercialReady(b)),
       "both production Servers registered the private contract",
     );
+    const identity = await Bun.file(`${root}/federation-probe.json`).json();
+    const agreementA = new FederationAgreementService(a.db, a.key);
+    const agreementB = new FederationAgreementService(b.db, b.key);
+    const sourceConsent = await agreementA.approve(a.actor, { terms: config.terms });
+    const providerConsent = await agreementB.approve(b.actor, {
+      terms: config.terms,
+      executionUserId: identity.identity.userId,
+    });
+    await agreementA.attachCounterparty(
+      a.actor,
+      config.terms.agreementRevisionId,
+      providerConsent.approvalJws,
+    );
+    await agreementB.attachCounterparty(
+      b.actor,
+      config.terms.agreementRevisionId,
+      sourceConsent.approvalJws,
+    );
     const demandId = randomUUID(),
       reservationId = randomUUID(),
       activationId = randomUUID();
@@ -230,18 +241,35 @@ if (import.meta.main) {
     });
     const own = await a.execution.approve(a.actor, config.terms.agreementRevisionId, reserve);
     const other = await b.execution.approve(b.actor, config.terms.agreementRevisionId, reserve);
-    await a.execution.attachCounterparty(
-      a.actor,
-      config.terms.agreementRevisionId,
-      reservationId,
-      other.approvalJws,
-    );
-    await b.execution.attachCounterparty(
-      b.actor,
-      config.terms.agreementRevisionId,
-      reservationId,
-      own.approvalJws,
-    );
+    await wait(async () => {
+      const source = await a.execution.get(
+        a.actor,
+        config.terms.agreementRevisionId,
+        reservationId,
+      );
+      const provider = await b.execution.get(
+        b.actor,
+        config.terms.agreementRevisionId,
+        reservationId,
+      );
+      if (!source.counterpartyJws || !provider.counterpartyJws) return false;
+      assert.equal(source.counterpartyJws, other.approvalJws);
+      assert.equal(provider.counterpartyJws, own.approvalJws);
+      return true;
+    }, "reservation signatures exchanged automatically over mTLS");
+    const exchangeEvidence = [];
+    for (const p of parties) {
+      const exchanged = await new FederationCommercialApprovalExchange(p.db, p.key).list(
+        p.actor,
+        config.terms.agreementRevisionId,
+        50,
+        0,
+      );
+      assert.equal(exchanged.records.length, 2);
+      assert(exchanged.records.every((r) => r.state === "complete"));
+      exchangeEvidence.push({ siteId: p.key.siteId, records: exchanged.records });
+    }
+    await Bun.write(`${root}/approval-exchange.json`, JSON.stringify(exchangeEvidence));
     await wait(
       async () => (await commercialReady(a)) && (await commercialReady(b)),
       "both private reservations committed",
