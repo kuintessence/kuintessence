@@ -51,10 +51,12 @@ export const FederationKeyInput = z
           "cancellation-receipt",
           "result-query",
           "result-report",
+          "result-download-query",
+          "result-download-grant",
         ]),
       )
       .min(1)
-      .max(10),
+      .max(12),
     validFrom: z.iso.datetime(),
     validUntil: z.iso.datetime(),
   })

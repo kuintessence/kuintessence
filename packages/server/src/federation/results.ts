@@ -12,8 +12,11 @@ import {
 } from "@kuintessence/db";
 import {
   assertFederationStatusQueryFresh,
+  FederationDataOriginSchema,
   FederationDelegationSchema,
   FederationError,
+  FederationResultDownloadGrantSchema,
+  FederationResultDownloadQuerySchema,
   type FederationResultManifest,
   FederationResultManifestSchema,
   type FederationResultQuery,
@@ -22,8 +25,10 @@ import {
 } from "@kuintessence/shared/federation";
 import { and, asc, eq, inArray, isNull } from "drizzle-orm";
 import { validateArtifactMembers } from "../services/artifact-members";
+import type { MinioBackend } from "../storage/minio-client";
 import { federationMaterialDigest } from "./assets";
 import { requireExecutionIdentity } from "./execution-identity";
+import { signedDownloadExpiry } from "./result-download-credential";
 import { requireFederationResultPolicy } from "./result-policy";
 import {
   type FederationSigningKey,
@@ -33,7 +38,12 @@ import {
 } from "./signatures";
 import { type FederationTransaction, FederationTrustRegistry } from "./trust-registry";
 
-/** Signed inventory only. No storage path, local identity, download credential or file bytes. */
+export interface FederationResultDownloadStorage {
+  storage: Pick<MinioBackend, "head" | "presignDownload">;
+  allowedOrigins: readonly string[];
+}
+
+/** Inventory and short-lived credentials travel separately; bytes never pass through this service. */
 export class FederationResultResponder {
   private readonly trust: FederationTrustRegistry;
   constructor(
@@ -74,7 +84,7 @@ export class FederationResultResponder {
       }
       return this.manifest(tx, query);
     };
-    const manifest = await this.db.transaction(read);
+    const { manifest } = await this.db.transaction(read);
     const manifestDigest = federationMaterialDigest(manifest);
     const { issuedAt: _issuedAt, expiresAt: _expiresAt, ...identity } = query;
     const report = FederationResultReportSchema.parse({
@@ -90,13 +100,117 @@ export class FederationResultResponder {
     const jws = await signFederationMessage(FederationResultReportSchema, report, this.signingKey);
     // Revocation, deletion or content changes while signing cannot release the older snapshot.
     await this.db.transaction(async (tx) => {
-      if (federationMaterialDigest(await read(tx)) !== manifestDigest)
+      if (federationMaterialDigest((await read(tx)).manifest) !== manifestDigest)
         throw new FederationError("OPERATION_CONFLICT");
     });
     return jws;
   }
 
-  private async manifest(tx: FederationTransaction, query: FederationResultQuery) {
+  async receiveDownload(
+    queryJws: string,
+    fingerprint: string,
+    options: FederationResultDownloadStorage,
+  ) {
+    const peer = await this.trust.resolvePeer(
+      fingerprint,
+      federationMessageKeyId(queryJws),
+      this.clock(),
+    );
+    const { payload: query, digest } = await verifyFederationMessage(
+      FederationResultDownloadQuerySchema,
+      queryJws,
+      peer,
+      this.clock(),
+    );
+    if (query.senderSiteId !== peer.siteId || query.recipientSiteId !== this.signingKey.siteId)
+      throw new FederationError("POLICY_DENIED");
+    const read = async (tx: FederationTransaction) => {
+      assertFederationStatusQueryFresh(query, this.clock());
+      for (const site of [peer.siteId, this.signingKey.siteId].sort()) {
+        if (site === peer.siteId)
+          await this.trust.assertPeer(tx, fingerprint, site, peer.keyId, this.clock());
+        else await this.trust.assertKey(tx, site, this.signingKey.keyId, this.clock());
+      }
+      const local = await this.trust.resolveKey(
+        this.signingKey.siteId,
+        this.signingKey.keyId,
+        this.clock(),
+        tx,
+      );
+      const sender = await this.trust.resolveKey(peer.siteId, peer.keyId, this.clock(), tx);
+      if (
+        !local.allowedKinds.includes("result-download-grant") ||
+        !sender.allowedKinds.includes("result-download-query")
+      )
+        throw new FederationError("UNTRUSTED_IDENTITY");
+      const snapshot = await this.manifest(tx, query);
+      const file = snapshot.sources.get(`${query.binding.outputId}/${query.binding.path}`);
+      if (
+        !file ||
+        federationMaterialDigest(snapshot.manifest) !== query.binding.manifestDigest ||
+        file.sha256 !== query.binding.sha256 ||
+        file.size !== query.binding.sizeBytes
+      )
+        throw new FederationError("OPERATION_CONFLICT");
+      return { file, availableUntil: snapshot.manifest.availableUntil };
+    };
+    const first = await this.db.transaction(read);
+    const origins = new Set(
+      options.allowedOrigins.map(
+        (origin) => new URL(FederationDataOriginSchema.parse(origin)).origin,
+      ),
+    );
+    if (!origins.size) throw new FederationError("POLICY_DENIED");
+    // Head and presign do not hold database locks or read the object body.
+    const stat = await options.storage.head(first.file.storageKey);
+    if (!stat || stat.size !== first.file.size) throw new FederationError("ASSET_UNAVAILABLE");
+    const now = this.clock().getTime();
+    const seconds = Math.floor(
+      (Math.min(now + 30_000, Date.parse(query.expiresAt), Date.parse(first.availableUntil)) -
+        now) /
+        1000,
+    );
+    if (seconds < 1) throw new FederationError("AUTHORIZATION_EXPIRED");
+    const deadline = Math.min(
+      now + 30_000,
+      Date.parse(query.expiresAt),
+      Date.parse(first.availableUntil),
+    );
+    const url = await options.storage.presignDownload(
+      first.file.storageKey,
+      seconds,
+      undefined,
+      stat.versionId,
+    );
+    const expiresAt = signedDownloadExpiry(url, this.clock().getTime(), deadline);
+    const { issuedAt: _issuedAt, expiresAt: _queryExpiresAt, ...identity } = query;
+    const grant = FederationResultDownloadGrantSchema.parse({
+      ...identity,
+      kind: "result-download-grant",
+      senderSiteId: query.recipientSiteId,
+      recipientSiteId: query.senderSiteId,
+      queryDigest: digest,
+      observedAt: this.clock().toISOString(),
+      url,
+      expiresAt,
+    });
+    if (!origins.has(new URL(grant.url).origin)) throw new FederationError("POLICY_DENIED");
+    const signed = await signFederationMessage(
+      FederationResultDownloadGrantSchema,
+      grant,
+      this.signingKey,
+    );
+    await this.db.transaction(async (tx) => {
+      const current = await read(tx);
+      if (current.file.id !== first.file.id || current.file.storageKey !== first.file.storageKey)
+        throw new FederationError("OPERATION_CONFLICT");
+      if (Date.parse(expiresAt) <= this.clock().getTime())
+        throw new FederationError("AUTHORIZATION_EXPIRED");
+    });
+    return signed;
+  }
+
+  private async manifest(tx: FederationTransaction, query: Omit<FederationResultQuery, "kind">) {
     const [agreement] = await tx
       .select()
       .from(federationAgreements)
@@ -254,6 +368,7 @@ export class FederationResultResponder {
       .for("share");
     if (artifacts.length > 256) throw new FederationError("POLICY_DENIED");
     const outputs: FederationResultManifest["outputs"] = [];
+    const sources = new Map<string, typeof netdriveFiles.$inferSelect>();
     let totalBytes = 0,
       totalFiles = 0;
     for (const artifact of artifacts) {
@@ -295,6 +410,10 @@ export class FederationResultResponder {
         totalBytes > policy.maxBytes
       )
         throw new FederationError("POLICY_DENIED");
+      const outputId = federationMaterialDigest({
+        operationId: query.operationId,
+        artifactId: artifact.id,
+      });
       const files = [];
       for (const member of members) {
         let fileId = artifact.netdriveFileId;
@@ -325,6 +444,7 @@ export class FederationResultResponder {
           .for("share");
         if (!file || file.size !== member.sizeBytes || file.sha256 !== member.sha256)
           throw new FederationError("ASSET_UNAVAILABLE");
+        sources.set(`${outputId}/${member.relativePath}`, file);
         files.push({
           path: member.relativePath,
           sha256: member.sha256,
@@ -332,10 +452,7 @@ export class FederationResultResponder {
         });
       }
       outputs.push({
-        outputId: federationMaterialDigest({
-          operationId: query.operationId,
-          artifactId: artifact.id,
-        }),
+        outputId,
         nodeId: artifact.producerNodeId,
         descriptor: artifact.descriptor,
         type: artifact.ioType === "FileBatch" ? "FileBatch" : "File",
@@ -344,7 +461,7 @@ export class FederationResultResponder {
         files,
       });
     }
-    return FederationResultManifestSchema.parse({
+    const manifest = FederationResultManifestSchema.parse({
       template: request.template,
       inputManifestDigest: request.inputManifestDigest,
       environmentLockDigest: request.environmentLockDigest,
@@ -352,5 +469,6 @@ export class FederationResultResponder {
       availableUntil: policy.availableUntil,
       outputs,
     });
+    return { manifest, sources };
   }
 }

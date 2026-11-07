@@ -36,6 +36,8 @@ import {
   FederationAgreementSchema,
   FederationCancellationReceiptSchema,
   FederationCancellationSchema,
+  FederationResultDownloadGrantSchema,
+  FederationResultDownloadQuerySchema,
   FederationResultQuerySchema,
   FederationResultReportSchema,
   FederationStatusQuerySchema,
@@ -57,7 +59,7 @@ import { FederationOutboundService } from "./outbound";
 import { FederationDeliveryError, type FederationSend } from "./outbound-client";
 import { FederationPermissionService } from "./permissions";
 import { FederationPreparationService } from "./preparation";
-import { FederationResultResponder } from "./results";
+import { type FederationResultDownloadStorage, FederationResultResponder } from "./results";
 import { signFederationMessage, verifyFederationMessage } from "./signatures";
 import { FederationStatusResponder } from "./status";
 import { testAgreement, testDelegation, testKeys, testNow } from "./test-fixtures";
@@ -131,6 +133,8 @@ beforeAll(async () => {
           "cancellation-receipt",
           "result-query",
           "result-report",
+          "result-download-query",
+          "result-download-grant",
         ],
         validFrom: key.verification.validFrom.toISOString(),
         validUntil: key.verification.validUntil.toISOString(),
@@ -1323,4 +1327,246 @@ test("result queries cannot change task identity or bypass receiver agreement an
     .set({ terms: { ...f.terms, resultPolicy: { ...resultPolicy, maxBytes: 100 } } })
     .where(eq(federationAgreements.revisionId, f.terms.agreementRevisionId));
   await expect(f.read()).rejects.toThrow("OPERATION_CONFLICT");
+});
+
+async function resultDownloadFixture() {
+  const f = await resultFixture();
+  const { report } = await f.read();
+  const output = report.manifest.outputs[0];
+  const member = output?.files[0];
+  if (!output || !member) throw new Error("Expected file member");
+  const binding = {
+    transferId: crypto.randomUUID(),
+    generation: crypto.randomUUID(),
+    operationId: f.request.operationId,
+    manifestDigest: report.manifestDigest,
+    outputId: output.outputId,
+    ...member,
+    partSize: 5 * 1024 * 1024,
+  };
+  const calls: { key: string; seconds: number; version?: string }[] = [];
+  const downloads: FederationResultDownloadStorage = {
+    allowedOrigins: ["https://storage.test.invalid"],
+    storage: {
+      head: async () => ({
+        size: member.sizeBytes,
+        etag: "object-etag",
+        versionId: "version-one",
+        contentType: "application/octet-stream",
+        lastModified: clock(),
+      }),
+      presignDownload: async (key, seconds, _filename, version) => {
+        calls.push({ key, seconds, version });
+        const url = new URL("https://storage.test.invalid/opaque-object");
+        url.searchParams.set(
+          "X-Amz-Date",
+          clock()
+            .toISOString()
+            .replace(/[-:]/g, "")
+            .replace(/\.\d{3}/, ""),
+        );
+        url.searchParams.set("X-Amz-Expires", String(seconds));
+        url.searchParams.set("X-Amz-Signature", "private-ticket");
+        url.searchParams.set("versionId", version ?? "");
+        return url.toString();
+      },
+    },
+  };
+  const send: FederationSend = (_endpoint, jws, path) => {
+    expect(path).toBe("/federation/v1/result-downloads");
+    return f.responder.receiveDownload(jws, sourceFingerprint, downloads);
+  };
+  const read = (sender = send, value = binding, origins = downloads.allowedOrigins) =>
+    f.service(sender).results.downloadGrant(actor, value, origins);
+  return { ...f, binding, calls, downloads, sendDownload: send, download: read };
+}
+
+test("result downloads issue a version-pinned, signed short-lived grant only for the selected manifest member", async () => {
+  const f = await resultDownloadFixture();
+  const grant = await f.download();
+  expect(grant.binding).toEqual(f.binding);
+  expect(grant.direction).toBe("download");
+  expect(Date.parse(grant.expiresAt) - clock().getTime()).toBe(30_000);
+  expect(new URL(grant.url).searchParams.get("versionId")).toBe("version-one");
+  expect(f.calls).toEqual([{ key: "private/object/key", seconds: 30, version: "version-one" }]);
+  expect(await row(f.request.operationId)).toEqual(f.saved);
+  // The last release window cannot be enlarged by rounding or by the actual S3 credential.
+  time = new Date(Date.parse(resultPolicy.availableUntil) - 2_500);
+  const last = await f.download();
+  expect(Date.parse(last.expiresAt)).toBeLessThanOrEqual(Date.parse(resultPolicy.availableUntil));
+  expect(f.calls.at(-1)?.seconds).toBe(2);
+  time = new Date(Date.parse(resultPolicy.availableUntil) - 500);
+  await expect(f.download()).rejects.toThrow("AUTHORIZATION_EXPIRED");
+  expect(f.calls).toHaveLength(2);
+});
+
+test("result downloads reject changed manifests, wrong files, foreign peers and unavailable storage before releasing a URL", async () => {
+  const f = await resultDownloadFixture();
+  for (const change of [
+    { path: "another-file" },
+    { sha256: "b".repeat(64) },
+    { manifestDigest: `sha256:${"b".repeat(64)}` },
+  ])
+    await expect(f.download(f.sendDownload, { ...f.binding, ...change })).rejects.toThrow(
+      "OPERATION_CONFLICT",
+    );
+  expect(f.calls).toHaveLength(0);
+  await expect(
+    f.download((_endpoint, jws) =>
+      f.responder.receiveDownload(jws, targetFingerprint, f.downloads),
+    ),
+  ).rejects.toThrow("UNTRUSTED_IDENTITY");
+  const head = f.downloads.storage.head;
+  f.downloads.storage.head = async () => null;
+  await expect(f.download()).rejects.toThrow("ASSET_UNAVAILABLE");
+  f.downloads.storage.head = head;
+  await db.update(jobs).set({ restrictedNoEgress: true }).where(eq(jobs.id, f.jobId));
+  await expect(f.download()).rejects.toThrow("POLICY_DENIED");
+  expect(f.calls).toHaveLength(0);
+});
+
+test("result downloads recheck both authorities and file mapping after presigning or network delay", async () => {
+  const f = await resultDownloadFixture();
+  const presign = f.downloads.storage.presignDownload;
+  f.downloads.storage.presignDownload = async (...args) => {
+    const url = await presign(...args);
+    await db
+      .update(netdriveFiles)
+      .set({ storageKey: "changed/object" })
+      .where(eq(netdriveFiles.id, f.fileId));
+    return url;
+  };
+  await expect(f.download()).rejects.toThrow("OPERATION_CONFLICT");
+  f.downloads.storage.presignDownload = presign;
+  await db
+    .update(netdriveFiles)
+    .set({ storageKey: "private/object/key" })
+    .where(eq(netdriveFiles.id, f.fileId));
+  await expect(
+    f.download(async (...args) => {
+      const grant = await f.sendDownload(...args);
+      await permission.set({ ...actor, capability: "result.read", enabled: false }, actor.userId);
+      return grant;
+    }),
+  ).rejects.toThrow("POLICY_DENIED");
+  await permission.set({ ...actor, capability: "result.read", enabled: true }, actor.userId);
+  f.downloads.storage.presignDownload = async (...args) => {
+    const url = await presign(...args);
+    await db
+      .update(federationAgreements)
+      .set({ state: "suspended" })
+      .where(eq(federationAgreements.revisionId, f.terms.agreementRevisionId));
+    return url;
+  };
+  await expect(f.download()).rejects.toThrow("POLICY_DENIED");
+});
+
+test("result downloads reject replay, mismatched attempts, untrusted origins and credentials longer than their envelope", async () => {
+  const f = await resultDownloadFixture();
+  let old: string | undefined;
+  await f.download(async (...args) => {
+    old = await f.sendDownload(...args);
+    return old;
+  });
+  await expect(
+    f.download(async () => {
+      if (!old) throw new Error("Missing grant");
+      return old;
+    }),
+  ).rejects.toThrow("INVALID_MESSAGE");
+  const mutate =
+    (edit: (grant: typeof FederationResultDownloadGrantSchema._output) => void): FederationSend =>
+    async (...args) => {
+      const signed = await f.sendDownload(...args);
+      const key = await trust.resolveKey(b.signing.siteId, b.signing.keyId, clock());
+      const { payload } = await verifyFederationMessage(
+        FederationResultDownloadGrantSchema,
+        signed,
+        key,
+        clock(),
+      );
+      edit(payload);
+      return signFederationMessage(FederationResultDownloadGrantSchema, payload, b.signing);
+    };
+  await expect(
+    f.download(
+      mutate((grant) => {
+        grant.binding.generation = crypto.randomUUID();
+      }),
+    ),
+  ).rejects.toThrow("INVALID_MESSAGE");
+  await expect(
+    f.download(
+      mutate((grant) => {
+        grant.url = grant.url.replace("storage.test.invalid", "foreign.test.invalid");
+      }),
+    ),
+  ).rejects.toThrow("INVALID_MESSAGE");
+  await expect(
+    f.download(
+      mutate((grant) => {
+        grant.url = grant.url.replace("X-Amz-Expires=30", "X-Amz-Expires=3600");
+      }),
+    ),
+  ).rejects.toThrow("POLICY_DENIED");
+  const presign = f.downloads.storage.presignDownload;
+  f.downloads.storage.presignDownload = async (...args) =>
+    (await presign(...args)).replace("storage.test.invalid", "foreign.test.invalid");
+  await expect(f.download()).rejects.toThrow("POLICY_DENIED");
+  f.downloads.storage.presignDownload = async (...args) =>
+    (await presign(...args)).replace("X-Amz-Expires=30", "X-Amz-Expires=3600");
+  await expect(f.download()).rejects.toThrow("POLICY_DENIED");
+  f.downloads.storage.presignDownload = presign;
+  await expect(f.download(f.sendDownload, f.binding, [])).rejects.toThrow("POLICY_DENIED");
+  expect(await row(f.request.operationId)).toEqual(f.saved);
+});
+
+test("result downloads require separately registered key purposes on both sites", async () => {
+  const f = await resultDownloadFixture();
+  const [key] = await db
+    .select()
+    .from(federationSigningKeys)
+    .where(eq(federationSigningKeys.siteId, b.signing.siteId));
+  if (!key) throw new Error("Expected key");
+  try {
+    await db
+      .update(federationSigningKeys)
+      .set({ allowedKinds: key.allowedKinds.filter((kind) => kind !== "result-download-grant") })
+      .where(
+        and(
+          eq(federationSigningKeys.siteId, key.siteId),
+          eq(federationSigningKeys.keyId, key.keyId),
+        ),
+      );
+    await expect(f.download()).rejects.toThrow("UNTRUSTED_IDENTITY");
+    expect(f.calls).toHaveLength(0);
+  } finally {
+    await db
+      .update(federationSigningKeys)
+      .set({ allowedKinds: key.allowedKinds })
+      .where(
+        and(
+          eq(federationSigningKeys.siteId, key.siteId),
+          eq(federationSigningKeys.keyId, key.keyId),
+        ),
+      );
+  }
+  await expect(
+    f.download(async (_endpoint, jws) => {
+      const peer = await trust.resolveKey(a.signing.siteId, a.signing.keyId, clock());
+      const { payload } = await verifyFederationMessage(
+        FederationResultDownloadQuerySchema,
+        jws,
+        peer,
+        clock(),
+      );
+      const { binding: _binding, ...identity } = payload;
+      const signed = await signFederationMessage(
+        FederationResultQuerySchema,
+        { ...identity, kind: "result-query" },
+        a.signing,
+      );
+      return f.responder.receiveDownload(signed, sourceFingerprint, f.downloads);
+    }),
+  ).rejects.toThrow();
 });

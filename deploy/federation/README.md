@@ -14,7 +14,7 @@
                               PostgreSQL 原子预留
 ```
 
-Gateway 使用 Node 22，强制校验客户端证书链，按实际 TLS 证书计算 SHA-256 指纹。客户端提供的身份头、Authorization、Cookie、代理头均不转发。Bun 私有入口按指纹查本地登记，验证机构签名，并在接单事务中锁定、复查信任状态。网关只允许 `/federation/v1/delegations` 、`/federation/v1/status`、`/federation/v1/cancellations` 和 `/federation/v1/results`；普通 Server HTTP 端口不挂载这些机构路由。
+Gateway 使用 Node 22，强制校验客户端证书链，按实际 TLS 证书计算 SHA-256 指纹。客户端提供的身份头、Authorization、Cookie、代理头均不转发。Bun 私有入口按指纹查本地登记，验证机构签名，并在接单事务中锁定、复查信任状态。网关只允许 `/federation/v1/delegations` 、`/federation/v1/status`、`/federation/v1/cancellations` 、`/federation/v1/results` 和 `/federation/v1/result-downloads`；普通 Server HTTP 端口不挂载这些机构路由。
 
 Unix socket 只允许 Server 与 Gateway 的相同系统 UID 访问。独立目录须为该 UID 所有、权限 0700；socket 为 0600。运行时拒绝公开目录和权限过宽的签名私钥。Gateway 与 Server 属于同一机构的信任边界，不能把此 socket 挂给其他机构容器。各机构使用独立目录、数据库和签名密钥。
 
@@ -29,6 +29,7 @@ Server 设置：
 | `FEDERATION_SIGNING_KEY_ID` | 本地登记中的签名公钥 ID |
 | `FEDERATION_SIGNING_KEY_FILE` | 专用 RSA PKCS#8 PEM 私钥路径，至少 2048 位，文件 0600 |
 | `FEDERATION_SOCKET_PATH` | 私有 Unix socket 绝对路径 |
+| `FEDERATION_RESULT_DOWNLOAD_ORIGINS` | 接收机构允许签发下载地址的 HTTPS 存储 origin，逗号分隔；默认空，禁用下载授权 |
 
 Gateway 设置 `FEDERATION_TLS_CA_FILE`、`FEDERATION_TLS_CERT_FILE`、`FEDERATION_TLS_KEY_FILE`、`FEDERATION_SOCKET_PATH`、`FEDERATION_TLS_PORT`。服务端证书须含正确 DNS SAN 和 serverAuth；机构客户端证书须含 clientAuth。CA 信任与本站证书登记都要满足；仅持有某受信任 CA 签发的证书仍不能接单。JWS 私钥和 TLS 私钥分别管理，均不进入镜像、仓库或 seed。
 
@@ -73,6 +74,12 @@ Server 另行配置 `FEDERATION_CLIENT_CERT_FILE`、`FEDERATION_CLIENT_KEY_FILE`
 
 结果清单需要双方新签协议的 `resultPolicy`（持久文件范围、总文件数/字节数上限及结果披露截止时间）、源站用户的独立 `result.read` 权限，以及两端密钥分别登记 `result-query`/`result-report` 用途。没有结果条款的旧协议拒绝开放；普通委派读取权不允许读取结果清单。暂时只返回已完成运行的 Persistent File/FileBatch 元数据和 SHA-256，清单签名不等于文件已经传回，不生成下载链接。详见[结果清单契约](../../docs/design/federation/implementation.md#签名结果清单)。
 
+机构下载授权使用独立 `/federation/v1/result-downloads`，仍须相同结果条款和当前权限。源/接收密钥分别新增 `result-download-query`/`result-download-grant` 用途，旧密钥不自动扩权。接收方须启用 NetDrive，并将其预签名 HTTPS 公网地址的 origin 配入 `FEDERATION_RESULT_DOWNLOAD_ORIGINS`，例如 `https://storage.example.org:9443`。Compose 叠加文件已传递该变量；HTTP 地址、路径、凭据、query 和 fragment 均不接受。无需为 direct 模式配置 Fabric。
+
+每个下载凭据最多 30 秒，并受协议结果截止时间限制；同时核对实际 S3 SigV4 的过期时间，支持时固定对象 versionId。地址及签名响应含 bearer 凭据，仅交给受信任的搬运组件，不写日志、数据库或普通清单响应。已发预签名地址无法即时撤销，撤权阻止续发；已建立的 S3 响应不保证在地址过期瞬间断开，受管 Agent 会按授权截止时间取消连接。需要逐字节即时撤权的部署不能把此通道当作满足该要求。
+
+源站已实现当前组织授权、发出签名下载请求、验签、对象/尝试绑定及返回前重新授权的内部方法；生产持久传输任务与 AgentStream 桥接尚未连接，没有新增面向普通用户的下载授权 REST 接口。尚不代表完整跨站文件交付。
+
 出站、状态、取消与结果清单接口不依赖 Fabric。额度尚未接通结算释放；源站结果交付、后台状态同步、普通 Workflow 自动委派和已接单端点迁移仍待完成。详细契约见[实现说明](../../docs/design/federation/implementation.md#源站持久发送)。
 
 ## 本地信任管理 API
@@ -86,7 +93,7 @@ Server 另行配置 `FEDERATION_CLIENT_CERT_FILE`、`FEDERATION_CLIENT_KEY_FILE`
 | `GET /sites/:siteId` | 机构详情、登记公钥和证书及其有效期/撤销状态 |
 | `PUT /sites/:siteId` | `{name,endpoint}`；不能改机构 ID |
 | `POST /sites/:siteId/state` | `{state: active或suspended或revoked}`；revoked 不可恢复 |
-| `POST /sites/:siteId/keys` | `{keyId,publicKeyPem,allowedKinds,validFrom,validUntil}`；用途为 agreement/delegation/acceptance/evidence-batch/status-query/status-report/cancellation/cancellation-receipt |
+| `POST /sites/:siteId/keys` | `{keyId,publicKeyPem,allowedKinds,validFrom,validUntil}`；用途为 agreement/delegation/acceptance/evidence-batch/status-query/status-report/cancellation/cancellation-receipt/result-query/result-report/result-download-query/result-download-grant |
 | `POST /sites/:siteId/certificates` | `{certificatePem}`；服务端计算指纹及有效期 |
 | `POST /sites/:siteId/revoke` | `{keyId}` 或 `{fingerprint}`；永久撤销 |
 

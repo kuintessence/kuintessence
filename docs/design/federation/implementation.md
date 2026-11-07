@@ -156,7 +156,19 @@ Agent 的 `copyFederationResultFile` 已提供内部文件搬运函数：绑定�
 
 下载要求准确的 206/Content-Range，以 1 MiB 窗口读取并校验 SHA-256；共用恢复下载器以 64 KiB 块重算已有前缀，拒绝忽略 Range 的全对象响应、超长/截短/压缩响应，损坏的完整文件会删除后重新下载。上传逐分片申请 URL，使用文件支持的 Blob 流式发送并重新计算摘要，检查源文件大小和修改时间；错误、取消及授权过期不会返回完成结果。只返回未提交的 multipart parts，尚不执行 CompleteMultipart、发布云盘副本或签署接收回执。
 
-暂存目录须归 Agent 用户所有、权限 0700、无符号链接；单文件受配置容量与可用空间检查，成功失败均清理。当前每次尝试从头创建暂存，不能跨进程续传，也没有全 Agent 并发磁盘容量预留。测试覆盖真实 HTTPS 搬运 5 MiB + 123 字节；不代表 TB 规模、真实 S3 完成发布或双平台结果回传验收。生产 grant 协议、持久传输任务、AgentStream 派发和后台清理仍待接通。
+暂存目录须归 Agent 用户所有、权限 0700、无符号链接；单文件受配置容量与可用空间检查，成功失败均清理。当前每次尝试从头创建暂存，不能跨进程续传，也没有全 Agent 并发磁盘容量预留。测试覆盖真实 HTTPS 搬运 5 MiB + 123 字节；不代表 TB 规模、真实 S3 完成发布或双平台结果回传验收。下载 grant 协议已接通，见下节；持久传输任务、目的端上传授权、AgentStream 派发和后台清理仍待接通。
+
+### 独立的结果下载授权
+
+接收方私有 mTLS `POST /federation/v1/result-downloads` 接受 `result-download-query`，返回 `result-download-grant`。双方须为新 keyId 显式登记对应用途，清单/状态用途不隐含文件字节授权。查询绑定原委派/协议/预留及独立 challenge，再绑定 transferId、generation、清单摘要、输出 ID、成员路径、大小、SHA-256 和上传分片大小。接收方重新执行原清单的全部授权与归属检查，不能仅凭一个 fileId 或对端自行声明的 URL 下载。
+
+接收方读取本地已发布文件的 storageKey，以配置的 NetDrive backend 检查对象大小，并在存储支持时固定 versionId；只生成 HTTPS S3 预签名地址，不读取文件字节。允许的存储 origin 由 `FEDERATION_RESULT_DOWNLOAD_ORIGINS` 指定，默认空则关闭。有效期不超过 30 秒、查询期限及原 resultPolicy.availableUntil；额外解析地址中的实际 SigV4 签署时间/有效期，避免仅缩短回执期限。签发及签名后再次检查权限、清单与文件映射，任何变化都拒绝释放旧地址。
+
+源站内部 `FederationResultReader.downloadGrant` 复用当前组织结果读取权限和双签条款，检查登记端点，发送签名 challenge 后验证对端用途、签名、查询绑定、对象/尝试、origin、正文与实际 S3 期限，并在返回前再授权。返回短期下载 grant，不持久保存 URL 或 JWS，不登记已交付。transferId/generation 当前只用于绑定；其持久租约和旧 worker 隔离必须由待接通的传输管理器维护，接收方不能单凭来源生成的 generation 判断它是否最新。
+
+预签名地址是短期 bearer 凭据，受控接收方能看到其存储定位信息；不得向普通清单、日志或审计正文扩散。已发地址不可即时召回；撤权阻止续发，受管 Agent 在截止时主动取消，不能宣称 S3 会立即断开已建立连接。双方采用这个有界撤权窗口；要求立即阻断在途数据时需更换为逐请求授权的数据网关。
+
+当前已有数据库授权/签名协议与真实 TLS 路由测试，存储签发在数据库测试中使用替身，尚无完整真实 S3/两平台回传验收。目的端 multipart 管理、持久恢复、AgentStream 派发、原子副本发布及接收完成回执继续接线。
 
 ### 远端取消与停止确认
 

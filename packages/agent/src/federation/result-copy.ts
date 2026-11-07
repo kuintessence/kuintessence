@@ -2,6 +2,8 @@ import { createHash } from "node:crypto";
 import { lstat, mkdir, mkdtemp, realpath, rm, statfs } from "node:fs/promises";
 import { isAbsolute, join, resolve } from "node:path";
 import {
+  FederationResultCopyBindingSchema as BindingSchema,
+  FederationDataOriginSchema,
   FederationDigestSchema,
   FederationResultReportSchema,
   federationCanonicalJson,
@@ -24,17 +26,6 @@ const TaskSchema = z.strictObject({
     .max(5 * 1024 * 1024 * 1024),
 });
 export type FederationResultCopyTask = z.infer<typeof TaskSchema>;
-const BindingSchema = z.strictObject({
-  transferId: z.uuid(),
-  generation: z.uuid(),
-  operationId: z.uuid(),
-  manifestDigest: FederationDigestSchema,
-  outputId: FederationDigestSchema,
-  path: z.string().min(1).max(255),
-  sizeBytes: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
-  sha256: z.string().regex(/^[a-f0-9]{64}$/),
-  partSize: TaskSchema.shape.partSize,
-});
 export type FederationResultCopyBinding = z.infer<typeof BindingSchema>;
 const GrantSchema = z
   .strictObject({
@@ -251,16 +242,7 @@ function origins(values: readonly string[]) {
     if (!values.length) throw new Error("Empty origins");
     return new Set(
       values.map((value) => {
-        const url = new URL(value);
-        if (
-          url.protocol !== "https:" ||
-          url.username ||
-          url.password ||
-          url.search ||
-          url.hash ||
-          url.pathname !== "/"
-        )
-          throw new Error("Invalid origin");
+        const url = new URL(FederationDataOriginSchema.parse(value));
         return url.origin;
       }),
     );

@@ -5,7 +5,7 @@ import { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { FederationAdmission } from "./admission";
 import { FederationCancellationReceiver } from "./cancellation";
-import { FederationResultResponder } from "./results";
+import { type FederationResultDownloadStorage, FederationResultResponder } from "./results";
 import { type FederationSigningKey, federationMessageKeyId } from "./signatures";
 import { FederationStatusResponder } from "./status";
 import { FederationTrustRegistry } from "./trust-registry";
@@ -13,7 +13,11 @@ import { FederationTrustRegistry } from "./trust-registry";
 const logger = createLogger("federation-ingress");
 
 /** Mount only on the private Unix listener. The Node gateway owns the certificate header. */
-export function createFederationIngress(db: PgDb, signingKey: FederationSigningKey) {
+export function createFederationIngress(
+  db: PgDb,
+  signingKey: FederationSigningKey,
+  downloads?: FederationResultDownloadStorage,
+) {
   const r = new Hono();
   const trust = new FederationTrustRegistry(db);
   const status = new FederationStatusResponder(db, signingKey);
@@ -92,6 +96,17 @@ export function createFederationIngress(db: PgDb, signingKey: FederationSigningK
       c.req.header("x-kq-federation-cert") ?? "",
     );
     return c.body(report, 200, { "content-type": "application/jose", "cache-control": "no-store" });
+  });
+  r.post("/federation/v1/result-downloads", async (c) => {
+    if (c.req.header("content-type") !== "application/jose")
+      return c.json({ error: { code: "INVALID_MESSAGE" } }, 415);
+    if (!downloads) throw new FederationError("POLICY_DENIED");
+    const grant = await new FederationResultResponder(db, signingKey).receiveDownload(
+      await c.req.text(),
+      c.req.header("x-kq-federation-cert") ?? "",
+      downloads,
+    );
+    return c.body(grant, 200, { "content-type": "application/jose", "cache-control": "no-store" });
   });
   return r;
 }

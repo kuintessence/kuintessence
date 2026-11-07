@@ -55,6 +55,8 @@ export interface FederationVerificationKey {
     | "cancellation-receipt"
     | "result-query"
     | "result-report"
+    | "result-download-query"
+    | "result-download-grant"
   )[];
 }
 

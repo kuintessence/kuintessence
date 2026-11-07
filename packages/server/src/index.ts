@@ -1752,6 +1752,9 @@ if (config.SSH_SESSION_RECORDING && !config.NETDRIVE_ENABLED) {
 if (!(config.SSH_SESSION_RECORDING && config.NETDRIVE_ENABLED)) {
   protectedApi.get("/admin/ssh-recordings", (c) => c.json({ enabled: false, recordings: [] }));
 }
+let federationResultDownloads:
+  | import("./federation/results").FederationResultDownloadStorage
+  | undefined;
 if (config.NETDRIVE_ENABLED) {
   const minioCfg = loadMinioConfigFromEnv({
     ...process.env,
@@ -1759,6 +1762,11 @@ if (config.NETDRIVE_ENABLED) {
     DATA_MARKET_IMMUTABLE_BUCKET: config.DATA_MARKET_IMMUTABLE_BUCKET,
   });
   const minioBackend = await createRealMinioBackend(minioCfg);
+  if (config.FEDERATION_ENABLED && config.FEDERATION_RESULT_DOWNLOAD_ORIGINS.length)
+    federationResultDownloads = {
+      storage: minioBackend,
+      allowedOrigins: config.FEDERATION_RESULT_DOWNLOAD_ORIGINS,
+    };
   await minioBackend.healthCheck();
   await minioBackend.assertDataMarketStagingSafety();
   await minioBackend.assertDataMarketImmutability();
@@ -2114,7 +2122,12 @@ async function readRequiredGrpcTlsFile(
   return readFile(path, "utf8");
 }
 
-const federationIngress = await startFederationIngress(db, config, federationSigningKey);
+const federationIngress = await startFederationIngress(
+  db,
+  config,
+  federationSigningKey,
+  federationResultDownloads,
+);
 const federationPreparationWorker = federationPreparation
   ? new FederationPreparationWorker(
       db,

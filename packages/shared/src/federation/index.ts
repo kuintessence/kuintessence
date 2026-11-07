@@ -220,5 +220,6 @@ export function assertDelegationPolicy(
 
 export * from "./assets";
 export * from "./cancellation";
+export * from "./result-transfer";
 export * from "./results";
 export * from "./status";

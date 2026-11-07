@@ -367,3 +367,23 @@ describe("queue inventory config", () => {
     ).toThrow();
   });
 });
+
+test("federation result download origins default to closed and require clean HTTPS origins", () => {
+  expect(loadServerConfig(VALID_BASE).FEDERATION_RESULT_DOWNLOAD_ORIGINS).toEqual([]);
+  expect(
+    loadServerConfig({
+      ...VALID_BASE,
+      FEDERATION_RESULT_DOWNLOAD_ORIGINS:
+        "https://storage.example.org, https://archive.example.org:9443",
+    }).FEDERATION_RESULT_DOWNLOAD_ORIGINS,
+  ).toEqual(["https://storage.example.org", "https://archive.example.org:9443"]);
+  for (const value of [
+    "http://storage.example.org",
+    "https://user:pass@storage.example.org",
+    "https://storage.example.org/path",
+    "https://storage.example.org?token=secret",
+  ])
+    expect(() =>
+      loadServerConfig({ ...VALID_BASE, FEDERATION_RESULT_DOWNLOAD_ORIGINS: value }),
+    ).toThrow();
+});
