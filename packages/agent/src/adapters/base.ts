@@ -5,6 +5,7 @@ import type {
   SandboxExecutionMode,
   SandboxSelfAccount,
   SandboxTrustedExecutionProfile,
+  SchedulerAccounting,
   SchedulerQueueInventory,
 } from "@kuintessence/shared";
 
@@ -133,6 +134,7 @@ export function isSchedulerQueueName(value: string): boolean {
 }
 
 export interface JobStatusResult {
+  accounting?: SchedulerAccounting;
   status: "queued" | "running" | "completed" | "failed";
   exitCode?: number;
   message?: string;

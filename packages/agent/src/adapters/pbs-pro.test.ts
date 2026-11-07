@@ -753,3 +753,54 @@ test("recovery lookup binds PBS Job UUID, dispatch epoch name and scheduler acco
     }),
   ).toEqual({ status: "found", schedulerJobId: "101.server" });
 });
+
+test("PBS history accounting uses reported resources rather than requested resources", async () => {
+  const { spawner, calls } = mockSpawner([
+    { exitCode: 153, stdout: "" },
+    {
+      exitCode: 0,
+      stdout: JSON.stringify({
+        Jobs: {
+          "42.pbs": {
+            job_state: "F",
+            Exit_status: 0,
+            Resource_List: { ncpus: 100 },
+            resources_used: { walltime: "00:00:10", cput: "00:00:03", ncpus: "2" },
+          },
+        },
+      }),
+    },
+  ]);
+  const result = await new PbsProAdapter("2024", { spawner }).status("42.pbs");
+  expect(result.accounting).toMatchObject({
+    source: "pbs-qstat",
+    schedulerJobId: "42.pbs",
+    elapsedMilliseconds: "10000",
+    cpuTimeMilliseconds: "3000",
+    allocatedCpus: "2",
+  });
+  expect(calls[1]).toContain("-x");
+});
+
+test("PBS missing CPU accounting stays absent even with requested cores and walltime", async () => {
+  const { spawner } = mockSpawner([
+    {
+      exitCode: 0,
+      stdout: JSON.stringify({
+        Jobs: {
+          "42.pbs": {
+            job_state: "F",
+            Exit_status: 1,
+            Resource_List: { ncpus: 100, walltime: "00:00:30" },
+            resources_used: { walltime: "00:00:00", cput: "Unknown" },
+          },
+        },
+      }),
+    },
+  ]);
+  const result = await new PbsProAdapter("2024", { spawner }).status("42.pbs");
+  expect(result.status).toBe("failed");
+  expect(result.accounting?.elapsedMilliseconds).toBe("0");
+  expect(result.accounting?.cpuTimeMilliseconds).toBeUndefined();
+  expect(result.accounting?.allocatedCpus).toBeUndefined();
+});

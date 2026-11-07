@@ -1,4 +1,8 @@
-import { createLogger, type QueueFailureCode } from "@kuintessence/shared";
+import {
+  createLogger,
+  type QueueFailureCode,
+  type SchedulerAccounting,
+} from "@kuintessence/shared";
 import type { Logger } from "pino";
 import {
   cancelAndConfirmStopped,
@@ -24,6 +28,7 @@ type SubmissionAttempt =
     };
 
 export interface JobStatusReport {
+  accounting?: SchedulerAccounting;
   jobId: string;
   status: "queued" | "running" | "completed" | "failed" | "cancelled";
   schedulerJobId?: string;
@@ -373,6 +378,7 @@ export class JobRunner {
           message: reportMessage,
           node: result.node,
           reason: result.reason,
+          ...(result.accounting ? { accounting: result.accounting } : {}),
           collected,
           workingDir: spec.workingDir,
         });

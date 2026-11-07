@@ -1025,7 +1025,7 @@ describe("SlurmAdapter.status", () => {
   test("falls back to sacct when squeue returns empty", async () => {
     const { spawner } = mockSpawner([
       { exitCode: 0, stdout: "" }, // squeue empty
-      { exitCode: 0, stdout: "COMPLETED|0:0\n" }, // sacct
+      { exitCode: 0, stdout: "COMPLETED|0:0|12345||||\n" }, // sacct
     ]);
     const adapter = new SlurmAdapter("23.02.7", { spawner });
     const r = await adapter.status("12345");
@@ -1059,7 +1059,7 @@ describe("SlurmAdapter.status", () => {
   test("non-COMPLETED sacct state -> failed", async () => {
     const { spawner } = mockSpawner([
       { exitCode: 0, stdout: "" },
-      { exitCode: 0, stdout: "FAILED|1:0\n" },
+      { exitCode: 0, stdout: "FAILED|1:0|12345||||\n" },
     ]);
     const adapter = new SlurmAdapter("23.02.7", { spawner });
     const r = await adapter.status("12345");
@@ -1119,13 +1119,15 @@ test("Slurm stop confirmation excludes resumable and unknown states", async () =
     { exitCode: 0, stdout: JSON.stringify({ jobs: [{ job_id: 42, job_state: "SPECIAL_EXIT" }] }) },
     { exitCode: 0, stdout: JSON.stringify({ jobs: [{ job_id: 42, job_state: "UNKNOWN" }] }) },
     { exitCode: 0, stdout: "" },
-    { exitCode: 0, stdout: "OUT_OF_MEMORY|1:0\n" },
+    { exitCode: 0, stdout: "OUT_OF_MEMORY|1:0|42||||\n" },
   ]);
   const adapter = new SlurmAdapter("23.02.7", { spawner });
   expect(await adapter.confirmStopped("42")).toBe(false);
   await expect(adapter.confirmStopped("42")).rejects.toThrow("Unknown Slurm");
   expect(await adapter.confirmStopped("42")).toBe(true);
-  expect(calls.at(-1)).toContain("--format=State%64,ExitCode");
+  expect(calls.at(-1)).toContain(
+    "--format=State%64,ExitCode,JobIDRaw,ElapsedRaw,AllocCPUS,TotalCPU",
+  );
 });
 
 test("failed scheduler-side identity lookup cannot broaden Slurm recovery to other users", async () => {
@@ -1160,4 +1162,46 @@ test.each([
     variant === "original" ? { status: "found", schedulerJobId: "42" } : { status: "not_found" },
   );
   expect(calls[3]).toEqual(["scontrol", "show", "jobs", "-o"]);
+});
+
+test("Slurm accounting selects exactly the job allocation row without summing steps or filtering their utilization", async () => {
+  const { spawner, calls } = mockSpawner([
+    { exitCode: 0, stdout: "" },
+    {
+      exitCode: 0,
+      stdout:
+        "COMPLETED|0:0|99|999|8|01:00:00\nCOMPLETED|0:0|42.batch|7|2|00:00:08\nCOMPLETED|0:0|42|7|2|00:00:03.125\n",
+    },
+  ]);
+  const result = await new SlurmAdapter("23", { spawner }).status("42");
+  expect(result.accounting).toMatchObject({
+    source: "slurm-sacct",
+    schedulerJobId: "42",
+    elapsedMilliseconds: "7000",
+    allocatedCpus: "2",
+    cpuTimeMilliseconds: "3125",
+  });
+  expect(calls.at(-1)).not.toContain("--allocations");
+});
+
+test("ambiguous or missing Slurm accounting retains status fallback without inventing usage", async () => {
+  const { spawner } = mockSpawner([
+    { exitCode: 0, stdout: "" },
+    { exitCode: 0, stdout: "COMPLETED|0:0|42|1|1|00:00:01\nCOMPLETED|0:0|42|2|2|00:00:02\n" },
+    { exitCode: 0, stdout: SCONTROL_COMPLETED },
+  ]);
+  const result = await new SlurmAdapter("23", { spawner }).status("42");
+  expect(result.status).toBe("completed");
+  expect(result.accounting).toBeUndefined();
+});
+
+test("Slurm terminal squeue observations also collect retained scheduler accounting", async () => {
+  const { spawner } = mockSpawner([
+    { exitCode: 0, stdout: JSON.stringify({ jobs: [{ job_id: 42, job_state: "COMPLETED" }] }) },
+    { exitCode: 0, stdout: "COMPLETED|0:0|42|0|2|00:00:00\n" },
+  ]);
+  expect((await new SlurmAdapter("23", { spawner }).status("42")).accounting).toMatchObject({
+    elapsedMilliseconds: "0",
+    cpuTimeMilliseconds: "0",
+  });
 });

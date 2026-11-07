@@ -13,6 +13,7 @@ export * from "./interconnect";
 export * from "./netdrive-types";
 export * from "./offline-delivery";
 export * from "./sandbox";
+export * from "./scheduler-accounting";
 // placement-pipeline trace types (preview + post-decision audit).
 export * from "./scheduler-types";
 export * from "./schemas/agent";

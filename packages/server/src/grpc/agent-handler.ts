@@ -30,6 +30,7 @@ import {
   QueueFailureCodeSchema,
   SandboxRuntimeAttestationIdSchema,
   SandboxSelfAccountSchema,
+  SchedulerAccountingSchema,
   WorkflowExecutionInterrupted,
 } from "@kuintessence/shared";
 import { FederationError } from "@kuintessence/shared/federation";
@@ -896,6 +897,19 @@ export function registerAgentHandler(router: ConnectRouter, deps: AgentHandlerDe
                 {
                   ...(update.node ? { node: update.node } : {}),
                   reason: failureCode.success ? failureCode.data : update.reason || null,
+                  ...(update.accounting
+                    ? {
+                        accounting: SchedulerAccountingSchema.parse({
+                          version: 1,
+                          source: update.accounting.source,
+                          schedulerJobId: update.accounting.schedulerJobId,
+                          observedAt: update.accounting.observedAt,
+                          elapsedMilliseconds: update.accounting.elapsedMilliseconds,
+                          cpuTimeMilliseconds: update.accounting.cpuTimeMilliseconds,
+                          allocatedCpus: update.accounting.allocatedCpus,
+                        }),
+                      }
+                    : {}),
                 },
               );
               await jobDispatches?.acknowledge(registeredAgentId, update.jobId);

@@ -41,6 +41,7 @@ import {
   SandboxRuntimeCacheEntrySchema,
   SandboxRuntimeKind,
   SandboxSelfAccountSchema,
+  SchedulerAccountingSchema,
   SchedulerQueueFactSchema,
   SchedulerType,
   type ServerMessage,
@@ -522,6 +523,16 @@ export function jobStatusReportToProto(report: JobStatusReport, eventId = ""): A
         collected: report.collected ?? {},
         eventId,
         workingDir: report.workingDir ?? "",
+        accounting: report.accounting
+          ? create(SchedulerAccountingSchema, {
+              source: report.accounting.source,
+              schedulerJobId: report.accounting.schedulerJobId,
+              observedAt: report.accounting.observedAt,
+              elapsedMilliseconds: report.accounting.elapsedMilliseconds,
+              cpuTimeMilliseconds: report.accounting.cpuTimeMilliseconds,
+              allocatedCpus: report.accounting.allocatedCpus,
+            })
+          : undefined,
       }),
     },
   });

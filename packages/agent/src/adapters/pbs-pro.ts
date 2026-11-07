@@ -5,6 +5,7 @@ import {
   type SchedulerQueueFact,
   type SchedulerQueueInventory,
 } from "@kuintessence/shared";
+import { accountingDuration, accountingInteger, schedulerAccounting } from "./accounting";
 import {
   appendEnvAndCommand,
   assertSandboxSchedulerMetadata,
@@ -479,7 +480,13 @@ export class PbsProAdapter implements SchedulerAdapter {
     const data = parsed as {
       Jobs?: Record<
         string,
-        { job_state?: string; Exit_status?: number; exec_host?: string; comment?: string }
+        {
+          job_state?: string;
+          Exit_status?: number;
+          exec_host?: string;
+          comment?: string;
+          resources_used?: { walltime?: unknown; cput?: unknown; ncpus?: unknown };
+        }
       >;
     };
     const jobs = data.Jobs ?? {};
@@ -505,9 +512,16 @@ export class PbsProAdapter implements SchedulerAdapter {
     if (["Q", "H", "W", "T", "M", "B"].includes(state)) return withNode({ status: "queued" });
     if (["R", "E", "S", "U"].includes(state)) return withNode({ status: "running" });
     if (state === "F") {
+      const accounting = schedulerAccounting("pbs-qstat", schedulerJobId, {
+        elapsedMilliseconds: accountingDuration(job.resources_used?.walltime),
+        cpuTimeMilliseconds: accountingDuration(job.resources_used?.cput),
+        allocatedCpus: accountingInteger(job.resources_used?.ncpus),
+      });
+      const terminal = (result: JobStatusResult) =>
+        withNode({ ...result, ...(accounting ? { accounting } : {}) });
       const exitStatus = job.Exit_status ?? 0;
-      if (exitStatus === 0) return withNode({ status: "completed", exitCode: 0 });
-      return withNode({ status: "failed", exitCode: exitStatus, message: `Exit ${exitStatus}` });
+      if (exitStatus === 0) return terminal({ status: "completed", exitCode: 0 });
+      return terminal({ status: "failed", exitCode: exitStatus, message: `Exit ${exitStatus}` });
     }
     throw new Error(`Unknown PBS job state: ${state}`);
   }

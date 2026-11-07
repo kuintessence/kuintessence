@@ -1277,3 +1277,16 @@ lint 无错误（既有 47 warnings/1 info），完整类型检查结果见本�
 终态证据收尾检查还发现平台准备失败会携带 expectedAgentId，已修正来源判定：须同时有持久 Agent 事件 ID 才标 agent-status，其他写入标 status-update；带 Agent 的平台准备失败定向测试通过，计数不增加。平台取消来源使用 platform-cancellation，避免将后台取消误标为人工操作。新增测试派发替身的返回类型改为原接口要求的 boolean，未改变生产派发逻辑。
 
 最终全仓各包类型检查通过：首次 Server 仅测试替身返回类型报错，修正后 Server 通过；来源判定调整后 Shared/Server 再定向通过。protobuf 生成与独立 Fabric 脚本类型检查通过；最终改动文件 lint、657 个本地文档目标、workflow uses 和 diff 空白检查通过。临时 Vite、数据库端口转发及隔离测试数据库均已清理。
+
+
+## Slurm/PBS 计量随持久终态事件传输
+
+为用量报告补上调度器来源：新增独立 SchedulerAccounting schema，分别保存 elapsedMilliseconds、cpuTimeMilliseconds 与 allocatedCpus，只接受整数/字符串并保留缺失；时间解析用 BigInt，亚毫秒截断，不以核数乘时间冒充累计 CPU 消耗。Slurm sacct 精确匹配 JobIDRaw 汇总行，保留步骤参与统计，不累加 .batch 等子行；重复 ID 无法唯一匹配时回退状态，计量缺失。PBS Pro 从实时或历史 resources_used 读取，不使用 Resource_List 申请值。
+
+JobRunner、SQLite outbound 的写入/新实例重放、protobuf 可选 accounting、生产 gRPC 和联邦终态证据已贯通。旧消息无计量仍兼容，新事件保留精确整数及原 eventId，Server 在 ACK 前完成保存；绑定调度器类型、Job ID 和 Agent 事件，错误绑定回滚原终态，原事件可重试。原始证据不因重复回报被替换；没有新增数据库迁移，protobuf 通过生成命令更新，未手改生成文件。
+
+208 个不同单元/协议场景与 12 个 PostgreSQL 场景通过（包括此前的回归）；覆盖 duration/大整数/真实零与未知、Slurm 汇总/步骤/重号、PBS 历史及请求值排除、runner、SQLite 重放、proto 二进制精度/旧消息、gRPC 先保存再 ACK、原证据重放以及错 Job/调度器拒绝。首次回归发现编辑时误删了独立身份恢复查询的 --allocations，已恢复该查询，Slurm 全部 74 场景定向通过；计量查询保持不使用该选项。检查复跑不重复计数。lint 无错误（既有 47 warnings/1 info）；完整类型与文档检查收尾记录如下。
+
+这轮使用真实 SQLite、protobuf、PostgreSQL 和受控调度器 CLI 输出，不是真实 Slurm/PBS 会计或 Fabric 作业联测。计量是调度器的断言，仍须在部署验收验证会计插件；迟到补采、取消后的最终计量、Torque/Kubernetes/GPU/内存来源以及签名报告/更正/合同口径绑定均待继续。独立分支与完整 PR 预览目标保持，未合并或部署 main。日志位于忽略目录 temp/federation-accounting-*。
+
+本轮收尾：完整类型检查（含 protobuf 生成、全部 package 与 Fabric 脚本）通过，后加二进制协议测试的 Proto 定向类型也通过；lint 无新增错误/告警，657 个文档目标、workflow uses 与 diff 检查通过。隔离 PostgreSQL 已清理，所属端口转发关闭。当前没有运行新真实集群作业或重复执行未改动的 Fabric 隐私/恢复测试。

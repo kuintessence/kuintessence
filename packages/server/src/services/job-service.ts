@@ -27,6 +27,7 @@ import type {
   PlacementTrace,
   QueueTargetMode,
   SandboxSignedManifest,
+  SchedulerAccounting,
 } from "@kuintessence/shared";
 import {
   AppError,
@@ -142,6 +143,7 @@ export interface JobSubmitOptions {
 }
 
 export interface SchedulerRuntimeDetails {
+  accounting?: SchedulerAccounting;
   node?: string;
   reason?: string | null;
 }
@@ -970,6 +972,7 @@ export class JobService {
           current,
           expectedAgentId && agentEventId ? "agent-status" : "status-update",
           agentEventId,
+          schedulerDetails?.accounting,
         );
       if (status === JobStatus.CANCELLED) await persistJobCancellations(tx, written);
       changed = true;

@@ -9856,3 +9856,25 @@ for (const kind of ["Sandbox", "Data Market", "NetDrive"] as const)
       await running;
     }
   });
+
+test("jobStatusReportToProto preserves partial accounting and large integer strings", () => {
+  const msg = jobStatusReportToProto(
+    {
+      jobId: "accounted",
+      status: "completed",
+      schedulerJobId: "42",
+      accounting: {
+        version: 1,
+        source: "slurm-sacct",
+        schedulerJobId: "42",
+        observedAt: "2026-11-07T00:00:00.000Z",
+        cpuTimeMilliseconds: "9007199254740993",
+      },
+    },
+    "original-event",
+  );
+  if (msg.payload.case !== "jobStatus") throw new Error("Expected status");
+  expect(msg.payload.value.accounting?.cpuTimeMilliseconds).toBe("9007199254740993");
+  expect(msg.payload.value.accounting?.elapsedMilliseconds).toBeUndefined();
+  expect(msg.payload.value.eventId).toBe("original-event");
+});

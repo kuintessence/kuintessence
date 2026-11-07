@@ -977,3 +977,25 @@ test("runner carries scheduler UID through submission, recovery and cancellation
   expect(resumedUid).toBe(schedulerUid);
   expect(cancelled).toEqual([schedulerUid, schedulerUid]);
 });
+
+test("terminal runner reports preserve scheduler accounting independently of declared resources", async () => {
+  const accounting = {
+    version: 1,
+    source: "slurm-sacct",
+    schedulerJobId: "scheduler-1",
+    observedAt: new Date().toISOString(),
+    elapsedMilliseconds: "5000",
+    cpuTimeMilliseconds: "1234",
+    allocatedCpus: "2",
+  } as const;
+  const reports: JobStatusReport[] = [];
+  const runner = new JobRunner({
+    adapter: makeAdapter({ statuses: [{ status: "completed", exitCode: 0, accounting }] }),
+    sleep: noSleep,
+    onStatusUpdate: (report) => {
+      reports.push(report);
+    },
+  });
+  await runner.run(baseSpec);
+  expect(reports.find((report) => report.status === "completed")?.accounting).toEqual(accounting);
+});

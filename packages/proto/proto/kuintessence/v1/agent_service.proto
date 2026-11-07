@@ -695,6 +695,16 @@ message SandboxArtifactReleaseAck {
   map<string, string> failures = 3;
 }
 
+// Optional scheduler assertions. Absent quantities are unknown, never inferred zero.
+message SchedulerAccounting {
+  string source = 1;
+  string scheduler_job_id = 2;
+  string observed_at = 3;
+  optional string elapsed_milliseconds = 4;
+  optional string cpu_time_milliseconds = 5;
+  optional string allocated_cpus = 6;
+}
+
 message JobStatusUpdate {
   string job_id = 1;
   JobStatus status = 2;
@@ -718,6 +728,7 @@ message JobStatusUpdate {
   string working_dir = 10;
   reserved 11 to 15;
   string failure_code = 16;
+  SchedulerAccounting accounting = 17;
 }
 
 message QueueValidationShadowRejection {

@@ -8,6 +8,7 @@ import {
   workflowExecutionJobs,
   workflowRuns,
 } from "@kuintessence/db";
+import { type SchedulerAccounting, SchedulerAccountingSchema } from "@kuintessence/shared";
 import {
   FederationError,
   type FederationTerminalEvidence,
@@ -23,6 +24,7 @@ export async function persistFederationTerminalEvidence(
   before: { status: string; startedAt: Date | null },
   source: FederationTerminalEvidence["source"],
   agentEventId?: string,
+  rawAccounting?: SchedulerAccounting,
 ) {
   const [execution] = await tx
     .select({
@@ -79,6 +81,17 @@ export async function persistFederationTerminalEvidence(
   )
     throw new FederationError("OPERATION_CONFLICT");
   const { job } = row;
+  const accounting =
+    rawAccounting === undefined ? undefined : SchedulerAccountingSchema.parse(rawAccounting);
+  if (
+    accounting &&
+    (source !== "agent-status" ||
+      accounting.schedulerJobId !== job.schedulerJobId ||
+      (accounting.source === "slurm-sacct"
+        ? row.schedulerType !== "slurm"
+        : row.schedulerType !== "pbs-pro"))
+  )
+    throw new FederationError("OPERATION_CONFLICT");
   const ended = row.job.completedAt;
   // JobService may synthesize startedAt at termination; preserve the pre-transition observation.
   const started = before.startedAt;
@@ -113,6 +126,7 @@ export async function persistFederationTerminalEvidence(
       node: job.node,
       exitCode: job.exitCode,
     },
+    ...(accounting ? { accounting } : {}),
     observation: {
       basis: "server-status-observation",
       runningObservedAt: started?.toISOString() ?? null,
@@ -122,7 +136,7 @@ export async function persistFederationTerminalEvidence(
         : started > ended
           ? "clock-inconsistent"
           : "observed-interval",
-      schedulerAccounting: "unavailable",
+      schedulerAccounting: accounting ? "reported" : "unavailable",
     },
   });
   // A conflicting second insert aborts the transition; no overwrite or silent evidence loss.

@@ -1,7 +1,8 @@
 import { z } from "zod";
+import { SchedulerAccountingSchema } from "../scheduler-accounting";
 import { FederationDigestSchema } from "./references";
 
-/** Receiver-private observations, not a bill or a scheduler accounting statement. */
+/** Receiver-private observations and optional scheduler assertions, never a bill. */
 export const FederationTerminalEvidenceSchema = z.strictObject({
   version: z.literal(1),
   jobId: z.uuid(),
@@ -36,12 +37,13 @@ export const FederationTerminalEvidenceSchema = z.strictObject({
     node: z.string().nullable(),
     exitCode: z.number().int().nullable(),
   }),
+  accounting: SchedulerAccountingSchema.optional(),
   observation: z.strictObject({
     basis: z.literal("server-status-observation"),
     runningObservedAt: z.iso.datetime().nullable(),
     terminalObservedAt: z.iso.datetime(),
     quality: z.enum(["observed-interval", "start-unobserved", "clock-inconsistent"]),
-    schedulerAccounting: z.literal("unavailable"),
+    schedulerAccounting: z.enum(["reported", "unavailable"]),
   }),
 });
 export type FederationTerminalEvidence = z.infer<typeof FederationTerminalEvidenceSchema>;

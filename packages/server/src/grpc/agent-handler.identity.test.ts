@@ -337,6 +337,12 @@ describe("agent-handler identity pinning", () => {
           eventId: "status-event-1",
           node: "compute-03",
           reason: "None",
+          accounting: {
+            source: "slurm-sacct",
+            schedulerJobId: "scheduler-1",
+            observedAt: "2026-11-07T00:00:00.000Z",
+            cpuTimeMilliseconds: "9007199254740993",
+          },
         }),
       },
     });
@@ -355,7 +361,19 @@ describe("agent-handler identity pinning", () => {
       0,
       { result: "ok" },
       "status-event-1",
-      { node: "compute-03", reason: "None" },
+      {
+        node: "compute-03",
+        reason: "None",
+        accounting: {
+          version: 1,
+          source: "slurm-sacct",
+          schedulerJobId: "scheduler-1",
+          observedAt: "2026-11-07T00:00:00.000Z",
+          cpuTimeMilliseconds: "9007199254740993",
+          elapsedMilliseconds: undefined,
+          allocatedCpus: undefined,
+        },
+      },
     ]);
     expect(responses.map((message) => message.payload.case)).toEqual([
       "registerResponse",

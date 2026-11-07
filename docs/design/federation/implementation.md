@@ -398,7 +398,11 @@ Agent 的 `input-copy` / `input-verify` 内部入口已有独立输入任务、�
 
 迁移 0115 建立 federation_terminal_evidence，按 Job 唯一且不级联删除；JobService 的完成/失败/取消与数据集/授权撤销均在原事务保存证据。证据失败则 Job 终态与 Agent 事件去重记录一起回滚，原事件可重试；终态重放不覆盖首份证据。保存不依赖当前商业批准或链可用性，合作撤销后仍能留存取消事实。
 
-当前观测来源为 server-status-observation，不是调度器会计数据：保留终态写入前的 startedAt，避免将 JobService 在终态补写的时间误当开始；没有开始标记 start-unobserved，时钟倒退标记 clock-inconsistent，不计算虚假零用量。调度器实际计量标记 unavailable，平台取消也不代表远端停止已确认。资源数量用整数字符串保存，memoryMb 直接从 PostgreSQL bigint 文本读取；不复制命令、环境变量、脚本输出、凭据或真实用户身份到证据正文。这里只落本机构受控数据库，不自动向链/对端披露。签名报告、计量口径与合同价格关联、追加更正和最终账单仍待实现。
+当前观测来源为 server-status-observation，不是调度器会计数据：保留终态写入前的 startedAt，避免将 JobService 在终态补写的时间误当开始；没有开始标记 start-unobserved，时钟倒退标记 clock-inconsistent，不计算虚假零用量。未取得调度器计量时标记 unavailable；新 Agent 的有效计量随同一终态事件保存时标 reported，平台取消也不代表远端停止已确认。资源数量用整数字符串保存，memoryMb 直接从 PostgreSQL bigint 文本读取；不复制命令、环境变量、脚本输出、凭据或真实用户身份到证据正文。这里只落本机构受控数据库，不自动向链/对端披露。签名报告、计量口径与合同价格关联、追加更正和最终账单仍待实现。
+
+Slurm 从 sacct 精确匹配 JobIDRaw 汇总行读取 ElapsedRaw、AllocCPUS 与 TotalCPU，保留步骤查询以取得正确利用量，不使用会把利用量归零的 --allocations 选项；身份恢复查询仍保留它原有的 --allocations 过滤。--duplicates 暴露重复作业 ID，无法唯一匹配时只保留状态回退，不猜哪一份用量属于本作业。PBS Pro 从当前或历史 qstat 的 resources_used.walltime/cput/ncpus 读取。CPU 时间与分配核数分别保存，绝不以申请值乘时长填补 CPU 时间。
+
+新增 SchedulerAccounting 可选 protobuf 字段，不改变原状态事件 ID 和 ACK 顺序。JobRunner、SQLite outbound、重连映射、gRPC 和终态证据贯通；Server 核对 registered Agent、持久事件、调度器类型与作业 ID。缺字段保持缺失，合法零值保留；超过 JS 安全整数的值使用字符串/BigInt，时间统一毫秒（亚毫秒截断）。这是调度器断言，不证明测量插件已正确配置或科研结果正确；部署验收仍需验证 Slurm jobacct_gather / PBS 会计能力。Kubernetes、Torque、GPU/内存实际消耗及终态后的迟到补采尚无这条数据来源，不能据此生成零账单。
 
 独立 evidence 保留与 raw rollup 删除解耦；签名证据正文/引用及对象备份验证后才允许按协议清理源证据。执行存储失败与存证服务失败分开：前者可阻止新增任务，后者进入队列。
 

@@ -158,3 +158,30 @@ describe("queue protocol compatibility", () => {
     ).toBe("shadow-event-1");
   });
 });
+
+test("accounting wire format preserves exact quantities and absence for legacy statuses", () => {
+  const legacy = fromBinary(
+    proto.JobStatusUpdateSchema,
+    Uint8Array.from([0x0a, 6, ...new TextEncoder().encode("legacy")]),
+  );
+  expect(legacy.accounting).toBeUndefined();
+  const message = create(proto.JobStatusUpdateSchema, {
+    jobId: "accounted",
+    eventId: "same-event",
+    accounting: {
+      source: "slurm-sacct",
+      schedulerJobId: "42",
+      observedAt: "2026-11-07T00:00:00.000Z",
+      cpuTimeMilliseconds: "9007199254740993",
+      allocatedCpus: "0",
+    },
+  });
+  const decoded = fromBinary(
+    proto.JobStatusUpdateSchema,
+    toBinary(proto.JobStatusUpdateSchema, message),
+  );
+  expect(decoded.accounting?.cpuTimeMilliseconds).toBe("9007199254740993");
+  expect(decoded.accounting?.allocatedCpus).toBe("0");
+  expect(decoded.accounting?.elapsedMilliseconds).toBeUndefined();
+  expect(decoded.eventId).toBe("same-event");
+});

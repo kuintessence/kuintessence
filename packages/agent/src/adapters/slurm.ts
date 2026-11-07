@@ -5,6 +5,7 @@ import {
   type SchedulerQueueFact,
   type SchedulerQueueInventory,
 } from "@kuintessence/shared";
+import { accountingDuration, accountingInteger, schedulerAccounting } from "./accounting";
 import {
   appendEnvAndCommand,
   assertSandboxSchedulerMetadata,
@@ -698,7 +699,19 @@ export class SlurmAdapter implements SchedulerAdapter {
     const node = typeof job.nodes === "string" && job.nodes.trim() ? job.nodes : undefined;
     const startedAt = slurmEpochToIso(job.start_time);
     const reason = job.state_reason && job.state_reason !== "None" ? job.state_reason : undefined;
+    let accounting: JobStatusResult["accounting"];
+    if (
+      (result.status === "completed" || result.status === "failed") &&
+      this.terminalStatusBackend === "sacct"
+    ) {
+      try {
+        accounting = (await this.sacctStatus(schedulerJobId)).accounting;
+      } catch {
+        logger.debug("Scheduler accounting unavailable for terminal status");
+      }
+    }
     return {
+      ...(accounting ? { accounting } : {}),
       ...result,
       ...(node ? { node } : {}),
       ...(startedAt ? { startedAt } : {}),
@@ -718,7 +731,8 @@ export class SlurmAdapter implements SchedulerAdapter {
       "sacct",
       "-j",
       schedulerJobId,
-      "--format=State%64,ExitCode",
+      "--format=State%64,ExitCode,JobIDRaw,ElapsedRaw,AllocCPUS,TotalCPU",
+      "--duplicates",
       "--noheader",
       "--parsable2",
     ]);
@@ -726,16 +740,29 @@ export class SlurmAdapter implements SchedulerAdapter {
       return this.scontrolStatus(schedulerJobId);
     }
 
-    const firstLine = stdout.trim().split("\n")[0];
-    if (!firstLine) {
-      return this.scontrolStatus(schedulerJobId);
-    }
-
-    const parts = firstLine.split("|");
-    const state = parts[0] ?? "";
-    const exitCodeStr = parts[1]?.split(":")[0] ?? "1";
-    const exitCode = Number.parseInt(exitCodeStr, 10);
-    return mapSlurmState(state, exitCode);
+    const matches = stdout
+      .trim()
+      .split("\n")
+      .map((line) => line.split("|"))
+      .filter((parts) => parts[2]?.trim() === schedulerJobId);
+    if (matches.length !== 1) return this.scontrolStatus(schedulerJobId);
+    const parts = matches[0];
+    if (!parts) return this.scontrolStatus(schedulerJobId);
+    const result = mapSlurmState(
+      parts[0] ?? "",
+      Number.parseInt(parts[1]?.split(":")[0] ?? "1", 10),
+    );
+    if (result.status !== "completed" && result.status !== "failed") return result;
+    const elapsedSeconds = accountingInteger(parts[3]);
+    const accounting = schedulerAccounting("slurm-sacct", schedulerJobId, {
+      elapsedMilliseconds:
+        elapsedSeconds === undefined
+          ? undefined
+          : accountingInteger((BigInt(elapsedSeconds) * 1000n).toString()),
+      allocatedCpus: accountingInteger(parts[4]),
+      cpuTimeMilliseconds: accountingDuration(parts[5], true),
+    });
+    return { ...result, ...(accounting ? { accounting } : {}) };
   }
 
   private async scontrolStatus(schedulerJobId: string): Promise<JobStatusResult> {

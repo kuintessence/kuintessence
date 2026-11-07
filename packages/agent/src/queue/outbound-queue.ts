@@ -400,6 +400,7 @@ function reportToPayload(report: JobStatusReport, eventId: string): Record<strin
     reason: report.reason,
     collected: report.collected,
     workingDir: report.workingDir,
+    accounting: report.accounting,
   };
 }
 
@@ -446,6 +447,7 @@ function rowToItem(row: MergedRow): OutboundItem {
         reason: p.reason,
         collected: p.collected,
         workingDir: p.workingDir,
+        accounting: p.accounting,
       }),
     };
   }
@@ -514,6 +516,7 @@ function stripUndefined(report: JobStatusReport): JobStatusReport {
   if (report.reason !== undefined) out.reason = report.reason;
   if (report.collected !== undefined) out.collected = report.collected;
   if (report.workingDir !== undefined) out.workingDir = report.workingDir;
+  if (report.accounting !== undefined) out.accounting = report.accounting;
   return out;
 }
 

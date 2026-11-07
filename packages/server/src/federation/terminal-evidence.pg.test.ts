@@ -20,6 +20,7 @@ import {
   workflowExecutionLeases,
   workflowRuns,
 } from "@kuintessence/db";
+import type { SchedulerAccounting } from "@kuintessence/shared";
 import { FederationAcceptanceSchema } from "@kuintessence/shared/federation";
 import { eq, sql } from "drizzle-orm";
 import { revokeDataDeliveryJobs } from "../services/data-delivery";
@@ -207,7 +208,7 @@ async function fixture(
         .from(federationTerminalEvidence)
         .where(eq(federationTerminalEvidence.jobId, jobId))
     )[0];
-  const finish = (eventId = "completion") =>
+  const finish = (eventId = "completion", accounting?: SchedulerAccounting) =>
     service.updateStatus(
       jobId,
       "completed",
@@ -217,7 +218,7 @@ async function fixture(
       0,
       { result: "private output probe" },
       eventId,
-      { node: "node-1" },
+      { node: "node-1", accounting },
     );
   return { orgId, userId, jobId, runId, agentId, reservationId, terms, service, read, finish };
 }
@@ -399,4 +400,44 @@ test("legacy metering failure does not lose committed federation evidence", asyn
   expect(calls).toBe(1);
   expect((await f.read())?.evidence.status).toBe("completed");
   expect((await service.getById(f.jobId))?.status).toBe("completed");
+});
+
+for (const scheduler of ["slurm", "pbs-pro"] as const)
+  test(`${scheduler} accounting is saved with the original terminal event and retained on replay`, async () => {
+    const f = await fixture({ scheduler });
+    const accounting: SchedulerAccounting = {
+      version: 1,
+      source: scheduler === "slurm" ? "slurm-sacct" : "pbs-qstat",
+      schedulerJobId: "scheduler-42",
+      observedAt: new Date().toISOString(),
+      cpuTimeMilliseconds: "9007199254740993",
+    };
+    await f.finish("accounting-event", accounting);
+    const saved = await f.read();
+    expect(saved?.evidence.accounting).toEqual(accounting);
+    expect(saved?.evidence.observation.schedulerAccounting).toBe("reported");
+    expect(saved?.evidence.accounting?.elapsedMilliseconds).toBeUndefined();
+    await f.finish("accounting-event", { ...accounting, cpuTimeMilliseconds: "0" });
+    expect(await f.read()).toEqual(saved);
+  });
+
+test("mismatched accounting scheduler or job cannot commit a terminal event", async () => {
+  const f = await fixture();
+  const accounting: SchedulerAccounting = {
+    version: 1,
+    source: "slurm-sacct",
+    schedulerJobId: "scheduler-42",
+    observedAt: new Date().toISOString(),
+    elapsedMilliseconds: "10",
+  };
+  for (const invalid of [
+    { ...accounting, schedulerJobId: "another-job" },
+    { ...accounting, source: "pbs-qstat" as const },
+  ]) {
+    await expect(f.finish("same-event", invalid)).rejects.toThrow("OPERATION_CONFLICT");
+    expect((await f.service.getById(f.jobId))?.status).toBe("running");
+    expect(await f.read()).toBeUndefined();
+  }
+  await f.finish("same-event", accounting);
+  expect((await f.read())?.evidence.accounting).toEqual(accounting);
 });
