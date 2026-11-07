@@ -16,6 +16,7 @@ import {
   federationCapabilities,
   federationCertificates,
   federationCommercialApprovalSyncs,
+  federationCommercialBills,
   federationEvidence,
   federationExecutionTerminals,
   federationMarketRequests,
@@ -68,15 +69,18 @@ import {
   FederationStatusQuerySchema,
   FederationStatusReportSchema,
 } from "@kuintessence/shared/federation";
+import { calculateCommercialBill } from "@kuintessence/shared/federation/billing";
 import {
   type CommercialAdapterProposalInput,
   type CommercialAdvanceResult,
   CommercialAgreementSchema,
   CommercialAgreementSummarySchema,
+  CommercialBillSchema,
   CommercialExecutionApprovalSchema,
   CommercialReleaseSchema,
   CommercialReservationSchema,
   CommercialTerminalSchema,
+  CommercialUsageSchema,
 } from "@kuintessence/shared/federation/commercial";
 import {
   CommercialApprovalQuerySchema,
@@ -340,6 +344,9 @@ afterAll(async () => {
     await db
       .delete(federationTerminalSyncs)
       .where(inArray(federationTerminalSyncs.localSiteId, siteIds));
+    await db
+      .delete(federationCommercialBills)
+      .where(inArray(federationCommercialBills.localSiteId, siteIds));
     await db.delete(federationCertificates).where(inArray(federationCertificates.siteId, siteIds));
     await db
       .delete(federationCancellations)
@@ -8131,4 +8138,186 @@ test.each([
   expect(queries).toBe(0);
   expect(f.adapter.prepares).toHaveLength(1);
   expect((await pending(f)).state).toBe(outcome === "unknown" ? "pending" : "needs_review");
+});
+
+test("coordinated bill waits for the exact source terminal receipt without requiring a local terminal submission", async () => {
+  const f = await terminalSourceFixture();
+  const terminal = await f.approveTerminal();
+  const source = await f.sourceTerminal.countersign(
+    f.actor,
+    f.revisionId,
+    f.reservation.reservationId,
+    await f.proposal(),
+  );
+  await db
+    .update(federationExecutionTerminals)
+    .set({ counterpartyJws: source.approvalJws })
+    .where(
+      and(
+        eq(federationExecutionTerminals.localSiteId, f.siteId),
+        eq(federationExecutionTerminals.terminalId, terminal.terminalId),
+      ),
+    );
+  for (const siteId of [f.a.signing.siteId, f.b.signing.siteId]) {
+    const [key] = await db
+      .select()
+      .from(federationSigningKeys)
+      .where(eq(federationSigningKeys.siteId, siteId));
+    if (!key) throw new Error("Missing fixture key");
+    await db
+      .update(federationSigningKeys)
+      .set({ allowedKinds: [...key.allowedKinds, "commercial-bill"] })
+      .where(eq(federationSigningKeys.siteId, siteId));
+  }
+  await new FederationPermissionService(db).set(
+    { ...f.actor, capability: "billing.approve", enabled: true },
+    f.actor.userId,
+  );
+  const wireDigest = (value: unknown) =>
+    `sha256:${createHash("sha256").update(JSON.stringify(value)).digest("hex")}`;
+  const agreementDigest = wireDigest(f.terms);
+  const report = CommercialUsageSchema.parse({
+    protocolVersion: 1,
+    kind: "commercial-usage",
+    reportId: randomUUID(),
+    domainId: f.terms.domainId,
+    agreementRevisionId: f.revisionId,
+    agreementDigest,
+    sourceSiteId: f.a.signing.siteId,
+    targetSiteId: f.siteId,
+    taskId: f.reservation.request.taskId,
+    attempt: f.reservation.request.attempt,
+    salt: "c".repeat(64),
+    reportedAt: new Date().toISOString(),
+    periodStart: f.reservation.request.issuedAt,
+    periodEnd: terminal.payload.observedAt,
+    measurements: [
+      {
+        metric: "cpu",
+        quantityUnit: "core-second",
+        quantity: "1",
+        evidenceDigest: `sha256:${"d".repeat(64)}`,
+      },
+    ],
+  });
+  const bill = CommercialBillSchema.parse({
+    protocolVersion: 1,
+    kind: "commercial-bill",
+    billId: randomUUID(),
+    domainId: f.terms.domainId,
+    agreementDigest,
+    priceVersionId: f.terms.priceVersionId,
+    reportId: report.reportId,
+    reportDigest: wireDigest(report),
+    request: f.reservation.request,
+    reservationId: f.reservation.reservationId,
+    discount: null,
+    calculation: calculateCommercialBill(f.terms, f.reservation.request, report),
+    issuedAt: new Date().toISOString(),
+    salt: "e".repeat(64),
+  });
+  const sourceJws = await signFederationMessage(CommercialBillSchema, bill, f.a.signing);
+  const targetJws = await signFederationMessage(CommercialBillSchema, bill, f.b.signing);
+  const digest = wireDigest(bill);
+  await db.insert(federationCommercialBills).values({
+    localSiteId: f.siteId,
+    localOrgId: f.actor.orgId,
+    billId: bill.billId,
+    agreementRevisionId: f.revisionId,
+    taskId: bill.request.taskId,
+    attempt: bill.request.attempt,
+    payload: bill,
+    digest,
+    approvalJws: targetJws,
+    counterpartyJws: sourceJws,
+    approvedBy: f.actor.userId,
+  });
+  await db.insert(submissions).values({
+    id: randomUUID(),
+    localSiteId: f.siteId,
+    agreementRevisionId: f.revisionId,
+    state: "committed",
+    input: {
+      operation: "record-usage",
+      domainId: bill.domainId,
+      recordId: report.reportId,
+      digest: bill.reportDigest,
+      envelope: {
+        providerJws: await signFederationMessage(CommercialUsageSchema, report, f.b.signing),
+      },
+    },
+  });
+  const id = randomUUID();
+  await db.insert(submissions).values({
+    id,
+    localSiteId: f.siteId,
+    agreementRevisionId: f.revisionId,
+    input: {
+      operation: "confirm-bill",
+      domainId: bill.domainId,
+      recordId: bill.billId,
+      digest,
+      envelope: { sourceSiteId: f.a.signing.siteId, targetSiteId: f.siteId, sourceJws, targetJws },
+    },
+  });
+  const adapter = new Adapter();
+  const worker = new FederationCommercialSubmissionService(db, f.siteId, adapter);
+  const read = async () => (await db.select().from(submissions).where(eq(submissions.id, id)))[0];
+  const due = () =>
+    db
+      .update(submissions)
+      .set({ nextAttemptAt: sql`clock_timestamp()` })
+      .where(eq(submissions.id, id));
+  adapter.receipt = async (query) => {
+    expect(query).toEqual({
+      operation: "get-commercial-receipt",
+      domainId: bill.domainId,
+      recordType: "terminal",
+      recordId: terminal.terminalId,
+    });
+    return { receipt: null };
+  };
+  expect(await worker.advanceNext()).toBe(true);
+  expect((await read())?.lastError).toBe("LEDGER_PENDING");
+  expect((await read())?.state).toBe("pending");
+  expect(adapter.prepares).toHaveLength(0);
+  adapter.receipt = async () => ({
+    receipt: { recordId: terminal.terminalId, digest: `sha256:${"0".repeat(64)}` },
+  });
+  await due();
+  await worker.advanceNext();
+  expect((await read())?.state).toBe("needs_review");
+  expect(adapter.prepares).toHaveLength(0);
+  adapter.receipt = async () => {
+    await db
+      .update(federationSigningKeys)
+      .set({ revokedAt: new Date() })
+      .where(eq(federationSigningKeys.siteId, f.a.signing.siteId));
+    return { receipt: { recordId: terminal.terminalId, digest: terminal.digest } };
+  };
+  await worker.retry(f.actor, f.revisionId, id);
+  await worker.advanceNext();
+  expect((await read())?.lastError).toBe("UNTRUSTED_IDENTITY");
+  expect(adapter.prepares).toHaveLength(0);
+  await db
+    .update(federationSigningKeys)
+    .set({ revokedAt: null })
+    .where(eq(federationSigningKeys.siteId, f.a.signing.siteId));
+  adapter.receipt = async () => ({
+    receipt: { recordId: terminal.terminalId, digest: terminal.digest },
+  });
+  await worker.retry(f.actor, f.revisionId, id);
+  await worker.advanceNext();
+  expect(adapter.prepares.map((input) => input.operation)).toEqual(["confirm-bill"]);
+  expect(
+    await db
+      .select()
+      .from(submissions)
+      .where(
+        and(
+          eq(submissions.localSiteId, f.siteId),
+          sql`${submissions.input}->>'operation' = 'record-execution-terminal'`,
+        ),
+      ),
+  ).toHaveLength(0);
 });

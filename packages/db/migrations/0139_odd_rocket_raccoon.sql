@@ -1,0 +1,2 @@
+ALTER TABLE "federation_commercial_approval_syncs" DROP CONSTRAINT "federation_approval_sync_identity";--> statement-breakpoint
+ALTER TABLE "federation_commercial_approval_syncs" ADD CONSTRAINT "federation_approval_sync_identity" CHECK (("federation_commercial_approval_syncs"."record_kind" IN ('agreement','reservation','release','bill') AND ("federation_commercial_approval_syncs"."record_kind" <> 'agreement' OR "federation_commercial_approval_syncs"."record_id" = "federation_commercial_approval_syncs"."agreement_revision_id")) IS TRUE);

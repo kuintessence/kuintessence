@@ -289,6 +289,7 @@ export class FederationUsageExchange {
   private async fetch(claim: Sync) {
     if (!this.send) return;
     const saved = await this.db.transaction((tx) => this.authorizeNetwork(tx, claim.operationId));
+    const issuedAt = new Date();
     const query = CommercialUsageQuerySchema.parse({
       protocolVersion: 1,
       kind: "commercial-usage-query",
@@ -302,8 +303,8 @@ export class FederationUsageExchange {
       attempt: saved.outbound.attempt,
       reservationId: saved.receipt.reservationId,
       requestDigest: saved.outbound.requestDigest,
-      issuedAt: new Date().toISOString(),
-      expiresAt: new Date(Date.now() + 60000).toISOString(),
+      issuedAt: issuedAt.toISOString(),
+      expiresAt: new Date(issuedAt.getTime() + 60000).toISOString(),
       afterNumber: claim.number,
       afterReportId: claim.lastReportId,
     });

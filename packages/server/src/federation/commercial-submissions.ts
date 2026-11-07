@@ -160,10 +160,10 @@ export class FederationCommercialSubmissionService {
                     AND discount.input->>'operation' = 'record-discount'
                     AND discount.input->>'recordId' = bill.payload->'discount'->>'discountId' AND discount.state = 'committed'))
                 AND (bill.payload->>'reservationId' IS NULL OR EXISTS (
-                  SELECT 1 FROM ${terminals} terminal JOIN ${submissions} evidence ON evidence.local_site_id = terminal.local_site_id
-                    AND evidence.input->>'operation' = 'record-execution-terminal'
-                    AND evidence.input->>'recordId' = terminal.terminal_id::text AND evidence.state = 'committed'
-                  WHERE terminal.local_site_id = bill.local_site_id AND terminal.reservation_id::text = bill.payload->>'reservationId'))
+                  SELECT 1 FROM ${terminals} terminal
+                  WHERE terminal.local_site_id = bill.local_site_id
+                    AND terminal.reservation_id::text = bill.payload->>'reservationId'
+                    AND terminal.counterparty_jws IS NOT NULL))
             ))`,
             sql`${submissions.nextAttemptAt} <= clock_timestamp()`,
             sql`(${submissions.leaseToken} IS NULL OR ${submissions.leaseUntil} <= clock_timestamp())`,
@@ -249,6 +249,8 @@ export class FederationCommercialSubmissionService {
         });
       } else if (!attempt || attempt.stage === "invalid" || attempt.stage === "abandoned") {
         await this.beforeDisclosure(submission.input);
+        if (await this.requireBillTerminal(submission.input))
+          await this.beforeDisclosure(submission.input);
         let receipt: z.infer<typeof CommercialReceiptQueryResultSchema>["receipt"] = null;
         if (reconciling) {
           if (
@@ -439,6 +441,41 @@ export class FederationCommercialSubmissionService {
         updatedAt: sql`clock_timestamp()`,
       })
       .where(eq(submissions.id, id));
+  }
+
+  /** The source commits terminal evidence; the provider must query that original private receipt. */
+  private async requireBillTerminal(input: CommercialAdapterProposalInput) {
+    if (input.operation !== "confirm-bill") return;
+    const [bill] = await this.db
+      .select()
+      .from(bills)
+      .where(and(eq(bills.localSiteId, this.siteId), eq(bills.billId, input.recordId)));
+    if (!bill) throw new FederationError("ASSET_UNAVAILABLE");
+    if (!bill.payload.reservationId) return;
+    const [terminal] = await this.db
+      .select()
+      .from(terminals)
+      .where(
+        and(
+          eq(terminals.localSiteId, this.siteId),
+          eq(terminals.reservationId, bill.payload.reservationId),
+        ),
+      );
+    if (!terminal?.counterpartyJws || terminal.payload.domainId !== input.domainId)
+      throw new FederationError("OPERATION_CONFLICT");
+    if (!this.client?.receipt) throw new FabricClientFailure("TERMINAL_RECEIPT_UNAVAILABLE", true);
+    const { receipt } = CommercialReceiptQueryResultSchema.parse(
+      await this.client.receipt({
+        operation: "get-commercial-receipt",
+        domainId: input.domainId,
+        recordType: "terminal",
+        recordId: terminal.terminalId,
+      }),
+    );
+    if (!receipt) throw new FabricClientFailure("LEDGER_PENDING", false);
+    if (receipt.recordId !== terminal.terminalId || receipt.digest !== terminal.digest)
+      throw new FederationError("OPERATION_CONFLICT");
+    return true;
   }
 
   private async beforeDisclosure(raw: CommercialAdapterProposalInput, tx?: PgTransaction) {

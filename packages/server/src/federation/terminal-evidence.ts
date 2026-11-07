@@ -8,7 +8,11 @@ import {
   workflowExecutionJobs,
   workflowRuns,
 } from "@kuintessence/db";
-import { type SchedulerAccounting, SchedulerAccountingSchema } from "@kuintessence/shared";
+import {
+  type SchedulerAccounting,
+  SchedulerAccountingSchema,
+  schedulerAccountingSource,
+} from "@kuintessence/shared";
 import {
   FederationError,
   type FederationTerminalEvidence,
@@ -87,9 +91,7 @@ export async function persistFederationTerminalEvidence(
     accounting &&
     (source !== "agent-status" ||
       accounting.schedulerJobId !== job.schedulerJobId ||
-      (accounting.source === "slurm-sacct"
-        ? row.schedulerType !== "slurm"
-        : row.schedulerType !== "pbs-pro"))
+      accounting.source !== schedulerAccountingSource(row.schedulerType ?? undefined))
   )
     throw new FederationError("OPERATION_CONFLICT");
   const ended = row.job.completedAt;

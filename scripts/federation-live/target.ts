@@ -106,7 +106,7 @@ if (process.argv[2] === "inspect") {
     .insert(userOrgMemberships)
     .values([actor, identity].map((x) => ({ ...x, role: "member" })))
     .onConflictDoNothing();
-  for (const capability of ["agreement.approve", "asset.map"] as const)
+  for (const capability of ["agreement.approve", "billing.approve", "asset.map"] as const)
     await new FederationPermissionService(db).set(
       { ...actor, capability, enabled: true },
       actor.userId,
@@ -170,6 +170,9 @@ if (process.argv[2] === "inspect") {
           "terminal-delivery",
           "terminal-ack",
           "commercial-usage",
+          "commercial-usage-query",
+          "commercial-usage-page",
+          "commercial-bill",
           "agreement",
           "delegation",
           "acceptance",
@@ -210,7 +213,7 @@ if (process.argv[2] === "inspect") {
   if (!runtimeImage) throw Error("Pinned runtime required");
   const outage = ["outage", "stop"].includes(process.env.LAB_SCENARIO ?? "");
   const producer = `set -euo pipefail
-${outage ? "printf 'federation-sleep-started\\n'; sleep 600" : ""}
+${outage ? "printf 'federation-sleep-started\\n'; sleep 600" : "sleep 1"}
 [ "$(id -u)" -gt 0 ]
 grep -Eq '^NoNewPrivs:[[:space:]]+1$' /proc/self/status
 grep -Eq '^Seccomp:[[:space:]]+2$' /proc/self/status

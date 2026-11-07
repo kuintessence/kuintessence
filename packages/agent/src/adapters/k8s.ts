@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { createLogger } from "@kuintessence/shared";
 import { z } from "zod";
+import { schedulerAccounting } from "./accounting";
 import {
   COMPUTE_HEALTH_CLI_TIMEOUT_MS,
   type ComputeHealthObservation,
@@ -1110,6 +1111,7 @@ export class K8sAdapter implements SchedulerAdapter {
         status: "completed",
         exitCode: 0,
         ...(await this.podInfo(schedulerJobId, namespace)),
+        ...(await this.podAccounting(schedulerJobId, namespace, parsed)),
       };
     }
     if ((jobStatus.failed ?? 0) > 0) {
@@ -1119,6 +1121,7 @@ export class K8sAdapter implements SchedulerAdapter {
         status: "failed",
         message,
         ...(failure.exitCode !== undefined ? { exitCode: failure.exitCode } : {}),
+        ...(await this.podAccounting(schedulerJobId, namespace, parsed)),
       };
     }
     if ((jobStatus.active ?? 0) > 0) {
@@ -1131,6 +1134,96 @@ export class K8sAdapter implements SchedulerAdapter {
     // No active/succeeded/failed pods yet — still pending. Surface why it's
     // stuck (Unschedulable / ImagePullBackOff / …) when the pod reports it.
     return { status: "queued", ...(await this.podReason(schedulerJobId, namespace)) };
+  }
+
+  private async podAccounting(
+    schedulerJobId: string,
+    namespace: string,
+    job: unknown,
+  ): Promise<Pick<JobStatusResult, "accounting">> {
+    if (!isRecord(job) || !isRecord(job.metadata) || !isRecord(job.spec) || !isRecord(job.status))
+      return {};
+    const uid = job.metadata.uid;
+    if (
+      typeof uid !== "string" ||
+      job.metadata.name !== schedulerJobId ||
+      job.metadata.namespace !== namespace ||
+      job.spec.backoffLimit !== 0 ||
+      (job.spec.completions ?? 1) !== 1 ||
+      (job.spec.parallelism ?? 1) !== 1 ||
+      (job.status.active ?? 0) !== 0 ||
+      Number(job.status.succeeded ?? 0) + Number(job.status.failed ?? 0) !== 1
+    )
+      return {};
+    try {
+      const result = await this.spawner.run(
+        [
+          "kubectl",
+          "get",
+          "pods",
+          "-n",
+          namespace,
+          "--selector",
+          `controller-uid=${uid}`,
+          "-o",
+          "json",
+        ],
+        { timeoutMs: 5_000 },
+      );
+      if (result.exitCode !== 0) return {};
+      const data: unknown = JSON.parse(result.stdout);
+      if (!isRecord(data) || !Array.isArray(data.items) || data.items.length !== 1) return {};
+      const pod: unknown = data.items[0];
+      if (!isRecord(pod) || !isRecord(pod.metadata) || !isRecord(pod.spec) || !isRecord(pod.status))
+        return {};
+      const owners = pod.metadata.ownerReferences;
+      const containers = pod.spec.containers;
+      const statuses = pod.status.containerStatuses;
+      if (
+        pod.metadata.namespace !== namespace ||
+        !Array.isArray(owners) ||
+        !owners.some(
+          (owner: unknown) =>
+            isRecord(owner) &&
+            owner.controller === true &&
+            owner.kind === "Job" &&
+            owner.name === schedulerJobId &&
+            owner.uid === uid,
+        ) ||
+        pod.spec.restartPolicy !== "Never" ||
+        !["Succeeded", "Failed"].includes(String(pod.status.phase)) ||
+        !Array.isArray(containers) ||
+        containers.length !== 1 ||
+        !isRecord(containers[0]) ||
+        !["kq-worker", "kq-sandbox"].includes(String(containers[0].name)) ||
+        !Array.isArray(statuses) ||
+        statuses.length !== 1 ||
+        !isRecord(statuses[0]) ||
+        statuses[0].name !== containers[0].name ||
+        statuses[0].restartCount !== 0 ||
+        !isRecord(statuses[0].state) ||
+        !isRecord(statuses[0].state.terminated)
+      )
+        return {};
+      const terminated = statuses[0].state.terminated;
+      const timestamps = z
+        .object({
+          startedAt: z.iso.datetime({ offset: true }),
+          finishedAt: z.iso.datetime({ offset: true }),
+        })
+        .safeParse(terminated);
+      if (!timestamps.success) return {};
+      const start = Date.parse(timestamps.data.startedAt),
+        end = Date.parse(timestamps.data.finishedAt);
+      if (end < start || end > Date.now()) return {};
+      const accounting = schedulerAccounting("kubernetes-pod", schedulerJobId, {
+        elapsedMilliseconds: String(end - start),
+      });
+      return accounting ? { accounting } : {};
+    } catch {
+      logger.debug("Kubernetes terminal accounting unavailable");
+      return {};
+    }
   }
 
   prepareResume(spec: JobSpec, schedulerJobId: string, schedulerUid?: string): void {

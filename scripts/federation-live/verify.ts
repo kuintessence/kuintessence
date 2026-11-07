@@ -45,7 +45,8 @@ export async function verifyLiveExecution(
         for (const action of ["stop", "start"] as const) {
           const request = Bun.file(join(root, `execution-orderer-${action}`));
           const ack = Bun.file(join(root, `execution-orderer-${action}.ack`));
-          if ((await request.exists()) && !(await ack.exists())) {
+          const requestId = (await request.exists()) ? await request.text() : null;
+          if (requestId && (!(await ack.exists()) || (await ack.text()) !== requestId)) {
             if (action === "stop") {
               await controls.stopOrderer();
               stopped = true;
@@ -53,7 +54,7 @@ export async function verifyLiveExecution(
               await controls.startOrderer();
               stopped = false;
             }
-            await Bun.write(ack, action);
+            await Bun.write(ack, requestId);
           }
         }
         await Bun.sleep(300);

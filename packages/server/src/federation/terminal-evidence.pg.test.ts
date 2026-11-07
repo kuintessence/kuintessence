@@ -1,4 +1,4 @@
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, expect, setSystemTime, spyOn, test } from "bun:test";
 import { randomUUID } from "node:crypto";
 import {
   agentJobStatusEvents,
@@ -15,6 +15,7 @@ import {
   federationCapabilities,
   federationCertificates,
   federationCommercialAgreements,
+  federationCommercialApprovalSyncs,
   federationCommercialAttempts,
   federationCommercialBills,
   federationCommercialDiscounts,
@@ -69,6 +70,7 @@ import { FederationAccountingCollection } from "./accounting-collection";
 import { federationMaterialDigest } from "./assets";
 import { FederationBillingService } from "./billing";
 import { FederationCommercialAgreementService } from "./commercial-agreements";
+import { FederationCommercialApprovalExchange } from "./commercial-approval-exchange";
 import { FederationCommercialSubmissionService } from "./commercial-submissions";
 import { FederationCommercialWorker } from "./commercial-worker";
 import { FabricClientFailure } from "./fabric-client";
@@ -477,6 +479,25 @@ for (const scheduler of ["slurm", "pbs-pro"] as const)
     await f.finish("accounting-event", { ...accounting, cpuTimeMilliseconds: "0" });
     expect(await f.read()).toEqual(saved);
   });
+
+test("Kubernetes terminal event preserves measured Pod runtime and rejects invented CPU metrics", async () => {
+  const f = await fixture({ scheduler: "kubernetes" });
+  const accounting: SchedulerAccounting = {
+    version: 1,
+    source: "kubernetes-pod",
+    schedulerJobId: "scheduler-42",
+    observedAt: new Date().toISOString(),
+    elapsedMilliseconds: "2500",
+  };
+  await expect(
+    f.finish("pod-accounting", { ...accounting, cpuTimeMilliseconds: "2500" }),
+  ).rejects.toThrow();
+  expect(await f.read()).toBeUndefined();
+  await f.finish("pod-accounting", accounting);
+  expect((await f.read())?.evidence.accounting).toEqual(accounting);
+  await f.finish("pod-accounting", { ...accounting, elapsedMilliseconds: "9999" });
+  expect((await f.read())?.evidence.accounting).toEqual(accounting);
+});
 
 test("mismatched accounting scheduler or job cannot commit a terminal event", async () => {
   const f = await fixture();
@@ -2539,4 +2560,461 @@ test("billing pending signature blocks later correction evidence until the origi
   expect(await worker.advanceNext()).toBe(false);
   expect(calls).toBe(0);
   expect((await f.view()).reports).toHaveLength(2);
+});
+
+async function billingExchangeFixture(
+  mode: "bilateral_direct" | "bilateral_attested" = "bilateral_direct",
+) {
+  const f = await billingFixture(mode);
+  const providerFingerprint = randomUUID().replaceAll("-", "").repeat(2);
+  cleanup.push(async () => {
+    for (const siteId of [f.source.signing.siteId, f.provider.signing.siteId]) {
+      await db
+        .delete(federationCommercialApprovalSyncs)
+        .where(eq(federationCommercialApprovalSyncs.localSiteId, siteId));
+      await db.delete(auditLog).where(eq(auditLog.actor, `billing-exchange:${siteId}`));
+    }
+    await db
+      .delete(federationCertificates)
+      .where(eq(federationCertificates.fingerprint, providerFingerprint));
+  });
+  await db.insert(federationCertificates).values({
+    fingerprint: providerFingerprint,
+    siteId: f.provider.signing.siteId,
+    certificatePem: "Authenticated peer fixture; TLS tested in the network suite",
+    validFrom: new Date("2020-01-01"),
+    validUntil: new Date("2100-01-01"),
+  });
+  for (const siteId of [f.source.signing.siteId, f.provider.signing.siteId])
+    await db
+      .update(federationSigningKeys)
+      .set({
+        allowedKinds: [
+          "commercial-agreement",
+          "commercial-usage",
+          "commercial-usage-query",
+          "commercial-usage-page",
+          "commercial-bill",
+          "commercial-discount",
+          "commercial-approval-query",
+          "commercial-approval-waiting",
+        ],
+      })
+      .where(eq(federationSigningKeys.siteId, siteId));
+  const sourceResponder = new FederationCommercialApprovalExchange(db, f.source.signing);
+  const providerResponder = new FederationCommercialApprovalExchange(db, f.provider.signing);
+  const transport: { afterResponse?: (jws: string) => Promise<string>; calls: number } = {
+    calls: 0,
+  };
+  const sendSource: FederationSend = async (_endpoint, jws, path) => {
+    expect(path).toBe("/federation/v1/commercial-approvals");
+    transport.calls++;
+    const response = await providerResponder.receive(jws, f.fingerprint);
+    return transport.afterResponse ? transport.afterResponse(response) : response;
+  };
+  const sendProvider: FederationSend = async (_endpoint, jws, path) => {
+    expect(path).toBe("/federation/v1/commercial-approvals");
+    transport.calls++;
+    const response = await sourceResponder.receive(jws, providerFingerprint);
+    return transport.afterResponse ? transport.afterResponse(response) : response;
+  };
+  const sourceAuto = new FederationCommercialApprovalExchange(db, f.source.signing, sendSource);
+  const providerAuto = new FederationCommercialApprovalExchange(
+    db,
+    f.provider.signing,
+    sendProvider,
+  );
+  const due = () =>
+    db
+      .update(federationCommercialApprovalSyncs)
+      .set({ nextAttemptAt: sql`clock_timestamp()` })
+      .where(
+        inArray(federationCommercialApprovalSyncs.localSiteId, [
+          f.source.signing.siteId,
+          f.provider.signing.siteId,
+        ]),
+      );
+  const status = async (provider = true) =>
+    (
+      await (provider ? providerAuto : sourceAuto).list(
+        provider ? f.actor : f.sourceActor,
+        f.revisionId,
+        10,
+        0,
+      )
+    ).records.find((row) => row.recordKind === "bill");
+  return {
+    ...f,
+    providerFingerprint,
+    sourceAuto,
+    providerAuto,
+    sendSource,
+    sendProvider,
+    transport,
+    due,
+    status,
+  };
+}
+
+test("billing exchange waits for independent approval then attaches exact originals at both institutions", async () => {
+  const f = await billingExchangeFixture();
+  const provider = await f.providerBilling.approve(f.actor, f.revisionId, f.draft);
+  await f.providerAuto.discover();
+  expect(await f.providerAuto.advanceNext()).toBe(true);
+  expect((await f.status())?.state).toBe("pending");
+  expect((await f.sourceBilling.list(f.sourceActor, f.revisionId, 10, 0)).data).toHaveLength(0);
+  const source = await f.sourceBilling.approve(f.sourceActor, f.revisionId, f.draft);
+  await f.sourceAuto.discover();
+  await f.due();
+  await Promise.all([f.providerAuto.advanceNext(), f.sourceAuto.advanceNext()]);
+  expect((await f.status())?.state).toBe("complete");
+  expect((await f.status(false))?.state).toBe("complete");
+  const p = (await f.providerBilling.list(f.actor, f.revisionId, 10, 0)).data[0]?.bill;
+  const a = (await f.sourceBilling.list(f.sourceActor, f.revisionId, 10, 0)).data[0]?.bill;
+  expect(p?.approvalJws).toBe(provider.approvalJws);
+  expect(p?.counterpartyJws).toBe(source.approvalJws);
+  expect(a?.approvalJws).toBe(source.approvalJws);
+  expect(a?.counterpartyJws).toBe(provider.approvalJws);
+  expect(
+    await db
+      .select()
+      .from(federationCommercialSubmissions)
+      .where(
+        inArray(federationCommercialSubmissions.localSiteId, [
+          f.source.signing.siteId,
+          f.provider.signing.siteId,
+        ]),
+      ),
+  ).toHaveLength(0);
+});
+
+test("billing exchange response loss and restart keep a single attested confirmation and ledger intent", async () => {
+  const f = await billingExchangeFixture("bilateral_attested");
+  await f.providerBilling.approve(f.actor, f.revisionId, f.draft);
+  const source = await f.sourceBilling.approve(f.sourceActor, f.revisionId, f.draft);
+  await f.providerAuto.discover();
+  f.transport.afterResponse = async () => {
+    throw new Error("Dropped response");
+  };
+  await f.providerAuto.advanceNext();
+  expect((await f.status())?.state).toBe("pending");
+  expect(
+    (await f.providerBilling.list(f.actor, f.revisionId, 10, 0)).data[0]?.bill.counterpartyJws,
+  ).toBeNull();
+  delete f.transport.afterResponse;
+  await f.due();
+  const restarted = new FederationCommercialApprovalExchange(
+    db,
+    f.provider.signing,
+    f.sendProvider,
+  );
+  await Promise.all([restarted.advanceNext(), restarted.advanceNext()]);
+  expect((await f.status())?.state).toBe("complete");
+  expect(
+    (await f.providerBilling.list(f.actor, f.revisionId, 10, 0)).data[0]?.bill.counterpartyJws,
+  ).toBe(source.approvalJws);
+  expect(
+    await db
+      .select()
+      .from(federationCommercialSubmissions)
+      .where(
+        and(
+          eq(federationCommercialSubmissions.localSiteId, f.provider.signing.siteId),
+          sql`${federationCommercialSubmissions.input}->>'operation' = 'confirm-bill'`,
+        ),
+      ),
+  ).toHaveLength(1);
+  expect(
+    await db
+      .select()
+      .from(auditLog)
+      .where(
+        and(
+          eq(auditLog.actor, `billing-exchange:${f.provider.signing.siteId}`),
+          eq(auditLog.target, f.draft.billId),
+        ),
+      ),
+  ).toHaveLength(1);
+});
+
+test("billing exchange existing approval survives departing staff without granting a new approval", async () => {
+  const f = await billingExchangeFixture();
+  await f.providerBilling.approve(f.actor, f.revisionId, f.draft);
+  await f.sourceBilling.approve(f.sourceActor, f.revisionId, f.draft);
+  await f.providerAuto.discover();
+  await db.update(users).set({ suspended: true }).where(eq(users.id, f.userId));
+  try {
+    await f.providerAuto.advanceNext();
+    const [sync] = await db
+      .select()
+      .from(federationCommercialApprovalSyncs)
+      .where(
+        and(
+          eq(federationCommercialApprovalSyncs.localSiteId, f.provider.signing.siteId),
+          eq(federationCommercialApprovalSyncs.recordId, f.draft.billId),
+        ),
+      );
+    expect(sync?.lastError).toBeNull();
+    expect(sync?.state).toBe("complete");
+    await expect(
+      f.providerBilling.approve(f.actor, f.revisionId, { ...f.draft, billId: randomUUID() }),
+    ).rejects.toThrow("POLICY_DENIED");
+  } finally {
+    await db.update(users).set({ suspended: false }).where(eq(users.id, f.userId));
+  }
+});
+
+test("billing exchange rejects two independently approved but different payloads", async () => {
+  const f = await billingExchangeFixture();
+  await f.providerBilling.approve(f.actor, f.revisionId, f.draft);
+  await f.sourceBilling.approve(f.sourceActor, f.revisionId, { ...f.draft, salt: "d".repeat(64) });
+  await f.providerAuto.discover();
+  await f.providerAuto.advanceNext();
+  expect((await f.status())?.state).toBe("needs_review");
+  expect((await f.status())?.lastError).toBe("OPERATION_CONFLICT");
+  expect(
+    (await f.providerBilling.list(f.actor, f.revisionId, 10, 0)).data[0]?.bill.counterpartyJws,
+  ).toBeNull();
+});
+
+test("billing exchange audit failure rolls back signature, progress and ledger intent together", async () => {
+  const f = await billingExchangeFixture("bilateral_attested");
+  await f.providerBilling.approve(f.actor, f.revisionId, f.draft);
+  await f.sourceBilling.approve(f.sourceActor, f.revisionId, f.draft);
+  await f.providerAuto.discover();
+  await db.execute(
+    sql.raw(
+      `ALTER TABLE audit_log ADD CONSTRAINT bill_exchange_audit_fixture CHECK (action <> 'federation.billing.counterparty' OR target <> '${f.draft.billId}')`,
+    ),
+  );
+  try {
+    await f.providerAuto.advanceNext();
+  } finally {
+    await db.execute(sql`ALTER TABLE audit_log DROP CONSTRAINT bill_exchange_audit_fixture`);
+  }
+  expect((await f.status())?.state).toBe("pending");
+  expect(
+    (await f.providerBilling.list(f.actor, f.revisionId, 10, 0)).data[0]?.bill.counterpartyJws,
+  ).toBeNull();
+  expect(
+    await db
+      .select()
+      .from(federationCommercialSubmissions)
+      .where(
+        and(
+          eq(federationCommercialSubmissions.localSiteId, f.provider.signing.siteId),
+          sql`${federationCommercialSubmissions.input}->>'operation' = 'confirm-bill'`,
+        ),
+      ),
+  ).toHaveLength(0);
+  await f.due();
+  await f.providerAuto.advanceNext();
+  expect((await f.status())?.state).toBe("complete");
+});
+
+test("billing exchange expired execution still permits historical consent under current signing trust", async () => {
+  const f = await billingExchangeFixture();
+  await f.providerBilling.approve(f.actor, f.revisionId, f.draft);
+  await f.sourceBilling.approve(f.sourceActor, f.revisionId, f.draft);
+  await f.providerAuto.discover();
+  await db
+    .update(federationSigningKeys)
+    .set({ validUntil: new Date("2100-01-01") })
+    .where(
+      inArray(federationSigningKeys.siteId, [f.source.signing.siteId, f.provider.signing.siteId]),
+    );
+  try {
+    setSystemTime(new Date("2099-02-01"));
+    await f.providerAuto.advanceNext();
+    expect((await f.status())?.state).toBe("complete");
+  } finally {
+    setSystemTime();
+  }
+});
+
+test("billing exchange builds its minute window from one clock observation", async () => {
+  const f = await billingExchangeFixture();
+  await f.providerBilling.approve(f.actor, f.revisionId, f.draft);
+  await f.sourceBilling.approve(f.sourceActor, f.revisionId, f.draft);
+  await f.providerAuto.discover();
+  const current = Date.now.bind(Date);
+  const clock = spyOn(Date, "now").mockImplementation(() => current() + 5);
+  try {
+    await f.providerAuto.advanceNext();
+    expect((await f.status())?.lastError).toBeNull();
+    expect((await f.status())?.state).toBe("complete");
+  } finally {
+    clock.mockRestore();
+  }
+});
+
+test("billing exchange late response cannot overwrite another lease and retry requires bill authority", async () => {
+  const f = await billingExchangeFixture();
+  await f.providerBilling.approve(f.actor, f.revisionId, f.draft);
+  await f.sourceBilling.approve(f.sourceActor, f.revisionId, f.draft);
+  await f.providerAuto.discover();
+  const key = and(
+    eq(federationCommercialApprovalSyncs.localSiteId, f.provider.signing.siteId),
+    eq(federationCommercialApprovalSyncs.recordKind, "bill"),
+    eq(federationCommercialApprovalSyncs.recordId, f.draft.billId),
+  );
+  const lease = randomUUID();
+  f.transport.afterResponse = async (response) => {
+    await db
+      .update(federationCommercialApprovalSyncs)
+      .set({ leaseToken: lease, leaseUntil: sql`clock_timestamp() + interval '60 seconds'` })
+      .where(key);
+    return response;
+  };
+  await f.providerAuto.advanceNext();
+  const [waiting] = await db.select().from(federationCommercialApprovalSyncs).where(key);
+  expect(waiting?.leaseToken).toBe(lease);
+  expect(waiting?.state).toBe("pending");
+  expect(
+    (await f.providerBilling.list(f.actor, f.revisionId, 10, 0)).data[0]?.bill.counterpartyJws,
+  ).toBeNull();
+  const identity = {
+    agreementRevisionId: f.revisionId,
+    recordKind: "bill" as const,
+    recordId: f.draft.billId,
+  };
+  await new FederationPermissionService(db).set(
+    { ...f.actor, capability: "billing.approve", enabled: false },
+    f.userId,
+  );
+  await expect(f.providerAuto.retry(f.actor, identity)).rejects.toThrow("POLICY_DENIED");
+  await new FederationPermissionService(db).set(
+    { ...f.actor, capability: "billing.approve", enabled: true },
+    f.userId,
+  );
+  await expect(f.providerAuto.retry(f.actor, identity)).rejects.toThrow("OPERATION_CONFLICT");
+  await db
+    .update(federationCommercialApprovalSyncs)
+    .set({ leaseUntil: sql`clock_timestamp() - interval '1 second'` })
+    .where(key);
+  delete f.transport.afterResponse;
+  await f.providerAuto.advanceNext();
+  expect((await f.status())?.state).toBe("complete");
+});
+
+test("billing exchange revocation during transport prevents attachment without discarding existing consent", async () => {
+  const f = await billingExchangeFixture();
+  const original = await f.providerBilling.approve(f.actor, f.revisionId, f.draft);
+  await f.sourceBilling.approve(f.sourceActor, f.revisionId, f.draft);
+  await f.providerAuto.discover();
+  f.transport.afterResponse = async (response) => {
+    await db
+      .update(federationSigningKeys)
+      .set({ revokedAt: new Date() })
+      .where(eq(federationSigningKeys.siteId, f.source.signing.siteId));
+    return response;
+  };
+  await f.providerAuto.advanceNext();
+  expect((await f.status())?.lastError).toBe("UNTRUSTED_IDENTITY");
+  const bill = (await f.providerBilling.list(f.actor, f.revisionId, 10, 0)).data[0]?.bill;
+  expect(bill?.approvalJws).toBe(original.approvalJws);
+  expect(bill?.counterpartyJws).toBeNull();
+});
+
+test("billing exchange disabled transport retains readable history and organization scope", async () => {
+  const f = await billingExchangeFixture();
+  await f.providerBilling.approve(f.actor, f.revisionId, f.draft);
+  await f.sourceBilling.approve(f.sourceActor, f.revisionId, f.draft);
+  await f.providerAuto.discover();
+  await f.providerAuto.advanceNext();
+  const offline = new FederationCommercialApprovalExchange(db, f.provider.signing);
+  await offline.discover();
+  expect(await offline.advanceNext()).toBe(false);
+  const view = await offline.list(f.actor, f.revisionId, 10, 0);
+  expect(view.enabled).toBe(false);
+  expect(view.records[0]?.state).toBe("complete");
+  await expect(offline.list(f.sourceActor, f.revisionId, 10, 0)).rejects.toThrow(
+    "AGREEMENT_UNAVAILABLE",
+  );
+});
+
+test("billing exchange reconciles manual attachment after discovery without resending or duplicating evidence", async () => {
+  const f = await billingExchangeFixture("bilateral_attested");
+  await f.providerBilling.approve(f.actor, f.revisionId, f.draft);
+  const source = await f.sourceBilling.approve(f.sourceActor, f.revisionId, f.draft);
+  await f.providerAuto.discover();
+  await f.providerBilling.attachCounterparty(
+    f.actor,
+    f.revisionId,
+    f.draft.billId,
+    source.approvalJws,
+  );
+  await f.providerAuto.advanceNext();
+  expect((await f.status())?.state).toBe("complete");
+  expect(f.transport.calls).toBe(0);
+  expect(
+    await db
+      .select()
+      .from(federationCommercialSubmissions)
+      .where(
+        and(
+          eq(federationCommercialSubmissions.localSiteId, f.provider.signing.siteId),
+          sql`${federationCommercialSubmissions.input}->>'operation' = 'confirm-bill'`,
+        ),
+      ),
+  ).toHaveLength(1);
+});
+
+test("billing exchange HTTP exposes only scoped progress and requires independent bill retry authority", async () => {
+  const f = await billingExchangeFixture();
+  await f.providerBilling.approve(f.actor, f.revisionId, f.draft);
+  await f.providerAuto.discover();
+  const app = new Hono();
+  let actor = f.actor;
+  app.onError(createErrorHandler(pino({ enabled: false })));
+  app.use("*", async (c, next) => {
+    c.set("principal" as never, actor as never);
+    await next();
+  });
+  const dependencies: Parameters<typeof createFederationCommercialRoutes> = [
+    f.approvals,
+    new FederationCommercialSubmissionService(db, f.provider.signing.siteId),
+  ];
+  dependencies[10] = f.providerAuto;
+  app.route("/", createFederationCommercialRoutes(...dependencies));
+  const path = `/federation/commercial-agreements/${f.revisionId}/approval-exchange`;
+  const response = await app.request(path);
+  expect(response.status).toBe(200);
+  expect(response.headers.get("cache-control")).toBe("no-store");
+  const body = await response.text();
+  expect(body).toContain(f.draft.billId);
+  for (const field of ["approvalJws", "leaseToken", "dueAmount", "prices", "payload"])
+    expect(body).not.toContain(field);
+  const retry = (value: unknown = {}) =>
+    app.request(`${path}/bill/${f.draft.billId}/retry`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(value),
+    });
+  expect((await retry({ approve: true })).status).toBe(400);
+  const permissions = new FederationPermissionService(db);
+  await permissions.set({ ...f.actor, capability: "billing.approve", enabled: false }, f.userId);
+  expect((await retry()).status).toBe(403);
+  await permissions.set({ ...f.actor, capability: "billing.approve", enabled: true }, f.userId);
+  await permissions.set({ ...f.actor, capability: "agreement.approve", enabled: false }, f.userId);
+  expect((await retry()).status).toBe(200);
+  actor = f.sourceActor;
+  expect((await app.request(path)).status).toBe(409);
+  expect((await retry()).status).toBe(403);
+  expect(f.transport.calls).toBe(0);
+});
+
+test("usage exchange builds its minute window from a single clock observation", async () => {
+  const f = await exchangeFixture();
+  await f.exchange.discover();
+  const current = Date.now.bind(Date);
+  const clock = spyOn(Date, "now").mockImplementation(() => current() + 5);
+  try {
+    await f.exchange.advanceNext();
+    const view = await f.exchangeView();
+    expect(view.sync?.lastError).toBeNull();
+    expect(view.reports).toHaveLength(1);
+  } finally {
+    clock.mockRestore();
+  }
 });

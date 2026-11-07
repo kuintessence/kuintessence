@@ -21,7 +21,12 @@ export type PgConnectionOptions = Pick<
 >;
 
 export function createPgDb(connectionString: string, options: PgConnectionOptions = {}) {
-  const client = postgres(connectionString, { max: 1, ...options });
+  // Legacy timestamp columns are decoded as UTC; SQL defaults must use the same timezone.
+  const client = postgres(connectionString, {
+    max: 1,
+    ...options,
+    connection: { TimeZone: "UTC" },
+  });
   return drizzle(client, { schema: fullSchema });
 }
 

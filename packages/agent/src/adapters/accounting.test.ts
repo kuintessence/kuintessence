@@ -34,3 +34,14 @@ test("partial accounting never fills absent CPU time or elapsed time with zero",
     SchedulerAccountingSchema.safeParse({ ...partial, cpuTimeMilliseconds: "-1" }).success,
   ).toBe(false);
 });
+
+test("Kubernetes Pod accounting cannot claim measured CPU or allocated cores from timestamps", () => {
+  const elapsed = schedulerAccounting("kubernetes-pod", "kq-job", { elapsedMilliseconds: "2500" });
+  expect(elapsed?.elapsedMilliseconds).toBe("2500");
+  expect(
+    SchedulerAccountingSchema.safeParse({ ...elapsed, cpuTimeMilliseconds: "2500" }).success,
+  ).toBe(false);
+  expect(SchedulerAccountingSchema.safeParse({ ...elapsed, allocatedCpus: "1" }).success).toBe(
+    false,
+  );
+});

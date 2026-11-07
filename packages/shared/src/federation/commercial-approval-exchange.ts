@@ -2,7 +2,12 @@ import { z } from "zod";
 import { FederationDigestSchema } from "./references";
 import { hasFederationQueryWindow } from "./status";
 
-export const CommercialApprovalRecordKindSchema = z.enum(["agreement", "reservation", "release"]);
+export const CommercialApprovalRecordKindSchema = z.enum([
+  "agreement",
+  "reservation",
+  "release",
+  "bill",
+]);
 const identity = {
   protocolVersion: z.literal(1),
   queryId: z.uuid(),

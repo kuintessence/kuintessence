@@ -35,6 +35,13 @@ test("commercial approval exchange binds record kind, digest, distinct parties a
   expect(
     CommercialApprovalQuerySchema.safeParse({
       ...query,
+      recordKind: "bill",
+      recordId: crypto.randomUUID(),
+    }).success,
+  ).toBe(true);
+  expect(
+    CommercialApprovalQuerySchema.safeParse({
+      ...query,
       recordKind: "reservation",
       recordId: crypto.randomUUID(),
     }).success,

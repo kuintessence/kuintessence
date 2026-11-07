@@ -375,8 +375,43 @@ export class FederationBillingService {
     billId: string,
     jws: string,
   ) {
+    return this.attach(actor, revisionId, billId, jws);
+  }
+  /** Existing business consent only; the exchange lease is fenced in the attachment transaction. */
+  async attachExchanged(
+    revisionId: string,
+    billId: string,
+    jws: string,
+    authorize: (tx: PgTransaction) => Promise<void>,
+  ) {
+    const [local] = await this.db
+      .select()
+      .from(bills)
+      .where(
+        and(
+          eq(bills.localSiteId, this.signing.siteId),
+          eq(bills.billId, billId),
+          eq(bills.agreementRevisionId, revisionId),
+        ),
+      );
+    if (!local) throw new FederationError("ASSET_UNAVAILABLE");
+    return this.attach(
+      { userId: local.approvedBy, orgId: local.localOrgId },
+      revisionId,
+      billId,
+      jws,
+      authorize,
+    );
+  }
+  private async attach(
+    actor: FederationActor,
+    revisionId: string,
+    billId: string,
+    jws: string,
+    authorize?: (tx: PgTransaction) => Promise<void>,
+  ) {
     return this.db.transaction(async (tx) => {
-      await requireFederationCapability(tx, actor, "billing.approve");
+      if (!authorize) await requireFederationCapability(tx, actor, "billing.approve");
       await this.contract(tx, actor, revisionId);
       // Lock the usage head before the bill, consistently with approve and corrections.
       const [snapshot] = await tx
@@ -393,6 +428,7 @@ export class FederationBillingService {
       if (!snapshot) throw new FederationError("ASSET_UNAVAILABLE");
       if (snapshot.counterpartyJws) {
         if (snapshot.counterpartyJws !== jws) throw new FederationError("OPERATION_CONFLICT");
+        await authorize?.(tx);
         return snapshot;
       }
       // A signed bill remains binding until explicitly resolved; later metering does not revoke an approval.
@@ -417,6 +453,7 @@ export class FederationBillingService {
       }
       if (row.counterpartyJws) {
         if (row.counterpartyJws !== jws) throw new FederationError("OPERATION_CONFLICT");
+        await authorize?.(tx);
         return row;
       }
       const discount = await this.concession(
@@ -433,6 +470,7 @@ export class FederationBillingService {
         f.reportDigest,
         discount,
       );
+      await authorize?.(tx);
       const [updated] = await tx
         .update(bills)
         .set({ counterpartyJws: jws })
@@ -458,7 +496,13 @@ export class FederationBillingService {
             },
           }),
         });
-      await this.audit(tx, actor, "counterparty", billId, row.digest);
+      await this.audit(
+        tx,
+        authorize ? { ...actor, userId: `billing-exchange:${this.signing.siteId}` } : actor,
+        "counterparty",
+        billId,
+        row.digest,
+      );
       return updated;
     });
   }

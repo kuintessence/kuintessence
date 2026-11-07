@@ -220,3 +220,26 @@ test("supplemental accounting commits both immutable sources and rejects crossed
     reason: "EVIDENCE_CONFLICT",
   });
 });
+
+test("Kubernetes terminal elapsed time is billable only as job elapsed time and requires matching scheduler provenance", () => {
+  const f = fixture();
+  f.evidence.scheduler.type = "kubernetes";
+  f.evidence.accounting = {
+    version: 1,
+    source: "kubernetes-pod",
+    schedulerJobId: "42",
+    observedAt: "2026-01-01T00:00:10.000Z",
+    elapsedMilliseconds: "2500",
+  };
+  const terms = { ...f.terms, prices: f.terms.prices.filter((p) => p.metric === "job.elapsed") };
+  const rows = () => [{ evidence: f.evidence, digest: federationMaterialDigest(f.evidence) }];
+  const result = aggregateCommercialUsage(terms, f.scope, rows());
+  expect(result.state).toBe("ready");
+  if (result.state === "ready")
+    expect(result.measurements).toMatchObject([
+      { metric: "job.elapsed", quantityUnit: "job-millisecond", quantity: "2500" },
+    ]);
+  expect(aggregateCommercialUsage(f.terms, f.scope, rows()).state).toBe("missing_data");
+  f.evidence.scheduler.type = "slurm";
+  expect(aggregateCommercialUsage(terms, f.scope, rows()).state).toBe("needs_review");
+});

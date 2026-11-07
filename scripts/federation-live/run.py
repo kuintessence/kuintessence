@@ -1,7 +1,7 @@
 """Isolated full Server and real Kubernetes artifact pipeline probe; no deployment credentials."""
 
 import json, os, pathlib, secrets, shutil, signal, socket, subprocess, tempfile, time, urllib.request, uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 
 repo = pathlib.Path(__file__).resolve().parents[2]
 if os.environ.get("KQ_FEDERATION_EXECUTION_LAB") != "1":
@@ -147,9 +147,11 @@ def api(path, body=None, token=None, headers=None):
 
 
 def orderer(action):
-    (networkroot / ("execution-orderer-" + action)).write_text(action)
+    request_id = str(uuid.uuid4())
+    acknowledgement = networkroot / ("execution-orderer-" + action + ".ack")
+    (networkroot / ("execution-orderer-" + action)).write_text(request_id)
     deadline = time.monotonic() + 45
-    while not (networkroot / ("execution-orderer-" + action + ".ack")).exists():
+    while not acknowledgement.exists() or acknowledgement.read_text() != request_id:
         assert time.monotonic() < deadline, "Orderer control acknowledgement timeout"
         time.sleep(0.3)
 
@@ -736,6 +738,93 @@ def verify_terminal():
         "REAL PREAUTHORIZED TERMINAL AND CLOSURE PASSED: explicit institutional policies -> automatic provider approval -> mTLS evidence transfer -> automatic independent source review -> signature return and signed acknowledgement -> VALID private terminal -> VALID public closure",
         flush=True,
     )
+
+
+def verify_billing():
+    config = json.loads((root / "source-init.json").read_text())
+    proof = json.loads((root / "ledger-proof.json").read_text())
+    path = "federation/commercial-agreements/" + config["request"]["agreementRevisionId"]
+    usagepath = path + "/usage/" + proof["reservationId"]
+    receivedpath = path + "/received-usage/" + config["request"]["operationId"]
+    for _ in range(60):
+        usage = api(usagepath, token=token)["data"]
+        received = sourceapi(receivedpath, token=sourcetoken)["data"]
+        assert usage["task"]["state"] != "needs_review", json.dumps(usage["task"])
+        assert not received["sync"] or received["sync"]["state"] != "needs_review", json.dumps(received["sync"])
+        if usage["reports"] and usage["reports"][0]["ledgerState"] == "committed" and received["reports"]:
+            break
+        time.sleep(3)
+    else:
+        raise AssertionError("Real workload usage did not reach both institutions: " + json.dumps({"usage": usage, "received": received}))
+    report = usage["reports"][0]
+    assert len(usage["reports"]) == len(received["reports"]) == 1
+    assert received["reports"][0]["reportJws"] == report["reportJws"]
+    assert received["reports"][0]["report"] == report["report"]
+    runtime = json.loads((logs / "runtime-gate-result.json").read_text())
+    total = 0
+    pods = []
+    for job in runtime["jobs"]:
+        observed = json.loads(k(["get", "pods", "-n", namespace, "-l", "job-name=" + job["schedulerJobId"], "-o", "json"]).stdout)["items"]
+        assert len(observed) == 1
+        pod = observed[0]
+        statuses = pod["status"]["containerStatuses"]
+        assert len(statuses) == 1 and statuses[0]["restartCount"] == 0
+        duration = statuses[0]["state"]["terminated"]
+        start = datetime.fromisoformat(duration["startedAt"].replace("Z", "+00:00"))
+        end = datetime.fromisoformat(duration["finishedAt"].replace("Z", "+00:00"))
+        total += (end - start) // timedelta(milliseconds=1)
+        pods.append(pod)
+    measured = report["report"]["measurements"]
+    assert len(measured) == 1 and measured[0]["metric"] == "job.elapsed"
+    assert measured[0]["quantityUnit"] == "job-millisecond" and int(measured[0]["quantity"]) == total
+    bill_id = str(uuid.uuid4())
+    draft = api(path + "/bills/draft", {"reportId": report["id"], "billId": bill_id}, token=token)["data"]
+    assert total >= 1000, "Positive billing requires actual measured container runtime"
+    expected_gross = (total + 999) // 1000
+    assert int(draft["calculation"]["grossAmount"]) == expected_gross
+    assert int(draft["calculation"]["dueAmount"]) == min(expected_gross, int(config["request"]["maxAmount"]))
+    # Consensus unavailability must not prevent existing business signatures from being exchanged.
+    orderer("stop")
+    try:
+        provider = api(path + "/bills/approve", draft, token=token)["data"]
+        source = sourceapi(path + "/bills/approve", draft, token=sourcetoken)["data"]
+        statuses = {}
+        for _ in range(60):
+            for name, read, auth in (("provider", api, token), ("source", sourceapi, sourcetoken)):
+                rows = read(path + "/bills", token=auth)["data"]["data"]
+                assert len(rows) == 1
+                sync = read(path + "/approval-exchange", token=auth)["data"]["records"]
+                sync = next((r for r in sync if r["recordKind"] == "bill" and r["recordId"] == bill_id), None)
+                assert not sync or sync["state"] != "needs_review", json.dumps(sync)
+                statuses[name] = {"record": rows[0], "exchange": sync}
+            if all(v["exchange"] and v["exchange"]["state"] == "complete" for v in statuses.values()):
+                break
+            time.sleep(3)
+        else:
+            raise AssertionError("Bill signatures did not exchange while Orderer was stopped")
+        assert statuses["provider"]["record"]["bill"]["counterpartyJws"] == source["approvalJws"]
+        assert statuses["source"]["record"]["bill"]["counterpartyJws"] == provider["approvalJws"]
+        assert statuses["provider"]["record"]["ledger"]["state"] == "pending"
+        assert statuses["source"]["record"]["ledger"] is None
+        assert api(path + "/bills/approve", draft, token=token)["data"]["approvalJws"] == provider["approvalJws"]
+        assert sourceapi(path + "/bills/approve", draft, token=sourcetoken)["data"]["approvalJws"] == source["approvalJws"]
+        (logs / "billing-offline-evidence.json").write_text(json.dumps({"usage": usage, "received": received, "pods": pods, "draft": draft, "statuses": statuses}, indent=2) + "\n")
+        print("REAL BILL EXCHANGE PASSED: measured Kubernetes runtime -> signed usage over mTLS -> independent HTTP approvals -> automatic original signatures while Orderer is stopped", flush=True)
+    finally:
+        orderer("start")
+    submission_id = statuses["provider"]["record"]["ledger"]["id"]
+    for _ in range(60):
+        rows = api(path + "/bills", token=token)["data"]["data"]
+        assert len(rows) == 1 and rows[0]["bill"]["billId"] == bill_id
+        record = rows[0]["ledger"]
+        assert record["id"] == submission_id
+        assert record["state"] != "needs_review", json.dumps(record)
+        if record["state"] == "committed":
+            break
+        time.sleep(3)
+    else:
+        raise AssertionError("Original bill intent did not commit after Orderer recovery")
+    return record
 
 
 try:
@@ -1897,7 +1986,15 @@ await Bun.write(process.env.LAB_ROOT+'/registration.json',JSON.stringify({token:
     else:
         verify_success()
         verify_terminal()
+        bill_record = verify_billing()
     inspect_ledgers("after")
+    if scenario in ("success", "workflow"):
+        state = json.loads((logs / "provider-after.json").read_text())
+        transactions = [r for r in state["commercialTransactions"] if r["submissionId"] == bill_record["id"]]
+        valid = [r for r in transactions if r["stage"] == "committed" and r["validationCode"] == 0 and r["blockNumber"] is not None]
+        assert len(valid) == 1, "Expected one original VALID bill transaction"
+        (logs / "billing-committed-evidence.json").write_text(json.dumps({"record": bill_record, "transactions": transactions}, indent=2) + "\n")
+        print("REAL BILL EVIDENCE PASSED: original durable intent -> VALID private bill after Orderer recovery; no payment or balance settlement", flush=True)
 
 finally:
     cleanup_errors = []

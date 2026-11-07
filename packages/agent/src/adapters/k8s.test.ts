@@ -873,3 +873,117 @@ describe("federation Kubernetes identity", () => {
     ).toMatchObject({ status: "indeterminate" });
   });
 });
+
+describe("K8sAdapter terminal accounting", () => {
+  const uid = "e8e9e3fa-0254-4b26-9050-c00407599172";
+  const job = {
+    metadata: { name: "kq-metered", namespace: "mapped", uid },
+    spec: { backoffLimit: 0, completions: 1, parallelism: 1 },
+    status: { succeeded: 1 },
+  };
+  const pod = {
+    metadata: {
+      namespace: "mapped",
+      ownerReferences: [{ controller: true, kind: "Job", name: "kq-metered", uid }],
+    },
+    spec: { restartPolicy: "Never", containers: [{ name: "kq-sandbox" }] },
+    status: {
+      phase: "Succeeded",
+      containerStatuses: [
+        {
+          name: "kq-sandbox",
+          restartCount: 0,
+          state: {
+            terminated: {
+              exitCode: 0,
+              startedAt: "2026-01-01T00:00:01Z",
+              finishedAt: "2026-01-01T00:00:03.500Z",
+            },
+          },
+        },
+      ],
+    },
+  };
+  async function read(items: unknown[], original: unknown = job) {
+    const { spawner, calls } = mockSpawner([
+      { exitCode: 0, stdout: JSON.stringify(original) },
+      { exitCode: 0, stdout: "node-a\t2026-01-01T00:00:00Z" },
+      { exitCode: 0, stdout: JSON.stringify({ items }) },
+    ]);
+    const result = await new K8sAdapter("v1.30", { spawner, namespace: "mapped" }).status(
+      "kq-metered",
+    );
+    return { result, calls };
+  }
+  test("uses the original Job UID and terminated container times without inventing CPU usage", async () => {
+    const { result, calls } = await read([pod]);
+    expect(result.accounting).toMatchObject({
+      source: "kubernetes-pod",
+      schedulerJobId: "kq-metered",
+      elapsedMilliseconds: "2500",
+    });
+    expect(result.accounting?.cpuTimeMilliseconds).toBeUndefined();
+    expect(result.accounting?.allocatedCpus).toBeUndefined();
+    expect(calls[2]).toContain(`controller-uid=${uid}`);
+    const zero = structuredClone(pod);
+    zero.status.containerStatuses.forEach((status) => {
+      status.state.terminated.finishedAt = "2026-01-01T00:00:01Z";
+    });
+    expect((await read([zero])).result.accounting?.elapsedMilliseconds).toBe("0");
+  });
+  test("missing, restarted, replaced, multi-pod or malformed observations remain unknown", async () => {
+    for (const mutate of [
+      (p: typeof pod) => {
+        p.metadata.ownerReferences.forEach((owner) => {
+          owner.uid = crypto.randomUUID();
+        });
+      },
+      (p: typeof pod) => {
+        p.metadata.namespace = "other";
+      },
+      (p: typeof pod) => {
+        p.status.containerStatuses.forEach((status) => {
+          status.restartCount = 1;
+        });
+      },
+      (p: typeof pod) => {
+        p.status.containerStatuses.forEach((status) => {
+          status.name = "sidecar";
+        });
+      },
+      (p: typeof pod) => {
+        p.status.containerStatuses.forEach((status) => {
+          status.state.terminated.startedAt = "2026-01-01T00:00:04Z";
+        });
+      },
+      (p: typeof pod) => {
+        p.status.containerStatuses.forEach((status) => {
+          status.state.terminated.finishedAt = "invalid";
+        });
+      },
+      (p: typeof pod) => {
+        p.status.containerStatuses.forEach((status) => {
+          status.state.terminated.finishedAt = "2099-01-01T00:00:00Z";
+        });
+      },
+      (p: typeof pod) => {
+        p.spec.containers.push({ name: "sidecar" });
+      },
+      (p: typeof pod) => {
+        p.status.phase = "Running";
+      },
+    ]) {
+      const changed = structuredClone(pod);
+      mutate(changed);
+      expect((await read([changed])).result.accounting).toBeUndefined();
+    }
+    for (const items of [[], [pod, pod]])
+      expect((await read(items)).result.accounting).toBeUndefined();
+    expect(
+      (await read([pod], { ...job, status: { succeeded: 1, failed: 1 } })).result.accounting,
+    ).toBeUndefined();
+    expect(
+      (await read([pod], { ...job, spec: { ...job.spec, backoffLimit: 2 } })).result.accounting,
+    ).toBeUndefined();
+  });
+});

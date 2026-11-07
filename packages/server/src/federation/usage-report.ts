@@ -1,3 +1,4 @@
+import { schedulerAccountingSource } from "@kuintessence/shared";
 import {
   type FederationAccountingObservation,
   FederationAccountingObservationSchema,
@@ -67,9 +68,8 @@ export function aggregateCommercialUsage(
         (evidence.source !== "agent-status" ||
           evidence.observation.schedulerAccounting !== "reported" ||
           evidence.accounting.schedulerJobId !== evidence.scheduler.jobId ||
-          (evidence.accounting.source === "slurm-sacct"
-            ? evidence.scheduler.type !== "slurm"
-            : evidence.scheduler.type !== "pbs-pro"))) ||
+          evidence.accounting.source !==
+            schedulerAccountingSource(evidence.scheduler.type ?? undefined))) ||
       (!evidence.accounting && evidence.observation.schedulerAccounting === "reported")
     )
       return { state: "needs_review", reason: "EVIDENCE_CONFLICT" };
@@ -85,12 +85,7 @@ export function aggregateCommercialUsage(
         sample.originalEvidenceDigest !== row.digest ||
         federationMaterialDigest(sample) !== row.accountingObservation.digest ||
         sample.accounting.schedulerJobId !== evidence.scheduler.jobId ||
-        sample.accounting.source !==
-          (evidence.scheduler.type === "slurm"
-            ? "slurm-sacct"
-            : evidence.scheduler.type === "pbs-pro"
-              ? "pbs-qstat"
-              : null)
+        sample.accounting.source !== schedulerAccountingSource(evidence.scheduler.type ?? undefined)
       )
         return { state: "needs_review", reason: "EVIDENCE_CONFLICT" };
     }

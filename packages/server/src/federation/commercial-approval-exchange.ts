@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import {
   federationCommercialExecutionApprovals as approvals,
   auditLog,
+  federationCommercialBills as bills,
   federationCommercialAgreements as contracts,
   type PgDb,
   type PgTransaction,
@@ -11,6 +12,7 @@ import {
 import { assertFederationStatusQueryFresh, FederationError } from "@kuintessence/shared/federation";
 import {
   CommercialAgreementSchema,
+  CommercialBillSchema,
   CommercialExecutionApprovalSchema,
 } from "@kuintessence/shared/federation/commercial";
 import {
@@ -20,6 +22,7 @@ import {
 import { and, asc, eq, isNull, sql } from "drizzle-orm";
 import { z } from "zod";
 import { federationMaterialDigest } from "./assets";
+import { FederationBillingService } from "./billing";
 import { FederationCommercialAgreementService } from "./commercial-agreements";
 import { FederationCommercialExecutionService } from "./commercial-execution";
 import { FederationDeliveryError, type FederationSend } from "./outbound-client";
@@ -34,7 +37,11 @@ import { FederationTrustRegistry } from "./trust-registry";
 
 type Sync = typeof syncs.$inferSelect;
 type Identity = Pick<Sync, "agreementRevisionId" | "recordKind" | "recordId">;
-const businessSchema = z.union([CommercialAgreementSchema, CommercialExecutionApprovalSchema]);
+const businessSchema = z.union([
+  CommercialAgreementSchema,
+  CommercialExecutionApprovalSchema,
+  CommercialBillSchema,
+]);
 const responseSchema = z.union([businessSchema, CommercialApprovalWaitingSchema]);
 class ApprovalLeaseLost extends Error {}
 
@@ -75,7 +82,10 @@ export class FederationCommercialApprovalExchange {
         : terms.agreement.sourceSiteId;
     if (![terms.agreement.sourceSiteId, terms.agreement.targetSiteId].includes(this.signing.siteId))
       throw new FederationError("POLICY_DENIED");
-    if (identity.recordKind !== "release" && Date.parse(terms.agreement.validUntil) <= Date.now())
+    if (
+      ["agreement", "reservation"].includes(identity.recordKind) &&
+      Date.parse(terms.agreement.validUntil) <= Date.now()
+    )
       throw new FederationError("AUTHORIZATION_EXPIRED");
     if (identity.recordKind === "agreement") {
       if (identity.recordId !== identity.agreementRevisionId)
@@ -87,6 +97,41 @@ export class FederationCommercialApprovalExchange {
         digest: contract.digest,
         approvalJws: contract.approvalJws,
         counterpartyJws: contract.counterpartyJws,
+      };
+    }
+    if (identity.recordKind === "bill") {
+      // The signed payload is immutable. Avoid taking a bill lock before its usage-head lock.
+      const [record] = await tx
+        .select()
+        .from(bills)
+        .where(
+          and(
+            eq(bills.localSiteId, this.signing.siteId),
+            eq(bills.billId, identity.recordId),
+            eq(bills.agreementRevisionId, identity.agreementRevisionId),
+            eq(bills.localOrgId, contract.localOrgId),
+          ),
+        );
+      if (!record) return null;
+      const payload = CommercialBillSchema.parse(record.payload);
+      if (
+        !contract.counterpartyJws ||
+        payload.billId !== identity.recordId ||
+        payload.domainId !== terms.domainId ||
+        payload.agreementDigest !== contract.digest ||
+        payload.priceVersionId !== terms.priceVersionId ||
+        payload.request.agreementRevisionId !== identity.agreementRevisionId ||
+        payload.request.senderSiteId !== terms.agreement.sourceSiteId ||
+        payload.request.recipientSiteId !== terms.agreement.targetSiteId
+      )
+        throw new FederationError("OPERATION_CONFLICT");
+      return {
+        contract,
+        other,
+        payload,
+        digest: record.digest,
+        approvalJws: record.approvalJws,
+        counterpartyJws: record.counterpartyJws,
       };
     }
     const [record] = await tx
@@ -241,6 +286,35 @@ export class FederationCommercialApprovalExchange {
         .insert(syncs)
         .values(agreements.map((v) => ({ ...v, recordKind: "agreement" as const })))
         .onConflictDoNothing();
+    const billing = await this.db
+      .select({
+        localSiteId: bills.localSiteId,
+        agreementRevisionId: bills.agreementRevisionId,
+        recordId: bills.billId,
+      })
+      .from(bills)
+      .leftJoin(
+        syncs,
+        and(
+          eq(syncs.localSiteId, bills.localSiteId),
+          eq(syncs.recordKind, "bill"),
+          eq(syncs.recordId, bills.billId),
+        ),
+      )
+      .where(
+        and(
+          eq(bills.localSiteId, this.signing.siteId),
+          isNull(bills.counterpartyJws),
+          isNull(syncs.recordId),
+        ),
+      )
+      .orderBy(asc(bills.billId))
+      .limit(8);
+    if (billing.length)
+      await this.db
+        .insert(syncs)
+        .values(billing.map((v) => ({ ...v, recordKind: "bill" as const })))
+        .onConflictDoNothing();
     const executions = await this.db
       .select({
         localSiteId: approvals.localSiteId,
@@ -343,6 +417,7 @@ export class FederationCommercialApprovalExchange {
       await this.lock(tx, claim);
       return this.source(tx, claim);
     });
+    const issuedAt = new Date();
     const query = CommercialApprovalQuerySchema.parse({
       protocolVersion: 1,
       kind: "commercial-approval-query",
@@ -354,8 +429,8 @@ export class FederationCommercialApprovalExchange {
       recordKind: claim.recordKind,
       recordId: claim.recordId,
       recordDigest: scope.digest,
-      issuedAt: new Date().toISOString(),
-      expiresAt: new Date(Date.now() + 60000).toISOString(),
+      issuedAt: issuedAt.toISOString(),
+      expiresAt: new Date(issuedAt.getTime() + 60000).toISOString(),
     });
     const own = await this.trust.resolveKey(this.signing.siteId, this.signing.keyId, new Date());
     const request = await signFederationMessage(CommercialApprovalQuerySchema, query, this.signing);
@@ -423,6 +498,13 @@ export class FederationCommercialApprovalExchange {
     if (claim.recordKind === "agreement")
       await new FederationCommercialAgreementService(this.db, this.signing).attachExchanged(
         claim.agreementRevisionId,
+        response,
+        (tx) => authorize(tx, true),
+      );
+    else if (claim.recordKind === "bill")
+      await new FederationBillingService(this.db, this.signing).attachExchanged(
+        claim.agreementRevisionId,
+        claim.recordId,
         response,
         (tx) => authorize(tx, true),
       );
@@ -536,7 +618,11 @@ export class FederationCommercialApprovalExchange {
   async retry(actor: FederationActor, identity: Identity) {
     if (!this.send) throw new FederationError("ASSET_UNAVAILABLE");
     await this.db.transaction(async (tx) => {
-      await requireFederationCapability(tx, actor, "agreement.approve");
+      await requireFederationCapability(
+        tx,
+        actor,
+        identity.recordKind === "bill" ? "billing.approve" : "agreement.approve",
+      );
       const [existing] = await tx
         .select()
         .from(syncs)
