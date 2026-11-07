@@ -122,6 +122,24 @@ export function createFederationCommercialRoutes(
   if (execution) {
     const record = id.extend({ recordId: z.uuid() });
     const path = "/federation/commercial-agreements/:revisionId/execution-approvals";
+    r.post(
+      `${path}/:recordId/activate`,
+      kqValidator("param", record),
+      kqValidator("json", z.strictObject({ activationId: z.uuid() })),
+      async (c) =>
+        c.json(
+          {
+            success: true,
+            data: await execution.activate(
+              c.get("federationActor"),
+              c.req.valid("param").revisionId,
+              c.req.valid("param").recordId,
+              c.req.valid("json").activationId,
+            ),
+          },
+          202,
+        ),
+    );
     r.get(path, kqValidator("param", id), kqValidator("query", page), async (c) => {
       const { limit, offset } = c.req.valid("query");
       return c.json({

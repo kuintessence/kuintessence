@@ -11,6 +11,7 @@ import { FederationError } from "@kuintessence/shared/federation";
 import { FabricProposalCheckpointSchema } from "@kuintessence/shared/federation/ledger";
 import {
   FabricMarketAdvanceResultSchema,
+  MarketAdapterProposalInputSchema,
   type MarketProposalInput,
   MarketProposalInputSchema,
   type MarketQueryInput,
@@ -217,7 +218,7 @@ export class FederationMarketService {
   }
 
   private validate(row: Submission) {
-    const input = MarketProposalInputSchema.parse(row.input);
+    const input = MarketAdapterProposalInputSchema.parse(row.input);
     if (federationMaterialDigest(input) !== row.digest)
       throw new FederationError("OPERATION_CONFLICT");
     return input;
@@ -410,6 +411,8 @@ export class FederationMarketService {
         actor,
         row.input.operation === "claim-demand" ? "market.claim" : "market.publish",
       );
+      if (row.input.operation === "activate-demand")
+        await requireFederationCapability(tx, actor, "agreement.approve");
       const [time] = await tx
         .select({ now: sql<Date>`clock_timestamp()` })
         .from(users)

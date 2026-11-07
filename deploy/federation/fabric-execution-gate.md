@@ -1,6 +1,6 @@
 # 私有额度与公共执行许可
 
-本页说明同一 Fabric 通道中的 kq-commercial / kq-market 协议。链码、生产 Adapter 与 Server Unix 客户端已通过隔离真实网络验收；Server 已接通预留/释放的业务双签审批和持久待办，协调激活与执行方验权尚未接入，协调接单入口仍拒绝执行，不能把链码 ACTIVE 当作平台已提交真实计算任务。
+本页说明同一 Fabric 通道中的 kq-commercial / kq-market 协议。链码、生产 Adapter 与 Server Unix 客户端已通过隔离真实网络验收；Server 已接通预留/释放的业务双签审批和持久待办，源站公开激活也已接入持久市场待办；执行方验权尚未接入，协调接单入口仍拒绝执行，不能把链码 ACTIVE 当作平台已提交真实计算任务。
 
 ## 私有边界与背书
 
@@ -42,7 +42,7 @@ Commercial Adapter 的固定 proposal 接口增加 reserve-execution/release-exe
 
 Market Adapter 增加 activate-demand，恢复检查点绑定规范化公开载荷与 activationId。两类操作均复用原加密检查点，不改变已有恢复用途或密钥文件。必须先保存 proposal，再保存 prepared transaction，最后才提交；提交响应丢失时继续恢复原交易，不能重新创建预留。
 
-这些是本机私有套接字能力。CommercialClient 与持久商业待办现已接受经双签审批组装的预留/释放；公共市场业务接口和用户输入仍只允许发布/认领/撤回，不能通过 market.publish 激活。DATA_WAITING 保留原交易并等待重试；预算不足、授权或对象冲突进入复核，原始私有错误不会返回用户。
+这些是本机私有套接字能力。CommercialClient 与持久商业待办现已接受经双签审批组装的预留/释放；公共市场的通用提交接口仍只允许发布/认领/撤回；激活须走下述商业审批专用接口，market.publish 单独不足以授权。DATA_WAITING 保留原交易并等待重试；预算不足、授权或对象冲突进入复核，原始私有错误不会返回用户。
 
     KQ_FABRIC_TOOLS=/path/to/verified-fabric-3.1.5 bun run test:fabric:gate
 
@@ -73,4 +73,17 @@ Market Adapter 增加 activate-demand，恢复检查点绑定规范化公开载�
 
 释放须引用同合同已双签的原预留摘要及 READY 版本；ACTIVE 的新释放审批拒绝。自然到期不自动释放。后台先等合同登记 committed，预留才能推进；释放再等对应预留 committed。发送提案前重新验双方当前密钥信任与专用签署用途；已有未知提交仍按原交易恢复，不能因撤权创建新交易。原有 90 秒租约、检查点先落库、迟到响应隔离和 INVALID 历史保留继续适用。
 
-此审批不创建本地双边预算、不激活执行协议，也不提交 Job。独立数据库已覆盖权限变化、重复审批/附签、错签/错摘要、事务回滚、合同→预留→释放依赖、重启恢复及 HTTP 隔离；Adapter 使用替身，尚未进行这条数据库审批到真实 Fabric 的联合验收。公开激活协调、执行授权与 Web 审批界面继续待接。
+此审批不创建本地双边预算、不激活执行协议，也不提交 Job。独立数据库已覆盖权限变化、重复审批/附签、错签/错摘要、事务回滚、合同→预留→释放依赖、重启恢复及 HTTP 隔离；Adapter 使用替身，尚未进行这条数据库审批到真实 Fabric 的联合验收。公开激活待办已接通，执行授权与 Web 审批界面继续待接。
+
+
+## 源站公开激活
+
+迁移 0122 后，POST /api/federation/commercial-agreements/:revisionId/execution-approvals/:recordId/activate 只接受 {"activationId":"UUID"}，返回 202 与持久市场操作 ID；HTTP 成功表示入队，不是链已确认。请求者必须同时具备当前组织 agreement.approve 和 market.publish，且必须是需求源站；普通市场发布接口仍拒绝 activate-demand。
+
+Server 从本组织原双签预留生成公开 gate，不接受调用者提交金额、gate、摘要或对方身份。检查本组织原发布已 committed、合同/委派期限、私有预留提交已 committed 且摘要相同，以及双方当前密钥信任；已有同预留双签释放时拒绝新的激活意图。原签名和预留不能代替最终链验证：后续并发释放或超时由同通道哈希读集裁决，不通过多次应用查询声称原子性。
+
+同一次预留最多保存一个激活意图。同 ID 重试返回原操作，即使其后激活窗口到期也不会产生第二个意图；改 ID 重试冲突应读取原市场操作。唯一约束按预留划分，不永久锁死同一需求未来的其他认领；当前尚未实现重新开放流程。
+
+激活复用既有 Market worker 的先持久化检查点、原交易恢复、90 秒租约与迟到响应隔离。accepted 意图是已批准的机构操作，原请求人离职不会删除后台待办；新执行仍须提供方独立验权。最近状态与历史从 /api/federation/market/operations/:activationId 读取；复核 retry 也同时要求上述两个权限。未知提交不允许换 txId，明确 INVALID 后才可新增交易尝试，保留历史与原公开载荷。
+
+隔离 PostgreSQL 验证权限、锁额前拒绝、私有字段不进入公开意图、并发幂等、过期后读原意图、已有释放/密钥撤销拒绝、原交易恢复、INVALID 历史与通用接口绕过拒绝。这里使用 Adapter 替身；真实链的激活/释放 MVCC 竞态和生产 Adapter 恢复由独立网络入口验证，尚不是完整数据库→Fabric→Agent 执行验收。

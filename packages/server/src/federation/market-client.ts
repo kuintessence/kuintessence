@@ -7,7 +7,6 @@ import {
   type MarketAdapterProposalInput,
   MarketAdapterProposalInputSchema,
   type MarketAdvanceResult,
-  type MarketProposalInput,
   type MarketQueryInput,
   MarketQueryInputSchema,
   type MarketQueryResult,
@@ -18,7 +17,9 @@ import { UnixFabricClient } from "./fabric-client";
 
 export interface MarketClient {
   query(input: MarketQueryInput): Promise<MarketQueryResult>;
-  prepare(input: MarketProposalInput): Promise<z.infer<typeof FabricProposalCheckpointSchema>>;
+  prepare(
+    input: MarketAdapterProposalInput,
+  ): Promise<z.infer<typeof FabricProposalCheckpointSchema>>;
   advance(recovery: string): Promise<MarketAdvanceResult>;
 }
 export class UnixMarketClient implements MarketClient {

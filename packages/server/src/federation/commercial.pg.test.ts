@@ -11,6 +11,7 @@ import {
   federationCapabilities,
   federationSigningKeys,
   federationSites,
+  federationMarketAttempts as marketAttempts,
   federationMarketSubmissions as marketSubmissions,
   orgs,
   federationCommercialSubmissions as submissions,
@@ -27,7 +28,13 @@ import {
   CommercialReleaseSchema,
   CommercialReservationSchema,
 } from "@kuintessence/shared/federation/commercial";
-import { MarketDemandStateSchema } from "@kuintessence/shared/federation/market";
+import {
+  type MarketAdapterProposalInput,
+  type MarketAdvanceResult,
+  MarketDemandStateSchema,
+  type MarketProposalInput,
+  MarketProposalInputSchema,
+} from "@kuintessence/shared/federation/market";
 import { and, eq, inArray, sql } from "drizzle-orm";
 import { Hono } from "hono";
 import { exportSPKI } from "jose";
@@ -41,6 +48,8 @@ import { FederationCommercialExecutionService } from "./commercial-execution";
 import { FederationCommercialSubmissionService } from "./commercial-submissions";
 import { FederationCommercialWorker } from "./commercial-worker";
 import { FabricClientFailure } from "./fabric-client";
+import { FederationMarketService } from "./market";
+import type { MarketClient } from "./market-client";
 import { FederationPermissionService } from "./permissions";
 import { signFederationMessage } from "./signatures";
 import { testAgreement, testKeys } from "./test-fixtures";
@@ -212,6 +221,17 @@ afterAll(async () => {
         ),
       );
     await db.delete(submissions).where(inArray(submissions.localSiteId, siteIds));
+    const marketRows = await db
+      .select({ id: marketSubmissions.id })
+      .from(marketSubmissions)
+      .where(inArray(marketSubmissions.localSiteId, siteIds));
+    if (marketRows.length)
+      await db.delete(marketAttempts).where(
+        inArray(
+          marketAttempts.submissionId,
+          marketRows.map((row) => row.id),
+        ),
+      );
     await db.delete(marketSubmissions).where(inArray(marketSubmissions.localSiteId, siteIds));
     await db.delete(executionApprovals).where(inArray(executionApprovals.localSiteId, siteIds));
     await db.delete(contracts).where(inArray(contracts.localSiteId, siteIds));
@@ -918,4 +938,246 @@ test("execution approval cannot fund another organization's public intent or an 
   expect((await target.approve(f.actor, f.revisionId, f.reservation)).recordId).toBe(
     f.reservation.reservationId,
   );
+});
+
+class ActivationAdapter implements MarketClient {
+  inputs: MarketAdapterProposalInput[] = [];
+  outcome: "pending" | "committed" | "invalid" = "committed";
+  async query() {
+    return { operation: "get-demand" as const, demand: null };
+  }
+  async prepare(input: MarketAdapterProposalInput) {
+    this.inputs.push(input);
+    const transactionId = randomBytes(32).toString("hex");
+    return { transactionId, recovery: Buffer.from(`proposal:${transactionId}`).toString("base64") };
+  }
+  async advance(recovery: string): Promise<MarketAdvanceResult> {
+    const [stage, transactionId] = Buffer.from(recovery, "base64").toString().split(":");
+    if (!transactionId) throw new Error("Missing activation fixture transaction");
+    const [stored] = await db
+      .select()
+      .from(marketAttempts)
+      .where(eq(marketAttempts.transactionId, transactionId));
+    expect(stored?.recovery).toBe(recovery);
+    if (stage === "proposal")
+      return {
+        state: "prepared",
+        transactionId,
+        recovery: Buffer.from(`transaction:${transactionId}`).toString("base64"),
+      };
+    if (this.outcome === "pending") return { state: "pending", transactionId, recovery };
+    if (this.outcome === "invalid")
+      return { state: "invalid", transactionId, validationCode: 11, blockNumber: "9" };
+    return { state: "committed", transactionId, blockNumber: "10" };
+  }
+}
+async function activationFixture() {
+  const f = await executionFixture();
+  await approveReservation(f);
+  for (let step = 0; step < 6; step++) expect(await f.service.advanceNext()).toBe(true);
+  await new FederationPermissionService(db).set(
+    {
+      ...f.actor,
+      capability: "market.publish",
+      enabled: true,
+    },
+    f.actor.userId,
+  );
+  const marketAdapter = new ActivationAdapter();
+  const market = new FederationMarketService(db, f.a.signing.siteId, marketAdapter);
+  return { ...f, market, marketAdapter, activationId: randomUUID() };
+}
+
+test("activation requires two capabilities and confirmed private reservation; public payload contains no private delegation", async () => {
+  const f = await executionFixture();
+  await approveReservation(f);
+  const id = randomUUID();
+  await expect(
+    f.execution.activate(f.actor, f.revisionId, f.reservation.reservationId, id),
+  ).rejects.toMatchObject({ code: "POLICY_DENIED" });
+  await new FederationPermissionService(db).set(
+    {
+      ...f.actor,
+      capability: "market.publish",
+      enabled: true,
+    },
+    f.actor.userId,
+  );
+  await expect(
+    f.execution.activate(f.actor, f.revisionId, f.reservation.reservationId, id),
+  ).rejects.toMatchObject({ code: "LEDGER_REQUIRED" });
+  for (let step = 0; step < 6; step++) await f.service.advanceNext();
+  const created = await f.execution.activate(
+    f.actor,
+    f.revisionId,
+    f.reservation.reservationId,
+    id,
+  );
+  expect(created).toEqual({ id, demandId: f.reservation.demandId, state: "pending" });
+  const [row] = await db.select().from(marketSubmissions).where(eq(marketSubmissions.id, id));
+  expect(row?.input.operation).toBe("activate-demand");
+  const encoded = JSON.stringify(row?.input);
+  for (const secret of [
+    "maxAmount",
+    "inputManifestDigest",
+    "environmentLockDigest",
+    "sourceJws",
+    "targetJws",
+    "budgetDomainId",
+    "termsText",
+  ])
+    expect(encoded).not.toContain(secret);
+  expect(row?.digest).toBe(federationMaterialDigest(row?.input));
+});
+
+test("activation intent is unique and idempotent even after the gate deadline", async () => {
+  const f = await activationFixture();
+  const [one, two] = await Promise.all([
+    f.execution.activate(f.actor, f.revisionId, f.reservation.reservationId, f.activationId),
+    f.execution.activate(f.actor, f.revisionId, f.reservation.reservationId, f.activationId),
+  ]);
+  expect(one).toEqual(two);
+  await expect(
+    f.execution.activate(f.actor, f.revisionId, f.reservation.reservationId, randomUUID()),
+  ).rejects.toMatchObject({ code: "OPERATION_CONFLICT" });
+  const later = new FederationCommercialExecutionService(
+    db,
+    f.a.signing,
+    undefined,
+    () => new Date(Date.parse(f.reservation.request.expiresAt) + 1000),
+  );
+  expect(
+    await later.activate(f.actor, f.revisionId, f.reservation.reservationId, f.activationId),
+  ).toEqual(one);
+  const logs = await db
+    .select()
+    .from(auditLog)
+    .where(
+      and(
+        eq(auditLog.actor, f.actor.userId),
+        eq(auditLog.action, "federation.commercial.execution.activate"),
+      ),
+    );
+  expect(logs).toHaveLength(1);
+});
+
+test("activation refuses an already double-approved release and revoked business signing trust", async () => {
+  const f = await activationFixture();
+  const release = await releasePayload(f);
+  await f.execution.approve(f.actor, f.revisionId, release);
+  await f.execution.attachCounterparty(
+    f.actor,
+    f.revisionId,
+    release.releaseId,
+    await signFederationMessage(CommercialExecutionApprovalSchema, release, f.b.signing),
+  );
+  await expect(
+    f.execution.activate(f.actor, f.revisionId, f.reservation.reservationId, f.activationId),
+  ).rejects.toMatchObject({ code: "OPERATION_CONFLICT" });
+  const revoked = await activationFixture();
+  await revoked.trust.revoke(
+    revoked.b.signing.siteId,
+    { keyId: revoked.b.signing.keyId },
+    revoked.actor.userId,
+  );
+  await expect(
+    revoked.execution.activate(
+      revoked.actor,
+      revoked.revisionId,
+      revoked.reservation.reservationId,
+      revoked.activationId,
+    ),
+  ).rejects.toMatchObject({ code: "UNTRUSTED_IDENTITY" });
+});
+
+test("activation checkpoints recover original transactions and retry requires commercial approval", async () => {
+  const f = await activationFixture();
+  await f.execution.activate(f.actor, f.revisionId, f.reservation.reservationId, f.activationId);
+  expect(await f.market.advanceNext()).toBe(true);
+  expect(await f.market.advanceNext()).toBe(true);
+  f.marketAdapter.outcome = "pending";
+  expect(await f.market.advanceNext()).toBe(true);
+  const prior = await f.market.get(f.actor, f.activationId, 50, 0);
+  const transactionId = prior.transactions[0]?.transactionId;
+  expect(transactionId).toBeDefined();
+  await db
+    .update(marketSubmissions)
+    .set({ state: "needs_review", lastError: "UNKNOWN" })
+    .where(eq(marketSubmissions.id, f.activationId));
+  await new FederationPermissionService(db).set(
+    {
+      ...f.actor,
+      capability: "agreement.approve",
+      enabled: false,
+    },
+    f.actor.userId,
+  );
+  await expect(f.market.retry(f.actor, f.activationId)).rejects.toMatchObject({
+    code: "POLICY_DENIED",
+  });
+  await new FederationPermissionService(db).set(
+    {
+      ...f.actor,
+      capability: "agreement.approve",
+      enabled: true,
+    },
+    f.actor.userId,
+  );
+  await f.market.retry(f.actor, f.activationId);
+  f.marketAdapter.outcome = "invalid";
+  const restarted = new FederationMarketService(db, f.a.signing.siteId, f.marketAdapter);
+  expect(await restarted.advanceNext()).toBe(true);
+  let status = await restarted.get(f.actor, f.activationId, 50, 0);
+  expect(status.transactions[0]).toMatchObject({
+    transactionId,
+    stage: "invalid",
+    validationCode: 11,
+  });
+  await restarted.retry(f.actor, f.activationId);
+  f.marketAdapter.outcome = "committed";
+  for (let step = 0; step < 3; step++) expect(await restarted.advanceNext()).toBe(true);
+  status = await restarted.get(f.actor, f.activationId, 50, 0);
+  expect(status.operation.state).toBe("committed");
+  expect(status.transactions).toHaveLength(2);
+  expect(status.transactions[1]?.transactionId).toBe(transactionId);
+  expect(f.marketAdapter.inputs).toHaveLength(2);
+  expect(f.marketAdapter.inputs[1]).toEqual(f.marketAdapter.inputs[0]);
+});
+
+test("activation HTTP accepts only an operation id and generic market publishing cannot bypass approval", async () => {
+  const f = await activationFixture();
+  const app = new Hono();
+  app.onError(createErrorHandler(pino({ enabled: false })));
+  app.use("*", async (c, next) => {
+    c.set("principal" as never, f.actor as never);
+    await next();
+  });
+  app.route(
+    "/",
+    createFederationCommercialRoutes(f.approvals, f.service, undefined, undefined, f.execution),
+  );
+  const path = `/federation/commercial-agreements/${f.revisionId}/execution-approvals/${f.reservation.reservationId}/activate`;
+  const request = (body: unknown) =>
+    app.request(path, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  expect((await request({ activationId: f.activationId, gate: { state: "READY" } })).status).toBe(
+    400,
+  );
+  const response = await request({ activationId: f.activationId });
+  expect(response.status).toBe(202);
+  expect(response.headers.get("cache-control")).toBe("no-store");
+  const [row] = await db
+    .select()
+    .from(marketSubmissions)
+    .where(eq(marketSubmissions.id, f.activationId));
+  if (!row || row.input.operation !== "activate-demand")
+    throw new Error("Missing stored activation");
+  // The HTTP validator and service both retain the narrow public input schema.
+  expect(MarketProposalInputSchema.safeParse(row.input).success).toBe(false);
+  await expect(
+    f.market.enqueue(f.actor, row.input as unknown as MarketProposalInput),
+  ).rejects.toThrow();
 });

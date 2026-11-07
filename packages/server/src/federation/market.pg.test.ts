@@ -10,6 +10,7 @@ import {
   users,
 } from "@kuintessence/db";
 import {
+  type MarketAdapterProposalInput,
   type MarketAdvanceResult,
   MarketDemandSchema,
   type MarketProposalInput,
@@ -49,7 +50,7 @@ class Adapter implements MarketClient {
   offline = false;
   onPrepare?: () => Promise<void>;
   onAdvance?: () => Promise<void>;
-  async prepare(_input: MarketProposalInput) {
+  async prepare(_input: MarketAdapterProposalInput) {
     this.prepares++;
     await this.onPrepare?.();
     if (this.offline) throw new FabricClientFailure("LEDGER_UNAVAILABLE");

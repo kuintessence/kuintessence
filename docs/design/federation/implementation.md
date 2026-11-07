@@ -446,7 +446,7 @@ raw transaction args、chaincode response、events、trace 均不能携带私有
 
 公共交易 MAJORITY、合作域 AND、关键治理 ALL 及指定仲裁模板由部署/lifecycle 策略表达。ALL 导致成员离线时升级受阻，这属于明确选择的治理边界，不由平台管理员绕过。
 
-公共市场链码已增加 OPEN → CLAIMED 或 CANCELLED；按同一需求键的版本读取和写入，由 Fabric 提交时 MVCC 保证单一认领。原请求重试不覆盖，不因截止时间过去自动重新开放；CLAIMED 已增加私有双签预留/gate 约束的链码激活和激活前释放；应用入口仍未放开。真实三机构验证多数背书和竞争认领，见[部署与验证说明](../../../deploy/federation/fabric-market.md)。市场 Adapter/本机客户端和 Server 持久操作 API 已连接，公共目录查询已接通，私有锁额/gate 已有链码实现，Web 与应用执行接入仍待连接，保留 ledger_coordinated 拒绝门槛。
+公共市场链码已增加 OPEN → CLAIMED 或 CANCELLED；按同一需求键的版本读取和写入，由 Fabric 提交时 MVCC 保证单一认领。原请求重试不覆盖，不因截止时间过去自动重新开放；CLAIMED 已增加私有双签预留/gate 约束的链码激活和激活前释放；Server 公开激活审批与待办已接通，实际执行入口仍未放开。真实三机构验证多数背书和竞争认领，见[部署与验证说明](../../../deploy/federation/fabric-market.md)。市场 Adapter/本机客户端和 Server 持久操作 API 已连接，公共目录查询已接通，私有锁额/gate 已有链码实现，Web 与应用执行接入仍待连接，保留 ledger_coordinated 拒绝门槛。
 
 ## 10. UI 与配置
 
@@ -721,7 +721,7 @@ kq-market ListDemands 使用 Fabric 原生分页，GetDemand 保留原单条语�
 
 为避免公开 gate 初次创建需要更宽背书而暴露 transient，gate 存于双方 PDC；Market ActivateDemand 读取 Commercial GetExecutionGateHash 并比较批准公开的原文哈希。真实 Fabric 的同通道 hashed read 与反向公共状态 read 用于激活/释放互斥，不依赖应用先查后写。许可原文只含路由、版本、期限与带盐私有预留摘要，不能带金额、条款或完整委派。部署/边界见[执行许可](../../../deploy/federation/fabric-execution-gate.md)。
 
-生产 Commercial Adapter/Unix 客户端增加 reserve-execution、release-execution 及固定哈希查询，Market Adapter 增加 activate-demand。执行载荷另用 Adapter schema，原 HTTP/持久市场服务输入不扩大；业务签署用途、双方签名、摘要、域/操作标识在发送私有数据前校验。预留/释放明确只向双方 MSP 背书，激活只传批准公开的 gate。复用原恢复协议与加密用途；DATA_WAITING 可重试，其余明确政策/预算拒绝进入复核。真实网络覆盖三操作跨新进程及丢失成功响应恢复，预留经历 Orderer 停机后仍恢复相同 txId；固定查询核对释放/可用许可哈希及 ACTIVE 需求。Server 预留/释放双签审批和持久协调已接通，公开激活与实际执行仍未接通。
+生产 Commercial Adapter/Unix 客户端增加 reserve-execution、release-execution 及固定哈希查询，Market Adapter 增加 activate-demand。执行载荷另用 Adapter schema，原 HTTP/持久市场服务输入不扩大；业务签署用途、双方签名、摘要、域/操作标识在发送私有数据前校验。预留/释放明确只向双方 MSP 背书，激活只传批准公开的 gate。复用原恢复协议与加密用途；DATA_WAITING 可重试，其余明确政策/预算拒绝进入复核。真实网络覆盖三操作跨新进程及丢失成功响应恢复，预留经历 Orderer 停机后仍恢复相同 txId；固定查询核对释放/可用许可哈希及 ACTIVE 需求。Server 预留/释放双签审批和持久协调已接通，公开激活已接入专用审批入口与市场待办，实际执行仍未接通。
 
 
 ### 预留与释放的机构审批
@@ -730,4 +730,11 @@ kq-market ListDemands 使用 Fabric 原生分页，GetDemand 保留原单条语�
 
 复用商业提交服务与 worker：合同 committed 后推进预留，原预留 committed 后推进释放。发送私有提案前重验双方当前密钥与准确用途，所有原交易恢复规则保持；机构签名审批不因原员工离职自动丢弃，实际执行撤权由独立执行策略负责。详情仅公开本组织的签署正文与最近提交状态，不返回恢复密文或租约；复核复用合同提交 retry。API/边界见[Server 双签审批](../../../deploy/federation/fabric-execution-gate.md#server-双签审批与持久待办)。
 
-此处只接通人工双签业务审批与后台提交，未实现双方自动握手、公开激活编排、执行 gate 到 Job 的授权，亦不增加本地双边余额。隔离 PostgreSQL 已验证权限、并发/回滚和恢复，尚未验证这条数据库链路到真实 Fabric；两类独立检查不可冒充端到端执行。
+此处只接通人工双签业务审批与后台提交，未实现双方自动握手、执行 gate 到 Job 的授权，公开激活现已接入独立审批和市场待办，亦不增加本地双边余额。隔离 PostgreSQL 已验证权限、并发/回滚和恢复，尚未验证这条数据库链路到真实 Fabric；两类独立检查不可冒充端到端执行。
+
+
+### 源站公开激活待办
+
+迁移 0122 扩展市场持久记录，允许专用商业审批入口生成 activate-demand；通用 enqueue 和 HTTP schema 保持原三种操作。入口只接受 activationId，要求源站当前组织的 agreement.approve 与 market.publish，核对本组织已确认发布、双签原文/当前机构密钥、私有预留 committed 和完整摘要。gate 固定从原双签预留生成，不接收用户原文；已有本地双签释放阻止新的激活意图。意图、摘要审计与同预留唯一约束同事务保存，重复原 ID 可在期限后读取原结果，不产生新授权。
+
+后台复用 Market worker 的持久恢复，不新增轮询器；复核激活要求同样两个权限。未知结果恢复原 txId，INVALID 追加新尝试而保留原记录。并发释放/期限的最终判断仍依赖真实链读集，不能用本地已 committed 的旧预留推断当前 gate。API 与边界见[源站公开激活](../../../deploy/federation/fabric-execution-gate.md#源站公开激活)。该结果只推进公共 ACTIVE，不授予实际 Job 执行或释放私有锁额；下一步须将提供方执行验权与确切双签委派绑定。

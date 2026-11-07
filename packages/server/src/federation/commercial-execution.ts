@@ -16,9 +16,13 @@ import {
   CommercialExecutionApprovalSchema,
   CommercialExecutionProposalInputSchema,
 } from "@kuintessence/shared/federation/commercial";
-import { MarketQueryResultSchema } from "@kuintessence/shared/federation/market";
+import {
+  MarketActivationSchema,
+  MarketQueryResultSchema,
+} from "@kuintessence/shared/federation/market";
 import { and, desc, eq, sql } from "drizzle-orm";
 import { z } from "zod";
+import { federationMaterialDigest } from "./assets";
 import { FabricClientFailure } from "./fabric-client";
 import type { MarketClient } from "./market-client";
 import { type FederationActor, requireFederationCapability } from "./permissions";
@@ -374,6 +378,116 @@ export class FederationCommercialExecutionService {
       });
       await this.audit(tx, actor, "counterparty", recordId, local.digest);
       return updated;
+    });
+  }
+  async activate(
+    actor: FederationActor,
+    revisionId: string,
+    recordId: string,
+    activationId: string,
+  ) {
+    z.uuid().parse(activationId);
+    return this.db.transaction(async (tx) => {
+      await requireFederationCapability(tx, actor, "agreement.approve");
+      await requireFederationCapability(tx, actor, "market.publish");
+      const approval = await this.local(tx, actor, revisionId, recordId);
+      const payload = CommercialExecutionApprovalSchema.parse(approval.payload);
+      if (
+        payload.kind !== "commercial-reservation" ||
+        !approval.counterpartyJws ||
+        payload.request.senderSiteId !== this.signingKey.siteId
+      )
+        throw new FederationError("POLICY_DENIED");
+      const input = {
+        operation: "activate-demand" as const,
+        activation: MarketActivationSchema.parse({
+          activationId,
+          demandId: payload.demandId,
+          expectedVersion: payload.claimVersion,
+          gate: {
+            domainId: payload.domainId,
+            reservationId: payload.reservationId,
+            demandId: payload.demandId,
+            claimVersion: payload.claimVersion,
+            version: 1,
+            state: "READY",
+            reservationDigest: approval.digest,
+            expiresAt: payload.request.expiresAt,
+          },
+        }),
+      };
+      const digest = federationMaterialDigest(input);
+      const [prior] = await tx
+        .select()
+        .from(marketSubmissions)
+        .where(eq(marketSubmissions.id, activationId));
+      if (prior) {
+        if (prior.localSiteId !== this.signingKey.siteId || prior.localOrgId !== actor.orgId)
+          throw new FederationError("POLICY_DENIED");
+        if (prior.digest !== digest) throw new FederationError("OPERATION_CONFLICT");
+        return { id: prior.id, demandId: prior.demandId, state: prior.state };
+      }
+      await this.validate(tx, actor, revisionId, payload);
+      const [reservation] = await tx
+        .select({ id: submissions.id })
+        .from(submissions)
+        .where(
+          and(
+            eq(submissions.localSiteId, this.signingKey.siteId),
+            eq(submissions.agreementRevisionId, revisionId),
+            eq(submissions.state, "committed"),
+            sql`${submissions.input}->>'operation' = 'reserve-execution'`,
+            sql`${submissions.input}->>'recordId' = ${recordId}`,
+            sql`${submissions.input}->>'digest' = ${approval.digest}`,
+          ),
+        )
+        .for("share");
+      if (!reservation) throw new FederationError("LEDGER_REQUIRED");
+      const [release] = await tx
+        .select({ recordId: approvals.recordId })
+        .from(approvals)
+        .where(
+          and(
+            this.scope(actor, revisionId),
+            sql`${approvals.payload}->>'kind' = 'commercial-release'`,
+            sql`${approvals.payload}->>'reservationId' = ${recordId}`,
+            sql`${approvals.counterpartyJws} IS NOT NULL`,
+          ),
+        )
+        .limit(1);
+      if (release) throw new FederationError("OPERATION_CONFLICT");
+      const pairs = [
+        { siteId: payload.request.senderSiteId, jws: approval.approvalJws },
+        { siteId: payload.request.recipientSiteId, jws: approval.counterpartyJws },
+      ].sort((a, b) => a.siteId.localeCompare(b.siteId));
+      for (const { siteId, jws } of pairs) {
+        const keyId = federationMessageKeyId(jws);
+        await this.trust.assertKey(tx, siteId, keyId, this.clock());
+        const key = await this.trust.resolveKey(siteId, keyId, this.clock(), tx);
+        const verified = await verifyFederationMessage(
+          CommercialExecutionApprovalSchema,
+          jws,
+          key,
+          this.clock(),
+        );
+        if (verified.digest !== approval.digest) throw new FederationError("OPERATION_CONFLICT");
+      }
+      const [created] = await tx
+        .insert(marketSubmissions)
+        .values({
+          id: activationId,
+          localSiteId: this.signingKey.siteId,
+          localOrgId: actor.orgId,
+          requestedBy: actor.userId,
+          demandId: payload.demandId,
+          input,
+          digest,
+        })
+        .onConflictDoNothing()
+        .returning();
+      if (!created) throw new FederationError("OPERATION_CONFLICT");
+      await this.audit(tx, actor, "activate", recordId, digest);
+      return { id: created.id, demandId: created.demandId, state: created.state };
     });
   }
   private async audit(

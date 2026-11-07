@@ -28,7 +28,7 @@ import type {
   CommercialUsageGap,
 } from "@kuintessence/shared/federation/commercial";
 import type { FederationEvidenceBatch } from "@kuintessence/shared/federation/ledger";
-import type { MarketProposalInput } from "@kuintessence/shared/federation/market";
+import type { MarketAdapterProposalInput } from "@kuintessence/shared/federation/market";
 import { sql } from "drizzle-orm";
 import {
   bigint,
@@ -1193,7 +1193,7 @@ export const federationMarketSubmissions = pgTable(
       .references(() => users.id),
     demandId: uuid("demand_id").notNull(),
     digest: varchar("digest", { length: 71 }).notNull(),
-    input: jsonb("input").$type<MarketProposalInput>().notNull(),
+    input: jsonb("input").$type<MarketAdapterProposalInput>().notNull(),
     state: varchar("state", { length: 24 }).notNull().default("pending"),
     lastError: varchar("last_error", { length: 64 }),
     leaseToken: uuid("lease_token"),
@@ -1206,6 +1206,9 @@ export const federationMarketSubmissions = pgTable(
     index("federation_market_org").on(t.localSiteId, t.localOrgId, t.createdAt),
     index("federation_market_demand").on(t.localSiteId, t.demandId),
     index("federation_market_pending").on(t.localSiteId, t.state, t.nextAttemptAt),
+    uniqueIndex("federation_market_activation")
+      .on(t.localSiteId, sql`(${t.input}->'activation'->'gate'->>'reservationId')`)
+      .where(sql`${t.input}->>'operation' = 'activate-demand'`),
     check(
       "federation_market_submission_state",
       sql`${t.state} IN ('pending','committed','needs_review')`,
@@ -1216,6 +1219,7 @@ export const federationMarketSubmissions = pgTable(
         (${t.input}->>'operation' = 'publish-demand' AND ${t.input}->'demand'->>'demandId' = ${t.id}::text AND ${t.input}->'demand'->>'demandId' = ${t.demandId}::text AND ${t.input}->'demand'->>'sourceSiteId' = ${t.localSiteId}::text)
         OR (${t.input}->>'operation' = 'claim-demand' AND ${t.input}->'claim'->>'claimId' = ${t.id}::text AND ${t.input}->'claim'->>'demandId' = ${t.demandId}::text AND ${t.input}->'claim'->>'providerSiteId' = ${t.localSiteId}::text)
         OR (${t.input}->>'operation' = 'cancel-open-demand' AND ${t.input}->'cancellation'->>'cancellationId' = ${t.id}::text AND ${t.input}->'cancellation'->>'demandId' = ${t.demandId}::text)
+        OR (${t.input}->>'operation' = 'activate-demand' AND ${t.input}->'activation'->>'activationId' = ${t.id}::text AND ${t.input}->'activation'->>'demandId' = ${t.demandId}::text)
       )) IS TRUE`,
     ),
     check(

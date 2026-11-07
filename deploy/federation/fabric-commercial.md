@@ -140,4 +140,4 @@ KQ_FABRIC_TOOLS=/path/to/verified/fabric-3.1.5 KQ_FABRIC_DATABASE_URL=postgres:/
 
 ## 协调模式的私有额度与执行 gate
 
-链码另已增加双签 ReserveExecution/ReleaseExecution 和仅返回哈希的 GetExecutionGateHash，见[执行许可协议与真实网络验证](fabric-execution-gate.md)。金额和完整委派只存双方 PDC，固定合作域预算不随合同修订重置；激活与释放依赖同通道跨链码读集。生产 Adapter、Server 双签审批/持久待办已支持预留和激活前释放；新密钥用途可在线登记。公开激活的 Server 协调与实际执行尚未接通，详见上述执行许可说明。
+链码另已增加双签 ReserveExecution/ReleaseExecution 和仅返回哈希的 GetExecutionGateHash，见[执行许可协议与真实网络验证](fabric-execution-gate.md)。金额和完整委派只存双方 PDC，固定合作域预算不随合同修订重置；激活与释放依赖同通道跨链码读集。生产 Adapter、Server 双签审批/持久待办已支持预留和激活前释放；新密钥用途可在线登记。源站公开激活已接入独立审批入口与市场持久待办，实际执行尚未接通，详见上述执行许可说明。

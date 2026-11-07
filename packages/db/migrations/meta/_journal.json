@@ -855,6 +855,13 @@
       "when": 1794055952226,
       "tag": "0121_bent_spyke",
       "breakpoints": true
+    },
+    {
+      "idx": 122,
+      "version": "7",
+      "when": 1794057134378,
+      "tag": "0122_loving_talon",
+      "breakpoints": true
     }
   ]
 }
