@@ -1135,6 +1135,11 @@ export const federationCommercialExecutionApprovals = pgTable(
     digest: varchar("digest", { length: 71 }).notNull(),
     approvalJws: text("approval_jws").notNull(),
     counterpartyJws: text("counterparty_jws"),
+    terminalAutoState: varchar("terminal_auto_state", { length: 24 }).notNull().default("pending"),
+    terminalAutoNextAt: timestamp("terminal_auto_next_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    terminalAutoError: varchar("terminal_auto_error", { length: 64 }),
     stopId: uuid("stop_id"),
     stopRequestedBy: uuid("stop_requested_by").references(() => users.id),
     stopRequestedAt: timestamp("stop_requested_at", { withTimezone: true }),
@@ -1147,6 +1152,15 @@ export const federationCommercialExecutionApprovals = pgTable(
   },
   (t) => [
     primaryKey({ columns: [t.localSiteId, t.recordId] }),
+    index("federation_terminal_auto_pending").on(
+      t.localSiteId,
+      t.terminalAutoState,
+      t.terminalAutoNextAt,
+    ),
+    check(
+      "federation_terminal_auto_state",
+      sql`${t.terminalAutoState} IN ('pending','needs_review')`,
+    ),
     uniqueIndex("federation_execution_stop_id").on(t.stopId),
     index("federation_execution_stop_pending")
       .on(t.localSiteId, t.stopNextAttemptAt)
@@ -1186,6 +1200,44 @@ export const federationCommercialExecutionApprovals = pgTable(
   ],
 );
 
+/** Immutable institutional consent; replacement requires explicit revocation. */
+export const federationTerminalPolicies = pgTable(
+  "federation_terminal_policies",
+  {
+    id: uuid("id").primaryKey(),
+    localSiteId: uuid("local_site_id").notNull(),
+    agreementRevisionId: uuid("agreement_revision_id").notNull(),
+    localOrgId: uuid("local_org_id")
+      .notNull()
+      .references(() => orgs.id),
+    agreementDigest: varchar("agreement_digest", { length: 71 }).notNull(),
+    outcomes: jsonb("outcomes").$type<("completed" | "failed" | "cancelled")[]>().notNull(),
+    validFrom: timestamp("valid_from", { withTimezone: true }).notNull(),
+    validUntil: timestamp("valid_until", { withTimezone: true }).notNull(),
+    grantedBy: uuid("granted_by")
+      .notNull()
+      .references(() => users.id),
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
+    revokedBy: uuid("revoked_by").references(() => users.id),
+  },
+  (t) => [
+    foreignKey({
+      columns: [t.localSiteId, t.agreementRevisionId],
+      foreignColumns: [
+        federationCommercialAgreements.localSiteId,
+        federationCommercialAgreements.revisionId,
+      ],
+    }),
+    uniqueIndex("federation_terminal_policy_active")
+      .on(t.localSiteId, t.agreementRevisionId)
+      .where(sql`${t.revokedAt} IS NULL`),
+    check(
+      "federation_terminal_policy_valid",
+      sql`(${t.validUntil} > ${t.validFrom} AND ${t.agreementDigest} ~ '^sha256:[a-f0-9]{64}$' AND jsonb_typeof(${t.outcomes}) = 'array' AND jsonb_array_length(${t.outcomes}) BETWEEN 1 AND 3 AND ${t.outcomes} <@ '["completed","failed","cancelled"]'::jsonb AND ((${t.revokedAt} IS NULL) = (${t.revokedBy} IS NULL))) IS TRUE`,
+    ),
+  ],
+);
+
 /** Presence is a permanent execution fence, committed atomically with the local signature. */
 export const federationExecutionTerminals = pgTable(
   "federation_execution_terminals",
@@ -1199,6 +1251,9 @@ export const federationExecutionTerminals = pgTable(
     approvalJws: text("approval_jws").notNull(),
     counterpartyJws: text("counterparty_jws"),
     sourceReview: jsonb("source_review").$type<FederationTerminalSourceReview>(),
+    authorizationPolicyId: uuid("authorization_policy_id").references(
+      () => federationTerminalPolicies.id,
+    ),
     approvedBy: uuid("approved_by")
       .notNull()
       .references(() => users.id),

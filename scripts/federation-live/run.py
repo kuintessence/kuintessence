@@ -665,20 +665,25 @@ def verify_terminal():
         + proof["reservationId"]
         + "/terminal"
     )
-    provider = api(path, {}, token=token)["data"]
-    for _ in range(40):
+    for _ in range(60):
+        provider = api(path, token=token)["data"]
+        source = sourceapi(path, token=sourcetoken)["data"]
         exchange = sourceapi(path + "/exchange", token=sourcetoken)["data"]
         assert not exchange["sync"] or exchange["sync"]["state"] != "needs_review", json.dumps(exchange)
-        if exchange["sync"] and exchange["sync"]["state"] == "ready":
+        for read, auth in ((api, token), (sourceapi, sourcetoken)):
+            approval = read(path.removesuffix("/terminal"), token=auth)["data"]
+            assert approval["terminalAutoState"] != "needs_review", json.dumps(approval)
+        if provider and source:
             break
         time.sleep(3)
     else:
-        raise AssertionError("Provider proposal did not arrive over mTLS")
+        raise AssertionError("Preauthorized terminal approval did not complete")
     proposal = exchange["sync"]["proposal"]
     assert proposal["providerJws"] == provider["approvalJws"]
     assert provider["payload"]["outcome"] == "completed"
     assert len(provider["evidence"]["jobs"]) == 2
-    source = sourceapi(path + "/countersign-received", {}, sourcetoken)["data"]
+    assert provider["authorizationPolicyId"] == terminal_policies["provider"]["id"]
+    assert source["authorizationPolicyId"] == terminal_policies["source"]["id"]
     assert source["digest"] == provider["digest"]
     assert source["counterpartyJws"] == provider["approvalJws"]
     assert source["sourceReview"]["result"]["importId"]
@@ -698,16 +703,15 @@ def verify_terminal():
         assert operation["transaction"]["validationCode"] == 0
         assert operation["transaction"]["blockNumber"] is not None
     assert view["closure"]["id"] == provider["terminalId"]
-    assert sourceapi(path + "/countersign-received", {}, sourcetoken)["data"] == source
-    returned = api(path, {}, token=token)["data"]
+    returned = api(path, token=token)["data"]
     assert returned["counterpartyJws"] == source["approvalJws"]
     for field in ("terminalId", "payload", "digest", "evidence", "approvalJws"):
         assert returned[field] == provider[field]
     (logs / "terminal-evidence.json").write_text(
-        json.dumps({"provider": returned, "source": source, "status": view, "exchange": exchange}, indent=2) + "\n"
+        json.dumps({"provider": returned, "source": source, "status": view, "exchange": exchange, "policies": terminal_policies}, indent=2) + "\n"
     )
     print(
-        "REAL TERMINAL EXCHANGE AND CLOSURE PASSED: mTLS evidence transfer -> local source review -> automatic countersignature return and signed acknowledgement -> VALID private terminal -> VALID public closure; replay retains original records",
+        "REAL PREAUTHORIZED TERMINAL AND CLOSURE PASSED: explicit institutional policies -> automatic provider approval -> mTLS evidence transfer -> automatic independent source review -> signature return and signed acknowledgement -> VALID private terminal -> VALID public closure",
         flush=True,
     )
 
@@ -1729,6 +1733,13 @@ await Bun.write(process.env.LAB_ROOT+'/registration.json',JSON.stringify({token:
         raise RuntimeError("Lab node is busy; retry without concurrent builds")
     run(["bun", "--no-env-file", "run", "scripts/federation-live/business.ts"])
     (logs / "ledger-proof.json").write_text((root / "ledger-proof.json").read_text())
+    terminal_policies = {}
+    if scenario == "success":
+        policy_path = "federation/commercial-agreements/" + configuration["request"]["agreementRevisionId"] + "/terminal-policies"
+        policy_input = {"outcomes": ["completed"], "validUntil": configuration["request"].get("executionExpiresAt", configuration["request"]["expiresAt"])}
+        terminal_policies["provider"] = api(policy_path, policy_input, token=token)["data"]
+        terminal_policies["source"] = sourceapi(policy_path, policy_input, sourcetoken)["data"]
+        (logs / "terminal-policies.json").write_text(json.dumps(terminal_policies, indent=2) + "\n")
     first = sourceapi("federation/outbound", configuration["request"], sourcetoken)
     second = sourceapi("federation/outbound", configuration["request"], sourcetoken)
     assert (

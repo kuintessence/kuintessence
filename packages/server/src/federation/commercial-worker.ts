@@ -4,6 +4,7 @@ import type { FederationCommercialSubmissionService } from "./commercial-submiss
 import type { FederationExecutionStopService } from "./execution-stop";
 import type { FederationTerminalExchange } from "./execution-terminal-exchange";
 import type { FederationMarketService } from "./market";
+import type { FederationTerminalAutomation } from "./terminal-automation";
 import type { FederationUsageService } from "./usage";
 import type { FederationUsageExchange } from "./usage-exchange";
 
@@ -20,6 +21,7 @@ export class FederationCommercialWorker {
     private readonly market?: FederationMarketService,
     private readonly stops?: FederationExecutionStopService,
     private readonly terminals?: FederationTerminalExchange,
+    private readonly terminalAutomation?: FederationTerminalAutomation,
   ) {}
 
   start() {
@@ -50,6 +52,16 @@ export class FederationCommercialWorker {
         } catch {
           logger.error(
             "Terminal exchange failed; received evidence and signatures remain in PostgreSQL",
+          );
+        }
+      }
+      if (this.terminalAutomation) {
+        try {
+          for (let i = 0; i < 8 && !this.stopped; i++)
+            if (!(await this.terminalAutomation.advanceNext())) break;
+        } catch {
+          logger.error(
+            "Automatic terminal approval failed; institutional authority and evidence remain in PostgreSQL",
           );
         }
       }

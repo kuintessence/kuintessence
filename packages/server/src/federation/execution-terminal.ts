@@ -8,7 +8,9 @@ import {
   federationCommercialAgreements as contracts,
   type PgDb,
   type PgTransaction,
+  federationTerminalPolicies as policies,
   federationCommercialSubmissions as submissions,
+  federationTerminalSyncs as syncs,
   federationExecutionTerminals as terminals,
 } from "@kuintessence/db";
 import { FederationError } from "@kuintessence/shared/federation";
@@ -37,6 +39,7 @@ import {
   signFederationMessage,
   verifyFederationMessage,
 } from "./signatures";
+import { assertTerminalPolicyActive } from "./terminal-policy";
 import { FederationTrustRegistry } from "./trust-registry";
 
 /** Institutional terminal statements and source review; never a bill or settlement. */
@@ -225,10 +228,90 @@ export class FederationExecutionTerminalService {
     });
   }
 
+  private async authority(
+    tx: PgTransaction,
+    actor: FederationActor,
+    revisionId: string,
+    policyId?: string,
+  ) {
+    if (!policyId) {
+      await requireFederationCapability(tx, actor, "agreement.approve");
+      return undefined;
+    }
+    const [policy] = await tx
+      .select()
+      .from(policies)
+      .where(
+        and(
+          eq(policies.id, policyId),
+          eq(policies.localSiteId, this.signing.siteId),
+          eq(policies.localOrgId, actor.orgId),
+          eq(policies.agreementRevisionId, revisionId),
+          eq(policies.grantedBy, actor.userId),
+        ),
+      )
+      .for("share");
+    if (!policy) throw new FederationError("POLICY_DENIED");
+    assertTerminalPolicyActive(policy, this.clock());
+    const [contract] = await tx
+      .select()
+      .from(contracts)
+      .where(
+        and(
+          eq(contracts.localSiteId, this.signing.siteId),
+          eq(contracts.revisionId, revisionId),
+          eq(contracts.localOrgId, actor.orgId),
+        ),
+      )
+      .for("share");
+    if (contract?.digest !== policy.agreementDigest)
+      throw new FederationError("OPERATION_CONFLICT");
+    return policy;
+  }
+
+  /** Only this local entry point can use stored institutional authority. */
+  async automate(policyId: string, reservationId: string) {
+    const [policy] = await this.db
+      .select()
+      .from(policies)
+      .where(and(eq(policies.id, policyId), eq(policies.localSiteId, this.signing.siteId)));
+    if (!policy) throw new FederationError("POLICY_DENIED");
+    const actor = { orgId: policy.localOrgId, userId: policy.grantedBy };
+    const initial = await this.db.transaction(async (tx) => {
+      await this.authority(tx, actor, policy.agreementRevisionId, policy.id);
+      return this.scope(tx, actor, policy.agreementRevisionId, reservationId, false, "either");
+    });
+    if (initial.reserve.request.recipientSiteId === this.signing.siteId)
+      return this.approveWithAuthority(actor, policy.agreementRevisionId, reservationId, policy.id);
+    const [sync] = await this.db
+      .select()
+      .from(syncs)
+      .where(
+        and(eq(syncs.localSiteId, this.signing.siteId), eq(syncs.reservationId, reservationId)),
+      );
+    if (sync?.state !== "ready" || !sync.proposal) throw new FederationError("DATA_WAITING");
+    return this.countersignWithAuthority(
+      actor,
+      policy.agreementRevisionId,
+      reservationId,
+      sync.proposal,
+      policy.id,
+    );
+  }
+
   /** No caller-supplied digest, outcome or evidence can bypass local collection. */
   async approve(actor: FederationActor, revisionId: string, reservationId: string) {
+    return this.approveWithAuthority(actor, revisionId, reservationId);
+  }
+
+  private async approveWithAuthority(
+    actor: FederationActor,
+    revisionId: string,
+    reservationId: string,
+    policyId?: string,
+  ) {
     const initial = await this.db.transaction(async (tx) => {
-      await requireFederationCapability(tx, actor, "agreement.approve");
+      await this.authority(tx, actor, revisionId, policyId);
       const scope = await this.scope(tx, actor, revisionId, reservationId, false);
       const [saved] = await tx.select().from(terminals).where(this.filter(reservationId));
       return { ...scope, saved };
@@ -237,7 +320,7 @@ export class FederationExecutionTerminalService {
     const activation = await this.activation(initial.reserve, initial.approval.digest);
     const reserve = initial.reserve;
     return this.db.transaction(async (tx) => {
-      await requireFederationCapability(tx, actor, "agreement.approve");
+      const policy = await this.authority(tx, actor, revisionId, policyId);
       const current = await this.scope(tx, actor, revisionId, reservationId, true);
       if (
         current.approval.digest !== initial.approval.digest ||
@@ -279,6 +362,7 @@ export class FederationExecutionTerminalService {
       const key = await this.trust.resolveKey(this.signing.siteId, this.signing.keyId, now, tx);
       if (!key.allowedKinds.includes("commercial-terminal"))
         throw new FederationError("UNTRUSTED_IDENTITY");
+      if (policy) assertTerminalPolicyActive(policy, this.clock(), payload.outcome);
       const approvalJws = await signFederationMessage(
         CommercialTerminalSchema,
         payload,
@@ -290,6 +374,7 @@ export class FederationExecutionTerminalService {
         key,
         now,
       );
+      if (policy) assertTerminalPolicyActive(policy, this.clock(), payload.outcome);
       const [saved] = await tx
         .insert(terminals)
         .values({
@@ -301,11 +386,21 @@ export class FederationExecutionTerminalService {
           evidence,
           approvalJws,
           approvedBy: actor.userId,
+          authorizationPolicyId: policy?.id,
         })
         .returning();
       if (!saved) throw new FederationError("OPERATION_CONFLICT");
+      await tx
+        .update(approvals)
+        .set({ terminalAutoError: null, terminalAutoState: "pending" })
+        .where(
+          and(
+            eq(approvals.localSiteId, this.signing.siteId),
+            eq(approvals.recordId, reservationId),
+          ),
+        );
       await tx.insert(auditLog).values({
-        actor: actor.userId,
+        actor: policy ? `terminal-policy:${policy.id}` : actor.userId,
         orgId: actor.orgId,
         action: "federation.execution.terminal",
         target: payload.terminalId,
@@ -313,6 +408,7 @@ export class FederationExecutionTerminalService {
           after: {
             reservationId,
             digest,
+            authorizationPolicyId: policy?.id ?? null,
             executionEvidenceDigest: payload.executionEvidenceDigest,
           },
         },
@@ -356,9 +452,19 @@ export class FederationExecutionTerminalService {
     reservationId: string,
     raw: FederationTerminalProposal,
   ) {
+    return this.countersignWithAuthority(actor, revisionId, reservationId, raw);
+  }
+
+  private async countersignWithAuthority(
+    actor: FederationActor,
+    revisionId: string,
+    reservationId: string,
+    raw: FederationTerminalProposal,
+    policyId?: string,
+  ) {
     const proposal = FederationTerminalProposalSchema.parse(raw);
     const initial = await this.db.transaction(async (tx) => {
-      await requireFederationCapability(tx, actor, "agreement.approve");
+      await this.authority(tx, actor, revisionId, policyId);
       const scope = await this.scope(tx, actor, revisionId, reservationId, false, "source");
       const [saved] = await tx.select().from(terminals).where(this.filter(reservationId));
       if (
@@ -374,7 +480,7 @@ export class FederationExecutionTerminalService {
     if (initial.saved) return initial.saved;
     const activation = await this.activation(initial.reserve, initial.approval.digest);
     return this.db.transaction(async (tx) => {
-      await requireFederationCapability(tx, actor, "agreement.approve");
+      const policy = await this.authority(tx, actor, revisionId, policyId);
       const current = await this.scope(tx, actor, revisionId, reservationId, true, "source");
       const { payload, evidence } = proposal;
       if (
@@ -431,6 +537,7 @@ export class FederationExecutionTerminalService {
       const key = await this.trust.resolveKey(this.signing.siteId, this.signing.keyId, now, tx);
       if (!key.allowedKinds.includes("commercial-terminal"))
         throw new FederationError("UNTRUSTED_IDENTITY");
+      if (policy) assertTerminalPolicyActive(policy, this.clock(), payload.outcome);
       const approvalJws = await signFederationMessage(
         CommercialTerminalSchema,
         payload,
@@ -443,6 +550,7 @@ export class FederationExecutionTerminalService {
         now,
       );
       if (digest !== provider.digest) throw new FederationError("OPERATION_CONFLICT");
+      if (policy) assertTerminalPolicyActive(policy, this.clock(), payload.outcome);
       const [saved] = await tx
         .insert(terminals)
         .values({
@@ -456,11 +564,21 @@ export class FederationExecutionTerminalService {
           counterpartyJws: proposal.providerJws,
           sourceReview,
           approvedBy: actor.userId,
+          authorizationPolicyId: policy?.id,
         })
         .returning();
       if (!saved) throw new FederationError("OPERATION_CONFLICT");
+      await tx
+        .update(approvals)
+        .set({ terminalAutoError: null, terminalAutoState: "pending" })
+        .where(
+          and(
+            eq(approvals.localSiteId, this.signing.siteId),
+            eq(approvals.recordId, reservationId),
+          ),
+        );
       await tx.insert(auditLog).values({
-        actor: actor.userId,
+        actor: policy ? `terminal-policy:${policy.id}` : actor.userId,
         orgId: actor.orgId,
         action: "federation.execution.terminal_countersign",
         target: payload.terminalId,
@@ -468,6 +586,7 @@ export class FederationExecutionTerminalService {
           after: {
             reservationId,
             digest,
+            authorizationPolicyId: policy?.id ?? null,
             sourceReviewDigest: federationMaterialDigest(sourceReview),
           },
         },

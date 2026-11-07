@@ -26,6 +26,7 @@ import {
   federationSites,
   federationTerminalChunks,
   federationTerminalEvidence,
+  federationTerminalPolicies,
   federationTerminalSyncs,
   federationWorkflowBindings,
   jobCancellations,
@@ -112,6 +113,8 @@ import type { FederationSend } from "./outbound-client";
 import { FederationPermissionService } from "./permissions";
 import { FederationPreparationService } from "./preparation";
 import { signFederationMessage, verifyFederationMessage } from "./signatures";
+import { FederationTerminalAutomation } from "./terminal-automation";
+import { FederationTerminalPolicyService, TerminalPolicyInputSchema } from "./terminal-policy";
 import { testAgreement, testKeys } from "./test-fixtures";
 import { FederationTrustRegistry } from "./trust-registry";
 
@@ -326,6 +329,9 @@ afterAll(async () => {
       .where(inArray(federationTerminalEvidence.jobId, jobIds));
     await db.delete(workflowExecutionJobs).where(inArray(workflowExecutionJobs.jobId, jobIds));
     await db.delete(jobs).where(eq(jobs.orgId, f.actor.orgId));
+    await db
+      .delete(federationTerminalPolicies)
+      .where(inArray(federationTerminalPolicies.localSiteId, siteIds));
     await db.delete(executionApprovals).where(inArray(executionApprovals.localSiteId, siteIds));
     const reservations = db
       .select({ id: federationReservations.id })
@@ -367,7 +373,7 @@ afterAll(async () => {
       .delete(federationAgreementApprovals)
       .where(inArray(federationAgreementApprovals.localSiteId, siteIds));
     await db.delete(contracts).where(inArray(contracts.localSiteId, siteIds));
-    await db.delete(auditLog).where(eq(auditLog.actor, f.actor.userId));
+    await db.delete(auditLog).where(eq(auditLog.orgId, f.actor.orgId));
     await db
       .delete(federationCapabilities)
       .where(eq(federationCapabilities.userId, f.actor.userId));
@@ -4239,4 +4245,363 @@ test("terminal exchange explicit retry fences errors from the expired worker", a
   expect((await f.view()).sync).toMatchObject({ state: "pending", lastError: null, nextOffset: 0 });
   await f.exchange.advanceNext();
   expect((await f.view()).sync?.state).toBe("ready");
+});
+
+async function terminalPolicyFixture(
+  outcome: "completed" | "failed" | "cancelled" = "completed",
+  withResults = false,
+) {
+  const f = await terminalFixture(outcome, withResults);
+  const policies = new FederationTerminalPolicyService(db, f.siteId);
+  const worker = new FederationTerminalAutomation(db, f.siteId, f.terminal);
+  const grant = (outcomes: ("completed" | "failed" | "cancelled")[] = [outcome]) =>
+    policies.grant(f.actor, f.revisionId, {
+      outcomes,
+      validUntil: new Date(Date.now() + 3600_000).toISOString(),
+    });
+  const view = async () =>
+    (
+      await db
+        .select()
+        .from(executionApprovals)
+        .where(
+          and(
+            eq(executionApprovals.localSiteId, f.siteId),
+            eq(executionApprovals.recordId, f.reservation.reservationId),
+          ),
+        )
+    )[0];
+  return { ...f, policies, worker, grant, view };
+}
+
+test("terminal automation is opt-in and concurrent workers sign once with institutional provenance", async () => {
+  const f = await terminalPolicyFixture();
+  expect(await f.worker.advanceNext()).toBe(false);
+  const policy = await f.grant();
+  const results = await Promise.all([f.worker.advanceNext(), f.worker.advanceNext()]);
+  expect(results.filter(Boolean)).toHaveLength(1);
+  const terminal = await f.terminal.get(f.actor, f.revisionId, f.reservation.reservationId);
+  expect(terminal).toMatchObject({ authorizationPolicyId: policy.id, approvedBy: f.actor.userId });
+  expect(await f.worker.advanceNext()).toBe(false);
+  const audits = await db
+    .select()
+    .from(auditLog)
+    .where(
+      and(
+        eq(auditLog.actor, `terminal-policy:${policy.id}`),
+        eq(auditLog.action, "federation.execution.terminal"),
+      ),
+    );
+  expect(audits).toHaveLength(1);
+  expect(await f.policies.revoke(f.actor, f.revisionId, policy.id)).toMatchObject({
+    id: policy.id,
+    revokedBy: f.actor.userId,
+  });
+  expect(
+    (await f.terminal.get(f.actor, f.revisionId, f.reservation.reservationId))?.approvalJws,
+  ).toBe(terminal?.approvalJws);
+  await expect(f.requestConfirmation()).rejects.toMatchObject({ code: "POLICY_DENIED" });
+});
+
+test("terminal automation rechecks revocation after network query and replacement requires explicit retry", async () => {
+  const f = await terminalPolicyFixture();
+  const policy = await f.grant();
+  f.beforeTerminalQuery(async () => {
+    await f.policies.revoke(f.actor, f.revisionId, policy.id);
+  });
+  await f.worker.advanceNext();
+  expect(await f.terminal.get(f.actor, f.revisionId, f.reservation.reservationId)).toBeNull();
+  expect(await f.view()).toMatchObject({
+    terminalAutoState: "needs_review",
+    terminalAutoError: "AUTHORIZATION_EXPIRED",
+  });
+  const replacement = await f.grant();
+  expect(await f.worker.advanceNext()).toBe(false);
+  f.beforeTerminalQuery(async () => {});
+  await f.policies.retry(f.actor, f.revisionId, f.reservation.reservationId);
+  await f.worker.advanceNext();
+  expect(await f.terminal.get(f.actor, f.revisionId, f.reservation.reservationId)).toMatchObject({
+    authorizationPolicyId: replacement.id,
+  });
+});
+
+test("terminal automation checks expiry at signing and never follows a grant into another revision or institution", async () => {
+  const f = await terminalPolicyFixture();
+  const policy = await f.grant();
+  let now = new Date();
+  const expired = new FederationExecutionTerminalService(
+    db,
+    f.b.signing,
+    {
+      query: async () => {
+        now = policy.validUntil;
+        return { operation: "get-demand", demand: f.state };
+      },
+    },
+    () => now,
+  );
+  await expect(expired.automate(policy.id, f.reservation.reservationId)).rejects.toMatchObject({
+    code: "AUTHORIZATION_EXPIRED",
+  });
+  const g = await terminalPolicyFixture();
+  await expect(g.terminal.automate(policy.id, g.reservation.reservationId)).rejects.toMatchObject({
+    code: "POLICY_DENIED",
+  });
+  await expect(f.terminal.automate(policy.id, g.reservation.reservationId)).rejects.toMatchObject({
+    code: "ASSET_UNAVAILABLE",
+  });
+  expect(await f.terminal.get(f.actor, f.revisionId, f.reservation.reservationId)).toBeNull();
+});
+
+test("terminal automation preserves outcome restrictions and quarantines unapproved results", async () => {
+  const f = await terminalPolicyFixture("failed");
+  await f.grant(["completed"]);
+  await f.worker.advanceNext();
+  expect(await f.view()).toMatchObject({
+    terminalAutoState: "needs_review",
+    terminalAutoError: "POLICY_DENIED",
+  });
+  expect(await f.terminal.get(f.actor, f.revisionId, f.reservation.reservationId)).toBeNull();
+});
+
+test("terminal automation skips running work and waits for result receipts without weakening evidence checks", async () => {
+  const f = await terminalPolicyFixture("completed", true);
+  await f.grant();
+  await db
+    .update(workflowRuns)
+    .set({ status: "running", completedAt: null })
+    .where(eq(workflowRuns.id, f.binding.workflowRunId));
+  expect(await f.worker.advanceNext()).toBe(false);
+  await db
+    .update(workflowRuns)
+    .set({ status: "completed", completedAt: new Date() })
+    .where(eq(workflowRuns.id, f.binding.workflowRunId));
+  expect(await f.worker.advanceNext()).toBe(true);
+  expect(await f.view()).toMatchObject({
+    terminalAutoState: "pending",
+    terminalAutoError: "DATA_WAITING",
+  });
+  expect(await f.terminal.get(f.actor, f.revisionId, f.reservation.reservationId)).toBeNull();
+});
+
+test("terminal automation retries ledger outages and database contention but quarantines invalid ledger evidence", async () => {
+  const f = await terminalPolicyFixture();
+  await f.grant();
+  f.beforeTerminalQuery(async () => {
+    throw new FabricClientFailure("LEDGER_UNAVAILABLE");
+  });
+  await f.worker.advanceNext();
+  expect(await f.view()).toMatchObject({
+    terminalAutoState: "pending",
+    terminalAutoError: "LEDGER_UNAVAILABLE",
+  });
+  await f.policies.retry(f.actor, f.revisionId, f.reservation.reservationId);
+  f.beforeTerminalQuery(async () => {
+    throw new Error("busy", { cause: { code: "55P03" } });
+  });
+  await f.worker.advanceNext();
+  expect(await f.view()).toMatchObject({
+    terminalAutoState: "pending",
+    terminalAutoError: "DATABASE_BUSY",
+  });
+  await f.policies.retry(f.actor, f.revisionId, f.reservation.reservationId);
+  f.beforeTerminalQuery(async () => {
+    throw new FabricClientFailure("INVALID_LEDGER_RESPONSE", true);
+  });
+  await f.worker.advanceNext();
+  expect(await f.view()).toMatchObject({
+    terminalAutoState: "needs_review",
+    terminalAutoError: "INVALID_LEDGER_RESPONSE",
+  });
+});
+
+test("terminal automation stale worker errors cannot overwrite an explicit retry", async () => {
+  const f = await terminalPolicyFixture();
+  await f.grant();
+  f.beforeTerminalQuery(async () => {
+    await f.policies.retry(f.actor, f.revisionId, f.reservation.reservationId);
+    throw new FabricClientFailure("INVALID_LEDGER_RESPONSE", true);
+  });
+  await f.worker.advanceNext();
+  expect(await f.view()).toMatchObject({ terminalAutoState: "pending", terminalAutoError: null });
+  f.beforeTerminalQuery(async () => {});
+  await f.worker.advanceNext();
+  expect(await f.terminal.get(f.actor, f.revisionId, f.reservation.reservationId)).not.toBeNull();
+});
+
+test("terminal policy requires explicit human capability, immutable replacement and valid bounded input", async () => {
+  const f = await terminalPolicyFixture();
+  for (const input of [
+    { outcomes: [], validUntil: "2099-01-01T00:00:00Z" },
+    { outcomes: ["completed", "completed"], validUntil: "2099-01-01T00:00:00Z" },
+    { outcomes: ["completed"], validUntil: "2099-01-01T00:00:00Z", billApproval: true },
+  ])
+    expect(TerminalPolicyInputSchema.safeParse(input).success).toBe(false);
+  await expect(
+    f.policies.grant(f.actor, f.revisionId, {
+      outcomes: ["completed"],
+      validUntil: "2000-01-01T00:00:00Z",
+    }),
+  ).rejects.toMatchObject({ code: "AUTHORIZATION_EXPIRED" });
+  const policy = await f.grant();
+  await expect(f.grant()).rejects.toMatchObject({ code: "OPERATION_CONFLICT" });
+  await expect(
+    f.policies.revoke({ ...f.actor, orgId: randomUUID() }, f.revisionId, policy.id),
+  ).rejects.toMatchObject({ code: "POLICY_DENIED" });
+  await new FederationPermissionService(db).set(
+    { ...f.actor, capability: "agreement.approve", enabled: false },
+    f.actor.userId,
+  );
+  await expect(f.policies.revoke(f.actor, f.revisionId, policy.id)).rejects.toMatchObject({
+    code: "POLICY_DENIED",
+  });
+  // Institutional consent survives the grantor's personal role change; revocation is explicit.
+  await f.worker.advanceNext();
+  const [terminal] = await db
+    .select()
+    .from(federationExecutionTerminals)
+    .where(eq(federationExecutionTerminals.localSiteId, f.siteId));
+  expect(terminal?.authorizationPolicyId).toBe(policy.id);
+});
+
+test("terminal automation rolls back signature and execution fence if audit fails", async () => {
+  const f = await terminalPolicyFixture();
+  const policy = await f.grant();
+  await db.execute(
+    sql`alter table audit_log add constraint test_auto_terminal_audit check (actor <> ${sql.raw(`'terminal-policy:${policy.id}'`)})`,
+  );
+  try {
+    await f.worker.advanceNext();
+    expect(await f.terminal.get(f.actor, f.revisionId, f.reservation.reservationId)).toBeNull();
+    expect(await f.view()).toMatchObject({
+      terminalAutoState: "needs_review",
+      terminalAutoError: "INTERNAL_ERROR",
+    });
+  } finally {
+    await db.execute(sql`alter table audit_log drop constraint test_auto_terminal_audit`);
+  }
+  await f.policies.retry(f.actor, f.revisionId, f.reservation.reservationId);
+  await f.worker.advanceNext();
+  expect(await f.terminal.get(f.actor, f.revisionId, f.reservation.reservationId)).not.toBeNull();
+});
+
+test("terminal automation independently authorizes both institutions and completes signature return", async () => {
+  const f = await terminalExchangeFixture();
+  const providerPolicies = new FederationTerminalPolicyService(db, f.siteId);
+  const sourcePolicies = new FederationTerminalPolicyService(db, f.a.signing.siteId);
+  const providerWorker = new FederationTerminalAutomation(db, f.siteId, f.terminal);
+  const sourceWorker = new FederationTerminalAutomation(db, f.a.signing.siteId, f.sourceTerminal);
+  const provider = await providerPolicies.grant(f.actor, f.revisionId, {
+    outcomes: ["failed"],
+    validUntil: new Date(Date.now() + 3600_000).toISOString(),
+  });
+  await providerWorker.advanceNext();
+  await f.exchange.advanceNext();
+  expect((await f.view()).sync?.state).toBe("ready");
+  expect(await sourceWorker.advanceNext()).toBe(false);
+  expect(await f.sourceTerminal.get(f.actor, f.revisionId, f.reservation.reservationId)).toBeNull();
+  const source = await sourcePolicies.grant(f.actor, f.revisionId, {
+    outcomes: ["failed"],
+    validUntil: new Date(Date.now() + 3600_000).toISOString(),
+  });
+  await sourceWorker.advanceNext();
+  await f.exchange.advanceNext();
+  expect((await f.view()).sync?.state).toBe("complete");
+  expect(await f.terminal.get(f.actor, f.revisionId, f.reservation.reservationId)).toMatchObject({
+    authorizationPolicyId: provider.id,
+  });
+  expect(
+    await f.sourceTerminal.get(f.actor, f.revisionId, f.reservation.reservationId),
+  ).toMatchObject({ authorizationPolicyId: source.id, submission: { state: "pending" } });
+});
+
+test("terminal policy API binds human organization and rejects extra authority fields", async () => {
+  const f = await terminalPolicyFixture();
+  const app = new Hono();
+  app.onError(createErrorHandler(pino({ enabled: false })));
+  let automated = false;
+  app.use("*", async (c, next) => {
+    c.set("principal" as never, f.actor as never);
+    c.set("automation" as never, automated as never);
+    await next();
+  });
+  app.route(
+    "/",
+    createFederationCommercialRoutes(
+      f.approvals,
+      f.service,
+      undefined,
+      undefined,
+      f.execution,
+      undefined,
+      undefined,
+      f.terminal,
+      undefined,
+      f.policies,
+    ),
+  );
+  const path = `/federation/commercial-agreements/${f.revisionId}/terminal-policies`;
+  const post = (url: string, body: unknown) =>
+    app.request(url, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  const input = {
+    outcomes: ["completed"],
+    validUntil: new Date(Date.now() + 3600_000).toISOString(),
+  };
+  expect((await post(path, { ...input, orgId: randomUUID() })).status).toBe(400);
+  automated = true;
+  expect((await post(path, input)).status).toBe(403);
+  automated = false;
+  const response = await post(path, input);
+  expect(response.status).toBe(201);
+  const body = (await response.json()) as { data: { id: string } };
+  const listing = await app.request(path);
+  expect(listing.status).toBe(200);
+  expect(listing.headers.get("cache-control")).toBe("no-store");
+  expect((await post(`${path}/${body.data.id}/revoke`, { reason: "extra" })).status).toBe(400);
+  expect((await post(`${path}/${body.data.id}/revoke`, {})).status).toBe(200);
+});
+
+test("terminal automation clears waiting errors after successful durable approval", async () => {
+  const f = await terminalPolicyFixture();
+  await f.grant();
+  f.beforeTerminalQuery(async () => {
+    throw new FabricClientFailure("LEDGER_UNAVAILABLE");
+  });
+  await f.worker.advanceNext();
+  expect((await f.view())?.terminalAutoError).toBe("LEDGER_UNAVAILABLE");
+  f.beforeTerminalQuery(async () => {});
+  await db
+    .update(executionApprovals)
+    .set({ terminalAutoNextAt: new Date(0) })
+    .where(eq(executionApprovals.localSiteId, f.siteId));
+  await f.worker.advanceNext();
+  expect((await f.view())?.terminalAutoError).toBeNull();
+  expect(await f.terminal.get(f.actor, f.revisionId, f.reservation.reservationId)).not.toBeNull();
+});
+
+test("terminal policy grant and revocation are atomic with their audit records", async () => {
+  const f = await terminalPolicyFixture();
+  await db.execute(
+    sql`alter table audit_log add constraint test_terminal_policy_audit check (action NOT IN ('federation.terminal_policy.grant','federation.terminal_policy.revoke') OR actor <> ${sql.raw(`'${f.actor.userId}'`)})`,
+  );
+  try {
+    await expect(f.grant()).rejects.toThrow();
+    expect(await f.policies.list(f.actor, f.revisionId)).toHaveLength(0);
+  } finally {
+    await db.execute(sql`alter table audit_log drop constraint test_terminal_policy_audit`);
+  }
+  const policy = await f.grant();
+  await db.execute(
+    sql`alter table audit_log add constraint test_terminal_policy_revoke check (action <> 'federation.terminal_policy.revoke' OR actor <> ${sql.raw(`'${f.actor.userId}'`)})`,
+  );
+  try {
+    await expect(f.policies.revoke(f.actor, f.revisionId, policy.id)).rejects.toThrow();
+    expect((await f.policies.list(f.actor, f.revisionId))[0]?.revokedAt).toBeNull();
+  } finally {
+    await db.execute(sql`alter table audit_log drop constraint test_terminal_policy_revoke`);
+  }
 });

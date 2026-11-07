@@ -88,6 +88,7 @@ export async function executionClosure(tx: PgTransaction, siteId: string, termin
   return {
     localOrgId: approval.localOrgId,
     requestedBy: terminal.approvedBy,
+    authorizationPolicyId: terminal.authorizationPolicyId,
     input: {
       operation: "close-demand" as const,
       closure: MarketClosureSchema.parse({
@@ -121,7 +122,9 @@ export async function enqueueExecutionClosure(
   const inserted = await tx
     .insert(market)
     .values({
-      ...closure,
+      localOrgId: closure.localOrgId,
+      requestedBy: closure.requestedBy,
+      input: closure.input,
       id: terminalId,
       localSiteId: siteId,
       demandId: closure.input.closure.demandId,
@@ -141,10 +144,18 @@ export async function enqueueExecutionClosure(
     return;
   }
   await tx.insert(auditLog).values({
-    actor: closure.requestedBy,
+    actor: closure.authorizationPolicyId
+      ? `terminal-policy:${closure.authorizationPolicyId}`
+      : closure.requestedBy,
     orgId: closure.localOrgId,
     action: "federation.execution.close_enqueue",
     target: terminalId,
-    diff: { after: { demandId: closure.input.closure.demandId, digest } },
+    diff: {
+      after: {
+        demandId: closure.input.closure.demandId,
+        digest,
+        authorizationPolicyId: closure.authorizationPolicyId,
+      },
+    },
   });
 }

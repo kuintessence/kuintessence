@@ -262,7 +262,9 @@ export class FederationTerminalExchange {
           .set({ counterpartyJws: q.sourceJws })
           .where(terminalKey(this.signing.siteId, q.reservationId));
         await tx.insert(auditLog).values({
-          actor: terminal.approvedBy,
+          actor: terminal.authorizationPolicyId
+            ? `terminal-policy:${terminal.authorizationPolicyId}`
+            : terminal.approvedBy,
           orgId: scope.approval.localOrgId,
           action: "federation.execution.terminal_receive_signature",
           target: terminal.terminalId,
@@ -508,7 +510,9 @@ export class FederationTerminalExchange {
             ),
           );
         await tx.insert(auditLog).values({
-          actor: terminal.approvedBy,
+          actor: terminal.authorizationPolicyId
+            ? `terminal-policy:${terminal.authorizationPolicyId}`
+            : terminal.approvedBy,
           orgId: saved.approval.localOrgId,
           action: "federation.execution.terminal_signature_ack",
           target: terminal.terminalId,

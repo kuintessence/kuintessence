@@ -18,6 +18,10 @@ import type { FederationExecutionTerminalService } from "../federation/execution
 import type { FederationTerminalExchange } from "../federation/execution-terminal-exchange";
 import { FabricClientFailure } from "../federation/fabric-client";
 import type { FederationActor } from "../federation/permissions";
+import {
+  type FederationTerminalPolicyService,
+  TerminalPolicyInputSchema,
+} from "../federation/terminal-policy";
 import type { FederationUsageService } from "../federation/usage";
 import type { FederationUsageExchange } from "../federation/usage-exchange";
 import type { BoundPrincipal } from "../middleware/principal-binder";
@@ -33,6 +37,7 @@ export function createFederationCommercialRoutes(
   stops?: FederationExecutionStopService,
   terminals?: FederationExecutionTerminalService,
   terminalExchange?: FederationTerminalExchange,
+  terminalPolicies?: FederationTerminalPolicyService,
 ) {
   const r = new Hono<{ Variables: { federationActor: FederationActor } }>();
   r.use("/federation/commercial-agreements/*", async (c, next) => {
@@ -67,6 +72,64 @@ export function createFederationCommercialRoutes(
     limit: z.coerce.number().int().min(1).max(100).default(50),
     offset: z.coerce.number().int().min(0).default(0),
   });
+  if (terminalPolicies) {
+    const path = "/federation/commercial-agreements/:revisionId/terminal-policies";
+    r.get(path, kqValidator("param", id), kqValidator("query", page), async (c) =>
+      c.json({
+        success: true,
+        data: await terminalPolicies.list(
+          c.get("federationActor"),
+          c.req.valid("param").revisionId,
+          c.req.valid("query").limit,
+          c.req.valid("query").offset,
+        ),
+      }),
+    );
+    r.post(
+      path,
+      kqValidator("param", id),
+      kqValidator("json", TerminalPolicyInputSchema),
+      async (c) =>
+        c.json(
+          {
+            success: true,
+            data: await terminalPolicies.grant(
+              c.get("federationActor"),
+              c.req.valid("param").revisionId,
+              c.req.valid("json"),
+            ),
+          },
+          201,
+        ),
+    );
+    r.post(
+      `${path}/:policyId/revoke`,
+      kqValidator("param", id.extend({ policyId: z.uuid() })),
+      kqValidator("json", z.strictObject({})),
+      async (c) =>
+        c.json({
+          success: true,
+          data: await terminalPolicies.revoke(
+            c.get("federationActor"),
+            c.req.valid("param").revisionId,
+            c.req.valid("param").policyId,
+          ),
+        }),
+    );
+    r.post(
+      "/federation/commercial-agreements/:revisionId/execution-approvals/:recordId/terminal/automatic-retry",
+      kqValidator("param", id.extend({ recordId: z.uuid() })),
+      kqValidator("json", z.strictObject({})),
+      async (c) => {
+        await terminalPolicies.retry(
+          c.get("federationActor"),
+          c.req.valid("param").revisionId,
+          c.req.valid("param").recordId,
+        );
+        return c.json({ success: true });
+      },
+    );
+  }
   r.get("/federation/commercial-agreements", kqValidator("query", page), async (c) => {
     const { limit, offset } = c.req.valid("query");
     return c.json({

@@ -98,6 +98,8 @@ import {
   loadFederationSigningKey,
   startFederationIngress,
 } from "./federation/runtime";
+import { FederationTerminalAutomation } from "./federation/terminal-automation";
+import { FederationTerminalPolicyService } from "./federation/terminal-policy";
 import { FederationTrustRegistry } from "./federation/trust-registry";
 import { FederationUsageService } from "./federation/usage";
 import { FederationUsageExchange } from "./federation/usage-exchange";
@@ -1718,6 +1720,22 @@ const federationAccounting = federationSigningKey
 const federationUsage = federationSigningKey
   ? new FederationUsageService(db, federationSigningKey)
   : undefined;
+const federationTerminals = federationSigningKey
+  ? new FederationExecutionTerminalService(
+      db,
+      federationSigningKey,
+      config.FEDERATION_MARKET_SOCKET_PATH
+        ? new UnixMarketClient(config.FEDERATION_MARKET_SOCKET_PATH)
+        : undefined,
+    )
+  : undefined;
+const federationTerminalPolicies = federationSigningKey
+  ? new FederationTerminalPolicyService(db, federationSigningKey.siteId)
+  : undefined;
+const federationTerminalAutomation =
+  federationSigningKey && federationTerminals
+    ? new FederationTerminalAutomation(db, federationSigningKey.siteId, federationTerminals)
+    : undefined;
 const federationTerminalExchange = federationSigningKey
   ? new FederationTerminalExchange(db, federationSigningKey, federationSender)
   : undefined;
@@ -1741,14 +1759,9 @@ if (federationSigningKey && federationCommercial)
       ),
       federationConfirmations,
       federationStops,
-      new FederationExecutionTerminalService(
-        db,
-        federationSigningKey,
-        config.FEDERATION_MARKET_SOCKET_PATH
-          ? new UnixMarketClient(config.FEDERATION_MARKET_SOCKET_PATH)
-          : undefined,
-      ),
+      federationTerminals,
       federationTerminalExchange,
+      federationTerminalPolicies,
     ),
   );
 const federationPreparation = federationSigningKey
@@ -2484,6 +2497,7 @@ const federationCommercialWorker = federationCommercial
       federationMarket,
       federationStops,
       federationTerminalExchange,
+      federationTerminalAutomation,
     )
   : undefined;
 federationCommercialWorker?.start();
