@@ -191,7 +191,11 @@ export function createWorkflowPlacementBuilder(db: PgDb): PlacementPlanBuilder {
             target.providerOrgId === agent.providerOrgId,
         ),
     );
-    const scriptNodes = workflow.spec.nodeDrafts.filter(isResolvedScriptNode);
+    // Server control flow and remote federation calls do not consume local scheduler slots.
+    const localNodes = workflow.spec.nodeDrafts.filter(
+      (node) => node.type === "Script" || node.type === "SoftwareUsecaseComputing",
+    );
+    const scriptNodes = localNodes.filter(isResolvedScriptNode);
     const profileIds = [
       ...new Set(
         scriptNodes.flatMap((node) => (node.runtimeProfileId ? [node.runtimeProfileId] : [])),
@@ -261,7 +265,7 @@ export function createWorkflowPlacementBuilder(db: PgDb): PlacementPlanBuilder {
     }
     const identities: Record<string, ExecutionIdentity> = {};
     const nodes: SandboxPlannerNode[] = await Promise.all(
-      workflow.spec.nodeDrafts.map(async (node) => {
+      localNodes.map(async (node) => {
         const identity = executionIdentity(node, config);
         assertInlineIdentity(node, identity);
         identities[node.id] = identity;
@@ -366,11 +370,16 @@ export function createWorkflowPlacementBuilder(db: PgDb): PlacementPlanBuilder {
       config,
       request: {
         nodes,
-        edges: workflow.spec.nodeRelations.map((relation) => ({
-          from: relation.fromId,
-          to: relation.toId,
-          bytes: estimatedByNode.get(relation.fromId) ?? 0,
-        })),
+        edges: workflow.spec.nodeRelations
+          .filter(
+            (relation) =>
+              estimatedByNode.has(relation.fromId) && estimatedByNode.has(relation.toId),
+          )
+          .map((relation) => ({
+            from: relation.fromId,
+            to: relation.toId,
+            bytes: estimatedByNode.get(relation.fromId) ?? 0,
+          })),
         beamWidth: 64,
         defaultNetworkCostPerByte: 1e-9,
       },

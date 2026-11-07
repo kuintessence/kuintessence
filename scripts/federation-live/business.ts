@@ -8,6 +8,8 @@ import {
   federationMarketRequests,
   federationMarketSubmissions,
   federationReservationProposals,
+  workflowExecutionDelegations,
+  workflowRuns,
 } from "@kuintessence/db";
 import type { FederationAgreement } from "@kuintessence/shared/federation";
 import {
@@ -234,53 +236,143 @@ if (import.meta.main) {
           },
         ),
       );
-    const demandId = randomUUID(),
-      reservationId = config.request.operationId;
-    const contract = await new FederationCommercialAgreementService(a.db, a.key).get(
-      a.actor,
-      config.terms.agreementRevisionId,
-    );
-    const reserve = CommercialReservationSchema.parse({
-      protocolVersion: 1,
-      kind: "commercial-reservation",
-      domainId: config.commercial.domainId,
-      reservationId,
-      demandId,
-      claimVersion: 2,
-      agreementDigest: contract.digest,
-      salt: randomBytes(32).toString("hex"),
-      request: config.request,
-    });
     const sourcePolicy = reservationPolicies[0],
       providerPolicy = reservationPolicies[1];
     assert(sourcePolicy && providerPolicy);
-    const sourceRequests = new FederationMarketRequestService(
-      a.db,
-      a.key,
-      createFederationSender({
-        cert: await Bun.file(`${root}/peer.crt`).text(),
-        key: await Bun.file(`${root}/peer.key`).text(),
-        ca: await Bun.file(`${root}/ca/ca.crt`).text(),
-      }),
-      a.market,
-    );
-    await sourceRequests.submit(a.actor, config.terms.agreementRevisionId, sourcePolicy.id, {
-      protocolVersion: 1,
-      kind: "market-request",
-      demand: {
+    let demandId: string, reservationId: string;
+    if (process.env.LAB_SCENARIO === "workflow") {
+      const origin = z.url().parse(process.env.LAB_SOURCE_HTTP);
+      assert.equal(new URL(origin).hostname, "127.0.0.1");
+      const login = await fetch(`${origin}/api/auth/login`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ email: "source-admin@test.invalid", role: "platform_admin" }),
+      });
+      assert(login.ok, "Source test login failed");
+      const { token } = z.object({ token: z.string() }).parse(await login.json());
+      const request = config.request;
+      const workflow = {
+        name: "Coordinated institutional workflow",
+        spec: {
+          nodeDrafts: [
+            {
+              id: "remote",
+              name: "Remote calculation",
+              type: "Federation",
+              agreementRevisionId: request.agreementRevisionId,
+              template: request.template,
+              inputManifestDigest: request.inputManifestDigest,
+              environmentLockDigest: request.environmentLockDigest,
+              resources: request.resources,
+              maxAmount: request.maxAmount,
+              admissionWindowSec: 1200,
+              executionExpiresAt: request.executionExpiresAt,
+              market: {
+                policyId: sourcePolicy.id,
+                title: "Isolated file computation",
+                description: "",
+              },
+              outputs: [
+                {
+                  descriptor: "result",
+                  type: "File",
+                  from: { nodeId: "consumer", descriptor: "result" },
+                },
+              ],
+            },
+            {
+              id: "consume",
+              name: "Receive verified result",
+              type: "NoAction",
+              inputSlots: [
+                { descriptor: "input", type: "File", from: { node: "remote", output: "result" } },
+              ],
+            },
+          ],
+          nodeRelations: [{ fromId: "remote", toId: "consume", slotRelations: [] }],
+        },
+      };
+      const submitted = await fetch(`${origin}/api/workflows`, {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
+        body: JSON.stringify({ yaml: JSON.stringify(workflow) }),
+      });
+      assert.equal(submitted.status, 202, "Ordinary Workflow submission failed");
+      const { runId } = z.object({ runId: z.uuid() }).parse(await submitted.json());
+      await Bun.write(`${root}/source-workflow.json`, JSON.stringify({ runId, workflow }));
+      await wait(async () => {
+        const [run] = await a.db
+          .select({ status: workflowRuns.status })
+          .from(workflowRuns)
+          .where(eq(workflowRuns.id, runId));
+        assert(
+          !["failed", "cancelled", "cancelling"].includes(run?.status ?? ""),
+          "Source workflow failed before market submission",
+        );
+        const [binding] = await a.db
+          .select()
+          .from(workflowExecutionDelegations)
+          .where(eq(workflowExecutionDelegations.runId, runId));
+        if (!binding) return false;
+        const [intent] = await a.db
+          .select()
+          .from(federationMarketRequests)
+          .where(eq(federationMarketRequests.reservationId, binding.operationId));
+        if (!intent) return false;
+        config.request = binding.request;
+        await Bun.write(`${root}/source-init.json`, JSON.stringify(config));
+        return true;
+      }, "ordinary Workflow created its original market request automatically");
+      const [intent] = await a.db.select().from(federationMarketRequests);
+      assert(intent);
+      demandId = intent.demandId;
+      reservationId = intent.reservationId;
+    } else {
+      demandId = randomUUID();
+      reservationId = config.request.operationId;
+      const contract = await new FederationCommercialAgreementService(a.db, a.key).get(
+        a.actor,
+        config.terms.agreementRevisionId,
+      );
+      const reserve = CommercialReservationSchema.parse({
         protocolVersion: 1,
+        kind: "commercial-reservation",
+        domainId: config.commercial.domainId,
+        reservationId,
         demandId,
-        sourceSiteId: a.key.siteId,
-        title: "Isolated file computation",
-        description: "",
-        platform: "linux",
-        architecture: "x86_64",
-        resources: config.request.resources,
-        createdAt: new Date().toISOString(),
-        expiresAt: config.request.expiresAt,
-      },
-      proposal: reserve,
-    });
+        claimVersion: 2,
+        agreementDigest: contract.digest,
+        salt: randomBytes(32).toString("hex"),
+        request: config.request,
+      });
+      const sourceRequests = new FederationMarketRequestService(
+        a.db,
+        a.key,
+        createFederationSender({
+          cert: await Bun.file(`${root}/peer.crt`).text(),
+          key: await Bun.file(`${root}/peer.key`).text(),
+          ca: await Bun.file(`${root}/ca/ca.crt`).text(),
+        }),
+        a.market,
+      );
+      await sourceRequests.submit(a.actor, config.terms.agreementRevisionId, sourcePolicy.id, {
+        protocolVersion: 1,
+        kind: "market-request",
+        demand: {
+          protocolVersion: 1,
+          demandId,
+          sourceSiteId: a.key.siteId,
+          title: "Isolated file computation",
+          description: "",
+          platform: "linux",
+          architecture: "x86_64",
+          resources: config.request.resources,
+          createdAt: new Date().toISOString(),
+          expiresAt: config.request.expiresAt,
+        },
+        proposal: reserve,
+      });
+    }
     await wait(async () => {
       for (const p of parties) {
         const [request] = await p.db.select().from(federationMarketRequests);

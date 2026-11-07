@@ -45,6 +45,7 @@ import { type FederationActor, requireFederationCapability } from "./permissions
 import { FederationReservationPolicyService } from "./reservation-policy";
 import { federationMessageKeyId, verifyFederationMessage } from "./signatures";
 import { FederationTrustRegistry } from "./trust-registry";
+import { assertWorkflowRequestActive } from "./workflow-delegations";
 
 type Phase = "admission" | "execution";
 type Submission = typeof submissions.$inferSelect;
@@ -108,6 +109,7 @@ export class FederationExecutionConfirmationService {
       ![request.senderSiteId, request.recipientSiteId].includes(this.siteId)
     )
       throw new FederationError("POLICY_DENIED");
+    await assertWorkflowRequestActive(tx, this.siteId, orgId, request);
     const [consent] = await tx
       .select()
       .from(agreements)

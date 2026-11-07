@@ -18,7 +18,7 @@ export async function verifyLiveExecution(
   const cleanup = await startAdapters(root);
   controls.onCleanup(cleanup);
   const selection = process.env.KQ_FEDERATION_LAB_SCENARIO ?? "both";
-  assert(["success", "outage", "stop", "both"].includes(selection));
+  assert(["success", "outage", "stop", "workflow", "both"].includes(selection));
   for (const scenario of selection === "both" ? ["success", "outage"] : [selection]) {
     const child = Bun.spawn(["python3", join(import.meta.dir, "run.py")], {
       env: { ...process.env, LAB_FABRIC_ROOT: root, LAB_SCENARIO: scenario },

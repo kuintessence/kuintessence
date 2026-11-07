@@ -23,6 +23,7 @@ import {
 } from "@kuintessence/shared/federation";
 import { and, eq } from "drizzle-orm";
 import type { LeasedWorkflowJournal } from "../workflow/execution-journal";
+import { FabricClientFailure } from "./fabric-client";
 import type { FederationOutboundService } from "./outbound";
 import { FederationDeliveryError } from "./outbound-client";
 import { type FederationActor, requireFederationCapability } from "./permissions";
@@ -66,7 +67,8 @@ export class FederationWorkflowExecutor {
               eq(federationAgreementApprovals.revisionId, node.agreementRevisionId),
             ),
           );
-        if (!approval) throw new FederationError("AGREEMENT_UNAVAILABLE");
+        if (!approval || approval.state !== "active" || !approval.counterpartyApprovalJws)
+          throw new FederationError("AGREEMENT_UNAVAILABLE");
         return FederationAgreementSchema.parse(approval.terms);
       });
       const operation = await this.outbound.enqueueForWorkflow(
@@ -94,6 +96,7 @@ export class FederationWorkflowExecutor {
         node.admissionWindowSec,
         parameters,
         files,
+        node.market,
       );
       const observed = await lease.transaction(async (tx) => {
         await requireFederationCapability(tx, actor, "delegation.read");
@@ -167,6 +170,14 @@ export class FederationWorkflowExecutor {
     } catch (error) {
       if (error instanceof WorkflowNodeWaiting || error instanceof WorkflowExecutionInterrupted)
         throw error;
+      if (error instanceof FabricClientFailure) {
+        if (!error.needsReview) throw new WorkflowNodeWaiting("LEDGER_WAITING");
+        return {
+          status: "Failed",
+          values: {},
+          failure: { message: `Federation ledger requires review: ${error.code}` },
+        };
+      }
       if (error instanceof FederationError) {
         if (error.code === "DATA_WAITING") throw new WorkflowNodeWaiting(waitingReason);
         return {

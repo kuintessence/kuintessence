@@ -24,6 +24,7 @@ import { z } from "zod";
 import { requireCoordinatedCommercialAgreement } from "./commercial-execution-policy";
 import { type FederationActor, requireFederationCapability } from "./permissions";
 import { FederationTrustRegistry } from "./trust-registry";
+import { assertWorkflowRequestActive } from "./workflow-delegations";
 
 export const ReservationPolicyInputSchema = z
   .strictObject({
@@ -206,6 +207,7 @@ export class FederationReservationPolicyService {
     orgId: string,
     payload: CommercialReservation,
   ) {
+    await assertWorkflowRequestActive(tx, this.siteId, orgId, payload.request);
     const revisionId = payload.request.agreementRevisionId;
     const contract = await this.contract(tx, orgId, revisionId);
     const terms = CommercialAgreementSchema.parse(contract.terms);

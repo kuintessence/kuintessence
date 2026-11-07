@@ -9,7 +9,12 @@ import {
   workflowExecutionDelegations,
   workflowRuns,
 } from "@kuintessence/db";
-import { AppError, createLogger, type NodeInvocation } from "@kuintessence/shared";
+import {
+  AppError,
+  createLogger,
+  type NodeInvocation,
+  WorkflowNodeWaiting,
+} from "@kuintessence/shared";
 import {
   assertDelegationPolicy,
   assertDelegationTerms,
@@ -34,14 +39,20 @@ import {
   federationCanonicalJson,
   federationExecutionDeadline,
 } from "@kuintessence/shared/federation";
+import {
+  type FederationWorkflowMarket,
+  FederationWorkflowMarketSchema,
+} from "@kuintessence/shared/federation/market";
 import { and, asc, desc, eq, isNull, lte, or, sql } from "drizzle-orm";
 import type { LeasedWorkflowJournal } from "../workflow/execution-journal";
 import type { FederationAssetService } from "./assets";
 import { cancellationSummary, FederationCancellationSender } from "./cancellation-outbound";
 import { type FederationDownloadStorage, signedDownloadExpiry } from "./download-credential";
 import type { FederationExecutionConfirmationService } from "./execution-confirmation";
+import { stopCancelledExecution } from "./execution-stop";
 import { FabricClientFailure } from "./fabric-client";
 import { FederationWorkflowInputExports } from "./input-exports";
+import type { FederationMarketRequestService } from "./market-requests";
 import { FederationDeliveryError, type FederationSend } from "./outbound-client";
 import { type FederationActor, requireFederationCapability } from "./permissions";
 import { FederationResultImports } from "./result-imports";
@@ -101,6 +112,7 @@ export class FederationOutboundService {
     private readonly assets: FederationAssetService,
     private readonly clock: () => Date = () => new Date(),
     private readonly confirmations?: FederationExecutionConfirmationService,
+    private readonly marketRequests?: FederationMarketRequestService,
   ) {
     this.trust = new FederationTrustRegistry(db);
     this.resultReceipts = new FederationResultReceiptSender(db, signingKey, send, clock);
@@ -262,8 +274,14 @@ export class FederationOutboundService {
     admissionWindowSec: number,
     parameters: FederationParameterOverrides = {},
     files?: unknown,
+    market?: FederationWorkflowMarket,
   ) {
     if (plan.senderSiteId !== this.signingKey.siteId) throw new FederationError("POLICY_DENIED");
+    const selection =
+      market === undefined ? undefined : FederationWorkflowMarketSchema.parse(market);
+    if ((plan.mode === "ledger_coordinated") !== !!selection)
+      throw new FederationError("POLICY_DENIED");
+    if (selection && !this.marketRequests) throw new FederationError("LEDGER_REQUIRED");
     if (files !== undefined) {
       const snapshot = await this.inputExports.capture(actor, lease, nodeId, invocation, files);
       if (plan.inputFilesDigest && plan.inputFilesDigest !== snapshot.manifestDigest)
@@ -291,14 +309,16 @@ export class FederationOutboundService {
       plan,
       admissionWindowSec,
       this.clock,
+      selection,
     );
-    return this.enqueueRequest(actor, request, lease);
+    return this.enqueueRequest(actor, request, lease, selection);
   }
 
   private async enqueueRequest(
     actor: FederationActor,
     raw: FederationDelegation,
     lease?: LeasedWorkflowJournal,
+    market?: FederationWorkflowMarket,
   ) {
     const request = FederationDelegationSchema.parse(raw);
     const transaction = <T>(operation: (tx: PgTransaction) => Promise<T>) =>
@@ -334,6 +354,31 @@ export class FederationOutboundService {
     });
     if (prior) return prior;
     const materials = await this.materials(actor, request);
+    if (lease && market) {
+      if (!this.marketRequests) throw new FederationError("LEDGER_REQUIRED");
+      const marketRequests = this.marketRequests;
+      const ready = await lease.transaction(async (tx) => {
+        await assertWorkflowDelegationOwner(tx, lease.runId, actor);
+        for (const material of materials)
+          await this.assets.assertResolved(tx, actor, material.reference, material.mappingId);
+        const environment = await this.assets.readMaterial(
+          tx,
+          actor.orgId,
+          this.signingKey.siteId,
+          request.environmentLockDigest,
+        );
+        if (environment.kind !== "environment-lock") throw new FederationError("INVALID_MESSAGE");
+        return marketRequests.prepareWorkflow(
+          tx,
+          actor,
+          lease.runId,
+          request,
+          market,
+          environment.target,
+        );
+      });
+      if (!ready) throw new WorkflowNodeWaiting("LEDGER_WAITING");
+    }
     if (request.mode === "ledger_coordinated") {
       if (!this.confirmations) throw new FederationError("LEDGER_REQUIRED");
       await this.confirmations.refreshForExecution(actor.orgId, request, "admission");
@@ -452,6 +497,25 @@ export class FederationOutboundService {
         .where(eq(workflowRuns.id, runId))
         .for("update");
       if (run?.status !== "cancelling") throw new FederationError("POLICY_DENIED");
+      const bindings = await tx
+        .select()
+        .from(workflowExecutionDelegations)
+        .where(
+          and(
+            eq(workflowExecutionDelegations.runId, runId),
+            eq(workflowExecutionDelegations.localSiteId, this.signingKey.siteId),
+          ),
+        );
+      for (const binding of bindings) {
+        if (!run.submittedBy || typeof run.input?.orgId !== "string")
+          throw new FederationError("POLICY_DENIED");
+        await stopCancelledExecution(
+          tx,
+          this.signingKey.siteId,
+          { userId: run.submittedBy, orgId: run.input.orgId },
+          binding.request,
+        );
+      }
       return tx
         .select({
           operationId: workflowExecutionDelegations.operationId,

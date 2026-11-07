@@ -44,10 +44,17 @@ import {
   federationCommercialSubmissions as submissions,
   userOrgMemberships,
   users,
+  workflowExecutionDelegations,
   workflowExecutionJobs,
   workflowExecutionLeases,
   workflowRuns,
 } from "@kuintessence/db";
+import {
+  WorkflowExecutionInterrupted,
+  WorkflowNodeWaiting,
+  WorkflowPlacementConfigSchema,
+  workflowDsl,
+} from "@kuintessence/shared";
 import {
   FederationAcceptanceSchema,
   FederationAgreementSchema,
@@ -102,8 +109,11 @@ import { JobCancellationOutbox } from "../grpc/dispatcher";
 import { createErrorHandler } from "../middleware/error-handler";
 import { createFederationCommercialRoutes } from "../routes/federation-commercial";
 import { createFederationOutboundRoutes } from "../routes/federation-outbound";
+import { planSandboxPlacement } from "../scheduler/sandbox-planner";
 import { JobService } from "../services/job-service";
 import { SoftwareAvailabilityService } from "../services/software-availability";
+import { createWorkflowPlacementBuilder } from "../services/workflow-placement-builder";
+import { WorkflowExecutionJournalStore } from "../workflow/execution-journal";
 import { FederationAdmission } from "./admission";
 import { FederationAgreementService } from "./agreements";
 import { FederationAssetService, federationMaterialDigest } from "./assets";
@@ -144,6 +154,7 @@ import { FederationTerminalAutomation } from "./terminal-automation";
 import { FederationTerminalPolicyService, TerminalPolicyInputSchema } from "./terminal-policy";
 import { testAgreement, testKeys } from "./test-fixtures";
 import { FederationTrustRegistry } from "./trust-registry";
+import { FederationWorkflowExecutor } from "./workflow-executor";
 
 const url = process.env.DATABASE_URL;
 if (!url || !/^\/kuintessence_unit_[a-z0-9_]+$/.test(new URL(url).pathname))
@@ -309,6 +320,10 @@ async function ready(f: Awaited<ReturnType<typeof fixture>>) {
 afterAll(async () => {
   for (const f of fixtures) {
     const siteIds = [f.a.signing.siteId, f.b.signing.siteId];
+    await db
+      .delete(workflowExecutionDelegations)
+      .where(inArray(workflowExecutionDelegations.localSiteId, siteIds));
+    await db.delete(workflowRuns).where(eq(workflowRuns.submittedBy, f.actor.userId));
     await db
       .delete(federationMarketRequests)
       .where(inArray(federationMarketRequests.localSiteId, siteIds));
@@ -5199,8 +5214,9 @@ test("approval exchange preserves preapproved release recovery after the coopera
 async function reservationPolicyFixture(
   provider = false,
   amounts?: { budgetLimit: string; maxTaskAmount: string },
+  withMaterials = false,
 ) {
-  const f = await executionFixture(true, false, false, amounts);
+  const f = await executionFixture(true, withMaterials, false, amounts);
   const signing = provider ? f.b.signing : f.a.signing;
   if (provider) {
     const agreements = new FederationCommercialAgreementService(db, signing);
@@ -6791,8 +6807,8 @@ test("execution automation HTTP retry requires current human authority and prese
   expect(await f.view()).toMatchObject({ executionState: "complete" });
 });
 
-async function marketRequestFixture(enabled = true, limit = 2) {
-  const f = await reservationPolicyFixture(true);
+async function marketRequestFixture(enabled = true, limit = 2, workflow = false) {
+  const f = await reservationPolicyFixture(true, undefined, workflow);
   await db
     .delete(marketSubmissions)
     .where(inArray(marketSubmissions.localSiteId, [f.a.signing.siteId, f.b.signing.siteId]));
@@ -6806,11 +6822,14 @@ async function marketRequestFixture(enabled = true, limit = 2) {
     ...f.policyInput,
     maxTasks: limit,
     allowMarketPublish: enabled,
+    allowActivation: workflow,
+    allowExecutionConfirmation: workflow,
   });
   const providerPolicy = await f.policies.grant(f.actor, f.revisionId, {
     ...f.policyInput,
     maxTasks: limit,
     allowMarketClaim: enabled,
+    allowExecutionConfirmation: workflow,
   });
   const fingerprints: string[] = [];
   for (const party of [f.a, f.b]) {
@@ -6960,6 +6979,7 @@ async function marketRequestFixture(enabled = true, limit = 2) {
     request,
     query,
     adapter,
+    commercialAdapter: f.adapter,
     sourceMarket,
     providerMarket,
     source,
@@ -7490,4 +7510,433 @@ test("market request conflicting demand identity returns a domain conflict witho
     marketAuthorizedTasks: 1,
     marketAuthorizedAmount: "1",
   });
+});
+
+async function workflowMarketFixture() {
+  const f = await marketRequestFixture(true, 2, true);
+  await new FederationPermissionService(db).set(
+    { ...f.actor, capability: "delegation.read", enabled: true },
+    f.actor.userId,
+  );
+  const ordinarySource = new FederationAgreementService(db, f.a.signing);
+  const ordinaryProvider = new FederationAgreementService(db, f.b.signing);
+  const executionUserId = randomUUID();
+  await db.insert(users).values({
+    id: executionUserId,
+    orgId: f.actor.orgId,
+    email: `${executionUserId}@test.invalid`,
+    role: "user",
+    serviceAccount: true,
+  });
+  await db
+    .insert(userOrgMemberships)
+    .values({ userId: executionUserId, orgId: f.actor.orgId, role: "member" });
+  const sourceConsent = await ordinarySource.approve(f.actor, { terms: f.terms.agreement });
+  const providerConsent = await ordinaryProvider.approve(f.actor, {
+    terms: f.terms.agreement,
+    executionUserId,
+  });
+  await ordinarySource.attachCounterparty(f.actor, f.revisionId, providerConsent.approvalJws);
+  await ordinaryProvider.attachCounterparty(f.actor, f.revisionId, sourceConsent.approvalJws);
+  const runId = randomUUID();
+  await db.insert(workflowRuns).values({
+    id: runId,
+    name: "Coordinated source workflow",
+    status: "running",
+    submittedBy: f.actor.userId,
+    startedAt: new Date(),
+    input: { executionModel: "durable-v2", orgId: f.actor.orgId, role: "user", yaml: "" },
+  });
+  let lease = await new WorkflowExecutionJournalStore(db).acquire(runId, 300000);
+  if (!lease) throw new Error("Missing workflow lease");
+  const sourceConfirmation = new FederationExecutionConfirmationService(
+    db,
+    f.a.signing.siteId,
+    f.query,
+  );
+  const providerConfirmation = new FederationExecutionConfirmationService(
+    db,
+    f.b.signing.siteId,
+    f.query,
+  );
+  const admission = new FederationAdmission(
+    db,
+    f.b.signing,
+    f.b.verification,
+    undefined,
+    providerConfirmation,
+  );
+  const send: FederationSend = async (_endpoint, requestJws, path) => {
+    expect(path).toBeUndefined();
+    return (
+      await admission.receive({
+        requestJws,
+        authenticatedPeerSiteId: f.a.signing.siteId,
+        senderKey: f.a.verification,
+      })
+    ).receiptJws;
+  };
+  const outbound = new FederationOutboundService(
+    db,
+    f.a.signing,
+    send,
+    f.assets,
+    undefined,
+    sourceConfirmation,
+    f.source,
+  );
+  const executor = new FederationWorkflowExecutor(db, f.a.signing.siteId, outbound);
+  const node = workflowDsl.WorkflowNodeSchema.parse({
+    id: "remote",
+    name: "Remote task",
+    type: "Federation",
+    agreementRevisionId: f.revisionId,
+    template: f.request.proposal.request.template,
+    inputManifestDigest: f.request.proposal.request.inputManifestDigest,
+    environmentLockDigest: f.request.proposal.request.environmentLockDigest,
+    resources: f.request.proposal.request.resources,
+    maxAmount: f.request.proposal.request.maxAmount,
+    admissionWindowSec: 600,
+    executionExpiresAt: f.request.proposal.request.executionExpiresAt,
+    market: { policyId: f.sourcePolicy.id, title: "Public approved task", description: "" },
+    inputSlots: [],
+    outputs: [],
+  });
+  if (node.type !== "Federation") throw new Error("Wrong node");
+  const invocation = { path: JSON.stringify(["node", "remote"]) };
+  const execute = () => {
+    if (!lease) throw new Error("Missing lease");
+    return executor.execute(f.actor, lease, node, invocation);
+  };
+  const prepare = async () => {
+    await expect(execute()).rejects.toMatchObject({ reason: "LEDGER_WAITING" });
+    const original = await f.view();
+    if (!original) throw new Error("Missing market request");
+    Object.assign(f.request, original.payload);
+    return original;
+  };
+  const marketAndSignatures = async () => {
+    await f.source.advanceNext();
+    await f.commit();
+    await f.source.advanceNext();
+    await f.target.advanceNext();
+    await f.commit(true);
+    await f.target.advanceNext();
+    await f.due();
+    await f.source.advanceNext();
+    await f.sourceProposals.advanceNext();
+    await f.sourceProposals.advanceNext();
+    await f.receiverProposals.advanceNext();
+    const exchange = await approvalTransport({ ...f, adapter: f.commercialAdapter });
+    await exchange.a.discover();
+    await exchange.b.discover();
+    await exchange.a.advanceNext();
+    await exchange.b.advanceNext();
+    const providerCommercial = new FederationCommercialSubmissionService(
+      db,
+      f.b.signing.siteId,
+      f.commercialAdapter,
+    );
+    for (let i = 0; i < 6; i++) {
+      await f.service.advanceNext();
+      await providerCommercial.advanceNext();
+    }
+  };
+  const sourceAutomation = new FederationExecutionAutomation(db, f.a.signing, f.query);
+  const providerAutomation = new FederationExecutionAutomation(db, f.b.signing, f.query);
+  const dueExecution = () =>
+    db
+      .update(federationReservationProposals)
+      .set({ executionNextAt: new Date(0) })
+      .where(
+        inArray(federationReservationProposals.localSiteId, [
+          f.a.signing.siteId,
+          f.b.signing.siteId,
+        ]),
+      );
+  const activate = async () => {
+    await sourceAutomation.discover();
+    await providerAutomation.discover();
+    await sourceAutomation.advanceNext();
+    for (let i = 0; i < 3; i++) await f.sourceMarket.advanceNext();
+    const activation = f.adapter.inputs.find((i) => i.operation === "activate-demand");
+    const state = f.state();
+    if (!state || activation?.operation !== "activate-demand")
+      throw new Error("Missing activation");
+    f.setState({ ...state, status: "ACTIVE", version: 3, activation: activation.activation });
+    await dueExecution();
+  };
+  const confirm = async () => {
+    await sourceAutomation.advanceNext();
+    await providerAutomation.advanceNext();
+    for (let i = 0; i < 3; i++) {
+      await f.sourceMarket.advanceNext();
+      await f.providerMarket.advanceNext();
+    }
+    await dueExecution();
+    await sourceAutomation.advanceNext();
+    await providerAutomation.advanceNext();
+  };
+  return {
+    ...f,
+    runId,
+    node,
+    invocation,
+    outbound,
+    executor,
+    execute,
+    prepare,
+    marketAndSignatures,
+    activate,
+    confirm,
+    sourceAutomation,
+    providerAutomation,
+    dueExecution,
+    sourceConfirmation,
+    lease: () => {
+      if (!lease) throw new Error("Missing lease");
+      return lease;
+    },
+    restart: async () => {
+      await lease?.release();
+      lease = await new WorkflowExecutionJournalStore(db).acquire(runId, 300000);
+    },
+  };
+}
+
+test("workflow market coordinates one immutable invocation through VALID permits into ordinary outbound delivery", async () => {
+  const f = await workflowMarketFixture();
+  const original = await f.prepare();
+  expect(original.payload.demand).toMatchObject({
+    title: f.node.market?.title,
+    platform: "linux",
+    architecture: "x86_64",
+  });
+  expect(original.payload.proposal.reservationId).toBe(
+    original.payload.proposal.request.operationId,
+  );
+  await expect(f.execute()).rejects.toBeInstanceOf(WorkflowNodeWaiting);
+  await f.restart();
+  await expect(f.execute()).rejects.toMatchObject({ reason: "LEDGER_WAITING" });
+  expect((await f.view())?.payload).toEqual(original.payload);
+  await f.marketAndSignatures();
+  await expect(f.execute()).rejects.toMatchObject({ reason: "LEDGER_WAITING" });
+  await f.activate();
+  await expect(f.execute()).rejects.toMatchObject({ reason: "LEDGER_WAITING" });
+  await f.confirm();
+  await expect(f.execute()).rejects.toMatchObject({ reason: "REMOTE_WAITING" });
+  expect(await f.outbound.deliverNext()).toBe(true);
+  const [sent] = await db
+    .select()
+    .from(federationOutbound)
+    .where(eq(federationOutbound.localSiteId, f.a.signing.siteId));
+  expect(sent).toMatchObject({ operationId: original.reservationId, state: "accepted" });
+  expect(sent?.receipt?.reservationId).toBe(original.reservationId);
+  await f.restart();
+  await expect(f.execute()).rejects.toMatchObject({ reason: "REMOTE_WAITING" });
+  expect((await f.sourcePolicies.list(f.actor, f.revisionId))[0]).toMatchObject({
+    marketAuthorizedTasks: 1,
+    authorizedTasks: 1,
+  });
+  expect(
+    await db
+      .select()
+      .from(federationBudgets)
+      .where(eq(federationBudgets.domainId, f.terms.agreement.budgetDomainId)),
+  ).toHaveLength(0);
+  await f.lease().release();
+});
+
+test("workflow market rejects changed publication and raw API bypass, preserving original intent on restart", async () => {
+  const f = await workflowMarketFixture();
+  const original = await f.prepare();
+  await expect(
+    f.source.submit(f.actor, f.revisionId, f.sourcePolicy.id, original.payload),
+  ).rejects.toMatchObject({ code: "POLICY_DENIED" });
+  if (!f.node.market) throw new Error("Missing market selection");
+  f.node.market.title = "Changed public title";
+  await expect(f.execute()).rejects.toBeInstanceOf(WorkflowExecutionInterrupted);
+  expect((await f.view())?.payload).toEqual(original.payload);
+  await f.lease().release();
+});
+
+test("workflow market requires explicit coordination configuration and leaves bilateral execution independent", async () => {
+  const f = await workflowMarketFixture();
+  f.node.market = undefined;
+  expect(await f.execute()).toMatchObject({ status: "Failed" });
+  expect(await f.view()).toBeUndefined();
+  await f.lease().release();
+});
+
+test("workflow market expired workflow lease rolls back task intent instead of consuming institutional authority", async () => {
+  const f = await workflowMarketFixture();
+  await db
+    .update(workflowExecutionLeases)
+    .set({ expiresAt: new Date(0) })
+    .where(eq(workflowExecutionLeases.runId, f.runId));
+  await expect(f.execute()).rejects.toBeInstanceOf(WorkflowExecutionInterrupted);
+  expect(await f.view()).toBeUndefined();
+  expect((await f.sourcePolicies.list(f.actor, f.revisionId))[0]?.marketAuthorizedTasks).toBe(0);
+  await f.restart();
+  await f.prepare();
+  await f.lease().release();
+});
+
+test("workflow market cancellation before outbound prevents new publication and requires no chain connection", async () => {
+  const f = await workflowMarketFixture();
+  await f.prepare();
+  await db.update(workflowRuns).set({ status: "cancelling" }).where(eq(workflowRuns.id, f.runId));
+  f.beforeQuery(async () => {
+    throw new Error("Cancelled workflow must not query the chain");
+  });
+  await f.outbound.cancelWorkflow(f.runId);
+  await f.source.advanceNext();
+  expect(await f.view()).toMatchObject({
+    state: "needs_review",
+    lastError: "CANCELLATION_REQUESTED",
+    marketSubmissionId: null,
+  });
+  expect(f.adapter.inputs).toHaveLength(0);
+  await f.lease().release();
+});
+
+test("workflow market cancellation after signature records a local stop before activation without a second human grant", async () => {
+  const f = await workflowMarketFixture();
+  await f.prepare();
+  await f.marketAndSignatures();
+  await new FederationPermissionService(db).set(
+    { ...f.actor, capability: "agreement.approve", enabled: false },
+    f.actor.userId,
+  );
+  await db.update(workflowRuns).set({ status: "cancelling" }).where(eq(workflowRuns.id, f.runId));
+  await f.outbound.cancelWorkflow(f.runId);
+  const [approval] = await db
+    .select()
+    .from(executionApprovals)
+    .where(
+      and(
+        eq(executionApprovals.localSiteId, f.a.signing.siteId),
+        eq(executionApprovals.recordId, f.request.proposal.reservationId),
+      ),
+    );
+  expect(approval?.stopId).toBeString();
+  await f.sourceAutomation.discover();
+  await f.sourceAutomation.advanceNext();
+  expect(f.adapter.inputs.some((i) => i.operation === "activate-demand")).toBe(false);
+  expect(
+    await db
+      .select()
+      .from(federationOutbound)
+      .where(eq(federationOutbound.localSiteId, f.a.signing.siteId)),
+  ).toHaveLength(0);
+  await f.lease().release();
+});
+
+test("workflow market cancellation during claim verification prevents the late reservation handoff", async () => {
+  const f = await workflowMarketFixture();
+  await f.prepare();
+  await f.source.advanceNext();
+  await f.commit();
+  await f.source.advanceNext();
+  await f.target.advanceNext();
+  await f.commit(true);
+  await f.target.advanceNext();
+  await f.due();
+  f.beforeQuery(async () => {
+    await db.update(workflowRuns).set({ status: "cancelling" }).where(eq(workflowRuns.id, f.runId));
+  });
+  await f.source.advanceNext();
+  expect(await f.view()).toMatchObject({
+    state: "needs_review",
+    lastError: "CANCELLATION_REQUESTED",
+  });
+  expect(
+    await db
+      .select()
+      .from(federationReservationProposals)
+      .where(eq(federationReservationProposals.localSiteId, f.a.signing.siteId)),
+  ).toHaveLength(0);
+  await f.outbound.cancelWorkflow(f.runId);
+  await f.lease().release();
+});
+
+test("workflow market audit failure rolls back publication authority and resumes the bound invocation", async () => {
+  const f = await workflowMarketFixture();
+  await db.execute(
+    sql`alter table audit_log add constraint test_workflow_market_audit check (action <> 'federation.market_request.submit' OR org_id <> ${sql.raw(`'${f.actor.orgId}'`)})`,
+  );
+  try {
+    await expect(f.execute()).rejects.toBeInstanceOf(WorkflowExecutionInterrupted);
+    expect(await f.view()).toBeUndefined();
+    expect((await f.sourcePolicies.list(f.actor, f.revisionId))[0]?.marketAuthorizedTasks).toBe(0);
+  } finally {
+    await db.execute(sql`alter table audit_log drop constraint test_workflow_market_audit`);
+  }
+  const [binding] = await db
+    .select()
+    .from(workflowExecutionDelegations)
+    .where(eq(workflowExecutionDelegations.runId, f.runId));
+  if (!binding) throw new Error("Missing stable binding");
+  await f.restart();
+  const original = await f.prepare();
+  expect(original.reservationId).toBe(binding.operationId);
+  expect(original.payload.proposal.request).toEqual(binding.request);
+  await f.lease().release();
+});
+
+test("workflow market does not silently upgrade a publication-only policy into execution authority", async () => {
+  const f = await workflowMarketFixture();
+  await f.sourcePolicies.revoke(f.actor, f.revisionId, f.sourcePolicy.id);
+  const policy = await f.sourcePolicies.grant(f.actor, f.revisionId, {
+    ...f.policyInput,
+    allowMarketPublish: true,
+  });
+  if (!f.node.market) throw new Error("Missing selection");
+  f.node.market.policyId = policy.id;
+  expect(await f.execute()).toMatchObject({ status: "Failed" });
+  expect(await f.view()).toBeUndefined();
+  await f.lease().release();
+});
+
+test("workflow market local planning requires no source Agent for remote and control nodes but still plans real compute", async () => {
+  const f = await workflowMarketFixture();
+  const config = WorkflowPlacementConfigSchema.parse({});
+  const workflow = workflowDsl.WorkflowSchema.parse({
+    name: "Remote only",
+    spec: {
+      nodeDrafts: [f.node, { type: "NoAction", id: "consume", name: "Consume" }],
+      nodeRelations: [{ fromId: "remote", toId: "consume", slotRelations: [] }],
+    },
+  });
+  const build = createWorkflowPlacementBuilder(db);
+  const plan = await build(f.runId, "workflow-submit", { workflow, config });
+  expect(plan.request.nodes).toHaveLength(0);
+  expect(plan.request.edges).toEqual([]);
+  expect(planSandboxPlacement({ ...plan.request, mode: "Global" })).toMatchObject({
+    assignments: [],
+    objective: { total: 0 },
+  });
+  workflow.spec.nodeDrafts.push(
+    workflowDsl.WorkflowNodeSchema.parse({
+      type: "SoftwareUsecaseComputing",
+      id: "local",
+      name: "Local",
+      usecaseVersionId: randomUUID(),
+      softwareVersionId: randomUUID(),
+    }),
+  );
+  workflow.spec.nodeRelations.push({ fromId: "consume", toId: "local", slotRelations: [] });
+  config.nodeConstraints.local = {
+    mode: "Require",
+    siteIds: [randomUUID()],
+    clusterIds: [],
+    dataMovement: "Allow",
+  };
+  const mixed = await build(f.runId, "workflow-submit", { workflow, config });
+  expect(mixed.request.nodes.map((n) => n.id)).toEqual(["local"]);
+  expect(mixed.request.edges).toEqual([]);
+  expect(() => planSandboxPlacement({ ...mixed.request, mode: "Global" })).toThrow(
+    "no candidate satisfies placement constraints",
+  );
+  await f.lease().release();
 });

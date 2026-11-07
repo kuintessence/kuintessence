@@ -12,7 +12,7 @@ if os.geteuid() != 0:
     raise SystemExit("Run on a disposable local k3s node as root")
 os.umask(0o077)
 scenario = os.environ.get("LAB_SCENARIO", "success")
-assert scenario in ("success", "outage", "stop")
+assert scenario in ("success", "outage", "stop", "workflow")
 nodeinfo = json.loads(
     subprocess.check_output(["kubectl", "get", "nodes", "-o", "json"], timeout=15)
 )["items"]
@@ -533,12 +533,20 @@ def verify_success():
     import ssl
 
     operation = source_state[0]["operationId"]
-    importid = str(uuid.uuid4())
+    importid = operation if scenario == "workflow" else str(uuid.uuid4())
     path = f"federation/outbound/{operation}/result-imports"
-    created_import = sourceapi(path, {"importId": importid}, sourcetoken)
-    assert created_import["data"]["state"] == "pending"
+    if scenario != "workflow":
+        created_import = sourceapi(path, {"importId": importid}, sourcetoken)
+        assert created_import["data"]["state"] == "pending"
+    result = None
     for _ in range(120):
-        result = sourceapi(path + "/" + importid, token=sourcetoken)["data"]
+        try:
+            result = sourceapi(path + "/" + importid, token=sourcetoken)["data"]
+        except urllib.error.HTTPError as error:
+            if scenario != "workflow" or error.code not in (403, 404):
+                raise
+            time.sleep(2)
+            continue
         if (
             result["state"] == "available"
             and result.get("receipt", {}).get("state") == "recorded"
@@ -549,6 +557,20 @@ def verify_success():
         raise RuntimeError(
             "Result import did not publish and acknowledge: " + json.dumps(result)
         )
+    if scenario == "workflow":
+        submitted = json.loads((root / "source-workflow.json").read_text())
+        for _ in range(60):
+            parent = sourceapi("workflows/" + submitted["runId"], token=sourcetoken)
+            if parent["status"] in ("completed", "failed", "cancelled"):
+                break
+            time.sleep(2)
+        assert parent["status"] == "completed", "Source workflow did not finish"
+        assert parent["input"]["executionModel"] == "durable-v2"
+        assert parent["result"]["status"] == {"remote": "Succeeded", "consume": "Succeeded"}
+        assert parent["waitingInvocations"] == []
+        assert parent["result"]["values"]["remote"]["values"]["result"]["fileMetadataId"] == result["members"][0]["fileId"]
+        (logs / "source-workflow-result.json").write_text(json.dumps(parent, indent=2) + "\n")
+        print("REAL COORDINATED WORKFLOW PASSED: ordinary API -> automatic market and permits -> remote Jobs -> automatic result import -> downstream File", flush=True)
     assert len(result["members"]) == 1
     member = result["members"][0]
     assert (
@@ -1610,6 +1632,7 @@ await Bun.write(process.env.LAB_ROOT+'/registration.json',JSON.stringify({token:
             time.sleep(0.2)
     # Start the independent source Server only after the receiving gateway is ready.
     sourcehttp, sourcegrpc = port(), port()
+    env["LAB_SOURCE_HTTP"] = f"http://127.0.0.1:{sourcehttp}"
     sourceenv = env.copy()
     sourceenv.update(
         FEDERATION_COMMERCIAL_SOCKET_PATH=str(
@@ -1732,28 +1755,52 @@ await Bun.write(process.env.LAB_ROOT+'/registration.json',JSON.stringify({token:
     else:
         raise RuntimeError("Lab node is busy; retry without concurrent builds")
     run(["bun", "--no-env-file", "run", "scripts/federation-live/business.ts"], timeout=1200)
+    configuration = json.loads((root / "source-init.json").read_text())
+    if scenario == "workflow":
+        (logs / "source-workflow.json").write_text((root / "source-workflow.json").read_text())
     (logs / "ledger-proof.json").write_text((root / "ledger-proof.json").read_text())
     (logs / "agreement-exchange.json").write_text((root / "agreement-exchange.json").read_text())
     (logs / "approval-exchange.json").write_text((root / "approval-exchange.json").read_text())
     (logs / "market-requests.json").write_text((root / "market-requests.json").read_text())
     (logs / "reservation-proposals.json").write_text((root / "reservation-proposals.json").read_text())
     (logs / "execution-automation.json").write_text((root / "execution-automation.json").read_text())
+    def inspect_ledgers(suffix):
+        for name, setting in [("source", sourceenv), ("provider", env)]:
+            subprocess.run(
+                ["bun", "--no-env-file", "scripts/federation-live/inspect.ts"]
+                + (["--closed"] if scenario in ("success", "workflow") and suffix == "after" else []),
+                cwd=repo,
+                env={
+                    **setting,
+                    "LAB_EVIDENCE": str(logs / (name + "-" + suffix + ".json")),
+                },
+                stdout=log,
+                stderr=log,
+                check=True,
+                timeout=30,
+            )
+
+    inspect_ledgers("before")
+
     terminal_policies = {}
-    if scenario == "success":
+    if scenario in ("success", "workflow"):
         policy_path = "federation/commercial-agreements/" + configuration["request"]["agreementRevisionId"] + "/terminal-policies"
         policy_input = {"outcomes": ["completed"], "validUntil": configuration["request"].get("executionExpiresAt", configuration["request"]["expiresAt"])}
         terminal_policies["provider"] = api(policy_path, policy_input, token=token)["data"]
         terminal_policies["source"] = sourceapi(policy_path, policy_input, sourcetoken)["data"]
         (logs / "terminal-policies.json").write_text(json.dumps(terminal_policies, indent=2) + "\n")
-    first = sourceapi("federation/outbound", configuration["request"], sourcetoken)
-    second = sourceapi("federation/outbound", configuration["request"], sourcetoken)
-    assert (
-        first["data"]["operationId"] == second["data"]["operationId"]
-    ), "Source created a new operation on replay"
-    print(
-        "Source Server accepted the original request twice; production worker is responsible for mTLS delivery",
-        flush=True,
-    )
+    if scenario == "workflow":
+        print("Ordinary Workflow owns delegation; no manual outbound submission", flush=True)
+    else:
+        first = sourceapi("federation/outbound", configuration["request"], sourcetoken)
+        second = sourceapi("federation/outbound", configuration["request"], sourcetoken)
+        assert (
+            first["data"]["operationId"] == second["data"]["operationId"]
+        ), "Source created a new operation on replay"
+        print(
+            "Source Server accepted the original request twice; production worker is responsible for mTLS delivery",
+            flush=True,
+        )
 
     # Enroll a separate production Agent with the source institution, using its actual API.
     sourceagent = "federation-source-copy-" + namespace[-8:]
@@ -1845,23 +1892,6 @@ await Bun.write(process.env.LAB_ROOT+'/registration.json',JSON.stringify({token:
         flush=True,
     )
 
-    def inspect_ledgers(suffix):
-        for name, setting in [("source", sourceenv), ("provider", env)]:
-            subprocess.run(
-                ["bun", "--no-env-file", "scripts/federation-live/inspect.ts"]
-                + (["--closed"] if scenario == "success" and suffix == "after" else []),
-                cwd=repo,
-                env={
-                    **setting,
-                    "LAB_EVIDENCE": str(logs / (name + "-" + suffix + ".json")),
-                },
-                stdout=log,
-                stderr=log,
-                check=True,
-                timeout=30,
-            )
-
-    inspect_ledgers("before")
     if scenario in ("outage", "stop"):
         verify_interruption()
     else:

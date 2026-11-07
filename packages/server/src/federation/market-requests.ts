@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import {
   federationMarketAttempts as attempts,
   auditLog,
@@ -6,12 +6,24 @@ import {
   type PgDb,
   type PgTransaction,
   federationReservationPolicies as policies,
+  federationReservationProposals as proposals,
   federationMarketRequests as requests,
   federationSites as sites,
   federationMarketSubmissions as submissions,
+  workflowExecutionDelegations,
 } from "@kuintessence/db";
-import { FederationError } from "@kuintessence/shared/federation";
-import { MarketClaimSchema, MarketQueryResultSchema } from "@kuintessence/shared/federation/market";
+import {
+  type FederationDelegation,
+  FederationError,
+  federationCanonicalJson,
+} from "@kuintessence/shared/federation";
+import { CommercialAgreementSchema } from "@kuintessence/shared/federation/commercial";
+import {
+  type FederationWorkflowMarket,
+  FederationWorkflowMarketSchema,
+  MarketClaimSchema,
+  MarketQueryResultSchema,
+} from "@kuintessence/shared/federation/market";
 import {
   type MarketRequest,
   MarketRequestReceiptSchema,
@@ -36,6 +48,7 @@ import {
   verifyFederationMessage,
 } from "./signatures";
 import { FederationTrustRegistry } from "./trust-registry";
+import { assertWorkflowDelegationBinding } from "./workflow-delegations";
 
 type Request = typeof requests.$inferSelect;
 class MarketRequestLeaseLost extends Error {}
@@ -119,6 +132,16 @@ export class FederationMarketRequestService {
       throw new FederationError("POLICY_DENIED");
   }
   async submit(actor: FederationActor, revisionId: string, policyId: string, raw: MarketRequest) {
+    return this.db.transaction((tx) => this.submitIntent(tx, actor, revisionId, policyId, raw));
+  }
+  private async submitIntent(
+    tx: PgTransaction,
+    actor: FederationActor,
+    revisionId: string,
+    policyId: string,
+    raw: MarketRequest,
+    workflow = false,
+  ) {
     if (!this.send || !this.market) throw new FederationError("ASSET_UNAVAILABLE");
     const payload = MarketRequestSchema.parse(raw),
       hash = digest(payload);
@@ -127,76 +150,179 @@ export class FederationMarketRequestService {
       payload.proposal.request.agreementRevisionId !== revisionId
     )
       throw new FederationError("POLICY_DENIED");
-    return this.db.transaction(async (tx) => {
-      await requireFederationCapability(tx, actor, "delegation.submit");
-      await this.contract(tx, revisionId, actor.orgId);
-      const existing = async () => {
-        const [row] = await tx
-          .select()
-          .from(requests)
-          .where(this.key(payload.proposal.reservationId));
-        if (row) {
-          this.same(row, payload, hash);
-          if (
-            row.localOrgId !== actor.orgId ||
-            row.policyId !== policyId ||
-            row.direction !== "outbound"
-          )
-            throw new FederationError("OPERATION_CONFLICT");
-        }
-        return row;
-      };
-      const prior = await existing();
-      if (prior) return progress(prior);
-      const policy = await this.policies.authorizeMarket(
-        tx,
-        policyId,
-        actor.orgId,
-        payload.proposal,
+    const [binding] = await tx
+      .select({ runId: workflowExecutionDelegations.runId })
+      .from(workflowExecutionDelegations)
+      .where(
+        and(
+          eq(workflowExecutionDelegations.localSiteId, this.signing.siteId),
+          eq(workflowExecutionDelegations.operationId, payload.proposal.request.operationId),
+        ),
       );
-      const duplicate = await existing();
-      if (duplicate) return progress(duplicate);
-      if (Date.parse(payload.demand.createdAt) > Date.now() + 60000)
-        throw new FederationError("INVALID_MESSAGE");
-      await this.room(tx, policy, payload);
-      const own = await this.trust.resolveKey(
-        this.signing.siteId,
-        this.signing.keyId,
-        new Date(),
-        tx,
-      );
-      if (!own.allowedKinds.includes("market-request"))
-        throw new FederationError("UNTRUSTED_IDENTITY");
+    if (binding && !workflow) throw new FederationError("POLICY_DENIED");
+    await requireFederationCapability(tx, actor, "delegation.submit");
+    await this.contract(tx, revisionId, actor.orgId);
+    const existing = async () => {
       const [row] = await tx
-        .insert(requests)
-        .values({
-          localSiteId: this.signing.siteId,
-          reservationId: payload.proposal.reservationId,
-          demandId: payload.demand.demandId,
-          agreementRevisionId: revisionId,
-          localOrgId: actor.orgId,
-          policyId,
-          direction: "outbound",
-          payload,
-          digest: hash,
-          requestedBy: actor.userId,
-        })
-        .onConflictDoNothing()
-        .returning();
-      if (!row) {
-        const duplicate = await existing();
-        if (!duplicate) throw new FederationError("OPERATION_CONFLICT");
-        return progress(duplicate);
+        .select()
+        .from(requests)
+        .where(this.key(payload.proposal.reservationId));
+      if (row) {
+        this.same(row, payload, hash);
+        if (
+          row.localOrgId !== actor.orgId ||
+          row.policyId !== policyId ||
+          row.direction !== "outbound"
+        )
+          throw new FederationError("OPERATION_CONFLICT");
       }
-      await tx.insert(auditLog).values({
-        actor: actor.userId,
-        orgId: actor.orgId,
-        action: "federation.market_request.submit",
-        target: row.reservationId,
-        diff: { after: { policyId, digest: hash } },
-      });
-      return progress(row);
+      return row;
+    };
+    const prior = await existing();
+    if (prior) return progress(prior);
+    const policy = await this.policies.authorizeMarket(tx, policyId, actor.orgId, payload.proposal);
+    const duplicate = await existing();
+    if (duplicate) return progress(duplicate);
+    if (Date.parse(payload.demand.createdAt) > Date.now() + 60000)
+      throw new FederationError("INVALID_MESSAGE");
+    await this.room(tx, policy, payload);
+    const own = await this.trust.resolveKey(
+      this.signing.siteId,
+      this.signing.keyId,
+      new Date(),
+      tx,
+    );
+    if (!own.allowedKinds.includes("market-request"))
+      throw new FederationError("UNTRUSTED_IDENTITY");
+    const [row] = await tx
+      .insert(requests)
+      .values({
+        localSiteId: this.signing.siteId,
+        reservationId: payload.proposal.reservationId,
+        demandId: payload.demand.demandId,
+        agreementRevisionId: revisionId,
+        localOrgId: actor.orgId,
+        policyId,
+        direction: "outbound",
+        payload,
+        digest: hash,
+        requestedBy: actor.userId,
+      })
+      .onConflictDoNothing()
+      .returning();
+    if (!row) {
+      const duplicate = await existing();
+      if (!duplicate) throw new FederationError("OPERATION_CONFLICT");
+      return progress(duplicate);
+    }
+    await tx.insert(auditLog).values({
+      actor: actor.userId,
+      orgId: actor.orgId,
+      action: "federation.market_request.submit",
+      target: row.reservationId,
+      diff: { after: { policyId, digest: hash } },
     });
+    return progress(row);
+  }
+
+  /** Caller holds the live workflow lease and revalidates its resolved materials in this transaction. */
+  async prepareWorkflow(
+    tx: PgTransaction,
+    actor: FederationActor,
+    runId: string,
+    request: FederationDelegation,
+    raw: FederationWorkflowMarket,
+    target: { platform: string; architecture: string },
+  ) {
+    const selection = FederationWorkflowMarketSchema.parse(raw);
+    const binding = await assertWorkflowDelegationBinding(
+      tx,
+      runId,
+      actor,
+      this.signing.siteId,
+      request.operationId,
+    );
+    if (
+      request.mode !== "ledger_coordinated" ||
+      federationCanonicalJson(binding.request) !== federationCanonicalJson(request)
+    )
+      throw new FederationError("OPERATION_CONFLICT");
+    const [prior] = await tx.select().from(requests).where(this.key(request.operationId));
+    const contract = await this.contract(tx, request.agreementRevisionId, actor.orgId);
+    const terms = CommercialAgreementSchema.parse(contract.terms);
+    const demandId = prior?.demandId ?? randomUUID();
+    const payload =
+      prior?.payload ??
+      MarketRequestSchema.parse({
+        protocolVersion: 1,
+        kind: "market-request",
+        demand: {
+          protocolVersion: 1,
+          demandId,
+          sourceSiteId: request.senderSiteId,
+          createdAt: request.issuedAt,
+          expiresAt: request.expiresAt,
+          title: selection.title,
+          description: selection.description,
+          ...target,
+          resources: request.resources,
+        },
+        proposal: {
+          protocolVersion: 1,
+          kind: "commercial-reservation",
+          domainId: terms.domainId,
+          reservationId: request.operationId,
+          demandId,
+          claimVersion: 2,
+          agreementDigest: contract.digest,
+          salt: randomBytes(32).toString("hex"),
+          request,
+        },
+      });
+    // demandId is allocated once with the original private intent, under the workflow lease.
+    if (
+      prior &&
+      (prior.policyId !== selection.policyId ||
+        prior.localOrgId !== actor.orgId ||
+        prior.requestedBy !== actor.userId ||
+        prior.direction !== "outbound" ||
+        federationCanonicalJson(payload.proposal.request) !== federationCanonicalJson(request) ||
+        payload.demand.title !== selection.title ||
+        payload.demand.description !== selection.description ||
+        payload.demand.platform !== target.platform ||
+        payload.demand.architecture !== target.architecture)
+    )
+      throw new FederationError("OPERATION_CONFLICT");
+    const policy = await this.policies.authorizeMarket(
+      tx,
+      selection.policyId,
+      actor.orgId,
+      payload.proposal,
+    );
+    if (!policy.allowActivation || !policy.allowExecutionConfirmation)
+      throw new FederationError("POLICY_DENIED");
+    const progress = await this.submitIntent(
+      tx,
+      actor,
+      request.agreementRevisionId,
+      selection.policyId,
+      payload,
+      true,
+    );
+    if (progress.state === "needs_review") throw new FederationError("POLICY_DENIED");
+    if (progress.state !== "complete") return false;
+    const [proposal] = await tx
+      .select()
+      .from(proposals)
+      .where(
+        and(
+          eq(proposals.localSiteId, this.signing.siteId),
+          eq(proposals.reservationId, request.operationId),
+        ),
+      );
+    if (proposal?.state === "needs_review" || proposal?.executionState === "needs_review")
+      throw new FederationError("POLICY_DENIED");
+    return proposal?.executionState === "complete";
   }
   async receive(jws: string, fingerprint: string) {
     const peer = await this.trust.resolvePeer(fingerprint, federationMessageKeyId(jws), new Date());

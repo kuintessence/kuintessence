@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { FederationAmountSchema, FederationResourcesSchema } from "../federation";
 import { FederationParameterOverridesSchema } from "../federation/assets";
+import { FederationWorkflowMarketSchema } from "../federation/market";
 import { FederationAssetRefSchema, FederationDigestSchema } from "../federation/references";
 import { RequirementsSchema, SchedulingStrategySchema, SlugSchema, UuidSchema } from "./common";
 import { ExprSchema, IntOrExprSchema } from "./expr";
@@ -81,6 +82,7 @@ export const WorkflowNodeSchema = z.union([
     ...nodeCommon,
     type: z.literal("Federation"),
     agreementRevisionId: UuidSchema,
+    market: FederationWorkflowMarketSchema.optional(),
     template: FederationAssetRefSchema.refine(
       (ref) => ref.kind === "workflow" || ref.kind === "script",
     ),

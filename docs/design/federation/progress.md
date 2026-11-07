@@ -1788,3 +1788,25 @@ Market 新增 RequestExecutionStop、Adapter 新增 request-execution-stop，双
 随后自动完成预留提案、机构签署、双签交换、私有预留、公开激活和双方执行确认。两个实际轻量 Kubernetes Bash Job 完成；接收方从零份清单拉取原输入/环境锁，源方独立 Agent 和独立桶实际下载 12 字节 verified:42 结果，SHA-256 校验、签名接收回执及重复请求幂等通过。终态双方预授权、独立审核、签名交换与 ACK 自动完成，私有终态 VALID 区块 20（d315997bf9b3c2faaa88c24cfff3605757c8f6feb9b777da836b0b327864eaee），公开关闭 VALID 区块 21（e9772ae571d3a117185c929b88ae50fcfaabf985de1778db21d85e2cc496725f）。本次未触发重复商业交易的人工 MVCC 复核；自建 Server、数据库、临时凭据、scheduler namespace/RBAC 均已清理。
 
 实际委派仍由夹具显式调用原 outbound API；本轮完成已选机构下从新任务意图到预留许可的自动推进，未声称完成普通 Workflow 协调节点或开放市场发现匹配。生产安全 MVCC 复核、商务减免/账单/结算/付款/争议与重开、物理介质交付、Peer 容量归档恢复、完整 Web/CLI 与 PR 预览继续待完成。没有重跑原断链/停止、原生隐私/背书或真实 Spack/Slurm/PBS/科学软件场景；未合并或部署 main。
+
+
+## 普通 Workflow 协调市场编排
+
+Federation 节点新增可选 market（policyId/title/description），协调协议明确配置，双边节点继续原路径。公开平台/架构只从不可变环境锁读取，文案由提交者显式指定。原 bindWorkflowDelegation 的意图摘要绑定市场选择，保留无 market 时的旧摘要编码；不新增第二套工作流状态表。参数/文件快照和原操作 ID 先持久固定，随后复核原材料映射、当前身份及机构策略，在工作流租约事务内保存原市场请求，分配一次需求 ID/salt。节点等待 LEDGER_WAITING，原提案及初始许可完成后仍执行原有效回执准入检查，再创建持久 outbound；后续结果自动回传和下游文件复用原执行器。
+
+新增父工作流持久状态检查用于源机构发布、预留签署、激活/确认及准入，网络前后通过原授权事务复核。取消时扫描所有原调用；即使尚无 outbound，也为已有商业批准写入原本地停止意图，不依赖链或额外人工审批。已入队的同意、链上冻结金额和历史证据不被抹除；父工作流取消不是退款/结算证明。原始市场 HTTP 不能代替工作流租约操作已有绑定请求。
+
+新增 9 个数据库场景全部通过：普通节点贯通原市场、签署、VALID 许可、实际生产 outbound/接单服务，恢复保留一份原任务与一次权限消耗；变更公开文案/原始 API 绕过拒绝；配置缺失/只有发布权限拒绝；旧租约拒绝；发布前取消无链操作；签署后取消先写本地停止；链查询期间取消不产生迟到提案；审计失败回滚市场权限并恢复原调用。另有 20 个市场/商业/自动执行回归和 16 个普通 Workflow、动态参数、文件输入、取消与结果回传回归通过，共 45 个不同 PostgreSQL 场景。Workflow schema 15 项（含 1 个新配置边界）通过。日志 temp/workflow-market-new-pg.log、temp/workflow-market-regression-pg.log、temp/workflow-market-schema.log；数据库用测试 Adapter，不替代真实链验收。
+
+第一次真实 workflow 场景在普通 API 提交阶段返回 400，未创建远端作业；源 Server 日志明确为 SandboxPlannerError（no candidate satisfies placement constraints）。原因是原本地规划器把 Federation、NoAction 等非本地计算节点也分配给 Agent。修正共享规划入口，只为 Script/SoftwareUsecaseComputing 构造本地候选、身份和相互边；实际工作流依赖图不变，远端执行和真实输入传输仍走各自授权/调度路径。纯远端编排不要求源机构已有计算 Agent，不虚构远端本地费用。
+
+新增一个真实数据库规划场景通过：源方没有 Agent 时 Federation → NoAction 得到零本地分配，增加本地计算节点仍因缺候选被拒。原规划算法及预算/约束 8 项回归通过。本轮累计 46 个不同 PostgreSQL 场景，另有 schema 15 项、规划器/计划服务 8 项。首次真实失败日志 temp/workflow-market-execution.log、证据 temp/federation-execution-workflow-91mqxsiy 和 temp/fabric-network-balDd0；隔离运行资源已清理。修正后继续同一新增 workflow 场景，未重跑原 success/outage/stop。
+
+
+修正后的真实 workflow 场景退出 0，日志 temp/workflow-market-execution-final.log，隔离证据 temp/federation-execution-workflow-9kvunvi3，Fabric 网络 temp/fabric-network-gGxEE3。普通 /api/workflows 创建 Federation → NoAction 后，由原工作流租约生成唯一市场意图；没有人工提交市场请求、outbound 或结果导入。后台完成发布（区块 13）、认领（14）、双签预留、激活（17）及双方执行确认（18/19），均为 VALID；本次未发生需要夹具复核的重复商业 MVCC 冲突。
+
+目标方从零份清单拉取输入及环境锁，实际运行两个 Kubernetes Bash Job。源方独立 Agent/桶接收原结果并自动发布为本地 File；原 Workflow 的 remote/consume 均 Succeeded，父运行 completed，waitingInvocations 为空，节点输出文件 ID 与原导入成员一致。实际下载 verified:42\n 共 12 字节，SHA-256 为 87730d8e29a90b06728319cb30fcf8dbae523f785f3043c82ea4df6386c83f7f。其后双方终态策略自动独立批准、交换签名并 ACK；私有终态 VALID 在区块 20（dbd60dc3ad9391fc8bb3fb06e03e78a24bc87a99f580cec570e075cd44250db3），公共关闭 VALID 在区块 21（7a7b104a0afef0a98257eaca03627e4d99a1aab5d892f303b641b98a7d63d35e）。关闭不释放预算，也不代表商务结算。
+
+自建 Server、数据库、临时凭据与 scheduler namespace/RBAC 已清理。该样例证明已选合作机构、预授权策略和普通 Workflow 的自动协调闭环；下游 NoAction 验证文件绑定，未声称另一次本地计算。它使用轻量 Bash，不包含 Spack/Slurm/PBS/科学计算或完整计量；未重复原 success/outage/stop 场景。开放市场匹配、混合/嵌套/多机构协调、生产 MVCC 复核、账单/结算/争议、加密物理介质、Peer 容量归档及完整 Web/CLI/PR 预览仍待完成。
+
+最终全仓 lint 退出 0（原有 47 warning / 1 info）；本单元全仓及后续变更包的类型检查已通过，文档链接、workflow 引用及差异检查通过。没有为同一结果重复累计测试数。

@@ -172,3 +172,41 @@ describe("WorkflowSpecSchema", () => {
     expect(r.nodeRelations).toEqual([]);
   });
 });
+
+test("Federation market selection is optional and only allows explicit public copy and original policy", () => {
+  const id = crypto.randomUUID();
+  const node = {
+    type: "Federation",
+    id: "remote",
+    name: "Remote",
+    agreementRevisionId: id,
+    template: {
+      originSiteId: id,
+      kind: "workflow",
+      id,
+      revision: "1",
+      digest: `sha256:${"a".repeat(64)}`,
+    },
+    inputManifestDigest: `sha256:${"b".repeat(64)}`,
+    environmentLockDigest: `sha256:${"c".repeat(64)}`,
+    resources: { cpus: 1, memoryMb: 128, gpus: 0, wallTimeSec: 60 },
+    maxAmount: "0",
+    inputSlots: [],
+    outputs: [],
+  };
+  expect(WorkflowNodeSchema.safeParse(node).success).toBe(true);
+  const market = { policyId: id, title: "Shared task", description: "" };
+  expect(WorkflowNodeSchema.safeParse({ ...node, market }).success).toBe(true);
+  for (const patch of [
+    { policyId: "unknown" },
+    { title: "" },
+    { title: "x".repeat(161) },
+    { contract: "private terms" },
+    { price: "10" },
+    { platform: "override-lock" },
+    { autoApprove: true },
+  ])
+    expect(WorkflowNodeSchema.safeParse({ ...node, market: { ...market, ...patch } }).success).toBe(
+      false,
+    );
+});

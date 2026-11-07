@@ -41,6 +41,7 @@ import {
   verifyFederationMessage,
 } from "./signatures";
 import { FederationTrustRegistry } from "./trust-registry";
+import { assertWorkflowRequestActive } from "./workflow-delegations";
 
 export interface ReservationApprovalGuard {
   authorize(tx: PgTransaction): Promise<void>;
@@ -211,6 +212,7 @@ export class FederationCommercialExecutionService {
     )
       throw new FederationError("POLICY_DENIED");
     if (payload.kind === "commercial-reservation") {
+      await assertWorkflowRequestActive(tx, this.signingKey.siteId, actor.orgId, payload.request);
       const source = parties.sourceSiteId === this.signingKey.siteId;
       const [intent] = await tx
         .select({ input: marketSubmissions.input })

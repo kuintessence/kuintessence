@@ -1668,6 +1668,16 @@ const federationConfirmations = federationSigningKey
         : undefined,
     )
   : undefined;
+const federationMarketRequests = federationSigningKey
+  ? new FederationMarketRequestService(
+      db,
+      federationSigningKey,
+      federationSender,
+      config.FEDERATION_MARKET_SOCKET_PATH
+        ? new UnixMarketClient(config.FEDERATION_MARKET_SOCKET_PATH)
+        : undefined,
+    )
+  : undefined;
 const federationOutbound =
   federationSigningKey && federationSender
     ? new FederationOutboundService(
@@ -1677,6 +1687,7 @@ const federationOutbound =
         federationAssets,
         undefined,
         federationConfirmations,
+        federationMarketRequests,
       )
     : undefined;
 const federationStops = federationSigningKey
@@ -1749,16 +1760,6 @@ const federationExecutionAutomation = federationSigningKey
   ? new FederationExecutionAutomation(
       db,
       federationSigningKey,
-      config.FEDERATION_MARKET_SOCKET_PATH
-        ? new UnixMarketClient(config.FEDERATION_MARKET_SOCKET_PATH)
-        : undefined,
-    )
-  : undefined;
-const federationMarketRequests = federationSigningKey
-  ? new FederationMarketRequestService(
-      db,
-      federationSigningKey,
-      federationSender,
       config.FEDERATION_MARKET_SOCKET_PATH
         ? new UnixMarketClient(config.FEDERATION_MARKET_SOCKET_PATH)
         : undefined,

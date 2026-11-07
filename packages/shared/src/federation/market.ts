@@ -24,6 +24,14 @@ export const MarketDemandSchema = z
     "Invalid demand interval",
   );
 export type MarketDemand = z.infer<typeof MarketDemandSchema>;
+/** Explicit public disclosure for one workflow invocation; target is taken from its immutable lock. */
+export const FederationWorkflowMarketSchema = z.strictObject({
+  policyId: z.uuid(),
+  title: MarketDemandSchema.shape.title,
+  description: MarketDemandSchema.shape.description,
+});
+export type FederationWorkflowMarket = z.infer<typeof FederationWorkflowMarketSchema>;
+
 export const MarketClaimSchema = z.strictObject({
   demandId: Id,
   claimId: Id,
