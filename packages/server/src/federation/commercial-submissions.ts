@@ -8,6 +8,7 @@ import {
   type PgTransaction,
   federationUsageReports as reports,
   federationCommercialSubmissions as submissions,
+  federationExecutionTerminals as terminals,
 } from "@kuintessence/db";
 import { FederationError } from "@kuintessence/shared/federation";
 import {
@@ -15,6 +16,7 @@ import {
   CommercialAdapterProposalInputSchema,
   CommercialAgreementSchema,
   CommercialExecutionApprovalSchema,
+  CommercialTerminalSchema,
   CommercialUsageSchema,
   FabricCommercialAdvanceResultSchema,
 } from "@kuintessence/shared/federation/commercial";
@@ -86,6 +88,21 @@ export class FederationCommercialSubmissionService {
                     AND predecessor.state = 'committed'
                 )
             )`,
+            sql`(${submissions.input}->>'operation' <> 'record-execution-terminal' OR EXISTS (
+              SELECT 1 FROM ${terminals} terminal
+              JOIN ${approvals} original ON original.local_site_id = terminal.local_site_id AND original.record_id = terminal.reservation_id
+              WHERE terminal.local_site_id = ${submissions.localSiteId}
+                AND terminal.terminal_id::text = ${submissions.input}->>'recordId'
+                AND terminal.digest = ${submissions.input}->>'digest'
+                AND terminal.counterparty_jws IS NOT NULL
+                AND original.agreement_revision_id = ${submissions.agreementRevisionId}
+                AND EXISTS (SELECT 1 FROM ${submissions} reservation
+                  WHERE reservation.local_site_id = terminal.local_site_id
+                    AND reservation.agreement_revision_id = original.agreement_revision_id
+                    AND reservation.input->>'operation' = 'reserve-execution'
+                    AND reservation.input->>'recordId' = terminal.reservation_id::text
+                    AND reservation.state = 'committed')
+            ))`,
             sql`${submissions.nextAttemptAt} <= clock_timestamp()`,
             sql`(${submissions.leaseToken} IS NULL OR ${submissions.leaseUntil} <= clock_timestamp())`,
           ),
@@ -261,13 +278,37 @@ export class FederationCommercialSubmissionService {
 
   private async beforeDisclosure(raw: CommercialAdapterProposalInput) {
     const input = CommercialAdapterProposalInputSchema.parse(raw);
-    // Dedicated terminal-evidence approval is not yet exposed through generic submissions.
-    if (input.operation === "record-execution-terminal") throw new FederationError("POLICY_DENIED");
+    if (input.operation === "record-execution-terminal") {
+      const [local] = await this.db
+        .select()
+        .from(terminals)
+        .where(
+          and(
+            eq(terminals.localSiteId, this.siteId),
+            eq(terminals.terminalId, input.recordId),
+            eq(terminals.digest, input.digest),
+          ),
+        );
+      if (
+        !local?.counterpartyJws ||
+        local.payload.domainId !== input.domainId ||
+        local.payload.sourceSiteId !== input.envelope.sourceSiteId ||
+        local.payload.targetSiteId !== input.envelope.targetSiteId ||
+        (this.siteId === local.payload.sourceSiteId
+          ? local.approvalJws !== input.envelope.sourceJws ||
+            local.counterpartyJws !== input.envelope.targetJws ||
+            !local.sourceReview
+          : local.approvalJws !== input.envelope.targetJws ||
+            local.counterpartyJws !== input.envelope.sourceJws)
+      )
+        throw new FederationError("POLICY_DENIED");
+    }
     if (input.operation !== "record-usage") {
       const kinds = {
         "register-agreement": "commercial-agreement",
         "reserve-execution": "commercial-reservation",
         "release-execution": "commercial-release",
+        "record-execution-terminal": "commercial-terminal",
       } as const;
       for (const [siteId, jws] of [
         [input.envelope.sourceSiteId, input.envelope.sourceJws],
@@ -276,7 +317,11 @@ export class FederationCommercialSubmissionService {
         if (!siteId || !jws) throw new FederationError("INVALID_MESSAGE");
         const key = await this.trust.resolveKey(siteId, federationMessageKeyId(jws), new Date());
         const verified = await verifyFederationMessage(
-          z.union([CommercialAgreementSchema, CommercialExecutionApprovalSchema]),
+          z.union([
+            CommercialAgreementSchema,
+            CommercialExecutionApprovalSchema,
+            CommercialTerminalSchema,
+          ]),
           jws,
           key,
           new Date(),

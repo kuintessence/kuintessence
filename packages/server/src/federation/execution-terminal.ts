@@ -1,22 +1,30 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import {
   federationCommercialExecutionApprovals as approvals,
+  federationCommercialAttempts as attempts,
   auditLog,
   federationCommercialAgreements as contracts,
   type PgDb,
   type PgTransaction,
+  federationCommercialSubmissions as submissions,
   federationExecutionTerminals as terminals,
 } from "@kuintessence/db";
 import { FederationError } from "@kuintessence/shared/federation";
 import {
+  CommercialAdapterProposalInputSchema,
   CommercialAgreementSchema,
   CommercialReservationSchema,
   CommercialTerminalSchema,
 } from "@kuintessence/shared/federation/commercial";
 import { MarketQueryResultSchema } from "@kuintessence/shared/federation/market";
-import { and, eq } from "drizzle-orm";
+import {
+  type FederationTerminalProposal,
+  FederationTerminalProposalSchema,
+} from "@kuintessence/shared/federation/terminal-proposal";
+import { and, desc, eq, sql } from "drizzle-orm";
 import { federationMaterialDigest } from "./assets";
 import { collectExecutionTerminalEvidence } from "./execution-terminal-evidence";
+import { reviewExecutionTerminalSource } from "./execution-terminal-review";
 import { FabricClientFailure } from "./fabric-client";
 import type { MarketClient } from "./market-client";
 import { type FederationActor, requireFederationCapability } from "./permissions";
@@ -28,7 +36,7 @@ import {
 } from "./signatures";
 import { FederationTrustRegistry } from "./trust-registry";
 
-/** Provider statement only: no billing approval, settlement or ledger submission. */
+/** Institutional terminal statements and source review; never a bill or settlement. */
 export class FederationExecutionTerminalService {
   private readonly trust: FederationTrustRegistry;
   constructor(
@@ -53,6 +61,7 @@ export class FederationExecutionTerminalService {
     revisionId: string,
     reservationId: string,
     lock: boolean,
+    role: "provider" | "source" | "either" = "provider",
   ) {
     const [contract] = await tx
       .select()
@@ -88,9 +97,13 @@ export class FederationExecutionTerminalService {
       !contract.counterpartyJws ||
       reserve.request.mode !== "ledger_coordinated" ||
       terms.agreement.mode !== "ledger_coordinated" ||
-      reserve.request.recipientSiteId !== this.signing.siteId ||
+      (role === "provider" && reserve.request.recipientSiteId !== this.signing.siteId) ||
+      (role === "source" && reserve.request.senderSiteId !== this.signing.siteId) ||
+      ![reserve.request.senderSiteId, reserve.request.recipientSiteId].includes(
+        this.signing.siteId,
+      ) ||
       reserve.request.senderSiteId !== terms.agreement.sourceSiteId ||
-      terms.agreement.targetSiteId !== this.signing.siteId ||
+      terms.agreement.targetSiteId !== reserve.request.recipientSiteId ||
       reserve.request.agreementRevisionId !== revisionId ||
       reserve.reservationId !== reservationId ||
       reserve.domainId !== terms.domainId ||
@@ -103,9 +116,84 @@ export class FederationExecutionTerminalService {
   async get(actor: FederationActor, revisionId: string, reservationId: string) {
     return this.db.transaction(async (tx) => {
       await requireFederationCapability(tx, actor, "agreement.read");
-      await this.scope(tx, actor, revisionId, reservationId, false);
+      await this.scope(tx, actor, revisionId, reservationId, false, "either");
       const [saved] = await tx.select().from(terminals).where(this.filter(reservationId));
-      return saved ?? null;
+      if (!saved) return null;
+      const [submission] = await tx
+        .select({ id: submissions.id, state: submissions.state, lastError: submissions.lastError })
+        .from(submissions)
+        .where(
+          and(
+            eq(submissions.localSiteId, this.signing.siteId),
+            eq(submissions.agreementRevisionId, revisionId),
+            sql`${submissions.input}->>'operation' = 'record-execution-terminal'`,
+            sql`${submissions.input}->>'recordId' = ${saved.terminalId}`,
+          ),
+        );
+      const [transaction] = submission
+        ? await tx
+            .select({
+              transactionId: attempts.transactionId,
+              stage: attempts.stage,
+              validationCode: attempts.validationCode,
+              blockNumber: attempts.blockNumber,
+            })
+            .from(attempts)
+            .where(eq(attempts.submissionId, submission.id))
+            .orderBy(desc(attempts.number))
+            .limit(1)
+        : [];
+      return {
+        ...saved,
+        submission: submission ? { ...submission, transaction: transaction ?? null } : null,
+      };
+    });
+  }
+
+  private async activation(
+    reserve: ReturnType<typeof CommercialReservationSchema.parse>,
+    digest: string,
+  ) {
+    if (!this.market) throw new FabricClientFailure("LEDGER_UNAVAILABLE");
+    const response = MarketQueryResultSchema.safeParse(
+      await this.market.query({ operation: "get-demand", demandId: reserve.demandId }),
+    );
+    if (!response.success || response.data.operation !== "get-demand")
+      throw new FabricClientFailure("INVALID_ADAPTER_RESPONSE", true);
+    const state = response.data.demand;
+    const activation = state?.activation;
+    if (
+      !state ||
+      !["ACTIVE", "STOPPING"].includes(state.status) ||
+      !activation ||
+      state.demand.demandId !== reserve.demandId ||
+      state.demand.sourceSiteId !== reserve.request.senderSiteId ||
+      state.claim?.providerSiteId !== reserve.request.recipientSiteId ||
+      state.claim.claimId !== reserve.reservationId ||
+      state.claim.commercialDomainId !== reserve.domainId ||
+      activation.demandId !== reserve.demandId ||
+      activation.expectedVersion !== reserve.claimVersion ||
+      activation.gate.domainId !== reserve.domainId ||
+      activation.gate.reservationId !== reserve.reservationId ||
+      activation.gate.demandId !== reserve.demandId ||
+      activation.gate.reservationDigest !== digest ||
+      activation.gate.claimVersion !== reserve.claimVersion ||
+      activation.gate.version !== 1 ||
+      activation.gate.state !== "READY" ||
+      activation.gate.expiresAt !== reserve.request.expiresAt
+    )
+      throw new FederationError("OPERATION_CONFLICT");
+    return activation;
+  }
+
+  async proposal(actor: FederationActor, revisionId: string, reservationId: string) {
+    const row = await this.get(actor, revisionId, reservationId);
+    if (!row || row.payload.targetSiteId !== this.signing.siteId)
+      throw new FederationError("ASSET_UNAVAILABLE");
+    return FederationTerminalProposalSchema.parse({
+      payload: row.payload,
+      evidence: row.evidence,
+      providerJws: row.approvalJws,
     });
   }
 
@@ -118,36 +206,8 @@ export class FederationExecutionTerminalService {
       return { ...scope, saved };
     });
     if (initial.saved) return initial.saved;
-    if (!this.market) throw new FabricClientFailure("LEDGER_UNAVAILABLE");
-    const response = MarketQueryResultSchema.safeParse(
-      await this.market.query({ operation: "get-demand", demandId: initial.reserve.demandId }),
-    );
-    if (!response.success || response.data.operation !== "get-demand")
-      throw new FabricClientFailure("INVALID_ADAPTER_RESPONSE", true);
-    const state = response.data.demand;
-    const activation = state?.activation;
+    const activation = await this.activation(initial.reserve, initial.approval.digest);
     const reserve = initial.reserve;
-    if (
-      !state ||
-      !["ACTIVE", "STOPPING"].includes(state.status) ||
-      !activation ||
-      state.demand.demandId !== reserve.demandId ||
-      state.demand.sourceSiteId !== reserve.request.senderSiteId ||
-      state.claim?.providerSiteId !== this.signing.siteId ||
-      state.claim.claimId !== reservationId ||
-      state.claim.commercialDomainId !== reserve.domainId ||
-      activation.demandId !== reserve.demandId ||
-      activation.expectedVersion !== reserve.claimVersion ||
-      activation.gate.domainId !== reserve.domainId ||
-      activation.gate.reservationId !== reservationId ||
-      activation.gate.demandId !== reserve.demandId ||
-      activation.gate.reservationDigest !== initial.approval.digest ||
-      activation.gate.claimVersion !== reserve.claimVersion ||
-      activation.gate.version !== 1 ||
-      activation.gate.state !== "READY" ||
-      activation.gate.expiresAt !== reserve.request.expiresAt
-    )
-      throw new FederationError("OPERATION_CONFLICT");
     return this.db.transaction(async (tx) => {
       await requireFederationCapability(tx, actor, "agreement.approve");
       const current = await this.scope(tx, actor, revisionId, reservationId, true);
@@ -159,21 +219,7 @@ export class FederationExecutionTerminalService {
       const [prior] = await tx.select().from(terminals).where(this.filter(reservationId));
       if (prior) return prior;
       const now = this.clock();
-      for (const { siteId, jws } of [
-        { siteId: this.signing.siteId, jws: current.approval.approvalJws },
-        { siteId: reserve.request.senderSiteId, jws: current.approval.counterpartyJws },
-      ].sort((a, b) => a.siteId.localeCompare(b.siteId))) {
-        if (!jws) throw new FederationError("OPERATION_CONFLICT");
-        const keyId = federationMessageKeyId(jws);
-        await this.trust.assertKey(tx, siteId, keyId, now);
-        const key = await this.trust.resolveKey(siteId, keyId, now, tx);
-        const verified = await verifyFederationMessage(CommercialReservationSchema, jws, key, now);
-        if (
-          verified.digest !== current.approval.digest ||
-          federationMaterialDigest(verified.payload) !== federationMaterialDigest(reserve)
-        )
-          throw new FederationError("OPERATION_CONFLICT");
-      }
+      await this.verifyReservation(tx, current.approval, reserve, now);
       const evidence = await collectExecutionTerminalEvidence(
         tx,
         reserve,
@@ -242,6 +288,177 @@ export class FederationExecutionTerminalService {
             executionEvidenceDigest: payload.executionEvidenceDigest,
           },
         },
+      });
+      return saved;
+    });
+  }
+
+  private async verifyReservation(
+    tx: PgTransaction,
+    approval: typeof approvals.$inferSelect,
+    reserve: ReturnType<typeof CommercialReservationSchema.parse>,
+    now: Date,
+  ) {
+    for (const { siteId, jws } of [
+      { siteId: this.signing.siteId, jws: approval.approvalJws },
+      {
+        siteId:
+          this.signing.siteId === reserve.request.senderSiteId
+            ? reserve.request.recipientSiteId
+            : reserve.request.senderSiteId,
+        jws: approval.counterpartyJws,
+      },
+    ].sort((a, b) => a.siteId.localeCompare(b.siteId))) {
+      if (!jws) throw new FederationError("OPERATION_CONFLICT");
+      const keyId = federationMessageKeyId(jws);
+      await this.trust.assertKey(tx, siteId, keyId, now);
+      const key = await this.trust.resolveKey(siteId, keyId, now, tx);
+      const verified = await verifyFederationMessage(CommercialReservationSchema, jws, key, now);
+      if (
+        verified.digest !== approval.digest ||
+        federationMaterialDigest(verified.payload) !== federationMaterialDigest(reserve)
+      )
+        throw new FederationError("OPERATION_CONFLICT");
+    }
+  }
+
+  async countersign(
+    actor: FederationActor,
+    revisionId: string,
+    reservationId: string,
+    raw: FederationTerminalProposal,
+  ) {
+    const proposal = FederationTerminalProposalSchema.parse(raw);
+    const initial = await this.db.transaction(async (tx) => {
+      await requireFederationCapability(tx, actor, "agreement.approve");
+      const scope = await this.scope(tx, actor, revisionId, reservationId, false, "source");
+      const [saved] = await tx.select().from(terminals).where(this.filter(reservationId));
+      if (
+        saved &&
+        (federationMaterialDigest(saved.payload) !== federationMaterialDigest(proposal.payload) ||
+          federationMaterialDigest(saved.evidence) !==
+            federationMaterialDigest(proposal.evidence) ||
+          saved.counterpartyJws !== proposal.providerJws)
+      )
+        throw new FederationError("OPERATION_CONFLICT");
+      return { ...scope, saved };
+    });
+    if (initial.saved) return initial.saved;
+    const activation = await this.activation(initial.reserve, initial.approval.digest);
+    return this.db.transaction(async (tx) => {
+      await requireFederationCapability(tx, actor, "agreement.approve");
+      const current = await this.scope(tx, actor, revisionId, reservationId, true, "source");
+      const { payload, evidence } = proposal;
+      if (
+        current.approval.digest !== initial.approval.digest ||
+        federationMaterialDigest(current.reserve) !== federationMaterialDigest(initial.reserve) ||
+        payload.reservationId !== reservationId ||
+        payload.reservationDigest !== current.approval.digest ||
+        payload.domainId !== current.reserve.domainId ||
+        payload.sourceSiteId !== this.signing.siteId ||
+        payload.targetSiteId !== current.reserve.request.recipientSiteId ||
+        payload.activationId !== activation.activationId ||
+        payload.expectedGateVersion !== 1
+      )
+        throw new FederationError("OPERATION_CONFLICT");
+      const [prior] = await tx.select().from(terminals).where(this.filter(reservationId));
+      if (prior) {
+        if (
+          federationMaterialDigest(prior.payload) !== federationMaterialDigest(payload) ||
+          federationMaterialDigest(prior.evidence) !== federationMaterialDigest(evidence) ||
+          prior.counterpartyJws !== proposal.providerJws
+        )
+          throw new FederationError("OPERATION_CONFLICT");
+        return prior;
+      }
+      const now = this.clock();
+      const providerKeyId = federationMessageKeyId(proposal.providerJws);
+      for (const [siteId, keyId] of [
+        [payload.targetSiteId, providerKeyId],
+        [this.signing.siteId, this.signing.keyId],
+      ].sort((a, b) => (a[0] ?? "").localeCompare(b[0] ?? ""))) {
+        if (!siteId || !keyId) throw new FederationError("UNTRUSTED_IDENTITY");
+        await this.trust.assertKey(tx, siteId, keyId, now);
+      }
+      const providerKey = await this.trust.resolveKey(payload.targetSiteId, providerKeyId, now, tx);
+      const provider = await verifyFederationMessage(
+        CommercialTerminalSchema,
+        proposal.providerJws,
+        providerKey,
+        now,
+      );
+      if (federationMaterialDigest(provider.payload) !== federationMaterialDigest(payload))
+        throw new FederationError("OPERATION_CONFLICT");
+      await this.verifyReservation(tx, current.approval, current.reserve, now);
+      const sourceReview = await reviewExecutionTerminalSource(
+        tx,
+        this.trust,
+        actor.orgId,
+        current.reserve,
+        proposal,
+        Boolean(current.terms.agreement.resultPolicy),
+        now,
+      );
+      const key = await this.trust.resolveKey(this.signing.siteId, this.signing.keyId, now, tx);
+      if (!key.allowedKinds.includes("commercial-terminal"))
+        throw new FederationError("UNTRUSTED_IDENTITY");
+      const approvalJws = await signFederationMessage(
+        CommercialTerminalSchema,
+        payload,
+        this.signing,
+      );
+      const { digest } = await verifyFederationMessage(
+        CommercialTerminalSchema,
+        approvalJws,
+        key,
+        now,
+      );
+      if (digest !== provider.digest) throw new FederationError("OPERATION_CONFLICT");
+      const [saved] = await tx
+        .insert(terminals)
+        .values({
+          localSiteId: this.signing.siteId,
+          reservationId,
+          terminalId: payload.terminalId,
+          payload,
+          evidence,
+          digest,
+          approvalJws,
+          counterpartyJws: proposal.providerJws,
+          sourceReview,
+          approvedBy: actor.userId,
+        })
+        .returning();
+      if (!saved) throw new FederationError("OPERATION_CONFLICT");
+      await tx.insert(auditLog).values({
+        actor: actor.userId,
+        orgId: actor.orgId,
+        action: "federation.execution.terminal_countersign",
+        target: payload.terminalId,
+        diff: {
+          after: {
+            reservationId,
+            digest,
+            sourceReviewDigest: federationMaterialDigest(sourceReview),
+          },
+        },
+      });
+      await tx.insert(submissions).values({
+        id: randomUUID(),
+        localSiteId: this.signing.siteId,
+        agreementRevisionId: revisionId,
+        input: CommercialAdapterProposalInputSchema.parse({
+          operation: "record-execution-terminal",
+          domainId: payload.domainId,
+          recordId: payload.terminalId,
+          digest,
+          envelope: {
+            sourceSiteId: payload.sourceSiteId,
+            targetSiteId: payload.targetSiteId,
+            sourceJws: approvalJws,
+            targetJws: proposal.providerJws,
+          },
+        }),
       });
       return saved;
     });

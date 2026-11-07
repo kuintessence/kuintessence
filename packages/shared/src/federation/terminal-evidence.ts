@@ -120,3 +120,28 @@ export const FederationExecutionTerminalEvidenceSchema = z.strictObject({
 export type FederationExecutionTerminalEvidence = z.infer<
   typeof FederationExecutionTerminalEvidenceSchema
 >;
+
+/** Source-local review trail; do not disclose local import/user IDs to the provider. */
+export const FederationTerminalSourceReviewSchema = z.strictObject({
+  requestDigest: FederationDigestSchema,
+  requestJws: z.string().min(1).max(524288),
+  acceptanceDigest: FederationDigestSchema,
+  acceptanceJws: z.string().min(1).max(524288),
+  statusDigest: FederationDigestSchema,
+  statusReportJws: z.string().min(1).max(524288),
+  result: z
+    .strictObject({
+      importId: z.uuid(),
+      receiptDigest: FederationDigestSchema,
+      reportJws: z.string().min(1).max(524288),
+    })
+    .nullable(),
+  cancellation: z
+    .strictObject({
+      receiptDigest: FederationDigestSchema,
+      receiptJws: z.string().min(1).max(524288),
+    })
+    .nullable(),
+  reviewedAt: z.iso.datetime(),
+});
+export type FederationTerminalSourceReview = z.infer<typeof FederationTerminalSourceReviewSchema>;

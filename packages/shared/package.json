@@ -41,6 +41,11 @@
       "types": "./src/federation/commercial.ts",
       "default": "./src/federation/commercial.ts"
     },
+    "./federation/terminal-proposal": {
+      "bun": "./src/federation/terminal-proposal.ts",
+      "types": "./src/federation/terminal-proposal.ts",
+      "default": "./src/federation/terminal-proposal.ts"
+    },
     "./federation/usage-exchange": {
       "bun": "./src/federation/usage-exchange.ts",
       "types": "./src/federation/usage-exchange.ts",

@@ -5,6 +5,7 @@ import {
   CommercialExecutionApprovalSchema,
   CommercialUsageCorrectionInputSchema,
 } from "@kuintessence/shared/federation/commercial";
+import { FederationTerminalProposalSchema } from "@kuintessence/shared/federation/terminal-proposal";
 import { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { z } from "zod";
@@ -44,7 +45,11 @@ export function createFederationCommercialRoutes(
     c.header("cache-control", "no-store");
     await next();
   });
-  r.use("/federation/commercial-agreements/*", bodyLimit({ maxSize: 600000 }));
+  r.use("/federation/commercial-agreements/*", (c, next) =>
+    bodyLimit({
+      maxSize: c.req.path.endsWith("/terminal/countersign") ? 16 * 1024 * 1024 : 600000,
+    })(c, next),
+  );
   r.onError((error, c) => {
     if (error instanceof FabricClientFailure)
       return c.json({ error: { code: error.code } }, error.needsReview ? 502 : 503);
@@ -129,6 +134,31 @@ export function createFederationCommercialRoutes(
     const record = id.extend({ recordId: z.uuid() });
     const path = "/federation/commercial-agreements/:revisionId/execution-approvals";
     if (terminals) {
+      r.get(`${path}/:recordId/terminal/proposal`, kqValidator("param", record), async (c) =>
+        c.json({
+          success: true,
+          data: await terminals.proposal(
+            c.get("federationActor"),
+            c.req.valid("param").revisionId,
+            c.req.valid("param").recordId,
+          ),
+        }),
+      );
+      r.post(
+        `${path}/:recordId/terminal/countersign`,
+        kqValidator("param", record),
+        kqValidator("json", FederationTerminalProposalSchema),
+        async (c) =>
+          c.json({
+            success: true,
+            data: await terminals.countersign(
+              c.get("federationActor"),
+              c.req.valid("param").revisionId,
+              c.req.valid("param").recordId,
+              c.req.valid("json"),
+            ),
+          }),
+      );
       r.get(`${path}/:recordId/terminal`, kqValidator("param", record), async (c) =>
         c.json({
           success: true,

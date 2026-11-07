@@ -18,6 +18,7 @@ import type {
   FederationStatusReport,
   FederationStorageReconciliationRecord,
   FederationTerminalEvidence,
+  FederationTerminalSourceReview,
 } from "@kuintessence/shared/federation";
 import type {
   CommercialAdapterProposalInput,
@@ -1106,7 +1107,7 @@ export const federationCommercialSubmissions = pgTable(
     ),
     check(
       "federation_commercial_submission_input",
-      sql`(${t.input}->>'operation' IN ('register-agreement','record-usage','reserve-execution','release-execution') AND ${t.input}->>'recordId' IS NOT NULL AND ${t.input}->>'domainId' IS NOT NULL AND ${t.input}->>'digest' ~ '^sha256:[a-f0-9]{64}$') IS TRUE`,
+      sql`(${t.input}->>'operation' IN ('register-agreement','record-usage','reserve-execution','release-execution','record-execution-terminal') AND ${t.input}->>'recordId' IS NOT NULL AND ${t.input}->>'domainId' IS NOT NULL AND ${t.input}->>'digest' ~ '^sha256:[a-f0-9]{64}$') IS TRUE`,
     ),
     check(
       "federation_commercial_submission_lease",
@@ -1180,7 +1181,7 @@ export const federationCommercialExecutionApprovals = pgTable(
   ],
 );
 
-/** Presence is a permanent execution fence, committed atomically with the provider signature. */
+/** Presence is a permanent execution fence, committed atomically with the local signature. */
 export const federationExecutionTerminals = pgTable(
   "federation_execution_terminals",
   {
@@ -1191,6 +1192,8 @@ export const federationExecutionTerminals = pgTable(
     digest: varchar("digest", { length: 71 }).notNull(),
     evidence: jsonb("evidence").$type<FederationExecutionTerminalEvidence>().notNull(),
     approvalJws: text("approval_jws").notNull(),
+    counterpartyJws: text("counterparty_jws"),
+    sourceReview: jsonb("source_review").$type<FederationTerminalSourceReview>(),
     approvedBy: uuid("approved_by")
       .notNull()
       .references(() => users.id),
@@ -1213,7 +1216,8 @@ export const federationExecutionTerminals = pgTable(
       AND ${t.payload}->>'kind' = 'commercial-terminal'
       AND ${t.payload}->>'terminalId' = ${t.terminalId}::text
       AND ${t.payload}->>'reservationId' = ${t.reservationId}::text
-      AND ${t.payload}->>'targetSiteId' = ${t.localSiteId}::text
+      AND ((${t.payload}->>'targetSiteId' = ${t.localSiteId}::text AND ${t.sourceReview} IS NULL)
+        OR (${t.payload}->>'sourceSiteId' = ${t.localSiteId}::text AND ${t.sourceReview} IS NOT NULL AND ${t.counterpartyJws} IS NOT NULL))
       AND ${t.evidence}->>'reservationId' = ${t.reservationId}::text
       AND ${t.evidence}->>'activationId' = ${t.payload}->>'activationId'
       AND ${t.evidence}->'workflow'->>'status' = ${t.payload}->>'outcome'

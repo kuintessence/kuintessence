@@ -19,6 +19,7 @@ import {
   federationMaterials,
   federationOutbound,
   federationReservations,
+  federationResultImports,
   federationResultReceipts,
   federationSigningKeys,
   federationSites,
@@ -40,12 +41,17 @@ import {
   workflowRuns,
 } from "@kuintessence/db";
 import {
+  FederationAcceptanceSchema,
   FederationAgreementSchema,
+  FederationCancellationReceiptSchema,
   FederationCancellationSchema,
   FederationDelegationSchema,
   type FederationMode,
   FederationResultReceiptAckSchema,
   FederationResultReceiptSchema,
+  FederationResultReportSchema,
+  FederationStatusQuerySchema,
+  FederationStatusReportSchema,
 } from "@kuintessence/shared/federation";
 import {
   type CommercialAdapterProposalInput,
@@ -182,6 +188,10 @@ async function fixture(
               "commercial-release",
               "commercial-terminal",
               "result-receipt",
+              "status-query",
+              "status-report",
+              "result-report",
+              "cancellation-receipt",
               "agreement",
               "acceptance",
               "delegation",
@@ -323,6 +333,9 @@ afterAll(async () => {
     await db
       .delete(federationReservations)
       .where(inArray(federationReservations.senderSiteId, siteIds));
+    await db
+      .delete(federationResultImports)
+      .where(inArray(federationResultImports.localSiteId, siteIds));
     await db.delete(federationOutbound).where(inArray(federationOutbound.localSiteId, siteIds));
     await db
       .delete(federationAssetMappings)
@@ -2821,4 +2834,573 @@ test("execution terminal waits for the original source cancellation cleanup moni
     .set({ confirmedAt: new Date() })
     .where(eq(federationCancellations.operationId, reservation.operationId));
   expect((await f.approveTerminal()).evidence.cancellation?.digest).toBe(digest);
+});
+
+async function terminalSourceFixture(
+  outcome: "completed" | "failed" | "cancelled" = "completed",
+  withResults = false,
+) {
+  const f = await terminalFixture(outcome, withResults);
+  const sourceSiteId = f.a.signing.siteId;
+  const sourceConfirmation = new FederationExecutionConfirmationService(db, sourceSiteId, {
+    query: async () => ({ operation: "get-demand", demand: f.state }),
+  });
+  await sourceConfirmation.request(f.actor, f.revisionId, f.reservation.reservationId);
+  const market = new FederationMarketService(db, sourceSiteId, f.marketAdapter);
+  for (let i = 0; i < 3; i++) await market.advanceNext();
+  const [reservation] = await db
+    .select()
+    .from(federationReservations)
+    .where(eq(federationReservations.id, f.reservation.reservationId));
+  if (!reservation?.receiptJws) throw new Error("Missing receiver reservation");
+  const outbound = new FederationOutboundService(
+    db,
+    f.a.signing,
+    async (_endpoint, jws, path) => {
+      if (!path || path === "/federation/v1/delegations") return reservation.receiptJws ?? "";
+      if (path !== "/federation/v1/status") throw new Error("Unexpected fixture transport");
+      const key = await f.trust.resolveKey(sourceSiteId, f.a.signing.keyId, new Date());
+      const { payload: query, digest } = await verifyFederationMessage(
+        FederationStatusQuerySchema,
+        jws,
+        key,
+        new Date(),
+      );
+      const { issuedAt: _issuedAt, expiresAt: _expiresAt, ...identity } = query;
+      const report = FederationStatusReportSchema.parse({
+        ...identity,
+        kind: "status-report",
+        senderSiteId: f.siteId,
+        recipientSiteId: sourceSiteId,
+        queryDigest: digest,
+        observedAt: new Date().toISOString(),
+        preparation: null,
+        workflow: { status: outcome, updatedAt: new Date().toISOString() },
+      });
+      return signFederationMessage(FederationStatusReportSchema, report, f.b.signing);
+    },
+    f.assets,
+    undefined,
+    sourceConfirmation,
+  );
+  await outbound.enqueue(f.actor, f.reservation.request);
+  expect(await outbound.deliverNext()).toBe(true);
+  expect(await outbound.refreshStatusNext()).toBe(true);
+  const sourceTerminal = new FederationExecutionTerminalService(db, f.a.signing, {
+    query: async () => ({ operation: "get-demand", demand: f.state }),
+  });
+  return {
+    ...f,
+    sourceTerminal,
+    sourceConfirmation,
+    outbound,
+    receiver: reservation,
+    proposal: () => f.terminal.proposal(f.actor, f.revisionId, f.reservation.reservationId),
+  };
+}
+
+for (const outcome of ["completed", "failed", "cancelled"] as const)
+  test(`terminal source ${outcome} countersigns verified local evidence and permanently fences its own execution`, async () => {
+    const f = await terminalSourceFixture(outcome);
+    const provider = await f.approveTerminal();
+    const proposal = await f.proposal();
+    const call = () =>
+      f.sourceTerminal.countersign(f.actor, f.revisionId, f.reservation.reservationId, proposal);
+    const signed = await Promise.all([call(), call(), call()]);
+    const first = signed[0];
+    if (!first) throw new Error("Missing countersignature");
+    expect(signed.every((row) => row.approvalJws === first.approvalJws)).toBe(true);
+    expect(first.digest).toBe(provider.digest);
+    expect(first.counterpartyJws).toBe(provider.approvalJws);
+    expect(first.sourceReview?.requestDigest).toBe(f.receiver.requestDigest);
+    expect(first.sourceReview?.requestJws).toBe(f.receiver.requestJws);
+    if (!f.receiver.receiptJws) throw new Error("Missing acceptance signature");
+    expect(first.sourceReview?.acceptanceJws).toBe(f.receiver.receiptJws);
+    const key = await f.trust.resolveKey(f.a.signing.siteId, f.a.signing.keyId, new Date());
+    expect(
+      (await verifyFederationMessage(CommercialTerminalSchema, first.approvalJws, key, new Date()))
+        .digest,
+    ).toBe(provider.digest);
+    await expect(
+      db.transaction((tx) =>
+        f.sourceConfirmation.authorize(tx, f.actor.orgId, f.reservation.request),
+      ),
+    ).rejects.toMatchObject({ code: "POLICY_DENIED" });
+    const restart = new FederationExecutionTerminalService(db, f.a.signing);
+    expect(
+      await restart.countersign(f.actor, f.revisionId, f.reservation.reservationId, proposal),
+    ).toEqual(first);
+    expect(
+      await db
+        .select()
+        .from(auditLog)
+        .where(
+          and(
+            eq(auditLog.actor, f.actor.userId),
+            eq(auditLog.action, "federation.execution.terminal_countersign"),
+          ),
+        ),
+    ).toHaveLength(1);
+    expect(
+      await db
+        .select()
+        .from(federationBudgets)
+        .where(eq(federationBudgets.domainId, f.terms.agreement.budgetDomainId)),
+    ).toHaveLength(0);
+  });
+
+test("terminal source rejects altered evidence, unsigned digests, wrong activation and stale local status", async () => {
+  const f = await terminalSourceFixture();
+  await f.approveTerminal();
+  const original = await f.proposal();
+  for (const field of ["evidence", "activation", "signature"] as const) {
+    const proposal = structuredClone(original);
+    if (field === "evidence") proposal.evidence.jobs = [];
+    else if (field === "activation") proposal.payload.activationId = randomUUID();
+    else
+      proposal.providerJws = await signFederationMessage(
+        CommercialTerminalSchema,
+        proposal.payload,
+        f.a.signing,
+      );
+    await expect(
+      f.sourceTerminal.countersign(f.actor, f.revisionId, f.reservation.reservationId, proposal),
+    ).rejects.toThrow();
+  }
+  await db
+    .update(federationOutbound)
+    .set({ statusReport: null, statusReportJws: null, statusVerifiedAt: null })
+    .where(
+      and(
+        eq(federationOutbound.localSiteId, f.a.signing.siteId),
+        eq(federationOutbound.operationId, f.reservation.request.operationId),
+      ),
+    );
+  await expect(
+    f.sourceTerminal.countersign(f.actor, f.revisionId, f.reservation.reservationId, original),
+  ).rejects.toMatchObject({ code: "DATA_WAITING" });
+  expect(
+    await db
+      .select()
+      .from(federationExecutionTerminals)
+      .where(eq(federationExecutionTerminals.localSiteId, f.a.signing.siteId)),
+  ).toHaveLength(0);
+});
+
+test("terminal source rejects a signed but incomplete job stop assertion", async () => {
+  const f = await terminalSourceFixture("cancelled");
+  await f.approveTerminal();
+  const proposal = await f.proposal();
+  const job = proposal.evidence.jobs[0];
+  if (!job) throw new Error("Missing job");
+  job.evidence.source = "platform-cancellation";
+  job.evidence.agentEventId = null;
+  job.digest = federationMaterialDigest(job.evidence);
+  job.cancellations = [];
+  proposal.payload.executionEvidenceDigest = federationMaterialDigest(proposal.evidence);
+  proposal.providerJws = await signFederationMessage(
+    CommercialTerminalSchema,
+    proposal.payload,
+    f.b.signing,
+  );
+  await expect(
+    f.sourceTerminal.countersign(f.actor, f.revisionId, f.reservation.reservationId, proposal),
+  ).rejects.toMatchObject({ code: "OPERATION_CONFLICT" });
+});
+
+test("terminal source requires current org approval and original business signing trust", async () => {
+  const f = await terminalSourceFixture();
+  await f.approveTerminal();
+  const proposal = await f.proposal();
+  await expect(
+    f.sourceTerminal.countersign(
+      { ...f.actor, orgId: randomUUID() },
+      f.revisionId,
+      f.reservation.reservationId,
+      proposal,
+    ),
+  ).rejects.toMatchObject({ code: "POLICY_DENIED" });
+  await f.trust.revoke(f.siteId, { keyId: f.b.signing.keyId }, f.actor.userId);
+  await expect(
+    f.sourceTerminal.countersign(f.actor, f.revisionId, f.reservation.reservationId, proposal),
+  ).rejects.toMatchObject({ code: "UNTRUSTED_IDENTITY" });
+});
+
+test("terminal source requires its own published result import matching the signed provider manifest", async () => {
+  const f = await terminalSourceFixture("completed", true);
+  const [run] = await db
+    .select()
+    .from(workflowRuns)
+    .where(eq(workflowRuns.id, f.binding.workflowRunId));
+  if (!run?.completedAt || !f.terms.agreement.resultPolicy) throw new Error("Missing completion");
+  const request = f.reservation.request;
+  const manifest = {
+    template: request.template,
+    inputManifestDigest: request.inputManifestDigest,
+    environmentLockDigest: request.environmentLockDigest,
+    completedAt: run.completedAt.toISOString(),
+    availableUntil: f.terms.agreement.resultPolicy.availableUntil,
+    outputs: [
+      {
+        outputId: `sha256:${"e".repeat(64)}`,
+        nodeId: "terminal",
+        descriptor: "result",
+        type: "File" as const,
+        contentDigest: `sha256:${"f".repeat(64)}`,
+        sizeBytes: 42,
+        files: [{ path: "result.txt", sha256: "f".repeat(64), sizeBytes: 42 }],
+      },
+    ],
+  };
+  const manifestDigest = federationMaterialDigest(manifest);
+  const identity = {
+    protocolVersion: 1 as const,
+    operationId: request.operationId,
+    agreementRevisionId: f.revisionId,
+    taskId: request.taskId,
+    attempt: request.attempt,
+    reservationId: f.reservation.reservationId,
+    requestDigest: f.receiver.requestDigest,
+  };
+  const receipt = FederationResultReceiptSchema.parse({
+    ...identity,
+    kind: "result-receipt",
+    receiptId: randomUUID(),
+    senderSiteId: f.a.signing.siteId,
+    recipientSiteId: f.siteId,
+    manifestDigest,
+    fileCount: 1,
+    sizeBytes: 42,
+    receivedAt: new Date().toISOString(),
+  });
+  const receiptJws = await signFederationMessage(
+    FederationResultReceiptSchema,
+    receipt,
+    f.a.signing,
+  );
+  const key = await f.trust.resolveKey(f.a.signing.siteId, f.a.signing.keyId, new Date());
+  const { digest } = await verifyFederationMessage(
+    FederationResultReceiptSchema,
+    receiptJws,
+    key,
+    new Date(),
+  );
+  const acknowledgement = FederationResultReceiptAckSchema.parse({
+    protocolVersion: 1,
+    kind: "result-receipt-ack",
+    receiptId: receipt.receiptId,
+    operationId: request.operationId,
+    senderSiteId: f.siteId,
+    recipientSiteId: f.a.signing.siteId,
+    receiptDigest: digest,
+    recordedAt: new Date().toISOString(),
+  });
+  await db.insert(federationResultReceipts).values({
+    localSiteId: f.siteId,
+    senderSiteId: f.a.signing.siteId,
+    receiptId: receipt.receiptId,
+    reservationId: f.reservation.reservationId,
+    receipt,
+    receiptJws,
+    digest,
+    acknowledgement,
+    acknowledgementJws: await signFederationMessage(
+      FederationResultReceiptAckSchema,
+      acknowledgement,
+      f.b.signing,
+    ),
+  });
+  await f.approveTerminal();
+  const proposal = await f.proposal();
+  const sign = () =>
+    f.sourceTerminal.countersign(f.actor, f.revisionId, f.reservation.reservationId, proposal);
+  await expect(sign()).rejects.toMatchObject({ code: "DATA_WAITING" });
+  const report = FederationResultReportSchema.parse({
+    ...identity,
+    kind: "result-report",
+    queryId: randomUUID(),
+    senderSiteId: f.siteId,
+    recipientSiteId: f.a.signing.siteId,
+    queryDigest: `sha256:${"a".repeat(64)}`,
+    observedAt: new Date().toISOString(),
+    manifestDigest,
+    manifest,
+  });
+  const reportJws = await signFederationMessage(FederationResultReportSchema, report, f.b.signing);
+  const importId = randomUUID();
+  await db.insert(federationResultImports).values({
+    id: importId,
+    localSiteId: f.a.signing.siteId,
+    localOrgId: f.actor.orgId,
+    operationId: request.operationId,
+    requestedBy: f.actor.userId,
+    report,
+    reportJws,
+    manifestDigest,
+  });
+  await expect(sign()).rejects.toMatchObject({ code: "DATA_WAITING" });
+  await db
+    .update(federationResultImports)
+    .set({
+      state: "available",
+      receipt,
+      receiptJws,
+      report: { ...report, manifest: { ...manifest, outputs: [] } },
+    })
+    .where(eq(federationResultImports.id, importId));
+  await expect(sign()).rejects.toMatchObject({ code: "OPERATION_CONFLICT" });
+  await db
+    .update(federationResultImports)
+    .set({ report })
+    .where(eq(federationResultImports.id, importId));
+  expect((await sign()).sourceReview?.result).toEqual({
+    importId,
+    receiptDigest: digest,
+    reportJws,
+  });
+});
+
+test("terminal source waits for its own stopped cancellation receipt and rejects a different cancellation", async () => {
+  const f = await terminalSourceFixture("cancelled");
+  const identity = {
+    protocolVersion: 1 as const,
+    operationId: f.reservation.request.operationId,
+    agreementRevisionId: f.revisionId,
+    taskId: f.reservation.request.taskId,
+    attempt: 1,
+    requestDigest: f.receiver.requestDigest,
+  };
+  const cancelRequest = FederationCancellationSchema.parse({
+    ...identity,
+    kind: "cancellation",
+    senderSiteId: f.a.signing.siteId,
+    recipientSiteId: f.siteId,
+    issuedAt: new Date().toISOString(),
+  });
+  const cancelJws = await signFederationMessage(
+    FederationCancellationSchema,
+    cancelRequest,
+    f.a.signing,
+  );
+  const sourceKey = await f.trust.resolveKey(f.a.signing.siteId, f.a.signing.keyId, new Date());
+  const { digest: cancelDigest } = await verifyFederationMessage(
+    FederationCancellationSchema,
+    cancelJws,
+    sourceKey,
+    new Date(),
+  );
+  await db.insert(federationCancellations).values({
+    localSiteId: f.siteId,
+    senderSiteId: f.a.signing.siteId,
+    operationId: identity.operationId,
+    agreementRevisionId: f.revisionId,
+    requestDigest: identity.requestDigest,
+    cancellationDigest: cancelDigest,
+    request: cancelRequest,
+    requestJws: cancelJws,
+    recordedAt: new Date(),
+    confirmedAt: new Date(),
+  });
+  const filter = and(
+    eq(federationOutbound.localSiteId, f.a.signing.siteId),
+    eq(federationOutbound.operationId, identity.operationId),
+  );
+  await db
+    .update(federationOutbound)
+    .set({
+      cancelRequest,
+      cancelJws,
+      cancelDigest,
+      cancelState: "pending",
+      cancelRequestedBy: f.actor.userId,
+      cancelNextAttemptAt: new Date(),
+    })
+    .where(filter);
+  await f.approveTerminal();
+  const proposal = await f.proposal();
+  const sign = () =>
+    f.sourceTerminal.countersign(f.actor, f.revisionId, f.reservation.reservationId, proposal);
+  await expect(sign()).rejects.toMatchObject({ code: "DATA_WAITING" });
+  const cancelReceipt = FederationCancellationReceiptSchema.parse({
+    ...identity,
+    kind: "cancellation-receipt",
+    senderSiteId: f.siteId,
+    recipientSiteId: f.a.signing.siteId,
+    cancellationDigest: cancelDigest,
+    recordedAt: cancelRequest.issuedAt,
+    observedAt: new Date().toISOString(),
+    reservationId: f.reservation.reservationId,
+    state: "stopped",
+    workflow: { status: "cancelled", updatedAt: new Date().toISOString() },
+  });
+  const cancelReceiptJws = await signFederationMessage(
+    FederationCancellationReceiptSchema,
+    cancelReceipt,
+    f.b.signing,
+  );
+  await db
+    .update(federationOutbound)
+    .set({
+      cancelState: "stopped",
+      cancelReceipt,
+      cancelReceiptJws,
+      cancelDigest: `sha256:${"0".repeat(64)}`,
+    })
+    .where(filter);
+  await expect(sign()).rejects.toMatchObject({ code: "OPERATION_CONFLICT" });
+  await db.update(federationOutbound).set({ cancelDigest }).where(filter);
+  expect((await sign()).sourceReview?.cancellation?.receiptJws).toBe(cancelReceiptJws);
+});
+
+test("terminal source atomically enqueues private terminal and recovers the same transaction after adapter outage", async () => {
+  const f = await terminalSourceFixture("failed");
+  await f.approveTerminal();
+  const proposal = await f.proposal();
+  const saved = await f.sourceTerminal.countersign(
+    f.actor,
+    f.revisionId,
+    f.reservation.reservationId,
+    proposal,
+  );
+  const view = () => f.sourceTerminal.get(f.actor, f.revisionId, f.reservation.reservationId);
+  expect((await view())?.submission?.state).toBe("pending");
+  expect(await f.service.advanceNext()).toBe(true);
+  const before = await view();
+  expect(before?.submission?.transaction?.stage).toBe("proposal");
+  f.adapter.offline = true;
+  expect(await f.service.advanceNext()).toBe(true);
+  expect((await view())?.submission?.transaction?.transactionId).toBe(
+    before?.submission?.transaction?.transactionId,
+  );
+  f.adapter.offline = false;
+  const worker = new FederationCommercialSubmissionService(db, f.a.signing.siteId, f.adapter);
+  if (!before?.submission) throw new Error("Missing submission");
+  await db
+    .update(submissions)
+    .set({ nextAttemptAt: new Date(0) })
+    .where(eq(submissions.id, before.submission.id));
+  expect(await worker.advanceNext()).toBe(true);
+  expect(await worker.advanceNext()).toBe(true);
+  expect((await view())?.submission).toMatchObject({
+    state: "committed",
+    transaction: {
+      stage: "committed",
+      transactionId: before.submission.transaction?.transactionId,
+    },
+  });
+  const wire = f.adapter.prepares.find((input) => input.operation === "record-execution-terminal");
+  expect(wire?.digest).toBe(saved.digest);
+  expect(JSON.stringify(wire)).not.toContain("executionSnapshotDigest");
+  expect(JSON.stringify(wire)).not.toContain(f.jobId);
+  expect(
+    await f.sourceTerminal.countersign(
+      f.actor,
+      f.revisionId,
+      f.reservation.reservationId,
+      proposal,
+    ),
+  ).toEqual(saved);
+});
+
+test("terminal source disclosure refuses a replaced signature and audit failure rolls back signing and enqueue", async () => {
+  const f = await terminalSourceFixture();
+  await f.approveTerminal();
+  const proposal = await f.proposal();
+  await db.execute(
+    sql`alter table audit_log add constraint test_terminal_source_audit check (action <> 'federation.execution.terminal_countersign' OR actor <> ${sql.raw(`'${f.actor.userId}'`)})`,
+  );
+  try {
+    await expect(
+      f.sourceTerminal.countersign(f.actor, f.revisionId, f.reservation.reservationId, proposal),
+    ).rejects.toThrow();
+    expect(
+      await f.sourceTerminal.get(f.actor, f.revisionId, f.reservation.reservationId),
+    ).toBeNull();
+  } finally {
+    await db.execute(sql`alter table audit_log drop constraint test_terminal_source_audit`);
+  }
+  await f.sourceTerminal.countersign(f.actor, f.revisionId, f.reservation.reservationId, proposal);
+  const view = await f.sourceTerminal.get(f.actor, f.revisionId, f.reservation.reservationId);
+  if (!view?.submission) throw new Error("Missing submission");
+  const [row] = await db.select().from(submissions).where(eq(submissions.id, view.submission.id));
+  if (row?.input.operation !== "record-execution-terminal")
+    throw new Error("Missing terminal operation");
+  await db
+    .update(submissions)
+    .set({
+      input: {
+        ...row.input,
+        envelope: { ...row.input.envelope, sourceJws: row.input.envelope.targetJws },
+      },
+    })
+    .where(eq(submissions.id, row.id));
+  const count = f.adapter.prepares.length;
+  expect(await f.service.advanceNext()).toBe(true);
+  expect(f.adapter.prepares).toHaveLength(count);
+  expect(
+    (await f.sourceTerminal.get(f.actor, f.revisionId, f.reservation.reservationId))?.submission
+      ?.state,
+  ).toBe("needs_review");
+});
+
+test("terminal source rejects a signed acceptance for different consideration", async () => {
+  const f = await terminalSourceFixture();
+  await f.approveTerminal();
+  const proposal = await f.proposal();
+  const receipt = { ...f.receiver.receipt, reservedAmount: "1" };
+  await db
+    .update(federationOutbound)
+    .set({
+      receipt,
+      receiptJws: await signFederationMessage(FederationAcceptanceSchema, receipt, f.b.signing),
+    })
+    .where(
+      and(
+        eq(federationOutbound.localSiteId, f.a.signing.siteId),
+        eq(federationOutbound.operationId, f.reservation.request.operationId),
+      ),
+    );
+  await expect(
+    f.sourceTerminal.countersign(f.actor, f.revisionId, f.reservation.reservationId, proposal),
+  ).rejects.toMatchObject({ code: "OPERATION_CONFLICT" });
+});
+
+test("terminal source HTTP requires an institutional human and the complete signed proposal", async () => {
+  const f = await terminalSourceFixture();
+  await f.approveTerminal();
+  const proposal = await f.proposal();
+  const app = new Hono();
+  app.onError(createErrorHandler(pino({ level: "silent" })));
+  app.use("*", async (c, next) => {
+    c.set("principal" as never, { userId: f.actor.userId, orgId: f.actor.orgId } as never);
+    if (c.req.header("x-test-automation")) c.set("automation" as never, true as never);
+    await next();
+  });
+  app.route(
+    "/",
+    createFederationCommercialRoutes(
+      f.approvals,
+      f.service,
+      undefined,
+      undefined,
+      f.execution,
+      undefined,
+      undefined,
+      f.sourceTerminal,
+    ),
+  );
+  const path = `/federation/commercial-agreements/${f.revisionId}/execution-approvals/${f.reservation.reservationId}/terminal/countersign`;
+  const post = (body: unknown, automation = false) =>
+    app.request(path, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        ...(automation ? { "x-test-automation": "1" } : {}),
+      },
+      body: JSON.stringify(body),
+    });
+  expect((await post({})).status).toBe(400);
+  expect((await post(proposal, true)).status).toBe(403);
+  expect((await post(proposal)).status).toBe(200);
+  expect((await post(proposal)).status).toBe(200);
 });
