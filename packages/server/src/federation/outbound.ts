@@ -47,6 +47,14 @@ function summary(row: Outbound) {
     lastError: row.lastError,
     receipt: row.receipt,
     cancellation: cancellationSummary(row),
+    remoteStatus: {
+      preparation: row.statusReport?.preparation ?? null,
+      workflow: row.statusReport?.workflow ?? null,
+      observedAt: row.statusReport?.observedAt ?? null,
+      verifiedAt: row.statusVerifiedAt,
+      lastError: row.statusLastError,
+      nextAttemptAt: row.statusNextAttemptAt,
+    },
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   };
@@ -345,7 +353,11 @@ export class FederationOutboundService {
     });
   }
 
-  async remoteStatus(actor: FederationActor, operationId: string) {
+  remoteStatus(actor: FederationActor, operationId: string) {
+    return this.queryStatus(actor, operationId);
+  }
+
+  private async queryStatus(actor: FederationActor, operationId: string, claim?: string) {
     const authorize = async (tx: FederationTransaction) => {
       await requireFederationCapability(tx, actor, "delegation.read");
       const [row] = await tx
@@ -405,12 +417,95 @@ export class FederationOutboundService {
       this.clock(),
     );
     assertFederationStatusReport(query, verified.digest, report, this.clock());
-    await this.db.transaction(async (tx) => {
+    const verifiedAt = await this.db.transaction(async (tx) => {
       await authorize(tx);
       await this.trust.assertKey(tx, peer.siteId, keyId, this.clock());
-      assertFederationStatusReport(query, verified.digest, report, this.clock());
+      if (claim) {
+        const [current] = await tx
+          .select({ claim: federationOutbound.statusClaim })
+          .from(federationOutbound)
+          .where(this.key(operationId))
+          .for("update");
+        if (current?.claim !== claim) throw new FederationError("OPERATION_CONFLICT");
+      }
+      const now = this.clock();
+      // Lock waits must not extend either signing key's validity.
+      if ([ownKey, peer].some((key) => now < key.validFrom || now >= key.validUntil))
+        throw new FederationError("UNTRUSTED_IDENTITY");
+      assertFederationStatusReport(query, verified.digest, report, now);
+      if (claim) {
+        const terminal =
+          report.workflow && ["completed", "failed", "cancelled"].includes(report.workflow.status);
+        await tx
+          .update(federationOutbound)
+          .set({
+            statusReport: report,
+            statusReportJws: reportJws,
+            statusVerifiedAt: now,
+            statusLastError: null,
+            statusClaim: null,
+            statusNextAttemptAt: terminal ? null : new Date(now.getTime() + 30_000),
+            updatedAt: now,
+          })
+          .where(this.key(operationId));
+      }
+      return now.toISOString();
     });
-    return { report, reportJws, verifiedAt: this.clock().toISOString() };
+    return { report, reportJws, verifiedAt };
+  }
+
+  async refreshStatusNext(): Promise<boolean> {
+    const claim = crypto.randomUUID();
+    const claimed = await this.db.transaction(async (tx) => {
+      const [row] = await tx
+        .select()
+        .from(federationOutbound)
+        .where(
+          and(
+            eq(federationOutbound.localSiteId, this.signingKey.siteId),
+            eq(federationOutbound.state, "accepted"),
+            lte(federationOutbound.statusNextAttemptAt, this.clock()),
+          ),
+        )
+        .orderBy(asc(federationOutbound.statusNextAttemptAt), asc(federationOutbound.operationId))
+        .limit(1)
+        .for("update", { skipLocked: true });
+      if (!row) return undefined;
+      await tx
+        .update(federationOutbound)
+        .set({
+          statusClaim: claim,
+          statusNextAttemptAt: new Date(this.clock().getTime() + 30_000),
+        })
+        .where(this.key(row.operationId));
+      return row;
+    });
+    if (!claimed) return false;
+    try {
+      await this.queryStatus(
+        { userId: claimed.submittedBy, orgId: claimed.localOrgId },
+        claimed.operationId,
+        claim,
+      );
+    } catch (error) {
+      const lastError =
+        error instanceof FederationError || error instanceof FederationDeliveryError
+          ? error.code
+          : error instanceof AppError && error.statusCode === 403
+            ? "POLICY_DENIED"
+            : "DELIVERY_UNAVAILABLE";
+      // Keep the last authenticated observation; transport failure is not computation failure.
+      await this.db
+        .update(federationOutbound)
+        .set({
+          statusLastError: lastError,
+          statusClaim: null,
+          statusNextAttemptAt: new Date(this.clock().getTime() + 30_000),
+          updatedAt: this.clock(),
+        })
+        .where(and(this.key(claimed.operationId), eq(federationOutbound.statusClaim, claim)));
+    }
+    return true;
   }
 
   async deliverNext(): Promise<boolean> {
@@ -541,6 +636,7 @@ export class FederationOutboundService {
           .update(federationOutbound)
           .set({
             state: "accepted",
+            statusNextAttemptAt: this.clock(),
             receipt,
             receiptJws,
             lastError: null,
@@ -617,7 +713,9 @@ export class FederationOutboundWorker {
       const delivered = await this.service.deliverNext();
       if (this.stopping) break;
       const receipted = await this.service.resultReceipts.deliverNext();
-      if (!cancelled && !delivered && !receipted) break;
+      if (this.stopping) break;
+      const refreshed = await this.service.refreshStatusNext();
+      if (!cancelled && !delivered && !receipted && !refreshed) break;
     }
   }
   async stop() {

@@ -75,7 +75,7 @@ import { FederationAgreementService } from "./agreements";
 import { FederationAssetService, federationMaterialDigest } from "./assets";
 import { FederationCancellationReceiver } from "./cancellation";
 import { FederationCancellationMonitor } from "./cancellation-monitor";
-import { FederationOutboundService } from "./outbound";
+import { FederationOutboundService, FederationOutboundWorker } from "./outbound";
 import { FederationDeliveryError, type FederationSend } from "./outbound-client";
 import { FederationPermissionService } from "./permissions";
 import { FederationPreparationService } from "./preparation";
@@ -3088,5 +3088,234 @@ test("result receipts re-sign a stored peer acknowledgement after receiver key r
           eq(federationSigningKeys.keyId, b.signing.keyId),
         ),
       );
+  }
+});
+
+async function statusSyncFixture() {
+  // Other fixtures share this isolated database; only this operation is due for polling.
+  await db.update(federationOutbound).set({ statusNextAttemptAt: null });
+  const f = await resultFixture();
+  await db.update(workflowRuns).set({ status: "running" }).where(eq(workflowRuns.id, f.runId));
+  const responder = new FederationStatusResponder(db, b.signing, clock);
+  const send: FederationSend = (endpoint, jws, path) =>
+    path === "/federation/v1/status"
+      ? responder.receive(jws, sourceFingerprint)
+      : f.receive(endpoint, jws, path);
+  return { ...f, send };
+}
+
+test("status sync worker persists signed observations, retains them offline and resumes after reconstruction", async () => {
+  const f = await statusSyncFixture();
+  const worker = new FederationOutboundWorker(f.service(f.send));
+  await worker.tick();
+  await worker.stop();
+  const first = await row(f.request.operationId);
+  expect(first.statusReport?.workflow?.status).toBe("running");
+  expect(first.statusVerifiedAt).toEqual(clock());
+  expect(first.statusClaim).toBeNull();
+  expect(first.statusReportJws).toBeString();
+  expect(await f.service(f.send).refreshStatusNext()).toBe(false);
+  const listed = (await f.service().list(actor)).find(
+    (v) => v.operationId === f.request.operationId,
+  );
+  expect(listed?.remoteStatus).toMatchObject({ workflow: { status: "running" }, lastError: null });
+  expect(JSON.stringify(listed?.remoteStatus)).not.toContain(first.statusReportJws ?? "missing");
+  expect(JSON.stringify(listed?.remoteStatus)).not.toContain(executionUserId);
+  expect(await f.service().list(receiver)).toHaveLength(0);
+  time = new Date(time.getTime() + 30_000);
+  await f
+    .service(async () => {
+      throw new Error("private-storage-secret");
+    })
+    .refreshStatusNext();
+  const offline = await row(f.request.operationId);
+  expect(offline).toMatchObject({
+    state: "accepted",
+    amount: first.amount,
+    statusLastError: "DELIVERY_UNAVAILABLE",
+  });
+  expect(offline.statusReport).toEqual(first.statusReport);
+  expect(offline.statusReportJws).toBe(first.statusReportJws);
+  expect(offline.statusVerifiedAt).toEqual(first.statusVerifiedAt);
+  time = new Date(time.getTime() + 30_000);
+  await f.service(f.send).refreshStatusNext();
+  const resumed = await row(f.request.operationId);
+  expect(resumed.statusLastError).toBeNull();
+  expect(resumed.statusVerifiedAt).toEqual(clock());
+  expect(resumed.statusReport?.queryId).not.toBe(first.statusReport?.queryId);
+});
+
+test("status sync fences late successes and failures from an expired claim", async () => {
+  for (const fail of [false, true]) {
+    const f = await statusSyncFixture();
+    let release!: () => void, signal!: () => void;
+    const waiting = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const started = new Promise<void>((resolve) => {
+      signal = resolve;
+    });
+    const slow = f.service(async (endpoint, jws, path) => {
+      const report = await f.send(endpoint, jws, path);
+      signal();
+      await waiting;
+      if (fail) throw new FederationDeliveryError("DELIVERY_UNAVAILABLE");
+      return report;
+    });
+    const old = slow.refreshStatusNext();
+    let latest: Awaited<ReturnType<typeof row>>;
+    try {
+      await started;
+      expect(await f.service(f.send).refreshStatusNext()).toBe(false);
+      time = new Date(time.getTime() + 30_001);
+      await db
+        .update(workflowRuns)
+        .set({ status: "completed" })
+        .where(eq(workflowRuns.id, f.runId));
+      expect(await f.service(f.send).refreshStatusNext()).toBe(true);
+      latest = await row(f.request.operationId);
+      expect(latest.statusReport?.workflow?.status).toBe("completed");
+      expect(latest.statusNextAttemptAt).toBeNull();
+    } finally {
+      release();
+      await old;
+    }
+    expect(await row(f.request.operationId)).toEqual(latest);
+  }
+});
+
+test("status sync stops only for signed terminal workflows and recovers an abandoned claim", async () => {
+  const f = await statusSyncFixture();
+  for (const status of [
+    "submitted",
+    "queued",
+    "awaiting_approval",
+    "running",
+    "cancelling",
+    "completed",
+    "failed",
+    "cancelled",
+  ] as const) {
+    await db.update(workflowRuns).set({ status }).where(eq(workflowRuns.id, f.runId));
+    await db
+      .update(federationOutbound)
+      .set({ statusNextAttemptAt: clock(), statusClaim: crypto.randomUUID() })
+      .where(eq(federationOutbound.operationId, f.request.operationId));
+    await f.service(f.send).refreshStatusNext();
+    const saved = await row(f.request.operationId);
+    expect(saved.statusReport?.workflow?.status).toBe(status);
+    expect(saved.statusClaim).toBeNull();
+    expect(saved.statusNextAttemptAt === null).toBe(
+      ["completed", "failed", "cancelled"].includes(status),
+    );
+    expect(await f.service(f.send).refreshStatusNext()).toBe(false);
+  }
+  // No bound Workflow, even with waiting/blocked preparation, is not a terminal result.
+  if (!f.saved.receipt) throw new Error("Expected receipt");
+  const reservationId = f.saved.receipt.reservationId;
+  await db
+    .delete(federationWorkflowBindings)
+    .where(eq(federationWorkflowBindings.workflowRunId, f.runId));
+  for (const state of [null, "waiting", "blocked", "resolved"] as const) {
+    if (state) {
+      const blocker = state === "resolved" ? null : "DATA_WAITING";
+      await db
+        .insert(federationPreparations)
+        .values({ reservationId, state, blocker })
+        .onConflictDoUpdate({
+          target: federationPreparations.reservationId,
+          set: { state, blocker },
+        });
+    }
+    await db
+      .update(federationOutbound)
+      .set({ statusNextAttemptAt: clock() })
+      .where(eq(federationOutbound.operationId, f.request.operationId));
+    await f.service(f.send).refreshStatusNext();
+    const saved = await row(f.request.operationId);
+    expect(saved.statusReport?.workflow).toBeNull();
+    expect(saved.statusNextAttemptAt).not.toBeNull();
+    expect(saved.statusLastError).toBeNull();
+  }
+});
+
+test("status sync rejects invalid reports and authority revoked during I/O without replacing trusted state", async () => {
+  const f = await statusSyncFixture();
+  await f.service(f.send).refreshStatusNext();
+  const first = await row(f.request.operationId);
+  const revoked = f.service(async (endpoint, jws, path) => {
+    const response = await f.send(endpoint, jws, path);
+    await permission.set(
+      { ...actor, capability: "delegation.submit", enabled: false },
+      actor.userId,
+    );
+    return response;
+  });
+  try {
+    time = new Date(time.getTime() + 30_000);
+    await revoked.refreshStatusNext();
+    const denied = await row(f.request.operationId);
+    expect(denied.statusLastError).toBe("POLICY_DENIED");
+    expect(denied.statusReport).toEqual(first.statusReport);
+    expect(denied.statusVerifiedAt).toEqual(first.statusVerifiedAt);
+  } finally {
+    await permission.set(
+      { ...actor, capability: "delegation.submit", enabled: true },
+      actor.userId,
+    );
+  }
+  time = new Date(time.getTime() + 30_000);
+  await f.service(async () => "forged").refreshStatusNext();
+  expect(await row(f.request.operationId)).toMatchObject({
+    state: "accepted",
+    statusLastError: "INVALID_MESSAGE",
+    statusReport: first.statusReport,
+  });
+  time = new Date(time.getTime() + 30_000);
+  const expired = f.service(async (endpoint, jws, path) => {
+    const response = await f.send(endpoint, jws, path);
+    time = new Date(time.getTime() + 60_000);
+    return response;
+  });
+  await expired.refreshStatusNext();
+  const saved = await row(f.request.operationId);
+  expect(saved.statusLastError).toBe("AUTHORIZATION_EXPIRED");
+  expect(saved.statusVerifiedAt).toEqual(first.statusVerifiedAt);
+  expect(saved.statusReportJws).toBe(first.statusReportJws);
+});
+
+test("status sync leaves unknown state on first failure and rejects revoked peer keys", async () => {
+  const f = await statusSyncFixture();
+  await f.service(async () => "forged").refreshStatusNext();
+  const unknown = await row(f.request.operationId);
+  expect(unknown).toMatchObject({
+    state: "accepted",
+    statusReport: null,
+    statusReportJws: null,
+    statusVerifiedAt: null,
+    statusLastError: "INVALID_MESSAGE",
+  });
+  time = new Date(time.getTime() + 30_000);
+  await f.service(f.send).refreshStatusNext();
+  const first = await row(f.request.operationId);
+  time = new Date(time.getTime() + 30_000);
+  const peerKey = and(
+    eq(federationSigningKeys.siteId, b.signing.siteId),
+    eq(federationSigningKeys.keyId, b.signing.keyId),
+  );
+  try {
+    await f
+      .service(async (endpoint, jws, path) => {
+        const response = await f.send(endpoint, jws, path);
+        await db.update(federationSigningKeys).set({ revokedAt: clock() }).where(peerKey);
+        return response;
+      })
+      .refreshStatusNext();
+    const saved = await row(f.request.operationId);
+    expect(saved.statusLastError).toBe("UNTRUSTED_IDENTITY");
+    expect(saved.statusReport).toEqual(first.statusReport);
+    expect(saved.statusVerifiedAt).toEqual(first.statusVerifiedAt);
+  } finally {
+    await db.update(federationSigningKeys).set({ revokedAt: null }).where(peerKey);
   }
 });

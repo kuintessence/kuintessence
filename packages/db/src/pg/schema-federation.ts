@@ -11,6 +11,7 @@ import type {
   FederationResultReceipt,
   FederationResultReceiptAck,
   FederationResultReport,
+  FederationStatusReport,
 } from "@kuintessence/shared/federation";
 import type { FederationEvidenceBatch } from "@kuintessence/shared/federation/ledger";
 import { sql } from "drizzle-orm";
@@ -186,6 +187,12 @@ export const federationOutbound = pgTable(
     requestJws: text("request_jws").notNull(),
     receipt: jsonb("receipt").$type<FederationAcceptance>(),
     receiptJws: text("receipt_jws"),
+    statusReport: jsonb("status_report").$type<FederationStatusReport>(),
+    statusReportJws: text("status_report_jws"),
+    statusVerifiedAt: timestamp("status_verified_at", { withTimezone: true }),
+    statusLastError: varchar("status_last_error", { length: 64 }),
+    statusClaim: uuid("status_claim"),
+    statusNextAttemptAt: timestamp("status_next_attempt_at", { withTimezone: true }).defaultNow(),
     cancelRequest: jsonb("cancel_request").$type<FederationCancellation>(),
     cancelJws: text("cancel_jws"),
     cancelDigest: varchar("cancel_digest", { length: 71 }),
@@ -221,6 +228,14 @@ export const federationOutbound = pgTable(
       t.attempt,
     ),
     index("federation_outbound_delivery").on(t.localSiteId, t.state, t.nextAttemptAt),
+    index("federation_outbound_status")
+      .on(t.localSiteId, t.statusNextAttemptAt, t.operationId)
+      .where(sql`${t.state} = 'accepted' AND ${t.statusNextAttemptAt} IS NOT NULL`),
+    check(
+      "federation_outbound_status_report",
+      sql`(${t.statusReport} IS NULL AND ${t.statusReportJws} IS NULL AND ${t.statusVerifiedAt} IS NULL)
+        OR (${t.statusReport} IS NOT NULL AND ${t.statusReportJws} IS NOT NULL AND ${t.statusVerifiedAt} IS NOT NULL AND ${t.state} = 'accepted')`,
+    ),
     index("federation_outbound_cancel").on(t.localSiteId, t.cancelState, t.cancelNextAttemptAt),
     index("federation_outbound_budget").on(t.localSiteId, t.budgetDomainId, t.epoch),
     check(

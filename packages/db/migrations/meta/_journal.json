@@ -736,6 +736,13 @@
       "when": 1794018572372,
       "tag": "0104_solid_titanium_man",
       "breakpoints": true
+    },
+    {
+      "idx": 105,
+      "version": "7",
+      "when": 1794020015379,
+      "tag": "0105_bright_maddog",
+      "breakpoints": true
     }
   ]
 }
