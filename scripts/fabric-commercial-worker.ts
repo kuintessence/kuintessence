@@ -26,7 +26,14 @@ import { Site } from "./fabric-evidence-fixture";
 async function main() {
   const root = z.string().parse(process.argv[2]);
   const action = z
-    .enum(["initialize", "approve-direct", "approve-attested", "advance", "crash-after-commit"])
+    .enum([
+      "initialize",
+      "approve-direct",
+      "approve-attested",
+      "approve-mvcc",
+      "advance",
+      "crash-after-commit",
+    ])
     .parse(process.argv[3]);
   const url = process.env.DATABASE_URL;
   if (!url || !/^\/kuintessence_unit_[a-z0-9_]+$/.test(new URL(url).pathname))
@@ -136,12 +143,26 @@ async function main() {
         ),
         { mode: 0o600 },
       );
-    } else if (action === "approve-direct" || action === "approve-attested") {
+    } else if (
+      action === "approve-direct" ||
+      action === "approve-attested" ||
+      action === "approve-mvcc"
+    ) {
       const fixture = Fixture.parse(JSON.parse(await readFile(fixtureFile, "utf8")));
       const actorA = fixture.actors[0],
         actorB = fixture.actors[1];
       assert(actorA && actorB);
-      const terms = action === "approve-direct" ? fixture.direct : fixture.attested;
+      const terms =
+        action === "approve-direct"
+          ? fixture.direct
+          : action === "approve-mvcc"
+            ? CommercialAgreementSchema.parse({
+                ...fixture.attested,
+                salt: randomBytes(32).toString("hex"),
+                createdAt: new Date().toISOString(),
+                agreement: { ...fixture.attested.agreement, agreementRevisionId: randomUUID() },
+              })
+            : fixture.attested;
       const source = new FederationCommercialAgreementService(db, aKey);
       const target = new FederationCommercialAgreementService(db, bKey);
       await source.approve(actorA, terms);

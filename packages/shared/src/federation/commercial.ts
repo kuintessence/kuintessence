@@ -176,6 +176,22 @@ export const CommercialReceiptSchema = z.strictObject({
   recordId: Id,
   digest: FederationDigestSchema,
 });
+export const CommercialRecordTypeSchema = z.enum([
+  "agreement",
+  "usage",
+  "reservation",
+  "release",
+  "terminal",
+]);
+export const CommercialReceiptQuerySchema = z.strictObject({
+  operation: z.literal("get-commercial-receipt"),
+  domainId: Id,
+  recordType: CommercialRecordTypeSchema,
+  recordId: Id,
+});
+export const CommercialReceiptQueryResultSchema = z.strictObject({
+  receipt: CommercialReceiptSchema.nullable(),
+});
 
 /** Public lifecycle-governed purposes; registering a key never implies authority to sign every record. */
 export const FabricCommercialTrustSchema = FabricEvidenceTrustSchema.safeExtend({

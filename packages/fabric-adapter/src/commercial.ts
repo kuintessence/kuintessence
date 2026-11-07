@@ -11,6 +11,8 @@ import {
   CommercialAgreementSchema,
   CommercialGateHashSchema,
   CommercialGateQuerySchema,
+  CommercialReceiptQueryResultSchema,
+  CommercialReceiptQuerySchema,
   CommercialReceiptSchema,
   CommercialReleaseSchema,
   CommercialReservationSchema,
@@ -186,6 +188,45 @@ export class FabricCommercialAdapter {
         JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)),
       );
       if (!result.hash) throw new Error("Missing committed hash");
+      return result;
+    } catch {
+      throw new Error("INVALID_LEDGER_RESPONSE");
+    }
+  }
+  async receipt(raw: z.infer<typeof CommercialReceiptQuerySchema>) {
+    const input = CommercialReceiptQuerySchema.parse(raw);
+    const domain = this.config.trust.domains.find((domain) => domain.domainId === input.domainId);
+    if (!domain?.siteIds.includes(this.config.siteId)) throw new Error("POLICY_DENIED");
+    let bytes: Uint8Array;
+    try {
+      bytes = await this.gateway
+        .getNetwork(this.config.channel)
+        .getContract(this.config.chaincode)
+        .newProposal("GetRecordReceipt", {
+          arguments: [input.domainId, input.recordType, input.recordId],
+        })
+        .evaluate({ deadline: Date.now() + 10000 });
+    } catch (error) {
+      if (error instanceof GatewayError && error.details.length > 0) {
+        for (const code of [
+          "POLICY_DENIED",
+          "UNTRUSTED_IDENTITY",
+          "INVALID_MESSAGE",
+          "OPERATION_CONFLICT",
+          "DATA_WAITING",
+        ])
+          if (error.details.every((detail) => detail.message === `chaincode response 500, ${code}`))
+            throw new Error(code);
+      }
+      throw error;
+    }
+    try {
+      if (bytes.length > 1024) throw new Error("Oversized receipt response");
+      const result = CommercialReceiptQueryResultSchema.parse(
+        JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)),
+      );
+      if (result.receipt && result.receipt.recordId !== input.recordId)
+        throw new Error("Wrong record");
       return result;
     } catch {
       throw new Error("INVALID_LEDGER_RESPONSE");

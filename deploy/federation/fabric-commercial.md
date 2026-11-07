@@ -76,9 +76,9 @@ bun run --filter @kuintessence/fabric-commercial build
 
 这些接口只允许人类会话，受机构范围、输入大小和严格 schema 限制。签署商业条款是独立机构批准记录，不隐式安装执行协议。当前 ledger_coordinated 仍不能执行，不能将商业 committed 当作额度锁定、唯一认领或执行 gate 已满足。合同原件与签名在本地 PostgreSQL 中属受控私有记录，须纳入机构备份和访问管理；平台审计只存记录 ID、摘要、状态，不复制价格和条款正文。
 
-双签后的处理由合同 mode 决定：bilateral_direct 不生成链待办；bilateral_attested 与 ledger_coordinated 生成 pending，但 HTTP 响应不等待链。未配置 socket、链不可达及提交结果未知不会撤销双签或影响已有双边接单。各方可登记同一不可变合同；同时提交可能产生 Fabric MVCC INVALID，进入人工复核后可重试原内容，不自动替换商业条款。
+双签后的处理由合同 mode 决定：bilateral_direct 不生成链待办；bilateral_attested 与 ledger_coordinated 生成 pending，但 HTTP 响应不等待链。未配置 socket、链不可达及提交结果未知不会撤销双签或影响已有双边接单。各方可登记同一不可变合同；同时提交可能产生 Fabric MVCC INVALID；首次明确的版本冲突可核对原私有回执后自动恢复一次，详见下节。不会替换商业条款。
 
-配置 FEDERATION_COMMERCIAL_SOCKET_PATH=/private/run/commercial.sock 后，每十秒扫描、每轮至多推进八次检查点。90 秒数据库租约防止多个 Server 同时推进；网络 I/O 不持有事务，保存结果前后均验证租约。proposal 与背书后的 transaction 必须先事务保存，之后才能提交；pending 保留原 transactionId 与 recovery，至少退避 30 秒。VALID 才标记 committed，INVALID 或不可自动处理的错误进入 needs_review。人工重试只能放弃未提交 proposal，或在已确认 INVALID 后开始新尝试；未知的 transaction 仍须恢复原交易。
+配置 FEDERATION_COMMERCIAL_SOCKET_PATH=/private/run/commercial.sock 后，每十秒扫描、每轮至多推进八次检查点。90 秒数据库租约防止多个 Server 同时推进；网络 I/O 不持有事务，保存结果前后均验证租约。proposal 与背书后的 transaction 必须先事务保存，之后才能提交；pending 保留原 transactionId 与 recovery，至少退避 30 秒。VALID 才标记 committed；符合下述条件的首次 MVCC INVALID 暂存 MVCC_RECONCILING，其余 INVALID 或不可自动处理的错误进入 needs_review。人工重试只能放弃未提交 proposal，或在已确认 INVALID 后开始新尝试；未知的 transaction 仍须恢复原交易。
 
 机构批准是持久签署事实，后台不以批准人员离职抹除原批准。创建新 proposal、向 Peer 披露前检查当前平台机构/签名信任与用途；已背书的交易按原检查点恢复和核对终态，不通过更换签名或重新授权掩盖未知结果。暂停/撤销合作的执行权仍由执行协议及本地策略控制，商业记录不替代它们。当前审批支持完整商业 wrapper；平台签名原始用量报告已接入；技术更正 API 已接入；计量补采与合同修订生效切换仍待接入。
 
@@ -152,7 +152,7 @@ KQ_FABRIC_TOOLS=/path/to/verified/fabric-3.1.5 KQ_FABRIC_DATABASE_URL=postgres:/
 
 源端在披露查询前和保存响应时重查机构、原端点、密钥用途、本地原文及有效期；响应验签后，复用人工签名导入服务的原组织/合同/预留校验。补齐对签、交换完成、审计与可选链上待办在同一事务提交，失败全部回滚。签名交换审计使用 `commercial-exchange:<siteId>`，不会把自动传输伪装成一次人工批准。原批准人的角色变化不抹除该项已签业务同意，但不因此允许创建新批准。
 
-直接合作只补齐本地签名，不生成链待办、不连接 Fabric；异步存证和协调模式交由既有商业 worker 处理原提交。交换 complete 表示本地已持久取得签名，不代表链上 VALID，也不证明对方已经收到己方签名；双方各自的交换状态独立保存。原生 MVCC 导致的链 INVALID 仍需原提交复核，不会因为传输成功自动认定链交易有效。
+直接合作只补齐本地签名，不生成链待办、不连接 Fabric；异步存证和协调模式交由既有商业 worker 处理原提交。交换 complete 表示本地已持久取得签名，不代表链上 VALID，也不证明对方已经收到己方签名；双方各自的交换状态独立保存。原生 MVCC 导致的链 INVALID 按原提交独立核对，符合条件可自动恢复一次；不会因为传输或查询成功认定链交易有效。
 
 商业 worker 每轮有限发现/推进，采用 60 秒租约、SKIP LOCKED 和原记录恢复。断线及短暂数据库失败退避；错误正文、身份/用途或端点冲突进入 needs_review。迟到响应/错误不能覆盖后继 worker 或人工复核的新状态。已通过人工入口补齐签名时，后台可核对原记录后收尾，不再次提交业务意图。
 
@@ -162,3 +162,14 @@ KQ_FABRIC_TOOLS=/path/to/verified/fabric-3.1.5 KQ_FABRIC_DATABASE_URL=postgres:/
 - `POST .../:revisionId/approval-exchange/:recordKind/:recordId/retry`：需要 `agreement.approve`，正文仅 `{}`；recordKind 为 agreement/reservation/release。不能抢占活动租约或重置完成记录，过期租约重排时清除旧 token，保留复核审计。
 
 这一步消除已有商业批准的人工签名搬运。长期协议下的新任务自动批准、执行同意交换、市场动作/准入自动编排，以及对应 Web/CLI 操作还需接入；不会把它当作完整无人值守商务握手。
+
+
+## 相同业务意图的 MVCC 冲突恢复
+
+配套升级商业链码、Adapter 与 Server 后，第一次提交得到明确 `INVALID`、校验码 `11`（MVCC_READ_CONFLICT）和区块号时，商业待办保留 `pending / MVCC_RECONCILING`，原尝试仍为 INVALID。没有回执查询能力的旧客户端保持人工复核；不自动接管历史 needs_review 记录，也不自动重放其他 INVALID 或结果未知的交易。
+
+后台经原私有 Unix `/v1/commercial/query` 调用固定 `get-commercial-receipt`，只允许 agreement/usage/reservation/release/terminal 的 domainId 与 recordId；链码 `GetRecordReceipt` 在原组织角色和 PDC 成员校验之后核对私有字节与区块承诺，只返回原 recordId/digest。第三方无权读取，缺失或损坏的私有字节不会伪装成不存在；预算、价格、用量、合同正文、签名和盐均不返回。只读查询不替代机构背书或提交确认。
+
+原 ID 和签名原文字节摘要完全一致后，后台使用原完整待办申请一次新的 proposal；重新取得原生机构背书，等待新的 VALID 才将待办完成。新检查点与 `commercial-worker:<siteId>` 审计在同一租约事务提交，保留原 INVALID 交易、区块、匹配回执和新交易 ID。查询后及检查点保存前重新核对信任与原意图；旧租约、撤销和审计失败不能留下可提交的新检查点。新交易仍执行链码的原幂等检查，不再次占用预算，也不借终态确认释放资金。
+
+链/Adapter 暂时不可用时按原 30 秒退避继续核对，不清空原 INVALID。原记录不存在、摘要不符、信任/用途失效、接口版本不支持或第二次冲突转 `needs_review`，有权限者可沿原人工重试接口复核。一次自动恢复上限按原待办的尝试号判定，进程重启不重置；不会无限换交易重试、修改 ID 或替换原合同。本机制不处理业务争议、修订正文、重新认领或结算。

@@ -608,3 +608,62 @@ test("terminal adapter confines dual signatures to PDC members and binds recover
     purpose.kinds = purpose.kinds.filter((k) => k !== "commercial-terminal");
   await expect(setup({ trust }).adapter.prepare(request)).rejects.toThrow("UNTRUSTED_IDENTITY");
 });
+
+test("commercial receipt query is member scoped, binds identity and rejects private or oversized responses", async () => {
+  const f = setup();
+  const query = {
+    operation: "get-commercial-receipt" as const,
+    domainId: input.domainId,
+    recordType: "agreement" as const,
+    recordId: input.recordId,
+  };
+  await expect(f.adapter.receipt({ ...query, domainId: randomUUID() })).rejects.toThrow(
+    "POLICY_DENIED",
+  );
+  expect(f.sdk).not.toHaveBeenCalled();
+  const network = f.gateway.getNetwork(config.channel),
+    contract = network.getContract(config.chaincode);
+  f.sdk.mockReturnValue(network);
+  spyOn(network, "getContract").mockReturnValue(contract);
+  const original = contract.newProposal.bind(contract);
+  let failure: Error | undefined;
+  let output: unknown = { receipt: { recordId: input.recordId, digest: input.digest } };
+  spyOn(contract, "newProposal").mockImplementation((name, options) => {
+    expect(name).toBe("GetRecordReceipt");
+    expect(options).toEqual({ arguments: [input.domainId, "agreement", input.recordId] });
+    const proposal = original(name, options);
+    spyOn(proposal, "evaluate").mockImplementation(async () => {
+      if (failure) throw failure;
+      return Buffer.from(JSON.stringify(output));
+    });
+    return proposal;
+  });
+  expect(await f.adapter.receipt(query)).toEqual({
+    receipt: { recordId: input.recordId, digest: input.digest },
+  });
+  for (const value of [
+    { receipt: { recordId: randomUUID(), digest: input.digest } },
+    { receipt: { recordId: input.recordId, digest: input.digest, price: "123" } },
+    { receipt: null, secret: "private" },
+    "x".repeat(1025),
+  ]) {
+    output = value;
+    await expect(f.adapter.receipt(query)).rejects.toThrow("INVALID_LEDGER_RESPONSE");
+  }
+  output = { receipt: null };
+  expect(await f.adapter.receipt(query)).toEqual({ receipt: null });
+  failure = new GatewayError({
+    code: 2,
+    cause: Object.assign(new Error("private peer detail"), {
+      code: 2,
+      details: "private",
+      metadata: new Metadata(),
+    }),
+    details: [
+      { address: "private-peer", mspId: "AMSP", message: "chaincode response 500, DATA_WAITING" },
+    ],
+  });
+  await expect(f.adapter.receipt(query)).rejects.toThrow("DATA_WAITING");
+  failure = new Error("offline");
+  await expect(f.adapter.receipt(query)).rejects.toBe(failure);
+});

@@ -4,6 +4,8 @@ import {
   type CommercialAdvanceResult,
   CommercialGateHashSchema,
   CommercialGateQuerySchema,
+  CommercialReceiptQueryResultSchema,
+  CommercialReceiptQuerySchema,
   FabricCommercialAdvanceResultSchema,
 } from "@kuintessence/shared/federation/commercial";
 import {
@@ -18,6 +20,9 @@ export interface CommercialClient {
     input: CommercialAdapterProposalInput,
   ): Promise<z.infer<typeof FabricProposalCheckpointSchema>>;
   advance(recovery: string): Promise<CommercialAdvanceResult>;
+  receipt?(
+    input: z.infer<typeof CommercialReceiptQuerySchema>,
+  ): Promise<z.infer<typeof CommercialReceiptQueryResultSchema>>;
 }
 export class UnixCommercialClient implements CommercialClient {
   private readonly transport: UnixFabricClient;
@@ -35,6 +40,11 @@ export class UnixCommercialClient implements CommercialClient {
   async query(input: z.infer<typeof CommercialGateQuerySchema>) {
     return CommercialGateHashSchema.parse(
       await this.transport.call("/v1/commercial/query", CommercialGateQuerySchema.parse(input)),
+    );
+  }
+  async receipt(input: z.infer<typeof CommercialReceiptQuerySchema>) {
+    return CommercialReceiptQueryResultSchema.parse(
+      await this.transport.call("/v1/commercial/query", CommercialReceiptQuerySchema.parse(input)),
     );
   }
   async advance(recovery: string) {

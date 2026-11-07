@@ -166,6 +166,7 @@ const fixtures: {
   actor: { orgId: string; userId: string };
 }[] = [];
 class Adapter implements CommercialClient {
+  receipt?: CommercialClient["receipt"];
   prepares: CommercialAdapterProposalInput[] = [];
   advances: string[] = [];
   offline = false;
@@ -7939,4 +7940,195 @@ test("workflow market local planning requires no source Agent for remote and con
     "no candidate satisfies placement constraints",
   );
   await f.lease().release();
+});
+
+async function mvccFixture() {
+  const f = await fixture();
+  await approveBoth(f);
+  const original = await pending(f);
+  const queries: unknown[] = [];
+  f.adapter.receipt = async (query) => {
+    queries.push(query);
+    return { receipt: { recordId: original.input.recordId, digest: original.input.digest } };
+  };
+  f.adapter.outcome = "invalid";
+  for (let i = 0; i < 3; i++) await f.service.advanceNext();
+  expect(await pending(f)).toMatchObject({ state: "pending", lastError: "MVCC_RECONCILING" });
+  const [failed] = await db.select().from(attempts).where(eq(attempts.submissionId, original.id));
+  if (!failed) throw new Error("Missing original invalid transaction");
+  expect(failed).toMatchObject({ stage: "invalid", validationCode: 11 });
+  return { ...f, original, failed, queries };
+}
+
+test("commercial MVCC reconciliation survives outage and restart, preserves INVALID and requires a fresh VALID", async () => {
+  const f = await mvccFixture();
+  const receipt = f.adapter.receipt;
+  if (!receipt) throw new Error("Missing receipt client");
+  f.adapter.receipt = async () => {
+    throw new FabricClientFailure("LEDGER_UNAVAILABLE");
+  };
+  await f.service.advanceNext();
+  expect(await pending(f)).toMatchObject({ state: "pending", lastError: "MVCC_RECONCILING" });
+  expect(f.adapter.prepares).toHaveLength(1);
+  await ready(f);
+  f.adapter.receipt = receipt;
+  const restart = new FederationCommercialSubmissionService(db, f.a.signing.siteId, f.adapter);
+  await Promise.all([restart.advanceNext(), restart.advanceNext()]);
+  expect(f.queries).toEqual([
+    {
+      operation: "get-commercial-receipt",
+      domainId: f.original.input.domainId,
+      recordType: "agreement",
+      recordId: f.original.input.recordId,
+    },
+  ]);
+  expect(f.adapter.prepares).toEqual([f.original.input, f.original.input]);
+  expect((await pending(f)).state).toBe("pending");
+  f.adapter.outcome = "committed";
+  for (let i = 0; i < 2; i++) await restart.advanceNext();
+  expect((await pending(f)).state).toBe("committed");
+  const history = await db.select().from(attempts).where(eq(attempts.submissionId, f.original.id));
+  expect(history).toHaveLength(2);
+  expect(history.find((row) => row.id === f.failed.id)).toEqual(f.failed);
+  expect(history.find((row) => row.number === 2)).toMatchObject({
+    stage: "committed",
+    validationCode: 0,
+  });
+  const audits = await db
+    .select()
+    .from(auditLog)
+    .where(
+      and(
+        eq(auditLog.target, f.original.id),
+        eq(auditLog.action, "federation.commercial.mvcc_reconcile"),
+      ),
+    );
+  expect(audits).toHaveLength(1);
+  expect(audits[0]?.diff).toMatchObject({
+    after: {
+      previousTransactionId: f.failed.transactionId,
+      validationCode: 11,
+      receipt: { digest: f.original.input.digest },
+    },
+  });
+  expect(JSON.stringify(audits)).not.toContain(JSON.stringify(f.original.input.envelope));
+});
+
+test.each([
+  "absent",
+  "different",
+])("commercial MVCC reconciliation refuses %s receipt and leaves explicit manual review available", async (kind) => {
+  const f = await mvccFixture();
+  f.adapter.receipt = async () => ({
+    receipt:
+      kind === "absent"
+        ? null
+        : { recordId: f.original.input.recordId, digest: `sha256:${"f".repeat(64)}` },
+  });
+  await f.service.advanceNext();
+  expect((await pending(f)).state).toBe("needs_review");
+  expect(f.adapter.prepares).toHaveLength(1);
+  await f.service.retry(f.actor, f.revisionId, f.original.id);
+  await f.service.advanceNext();
+  expect(f.adapter.prepares).toHaveLength(2);
+  expect(f.adapter.prepares[1]).toEqual(f.original.input);
+});
+
+test("commercial MVCC reconciliation is bounded and never retries a second conflict automatically", async () => {
+  const f = await mvccFixture();
+  for (let i = 0; i < 3; i++) await f.service.advanceNext();
+  expect((await pending(f)).state).toBe("needs_review");
+  expect(f.queries).toHaveLength(1);
+  expect(f.adapter.prepares).toHaveLength(2);
+  expect(await f.service.advanceNext()).toBe(false);
+});
+
+test.each([
+  "query",
+  "prepare",
+])("commercial MVCC reconciliation rechecks revoked trust after %s", async (boundary) => {
+  const f = await mvccFixture();
+  const revoke = () =>
+    f.trust.revoke(f.b.signing.siteId, { keyId: f.b.signing.keyId }, f.actor.userId);
+  if (boundary === "query")
+    f.adapter.receipt = async () => {
+      await revoke();
+      return { receipt: { recordId: f.original.input.recordId, digest: f.original.input.digest } };
+    };
+  else {
+    const prepare = f.adapter.prepare.bind(f.adapter);
+    f.adapter.prepare = async (input) => {
+      const result = await prepare(input);
+      await revoke();
+      return result;
+    };
+  }
+  await f.service.advanceNext();
+  expect(await pending(f)).toMatchObject({
+    state: "needs_review",
+    lastError: "UNTRUSTED_IDENTITY",
+  });
+  expect(await db.select().from(attempts).where(eq(attempts.submissionId, f.original.id))).toEqual([
+    f.failed,
+  ]);
+});
+
+test("commercial MVCC reconciliation cannot save a new checkpoint under a replaced lease", async () => {
+  const f = await mvccFixture();
+  const replacement = randomUUID();
+  f.adapter.receipt = async () => {
+    await db
+      .update(submissions)
+      .set({ leaseToken: replacement, leaseUntil: sql`clock_timestamp() + interval '90 seconds'` })
+      .where(eq(submissions.id, f.original.id));
+    return { receipt: { recordId: f.original.input.recordId, digest: f.original.input.digest } };
+  };
+  await f.service.advanceNext();
+  expect((await pending(f)).leaseToken).toBe(replacement);
+  expect(await db.select().from(attempts).where(eq(attempts.submissionId, f.original.id))).toEqual([
+    f.failed,
+  ]);
+});
+
+test("commercial MVCC reconciliation audit failure rolls back the replacement checkpoint", async () => {
+  const f = await mvccFixture();
+  await db.execute(
+    sql`alter table audit_log add constraint test_mvcc_reconcile_audit check (action <> 'federation.commercial.mvcc_reconcile' OR target <> ${sql.raw(`'${f.original.id}'`)})`,
+  );
+  try {
+    await f.service.advanceNext();
+    expect(await pending(f)).toMatchObject({ state: "pending", lastError: "MVCC_RECONCILING" });
+    expect(
+      await db.select().from(attempts).where(eq(attempts.submissionId, f.original.id)),
+    ).toEqual([f.failed]);
+  } finally {
+    await db.execute(sql`alter table audit_log drop constraint test_mvcc_reconcile_audit`);
+  }
+  await ready(f);
+  await f.service.advanceNext();
+  expect(
+    await db.select().from(attempts).where(eq(attempts.submissionId, f.original.id)),
+  ).toHaveLength(2);
+});
+
+test.each([
+  "endorsement",
+  "unknown",
+])("commercial MVCC reconciliation never replaces an %s outcome", async (outcome) => {
+  const f = await fixture();
+  await approveBoth(f);
+  let queries = 0;
+  f.adapter.receipt = async () => {
+    queries++;
+    return { receipt: null };
+  };
+  for (let i = 0; i < 2; i++) await f.service.advanceNext();
+  f.adapter.onAdvance = async (recovery, transactionId) =>
+    outcome === "unknown"
+      ? { state: "pending", recovery, transactionId }
+      : { state: "invalid", transactionId, validationCode: 10, blockNumber: "7" };
+  await f.service.advanceNext();
+  expect(queries).toBe(0);
+  expect(f.adapter.prepares).toHaveLength(1);
+  expect((await pending(f)).state).toBe(outcome === "unknown" ? "pending" : "needs_review");
 });

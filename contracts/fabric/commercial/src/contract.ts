@@ -9,6 +9,7 @@ import {
   CommercialAgreementEnvelopeSchema,
   CommercialAgreementSchema,
   CommercialReceiptSchema,
+  CommercialRecordTypeSchema,
   CommercialReleaseSchema,
   CommercialReservationSchema,
   CommercialTerminalSchema,
@@ -615,6 +616,26 @@ export class CommercialLedger {
         return fail("POLICY_DENIED");
       await stub.putState(this.keyState(stub, siteId, keyId), Buffer.from("revoked"));
       return encode({ revoked: true });
+    }
+    if (fcn === "GetRecordReceipt") {
+      const org = this.organization(identity, "commercial");
+      const [domainId, recordType, recordId] = z
+        .tuple([z.uuid(), CommercialRecordTypeSchema, z.uuid()])
+        .parse(params);
+      const domain = this.trust.domains.find((value) => value.domainId === domainId);
+      if (!domain?.siteIds.includes(org.siteId)) return fail("POLICY_DENIED");
+      if (stub.getTransient().size) return fail("INVALID_MESSAGE");
+      const bytes = await this.privateValue(
+        stub,
+        domain.collection,
+        stub.createCompositeKey(recordType, [domainId, recordId]),
+      );
+      if (!bytes.length) return encode({ receipt: null });
+      const { receipt } = z
+        .object({ receipt: CommercialReceiptSchema })
+        .parse(JSON.parse(Buffer.from(bytes).toString()));
+      if (receipt.recordId !== recordId) return fail("OPERATION_CONFLICT");
+      return encode({ receipt });
     }
     if (
       ![

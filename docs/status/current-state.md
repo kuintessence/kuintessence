@@ -1,5 +1,7 @@
 # 当前功能与使用边界
 
+商业提交已增加同一业务意图的首次 MVCC 冲突核对：保留明确 INVALID，读取成员限定的 PDC 原回执，匹配后重新背书并等待新 VALID；缺失、不一致或再次冲突仍需人工复核。原意图、租约、信任与审计回滚检查已通过，真实 Fabric/PostgreSQL 已验证竞争 VALID、原 INVALID 11 和后台自动恢复的新 VALID，记录见[进度](../design/federation/progress.md#商业重复提交的-mvcc-自动核对)。该功能不处理业务争议或结算。配置见[冲突恢复](../../deploy/federation/fabric-commercial.md#相同业务意图的-mvcc-冲突恢复)。
+
 合作协议详情现可查看自动签名交换进度及历史验证时间，信任/权限冲突给出对应提示；有审批权限且协议已启用时可确认重试原签名。机构通信关闭仍可看历史，状态读取失败隐藏旧重试入口；24 个组件场景及桌面/手机、中英文浏览器夹具验证通过，真实 PR 预览仍待交付。
 
 普通 Workflow 的协调 Federation 节点已接自动市场请求：显式 market 策略与公开文案、原环境锁目标、稳定动态调用、LEDGER_WAITING 到原 outbound 和自动结果回传；取消前置检查覆盖尚无 outbound 的阶段。46 个不同数据库场景通过，真实普通 Workflow/Fabric 联合验收已通过：普通 API 提交后自动发布/认领、双签预留与执行许可、远端两个轻量 Kubernetes Job、结果自动导入及下游 File、双方终态和公共关闭均完成；没有人工提交市场请求、委派或结果导入。详情见[进度](../design/federation/progress.md#普通-workflow-协调市场编排)。配置见[协调节点](../../deploy/federation/fabric-execution-gate.md#普通-workflow-的协调节点)。

@@ -1,6 +1,7 @@
 import {
   CommercialAdapterProposalInputSchema,
   CommercialGateQuerySchema,
+  CommercialReceiptQuerySchema,
 } from "@kuintessence/shared/federation/commercial";
 import { z } from "zod";
 import { CommercialAdapterConfigSchema, FabricCommercialAdapter } from "./commercial";
@@ -16,13 +17,18 @@ export const CommercialRuntimeConfigSchema = z.strictObject({
   ...FabricConnectionConfigSchema.shape,
 });
 export function createCommercialHttpServer(
-  adapter: Pick<FabricCommercialAdapter, "prepare" | "advance" | "query">,
+  adapter: Pick<FabricCommercialAdapter, "prepare" | "advance" | "query" | "receipt">,
 ) {
   return createFabricHttpServer(
     "commercial",
     CommercialAdapterProposalInputSchema,
     adapter,
-    (input) => adapter.query(CommercialGateQuerySchema.parse(input)),
+    (raw) => {
+      const input = z.union([CommercialGateQuerySchema, CommercialReceiptQuerySchema]).parse(raw);
+      return input.operation === "get-commercial-receipt"
+        ? adapter.receipt(input)
+        : adapter.query(input);
+    },
   );
 }
 export async function startCommercialAdapter(configFile: string) {

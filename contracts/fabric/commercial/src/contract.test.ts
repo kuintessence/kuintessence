@@ -618,6 +618,12 @@ test("commercial reservation and pre-activation release preserve exact private b
   });
   const signed = await bilateral(CommercialReleaseSchema, release);
   const released = await f.call("ReleaseExecution", release.releaseId, signed);
+  f.stub.fcn = "GetRecordReceipt";
+  f.stub.params = [domainId, "release", release.releaseId];
+  f.stub.transient.clear();
+  expect(JSON.parse((await f.ledger.invoke(f.stub, identity(1))).toString())).toEqual({
+    receipt: JSON.parse(released.toString()),
+  });
   expect((await f.call("ReleaseExecution", release.releaseId, signed)).equals(released)).toBe(true);
   expect(f.budget()).toEqual({ locked: "0", spent: "0", reservations: 0 });
   expect(await f.reserve()).toEqual(receipt);
@@ -986,4 +992,41 @@ test("terminal binds exact activation and both signatures; third parties and ear
   await f.stub.putState(revoked, Buffer.from("revoked"));
   await expect(f.record()).rejects.toThrow("UNTRUSTED_IDENTITY");
   expect(f.stub.privateState).toEqual(before);
+});
+
+test("commercial record receipts expose only original digests to PDC members and never confuse missing private data with absence", async () => {
+  const f = await terminalFixture();
+  const terminalReceipt = JSON.parse((await f.record()).toString());
+  const read = async (kind: string, id: string, actor = identity()) => {
+    f.stub.fcn = "GetRecordReceipt";
+    f.stub.params = [domainId, kind, id];
+    f.stub.transient.clear();
+    return JSON.parse((await f.ledger.invoke(f.stub, actor)).toString());
+  };
+  expect(await read("agreement", f.terms.agreement.agreementRevisionId)).toEqual({
+    receipt: f.receipt,
+  });
+  expect(await read("reservation", f.reservation.reservationId)).toEqual({
+    receipt: { recordId: f.reservation.reservationId, digest: f.terminal.reservationDigest },
+  });
+  expect(await read("terminal", f.terminal.terminalId, identity(1))).toEqual({
+    receipt: terminalReceipt,
+  });
+  const report = usage(f.terms, f.receipt.digest);
+  const provider = keys[1];
+  if (!provider) throw new Error("Missing provider signing key");
+  const reportJws = await signFederationMessage(CommercialUsageSchema, report, provider);
+  const reported = JSON.parse(
+    (
+      await f.call("RecordUsage", report.reportId, { providerJws: reportJws }, identity(1))
+    ).toString(),
+  );
+  expect(await read("usage", report.reportId)).toEqual({ receipt: reported });
+  expect(await read("release", randomUUID())).toEqual({ receipt: null });
+  for (const actor of [identity(2), identity(0, "trust-admin"), identity(0, "market")])
+    await expect(read("agreement", f.terms.agreement.agreementRevisionId, actor)).rejects.toThrow();
+  await expect(read("budget", f.terms.agreement.agreementRevisionId)).rejects.toThrow();
+  const privateKey = `commercial_AB_v1:${f.stub.createCompositeKey("terminal", [domainId, f.terminal.terminalId])}`;
+  f.stub.privateState.delete(privateKey);
+  await expect(read("terminal", f.terminal.terminalId)).rejects.toThrow("DATA_WAITING");
 });

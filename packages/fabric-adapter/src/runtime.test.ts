@@ -35,6 +35,7 @@ test.each([
       : kind === "commercial"
         ? createCommercialHttpServer({
             ...adapter,
+            receipt: async () => ({ receipt: null }),
             query: async () => {
               calls++;
               return { hash: null };
@@ -98,6 +99,24 @@ test.each([
       kind === "evidence" ? 404 : 409,
     );
     expect(calls).toBe(kind === "evidence" ? 1 : 2);
+    if (kind === "commercial") {
+      const receipt = {
+        operation: "get-commercial-receipt",
+        domainId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        recordType: "agreement",
+        recordId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      };
+      expect(await send("/v1/commercial/query", receipt)).toEqual({
+        status: 200,
+        text: '{"receipt":null}',
+      });
+      expect((await send("/v1/commercial/query", { ...receipt, collection: "other" })).status).toBe(
+        409,
+      );
+      expect(
+        (await send("/v1/commercial/query", { ...receipt, recordType: "budget" })).status,
+      ).toBe(409);
+    }
   } finally {
     await new Promise<void>((resolve) => server.close(() => resolve()));
     await rm(directory, { recursive: true, force: true });

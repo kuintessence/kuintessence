@@ -4,14 +4,16 @@ import { closeSync, openSync } from "node:fs";
 import { join, resolve } from "node:path";
 import {
   federationCommercialAttempts as attempts,
+  auditLog,
   createPgDb,
   federationAgreements,
   federationBudgets,
   federationCommercialSubmissions as submissions,
 } from "@kuintessence/db";
-import { eq, sql } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import postgres from "postgres";
 import { migratePostgresDatabase } from "../packages/db/src/pg/migrate";
+import { UnixCommercialClient } from "../packages/server/src/federation/commercial-client";
 import { databaseUrlWithName, unitDatabaseName } from "./test-unit";
 
 export async function verifyCommercialDatabase(
@@ -190,6 +192,122 @@ export async function verifyCommercialDatabase(
     assert.equal((await db.select().from(submissions))[0]?.state, "committed");
     pass(
       "fresh commercial worker recovers original VALID transaction after commit-before-database process exit and real lease expiry",
+    );
+    await worker("approve-mvcc");
+    const [duplicate] = await db.select().from(submissions).where(eq(submissions.state, "pending"));
+    assert(duplicate);
+    await worker("advance");
+    await worker("advance");
+    const [original] = await db
+      .select()
+      .from(attempts)
+      .where(eq(attempts.submissionId, duplicate.id));
+    assert(original?.stage === "transaction");
+    const client = new UnixCommercialClient(join(root, "commercial-adapter", "commercial.sock"));
+    const peerProposal = await client.prepare(duplicate.input);
+    const peerPrepared = await client.advance(peerProposal.recovery);
+    assert(peerPrepared.state === "prepared");
+    let peerResult = await client.advance(peerPrepared.recovery);
+    const committedBy = Date.now() + 35000;
+    while (peerResult.state === "pending") {
+      assert(Date.now() < committedBy);
+      await Bun.sleep(500);
+      peerResult = await client.advance(peerPrepared.recovery);
+    }
+    assert(peerResult.state === "committed", "Competing original intent must have a real VALID");
+    const advanceDue = async () => {
+      await db
+        .update(submissions)
+        .set({ nextAttemptAt: sql`clock_timestamp()` })
+        .where(eq(submissions.id, duplicate.id));
+      await worker("advance");
+    };
+    for (let i = 0; i < 10; i++) {
+      await advanceDue();
+      const [row] = await db.select().from(attempts).where(eq(attempts.id, original.id));
+      if (row?.stage === "invalid") break;
+      assert(row?.stage === "transaction");
+      await Bun.sleep(500);
+    }
+    const [failed] = await db.select().from(attempts).where(eq(attempts.id, original.id));
+    assert(
+      failed?.stage === "invalid" && failed.validationCode === 11 && failed.blockNumber !== null,
+    );
+    assert.equal(
+      (await db.select().from(submissions).where(eq(submissions.id, duplicate.id)))[0]?.lastError,
+      "MVCC_RECONCILING",
+    );
+    for (let i = 0; i < 10; i++) {
+      await advanceDue();
+      const [row] = await db.select().from(submissions).where(eq(submissions.id, duplicate.id));
+      assert(
+        row?.state !== "needs_review",
+        "Original duplicate must reconcile without a human retry",
+      );
+      if (row?.state === "committed") break;
+      await Bun.sleep(500);
+    }
+    const history = await db.select().from(attempts).where(eq(attempts.submissionId, duplicate.id));
+    assert.equal(history.length, 2);
+    assert.deepEqual(
+      history.find((row) => row.id === failed.id),
+      failed,
+    );
+    const reconciled = history.find((row) => row.number === 2);
+    assert(
+      reconciled?.stage === "committed" &&
+        reconciled.validationCode === 0 &&
+        reconciled.blockNumber !== null,
+    );
+    assert.equal(
+      (await db.select().from(submissions).where(eq(submissions.id, duplicate.id)))[0]?.state,
+      "committed",
+    );
+    const audits = await db
+      .select()
+      .from(auditLog)
+      .where(
+        and(
+          eq(auditLog.target, duplicate.id),
+          eq(auditLog.action, "federation.commercial.mvcc_reconcile"),
+        ),
+      );
+    assert.equal(audits.length, 1);
+    assert.deepEqual(
+      await client.receipt({
+        operation: "get-commercial-receipt",
+        domainId: duplicate.input.domainId,
+        recordType: "agreement",
+        recordId: duplicate.input.recordId,
+      }),
+      { receipt: { recordId: duplicate.input.recordId, digest: duplicate.input.digest } },
+    );
+    await Bun.write(
+      join(root, "commercial-mvcc-reconciliation.json"),
+      JSON.stringify(
+        {
+          competing: {
+            transactionId: peerResult.transactionId,
+            blockNumber: peerResult.blockNumber,
+          },
+          invalid: {
+            transactionId: failed.transactionId,
+            blockNumber: failed.blockNumber,
+            validationCode: failed.validationCode,
+          },
+          recovered: {
+            transactionId: reconciled.transactionId,
+            blockNumber: reconciled.blockNumber,
+            validationCode: reconciled.validationCode,
+          },
+          audits: audits.length,
+        },
+        null,
+        2,
+      ),
+    );
+    pass(
+      "real MVCC duplicate reconciles the immutable private receipt automatically, preserves INVALID history and commits a fresh VALID after native endorsement",
     );
   } finally {
     await cleanup();

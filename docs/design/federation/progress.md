@@ -1821,3 +1821,21 @@ Federation 节点新增可选 market（policyId/title/description），协调协
 四张浏览器夹具截图位于忽略的 temp/agreement-exchange-ui：桌面复核、确认弹窗、手机只读、英文深色离线历史；无页面错误或横向溢出。已逐张核对新增状态与现有布局；原离线历史夹具的对方签名字段已修正为与 complete 一致并重拍该状态。本轮没有真实 PR 预览，也没有再运行 Fabric/调度器验收；协议交换后端此前已有真实双平台验收。
 
 本单元全仓 lint 退出 0（保留原有 47 warning / 1 info），全仓类型检查其余包通过，修正上述测试类型后 Web 定向检查退出 0；一次 Web 补查被 SIGTERM 中止，串行补查已完成。711 个本地文档目标与差异格式检查通过；浏览器临时 Vite 服务已停止。没有新依赖、迁移或业务权限放宽。
+
+
+## 商业重复提交的 MVCC 自动核对
+
+新增固定成员回执查询，覆盖合同、用量、预留、释放和终态原记录。链码保持 PDC/角色边界，只输出不可变 recordId/digest；Adapter 校验本机构域、响应大小、结构及 ID，不接受任意集合/链码读取。Server 仅把具备查询能力的第一次明确 MVCC_INVALID 送入核对，保留原失败交易，匹配后原意图重建检查点并等待原生背书及新 VALID。无需新表或迁移；原 lastError 的 MVCC_RECONCILING 标记在短暂查询/数据库失败时持久保留，人工复核明确清除标记后仍走原人工路径。
+
+检查点保存事务中重新核对原待办、最新尝试和当前业务签名信任，追加机器审计；旧租约、审计失败、查询/准备期间撤权不能发布新检查点。未知交易从不换 ID，原记录不存在/不匹配、其他 INVALID 和第二次冲突不自动放行。只读回执不是执行许可或提交确认。原真实 Workflow 夹具的临时人工 MVCC 重试分支已删除，异常必须由生产后台处理或让验收失败。
+
+本轮 14 个不同 PostgreSQL 场景通过（10 个新增、4 个原路径回归）：真实租约并发/恢复、断线、精确原意图、原 INVALID 保留、新 VALID 门槛、缺失/错摘要、人工复核兼容、恢复次数上限、查询/准备期间撤权、迟到租约、审计回滚、非 MVCC 与未知结果。初次发现机器审计 actor 不允许 null，已改为 commercial-worker:<siteId>，受影响场景定向通过；审计故障夹具随后限定到本次 target，避免已有成功审计污染，单项补查通过。日志 temp/commercial-mvcc-pg.log、temp/commercial-mvcc-recovery-pg.log、temp/commercial-mvcc-audit-pg.log，不重复计数。
+
+商业链码、Adapter 与私有运行入口 35 个不同用例通过，补充回执成员隔离、原五类记录、缺私有数据、严格查询白名单与有限响应；后续新增错误映射/释放回执/路由断言的 4 项定向补查通过。日志 temp/commercial-mvcc-unit.log、temp/commercial-mvcc-query-final.log。真实 Fabric/PostgreSQL 场景增加独立竞争交易，明确制造原提交校验码 11，再要求生产 worker 自动核对并取得新 VALID；执行结果记录如下。
+
+
+真实 Fabric 3.1.5 三机构链码/Adapter/PostgreSQL 联合入口退出 0：日志 temp/commercial-mvcc-network.log，证据 temp/fabric-network-BgkR6g/commercial-mvcc-reconciliation.json。测试先把两个相同私有合同意图分别原生背书，再提交竞争交易；竞争 VALID 在区块 15（e36439b77bee8cdc1eec6bf707864876ce6c363f6e65f3a401ccdfc0c27f30a8），原持久交易 INVALID 11 在区块 16（d5afa34953ccfa41f1b2c9f75c48f7a5d2a14926fe84c73950346f68c42cc113）。新进程生产 worker 独立核对成员原回执后保存第二份原意图检查点，重新背书并在区块 17 VALID（b3ead1fc10e4ff94abb4b0fc5f1ea9ed61bd584c8322ee822ddd2fc7de6a5428）；原 INVALID 字段逐项未变，机器审计恰为一条，无人工 retry 调用。
+
+本入口同时通过既有原生双方背书、第三方 PDC 隔离、公开块/日志无商业探针、断链原交易恢复、提交成功后退出及真实租约到期恢复等检查，共 15 项。竞争交易由隔离夹具经同一生产 Adapter 发起，恢复由新 Server worker 进程完成；这证明真实链上的精确重复意图恢复，不冒称本轮又运行了两台完整 Server 的文件 Workflow 或 Slurm/PBS。自建链进程和数据库已清理；隔离链测试凭据随私有证据按显式开关保留在忽略目录，不包含部署环境凭据。
+
+全仓类型检查的其他 package 通过，Adapter 新测试对 unknown 的断言类型修正后定向类型检查通过；Fabric 联调脚本类型检查通过。全仓 lint 无错误（原有 47 warning / 1 info），713 个本地文档目标和差异检查通过。本轮不含业务对账/付款、争议/重开、物理介质、Peer 容量归档或完整 Web/CLI/PR 预览，这些仍是完整目标的待办。

@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import { randomBytes, randomUUID } from "node:crypto";
 import {
   createPgDb,
-  federationCommercialAttempts,
   federationCommercialSubmissions,
   federationMarketAttempts,
   federationMarketRequests,
@@ -21,11 +20,9 @@ import { importPKCS8 } from "jose";
 import { z } from "zod";
 import { FederationAgreementExchange } from "../../packages/server/src/federation/agreement-exchange";
 import { FederationAgreementService } from "../../packages/server/src/federation/agreements";
-import { federationMaterialDigest } from "../../packages/server/src/federation/assets";
 import { FederationCommercialAgreementService } from "../../packages/server/src/federation/commercial-agreements";
 import { FederationCommercialApprovalExchange } from "../../packages/server/src/federation/commercial-approval-exchange";
 import { FederationCommercialExecutionService } from "../../packages/server/src/federation/commercial-execution";
-import { FederationCommercialSubmissionService } from "../../packages/server/src/federation/commercial-submissions";
 import { UnixMarketClient } from "../../packages/server/src/federation/market-client";
 import { FederationMarketRequestService } from "../../packages/server/src/federation/market-requests";
 import { createFederationSender } from "../../packages/server/src/federation/outbound-client";
@@ -124,56 +121,13 @@ if (import.meta.main) {
       }
       console.log(`PASS ${label}`);
     };
-    const reviewed = new Set<string>();
-    const commercialReady = async (p: typeof a) => {
+    const commercialReady = async (p: (typeof parties)[number]) => {
       const rows = await p.db.select().from(federationCommercialSubmissions);
-      for (const row of rows.filter((r) => r.state === "needs_review")) {
-        const [attempt] = await p.db
-          .select()
-          .from(federationCommercialAttempts)
-          .where(eq(federationCommercialAttempts.submissionId, row.id))
-          .orderBy(desc(federationCommercialAttempts.number))
-          .limit(1);
-        assert(
-          row.lastError === "LEDGER_INVALID" &&
-            attempt?.stage === "invalid" &&
-            attempt.validationCode === 11 &&
-            !reviewed.has(row.id),
-          row.lastError ?? "Commercial failure",
-        );
-        const other = p === a ? b : a;
-        const peers = await other.db.select().from(federationCommercialSubmissions);
-        const duplicate = peers.find(
-          (r) => federationMaterialDigest(r.input) === federationMaterialDigest(row.input),
-        );
-        assert(
-          duplicate && duplicate.state !== "needs_review",
-          "MVCC retry needs the exact peer intent",
-        );
-        if (duplicate.state !== "committed" || (row.leaseUntil && row.leaseUntil > new Date()))
-          return false;
-        const [valid] = await other.db
-          .select()
-          .from(federationCommercialAttempts)
-          .where(eq(federationCommercialAttempts.submissionId, duplicate.id))
-          .orderBy(desc(federationCommercialAttempts.number))
-          .limit(1);
-        assert(
-          valid?.stage === "committed" && valid.validationCode === 0 && valid.blockNumber !== null,
-        );
-        // The fixture acts as the authorized reviewer only for a proven duplicate VALID peer intent.
-        await new FederationCommercialSubmissionService(p.db, p.key.siteId).retry(
-          p.actor,
-          row.agreementRevisionId,
-          row.id,
-        );
-        reviewed.add(row.id);
-        console.log(
-          `Reviewed duplicate commercial MVCC conflict: ${attempt.transactionId}; peer VALID ${valid.transactionId}`,
-        );
-        return false;
-      }
-      return rows.length > 0 && rows.every((r) => r.state === "committed");
+      assert(
+        rows.every((row) => row.state !== "needs_review"),
+        "Commercial record needs human review; the fixture must not approve retries",
+      );
+      return rows.length > 0 && rows.every((row) => row.state === "committed");
     };
     await wait(
       async () => (await commercialReady(a)) && (await commercialReady(b)),

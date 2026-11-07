@@ -11,12 +11,13 @@ import {
   federationCommercialSubmissions as submissions,
   federationExecutionTerminals as terminals,
 } from "@kuintessence/db";
-import { FederationError } from "@kuintessence/shared/federation";
+import { FederationError, federationCanonicalJson } from "@kuintessence/shared/federation";
 import {
   type CommercialAdapterProposalInput,
   CommercialAdapterProposalInputSchema,
   CommercialAgreementSchema,
   CommercialExecutionApprovalSchema,
+  CommercialReceiptQueryResultSchema,
   CommercialTerminalSchema,
   CommercialUsageSchema,
   FabricCommercialAdvanceResultSchema,
@@ -34,6 +35,14 @@ import { FederationTrustRegistry } from "./trust-registry";
 type Submission = typeof submissions.$inferSelect;
 type Lease = { id: string; token: string };
 class LeaseLost extends Error {}
+const MvccReconciling = "MVCC_RECONCILING";
+const recordTypes = {
+  "register-agreement": "agreement",
+  "record-usage": "usage",
+  "reserve-execution": "reservation",
+  "release-execution": "release",
+  "record-execution-terminal": "terminal",
+} as const;
 
 export class FederationCommercialSubmissionService {
   private readonly trust: FederationTrustRegistry;
@@ -174,12 +183,14 @@ export class FederationCommercialSubmissionService {
     const lease = await this.claim();
     if (!lease) return false;
     const claimed = lease;
+    let reconciling = false;
     try {
       const snapshot = await this.fenced(claimed, async (tx, submission) => ({
         submission,
         attempt: (await this.latest(tx, submission.id))[0],
       }));
       const { submission, attempt } = snapshot;
+      reconciling = submission.lastError === MvccReconciling;
       if (submission.state === "committed" || attempt?.stage === "committed") {
         if (
           submission.input.operation !== "record-execution-terminal" ||
@@ -195,10 +206,73 @@ export class FederationCommercialSubmissionService {
         });
       } else if (!attempt || attempt.stage === "invalid" || attempt.stage === "abandoned") {
         await this.beforeDisclosure(submission.input);
+        let receipt: z.infer<typeof CommercialReceiptQueryResultSchema>["receipt"] = null;
+        if (reconciling) {
+          if (
+            !this.client.receipt ||
+            attempt?.stage !== "invalid" ||
+            attempt.validationCode !== 11 ||
+            attempt.number !== 1 ||
+            attempt.blockNumber === null
+          )
+            throw new FabricClientFailure("MVCC_RECONCILIATION_UNAVAILABLE", true);
+          ({ receipt } = CommercialReceiptQueryResultSchema.parse(
+            await this.client.receipt({
+              operation: "get-commercial-receipt",
+              domainId: submission.input.domainId,
+              recordType: recordTypes[submission.input.operation],
+              recordId: submission.input.recordId,
+            }),
+          ));
+          if (!receipt) throw new FabricClientFailure("MVCC_ORIGINAL_NOT_FOUND", true);
+          if (
+            receipt.recordId !== submission.input.recordId ||
+            receipt.digest !== submission.input.digest
+          )
+            throw new FederationError("OPERATION_CONFLICT");
+          await this.beforeDisclosure(submission.input);
+        }
         const result = FabricProposalCheckpointSchema.parse(
           await this.client.prepare(submission.input),
         );
-        await this.fenced(claimed, async (tx) => {
+        await this.fenced(claimed, async (tx, current) => {
+          if (receipt) {
+            const [latest] = await this.latest(tx, submission.id);
+            if (
+              !attempt ||
+              latest?.id !== attempt.id ||
+              latest.stage !== "invalid" ||
+              current.lastError !== MvccReconciling ||
+              federationCanonicalJson(current.input) !== federationCanonicalJson(submission.input)
+            )
+              throw new FederationError("OPERATION_CONFLICT");
+            await this.beforeDisclosure(current.input, tx);
+            const [contract] = await tx
+              .select({ orgId: agreements.localOrgId })
+              .from(agreements)
+              .where(
+                and(
+                  eq(agreements.localSiteId, this.siteId),
+                  eq(agreements.revisionId, current.agreementRevisionId),
+                ),
+              );
+            if (!contract) throw new FederationError("AGREEMENT_UNAVAILABLE");
+            await tx.insert(auditLog).values({
+              actor: `commercial-worker:${this.siteId}`,
+              orgId: contract.orgId,
+              action: "federation.commercial.mvcc_reconcile",
+              target: current.id,
+              diff: {
+                after: {
+                  previousTransactionId: attempt.transactionId,
+                  previousBlockNumber: attempt.blockNumber,
+                  validationCode: 11,
+                  receipt,
+                  transactionId: result.transactionId,
+                },
+              },
+            });
+          }
           await tx.insert(attempts).values({
             id: randomUUID(),
             submissionId: submission.id,
@@ -234,6 +308,12 @@ export class FederationCommercialSubmissionService {
           } else if (result.state === "pending") {
             await this.schedule(tx, submission.id, "LEDGER_PENDING");
           } else {
+            // Only a definite first MVCC failure may inspect the original immutable PDC record.
+            const reconcile =
+              result.state === "invalid" &&
+              result.validationCode === 11 &&
+              attempt.number === 1 &&
+              !!this.client?.receipt;
             await tx
               .update(attempts)
               .set({
@@ -246,8 +326,18 @@ export class FederationCommercialSubmissionService {
             await tx
               .update(submissions)
               .set({
-                state: result.state === "committed" ? "committed" : "needs_review",
-                lastError: result.state === "committed" ? null : "LEDGER_INVALID",
+                state:
+                  result.state === "committed"
+                    ? "committed"
+                    : reconcile
+                      ? "pending"
+                      : "needs_review",
+                lastError:
+                  result.state === "committed"
+                    ? null
+                    : reconcile
+                      ? MvccReconciling
+                      : "LEDGER_INVALID",
                 updatedAt: sql`clock_timestamp()`,
               })
               .where(eq(submissions.id, submission.id));
@@ -271,7 +361,11 @@ export class FederationCommercialSubmissionService {
                 : new FabricClientFailure("COMMERCIAL_RETRY");
         try {
           await this.fenced(claimed, async (tx) => {
-            await this.schedule(tx, claimed.id, failure.code);
+            await this.schedule(
+              tx,
+              claimed.id,
+              reconciling && !failure.needsReview ? MvccReconciling : failure.code,
+            );
             if (failure.needsReview)
               await tx
                 .update(submissions)
@@ -304,10 +398,10 @@ export class FederationCommercialSubmissionService {
       .where(eq(submissions.id, id));
   }
 
-  private async beforeDisclosure(raw: CommercialAdapterProposalInput) {
+  private async beforeDisclosure(raw: CommercialAdapterProposalInput, tx?: PgTransaction) {
     const input = CommercialAdapterProposalInputSchema.parse(raw);
     if (input.operation === "record-execution-terminal") {
-      const [local] = await this.db
+      const [local] = await (tx ?? this.db)
         .select()
         .from(terminals)
         .where(
@@ -341,9 +435,11 @@ export class FederationCommercialSubmissionService {
       for (const [siteId, jws] of [
         [input.envelope.sourceSiteId, input.envelope.sourceJws],
         [input.envelope.targetSiteId, input.envelope.targetJws],
-      ]) {
+      ].sort(([left], [right]) => (left ?? "").localeCompare(right ?? ""))) {
         if (!siteId || !jws) throw new FederationError("INVALID_MESSAGE");
-        const key = await this.trust.resolveKey(siteId, federationMessageKeyId(jws), new Date());
+        const keyId = federationMessageKeyId(jws);
+        if (tx) await this.trust.assertKey(tx, siteId, keyId, new Date());
+        const key = await this.trust.resolveKey(siteId, keyId, new Date(), tx);
         const verified = await verifyFederationMessage(
           z.union([
             CommercialAgreementSchema,
@@ -359,7 +455,9 @@ export class FederationCommercialSubmissionService {
       }
     } else {
       const jws = input.envelope.providerJws;
-      const key = await this.trust.resolveKey(this.siteId, federationMessageKeyId(jws), new Date());
+      const keyId = federationMessageKeyId(jws);
+      if (tx) await this.trust.assertKey(tx, this.siteId, keyId, new Date());
+      const key = await this.trust.resolveKey(this.siteId, keyId, new Date(), tx);
       const verified = await verifyFederationMessage(CommercialUsageSchema, jws, key, new Date());
       if (verified.digest !== input.digest) throw new FederationError("OPERATION_CONFLICT");
     }
