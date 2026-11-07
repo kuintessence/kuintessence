@@ -1,0 +1,1 @@
+ALTER TABLE "netdrive_files" ADD COLUMN "storage_version_id" varchar(2048);

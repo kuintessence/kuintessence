@@ -78,6 +78,7 @@ export const NetDriveFileSchema = z.object({
   contentType: z.string(),
   etag: z.string().nullable(),
   storageKey: z.string(),
+  storageVersionId: z.string().nullable().optional(),
   mtime: z.string(),
   createdAt: z.string(),
 });

@@ -1,0 +1,2 @@
+ALTER TABLE "federation_result_imports" ADD COLUMN "reserved_bytes" bigint DEFAULT 0 NOT NULL;--> statement-breakpoint
+ALTER TABLE "federation_result_imports" ADD CONSTRAINT "federation_result_import_reservation" CHECK ("federation_result_imports"."reserved_bytes" >= 0);

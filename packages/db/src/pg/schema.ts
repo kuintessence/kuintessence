@@ -1899,6 +1899,7 @@ export const netdriveFiles = pgTable(
     etag: varchar("etag", { length: 255 }),
     /** Synthetic MinIO/S3 object key under the bucket. */
     storageKey: varchar("storage_key", { length: 512 }).notNull(),
+    storageVersionId: varchar("storage_version_id", { length: 2048 }),
     mtime: timestamp("mtime").defaultNow().notNull(),
     createdAt: timestamp("created_at").defaultNow().notNull(),
     /** Soft-delete tombstone. NULL for live rows. */

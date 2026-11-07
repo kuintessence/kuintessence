@@ -24,6 +24,7 @@ import { and, asc, desc, eq, inArray, isNull, like, sql } from "drizzle-orm";
 import * as jose from "jose";
 import type { Logger } from "pino";
 import type { MinioBackend } from "../storage/minio-client";
+import { lockCloudWrites, StorageQuotaService } from "./storage-quota";
 
 /**
  * NetDrive metadata service.
@@ -294,6 +295,7 @@ export class NetDriveService {
         contentType,
         etag: req.etag ?? stat.etag,
         storageKey: req.storageKey,
+        storageVersionId: stat.versionId === "null" ? null : (stat.versionId ?? null),
       },
       context,
     );
@@ -313,50 +315,62 @@ export class NetDriveService {
       contentType: string;
       etag: string | null;
       storageKey: string;
+      storageVersionId?: string | null;
     },
     context?: NetDriveTransferContext,
   ): Promise<NetDriveCommitResult> {
-    // Soft-delete-aware uniqueness: we allow the same `(owner_id, path)`
-    // to be re-uploaded as long as the prior row is tombstoned. To keep
-    // active uniqueness we tombstone any existing live row first.
-    const replacedRows = await this.db
-      .select()
-      .from(netdriveFiles)
-      .where(
-        and(
-          eq(netdriveFiles.ownerId, ownerId),
-          eq(netdriveFiles.path, args.path),
-          isNull(netdriveFiles.deletedAt),
-        ),
-      );
-    await this.db
-      .update(netdriveFiles)
-      .set({ deletedAt: new Date(this.now()) })
-      .where(
-        and(
-          eq(netdriveFiles.ownerId, ownerId),
-          eq(netdriveFiles.path, args.path),
-          isNull(netdriveFiles.deletedAt),
-        ),
-      );
-
-    const [row] = await this.db
-      .insert(netdriveFiles)
-      .values({
+    const { row, replacedRows } = await this.db.transaction(async (tx) => {
+      await lockCloudWrites(tx, ownerId);
+      await new StorageQuotaService(tx, () => new Date(this.now())).assertCloudWriteAllowed(
         ownerId,
-        path: args.path,
-        size: args.size,
-        sha256: args.sha256.toLowerCase(),
-        contentType: args.contentType,
-        etag: args.etag,
-        storageKey: args.storageKey,
-        mtime: new Date(this.now()),
-      })
-      .returning();
+        args.path,
+        args.size,
+      );
+      // Soft-delete-aware uniqueness: we allow the same `(owner_id, path)`
+      // to be re-uploaded as long as the prior row is tombstoned. To keep
+      // active uniqueness we tombstone any existing live row first.
+      const replacedRows = await tx
+        .select()
+        .from(netdriveFiles)
+        .where(
+          and(
+            eq(netdriveFiles.ownerId, ownerId),
+            eq(netdriveFiles.path, args.path),
+            isNull(netdriveFiles.deletedAt),
+          ),
+        );
+      await tx
+        .update(netdriveFiles)
+        .set({ deletedAt: new Date(this.now()) })
+        .where(
+          and(
+            eq(netdriveFiles.ownerId, ownerId),
+            eq(netdriveFiles.path, args.path),
+            isNull(netdriveFiles.deletedAt),
+          ),
+        );
 
-    if (!row) {
-      throw new AppError(ErrorCode.INTERNAL_ERROR, "Failed to insert netdrive_files row", 500);
-    }
+      const [row] = await tx
+        .insert(netdriveFiles)
+        .values({
+          ownerId,
+          path: args.path,
+          size: args.size,
+          sha256: args.sha256.toLowerCase(),
+          contentType: args.contentType,
+          etag: args.etag,
+          storageKey: args.storageKey,
+          storageVersionId: args.storageVersionId,
+          mtime: new Date(this.now()),
+        })
+        .returning();
+
+      if (!row) {
+        throw new AppError(ErrorCode.INTERNAL_ERROR, "Failed to insert netdrive_files row", 500);
+      }
+
+      return { row, replacedRows };
+    });
 
     // record real upload bytes against the transfer log so the
     // CP Console reads from a per-event ledger rather than approximating
@@ -494,6 +508,7 @@ export class NetDriveService {
       file.storageKey,
       this.downloadTtlSec,
       filenameFromPath(file.path),
+      file.storageVersionId ?? undefined,
     );
     const expiresAt = new Date(this.now() + this.downloadTtlSec * 1000).toISOString();
 
@@ -681,7 +696,7 @@ export class NetDriveService {
       req.parts,
     );
 
-    const stat = await this.minio.head(req.storageKey);
+    const stat = await this.minio.head(req.storageKey, completed.versionId);
     if (!stat) {
       throw new AppError(ErrorCode.NOT_FOUND, "Assembled object not found after complete", 404);
     }
@@ -703,6 +718,7 @@ export class NetDriveService {
         contentType,
         etag: completed.etag || stat.etag,
         storageKey: req.storageKey,
+        storageVersionId: stat.versionId === "null" ? null : (stat.versionId ?? null),
       },
       context,
     );
@@ -788,6 +804,7 @@ interface NetDriveFileRow {
   contentType: string;
   etag: string | null;
   storageKey: string;
+  storageVersionId?: string | null;
   mtime: Date;
   createdAt: Date;
 }
@@ -802,6 +819,7 @@ function rowToFile(r: NetDriveFileRow): NetDriveFile {
     contentType: r.contentType,
     etag: r.etag,
     storageKey: r.storageKey,
+    storageVersionId: r.storageVersionId ?? null,
     mtime: r.mtime.toISOString(),
     createdAt: r.createdAt.toISOString(),
   };

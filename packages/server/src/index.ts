@@ -1783,8 +1783,6 @@ if (config.NETDRIVE_ENABLED) {
       {
         sourceOrigins: config.FEDERATION_RESULT_IMPORT_SOURCE_ORIGINS,
         destinationOrigins: config.FEDERATION_RESULT_DOWNLOAD_ORIGINS,
-        quotaGuard: (ownerId, path, size) =>
-          storageQuotaService.assertCloudWriteAllowed(ownerId, path, size),
       },
     );
     federationResults = new FederationResultTransport(

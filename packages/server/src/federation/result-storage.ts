@@ -26,7 +26,6 @@ const logger = createLogger("federation-result-storage");
 export interface FederationResultStorageOptions {
   sourceOrigins: readonly string[];
   destinationOrigins: readonly string[];
-  quotaGuard: (ownerId: string, path: string, size: number) => Promise<void>;
   clock?: () => Date;
   timeoutMs?: number;
 }
@@ -64,17 +63,6 @@ export class FederationResultStorage {
     const generation = started.attempt.generation;
     try {
       const ready = await this.imports.preparing(agentId, generation);
-      const bytes = ready.parent.report.manifest.outputs.reduce(
-        (sum, output) => sum + output.sizeBytes,
-        0,
-      );
-      if (!Number.isSafeInteger(bytes)) throw new FederationError("INVALID_MESSAGE");
-      await this.options.quotaGuard(
-        ready.actor.userId,
-        `federation-results/${ready.parent.id}`,
-        bytes,
-      );
-      await this.imports.preparing(agentId, generation);
       const allocated = this.storage
         .createMultipartUpload(ready.attempt.storageKey, "application/octet-stream")
         .then(async ({ uploadId }) => {

@@ -180,6 +180,8 @@ Server 另行配置 `FEDERATION_CLIENT_CERT_FILE`、`FEDERATION_CLIENT_KEY_FILE`
 
 Agent 结果搬运配置默认关闭。`AGENT_FEDERATION_RESULT_COPY` 是 JSON，例如 `{"stagingRoot":"/var/lib/kq/result-staging","maxStagingBytes":1073741824,"allowedSourceOrigins":["https://remote-storage.example.org"],"allowedDestinationOrigins":["https://local-storage.example.org"]}`。暂存路径须是 Agent 用户独占的绝对目录（0700，无符号链接），需要完整单文件空间；容量是文件上限，不是已验证支持 TB 级搬运。当前运行结果不跨进程续传。双方服务都需升级以协商复制与目的校验两项能力；仅支持复制的旧 Agent 不领取新任务，Agent 到 Server 必须通过 mTLS；缺失任一条件不派发。
 
-Server 已构造结果传输服务并接 Agent RPC，但自动扫描 worker 尚未启动。配置上述值不会让 pending 导入自动完成；分片完成和目的字节校验已接通，仍需补齐配额及整单发布，不能据此宣布离线包或联邦结果已交付。
+Server 已构造结果传输服务并接 Agent RPC，但自动扫描 worker 尚未启动。配置上述值不会让 pending 导入自动完成；分片完成和目的字节校验已接通，已补齐事务配额预留，仍需整单发布，不能据此宣布离线包或联邦结果已交付。
 
 目的校验需要上述固定版本 GET 权限，分片完成后保存对象 ETag 与可用的 versionId，再由 Agent 实际读取字节。开启 versioning 的存储可固定读取已组装版本；未开启时使用 If-Match 和 SHA-256，不提供历史版本保留保证。Agent 需要能访问本端预签名 HTTPS 地址，校验读取不经 Server 中转、不占完整文件暂存空间。目前 verified 只代表传输完整性，不代表已登记云盘副本或已签收/结算。
+
+结果导入先预留整份清单的用户云盘额度，与普通上传提交共享事务锁。取消后须等残留清理完成才释放额度，清理失败时不能靠重试抢占新空间。迁移 0101、0102 分别新增预留字段与云盘对象版本字段；普通上传和分片提交保存版本，后续下载不随同 key 覆盖切换对象。

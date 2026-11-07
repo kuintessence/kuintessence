@@ -19,6 +19,7 @@ import {
 } from "@kuintessence/shared/federation";
 import { and, asc, eq, gte, inArray, lte, ne, or } from "drizzle-orm";
 import { z } from "zod";
+import { lockCloudWrites, StorageQuotaService } from "../services/storage-quota";
 import { federationMaterialDigest } from "./assets";
 import { type FederationActor, requireFederationCapability } from "./permissions";
 import type { FederationResultReader } from "./result-reader";
@@ -95,6 +96,13 @@ export class FederationResultImports {
         this.assertOwner(sameManifest, actor, operationId);
         return this.summary(tx, sameManifest);
       }
+      const reservedBytes = members.reduce((sum, file) => sum + file.sizeBytes, 0);
+      await lockCloudWrites(tx, actor.userId);
+      await new StorageQuotaService(tx, this.clock).assertCloudWritesAllowed(
+        actor.userId,
+        [],
+        reservedBytes,
+      );
       const [created] = await tx
         .insert(federationResultImports)
         .values({
@@ -106,6 +114,7 @@ export class FederationResultImports {
           report: verified.report,
           reportJws: verified.reportJws,
           manifestDigest: verified.report.manifestDigest,
+          reservedBytes,
           state: "pending",
           createdAt: this.clock(),
           updatedAt: this.clock(),
@@ -155,6 +164,22 @@ export class FederationResultImports {
     return this.db.transaction(async (tx) => {
       const rows = await this.lockTransfer(tx, transferId);
       await this.authorize(tx, rows.parent);
+      if (rows.parent.reservedBytes === 0) {
+        const bytes = rows.parent.report.manifest.outputs.reduce(
+          (sum, output) => sum + output.sizeBytes,
+          0,
+        );
+        await lockCloudWrites(tx, rows.parent.requestedBy);
+        await new StorageQuotaService(tx, this.clock).assertCloudWritesAllowed(
+          rows.parent.requestedBy,
+          [],
+          bytes,
+        );
+        await tx
+          .update(federationResultImports)
+          .set({ reservedBytes: bytes })
+          .where(eq(federationResultImports.id, rows.parent.id));
+      }
       const [agent] = await tx
         .select()
         .from(agents)
@@ -481,6 +506,7 @@ export class FederationResultImports {
           .update(federationResultImports)
           .set({ state: "cancelled", updatedAt: this.clock() })
           .where(eq(federationResultImports.id, row.id));
+        await this.releaseCancelledReservation(tx, { ...row, state: "cancelled" });
         await this.audit(tx, row, "cancelled");
       }
       return { id: row.id, state: "cancelled" as const };
@@ -583,11 +609,35 @@ export class FederationResultImports {
             updatedAt: this.clock(),
           })
           .where(eq(federationResultTransfers.id, rows.transfer.id));
+      await this.releaseCancelledReservation(tx, rows.parent);
       await this.audit(tx, rows.parent, "storage_cleaned", {
         transferId: rows.transfer.id,
         generation,
       });
     });
+  }
+
+  private async releaseCancelledReservation(tx: FederationTransaction, parent: Import) {
+    if (parent.state !== "cancelled" || parent.reservedBytes === 0) return;
+    const [remaining] = await tx
+      .select({ generation: federationResultAttempts.generation })
+      .from(federationResultAttempts)
+      .innerJoin(
+        federationResultTransfers,
+        eq(federationResultTransfers.id, federationResultAttempts.transferId),
+      )
+      .where(
+        and(
+          eq(federationResultTransfers.importId, parent.id),
+          ne(federationResultAttempts.state, "cleaned"),
+        ),
+      )
+      .limit(1);
+    if (!remaining)
+      await tx
+        .update(federationResultImports)
+        .set({ reservedBytes: 0 })
+        .where(eq(federationResultImports.id, parent.id));
   }
 
   private async hasOtherLiveAttempt(tx: FederationTransaction, attempt: Attempt) {

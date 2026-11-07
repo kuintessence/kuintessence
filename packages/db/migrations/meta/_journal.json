@@ -708,6 +708,20 @@
       "when": 1794015997926,
       "tag": "0100_swift_king_cobra",
       "breakpoints": true
+    },
+    {
+      "idx": 101,
+      "version": "7",
+      "when": 1794017140384,
+      "tag": "0101_clean_cerise",
+      "breakpoints": true
+    },
+    {
+      "idx": 102,
+      "version": "7",
+      "when": 1794017385676,
+      "tag": "0102_charming_aqueduct",
+      "breakpoints": true
     }
   ]
 }

@@ -162,8 +162,17 @@ export class FederationResultResponder {
     );
     if (!origins.size) throw new FederationError("POLICY_DENIED");
     // Head and presign do not hold database locks or read the object body.
-    const stat = await options.storage.head(first.file.storageKey);
-    if (!stat || stat.size !== first.file.size) throw new FederationError("ASSET_UNAVAILABLE");
+    const stat = await options.storage.head(
+      first.file.storageKey,
+      first.file.storageVersionId ?? undefined,
+    );
+    if (
+      !stat ||
+      stat.size !== first.file.size ||
+      (first.file.storageVersionId && stat.versionId !== first.file.storageVersionId) ||
+      (first.file.etag && stat.etag !== first.file.etag.replace(/^"|"$/g, ""))
+    )
+      throw new FederationError("ASSET_UNAVAILABLE");
     const now = this.clock().getTime();
     const seconds = Math.floor(
       (Math.min(now + 30_000, Date.parse(query.expiresAt), Date.parse(first.availableUntil)) -
@@ -202,7 +211,12 @@ export class FederationResultResponder {
     );
     await this.db.transaction(async (tx) => {
       const current = await read(tx);
-      if (current.file.id !== first.file.id || current.file.storageKey !== first.file.storageKey)
+      if (
+        current.file.id !== first.file.id ||
+        current.file.storageKey !== first.file.storageKey ||
+        current.file.storageVersionId !== first.file.storageVersionId ||
+        current.file.etag !== first.file.etag
+      )
         throw new FederationError("OPERATION_CONFLICT");
       if (Date.parse(expiresAt) <= this.clock().getTime())
         throw new FederationError("AUTHORIZATION_EXPIRED");

@@ -634,6 +634,7 @@ export const federationResultImports = pgTable(
     reportJws: text("report_jws").notNull(),
     manifestDigest: varchar("manifest_digest", { length: 71 }).notNull(),
     state: varchar("state", { length: 24 }).notNull().default("pending"),
+    reservedBytes: bigint("reserved_bytes", { mode: "number" }).notNull().default(0),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
@@ -651,6 +652,7 @@ export const federationResultImports = pgTable(
       t.requestedBy,
       t.createdAt,
     ),
+    check("federation_result_import_reservation", sql`${t.reservedBytes} >= 0`),
     check(
       "federation_result_import_state",
       sql`${t.state} IN ('pending','transferring','verifying','available','cancelled','needs_review')`,

@@ -28,6 +28,7 @@ import {
   orgs,
   softwareAssetRevisions,
   softwareAssets,
+  storageQuotaPolicies,
   userOrgMemberships,
   users,
   workflowArtifactFiles,
@@ -60,7 +61,10 @@ import { exportSPKI } from "jose";
 import { AgentDispatcher } from "../grpc/dispatcher";
 import { createFederationOutboundRoutes } from "../routes/federation-outbound";
 import { artifactBatchHash } from "../services/artifact-members";
+import { NetDriveService } from "../services/netdrive";
+import { StorageQuotaService } from "../services/storage-quota";
 import type { ObjectStat } from "../storage/minio-client";
+import { FakeMinioBackend } from "../storage/minio-client.test";
 import { WorkflowAsyncRunner } from "../workflow/async-runner";
 import { WorkflowRunRegistry } from "../workflow/run-registry";
 import { FederationAdmission } from "./admission";
@@ -1902,7 +1906,6 @@ async function resultStorageFixture() {
   const uploads = new Map<string, string>();
   const objects = new Map<string, ObjectStat>();
   const purged: string[] = [];
-  const quota: { owner: string; path: string; size: number }[] = [];
   const storage = {
     head: async (key: string, _versionId?: string): Promise<ObjectStat | null> =>
       objects.get(key) ?? null,
@@ -1956,22 +1959,21 @@ async function resultStorageFixture() {
     sourceOrigins: downloads.allowedOrigins,
     destinationOrigins: ["https://destination-storage.test.invalid"],
     clock,
-    quotaGuard: async (owner: string, path: string, size: number) => {
-      quota.push({ owner, path, size });
-    },
     timeoutMs: 5000,
   };
   const bridge = new FederationResultStorage(f.imports, reader, storage, options);
-  return { ...f, storage, bridge, uploads, objects, purged, quota, options, reader };
+  return { ...f, storage, bridge, uploads, objects, purged, options, reader };
 }
 
 test("result storage binds both credentials to the current copy and preserves cleanup after failure", async () => {
   const f = await resultStorageFixture();
   const allocated = await f.bridge.allocate(f.member.id, f.agentId);
   const binding = f.bindingFor(allocated.task.generation);
-  expect(f.quota).toEqual([
-    { owner: actor.userId, path: `federation-results/${f.imported.id}`, size: 3 },
-  ]);
+  const [reserved] = await db
+    .select()
+    .from(federationResultImports)
+    .where(eq(federationResultImports.id, f.imported.id));
+  expect(reserved?.reservedBytes).toBe(3);
   const download = await f.bridge.grant(f.agentId, binding, "download");
   expect(download.grant).toMatchObject({ binding, direction: "download" });
   const upload = await f.bridge.grant(f.agentId, binding, "upload", 1);
@@ -2057,14 +2059,12 @@ test("result storage keeps late allocation IDs after timeout and rechecks cleane
   expect(f.purged.filter((key) => key === attempt.storageKey)).toHaveLength(2);
 });
 
-test("result storage quota rejection creates no upload and failed cleanup cannot release retry eligibility", async () => {
+test("result storage failed allocation and cleanup cannot release retry eligibility", async () => {
   const f = await resultStorageFixture();
-  const bridge = new FederationResultStorage(f.imports, f.reader, f.storage, {
-    ...f.options,
-    quotaGuard: async () => {
-      throw new Error("quota");
-    },
-  });
+  const bridge = f.bridge;
+  f.storage.createMultipartUpload = async () => {
+    throw new Error("Storage unavailable");
+  };
   await expect(bridge.allocate(f.member.id, f.agentId)).rejects.toThrow(
     "FEDERATION_RESULT_STORAGE_UNAVAILABLE",
   );
@@ -2345,4 +2345,117 @@ test("concurrent result completions cannot mark a successfully assembled object 
   expect((await f.imports.get(actor, f.imported.id)).members[0]?.state).toBe("verifying");
   expect(await f.bridge.cleanup()).toBe(0);
   expect(f.objects.size).toBe(1);
+});
+
+test.each([
+  "import",
+  "ordinary-upload",
+] as const)("result quota serializes remaining capacity against %s", async (competitor) => {
+  const first = await resultImportFixture();
+  const second = await resultImportFixture();
+  await first.imports.cancel(actor, first.imported.id);
+  await second.imports.cancel(actor, second.imported.id);
+  const quota = new StorageQuotaService(db, clock);
+  const before = await quota.getSummary(actor.userId);
+  const limit = before.usedBytes + (before.reservedBytes ?? 0) + 3;
+  const [policy] = await db
+    .insert(storageQuotaPolicies)
+    .values({ scope: "cloud", scopeId: "global", defaultQuotaBytes: limit })
+    .returning();
+  if (!policy) throw new Error("Missing quota policy");
+  const firstId = crypto.randomUUID(),
+    secondId = crypto.randomUUID();
+  try {
+    const backend = new FakeMinioBackend();
+    const service = new NetDriveService(db, backend, {
+      commitSecret: "result-quota-test-commit-secret-for-isolated-fixture",
+    });
+    const path = `result-quota/${crypto.randomUUID()}`;
+    const minted = await service.mintUploadUrl(actor.userId, { path, size: 3 });
+    await backend.putBlob(minted.storageKey, Buffer.from("abc"), "text/plain");
+    const results = await Promise.allSettled([
+      first.imports.enqueue(actor, first.imported.operationId, firstId),
+      competitor === "import"
+        ? second.imports.enqueue(actor, second.imported.operationId, secondId)
+        : service.commitFile(actor.userId, {
+            path,
+            size: 3,
+            sha256: new Bun.CryptoHasher("sha256").update("abc").digest("hex"),
+            storageKey: minted.storageKey,
+            commitToken: minted.commitToken,
+          }),
+    ]);
+    expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+    const rejected = results.find((result) => result.status === "rejected");
+    if (rejected?.status !== "rejected") throw new Error("Expected quota conflict");
+    expect(rejected.reason).toMatchObject({ code: "STORAGE_QUOTA_EXCEEDED" });
+    const after = await quota.getSummary(actor.userId);
+    expect(after.usedBytes + (after.reservedBytes ?? 0)).toBe(limit);
+    expect(after.availableBytes).toBe(0);
+    for (const [index, result] of results.entries())
+      if (result.status === "fulfilled") {
+        if (competitor === "ordinary-upload" && index === 1)
+          await service.deleteFile(actor.userId, result.value.id);
+        else await first.imports.cancel(actor, result.value.id);
+      }
+  } finally {
+    await db.delete(storageQuotaPolicies).where(eq(storageQuotaPolicies.id, policy.id));
+  }
+});
+
+test("result quota stays reserved until cancelled attempts are actually cleaned", async () => {
+  const f = await resultStorageFixture();
+  const quota = new StorageQuotaService(db, clock);
+  const before = await quota.getSummary(actor.userId);
+  await f.bridge.allocate(f.member.id, f.agentId);
+  await f.imports.cancel(actor, f.imported.id);
+  expect((await quota.getSummary(actor.userId)).reservedBytes).toBe(before.reservedBytes);
+  time = new Date(time.getTime() + 120_001);
+  const cleanup = f.storage.cleanupFederationResult;
+  f.storage.cleanupFederationResult = async () => {
+    throw new Error("storage offline");
+  };
+  expect(await f.bridge.cleanup()).toBe(0);
+  expect((await quota.getSummary(actor.userId)).reservedBytes).toBe(before.reservedBytes);
+  f.storage.cleanupFederationResult = cleanup;
+  await f.bridge.cleanup();
+  expect((await quota.getSummary(actor.userId)).reservedBytes).toBe(
+    (before.reservedBytes ?? 0) - 3,
+  );
+});
+
+test("result downloads honor the committed file version and reject a changed pin before releasing credentials", async () => {
+  const f = await resultDownloadFixture();
+  await db
+    .update(netdriveFiles)
+    .set({ storageVersionId: "committed-old", etag: '"object-etag"' })
+    .where(eq(netdriveFiles.id, f.fileId));
+  const head = f.downloads.storage.head;
+  let observedVersion: string | undefined;
+  f.downloads.storage.head = async (key, version) => {
+    observedVersion = version;
+    const stat = await head(key, version);
+    if (!stat) throw new Error("Missing fixture object");
+    return { ...stat, versionId: "committed-old" };
+  };
+  expect(new URL((await f.download()).url).searchParams.get("versionId")).toBe("committed-old");
+  expect(observedVersion).toBe("committed-old");
+  const pinnedHead = f.downloads.storage.head;
+  f.downloads.storage.head = async (...args) => {
+    const stat = await pinnedHead(...args);
+    return stat ? { ...stat, versionId: "unexpected-latest" } : null;
+  };
+  await expect(f.download()).rejects.toThrow("ASSET_UNAVAILABLE");
+  expect(f.calls).toHaveLength(1);
+  f.downloads.storage.head = pinnedHead;
+  const presign = f.downloads.storage.presignDownload;
+  f.downloads.storage.presignDownload = async (...args) => {
+    const url = await presign(...args);
+    await db
+      .update(netdriveFiles)
+      .set({ storageVersionId: "changed-during-signing" })
+      .where(eq(netdriveFiles.id, f.fileId));
+    return url;
+  };
+  await expect(f.download()).rejects.toThrow("OPERATION_CONFLICT");
 });

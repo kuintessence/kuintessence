@@ -90,6 +90,7 @@ export interface StorageQuotaSummary {
   usedBytes: number;
   quotaBytes: number;
   availableBytes: number;
+  reservedBytes?: number;
   usagePercent: number;
   fileCount: number;
   uploadedBytes30d: number;
