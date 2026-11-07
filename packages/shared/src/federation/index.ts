@@ -256,4 +256,5 @@ export * from "./result-transfer";
 export * from "./results";
 export * from "./status";
 export * from "./storage-reconciliation";
+export * from "./terminal-evidence";
 export * from "./trust";

@@ -57,6 +57,7 @@ import {
 } from "drizzle-orm";
 import { jobQueueTuple } from "../authz/projection";
 import type { EventBus } from "../events/event-bus";
+import { persistFederationTerminalEvidence } from "../federation/terminal-evidence";
 import { frozenAuthorizationSubjects } from "./authorization-subjects";
 import type { DataRequirement } from "./data-prerequisite";
 import { PgDataPrerequisiteRepository } from "./data-prerequisite-repository-drizzle";
@@ -962,6 +963,14 @@ export class JobService {
       if (!written) {
         throw new AppError(ErrorCode.NOT_FOUND, `Job ${jobId} not found`, 404);
       }
+      if (isTerminal)
+        await persistFederationTerminalEvidence(
+          tx,
+          jobId,
+          current,
+          expectedAgentId && agentEventId ? "agent-status" : "status-update",
+          agentEventId,
+        );
       if (status === JobStatus.CANCELLED) await persistJobCancellations(tx, written);
       changed = true;
       return written;
@@ -1002,6 +1011,7 @@ export class JobService {
       if (!written) {
         throw new AppError(ErrorCode.NOT_FOUND, `Job ${jobId} not found`, 404);
       }
+      await persistFederationTerminalEvidence(tx, jobId, current, "platform-cancellation");
       await persistJobCancellations(tx, written);
       return written;
     });

@@ -19,6 +19,7 @@ import {
   type SandboxSignedManifest,
 } from "@kuintessence/shared";
 import { and, eq, inArray, sql } from "drizzle-orm";
+import { persistFederationTerminalEvidence } from "../federation/terminal-evidence";
 import type { AgentDispatcher } from "../grpc/dispatcher";
 import type { MinioBackend } from "../storage/minio-client";
 import { isReplicaEligible } from "./data-prerequisite-repository-drizzle";
@@ -482,6 +483,8 @@ export async function revokeDataDeliveryJobs(input: {
     const rows = await tx
       .select({
         jobId: jobs.id,
+        status: jobs.status,
+        startedAt: jobs.startedAt,
         agentId: jobs.agentId,
         restrictedNoEgress: jobs.restrictedNoEgress,
         dispatchEpoch: jobs.dispatchEpoch,
@@ -515,6 +518,8 @@ export async function revokeDataDeliveryJobs(input: {
         ),
       )
       .returning();
+    for (const before of rows)
+      await persistFederationTerminalEvidence(tx, before.jobId, before, "data-revocation");
     for (const job of cancelled) await persistJobCancellations(tx, job, false);
     const remote = rows.filter((row) => row.agentId !== null);
     if (remote.length > 0) {

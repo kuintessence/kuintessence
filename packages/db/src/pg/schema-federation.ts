@@ -15,6 +15,7 @@ import type {
   FederationResultReport,
   FederationStatusReport,
   FederationStorageReconciliationRecord,
+  FederationTerminalEvidence,
 } from "@kuintessence/shared/federation";
 import type {
   CommercialAgreement,
@@ -41,6 +42,7 @@ import {
 import {
   agents,
   dataAssetVersions,
+  jobs,
   orgs,
   softwareAssetRevisions,
   users,
@@ -1115,6 +1117,38 @@ export const federationCommercialAttempts = pgTable(
     check(
       "federation_commercial_result",
       sql`((${t.stage} IN ('proposal','transaction','abandoned') AND ${t.validationCode} IS NULL AND ${t.blockNumber} IS NULL) OR (${t.stage} = 'committed' AND ${t.validationCode} = 0 AND ${t.blockNumber} >= 0) OR (${t.stage} = 'invalid' AND ${t.validationCode} BETWEEN 1 AND 255 AND ${t.blockNumber} >= 0)) IS TRUE`,
+    ),
+  ],
+);
+
+/** Immutable local evidence; raw-metering retention and Job deletion must not erase it. */
+export const federationTerminalEvidence = pgTable(
+  "federation_terminal_evidence",
+  {
+    jobId: uuid("job_id")
+      .primaryKey()
+      .references(() => jobs.id),
+    reservationId: uuid("reservation_id")
+      .notNull()
+      .references(() => federationReservations.id),
+    workflowRunId: uuid("workflow_run_id")
+      .notNull()
+      .references(() => workflowRuns.id),
+    evidence: jsonb("evidence").$type<FederationTerminalEvidence>().notNull(),
+    digest: varchar("digest", { length: 71 }).notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index("federation_terminal_reservation").on(t.reservationId, t.jobId),
+    check("federation_terminal_digest", sql`${t.digest} ~ '^sha256:[a-f0-9]{64}$'`),
+    check(
+      "federation_terminal_identity",
+      sql`coalesce(
+      ${t.evidence}->>'version' = '1'
+      AND ${t.evidence}->>'jobId' = ${t.jobId}::text
+      AND ${t.evidence}->>'reservationId' = ${t.reservationId}::text
+      AND ${t.evidence}->>'runId' = ${t.workflowRunId}::text
+      AND ${t.evidence}->>'status' IN ('completed','failed','cancelled'), false)`,
     ),
   ],
 );

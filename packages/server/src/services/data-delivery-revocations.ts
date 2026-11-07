@@ -10,6 +10,7 @@ import { AppError, ErrorCode } from "@kuintessence/shared";
 import { and, eq, inArray, isNull, sql } from "drizzle-orm";
 import { dataAssetGrantDeltaTuples, normalizeDataGrantCapabilities } from "../authz/projection";
 import type { AuthzTuple } from "../authz/service";
+import { persistFederationTerminalEvidence } from "../federation/terminal-evidence";
 import type { AgentDispatcher } from "../grpc/dispatcher";
 import { canonicalAuthorizationSubject } from "./authorization-subjects";
 import { persistJobCancellations } from "./job-cancellation";
@@ -142,6 +143,8 @@ export class DataGrantRevocationCoordinator {
       const affected = await tx
         .select({
           jobId: jobs.id,
+          status: jobs.status,
+          startedAt: jobs.startedAt,
           agentId: jobs.agentId,
           restrictedNoEgress: jobs.restrictedNoEgress,
           dispatchEpoch: jobs.dispatchEpoch,
@@ -187,6 +190,8 @@ export class DataGrantRevocationCoordinator {
                 restrictedNoEgress: jobs.restrictedNoEgress,
                 revokedEpoch: jobs.revokedEpoch,
               });
+      for (const before of affected)
+        await persistFederationTerminalEvidence(tx, before.jobId, before, "data-revocation");
       const remote = cancelled.filter((job) => job.agentId !== null);
       for (const job of cancelled)
         await persistJobCancellations(

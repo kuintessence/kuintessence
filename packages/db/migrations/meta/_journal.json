@@ -806,6 +806,13 @@
       "when": 1794042086688,
       "tag": "0114_sleepy_vanisher",
       "breakpoints": true
+    },
+    {
+      "idx": 115,
+      "version": "7",
+      "when": 1794044110879,
+      "tag": "0115_powerful_major_mapleleaf",
+      "breakpoints": true
     }
   ]
 }
