@@ -69,6 +69,8 @@ import {
   type FederationInputStorageBackend,
 } from "./federation/input-storage";
 import { FederationInputTransfers } from "./federation/input-transfers";
+import { FederationInputTransport } from "./federation/input-transport";
+import { FederationInputWorker } from "./federation/input-worker";
 import { FederationMaterialExchange } from "./federation/material-exchange";
 import { FederationOutboundService, FederationOutboundWorker } from "./federation/outbound";
 import { createFederationPackageResolver } from "./federation/package-resolver";
@@ -2112,6 +2114,61 @@ app.route("/api", protectedApi);
 // NOTE: any future PUBLIC routes must be registered BEFORE app.route("/api", protectedApi)
 // to avoid being shadowed by the auth middleware on protectedApi.
 
+const federationMaterialExchange =
+  federationSigningKey && federationSender && federationPreparation
+    ? new FederationMaterialExchange(
+        db,
+        federationSigningKey,
+        federationSender,
+        federationPreparation,
+        federationAssets,
+      )
+    : undefined;
+const federationInputImports =
+  federationPreparation && federationMaterialExchange
+    ? new FederationInputImports(db, federationPreparation, federationMaterialExchange)
+    : undefined;
+const federationInputTransfers =
+  federationPreparation && federationInputImports
+    ? new FederationInputTransfers(db, federationPreparation, federationInputImports)
+    : undefined;
+const federationInputReader =
+  federationInputTransfers && federationSigningKey && federationSender
+    ? new FederationInputReader(
+        db,
+        federationSigningKey,
+        federationSender,
+        federationInputTransfers,
+      )
+    : undefined;
+const federationInputStorage =
+  federationInputTransfers && federationInputStorageBackend
+    ? new FederationInputStorage(federationInputTransfers, federationInputStorageBackend, {
+        grants:
+          federationInputReader &&
+          config.FEDERATION_INPUT_IMPORT_SOURCE_ORIGINS.length &&
+          config.FEDERATION_INPUT_DOWNLOAD_ORIGINS.length
+            ? {
+                reader: federationInputReader,
+                sourceOrigins: config.FEDERATION_INPUT_IMPORT_SOURCE_ORIGINS,
+                destinationOrigins: config.FEDERATION_INPUT_DOWNLOAD_ORIGINS,
+              }
+            : undefined,
+      })
+    : undefined;
+const federationInputs =
+  config.FEDERATION_ENABLED &&
+  federationInputTransfers &&
+  federationInputStorage &&
+  config.FEDERATION_INPUT_IMPORT_SOURCE_ORIGINS.length &&
+  config.FEDERATION_INPUT_DOWNLOAD_ORIGINS.length
+    ? new FederationInputTransport(federationInputTransfers, federationInputStorage, dispatcher)
+    : undefined;
+const federationInputWorker =
+  federationInputTransfers && federationInputs
+    ? new FederationInputWorker(federationInputTransfers, federationInputs)
+    : undefined;
+
 // connectRPC server for Agent bidirectional streaming.
 const grpcDeps = {
   agentManager,
@@ -2131,6 +2188,7 @@ const grpcDeps = {
   transferRegistry,
   jobCompletionRegistry,
   federationResults,
+  federationInputs,
   partUrlMinter: transferRunner,
   sandboxArtifactRelease: sandboxArtifactReleaseService,
   dataScanCoordinator,
@@ -2210,48 +2268,6 @@ const federationIngress = await startFederationIngress(
   federationOutbound,
   federationInputDownloads,
 );
-const federationMaterialExchange =
-  federationSigningKey && federationSender && federationPreparation
-    ? new FederationMaterialExchange(
-        db,
-        federationSigningKey,
-        federationSender,
-        federationPreparation,
-        federationAssets,
-      )
-    : undefined;
-const federationInputImports =
-  federationPreparation && federationMaterialExchange
-    ? new FederationInputImports(db, federationPreparation, federationMaterialExchange)
-    : undefined;
-const federationInputTransfers =
-  federationPreparation && federationInputImports
-    ? new FederationInputTransfers(db, federationPreparation, federationInputImports)
-    : undefined;
-const federationInputReader =
-  federationInputTransfers && federationSigningKey && federationSender
-    ? new FederationInputReader(
-        db,
-        federationSigningKey,
-        federationSender,
-        federationInputTransfers,
-      )
-    : undefined;
-const federationInputStorage =
-  federationInputTransfers && federationInputStorageBackend
-    ? new FederationInputStorage(federationInputTransfers, federationInputStorageBackend, {
-        grants:
-          federationInputReader &&
-          config.FEDERATION_INPUT_IMPORT_SOURCE_ORIGINS.length &&
-          config.FEDERATION_INPUT_DOWNLOAD_ORIGINS.length
-            ? {
-                reader: federationInputReader,
-                sourceOrigins: config.FEDERATION_INPUT_IMPORT_SOURCE_ORIGINS,
-                destinationOrigins: config.FEDERATION_INPUT_DOWNLOAD_ORIGINS,
-              }
-            : undefined,
-      })
-    : undefined;
 const federationPreparationWorker = federationPreparation
   ? new FederationPreparationWorker(
       db,
@@ -2298,6 +2314,7 @@ const federationOutboundWorker = federationOutbound
   : undefined;
 federationOutboundWorker?.start();
 federationResultWorker?.start();
+federationInputWorker?.start();
 const federationExecutionMonitor = new FederationExecutionMonitor(
   db,
   federationDispatchAuthorization,
@@ -2365,6 +2382,7 @@ async function shutdown(signal: string): Promise<void> {
     await federationIngress?.stop(true);
     await federationPreparationWorker?.stop();
     await federationOutboundWorker?.stop();
+    await federationInputWorker?.stop();
     await federationResultWorker?.stop();
     await federationAttestationWorker?.stop();
     await jobDispatchOutbox.stop();

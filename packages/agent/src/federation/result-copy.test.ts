@@ -6,6 +6,11 @@ import { join } from "node:path";
 import { create } from "@bufbuild/protobuf";
 import {
   AgentMessageSchema,
+  type FederationInputCopyReport,
+  FederationInputCopySchema,
+  type FederationInputGrantRequest,
+  FederationInputGrantResponseSchema,
+  FederationInputVerifySchema,
   type FederationResultCopyReport,
   FederationResultCopySchema,
   type FederationResultGrantRequest,
@@ -24,6 +29,7 @@ import {
 import pino from "pino";
 import { AgentStream, type AgentStreamDeps } from "../stream";
 import { FederationFileTransferError } from "./file-copy";
+import { FederationInputClient } from "./input-client";
 import { copyFederationInputFile, type FederationInputCopyOptions } from "./input-copy";
 import { verifyFederationInputFile } from "./input-verify";
 import { FederationResultClient } from "./result-client";
@@ -33,6 +39,7 @@ import {
   type FederationResultCopyOptions,
 } from "./result-copy";
 import { verifyFederationResultFile } from "./result-verify";
+import { FederationTransferSlot } from "./transfer-session";
 
 let root: string, ca: string;
 let source: ReturnType<typeof Bun.serve>, target: ReturnType<typeof Bun.serve>;
@@ -909,5 +916,223 @@ test("input destination verification requires real content, version and bounded 
     } finally {
       if (timer) clearTimeout(timer);
     }
+  }
+});
+
+test("AgentStream negotiates input copy and carries grants and failure reports without exposing tickets", async () => {
+  const f = inputFixture();
+  const requested = Promise.withResolvers<FederationInputGrantRequest>();
+  const completed = Promise.withResolvers<FederationInputCopyReport>();
+  const registered = Promise.withResolvers<boolean>();
+  const disconnected = Promise.withResolvers<void>();
+  const client: AgentStreamDeps["client"] = {
+    connect(requests, options) {
+      options?.signal?.addEventListener("abort", () => disconnected.resolve(), { once: true });
+      void (async () => {
+        for await (const raw of requests) {
+          const message = create(AgentMessageSchema, raw);
+          if (message.payload.case === "register")
+            registered.resolve(message.payload.value.federationInputCopyV1);
+          if (message.payload.case === "federationInputGrantRequest")
+            requested.resolve(message.payload.value);
+          if (message.payload.case === "federationInputCopyReport")
+            completed.resolve(message.payload.value);
+        }
+      })().catch((error) => completed.reject(error));
+      return (async function* (): AsyncGenerator<ServerMessage> {
+        yield create(ServerMessageSchema, {
+          payload: {
+            case: "registerResponse",
+            value: create(RegisterResponseSchema, {
+              accepted: true,
+              federationInputCopyV1Supported: true,
+            }),
+          },
+        });
+        yield create(ServerMessageSchema, {
+          payload: {
+            case: "federationInputCopy",
+            value: create(FederationInputCopySchema, {
+              taskJson: JSON.stringify(f.options.task),
+              leaseExpiresAtUnixMs: BigInt(Date.now() + 90_000),
+            }),
+          },
+        });
+        const request = await requested.promise;
+        // A denied grant exercises both stream directions without trusting the test TLS server globally.
+        yield create(ServerMessageSchema, {
+          payload: {
+            case: "federationInputGrantResponse",
+            value: create(FederationInputGrantResponseSchema, { requestId: request.requestId }),
+          },
+        });
+        await disconnected.promise;
+      })();
+    },
+  };
+  const stream = new AgentStream({
+    client,
+    federationInputCopy: f.options,
+    agentId: "input-stream-test",
+    siteName: "test",
+    heartbeatIntervalMs: 60_000,
+    logger: pino({ level: "silent" }),
+    adapter: {
+      type: "slurm",
+      version: "test",
+      submit: async () => {
+        throw new Error("No compute expected");
+      },
+      cancel: async () => {},
+      status: async () => ({ status: "completed" }),
+    },
+  });
+  const running = stream.start();
+  try {
+    expect(await registered.promise).toBe(true);
+    expect((await completed.promise).failed).toBe(true);
+    expect((await requested.promise).bindingJson).toContain(f.options.task.binding.generation);
+    expect(sourceRequests).toBe(0);
+    expect(targetRequests).toBe(0);
+  } finally {
+    await stream.stop();
+    await running;
+  }
+});
+
+test("input transport client stops on disconnect or lease expiry and discards late grants", async () => {
+  for (const cause of ["disconnect", "expiry", "wrong-binding"] as const) {
+    const f = inputFixture();
+    const requested = Promise.withResolvers<FederationInputGrantRequest>();
+    const finished = Promise.withResolvers<FederationInputCopyReport>();
+    const client = new FederationInputClient(
+      f.options,
+      (request) => {
+        requested.resolve(request);
+        return true;
+      },
+      (report) => finished.resolve(report),
+      (options) => copyFederationInputFile({ ...options, fetcher: f.options.fetcher }),
+    );
+    client.start(
+      create(FederationInputCopySchema, {
+        taskJson: JSON.stringify(f.options.task),
+        leaseExpiresAtUnixMs: BigInt(Date.now() + (cause === "expiry" ? 200 : 60_000)),
+      }),
+    );
+    const request = await requested.promise;
+    const grant = await f.options.authorize(
+      JSON.parse(request.bindingJson),
+      "download",
+      undefined,
+      new AbortController().signal,
+    );
+    const response = create(FederationInputGrantResponseSchema, {
+      requestId: request.requestId,
+      grantJson: JSON.stringify(grant),
+      leaseExpiresAtUnixMs: BigInt(Date.now() + 90_000),
+    });
+    try {
+      if (cause === "disconnect") await client.disconnect();
+      if (cause === "wrong-binding") {
+        grant.binding.generation = crypto.randomUUID();
+        response.grantJson = JSON.stringify(grant);
+        client.receive(response);
+      }
+      expect((await finished.promise).failed).toBe(true);
+      expect(client.hasPending(request.requestId)).toBe(false);
+      client.receive(response);
+      expect(sourceRequests).toBe(0);
+      expect(targetRequests).toBe(0);
+      expect(await readdir(f.options.stagingRoot)).toEqual([]);
+    } finally {
+      await client.disconnect();
+    }
+  }
+});
+
+test("input client copies and independently verifies HTTPS bytes while sharing a slot with results", async () => {
+  const r = fixture(Buffer.from("input"));
+  const f = inputFixture();
+  const verification = inputVerificationOptions(f);
+  const copied = Promise.withResolvers<FederationInputCopyReport>();
+  const verified = Promise.withResolvers<FederationInputCopyReport>();
+  const slot = new FederationTransferSlot();
+  const resultReports: FederationResultCopyReport[] = [];
+  const result = new FederationResultClient(
+    r.options,
+    () => false,
+    (report) => resultReports.push(report),
+    undefined,
+    undefined,
+    slot,
+  );
+  const input = new FederationInputClient(
+    f.options,
+    (request) => {
+      void (async () => {
+        const grant = request.verificationJson
+          ? await verification.authorize(
+              JSON.parse(request.verificationJson),
+              new AbortController().signal,
+            )
+          : await f.options.authorize(
+              JSON.parse(request.bindingJson),
+              request.upload ? "upload" : "download",
+              request.partNumber,
+              new AbortController().signal,
+            );
+        input.receive(
+          create(FederationInputGrantResponseSchema, {
+            requestId: request.requestId,
+            grantJson: JSON.stringify(grant),
+            leaseExpiresAtUnixMs: BigInt(Date.now() + 60_000),
+          }),
+        );
+      })().catch(copied.reject);
+      return true;
+    },
+    (report) => (report.verifiedJson ? verified : copied).resolve(report),
+    (options) => copyFederationInputFile({ ...options, fetcher: f.options.fetcher }),
+    (options) => verifyFederationInputFile({ ...options, fetcher: f.options.fetcher }),
+    slot,
+  );
+  try {
+    const command = create(FederationInputCopySchema, {
+      taskJson: JSON.stringify(f.options.task),
+      leaseExpiresAtUnixMs: BigInt(Date.now() + 60_000),
+    });
+    input.start(command);
+    input.start(command);
+    result.start(
+      create(FederationResultCopySchema, {
+        taskJson: JSON.stringify(r.options.task),
+        leaseExpiresAtUnixMs: command.leaseExpiresAtUnixMs,
+      }),
+    );
+    expect(resultReports).toHaveLength(1);
+    expect(resultReports[0]?.failed).toBe(true);
+    const copyReport = await copied.promise;
+    expect(copyReport.failed).toBe(false);
+    expect(JSON.parse(copyReport.copiedJson).sha256).toBe(hash(content));
+    expect(Buffer.compare(Buffer.concat([...received.values()]), content)).toBe(0);
+    const before = targetRequests;
+    input.startVerification(
+      create(FederationInputVerifySchema, {
+        taskJson: JSON.stringify(verification.task),
+        leaseExpiresAtUnixMs: BigInt(Date.now() + 60_000),
+      }),
+    );
+    const report = await verified.promise;
+    expect(report.failed).toBe(false);
+    expect(JSON.parse(report.verifiedJson).sha256).toBe(hash(content));
+    expect(targetRequests).toBeGreaterThan(before);
+    expect(JSON.stringify([copyReport, report])).not.toContain("secret=");
+    expect(await readdir(f.options.stagingRoot)).toEqual([]);
+    const release = slot.acquire();
+    expect(release).toBeDefined();
+    release?.();
+  } finally {
+    await Promise.all([input.disconnect(), result.disconnect()]);
   }
 });

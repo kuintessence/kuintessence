@@ -42,6 +42,8 @@ import {
   workflowRuns,
 } from "@kuintessence/db";
 import {
+  FederationInputCopyReportSchema,
+  FederationInputGrantRequestSchema,
   FederationResultCopyReportSchema,
   FederationResultGrantRequestSchema,
   type ServerMessage,
@@ -102,6 +104,8 @@ import { FederationInputImports } from "./input-imports";
 import { FederationInputReader } from "./input-reader";
 import { FederationInputStorage, type FederationInputStorageBackend } from "./input-storage";
 import { FederationInputTransfers } from "./input-transfers";
+import { FederationInputTransport } from "./input-transport";
+import { FederationInputWorker } from "./input-worker";
 import { FederationMaterialExchange } from "./material-exchange";
 import { FederationOutboundService, FederationOutboundWorker } from "./outbound";
 import { FederationDeliveryError, type FederationSend } from "./outbound-client";
@@ -3745,6 +3749,10 @@ test("result receipts require explicit signing purposes but survive later data d
 
 test("result worker dispatches capable Agents, publishes after verification and recovers durable attempts", async () => {
   const f = await resultStorageFixture();
+  const pending = f.imports.pending.bind(f.imports);
+  // Other tests retain attempts for recovery; this storage fixture only owns its own objects.
+  f.imports.pending = async (...args) =>
+    (await pending(...args)).filter((candidate) => candidate.importId === f.imported.id);
   const dispatcher = new AgentDispatcher();
   const messages: ServerMessage[] = [];
   const channel = {
@@ -3767,7 +3775,9 @@ test("result worker dispatches capable Agents, publishes after verification and 
   time = new Date(time.getTime() + 120_001);
   await worker().tick();
   expect(messages).toHaveLength(2);
-  expect(f.purged).toHaveLength(1);
+  expect(
+    f.purged.filter((key) => key.startsWith(`federation-results/${f.imported.id}/`)),
+  ).toHaveLength(1);
   const message = messages[1];
   if (message?.payload.case !== "federationResultCopy") throw new Error("Missing retry dispatch");
   const task = JSON.parse(message.payload.value.taskJson);
@@ -5535,14 +5545,18 @@ test("input transfers serialize concurrent Agent claims across separate task inv
 
 test("input transfers and result copies share the same durable Agent slot in both directions", async () => {
   const input = await inputTransferFixture(),
-    result = await resultImportFixture();
+    result = await resultImportFixture(),
+    waitingResult = await resultImportFixture();
   try {
     const started = await result.imports.begin(result.member.id, result.agentId);
+    time = new Date(time.getTime() + 31_000);
+    expect(await input.transfers.pending([input.agentId])).toHaveLength(1);
     // Even moving the Agent between orgs cannot erase a previously issued transfer lease.
     await db
       .update(agents)
       .set({ providerOrgId: receiver.orgId })
       .where(eq(agents.agentId, result.agentId));
+    expect(await input.transfers.pending([result.agentId])).toHaveLength(0);
     await expect(input.transfers.begin(input.member.id, result.agentId)).rejects.toThrow(
       "OPERATION_CONFLICT",
     );
@@ -5556,6 +5570,7 @@ test("input transfers and result copies share the same durable Agent slot in bot
       .update(agents)
       .set({ providerOrgId: actor.orgId })
       .where(eq(agents.agentId, result.agentId));
+    expect(await waitingResult.imports.pending([result.agentId])).toHaveLength(0);
     await expect(result.imports.begin(result.member.id, result.agentId)).rejects.toThrow(
       "OPERATION_CONFLICT",
     );
@@ -6784,6 +6799,265 @@ test("input allocation recovery retains unknown quota and cleans the discovered 
     expect(purges).toBe(1);
     expect(await f.transfers.allocationPending(started.attempt.generation)).toBeUndefined();
   } finally {
+    await db.update(users).set({ suspended: false }).where(eq(users.id, executionUserId));
+    await f.lease.release();
+  }
+});
+
+test("input transport binds grants and copy/verification reports to the current Agent attempt", async () => {
+  const f = await inputVerificationFixture();
+  const filesBefore = await db
+    .select({ id: netdriveFiles.id })
+    .from(netdriveFiles)
+    .where(eq(netdriveFiles.ownerId, executionUserId))
+    .orderBy(netdriveFiles.id);
+  const dispatcher = new AgentDispatcher();
+  const messages: ServerMessage[] = [];
+  dispatcher.register(f.agentId, {
+    push: (message) => {
+      messages.push(message);
+    },
+    close: () => {},
+    federationInputCopyV1: true,
+    federationInputVerifyV1: true,
+    verifiedCertFingerprint: "verified",
+  });
+  const transport = new FederationInputTransport(f.transfers, f.storage, dispatcher);
+  try {
+    const request = create(FederationInputGrantRequestSchema, {
+      requestId: crypto.randomUUID(),
+      bindingJson: JSON.stringify(f.binding),
+      upload: true,
+      partNumber: 1,
+    });
+    expect(JSON.parse((await transport.grant(f.agentId, request)).grantJson)).toMatchObject({
+      binding: f.binding,
+      direction: "upload",
+      partNumber: 1,
+    });
+    await expect(transport.grant("other-agent", request)).rejects.toThrow("OPERATION_CONFLICT");
+    const copied = create(FederationInputCopyReportSchema, {
+      generation: f.binding.generation,
+      copiedJson: JSON.stringify(f.copied),
+    });
+    await expect(
+      transport.report(f.agentId, { ...copied, generation: crypto.randomUUID() }),
+    ).rejects.toThrow("INVALID_MESSAGE");
+    await expect(transport.report(f.agentId, { ...copied, failed: true })).rejects.toThrow(
+      "INVALID_MESSAGE",
+    );
+    await transport.report(f.agentId, copied);
+    await transport.report(f.agentId, copied);
+    expect(f.completions()).toBe(1);
+    expect(messages).toHaveLength(2);
+    const verification = messages[0];
+    if (verification?.payload.case !== "federationInputVerify")
+      throw new Error("Missing input verification");
+    const task = JSON.parse(verification.payload.value.taskJson);
+    const check = create(FederationInputGrantRequestSchema, {
+      requestId: crypto.randomUUID(),
+      verificationJson: JSON.stringify(task),
+    });
+    await expect(
+      transport.grant(f.agentId, { ...check, bindingJson: request.bindingJson }),
+    ).rejects.toThrow("INVALID_MESSAGE");
+    expect(JSON.parse((await transport.grant(f.agentId, check)).grantJson)).toMatchObject({
+      ...task,
+      direction: "verify",
+    });
+    const receipt = create(FederationInputCopyReportSchema, {
+      generation: f.binding.generation,
+      verifiedJson: JSON.stringify({
+        ...task,
+        sizeBytes: f.binding.sizeBytes,
+        sha256: f.binding.sha256,
+      }),
+    });
+    await transport.report(f.agentId, receipt);
+    await transport.report(f.agentId, receipt);
+    await transport.report(f.agentId, copied);
+    expect((await f.attempt())?.state).toBe("verified");
+    expect((await f.inventory())[0]?.state).toBe("transferring");
+    expect(messages).toHaveLength(2);
+    expect(
+      await db
+        .select({ id: netdriveFiles.id })
+        .from(netdriveFiles)
+        .where(eq(netdriveFiles.ownerId, executionUserId))
+        .orderBy(netdriveFiles.id),
+    ).toEqual(filesBefore);
+  } finally {
+    await f.lease.release();
+  }
+});
+
+test("input worker negotiates capabilities, serializes concurrent scans and recovers expired disconnected transfers", async () => {
+  const f = await inputTransferFixture();
+  const dispatcher = new AgentDispatcher();
+  const messages: ServerMessage[] = [];
+  let creates = 0,
+    purges = 0;
+  const channel = {
+    push: (message: ServerMessage) => {
+      messages.push(message);
+    },
+    close: () => {},
+    federationInputCopyV1: false,
+    federationInputVerifyV1: false,
+    verifiedCertFingerprint: undefined as string | undefined,
+  };
+  dispatcher.register(f.agentId, channel);
+  const backend: FederationInputStorageBackend = {
+    ...unassembledInputStorage,
+    createMultipartUpload: async () => ({ uploadId: `worker-${++creates}` }),
+    cleanupFederationInput: async () => {
+      purges++;
+    },
+    presignUploadPart: async () => {
+      throw new Error("No grant expected");
+    },
+  };
+  const storage = new FederationInputStorage(f.transfers, backend, { clock });
+  const transport = new FederationInputTransport(f.transfers, storage, dispatcher);
+  const worker = () => new FederationInputWorker(f.transfers, transport);
+  try {
+    time = new Date(time.getTime() + 31_000);
+    for (const change of [
+      () => {},
+      () => {
+        channel.federationInputCopyV1 = true;
+      },
+      () => {
+        channel.federationInputVerifyV1 = true;
+      },
+    ]) {
+      change();
+      await worker().tick();
+      expect(creates).toBe(0);
+    }
+    channel.verifiedCertFingerprint = "verified";
+    await Promise.all([worker().tick(), worker().tick()]);
+    expect(creates).toBe(1);
+    expect(messages).toHaveLength(1);
+    const first = messages[0];
+    if (first?.payload.case !== "federationInputCopy") throw new Error("Missing input copy");
+    const task = JSON.parse(first.payload.value.taskJson);
+    expect(task.binding.descriptor).toBe(f.member.descriptor);
+    expect(first.payload.value.taskJson).not.toMatch(/storageKey|uploadId|ownerId/);
+    await worker().tick();
+    expect(creates).toBe(1);
+    time = new Date(Number(first.payload.value.leaseExpiresAtUnixMs) + 1);
+    expect(await storage.cleanup()).toBe(1);
+    time = new Date(time.getTime() + 31_000);
+    await worker().tick();
+    expect(creates).toBe(2);
+    expect(purges).toBe(1);
+    expect(messages).toHaveLength(2);
+    const second = messages[1];
+    if (second?.payload.case !== "federationInputCopy") throw new Error("Missing resumed input");
+    expect(JSON.parse(second.payload.value.taskJson).binding.generation).not.toBe(
+      task.binding.generation,
+    );
+  } finally {
+    await f.lease.release();
+  }
+});
+
+test("input transport fences allocations if the authenticated channel is replaced", async () => {
+  const f = await inputTransferFixture();
+  const dispatcher = new AgentDispatcher();
+  let pushes = 0;
+  const channel = {
+    push: () => {
+      pushes++;
+    },
+    close: () => {},
+    federationInputCopyV1: true,
+    federationInputVerifyV1: true,
+    verifiedCertFingerprint: "verified",
+  };
+  dispatcher.register(f.agentId, channel);
+  const storage = new FederationInputStorage(
+    f.transfers,
+    {
+      ...unassembledInputStorage,
+      createMultipartUpload: async () => {
+        dispatcher.register(f.agentId, { ...channel });
+        return { uploadId: "old-channel-upload" };
+      },
+      cleanupFederationInput: async () => {},
+      presignUploadPart: async () => {
+        throw new Error("No grant expected");
+      },
+    },
+    { clock },
+  );
+  try {
+    expect(
+      await new FederationInputTransport(f.transfers, storage, dispatcher).dispatch(
+        f.member.id,
+        f.agentId,
+      ),
+    ).toBe(false);
+    expect(pushes).toBe(0);
+    const [attempt] = await db
+      .select()
+      .from(federationInputAttempts)
+      .where(eq(federationInputAttempts.transferId, f.member.id));
+    expect(attempt?.state).toBe("cleanup_pending");
+    expect((await f.inventory())[0]?.reservedBytes).toBe(f.member.sizeBytes);
+  } finally {
+    await f.lease.release();
+  }
+});
+
+test("input worker backs off denied transfers and does not recreate a cancelled inventory", async () => {
+  const f = await inputTransferFixture();
+  const dispatcher = new AgentDispatcher();
+  dispatcher.register(f.agentId, {
+    push: () => {
+      throw new Error("No dispatch expected");
+    },
+    close: () => {},
+    federationInputCopyV1: true,
+    federationInputVerifyV1: true,
+    verifiedCertFingerprint: "verified",
+  });
+  let creates = 0;
+  const storage = new FederationInputStorage(
+    f.transfers,
+    {
+      ...unassembledInputStorage,
+      createMultipartUpload: async () => {
+        creates++;
+        return { uploadId: "unexpected" };
+      },
+      cleanupFederationInput: async () => {},
+      presignUploadPart: async () => {
+        throw new Error("No grant expected");
+      },
+    },
+    { clock },
+  );
+  const worker = new FederationInputWorker(
+    f.transfers,
+    new FederationInputTransport(f.transfers, storage, dispatcher),
+  );
+  try {
+    time = new Date(time.getTime() + 31_000);
+    await db.update(users).set({ suspended: true }).where(eq(users.id, executionUserId));
+    await worker.tick();
+    expect(creates).toBe(0);
+    expect((await f.inventory())[0]?.lastError).toBe("POLICY_DENIED");
+    expect(await f.transfers.pending([f.agentId])).toHaveLength(0);
+    await f.imports.sweep();
+    await db.update(users).set({ suspended: false }).where(eq(users.id, executionUserId));
+    time = new Date(time.getTime() + 31_000);
+    await worker.tick();
+    expect(creates).toBe(0);
+    expect((await f.inventory())[0]).toMatchObject({ state: "cancelled", reservedBytes: 0 });
+  } finally {
+    await worker.stop();
     await db.update(users).set({ suspended: false }).where(eq(users.id, executionUserId));
     await f.lease.release();
   }

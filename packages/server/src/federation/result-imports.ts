@@ -1,6 +1,7 @@
 import {
   agents,
   auditLog,
+  federationInputAttempts,
   federationOutbound,
   federationResultAttempts,
   federationResultImports,
@@ -916,6 +917,18 @@ export class FederationResultImports {
                   eq(federationResultAttempts.agentId, agents.agentId),
                   inArray(federationResultAttempts.state, [...activeStates, "cleanup_pending"]),
                   gte(federationResultAttempts.leaseUntil, this.clock()),
+                ),
+              ),
+          ),
+          notExists(
+            this.db
+              .select({ id: federationInputAttempts.generation })
+              .from(federationInputAttempts)
+              .where(
+                and(
+                  eq(federationInputAttempts.agentId, agents.agentId),
+                  inArray(federationInputAttempts.state, [...activeStates, "cleanup_pending"]),
+                  gte(federationInputAttempts.leaseUntil, this.clock()),
                 ),
               ),
           ),

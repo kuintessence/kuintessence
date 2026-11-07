@@ -22,6 +22,8 @@ import {
   FederationExecutionRequestSchema,
   type FederationExecutionResponse,
   FederationExecutionResponseSchema,
+  FederationInputGrantRequestSchema,
+  FederationInputGrantResponseSchema,
   FederationResultGrantRequestSchema,
   FederationResultGrantResponseSchema,
   GpuMetricSchema,
@@ -354,6 +356,107 @@ describe("agent-handler", () => {
     );
     const grants = output.flatMap((message) =>
       message.payload.case === "federationResultGrantResponse"
+        ? [message.payload.value.grantJson]
+        : [],
+    );
+    expect(grants).toEqual(
+      mode === "granted" ? ["short-lived-ticket"] : mode === "denied" ? [""] : [],
+    );
+  });
+
+  test.each([
+    "granted",
+    "denied",
+    "legacy",
+    "copy-only",
+    "unverified",
+    "replaced",
+  ] as const)("input copy RPC trust and nonblocking delivery: %s", async (mode) => {
+    const { router, handlers } = createMockRouter();
+    const dispatcher = new AgentDispatcher();
+    const heartbeat = Promise.withResolvers<void>();
+    const done = Promise.withResolvers<void>();
+    const calls: string[] = [];
+    registerAgentHandler(router, {
+      agentManager,
+      jobService,
+      logger: testLogger,
+      dispatcher,
+      federationInputs: {
+        grant: async (agentId, request) => {
+          calls.push(agentId);
+          await heartbeat.promise;
+          if (mode === "denied") throw new Error("secret storage credential");
+          return create(FederationInputGrantResponseSchema, {
+            requestId: request.requestId,
+            grantJson: "short-lived-ticket",
+          });
+        },
+        report: async () => {},
+      },
+    });
+    await agentManager.register({
+      agentId: "grpc-test-agent-1",
+      siteName: "test",
+      schedulerType: "slurm",
+      schedulerVersion: "test",
+    });
+    const register = registerFrame();
+    if (register.payload.case !== "register") throw new Error("Missing register");
+    register.payload.value.federationInputCopyV1 = mode !== "legacy";
+    register.payload.value.federationInputVerifyV1 = mode !== "copy-only";
+    async function* messages() {
+      yield register;
+      yield create(AgentMessageSchema, {
+        payload: {
+          case: "federationInputGrantRequest",
+          value: create(FederationInputGrantRequestSchema, {
+            requestId: crypto.randomUUID(),
+            bindingJson: "{}",
+          }),
+        },
+      });
+      yield create(AgentMessageSchema, {
+        payload: {
+          case: "heartbeat",
+          value: create(HeartbeatSchema, { agentId: "grpc-test-agent-1", sequence: 1n }),
+        },
+      });
+      await done.promise;
+    }
+    const connect = handlers.connect;
+    if (!connect) throw new Error("Missing handler");
+    const output = await runWithMtlsContext(
+      {
+        agentId: mode === "unverified" ? null : "grpc-test-agent-1",
+        fingerprintSha256: mode === "unverified" ? null : "verified",
+      },
+      async () => {
+        const responses: ServerMessage[] = [];
+        for await (const raw of connect(messages())) {
+          const message = raw as ServerMessage;
+          responses.push(message);
+          if (message.payload.case === "heartbeatAck") {
+            if (mode === "replaced")
+              dispatcher.register("grpc-test-agent-1", { push: () => {}, close: () => {} });
+            heartbeat.resolve();
+            if (["legacy", "copy-only", "unverified", "replaced"].includes(mode)) done.resolve();
+          }
+          if (message.payload.case === "federationInputGrantResponse") done.resolve();
+        }
+        return responses;
+      },
+    );
+    expect(calls).toEqual(
+      ["legacy", "copy-only", "unverified"].includes(mode) ? [] : ["grpc-test-agent-1"],
+    );
+    const registration = output.find((message) => message.payload.case === "registerResponse");
+    if (registration?.payload.case !== "registerResponse") throw new Error("Missing registration");
+    expect(registration.payload.value.federationInputCopyV1Supported).toBe(
+      !["legacy", "copy-only", "unverified"].includes(mode),
+    );
+    const grants = output.flatMap((message) =>
+      message.payload.case === "federationInputGrantResponse"
         ? [message.payload.value.grantJson]
         : [],
     );

@@ -13,6 +13,8 @@ import {
   DataScanResultSchema,
   type DispatchJob,
   type FederationExecutionRequest,
+  type FederationInputCopyReport,
+  type FederationInputGrantRequest,
   type FederationResultCopyReport,
   type FederationResultGrantRequest,
   FileTransferProgressSchema,
@@ -84,10 +86,12 @@ import { netdriveDeliveries } from "./data-market/netdrive-inputs";
 import { ExecutorPool } from "./embedded/executor-pool";
 import type { JobStatusReport } from "./embedded/job-executor";
 import { ExecutionAuthorization, ExecutionAuthorizationExpired } from "./execution-authorization";
+import { FederationInputClient, type FederationInputClientConfig } from "./federation/input-client";
 import {
   FederationResultClient,
   type FederationResultClientConfig,
 } from "./federation/result-client";
+import { FederationTransferSlot } from "./federation/transfer-session";
 import {
   buildCloudToClusterArgv,
   buildHostCloudToClusterArgv,
@@ -239,6 +243,8 @@ type OutboundItem =
       requestId: string;
       partNumbers: number[];
     }
+  | { kind: "federationInputGrantRequest"; request: FederationInputGrantRequest }
+  | { kind: "federationInputCopyReport"; report: FederationInputCopyReport }
   | { kind: "federationResultGrantRequest"; request: FederationResultGrantRequest }
   | { kind: "federationResultCopyReport"; report: FederationResultCopyReport }
   | { kind: "federationExecutionRequest"; request: FederationExecutionRequest }
@@ -527,6 +533,7 @@ export function jobStatusReportToProto(report: JobStatusReport, eventId = ""): A
 
 export interface AgentStreamDeps {
   federationResultCopy?: FederationResultClientConfig;
+  federationInputCopy?: FederationInputClientConfig;
   assertFederationRuntimeWatchdog?: () => Promise<void>;
   client: ServerClient;
   /**
@@ -710,6 +717,8 @@ function throwIfTransferAborted(signal: AbortSignal): void {
 export class AgentStream {
   private running = true;
   private connected = false;
+  private federationInputCopySupported = false;
+  private federationInputCopy?: FederationInputClient;
   private federationResultCopySupported = false;
   private federationResultCopy?: FederationResultClient;
   private federationExecutionSupported = false;
@@ -852,6 +861,7 @@ export class AgentStream {
   private heartbeatFollowUpRequested = false;
 
   constructor(private deps: AgentStreamDeps) {
+    const transferSlot = new FederationTransferSlot();
     if (deps.federationResultCopy)
       this.federationResultCopy = new FederationResultClient(
         deps.federationResultCopy,
@@ -866,6 +876,27 @@ export class AgentStream {
           this.outboundQueue.push({ kind: "federationResultCopyReport", report });
           this.signalOutbound();
         },
+        undefined,
+        undefined,
+        transferSlot,
+      );
+    if (deps.federationInputCopy)
+      this.federationInputCopy = new FederationInputClient(
+        deps.federationInputCopy,
+        (request) => {
+          if (!this.connected || !this.federationInputCopySupported) return false;
+          this.outboundQueue.push({ kind: "federationInputGrantRequest", request });
+          this.signalOutbound();
+          return true;
+        },
+        (report) => {
+          if (!this.connected || !this.federationInputCopySupported) return;
+          this.outboundQueue.push({ kind: "federationInputCopyReport", report });
+          this.signalOutbound();
+        },
+        undefined,
+        undefined,
+        transferSlot,
       );
     this.logger = deps.logger ?? createLogger("agent-stream");
     this.sleep = deps.sleep ?? ((ms) => Bun.sleep(ms));
@@ -1245,6 +1276,7 @@ export class AgentStream {
     if (this.softwareOperationShutdown) return this.softwareOperationShutdown;
     this.running = false;
     void this.federationResultCopy?.disconnect();
+    void this.federationInputCopy?.disconnect();
     this.lifecycleController.abort(new Error("agent shutdown"));
     for (const entry of this.federationRuntimes.values()) clearTimeout(entry.retry);
     this.currentStreamController?.abort(new Error("agent shutdown"));
@@ -1276,6 +1308,7 @@ export class AgentStream {
           pending,
           this.schedulerRecovery,
           this.federationResultCopy?.disconnect(),
+          this.federationInputCopy?.disconnect(),
           ...this.pendingSoftwareResultSpills,
           ...this.pendingSpackPreparations,
           ...this.pendingSpackLoadCleanups,
@@ -2000,6 +2033,8 @@ export class AgentStream {
             this.spackManager?.requireServerMaterials === true &&
             !!this.persistentQueue?.softwareOperations,
           managedDatasetRootIds: [...(this.deps.managedDatasetRootIds ?? [])],
+          federationInputCopyV1: !!this.federationInputCopy,
+          federationInputVerifyV1: !!this.federationInputCopy,
           federationResultCopyV1: !!this.federationResultCopy,
           federationResultVerifyV1: !!this.federationResultCopy,
           federationExecutionV1: this.federationExecutionCapable(),
@@ -2218,6 +2253,15 @@ export class AgentStream {
           } else if (item.kind === "federationResultCopyReport") {
             yield create(AgentMessageSchema, {
               payload: { case: "federationResultCopyReport", value: item.report },
+            });
+          } else if (item.kind === "federationInputGrantRequest") {
+            if (this.federationInputCopy?.hasPending(item.request.requestId))
+              yield create(AgentMessageSchema, {
+                payload: { case: "federationInputGrantRequest", value: item.request },
+              });
+          } else if (item.kind === "federationInputCopyReport") {
+            yield create(AgentMessageSchema, {
+              payload: { case: "federationInputCopyReport", value: item.report },
             });
           } else if (item.kind === "federationExecutionRequest") {
             if (this.federationExecution.hasPending(item.request.requestId))
@@ -2659,6 +2703,8 @@ export class AgentStream {
             clearTimeout(registrationTimer);
             if (message.payload.value.accepted) {
               this.connected = true;
+              this.federationInputCopySupported =
+                message.payload.value.federationInputCopyV1Supported;
               this.federationResultCopySupported =
                 message.payload.value.federationResultCopyV1Supported;
               this.federationExecutionSupported =
@@ -2710,6 +2756,8 @@ export class AgentStream {
         this.heartbeatPreparationAttempt = undefined;
       }
       this.connected = false;
+      this.federationInputCopySupported = false;
+      await this.federationInputCopy?.disconnect();
       this.federationResultCopySupported = false;
       await this.federationResultCopy?.disconnect();
       this.federationExecutionSupported = false;
@@ -3031,6 +3079,19 @@ export class AgentStream {
     }
     if (payload.case === "federationResultGrantResponse") {
       if (this.federationResultCopySupported) this.federationResultCopy?.receive(payload.value);
+      return;
+    }
+    if (payload.case === "federationInputCopy") {
+      if (this.federationInputCopySupported) this.federationInputCopy?.start(payload.value);
+      return;
+    }
+    if (payload.case === "federationInputVerify") {
+      if (this.federationInputCopySupported)
+        this.federationInputCopy?.startVerification(payload.value);
+      return;
+    }
+    if (payload.case === "federationInputGrantResponse") {
+      if (this.federationInputCopySupported) this.federationInputCopy?.receive(payload.value);
       return;
     }
     if (payload.case === "federationExecutionResponse") {

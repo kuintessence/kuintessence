@@ -113,6 +113,8 @@ message AgentMessage {
     FederationExecutionRequest federation_execution_request = 20;
     FederationResultGrantRequest federation_result_grant_request = 21;
     FederationResultCopyReport federation_result_copy_report = 22;
+    FederationInputGrantRequest federation_input_grant_request = 23;
+    FederationInputCopyReport federation_input_copy_report = 24;
   }
   reserved 15;
 }
@@ -153,6 +155,9 @@ message ServerMessage {
     FederationResultCopy federation_result_copy = 24;
     FederationResultGrantResponse federation_result_grant_response = 25;
     FederationResultVerify federation_result_verify = 26;
+    FederationInputCopy federation_input_copy = 27;
+    FederationInputGrantResponse federation_input_grant_response = 28;
+    FederationInputVerify federation_input_verify = 29;
   }
 }
 
@@ -236,6 +241,8 @@ message RegisterRequest {
   bool federation_netdrive_input_lease_v1 = 30;
   bool federation_result_copy_v1 = 31;
   bool federation_result_verify_v1 = 32;
+  bool federation_input_copy_v1 = 33;
+  bool federation_input_verify_v1 = 34;
 }
 
 message RegisterResponse {
@@ -256,6 +263,7 @@ message RegisterResponse {
   bool federation_execution_v1_supported = 8;
   bool federation_installation_v1_supported = 9;
   bool federation_result_copy_v1_supported = 10;
+  bool federation_input_copy_v1_supported = 11;
 }
 
 // tags 7–10 carry extended monitoring + installed-software
@@ -1053,5 +1061,34 @@ message FederationResultCopyReport {
 
 message FederationResultVerify {
   string task_json = 1; // FederationResultVerifyTask, at most 16 KiB.
+  int64 lease_expires_at_unix_ms = 2;
+}
+
+// JSON metadata uses the shared strict federation schemas. Never includes file bytes.
+message FederationInputCopy {
+  string task_json = 1; // At most 256 KiB.
+  int64 lease_expires_at_unix_ms = 2;
+}
+message FederationInputGrantRequest {
+  string request_id = 1;
+  string binding_json = 2; // At most 8 KiB.
+  bool upload = 3;
+  optional uint32 part_number = 4;
+  string verification_json = 5; // When set, binding_json must be empty; at most 16 KiB.
+}
+message FederationInputGrantResponse {
+  string request_id = 1;
+  string grant_json = 2; // Sensitive bearer credential; memory only. Empty means denied.
+  int64 lease_expires_at_unix_ms = 3;
+}
+message FederationInputCopyReport {
+  string generation = 1;
+  string copied_json = 2; // At most 4 MiB; metadata only, never a publication receipt.
+  bool failed = 3;
+  string verified_json = 4; // Exclusive with copied_json/failed; at most 16 KiB.
+}
+
+message FederationInputVerify {
+  string task_json = 1; // FederationInputVerifyTask, at most 16 KiB.
   int64 lease_expires_at_unix_ms = 2;
 }

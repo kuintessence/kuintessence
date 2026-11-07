@@ -4,6 +4,7 @@ import {
   federationInputAttempts,
   federationInputImports,
   federationInputTransfers,
+  federationResultAttempts,
   type PgDb,
   type PgTransaction,
 } from "@kuintessence/db";
@@ -19,7 +20,7 @@ import {
   FederationInputVerifyTaskSchema,
   FederationResultObjectSchema,
 } from "@kuintessence/shared/federation";
-import { and, asc, eq, inArray, isNotNull, isNull, lte, ne, or } from "drizzle-orm";
+import { and, asc, eq, gte, inArray, isNotNull, isNull, lte, ne, notExists, or } from "drizzle-orm";
 import { z } from "zod";
 import { federationMaterialDigest } from "./assets";
 import { type FederationInputImports, finishCancelledInputImport } from "./input-imports";
@@ -42,6 +43,67 @@ export class FederationInputTransfers {
     private readonly imports: FederationInputImports,
     private readonly clock: () => Date = () => new Date(),
   ) {}
+
+  async pending(onlineAgentIds: readonly string[], limit = 20) {
+    z.number().int().min(1).max(100).parse(limit);
+    if (!onlineAgentIds.length) return [];
+    return this.db
+      .select({
+        transferId: federationInputTransfers.id,
+        agentId: agents.agentId,
+      })
+      .from(federationInputTransfers)
+      .innerJoin(
+        federationInputImports,
+        eq(federationInputImports.id, federationInputTransfers.importId),
+      )
+      .innerJoin(agents, eq(agents.providerOrgId, federationInputImports.localOrgId))
+      .where(
+        and(
+          eq(federationInputImports.localSiteId, this.preparation.localSiteId),
+          inArray(federationInputImports.state, ["pending", "transferring"]),
+          eq(federationInputTransfers.state, "pending"),
+          lte(federationInputTransfers.updatedAt, new Date(this.clock().getTime() - 30_000)),
+          inArray(agents.agentId, [...onlineAgentIds]),
+          eq(agents.status, "online"),
+          ...[federationInputAttempts, federationResultAttempts].map((attempts) =>
+            notExists(
+              this.db
+                .select({ id: attempts.generation })
+                .from(attempts)
+                .where(
+                  and(
+                    eq(attempts.agentId, agents.agentId),
+                    inArray(attempts.state, [...activeStates, "cleanup_pending"]),
+                    gte(attempts.leaseUntil, this.clock()),
+                  ),
+                ),
+            ),
+          ),
+        ),
+      )
+      .orderBy(
+        asc(federationInputTransfers.updatedAt),
+        asc(federationInputTransfers.id),
+        asc(agents.agentId),
+      )
+      .limit(limit);
+  }
+
+  async processingFailed(transferId: string, code: string) {
+    await this.db.transaction(async (tx) => {
+      const rows = await this.lockTransfer(tx, transferId);
+      if (!["pending", "transferring"].includes(rows.parent.state)) return;
+      await tx
+        .update(federationInputTransfers)
+        .set({ updatedAt: this.clock() })
+        .where(eq(federationInputTransfers.id, transferId));
+      await tx
+        .update(federationInputImports)
+        .set({ lastError: code, updatedAt: this.clock() })
+        .where(eq(federationInputImports.id, rows.parent.id));
+    });
+  }
 
   async begin(transferId: string, agentId: string) {
     const scope = await this.scope(transferId);
@@ -243,7 +305,7 @@ export class FederationInputTransfers {
 
   /** One CompleteMultipart request per generation; retries inspect its object instead of reissuing it. */
   async startCompletion(agentId: string, generation: string) {
-    // shortcut: a permit without an object retains quota; add confirmed recovery before automatic dispatch.
+    // shortcut: no positive storage evidence means retained quota; add operator-confirmed reconciliation.
     const scope = await this.attemptScope(generation);
     return this.db.transaction(async (tx) => {
       const rows = await this.authorizedAttempt(tx, scope, generation, agentId, [

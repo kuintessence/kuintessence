@@ -8,6 +8,7 @@ import {
   FederationExecutionDecision,
   type FederationExecutionResponse,
   FederationExecutionResponseSchema,
+  FederationInputGrantResponseSchema,
   FederationResultGrantResponseSchema,
   HeartbeatAckSchema,
   JobStatusAckSchema,
@@ -35,6 +36,7 @@ import { FederationError } from "@kuintessence/shared/federation";
 import type { Logger } from "pino";
 import { mtlsContext } from "../auth/mtls-context";
 import { AuthorizationUnavailableError } from "../authz/service";
+import type { FederationInputTransport } from "../federation/input-transport";
 import type { FederationResultTransport } from "../federation/result-transport";
 import type { AgentManager, ComputeHealthReport } from "../services/agent-manager";
 import type { DataDeliveryRevocationOutbox } from "../services/data-delivery-revocations";
@@ -262,6 +264,7 @@ export interface AgentMetricsRecorder {
 
 export interface AgentHandlerDeps {
   federationResults?: Pick<FederationResultTransport, "grant" | "report">;
+  federationInputs?: Pick<FederationInputTransport, "grant" | "report">;
   agentManager: AgentManager;
   jobService: JobService;
   logger: Logger;
@@ -394,13 +397,15 @@ export function registerAgentHandler(router: ConnectRouter, deps: AgentHandlerDe
       let queueInventoryV1 = false;
       let active = true;
       const pendingFederationGrants = new Set<string>();
-      const pendingResultRequests = new Set<string>();
+      const pendingTransferRequests = new Set<string>();
       const requestIterator = requests[Symbol.asyncIterator]();
 
       const channel = {
         spackMaterialDeliveryV1: false,
         spackPinnedExecutionV1: false,
         softwareOperationReplayV1: false,
+        federationInputCopyV1: false,
+        federationInputVerifyV1: false,
         federationResultCopyV1: false,
         federationResultVerifyV1: false,
         federationExecutionV1: false,
@@ -525,6 +530,8 @@ export function registerAgentHandler(router: ConnectRouter, deps: AgentHandlerDe
               channel.spackMaterialDeliveryV1 = reg.spackMaterialDeliveryV1;
               channel.spackPinnedExecutionV1 = reg.spackPinnedExecutionV1;
               channel.softwareOperationReplayV1 = reg.softwareOperationReplayV1;
+              channel.federationInputCopyV1 = reg.federationInputCopyV1;
+              channel.federationInputVerifyV1 = reg.federationInputVerifyV1;
               channel.federationResultCopyV1 = reg.federationResultCopyV1;
               channel.federationResultVerifyV1 = reg.federationResultVerifyV1;
               channel.federationExecutionV1 = reg.federationExecutionV1;
@@ -560,6 +567,11 @@ export function registerAgentHandler(router: ConnectRouter, deps: AgentHandlerDe
                         !!deps.federationResults &&
                         reg.federationResultCopyV1 &&
                         reg.federationResultVerifyV1 &&
+                        !!channel.verifiedCertFingerprint,
+                      federationInputCopyV1Supported:
+                        !!deps.federationInputs &&
+                        reg.federationInputCopyV1 &&
+                        reg.federationInputVerifyV1 &&
                         !!channel.verifiedCertFingerprint,
                       federationExecutionV1Supported:
                         jobDispatches?.renewExecution !== undefined && reg.federationComputeLeaseV1,
@@ -1144,11 +1156,11 @@ export function registerAgentHandler(router: ConnectRouter, deps: AgentHandlerDe
                 : request.value.generation;
             if (
               key.length > 128 ||
-              pendingResultRequests.has(key) ||
-              pendingResultRequests.size >= 2
+              pendingTransferRequests.has(key) ||
+              pendingTransferRequests.size >= 2
             )
               continue;
-            pendingResultRequests.add(key);
+            pendingTransferRequests.add(key);
             const transport = deps.federationResults;
             void (async () => {
               try {
@@ -1177,7 +1189,67 @@ export function registerAgentHandler(router: ConnectRouter, deps: AgentHandlerDe
               }
             })()
               .catch(() => logger.warn({ agentId }, "Federation result response unavailable"))
-              .finally(() => pendingResultRequests.delete(key));
+              .finally(() => pendingTransferRequests.delete(key));
+            continue;
+          }
+
+          if (
+            payload.case === "federationInputGrantRequest" ||
+            payload.case === "federationInputCopyReport"
+          ) {
+            if (
+              !registeredAgentId ||
+              !active ||
+              !channel.federationInputCopyV1 ||
+              !channel.federationInputVerifyV1 ||
+              !channel.verifiedCertFingerprint ||
+              !deps.federationInputs ||
+              !dispatcher.isCurrentChannel(registeredAgentId, channel)
+            )
+              continue;
+            const agentId = registeredAgentId;
+            const current = () => active && dispatcher.isCurrentChannel(agentId, channel);
+            const request = payload;
+            const key =
+              request.case === "federationInputGrantRequest"
+                ? request.value.requestId
+                : request.value.generation;
+            if (
+              key.length > 128 ||
+              pendingTransferRequests.has(key) ||
+              pendingTransferRequests.size >= 2
+            )
+              continue;
+            pendingTransferRequests.add(key);
+            const transport = deps.federationInputs;
+            void (async () => {
+              try {
+                if (request.case === "federationInputGrantRequest") {
+                  const response = await transport.grant(agentId, request.value);
+                  if (current())
+                    channel.push(
+                      create(ServerMessageSchema, {
+                        payload: { case: "federationInputGrantResponse", value: response },
+                      }),
+                    );
+                } else await transport.report(agentId, request.value);
+              } catch {
+                if (request.case === "federationInputGrantRequest" && current())
+                  channel.push(
+                    create(ServerMessageSchema, {
+                      payload: {
+                        case: "federationInputGrantResponse",
+                        value: create(FederationInputGrantResponseSchema, {
+                          requestId: request.value.requestId,
+                        }),
+                      },
+                    }),
+                  );
+                // Never log request bodies, presigned grants or raw storage errors.
+              }
+            })()
+              .catch(() => logger.warn({ agentId }, "Federation input response unavailable"))
+              .finally(() => pendingTransferRequests.delete(key));
             continue;
           }
 

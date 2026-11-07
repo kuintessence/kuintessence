@@ -47,6 +47,26 @@ describe("loadAgentConfig", () => {
       expect(() => load(invalid)).toThrow();
   });
 
+  test("input copy defaults off and requires private staging capacity and explicit HTTPS origins", () => {
+    expect(loadAgentConfig(baseEnv).AGENT_FEDERATION_INPUT_COPY).toBeNull();
+    const settings = {
+      stagingRoot: "/var/lib/kq/input-staging",
+      maxStagingBytes: 1024,
+      allowedSourceOrigins: ["https://source.invalid"],
+      allowedDestinationOrigins: ["https://target.invalid"],
+    };
+    const load = (value: unknown) =>
+      loadAgentConfig({ ...baseEnv, AGENT_FEDERATION_INPUT_COPY: JSON.stringify(value) });
+    expect(load(settings).AGENT_FEDERATION_INPUT_COPY).toEqual(settings);
+    for (const invalid of [
+      { ...settings, stagingRoot: "/" },
+      { ...settings, maxStagingBytes: 0 },
+      { ...settings, allowedSourceOrigins: [] },
+      { ...settings, allowedDestinationOrigins: ["http://target.invalid"] },
+    ])
+      expect(() => load(invalid)).toThrow();
+  });
+
   test("coerces HEARTBEAT_INTERVAL_SEC from string", () => {
     const cfg = loadAgentConfig({ ...baseEnv, HEARTBEAT_INTERVAL_SEC: "60" });
     expect(cfg.HEARTBEAT_INTERVAL_SEC).toBe(60);

@@ -149,6 +149,8 @@ export interface AgentChannel {
   spackMaterialDeliveryV1?: boolean;
   spackPinnedExecutionV1?: boolean;
   softwareOperationReplayV1?: boolean;
+  federationInputCopyV1?: boolean;
+  federationInputVerifyV1?: boolean;
   federationResultCopyV1?: boolean;
   federationResultVerifyV1?: boolean;
   federationExecutionV1?: boolean;

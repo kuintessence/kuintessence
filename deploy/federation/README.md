@@ -86,7 +86,7 @@ Server 另行配置 `FEDERATION_CLIENT_CERT_FILE`、`FEDERATION_CLIENT_KEY_FILE`
 
 签名地址绑定具体文件与传输尝试，最多有效 30 秒，并受原任务、查询与签名密钥期限限制。Server 只查对象元数据并生成固定 versionId 的地址，不中转文件内容。短期 URL 是 bearer 凭据，禁止存入普通日志、数据库或清单；撤权后不再续发，已经签发的地址可能持续有效至短期期限，不保证即时收回。
 
-新云盘上传使用 `netdrive/objects/<随机 UUID>`，归属仍由数据库与上传 token 校验。旧 `netdrive/<用户 UUID>/...` 路径在本平台仍可正常访问，但输入跨站下载目前拒绝，避免 URL 暴露真实账号标识；后续须补受管匿名副本转换，不能直接修改活动快照。结果导入生成的随机 `federation-results/<UUID>/<UUID>` 对象也可作为输入来源。接收端准备后台已保存任务私有输入清单并按原执行服务账号预留统一云盘空间，重复获取不重复占用；未开始的导入在取消/授权失效后释放预留。搬运/校验与受管副本映射仍待接通，以上配置不等于已完成文件输入端到端验收。
+新云盘上传使用 `netdrive/objects/<随机 UUID>`，归属仍由数据库与上传 token 校验。旧 `netdrive/<用户 UUID>/...` 路径在本平台仍可正常访问，但输入跨站下载目前拒绝，避免 URL 暴露真实账号标识；后续须补受管匿名副本转换，不能直接修改活动快照。结果导入生成的随机 `federation-results/<UUID>/<UUID>` 对象也可作为输入来源。接收端准备后台已保存任务私有输入清单并按原执行服务账号预留统一云盘空间，重复获取不重复占用；未开始的导入在取消/授权失效后释放预留。搬运/校验已接通生产 Agent 通道和后台扫描，受管副本映射仍待接通，以上配置不等于已完成文件输入端到端验收。
 
 
 每个下载凭据最多 30 秒，并受协议结果截止时间限制；同时核对实际 S3 SigV4 的过期时间，支持时固定对象 versionId。地址及签名响应含 bearer 凭据，仅交给受信任的搬运组件，不写日志、数据库或普通清单响应。已发预签名地址无法即时撤销，撤权阻止续发；已建立的 S3 响应不保证在地址过期瞬间断开，受管 Agent 会按授权截止时间取消连接。需要逐字节即时撤权的部署不能把此通道当作满足该要求。
@@ -186,6 +186,10 @@ Server 另行配置 `FEDERATION_CLIENT_CERT_FILE`、`FEDERATION_CLIENT_KEY_FILE`
 目前联邦环境清单还没有接通该内部 pin 的构造与自动安装绑定。这项能力不意味着 native lock 已导入、联邦任务可执行，或已有一次真实离线安装验收。
 
 结果存储协调器已挂入生产后台。存储角色需要 `s3:GetObjectVersion` 读取 netdrive、federation-results 与 federation-inputs 固定版本，并需要仅限 `federation-results/*`、`federation-inputs/*` 的 `s3:ListBucketMultipartUploads`、`s3:ListBucketVersions` 及 `s3:DeleteObjectVersion`。仓库 RustFS 和 Helm 初始化脚本已同步更新；外部 S3 需由存储管理员配置等效权限。已有部署须重新应用初始化策略（外部 S3 更新等效 IAM），单独升级 Server 不会补齐输入目录权限。不要扩大普通云盘历史版本的删除权限或取消不可变存储的显式删除拒绝。真实 RustFS 已验证该边界，不能据此假定所有兼容 S3 实现均具有相同策略行为。
+
+Agent 输入搬运独立默认关闭。可向接收端 Agent 进程注入 `AGENT_FEDERATION_INPUT_COPY='{"stagingRoot":"/var/lib/kq/input-staging","maxStagingBytes":1073741824,"allowedSourceOrigins":["https://source-storage.example.org"],"allowedDestinationOrigins":["https://receiver-storage.example.org"]}'`；目录须归 Agent 独占（0700、无符号链接），地址与 Server 的输入 origins 对应，使用 Agent 实际可访问的 HTTPS 域名。输入和结果客户端共用一个传输槽，限制同时暂存/读写的文件数；原结果配置不会自动开启输入搬运。Server 与 Agent 同步升级后才能协商输入复制和目的校验能力，要求 mTLS。两端 Server 的协议/材料/签名信任和存储权限仍须配置。
+
+输入后台每 10 秒扫描，成员至少间隔 30 秒尝试派发，单轮至多使用 4 个不同 Agent；重连/到期未完成的传输先清理旧代次再重传。当前已接到 verified，整单发布和 Workflow 文件映射仍待完成；开启输入搬运不会让缺少映射的文件任务直接运行。停用输入配置不阻止遗留清理。
 
 Agent 结果搬运配置默认关闭。`AGENT_FEDERATION_RESULT_COPY` 是 JSON，例如 `{"stagingRoot":"/var/lib/kq/result-staging","maxStagingBytes":1073741824,"allowedSourceOrigins":["https://remote-storage.example.org"],"allowedDestinationOrigins":["https://local-storage.example.org"]}`。暂存路径须是 Agent 用户独占的绝对目录（0700，无符号链接），需要完整单文件空间；容量是文件上限，不是已验证支持 TB 级搬运。当前运行结果不跨进程续传。双方服务都需升级以协商复制与目的校验两项能力；仅支持复制的旧 Agent 不领取新任务，Agent 到 Server 必须通过 mTLS；缺失任一条件不派发。
 
