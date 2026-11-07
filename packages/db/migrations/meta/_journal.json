@@ -904,6 +904,13 @@
       "when": 1794070535632,
       "tag": "0128_soft_wallow",
       "breakpoints": true
+    },
+    {
+      "idx": 129,
+      "version": "7",
+      "when": 1794071564180,
+      "tag": "0129_wooden_starhawk",
+      "breakpoints": true
     }
   ]
 }

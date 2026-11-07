@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import {
   createPgDb,
   federationBudgets,
@@ -89,10 +90,13 @@ try {
     operation: "get-demand",
     demandId: proof.demandId,
   });
+  const closed = process.argv.includes("--closed");
   assert(demand.operation === "get-demand" && demand.demand);
   assert(
-    demand.demand.status === "ACTIVE" ||
-      (process.env.LAB_SCENARIO === "stop" && demand.demand.status === "STOPPING"),
+    closed
+      ? demand.demand.status === "CLOSED"
+      : demand.demand.status === "ACTIVE" ||
+          (process.env.LAB_SCENARIO === "stop" && demand.demand.status === "STOPPING"),
   );
   assert.equal(demand.demand.activation?.activationId, proof.activationId);
   const gate = await new UnixCommercialClient(
@@ -103,6 +107,36 @@ try {
     reservationId: proof.reservationId,
   });
   assert(gate.hash, "Reservation remains locked");
+  if (closed) {
+    const closure = demand.demand.closure;
+    assert(closure);
+    assert.equal(closure.gate.terminal?.activationId, proof.activationId);
+    assert.equal(closure.gate.state, "TERMINAL");
+    assert.equal(closure.gate.version, 2);
+    assert.equal(closure.gate.reservationId, proof.reservationId);
+    assert.equal(
+      gate.hash,
+      createHash("sha256").update(JSON.stringify(closure.gate)).digest("hex"),
+    );
+    const actor = await Bun.file(
+      `${root}/${process.env.FEDERATION_SITE_ID === config.source.siteId ? "source-actor" : "registration"}.json`,
+    ).json();
+    const service = new FederationExecutionConfirmationService(
+      db,
+      z.string().min(1).parse(process.env.FEDERATION_SITE_ID),
+    );
+    await assert.rejects(
+      db.transaction((tx) =>
+        service.authorize(
+          tx,
+          actor.orgId,
+          FederationDelegationSchema.parse(config.request),
+          "execution",
+        ),
+      ),
+      (error: unknown) => error instanceof FederationError && error.code === "POLICY_DENIED",
+    );
+  }
   if (process.argv.includes("--expired") || process.argv.includes("--stopped")) {
     const actor = await Bun.file(`${root}/registration.json`).json();
     const service = new FederationExecutionConfirmationService(

@@ -655,6 +655,49 @@ def verify_success():
     )
 
 
+def verify_terminal():
+    proof = json.loads((root / "ledger-proof.json").read_text())
+    config = json.loads((root / "source-init.json").read_text())
+    path = (
+        "federation/commercial-agreements/"
+        + config["request"]["agreementRevisionId"]
+        + "/execution-approvals/"
+        + proof["reservationId"]
+        + "/terminal"
+    )
+    provider = api(path, {}, token=token)["data"]
+    proposal = api(path + "/proposal", token=token)["data"]
+    assert provider["payload"]["outcome"] == "completed"
+    assert len(provider["evidence"]["jobs"]) == 2
+    source = sourceapi(path + "/countersign", proposal, sourcetoken)["data"]
+    assert source["digest"] == provider["digest"]
+    assert source["counterpartyJws"] == provider["approvalJws"]
+    assert source["sourceReview"]["result"]["importId"]
+    for _ in range(40):
+        view = sourceapi(path, token=sourcetoken)["data"]
+        for operation in (view["submission"], view["closure"]):
+            assert not operation or operation["state"] != "needs_review", json.dumps(operation)
+        if view["closure"] and view["closure"]["state"] == "committed":
+            break
+        time.sleep(3)
+    else:
+        raise AssertionError("Terminal/closure did not commit: " + json.dumps(view))
+    for operation in (view["submission"], view["closure"]):
+        assert operation["state"] == "committed"
+        assert operation["transaction"]["validationCode"] == 0
+        assert operation["transaction"]["blockNumber"] is not None
+    assert view["closure"]["id"] == provider["terminalId"]
+    assert sourceapi(path + "/countersign", proposal, sourcetoken)["data"] == source
+    assert api(path, {}, token=token)["data"] == provider
+    (logs / "terminal-evidence.json").write_text(
+        json.dumps({"provider": provider, "source": source, "status": view}, indent=2) + "\n"
+    )
+    print(
+        "REAL TERMINAL CLOSURE PASSED: bound Job evidence + source result import -> dual signatures -> VALID private terminal -> VALID public closure; replay retains original records",
+        flush=True,
+    )
+
+
 try:
     # Executed only inside the disposable lab namespace.
     k(["create", "namespace", namespace])
@@ -1775,7 +1818,8 @@ await Bun.write(process.env.LAB_ROOT+'/registration.json',JSON.stringify({token:
     def inspect_ledgers(suffix):
         for name, setting in [("source", sourceenv), ("provider", env)]:
             subprocess.run(
-                ["bun", "--no-env-file", "scripts/federation-live/inspect.ts"],
+                ["bun", "--no-env-file", "scripts/federation-live/inspect.ts"]
+                + (["--closed"] if scenario == "success" and suffix == "after" else []),
                 cwd=repo,
                 env={
                     **setting,
@@ -1792,6 +1836,7 @@ await Bun.write(process.env.LAB_ROOT+'/registration.json',JSON.stringify({token:
         verify_interruption()
     else:
         verify_success()
+        verify_terminal()
     inspect_ledgers("after")
 
 finally:

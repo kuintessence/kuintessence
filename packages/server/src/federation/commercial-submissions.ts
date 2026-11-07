@@ -4,6 +4,7 @@ import {
   federationCommercialExecutionApprovals as approvals,
   federationCommercialAttempts as attempts,
   auditLog,
+  federationMarketSubmissions as marketSubmissions,
   type PgDb,
   type PgTransaction,
   federationUsageReports as reports,
@@ -24,6 +25,7 @@ import { FabricProposalCheckpointSchema } from "@kuintessence/shared/federation/
 import { and, asc, desc, eq, sql } from "drizzle-orm";
 import { z } from "zod";
 import type { CommercialClient } from "./commercial-client";
+import { enqueueExecutionClosure } from "./execution-closure";
 import { FabricClientFailure } from "./fabric-client";
 import { type FederationActor, requireFederationCapability } from "./permissions";
 import { federationMessageKeyId, verifyFederationMessage } from "./signatures";
@@ -50,7 +52,15 @@ export class FederationCommercialSubmissionService {
         .where(
           and(
             eq(submissions.localSiteId, this.siteId),
-            eq(submissions.state, "pending"),
+            sql`(${submissions.state} = 'pending' OR (
+              ${submissions.state} = 'committed'
+              AND ${submissions.input}->>'operation' = 'record-execution-terminal'
+              AND ${submissions.input}->'envelope'->>'sourceSiteId' = ${this.siteId}
+              AND NOT EXISTS (SELECT 1 FROM ${marketSubmissions} closure
+                WHERE closure.id::text = ${submissions.input}->>'recordId'
+                  AND closure.local_site_id = ${submissions.localSiteId}
+                  AND closure.input->>'operation' = 'close-demand')
+            ))`,
             sql`(${submissions.input}->>'operation' = 'register-agreement' OR EXISTS (
               SELECT 1 FROM ${submissions} dependency
               WHERE dependency.local_site_id = ${submissions.localSiteId}
@@ -132,7 +142,7 @@ export class FederationCommercialSubmissionService {
           and(
             eq(submissions.id, lease.id),
             eq(submissions.localSiteId, this.siteId),
-            eq(submissions.state, "pending"),
+            sql`${submissions.state} IN ('pending','committed')`,
             eq(submissions.leaseToken, lease.token),
             sql`${submissions.leaseUntil} > clock_timestamp()`,
           ),
@@ -170,7 +180,20 @@ export class FederationCommercialSubmissionService {
         attempt: (await this.latest(tx, submission.id))[0],
       }));
       const { submission, attempt } = snapshot;
-      if (!attempt || attempt.stage === "invalid" || attempt.stage === "abandoned") {
+      if (submission.state === "committed" || attempt?.stage === "committed") {
+        if (
+          submission.input.operation !== "record-execution-terminal" ||
+          attempt?.stage !== "committed"
+        )
+          throw new FederationError("OPERATION_CONFLICT");
+        await this.fenced(claimed, async (tx) => {
+          await tx
+            .update(submissions)
+            .set({ state: "committed", lastError: null })
+            .where(eq(submissions.id, submission.id));
+          await enqueueExecutionClosure(tx, this.siteId, submission.input.recordId);
+        });
+      } else if (!attempt || attempt.stage === "invalid" || attempt.stage === "abandoned") {
         await this.beforeDisclosure(submission.input);
         const result = FabricProposalCheckpointSchema.parse(
           await this.client.prepare(submission.input),
@@ -228,6 +251,11 @@ export class FederationCommercialSubmissionService {
                 updatedAt: sql`clock_timestamp()`,
               })
               .where(eq(submissions.id, submission.id));
+            if (
+              result.state === "committed" &&
+              submission.input.operation === "record-execution-terminal"
+            )
+              await enqueueExecutionClosure(tx, this.siteId, submission.input.recordId);
           }
         });
       }

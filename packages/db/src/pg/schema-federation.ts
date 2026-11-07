@@ -1296,6 +1296,9 @@ export const federationMarketSubmissions = pgTable(
     uniqueIndex("federation_market_execution_stop")
       .on(t.localSiteId, sql`(${t.input}->'stop'->>'activationId')`, t.demandId)
       .where(sql`${t.input}->>'operation' = 'request-execution-stop'`),
+    uniqueIndex("federation_market_execution_closure")
+      .on(t.localSiteId, sql`(${t.input}->'closure'->'gate'->'terminal'->>'activationId')`)
+      .where(sql`${t.input}->>'operation' = 'close-demand'`),
     check(
       "federation_market_submission_state",
       sql`${t.state} IN ('pending','committed','needs_review')`,
@@ -1309,6 +1312,7 @@ export const federationMarketSubmissions = pgTable(
         OR (${t.input}->>'operation' = 'activate-demand' AND ${t.input}->'activation'->>'activationId' = ${t.id}::text AND ${t.input}->'activation'->>'demandId' = ${t.demandId}::text)
         OR (${t.input}->>'operation' = 'authorize-execution' AND ${t.input}->'authorization'->>'authorizationId' = ${t.id}::text AND ${t.input}->'authorization'->>'demandId' = ${t.demandId}::text AND ${t.input}->'authorization'->'gate'->>'demandId' = ${t.demandId}::text AND ${t.input}->'authorization'->>'issuerSiteId' = ${t.localSiteId}::text)
         OR (${t.input}->>'operation' = 'request-execution-stop' AND ${t.input}->'stop'->>'stopId' = ${t.id}::text AND ${t.input}->'stop'->>'demandId' = ${t.demandId}::text AND ${t.input}->'stop'->>'issuerSiteId' = ${t.localSiteId}::text)
+        OR (${t.input}->>'operation' = 'close-demand' AND ${t.input}->'closure'->>'closureId' = ${t.id}::text AND ${t.input}->'closure'->>'demandId' = ${t.demandId}::text AND ${t.input}->'closure'->'gate'->>'state' = 'TERMINAL' AND ${t.input}->'closure'->'gate'->>'demandId' = ${t.demandId}::text AND ${t.input}->'closure'->'gate'->'terminal'->>'terminalId' = ${t.id}::text)
       )) IS TRUE`,
     ),
     check(

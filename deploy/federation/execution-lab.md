@@ -35,9 +35,10 @@ bun run test:fabric:execution
 | 返回 | Persistent 结果经独立源站 Agent 复制并实读校验，登记为带版本云盘文件；下载得到准确的 12 字节/SHA-256，取得对端签名回执；Checkpoint 不披露，重复导入不新增文件 |
 | 断链 | 读取 Pod 中实际 sleep 进程后停 Orderer（沙箱 stdout 在任务结束后才发布）；等待原 VALID 确认的真实期限，不篡改时间或签名；到期 10 秒内观察到 Job 删除请求，经过 Pod 声明的终止宽限期（最多 30 秒）及额外 30 秒状态回收时间后确认 Job/Pod 停止，下游不派发、不产出文件 |
 | 主动停止 | 确认真实 sleep 正在运行且原 VALID 余期超过 120 秒，停 Orderer 后两次调用提供方停止 HTTP；请求幂等，20 秒内发起调度器停止，经过真实终止宽限后在原 VALID 到期前确认 Job/Pod 停止，本地授权返回 CANCELLATION_REQUESTED；恢复 Orderer 后原停止意图取得 VALID、需求变为 STOPPING，私有 gate 不变、旧作业不重启 |
+| 终态关闭（成功场景） | 提供方专用 API 从真实 Job 归集终态，源方以本地结果导入及签名回执复核并签署；生产 worker 自动提交私有终态和公共关闭，两端分别查询 CLOSED 与一致的 TERMINAL gate 哈希；重复审批保持原记录，本地重新执行被拒绝 |
 | 锁额 | 两边数据库都不生成本地预算；断链/期限到达不改变 ACTIVE 需求与原私有 gate 哈希；恢复 Orderer 不重启终态作业 |
 
-运行打印私有证据目录 `temp/federation-execution-{success,outage,stop}-*`。`source/provider-before/after.json` 保存公开意图、交易 ID、验证码、区块号、预留和作业关联；`result-delivery-evidence.json` 保存结果摘要与版本；`running-process.txt` 与 `provider-running.json` 保存断链前的进程和确认，`outage-evidence.json` 保存停止请求时间、终止宽限期及实际 Job/Pod/Workflow 状态。主动停止另保存 `stop-api.json`、`stop-evidence.json` 与双方 `stop-recovery.json`；该场景与自然到期断链场景分别验收。不存在的场景文件不代表通过；以进程退出码和该场景全部断言为准。
+运行打印私有证据目录 `temp/federation-execution-{success,outage,stop}-*`。成功场景另保存 `terminal-evidence.json`（双方签名、源方复核及两次链上交易回执）；这一步通过测试驱动显式调用机构审批 API，尚不是无人值守的机构间终态交换。`source/provider-before/after.json` 保存公开意图、交易 ID、验证码、区块号、预留和作业关联；`result-delivery-evidence.json` 保存结果摘要与版本；`running-process.txt` 与 `provider-running.json` 保存断链前的进程和确认，`outage-evidence.json` 保存停止请求时间、终止宽限期及实际 Job/Pod/Workflow 状态。主动停止另保存 `stop-api.json`、`stop-evidence.json` 与双方 `stop-recovery.json`；该场景与自然到期断链场景分别验收。不存在的场景文件不代表通过；以进程退出码和该场景全部断言为准。
 
 目录权限为 0700、文件默认 0600；完整 Server/Agent 日志与本机 Fabric 的测试身份仅供本地排查，不上传 CI artifact 或纳入 Git。导出证据必须另行筛除内部路径、测试签名与存储信息。
 

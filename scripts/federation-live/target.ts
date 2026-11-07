@@ -158,6 +158,7 @@ if (process.argv[2] === "inspect") {
           "commercial-agreement",
           "commercial-reservation",
           "commercial-release",
+          "commercial-terminal",
           "commercial-usage",
           "agreement",
           "delegation",

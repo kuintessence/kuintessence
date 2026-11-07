@@ -155,7 +155,7 @@ export class FederationExecutionStopService {
         throw new FabricClientFailure("ACTIVATION_PENDING");
       const activation = state.activation;
       if (
-        !["ACTIVE", "STOPPING"].includes(state.status) ||
+        !["ACTIVE", "STOPPING", "CLOSED"].includes(state.status) ||
         !activation ||
         state.demand.demandId !== reserve.demandId ||
         state.demand.sourceSiteId !== reserve.request.senderSiteId ||
@@ -174,6 +174,19 @@ export class FederationExecutionStopService {
         activation.gate.expiresAt !== reserve.request.expiresAt
       )
         throw new FederationError("OPERATION_CONFLICT");
+      if (state.status === "CLOSED") {
+        await this.db
+          .update(approvals)
+          .set({ stopNextAttemptAt: null, stopLastError: null })
+          .where(
+            and(
+              key(this.siteId, row.recordId),
+              eq(approvals.stopId, row.stopId),
+              eq(approvals.digest, row.digest),
+            ),
+          );
+        return true;
+      }
       const input = {
         operation: "request-execution-stop" as const,
         stop: MarketExecutionStopSchema.parse({

@@ -5,6 +5,7 @@ import {
   type PgDb,
   type PgTransaction,
   federationMarketSubmissions as submissions,
+  federationExecutionTerminals as terminals,
   users,
 } from "@kuintessence/db";
 import { FederationError } from "@kuintessence/shared/federation";
@@ -21,6 +22,7 @@ import {
 import { and, asc, desc, eq, sql } from "drizzle-orm";
 import { z } from "zod";
 import { federationMaterialDigest } from "./assets";
+import { executionClosure } from "./execution-closure";
 import { FabricClientFailure } from "./fabric-client";
 import type { MarketClient } from "./market-client";
 import { type FederationActor, requireFederationCapability } from "./permissions";
@@ -112,7 +114,7 @@ export class FederationMarketService {
       }));
       const { submission, attempt } = snapshot;
       if (!attempt || attempt.stage === "invalid" || attempt.stage === "abandoned") {
-        this.validate(submission);
+        await this.validate(submission);
         const result = FabricProposalCheckpointSchema.parse(
           await this.client.prepare(submission.input),
         );
@@ -127,7 +129,7 @@ export class FederationMarketService {
           await this.schedule(tx, submission.id);
         });
       } else {
-        if (attempt.stage === "proposal") this.validate(submission);
+        if (attempt.stage === "proposal") await this.validate(submission);
         const result = FabricMarketAdvanceResultSchema.parse(
           await this.client.advance(attempt.recovery),
         );
@@ -217,10 +219,35 @@ export class FederationMarketService {
       .where(eq(submissions.id, id));
   }
 
-  private validate(row: Submission) {
+  private async validate(row: Submission) {
     const input = MarketAdapterProposalInputSchema.parse(row.input);
     if (federationMaterialDigest(input) !== row.digest)
       throw new FederationError("OPERATION_CONFLICT");
+    if (input.operation === "close-demand") {
+      const closure = await this.db.transaction((tx) => executionClosure(tx, this.siteId, row.id));
+      if (
+        row.localOrgId !== closure.localOrgId ||
+        row.requestedBy !== closure.requestedBy ||
+        row.demandId !== closure.input.closure.demandId ||
+        federationMaterialDigest(closure.input) !== row.digest
+      )
+        throw new FederationError("OPERATION_CONFLICT");
+    }
+    if (input.operation === "authorize-execution" || input.operation === "request-execution-stop") {
+      const [terminal] = await this.db
+        .select({ id: terminals.terminalId })
+        .from(terminals)
+        .where(
+          and(
+            eq(terminals.localSiteId, this.siteId),
+            input.operation === "authorize-execution"
+              ? eq(terminals.reservationId, input.authorization.gate.reservationId)
+              : sql`${terminals.payload}->>'activationId' = ${input.stop.activationId}`,
+          ),
+        )
+        .limit(1);
+      if (terminal) throw new FabricClientFailure("EXECUTION_TERMINAL", true);
+    }
     return input;
   }
   async enqueue(actor: FederationActor, raw: MarketProposalInput) {

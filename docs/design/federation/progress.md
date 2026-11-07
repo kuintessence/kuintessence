@@ -1629,3 +1629,17 @@ Market 新增 RequestExecutionStop、Adapter 新增 request-execution-stop，双
 静态检查：全仓 lint 无错误（原有 47 warning / 1 info）。全仓 typecheck 首次只发现测试中 nullable 接单签名的断言类型，补显式非空检查后最终 Server 定向检查通过；其余包/protobuf 已通过，Fabric 脚本类型检查另行通过。最终改动文件格式、693 项本地文档目标、workflow 引用及差异检查通过。
 
 这些用例使用生产 Server 服务、真实 PostgreSQL 及模拟 Adapter/对端签名消息；结果导入和停止状态是测试夹具，不代表本轮运行过 Agent 或真实拷贝。此轮未启动新的 Fabric 网络、未跑真实双平台任务。下一步仍须接自动机构交换、公共关闭待办和真实终态联验；账单/结算/争议/重开、自动商务握手、介质与归档容量、完整 Web/CLI 和 PR 预览继续待办，未合并或部署 main。
+
+## 私有终态后的持久公共关闭
+
+迁移 0129 由 db:generate 生成，允许内部 close-demand 并按本机构/activation 唯一约束。源方商业 worker 在私有终态最新交易获得 VALID 区块确认后，同事务保存确认、固定 terminalId 的关闭待办和审计；升级或重启可沿用原队列补办已确认而未入队的历史终态。入队不访问网络，不要求重新业务签署；首次公开准备和提案推进前重新核对本地双签、原预留、私有回执与完整关闭正文。未知已提交结果继续恢复原交易。
+
+关闭仍锚定原 ACTIVE 版本，STOPPING 不改变锚点；gate 使用原准入 expiresAt。终态 GET 分别返回私有提交与公共关闭的状态/错误/交易回执。公共正文没有 outcome、Job 证据、私有签名或费用，通用市场创建接口继续拒绝该操作。未发送的续期/停止提案遇到本地终态进入 needs_review，已经发送的交易继续查询原结果；尚未入队的停止在精确 CLOSED 后结束投递，本地防线不撤销。关闭不确认账单、释放额度、退款或重开。
+
+隔离 PostgreSQL 从空库完成迁移后，82 项商业/市场用例通过；随后仅运行新增的 4 项终态后待办用例，共 86 项不同用例，无失败。覆盖私有 pending/INVALID/缺有效回执时拒绝关闭、原子审计回滚与原交易恢复、并发重启补办、旧签名密钥撤销后的历史确认、伪造关闭正文、ACTIVE/STOPPING 版本绑定、错误 CLOSED 归属、未发送续期阻断与已发送交易恢复。证据为忽略目录 temp/closure-pg.log、temp/closure-fence-pg.log；数据库已清理。这些数据库测试的 Adapter 为夹具，不代替真实链验收。
+
+全仓 lint 无错误（原有 47 warning / 1 info），全仓 typecheck 含 protobuf 和 Fabric 脚本通过；验收脚本最终修改另经 Fabric 定向类型检查。693 个本地文档目标、workflow 引用与差异格式检查通过。
+
+成功场景真实联合验收退出 0：temp/closure-execution.log；私有业务证据 temp/federation-execution-success-8e1ekkal，测试链材料 temp/fabric-network-VQpIgh。三个 Fabric 机构、四个生产 Adapter、双 Server/独立 PG、双 Agent 与独立存储实际执行两节点 Bash 文件工作流；源方实读 verified:42 的 12 字节结果并完成签名回执。提供方从这两个真实 Job 归集证据，源方从自身导入记录复核后签署；生产 worker 获得私有终态 VALID（区块 20）和公共关闭 VALID（区块 21），重复审批返回原记录。两端分别读到 CLOSED、同一 TERMINAL gate 哈希且无本地预算；两端本地重新执行均返回 POLICY_DENIED。所有自建进程、数据库、namespace/RBAC 与临时凭据已清理；证据/链材料仅留忽略目录。
+
+这次延伸并实际运行成功场景，没有重复此前已通过的断链到期/主动停止场景或原生链级金额与背书竞态。机构终态审批由测试驱动专用人工 API，不是自动 mTLS 交换；没有 Spack、Slurm/PBS、真实科研软件或独立机构验收。下一项为机构间终态材料自动交换、提供方接收对签及双端业务状态收敛；结算、物理介质、归档、完整 Web/CLI 和 PR 预览仍待完成。未合并或部署 main。

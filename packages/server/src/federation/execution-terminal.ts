@@ -3,6 +3,8 @@ import {
   federationCommercialExecutionApprovals as approvals,
   federationCommercialAttempts as attempts,
   auditLog,
+  federationMarketAttempts as closureAttempts,
+  federationMarketSubmissions as closures,
   federationCommercialAgreements as contracts,
   type PgDb,
   type PgTransaction,
@@ -143,9 +145,34 @@ export class FederationExecutionTerminalService {
             .orderBy(desc(attempts.number))
             .limit(1)
         : [];
+      const [closure] = await tx
+        .select({ id: closures.id, state: closures.state, lastError: closures.lastError })
+        .from(closures)
+        .where(
+          and(
+            eq(closures.id, saved.terminalId),
+            eq(closures.localSiteId, this.signing.siteId),
+            eq(closures.localOrgId, actor.orgId),
+            sql`${closures.input}->>'operation' = 'close-demand'`,
+          ),
+        );
+      const [closureTransaction] = closure
+        ? await tx
+            .select({
+              transactionId: closureAttempts.transactionId,
+              stage: closureAttempts.stage,
+              validationCode: closureAttempts.validationCode,
+              blockNumber: closureAttempts.blockNumber,
+            })
+            .from(closureAttempts)
+            .where(eq(closureAttempts.submissionId, closure.id))
+            .orderBy(desc(closureAttempts.number))
+            .limit(1)
+        : [];
       return {
         ...saved,
         submission: submission ? { ...submission, transaction: transaction ?? null } : null,
+        closure: closure ? { ...closure, transaction: closureTransaction ?? null } : null,
       };
     });
   }

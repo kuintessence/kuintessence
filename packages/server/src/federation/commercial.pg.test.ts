@@ -3404,3 +3404,301 @@ test("terminal source HTTP requires an institutional human and the complete sign
   expect((await post(proposal)).status).toBe(200);
   expect((await post(proposal)).status).toBe(200);
 });
+
+async function closureFixture() {
+  const f = await terminalSourceFixture("failed");
+  await f.approveTerminal();
+  const terminal = await f.sourceTerminal.countersign(
+    f.actor,
+    f.revisionId,
+    f.reservation.reservationId,
+    await f.proposal(),
+  );
+  const view = () => f.sourceTerminal.get(f.actor, f.revisionId, f.reservation.reservationId);
+  const market = new FederationMarketService(db, f.a.signing.siteId, f.marketAdapter);
+  return { ...f, terminal, view, sourceMarket: market };
+}
+
+test("execution closure waits for VALID private commit and recovers public transaction without exposing private evidence", async () => {
+  const f = await closureFixture();
+  expect((await f.view())?.closure).toBeNull();
+  for (let i = 0; i < 2; i++) await f.service.advanceNext();
+  f.adapter.outcome = "pending";
+  await f.service.advanceNext();
+  expect((await f.view())?.closure).toBeNull();
+  const pending = (await f.view())?.submission;
+  if (!pending) throw new Error("Missing private terminal");
+  f.adapter.outcome = "committed";
+  await db
+    .update(submissions)
+    .set({ nextAttemptAt: new Date(0) })
+    .where(eq(submissions.id, pending.id));
+  await f.service.advanceNext();
+  expect((await f.view())?.closure).toMatchObject({ id: f.terminal.terminalId, state: "pending" });
+  const [saved] = await db
+    .select()
+    .from(marketSubmissions)
+    .where(eq(marketSubmissions.id, f.terminal.terminalId));
+  if (saved?.input.operation !== "close-demand") throw new Error("Missing closure");
+  expect(saved.input.closure).toMatchObject({
+    expectedVersion: f.reservation.claimVersion + 1,
+    gate: {
+      state: "TERMINAL",
+      version: 2,
+      expiresAt: f.reservation.request.expiresAt,
+      terminal: {
+        terminalId: f.terminal.terminalId,
+        activationId: f.activationId,
+        digest: f.terminal.digest,
+      },
+    },
+  });
+  for (const secret of [
+    f.jobId,
+    f.terminal.payload.executionEvidenceDigest,
+    f.terminal.approvalJws,
+    "failed",
+    "sourceReview",
+    "locked",
+    "spent",
+  ])
+    expect(JSON.stringify(saved.input)).not.toContain(secret);
+  expect(MarketProposalInputSchema.safeParse(saved.input).success).toBe(false);
+  f.marketAdapter.outcome = "pending";
+  for (let i = 0; i < 3; i++) await f.sourceMarket.advanceNext();
+  const before = (await f.view())?.closure?.transaction;
+  expect(before?.stage).toBe("transaction");
+  f.marketAdapter.outcome = "committed";
+  await db
+    .update(marketSubmissions)
+    .set({ nextAttemptAt: new Date(0) })
+    .where(eq(marketSubmissions.id, saved.id));
+  await new FederationMarketService(db, f.a.signing.siteId, f.marketAdapter).advanceNext();
+  expect((await f.view())?.closure).toMatchObject({
+    state: "committed",
+    transaction: { transactionId: before?.transactionId, stage: "committed", validationCode: 0 },
+  });
+  expect(await f.service.advanceNext()).toBe(false);
+  expect(await f.sourceMarket.advanceNext()).toBe(false);
+  expect(f.marketAdapter.inputs.filter((x) => x.operation === "close-demand")).toHaveLength(1);
+});
+
+test("execution closure backfills historical committed terminals once after restart without live signing keys or network", async () => {
+  const f = await closureFixture();
+  for (let i = 0; i < 3; i++) await f.service.advanceNext();
+  await db.delete(marketSubmissions).where(eq(marketSubmissions.id, f.terminal.terminalId));
+  await db
+    .update(federationSigningKeys)
+    .set({ revokedAt: new Date() })
+    .where(eq(federationSigningKeys.siteId, f.a.signing.siteId));
+  f.adapter.offline = true;
+  const count = f.adapter.prepares.length;
+  const restarted = new FederationCommercialSubmissionService(db, f.a.signing.siteId, f.adapter);
+  await Promise.all([restarted.advanceNext(), f.service.advanceNext()]);
+  expect((await f.view())?.closure?.state).toBe("pending");
+  expect(f.adapter.prepares).toHaveLength(count);
+  expect(await restarted.advanceNext()).toBe(false);
+  await f.sourceMarket.advanceNext();
+  expect((await f.view())?.closure?.transaction?.stage).toBe("proposal");
+});
+
+test("execution closure does not accept committed state without a valid transaction receipt", async () => {
+  const f = await closureFixture();
+  const pending = (await f.view())?.submission;
+  if (!pending) throw new Error("Missing private terminal");
+  await db.update(submissions).set({ state: "committed" }).where(eq(submissions.id, pending.id));
+  await f.service.advanceNext();
+  expect((await f.view())?.closure).toBeNull();
+  expect((await f.view())?.submission).toMatchObject({
+    state: "needs_review",
+    lastError: "OPERATION_CONFLICT",
+  });
+  expect(f.adapter.prepares.some((x) => x.operation === "record-execution-terminal")).toBe(false);
+});
+
+test("execution closure rejects invalid private commits and conflicting public identity", async () => {
+  const f = await closureFixture();
+  f.adapter.outcome = "invalid";
+  for (let i = 0; i < 3; i++) await f.service.advanceNext();
+  expect((await f.view())?.closure).toBeNull();
+  expect((await f.view())?.submission?.state).toBe("needs_review");
+  const g = await closureFixture();
+  for (let i = 0; i < 3; i++) await g.service.advanceNext();
+  const [saved] = await db
+    .select()
+    .from(marketSubmissions)
+    .where(eq(marketSubmissions.id, g.terminal.terminalId));
+  if (saved?.input.operation !== "close-demand") throw new Error("Missing closure");
+  const input = {
+    ...saved.input,
+    closure: { ...saved.input.closure, expectedVersion: saved.input.closure.expectedVersion + 1 },
+  };
+  await db
+    .update(marketSubmissions)
+    .set({ input, digest: federationMaterialDigest(input) })
+    .where(eq(marketSubmissions.id, saved.id));
+  await g.sourceMarket.advanceNext();
+  expect((await g.view())?.closure).toMatchObject({
+    state: "needs_review",
+    lastError: "OPERATION_CONFLICT",
+    transaction: null,
+  });
+  expect(g.marketAdapter.inputs.some((x) => x.operation === "close-demand")).toBe(false);
+});
+
+test("execution closure audit rollback preserves private transaction checkpoint and recovers it unchanged", async () => {
+  const f = await closureFixture();
+  for (let i = 0; i < 2; i++) await f.service.advanceNext();
+  const before = (await f.view())?.submission;
+  if (!before) throw new Error("Missing terminal submission");
+  await db.execute(
+    sql`alter table audit_log add constraint test_closure_audit check (action <> 'federation.execution.close_enqueue' OR actor <> ${sql.raw(`'${f.actor.userId}'`)})`,
+  );
+  try {
+    await f.service.advanceNext();
+    expect((await f.view())?.closure).toBeNull();
+    expect((await f.view())?.submission?.transaction?.stage).toBe("transaction");
+  } finally {
+    await db.execute(sql`alter table audit_log drop constraint test_closure_audit`);
+  }
+  await db
+    .update(submissions)
+    .set({ nextAttemptAt: new Date(0) })
+    .where(eq(submissions.id, before.id));
+  await f.service.advanceNext();
+  expect((await f.view())?.submission?.transaction).toMatchObject({
+    stage: "committed",
+    transactionId: before.transaction?.transactionId,
+  });
+  expect((await f.view())?.closure?.state).toBe("pending");
+});
+
+for (const stopping of [false, true])
+  test(`execution closure accepts original ACTIVE version and retires unqueued stop after CLOSED (stopping=${stopping})`, async () => {
+    const f = await closureFixture();
+    const stops = new FederationExecutionStopService(db, f.a.signing.siteId, {
+      query: async () => ({ operation: "get-demand", demand: f.state }),
+    });
+    const stop = await stops.request(f.actor, f.revisionId, f.reservation.reservationId);
+    if (stopping) {
+      f.state.status = "STOPPING";
+      f.state.version++;
+      f.state.stopRequest = {
+        stopId: stop.id,
+        issuerSiteId: f.a.signing.siteId,
+        demandId: f.reservation.demandId,
+        activationId: f.activationId,
+        expectedVersion: f.reservation.claimVersion + 1,
+      };
+    }
+    for (let i = 0; i < 3; i++) await f.service.advanceNext();
+    const [saved] = await db
+      .select()
+      .from(marketSubmissions)
+      .where(eq(marketSubmissions.id, f.terminal.terminalId));
+    if (saved?.input.operation !== "close-demand") throw new Error("Missing closure");
+    f.state.status = "CLOSED";
+    f.state.version++;
+    f.state.closure = saved.input.closure;
+    expect(MarketDemandStateSchema.safeParse(f.state).success).toBe(true);
+    expect(await stops.advanceNext()).toBe(true);
+    expect(await stops.advanceNext()).toBe(false);
+    const [approval] = await db
+      .select()
+      .from(executionApprovals)
+      .where(eq(executionApprovals.stopId, stop.id));
+    expect(approval).toMatchObject({
+      stopId: stop.id,
+      stopNextAttemptAt: null,
+      stopLastError: null,
+    });
+    expect(
+      await db.select().from(marketSubmissions).where(eq(marketSubmissions.id, stop.id)),
+    ).toHaveLength(0);
+    await expect(
+      f.sourceConfirmation.request(f.actor, f.revisionId, f.reservation.reservationId),
+    ).rejects.toMatchObject({ code: "CANCELLATION_REQUESTED" });
+  });
+
+for (const steps of [0, 1, 2])
+  test(`terminal fence blocks undisclosed renewals but recovers submitted transactions (steps=${steps})`, async () => {
+    const f = await terminalFixture("failed");
+    f.setClock(new Date(Date.now() + 241000));
+    await f.requestConfirmation();
+    const [renewal] = await db
+      .select()
+      .from(marketSubmissions)
+      .where(
+        and(
+          eq(marketSubmissions.localSiteId, f.siteId),
+          eq(marketSubmissions.state, "pending"),
+          sql`${marketSubmissions.input}->>'operation' = 'authorize-execution'`,
+        ),
+      );
+    if (!renewal) throw new Error("Missing renewal");
+    for (let i = 0; i < steps; i++) await f.market.advanceNext();
+    const [before] = await db
+      .select()
+      .from(marketAttempts)
+      .where(eq(marketAttempts.submissionId, renewal.id));
+    await f.approveTerminal();
+    const count = f.marketAdapter.inputs.length;
+    await f.market.advanceNext();
+    const [after] = await db
+      .select()
+      .from(marketSubmissions)
+      .where(eq(marketSubmissions.id, renewal.id));
+    expect(after?.state).toBe(steps === 2 ? "committed" : "needs_review");
+    expect(after?.lastError).toBe(steps === 2 ? null : "EXECUTION_TERMINAL");
+    expect(f.marketAdapter.inputs).toHaveLength(count);
+    if (steps === 2) {
+      const [attempt] = await db
+        .select()
+        .from(marketAttempts)
+        .where(eq(marketAttempts.submissionId, renewal.id));
+      expect(attempt?.transactionId).toBe(before?.transactionId);
+    }
+  });
+
+test("terminal fence blocks undisclosed stops and CLOSED with mismatched reservation cannot retire a stop", async () => {
+  const f = await terminalFixture("failed");
+  const stops = new FederationExecutionStopService(db, f.siteId, {
+    query: async () => ({ operation: "get-demand", demand: f.state }),
+  });
+  const stop = await stops.request(f.actor, f.revisionId, f.reservation.reservationId);
+  await stops.advanceNext();
+  await f.approveTerminal();
+  const count = f.marketAdapter.inputs.length;
+  await f.market.advanceNext();
+  const [submission] = await db
+    .select()
+    .from(marketSubmissions)
+    .where(eq(marketSubmissions.id, stop.id));
+  expect(submission).toMatchObject({ state: "needs_review", lastError: "EXECUTION_TERMINAL" });
+  expect(f.marketAdapter.inputs).toHaveLength(count);
+  const g = await closureFixture();
+  for (let i = 0; i < 3; i++) await g.service.advanceNext();
+  const [closure] = await db
+    .select()
+    .from(marketSubmissions)
+    .where(eq(marketSubmissions.id, g.terminal.terminalId));
+  if (closure?.input.operation !== "close-demand" || !g.state.activation)
+    throw new Error("Missing closure");
+  g.state.status = "CLOSED";
+  g.state.version++;
+  g.state.closure = closure.input.closure;
+  const otherDigest = `sha256:${"f".repeat(64)}`;
+  g.state.closure.gate.reservationDigest = otherDigest;
+  g.state.activation.gate.reservationDigest = otherDigest;
+  const otherStops = new FederationExecutionStopService(db, g.a.signing.siteId, {
+    query: async () => ({ operation: "get-demand", demand: g.state }),
+  });
+  const otherStop = await otherStops.request(g.actor, g.revisionId, g.reservation.reservationId);
+  await otherStops.advanceNext();
+  const [approval] = await db
+    .select()
+    .from(executionApprovals)
+    .where(eq(executionApprovals.stopId, otherStop.id));
+  expect(approval?.stopLastError).toBe("OPERATION_CONFLICT");
+  expect(approval?.stopNextAttemptAt).not.toBeNull();
+});
