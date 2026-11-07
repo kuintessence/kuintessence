@@ -17,6 +17,7 @@ import {
 } from "@kuintessence/shared/federation";
 import { and, asc, desc, eq, ilike, or } from "drizzle-orm";
 import { FederationAdmission } from "./admission";
+import { requireCoordinatedCommercialAgreement } from "./commercial-execution-policy";
 import { executionIdentityEligibility, requireExecutionIdentity } from "./execution-identity";
 import { type FederationActor, requireFederationCapability } from "./permissions";
 import {
@@ -162,7 +163,6 @@ export class FederationAgreementService {
     const local = this.signingKey.siteId;
     if (terms.sourceSiteId !== local && terms.targetSiteId !== local)
       throw new FederationError("POLICY_DENIED");
-    if (terms.mode === "ledger_coordinated") throw new FederationError("LEDGER_REQUIRED");
     if ((terms.targetSiteId === local) !== Boolean(input.executionUserId))
       throw new FederationError("POLICY_DENIED");
     // Check the business grant before using a machine's institutional signing key.
@@ -179,6 +179,14 @@ export class FederationAgreementService {
       if (input.executionUserId)
         await requireExecutionIdentity(tx, { orgId: actor.orgId, userId: input.executionUserId });
       await this.trust.assertKey(tx, local, key.keyId, this.clock());
+      await requireCoordinatedCommercialAgreement(
+        tx,
+        this.trust,
+        local,
+        actor.orgId,
+        terms,
+        this.clock,
+      );
       this.requireUnexpired(terms, this.clock());
       const [created] = await tx
         .insert(federationAgreementApprovals)
@@ -211,7 +219,7 @@ export class FederationAgreementService {
     });
   }
 
-  /** Attaches the other institution's signature; the receiving site activates its budget atomically. */
+  /** Attaches the peer signature and installs recipient consent; only bilateral modes create a budget. */
   async attachCounterparty(
     actor: FederationActor,
     revisionId: string,
@@ -247,6 +255,14 @@ export class FederationAgreementService {
       if (current.state !== "active") throw new FederationError("AGREEMENT_UNAVAILABLE");
       for (const key of [ownKey, otherKey])
         await this.trust.assertKey(tx, key.siteId, key.keyId, this.clock());
+      await requireCoordinatedCommercialAgreement(
+        tx,
+        this.trust,
+        this.signingKey.siteId,
+        actor.orgId,
+        terms,
+        this.clock,
+      );
       this.requireUnexpired(terms, this.clock());
       if (current.counterpartyApprovalJws) {
         // Same terms signed by a new key do not silently replace the original approval evidence.

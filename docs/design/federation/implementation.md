@@ -745,3 +745,12 @@ kq-market ListDemands 使用 Fabric 原生分页，GetDemand 保留原单条语�
 新增 test:fabric:gate:integration，复用三机构同通道网络及随机隔离 PostgreSQL。源站/提供方业务服务使用不同组织和真实业务签名确认合同、预留和释放，生产 Node Adapter 提交私有操作；源站专用激活服务生成持久市场意图。Orderer 中断和 VALID 响应丢失后保留原 prepared 检查点，服务实例重新建立后使用同一 txId 确认原 ACTIVE，并核对激活 ID/预留归属。真实私有 gate 哈希验证释放，不读取商业正文来生成公开激活。
 
 前置市场发布/认领由真实链探针创建，历史意图作为测试夹具导入各自组织；不是完整 Server 发布入口或双 Server mTLS 交换。没有 Agent/Job。测试与资源边界见[数据库联合检查](../../../deploy/federation/fabric-execution-gate.md#数据库与真实-fabric-联合检查)。CI 的 gate 项现运行联合入口，原无数据库入口保留用于 Adapter 进程恢复定向检查。
+
+
+### 链上协调协议的本地执行同意
+
+迁移 0123 将已安装协议的本地 budgetDomainId/epoch 外键改为按模式约束：双边模式必须保留与签署条款一致的本地预算，ledger_coordinated 必须两列均为空。完整商业预算标识仍保留在原签署条款中；不会建立零额假预算、复制链上可用额度，也不删除或改写原双边余额。原预算外键、双边 epoch 唯一性和守恒约束保留。
+
+执行协议 approve/counterparty 与底层 installApprovedAgreement 现在允许链上协调协议的本地同意。前提是同站点、同组织、同 revision 已有商业双签，嵌入的完整执行条款必须一致；每次批准/安装重新验证两份商业原文、摘要、当前机构信任和 commercial-agreement 用途。提供方仍须选择当前有效的受限服务账户，普通 agreement 签署权不能替代商业签署权。对方执行签名、安装与审计在原事务内提交，失败回滚；并发同请求只安装一份，不创建本地可用额度。
+
+这里保存的是执行同意，不是运行许可。接单仍明确拒绝 LEDGER_REQUIRED，源站发送、材料披露和执行准备原有拒绝规则不放宽；context.supportedModes 暂仍只列可运行的两个双边模式，Web 不提前开放协调执行。审批 API 可用于准备同意，不能把 installed/active 状态当作链上 ACTIVE 或已派发 Job。实际执行还须绑定精确私有预留、公开激活和本地当前授权；旧 Peer 查询或调用方布尔值不能代替这项检查。

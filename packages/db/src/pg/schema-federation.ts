@@ -323,8 +323,9 @@ export const federationAgreements = pgTable(
     executionUserId: uuid("execution_user_id")
       .notNull()
       .references(() => users.id),
-    budgetDomainId: uuid("budget_domain_id").notNull(),
-    epoch: uuid("epoch").notNull(),
+    // Only bilateral execution installs a local spendable budget.
+    budgetDomainId: uuid("budget_domain_id"),
+    epoch: uuid("epoch"),
     terms: jsonb("terms").$type<FederationAgreement>().notNull(),
     termsDigest: varchar("terms_digest", { length: 71 }).notNull(),
     sourceApprovalJws: text("source_approval_jws").notNull(),
@@ -338,6 +339,15 @@ export const federationAgreements = pgTable(
       foreignColumns: [federationBudgets.domainId, federationBudgets.epoch],
     }),
     uniqueIndex("federation_agreement_budget_epoch").on(t.budgetDomainId, t.epoch),
+    check(
+      "federation_agreement_budget_backing",
+      sql`(((${t.terms}->>'mode' IN ('bilateral_direct', 'bilateral_attested'))
+        AND ${t.budgetDomainId} IS NOT NULL AND ${t.epoch} IS NOT NULL
+        AND ${t.budgetDomainId} = (${t.terms}->>'budgetDomainId')::uuid
+        AND ${t.epoch} = (${t.terms}->>'epoch')::uuid)
+        OR (${t.terms}->>'mode' = 'ledger_coordinated'
+        AND ${t.budgetDomainId} IS NULL AND ${t.epoch} IS NULL)) IS TRUE`,
+    ),
     check("federation_agreement_state", sql`${t.state} IN ('active', 'suspended', 'revoked')`),
     check("federation_agreement_sites", sql`${t.sourceSiteId} <> ${t.targetSiteId}`),
   ],

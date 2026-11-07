@@ -1497,3 +1497,16 @@ Commercial Adapter/Server Unix 客户端接入双签预留、释放和固定 gat
 真实链第一次联合运行即通过。旧私有预留幂等确认，释放后的 gate 哈希匹配；新预留成功后，激活 prepared 检查点先保存，再停 Orderer，数据库保留 pending/原交易。恢复 Orderer 后故意丢失 VALID 响应，新的服务实例按生产退避继续恢复，最终只有原交易一个尝试，真实需求 ACTIVE 的 activationId 和预留一致。此处是服务实例/响应故障，不是完整 Server SIGKILL，亦无 Agent/Job。公开日志检查包含新增生产 Adapter 日志；私有区块完整遍历仍只覆盖前置竞态交易。
 
 最终七组断言通过，证据 temp/fabric-network-7aYWxs，摘要 temp/federation-gate-database-report.json。所属 Adapter/Peer/Orderer/CCAAS、随机数据库和本机数据库转发均已清理。Fabric CI 的 gate 项改为联合入口，无数据库跨进程恢复入口保留。完整类型/lint 在本轮业务增量已通过，新增联合脚本另经 Fabric 脚本类型检查、五个相关文件 lint、679 个文档目标、workflow 引用及 diff 检查通过；没有再跑未修改的整个项目测试。源站实际委派、提供方执行验权、自动握手、终态结算/重开、物理介质、容量/归档、完整 Web 和 PR 预览仍未完成，目标保持完整范围。
+
+
+## 链上协调协议的本地执行同意
+
+迁移 0123 将已安装协议的本地 budgetDomainId/epoch 外键改为按模式约束：双边模式必须保留与签署条款一致的本地预算，ledger_coordinated 必须两列均为空。完整商业预算标识仍保留在原签署条款中；不会建立零额假预算、复制链上可用额度，也不删除或改写原双边余额。原预算外键、双边 epoch 唯一性和守恒约束保留。
+
+执行协议 approve/counterparty 与底层 installApprovedAgreement 现在允许链上协调协议的本地同意。前提是同站点、同组织、同 revision 已有商业双签，嵌入的完整执行条款必须一致；每次批准/安装重新验证两份商业原文、摘要、当前机构信任和 commercial-agreement 用途。提供方仍须选择当前有效的受限服务账户，普通 agreement 签署权不能替代商业签署权。对方执行签名、安装与审计在原事务内提交，失败回滚；并发同请求只安装一份，不创建本地可用额度。
+
+这里保存的是执行同意，不是运行许可。接单仍明确拒绝 LEDGER_REQUIRED，源站发送、材料披露和执行准备原有拒绝规则不放宽；context.supportedModes 暂仍只列可运行的两个双边模式，Web 不提前开放协调执行。审批 API 可用于准备同意，不能把 installed/active 状态当作链上 ACTIVE 或已派发 Job。实际执行还须绑定精确私有预留、公开激活和本地当前授权；旧 Peer 查询或调用方布尔值不能代替这项检查。
+
+验证：由 db:generate 生成 0123，并在随机隔离 PostgreSQL 从空库迁移。新增 5 项覆盖并发无本地预算、缺少双签/条款不符/跨组织、商业签名与用途和机器身份、数据库模式约束、单独商业密钥撤销及底层安装绕过；原接单与审批测试另有 25 项通过，异步存证定向回归 2 项通过，共 32 项不同用例。数据库约束按 UUID 类型比较预算标识，保留合法大写 UUID 的历史协议兼容性。首次约束测试传入 Drizzle thenable 导致测试断言失败，改为执行 Promise 后定向检查通过，没有将该失败误记为数据库约束缺陷。本轮无 Fabric/Agent/科研作业验收，未发布预览或部署 main。
+
+静态检查：全仓 lint 无错误（原有 47 warning / 1 info）；全仓 typecheck 首次发现异步存证调用方的可空预算类型问题，修复后 Server 定向检查通过，其余包、protobuf 和 Fabric 脚本检查均通过。最后一次锁序修订已再通过 Server 类型检查及上述 5 项定向数据库测试。681 个本地文档目标与差异格式检查通过；测试库、转发进程均已清理。

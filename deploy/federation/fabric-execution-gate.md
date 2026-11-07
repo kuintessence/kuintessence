@@ -100,3 +100,10 @@ Server 从本组织原双签预留生成公开 gate，不接受调用者提交�
 检查释放后的真实 gate 哈希，以及原私有预留、释放和新预留的提交确认。公开激活保存 prepared 检查点后停止 Orderer，保持原待办；恢复后模拟丢失 VALID 响应，新的服务实例继续使用原交易，最终数据库只有一个交易尝试，链上 ACTIVE 关联同一 activationId/预留。这里的恢复是服务实例和响应故障，不是完整 Server 进程 SIGKILL；单独的 test:fabric:gate 入口仍覆盖生产 Adapter 跨进程恢复。
 
 测试结束清理所属 Node/Fabric 进程与临时数据库。该入口已接入 Fabric CI，报告仅含断言摘要；本机含密钥、签名和私有材料的诊断文件只保留在忽略目录。原生私有区块遍历覆盖前置竞态交易，数据库后的检查覆盖真实提交、gate 哈希和公开 ACTIVE，不额外宣称遍历了所有后续私有区块。未启动 Agent 或计算 Job，不代表真实科研软件和 Workflow 已通过联邦执行验收。
+
+
+## 本地执行账户同意
+
+现有 `/api/federation/agreements/approve` 与 `/:revisionId/counterparty` 支持为已商业双签的 ledger_coordinated 协议保存本地执行同意。两站分别使用当前组织的 agreement.approve；提供方显式选择受限 executionUserId。协议正文必须与本组织商业合同嵌入的 agreement 完全相同，双方商业签名及当前用途会重新验证。
+
+迁移 [0123](../../packages/db/migrations/0123_petite_wallop.sql) 只让协调协议的本地预算外键为空，完整预算标识仍在签署条款中；双边协议仍必须有预算。不要为协调协议人工插入本地余额。批准与安装不需要在线 Fabric，亦不证明商业合同/锁额已经上链；实际接单仍返回 LEDGER_REQUIRED，Web 的可运行模式暂不扩大。这一步不替代公开激活、当前链上运行许可或本地派发授权。

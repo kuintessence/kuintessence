@@ -862,6 +862,13 @@
       "when": 1794057134378,
       "tag": "0122_loving_talon",
       "breakpoints": true
+    },
+    {
+      "idx": 123,
+      "version": "7",
+      "when": 1794058425040,
+      "tag": "0123_petite_wallop",
+      "breakpoints": true
     }
   ]
 }

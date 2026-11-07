@@ -16,6 +16,7 @@ import {
 } from "@kuintessence/shared/federation";
 import { and, count, eq, sql } from "drizzle-orm";
 import { assertFederationNotCancelled } from "./cancellation-fence";
+import { requireCoordinatedCommercialAgreement } from "./commercial-execution-policy";
 import { type ExecutionIdentity, requireExecutionIdentity } from "./execution-identity";
 import {
   type FederationSigningKey,
@@ -23,6 +24,7 @@ import {
   signFederationMessage,
   verifyFederationMessage,
 } from "./signatures";
+import { FederationTrustRegistry } from "./trust-registry";
 
 type Transaction = Parameters<Parameters<PgDb["transaction"]>[0]>[0];
 type Reservation = typeof federationReservations.$inferSelect;
@@ -72,7 +74,6 @@ export class FederationAdmission {
       terms.targetSiteId !== this.signingKey.siteId
     )
       throw new FederationError("UNTRUSTED_IDENTITY");
-    if (terms.mode === "ledger_coordinated") throw new FederationError("LEDGER_REQUIRED");
     if (Date.parse(terms.validUntil) <= now.getTime())
       throw new FederationError("AUTHORIZATION_EXPIRED");
 
@@ -81,6 +82,15 @@ export class FederationAdmission {
       // Serializes initial creation and retries without holding a network/crypto call in a transaction.
       await tx.execute(
         sql`select pg_advisory_xact_lock(hashtextextended(${terms.agreementRevisionId}, 0))`,
+      );
+      await requireExecutionIdentity(tx, input.identity);
+      await requireCoordinatedCommercialAgreement(
+        tx,
+        new FederationTrustRegistry(this.db),
+        this.signingKey.siteId,
+        input.identity.orgId,
+        terms,
+        this.clock,
       );
       const [existing] = await tx
         .select()
@@ -95,30 +105,31 @@ export class FederationAdmission {
           throw new FederationError("OPERATION_CONFLICT");
         return;
       }
-      await requireExecutionIdentity(tx, input.identity);
       if (Date.parse(terms.validUntil) <= this.clock().getTime())
         throw new FederationError("AUTHORIZATION_EXPIRED");
-      const [budget] = await tx
-        .insert(federationBudgets)
-        .values({
-          domainId: terms.budgetDomainId,
-          epoch: terms.epoch,
-          unit: terms.unit,
-          limit: terms.budgetLimit,
-          available: terms.budgetLimit,
-        })
-        .onConflictDoNothing()
-        .returning();
-      // Revisions never silently reopen or copy an existing spendable epoch.
-      if (!budget) throw new FederationError("OPERATION_CONFLICT");
+      if (terms.mode !== "ledger_coordinated") {
+        const [budget] = await tx
+          .insert(federationBudgets)
+          .values({
+            domainId: terms.budgetDomainId,
+            epoch: terms.epoch,
+            unit: terms.unit,
+            limit: terms.budgetLimit,
+            available: terms.budgetLimit,
+          })
+          .onConflictDoNothing()
+          .returning();
+        // Revisions never silently reopen or copy an existing spendable epoch.
+        if (!budget) throw new FederationError("OPERATION_CONFLICT");
+      }
       await tx.insert(federationAgreements).values({
         revisionId: terms.agreementRevisionId,
         sourceSiteId: terms.sourceSiteId,
         targetSiteId: terms.targetSiteId,
         localOrgId: input.identity.orgId,
         executionUserId: input.identity.userId,
-        budgetDomainId: terms.budgetDomainId,
-        epoch: terms.epoch,
+        budgetDomainId: terms.mode === "ledger_coordinated" ? null : terms.budgetDomainId,
+        epoch: terms.mode === "ledger_coordinated" ? null : terms.epoch,
         terms,
         termsDigest: source.digest,
         sourceApprovalJws: source.jws,
@@ -188,6 +199,7 @@ export class FederationAdmission {
       if (agreement.state !== "active") throw new FederationError("AGREEMENT_UNAVAILABLE");
       await assertFederationNotCancelled(tx, request);
       const terms = FederationAgreementSchema.parse(agreement.terms);
+      if (terms.mode === "ledger_coordinated") throw new FederationError("LEDGER_REQUIRED");
       await requireExecutionIdentity(tx, {
         orgId: agreement.localOrgId,
         userId: agreement.executionUserId,

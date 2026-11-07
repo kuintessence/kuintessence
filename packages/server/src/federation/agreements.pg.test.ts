@@ -7,6 +7,9 @@ import {
   federationAgreements,
   federationBudgets,
   federationCapabilities,
+  federationCommercialAgreements,
+  federationCommercialSubmissions,
+  federationReservations,
   federationSigningKeys,
   federationSites,
   orgs,
@@ -16,9 +19,11 @@ import {
 import {
   FederationAgreementContextSchema,
   FederationAgreementSchema,
+  FederationDelegationSchema,
   FederationExecutionAccountsSchema,
   FederationMemberOptionsSchema,
 } from "@kuintessence/shared/federation";
+import { CommercialAgreementSchema } from "@kuintessence/shared/federation/commercial";
 import { and, eq, inArray, sql } from "drizzle-orm";
 import { Hono } from "hono";
 import { exportSPKI } from "jose";
@@ -28,10 +33,12 @@ import { createErrorHandler } from "../middleware/error-handler";
 import { createAdminAuthzRoutes } from "../routes/admin-authz";
 import { createAdminFederationPermissionRoutes } from "../routes/admin-federation-permissions";
 import { createFederationAgreementRoutes } from "../routes/federation-agreements";
+import { FederationAdmission } from "./admission";
 import { FederationAgreementService } from "./agreements";
+import { FederationCommercialAgreementService } from "./commercial-agreements";
 import { FederationPermissionService } from "./permissions";
 import { signFederationMessage, verifyFederationMessage } from "./signatures";
-import { testAgreement, testKeys, testNow } from "./test-fixtures";
+import { testAgreement, testDelegation, testKeys, testNow } from "./test-fixtures";
 import { FederationTrustRegistry } from "./trust-registry";
 
 const url = process.env.DATABASE_URL;
@@ -102,7 +109,7 @@ beforeAll(async () => {
       {
         keyId: key.signing.keyId,
         publicKeyPem: await exportSPKI(key.verification.publicKey),
-        allowedKinds: ["agreement", "acceptance", "delegation"],
+        allowedKinds: ["agreement", "acceptance", "delegation", "commercial-agreement"],
         validFrom: key.verification.validFrom.toISOString(),
         validUntil: key.verification.validUntil.toISOString(),
       },
@@ -131,6 +138,16 @@ afterAll(async () => {
   }
   const orgIds = [aActor.orgId, bActor.orgId];
   const userIds = [aActor.userId, bActor.userId, adminId, executionUserId, outsiderId];
+  if (a && b) {
+    await db
+      .delete(federationCommercialSubmissions)
+      .where(
+        inArray(federationCommercialSubmissions.localSiteId, [a.signing.siteId, b.signing.siteId]),
+      );
+  }
+  await db
+    .delete(federationCommercialAgreements)
+    .where(inArray(federationCommercialAgreements.localOrgId, orgIds));
   await db
     .delete(federationAgreementApprovals)
     .where(inArray(federationAgreementApprovals.localOrgId, orgIds));
@@ -307,6 +324,286 @@ test("wrong institution or modified terms cannot activate; org scope cannot be s
   expect(
     (await bService.get(bActor, value.agreementRevisionId)).counterpartyApprovalJws,
   ).toBeNull();
+});
+
+async function coordinatedContract(dual = true) {
+  const value = { ...terms(), mode: "ledger_coordinated" as const };
+  const commercial = CommercialAgreementSchema.parse({
+    protocolVersion: 1,
+    kind: "commercial-agreement",
+    domainId: crypto.randomUUID(),
+    salt: "c".repeat(64),
+    createdAt: testNow.toISOString(),
+    agreement: value,
+    consideration: "exchange",
+    priceVersionId: crypto.randomUUID(),
+    prices: [
+      { metric: "cpu.time", quantityUnit: "cpu-millisecond", perQuantity: "1000", amount: "1" },
+    ],
+    termsText: "Private coordinated execution test",
+  });
+  const source = new FederationCommercialAgreementService(db, a.signing, () => testNow);
+  const target = new FederationCommercialAgreementService(db, b.signing, () => testNow);
+  const sourceApproval = await source.approve(aActor, commercial);
+  const targetApproval = await target.approve(bActor, commercial);
+  if (dual) {
+    await source.attachCounterparty(aActor, value.agreementRevisionId, targetApproval.approvalJws);
+    await target.attachCounterparty(bActor, value.agreementRevisionId, sourceApproval.approvalJws);
+  }
+  return { value, commercial };
+}
+
+test("coordinated execution consent installs exactly one identity and no local spendable budget", async () => {
+  const { value } = await coordinatedContract();
+  const source = await aService.approve(aActor, { terms: value });
+  const target = await bService.approve(bActor, { terms: value, executionUserId });
+  await aService.attachCounterparty(aActor, value.agreementRevisionId, target.approvalJws);
+  await Promise.all(
+    Array.from({ length: 4 }, () =>
+      bService.attachCounterparty(bActor, value.agreementRevisionId, source.approvalJws),
+    ),
+  );
+  const rows = await db
+    .select()
+    .from(federationAgreements)
+    .where(eq(federationAgreements.revisionId, value.agreementRevisionId));
+  expect(rows).toHaveLength(1);
+  expect(rows[0]).toMatchObject({
+    localOrgId: bActor.orgId,
+    executionUserId,
+    terms: value,
+    budgetDomainId: null,
+    epoch: null,
+  });
+  expect(
+    await db
+      .select()
+      .from(federationBudgets)
+      .where(eq(federationBudgets.domainId, value.budgetDomainId)),
+  ).toHaveLength(0);
+  // Consent alone cannot create a receiver reservation while chain execution authorization is absent.
+  const admission = new FederationAdmission(db, b.signing, b.verification, () => testNow);
+  await expect(
+    admission.receive({
+      requestJws: await signFederationMessage(
+        FederationDelegationSchema,
+        testDelegation(value),
+        a.signing,
+      ),
+      authenticatedPeerSiteId: a.signing.siteId,
+      senderKey: a.verification,
+    }),
+  ).rejects.toThrow("LEDGER_REQUIRED");
+  expect(
+    await db
+      .select()
+      .from(federationReservations)
+      .where(eq(federationReservations.agreementRevisionId, value.agreementRevisionId)),
+  ).toHaveLength(0);
+  await bService.setState(bActor, value.agreementRevisionId, "suspended");
+  await expect(
+    bService.attachCounterparty(bActor, value.agreementRevisionId, source.approvalJws),
+  ).rejects.toThrow("AGREEMENT_UNAVAILABLE");
+});
+
+test("coordinated execution consent requires an exact dual-approved commercial contract", async () => {
+  const { value } = await coordinatedContract(false);
+  await expect(aService.approve(aActor, { terms: value })).rejects.toThrow("LEDGER_REQUIRED");
+  const complete = await coordinatedContract();
+  await expect(
+    aService.approve(aActor, {
+      terms: { ...complete.value, maxTaskAmount: "1" },
+    }),
+  ).rejects.toThrow("OPERATION_CONFLICT");
+  await db
+    .update(federationCommercialAgreements)
+    .set({ localOrgId: aActor.orgId })
+    .where(
+      and(
+        eq(federationCommercialAgreements.localSiteId, b.signing.siteId),
+        eq(federationCommercialAgreements.revisionId, complete.value.agreementRevisionId),
+      ),
+    );
+  await expect(
+    bService.approve(bActor, { terms: complete.value, executionUserId }),
+  ).rejects.toThrow("LEDGER_REQUIRED");
+  expect(
+    await db
+      .select()
+      .from(federationAgreementApprovals)
+      .where(
+        inArray(federationAgreementApprovals.revisionId, [
+          value.agreementRevisionId,
+          complete.value.agreementRevisionId,
+        ]),
+      ),
+  ).toHaveLength(0);
+});
+
+test("coordinated installation revalidates commercial signatures, purpose and execution identity", async () => {
+  const { value, commercial } = await coordinatedContract();
+  const source = await aService.approve(aActor, { terms: value });
+  await bService.approve(bActor, { terms: value, executionUserId });
+  const contractKey = and(
+    eq(federationCommercialAgreements.localSiteId, b.signing.siteId),
+    eq(federationCommercialAgreements.revisionId, value.agreementRevisionId),
+  );
+  const original = await signFederationMessage(CommercialAgreementSchema, commercial, a.signing);
+  const wrongTerms = await signFederationMessage(
+    CommercialAgreementSchema,
+    {
+      ...commercial,
+      termsText: "Changed private contract",
+    },
+    a.signing,
+  );
+  await db
+    .update(federationCommercialAgreements)
+    .set({ counterpartyJws: wrongTerms })
+    .where(contractKey);
+  await expect(
+    bService.attachCounterparty(bActor, value.agreementRevisionId, source.approvalJws),
+  ).rejects.toThrow("OPERATION_CONFLICT");
+  const keyId = `commercial-restricted-${crypto.randomUUID()}`;
+  await trust.addKey(
+    a.signing.siteId,
+    {
+      keyId,
+      publicKeyPem: await exportSPKI(a.verification.publicKey),
+      allowedKinds: ["agreement"],
+      validFrom: a.verification.validFrom.toISOString(),
+      validUntil: a.verification.validUntil.toISOString(),
+    },
+    adminId,
+  );
+  const restricted = await signFederationMessage(CommercialAgreementSchema, commercial, {
+    ...a.signing,
+    keyId,
+  });
+  await db
+    .update(federationCommercialAgreements)
+    .set({ counterpartyJws: restricted })
+    .where(contractKey);
+  await expect(
+    bService.attachCounterparty(bActor, value.agreementRevisionId, source.approvalJws),
+  ).rejects.toThrow("UNTRUSTED_IDENTITY");
+  await db
+    .update(federationCommercialAgreements)
+    .set({ counterpartyJws: original })
+    .where(contractKey);
+  await db.update(users).set({ suspended: true }).where(eq(users.id, executionUserId));
+  try {
+    await expect(
+      bService.attachCounterparty(bActor, value.agreementRevisionId, source.approvalJws),
+    ).rejects.toThrow("POLICY_DENIED");
+  } finally {
+    await db.update(users).set({ suspended: false }).where(eq(users.id, executionUserId));
+  }
+  expect(
+    (await bService.get(bActor, value.agreementRevisionId)).counterpartyApprovalJws,
+  ).toBeNull();
+  expect(
+    await db
+      .select()
+      .from(federationAgreements)
+      .where(eq(federationAgreements.revisionId, value.agreementRevisionId)),
+  ).toHaveLength(0);
+  await bService.attachCounterparty(bActor, value.agreementRevisionId, source.approvalJws);
+});
+
+test("database backing rejects null bilateral budgets and spendable coordinated balances", async () => {
+  const value = terms();
+  value.budgetDomainId = value.budgetDomainId.toUpperCase();
+  value.epoch = value.epoch.toUpperCase();
+  const source = await aService.approve(aActor, { terms: value });
+  await bService.approve(bActor, { terms: value, executionUserId });
+  await bService.attachCounterparty(bActor, value.agreementRevisionId, source.approvalJws);
+  for (const change of [
+    { budgetDomainId: null },
+    { epoch: null },
+    { terms: { ...value, mode: "ledger_coordinated" as const } },
+    { terms: { ...value, budgetDomainId: crypto.randomUUID() } },
+  ]) {
+    await expect(
+      db
+        .update(federationAgreements)
+        .set(change)
+        .where(eq(federationAgreements.revisionId, value.agreementRevisionId))
+        .execute(),
+    ).rejects.toThrow();
+  }
+  const coordinated = await coordinatedContract();
+  const approval = await aService.approve(aActor, { terms: coordinated.value });
+  await bService.approve(bActor, { terms: coordinated.value, executionUserId });
+  await bService.attachCounterparty(
+    bActor,
+    coordinated.value.agreementRevisionId,
+    approval.approvalJws,
+  );
+  await expect(
+    db
+      .update(federationAgreements)
+      .set({
+        budgetDomainId: value.budgetDomainId,
+        epoch: value.epoch,
+      })
+      .where(eq(federationAgreements.revisionId, coordinated.value.agreementRevisionId))
+      .execute(),
+  ).rejects.toThrow();
+});
+
+test("coordinated consent rechecks a commercial-only key revoked after execution approval", async () => {
+  const { value, commercial } = await coordinatedContract();
+  const keyId = `commercial-revoked-${crypto.randomUUID()}`;
+  await trust.addKey(
+    a.signing.siteId,
+    {
+      keyId,
+      publicKeyPem: await exportSPKI(a.verification.publicKey),
+      allowedKinds: ["commercial-agreement"],
+      validFrom: a.verification.validFrom.toISOString(),
+      validUntil: a.verification.validUntil.toISOString(),
+    },
+    adminId,
+  );
+  const counterpartyJws = await signFederationMessage(CommercialAgreementSchema, commercial, {
+    ...a.signing,
+    keyId,
+  });
+  await db
+    .update(federationCommercialAgreements)
+    .set({ counterpartyJws })
+    .where(
+      and(
+        eq(federationCommercialAgreements.localSiteId, b.signing.siteId),
+        eq(federationCommercialAgreements.revisionId, value.agreementRevisionId),
+      ),
+    );
+  const source = await aService.approve(aActor, { terms: value });
+  const target = await bService.approve(bActor, { terms: value, executionUserId });
+  await trust.revoke(a.signing.siteId, { keyId }, adminId);
+  await expect(
+    bService.attachCounterparty(bActor, value.agreementRevisionId, source.approvalJws),
+  ).rejects.toThrow("UNTRUSTED_IDENTITY");
+  // Direct internal installation cannot bypass the service's commercial checks either.
+  await expect(
+    new FederationAdmission(db, b.signing, b.verification, () => testNow).installApprovedAgreement({
+      sourceApprovalJws: source.approvalJws,
+      targetApprovalJws: target.approvalJws,
+      sourceKey: a.verification,
+      targetKey: b.verification,
+      identity: { orgId: bActor.orgId, userId: executionUserId },
+    }),
+  ).rejects.toThrow("UNTRUSTED_IDENTITY");
+  expect(
+    (await bService.get(bActor, value.agreementRevisionId)).counterpartyApprovalJws,
+  ).toBeNull();
+  expect(
+    await db
+      .select()
+      .from(federationAgreements)
+      .where(eq(federationAgreements.revisionId, value.agreementRevisionId)),
+  ).toHaveLength(0);
 });
 
 test("capability revocation and suspension stop approvals without erasing old signatures", async () => {

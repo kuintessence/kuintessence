@@ -61,19 +61,18 @@ export class FederationAttestationService {
       .orderBy(asc(outbox.createdAt), asc(outbox.evidenceId))
       .limit(1);
     if (!candidate) return null;
+    const domainId = candidate.domainId;
+    if (!domainId) throw new FederationError("AGREEMENT_UNAVAILABLE");
     return this.db.transaction(async (tx) => {
       await tx
         .insert(streams)
-        .values({ domainId: candidate.domainId, issuerSiteId: this.signingKey.siteId })
+        .values({ domainId, issuerSiteId: this.signingKey.siteId })
         .onConflictDoNothing();
       const [stream] = await tx
         .select()
         .from(streams)
         .where(
-          and(
-            eq(streams.domainId, candidate.domainId),
-            eq(streams.issuerSiteId, this.signingKey.siteId),
-          ),
+          and(eq(streams.domainId, domainId), eq(streams.issuerSiteId, this.signingKey.siteId)),
         )
         .for("update");
       if (!stream) throw new Error("Evidence stream unavailable");
@@ -82,7 +81,7 @@ export class FederationAttestationService {
         .from(batches)
         .where(
           and(
-            eq(batches.domainId, candidate.domainId),
+            eq(batches.domainId, domainId),
             eq(batches.issuerSiteId, this.signingKey.siteId),
             ne(batches.state, "anchored"),
           ),
