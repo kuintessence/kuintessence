@@ -1,5 +1,6 @@
 import {
   federationAgreements,
+  federationCancellations,
   federationPreparations,
   federationReservations,
   federationWorkflowBindings,
@@ -8,7 +9,7 @@ import {
 } from "@kuintessence/db";
 import { createLogger } from "@kuintessence/shared";
 import { FederationError } from "@kuintessence/shared/federation";
-import { and, asc, eq, isNull, lt, ne, or, sql } from "drizzle-orm";
+import { and, asc, eq, isNull, lt, ne, notExists, or, sql } from "drizzle-orm";
 import type { FederationExecutionBindingService } from "./execution-binding";
 import { FederationMaterializationError } from "./materialize";
 import type { FederationPreparationService } from "./preparation";
@@ -76,6 +77,18 @@ export class FederationPreparationWorker {
         and(
           eq(federationAgreements.targetSiteId, this.service.localSiteId),
           eq(federationReservations.state, "reserved"),
+          notExists(
+            this.db
+              .select({ id: federationCancellations.operationId })
+              .from(federationCancellations)
+              .where(
+                and(
+                  eq(federationCancellations.localSiteId, this.service.localSiteId),
+                  eq(federationCancellations.senderSiteId, federationReservations.senderSiteId),
+                  eq(federationCancellations.operationId, federationReservations.operationId),
+                ),
+              ),
+          ),
           or(
             isNull(federationPreparations.reservationId),
             and(

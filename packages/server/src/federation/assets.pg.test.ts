@@ -16,6 +16,7 @@ import {
   federationAssetMappings,
   federationAttestationOutbox,
   federationBudgets,
+  federationCancellations,
   federationCapabilities,
   federationEvidence,
   federationMaterials,
@@ -3151,7 +3152,7 @@ test.each([
         pending.push(task);
       },
       authorizeFederationExecution: (id, lease) => authorization.authorizeWorkflow(id, lease),
-      makeRunner: (_user, _role, _runId, _placement, _orgId, lease) =>
+      makeRunner: (_user, _role, runId, _placement, _orgId, lease) =>
         createWorkflowRunner({
           journal: lease,
           resolvePackage: async () => {
@@ -3161,7 +3162,8 @@ test.each([
             throw new Error("Unexpected software Job");
           },
           executeScript: async () => {
-            executions++;
+            // Recovery scans the database, including other fixtures' unfinished runs.
+            if (runId === binding.workflowRunId) executions++;
             return { status: "Succeeded", values: {} };
           },
         }),
@@ -3366,5 +3368,52 @@ test("federation placement only plans signed targets with the locked runtime", a
       .where(eq(sandboxRuntimeContractBindings.runtimeProfileId, profileId));
     await db.delete(sandboxRuntimeProfiles).where(eq(sandboxRuntimeProfiles.id, profileId));
     await db.delete(agents).where(inArray(agents.agentId, ids));
+  }
+});
+
+test("cancellation invalidates a prepared snapshot before binding and queue authorization", async () => {
+  const f = await executionFixture();
+  const snapshot = await f.preparation.executionSnapshot(f.reservationId);
+  const binding = await f.bindings.stage(f.reservationId);
+  const dispatch = new FederationDispatchAuthorization(db, f.preparation);
+  const authorize = await dispatch.prepare(binding.workflowRunId);
+  const request = snapshot.request;
+  await db.insert(federationCancellations).values({
+    localSiteId: target.signing.siteId,
+    senderSiteId: source.signing.siteId,
+    operationId: request.operationId,
+    agreementRevisionId: request.agreementRevisionId,
+    requestDigest: snapshot.saved.reservation.requestDigest,
+    cancellationDigest: request.inputManifestDigest,
+    recordedAt: testNow,
+    requestJws: "Persistence fixture; signature is exercised by outbound.pg.test.ts",
+    request: {
+      protocolVersion: 1,
+      kind: "cancellation",
+      operationId: request.operationId,
+      senderSiteId: request.senderSiteId,
+      recipientSiteId: request.recipientSiteId,
+      agreementRevisionId: request.agreementRevisionId,
+      taskId: request.taskId,
+      attempt: request.attempt,
+      requestDigest: snapshot.saved.reservation.requestDigest,
+      issuedAt: testNow.toISOString(),
+    },
+  });
+  try {
+    await expect(
+      db.transaction((tx) => f.preparation.lockExecutionSnapshot(tx, snapshot)),
+    ).rejects.toThrow("CANCELLATION_REQUESTED");
+    await expect(db.transaction(authorize)).rejects.toThrow("CANCELLATION_REQUESTED");
+    await expect(queueFederationWorkflow(db, dispatch, binding.workflowRunId)).rejects.toThrow(
+      "CANCELLATION_REQUESTED",
+    );
+    expect((await new WorkflowRunRegistry(db).getById(binding.workflowRunId))?.status).toBe(
+      "submitted",
+    );
+  } finally {
+    await db
+      .delete(federationCancellations)
+      .where(eq(federationCancellations.operationId, request.operationId));
   }
 });

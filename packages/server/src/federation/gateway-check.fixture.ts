@@ -89,7 +89,13 @@ try {
   const socketPath = join(dir, "backend.sock");
   const backend = createServer(async (req, res) => {
     calls++;
-    assert.ok(["/federation/v1/delegations", "/federation/v1/status"].includes(req.url ?? ""));
+    assert.ok(
+      [
+        "/federation/v1/delegations",
+        "/federation/v1/status",
+        "/federation/v1/cancellations",
+      ].includes(req.url ?? ""),
+    );
     assert.equal(
       req.headers["x-kq-federation-cert"],
       new X509Certificate(cert).fingerprint256.replaceAll(":", "").toLowerCase(),
@@ -164,7 +170,8 @@ try {
       (await call({ cert, key }, "/federation/v1/delegations", "x".repeat(524289))).status,
       413,
     );
-    assert.equal(calls, 2);
+    assert.equal((await call({ cert, key }, "/federation/v1/cancellations")).status, 200);
+    assert.equal(calls, 3);
     await new Promise<void>((resolve, reject) =>
       backend.close((error) => (error ? reject(error) : resolve())),
     );

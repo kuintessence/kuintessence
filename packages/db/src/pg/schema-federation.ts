@@ -2,6 +2,8 @@ import type { workflowDsl } from "@kuintessence/shared";
 import type {
   FederationAcceptance,
   FederationAgreement,
+  FederationCancellation,
+  FederationCancellationReceipt,
   FederationDelegation,
   FederationEnvironmentLock,
   FederationExecutionTarget,
@@ -56,6 +58,8 @@ export const federationSigningKeys = pgTable(
           | "evidence-batch"
           | "status-query"
           | "status-report"
+          | "cancellation"
+          | "cancellation-receipt"
         )[]
       >()
       .notNull(),
@@ -108,7 +112,7 @@ export const federationCapabilities = pgTable(
     primaryKey({ columns: [t.orgId, t.userId, t.capability] }),
     check(
       "federation_capability_kind",
-      sql`${t.capability} IN ('agreement.read', 'agreement.approve', 'asset.read', 'asset.map', 'delegation.read', 'delegation.submit')`,
+      sql`${t.capability} IN ('agreement.read', 'agreement.approve', 'asset.read', 'asset.map', 'delegation.read', 'delegation.submit', 'delegation.cancel')`,
     ),
   ],
 );
@@ -165,6 +169,17 @@ export const federationOutbound = pgTable(
     requestJws: text("request_jws").notNull(),
     receipt: jsonb("receipt").$type<FederationAcceptance>(),
     receiptJws: text("receipt_jws"),
+    cancelRequest: jsonb("cancel_request").$type<FederationCancellation>(),
+    cancelJws: text("cancel_jws"),
+    cancelDigest: varchar("cancel_digest", { length: 71 }),
+    cancelRequestedBy: uuid("cancel_requested_by").references(() => users.id),
+    cancelState: varchar("cancel_state", { length: 24 }),
+    cancelReceipt: jsonb("cancel_receipt").$type<FederationCancellationReceipt>(),
+    cancelReceiptJws: text("cancel_receipt_jws"),
+    cancelLastError: varchar("cancel_last_error", { length: 64 }),
+    cancelLeaseOwner: uuid("cancel_lease_owner"),
+    cancelLeaseUntil: timestamp("cancel_lease_until", { withTimezone: true }),
+    cancelNextAttemptAt: timestamp("cancel_next_attempt_at", { withTimezone: true }),
     state: varchar("state", { length: 24 }).notNull().default("queued"),
     lastError: varchar("last_error", { length: 64 }),
     leaseOwner: uuid("lease_owner"),
@@ -189,10 +204,21 @@ export const federationOutbound = pgTable(
       t.attempt,
     ),
     index("federation_outbound_delivery").on(t.localSiteId, t.state, t.nextAttemptAt),
+    index("federation_outbound_cancel").on(t.localSiteId, t.cancelState, t.cancelNextAttemptAt),
     index("federation_outbound_budget").on(t.localSiteId, t.budgetDomainId, t.epoch),
     check(
       "federation_outbound_state",
       sql`${t.state} IN ('queued', 'sending', 'accepted', 'needs_review')`,
+    ),
+    check(
+      "federation_outbound_cancel_intent",
+      sql`
+      (${t.cancelState} IS NULL AND ${t.cancelRequest} IS NULL AND ${t.cancelJws} IS NULL AND ${t.cancelDigest} IS NULL AND ${t.cancelRequestedBy} IS NULL)
+      OR (${t.cancelState} IS NOT NULL AND ${t.cancelState} IN ('queued','sending','pending','stopped','needs_review') AND ${t.cancelRequest} IS NOT NULL AND ${t.cancelJws} IS NOT NULL AND ${t.cancelDigest} IS NOT NULL AND ${t.cancelRequestedBy} IS NOT NULL AND ${t.cancelNextAttemptAt} IS NOT NULL)`,
+    ),
+    check(
+      "federation_outbound_cancel_stopped",
+      sql`${t.cancelState} IS DISTINCT FROM 'stopped' OR (${t.cancelReceipt} IS NOT NULL AND ${t.cancelReceiptJws} IS NOT NULL AND coalesce(${t.cancelReceipt}->>'state' = 'stopped', false))`,
     ),
     check(
       "federation_outbound_amount",
@@ -294,6 +320,27 @@ export const federationReservations = pgTable(
       OR (${t.state} = 'reserved' AND ${t.receiptJws} IS NOT NULL)`,
     ),
   ],
+);
+
+/** Irreversible receiver fence, including cancellation arriving before admission. */
+export const federationCancellations = pgTable(
+  "federation_cancellations",
+  {
+    localSiteId: uuid("local_site_id").notNull(),
+    senderSiteId: uuid("sender_site_id").notNull(),
+    operationId: uuid("operation_id").notNull(),
+    agreementRevisionId: uuid("agreement_revision_id")
+      .notNull()
+      .references(() => federationAgreements.revisionId),
+    requestDigest: varchar("request_digest", { length: 71 }).notNull(),
+    cancellationDigest: varchar("cancellation_digest", { length: 71 }).notNull(),
+    request: jsonb("request").$type<FederationCancellation>().notNull(),
+    requestJws: text("request_jws").notNull(),
+    recordedAt: timestamp("recorded_at", { withTimezone: true }).notNull(),
+    confirmedAt: timestamp("confirmed_at", { withTimezone: true }),
+    nextCheckAt: timestamp("next_check_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [primaryKey({ columns: [t.localSiteId, t.senderSiteId, t.operationId] })],
 );
 
 /** Independent of raw metering retention. There is deliberately no cascade deletion. */

@@ -47,10 +47,12 @@ export const FederationKeyInput = z
           "evidence-batch",
           "status-query",
           "status-report",
+          "cancellation",
+          "cancellation-receipt",
         ]),
       )
       .min(1)
-      .max(6),
+      .max(8),
     validFrom: z.iso.datetime(),
     validUntil: z.iso.datetime(),
   })

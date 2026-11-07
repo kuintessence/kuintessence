@@ -51,6 +51,8 @@ export interface FederationVerificationKey {
     | "evidence-batch"
     | "status-query"
     | "status-report"
+    | "cancellation"
+    | "cancellation-receipt"
   )[];
 }
 

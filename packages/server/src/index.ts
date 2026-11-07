@@ -52,6 +52,7 @@ import { FederationAssetService } from "./federation/assets";
 import { FederationAttestationService } from "./federation/attestation";
 import { UnixAttestationClient } from "./federation/attestation-client";
 import { FederationAttestationWorker } from "./federation/attestation-worker";
+import { FederationCancellationMonitor } from "./federation/cancellation-monitor";
 import { FederationDataDispatch } from "./federation/data-dispatch";
 import { createFederationDatasetPreflight } from "./federation/dataset-preflight";
 import { FederationDispatchAuthorization } from "./federation/dispatch-authorization";
@@ -2152,6 +2153,19 @@ const federationExecutionMonitor = new FederationExecutionMonitor(
   workflowAsyncRunner,
 );
 federationExecutionMonitor.start();
+const federationCancellationMonitor = new FederationCancellationMonitor(
+  db,
+  workflowAsyncRunner,
+  (runId) =>
+    cancelWorkflowJobs(
+      runId,
+      workflowRegistry,
+      jobService,
+      jobCancellationOutbox,
+      jobCompletionRegistry,
+    ),
+);
+federationCancellationMonitor.start();
 const federationAttestationWorker =
   federationAttestation && config.FEDERATION_ATTESTATION_SOCKET_PATH
     ? new FederationAttestationWorker(federationAttestation)
@@ -2194,6 +2208,7 @@ async function shutdown(signal: string): Promise<void> {
   logger.info({ signal }, "Server shutting down");
   try {
     grpcServer.close();
+    await federationCancellationMonitor.stop();
     await federationExecutionMonitor.stop();
     await workflowAsyncRunner.stop();
     await federationIngress?.stop(true);

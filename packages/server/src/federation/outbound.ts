@@ -19,8 +19,9 @@ import {
   FederationStatusReportSchema,
   federationCanonicalJson,
 } from "@kuintessence/shared/federation";
-import { and, asc, desc, eq, lte, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, isNull, lte, or, sql } from "drizzle-orm";
 import type { FederationAssetService } from "./assets";
+import { cancellationSummary, FederationCancellationSender } from "./cancellation-outbound";
 import { FederationDeliveryError, type FederationSend } from "./outbound-client";
 import { type FederationActor, requireFederationCapability } from "./permissions";
 import {
@@ -42,6 +43,7 @@ function summary(row: Outbound) {
     state: row.state,
     lastError: row.lastError,
     receipt: row.receipt,
+    cancellation: cancellationSummary(row),
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   };
@@ -50,6 +52,7 @@ function summary(row: Outbound) {
 /** Durable source delivery. Acceptance is not execution, settlement or permission to retry a task. */
 export class FederationOutboundService {
   private readonly trust: FederationTrustRegistry;
+  readonly cancellations: FederationCancellationSender;
   constructor(
     private readonly db: PgDb,
     private readonly signingKey: FederationSigningKey,
@@ -58,6 +61,7 @@ export class FederationOutboundService {
     private readonly clock: () => Date = () => new Date(),
   ) {
     this.trust = new FederationTrustRegistry(db);
+    this.cancellations = new FederationCancellationSender(db, signingKey, send, clock);
   }
 
   private key(operationId: string) {
@@ -304,7 +308,7 @@ export class FederationOutboundService {
         .where(and(this.key(operationId), eq(federationOutbound.localOrgId, actor.orgId)))
         .for("update");
       if (!row) throw new FederationError("POLICY_DENIED");
-      if (row.state === "accepted" || row.state === "sending")
+      if (row.cancelState || row.state === "accepted" || row.state === "sending")
         throw new FederationError("OPERATION_CONFLICT");
       const [target] = await tx
         .select()
@@ -410,6 +414,7 @@ export class FederationOutboundService {
           and(
             eq(federationOutbound.localSiteId, this.signingKey.siteId),
             lte(federationOutbound.nextAttemptAt, this.clock()),
+            isNull(federationOutbound.cancelState),
             or(
               eq(federationOutbound.state, "queued"),
               and(
@@ -456,6 +461,7 @@ export class FederationOutboundService {
               this.key(claimed.operationId),
               eq(federationOutbound.leaseOwner, leaseOwner),
               eq(federationOutbound.state, "sending"),
+              isNull(federationOutbound.cancelState),
             ),
           )
           .for("update");
@@ -596,7 +602,12 @@ export class FederationOutboundWorker {
     return running;
   }
   private async run() {
-    for (let i = 0; i < 8 && !this.stopping && (await this.service.deliverNext()); i++) {}
+    for (let i = 0; i < 8 && !this.stopping; i++) {
+      const cancelled = await this.service.cancellations.deliverNext();
+      if (this.stopping) break;
+      const delivered = await this.service.deliverNext();
+      if (!cancelled && !delivered) break;
+    }
   }
   async stop() {
     this.stopping = true;

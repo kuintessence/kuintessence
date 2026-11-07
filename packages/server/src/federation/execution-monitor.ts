@@ -99,7 +99,10 @@ export class FederationExecutionMonitor {
           continue;
         }
         await this.runner.cancel(runId, {
-          code: "FEDERATION_AUTHORIZATION_REVOKED",
+          code:
+            reason === "CANCELLATION_REQUESTED"
+              ? "FEDERATION_CANCELLATION_REQUESTED"
+              : "FEDERATION_AUTHORIZATION_REVOKED",
           message: reason,
         });
         return;

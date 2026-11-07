@@ -149,7 +149,8 @@ export class FederationError extends Error {
       | "OPERATION_CONFLICT"
       | "LEDGER_REQUIRED"
       | "ASSET_UNAVAILABLE"
-      | "DATA_WAITING",
+      | "DATA_WAITING"
+      | "CANCELLATION_REQUESTED",
   ) {
     super(code);
     this.name = "FederationError";
@@ -208,5 +209,5 @@ export function assertDelegationPolicy(
 }
 
 export * from "./assets";
-
+export * from "./cancellation";
 export * from "./status";

@@ -7,6 +7,7 @@ import {
   federationAgreements,
   federationAssetMappings,
   federationBudgets,
+  federationCancellations,
   federationCapabilities,
   federationCertificates,
   federationEvidence,
@@ -16,16 +17,20 @@ import {
   federationReservations,
   federationSigningKeys,
   federationSites,
+  jobs,
   orgs,
   softwareAssetRevisions,
   softwareAssets,
   userOrgMemberships,
   users,
+  workflowRuns,
 } from "@kuintessence/db";
 import {
   FederationAcceptanceSchema,
   type FederationAgreement,
   FederationAgreementSchema,
+  FederationCancellationReceiptSchema,
+  FederationCancellationSchema,
   FederationStatusQuerySchema,
   FederationStatusReportSchema,
 } from "@kuintessence/shared/federation";
@@ -33,12 +38,17 @@ import { and, eq, inArray } from "drizzle-orm";
 import { Hono } from "hono";
 import { exportSPKI } from "jose";
 import { createFederationOutboundRoutes } from "../routes/federation-outbound";
+import { WorkflowAsyncRunner } from "../workflow/async-runner";
+import { WorkflowRunRegistry } from "../workflow/run-registry";
 import { FederationAdmission } from "./admission";
 import { FederationAgreementService } from "./agreements";
 import { FederationAssetService, federationMaterialDigest } from "./assets";
+import { FederationCancellationReceiver } from "./cancellation";
+import { FederationCancellationMonitor } from "./cancellation-monitor";
 import { FederationOutboundService } from "./outbound";
 import { FederationDeliveryError, type FederationSend } from "./outbound-client";
 import { FederationPermissionService } from "./permissions";
+import { FederationPreparationService } from "./preparation";
 import { signFederationMessage, verifyFederationMessage } from "./signatures";
 import { FederationStatusResponder } from "./status";
 import { testAgreement, testDelegation, testKeys, testNow } from "./test-fixtures";
@@ -102,7 +112,15 @@ beforeAll(async () => {
       {
         keyId: key.signing.keyId,
         publicKeyPem: await exportSPKI(key.verification.publicKey),
-        allowedKinds: ["agreement", "delegation", "acceptance", "status-query", "status-report"],
+        allowedKinds: [
+          "agreement",
+          "delegation",
+          "acceptance",
+          "status-query",
+          "status-report",
+          "cancellation",
+          "cancellation-receipt",
+        ],
         validFrom: key.verification.validFrom.toISOString(),
         validUntil: key.verification.validUntil.toISOString(),
       },
@@ -149,6 +167,9 @@ afterAll(async () => {
   await db
     .delete(federationReservations)
     .where(inArray(federationReservations.agreementRevisionId, termsIds));
+  await db
+    .delete(federationCancellations)
+    .where(inArray(federationCancellations.agreementRevisionId, termsIds));
   await db.delete(federationAgreements).where(inArray(federationAgreements.revisionId, termsIds));
   for (const terms of agreements)
     await db
@@ -179,6 +200,8 @@ afterAll(async () => {
     .delete(federationSites)
     .where(inArray(federationSites.id, [a.signing.siteId, b.signing.siteId]));
   await db.delete(auditLog).where(inArray(auditLog.orgId, orgIds));
+  await db.delete(jobs).where(eq(jobs.submittedBy, executionUserId));
+  await db.delete(workflowRuns).where(eq(workflowRuns.submittedBy, executionUserId));
   await db.delete(userOrgMemberships).where(inArray(userOrgMemberships.orgId, orgIds));
   await db.delete(users).where(inArray(users.id, [actor.userId, receiver.userId, executionUserId]));
   await db.delete(orgs).where(inArray(orgs.id, orgIds));
@@ -684,4 +707,303 @@ test("remote status rechecks reader authorization after network I/O and preserve
       actor.userId,
     );
   }
+});
+
+async function cancellationFixture() {
+  const f = await fixture();
+  const receiver = new FederationCancellationReceiver(db, b.signing, clock);
+  const transmit: FederationSend = async (endpoint, jws, path) =>
+    path === "/federation/v1/cancellations"
+      ? receiver.receive(jws, sourceFingerprint)
+      : f.receive(endpoint, jws);
+  const service = f.service(transmit);
+  const monitor = new FederationCancellationMonitor(
+    db,
+    {
+      cancel: async () => {
+        throw new Error("No bound run expected");
+      },
+    },
+    async () => {},
+    clock,
+  );
+  await service.enqueue(actor, f.request);
+  return { ...f, source: service, receiver, transmit, monitor };
+}
+
+test("cancellation before admission fences late delivery and survives restart without releasing budget", async () => {
+  const f = await cancellationFixture();
+  const results = await Promise.all([
+    f.source.cancellations.request(actor, f.request.operationId),
+    f.source.cancellations.request(actor, f.request.operationId),
+  ]);
+  expect(results[0]).toEqual(results[1]);
+  expect(await f.source.deliverNext()).toBe(false);
+  await f.source.cancellations.deliverNext();
+  expect((await row(f.request.operationId)).cancelState).toBe("pending");
+  await f.monitor.tick();
+  time = new Date(time.getTime() + 11_000);
+  await f.service(f.transmit).cancellations.deliverNext();
+  const saved = await row(f.request.operationId);
+  expect(saved).toMatchObject({
+    state: "queued",
+    amount: "60",
+    cancelState: "stopped",
+    cancelReceipt: { reservationId: null, workflow: null },
+  });
+  await expect(f.receive(saved.endpoint, saved.requestJws)).rejects.toThrow(
+    "CANCELLATION_REQUESTED",
+  );
+  await expect(f.source.retry(actor, f.request.operationId)).rejects.toThrow("OPERATION_CONFLICT");
+  expect(
+    (await f.source.list(actor)).find((v) => v.operationId === f.request.operationId)?.cancellation
+      ?.state,
+  ).toBe("stopped");
+});
+
+test("cancellation recovers a lost admission response and denies preparation of the accepted reservation", async () => {
+  const f = await cancellationFixture();
+  await f
+    .service(async (endpoint, jws) => {
+      await f.receive(endpoint, jws);
+      throw new FederationDeliveryError("DELIVERY_UNAVAILABLE");
+    })
+    .deliverNext();
+  expect((await row(f.request.operationId)).state).toBe("queued");
+  await f.source.cancellations.request(actor, f.request.operationId);
+  await f.source.cancellations.deliverNext();
+  const pending = await row(f.request.operationId);
+  const reservationId = pending.cancelReceipt?.reservationId;
+  if (!reservationId) throw new Error("Remote accepted reservation was not found");
+  await expect(
+    new FederationPreparationService(db, b.signing.siteId, assets, clock).executionSnapshot(
+      reservationId,
+    ),
+  ).rejects.toThrow("CANCELLATION_REQUESTED");
+  await f.monitor.tick();
+  time = new Date(time.getTime() + 11_000);
+  await f.source.cancellations.deliverNext();
+  expect((await row(f.request.operationId)).cancelState).toBe("stopped");
+  expect((await row(f.request.operationId)).amount).toBe("60");
+});
+
+test("cancellation does not confirm a failed workflow while stopping or cleanup is unresolved", async () => {
+  const f = await cancellationFixture();
+  await f.source.deliverNext();
+  const accepted = await row(f.request.operationId);
+  if (!accepted.receipt) throw new Error("Expected acceptance");
+  const runId = crypto.randomUUID();
+  await db.insert(workflowRuns).values({
+    id: runId,
+    name: "Cancellation recovery",
+    submittedBy: executionUserId,
+    status: "failed",
+    input: {
+      yaml: "",
+      role: "user",
+      executionModel: "durable-v2",
+      federationReservationId: accepted.receipt.reservationId,
+    },
+  });
+  await f.source.cancellations.request(actor, f.request.operationId);
+  await f.source.cancellations.deliverNext();
+  const runner = new WorkflowAsyncRunner({
+    registry: new WorkflowRunRegistry(db),
+    makeRunner: () => {
+      throw new Error("No execution expected");
+    },
+  });
+  let stops = 0;
+  try {
+    const monitor = new FederationCancellationMonitor(
+      db,
+      runner,
+      async () => {
+        stops++;
+        throw new Error("Installer stop not confirmed");
+      },
+      clock,
+    );
+    await monitor.tick();
+    time = new Date(time.getTime() + 31_000);
+    await f.source.cancellations.deliverNext();
+    expect((await row(f.request.operationId)).cancelState).toBe("pending");
+    await new FederationCancellationMonitor(
+      db,
+      runner,
+      async () => {
+        stops++;
+      },
+      clock,
+    ).tick();
+    time = new Date(time.getTime() + 11_000);
+    await f.source.cancellations.deliverNext();
+    expect((await row(f.request.operationId)).cancelReceipt).toMatchObject({
+      state: "stopped",
+      workflow: { status: "failed" },
+    });
+    expect(stops).toBe(2);
+    expect((await row(f.request.operationId)).receipt).toEqual(accepted.receipt);
+  } finally {
+    await runner.stop();
+  }
+});
+
+test("cancellation validates institutional identity and immutable task intent", async () => {
+  const f = await cancellationFixture();
+  await f.source.deliverNext();
+  await expect(f.source.cancellations.request(receiver, f.request.operationId)).rejects.toThrow(
+    "POLICY_DENIED",
+  );
+  await f.source.cancellations.request(actor, f.request.operationId);
+  const saved = await row(f.request.operationId);
+  if (!saved.cancelJws || !saved.cancelRequest) throw new Error("Expected stop intent");
+  await expect(f.receiver.receive(saved.cancelJws, targetFingerprint)).rejects.toThrow(
+    "UNTRUSTED_IDENTITY",
+  );
+  const altered = await signFederationMessage(
+    FederationCancellationSchema,
+    { ...saved.cancelRequest, taskId: crypto.randomUUID() },
+    a.signing,
+  );
+  await expect(f.receiver.receive(altered, sourceFingerprint)).rejects.toThrow(
+    "OPERATION_CONFLICT",
+  );
+  await f.source.cancellations.deliverNext();
+  const changed = await signFederationMessage(
+    FederationCancellationSchema,
+    { ...saved.cancelRequest, issuedAt: new Date(time.getTime() + 1).toISOString() },
+    a.signing,
+  );
+  await expect(f.receiver.receive(changed, sourceFingerprint)).rejects.toThrow(
+    "OPERATION_CONFLICT",
+  );
+  await f.monitor.tick();
+  time = new Date(time.getTime() + 11_000);
+  await f.source.cancellations.deliverNext();
+});
+
+test("cancellation remains durable after initiator revocation and a lost response", async () => {
+  const f = await cancellationFixture();
+  await f.source.deliverNext();
+  await f.source.cancellations.request(actor, f.request.operationId);
+  const original = await row(f.request.operationId);
+  await permission.set({ ...actor, capability: "delegation.submit", enabled: false }, actor.userId);
+  try {
+    await f
+      .service(async (endpoint, jws, path) => {
+        await f.transmit(endpoint, jws, path);
+        throw new FederationDeliveryError("DELIVERY_UNAVAILABLE");
+      })
+      .cancellations.deliverNext();
+    await f.monitor.tick();
+    time = new Date(time.getTime() + 31_000);
+    await f.source.cancellations.deliverNext();
+    expect(await row(f.request.operationId)).toMatchObject({
+      cancelState: "stopped",
+      cancelJws: original.cancelJws,
+      cancelDigest: original.cancelDigest,
+    });
+  } finally {
+    await permission.set(
+      { ...actor, capability: "delegation.submit", enabled: true },
+      actor.userId,
+    );
+  }
+});
+
+test("cancellation rejects a mismatched signed receipt and retries only the same intent", async () => {
+  const f = await cancellationFixture();
+  await f.source.deliverNext();
+  await f.source.cancellations.request(actor, f.request.operationId);
+  const original = await row(f.request.operationId);
+  const bad = f.service(async (_endpoint, jws) => {
+    const receipt = await f.receiver.receive(jws, sourceFingerprint);
+    const key = await trust.resolveKey(b.signing.siteId, b.signing.keyId, clock());
+    const { payload } = await verifyFederationMessage(
+      FederationCancellationReceiptSchema,
+      receipt,
+      key,
+      clock(),
+    );
+    return signFederationMessage(
+      FederationCancellationReceiptSchema,
+      { ...payload, taskId: crypto.randomUUID() },
+      b.signing,
+    );
+  });
+  await bad.cancellations.deliverNext();
+  expect((await row(f.request.operationId)).cancelState).toBe("needs_review");
+  await f.source.cancellations.request(actor, f.request.operationId, true);
+  expect((await row(f.request.operationId)).cancelDigest).toBe(original.cancelDigest);
+  await f.monitor.tick();
+  await f.source.cancellations.deliverNext();
+  expect((await row(f.request.operationId)).cancelState).toBe("stopped");
+});
+
+test("cancellation late worker cannot overwrite recovered stop confirmation", async () => {
+  const f = await cancellationFixture();
+  await f.source.cancellations.request(actor, f.request.operationId);
+  let release!: () => void, entered!: () => void;
+  const blocked = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const started = new Promise<void>((resolve) => {
+    entered = resolve;
+  });
+  const slow = f.service(async (endpoint, jws, path) => {
+    await f.transmit(endpoint, jws, path);
+    entered();
+    await blocked;
+    return "late-invalid-receipt";
+  });
+  const sending = slow.cancellations.deliverNext();
+  try {
+    await started;
+    await f.monitor.tick();
+    time = new Date(time.getTime() + 61_000);
+    await f.source.cancellations.deliverNext();
+    expect((await row(f.request.operationId)).cancelState).toBe("stopped");
+  } finally {
+    release();
+    await sending;
+  }
+  expect(await row(f.request.operationId)).toMatchObject({
+    cancelState: "stopped",
+    cancelLastError: null,
+  });
+});
+
+test("cancellation preserves an acceptance that arrives after the stop intent", async () => {
+  const f = await cancellationFixture();
+  let release!: () => void, entered!: () => void;
+  const blocked = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const started = new Promise<void>((resolve) => {
+    entered = resolve;
+  });
+  const slow = f.service(async (endpoint, jws) => {
+    const receipt = await f.receive(endpoint, jws);
+    entered();
+    await blocked;
+    return receipt;
+  });
+  const sending = slow.deliverNext();
+  try {
+    await started;
+    await f.source.cancellations.request(actor, f.request.operationId);
+    await f.source.cancellations.deliverNext();
+    await f.monitor.tick();
+    time = new Date(time.getTime() + 11_000);
+    await f.source.cancellations.deliverNext();
+  } finally {
+    release();
+    await sending;
+  }
+  const saved = await row(f.request.operationId);
+  expect(saved).toMatchObject({ state: "accepted", cancelState: "stopped", amount: "60" });
+  if (!saved.receipt || !saved.cancelReceipt?.reservationId)
+    throw new Error("Missing matching remote receipts");
+  expect(saved.receipt.reservationId).toBe(saved.cancelReceipt.reservationId);
 });

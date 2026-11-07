@@ -81,5 +81,23 @@ export function createFederationOutboundRoutes(service: FederationOutboundServic
       });
     },
   );
+  for (const action of ["cancel", "cancel-retry"] as const) {
+    r.post(
+      `/federation/outbound/:operationId/${action}`,
+      kqValidator("param", z.object({ operationId: z.uuid() })),
+      async (c) =>
+        c.json(
+          {
+            success: true,
+            data: await service.cancellations.request(
+              c.get("federationActor"),
+              c.req.valid("param").operationId,
+              action === "cancel-retry",
+            ),
+          },
+          202,
+        ),
+    );
+  }
   return r;
 }

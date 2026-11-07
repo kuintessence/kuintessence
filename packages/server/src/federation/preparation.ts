@@ -21,6 +21,7 @@ import {
 import { and, eq } from "drizzle-orm";
 import { AuthorizationUnavailableError } from "../authz/service";
 import { type FederationAssetService, federationMaterialDigest } from "./assets";
+import { assertFederationNotCancelled } from "./cancellation-fence";
 import { type ExecutionIdentity, requireExecutionIdentity } from "./execution-identity";
 import { type FederationWorkflowProjection, materializeFederationWorkflow } from "./materialize";
 import { type FederationActor, requireFederationCapability } from "./permissions";
@@ -209,6 +210,7 @@ export class FederationPreparationService {
       reservation.attempt !== request.attempt
     )
       throw new FederationError("OPERATION_CONFLICT");
+    await assertFederationNotCancelled(tx, request);
     for (const mapping of snapshot.mappings) {
       const current = await this.assets.assertResolved(
         tx,
@@ -276,6 +278,11 @@ export class FederationPreparationService {
   ) {
     if (saved.reservation.state !== "reserved" || !saved.reservation.receiptJws)
       throw new FederationError("AGREEMENT_UNAVAILABLE");
+    await assertFederationNotCancelled(this.db, {
+      senderSiteId: saved.reservation.senderSiteId,
+      recipientSiteId: this.localSiteId,
+      operationId: saved.reservation.operationId,
+    });
     const trust = new FederationTrustRegistry(this.db);
     const key = await trust.resolveKey(
       saved.agreement.sourceSiteId,

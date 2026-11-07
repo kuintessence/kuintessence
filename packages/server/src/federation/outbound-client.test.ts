@@ -72,7 +72,7 @@ beforeAll(async () => {
     import { createServer } from 'node:https';
     import { readFileSync, writeFileSync } from 'node:fs';
     const server = createServer({ key:readFileSync('server.key'), cert:readFileSync('server.pem'), ca:readFileSync('ca.pem'), requestCert:true, rejectUnauthorized:true }, async (req,res) => {
-      if (!req.socket.authorized || req.socket.getPeerCertificate().subject.CN !== 'source' || req.method !== 'POST' || !['/federation/v1/delegations','/federation/v1/status'].includes(req.url) || req.headers['content-type'] !== 'application/jose') { res.writeHead(403).end(); return; }
+      if (!req.socket.authorized || req.socket.getPeerCertificate().subject.CN !== 'source' || req.method !== 'POST' || !['/federation/v1/delegations','/federation/v1/status','/federation/v1/cancellations'].includes(req.url) || req.headers['content-type'] !== 'application/jose') { res.writeHead(403).end(); return; }
       let body=''; for await (const chunk of req) body+=chunk;
       if (body==='redirect') { res.writeHead(307,{location:'/unexpected'}).end(); return; }
       if (body==='slow') return;
@@ -108,6 +108,7 @@ afterAll(async () => {
 test("outbound HTTPS sends the client identity and accepts a bounded JOSE response", async () => {
   expect(await send(endpoint, "request-jws")).toBe("signed-receipt");
   expect(await send(endpoint, "status-jws", "/federation/v1/status")).toBe("signed-receipt");
+  expect(await send(endpoint, "cancel-jws", "/federation/v1/cancellations")).toBe("signed-receipt");
 });
 
 test("outbound transport refuses redirects and oversized or truncated responses", async () => {

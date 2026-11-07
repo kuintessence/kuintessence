@@ -1,0 +1,2 @@
+ALTER TABLE "federation_cancellations" ADD COLUMN "confirmed_at" timestamp with time zone;--> statement-breakpoint
+ALTER TABLE "federation_cancellations" ADD COLUMN "next_check_at" timestamp with time zone DEFAULT now() NOT NULL;

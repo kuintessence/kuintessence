@@ -1,6 +1,8 @@
 # 当前功能与使用边界
 
-源站现已支持持久委派 API 和后台 mTLS 自动发送，固定原操作/JWS 重试、额度预留及租约恢复；accepted 仅代表可信接单，尚无结算释放。两个生产 Server 与独立数据库的本机联合验收已通过：A API 重复提交保持同一操作，B 自动运行真实 Kubernetes 双 Script 文件链，输出 `42` → `verified:42`，不依赖 Fabric。A 已新增按需签名运行状态查询，在真实双平台运行后取得并验证 B 的 completed 状态；查询绑定随机 challenge 与原任务，防止重放/串单，读取权限在网络返回后复查。当前仍需分别登记两端材料，结果交付、远端取消确认、源站后台同步与普通 Workflow 自动委派尚未接通；不等于多主机、Slurm/PBS 或完整联盟链验收。详见[签名运行状态查询](../design/federation/progress.md#源站签名运行状态查询)。
+源站已支持持久远端取消和签名停止确认：取消可先于接单到达，接收方保存永久撤回记录以阻止迟到委派和后续派发；后台等待实际作业、安装及数据清理确认，不把 failed 或超时当作停止。本机双平台真实 Kubernetes 验收通过，A 在生产者运行中取消，66.4 秒后验得 stopped；B 的 Job/Pod 停止，下游未启动、无产物，原接单与预算仍保留。联调修复 Agent 与独立看守写 SQLite 的短暂争用，Agent 连接现最多等待锁 5 秒。尚未覆盖 Slurm/PBS、真实编译或多主机，详见[远端取消验收](../design/federation/progress.md#源站远端取消与停止确认)。
+
+源站现已支持持久委派 API 和后台 mTLS 自动发送，固定原操作/JWS 重试、额度预留及租约恢复；accepted 仅代表可信接单，尚无结算释放。两个生产 Server 与独立数据库的本机联合验收已通过：A API 重复提交保持同一操作，B 自动运行真实 Kubernetes 双 Script 文件链，输出 `42` → `verified:42`，不依赖 Fabric。A 已新增按需签名运行状态查询，在真实双平台运行后取得并验证 B 的 completed 状态；查询绑定随机 challenge 与原任务，防止重放/串单，读取权限在网络返回后复查。当前仍需分别登记两端材料，结果交付、源站后台同步与普通 Workflow 自动委派尚未接通；不等于多主机、Slurm/PBS 或完整联盟链验收。详见[签名运行状态查询](../design/federation/progress.md#源站签名运行状态查询)。
 
 已有一个接收站点内的真实 Kubernetes 联邦文件流水线通过：两个脚本按依赖顺序执行，首个文件经 RustFS 上传、下载与摘要校验后被下游读取，结果产物发布为 Persistent；重复委派保持一个运行，无 Fabric 依赖。修复 PVC 路径共用、输出目录未准备、可选输出误报和 Agent 文本读取路径错误。该轮尚未覆盖两个平台；后续本机双平台已通过，Slurm/PBS 跨站验收仍未完成，PVC 自动回收也待补，见[文件联调记录](../design/federation/progress.md#kubernetes-联邦文件流水线)。
 

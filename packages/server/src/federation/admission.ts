@@ -15,6 +15,7 @@ import {
   FederationError,
 } from "@kuintessence/shared/federation";
 import { and, count, eq, sql } from "drizzle-orm";
+import { assertFederationNotCancelled } from "./cancellation-fence";
 import { type ExecutionIdentity, requireExecutionIdentity } from "./execution-identity";
 import {
   type FederationSigningKey,
@@ -185,6 +186,7 @@ export class FederationAdmission {
         return this.requireSameRequest(retried, verified.digest);
       }
       if (agreement.state !== "active") throw new FederationError("AGREEMENT_UNAVAILABLE");
+      await assertFederationNotCancelled(tx, request);
       const terms = FederationAgreementSchema.parse(agreement.terms);
       await requireExecutionIdentity(tx, {
         orgId: agreement.localOrgId,
