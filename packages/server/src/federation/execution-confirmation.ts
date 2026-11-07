@@ -5,6 +5,7 @@ import {
   federationMarketAttempts as attempts,
   auditLog,
   federationCommercialSubmissions as commercialSubmissions,
+  federationExecutionTerminals,
   federationOutbound,
   federationAgreements as installed,
   type PgDb,
@@ -208,6 +209,16 @@ export class FederationExecutionConfirmationService {
     if (!record?.counterpartyJws || records.length !== 1)
       throw new FederationError("OPERATION_CONFLICT");
     if (record.stopId) throw new FederationError("CANCELLATION_REQUESTED");
+    const [terminal] = await tx
+      .select({ id: federationExecutionTerminals.terminalId })
+      .from(federationExecutionTerminals)
+      .where(
+        and(
+          eq(federationExecutionTerminals.localSiteId, this.siteId),
+          eq(federationExecutionTerminals.reservationId, record.recordId),
+        ),
+      );
+    if (terminal) throw new FederationError("POLICY_DENIED");
     const reserve = CommercialReservationSchema.parse(record.payload);
     if (
       federationCanonicalJson(reserve.request) !== federationCanonicalJson(request) ||

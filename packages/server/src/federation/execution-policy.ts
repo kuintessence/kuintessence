@@ -5,6 +5,7 @@ import {
   dataAssetVersions,
   dataGrants,
   federationCommercialExecutionApprovals,
+  federationExecutionTerminals,
   jobDataBindings,
   jobs,
   type PgDb,
@@ -56,6 +57,16 @@ export async function checkFederationExecutionPolicy(
         ),
       );
     if (approval?.stopId) throw new FederationError("CANCELLATION_REQUESTED");
+    const [terminal] = await db
+      .select({ id: federationExecutionTerminals.terminalId })
+      .from(federationExecutionTerminals)
+      .where(
+        and(
+          eq(federationExecutionTerminals.localSiteId, binding.snapshot.request.recipientSiteId),
+          eq(federationExecutionTerminals.reservationId, binding.reservationId),
+        ),
+      );
+    if (terminal) throw new FederationError("POLICY_DENIED");
   }
   const targets = binding.snapshot.executionTargets ?? [];
   const active = await db

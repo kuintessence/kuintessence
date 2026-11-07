@@ -8,6 +8,7 @@ import type {
   FederationDelegation,
   FederationEnvironmentLock,
   FederationExecutionTarget,
+  FederationExecutionTerminalEvidence,
   FederationInputFiles,
   FederationInputManifest,
   FederationReceivedInputFiles,
@@ -22,6 +23,7 @@ import type {
   CommercialAdapterProposalInput,
   CommercialAgreement,
   CommercialExecutionApproval,
+  CommercialTerminal,
   CommercialUsage,
   CommercialUsageCorrectionEvidence,
   CommercialUsageEvidenceSet,
@@ -1173,6 +1175,48 @@ export const federationCommercialExecutionApprovals = pgTable(
         AND ${t.payload}->'request'->>'agreementRevisionId' = ${t.agreementRevisionId}::text)
       OR (${t.payload}->>'kind' = 'commercial-release'
         AND ${t.payload}->>'releaseId' = ${t.recordId}::text))
+    ) IS TRUE`,
+    ),
+  ],
+);
+
+/** Presence is a permanent execution fence, committed atomically with the provider signature. */
+export const federationExecutionTerminals = pgTable(
+  "federation_execution_terminals",
+  {
+    localSiteId: uuid("local_site_id").notNull(),
+    reservationId: uuid("reservation_id").notNull(),
+    terminalId: uuid("terminal_id").notNull(),
+    payload: jsonb("payload").$type<CommercialTerminal>().notNull(),
+    digest: varchar("digest", { length: 71 }).notNull(),
+    evidence: jsonb("evidence").$type<FederationExecutionTerminalEvidence>().notNull(),
+    approvalJws: text("approval_jws").notNull(),
+    approvedBy: uuid("approved_by")
+      .notNull()
+      .references(() => users.id),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.localSiteId, t.reservationId] }),
+    uniqueIndex("federation_execution_terminal_id").on(t.localSiteId, t.terminalId),
+    foreignKey({
+      columns: [t.localSiteId, t.reservationId],
+      foreignColumns: [
+        federationCommercialExecutionApprovals.localSiteId,
+        federationCommercialExecutionApprovals.recordId,
+      ],
+    }),
+    check(
+      "federation_execution_terminal_identity",
+      sql`(
+      ${t.digest} ~ '^sha256:[a-f0-9]{64}$'
+      AND ${t.payload}->>'kind' = 'commercial-terminal'
+      AND ${t.payload}->>'terminalId' = ${t.terminalId}::text
+      AND ${t.payload}->>'reservationId' = ${t.reservationId}::text
+      AND ${t.payload}->>'targetSiteId' = ${t.localSiteId}::text
+      AND ${t.evidence}->>'reservationId' = ${t.reservationId}::text
+      AND ${t.evidence}->>'activationId' = ${t.payload}->>'activationId'
+      AND ${t.evidence}->'workflow'->>'status' = ${t.payload}->>'outcome'
     ) IS TRUE`,
     ),
   ],

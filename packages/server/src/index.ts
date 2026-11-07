@@ -70,6 +70,7 @@ import {
 import { FederationExecutionConfirmationService } from "./federation/execution-confirmation";
 import { FederationExecutionMonitor } from "./federation/execution-monitor";
 import { FederationExecutionStopService } from "./federation/execution-stop";
+import { FederationExecutionTerminalService } from "./federation/execution-terminal";
 import { FederationInputImports } from "./federation/input-imports";
 import { FederationInputPublication } from "./federation/input-publication";
 import { FederationInputReader } from "./federation/input-reader";
@@ -1736,6 +1737,13 @@ if (federationSigningKey && federationCommercial)
       ),
       federationConfirmations,
       federationStops,
+      new FederationExecutionTerminalService(
+        db,
+        federationSigningKey,
+        config.FEDERATION_MARKET_SOCKET_PATH
+          ? new UnixMarketClient(config.FEDERATION_MARKET_SOCKET_PATH)
+          : undefined,
+      ),
     ),
   );
 const federationPreparation = federationSigningKey

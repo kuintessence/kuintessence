@@ -778,4 +778,4 @@ Market 新增 RequestExecutionStop、STOPPING 和原始 stopRequest；公开字�
 
 ### 双方终态确认与关闭执行许可
 
-新增独立 commercial-terminal 签署用途。双方签署同一原预留/activation/gate 版本及带盐终态材料摘要，RecordExecutionTerminal 验证当前 ACTIVE/STOPPING 后在双方 PDC 保存不可变正文并升版为 TERMINAL gate。预算不变，既有待提交续期通过私有哈希原生读集被否决。原两方任一方提交固定 terminalId 的 CloseDemand，公共链仅校验 gate 哈希与原激活并进入 CLOSED，不披露终态明细。重复终态/关闭不增版或退款，重开和资金结算须另行批准。完整字段、签署用途、升级边界与尚待完成的 Server 证据流程见[终态协议](../../../deploy/federation/fabric-execution-gate.md#双方终态确认与公共关闭)。
+新增独立 commercial-terminal 签署用途。双方签署同一原预留/activation/gate 版本及带盐终态材料摘要，RecordExecutionTerminal 验证当前 ACTIVE/STOPPING 后在双方 PDC 保存不可变正文并升版为 TERMINAL gate。预算不变，既有待提交续期通过私有哈希原生读集被否决。原两方任一方提交固定 terminalId 的 CloseDemand，公共链仅校验 gate 哈希与原激活并进入 CLOSED，不披露终态明细。重复终态/关闭不增版或退款，重开和资金结算须另行批准。Server 已提供基于本机构真实记录的空正文终态审批：原预留写锁保护证据、签名和本地执行防线，缺失停止/清理回执不得签署，成功任务按合同要求关联源方结果接收回执。源方复核、自动交换与链待办仍未接入。完整字段、签署用途与升级边界见[终态协议](../../../deploy/federation/fabric-execution-gate.md#双方终态确认与公共关闭)。

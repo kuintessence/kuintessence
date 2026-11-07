@@ -13,6 +13,7 @@ import type { FederationCommercialExecutionService } from "../federation/commerc
 import type { FederationCommercialSubmissionService } from "../federation/commercial-submissions";
 import type { FederationExecutionConfirmationService } from "../federation/execution-confirmation";
 import type { FederationExecutionStopService } from "../federation/execution-stop";
+import type { FederationExecutionTerminalService } from "../federation/execution-terminal";
 import { FabricClientFailure } from "../federation/fabric-client";
 import type { FederationActor } from "../federation/permissions";
 import type { FederationUsageService } from "../federation/usage";
@@ -28,6 +29,7 @@ export function createFederationCommercialRoutes(
   execution?: FederationCommercialExecutionService,
   confirmation?: FederationExecutionConfirmationService,
   stops?: FederationExecutionStopService,
+  terminals?: FederationExecutionTerminalService,
 ) {
   const r = new Hono<{ Variables: { federationActor: FederationActor } }>();
   r.use("/federation/commercial-agreements/*", async (c, next) => {
@@ -126,6 +128,32 @@ export function createFederationCommercialRoutes(
   if (execution) {
     const record = id.extend({ recordId: z.uuid() });
     const path = "/federation/commercial-agreements/:revisionId/execution-approvals";
+    if (terminals) {
+      r.get(`${path}/:recordId/terminal`, kqValidator("param", record), async (c) =>
+        c.json({
+          success: true,
+          data: await terminals.get(
+            c.get("federationActor"),
+            c.req.valid("param").revisionId,
+            c.req.valid("param").recordId,
+          ),
+        }),
+      );
+      r.post(
+        `${path}/:recordId/terminal`,
+        kqValidator("param", record),
+        kqValidator("json", z.strictObject({})),
+        async (c) =>
+          c.json({
+            success: true,
+            data: await terminals.approve(
+              c.get("federationActor"),
+              c.req.valid("param").revisionId,
+              c.req.valid("param").recordId,
+            ),
+          }),
+      );
+    }
     if (stops)
       r.post(
         `${path}/:recordId/stop`,

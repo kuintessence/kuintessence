@@ -1,37 +1,51 @@
 import { afterAll, expect, test } from "bun:test";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import {
+  agents,
   federationCommercialAttempts as attempts,
   auditLog,
   federationCommercialAgreements as contracts,
   createPgDb,
+  dataDeliveryRevocations,
   federationCommercialExecutionApprovals as executionApprovals,
   federationAgreementApprovals,
   federationAgreements,
   federationAssetMappings,
   federationBudgets,
+  federationCancellations,
   federationCapabilities,
   federationEvidence,
+  federationExecutionTerminals,
   federationMaterials,
   federationOutbound,
   federationReservations,
+  federationResultReceipts,
   federationSigningKeys,
   federationSites,
+  federationTerminalEvidence,
   federationWorkflowBindings,
+  jobCancellations,
+  jobs,
   federationMarketAttempts as marketAttempts,
   federationMarketSubmissions as marketSubmissions,
   orgs,
   softwareAssetRevisions,
   softwareAssets,
+  softwareOperations,
   federationCommercialSubmissions as submissions,
   userOrgMemberships,
   users,
+  workflowExecutionJobs,
+  workflowExecutionLeases,
   workflowRuns,
 } from "@kuintessence/db";
 import {
   FederationAgreementSchema,
+  FederationCancellationSchema,
   FederationDelegationSchema,
   type FederationMode,
+  FederationResultReceiptAckSchema,
+  FederationResultReceiptSchema,
 } from "@kuintessence/shared/federation";
 import {
   type CommercialAdapterProposalInput,
@@ -41,6 +55,7 @@ import {
   CommercialExecutionApprovalSchema,
   CommercialReleaseSchema,
   CommercialReservationSchema,
+  CommercialTerminalSchema,
 } from "@kuintessence/shared/federation/commercial";
 import {
   type MarketAdapterProposalInput,
@@ -53,9 +68,11 @@ import { and, eq, inArray, sql } from "drizzle-orm";
 import { Hono } from "hono";
 import { exportSPKI } from "jose";
 import pino from "pino";
+import { JobCancellationOutbox } from "../grpc/dispatcher";
 import { createErrorHandler } from "../middleware/error-handler";
 import { createFederationCommercialRoutes } from "../routes/federation-commercial";
 import { createFederationOutboundRoutes } from "../routes/federation-outbound";
+import { JobService } from "../services/job-service";
 import { SoftwareAvailabilityService } from "../services/software-availability";
 import { FederationAdmission } from "./admission";
 import { FederationAgreementService } from "./agreements";
@@ -70,13 +87,14 @@ import { FederationExecutionBindingService } from "./execution-binding";
 import { FederationExecutionConfirmationService } from "./execution-confirmation";
 import { FederationExecutionMonitor } from "./execution-monitor";
 import { FederationExecutionStopService } from "./execution-stop";
+import { FederationExecutionTerminalService } from "./execution-terminal";
 import { FabricClientFailure } from "./fabric-client";
 import { FederationMarketService } from "./market";
 import type { MarketClient } from "./market-client";
 import { FederationOutboundService } from "./outbound";
 import { FederationPermissionService } from "./permissions";
 import { FederationPreparationService } from "./preparation";
-import { signFederationMessage } from "./signatures";
+import { signFederationMessage, verifyFederationMessage } from "./signatures";
 import { testAgreement, testKeys } from "./test-fixtures";
 import { FederationTrustRegistry } from "./trust-registry";
 
@@ -162,6 +180,8 @@ async function fixture(
               "commercial-usage",
               "commercial-reservation",
               "commercial-release",
+              "commercial-terminal",
+              "result-receipt",
               "agreement",
               "acceptance",
               "delegation",
@@ -238,6 +258,9 @@ async function ready(f: Awaited<ReturnType<typeof fixture>>) {
 afterAll(async () => {
   for (const f of fixtures) {
     const siteIds = [f.a.signing.siteId, f.b.signing.siteId];
+    await db
+      .delete(federationCancellations)
+      .where(inArray(federationCancellations.localSiteId, siteIds));
     const rows = await db
       .select({ id: submissions.id })
       .from(submissions)
@@ -262,6 +285,19 @@ afterAll(async () => {
         ),
       );
     await db.delete(marketSubmissions).where(inArray(marketSubmissions.localSiteId, siteIds));
+    await db
+      .delete(federationExecutionTerminals)
+      .where(inArray(federationExecutionTerminals.localSiteId, siteIds));
+    await db
+      .delete(federationResultReceipts)
+      .where(inArray(federationResultReceipts.localSiteId, siteIds));
+    const jobIds = db.select({ id: jobs.id }).from(jobs).where(eq(jobs.orgId, f.actor.orgId));
+    await db.delete(softwareOperations).where(inArray(softwareOperations.federationJobId, jobIds));
+    await db
+      .delete(federationTerminalEvidence)
+      .where(inArray(federationTerminalEvidence.jobId, jobIds));
+    await db.delete(workflowExecutionJobs).where(inArray(workflowExecutionJobs.jobId, jobIds));
+    await db.delete(jobs).where(eq(jobs.orgId, f.actor.orgId));
     await db.delete(executionApprovals).where(inArray(executionApprovals.localSiteId, siteIds));
     const reservations = db
       .select({ id: federationReservations.id })
@@ -314,6 +350,8 @@ afterAll(async () => {
       await db.delete(federationSites).where(eq(federationSites.id, key.signing.siteId));
     }
   }
+  if (terminalAgentIds.length)
+    await db.delete(agents).where(inArray(agents.agentId, terminalAgentIds));
   await db.$client.end({ timeout: 5 });
 });
 
@@ -553,7 +591,11 @@ test("HTTP requires human scope, rejects unknown fields, hides private data from
   expect(f.adapter.prepares).toHaveLength(0);
 });
 
-async function executionFixture(explicitPurpose = true, withMaterials = false) {
+async function executionFixture(
+  explicitPurpose = true,
+  withMaterials = false,
+  withResults = false,
+) {
   const f = await fixture("ledger_coordinated", true, explicitPurpose);
   const availability = new SoftwareAvailabilityService(db);
   const assets = new FederationAssetService(db, {
@@ -624,6 +666,13 @@ async function executionFixture(explicitPurpose = true, withMaterials = false) {
       })
     ).digest;
   }
+  if (withResults)
+    f.terms.agreement.resultPolicy = {
+      scope: "persistent-files",
+      maxFiles: 10,
+      maxBytes: 1024,
+      availableUntil: "2099-01-01T00:00:00Z",
+    };
   const { own } = await approveBoth(f);
   const reservation = CommercialReservationSchema.parse({
     protocolVersion: 1,
@@ -1106,8 +1155,8 @@ class ActivationAdapter implements MarketClient {
     return { state: "committed", transactionId, blockNumber: "10" };
   }
 }
-async function activationFixture(withMaterials = false) {
-  const f = await executionFixture(true, withMaterials);
+async function activationFixture(withMaterials = false, withResults = false) {
+  const f = await executionFixture(true, withMaterials, withResults);
   await approveReservation(f);
   for (let step = 0; step < 6; step++) expect(await f.service.advanceNext()).toBe(true);
   await new FederationPermissionService(db).set(
@@ -1123,8 +1172,8 @@ async function activationFixture(withMaterials = false) {
   return { ...f, market, marketAdapter, activationId: randomUUID() };
 }
 
-async function confirmationFixture(provider = false, withMaterials = false) {
-  const f = await activationFixture(withMaterials);
+async function confirmationFixture(provider = false, withMaterials = false, withResults = false) {
+  const f = await activationFixture(withMaterials, withResults);
   const ordinary = new FederationAgreementService(db, f.a.signing);
   const own = await ordinary.approve(f.actor, { terms: f.terms.agreement });
   let executionUserId: string | undefined;
@@ -2223,4 +2272,553 @@ test("activation HTTP accepts only an operation id and generic market publishing
   await expect(
     f.market.enqueue(f.actor, row.input as unknown as MarketProposalInput),
   ).rejects.toThrow();
+});
+
+const terminalAgentIds: string[] = [];
+async function terminalFixture(
+  outcome: "completed" | "failed" | "cancelled" = "completed",
+  withResults = false,
+) {
+  const f = await confirmationFixture(true, true, withResults);
+  await f.requestConfirmation();
+  for (let i = 0; i < 3; i++) await f.market.advanceNext();
+  const admission = new FederationAdmission(
+    db,
+    f.b.signing,
+    f.b.verification,
+    undefined,
+    f.confirmation,
+  );
+  await admission.receive({
+    requestJws: await signFederationMessage(
+      FederationDelegationSchema,
+      f.reservation.request,
+      f.a.signing,
+    ),
+    authenticatedPeerSiteId: f.a.signing.siteId,
+    senderKey: f.a.verification,
+  });
+  const preparation = new FederationPreparationService(
+    db,
+    f.siteId,
+    f.assets,
+    undefined,
+    f.confirmation,
+  );
+  const binding = await new FederationExecutionBindingService(db, preparation).stage(
+    f.reservation.reservationId,
+  );
+  await db.insert(workflowExecutionLeases).values({ runId: binding.workflowRunId });
+  const agentId = `terminal-${randomUUID()}`,
+    jobId = randomUUID();
+  terminalAgentIds.push(agentId);
+  await db.insert(agents).values({
+    agentId,
+    siteName: "Terminal fixture",
+    schedulerType: "slurm",
+    schedulerVersion: "fixture",
+  });
+  if (!f.executionUserId) throw new Error("Missing fixture user");
+  await db.insert(jobs).values({
+    id: jobId,
+    name: "Terminal fixture",
+    command: "private command probe",
+    envVars: { SECRET: "private secret probe" },
+    cpus: 1,
+    memoryMb: 128,
+    orgId: f.actor.orgId,
+    submittedBy: f.executionUserId,
+    status: "running",
+    agentId,
+    dispatchEpoch: 1,
+    startedAt: new Date(),
+    schedulerJobId: "terminal-42",
+  });
+  await db.insert(workflowExecutionJobs).values({
+    runId: binding.workflowRunId,
+    jobId,
+    pathHash: "a".repeat(64),
+    path: '["node","terminal"]',
+    nodeId: "terminal",
+    intent: {
+      nodeId: "terminal",
+      name: "Terminal fixture",
+      command: "true",
+      envVars: {},
+      inputStaging: [],
+      expectedOutputs: [],
+    },
+  });
+  const jobService = new JobService(db);
+  await jobService.updateStatus(
+    jobId,
+    outcome,
+    "terminal-42",
+    agentId,
+    undefined,
+    outcome === "completed" ? 0 : 1,
+    undefined,
+    "terminal-event",
+  );
+  if (outcome === "cancelled")
+    await new JobCancellationOutbox(db, { pushCancelJob: () => true }).acknowledge(
+      agentId,
+      jobId,
+      2,
+    );
+  await db
+    .update(workflowRuns)
+    .set({ status: outcome, completedAt: new Date(), stepJobs: { terminal: jobId } })
+    .where(eq(workflowRuns.id, binding.workflowRunId));
+  let onQuery: (() => Promise<void>) | undefined;
+  const terminal = new FederationExecutionTerminalService(db, f.b.signing, {
+    query: async () => {
+      await onQuery?.();
+      return { operation: "get-demand", demand: f.state };
+    },
+  });
+  return {
+    ...f,
+    binding,
+    agentId,
+    jobId,
+    terminal,
+    approveTerminal: () => terminal.approve(f.actor, f.revisionId, f.reservation.reservationId),
+    beforeTerminalQuery: (fn: () => Promise<void>) => {
+      onQuery = fn;
+    },
+  };
+}
+
+for (const outcome of ["completed", "failed", "cancelled"] as const)
+  test(`execution terminal ${outcome} signs real bound evidence once and permanently fences confirmation`, async () => {
+    const f = await terminalFixture(outcome);
+    const records = await Promise.all(Array.from({ length: 4 }, () => f.approveTerminal()));
+    const first = records[0];
+    if (!first) throw new Error("Missing terminal");
+    expect(
+      records.every(
+        (row) => row.terminalId === first.terminalId && row.approvalJws === first.approvalJws,
+      ),
+    ).toBe(true);
+    expect(first.payload).toMatchObject({
+      outcome,
+      activationId: f.state.activation?.activationId,
+      executionEvidenceDigest: federationMaterialDigest(first.evidence),
+      resultManifestDigest: null,
+    });
+    const key = await f.trust.resolveKey(f.siteId, f.b.signing.keyId, new Date());
+    expect(
+      (await verifyFederationMessage(CommercialTerminalSchema, first.approvalJws, key, new Date()))
+        .digest,
+    ).toBe(first.digest);
+    expect(first.evidence.jobs).toHaveLength(1);
+    expect(JSON.stringify(first)).not.toContain("private command probe");
+    expect(JSON.stringify(first)).not.toContain("private secret probe");
+    await expect(f.authorizeConfirmation()).rejects.toMatchObject({ code: "POLICY_DENIED" });
+    await expect(f.requestConfirmation()).rejects.toMatchObject({ code: "POLICY_DENIED" });
+    const dispatch = new FederationDispatchAuthorization(
+      db,
+      new FederationPreparationService(db, f.siteId, f.assets, undefined, f.confirmation),
+    );
+    await expect(dispatch.checkActiveJobs(f.binding.workflowRunId)).rejects.toMatchObject({
+      code: "POLICY_DENIED",
+    });
+    const restarted = new FederationExecutionTerminalService(db, f.b.signing);
+    expect(await restarted.approve(f.actor, f.revisionId, f.reservation.reservationId)).toEqual(
+      first,
+    );
+    expect(
+      await db
+        .select()
+        .from(auditLog)
+        .where(
+          and(
+            eq(auditLog.actor, f.actor.userId),
+            eq(auditLog.action, "federation.execution.terminal"),
+          ),
+        ),
+    ).toHaveLength(1);
+    expect(
+      await db
+        .select()
+        .from(federationBudgets)
+        .where(eq(federationBudgets.domainId, f.terms.agreement.budgetDomainId)),
+    ).toHaveLength(0);
+    expect(
+      (await db.select().from(submissions).where(eq(submissions.localSiteId, f.siteId))).some(
+        (row) => row.input.operation === "record-execution-terminal",
+      ),
+    ).toBe(false);
+  });
+
+test("execution terminal refuses nonterminal jobs, missing observations and mismatched invocation evidence", async () => {
+  const f = await terminalFixture();
+  await db.update(jobs).set({ status: "running" }).where(eq(jobs.id, f.jobId));
+  await expect(f.approveTerminal()).rejects.toMatchObject({ code: "DATA_WAITING" });
+  await db.update(jobs).set({ status: "completed" }).where(eq(jobs.id, f.jobId));
+  const [saved] = await db
+    .select()
+    .from(federationTerminalEvidence)
+    .where(eq(federationTerminalEvidence.jobId, f.jobId));
+  if (!saved) throw new Error("Missing job evidence");
+  await db.delete(federationTerminalEvidence).where(eq(federationTerminalEvidence.jobId, f.jobId));
+  await expect(f.approveTerminal()).rejects.toMatchObject({ code: "OPERATION_CONFLICT" });
+  await db.insert(federationTerminalEvidence).values(saved);
+  await db
+    .update(workflowExecutionJobs)
+    .set({ pathHash: "b".repeat(64) })
+    .where(eq(workflowExecutionJobs.jobId, f.jobId));
+  await expect(f.approveTerminal()).rejects.toMatchObject({ code: "OPERATION_CONFLICT" });
+  expect(
+    await db
+      .select()
+      .from(federationExecutionTerminals)
+      .where(eq(federationExecutionTerminals.localSiteId, f.siteId)),
+  ).toHaveLength(0);
+});
+
+test("execution terminal waits for cancellation epoch and installer-stop acknowledgements", async () => {
+  const f = await terminalFixture("cancelled");
+  await db.delete(jobCancellations).where(eq(jobCancellations.jobId, f.jobId));
+  const [saved] = await db
+    .select()
+    .from(federationTerminalEvidence)
+    .where(eq(federationTerminalEvidence.jobId, f.jobId));
+  if (!saved) throw new Error("Missing job evidence");
+  const evidence = {
+    ...saved.evidence,
+    source: "platform-cancellation" as const,
+    agentEventId: null,
+  };
+  await db
+    .update(federationTerminalEvidence)
+    .set({ evidence, digest: federationMaterialDigest(evidence) })
+    .where(eq(federationTerminalEvidence.jobId, f.jobId));
+  await db.update(jobs).set({ revokedEpoch: 2 }).where(eq(jobs.id, f.jobId));
+  await db.insert(softwareOperations).values({
+    agentId: f.agentId,
+    requestedBy: f.executionUserId,
+    action: "install",
+    spec: "private-spec",
+    replayEnabled: true,
+    federationJobId: f.jobId,
+    manifestDigest: `sha256:${"a".repeat(64)}`,
+    status: "running",
+  });
+  await expect(f.approveTerminal()).rejects.toMatchObject({ code: "DATA_WAITING" });
+  await db.insert(jobCancellations).values({
+    jobId: f.jobId,
+    agentId: f.agentId,
+    revokedEpoch: 1,
+    requiresInstallationStop: true,
+    createdAt: new Date(Date.now() - 1000),
+    acknowledgedAt: new Date(),
+  });
+  await expect(f.approveTerminal()).rejects.toMatchObject({ code: "DATA_WAITING" });
+  await db
+    .update(jobCancellations)
+    .set({ revokedEpoch: 2, requiresInstallationStop: false, acknowledgedAt: new Date() })
+    .where(eq(jobCancellations.jobId, f.jobId));
+  await expect(f.approveTerminal()).rejects.toMatchObject({ code: "DATA_WAITING" });
+  await db
+    .update(jobCancellations)
+    .set({ requiresInstallationStop: true, acknowledgedAt: new Date() })
+    .where(eq(jobCancellations.jobId, f.jobId));
+  const terminal = await f.approveTerminal();
+  expect(terminal.evidence.jobs[0]?.installations[0]).toMatchObject({
+    status: "running",
+    stopAcknowledgementId: expect.any(String),
+  });
+  expect(JSON.stringify(terminal)).not.toContain("private-spec");
+});
+
+test("execution terminal requires outstanding data cleanup acknowledgement even after Agent completion", async () => {
+  const f = await terminalFixture();
+  await db.insert(dataDeliveryRevocations).values({
+    jobId: f.jobId,
+    agentId: f.agentId,
+    reasonCode: "fixture",
+    revokedEpoch: 2,
+    destroyRestrictedWorkRoot: true,
+  });
+  await expect(f.approveTerminal()).rejects.toMatchObject({ code: "DATA_WAITING" });
+  await db
+    .update(dataDeliveryRevocations)
+    .set({ acknowledgedAt: new Date() })
+    .where(eq(dataDeliveryRevocations.jobId, f.jobId));
+  expect((await f.approveTerminal()).evidence.jobs[0]?.revocations).toHaveLength(1);
+});
+
+test("execution terminal checks exact market binding and explicit signing purpose", async () => {
+  const f = await terminalFixture();
+  if (!f.state.activation) throw new Error("Missing activation");
+  const gate = f.state.activation.gate;
+  f.state.activation.gate = { ...gate, reservationDigest: `sha256:${"0".repeat(64)}` };
+  await expect(f.approveTerminal()).rejects.toMatchObject({ code: "OPERATION_CONFLICT" });
+  f.state.activation.gate = gate;
+  await db
+    .update(federationSigningKeys)
+    .set({ allowedKinds: ["commercial-reservation", "delegation"] })
+    .where(
+      and(
+        eq(federationSigningKeys.siteId, f.siteId),
+        eq(federationSigningKeys.keyId, f.b.signing.keyId),
+      ),
+    );
+  await expect(f.approveTerminal()).rejects.toMatchObject({ code: "UNTRUSTED_IDENTITY" });
+  expect(
+    await db
+      .select()
+      .from(federationExecutionTerminals)
+      .where(eq(federationExecutionTerminals.localSiteId, f.siteId)),
+  ).toHaveLength(0);
+});
+
+test("execution terminal rechecks human authority after ledger query and rolls back the fence with failed audit", async () => {
+  const f = await terminalFixture();
+  f.beforeTerminalQuery(async () => {
+    await new FederationPermissionService(db).set(
+      { ...f.actor, capability: "agreement.approve", enabled: false },
+      f.actor.userId,
+    );
+  });
+  await expect(f.approveTerminal()).rejects.toMatchObject({ code: "POLICY_DENIED" });
+  f.beforeTerminalQuery(async () => {});
+  await new FederationPermissionService(db).set(
+    { ...f.actor, capability: "agreement.approve", enabled: true },
+    f.actor.userId,
+  );
+  await db.execute(
+    sql`alter table audit_log add constraint test_terminal_audit check (action <> 'federation.execution.terminal' OR actor <> ${sql.raw(`'${f.actor.userId}'`)})`,
+  );
+  try {
+    await expect(f.approveTerminal()).rejects.toThrow();
+    expect(
+      await db
+        .select()
+        .from(federationExecutionTerminals)
+        .where(eq(federationExecutionTerminals.localSiteId, f.siteId)),
+    ).toHaveLength(0);
+    await f.authorizeConfirmation();
+  } finally {
+    await db.execute(sql`alter table audit_log drop constraint test_terminal_audit`);
+  }
+  await f.approveTerminal();
+});
+
+test("execution terminal requires signed result delivery for successful workflows with a result policy", async () => {
+  const f = await terminalFixture("completed", true);
+  await expect(f.approveTerminal()).rejects.toMatchObject({ code: "DATA_WAITING" });
+  const [reservation] = await db
+    .select()
+    .from(federationReservations)
+    .where(eq(federationReservations.id, f.reservation.reservationId));
+  if (!reservation) throw new Error("Missing reservation");
+  const receipt = FederationResultReceiptSchema.parse({
+    protocolVersion: 1,
+    kind: "result-receipt",
+    receiptId: randomUUID(),
+    senderSiteId: f.a.signing.siteId,
+    recipientSiteId: f.siteId,
+    operationId: f.reservation.request.operationId,
+    agreementRevisionId: f.revisionId,
+    taskId: f.reservation.request.taskId,
+    attempt: 1,
+    reservationId: reservation.id,
+    requestDigest: reservation.requestDigest,
+    manifestDigest: `sha256:${"f".repeat(64)}`,
+    fileCount: 1,
+    sizeBytes: 42,
+    receivedAt: new Date().toISOString(),
+  });
+  const receiptJws = await signFederationMessage(
+    FederationResultReceiptSchema,
+    receipt,
+    f.a.signing,
+  );
+  const key = await f.trust.resolveKey(f.a.signing.siteId, f.a.signing.keyId, new Date());
+  const { digest } = await verifyFederationMessage(
+    FederationResultReceiptSchema,
+    receiptJws,
+    key,
+    new Date(),
+  );
+  const acknowledgement = FederationResultReceiptAckSchema.parse({
+    protocolVersion: 1,
+    kind: "result-receipt-ack",
+    receiptId: receipt.receiptId,
+    operationId: receipt.operationId,
+    senderSiteId: f.siteId,
+    recipientSiteId: f.a.signing.siteId,
+    receiptDigest: digest,
+    recordedAt: new Date().toISOString(),
+  });
+  await db.insert(federationResultReceipts).values({
+    localSiteId: f.siteId,
+    senderSiteId: f.a.signing.siteId,
+    receiptId: receipt.receiptId,
+    reservationId: reservation.id,
+    receipt,
+    receiptJws,
+    digest,
+    acknowledgement,
+    acknowledgementJws: await signFederationMessage(
+      FederationResultReceiptAckSchema,
+      acknowledgement,
+      f.b.signing,
+    ),
+  });
+  await db
+    .update(federationResultReceipts)
+    .set({ receipt: { ...receipt, manifestDigest: `sha256:${"0".repeat(64)}` } })
+    .where(eq(federationResultReceipts.receiptId, receipt.receiptId));
+  await expect(f.approveTerminal()).rejects.toMatchObject({ code: "OPERATION_CONFLICT" });
+  await db
+    .update(federationResultReceipts)
+    .set({ receipt })
+    .where(eq(federationResultReceipts.receiptId, receipt.receiptId));
+  expect((await f.approveTerminal()).payload.resultManifestDigest).toBe(receipt.manifestDigest);
+});
+
+test("execution terminal refuses foreign org, source institution and caller-supplied evidence over HTTP", async () => {
+  const f = await terminalFixture();
+  const source = new FederationExecutionTerminalService(db, f.a.signing);
+  await expect(
+    source.approve(f.actor, f.revisionId, f.reservation.reservationId),
+  ).rejects.toMatchObject({ code: "POLICY_DENIED" });
+  await expect(
+    f.terminal.approve(
+      { ...f.actor, orgId: randomUUID() },
+      f.revisionId,
+      f.reservation.reservationId,
+    ),
+  ).rejects.toMatchObject({ code: "POLICY_DENIED" });
+  const app = new Hono();
+  app.onError(createErrorHandler(pino({ level: "silent" })));
+  app.use("*", async (c, next) => {
+    c.set("principal" as never, { userId: f.actor.userId, orgId: f.actor.orgId } as never);
+    await next();
+  });
+  app.route(
+    "/",
+    createFederationCommercialRoutes(
+      f.approvals,
+      f.service,
+      undefined,
+      undefined,
+      f.execution,
+      undefined,
+      undefined,
+      f.terminal,
+    ),
+  );
+  const path = `/federation/commercial-agreements/${f.revisionId}/execution-approvals/${f.reservation.reservationId}/terminal`;
+  const invalid = await app.request(path, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      outcome: "completed",
+      executionEvidenceDigest: `sha256:${"0".repeat(64)}`,
+    }),
+  });
+  expect(invalid.status).toBe(400);
+  expect(
+    (
+      await app.request(path, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: "{}",
+      })
+    ).status,
+  ).toBe(200);
+});
+
+test("execution terminal wins a renewal network race and accepts a terminal after execution expiry", async () => {
+  const f = await terminalFixture("failed");
+  f.setClock(new Date(Date.now() + 241000));
+  f.beforeQuery(async () => {
+    await f.approveTerminal();
+  });
+  await expect(f.requestConfirmation()).rejects.toMatchObject({ code: "POLICY_DENIED" });
+  const expired = await terminalFixture("failed");
+  const afterExpiry = new Date(
+    Date.parse(
+      expired.reservation.request.executionExpiresAt ?? expired.reservation.request.expiresAt,
+    ) + 1000,
+  );
+  const service = new FederationExecutionTerminalService(
+    db,
+    expired.b.signing,
+    { query: async () => ({ operation: "get-demand", demand: expired.state }) },
+    () => afterExpiry,
+  );
+  expect(
+    (await service.approve(expired.actor, expired.revisionId, expired.reservation.reservationId))
+      .payload.issuedAt,
+  ).toBe(afterExpiry.toISOString());
+});
+
+test("execution terminal refuses a held workflow lock without deadlocking a final dispatch", async () => {
+  const f = await terminalFixture();
+  await db.transaction(async (tx) => {
+    await tx
+      .select()
+      .from(workflowRuns)
+      .where(eq(workflowRuns.id, f.binding.workflowRunId))
+      .for("update");
+    await expect(f.approveTerminal()).rejects.toMatchObject({ cause: { code: "55P03" } });
+    await f.confirmation.authorize(tx, f.actor.orgId, f.reservation.request);
+  });
+  await f.approveTerminal();
+});
+
+test("execution terminal waits for the original source cancellation cleanup monitor", async () => {
+  const f = await terminalFixture("cancelled");
+  const [reservation] = await db
+    .select()
+    .from(federationReservations)
+    .where(eq(federationReservations.id, f.reservation.reservationId));
+  if (!reservation) throw new Error("Missing reservation");
+  const request = FederationCancellationSchema.parse({
+    protocolVersion: 1,
+    kind: "cancellation",
+    operationId: reservation.operationId,
+    senderSiteId: f.a.signing.siteId,
+    recipientSiteId: f.siteId,
+    agreementRevisionId: f.revisionId,
+    taskId: reservation.taskId,
+    attempt: reservation.attempt,
+    requestDigest: reservation.requestDigest,
+    issuedAt: new Date().toISOString(),
+  });
+  const requestJws = await signFederationMessage(
+    FederationCancellationSchema,
+    request,
+    f.a.signing,
+  );
+  const key = await f.trust.resolveKey(f.a.signing.siteId, f.a.signing.keyId, new Date());
+  const { digest } = await verifyFederationMessage(
+    FederationCancellationSchema,
+    requestJws,
+    key,
+    new Date(),
+  );
+  await db.insert(federationCancellations).values({
+    localSiteId: f.siteId,
+    senderSiteId: f.a.signing.siteId,
+    operationId: reservation.operationId,
+    agreementRevisionId: f.revisionId,
+    requestDigest: reservation.requestDigest,
+    cancellationDigest: digest,
+    request,
+    requestJws,
+    recordedAt: new Date(),
+  });
+  await expect(f.approveTerminal()).rejects.toMatchObject({ code: "DATA_WAITING" });
+  await db
+    .update(federationCancellations)
+    .set({ confirmedAt: new Date() })
+    .where(eq(federationCancellations.operationId, reservation.operationId));
+  expect((await f.approveTerminal()).evidence.cancellation?.digest).toBe(digest);
 });
