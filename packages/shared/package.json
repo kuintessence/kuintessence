@@ -75,6 +75,11 @@
       "bun": "./src/federation/agreement-exchange.ts",
       "types": "./src/federation/agreement-exchange.ts",
       "default": "./src/federation/agreement-exchange.ts"
+    },
+    "./federation/market-request": {
+      "bun": "./src/federation/market-request.ts",
+      "types": "./src/federation/market-request.ts",
+      "default": "./src/federation/market-request.ts"
     }
   },
   "scripts": {

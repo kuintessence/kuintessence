@@ -18,6 +18,7 @@ import {
   federationCommercialApprovalSyncs,
   federationEvidence,
   federationExecutionTerminals,
+  federationMarketRequests,
   federationMaterials,
   federationOutbound,
   federationReservationPolicies,
@@ -81,6 +82,10 @@ import {
   type MarketProposalInput,
   MarketProposalInputSchema,
 } from "@kuintessence/shared/federation/market";
+import {
+  MarketRequestReceiptSchema,
+  MarketRequestSchema,
+} from "@kuintessence/shared/federation/market-request";
 import { ReservationProposalReceiptSchema } from "@kuintessence/shared/federation/reservation-proposal";
 import {
   TERMINAL_MAX_BYTES,
@@ -92,6 +97,7 @@ import { and, eq, inArray, sql } from "drizzle-orm";
 import { Hono } from "hono";
 import { exportSPKI } from "jose";
 import pino from "pino";
+import type { z } from "zod";
 import { JobCancellationOutbox } from "../grpc/dispatcher";
 import { createErrorHandler } from "../middleware/error-handler";
 import { createFederationCommercialRoutes } from "../routes/federation-commercial";
@@ -119,6 +125,7 @@ import { FabricClientFailure } from "./fabric-client";
 import { createFederationIngress } from "./ingress";
 import { FederationMarketService } from "./market";
 import type { MarketClient } from "./market-client";
+import { FederationMarketRequestService } from "./market-requests";
 import { FederationOutboundService } from "./outbound";
 import type { FederationSend } from "./outbound-client";
 import { FederationPermissionService } from "./permissions";
@@ -128,7 +135,11 @@ import {
   ReservationPolicyInputSchema,
 } from "./reservation-policy";
 import { FederationReservationProposalService } from "./reservation-proposals";
-import { signFederationMessage, verifyFederationMessage } from "./signatures";
+import {
+  federationMessageKeyId,
+  signFederationMessage,
+  verifyFederationMessage,
+} from "./signatures";
 import { FederationTerminalAutomation } from "./terminal-automation";
 import { FederationTerminalPolicyService, TerminalPolicyInputSchema } from "./terminal-policy";
 import { testAgreement, testKeys } from "./test-fixtures";
@@ -298,6 +309,9 @@ async function ready(f: Awaited<ReturnType<typeof fixture>>) {
 afterAll(async () => {
   for (const f of fixtures) {
     const siteIds = [f.a.signing.siteId, f.b.signing.siteId];
+    await db
+      .delete(federationMarketRequests)
+      .where(inArray(federationMarketRequests.localSiteId, siteIds));
     await db
       .delete(federationReservationProposals)
       .where(inArray(federationReservationProposals.localSiteId, siteIds));
@@ -6775,4 +6789,705 @@ test("execution automation HTTP retry requires current human authority and prese
   await f.sourceAutomation.advanceNext();
   expect((await post()).status).toBe(409);
   expect(await f.view()).toMatchObject({ executionState: "complete" });
+});
+
+async function marketRequestFixture(enabled = true, limit = 2) {
+  const f = await reservationPolicyFixture(true);
+  await db
+    .delete(marketSubmissions)
+    .where(inArray(marketSubmissions.localSiteId, [f.a.signing.siteId, f.b.signing.siteId]));
+  for (const capability of ["delegation.submit", "market.publish", "market.claim"] as const)
+    await new FederationPermissionService(db).set(
+      { ...f.actor, capability, enabled: true },
+      f.actor.userId,
+    );
+  const sourcePolicies = new FederationReservationPolicyService(db, f.a.signing.siteId);
+  const sourcePolicy = await sourcePolicies.grant(f.actor, f.revisionId, {
+    ...f.policyInput,
+    maxTasks: limit,
+    allowMarketPublish: enabled,
+  });
+  const providerPolicy = await f.policies.grant(f.actor, f.revisionId, {
+    ...f.policyInput,
+    maxTasks: limit,
+    allowMarketClaim: enabled,
+  });
+  const fingerprints: string[] = [];
+  for (const party of [f.a, f.b]) {
+    const fingerprint = randomBytes(32).toString("hex");
+    fingerprints.push(fingerprint);
+    await db.insert(federationCertificates).values({
+      siteId: party.signing.siteId,
+      fingerprint,
+      certificatePem: "fixture; real transport covered separately",
+      validFrom: new Date("2020-01-01"),
+      validUntil: new Date("2099-01-01"),
+    });
+    const [key] = await db
+      .select()
+      .from(federationSigningKeys)
+      .where(eq(federationSigningKeys.siteId, party.signing.siteId));
+    if (!key) throw new Error("Missing key");
+    await db
+      .update(federationSigningKeys)
+      .set({
+        allowedKinds: [
+          ...key.allowedKinds,
+          "market-request",
+          "market-request-receipt",
+          "reservation-proposal-receipt",
+        ],
+      })
+      .where(eq(federationSigningKeys.siteId, party.signing.siteId));
+  }
+  const request = MarketRequestSchema.parse({
+    protocolVersion: 1,
+    kind: "market-request",
+    demand: { ...f.state.demand, expiresAt: f.reservation.request.expiresAt },
+    proposal: {
+      ...f.reservation,
+      request: { ...f.reservation.request, operationId: f.reservation.reservationId },
+    },
+  });
+  let state: z.infer<typeof MarketDemandStateSchema> | null = null;
+  let queryHook: (() => Promise<void>) | undefined;
+  const query: Pick<MarketClient, "query"> = {
+    query: async () => {
+      await queryHook?.();
+      return { operation: "get-demand", demand: state };
+    },
+  };
+  const adapter = new ActivationAdapter();
+  const sourceMarket = new FederationMarketService(db, f.a.signing.siteId, adapter),
+    providerMarket = new FederationMarketService(db, f.b.signing.siteId, adapter);
+  const target = new FederationMarketRequestService(db, f.b.signing, undefined, query);
+  let sendHook: ((jws: string, response: string) => Promise<string>) | undefined;
+  const send: FederationSend = async (_endpoint, jws, path) => {
+    expect(path).toBe("/federation/v1/market-requests");
+    const result = await target.receive(jws, fingerprints[0] ?? "");
+    return sendHook ? sendHook(jws, result) : result;
+  };
+  const source = new FederationMarketRequestService(db, f.a.signing, send, query);
+  const view = async (provider = false) =>
+    (
+      await db
+        .select()
+        .from(federationMarketRequests)
+        .where(
+          eq(
+            federationMarketRequests.localSiteId,
+            provider ? f.b.signing.siteId : f.a.signing.siteId,
+          ),
+        )
+    )[0];
+  const due = () =>
+    db
+      .update(federationMarketRequests)
+      .set({ nextAttemptAt: new Date(0) })
+      .where(
+        inArray(federationMarketRequests.localSiteId, [f.a.signing.siteId, f.b.signing.siteId]),
+      );
+  const commit = async (provider = false) => {
+    const service = provider ? providerMarket : sourceMarket;
+    for (let i = 0; i < 3; i++) await service.advanceNext();
+    const [row] = await db
+      .select()
+      .from(marketSubmissions)
+      .where(
+        and(
+          eq(marketSubmissions.localSiteId, provider ? f.b.signing.siteId : f.a.signing.siteId),
+          eq(marketSubmissions.state, "committed"),
+        ),
+      );
+    if (row?.input.operation === "publish-demand")
+      state = MarketDemandStateSchema.parse({
+        demand: row.input.demand,
+        digest: federationMaterialDigest(row.input.demand),
+        version: 1,
+        status: "OPEN",
+        claim: null,
+        cancellation: null,
+      });
+    if (row?.input.operation === "claim-demand")
+      state = MarketDemandStateSchema.parse({
+        demand: request.demand,
+        digest: federationMaterialDigest(request.demand),
+        version: 2,
+        status: "CLAIMED",
+        claim: row.input.claim,
+        cancellation: null,
+      });
+    await due();
+  };
+  const submit = (raw = request) => source.submit(f.actor, f.revisionId, sourcePolicy.id, raw);
+  const publish = async () => {
+    await submit();
+    await source.advanceNext();
+    await commit();
+  };
+  const deliver = async () => {
+    await publish();
+    await source.advanceNext();
+  };
+  const claim = async () => {
+    await deliver();
+    await target.advanceNext();
+    await commit(true);
+    await target.advanceNext();
+    await due();
+  };
+  const receiverProposals = new FederationReservationProposalService(
+    db,
+    f.b.signing,
+    undefined,
+    query,
+  );
+  const proposalSend: FederationSend = async (_endpoint, jws, path) => {
+    expect(path).toBe("/federation/v1/reservation-proposals");
+    return receiverProposals.receive(jws, fingerprints[0] ?? "");
+  };
+  const sourceProposals = new FederationReservationProposalService(
+    db,
+    f.a.signing,
+    proposalSend,
+    query,
+  );
+  return {
+    ...f,
+    sourcePolicies,
+    sourcePolicy,
+    providerPolicy,
+    request,
+    query,
+    adapter,
+    sourceMarket,
+    providerMarket,
+    source,
+    target,
+    view,
+    due,
+    commit,
+    submit,
+    publish,
+    deliver,
+    claim,
+    fingerprints,
+    send,
+    sourceProposals,
+    receiverProposals,
+    state: () => state,
+    setState: (value: typeof state) => {
+      state = value;
+    },
+    beforeQuery: (fn: typeof queryHook) => {
+      queryHook = fn;
+    },
+    afterSend: (fn: typeof sendHook) => {
+      sendHook = fn;
+    },
+  };
+}
+
+test("market request permissions are opt-in and publishing/claim grants belong to their own institution", async () => {
+  const f = await marketRequestFixture(false);
+  await expect(f.submit()).rejects.toMatchObject({ code: "POLICY_DENIED" });
+  await f.sourcePolicies.revoke(f.actor, f.revisionId, f.sourcePolicy.id);
+  await f.policies.revoke(f.actor, f.revisionId, f.providerPolicy.id);
+  await expect(
+    f.sourcePolicies.grant(f.actor, f.revisionId, { ...f.policyInput, allowMarketClaim: true }),
+  ).rejects.toMatchObject({ code: "POLICY_DENIED" });
+  await expect(
+    f.policies.grant(f.actor, f.revisionId, { ...f.policyInput, allowMarketPublish: true }),
+  ).rejects.toMatchObject({ code: "POLICY_DENIED" });
+  for (const capability of ["market.publish", "market.claim"] as const)
+    await new FederationPermissionService(db).set(
+      { ...f.actor, capability, enabled: false },
+      f.actor.userId,
+    );
+  await expect(
+    f.sourcePolicies.grant(f.actor, f.revisionId, { ...f.policyInput, allowMarketPublish: true }),
+  ).rejects.toMatchObject({ code: "POLICY_DENIED" });
+  await expect(
+    f.policies.grant(f.actor, f.revisionId, { ...f.policyInput, allowMarketClaim: true }),
+  ).rejects.toMatchObject({ code: "POLICY_DENIED" });
+});
+test("market request production worker publishes only public demand and hands off after real VALID checkpoints", async () => {
+  const f = await marketRequestFixture();
+  await Promise.all([f.submit(), f.submit()]);
+  const worker = new FederationCommercialWorker(
+    f.service,
+    undefined,
+    undefined,
+    undefined,
+    f.sourceMarket,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    f.source,
+  );
+  await worker.tick();
+  await worker.stop();
+  await f.commit();
+  await f.source.advanceNext();
+  expect(await f.view(true)).toMatchObject({ state: "pending", marketSubmissionId: null });
+  expect(
+    await db
+      .select()
+      .from(executionApprovals)
+      .where(inArray(executionApprovals.localSiteId, [f.a.signing.siteId, f.b.signing.siteId])),
+  ).toHaveLength(0);
+  await f.target.advanceNext();
+  expect((await f.view(true))?.state).toBe("pending");
+  await f.commit(true);
+  await f.target.advanceNext();
+  await f.due();
+  for (const capability of ["delegation.submit", "market.publish", "market.claim"] as const)
+    await new FederationPermissionService(db).set(
+      { ...f.actor, capability, enabled: false },
+      f.actor.userId,
+    );
+  await f.source.advanceNext();
+  expect((await f.view())?.state).toBe("complete");
+  expect((await f.view(true))?.state).toBe("complete");
+  const [proposal] = await db
+    .select()
+    .from(federationReservationProposals)
+    .where(eq(federationReservationProposals.localSiteId, f.a.signing.siteId));
+  expect(proposal).toMatchObject({
+    policyId: f.sourcePolicy.id,
+    state: "pending",
+    requestedBy: f.actor.userId,
+  });
+  await f.sourceProposals.advanceNext();
+  await f.sourceProposals.advanceNext();
+  await f.receiverProposals.advanceNext();
+  const approved = await db
+    .select()
+    .from(executionApprovals)
+    .where(inArray(executionApprovals.localSiteId, [f.a.signing.siteId, f.b.signing.siteId]));
+  expect(approved).toHaveLength(2);
+  expect(approved.every((r) => r.authorizationPolicyId)).toBe(true);
+  const inputs = f.adapter.inputs;
+  expect(inputs).toHaveLength(2);
+  expect(inputs[0]).toEqual({ operation: "publish-demand", demand: f.request.demand });
+  expect(JSON.stringify(inputs)).not.toContain(f.request.proposal.agreementDigest);
+  expect(JSON.stringify(inputs)).not.toContain('"maxAmount"');
+  expect(JSON.stringify(inputs)).not.toContain('"request"');
+  const policy = (await f.sourcePolicies.list(f.actor, f.revisionId))[0];
+  expect(policy).toMatchObject({
+    marketAuthorizedTasks: 1,
+    marketAuthorizedAmount: "60",
+    authorizedTasks: 1,
+    authorizedAmount: "60",
+  });
+});
+test("market request reception is durable only and duplicate signed delivery cannot create claims", async () => {
+  const f = await marketRequestFixture();
+  await f.deliver();
+  const row = await f.view();
+  if (!row?.sourceJws) throw new Error("Missing request");
+  await Promise.all([
+    f.target.receive(row.sourceJws, f.fingerprints[0] ?? ""),
+    f.target.receive(row.sourceJws, f.fingerprints[0] ?? ""),
+  ]);
+  expect((await f.view(true))?.marketSubmissionId).toBeNull();
+  const [policy] = await f.policies.list(f.actor, f.revisionId);
+  expect(policy).toMatchObject({
+    marketAuthorizedTasks: 1,
+    marketAuthorizedAmount: "60",
+    authorizedTasks: 0,
+  });
+});
+test("market request amount and count authority remain bounded under concurrent distinct tasks", async () => {
+  const f = await marketRequestFixture(true, 1);
+  const id = randomUUID(),
+    demandId = randomUUID();
+  const second = MarketRequestSchema.parse({
+    ...f.request,
+    demand: { ...f.request.demand, demandId },
+    proposal: {
+      ...f.request.proposal,
+      reservationId: id,
+      demandId,
+      request: { ...f.request.proposal.request, operationId: id },
+    },
+  });
+  const result = await Promise.allSettled([f.submit(), f.submit(second)]);
+  expect(result.filter((r) => r.status === "fulfilled")).toHaveLength(1);
+  const g = await marketRequestFixture();
+  await g.submit();
+  const nextId = randomUUID(),
+    nextDemand = randomUUID();
+  const next = MarketRequestSchema.parse({
+    ...g.request,
+    demand: { ...g.request.demand, demandId: nextDemand },
+    proposal: {
+      ...g.request.proposal,
+      reservationId: nextId,
+      demandId: nextDemand,
+      request: { ...g.request.proposal.request, operationId: nextId },
+    },
+  });
+  await expect(g.submit(next)).rejects.toMatchObject({ code: "POLICY_DENIED" });
+  expect((await g.sourcePolicies.list(g.actor, g.revisionId))[0]).toMatchObject({
+    marketAuthorizedTasks: 1,
+    marketAuthorizedAmount: "60",
+    authorizedTasks: 0,
+  });
+});
+test("market request policy bounds original template resources and contract before public disclosure", async () => {
+  const f = await marketRequestFixture();
+  const cpus = 100;
+  const altered = MarketRequestSchema.parse({
+    ...f.request,
+    demand: { ...f.request.demand, resources: { ...f.request.demand.resources, cpus } },
+    proposal: {
+      ...f.request.proposal,
+      request: {
+        ...f.request.proposal.request,
+        resources: { ...f.request.proposal.request.resources, cpus },
+      },
+    },
+  });
+  await expect(f.submit(altered)).rejects.toMatchObject({ code: "POLICY_DENIED" });
+  await expect(
+    f.submit({ ...f.request, proposal: { ...f.request.proposal, domainId: randomUUID() } }),
+  ).rejects.toMatchObject({ code: "POLICY_DENIED" });
+  await expect(
+    f.submit({
+      ...f.request,
+      proposal: {
+        ...f.request.proposal,
+        request: {
+          ...f.request.proposal.request,
+          template: { ...f.request.proposal.request.template, revision: "other" },
+        },
+      },
+    }),
+  ).rejects.toMatchObject({ code: "POLICY_DENIED" });
+  expect(await f.view()).toBeUndefined();
+});
+test("market request rejects another claimant or modified public demand without preparing a new transaction", async () => {
+  for (const change of ["claimant", "demand"] as const) {
+    const f = await marketRequestFixture();
+    await f.deliver();
+    const state = f.state();
+    if (!state) throw new Error("Missing state");
+    f.setState(
+      change === "claimant"
+        ? MarketDemandStateSchema.parse({
+            ...state,
+            status: "CLAIMED",
+            version: 2,
+            claim: {
+              demandId: f.request.demand.demandId,
+              claimId: randomUUID(),
+              providerSiteId: randomUUID(),
+              expectedVersion: 1,
+              expiresAt: f.request.proposal.request.expiresAt,
+            },
+          })
+        : { ...state, demand: { ...state.demand, title: "changed" } },
+    );
+    await f.target.advanceNext();
+    expect((await f.view(true))?.state).toBe("needs_review");
+    expect(f.adapter.inputs).toHaveLength(1);
+  }
+});
+test("market request cannot substitute INVALID or unknown publish transactions with fresh requests", async () => {
+  const f = await marketRequestFixture();
+  await f.submit();
+  await f.source.advanceNext();
+  f.adapter.outcome = "invalid";
+  await f.commit();
+  await f.source.advanceNext();
+  expect((await f.view())?.state).toBe("needs_review");
+  await f.source.retry(f.actor, f.revisionId, f.request.proposal.reservationId);
+  await f.source.advanceNext();
+  expect((await f.view())?.state).toBe("needs_review");
+  expect(f.adapter.inputs).toHaveLength(1);
+  expect(await f.view(true)).toBeUndefined();
+  const g = await marketRequestFixture();
+  await g.submit();
+  await g.source.advanceNext();
+  g.adapter.outcome = "pending";
+  await g.commit();
+  await g.source.advanceNext();
+  expect((await g.view())?.state).toBe("pending");
+  expect(await g.view(true)).toBeUndefined();
+  expect(g.adapter.inputs).toHaveLength(1);
+});
+test("market request refuses unproven committed state and a forged claimed receipt", async () => {
+  const f = await marketRequestFixture();
+  await f.submit();
+  await f.source.advanceNext();
+  await db
+    .update(marketSubmissions)
+    .set({ state: "committed" })
+    .where(eq(marketSubmissions.localSiteId, f.a.signing.siteId));
+  await f.due();
+  await f.source.advanceNext();
+  expect((await f.view())?.lastError).toBe("INVALID_ADAPTER_RESPONSE");
+  const g = await marketRequestFixture();
+  await g.publish();
+  g.afterSend(async (_jws, response) => {
+    const peer = await new FederationTrustRegistry(db).resolveKey(
+      g.b.signing.siteId,
+      federationMessageKeyId(response),
+      new Date(),
+    );
+    const v = await verifyFederationMessage(MarketRequestReceiptSchema, response, peer, new Date());
+    return signFederationMessage(
+      MarketRequestReceiptSchema,
+      { ...v.payload, state: "claimed" },
+      g.b.signing,
+    );
+  });
+  await g.source.advanceNext();
+  expect(await g.view()).toMatchObject({ state: "pending", lastError: null });
+  expect(
+    await db
+      .select()
+      .from(federationReservationProposals)
+      .where(eq(federationReservationProposals.localSiteId, g.a.signing.siteId)),
+  ).toHaveLength(0);
+});
+test("market request checks provider policy and original certificate again after chain query", async () => {
+  for (const change of ["policy", "certificate"] as const) {
+    const f = await marketRequestFixture();
+    await f.deliver();
+    f.beforeQuery(async () => {
+      if (change === "policy") await f.policies.revoke(f.actor, f.revisionId, f.providerPolicy.id);
+      else
+        await db
+          .update(federationCertificates)
+          .set({ revokedAt: new Date() })
+          .where(eq(federationCertificates.fingerprint, f.fingerprints[0] ?? ""));
+    });
+    await f.target.advanceNext();
+    expect((await f.view(true))?.state).toBe("needs_review");
+    expect((await f.view(true))?.marketSubmissionId).toBeNull();
+  }
+});
+test("market request source rechecks policy, endpoint and receipt binding before reservation handoff", async () => {
+  for (const change of ["policy", "endpoint", "receipt"] as const) {
+    const f = await marketRequestFixture();
+    await f.claim();
+    f.afterSend(async (_jws, response) => {
+      if (change === "policy")
+        await f.sourcePolicies.revoke(f.actor, f.revisionId, f.sourcePolicy.id);
+      if (change === "endpoint")
+        await db
+          .update(federationSites)
+          .set({ endpoint: "https://changed.invalid" })
+          .where(eq(federationSites.id, f.b.signing.siteId));
+      if (change === "receipt") {
+        const peer = await new FederationTrustRegistry(db).resolveKey(
+          f.b.signing.siteId,
+          federationMessageKeyId(response),
+          new Date(),
+        );
+        const v = await verifyFederationMessage(
+          MarketRequestReceiptSchema,
+          response,
+          peer,
+          new Date(),
+        );
+        return signFederationMessage(
+          MarketRequestReceiptSchema,
+          { ...v.payload, reservationId: randomUUID() },
+          f.b.signing,
+        );
+      }
+      return response;
+    });
+    await f.source.advanceNext();
+    const result = await f.view();
+    expect({ change, state: result?.state, error: result?.lastError }).toMatchObject({
+      change,
+      state: "needs_review",
+    });
+    expect(
+      await db
+        .select()
+        .from(federationReservationProposals)
+        .where(eq(federationReservationProposals.localSiteId, f.a.signing.siteId)),
+    ).toHaveLength(0);
+  }
+});
+test("market request lease fencing rejects late claim insertion and late source success or failure", async () => {
+  const f = await marketRequestFixture();
+  await f.deliver();
+  f.beforeQuery(async () => {
+    await expect(
+      f.target.retry(f.actor, f.revisionId, f.request.proposal.reservationId),
+    ).rejects.toMatchObject({ code: "OPERATION_CONFLICT" });
+    await db
+      .update(federationMarketRequests)
+      .set({ leaseUntil: new Date(0) })
+      .where(eq(federationMarketRequests.localSiteId, f.b.signing.siteId));
+    await f.target.retry(f.actor, f.revisionId, f.request.proposal.reservationId);
+  });
+  await f.target.advanceNext();
+  expect((await f.view(true))?.marketSubmissionId).toBeNull();
+  for (const fail of [false, true]) {
+    const g = await marketRequestFixture();
+    await g.claim();
+    g.afterSend(async (_jws, response) => {
+      await db
+        .update(federationMarketRequests)
+        .set({ leaseUntil: new Date(0) })
+        .where(eq(federationMarketRequests.localSiteId, g.a.signing.siteId));
+      await g.source.retry(g.actor, g.revisionId, g.request.proposal.reservationId);
+      if (fail) throw new Error("late network failure");
+      return response;
+    });
+    await g.source.advanceNext();
+    expect(await g.view()).toMatchObject({ state: "pending", lastError: null });
+    expect(
+      await db
+        .select()
+        .from(federationReservationProposals)
+        .where(eq(federationReservationProposals.localSiteId, g.a.signing.siteId)),
+    ).toHaveLength(0);
+    g.afterSend(undefined);
+    await g.source.advanceNext();
+    expect((await g.view())?.state).toBe("complete");
+  }
+});
+test("market request lost reply and restarted source preserve one request and one institutional charge", async () => {
+  const f = await marketRequestFixture();
+  await f.publish();
+  f.afterSend(async () => {
+    throw new Error("lost reply");
+  });
+  await f.source.advanceNext();
+  expect((await f.view())?.state).toBe("pending");
+  expect((await f.view(true))?.state).toBe("pending");
+  await f.target.advanceNext();
+  await f.commit(true);
+  await f.target.advanceNext();
+  await f.due();
+  f.afterSend(undefined);
+  const restart = new FederationMarketRequestService(db, f.a.signing, f.send, f.query);
+  await restart.advanceNext();
+  expect((await f.view())?.state).toBe("complete");
+  expect(f.adapter.inputs).toHaveLength(2);
+  expect((await f.policies.list(f.actor, f.revisionId))[0]?.marketAuthorizedTasks).toBe(1);
+});
+test("market request handoff audit failure rolls back proposal and completion together", async () => {
+  const f = await marketRequestFixture();
+  await f.claim();
+  await db.execute(
+    sql`alter table audit_log add constraint test_market_request_audit check (action <> 'federation.reservation_proposal.submit' OR target <> ${sql.raw(`'${f.request.proposal.reservationId}'`)})`,
+  );
+  try {
+    await f.source.advanceNext();
+    expect((await f.view())?.state).toBe("pending");
+    expect(
+      await db
+        .select()
+        .from(federationReservationProposals)
+        .where(eq(federationReservationProposals.localSiteId, f.a.signing.siteId)),
+    ).toHaveLength(0);
+  } finally {
+    await db.execute(sql`alter table audit_log drop constraint test_market_request_audit`);
+  }
+  await f.due();
+  await f.source.advanceNext();
+  expect((await f.view())?.state).toBe("complete");
+});
+test("market request HTTP validates human and organization scope, hides private fields and protects completed retry", async () => {
+  const f = await marketRequestFixture();
+  const app = new Hono();
+  app.onError(createErrorHandler(pino({ enabled: false })));
+  let automated = false;
+  app.use("*", async (c, next) => {
+    c.set("principal" as never, f.actor as never);
+    c.set("automation" as never, automated as never);
+    await next();
+  });
+  app.route(
+    "/",
+    createFederationCommercialRoutes(
+      f.approvals,
+      f.service,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      f.source,
+    ),
+  );
+  const path = `/federation/commercial-agreements/${f.revisionId}/market-requests`;
+  const post = (body: unknown, route = path) =>
+    app.request(route, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  const body = { policyId: f.sourcePolicy.id, request: f.request };
+  automated = true;
+  expect((await post(body)).status).toBe(403);
+  automated = false;
+  expect((await post({ ...body, approvedBy: f.actor.userId })).status).toBe(400);
+  expect((await post(body)).status).toBe(202);
+  expect((await post(body, path.replace(f.revisionId, randomUUID()))).status).toBe(403);
+  const response = await app.request(path);
+  expect(response.status).toBe(200);
+  const data = JSON.stringify(await response.json());
+  for (const key of ['"sourceJws"', '"leaseToken"', '"payload"']) expect(data).not.toContain(key);
+  await f.claim();
+  await f.source.advanceNext();
+  expect((await post({}, `${path}/${f.request.proposal.reservationId}/retry`)).status).toBe(409);
+  const ingress = createFederationIngress(db, f.b.signing);
+  expect(
+    (await ingress.request("/federation/v1/market-requests", { method: "POST", body: "bad" }))
+      .status,
+  ).toBe(415);
+});
+
+test("market request conflicting demand identity returns a domain conflict without losing the original intent", async () => {
+  const f = await marketRequestFixture();
+  const original = MarketRequestSchema.parse({
+    ...f.request,
+    proposal: { ...f.request.proposal, request: { ...f.request.proposal.request, maxAmount: "1" } },
+  });
+  await f.submit(original);
+  const id = randomUUID();
+  const conflicting = MarketRequestSchema.parse({
+    ...original,
+    proposal: {
+      ...original.proposal,
+      reservationId: id,
+      request: { ...original.proposal.request, operationId: id },
+    },
+  });
+  await expect(f.submit(conflicting)).rejects.toMatchObject({ code: "OPERATION_CONFLICT" });
+  const sourceJws = await signFederationMessage(MarketRequestSchema, original, f.a.signing);
+  await f.target.receive(sourceJws, f.fingerprints[0] ?? "");
+  const conflictJws = await signFederationMessage(MarketRequestSchema, conflicting, f.a.signing);
+  await expect(f.target.receive(conflictJws, f.fingerprints[0] ?? "")).rejects.toMatchObject({
+    code: "OPERATION_CONFLICT",
+  });
+  expect((await f.sourcePolicies.list(f.actor, f.revisionId))[0]).toMatchObject({
+    marketAuthorizedTasks: 1,
+    marketAuthorizedAmount: "1",
+  });
+  expect((await f.policies.list(f.actor, f.revisionId))[0]).toMatchObject({
+    marketAuthorizedTasks: 1,
+    marketAuthorizedAmount: "1",
+  });
 });

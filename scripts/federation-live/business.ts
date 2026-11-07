@@ -5,6 +5,7 @@ import {
   federationCommercialAttempts,
   federationCommercialSubmissions,
   federationMarketAttempts,
+  federationMarketRequests,
   federationMarketSubmissions,
   federationReservationProposals,
 } from "@kuintessence/db";
@@ -23,12 +24,11 @@ import { FederationCommercialAgreementService } from "../../packages/server/src/
 import { FederationCommercialApprovalExchange } from "../../packages/server/src/federation/commercial-approval-exchange";
 import { FederationCommercialExecutionService } from "../../packages/server/src/federation/commercial-execution";
 import { FederationCommercialSubmissionService } from "../../packages/server/src/federation/commercial-submissions";
-import { FederationMarketService } from "../../packages/server/src/federation/market";
 import { UnixMarketClient } from "../../packages/server/src/federation/market-client";
+import { FederationMarketRequestService } from "../../packages/server/src/federation/market-requests";
 import { createFederationSender } from "../../packages/server/src/federation/outbound-client";
 import { FederationPermissionService } from "../../packages/server/src/federation/permissions";
 import { FederationReservationPolicyService } from "../../packages/server/src/federation/reservation-policy";
-import { FederationReservationProposalService } from "../../packages/server/src/federation/reservation-proposals";
 import type { FederationSigningKey } from "../../packages/server/src/federation/signatures";
 
 export async function approveContract(
@@ -84,7 +84,7 @@ if (import.meta.main) {
       db: ReturnType<typeof createPgDb>;
       actor: { orgId: string; userId: string };
       key: FederationSigningKey;
-      market: FederationMarketService;
+      market: UnixMarketClient;
       execution: FederationCommercialExecutionService;
     }[] = [];
     for (const [name, db, actor] of [
@@ -107,7 +107,7 @@ if (import.meta.main) {
         db,
         actor,
         key,
-        market: new FederationMarketService(db, key.siteId, client),
+        market: client,
         execution: new FederationCommercialExecutionService(db, key, client),
       });
     }
@@ -173,14 +173,6 @@ if (import.meta.main) {
       }
       return rows.length > 0 && rows.every((r) => r.state === "committed");
     };
-    const marketReady = async (p: typeof a, id: string) => {
-      const [row] = await p.db
-        .select()
-        .from(federationMarketSubmissions)
-        .where(eq(federationMarketSubmissions.id, id));
-      assert(row?.state !== "needs_review", row?.lastError ?? "Market failure");
-      return row?.state === "committed";
-    };
     await wait(
       async () => (await commercialReady(a)) && (await commercialReady(b)),
       "both production Servers registered the private contract",
@@ -234,6 +226,8 @@ if (import.meta.main) {
             maxTaskAmount: config.request.maxAmount,
             maxTotalAmount: config.request.maxAmount,
             maxTasks: 1,
+            allowMarketPublish: p === a,
+            allowMarketClaim: p === b,
             allowActivation: p === a,
             allowExecutionConfirmation: true,
             validUntil: config.request.executionExpiresAt ?? config.request.expiresAt,
@@ -241,35 +235,7 @@ if (import.meta.main) {
         ),
       );
     const demandId = randomUUID(),
-      reservationId = randomUUID();
-    await a.market.enqueue(a.actor, {
-      operation: "publish-demand",
-      demand: {
-        protocolVersion: 1,
-        demandId,
-        sourceSiteId: a.key.siteId,
-        title: "Isolated file computation",
-        description: "",
-        platform: "linux",
-        architecture: "x86_64",
-        resources: config.request.resources,
-        createdAt: new Date().toISOString(),
-        expiresAt: config.terms.validUntil,
-      },
-    });
-    await wait(() => marketReady(a, demandId), "source public demand committed");
-    await b.market.enqueue(b.actor, {
-      operation: "claim-demand",
-      claim: {
-        demandId,
-        claimId: reservationId,
-        providerSiteId: b.key.siteId,
-        commercialDomainId: config.commercial.domainId,
-        expectedVersion: 1,
-        expiresAt: config.request.expiresAt,
-      },
-    });
-    await wait(() => marketReady(b, reservationId), "provider claim committed");
+      reservationId = config.request.operationId;
     const contract = await new FederationCommercialAgreementService(a.db, a.key).get(
       a.actor,
       config.terms.agreementRevisionId,
@@ -288,7 +254,7 @@ if (import.meta.main) {
     const sourcePolicy = reservationPolicies[0],
       providerPolicy = reservationPolicies[1];
     assert(sourcePolicy && providerPolicy);
-    const sourceProposals = new FederationReservationProposalService(
+    const sourceRequests = new FederationMarketRequestService(
       a.db,
       a.key,
       createFederationSender({
@@ -296,13 +262,64 @@ if (import.meta.main) {
         key: await Bun.file(`${root}/peer.key`).text(),
         ca: await Bun.file(`${root}/ca/ca.crt`).text(),
       }),
+      a.market,
     );
-    await sourceProposals.submit(
-      a.actor,
-      config.terms.agreementRevisionId,
-      sourcePolicy.id,
-      reserve,
-    );
+    await sourceRequests.submit(a.actor, config.terms.agreementRevisionId, sourcePolicy.id, {
+      protocolVersion: 1,
+      kind: "market-request",
+      demand: {
+        protocolVersion: 1,
+        demandId,
+        sourceSiteId: a.key.siteId,
+        title: "Isolated file computation",
+        description: "",
+        platform: "linux",
+        architecture: "x86_64",
+        resources: config.request.resources,
+        createdAt: new Date().toISOString(),
+        expiresAt: config.request.expiresAt,
+      },
+      proposal: reserve,
+    });
+    await wait(async () => {
+      for (const p of parties) {
+        const [request] = await p.db.select().from(federationMarketRequests);
+        assert(
+          request?.state !== "needs_review",
+          request?.lastError ?? "Automatic market request failed",
+        );
+        if (request?.state !== "complete") return false;
+      }
+      return true;
+    }, "production workers automatically published, claimed and handed off the original task");
+    const marketEvidence = [];
+    for (const p of parties) {
+      const [request] = await p.db.select().from(federationMarketRequests);
+      const policyId: string = p === a ? sourcePolicy.id : providerPolicy.id;
+      assert(request?.marketSubmissionId);
+      assert.equal(request.reservationId, config.request.operationId);
+      assert.equal(request.policyId, policyId);
+      const [submission] = await p.db
+        .select()
+        .from(federationMarketSubmissions)
+        .where(eq(federationMarketSubmissions.id, request.marketSubmissionId));
+      assert(submission?.state === "committed" && submission.authorizationPolicyId === policyId);
+      const history = await p.db
+        .select()
+        .from(federationMarketAttempts)
+        .where(eq(federationMarketAttempts.submissionId, submission.id))
+        .orderBy(desc(federationMarketAttempts.number));
+      assert(
+        history[0]?.stage === "committed" &&
+          history[0]?.validationCode === 0 &&
+          history[0]?.blockNumber !== null,
+      );
+      assert.equal(submission.input.operation, p === a ? "publish-demand" : "claim-demand");
+      if (submission.input.operation === "publish-demand")
+        assert.deepEqual(Object.keys(submission.input).sort(), ["demand", "operation"]);
+      marketEvidence.push({ siteId: p.key.siteId, request, submission, history });
+    }
+    await Bun.write(`${root}/market-requests.json`, JSON.stringify(marketEvidence, null, 2));
     await wait(async () => {
       const source = (await a.db.select().from(federationReservationProposals))[0];
       const provider = (await b.db.select().from(federationReservationProposals))[0];

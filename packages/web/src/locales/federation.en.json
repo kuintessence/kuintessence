@@ -80,6 +80,8 @@
       "agreement-approval-waiting": "Execution agreement approval waiting receipt",
       "commercial-approval-query": "Commercial approval query",
       "commercial-approval-waiting": "Commercial approval waiting receipt",
+      "market-request": "Market task request",
+      "market-request-receipt": "Market task reception and claim receipt",
       "reservation-proposal-receipt": "Reservation proposal receipt",
       "commercial-agreement": "Commercial agreement",
       "commercial-usage": "Commercial usage",

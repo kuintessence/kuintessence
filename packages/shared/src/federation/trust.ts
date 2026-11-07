@@ -34,6 +34,8 @@ export const FederationKeyInput = z
           "agreement-approval-waiting",
           "commercial-approval-query",
           "commercial-approval-waiting",
+          "market-request",
+          "market-request-receipt",
           "reservation-proposal-receipt",
           "commercial-agreement",
           "commercial-usage",
@@ -63,7 +65,7 @@ export const FederationKeyInput = z
         ]),
       )
       .min(1)
-      .max(34),
+      .max(36),
     validFrom: z.iso.datetime(),
     validUntil: z.iso.datetime(),
   })

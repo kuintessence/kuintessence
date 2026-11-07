@@ -7,6 +7,7 @@ import {
   CommercialUsageCorrectionInputSchema,
 } from "@kuintessence/shared/federation/commercial";
 import { CommercialApprovalRecordKindSchema } from "@kuintessence/shared/federation/commercial-approval-exchange";
+import { MarketRequestSchema } from "@kuintessence/shared/federation/market-request";
 import { FederationTerminalProposalSchema } from "@kuintessence/shared/federation/terminal-proposal";
 import { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
@@ -21,6 +22,7 @@ import type { FederationExecutionStopService } from "../federation/execution-sto
 import type { FederationExecutionTerminalService } from "../federation/execution-terminal";
 import type { FederationTerminalExchange } from "../federation/execution-terminal-exchange";
 import { FabricClientFailure } from "../federation/fabric-client";
+import type { FederationMarketRequestService } from "../federation/market-requests";
 import type { FederationActor } from "../federation/permissions";
 import {
   type FederationReservationPolicyService,
@@ -51,6 +53,7 @@ export function createFederationCommercialRoutes(
   reservationPolicies?: FederationReservationPolicyService,
   reservationProposals?: FederationReservationProposalService,
   executionAutomation?: FederationExecutionAutomation,
+  marketRequests?: FederationMarketRequestService,
 ) {
   const r = new Hono<{ Variables: { federationActor: FederationActor } }>();
   r.use("/federation/commercial-agreements/*", async (c, next) => {
@@ -85,6 +88,55 @@ export function createFederationCommercialRoutes(
     limit: z.coerce.number().int().min(1).max(100).default(50),
     offset: z.coerce.number().int().min(0).default(0),
   });
+  if (marketRequests) {
+    const path = "/federation/commercial-agreements/:revisionId/market-requests";
+    r.get(path, kqValidator("param", id), kqValidator("query", page), async (c) => {
+      const { limit, offset } = c.req.valid("query");
+      return c.json({
+        success: true,
+        data: await marketRequests.list(
+          c.get("federationActor"),
+          c.req.valid("param").revisionId,
+          limit,
+          offset,
+        ),
+      });
+    });
+    r.post(
+      path,
+      kqValidator("param", id),
+      kqValidator("json", z.strictObject({ policyId: z.uuid(), request: MarketRequestSchema })),
+      async (c) => {
+        const input = c.req.valid("json");
+        return c.json(
+          {
+            success: true,
+            data: await marketRequests.submit(
+              c.get("federationActor"),
+              c.req.valid("param").revisionId,
+              input.policyId,
+              input.request,
+            ),
+          },
+          202,
+        );
+      },
+    );
+    r.post(
+      `${path}/:reservationId/retry`,
+      kqValidator("param", id.extend({ reservationId: z.uuid() })),
+      kqValidator("json", z.strictObject({})),
+      async (c) => {
+        const params = c.req.valid("param");
+        await marketRequests.retry(
+          c.get("federationActor"),
+          params.revisionId,
+          params.reservationId,
+        );
+        return c.json({ success: true });
+      },
+    );
+  }
   if (executionAutomation)
     r.post(
       "/federation/commercial-agreements/:revisionId/reservation-proposals/:reservationId/execution-retry",

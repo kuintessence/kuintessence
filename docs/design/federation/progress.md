@@ -1771,3 +1771,20 @@ Market 新增 RequestExecutionStop、Adapter 新增 request-execution-stop，双
 两个实际 Kubernetes Bash Job 完成，目标方从零份清单取得签名输入及环境锁；源方独立 Agent、独立桶实际下载 verified:42 的 12 字节文件并核对 SHA-256，结果回执与重复请求幂等通过。既有终态机构预授权完成双方签署、回传与 ACK，私有终态 VALID 在区块 20（94ebf0f45d08182fb7f62b4cf46868afe454a890422bf2a4321b7793a06d35f9），公共关闭 VALID 在区块 21（7cb0e3e79ef14744e68d85871753e1f923c866788b3efb76f4b4e7ba091f6b09）。本次未触发重复商业提交的 MVCC 人工复核分支，不能据此声称已提供生产自动恢复。运行退出 0，自建 Server、数据库和 scheduler namespace/RBAC 等运行资源已清理，私有测试证据留在忽略目录。
 
 本轮真实验收使用协调模式；两种双边模式的无链交换由独立数据库专项验证。未重复先前断链/主动停止、原生隐私/背书/金额、Spack/Slurm/PBS 或科学软件验收。市场发布/认领和实际委派仍由夹具显式发起；全自动市场编排、普通 Workflow 协调节点、生产 MVCC 同意复核、账单/结算/争议与重开、物理介质、Peer 容量归档、完整 Web/CLI 与 PR 预览继续待完成。没有合并或部署 main。
+
+
+## 机构授权的市场请求自动编排
+
+迁移 0137 为原预留策略增加默认关闭的 allowMarketPublish / allowMarketClaim，并增加绑定原合同/策略的持久市场请求。源方当前人工委派权限提交后，生产后台只发布公开 demand；原私有 CommercialReservation 通过独立 market-request 签名与固定 mTLS 入口交付。提供方按自己的不可变策略、原证书/签名及当前链状态认领，必须保存原提交的 VALID 尝试；源方独立检查 CLAIMED，再同事务完成请求和创建原预留提案。received 只证明接收，claimed 只报告已认领；均不直接批准执行或释放资金。
+
+稳定原 operationId 等于 reservationId；公开需求和私有原请求的源机构、资源、期限与需求 ID 必须一致。累计市场任务数和原 maxAmount 按策略锁下不可变请求行统计，独立于原预留签署计数及链上余额，重复请求不重复计数，另限 128 项未完成积压。机构权限不随个人角色变更而失效，撤销/到期仍阻止新动作；已经入队的市场同意保持原交易跟踪。来源、正文/摘要、端点、证书和租约前后复查，冲突人工复核，未知结局/INVALID 不换 ID 绕过。GET 隐藏私有正文与证明，人工重试不能抢占租约或重置完成。
+
+本轮隔离数据库包含 15 个新市场请求场景及 42 个原预授权/提案/执行自动化回归，共 57 个不同场景。初轮漏导入测试验签函数导致一个场景失败，修正导入后定向验证相关两项；同时补齐测试类型导入。新增覆盖生产 worker 公开字段边界、实际持久尝试、个人权限变更、并发累计额度、重复/断线恢复、篡改/其他认领人、未证明 commit、伪造认领回执、撤权与端点竞态、租约迟到成功/失败、审计原子回滚、HTTP 组织范围与重复需求标识冲突。数据库夹具使用测试 Adapter，不等同真实链，真实验收另记。协议及真实 TLS 9 个不同场景通过；尚未执行过的真实入口已改为只调用一次市场请求提交，不再由夹具发布、认领或创建预留提案。
+
+全仓类型检查已运行；Server 测试缺导入和真实夹具的 TypeScript 推导问题修正后，Server 与 Fabric 脚本定向检查均退出 0，其余 package 已通过。全仓 lint 无错误，仍为原有 47 warning / 1 info；709 个本地文档目标、workflow 引用、Python 语法和差异格式通过。伪造 claimed 的测试额外断言没有一般重试错误，确保执行的是独立链状态检查，定向复跑通过；不累加重复用例数。
+
+真实联合运行一次退出 0，日志 temp/market-requests-execution.log，隔离证据 temp/federation-execution-success-w3ha1a2y，测试链材料 temp/fabric-network-GngXGC。原双方合同/基础执行同意已自动交换，源方只调用一次市场请求提交；生产 worker 自动发布和认领，双方请求 complete 且归属原策略，原操作 ID 保持不变。公开发布 VALID 区块 13（60d245c2dbc077413f0b776eda0fb7b58a7f7b35ec7865d62dbc8c4676bacacf），认领 VALID 区块 14（d86106ed12329d58f937840b8b270c2584e3309462bb858e9002937b4a9765cd）。原请求、签名回执、公开提交、实际 VALID 尝试保存在忽略目录的 market-requests.json；不提交私有原文或凭据到 Git。
+
+随后自动完成预留提案、机构签署、双签交换、私有预留、公开激活和双方执行确认。两个实际轻量 Kubernetes Bash Job 完成；接收方从零份清单拉取原输入/环境锁，源方独立 Agent 和独立桶实际下载 12 字节 verified:42 结果，SHA-256 校验、签名接收回执及重复请求幂等通过。终态双方预授权、独立审核、签名交换与 ACK 自动完成，私有终态 VALID 区块 20（d315997bf9b3c2faaa88c24cfff3605757c8f6feb9b777da836b0b327864eaee），公开关闭 VALID 区块 21（e9772ae571d3a117185c929b88ae50fcfaabf985de1778db21d85e2cc496725f）。本次未触发重复商业交易的人工 MVCC 复核；自建 Server、数据库、临时凭据、scheduler namespace/RBAC 均已清理。
+
+实际委派仍由夹具显式调用原 outbound API；本轮完成已选机构下从新任务意图到预留许可的自动推进，未声称完成普通 Workflow 协调节点或开放市场发现匹配。生产安全 MVCC 复核、商务减免/账单/结算/付款/争议与重开、物理介质交付、Peer 容量归档恢复、完整 Web/CLI 与 PR 预览继续待完成。没有重跑原断链/停止、原生隐私/背书或真实 Spack/Slurm/PBS/科学软件场景；未合并或部署 main。

@@ -1735,6 +1735,7 @@ await Bun.write(process.env.LAB_ROOT+'/registration.json',JSON.stringify({token:
     (logs / "ledger-proof.json").write_text((root / "ledger-proof.json").read_text())
     (logs / "agreement-exchange.json").write_text((root / "agreement-exchange.json").read_text())
     (logs / "approval-exchange.json").write_text((root / "approval-exchange.json").read_text())
+    (logs / "market-requests.json").write_text((root / "market-requests.json").read_text())
     (logs / "reservation-proposals.json").write_text((root / "reservation-proposals.json").read_text())
     (logs / "execution-automation.json").write_text((root / "execution-automation.json").read_text())
     terminal_policies = {}

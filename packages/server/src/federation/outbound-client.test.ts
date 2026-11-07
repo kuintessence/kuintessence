@@ -72,7 +72,7 @@ beforeAll(async () => {
     import { createServer } from 'node:https';
     import { readFileSync, writeFileSync } from 'node:fs';
     const server = createServer({ key:readFileSync('server.key'), cert:readFileSync('server.pem'), ca:readFileSync('ca.pem'), requestCert:true, rejectUnauthorized:true }, async (req,res) => {
-      if (!req.socket.authorized || req.socket.getPeerCertificate().subject.CN !== 'source' || req.method !== 'POST' || !['/federation/v1/delegations','/federation/v1/status','/federation/v1/usage','/federation/v1/agreement-approvals','/federation/v1/commercial-approvals','/federation/v1/reservation-proposals','/federation/v1/cancellations','/federation/v1/results','/federation/v1/result-downloads','/federation/v1/result-receipts','/federation/v1/materials','/federation/v1/input-downloads'].includes(req.url) || req.headers['content-type'] !== 'application/jose') { res.writeHead(403).end(); return; }
+      if (!req.socket.authorized || req.socket.getPeerCertificate().subject.CN !== 'source' || req.method !== 'POST' || !['/federation/v1/delegations','/federation/v1/status','/federation/v1/usage','/federation/v1/agreement-approvals','/federation/v1/commercial-approvals','/federation/v1/market-requests','/federation/v1/reservation-proposals','/federation/v1/cancellations','/federation/v1/results','/federation/v1/result-downloads','/federation/v1/result-receipts','/federation/v1/materials','/federation/v1/input-downloads'].includes(req.url) || req.headers['content-type'] !== 'application/jose') { res.writeHead(403).end(); return; }
       let body=''; for await (const chunk of req) body+=chunk;
       if (body==='redirect') { res.writeHead(307,{location:'/unexpected'}).end(); return; }
       if (body==='slow') return;
@@ -119,6 +119,9 @@ test("outbound HTTPS sends the client identity and accepts a bounded JOSE respon
     "signed-receipt",
   );
   expect(await send(endpoint, "usage-jws", "/federation/v1/usage")).toBe("signed-receipt");
+  expect(await send(endpoint, "market-request-jws", "/federation/v1/market-requests")).toBe(
+    "signed-receipt",
+  );
   expect(await send(endpoint, "proposal-jws", "/federation/v1/reservation-proposals")).toBe(
     "signed-receipt",
   );

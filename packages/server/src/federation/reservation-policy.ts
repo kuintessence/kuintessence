@@ -3,11 +3,13 @@ import {
   federationCommercialExecutionApprovals as approvals,
   auditLog,
   federationCommercialAgreements as contracts,
+  federationMarketRequests as marketRequests,
   type PgDb,
   type PgTransaction,
   federationReservationPolicies as policies,
 } from "@kuintessence/db";
 import {
+  assertDelegationTerms,
   FederationAmountSchema,
   FederationError,
   federationExecutionDeadline,
@@ -17,7 +19,7 @@ import {
   type CommercialReservation,
   CommercialReservationSchema,
 } from "@kuintessence/shared/federation/commercial";
-import { and, desc, eq, isNull } from "drizzle-orm";
+import { and, desc, eq, getTableColumns, isNull, sql } from "drizzle-orm";
 import { z } from "zod";
 import { requireCoordinatedCommercialAgreement } from "./commercial-execution-policy";
 import { type FederationActor, requireFederationCapability } from "./permissions";
@@ -25,6 +27,8 @@ import { FederationTrustRegistry } from "./trust-registry";
 
 export const ReservationPolicyInputSchema = z
   .strictObject({
+    allowMarketPublish: z.boolean().default(false),
+    allowMarketClaim: z.boolean().default(false),
     allowActivation: z.boolean().default(false),
     allowExecutionConfirmation: z.boolean().default(false),
     maxTaskAmount: FederationAmountSchema,
@@ -71,7 +75,11 @@ export class FederationReservationPolicyService {
       await requireFederationCapability(tx, actor, "agreement.read");
       await this.contract(tx, actor.orgId, revisionId);
       return tx
-        .select()
+        .select({
+          ...getTableColumns(policies),
+          marketAuthorizedTasks: sql<number>`(select count(*)::int from ${marketRequests} where ${marketRequests.policyId} = ${policies.id})`,
+          marketAuthorizedAmount: sql<string>`(select coalesce(sum((${marketRequests.payload}->'proposal'->'request'->>'maxAmount')::numeric),0)::text from ${marketRequests} where ${marketRequests.policyId} = ${policies.id})`,
+        })
         .from(policies)
         .where(
           and(
@@ -97,10 +105,16 @@ export class FederationReservationPolicyService {
       const contract = await this.contract(tx, actor.orgId, revisionId);
       const terms = CommercialAgreementSchema.parse(contract.terms);
       if (terms.agreement.mode !== "ledger_coordinated") throw new FederationError("POLICY_DENIED");
-      if (input.allowActivation) {
+      if (input.allowActivation || input.allowMarketPublish) {
         if (terms.agreement.sourceSiteId !== this.siteId)
           throw new FederationError("POLICY_DENIED");
         await requireFederationCapability(tx, actor, "market.publish");
+      }
+
+      if (input.allowMarketClaim) {
+        if (terms.agreement.targetSiteId !== this.siteId)
+          throw new FederationError("POLICY_DENIED");
+        await requireFederationCapability(tx, actor, "market.claim");
       }
 
       await requireCoordinatedCommercialAgreement(
@@ -226,6 +240,28 @@ export class FederationReservationPolicyService {
       throw new FederationError("POLICY_DENIED");
     if (federationExecutionDeadline(payload.request) > policy.validUntil.getTime())
       throw new FederationError("AUTHORIZATION_EXPIRED");
+    return policy;
+  }
+
+  async authorizeMarket(
+    tx: PgTransaction,
+    policyId: string,
+    orgId: string,
+    payload: CommercialReservation,
+  ) {
+    const policy = await this.authorize(tx, policyId, orgId, payload);
+    const contract = await this.contract(tx, orgId, payload.request.agreementRevisionId);
+    const terms = CommercialAgreementSchema.parse(contract.terms);
+    const source = payload.request.senderSiteId === this.siteId;
+    if (
+      (source ? !policy.allowMarketPublish : !policy.allowMarketClaim) ||
+      (!source && payload.request.recipientSiteId !== this.siteId) ||
+      payload.domainId !== terms.domainId ||
+      terms.agreement.mode !== "ledger_coordinated" ||
+      (terms.consideration === "charity" && payload.request.maxAmount !== "0")
+    )
+      throw new FederationError("POLICY_DENIED");
+    assertDelegationTerms(terms.agreement, payload.request, this.clock());
     return policy;
   }
 

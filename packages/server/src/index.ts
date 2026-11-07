@@ -87,6 +87,7 @@ import { FederationInputTransport } from "./federation/input-transport";
 import { FederationInputWorker } from "./federation/input-worker";
 import { FederationMarketService } from "./federation/market";
 import { UnixMarketClient } from "./federation/market-client";
+import { FederationMarketRequestService } from "./federation/market-requests";
 import { FederationMaterialExchange } from "./federation/material-exchange";
 import { FederationOutboundService, FederationOutboundWorker } from "./federation/outbound";
 import { createFederationPackageResolver } from "./federation/package-resolver";
@@ -1753,6 +1754,16 @@ const federationExecutionAutomation = federationSigningKey
         : undefined,
     )
   : undefined;
+const federationMarketRequests = federationSigningKey
+  ? new FederationMarketRequestService(
+      db,
+      federationSigningKey,
+      federationSender,
+      config.FEDERATION_MARKET_SOCKET_PATH
+        ? new UnixMarketClient(config.FEDERATION_MARKET_SOCKET_PATH)
+        : undefined,
+    )
+  : undefined;
 const federationReservationProposals = federationSigningKey
   ? new FederationReservationProposalService(
       db,
@@ -1796,6 +1807,7 @@ if (federationSigningKey && federationCommercial)
       new FederationReservationPolicyService(db, federationSigningKey.siteId),
       federationReservationProposals,
       federationExecutionAutomation,
+      federationMarketRequests,
     ),
   );
 const federationPreparation = federationSigningKey
@@ -2537,6 +2549,7 @@ const federationCommercialWorker = federationCommercial
       federationReservationProposals,
       federationExecutionAutomation,
       federationAgreementExchange,
+      federationMarketRequests,
     )
   : undefined;
 federationCommercialWorker?.start();

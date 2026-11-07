@@ -113,6 +113,24 @@ export class FederationReservationProposalService {
     policyId: string,
     raw: CommercialReservation,
   ) {
+    return this.submitAuthorized(actor, revisionId, policyId, raw);
+  }
+  async submitPrepared(
+    actor: FederationActor,
+    revisionId: string,
+    policyId: string,
+    raw: CommercialReservation,
+    guard: (tx: PgTransaction) => Promise<void>,
+  ) {
+    return this.submitAuthorized(actor, revisionId, policyId, raw, guard);
+  }
+  private async submitAuthorized(
+    actor: FederationActor,
+    revisionId: string,
+    policyId: string,
+    raw: CommercialReservation,
+    guard?: (tx: PgTransaction) => Promise<void>,
+  ) {
     if (!this.send) throw new FederationError("ASSET_UNAVAILABLE");
     const payload = CommercialReservationSchema.parse(raw),
       digest = wireDigest(payload);
@@ -122,7 +140,8 @@ export class FederationReservationProposalService {
     )
       throw new FederationError("POLICY_DENIED");
     return this.db.transaction(async (tx) => {
-      await requireFederationCapability(tx, actor, "delegation.submit");
+      if (guard) await guard(tx);
+      else await requireFederationCapability(tx, actor, "delegation.submit");
       await this.contract(tx, revisionId, actor.orgId);
       const [existing] = await tx.select().from(proposals).where(this.key(payload.reservationId));
       if (existing) {
@@ -166,7 +185,7 @@ export class FederationReservationProposalService {
         return progress(original);
       }
       await tx.insert(auditLog).values({
-        actor: actor.userId,
+        actor: guard ? `market-request:${payload.reservationId}` : actor.userId,
         orgId: actor.orgId,
         action: "federation.reservation_proposal.submit",
         target: payload.reservationId,

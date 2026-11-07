@@ -53,6 +53,8 @@ export interface FederationVerificationKey {
     | "agreement-approval-waiting"
     | "commercial-approval-query"
     | "commercial-approval-waiting"
+    | "market-request"
+    | "market-request-receipt"
     | "reservation-proposal-receipt"
     | "commercial-agreement"
     | "commercial-usage"

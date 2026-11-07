@@ -158,6 +158,8 @@ if (process.argv[2] === "inspect") {
           "agreement-approval-waiting",
           "commercial-approval-query",
           "commercial-approval-waiting",
+          "market-request",
+          "market-request-receipt",
           "reservation-proposal-receipt",
           "commercial-agreement",
           "commercial-reservation",

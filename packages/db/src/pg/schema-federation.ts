@@ -33,6 +33,7 @@ import type {
 } from "@kuintessence/shared/federation/commercial";
 import type { FederationEvidenceBatch } from "@kuintessence/shared/federation/ledger";
 import type { MarketAdapterProposalInput } from "@kuintessence/shared/federation/market";
+import type { MarketRequest } from "@kuintessence/shared/federation/market-request";
 import type { FederationTerminalProposal } from "@kuintessence/shared/federation/terminal-proposal";
 import { sql } from "drizzle-orm";
 import {
@@ -94,6 +95,8 @@ export const federationSigningKeys = pgTable(
           | "agreement-approval-waiting"
           | "commercial-approval-query"
           | "commercial-approval-waiting"
+          | "market-request"
+          | "market-request-receipt"
           | "reservation-proposal-receipt"
           | "commercial-agreement"
           | "commercial-usage"
@@ -1139,6 +1142,8 @@ export const federationReservationPolicies = pgTable(
       .notNull()
       .references(() => orgs.id),
     agreementDigest: varchar("agreement_digest", { length: 71 }).notNull(),
+    allowMarketPublish: boolean("allow_market_publish").notNull().default(false),
+    allowMarketClaim: boolean("allow_market_claim").notNull().default(false),
     allowActivation: boolean("allow_activation").notNull().default(false),
     allowExecutionConfirmation: boolean("allow_execution_confirmation").notNull().default(false),
     maxTaskAmount: numeric("max_task_amount", { precision: 38, scale: 0 }).notNull(),
@@ -1901,6 +1906,66 @@ export const federationAgreementSyncs = pgTable(
     check(
       "federation_agreement_sync_receipt",
       sql`(${t.state} = 'complete') = (${t.verifiedAt} IS NOT NULL)`,
+    ),
+  ],
+);
+
+/** Private task intent before public publish/claim; never a substitute for reservation approval. */
+export const federationMarketRequests = pgTable(
+  "federation_market_requests",
+  {
+    localSiteId: uuid("local_site_id").notNull(),
+    reservationId: uuid("reservation_id").notNull(),
+    demandId: uuid("demand_id").notNull(),
+    agreementRevisionId: uuid("agreement_revision_id").notNull(),
+    localOrgId: uuid("local_org_id")
+      .notNull()
+      .references(() => orgs.id),
+    policyId: uuid("policy_id")
+      .notNull()
+      .references(() => federationReservationPolicies.id),
+    direction: varchar("direction", { length: 16 }).notNull(),
+    payload: jsonb("payload").$type<MarketRequest>().notNull(),
+    digest: varchar("digest", { length: 71 }).notNull(),
+    sourceJws: text("source_jws"),
+    sourceFingerprint: varchar("source_fingerprint", { length: 64 }),
+    receiptJws: text("receipt_jws"),
+    requestedBy: uuid("requested_by").references(() => users.id),
+    marketSubmissionId: uuid("market_submission_id").references(
+      () => federationMarketSubmissions.id,
+    ),
+    state: varchar("state", { length: 24 }).notNull().default("pending"),
+    lastError: varchar("last_error", { length: 64 }),
+    leaseToken: uuid("lease_token"),
+    leaseUntil: timestamp("lease_until", { withTimezone: true }),
+    nextAttemptAt: timestamp("next_attempt_at", { withTimezone: true }).notNull().defaultNow(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    completedAt: timestamp("completed_at", { withTimezone: true }),
+  },
+  (t) => [
+    primaryKey({ columns: [t.localSiteId, t.reservationId] }),
+    uniqueIndex("federation_market_request_demand").on(t.localSiteId, t.demandId),
+    index("federation_market_request_pending").on(t.localSiteId, t.state, t.nextAttemptAt),
+    index("federation_market_request_policy").on(t.policyId),
+    foreignKey({
+      name: "federation_market_request_contract_fk",
+      columns: [t.localSiteId, t.agreementRevisionId],
+      foreignColumns: [
+        federationCommercialAgreements.localSiteId,
+        federationCommercialAgreements.revisionId,
+      ],
+    }),
+    check(
+      "federation_market_request_state",
+      sql`${t.state} IN ('pending','complete','needs_review') AND ((${t.state} = 'complete') = (${t.completedAt} IS NOT NULL))`,
+    ),
+    check(
+      "federation_market_request_direction",
+      sql`${t.direction} IN ('outbound','inbound') AND (${t.direction} <> 'inbound' OR (${t.sourceJws} IS NOT NULL AND ${t.sourceFingerprint} IS NOT NULL))`,
+    ),
+    check(
+      "federation_market_request_lease",
+      sql`(${t.leaseToken} IS NULL) = (${t.leaseUntil} IS NULL)`,
     ),
   ],
 );

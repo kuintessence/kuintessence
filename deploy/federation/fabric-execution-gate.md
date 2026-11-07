@@ -334,4 +334,25 @@ stopped 回执，且其取消摘要、终态和提供方保留的取消确认一
 
 异常复核入口为 `POST /api/federation/commercial-agreements/:revisionId/reservation-proposals/:reservationId/execution-retry {}`，只接受当前有审批权限的人工会话。不能抢占活租约、替换策略或重置 complete；重试也不能绕过原 INVALID 提交。新自动提交保存策略 ID、原授权人及机器审计身份，不冒充当前人工操作。机构撤销/到期阻止新的自动动作，不撤回已入队或已确认的同意；如须阻断任务执行，应使用原停止/取消入口。
 
-本功能不自动批准合同、发布/认领市场需求、创建委派、结算或付款；基础执行协议仍须双方批准和交换。完整流程还需这些独立环节，不应将两个开关视为全自动业务托管。
+这两个执行许可开关不自动批准合同、创建委派、结算或付款；发布/认领使用下节独立机构授权，基础执行协议仍须双方批准后交换。完整流程还需这些独立环节，不应将两个开关视为全自动业务托管。
+
+## 机构授权的自动发布与认领
+
+迁移 0137 为原机构预留策略增加两个不可变、默认关闭的开关：`allowMarketPublish` 只可由源机构授予，授权人须同时有 `agreement.approve` 和 `market.publish`；`allowMarketClaim` 只可由提供机构授予，授权人须同时有 `agreement.approve` 和 `market.claim`。双方仍须先独立批准商业合同、明确本地执行身份及基础执行协议。既有激活、首次执行确认开关独立配置，不因发布或认领而自动开启。
+
+源方有 `delegation.submit` 的人工会话可以调用 `POST /api/federation/commercial-agreements/:revisionId/market-requests`，正文为 `{ "policyId": "…", "request": { "protocolVersion": 1, "kind": "market-request", "demand": {…}, "proposal": {…} } }`。`demand` 使用严格的公开市场需求 schema，`proposal` 使用原商业预留 schema。首次认领版本固定为 2；预留 ID 必须等于原委派 operationId，需求 ID、源机构、资源和到期时间必须精确匹配，防止同一任务改名新增预留。价格、额度、合同、完整脚本和个人身份不得添加到公开 demand；完整提案只保存于双方数据库并通过私有机构 mTLS 传递。
+
+生产后台依次推进：
+
+1. 源方复核原策略、合同和任务范围，仅把公开 demand 放入已有市场队列；等待原发布交易确实 VALID。
+2. 经固定私有路径 `/federation/v1/market-requests` 发送原签名请求。对方按独立机构策略接收，保留原 JWS 和证书指纹；`received` 回执只表示持久落库。
+3. 提供方确认链上原需求仍 OPEN 或已由自己以同一请求认领，入队原 claim 并等待 VALID，复查当前 CLAIMED 后记为完成。不同认领人、正文或版本进入人工复核。
+4. 源方取得绑定原请求摘要的 `claimed` 回执后，独立查询链上原 CLAIMED 状态，再在一个事务内创建既有预留提案并完成市场请求。随后沿用原自动签署、双签交换、私有预留和可选激活/执行确认。
+
+双方业务密钥须分别明确允许传输用途 `market-request` / `market-request-receipt`；它们不属于 Fabric 商业审批用途。目录现有 36 项，旧密钥不会自动扩权。对方回执不替代链查询、原策略或执行许可。协议错误、原证书撤销、端点变化、INVALID 和内容冲突不会自动换交易；临时链或网络故障持久退避，重启复用原任务，租约隔离迟到结果。
+
+市场请求的累计权限按原策略下不可变请求行计算：每项消耗一次 `maxTasks`，原 `maxAmount` 计入 `maxTotalAmount`，单项仍受 `maxTaskAmount` 约束；同一请求重放不重复计数。另限制每个策略最多 128 项未完成请求。GET 策略返回 `marketAuthorizedTasks` / `marketAuthorizedAmount`，与原签署计数 `authorizedTasks` / `authorizedAmount` 分开：前者限制允许公开/认领的任务，后者限制预留签署，均不代表链上可用余额或实际扣款。后续签署额度被其他任务占用时仍可能拒绝，不借市场计数绕过原额度。请求失败、复核或策略撤销不退还累计权限。
+
+`GET` 同一路径支持 limit/offset，只返回当前组织的进度与脱敏错误。`complete` 仅表示原认领及提案交接完成，不表示作业完成、结果正确或已结算。`POST /:reservationId/retry {}` 要求当前人工审批，不能抢租约、换策略或重置 complete。机构撤权阻止新的动作；已经落库的市场交易意图仍须跟踪原结局，不能假定撤权撤销了已签义务。若要停止执行，使用原停止/取消路径。
+
+本入口面向已选定合作机构及合同的任务，尚未代替普通 Workflow 的协调模式编排或开放市场自动发现/匹配。双边 direct / attested 路径不经过此市场入口，继续保留不依赖链的执行方式。

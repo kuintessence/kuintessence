@@ -7,6 +7,7 @@ import type { FederationExecutionAutomation } from "./execution-automation";
 import type { FederationExecutionStopService } from "./execution-stop";
 import type { FederationTerminalExchange } from "./execution-terminal-exchange";
 import type { FederationMarketService } from "./market";
+import type { FederationMarketRequestService } from "./market-requests";
 import type { FederationReservationProposalService } from "./reservation-proposals";
 import type { FederationTerminalAutomation } from "./terminal-automation";
 import type { FederationUsageService } from "./usage";
@@ -30,6 +31,7 @@ export class FederationCommercialWorker {
     private readonly proposals?: FederationReservationProposalService,
     private readonly executionAutomation?: FederationExecutionAutomation,
     private readonly agreements?: FederationAgreementExchange,
+    private readonly marketRequests?: FederationMarketRequestService,
   ) {}
 
   start() {
@@ -53,6 +55,16 @@ export class FederationCommercialWorker {
         } catch {
           logger.error(
             "Execution consent exchange failed; original institutional approvals remain in PostgreSQL",
+          );
+        }
+      }
+      if (this.marketRequests) {
+        try {
+          for (let i = 0; i < 8 && !this.stopped; i++)
+            if (!(await this.marketRequests.advanceNext())) break;
+        } catch {
+          logger.error(
+            "Automatic market requests failed; private task intents remain in PostgreSQL",
           );
         }
       }

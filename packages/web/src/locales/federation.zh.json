@@ -80,6 +80,8 @@
       "agreement-approval-waiting": "执行协议批准等待回执",
       "commercial-approval-query": "商业批准查询",
       "commercial-approval-waiting": "商业批准等待回执",
+      "market-request": "市场任务请求",
+      "market-request-receipt": "市场任务接收与认领回执",
       "reservation-proposal-receipt": "任务提案接收回执",
       "commercial-agreement": "商业合同",
       "commercial-usage": "商业用量",
