@@ -49,6 +49,7 @@ const ServerConfigSchema = z.object({
   DATABASE_URL: z.string().url(),
   FEDERATION_ENABLED: envBool(false),
   FEDERATION_RESULT_DOWNLOAD_ORIGINS: federationStorageOrigins,
+  FEDERATION_INPUT_DOWNLOAD_ORIGINS: federationStorageOrigins,
   FEDERATION_RESULT_IMPORT_SOURCE_ORIGINS: federationStorageOrigins,
   FEDERATION_SITE_ID: z.uuid().optional(),
   FEDERATION_SOCKET_PATH: z.string().min(1).optional(),

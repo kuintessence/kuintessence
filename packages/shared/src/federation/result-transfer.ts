@@ -15,6 +15,14 @@ export const FederationDataOriginSchema = z.url().refine((value) => {
   );
 }, "Expected an HTTPS storage origin");
 
+export const FederationDownloadUrlSchema = z
+  .url()
+  .max(8192)
+  .refine((value) => {
+    const url = new URL(value);
+    return url.protocol === "https:" && !url.username && !url.password && !url.hash;
+  }, "Expected HTTPS download URL");
+
 export const FederationResultCopyBindingSchema = z.strictObject({
   transferId: z.uuid(),
   generation: z.uuid(),
@@ -49,13 +57,7 @@ export const FederationResultDownloadGrantSchema = FederationResultReportSchema.
 }).extend({
   kind: z.literal("result-download-grant"),
   binding: FederationResultCopyBindingSchema,
-  url: z
-    .url()
-    .max(8192)
-    .refine((value) => {
-      const url = new URL(value);
-      return url.protocol === "https:" && !url.username && !url.password && !url.hash;
-    }, "Expected HTTPS download URL"),
+  url: FederationDownloadUrlSchema,
   expiresAt: z.iso.datetime(),
 });
 

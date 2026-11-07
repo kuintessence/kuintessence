@@ -172,10 +172,8 @@ export class NetDriveService {
     expiresAt: string;
   }> {
     await this.quotaGuard?.(ownerId, req.path, req.size);
-    // Synthetic key keeps user paths decoupled from the object store
-    // layout; renames don't cause MinIO churn and a future cross-site
-    // replicator can shard purely on storageKey.
-    const storageKey = `${STORAGE_PREFIX}/${ownerId}/${crypto.randomUUID()}`;
+    // Presigned URLs can cross institutions; object keys must not contain the owner identity.
+    const storageKey = `${STORAGE_PREFIX}/objects/${crypto.randomUUID()}`;
     const contentType = req.contentType ?? "application/octet-stream";
     const uploadUrl = await this.minio.presignUpload(storageKey, this.uploadTtlSec, contentType);
     const expiresAt = new Date(this.now() + this.uploadTtlSec * 1000).toISOString();
@@ -209,7 +207,7 @@ export class NetDriveService {
     if (req.size > 0) {
       await this.quotaGuard?.(ownerId, req.path, req.size);
     }
-    const storageKey = `${STORAGE_PREFIX}/${ownerId}/${crypto.randomUUID()}`;
+    const storageKey = `${STORAGE_PREFIX}/objects/${crypto.randomUUID()}`;
     const contentType = req.contentType ?? "application/octet-stream";
     const { uploadId } = await this.minio.createMultipartUpload(storageKey, contentType);
     const expiresAt = new Date(this.now() + this.multipartTtlSec * 1000).toISOString();

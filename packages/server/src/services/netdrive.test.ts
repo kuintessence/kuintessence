@@ -78,7 +78,8 @@ describe("NetDriveService", () => {
       contentType: "text/plain",
     });
     expect(minted.uploadUrl).toContain("/upload/");
-    expect(minted.storageKey).toMatch(/^netdrive\//);
+    expect(minted.storageKey).toMatch(/^netdrive\/objects\/[a-f0-9-]{36}$/);
+    expect(minted.storageKey).not.toContain(OWNER_ID);
     expect(minted.commitToken.split(".")).toHaveLength(3); // JWS format
     expect(minted.expiresAt).toMatch(/Z$/);
   });
@@ -122,7 +123,8 @@ describe("NetDriveService", () => {
       size: 5_000_000_000,
     });
     expect(res.uploadId).toMatch(/.+/);
-    expect(res.storageKey).toContain(`netdrive/${OWNER_ID}/`);
+    expect(res.storageKey).toMatch(/^netdrive\/objects\/[a-f0-9-]{36}$/);
+    expect(res.storageKey).not.toContain(OWNER_ID);
     expect(res.partSize).toBeGreaterThanOrEqual(5 * 1024 * 1024);
     expect(typeof res.commitToken).toBe("string");
     const verified = await jose.jwtVerify(res.commitToken, new TextEncoder().encode(COMMIT_SECRET));

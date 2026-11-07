@@ -9,8 +9,8 @@ import {
   FederationResultVerifyTaskSchema,
 } from "@kuintessence/shared/federation";
 import type { MinioBackend } from "../storage/minio-client";
+import { signedDownloadExpiry } from "./download-credential";
 import type { FederationActor } from "./permissions";
-import { signedDownloadExpiry } from "./result-download-credential";
 import type { FederationResultImports } from "./result-imports";
 import type { FederationResultReader } from "./result-reader";
 

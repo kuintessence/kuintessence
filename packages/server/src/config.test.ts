@@ -368,25 +368,27 @@ describe("queue inventory config", () => {
   });
 });
 
-test("federation result download origins default to closed and require clean HTTPS origins", () => {
-  expect(loadServerConfig(VALID_BASE).FEDERATION_RESULT_DOWNLOAD_ORIGINS).toEqual([]);
-  expect(
-    loadServerConfig({
-      ...VALID_BASE,
-      FEDERATION_RESULT_DOWNLOAD_ORIGINS:
-        "https://storage.example.org, https://archive.example.org:9443",
-    }).FEDERATION_RESULT_DOWNLOAD_ORIGINS,
-  ).toEqual(["https://storage.example.org", "https://archive.example.org:9443"]);
-  for (const value of [
-    "http://storage.example.org",
-    "https://user:pass@storage.example.org",
-    "https://storage.example.org/path",
-    "https://storage.example.org?token=secret",
-  ])
-    expect(() =>
-      loadServerConfig({ ...VALID_BASE, FEDERATION_RESULT_DOWNLOAD_ORIGINS: value }),
-    ).toThrow();
-});
+for (const field of [
+  "FEDERATION_RESULT_DOWNLOAD_ORIGINS",
+  "FEDERATION_INPUT_DOWNLOAD_ORIGINS",
+] as const) {
+  test(`${field} defaults to closed and requires clean HTTPS origins`, () => {
+    expect(loadServerConfig(VALID_BASE)[field]).toEqual([]);
+    expect(
+      loadServerConfig({
+        ...VALID_BASE,
+        [field]: "https://storage.example.org, https://archive.example.org:9443",
+      })[field],
+    ).toEqual(["https://storage.example.org", "https://archive.example.org:9443"]);
+    for (const value of [
+      "http://storage.example.org",
+      "https://user:pass@storage.example.org",
+      "https://storage.example.org/path",
+      "https://storage.example.org?token=secret",
+    ])
+      expect(() => loadServerConfig({ ...VALID_BASE, [field]: value })).toThrow();
+  });
+}
 
 test("federation result import source origins stay independent of local download origins", () => {
   expect(loadServerConfig(VALID_BASE).FEDERATION_RESULT_IMPORT_SOURCE_ORIGINS).toEqual([]);

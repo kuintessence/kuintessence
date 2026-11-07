@@ -81,6 +81,8 @@ export const federationSigningKeys = pgTable(
           | "result-receipt-ack"
           | "material-query"
           | "material-chunk"
+          | "input-download-query"
+          | "input-download-grant"
         )[]
       >()
       .notNull(),

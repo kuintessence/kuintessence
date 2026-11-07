@@ -18,20 +18,26 @@ import {
   FederationAcceptanceSchema,
   FederationAgreementSchema,
   type FederationAssetRef,
+  FederationDataOriginSchema,
   type FederationDelegation,
   FederationDelegationSchema,
   FederationError,
+  FederationInputDownloadGrantSchema,
+  FederationInputDownloadQuerySchema,
   FederationMaterialChunkSchema,
+  type FederationMaterialQuery,
   FederationMaterialQuerySchema,
   type FederationParameterOverrides,
   FederationStatusQuerySchema,
   FederationStatusReportSchema,
   federationCanonicalJson,
+  federationExecutionDeadline,
 } from "@kuintessence/shared/federation";
 import { and, asc, desc, eq, isNull, lte, or, sql } from "drizzle-orm";
 import type { LeasedWorkflowJournal } from "../workflow/execution-journal";
 import type { FederationAssetService } from "./assets";
 import { cancellationSummary, FederationCancellationSender } from "./cancellation-outbound";
+import { type FederationDownloadStorage, signedDownloadExpiry } from "./download-credential";
 import { FederationWorkflowInputExports } from "./input-exports";
 import { FederationDeliveryError, type FederationSend } from "./outbound-client";
 import { type FederationActor, requireFederationCapability } from "./permissions";
@@ -40,6 +46,7 @@ import { FederationResultReader } from "./result-reader";
 import { FederationResultReceiptSender } from "./result-receipts";
 import {
   type FederationSigningKey,
+  type FederationVerificationKey,
   federationMessageKeyId,
   signFederationMessage,
   verifyFederationMessage,
@@ -540,6 +547,141 @@ export class FederationOutboundService {
       peer,
       this.clock(),
     );
+    const authorize = await this.materialAuthorization(query, fingerprint, peer, "material-chunk");
+    const { content } = await this.db.transaction(authorize);
+    if (query.offset >= content.length) throw new FederationError("INVALID_MESSAGE");
+    const report = FederationMaterialChunkSchema.parse({
+      protocolVersion: 1,
+      kind: "material-chunk",
+      queryId: query.queryId,
+      operationId: query.operationId,
+      agreementRevisionId: query.agreementRevisionId,
+      taskId: query.taskId,
+      attempt: query.attempt,
+      reservationId: query.reservationId,
+      requestDigest: query.requestDigest,
+      materialDigest: query.materialDigest,
+      offset: query.offset,
+      senderSiteId: this.signingKey.siteId,
+      recipientSiteId: peer.siteId,
+      queryDigest,
+      observedAt: this.clock().toISOString(),
+      totalBytes: content.length,
+      bytes: content
+        .subarray(query.offset, query.offset + FEDERATION_MATERIAL_CHUNK_BYTES)
+        .toString("base64"),
+    });
+    const signed = await signFederationMessage(
+      FederationMaterialChunkSchema,
+      report,
+      this.signingKey,
+    );
+    await this.db.transaction(authorize);
+    return signed;
+  }
+
+  async inputDownload(queryJws: string, fingerprint: string, options: FederationDownloadStorage) {
+    const peer = await this.trust.resolvePeer(
+      fingerprint,
+      federationMessageKeyId(queryJws),
+      this.clock(),
+    );
+    const { payload: query, digest: queryDigest } = await verifyFederationMessage(
+      FederationInputDownloadQuerySchema,
+      queryJws,
+      peer,
+      this.clock(),
+    );
+    const authorize = await this.materialAuthorization(
+      { ...query, materialDigest: query.binding.manifestDigest },
+      fingerprint,
+      peer,
+      "input-download-grant",
+    );
+    const read = async (tx: FederationTransaction) => {
+      const snapshot = await authorize(tx);
+      const file = snapshot.inputExport?.bindings.find(
+        (file) => file.descriptor === query.binding.descriptor && file.path === query.binding.path,
+      );
+      if (
+        !file ||
+        snapshot.inputFilesDigest !== query.binding.manifestDigest ||
+        file.sizeBytes !== query.binding.sizeBytes ||
+        file.sha256 !== query.binding.sha256
+      )
+        throw new FederationError("OPERATION_CONFLICT");
+      return { file, deadline: snapshot.deadline };
+    };
+    const first = await this.db.transaction(read);
+    // Legacy NetDrive keys contain user IDs; they need an opaque export copy before sharing.
+    if (
+      !/^(?:netdrive\/objects|federation-results\/[a-f0-9-]{36})\/[a-f0-9-]{36}$/.test(
+        first.file.storageKey,
+      )
+    )
+      throw new FederationError("POLICY_DENIED");
+    const origins = new Set(
+      options.allowedOrigins.map(
+        (origin) => new URL(FederationDataOriginSchema.parse(origin)).origin,
+      ),
+    );
+    if (!origins.size) throw new FederationError("POLICY_DENIED");
+    const stat = await options.storage.head(first.file.storageKey, first.file.versionId);
+    if (!stat || stat.size !== first.file.sizeBytes || stat.versionId !== first.file.versionId)
+      throw new FederationError("ASSET_UNAVAILABLE");
+    const now = this.clock().getTime();
+    const deadline = Math.min(now + 30_000, Date.parse(query.expiresAt), first.deadline);
+    const seconds = Math.floor((deadline - now) / 1000);
+    if (seconds < 1) throw new FederationError("AUTHORIZATION_EXPIRED");
+    const url = await options.storage.presignDownload(
+      first.file.storageKey,
+      seconds,
+      undefined,
+      first.file.versionId,
+    );
+    const parsed = new URL(url);
+    if (
+      !origins.has(parsed.origin) ||
+      parsed.searchParams.getAll("versionId").length !== 1 ||
+      parsed.searchParams.get("versionId") !== first.file.versionId
+    )
+      throw new FederationError("POLICY_DENIED");
+    const expiresAt = signedDownloadExpiry(url, this.clock().getTime(), deadline);
+    const { issuedAt: _issued, expiresAt: _expires, ...identity } = query;
+    const grant = FederationInputDownloadGrantSchema.parse({
+      ...identity,
+      kind: "input-download-grant",
+      senderSiteId: query.recipientSiteId,
+      recipientSiteId: query.senderSiteId,
+      queryDigest,
+      observedAt: this.clock().toISOString(),
+      url,
+      expiresAt,
+    });
+    const signed = await signFederationMessage(
+      FederationInputDownloadGrantSchema,
+      grant,
+      this.signingKey,
+    );
+    await this.db.transaction(async (tx) => {
+      const current = await read(tx);
+      if (federationCanonicalJson(current.file) !== federationCanonicalJson(first.file))
+        throw new FederationError("OPERATION_CONFLICT");
+      if (
+        Date.parse(expiresAt) <= this.clock().getTime() ||
+        Date.parse(expiresAt) > current.deadline
+      )
+        throw new FederationError("AUTHORIZATION_EXPIRED");
+    });
+    return signed;
+  }
+
+  private async materialAuthorization(
+    query: Omit<FederationMaterialQuery, "kind" | "offset">,
+    fingerprint: string,
+    peer: FederationVerificationKey,
+    responseKind: "material-chunk" | "input-download-grant",
+  ) {
     if (query.senderSiteId !== peer.siteId || query.recipientSiteId !== this.signingKey.siteId)
       throw new FederationError("UNTRUSTED_IDENTITY");
     assertFederationStatusQueryFresh(query, this.clock());
@@ -567,7 +709,7 @@ export class FederationOutboundService {
       throw new FederationError("POLICY_DENIED");
     const actor = { userId: saved.submittedBy, orgId: saved.localOrgId };
     const materials = await this.materials(actor, saved.request);
-    const authorize = async (tx: FederationTransaction) => {
+    return async (tx: FederationTransaction) => {
       const { terms, ownKey, endpoint, inputExport } = await this.authorize(
         tx,
         actor,
@@ -576,7 +718,13 @@ export class FederationOutboundService {
         true,
       );
       await this.trust.assertPeer(tx, fingerprint, peer.siteId, peer.keyId, this.clock());
-      if (!ownKey.allowedKinds.includes("material-chunk"))
+      const currentPeer = await this.trust.resolveKey(peer.siteId, peer.keyId, this.clock(), tx);
+      const queryKind =
+        responseKind === "material-chunk" ? "material-query" : "input-download-query";
+      if (
+        !ownKey.allowedKinds.includes(responseKind) ||
+        !currentPeer.allowedKinds.includes(queryKind)
+      )
         throw new FederationError("UNTRUSTED_IDENTITY");
       const [current] = await tx
         .select()
@@ -624,41 +772,26 @@ export class FederationOutboundService {
       assertDelegationPolicy(terms, saved.request, this.clock(), "execution");
       assertFederationStatusQueryFresh(query, this.clock());
       const now = this.clock();
-      if ([ownKey, peer, originalKey].some((key) => now < key.validFrom || now >= key.validUntil))
+      if (
+        [ownKey, currentPeer, originalKey].some(
+          (key) => now < key.validFrom || now >= key.validUntil,
+        )
+      )
         throw new FederationError("UNTRUSTED_IDENTITY");
       await this.trust.assertPeer(tx, fingerprint, peer.siteId, peer.keyId, now);
-      return Buffer.from(federationCanonicalJson(content), "utf8");
+      return {
+        content: Buffer.from(federationCanonicalJson(content), "utf8"),
+        inputExport,
+        inputFilesDigest: saved.request.inputFilesDigest,
+        deadline: Math.min(
+          federationExecutionDeadline(saved.request),
+          Date.parse(terms.validUntil),
+          ownKey.validUntil.getTime(),
+          currentPeer.validUntil.getTime(),
+          originalKey.validUntil.getTime(),
+        ),
+      };
     };
-    const content = await this.db.transaction(authorize);
-    if (query.offset >= content.length) throw new FederationError("INVALID_MESSAGE");
-    const report = FederationMaterialChunkSchema.parse({
-      protocolVersion: 1,
-      kind: "material-chunk",
-      queryId: query.queryId,
-      operationId: query.operationId,
-      agreementRevisionId: query.agreementRevisionId,
-      taskId: query.taskId,
-      attempt: query.attempt,
-      reservationId: query.reservationId,
-      requestDigest: query.requestDigest,
-      materialDigest: query.materialDigest,
-      offset: query.offset,
-      senderSiteId: this.signingKey.siteId,
-      recipientSiteId: peer.siteId,
-      queryDigest,
-      observedAt: this.clock().toISOString(),
-      totalBytes: content.length,
-      bytes: content
-        .subarray(query.offset, query.offset + FEDERATION_MATERIAL_CHUNK_BYTES)
-        .toString("base64"),
-    });
-    const signed = await signFederationMessage(
-      FederationMaterialChunkSchema,
-      report,
-      this.signingKey,
-    );
-    await this.db.transaction(authorize);
-    return signed;
   }
 
   remoteStatus(actor: FederationActor, operationId: string) {

@@ -14,7 +14,7 @@
                               PostgreSQL 原子预留
 ```
 
-Gateway 使用 Node 22，强制校验客户端证书链，按实际 TLS 证书计算 SHA-256 指纹。客户端提供的身份头、Authorization、Cookie、代理头均不转发。Bun 私有入口按指纹查本地登记，验证机构签名，并在接单事务中锁定、复查信任状态。网关只允许 `/federation/v1/delegations` 、`/federation/v1/status`、`/federation/v1/cancellations` 、`/federation/v1/results` 、`/federation/v1/result-downloads` 、`/federation/v1/result-receipts` 和 `/federation/v1/materials`；普通 Server HTTP 端口不挂载这些机构路由。
+Gateway 使用 Node 22，强制校验客户端证书链，按实际 TLS 证书计算 SHA-256 指纹。客户端提供的身份头、Authorization、Cookie、代理头均不转发。Bun 私有入口按指纹查本地登记，验证机构签名，并在接单事务中锁定、复查信任状态。网关只允许 `/federation/v1/delegations` 、`/federation/v1/status`、`/federation/v1/cancellations` 、`/federation/v1/results` 、`/federation/v1/result-downloads` 、`/federation/v1/result-receipts`、`/federation/v1/materials` 和 `/federation/v1/input-downloads`；普通 Server HTTP 端口不挂载这些机构路由。
 
 Unix socket 只允许 Server 与 Gateway 的相同系统 UID 访问。独立目录须为该 UID 所有、权限 0700；socket 为 0600。运行时拒绝公开目录和权限过宽的签名私钥。Gateway 与 Server 属于同一机构的信任边界，不能把此 socket 挂给其他机构容器。各机构使用独立目录、数据库和签名密钥。Linux 启动依赖 util-linux 的 flock（Server、开发及 AIO 镜像已包含）。Server 与 Fabric Adapter 在同目录的持久 .lock 文件上串行化检查、清理和绑定：仅清理本 UID 所有且连接明确被拒绝的遗留 socket；仍有监听、探测超时、普通文件、符号链接或锁异常时拒绝替换。进程退出自动释放锁，.lock 文件不能在运行中删除；跨容器共享目录使用同一文件锁，存储须支持可靠的 flock 语义。非 Linux 保留原有拒绝占用路径的行为，不自动清理。
 
@@ -30,6 +30,7 @@ Server 设置：
 | `FEDERATION_SIGNING_KEY_FILE` | 专用 RSA PKCS#8 PEM 私钥路径，至少 2048 位，文件 0600 |
 | `FEDERATION_SOCKET_PATH` | 私有 Unix socket 绝对路径 |
 | `FEDERATION_RESULT_DOWNLOAD_ORIGINS` | 本机构存储的 HTTPS origin，逗号分隔；用于结果下载和本端上传地址验证，默认空 |
+| `FEDERATION_INPUT_DOWNLOAD_ORIGINS` | 本机构输入文件存储的 HTTPS origin，逗号分隔；独立于结果授权，默认空（关闭） |
 | `FEDERATION_RESULT_IMPORT_SOURCE_ORIGINS` | 导入结果允许访问的对端存储 HTTPS origin，逗号分隔；默认空，不启用 Agent 结果传输服务 |
 
 Gateway 设置 `FEDERATION_TLS_CA_FILE`、`FEDERATION_TLS_CERT_FILE`、`FEDERATION_TLS_KEY_FILE`、`FEDERATION_SOCKET_PATH`、`FEDERATION_TLS_PORT`。服务端证书须含正确 DNS SAN 和 serverAuth；机构客户端证书须含 clientAuth。CA 信任与本站证书登记都要满足；仅持有某受信任 CA 签发的证书仍不能接单。JWS 私钥和 TLS 私钥分别管理，均不进入镜像、仓库或 seed。
@@ -80,6 +81,13 @@ Server 另行配置 `FEDERATION_CLIENT_CERT_FILE`、`FEDERATION_CLIENT_KEY_FILE`
 
 机构下载授权使用独立 `/federation/v1/result-downloads`，仍须相同结果条款和当前权限。源/接收密钥分别新增 `result-download-query`/`result-download-grant` 用途，旧密钥不自动扩权。接收方须启用 NetDrive，并将其预签名 HTTPS 公网地址的 origin 配入 `FEDERATION_RESULT_DOWNLOAD_ORIGINS`，例如 `https://storage.example.org:9443`。Compose 叠加文件已传递该变量；HTTP 地址、路径、凭据、query 和 fragment 均不接受。无需为 direct 模式配置 Fabric。
 
+输入文件授权使用独立 `/federation/v1/input-downloads`。源站启用 NetDrive，并配置 `FEDERATION_INPUT_DOWNLOAD_ORIGINS`；Compose 叠加文件已传递该变量，其他部署可通过 Server 环境变量设置。接收机构密钥须登记 `input-download-query`，源站密钥须登记 `input-download-grant`；旧信任记录不自动扩权。双方协议必须批准 `inputPolicy`，委派必须绑定 `inputFilesDigest` 与源站 invocation 快照，单有普通材料/结果读取权不能下载输入。
+
+签名地址绑定具体文件与传输尝试，最多有效 30 秒，并受原任务、查询与签名密钥期限限制。Server 只查对象元数据并生成固定 versionId 的地址，不中转文件内容。短期 URL 是 bearer 凭据，禁止存入普通日志、数据库或清单；撤权后不再续发，已经签发的地址可能持续有效至短期期限，不保证即时收回。
+
+新云盘上传使用 `netdrive/objects/<随机 UUID>`，归属仍由数据库与上传 token 校验。旧 `netdrive/<用户 UUID>/...` 路径在本平台仍可正常访问，但输入跨站下载目前拒绝，避免 URL 暴露真实账号标识；后续须补受管匿名副本转换，不能直接修改活动快照。结果导入生成的随机 `federation-results/<UUID>/<UUID>` 对象也可作为输入来源。接收端搬运/校验与受管副本映射仍待接通，以上配置不等于已完成文件输入端到端验收。
+
+
 每个下载凭据最多 30 秒，并受协议结果截止时间限制；同时核对实际 S3 SigV4 的过期时间，支持时固定对象 versionId。地址及签名响应含 bearer 凭据，仅交给受信任的搬运组件，不写日志、数据库或普通清单响应。已发预签名地址无法即时撤销，撤权阻止续发；已建立的 S3 响应不保证在地址过期瞬间断开，受管 Agent 会按授权截止时间取消连接。需要逐字节即时撤权的部署不能把此通道当作满足该要求。
 
 结果导入 API 已接入持久状态与自动传输 worker，提交先返回 pending。读取及首次提交需要独立 `result.read`，自己的已提交导入可在失去该权限后请求停止；取消 ID 不重启，重新授权导入使用新 ID。全部成员验证并原子发布后才返回 available 和成员 fileId。详见[持久导入契约](../../docs/design/federation/implementation.md#持久结果导入与传输尝试)。
@@ -99,7 +107,7 @@ Server 另行配置 `FEDERATION_CLIENT_CERT_FILE`、`FEDERATION_CLIENT_KEY_FILE`
 | `GET /sites/:siteId` | 机构详情、登记公钥和证书及其有效期/撤销状态 |
 | `PUT /sites/:siteId` | `{name,endpoint}`；不能改机构 ID |
 | `POST /sites/:siteId/state` | `{state: active或suspended或revoked}`；revoked 不可恢复 |
-| `POST /sites/:siteId/keys` | `{keyId,publicKeyPem,allowedKinds,validFrom,validUntil}`；用途为 agreement/delegation/acceptance/evidence-batch/status-query/status-report/cancellation/cancellation-receipt/result-query/result-report/result-download-query/result-download-grant/result-receipt/result-receipt-ack |
+| `POST /sites/:siteId/keys` | `{keyId,publicKeyPem,allowedKinds,validFrom,validUntil}`；用途为 agreement/delegation/acceptance/evidence-batch/status-query/status-report/cancellation/cancellation-receipt/result-query/result-report/result-download-query/result-download-grant/result-receipt/result-receipt-ack/material-query/material-chunk/input-download-query/input-download-grant |
 | `POST /sites/:siteId/certificates` | `{certificatePem}`；服务端计算指纹及有效期 |
 | `POST /sites/:siteId/revoke` | `{keyId}` 或 `{fingerprint}`；永久撤销 |
 

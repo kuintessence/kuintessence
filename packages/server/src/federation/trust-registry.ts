@@ -57,10 +57,12 @@ export const FederationKeyInput = z
           "result-receipt-ack",
           "material-query",
           "material-chunk",
+          "input-download-query",
+          "input-download-grant",
         ]),
       )
       .min(1)
-      .max(16),
+      .max(18),
     validFrom: z.iso.datetime(),
     validUntil: z.iso.datetime(),
   })

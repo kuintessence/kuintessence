@@ -17,9 +17,9 @@ import {
 } from "@kuintessence/shared/federation";
 import { and, eq } from "drizzle-orm";
 import { federationMaterialDigest } from "./assets";
+import { signedDownloadExpiry } from "./download-credential";
 import type { FederationSend } from "./outbound-client";
 import { type FederationActor, requireFederationCapability } from "./permissions";
-import { signedDownloadExpiry } from "./result-download-credential";
 import { requireFederationResultPolicy } from "./result-policy";
 import {
   type FederationSigningKey,

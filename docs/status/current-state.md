@@ -1,5 +1,7 @@
 # 当前功能与使用边界
 
+输入文件的独立签名下载授权已接私有机构入口和 Server 配置：双方协议及专用密钥用途均有效时，按原任务/指定文件/固定对象版本签发最长 30 秒的 URL，存储操作后复查撤权与取消。新云盘对象 key 不再含用户 UUID；旧文件在本平台照常使用，但跨机构输入下载拒绝旧的含身份 key，匿名副本转换待补。接收端实际搬运、验证及 Workflow 使用仍未完成，文件任务继续 DATA_WAITING，详见[部署与下载边界](../../deploy/federation/README.md)。
+
 源站已增加动态文件的版本快照、委派摘要绑定及授权清单披露：双方须明确签署输入文件数量/容量上限，只有已接单的机构可按原任务取清单，读取时复查当前权限、文件版本和取消状态。清单不含本地文件 ID、存储位置或凭据。接收端实际搬运、校验、受管副本与 DSL File/FileBatch 输入仍未接通，带文件摘要的任务保持 DATA_WAITING，不能据此宣称文件已交付。详见[源站动态文件快照](../design/federation/implementation.md#源站动态文件快照与清单披露)。
 
 联邦 Server 和 Fabric Adapter 的 Linux 私有监听入口已增加崩溃后遗留 socket 恢复：使用 util-linux flock 串行化检查与绑定，拒绝替换活跃监听或非 socket 文件。实际 Node/Bun 进程、SIGKILL 和独立网络命名空间竞争测试通过；直接模式无需 Fabric。部署说明见 [联邦入口](../../deploy/federation/README.md)。

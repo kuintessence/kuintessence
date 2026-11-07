@@ -5,6 +5,7 @@ import { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { FederationAdmission } from "./admission";
 import { FederationCancellationReceiver } from "./cancellation";
+import type { FederationDownloadStorage } from "./download-credential";
 import type { FederationOutboundService } from "./outbound";
 import { FederationResultReceiptReceiver } from "./result-receipts";
 import { type FederationResultDownloadStorage, FederationResultResponder } from "./results";
@@ -19,7 +20,8 @@ export function createFederationIngress(
   db: PgDb,
   signingKey: FederationSigningKey,
   downloads?: FederationResultDownloadStorage,
-  materials?: Pick<FederationOutboundService, "materialChunk">,
+  materials?: Pick<FederationOutboundService, "materialChunk" | "inputDownload">,
+  inputDownloads?: FederationDownloadStorage,
 ) {
   const r = new Hono();
   const trust = new FederationTrustRegistry(db);
@@ -82,6 +84,17 @@ export function createFederationIngress(
       "content-type": "application/jose",
       "cache-control": "no-store",
     });
+  });
+  r.post("/federation/v1/input-downloads", async (c) => {
+    if (c.req.header("content-type") !== "application/jose")
+      return c.json({ error: { code: "INVALID_MESSAGE" } }, 415);
+    if (!inputDownloads || !materials) throw new FederationError("POLICY_DENIED");
+    const grant = await materials.inputDownload(
+      await c.req.text(),
+      c.req.header("x-kq-federation-cert") ?? "",
+      inputDownloads,
+    );
+    return c.body(grant, 200, { "content-type": "application/jose", "cache-control": "no-store" });
   });
   r.post("/federation/v1/status", async (c) => {
     if (c.req.header("content-type") !== "application/jose")

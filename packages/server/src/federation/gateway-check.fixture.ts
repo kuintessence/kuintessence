@@ -98,6 +98,7 @@ try {
         "/federation/v1/result-downloads",
         "/federation/v1/result-receipts",
         "/federation/v1/materials",
+        "/federation/v1/input-downloads",
       ].includes(req.url ?? ""),
     );
     assert.equal(
@@ -189,7 +190,12 @@ try {
       (await call({ cert, key }, "/federation/v1/result-receipts?peer=forged")).status,
       404,
     );
-    assert.equal(calls, 7);
+    assert.equal((await call({ cert, key }, "/federation/v1/input-downloads")).status, 200);
+    assert.equal(
+      (await call({ cert, key }, "/federation/v1/input-downloads?identity=forged")).status,
+      404,
+    );
+    assert.equal(calls, 8);
     await new Promise<void>((resolve, reject) =>
       backend.close((error) => (error ? reject(error) : resolve())),
     );

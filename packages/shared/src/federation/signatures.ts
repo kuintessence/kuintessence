@@ -61,6 +61,8 @@ export interface FederationVerificationKey {
     | "result-receipt-ack"
     | "material-query"
     | "material-chunk"
+    | "input-download-query"
+    | "input-download-grant"
   )[];
 }
 

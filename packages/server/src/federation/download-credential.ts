@@ -1,4 +1,5 @@
 import { FederationError } from "@kuintessence/shared/federation";
+import type { MinioBackend } from "../storage/minio-client";
 
 /** S3 credentials, not just the envelope, must expire within the agreed release window. */
 export function signedDownloadExpiry(url: string, now: number, deadline: number) {
@@ -23,4 +24,9 @@ export function signedDownloadExpiry(url: string, now: number, deadline: number)
   if (!Number.isFinite(expiry) || expiry <= now || expiry > deadline || issued > now)
     throw new FederationError("AUTHORIZATION_EXPIRED");
   return new Date(expiry).toISOString();
+}
+
+export interface FederationDownloadStorage {
+  storage: Pick<MinioBackend, "head" | "presignDownload">;
+  allowedOrigins: readonly string[];
 }

@@ -1788,6 +1788,9 @@ if (!(config.SSH_SESSION_RECORDING && config.NETDRIVE_ENABLED)) {
 }
 let federationResults: FederationResultTransport | undefined;
 let federationResultWorker: FederationResultWorker | undefined;
+let federationInputDownloads:
+  | import("./federation/download-credential").FederationDownloadStorage
+  | undefined;
 let federationResultDownloads:
   | import("./federation/results").FederationResultDownloadStorage
   | undefined;
@@ -1798,6 +1801,11 @@ if (config.NETDRIVE_ENABLED) {
     DATA_MARKET_IMMUTABLE_BUCKET: config.DATA_MARKET_IMMUTABLE_BUCKET,
   });
   const minioBackend = await createRealMinioBackend(minioCfg);
+  if (config.FEDERATION_ENABLED && config.FEDERATION_INPUT_DOWNLOAD_ORIGINS.length)
+    federationInputDownloads = {
+      storage: minioBackend,
+      allowedOrigins: config.FEDERATION_INPUT_DOWNLOAD_ORIGINS,
+    };
   if (config.FEDERATION_ENABLED && config.FEDERATION_RESULT_DOWNLOAD_ORIGINS.length)
     federationResultDownloads = {
       storage: minioBackend,
@@ -2191,6 +2199,7 @@ const federationIngress = await startFederationIngress(
   federationSigningKey,
   federationResultDownloads,
   federationOutbound,
+  federationInputDownloads,
 );
 const federationMaterialExchange =
   federationSigningKey && federationSender && federationPreparation

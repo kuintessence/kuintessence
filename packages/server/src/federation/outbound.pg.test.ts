@@ -55,6 +55,8 @@ import {
   type FederationAssetRef,
   FederationCancellationReceiptSchema,
   FederationCancellationSchema,
+  FederationInputDownloadGrantSchema,
+  FederationInputDownloadQuerySchema,
   FederationMaterialChunkSchema,
   FederationMaterialQuerySchema,
   type FederationParameterOverrides,
@@ -89,6 +91,7 @@ import { FederationAgreementService } from "./agreements";
 import { FederationAssetService, federationMaterialDigest } from "./assets";
 import { FederationCancellationReceiver } from "./cancellation";
 import { FederationCancellationMonitor } from "./cancellation-monitor";
+import type { FederationDownloadStorage } from "./download-credential";
 import { createFederationIngress } from "./ingress";
 import { FederationMaterialExchange } from "./material-exchange";
 import { FederationOutboundService, FederationOutboundWorker } from "./outbound";
@@ -207,6 +210,8 @@ beforeAll(async () => {
           "result-receipt-ack",
           "material-query",
           "material-chunk",
+          "input-download-query",
+          "input-download-grant",
         ],
         validFrom: key.verification.validFrom.toISOString(),
         validUntil: key.verification.validUntil.toISOString(),
@@ -4193,8 +4198,15 @@ test("material exchange worker retrieves large unicode manifests atomically and 
     localRevisionId: resolved.mapping.softwareRevisionId,
   });
   const exchange = f.exchange();
-  const worker = new FederationPreparationWorker(db, f.preparation, undefined, undefined, (id) =>
-    exchange.ensure(id),
+  // Other tests leave reservations at this shared site; only this fixture owns its transport.
+  const worker = new FederationPreparationWorker(
+    db,
+    f.preparation,
+    undefined,
+    undefined,
+    async (id) => {
+      if (id === f.reservationId) await exchange.ensure(id);
+    },
   );
   await worker.tick();
   await worker.stop();
@@ -4205,7 +4217,11 @@ test("material exchange worker retrieves large unicode manifests atomically and 
     f.request.inputManifestDigest,
   );
   expect(stored).toMatchObject({ kind: "inputs", parameters });
-  expect(await receivedMaterials()).toHaveLength(2);
+  expect(
+    (await receivedMaterials()).filter((material) =>
+      [f.request.inputManifestDigest, f.request.environmentLockDigest].includes(material.digest),
+    ),
+  ).toHaveLength(2);
   expect(await f.preparation.prepare(f.reservationId)).toMatchObject({ state: "resolved" });
   const callCount = f.calls.length;
   await Promise.all([f.exchange().ensure(f.reservationId), f.exchange().ensure(f.reservationId)]);
@@ -4437,7 +4453,7 @@ async function inputInventoryFixture(
     path: "private/source.dat",
     size: 4,
     sha256: "a".repeat(64),
-    storageKey: `private/${fileId}`,
+    storageKey: `netdrive/objects/${crypto.randomUUID()}`,
     storageVersionId: "original-version",
   });
   const files = [{ descriptor: "input", type: "File", files: [{ fileId, path: "input.dat" }] }];
@@ -4668,6 +4684,318 @@ test("input inventory cannot be borrowed from a different invocation or an unbou
         .from(federationOutbound)
         .where(eq(federationOutbound.agreementRevisionId, f.terms.agreementRevisionId)),
     ).toHaveLength(1);
+  } finally {
+    await f.lease.release();
+  }
+});
+
+async function inputDownloadFixture() {
+  const f = await acceptedInputInventory();
+  const { kind: _kind, materialDigest, offset: _offset, ...identity } = f.query;
+  const query = FederationInputDownloadQuerySchema.parse({
+    ...identity,
+    kind: "input-download-query",
+    binding: {
+      transferId: crypto.randomUUID(),
+      generation: crypto.randomUUID(),
+      operationId: f.saved.operationId,
+      manifestDigest: materialDigest,
+      descriptor: "input",
+      path: "input.dat",
+      sha256: "a".repeat(64),
+      sizeBytes: 4,
+    },
+  });
+  const jws = await signFederationMessage(FederationInputDownloadQuerySchema, query, b.signing);
+  const calls: Array<{ key: string; seconds?: number; version?: string }> = [];
+  const downloads: FederationDownloadStorage = {
+    allowedOrigins: ["https://storage.test.invalid"],
+    storage: {
+      head: async (key, version) => {
+        calls.push({ key, version });
+        return {
+          size: 4,
+          etag: "input-etag",
+          versionId: "original-version",
+          contentType: "application/octet-stream",
+          lastModified: clock(),
+        };
+      },
+      presignDownload: async (key, seconds, _name, version) => {
+        calls.push({ key, seconds, version });
+        const url = new URL(`https://storage.test.invalid/${key}`);
+        url.searchParams.set("versionId", version ?? "");
+        url.searchParams.set(
+          "X-Amz-Date",
+          clock()
+            .toISOString()
+            .replace(/[-:]/g, "")
+            .replace(/\.\d{3}/, ""),
+        );
+        url.searchParams.set("X-Amz-Expires", String(seconds));
+        url.searchParams.set("X-Amz-Signature", "private-input-ticket");
+        return url.toString();
+      },
+    },
+  };
+  const read = async () =>
+    (
+      await verifyFederationMessage(
+        FederationInputDownloadGrantSchema,
+        await f.source.inputDownload(jws, targetFingerprint, downloads),
+        await trust.resolveKey(a.signing.siteId, a.signing.keyId, clock()),
+        clock(),
+      )
+    ).payload;
+  return { ...f, query, jws, calls, downloads, read };
+}
+
+test("input downloads bind signed grants to an exact private file version through the isolated ingress", async () => {
+  const f = await inputDownloadFixture();
+  try {
+    const ingress = createFederationIngress(db, a.signing, undefined, f.source, f.downloads);
+    const response = await ingress.request("/federation/v1/input-downloads", {
+      method: "POST",
+      headers: { "content-type": "application/jose", "x-kq-federation-cert": targetFingerprint },
+      body: f.jws,
+    });
+    expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    const grant = (
+      await verifyFederationMessage(
+        FederationInputDownloadGrantSchema,
+        await response.text(),
+        await trust.resolveKey(a.signing.siteId, a.signing.keyId, clock()),
+        clock(),
+      )
+    ).payload;
+    expect(grant.binding).toEqual(f.query.binding);
+    expect(grant.queryDigest).toBe(
+      (
+        await verifyFederationMessage(
+          FederationInputDownloadQuerySchema,
+          f.jws,
+          await trust.resolveKey(b.signing.siteId, b.signing.keyId, clock()),
+          clock(),
+        )
+      ).digest,
+    );
+    expect(grant.expiresAt).toBe(f.query.expiresAt);
+    expect(f.calls).toHaveLength(2);
+    expect(f.calls.map((call) => call.version)).toEqual(["original-version", "original-version"]);
+    expect(f.calls[1]?.seconds).toBe(30);
+    expect(f.calls[0]?.key).toMatch(/^netdrive\/objects\//);
+    for (const secret of [actor.userId, f.fileId, "private/source.dat"])
+      expect(JSON.stringify(grant)).not.toContain(secret);
+    expect(
+      JSON.stringify(await db.select().from(auditLog).where(eq(auditLog.orgId, actor.orgId))),
+    ).not.toContain("private-input-ticket");
+    const disabled = createFederationIngress(db, a.signing, f.downloads, f.source);
+    expect(
+      (
+        await disabled.request("/federation/v1/input-downloads", {
+          method: "POST",
+          headers: { "content-type": "application/jose" },
+          body: f.jws,
+        })
+      ).status,
+    ).toBe(409);
+  } finally {
+    await f.lease.release();
+  }
+});
+
+test("input downloads reject unselected members, wrong tasks, expired queries and legacy identifying keys", async () => {
+  const f = await inputDownloadFixture();
+  try {
+    for (const binding of [
+      { ...f.query.binding, descriptor: "other" },
+      { ...f.query.binding, path: "other.dat" },
+      { ...f.query.binding, sizeBytes: 5 },
+      { ...f.query.binding, sha256: "b".repeat(64) },
+      { ...f.query.binding, manifestDigest: f.saved.request.environmentLockDigest },
+    ]) {
+      const jws = await signFederationMessage(
+        FederationInputDownloadQuerySchema,
+        { ...f.query, binding },
+        b.signing,
+      );
+      await expect(f.source.inputDownload(jws, targetFingerprint, f.downloads)).rejects.toThrow(
+        "OPERATION_CONFLICT",
+      );
+    }
+    const wrongTask = await signFederationMessage(
+      FederationInputDownloadQuerySchema,
+      { ...f.query, taskId: crypto.randomUUID() },
+      b.signing,
+    );
+    await expect(f.source.inputDownload(wrongTask, targetFingerprint, f.downloads)).rejects.toThrow(
+      "POLICY_DENIED",
+    );
+    await expect(f.source.inputDownload(f.jws, sourceFingerprint, f.downloads)).rejects.toThrow(
+      "UNTRUSTED_IDENTITY",
+    );
+    expect(f.calls).toHaveLength(0);
+    time = new Date(time.getTime() + 31_000);
+    await expect(f.read()).rejects.toThrow("AUTHORIZATION_EXPIRED");
+  } finally {
+    await f.lease.release();
+  }
+  const legacy = await inputInventoryFixture();
+  try {
+    await db
+      .update(netdriveFiles)
+      .set({ storageKey: `netdrive/${actor.userId}/${crypto.randomUUID()}` })
+      .where(eq(netdriveFiles.id, legacy.fileId));
+    const operation = await legacy.enqueue();
+    await legacy.source.deliverNext();
+    const saved = await row(operation.operationId);
+    if (!saved.receipt || !saved.request.inputFilesDigest)
+      throw new Error("Missing legacy acceptance");
+    const jws = await signFederationMessage(
+      FederationInputDownloadQuerySchema,
+      {
+        ...f.query,
+        queryId: crypto.randomUUID(),
+        operationId: saved.operationId,
+        taskId: saved.taskId,
+        agreementRevisionId: saved.agreementRevisionId,
+        reservationId: saved.receipt.reservationId,
+        requestDigest: saved.requestDigest,
+        binding: {
+          ...f.query.binding,
+          operationId: saved.operationId,
+          manifestDigest: saved.request.inputFilesDigest,
+        },
+        issuedAt: clock().toISOString(),
+        expiresAt: new Date(clock().getTime() + 30_000).toISOString(),
+      },
+      b.signing,
+    );
+    await expect(legacy.source.inputDownload(jws, targetFingerprint, f.downloads)).rejects.toThrow(
+      "POLICY_DENIED",
+    );
+    expect(f.calls).toHaveLength(0);
+  } finally {
+    await legacy.lease.release();
+  }
+});
+
+test("input downloads refuse missing storage, substituted versions, untrusted origins and overlong bearer credentials", async () => {
+  const f = await inputDownloadFixture();
+  try {
+    const head = f.downloads.storage.head;
+    const presign = f.downloads.storage.presignDownload;
+    const original = await head("test", "original-version");
+    if (!original) throw new Error("Missing storage fixture");
+    for (const stat of [
+      null,
+      { ...original, size: 5 },
+      { ...original, versionId: "different-version" },
+    ]) {
+      f.downloads.storage.head = async () => stat;
+      await expect(f.read()).rejects.toThrow("ASSET_UNAVAILABLE");
+    }
+    f.downloads.storage.head = head;
+    for (const [field, value] of [
+      ["X-Amz-Expires", "31"],
+      ["versionId", "other"],
+      ["host", "elsewhere.test.invalid"],
+    ]) {
+      f.downloads.storage.presignDownload = async (...args) => {
+        const url = new URL(await presign(...args));
+        if (field === "host") url.hostname = value ?? "";
+        else url.searchParams.set(field ?? "", value ?? "");
+        return url.toString();
+      };
+      await expect(f.read()).rejects.toThrow();
+    }
+    f.downloads.storage.presignDownload = presign;
+    await expect(
+      f.source.inputDownload(f.jws, targetFingerprint, { ...f.downloads, allowedOrigins: [] }),
+    ).rejects.toThrow("POLICY_DENIED");
+    time = new Date(time.getTime() + 25_000);
+    expect((await f.read()).expiresAt).toBe(f.query.expiresAt);
+    expect(f.calls.at(-1)?.seconds).toBe(5);
+  } finally {
+    await f.lease.release();
+  }
+});
+
+test("input downloads recheck current permissions and both signing purposes after storage I/O", async () => {
+  const f = await inputDownloadFixture();
+  try {
+    const presign = f.downloads.storage.presignDownload;
+    for (const [siteId, keyId, kind] of [
+      [a.signing.siteId, a.signing.keyId, "input-download-grant"],
+      [b.signing.siteId, b.signing.keyId, "input-download-query"],
+    ] as const) {
+      const [key] = await db
+        .select()
+        .from(federationSigningKeys)
+        .where(
+          and(eq(federationSigningKeys.siteId, siteId), eq(federationSigningKeys.keyId, keyId)),
+        );
+      if (!key) throw new Error("Missing signing key");
+      f.downloads.storage.presignDownload = async (...args) => {
+        const url = await presign(...args);
+        await db
+          .update(federationSigningKeys)
+          .set({ allowedKinds: key.allowedKinds.filter((value) => value !== kind) })
+          .where(
+            and(eq(federationSigningKeys.siteId, siteId), eq(federationSigningKeys.keyId, keyId)),
+          );
+        return url;
+      };
+      try {
+        await expect(f.read()).rejects.toThrow("UNTRUSTED_IDENTITY");
+      } finally {
+        await db
+          .update(federationSigningKeys)
+          .set({ allowedKinds: key.allowedKinds })
+          .where(
+            and(eq(federationSigningKeys.siteId, siteId), eq(federationSigningKeys.keyId, keyId)),
+          );
+      }
+    }
+    f.downloads.storage.presignDownload = async (...args) => {
+      const url = await presign(...args);
+      await db
+        .update(netdriveFiles)
+        .set({ storageVersionId: "replaced-during-signing" })
+        .where(eq(netdriveFiles.id, f.fileId));
+      return url;
+    };
+    try {
+      await expect(f.read()).rejects.toThrow("OPERATION_CONFLICT");
+    } finally {
+      await db
+        .update(netdriveFiles)
+        .set({ storageVersionId: "original-version" })
+        .where(eq(netdriveFiles.id, f.fileId));
+    }
+    f.downloads.storage.presignDownload = async (...args) => {
+      const url = await presign(...args);
+      await permission.set(
+        { ...actor, capability: "delegation.submit", enabled: false },
+        actor.userId,
+      );
+      return url;
+    };
+    try {
+      await expect(f.read()).rejects.toThrow("POLICY_DENIED");
+    } finally {
+      await permission.set(
+        { ...actor, capability: "delegation.submit", enabled: true },
+        actor.userId,
+      );
+    }
+    f.downloads.storage.presignDownload = async (...args) => {
+      const url = await presign(...args);
+      await f.registry.requestCancel(f.runId);
+      return url;
+    };
+    await expect(f.read()).rejects.toThrow("CANCELLATION_REQUESTED");
   } finally {
     await f.lease.release();
   }

@@ -25,10 +25,9 @@ import {
 } from "@kuintessence/shared/federation";
 import { and, asc, eq, inArray, isNull } from "drizzle-orm";
 import { validateArtifactMembers } from "../services/artifact-members";
-import type { MinioBackend } from "../storage/minio-client";
 import { federationMaterialDigest } from "./assets";
+import { type FederationDownloadStorage, signedDownloadExpiry } from "./download-credential";
 import { requireExecutionIdentity } from "./execution-identity";
-import { signedDownloadExpiry } from "./result-download-credential";
 import { requireFederationResultPolicy } from "./result-policy";
 import {
   type FederationSigningKey,
@@ -38,10 +37,7 @@ import {
 } from "./signatures";
 import { type FederationTransaction, FederationTrustRegistry } from "./trust-registry";
 
-export interface FederationResultDownloadStorage {
-  storage: Pick<MinioBackend, "head" | "presignDownload">;
-  allowedOrigins: readonly string[];
-}
+export type FederationResultDownloadStorage = FederationDownloadStorage;
 
 /** Inventory and short-lived credentials travel separately; bytes never pass through this service. */
 export class FederationResultResponder {
