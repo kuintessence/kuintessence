@@ -21,6 +21,10 @@ test.each([
         ? createEvidenceHttpServer
         : createCommercialHttpServer;
   const server = createHttpServer({
+    query: async () => {
+      calls++;
+      return { operation: "list-demands", demands: [], bookmark: "" };
+    },
     prepare: async () => {
       throw new Error("unexpected prepare");
     },
@@ -73,6 +77,12 @@ test.each([
     const response = await send(`/v1/${kind}/advance`, { recovery: "eA==" });
     expect(response).toEqual({ status: 503, text: '{"code":"LEDGER_UNAVAILABLE"}' });
     expect(calls).toBe(1);
+    const query = { operation: "list-demands", limit: 10, bookmark: "" };
+    expect((await send(`/v1/${kind}/query`, query)).status).toBe(kind === "market" ? 200 : 404);
+    expect((await send(`/v1/${kind}/query`, { ...query, chaincode: "other" })).status).toBe(
+      kind === "market" ? 409 : 404,
+    );
+    expect(calls).toBe(kind === "market" ? 2 : 1);
   } finally {
     await new Promise<void>((resolve) => server.close(() => resolve()));
     await rm(directory, { recursive: true, force: true });

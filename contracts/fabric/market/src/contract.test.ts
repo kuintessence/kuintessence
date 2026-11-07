@@ -28,6 +28,42 @@ class State {
   fcn = "Init";
   transient = new Map<string, Uint8Array>();
   timestamp = now;
+  closed = 0;
+  getStateByPartialCompositeKeyWithPagination = (
+    _name: string,
+    _parts: string[],
+    limit: number,
+    bookmark = "",
+  ) => {
+    const rows = [...this.state]
+      .filter(([key]) => key.startsWith('["demand",'))
+      .sort(([a], [b]) => a.localeCompare(b));
+    const start = bookmark ? rows.findIndex(([key]) => key === bookmark) : 0;
+    if (start < 0) throw new Error("Invalid fixture bookmark");
+    const page = rows
+      .slice(start, start + limit)
+      .map(([key, value]) => ({ namespace: "market", key, value }));
+    let index = 0;
+    return Object.assign(
+      Promise.resolve({
+        metadata: { fetchedRecordsCount: page.length, bookmark: rows[start + limit]?.[0] ?? "" },
+        iterator: {
+          next: async () => ({
+            value: page[index++] ?? { namespace: "market", key: "", value: new Uint8Array() },
+            done: index > page.length,
+          }),
+          close: async () => {
+            this.closed++;
+          },
+        },
+      }),
+      {
+        [Symbol.asyncIterator]: async function* () {
+          yield* page;
+        },
+      },
+    );
+  };
   getState = async (key: string) => this.state.get(key) ?? new Uint8Array();
   putState = async (key: string, value: Uint8Array) => {
     this.state.set(key, value);
@@ -174,4 +210,37 @@ test("market trust changes and duplicate initialization are refused", async () =
         organizations: [organization, organization],
       }),
   ).toThrow();
+});
+
+test("market public directory paginates only demand keys and closes iterators without writes", async () => {
+  const f = await fixture();
+  const second = { ...f.demand, demandId: randomUUID() };
+  await f.invoke("PublishDemand", f.demand);
+  f.stub.params = [second.demandId];
+  f.stub.transient = new Map([["market", Buffer.from(JSON.stringify(second))]]);
+  await f.ledger.invoke(f.stub, identity());
+  const before = new Map(f.stub.state);
+  const list = async (bookmark: string, role = "market") => {
+    f.stub.fcn = "ListDemands";
+    f.stub.params = ["1", bookmark];
+    f.stub.transient.clear();
+    return JSON.parse((await f.ledger.invoke(f.stub, identity(2, role))).toString());
+  };
+  const first = await list("");
+  expect(first.demands).toHaveLength(1);
+  expect(first.bookmark).not.toBe("");
+  const last = await list(first.bookmark, "commercial");
+  expect(last.demands).toHaveLength(1);
+  expect(last.bookmark).toBe("");
+  expect(new Set([first.demands[0].demand.demandId, last.demands[0].demand.demandId])).toEqual(
+    new Set([f.demand.demandId, second.demandId]),
+  );
+  expect(f.stub.closed).toBe(2);
+  expect(f.stub.state).toEqual(before);
+  await expect(list("", "evidence")).rejects.toThrow("UNTRUSTED_IDENTITY");
+  f.stub.params = ["51", ""];
+  await expect(f.ledger.invoke(f.stub, identity())).rejects.toThrow();
+  f.stub.params = ["1", ""];
+  f.stub.transient.set("private", Buffer.from("forbidden"));
+  await expect(f.ledger.invoke(f.stub, identity())).rejects.toThrow("INVALID_MESSAGE");
 });

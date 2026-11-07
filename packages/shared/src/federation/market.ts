@@ -93,3 +93,25 @@ export const FabricMarketAdvanceResultSchema = z.discriminatedUnion("state", [
   FabricEvidenceAdvanceResultSchema.options[3],
 ]);
 export type MarketAdvanceResult = z.infer<typeof FabricMarketAdvanceResultSchema>;
+
+export const MarketPageRequestSchema = z.strictObject({
+  limit: z.number().int().min(1).max(50),
+  bookmark: z.string().max(4096),
+});
+export const MarketQueryInputSchema = z.discriminatedUnion("operation", [
+  z.strictObject({ operation: z.literal("list-demands"), ...MarketPageRequestSchema.shape }),
+  z.strictObject({ operation: z.literal("get-demand"), demandId: Id }),
+]);
+export type MarketQueryInput = z.infer<typeof MarketQueryInputSchema>;
+export const MarketPageSchema = z.strictObject({
+  demands: z.array(MarketDemandStateSchema).max(50),
+  bookmark: z.string().max(4096),
+});
+export const MarketQueryResultSchema = z.discriminatedUnion("operation", [
+  z.strictObject({ operation: z.literal("list-demands"), ...MarketPageSchema.shape }),
+  z.strictObject({
+    operation: z.literal("get-demand"),
+    demand: MarketDemandStateSchema.nullable(),
+  }),
+]);
+export type MarketQueryResult = z.infer<typeof MarketQueryResultSchema>;

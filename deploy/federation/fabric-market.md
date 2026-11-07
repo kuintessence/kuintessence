@@ -6,7 +6,7 @@
 
 ## 状态与接口
 
-每个调用只有一个公开参数 `demandId`；写入载荷通过唯一 transient 键 `market` 传入，最多 32 KiB。**transient 只是传输方式，这些市场载荷会写入公开状态，绝非私有记录。**
+单条读写调用只有一个公开参数 `demandId`；分页读取使用 limit/bookmark 两个参数。写入载荷通过唯一 transient 键 `market` 传入，最多 32 KiB。**transient 只是传输方式，这些市场载荷会写入公开状态，绝非私有记录。**
 
 | 方法 | 操作者与效果 |
 | --- | --- |
@@ -14,6 +14,7 @@
 | ClaimDemand | 另一机构按 expectedVersion 认领，保存唯一 claimId/执行机构/截止时间，状态 CLAIMED/version=2 |
 | CancelOpenDemand | 仅需求机构可按 expectedVersion 撤回 OPEN 需求，状态 CANCELLED |
 | GetDemand | 登记机构读取完整公开状态；允许 market/commercial 角色 |
+| ListDemands | 相同读取角色，使用 Fabric 原生书签按需求键分页；每页 1–50 项，仅读取不提交 |
 
 相同发布/认领/撤回原请求可重试，不能用同一标识覆盖内容或重置当前状态。认领期限必须处于需求有效期内；已认领需求不因超时自动开放，也不能调用“撤回未认领需求”释放。这避免后续私有锁额存在时另一机构取得第二份认领。当前没有激活、资金释放、重新开放或结算接口；Server 的 ledger_coordinated 拒绝门槛保持不变。认领不是执行许可，也不是已锁定资金的证明。
 
@@ -27,7 +28,7 @@
 
 新增独立 [Market Adapter](../../packages/fabric-adapter/src/market.ts)，启动已有 Node Adapter 入口时设置 `KQ_FABRIC_ADAPTER_KIND=market`、`KQ_FABRIC_ADAPTER_CONFIG=/absolute/path/market-adapter.json`。配置格式复用[商业 Adapter](fabric-commercial.md)，其中 adapter 包含本机构 siteId、固定 channel、固定 chaincode 和上述公开 trust；连接证书、身份密钥、恢复密钥及私有 runDirectory 使用原权限检查。生成 `market.sock`，目录/套接字仅本用户可读写，启动锁阻止同目录双进程；不开放 TCP API。
 
-本机协议仅接受 `POST /v1/market/proposal` 和 `/v1/market/advance`。前者为严格联合结构：publish-demand + demand、claim-demand + claim 或 cancel-open-demand + cancellation，详情见共享 schema；后者仅接受 recovery。不能由调用方选择其他通道、链码或机构密钥。Server 的 [UnixMarketClient](../../packages/server/src/federation/market-client.ts) 已提供类型化客户端，持久待办与机构范围 API 已按下节接通。
+本机协议接受 `POST /v1/market/proposal`、`/v1/market/advance` 和 `/v1/market/query`。前者为严格联合结构：publish-demand + demand、claim-demand + claim 或 cancel-open-demand + cancellation，详情见共享 schema；advance 仅接受 recovery；query 严格限定 list-demands + limit/bookmark 或 get-demand + demandId。不能由调用方选择其他通道、链码或机构密钥。Server 的 [UnixMarketClient](../../packages/server/src/federation/market-client.ts) 已提供类型化客户端，持久待办与机构范围 API 已按下节接通。
 
 准备提案保存加密检查点；背书后返回 prepared，尚未提交。后续提交须取得原交易 VALID 才返回 committed；未知结果保持 pending 并沿同一 transactionId 恢复。调用方必须在每次推进前持久保存原输入及检查点，不能丢失待办后创建新请求。恢复密钥、机构证书、channel/chaincode、信任 generation 或 Adapter 用途改变均拒绝旧检查点，需按原配置恢复并核对，不能静默丢弃。
 
@@ -41,6 +42,8 @@
 
 | 接口 | 用途 |
 | --- | --- |
+| GET /api/federation/market/demands | 公共需求目录，limit（默认 20、最多 50）及不透明 bookmark 分页 |
+| GET /api/federation/market/demands/:id | 公共单条需求，明确不存在返回 404 |
 | POST /api/federation/market/operations | 接受 MarketProposalInput，返回 202 和本地待办 ID；不表示已上链 |
 | GET /api/federation/market/operations | 本组织操作列表，limit/offset 分页 |
 | GET /api/federation/market/operations/:id | 本组织操作与交易尝试；limit/offset 分页交易历史 |
@@ -52,7 +55,9 @@
 
 入队表示机构已经受理该公开操作。人员权限撤销禁止后续新请求、读取与人工重试，不自动撤销已受理的后台操作；已提交结果未知时也不能通过撤销人员权限假定链上操作未发生。当前不提供撤销本地尚未提交待办的接口；撤回公开需求是独立链上操作，受前述状态限制。
 
-这里的列表是本组织提交记录，不是全联盟需求目录；尚缺公共状态同步、平台市场页面、私有锁额及执行许可。数据库验证使用真实 PostgreSQL 与受控 Adapter 返回值；另有真实链 Adapter 恢复验收，但尚未将本轮 Server 服务与真实链合并为完整端到端检查。
+operations 列表是本组织提交记录；demands 是当前机构 Fabric 身份可读的联盟公开目录，二者分开。公共目录仅调用 Gateway evaluate，不提交交易，也不写本地待办。返回 observedAt 是本次成功读取时间，不是区块时间或多机构共识新鲜度保证；Peer 可能暂时落后，后续写入仍由链上版本/MVCC 核验。书签只是翻页位置，跨页不保证同一时点快照；不对需求总量作精确统计承诺。
+
+目录读取在网络前后均复核 market.read 和当前组织，网络期间不持有数据库锁。未配置 Adapter 或断线返回 503，不把故障当作空列表；无效响应返回 502。Adapter 核对严格 schema、需求 ID/摘要及页大小，不提供任意链码查询。价格、用量和合同不得出现在自由文本中。尚缺平台市场页面、自动认领订阅、私有锁额及执行许可。数据库验证使用真实 PostgreSQL 与受控 Adapter 返回值；另有真实链 Adapter 恢复验收，但尚未将本轮 Server 服务与真实链合并为完整端到端检查。
 
 ## 真实网络验证
 
@@ -63,6 +68,6 @@ bun run test:fabric:market
 
 沿用[隔离 Fabric 网络](fabric-evidence.md)的三机构/三 Peer、独立 Orderer、随机本机端口、mTLS 与资源限制，不接入现有链或数据库。可用 `KQ_FABRIC_REPORT` 保存不含凭据的断言摘要；完整测试目录默认清理，`KQ_FABRIC_KEEP_ARTIFACTS=1` 仅用于本机诊断，目录包含测试凭据，不公开上传。
 
-已验证单机构背书提交为 ENDORSEMENT_POLICY_FAILURE，两机构发布 VALID；B/C 同时认领时只有一个 VALID，另一个 MVCC_READ_CONFLICT；原请求重试不重置认领，竞争方不能覆盖，未认领撤回接口不能作用于认领后状态，未实现的激活接口拒绝调用。测试已接入现有 Fabric CI。追加检查使用真实 Node Market Adapter、私有 Unix socket 和 Server 客户端，先持久保存提案/背书检查点，停止 Orderer 得到 pending，再恢复 Orderer；提交 VALID 后让进程退出而不保存响应，新进程仍从原检查点取得同一 transactionId/blockNumber。每次调用是新进程，未以同一内存对象代替恢复；此故障恢复样例是发布需求操作。
+已验证单机构背书提交为 ENDORSEMENT_POLICY_FAILURE，两机构发布 VALID；B/C 同时认领时只有一个 VALID，另一个 MVCC_READ_CONFLICT；原请求重试不重置认领，竞争方不能覆盖，未认领撤回接口不能作用于认领后状态，未实现的激活接口拒绝调用。测试已接入现有 Fabric CI。追加检查使用真实 Node Market Adapter、私有 Unix socket 和 Server 客户端，先持久保存提案/背书检查点，停止 Orderer 得到 pending，再恢复 Orderer；提交 VALID 后让进程退出而不保存响应，新进程仍从原检查点取得同一 transactionId/blockNumber。每次调用是新进程，未以同一内存对象代替恢复；此故障恢复样例是发布需求操作。追加目录检查通过同一生产 Node Adapter/Server Unix 客户端逐页读取两条真实提交需求，核对单条详情、书签不重复及不存在记录；读取使用 evaluate，无额外市场提交。
 
-Market Adapter、Server 持久待办与操作 API 已接通，尚缺公共需求浏览/同步和 Web 入口、PDC 报价与额度锁定、跨链码 executionGate 读集、激活/终态/释放及结算。这些完成前不允许把“已认领”接入作业派发，当前检查不代表市场到真实计算的端到端交付。
+Market Adapter、Server 持久待办与操作 API 已接通，已接入公共需求分页浏览 API，尚缺自动同步和 Web 入口、PDC 报价与额度锁定、跨链码 executionGate 读集、激活/终态/释放及结算。这些完成前不允许把“已认领”接入作业派发，当前检查不代表市场到真实计算的端到端交付。

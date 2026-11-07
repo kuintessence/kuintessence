@@ -1423,3 +1423,16 @@ Server 商业 worker 已接入原 Agent 流的只读补采。数据库保存请�
 七个不同隔离 PostgreSQL 场景通过：并发幂等与组织隔离、持久检查点/断线/服务重启、并发领取/租约过期/迟到回包、未知交易重试/无效历史保留、明确能力/撤回归属/撤权、HTTP 身份/组织/严格输入/公开投影，以及错误交易响应拒绝与提交状态保存失败的原子回滚。首轮发现 Drizzle 无 FROM 的时钟查询不执行，已改为绑定当前用户行并复查。一个既有双语权限覆盖测试通过。数据库测试使用受控 Adapter 回调，不代表 Server/数据库/真实 Fabric 已贯通。
 
 完整类型检查通过（含 protobuf、全部包及 Fabric 脚本），最终 Server 类型检查通过；全仓 lint 无错误，保留既有 47 warnings/1 info。文档目标、workflow 引用和 diff 静态检查通过。临时随机数据库均删除，凭据和日志留在忽略的 temp/。公共市场目录、Web、私有锁额、跨链码 gate、结算、物理介质和归档恢复仍待完成，链上协调执行入口继续保持拒绝；未合并或部署 main/PR 预览。
+
+
+## 公共需求分页查询与真实链读取
+
+kq-market 新增 ListDemands，使用 Fabric 原生书签按需求键分页（最多 50 项），沿用 market/commercial 角色读取权限。Market Adapter 增加固定 query 接口，仅 evaluate 公开目录与单条需求，不提交查询交易；校验 schema、请求 ID、摘要、页大小与重复项。Server Unix 客户端和 /api/federation/market/demands、/:id 已接通，网络前后复核当前组织 market.read；读取期间不持数据库锁。未配置/断线返回 503，错误响应 502，不存在返回 404；不把故障转成空列表。observedAt 是读取时间，不能证明区块新鲜度；跨页不是同一快照。没有新增迁移、本地镜像表或轮询任务。
+
+七项市场链码单测、四项 Adapter SDK 场景及三类私有 HTTP runtime 检查通过（其中多数是既有场景回归）。九个隔离 PostgreSQL 场景通过，新增两项验证公共查询前后权限、只读能力、断线/缺失/错误响应与 HTTP 分页边界；最终错误响应修正后定向两项通过，不重复计数。首次 SDK 调用误用了未导出的 EvaluateError，改为真实 GatewayError；测试类型的字面量与 unknown 展开问题也已修正。
+
+实际 Fabric 3.1.5 三机构网络七组断言通过：前六组回归多数背书、竞争认领和原交易恢复，第七组通过生产 Node Adapter/Server Unix 客户端逐页读取两条真实提交需求、校验详情、不重复书签及不存在记录。证据 temp/fabric-network-fXO5Lf，摘要 temp/federation-market-query-network-report.json；所属 Peer/Orderer/CCAAS 均由测试入口清理。首次入口因未设置工具路径在启动前拒绝，补齐已验证工具目录后运行；不算链测试失败或通过。
+
+本轮仍不是 Server 数据库到 Fabric 的完整联合验收，目录读取也不允许执行。市场 Web、私有锁额、跨链码 executionGate、结算、物理介质与归档恢复及 PR 预览继续待办。未合并、未部署 main。
+
+收尾：完整类型检查执行后仅 Adapter 的上述导入/测试类型错误未通过，其余包检查通过；修正后 Adapter、Server 及 Fabric 脚本定向类型检查均通过。全仓 lint 无错误，保留既有 47 warnings/1 info；最终 14 个修改源码文件 lint 无诊断，672 个文档目标、workflow 引用及 diff 检查通过。随机测试数据库已删除，所属数据库转发已关闭。没有重复运行未改动的商业/证据网络验收。

@@ -7,6 +7,7 @@ import {
   MarketClaimSchema,
   MarketDemandSchema,
   MarketDemandStateSchema,
+  MarketPageRequestSchema,
 } from "@kuintessence/shared/federation/market";
 import type { ChaincodeInterface, ChaincodeStub } from "fabric-shim";
 import shim from "fabric-shim";
@@ -22,6 +23,7 @@ const fail = (code: ConstructorParameters<typeof FederationError>[0]): never => 
 type Stub = Pick<
   ChaincodeStub,
   | "getFunctionAndParameters"
+  | "getStateByPartialCompositeKeyWithPagination"
   | "getState"
   | "putState"
   | "setStateValidationParameter"
@@ -70,12 +72,45 @@ export class MarketLedger {
     if (!Buffer.from(await stub.getState(ConfigKey)).equals(encode(this.trust)))
       return fail("POLICY_DENIED");
     const { fcn, params } = stub.getFunctionAndParameters();
-    if (!["PublishDemand", "ClaimDemand", "CancelOpenDemand", "GetDemand"].includes(fcn))
+    if (
+      !["PublishDemand", "ClaimDemand", "CancelOpenDemand", "GetDemand", "ListDemands"].includes(
+        fcn,
+      )
+    )
       return fail("INVALID_MESSAGE");
     const org = this.organization(
       identity,
-      fcn === "GetDemand" ? ["market", "commercial"] : ["market"],
+      ["GetDemand", "ListDemands"].includes(fcn) ? ["market", "commercial"] : ["market"],
     );
+    if (fcn === "ListDemands") {
+      if (stub.getTransient().size) return fail("INVALID_MESSAGE");
+      const [size, cursor] = z.tuple([z.string().regex(/^[1-9][0-9]?$/), z.string()]).parse(params);
+      const { limit, bookmark } = MarketPageRequestSchema.parse({
+        limit: Number(size),
+        bookmark: cursor,
+      });
+      const { iterator, metadata } = await stub.getStateByPartialCompositeKeyWithPagination(
+        "demand",
+        [],
+        limit,
+        bookmark,
+      );
+      const demands = [];
+      try {
+        for (;;) {
+          const item = await iterator.next();
+          if (item.value?.value?.length)
+            demands.push(
+              MarketDemandStateSchema.parse(JSON.parse(Buffer.from(item.value.value).toString())),
+            );
+          if (item.done) break;
+          if (demands.length > limit) return fail("INVALID_MESSAGE");
+        }
+      } finally {
+        await iterator.close();
+      }
+      return encode({ demands, bookmark: metadata.bookmark });
+    }
     const [id] = z.tuple([z.uuid()]).parse(params);
     const key = stub.createCompositeKey("demand", [id]);
     const bytes = await stub.getState(key);

@@ -13,6 +13,9 @@ import {
   FabricMarketAdvanceResultSchema,
   type MarketProposalInput,
   MarketProposalInputSchema,
+  type MarketQueryInput,
+  MarketQueryInputSchema,
+  MarketQueryResultSchema,
 } from "@kuintessence/shared/federation/market";
 import { and, asc, desc, eq, sql } from "drizzle-orm";
 import { z } from "zod";
@@ -326,6 +329,33 @@ export class FederationMarketService {
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,
     };
+  }
+  async query(actor: FederationActor, raw: MarketQueryInput) {
+    const input = MarketQueryInputSchema.parse(raw);
+    await this.db.transaction((tx) => requireFederationCapability(tx, actor, "market.read"));
+    if (!this.client) throw new FabricClientFailure("LEDGER_UNAVAILABLE");
+    const rawResult = await this.client.query(input).catch((error: unknown) => {
+      if (error instanceof z.ZodError)
+        throw new FabricClientFailure("INVALID_ADAPTER_RESPONSE", true);
+      throw error;
+    });
+    const parsed = MarketQueryResultSchema.safeParse(rawResult);
+    if (!parsed.success) throw new FabricClientFailure("INVALID_ADAPTER_RESPONSE", true);
+    const result = parsed.data;
+    if (
+      result.operation !== input.operation ||
+      (input.operation === "get-demand" &&
+        result.operation === "get-demand" &&
+        result.demand &&
+        result.demand.demand.demandId !== input.demandId) ||
+      (input.operation === "list-demands" &&
+        result.operation === "list-demands" &&
+        result.demands.length > input.limit)
+    )
+      throw new FabricClientFailure("INVALID_ADAPTER_RESPONSE", true);
+    // No database lock during network I/O; a revoked reader cannot receive a late response.
+    await this.db.transaction((tx) => requireFederationCapability(tx, actor, "market.read"));
+    return { ...result, observedAt: new Date().toISOString() };
   }
   async list(actor: FederationActor, limit: number, offset: number) {
     return this.db.transaction(async (tx) => {

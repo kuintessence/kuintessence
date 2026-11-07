@@ -4,6 +4,7 @@ import { MarketProposalInputSchema } from "@kuintessence/shared/federation/marke
 import { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { z } from "zod";
+import { FabricClientFailure } from "../federation/fabric-client";
 import type { FederationMarketService } from "../federation/market";
 import type { FederationActor } from "../federation/permissions";
 import type { BoundPrincipal } from "../middleware/principal-binder";
@@ -24,6 +25,8 @@ export function createFederationMarketRoutes(service: FederationMarketService) {
   });
   r.use("/federation/market/*", bodyLimit({ maxSize: 32768 }));
   r.onError((error, c) => {
+    if (error instanceof FabricClientFailure)
+      return c.json({ error: { code: error.code } }, error.needsReview ? 502 : 503);
     if (error instanceof FederationError)
       return c.json(
         { error: { code: error.code } },
@@ -36,6 +39,33 @@ export function createFederationMarketRoutes(service: FederationMarketService) {
       limit: z.coerce.number().int().min(1).max(100).default(50),
       offset: z.coerce.number().int().min(0).default(0),
     });
+  r.get(
+    "/federation/market/demands",
+    kqValidator(
+      "query",
+      z.strictObject({
+        limit: z.coerce.number().int().min(1).max(50).default(20),
+        bookmark: z.string().max(4096).default(""),
+      }),
+    ),
+    async (c) =>
+      c.json({
+        success: true,
+        data: await service.query(c.get("federationActor"), {
+          operation: "list-demands",
+          ...c.req.valid("query"),
+        }),
+      }),
+  );
+  r.get("/federation/market/demands/:id", kqValidator("param", id), async (c) => {
+    const data = await service.query(c.get("federationActor"), {
+      operation: "get-demand",
+      demandId: c.req.valid("param").id,
+    });
+    if (data.operation === "get-demand" && !data.demand)
+      return c.json({ error: { code: "ASSET_UNAVAILABLE" } }, 404);
+    return c.json({ success: true, data });
+  });
   r.post(
     "/federation/market/operations",
     kqValidator("json", MarketProposalInputSchema),

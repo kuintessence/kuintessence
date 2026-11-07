@@ -13,6 +13,9 @@ import {
   type MarketAdvanceResult,
   MarketDemandSchema,
   type MarketProposalInput,
+  type MarketQueryInput,
+  type MarketQueryResult,
+  MarketQueryResultSchema,
 } from "@kuintessence/shared/federation/market";
 import { eq, sql } from "drizzle-orm";
 import { Hono } from "hono";
@@ -30,6 +33,16 @@ if (!url || !/^\/kuintessence_unit_[a-z0-9_]+$/.test(new URL(url).pathname))
 const db = createPgDb(url, { max: 8, idle_timeout: 1 });
 afterAll(() => db.$client.end());
 class Adapter implements MarketClient {
+  queries = 0;
+  onQuery?: (input: MarketQueryInput) => Promise<MarketQueryResult>;
+  async query(input: MarketQueryInput): Promise<MarketQueryResult> {
+    this.queries++;
+    if (this.offline) throw new FabricClientFailure("LEDGER_UNAVAILABLE");
+    if (this.onQuery) return this.onQuery(input);
+    return input.operation === "get-demand"
+      ? { operation: "get-demand", demand: null }
+      : { operation: "list-demands", demands: [], bookmark: "" };
+  }
   prepares = 0;
   advances = 0;
   outcome: "pending" | "committed" | "invalid" = "committed";
@@ -297,6 +310,7 @@ test("market commits status with the transaction result atomically and rejects a
   await f.service.advanceNext();
   const before = (await f.view()).transactions[0];
   const bad: MarketClient = {
+    query: (input) => f.adapter.query(input),
     prepare: (input) => f.adapter.prepare(input),
     advance: async () => ({ state: "committed", transactionId: "0".repeat(64), blockNumber: "10" }),
   };
@@ -325,4 +339,69 @@ test("market commits status with the transaction result atomically and rejects a
   expect((await f.view()).operation.state).toBe("committed");
   expect((await f.view()).transactions).toHaveLength(1);
   expect(f.adapter.prepares).toBe(1);
+});
+
+test("market directory rechecks scoped read permission after network and never converts outage into empty state", async () => {
+  const f = await fixture(false);
+  const query: MarketQueryInput = { operation: "list-demands", limit: 1, bookmark: "" };
+  await expect(f.service.query(f.actor, query)).rejects.toThrow("POLICY_DENIED");
+  expect(f.adapter.queries).toBe(0);
+  await f.permissions.set({ ...f.actor, capability: "market.read", enabled: true }, f.actor.userId);
+  expect(await f.service.query(f.actor, query)).toMatchObject({
+    operation: "list-demands",
+    demands: [],
+    bookmark: "",
+    observedAt: expect.any(String),
+  });
+  await expect(f.service.enqueue(f.actor, f.input)).rejects.toThrow("POLICY_DENIED");
+  f.adapter.offline = true;
+  await expect(f.service.query(f.actor, query)).rejects.toThrow("LEDGER_UNAVAILABLE");
+  await expect(new FederationMarketService(db, f.siteId).query(f.actor, query)).rejects.toThrow(
+    "LEDGER_UNAVAILABLE",
+  );
+  f.adapter.offline = false;
+  f.adapter.onQuery = async () => ({ operation: "get-demand", demand: null });
+  await expect(f.service.query(f.actor, query)).rejects.toThrow("INVALID_ADAPTER_RESPONSE");
+  f.adapter.onQuery = async () => {
+    await f.permissions.set(
+      { ...f.actor, capability: "market.read", enabled: false },
+      f.actor.userId,
+    );
+    return { operation: "list-demands", demands: [], bookmark: "" };
+  };
+  await expect(f.service.query(f.actor, query)).rejects.toThrow("POLICY_DENIED");
+  expect(
+    await db.select().from(submissions).where(eq(submissions.localSiteId, f.siteId)),
+  ).toHaveLength(0);
+});
+
+test("market directory HTTP bounds pages and distinguishes missing, unavailable and denied", async () => {
+  const f = await fixture();
+  const app = new Hono();
+  app.onError(createErrorHandler(pino({ level: "silent" })));
+  app.use("*", async (c, next) => {
+    c.set("principal" as never, { userId: f.actor.userId, orgId: f.actor.orgId } as never);
+    await next();
+  });
+  app.route("/api", createFederationMarketRoutes(f.service));
+  const base = "/api/federation/market/demands";
+  const page = await app.request(base);
+  expect(page.status).toBe(200);
+  expect(page.headers.get("cache-control")).toBe("no-store");
+  expect(await page.json()).toMatchObject({
+    success: true,
+    data: { demands: [], observedAt: expect.any(String) },
+  });
+  expect((await app.request(`${base}?limit=51`)).status).toBe(400);
+  expect((await app.request(`${base}?chaincode=other`)).status).toBe(400);
+  expect((await app.request(`${base}/${randomUUID()}`)).status).toBe(404);
+  f.adapter.onQuery = async () => MarketQueryResultSchema.parse({});
+  expect((await app.request(base)).status).toBe(502);
+  f.adapter.offline = true;
+  expect((await app.request(base)).status).toBe(503);
+  await f.permissions.set(
+    { ...f.actor, capability: "market.publish", enabled: false },
+    f.actor.userId,
+  );
+  expect((await app.request(base)).status).toBe(403);
 });

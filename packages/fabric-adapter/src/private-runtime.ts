@@ -40,6 +40,7 @@ export function createFabricHttpServer<T>(
   kind: "evidence" | "commercial" | "market",
   inputSchema: z.ZodType<T>,
   adapter: { prepare(input: T): Promise<unknown>; advance(token: string): Promise<unknown> },
+  query?: (input: unknown) => Promise<unknown>,
 ) {
   let active = 0;
   return createServer(
@@ -53,7 +54,11 @@ export function createFabricHttpServer<T>(
       }
       if (
         request.method !== "POST" ||
-        ![`/v1/${kind}/proposal`, `/v1/${kind}/advance`].includes(request.url ?? "")
+        ![
+          `/v1/${kind}/proposal`,
+          `/v1/${kind}/advance`,
+          ...(query ? [`/v1/${kind}/query`] : []),
+        ].includes(request.url ?? "")
       ) {
         response.writeHead(404).end();
         return;
@@ -83,9 +88,11 @@ export function createFabricHttpServer<T>(
           new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(parts)),
         );
         const result =
-          request.url === `/v1/${kind}/proposal`
-            ? await adapter.prepare(inputSchema.parse(input))
-            : await adapter.advance(AdvanceInput.parse(input).recovery);
+          query && request.url === `/v1/${kind}/query`
+            ? await query(input)
+            : request.url === `/v1/${kind}/proposal`
+              ? await adapter.prepare(inputSchema.parse(input))
+              : await adapter.advance(AdvanceInput.parse(input).recovery);
         response.end(JSON.stringify(result));
       } catch (error) {
         const invalid = error instanceof z.ZodError || error instanceof SyntaxError;

@@ -93,6 +93,10 @@ export async function verifyMarketNetwork(
     report.passed.push(
       "production Node market adapter and Server Unix client resume one transaction across outage, new processes and lost committed response",
     );
+    assert.equal((await probe("query"))?.state, "queried");
+    report.passed.push(
+      "production market adapter and Server Unix client browse committed demand pages, matching details and missing records without submission",
+    );
     for (const item of report.passed) console.log(`PASS ${item}`);
     if (process.env.KQ_FABRIC_REPORT)
       await writeFile(process.env.KQ_FABRIC_REPORT, JSON.stringify(report, null, 2), {

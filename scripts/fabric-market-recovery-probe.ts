@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
 import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { FabricProposalCheckpointSchema } from "@kuintessence/shared/federation/ledger";
@@ -12,7 +13,7 @@ import { UnixMarketClient } from "../packages/server/src/federation/market-clien
 import { Site } from "./fabric-evidence-fixture";
 
 const root = z.string().parse(process.argv[2]);
-const action = z.enum(["prepare", "advance", "advance-then-crash"]).parse(process.argv[3]);
+const action = z.enum(["prepare", "advance", "advance-then-crash", "query"]).parse(process.argv[3]);
 const checkpointFile = z.string().parse(process.argv[4]);
 const replyFile = z.string().parse(process.argv[5]);
 const network = z
@@ -62,6 +63,42 @@ try {
     await writeFile(
       replyFile,
       JSON.stringify({ state: "proposal", transactionId: checkpoint.transactionId }),
+      { mode: 0o600 },
+    );
+  } else if (action === "query") {
+    const seen = new Set<string>();
+    let bookmark = "";
+    for (let page = 0; ; page++) {
+      assert(page < 10, "Bounded directory traversal");
+      const result = await client.query({ operation: "list-demands", limit: 1, bookmark });
+      assert.equal(result.operation, "list-demands");
+      if (result.operation !== "list-demands") throw new Error("Wrong query response");
+      assert(result.demands.length <= 1);
+      for (const row of result.demands) {
+        assert(!seen.has(row.demand.demandId), "No duplicate demand across pages");
+        seen.add(row.demand.demandId);
+        const detail = await client.query({
+          operation: "get-demand",
+          demandId: row.demand.demandId,
+        });
+        assert.equal(detail.operation, "get-demand");
+        if (detail.operation !== "get-demand") throw new Error("Wrong detail response");
+        assert.deepEqual(detail.demand, row);
+      }
+      bookmark = result.bookmark;
+      if (!bookmark) break;
+    }
+    assert(seen.size >= 2, "Directory includes original and recovered publications");
+    assert.deepEqual(await client.query({ operation: "get-demand", demandId: randomUUID() }), {
+      operation: "get-demand",
+      demand: null,
+    });
+    const checkpoint = FabricProposalCheckpointSchema.parse(
+      JSON.parse(await readFile(checkpointFile, "utf8")),
+    );
+    await writeFile(
+      replyFile,
+      JSON.stringify({ state: "queried", transactionId: checkpoint.transactionId }),
       { mode: 0o600 },
     );
   } else {

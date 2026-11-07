@@ -207,3 +207,60 @@ test("market recovery rejects changed governance, channel, identity, key and cip
   changed[30] = (changed[30] ?? 0) ^ 1;
   await expect(f.adapter.advance(changed.toString("base64"))).rejects.toThrow("INVALID_RECOVERY");
 });
+
+test("market query only evaluates fixed public methods and rejects wrong or oversized ledger results", async () => {
+  const f = fixture();
+  const network = f.gateway.getNetwork(f.config.channel),
+    contract = network.getContract(f.config.chaincode);
+  spyOn(f.gateway, "getNetwork").mockReturnValue(network);
+  spyOn(network, "getContract").mockReturnValue(contract);
+  const state = {
+    demand: f.demand,
+    digest: `sha256:${createHash("sha256").update(federationCanonicalJson(f.demand)).digest("hex")}`,
+    version: 1,
+    status: "OPEN" as const,
+    claim: null,
+    cancellation: null,
+  };
+  let response: unknown = state;
+  const calls: { name: string; options: unknown }[] = [];
+  const original = contract.newProposal.bind(contract);
+  spyOn(contract, "newProposal").mockImplementation((name, options) => {
+    calls.push({ name, options });
+    const proposal = original(name, options);
+    spyOn(proposal, "evaluate").mockImplementation(async () =>
+      Buffer.from(JSON.stringify(response)),
+    );
+    return proposal;
+  });
+  expect(await f.adapter.query({ operation: "get-demand", demandId: f.demand.demandId })).toEqual({
+    operation: "get-demand",
+    demand: state,
+  });
+  const page = { demands: [state], bookmark: "opaque\u0000cursor" };
+  response = page;
+  expect(await f.adapter.query({ operation: "list-demands", limit: 1, bookmark: "" })).toEqual({
+    operation: "list-demands",
+    ...page,
+  });
+  expect(calls).toEqual([
+    { name: "GetDemand", options: { arguments: [f.demand.demandId] } },
+    { name: "ListDemands", options: { arguments: ["1", ""] } },
+  ]);
+  response = { ...state, digest: `sha256:${"0".repeat(64)}` };
+  await expect(
+    f.adapter.query({ operation: "get-demand", demandId: f.demand.demandId }),
+  ).rejects.toThrow("INVALID_LEDGER_RESPONSE");
+  response = state;
+  await expect(
+    f.adapter.query({ operation: "get-demand", demandId: randomUUID() }),
+  ).rejects.toThrow("INVALID_LEDGER_RESPONSE");
+  response = { demands: [state, state], bookmark: "" };
+  await expect(
+    f.adapter.query({ operation: "list-demands", limit: 1, bookmark: "" }),
+  ).rejects.toThrow("INVALID_LEDGER_RESPONSE");
+  response = "x".repeat(2_097_153);
+  await expect(
+    f.adapter.query({ operation: "get-demand", demandId: f.demand.demandId }),
+  ).rejects.toThrow("INVALID_LEDGER_RESPONSE");
+});

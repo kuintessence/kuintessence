@@ -1,13 +1,23 @@
 import { createHash } from "node:crypto";
-import type { Gateway, Identity, Signer } from "@hyperledger/fabric-gateway";
+import {
+  type Gateway,
+  GatewayError,
+  type Identity,
+  type Signer,
+} from "@hyperledger/fabric-gateway";
 import { federationCanonicalJson } from "@kuintessence/shared/federation";
 import {
   FabricMarketTrustSchema,
   type MarketCancelOpenSchema,
   type MarketClaim,
   type MarketDemand,
+  MarketDemandStateSchema,
+  MarketPageSchema,
   type MarketProposalInput,
   MarketProposalInputSchema,
+  type MarketQueryInput,
+  MarketQueryInputSchema,
+  type MarketQueryResult,
   MarketReceiptSchema,
 } from "@kuintessence/shared/federation/market";
 import { z } from "zod";
@@ -81,6 +91,61 @@ export class FabricMarketAdapter {
       recordId,
       digest: `sha256:${createHash("sha256").update(bytes).digest("hex")}`,
     });
+  }
+  async query(raw: MarketQueryInput): Promise<MarketQueryResult> {
+    const input = MarketQueryInputSchema.parse(raw);
+    const contract = this.gateway
+      .getNetwork(this.config.channel)
+      .getContract(this.config.chaincode);
+    const name = input.operation === "get-demand" ? "GetDemand" : "ListDemands";
+    let bytes: Uint8Array;
+    try {
+      bytes = await contract
+        .newProposal(name, {
+          arguments:
+            input.operation === "get-demand"
+              ? [input.demandId]
+              : [String(input.limit), input.bookmark],
+        })
+        .evaluate({ deadline: Date.now() + 10000 });
+    } catch (error) {
+      if (
+        input.operation === "get-demand" &&
+        error instanceof GatewayError &&
+        error.details.length > 0 &&
+        error.details.every(
+          (detail) => detail.message === "chaincode response 500, ASSET_UNAVAILABLE",
+        )
+      )
+        return { operation: "get-demand", demand: null };
+      throw error;
+    }
+    try {
+      if (bytes.length > 2_097_152) throw new Error("Oversized result");
+      const value: unknown = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
+      const result: MarketQueryResult =
+        input.operation === "get-demand"
+          ? { operation: "get-demand", demand: MarketDemandStateSchema.parse(value) }
+          : { operation: "list-demands", ...MarketPageSchema.parse(value) };
+      const demands =
+        result.operation === "get-demand" ? (result.demand ? [result.demand] : []) : result.demands;
+      if (input.operation === "list-demands" && demands.length > input.limit)
+        throw new Error("Invalid page");
+      if (new Set(demands.map((row) => row.demand.demandId)).size !== demands.length)
+        throw new Error("Duplicate demand");
+      for (const row of demands) {
+        if (input.operation === "get-demand" && row.demand.demandId !== input.demandId)
+          throw new Error("Wrong demand");
+        if (
+          row.digest !==
+          `sha256:${createHash("sha256").update(federationCanonicalJson(row.demand)).digest("hex")}`
+        )
+          throw new Error("Wrong digest");
+      }
+      return result;
+    } catch {
+      throw new Error("INVALID_LEDGER_RESPONSE");
+    }
   }
   advance(recovery: string) {
     return this.submission.advance(recovery);
