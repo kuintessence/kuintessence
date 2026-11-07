@@ -48,6 +48,8 @@ import {
   FederationAgreementSchema,
   FederationCancellationReceiptSchema,
   FederationCancellationSchema,
+  FederationMaterialChunkSchema,
+  FederationMaterialQuerySchema,
   FederationResultDownloadGrantSchema,
   FederationResultDownloadQuerySchema,
   FederationResultQuerySchema,
@@ -57,6 +59,7 @@ import {
   FederationResultVerifyTaskSchema,
   FederationStatusQuerySchema,
   FederationStatusReportSchema,
+  federationCanonicalJson,
 } from "@kuintessence/shared/federation";
 import { and, eq, inArray } from "drizzle-orm";
 import { Hono } from "hono";
@@ -75,10 +78,13 @@ import { FederationAgreementService } from "./agreements";
 import { FederationAssetService, federationMaterialDigest } from "./assets";
 import { FederationCancellationReceiver } from "./cancellation";
 import { FederationCancellationMonitor } from "./cancellation-monitor";
+import { createFederationIngress } from "./ingress";
+import { FederationMaterialExchange } from "./material-exchange";
 import { FederationOutboundService, FederationOutboundWorker } from "./outbound";
 import { FederationDeliveryError, type FederationSend } from "./outbound-client";
 import { FederationPermissionService } from "./permissions";
 import { FederationPreparationService } from "./preparation";
+import { FederationPreparationWorker } from "./preparation-worker";
 import { FederationResultImports } from "./result-imports";
 import { FederationResultReceiptReceiver, FederationResultReceiptSender } from "./result-receipts";
 import { FederationResultStorage } from "./result-storage";
@@ -163,6 +169,8 @@ beforeAll(async () => {
           "result-download-grant",
           "result-receipt",
           "result-receipt-ack",
+          "material-query",
+          "material-chunk",
         ],
         validFrom: key.verification.validFrom.toISOString(),
         validUntil: key.verification.validUntil.toISOString(),
@@ -295,7 +303,10 @@ afterAll(async () => {
   await db.$client.end();
 });
 
-async function fixture(resultPolicy?: FederationAgreement["resultPolicy"]) {
+async function fixture(
+  resultPolicy?: FederationAgreement["resultPolicy"],
+  parameters: Record<string, string | number> = {},
+) {
   time = new Date(testNow);
   const terms = testAgreement(a.signing.siteId, b.signing.siteId);
   if (resultPolicy) terms.resultPolicy = resultPolicy;
@@ -339,7 +350,7 @@ async function fixture(resultPolicy?: FederationAgreement["resultPolicy"]) {
   const inputs = await assets.putMaterial(actor, a.signing.siteId, {
     protocolVersion: 1,
     kind: "inputs",
-    parameters: {},
+    parameters,
     datasets: [],
     bindings: [],
   });
@@ -3319,3 +3330,288 @@ test("status sync leaves unknown state on first failure and rejects revoked peer
     await db.update(federationSigningKeys).set({ revokedAt: null }).where(peerKey);
   }
 });
+
+async function materialExchangeFixture(parameters: Record<string, string | number> = {}) {
+  const f = await fixture(undefined, parameters);
+  await db.delete(federationMaterials).where(eq(federationMaterials.localOrgId, receiver.orgId));
+  const source = f.service();
+  await source.enqueue(actor, f.request);
+  await source.deliverNext();
+  const saved = await row(f.request.operationId);
+  if (!saved.receipt) throw new Error("Expected receipt");
+  const preparation = new FederationPreparationService(db, b.signing.siteId, assets, clock);
+  const calls: string[] = [];
+  const ingress = createFederationIngress(db, a.signing, undefined, source);
+  const send: FederationSend = async (_endpoint, jws, path) => {
+    if (path !== "/federation/v1/materials") throw new Error("Expected material route");
+    calls.push(jws);
+    const response = await ingress.request(path, {
+      method: "POST",
+      headers: {
+        "content-type": "application/jose",
+        "x-kq-federation-cert": targetFingerprint,
+      },
+      body: jws,
+    });
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    if (response.status !== 200)
+      throw new Error(`Material response ${response.status}: ${await response.text()}`);
+    return response.text();
+  };
+  const exchange = (sender: FederationSend = send) =>
+    new FederationMaterialExchange(db, b.signing, sender, preparation, assets, clock);
+  return {
+    ...f,
+    source,
+    preparation,
+    exchange,
+    calls,
+    send,
+    reservationId: saved.receipt.reservationId,
+    saved,
+  };
+}
+
+async function receivedMaterials() {
+  return db
+    .select()
+    .from(federationMaterials)
+    .where(eq(federationMaterials.localOrgId, receiver.orgId));
+}
+
+test("material exchange worker retrieves large unicode manifests atomically and reuses their digests", async () => {
+  const parameters = { message: "参数测试".repeat(48_000), count: 3 };
+  const f = await materialExchangeFixture(parameters);
+  const resolved = await assets.resolveForDelegation(actor, f.reference);
+  if (!resolved.mapping.softwareRevisionId) throw new Error("Expected revision");
+  await assets.register(receiver, {
+    reference: f.reference,
+    localRevisionId: resolved.mapping.softwareRevisionId,
+  });
+  const exchange = f.exchange();
+  const worker = new FederationPreparationWorker(db, f.preparation, undefined, undefined, (id) =>
+    exchange.ensure(id),
+  );
+  await worker.tick();
+  await worker.stop();
+  expect(f.calls.length).toBeGreaterThan(8);
+  const stored = await assets.getMaterial(
+    receiver,
+    a.signing.siteId,
+    f.request.inputManifestDigest,
+  );
+  expect(stored).toMatchObject({ kind: "inputs", parameters });
+  expect(await receivedMaterials()).toHaveLength(2);
+  expect(await f.preparation.prepare(f.reservationId)).toMatchObject({ state: "resolved" });
+  const callCount = f.calls.length;
+  await Promise.all([f.exchange().ensure(f.reservationId), f.exchange().ensure(f.reservationId)]);
+  expect(f.calls.length).toBe(callCount);
+  const audits = await db
+    .select()
+    .from(auditLog)
+    .where(
+      and(eq(auditLog.orgId, receiver.orgId), eq(auditLog.action, "federation.material.receive")),
+    );
+  expect(
+    audits.filter(
+      (v) => (v.diff?.after as { operationId?: string })?.operationId === f.request.operationId,
+    ),
+  ).toHaveLength(2);
+}, 20_000);
+
+test("material exchange interruption stores no partial manifests and restart requires original mappings", async () => {
+  const f = await materialExchangeFixture({ message: "a".repeat(90_000) });
+  let count = 0;
+  await expect(
+    f
+      .exchange(async (endpoint, jws, path) => {
+        if (++count === 2) throw new FederationDeliveryError("DELIVERY_UNAVAILABLE");
+        return f.send(endpoint, jws, path);
+      })
+      .ensure(f.reservationId),
+  ).rejects.toThrow("DATA_WAITING");
+  expect(await receivedMaterials()).toHaveLength(0);
+  await Promise.all([f.exchange().ensure(f.reservationId), f.exchange().ensure(f.reservationId)]);
+  expect(await receivedMaterials()).toHaveLength(2);
+  // Receiving manifests does not create asset mappings or authorize execution.
+  expect(await f.preparation.prepare(f.reservationId)).toMatchObject({
+    state: "waiting",
+    blocker: "ASSET_UNAVAILABLE",
+  });
+});
+
+test("material exchange rejects wrong peer, task and unselected digest before disclosure", async () => {
+  const f = await materialExchangeFixture();
+  await f.exchange().ensure(f.reservationId);
+  const jws = f.calls[0];
+  if (!jws) throw new Error("Expected query");
+  await expect(f.source.materialChunk(jws, sourceFingerprint)).rejects.toThrow(
+    "UNTRUSTED_IDENTITY",
+  );
+  const key = await trust.resolveKey(b.signing.siteId, b.signing.keyId, clock());
+  const { payload } = await verifyFederationMessage(
+    FederationMaterialQuerySchema,
+    jws,
+    key,
+    clock(),
+  );
+  for (const change of [
+    { taskId: crypto.randomUUID() },
+    { reservationId: crypto.randomUUID() },
+    { materialDigest: `sha256:${"f".repeat(64)}` },
+    { requestDigest: `sha256:${"e".repeat(64)}` },
+  ]) {
+    const altered = await signFederationMessage(
+      FederationMaterialQuerySchema,
+      { ...payload, ...change },
+      b.signing,
+    );
+    await expect(f.source.materialChunk(altered, targetFingerprint)).rejects.toThrow(
+      "POLICY_DENIED",
+    );
+  }
+  await f.source.cancellations.request(actor, f.request.operationId);
+  await expect(f.source.materialChunk(jws, targetFingerprint)).rejects.toThrow("POLICY_DENIED");
+  time = new Date(time.getTime() + 60_000);
+  await expect(f.source.materialChunk(jws, targetFingerprint)).rejects.toThrow(
+    "AUTHORIZATION_EXPIRED",
+  );
+});
+
+test("material exchange rejects signed corrupt, reordered, replayed and oversized chunks", async () => {
+  const f = await materialExchangeFixture({ message: "a".repeat(90_000) });
+  const key = await trust.resolveKey(a.signing.siteId, a.signing.keyId, clock());
+  for (const change of ["corrupt", "offset", "total", "replay"]) {
+    let first = "";
+    await expect(
+      f
+        .exchange(async (endpoint, jws, path) => {
+          const response = await f.send(endpoint, jws, path);
+          if (change === "replay") {
+            if (first) return first;
+            first = response;
+            return response;
+          }
+          const { payload } = await verifyFederationMessage(
+            FederationMaterialChunkSchema,
+            response,
+            key,
+            clock(),
+          );
+          const bytes = Buffer.from(payload.bytes, "base64");
+          bytes[0] = (bytes[0] ?? 0) ^ 1;
+          return signFederationMessage(
+            FederationMaterialChunkSchema,
+            {
+              ...payload,
+              ...(change === "corrupt"
+                ? { bytes: bytes.toString("base64") }
+                : change === "offset"
+                  ? { offset: 65_536 }
+                  : { totalBytes: payload.totalBytes - 1 }),
+            },
+            a.signing,
+          );
+        })
+        .ensure(f.reservationId),
+    ).rejects.toThrow("INVALID_MESSAGE");
+    expect(await receivedMaterials()).toHaveLength(0);
+  }
+});
+
+test("material exchange rechecks receiver and source authority after network I/O", async () => {
+  const f = await materialExchangeFixture();
+  await expect(
+    f
+      .exchange(async (endpoint, jws, path) => {
+        const response = await f.send(endpoint, jws, path);
+        await db
+          .update(federationAgreements)
+          .set({ state: "revoked" })
+          .where(eq(federationAgreements.revisionId, f.terms.agreementRevisionId));
+        return response;
+      })
+      .ensure(f.reservationId),
+  ).rejects.toThrow("AGREEMENT_UNAVAILABLE");
+  expect(await receivedMaterials()).toHaveLength(0);
+  await db
+    .update(federationAgreements)
+    .set({ state: "active" })
+    .where(eq(federationAgreements.revisionId, f.terms.agreementRevisionId));
+  await permission.set({ ...actor, capability: "delegation.submit", enabled: false }, actor.userId);
+  try {
+    await expect(
+      f
+        .exchange((_endpoint, jws) => f.source.materialChunk(jws, targetFingerprint))
+        .ensure(f.reservationId),
+    ).rejects.toThrow("POLICY_DENIED");
+    expect(await receivedMaterials()).toHaveLength(0);
+  } finally {
+    await permission.set(
+      { ...actor, capability: "delegation.submit", enabled: true },
+      actor.userId,
+    );
+  }
+  time = new Date(f.request.expiresAt);
+  await expect(f.exchange().ensure(f.reservationId)).rejects.toThrow("AUTHORIZATION_EXPIRED");
+});
+
+test("material exchange supports the exact one MiB limit and requires separate signing purposes", async () => {
+  const base = {
+    protocolVersion: 1,
+    kind: "inputs",
+    parameters: { message: "" },
+    datasets: [],
+    bindings: [],
+  };
+  const message = "a".repeat(1_048_576 - Buffer.byteLength(federationCanonicalJson(base)));
+  const f = await materialExchangeFixture({ message });
+  for (const [siteId, keyId, kind] of [
+    [a.signing.siteId, a.signing.keyId, "material-chunk"],
+    [b.signing.siteId, b.signing.keyId, "material-query"],
+  ]) {
+    if (!siteId || !keyId) throw new Error("Expected key");
+    const condition = and(
+      eq(federationSigningKeys.siteId, siteId),
+      eq(federationSigningKeys.keyId, keyId),
+    );
+    const [key] = await db.select().from(federationSigningKeys).where(condition);
+    if (!key) throw new Error("Expected key");
+    try {
+      await db
+        .update(federationSigningKeys)
+        .set({ allowedKinds: key.allowedKinds.filter((value) => value !== kind) })
+        .where(condition);
+      await expect(
+        f
+          .exchange((_endpoint, jws) => f.source.materialChunk(jws, targetFingerprint))
+          .ensure(f.reservationId),
+      ).rejects.toThrow("UNTRUSTED_IDENTITY");
+      expect(await receivedMaterials()).toHaveLength(0);
+    } finally {
+      await db
+        .update(federationSigningKeys)
+        .set({ allowedKinds: key.allowedKinds })
+        .where(condition);
+    }
+  }
+  await f.exchange().ensure(f.reservationId);
+  expect(f.calls).toHaveLength(17);
+  const stored = (await receivedMaterials()).find(
+    (value) => value.digest === f.request.inputManifestDigest,
+  );
+  expect(Buffer.byteLength(stored?.content ?? "")).toBe(1_048_576);
+  const first = f.calls[0];
+  if (!first) throw new Error("Expected query");
+  const chunkJws = await f.source.materialChunk(first, targetFingerprint);
+  const key = await trust.resolveKey(a.signing.siteId, a.signing.keyId, clock());
+  const { payload } = await verifyFederationMessage(
+    FederationMaterialChunkSchema,
+    chunkJws,
+    key,
+    clock(),
+  );
+  expect(
+    FederationMaterialChunkSchema.safeParse({ ...payload, totalBytes: 1_048_577 }).success,
+  ).toBe(false);
+}, 20_000);

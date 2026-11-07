@@ -25,6 +25,7 @@ export class FederationPreparationWorker {
     private readonly service: FederationPreparationService,
     private readonly bindings?: FederationExecutionBindingService,
     private readonly queueRun?: (runId: string) => Promise<boolean>,
+    private readonly ensureMaterials?: (reservationId: string) => Promise<void>,
   ) {}
 
   start() {
@@ -111,7 +112,15 @@ export class FederationPreparationWorker {
       .limit(8);
     for (const row of rows) {
       try {
-        const prepared = await this.service.prepare(row.id);
+        let prepared = await this.service.prepare(row.id);
+        if (
+          prepared.state === "waiting" &&
+          prepared.blocker === "DATA_WAITING" &&
+          this.ensureMaterials
+        ) {
+          await this.ensureMaterials(row.id);
+          prepared = await this.service.prepare(row.id);
+        }
         if (prepared.state === "resolved") {
           const binding = await this.bindings?.stage(row.id);
           if (binding) await this.queueRun?.(binding.workflowRunId);

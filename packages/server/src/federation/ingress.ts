@@ -5,6 +5,7 @@ import { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { FederationAdmission } from "./admission";
 import { FederationCancellationReceiver } from "./cancellation";
+import type { FederationOutboundService } from "./outbound";
 import { FederationResultReceiptReceiver } from "./result-receipts";
 import { type FederationResultDownloadStorage, FederationResultResponder } from "./results";
 import { type FederationSigningKey, federationMessageKeyId } from "./signatures";
@@ -18,6 +19,7 @@ export function createFederationIngress(
   db: PgDb,
   signingKey: FederationSigningKey,
   downloads?: FederationResultDownloadStorage,
+  materials?: Pick<FederationOutboundService, "materialChunk">,
 ) {
   const r = new Hono();
   const trust = new FederationTrustRegistry(db);
@@ -64,6 +66,19 @@ export function createFederationIngress(
       },
     });
     return c.body(result.receiptJws, 200, {
+      "content-type": "application/jose",
+      "cache-control": "no-store",
+    });
+  });
+  r.post("/federation/v1/materials", async (c) => {
+    if (c.req.header("content-type") !== "application/jose")
+      return c.json({ error: { code: "INVALID_MESSAGE" } }, 415);
+    if (!materials) return c.json({ error: { code: "TEMPORARILY_UNAVAILABLE" } }, 503);
+    const response = await materials.materialChunk(
+      await c.req.text(),
+      c.req.header("x-kq-federation-cert") ?? "",
+    );
+    return c.body(response, 200, {
       "content-type": "application/jose",
       "cache-control": "no-store",
     });

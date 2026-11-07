@@ -896,6 +896,22 @@ Slurm 方向已取得并核对仓库既有 Apptainer 1.4.3 包 SHA-256，构建�
 
 全仓类型检查（含 protobuf 生成和 Fabric 测试）通过，最后新增信任测试后 Server 定向复查通过；lint 无错误，保留原有 47 warnings、1 info；637 个本地文档目标检查通过。未修改 main 或现有部署，尚未发布 PR 预览。下一项需补齐受授权的动态输入清单交换，再将持久状态及回传文件接入普通 Workflow；仅发送摘要并预置两端材料不能替代自动委派。
 
+## 动态输入清单与环境锁交换
+
+接收方准备后台在 DATA_WAITING 时自动按原委派的两个摘要拉取 inputs/environment-lock。新增固定机构路由 /federation/v1/materials 与独立 material-query/material-chunk 密钥用途；旧信任记录不自动扩权。源站限制已接受操作、原接收机构与原任务摘要，逐次复查原提交者权限、双签协议、原委派签名、材料映射、取消和执行期限。目标复用原准备/执行事务检查，传输前后及最终登记时核对原身份、协议、取消、信任和端点。
+
+保留单清单 1 MiB 上限，每个签名响应携带最多 64 KiB 原始字节的 base64，仍在原 256 KiB 签名正文限制内。拒绝查询重放、偏移/长度变化、损坏内容、无效 UTF-8 和摘要/schema 不符。本次缺失清单全部完成后一次登记及审计，最终不得超过最后一次查询截止；没有部分清单或断点续传表，中断后重新获取小清单，并发导入按内容地址去重。软件/模板及数据本地映射、许可、使用授权不由接收清单自动授予，大文件内容不走此通道。
+
+隔离 PostgreSQL 新增 6 个不同用例通过：大于单消息上限的 Unicode 清单、精确 1 MiB 边界、生产准备 worker 调用与真实私有 ingress handler、专用密钥用途、双清单原子登记、并发去重、中断重拉、无映射仍等待、错误机构/任务/摘要、源端取消、签名损坏/错序/重放、授权撤销和截止拒绝。准备/绑定回归共 7 个不同用例通过；其中两项最初因定向筛选遗漏前置映射夹具失败，补入依赖后通过，不将失败计为通过。新密钥用途一度超过旧列表 max(14)，已同步为 16。真实 Node mTLS 网关/发送器 7 项通过，新增路由固定路径及证书检查；网关断言计数随新增路由由 6 改为 7 后定向通过。
+
+全仓其余包类型检查通过，Server 测试可选 path 缺少类型收窄已修正，最终 Server 与 Fabric 测试类型检查通过；lint 无错误，保留原有 47 warnings、1 info，637 个本地文档目标检查通过。数据库仅扩展密钥用途 JSON 的 TS 类型，没有新增物理 schema 或迁移。单元证据在本机 temp/federation-material-*.log，临时 PostgreSQL 均已清理。
+
+真实双平台新增验收通过：接收方初始 federationMaterials 为 0，仅源站保存本次输入/环境锁；两个生产 Server、独立数据库、机构双向 mTLS 网关和两个真实 Agent 自动完成清单获取，接收方登记 2 份材料后启动 Kubernetes 两节点工作流。实际产物 42\n → verified:42\n，原子回传到源站独立 RustFS 云盘并通过普通下载 API 取得 12 字节，SHA-256 为 87730d8e29a90b06728319cb30fcf8dbae523f785f3043c82ea4df6386c83f7f，回执 recorded。源站自动状态同步也实际保存 completed、verifiedAt 与 nextAttemptAt=null；重复提交/导入仍只有原运行和原文件。
+
+操作 58dabb4b-c146-44ec-84fe-b4f8cc3905fc，Workflow 13795a01-2b07-4ddb-b277-7c55cc20539a，导入 0c890084-553d-4d58-ba78-eb2d7f0f9394。证据在本机 temp/federation-material-live-platforms/material-exchange-evidence.json、result-delivery-evidence.json 与相应运行日志。临时进程、数据库、凭据均清理，并确认异步删除的 namespace 最终消失。本次在同一主机，计算限 1 CPU/128 MiB，模板与运行时映射预先批准；没有 Spack 编译、Fabric 或普通源站 Workflow 自动委派，不据此声称全部蓝图完成。未修改 main 或发布预览。
+
+下一项接入普通 Workflow 的联邦节点/执行位置、动态 invocation 持久绑定、取消及恢复，并将已回传文件转换为下游可用的受管产物。输入清单交换已经接通，但本地云盘 File/FileBatch 到跨站受管输入的自动授权交付仍需完成。
+
 ## 尚未接通，不能宣称支持
 
 协议审批与机构信任管理 UI、源站 Workflow 状态消费、额度结算/退款、完整生产持久 Workflow 端到端验收、完整的数据/软件物化与介质交付、双方证据确认与完整用量/结算记录、商业/市场链码及真实联邦作业与 Fabric 联合运行、归档恢复、Web/CLI 和部署配置均未完成。

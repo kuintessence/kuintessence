@@ -4,6 +4,7 @@ import type { PgDb } from "@kuintessence/db";
 import { importPKCS8 } from "jose";
 import type { ServerConfig } from "../config";
 import { createFederationIngress } from "./ingress";
+import type { FederationOutboundService } from "./outbound";
 import { createFederationSender } from "./outbound-client";
 import type { FederationResultDownloadStorage } from "./results";
 import type { FederationSigningKey } from "./signatures";
@@ -13,6 +14,7 @@ export async function startFederationIngress(
   config: ServerConfig,
   key?: FederationSigningKey,
   downloads?: FederationResultDownloadStorage,
+  materials?: Pick<FederationOutboundService, "materialChunk">,
 ) {
   if (!config.FEDERATION_ENABLED) return undefined;
   const socketPath = config.FEDERATION_SOCKET_PATH;
@@ -30,7 +32,7 @@ export async function startFederationIngress(
     throw new Error("Federation socket directory must be private (0700), owned by the Server UID");
   const signingKey = key ?? (await loadFederationSigningKey(config));
   if (!signingKey) throw new Error("Federation signing key is required");
-  const app = createFederationIngress(db, signingKey, downloads);
+  const app = createFederationIngress(db, signingKey, downloads, materials);
   const server = Bun.serve({ unix: socketPath, fetch: app.fetch, maxRequestBodySize: 524288 });
   try {
     await chmod(socketPath, 0o600);

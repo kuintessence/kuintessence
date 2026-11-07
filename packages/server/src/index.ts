@@ -62,6 +62,7 @@ import {
   queueFederationWorkflow,
 } from "./federation/execution-binding";
 import { FederationExecutionMonitor } from "./federation/execution-monitor";
+import { FederationMaterialExchange } from "./federation/material-exchange";
 import { FederationOutboundService, FederationOutboundWorker } from "./federation/outbound";
 import { createFederationPackageResolver } from "./federation/package-resolver";
 import { FederationPermissionService } from "./federation/permissions";
@@ -2159,7 +2160,18 @@ const federationIngress = await startFederationIngress(
   config,
   federationSigningKey,
   federationResultDownloads,
+  federationOutbound,
 );
+const federationMaterialExchange =
+  federationSigningKey && federationSender && federationPreparation
+    ? new FederationMaterialExchange(
+        db,
+        federationSigningKey,
+        federationSender,
+        federationPreparation,
+        federationAssets,
+      )
+    : undefined;
 const federationPreparationWorker = federationPreparation
   ? new FederationPreparationWorker(
       db,
@@ -2185,6 +2197,7 @@ const federationPreparationWorker = federationPreparation
         );
         return queueFederationWorkflow(db, federationDispatchAuthorization, runId);
       },
+      federationMaterialExchange ? (id) => federationMaterialExchange.ensure(id) : undefined,
     )
   : undefined;
 federationPreparationWorker?.start();

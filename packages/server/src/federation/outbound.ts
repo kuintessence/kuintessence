@@ -8,13 +8,17 @@ import {
 import { AppError, createLogger } from "@kuintessence/shared";
 import {
   assertDelegationPolicy,
+  assertFederationStatusQueryFresh,
   assertFederationStatusReport,
+  FEDERATION_MATERIAL_CHUNK_BYTES,
   FederationAcceptanceSchema,
   FederationAgreementSchema,
   type FederationAssetRef,
   type FederationDelegation,
   FederationDelegationSchema,
   FederationError,
+  FederationMaterialChunkSchema,
+  FederationMaterialQuerySchema,
   FederationStatusQuerySchema,
   FederationStatusReportSchema,
   federationCanonicalJson,
@@ -351,6 +355,135 @@ export class FederationOutboundService {
         diff: { before: { endpoint: row.endpoint }, after: { endpoint: target.endpoint } },
       });
     });
+  }
+
+  /** Only the accepted recipient may retrieve the two digests bound to its original task. */
+  async materialChunk(requestJws: string, fingerprint: string) {
+    const peer = await this.trust.resolvePeer(
+      fingerprint,
+      federationMessageKeyId(requestJws),
+      this.clock(),
+    );
+    const { payload: query, digest: queryDigest } = await verifyFederationMessage(
+      FederationMaterialQuerySchema,
+      requestJws,
+      peer,
+      this.clock(),
+    );
+    if (query.senderSiteId !== peer.siteId || query.recipientSiteId !== this.signingKey.siteId)
+      throw new FederationError("UNTRUSTED_IDENTITY");
+    assertFederationStatusQueryFresh(query, this.clock());
+    const [saved] = await this.db
+      .select()
+      .from(federationOutbound)
+      .where(this.key(query.operationId));
+    if (
+      !saved ||
+      saved.state !== "accepted" ||
+      !saved.receipt ||
+      saved.cancelState ||
+      query.senderSiteId !== saved.request.recipientSiteId ||
+      query.reservationId !== saved.receipt.reservationId ||
+      query.requestDigest !== saved.requestDigest ||
+      query.agreementRevisionId !== saved.agreementRevisionId ||
+      query.taskId !== saved.taskId ||
+      query.attempt !== saved.attempt ||
+      ![saved.request.inputManifestDigest, saved.request.environmentLockDigest].includes(
+        query.materialDigest,
+      )
+    )
+      throw new FederationError("POLICY_DENIED");
+    const actor = { userId: saved.submittedBy, orgId: saved.localOrgId };
+    const materials = await this.materials(actor, saved.request);
+    const authorize = async (tx: FederationTransaction) => {
+      const { terms, ownKey, endpoint } = await this.authorize(
+        tx,
+        actor,
+        saved.request,
+        materials,
+        true,
+      );
+      await this.trust.assertPeer(tx, fingerprint, peer.siteId, peer.keyId, this.clock());
+      if (!ownKey.allowedKinds.includes("material-chunk"))
+        throw new FederationError("UNTRUSTED_IDENTITY");
+      const [current] = await tx
+        .select()
+        .from(federationOutbound)
+        .where(this.key(saved.operationId))
+        .for("share");
+      if (
+        !current ||
+        current.state !== "accepted" ||
+        current.cancelState ||
+        current.requestDigest !== saved.requestDigest ||
+        current.requestJws !== saved.requestJws ||
+        current.receiptJws !== saved.receiptJws ||
+        current.endpoint !== endpoint
+      )
+        throw new FederationError("POLICY_DENIED");
+      const originalKeyId = federationMessageKeyId(saved.requestJws);
+      const originalKey = await this.trust.resolveKey(
+        this.signingKey.siteId,
+        originalKeyId,
+        this.clock(),
+        tx,
+      );
+      await this.trust.assertKey(tx, this.signingKey.siteId, originalKeyId, this.clock());
+      const original = await verifyFederationMessage(
+        FederationDelegationSchema,
+        saved.requestJws,
+        originalKey,
+        this.clock(),
+      );
+      if (
+        original.digest !== saved.requestDigest ||
+        federationCanonicalJson(original.payload) !== federationCanonicalJson(saved.request)
+      )
+        throw new FederationError("OPERATION_CONFLICT");
+      const content = await this.assets.readMaterial(
+        tx,
+        actor.orgId,
+        this.signingKey.siteId,
+        query.materialDigest,
+      );
+      assertDelegationPolicy(terms, saved.request, this.clock(), "execution");
+      assertFederationStatusQueryFresh(query, this.clock());
+      const now = this.clock();
+      if ([ownKey, peer, originalKey].some((key) => now < key.validFrom || now >= key.validUntil))
+        throw new FederationError("UNTRUSTED_IDENTITY");
+      await this.trust.assertPeer(tx, fingerprint, peer.siteId, peer.keyId, now);
+      return Buffer.from(federationCanonicalJson(content), "utf8");
+    };
+    const content = await this.db.transaction(authorize);
+    if (query.offset >= content.length) throw new FederationError("INVALID_MESSAGE");
+    const report = FederationMaterialChunkSchema.parse({
+      protocolVersion: 1,
+      kind: "material-chunk",
+      queryId: query.queryId,
+      operationId: query.operationId,
+      agreementRevisionId: query.agreementRevisionId,
+      taskId: query.taskId,
+      attempt: query.attempt,
+      reservationId: query.reservationId,
+      requestDigest: query.requestDigest,
+      materialDigest: query.materialDigest,
+      offset: query.offset,
+      senderSiteId: this.signingKey.siteId,
+      recipientSiteId: peer.siteId,
+      queryDigest,
+      observedAt: this.clock().toISOString(),
+      totalBytes: content.length,
+      bytes: content
+        .subarray(query.offset, query.offset + FEDERATION_MATERIAL_CHUNK_BYTES)
+        .toString("base64"),
+    });
+    const signed = await signFederationMessage(
+      FederationMaterialChunkSchema,
+      report,
+      this.signingKey,
+    );
+    await this.db.transaction(authorize);
+    return signed;
   }
 
   remoteStatus(actor: FederationActor, operationId: string) {

@@ -16,7 +16,8 @@ export type FederationSend = (
     | "/federation/v1/cancellations"
     | "/federation/v1/results"
     | "/federation/v1/result-downloads"
-    | "/federation/v1/result-receipts",
+    | "/federation/v1/result-receipts"
+    | "/federation/v1/materials",
 ) => Promise<string>;
 
 /** Only registry-approved HTTPS origins; no redirects, proxies or peer-provided URLs. */
@@ -33,7 +34,8 @@ export function createFederationSender(tls: {
       path !== "/federation/v1/cancellations" &&
       path !== "/federation/v1/results" &&
       path !== "/federation/v1/result-downloads" &&
-      path !== "/federation/v1/result-receipts"
+      path !== "/federation/v1/result-receipts" &&
+      path !== "/federation/v1/materials"
     )
       throw new FederationDeliveryError("INVALID_RECEIPT_RESPONSE");
     const endpoint = FederationSiteInput.shape.endpoint.parse(origin);

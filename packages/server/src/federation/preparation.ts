@@ -163,6 +163,43 @@ export class FederationPreparationService {
     snapshot: FederationExecutionPreparation,
     running = false,
   ) {
+    const { request, identity } = snapshot;
+    await this.lockMaterialScope(tx, snapshot);
+    for (const mapping of snapshot.mappings) {
+      const current = await this.assets.assertResolved(
+        tx,
+        identity,
+        mapping.reference,
+        mapping.mappingId,
+        running,
+      );
+      if (
+        (current.local.kind === "dataset"
+          ? current.local.version.id
+          : current.local.revision.id) !== mapping.localRevisionId
+      )
+        throw new FederationError("OPERATION_CONFLICT");
+    }
+    // These rows also stay locked through the binding commit.
+    await this.assets.readMaterial(
+      tx,
+      identity.orgId,
+      request.senderSiteId,
+      request.inputManifestDigest,
+    );
+    await this.assets.readMaterial(
+      tx,
+      identity.orgId,
+      request.senderSiteId,
+      request.environmentLockDigest,
+    );
+    await this.lockMaterialScope(tx, snapshot);
+  }
+
+  async lockMaterialScope(
+    tx: PgTransaction,
+    snapshot: Pick<FederationExecutionPreparation, "saved" | "request" | "identity">,
+  ) {
     const { saved, request, identity } = snapshot;
     const trust = new FederationTrustRegistry(this.db);
     await trust.assertKey(
@@ -211,34 +248,6 @@ export class FederationPreparationService {
     )
       throw new FederationError("OPERATION_CONFLICT");
     await assertFederationNotCancelled(tx, request);
-    for (const mapping of snapshot.mappings) {
-      const current = await this.assets.assertResolved(
-        tx,
-        identity,
-        mapping.reference,
-        mapping.mappingId,
-        running,
-      );
-      if (
-        (current.local.kind === "dataset"
-          ? current.local.version.id
-          : current.local.revision.id) !== mapping.localRevisionId
-      )
-        throw new FederationError("OPERATION_CONFLICT");
-    }
-    // These rows also stay locked through the binding commit.
-    await this.assets.readMaterial(
-      tx,
-      identity.orgId,
-      request.senderSiteId,
-      request.inputManifestDigest,
-    );
-    await this.assets.readMaterial(
-      tx,
-      identity.orgId,
-      request.senderSiteId,
-      request.environmentLockDigest,
-    );
     assertDelegationPolicy(
       FederationAgreementSchema.parse(agreement.terms),
       request,
@@ -273,7 +282,11 @@ export class FederationPreparationService {
     return saved;
   }
 
-  private async resolveReservation(
+  async materialScope(reservationId: string) {
+    return this.verifyReservation(await this.loadReservation(reservationId));
+  }
+
+  private async verifyReservation(
     saved: Awaited<ReturnType<FederationPreparationService["loadReservation"]>>,
   ) {
     if (saved.reservation.state !== "reserved" || !saved.reservation.receiptJws)
@@ -343,22 +356,18 @@ export class FederationPreparationService {
       orgId: saved.agreement.localOrgId,
       userId: saved.agreement.executionUserId,
     };
+    const scope = { saved, request, identity };
+    await this.db.transaction((tx) => this.lockMaterialScope(tx, scope));
+    return scope;
+  }
+
+  private async resolveReservation(
+    saved: Awaited<ReturnType<FederationPreparationService["loadReservation"]>>,
+  ) {
+    const scope = await this.verifyReservation(saved);
+    const { request, identity } = scope;
     const material = await this.db.transaction(async (tx) => {
-      await trust.assertKey(tx, key.siteId, key.keyId, this.clock());
-      await requireExecutionIdentity(tx, identity);
-      const [current] = await tx
-        .select()
-        .from(federationAgreements)
-        .where(eq(federationAgreements.revisionId, saved.agreement.revisionId))
-        .for("share");
-      if (!current || current.state !== "active")
-        throw new FederationError("AGREEMENT_UNAVAILABLE");
-      assertDelegationPolicy(
-        FederationAgreementSchema.parse(current.terms),
-        request,
-        this.clock(),
-        "execution",
-      );
+      await this.lockMaterialScope(tx, scope);
       const inputs = await this.assets.readMaterial(
         tx,
         identity.orgId,
