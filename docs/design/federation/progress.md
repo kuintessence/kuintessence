@@ -1355,3 +1355,18 @@ JobRunner、SQLite outbound 的写入/新实例重放、protobuf 可选 accounti
 联合验收准备时确认现有 Compose Slurm AIO 模板关闭 AccountingStorageType 和 JobAcctGatherType，不能作为真实累计 CPU 计量验收环境。下一步须使用启用 sacct 的隔离 Slurm 会计配置，并与 PBS 的 resources_used 分别核对；现有无会计环境应继续显示缺失，不能靠 scontrol 或申请核数编造 CPU 消耗。
 
 收尾检查：全仓 lint 无错误，保留既有 47 warnings/1 info；完整类型检查发现新增 HTTP 测试直接读取 unknown 响应，已改为结构断言。其余包检查通过，修正后的 Server 类型检查与 Fabric 脚本类型检查分别通过；受影响数据库场景定向复查通过。660 个文档目标、workflow 引用与 diff 检查通过，所属临时数据库/转发及浏览器开发服务均已清理。
+
+
+## 真实 Slurm 会计采集与汇总一致性
+
+在随机 namespace 内启动真实 Slurm 19.05.5、MariaDB 与 slurmdbd，开启 linux 采样；容器限额 1 CPU/1200 MiB，作业申请 1 CPU/64 MiB/60 秒，运行约 2 个 CPU 秒的 Python 循环并校验输出。没有替换科学软件二进制，没有修改 main 或现有集群。首次临时探针缺少日志目录导致调度器在启动前失败，补齐探针目录后重试；不计为平台计算成功。
+
+真实查询暴露完成后短暂不一致：汇总行 ElapsedRaw=0、batch=2、TotalCPU=00:02.018；后续汇总变为 2。适配器现在检测同任务步骤状态与汇总关系，未终态/未知步骤或任一步骤时间、CPU 超过汇总时保留作业终态、舍弃本次计量。既不汇总步骤造成重复计量，也不拿申请核数推算或把矛盾零值签为有效用量；原有合法零值兼容。
+
+77 个 Slurm 适配器场景通过，新增未知步骤状态后定向 1 项通过，共 78 个不同场景。三个首次新增场景分别覆盖时长未合并、CPU 未合并和步骤仍运行，并验证后续一致查询恢复。已将实际原始行加入回归，旧“不累加步骤”夹具中不可能的子步骤 CPU 大于汇总值改为合法数据。
+
+新增可复现脚本 scripts/federation-slurm-accounting.ts、容器内探针与启动配置，完整入口实际执行通过：最终作业运行 2000 毫秒、CPU 2024 毫秒、1 核，原 sacct 汇总/步骤相符，输出标记校验成功。脚本只使用 pinned 镜像、独立随机 namespace 和临时会计数据库，保存安装版本/配置/原始观测，结束删除所属资源；证据在忽略的 temp/kq-accounting-44079a26。详情见部署说明。
+
+这轮是实际调度器和生产适配器采集检查，不包含 Agent 消息投递、两个 Server、PBS 或 Fabric 联合链路。探针轮询不等于已实现生产迟到补采；终态首次计量缺失仍需追加观测能力，不能覆盖原证据。完整目标及 PR 预览继续。
+
+收尾：完整类型检查通过，包含 protobuf 生成、全部 package 及新增真实计量脚本；全仓 lint 无错误，保留既有 47 warnings/1 info。662 个文档目标、workflow 引用及 diff 检查通过。两次创建的所属 namespace 均已确认删除，无残留测试容器。

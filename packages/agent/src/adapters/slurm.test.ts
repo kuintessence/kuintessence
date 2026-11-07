@@ -1170,7 +1170,7 @@ test("Slurm accounting selects exactly the job allocation row without summing st
     {
       exitCode: 0,
       stdout:
-        "COMPLETED|0:0|99|999|8|01:00:00\nCOMPLETED|0:0|42.batch|7|2|00:00:08\nCOMPLETED|0:0|42|7|2|00:00:03.125\n",
+        "COMPLETED|0:0|99|999|8|01:00:00\nCOMPLETED|0:0|42.batch|7|2|00:00:03\nCOMPLETED|0:0|42|7|2|00:00:03.125\n",
     },
   ]);
   const result = await new SlurmAdapter("23", { spawner }).status("42");
@@ -1203,5 +1203,31 @@ test("Slurm terminal squeue observations also collect retained scheduler account
   expect((await new SlurmAdapter("23", { spawner }).status("42")).accounting).toMatchObject({
     elapsedMilliseconds: "0",
     cpuTimeMilliseconds: "0",
+  });
+});
+
+test.each([
+  ["elapsed time", "COMPLETED|0:0|42|0|1|00:02.018", "COMPLETED|0:0|42.batch|2|1|00:02.018"],
+  ["CPU time", "COMPLETED|0:0|42|2|1|00:00:00", "COMPLETED|0:0|42.batch|2|1|00:02.018"],
+  ["running step", "COMPLETED|0:0|42|2|1|00:02.018", "RUNNING|0:0|42.batch|2|1|00:02.018"],
+  ["unknown step", "COMPLETED|0:0|42|2|1|00:02.018", "FUTURE_STATE|0:0|42.batch|2|1|00:02.018"],
+])("Slurm terminal allocation waits for consistent %s before exposing accounting", async (_label, allocation, step) => {
+  const { spawner } = mockSpawner([
+    { exitCode: 0, stdout: "" },
+    { exitCode: 0, stdout: `${allocation}\n${step}\n` },
+    { exitCode: 0, stdout: "" },
+    {
+      exitCode: 0,
+      stdout: "COMPLETED|0:0|42|2|1|00:02.018\nCOMPLETED|0:0|42.batch|2|1|00:02.018\n",
+    },
+  ]);
+  const adapter = new SlurmAdapter("19.05.5", { spawner });
+  const pending = await adapter.status("42");
+  expect(pending.status).toBe("completed");
+  expect(pending.accounting).toBeUndefined();
+  expect((await adapter.status("42")).accounting).toMatchObject({
+    cpuTimeMilliseconds: "2018",
+    elapsedMilliseconds: "2000",
+    allocatedCpus: "1",
   });
 });

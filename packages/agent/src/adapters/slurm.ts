@@ -740,11 +740,11 @@ export class SlurmAdapter implements SchedulerAdapter {
       return this.scontrolStatus(schedulerJobId);
     }
 
-    const matches = stdout
+    const rows = stdout
       .trim()
       .split("\n")
-      .map((line) => line.split("|"))
-      .filter((parts) => parts[2]?.trim() === schedulerJobId);
+      .map((line) => line.split("|"));
+    const matches = rows.filter((parts) => parts[2]?.trim() === schedulerJobId);
     if (matches.length !== 1) return this.scontrolStatus(schedulerJobId);
     const parts = matches[0];
     if (!parts) return this.scontrolStatus(schedulerJobId);
@@ -754,13 +754,35 @@ export class SlurmAdapter implements SchedulerAdapter {
     );
     if (result.status !== "completed" && result.status !== "failed") return result;
     const elapsedSeconds = accountingInteger(parts[3]);
+    const cpuTimeMilliseconds = accountingDuration(parts[5], true);
+    // Slurm can expose terminal allocation rows before step accounting has finished merging.
+    for (const step of rows.filter((row) => row[2]?.trim().startsWith(`${schedulerJobId}.`))) {
+      let state: JobStatusResult["status"];
+      try {
+        state = mapSlurmState(step[0] ?? "", 0).status;
+      } catch {
+        return result;
+      }
+      const stepElapsed = accountingInteger(step[3]);
+      const stepCpu = accountingDuration(step[5], true);
+      if (
+        (state !== "completed" && state !== "failed") ||
+        (elapsedSeconds !== undefined &&
+          stepElapsed !== undefined &&
+          BigInt(stepElapsed) > BigInt(elapsedSeconds)) ||
+        (cpuTimeMilliseconds !== undefined &&
+          stepCpu !== undefined &&
+          BigInt(stepCpu) > BigInt(cpuTimeMilliseconds))
+      )
+        return result;
+    }
     const accounting = schedulerAccounting("slurm-sacct", schedulerJobId, {
       elapsedMilliseconds:
         elapsedSeconds === undefined
           ? undefined
           : accountingInteger((BigInt(elapsedSeconds) * 1000n).toString()),
       allocatedCpus: accountingInteger(parts[4]),
-      cpuTimeMilliseconds: accountingDuration(parts[5], true),
+      cpuTimeMilliseconds,
     });
     return { ...result, ...(accounting ? { accounting } : {}) };
   }

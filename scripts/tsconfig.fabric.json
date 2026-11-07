@@ -8,6 +8,7 @@
   "include": [
     "fabric-evidence-*.ts",
     "federation-result-storage.integration.test.ts",
-    "fabric-commercial-*.ts"
+    "fabric-commercial-*.ts",
+    "federation-slurm-accounting*.ts"
   ]
 }

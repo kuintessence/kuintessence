@@ -97,7 +97,7 @@ bun run --filter @kuintessence/fabric-commercial build
 
 证据保存请求资源和平台看到的状态时间，未取得调度器会计数据时明确为 unavailable；新 Agent 的有效可选计量入库后为 reported。没有开始观测或时钟倒退分别标记，不自动转换成零用量；平台取消不是远端停止证明。只有绑定 Agent 的持久事件标记 agent-status，其余状态写入不冒称 Agent 回报。正文在本机构数据库受控保存，不含命令、环境变量和输出。自动报告绑定双方约定的计量口径和价格版本，不能直接拿 CPU 请求量乘平台观测时长当实际 CPU 消耗。
 
-Slurm/PBS Pro 新 Agent 会在原终态事件中携带可取得的运行时长、累计 CPU 时间与调度器报告核数。Slurm 需要可查询的 sacct 及正确配置的会计采样，PBS 需要 resources_used；字段没有返回时保持缺失，不用资源申请补算。旧 Agent 消息仍可处理，但无计量；新字段通过独立 schema 校验，原事件 ID/重放/ACK 不变。计量先进入本地证据，不自动上链或扣款。取消时只得到平台终态、会计结果迟到、Torque/Kubernetes 或 GPU/内存指标暂未采集等情况，仍须报告待补采/核对，不能当作零用量结算。
+Slurm/PBS Pro 新 Agent 会在原终态事件中携带可取得的运行时长、累计 CPU 时间与调度器报告核数。Slurm 汇总与步骤尚不一致时保留终态、不输出该次计量，继续按缺失处理；可用[隔离会计检查](accounting/README.md)验证真实采集，默认开发 AIO 未开启会计。Slurm 需要可查询的 sacct 及正确配置的会计采样，PBS 需要 resources_used；字段没有返回时保持缺失，不用资源申请补算。旧 Agent 消息仍可处理，但无计量；新字段通过独立 schema 校验，原事件 ID/重放/ACK 不变。计量先进入本地证据，不自动上链或扣款。取消时只得到平台终态、会计结果迟到、Torque/Kubernetes 或 GPU/内存指标暂未采集等情况，仍须报告待补采/核对，不能当作零用量结算。
 
 ## 自动用量报告
 
