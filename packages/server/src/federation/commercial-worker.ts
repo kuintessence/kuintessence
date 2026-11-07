@@ -1,6 +1,7 @@
 import { createLogger } from "@kuintessence/shared";
 import type { FederationCommercialSubmissionService } from "./commercial-submissions";
 import type { FederationUsageService } from "./usage";
+import type { FederationUsageExchange } from "./usage-exchange";
 
 const logger = createLogger("federation-commercial");
 export class FederationCommercialWorker {
@@ -10,6 +11,7 @@ export class FederationCommercialWorker {
   constructor(
     private readonly service: FederationCommercialSubmissionService,
     private readonly usage?: FederationUsageService,
+    private readonly exchange?: FederationUsageExchange,
   ) {}
 
   start() {
@@ -31,6 +33,15 @@ export class FederationCommercialWorker {
           for (let i = 0; i < 8 && !this.stopped; i++) if (!(await this.usage.advanceNext())) break;
         } catch {
           logger.error("Usage scan failed; original evidence remains in PostgreSQL");
+        }
+      }
+      if (this.exchange) {
+        try {
+          await this.exchange.discover();
+          for (let i = 0; i < 8 && !this.stopped; i++)
+            if (!(await this.exchange.advanceNext())) break;
+        } catch {
+          logger.error("Usage exchange scan failed; received evidence remains in PostgreSQL");
         }
       }
       for (let i = 0; i < 8 && !this.stopped; i++) if (!(await this.service.advanceNext())) break;

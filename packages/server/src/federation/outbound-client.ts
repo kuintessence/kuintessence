@@ -12,6 +12,7 @@ export type FederationSend = (
   jws: string,
   path?:
     | "/federation/v1/delegations"
+    | "/federation/v1/usage"
     | "/federation/v1/status"
     | "/federation/v1/cancellations"
     | "/federation/v1/results"
@@ -31,6 +32,7 @@ export function createFederationSender(tls: {
   return (origin, jws, path = "/federation/v1/delegations") => {
     if (
       path !== "/federation/v1/delegations" &&
+      path !== "/federation/v1/usage" &&
       path !== "/federation/v1/status" &&
       path !== "/federation/v1/cancellations" &&
       path !== "/federation/v1/results" &&

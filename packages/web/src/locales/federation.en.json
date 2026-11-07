@@ -78,6 +78,8 @@
       "input-download-query": "Input download query",
       "commercial-agreement": "Commercial agreement",
       "commercial-usage": "Commercial usage",
+      "commercial-usage-query": "Usage query",
+      "commercial-usage-page": "Usage exchange response",
       "input-download-grant": "Input download grant"
     },
     "storage": {

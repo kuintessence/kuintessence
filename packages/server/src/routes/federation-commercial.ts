@@ -11,6 +11,7 @@ import type { FederationCommercialAgreementService } from "../federation/commerc
 import type { FederationCommercialSubmissionService } from "../federation/commercial-submissions";
 import type { FederationActor } from "../federation/permissions";
 import type { FederationUsageService } from "../federation/usage";
+import type { FederationUsageExchange } from "../federation/usage-exchange";
 import type { BoundPrincipal } from "../middleware/principal-binder";
 import { kqValidator } from "../middleware/validator";
 
@@ -18,6 +19,7 @@ export function createFederationCommercialRoutes(
   agreements: FederationCommercialAgreementService,
   submissions: FederationCommercialSubmissionService,
   usage?: FederationUsageService,
+  exchange?: FederationUsageExchange,
 ) {
   const r = new Hono<{ Variables: { federationActor: FederationActor } }>();
   r.use("/federation/commercial-agreements/*", async (c, next) => {
@@ -172,6 +174,55 @@ export function createFederationCommercialRoutes(
       async (c) => {
         const { revisionId, reservationId } = c.req.valid("param");
         await usage.retry(c.get("federationActor"), revisionId, reservationId);
+        return c.json({ success: true });
+      },
+    );
+  }
+  if (exchange) {
+    const operation = id.extend({ operationId: z.uuid() });
+    r.get(
+      "/federation/commercial-agreements/:revisionId/received-usage",
+      kqValidator("param", id),
+      kqValidator("query", page),
+      async (c) => {
+        const { limit, offset } = c.req.valid("query");
+        return c.json({
+          success: true,
+          data: await exchange.list(
+            c.get("federationActor"),
+            c.req.valid("param").revisionId,
+            limit,
+            offset,
+          ),
+        });
+      },
+    );
+    r.get(
+      "/federation/commercial-agreements/:revisionId/received-usage/:operationId",
+      kqValidator("param", operation),
+      kqValidator("query", page),
+      async (c) => {
+        const { revisionId, operationId } = c.req.valid("param"),
+          { limit, offset } = c.req.valid("query");
+        return c.json({
+          success: true,
+          data: await exchange.get(
+            c.get("federationActor"),
+            revisionId,
+            operationId,
+            limit,
+            offset,
+          ),
+        });
+      },
+    );
+    r.post(
+      "/federation/commercial-agreements/:revisionId/received-usage/:operationId/refresh",
+      kqValidator("param", operation),
+      kqValidator("json", z.strictObject({})),
+      async (c) => {
+        const { revisionId, operationId } = c.req.valid("param");
+        await exchange.retry(c.get("federationActor"), revisionId, operationId);
         return c.json({ success: true });
       },
     );

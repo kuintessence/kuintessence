@@ -12,6 +12,7 @@ import { type FederationResultDownloadStorage, FederationResultResponder } from 
 import { type FederationSigningKey, federationMessageKeyId } from "./signatures";
 import { FederationStatusResponder } from "./status";
 import { FederationTrustRegistry } from "./trust-registry";
+import { FederationUsageExchange } from "./usage-exchange";
 
 const logger = createLogger("federation-ingress");
 
@@ -95,6 +96,15 @@ export function createFederationIngress(
       inputDownloads,
     );
     return c.body(grant, 200, { "content-type": "application/jose", "cache-control": "no-store" });
+  });
+  r.post("/federation/v1/usage", async (c) => {
+    if (c.req.header("content-type") !== "application/jose")
+      return c.json({ error: { code: "INVALID_MESSAGE" } }, 415);
+    const report = await new FederationUsageExchange(db, signingKey).receive(
+      await c.req.text(),
+      c.req.header("x-kq-federation-cert") ?? "",
+    );
+    return c.body(report, 200, { "content-type": "application/jose", "cache-control": "no-store" });
   });
   r.post("/federation/v1/status", async (c) => {
     if (c.req.header("content-type") !== "application/jose")

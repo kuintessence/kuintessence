@@ -8,17 +8,22 @@ import {
   dataAssets,
   dataAssetVersions,
   dataGrants,
+  federationAgreementApprovals,
   federationAgreements,
   federationBudgets,
   federationCapabilities,
+  federationCertificates,
   federationCommercialAgreements,
   federationCommercialAttempts,
   federationCommercialSubmissions,
+  federationOutbound,
+  federationReceivedUsage,
   federationReservations,
   federationSigningKeys,
   federationSites,
   federationTerminalEvidence,
   federationUsageReports,
+  federationUsageSyncs,
   federationUsageTasks,
   federationWorkflowBindings,
   jobDataBindings,
@@ -41,6 +46,10 @@ import {
   CommercialUsageSchema,
   commercialAutomaticMeters,
 } from "@kuintessence/shared/federation/commercial";
+import {
+  CommercialUsagePageSchema,
+  CommercialUsageQuerySchema,
+} from "@kuintessence/shared/federation/usage-exchange";
 import { eq, inArray, sql } from "drizzle-orm";
 import { Hono } from "hono";
 import { exportSPKI } from "jose";
@@ -54,11 +63,14 @@ import { federationMaterialDigest } from "./assets";
 import { FederationCommercialAgreementService } from "./commercial-agreements";
 import { FederationCommercialSubmissionService } from "./commercial-submissions";
 import { FederationCommercialWorker } from "./commercial-worker";
+import { createFederationIngress } from "./ingress";
+import type { FederationSend } from "./outbound-client";
 import { FederationPermissionService } from "./permissions";
 import { signFederationMessage, verifyFederationMessage } from "./signatures";
 import { testAgreement, testDelegation, testKeys } from "./test-fixtures";
 import { FederationTrustRegistry } from "./trust-registry";
 import { FederationUsageService } from "./usage";
+import { FederationUsageExchange } from "./usage-exchange";
 
 const url = process.env.DATABASE_URL;
 if (!url || !/^\/kuintessence_unit_[a-z0-9_]+$/.test(new URL(url).pathname))
@@ -1106,4 +1118,546 @@ test("technical correction HTTP rejects hidden override fields and read-only or 
     f.userId,
   );
   expect((await request(f.input)).status).toBe(403);
+});
+
+async function exchangeFixture(missing = false) {
+  const f = await usageFixture("bilateral_direct", missing);
+  await f.usage.discover();
+  await f.usage.advanceNext();
+  const actor = { userId: randomUUID(), orgId: randomUUID() };
+  const fingerprint = randomUUID().replaceAll("-", "").repeat(2);
+  const [reservation] = await db
+    .select()
+    .from(federationReservations)
+    .where(eq(federationReservations.id, f.reservationId));
+  const [binding] = await db
+    .select()
+    .from(federationWorkflowBindings)
+    .where(eq(federationWorkflowBindings.reservationId, f.reservationId));
+  if (!reservation || !binding) throw new Error("Missing execution binding");
+  const operationId = reservation.operationId;
+  cleanup.push(async () => {
+    await db
+      .delete(federationReceivedUsage)
+      .where(eq(federationReceivedUsage.localSiteId, f.source.signing.siteId));
+    await db
+      .delete(federationUsageSyncs)
+      .where(eq(federationUsageSyncs.localSiteId, f.source.signing.siteId));
+    await db
+      .delete(federationOutbound)
+      .where(eq(federationOutbound.localSiteId, f.source.signing.siteId));
+    await db
+      .delete(federationCommercialAgreements)
+      .where(eq(federationCommercialAgreements.localSiteId, f.source.signing.siteId));
+    await db
+      .delete(federationAgreementApprovals)
+      .where(eq(federationAgreementApprovals.localSiteId, f.source.signing.siteId));
+    await db
+      .delete(federationCertificates)
+      .where(eq(federationCertificates.fingerprint, fingerprint));
+    await db.delete(federationCapabilities).where(eq(federationCapabilities.userId, actor.userId));
+    await db.delete(userOrgMemberships).where(eq(userOrgMemberships.userId, actor.userId));
+    await db.delete(auditLog).where(eq(auditLog.actor, actor.userId));
+    await db.delete(users).where(eq(users.id, actor.userId));
+    await db.delete(orgs).where(eq(orgs.id, actor.orgId));
+  });
+  await db.insert(orgs).values({ id: actor.orgId, name: "Source usage reader" });
+  await db.insert(users).values({
+    id: actor.userId,
+    orgId: actor.orgId,
+    email: `${actor.userId}@test.invalid`,
+    role: "user",
+  });
+  await db.insert(userOrgMemberships).values({ ...actor, role: "member" });
+  await new FederationPermissionService(db).set(
+    { ...actor, capability: "agreement.approve", enabled: true },
+    actor.userId,
+  );
+  await db.insert(federationAgreementApprovals).values({
+    localSiteId: f.source.signing.siteId,
+    revisionId: f.terms.agreementRevisionId,
+    localOrgId: actor.orgId,
+    terms: f.terms,
+    termsDigest: federationMaterialDigest(f.terms),
+    approvalJws: "fixture",
+    approvedBy: actor.userId,
+  });
+  const approvals = new FederationCommercialAgreementService(db, f.source.signing);
+  await approvals.approve(actor, f.contract);
+  await approvals.attachCounterparty(
+    actor,
+    f.terms.agreementRevisionId,
+    await signFederationMessage(CommercialAgreementSchema, f.contract, f.provider.signing),
+  );
+  await db.insert(federationOutbound).values({
+    localSiteId: f.source.signing.siteId,
+    operationId,
+    agreementRevisionId: f.terms.agreementRevisionId,
+    localOrgId: actor.orgId,
+    submittedBy: actor.userId,
+    taskId: reservation.taskId,
+    attempt: reservation.attempt,
+    budgetDomainId: f.terms.budgetDomainId,
+    epoch: f.terms.epoch,
+    amount: reservation.amount,
+    endpoint: "https://fixture.invalid",
+    request: binding.snapshot.request,
+    requestDigest: reservation.requestDigest,
+    requestJws: reservation.requestJws,
+    receipt: reservation.receipt,
+    receiptJws: reservation.receiptJws,
+    state: "accepted",
+  });
+  await db.insert(federationCertificates).values({
+    fingerprint,
+    siteId: f.source.signing.siteId,
+    certificatePem: "TLS registry fixture; actual TLS verified separately",
+    validFrom: new Date("2020-01-01"),
+    validUntil: new Date("2099-01-01"),
+  });
+  for (const siteId of [f.source.signing.siteId, f.provider.signing.siteId])
+    await db
+      .update(federationSigningKeys)
+      .set({
+        allowedKinds: [
+          "commercial-agreement",
+          "commercial-usage",
+          "commercial-usage-query",
+          "commercial-usage-page",
+        ],
+      })
+      .where(eq(federationSigningKeys.siteId, siteId));
+  const responder = new FederationUsageExchange(db, f.provider.signing);
+  const delivered: string[] = [];
+  const send: FederationSend = async (endpoint, jws, path) => {
+    expect(endpoint).toBe("https://fixture.invalid");
+    expect(path).toBe("/federation/v1/usage");
+    const response = await responder.receive(jws, fingerprint);
+    delivered.push(response);
+    return response;
+  };
+  const exchange = new FederationUsageExchange(db, f.source.signing, send);
+  const view = () => exchange.get(actor, f.terms.agreementRevisionId, operationId);
+  const due = () =>
+    db
+      .update(federationUsageSyncs)
+      .set({ nextAttemptAt: sql`clock_timestamp()` })
+      .where(eq(federationUsageSyncs.localSiteId, f.source.signing.siteId));
+  return {
+    ...f,
+    sourceActor: actor,
+    sourceApprovals: approvals,
+    operationId,
+    fingerprint,
+    responder,
+    send,
+    exchange,
+    exchangeView: view,
+    due,
+    delivered,
+    reservation,
+  };
+}
+
+test("usage exchange persists original and correction pages exactly once across concurrent/restarted scans", async () => {
+  const f = await exchangeFixture();
+  const original = (await f.view()).reports[0];
+  if (!original) throw new Error("Missing report");
+  const corrected = await f.usage.correct(f.actor, f.terms.agreementRevisionId, f.reservationId, {
+    reportId: randomUUID(),
+    correctionOf: original.id,
+    reason: "Verified later technical sample",
+    measurements: [
+      {
+        ...commercialAutomaticMeters[0],
+        quantity: "9007199254741023",
+        supportingEvidenceDigest: `sha256:${"b".repeat(64)}`,
+      },
+    ],
+  });
+  await f.exchange.discover();
+  await Promise.all(
+    Array.from({ length: 4 }, () =>
+      new FederationUsageExchange(db, f.source.signing, f.send).advanceNext(),
+    ),
+  );
+  await f.due();
+  await f.exchange.advanceNext();
+  const view = await f.exchangeView();
+  expect(view.sync).toMatchObject({ number: 2, lastReportId: corrected.id, lastError: null });
+  expect(view.reports.map((row) => row.reportId)).toEqual([corrected.id, original.id]);
+  expect(view.reports[0]?.reportJws).toBe(corrected.reportJws);
+  expect(view.reports[1]?.reportJws).toBe(original.reportJws);
+  const peer = await f.trust.resolveKey(
+    f.provider.signing.siteId,
+    f.provider.signing.keyId,
+    new Date(),
+  );
+  for (const jws of f.delivered) {
+    const { payload } = await verifyFederationMessage(
+      CommercialUsagePageSchema,
+      jws,
+      peer,
+      new Date(),
+    );
+    expect(JSON.stringify(payload)).not.toContain(f.jobId);
+    expect(JSON.stringify(payload)).not.toContain(f.userId);
+    expect(JSON.stringify(payload)).not.toContain("evidenceSet");
+  }
+  await f.due();
+  await f.exchange.advanceNext();
+  expect((await f.exchangeView()).reports).toHaveLength(2);
+  expect(
+    JSON.stringify(await f.exchange.list(f.sourceActor, f.terms.agreementRevisionId, 50, 0)),
+  ).not.toContain("leaseToken");
+  expect(JSON.stringify(await f.exchangeView())).not.toContain("leaseToken");
+  expect(
+    await f.exchange.get(f.sourceActor, f.terms.agreementRevisionId, f.operationId, 1, 1),
+  ).toMatchObject({ hasMore: false, reports: [{ reportId: original.id }] });
+});
+
+test("usage exchange preserves missing data and recovers unavailable transport without advancing its cursor", async () => {
+  const f = await exchangeFixture(true);
+  await f.exchange.discover();
+  const offline = new FederationUsageExchange(db, f.source.signing, async () => {
+    throw new Error("unavailable private transport");
+  });
+  await offline.advanceNext();
+  expect(await f.exchangeView()).toMatchObject({
+    sync: { state: "pending", lastError: "EXCHANGE_RETRY", number: 0 },
+    reports: [],
+  });
+  await f.due();
+  await f.exchange.advanceNext();
+  expect(await f.exchangeView()).toMatchObject({
+    sync: { providerState: "missing_data", number: 0, lastError: null },
+    reports: [],
+  });
+});
+
+test("usage exchange rejects replayed challenge and rolls back imported evidence on database failure", async () => {
+  const f = await exchangeFixture();
+  await f.exchange.discover();
+  const replay = new FederationUsageExchange(db, f.source.signing, async (endpoint, jws, path) => {
+    const first = await f.send(endpoint, jws, path);
+    const peer = await f.trust.resolveKey(
+      f.provider.signing.siteId,
+      f.provider.signing.keyId,
+      new Date(),
+    );
+    const { payload } = await verifyFederationMessage(
+      CommercialUsagePageSchema,
+      first,
+      peer,
+      new Date(),
+    );
+    return signFederationMessage(
+      CommercialUsagePageSchema,
+      { ...payload, queryId: randomUUID() },
+      f.provider.signing,
+    );
+  });
+  await replay.advanceNext();
+  expect(await f.exchangeView()).toMatchObject({
+    sync: { state: "needs_review", number: 0, lastError: "INVALID_MESSAGE" },
+    reports: [],
+  });
+  await f.exchange.retry(f.sourceActor, f.terms.agreementRevisionId, f.operationId);
+  await db.execute(
+    sql`alter table federation_received_usage add constraint test_received_failure check (operation_id <> ${sql.raw(`'${f.operationId}'::uuid`)})`,
+  );
+  try {
+    await f.exchange.advanceNext();
+    expect(await f.exchangeView()).toMatchObject({
+      sync: { number: 0, lastError: "EXCHANGE_RETRY" },
+      reports: [],
+    });
+  } finally {
+    await db.execute(
+      sql`alter table federation_received_usage drop constraint test_received_failure`,
+    );
+  }
+  await f.due();
+  await f.exchange.advanceNext();
+  expect((await f.exchangeView()).reports).toHaveLength(1);
+});
+
+test("usage exchange stops disclosure for wrong binding or revoked peer but preserves reading after execution revocation", async () => {
+  const f = await exchangeFixture();
+  await f.exchange.discover();
+  const changed = new FederationUsageExchange(db, f.source.signing, async (endpoint, jws) => {
+    const own = await f.trust.resolveKey(
+      f.source.signing.siteId,
+      f.source.signing.keyId,
+      new Date(),
+    );
+    const { payload } = await verifyFederationMessage(
+      CommercialUsageQuerySchema,
+      jws,
+      own,
+      new Date(),
+    );
+    const wrong = await signFederationMessage(
+      CommercialUsageQuerySchema,
+      { ...payload, taskId: randomUUID() },
+      f.source.signing,
+    );
+    await expect(f.responder.receive(wrong, f.fingerprint)).rejects.toThrow("POLICY_DENIED");
+    await db
+      .update(federationAgreements)
+      .set({ state: "revoked" })
+      .where(eq(federationAgreements.revisionId, f.terms.agreementRevisionId));
+    return f.send(endpoint, jws, "/federation/v1/usage");
+  });
+  await changed.advanceNext();
+  expect((await f.exchangeView()).reports).toHaveLength(1);
+  await f.due();
+  const revoked = new FederationUsageExchange(db, f.source.signing, async (endpoint, jws, path) => {
+    const response = await f.send(endpoint, jws, path);
+    await db
+      .update(federationSites)
+      .set({ state: "revoked" })
+      .where(eq(federationSites.id, f.provider.signing.siteId));
+    return response;
+  });
+  await revoked.advanceNext();
+  expect(await f.exchangeView()).toMatchObject({
+    sync: { number: 1, state: "needs_review", lastError: "UNTRUSTED_IDENTITY" },
+  });
+});
+
+test("usage exchange validates historical signatures after natural key expiry under a fresh provider signature", async () => {
+  const f = await exchangeFixture();
+  const original = (await f.view()).reports[0];
+  if (!original) throw new Error("Missing original");
+  const rotated = await testKeys(f.provider.signing.siteId);
+  rotated.signing.keyId += "-rotated";
+  await f.trust.addKey(
+    f.provider.signing.siteId,
+    {
+      keyId: rotated.signing.keyId,
+      publicKeyPem: await exportSPKI(rotated.verification.publicKey),
+      allowedKinds: ["commercial-usage-page"],
+      validFrom: "2020-01-01T00:00:00.000Z",
+      validUntil: "2099-01-01T00:00:00.000Z",
+    },
+    f.userId,
+  );
+  await db
+    .update(federationSigningKeys)
+    .set({ validUntil: new Date(new Date(original.report.reportedAt).getTime() + 1) })
+    .where(eq(federationSigningKeys.keyId, f.provider.signing.keyId));
+  const provider = new FederationUsageExchange(db, rotated.signing);
+  const source = new FederationUsageExchange(db, f.source.signing, async (_endpoint, jws) =>
+    provider.receive(jws, f.fingerprint),
+  );
+  await source.discover();
+  await source.advanceNext();
+  expect((await f.exchangeView()).reports[0]?.reportJws).toBe(original.reportJws);
+});
+
+test("usage exchange HTTP enforces private JOSE ingress, organization reads and explicit refresh capability", async () => {
+  const f = await exchangeFixture();
+  const ingress = createFederationIngress(db, f.provider.signing);
+  expect(
+    (await ingress.request("/federation/v1/usage", { method: "POST", body: "{}" })).status,
+  ).toBe(415);
+  expect(
+    (
+      await ingress.request("/federation/v1/usage", {
+        method: "POST",
+        headers: { "content-type": "application/jose" },
+        body: "invalid",
+      })
+    ).status,
+  ).not.toBe(200);
+  await f.exchange.discover();
+  await f.exchange.advanceNext();
+  const app = new Hono();
+  let actor = f.sourceActor;
+  app.onError(createErrorHandler(pino({ enabled: false })));
+  app.use("*", async (c, next) => {
+    c.set("principal" as never, actor as never);
+    await next();
+  });
+  app.route(
+    "/",
+    createFederationCommercialRoutes(
+      f.sourceApprovals,
+      new FederationCommercialSubmissionService(db, f.source.signing.siteId),
+      undefined,
+      f.exchange,
+    ),
+  );
+  const path = `/federation/commercial-agreements/${f.terms.agreementRevisionId}/received-usage/${f.operationId}`;
+  const response = await app.request(path);
+  expect(response.status).toBe(200);
+  expect(response.headers.get("cache-control")).toBe("no-store");
+  expect(JSON.stringify(await response.json())).not.toContain("pageJws");
+  actor = f.actor;
+  expect((await app.request(path)).status).not.toBe(200);
+  actor = f.sourceActor;
+  await new FederationPermissionService(db).set(
+    { ...actor, capability: "agreement.read", enabled: true },
+    actor.userId,
+  );
+  await new FederationPermissionService(db).set(
+    { ...actor, capability: "agreement.approve", enabled: false },
+    actor.userId,
+  );
+  expect((await app.request(path)).status).toBe(200);
+  expect(
+    (
+      await app.request(`${path}/refresh`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: "{}",
+      })
+    ).status,
+  ).toBe(403);
+});
+
+test("usage exchange rejects signed pages with broken sequence or correction commitments", async () => {
+  const f = await exchangeFixture();
+  await f.exchange.discover();
+  await f.exchange.advanceNext();
+  const original = (await f.view()).reports[0];
+  if (!original) throw new Error("Missing report");
+  await f.usage.correct(f.actor, f.terms.agreementRevisionId, f.reservationId, {
+    reportId: randomUUID(),
+    correctionOf: original.id,
+    reason: "Technical evidence",
+    measurements: [
+      {
+        ...commercialAutomaticMeters[0],
+        quantity: "12",
+        supportingEvidenceDigest: `sha256:${"c".repeat(64)}`,
+      },
+    ],
+  });
+  for (const change of ["sequence", "commitment", "quantity"] as const) {
+    await f.exchange.retry(f.sourceActor, f.terms.agreementRevisionId, f.operationId);
+    const malicious = new FederationUsageExchange(
+      db,
+      f.source.signing,
+      async (endpoint, query, path) => {
+        const result = await f.send(endpoint, query, path);
+        const peer = await f.trust.resolveKey(
+          f.provider.signing.siteId,
+          f.provider.signing.keyId,
+          new Date(),
+        );
+        const { payload } = await verifyFederationMessage(
+          CommercialUsagePageSchema,
+          result,
+          peer,
+          new Date(),
+        );
+        if (!payload.item?.correctionEvidence) throw new Error("Missing correction");
+        if (change === "sequence") payload.item.number++;
+        else if (change === "commitment")
+          payload.item.correctionEvidence.previousDigest = `sha256:${"0".repeat(64)}`;
+        else {
+          const measurement = payload.item.report.measurements[0];
+          if (!measurement) throw new Error("Missing measurement");
+          measurement.quantity = "0";
+          payload.item.reportJws = await signFederationMessage(
+            CommercialUsageSchema,
+            payload.item.report,
+            f.provider.signing,
+          );
+        }
+        return signFederationMessage(CommercialUsagePageSchema, payload, f.provider.signing);
+      },
+    );
+    await malicious.advanceNext();
+    const view = await f.exchangeView();
+    expect(view.sync).toMatchObject({
+      number: 1,
+      state: "needs_review",
+      lastError: "INVALID_MESSAGE",
+    });
+    expect(view.reports).toHaveLength(1);
+  }
+});
+
+test("usage exchange fences a late response after another worker recovers the expired lease", async () => {
+  const f = await exchangeFixture();
+  await f.exchange.discover();
+  let signal!: () => void;
+  const entered = new Promise<void>((resolve) => {
+    signal = resolve;
+  });
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const slow = new FederationUsageExchange(db, f.source.signing, async (endpoint, query, path) => {
+    const response = await f.send(endpoint, query, path);
+    signal();
+    await held;
+    return response;
+  });
+  const running = slow.advanceNext();
+  try {
+    await entered;
+    await db
+      .update(federationUsageSyncs)
+      .set({ leaseUntil: sql`clock_timestamp() - interval '1 second'` })
+      .where(eq(federationUsageSyncs.localSiteId, f.source.signing.siteId));
+    await f.exchange.advanceNext();
+    expect((await f.exchangeView()).sync).toMatchObject({ number: 1, lastError: null });
+  } finally {
+    release();
+    await running;
+  }
+  expect((await f.exchangeView()).reports).toHaveLength(1);
+  expect((await f.exchangeView()).sync).toMatchObject({
+    number: 1,
+    state: "pending",
+    lastError: null,
+  });
+});
+
+test("usage exchange worker needs explicit new signing purposes and runs independently of Fabric or departed staff", async () => {
+  const f = await exchangeFixture();
+  await db
+    .update(federationSigningKeys)
+    .set({ allowedKinds: ["commercial-agreement", "commercial-usage"] })
+    .where(eq(federationSigningKeys.siteId, f.source.signing.siteId));
+  const worker = new FederationCommercialWorker(
+    new FederationCommercialSubmissionService(db, f.source.signing.siteId),
+    undefined,
+    f.exchange,
+  );
+  await worker.tick();
+  expect(f.delivered).toHaveLength(0);
+  expect((await f.exchangeView()).sync).toMatchObject({
+    state: "needs_review",
+    number: 0,
+    lastError: "UNTRUSTED_IDENTITY",
+  });
+  await db
+    .update(federationSigningKeys)
+    .set({ allowedKinds: ["commercial-agreement", "commercial-usage", "commercial-usage-query"] })
+    .where(eq(federationSigningKeys.siteId, f.source.signing.siteId));
+  await f.exchange.retry(f.sourceActor, f.terms.agreementRevisionId, f.operationId);
+  await db
+    .delete(federationCapabilities)
+    .where(eq(federationCapabilities.userId, f.sourceActor.userId));
+  await worker.tick();
+  await worker.stop();
+  expect(
+    await db
+      .select()
+      .from(federationReceivedUsage)
+      .where(eq(federationReceivedUsage.localSiteId, f.source.signing.siteId)),
+  ).toHaveLength(1);
+  await expect(f.exchangeView()).rejects.toThrow("POLICY_DENIED");
+  expect(
+    await db
+      .select()
+      .from(federationCommercialSubmissions)
+      .where(eq(federationCommercialSubmissions.localSiteId, f.source.signing.siteId)),
+  ).toHaveLength(0);
 });

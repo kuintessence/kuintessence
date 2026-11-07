@@ -83,6 +83,8 @@ export const federationSigningKeys = pgTable(
           | "evidence-batch"
           | "commercial-agreement"
           | "commercial-usage"
+          | "commercial-usage-query"
+          | "commercial-usage-page"
           | "status-query"
           | "status-report"
           | "cancellation"
@@ -1214,6 +1216,66 @@ export const federationUsageReports = pgTable(
       "federation_usage_report_identity",
       sql`coalesce(${t.number} > 0 AND ${t.report}->>'reportId' = ${t.id}::text
     AND ${t.evidenceSet}->>'reservationId' = ${t.reservationId}::text AND ${t.digest} ~ '^sha256:[a-f0-9]{64}$',false)`,
+    ),
+  ],
+);
+
+/** Source-side polling survives restarts; receipt of a report never approves a bill. */
+export const federationUsageSyncs = pgTable(
+  "federation_usage_syncs",
+  {
+    localSiteId: uuid("local_site_id").notNull(),
+    operationId: uuid("operation_id").notNull(),
+    number: integer("number").notNull().default(0),
+    lastReportId: uuid("last_report_id"),
+    state: varchar("state", { length: 24 }).notNull().default("pending"),
+    providerState: varchar("provider_state", { length: 24 }),
+    lastError: varchar("last_error", { length: 64 }),
+    leaseToken: uuid("lease_token"),
+    leaseUntil: timestamp("lease_until", { withTimezone: true }),
+    nextAttemptAt: timestamp("next_attempt_at", { withTimezone: true }).notNull().defaultNow(),
+    verifiedAt: timestamp("verified_at", { withTimezone: true }),
+  },
+  (t) => [
+    primaryKey({ columns: [t.localSiteId, t.operationId] }),
+    foreignKey({
+      name: "federation_usage_sync_outbound_fk",
+      columns: [t.localSiteId, t.operationId],
+      foreignColumns: [federationOutbound.localSiteId, federationOutbound.operationId],
+    }),
+    index("federation_usage_sync_pending").on(t.localSiteId, t.state, t.nextAttemptAt),
+    check(
+      "federation_usage_sync_state",
+      sql`${t.state} IN ('pending','needs_review') AND ${t.number} >= 0 AND ((${t.number} = 0) = (${t.lastReportId} IS NULL)) AND ((${t.leaseToken} IS NULL) = (${t.leaseUntil} IS NULL))`,
+    ),
+  ],
+);
+
+export const federationReceivedUsage = pgTable(
+  "federation_received_usage",
+  {
+    localSiteId: uuid("local_site_id").notNull(),
+    operationId: uuid("operation_id").notNull(),
+    reportId: uuid("report_id").notNull(),
+    number: integer("number").notNull(),
+    report: jsonb("report").$type<CommercialUsage>().notNull(),
+    reportJws: text("report_jws").notNull(),
+    digest: varchar("digest", { length: 71 }).notNull(),
+    correctionEvidence: jsonb("correction_evidence").$type<CommercialUsageCorrectionEvidence>(),
+    pageJws: text("page_jws").notNull(),
+    receivedAt: timestamp("received_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.localSiteId, t.reportId] }),
+    foreignKey({
+      name: "federation_received_usage_sync_fk",
+      columns: [t.localSiteId, t.operationId],
+      foreignColumns: [federationUsageSyncs.localSiteId, federationUsageSyncs.operationId],
+    }),
+    uniqueIndex("federation_received_usage_sequence").on(t.localSiteId, t.operationId, t.number),
+    check(
+      "federation_received_usage_identity",
+      sql`(${t.number} > 0 AND ${t.report}->>'reportId' = ${t.reportId}::text AND ${t.digest} ~ '^sha256:[a-f0-9]{64}$') IS TRUE`,
     ),
   ],
 );

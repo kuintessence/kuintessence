@@ -40,6 +40,11 @@
       "bun": "./src/federation/commercial.ts",
       "types": "./src/federation/commercial.ts",
       "default": "./src/federation/commercial.ts"
+    },
+    "./federation/usage-exchange": {
+      "bun": "./src/federation/usage-exchange.ts",
+      "types": "./src/federation/usage-exchange.ts",
+      "default": "./src/federation/usage-exchange.ts"
     }
   },
   "scripts": {

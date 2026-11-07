@@ -647,7 +647,7 @@ RegisterAgreement 验证双方对同一条款的签名后只写对应 PDC；Reco
 
 直接模式本地签署后完成，不创建链待办、不探测链；存证模式先等同一商业合同的注册 committed，再由原持久提交服务推进 record-usage。商用 worker 在配置机构签名后即可工作，无需配置商业 socket；未配置 socket 时存证待办保留。每轮最多发现八项并推进八次，无网络 I/O 占用生成事务。报告是单方计量断言，不激活执行、不变更额度、不确认账单。
 
-按组织受控的 GET /api/federation/commercial-agreements/:revisionId/usage 与 /:reservationId 提供状态和报告；POST /:reservationId/retry 仅接受空对象并要求 agreement.approve，其他读取要求 agreement.read。missing_data/needs_review 可以重试，已签报告不能重生成；审计不复制用量正文。响应 no-store，报告仅本机构可读，证据集合未发给链或其他机构。技术更正已按下述规则接入；跨机构报告交换及 Web 操作尚待接入。
+按组织受控的 GET /api/federation/commercial-agreements/:revisionId/usage 与 /:reservationId 提供状态和报告；POST /:reservationId/retry 仅接受空对象并要求 agreement.approve，其他读取要求 agreement.read。missing_data/needs_review 可以重试，已签报告不能重生成；审计不复制用量正文。响应 no-store，报告仅本机构可读，证据集合未发给链或其他机构。技术更正已按下述规则接入；跨机构报告交换已按下述规则接入，Web 操作尚待接入。
 
 
 ### 用量技术更正
@@ -659,3 +659,16 @@ reportId 为客户端持久 UUID。事务锁原工作项，再核对最新报告
 更正声明保存原因、完整数量、佐证摘要、原报告摘要和随机盐；更正后的 CommercialUsage 通过 evidenceDigest 承诺该声明，并以 correctionOf 引用上一报告。原 evidenceSet 只保留最初观测的出处，不能解释为证明更正数量来自 Agent。supportingEvidenceDigest 是操作人对外部技术材料的声明，当前 API 不接收也不验证佐证文件内容；应由授权人员核验并在机构受控存储保留材料。此记录不是自动补采、商务减免、需求方接受或付款凭证。
 
 当前机构签名用途仍须允许 commercial-usage；报告、更正声明、可选链待办和脱敏审计同事务保存，任一步失败全部回滚。直接模式不创建链待办。异步存证须在合同登记及 correctionOf 对应前一用量报告都 committed 后才推进；前一记录 pending/needs_review 不允许跳过，但也不阻塞双边计算。复用原链码线性更正与 MVCC 规则，不新增自定义背书规则。
+
+
+### 机构间自动用量交换
+
+新增 CommercialUsageQuery/Page 协议与 FederationUsageExchange。源站在已接单的原委派和本机构商业双签之间按协议修订及组织匹配，建立 federation_usage_syncs；商业 worker 每轮最多发现八项、推进八次。使用现有固定 HTTPS origin、Node mTLS 网关与 /federation/v1/usage 私有 JOSE 入口，禁止重定向/代理/调用方自选 URL。查询和响应分别要求显式 commercial-usage-query、commercial-usage-page 用途；旧密钥不自动扩权。
+
+查询包含原操作、合同摘要、任务/尝试、接单预留、委派摘要、随机 challenge、最长一分钟窗口及前一报告序号/ID。执行方验证客户端证书与签名所属机构、商业双签和原预留绑定，发送前再次检查信任及查询有效期。每页最多一份报告，以新响应签名绑定原查询摘要、可见最新序号及报告状态；未产生报告、缺失和待核对分别保留。报文只含原报告 JWS、报告字段及更正声明，不包含原始 Job ID、执行用户、命令、日志或 evidenceSet。
+
+源站验证响应 challenge 与全部身份字段，再验证报告本身的签名、合同、价格指标/单位、原执行时段与更正链。更正须引用本地已收到的前一份报告和摘要，声明的全部数量与签名报告一致；不接受跳号、回退、缺失前序或仅有有效外层签名的错误内容。自然到期但未撤销的旧签名密钥，可在报告 reportedAt 验证，前提是当前仍可信的提供方以新鲜响应重申原字节；已撤销旧密钥拒绝新导入。已收到的历史不因其后密钥到期消失。
+
+迁移 0118 新增持久读取状态和 federation_received_usage，保留提供方原签名及验过的页签名。60 秒数据库租约、SKIP LOCKED 与 token 复查封锁迟到响应；网络调用不持锁，保存前重验当前机构信任。报告和读取位置同事务提交，写入失败不前进，重启后续读；还有后续更正时立即继续，读到最新后每 60 秒检查。网络失败退避，身份/协议错误进入 needs_review。后台沿用机构商业批准，不以原操作人员离职抹除历史同步权；真人读取仍须当前组织成员及 agreement.read。
+
+GET /api/federation/commercial-agreements/:revisionId/received-usage 及 /:operationId 提供本机构状态和分页报告；POST /:operationId/refresh 仅接受空对象、要求 agreement.approve，只重排同步，不在 HTTP 内等待网络，也不能抢占活动租约。接口 no-store，不返回租约 token 或原始页签名。报告收到、技术更正、双方确认账单和链上提交继续是不同事实；本服务不创建额度、账单、付款或新的存证待办，直接模式完全不探测 Fabric。
