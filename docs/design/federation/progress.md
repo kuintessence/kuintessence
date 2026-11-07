@@ -1565,3 +1565,11 @@ test:fabric:gate:integration 通过 9 组检查，包含真实 PostgreSQL 双签
 前两次故障尝试用于修正测试观测：最初错误依赖沙箱 stdout 的运行中标记，而 stdout 在退出后才发布，现改为读取容器内真实 sleep 进程；随后 20 秒停止观察窗短于 Pod 的 30 秒终止宽限，已有证据显示到期当秒发起删除，并保持停止待确认。现同时要求到期 10 秒内观察到删除请求，以及经过实际宽限期加 30 秒状态回收后 Job/Pod 真正停止，不把删除已接受当作停止。一次 namespace 清理等待 40 秒超时后，已核实 namespace/RBAC 和 PostgreSQL 均停止并清理遗留私有目录；脚本改为有界的 90 秒删除等待。最终场景全部自动清理成功，不把早期失败轮次算作验收通过。
 
 新增测试 Server 入口复用生产全部配置与处理器，仅将开发登录 HTTP 绑定 loopback；实际检查两端监听均为 127.0.0.1，Agent 继续用独立 mTLS 通道。成功场景和最终故障场景分别有完整通过证据，没有声称同一轮默认双场景命令最终全绿。全仓 lint 无错误（原有 47 warnings/1 info），全仓 typecheck 通过；最后新增测试入口另经 Fabric 脚本类型检查和 Biome。Python 语法、格式、两入口未 opt-in 拒绝、文档链接与 workflow 引用检查通过。没有重复未修改的其他业务测试，也没有运行 Slurm/PBS/Spack。
+
+## 链级停止意图与续期竞态
+
+Market 新增 RequestExecutionStop、Adapter 新增 request-execution-stop，双方任一机构可按原 ACTIVE 版本请求停止。首份请求将公开需求推进 STOPPING，另一方保留独立不可变回执；精确历史重放不改变后续状态。同机构同次激活不能换请求，第三方被拒绝。请求仅含公开绑定，不包含原因、合同、用量或价格；不要求对方业务签名，不释放私有额度，也不证明调度器已经停止。已有 VALID 仍受原绝对到期时间约束。通用市场 HTTP 创建接口暂不开放该操作。
+
+39 项不同链码/Adapter 测试通过，覆盖停止身份、幂等、版本和状态绑定、过期后停止、STOPPING 拒绝确认及商业释放；后续状态约束复验与原测试存在重叠，不累加计数。真实 test:fabric:gate 退出 0，通过 9 组检查：停止先提交使已背书续期 MVCC INVALID，双方停止收敛，第三方拒绝，私有 gate 不变且不能释放。生产 Node Adapter 与 Server Unix 客户端在 Orderer 中断和进程退出后恢复原停止交易 ID；公开区块/PDC 隐私检查包括新停止交易。测试网络已清理，证据留在忽略目录 temp/federation-stop-report.json、temp/federation-stop-network.log。
+
+全仓 lint 无错误（原有 47 warning / 1 info），全仓 typecheck 含 protobuf 与 Fabric 脚本通过。此轮没有数据库服务/迁移变更，未重跑数据库集成或真实 Agent 作业；Server 持久化停止接口、本地停止防线和取消联动尚待接入。启用前必须同步升级链码、Adapter 与读取新状态的 Server；不能让旧严格 schema 读取 STOPPING。未发布 PR 预览，未合并或部署 main。

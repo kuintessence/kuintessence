@@ -24,6 +24,7 @@ import {
   MarketDemandStateSchema,
   MarketExecutionAuthorizationSchema,
   MarketExecutionGateSchema,
+  MarketExecutionStopSchema,
 } from "@kuintessence/shared/federation/market";
 import { signFederationMessage } from "@kuintessence/shared/federation/signatures";
 import { importPKCS8 } from "jose";
@@ -592,6 +593,75 @@ async function run() {
   );
   passed.push(
     "execution confirmations require a participant, bind native ACTIVE/private-hash reads and reject a stale concurrent renewal by MVCC",
+  );
+
+  const stop = MarketExecutionStopSchema.parse({
+    demandId: two.demand.demandId,
+    stopId: randomUUID(),
+    issuerSiteId: source.siteId,
+    activationId: active.activation.activationId,
+    expectedVersion: active.version,
+  });
+  await assert.rejects(
+    market(cm, "RequestExecutionStop", two.demand.demandId, {
+      ...stop,
+      issuerSiteId: site("C").siteId,
+    }).endorse(),
+    rejected("POLICY_DENIED"),
+  );
+  const oldGateHash = await hash(two.reservation.reservationId);
+  const renewedAt = Date.now();
+  const [stopping, obsoleteRenewal] = await Promise.all([
+    market(am, "RequestExecutionStop", two.demand.demandId, stop, ["AMSP", "CMSP"]).endorse(),
+    market(
+      bm,
+      "AuthorizeExecution",
+      two.demand.demandId,
+      {
+        ...confirmation,
+        issuerSiteId: target.siteId,
+        authorizationId: randomUUID(),
+        issuedAt: new Date(renewedAt).toISOString(),
+        expiresAt: new Date(renewedAt + 299000).toISOString(),
+      },
+      ["AMSP", "CMSP"],
+    ).endorse(),
+  ]);
+  assert.equal((await commit(stopping)).successful, true);
+  assert.equal((await commit(obsoleteRenewal)).code, peer.TxValidationCode.MVCC_READ_CONFLICT);
+  await synced(two.demand.demandId, "STOPPING");
+  const stoppedState = await current(two.demand.demandId);
+  assert.deepEqual(stoppedState.stopRequest, stop);
+  assert.equal(stoppedState.version, active.version + 1);
+  assert.equal(
+    (await commit(await market(am, "RequestExecutionStop", two.demand.demandId, stop).endorse()))
+      .successful,
+    true,
+  );
+  const otherStop = { ...stop, stopId: randomUUID(), issuerSiteId: target.siteId };
+  assert.equal(
+    (
+      await commit(
+        await market(bm, "RequestExecutionStop", two.demand.demandId, otherStop).endorse(),
+      )
+    ).successful,
+    true,
+  );
+  assert.deepEqual(await current(two.demand.demandId), stoppedState);
+  await assert.rejects(
+    market(bm, "AuthorizeExecution", two.demand.demandId, {
+      ...confirmation,
+      issuerSiteId: target.siteId,
+    }).endorse(),
+    rejected("OPERATION_CONFLICT"),
+  );
+  await assert.rejects(
+    commercial(a, "ReleaseExecution", cancelTwo.value.releaseId, cancelTwo.signed).endorse(),
+    rejected("OPERATION_CONFLICT"),
+  );
+  assert.deepEqual(await hash(two.reservation.reservationId), oldGateHash);
+  passed.push(
+    "stop commits first: native MVCC invalidates an endorsed renewal; both participants converge on STOPPING without releasing private funds or reopening the demand",
   );
 
   const contenders = [await claimed(), await claimed()];

@@ -12,6 +12,7 @@ import {
   MarketAdapterProposalInputSchema,
   MarketExecutionAuthorizationSchema,
   MarketExecutionGateSchema,
+  MarketExecutionStopSchema,
 } from "@kuintessence/shared/federation/market";
 import { z } from "zod";
 import { startCommercialAdapter } from "../packages/fabric-adapter/src/commercial-runtime";
@@ -21,7 +22,9 @@ import { UnixMarketClient } from "../packages/server/src/federation/market-clien
 import { Site } from "./fabric-evidence-fixture";
 
 const root = z.string().parse(process.argv[2]);
-const operation = z.enum(["release", "reserve", "activate", "authorize"]).parse(process.argv[3]);
+const operation = z
+  .enum(["release", "reserve", "activate", "authorize", "stop"])
+  .parse(process.argv[3]);
 const action = z.enum(["prepare", "advance", "crash", "query"]).parse(process.argv[4]);
 const replyFile = z.string().parse(process.argv[5]);
 const fixture = z
@@ -41,7 +44,7 @@ const network = z
   })
   .parse(JSON.parse(await readFile(join(root, "network.json"), "utf8")));
 const site = Site.parse(network.sites.find((site) => site.name === "A"));
-const isMarket = operation === "activate" || operation === "authorize";
+const isMarket = operation === "activate" || operation === "authorize" || operation === "stop";
 const kind = isMarket ? "market" : "commercial";
 const user = isMarket ? "User2" : "User1";
 const msp = join(dirname(dirname(site.userMsp)), `${user}@a.kq.test`, "msp");
@@ -83,7 +86,7 @@ try {
   const checkpointFile = join(root, `gate-${operation}-checkpoint.json`);
   if (action === "prepare") {
     let activation = fixture.activate.activation;
-    if (operation === "authorize") {
+    if (operation === "authorize" || operation === "stop") {
       const result = await market.query({ operation: "get-demand", demandId: activation.demandId });
       assert(
         result.operation === "get-demand" &&
@@ -103,11 +106,22 @@ try {
       issuedAt: new Date(issuedAt).toISOString(),
       expiresAt: new Date(issuedAt + 300000).toISOString(),
     });
+    const stop = MarketExecutionStopSchema.parse({
+      demandId: activation.demandId,
+      stopId: randomUUID(),
+      issuerSiteId: site.siteId,
+      activationId: activation.activationId,
+      expectedVersion: activation.expectedVersion + 1,
+    });
+    if (operation === "stop")
+      await writeFile(join(root, "gate-stop-input.json"), JSON.stringify(stop), { mode: 0o600 });
     const checkpoint = isMarket
       ? await market.prepare(
-          operation === "authorize"
-            ? { operation: "authorize-execution", authorization }
-            : fixture.activate,
+          operation === "stop"
+            ? { operation: "request-execution-stop", stop }
+            : operation === "authorize"
+              ? { operation: "authorize-execution", authorization }
+              : fixture.activate,
         )
       : await commercial.prepare(fixture[operation === "release" ? "release" : "reserve"]);
     await writeFile(checkpointFile, JSON.stringify(checkpoint), { mode: 0o600 });
@@ -124,8 +138,18 @@ try {
           operation: "get-demand",
           demandId: fixture.activate.activation.demandId,
         });
-        if (result.operation === "get-demand" && result.demand?.status === "ACTIVE") {
-          if (operation === "authorize")
+        if (
+          result.operation === "get-demand" &&
+          result.demand?.status === (operation === "stop" ? "STOPPING" : "ACTIVE")
+        ) {
+          if (operation === "stop")
+            assert.deepEqual(
+              result.demand.stopRequest,
+              MarketExecutionStopSchema.parse(
+                JSON.parse(await readFile(join(root, "gate-stop-input.json"), "utf8")),
+              ),
+            );
+          else if (operation === "authorize")
             assert.deepEqual(result.demand.activation?.gate, fixture.activate.activation.gate);
           else assert.deepEqual(result.demand.activation, fixture.activate.activation);
           break;

@@ -13,6 +13,7 @@ import { federationCanonicalJson } from "@kuintessence/shared/federation";
 import {
   MarketDemandSchema,
   MarketExecutionAuthorizationSchema,
+  MarketExecutionStopSchema,
   type MarketProposalInput,
 } from "@kuintessence/shared/federation/market";
 import { z } from "zod";
@@ -21,6 +22,54 @@ import { FabricMarketAdapter, MarketAdapterConfigSchema } from "./market";
 const close: (() => void)[] = [];
 afterEach(() => {
   for (const fn of close.splice(0)) fn();
+});
+
+test("stop transport binds issuer, original activation and immutable recovery without private fields", async () => {
+  const f = fixture();
+  const stop = MarketExecutionStopSchema.parse({
+    demandId: f.demand.demandId,
+    stopId: randomUUID(),
+    issuerSiteId: f.config.siteId,
+    activationId: randomUUID(),
+    expectedVersion: 3,
+  });
+  const prepared = await f.adapter.prepare({ operation: "request-execution-stop", stop });
+  const stored = decode(f, prepared.recovery);
+  expect(stored.batchId).toBe(stop.stopId);
+  expect(stored.digest).toBe(
+    `sha256:${createHash("sha256").update(federationCanonicalJson(stop)).digest("hex")}`,
+  );
+  const proposed = proto.ProposedTransaction.deserializeBinary(
+    Buffer.from(stored.message.bytes, "base64"),
+  );
+  const signed = proposed.getProposal();
+  if (!signed) throw new Error("Missing proposal");
+  const payload = peer.ChaincodeProposalPayload.deserializeBinary(
+    peer.Proposal.deserializeBinary(signed.getProposalBytes_asU8()).getPayload_asU8(),
+  );
+  expect(Buffer.from(payload.getTransientmapMap().get("market") ?? []).toString()).toBe(
+    federationCanonicalJson(stop),
+  );
+  expect(
+    peer.ChaincodeInvocationSpec.deserializeBinary(payload.getInput_asU8())
+      .getChaincodeSpec()
+      ?.getInput()
+      ?.getArgsList_asU8()
+      .map((value) => Buffer.from(value).toString()),
+  ).toEqual(["RequestExecutionStop", stop.demandId]);
+  const sdk = spyOn(f.gateway, "getNetwork");
+  await expect(
+    f.adapter.prepare({
+      operation: "request-execution-stop",
+      stop: { ...stop, issuerSiteId: randomUUID() },
+    }),
+  ).rejects.toThrow("POLICY_DENIED");
+  const privateInput = {
+    operation: "request-execution-stop" as const,
+    stop: { ...stop, contract: "private" },
+  };
+  await expect(f.adapter.prepare(privateInput)).rejects.toThrow();
+  expect(sdk).not.toHaveBeenCalled();
 });
 
 test("execution confirmation transport fixes issuer, bounded lifetime and exact public recovery payload", async () => {

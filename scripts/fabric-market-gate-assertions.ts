@@ -47,15 +47,15 @@ export async function verifyExecutionGateNetwork(
         controls,
         (message) => report.passed.push(message),
       );
-      await verifyAdapterRecovery(root, controls, ["authorize"]);
+      await verifyAdapterRecovery(root, controls, ["authorize", "stop"]);
       report.passed.push(
-        "production execution confirmation recovers its original VALID transaction after Orderer outage and process exit",
+        "production execution confirmation and stop request recover their original VALID transactions after Orderer outage and process exit",
       );
     } else {
       await verifyAdapterRecovery(root, controls);
       report.passed.push(
-        "production commercial and market runtimes recover release/reserve/activate/authorize across process loss; reserve and authorize survive Orderer outage with the original transaction",
-        "Server Unix clients read the released and ready gate hashes, confirmed absence and matching ACTIVE demand",
+        "production commercial and market runtimes recover release/reserve/activate/authorize/stop across process loss; reserve, authorize and stop survive Orderer outage with the original transaction",
+        "Server Unix clients read the released and ready gate hashes, confirmed absence, ACTIVE and STOPPING states",
       );
     }
     for (const file of await readdir(root)) {
@@ -82,7 +82,7 @@ export async function verifyExecutionGateNetwork(
 async function verifyAdapterRecovery(
   root: string,
   controls: { stopOrderer(): Promise<void>; startOrderer(): Promise<void> },
-  operations = ["release", "reserve", "activate", "authorize"],
+  operations = ["release", "reserve", "activate", "authorize", "stop"],
 ) {
   const build = await Bun.build({
     entrypoints: [resolve(import.meta.dir, "fabric-market-gate-recovery-probe.ts")],
@@ -130,7 +130,7 @@ async function verifyAdapterRecovery(
     assert.equal(proposal?.state, "proposal");
     assert.equal(prepared?.state, "prepared");
     assert.equal(prepared?.transactionId, proposal?.transactionId);
-    if (operation === "reserve" || operation === "authorize") {
+    if (operation === "reserve" || operation === "authorize" || operation === "stop") {
       await controls.stopOrderer();
       try {
         const pending = await probe(operation, "advance");

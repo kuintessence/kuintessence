@@ -9,6 +9,7 @@ import {
   MarketDemandSchema,
   MarketDemandStateSchema,
   MarketExecutionAuthorizationSchema,
+  MarketExecutionStopSchema,
   MarketPageRequestSchema,
 } from "@kuintessence/shared/federation/market";
 import type { ChaincodeInterface, ChaincodeStub } from "fabric-shim";
@@ -85,6 +86,7 @@ export class MarketLedger {
         "ListDemands",
         "ActivateDemand",
         "AuthorizeExecution",
+        "RequestExecutionStop",
       ].includes(fcn)
     )
       return fail("INVALID_MESSAGE");
@@ -158,6 +160,46 @@ export class MarketLedger {
       return encode({ recordId: id, digest: hash });
     }
     if (!prior) return fail("ASSET_UNAVAILABLE");
+    if (fcn === "RequestExecutionStop") {
+      const stop = this.input(stub, MarketExecutionStopSchema);
+      if (stop.demandId !== id || stop.issuerSiteId !== org.siteId) return fail("POLICY_DENIED");
+      // One immutable request per participant/activation, including after a later task generation.
+      const receiptKey = stub.createCompositeKey("execution-stop", [
+        id,
+        stop.activationId,
+        org.siteId,
+      ]);
+      const saved = await stub.getState(receiptKey);
+      if (saved.length) {
+        const original = MarketExecutionStopSchema.parse(JSON.parse(Buffer.from(saved).toString()));
+        if (digest(original) !== digest(stop)) return fail("OPERATION_CONFLICT");
+        return encode({ recordId: stop.stopId, digest: digest(stop) });
+      }
+      if (![prior.demand.sourceSiteId, prior.claim?.providerSiteId].includes(org.siteId))
+        return fail("POLICY_DENIED");
+      if (
+        !["ACTIVE", "STOPPING"].includes(prior.status) ||
+        !prior.activation ||
+        prior.activation.activationId !== stop.activationId ||
+        stop.expectedVersion !== prior.activation.expectedVersion + 1 ||
+        (prior.status === "ACTIVE" && prior.version !== stop.expectedVersion)
+      )
+        return fail("OPERATION_CONFLICT");
+      if (prior.status === "ACTIVE")
+        await stub.putState(
+          key,
+          encode(
+            MarketDemandStateSchema.parse({
+              ...prior,
+              version: prior.version + 1,
+              status: "STOPPING",
+              stopRequest: stop,
+            }),
+          ),
+        );
+      await stub.putState(receiptKey, encode(stop));
+      return encode({ recordId: stop.stopId, digest: digest(stop) });
+    }
     if (fcn === "AuthorizeExecution") {
       const authorization = this.input(stub, MarketExecutionAuthorizationSchema);
       if (

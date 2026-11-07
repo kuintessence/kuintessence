@@ -34,7 +34,19 @@ CommercialReservation 由双方对相同正文签名，签署用途必须显式�
 
 ReleaseExecution 使用专用 commercial-release 双签正文，绑定原预留摘要及 gate 版本。只允许尚未激活的 CLAIMED 需求：同一交易减少 locked/预留计数，保留原始记录，追加释放回执，并将 gate 升版为 REVOKED。重复释放不重复退款；旧预留重放不会把 REVOKED 改回 READY。自然到期不等于已经停止执行，ACTIVE 不能沿此接口释放。
 
-当前没有 ACTIVE 的终态结算/停止证明、公共重新开放、预算扩额/跨域划拨或自动代际迁移。新签署用途已进入链与 Server 信任管理，预留/释放双签审批已接入；既有链信任清单的治理升级/迁移工具仍须补齐。未放开现有 Server 的 LEDGER_REQUIRED 门槛。
+当前没有 ACTIVE 的终态结算/停止证明、公共重新开放、预算扩额/跨域划拨或自动代际迁移。新签署用途已进入链与 Server 信任管理，预留/释放双签审批已接入；既有链信任清单的治理升级/迁移工具仍须补齐。协调执行另外必须经过有期限的 VALID 确认和本地当前授权。
+
+## ACTIVE 的停止意图
+
+`RequestExecutionStop` / Adapter `request-execution-stop` 允许原委派方或原执行方将指定激活的需求由 ACTIVE 改为 STOPPING。公开正文只有 demandId、stopId、issuerSiteId、activationId 和原 ACTIVE 版本 expectedVersion；不接受停止原因、合同、用量或价格。请求人须是具有 market 用途的实际机构身份，使用既有公共市场原生背书策略。停止意图不需要对方业务签名，也不替代任何资金操作的双方批准或私有集合背书。
+
+每次真实 activation、每个参与机构最多保存一个不可变停止请求。双方同时申请时，以第一笔 VALID 设置 STOPPING；另一方重试后保留自己的回执，不再次改变需求版本。同一机构换 stopId 或改正文会冲突。历史原文重放只返回原回执，不能影响将来的激活。请求不受已过期的接单/执行窗口阻拦，亦不依赖商业私有数据是否可用。
+
+expectedVersion 固定为 `activation.expectedVersion + 1`，不是随后 STOPPING 的当前版本。新增状态须随两个链码、Adapter 和 Server 读取 schema 一同升级后再启用；旧严格读取方不识别 STOPPING，会拒绝响应，不能据此把任务恢复为 ACTIVE。
+
+停止事务写入公共需求，执行确认读取同一键。停止先提交时，之前基于 ACTIVE 背书的续期因原生 MVCC 失败；STOPPING 上新申请确认直接拒绝。已经 VALID 的旧确认不被改写，现有消费者仍执行其绝对期限；这项链操作不是即时撤销离线授权或已停止调度器进程的证明。平台停止入口还须持久保存本地禁止派发与远端取消意图，继续核对真正的停止回执。
+
+STOPPING 保留原激活、认领和私有 gate，原 ReleaseExecution 仍拒绝释放它，也不能通过 CancelOpenDemand 或 ClaimDemand 重开。完整终态停止证明、结算及重新开放尚待衔接；目前只有链码与私有 Adapter 能力，通用市场 HTTP 提交 schema 不接受该操作，Server 专用待办/API 尚未接入。不能把 STOPPING 显示成“已停止”或“已退款”。
 
 ## 复现真实网络验证
 

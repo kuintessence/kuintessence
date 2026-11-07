@@ -72,15 +72,44 @@ export const MarketExecutionAuthorizationSchema = z
     return duration > 0 && duration <= MARKET_EXECUTION_AUTHORIZATION_MS;
   }, "Invalid execution authorization interval");
 export type MarketExecutionAuthorization = z.infer<typeof MarketExecutionAuthorizationSchema>;
-export const MarketDemandStateSchema = z.strictObject({
-  demand: MarketDemandSchema,
-  digest: FederationDigestSchema,
-  version: Version,
-  status: z.enum(["OPEN", "CLAIMED", "CANCELLED", "ACTIVE"]),
-  claim: MarketClaimSchema.nullable(),
-  cancellation: MarketCancelOpenSchema.nullable(),
-  activation: MarketActivationSchema.nullable().default(null),
+/** A participant's stop intent is public; it is not evidence of stopped compute or settled money. */
+export const MarketExecutionStopSchema = z.strictObject({
+  demandId: Id,
+  stopId: Id,
+  issuerSiteId: Id,
+  activationId: Id,
+  expectedVersion: Version,
 });
+export type MarketExecutionStop = z.infer<typeof MarketExecutionStopSchema>;
+export const MarketDemandStateSchema = z
+  .strictObject({
+    demand: MarketDemandSchema,
+    digest: FederationDigestSchema,
+    version: Version,
+    status: z.enum(["OPEN", "CLAIMED", "CANCELLED", "ACTIVE", "STOPPING"]),
+    claim: MarketClaimSchema.nullable(),
+    cancellation: MarketCancelOpenSchema.nullable(),
+    activation: MarketActivationSchema.nullable().default(null),
+    stopRequest: MarketExecutionStopSchema.optional(),
+  })
+  .superRefine((value, ctx) => {
+    const stop = value.stopRequest;
+    if (value.status !== "STOPPING") {
+      if (stop) ctx.addIssue({ code: "custom", message: "Unexpected execution stop" });
+      return;
+    }
+    if (
+      !stop ||
+      !value.activation ||
+      !value.claim ||
+      stop.demandId !== value.demand.demandId ||
+      stop.activationId !== value.activation.activationId ||
+      stop.expectedVersion !== value.activation.expectedVersion + 1 ||
+      value.version !== stop.expectedVersion + 1 ||
+      ![value.demand.sourceSiteId, value.claim.providerSiteId].includes(stop.issuerSiteId)
+    )
+      ctx.addIssue({ code: "custom", message: "Invalid execution stop binding" });
+  });
 export const MarketReceiptSchema = z.strictObject({
   recordId: Id,
   digest: FederationDigestSchema,
@@ -124,6 +153,10 @@ export const MarketAdapterProposalInputSchema = z.discriminatedUnion("operation"
   z.strictObject({
     operation: z.literal("authorize-execution"),
     authorization: MarketExecutionAuthorizationSchema,
+  }),
+  z.strictObject({
+    operation: z.literal("request-execution-stop"),
+    stop: MarketExecutionStopSchema,
   }),
 ]);
 export type MarketAdapterProposalInput = z.infer<typeof MarketAdapterProposalInputSchema>;

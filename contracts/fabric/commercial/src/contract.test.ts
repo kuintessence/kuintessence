@@ -12,6 +12,7 @@ import {
   FabricCommercialTrustSchema,
   fabricCommercialCollections,
 } from "@kuintessence/shared/federation/commercial";
+import { MarketActivationSchema } from "@kuintessence/shared/federation/market";
 import {
   type FederationSigningKey,
   signFederationMessage,
@@ -720,15 +721,48 @@ test("active or expired active execution cannot release money and missing privat
     salt: randomBytes(32).toString("hex"),
     reason: "Attempt release",
   });
-  f.stub.market = { ...f.market, status: "ACTIVE", version: 3 };
   f.stub.timestamp = new Date(+now + 7200000);
-  await expect(
-    f.call(
-      "ReleaseExecution",
-      release.releaseId,
-      await bilateral(CommercialReleaseSchema, release),
-    ),
-  ).rejects.toThrow("OPERATION_CONFLICT");
+  const activation = MarketActivationSchema.parse({
+    demandId: f.reservation.demandId,
+    activationId: randomUUID(),
+    expectedVersion: 2,
+    gate: {
+      domainId,
+      reservationId: f.reservation.reservationId,
+      demandId: f.reservation.demandId,
+      claimVersion: 2,
+      version: 1,
+      state: "READY",
+      reservationDigest: receipt.digest,
+      expiresAt: f.reservation.request.expiresAt,
+    },
+  });
+  for (const status of ["ACTIVE", "STOPPING"]) {
+    f.stub.market = {
+      ...f.market,
+      status,
+      activation,
+      version: status === "STOPPING" ? 4 : 3,
+      ...(status === "STOPPING"
+        ? {
+            stopRequest: {
+              demandId: f.reservation.demandId,
+              stopId: randomUUID(),
+              issuerSiteId: sites[0],
+              activationId: activation.activationId,
+              expectedVersion: 3,
+            },
+          }
+        : {}),
+    };
+    await expect(
+      f.call(
+        "ReleaseExecution",
+        release.releaseId,
+        await bilateral(CommercialReleaseSchema, release),
+      ),
+    ).rejects.toThrow("OPERATION_CONFLICT");
+  }
   expect(f.budget().locked).toBe(f.reservation.request.maxAmount);
   f.stub.market = f.market;
   const budgetKey = [...f.stub.privateState.keys()].find((key) => key.includes('["budget",'));

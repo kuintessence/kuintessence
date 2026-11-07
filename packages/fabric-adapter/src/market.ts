@@ -16,6 +16,7 @@ import {
   type MarketDemand,
   MarketDemandStateSchema,
   type MarketExecutionAuthorization,
+  type MarketExecutionStop,
   MarketPageSchema,
   type MarketQueryInput,
   MarketQueryInputSchema,
@@ -66,7 +67,8 @@ export class FabricMarketAdapter {
       | MarketClaim
       | z.infer<typeof MarketCancelOpenSchema>
       | z.infer<typeof MarketActivationSchema>
-      | MarketExecutionAuthorization;
+      | MarketExecutionAuthorization
+      | MarketExecutionStop;
     if (input.operation === "publish-demand") {
       if (input.demand.sourceSiteId !== this.config.siteId) throw new Error("POLICY_DENIED");
       name = "PublishDemand";
@@ -86,6 +88,11 @@ export class FabricMarketAdapter {
       name = "AuthorizeExecution";
       recordId = input.authorization.authorizationId;
       value = input.authorization;
+    } else if (input.operation === "request-execution-stop") {
+      if (input.stop.issuerSiteId !== this.config.siteId) throw new Error("POLICY_DENIED");
+      name = "RequestExecutionStop";
+      recordId = input.stop.stopId;
+      value = input.stop;
     } else {
       // Publisher authorization needs current committed state and remains enforced by chaincode.
       name = "CancelOpenDemand";

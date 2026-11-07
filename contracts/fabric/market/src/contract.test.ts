@@ -3,8 +3,11 @@ import { createHash, randomUUID } from "node:crypto";
 import {
   type FabricMarketTrust,
   MarketDemandSchema,
+  MarketDemandStateSchema,
   MarketExecutionAuthorizationSchema,
   MarketExecutionGateSchema,
+  MarketExecutionStopSchema,
+  MarketProposalInputSchema,
 } from "@kuintessence/shared/federation/market";
 import { MarketLedger } from "./contract";
 
@@ -343,6 +346,134 @@ async function activated() {
   });
   return { ...f, authorization };
 }
+
+test("either execution participant can stop; both requests converge without releasing or renewing", async () => {
+  for (const first of [0, 1]) {
+    const f = await activated();
+    await f.invoke("AuthorizeExecution", f.authorization, 1);
+    const previous = await f.invoke("GetDemand", undefined);
+    const count = f.stub.state.size;
+    const requests = [0, 1].map((index) =>
+      MarketExecutionStopSchema.parse({
+        demandId: f.demand.demandId,
+        stopId: randomUUID(),
+        issuerSiteId: sites[index],
+        activationId: f.authorization.activationId,
+        expectedVersion: 3,
+      }),
+    );
+    for (const index of [first, 1 - first]) {
+      const request = requests[index];
+      const receipt = await f.invoke("RequestExecutionStop", request, index);
+      expect(receipt.recordId).toBe(request?.stopId);
+      expect(await f.invoke("RequestExecutionStop", request, index)).toEqual(receipt);
+      await expect(
+        f.invoke("RequestExecutionStop", { ...request, stopId: randomUUID() }, index),
+      ).rejects.toThrow("OPERATION_CONFLICT");
+    }
+    const current = await f.invoke("GetDemand", undefined);
+    expect(current).toEqual({
+      ...previous,
+      version: 4,
+      status: "STOPPING",
+      stopRequest: requests[first],
+    });
+    for (const malformed of [
+      { ...current, stopRequest: undefined },
+      { ...current, stopRequest: { ...requests[first], issuerSiteId: sites[2] } },
+      { ...current, version: 5 },
+    ])
+      expect(MarketDemandStateSchema.safeParse(malformed).success).toBe(false);
+    expect(f.stub.state.size).toBe(count + 2);
+    for (const index of [0, 1])
+      await expect(
+        f.invoke(
+          "AuthorizeExecution",
+          { ...f.authorization, issuerSiteId: sites[index], authorizationId: randomUUID() },
+          index,
+        ),
+      ).rejects.toThrow("OPERATION_CONFLICT");
+    await expect(
+      f.invoke("CancelOpenDemand", {
+        demandId: f.demand.demandId,
+        cancellationId: randomUUID(),
+        expectedVersion: 4,
+      }),
+    ).rejects.toThrow("OPERATION_CONFLICT");
+    await expect(f.invoke("ClaimDemand", { ...f.claim(2), expectedVersion: 4 }, 2)).rejects.toThrow(
+      "OPERATION_CONFLICT",
+    );
+  }
+});
+
+test("stop binds the activation, organization and public schema but remains possible after execution expiry", async () => {
+  const f = await activated();
+  const stop = MarketExecutionStopSchema.parse({
+    demandId: f.demand.demandId,
+    stopId: randomUUID(),
+    issuerSiteId: sites[0],
+    activationId: f.authorization.activationId,
+    expectedVersion: 3,
+  });
+  const before = [...f.stub.state];
+  for (const input of [
+    { ...stop, activationId: randomUUID() },
+    { ...stop, expectedVersion: 2 },
+  ])
+    await expect(f.invoke("RequestExecutionStop", input)).rejects.toThrow("OPERATION_CONFLICT");
+  for (const [input, index] of [
+    [stop, 1],
+    [{ ...stop, issuerSiteId: sites[2] }, 2],
+  ] as const)
+    await expect(f.invoke("RequestExecutionStop", input, index)).rejects.toThrow("POLICY_DENIED");
+  await expect(f.invoke("RequestExecutionStop", stop, 0, "commercial")).rejects.toThrow(
+    "UNTRUSTED_IDENTITY",
+  );
+  for (const input of [
+    { ...stop, price: "private" },
+    { ...stop, reason: "private contract detail" },
+  ])
+    await expect(f.invoke("RequestExecutionStop", input)).rejects.toThrow();
+  expect(
+    MarketProposalInputSchema.safeParse({ operation: "request-execution-stop", stop }).success,
+  ).toBe(false);
+  expect([...f.stub.state]).toEqual(before);
+  f.stub.timestamp = new Date(+now + 7200000);
+  f.stub.onInvoke = async () => {
+    throw new Error("Stop must not depend on the commercial gate query");
+  };
+  const receipt = await f.invoke("RequestExecutionStop", stop);
+  expect(await f.invoke("RequestExecutionStop", stop)).toEqual(receipt);
+  const key = f.stub.createCompositeKey("demand", [f.demand.demandId]);
+  const latest = {
+    ...(await f.invoke("GetDemand", undefined)),
+    activation: null,
+    status: "OPEN",
+    stopRequest: undefined,
+    claim: null,
+    version: 5,
+  };
+  await f.stub.putState(key, Buffer.from(JSON.stringify(latest)));
+  expect(await f.invoke("RequestExecutionStop", stop)).toEqual(receipt);
+  expect(await f.invoke("GetDemand", undefined)).toEqual(JSON.parse(JSON.stringify(latest)));
+});
+
+test("a stop cannot cancel an OPEN or merely CLAIMED demand", async () => {
+  const f = await fixture();
+  await f.invoke("PublishDemand", f.demand);
+  const stop = {
+    demandId: f.demand.demandId,
+    stopId: randomUUID(),
+    issuerSiteId: sites[0],
+    activationId: randomUUID(),
+    expectedVersion: 1,
+  };
+  await expect(f.invoke("RequestExecutionStop", stop)).rejects.toThrow("OPERATION_CONFLICT");
+  await f.invoke("ClaimDemand", f.claim(), 1);
+  await expect(f.invoke("RequestExecutionStop", { ...stop, expectedVersion: 2 })).rejects.toThrow(
+    "OPERATION_CONFLICT",
+  );
+});
 
 test("execution confirmations bind current activation, issuer and private gate without exposing private terms", async () => {
   const f = await activated();
