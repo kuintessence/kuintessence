@@ -5,6 +5,7 @@ import {
   auditLog,
   type PgDb,
   type PgTransaction,
+  federationUsageReports as reports,
   federationCommercialSubmissions as submissions,
 } from "@kuintessence/db";
 import { FederationError } from "@kuintessence/shared/federation";
@@ -53,6 +54,20 @@ export class FederationCommercialSubmissionService {
                 AND dependency.input->>'operation' = 'register-agreement'
                 AND dependency.state = 'committed'
             ))`,
+            sql`NOT EXISTS (
+              SELECT 1 FROM ${reports} usage_report
+              WHERE usage_report.id = (${submissions.input}->>'recordId')::uuid
+                AND ${submissions.input}->>'operation' = 'record-usage'
+                AND usage_report.report->>'correctionOf' IS NOT NULL
+                AND NOT EXISTS (
+                  SELECT 1 FROM ${submissions} predecessor
+                  WHERE predecessor.local_site_id = ${submissions.localSiteId}
+                    AND predecessor.agreement_revision_id = ${submissions.agreementRevisionId}
+                    AND predecessor.input->>'operation' = 'record-usage'
+                    AND predecessor.input->>'recordId' = usage_report.report->>'correctionOf'
+                    AND predecessor.state = 'committed'
+                )
+            )`,
             sql`${submissions.nextAttemptAt} <= clock_timestamp()`,
             sql`(${submissions.leaseToken} IS NULL OR ${submissions.leaseUntil} <= clock_timestamp())`,
           ),

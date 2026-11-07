@@ -21,6 +21,7 @@ import type {
   CommercialAgreement,
   CommercialProposalInput,
   CommercialUsage,
+  CommercialUsageCorrectionEvidence,
   CommercialUsageEvidenceSet,
   CommercialUsageGap,
 } from "@kuintessence/shared/federation/commercial";
@@ -1201,6 +1202,7 @@ export const federationUsageReports = pgTable(
       .references(() => federationUsageTasks.reservationId),
     number: integer("number").notNull(),
     report: jsonb("report").$type<CommercialUsage>().notNull(),
+    correctionEvidence: jsonb("correction_evidence").$type<CommercialUsageCorrectionEvidence>(),
     reportJws: text("report_jws").notNull(),
     digest: varchar("digest", { length: 71 }).notNull(),
     evidenceSet: jsonb("evidence_set").$type<CommercialUsageEvidenceSet>().notNull(),

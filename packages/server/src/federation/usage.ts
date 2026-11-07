@@ -17,8 +17,15 @@ import {
 } from "@kuintessence/db";
 import { FederationError } from "@kuintessence/shared/federation";
 import {
+  type CommercialAgreement,
   CommercialAgreementSchema,
   CommercialProposalInputSchema,
+  type CommercialUsage,
+  type CommercialUsageCorrectionEvidence,
+  CommercialUsageCorrectionEvidenceSchema,
+  type CommercialUsageCorrectionInput,
+  CommercialUsageCorrectionInputSchema,
+  type CommercialUsageEvidenceSet,
   type CommercialUsageGap,
   CommercialUsageSchema,
 } from "@kuintessence/shared/federation/commercial";
@@ -27,7 +34,6 @@ import { federationMaterialDigest } from "./assets";
 import { type FederationActor, requireFederationCapability } from "./permissions";
 import {
   type FederationSigningKey,
-  type FederationVerificationKey,
   signFederationMessage,
   verifyFederationMessage,
 } from "./signatures";
@@ -246,50 +252,162 @@ export class FederationUsageService {
       periodEnd: periodEnd.toISOString(),
       measurements: aggregate.measurements,
     });
-    let key: FederationVerificationKey;
     try {
-      await this.trust.assertKey(tx, this.signing.siteId, this.signing.keyId, now);
-      key = await this.trust.resolveKey(this.signing.siteId, this.signing.keyId, now, tx);
-      if (!key.allowedKinds.includes("commercial-usage"))
-        throw new FederationError("UNTRUSTED_IDENTITY");
+      await this.saveReport(tx, task, report, aggregate.evidenceSet, 1, now, terms.agreement.mode);
     } catch (error) {
       if (error instanceof FederationError) return this.review(tx, task, error.code);
       throw error;
     }
+    await tx
+      .update(tasks)
+      .set({ state: "reported", gaps: [], lastError: null, updatedAt: sql`clock_timestamp()` })
+      .where(eq(tasks.reservationId, task.reservationId));
+  }
+
+  private async saveReport(
+    tx: PgTransaction,
+    task: Task,
+    report: CommercialUsage,
+    evidenceSet: CommercialUsageEvidenceSet,
+    number: number,
+    now: Date,
+    mode: CommercialAgreement["agreement"]["mode"],
+    correctionEvidence?: CommercialUsageCorrectionEvidence,
+  ) {
+    await this.trust.assertKey(tx, this.signing.siteId, this.signing.keyId, now);
+    const key = await this.trust.resolveKey(this.signing.siteId, this.signing.keyId, now, tx);
+    if (!key.allowedKinds.includes("commercial-usage"))
+      throw new FederationError("UNTRUSTED_IDENTITY");
     const reportJws = await signFederationMessage(CommercialUsageSchema, report, this.signing);
-    let verified: Awaited<ReturnType<typeof verifyFederationMessage>>;
-    try {
-      verified = await verifyFederationMessage(CommercialUsageSchema, reportJws, key, now);
-    } catch (error) {
-      if (error instanceof FederationError) return this.review(tx, task, error.code);
-      throw error;
-    }
-    await tx.insert(reports).values({
-      id: report.reportId,
-      reservationId: task.reservationId,
-      number: 1,
-      report,
-      reportJws,
-      digest: verified.digest,
-      evidenceSet: aggregate.evidenceSet,
-    });
-    if (terms.agreement.mode !== "bilateral_direct")
+    const verified = await verifyFederationMessage(CommercialUsageSchema, reportJws, key, now);
+    const [saved] = await tx
+      .insert(reports)
+      .values({
+        id: report.reportId,
+        reservationId: task.reservationId,
+        number,
+        report,
+        reportJws,
+        digest: verified.digest,
+        evidenceSet,
+        correctionEvidence,
+      })
+      .returning();
+    if (!saved) throw new FederationError("OPERATION_CONFLICT");
+    if (mode !== "bilateral_direct")
       await tx.insert(submissions).values({
         id: randomUUID(),
         localSiteId: this.signing.siteId,
         agreementRevisionId: task.agreementRevisionId,
         input: CommercialProposalInputSchema.parse({
           operation: "record-usage",
-          domainId: terms.domainId,
+          domainId: report.domainId,
           recordId: report.reportId,
           digest: verified.digest,
           envelope: { providerJws: reportJws },
         }),
       });
-    await tx
-      .update(tasks)
-      .set({ state: "reported", gaps: [], lastError: null, updatedAt: sql`clock_timestamp()` })
-      .where(eq(tasks.reservationId, task.reservationId));
+    return saved;
+  }
+
+  async correct(
+    actor: FederationActor,
+    revisionId: string,
+    reservationId: string,
+    raw: CommercialUsageCorrectionInput,
+  ) {
+    const input = CommercialUsageCorrectionInputSchema.parse(raw);
+    return this.db.transaction(async (tx) => {
+      await requireFederationCapability(tx, actor, "agreement.approve");
+      const task = await this.localTask(tx, actor, revisionId, reservationId, true);
+      if (task.state !== "reported") throw new FederationError("OPERATION_CONFLICT");
+      const [existing] = await tx.select().from(reports).where(eq(reports.id, input.reportId));
+      if (existing) {
+        if (
+          existing.reservationId !== reservationId ||
+          !existing.correctionEvidence ||
+          federationMaterialDigest(existing.correctionEvidence.declaration) !==
+            federationMaterialDigest(input)
+        )
+          throw new FederationError("OPERATION_CONFLICT");
+        return existing;
+      }
+      const [previous] = await tx
+        .select()
+        .from(reports)
+        .where(eq(reports.reservationId, reservationId))
+        .orderBy(desc(reports.number))
+        .limit(1);
+      if (!previous || previous.id !== input.correctionOf || previous.number >= 2147483647)
+        throw new FederationError("OPERATION_CONFLICT");
+      const [contract] = await tx
+        .select()
+        .from(contracts)
+        .where(
+          and(eq(contracts.localSiteId, task.localSiteId), eq(contracts.revisionId, revisionId)),
+        );
+      if (!contract) throw new FederationError("AGREEMENT_UNAVAILABLE");
+      const terms = CommercialAgreementSchema.parse(contract.terms);
+      if (
+        terms.agreement.targetSiteId !== this.signing.siteId ||
+        previous.report.agreementDigest !== contract.digest ||
+        input.measurements.length !== terms.prices.length ||
+        !input.measurements.every((measurement) =>
+          terms.prices.some(
+            (price) =>
+              price.metric === measurement.metric &&
+              price.quantityUnit === measurement.quantityUnit,
+          ),
+        )
+      )
+        throw new FederationError("INVALID_MESSAGE");
+      const [time] = await tx
+        .select({ now: sql<Date>`clock_timestamp()` })
+        .from(tasks)
+        .where(eq(tasks.reservationId, reservationId));
+      const now = new Date(time?.now ?? NaN);
+      if (!Number.isFinite(now.getTime()) || now < new Date(previous.report.reportedAt))
+        throw new FederationError("OPERATION_CONFLICT");
+      const correctionEvidence = CommercialUsageCorrectionEvidenceSchema.parse({
+        version: 1,
+        kind: "provider-technical-correction",
+        reservationId,
+        previousDigest: previous.digest,
+        recordedAt: now.toISOString(),
+        salt: randomBytes(32).toString("hex"),
+        declaration: input,
+      });
+      const digest = federationMaterialDigest(correctionEvidence);
+      const report = CommercialUsageSchema.parse({
+        ...previous.report,
+        reportId: input.reportId,
+        correctionOf: previous.id,
+        reportedAt: now.toISOString(),
+        salt: randomBytes(32).toString("hex"),
+        measurements: input.measurements.map(({ supportingEvidenceDigest: _, ...measurement }) => ({
+          ...measurement,
+          evidenceDigest: digest,
+        })),
+      });
+      const saved = await this.saveReport(
+        tx,
+        task,
+        report,
+        previous.evidenceSet,
+        previous.number + 1,
+        now,
+        terms.agreement.mode,
+        correctionEvidence,
+      );
+      await tx.insert(auditLog).values({
+        actor: actor.userId,
+        orgId: actor.orgId,
+        action: "federation.usage.correct",
+        target: input.reportId,
+        diff: { after: { correctionOf: previous.id, digest: saved.digest } },
+      });
+      return saved;
+    });
   }
 
   async list(actor: FederationActor, revisionId: string, limit: number, offset: number) {
@@ -311,7 +429,13 @@ export class FederationUsageService {
         .offset(offset);
     });
   }
-  async get(actor: FederationActor, revisionId: string, reservationId: string) {
+  async get(
+    actor: FederationActor,
+    revisionId: string,
+    reservationId: string,
+    limit = 100,
+    offset = 0,
+  ) {
     return this.db.transaction(async (tx) => {
       await requireFederationCapability(tx, actor, "agreement.read");
       const task = await this.localTask(tx, actor, revisionId, reservationId);
@@ -323,6 +447,7 @@ export class FederationUsageService {
           reportJws: reports.reportJws,
           digest: reports.digest,
           evidenceSet: reports.evidenceSet,
+          correctionEvidence: reports.correctionEvidence,
           createdAt: reports.createdAt,
           submissionId: submissions.id,
           ledgerState: submissions.state,
@@ -339,8 +464,9 @@ export class FederationUsageService {
         )
         .where(eq(reports.reservationId, reservationId))
         .orderBy(desc(reports.number))
-        .limit(100);
-      return { task, reports: records };
+        .limit(limit + 1)
+        .offset(offset);
+      return { task, reports: records.slice(0, limit), hasMore: records.length > limit };
     });
   }
   async retry(actor: FederationActor, revisionId: string, reservationId: string) {

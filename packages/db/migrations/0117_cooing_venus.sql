@@ -1,0 +1,1 @@
+ALTER TABLE "federation_usage_reports" ADD COLUMN "correction_evidence" jsonb;

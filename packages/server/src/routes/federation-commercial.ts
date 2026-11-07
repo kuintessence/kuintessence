@@ -1,6 +1,9 @@
 import { AppError, ErrorCode } from "@kuintessence/shared";
 import { FederationError } from "@kuintessence/shared/federation";
-import { CommercialAgreementSchema } from "@kuintessence/shared/federation/commercial";
+import {
+  CommercialAgreementSchema,
+  CommercialUsageCorrectionInputSchema,
+} from "@kuintessence/shared/federation/commercial";
 import { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { z } from "zod";
@@ -130,11 +133,35 @@ export function createFederationCommercialRoutes(
     r.get(
       "/federation/commercial-agreements/:revisionId/usage/:reservationId",
       kqValidator("param", task),
+      kqValidator("query", page),
       async (c) => {
         const { revisionId, reservationId } = c.req.valid("param");
         return c.json({
           success: true,
-          data: await usage.get(c.get("federationActor"), revisionId, reservationId),
+          data: await usage.get(
+            c.get("federationActor"),
+            revisionId,
+            reservationId,
+            c.req.valid("query").limit,
+            c.req.valid("query").offset,
+          ),
+        });
+      },
+    );
+    r.post(
+      "/federation/commercial-agreements/:revisionId/usage/:reservationId/corrections",
+      kqValidator("param", task),
+      kqValidator("json", CommercialUsageCorrectionInputSchema),
+      async (c) => {
+        const { revisionId, reservationId } = c.req.valid("param");
+        return c.json({
+          success: true,
+          data: await usage.correct(
+            c.get("federationActor"),
+            revisionId,
+            reservationId,
+            c.req.valid("json"),
+          ),
         });
       },
     );

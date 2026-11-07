@@ -247,3 +247,42 @@ export const CommercialUsageGapSchema = z.strictObject({
   reason: z.enum(["UNSUPPORTED_METER", "MISSING_ACCOUNTING", "NO_JOB_EVIDENCE"]),
 });
 export type CommercialUsageGap = z.infer<typeof CommercialUsageGapSchema>;
+
+/** An authorized provider assertion; never presented as a new Agent observation or a discount. */
+export const CommercialUsageCorrectionInputSchema = z
+  .strictObject({
+    reportId: Id,
+    correctionOf: Id,
+    reason: z.string().trim().min(1).max(4096),
+    measurements: z
+      .array(
+        z.strictObject({
+          metric: Metric,
+          quantityUnit: Metric,
+          quantity: FederationAmountSchema,
+          supportingEvidenceDigest: FederationDigestSchema,
+        }),
+      )
+      .min(1)
+      .max(64),
+  })
+  .superRefine((value, ctx) => {
+    if (
+      value.reportId === value.correctionOf ||
+      new Set(value.measurements.map((item) => item.metric)).size !== value.measurements.length
+    )
+      ctx.addIssue({ code: "custom", message: "Duplicate metric or self correction" });
+  });
+export type CommercialUsageCorrectionInput = z.infer<typeof CommercialUsageCorrectionInputSchema>;
+export const CommercialUsageCorrectionEvidenceSchema = z.strictObject({
+  version: z.literal(1),
+  kind: z.literal("provider-technical-correction"),
+  reservationId: Id,
+  previousDigest: FederationDigestSchema,
+  recordedAt: z.iso.datetime(),
+  salt: Salt,
+  declaration: CommercialUsageCorrectionInputSchema,
+});
+export type CommercialUsageCorrectionEvidence = z.infer<
+  typeof CommercialUsageCorrectionEvidenceSchema
+>;

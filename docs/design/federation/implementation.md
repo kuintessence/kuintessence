@@ -647,4 +647,15 @@ RegisterAgreement 验证双方对同一条款的签名后只写对应 PDC；Reco
 
 直接模式本地签署后完成，不创建链待办、不探测链；存证模式先等同一商业合同的注册 committed，再由原持久提交服务推进 record-usage。商用 worker 在配置机构签名后即可工作，无需配置商业 socket；未配置 socket 时存证待办保留。每轮最多发现八项并推进八次，无网络 I/O 占用生成事务。报告是单方计量断言，不激活执行、不变更额度、不确认账单。
 
-按组织受控的 GET /api/federation/commercial-agreements/:revisionId/usage 与 /:reservationId 提供状态和报告；POST /:reservationId/retry 仅接受空对象并要求 agreement.approve，其他读取要求 agreement.read。missing_data/needs_review 可以重试，已签报告不能重生成；审计不复制用量正文。响应 no-store，报告仅本机构可读，证据集合未发给链或其他机构。更正、跨机构报告交换及 Web 操作尚待接入。
+按组织受控的 GET /api/federation/commercial-agreements/:revisionId/usage 与 /:reservationId 提供状态和报告；POST /:reservationId/retry 仅接受空对象并要求 agreement.approve，其他读取要求 agreement.read。missing_data/needs_review 可以重试，已签报告不能重生成；审计不复制用量正文。响应 no-store，报告仅本机构可读，证据集合未发给链或其他机构。技术更正已按下述规则接入；跨机构报告交换及 Web 操作尚待接入。
+
+
+### 用量技术更正
+
+迁移 0117 为 federation_usage_reports 增加 correctionEvidence，只在更正记录中保存提供方声明。POST /api/federation/commercial-agreements/:revisionId/usage/:reservationId/corrections 要求本机构真人拥有 agreement.approve，字段为 reportId、correctionOf、reason 和完整 measurements；每项保留精确 quantity、合同规定的 metric/quantityUnit 及 supportingEvidenceDigest。严格拒绝额外字段，不能修改报告时段、合同、任务或尝试，也不能通过更正把尚无原始报告的 missing_data 任务变为已报告。
+
+reportId 为客户端持久 UUID。事务锁原工作项，再核对最新报告；同一 UUID/同一声明重试返回原签名，即使之后已有新更正也不回退头。同一父报告的不同更正只能接受一份；旧头、新 UUID 或已用 UUID 换内容均冲突。原始报告、终态证据和先前更正不更新。原报告查询支持 limit/offset 和 hasMore，历史超过一页仍可访问。
+
+更正声明保存原因、完整数量、佐证摘要、原报告摘要和随机盐；更正后的 CommercialUsage 通过 evidenceDigest 承诺该声明，并以 correctionOf 引用上一报告。原 evidenceSet 只保留最初观测的出处，不能解释为证明更正数量来自 Agent。supportingEvidenceDigest 是操作人对外部技术材料的声明，当前 API 不接收也不验证佐证文件内容；应由授权人员核验并在机构受控存储保留材料。此记录不是自动补采、商务减免、需求方接受或付款凭证。
+
+当前机构签名用途仍须允许 commercial-usage；报告、更正声明、可选链待办和脱敏审计同事务保存，任一步失败全部回滚。直接模式不创建链待办。异步存证须在合同登记及 correctionOf 对应前一用量报告都 committed 后才推进；前一记录 pending/needs_review 不允许跳过，但也不阻塞双边计算。复用原链码线性更正与 MVCC 规则，不新增自定义背书规则。

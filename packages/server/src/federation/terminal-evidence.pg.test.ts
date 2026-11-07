@@ -37,6 +37,7 @@ import {
 } from "@kuintessence/shared/federation";
 import {
   CommercialAgreementSchema,
+  type CommercialUsageCorrectionInput,
   CommercialUsageSchema,
   commercialAutomaticMeters,
 } from "@kuintessence/shared/federation/commercial";
@@ -831,4 +832,278 @@ test("reporting interval outside the agreement is held for review without clampi
     reports: [],
   });
   expect(await f.read()).toBeDefined();
+});
+
+async function correctionFixture(
+  mode: "bilateral_direct" | "bilateral_attested" = "bilateral_direct",
+) {
+  const f = await usageFixture(mode);
+  await f.usage.discover();
+  await f.usage.advanceNext();
+  const original = (await f.view()).reports[0];
+  if (!original) throw new Error("Missing original report");
+  const input: CommercialUsageCorrectionInput = {
+    reportId: randomUUID(),
+    correctionOf: original.id,
+    reason: "Scheduler administrator verified a delayed CPU sample",
+    measurements: [
+      {
+        ...commercialAutomaticMeters[0],
+        quantity: "9007199254741001",
+        supportingEvidenceDigest: federationMaterialDigest({ sample: "private accounting export" }),
+      },
+    ],
+  };
+  const correct = (raw = input) =>
+    f.usage.correct(f.actor, f.terms.agreementRevisionId, f.reservationId, raw);
+  return { ...f, original, input, correct };
+}
+
+test("technical correction appends a signed assertion and idempotent replay never rewrites history", async () => {
+  const f = await correctionFixture();
+  const originalEvidence = await f.read();
+  const first = await f.correct();
+  expect(first.number).toBe(2);
+  expect(first.report).toMatchObject({
+    correctionOf: f.original.id,
+    periodStart: f.original.report.periodStart,
+    periodEnd: f.original.report.periodEnd,
+    taskId: f.original.report.taskId,
+    attempt: f.original.report.attempt,
+  });
+  expect(first.correctionEvidence).toMatchObject({
+    kind: "provider-technical-correction",
+    previousDigest: f.original.digest,
+    declaration: f.input,
+  });
+  expect(first.report.measurements[0]?.evidenceDigest).toBe(
+    federationMaterialDigest(first.correctionEvidence),
+  );
+  const key = await f.trust.resolveKey(
+    f.provider.signing.siteId,
+    f.provider.signing.keyId,
+    new Date(),
+  );
+  expect(
+    (await verifyFederationMessage(CommercialUsageSchema, first.reportJws, key, new Date())).digest,
+  ).toBe(first.digest);
+  expect((await f.correct()).reportJws).toBe(first.reportJws);
+  const second = await f.correct({
+    ...f.input,
+    reportId: randomUUID(),
+    correctionOf: first.id,
+    reason: "Follow-up technical evidence",
+  });
+  expect(second.number).toBe(3);
+  expect((await f.correct()).reportJws).toBe(first.reportJws);
+  const records = (await f.view()).reports;
+  expect(records).toHaveLength(3);
+  expect(records[2]).toEqual(f.original);
+  expect(
+    await f.usage.get(f.actor, f.terms.agreementRevisionId, f.reservationId, 1, 0),
+  ).toMatchObject({ hasMore: true, reports: [{ id: second.id }] });
+  expect(
+    await f.usage.get(f.actor, f.terms.agreementRevisionId, f.reservationId, 1, 2),
+  ).toMatchObject({ hasMore: false, reports: [{ id: f.original.id }] });
+  expect(await f.read()).toEqual(originalEvidence);
+  expect(
+    await db
+      .select()
+      .from(federationCommercialSubmissions)
+      .where(eq(federationCommercialSubmissions.localSiteId, f.provider.signing.siteId)),
+  ).toHaveLength(0);
+  expect(
+    (
+      await db
+        .select()
+        .from(federationBudgets)
+        .where(eq(federationBudgets.domainId, f.terms.budgetDomainId))
+    )[0],
+  ).toMatchObject({ available: "40", reserved: "60" });
+  const audits = await db
+    .select()
+    .from(auditLog)
+    .where(eq(auditLog.action, "federation.usage.correct"));
+  expect(audits.filter((row) => row.actor === f.userId)).toHaveLength(2);
+  expect(JSON.stringify(audits)).not.toContain(f.input.reason);
+  expect(JSON.stringify(audits)).not.toContain(f.input.measurements[0]?.quantity);
+});
+
+test("technical correction serializes competing heads and rejects changed idempotency content", async () => {
+  const f = await correctionFixture();
+  const candidates = [
+    f.input,
+    { ...f.input, reportId: randomUUID(), reason: "Different correction" },
+  ];
+  const results = await Promise.allSettled(candidates.map((input) => f.correct(input)));
+  expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+  expect(results.filter((result) => result.status === "rejected")).toHaveLength(1);
+  expect((await f.view()).reports).toHaveLength(2);
+  const head = (await f.view()).reports[0];
+  if (!head?.correctionEvidence) throw new Error("Missing correction");
+  await expect(
+    f.correct({ ...head.correctionEvidence.declaration, reason: "Changed bytes" }),
+  ).rejects.toThrow("OPERATION_CONFLICT");
+  await expect(f.correct({ ...f.input, reportId: randomUUID() })).rejects.toThrow(
+    "OPERATION_CONFLICT",
+  );
+});
+
+test("technical correction requires current authority, valid units, complete metrics and signing purpose", async () => {
+  const f = await correctionFixture();
+  await expect(
+    f.correct({
+      ...f.input,
+      measurements: [
+        {
+          ...f.input.measurements[0],
+          metric: "cpu",
+          quantityUnit: "core-second",
+          quantity: "1",
+          supportingEvidenceDigest: `sha256:${"a".repeat(64)}`,
+        },
+      ],
+    }),
+  ).rejects.toThrow("INVALID_MESSAGE");
+  await expect(f.correct({ ...f.input, measurements: [] })).rejects.toThrow();
+  await expect(
+    f.usage.correct(
+      { ...f.actor, orgId: randomUUID() },
+      f.terms.agreementRevisionId,
+      f.reservationId,
+      f.input,
+    ),
+  ).rejects.toThrow("POLICY_DENIED");
+  await db
+    .update(federationSigningKeys)
+    .set({ allowedKinds: ["commercial-agreement"] })
+    .where(eq(federationSigningKeys.siteId, f.provider.signing.siteId));
+  await expect(f.correct()).rejects.toThrow("UNTRUSTED_IDENTITY");
+  await db
+    .update(federationSigningKeys)
+    .set({ allowedKinds: ["commercial-agreement", "commercial-usage"] })
+    .where(eq(federationSigningKeys.siteId, f.provider.signing.siteId));
+  await new FederationPermissionService(db).set(
+    { ...f.actor, capability: "agreement.approve", enabled: false },
+    f.userId,
+  );
+  await expect(f.correct()).rejects.toThrow("POLICY_DENIED");
+  expect(
+    await db
+      .select()
+      .from(federationUsageReports)
+      .where(eq(federationUsageReports.reservationId, f.reservationId)),
+  ).toHaveLength(1);
+});
+
+test("technical correction and audit roll back when its ledger intent cannot be saved", async () => {
+  const f = await correctionFixture("bilateral_attested");
+  await db.execute(
+    sql`alter table federation_commercial_submissions add constraint test_correction_failure check (input->>'recordId' <> ${sql.raw(`'${f.input.reportId}'`)})`,
+  );
+  try {
+    await expect(f.correct()).rejects.toThrow();
+    expect((await f.view()).reports).toHaveLength(1);
+    expect(
+      await db.select().from(auditLog).where(eq(auditLog.target, f.input.reportId)),
+    ).toHaveLength(0);
+  } finally {
+    await db.execute(
+      sql`alter table federation_commercial_submissions drop constraint test_correction_failure`,
+    );
+  }
+  expect((await f.correct()).number).toBe(2);
+});
+
+test("technical correction ledger waits for its predecessor and preserves order across multiple corrections", async () => {
+  const f = await correctionFixture("bilateral_attested");
+  const first = await f.correct();
+  const second = await f.correct({ ...f.input, reportId: randomUUID(), correctionOf: first.id });
+  const rows = await db
+    .select()
+    .from(federationCommercialSubmissions)
+    .where(eq(federationCommercialSubmissions.localSiteId, f.provider.signing.siteId));
+  const contract = rows.find((row) => row.input.operation === "register-agreement");
+  const original = rows.find((row) => row.input.recordId === f.original.id);
+  const corrected = rows.find((row) => row.input.recordId === first.id);
+  if (!contract || !original || !corrected) throw new Error("Missing submissions");
+  await db
+    .update(federationCommercialSubmissions)
+    .set({ state: "committed" })
+    .where(eq(federationCommercialSubmissions.id, contract.id));
+  await db
+    .update(federationCommercialSubmissions)
+    .set({ state: "needs_review" })
+    .where(eq(federationCommercialSubmissions.id, original.id));
+  const seen: string[] = [];
+  const ledger = new FederationCommercialSubmissionService(db, f.provider.signing.siteId, {
+    prepare: async (input) => {
+      seen.push(input.recordId);
+      return { transactionId: "a".repeat(64), recovery: "fixture" };
+    },
+    advance: async () => ({ state: "pending", transactionId: "a".repeat(64), recovery: "fixture" }),
+  });
+  expect(await ledger.advanceNext()).toBe(false);
+  await db
+    .update(federationCommercialSubmissions)
+    .set({ state: "committed" })
+    .where(eq(federationCommercialSubmissions.id, original.id));
+  expect(await ledger.advanceNext()).toBe(true);
+  expect(seen).toEqual([first.id]);
+  await db
+    .update(federationCommercialSubmissions)
+    .set({ nextAttemptAt: sql`clock_timestamp() + interval '1 hour'` })
+    .where(eq(federationCommercialSubmissions.id, corrected.id));
+  expect(await ledger.advanceNext()).toBe(false);
+  await db
+    .update(federationCommercialSubmissions)
+    .set({ state: "committed" })
+    .where(eq(federationCommercialSubmissions.id, corrected.id));
+  expect(await ledger.advanceNext()).toBe(true);
+  expect(seen).toEqual([first.id, second.id]);
+});
+
+test("technical correction HTTP rejects hidden override fields and read-only or automation callers", async () => {
+  const f = await correctionFixture();
+  const app = new Hono();
+  let automation = false;
+  app.onError(createErrorHandler(pino({ enabled: false })));
+  app.use("*", async (c, next) => {
+    c.set("principal" as never, f.actor as never);
+    if (automation) c.set("automation" as never, true as never);
+    await next();
+  });
+  app.route(
+    "/",
+    createFederationCommercialRoutes(
+      f.approvals,
+      new FederationCommercialSubmissionService(db, f.provider.signing.siteId),
+      f.usage,
+    ),
+  );
+  const path = `/federation/commercial-agreements/${f.terms.agreementRevisionId}/usage/${f.reservationId}/corrections`;
+  const request = (body: unknown) =>
+    app.request(path, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  expect((await request({ ...f.input, periodStart: "2020-01-01T00:00:00.000Z" })).status).toBe(400);
+  expect((await request({ ...f.input, reason: " " })).status).toBe(400);
+  const response = await request(f.input);
+  expect(response.status).toBe(200);
+  expect(response.headers.get("cache-control")).toBe("no-store");
+  expect(await response.json()).toMatchObject({ data: { id: f.input.reportId, number: 2 } });
+  automation = true;
+  expect((await request(f.input)).status).toBe(403);
+  automation = false;
+  await new FederationPermissionService(db).set(
+    { ...f.actor, capability: "agreement.read", enabled: true },
+    f.userId,
+  );
+  await new FederationPermissionService(db).set(
+    { ...f.actor, capability: "agreement.approve", enabled: false },
+    f.userId,
+  );
+  expect((await request(f.input)).status).toBe(403);
 });

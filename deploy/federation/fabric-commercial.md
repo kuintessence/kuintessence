@@ -80,7 +80,7 @@ bun run --filter @kuintessence/fabric-commercial build
 
 配置 FEDERATION_COMMERCIAL_SOCKET_PATH=/private/run/commercial.sock 后，每十秒扫描、每轮至多推进八次检查点。90 秒数据库租约防止多个 Server 同时推进；网络 I/O 不持有事务，保存结果前后均验证租约。proposal 与背书后的 transaction 必须先事务保存，之后才能提交；pending 保留原 transactionId 与 recovery，至少退避 30 秒。VALID 才标记 committed，INVALID 或不可自动处理的错误进入 needs_review。人工重试只能放弃未提交 proposal，或在已确认 INVALID 后开始新尝试；未知的 transaction 仍须恢复原交易。
 
-机构批准是持久签署事实，后台不以批准人员离职抹除原批准。创建新 proposal、向 Peer 披露前检查当前平台机构/签名信任与用途；已背书的交易按原检查点恢复和核对终态，不通过更换签名或重新授权掩盖未知结果。暂停/撤销合作的执行权仍由执行协议及本地策略控制，商业记录不替代它们。当前审批支持完整商业 wrapper；平台签名原始用量报告已接入；计量补采/技术更正、合同修订生效切换仍待接入。
+机构批准是持久签署事实，后台不以批准人员离职抹除原批准。创建新 proposal、向 Peer 披露前检查当前平台机构/签名信任与用途；已背书的交易按原检查点恢复和核对终态，不通过更换签名或重新授权掩盖未知结果。暂停/撤销合作的执行权仍由执行协议及本地策略控制，商业记录不替代它们。当前审批支持完整商业 wrapper；平台签名原始用量报告已接入；技术更正 API 已接入；计量补采与合同修订生效切换仍待接入。
 
 ## Web 操作
 
@@ -103,7 +103,13 @@ Slurm/PBS Pro 新 Agent 会在原终态事件中携带可取得的运行时长�
 
 双方须明确约定支持的 metric/quantityUnit：cpu.time/cpu-millisecond、cpu.allocated/core-millisecond 或 job.elapsed/job-millisecond。前者为累计 CPU 消耗，中者为分配核数乘运行时长，后者为逐 Job 时长和；这些数量不能互换。旧 cpu/core-second 等含糊口径不自动解释，Web 编辑器暂未提供标准口径选择，需通过完整 JSON 建立准确合同。已有签署合同不可编辑。
 
-缺失计量显示 missing_data；证据冲突、数量溢出、超过 4096 个 Job 或 Workflow 覆盖窗口不在协议有效期内进入 needs_review。读取和重试 API 见[实现说明](../../docs/design/federation/implementation.md#自动签名用量报告)。重试只重新检查原材料，不能提交数量覆盖或改写原证据；当前尚无迟到补采/技术更正入口、报告交换与 Web 报告页，部分缺失须等待这些能力。原始报告只表示提供方断言，不创建账单或付款。
+缺失计量显示 missing_data；证据冲突、数量溢出、超过 4096 个 Job 或 Workflow 覆盖窗口不在协议有效期内进入 needs_review。读取和重试 API 见[实现说明](../../docs/design/federation/implementation.md#自动签名用量报告)。重试只重新检查原材料，不能提交数量覆盖或改写原证据；当前尚无迟到自动补采、报告交换与 Web 报告页，部分缺失须等待这些能力。原始报告只表示提供方断言，不创建账单或付款。
+
+## 追加技术更正
+
+数据库迁移 0117 后，获显式 agreement.approve 的提供方人员可对已有报告追加技术更正；接口和字段见[用量技术更正](../../docs/design/federation/implementation.md#用量技术更正)。须提交全部合同指标、单位、精确数量、原因和佐证 SHA-256 摘要；客户端保存 reportId，未知响应时重试同一请求。发生并发冲突先读取最新报告再核对，不能换 ID 盲重试。
+
+更正签名承诺提供方声明，平台不会将人工填报称为调度器新观测，也不验证摘要对应的外部文件；佐证须由本机构核验和受控保存。原报告/原观测保持可读；重试、分页读取、同一机构和密钥用途规则沿用原报告。直接模式无需链；存证更正必须等待前一报告 committed，前一记录待复核时先解决前一记录，不能跳链。此 API 不处理缺失原始报告、商务减免或账单确认，Web 更正入口仍待接通。
 
 ## 已验证范围
 
