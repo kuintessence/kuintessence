@@ -73,6 +73,8 @@ while :; do
 done
 
 rc mb --ignore-existing "local/${netdrive_bucket}" >/dev/null
+# Cloud records pin verified versions; later writes must not replace their bytes.
+rc version enable "local/${netdrive_bucket}" >/dev/null
 rc mb --ignore-existing "local/${staging_bucket}" >/dev/null
 rc mb --ignore-existing --with-lock "local/${immutable_bucket}" >/dev/null
 rc version enable "local/${immutable_bucket}" >/dev/null

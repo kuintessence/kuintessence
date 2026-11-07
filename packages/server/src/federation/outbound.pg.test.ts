@@ -19,6 +19,7 @@ import {
   federationReservations,
   federationResultAttempts,
   federationResultImports,
+  federationResultReceipts,
   federationResultTransfers,
   federationSigningKeys,
   federationSites,
@@ -50,6 +51,8 @@ import {
   FederationResultDownloadGrantSchema,
   FederationResultDownloadQuerySchema,
   FederationResultQuerySchema,
+  FederationResultReceiptAckSchema,
+  FederationResultReceiptSchema,
   FederationResultReportSchema,
   FederationResultVerifyTaskSchema,
   FederationStatusQuerySchema,
@@ -77,8 +80,10 @@ import { FederationDeliveryError, type FederationSend } from "./outbound-client"
 import { FederationPermissionService } from "./permissions";
 import { FederationPreparationService } from "./preparation";
 import { FederationResultImports } from "./result-imports";
+import { FederationResultReceiptReceiver, FederationResultReceiptSender } from "./result-receipts";
 import { FederationResultStorage } from "./result-storage";
 import { FederationResultTransport } from "./result-transport";
+import { FederationResultWorker } from "./result-worker";
 import { type FederationResultDownloadStorage, FederationResultResponder } from "./results";
 import { signFederationMessage, verifyFederationMessage } from "./signatures";
 import { FederationStatusResponder } from "./status";
@@ -156,6 +161,8 @@ beforeAll(async () => {
           "result-report",
           "result-download-query",
           "result-download-grant",
+          "result-receipt",
+          "result-receipt-ack",
         ],
         validFrom: key.verification.validFrom.toISOString(),
         validUntil: key.verification.validUntil.toISOString(),
@@ -181,6 +188,9 @@ beforeAll(async () => {
 
 afterAll(async () => {
   const orgIds = [actor.orgId, receiver.orgId];
+  await db
+    .delete(federationResultReceipts)
+    .where(inArray(federationResultReceipts.localSiteId, [a.signing.siteId, b.signing.siteId]));
   const imports = await db
     .select({ id: federationResultImports.id })
     .from(federationResultImports)
@@ -2707,4 +2717,376 @@ test("result publication fences stale verification snapshots and expired peer au
     .from(federationResultImports)
     .where(eq(federationResultImports.id, f.imported.id));
   expect(parent?.reservedBytes).toBe(3);
+});
+
+async function receiptFixture() {
+  await db
+    .update(federationResultImports)
+    .set({ receiptNextAttemptAt: new Date("2027-01-01") })
+    .where(eq(federationResultImports.localSiteId, a.signing.siteId));
+  const f = await publishableResults();
+  await f.bridge.publish(actor, f.imported.id);
+  const receiver = new FederationResultReceiptReceiver(db, b.signing, clock);
+  const sender = (
+    send: FederationSend = (_endpoint, jws) => receiver.receive(jws, sourceFingerprint),
+  ) => new FederationResultReceiptSender(db, a.signing, send, clock);
+  const state = async () => {
+    const [row] = await db
+      .select()
+      .from(federationResultImports)
+      .where(eq(federationResultImports.id, f.imported.id));
+    if (!row?.receipt) throw new Error("Missing durable publication statement");
+    return row;
+  };
+  return { ...f, receiver, sender, state };
+}
+
+test("result receipts recover a lost acknowledgement without republishing or changing the signed statement", async () => {
+  const f = await receiptFixture();
+  const before = await f.state();
+  const sender = f.sender(async (endpoint, jws, path) => {
+    expect(path).toBe("/federation/v1/result-receipts");
+    expect(endpoint).toBe("https://peer.test.invalid");
+    await f.receiver.receive(jws, sourceFingerprint);
+    throw new FederationDeliveryError("DELIVERY_UNAVAILABLE");
+  });
+  expect(await sender.deliverNext()).toBe(true);
+  const lost = await f.state();
+  expect(lost.receiptAck).toBeNull();
+  expect(lost.receiptLastError).toBe("DELIVERY_UNAVAILABLE");
+  expect(await f.sender().deliverNext()).toBe(false);
+  time = new Date(time.getTime() + 30_001);
+  expect(await f.sender().deliverNext()).toBe(true);
+  const delivered = await f.state();
+  expect(delivered.receiptJws).toBe(lost.receiptJws);
+  expect(delivered.receipt).toEqual(before.receipt);
+  expect(delivered.receiptAck?.receiptId).toBe(f.imported.id);
+  expect(delivered.state).toBe("available");
+  expect(await f.publishedFiles()).toHaveLength(1);
+  expect((await f.imports.get(actor, f.imported.id)).receipt?.state).toBe("recorded");
+  const records = await db
+    .select()
+    .from(federationResultReceipts)
+    .where(eq(federationResultReceipts.receiptId, f.imported.id));
+  expect(records).toHaveLength(1);
+  expect(delivered.receiptAckJws).toBe(records[0]?.acknowledgementJws ?? null);
+});
+
+test("result receipts reject changed replay, foreign TLS identity and mismatched task binding", async () => {
+  const f = await receiptFixture();
+  await f.sender().deliverNext();
+  const row = await f.state();
+  if (!row.receiptJws || !row.receipt) throw new Error("Missing signed statement");
+  await expect(f.receiver.receive(row.receiptJws, targetFingerprint)).rejects.toThrow();
+  const changed = await signFederationMessage(
+    FederationResultReceiptSchema,
+    { ...row.receipt, sizeBytes: row.receipt.sizeBytes + 1 },
+    a.signing,
+  );
+  await expect(f.receiver.receive(changed, sourceFingerprint)).rejects.toThrow(
+    "OPERATION_CONFLICT",
+  );
+  const wrong = await signFederationMessage(
+    FederationResultReceiptSchema,
+    { ...row.receipt, receiptId: crypto.randomUUID(), operationId: crypto.randomUUID() },
+    a.signing,
+  );
+  await expect(f.receiver.receive(wrong, sourceFingerprint)).rejects.toThrow("OPERATION_CONFLICT");
+});
+
+test("result receipts reject forged acknowledgements and recheck source trust after the network response", async () => {
+  const f = await receiptFixture();
+  const sender = f.sender(async (_endpoint, jws) => {
+    const signed = await f.receiver.receive(jws, sourceFingerprint);
+    const peer = await trust.resolveKey(b.signing.siteId, b.signing.keyId, clock());
+    const { payload } = await verifyFederationMessage(
+      FederationResultReceiptAckSchema,
+      signed,
+      peer,
+      clock(),
+    );
+    return signFederationMessage(
+      FederationResultReceiptAckSchema,
+      { ...payload, receiptDigest: `sha256:${"0".repeat(64)}` },
+      b.signing,
+    );
+  });
+  await sender.deliverNext();
+  expect((await f.state()).receiptLastError).toBe("INVALID_MESSAGE");
+  expect((await f.state()).receiptAck).toBeNull();
+  time = new Date(time.getTime() + 30_001);
+  const revoke = f.sender(async (_endpoint, jws) => {
+    const ack = await f.receiver.receive(jws, sourceFingerprint);
+    await db
+      .update(federationSigningKeys)
+      .set({ revokedAt: clock() })
+      .where(
+        and(
+          eq(federationSigningKeys.siteId, b.signing.siteId),
+          eq(federationSigningKeys.keyId, b.signing.keyId),
+        ),
+      );
+    return ack;
+  });
+  try {
+    await revoke.deliverNext();
+    expect((await f.state()).receiptAck).toBeNull();
+    expect((await f.state()).receiptLastError).toBe("UNTRUSTED_IDENTITY");
+  } finally {
+    await db
+      .update(federationSigningKeys)
+      .set({ revokedAt: null })
+      .where(
+        and(
+          eq(federationSigningKeys.siteId, b.signing.siteId),
+          eq(federationSigningKeys.keyId, b.signing.keyId),
+        ),
+      );
+  }
+});
+
+test("result receipts require explicit signing purposes but survive later data deletion and disclosure expiry", async () => {
+  const f = await receiptFixture();
+  const [key] = await db
+    .select()
+    .from(federationSigningKeys)
+    .where(
+      and(
+        eq(federationSigningKeys.siteId, a.signing.siteId),
+        eq(federationSigningKeys.keyId, a.signing.keyId),
+      ),
+    );
+  if (!key) throw new Error("Missing key");
+  await db
+    .update(federationSigningKeys)
+    .set({ allowedKinds: key.allowedKinds.filter((kind) => kind !== "result-receipt") })
+    .where(
+      and(
+        eq(federationSigningKeys.siteId, a.signing.siteId),
+        eq(federationSigningKeys.keyId, a.signing.keyId),
+      ),
+    );
+  try {
+    await f.sender().deliverNext();
+    expect((await f.state()).receiptJws).toBeNull();
+    expect((await f.state()).receiptLastError).toBe("UNTRUSTED_IDENTITY");
+  } finally {
+    await db
+      .update(federationSigningKeys)
+      .set({ allowedKinds: key.allowedKinds })
+      .where(
+        and(
+          eq(federationSigningKeys.siteId, a.signing.siteId),
+          eq(federationSigningKeys.keyId, a.signing.keyId),
+        ),
+      );
+  }
+  time = new Date(resultPolicy.availableUntil);
+  await permission.set({ ...actor, capability: "result.read", enabled: false }, actor.userId);
+  await db
+    .update(federationAgreements)
+    .set({ state: "revoked" })
+    .where(eq(federationAgreements.revisionId, f.terms.agreementRevisionId));
+  await db
+    .update(netdriveFiles)
+    .set({ deletedAt: clock() })
+    .where(inArray(netdriveFiles.id, [f.fileId, f.member.id]));
+  expect(await f.sender().deliverNext()).toBe(true);
+  expect((await f.state()).receiptAck).not.toBeNull();
+  await permission.set({ ...actor, capability: "result.read", enabled: true }, actor.userId);
+});
+
+test("result worker dispatches capable Agents, publishes after verification and recovers durable attempts", async () => {
+  const f = await resultStorageFixture();
+  const dispatcher = new AgentDispatcher();
+  const messages: ServerMessage[] = [];
+  const channel = {
+    push: (message: ServerMessage) => {
+      messages.push(message);
+    },
+    close: () => {},
+    federationResultCopyV1: true,
+    federationResultVerifyV1: false,
+    verifiedCertFingerprint: "verified",
+  };
+  dispatcher.register(f.agentId, channel);
+  const transport = new FederationResultTransport(f.imports, f.bridge, dispatcher);
+  const worker = () => new FederationResultWorker(f.imports, f.bridge, transport);
+  await worker().tick();
+  expect(messages).toHaveLength(0);
+  channel.federationResultVerifyV1 = true;
+  await Promise.all([worker().tick(), worker().tick()]);
+  expect(messages).toHaveLength(1);
+  time = new Date(time.getTime() + 120_001);
+  await worker().tick();
+  expect(messages).toHaveLength(2);
+  expect(f.purged).toHaveLength(1);
+  const message = messages[1];
+  if (message?.payload.case !== "federationResultCopy") throw new Error("Missing retry dispatch");
+  const task = JSON.parse(message.payload.value.taskJson);
+  const binding = f.bindingFor(task.generation);
+  await transport.report(
+    f.agentId,
+    create(FederationResultCopyReportSchema, {
+      generation: task.generation,
+      copiedJson: JSON.stringify({
+        binding,
+        sizeBytes: 3,
+        sha256: binding.sha256,
+        parts: [{ partNumber: 1, etag: "copied" }],
+      }),
+    }),
+  );
+  const verify = messages[2];
+  if (verify?.payload.case !== "federationResultVerify")
+    throw new Error("Missing verification dispatch");
+  const verification = FederationResultVerifyTaskSchema.parse(
+    JSON.parse(verify.payload.value.taskJson),
+  );
+  await transport.report(
+    f.agentId,
+    create(FederationResultCopyReportSchema, {
+      generation: task.generation,
+      verifiedJson: JSON.stringify({ ...verification, sizeBytes: 3, sha256: binding.sha256 }),
+    }),
+  );
+  await worker().tick();
+  const result = await f.imports.get(actor, f.imported.id);
+  expect(result.state).toBe("available");
+  expect(result.receipt?.state).toBe("pending");
+  expect(result.members[0]?.fileId).toBe(f.member.id);
+  expect(messages).toHaveLength(3);
+  const stopped = worker();
+  await stopped.stop();
+  await stopped.tick();
+  expect(messages).toHaveLength(3);
+});
+
+test("result receipts explicitly re-sign after key rotation without changing the publication fact", async () => {
+  const f = await receiptFixture();
+  await f
+    .sender(async () => {
+      throw new FederationDeliveryError("DELIVERY_UNAVAILABLE");
+    })
+    .deliverNext();
+  const original = await f.state();
+  const rotated = await testKeys(a.signing.siteId);
+  rotated.signing.keyId = `receipt-${crypto.randomUUID()}`;
+  await trust.addKey(
+    a.signing.siteId,
+    {
+      keyId: rotated.signing.keyId,
+      publicKeyPem: await exportSPKI(rotated.verification.publicKey),
+      allowedKinds: ["result-receipt"],
+      validFrom: a.verification.validFrom.toISOString(),
+      validUntil: a.verification.validUntil.toISOString(),
+    },
+    actor.userId,
+  );
+  await db
+    .update(federationSigningKeys)
+    .set({ revokedAt: clock() })
+    .where(
+      and(
+        eq(federationSigningKeys.siteId, a.signing.siteId),
+        eq(federationSigningKeys.keyId, a.signing.keyId),
+      ),
+    );
+  try {
+    const app = new Hono();
+    let principal = receiver;
+    app.use("*", async (c, next) => {
+      c.set("principal" as never, principal as never);
+      await next();
+    });
+    app.route("/api", createFederationOutboundRoutes(f.service(f.send)));
+    const path = `/api/federation/outbound/${f.request.operationId}/result-imports/${f.imported.id}/receipt-retry`;
+    expect((await app.request(path, { method: "POST" })).status).toBe(403);
+    principal = actor;
+    expect((await app.request(path, { method: "POST" })).status).toBe(202);
+    expect((await f.state()).receiptJws).toBeNull();
+    const sender = new FederationResultReceiptSender(
+      db,
+      rotated.signing,
+      (_endpoint, jws) => f.receiver.receive(jws, sourceFingerprint),
+      clock,
+    );
+    expect(await sender.deliverNext()).toBe(true);
+    const current = await f.state();
+    expect(current.receipt).toEqual(original.receipt);
+    expect(current.receiptJws).not.toBe(original.receiptJws);
+    expect(current.receiptAck).not.toBeNull();
+    expect(await f.publishedFiles()).toHaveLength(1);
+  } finally {
+    await db
+      .update(federationSigningKeys)
+      .set({ revokedAt: null })
+      .where(
+        and(
+          eq(federationSigningKeys.siteId, a.signing.siteId),
+          eq(federationSigningKeys.keyId, a.signing.keyId),
+        ),
+      );
+  }
+});
+
+test("result receipts re-sign a stored peer acknowledgement after receiver key rotation", async () => {
+  const f = await receiptFixture();
+  await f
+    .sender(async (_endpoint, jws) => {
+      await f.receiver.receive(jws, sourceFingerprint);
+      throw new FederationDeliveryError("DELIVERY_UNAVAILABLE");
+    })
+    .deliverNext();
+  const [old] = await db
+    .select()
+    .from(federationResultReceipts)
+    .where(eq(federationResultReceipts.receiptId, f.imported.id));
+  if (!old) throw new Error("Missing receiver record");
+  const rotated = await testKeys(b.signing.siteId);
+  rotated.signing.keyId = `receipt-ack-${crypto.randomUUID()}`;
+  await trust.addKey(
+    b.signing.siteId,
+    {
+      keyId: rotated.signing.keyId,
+      publicKeyPem: await exportSPKI(rotated.verification.publicKey),
+      allowedKinds: ["result-receipt-ack"],
+      validFrom: b.verification.validFrom.toISOString(),
+      validUntil: b.verification.validUntil.toISOString(),
+    },
+    actor.userId,
+  );
+  await db
+    .update(federationSigningKeys)
+    .set({ revokedAt: clock() })
+    .where(
+      and(
+        eq(federationSigningKeys.siteId, b.signing.siteId),
+        eq(federationSigningKeys.keyId, b.signing.keyId),
+      ),
+    );
+  try {
+    const receiver = new FederationResultReceiptReceiver(db, rotated.signing, clock);
+    time = new Date(time.getTime() + 30_001);
+    await f.sender((_endpoint, jws) => receiver.receive(jws, sourceFingerprint)).deliverNext();
+    const current = await f.state();
+    expect(current.receiptAck).toEqual(old.acknowledgement);
+    expect(current.receiptAckJws).not.toBe(old.acknowledgementJws);
+    expect(current.receiptLastError).toBeNull();
+    const records = await db
+      .select()
+      .from(federationResultReceipts)
+      .where(eq(federationResultReceipts.receiptId, f.imported.id));
+    expect(records).toHaveLength(1);
+  } finally {
+    await db
+      .update(federationSigningKeys)
+      .set({ revokedAt: null })
+      .where(
+        and(
+          eq(federationSigningKeys.siteId, b.signing.siteId),
+          eq(federationSigningKeys.keyId, b.signing.keyId),
+        ),
+      );
+  }
 });

@@ -70,7 +70,7 @@ describe("RustFS Object Lock bootstrap wiring", () => {
     const script = await read("deploy/rustfs/bootstrap-object-lock.sh");
 
     expect(script).toContain("rc mb --ignore-existing --with-lock");
-    expect(script).toContain("rc version enable");
+    expect(script).toContain(`rc version enable "local/\${netdrive_bucket}"`);
     expect(script).toContain("DATA_MARKET_STAGING_BUCKET must differ");
     expect(script).toContain("NETDRIVE_BUCKET must differ from Data Market buckets");
     expect(script).toContain("rc ilm rule import");

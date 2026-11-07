@@ -27,6 +27,17 @@ export class FederationResultTransport {
     private readonly dispatcher: AgentDispatcher,
   ) {}
 
+  eligibleAgentIds() {
+    return this.dispatcher.onlineAgentIds().filter((agentId) => {
+      const channel = this.dispatcher.getChannel(agentId);
+      return (
+        channel?.federationResultCopyV1 &&
+        channel.federationResultVerifyV1 &&
+        channel.verifiedCertFingerprint
+      );
+    });
+  }
+
   async dispatch(transferId: string, agentId: string) {
     const channel = this.dispatcher.getChannel(agentId);
     if (

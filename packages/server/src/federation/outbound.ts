@@ -26,6 +26,7 @@ import { FederationDeliveryError, type FederationSend } from "./outbound-client"
 import { type FederationActor, requireFederationCapability } from "./permissions";
 import { FederationResultImports } from "./result-imports";
 import { FederationResultReader } from "./result-reader";
+import { FederationResultReceiptSender } from "./result-receipts";
 import {
   type FederationSigningKey,
   federationMessageKeyId,
@@ -56,6 +57,7 @@ export class FederationOutboundService {
   private readonly trust: FederationTrustRegistry;
   readonly cancellations: FederationCancellationSender;
   readonly results: FederationResultReader;
+  readonly resultReceipts: FederationResultReceiptSender;
   readonly resultImports: FederationResultImports;
   constructor(
     private readonly db: PgDb,
@@ -65,6 +67,7 @@ export class FederationOutboundService {
     private readonly clock: () => Date = () => new Date(),
   ) {
     this.trust = new FederationTrustRegistry(db);
+    this.resultReceipts = new FederationResultReceiptSender(db, signingKey, send, clock);
     this.results = new FederationResultReader(db, signingKey, send, clock);
     this.resultImports = new FederationResultImports(db, signingKey.siteId, this.results, clock);
     this.cancellations = new FederationCancellationSender(db, signingKey, send, clock);
@@ -612,7 +615,9 @@ export class FederationOutboundWorker {
       const cancelled = await this.service.cancellations.deliverNext();
       if (this.stopping) break;
       const delivered = await this.service.deliverNext();
-      if (!cancelled && !delivered) break;
+      if (this.stopping) break;
+      const receipted = await this.service.resultReceipts.deliverNext();
+      if (!cancelled && !delivered && !receipted) break;
     }
   }
   async stop() {

@@ -69,6 +69,7 @@ import { FederationPreparationService } from "./federation/preparation";
 import { FederationPreparationWorker } from "./federation/preparation-worker";
 import { FederationResultStorage } from "./federation/result-storage";
 import { FederationResultTransport } from "./federation/result-transport";
+import { FederationResultWorker } from "./federation/result-worker";
 import {
   loadFederationSender,
   loadFederationSigningKey,
@@ -1755,6 +1756,7 @@ if (!(config.SSH_SESSION_RECORDING && config.NETDRIVE_ENABLED)) {
   protectedApi.get("/admin/ssh-recordings", (c) => c.json({ enabled: false, recordings: [] }));
 }
 let federationResults: FederationResultTransport | undefined;
+let federationResultWorker: FederationResultWorker | undefined;
 let federationResultDownloads:
   | import("./federation/results").FederationResultDownloadStorage
   | undefined;
@@ -1789,6 +1791,11 @@ if (config.NETDRIVE_ENABLED) {
       federationOutbound.resultImports,
       storage,
       dispatcher,
+    );
+    federationResultWorker = new FederationResultWorker(
+      federationOutbound.resultImports,
+      storage,
+      federationResults,
     );
   }
   await minioBackend.healthCheck();
@@ -2185,6 +2192,7 @@ const federationOutboundWorker = federationOutbound
   ? new FederationOutboundWorker(federationOutbound)
   : undefined;
 federationOutboundWorker?.start();
+federationResultWorker?.start();
 const federationExecutionMonitor = new FederationExecutionMonitor(
   db,
   federationDispatchAuthorization,
@@ -2252,6 +2260,7 @@ async function shutdown(signal: string): Promise<void> {
     await federationIngress?.stop(true);
     await federationPreparationWorker?.stop();
     await federationOutboundWorker?.stop();
+    await federationResultWorker?.stop();
     await federationAttestationWorker?.stop();
     await jobDispatchOutbox.stop();
     await jobCancellationOutbox.stop();

@@ -13,12 +13,13 @@ import {
   FederationError,
   type FederationResultCopyBinding,
   FederationResultObjectSchema,
+  FederationResultReceiptSchema,
   type FederationResultVerified,
   FederationResultVerifiedSchema,
   type FederationResultVerifyTask,
   FederationResultVerifyTaskSchema,
 } from "@kuintessence/shared/federation";
-import { and, asc, eq, gte, inArray, isNull, lte, ne, or } from "drizzle-orm";
+import { and, asc, eq, gte, inArray, isNull, lte, ne, notExists, or } from "drizzle-orm";
 import { z } from "zod";
 import { lockCloudWrites, StorageQuotaService } from "../services/storage-quota";
 import { federationMaterialDigest } from "./assets";
@@ -118,6 +119,7 @@ export class FederationResultImports {
           manifestDigest: verified.report.manifestDigest,
           reservedBytes,
           state: "pending",
+          nextAttemptAt: this.clock(),
           createdAt: this.clock(),
           updatedAt: this.clock(),
         })
@@ -233,7 +235,7 @@ export class FederationResultImports {
         .where(eq(federationResultTransfers.id, transferId));
       await tx
         .update(federationResultImports)
-        .set({ state: "transferring", updatedAt: this.clock() })
+        .set({ state: "transferring", lastError: null, updatedAt: this.clock() })
         .where(eq(federationResultImports.id, rows.parent.id));
       await this.audit(tx, rows.parent, "attempt_started", { transferId, generation, agentId });
       return {
@@ -587,9 +589,32 @@ export class FederationResultImports {
           .where(eq(federationResultTransfers.importId, parent.id));
       }
       assertFresh();
+      const receipt = FederationResultReceiptSchema.parse({
+        protocolVersion: 1,
+        kind: "result-receipt",
+        receiptId: parent.id,
+        senderSiteId: this.siteId,
+        recipientSiteId: report.senderSiteId,
+        operationId: parent.operationId,
+        agreementRevisionId: report.agreementRevisionId,
+        taskId: report.taskId,
+        attempt: report.attempt,
+        reservationId: report.reservationId,
+        requestDigest: report.requestDigest,
+        manifestDigest: parent.manifestDigest,
+        fileCount: files.length,
+        sizeBytes: files.reduce((sum, file) => sum + file.size, 0),
+        receivedAt: this.clock().toISOString(),
+      });
       const [published] = await tx
         .update(federationResultImports)
-        .set({ state: "available", updatedAt: this.clock() })
+        .set({
+          state: "available",
+          receipt,
+          receiptNextAttemptAt: this.clock(),
+          lastError: null,
+          updatedAt: this.clock(),
+        })
         .where(eq(federationResultImports.id, parent.id))
         .returning();
       if (!published) throw new FederationError("OPERATION_CONFLICT");
@@ -857,7 +882,11 @@ export class FederationResultImports {
     if (!onlineAgentIds.length) return [];
     z.number().int().min(1).max(100).parse(limit);
     return this.db
-      .select({ transferId: federationResultTransfers.id, agentId: agents.agentId })
+      .select({
+        transferId: federationResultTransfers.id,
+        importId: federationResultImports.id,
+        agentId: agents.agentId,
+      })
       .from(federationResultTransfers)
       .innerJoin(
         federationResultImports,
@@ -869,6 +898,19 @@ export class FederationResultImports {
           eq(federationResultImports.localSiteId, this.siteId),
           inArray(federationResultImports.state, ["pending", "transferring"]),
           eq(federationResultTransfers.state, "pending"),
+          lte(federationResultImports.nextAttemptAt, this.clock()),
+          notExists(
+            this.db
+              .select({ id: federationResultAttempts.generation })
+              .from(federationResultAttempts)
+              .where(
+                and(
+                  eq(federationResultAttempts.agentId, agents.agentId),
+                  inArray(federationResultAttempts.state, [...activeStates, "cleanup_pending"]),
+                  gte(federationResultAttempts.leaseUntil, this.clock()),
+                ),
+              ),
+          ),
           inArray(agents.agentId, [...onlineAgentIds]),
           eq(agents.status, "online"),
         ),
@@ -879,6 +921,54 @@ export class FederationResultImports {
         asc(agents.agentId),
       )
       .limit(limit);
+  }
+
+  async nextPublication() {
+    return this.db.transaction(async (tx) => {
+      const [row] = await tx
+        .select()
+        .from(federationResultImports)
+        .where(
+          and(
+            eq(federationResultImports.localSiteId, this.siteId),
+            inArray(federationResultImports.state, ["pending", "transferring", "verifying"]),
+            lte(federationResultImports.nextAttemptAt, this.clock()),
+            notExists(
+              tx
+                .select({ id: federationResultTransfers.id })
+                .from(federationResultTransfers)
+                .where(
+                  and(
+                    eq(federationResultTransfers.importId, federationResultImports.id),
+                    ne(federationResultTransfers.state, "verified"),
+                  ),
+                ),
+            ),
+          ),
+        )
+        .orderBy(asc(federationResultImports.nextAttemptAt), asc(federationResultImports.id))
+        .limit(1)
+        .for("update", { skipLocked: true });
+      if (!row) return;
+      await tx
+        .update(federationResultImports)
+        .set({ nextAttemptAt: new Date(this.clock().getTime() + 30_000) })
+        .where(eq(federationResultImports.id, row.id));
+      return { id: row.id, actor: this.actor(row) };
+    });
+  }
+
+  async processingFailed(importId: string, code: string) {
+    await this.db
+      .update(federationResultImports)
+      .set({ lastError: code, nextAttemptAt: new Date(this.clock().getTime() + 30_000) })
+      .where(
+        and(
+          eq(federationResultImports.id, importId),
+          eq(federationResultImports.localSiteId, this.siteId),
+          inArray(federationResultImports.state, ["pending", "transferring", "verifying"]),
+        ),
+      );
   }
 
   async preparing(agentId: string, generation: string) {
@@ -1061,6 +1151,15 @@ export class FederationResultImports {
       operationId: row.operationId,
       manifestDigest: row.manifestDigest,
       state: row.state,
+      lastError: row.lastError,
+      receipt: row.receipt
+        ? {
+            state: row.receiptAck ? "recorded" : "pending",
+            receivedAt: row.receipt.receivedAt,
+            recordedAt: row.receiptAck?.recordedAt ?? null,
+            lastError: row.receiptLastError,
+          }
+        : null,
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,
       members: members.map((member) => ({

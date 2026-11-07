@@ -139,6 +139,20 @@ export function createFederationOutboundRoutes(service: FederationOutboundServic
       );
     },
   );
+  r.post(
+    "/federation/outbound/:operationId/result-imports/:importId/receipt-retry",
+    kqValidator("param", importParams),
+    async (c) => {
+      const { operationId, importId } = c.req.valid("param");
+      return c.json(
+        {
+          success: true,
+          data: await service.resultReceipts.retry(c.get("federationActor"), operationId, importId),
+        },
+        202,
+      );
+    },
+  );
   for (const action of ["cancel", "cancel-retry"] as const) {
     r.post(
       `/federation/outbound/:operationId/${action}`,

@@ -14,7 +14,7 @@
                               PostgreSQL 原子预留
 ```
 
-Gateway 使用 Node 22，强制校验客户端证书链，按实际 TLS 证书计算 SHA-256 指纹。客户端提供的身份头、Authorization、Cookie、代理头均不转发。Bun 私有入口按指纹查本地登记，验证机构签名，并在接单事务中锁定、复查信任状态。网关只允许 `/federation/v1/delegations` 、`/federation/v1/status`、`/federation/v1/cancellations` 、`/federation/v1/results` 和 `/federation/v1/result-downloads`；普通 Server HTTP 端口不挂载这些机构路由。
+Gateway 使用 Node 22，强制校验客户端证书链，按实际 TLS 证书计算 SHA-256 指纹。客户端提供的身份头、Authorization、Cookie、代理头均不转发。Bun 私有入口按指纹查本地登记，验证机构签名，并在接单事务中锁定、复查信任状态。网关只允许 `/federation/v1/delegations` 、`/federation/v1/status`、`/federation/v1/cancellations` 、`/federation/v1/results` 、`/federation/v1/result-downloads` 和 `/federation/v1/result-receipts`；普通 Server HTTP 端口不挂载这些机构路由。
 
 Unix socket 只允许 Server 与 Gateway 的相同系统 UID 访问。独立目录须为该 UID 所有、权限 0700；socket 为 0600。运行时拒绝公开目录和权限过宽的签名私钥。Gateway 与 Server 属于同一机构的信任边界，不能把此 socket 挂给其他机构容器。各机构使用独立目录、数据库和签名密钥。
 
@@ -82,11 +82,11 @@ Server 另行配置 `FEDERATION_CLIENT_CERT_FILE`、`FEDERATION_CLIENT_KEY_FILE`
 
 每个下载凭据最多 30 秒，并受协议结果截止时间限制；同时核对实际 S3 SigV4 的过期时间，支持时固定对象 versionId。地址及签名响应含 bearer 凭据，仅交给受信任的搬运组件，不写日志、数据库或普通清单响应。已发预签名地址无法即时撤销，撤权阻止续发；已建立的 S3 响应不保证在地址过期瞬间断开，受管 Agent 会按授权截止时间取消连接。需要逐字节即时撤权的部署不能把此通道当作满足该要求。
 
-结果导入 API 已接入持久状态，但自动传输 worker 尚未启动，提交保持 pending。读取及首次提交需要独立 `result.read`，自己的已提交导入可在失去该权限后请求停止；取消 ID 不重启，重新授权导入使用新 ID。未连接的阶段不会返回 available 或云盘文件。详见[持久导入契约](../../docs/design/federation/implementation.md#持久结果导入与传输尝试)。
+结果导入 API 已接入持久状态与自动传输 worker，提交先返回 pending。读取及首次提交需要独立 `result.read`，自己的已提交导入可在失去该权限后请求停止；取消 ID 不重启，重新授权导入使用新 ID。全部成员验证并原子发布后才返回 available 和成员 fileId。详见[持久导入契约](../../docs/design/federation/implementation.md#持久结果导入与传输尝试)。
 
-源站已实现当前组织授权、发出签名下载请求、验签、对象/尝试绑定及返回前重新授权的内部方法；生产持久传输任务与 AgentStream 桥接尚未连接，没有新增面向普通用户的下载授权 REST 接口。尚不代表完整跨站文件交付。
+源站已实现当前组织授权、发出签名下载请求、验签、对象/尝试绑定及返回前重新授权的内部方法；已连接生产持久传输任务与 AgentStream；短期搬运地址不通过普通用户 REST 接口返回。完整交付须同时检查本地发布与回执状态。
 
-出站、状态、取消与结果清单接口不依赖 Fabric。额度尚未接通结算释放；源站结果交付、后台状态同步、普通 Workflow 自动委派和已接单端点迁移仍待完成。详细契约见[实现说明](../../docs/design/federation/implementation.md#源站持久发送)。
+出站、状态、取消与结果清单接口不依赖 Fabric。额度尚未接通结算释放；源站结果交付已接通；后台状态同步、普通 Workflow 自动委派和已接单端点迁移仍待完成。详细契约见[实现说明](../../docs/design/federation/implementation.md#源站持久发送)。
 
 ## 本地信任管理 API
 
@@ -99,7 +99,7 @@ Server 另行配置 `FEDERATION_CLIENT_CERT_FILE`、`FEDERATION_CLIENT_KEY_FILE`
 | `GET /sites/:siteId` | 机构详情、登记公钥和证书及其有效期/撤销状态 |
 | `PUT /sites/:siteId` | `{name,endpoint}`；不能改机构 ID |
 | `POST /sites/:siteId/state` | `{state: active或suspended或revoked}`；revoked 不可恢复 |
-| `POST /sites/:siteId/keys` | `{keyId,publicKeyPem,allowedKinds,validFrom,validUntil}`；用途为 agreement/delegation/acceptance/evidence-batch/status-query/status-report/cancellation/cancellation-receipt/result-query/result-report/result-download-query/result-download-grant |
+| `POST /sites/:siteId/keys` | `{keyId,publicKeyPem,allowedKinds,validFrom,validUntil}`；用途为 agreement/delegation/acceptance/evidence-batch/status-query/status-report/cancellation/cancellation-receipt/result-query/result-report/result-download-query/result-download-grant/result-receipt/result-receipt-ack |
 | `POST /sites/:siteId/certificates` | `{certificatePem}`；服务端计算指纹及有效期 |
 | `POST /sites/:siteId/revoke` | `{keyId}` 或 `{fingerprint}`；永久撤销 |
 
@@ -176,14 +176,20 @@ Server 另行配置 `FEDERATION_CLIENT_CERT_FILE`、`FEDERATION_CLIENT_KEY_FILE`
 
 目前联邦环境清单还没有接通该内部 pin 的构造与自动安装绑定。这项能力不意味着 native lock 已导入、联邦任务可执行，或已有一次真实离线安装验收。
 
-结果存储协调器尚未挂入生产后台。准备接线的存储角色需要 `s3:GetObjectVersion` 读取 netdrive 与 federation-results 固定版本，并需要仅限 `federation-results/*` 的 `s3:ListBucketMultipartUploads`、`s3:ListBucketVersions` 及 `s3:DeleteObjectVersion`。仓库 RustFS 和 Helm 初始化脚本已同步更新；外部 S3 需由存储管理员配置等效权限。不要扩大普通云盘历史版本的删除权限或取消不可变存储的显式删除拒绝。真实 RustFS 已验证该边界，不能据此假定所有兼容 S3 实现均具有相同策略行为。
+结果存储协调器已挂入生产后台。存储角色需要 `s3:GetObjectVersion` 读取 netdrive 与 federation-results 固定版本，并需要仅限 `federation-results/*` 的 `s3:ListBucketMultipartUploads`、`s3:ListBucketVersions` 及 `s3:DeleteObjectVersion`。仓库 RustFS 和 Helm 初始化脚本已同步更新；外部 S3 需由存储管理员配置等效权限。不要扩大普通云盘历史版本的删除权限或取消不可变存储的显式删除拒绝。真实 RustFS 已验证该边界，不能据此假定所有兼容 S3 实现均具有相同策略行为。
 
 Agent 结果搬运配置默认关闭。`AGENT_FEDERATION_RESULT_COPY` 是 JSON，例如 `{"stagingRoot":"/var/lib/kq/result-staging","maxStagingBytes":1073741824,"allowedSourceOrigins":["https://remote-storage.example.org"],"allowedDestinationOrigins":["https://local-storage.example.org"]}`。暂存路径须是 Agent 用户独占的绝对目录（0700，无符号链接），需要完整单文件空间；容量是文件上限，不是已验证支持 TB 级搬运。当前运行结果不跨进程续传。双方服务都需升级以协商复制与目的校验两项能力；仅支持复制的旧 Agent 不领取新任务，Agent 到 Server 必须通过 mTLS；缺失任一条件不派发。
 
-Server 已构造结果传输服务并接 Agent RPC，但自动扫描 worker 尚未启动。配置上述值不会让 pending 导入自动完成；分片完成和目的字节校验已接通，已补齐事务配额预留与整单发布内部入口，仍需接收回执和后台接线，不能据此宣布离线包或联邦结果已交付。
+Server 已接结果传输服务、Agent RPC 与自动扫描。配置上述值并具备有效双边授权和可用 Agent 后，后台会处理 pending 导入，依次完成搬运、目的字节验证、整单发布及签名回执发送；以导入详情的实际状态为准，HTTP 202 不表示已交付。
 
 目的校验需要上述固定版本 GET 权限，分片完成后保存对象 ETag 与可用的 versionId，再由 Agent 实际读取字节。开启 versioning 的存储可固定读取已组装版本；未开启时使用 If-Match 和 SHA-256，不提供历史版本保留保证。Agent 需要能访问本端预签名 HTTPS 地址，校验读取不经 Server 中转、不占完整文件暂存空间。目前 verified 只代表传输完整性，不代表已登记云盘副本或已签收/结算。
 
 结果导入先预留整份清单的用户云盘额度，与普通上传提交共享事务锁。取消后须等残留清理完成才释放额度，清理失败时不能靠重试抢占新空间。迁移 0101、0102 分别新增预留字段与云盘对象版本字段；普通上传和分片提交保存版本，后续下载不随同 key 覆盖切换对象。
 
-结果整单发布要求目的 bucket 已启用版本管理且 HEAD 返回真实 versionId（不能是 null）。服务按固定版本登记云盘文件；不满足时拒绝发布，不能降级读取最新同名对象。发布会重新向对端验签相同清单，并在 30 秒内提交本地全部文件与额度转换；网络调用不持有数据库锁。重复请求不会重复登记，路径冲突拒绝整单。当前仍无自动 worker 或对端签收回执，不应据此宣称已完成跨平台交付。
+结果整单发布要求目的 bucket 已启用版本管理且 HEAD 返回真实 versionId（不能是 null）。服务按固定版本登记云盘文件；不满足时拒绝发布，不能降级读取最新同名对象。发布会重新向对端验签相同清单，并在 30 秒内提交本地全部文件与额度转换；网络调用不持有数据库锁。重复请求不会重复登记，路径冲突拒绝整单。自动 worker 和对端回执已接通；available 仅表示本地文件登记，须分别查看 receipt.pending/recorded，不把它当作科学验收或结算。
+
+回执协议要求源站签名密钥显式具有 result-receipt 用途，接收方具有 result-receipt-ack 用途；通过已有机构密钥管理登记，旧配置不自动扩权。回执发送沿用机构 mTLS 客户端，不需要存储连接保持可用。后台错误只保存脱敏错误码，30 秒后重试；重复回执返回原确认，不重复登记或复制文件。披露过期之后可以补送已经完成发布的历史回执，但当前机构和密钥信任仍须有效。新建导入不能绕过结果披露期限。
+
+存储初始化现在默认对 NETDRIVE_BUCKET 启用版本管理，Docker 与 Helm 脚本一致。已有部署须重新执行初始化或由存储管理员启用；已经写成无版本的对象不会自动获得新版本，旧的未发布导入应取消并重新导入。不要设置会删除仍被云盘记录引用的历史版本的自动过期规则；用户逻辑删除与物理历史版本回收是不同操作，当前云盘配额按已发布文件及导入预留计量，不代表存储后端实际占用。
+
+源站签名密钥轮换后，可由拥有该导入且具有 result.read 的用户调用 POST /api/federation/outbound/:operationId/result-imports/:importId/receipt-retry。它保留收到时间与原正文，仅允许后台采用当前密钥重新签署；已获确认的回执不重开。接收方切换密钥后，会为原登记事实重签确认，保持原 recordedAt 与回执摘要，避免返回已经撤销密钥签署的旧确认。

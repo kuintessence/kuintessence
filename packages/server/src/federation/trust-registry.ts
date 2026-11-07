@@ -53,10 +53,12 @@ export const FederationKeyInput = z
           "result-report",
           "result-download-query",
           "result-download-grant",
+          "result-receipt",
+          "result-receipt-ack",
         ]),
       )
       .min(1)
-      .max(12),
+      .max(14),
     validFrom: z.iso.datetime(),
     validUntil: z.iso.datetime(),
   })

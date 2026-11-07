@@ -8,6 +8,8 @@ import type {
   FederationEnvironmentLock,
   FederationExecutionTarget,
   FederationInputManifest,
+  FederationResultReceipt,
+  FederationResultReceiptAck,
   FederationResultReport,
 } from "@kuintessence/shared/federation";
 import type { FederationEvidenceBatch } from "@kuintessence/shared/federation/ledger";
@@ -73,6 +75,8 @@ export const federationSigningKeys = pgTable(
           | "result-report"
           | "result-download-query"
           | "result-download-grant"
+          | "result-receipt"
+          | "result-receipt-ack"
         )[]
       >()
       .notNull(),
@@ -634,6 +638,16 @@ export const federationResultImports = pgTable(
     reportJws: text("report_jws").notNull(),
     manifestDigest: varchar("manifest_digest", { length: 71 }).notNull(),
     state: varchar("state", { length: 24 }).notNull().default("pending"),
+    receipt: jsonb("receipt").$type<FederationResultReceipt>(),
+    receiptJws: text("receipt_jws"),
+    receiptAck: jsonb("receipt_ack").$type<FederationResultReceiptAck>(),
+    receiptAckJws: text("receipt_ack_jws"),
+    nextAttemptAt: timestamp("next_attempt_at", { withTimezone: true }).notNull().defaultNow(),
+    lastError: varchar("last_error", { length: 64 }),
+    receiptNextAttemptAt: timestamp("receipt_next_attempt_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    receiptLastError: varchar("receipt_last_error", { length: 64 }),
     reservedBytes: bigint("reserved_bytes", { mode: "number" }).notNull().default(0),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
@@ -651,6 +665,10 @@ export const federationResultImports = pgTable(
       t.localOrgId,
       t.requestedBy,
       t.createdAt,
+    ),
+    check(
+      "federation_result_import_receipt",
+      sql`(${t.receipt} IS NULL OR ${t.state} = 'available') AND (${t.receiptJws} IS NULL OR ${t.receipt} IS NOT NULL) AND ((${t.receiptAck} IS NULL AND ${t.receiptAckJws} IS NULL) OR (${t.receiptAck} IS NOT NULL AND ${t.receiptAckJws} IS NOT NULL AND ${t.receiptJws} IS NOT NULL))`,
     ),
     check("federation_result_import_reservation", sql`${t.reservedBytes} >= 0`),
     check(
@@ -738,5 +756,27 @@ export const federationResultAttempts = pgTable(
       "federation_result_attempt_verified",
       sql`${t.state} NOT IN ('verified','available') OR ${t.verifiedAt} IS NOT NULL`,
     ),
+  ],
+);
+
+/** Receiver-owned signed claims and acknowledgement; independent of live object retention. */
+export const federationResultReceipts = pgTable(
+  "federation_result_receipts",
+  {
+    localSiteId: uuid("local_site_id").notNull(),
+    senderSiteId: uuid("sender_site_id").notNull(),
+    receiptId: uuid("receipt_id").notNull(),
+    reservationId: uuid("reservation_id")
+      .notNull()
+      .references(() => federationReservations.id),
+    receipt: jsonb("receipt").$type<FederationResultReceipt>().notNull(),
+    digest: varchar("digest", { length: 71 }).notNull(),
+    receiptJws: text("receipt_jws").notNull(),
+    acknowledgement: jsonb("acknowledgement").$type<FederationResultReceiptAck>().notNull(),
+    acknowledgementJws: text("acknowledgement_jws").notNull(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.localSiteId, t.senderSiteId, t.receiptId] }),
+    index("federation_result_receipt_reservation").on(t.reservationId),
   ],
 );
