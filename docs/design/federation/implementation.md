@@ -446,7 +446,7 @@ raw transaction args、chaincode response、events、trace 均不能携带私有
 
 公共交易 MAJORITY、合作域 AND、关键治理 ALL 及指定仲裁模板由部署/lifecycle 策略表达。ALL 导致成员离线时升级受阻，这属于明确选择的治理边界，不由平台管理员绕过。
 
-公共市场链码已增加 OPEN → CLAIMED 或 CANCELLED；按同一需求键的版本读取和写入，由 Fabric 提交时 MVCC 保证单一认领。原请求重试不覆盖，不因截止时间过去自动重新开放；CLAIMED 当前不能激活或释放。真实三机构验证多数背书和竞争认领，见[部署与验证说明](../../../deploy/federation/fabric-market.md)。市场 Adapter/平台入口与私有锁额/gate 仍待连接，保留 ledger_coordinated 拒绝门槛。
+公共市场链码已增加 OPEN → CLAIMED 或 CANCELLED；按同一需求键的版本读取和写入，由 Fabric 提交时 MVCC 保证单一认领。原请求重试不覆盖，不因截止时间过去自动重新开放；CLAIMED 当前不能激活或释放。真实三机构验证多数背书和竞争认领，见[部署与验证说明](../../../deploy/federation/fabric-market.md)。市场 Adapter/本机客户端已连接，平台入口与私有锁额/gate 仍待连接，保留 ledger_coordinated 拒绝门槛。
 
 ## 10. UI 与配置
 
@@ -694,3 +694,10 @@ GET /api/federation/commercial-agreements/:revisionId/received-usage 及 /:opera
 报告数量用整数字符串和 BigInt 格式化，导出保留签名及当前可见证据。本地签名、链待办和 committed 分开展示；已收到报告不代表账单接受或付款。仅最新历史页可发起更正，提交完整指标数量、原因及佐证摘要；核对对话框固定请求 ID/内容，响应不确定时重试原请求。原报告缺失时仅可重新检查材料，不能用人工更正伪造首份报告。
 
 新商业合同提供 cpu.time/cpu-millisecond、cpu.allocated/core-millisecond、job.elapsed/job-millisecond 成对选择；默认首项、每 1000 单位计价，慈善价格为零。自定义/旧口径保留原字段和原值并提示自动计量可能不支持，不转换已签署合同。此界面不增加计量补采、账单、执行 gate 或付款能力。
+
+
+### 公共市场提交适配
+
+独立 Market Adapter 复用 FabricSubmission 的签名提案、加密检查点、提交状态查询及按原 txId 恢复，采用 kq-market-v1 独立恢复用途。输入严格限定发布/认领/撤回未认领需求，固定本机构和配置中的通道/链码；载荷 canonical SHA-256 与链码回执核对，公开需求使用 Gateway 原生背书发现。检查点中的遗留 domainId 字段用于绑定治理 generationId，不是商业钱包，也不创造额度。
+
+Node 私有 runtime 已支持 KQ_FABRIC_ADAPTER_KIND=market，套接字 market.sock；Server 已有 UnixMarketClient，仅实现类型化本机传输，尚未接持久市场待办、公开 API 或 Web。prepared/pending/committed/invalid 与商业提交保持相同语义，committed 不授予执行权；认领还必须经过私有锁额和公共激活。配置与恢复方法见[部署说明](../../../deploy/federation/fabric-market.md)。

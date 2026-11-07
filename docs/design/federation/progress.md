@@ -1401,3 +1401,14 @@ Server 商业 worker 已接入原 Agent 流的只读补采。数据库保存请�
 断言摘要 temp/federation-market-network-report.json，完整本机证据 temp/fabric-network-jXpCgc，未公开上传测试凭据；所属 Peer/Orderer/CCAAS 已停止。CI 新增同一命令及仅断言摘要上传。当前只完成公共认领基础，市场 Adapter/Server/Web、PDC 锁额、跨链码 gate、结算及真实计算验收继续推进，未合并或部署 main。
 
 收尾：完整类型检查（含 protobuf 生成和全部包）及 Fabric 脚本检查通过。全仓 lint 无错误；新增测试的两处非空断言提示已改为显式检查，修改文件复查无诊断，原有 47 warnings/1 info 保留。667 个文档目标、workflow 引用和 diff 检查通过；没有重复运行已通过的旧商业/证据网络检查。
+
+
+## Market Adapter 与真实提交恢复
+
+新增独立 Market Adapter、私有 Node runtime 入口和 Server UnixMarketClient，复用 FabricSubmission 的签名提案与加密检查点，不引入第二套恢复账本。仅允许发布、认领和撤回未认领需求；固定机构/通道/链码，规范化载荷摘要与链码回执一致，原生 Gateway 发现多数背书。恢复用途为 kq-market-v1，配置/机构证书/治理 generation/恢复密钥变更拒绝旧检查点。准备、已背书、待提交、有效提交分别处理，不将 committed 解释为可执行许可。
+
+三项 SDK 单测覆盖三种方法的准确载荷/调用与加密检查点绑定、越机构/任意调用拒绝、恢复配置与密文变更拒绝；三个不同私有 socket 场景覆盖 evidence/commercial/market 路由隔离、严格输入与错误脱敏，共六项通过。实际 Node Market Adapter 和 Server 客户端经真实 Unix socket/mTLS 连到 Fabric：发布提案保存、背书 prepared、Orderer 停止返回 pending；Orderer 恢复后原交易 VALID，立即退出 Adapter 而不保存成功响应，再由新进程读取原检查点，恢复同一 transactionId/blockNumber，重复查询不变。
+
+首次恢复脚本错误地把 Orderer 进程监听视为 Raft 已选主，遇到正确的 pending 时断言失败；改为限时推进同一检查点，未重造交易或放宽 VALID 判定。另一次在并发认领背书阶段失败且原日志仅有 EndorseError，补充本机详细失败记录及 B/C 实际跨机构查询路径就绪检查，避免仅由 A 查询成功推断全部 Gateway 可用。最终真实网络六组断言通过，前五项为既有市场检查的回归，不重复计为新增场景。证据 temp/fabric-network-LgZ0Mv，摘要 temp/federation-market-adapter-network-report.json；三次网络所属进程均已退出，本机诊断/测试凭据留在忽略目录。
+
+完整类型检查通过（含 protobuf 和全部包）；最终脚本类型检查、修改文件 lint、文档/workflow 引用与 diff 检查通过。全仓 lint 无错误，保留既有 47 warnings/1 info。Server 尚缺持久市场待办、公开 API/查询与 Web，私有锁额、跨链码 gate 和结算仍须实现；既有链上协调执行入口保持拒绝，未合并或部署 main/PR 预览。

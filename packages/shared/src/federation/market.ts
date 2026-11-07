@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { FederationResourcesSchema } from "./index";
+import { FabricEvidenceAdvanceResultSchema, FabricProposalCheckpointSchema } from "./ledger";
 import { FederationDigestSchema } from "./references";
 
 const Id = z.uuid();
@@ -70,3 +71,25 @@ export const FabricMarketTrustSchema = z
       ctx.addIssue({ code: "custom", message: "Duplicate market organization" });
   });
 export type FabricMarketTrust = z.infer<typeof FabricMarketTrustSchema>;
+
+export const MarketProposalInputSchema = z.discriminatedUnion("operation", [
+  z.strictObject({ operation: z.literal("publish-demand"), demand: MarketDemandSchema }),
+  z.strictObject({ operation: z.literal("claim-demand"), claim: MarketClaimSchema }),
+  z.strictObject({
+    operation: z.literal("cancel-open-demand"),
+    cancellation: MarketCancelOpenSchema,
+  }),
+]);
+export type MarketProposalInput = z.infer<typeof MarketProposalInputSchema>;
+
+export const FabricMarketAdvanceResultSchema = z.discriminatedUnion("state", [
+  FabricProposalCheckpointSchema.extend({ state: z.literal("prepared") }),
+  FabricProposalCheckpointSchema.extend({ state: z.literal("pending") }),
+  z.strictObject({
+    state: z.literal("committed"),
+    transactionId: z.string().regex(/^[a-f0-9]{64}$/),
+    blockNumber: z.string().regex(/^(0|[1-9][0-9]{0,19})$/),
+  }),
+  FabricEvidenceAdvanceResultSchema.options[3],
+]);
+export type MarketAdvanceResult = z.infer<typeof FabricMarketAdvanceResultSchema>;

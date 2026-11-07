@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash, createPrivateKey, randomUUID, X509Certificate } from "node:crypto";
 import { readdir, readFile, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { Client, credentials } from "@grpc/grpc-js";
 import { connect, EndorseError, signers } from "@hyperledger/fabric-gateway";
 import { peer } from "@hyperledger/fabric-protos";
@@ -98,12 +98,12 @@ async function run() {
       transientData: { market: JSON.stringify(value) },
       endorsingOrganizations: msps,
     });
-  const current = async (msp = "AMSP") =>
+  const current = async (msp = "AMSP", gateway = a) =>
     MarketDemandStateSchema.parse(
       JSON.parse(
         Buffer.from(
           (
-            await contract(a)
+            await contract(gateway)
               .newProposal("GetDemand", {
                 arguments: [demand.demandId],
                 endorsingOrganizations: [msp],
@@ -138,10 +138,16 @@ async function run() {
     const deadline = Date.now() + 30000;
     for (;;) {
       try {
-        const states = await Promise.all(["AMSP", "BMSP", "CMSP"].map(current));
+        const states = await Promise.all([
+          current("AMSP", a),
+          current("BMSP", a),
+          current("CMSP", a),
+          current("AMSP", b),
+          current("AMSP", c),
+        ]);
         if (states.every((value) => value.status === status)) return;
       } catch (error) {
-        if (!rejected("ASSET_UNAVAILABLE")(error)) throw error;
+        if (!(error instanceof EndorseError)) throw error;
       }
       assert(Date.now() < deadline, "Committed market state must reach every peer");
       await new Promise((resolve) => setTimeout(resolve, 250));
@@ -204,6 +210,14 @@ async function run() {
     "claimed demand cannot be overwritten, cancelled as open, or activated without a gate",
   );
   await writeFile(
+    join(dirname(z.string().parse(process.argv[3])), "market-proposal.json"),
+    JSON.stringify({
+      operation: "publish-demand",
+      demand: { ...demand, demandId: randomUUID(), title: "Public recovery task" },
+    }),
+    { mode: 0o600 },
+  );
+  await writeFile(
     z.string().parse(process.argv[3]),
     JSON.stringify(
       {
@@ -220,6 +234,12 @@ async function run() {
 try {
   await run();
 } catch (error) {
+  if (error instanceof EndorseError)
+    await writeFile(
+      `${z.string().parse(process.argv[3])}.failure`,
+      JSON.stringify({ code: error.code, message: error.message, details: error.details }),
+      { mode: 0o600 },
+    );
   process.stderr.write(
     `Market probe failed after ${passed.length} checks: ${error instanceof Error ? error.name : "Error"}${error instanceof Error && error.name === "AssertionError" ? ` (${error.message})` : ""}\n`,
   );

@@ -37,7 +37,7 @@ const publicErrors = new Set([
 
 /** Only local socket callers; no generic chaincode/channel/identity/collection selection. */
 export function createFabricHttpServer<T>(
-  kind: "evidence" | "commercial",
+  kind: "evidence" | "commercial" | "market",
   inputSchema: z.ZodType<T>,
   adapter: { prepare(input: T): Promise<unknown>; advance(token: string): Promise<unknown> },
 ) {
@@ -126,7 +126,7 @@ export async function startFabricRuntime(
     signer: Signer,
     recoveryKey: Uint8Array,
   ) => Server,
-  socketName: "evidence.sock" | "commercial.sock",
+  socketName: "evidence.sock" | "commercial.sock" | "market.sock",
 ) {
   const certificate = await readFile(config.identityCertificateFile);
   const key = createPrivateKey(await privateFile(config.identityPrivateKeyFile));

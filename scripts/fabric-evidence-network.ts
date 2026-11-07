@@ -745,7 +745,7 @@ try {
     });
     process.stdin.pause();
   } else {
-    if (market) await verifyMarketNetwork(root);
+    if (market) await verifyMarketNetwork(root, controls);
     else if (commercial) await verifyCommercialNetwork(root, controls);
     else await verifyEvidenceNetwork(root, controls);
   }

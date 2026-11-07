@@ -4,16 +4,22 @@ import { request } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createCommercialHttpServer } from "./commercial-runtime";
+import { createMarketHttpServer } from "./market-runtime";
 import { createEvidenceHttpServer } from "./runtime";
 
 test.each([
   "evidence",
   "commercial",
+  "market",
 ] as const)("%s Unix HTTP surface is allowlisted, strict and never exposes private details", async (kind) => {
   const directory = await mkdtemp(join(tmpdir(), "kq-evidence-http-"));
   let calls = 0;
   const createHttpServer =
-    kind === "evidence" ? createEvidenceHttpServer : createCommercialHttpServer;
+    kind === "market"
+      ? createMarketHttpServer
+      : kind === "evidence"
+        ? createEvidenceHttpServer
+        : createCommercialHttpServer;
   const server = createHttpServer({
     prepare: async () => {
       throw new Error("unexpected prepare");
