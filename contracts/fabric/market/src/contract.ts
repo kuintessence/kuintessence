@@ -8,6 +8,7 @@ import {
   MarketClaimSchema,
   MarketDemandSchema,
   MarketDemandStateSchema,
+  MarketExecutionAuthorizationSchema,
   MarketPageRequestSchema,
 } from "@kuintessence/shared/federation/market";
 import type { ChaincodeInterface, ChaincodeStub } from "fabric-shim";
@@ -83,6 +84,7 @@ export class MarketLedger {
         "GetDemand",
         "ListDemands",
         "ActivateDemand",
+        "AuthorizeExecution",
       ].includes(fcn)
     )
       return fail("INVALID_MESSAGE");
@@ -156,6 +158,51 @@ export class MarketLedger {
       return encode({ recordId: id, digest: hash });
     }
     if (!prior) return fail("ASSET_UNAVAILABLE");
+    if (fcn === "AuthorizeExecution") {
+      const authorization = this.input(stub, MarketExecutionAuthorizationSchema);
+      if (
+        authorization.demandId !== id ||
+        authorization.issuerSiteId !== org.siteId ||
+        ![prior.demand.sourceSiteId, prior.claim?.providerSiteId].includes(org.siteId)
+      )
+        return fail("POLICY_DENIED");
+      if (
+        prior.status !== "ACTIVE" ||
+        !prior.activation ||
+        prior.activation.activationId !== authorization.activationId ||
+        digest(prior.activation.gate) !== digest(authorization.gate)
+      )
+        return fail("OPERATION_CONFLICT");
+      const issuedAt = Date.parse(authorization.issuedAt);
+      if (issuedAt > now || now - issuedAt > 60000 || Date.parse(authorization.expiresAt) <= now)
+        return fail("AUTHORIZATION_EXPIRED");
+      const gate = authorization.gate;
+      const response = await stub.invokeChaincode(
+        "kq-commercial",
+        ["GetExecutionGateHash", gate.domainId, gate.reservationId],
+        stub.getChannelID(),
+      );
+      if (response.status !== 200 || !response.payload) return fail("LEDGER_REQUIRED");
+      const current = z
+        .strictObject({ hash: z.string().regex(/^[a-f0-9]{64}$/) })
+        .parse(JSON.parse(Buffer.from(response.payload).toString()));
+      if (current.hash !== createHash("sha256").update(JSON.stringify(gate)).digest("hex"))
+        return fail("OPERATION_CONFLICT");
+      // Keep one latest state per party/demand; immutable historical proofs remain in transaction blocks.
+      const authorizationKey = stub.createCompositeKey("execution-authorization", [id, org.siteId]);
+      const previousBytes = await stub.getState(authorizationKey);
+      if (previousBytes.length) {
+        const previous = MarketExecutionAuthorizationSchema.parse(
+          JSON.parse(Buffer.from(previousBytes).toString()),
+        );
+        if (previous.authorizationId === authorization.authorizationId) {
+          if (digest(previous) !== digest(authorization)) return fail("OPERATION_CONFLICT");
+        } else if (Date.parse(previous.issuedAt) >= issuedAt) return fail("OPERATION_CONFLICT");
+      }
+      // VALID requires both the public ACTIVE read and same-channel private hash read to remain current.
+      await stub.putState(authorizationKey, encode(authorization));
+      return encode({ recordId: authorization.authorizationId, digest: digest(authorization) });
+    }
     if (fcn === "ActivateDemand") {
       const activation = this.input(stub, MarketActivationSchema);
       if (activation.demandId !== id || org.siteId !== prior.demand.sourceSiteId)

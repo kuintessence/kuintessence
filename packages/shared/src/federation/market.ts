@@ -55,6 +55,23 @@ export const MarketActivationSchema = z.strictObject({
   expectedVersion: Version,
   gate: MarketExecutionGateSchema,
 });
+export const MARKET_EXECUTION_AUTHORIZATION_MS = 300_000;
+/** A VALID transaction confirms current chain state; consumers must still enforce absolute expiry. */
+export const MarketExecutionAuthorizationSchema = z
+  .strictObject({
+    demandId: Id,
+    authorizationId: Id,
+    issuerSiteId: Id,
+    activationId: Id,
+    gate: MarketExecutionGateSchema,
+    issuedAt: z.iso.datetime(),
+    expiresAt: z.iso.datetime(),
+  })
+  .refine((value) => {
+    const duration = Date.parse(value.expiresAt) - Date.parse(value.issuedAt);
+    return duration > 0 && duration <= MARKET_EXECUTION_AUTHORIZATION_MS;
+  }, "Invalid execution authorization interval");
+export type MarketExecutionAuthorization = z.infer<typeof MarketExecutionAuthorizationSchema>;
 export const MarketDemandStateSchema = z.strictObject({
   demand: MarketDemandSchema,
   digest: FederationDigestSchema,
@@ -100,10 +117,14 @@ export const MarketProposalInputSchema = z.discriminatedUnion("operation", [
   }),
 ]);
 export type MarketProposalInput = z.infer<typeof MarketProposalInputSchema>;
-/** Public HTTP intent remains narrower until execution approval is wired. */
+/** Internal transport includes privileged operations that generic market HTTP intents cannot submit. */
 export const MarketAdapterProposalInputSchema = z.discriminatedUnion("operation", [
   ...MarketProposalInputSchema.options,
   z.strictObject({ operation: z.literal("activate-demand"), activation: MarketActivationSchema }),
+  z.strictObject({
+    operation: z.literal("authorize-execution"),
+    authorization: MarketExecutionAuthorizationSchema,
+  }),
 ]);
 export type MarketAdapterProposalInput = z.infer<typeof MarketAdapterProposalInputSchema>;
 

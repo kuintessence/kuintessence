@@ -107,3 +107,19 @@ Server 从本组织原双签预留生成公开 gate，不接受调用者提交�
 现有 `/api/federation/agreements/approve` 与 `/:revisionId/counterparty` 支持为已商业双签的 ledger_coordinated 协议保存本地执行同意。两站分别使用当前组织的 agreement.approve；提供方显式选择受限 executionUserId。协议正文必须与本组织商业合同嵌入的 agreement 完全相同，双方商业签名及当前用途会重新验证。
 
 迁移 [0123](../../packages/db/migrations/0123_petite_wallop.sql) 只让协调协议的本地预算外键为空，完整预算标识仍在签署条款中；双边协议仍必须有预算。不要为协调协议人工插入本地余额。批准与安装不需要在线 Fabric，亦不证明商业合同/锁额已经上链；实际接单仍返回 LEDGER_REQUIRED，Web 的可运行模式暂不扩大。这一步不替代公开激活、当前链上运行许可或本地派发授权。
+
+
+## 有期限的链上执行确认
+
+新增 Market `AuthorizeExecution` 与 Adapter `authorize-execution`。普通 GetDemand 查询可能来自落后 Peer，不能直接授权派发；执行确认必须经过正常背书、排序和 VALID 提交。交易同时读取公开 ACTIVE 状态、当前 activationId 和同通道商业 gate 哈希；这些实际读集参与 Fabric MVCC 校验。确认只带 authorizationId、issuerSiteId、demandId、activationId、原公开 gate 和起止时间，不包含价格、用量、合同正文或完整委派。
+
+只有原需求方或认领提供方可以为自己申请确认，MSP/站点属性与 issuerSiteId 必须相同；第三方不能冒名。gate 必须与已激活的原文完全一致，当前私有哈希也须匹配。期限为绝对时间，最长 5 分钟；相对于 Fabric 提案时间，issuedAt 不得在未来或早于 60 秒前，expiresAt 必须尚未到达。这里的提案时间不是可信墙钟，消费方必须用本机时钟复查绝对期限，并取原私有委派 executionExpiresAt、本地授权和 Agent 租约的最短期限；不能只看 committed。
+
+世界状态按 `(demandId, issuerSiteId)` 只保留最新确认，两方分别保存。新确认的 issuedAt 必须递增；旧 ID 不能换内容，旧请求不能覆盖更新记录。同一确认重新背书仍核对当前 ACTIVE/gate 和期限；恢复已提交交易通过原 txId 获取结果，不重新生成 ID 或延长期限。历史交易留在区块中，当前状态覆盖不等于区块裁剪，持续续期仍会产生账本存储开销。
+
+商业 gate.expiresAt 是原激活窗口，已成功激活的执行续期不使用它作为运行终止时间；运行截止由原私有委派控制。链故障期间不能把 prepared/pending 或过期 VALID 当作新许可，超时也不证明旧作业已停止，不自动释放锁额或重新开放需求。
+
+生产 Node Market Adapter 和 Server Unix 客户端已支持该固定操作并复用加密检查点、原交易恢复；通用市场 HTTP 输入保持原三操作。Server 尚未自动创建/保存/消费执行确认，数据库市场待办约束也未开放该操作，协调接单、材料授权和派发仍拒绝 LEDGER_REQUIRED。本节完成链上确认与传输，不表示已放行实际作业。
+
+
+确认验证已纳入两个真实网络入口：`test:fabric:gate` 覆盖原生读集/MVCC、第三方拒绝及 Adapter 故障恢复；`test:fabric:gate:integration` 在真实数据库审批/激活之后再运行确认恢复，CI 使用后者。两者本轮均通过；没有 Agent 或实际作业，亦未实现 Server 的自动确认消费和 ACTIVE 停止状态转移。

@@ -12,6 +12,7 @@ import { peer, gateway as proto } from "@hyperledger/fabric-protos";
 import { federationCanonicalJson } from "@kuintessence/shared/federation";
 import {
   MarketDemandSchema,
+  MarketExecutionAuthorizationSchema,
   type MarketProposalInput,
 } from "@kuintessence/shared/federation/market";
 import { z } from "zod";
@@ -20,6 +21,71 @@ import { FabricMarketAdapter, MarketAdapterConfigSchema } from "./market";
 const close: (() => void)[] = [];
 afterEach(() => {
   for (const fn of close.splice(0)) fn();
+});
+
+test("execution confirmation transport fixes issuer, bounded lifetime and exact public recovery payload", async () => {
+  const f = fixture();
+  const authorization = MarketExecutionAuthorizationSchema.parse({
+    demandId: f.demand.demandId,
+    authorizationId: randomUUID(),
+    issuerSiteId: f.config.siteId,
+    activationId: randomUUID(),
+    issuedAt: f.demand.createdAt,
+    expiresAt: new Date(Date.parse(f.demand.createdAt) + 300000).toISOString(),
+    gate: {
+      domainId: randomUUID(),
+      reservationId: randomUUID(),
+      demandId: f.demand.demandId,
+      claimVersion: 2,
+      version: 1,
+      state: "READY",
+      reservationDigest: `sha256:${"b".repeat(64)}`,
+      expiresAt: f.demand.expiresAt,
+    },
+  });
+  const checkpoint = await f.adapter.prepare({ operation: "authorize-execution", authorization });
+  const stored = decode(f, checkpoint.recovery);
+  expect(stored.batchId).toBe(authorization.authorizationId);
+  expect(stored.digest).toBe(
+    `sha256:${createHash("sha256").update(federationCanonicalJson(authorization)).digest("hex")}`,
+  );
+  const proposed = proto.ProposedTransaction.deserializeBinary(
+    Buffer.from(stored.message.bytes, "base64"),
+  );
+  const signed = proposed.getProposal();
+  if (!signed) throw new Error("Missing proposal");
+  const payload = peer.ChaincodeProposalPayload.deserializeBinary(
+    peer.Proposal.deserializeBinary(signed.getProposalBytes_asU8()).getPayload_asU8(),
+  );
+  expect(Buffer.from(payload.getTransientmapMap().get("market") ?? []).toString()).toBe(
+    federationCanonicalJson(authorization),
+  );
+  expect(
+    peer.ChaincodeInvocationSpec.deserializeBinary(payload.getInput_asU8())
+      .getChaincodeSpec()
+      ?.getInput()
+      ?.getArgsList_asU8()
+      .map((value) => Buffer.from(value).toString()),
+  ).toEqual(["AuthorizeExecution", f.demand.demandId]);
+  const sdk = spyOn(f.gateway, "getNetwork");
+  await expect(
+    f.adapter.prepare({
+      operation: "authorize-execution",
+      authorization: { ...authorization, issuerSiteId: randomUUID() },
+    }),
+  ).rejects.toThrow("POLICY_DENIED");
+  await expect(
+    f.adapter.prepare({
+      operation: "authorize-execution",
+      authorization: { ...authorization, expiresAt: f.demand.expiresAt },
+    }),
+  ).rejects.toThrow();
+  const privateInput = {
+    operation: "authorize-execution" as const,
+    authorization: { ...authorization, amount: "private" },
+  };
+  await expect(f.adapter.prepare(privateInput)).rejects.toThrow();
+  expect(sdk).not.toHaveBeenCalled();
 });
 function fixture() {
   const siteId = randomUUID();

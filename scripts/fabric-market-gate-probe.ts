@@ -22,6 +22,7 @@ import {
   MarketActivationSchema,
   MarketDemandSchema,
   MarketDemandStateSchema,
+  MarketExecutionAuthorizationSchema,
   MarketExecutionGateSchema,
 } from "@kuintessence/shared/federation/market";
 import { signFederationMessage } from "@kuintessence/shared/federation/signatures";
@@ -506,6 +507,91 @@ async function run() {
   );
   passed.push(
     "activation commits first: cross-chaincode public read invalidates release and ACTIVE funds remain locked",
+  );
+
+  const active = await current(two.demand.demandId);
+  assert(active.activation);
+  const confirmationTime = Date.now();
+  const confirmation = MarketExecutionAuthorizationSchema.parse({
+    demandId: two.demand.demandId,
+    authorizationId: randomUUID(),
+    issuerSiteId: source.siteId,
+    activationId: active.activation.activationId,
+    gate: active.activation.gate,
+    issuedAt: new Date(confirmationTime - 2).toISOString(),
+    expiresAt: new Date(confirmationTime + 299000).toISOString(),
+  });
+  await assert.rejects(
+    market(cm, "AuthorizeExecution", two.demand.demandId, {
+      ...confirmation,
+      issuerSiteId: site("C").siteId,
+    }).endorse(),
+    rejected("POLICY_DENIED"),
+  );
+  const renewal = {
+    ...confirmation,
+    authorizationId: randomUUID(),
+    issuedAt: new Date(confirmationTime - 1).toISOString(),
+  };
+  const [confirmationTx, staleConfirmationTx] = await Promise.all([
+    market(am, "AuthorizeExecution", two.demand.demandId, confirmation, ["AMSP", "CMSP"]).endorse(),
+    market(am, "AuthorizeExecution", two.demand.demandId, renewal, ["AMSP", "CMSP"]).endorse(),
+  ]);
+  const confirmedEnvelope = proto.PreparedTransaction.deserializeBinary(
+    confirmationTx.getBytes(),
+  ).getEnvelope();
+  assert(confirmedEnvelope);
+  const confirmedActions = peer.Transaction.deserializeBinary(
+    common.Payload.deserializeBinary(confirmedEnvelope.getPayload_asU8()).getData_asU8(),
+  ).getActionsList();
+  let publicRead = false,
+    privateHashRead = false;
+  for (const action of confirmedActions) {
+    const endorsedAction = peer.ChaincodeActionPayload.deserializeBinary(
+      action.getPayload_asU8(),
+    ).getAction();
+    assert(endorsedAction);
+    const response = peer.ProposalResponsePayload.deserializeBinary(
+      endorsedAction.getProposalResponsePayload_asU8(),
+    );
+    const execution = peer.ChaincodeAction.deserializeBinary(response.getExtension_asU8());
+    for (const ns of ledger.rwset.TxReadWriteSet.deserializeBinary(
+      execution.getResults_asU8(),
+    ).getNsRwsetList()) {
+      if (ns.getNamespace() === "kq-market")
+        publicRead ||= ledger.rwset.kvrwset.KVRWSet.deserializeBinary(ns.getRwset_asU8())
+          .getReadsList()
+          .some((read) => read.getKey() === `\u0000demand\u0000${two.demand.demandId}\u0000`);
+      if (ns.getNamespace() === "kq-commercial")
+        privateHashRead ||= ns
+          .getCollectionHashedRwsetList()
+          .some(
+            (collection) =>
+              ledger.rwset.kvrwset.HashedRWSet.deserializeBinary(
+                collection.getHashedRwset_asU8(),
+              ).getHashedReadsList().length > 0,
+          );
+    }
+  }
+  assert(
+    publicRead && privateHashRead,
+    "Execution confirmation must bind ACTIVE and the private gate in its native read set",
+  );
+  assert.equal((await commit(confirmationTx)).successful, true);
+  assert.equal((await commit(staleConfirmationTx)).code, peer.TxValidationCode.MVCC_READ_CONFLICT);
+  assert.equal(
+    (
+      await commit(
+        await market(bm, "AuthorizeExecution", two.demand.demandId, {
+          ...renewal,
+          issuerSiteId: target.siteId,
+        }).endorse(),
+      )
+    ).successful,
+    true,
+  );
+  passed.push(
+    "execution confirmations require a participant, bind native ACTIVE/private-hash reads and reject a stale concurrent renewal by MVCC",
   );
 
   const contenders = [await claimed(), await claimed()];

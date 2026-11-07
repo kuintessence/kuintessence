@@ -1,6 +1,11 @@
 import { expect, test } from "bun:test";
 import { createHash, randomUUID } from "node:crypto";
-import { type FabricMarketTrust, MarketDemandSchema } from "@kuintessence/shared/federation/market";
+import {
+  type FabricMarketTrust,
+  MarketDemandSchema,
+  MarketExecutionAuthorizationSchema,
+  MarketExecutionGateSchema,
+} from "@kuintessence/shared/federation/market";
 import { MarketLedger } from "./contract";
 
 const sites = [randomUUID(), randomUUID(), randomUUID()];
@@ -297,4 +302,137 @@ test("market activation requires the current same-channel private gate hash and 
   await expect(
     f.invoke("ActivateDemand", { ...activation, activationId: randomUUID() }),
   ).rejects.toThrow("OPERATION_CONFLICT");
+});
+
+async function activated() {
+  const f = await fixture();
+  await f.invoke("PublishDemand", f.demand);
+  const claim = { ...f.claim(), commercialDomainId: randomUUID() };
+  await f.invoke("ClaimDemand", claim, 1);
+  const gate = MarketExecutionGateSchema.parse({
+    domainId: claim.commercialDomainId,
+    reservationId: claim.claimId,
+    demandId: f.demand.demandId,
+    claimVersion: 2,
+    version: 1,
+    state: "READY",
+    reservationDigest: `sha256:${"a".repeat(64)}`,
+    expiresAt: claim.expiresAt,
+  });
+  f.stub.onInvoke = async () => ({
+    status: 200,
+    payload: Buffer.from(
+      JSON.stringify({ hash: createHash("sha256").update(JSON.stringify(gate)).digest("hex") }),
+    ),
+  });
+  const activationId = randomUUID();
+  await f.invoke("ActivateDemand", {
+    demandId: f.demand.demandId,
+    activationId,
+    expectedVersion: 2,
+    gate,
+  });
+  const authorization = MarketExecutionAuthorizationSchema.parse({
+    demandId: f.demand.demandId,
+    authorizationId: randomUUID(),
+    issuerSiteId: sites[1],
+    activationId,
+    gate,
+    issuedAt: now.toISOString(),
+    expiresAt: new Date(+now + 300000).toISOString(),
+  });
+  return { ...f, authorization };
+}
+
+test("execution confirmations bind current activation, issuer and private gate without exposing private terms", async () => {
+  const f = await activated();
+  const receipt = await f.invoke("AuthorizeExecution", f.authorization, 1);
+  expect(await f.invoke("AuthorizeExecution", f.authorization, 1)).toEqual(receipt);
+  const size = f.stub.state.size;
+  for (const input of [
+    { ...f.authorization, activationId: randomUUID() },
+    { ...f.authorization, gate: { ...f.authorization.gate, reservationId: randomUUID() } },
+    { ...f.authorization, expiresAt: new Date(+now + 200000).toISOString() },
+  ])
+    await expect(f.invoke("AuthorizeExecution", input, 1)).rejects.toThrow("OPERATION_CONFLICT");
+  await expect(f.invoke("AuthorizeExecution", f.authorization, 0)).rejects.toThrow("POLICY_DENIED");
+  await expect(
+    f.invoke("AuthorizeExecution", { ...f.authorization, issuerSiteId: sites[2] }, 2),
+  ).rejects.toThrow("POLICY_DENIED");
+  await expect(
+    f.invoke("AuthorizeExecution", { ...f.authorization, price: "private" }, 1),
+  ).rejects.toThrow();
+  expect(f.stub.state.size).toBe(size);
+  f.stub.onInvoke = async () => ({
+    status: 200,
+    payload: Buffer.from(JSON.stringify({ hash: "0".repeat(64) })),
+  });
+  await expect(f.invoke("AuthorizeExecution", f.authorization, 1)).rejects.toThrow(
+    "OPERATION_CONFLICT",
+  );
+  f.stub.onInvoke = async () => ({ status: 500, payload: Buffer.alloc(0) });
+  await expect(f.invoke("AuthorizeExecution", f.authorization, 1)).rejects.toThrow(
+    "LEDGER_REQUIRED",
+  );
+});
+
+test("confirmation renewals retain one latest state per party and cannot extend an old authorization", async () => {
+  const f = await activated();
+  await f.invoke("AuthorizeExecution", f.authorization, 1);
+  const size = f.stub.state.size;
+  f.stub.timestamp = new Date(+now + 1000);
+  const renewed = {
+    ...f.authorization,
+    authorizationId: randomUUID(),
+    issuedAt: f.stub.timestamp.toISOString(),
+    expiresAt: new Date(+f.stub.timestamp + 300000).toISOString(),
+  };
+  await f.invoke("AuthorizeExecution", renewed, 1);
+  expect(f.stub.state.size).toBe(size);
+  await expect(f.invoke("AuthorizeExecution", f.authorization, 1)).rejects.toThrow(
+    "OPERATION_CONFLICT",
+  );
+  await f.invoke("AuthorizeExecution", {
+    ...renewed,
+    issuerSiteId: sites[0],
+    authorizationId: randomUUID(),
+  });
+  expect(f.stub.state.size).toBe(size + 1);
+  f.stub.timestamp = new Date(+now + 400000);
+  await expect(f.invoke("AuthorizeExecution", renewed, 1)).rejects.toThrow("AUTHORIZATION_EXPIRED");
+});
+
+test("confirmation requires ACTIVE, enforces a five-minute ceiling and rejects stale or future proposals", async () => {
+  const f = await activated();
+  await expect(
+    f.invoke(
+      "AuthorizeExecution",
+      {
+        ...f.authorization,
+        expiresAt: new Date(+now + 300001).toISOString(),
+      },
+      1,
+    ),
+  ).rejects.toThrow();
+  await expect(
+    f.invoke(
+      "AuthorizeExecution",
+      {
+        ...f.authorization,
+        issuedAt: new Date(+now + 1).toISOString(),
+      },
+      1,
+    ),
+  ).rejects.toThrow("AUTHORIZATION_EXPIRED");
+  f.stub.timestamp = new Date(+now + 60001);
+  await expect(f.invoke("AuthorizeExecution", f.authorization, 1)).rejects.toThrow(
+    "AUTHORIZATION_EXPIRED",
+  );
+  f.stub.timestamp = now;
+  const key = f.stub.createCompositeKey("demand", [f.demand.demandId]);
+  const state = await f.invoke("GetDemand", undefined);
+  await f.stub.putState(key, Buffer.from(JSON.stringify({ ...state, status: "CLAIMED" })));
+  await expect(f.invoke("AuthorizeExecution", f.authorization, 1)).rejects.toThrow(
+    "OPERATION_CONFLICT",
+  );
 });

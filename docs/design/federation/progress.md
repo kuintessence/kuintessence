@@ -1510,3 +1510,14 @@ Commercial Adapter/Server Unix 客户端接入双签预留、释放和固定 gat
 验证：由 db:generate 生成 0123，并在随机隔离 PostgreSQL 从空库迁移。新增 5 项覆盖并发无本地预算、缺少双签/条款不符/跨组织、商业签名与用途和机器身份、数据库模式约束、单独商业密钥撤销及底层安装绕过；原接单与审批测试另有 25 项通过，异步存证定向回归 2 项通过，共 32 项不同用例。数据库约束按 UUID 类型比较预算标识，保留合法大写 UUID 的历史协议兼容性。首次约束测试传入 Drizzle thenable 导致测试断言失败，改为执行 Promise 后定向检查通过，没有将该失败误记为数据库约束缺陷。本轮无 Fabric/Agent/科研作业验收，未发布预览或部署 main。
 
 静态检查：全仓 lint 无错误（原有 47 warning / 1 info）；全仓 typecheck 首次发现异步存证调用方的可空预算类型问题，修复后 Server 定向检查通过，其余包、protobuf 和 Fabric 脚本检查均通过。最后一次锁序修订已再通过 Server 类型检查及上述 5 项定向数据库测试。681 个本地文档目标与差异格式检查通过；测试库、转发进程均已清理。
+
+
+## 有期限的链上执行确认
+
+Market 链码与生产 Adapter 新增 AuthorizeExecution/authorize-execution。确认固定本机构、原需求/activationId/公开 gate，交易须读取当前 ACTIVE 和同通道私有 gate 哈希，并取得 VALID；第三方不能申请，当前哈希变化拒绝。最长 5 分钟有效，确认原文不能换内容或通过恢复延长；当前状态按需求/机构覆盖为最新确认，历史交易仍保留。Server 消费时仍须核对原私有执行期限及本地当前授权，不能把查询结果、prepared/pending 或已经过期的 committed 作为许可。详见[协议与存储边界](../../../deploy/federation/fabric-execution-gate.md#有期限的链上执行确认)。
+
+17 项链码/Adapter 单元测试通过，其中 4 项为新增确认测试；覆盖身份、ACTIVE/gate 绑定、私有字段拒绝、绝对期限、单方有序续期、旧确认不能覆盖、当前状态条数与恢复载荷。test:fabric:gate 通过 8 组检查：新增真实确认的 public ACTIVE/private-hash 原生读集检查、同机构并发确认的 MVCC INVALID、两方可确认/第三方拒绝；生产 Node Adapter 与 Server Unix 客户端验证确认在 Orderer 中断和进程退出后恢复同一原交易。原有锁额/释放竞态和公开区块/PDC 隐私检查继续通过，新增原生确认交易包含在这轮区块遍历中。
+
+test:fabric:gate:integration 通过 9 组检查，包含真实 PostgreSQL 双签审批、私有预留/释放/替换及公开激活，随后从实际激活结果取得原 gate 并申请执行确认，验证同一原交易恢复。CI 联合入口已纳入该确认恢复检查。两入口有重叠，不把分组数相加为独立场景。全仓 typecheck（含 protobuf 与 Fabric 脚本）通过；全仓 lint 无错误，仍为原有 47 warning / 1 info；最终修改文件的 Biome 与差异格式检查通过。
+
+本轮没有 Server 自动确认待办、接单/材料/派发消费或 Agent 作业；已有生产协调执行入口仍拒绝。未增加 ACTIVE 停止/终态释放或重新开放，不能用这轮确认竞态代替这些未实现转移的验收。未发布 PR 预览或部署 main。真实网络与临时数据库均已由测试清理，私有诊断材料仅在忽略目录。

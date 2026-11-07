@@ -47,10 +47,14 @@ export async function verifyExecutionGateNetwork(
         controls,
         (message) => report.passed.push(message),
       );
+      await verifyAdapterRecovery(root, controls, ["authorize"]);
+      report.passed.push(
+        "production execution confirmation recovers its original VALID transaction after Orderer outage and process exit",
+      );
     } else {
       await verifyAdapterRecovery(root, controls);
       report.passed.push(
-        "production commercial and market runtimes recover release/reserve/activate across process loss; reserve survives Orderer outage with the original transaction",
+        "production commercial and market runtimes recover release/reserve/activate/authorize across process loss; reserve and authorize survive Orderer outage with the original transaction",
         "Server Unix clients read the released and ready gate hashes, confirmed absence and matching ACTIVE demand",
       );
     }
@@ -78,6 +82,7 @@ export async function verifyExecutionGateNetwork(
 async function verifyAdapterRecovery(
   root: string,
   controls: { stopOrderer(): Promise<void>; startOrderer(): Promise<void> },
+  operations = ["release", "reserve", "activate", "authorize"],
 ) {
   const build = await Bun.build({
     entrypoints: [resolve(import.meta.dir, "fabric-market-gate-recovery-probe.ts")],
@@ -119,13 +124,13 @@ async function verifyAdapterRecovery(
       clearTimeout(limit);
     }
   };
-  for (const operation of ["release", "reserve", "activate"]) {
+  for (const operation of operations) {
     const proposal = await probe(operation, "prepare");
     const prepared = await probe(operation, "advance");
     assert.equal(proposal?.state, "proposal");
     assert.equal(prepared?.state, "prepared");
     assert.equal(prepared?.transactionId, proposal?.transactionId);
-    if (operation === "reserve") {
+    if (operation === "reserve" || operation === "authorize") {
       await controls.stopOrderer();
       try {
         const pending = await probe(operation, "advance");
