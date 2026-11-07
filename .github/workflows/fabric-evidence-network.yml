@@ -13,6 +13,7 @@ on:
       - packages/db/migrations/**
       - scripts/fabric-evidence-*.ts
       - scripts/fabric-commercial-*.ts
+      - scripts/fabric-market-*.ts
       - scripts/test-unit.ts
       - scripts/tsconfig.fabric.json
       - package.json
@@ -81,6 +82,18 @@ jobs:
           KQ_FABRIC_DATABASE_URL: postgres://kq:kq@localhost:5432/postgres
           KQ_FABRIC_REPORT: ${{ runner.temp }}/fabric-commercial-result.json
         run: bun run test:fabric:commercial:integration
+      - name: Verify public market claims and native majority endorsement
+        env:
+          KQ_FABRIC_TOOLS: ${{ runner.temp }}/kq-fabric-3.1.5
+          KQ_FABRIC_REPORT: ${{ runner.temp }}/fabric-market-result.json
+        run: bun run test:fabric:market
+      - name: Preserve market assertion summary
+        uses: actions/upload-artifact@v4
+        with:
+          name: fabric-market-result
+          path: ${{ runner.temp }}/fabric-market-result.json
+          if-no-files-found: error
+          retention-days: 14
       - name: Preserve commercial assertion summary
         uses: actions/upload-artifact@v4
         with:

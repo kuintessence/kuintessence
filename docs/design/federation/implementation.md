@@ -446,6 +446,8 @@ raw transaction args、chaincode response、events、trace 均不能携带私有
 
 公共交易 MAJORITY、合作域 AND、关键治理 ALL 及指定仲裁模板由部署/lifecycle 策略表达。ALL 导致成员离线时升级受阻，这属于明确选择的治理边界，不由平台管理员绕过。
 
+公共市场链码已增加 OPEN → CLAIMED 或 CANCELLED；按同一需求键的版本读取和写入，由 Fabric 提交时 MVCC 保证单一认领。原请求重试不覆盖，不因截止时间过去自动重新开放；CLAIMED 当前不能激活或释放。真实三机构验证多数背书和竞争认领，见[部署与验证说明](../../../deploy/federation/fabric-market.md)。市场 Adapter/平台入口与私有锁额/gate 仍待连接，保留 ledger_coordinated 拒绝门槛。
+
 ## 10. UI 与配置
 
 已接入现有平台安全的 `security/federation-trust` 页签，按机构列表、详情、公钥与客户端证书组织操作。只有选中页签才请求联邦信任数据；机构分页、登记/编辑、暂停/恢复/永久撤销、公钥用途与有效期、证书登记/撤销均调用现有平台管理 API。客户端和 Server 共用输入 schema，响应按共享 schema 校验；失败保留草稿，刷新失败禁用旧详情写入，迟到详情不覆盖当前选择。机构 ID 不可修改，私钥不经页面上传，永久撤销需确认对象。沿用移动端只读策略和中英文文案。它不授予协议/财务审批权，也不代替其他联邦业务 UI。

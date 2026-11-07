@@ -1390,3 +1390,14 @@ Server 商业 worker 已接入原 Agent 流的只读补采。数据库保存请�
 重启完整 Server 后再启动生产 Agent 与看守，后台沿原数据库待办，经实际双向流完成 UUID/代次身份查询和 sacct 读取，独立保存观测、自动生成并验签唯一报告。HTTP 用量详情已核对同一摘要，原终态证据前后完全相同；直接模式没有商业链待办。未手动调用补采 receive 或报告 advanceNext，未用内存通道替代网络。证据在忽略的 temp/federation-accounting-live，过程脚本在 temp/accounting-live-*，未纳入公开资料。
 
 边界：初始 Workflow/Job 终态及派发收据为受控数据库输入，真实调度器任务通过生产适配器提交；不将本轮描述为完整联邦委派或真实终态消息验收。尚缺双站报告交换与真实任务/Fabric 联合链路，也未验证 PBS。完整 Server、数据库、Agent 所属 namespace 与临时凭据已清理，没有 main 部署或 PR 预览发布。
+
+
+## 公共需求唯一认领与原生多数背书
+
+新增 shared market 协议和独立 kq-market CCAAS，复用现有 Fabric 依赖，没有引入第三方包。发布仅允许明确公开的资源/平台/摘要/有效期字段；机构 MSP/site/role 必须匹配部署信任。相同请求幂等，按 expectedVersion 从 OPEN 认领为 CLAIMED 或由发布方撤回为 CANCELLED。截止不自动重新开放，已认领不能经未认领撤回路径释放；激活尚未开放。
+
+六项链码单测通过，覆盖幂等/内容冲突、机构与角色绑定、过期/旧版本、撤回边界、额外私有字段/体积/未知激活拒绝及信任配置。真实 Fabric 3.1.5 三 Peer 验证五组断言：单机构发布背书 INVALID（ENDORSEMENT_POLICY_FAILURE）、两机构 VALID，B/C 同版本同时背书后仅 B 提交有效而 C 为 MVCC_READ_CONFLICT，原请求重试不回退认领，以及覆盖/错误撤回/无 gate 激活被拒绝。没有用内存 ledger 的串行结果证明链上并发。公开任务采用通道原生 MAJORITY，lifecycle 为 ALL，信任配置键要求全部机构。网络启动脚本增加 --market，已有证据/商业路径保留原策略。
+
+断言摘要 temp/federation-market-network-report.json，完整本机证据 temp/fabric-network-jXpCgc，未公开上传测试凭据；所属 Peer/Orderer/CCAAS 已停止。CI 新增同一命令及仅断言摘要上传。当前只完成公共认领基础，市场 Adapter/Server/Web、PDC 锁额、跨链码 gate、结算及真实计算验收继续推进，未合并或部署 main。
+
+收尾：完整类型检查（含 protobuf 生成和全部包）及 Fabric 脚本检查通过。全仓 lint 无错误；新增测试的两处非空断言提示已改为显式检查，修改文件复查无诊断，原有 47 warnings/1 info 保留。667 个文档目标、workflow 引用和 diff 检查通过；没有重复运行已通过的旧商业/证据网络检查。

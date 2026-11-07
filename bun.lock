@@ -34,6 +34,15 @@
         "jose": "^6.2.2",
       },
     },
+    "contracts/fabric/market": {
+      "name": "@kuintessence/fabric-market",
+      "version": "0.1.0-rc.1",
+      "dependencies": {
+        "@kuintessence/shared": "workspace:*",
+        "fabric-shim": "2.5.8",
+        "zod": "^4.3.6",
+      },
+    },
     "packages/agent": {
       "name": "@kuintessence/agent",
       "version": "0.1.0-rc.1",
@@ -485,6 +494,8 @@
     "@kuintessence/fabric-commercial": ["@kuintessence/fabric-commercial@workspace:contracts/fabric/commercial"],
 
     "@kuintessence/fabric-evidence": ["@kuintessence/fabric-evidence@workspace:contracts/fabric/evidence"],
+
+    "@kuintessence/fabric-market": ["@kuintessence/fabric-market@workspace:contracts/fabric/market"],
 
     "@kuintessence/proto": ["@kuintessence/proto@workspace:packages/proto"],
 

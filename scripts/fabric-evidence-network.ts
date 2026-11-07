@@ -11,11 +11,13 @@ import {
   type FabricEvidenceTrust,
   fabricEvidenceCollections,
 } from "@kuintessence/shared/federation/ledger";
+import { FabricMarketTrustSchema } from "@kuintessence/shared/federation/market";
 import { exportPKCS8, exportSPKI, generateKeyPair } from "jose";
 import { parse, stringify } from "yaml";
 import { z } from "zod";
 import { verifyCommercialNetwork } from "./fabric-commercial-assertions";
 import { verifyEvidenceNetwork } from "./fabric-evidence-assertions";
+import { verifyMarketNetwork } from "./fabric-market-assertions";
 
 const repo = resolve(import.meta.dir, "..");
 const toolsRoot = process.env.KQ_FABRIC_TOOLS;
@@ -38,7 +40,11 @@ const environment = {
 };
 const channel = "kq-evidence-test";
 const commercial = process.argv.includes("--commercial");
-const chaincode = commercial ? "kq-commercial" : "kq-evidence";
+const market = process.argv.includes("--market");
+if (market && (commercial || process.argv.includes("--database")))
+  throw new Error("Market probe is independent of commercial/database checks");
+const kind = market ? "market" : commercial ? "commercial" : "evidence";
+const chaincode = `kq-${kind}`;
 const record = z.record(z.string(), z.unknown());
 const section = (parent: Record<string, unknown>, key: string) => {
   const value = record.parse(parent[key] ?? {});
@@ -220,7 +226,7 @@ async function setup() {
     if (!caKeyName || !caCertName) throw new Error("Missing test institution CA");
     for (const [identity, role, ou] of [
       ["Admin", "trust-admin", "admin"],
-      ["User1", commercial ? "commercial" : "attestor", "client"],
+      ["User1", market ? "market" : commercial ? "commercial" : "attestor", "client"],
     ] as const) {
       const msp = join(directory, "users", `${identity}@${domain}`, "msp");
       const key = await onlyKey(join(msp, "keystore"));
@@ -309,24 +315,32 @@ async function setup() {
       },
     ],
   };
-  const trust = commercial
-    ? FabricCommercialTrustSchema.parse({
-        ...evidenceTrust,
-        keyPurposes: organizations.flatMap((org) =>
-          org.keys.map((key) => ({
-            siteId: org.siteId,
-            keyId: key.keyId,
-            kinds: ["commercial-agreement", "commercial-usage"],
-          })),
-        ),
+  const trust = market
+    ? FabricMarketTrustSchema.parse({
+        version: 1,
+        generationId: randomUUID(),
+        organizations: organizations.map(({ siteId, mspId }) => ({ siteId, mspId })),
       })
-    : evidenceTrust;
+    : commercial
+      ? FabricCommercialTrustSchema.parse({
+          ...evidenceTrust,
+          keyPurposes: organizations.flatMap((org) =>
+            org.keys.map((key) => ({
+              siteId: org.siteId,
+              keyId: key.keyId,
+              kinds: ["commercial-agreement", "commercial-usage"],
+            })),
+          ),
+        })
+      : evidenceTrust;
   await json(join(root, "trust.json"), trust);
   await json(
     join(root, "collections.json"),
-    commercial
-      ? fabricCommercialCollections(FabricCommercialTrustSchema.parse(trust))
-      : fabricEvidenceCollections(trust),
+    market
+      ? []
+      : commercial
+        ? fabricCommercialCollections(FabricCommercialTrustSchema.parse(trust))
+        : fabricEvidenceCollections(evidenceTrust),
   );
   const ordererDir = join(
     root,
@@ -508,9 +522,7 @@ async function setup() {
     .update(await readFile(archive))
     .digest("hex")}`;
   const build = await Bun.build({
-    entrypoints: [
-      join(repo, `contracts/fabric/${commercial ? "commercial" : "evidence"}/src/main.ts`),
-    ],
+    entrypoints: [join(repo, `contracts/fabric/${kind}/src/main.ts`)],
     outdir: join(root, "chaincode"),
     target: "node",
     format: "esm",
@@ -569,10 +581,7 @@ async function setup() {
       `chaincode-${site.name}`,
       ["node", "--max-old-space-size=192", join(root, "chaincode/main.js")],
       {
-        [commercial ? "KQ_COMMERCIAL_TRUST_FILE" : "KQ_EVIDENCE_TRUST_FILE"]: join(
-          root,
-          "trust.json",
-        ),
+        [`KQ_${kind.toUpperCase()}_TRUST_FILE`]: join(root, "trust.json"),
         CHAINCODE_ID: packageId,
         CHAINCODE_ADDRESS: `127.0.0.1:${site.chaincodePort}`,
         CHAINCODE_TLS_KEY_FILE: join(site.tls, "server.key"),
@@ -625,10 +634,14 @@ async function setup() {
     "--sequence",
     "1",
     "--init-required",
-    "--signature-policy",
-    "AND('AMSP.peer','BMSP.peer','CMSP.peer')",
-    "--collections-config",
-    join(root, "collections.json"),
+    ...(market
+      ? ["--channel-config-policy", "/Channel/Application/Endorsement"]
+      : [
+          "--signature-policy",
+          "AND('AMSP.peer','BMSP.peer','CMSP.peer')",
+          "--collections-config",
+          join(root, "collections.json"),
+        ]),
   ];
   for (const site of sites)
     await run(
@@ -732,7 +745,8 @@ try {
     });
     process.stdin.pause();
   } else {
-    if (commercial) await verifyCommercialNetwork(root, controls);
+    if (market) await verifyMarketNetwork(root);
+    else if (commercial) await verifyCommercialNetwork(root, controls);
     else await verifyEvidenceNetwork(root, controls);
   }
   succeeded = true;
