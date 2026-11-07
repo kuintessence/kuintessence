@@ -1678,6 +1678,10 @@
           "title": "调度解释",
           "description": "从作业详情查看权限、软件、计量、负载、成本等选址流水线解释。"
         },
+        "federationPermissions": {
+          "title": "联邦权限",
+          "description": "按组织为成员授予联邦业务权限"
+        },
         "federationStorage": { "title": "输入存储核对", "description": "核对未知请求与存储清理" },
         "federationTrust": {
           "title": "联邦信任",
@@ -1895,6 +1899,7 @@
       "ssh-recordings": "SSH 录像",
       "cluster-file-roots": "集群文件根目录",
       "cost-rates": "成本费率",
+      "federation-permissions": "联邦权限",
       "federation-storage": "输入存储核对",
       "federation-trust": "联邦信任"
     }
@@ -2514,7 +2519,7 @@
     "save": "保存",
     "removeTitle": "移除组织成员",
     "desktopRemove": "请在电脑上移除组织成员。",
-    "removeEffect": "仅撤销该组织成员资格，不删除用户账户或其他独立授权。",
+    "removeEffect": "移除该组织成员资格及该组织内的联邦授权。保留用户账户和其他独立授权；再次加入组织须重新授予联邦权限。",
     "removeFailed": "移除失败，请重试。",
     "removing": "移除中…",
     "confirmRemove": "确认移除",

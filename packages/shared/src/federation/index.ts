@@ -227,11 +227,10 @@ export * from "./cancellation";
 export * from "./input-files";
 export * from "./input-transfer";
 export * from "./material-exchange";
+export * from "./permissions";
 export * from "./result-receipts";
 export * from "./result-transfer";
 export * from "./results";
 export * from "./status";
-
 export * from "./storage-reconciliation";
-
 export * from "./trust";

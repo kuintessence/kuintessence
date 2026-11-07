@@ -5,22 +5,19 @@ import {
   userOrgMemberships,
   users,
 } from "@kuintessence/db";
-import { FederationError } from "@kuintessence/shared/federation";
-import { and, asc, eq, inArray } from "drizzle-orm";
-import { z } from "zod";
+import {
+  type FederationCapability,
+  FederationCapabilitySchema,
+  FederationError,
+  federationCapabilitySources,
+} from "@kuintessence/shared/federation";
+import { and, asc, eq, getTableColumns, ilike, inArray, or, sql } from "drizzle-orm";
 import type { FederationTransaction } from "./trust-registry";
 
-export const FederationCapabilitySchema = z.enum([
-  "agreement.read",
-  "agreement.approve",
-  "asset.read",
-  "asset.map",
-  "delegation.read",
-  "delegation.submit",
-  "delegation.cancel",
-  "result.read",
-]);
-export type FederationCapability = z.infer<typeof FederationCapabilitySchema>;
+export {
+  type FederationCapability,
+  FederationCapabilitySchema,
+} from "@kuintessence/shared/federation";
 export interface FederationActor {
   userId: string;
   orgId: string;
@@ -47,16 +44,7 @@ export async function requireFederationCapability(
   capability: FederationCapability,
 ) {
   await requireHumanMember(tx, actor);
-  const allowed =
-    capability === "agreement.read"
-      ? ["agreement.read", "agreement.approve"]
-      : capability === "delegation.read"
-        ? ["delegation.read", "delegation.submit", "delegation.cancel"]
-        : capability === "delegation.cancel"
-          ? ["delegation.cancel", "delegation.submit"]
-          : capability === "asset.read"
-            ? ["asset.read", "asset.map"]
-            : [capability];
+  const allowed = federationCapabilitySources(capability);
   const [grant] = await tx
     .select()
     .from(federationCapabilities)
@@ -77,12 +65,74 @@ export class FederationPermissionService {
 
   async list(orgId: string, limit: number, offset: number) {
     return this.db
-      .select()
+      .select({
+        ...getTableColumns(federationCapabilities),
+        email: users.email,
+        displayName: users.displayName,
+        suspended: users.suspended,
+        serviceAccount: users.serviceAccount,
+        membershipActive: sql<boolean>`${userOrgMemberships.userId} IS NOT NULL`,
+      })
       .from(federationCapabilities)
+      .leftJoin(users, eq(users.id, federationCapabilities.userId))
+      .leftJoin(
+        userOrgMemberships,
+        and(
+          eq(userOrgMemberships.userId, federationCapabilities.userId),
+          eq(userOrgMemberships.orgId, federationCapabilities.orgId),
+        ),
+      )
       .where(eq(federationCapabilities.orgId, orgId))
       .orderBy(asc(federationCapabilities.userId), asc(federationCapabilities.capability))
       .limit(limit)
       .offset(offset);
+  }
+
+  async members(orgId: string, search: string, limit: number, offset: number) {
+    const rows = await this.db
+      .select({ userId: users.id, email: users.email, displayName: users.displayName })
+      .from(users)
+      .innerJoin(
+        userOrgMemberships,
+        and(eq(userOrgMemberships.userId, users.id), eq(userOrgMemberships.orgId, orgId)),
+      )
+      .where(
+        and(
+          eq(users.suspended, false),
+          eq(users.serviceAccount, false),
+          search
+            ? or(ilike(users.email, `%${search}%`), ilike(users.displayName, `%${search}%`))
+            : undefined,
+        ),
+      )
+      .orderBy(asc(users.email), asc(users.id))
+      .limit(limit + 1)
+      .offset(offset);
+    return { data: rows.slice(0, limit), hasMore: rows.length > limit };
+  }
+
+  async current(actor: FederationActor) {
+    return this.db.transaction(async (tx) => {
+      await requireHumanMember(tx, actor);
+      const rows = await tx
+        .select({ capability: federationCapabilities.capability })
+        .from(federationCapabilities)
+        .where(
+          and(
+            eq(federationCapabilities.orgId, actor.orgId),
+            eq(federationCapabilities.userId, actor.userId),
+          ),
+        )
+        .orderBy(asc(federationCapabilities.capability));
+      const grants = rows.map((row) => FederationCapabilitySchema.parse(row.capability));
+      return {
+        ...actor,
+        grants,
+        effectiveCapabilities: FederationCapabilitySchema.options.filter((capability) =>
+          federationCapabilitySources(capability).some((source) => grants.includes(source)),
+        ),
+      };
+    });
   }
 
   async set(

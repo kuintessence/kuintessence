@@ -24,6 +24,7 @@ import { AuthzAdminPanel } from "./AuthzAdminPanel";
 import { ClusterFileRootsPanel } from "./ClusterFileRootsPanel";
 import { CostRatesForm } from "./CostRatesForm";
 import { DesensitizeAdminPanel } from "./DesensitizeAdminPanel";
+import { FederationPermissionsPanel } from "./FederationPermissionsPanel";
 import { FederationStoragePanel } from "./FederationStoragePanel";
 import { FederationTrustPanel } from "./FederationTrustPanel";
 import {
@@ -52,6 +53,7 @@ const SECURITY_SECTIONS = [
   "ssh-vault",
   "agent-certs",
   "federation-trust",
+  "federation-permissions",
   "federation-storage",
   "ssh-sessions",
   "ssh-recordings",
@@ -430,6 +432,11 @@ export function SettingsPage() {
 
           {activeTab === "security" ? (
             <div className="space-y-4">
+              {selectedSection === "federation-permissions" ? (
+                <section id="federation-permissions" className="min-w-0 scroll-mt-4">
+                  <FederationPermissionsPanel />
+                </section>
+              ) : null}
               {selectedSection === "federation-storage" ? (
                 <section id="federation-storage" className="min-w-0 scroll-mt-4">
                   <FederationStoragePanel />

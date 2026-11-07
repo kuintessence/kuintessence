@@ -140,6 +140,61 @@
         "cancelling": "Cancelling",
         "cancelled": "Cancelled"
       }
+    },
+    "permissions": {
+      "title": "Federation permissions",
+      "organizationSearch": "Search organization names",
+      "noOrganizations": "No matching organizations",
+      "refineSearch": "More organizations are available. Refine your search.",
+      "back": "Back to organizations",
+      "grant": "Grant permission",
+      "memberSearch": "Search member names or emails",
+      "noMembers": "No eligible members",
+      "changeMember": "Change member",
+      "capability": "Permission",
+      "chooseCapability": "Choose permission",
+      "remove": "Remove grant",
+      "removeEffect": "Only this explicit grant is removed; other grants may still include the same capability. Removing a grant does not confirm running tasks are cancelled.",
+      "noGrants": "No federation grants in this organization",
+      "ineligibleMember": "Member no longer eligible",
+      "desktopOnly": "Read-only on mobile. Change federation permissions on desktop.",
+      "pagination": "Grant list pagination",
+      "capabilities": {
+        "agreement": {
+          "read": "View agreements",
+          "approve": "Approve agreements"
+        },
+        "asset": {
+          "read": "View federation materials",
+          "map": "Manage material mappings"
+        },
+        "delegation": {
+          "read": "View delegations",
+          "submit": "Submit delegations",
+          "cancel": "Cancel delegations"
+        },
+        "result": {
+          "read": "View delivered results"
+        }
+      },
+      "effects": {
+        "agreement": {
+          "read": "Read this organization’s agreements and signatures; does not permit approval.",
+          "approve": "Sign for this organization, attach counterparty signatures and change local agreement state; includes agreement reading. Platform roles do not automatically grant this authority."
+        },
+        "asset": {
+          "read": "Read federation materials in this organization; local software and data require separate authorization.",
+          "map": "Register or revoke this organization’s material mappings; includes reading materials, without granting resource usage rights."
+        },
+        "delegation": {
+          "read": "Read this organization’s delegations; does not permit submission or cancellation.",
+          "submit": "Submit, read and cancel this organization’s delegations, subject to agreements, budgets and resource authorization.",
+          "cancel": "Cancel and read this organization’s delegations; does not permit submission."
+        },
+        "result": {
+          "read": "Read delivered results within this organization’s authorized scope; does not permit contract approval."
+        }
+      }
     }
   }
 }

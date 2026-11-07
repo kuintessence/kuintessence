@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import {
   auditLog,
+  authzOutbox,
   createPgDb,
   federationAgreementApprovals,
   federationAgreements,
@@ -12,12 +13,17 @@ import {
   userOrgMemberships,
   users,
 } from "@kuintessence/db";
-import { FederationAgreementSchema } from "@kuintessence/shared/federation";
+import {
+  FederationAgreementSchema,
+  FederationMemberOptionsSchema,
+} from "@kuintessence/shared/federation";
 import { and, eq, inArray, sql } from "drizzle-orm";
 import { Hono } from "hono";
 import { exportSPKI } from "jose";
 import pino from "pino";
+import { AuthzService } from "../authz/service";
 import { createErrorHandler } from "../middleware/error-handler";
+import { createAdminAuthzRoutes } from "../routes/admin-authz";
 import { createAdminFederationPermissionRoutes } from "../routes/admin-federation-permissions";
 import { createFederationAgreementRoutes } from "../routes/federation-agreements";
 import { FederationAgreementService } from "./agreements";
@@ -128,6 +134,7 @@ afterAll(async () => {
     .where(inArray(federationAgreementApprovals.localOrgId, orgIds));
   await db.delete(federationCapabilities).where(inArray(federationCapabilities.orgId, orgIds));
   await db.delete(auditLog).where(inArray(auditLog.actor, userIds));
+  await db.delete(authzOutbox).where(inArray(authzOutbox.resourceId, orgIds));
   if (a && b) {
     await db
       .delete(federationSigningKeys)
@@ -381,4 +388,206 @@ test("signing authority and agreement lifetime are required even for a granted a
       .from(federationAgreementApprovals)
       .where(eq(federationAgreementApprovals.revisionId, value.agreementRevisionId)),
   ).toHaveLength(0);
+});
+
+test("current federation grants stay organization-scoped and expand only explicit capabilities", async () => {
+  const admin = { orgId: aActor.orgId, userId: adminId };
+  expect((await permissions.current(admin)).effectiveCapabilities).toEqual([]);
+  await permissions.set({ ...admin, capability: "delegation.submit", enabled: true }, adminId);
+  await permissions.set({ ...admin, capability: "asset.map", enabled: true }, adminId);
+  try {
+    expect(await permissions.current(admin)).toEqual({
+      ...admin,
+      grants: ["asset.map", "delegation.submit"],
+      effectiveCapabilities: [
+        "asset.read",
+        "asset.map",
+        "delegation.read",
+        "delegation.submit",
+        "delegation.cancel",
+      ],
+    });
+    await expect(permissions.current({ userId: adminId, orgId: bActor.orgId })).rejects.toThrow(
+      "POLICY_DENIED",
+    );
+    await expect(
+      permissions.current({ userId: executionUserId, orgId: bActor.orgId }),
+    ).rejects.toThrow("POLICY_DENIED");
+    await permissions.set({ ...admin, capability: "delegation.submit", enabled: false }, adminId);
+    expect((await permissions.current(admin)).effectiveCapabilities).toEqual([
+      "asset.read",
+      "asset.map",
+    ]);
+  } finally {
+    for (const capability of ["delegation.submit", "asset.map"] as const)
+      await permissions.set({ ...admin, capability, enabled: false }, adminId);
+  }
+});
+
+test("member lookup excludes nonmembers, service identities and suspended humans while stale grants remain revocable", async () => {
+  const active = await permissions.members(aActor.orgId, "", 1, 0);
+  expect(active.data).toHaveLength(1);
+  expect(active.hasMore).toBe(true);
+  const all = await permissions.members(aActor.orgId, "", 100, 0);
+  expect(new Set(all.data.map((row) => row.userId))).toEqual(new Set([aActor.userId, adminId]));
+  expect(
+    (await permissions.members(bActor.orgId, "", 100, 0)).data.map((row) => row.userId),
+  ).toEqual([bActor.userId]);
+  expect(
+    (await permissions.members(aActor.orgId, `${adminId}@test.invalid`, 10, 0)).data.map(
+      (row) => row.userId,
+    ),
+  ).toEqual([adminId]);
+  await db.update(users).set({ suspended: true }).where(eq(users.id, aActor.userId));
+  try {
+    expect(
+      (await permissions.members(aActor.orgId, "", 100, 0)).data.map((row) => row.userId),
+    ).toEqual([adminId]);
+    await expect(permissions.current(aActor)).rejects.toThrow("POLICY_DENIED");
+    const grants = await permissions.list(aActor.orgId, 100, 0);
+    expect(grants.find((row) => row.userId === aActor.userId)).toMatchObject({
+      suspended: true,
+      membershipActive: true,
+      email: `${aActor.userId}@test.invalid`,
+    });
+  } finally {
+    await db.update(users).set({ suspended: false }).where(eq(users.id, aActor.userId));
+  }
+  const admin = { orgId: aActor.orgId, userId: adminId };
+  await permissions.set({ ...admin, capability: "result.read", enabled: true }, adminId);
+  await db
+    .delete(userOrgMemberships)
+    .where(and(eq(userOrgMemberships.userId, adminId), eq(userOrgMemberships.orgId, aActor.orgId)));
+  try {
+    expect(
+      (await permissions.list(aActor.orgId, 100, 0)).find((row) => row.userId === adminId),
+    ).toMatchObject({ membershipActive: false });
+    await permissions.set({ ...admin, capability: "result.read", enabled: false }, adminId);
+    expect(
+      (await permissions.list(aActor.orgId, 100, 0)).some((row) => row.userId === adminId),
+    ).toBe(false);
+  } finally {
+    await db.insert(userOrgMemberships).values({ ...admin, role: "owner" });
+    await permissions.set({ ...admin, capability: "result.read", enabled: false }, adminId);
+  }
+});
+
+test("capability discovery cannot choose another principal or expose member directories without platform management", async () => {
+  function app(actor: typeof aActor, role = "user", automation = false) {
+    const r = new Hono();
+    r.onError(createErrorHandler(pino({ level: "silent" })));
+    r.use("*", async (c, next) => {
+      c.set("principal" as never, { ...actor, role });
+      if (automation) c.set("automation" as never, { userId: actor.userId });
+      await next();
+    });
+    r.route("/api", createAdminFederationPermissionRoutes(permissions));
+    return r;
+  }
+  const self = await app(aActor).request("/api/federation/capabilities");
+  expect(self.status).toBe(200);
+  expect(self.headers.get("cache-control")).toBe("no-store");
+  expect(await self.json()).toMatchObject({ data: aActor });
+  expect(
+    (await app(aActor).request(`/api/federation/capabilities?orgId=${bActor.orgId}`)).status,
+  ).toBe(400);
+  expect((await app(aActor, "user", true).request("/api/federation/capabilities")).status).toBe(
+    403,
+  );
+  expect(
+    (
+      await app({ orgId: bActor.orgId, userId: executionUserId }).request(
+        "/api/federation/capabilities",
+      )
+    ).status,
+  ).toBe(403);
+  const path = `/api/admin/federation/capabilities/members?orgId=${aActor.orgId}`;
+  expect((await app(aActor).request(path)).status).toBe(403);
+  const response = await app({ orgId: aActor.orgId, userId: adminId }, "platform_admin").request(
+    path,
+  );
+  expect(response.status).toBe(200);
+  expect(response.headers.get("cache-control")).toBe("no-store");
+  expect(FederationMemberOptionsSchema.parse(await response.json()).data).toHaveLength(2);
+});
+
+test("membership deletion atomically revokes local federation grants and rejoining cannot restore them", async () => {
+  const admin = { userId: adminId, orgId: aActor.orgId };
+  const other = { userId: adminId, orgId: bActor.orgId };
+  const authz = new AuthzService({
+    mode: "off",
+    endpoint: "",
+    token: "",
+    schemaPath: "",
+    db,
+    platformAdminDegrade: false,
+  });
+  const app = new Hono();
+  app.onError(createErrorHandler(pino({ level: "silent" })));
+  app.use("*", async (c, next) => {
+    c.set("principal" as never, { ...admin, role: "platform_admin" });
+    await next();
+  });
+  app.route("/api", createAdminAuthzRoutes(db, { authz, rawTupleAdminEnabled: false }));
+  await db.insert(userOrgMemberships).values({ ...other, role: "member" });
+  await permissions.set({ ...admin, capability: "agreement.approve", enabled: true }, adminId);
+  await permissions.set({ ...other, capability: "asset.read", enabled: true }, adminId);
+  const path = `/api/admin/authz/memberships/${adminId}/${aActor.orgId}`;
+  const outboxBefore = await db
+    .select()
+    .from(authzOutbox)
+    .where(eq(authzOutbox.resourceId, aActor.orgId));
+  await db.execute(
+    sql`CREATE FUNCTION federation_test_membership_audit_fail() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.action = 'authz.membership.delete' THEN RAISE EXCEPTION 'injected audit fault'; END IF; RETURN NEW; END $$`,
+  );
+  await db.execute(
+    sql`CREATE TRIGGER federation_test_membership_audit_fail BEFORE INSERT ON audit_log FOR EACH ROW EXECUTE FUNCTION federation_test_membership_audit_fail()`,
+  );
+  try {
+    expect((await app.request(path, { method: "DELETE" })).status).toBe(500);
+    expect((await permissions.current(admin)).grants).toEqual(["agreement.approve"]);
+    expect(
+      await db.select().from(authzOutbox).where(eq(authzOutbox.resourceId, aActor.orgId)),
+    ).toHaveLength(outboxBefore.length);
+  } finally {
+    await db.execute(sql`DROP TRIGGER federation_test_membership_audit_fail ON audit_log`);
+    await db.execute(sql`DROP FUNCTION federation_test_membership_audit_fail()`);
+  }
+  try {
+    expect((await app.request(path, { method: "DELETE" })).status).toBe(200);
+    await expect(permissions.current(admin)).rejects.toThrow("POLICY_DENIED");
+    expect(
+      (await permissions.list(aActor.orgId, 100, 0)).some((row) => row.userId === adminId),
+    ).toBe(false);
+    expect((await permissions.current(other)).grants).toEqual(["asset.read"]);
+    const [audit] = await db
+      .select()
+      .from(auditLog)
+      .where(
+        and(
+          eq(auditLog.action, "authz.membership.delete"),
+          eq(auditLog.target, `organization:${aActor.orgId}#membership@user:${adminId}`),
+        ),
+      );
+    expect(audit).toMatchObject({
+      actor: adminId,
+      orgId: aActor.orgId,
+      diff: { before: { federationCapabilities: ["agreement.approve"] } },
+    });
+    await db.insert(userOrgMemberships).values({ ...admin, role: "owner" });
+    expect((await permissions.current(admin)).effectiveCapabilities).toEqual([]);
+  } finally {
+    await db
+      .insert(userOrgMemberships)
+      .values({ ...admin, role: "owner" })
+      .onConflictDoNothing();
+    await permissions.set({ ...admin, capability: "agreement.approve", enabled: false }, adminId);
+    await permissions.set({ ...other, capability: "asset.read", enabled: false }, adminId);
+    await db
+      .delete(userOrgMemberships)
+      .where(
+        and(eq(userOrgMemberships.userId, adminId), eq(userOrgMemberships.orgId, bActor.orgId)),
+      );
+    authz.close();
+  }
 });

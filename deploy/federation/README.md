@@ -125,7 +125,13 @@ Server 另行配置 `FEDERATION_CLIENT_CERT_FILE`、`FEDERATION_CLIENT_KEY_FILE`
 
 ## 协议审批 API
 
+平台管理员可在“平台安全 → 联邦权限”按组织查看、授予或撤销业务权限。组织按名称搜索，成员按姓名或邮箱搜索；候选人仅限该组织当前未停用的真人成员，手机只读。权限逐项授予；批准协议包含查看协议、管理映射包含查看材料、提交委派包含查看和取消委派、取消委派包含查看委派。撤销一项直接授权不保证其他授权不再包含同一能力，也不等于运行任务已经停止。
+
 平台管理员通过 `GET /api/admin/federation/capabilities?orgId=...` 查询授权，或 `PUT /api/admin/federation/capabilities` 提交 `{orgId,userId,capability,enabled}`。审批相关 capability 为 `agreement.read` 或 `agreement.approve`，后者包含读取权。被授权人必须是该组织的当前真人成员；自动化凭据和受限服务账号不能代表机构审批。平台管理员如需审批，也必须被显式授予该组织权限。
+
+管理员新增只读入口 `GET /api/admin/federation/capabilities/members?orgId=...&search=...&limit=20&offset=0`，返回 `data/hasMore`，便于选择当前符合条件的成员；授权列表额外返回姓名、邮箱和成员/账号有效性，历史无效授权仍可显式撤销。平台成员管理 API 移除成员时，在同一事务删除该组织的联邦授权、写入权限投影待办和记录包含被撤销能力的审计；之后重新加入须重新授予，不影响其他组织授权。老版本留下的无效授权仍须在此页清理，不能直接改数据库代替业务操作。
+
+`GET /api/federation/capabilities` 返回当前真人会话在活动组织的 `orgId/userId/grants/effectiveCapabilities`；不接收用户或组织参数，不因平台角色自动增加权限。不存在成员关系、已停用或服务账号均拒绝；自动化请求不允许。此接口和管理列表均为 no-store。返回值只是权限视图，不能代替具体写入/执行接口的实时授权检查，也不表示联邦部署或 Fabric 已就绪。
 
 审批人切换到目标本地组织后，使用现有登录 session 调用：
 

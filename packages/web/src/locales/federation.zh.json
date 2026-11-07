@@ -140,6 +140,61 @@
         "cancelling": "取消处理中",
         "cancelled": "已取消"
       }
+    },
+    "permissions": {
+      "title": "联邦权限",
+      "organizationSearch": "搜索组织名称",
+      "noOrganizations": "没有匹配的组织",
+      "refineSearch": "还有更多组织，请缩小搜索范围。",
+      "back": "返回组织列表",
+      "grant": "授予权限",
+      "memberSearch": "搜索成员姓名或邮箱",
+      "noMembers": "没有可授权的成员",
+      "changeMember": "更换成员",
+      "capability": "权限",
+      "chooseCapability": "选择权限",
+      "remove": "撤销授权",
+      "removeEffect": "仅移除这一项直接授权；其他授权可能仍包含同一能力。撤权不代表已取消运行中的任务。",
+      "noGrants": "该组织尚未授予联邦权限",
+      "ineligibleMember": "成员已不符合使用条件",
+      "desktopOnly": "手机端仅供查看，请在桌面端修改联邦权限。",
+      "pagination": "授权列表分页",
+      "capabilities": {
+        "agreement": {
+          "read": "查看合作协议",
+          "approve": "批准合作协议"
+        },
+        "asset": {
+          "read": "查看联邦材料",
+          "map": "管理材料映射"
+        },
+        "delegation": {
+          "read": "查看委派任务",
+          "submit": "提交委派任务",
+          "cancel": "取消委派任务"
+        },
+        "result": {
+          "read": "查看交付结果"
+        }
+      },
+      "effects": {
+        "agreement": {
+          "read": "可查看本组织的协议及签名，不包含批准权。",
+          "approve": "可代表本组织签署协议、登记对方签名及修改本地协议状态；包含查看协议。平台管理角色不会自动获得此权限。"
+        },
+        "asset": {
+          "read": "可查看本组织联邦材料；本地软件和数据仍须单独授权。",
+          "map": "可登记或撤销本组织的材料映射；包含查看材料，不自动授予资源使用权。"
+        },
+        "delegation": {
+          "read": "可查看本组织的委派任务，不包含提交和取消权。",
+          "submit": "可提交、查看和取消本组织的委派任务，仍受协议、预算与资源授权限制。",
+          "cancel": "可取消及查看本组织的委派任务，不包含提交权。"
+        },
+        "result": {
+          "read": "可查看本组织授权范围内的交付结果，不授予合同批准权。"
+        }
+      }
     }
   }
 }
