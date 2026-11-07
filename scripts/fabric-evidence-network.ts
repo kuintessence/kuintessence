@@ -19,8 +19,12 @@ import { verifyCommercialNetwork } from "./fabric-commercial-assertions";
 import { verifyEvidenceNetwork } from "./fabric-evidence-assertions";
 import { verifyMarketNetwork } from "./fabric-market-assertions";
 import { verifyExecutionGateNetwork } from "./fabric-market-gate-assertions";
+import { verifyLiveExecution } from "./federation-live/verify";
 
 const repo = resolve(import.meta.dir, "..");
+const execution = process.argv.includes("--execution");
+if (execution && process.env.KQ_FEDERATION_EXECUTION_LAB !== "1")
+  throw new Error("Set KQ_FEDERATION_EXECUTION_LAB=1 for the disposable local k3s lab");
 const toolsRoot = process.env.KQ_FABRIC_TOOLS;
 if (!toolsRoot) throw new Error("Set KQ_FABRIC_TOOLS to a verified Fabric 3.1.5 release directory");
 if (process.argv.includes("--database") && !process.env.KQ_FABRIC_DATABASE_URL)
@@ -40,7 +44,7 @@ const environment = {
   GOMAXPROCS: "2",
 };
 const channel = "kq-evidence-test";
-const gate = process.argv.includes("--gate");
+const gate = execution || process.argv.includes("--gate");
 const commercial = gate || process.argv.includes("--commercial");
 const market = process.argv.includes("--market");
 if (market && (commercial || process.argv.includes("--database")))
@@ -879,7 +883,8 @@ try {
     });
     process.stdin.pause();
   } else {
-    if (gate) await verifyExecutionGateNetwork(root, controls);
+    if (execution) await verifyLiveExecution(root, controls);
+    else if (gate) await verifyExecutionGateNetwork(root, controls);
     else if (market) await verifyMarketNetwork(root, controls);
     else if (commercial) await verifyCommercialNetwork(root, controls);
     else await verifyEvidenceNetwork(root, controls);

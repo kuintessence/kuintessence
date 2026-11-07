@@ -1,6 +1,6 @@
 # 私有额度与公共执行许可
 
-本页说明同一 Fabric 通道中的 kq-commercial / kq-market 协议。链码、生产 Adapter 与 Server Unix 客户端已通过隔离真实网络验收；Server 已接通预留/释放的业务双签审批和持久待办，源站公开激活也已接入持久市场待办；执行方验权已接入有期限的 VALID 确认与本地当前授权；真实 Agent 作业联合验收尚未完成，不能把链码 ACTIVE 当作平台已提交真实计算任务。
+本页说明同一 Fabric 通道中的 kq-commercial / kq-market 协议。链码、生产 Adapter 与 Server Unix 客户端已通过隔离真实网络验收；Server 已接通预留/释放的业务双签审批和持久待办，源站公开激活也已接入持久市场待办；执行方验权已接入有期限的 VALID 确认与本地当前授权；人工预批准合同后的真实双 Server/Agent Kubernetes 作业与结果回传已通过，见[执行验收](execution-lab.md)。这不代表自动商务握手或结算闭环完成，单独链码 ACTIVE 仍不等于已派发 Job。
 
 ## 私有边界与背书
 
