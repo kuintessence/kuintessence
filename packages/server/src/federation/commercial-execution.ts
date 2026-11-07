@@ -145,9 +145,26 @@ export class FederationCommercialExecutionService {
             .orderBy(desc(attempts.number))
             .limit(1)
         : [];
+      const [stopSubmission] = approval.stopId
+        ? await tx
+            .select({
+              id: marketSubmissions.id,
+              state: marketSubmissions.state,
+              lastError: marketSubmissions.lastError,
+            })
+            .from(marketSubmissions)
+            .where(
+              and(
+                eq(marketSubmissions.id, approval.stopId),
+                eq(marketSubmissions.localSiteId, this.signingKey.siteId),
+                eq(marketSubmissions.localOrgId, actor.orgId),
+              ),
+            )
+        : [];
       return {
         ...approval,
         submission: submission ? { ...submission, transaction: transaction ?? null } : null,
+        stopSubmission: stopSubmission ?? null,
       };
     });
   }
@@ -392,6 +409,7 @@ export class FederationCommercialExecutionService {
       await requireFederationCapability(tx, actor, "market.publish");
       const approval = await this.local(tx, actor, revisionId, recordId);
       const payload = CommercialExecutionApprovalSchema.parse(approval.payload);
+      if (approval.stopId) throw new FederationError("CANCELLATION_REQUESTED");
       if (
         payload.kind !== "commercial-reservation" ||
         !approval.counterpartyJws ||

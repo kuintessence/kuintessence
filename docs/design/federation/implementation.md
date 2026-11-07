@@ -446,7 +446,7 @@ raw transaction args、chaincode response、events、trace 均不能携带私有
 
 公共交易 MAJORITY、合作域 AND、关键治理 ALL 及指定仲裁模板由部署/lifecycle 策略表达。ALL 导致成员离线时升级受阻，这属于明确选择的治理边界，不由平台管理员绕过。
 
-公共市场链码已增加 OPEN → CLAIMED 或 CANCELLED；按同一需求键的版本读取和写入，由 Fabric 提交时 MVCC 保证单一认领。原请求重试不覆盖，不因截止时间过去自动重新开放；CLAIMED 已增加私有双签预留/gate 约束的链码激活和激活前释放；Server 公开激活审批与待办已接通，实际执行入口必须再取得有期限的 VALID 执行确认。真实三机构验证多数背书和竞争认领，见[部署与验证说明](../../../deploy/federation/fabric-market.md)。市场 Adapter/本机客户端和 Server 持久操作 API 已连接，公共目录查询已接通，私有锁额/gate 已有链码实现，应用执行入口已接入有期限的确认；Web 和实际 Agent 联合验收仍待完成，缺少确认时保留拒绝门槛。
+公共市场链码已增加 OPEN → CLAIMED 或 CANCELLED；按同一需求键的版本读取和写入，由 Fabric 提交时 MVCC 保证单一认领。原请求重试不覆盖，不因截止时间过去自动重新开放；CLAIMED 已增加私有双签预留/gate 约束的链码激活和激活前释放；Server 公开激活审批与待办已接通，实际执行入口必须再取得有期限的 VALID 执行确认。真实三机构验证多数背书和竞争认领，见[部署与验证说明](../../../deploy/federation/fabric-market.md)。市场 Adapter/本机客户端和 Server 持久操作 API 已连接，公共目录查询已接通，私有锁额/gate 已有链码实现，应用执行入口已接入有期限的确认，真实双平台与 Kubernetes Agent 轻量文件工作流已通过；Web 联合验收仍待完成，缺少确认时保留拒绝门槛。
 
 ## 10. UI 与配置
 
@@ -773,4 +773,4 @@ Web 仍不开放协调运行模式。人工预批准合同后的真实联合执�
 
 Market 新增 RequestExecutionStop、STOPPING 和原始 stopRequest；公开字段绑定请求机构、原需求/activation 与原 ACTIVE 版本。源/目标机构都能提出停止，最多各保留一份不可变请求。同机构原文重放恢复原回执，换 ID 或内容拒绝；双方请求收敛到第一份 STOPPING，不通过同意方数量生成停止或资金证明。原生交易读取并写公共需求；旧 ACTIVE 上背书的执行确认在停止先提交时必须 MVCC INVALID。STOPPING 之后的新确认、普通撤回或认领均拒绝，私有释放仍只允许未激活的 CLAIMED。
 
-生产 Market Adapter 与 Unix 客户端支持这个固定操作及原交易恢复；通用市场意图 schema 不开放它。平台仍须在专用业务入口验证原组织/预留归属，持久保存本地停止与远端取消，复用现有停止确认流程，随后才衔接终态证明和结算。不能只发一个链上停止请求就把界面或私有额度改为已停止/已释放，亦不能将旧 VALID 的期限改短来伪造远端已停。
+生产 Market Adapter 与 Unix 客户端支持这个固定操作及原交易恢复；通用市场意图 schema 不开放它。Server 专用停止入口验证原组织/预留归属，在审批记录上原子保存本地停止与审计；旧 VALID 不能绕过本地停止。后台查询精确 activation 后复用市场待办，原源站取消同步保存链停止意图，独立执行监控复用 Workflow 取消。迁移 0125 和接口边界见[平台停止接口](../../../deploy/federation/fabric-execution-gate.md#平台停止接口与本地约束)；终态证明和结算继续待办。不能只发一个链上停止请求就把界面或私有额度改为已停止/已释放，亦不能将旧 VALID 的期限改短来伪造远端已停。

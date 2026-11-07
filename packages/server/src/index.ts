@@ -69,6 +69,7 @@ import {
 } from "./federation/execution-binding";
 import { FederationExecutionConfirmationService } from "./federation/execution-confirmation";
 import { FederationExecutionMonitor } from "./federation/execution-monitor";
+import { FederationExecutionStopService } from "./federation/execution-stop";
 import { FederationInputImports } from "./federation/input-imports";
 import { FederationInputPublication } from "./federation/input-publication";
 import { FederationInputReader } from "./federation/input-reader";
@@ -1665,6 +1666,15 @@ const federationOutbound =
         federationConfirmations,
       )
     : undefined;
+const federationStops = federationSigningKey
+  ? new FederationExecutionStopService(
+      db,
+      federationSigningKey.siteId,
+      config.FEDERATION_MARKET_SOCKET_PATH
+        ? new UnixMarketClient(config.FEDERATION_MARKET_SOCKET_PATH)
+        : undefined,
+    )
+  : undefined;
 const federationWorkflowExecutor =
   federationSigningKey && federationOutbound
     ? new FederationWorkflowExecutor(db, federationSigningKey.siteId, federationOutbound)
@@ -1725,6 +1735,7 @@ if (federationSigningKey && federationCommercial)
           : undefined,
       ),
       federationConfirmations,
+      federationStops,
     ),
   );
 const federationPreparation = federationSigningKey
@@ -2458,6 +2469,7 @@ const federationCommercialWorker = federationCommercial
       federationUsageExchange,
       federationAccounting,
       federationMarket,
+      federationStops,
     )
   : undefined;
 federationCommercialWorker?.start();

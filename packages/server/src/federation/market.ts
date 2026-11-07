@@ -409,7 +409,8 @@ export class FederationMarketService {
       await requireFederationCapability(
         tx,
         actor,
-        row.input.operation === "authorize-execution"
+        row.input.operation === "authorize-execution" ||
+          row.input.operation === "request-execution-stop"
           ? "agreement.approve"
           : row.input.operation === "claim-demand"
             ? "market.claim"

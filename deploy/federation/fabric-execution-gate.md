@@ -44,9 +44,9 @@ ReleaseExecution 使用专用 commercial-release 双签正文，绑定原预留�
 
 expectedVersion 固定为 `activation.expectedVersion + 1`，不是随后 STOPPING 的当前版本。新增状态须随两个链码、Adapter 和 Server 读取 schema 一同升级后再启用；旧严格读取方不识别 STOPPING，会拒绝响应，不能据此把任务恢复为 ACTIVE。
 
-停止事务写入公共需求，执行确认读取同一键。停止先提交时，之前基于 ACTIVE 背书的续期因原生 MVCC 失败；STOPPING 上新申请确认直接拒绝。已经 VALID 的旧确认不被改写，现有消费者仍执行其绝对期限；这项链操作不是即时撤销离线授权或已停止调度器进程的证明。平台停止入口还须持久保存本地禁止派发与远端取消意图，继续核对真正的停止回执。
+停止事务写入公共需求，执行确认读取同一键。停止先提交时，之前基于 ACTIVE 背书的续期因原生 MVCC 失败；STOPPING 上新申请确认直接拒绝。已经 VALID 的旧确认不被改写，现有消费者仍执行其绝对期限；这项链操作不是即时撤销离线授权或已停止调度器进程的证明。Server 专用入口先持久保存本地停止意图；本地事务内验权与独立 Workflow 监控拒绝续期并发起取消，继续核对真正的停止回执。
 
-STOPPING 保留原激活、认领和私有 gate，原 ReleaseExecution 仍拒绝释放它，也不能通过 CancelOpenDemand 或 ClaimDemand 重开。完整终态停止证明、结算及重新开放尚待衔接；目前只有链码与私有 Adapter 能力，通用市场 HTTP 提交 schema 不接受该操作，Server 专用待办/API 尚未接入。不能把 STOPPING 显示成“已停止”或“已退款”。
+STOPPING 保留原激活、认领和私有 gate，原 ReleaseExecution 仍拒绝释放它，也不能通过 CancelOpenDemand 或 ClaimDemand 重开。完整终态停止证明、结算及重新开放尚待衔接；通用市场 HTTP 提交 schema 不接受该操作，Server 通过下述专用入口创建待办。不能把 STOPPING 显示成“已停止”或“已退款”。
 
 ## 复现真实网络验证
 
@@ -143,3 +143,14 @@ Server 从本组织原双签预留生成公开 gate，不接受调用者提交�
 
 
 确认验证已纳入两个真实网络入口：`test:fabric:gate` 覆盖原生读集/MVCC、第三方拒绝及 Adapter 故障恢复；`test:fabric:gate:integration` 在真实数据库审批/激活之后验证服务端申请、VALID 消费、本地暂停拒绝，再运行 Adapter 确认恢复，CI 使用后者。没有 Agent 或实际作业，亦未实现作业自动确认消费和 ACTIVE 停止状态转移。
+
+
+### 平台停止接口与本地约束
+
+`POST /api/federation/commercial-agreements/:revisionId/execution-approvals/:recordId/stop` 仅接受空 JSON，对当前组织要求 `agreement.approve`，只允许停止本机构持有的协调执行预留。202 返回原停止 ID 与请求时间，表示本地意图已持久化，不表示链已确认或调度器已停止。重复调用返回同一 ID。停止不要求合同仍有效、签名密钥仍可续期或对方重新批准；失效授权不能阻挡本机构停止自己的任务。
+
+迁移 0125 在原审批记录保存停止元数据，不修改签名正文。同一事务写入意图和审计，原最终授权持有审批共享锁，与停止写入互斥；记录停止后，即使原 VALID 尚未到期或市场提交为 pending/needs_review，本地接单、材料、派发和续期也不再获准。现有独立执行监控在准备流程临时故障时仍检查本地停止记录，调用正式 Workflow 取消流程；实际 Agent 停止和终态观察继续使用原有机制。
+
+后台在事务外查询精确激活并生成固定公开停止载荷，再复用市场检查点提交和恢复。链不可用时保留本地停止，查询失败写入 stopLastError 并退避；未激活的预留显示 ACTIVATION_PENDING，不能借停止触发新激活或释放资金。审批详情返回 stopId、stopRequestedAt、stopLastError 和 stopSubmission；后者可进一步通过市场详情查看交易状态。已进入市场 needs_review 的请求使用原 retry 接口，要求 market.read 和 agreement.approve，不以 market.publish 替代业务批准。未知已提交交易仍恢复原交易。
+
+源站普通委派取消在原授权事务内同步记录该停止意图，沿用 delegation.cancel 或持久 Workflow 取消授权，不额外要求用户成为商业审批人。原签名取消通道仍独立投递。机构专用停止接口不会冒充源站用户签署远端取消：提供方本地由监控停止，另一方受 STOPPING 与既有 VALID 的绝对期限约束。没有自动把既往取消记录回填为链停止，也没有声称断链时能立即撤销另一机构已经持有的离线证明。终态证明、额度结算和重新开放仍待实现。

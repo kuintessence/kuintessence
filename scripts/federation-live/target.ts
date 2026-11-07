@@ -197,7 +197,7 @@ if (process.argv[2] === "inspect") {
   if (!queue || !agent?.clusterId) throw Error("Agent/queue unavailable");
   const runtimeImage = process.env.LAB_RUNTIME_IMAGE;
   if (!runtimeImage) throw Error("Pinned runtime required");
-  const outage = process.env.LAB_SCENARIO === "outage";
+  const outage = ["outage", "stop"].includes(process.env.LAB_SCENARIO ?? "");
   const producer = `set -euo pipefail
 ${outage ? "printf 'federation-sleep-started\\n'; sleep 600" : ""}
 [ "$(id -u)" -gt 0 ]

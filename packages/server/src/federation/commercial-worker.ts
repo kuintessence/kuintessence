@@ -1,6 +1,7 @@
 import { createLogger } from "@kuintessence/shared";
 import type { FederationAccountingCollection } from "./accounting-collection";
 import type { FederationCommercialSubmissionService } from "./commercial-submissions";
+import type { FederationExecutionStopService } from "./execution-stop";
 import type { FederationMarketService } from "./market";
 import type { FederationUsageService } from "./usage";
 import type { FederationUsageExchange } from "./usage-exchange";
@@ -16,6 +17,7 @@ export class FederationCommercialWorker {
     private readonly exchange?: FederationUsageExchange,
     private readonly accounting?: FederationAccountingCollection,
     private readonly market?: FederationMarketService,
+    private readonly stops?: FederationExecutionStopService,
   ) {}
 
   start() {
@@ -31,6 +33,13 @@ export class FederationCommercialWorker {
   tick() {
     if (this.running) return this.running;
     this.running = (async () => {
+      if (this.stops) {
+        try {
+          for (let i = 0; i < 8 && !this.stopped; i++) if (!(await this.stops.advanceNext())) break;
+        } catch {
+          logger.error("Execution stop delivery failed; local stop intent remains in PostgreSQL");
+        }
+      }
       if (this.usage) {
         try {
           await this.usage.discover();

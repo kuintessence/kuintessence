@@ -12,7 +12,7 @@ if os.geteuid() != 0:
     raise SystemExit("Run on a disposable local k3s node as root")
 os.umask(0o077)
 scenario = os.environ.get("LAB_SCENARIO", "success")
-assert scenario in ("success", "outage")
+assert scenario in ("success", "outage", "stop")
 nodeinfo = json.loads(
     subprocess.check_output(["kubectl", "get", "nodes", "-o", "json"], timeout=15)
 )["items"]
@@ -154,7 +154,7 @@ def orderer(action):
         time.sleep(0.3)
 
 
-def verify_outage():
+def verify_interruption():
     for _ in range(60):
         run(
             [
@@ -214,9 +214,34 @@ def verify_outage():
     )
     assert 0 <= grace <= 30, "Unexpected sandbox termination grace"
     stop_requested_at = None
+    original_cutoff = cutoff
+    stop_id = None
+    stop_bound = 10
     orderer("stop")
+    if scenario == "stop":
+        assert (
+            original_cutoff > time.time() + 120
+        ), "Need a live proof throughout local stop"
+        proof = json.loads((root / "ledger-proof.json").read_text())
+        config = json.loads((root / "source-init.json").read_text())
+        path = (
+            "federation/commercial-agreements/"
+            + config["request"]["agreementRevisionId"]
+            + "/execution-approvals/"
+            + proof["reservationId"]
+            + "/stop"
+        )
+        requested = api(path, {}, token=token)
+        repeated = api(path, {}, token=token)
+        assert (
+            requested["data"] == repeated["data"]
+        ), "Duplicate stop changed its identity"
+        stop_id = requested["data"]["id"]
+        (logs / "stop-api.json").write_text(json.dumps(requested, indent=2) + "\n")
+        cutoff = time.time()
+        stop_bound = 20
     print(
-        "Orderer stopped after actual sleep started; waiting for original confirmation expiry",
+        "Orderer stopped after actual sleep started; observing " + scenario,
         flush=True,
     )
     lastprint = 0
@@ -246,18 +271,18 @@ def verify_outage():
             elif not current.strip():
                 stop_requested_at = time.time()
             assert (
-                stop_requested_at is not None or time.time() <= cutoff + 10
-            ), "Lease expiry did not promptly request scheduler stop"
+                stop_requested_at is not None or time.time() <= cutoff + stop_bound
+            ), "Execution interruption did not promptly request scheduler stop"
         if time.time() - lastprint >= 30:
             print(
                 "Lease outage observation: "
                 + str(max(0, int(cutoff - time.time())))
-                + " seconds to original proof expiry",
+                + " seconds to stop observation deadline",
                 flush=True,
             )
             lastprint = time.time()
         time.sleep(2)
-    assert stop_requested_at is not None and stop_requested_at <= cutoff + 10
+    assert stop_requested_at is not None and stop_requested_at <= cutoff + stop_bound
     # A DB terminal flag alone is insufficient: the real scheduler Pod must be gone or terminated.
     pods = json.loads(
         k(
@@ -294,7 +319,18 @@ def verify_outage():
         not probe["artifacts"] and not probe["files"]
     ), "Interrupted workload published results"
     env["LAB_EVIDENCE"] = str(logs / "provider-expired.json")
-    run(["bun", "--no-env-file", "scripts/federation-live/inspect.ts", "--expired"])
+    run(
+        [
+            "bun",
+            "--no-env-file",
+            "scripts/federation-live/inspect.ts",
+            "--stopped" if scenario == "stop" else "--expired",
+        ]
+    )
+    if scenario == "stop":
+        assert (
+            time.time() < original_cutoff
+        ), "Local stop was only observed after proof expiry"
     after = json.loads((logs / "provider-expired.json").read_text())
     assert (
         after["gate"] == before["gate"]
@@ -311,11 +347,14 @@ def verify_outage():
     assert (
         committed == confirmations
     ), "Orderer outage unexpectedly committed a new confirmation"
-    (logs / "outage-evidence.json").write_text(
+    (logs / (scenario + "-evidence.json")).write_text(
         json.dumps(
             {
                 "jobId": jobid,
-                "confirmationExpiresAt": datetime.fromtimestamp(cutoff).isoformat(),
+                "confirmationExpiresAt": datetime.fromtimestamp(
+                    original_cutoff
+                ).isoformat(),
+                "stopId": stop_id,
                 "stopRequestedAt": datetime.fromtimestamp(
                     stop_requested_at
                 ).isoformat(),
@@ -332,6 +371,24 @@ def verify_outage():
         + "\n"
     )
     orderer("start")
+    if scenario == "stop":
+        for _ in range(24):
+            inspect_ledgers("stop-recovery")
+            restored = json.loads((logs / "provider-stop-recovery.json").read_text())
+            committed_stop = [
+                r
+                for r in restored["market"]
+                if r["id"] == stop_id and r["state"] == "committed"
+            ]
+            if committed_stop:
+                assert len(committed_stop) == 1
+                assert restored["demand"]["demand"]["status"] == "STOPPING"
+                assert restored["demand"]["demand"]["stopRequest"]["stopId"] == stop_id
+                assert restored["gate"] == before["gate"], "Stop released private funds"
+                break
+            time.sleep(5)
+        else:
+            raise RuntimeError("Durable stop did not commit after Orderer recovery")
     time.sleep(15)
     run(["bun", "--no-env-file", "run", "scripts/federation-live/target.ts", "inspect"])
     recovered = json.loads((root / "probe-state.json").read_text())
@@ -340,7 +397,9 @@ def verify_outage():
         "cancelled",
     ], "Restoring Orderer restarted terminal work"
     print(
-        "REAL OUTAGE PASSED: expired VALID rejected; actual workload stopped; no downstream dispatch, release or reopen",
+        "REAL "
+        + scenario.upper()
+        + " PASSED: authorization rejected; actual workload stopped; no downstream dispatch, release or reopen",
         flush=True,
     )
 
@@ -1604,7 +1663,8 @@ await Bun.write(process.env.LAB_ROOT+'/registration.json',JSON.stringify({token:
     healthy = 0
     for _ in range(90):
         current = api("agents/" + env["LAB_AGENT"], token=token)
-        healthy = healthy + 1 if current.get("cpuUsagePercent", 100) < 80 else 0
+        cpu = current.get("cpuUsagePercent")
+        healthy = healthy + 1 if isinstance(cpu, (int, float)) and 0 <= cpu < 80 else 0
         if healthy >= 3:
             break
         time.sleep(2)
@@ -1728,8 +1788,8 @@ await Bun.write(process.env.LAB_ROOT+'/registration.json',JSON.stringify({token:
             )
 
     inspect_ledgers("before")
-    if scenario == "outage":
-        verify_outage()
+    if scenario in ("outage", "stop"):
+        verify_interruption()
     else:
         verify_success()
     inspect_ledgers("after")

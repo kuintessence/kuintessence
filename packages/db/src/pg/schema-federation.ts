@@ -1126,6 +1126,11 @@ export const federationCommercialExecutionApprovals = pgTable(
     digest: varchar("digest", { length: 71 }).notNull(),
     approvalJws: text("approval_jws").notNull(),
     counterpartyJws: text("counterparty_jws"),
+    stopId: uuid("stop_id"),
+    stopRequestedBy: uuid("stop_requested_by").references(() => users.id),
+    stopRequestedAt: timestamp("stop_requested_at", { withTimezone: true }),
+    stopNextAttemptAt: timestamp("stop_next_attempt_at", { withTimezone: true }),
+    stopLastError: varchar("stop_last_error", { length: 64 }),
     approvedBy: uuid("approved_by")
       .notNull()
       .references(() => users.id),
@@ -1133,6 +1138,15 @@ export const federationCommercialExecutionApprovals = pgTable(
   },
   (t) => [
     primaryKey({ columns: [t.localSiteId, t.recordId] }),
+    uniqueIndex("federation_execution_stop_id").on(t.stopId),
+    index("federation_execution_stop_pending")
+      .on(t.localSiteId, t.stopNextAttemptAt)
+      .where(sql`${t.stopNextAttemptAt} IS NOT NULL`),
+    check(
+      "federation_execution_stop_intent",
+      sql`((${t.stopId} IS NULL AND ${t.stopRequestedBy} IS NULL AND ${t.stopRequestedAt} IS NULL AND ${t.stopNextAttemptAt} IS NULL AND ${t.stopLastError} IS NULL)
+        OR (${t.stopId} IS NOT NULL AND ${t.stopRequestedBy} IS NOT NULL AND ${t.stopRequestedAt} IS NOT NULL AND ${t.payload}->>'kind' = 'commercial-reservation' AND ${t.payload}->'request'->>'mode' = 'ledger_coordinated')) IS TRUE`,
+    ),
     foreignKey({
       columns: [t.localSiteId, t.agreementRevisionId],
       foreignColumns: [
@@ -1230,6 +1244,9 @@ export const federationMarketSubmissions = pgTable(
         t.createdAt,
       )
       .where(sql`${t.input}->>'operation' = 'authorize-execution'`),
+    uniqueIndex("federation_market_execution_stop")
+      .on(t.localSiteId, sql`(${t.input}->'stop'->>'activationId')`, t.demandId)
+      .where(sql`${t.input}->>'operation' = 'request-execution-stop'`),
     check(
       "federation_market_submission_state",
       sql`${t.state} IN ('pending','committed','needs_review')`,
@@ -1242,6 +1259,7 @@ export const federationMarketSubmissions = pgTable(
         OR (${t.input}->>'operation' = 'cancel-open-demand' AND ${t.input}->'cancellation'->>'cancellationId' = ${t.id}::text AND ${t.input}->'cancellation'->>'demandId' = ${t.demandId}::text)
         OR (${t.input}->>'operation' = 'activate-demand' AND ${t.input}->'activation'->>'activationId' = ${t.id}::text AND ${t.input}->'activation'->>'demandId' = ${t.demandId}::text)
         OR (${t.input}->>'operation' = 'authorize-execution' AND ${t.input}->'authorization'->>'authorizationId' = ${t.id}::text AND ${t.input}->'authorization'->>'demandId' = ${t.demandId}::text AND ${t.input}->'authorization'->'gate'->>'demandId' = ${t.demandId}::text AND ${t.input}->'authorization'->>'issuerSiteId' = ${t.localSiteId}::text)
+        OR (${t.input}->>'operation' = 'request-execution-stop' AND ${t.input}->'stop'->>'stopId' = ${t.id}::text AND ${t.input}->'stop'->>'demandId' = ${t.demandId}::text AND ${t.input}->'stop'->>'issuerSiteId' = ${t.localSiteId}::text)
       )) IS TRUE`,
     ),
     check(

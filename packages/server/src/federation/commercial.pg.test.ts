@@ -68,6 +68,8 @@ import { FederationCommercialWorker } from "./commercial-worker";
 import { FederationDispatchAuthorization } from "./dispatch-authorization";
 import { FederationExecutionBindingService } from "./execution-binding";
 import { FederationExecutionConfirmationService } from "./execution-confirmation";
+import { FederationExecutionMonitor } from "./execution-monitor";
+import { FederationExecutionStopService } from "./execution-stop";
 import { FabricClientFailure } from "./fabric-client";
 import { FederationMarketService } from "./market";
 import type { MarketClient } from "./market-client";
@@ -163,6 +165,7 @@ async function fixture(
               "agreement",
               "acceptance",
               "delegation",
+              "cancellation",
             ]
           : ["commercial-agreement", "commercial-usage"],
         validFrom: "2020-01-01T00:00:00Z",
@@ -1613,6 +1616,419 @@ test("confirmation HTTP accepts only an empty renewal intent and preserves human
     f.actor.userId,
   );
   expect((await call({})).status).toBe(403);
+});
+
+test.each([
+  false,
+  true,
+])("execution stop is durable and fences VALID proofs without a ledger connection (provider=%s)", async (provider) => {
+  const f = await confirmationFixture(provider);
+  await f.requestConfirmation();
+  for (let i = 0; i < 3; i++) await f.market.advanceNext();
+  await f.authorizeConfirmation();
+  const stops = new FederationExecutionStopService(db, f.siteId);
+  const results = await Promise.all(
+    Array.from({ length: 4 }, () =>
+      stops.request(f.actor, f.revisionId, f.reservation.reservationId),
+    ),
+  );
+  expect(new Set(results.map((row) => row.id)).size).toBe(1);
+  expect(await stops.advanceNext()).toBe(false);
+  const queries = f.queryCount();
+  await expect(f.authorizeConfirmation()).rejects.toMatchObject({ code: "CANCELLATION_REQUESTED" });
+  await expect(f.requestConfirmation()).rejects.toMatchObject({ code: "CANCELLATION_REQUESTED" });
+  await expect(
+    f.confirmation.refreshForExecution(f.actor.orgId, f.reservation.request),
+  ).rejects.toMatchObject({ code: "CANCELLATION_REQUESTED" });
+  expect(f.queryCount()).toBe(queries);
+  const restarted = new FederationExecutionStopService(db, f.siteId);
+  const first = results[0];
+  if (!first) throw new Error("Missing stop request");
+  expect(await restarted.request(f.actor, f.revisionId, f.reservation.reservationId)).toEqual(
+    first,
+  );
+  expect(
+    await db
+      .select()
+      .from(auditLog)
+      .where(
+        and(
+          eq(auditLog.target, f.reservation.reservationId),
+          eq(auditLog.action, "federation.execution.stop"),
+        ),
+      ),
+  ).toHaveLength(1);
+  await f.trust.revoke(f.a.signing.siteId, { keyId: f.a.signing.keyId }, f.actor.userId);
+  expect(await restarted.request(f.actor, f.revisionId, f.reservation.reservationId)).toEqual(
+    first,
+  );
+});
+
+test("execution stop wins a renewal network race before a new authorization can be persisted", async () => {
+  const f = await confirmationFixture();
+  const stops = new FederationExecutionStopService(db, f.siteId);
+  f.beforeQuery(async () => {
+    await stops.request(f.actor, f.revisionId, f.reservation.reservationId);
+  });
+  await expect(f.requestConfirmation()).rejects.toMatchObject({ code: "CANCELLATION_REQUESTED" });
+  expect(
+    await db
+      .select()
+      .from(marketSubmissions)
+      .where(
+        and(
+          eq(marketSubmissions.localSiteId, f.siteId),
+          sql`${marketSubmissions.input}->>'operation' = 'authorize-execution'`,
+        ),
+      ),
+  ).toHaveLength(0);
+});
+
+test("execution stop enqueues once after outage and resumes an unknown ledger outcome with the same transaction", async () => {
+  const f = await confirmationFixture();
+  let offline = true;
+  const stops = new FederationExecutionStopService(db, f.siteId, {
+    query: async () => {
+      if (offline) throw new FabricClientFailure("LEDGER_UNAVAILABLE");
+      return { operation: "get-demand", demand: f.state };
+    },
+  });
+  const stop = await stops.request(f.actor, f.revisionId, f.reservation.reservationId);
+  await expect(
+    f.execution.activate(f.actor, f.revisionId, f.reservation.reservationId, f.activationId),
+  ).rejects.toMatchObject({ code: "CANCELLATION_REQUESTED" });
+  await stops.advanceNext();
+  const pending = await f.execution.get(f.actor, f.revisionId, f.reservation.reservationId);
+  expect(pending.stopLastError).toBe("LEDGER_UNAVAILABLE");
+  expect(pending.stopSubmission).toBeNull();
+  offline = false;
+  await db
+    .update(executionApprovals)
+    .set({ stopNextAttemptAt: new Date(0) })
+    .where(eq(executionApprovals.stopId, stop.id));
+  await Promise.all([stops.advanceNext(), stops.advanceNext()]);
+  const [saved] = await db
+    .select()
+    .from(marketSubmissions)
+    .where(eq(marketSubmissions.id, stop.id));
+  expect(saved?.input).toEqual({
+    operation: "request-execution-stop",
+    stop: {
+      demandId: f.reservation.demandId,
+      stopId: stop.id,
+      issuerSiteId: f.siteId,
+      activationId: f.activationId,
+      expectedVersion: 3,
+    },
+  });
+  expect(await stops.advanceNext()).toBe(false);
+  f.marketAdapter.outcome = "pending";
+  for (let i = 0; i < 3; i++) await f.market.advanceNext();
+  const [original] = await db
+    .select()
+    .from(marketAttempts)
+    .where(eq(marketAttempts.submissionId, stop.id));
+  expect(original?.stage).toBe("transaction");
+  f.marketAdapter.outcome = "committed";
+  await db
+    .update(marketSubmissions)
+    .set({ nextAttemptAt: new Date(0) })
+    .where(eq(marketSubmissions.id, stop.id));
+  await new FederationMarketService(db, f.siteId, f.marketAdapter).advanceNext();
+  const recovered = await db
+    .select()
+    .from(marketAttempts)
+    .where(eq(marketAttempts.submissionId, stop.id));
+  expect(recovered).toHaveLength(1);
+  expect(recovered[0]?.transactionId).toBe(original?.transactionId);
+  expect(recovered[0]?.stage).toBe("committed");
+  expect(
+    (await f.execution.get(f.actor, f.revisionId, f.reservation.reservationId)).stopSubmission
+      ?.state,
+  ).toBe("committed");
+  await expect(f.authorizeConfirmation()).rejects.toMatchObject({ code: "CANCELLATION_REQUESTED" });
+});
+
+test("execution stop rejects unrelated activation and preserves its local fence while awaiting activation", async () => {
+  const f = await confirmationFixture(true);
+  const stops = new FederationExecutionStopService(db, f.siteId, {
+    query: async () => ({ operation: "get-demand", demand: f.state }),
+  });
+  const stop = await stops.request(f.actor, f.revisionId, f.reservation.reservationId);
+  if (!f.state.activation) throw new Error("Missing activation");
+  const gate = f.state.activation.gate;
+  f.state.activation.gate = { ...gate, reservationDigest: `sha256:${"f".repeat(64)}` };
+  await stops.advanceNext();
+  const [bad] = await db
+    .select()
+    .from(executionApprovals)
+    .where(eq(executionApprovals.stopId, stop.id));
+  expect(bad?.stopLastError).toBe("OPERATION_CONFLICT");
+  expect(
+    await db.select().from(marketSubmissions).where(eq(marketSubmissions.id, stop.id)),
+  ).toHaveLength(0);
+  f.state.activation.gate = gate;
+  f.state.status = "CLAIMED";
+  await db
+    .update(executionApprovals)
+    .set({ stopNextAttemptAt: new Date(0) })
+    .where(eq(executionApprovals.stopId, stop.id));
+  await stops.advanceNext();
+  const [waiting] = await db
+    .select()
+    .from(executionApprovals)
+    .where(eq(executionApprovals.stopId, stop.id));
+  expect(waiting?.stopLastError).toBe("ACTIVATION_PENDING");
+  await expect(f.authorizeConfirmation()).rejects.toMatchObject({ code: "CANCELLATION_REQUESTED" });
+});
+
+test("execution stop audit is atomic and HTTP requires empty input and institutional authority", async () => {
+  const f = await confirmationFixture();
+  const stops = new FederationExecutionStopService(db, f.siteId);
+  await db.execute(
+    sql`CREATE FUNCTION stop_test_audit_fail() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.action = 'federation.execution.stop' THEN RAISE EXCEPTION 'injected failure'; END IF; RETURN NEW; END $$`,
+  );
+  await db.execute(
+    sql`CREATE TRIGGER stop_test_audit_fail BEFORE INSERT ON audit_log FOR EACH ROW EXECUTE FUNCTION stop_test_audit_fail()`,
+  );
+  try {
+    await expect(
+      stops.request(f.actor, f.revisionId, f.reservation.reservationId),
+    ).rejects.toThrow();
+  } finally {
+    await db.execute(sql`DROP TRIGGER stop_test_audit_fail ON audit_log`);
+    await db.execute(sql`DROP FUNCTION stop_test_audit_fail()`);
+  }
+  expect(
+    (await f.execution.get(f.actor, f.revisionId, f.reservation.reservationId)).stopId,
+  ).toBeNull();
+  const other = await fixture();
+  await expect(
+    stops.request(other.actor, f.revisionId, f.reservation.reservationId),
+  ).rejects.toMatchObject({ code: "ASSET_UNAVAILABLE" });
+  const app = new Hono();
+  app.onError(createErrorHandler(pino({ level: "silent" })));
+  let automation = false;
+  app.use("*", async (c, next) => {
+    c.set("principal" as never, f.actor as never);
+    if (automation) c.set("automation" as never, true as never);
+    await next();
+  });
+  app.route(
+    "/",
+    createFederationCommercialRoutes(
+      f.approvals,
+      f.service,
+      undefined,
+      undefined,
+      f.execution,
+      f.confirmation,
+      stops,
+    ),
+  );
+  const path = `/federation/commercial-agreements/${f.revisionId}/execution-approvals/${f.reservation.reservationId}/stop`;
+  const call = (body: unknown) =>
+    app.request(path, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  expect((await call({ activationId: f.activationId })).status).toBe(400);
+  automation = true;
+  expect((await call({})).status).toBe(403);
+  automation = false;
+  const response = await call({});
+  expect(response.status).toBe(202);
+  expect(response.headers.get("cache-control")).toBe("no-store");
+  const body = await response.text();
+  expect(body).not.toContain("recovery");
+  expect(body).not.toContain("committed");
+  await new FederationPermissionService(db).set(
+    { ...f.actor, capability: "agreement.approve", enabled: false },
+    f.actor.userId,
+  );
+  expect((await call({})).status).toBe(403);
+});
+
+test("execution stop is observed by the independent workflow monitor despite preparation outage", async () => {
+  const f = await confirmationFixture(true, true);
+  await f.requestConfirmation();
+  for (let i = 0; i < 3; i++) await f.market.advanceNext();
+  const admission = new FederationAdmission(
+    db,
+    f.b.signing,
+    f.b.verification,
+    undefined,
+    f.confirmation,
+  );
+  await admission.receive({
+    requestJws: await signFederationMessage(
+      FederationDelegationSchema,
+      f.reservation.request,
+      f.a.signing,
+    ),
+    authenticatedPeerSiteId: f.a.signing.siteId,
+    senderKey: f.a.verification,
+  });
+  const preparation = new FederationPreparationService(
+    db,
+    f.siteId,
+    f.assets,
+    undefined,
+    f.confirmation,
+  );
+  const binding = await new FederationExecutionBindingService(db, preparation).stage(
+    f.reservation.reservationId,
+  );
+  const dispatch = new FederationDispatchAuthorization(db, preparation);
+  const final = await dispatch.prepare(binding.workflowRunId);
+  await db.transaction(final);
+  await new FederationExecutionStopService(db, f.siteId).request(
+    f.actor,
+    f.revisionId,
+    f.reservation.reservationId,
+  );
+  await expect(db.transaction(final)).rejects.toMatchObject({ code: "CANCELLATION_REQUESTED" });
+  const cancelled: string[] = [];
+  const monitor = new FederationExecutionMonitor(
+    db,
+    {
+      prepare: async () => {
+        throw new FabricClientFailure("LEDGER_UNAVAILABLE");
+      },
+      checkActiveJobs: (runId) => dispatch.checkActiveJobs(runId),
+    },
+    {
+      cancel: async (runId, reason) => {
+        if (runId === binding.workflowRunId) {
+          expect(reason?.code).toBe("FEDERATION_CANCELLATION_REQUESTED");
+          cancelled.push(runId);
+        }
+        return "cancelling";
+      },
+    },
+  );
+  for (let i = 0; i < 4 && !cancelled.length; i++) await monitor.tick();
+  expect(cancelled).toEqual([binding.workflowRunId]);
+  // A requested cancellation is not a scheduler terminal receipt or budget release.
+  expect(
+    await db
+      .select()
+      .from(federationBudgets)
+      .where(eq(federationBudgets.domainId, f.terms.agreement.budgetDomainId)),
+  ).toHaveLength(0);
+});
+
+test("execution stop follows source cancellation without requiring a commercial approver grant", async () => {
+  const f = await confirmationFixture(false, true);
+  await f.requestConfirmation();
+  for (let i = 0; i < 3; i++) await f.market.advanceNext();
+  const outbound = new FederationOutboundService(
+    db,
+    f.a.signing,
+    async () => {
+      throw new Error("No transport expected");
+    },
+    f.assets,
+    undefined,
+    f.confirmation,
+  );
+  await outbound.enqueue(f.actor, f.reservation.request);
+  const permissions = new FederationPermissionService(db);
+  await permissions.set(
+    { ...f.actor, capability: "delegation.cancel", enabled: true },
+    f.actor.userId,
+  );
+  await permissions.set(
+    { ...f.actor, capability: "agreement.approve", enabled: false },
+    f.actor.userId,
+  );
+  expect(
+    (await outbound.cancellations.request(f.actor, f.reservation.request.operationId))?.state,
+  ).toBe("queued");
+  const [stopped] = await db
+    .select()
+    .from(executionApprovals)
+    .where(
+      and(
+        eq(executionApprovals.localSiteId, f.siteId),
+        eq(executionApprovals.recordId, f.reservation.reservationId),
+      ),
+    );
+  expect(stopped?.stopId).toBeString();
+  await expect(f.authorizeConfirmation()).rejects.toMatchObject({ code: "CANCELLATION_REQUESTED" });
+});
+
+test("stop retry requires business approval rather than publish authority", async () => {
+  const f = await confirmationFixture();
+  const stops = new FederationExecutionStopService(db, f.siteId, {
+    query: async () => ({ operation: "get-demand", demand: f.state }),
+  });
+  const stop = await stops.request(f.actor, f.revisionId, f.reservation.reservationId);
+  await stops.advanceNext();
+  f.marketAdapter.outcome = "invalid";
+  for (let i = 0; i < 3; i++) await f.market.advanceNext();
+  const permissions = new FederationPermissionService(db);
+  await permissions.set(
+    { ...f.actor, capability: "agreement.approve", enabled: false },
+    f.actor.userId,
+  );
+  await expect(f.market.retry(f.actor, stop.id)).rejects.toMatchObject({ code: "POLICY_DENIED" });
+  await permissions.set(
+    { ...f.actor, capability: "agreement.approve", enabled: true },
+    f.actor.userId,
+  );
+  await permissions.set({ ...f.actor, capability: "market.read", enabled: true }, f.actor.userId);
+  await permissions.set(
+    { ...f.actor, capability: "market.publish", enabled: false },
+    f.actor.userId,
+  );
+  await f.market.retry(f.actor, stop.id);
+  await expect(f.authorizeConfirmation()).rejects.toMatchObject({ code: "CANCELLATION_REQUESTED" });
+  const [saved] = await db
+    .select()
+    .from(marketSubmissions)
+    .where(eq(marketSubmissions.id, stop.id));
+  expect(saved?.state).toBe("pending");
+});
+
+test("stop database constraints reject partial intents and duplicate activation submissions", async () => {
+  const f = await confirmationFixture();
+  const filter = and(
+    eq(executionApprovals.localSiteId, f.siteId),
+    eq(executionApprovals.recordId, f.reservation.reservationId),
+  );
+  await expect(
+    db.update(executionApprovals).set({ stopId: randomUUID() }).where(filter).execute(),
+  ).rejects.toThrow();
+  const stops = new FederationExecutionStopService(db, f.siteId, {
+    query: async () => ({ operation: "get-demand", demand: f.state }),
+  });
+  const stop = await stops.request(f.actor, f.revisionId, f.reservation.reservationId);
+  await stops.advanceNext();
+  const [saved] = await db
+    .select()
+    .from(marketSubmissions)
+    .where(eq(marketSubmissions.id, stop.id));
+  if (!saved || saved.input.operation !== "request-execution-stop") throw new Error("Missing stop");
+  const id = randomUUID();
+  const input = {
+    operation: "request-execution-stop" as const,
+    stop: { ...saved.input.stop, stopId: id },
+  };
+  await expect(
+    db
+      .insert(marketSubmissions)
+      .values({ ...saved, id, input, digest: federationMaterialDigest(input) })
+      .execute(),
+  ).rejects.toThrow();
+  await expect(
+    db
+      .update(marketSubmissions)
+      .set({ input: { ...input, stop: { ...input.stop, issuerSiteId: randomUUID() } } })
+      .where(eq(marketSubmissions.id, stop.id))
+      .execute(),
+  ).rejects.toThrow();
 });
 
 test("activation requires two capabilities and confirmed private reservation; public payload contains no private delegation", async () => {

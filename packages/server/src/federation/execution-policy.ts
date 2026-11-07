@@ -4,6 +4,7 @@ import {
   dataAssets,
   dataAssetVersions,
   dataGrants,
+  federationCommercialExecutionApprovals,
   jobDataBindings,
   jobs,
   type PgDb,
@@ -40,6 +41,22 @@ export async function checkFederationExecutionPolicy(
   const binding = await loadFederationWorkflowBinding(db, runId);
   if (!binding) throw new FederationError("OPERATION_CONFLICT");
   const { identity } = binding.snapshot;
+  if (binding.snapshot.request.mode === "ledger_coordinated") {
+    const [approval] = await db
+      .select({ stopId: federationCommercialExecutionApprovals.stopId })
+      .from(federationCommercialExecutionApprovals)
+      .where(
+        and(
+          eq(
+            federationCommercialExecutionApprovals.localSiteId,
+            binding.snapshot.request.recipientSiteId,
+          ),
+          eq(federationCommercialExecutionApprovals.localOrgId, identity.orgId),
+          eq(federationCommercialExecutionApprovals.recordId, binding.reservationId),
+        ),
+      );
+    if (approval?.stopId) throw new FederationError("CANCELLATION_REQUESTED");
+  }
   const targets = binding.snapshot.executionTargets ?? [];
   const active = await db
     .select({ job: jobs, intent: workflowExecutionJobs.intent })

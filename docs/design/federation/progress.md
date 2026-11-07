@@ -1573,3 +1573,17 @@ Market 新增 RequestExecutionStop、Adapter 新增 request-execution-stop，双
 39 项不同链码/Adapter 测试通过，覆盖停止身份、幂等、版本和状态绑定、过期后停止、STOPPING 拒绝确认及商业释放；后续状态约束复验与原测试存在重叠，不累加计数。真实 test:fabric:gate 退出 0，通过 9 组检查：停止先提交使已背书续期 MVCC INVALID，双方停止收敛，第三方拒绝，私有 gate 不变且不能释放。生产 Node Adapter 与 Server Unix 客户端在 Orderer 中断和进程退出后恢复原停止交易 ID；公开区块/PDC 隐私检查包括新停止交易。测试网络已清理，证据留在忽略目录 temp/federation-stop-report.json、temp/federation-stop-network.log。
 
 全仓 lint 无错误（原有 47 warning / 1 info），全仓 typecheck 含 protobuf 与 Fabric 脚本通过。此轮没有数据库服务/迁移变更，未重跑数据库集成或真实 Agent 作业；Server 持久化停止接口、本地停止防线和取消联动尚待接入。启用前必须同步升级链码、Adapter 与读取新状态的 Server；不能让旧严格 schema 读取 STOPPING。未发布 PR 预览，未合并或部署 main。
+
+## 平台停止待办、本地禁止续期与真实主动停机
+
+新增机构专用空正文 stop API，要求当前组织 agreement.approve；源站普通取消沿用 delegation.cancel 或持久 Workflow 取消授权，在原事务内同步保存链停止意图，不要求提交用户具备商业批准权。迁移 0125 通过 db:generate 生成，在原商业预留审批上保存停止 ID、请求人/时间和投递重试信息，不改签名正文。并发重复请求保持同一 ID，停止与审计原子提交；断链、合作失效或已到期不清除已保存停止。
+
+执行确认的最终事务共享锁与停止写入互斥，本地停止后旧 VALID、已排队续期或上链 needs_review 均不能恢复材料/派发/续期权限。独立 Workflow 监控额外读取本地停止，准备流程临时故障时仍可调用原取消机制。后台查询精确 activation 后才构造公开 stop，复用市场持久检查点；未知已提交交易保留原 ID。市场重试要求 market.read 加 agreement.approve，不误用 market.publish。机构专用接口不冒充另一方签署用户取消，另一方已有离线许可仍以 STOPPING 和原绝对期限为边界；普通源站取消继续走已有签名通道。
+
+隔离 PostgreSQL 从空库迁移后，10 项新增停止测试和 40 项商业/市场回归通过，共 50 项不同用例：双方本地断链停止、并发幂等、网络续期竞态、重启/未知交易恢复、错误激活绑定、激活前待办、跨组织/机器身份拒绝、审计回滚、重试权限、SQL 约束、独立 Workflow 取消及普通源站取消联动。8 项新测试与其余 42 项分开运行，没有重复累加。数据库已停止并清理。测试 Adapter 不当作真实链证据，模拟 runner 的取消调用也不当作进程退出。
+
+新增 KQ_FEDERATION_LAB_SCENARIO=stop 复用真实链、双 Server/独立数据库、两个 Agent 与轻量 Kubernetes sleep 任务。首轮在提交作业前遇到测试脚本未处理 Agent 初始 CPU 采样 null，异常退出并清理；修正为等待有效采样，没有改变 80% 就绪阈值或生产调度保护。此失败不计为业务验收通过。
+
+最终主动停止复验退出 0，私有证据 temp/federation-execution-stop-igwwckad，网络材料 temp/fabric-network-5VNoiS。实际读取到 sleep 600 进程后停自建 Orderer；提供方 HTTP 在 2026-11-07 16:02:17.097 UTC 保存停止，两次调用返回同一 ID，Kubernetes Job 删除时间为同一秒。Pod 原终止宽限 30 秒；16:03:18 UTC 观测时 Job/Pod 均消失，平台 Job 和 Workflow 均 cancelled，无下游与产物，此时原 VALID 仍要到 16:06:43.834 UTC 才到期。事务内 authorize 明确返回 CANCELLATION_REQUESTED，期间私有 gate 与 ACTIVE 均不变，双方没有本地预算。恢复 Orderer 后同一停止 ID 的唯一交易取得 VALID（区块 20），需求变为 STOPPING，私有 gate 未改变；再观察 15 秒旧作业未重启。所有自建进程、数据库、namespace/RBAC 与临时凭据清理成功，保留的诊断与测试链材料仅在忽略目录。
+
+全仓 lint 无错误（原有 47 warning / 1 info）；全仓 typecheck 首次仅发现两处新测试的可空数组断言，修正后 Server 定向类型检查及 Fabric 脚本检查通过，其余包与 protobuf 已通过。最终 Python 格式、语法、文档链接/workflow 引用与差异格式检查通过。本轮只重跑失败的主动停止场景，没有重复此前成功的文件回传与自然到期场景；不覆盖 Slurm/PBS、Spack、真实科研计算或独立机构。终态停止/完成证明、结算释放与重开、自动商务握手、物理介质、容量归档、完整 Web/CLI 与 PR 预览仍待完成；未合并或部署 main。

@@ -10,7 +10,7 @@ import {
   federationWorkflowBindings,
   jobs,
 } from "@kuintessence/db";
-import { FederationDelegationSchema } from "@kuintessence/shared/federation";
+import { FederationDelegationSchema, FederationError } from "@kuintessence/shared/federation";
 import { z } from "zod";
 import { UnixCommercialClient } from "../../packages/server/src/federation/commercial-client";
 import { FederationExecutionConfirmationService } from "../../packages/server/src/federation/execution-confirmation";
@@ -89,7 +89,11 @@ try {
     operation: "get-demand",
     demandId: proof.demandId,
   });
-  assert(demand.operation === "get-demand" && demand.demand?.status === "ACTIVE");
+  assert(demand.operation === "get-demand" && demand.demand);
+  assert(
+    demand.demand.status === "ACTIVE" ||
+      (process.env.LAB_SCENARIO === "stop" && demand.demand.status === "STOPPING"),
+  );
   assert.equal(demand.demand.activation?.activationId, proof.activationId);
   const gate = await new UnixCommercialClient(
     z.string().min(1).parse(process.env.FEDERATION_COMMERCIAL_SOCKET_PATH),
@@ -99,7 +103,7 @@ try {
     reservationId: proof.reservationId,
   });
   assert(gate.hash, "Reservation remains locked");
-  if (process.argv.includes("--expired")) {
+  if (process.argv.includes("--expired") || process.argv.includes("--stopped")) {
     const actor = await Bun.file(`${root}/registration.json`).json();
     const service = new FederationExecutionConfirmationService(
       db,
@@ -114,7 +118,10 @@ try {
           "execution",
         ),
       ),
-      (error: unknown) => error instanceof FabricClientFailure && error.code === "LEDGER_PENDING",
+      (error: unknown) =>
+        process.argv.includes("--stopped")
+          ? error instanceof FederationError && error.code === "CANCELLATION_REQUESTED"
+          : error instanceof FabricClientFailure && error.code === "LEDGER_PENDING",
     );
   }
   await Bun.write(

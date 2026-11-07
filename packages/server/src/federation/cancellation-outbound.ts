@@ -13,6 +13,7 @@ import {
   federationCanonicalJson,
 } from "@kuintessence/shared/federation";
 import { and, asc, eq, inArray, lte, or } from "drizzle-orm";
+import { stopCancelledExecution } from "./execution-stop";
 import { FederationDeliveryError, type FederationSend } from "./outbound-client";
 import { type FederationActor, requireFederationCapability } from "./permissions";
 import {
@@ -178,6 +179,7 @@ export class FederationCancellationSender {
         .where(this.key(operationId))
         .returning();
       if (!updated) throw new Error("Cancellation intent was not saved");
+      await stopCancelledExecution(tx, this.signingKey.siteId, actor, current.request);
       await tx.insert(auditLog).values({
         actor: actor.userId,
         orgId: actor.orgId,

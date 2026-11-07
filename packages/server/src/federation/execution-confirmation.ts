@@ -207,6 +207,7 @@ export class FederationExecutionConfirmationService {
     const record = records[0];
     if (!record?.counterpartyJws || records.length !== 1)
       throw new FederationError("OPERATION_CONFLICT");
+    if (record.stopId) throw new FederationError("CANCELLATION_REQUESTED");
     const reserve = CommercialReservationSchema.parse(record.payload);
     if (
       federationCanonicalJson(reserve.request) !== federationCanonicalJson(request) ||
