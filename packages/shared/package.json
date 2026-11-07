@@ -35,6 +35,11 @@
       "bun": "./src/federation/ledger.ts",
       "types": "./src/federation/ledger.ts",
       "default": "./src/federation/ledger.ts"
+    },
+    "./federation/commercial": {
+      "bun": "./src/federation/commercial.ts",
+      "types": "./src/federation/commercial.ts",
+      "default": "./src/federation/commercial.ts"
     }
   },
   "scripts": {

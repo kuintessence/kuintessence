@@ -49,6 +49,8 @@ export interface FederationVerificationKey {
     | "delegation"
     | "acceptance"
     | "evidence-batch"
+    | "commercial-agreement"
+    | "commercial-usage"
     | "status-query"
     | "status-report"
     | "cancellation"

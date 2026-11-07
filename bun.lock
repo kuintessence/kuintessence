@@ -10,6 +10,18 @@
         "typescript": "^6.0.3",
       },
     },
+    "contracts/fabric/commercial": {
+      "name": "@kuintessence/fabric-commercial",
+      "version": "0.1.0-rc.1",
+      "dependencies": {
+        "@kuintessence/shared": "workspace:*",
+        "fabric-shim": "2.5.8",
+        "zod": "^4.3.6",
+      },
+      "devDependencies": {
+        "jose": "^6.2.2",
+      },
+    },
     "contracts/fabric/evidence": {
       "name": "@kuintessence/fabric-evidence",
       "version": "0.1.0-rc.1",
@@ -469,6 +481,8 @@
     "@kuintessence/docs-site": ["@kuintessence/docs-site@workspace:packages/docs-site"],
 
     "@kuintessence/fabric-adapter": ["@kuintessence/fabric-adapter@workspace:packages/fabric-adapter"],
+
+    "@kuintessence/fabric-commercial": ["@kuintessence/fabric-commercial@workspace:contracts/fabric/commercial"],
 
     "@kuintessence/fabric-evidence": ["@kuintessence/fabric-evidence@workspace:contracts/fabric/evidence"],
 

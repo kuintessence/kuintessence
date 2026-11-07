@@ -1,4 +1,4 @@
-name: Fabric evidence network
+name: Fabric private data and evidence
 
 on:
   workflow_dispatch:
@@ -12,6 +12,7 @@ on:
       - packages/db/src/pg/schema-federation.ts
       - packages/db/migrations/**
       - scripts/fabric-evidence-*.ts
+      - scripts/fabric-commercial-*.ts
       - scripts/test-unit.ts
       - scripts/tsconfig.fabric.json
       - package.json
@@ -74,6 +75,18 @@ jobs:
           KQ_FABRIC_DATABASE_URL: postgres://kq:kq@localhost:5432/postgres
           KQ_FABRIC_REPORT: ${{ runner.temp }}/fabric-evidence-result.json
         run: bun run test:fabric:integration
+      - name: Verify private commercial agreements and usage
+        env:
+          KQ_FABRIC_TOOLS: ${{ runner.temp }}/kq-fabric-3.1.5
+          KQ_FABRIC_REPORT: ${{ runner.temp }}/fabric-commercial-result.json
+        run: bun run test:fabric:commercial
+      - name: Preserve commercial assertion summary
+        uses: actions/upload-artifact@v4
+        with:
+          name: fabric-commercial-result
+          path: ${{ runner.temp }}/fabric-commercial-result.json
+          if-no-files-found: error
+          retention-days: 14
       - name: Preserve assertion summary
         uses: actions/upload-artifact@v4
         with:

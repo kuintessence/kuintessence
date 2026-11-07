@@ -4,12 +4,17 @@ import { chmod, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs
 import { createConnection, createServer } from "node:net";
 import { dirname, join, resolve } from "node:path";
 import {
+  FabricCommercialTrustSchema,
+  fabricCommercialCollections,
+} from "@kuintessence/shared/federation/commercial";
+import {
   type FabricEvidenceTrust,
   fabricEvidenceCollections,
 } from "@kuintessence/shared/federation/ledger";
 import { exportPKCS8, exportSPKI, generateKeyPair } from "jose";
 import { parse, stringify } from "yaml";
 import { z } from "zod";
+import { verifyCommercialNetwork } from "./fabric-commercial-assertions";
 import { verifyEvidenceNetwork } from "./fabric-evidence-assertions";
 
 const repo = resolve(import.meta.dir, "..");
@@ -32,7 +37,10 @@ const environment = {
   GOMAXPROCS: "2",
 };
 const channel = "kq-evidence-test";
-const chaincode = "kq-evidence";
+const commercial = process.argv.includes("--commercial");
+if (commercial && process.argv.includes("--database"))
+  throw new Error("Commercial Server integration is not implemented");
+const chaincode = commercial ? "kq-commercial" : "kq-evidence";
 const record = z.record(z.string(), z.unknown());
 const section = (parent: Record<string, unknown>, key: string) => {
   const value = record.parse(parent[key] ?? {});
@@ -214,7 +222,7 @@ async function setup() {
     if (!caKeyName || !caCertName) throw new Error("Missing test institution CA");
     for (const [identity, role, ou] of [
       ["Admin", "trust-admin", "admin"],
-      ["User1", "attestor", "client"],
+      ["User1", commercial ? "commercial" : "attestor", "client"],
     ] as const) {
       const msp = join(directory, "users", `${identity}@${domain}`, "msp");
       const key = await onlyKey(join(msp, "keystore"));
@@ -291,16 +299,37 @@ async function setup() {
   const a = sites[0];
   const b = sites[1];
   if (!a || !b) throw new Error("Missing institutions");
-  const trust: FabricEvidenceTrust = {
+  const evidenceTrust: FabricEvidenceTrust = {
     version: 1,
     generationId: randomUUID(),
     organizations,
     domains: [
-      { domainId: randomUUID(), collection: "evidence_AB_v1", siteIds: [a.siteId, b.siteId] },
+      {
+        domainId: randomUUID(),
+        collection: commercial ? "commercial_AB_v1" : "evidence_AB_v1",
+        siteIds: [a.siteId, b.siteId],
+      },
     ],
   };
+  const trust = commercial
+    ? FabricCommercialTrustSchema.parse({
+        ...evidenceTrust,
+        keyPurposes: organizations.flatMap((org) =>
+          org.keys.map((key) => ({
+            siteId: org.siteId,
+            keyId: key.keyId,
+            kinds: ["commercial-agreement", "commercial-usage"],
+          })),
+        ),
+      })
+    : evidenceTrust;
   await json(join(root, "trust.json"), trust);
-  await json(join(root, "collections.json"), fabricEvidenceCollections(trust));
+  await json(
+    join(root, "collections.json"),
+    commercial
+      ? fabricCommercialCollections(FabricCommercialTrustSchema.parse(trust))
+      : fabricEvidenceCollections(trust),
+  );
   const ordererDir = join(
     root,
     "crypto/ordererOrganizations/orderer.kq.test/orderers/orderer0.orderer.kq.test",
@@ -481,7 +510,9 @@ async function setup() {
     .update(await readFile(archive))
     .digest("hex")}`;
   const build = await Bun.build({
-    entrypoints: [join(repo, "contracts/fabric/evidence/src/main.ts")],
+    entrypoints: [
+      join(repo, `contracts/fabric/${commercial ? "commercial" : "evidence"}/src/main.ts`),
+    ],
     outdir: join(root, "chaincode"),
     target: "node",
     format: "esm",
@@ -540,7 +571,10 @@ async function setup() {
       `chaincode-${site.name}`,
       ["node", "--max-old-space-size=192", join(root, "chaincode/main.js")],
       {
-        KQ_EVIDENCE_TRUST_FILE: join(root, "trust.json"),
+        [commercial ? "KQ_COMMERCIAL_TRUST_FILE" : "KQ_EVIDENCE_TRUST_FILE"]: join(
+          root,
+          "trust.json",
+        ),
         CHAINCODE_ID: packageId,
         CHAINCODE_ADDRESS: `127.0.0.1:${site.chaincodePort}`,
         CHAINCODE_TLS_KEY_FILE: join(site.tls, "server.key"),
@@ -700,7 +734,8 @@ try {
     });
     process.stdin.pause();
   } else {
-    await verifyEvidenceNetwork(root, controls);
+    if (commercial) await verifyCommercialNetwork(root);
+    else await verifyEvidenceNetwork(root, controls);
   }
   succeeded = true;
 } catch (error) {

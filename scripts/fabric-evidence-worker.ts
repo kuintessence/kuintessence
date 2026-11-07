@@ -62,7 +62,7 @@ async function main() {
       keyId: configured.keyId,
       privateKey: await importPKCS8(await readFile(site.businessKeyFile, "utf8"), "RS256"),
     };
-    const verification: FederationVerificationKey = {
+    const verification = {
       siteId: site.siteId,
       keyId: configured.keyId,
       publicKey: await importSPKI(configured.publicKeyPem, "RS256"),
@@ -70,7 +70,7 @@ async function main() {
       validUntil: new Date(configured.validUntil),
       revoked: false,
       allowedKinds: ["agreement", "delegation", "acceptance", "evidence-batch"],
-    };
+    } satisfies FederationVerificationKey;
     return { signing, verification, configured };
   }
   const source = await key("A");
