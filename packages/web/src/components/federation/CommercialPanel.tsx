@@ -25,6 +25,7 @@ import {
   DialogTitle,
 } from "../ui/dialog";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../ui/tabs";
+import { CommercialBillingPanel } from "./CommercialBillingPanel";
 import { CommercialDetail } from "./CommercialDetail";
 import { CommercialEditor } from "./CommercialEditor";
 import { CommercialTerms } from "./CommercialTerms";
@@ -47,6 +48,8 @@ export function CommercialPanel({
   const client = useQueryClient();
   const key = ["federation", "commercial", scope.organizationId, scope.authRevision];
   const readOnly = useMobileMutationBlocked(path);
+  const [section, setSection] = useState("terms");
+  const [billingReport, setBillingReport] = useState<string | undefined>();
   const [page, setPage] = useState(0);
   const [selected, setSelected] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
@@ -64,6 +67,7 @@ export function CommercialPanel({
       : [];
   const canRead = grants.includes("agreement.read");
   const canApprove = grants.includes("agreement.approve") && !readOnly;
+  const canBill = grants.includes("billing.approve") && !readOnly;
   const context = useQuery({
     queryKey: ["federation", "agreements", scope.organizationId, scope.authRevision, "context"],
     enabled: canRead,
@@ -136,7 +140,11 @@ export function CommercialPanel({
     onSuccess: async (_, action) => {
       setConfirmation(null);
       setCreating(false);
-      if (action.kind === "sign") setSelected(action.terms.agreement.agreementRevisionId);
+      if (action.kind === "sign") {
+        setSelected(action.terms.agreement.agreementRevisionId);
+        setSection("terms");
+        setBillingReport(undefined);
+      }
       await client.invalidateQueries({ queryKey: key });
     },
   });
@@ -226,10 +234,18 @@ export function CommercialPanel({
           ) : detail.isPending ? (
             <p role="status">{t("federation.loading")}</p>
           ) : (
-            <Tabs key={detail.data.revisionId} defaultValue="terms">
+            <Tabs
+              key={detail.data.revisionId}
+              value={section}
+              onValueChange={(value) => {
+                setSection(value);
+                setBillingReport(undefined);
+              }}
+            >
               <TabsList aria-label={t("federation.usage.contractSections")}>
                 <TabsTrigger value="terms">{t("federation.commercial.terms")}</TabsTrigger>
                 <TabsTrigger value="usage">{t("federation.usage.title")}</TabsTrigger>
+                <TabsTrigger value="bills">{t("federation.billing.title")}</TabsTrigger>
               </TabsList>
               <TabsContent value="terms">
                 <CommercialDetail
@@ -250,10 +266,27 @@ export function CommercialPanel({
               <TabsContent value="usage">
                 <CommercialUsagePanel
                   key={`${scope.organizationId}:${scope.authRevision}:${detail.data.revisionId}`}
+                  onDraftBill={
+                    canBill
+                      ? (reportId) => {
+                          setBillingReport(reportId);
+                          setSection("bills");
+                        }
+                      : undefined
+                  }
                   approval={detail.data}
                   scope={scope}
                   writable={canApprove}
                   busy={busy || detail.isFetching}
+                />
+              </TabsContent>
+              <TabsContent value="bills">
+                <CommercialBillingPanel
+                  approval={detail.data}
+                  scope={scope}
+                  writable={canBill}
+                  busy={busy || detail.isFetching}
+                  reportId={billingReport}
                 />
               </TabsContent>
             </Tabs>
@@ -272,7 +305,11 @@ export function CommercialPanel({
                   <button
                     type="button"
                     className="flex w-full flex-col gap-3 p-4 text-left hover:bg-muted/50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring sm:flex-row sm:justify-between"
-                    onClick={() => setSelected(row.revisionId)}
+                    onClick={() => {
+                      setSelected(row.revisionId);
+                      setSection("terms");
+                      setBillingReport(undefined);
+                    }}
                   >
                     <span className="min-w-0 space-y-1">
                       <span className="block break-words font-medium">

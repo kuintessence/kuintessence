@@ -180,7 +180,9 @@
       "desktopOnly": "Read-only on mobile. Change federation permissions on desktop.",
       "pagination": "Grant list pagination",
       "capabilities": {
-        "billing": { "approve": "Approve bills and discounts" },
+        "billing": {
+          "approve": "Approve bills and discounts"
+        },
         "agreement": {
           "read": "View agreements",
           "approve": "Approve agreements"
@@ -480,6 +482,56 @@
       "actionFailed": "The action is unconfirmed. Retry the same request; if someone else corrected the report, refresh and review the latest record.",
       "ledgerPending": "Awaiting ledger submission",
       "exportFailed": "Could not export the report. Try again."
+    },
+    "billing": {
+      "title": "Bills",
+      "billId": "Bill ID",
+      "reportId": "Usage report ID",
+      "taskId": "Task ID",
+      "issuedAt": "Issued",
+      "rounding": "Amounts in {{unit}}, rounded up per line",
+      "rate": "Rate / quantity",
+      "amount": "Amount",
+      "grossAmount": "Gross",
+      "capReduction": "Cap reduction",
+      "discountAmount": "Discount",
+      "dueAmount": "Amount due",
+      "references": "Linked records",
+      "reportDigest": "Usage report digest",
+      "discountId": "Discount ID",
+      "reservationId": "Reservation ID",
+      "back": "Back to bills",
+      "newBill": "Create bill",
+      "importBill": "Import bill",
+      "exportBill": "Export bill",
+      "review": "Review and approve",
+      "generate": "Calculate draft",
+      "draftFailed": "Draft unavailable. Check the report ID, terminal task and latest usage report.",
+      "importJson": "Bill JSON",
+      "readBill": "Read and review",
+      "invalidBill": "Invalid bill or contract mismatch. Import the complete bill for this contract.",
+      "confirmation": "Bill confirmation",
+      "bothSigned": "Confirmed by both institutions",
+      "localSigned": "Approved locally, awaiting counterparty",
+      "signatures": "Signatures and manual import",
+      "copyCounterparty": "Copy counterparty signature",
+      "empty": "No approved bills",
+      "approvalBoundary": "Confirmation records the amount due. It does not pay or release a reservation.",
+      "actionFailed": "Action not confirmed. Check permissions, original usage and signing trust, then retry the same request.",
+      "confirm": "Confirm",
+      "actions": {
+        "approve": "Approve bill",
+        "attach": "Verify and import counterparty signature",
+        "retry": "Retry bill evidence"
+      },
+      "states": {
+        "direct": "Evidence not required",
+        "pending": "Evidence pending",
+        "committed": "Evidence committed",
+        "needs_review": "Evidence needs review",
+        "awaitingSignatures": "Awaiting both signatures",
+        "remoteLedger": "Provider submits evidence; status not synchronized"
+      }
     }
   }
 }

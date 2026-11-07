@@ -180,7 +180,9 @@
       "desktopOnly": "手机端仅供查看，请在桌面端修改联邦权限。",
       "pagination": "授权列表分页",
       "capabilities": {
-        "billing": { "approve": "确认账单与商务减免" },
+        "billing": {
+          "approve": "确认账单与商务减免"
+        },
         "agreement": {
           "read": "查看合作协议",
           "approve": "批准合作协议"
@@ -480,6 +482,56 @@
       "actionFailed": "操作未确认。可重试同一请求；如报告已被其他人更正，请刷新后核对最新记录。",
       "ledgerPending": "等待存证",
       "exportFailed": "报告导出失败，请重试。"
+    },
+    "billing": {
+      "title": "账单",
+      "billId": "账单编号",
+      "reportId": "用量报告编号",
+      "taskId": "任务编号",
+      "issuedAt": "出具时间",
+      "rounding": "金额单位：{{unit}}，每项向上取整",
+      "rate": "费率 / 计量数量",
+      "amount": "金额",
+      "grossAmount": "原价",
+      "capReduction": "封顶扣减",
+      "discountAmount": "商务减免",
+      "dueAmount": "应付",
+      "references": "关联记录",
+      "reportDigest": "用量报告摘要",
+      "discountId": "减免编号",
+      "reservationId": "预留编号",
+      "back": "返回账单",
+      "newBill": "生成账单",
+      "importBill": "导入账单",
+      "exportBill": "导出账单",
+      "review": "核对并批准",
+      "generate": "计算草稿",
+      "draftFailed": "无法生成草稿。请检查报告编号、任务终态及最新用量是否已就绪。",
+      "importJson": "账单 JSON",
+      "readBill": "读取并核对",
+      "invalidBill": "账单格式或所属合同不符，请导入当前合同的完整账单。",
+      "confirmation": "账单确认",
+      "bothSigned": "双方已确认",
+      "localSigned": "本方已批准，等待对方",
+      "signatures": "签名与手动导入",
+      "copyCounterparty": "复制对方签名",
+      "empty": "暂无已批准账单",
+      "approvalBoundary": "确认账单记录应付金额，不执行付款或释放预留。",
+      "actionFailed": "操作未确认。请检查权限、原报告及签名信任，核对后重试同一请求。",
+      "confirm": "确认",
+      "actions": {
+        "approve": "批准账单",
+        "attach": "验证并导入对方签名",
+        "retry": "重试账单存证"
+      },
+      "states": {
+        "direct": "不要求存证",
+        "pending": "待存证",
+        "committed": "已存证",
+        "needs_review": "存证需复核",
+        "awaitingSignatures": "等待双方签名",
+        "remoteLedger": "由提供方存证，状态尚未同步"
+      }
     }
   }
 }

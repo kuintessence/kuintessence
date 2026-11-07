@@ -240,6 +240,34 @@ export const CommercialBillSchema = z
   );
 export type CommercialBill = z.infer<typeof CommercialBillSchema>;
 
+export const CommercialBillApprovalSchema = z.object({
+  localSiteId: Id,
+  localOrgId: Id,
+  agreementRevisionId: Id,
+  billId: Id,
+  payload: CommercialBillSchema,
+  digest: FederationDigestSchema,
+  approvalJws: z.string().min(1).max(524288),
+  counterpartyJws: z.string().min(1).max(524288).nullable(),
+  approvedBy: Id,
+  createdAt: z.iso.datetime(),
+});
+export const CommercialBillListSchema = z.object({
+  data: z.array(
+    z.object({
+      bill: CommercialBillApprovalSchema,
+      ledger: z
+        .object({
+          id: Id,
+          state: z.enum(["pending", "committed", "needs_review"]),
+          lastError: z.string().nullable(),
+        })
+        .nullable(),
+    }),
+  ),
+  hasMore: z.boolean(),
+});
+
 export const CommercialUsageEnvelopeSchema = z.strictObject({
   providerJws: z.string().min(1).max(524288),
 });

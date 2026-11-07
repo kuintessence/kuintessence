@@ -37,11 +37,13 @@ export function CommercialUsagePanel({
   scope,
   writable,
   busy,
+  onDraftBill,
 }: {
   approval: CommercialAgreementApproval;
   scope: ApiOrganizationScope;
   writable: boolean;
   busy: boolean;
+  onDraftBill?: (reportId: string) => void;
 }) {
   const { t, i18n } = useTranslation();
   const client = useQueryClient();
@@ -524,6 +526,17 @@ export function CommercialUsagePanel({
                               : t("federation.usage.receivedStatus")}
                           </span>
                           <div className="flex flex-wrap gap-2">
+                            {provider &&
+                            latest?.report.reportId === record.report.reportId &&
+                            onDraftBill ? (
+                              <Button
+                                variant="outline"
+                                disabled={blocked}
+                                onClick={() => onDraftBill(record.report.reportId)}
+                              >
+                                {t("federation.billing.newBill")}
+                              </Button>
+                            ) : null}
                             <Button variant="outline" onClick={() => exportRecord(record)}>
                               {t("federation.usage.export")}
                             </Button>

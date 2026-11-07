@@ -131,6 +131,7 @@ beforeEach(async () => {
         data: { localSiteId: source, supportedModes: ["bilateral_direct", "bilateral_attested"] },
       };
     if (path.startsWith("/federation/agreements?")) return { data: [base] };
+    if (path.includes("/bills?")) return { data: { data: [], hasMore: false } };
     if (path.includes("/submissions?")) return { data: status };
     if (path.includes("?limit="))
       return {
@@ -423,9 +424,15 @@ function usageSetup(provider = true, state: "reported" | "missing_data" = "repor
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false, gcTime: 0 }, mutations: { retry: false } },
   });
-  const renderPanel = (writable = true, busy = false) => (
+  const renderPanel = (writable = true, busy = false, onDraftBill?: (id: string) => void) => (
     <QueryClientProvider client={client}>
-      <CommercialUsagePanel approval={approval} scope={scope} writable={writable} busy={busy} />
+      <CommercialUsagePanel
+        approval={approval}
+        scope={scope}
+        writable={writable}
+        busy={busy}
+        onDraftBill={onDraftBill}
+      />
     </QueryClientProvider>
   );
   return { approval, record, task, sync, detail, path, client, renderPanel };
@@ -630,5 +637,37 @@ test("usage received history stays readable with transport disabled and no misle
   ).toBeTruthy();
   expect(screen.getByText("Received and signature verified")).toBeTruthy();
   expect(screen.queryByRole("button", { name: "Sync provider reports" })).toBeNull();
+  expect(api.post).not.toHaveBeenCalled();
+});
+
+test.each([
+  { capabilities: ["agreement.read", "agreement.approve"], mobile: false, canBill: false },
+  { capabilities: ["agreement.read", "billing.approve"], mobile: false, canBill: true },
+  { capabilities: ["agreement.read", "billing.approve"], mobile: true, canBill: false },
+])("billing tab respects its independent permission and device policy: %j", async ({
+  capabilities,
+  mobile,
+  canBill,
+}) => {
+  listed = true;
+  row.counterpartyJws = "peer.signature";
+  grants = capabilities;
+  device.readOnly = mobile;
+  mount();
+  await openDetail();
+  fireEvent.mouseDown(screen.getByRole("tab", { name: "Bills" }), { button: 0, ctrlKey: false });
+  await screen.findByText("No approved bills");
+  expect(!!screen.queryByRole("button", { name: "Import bill" })).toBe(canBill);
+  expect(api.post).not.toHaveBeenCalled();
+});
+
+test("latest provider report opens a bill draft without granting correction permission", async () => {
+  const fixture = usageSetup();
+  const draft = vi.fn();
+  render(fixture.renderPanel(false, false, draft));
+  await openUsage();
+  fireEvent.click(await screen.findByRole("button", { name: "Create bill" }));
+  expect(draft).toHaveBeenCalledWith(fixture.record.report.reportId);
+  expect(screen.queryByRole("button", { name: "Add technical correction" })).toBeNull();
   expect(api.post).not.toHaveBeenCalled();
 });
