@@ -446,7 +446,7 @@ raw transaction args、chaincode response、events、trace 均不能携带私有
 
 公共交易 MAJORITY、合作域 AND、关键治理 ALL 及指定仲裁模板由部署/lifecycle 策略表达。ALL 导致成员离线时升级受阻，这属于明确选择的治理边界，不由平台管理员绕过。
 
-公共市场链码已增加 OPEN → CLAIMED 或 CANCELLED；按同一需求键的版本读取和写入，由 Fabric 提交时 MVCC 保证单一认领。原请求重试不覆盖，不因截止时间过去自动重新开放；CLAIMED 当前不能激活或释放。真实三机构验证多数背书和竞争认领，见[部署与验证说明](../../../deploy/federation/fabric-market.md)。市场 Adapter/本机客户端和 Server 持久操作 API 已连接，公共目录查询已接通，Web 与私有锁额/gate 仍待连接，保留 ledger_coordinated 拒绝门槛。
+公共市场链码已增加 OPEN → CLAIMED 或 CANCELLED；按同一需求键的版本读取和写入，由 Fabric 提交时 MVCC 保证单一认领。原请求重试不覆盖，不因截止时间过去自动重新开放；CLAIMED 已增加私有双签预留/gate 约束的链码激活和激活前释放；应用入口仍未放开。真实三机构验证多数背书和竞争认领，见[部署与验证说明](../../../deploy/federation/fabric-market.md)。市场 Adapter/本机客户端和 Server 持久操作 API 已连接，公共目录查询已接通，私有锁额/gate 已有链码实现，Web 与应用执行接入仍待连接，保留 ledger_coordinated 拒绝门槛。
 
 ## 10. UI 与配置
 
@@ -628,7 +628,7 @@ inputSlots:
 
 RegisterAgreement 验证双方对同一条款的签名后只写对应 PDC；RecordUsage 绑定已登记合同摘要、提供方、任务/attempt、原执行期间及指标单位。初始报告唯一，更正必须接续当前私有头记录，读集由 MVCC 防并发；旧报告重放保留原字节且不回退头。审批历史已提交后不因旧签名公钥自然到期而消失；新报告的业务签名继续检查当前用途/撤销与有效期。所有普通返回仅随机记录 ID/带盐摘要，禁止用 Get 方法返回原文后误 submit 到公共区块。PDC hash 与字节不符继续等待，不当成空状态。
 
-新增真实 A/B/C Fabric 3.1.5 商业检查，复用隔离网络构建器，通过私有区块投递验证越权不可见、缺机构背书提交无效、并发重复原始用量冲突；CI 已接入。详见[运行配置](../../../deploy/federation/fabric-commercial.md)。Server 商业审批、Adapter 检查点、公共市场 gate、额度锁定与结算尚未接通；登记商业合同不放开 ledger_coordinated 执行门槛，不将提供方用量当成已确认账单。
+新增真实 A/B/C Fabric 3.1.5 商业检查，复用隔离网络构建器，通过私有区块投递验证越权不可见、缺机构背书提交无效、并发重复原始用量冲突；CI 已接入。详见[运行配置](../../../deploy/federation/fabric-commercial.md)。Server 商业审批与 Adapter 检查点已接通；公共市场 gate/额度锁定已有链码，相关应用执行与结算尚未接通；登记商业合同不放开 ledger_coordinated 执行门槛，不将提供方用量当成已确认账单。
 
 
 ### 自动签名用量报告
@@ -713,3 +713,10 @@ Node 私有 runtime 已支持 KQ_FABRIC_ADAPTER_KIND=market，套接字 market.s
 ### 公共需求目录读取
 
 kq-market ListDemands 使用 Fabric 原生分页，GetDemand 保留原单条语义。Adapter 的固定 query 接口仅允许上述两种 evaluate，校验公开 schema、ID/摘要及页长，Server 提供 /api/federation/market/demands 与 /:id，复用 market.read；网络前后重新检查组织权限。结果 observedAt 为读取时间，明确不同于区块时间；跨页不是一致快照，Peer 落后不授予任何执行权限。未配置/断线明确 503，单条不存在 404，不把基础设施故障当作空目录。不新增持久镜像表、迁移或另一轮询 worker。
+
+
+### 私有预算与同通道执行 gate
+
+商业预留按双方签署的 CommercialReservation 固定完整委派；复用条款校验并明确限定 ledger_coordinated。原 assertDelegationPolicy 仍先拒绝链上协调模式，新增 assertDelegationTerms 仅供链码核对条款，不授予运行权。预算按 domain/budgetDomain/epoch 唯一，修订不能重置额度；私有预算/预留/任务与操作映射/gate 同事务写入。ReleaseExecution 仅处理未激活需求，保持原证据并升版 REVOKED，不把自然到期视为停止。
+
+为避免公开 gate 初次创建需要更宽背书而暴露 transient，gate 存于双方 PDC；Market ActivateDemand 读取 Commercial GetExecutionGateHash 并比较批准公开的原文哈希。真实 Fabric 的同通道 hashed read 与反向公共状态 read 用于激活/释放互斥，不依赖应用先查后写。许可原文只含路由、版本、期限与带盐私有预留摘要，不能带金额、条款或完整委派。部署/边界见[执行许可](../../../deploy/federation/fabric-execution-gate.md)。

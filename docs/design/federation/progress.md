@@ -1436,3 +1436,20 @@ kq-market 新增 ListDemands，使用 Fabric 原生书签按需求键分页（�
 本轮仍不是 Server 数据库到 Fabric 的完整联合验收，目录读取也不允许执行。市场 Web、私有锁额、跨链码 executionGate、结算、物理介质与归档恢复及 PR 预览继续待办。未合并、未部署 main。
 
 收尾：完整类型检查执行后仅 Adapter 的上述导入/测试类型错误未通过，其余包检查通过；修正后 Adapter、Server 及 Fabric 脚本定向类型检查均通过。全仓 lint 无错误，保留既有 47 warnings/1 info；最终 14 个修改源码文件 lint 无诊断，672 个文档目标、workflow 引用及 diff 检查通过。随机测试数据库已删除，所属数据库转发已关闭。没有重复运行未改动的商业/证据网络验收。
+
+
+## 私有预算预留与同通道执行许可
+
+新增 CommercialReservation/CommercialRelease 双签正文及专用签署用途；完整委派和预算只存双方 PDC。公开认领固定 commercialDomainId，预留 ID 等于 claimId；链码核对当前认领、双方、资源、合同摘要、材料/软件锁、期限和封顶额度。预算按 domain/budgetDomain/epoch 唯一，BigInt 计算，合同换 revision 不能增大上限或重置余额；同 task/attempt、operationId 及 releaseId 均防复用。不将提供方用量报告当成增发额度的依据。
+
+ReserveExecution 同事务写私有预算/预留/唯一映射/READY gate。gate 只包含可公开的路由、版本、激活期限与带盐私有预留摘要，仍保存在 PDC；GetExecutionGateHash 仅返回当前私有数据哈希。Market ActivateDemand 在同通道读取该 hash，验证批准公开的 gate 原文并写 ACTIVE；ReleaseExecution 反向读取公共 CLAIMED，减少锁额、追加回执并将 gate 升版 REVOKED。旧许可不能激活，已激活或仅自然到期不允许释放。未新增私有载荷接收机构，没有改变原生 PDC AND/市场 MAJORITY/治理 ALL。
+
+真实 Fabric 暴露重复预留直接返回回执而没有私有写入时，交易会落到商业链码默认 ALL 背书，导致双方提交 INVALID。已改为写回原私有记录，保持集合双方 AND，不重置余额/gate；重复释放也采用同样约束。原生双向竞态和实际区块检查通过：释放先提交使旧激活因 hashed read 的 MVCC_READ_CONFLICT 失效，激活先提交使旧释放因公共状态 read 冲突失效；同时锁最后一份预算只有一笔有效，另一笔重试明确 BUDGET_EXHAUSTED。缺 B 背书 INVALID，释放 ID 跨预留重用拒绝。真实私有区块核对余额为 18014398509481986、锁定数量 2，未发生浮点舍入或重复释放。
+
+三机构真实网络共五组断言通过，覆盖角色独立证书、两份同通道链码、两类竞态、余额和隐私。A/B 获取私有写入，C/C、C 请求 A、A 请求不持私有副本的 C 均拿不到正文；公共区块和服务日志无合同/金额/签名探针。首次脚本错误使用被 Site schema 过滤的目录字段，改用已验证的证书路径；第二次启动就绪只查本地，改为核验实际跨机构查询路径；第三次发现并修复上述幂等背书问题。最终增加释放 ID 防复用后再定向联合验收通过，不能把重跑次数当成新增覆盖。证据 temp/fabric-network-HcX7hn，断言摘要 temp/federation-gate-network-report.json；所有所属网络进程已清理。
+
+37 个不同单元场景首次通过，后增一项预算修订不能重置检查，共 38 项；最新重复预留/释放和 ID 防复用场景已定向复查。预算修订测试首次夹具对 38 位全 9 金额加一超出协议上限，改成合法小于上限的固定预算后通过，没有放宽生产精度约束。共享条款校验拆出 assertDelegationTerms，但原 assertDelegationPolicy 对 ledger_coordinated 的拒绝仍保留并经既有测试覆盖。
+
+新增 test:fabric:gate 与 CI 入口，部署说明和验收覆盖映射已同步。完整类型检查通过（含所有包、protobuf 和 Fabric 脚本）；全仓 lint 无错误、保留既有 47 warnings/1 info。最终修改文件 lint、676 个文档目标、workflow 引用和 diff 检查通过。
+
+这仍只证明链码协调，不是 Server/Agent 真实执行。新用途的 Server 信任管理、双签审批、Adapter/数据库待办与执行验权、ACTIVE 终态/结算/重开、物理介质、容量/归档恢复、完整 Web 和 PR 预览均未完成。没有合并或部署 main，目标继续保持完整范围。

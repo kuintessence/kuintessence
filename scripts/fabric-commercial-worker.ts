@@ -103,7 +103,9 @@ async function main() {
             ...key,
             validFrom: new Date(key.validFrom),
             validUntil: new Date(key.validUntil),
-            allowedKinds: purposes.kinds,
+            allowedKinds: z
+              .array(z.enum(["commercial-agreement", "commercial-usage"]))
+              .parse(purposes.kinds),
           });
         }
       }

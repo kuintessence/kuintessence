@@ -1,0 +1,45 @@
+# 私有额度与公共执行许可
+
+本页说明同一 Fabric 通道中的 kq-commercial / kq-market 协议。当前交付的是链码与隔离真实网络验收；Server 的协调接单入口仍拒绝执行，Adapter、业务审批和执行方验权尚未接入，不能把链码 ACTIVE 当作平台已提交真实计算任务。
+
+## 私有边界与背书
+
+商业正文、完整委派（材料摘要、软件锁、预算封顶）、预算余额和双方签名均只存入双方 PDC。调用 ReserveExecution/ReleaseExecution 只传公开路由参数 domainId/recordId，正文使用 commercial transient；发送端必须明确限制背书节点为集合成员。集合仍要求对应机构 AND 背书，不向第三方发送完整委派或签名。治理初始化仍使用既有全机构策略。
+
+执行许可 gate 也写入 PDC；其中仅包含允许公开的域/认领标识、需求标识、版本、READY/REVOKED、激活截止时间与带随机盐的私有预留摘要。激活者提供这份可公开的 gate 原文，商业链码的 GetExecutionGateHash 只返回当前 getPrivateDataHash，不读取私有原文。因此第三机构可参与公开激活背书，却拿不到金额、合同及委派内容。
+
+公共 ActivateDemand 在同通道调用商业链码，比较 gate 原文的 SHA-256 与当前 hash，并校验当前认领、域、版本、READY 和期限。私有哈希读取进入 Fabric 的提交验证读集；退款改变 gate 的私有哈希，旧激活会因 MVCC 冲突失效。商业释放反向读取公共需求，激活先提交时旧释放也会因 MVCC 冲突失效。不能用应用先查后写替代这一链上读集。
+
+两个链码名称固定，调用显式使用 stub.getChannelID()。必须部署在同通道；不支持跨通道原子性。内部 GetDemand/GetExecutionGateHash 会收到外层调用的 transient，但仅读取允许的状态或哈希，既不解码也不返回该 transient。
+
+## 公开认领与私有预留
+
+新的可执行认领需包含 commercialDomainId，只公开商业域路由标识，不包含条款。旧的、不带此字段的认领仍可读取和重试，但不能锁额或激活；不能在已有认领上偷偷补字段。
+
+CommercialReservation 由双方对相同正文签名，签署用途必须显式包含 commercial-reservation；以前的合同或用量签署权不会自动扩大。预留 ID 固定等于公共 claimId，绑定域、需求、认领版本、已登记合同摘要和完整 FederationDelegation：
+
+- 当前需求必须是该执行机构的 CLAIMED，商业域一致，资源需求与委派一致。
+- 合同必须是 ledger_coordinated，当前有效，委派匹配双方、合同修订、预算域/epoch/单位、模板、资源与金额上限。
+- 材料及软件锁的摘要在双签正文中固定；实际解析、授权和目标环境适用性仍由后续平台准备流程验证。
+- 同一任务 attempt 和 operationId 只能占用一次预留；重复请求保留原记录，内容变化拒绝。
+- 慈善预留金额为零，但仍占用并发预留数量，不能绕过数量限制。
+
+预算键由商业域、budgetDomainId、epoch 组成，不使用合同修订 ID。首次预留按双方已确认的固定额度建立预算；后续修订必须匹配原双方、单位、总额度和预留数量上限，不能增大上限或重置余额。整数金额全程 BigInt，判定 locked + spent + 本次封顶不超过 limit，同时限制预留数量。不同合作域不共用一个隐含钱包；这不是可转让货币，也不是提供方报告用量后自动增发积分。
+
+预留、预算增加、唯一映射及 READY gate 在一笔私有交易中写入。仅 VALID 表示锁额成立。相同请求重放写回原私有预留字节，继续受集合 AND 策略约束；不重复扣款，也不重置 gate。
+
+## 激活、释放与当前边界
+
+公开 ActivateDemand 只能由需求机构调用，要求当前 CLAIMED/version、claimId、商业域与 gate 一致。成功写入 ACTIVE 与不可变 activation；重复原激活返回原回执，不能产生第二次授权。gate 的 expiresAt 是激活窗口，执行窗口仍在私有委派 executionExpiresAt 中，执行端须独立核验。
+
+ReleaseExecution 使用专用 commercial-release 双签正文，绑定原预留摘要及 gate 版本。只允许尚未激活的 CLAIMED 需求：同一交易减少 locked/预留计数，保留原始记录，追加释放回执，并将 gate 升版为 REVOKED。重复释放不重复退款；旧预留重放不会把 REVOKED 改回 READY。自然到期不等于已经停止执行，ACTIVE 不能沿此接口释放。
+
+当前没有 ACTIVE 的终态结算/停止证明、公共重新开放、预算扩额/跨域划拨或自动代际迁移。新签署用途已进入链信任 schema，但 Server 信任管理与审批流程尚未接入；既有链信任清单的治理升级/迁移工具也仍须补齐。未放开现有 Server 的 LEDGER_REQUIRED 门槛。
+
+## 复现真实网络验证
+
+    KQ_FABRIC_TOOLS=/path/to/verified-fabric-3.1.5 bun run test:fabric:gate
+
+复用隔离三机构网络，新增同通道第二份链码及分开的 market/commercial 证书，不使用同一证书冒充不同角色。保留商业全机构默认策略、私有集合双方 AND、市场 MAJORITY、lifecycle ALL。测试进程有现有限额，结束清理所属资源；KQ_FABRIC_KEEP_ARTIFACTS=1 仅保留本机含测试凭据的诊断目录，KQ_FABRIC_REPORT 仅输出无私有正文的断言摘要。
+
+检查提交验证码、原生 MVCC 读集竞态及真实区块中的 PDC 写入：缺 B 背书、释放先提交、激活先提交、并发超额、重复预留/释放及第三方不可见。A/B 应取得私有写入；C 本地查询、C 请求 A 的私有区块及 A 请求没有私有副本的 C 均不能取到正文；公共区块与服务日志也不得出现金额、合同探针或签名。该入口已接入现有 Fabric CI。

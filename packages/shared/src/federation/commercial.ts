@@ -1,5 +1,9 @@
 import { z } from "zod";
-import { FederationAgreementSchema, FederationAmountSchema } from "./index";
+import {
+  FederationAgreementSchema,
+  FederationAmountSchema,
+  FederationDelegationSchema,
+} from "./index";
 import {
   FabricEvidenceAdvanceResultSchema,
   FabricEvidenceTrustSchema,
@@ -18,7 +22,12 @@ export const commercialAutomaticMeters = [
   { metric: "cpu.allocated", quantityUnit: "core-millisecond" },
   { metric: "job.elapsed", quantityUnit: "job-millisecond" },
 ] as const;
-export const CommercialSigningKindSchema = z.enum(["commercial-agreement", "commercial-usage"]);
+export const CommercialSigningKindSchema = z.enum([
+  "commercial-agreement",
+  "commercial-usage",
+  "commercial-reservation",
+  "commercial-release",
+]);
 
 /** Private rates use integer amount per integer quantity; the execution agreement fixes the money unit. */
 export const CommercialAgreementSchema = z
@@ -57,6 +66,35 @@ export const CommercialAgreementEnvelopeSchema = z.strictObject({
   sourceJws: z.string().min(1).max(524288),
   targetJws: z.string().min(1).max(524288),
 });
+
+/** Both institutions approve the exact delegation, including its private cap and immutable material locks. */
+export const CommercialReservationSchema = z.strictObject({
+  protocolVersion: z.literal(1),
+  kind: z.literal("commercial-reservation"),
+  domainId: Id,
+  reservationId: Id,
+  demandId: Id,
+  claimVersion: z.number().int().min(1).max(2147483647),
+  agreementDigest: FederationDigestSchema,
+  salt: Salt,
+  request: FederationDelegationSchema,
+});
+export type CommercialReservation = z.infer<typeof CommercialReservationSchema>;
+export const CommercialReleaseSchema = z.strictObject({
+  protocolVersion: z.literal(1),
+  kind: z.literal("commercial-release"),
+  releaseId: Id,
+  domainId: Id,
+  reservationId: Id,
+  reservationDigest: FederationDigestSchema,
+  sourceSiteId: Id,
+  targetSiteId: Id,
+  expectedGateVersion: z.number().int().min(1).max(2147483647),
+  issuedAt: z.iso.datetime(),
+  salt: Salt,
+  reason: z.string().trim().min(1).max(4096),
+});
+export type CommercialRelease = z.infer<typeof CommercialReleaseSchema>;
 
 /** Provider assertions and technical corrections remain immutable; neither confirms a bill or payment. */
 export const CommercialUsageSchema = z
@@ -117,7 +155,7 @@ export const FabricCommercialTrustSchema = FabricEvidenceTrustSchema.safeExtend(
       z.strictObject({
         siteId: Id,
         keyId: z.string().regex(/^[a-zA-Z0-9_.:-]{1,128}$/),
-        kinds: z.array(CommercialSigningKindSchema).min(1).max(2),
+        kinds: z.array(CommercialSigningKindSchema).min(1).max(4),
       }),
     )
     .min(2)

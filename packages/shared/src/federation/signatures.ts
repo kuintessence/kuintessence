@@ -51,6 +51,8 @@ export interface FederationVerificationKey {
     | "evidence-batch"
     | "commercial-agreement"
     | "commercial-usage"
+    | "commercial-reservation"
+    | "commercial-release"
     | "commercial-usage-query"
     | "commercial-usage-page"
     | "status-query"

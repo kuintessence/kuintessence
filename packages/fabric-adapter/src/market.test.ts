@@ -221,6 +221,7 @@ test("market query only evaluates fixed public methods and rejects wrong or over
     status: "OPEN" as const,
     claim: null,
     cancellation: null,
+    activation: null,
   };
   let response: unknown = state;
   const calls: { name: string; options: unknown }[] = [];

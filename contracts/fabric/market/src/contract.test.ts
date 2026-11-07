@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { type FabricMarketTrust, MarketDemandSchema } from "@kuintessence/shared/federation/market";
 import { MarketLedger } from "./contract";
 
@@ -28,6 +28,16 @@ class State {
   fcn = "Init";
   transient = new Map<string, Uint8Array>();
   timestamp = now;
+  getChannelID = () => "cooperation";
+  onInvoke?: (
+    name: string,
+    args: string[],
+    channel: string,
+  ) => Promise<{ status: number; payload: Uint8Array }>;
+  invokeChaincode = async (name: string, args: string[], channel: string) => {
+    if (!this.onInvoke) throw new Error("Unexpected cross-chaincode call");
+    return this.onInvoke(name, args, channel);
+  };
   closed = 0;
   getStateByPartialCompositeKeyWithPagination = (
     _name: string,
@@ -243,4 +253,48 @@ test("market public directory paginates only demand keys and closes iterators wi
   f.stub.params = ["1", ""];
   f.stub.transient.set("private", Buffer.from("forbidden"));
   await expect(f.ledger.invoke(f.stub, identity())).rejects.toThrow("INVALID_MESSAGE");
+});
+
+test("market activation requires the current same-channel private gate hash and remains immutable", async () => {
+  const f = await fixture();
+  await f.invoke("PublishDemand", f.demand);
+  const claim = { ...f.claim(), commercialDomainId: randomUUID() };
+  await f.invoke("ClaimDemand", claim, 1);
+  const gate = {
+    domainId: claim.commercialDomainId,
+    reservationId: claim.claimId,
+    demandId: f.demand.demandId,
+    claimVersion: 2,
+    version: 1,
+    state: "READY",
+    reservationDigest: `sha256:${"a".repeat(64)}`,
+    expiresAt: claim.expiresAt,
+  };
+  let hash = "0".repeat(64);
+  f.stub.onInvoke = async (name, args, channel) => {
+    expect([name, ...args, channel]).toEqual([
+      "kq-commercial",
+      "GetExecutionGateHash",
+      gate.domainId,
+      gate.reservationId,
+      "cooperation",
+    ]);
+    return { status: 200, payload: Buffer.from(JSON.stringify({ hash })) };
+  };
+  const activation = {
+    demandId: f.demand.demandId,
+    activationId: randomUUID(),
+    expectedVersion: 2,
+    gate,
+  };
+  await expect(f.invoke("ActivateDemand", activation, 1)).rejects.toThrow("POLICY_DENIED");
+  await expect(f.invoke("ActivateDemand", activation)).rejects.toThrow("OPERATION_CONFLICT");
+  hash = createHash("sha256").update(JSON.stringify(gate)).digest("hex");
+  const receipt = await f.invoke("ActivateDemand", activation);
+  expect((await f.invoke("GetDemand", undefined)).status).toBe("ACTIVE");
+  hash = "0".repeat(64);
+  expect(await f.invoke("ActivateDemand", activation)).toEqual(receipt);
+  await expect(
+    f.invoke("ActivateDemand", { ...activation, activationId: randomUUID() }),
+  ).rejects.toThrow("OPERATION_CONFLICT");
 });

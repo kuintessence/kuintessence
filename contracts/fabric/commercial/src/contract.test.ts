@@ -4,6 +4,8 @@ import {
   type CommercialAgreement,
   CommercialAgreementSchema,
   CommercialReceiptSchema,
+  CommercialReleaseSchema,
+  CommercialReservationSchema,
   type CommercialUsage,
   CommercialUsageSchema,
   type FabricCommercialTrust,
@@ -15,6 +17,7 @@ import {
   signFederationMessage,
 } from "@kuintessence/shared/federation/signatures";
 import { exportSPKI, generateKeyPair } from "jose";
+import { z } from "zod";
 import { CommercialLedger } from "./contract";
 
 const sites = [randomUUID(), randomUUID(), randomUUID()] as const;
@@ -49,7 +52,12 @@ beforeAll(async () => {
     keyPurposes: keys.map((key) => ({
       siteId: key.siteId,
       keyId: key.keyId,
-      kinds: ["commercial-agreement", "commercial-usage"],
+      kinds: [
+        "commercial-agreement",
+        "commercial-usage",
+        "commercial-reservation",
+        "commercial-release",
+      ],
     })),
   });
 });
@@ -73,6 +81,14 @@ class MemoryLedger {
   fcn = "Init";
   params: string[] = [];
   timestamp = now;
+  market: unknown = null;
+  getChannelID = () => "cooperation";
+  invokeChaincode = async (name: string, args: string[], channel: string) => {
+    expect(name).toBe("kq-market");
+    expect(channel).toBe("cooperation");
+    expect(args[0]).toBe("GetDemand");
+    return { status: this.market ? 200 : 500, payload: Buffer.from(JSON.stringify(this.market)) };
+  };
   getFunctionAndParameters = () => ({ fcn: this.fcn, params: this.params });
   getDateTimestamp = () => this.timestamp;
   getTransient = () => this.transient;
@@ -165,9 +181,8 @@ async function setup(input = trust) {
   };
   return { stub, ledger, call };
 }
-async function install() {
+async function install(terms = agreement()) {
   const fixture = await setup();
-  const terms = agreement();
   const receipt = CommercialReceiptSchema.parse(
     JSON.parse(
       (
@@ -466,4 +481,315 @@ test("expired execution terms and source signing key do not erase approved histo
   await expect(
     call("RecordUsage", outOfRange.reportId, await signedUsage(outOfRange), identity(1)),
   ).rejects.toThrow("POLICY_DENIED");
+});
+
+async function bilateral<T>(schema: z.ZodType<T>, value: T) {
+  const source = keys[0],
+    target = keys[1];
+  if (!source || !target) throw new Error("Missing signers");
+  return {
+    sourceSiteId: source.siteId,
+    targetSiteId: target.siteId,
+    sourceJws: await signFederationMessage(schema, value, source),
+    targetJws: await signFederationMessage(schema, value, target),
+  };
+}
+async function reservationFixture(terms = agreement()) {
+  const f = await install(terms);
+  const reservation = CommercialReservationSchema.parse({
+    protocolVersion: 1,
+    kind: "commercial-reservation",
+    domainId,
+    reservationId: randomUUID(),
+    demandId: randomUUID(),
+    claimVersion: 2,
+    agreementDigest: f.receipt.digest,
+    salt: randomBytes(32).toString("hex"),
+    request: {
+      protocolVersion: 1,
+      kind: "delegation",
+      operationId: randomUUID(),
+      senderSiteId: sites[0],
+      recipientSiteId: sites[1],
+      agreementRevisionId: terms.agreement.agreementRevisionId,
+      mode: "ledger_coordinated",
+      budgetDomainId: terms.agreement.budgetDomainId,
+      epoch: terms.agreement.epoch,
+      unit: terms.agreement.unit,
+      taskId: randomUUID(),
+      attempt: 1,
+      issuedAt: now.toISOString(),
+      expiresAt: new Date(+now + 300000).toISOString(),
+      executionExpiresAt: new Date(+now + 3600000).toISOString(),
+      template: terms.agreement.templates[0],
+      resources: terms.agreement.resourceLimit,
+      inputManifestDigest: `sha256:${"d".repeat(64)}`,
+      environmentLockDigest: `sha256:${"e".repeat(64)}`,
+      maxAmount: terms.agreement.maxTaskAmount,
+    },
+  });
+  const market = {
+    demand: {
+      protocolVersion: 1,
+      demandId: reservation.demandId,
+      sourceSiteId: sites[0],
+      createdAt: now.toISOString(),
+      expiresAt: new Date(+now + 3600000).toISOString(),
+      title: "Public test",
+      description: "",
+      platform: "linux",
+      architecture: "x86_64",
+      resources: reservation.request.resources,
+    },
+    digest: `sha256:${"a".repeat(64)}`,
+    status: "CLAIMED",
+    version: 2,
+    cancellation: null,
+    activation: null,
+    claim: {
+      demandId: reservation.demandId,
+      claimId: reservation.reservationId,
+      providerSiteId: sites[1],
+      commercialDomainId: domainId,
+      expectedVersion: 1,
+      expiresAt: reservation.request.expiresAt,
+    },
+  };
+  f.stub.market = market;
+  const reserve = async (value = reservation) =>
+    CommercialReceiptSchema.parse(
+      JSON.parse(
+        (
+          await f.call(
+            "ReserveExecution",
+            value.reservationId,
+            await bilateral(CommercialReservationSchema, value),
+          )
+        ).toString(),
+      ),
+    );
+  const budget = () => {
+    const entry = [...f.stub.privateState].find(([key]) => key.includes('["budget",'));
+    if (!entry) throw new Error("Missing private budget");
+    return z
+      .object({ locked: z.string(), spent: z.string(), reservations: z.number() })
+      .parse(JSON.parse(Buffer.from(entry[1]).toString()));
+  };
+  return { ...f, reservation, reserve, market, budget };
+}
+test("commercial reservation and pre-activation release preserve exact private budget and immutable gate", async () => {
+  const f = await reservationFixture(),
+    receipt = await f.reserve();
+  expect(await f.reserve()).toEqual(receipt);
+  expect(f.budget()).toEqual({ locked: "9007199254740993", spent: "0", reservations: 1 });
+  const publicBefore = new Map(f.stub.state);
+  const gateKey = f.stub.createCompositeKey("execution-gate", [
+    domainId,
+    f.reservation.reservationId,
+  ]);
+  const gateBefore = await f.stub.getPrivateDataHash("commercial_AB_v1", gateKey);
+  const hash = await f.call(
+    "GetExecutionGateHash",
+    f.reservation.reservationId,
+    undefined,
+    identity(2, "market"),
+  );
+  expect(JSON.parse(hash.toString())).toEqual({ hash: Buffer.from(gateBefore).toString("hex") });
+  expect(hash.toString()).not.toContain(f.reservation.request.maxAmount);
+  const release = CommercialReleaseSchema.parse({
+    protocolVersion: 1,
+    kind: "commercial-release",
+    releaseId: randomUUID(),
+    domainId,
+    reservationId: f.reservation.reservationId,
+    reservationDigest: receipt.digest,
+    sourceSiteId: sites[0],
+    targetSiteId: sites[1],
+    expectedGateVersion: 1,
+    issuedAt: now.toISOString(),
+    salt: randomBytes(32).toString("hex"),
+    reason: "Withdraw before activation",
+  });
+  const signed = await bilateral(CommercialReleaseSchema, release);
+  const released = await f.call("ReleaseExecution", release.releaseId, signed);
+  expect((await f.call("ReleaseExecution", release.releaseId, signed)).equals(released)).toBe(true);
+  expect(f.budget()).toEqual({ locked: "0", spent: "0", reservations: 0 });
+  expect(await f.reserve()).toEqual(receipt);
+  expect(f.budget().locked).toBe("0");
+  expect(await f.stub.getPrivateDataHash("commercial_AB_v1", gateKey)).not.toEqual(gateBefore);
+  expect(f.stub.state).toEqual(publicBefore);
+  const next = {
+    ...f.reservation,
+    reservationId: randomUUID(),
+    demandId: randomUUID(),
+    request: { ...f.reservation.request, taskId: randomUUID(), operationId: randomUUID() },
+  };
+  f.stub.market = {
+    ...f.market,
+    demand: { ...f.market.demand, demandId: next.demandId },
+    claim: { ...f.market.claim, claimId: next.reservationId, demandId: next.demandId },
+  };
+  const nextReceipt = await f.reserve(next);
+  const reused = {
+    ...release,
+    reservationId: next.reservationId,
+    reservationDigest: nextReceipt.digest,
+  };
+  await expect(
+    f.call("ReleaseExecution", reused.releaseId, await bilateral(CommercialReleaseSchema, reused)),
+  ).rejects.toThrow("OPERATION_CONFLICT");
+  expect(f.budget().locked).toBe(next.request.maxAmount);
+});
+test("commercial reservation rejects overspend and duplicate operation despite distinct public claims", async () => {
+  const terms = agreement();
+  terms.agreement.budgetLimit = terms.agreement.maxTaskAmount;
+  const f = await reservationFixture(terms);
+  await f.reserve();
+  const second = {
+    ...f.reservation,
+    reservationId: randomUUID(),
+    demandId: randomUUID(),
+    salt: randomBytes(32).toString("hex"),
+  };
+  f.stub.market = {
+    ...f.market,
+    demand: { ...f.market.demand, demandId: second.demandId },
+    claim: { ...f.market.claim, demandId: second.demandId, claimId: second.reservationId },
+  };
+  await expect(f.reserve(second)).rejects.toThrow("OPERATION_CONFLICT");
+  second.request = { ...second.request, taskId: randomUUID(), operationId: randomUUID() };
+  await expect(f.reserve(second)).rejects.toThrow("BUDGET_EXHAUSTED");
+  expect(f.budget()).toEqual({
+    locked: terms.agreement.maxTaskAmount,
+    spent: "0",
+    reservations: 1,
+  });
+});
+test("commercial reservation binds both approvals, domain, current claim, resources and declared signing purposes", async () => {
+  const f = await reservationFixture();
+  const envelope = await bilateral(CommercialReservationSchema, f.reservation);
+  await expect(
+    f.call("ReserveExecution", f.reservation.reservationId, {
+      ...envelope,
+      targetJws: envelope.sourceJws,
+    }),
+  ).rejects.toThrow();
+  for (const market of [
+    { ...f.market, status: "ACTIVE" },
+    { ...f.market, version: 3 },
+    { ...f.market, claim: { ...f.market.claim, commercialDomainId: randomUUID() } },
+    { ...f.market, claim: { ...f.market.claim, claimId: randomUUID() } },
+    {
+      ...f.market,
+      demand: { ...f.market.demand, resources: { ...f.market.demand.resources, cpus: 2 } },
+    },
+  ]) {
+    f.stub.market = market;
+    await expect(f.reserve()).rejects.toThrow("OPERATION_CONFLICT");
+  }
+  f.stub.market = f.market;
+  await expect(
+    f.reserve({
+      ...f.reservation,
+      request: { ...f.reservation.request, mode: "bilateral_direct" },
+    }),
+  ).rejects.toThrow("POLICY_DENIED");
+  const old = structuredClone(trust);
+  for (const purpose of old.keyPurposes)
+    purpose.kinds = ["commercial-agreement", "commercial-usage"];
+  const denied = await setup(old);
+  await expect(
+    denied.call("ReserveExecution", f.reservation.reservationId, envelope),
+  ).rejects.toThrow("UNTRUSTED_IDENTITY");
+  expect(f.stub.privateState.size).toBe(1);
+});
+test("active or expired active execution cannot release money and missing private state cannot reset balance", async () => {
+  const f = await reservationFixture(),
+    receipt = await f.reserve();
+  const release = CommercialReleaseSchema.parse({
+    protocolVersion: 1,
+    kind: "commercial-release",
+    releaseId: randomUUID(),
+    domainId,
+    reservationId: f.reservation.reservationId,
+    reservationDigest: receipt.digest,
+    sourceSiteId: sites[0],
+    targetSiteId: sites[1],
+    expectedGateVersion: 1,
+    issuedAt: now.toISOString(),
+    salt: randomBytes(32).toString("hex"),
+    reason: "Attempt release",
+  });
+  f.stub.market = { ...f.market, status: "ACTIVE", version: 3 };
+  f.stub.timestamp = new Date(+now + 7200000);
+  await expect(
+    f.call(
+      "ReleaseExecution",
+      release.releaseId,
+      await bilateral(CommercialReleaseSchema, release),
+    ),
+  ).rejects.toThrow("OPERATION_CONFLICT");
+  expect(f.budget().locked).toBe(f.reservation.request.maxAmount);
+  f.stub.market = f.market;
+  const budgetKey = [...f.stub.privateState.keys()].find((key) => key.includes('["budget",'));
+  if (!budgetKey) throw new Error("Missing budget");
+  f.stub.privateState.delete(budgetKey);
+  await expect(
+    f.call(
+      "ReleaseExecution",
+      release.releaseId,
+      await bilateral(CommercialReleaseSchema, release),
+    ),
+  ).rejects.toThrow("DATA_WAITING");
+});
+
+test("a later agreement revision cannot refill or enlarge an existing private budget epoch", async () => {
+  const original = agreement();
+  original.agreement.budgetLimit = (BigInt(original.agreement.maxTaskAmount) * 2n).toString();
+  const f = await reservationFixture(original);
+  await f.reserve();
+  const nextTerms = {
+    ...f.terms,
+    salt: randomBytes(32).toString("hex"),
+    agreement: {
+      ...f.terms.agreement,
+      agreementRevisionId: randomUUID(),
+      budgetLimit: (BigInt(f.terms.agreement.budgetLimit) + 1n).toString(),
+    },
+  };
+  const changed = CommercialAgreementSchema.parse(nextTerms);
+  const receipt = CommercialReceiptSchema.parse(
+    JSON.parse(
+      (
+        await f.call(
+          "RegisterAgreement",
+          changed.agreement.agreementRevisionId,
+          await signedAgreement(changed),
+        )
+      ).toString(),
+    ),
+  );
+  const next = {
+    ...f.reservation,
+    reservationId: randomUUID(),
+    demandId: randomUUID(),
+    agreementDigest: receipt.digest,
+    request: {
+      ...f.reservation.request,
+      taskId: randomUUID(),
+      operationId: randomUUID(),
+      agreementRevisionId: receipt.recordId,
+    },
+  };
+  f.stub.market = {
+    ...f.market,
+    demand: { ...f.market.demand, demandId: next.demandId },
+    claim: { ...f.market.claim, claimId: next.reservationId, demandId: next.demandId },
+  };
+  await expect(f.reserve(next)).rejects.toThrow("OPERATION_CONFLICT");
+  expect(f.budget()).toEqual({
+    locked: f.reservation.request.maxAmount,
+    spent: "0",
+    reservations: 1,
+  });
 });

@@ -87,6 +87,18 @@ jobs:
           KQ_FABRIC_TOOLS: ${{ runner.temp }}/kq-fabric-3.1.5
           KQ_FABRIC_REPORT: ${{ runner.temp }}/fabric-market-result.json
         run: bun run test:fabric:market
+      - name: Verify private budget and same-channel execution gate races
+        env:
+          KQ_FABRIC_TOOLS: ${{ runner.temp }}/kq-fabric-3.1.5
+          KQ_FABRIC_REPORT: ${{ runner.temp }}/fabric-gate-result.json
+        run: bun run test:fabric:gate
+      - name: Preserve execution gate assertion summary
+        uses: actions/upload-artifact@v4
+        with:
+          name: fabric-gate-result
+          path: ${{ runner.temp }}/fabric-gate-result.json
+          if-no-files-found: error
+          retention-days: 14
       - name: Preserve market assertion summary
         uses: actions/upload-artifact@v4
         with:

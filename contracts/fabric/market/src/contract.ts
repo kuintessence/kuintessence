@@ -3,6 +3,7 @@ import { FederationError, federationCanonicalJson } from "@kuintessence/shared/f
 import {
   type FabricMarketTrust,
   FabricMarketTrustSchema,
+  MarketActivationSchema,
   MarketCancelOpenSchema,
   MarketClaimSchema,
   MarketDemandSchema,
@@ -24,6 +25,8 @@ type Stub = Pick<
   ChaincodeStub,
   | "getFunctionAndParameters"
   | "getStateByPartialCompositeKeyWithPagination"
+  | "invokeChaincode"
+  | "getChannelID"
   | "getState"
   | "putState"
   | "setStateValidationParameter"
@@ -73,9 +76,14 @@ export class MarketLedger {
       return fail("POLICY_DENIED");
     const { fcn, params } = stub.getFunctionAndParameters();
     if (
-      !["PublishDemand", "ClaimDemand", "CancelOpenDemand", "GetDemand", "ListDemands"].includes(
-        fcn,
-      )
+      ![
+        "PublishDemand",
+        "ClaimDemand",
+        "CancelOpenDemand",
+        "GetDemand",
+        "ListDemands",
+        "ActivateDemand",
+      ].includes(fcn)
     )
       return fail("INVALID_MESSAGE");
     const org = this.organization(
@@ -118,7 +126,7 @@ export class MarketLedger {
       ? MarketDemandStateSchema.parse(JSON.parse(Buffer.from(bytes).toString()))
       : null;
     if (fcn === "GetDemand") {
-      if (stub.getTransient().size) return fail("INVALID_MESSAGE");
+      // Same-channel commercial calls carry their original transient map; this read never decodes it.
       if (!prior) return fail("ASSET_UNAVAILABLE");
       return encode(prior);
     }
@@ -148,6 +156,45 @@ export class MarketLedger {
       return encode({ recordId: id, digest: hash });
     }
     if (!prior) return fail("ASSET_UNAVAILABLE");
+    if (fcn === "ActivateDemand") {
+      const activation = this.input(stub, MarketActivationSchema);
+      if (activation.demandId !== id || org.siteId !== prior.demand.sourceSiteId)
+        return fail("POLICY_DENIED");
+      if (prior.activation) {
+        if (digest(prior.activation) !== digest(activation)) return fail("OPERATION_CONFLICT");
+        return encode({ recordId: activation.activationId, digest: digest(activation) });
+      }
+      const gate = activation.gate;
+      if (
+        prior.status !== "CLAIMED" ||
+        prior.version !== activation.expectedVersion ||
+        gate.demandId !== id ||
+        gate.claimVersion !== prior.version ||
+        gate.reservationId !== prior.claim?.claimId ||
+        gate.domainId !== prior.claim.commercialDomainId ||
+        gate.state !== "READY"
+      )
+        return fail("OPERATION_CONFLICT");
+      if (Date.parse(gate.expiresAt) <= now || Date.parse(prior.claim.expiresAt) <= now)
+        return fail("AUTHORIZATION_EXPIRED");
+      const response = await stub.invokeChaincode(
+        "kq-commercial",
+        ["GetExecutionGateHash", gate.domainId, gate.reservationId],
+        stub.getChannelID(),
+      );
+      if (response.status !== 200 || !response.payload) return fail("LEDGER_REQUIRED");
+      const current = z
+        .strictObject({ hash: z.string().regex(/^[a-f0-9]{64}$/) })
+        .parse(JSON.parse(Buffer.from(response.payload).toString()));
+      if (current.hash !== createHash("sha256").update(JSON.stringify(gate)).digest("hex"))
+        return fail("OPERATION_CONFLICT");
+      // Same-channel hashed read is part of this transaction's MVCC set, not an application preflight.
+      await stub.putState(
+        key,
+        encode({ ...prior, version: prior.version + 1, status: "ACTIVE", activation }),
+      );
+      return encode({ recordId: activation.activationId, digest: digest(activation) });
+    }
     if (fcn === "CancelOpenDemand") {
       const cancellation = this.input(stub, MarketCancelOpenSchema);
       if (cancellation.demandId !== id || prior.demand.sourceSiteId !== org.siteId)

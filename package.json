@@ -50,7 +50,8 @@
     "typecheck:fabric-tests": "tsc --noEmit -p scripts/tsconfig.fabric.json",
     "test:fabric:commercial": "bun scripts/fabric-evidence-network.ts --commercial",
     "test:fabric:commercial:integration": "bun scripts/fabric-evidence-network.ts --commercial --database",
-    "test:fabric:market": "bun scripts/fabric-evidence-network.ts --market"
+    "test:fabric:market": "bun scripts/fabric-evidence-network.ts --market",
+    "test:fabric:gate": "bun scripts/fabric-evidence-network.ts --gate"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.4.13",

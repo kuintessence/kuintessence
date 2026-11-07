@@ -1,6 +1,6 @@
 # Fabric 私有合同与用量链码
 
-`kq-commercial` 是独立链码，当前提供双方商业合同的不可变登记、提供方用量报告和追加更正。价格、合同字段、用量与签名仅进入两方机构 PDC；公开交易仅有随机域/记录 ID 和带盐摘要。已用 Fabric 3.1.5 的真实 Peer、Orderer、MSP、Gateway 和私有区块投递验证，**已接独立 Node Adapter、Server 类型化私有客户端与跨进程恢复；Server 商业审批、数据库待办与后台提交已接入；市场激活、余额、账单及支付仍待完成**。登记合同不是执行许可，用量报告不是计费事实或双方确认账单；Server 对 ledger_coordinated 的执行拒绝继续有效。
+`kq-commercial` 是独立链码，当前提供双方商业合同的不可变登记、提供方用量报告和追加更正。价格、合同字段、用量与签名仅进入两方机构 PDC；公开交易仅有随机域/记录 ID 和带盐摘要。已用 Fabric 3.1.5 的真实 Peer、Orderer、MSP、Gateway 和私有区块投递验证，**已接独立 Node Adapter、Server 类型化私有客户端与跨进程恢复；Server 商业审批、数据库待办与后台提交已接入；私有预算/gate/激活已有链码，应用执行接入、账单及支付仍待完成**。登记合同不是执行许可，用量报告不是计费事实或双方确认账单；Server 对 ledger_coordinated 的执行拒绝继续有效。
 
 实现：[商业协议](../../packages/shared/src/federation/commercial.ts)、[链码](../../contracts/fabric/commercial/src/contract.ts)、[Node 入口](../../contracts/fabric/commercial/src/main.ts)。构建：
 
@@ -135,4 +135,9 @@ KQ_FABRIC_TOOLS=/path/to/verified/fabric-3.1.5 KQ_FABRIC_DATABASE_URL=postgres:/
 
 已验证双签、缺 B 背书的 INVALID 交易、合法合同/用量 VALID、并发初始报告 MVCC 冲突、非成员和信任管理员接口拒绝、A/B 私有区块可见、C 经本机构或 A Peer 均无私有区块，以及公开块和进程日志不含合同/价格/用量/签名探针。生产 Unix 客户端与每步新建的 Node Adapter 还验证了提交后未写回检查点即退出的恢复，以及 Orderer 停机时保留原检查点、重启后取得原交易 VALID；日志检查也覆盖这些子进程。真实 PostgreSQL 联合检查进一步通过：链与 Adapter 均停机时直接合同仍可双签且无待办；存证合同原子入队，Orderer 停机时保持原检查点；链已提交但进程在写回数据库前退出，经真实 90 秒租约到期后，新进程恢复原 VALID 交易且仅有一个提交尝试。CI 沿用 Fabric 网络工作流，包含商业数据库联合检查和脱敏断言产物。
 
-本测试使用单机三个机构容器外进程及单个 Raft Orderer，不证明独立机构信任或 SmartBFT 高可用。PDC 仍暴露成员关系、MSP、时间及哈希等元数据；关系也需保密时采用私有 channel。blockToLive=0 防止未经归档删除，容量治理与快照恢复仍待完成。合同变更、新密钥/机构迁移、执行 gate、账单认可、争议处理和结算路径还须继续实现；当前不能发起真实有偿执行。
+本测试使用单机三个机构容器外进程及单个 Raft Orderer，不证明独立机构信任或 SmartBFT 高可用。PDC 仍暴露成员关系、MSP、时间及哈希等元数据；关系也需保密时采用私有 channel。blockToLive=0 防止未经归档删除，容量治理与快照恢复仍待完成。合同变更、新密钥/机构迁移、执行 gate 的应用接入、账单认可、争议处理和结算路径还须继续实现；当前不能发起真实有偿执行。
+
+
+## 协调模式的私有额度与执行 gate
+
+链码另已增加双签 ReserveExecution/ReleaseExecution 和仅返回哈希的 GetExecutionGateHash，见[执行许可协议与真实网络验证](fabric-execution-gate.md)。金额和完整委派只存双方 PDC，固定合作域预算不随合同修订重置；激活与释放依赖同通道跨链码读集。现有商业 Adapter/Server 接口仍仅支持合同及用量记录，尚未启用新用途审批或真实协调执行。

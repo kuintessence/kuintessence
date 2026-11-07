@@ -28,6 +28,7 @@ export const MarketClaimSchema = z.strictObject({
   demandId: Id,
   claimId: Id,
   providerSiteId: Id,
+  commercialDomainId: Id.optional(),
   expectedVersion: Version,
   expiresAt: z.iso.datetime(),
 });
@@ -37,13 +38,31 @@ export const MarketCancelOpenSchema = z.strictObject({
   cancellationId: Id,
   expectedVersion: Version,
 });
+/** Public preimage of a private gate hash; contains no amount, price or contract body. */
+export const MarketExecutionGateSchema = z.strictObject({
+  domainId: Id,
+  reservationId: Id,
+  demandId: Id,
+  claimVersion: Version,
+  version: Version,
+  state: z.enum(["READY", "REVOKED"]),
+  reservationDigest: FederationDigestSchema,
+  expiresAt: z.iso.datetime(),
+});
+export const MarketActivationSchema = z.strictObject({
+  demandId: Id,
+  activationId: Id,
+  expectedVersion: Version,
+  gate: MarketExecutionGateSchema,
+});
 export const MarketDemandStateSchema = z.strictObject({
   demand: MarketDemandSchema,
   digest: FederationDigestSchema,
   version: Version,
-  status: z.enum(["OPEN", "CLAIMED", "CANCELLED"]),
+  status: z.enum(["OPEN", "CLAIMED", "CANCELLED", "ACTIVE"]),
   claim: MarketClaimSchema.nullable(),
   cancellation: MarketCancelOpenSchema.nullable(),
+  activation: MarketActivationSchema.nullable().default(null),
 });
 export const MarketReceiptSchema = z.strictObject({
   recordId: Id,

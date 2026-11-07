@@ -206,6 +206,16 @@ export function assertDelegationPolicy(
   phase: "admission" | "execution" = "admission",
 ): void {
   if (agreement.mode === "ledger_coordinated") throw new FederationError("LEDGER_REQUIRED");
+  assertDelegationTerms(agreement, request, now, phase);
+}
+
+/** Terms validation only: callers still need mode-specific admission and execution authorization. */
+export function assertDelegationTerms(
+  agreement: FederationAgreement,
+  request: FederationDelegation,
+  now: Date,
+  phase: "admission" | "execution" = "admission",
+): void {
   if (
     request.agreementRevisionId !== agreement.agreementRevisionId ||
     request.senderSiteId !== agreement.sourceSiteId ||

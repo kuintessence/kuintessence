@@ -18,6 +18,7 @@ import { z } from "zod";
 import { verifyCommercialNetwork } from "./fabric-commercial-assertions";
 import { verifyEvidenceNetwork } from "./fabric-evidence-assertions";
 import { verifyMarketNetwork } from "./fabric-market-assertions";
+import { verifyExecutionGateNetwork } from "./fabric-market-gate-assertions";
 
 const repo = resolve(import.meta.dir, "..");
 const toolsRoot = process.env.KQ_FABRIC_TOOLS;
@@ -39,9 +40,13 @@ const environment = {
   GOMAXPROCS: "2",
 };
 const channel = "kq-evidence-test";
-const commercial = process.argv.includes("--commercial");
+const gate = process.argv.includes("--gate");
+const commercial = gate || process.argv.includes("--commercial");
 const market = process.argv.includes("--market");
-if (market && (commercial || process.argv.includes("--database")))
+if (
+  (market && (commercial || process.argv.includes("--database"))) ||
+  (gate && process.argv.includes("--database"))
+)
   throw new Error("Market probe is independent of commercial/database checks");
 const kind = market ? "market" : commercial ? "commercial" : "evidence";
 const chaincode = `kq-${kind}`;
@@ -189,6 +194,7 @@ async function setup() {
       peerPort: await port(),
       chaincodePort: await port(),
       chaincodeListener: await port(),
+      gateChaincodePort: gate ? await port() : 0,
     })),
   );
   await yaml(join(root, "crypto.yaml"), {
@@ -205,7 +211,7 @@ async function setup() {
       Domain: `${m.name.toLowerCase()}.kq.test`,
       EnableNodeOUs: true,
       Template: { Count: 1, SANS: ["localhost", "127.0.0.1"] },
-      Users: { Count: 1 },
+      Users: { Count: gate ? 2 : 1 },
     })),
   });
   await run("cryptogen", [
@@ -227,6 +233,7 @@ async function setup() {
     for (const [identity, role, ou] of [
       ["Admin", "trust-admin", "admin"],
       ["User1", market ? "market" : commercial ? "commercial" : "attestor", "client"],
+      ...(gate ? [["User2", "market", "client"]] : []),
     ] as const) {
       const msp = join(directory, "users", `${identity}@${domain}`, "msp");
       const key = await onlyKey(join(msp, "keystore"));
@@ -328,7 +335,11 @@ async function setup() {
             org.keys.map((key) => ({
               siteId: org.siteId,
               keyId: key.keyId,
-              kinds: ["commercial-agreement", "commercial-usage"],
+              kinds: [
+                "commercial-agreement",
+                "commercial-usage",
+                ...(gate ? ["commercial-reservation", "commercial-release"] : []),
+              ],
             })),
           ),
         })
@@ -492,7 +503,7 @@ async function setup() {
   await mkdir(builder, { recursive: true });
   const scripts = {
     detect: `import json,sys\nsys.exit(0 if json.load(open(sys.argv[2]+'/metadata.json'))['type']=='kq-evidence-ccaas' else 1)\n`,
-    build: `import json,sys,os\nvalue={'address':os.environ['KQ_CCAAS_ADDRESS'],'dial_timeout':'10s','tls_required':True,'client_auth_required':True,'root_cert':open(os.environ['KQ_CCAAS_CA']).read(),'client_cert':open(os.environ['KQ_CCAAS_CERT']).read(),'client_key':open(os.environ['KQ_CCAAS_KEY']).read()}\nwith open(sys.argv[3]+'/connection.json','w') as f:json.dump(value,f)\n`,
+    build: `import json,sys,os\nvalue={'address':(os.environ['KQ_MARKET_CCAAS_ADDRESS'] if json.load(open(sys.argv[2]+'/metadata.json'))['label']=='kq-market-gate' else os.environ['KQ_CCAAS_ADDRESS']),'dial_timeout':'10s','tls_required':True,'client_auth_required':True,'root_cert':open(os.environ['KQ_CCAAS_CA']).read(),'client_cert':open(os.environ['KQ_CCAAS_CERT']).read(),'client_key':open(os.environ['KQ_CCAAS_KEY']).read()}\nwith open(sys.argv[3]+'/connection.json','w') as f:json.dump(value,f)\n`,
     release: `import sys,os,shutil\np=sys.argv[2]+'/chaincode/server'\nos.makedirs(p,exist_ok=True)\nshutil.copyfile(sys.argv[1]+'/connection.json',p+'/connection.json')\n`,
   };
   for (const [name, source] of Object.entries(scripts)) {
@@ -564,7 +575,13 @@ async function setup() {
       {
         name: "kq-evidence",
         path: dirname(builder),
-        propagateEnvironment: ["KQ_CCAAS_ADDRESS", "KQ_CCAAS_CA", "KQ_CCAAS_CERT", "KQ_CCAAS_KEY"],
+        propagateEnvironment: [
+          "KQ_CCAAS_ADDRESS",
+          "KQ_MARKET_CCAAS_ADDRESS",
+          "KQ_CCAAS_CA",
+          "KQ_CCAAS_CERT",
+          "KQ_CCAAS_KEY",
+        ],
       },
     ];
     const configDir = join(root, `${site.name}-config`);
@@ -573,6 +590,7 @@ async function setup() {
     const env = {
       FABRIC_CFG_PATH: configDir,
       KQ_CCAAS_ADDRESS: `127.0.0.1:${site.chaincodePort}`,
+      KQ_MARKET_CCAAS_ADDRESS: `127.0.0.1:${site.gateChaincodePort}`,
       KQ_CCAAS_CA: join(site.tls, "ca.crt"),
       KQ_CCAAS_CERT: join(site.tls, "server.crt"),
       KQ_CCAAS_KEY: join(site.tls, "server.key"),
@@ -696,6 +714,125 @@ async function setup() {
     ],
     peerEnvironments.A,
   );
+  if (gate) {
+    const marketTrust = FabricMarketTrustSchema.parse({
+      version: 1,
+      generationId: randomUUID(),
+      organizations: organizations.map(({ siteId, mspId }) => ({ siteId, mspId })),
+    });
+    await json(join(root, "gate-market-trust.json"), marketTrust);
+    const gateDir = join(root, "gate-package");
+    await mkdir(gateDir);
+    await json(join(gateDir, "metadata.json"), {
+      type: "kq-evidence-ccaas",
+      label: "kq-market-gate",
+      path: "kq-market",
+    });
+    await writeFile(join(gateDir, "code.tar.gz"), await readFile(join(packageDir, "code.tar.gz")), {
+      mode: 0o600,
+    });
+    const gateArchive = join(root, "gate-market.tar.gz");
+    await run("gate-package", [
+      "tar",
+      "-czf",
+      gateArchive,
+      "-C",
+      gateDir,
+      "metadata.json",
+      "code.tar.gz",
+    ]);
+    const gatePackageId = `kq-market-gate:${createHash("sha256")
+      .update(await readFile(gateArchive))
+      .digest("hex")}`;
+    const gateBuild = await Bun.build({
+      entrypoints: [join(repo, "contracts/fabric/market/src/main.ts")],
+      outdir: join(root, "gate-chaincode"),
+      target: "node",
+      format: "esm",
+      external: ["fabric-shim"],
+    });
+    if (!gateBuild.success) throw new Error("Gate market chaincode build failed");
+    const gateDefinition = [
+      "--channelID",
+      channel,
+      "--name",
+      "kq-market",
+      "--version",
+      "1",
+      "--sequence",
+      "1",
+      "--init-required",
+      "--channel-config-policy",
+      "/Channel/Application/Endorsement",
+    ];
+    for (const site of sites) {
+      start(
+        `gate-chaincode-${site.name}`,
+        ["node", "--max-old-space-size=192", join(root, "gate-chaincode/main.js")],
+        {
+          KQ_MARKET_TRUST_FILE: join(root, "gate-market-trust.json"),
+          CHAINCODE_ID: gatePackageId,
+          CHAINCODE_ADDRESS: `127.0.0.1:${site.gateChaincodePort}`,
+          CHAINCODE_TLS_KEY_FILE: join(site.tls, "server.key"),
+          CHAINCODE_TLS_CERT_FILE: join(site.tls, "server.crt"),
+          CHAINCODE_TLS_CLIENT_CA_FILE: join(site.tls, "ca.crt"),
+          CORE_CHAINCODE_LOGGING_LEVEL: "error",
+        },
+      );
+      await listening(site.gateChaincodePort);
+      await run(
+        `gate-${site.name}-install`,
+        [join(binaries, "peer"), "lifecycle", "chaincode", "install", gateArchive],
+        peerEnvironments[site.name],
+      );
+      await run(
+        `gate-${site.name}-approve`,
+        [
+          join(binaries, "peer"),
+          "lifecycle",
+          "chaincode",
+          "approveformyorg",
+          ...gateDefinition,
+          "--package-id",
+          gatePackageId,
+          ...ordererOptions,
+        ],
+        peerEnvironments[site.name],
+      );
+    }
+    await run(
+      "gate-commit-definition",
+      [
+        join(binaries, "peer"),
+        "lifecycle",
+        "chaincode",
+        "commit",
+        ...gateDefinition,
+        ...ordererOptions,
+        ...peerOptions,
+      ],
+      peerEnvironments.A,
+    );
+    await run(
+      "gate-initialize",
+      [
+        join(binaries, "peer"),
+        "chaincode",
+        "invoke",
+        "-C",
+        channel,
+        "-n",
+        "kq-market",
+        "--isInit",
+        "-c",
+        JSON.stringify({ Args: ["Init"] }),
+        "--waitForEvent",
+        ...ordererOptions,
+        ...peerOptions,
+      ],
+      peerEnvironments.A,
+    );
+  }
   await json(join(root, "network.json"), {
     channel,
     chaincode,
@@ -745,7 +882,8 @@ try {
     });
     process.stdin.pause();
   } else {
-    if (market) await verifyMarketNetwork(root, controls);
+    if (gate) await verifyExecutionGateNetwork(root);
+    else if (market) await verifyMarketNetwork(root, controls);
     else if (commercial) await verifyCommercialNetwork(root, controls);
     else await verifyEvidenceNetwork(root, controls);
   }
