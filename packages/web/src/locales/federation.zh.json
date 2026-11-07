@@ -292,6 +292,72 @@
         "suspended": "暂停本地协议的授权。此操作不证明远端或运行中的任务已经停止。",
         "revoked": "永久撤销本地协议，不能恢复。此操作不证明远端或运行中的任务已经停止。"
       }
+    },
+    "commercial": {
+      "title": "商业合同",
+      "newContract": "新建合同",
+      "source": "合同来源",
+      "sources": {
+        "existing": "基于执行协议",
+        "import": "导入完整合同"
+      },
+      "noBaseAgreement": "暂无有效执行协议，可导入完整合同继续。",
+      "loadTerms": "载入合同",
+      "consideration": "回报方式",
+      "considerations": {
+        "charity": "算力慈善",
+        "exchange": "资源置换",
+        "paid": "有偿共享"
+      },
+      "domain": "私有合作域",
+      "prices": "价格",
+      "priceRow": "价格第 {{number}} 项",
+      "metric": "计量指标",
+      "quantityUnit": "数量单位",
+      "perQuantity": "每计量数量",
+      "amount": "金额",
+      "removePrice": "移除",
+      "addPrice": "添加价格",
+      "terms": "合同条款",
+      "executionScope": "执行范围与限制",
+      "identifiers": "合同标识",
+      "priceVersion": "价格版本",
+      "futureDate": "合同创建时间晚于当前时间，请核对导入内容。",
+      "back": "返回合同列表",
+      "empty": "暂无商业合同",
+      "noExecution": "签署及链上记录不授予执行权限，不代表账单确认或付款。",
+      "retryEffect": "重试原签署记录并保留历史。结果未知的交易仍使用原交易号恢复。",
+      "actions": {
+        "sign": "签署商业合同",
+        "attach": "验证对方签名",
+        "retry": "重试存证"
+      },
+      "exportTerms": "导出合同",
+      "exportFailed": "导出合同失败，请重试。",
+      "ledger": "链上记录",
+      "direct": "直接合作，无需上链",
+      "notConfigured": "后台存证尚未配置，待办会保留。",
+      "noSubmission": "暂无存证记录",
+      "transaction": "交易号",
+      "block": "区块号",
+      "validationCode": "验证代码",
+      "unconfirmed": "尚未确认",
+      "checkConfiguration": "请核对机构信任和存证配置后重试。",
+      "states": {
+        "queued": "等待提交",
+        "endorsing": "等待机构背书",
+        "confirming": "等待链上确认",
+        "committed": "已记录上链",
+        "needs_review": "需要复核"
+      },
+      "errors": {
+        "LEDGER_PENDING": "链上结果尚未确认。",
+        "LEDGER_UNAVAILABLE": "链服务暂时不可用。",
+        "UNTRUSTED_IDENTITY": "机构签名信任无效。",
+        "POLICY_DENIED": "机构策略拒绝了本次提交。",
+        "LEDGER_INVALID": "链已判定本次交易无效。",
+        "AUTHORIZATION_EXPIRED": "签署授权已到期。"
+      }
     }
   }
 }

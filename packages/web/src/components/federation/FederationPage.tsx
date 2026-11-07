@@ -12,7 +12,9 @@ import { getAuthState, subscribeAuthState } from "../../lib/auth";
 import { refreshOrganizationScope } from "../../lib/organization-query-scope";
 import { Button } from "../ui/button";
 import { PageHeader, PageShell } from "../ui/page";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "../ui/tabs";
 import { AgreementPanel } from "./AgreementPanel";
+import { CommercialPanel } from "./CommercialPanel";
 
 export function FederationPage() {
   const { t } = useTranslation();
@@ -94,11 +96,24 @@ function OrganizationAgreements({ revision }: { revision: string | null }) {
         ) : null}
       </div>
       {organizationId && context.data.organizations.some((org) => org.orgId === organizationId) ? (
-        <AgreementPanel
-          key={`${organizationId}:${revision}`}
-          scope={{ organizationId, authRevision: revision }}
-          switching={change.isPending || context.isFetching}
-        />
+        <Tabs key={`${organizationId}:${revision}`} defaultValue="execution">
+          <TabsList aria-label={t("federation.agreements.title")}>
+            <TabsTrigger value="execution">{t("federation.agreements.agreements")}</TabsTrigger>
+            <TabsTrigger value="commercial">{t("federation.commercial.title")}</TabsTrigger>
+          </TabsList>
+          <TabsContent value="execution">
+            <AgreementPanel
+              scope={{ organizationId, authRevision: revision }}
+              switching={change.isPending || context.isFetching}
+            />
+          </TabsContent>
+          <TabsContent value="commercial">
+            <CommercialPanel
+              scope={{ organizationId, authRevision: revision }}
+              switching={change.isPending || context.isFetching}
+            />
+          </TabsContent>
+        </Tabs>
       ) : (
         <p className="text-sm text-muted-foreground">
           {t("federation.agreements.chooseOrganization")}

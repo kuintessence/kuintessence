@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import {
   federationCommercialAgreements as agreements,
   auditLog,
+  federationSites,
   type PgDb,
   type PgTransaction,
   federationCommercialSubmissions as submissions,
@@ -10,9 +11,12 @@ import { FederationError } from "@kuintessence/shared/federation";
 import {
   type CommercialAgreement,
   CommercialAgreementSchema,
+  type CommercialAgreementSummarySchema,
   CommercialProposalInputSchema,
 } from "@kuintessence/shared/federation/commercial";
 import { and, desc, eq, sql } from "drizzle-orm";
+import { alias } from "drizzle-orm/pg-core";
+import type { z } from "zod";
 import { type FederationActor, requireFederationCapability } from "./permissions";
 import {
   type FederationSigningKey,
@@ -33,17 +37,37 @@ export class FederationCommercialAgreementService {
     this.trust = new FederationTrustRegistry(db);
   }
   async list(actor: FederationActor, limit: number, offset: number) {
+    const source = alias(federationSites, "commercial_source");
+    const target = alias(federationSites, "commercial_target");
     return this.db.transaction(async (tx) => {
       await requireFederationCapability(tx, actor, "agreement.read");
       return tx
         .select({
           revisionId: agreements.revisionId,
+          sourceSiteId: sql<string>`${agreements.terms}->'agreement'->>'sourceSiteId'`,
+          targetSiteId: sql<string>`${agreements.terms}->'agreement'->>'targetSiteId'`,
+          sourceName: source.name,
+          targetName: target.name,
+          mode: sql<
+            z.infer<typeof CommercialAgreementSummarySchema>["mode"]
+          >`${agreements.terms}->'agreement'->>'mode'`,
+          consideration: sql<
+            z.infer<typeof CommercialAgreementSummarySchema>["consideration"]
+          >`${agreements.terms}->>'consideration'`,
           digest: agreements.digest,
           approvedBy: agreements.approvedBy,
           createdAt: agreements.createdAt,
           hasCounterpartyApproval: sql<boolean>`${agreements.counterpartyJws} IS NOT NULL`,
         })
         .from(agreements)
+        .leftJoin(
+          source,
+          sql`${source.id} = (${agreements.terms}->'agreement'->>'sourceSiteId')::uuid`,
+        )
+        .leftJoin(
+          target,
+          sql`${target.id} = (${agreements.terms}->'agreement'->>'targetSiteId')::uuid`,
+        )
         .where(
           and(
             eq(agreements.localSiteId, this.signingKey.siteId),

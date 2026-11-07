@@ -15,6 +15,15 @@ describe("mobile management policy", () => {
     setMobileManagementPolicy(true);
     expect(isMobileHighRiskMutationBlocked("/admin/sso")).toBe(true);
     expect(isMobileHighRiskMutationBlocked("/federation/agreements/approve")).toBe(true);
+    expect(isMobileHighRiskMutationBlocked("/federation/commercial-agreements/approve")).toBe(true);
+    expect(
+      isMobileHighRiskMutationBlocked("/federation/commercial-agreements/revision/counterparty"),
+    ).toBe(true);
+    expect(
+      isMobileHighRiskMutationBlocked(
+        "/federation/commercial-agreements/revision/submissions/id/retry",
+      ),
+    ).toBe(true);
     expect(isMobileHighRiskMutationBlocked("/federation/agreements/revision/state")).toBe(true);
     expect(isMobileHighRiskMutationBlocked("/preferences/global")).toBe(true);
     expect(isMobileHighRiskMutationBlocked("/preferences/user")).toBe(false);

@@ -174,3 +174,51 @@ export const FabricCommercialAdvanceResultSchema = z.discriminatedUnion("state",
   FabricEvidenceAdvanceResultSchema.options[3],
 ]);
 export type CommercialAdvanceResult = z.infer<typeof FabricCommercialAdvanceResultSchema>;
+
+export const CommercialAgreementApprovalSchema = z.object({
+  localSiteId: Id,
+  localOrgId: Id,
+  revisionId: Id,
+  terms: CommercialAgreementSchema,
+  digest: FederationDigestSchema,
+  approvalJws: z.string().min(1).max(524288),
+  counterpartyJws: z.string().min(1).max(524288).nullable(),
+  approvedBy: Id,
+  createdAt: z.iso.datetime(),
+});
+export type CommercialAgreementApproval = z.infer<typeof CommercialAgreementApprovalSchema>;
+export const CommercialAgreementSummarySchema = CommercialAgreementApprovalSchema.pick({
+  revisionId: true,
+  digest: true,
+  approvedBy: true,
+  createdAt: true,
+}).extend({
+  sourceSiteId: Id,
+  targetSiteId: Id,
+  sourceName: z.string().nullable(),
+  targetName: z.string().nullable(),
+  mode: CommercialAgreementSchema.shape.agreement.shape.mode,
+  consideration: CommercialAgreementSchema.shape.consideration,
+  hasCounterpartyApproval: z.boolean(),
+});
+export const CommercialSubmissionsViewSchema = z.object({
+  enabled: z.boolean(),
+  submissions: z.array(
+    z.object({
+      id: Id,
+      state: z.enum(["pending", "committed", "needs_review"]),
+      lastError: z.string().nullable(),
+      createdAt: z.iso.datetime(),
+      updatedAt: z.iso.datetime(),
+      transaction: z
+        .object({
+          transactionId: z.string().regex(/^[a-f0-9]{64}$/),
+          stage: z.enum(["proposal", "transaction", "abandoned", "committed", "invalid"]),
+          validationCode: z.number().int().nullable(),
+          blockNumber: z.string().nullable(),
+        })
+        .nullable(),
+    }),
+  ),
+});
+export type CommercialSubmissionsView = z.infer<typeof CommercialSubmissionsViewSchema>;

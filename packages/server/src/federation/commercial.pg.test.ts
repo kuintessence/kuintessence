@@ -19,6 +19,7 @@ import type { FederationMode } from "@kuintessence/shared/federation";
 import {
   type CommercialAdvanceResult,
   CommercialAgreementSchema,
+  CommercialAgreementSummarySchema,
   type CommercialProposalInput,
 } from "@kuintessence/shared/federation/commercial";
 import { and, eq, inArray, sql } from "drizzle-orm";
@@ -235,6 +236,13 @@ test("commercial approval is immutable, exact and private to the local organizat
     otherScope = await fixture();
   const record = await f.approvals.approve(f.actor, f.terms);
   expect(record.terms.prices[0]?.amount).toBe("9007199254740993123");
+  const summary = CommercialAgreementSummarySchema.parse(
+    JSON.parse(JSON.stringify((await f.approvals.list(f.actor, 50, 0))[0])),
+  );
+  expect(summary.sourceName).toBe("Commercial institution");
+  expect(summary.targetSiteId).toBe(f.b.signing.siteId);
+  expect(summary.consideration).toBe("paid");
+  expect(JSON.stringify(summary)).not.toContain(f.terms.termsText);
   expect((await f.approvals.approve(f.actor, f.terms)).approvalJws).toBe(record.approvalJws);
   await expect(
     f.approvals.approve(f.actor, { ...f.terms, termsText: "Replacement" }),

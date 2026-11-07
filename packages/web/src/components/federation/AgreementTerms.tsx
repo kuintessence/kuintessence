@@ -11,7 +11,13 @@ export function AgreementFact({ label, children }: { label: string; children: Re
   );
 }
 
-export function AgreementTerms({ terms }: { terms: FederationAgreement }) {
+export function AgreementTerms({
+  terms,
+  showModeEffect = true,
+}: {
+  terms: FederationAgreement;
+  showModeEffect?: boolean;
+}) {
   const { t, i18n } = useTranslation();
   const date = (value: string) => new Date(value).toLocaleString(i18n.language);
   return (
@@ -60,9 +66,11 @@ export function AgreementTerms({ terms }: { terms: FederationAgreement }) {
           )}
         </AgreementFact>
       </dl>
-      <p className="max-w-prose text-sm text-muted-foreground">
-        {t(`federation.agreements.modeEffects.${terms.mode}`)}
-      </p>
+      {showModeEffect ? (
+        <p className="max-w-prose text-sm text-muted-foreground">
+          {t(`federation.agreements.modeEffects.${terms.mode}`)}
+        </p>
+      ) : null}
       <section className="space-y-3 border-t border-border pt-4">
         <h4 className="text-sm font-semibold">{t("federation.agreements.templates")}</h4>
         <ul className="divide-y divide-border">

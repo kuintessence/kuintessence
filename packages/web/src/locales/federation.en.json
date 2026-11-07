@@ -292,6 +292,72 @@
         "suspended": "Suspend local agreement authorization. This does not confirm remote or running tasks have stopped.",
         "revoked": "Permanently revoke this local agreement. This cannot be undone and does not confirm remote or running tasks have stopped."
       }
+    },
+    "commercial": {
+      "title": "Commercial contracts",
+      "newContract": "New contract",
+      "source": "Contract source",
+      "sources": {
+        "existing": "From an execution agreement",
+        "import": "Import complete contract"
+      },
+      "noBaseAgreement": "No active execution agreements. Import a complete contract to continue.",
+      "loadTerms": "Load contract",
+      "consideration": "Compensation",
+      "considerations": {
+        "charity": "Charitable contribution",
+        "exchange": "Resource exchange",
+        "paid": "Paid sharing"
+      },
+      "domain": "Private cooperation domain",
+      "prices": "Prices",
+      "priceRow": "Price {{number}}",
+      "metric": "Metric",
+      "quantityUnit": "Quantity unit",
+      "perQuantity": "Per quantity",
+      "amount": "Amount",
+      "removePrice": "Remove",
+      "addPrice": "Add price",
+      "terms": "Contract terms",
+      "executionScope": "Execution scope and limits",
+      "identifiers": "Contract identifiers",
+      "priceVersion": "Price version",
+      "futureDate": "The contract creation time is in the future. Check the imported contract.",
+      "back": "Back to contracts",
+      "empty": "No commercial contracts",
+      "noExecution": "Signing and ledger records do not authorize execution, confirm a bill or make a payment.",
+      "retryEffect": "Retry the same signed record and retain its history. An uncertain transaction resumes with its original ID.",
+      "actions": {
+        "sign": "Sign commercial contract",
+        "attach": "Verify counterparty signature",
+        "retry": "Retry ledger submission"
+      },
+      "exportTerms": "Export contract",
+      "exportFailed": "Could not export the contract. Try again.",
+      "ledger": "Ledger record",
+      "direct": "Direct cooperation — no ledger submission",
+      "notConfigured": "Ledger submission is not configured. Pending records are retained.",
+      "noSubmission": "No ledger submission record",
+      "transaction": "Transaction ID",
+      "block": "Block number",
+      "validationCode": "Validation code",
+      "unconfirmed": "Unconfirmed",
+      "checkConfiguration": "Check institutional trust and adapter configuration before retrying.",
+      "states": {
+        "queued": "Queued",
+        "endorsing": "Awaiting institutional endorsements",
+        "confirming": "Awaiting ledger confirmation",
+        "committed": "Recorded on ledger",
+        "needs_review": "Needs review"
+      },
+      "errors": {
+        "LEDGER_PENDING": "The ledger outcome has not been confirmed.",
+        "LEDGER_UNAVAILABLE": "The ledger is temporarily unavailable.",
+        "UNTRUSTED_IDENTITY": "Institutional signing trust is not valid.",
+        "POLICY_DENIED": "The institutional policy rejected this submission.",
+        "LEDGER_INVALID": "The ledger marked this transaction invalid.",
+        "AUTHORIZATION_EXPIRED": "The signing authorization has expired."
+      }
     }
   }
 }

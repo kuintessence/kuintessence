@@ -29,6 +29,9 @@ vi.mock("./AgreementPanel", () => ({
     </div>
   ),
 }));
+vi.mock("./CommercialPanel", () => ({
+  CommercialPanel: () => <input aria-label="Commercial draft" />,
+}));
 const orgA = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const orgB = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 function mount() {
@@ -99,4 +102,22 @@ test("another tab's institution selection also replaces the draft and clears res
   await waitFor(() => expect((screen.getByLabelText("Draft") as HTMLInputElement).value).toBe(""));
   await waitFor(() => expect(client.getQueryData(["jobs-list"])).toBeUndefined());
   expect(setActiveOrganization).not.toHaveBeenCalled();
+});
+
+test("commercial drafts are discarded with an institution change", async () => {
+  mount();
+  const selector = await screen.findByLabelText("Current institution");
+  fireEvent.mouseDown(screen.getByRole("tab", { name: "Commercial contracts" }), {
+    button: 0,
+    ctrlKey: false,
+  });
+  const draft = await screen.findByLabelText("Commercial draft");
+  fireEvent.change(draft, { target: { value: "private contract" } });
+  fireEvent.change(selector, { target: { value: orgB } });
+  await waitFor(() => expect(screen.queryByLabelText("Commercial draft")).toBeNull());
+  fireEvent.mouseDown(screen.getByRole("tab", { name: "Commercial contracts" }), {
+    button: 0,
+    ctrlKey: false,
+  });
+  expect(((await screen.findByLabelText("Commercial draft")) as HTMLInputElement).value).toBe("");
 });
