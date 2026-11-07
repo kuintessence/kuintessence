@@ -48,6 +48,11 @@ const progress = (row: Proposal) => ({
   approvedAt: row.approvedAt,
   deliveredAt: row.deliveredAt,
   nextAttemptAt: row.nextAttemptAt,
+  executionState: row.executionState,
+  executionError: row.executionError,
+  executionNextAt: row.executionNextAt,
+  activationId: row.activationId,
+  confirmationId: row.confirmationId,
   lastError: row.lastError,
 });
 

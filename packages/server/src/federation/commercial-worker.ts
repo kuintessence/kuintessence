@@ -2,6 +2,7 @@ import { createLogger } from "@kuintessence/shared";
 import type { FederationAccountingCollection } from "./accounting-collection";
 import type { FederationCommercialApprovalExchange } from "./commercial-approval-exchange";
 import type { FederationCommercialSubmissionService } from "./commercial-submissions";
+import type { FederationExecutionAutomation } from "./execution-automation";
 import type { FederationExecutionStopService } from "./execution-stop";
 import type { FederationTerminalExchange } from "./execution-terminal-exchange";
 import type { FederationMarketService } from "./market";
@@ -26,6 +27,7 @@ export class FederationCommercialWorker {
     private readonly terminalAutomation?: FederationTerminalAutomation,
     private readonly approvals?: FederationCommercialApprovalExchange,
     private readonly proposals?: FederationReservationProposalService,
+    private readonly executionAutomation?: FederationExecutionAutomation,
   ) {}
 
   start() {
@@ -59,6 +61,17 @@ export class FederationCommercialWorker {
         } catch {
           logger.error(
             "Commercial signature exchange failed; approved records remain in PostgreSQL",
+          );
+        }
+      }
+      if (this.executionAutomation) {
+        try {
+          await this.executionAutomation.discover();
+          for (let i = 0; i < 8 && !this.stopped; i++)
+            if (!(await this.executionAutomation.advanceNext())) break;
+        } catch {
+          logger.error(
+            "Automatic activation and execution confirmation failed; intent remains in PostgreSQL",
           );
         }
       }

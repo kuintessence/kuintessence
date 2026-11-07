@@ -1730,3 +1730,24 @@ Market 新增 RequestExecutionStop、Adapter 新增 request-execution-stop，双
 在原有显式市场激活与执行确认后，两个真实轻量 Bash Job 完成，接收方从零份清单拉取源端输入及环境锁，源方通过独立 Agent 和独立桶实际下载 verified:42 的 12 字节结果并核对 SHA-256，原签名结果回执被对方确认。既有终态预授权自动完成提供方证据归集、源方独立复核与双签回传，交换 complete；私有终态 VALID 在区块 20（bdffa0c6ba0b372ebe232f7589cdb9f54de29b164e1a1fc2555543e6439bdfe7），公共关闭 VALID 在区块 21（9b04bdfbb98cf78b0578196c62c23aa716f394928e005757559b8d2ea4e96edf）。本次未触发重复商业提交的 MVCC 人工复核分支，不能据此声称该生产异常已自动处理。
 
 运行退出 0，自建进程、数据库、临时凭据和集群 namespace/RBAC 已清理。没有重跑先前断链/主动停止、Slurm/PBS 或 Spack/真实科学软件；本次证据证明新任务提案自动签署与传输及其后续轻量链路，仍不是完整无人值守平台验收。自动市场与执行准入、基础执行同意交换、普通 Workflow 协调编排、账单/结算/争议与重开、物理介质、Peer 容量归档、完整 Web/CLI 及 PR 预览继续待完成，未合并或部署 main。
+
+
+## 原预留的自动激活与首次执行确认
+
+迁移 0135 为机构预留策略增加默认关闭的 allowActivation / allowExecutionConfirmation；前者只允许源方并要求授权人当前有市场发布权。只有该策略实际批准的原预留才能使用新增权力，旧策略、替代策略和人工批准不追溯升级。复用原激活与执行确认服务，保留双签合同、基础执行同意、受限执行身份、停止/终态及实际 VALID 检查。原提案增加独立初始执行进度和租约，不另建业务队列；新市场待办保存原策略 ID、授权人和机器审计。
+
+生产商业 worker 在双签提案就绪后按机构开关入队动作，源方等待激活 VALID，再由双方各自申请首次确认。未知提交等待，INVALID/needs_review 停下复核，不新造交易绕过。只授权激活不产生运行许可；只授权确认等待另行激活。已有人工激活可接续但保留人工归属。撤销阻止新动作，不抹除已入队/已提交的同意；阻断任务仍使用停止/取消。完成表示初始许可就绪，后续操作继续独立校验并按原规则续期，不是作业终态。
+
+提案 GET 增加执行进度、错误和动作 ID；独立 execution-retry 接口要求当前人工审批与空正文，不能抢租约、换策略或重置完成状态。链查询前后及落库前复查授权和租约，审计失败回滚。未开放自动市场发布/认领、基础执行同意交换、普通 Workflow 协调编排或资金结算。
+
+本轮 48 个不同 PostgreSQL 用例通过：35 个既有预留/机构策略/提案回归，13 个新自动执行用例。初轮 10 个新用例因夹具把执行账号建成 researcher 而失败；修正为生产要求的 user/serviceAccount 后只重跑新增 10 项通过，未放宽身份检查。后补单开关与人工 HTTP 重试 3 项也通过。新增覆盖撤销/到期/停止、原身份停用、个人角色变化、并发及人工意图兼容、未知/INVALID 交易、无真实回执的假 committed、查询期间租约丢失和审计原子回滚。日志在忽略的 temp/execution-automation-pg.log、temp/execution-automation-new-pg.log 和 temp/execution-automation-options-pg.log。
+
+全仓类型检查的各 package 已通过，Fabric 联调脚本因数组闭包类型推断失败，补充显式类型后定向脚本检查通过；同时补上联调策略的明确开关，避免使用默认关闭值。最终新增用例做 Server 定向类型检查；发现新增断言误传数据库而非事务，按真实事务调用修正后仅补跑该用例通过，重复验证不累加计数。全仓 lint 无错误，保留原有 47 warning / 1 info；704 个本地文档链接、workflow 引用、Python 语法及差异检查通过。真实联合入口已移除逐笔人工激活与执行确认，保存独立 execution-automation.json；运行结果继续记录如下。
+
+
+本轮真实联合运行日志 temp/execution-automation-execution.log，隔离证据 temp/federation-execution-success-dcduww8d，测试链 temp/fabric-network-gWenEr。双方在任务创建前各自授予机构策略，源方明确允许激活与首次确认、提供方仅允许首次确认；后台自动完成新提案批准、签名交换和私有预留，随后无人工激活/确认调用地完成三份市场待办。execution-automation.json 核验每笔待办的政策归属及实际 VALID：激活区块 17（c523342cd0656a5a477a06e1232c839d4a685ebf52d89c3099e92faa1bfc1c9b），提供方确认区块 18（4b81de9252195384718179cac9f4248d00291ee6cdef30ca6f29c3baecf17a62），源方确认区块 19（4ed31d593f35ddd15a34555f1b01c577ee0baa9af3ef832b84a59b41357ba7bd）；两端初始执行进度 complete。
+
+其后的真实双 Server/PostgreSQL/Agent、mTLS、RustFS 和 Kubernetes 文件工作流已完成：目标方从零份清单取得原输入与环境锁并运行两个轻量 Bash Job；源方独立 Agent、独立桶实际下载 verified:42 的 12 字节文件并核对 SHA-256，签名结果回执和重复导入幂等通过。既有终态预授权随后完成双方独立签署、原签名回传及 ACK，交换 complete；私有终态 VALID 在区块 20（08842778f2ed11277ee975daff437318a10614a97e104e6c8e7058cd1bd58795），公共关闭 VALID 在区块 21（b11396cfc10871e0bc1be926fd9bbc508f9755417342461b9f0bc2867690a0e2）。本次未触发双边重复商业提交的 MVCC 人工复核分支，仍不能据此宣称该异常已自动处理。
+
+
+真实运行一次通过并退出 0，自建服务、数据库、临时凭据和 scheduler namespace/RBAC 已清理。最终 Server 定向类型检查通过。没有重跑先前断链/主动停止、原生金额/背书或 Spack/Slurm/PBS/科学软件场景。本轮证明新任务预授权之后的初始激活/确认自动推进及轻量执行收尾；市场发布/认领、基础执行同意对签和实际委派仍由夹具显式发起。完整自动商务编排、普通 Workflow 协调节点、生产 MVCC 同意复核、账单/结算/争议与重开、物理介质、Peer 容量归档、完整 Web/CLI 和 PR 预览均继续待完成，未合并或部署 main。

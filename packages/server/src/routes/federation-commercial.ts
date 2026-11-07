@@ -15,6 +15,7 @@ import type { FederationCommercialAgreementService } from "../federation/commerc
 import type { FederationCommercialApprovalExchange } from "../federation/commercial-approval-exchange";
 import type { FederationCommercialExecutionService } from "../federation/commercial-execution";
 import type { FederationCommercialSubmissionService } from "../federation/commercial-submissions";
+import type { FederationExecutionAutomation } from "../federation/execution-automation";
 import type { FederationExecutionConfirmationService } from "../federation/execution-confirmation";
 import type { FederationExecutionStopService } from "../federation/execution-stop";
 import type { FederationExecutionTerminalService } from "../federation/execution-terminal";
@@ -49,6 +50,7 @@ export function createFederationCommercialRoutes(
   approvalExchange?: FederationCommercialApprovalExchange,
   reservationPolicies?: FederationReservationPolicyService,
   reservationProposals?: FederationReservationProposalService,
+  executionAutomation?: FederationExecutionAutomation,
 ) {
   const r = new Hono<{ Variables: { federationActor: FederationActor } }>();
   r.use("/federation/commercial-agreements/*", async (c, next) => {
@@ -83,6 +85,20 @@ export function createFederationCommercialRoutes(
     limit: z.coerce.number().int().min(1).max(100).default(50),
     offset: z.coerce.number().int().min(0).default(0),
   });
+  if (executionAutomation)
+    r.post(
+      "/federation/commercial-agreements/:revisionId/reservation-proposals/:reservationId/execution-retry",
+      kqValidator("param", id.extend({ reservationId: z.uuid() })),
+      kqValidator("json", z.strictObject({})),
+      async (c) => {
+        await executionAutomation.retry(
+          c.get("federationActor"),
+          c.req.valid("param").revisionId,
+          c.req.valid("param").reservationId,
+        );
+        return c.json({ success: true });
+      },
+    );
   if (reservationProposals) {
     const path = "/federation/commercial-agreements/:revisionId/reservation-proposals";
     r.get(path, kqValidator("param", id), kqValidator("query", page), async (c) =>

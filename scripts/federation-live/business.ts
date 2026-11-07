@@ -4,6 +4,7 @@ import {
   createPgDb,
   federationCommercialAttempts,
   federationCommercialSubmissions,
+  federationMarketAttempts,
   federationMarketSubmissions,
   federationReservationProposals,
 } from "@kuintessence/db";
@@ -21,7 +22,6 @@ import { FederationCommercialAgreementService } from "../../packages/server/src/
 import { FederationCommercialApprovalExchange } from "../../packages/server/src/federation/commercial-approval-exchange";
 import { FederationCommercialExecutionService } from "../../packages/server/src/federation/commercial-execution";
 import { FederationCommercialSubmissionService } from "../../packages/server/src/federation/commercial-submissions";
-import { FederationExecutionConfirmationService } from "../../packages/server/src/federation/execution-confirmation";
 import { FederationMarketService } from "../../packages/server/src/federation/market";
 import { UnixMarketClient } from "../../packages/server/src/federation/market-client";
 import { createFederationSender } from "../../packages/server/src/federation/outbound-client";
@@ -79,7 +79,13 @@ if (import.meta.main) {
   ])
     assert(new URL(url).pathname.startsWith("/kuintessence_unit_"));
   try {
-    const parties = [];
+    const parties: {
+      db: ReturnType<typeof createPgDb>;
+      actor: { orgId: string; userId: string };
+      key: FederationSigningKey;
+      market: FederationMarketService;
+      execution: FederationCommercialExecutionService;
+    }[] = [];
     for (const [name, db, actor] of [
       ["A", dbA, sourceActor],
       ["B", dbB, { orgId: registration.orgId, userId: registration.userId }],
@@ -102,7 +108,6 @@ if (import.meta.main) {
         key,
         market: new FederationMarketService(db, key.siteId, client),
         execution: new FederationCommercialExecutionService(db, key, client),
-        confirmation: new FederationExecutionConfirmationService(db, key.siteId, client),
       });
     }
     const a = parties[0],
@@ -207,13 +212,14 @@ if (import.meta.main) {
             maxTaskAmount: config.request.maxAmount,
             maxTotalAmount: config.request.maxAmount,
             maxTasks: 1,
+            allowActivation: p === a,
+            allowExecutionConfirmation: true,
             validUntil: config.request.executionExpiresAt ?? config.request.expiresAt,
           },
         ),
       );
     const demandId = randomUUID(),
-      reservationId = randomUUID(),
-      activationId = randomUUID();
+      reservationId = randomUUID();
     await a.market.enqueue(a.actor, {
       operation: "publish-demand",
       demand: {
@@ -333,21 +339,68 @@ if (import.meta.main) {
       async () => (await commercialReady(a)) && (await commercialReady(b)),
       "both private reservations committed",
     );
-    await a.execution.activate(
-      a.actor,
-      config.terms.agreementRevisionId,
-      reservationId,
-      activationId,
-    );
-    await wait(() => marketReady(a, activationId), "source activation committed");
+    await wait(async () => {
+      for (const p of parties) {
+        const [proposal] = await p.db.select().from(federationReservationProposals);
+        assert(
+          proposal?.executionState !== "needs_review",
+          proposal?.executionError ?? "Automatic execution approval failed",
+        );
+        if (proposal?.executionState !== "complete") return false;
+      }
+      return true;
+    }, "automatic activation and both VALID execution confirmations");
+    const automationEvidence = [];
+    let activationId: string | null = null;
     for (const p of parties) {
-      const proof = await p.confirmation.request(
-        p.actor,
-        config.terms.agreementRevisionId,
-        reservationId,
-      );
-      await wait(() => marketReady(p, proof.id), "participant confirmation committed");
+      const [proposal] = await p.db.select().from(federationReservationProposals);
+      assert(proposal?.confirmationId);
+      if (p === a) activationId = proposal.activationId;
+      const records = [];
+      for (const id of [proposal.activationId, proposal.confirmationId].filter(
+        (id): id is string => !!id,
+      )) {
+        const [submission] = await p.db
+          .select()
+          .from(federationMarketSubmissions)
+          .where(eq(federationMarketSubmissions.id, id));
+        const [attempt] = await p.db
+          .select()
+          .from(federationMarketAttempts)
+          .where(eq(federationMarketAttempts.submissionId, id))
+          .orderBy(desc(federationMarketAttempts.number))
+          .limit(1);
+        assert(
+          submission?.state === "committed" &&
+            submission.authorizationPolicyId === proposal.policyId,
+        );
+        assert(
+          attempt?.stage === "committed" &&
+            attempt.validationCode === 0 &&
+            attempt.blockNumber !== null,
+        );
+        records.push({
+          id,
+          operation: submission.input.operation,
+          policyId: submission.authorizationPolicyId,
+          state: submission.state,
+          transactionId: attempt.transactionId,
+          validationCode: attempt.validationCode,
+          blockNumber: attempt.blockNumber,
+        });
+      }
+      automationEvidence.push({
+        siteId: p.key.siteId,
+        policyId: proposal.policyId,
+        executionState: proposal.executionState,
+        records,
+      });
     }
+    assert(activationId);
+    await Bun.write(
+      `${root}/execution-automation.json`,
+      JSON.stringify(automationEvidence, null, 2),
+    );
     await Bun.write(
       `${root}/ledger-proof.json`,
       JSON.stringify({ demandId, reservationId, activationId }),

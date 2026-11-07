@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import {
+  federationCommercialExecutionApprovals as approvals,
   auditLog,
   federationCommercialAgreements as contracts,
   type PgDb,
@@ -14,6 +15,7 @@ import {
 import {
   CommercialAgreementSchema,
   type CommercialReservation,
+  CommercialReservationSchema,
 } from "@kuintessence/shared/federation/commercial";
 import { and, desc, eq, isNull } from "drizzle-orm";
 import { z } from "zod";
@@ -23,6 +25,8 @@ import { FederationTrustRegistry } from "./trust-registry";
 
 export const ReservationPolicyInputSchema = z
   .strictObject({
+    allowActivation: z.boolean().default(false),
+    allowExecutionConfirmation: z.boolean().default(false),
     maxTaskAmount: FederationAmountSchema,
     maxTotalAmount: FederationAmountSchema,
     maxTasks: z.number().int().min(1).max(100_000),
@@ -85,7 +89,7 @@ export class FederationReservationPolicyService {
   async grant(
     actor: FederationActor,
     revisionId: string,
-    raw: z.infer<typeof ReservationPolicyInputSchema>,
+    raw: z.input<typeof ReservationPolicyInputSchema>,
   ) {
     const input = ReservationPolicyInputSchema.parse(raw);
     return this.db.transaction(async (tx) => {
@@ -93,6 +97,12 @@ export class FederationReservationPolicyService {
       const contract = await this.contract(tx, actor.orgId, revisionId);
       const terms = CommercialAgreementSchema.parse(contract.terms);
       if (terms.agreement.mode !== "ledger_coordinated") throw new FederationError("POLICY_DENIED");
+      if (input.allowActivation) {
+        if (terms.agreement.sourceSiteId !== this.siteId)
+          throw new FederationError("POLICY_DENIED");
+        await requireFederationCapability(tx, actor, "market.publish");
+      }
+
       await requireCoordinatedCommercialAgreement(
         tx,
         this.trust,
@@ -217,6 +227,36 @@ export class FederationReservationPolicyService {
     if (federationExecutionDeadline(payload.request) > policy.validUntil.getTime())
       throw new FederationError("AUTHORIZATION_EXPIRED");
     return policy;
+  }
+
+  async authorizeOperation(
+    tx: PgTransaction,
+    policyId: string,
+    recordId: string,
+    operation: "activate" | "confirm",
+  ) {
+    const [approval] = await tx
+      .select()
+      .from(approvals)
+      .where(
+        and(
+          eq(approvals.localSiteId, this.siteId),
+          eq(approvals.recordId, recordId),
+          eq(approvals.authorizationPolicyId, policyId),
+        ),
+      );
+    if (!approval?.counterpartyJws || approval.payload.kind !== "commercial-reservation")
+      throw new FederationError("POLICY_DENIED");
+    if (approval.stopId) throw new FederationError("CANCELLATION_REQUESTED");
+    const payload = CommercialReservationSchema.parse(approval.payload);
+    const policy = await this.authorize(tx, policyId, approval.localOrgId, payload);
+    if (
+      operation === "activate"
+        ? !policy.allowActivation || payload.request.senderSiteId !== this.siteId
+        : !policy.allowExecutionConfirmation
+    )
+      throw new FederationError("POLICY_DENIED");
+    return { policy, approval, payload };
   }
 
   async consume(tx: PgTransaction, policy: ReservationPolicy, payload: CommercialReservation) {

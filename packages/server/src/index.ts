@@ -63,6 +63,7 @@ import { FederationCommercialWorker } from "./federation/commercial-worker";
 import { FederationDataDispatch } from "./federation/data-dispatch";
 import { createFederationDatasetPreflight } from "./federation/dataset-preflight";
 import { FederationDispatchAuthorization } from "./federation/dispatch-authorization";
+import { FederationExecutionAutomation } from "./federation/execution-automation";
 import {
   FederationExecutionBindingService,
   loadFederationWorkflowBinding,
@@ -1739,6 +1740,15 @@ const federationTerminalAutomation =
   federationSigningKey && federationTerminals
     ? new FederationTerminalAutomation(db, federationSigningKey.siteId, federationTerminals)
     : undefined;
+const federationExecutionAutomation = federationSigningKey
+  ? new FederationExecutionAutomation(
+      db,
+      federationSigningKey,
+      config.FEDERATION_MARKET_SOCKET_PATH
+        ? new UnixMarketClient(config.FEDERATION_MARKET_SOCKET_PATH)
+        : undefined,
+    )
+  : undefined;
 const federationReservationProposals = federationSigningKey
   ? new FederationReservationProposalService(
       db,
@@ -1781,6 +1791,7 @@ if (federationSigningKey && federationCommercial)
       federationApprovalExchange,
       new FederationReservationPolicyService(db, federationSigningKey.siteId),
       federationReservationProposals,
+      federationExecutionAutomation,
     ),
   );
 const federationPreparation = federationSigningKey
@@ -2519,6 +2530,7 @@ const federationCommercialWorker = federationCommercial
       federationTerminalAutomation,
       federationApprovalExchange,
       federationReservationProposals,
+      federationExecutionAutomation,
     )
   : undefined;
 federationCommercialWorker?.start();

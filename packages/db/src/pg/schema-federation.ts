@@ -37,6 +37,7 @@ import type { FederationTerminalProposal } from "@kuintessence/shared/federation
 import { sql } from "drizzle-orm";
 import {
   bigint,
+  boolean,
   check,
   foreignKey,
   index,
@@ -1136,6 +1137,8 @@ export const federationReservationPolicies = pgTable(
       .notNull()
       .references(() => orgs.id),
     agreementDigest: varchar("agreement_digest", { length: 71 }).notNull(),
+    allowActivation: boolean("allow_activation").notNull().default(false),
+    allowExecutionConfirmation: boolean("allow_execution_confirmation").notNull().default(false),
     maxTaskAmount: numeric("max_task_amount", { precision: 38, scale: 0 }).notNull(),
     maxTotalAmount: numeric("max_total_amount", { precision: 38, scale: 0 }).notNull(),
     maxTasks: integer("max_tasks").notNull(),
@@ -1196,6 +1199,14 @@ export const federationReservationProposals = pgTable(
     requestedBy: uuid("requested_by").references(() => users.id),
     state: varchar("state", { length: 24 }).notNull().default("pending"),
     receiptJws: text("receipt_jws"),
+    executionState: varchar("execution_state", { length: 24 }).notNull().default("idle"),
+    executionError: varchar("execution_error", { length: 64 }),
+    executionNextAt: timestamp("execution_next_at", { withTimezone: true }).notNull().defaultNow(),
+    executionLeaseToken: uuid("execution_lease_token"),
+    executionLeaseUntil: timestamp("execution_lease_until", { withTimezone: true }),
+    activationId: uuid("activation_id").references(() => federationMarketSubmissions.id),
+    confirmationId: uuid("confirmation_id").references(() => federationMarketSubmissions.id),
+
     approvedAt: timestamp("approved_at", { withTimezone: true }),
     deliveredAt: timestamp("delivered_at", { withTimezone: true }),
     lastError: varchar("last_error", { length: 64 }),
@@ -1206,6 +1217,17 @@ export const federationReservationProposals = pgTable(
   },
   (t) => [
     primaryKey({ columns: [t.localSiteId, t.reservationId] }),
+    index("federation_execution_automation_pending").on(
+      t.localSiteId,
+      t.executionState,
+      t.executionNextAt,
+    ),
+    check(
+      "federation_execution_automation_state",
+      sql`(${t.executionState} IN ('idle','pending','complete','needs_review')
+      AND ((${t.executionLeaseToken} IS NULL) = (${t.executionLeaseUntil} IS NULL))) IS TRUE`,
+    ),
+
     foreignKey({
       columns: [t.localSiteId, t.agreementRevisionId],
       foreignColumns: [
@@ -1451,6 +1473,9 @@ export const federationMarketSubmissions = pgTable(
     requestedBy: uuid("requested_by")
       .notNull()
       .references(() => users.id),
+    authorizationPolicyId: uuid("authorization_policy_id").references(
+      () => federationReservationPolicies.id,
+    ),
     demandId: uuid("demand_id").notNull(),
     digest: varchar("digest", { length: 71 }).notNull(),
     input: jsonb("input").$type<MarketAdapterProposalInput>().notNull(),

@@ -9,6 +9,7 @@ import {
   type PgTransaction,
   federationReservationPolicies as reservationPolicies,
   federationCommercialSubmissions as submissions,
+  federationExecutionTerminals as terminals,
 } from "@kuintessence/db";
 import { assertDelegationTerms, FederationError } from "@kuintessence/shared/federation";
 import {
@@ -29,7 +30,10 @@ import { federationMaterialDigest } from "./assets";
 import { FabricClientFailure } from "./fabric-client";
 import type { MarketClient } from "./market-client";
 import { type FederationActor, requireFederationCapability } from "./permissions";
-import { FederationReservationPolicyService } from "./reservation-policy";
+import {
+  assertReservationPolicyActive,
+  FederationReservationPolicyService,
+} from "./reservation-policy";
 import {
   type FederationSigningKey,
   federationMessageKeyId,
@@ -551,9 +555,54 @@ export class FederationCommercialExecutionService {
     activationId: string,
   ) {
     z.uuid().parse(activationId);
+    return this.activateAuthorized(actor, revisionId, recordId, activationId);
+  }
+  async activatePreauthorized(
+    policyId: string,
+    recordId: string,
+    guard?: (tx: PgTransaction) => Promise<void>,
+  ) {
+    const [approval] = await this.db
+      .select()
+      .from(approvals)
+      .where(
+        and(
+          eq(approvals.localSiteId, this.signingKey.siteId),
+          eq(approvals.recordId, recordId),
+          eq(approvals.authorizationPolicyId, policyId),
+        ),
+      );
+    if (!approval) throw new FederationError("POLICY_DENIED");
+    return this.activateAuthorized(
+      { orgId: approval.localOrgId, userId: approval.approvedBy },
+      approval.agreementRevisionId,
+      recordId,
+      undefined,
+      { policyId, guard },
+    );
+  }
+  private async activateAuthorized(
+    actor: FederationActor,
+    revisionId: string,
+    recordId: string,
+    activationId?: string,
+    automatic?: { policyId: string; guard?: (tx: PgTransaction) => Promise<void> },
+  ) {
     return this.db.transaction(async (tx) => {
-      await requireFederationCapability(tx, actor, "agreement.approve");
-      await requireFederationCapability(tx, actor, "market.publish");
+      let policy: typeof reservationPolicies.$inferSelect | undefined;
+      if (automatic) {
+        await automatic.guard?.(tx);
+        policy = (
+          await new FederationReservationPolicyService(
+            this.db,
+            this.signingKey.siteId,
+            this.clock,
+          ).authorizeOperation(tx, automatic.policyId, recordId, "activate")
+        ).policy;
+      } else {
+        await requireFederationCapability(tx, actor, "agreement.approve");
+        await requireFederationCapability(tx, actor, "market.publish");
+      }
       const approval = await this.local(tx, actor, revisionId, recordId);
       const payload = CommercialExecutionApprovalSchema.parse(approval.payload);
       if (approval.stopId) throw new FederationError("CANCELLATION_REQUESTED");
@@ -563,6 +612,20 @@ export class FederationCommercialExecutionService {
         payload.request.senderSiteId !== this.signingKey.siteId
       )
         throw new FederationError("POLICY_DENIED");
+      if (!activationId) {
+        const [existing] = await tx
+          .select({ id: marketSubmissions.id })
+          .from(marketSubmissions)
+          .where(
+            and(
+              eq(marketSubmissions.localSiteId, this.signingKey.siteId),
+              eq(marketSubmissions.localOrgId, actor.orgId),
+              sql`${marketSubmissions.input}->>'operation' = 'activate-demand'`,
+              sql`${marketSubmissions.input}->'activation'->'gate'->>'reservationId' = ${recordId}`,
+            ),
+          );
+        activationId = existing?.id ?? randomUUID();
+      }
       const input = {
         operation: "activate-demand" as const,
         activation: MarketActivationSchema.parse({
@@ -592,6 +655,16 @@ export class FederationCommercialExecutionService {
         if (prior.digest !== digest) throw new FederationError("OPERATION_CONFLICT");
         return { id: prior.id, demandId: prior.demandId, state: prior.state };
       }
+      const [terminal] = await tx
+        .select({ id: terminals.terminalId })
+        .from(terminals)
+        .where(
+          and(
+            eq(terminals.localSiteId, this.signingKey.siteId),
+            eq(terminals.reservationId, recordId),
+          ),
+        );
+      if (terminal) throw new FederationError("POLICY_DENIED");
       await this.validate(tx, actor, revisionId, payload);
       const [reservation] = await tx
         .select({ id: submissions.id })
@@ -637,13 +710,15 @@ export class FederationCommercialExecutionService {
         );
         if (verified.digest !== approval.digest) throw new FederationError("OPERATION_CONFLICT");
       }
+      if (policy) assertReservationPolicyActive(policy, this.clock());
       const [created] = await tx
         .insert(marketSubmissions)
         .values({
           id: activationId,
           localSiteId: this.signingKey.siteId,
           localOrgId: actor.orgId,
-          requestedBy: actor.userId,
+          requestedBy: policy?.grantedBy ?? actor.userId,
+          authorizationPolicyId: policy?.id,
           demandId: payload.demandId,
           input,
           digest,
@@ -651,7 +726,13 @@ export class FederationCommercialExecutionService {
         .onConflictDoNothing()
         .returning();
       if (!created) throw new FederationError("OPERATION_CONFLICT");
-      await this.audit(tx, actor, "activate", recordId, digest);
+      await this.audit(
+        tx,
+        policy ? { ...actor, userId: `reservation-policy:${policy.id}` } : actor,
+        "activate",
+        recordId,
+        digest,
+      );
       return { id: created.id, demandId: created.demandId, state: created.state };
     });
   }

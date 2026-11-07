@@ -42,6 +42,7 @@ import { requireExecutionIdentity } from "./execution-identity";
 import { FabricClientFailure } from "./fabric-client";
 import type { MarketClient } from "./market-client";
 import { type FederationActor, requireFederationCapability } from "./permissions";
+import { FederationReservationPolicyService } from "./reservation-policy";
 import { federationMessageKeyId, verifyFederationMessage } from "./signatures";
 import { FederationTrustRegistry } from "./trust-registry";
 
@@ -359,6 +360,7 @@ export class FederationExecutionConfirmationService {
     tx: PgTransaction,
     orgId: string,
     gate: ReturnType<typeof MarketExecutionGateSchema.parse>,
+    automatic = false,
   ) {
     const [latest] = await tx
       .select()
@@ -367,8 +369,11 @@ export class FederationExecutionConfirmationService {
       .orderBy(desc(submissions.createdAt), desc(submissions.id))
       .limit(1)
       .for("share");
+    if (automatic && latest?.state === "needs_review")
+      throw new FabricClientFailure(latest.lastError ?? "LEDGER_INVALID", true);
     if (!latest || latest.state === "needs_review") return undefined;
     const authorization = this.parse(latest, gate);
+    if (automatic && latest.state === "pending") return latest;
     return Date.parse(authorization.issuedAt) <= this.clock().getTime() &&
       Date.parse(authorization.expiresAt) > this.clock().getTime() + 60000
       ? latest
@@ -398,19 +403,52 @@ export class FederationExecutionConfirmationService {
     return this.refresh(actor.orgId, reserve.request, "execution", actor);
   }
 
+  async requestPreauthorized(
+    policyId: string,
+    recordId: string,
+    guard?: (tx: PgTransaction) => Promise<void>,
+  ) {
+    const [record] = await this.db
+      .select()
+      .from(approvals)
+      .where(
+        and(
+          eq(approvals.localSiteId, this.siteId),
+          eq(approvals.recordId, recordId),
+          eq(approvals.authorizationPolicyId, policyId),
+        ),
+      );
+    if (!record || record.payload.kind !== "commercial-reservation")
+      throw new FederationError("POLICY_DENIED");
+    const reserve = CommercialReservationSchema.parse(record.payload);
+    const policies = new FederationReservationPolicyService(this.db, this.siteId, this.clock);
+    return this.refresh(record.localOrgId, reserve.request, "execution", undefined, async (tx) => {
+      await guard?.(tx);
+      const current = await policies.authorizeOperation(tx, policyId, recordId, "confirm");
+      if (
+        current.approval.digest !== record.digest ||
+        current.approval.localOrgId !== record.localOrgId
+      )
+        throw new FederationError("OPERATION_CONFLICT");
+      return current.policy;
+    });
+  }
+
   /** Internal callers must independently check the user's authority for their operation. */
   async refresh(
     orgId: string,
     raw: FederationDelegation,
     phase: Phase = "execution",
     actor?: FederationActor,
+    automatic?: (tx: PgTransaction) => Promise<{ id: string; grantedBy: string; validUntil: Date }>,
   ) {
     const request = FederationDelegationSchema.parse(raw);
     if (actor && actor.orgId !== orgId) throw new FederationError("POLICY_DENIED");
     const snapshot = await this.db.transaction(async (tx) => {
       if (actor) await requireFederationCapability(tx, actor, "agreement.approve");
+      await automatic?.(tx);
       const current = await this.scope(tx, orgId, request, phase);
-      return { ...current, existing: await this.reusable(tx, orgId, current.gate) };
+      return { ...current, existing: await this.reusable(tx, orgId, current.gate, !!automatic) };
     });
     if (snapshot.existing) return this.summary(snapshot.existing);
     if (!this.market) throw new FabricClientFailure("LEDGER_UNAVAILABLE");
@@ -446,14 +484,16 @@ export class FederationExecutionConfirmationService {
     const activationId = state.activation.activationId;
     return this.db.transaction(async (tx) => {
       if (actor) await requireFederationCapability(tx, actor, "agreement.approve");
+      const policy = await automatic?.(tx);
       await tx.execute(
         sql`select pg_advisory_xact_lock(hashtextextended(${`${this.siteId}:${snapshot.reserve.reservationId}:execution-confirmation`}, 0))`,
       );
       const current = await this.scope(tx, orgId, request, phase);
-      const prior = await this.reusable(tx, orgId, current.gate);
+      const prior = await this.reusable(tx, orgId, current.gate, !!automatic);
       if (prior) return this.summary(prior);
       const now = this.clock().getTime();
-      if (current.validUntil <= now) throw new FederationError("AUTHORIZATION_EXPIRED");
+      if (current.validUntil <= now || (policy && policy.validUntil.getTime() <= now))
+        throw new FederationError("AUTHORIZATION_EXPIRED");
       const authorization = MarketExecutionAuthorizationSchema.parse({
         authorizationId: randomUUID(),
         issuerSiteId: this.siteId,
@@ -473,7 +513,8 @@ export class FederationExecutionConfirmationService {
           id: authorization.authorizationId,
           localSiteId: this.siteId,
           localOrgId: orgId,
-          requestedBy: current.consent.approvedBy,
+          requestedBy: policy?.grantedBy ?? current.consent.approvedBy,
+          authorizationPolicyId: policy?.id,
           demandId: current.reserve.demandId,
           input,
           digest,
@@ -481,7 +522,9 @@ export class FederationExecutionConfirmationService {
         .returning();
       if (!created) throw new FederationError("OPERATION_CONFLICT");
       await tx.insert(auditLog).values({
-        actor: actor?.userId ?? current.consent.approvedBy,
+        actor: policy
+          ? `reservation-policy:${policy.id}`
+          : (actor?.userId ?? current.consent.approvedBy),
         orgId,
         action: "federation.execution.confirm",
         target: created.id,

@@ -108,6 +108,7 @@ import { FederationCommercialExecutionService } from "./commercial-execution";
 import { FederationCommercialSubmissionService } from "./commercial-submissions";
 import { FederationCommercialWorker } from "./commercial-worker";
 import { FederationDispatchAuthorization } from "./dispatch-authorization";
+import { FederationExecutionAutomation } from "./execution-automation";
 import { FederationExecutionBindingService } from "./execution-binding";
 import { FederationExecutionConfirmationService } from "./execution-confirmation";
 import { FederationExecutionMonitor } from "./execution-monitor";
@@ -5717,15 +5718,29 @@ test("reservation preauthorization grants require dual coordinated consent and c
   ).toMatchObject({ authorizedAmount: "0", maxTotalAmount: "0" });
 });
 
-async function reservationProposalFixture() {
+async function reservationProposalFixture(
+  execution: boolean | "activation" | "confirmation" = false,
+) {
   const f = await reservationPolicyFixture(true);
   await new FederationPermissionService(db).set(
     { ...f.actor, capability: "delegation.submit", enabled: true },
     f.actor.userId,
   );
+  if (execution)
+    await new FederationPermissionService(db).set(
+      { ...f.actor, capability: "market.publish", enabled: true },
+      f.actor.userId,
+    );
   const sourcePolicies = new FederationReservationPolicyService(db, f.a.signing.siteId);
-  const sourcePolicy = await sourcePolicies.grant(f.actor, f.revisionId, f.policyInput);
-  const targetPolicy = await f.grant();
+  const sourcePolicy = await sourcePolicies.grant(f.actor, f.revisionId, {
+    ...f.policyInput,
+    allowActivation: execution === true || execution === "activation",
+    allowExecutionConfirmation: execution === true || execution === "confirmation",
+  });
+  const targetPolicy = await f.policies.grant(f.actor, f.revisionId, {
+    ...f.policyInput,
+    allowExecutionConfirmation: execution === true || execution === "confirmation",
+  });
   const fingerprints: string[] = [];
   for (const site of [f.a, f.b]) {
     const fingerprint = randomBytes(32).toString("hex");
@@ -6240,4 +6255,524 @@ test("reservation proposal expired delivery success cannot finish a replacement 
   f.afterSend(async (receipt) => receipt);
   await f.source.advanceNext();
   expect(await f.view()).toMatchObject({ state: "delivered" });
+});
+
+async function executionAutomationFixture(enabled: boolean | "activation" | "confirmation" = true) {
+  const f = await reservationProposalFixture(enabled);
+  const ordinarySource = new FederationAgreementService(db, f.a.signing);
+  const ordinaryProvider = new FederationAgreementService(db, f.b.signing);
+  const executionUserId = randomUUID();
+  await db.insert(users).values({
+    id: executionUserId,
+    orgId: f.actor.orgId,
+    email: `${executionUserId}@test.invalid`,
+    role: "user",
+    serviceAccount: true,
+  });
+  await db
+    .insert(userOrgMemberships)
+    .values({ userId: executionUserId, orgId: f.actor.orgId, role: "member" });
+  const sourceConsent = await ordinarySource.approve(f.actor, { terms: f.terms.agreement });
+  const providerConsent = await ordinaryProvider.approve(f.actor, {
+    terms: f.terms.agreement,
+    executionUserId,
+  });
+  await ordinarySource.attachCounterparty(f.actor, f.revisionId, providerConsent.approvalJws);
+  await ordinaryProvider.attachCounterparty(f.actor, f.revisionId, sourceConsent.approvalJws);
+  await f.submit();
+  await f.source.advanceNext();
+  await f.source.advanceNext();
+  await f.target.advanceNext();
+  const exchange = await approvalTransport(f);
+  await exchange.a.discover();
+  await exchange.b.discover();
+  await exchange.a.advanceNext();
+  await exchange.b.advanceNext();
+  const providerCommercial = new FederationCommercialSubmissionService(
+    db,
+    f.b.signing.siteId,
+    f.adapter,
+  );
+  for (let i = 0; i < 6; i++) {
+    await f.service.advanceNext();
+    await providerCommercial.advanceNext();
+  }
+  const marketAdapter = new ActivationAdapter();
+  const marketSource = new FederationMarketService(db, f.a.signing.siteId, marketAdapter);
+  const marketProvider = new FederationMarketService(db, f.b.signing.siteId, marketAdapter);
+  const sourceAutomation = new FederationExecutionAutomation(db, f.a.signing, f.market);
+  const providerAutomation = new FederationExecutionAutomation(db, f.b.signing, f.market);
+  const confirmation = new FederationExecutionConfirmationService(db, f.a.signing.siteId, f.market);
+  const sourceExecution = new FederationCommercialExecutionService(db, f.a.signing, f.market);
+  const dueExecution = () =>
+    db
+      .update(federationReservationProposals)
+      .set({ executionNextAt: new Date(0) })
+      .where(
+        inArray(federationReservationProposals.localSiteId, [
+          f.a.signing.siteId,
+          f.b.signing.siteId,
+        ]),
+      );
+  const commitMarket = async (provider = false) => {
+    for (let i = 0; i < 3; i++) await (provider ? marketProvider : marketSource).advanceNext();
+    const [activation] = await db
+      .select()
+      .from(marketSubmissions)
+      .where(
+        and(
+          eq(marketSubmissions.localSiteId, f.a.signing.siteId),
+          sql`${marketSubmissions.input}->>'operation' = 'activate-demand'`,
+          eq(marketSubmissions.state, "committed"),
+        ),
+      );
+    if (activation?.input.operation === "activate-demand") {
+      f.state.status = "ACTIVE";
+      f.state.version = 3;
+      f.state.activation = activation.input.activation;
+    }
+  };
+  const activate = async () => {
+    await sourceAutomation.discover();
+    await sourceAutomation.advanceNext();
+    await commitMarket();
+    await dueExecution();
+  };
+  const confirmations = () =>
+    db
+      .select()
+      .from(marketSubmissions)
+      .where(
+        and(
+          eq(marketSubmissions.localSiteId, f.a.signing.siteId),
+          sql`${marketSubmissions.input}->>'operation' = 'authorize-execution'`,
+        ),
+      );
+  return {
+    ...f,
+    sourceAutomation,
+    providerAutomation,
+    sourceExecution,
+    confirmation,
+    executionUserId,
+    marketAdapter,
+    marketSource,
+    marketProvider,
+    commitMarket,
+    dueExecution,
+    activate,
+    confirmations,
+  };
+}
+
+test("execution automation is opt-in and source activation grants require current market authority", async () => {
+  const f = await executionAutomationFixture(false);
+  expect(f.sourcePolicy).toMatchObject({
+    allowActivation: false,
+    allowExecutionConfirmation: false,
+  });
+  await f.sourceAutomation.discover();
+  expect(await f.sourceAutomation.advanceNext()).toBe(false);
+  await expect(
+    f.sourceExecution.activatePreauthorized(f.sourcePolicy.id, f.reservation.reservationId),
+  ).rejects.toMatchObject({ code: "POLICY_DENIED" });
+  await expect(
+    f.confirmation.requestPreauthorized(f.sourcePolicy.id, f.reservation.reservationId),
+  ).rejects.toMatchObject({ code: "POLICY_DENIED" });
+  await f.sourcePolicies.revoke(f.actor, f.revisionId, f.sourcePolicy.id);
+  await expect(
+    f.sourcePolicies.grant(f.actor, f.revisionId, { ...f.policyInput, allowActivation: true }),
+  ).rejects.toMatchObject({ code: "POLICY_DENIED" });
+  await new FederationPermissionService(db).set(
+    { ...f.actor, capability: "market.publish", enabled: true },
+    f.actor.userId,
+  );
+  await expect(
+    f.policies.grant(f.actor, f.revisionId, { ...f.policyInput, allowActivation: true }),
+  ).rejects.toMatchObject({ code: "POLICY_DENIED" });
+  const replacement = await f.sourcePolicies.grant(f.actor, f.revisionId, {
+    ...f.policyInput,
+    allowActivation: true,
+  });
+  await expect(
+    f.sourceExecution.activatePreauthorized(replacement.id, f.reservation.reservationId),
+  ).rejects.toMatchObject({ code: "POLICY_DENIED" });
+});
+
+test("execution automation progresses both sites only after VALID and keeps machine provenance", async () => {
+  const f = await executionAutomationFixture();
+  await new FederationPermissionService(db).set(
+    { ...f.actor, capability: "agreement.approve", enabled: false },
+    f.actor.userId,
+  );
+  await new FederationPermissionService(db).set(
+    { ...f.actor, capability: "market.publish", enabled: false },
+    f.actor.userId,
+  );
+  await f.sourceAutomation.discover();
+  await f.providerAutomation.discover();
+  await Promise.all([f.sourceAutomation.advanceNext(), f.sourceAutomation.advanceNext()]);
+  expect(await f.view()).toMatchObject({
+    executionState: "pending",
+    confirmationId: null,
+    executionError: null,
+  });
+  const [activation] = await db
+    .select()
+    .from(marketSubmissions)
+    .where(
+      and(
+        eq(marketSubmissions.localSiteId, f.a.signing.siteId),
+        sql`${marketSubmissions.input}->>'operation' = 'activate-demand'`,
+      ),
+    );
+  expect(activation).toMatchObject({
+    state: "pending",
+    authorizationPolicyId: f.sourcePolicy.id,
+    requestedBy: f.actor.userId,
+  });
+  await f.providerAutomation.advanceNext();
+  expect(await f.view(true)).toMatchObject({
+    executionState: "pending",
+    executionError: null,
+    confirmationId: null,
+  });
+  await f.commitMarket();
+  await f.dueExecution();
+  await f.sourceAutomation.advanceNext();
+  await f.providerAutomation.advanceNext();
+  const proof = (await f.confirmations())[0];
+  expect(proof).toMatchObject({ state: "pending", authorizationPolicyId: f.sourcePolicy.id });
+  expect(await f.view()).toMatchObject({ executionState: "pending" });
+  await f.commitMarket();
+  await f.commitMarket(true);
+  await f.dueExecution();
+  await f.sourceAutomation.advanceNext();
+  await f.providerAutomation.advanceNext();
+  expect(await f.view()).toMatchObject({ executionState: "complete" });
+  expect(await f.view(true)).toMatchObject({ executionState: "complete" });
+  expect(await f.sourceAutomation.advanceNext()).toBe(false);
+  const audits = await db
+    .select()
+    .from(auditLog)
+    .where(
+      and(
+        eq(auditLog.actor, `reservation-policy:${f.sourcePolicy.id}`),
+        eq(auditLog.action, "federation.execution.confirm"),
+      ),
+    );
+  expect(audits).toHaveLength(1);
+  expect(
+    (
+      await db
+        .select()
+        .from(federationReservationPolicies)
+        .where(eq(federationReservationPolicies.id, f.sourcePolicy.id))
+    )[0],
+  ).toMatchObject({ authorizedTasks: 1, authorizedAmount: "60" });
+});
+
+test("execution automation activation is idempotent and can reuse an explicit human activation", async () => {
+  const f = await executionAutomationFixture();
+  const manualId = randomUUID();
+  await f.sourceExecution.activate(f.actor, f.revisionId, f.reservation.reservationId, manualId);
+  const [one, two] = await Promise.all([
+    f.sourceExecution.activatePreauthorized(f.sourcePolicy.id, f.reservation.reservationId),
+    f.sourceExecution.activatePreauthorized(f.sourcePolicy.id, f.reservation.reservationId),
+  ]);
+  expect(one.id).toBe(manualId);
+  expect(two.id).toBe(manualId);
+  const [record] = await db
+    .select()
+    .from(marketSubmissions)
+    .where(eq(marketSubmissions.id, manualId));
+  expect(record?.authorizationPolicyId).toBeNull();
+  expect(await f.confirmations()).toHaveLength(0);
+});
+
+test("execution automation rechecks policy revocation after confirmation query and retains earlier activation", async () => {
+  const f = await executionAutomationFixture();
+  await f.activate();
+  f.beforeClaim(async () => {
+    await f.sourcePolicies.revoke(f.actor, f.revisionId, f.sourcePolicy.id);
+  });
+  await f.sourceAutomation.advanceNext();
+  expect(await f.view()).toMatchObject({
+    executionState: "needs_review",
+    executionError: "POLICY_DENIED",
+    confirmationId: null,
+  });
+  expect(await f.confirmations()).toHaveLength(0);
+  const activationId = (await f.view())?.activationId;
+  const [activation] = await db
+    .select()
+    .from(marketSubmissions)
+    .where(eq(marketSubmissions.id, activationId ?? ""));
+  expect(activation?.state).toBe("committed");
+});
+
+test("execution automation stops on a local fence or expired policy without new market intents", async () => {
+  const f = await executionAutomationFixture();
+  await f.sourceAutomation.discover();
+  await db
+    .update(executionApprovals)
+    .set({
+      stopId: randomUUID(),
+      stopRequestedBy: f.actor.userId,
+      stopRequestedAt: new Date(),
+      stopNextAttemptAt: new Date(),
+    })
+    .where(eq(executionApprovals.localSiteId, f.a.signing.siteId));
+  await f.sourceAutomation.advanceNext();
+  expect(await f.view()).toMatchObject({
+    executionState: "needs_review",
+    executionError: "CANCELLATION_REQUESTED",
+    activationId: null,
+  });
+  await f.providerAutomation.discover();
+  await db
+    .update(federationReservationPolicies)
+    .set({ validFrom: new Date(Date.now() - 20000), validUntil: new Date(Date.now() - 10000) })
+    .where(eq(federationReservationPolicies.id, f.targetPolicy.id));
+  await f.providerAutomation.advanceNext();
+  expect(await f.view(true)).toMatchObject({
+    executionState: "needs_review",
+    executionError: "AUTHORIZATION_EXPIRED",
+    confirmationId: null,
+  });
+});
+
+test("execution automation does not create a replacement for an INVALID market transaction", async () => {
+  const f = await executionAutomationFixture();
+  f.marketAdapter.outcome = "invalid";
+  await f.sourceAutomation.discover();
+  await f.sourceAutomation.advanceNext();
+  await f.commitMarket();
+  await f.dueExecution();
+  await f.sourceAutomation.advanceNext();
+  expect(await f.view()).toMatchObject({
+    executionState: "needs_review",
+    executionError: "LEDGER_INVALID",
+    confirmationId: null,
+  });
+  const id = (await f.view())?.activationId;
+  expect(await f.sourceAutomation.advanceNext()).toBe(false);
+  await f.sourceAutomation.retry(f.actor, f.revisionId, f.reservation.reservationId);
+  await f.sourceAutomation.advanceNext();
+  expect(await f.view()).toMatchObject({ executionState: "needs_review", activationId: id });
+});
+
+test("execution automation will not bypass unresolved confirmation work or mark unproven commit complete", async () => {
+  const f = await executionAutomationFixture();
+  await f.activate();
+  const proof = await f.confirmation.requestPreauthorized(
+    f.sourcePolicy.id,
+    f.reservation.reservationId,
+  );
+  const [record] = await f.confirmations();
+  if (record?.input.operation !== "authorize-execution") throw new Error("Missing confirmation");
+  const input = {
+    ...record.input,
+    authorization: {
+      ...record.input.authorization,
+      issuedAt: new Date().toISOString(),
+      expiresAt: new Date(Date.now() + 1000).toISOString(),
+    },
+  };
+  await db
+    .update(marketSubmissions)
+    .set({ input, digest: federationMaterialDigest(input) })
+    .where(eq(marketSubmissions.id, proof.id));
+  expect(
+    (await f.confirmation.requestPreauthorized(f.sourcePolicy.id, f.reservation.reservationId)).id,
+  ).toBe(proof.id);
+  await db
+    .update(marketSubmissions)
+    .set({ state: "needs_review", lastError: "LEDGER_INVALID" })
+    .where(eq(marketSubmissions.id, proof.id));
+  await expect(
+    f.confirmation.requestPreauthorized(f.sourcePolicy.id, f.reservation.reservationId),
+  ).rejects.toMatchObject({ code: "LEDGER_INVALID", needsReview: true });
+  expect(await f.confirmations()).toHaveLength(1);
+  await db
+    .update(marketSubmissions)
+    .set({ state: "committed", lastError: null, input: record.input, digest: record.digest })
+    .where(eq(marketSubmissions.id, proof.id));
+  await f.sourceAutomation.advanceNext();
+  expect(await f.view()).toMatchObject({
+    executionState: "needs_review",
+    executionError: "INVALID_ADAPTER_RESPONSE",
+  });
+});
+
+test("execution automation respects receiver identity revocation and explicit scope", async () => {
+  const f = await executionAutomationFixture();
+  await f.activate();
+  await f.providerAutomation.discover();
+  await db.update(users).set({ suspended: true }).where(eq(users.id, f.executionUserId));
+  await f.providerAutomation.advanceNext();
+  expect((await f.view(true))?.executionState).toBe("needs_review");
+  expect((await f.view(true))?.confirmationId).toBeNull();
+  await expect(
+    f.sourceAutomation.retry(
+      { ...f.actor, orgId: randomUUID() },
+      f.revisionId,
+      f.reservation.reservationId,
+    ),
+  ).rejects.toMatchObject({ code: "POLICY_DENIED" });
+  await expect(
+    f.sourceExecution.activatePreauthorized(f.targetPolicy.id, f.reservation.reservationId),
+  ).rejects.toMatchObject({ code: "POLICY_DENIED" });
+});
+
+test("execution automation lease loss around network query cannot issue a late confirmation", async () => {
+  const f = await executionAutomationFixture();
+  await f.activate();
+  f.beforeClaim(async () => {
+    await expect(
+      f.sourceAutomation.retry(f.actor, f.revisionId, f.reservation.reservationId),
+    ).rejects.toMatchObject({ code: "OPERATION_CONFLICT" });
+    await db
+      .update(federationReservationProposals)
+      .set({ executionLeaseUntil: new Date(0) })
+      .where(eq(federationReservationProposals.localSiteId, f.a.signing.siteId));
+    await f.sourceAutomation.retry(f.actor, f.revisionId, f.reservation.reservationId);
+  });
+  await f.sourceAutomation.advanceNext();
+  expect(await f.confirmations()).toHaveLength(0);
+  expect(await f.view()).toMatchObject({
+    executionState: "pending",
+    executionError: null,
+    executionLeaseToken: null,
+  });
+  f.beforeClaim(async () => {});
+  await f.sourceAutomation.advanceNext();
+  expect(await f.confirmations()).toHaveLength(1);
+});
+
+test("execution automation audit failure rolls back activation before progress can advance", async () => {
+  const f = await executionAutomationFixture();
+  await f.sourceAutomation.discover();
+  await db.execute(
+    sql`alter table audit_log add constraint test_activation_policy_audit check (action <> 'federation.commercial.execution.activate' OR actor <> ${sql.raw(`'reservation-policy:${f.sourcePolicy.id}'`)})`,
+  );
+  try {
+    await f.sourceAutomation.advanceNext();
+    expect(await f.view()).toMatchObject({ executionState: "pending", activationId: null });
+    const records = await db
+      .select()
+      .from(marketSubmissions)
+      .where(
+        and(
+          eq(marketSubmissions.localSiteId, f.a.signing.siteId),
+          sql`${marketSubmissions.input}->>'operation' = 'activate-demand'`,
+        ),
+      );
+    expect(records).toHaveLength(0);
+  } finally {
+    await db.execute(sql`alter table audit_log drop constraint test_activation_policy_audit`);
+  }
+  await f.dueExecution();
+  await f.sourceAutomation.advanceNext();
+  expect((await f.view())?.activationId).not.toBeNull();
+});
+
+test("execution automation activation-only policy finishes without authorizing execution", async () => {
+  const f = await executionAutomationFixture("activation");
+  await f.activate();
+  await f.sourceAutomation.advanceNext();
+  expect(await f.view()).toMatchObject({ executionState: "complete", confirmationId: null });
+  expect(await f.confirmations()).toHaveLength(0);
+  await f.providerAutomation.discover();
+  expect(await f.providerAutomation.advanceNext()).toBe(false);
+  await expect(
+    db.transaction((tx) => f.confirmation.authorize(tx, f.actor.orgId, f.reservation.request)),
+  ).rejects.toMatchObject({ code: "LEDGER_PENDING" });
+});
+
+test("execution automation confirmation-only policy waits for independent activation", async () => {
+  const f = await executionAutomationFixture("confirmation");
+  await f.sourceAutomation.discover();
+  await f.sourceAutomation.advanceNext();
+  expect(await f.view()).toMatchObject({
+    executionState: "pending",
+    activationId: null,
+    confirmationId: null,
+  });
+  const activation = await f.sourceExecution.activate(
+    f.actor,
+    f.revisionId,
+    f.reservation.reservationId,
+    randomUUID(),
+  );
+  await f.commitMarket();
+  await f.dueExecution();
+  await f.sourceAutomation.advanceNext();
+  await f.commitMarket();
+  await f.dueExecution();
+  await f.sourceAutomation.advanceNext();
+  expect(await f.view()).toMatchObject({ executionState: "complete", activationId: null });
+  expect((await f.confirmations())[0]?.authorizationPolicyId).toBe(f.sourcePolicy.id);
+  const [manual] = await db
+    .select()
+    .from(marketSubmissions)
+    .where(eq(marketSubmissions.id, activation.id));
+  expect(manual?.authorizationPolicyId).toBeNull();
+});
+
+test("execution automation HTTP retry requires current human authority and preserves completed progress", async () => {
+  const f = await executionAutomationFixture("activation");
+  const app = new Hono();
+  app.onError(createErrorHandler(pino({ enabled: false })));
+  let automated = false;
+  app.use("*", async (c, next) => {
+    c.set("principal" as never, f.actor as never);
+    c.set("automation" as never, automated as never);
+    await next();
+  });
+  app.route(
+    "/",
+    createFederationCommercialRoutes(
+      f.approvals,
+      f.service,
+      undefined,
+      undefined,
+      f.sourceExecution,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      f.sourcePolicies,
+      f.source,
+      f.sourceAutomation,
+    ),
+  );
+  const path = `/federation/commercial-agreements/${f.revisionId}/reservation-proposals/${f.reservation.reservationId}/execution-retry`;
+  const post = (body: unknown = {}, route = path) =>
+    app.request(route, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  automated = true;
+  expect((await post()).status).toBe(403);
+  automated = false;
+  expect((await post({ policyId: randomUUID() })).status).toBe(400);
+  expect((await post({}, path.replace(f.revisionId, randomUUID()))).status).toBe(409);
+  await new FederationPermissionService(db).set(
+    { ...f.actor, capability: "agreement.approve", enabled: false },
+    f.actor.userId,
+  );
+  expect((await post()).status).toBe(403);
+  await new FederationPermissionService(db).set(
+    { ...f.actor, capability: "agreement.approve", enabled: true },
+    f.actor.userId,
+  );
+  expect((await post()).status).toBe(200);
+  await f.activate();
+  await f.sourceAutomation.advanceNext();
+  expect((await post()).status).toBe(409);
+  expect(await f.view()).toMatchObject({ executionState: "complete" });
 });
