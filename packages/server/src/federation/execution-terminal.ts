@@ -19,6 +19,7 @@ import {
   CommercialTerminalSchema,
 } from "@kuintessence/shared/federation/commercial";
 import { MarketQueryResultSchema } from "@kuintessence/shared/federation/market";
+import { TERMINAL_MAX_BYTES } from "@kuintessence/shared/federation/terminal-exchange";
 import {
   type FederationTerminalProposal,
   FederationTerminalProposalSchema,
@@ -268,7 +269,7 @@ export class FederationExecutionTerminalService {
         targetSiteId: this.signing.siteId,
         expectedGateVersion: 1,
         outcome: evidence.workflow.status,
-        executionEvidenceDigest: federationMaterialDigest(evidence),
+        executionEvidenceDigest: federationMaterialDigest(evidence, TERMINAL_MAX_BYTES),
         resultManifestDigest: evidence.result?.receipt.manifestDigest ?? null,
         observedAt: evidence.observedAt,
         issuedAt: now.toISOString(),
@@ -363,8 +364,8 @@ export class FederationExecutionTerminalService {
       if (
         saved &&
         (federationMaterialDigest(saved.payload) !== federationMaterialDigest(proposal.payload) ||
-          federationMaterialDigest(saved.evidence) !==
-            federationMaterialDigest(proposal.evidence) ||
+          federationMaterialDigest(saved.evidence, TERMINAL_MAX_BYTES) !==
+            federationMaterialDigest(proposal.evidence, TERMINAL_MAX_BYTES) ||
           saved.counterpartyJws !== proposal.providerJws)
       )
         throw new FederationError("OPERATION_CONFLICT");
@@ -392,7 +393,8 @@ export class FederationExecutionTerminalService {
       if (prior) {
         if (
           federationMaterialDigest(prior.payload) !== federationMaterialDigest(payload) ||
-          federationMaterialDigest(prior.evidence) !== federationMaterialDigest(evidence) ||
+          federationMaterialDigest(prior.evidence, TERMINAL_MAX_BYTES) !==
+            federationMaterialDigest(evidence, TERMINAL_MAX_BYTES) ||
           prior.counterpartyJws !== proposal.providerJws
         )
           throw new FederationError("OPERATION_CONFLICT");

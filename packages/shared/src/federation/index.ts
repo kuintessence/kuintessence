@@ -1,3 +1,7 @@
+import { FederationError } from "./errors";
+
+export { FederationError } from "./errors";
+
 import { z } from "zod";
 import { FederationInputPolicySchema } from "./input-files";
 import {
@@ -172,26 +176,6 @@ export const FederationAcceptanceSchema = z.strictObject({
   status: z.literal("RESERVED"),
 });
 export type FederationAcceptance = z.infer<typeof FederationAcceptanceSchema>;
-
-export class FederationError extends Error {
-  constructor(
-    readonly code:
-      | "INVALID_MESSAGE"
-      | "UNTRUSTED_IDENTITY"
-      | "AUTHORIZATION_EXPIRED"
-      | "AGREEMENT_UNAVAILABLE"
-      | "POLICY_DENIED"
-      | "BUDGET_EXHAUSTED"
-      | "OPERATION_CONFLICT"
-      | "LEDGER_REQUIRED"
-      | "ASSET_UNAVAILABLE"
-      | "DATA_WAITING"
-      | "CANCELLATION_REQUESTED",
-  ) {
-    super(code);
-    this.name = "FederationError";
-  }
-}
 
 /** Legacy requests retain their original deadline; no implicit extension after acceptance. */
 export function federationExecutionDeadline(request: FederationDelegation): number {

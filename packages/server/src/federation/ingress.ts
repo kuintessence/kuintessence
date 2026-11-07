@@ -7,6 +7,7 @@ import { FederationAdmission } from "./admission";
 import { FederationCancellationReceiver } from "./cancellation";
 import type { FederationDownloadStorage } from "./download-credential";
 import type { FederationExecutionConfirmationService } from "./execution-confirmation";
+import { FederationTerminalExchange } from "./execution-terminal-exchange";
 import type { FederationOutboundService } from "./outbound";
 import { FederationResultReceiptReceiver } from "./result-receipts";
 import { type FederationResultDownloadStorage, FederationResultResponder } from "./results";
@@ -99,6 +100,23 @@ export function createFederationIngress(
     );
     return c.body(grant, 200, { "content-type": "application/jose", "cache-control": "no-store" });
   });
+  for (const path of ["/federation/v1/terminals", "/federation/v1/terminal-signatures"] as const) {
+    r.post(path, async (c) => {
+      if (c.req.header("content-type") !== "application/jose")
+        return c.json({ error: { code: "INVALID_MESSAGE" } }, 415);
+      const service = new FederationTerminalExchange(db, signingKey);
+      const jws = await c.req.text(),
+        fingerprint = c.req.header("x-kq-federation-cert") ?? "";
+      const response =
+        path === "/federation/v1/terminals"
+          ? await service.receiveQuery(jws, fingerprint)
+          : await service.receiveDelivery(jws, fingerprint);
+      return c.body(response, 200, {
+        "content-type": "application/jose",
+        "cache-control": "no-store",
+      });
+    });
+  }
   r.post("/federation/v1/usage", async (c) => {
     if (c.req.header("content-type") !== "application/jose")
       return c.json({ error: { code: "INVALID_MESSAGE" } }, 415);

@@ -55,6 +55,11 @@
       "bun": "./src/federation/market.ts",
       "types": "./src/federation/market.ts",
       "default": "./src/federation/market.ts"
+    },
+    "./federation/terminal-exchange": {
+      "bun": "./src/federation/terminal-exchange.ts",
+      "types": "./src/federation/terminal-exchange.ts",
+      "default": "./src/federation/terminal-exchange.ts"
     }
   },
   "scripts": {

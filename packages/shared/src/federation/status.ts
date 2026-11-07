@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { FederationError } from "./index";
+import { FederationError } from "./errors";
 import { FederationDigestSchema } from "./references";
 
 const Identity = {

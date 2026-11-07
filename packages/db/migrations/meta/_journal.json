@@ -911,6 +911,13 @@
       "when": 1794071564180,
       "tag": "0129_wooden_starhawk",
       "breakpoints": true
+    },
+    {
+      "idx": 130,
+      "version": "7",
+      "when": 1794072747047,
+      "tag": "0130_natural_maximus",
+      "breakpoints": true
     }
   ]
 }

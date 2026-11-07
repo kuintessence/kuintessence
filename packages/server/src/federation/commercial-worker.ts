@@ -2,6 +2,7 @@ import { createLogger } from "@kuintessence/shared";
 import type { FederationAccountingCollection } from "./accounting-collection";
 import type { FederationCommercialSubmissionService } from "./commercial-submissions";
 import type { FederationExecutionStopService } from "./execution-stop";
+import type { FederationTerminalExchange } from "./execution-terminal-exchange";
 import type { FederationMarketService } from "./market";
 import type { FederationUsageService } from "./usage";
 import type { FederationUsageExchange } from "./usage-exchange";
@@ -18,6 +19,7 @@ export class FederationCommercialWorker {
     private readonly accounting?: FederationAccountingCollection,
     private readonly market?: FederationMarketService,
     private readonly stops?: FederationExecutionStopService,
+    private readonly terminals?: FederationTerminalExchange,
   ) {}
 
   start() {
@@ -38,6 +40,17 @@ export class FederationCommercialWorker {
           for (let i = 0; i < 8 && !this.stopped; i++) if (!(await this.stops.advanceNext())) break;
         } catch {
           logger.error("Execution stop delivery failed; local stop intent remains in PostgreSQL");
+        }
+      }
+      if (this.terminals) {
+        try {
+          await this.terminals.discover();
+          for (let i = 0; i < 8 && !this.stopped; i++)
+            if (!(await this.terminals.advanceNext())) break;
+        } catch {
+          logger.error(
+            "Terminal exchange failed; received evidence and signatures remain in PostgreSQL",
+          );
         }
       }
       if (this.usage) {

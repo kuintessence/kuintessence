@@ -71,6 +71,7 @@ import { FederationExecutionConfirmationService } from "./federation/execution-c
 import { FederationExecutionMonitor } from "./federation/execution-monitor";
 import { FederationExecutionStopService } from "./federation/execution-stop";
 import { FederationExecutionTerminalService } from "./federation/execution-terminal";
+import { FederationTerminalExchange } from "./federation/execution-terminal-exchange";
 import { FederationInputImports } from "./federation/input-imports";
 import { FederationInputPublication } from "./federation/input-publication";
 import { FederationInputReader } from "./federation/input-reader";
@@ -1717,6 +1718,9 @@ const federationAccounting = federationSigningKey
 const federationUsage = federationSigningKey
   ? new FederationUsageService(db, federationSigningKey)
   : undefined;
+const federationTerminalExchange = federationSigningKey
+  ? new FederationTerminalExchange(db, federationSigningKey, federationSender)
+  : undefined;
 const federationUsageExchange = federationSigningKey
   ? new FederationUsageExchange(db, federationSigningKey, federationSender)
   : undefined;
@@ -1744,6 +1748,7 @@ if (federationSigningKey && federationCommercial)
           ? new UnixMarketClient(config.FEDERATION_MARKET_SOCKET_PATH)
           : undefined,
       ),
+      federationTerminalExchange,
     ),
   );
 const federationPreparation = federationSigningKey
@@ -2478,6 +2483,7 @@ const federationCommercialWorker = federationCommercial
       federationAccounting,
       federationMarket,
       federationStops,
+      federationTerminalExchange,
     )
   : undefined;
 federationCommercialWorker?.start();

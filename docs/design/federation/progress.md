@@ -1643,3 +1643,28 @@ Market 新增 RequestExecutionStop、Adapter 新增 request-execution-stop，双
 成功场景真实联合验收退出 0：temp/closure-execution.log；私有业务证据 temp/federation-execution-success-8e1ekkal，测试链材料 temp/fabric-network-VQpIgh。三个 Fabric 机构、四个生产 Adapter、双 Server/独立 PG、双 Agent 与独立存储实际执行两节点 Bash 文件工作流；源方实读 verified:42 的 12 字节结果并完成签名回执。提供方从这两个真实 Job 归集证据，源方从自身导入记录复核后签署；生产 worker 获得私有终态 VALID（区块 20）和公共关闭 VALID（区块 21），重复审批返回原记录。两端分别读到 CLOSED、同一 TERMINAL gate 哈希且无本地预算；两端本地重新执行均返回 POLICY_DENIED。所有自建进程、数据库、namespace/RBAC 与临时凭据已清理；证据/链材料仅留忽略目录。
 
 这次延伸并实际运行成功场景，没有重复此前已通过的断链到期/主动停止场景或原生链级金额与背书竞态。机构终态审批由测试驱动专用人工 API，不是自动 mTLS 交换；没有 Spack、Slurm/PBS、真实科研软件或独立机构验收。下一项为机构间终态材料自动交换、提供方接收对签及双端业务状态收敛；结算、物理介质、归档、完整 Web/CLI 和 PR 预览仍待完成。未合并或部署 main。
+
+## 终态材料自动分块交换与对签回传
+
+迁移 0130 由 db:generate 生成，新增源方同步与临时分块表。后台自动发现已接单的协调预留，按原合同、请求、任务和尝试，通过固定 mTLS 路径读取提供方已批准的终态；每次 64 KiB，整体最多 16 MiB。固定材料摘要/总长度/偏移，分块与游标事务提交，完成后核对全包摘要、提供方原业务签名及原预留绑定，保存完整 proposal 并删除临时分块。ready 只表示收到材料，不代表本机构批准。
+
+新增当前组织只读交换接口、空正文的已接收材料批准接口及人工重试入口。批准仍沿用原源方本地独立复核服务；后台随后自动回传原源方终态签名，提供方在事务内保存同文对签与审计并返回签名 ACK，源方验证后标记 complete。丢回包与重启不重复批准或审计，不生成第二份私有终态，也不向对端传源方复核记录、用户或本地结果导入 ID。交换 complete、私有存证 committed、公共关闭 CLOSED 各自记录，不混同付款或额度释放。
+
+新增四个独立签署用途、Node 网关/HTTPS 客户端固定路径和管理页面中英文标签，保留原单条 JOSE/签名正文限额。发现原终态 HTTP 上限 16 MiB 与规范摘要默认 1 MiB 不一致，终态整体摘要显式使用 16 MiB，普通材料默认上限与编码字节不变。独立加载新协议测试暴露 status 经总入口引用错误类型的循环导入，已把原 FederationError 类移到无依赖模块并由原入口继续导出，保留类身份和错误语义。
+
+隔离 PostgreSQL 43 项终态、源方复核、关闭、执行防线与交换用例通过；后续仅追加 1 项错误 JSON/禁用发送通道用例，共 44 项不同数据库用例。8 项新增覆盖超过 1 MiB 的分块与重启、ACK 丢失、撤销证书/错误用途/错任务、签名分块长度冲突、对签冲突、审计回滚、网络期间撤权、迟到租约、当前组织 HTTP 权限及空正文批准；错误数据进入 needs_review，禁用发送不影响历史读取。证据在 temp/terminal-exchange-final-pg.log、temp/terminal-exchange-json-pg.log；早期 5 项是同一用例的先行验证，不重复累加。
+
+共享联邦协议 22 项、真实 Node mTLS 网关 2 项、HTTPS 客户端 5 项通过（共 29 项不同测试，重复运行不累加）。初次网关测试因新增两个合法路径仍沿用旧调用总数失败，修正夹具计数后通过；新协议独立加载首次失败的循环导入已修复并通过全部共享联邦测试。全仓 lint 无错误，保留原有 47 warning / 1 info；初次全仓 typecheck 通过，最后新增测试的字符串数组断言类型错误已加字面量约束，Shared 定向复验通过，Server/DB 最终定向检查通过。真实链验收脚本已更新为后台取材料与回传对签，业务批准仍由专用人工 API 显式触发。
+
+
+最终复查另补两项恢复测试并通过：原下载未完成时人工通过既有接口批准了同一份材料，交付对签后清理原临时分块；租约到期但无人接替时迟到响应不把任务误标 needs_review，后续 worker 可直接重领。与上述 44 项合计 46 项不同数据库用例，日志 temp/terminal-exchange-recovery-pg.log。最终 Server/Fabric 脚本类型检查及 lint 另行运行。
+
+首次真实交换验收在作业提交前的双边合同登记阶段失败，证据 temp/terminal-exchange-execution.log、temp/federation-execution-success-xuz52vid、temp/fabric-network-UKD3mD。三方 Peer 日志均确认同一重复登记交易因 PDC 哈希版本冲突被标记 MVCC_READ_CONFLICT（区块 12），另一份已在区块 11 成功。测试环境已清理。验收夹具现只在确认错误码 11、另一方精确同文意图已有 VALID 区块回执且本请求尚未复核重试过时，作为已授权测试机构调用现有人工复核接口；保留原 INVALID 历史，其他失败仍终止。没有把生产 needs_review 改成自动接受。
+
+
+最终成功场景真实复验退出 0，证据 temp/terminal-exchange-execution-final.log、temp/federation-execution-success-g8b8yugf，测试链材料 temp/fabric-network-szDQpc。两份真实 Kubernetes Job 完成并经独立 Agent 回传 verified:42 的 12 字节结果后，源方生产后台通过 mTLS 自动取得提供方 7,844 字节终态材料；人工 API 只提交空正文批准已接收材料，后台自动回传原源方签名，提供方保存对签并返回签名 ACK，源方 exchange=complete。私有终态交易取得 VALID（区块 20），公共关闭取得 VALID（区块 21）；双方查询同一 CLOSED/TERMINAL gate 哈希且无本地预算，再执行均被拒绝。重复批准保持原终态和业务签名。该真实样例材料不足一个分块，大材料和跨重启续传由上述隔离 PG/签名协议用例覆盖；本次最终运行没有再次触发合同 MVCC 冲突，不能把它描述为实际复验了夹具的新复核分支。
+
+测试自建进程、数据库、namespace/RBAC 和临时凭据均已清理，私有材料仅在忽略目录。本轮未重跑断链到期/主动停止、原生链金额/背书竞态，也没有运行 Spack、Slurm/PBS 或真实科研软件。终态批准目前仍需两端机构显式发起，无人值守批准政策、自动商务握手、结算与争议/重开、物理介质、容量归档、完整 Web/CLI 和 PR 预览继续待完成；未合并或部署 main。
+
+
+最后补充人工 refresh 清除已过期租约 token 的约束，防止旧 worker 的迟到网络错误覆盖刚刚批准的重试；对应单项隔离 PG 测试通过，日志 temp/terminal-exchange-retry-pg.log。本轮共 47 项不同数据库用例（36 项原终态相关回归、11 项新增交换/恢复用例），此前重复执行不累加。最终 lint 无新增问题，最后 Server 类型检查在所有行为及测试修改后执行。

@@ -666,10 +666,19 @@ def verify_terminal():
         + "/terminal"
     )
     provider = api(path, {}, token=token)["data"]
-    proposal = api(path + "/proposal", token=token)["data"]
+    for _ in range(40):
+        exchange = sourceapi(path + "/exchange", token=sourcetoken)["data"]
+        assert not exchange["sync"] or exchange["sync"]["state"] != "needs_review", json.dumps(exchange)
+        if exchange["sync"] and exchange["sync"]["state"] == "ready":
+            break
+        time.sleep(3)
+    else:
+        raise AssertionError("Provider proposal did not arrive over mTLS")
+    proposal = exchange["sync"]["proposal"]
+    assert proposal["providerJws"] == provider["approvalJws"]
     assert provider["payload"]["outcome"] == "completed"
     assert len(provider["evidence"]["jobs"]) == 2
-    source = sourceapi(path + "/countersign", proposal, sourcetoken)["data"]
+    source = sourceapi(path + "/countersign-received", {}, sourcetoken)["data"]
     assert source["digest"] == provider["digest"]
     assert source["counterpartyJws"] == provider["approvalJws"]
     assert source["sourceReview"]["result"]["importId"]
@@ -677,7 +686,9 @@ def verify_terminal():
         view = sourceapi(path, token=sourcetoken)["data"]
         for operation in (view["submission"], view["closure"]):
             assert not operation or operation["state"] != "needs_review", json.dumps(operation)
-        if view["closure"] and view["closure"]["state"] == "committed":
+        exchange = sourceapi(path + "/exchange", token=sourcetoken)["data"]
+        assert exchange["sync"]["state"] != "needs_review", json.dumps(exchange)
+        if view["closure"] and view["closure"]["state"] == "committed" and exchange["sync"]["state"] == "complete":
             break
         time.sleep(3)
     else:
@@ -687,13 +698,16 @@ def verify_terminal():
         assert operation["transaction"]["validationCode"] == 0
         assert operation["transaction"]["blockNumber"] is not None
     assert view["closure"]["id"] == provider["terminalId"]
-    assert sourceapi(path + "/countersign", proposal, sourcetoken)["data"] == source
-    assert api(path, {}, token=token)["data"] == provider
+    assert sourceapi(path + "/countersign-received", {}, sourcetoken)["data"] == source
+    returned = api(path, {}, token=token)["data"]
+    assert returned["counterpartyJws"] == source["approvalJws"]
+    for field in ("terminalId", "payload", "digest", "evidence", "approvalJws"):
+        assert returned[field] == provider[field]
     (logs / "terminal-evidence.json").write_text(
-        json.dumps({"provider": provider, "source": source, "status": view}, indent=2) + "\n"
+        json.dumps({"provider": returned, "source": source, "status": view, "exchange": exchange}, indent=2) + "\n"
     )
     print(
-        "REAL TERMINAL CLOSURE PASSED: bound Job evidence + source result import -> dual signatures -> VALID private terminal -> VALID public closure; replay retains original records",
+        "REAL TERMINAL EXCHANGE AND CLOSURE PASSED: mTLS evidence transfer -> local source review -> automatic countersignature return and signed acknowledgement -> VALID private terminal -> VALID public closure; replay retains original records",
         flush=True,
     )
 

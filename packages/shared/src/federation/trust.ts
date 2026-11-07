@@ -35,6 +35,10 @@ export const FederationKeyInput = z
           "commercial-reservation",
           "commercial-release",
           "commercial-terminal",
+          "terminal-query",
+          "terminal-chunk",
+          "terminal-delivery",
+          "terminal-ack",
           "commercial-usage-query",
           "commercial-usage-page",
           "status-query",
@@ -54,7 +58,7 @@ export const FederationKeyInput = z
         ]),
       )
       .min(1)
-      .max(24),
+      .max(29),
     validFrom: z.iso.datetime(),
     validUntil: z.iso.datetime(),
   })

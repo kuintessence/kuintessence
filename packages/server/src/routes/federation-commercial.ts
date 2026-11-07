@@ -15,6 +15,7 @@ import type { FederationCommercialSubmissionService } from "../federation/commer
 import type { FederationExecutionConfirmationService } from "../federation/execution-confirmation";
 import type { FederationExecutionStopService } from "../federation/execution-stop";
 import type { FederationExecutionTerminalService } from "../federation/execution-terminal";
+import type { FederationTerminalExchange } from "../federation/execution-terminal-exchange";
 import { FabricClientFailure } from "../federation/fabric-client";
 import type { FederationActor } from "../federation/permissions";
 import type { FederationUsageService } from "../federation/usage";
@@ -31,6 +32,7 @@ export function createFederationCommercialRoutes(
   confirmation?: FederationExecutionConfirmationService,
   stops?: FederationExecutionStopService,
   terminals?: FederationExecutionTerminalService,
+  terminalExchange?: FederationTerminalExchange,
 ) {
   const r = new Hono<{ Variables: { federationActor: FederationActor } }>();
   r.use("/federation/commercial-agreements/*", async (c, next) => {
@@ -133,6 +135,44 @@ export function createFederationCommercialRoutes(
   if (execution) {
     const record = id.extend({ recordId: z.uuid() });
     const path = "/federation/commercial-agreements/:revisionId/execution-approvals";
+    if (terminalExchange) {
+      r.get(`${path}/:recordId/terminal/exchange`, kqValidator("param", record), async (c) => {
+        const { revisionId, recordId } = c.req.valid("param");
+        return c.json({
+          data: await terminalExchange.get(c.get("federationActor"), revisionId, recordId),
+        });
+      });
+      r.post(
+        `${path}/:recordId/terminal/refresh`,
+        kqValidator("param", record),
+        kqValidator("json", z.strictObject({})),
+        async (c) => {
+          const { revisionId, recordId } = c.req.valid("param");
+          await terminalExchange.retry(c.get("federationActor"), revisionId, recordId);
+          return c.json({ data: { queued: true } }, 202);
+        },
+      );
+      if (terminals)
+        r.post(
+          `${path}/:recordId/terminal/countersign-received`,
+          kqValidator("param", record),
+          kqValidator("json", z.strictObject({})),
+          async (c) => {
+            const { revisionId, recordId } = c.req.valid("param"),
+              actor = c.get("federationActor");
+            const received = await terminalExchange.get(actor, revisionId, recordId);
+            if (!received.sync?.proposal) throw new FederationError("DATA_WAITING");
+            return c.json({
+              data: await terminals.countersign(
+                actor,
+                revisionId,
+                recordId,
+                received.sync.proposal,
+              ),
+            });
+          },
+        );
+    }
     if (terminals) {
       r.get(`${path}/:recordId/terminal/proposal`, kqValidator("param", record), async (c) =>
         c.json({

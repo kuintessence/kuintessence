@@ -32,6 +32,7 @@ import type {
 } from "@kuintessence/shared/federation/commercial";
 import type { FederationEvidenceBatch } from "@kuintessence/shared/federation/ledger";
 import type { MarketAdapterProposalInput } from "@kuintessence/shared/federation/market";
+import type { FederationTerminalProposal } from "@kuintessence/shared/federation/terminal-proposal";
 import { sql } from "drizzle-orm";
 import {
   bigint,
@@ -92,6 +93,10 @@ export const federationSigningKeys = pgTable(
           | "commercial-reservation"
           | "commercial-release"
           | "commercial-terminal"
+          | "terminal-query"
+          | "terminal-chunk"
+          | "terminal-delivery"
+          | "terminal-ack"
           | "commercial-usage-query"
           | "commercial-usage-page"
           | "status-query"
@@ -1532,6 +1537,78 @@ export const federationReceivedUsage = pgTable(
     check(
       "federation_received_usage_identity",
       sql`(${t.number} > 0 AND ${t.report}->>'reportId' = ${t.reportId}::text AND ${t.digest} ~ '^sha256:[a-f0-9]{64}$') IS TRUE`,
+    ),
+  ],
+);
+
+export const federationTerminalSyncs = pgTable(
+  "federation_terminal_syncs",
+  {
+    localSiteId: uuid("local_site_id").notNull(),
+    reservationId: uuid("reservation_id").notNull(),
+    state: varchar("state", { length: 24 }).notNull().default("pending"),
+    terminalId: uuid("terminal_id"),
+    proposalDigest: varchar("proposal_digest", { length: 71 }),
+    totalBytes: integer("total_bytes"),
+    nextOffset: integer("next_offset").notNull().default(0),
+    proposal: jsonb("proposal").$type<FederationTerminalProposal>(),
+    acknowledgementJws: text("acknowledgement_jws"),
+    lastError: varchar("last_error", { length: 64 }),
+    leaseToken: uuid("lease_token"),
+    leaseUntil: timestamp("lease_until", { withTimezone: true }),
+    nextAttemptAt: timestamp("next_attempt_at", { withTimezone: true }).notNull().defaultNow(),
+    verifiedAt: timestamp("verified_at", { withTimezone: true }),
+  },
+  (t) => [
+    primaryKey({ columns: [t.localSiteId, t.reservationId] }),
+    foreignKey({
+      name: "federation_terminal_sync_approval_fk",
+      columns: [t.localSiteId, t.reservationId],
+      foreignColumns: [
+        federationCommercialExecutionApprovals.localSiteId,
+        federationCommercialExecutionApprovals.recordId,
+      ],
+    }),
+    index("federation_terminal_sync_pending").on(t.localSiteId, t.state, t.nextAttemptAt),
+    check(
+      "federation_terminal_sync_state",
+      sql`${t.state} IN ('pending','ready','complete','needs_review')`,
+    ),
+    check(
+      "federation_terminal_sync_lease",
+      sql`(${t.leaseToken} IS NULL) = (${t.leaseUntil} IS NULL)`,
+    ),
+    check(
+      "federation_terminal_sync_content",
+      sql`((
+    (${t.terminalId} IS NULL AND ${t.proposalDigest} IS NULL AND ${t.totalBytes} IS NULL AND ${t.nextOffset} = 0 AND ${t.proposal} IS NULL)
+    OR (${t.terminalId} IS NOT NULL AND ${t.proposalDigest} ~ '^sha256:[a-f0-9]{64}$' AND ${t.totalBytes} BETWEEN 1 AND 16777216
+      AND ${t.nextOffset} BETWEEN 1 AND ${t.totalBytes}
+      AND ((${t.proposal} IS NULL AND ${t.nextOffset} % 65536 = 0) OR
+        (${t.proposal}->'payload'->>'terminalId' = ${t.terminalId}::text AND ${t.nextOffset} = ${t.totalBytes})))
+    ) AND (${t.state} <> 'ready' OR ${t.proposal} IS NOT NULL)
+      AND ((${t.state} = 'complete') = (${t.acknowledgementJws} IS NOT NULL))) IS TRUE`,
+    ),
+  ],
+);
+export const federationTerminalChunks = pgTable(
+  "federation_terminal_chunks",
+  {
+    localSiteId: uuid("local_site_id").notNull(),
+    reservationId: uuid("reservation_id").notNull(),
+    offset: integer("offset").notNull(),
+    bytes: text("bytes").notNull(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.localSiteId, t.reservationId, t.offset] }),
+    foreignKey({
+      name: "federation_terminal_chunk_sync_fk",
+      columns: [t.localSiteId, t.reservationId],
+      foreignColumns: [federationTerminalSyncs.localSiteId, federationTerminalSyncs.reservationId],
+    }),
+    check(
+      "federation_terminal_chunk_size",
+      sql`${t.offset} BETWEEN 0 AND 16777215 AND ${t.offset} % 65536 = 0 AND octet_length(${t.bytes}) BETWEEN 4 AND 87384`,
     ),
   ],
 );

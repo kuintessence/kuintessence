@@ -94,6 +94,8 @@ try {
         "/federation/v1/delegations",
         "/federation/v1/status",
         "/federation/v1/usage",
+        "/federation/v1/terminals",
+        "/federation/v1/terminal-signatures",
         "/federation/v1/cancellations",
         "/federation/v1/results",
         "/federation/v1/result-downloads",
@@ -168,6 +170,8 @@ try {
     assert.deepEqual(await call({ cert, key }), { status: 200, body: "signed.receipt.bytes" });
     assert.equal((await call({ cert, key }, "/federation/v1/status")).status, 200);
     assert.equal((await call({ cert, key }, "/federation/v1/usage")).status, 200);
+    assert.equal((await call({ cert, key }, "/federation/v1/terminals")).status, 200);
+    assert.equal((await call({ cert, key }, "/federation/v1/terminal-signatures")).status, 200);
     assert.equal((await call({ cert, key }, "/federation/v1/usage?peer=forged")).status, 404);
     assert.equal((await call({ cert, key }, "/federation/v1/status?peer=forged")).status, 404);
     await assert.rejects(call({}));
@@ -198,7 +202,7 @@ try {
       (await call({ cert, key }, "/federation/v1/input-downloads?identity=forged")).status,
       404,
     );
-    assert.equal(calls, 9);
+    assert.equal(calls, 11);
     await new Promise<void>((resolve, reject) =>
       backend.close((error) => (error ? reject(error) : resolve())),
     );

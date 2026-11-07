@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { randomBytes, randomUUID } from "node:crypto";
 import {
   createPgDb,
+  federationCommercialAttempts,
   federationCommercialSubmissions,
   federationMarketSubmissions,
 } from "@kuintessence/db";
@@ -10,11 +11,13 @@ import {
   CommercialAgreementSchema,
   CommercialReservationSchema,
 } from "@kuintessence/shared/federation/commercial";
-import { eq } from "drizzle-orm";
+import { desc, eq } from "drizzle-orm";
 import { importPKCS8 } from "jose";
 import { z } from "zod";
+import { federationMaterialDigest } from "../../packages/server/src/federation/assets";
 import { FederationCommercialAgreementService } from "../../packages/server/src/federation/commercial-agreements";
 import { FederationCommercialExecutionService } from "../../packages/server/src/federation/commercial-execution";
+import { FederationCommercialSubmissionService } from "../../packages/server/src/federation/commercial-submissions";
 import { FederationExecutionConfirmationService } from "../../packages/server/src/federation/execution-confirmation";
 import { FederationMarketService } from "../../packages/server/src/federation/market";
 import { UnixMarketClient } from "../../packages/server/src/federation/market-client";
@@ -116,15 +119,55 @@ if (import.meta.main) {
       }
       console.log(`PASS ${label}`);
     };
+    const reviewed = new Set<string>();
     const commercialReady = async (p: typeof a) => {
       const rows = await p.db.select().from(federationCommercialSubmissions);
-      assert(
-        !rows.some((r) => r.state === "needs_review"),
-        rows
-          .map((r) => r.lastError)
-          .filter(Boolean)
-          .join(","),
-      );
+      for (const row of rows.filter((r) => r.state === "needs_review")) {
+        const [attempt] = await p.db
+          .select()
+          .from(federationCommercialAttempts)
+          .where(eq(federationCommercialAttempts.submissionId, row.id))
+          .orderBy(desc(federationCommercialAttempts.number))
+          .limit(1);
+        assert(
+          row.lastError === "LEDGER_INVALID" &&
+            attempt?.stage === "invalid" &&
+            attempt.validationCode === 11 &&
+            !reviewed.has(row.id),
+          row.lastError ?? "Commercial failure",
+        );
+        const other = p === a ? b : a;
+        const peers = await other.db.select().from(federationCommercialSubmissions);
+        const duplicate = peers.find(
+          (r) => federationMaterialDigest(r.input) === federationMaterialDigest(row.input),
+        );
+        assert(
+          duplicate && duplicate.state !== "needs_review",
+          "MVCC retry needs the exact peer intent",
+        );
+        if (duplicate.state !== "committed" || (row.leaseUntil && row.leaseUntil > new Date()))
+          return false;
+        const [valid] = await other.db
+          .select()
+          .from(federationCommercialAttempts)
+          .where(eq(federationCommercialAttempts.submissionId, duplicate.id))
+          .orderBy(desc(federationCommercialAttempts.number))
+          .limit(1);
+        assert(
+          valid?.stage === "committed" && valid.validationCode === 0 && valid.blockNumber !== null,
+        );
+        // The fixture acts as the authorized reviewer only for a proven duplicate VALID peer intent.
+        await new FederationCommercialSubmissionService(p.db, p.key.siteId).retry(
+          p.actor,
+          row.agreementRevisionId,
+          row.id,
+        );
+        reviewed.add(row.id);
+        console.log(
+          `Reviewed duplicate commercial MVCC conflict: ${attempt.transactionId}; peer VALID ${valid.transactionId}`,
+        );
+        return false;
+      }
       return rows.length > 0 && rows.every((r) => r.state === "committed");
     };
     const marketReady = async (p: typeof a, id: string) => {

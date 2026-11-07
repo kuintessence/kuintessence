@@ -10,6 +10,7 @@ import {
   FederationTerminalSourceReviewSchema,
 } from "@kuintessence/shared/federation";
 import type { CommercialReservation } from "@kuintessence/shared/federation/commercial";
+import { TERMINAL_MAX_BYTES } from "@kuintessence/shared/federation/terminal-exchange";
 import type { FederationTerminalProposal } from "@kuintessence/shared/federation/terminal-proposal";
 import { and, asc, eq, sql } from "drizzle-orm";
 import type { z } from "zod";
@@ -27,7 +28,7 @@ function inspectEvidence(
   const { payload, evidence } = proposal;
   const request = reserve.request;
   if (
-    federationMaterialDigest(evidence) !== payload.executionEvidenceDigest ||
+    federationMaterialDigest(evidence, TERMINAL_MAX_BYTES) !== payload.executionEvidenceDigest ||
     evidence.reservationId !== reserve.reservationId ||
     evidence.activationId !== payload.activationId ||
     evidence.requestDigest !== requestDigest ||

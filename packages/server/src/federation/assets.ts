@@ -38,8 +38,8 @@ const assetKinds = {
   usecase: "usecase",
 } as const;
 
-export function federationMaterialDigest(value: unknown): string {
-  return `sha256:${createHash("sha256").update(federationCanonicalJson(value)).digest("hex")}`;
+export function federationMaterialDigest(value: unknown, maxBytes?: 1048576 | 16777216): string {
+  return `sha256:${createHash("sha256").update(federationCanonicalJson(value, maxBytes)).digest("hex")}`;
 }
 
 export interface FederationAssetAuthorization {

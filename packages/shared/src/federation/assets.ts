@@ -125,7 +125,10 @@ export const FederationEnvironmentLockSchema = z
 export type FederationEnvironmentLock = z.infer<typeof FederationEnvironmentLockSchema>;
 
 /** Content addressing for portable material only; the JWS wire format remains byte-preserving. */
-export function federationCanonicalJson(value: unknown): string {
+export function federationCanonicalJson(
+  value: unknown,
+  maxBytes: 1048576 | 16777216 = 1048576,
+): string {
   function encode(input: unknown, depth: number): string {
     if (depth > 32) throw new Error("Federation material nesting exceeds 32 levels");
     if (input === null || typeof input === "boolean" || typeof input === "string")
@@ -151,7 +154,7 @@ export function federationCanonicalJson(value: unknown): string {
     throw new Error("Federation material must be finite JSON");
   }
   const encoded = encode(value, 0);
-  if (new TextEncoder().encode(encoded).length > 1048576)
-    throw new Error("Federation material exceeds one MiB");
+  if (new TextEncoder().encode(encoded).length > maxBytes)
+    throw new Error(`Federation material exceeds ${maxBytes / 1048576} MiB`);
   return encoded;
 }

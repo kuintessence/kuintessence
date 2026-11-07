@@ -14,6 +14,7 @@ import {
   federationBudgets,
   federationCancellations,
   federationCapabilities,
+  federationCertificates,
   federationEvidence,
   federationExecutionTerminals,
   federationMaterials,
@@ -23,7 +24,9 @@ import {
   federationResultReceipts,
   federationSigningKeys,
   federationSites,
+  federationTerminalChunks,
   federationTerminalEvidence,
+  federationTerminalSyncs,
   federationWorkflowBindings,
   jobCancellations,
   jobs,
@@ -70,6 +73,12 @@ import {
   type MarketProposalInput,
   MarketProposalInputSchema,
 } from "@kuintessence/shared/federation/market";
+import {
+  TERMINAL_MAX_BYTES,
+  TerminalChunkSchema,
+  TerminalDeliverySchema,
+  TerminalQuerySchema,
+} from "@kuintessence/shared/federation/terminal-exchange";
 import { and, eq, inArray, sql } from "drizzle-orm";
 import { Hono } from "hono";
 import { exportSPKI } from "jose";
@@ -94,10 +103,12 @@ import { FederationExecutionConfirmationService } from "./execution-confirmation
 import { FederationExecutionMonitor } from "./execution-monitor";
 import { FederationExecutionStopService } from "./execution-stop";
 import { FederationExecutionTerminalService } from "./execution-terminal";
+import { FederationTerminalExchange } from "./execution-terminal-exchange";
 import { FabricClientFailure } from "./fabric-client";
 import { FederationMarketService } from "./market";
 import type { MarketClient } from "./market-client";
 import { FederationOutboundService } from "./outbound";
+import type { FederationSend } from "./outbound-client";
 import { FederationPermissionService } from "./permissions";
 import { FederationPreparationService } from "./preparation";
 import { signFederationMessage, verifyFederationMessage } from "./signatures";
@@ -268,6 +279,13 @@ async function ready(f: Awaited<ReturnType<typeof fixture>>) {
 afterAll(async () => {
   for (const f of fixtures) {
     const siteIds = [f.a.signing.siteId, f.b.signing.siteId];
+    await db
+      .delete(federationTerminalChunks)
+      .where(inArray(federationTerminalChunks.localSiteId, siteIds));
+    await db
+      .delete(federationTerminalSyncs)
+      .where(inArray(federationTerminalSyncs.localSiteId, siteIds));
+    await db.delete(federationCertificates).where(inArray(federationCertificates.siteId, siteIds));
     await db
       .delete(federationCancellations)
       .where(inArray(federationCancellations.localSiteId, siteIds));
@@ -3701,4 +3719,524 @@ test("terminal fence blocks undisclosed stops and CLOSED with mismatched reserva
     .where(eq(executionApprovals.stopId, otherStop.id));
   expect(approval?.stopLastError).toBe("OPERATION_CONFLICT");
   expect(approval?.stopNextAttemptAt).not.toBeNull();
+});
+
+async function terminalExchangeFixture() {
+  const f = await terminalSourceFixture("failed");
+  const fingerprint = randomBytes(32).toString("hex");
+  await db.insert(federationCertificates).values({
+    fingerprint,
+    siteId: f.a.signing.siteId,
+    certificatePem: "TLS registry fixture; handshake tested separately",
+    validFrom: new Date("2020-01-01"),
+    validUntil: new Date("2099-01-01"),
+  });
+  for (const siteId of [f.a.signing.siteId, f.b.signing.siteId]) {
+    const [key] = await db
+      .select()
+      .from(federationSigningKeys)
+      .where(eq(federationSigningKeys.siteId, siteId));
+    if (!key) throw new Error("Missing key");
+    await db
+      .update(federationSigningKeys)
+      .set({
+        allowedKinds: [
+          ...key.allowedKinds,
+          "terminal-query",
+          "terminal-chunk",
+          "terminal-delivery",
+          "terminal-ack",
+        ],
+      })
+      .where(eq(federationSigningKeys.siteId, siteId));
+  }
+  const provider = new FederationTerminalExchange(db, f.b.signing);
+  let failAfterReceive = false;
+  let offline = false;
+  const requests: string[] = [];
+  const send: FederationSend = async (_endpoint, jws, path) => {
+    if (offline) throw new Error("offline fixture");
+    if (!path) throw new Error("Missing terminal path");
+    requests.push(path);
+    const result =
+      path === "/federation/v1/terminals"
+        ? await provider.receiveQuery(jws, fingerprint)
+        : path === "/federation/v1/terminal-signatures"
+          ? await provider.receiveDelivery(jws, fingerprint)
+          : (() => {
+              throw new Error("Unexpected terminal path");
+            })();
+    if (failAfterReceive) throw new Error("lost fixture response");
+    return result;
+  };
+  const exchange = new FederationTerminalExchange(db, f.a.signing, send);
+  const view = () => exchange.get(f.actor, f.revisionId, f.reservation.reservationId);
+  const due = () =>
+    db
+      .update(federationTerminalSyncs)
+      .set({ nextAttemptAt: new Date(0) })
+      .where(eq(federationTerminalSyncs.localSiteId, f.a.signing.siteId));
+  await exchange.discover();
+  return {
+    ...f,
+    provider,
+    exchange,
+    fingerprint,
+    view,
+    due,
+    send,
+    requests,
+    offline: (value: boolean) => {
+      offline = value;
+    },
+    loseReply: (value: boolean) => {
+      failAfterReceive = value;
+    },
+  };
+}
+
+test("terminal exchange receives evidence without signing and returns approved signature exactly once after lost reply", async () => {
+  const f = await terminalExchangeFixture();
+  expect(await f.exchange.advanceNext()).toBe(true);
+  expect((await f.view()).sync).toMatchObject({ state: "pending", proposal: null });
+  const provider = await f.approveTerminal();
+  await f.due();
+  await Promise.all([f.exchange.advanceNext(), f.exchange.advanceNext()]);
+  const received = (await f.view()).sync;
+  expect(received?.state).toBe("ready");
+  expect(received?.proposal).toEqual(await f.proposal());
+  expect(await f.exchange.advanceNext()).toBe(false);
+  expect(await f.sourceTerminal.get(f.actor, f.revisionId, f.reservation.reservationId)).toBeNull();
+  if (!received?.proposal) throw new Error("Missing proposal");
+  const signed = await f.sourceTerminal.countersign(
+    f.actor,
+    f.revisionId,
+    f.reservation.reservationId,
+    received.proposal,
+  );
+  f.loseReply(true);
+  await f.exchange.advanceNext();
+  expect((await f.view()).sync?.state).toBe("pending");
+  expect(
+    (await f.terminal.get(f.actor, f.revisionId, f.reservation.reservationId))?.counterpartyJws,
+  ).toBe(signed.approvalJws);
+  f.loseReply(false);
+  await f.due();
+  await new FederationTerminalExchange(db, f.a.signing, f.send).advanceNext();
+  expect((await f.view()).sync).toMatchObject({ state: "complete", lastError: null });
+  expect(await f.exchange.advanceNext()).toBe(false);
+  expect(
+    await db
+      .select()
+      .from(auditLog)
+      .where(
+        and(
+          eq(auditLog.actor, f.actor.userId),
+          eq(auditLog.action, "federation.execution.terminal_receive_signature"),
+        ),
+      ),
+  ).toHaveLength(1);
+  expect(
+    (await f.terminal.get(f.actor, f.revisionId, f.reservation.reservationId))?.payload,
+  ).toEqual(provider.payload);
+});
+
+test("terminal exchange resumes more than one MiB across restart with bounded chunks and no duplicated retained bytes", async () => {
+  const f = await terminalExchangeFixture();
+  const original = await f.approveTerminal();
+  const evidence = structuredClone(original.evidence);
+  const first = evidence.jobs[0];
+  if (!first) throw new Error("Missing job evidence");
+  evidence.jobs = Array.from({ length: 80 }, (_, i) => {
+    const row = structuredClone(first);
+    row.evidence.jobId = randomUUID();
+    row.evidence.invocationPathHash = createHash("sha256").update(String(i)).digest("hex");
+    row.evidence.scheduler.node = "x".repeat(20000);
+    row.digest = federationMaterialDigest(row.evidence);
+    return row;
+  });
+  const payload = {
+    ...original.payload,
+    executionEvidenceDigest: federationMaterialDigest(evidence, TERMINAL_MAX_BYTES),
+  };
+  const approvalJws = await signFederationMessage(CommercialTerminalSchema, payload, f.b.signing);
+  const key = await f.trust.resolveKey(f.b.signing.siteId, f.b.signing.keyId, new Date());
+  const signed = await verifyFederationMessage(
+    CommercialTerminalSchema,
+    approvalJws,
+    key,
+    new Date(),
+  );
+  await db
+    .update(federationExecutionTerminals)
+    .set({ payload, evidence, approvalJws, digest: signed.digest })
+    .where(
+      and(
+        eq(federationExecutionTerminals.localSiteId, f.b.signing.siteId),
+        eq(federationExecutionTerminals.reservationId, f.reservation.reservationId),
+      ),
+    );
+  await f.exchange.advanceNext();
+  expect((await f.view()).sync?.nextOffset).toBe(65536);
+  f.offline(true);
+  await f.exchange.advanceNext();
+  expect((await f.view()).sync?.nextOffset).toBe(65536);
+  f.offline(false);
+  await f.due();
+  const restart = new FederationTerminalExchange(db, f.a.signing, f.send);
+  for (let i = 0; i < 40 && (await f.view()).sync?.state === "pending"; i++)
+    await restart.advanceNext();
+  const view = (await f.view()).sync;
+  expect(view?.state).toBe("ready");
+  expect(view?.totalBytes).toBeGreaterThan(1048576);
+  expect(view?.proposal?.evidence).toEqual(evidence);
+  expect(
+    await db
+      .select()
+      .from(federationTerminalChunks)
+      .where(eq(federationTerminalChunks.localSiteId, f.a.signing.siteId)),
+  ).toHaveLength(0);
+  if (!view?.proposal) throw new Error("Missing proposal");
+  expect(
+    (
+      await f.sourceTerminal.countersign(
+        f.actor,
+        f.revisionId,
+        f.reservation.reservationId,
+        view.proposal,
+      )
+    ).digest,
+  ).toBe(signed.digest);
+});
+
+test("terminal exchange rejects revoked certificate, swapped identity and unauthorized message purposes", async () => {
+  const f = await terminalExchangeFixture();
+  await f.approveTerminal();
+  await db
+    .update(federationCertificates)
+    .set({ revokedAt: new Date() })
+    .where(eq(federationCertificates.fingerprint, f.fingerprint));
+  await f.exchange.advanceNext();
+  expect((await f.view()).sync?.state).toBe("needs_review");
+  await db
+    .update(federationCertificates)
+    .set({ revokedAt: null })
+    .where(eq(federationCertificates.fingerprint, f.fingerprint));
+  await f.exchange.retry(f.actor, f.revisionId, f.reservation.reservationId);
+  const malicious = new FederationTerminalExchange(db, f.a.signing, async (_endpoint, jws) => {
+    const own = await f.trust.resolveKey(f.a.signing.siteId, f.a.signing.keyId, new Date());
+    const { payload } = await verifyFederationMessage(TerminalQuerySchema, jws, own, new Date());
+    const wrong = await signFederationMessage(
+      TerminalQuerySchema,
+      { ...payload, taskId: randomUUID() },
+      f.a.signing,
+    );
+    return f.provider.receiveQuery(wrong, f.fingerprint);
+  });
+  await malicious.advanceNext();
+  expect((await f.view()).sync?.lastError).toBe("POLICY_DENIED");
+  await db
+    .update(federationSigningKeys)
+    .set({ allowedKinds: ["commercial-terminal"] })
+    .where(eq(federationSigningKeys.siteId, f.a.signing.siteId));
+  await f.exchange.retry(f.actor, f.revisionId, f.reservation.reservationId);
+  await f.exchange.advanceNext();
+  expect((await f.view()).sync?.lastError).toBe("UNTRUSTED_IDENTITY");
+  expect((await f.view()).sync?.proposal).toBeNull();
+});
+
+test("terminal exchange rejects signed inconsistent chunks and does not replace a partial download", async () => {
+  const f = await terminalExchangeFixture();
+  await f.approveTerminal();
+  const bad = new FederationTerminalExchange(db, f.a.signing, async (_endpoint, jws) => {
+    const response = await f.provider.receiveQuery(jws, f.fingerprint);
+    const key = await f.trust.resolveKey(f.b.signing.siteId, f.b.signing.keyId, new Date());
+    const { payload } = await verifyFederationMessage(
+      TerminalChunkSchema,
+      response,
+      key,
+      new Date(),
+    );
+    if (!payload.item) throw new Error("Missing chunk");
+    return signFederationMessage(
+      TerminalChunkSchema,
+      { ...payload, item: { ...payload.item, totalBytes: payload.item.totalBytes + 1 } },
+      f.b.signing,
+    );
+  });
+  await bad.advanceNext();
+  expect((await f.view()).sync).toMatchObject({
+    state: "needs_review",
+    nextOffset: 0,
+    proposal: null,
+  });
+  expect(
+    await db
+      .select()
+      .from(federationTerminalChunks)
+      .where(eq(federationTerminalChunks.localSiteId, f.a.signing.siteId)),
+  ).toHaveLength(0);
+});
+
+test("terminal exchange attachment rolls back on audit failure and rejects a different signed terminal", async () => {
+  const f = await terminalExchangeFixture();
+  await f.approveTerminal();
+  await f.exchange.advanceNext();
+  const proposal = (await f.view()).sync?.proposal;
+  if (!proposal) throw new Error("Missing proposal");
+  await f.sourceTerminal.countersign(f.actor, f.revisionId, f.reservation.reservationId, proposal);
+  await db.execute(
+    sql`alter table audit_log add constraint test_terminal_delivery_audit check (action <> 'federation.execution.terminal_receive_signature' OR actor <> ${sql.raw(`'${f.actor.userId}'`)})`,
+  );
+  try {
+    await f.exchange.advanceNext();
+    expect(
+      (await f.terminal.get(f.actor, f.revisionId, f.reservation.reservationId))?.counterpartyJws,
+    ).toBeNull();
+  } finally {
+    await db.execute(sql`alter table audit_log drop constraint test_terminal_delivery_audit`);
+  }
+  await f.due();
+  const bad = new FederationTerminalExchange(db, f.a.signing, async (_endpoint, jws) => {
+    const own = await f.trust.resolveKey(f.a.signing.siteId, f.a.signing.keyId, new Date());
+    const { payload } = await verifyFederationMessage(TerminalDeliverySchema, jws, own, new Date());
+    const sourceJws = await signFederationMessage(
+      CommercialTerminalSchema,
+      { ...proposal.payload, salt: randomBytes(32).toString("hex") },
+      f.a.signing,
+    );
+    return f.provider.receiveDelivery(
+      await signFederationMessage(TerminalDeliverySchema, { ...payload, sourceJws }, f.a.signing),
+      f.fingerprint,
+    );
+  });
+  await bad.advanceNext();
+  expect((await f.view()).sync?.lastError).toBe("OPERATION_CONFLICT");
+  expect(
+    (await f.terminal.get(f.actor, f.revisionId, f.reservation.reservationId))?.counterpartyJws,
+  ).toBeNull();
+  await f.exchange.retry(f.actor, f.revisionId, f.reservation.reservationId);
+  await f.exchange.advanceNext();
+  expect((await f.view()).sync?.state).toBe("complete");
+});
+
+test("terminal exchange rechecks local purpose and refuses stale leases after peer response", async () => {
+  const f = await terminalExchangeFixture();
+  await f.approveTerminal();
+  const revoked = new FederationTerminalExchange(db, f.a.signing, async (...args) => {
+    const response = await f.send(...args);
+    await db
+      .update(federationSigningKeys)
+      .set({ allowedKinds: ["commercial-terminal"] })
+      .where(eq(federationSigningKeys.siteId, f.a.signing.siteId));
+    return response;
+  });
+  await revoked.advanceNext();
+  expect((await f.view()).sync).toMatchObject({
+    state: "needs_review",
+    proposal: null,
+    lastError: "UNTRUSTED_IDENTITY",
+  });
+  const g = await terminalExchangeFixture();
+  await g.approveTerminal();
+  const late = new FederationTerminalExchange(db, g.a.signing, async (...args) => {
+    const response = await g.send(...args);
+    await db
+      .update(federationTerminalSyncs)
+      .set({ leaseToken: randomUUID(), leaseUntil: new Date(Date.now() + 60000) })
+      .where(eq(federationTerminalSyncs.localSiteId, g.a.signing.siteId));
+    return response;
+  });
+  await late.advanceNext();
+  expect((await g.view()).sync).toMatchObject({
+    state: "pending",
+    nextOffset: 0,
+    lastError: null,
+    proposal: null,
+  });
+});
+
+test("terminal exchange status and received approval enforce organization and empty human intent", async () => {
+  const f = await terminalExchangeFixture();
+  await f.approveTerminal();
+  await f.exchange.advanceNext();
+  await expect(
+    f.exchange.get({ ...f.actor, orgId: randomUUID() }, f.revisionId, f.reservation.reservationId),
+  ).rejects.toMatchObject({ code: "POLICY_DENIED" });
+  const app = new Hono();
+  app.onError(createErrorHandler(pino({ enabled: false })));
+  app.use("*", async (c, next) => {
+    c.set("principal" as never, f.actor as never);
+    await next();
+  });
+  app.route(
+    "/",
+    createFederationCommercialRoutes(
+      f.approvals,
+      f.service,
+      undefined,
+      undefined,
+      f.execution,
+      f.sourceConfirmation,
+      undefined,
+      f.sourceTerminal,
+      f.exchange,
+    ),
+  );
+  const path = `/federation/commercial-agreements/${f.revisionId}/execution-approvals/${f.reservation.reservationId}/terminal`;
+  const get = await app.request(`${path}/exchange`);
+  expect(get.status).toBe(200);
+  expect(get.headers.get("cache-control")).toBe("no-store");
+  expect(JSON.stringify(await get.json())).not.toContain("leaseToken");
+  expect(
+    (
+      await app.request(`${path}/countersign-received`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: '{"outcome":"completed"}',
+      })
+    ).status,
+  ).toBe(400);
+  expect(
+    (
+      await app.request(`${path}/countersign-received`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: "{}",
+      })
+    ).status,
+  ).toBe(200);
+  await f.exchange.advanceNext();
+  expect((await f.view()).sync?.state).toBe("complete");
+});
+
+test("terminal exchange quarantines invalid signed JSON and disabled transport keeps history without network", async () => {
+  const f = await terminalExchangeFixture();
+  await f.approveTerminal();
+  const bad = new FederationTerminalExchange(db, f.a.signing, async (_endpoint, jws) => {
+    const response = await f.provider.receiveQuery(jws, f.fingerprint);
+    const key = await f.trust.resolveKey(f.b.signing.siteId, f.b.signing.keyId, new Date());
+    const { payload } = await verifyFederationMessage(
+      TerminalChunkSchema,
+      response,
+      key,
+      new Date(),
+    );
+    if (!payload.item) throw new Error("Missing chunk");
+    const bytes = Buffer.from("invalid JSON");
+    return signFederationMessage(
+      TerminalChunkSchema,
+      {
+        ...payload,
+        item: {
+          ...payload.item,
+          totalBytes: bytes.length,
+          bytes: bytes.toString("base64"),
+          proposalDigest: `sha256:${createHash("sha256").update(bytes).digest("hex")}`,
+        },
+      },
+      f.b.signing,
+    );
+  });
+  await bad.advanceNext();
+  expect((await f.view()).sync).toMatchObject({
+    state: "needs_review",
+    proposal: null,
+    lastError: "INVALID_MESSAGE",
+  });
+  const disabled = new FederationTerminalExchange(db, f.a.signing);
+  await disabled.discover();
+  expect(await disabled.advanceNext()).toBe(false);
+  expect((await disabled.get(f.actor, f.revisionId, f.reservation.reservationId)).sync?.state).toBe(
+    "needs_review",
+  );
+  await expect(
+    disabled.retry(f.actor, f.revisionId, f.reservation.reservationId),
+  ).rejects.toMatchObject({ code: "ASSET_UNAVAILABLE" });
+});
+
+test("terminal exchange manual approval finishes signature delivery and clears an interrupted download", async () => {
+  const f = await terminalExchangeFixture();
+  const original = await f.approveTerminal();
+  const evidence = structuredClone(original.evidence),
+    job = evidence.jobs[0];
+  if (!job) throw new Error("Missing evidence");
+  job.evidence.scheduler.node = "x".repeat(80000);
+  job.digest = federationMaterialDigest(job.evidence);
+  const payload = {
+    ...original.payload,
+    executionEvidenceDigest: federationMaterialDigest(evidence, TERMINAL_MAX_BYTES),
+  };
+  const approvalJws = await signFederationMessage(CommercialTerminalSchema, payload, f.b.signing);
+  const key = await f.trust.resolveKey(f.b.signing.siteId, f.b.signing.keyId, new Date());
+  const { digest } = await verifyFederationMessage(
+    CommercialTerminalSchema,
+    approvalJws,
+    key,
+    new Date(),
+  );
+  await db
+    .update(federationExecutionTerminals)
+    .set({ payload, evidence, approvalJws, digest })
+    .where(
+      and(
+        eq(federationExecutionTerminals.localSiteId, f.b.signing.siteId),
+        eq(federationExecutionTerminals.reservationId, f.reservation.reservationId),
+      ),
+    );
+  await f.exchange.advanceNext();
+  expect((await f.view()).sync?.nextOffset).toBe(65536);
+  await f.sourceTerminal.countersign(
+    f.actor,
+    f.revisionId,
+    f.reservation.reservationId,
+    await f.proposal(),
+  );
+  await f.exchange.advanceNext();
+  expect((await f.view()).sync).toMatchObject({
+    state: "complete",
+    nextOffset: 0,
+    totalBytes: null,
+    proposal: null,
+  });
+  expect(
+    await db
+      .select()
+      .from(federationTerminalChunks)
+      .where(eq(federationTerminalChunks.localSiteId, f.a.signing.siteId)),
+  ).toHaveLength(0);
+});
+
+test("terminal exchange expired lease discards a late response without requiring human review", async () => {
+  const f = await terminalExchangeFixture();
+  await f.approveTerminal();
+  const late = new FederationTerminalExchange(db, f.a.signing, async (...args) => {
+    const response = await f.send(...args);
+    await db
+      .update(federationTerminalSyncs)
+      .set({ leaseUntil: new Date(0) })
+      .where(eq(federationTerminalSyncs.localSiteId, f.a.signing.siteId));
+    return response;
+  });
+  await late.advanceNext();
+  expect((await f.view()).sync).toMatchObject({ state: "pending", lastError: null, nextOffset: 0 });
+  await f.exchange.advanceNext();
+  expect((await f.view()).sync?.state).toBe("ready");
+});
+
+test("terminal exchange explicit retry fences errors from the expired worker", async () => {
+  const f = await terminalExchangeFixture();
+  await f.approveTerminal();
+  const late = new FederationTerminalExchange(db, f.a.signing, async () => {
+    await db
+      .update(federationTerminalSyncs)
+      .set({ leaseUntil: new Date(0) })
+      .where(eq(federationTerminalSyncs.localSiteId, f.a.signing.siteId));
+    await f.exchange.retry(f.actor, f.revisionId, f.reservation.reservationId);
+    throw new Error("late transport failure");
+  });
+  await late.advanceNext();
+  expect((await f.view()).sync).toMatchObject({ state: "pending", lastError: null, nextOffset: 0 });
+  await f.exchange.advanceNext();
+  expect((await f.view()).sync?.state).toBe("ready");
 });
