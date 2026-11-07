@@ -69,6 +69,87 @@ function definition(parallel = 1) {
 beforeAll(async () => {
   await db.insert(users).values({ id: userId, email: `${userId}@test.invalid`, role: "user" });
 });
+
+test("ordinary submit automatically persists durable execution for a referenced federation node and rejects missing scope", async () => {
+  const versionId = randomUUID(),
+    orgId = randomUUID();
+  const child = workflowDsl.WorkflowSchema.parse({
+    name: "Federation child",
+    spec: {
+      nodeDrafts: [
+        {
+          id: "remote",
+          name: "Remote",
+          type: "Federation",
+          agreementRevisionId: randomUUID(),
+          template: {
+            originSiteId: randomUUID(),
+            kind: "workflow",
+            id: randomUUID(),
+            revision: "1",
+            digest: `sha256:${"a".repeat(64)}`,
+          },
+          inputManifestDigest: `sha256:${"b".repeat(64)}`,
+          environmentLockDigest: `sha256:${"c".repeat(64)}`,
+          resources: { cpus: 1, memoryMb: 128, gpus: 0, wallTimeSec: 30 },
+          maxAmount: "1",
+        },
+      ],
+    },
+  });
+  const yaml = stringify({
+    name: "Ordinary source",
+    spec: {
+      nodeDrafts: [
+        {
+          id: "child",
+          name: "Child",
+          type: "SubWorkflow",
+          maxDepth: 2,
+          ref: { kind: "ByVersion", workflowVersionId: versionId },
+        },
+      ],
+    },
+  });
+  const tasks: Array<() => Promise<void>> = [];
+  const runner = new WorkflowAsyncRunner({
+    registry,
+    journal,
+    resolveWorkflowVersion: async (id) => (id === versionId ? child : null),
+    makeRunner: () => async () => {
+      throw new Error("Submit test must not execute");
+    },
+    schedule: (task) => {
+      tasks.push(task);
+    },
+  });
+  runners.push(runner);
+  await expect(
+    runner.submit({ yaml, submittedBy: userId, role: "user", authorizeRun: async () => {} }),
+  ).rejects.toThrow("active organization");
+  const submitted = await runner.submit({
+    yaml,
+    submittedBy: userId,
+    role: "user",
+    authorizeRun: async () => {},
+    principal: {
+      userId,
+      orgId,
+      sub: "fixture",
+      role: "user",
+      email: `${userId}@test.invalid`,
+      orgIds: [orgId],
+      memberships: [],
+      capabilities: [],
+    },
+  });
+  runIds.push(submitted.runId);
+  expect(await registry.getById(submitted.runId)).toMatchObject({
+    status: "queued",
+    input: { executionModel: "durable-v2", orgId },
+  });
+  expect(tasks).toHaveLength(1);
+});
 afterEach(async () => {
   await Promise.all(runners.splice(0).map((runner) => runner.stop()));
   if (runIds.length) await db.delete(workflowRuns).where(inArray(workflowRuns.id, runIds));

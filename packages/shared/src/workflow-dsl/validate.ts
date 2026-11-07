@@ -411,6 +411,7 @@ function declaredOutputDescriptors(node: WorkflowNode): Set<string> | undefined 
 }
 
 function outputDescriptorItems(node: WorkflowNode): string[] | undefined {
+  if (node.type === "Federation") return node.outputs.map((output) => output.descriptor);
   if (node.type === "Generate") {
     return [node.output.descriptor];
   }

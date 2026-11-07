@@ -7,6 +7,7 @@ import {
   federationResultTransfers,
   netdriveFiles,
   type PgDb,
+  type PgTransaction,
 } from "@kuintessence/db";
 import {
   FederationResultCopiedSchema as CopiedSchema,
@@ -22,11 +23,13 @@ import {
 import { and, asc, eq, gte, inArray, isNull, lte, ne, notExists, or } from "drizzle-orm";
 import { z } from "zod";
 import { lockCloudWrites, StorageQuotaService } from "../services/storage-quota";
+import type { LeasedWorkflowJournal } from "../workflow/execution-journal";
 import { federationMaterialDigest } from "./assets";
 import { type FederationActor, requireFederationCapability } from "./permissions";
 import type { FederationResultReader } from "./result-reader";
 import { federationMessageKeyId } from "./signatures";
 import { type FederationTransaction, FederationTrustRegistry } from "./trust-registry";
+import { assertWorkflowDelegationBinding } from "./workflow-delegations";
 
 type Import = typeof federationResultImports.$inferSelect;
 type Transfer = typeof federationResultTransfers.$inferSelect;
@@ -42,10 +45,22 @@ export class FederationResultImports {
     private readonly clock: () => Date = () => new Date(),
   ) {}
 
-  async enqueue(actor: FederationActor, operationId: string, importId: string) {
+  async enqueue(
+    actor: FederationActor,
+    operationId: string,
+    importId: string,
+    lease?: LeasedWorkflowJournal,
+  ) {
     z.uuid().parse(importId);
     z.uuid().parse(operationId);
-    const existing = await this.db.transaction(async (tx) => {
+    const transaction = <T>(operation: (tx: PgTransaction) => Promise<T>) =>
+      lease
+        ? lease.transaction(async (tx) => {
+            await assertWorkflowDelegationBinding(tx, lease.runId, actor, this.siteId, operationId);
+            return operation(tx);
+          })
+        : this.db.transaction(operation);
+    const existing = await transaction(async (tx) => {
       await requireFederationCapability(tx, actor, "result.read");
       const [row] = await tx
         .select()
@@ -62,7 +77,7 @@ export class FederationResultImports {
     );
     if (members.some((file) => file.sizeBytes > 5 * 1024 ** 4))
       throw new FederationError("POLICY_DENIED");
-    return this.db.transaction(async (tx) => {
+    return transaction(async (tx) => {
       // Serializes concurrent imports of the same remote operation without network under the lock.
       await tx
         .select()

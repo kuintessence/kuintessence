@@ -29,6 +29,12 @@ const EMPTY_MAPPINGS: SlotMapping[] = [];
 
 export function workflowOutputSlots(node: GraphNode): SlotOption[] {
   const raw = node.data.raw;
+  if (raw.type === "Federation")
+    return raw.outputs.map((output) => ({
+      batch: output.type === "FileBatch",
+      descriptor: output.descriptor,
+      type: "File",
+    }));
   if ("outputSlots" in raw && raw.outputSlots && raw.outputSlots.length > 0) {
     return raw.outputSlots.map((slot) => ({
       batch: slot.type === "File" ? slot.isBatch : false,

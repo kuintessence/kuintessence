@@ -1,5 +1,8 @@
 import {
   federationOutbound,
+  federationResultAttempts,
+  federationResultImports,
+  federationResultTransfers,
   jobCancellations,
   jobs,
   type PgDb,
@@ -47,7 +50,22 @@ function pendingDelegations(runId: string, requireStopReceipt = false) {
     JOIN ${federationOutbound} AS fo
       ON fo.local_site_id = wd.local_site_id AND fo.operation_id = wd.operation_id
     WHERE wd.run_id = ${runId} AND fo.cancel_state IS DISTINCT FROM 'stopped'
-      ${requireStopReceipt ? sql`` : sql`AND coalesce(fo.status_report->'workflow'->>'status', '') NOT IN ('completed', 'failed', 'cancelled')`}
+      ${requireStopReceipt ? sql`` : sql`AND coalesce(fo.status_report->'workflow'->>'status', '') <> 'completed'`}
+  )`;
+}
+
+function pendingDelegationCopies(runId: string) {
+  return sql<boolean>`EXISTS (
+    SELECT 1 FROM ${workflowExecutionDelegations} AS wd
+    JOIN ${federationOutbound} AS fo ON fo.local_site_id = wd.local_site_id AND fo.operation_id = wd.operation_id
+    JOIN ${federationResultImports} AS fi ON fi.local_site_id = wd.local_site_id AND fi.operation_id = wd.operation_id
+      AND fi.requested_by = fo.submitted_by AND fi.local_org_id = fo.local_org_id
+    WHERE wd.run_id = ${runId} AND fi.state <> 'available'
+      AND (fi.state <> 'cancelled' OR fi.reserved_bytes > 0 OR EXISTS (
+        SELECT 1 FROM ${federationResultTransfers} AS ft
+        JOIN ${federationResultAttempts} AS fa ON fa.transfer_id = ft.id
+        WHERE ft.import_id = fi.id AND fa.state <> 'cleaned'
+      ))
   )`;
 }
 
@@ -289,7 +307,9 @@ export class WorkflowRunRegistry implements WorkflowRunStore {
       const status = terminalStatusFromResult(result);
       const errorMessage = failedNodeSummary(result);
       const [remote] = await db
-        .select({ pending: pendingDelegations(runId) })
+        .select({
+          pending: sql<boolean>`(${pendingDelegations(runId)} OR ${pendingDelegationCopies(runId)})`,
+        })
         .from(workflowRuns)
         .where(eq(workflowRuns.id, runId));
       const stopping = pending.length > 0 || remote?.pending === true;
@@ -320,6 +340,7 @@ export class WorkflowRunRegistry implements WorkflowRunStore {
     errorCode = "WORKFLOW_EXECUTION_FAILED",
   ): Promise<boolean> {
     const errorMessage = err instanceof Error ? err.message : String(err);
+    const pending = sql<boolean>`(${pendingDelegations(runId, true)} OR ${pendingDelegationCopies(runId)})`;
     const failed = await this.db.transaction(async (tx) => {
       await tx
         .select({ id: workflowRuns.id })
@@ -329,7 +350,7 @@ export class WorkflowRunRegistry implements WorkflowRunStore {
       return tx
         .update(workflowRuns)
         .set({
-          status: sql`CASE WHEN ${pendingDelegations(runId, true)} THEN 'cancelling' ELSE 'failed' END`,
+          status: sql`CASE WHEN ${pending} THEN 'cancelling' ELSE 'failed' END`,
           waitingInvocations: [],
           errorCode,
           errorMessage,
@@ -342,8 +363,8 @@ export class WorkflowRunRegistry implements WorkflowRunStore {
               },
             },
           },
-          completedAt: sql`CASE WHEN ${pendingDelegations(runId, true)} THEN NULL ELSE now() END`,
-          cancelRequestedAt: sql`CASE WHEN ${pendingDelegations(runId, true)} THEN now() ELSE ${workflowRuns.cancelRequestedAt} END`,
+          completedAt: sql`CASE WHEN ${pending} THEN NULL ELSE now() END`,
+          cancelRequestedAt: sql`CASE WHEN ${pending} THEN now() ELSE ${workflowRuns.cancelRequestedAt} END`,
           updatedAt: new Date(),
         })
         .where(
@@ -378,6 +399,7 @@ export class WorkflowRunRegistry implements WorkflowRunStore {
           eq(workflowRuns.id, runId),
           eq(workflowRuns.status, "cancelling"),
           sql`NOT ${pendingDelegations(runId, true)}`,
+          sql`NOT ${pendingDelegationCopies(runId)}`,
         ),
       )
       .returning({ id: workflowRuns.id });
@@ -458,6 +480,7 @@ export class WorkflowRunRegistry implements WorkflowRunStore {
           eq(workflowRuns.status, "cancelling"),
           eq(workflowRuns.errorCode, "WORKFLOW_INTERRUPTED"),
           sql`NOT ${pendingDelegations(runId, true)}`,
+          sql`NOT ${pendingDelegationCopies(runId)}`,
         ),
       )
       .returning({ id: workflowRuns.id });

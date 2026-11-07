@@ -934,8 +934,24 @@ Slurm 方向已取得并核对仓库既有 Apptainer 1.4.3 包 SHA-256，构建�
 
 测试使用真实数据库、生产签名/权限/协议服务，跨站发送为服务内替身；服务重建不是实际进程崩溃验收，本轮没有运行真实集群或 Fabric，也没有重跑已通过的结果文件搬运。本机证据为 temp/federation-workflow-binding-*.log，临时 PostgreSQL 已停止清理。普通 Workflow 联邦节点、结果导入到下游输出以及本地动态文件输入的授权交付仍须继续接入；本轮是可恢复副作用边界，不是完整自动委派交付。未推送、发布预览或修改 main 部署。
 
+## 普通 Workflow 联邦节点与回传文件消费
+
+新增显式 Federation DSL 节点和生产执行者，以已批准模板、输入清单、环境锁、资源和金额上限提交。普通异步提交递归检查 Loop、Inline/ByVersion 子工作流并自动固定 durable-v2；无当前组织/规范用户时拒绝提交。运行恢复调用原持久 binding，消费后台签名状态；未知状态保持等待，completed 不代表文件已到。声明的 File/FileBatch 输出在自动导入、整单发布、所有者/成员/大小/摘要/本地版本检查后才变为源站受管文件引用，供普通下游使用。Web 已同步节点渲染、中英文名称和文件端口；配置暂通过 YAML，未添加无效占位节点或假装已完成协议选择表单。
+
+结果入队复用原导入服务和稳定操作 ID，在网络查询返回后的最终事务复查 Workflow lease，取消不能留下迟到副本任务。取消同时停止原提交者的未完成导入，保留已发布文件及其他用户副本；远端已 stopped 但本地短期搬运授权仍有效或清理未确认时，父运行继续 cancelling。远端 failed/cancelled 也不能替代停止回执。接收方物化明确拒绝 Federation 再委派节点，防止模板未经批准跳往第三站。
+
+新增 6 项不同隔离 PostgreSQL 联邦节点测试、1 项普通提交自动 durable 测试，以及既有 durable runner 9 项通过；新增 DSL/嵌套模式选择 3 项与原 async runner 19 项通过。生产 shared engine/runner + 数据库验证远端等待、结果等待、恢复不重跑无关分支、下游 Script 获得本地 FileBatch、自动排队去重、网络返回与取消竞争、错节点输出/覆盖版本/删除/撤权拒绝、远端失败及本地副本清理。首次清理夹具未等短期授权过期，改为推进测试时钟后通过；增加其他用户副本隔离时，预期状态应保持原 transferring 而非 pending，修正断言后定向通过。类型检查发现 executor 只接受成功/失败结果，已将远端独立撤回映射为节点失败并走父运行清理，未扩宽公共节点终态类型。
+
+上述 PG 测试中的远端网络、存储和下游 Script 执行仍为替身，不能代替真实双平台作业验收。静态输入清单的自动委派/回传已实现，动态参数、源站 File/FileBatch 输入授权交付、真实多调度器与 Fabric 联合、完整管理 UI/CLI 及 PR 预览仍须完成，不缩小总交付目标。
+
+真实普通 Workflow 双平台验收通过：使用源站正常 POST /api/workflows 提交 Federation + NoAction 文件接收节点，没有调用委派 POST 或结果导入 POST 发起任务。两个独立生产 Server/数据库、双向真实 mTLS 网关、两个注册 Agent 和独立 RustFS，接收站从零清单自动取得输入与环境锁，运行两个实际 Kubernetes Script 得到 42\n → verified:42\n。源站节点消费后台签名 completed 后自动排队回传并恢复，remote/consume 均 Succeeded，waitingInvocations 清空；源站普通云盘下载取得 12 字节，SHA-256 87730d8e29a90b06728319cb30fcf8dbae523f785f3043c82ea4df6386c83f7f，对端接收回执 recorded。后续重复导入请求只验证去重，未用于发起本次搬运。
+
+源站运行 1ea538a7-f707-428e-8b76-b0cc628b1947，委派/导入 ad7e4953-9950-4e93-8acc-4c423fa85792，源站文件 033dba6d-4597-41c6-9830-e6a20cce8c53。本机证据为 temp/federation-workflow-live-platforms/source-workflow-evidence.json、result-delivery-evidence.json、source-workflow-result.json 与 temp/federation-workflow-live-run.log。源站下游为 NoAction 文件就绪检查，远端两个 Script 才是真实计算；普通下游 Script 接收本地文件的数据库用例仍使用执行替身，不混作源站真实脚本验收。两站位于同一主机，远端计算限 1 CPU/128 MiB，无 Spack 编译或 Fabric，不声称 Slurm/PBS、多主机或全部蓝图完成。
+
+全仓其余包类型检查通过；Server 两个新增终态类型问题修正后，最终 Server 定向类型检查通过，Fabric 测试类型检查通过；lint 无错误、保留原有 47 warnings/1 info，639 个本地文档目标检查通过。临时服务、数据库、凭据已清理，并确认 namespace 已删除；未推送、发布预览或修改 main 部署。
+
 ## 尚未接通，不能宣称支持
 
-协议审批与机构信任管理 UI、源站 Workflow 状态消费、额度结算/退款、完整生产持久 Workflow 端到端验收、完整的数据/软件物化与介质交付、双方证据确认与完整用量/结算记录、商业/市场链码及真实联邦作业与 Fabric 联合运行、归档恢复、Web/CLI 和部署配置均未完成。
+协议审批与机构信任管理 UI、源站 Workflow 动态输入交付、额度结算/退款、完整生产持久 Workflow 端到端验收、完整的数据/软件物化与介质交付、双方证据确认与完整用量/结算记录、商业/市场链码及真实联邦作业与 Fabric 联合运行、归档恢复、Web/CLI 和部署配置均未完成。
 
 接下来连接普通 Workflow 自动委派和状态消费，并验证 Slurm/PBS 跨站执行、材料与环境锁，以及真实运行的恢复和撤权。已有接收站点 Kubernetes 文件流水线通过，不能替代这些验收。同时仍须补全用例内部标识与受管文件转换、native lock/Agent 检查，将本地输入连接到既有授权执行路径，并接通联邦任务/工作流映射与派发待办消费；只有本地资源、数据和软件授权及 Job 映射完整后，预留才能进入执行。完整交付仍须通过所有端到端验收，不将本轮基础模块单独宣传成可用联邦平台。

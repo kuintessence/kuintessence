@@ -38,6 +38,28 @@ export async function assertWorkflowDelegationOwner(
   return run;
 }
 
+export async function assertWorkflowDelegationBinding(
+  tx: PgTransaction,
+  runId: string,
+  actor: FederationActor,
+  localSiteId: string,
+  operationId: string,
+) {
+  await assertWorkflowDelegationOwner(tx, runId, actor);
+  const [binding] = await tx
+    .select()
+    .from(workflowExecutionDelegations)
+    .where(
+      and(
+        eq(workflowExecutionDelegations.runId, runId),
+        eq(workflowExecutionDelegations.localSiteId, localSiteId),
+        eq(workflowExecutionDelegations.operationId, operationId),
+      ),
+    );
+  if (!binding) throw new FederationError("POLICY_DENIED");
+  return binding;
+}
+
 export async function bindWorkflowDelegation(
   lease: LeasedWorkflowJournal,
   actor: FederationActor,

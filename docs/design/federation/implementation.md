@@ -289,13 +289,45 @@ checkpoint 保存：固定 Workflow/引用软件修订、动态 scope path、已
 
 一个 scope 中的等待节点及其下游不写终态 checkpoint，无关分支继续完成并保存检查点；ForEach 的等待迭代仍占用 maxParallel 名额，不因释放本地调用栈而无限派发其他迭代。嵌套 SubWorkflow/While/ForEach 传播带动态路径的等待；While 不提前进入下一次依赖迭代，Switch 不用缺失结果选择分支。数据库或执行租约故障仍中断所有后续副作用，不能冒充正常业务等待。
 
-可运行分支收尾后，Server 用当前 lease 将等待快照写入 workflow_runs.waiting_invocations（迁移 0106），每项含 path 和 reason，保留 status=running、completedAt=null，errorCode=WORKFLOW_WAITING。已有运行查询权限下可读取快照；后台按原恢复机制重建运行并复用完成检查点。成功/失败终态清除等待快照，取消仍经过既有停止确认回调再结束。该快照是最近一次让出执行时的等待观测，不是外部任务绑定。独立绑定及取消转发的服务边界现已实现，普通 Workflow 联邦节点执行者及结果消费仍待接入。
+可运行分支收尾后，Server 用当前 lease 将等待快照写入 workflow_runs.waiting_invocations（迁移 0106），每项含 path 和 reason，保留 status=running、completedAt=null，errorCode=WORKFLOW_WAITING。已有运行查询权限下可读取快照；后台按原恢复机制重建运行并复用完成检查点。成功/失败终态清除等待快照，取消仍经过既有停止确认回调再结束。该快照是最近一次让出执行时的等待观测，不是外部任务绑定。独立绑定及取消转发的服务边界现已实现，普通 Workflow 联邦节点现已接入这些服务，动态输入物化仍待完成。
 
 源站内部 enqueueForWorkflow 入口先在执行 lease 下写入 workflow_execution_delegations（迁移 0107），以 runId + 动态路径 SHA-256 唯一定位，同时保存原路径以检查碰撞。首次分配 operationId/taskId/attempt=1、issuedAt/expiresAt，固定协议、模板、输入摘要、环境锁、预算和资源参数；相同 invocation 恢复复用原请求，不延长截止时间或生成新 attempt。更改意图/节点身份、其他用户或组织、旧租约及接收站点的隐式再委派均拒绝。材料检查与签名完成后，入队事务再次锁定运行和 lease；取消与入队因此有明确先后，绑定但尚未入队的窗口可安全恢复或取消。
 
 普通委派 API 不得重放已绑定 Workflow 的请求来绕过 lease。后台发送及输入材料披露也检查父运行仍为 running。服务端取消回调同时推进本地 Job 和远端操作，不因一方等待而阻止另一方发出停止请求。内部 requestForWorkflow 只允许已进入 cancelling 的 durable run，核对原提交者、组织及完整绑定请求；其停止权限来自持久运行取消意图，不因原用户被撤权而丢失，但机构签名/信任要求继续有效。未入队的绑定没有远端副作用；已入队的操作必须拿到签名 stopped 回执才可结束取消。接收未知操作的永久撤回机制仍用于防止迟到派单。
 
-运行完成检查会把尚无可信远端终态的活动委派转入取消；执行失败也不能绕过清理直接终态。取消和中断收尾在数据库再次检查停止回执，即便取消回调未配置，也不会提前把运行标为已停止。这里尚未实现将远端 completed 与已回传文件组合成节点成功的执行者；签名状态不能代替结果文件就绪。
+运行完成检查会把尚无可信远端终态的活动委派转入取消；执行失败也不能绕过清理直接终态。取消和中断收尾在数据库再次检查停止回执，即便取消回调未配置，也不会提前把运行标为已停止。FederationWorkflowExecutor 现已组合远端 completed 和已回传文件，映射为节点成功；签名状态不能代替结果文件就绪。
+
+普通异步 Workflow 提交已识别 Federation 节点，并自动保存 durable-v2，不要求用户手工指定执行模式。检查递归覆盖 Loop、Inline 和 ByVersion 子工作流，并对引用环去重；联邦节点须有绑定的规范用户与当前组织。执行者引用双方签署的协议修订，从该协议读取对端、模式、预算域、epoch、单位，调用原持久委派服务；executionExpiresAt 未显式缩短时固定为协议 validUntil。每次动态调用首次绑定后仍沿用原操作和截止时间，不在恢复时续期。
+
+节点初次/远端未完成时让出 REMOTE_WAITING；准备状态 waiting 对应 DATA_WAITING。声明结果输出的节点在远端完成后自动以 operationId 为稳定 importId 排队接收，未发布时让出 RESULT_WAITING；相同已存在清单可以复用原导入 ID。仅在整单 available 后映射输出，检查原任务、组织、所有者、每项成员大小/摘要、本地文件未删除，以及发布尝试记录的 storageKey 和 versionId。下游获得源站 FileInputValue，不包含远端内部文件 ID、对象路径或凭据。输出只支持协议已支持的 Persistent File/FileBatch；远端失败/撤回使源节点失败，并先走停止与结果传输清理再结束父运行。已发布的用户文件保留；取消只处理原提交者的派生导入，不触及其他用户的副本。短期搬运租约过期并清理确认前，父运行继续 cancelling。
+
+当前 YAML 契约如下；UUID、摘要及模板修订必须替换为当前组织已批准的真实记录。inputManifestDigest 引用预先登记的输入清单，暂不接受 inputSlots 或自动把源云盘文件转成跨站输入；JSON 严格 schema 会拒绝这些未实现的字段。outputs.from 指向远端模板的节点及 Persistent 输出，不是源站节点。无 outputs 的节点只等待远端可信计算完成，不主动导入文件。Web 画布已能显示节点和文件输出端口，协议/材料选择表单尚待完成，当前通过 YAML 配置。
+
+```yaml
+name: 跨机构计算
+spec:
+  nodeDrafts:
+    - id: remote
+      name: 远端计算
+      type: Federation
+      agreementRevisionId: 00000000-0000-4000-8000-000000000001
+      template:
+        originSiteId: 00000000-0000-4000-8000-000000000002
+        kind: workflow
+        id: 00000000-0000-4000-8000-000000000003
+        revision: "1"
+        digest: sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+      inputManifestDigest: sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+      environmentLockDigest: sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
+      resources: { cpus: 1, memoryMb: 128, gpus: 0, wallTimeSec: 30 }
+      maxAmount: "1"
+      admissionWindowSec: 600
+      outputs:
+        - descriptor: result
+          type: File
+          from: { nodeId: consumer, descriptor: result }
+  nodeRelations: []
+```
 
 恢复先读取 checkpoint、已绑定任务和持久状态，重新订阅事件/查询远端；不得从头重新执行已完成脚本。完成事件可能早于等待注册，数据库是事实来源，现有内存 JobCompletionRegistry 仅作为通知加速，不承担唯一状态。
 

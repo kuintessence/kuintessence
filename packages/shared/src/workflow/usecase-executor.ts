@@ -94,6 +94,10 @@ export interface UsecaseExecutorDeps {
     ctx: Record<string, CelValue>,
     invocation?: NodeInvocation,
   ): Promise<NodeExecutionResult>;
+  executeFederation?(
+    node: Extract<workflowDsl.WorkflowNode, { type: "Federation" }>,
+    invocation?: NodeInvocation,
+  ): Promise<NodeExecutionResult>;
 }
 
 /**
@@ -103,6 +107,8 @@ export interface UsecaseExecutorDeps {
  */
 export function createUsecaseExecutor(deps: UsecaseExecutorDeps): NodeExecutor {
   return async (node, ctx, invocation) => {
+    if (node.type === "Federation" && deps.executeFederation)
+      return deps.executeFederation(node, invocation);
     if (node.type === "NoAction") {
       return { status: "Succeeded", values: {} };
     }

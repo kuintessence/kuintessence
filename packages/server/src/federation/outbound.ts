@@ -2,6 +2,7 @@ import {
   auditLog,
   federationAgreementApprovals,
   federationOutbound,
+  federationResultImports,
   federationSites,
   type PgDb,
   type PgTransaction,
@@ -383,7 +384,11 @@ export class FederationOutboundService {
         .for("update");
       if (run?.status !== "cancelling") throw new FederationError("POLICY_DENIED");
       return tx
-        .select({ operationId: workflowExecutionDelegations.operationId })
+        .select({
+          operationId: workflowExecutionDelegations.operationId,
+          userId: federationOutbound.submittedBy,
+          orgId: federationOutbound.localOrgId,
+        })
         .from(workflowExecutionDelegations)
         .innerJoin(
           federationOutbound,
@@ -401,12 +406,39 @@ export class FederationOutboundService {
     });
     let pending = false;
     const errors: unknown[] = [];
-    for (const { operationId } of operations) {
+    for (const { operationId, userId, orgId } of operations) {
       try {
         const cancellation = await this.cancellations.requestForWorkflow(runId, operationId);
         if (cancellation?.state !== "stopped") pending = true;
       } catch (error) {
         errors.push(error);
+      }
+      const imports = await this.db
+        .select()
+        .from(federationResultImports)
+        .where(
+          and(
+            eq(federationResultImports.localSiteId, this.signingKey.siteId),
+            eq(federationResultImports.operationId, operationId),
+            eq(federationResultImports.requestedBy, userId),
+            eq(federationResultImports.localOrgId, orgId),
+          ),
+        );
+      for (const imported of imports) {
+        if (imported.state === "available") continue;
+        try {
+          await this.resultImports.cancel(
+            { userId: imported.requestedBy, orgId: imported.localOrgId },
+            imported.id,
+            operationId,
+          );
+        } catch (error) {
+          const [current] = await this.db
+            .select()
+            .from(federationResultImports)
+            .where(eq(federationResultImports.id, imported.id));
+          if (current?.state !== "available") errors.push(error);
+        }
       }
     }
     if (errors.length)

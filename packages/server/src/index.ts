@@ -77,6 +77,7 @@ import {
   startFederationIngress,
 } from "./federation/runtime";
 import { FederationTrustRegistry } from "./federation/trust-registry";
+import { FederationWorkflowExecutor } from "./federation/workflow-executor";
 import {
   AgentDispatcher,
   JobCancellationOutbox,
@@ -996,6 +997,21 @@ const makeRunner =
       return availability.installableAvailable.length > 0;
     };
     return createWorkflowRunner({
+      executeFederation: async (node, invocation) => {
+        if (!executionLease || !activeOrgId || !invocation || federationSnapshot)
+          throw new WorkflowExecutionInterrupted(
+            "Federation nodes require a source durable run and organization",
+            { retryable: false },
+          );
+        if (!federationWorkflowExecutor)
+          throw new WorkflowExecutionInterrupted("Federation execution is unavailable");
+        return federationWorkflowExecutor.execute(
+          { userId: submittedBy, orgId: activeOrgId },
+          executionLease,
+          node,
+          invocation,
+        );
+      },
       resolveFileInput,
       journal: executionLease,
       deferSpackActivation: true,
@@ -1248,6 +1264,7 @@ const makeRunner =
     })(yaml);
   };
 const workflowAsyncRunner = new WorkflowAsyncRunner({
+  resolveWorkflowVersion,
   authorizeFederationExecution: async (runId, lease) => {
     if (!federationDispatchAuthorization)
       throw new WorkflowExecutionInterrupted("Federation workflow authorization is unavailable");
@@ -1605,6 +1622,10 @@ const federationSender = await loadFederationSender(config);
 const federationOutbound =
   federationSigningKey && federationSender
     ? new FederationOutboundService(db, federationSigningKey, federationSender, federationAssets)
+    : undefined;
+const federationWorkflowExecutor =
+  federationSigningKey && federationOutbound
+    ? new FederationWorkflowExecutor(db, federationSigningKey.siteId, federationOutbound)
     : undefined;
 if (federationOutbound) protectedApi.route("/", createFederationOutboundRoutes(federationOutbound));
 const federationAttestation = federationSigningKey

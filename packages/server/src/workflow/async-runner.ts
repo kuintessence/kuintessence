@@ -12,6 +12,7 @@ import {
 import { stringify } from "yaml";
 import type { BoundPrincipal } from "../middleware/principal-binder";
 import type { LeasedWorkflowJournal, WorkflowExecutionJournalStore } from "./execution-journal";
+import { requiresDurableWorkflow } from "./execution-model";
 import { parseWorkflowYaml } from "./parser";
 import type { WorkflowRunRegistry, WorkflowRunStatus } from "./run-registry";
 
@@ -37,6 +38,7 @@ export interface WorkflowAsyncRunnerDeps {
   markArtifactsTerminal?: (runId: string) => Promise<void>;
   schedule?: (task: () => Promise<void>) => void;
   resolveNamedReferences?: (workflow: Workflow, principal?: BoundPrincipal) => Promise<Workflow>;
+  resolveWorkflowVersion?: (id: string) => Promise<Workflow | null>;
   validateWorkflow?: (
     workflow: Workflow,
     principal?: { userId: string | null; orgId: string | null; sub?: string },
@@ -103,6 +105,13 @@ export class WorkflowAsyncRunner {
     const wf = this.deps.resolveNamedReferences
       ? await this.deps.resolveNamedReferences(parsedWorkflow, input.principal)
       : parsedWorkflow;
+    if (await requiresDurableWorkflow(wf, this.deps.resolveWorkflowVersion)) {
+      if (!input.principal?.orgId || input.principal.userId !== input.submittedBy)
+        throw new Error("Federation nodes require a canonical principal and active organization");
+      if (!this.deps.journal)
+        throw new Error("Federation nodes require durable workflow execution");
+      input = { ...input, executionModel: "durable-v2" };
+    }
     await this.deps.validateWorkflow?.(wf, input.principal);
     const resolvedYaml = this.deps.resolveNamedReferences ? stringify(wf) : input.yaml;
     const placementConfig = WorkflowPlacementConfigSchema.parse(input.placementConfig ?? {});

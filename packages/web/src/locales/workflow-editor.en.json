@@ -29,6 +29,7 @@
       "resizePalette": "Resize node palette",
       "resizeProperties": "Resize node properties",
       "nodeTypes": {
+        "Federation": "Federated task",
         "SoftwareUsecaseComputing": "Usecase compute",
         "Script": "Data transformation script",
         "NoAction": "No-action",

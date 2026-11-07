@@ -1,4 +1,6 @@
 import { z } from "zod";
+import { FederationAmountSchema, FederationResourcesSchema } from "../federation";
+import { FederationAssetRefSchema, FederationDigestSchema } from "../federation/references";
 import { RequirementsSchema, SchedulingStrategySchema, SlugSchema, UuidSchema } from "./common";
 import { ExprSchema, IntOrExprSchema } from "./expr";
 import { ValueOutputSchema } from "./extract";
@@ -74,6 +76,33 @@ const SubWorkflowOutputSchema = z.strictObject({
 });
 
 export const WorkflowNodeSchema = z.union([
+  z.strictObject({
+    ...nodeCommon,
+    type: z.literal("Federation"),
+    agreementRevisionId: UuidSchema,
+    template: FederationAssetRefSchema.refine(
+      (ref) => ref.kind === "workflow" || ref.kind === "script",
+    ),
+    inputManifestDigest: FederationDigestSchema,
+    environmentLockDigest: FederationDigestSchema,
+    resources: FederationResourcesSchema,
+    maxAmount: FederationAmountSchema,
+    admissionWindowSec: z.number().int().min(1).max(3600).default(600),
+    executionExpiresAt: z.iso.datetime().optional(),
+    outputs: z
+      .array(
+        z.strictObject({
+          descriptor: z.string().regex(/^[a-zA-Z][a-zA-Z0-9_.-]{0,127}$/),
+          from: z.strictObject({
+            nodeId: z.string().min(1).max(255),
+            descriptor: z.string().min(1).max(255),
+          }),
+          type: z.enum(["File", "FileBatch"]),
+        }),
+      )
+      .max(256)
+      .default([]),
+  }),
   z
     .strictObject({
       ...nodeCommon,

@@ -29,6 +29,7 @@
       "resizePalette": "调整节点面板宽度",
       "resizeProperties": "调整节点属性宽度",
       "nodeTypes": {
+        "Federation": "联邦任务",
         "SoftwareUsecaseComputing": "用例计算",
         "Script": "数据转换脚本",
         "NoAction": "空节点",

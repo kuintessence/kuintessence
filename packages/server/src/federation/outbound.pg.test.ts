@@ -42,7 +42,11 @@ import {
   FederationResultGrantRequestSchema,
   type ServerMessage,
 } from "@kuintessence/proto";
-import { WorkflowExecutionInterrupted, workflowDsl } from "@kuintessence/shared";
+import {
+  WorkflowExecutionInterrupted,
+  WorkflowExecutionWaiting,
+  workflowDsl,
+} from "@kuintessence/shared";
 import {
   FederationAcceptanceSchema,
   type FederationAgreement,
@@ -63,9 +67,10 @@ import {
   FederationStatusReportSchema,
   federationCanonicalJson,
 } from "@kuintessence/shared/federation";
-import { and, eq, inArray } from "drizzle-orm";
+import { and, eq, inArray, ne } from "drizzle-orm";
 import { Hono } from "hono";
 import { exportSPKI } from "jose";
+import { stringify } from "yaml";
 import { AgentDispatcher } from "../grpc/dispatcher";
 import { createFederationOutboundRoutes } from "../routes/federation-outbound";
 import { artifactBatchHash } from "../services/artifact-members";
@@ -76,6 +81,7 @@ import { FakeMinioBackend } from "../storage/minio-client.test";
 import { WorkflowAsyncRunner } from "../workflow/async-runner";
 import { WorkflowExecutionJournalStore } from "../workflow/execution-journal";
 import { WorkflowRunRegistry } from "../workflow/run-registry";
+import { createWorkflowRunner } from "../workflow/runner";
 import { FederationAdmission } from "./admission";
 import { FederationAgreementService } from "./agreements";
 import { FederationAssetService, federationMaterialDigest } from "./assets";
@@ -99,6 +105,7 @@ import { FederationStatusResponder } from "./status";
 import { testAgreement, testDelegation, testKeys, testNow } from "./test-fixtures";
 import { FederationTrustRegistry } from "./trust-registry";
 import { bindWorkflowDelegation, type WorkflowDelegationPlan } from "./workflow-delegations";
+import { FederationWorkflowExecutor } from "./workflow-executor";
 
 const url = process.env.DATABASE_URL;
 if (!url || !/^\/kuintessence_unit_[a-z0-9_]+$/.test(new URL(url).pathname))
@@ -131,6 +138,7 @@ afterEach(async () => {
     .update(federationOutbound)
     .set({
       nextAttemptAt: new Date("2030-01-01T00:00:00Z"),
+      statusNextAttemptAt: new Date("2030-01-01T00:00:00Z"),
       cancelNextAttemptAt: new Date("2030-01-01T00:00:00Z"),
     })
     .where(
@@ -424,8 +432,8 @@ async function row(operationId: string) {
   return value;
 }
 
-async function workflowDelegationFixture() {
-  const f = await fixture();
+async function workflowDelegationFixture(policy?: FederationAgreement["resultPolicy"]) {
+  const f = await fixture(policy);
   const registry = new WorkflowRunRegistry(db);
   const runId = crypto.randomUUID();
   sourceRunIds.push(runId);
@@ -1436,10 +1444,23 @@ const resultPolicy: NonNullable<FederationAgreement["resultPolicy"]> = {
   maxBytes: 20,
   availableUntil: "2026-01-04T00:00:00.000Z",
 };
-async function resultFixture(policy = resultPolicy) {
-  const f = await fixture(policy);
+async function resultFixture(policy = resultPolicy, workflowSource = false) {
+  const sourceWorkflow = workflowSource ? await workflowDelegationFixture(policy) : null;
+  const f = sourceWorkflow ?? (await fixture(policy));
   await permission.set({ ...actor, capability: "result.read", enabled: true }, actor.userId);
-  await f.service().enqueue(actor, f.request);
+  if (sourceWorkflow) {
+    const queued = await f
+      .service()
+      .enqueueForWorkflow(
+        actor,
+        sourceWorkflow.lease,
+        "remote",
+        sourceWorkflow.invocation,
+        { ...sourceWorkflow.plan, executionExpiresAt: f.terms.validUntil },
+        600,
+      );
+    f.request = (await row(queued.operationId)).request;
+  } else await f.service().enqueue(actor, f.request);
   await f.service().deliverNext();
   const saved = await row(f.request.operationId);
   if (!saved.receipt) throw new Error("Expected acceptance");
@@ -1527,7 +1548,7 @@ async function resultFixture(policy = resultPolicy) {
   const responder = new FederationResultResponder(db, b.signing, clock);
   const send: FederationSend = (_endpoint, jws) => responder.receive(jws, sourceFingerprint);
   const read = () => f.service(send).results.read(actor, f.request.operationId);
-  return { ...f, saved, runId, jobId, artifactId, fileId, responder, send, read };
+  return { ...f, sourceWorkflow, saved, runId, jobId, artifactId, fileId, responder, send, read };
 }
 
 test("result inventory requires explicit bilateral scope and independent current source permission", async () => {
@@ -1959,8 +1980,8 @@ test("result downloads require separately registered key purposes on both sites"
   ).rejects.toThrow();
 });
 
-async function resultImportFixture(fileCount = 1) {
-  const f = await resultFixture();
+async function resultImportFixture(fileCount = 1, workflowSource = false) {
+  const f = await resultFixture(resultPolicy, workflowSource);
   if (fileCount === 2) {
     const secondId = crypto.randomUUID();
     await db.insert(netdriveFiles).values({
@@ -2246,8 +2267,8 @@ test("result imports accept only an identical copied receipt replay and cap each
   expect((await second.imports.begin(second.member.id, f.agentId)).attempt.agentId).toBe(f.agentId);
 });
 
-async function resultStorageFixture(fileCount = 1) {
-  const f = await resultImportFixture(fileCount);
+async function resultStorageFixture(fileCount = 1, workflowSource = false) {
+  const f = await resultImportFixture(fileCount, workflowSource);
   const signedUrl = (origin: string, seconds: number) => {
     const url = new URL(`${origin}/opaque-object`);
     url.searchParams.set(
@@ -2837,8 +2858,8 @@ test("result downloads honor the committed file version and reject a changed pin
   await expect(f.download()).rejects.toThrow("OPERATION_CONFLICT");
 });
 
-async function publishableResults(fileCount = 1) {
-  const f = await resultStorageFixture(fileCount);
+async function publishableResults(fileCount = 1, workflowSource = false) {
+  const f = await resultStorageFixture(fileCount, workflowSource);
   for (const member of f.imported.members) {
     const allocated = await f.bridge.allocate(member.id, f.agentId);
     const binding = {
@@ -2874,6 +2895,309 @@ async function publishableResults(fileCount = 1) {
       );
   return { ...f, publishedFiles };
 }
+
+async function workflowResultExecutor(f: Awaited<ReturnType<typeof resultFixture>>, batch = false) {
+  const source = f.sourceWorkflow;
+  if (!source) throw new Error("Missing source Workflow fixture");
+  const status = new FederationStatusResponder(db, b.signing, clock);
+  const cancellation = new FederationCancellationReceiver(db, b.signing, clock);
+  const send: FederationSend = (endpoint, jws, path) =>
+    path === "/federation/v1/status"
+      ? status.receive(jws, sourceFingerprint)
+      : path === "/federation/v1/cancellations"
+        ? cancellation.receive(jws, sourceFingerprint)
+        : f.send(endpoint, jws, path);
+  const service = f.service(send);
+  const executor = new FederationWorkflowExecutor(db, a.signing.siteId, service, clock);
+  const node = workflowDsl.WorkflowNodeSchema.parse({
+    id: "remote",
+    name: "Remote task",
+    type: "Federation",
+    agreementRevisionId: f.terms.agreementRevisionId,
+    template: f.reference,
+    inputManifestDigest: f.request.inputManifestDigest,
+    environmentLockDigest: f.request.environmentLockDigest,
+    resources: f.request.resources,
+    maxAmount: f.request.maxAmount,
+    outputs: [
+      {
+        descriptor: "result",
+        from: { nodeId: "producer", descriptor: "result" },
+        type: batch ? "FileBatch" : "File",
+      },
+    ],
+  });
+  if (node.type !== "Federation") throw new Error("Missing federation node");
+  const refresh = async () => {
+    await db
+      .update(federationOutbound)
+      .set({ statusNextAttemptAt: new Date("2030-01-01T00:00:00Z") })
+      .where(ne(federationOutbound.operationId, f.request.operationId));
+    await db
+      .update(federationOutbound)
+      .set({ statusNextAttemptAt: clock() })
+      .where(eq(federationOutbound.operationId, f.request.operationId));
+    expect(await service.refreshStatusNext()).toBe(true);
+  };
+  return { source, service, executor, node, refresh };
+}
+
+test("federation Workflow node resumes remote and result waiting, then supplies verified local files to its downstream Script", async () => {
+  const f = await publishableResults(2, true);
+  const e = await workflowResultExecutor(f, true);
+  const script = (id: string) => ({
+    id,
+    name: id,
+    type: "Script",
+    source: { type: "Inline", language: "bash", content: "true" },
+    runtimeProfileId: crypto.randomUUID(),
+  });
+  const yaml = stringify({
+    name: "Ordinary federated workflow",
+    spec: {
+      nodeDrafts: [
+        e.node,
+        script("independent"),
+        {
+          ...script("consume"),
+          inputs: { files: { type: "FileBatch", required: true } },
+          inputSlots: [
+            {
+              descriptor: "files",
+              type: "File",
+              isBatch: true,
+              from: { node: "remote", output: "result" },
+            },
+          ],
+        },
+      ],
+      nodeRelations: [{ fromId: "remote", toId: "consume", slotRelations: [] }],
+    },
+  });
+  const executed: string[] = [];
+  let received: unknown;
+  const runner = (lease: typeof e.source.lease) =>
+    createWorkflowRunner({
+      journal: lease,
+      resolvePackage: async () => {
+        throw new Error("No local usecase expected");
+      },
+      submitJob: async () => {
+        throw new Error("No local Job expected");
+      },
+      executeFederation: (node, invocation) => {
+        if (!invocation) throw new Error("Missing invocation");
+        return e.executor.execute(actor, lease, node, invocation);
+      },
+      executeScript: async (node, ctx) => {
+        executed.push(node.id);
+        if (node.id === "consume") received = ctx.nodes;
+        return { status: "Succeeded", values: {} };
+      },
+    });
+  await expect(runner(e.source.lease)(yaml)).rejects.toBeInstanceOf(WorkflowExecutionWaiting);
+  expect(executed).toEqual(["independent"]);
+  await e.refresh();
+  await expect(runner(e.source.lease)(yaml)).rejects.toBeInstanceOf(WorkflowExecutionWaiting);
+  expect(executed).toEqual(["independent"]);
+  await f.bridge.publish(actor, f.imported.id);
+  await e.source.lease.release();
+  const lease = await e.source.journal.acquire(e.source.runId);
+  if (!lease) throw new Error("Missing restored source lease");
+  const result = await runner(lease)(yaml);
+  expect(result.status).toEqual({
+    remote: "Succeeded",
+    independent: "Succeeded",
+    consume: "Succeeded",
+  });
+  expect(executed).toEqual(["independent", "consume"]);
+  const expected = f.imported.members.map((member) => ({
+    fileMetadataId: member.id,
+    fileMetadataName: member.path,
+  }));
+  expect(received).toMatchObject({ remote: { values: { result: expected } } });
+  expect(expected.every((file) => file.fileMetadataId !== f.fileId)).toBe(true);
+  expect(await e.source.registry.completeRun(e.source.runId, result, lease)).toBe(true);
+  await lease.release();
+});
+
+test("federation Workflow node rejects missing output bindings, overwritten versions and deleted local result files", async () => {
+  const f = await publishableResults(1, true);
+  const e = await workflowResultExecutor(f);
+  await e.refresh();
+  await f.bridge.publish(actor, f.imported.id);
+  const execute = (node = e.node) =>
+    e.executor.execute(actor, e.source.lease, node, e.source.invocation);
+  expect((await execute()).status).toBe("Succeeded");
+  const output = e.node.outputs[0];
+  if (!output) throw new Error("Missing output mapping");
+  expect(
+    (
+      await execute({
+        ...e.node,
+        outputs: [
+          { ...output, descriptor: "missing", from: { nodeId: "other", descriptor: "result" } },
+        ],
+      })
+    ).status,
+  ).toBe("Failed");
+  const [file] = await f.publishedFiles();
+  if (!file) throw new Error("Missing local result file");
+  await db
+    .update(netdriveFiles)
+    .set({ storageVersionId: "replaced-version" })
+    .where(eq(netdriveFiles.id, file.id));
+  expect((await execute()).status).toBe("Failed");
+  await db
+    .update(netdriveFiles)
+    .set({ storageVersionId: file.storageVersionId, deletedAt: clock() })
+    .where(eq(netdriveFiles.id, file.id));
+  expect((await execute()).status).toBe("Failed");
+  await db.update(netdriveFiles).set({ deletedAt: null }).where(eq(netdriveFiles.id, file.id));
+  await permission.set({ ...actor, capability: "result.read", enabled: false }, actor.userId);
+  try {
+    expect((await execute()).status).toBe("Failed");
+  } finally {
+    await permission.set({ ...actor, capability: "result.read", enabled: true }, actor.userId);
+  }
+  await e.source.lease.release();
+});
+
+test("federation Workflow cancellation waits for result-copy cleanup after remote stop and fences late result imports", async () => {
+  const f = await resultStorageFixture(1, true);
+  const e = await workflowResultExecutor(f);
+  await e.refresh();
+  await f.bridge.allocate(f.member.id, f.agentId);
+  const [originalImport] = await db
+    .select()
+    .from(federationResultImports)
+    .where(eq(federationResultImports.id, f.imported.id));
+  if (!originalImport) throw new Error("Missing original import");
+  const otherImportId = crypto.randomUUID();
+  await db.insert(federationResultImports).values({
+    ...originalImport,
+    id: otherImportId,
+    requestedBy: receiver.userId,
+    reservedBytes: 0,
+  });
+  await e.source.registry.requestCancel(e.source.runId);
+  await expect(
+    e.service.resultImports.enqueue(
+      actor,
+      f.request.operationId,
+      crypto.randomUUID(),
+      e.source.lease,
+    ),
+  ).rejects.toBeInstanceOf(WorkflowExecutionInterrupted);
+  await expect(e.service.cancelWorkflow(e.source.runId)).rejects.toThrow(
+    "awaiting stop confirmation",
+  );
+  expect((await f.imports.get(actor, f.imported.id)).state).toBe("cancelled");
+  expect(
+    (
+      await db
+        .select()
+        .from(federationResultImports)
+        .where(eq(federationResultImports.id, otherImportId))
+    )[0]?.state,
+  ).toBe(originalImport.state);
+  await e.service.cancellations.deliverNext();
+  const monitor = new FederationCancellationMonitor(
+    db,
+    { cancel: async () => "completed" },
+    async () => {},
+    clock,
+  );
+  await monitor.tick();
+  time = new Date(time.getTime() + 11_000);
+  await e.service.cancellations.deliverNext();
+  expect((await row(f.request.operationId)).cancelState).toBe("stopped");
+  expect(await e.source.registry.cancelRun(e.source.runId)).toBe(false);
+  expect(await f.bridge.cleanup()).toBe(0);
+  time = new Date(time.getTime() + 120_001);
+  await f.bridge.cleanup();
+  expect(await e.source.registry.cancelRun(e.source.runId)).toBe(true);
+  await e.source.lease.release();
+});
+
+test("federation Workflow queues its result import automatically and deduplicates recovery", async () => {
+  const f = await resultFixture(resultPolicy, true);
+  const e = await workflowResultExecutor(f);
+  await e.refresh();
+  for (let i = 0; i < 2; i++)
+    await expect(
+      e.executor.execute(actor, e.source.lease, e.node, e.source.invocation),
+    ).rejects.toThrow("RESULT_WAITING");
+  const imports = await db
+    .select()
+    .from(federationResultImports)
+    .where(eq(federationResultImports.operationId, f.request.operationId));
+  expect(imports).toHaveLength(1);
+  expect(imports[0]).toMatchObject({
+    id: f.request.operationId,
+    state: "pending",
+    requestedBy: actor.userId,
+    reservedBytes: 3,
+  });
+  await e.source.lease.release();
+});
+
+test("federation Workflow cancellation during result inventory retrieval prevents late copy enqueue", async () => {
+  const f = await resultFixture(resultPolicy, true);
+  const e = await workflowResultExecutor(f);
+  await e.refresh();
+  const entered = Promise.withResolvers<void>(),
+    release = Promise.withResolvers<void>();
+  const delayed = f.service(async (endpoint, jws, path) => {
+    const response = await f.send(endpoint, jws, path);
+    entered.resolve();
+    await release.promise;
+    return response;
+  });
+  const executor = new FederationWorkflowExecutor(db, a.signing.siteId, delayed, clock);
+  const execution = executor.execute(actor, e.source.lease, e.node, e.source.invocation).then(
+    () => null,
+    (error: unknown) => error,
+  );
+  try {
+    await entered.promise;
+    await e.source.registry.requestCancel(e.source.runId);
+  } finally {
+    release.resolve();
+  }
+  expect(await execution).toBeInstanceOf(WorkflowExecutionInterrupted);
+  expect(
+    await db
+      .select()
+      .from(federationResultImports)
+      .where(eq(federationResultImports.operationId, f.request.operationId)),
+  ).toHaveLength(0);
+  await e.source.lease.release();
+});
+
+test("federation Workflow remote failure enters cancellation until cleanup is confirmed", async () => {
+  const f = await resultFixture(resultPolicy, true);
+  const e = await workflowResultExecutor(f);
+  await db.update(workflowRuns).set({ status: "failed" }).where(eq(workflowRuns.id, f.runId));
+  await e.refresh();
+  const result = await e.executor.execute(actor, e.source.lease, e.node, e.source.invocation);
+  expect(result.status).toBe("Failed");
+  expect(
+    await e.source.registry.completeRun(
+      e.source.runId,
+      {
+        status: { remote: result.status },
+        values: {
+          remote: { status: result.status, values: result.values ?? {}, failure: result.failure },
+        },
+      },
+      e.source.lease,
+    ),
+  ).toBe(false);
+  expect((await e.source.registry.getById(e.source.runId))?.status).toBe("cancelling");
+  expect(await e.source.registry.cancelRun(e.source.runId)).toBe(false);
+  await e.source.lease.release();
+});
 
 test("result publication commits the whole batch once with provenance, pinned versions and quota conversion", async () => {
   const f = await publishableResults(2);

@@ -191,6 +191,8 @@ export async function materializeFederationWorkflow(input: {
       localPolicy(node, field);
       const base = { ...node, externalId: undefined };
       switch (node.type) {
+        case "Federation":
+          return fail(field, "Onward federation delegation requires separate authorization");
         case "SoftwareUsecaseComputing": {
           const usecaseRef = binding(
             "usecase",
