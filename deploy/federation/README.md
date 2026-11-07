@@ -65,6 +65,9 @@ Server 另行配置 `FEDERATION_CLIENT_CERT_FILE`、`FEDERATION_CLIENT_KEY_FILE`
 | `POST /api/federation/outbound/:operationId/retry` | 按原操作/JWS 重试，并确认采用同一对端当前登记端点 |
 | `GET /api/federation/outbound/:operationId/remote-status` | 按需取得签名准备/运行状态，响应含观测时间及验签时间 |
 | `GET /api/federation/outbound/:operationId/results` | 查看协议允许的签名结果清单，尚不传输文件 |
+| `POST /api/federation/outbound/:operationId/result-imports` | `{importId: UUID}`，持久保存整份结果导入意图，202 仅表示排队 |
+| `GET /api/federation/outbound/:operationId/result-imports/:importId` | 查询自己提交的导入及文件成员状态 |
+| `POST /api/federation/outbound/:operationId/result-imports/:importId/cancel` | 保存取消和清理责任，不代表实际清理完成 |
 | `POST /api/federation/outbound/:operationId/cancel` | 持久请求停止，202 不代表已经停止 |
 | `POST /api/federation/outbound/:operationId/cancel-retry` | 修复信任/端点后明确重试同一停止意图 |
 
@@ -77,6 +80,8 @@ Server 另行配置 `FEDERATION_CLIENT_CERT_FILE`、`FEDERATION_CLIENT_KEY_FILE`
 机构下载授权使用独立 `/federation/v1/result-downloads`，仍须相同结果条款和当前权限。源/接收密钥分别新增 `result-download-query`/`result-download-grant` 用途，旧密钥不自动扩权。接收方须启用 NetDrive，并将其预签名 HTTPS 公网地址的 origin 配入 `FEDERATION_RESULT_DOWNLOAD_ORIGINS`，例如 `https://storage.example.org:9443`。Compose 叠加文件已传递该变量；HTTP 地址、路径、凭据、query 和 fragment 均不接受。无需为 direct 模式配置 Fabric。
 
 每个下载凭据最多 30 秒，并受协议结果截止时间限制；同时核对实际 S3 SigV4 的过期时间，支持时固定对象 versionId。地址及签名响应含 bearer 凭据，仅交给受信任的搬运组件，不写日志、数据库或普通清单响应。已发预签名地址无法即时撤销，撤权阻止续发；已建立的 S3 响应不保证在地址过期瞬间断开，受管 Agent 会按授权截止时间取消连接。需要逐字节即时撤权的部署不能把此通道当作满足该要求。
+
+结果导入 API 已接入持久状态，但自动传输 worker 尚未启动，提交保持 pending。读取及首次提交需要独立 `result.read`，自己的已提交导入可在失去该权限后请求停止；取消 ID 不重启，重新授权导入使用新 ID。未连接的阶段不会返回 available 或云盘文件。详见[持久导入契约](../../docs/design/federation/implementation.md#持久结果导入与传输尝试)。
 
 源站已实现当前组织授权、发出签名下载请求、验签、对象/尝试绑定及返回前重新授权的内部方法；生产持久传输任务与 AgentStream 桥接尚未连接，没有新增面向普通用户的下载授权 REST 接口。尚不代表完整跨站文件交付。
 

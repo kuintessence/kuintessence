@@ -24,6 +24,7 @@ import type { FederationAssetService } from "./assets";
 import { cancellationSummary, FederationCancellationSender } from "./cancellation-outbound";
 import { FederationDeliveryError, type FederationSend } from "./outbound-client";
 import { type FederationActor, requireFederationCapability } from "./permissions";
+import { FederationResultImports } from "./result-imports";
 import { FederationResultReader } from "./result-reader";
 import {
   type FederationSigningKey,
@@ -55,6 +56,7 @@ export class FederationOutboundService {
   private readonly trust: FederationTrustRegistry;
   readonly cancellations: FederationCancellationSender;
   readonly results: FederationResultReader;
+  readonly resultImports: FederationResultImports;
   constructor(
     private readonly db: PgDb,
     private readonly signingKey: FederationSigningKey,
@@ -64,6 +66,7 @@ export class FederationOutboundService {
   ) {
     this.trust = new FederationTrustRegistry(db);
     this.results = new FederationResultReader(db, signingKey, send, clock);
+    this.resultImports = new FederationResultImports(db, signingKey.siteId, this.results, clock);
     this.cancellations = new FederationCancellationSender(db, signingKey, send, clock);
   }
 

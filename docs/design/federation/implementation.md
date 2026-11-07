@@ -170,6 +170,22 @@ Agent 的 `copyFederationResultFile` 已提供内部文件搬运函数：绑定�
 
 当前已有数据库授权/签名协议与真实 TLS 路由测试，存储签发在数据库测试中使用替身，尚无完整真实 S3/两平台回传验收。目的端 multipart 管理、持久恢复、AgentStream 派发、原子副本发布及接收完成回执继续接线。
 
+### 持久结果导入与传输尝试
+
+源站增加三个组织/所有者隔离的 API：
+
+- `POST /api/federation/outbound/:operationId/result-imports`，正文 `{ "importId": "UUID" }`，202 只表示接收了导入意图。
+- `GET /api/federation/outbound/:operationId/result-imports/:importId`，返回整体与成员状态、摘要和大小，不返回签名正文、存储 key、uploadId 或下载凭据。
+- `POST /api/federation/outbound/:operationId/result-imports/:importId/cancel`，保存取消并阻止继续授权；不意味着存储或 Agent 已完成清理。
+
+新导入先通过现有生产结果查询验证远端签名清单，再于事务中重新检查本地当前权限和协议。原始 report/JWS、不可变文件成员和每次传输尝试分别持久保存，事务审计不含凭据。相同 importId 重放不重新请求远端；同一所有者/操作/清单的未取消导入去重。旧取消 ID 永不重启；重新导入须提交新 ID 并重新授权，保留旧记录及清理责任。
+
+每个成员每次尝试有独立 generation、预先落库的目标 storageKey、Agent、uploadId、parts 和两分钟租约，租约不能越过结果披露期限。当前只允许本组织拥有且 online 的 Agent，实际 mTLS 派发和能力检查仍待接线；不允许任意用户指定其他组织的节点。数据库防止同一成员/Agent 重复领取活动尝试，取消后尚未到期的旧租约仍占用 Agent 名额。每次授权续发及上传报告均重查所有者当前权限、原协议、Agent 归属和 generation。
+
+过期、失败或取消后保留旧尝试，等待独立存储清理，不覆盖 uploadId 或删除历史。创建上传的响应即使迟到到新尝试之后，也保留到旧 storageKey 下并重新等待清理，不改变新尝试状态。已复制报告必须匹配文件摘要/大小和完整有序 parts；完全相同的重放幂等，不同报告拒绝。上传报告仅进入 assembling，不能视为目的文件已独立校验，更不能发布可用副本。
+
+当前 API 只持久排队；后台扫描/AgentStream/目的端授权/实际 S3 分片分配、完成和清理尚未接通。`storageCleaned` 是内部状态入口，必须由后续清理 worker 在确认旧 key 的对象和所有 multipart 上传均不存在后调用；当前没有公开接口允许用户或 Agent 自报清理完成。六项隔离数据库/生产路由测试证明状态与隔离，不是实际 Server/Agent 进程崩溃恢复或存储清理验收。配额预留、目的对象实际字节校验、整份清单原子发布和签名接收回执仍待完成。
+
 ### 远端取消与停止确认
 
 源站 `POST /api/federation/outbound/:operationId/cancel` 要求当前组织的 `delegation.cancel`（submit 包含 cancel，cancel 包含 read）。HTTP 202 表示永久停止意图已保存，不能直接显示“已停止”。`cancel-retry` 在机构密钥或登记端点修复后重签同一停止正文并审计，不更改原 operation/task/attempt/请求摘要；已确认停止不重启。列表中的 `cancellation` 与原接单 state 分开：queued/sending/pending/needs_review 都不等于 stopped，原 accepted 和额度保持。

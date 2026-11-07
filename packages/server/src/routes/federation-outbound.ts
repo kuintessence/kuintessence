@@ -95,6 +95,50 @@ export function createFederationOutboundRoutes(service: FederationOutboundServic
       });
     },
   );
+  r.post(
+    "/federation/outbound/:operationId/result-imports",
+    kqValidator("param", z.object({ operationId: z.uuid() })),
+    kqValidator("json", z.strictObject({ importId: z.uuid() })),
+    async (c) =>
+      c.json(
+        {
+          success: true,
+          data: await service.resultImports.enqueue(
+            c.get("federationActor"),
+            c.req.valid("param").operationId,
+            c.req.valid("json").importId,
+          ),
+        },
+        202,
+      ),
+  );
+  const importParams = z.object({ operationId: z.uuid(), importId: z.uuid() });
+  r.get(
+    "/federation/outbound/:operationId/result-imports/:importId",
+    kqValidator("param", importParams),
+    async (c) => {
+      c.header("cache-control", "no-store");
+      const { operationId, importId } = c.req.valid("param");
+      return c.json({
+        success: true,
+        data: await service.resultImports.get(c.get("federationActor"), importId, operationId),
+      });
+    },
+  );
+  r.post(
+    "/federation/outbound/:operationId/result-imports/:importId/cancel",
+    kqValidator("param", importParams),
+    async (c) => {
+      const { operationId, importId } = c.req.valid("param");
+      return c.json(
+        {
+          success: true,
+          data: await service.resultImports.cancel(c.get("federationActor"), importId, operationId),
+        },
+        202,
+      );
+    },
+  );
   for (const action of ["cancel", "cancel-retry"] as const) {
     r.post(
       `/federation/outbound/:operationId/${action}`,

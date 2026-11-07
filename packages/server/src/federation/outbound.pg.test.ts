@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import {
+  agents,
   auditLog,
   createPgDb,
   federationAgreementApprovals,
@@ -15,6 +16,9 @@ import {
   federationOutbound,
   federationPreparations,
   federationReservations,
+  federationResultAttempts,
+  federationResultImports,
+  federationResultTransfers,
   federationSigningKeys,
   federationSites,
   federationWorkflowBindings,
@@ -59,6 +63,7 @@ import { FederationOutboundService } from "./outbound";
 import { FederationDeliveryError, type FederationSend } from "./outbound-client";
 import { FederationPermissionService } from "./permissions";
 import { FederationPreparationService } from "./preparation";
+import { FederationResultImports } from "./result-imports";
 import { type FederationResultDownloadStorage, FederationResultResponder } from "./results";
 import { signFederationMessage, verifyFederationMessage } from "./signatures";
 import { FederationStatusResponder } from "./status";
@@ -82,6 +87,7 @@ let bService: FederationAgreementService;
 let time = new Date(testNow);
 const clock = () => time;
 const revisions: string[] = [];
+const transferAgentIds: string[] = [];
 const assetIds: string[] = [];
 const agreements: FederationAgreement[] = [];
 const sourceFingerprint = "ab".repeat(32);
@@ -160,6 +166,30 @@ beforeAll(async () => {
 
 afterAll(async () => {
   const orgIds = [actor.orgId, receiver.orgId];
+  const imports = await db
+    .select({ id: federationResultImports.id })
+    .from(federationResultImports)
+    .where(inArray(federationResultImports.localOrgId, orgIds));
+  if (imports.length) {
+    const ids = imports.map((row) => row.id);
+    const transfers = await db
+      .select({ id: federationResultTransfers.id })
+      .from(federationResultTransfers)
+      .where(inArray(federationResultTransfers.importId, ids));
+    if (transfers.length)
+      await db.delete(federationResultAttempts).where(
+        inArray(
+          federationResultAttempts.transferId,
+          transfers.map((row) => row.id),
+        ),
+      );
+    await db
+      .delete(federationResultTransfers)
+      .where(inArray(federationResultTransfers.importId, ids));
+    await db.delete(federationResultImports).where(inArray(federationResultImports.id, ids));
+  }
+  if (transferAgentIds.length)
+    await db.delete(agents).where(inArray(agents.agentId, transferAgentIds));
   await db.delete(federationOutbound).where(inArray(federationOutbound.localOrgId, orgIds));
   const termsIds = agreements.map((terms) => terms.agreementRevisionId);
   const reservations = await db
@@ -1569,4 +1599,259 @@ test("result downloads require separately registered key purposes on both sites"
       return f.responder.receiveDownload(signed, sourceFingerprint, f.downloads);
     }),
   ).rejects.toThrow();
+});
+
+async function resultImportFixture() {
+  const f = await resultFixture();
+  const service = () =>
+    new FederationResultImports(db, a.signing.siteId, f.service(f.send).results, clock);
+  const imports = service();
+  const imported = await imports.enqueue(actor, f.request.operationId, crypto.randomUUID());
+  const member = imported.members[0];
+  if (!member) throw new Error("Expected result member");
+  const agentId = `result-copy-${crypto.randomUUID()}`;
+  transferAgentIds.push(agentId);
+  await db.insert(agents).values({
+    agentId,
+    providerOrgId: actor.orgId,
+    siteName: "Source storage node",
+    schedulerType: "kubernetes",
+    schedulerVersion: "test",
+    status: "online",
+  });
+  const bindingFor = (generation: string) => ({
+    transferId: member.id,
+    generation,
+    operationId: f.request.operationId,
+    manifestDigest: imported.manifestDigest,
+    outputId: member.outputId,
+    path: member.path,
+    sizeBytes: member.sizeBytes,
+    sha256: member.sha256,
+    partSize: 8 * 1024 * 1024,
+  });
+  return { ...f, serviceImports: service, imports, imported, member, agentId, bindingFor };
+}
+
+test("result imports persist one manifest and deduplicate concurrent submissions without exposing storage credentials", async () => {
+  const f = await resultImportFixture();
+  const repeated = await Promise.all([
+    f.imports.enqueue(actor, f.request.operationId, f.imported.id),
+    f.imports.enqueue(actor, f.request.operationId, crypto.randomUUID()),
+  ]);
+  expect(repeated.map((row) => row.id)).toEqual([f.imported.id, f.imported.id]);
+  expect((await f.serviceImports().get(actor, f.imported.id)).members).toEqual(f.imported.members);
+  const rows = await db
+    .select()
+    .from(federationResultImports)
+    .where(eq(federationResultImports.operationId, f.request.operationId));
+  expect(rows).toHaveLength(1);
+  expect(rows[0]?.reportJws).toBeString();
+  const summary = JSON.stringify(await f.imports.get(actor, f.imported.id));
+  for (const privateField of [
+    "reportJws",
+    "storageKey",
+    "uploadId",
+    "private/object/key",
+    "downloadUrl",
+  ])
+    expect(summary).not.toContain(privateField);
+  await permission.set({ ...receiver, capability: "result.read", enabled: true }, actor.userId);
+  await expect(f.imports.get(receiver, f.imported.id)).rejects.toThrow("POLICY_DENIED");
+  await expect(f.imports.enqueue(receiver, f.request.operationId, f.imported.id)).rejects.toThrow(
+    "POLICY_DENIED",
+  );
+});
+
+test("result imports fence concurrent copies, bind the Agent and survive service reconstruction", async () => {
+  const f = await resultImportFixture();
+  const raced = await Promise.allSettled([
+    f.imports.begin(f.member.id, f.agentId),
+    f.imports.begin(f.member.id, f.agentId),
+  ]);
+  expect(raced.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+  const winner = raced.find((result) => result.status === "fulfilled");
+  if (!winner || winner.status !== "fulfilled") throw new Error("Expected attempt");
+  const { attempt } = winner.value;
+  expect(await f.imports.allocated(attempt.generation, "upload-one")).toBe(true);
+  const restarted = f.serviceImports();
+  const binding = f.bindingFor(attempt.generation);
+  expect((await restarted.assertCopyLease(f.agentId, binding)).uploadId).toBe("upload-one");
+  await expect(restarted.assertCopyLease("foreign-agent", binding)).rejects.toThrow(
+    "OPERATION_CONFLICT",
+  );
+  await expect(
+    restarted.assertCopyLease(f.agentId, { ...binding, sha256: "b".repeat(64) }),
+  ).rejects.toThrow("OPERATION_CONFLICT");
+  const before = await db
+    .select()
+    .from(netdriveFiles)
+    .where(eq(netdriveFiles.ownerId, actor.userId));
+  await expect(
+    restarted.copied(f.agentId, {
+      binding,
+      sizeBytes: 3,
+      sha256: binding.sha256,
+      parts: [{ partNumber: 2, etag: "wrong-part" }],
+    }),
+  ).rejects.toThrow("INVALID_MESSAGE");
+  expect(
+    await restarted.copied(f.agentId, {
+      binding,
+      sizeBytes: 3,
+      sha256: binding.sha256,
+      parts: [{ partNumber: 1, etag: "uploaded-part" }],
+    }),
+  ).toEqual({ state: "assembling" });
+  expect((await restarted.get(actor, f.imported.id)).members[0]?.state).toBe("assembling");
+  expect(
+    await db.select().from(netdriveFiles).where(eq(netdriveFiles.ownerId, actor.userId)),
+  ).toEqual(before);
+  await expect(restarted.assertCopyLease(f.agentId, binding)).rejects.toThrow("OPERATION_CONFLICT");
+});
+
+test("result imports quarantine expired allocation and retain late storage IDs without corrupting a newer attempt", async () => {
+  const f = await resultImportFixture();
+  const first = await f.imports.begin(f.member.id, f.agentId);
+  time = new Date(time.getTime() + 120_001);
+  expect(await f.imports.expire()).toBeGreaterThanOrEqual(1);
+  await expect(f.imports.begin(f.member.id, f.agentId)).rejects.toThrow("OPERATION_CONFLICT");
+  await f.imports.storageCleaned(first.attempt.generation);
+  const next = await f.imports.begin(f.member.id, f.agentId);
+  expect(next.attempt.generation).not.toBe(first.attempt.generation);
+  expect(next.attempt.storageKey).not.toBe(first.attempt.storageKey);
+  expect(await f.imports.allocated(next.attempt.generation, "upload-new")).toBe(true);
+  // An old S3 creation response may arrive even after cleanup and a new claim.
+  expect(await f.imports.allocated(first.attempt.generation, "late-upload-old")).toBe(false);
+  const [old] = await db
+    .select()
+    .from(federationResultAttempts)
+    .where(eq(federationResultAttempts.generation, first.attempt.generation));
+  expect(old).toMatchObject({ state: "cleanup_pending", uploadId: "late-upload-old" });
+  await f.imports.storageCleaned(first.attempt.generation);
+  expect((await f.imports.get(actor, f.imported.id)).members[0]?.state).toBe("copying");
+  expect(
+    (await f.imports.assertCopyLease(f.agentId, f.bindingFor(next.attempt.generation))).uploadId,
+  ).toBe("upload-new");
+  await expect(
+    f.imports.copied(f.agentId, {
+      binding: f.bindingFor(first.attempt.generation),
+      sha256: f.member.sha256,
+      sizeBytes: 3,
+      parts: [{ partNumber: 1, etag: "late-part" }],
+    }),
+  ).rejects.toThrow("OPERATION_CONFLICT");
+});
+
+test("result imports revoke grants immediately, keep cleanup possible, and enforce Agent ownership", async () => {
+  const f = await resultImportFixture();
+  await db
+    .update(agents)
+    .set({ providerOrgId: receiver.orgId })
+    .where(eq(agents.agentId, f.agentId));
+  await expect(f.imports.begin(f.member.id, f.agentId)).rejects.toThrow("POLICY_DENIED");
+  await db.update(agents).set({ providerOrgId: actor.orgId }).where(eq(agents.agentId, f.agentId));
+  const { attempt } = await f.imports.begin(f.member.id, f.agentId);
+  await f.imports.allocated(attempt.generation, "upload-revoked");
+  await permission.set({ ...actor, capability: "result.read", enabled: false }, actor.userId);
+  await expect(f.imports.renew(f.agentId, attempt.generation)).rejects.toThrow("POLICY_DENIED");
+  await expect(
+    f.imports.assertCopyLease(f.agentId, f.bindingFor(attempt.generation)),
+  ).rejects.toThrow("POLICY_DENIED");
+  await f.imports.failed(f.agentId, attempt.generation, "COPY_FAILED");
+  await expect(f.imports.storageCleaned(attempt.generation)).rejects.toThrow("OPERATION_CONFLICT");
+  await expect(f.imports.cancel(receiver, f.imported.id)).rejects.toThrow("POLICY_DENIED");
+  expect(await f.imports.cancel(actor, f.imported.id)).toEqual({
+    id: f.imported.id,
+    state: "cancelled",
+  });
+  time = new Date(time.getTime() + 120_001);
+  await f.imports.storageCleaned(attempt.generation);
+  await permission.set({ ...actor, capability: "result.read", enabled: true }, actor.userId);
+  expect((await f.imports.get(actor, f.imported.id)).members[0]?.state).toBe("cancelled");
+  await expect(f.imports.begin(f.member.id, f.agentId)).rejects.toThrow("POLICY_DENIED");
+});
+
+test("result import HTTP API persists intent, enforces operation scope, and requires a new ID after cancellation", async () => {
+  const f = await resultFixture();
+  const app = new Hono();
+  let principal = actor;
+  app.use("*", async (c, next) => {
+    c.set("principal" as never, principal as never);
+    await next();
+  });
+  app.route("/api", createFederationOutboundRoutes(f.service(f.send)));
+  const base = `/api/federation/outbound/${f.request.operationId}/result-imports`;
+  const importId = crypto.randomUUID();
+  const post = (id: string) =>
+    app.request(base, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ importId: id }),
+    });
+  const replies = await Promise.all([post(importId), post(importId)]);
+  for (const reply of replies) {
+    expect(reply.status).toBe(202);
+    expect(await reply.json()).toMatchObject({ data: { id: importId, state: "pending" } });
+  }
+  const detail = await app.request(`${base}/${importId}`);
+  expect(detail.status).toBe(200);
+  expect(detail.headers.get("cache-control")).toBe("no-store");
+  expect(
+    (
+      await app.request(
+        `/api/federation/outbound/${crypto.randomUUID()}/result-imports/${importId}`,
+      )
+    ).status,
+  ).toBe(403);
+  await permission.set({ ...receiver, capability: "result.read", enabled: true }, actor.userId);
+  principal = receiver;
+  expect((await app.request(`${base}/${importId}`)).status).toBe(403);
+  expect((await app.request(`${base}/${importId}/cancel`, { method: "POST" })).status).toBe(403);
+  principal = actor;
+  await permission.set({ ...actor, capability: "result.read", enabled: false }, actor.userId);
+  expect((await app.request(`${base}/${importId}/cancel`, { method: "POST" })).status).toBe(202);
+  await permission.set({ ...actor, capability: "result.read", enabled: true }, actor.userId);
+  expect(await (await post(importId)).json()).toMatchObject({
+    data: { id: importId, state: "cancelled" },
+  });
+  const fresh = crypto.randomUUID();
+  expect(await (await post(fresh)).json()).toMatchObject({ data: { id: fresh, state: "pending" } });
+  const attempts = await db
+    .select()
+    .from(federationResultAttempts)
+    .innerJoin(
+      federationResultTransfers,
+      eq(federationResultTransfers.id, federationResultAttempts.transferId),
+    )
+    .where(eq(federationResultTransfers.importId, fresh));
+  expect(attempts).toEqual([]);
+});
+
+test("result imports accept only an identical copied receipt replay and cap each Agent at one active copy", async () => {
+  const f = await resultImportFixture();
+  const second = await resultImportFixture();
+  const first = await f.imports.begin(f.member.id, f.agentId);
+  await expect(second.imports.begin(second.member.id, f.agentId)).rejects.toThrow();
+  expect((await second.imports.get(actor, second.imported.id)).members[0]?.state).toBe("pending");
+  await f.imports.allocated(first.attempt.generation, "upload-idempotent");
+  const receipt = {
+    binding: f.bindingFor(first.attempt.generation),
+    sizeBytes: 3,
+    sha256: f.member.sha256,
+    parts: [{ partNumber: 1, etag: "part-one" }],
+  };
+  await f.imports.copied(f.agentId, receipt);
+  expect(await f.serviceImports().copied(f.agentId, receipt)).toEqual({ state: "assembling" });
+  await expect(
+    f.imports.copied(f.agentId, { ...receipt, parts: [{ partNumber: 1, etag: "changed-part" }] }),
+  ).rejects.toThrow("OPERATION_CONFLICT");
+  expect((await f.imports.get(actor, f.imported.id)).state).not.toBe("available");
+  await f.imports.cancel(actor, f.imported.id);
+  await expect(second.imports.begin(second.member.id, f.agentId)).rejects.toThrow(
+    "OPERATION_CONFLICT",
+  );
+  time = new Date(time.getTime() + 120_001);
+  await f.imports.storageCleaned(first.attempt.generation);
+  expect((await second.imports.begin(second.member.id, f.agentId)).attempt.agentId).toBe(f.agentId);
 });

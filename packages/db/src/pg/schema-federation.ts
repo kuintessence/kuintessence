@@ -8,10 +8,12 @@ import type {
   FederationEnvironmentLock,
   FederationExecutionTarget,
   FederationInputManifest,
+  FederationResultReport,
 } from "@kuintessence/shared/federation";
 import type { FederationEvidenceBatch } from "@kuintessence/shared/federation/ledger";
 import { sql } from "drizzle-orm";
 import {
+  bigint,
   check,
   foreignKey,
   index,
@@ -26,7 +28,14 @@ import {
   uuid,
   varchar,
 } from "drizzle-orm/pg-core";
-import { dataAssetVersions, orgs, softwareAssetRevisions, users, workflowRuns } from "./schema";
+import {
+  agents,
+  dataAssetVersions,
+  orgs,
+  softwareAssetRevisions,
+  users,
+  workflowRuns,
+} from "./schema";
 
 export const federationSites = pgTable(
   "federation_sites",
@@ -604,6 +613,117 @@ export const federationWorkflowBindings = pgTable(
     check(
       "federation_workflow_snapshot_digest",
       sql`${t.snapshotDigest} ~ '^sha256:[a-f0-9]{64}$'`,
+    ),
+  ],
+);
+
+/** Source-side result import. No credential URL is persisted in any transfer row. */
+export const federationResultImports = pgTable(
+  "federation_result_imports",
+  {
+    id: uuid("id").primaryKey(),
+    localSiteId: uuid("local_site_id").notNull(),
+    localOrgId: uuid("local_org_id")
+      .notNull()
+      .references(() => orgs.id),
+    operationId: uuid("operation_id").notNull(),
+    requestedBy: uuid("requested_by")
+      .notNull()
+      .references(() => users.id),
+    report: jsonb("report").$type<FederationResultReport>().notNull(),
+    reportJws: text("report_jws").notNull(),
+    manifestDigest: varchar("manifest_digest", { length: 71 }).notNull(),
+    state: varchar("state", { length: 24 }).notNull().default("pending"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    foreignKey({
+      columns: [t.localSiteId, t.operationId],
+      foreignColumns: [federationOutbound.localSiteId, federationOutbound.operationId],
+    }),
+    uniqueIndex("federation_result_import_manifest")
+      .on(t.localSiteId, t.operationId, t.requestedBy, t.manifestDigest)
+      .where(sql`${t.state} <> 'cancelled'`),
+    index("federation_result_import_owner").on(
+      t.localSiteId,
+      t.localOrgId,
+      t.requestedBy,
+      t.createdAt,
+    ),
+    check(
+      "federation_result_import_state",
+      sql`${t.state} IN ('pending','transferring','verifying','available','cancelled','needs_review')`,
+    ),
+  ],
+);
+
+export const federationResultTransfers = pgTable(
+  "federation_result_transfers",
+  {
+    id: uuid("id").primaryKey(),
+    importId: uuid("import_id")
+      .notNull()
+      .references(() => federationResultImports.id),
+    outputId: varchar("output_id", { length: 71 }).notNull(),
+    path: varchar("path", { length: 255 }).notNull(),
+    sizeBytes: bigint("size_bytes", { mode: "number" }).notNull(),
+    sha256: varchar("sha256", { length: 64 }).notNull(),
+    partSize: bigint("part_size", { mode: "number" }).notNull(),
+    state: varchar("state", { length: 24 }).notNull().default("pending"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("federation_result_transfer_member").on(t.importId, t.outputId, t.path),
+    check(
+      "federation_result_transfer_state",
+      sql`${t.state} IN ('pending','copying','assembling','verifying','verified','available','cleanup_pending','cancelled')`,
+    ),
+    check(
+      "federation_result_transfer_size",
+      sql`${t.sizeBytes} >= 0 AND ${t.sizeBytes} <= 5497558138880 AND ${t.partSize} >= 5242880 AND ${t.partSize} <= 5368709120`,
+    ),
+    check("federation_result_transfer_hash", sql`${t.sha256} ~ '^[a-f0-9]{64}$'`),
+  ],
+);
+
+/** Attempts are never overwritten: a lost create/complete response retains its cleanup identity. */
+export const federationResultAttempts = pgTable(
+  "federation_result_attempts",
+  {
+    generation: uuid("generation").primaryKey(),
+    transferId: uuid("transfer_id")
+      .notNull()
+      .references(() => federationResultTransfers.id),
+    agentId: varchar("agent_id", { length: 255 })
+      .notNull()
+      .references(() => agents.agentId),
+    state: varchar("state", { length: 24 }).notNull().default("preparing"),
+    storageKey: varchar("storage_key", { length: 512 }).notNull(),
+    uploadId: text("upload_id"),
+    parts: jsonb("parts").$type<Array<{ partNumber: number; etag: string }>>(),
+    leaseUntil: timestamp("lease_until", { withTimezone: true }).notNull(),
+    lastError: varchar("last_error", { length: 64 }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("federation_result_attempt_storage").on(t.storageKey),
+    uniqueIndex("federation_result_attempt_active_member")
+      .on(t.transferId)
+      .where(sql`${t.state} NOT IN ('cleaned','cleanup_pending')`),
+    uniqueIndex("federation_result_attempt_active_agent")
+      .on(t.agentId)
+      .where(sql`${t.state} IN ('preparing','copying','assembling','verifying')`),
+    index("federation_result_attempt_lease").on(t.state, t.leaseUntil),
+    check(
+      "federation_result_attempt_state",
+      sql`${t.state} IN ('preparing','copying','assembling','verifying','verified','available','cleanup_pending','cleaned')`,
+    ),
+    check(
+      "federation_result_attempt_upload",
+      sql`${t.state} NOT IN ('copying','assembling','verifying','verified','available') OR ${t.uploadId} IS NOT NULL`,
     ),
   ],
 );

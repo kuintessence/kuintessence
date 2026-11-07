@@ -221,7 +221,7 @@ export class FederationResultReader {
     };
   }
 
-  private async authorize(tx: FederationTransaction, actor: FederationActor, operationId: string) {
+  async authorize(tx: FederationTransaction, actor: FederationActor, operationId: string) {
     await requireFederationCapability(tx, actor, "result.read");
     const [row] = await tx
       .select()
