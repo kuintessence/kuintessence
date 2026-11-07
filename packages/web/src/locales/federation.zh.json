@@ -360,6 +360,72 @@
         "LEDGER_INVALID": "链已判定本次交易无效。",
         "AUTHORIZATION_EXPIRED": "签署授权已到期。"
       }
+    },
+    "usage": {
+      "title": "用量报告",
+      "contractSections": "合同内容",
+      "issued": "本方出具",
+      "received": "收到的报告",
+      "assertion": "提供方用量声明，不代表账单已确认。",
+      "meter": "计量口径",
+      "customMeter": "自定义口径",
+      "customMeterNotice": "自定义口径可保留在合同中；当前自动报告仅支持列表内的三种标准口径。",
+      "meters": {
+        "cpuTime": "CPU 累计时间",
+        "cpuAllocated": "CPU 分配时长",
+        "jobElapsed": "逐作业运行时长"
+      },
+      "units": {
+        "cpuTime": "CPU 毫秒",
+        "cpuAllocated": "核毫秒",
+        "jobElapsed": "作业毫秒"
+      },
+      "quantity": "用量",
+      "reservation": "接单",
+      "delegation": "委派",
+      "back": "返回用量列表",
+      "empty": "暂无相关任务",
+      "noReport": "尚未生成可用报告",
+      "states": {
+        "waiting": "等待报告",
+        "pending": "等待生成",
+        "missing_data": "计量缺失",
+        "needs_review": "需要复核",
+        "reported": "已有报告",
+        "retrying": "等待重试同步"
+      },
+      "gaps": {
+        "UNSUPPORTED_METER": "暂不支持此计量口径",
+        "MISSING_ACCOUNTING": "缺少调度器计量",
+        "NO_JOB_EVIDENCE": "缺少作业证据"
+      },
+      "retry": "重新检查计量",
+      "sync": "同步对方报告",
+      "correct": "追加技术更正",
+      "correctedQuantity": "更正后用量",
+      "supportingDigest": "佐证 SHA-256 摘要",
+      "reason": "更正原因",
+      "reviewCorrection": "核对并签署更正",
+      "invalidCorrection": "请填写原因、完整整数用量和 sha256: 开头的 64 位十六进制摘要。",
+      "correction": "技术更正",
+      "original": "原始报告",
+      "localSigned": "已在本地签名",
+      "receivedStatus": "已接收并验签",
+      "export": "导出报告",
+      "periodStart": "覆盖开始时间",
+      "periodEnd": "覆盖结束时间",
+      "evidence": "签名与证据",
+      "reportId": "报告 ID",
+      "taskId": "任务 ID",
+      "previousReport": "前一报告",
+      "signature": "报告签名",
+      "lastSync": "最近同步",
+      "errorCode": "错误代码",
+      "correctionNotice": "原报告会保留。本次签署的是提供方技术更正声明，不确认账单，也不发起付款。佐证原件须由本机构核验并保存。",
+      "retryNotice": "重新检查原记录。已保存的报告、计量和签名不会被覆盖。",
+      "actionFailed": "操作未确认。可重试同一请求；如报告已被其他人更正，请刷新后核对最新记录。",
+      "ledgerPending": "等待存证",
+      "exportFailed": "报告导出失败，请重试。"
     }
   }
 }

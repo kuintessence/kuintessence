@@ -1,6 +1,7 @@
 import type { CommercialAgreement } from "@kuintessence/shared/federation/commercial";
 import { useTranslation } from "react-i18next";
 import { AgreementFact, AgreementTerms } from "./AgreementTerms";
+import { commercialMetric, commercialUnit } from "./commercial-format";
 
 export function exportCommercialTerms(terms: CommercialAgreement) {
   const url = URL.createObjectURL(
@@ -54,9 +55,12 @@ export function CommercialTerms({ terms }: { terms: CommercialAgreement }) {
           <tbody>
             {terms.prices.map((price) => (
               <tr key={price.metric} className="border-b border-border">
-                <td className="break-all py-3 pr-4">{price.metric}</td>
+                <td className="break-all py-3 pr-4">
+                  {commercialMetric(t, price.metric, price.quantityUnit)}
+                </td>
                 <td className="py-3 pr-4">
-                  {BigInt(price.perQuantity).toLocaleString(i18n.language)} {price.quantityUnit}
+                  {BigInt(price.perQuantity).toLocaleString(i18n.language)}{" "}
+                  {commercialUnit(t, price.metric, price.quantityUnit)}
                 </td>
                 <td className="py-3 text-right">
                   {BigInt(price.amount).toLocaleString(i18n.language)}

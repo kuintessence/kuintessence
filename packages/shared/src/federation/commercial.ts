@@ -286,3 +286,49 @@ export const CommercialUsageCorrectionEvidenceSchema = z.strictObject({
 export type CommercialUsageCorrectionEvidence = z.infer<
   typeof CommercialUsageCorrectionEvidenceSchema
 >;
+
+/** Organization-scoped HTTP views; dates are serialized by the Server. */
+export const CommercialUsageTaskViewSchema = z.object({
+  reservationId: Id,
+  localSiteId: Id,
+  localOrgId: Id,
+  agreementRevisionId: Id,
+  state: z.enum(["pending", "missing_data", "needs_review", "reported"]),
+  gaps: z.array(CommercialUsageGapSchema),
+  lastError: z.string().nullable(),
+  updatedAt: z.iso.datetime(),
+});
+export const CommercialUsageSyncViewSchema = z.object({
+  operationId: Id,
+  number: z.number().int().nonnegative(),
+  lastReportId: Id.nullable(),
+  state: z.enum(["pending", "needs_review"]),
+  providerState: z
+    .enum(["waiting", "pending", "missing_data", "needs_review", "reported"])
+    .nullable(),
+  lastError: z.string().nullable(),
+  verifiedAt: z.iso.datetime().nullable(),
+  nextAttemptAt: z.iso.datetime(),
+});
+export const CommercialUsageRecordViewSchema = z.object({
+  number: z.number().int().positive(),
+  report: CommercialUsageSchema,
+  reportJws: z.string().min(1),
+  digest: FederationDigestSchema,
+  correctionEvidence: CommercialUsageCorrectionEvidenceSchema.nullable(),
+  evidenceSet: CommercialUsageEvidenceSetSchema.optional(),
+  submissionId: Id.nullable().optional(),
+  ledgerState: z.enum(["pending", "committed", "needs_review"]).nullable().optional(),
+  lastError: z.string().nullable().optional(),
+});
+export type CommercialUsageRecordView = z.infer<typeof CommercialUsageRecordViewSchema>;
+export const CommercialUsageProviderViewSchema = z.object({
+  task: CommercialUsageTaskViewSchema,
+  reports: z.array(CommercialUsageRecordViewSchema),
+  hasMore: z.boolean(),
+});
+export const CommercialUsageReceivedViewSchema = z.object({
+  sync: CommercialUsageSyncViewSchema.nullable(),
+  reports: z.array(CommercialUsageRecordViewSchema),
+  hasMore: z.boolean(),
+});

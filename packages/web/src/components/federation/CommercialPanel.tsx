@@ -24,9 +24,11 @@ import {
   DialogHeader,
   DialogTitle,
 } from "../ui/dialog";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "../ui/tabs";
 import { CommercialDetail } from "./CommercialDetail";
 import { CommercialEditor } from "./CommercialEditor";
 import { CommercialTerms } from "./CommercialTerms";
+import { CommercialUsagePanel } from "./CommercialUsagePanel";
 
 const path = "/federation/commercial-agreements";
 type Action =
@@ -224,21 +226,37 @@ export function CommercialPanel({
           ) : detail.isPending ? (
             <p role="status">{t("federation.loading")}</p>
           ) : (
-            <CommercialDetail
-              key={detail.data.revisionId}
-              approval={detail.data}
-              writable={canApprove}
-              busy={busy || detail.isFetching}
-              submissions={submissions.data}
-              loadingSubmissions={requiresLedger && submissions.isPending}
-              failedSubmissions={requiresLedger && submissions.isError}
-              onAttach={(approvalJws) =>
-                confirm({ kind: "attach", revisionId: detail.data.revisionId, approvalJws })
-              }
-              onRetry={(submissionId) =>
-                confirm({ kind: "retry", revisionId: detail.data.revisionId, submissionId })
-              }
-            />
+            <Tabs key={detail.data.revisionId} defaultValue="terms">
+              <TabsList aria-label={t("federation.usage.contractSections")}>
+                <TabsTrigger value="terms">{t("federation.commercial.terms")}</TabsTrigger>
+                <TabsTrigger value="usage">{t("federation.usage.title")}</TabsTrigger>
+              </TabsList>
+              <TabsContent value="terms">
+                <CommercialDetail
+                  approval={detail.data}
+                  writable={canApprove}
+                  busy={busy || detail.isFetching}
+                  submissions={submissions.data}
+                  loadingSubmissions={requiresLedger && submissions.isPending}
+                  failedSubmissions={requiresLedger && submissions.isError}
+                  onAttach={(approvalJws) =>
+                    confirm({ kind: "attach", revisionId: detail.data.revisionId, approvalJws })
+                  }
+                  onRetry={(submissionId) =>
+                    confirm({ kind: "retry", revisionId: detail.data.revisionId, submissionId })
+                  }
+                />
+              </TabsContent>
+              <TabsContent value="usage">
+                <CommercialUsagePanel
+                  key={`${scope.organizationId}:${scope.authRevision}:${detail.data.revisionId}`}
+                  approval={detail.data}
+                  scope={scope}
+                  writable={canApprove}
+                  busy={busy || detail.isFetching}
+                />
+              </TabsContent>
+            </Tabs>
           )}
         </>
       ) : list.isError ? (

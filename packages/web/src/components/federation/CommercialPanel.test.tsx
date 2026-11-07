@@ -10,6 +10,7 @@ import { beforeEach, expect, test, vi } from "vitest";
 import { api } from "../../lib/api-client";
 import i18n from "../../lib/i18n";
 import { CommercialPanel } from "./CommercialPanel";
+import { CommercialUsagePanel } from "./CommercialUsagePanel";
 
 vi.mock("../../lib/api-client", async (original) => ({
   ...(await original<typeof import("../../lib/api-client")>()),
@@ -203,7 +204,7 @@ test("existing agreement creates fresh protected identifiers, adds/removes price
   });
   expect((screen.getByLabelText("Amount") as HTMLInputElement).readOnly).toBe(true);
   fireEvent.click(screen.getByRole("button", { name: "Add price" }));
-  fireEvent.change(screen.getAllByLabelText("Metric")[1] as HTMLElement, {
+  fireEvent.change(screen.getByLabelText("Metric"), {
     target: { value: "storage" },
   });
   fireEvent.click(screen.getAllByRole("button", { name: "Remove" })[0] as HTMLElement);
@@ -345,4 +346,273 @@ test("scope-mismatched detail is rejected before showing private terms", async (
   fireEvent.click(await screen.findByRole("button", { name: /Research A.*Research B/ }));
   await screen.findByRole("alert");
   expect(screen.queryByText(terms.termsText)).toBeNull();
+});
+
+function usageSetup(provider = true, state: "reported" | "missing_data" = "reported") {
+  const approval: CommercialAgreementApproval = {
+    ...structuredClone(original),
+    localSiteId: provider ? target : source,
+    counterpartyJws: "peer.signature",
+  };
+  approval.terms.prices = [
+    { metric: "cpu.time", quantityUnit: "cpu-millisecond", perQuantity: "1000", amount: "1" },
+  ];
+  const record = {
+    number: 1,
+    report: {
+      protocolVersion: 1 as const,
+      kind: "commercial-usage" as const,
+      reportId: userId,
+      domainId: terms.domainId,
+      agreementRevisionId: revisionId,
+      agreementDigest: approval.digest,
+      sourceSiteId: source,
+      targetSiteId: target,
+      taskId: orgId,
+      attempt: 1,
+      salt: "a".repeat(64),
+      reportedAt: "2026-11-01T02:00:00.000Z",
+      periodStart: "2026-11-01T00:00:00.000Z",
+      periodEnd: "2026-11-01T01:00:00.000Z",
+      measurements: [
+        {
+          metric: "cpu.time",
+          quantityUnit: "cpu-millisecond",
+          quantity: "9007199254740993",
+          evidenceDigest: `sha256:${"a".repeat(64)}`,
+        },
+      ],
+    },
+    reportJws: "fixture.signed.report",
+    digest: `sha256:${"b".repeat(64)}`,
+    correctionEvidence: null,
+    submissionId: userId,
+    ledgerState: null as "pending" | "committed" | "needs_review" | null,
+    lastError: null,
+  };
+  const task = {
+    reservationId: orgId,
+    localSiteId: target,
+    localOrgId: orgId,
+    agreementRevisionId: revisionId,
+    state,
+    gaps:
+      state === "missing_data"
+        ? [{ metric: "cpu.time", reason: "MISSING_ACCOUNTING", missingJobs: 2 }]
+        : [],
+    lastError: state === "missing_data" ? "MISSING_ACCOUNTING" : null,
+    updatedAt: terms.createdAt,
+  };
+  const sync = {
+    operationId: orgId,
+    number: 1,
+    lastReportId: record.report.reportId,
+    state: "pending",
+    providerState: state,
+    lastError: null,
+    verifiedAt: terms.createdAt,
+    nextAttemptAt: terms.createdAt,
+  };
+  const detail = provider
+    ? { task, reports: state === "reported" ? [record] : [], hasMore: false }
+    : { sync, reports: [record], hasMore: false };
+  const path = `/federation/commercial-agreements/${revisionId}/${provider ? "usage" : "received-usage"}`;
+  vi.mocked(api.get).mockImplementation(async (url) => ({
+    data: url.startsWith(`${path}?`) ? [provider ? task : sync] : detail,
+  }));
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false, gcTime: 0 }, mutations: { retry: false } },
+  });
+  const renderPanel = (writable = true, busy = false) => (
+    <QueryClientProvider client={client}>
+      <CommercialUsagePanel approval={approval} scope={scope} writable={writable} busy={busy} />
+    </QueryClientProvider>
+  );
+  return { approval, record, task, sync, detail, path, client, renderPanel };
+}
+async function openUsage(provider = true) {
+  fireEvent.click(
+    await screen.findByRole("button", {
+      name: new RegExp(`^${provider ? "Reservation" : "Delegation"}`),
+    }),
+  );
+  await screen.findByRole("button", { name: "Back to usage list" });
+}
+async function fillCorrection() {
+  fireEvent.click(await screen.findByRole("button", { name: "Add technical correction" }));
+  fireEvent.change(screen.getByLabelText(/^Corrected usage/), {
+    target: { value: "9007199254741999" },
+  });
+  fireEvent.change(screen.getByLabelText("Supporting SHA-256 digest"), {
+    target: { value: `sha256:${"c".repeat(64)}` },
+  });
+  fireEvent.change(screen.getByLabelText("Correction reason"), {
+    target: { value: "Verified delayed accounting" },
+  });
+  fireEvent.click(screen.getByRole("button", { name: "Review and sign correction" }));
+  return within(await screen.findByRole("dialog"));
+}
+
+test("usage report keeps exact integers and separates local signatures from pending ledger and received state", async () => {
+  const f = usageSetup();
+  f.record.ledgerState = "pending";
+  render(f.renderPanel());
+  await openUsage();
+  expect(await screen.findByText(/9,007,199,254,740,993 CPU milliseconds/)).toBeTruthy();
+  expect(screen.getByText("Awaiting ledger submission")).toBeTruthy();
+  expect(screen.queryByText("Recorded on ledger")).toBeNull();
+  expect(api.post).not.toHaveBeenCalled();
+  expect(vi.mocked(api.get).mock.calls.every((call) => call[1] === scope)).toBe(true);
+});
+
+test("usage correction review preserves the same signed intent after an unconfirmed request", async () => {
+  const f = usageSetup();
+  vi.mocked(api.post).mockRejectedValueOnce(new Error("response lost"));
+  render(f.renderPanel());
+  await openUsage();
+  const dialog = await fillCorrection();
+  expect(dialog.getByText(/9,007,199,254,741,999/)).toBeTruthy();
+  expect(api.post).not.toHaveBeenCalled();
+  fireEvent.click(dialog.getByRole("button", { name: "Confirm" }));
+  await dialog.findByRole("alert");
+  fireEvent.click(dialog.getByRole("button", { name: "Confirm" }));
+  await waitFor(() => expect(api.post).toHaveBeenCalledTimes(2));
+  expect(vi.mocked(api.post).mock.calls[0]).toEqual(vi.mocked(api.post).mock.calls[1]);
+  expect(vi.mocked(api.post).mock.calls[0]).toEqual([
+    `${f.path}/${orgId}/corrections`,
+    {
+      reportId: expect.any(String),
+      correctionOf: f.record.report.reportId,
+      reason: "Verified delayed accounting",
+      measurements: [
+        {
+          metric: "cpu.time",
+          quantityUnit: "cpu-millisecond",
+          quantity: "9007199254741999",
+          supportingEvidenceDigest: `sha256:${"c".repeat(64)}`,
+        },
+      ],
+    },
+    scope,
+  ]);
+});
+
+test("usage correction rejects fractional quantities and malformed supporting hashes without posting", async () => {
+  const f = usageSetup();
+  render(f.renderPanel());
+  await openUsage();
+  fireEvent.click(await screen.findByRole("button", { name: "Add technical correction" }));
+  fireEvent.change(screen.getByLabelText(/^Corrected usage/), { target: { value: "1.5" } });
+  fireEvent.change(screen.getByLabelText("Supporting SHA-256 digest"), {
+    target: { value: "bad" },
+  });
+  fireEvent.change(screen.getByLabelText("Correction reason"), {
+    target: { value: "A correction" },
+  });
+  fireEvent.click(screen.getByRole("button", { name: "Review and sign correction" }));
+  expect(screen.getByRole("alert").textContent).toContain("complete integer quantities");
+  expect(screen.queryByRole("dialog")).toBeNull();
+  expect(api.post).not.toHaveBeenCalled();
+});
+
+test("missing usage remains missing and recheck cannot overwrite quantities", async () => {
+  const f = usageSetup(true, "missing_data");
+  render(f.renderPanel());
+  await openUsage();
+  expect(await screen.findByText(/Scheduler accounting missing/)).toBeTruthy();
+  expect(screen.getByText("No report available yet")).toBeTruthy();
+  expect(screen.queryByRole("button", { name: "Add technical correction" })).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "Recheck accounting" }));
+  fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Confirm" }));
+  await waitFor(() => expect(api.post).toHaveBeenCalledWith(`${f.path}/${orgId}/retry`, {}, scope));
+});
+
+test("received usage can request synchronization but cannot correct the provider's report", async () => {
+  const f = usageSetup(false);
+  render(f.renderPanel());
+  await openUsage(false);
+  expect(await screen.findByText("Received and signature verified")).toBeTruthy();
+  expect(screen.queryByRole("button", { name: "Add technical correction" })).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "Sync provider reports" }));
+  fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Confirm" }));
+  await waitFor(() =>
+    expect(api.post).toHaveBeenCalledWith(`${f.path}/${orgId}/refresh`, {}, scope),
+  );
+});
+
+test("usage permission loss closes a correction review and read-only mode never offers mutations", async () => {
+  const f = usageSetup();
+  const view = render(f.renderPanel());
+  await openUsage();
+  await fillCorrection();
+  view.rerender(f.renderPanel(false));
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  expect(screen.queryByRole("button", { name: "Add technical correction" })).toBeNull();
+  expect(screen.queryByLabelText("Correction reason")).toBeNull();
+  expect(api.post).not.toHaveBeenCalled();
+});
+
+test("usage detail rejects foreign contract records and offers refresh without stale correction controls", async () => {
+  const f = usageSetup();
+  f.record.report.agreementRevisionId = userId;
+  render(f.renderPanel());
+  await openUsage();
+  await screen.findByRole("alert");
+  expect(screen.queryByRole("button", { name: "Add technical correction" })).toBeNull();
+  expect(screen.queryByText(/9,007,199,254,740,993/)).toBeNull();
+});
+
+test("usage history pagination preserves scope and disables correction on older pages", async () => {
+  const f = usageSetup();
+  f.detail.hasMore = true;
+  render(f.renderPanel());
+  await openUsage();
+  fireEvent.click(await screen.findByRole("button", { name: "Next" }));
+  await waitFor(() =>
+    expect(api.get).toHaveBeenCalledWith(`${f.path}/${orgId}?limit=10&offset=10`, scope),
+  );
+  await waitFor(() =>
+    expect(screen.queryByRole("button", { name: "Add technical correction" })).toBeNull(),
+  );
+});
+
+test("usage ledger retry references the report submission rather than contract registration", async () => {
+  const f = usageSetup();
+  f.record.ledgerState = "needs_review";
+  render(f.renderPanel());
+  await openUsage();
+  fireEvent.click(await screen.findByRole("button", { name: "Retry ledger submission" }));
+  fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Confirm" }));
+  await waitFor(() =>
+    expect(api.post).toHaveBeenCalledWith(
+      `/federation/commercial-agreements/${revisionId}/submissions/${userId}/retry`,
+      {},
+      scope,
+    ),
+  );
+});
+
+test("new commercial meters bind unit atomically while imported legacy meter values stay intact", async () => {
+  mount();
+  await create();
+  fireEvent.click(await screen.findByRole("button", { name: new RegExp(`${source}.*${target}`) }));
+  expect((screen.getByLabelText("Meter") as HTMLSelectElement).value).toBe("cpu.time");
+  fireEvent.change(screen.getByLabelText("Meter"), { target: { value: "cpu.allocated" } });
+  fireEvent.change(screen.getByLabelText("Private cooperation domain"), {
+    target: { value: userId },
+  });
+  fireEvent.change(screen.getByLabelText("Contract terms"), {
+    target: { value: "Allocated CPU-time meter" },
+  });
+  fireEvent.click(screen.getByRole("button", { name: "Review terms" }));
+  expect(within(screen.getByRole("dialog")).getByText("Allocated CPU time")).toBeTruthy();
+  fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Confirm" }));
+  await waitFor(() => expect(api.post).toHaveBeenCalledOnce());
+  const request = vi.mocked(api.post).mock.calls[0]?.[1] as { terms: CommercialAgreement };
+  expect(request.terms.prices[0]).toEqual({
+    metric: "cpu.allocated",
+    quantityUnit: "core-millisecond",
+    perQuantity: "1000",
+    amount: "0",
+  });
 });

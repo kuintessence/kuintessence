@@ -360,6 +360,72 @@
         "LEDGER_INVALID": "The ledger marked this transaction invalid.",
         "AUTHORIZATION_EXPIRED": "The signing authorization has expired."
       }
+    },
+    "usage": {
+      "title": "Usage reports",
+      "contractSections": "Contract sections",
+      "issued": "Issued reports",
+      "received": "Received reports",
+      "assertion": "Provider usage assertions. Bills are not confirmed.",
+      "meter": "Meter",
+      "customMeter": "Custom meter",
+      "customMeterNotice": "Custom meters remain in the contract. Automatic reports currently support only the three standard meters listed.",
+      "meters": {
+        "cpuTime": "Accumulated CPU time",
+        "cpuAllocated": "Allocated CPU time",
+        "jobElapsed": "Per-job elapsed time"
+      },
+      "units": {
+        "cpuTime": "CPU milliseconds",
+        "cpuAllocated": "core milliseconds",
+        "jobElapsed": "job milliseconds"
+      },
+      "quantity": "Usage",
+      "reservation": "Reservation",
+      "delegation": "Delegation",
+      "back": "Back to usage list",
+      "empty": "No related tasks",
+      "noReport": "No report available yet",
+      "states": {
+        "waiting": "Waiting for report",
+        "pending": "Awaiting generation",
+        "missing_data": "Missing accounting",
+        "needs_review": "Needs review",
+        "reported": "Report available",
+        "retrying": "Sync retry pending"
+      },
+      "gaps": {
+        "UNSUPPORTED_METER": "Unsupported automatic meter",
+        "MISSING_ACCOUNTING": "Scheduler accounting missing",
+        "NO_JOB_EVIDENCE": "Job evidence missing"
+      },
+      "retry": "Recheck accounting",
+      "sync": "Sync provider reports",
+      "correct": "Add technical correction",
+      "correctedQuantity": "Corrected usage",
+      "supportingDigest": "Supporting SHA-256 digest",
+      "reason": "Correction reason",
+      "reviewCorrection": "Review and sign correction",
+      "invalidCorrection": "Enter a reason, complete integer quantities and sha256: followed by 64 hexadecimal characters.",
+      "correction": "Technical correction",
+      "original": "Original report",
+      "localSigned": "Signed locally",
+      "receivedStatus": "Received and signature verified",
+      "export": "Export report",
+      "periodStart": "Coverage starts",
+      "periodEnd": "Coverage ends",
+      "evidence": "Signature and evidence",
+      "reportId": "Report ID",
+      "taskId": "Task ID",
+      "previousReport": "Previous report",
+      "signature": "Report signature",
+      "lastSync": "Last synchronized",
+      "errorCode": "Error code",
+      "correctionNotice": "The original report stays intact. This signs a provider technical assertion; it does not confirm a bill or initiate payment. Your institution must verify and retain the supporting material.",
+      "retryNotice": "Recheck the existing record. Saved reports, accounting and signatures remain intact.",
+      "actionFailed": "The action is unconfirmed. Retry the same request; if someone else corrected the report, refresh and review the latest record.",
+      "ledgerPending": "Awaiting ledger submission",
+      "exportFailed": "Could not export the report. Try again."
     }
   }
 }

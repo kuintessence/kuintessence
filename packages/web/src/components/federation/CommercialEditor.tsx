@@ -5,6 +5,7 @@ import {
 import {
   type CommercialAgreement,
   CommercialAgreementSchema,
+  commercialAutomaticMeters,
 } from "@kuintessence/shared/federation/commercial";
 import { useQuery } from "@tanstack/react-query";
 import { useId, useRef, useState } from "react";
@@ -13,6 +14,7 @@ import { z } from "zod";
 import { type ApiOrganizationScope, api } from "../../lib/api-client";
 import { Button } from "../ui/button";
 import { Input, Textarea } from "../ui/input";
+import { commercialMetric, commercialUnit } from "./commercial-format";
 
 export function CommercialEditor({
   scope,
@@ -74,7 +76,7 @@ export function CommercialEditor({
       agreement: approval.terms,
       consideration: "charity",
       priceVersionId: crypto.randomUUID(),
-      prices: [{ metric: "cpu", quantityUnit: "core-second", perQuantity: "3600", amount: "0" }],
+      prices: [{ ...commercialAutomaticMeters[0], perQuantity: "1000", amount: "0" }],
       termsText: "",
     });
   };
@@ -334,32 +336,87 @@ export function CommercialEditor({
               {draft.prices.map((price, index) => (
                 <fieldset
                   key={priceIds[index]}
-                  className="grid items-end gap-3 border-b border-border pb-4 sm:grid-cols-2 lg:grid-cols-[1fr_1fr_1fr_1fr_auto]"
+                  className={
+                    commercialAutomaticMeters.some(
+                      (m) => m.metric === price.metric && m.quantityUnit === price.quantityUnit,
+                    )
+                      ? "grid items-end gap-3 border-b border-border pb-4 sm:grid-cols-2 lg:grid-cols-[2fr_1fr_1fr_auto]"
+                      : "grid items-end gap-3 border-b border-border pb-4 sm:grid-cols-2 lg:grid-cols-3"
+                  }
                 >
                   <legend className="sr-only">
                     {t("federation.commercial.priceRow", { number: index + 1 })}
                   </legend>
-                  {(["metric", "quantityUnit", "perQuantity", "amount"] as const).map((field) => (
-                    <label
-                      key={field}
-                      htmlFor={`${id}-${priceIds[index]}-${field}`}
-                      className="min-w-0 space-y-2 text-sm"
-                    >
-                      <span className="block">{t(`federation.commercial.${field}`)}</span>
-                      <Input
-                        required
-                        id={`${id}-${priceIds[index]}-${field}`}
-                        type="text"
-                        inputMode={
-                          field === "perQuantity" || field === "amount" ? "numeric" : "text"
-                        }
-                        value={price[field]}
-                        readOnly={field === "amount" && draft.consideration === "charity"}
-                        maxLength={field === "perQuantity" || field === "amount" ? 38 : 64}
-                        onChange={(event) => changePrice(index, field, event.target.value)}
-                      />
+                  <div className="min-w-0 space-y-2 text-sm">
+                    <label htmlFor={`${id}-${priceIds[index]}-meter`} className="block">
+                      {t("federation.usage.meter")}
                     </label>
-                  ))}
+                    <select
+                      id={`${id}-${priceIds[index]}-meter`}
+                      className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm"
+                      value={
+                        commercialAutomaticMeters.some(
+                          (m) => m.metric === price.metric && m.quantityUnit === price.quantityUnit,
+                        )
+                          ? price.metric
+                          : "custom"
+                      }
+                      onChange={(event) => {
+                        const meter = commercialAutomaticMeters.find(
+                          (m) => m.metric === event.target.value,
+                        );
+                        setDraft({
+                          ...draft,
+                          prices: draft.prices.map((row, i) =>
+                            i === index
+                              ? {
+                                  ...row,
+                                  metric: meter?.metric ?? "",
+                                  quantityUnit: meter?.quantityUnit ?? "",
+                                }
+                              : row,
+                          ),
+                        });
+                      }}
+                    >
+                      {commercialAutomaticMeters.map((m) => (
+                        <option key={m.metric} value={m.metric}>
+                          {commercialMetric(t, m.metric, m.quantityUnit)} ·{" "}
+                          {commercialUnit(t, m.metric, m.quantityUnit)}
+                        </option>
+                      ))}
+                      <option value="custom">{t("federation.usage.customMeter")}</option>
+                    </select>
+                  </div>
+                  {(["metric", "quantityUnit", "perQuantity", "amount"] as const)
+                    .filter(
+                      (field) =>
+                        !["metric", "quantityUnit"].includes(field) ||
+                        !commercialAutomaticMeters.some(
+                          (m) => m.metric === price.metric && m.quantityUnit === price.quantityUnit,
+                        ),
+                    )
+                    .map((field) => (
+                      <label
+                        key={field}
+                        htmlFor={`${id}-${priceIds[index]}-${field}`}
+                        className="min-w-0 space-y-2 text-sm"
+                      >
+                        <span className="block">{t(`federation.commercial.${field}`)}</span>
+                        <Input
+                          required
+                          id={`${id}-${priceIds[index]}-${field}`}
+                          type="text"
+                          inputMode={
+                            field === "perQuantity" || field === "amount" ? "numeric" : "text"
+                          }
+                          value={price[field]}
+                          readOnly={field === "amount" && draft.consideration === "charity"}
+                          maxLength={field === "perQuantity" || field === "amount" ? 38 : 64}
+                          onChange={(event) => changePrice(index, field, event.target.value)}
+                        />
+                      </label>
+                    ))}
                   <Button
                     type="button"
                     variant="ghost"
@@ -376,19 +433,30 @@ export function CommercialEditor({
                   </Button>
                 </fieldset>
               ))}
+              {draft.prices.some(
+                (p) =>
+                  !commercialAutomaticMeters.some(
+                    (m) => m.metric === p.metric && m.quantityUnit === p.quantityUnit,
+                  ),
+              ) ? (
+                <p className="text-sm text-muted-foreground">
+                  {t("federation.usage.customMeterNotice")}
+                </p>
+              ) : null}
               <Button
                 type="button"
                 variant="outline"
                 disabled={draft.prices.length >= 64}
-                onClick={() =>
+                onClick={() => {
+                  setPriceIds([...priceIds, crypto.randomUUID()]);
                   setDraft({
                     ...draft,
                     prices: [
                       ...draft.prices,
                       { metric: "", quantityUnit: "", perQuantity: "1", amount: "0" },
                     ],
-                  })
-                }
+                  });
+                }}
               >
                 {t("federation.commercial.addPrice")}
               </Button>

@@ -647,7 +647,7 @@ RegisterAgreement 验证双方对同一条款的签名后只写对应 PDC；Reco
 
 直接模式本地签署后完成，不创建链待办、不探测链；存证模式先等同一商业合同的注册 committed，再由原持久提交服务推进 record-usage。商用 worker 在配置机构签名后即可工作，无需配置商业 socket；未配置 socket 时存证待办保留。每轮最多发现八项并推进八次，无网络 I/O 占用生成事务。报告是单方计量断言，不激活执行、不变更额度、不确认账单。
 
-按组织受控的 GET /api/federation/commercial-agreements/:revisionId/usage 与 /:reservationId 提供状态和报告；POST /:reservationId/retry 仅接受空对象并要求 agreement.approve，其他读取要求 agreement.read。missing_data/needs_review 可以重试，已签报告不能重生成；审计不复制用量正文。响应 no-store，报告仅本机构可读，证据集合未发给链或其他机构。技术更正已按下述规则接入；跨机构报告交换已按下述规则接入，Web 操作尚待接入。
+按组织受控的 GET /api/federation/commercial-agreements/:revisionId/usage 与 /:reservationId 提供状态和报告；POST /:reservationId/retry 仅接受空对象并要求 agreement.approve，其他读取要求 agreement.read。missing_data/needs_review 可以重试，已签报告不能重生成；审计不复制用量正文。响应 no-store，报告仅本机构可读，证据集合未发给链或其他机构。技术更正已按下述规则接入；跨机构报告交换已按下述规则接入，Web 操作已接商业合同详情。
 
 
 ### 用量技术更正
@@ -672,3 +672,12 @@ reportId 为客户端持久 UUID。事务锁原工作项，再核对最新报告
 迁移 0118 新增持久读取状态和 federation_received_usage，保留提供方原签名及验过的页签名。60 秒数据库租约、SKIP LOCKED 与 token 复查封锁迟到响应；网络调用不持锁，保存前重验当前机构信任。报告和读取位置同事务提交，写入失败不前进，重启后续读；还有后续更正时立即继续，读到最新后每 60 秒检查。网络失败退避，身份/协议错误进入 needs_review。后台沿用机构商业批准，不以原操作人员离职抹除历史同步权；真人读取仍须当前组织成员及 agreement.read。
 
 GET /api/federation/commercial-agreements/:revisionId/received-usage 及 /:operationId 提供本机构状态和分页报告；POST /:operationId/refresh 仅接受空对象、要求 agreement.approve，只重排同步，不在 HTTP 内等待网络，也不能抢占活动租约。接口 no-store，不返回租约 token 或原始页签名。报告收到、技术更正、双方确认账单和链上提交继续是不同事实；本服务不创建额度、账单、付款或新的存证待办，直接模式完全不探测 Fabric。
+
+
+### 商业用量 Web 操作
+
+商业合同详情分为合同条款与用量报告两个页签。提供方查看本机构工作项、缺失原因、分页原始报告/更正及存证状态；委派方查看接收历史、最近验签时间和同步状态，并可重排刷新。查询按机构、登录版本、合同和工作项隔离；错误时隐藏旧数据操作，切换机构或撤权清除更正草稿。后台更新保留当前内容，仅可见页面轮询，编辑/核对时停止详情轮询；手机只读。
+
+报告数量用整数字符串和 BigInt 格式化，导出保留签名及当前可见证据。本地签名、链待办和 committed 分开展示；已收到报告不代表账单接受或付款。仅最新历史页可发起更正，提交完整指标数量、原因及佐证摘要；核对对话框固定请求 ID/内容，响应不确定时重试原请求。原报告缺失时仅可重新检查材料，不能用人工更正伪造首份报告。
+
+新商业合同提供 cpu.time/cpu-millisecond、cpu.allocated/core-millisecond、job.elapsed/job-millisecond 成对选择；默认首项、每 1000 单位计价，慈善价格为零。自定义/旧口径保留原字段和原值并提示自动计量可能不支持，不转换已签署合同。此界面不增加计量补采、账单、执行 gate 或付款能力。
