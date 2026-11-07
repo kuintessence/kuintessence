@@ -21,6 +21,10 @@ import type { FederationTerminalExchange } from "../federation/execution-termina
 import { FabricClientFailure } from "../federation/fabric-client";
 import type { FederationActor } from "../federation/permissions";
 import {
+  type FederationReservationPolicyService,
+  ReservationPolicyInputSchema,
+} from "../federation/reservation-policy";
+import {
   type FederationTerminalPolicyService,
   TerminalPolicyInputSchema,
 } from "../federation/terminal-policy";
@@ -41,6 +45,7 @@ export function createFederationCommercialRoutes(
   terminalExchange?: FederationTerminalExchange,
   terminalPolicies?: FederationTerminalPolicyService,
   approvalExchange?: FederationCommercialApprovalExchange,
+  reservationPolicies?: FederationReservationPolicyService,
 ) {
   const r = new Hono<{ Variables: { federationActor: FederationActor } }>();
   r.use("/federation/commercial-agreements/*", async (c, next) => {
@@ -75,6 +80,51 @@ export function createFederationCommercialRoutes(
     limit: z.coerce.number().int().min(1).max(100).default(50),
     offset: z.coerce.number().int().min(0).default(0),
   });
+  if (reservationPolicies) {
+    const path = "/federation/commercial-agreements/:revisionId/reservation-policies";
+    r.get(path, kqValidator("param", id), kqValidator("query", page), async (c) =>
+      c.json({
+        success: true,
+        data: await reservationPolicies.list(
+          c.get("federationActor"),
+          c.req.valid("param").revisionId,
+          c.req.valid("query").limit,
+          c.req.valid("query").offset,
+        ),
+      }),
+    );
+    r.post(
+      path,
+      kqValidator("param", id),
+      kqValidator("json", ReservationPolicyInputSchema),
+      async (c) =>
+        c.json(
+          {
+            success: true,
+            data: await reservationPolicies.grant(
+              c.get("federationActor"),
+              c.req.valid("param").revisionId,
+              c.req.valid("json"),
+            ),
+          },
+          201,
+        ),
+    );
+    r.post(
+      `${path}/:policyId/revoke`,
+      kqValidator("param", id.extend({ policyId: z.uuid() })),
+      kqValidator("json", z.strictObject({})),
+      async (c) =>
+        c.json({
+          success: true,
+          data: await reservationPolicies.revoke(
+            c.get("federationActor"),
+            c.req.valid("param").revisionId,
+            c.req.valid("param").policyId,
+          ),
+        }),
+    );
+  }
   if (approvalExchange) {
     const path = "/federation/commercial-agreements/:revisionId/approval-exchange";
     r.get(path, kqValidator("param", id), kqValidator("query", page), async (c) =>

@@ -1123,6 +1123,56 @@ export const federationCommercialSubmissions = pgTable(
   ],
 );
 
+/** Cumulative signing authority, not a balance or a source of ledger funds. */
+export const federationReservationPolicies = pgTable(
+  "federation_reservation_policies",
+  {
+    id: uuid("id").primaryKey(),
+    localSiteId: uuid("local_site_id").notNull(),
+    agreementRevisionId: uuid("agreement_revision_id").notNull(),
+    localOrgId: uuid("local_org_id")
+      .notNull()
+      .references(() => orgs.id),
+    agreementDigest: varchar("agreement_digest", { length: 71 }).notNull(),
+    maxTaskAmount: numeric("max_task_amount", { precision: 38, scale: 0 }).notNull(),
+    maxTotalAmount: numeric("max_total_amount", { precision: 38, scale: 0 }).notNull(),
+    maxTasks: integer("max_tasks").notNull(),
+    authorizedAmount: numeric("authorized_amount", { precision: 38, scale: 0 })
+      .notNull()
+      .default("0"),
+    authorizedTasks: integer("authorized_tasks").notNull().default(0),
+    validFrom: timestamp("valid_from", { withTimezone: true }).notNull(),
+    validUntil: timestamp("valid_until", { withTimezone: true }).notNull(),
+    grantedBy: uuid("granted_by")
+      .notNull()
+      .references(() => users.id),
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
+    revokedBy: uuid("revoked_by").references(() => users.id),
+  },
+  (t) => [
+    foreignKey({
+      columns: [t.localSiteId, t.agreementRevisionId],
+      foreignColumns: [
+        federationCommercialAgreements.localSiteId,
+        federationCommercialAgreements.revisionId,
+      ],
+    }),
+    uniqueIndex("federation_reservation_policy_active")
+      .on(t.localSiteId, t.agreementRevisionId)
+      .where(sql`${t.revokedAt} IS NULL`),
+    check(
+      "federation_reservation_policy_valid",
+      sql`(
+      ${t.validUntil} > ${t.validFrom} AND ${t.agreementDigest} ~ '^sha256:[a-f0-9]{64}$'
+      AND ${t.maxTaskAmount} >= 0 AND ${t.maxTotalAmount} >= ${t.maxTaskAmount}
+      AND ${t.maxTasks} BETWEEN 1 AND 100000
+      AND ${t.authorizedAmount} BETWEEN 0 AND ${t.maxTotalAmount}
+      AND ${t.authorizedTasks} BETWEEN 0 AND ${t.maxTasks}
+      AND ((${t.revokedAt} IS NULL) = (${t.revokedBy} IS NULL))) IS TRUE`,
+    ),
+  ],
+);
+
 /** Each signed approval is immutable; attaching the other signature creates durable ledger work. */
 export const federationCommercialExecutionApprovals = pgTable(
   "federation_commercial_execution_approvals",
@@ -1137,6 +1187,9 @@ export const federationCommercialExecutionApprovals = pgTable(
     digest: varchar("digest", { length: 71 }).notNull(),
     approvalJws: text("approval_jws").notNull(),
     counterpartyJws: text("counterparty_jws"),
+    authorizationPolicyId: uuid("authorization_policy_id").references(
+      () => federationReservationPolicies.id,
+    ),
     terminalAutoState: varchar("terminal_auto_state", { length: 24 }).notNull().default("pending"),
     terminalAutoNextAt: timestamp("terminal_auto_next_at", { withTimezone: true })
       .notNull()

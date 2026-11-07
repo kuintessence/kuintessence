@@ -91,6 +91,7 @@ import { createFederationPackageResolver } from "./federation/package-resolver";
 import { FederationPermissionService } from "./federation/permissions";
 import { FederationPreparationService } from "./federation/preparation";
 import { FederationPreparationWorker } from "./federation/preparation-worker";
+import { FederationReservationPolicyService } from "./federation/reservation-policy";
 import { FederationResultStorage } from "./federation/result-storage";
 import { FederationResultTransport } from "./federation/result-transport";
 import { FederationResultWorker } from "./federation/result-worker";
@@ -1767,6 +1768,7 @@ if (federationSigningKey && federationCommercial)
       federationTerminalExchange,
       federationTerminalPolicies,
       federationApprovalExchange,
+      new FederationReservationPolicyService(db, federationSigningKey.siteId),
     ),
   );
 const federationPreparation = federationSigningKey

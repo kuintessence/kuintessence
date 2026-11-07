@@ -7,6 +7,7 @@ import {
   federationMarketSubmissions as marketSubmissions,
   type PgDb,
   type PgTransaction,
+  federationReservationPolicies as reservationPolicies,
   federationCommercialSubmissions as submissions,
 } from "@kuintessence/db";
 import { assertDelegationTerms, FederationError } from "@kuintessence/shared/federation";
@@ -15,6 +16,8 @@ import {
   type CommercialExecutionApproval,
   CommercialExecutionApprovalSchema,
   CommercialExecutionProposalInputSchema,
+  type CommercialReservation,
+  CommercialReservationSchema,
 } from "@kuintessence/shared/federation/commercial";
 import {
   MarketActivationSchema,
@@ -26,6 +29,7 @@ import { federationMaterialDigest } from "./assets";
 import { FabricClientFailure } from "./fabric-client";
 import type { MarketClient } from "./market-client";
 import { type FederationActor, requireFederationCapability } from "./permissions";
+import { FederationReservationPolicyService } from "./reservation-policy";
 import {
   type FederationSigningKey,
   federationMessageKeyId,
@@ -262,10 +266,65 @@ export class FederationCommercialExecutionService {
     // This is a preflight only; chaincode checks current state atomically when the signed request commits.
   }
   async approve(actor: FederationActor, revisionId: string, raw: CommercialExecutionApproval) {
+    return this.approveAuthorized(actor, revisionId, raw);
+  }
+  async approvePreauthorized(policyId: string, raw: CommercialReservation, sourceJws?: string) {
+    const payload = CommercialReservationSchema.parse(raw);
+    const [policy] = await this.db
+      .select()
+      .from(reservationPolicies)
+      .where(
+        and(
+          eq(reservationPolicies.id, policyId),
+          eq(reservationPolicies.localSiteId, this.signingKey.siteId),
+          eq(reservationPolicies.agreementRevisionId, payload.request.agreementRevisionId),
+        ),
+      );
+    if (!policy) throw new FederationError("POLICY_DENIED");
+    return this.approveAuthorized(
+      { orgId: policy.localOrgId, userId: policy.grantedBy },
+      payload.request.agreementRevisionId,
+      payload,
+      { policyId, sourceJws },
+    );
+  }
+  private async approveAuthorized(
+    actor: FederationActor,
+    revisionId: string,
+    raw: CommercialExecutionApproval,
+    automatic?: { policyId: string; sourceJws?: string },
+  ) {
     const payload = CommercialExecutionApprovalSchema.parse(raw);
     const expectedDigest = `sha256:${createHash("sha256").update(JSON.stringify(payload)).digest("hex")}`;
+    const policies = new FederationReservationPolicyService(
+      this.db,
+      this.signingKey.siteId,
+      this.clock,
+    );
+    const authorize = async (tx: PgTransaction) => {
+      if (!automatic) {
+        await requireFederationCapability(tx, actor, "agreement.approve");
+        return null;
+      }
+      if (payload.kind !== "commercial-reservation") throw new FederationError("POLICY_DENIED");
+      if (payload.request.senderSiteId !== this.signingKey.siteId || automatic.sourceJws) {
+        if (!automatic.sourceJws) throw new FederationError("UNTRUSTED_IDENTITY");
+        const source = payload.request.senderSiteId,
+          keyId = federationMessageKeyId(automatic.sourceJws);
+        await this.trust.assertKey(tx, source, keyId, this.clock());
+        const key = await this.trust.resolveKey(source, keyId, this.clock(), tx);
+        const verified = await verifyFederationMessage(
+          CommercialReservationSchema,
+          automatic.sourceJws,
+          key,
+          this.clock(),
+        );
+        if (verified.digest !== expectedDigest) throw new FederationError("OPERATION_CONFLICT");
+      }
+      return policies.authorize(tx, automatic.policyId, actor.orgId, payload);
+    };
     const snapshot = await this.db.transaction(async (tx) => {
-      await requireFederationCapability(tx, actor, "agreement.approve");
+      await authorize(tx);
       const [existing] = await tx
         .select()
         .from(approvals)
@@ -299,8 +358,15 @@ export class FederationCommercialExecutionService {
       this.clock(),
     );
     return this.db.transaction(async (tx) => {
-      await requireFederationCapability(tx, actor, "agreement.approve");
+      const policy = await authorize(tx);
       await this.trust.assertKey(tx, key.siteId, key.keyId, this.clock());
+      const currentKey = await this.trust.resolveKey(key.siteId, key.keyId, this.clock(), tx);
+      await verifyFederationMessage(
+        CommercialExecutionApprovalSchema,
+        approvalJws,
+        currentKey,
+        this.clock(),
+      );
       await this.validate(tx, actor, revisionId, payload);
       const { recordId } = identity(payload);
       const [created] = await tx
@@ -314,6 +380,7 @@ export class FederationCommercialExecutionService {
           digest,
           approvalJws,
           approvedBy: actor.userId,
+          authorizationPolicyId: policy?.id,
         })
         .onConflictDoNothing()
         .returning();
@@ -322,7 +389,15 @@ export class FederationCommercialExecutionService {
         if (existing.digest !== digest) throw new FederationError("OPERATION_CONFLICT");
         return existing;
       }
-      await this.audit(tx, actor, "approve", recordId, digest);
+      if (policy && payload.kind === "commercial-reservation")
+        await policies.consume(tx, policy, payload);
+      await this.audit(
+        tx,
+        policy ? { ...actor, userId: `reservation-policy:${policy.id}` } : actor,
+        "approve",
+        recordId,
+        digest,
+      );
       return created;
     });
   }

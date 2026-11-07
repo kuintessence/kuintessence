@@ -20,6 +20,7 @@ import {
   federationExecutionTerminals,
   federationMaterials,
   federationOutbound,
+  federationReservationPolicies,
   federationReservations,
   federationResultImports,
   federationResultReceipts,
@@ -118,6 +119,10 @@ import { FederationOutboundService } from "./outbound";
 import type { FederationSend } from "./outbound-client";
 import { FederationPermissionService } from "./permissions";
 import { FederationPreparationService } from "./preparation";
+import {
+  FederationReservationPolicyService,
+  ReservationPolicyInputSchema,
+} from "./reservation-policy";
 import { signFederationMessage, verifyFederationMessage } from "./signatures";
 import { FederationTerminalAutomation } from "./terminal-automation";
 import { FederationTerminalPolicyService, TerminalPolicyInputSchema } from "./terminal-policy";
@@ -342,6 +347,9 @@ afterAll(async () => {
       .delete(federationTerminalPolicies)
       .where(inArray(federationTerminalPolicies.localSiteId, siteIds));
     await db.delete(executionApprovals).where(inArray(executionApprovals.localSiteId, siteIds));
+    await db
+      .delete(federationReservationPolicies)
+      .where(inArray(federationReservationPolicies.localSiteId, siteIds));
     const reservations = db
       .select({ id: federationReservations.id })
       .from(federationReservations)
@@ -641,8 +649,10 @@ async function executionFixture(
   explicitPurpose = true,
   withMaterials = false,
   withResults = false,
+  amounts?: { budgetLimit: string; maxTaskAmount: string },
 ) {
   const f = await fixture("ledger_coordinated", true, explicitPurpose);
+  if (amounts) Object.assign(f.terms.agreement, amounts);
   const availability = new SoftwareAvailabilityService(db);
   const assets = new FederationAssetService(db, {
     authorizeSoftware: (id, principal, capability) =>
@@ -5162,4 +5172,540 @@ test("approval exchange preserves preapproved release recovery after the coopera
   } finally {
     setSystemTime();
   }
+});
+
+async function reservationPolicyFixture(
+  provider = false,
+  amounts?: { budgetLimit: string; maxTaskAmount: string },
+) {
+  const f = await executionFixture(true, false, false, amounts);
+  const signing = provider ? f.b.signing : f.a.signing;
+  if (provider) {
+    const agreements = new FederationCommercialAgreementService(db, signing);
+    await agreements.approve(f.actor, f.terms);
+    const [source] = await db
+      .select()
+      .from(contracts)
+      .where(eq(contracts.localSiteId, f.a.signing.siteId));
+    if (!source) throw new Error("Missing source contract");
+    await agreements.attachCounterparty(f.actor, f.revisionId, source.approvalJws);
+    const input = MarketProposalInputSchema.parse({
+      operation: "claim-demand",
+      claim: f.state.claim,
+    });
+    await db.insert(marketSubmissions).values({
+      id: f.reservation.reservationId,
+      demandId: f.reservation.demandId,
+      localSiteId: signing.siteId,
+      localOrgId: f.actor.orgId,
+      requestedBy: f.actor.userId,
+      input,
+      digest: federationMaterialDigest(input),
+      state: "committed",
+    });
+  }
+  const policies = new FederationReservationPolicyService(db, signing.siteId);
+  const states = new Map([[f.reservation.demandId, f.state]]);
+  let onQuery: () => Promise<void> = async () => {};
+  const execution = new FederationCommercialExecutionService(db, signing, {
+    query: async (input) => {
+      if (input.operation !== "get-demand") throw new Error("Unexpected policy query");
+      await onQuery();
+      return { operation: "get-demand", demand: states.get(input.demandId) ?? null };
+    },
+  });
+  const policyInput = {
+    maxTaskAmount: "60",
+    maxTotalAmount: "100",
+    maxTasks: 2,
+    validUntil: new Date(Date.now() + 3600_000).toISOString(),
+  };
+  const grant = (input: Partial<typeof policyInput> = {}) =>
+    policies.grant(f.actor, f.revisionId, { ...policyInput, ...input });
+  const extra = async (maxAmount = "60") => {
+    const reserve = CommercialReservationSchema.parse({
+      ...f.reservation,
+      reservationId: randomUUID(),
+      demandId: randomUUID(),
+      request: {
+        ...f.reservation.request,
+        operationId: randomUUID(),
+        taskId: randomUUID(),
+        maxAmount,
+      },
+    });
+    const state = MarketDemandStateSchema.parse({
+      ...f.state,
+      demand: { ...f.state.demand, demandId: reserve.demandId },
+      claim: { ...f.state.claim, claimId: reserve.reservationId, demandId: reserve.demandId },
+    });
+    states.set(reserve.demandId, state);
+    const input = MarketProposalInputSchema.parse(
+      provider
+        ? { operation: "claim-demand", claim: state.claim }
+        : { operation: "publish-demand", demand: state.demand },
+    );
+    await db.insert(marketSubmissions).values({
+      id: provider ? reserve.reservationId : reserve.demandId,
+      localSiteId: signing.siteId,
+      localOrgId: f.actor.orgId,
+      requestedBy: f.actor.userId,
+      demandId: reserve.demandId,
+      input,
+      digest: federationMaterialDigest(input),
+      state: "committed",
+    });
+    return reserve;
+  };
+  const view = async () =>
+    (
+      await db
+        .select()
+        .from(federationReservationPolicies)
+        .where(eq(federationReservationPolicies.localSiteId, signing.siteId))
+    )[0];
+  const rows = () =>
+    db.select().from(executionApprovals).where(eq(executionApprovals.localSiteId, signing.siteId));
+  return {
+    ...f,
+    execution,
+    policies,
+    grant,
+    extra,
+    view,
+    rows,
+    signing,
+    policyInput,
+    beforeQuery: (fn: () => Promise<void>) => {
+      onQuery = fn;
+    },
+    sourceJws: () => signFederationMessage(CommercialReservationSchema, f.reservation, f.a.signing),
+  };
+}
+
+test("reservation preauthorization is opt-in, bounded and replaceable only by explicit revoke", async () => {
+  const f = await reservationPolicyFixture();
+  await expect(f.execution.approvePreauthorized(randomUUID(), f.reservation)).rejects.toMatchObject(
+    { code: "POLICY_DENIED" },
+  );
+  expect(
+    ReservationPolicyInputSchema.safeParse({ ...f.policyInput, approvedBy: f.actor.userId })
+      .success,
+  ).toBe(false);
+  expect(ReservationPolicyInputSchema.safeParse({ ...f.policyInput, maxTasks: 0 }).success).toBe(
+    false,
+  );
+  expect(
+    ReservationPolicyInputSchema.safeParse({
+      ...f.policyInput,
+      maxTaskAmount: "61",
+      maxTotalAmount: "60",
+    }).success,
+  ).toBe(false);
+  await expect(f.grant({ maxTaskAmount: "61" })).rejects.toMatchObject({ code: "POLICY_DENIED" });
+  await expect(f.grant({ maxTotalAmount: "9007199254740993123" })).rejects.toMatchObject({
+    code: "POLICY_DENIED",
+  });
+  await expect(f.grant({ validUntil: "2100-01-01T00:00:00Z" })).rejects.toMatchObject({
+    code: "AUTHORIZATION_EXPIRED",
+  });
+  await expect(f.grant({ validUntil: new Date(0).toISOString() })).rejects.toMatchObject({
+    code: "AUTHORIZATION_EXPIRED",
+  });
+  const policy = await f.grant();
+  await expect(f.grant()).rejects.toMatchObject({ code: "OPERATION_CONFLICT" });
+  await f.policies.revoke(f.actor, f.revisionId, policy.id);
+  expect((await f.grant()).id).not.toBe(policy.id);
+  expect(await f.policies.list(f.actor, f.revisionId, 1)).toHaveLength(1);
+  expect(await f.policies.list(f.actor, f.revisionId, 1, 1)).toHaveLength(1);
+});
+
+test("reservation preauthorization concurrent replay signs and consumes once without creating ledger work", async () => {
+  const f = await reservationPolicyFixture();
+  const policy = await f.grant({ maxTotalAmount: "60", maxTasks: 1 });
+  const [one, two] = await Promise.all([
+    f.execution.approvePreauthorized(policy.id, f.reservation),
+    f.execution.approvePreauthorized(policy.id, f.reservation),
+  ]);
+  expect(one.approvalJws).toBe(two.approvalJws);
+  expect(one).toMatchObject({
+    authorizationPolicyId: policy.id,
+    approvedBy: f.actor.userId,
+    counterpartyJws: null,
+  });
+  expect(await f.view()).toMatchObject({ authorizedTasks: 1, authorizedAmount: "60" });
+  expect((await f.execution.approvePreauthorized(policy.id, f.reservation)).approvalJws).toBe(
+    one.approvalJws,
+  );
+  expect(
+    await db
+      .select()
+      .from(auditLog)
+      .where(eq(auditLog.actor, `reservation-policy:${policy.id}`)),
+  ).toHaveLength(1);
+  expect(
+    await db
+      .select()
+      .from(submissions)
+      .where(
+        and(
+          eq(submissions.localSiteId, f.signing.siteId),
+          sql`${submissions.input}->>'operation' = 'reserve-execution'`,
+        ),
+      ),
+  ).toHaveLength(0);
+  expect(
+    await db
+      .select()
+      .from(federationBudgets)
+      .where(eq(federationBudgets.domainId, f.terms.agreement.budgetDomainId)),
+  ).toHaveLength(0);
+  await expect(
+    f.execution.approvePreauthorized(policy.id, { ...f.reservation, salt: "1".repeat(64) }),
+  ).rejects.toMatchObject({ code: "OPERATION_CONFLICT" });
+});
+
+test("reservation preauthorization concurrent different tasks cannot overspend the last signing allowance", async () => {
+  const f = await reservationPolicyFixture();
+  const policy = await f.grant();
+  const extra = await f.extra();
+  const results = await Promise.allSettled([
+    f.execution.approvePreauthorized(policy.id, f.reservation),
+    f.execution.approvePreauthorized(policy.id, extra),
+  ]);
+  expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+  expect(results.find((result) => result.status === "rejected")).toMatchObject({
+    reason: { code: "POLICY_DENIED" },
+  });
+  expect(await f.view()).toMatchObject({ authorizedTasks: 1, authorizedAmount: "60" });
+  expect(await f.rows()).toHaveLength(1);
+  const remaining = await f.extra("40");
+  await f.execution.approvePreauthorized(policy.id, remaining);
+  expect(await f.view()).toMatchObject({ authorizedTasks: 2, authorizedAmount: "100" });
+});
+
+test("reservation preauthorization counts zero-value tasks and keeps manual approvals distinct", async () => {
+  const f = await reservationPolicyFixture();
+  const policy = await f.grant({ maxTasks: 1, maxTaskAmount: "0", maxTotalAmount: "0" });
+  const one = await f.extra("0"),
+    two = await f.extra("0");
+  const manual = await f.execution.approve(f.actor, f.revisionId, one);
+  expect((await f.execution.approvePreauthorized(policy.id, one)).approvalJws).toBe(
+    manual.approvalJws,
+  );
+  expect(await f.view()).toMatchObject({ authorizedTasks: 0, authorizedAmount: "0" });
+  await f.execution.approvePreauthorized(policy.id, two);
+  await expect(
+    f.execution.approvePreauthorized(policy.id, await f.extra("0")),
+  ).rejects.toMatchObject({ code: "POLICY_DENIED" });
+  expect(await f.view()).toMatchObject({ authorizedTasks: 1, authorizedAmount: "0" });
+});
+
+test("reservation preauthorization survives grantor role changes but explicit revoke stops new signatures", async () => {
+  const f = await reservationPolicyFixture();
+  const policy = await f.grant();
+  const permissions = new FederationPermissionService(db);
+  await permissions.set(
+    { ...f.actor, capability: "agreement.approve", enabled: false },
+    f.actor.userId,
+  );
+  await expect(f.grant()).rejects.toMatchObject({ code: "POLICY_DENIED" });
+  const approved = await f.execution.approvePreauthorized(policy.id, f.reservation);
+  await permissions.set(
+    { ...f.actor, capability: "agreement.approve", enabled: true },
+    f.actor.userId,
+  );
+  await f.policies.revoke(f.actor, f.revisionId, policy.id);
+  await expect(
+    f.execution.approvePreauthorized(policy.id, await f.extra("1")),
+  ).rejects.toMatchObject({ code: "POLICY_DENIED" });
+  expect((await f.rows())[0]?.approvalJws).toBe(approved.approvalJws);
+  expect(await f.view()).toMatchObject({ authorizedTasks: 1, authorizedAmount: "60" });
+});
+
+test("reservation preauthorization rechecks revocation and deadlines after market I/O", async () => {
+  const f = await reservationPolicyFixture();
+  const policy = await f.grant();
+  f.beforeQuery(async () => {
+    await f.policies.revoke(f.actor, f.revisionId, policy.id);
+  });
+  await expect(f.execution.approvePreauthorized(policy.id, f.reservation)).rejects.toMatchObject({
+    code: "POLICY_DENIED",
+  });
+  expect(await f.rows()).toHaveLength(0);
+  const replacement = await f.grant();
+  f.beforeQuery(async () => {
+    await db
+      .update(federationReservationPolicies)
+      .set({ validUntil: new Date(Date.now() - 1), validFrom: new Date(Date.now() - 10000) })
+      .where(eq(federationReservationPolicies.id, replacement.id));
+  });
+  await expect(
+    f.execution.approvePreauthorized(replacement.id, f.reservation),
+  ).rejects.toMatchObject({ code: "AUTHORIZATION_EXPIRED" });
+  expect(await f.rows()).toHaveLength(0);
+});
+
+test("reservation preauthorization limits task lifetime, templates, resources and local market consent", async () => {
+  const f = await reservationPolicyFixture();
+  const policy = await f.grant();
+  const change = (request: Partial<typeof f.reservation.request>) => ({
+    ...f.reservation,
+    request: { ...f.reservation.request, ...request },
+  });
+  await expect(
+    f.execution.approvePreauthorized(
+      policy.id,
+      change({ executionExpiresAt: new Date(Date.now() + 7200_000).toISOString() }),
+    ),
+  ).rejects.toMatchObject({ code: "AUTHORIZATION_EXPIRED" });
+  await expect(
+    f.execution.approvePreauthorized(
+      policy.id,
+      change({ resources: { ...f.reservation.request.resources, cpus: 2 } }),
+    ),
+  ).rejects.toMatchObject({ code: "POLICY_DENIED" });
+  await expect(
+    f.execution.approvePreauthorized(
+      policy.id,
+      change({
+        template: { ...f.reservation.request.template, digest: `sha256:${"f".repeat(64)}` },
+      }),
+    ),
+  ).rejects.toMatchObject({ code: "POLICY_DENIED" });
+  await expect(
+    f.execution.approvePreauthorized(policy.id, {
+      ...f.reservation,
+      agreementDigest: `sha256:${"f".repeat(64)}`,
+    }),
+  ).rejects.toMatchObject({ code: "POLICY_DENIED" });
+  await db
+    .update(marketSubmissions)
+    .set({ state: "pending" })
+    .where(eq(marketSubmissions.id, f.reservation.demandId));
+  await expect(f.execution.approvePreauthorized(policy.id, f.reservation)).rejects.toMatchObject({
+    code: "ASSET_UNAVAILABLE",
+  });
+  expect(await f.view()).toMatchObject({ authorizedTasks: 0 });
+});
+
+test("reservation preauthorization rejects ledger outage and changed claim without consuming authority", async () => {
+  const f = await reservationPolicyFixture();
+  const policy = await f.grant();
+  f.beforeQuery(async () => {
+    throw new FabricClientFailure("LEDGER_UNAVAILABLE");
+  });
+  await expect(f.execution.approvePreauthorized(policy.id, f.reservation)).rejects.toMatchObject({
+    code: "LEDGER_UNAVAILABLE",
+  });
+  f.beforeQuery(async () => {});
+  f.state.status = "ACTIVE";
+  await expect(f.execution.approvePreauthorized(policy.id, f.reservation)).rejects.toMatchObject({
+    code: "OPERATION_CONFLICT",
+  });
+  expect(await f.view()).toMatchObject({ authorizedTasks: 0, authorizedAmount: "0" });
+});
+
+test("reservation preauthorization provider requires the exact source signature and its own policy", async () => {
+  const f = await reservationPolicyFixture(true);
+  const policy = await f.grant();
+  await expect(f.execution.approvePreauthorized(policy.id, f.reservation)).rejects.toMatchObject({
+    code: "UNTRUSTED_IDENTITY",
+  });
+  const wrongSigner = await signFederationMessage(
+    CommercialReservationSchema,
+    f.reservation,
+    f.b.signing,
+  );
+  await expect(
+    f.execution.approvePreauthorized(policy.id, f.reservation, wrongSigner),
+  ).rejects.toMatchObject({ code: "UNTRUSTED_IDENTITY" });
+  const changed = await signFederationMessage(
+    CommercialReservationSchema,
+    { ...f.reservation, salt: "e".repeat(64) },
+    f.a.signing,
+  );
+  await expect(
+    f.execution.approvePreauthorized(policy.id, f.reservation, changed),
+  ).rejects.toMatchObject({ code: "OPERATION_CONFLICT" });
+  const source = await f.sourceJws();
+  const approved = await f.execution.approvePreauthorized(policy.id, f.reservation, source);
+  expect(approved).toMatchObject({ authorizationPolicyId: policy.id, counterpartyJws: null });
+  expect(await f.view()).toMatchObject({ authorizedTasks: 1 });
+  const sourceService = new FederationCommercialExecutionService(db, f.a.signing);
+  await expect(sourceService.approvePreauthorized(policy.id, f.reservation)).rejects.toMatchObject({
+    code: "POLICY_DENIED",
+  });
+});
+
+test("reservation preauthorization rechecks source key purposes after network I/O", async () => {
+  const f = await reservationPolicyFixture(true);
+  const policy = await f.grant();
+  const source = await f.sourceJws();
+  f.beforeQuery(async () => {
+    await db
+      .update(federationSigningKeys)
+      .set({ allowedKinds: ["commercial-agreement"] })
+      .where(eq(federationSigningKeys.siteId, f.a.signing.siteId));
+  });
+  await expect(
+    f.execution.approvePreauthorized(policy.id, f.reservation, source),
+  ).rejects.toMatchObject({ code: "UNTRUSTED_IDENTITY" });
+  expect(await f.rows()).toHaveLength(0);
+  expect(await f.view()).toMatchObject({ authorizedTasks: 0 });
+});
+
+test("reservation preauthorization requires current contract trust and cannot grant across institutions", async () => {
+  const f = await reservationPolicyFixture();
+  const other = await reservationPolicyFixture();
+  await expect(f.policies.grant(other.actor, f.revisionId, f.policyInput)).rejects.toMatchObject({
+    code: "AGREEMENT_UNAVAILABLE",
+  });
+  const policy = await f.grant();
+  await expect(f.policies.revoke(other.actor, f.revisionId, policy.id)).rejects.toMatchObject({
+    code: "ASSET_UNAVAILABLE",
+  });
+  await expect(
+    other.execution.approvePreauthorized(policy.id, f.reservation),
+  ).rejects.toMatchObject({ code: "POLICY_DENIED" });
+  f.beforeQuery(async () => {
+    await db
+      .update(federationSigningKeys)
+      .set({ revokedAt: new Date() })
+      .where(eq(federationSigningKeys.siteId, f.b.signing.siteId));
+  });
+  await expect(f.execution.approvePreauthorized(policy.id, f.reservation)).rejects.toMatchObject({
+    code: "UNTRUSTED_IDENTITY",
+  });
+  expect(await f.rows()).toHaveLength(0);
+});
+
+test("reservation preauthorization audit failure rolls back both signature and cumulative authority", async () => {
+  const f = await reservationPolicyFixture();
+  const policy = await f.grant();
+  await db.execute(
+    sql`alter table audit_log add constraint test_reservation_policy_audit check (actor <> ${sql.raw(`'reservation-policy:${policy.id}'`)})`,
+  );
+  try {
+    await expect(f.execution.approvePreauthorized(policy.id, f.reservation)).rejects.toThrow();
+    expect(await f.rows()).toHaveLength(0);
+    expect(await f.view()).toMatchObject({ authorizedTasks: 0, authorizedAmount: "0" });
+  } finally {
+    await db.execute(sql`alter table audit_log drop constraint test_reservation_policy_audit`);
+  }
+  await f.execution.approvePreauthorized(policy.id, f.reservation);
+  expect(await f.view()).toMatchObject({ authorizedTasks: 1, authorizedAmount: "60" });
+});
+
+test("reservation preauthorization HTTP requires a human organization grant and strict input", async () => {
+  const f = await reservationPolicyFixture();
+  const app = new Hono();
+  app.onError(createErrorHandler(pino({ enabled: false })));
+  let automated = false;
+  app.use("*", async (c, next) => {
+    c.set("principal" as never, f.actor as never);
+    c.set("automation" as never, automated as never);
+    await next();
+  });
+  app.route(
+    "/",
+    createFederationCommercialRoutes(
+      f.approvals,
+      f.service,
+      undefined,
+      undefined,
+      f.execution,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      f.policies,
+    ),
+  );
+  const path = `/federation/commercial-agreements/${f.revisionId}/reservation-policies`;
+  const post = (url: string, body: unknown) =>
+    app.request(url, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  expect((await post(path, { ...f.policyInput, orgId: randomUUID() })).status).toBe(400);
+  automated = true;
+  expect((await post(path, f.policyInput)).status).toBe(403);
+  automated = false;
+  const response = await post(path, f.policyInput);
+  expect(response.status).toBe(201);
+  const body = (await response.json()) as { data: { id: string } };
+  const listing = await app.request(path);
+  expect(listing.status).toBe(200);
+  expect(listing.headers.get("cache-control")).toBe("no-store");
+  expect((await post(`${path}/${body.data.id}/revoke`, { maxTasks: 100 })).status).toBe(400);
+  expect((await post(`${path}/${body.data.id}/revoke`, {})).status).toBe(200);
+  expect((await post(`${path}/${body.data.id}/revoke`, {})).status).toBe(200);
+});
+
+test("reservation preauthorization preserves exact amounts above the JavaScript integer limit", async () => {
+  const f = await reservationPolicyFixture(false, {
+    budgetLimit: "9007199254740993123",
+    maxTaskAmount: "9007199254740993122",
+  });
+  const policy = await f.grant({
+    maxTaskAmount: "9007199254740993122",
+    maxTotalAmount: "9007199254740993123",
+    maxTasks: 3,
+  });
+  await f.execution.approvePreauthorized(policy.id, {
+    ...f.reservation,
+    request: { ...f.reservation.request, maxAmount: "9007199254740993122" },
+  });
+  await f.execution.approvePreauthorized(policy.id, await f.extra("1"));
+  expect(await f.view()).toMatchObject({
+    authorizedTasks: 2,
+    authorizedAmount: "9007199254740993123",
+  });
+  await expect(
+    f.execution.approvePreauthorized(policy.id, await f.extra("1")),
+  ).rejects.toMatchObject({ code: "POLICY_DENIED" });
+  expect(await f.rows()).toHaveLength(2);
+});
+
+test("reservation preauthorization grants require dual coordinated consent and charity permits no monetary authority", async () => {
+  const input = {
+    maxTaskAmount: "1",
+    maxTotalAmount: "1",
+    maxTasks: 1,
+    validUntil: new Date(Date.now() + 3600_000).toISOString(),
+  };
+  const unsigned = await fixture("ledger_coordinated", true, true);
+  await unsigned.approvals.approve(unsigned.actor, unsigned.terms);
+  const unsignedPolicies = new FederationReservationPolicyService(db, unsigned.a.signing.siteId);
+  await expect(
+    unsignedPolicies.grant(unsigned.actor, unsigned.revisionId, input),
+  ).rejects.toMatchObject({ code: "LEDGER_REQUIRED" });
+  const direct = await fixture("bilateral_direct", true, true);
+  await approveBoth(direct);
+  await expect(
+    new FederationReservationPolicyService(db, direct.a.signing.siteId).grant(
+      direct.actor,
+      direct.revisionId,
+      input,
+    ),
+  ).rejects.toMatchObject({ code: "POLICY_DENIED" });
+  const charity = await fixture("ledger_coordinated", true, true);
+  charity.terms.consideration = "charity";
+  charity.terms.prices = charity.terms.prices.map((price) => ({ ...price, amount: "0" }));
+  await approveBoth(charity);
+  const policies = new FederationReservationPolicyService(db, charity.a.signing.siteId);
+  await expect(policies.grant(charity.actor, charity.revisionId, input)).rejects.toMatchObject({
+    code: "POLICY_DENIED",
+  });
+  expect(
+    await policies.grant(charity.actor, charity.revisionId, {
+      ...input,
+      maxTaskAmount: "0",
+      maxTotalAmount: "0",
+    }),
+  ).toMatchObject({ authorizedAmount: "0", maxTotalAmount: "0" });
 });
