@@ -16,6 +16,8 @@ import {
   type CommercialAdapterProposalInput,
   CommercialAdapterProposalInputSchema,
   CommercialAgreementSchema,
+  CommercialBillSchema,
+  CommercialDiscountSchema,
   CommercialExecutionApprovalSchema,
   CommercialReceiptQueryResultSchema,
   CommercialTerminalSchema,
@@ -42,6 +44,8 @@ const recordTypes = {
   "reserve-execution": "reservation",
   "release-execution": "release",
   "record-execution-terminal": "terminal",
+  "record-discount": "discount",
+  "confirm-bill": "bill",
 } as const;
 
 export class FederationCommercialSubmissionService {
@@ -425,12 +429,13 @@ export class FederationCommercialSubmissionService {
       )
         throw new FederationError("POLICY_DENIED");
     }
-    if (input.operation !== "record-usage") {
+    if (input.operation !== "record-usage" && input.operation !== "record-discount") {
       const kinds = {
         "register-agreement": "commercial-agreement",
         "reserve-execution": "commercial-reservation",
         "release-execution": "commercial-release",
         "record-execution-terminal": "commercial-terminal",
+        "confirm-bill": "commercial-bill",
       } as const;
       for (const [siteId, jws] of [
         [input.envelope.sourceSiteId, input.envelope.sourceJws],
@@ -445,6 +450,7 @@ export class FederationCommercialSubmissionService {
             CommercialAgreementSchema,
             CommercialExecutionApprovalSchema,
             CommercialTerminalSchema,
+            CommercialBillSchema,
           ]),
           jws,
           key,
@@ -458,8 +464,18 @@ export class FederationCommercialSubmissionService {
       const keyId = federationMessageKeyId(jws);
       if (tx) await this.trust.assertKey(tx, this.siteId, keyId, new Date());
       const key = await this.trust.resolveKey(this.siteId, keyId, new Date(), tx);
-      const verified = await verifyFederationMessage(CommercialUsageSchema, jws, key, new Date());
-      if (verified.digest !== input.digest) throw new FederationError("OPERATION_CONFLICT");
+      const verified = await verifyFederationMessage(
+        z.union([CommercialUsageSchema, CommercialDiscountSchema]),
+        jws,
+        key,
+        new Date(),
+      );
+      if (
+        verified.digest !== input.digest ||
+        verified.payload.kind !==
+          (input.operation === "record-usage" ? "commercial-usage" : "commercial-discount")
+      )
+        throw new FederationError("OPERATION_CONFLICT");
     }
   }
   async status(actor: FederationActor, revisionId: string, limit: number, offset: number) {

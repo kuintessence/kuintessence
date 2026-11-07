@@ -36,6 +36,11 @@
       "types": "./src/federation/ledger.ts",
       "default": "./src/federation/ledger.ts"
     },
+    "./federation/billing": {
+      "bun": "./src/federation/billing.ts",
+      "types": "./src/federation/billing.ts",
+      "default": "./src/federation/billing.ts"
+    },
     "./federation/commercial": {
       "bun": "./src/federation/commercial.ts",
       "types": "./src/federation/commercial.ts",

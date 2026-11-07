@@ -11,8 +11,12 @@ import { dirname, join } from "node:path";
 import { Client, credentials } from "@grpc/grpc-js";
 import { connect, EndorseError, signers } from "@hyperledger/fabric-gateway";
 import { common, ledger, msp, peer, gateway as proto } from "@hyperledger/fabric-protos";
+import { FederationDelegationSchema } from "@kuintessence/shared/federation";
+import { calculateCommercialBill } from "@kuintessence/shared/federation/billing";
 import {
   CommercialAgreementSchema,
+  CommercialBillSchema,
+  CommercialDiscountSchema,
   CommercialReceiptSchema,
   CommercialUsageSchema,
   FabricCommercialTrustSchema,
@@ -278,6 +282,201 @@ async function run() {
   assert.equal(recordedStatus.successful, true);
   CommercialReceiptSchema.parse(JSON.parse(Buffer.from(recorded.getResult()).toString()));
   passed.push("provider usage commits separately without producing a payment or settlement");
+  const billingTerms = CommercialAgreementSchema.parse({
+    ...terms,
+    agreement: {
+      ...terms.agreement,
+      mode: "bilateral_attested",
+      agreementRevisionId: randomUUID(),
+      budgetDomainId: randomUUID(),
+      epoch: randomUUID(),
+    },
+    salt: randomBytes(32).toString("hex"),
+  });
+  const billingEnvelope = {
+    sourceSiteId: sourceKey.siteId,
+    targetSiteId: targetKey.siteId,
+    sourceJws: await signFederationMessage(CommercialAgreementSchema, billingTerms, sourceKey),
+    targetJws: await signFederationMessage(CommercialAgreementSchema, billingTerms, targetKey),
+  };
+  const billingAgreement = await proposal(
+    a,
+    "RegisterAgreement",
+    billingTerms.agreement.agreementRevisionId,
+    billingEnvelope,
+  ).endorse();
+  assert.equal((await (await billingAgreement.submit()).getStatus()).successful, true);
+  const billingReceipt = CommercialReceiptSchema.parse(
+    JSON.parse(Buffer.from(billingAgreement.getResult()).toString()),
+  );
+  const billingUsage = {
+    ...report,
+    reportId: randomUUID(),
+    agreementRevisionId: billingReceipt.recordId,
+    agreementDigest: billingReceipt.digest,
+  };
+  const billingUsageJws = await signFederationMessage(
+    CommercialUsageSchema,
+    billingUsage,
+    targetKey,
+  );
+  const billingUsageTx = await proposal(b, "RecordUsage", billingUsage.reportId, {
+    providerJws: billingUsageJws,
+  }).endorse();
+  assert.equal((await (await billingUsageTx.submit()).getStatus()).successful, true);
+  const billingUsageReceipt = CommercialReceiptSchema.parse(
+    JSON.parse(Buffer.from(billingUsageTx.getResult()).toString()),
+  );
+  const request = FederationDelegationSchema.parse({
+    protocolVersion: 1,
+    kind: "delegation",
+    operationId: randomUUID(),
+    senderSiteId: sourceKey.siteId,
+    recipientSiteId: targetKey.siteId,
+    agreementRevisionId: billingReceipt.recordId,
+    mode: "bilateral_attested",
+    budgetDomainId: billingTerms.agreement.budgetDomainId,
+    epoch: billingTerms.agreement.epoch,
+    unit: billingTerms.agreement.unit,
+    taskId: billingUsage.taskId,
+    attempt: 1,
+    issuedAt: billingUsage.periodStart,
+    expiresAt: new Date(time + 60000).toISOString(),
+    template: billingTerms.agreement.templates[0],
+    resources: billingTerms.agreement.resourceLimit,
+    maxAmount: "100",
+    inputManifestDigest: `sha256:${randomBytes(32).toString("hex")}`,
+    environmentLockDigest: `sha256:${randomBytes(32).toString("hex")}`,
+  });
+  const discountProbe = `PRIVATE-DISCOUNT-${randomUUID()}`;
+  const discount = CommercialDiscountSchema.parse({
+    protocolVersion: 1,
+    kind: "commercial-discount",
+    discountId: randomUUID(),
+    billId: randomUUID(),
+    domainId: domain.domainId,
+    agreementRevisionId: billingReceipt.recordId,
+    agreementDigest: billingReceipt.digest,
+    reportId: billingUsage.reportId,
+    reportDigest: billingUsageReceipt.digest,
+    taskId: request.taskId,
+    attempt: 1,
+    sourceSiteId: sourceKey.siteId,
+    targetSiteId: targetKey.siteId,
+    unit: request.unit,
+    amount: "7",
+    reason: discountProbe,
+    issuedAt: new Date(time).toISOString(),
+    salt: randomBytes(32).toString("hex"),
+  });
+  const discountJws = await signFederationMessage(CommercialDiscountSchema, discount, targetKey);
+  const discountTx = await proposal(b, "RecordDiscount", discount.discountId, {
+    providerJws: discountJws,
+  }).endorse();
+  const discountStatus = await (await discountTx.submit()).getStatus();
+  assert.equal(discountStatus.successful, true);
+  const discountReceipt = CommercialReceiptSchema.parse(
+    JSON.parse(Buffer.from(discountTx.getResult()).toString()),
+  );
+  const bill = CommercialBillSchema.parse({
+    protocolVersion: 1,
+    kind: "commercial-bill",
+    billId: discount.billId,
+    domainId: domain.domainId,
+    agreementDigest: billingReceipt.digest,
+    priceVersionId: billingTerms.priceVersionId,
+    reportId: billingUsage.reportId,
+    reportDigest: billingUsageReceipt.digest,
+    request,
+    reservationId: null,
+    discount: { discountId: discount.discountId, digest: discountReceipt.digest },
+    calculation: calculateCommercialBill(billingTerms, request, billingUsage, discount.amount),
+    issuedAt: discount.issuedAt,
+    salt: randomBytes(32).toString("hex"),
+  });
+  assert.equal(bill.calculation.dueAmount, "93");
+  const billEnvelope = {
+    sourceSiteId: sourceKey.siteId,
+    targetSiteId: targetKey.siteId,
+    sourceJws: await signFederationMessage(CommercialBillSchema, bill, sourceKey),
+    targetJws: await signFederationMessage(CommercialBillSchema, bill, targetKey),
+  };
+  await assert.rejects(
+    proposal(a, "ConfirmBill", bill.billId, {
+      ...billEnvelope,
+      targetJws: billEnvelope.sourceJws,
+    }).endorse(),
+    chainRejection("INVALID_MESSAGE"),
+  );
+  const billTx = await proposal(a, "ConfirmBill", bill.billId, billEnvelope).endorse();
+  const competingBill = {
+    ...bill,
+    billId: randomUUID(),
+    discount: null,
+    calculation: calculateCommercialBill(billingTerms, request, billingUsage),
+  };
+  const competingBillTx = await proposal(b, "ConfirmBill", competingBill.billId, {
+    ...billEnvelope,
+    sourceJws: await signFederationMessage(CommercialBillSchema, competingBill, sourceKey),
+    targetJws: await signFederationMessage(CommercialBillSchema, competingBill, targetKey),
+  }).endorse();
+  const billStatus = await (await billTx.submit()).getStatus();
+  assert.equal(billStatus.successful, true);
+  const competingBillStatus = await (await competingBillTx.submit()).getStatus();
+  assert.equal(competingBillStatus.successful, false);
+  assert.equal(competingBillStatus.code, 11);
+  passed.push(
+    "native MVCC allows only one of two concurrently endorsed initial bills for the same task",
+  );
+  const billReceipt = CommercialReceiptSchema.parse(
+    JSON.parse(Buffer.from(billTx.getResult()).toString()),
+  );
+  const billReplay = await proposal(b, "ConfirmBill", bill.billId, billEnvelope).endorse();
+  assert.deepEqual(JSON.parse(Buffer.from(billReplay.getResult()).toString()), billReceipt);
+  assert.equal((await (await billReplay.submit()).getStatus()).successful, true);
+  const replacement = { ...bill, billId: randomUUID() };
+  await assert.rejects(
+    proposal(a, "ConfirmBill", replacement.billId, {
+      ...billEnvelope,
+      sourceJws: await signFederationMessage(CommercialBillSchema, replacement, sourceKey),
+      targetJws: await signFederationMessage(CommercialBillSchema, replacement, targetKey),
+    }).endorse(),
+    chainRejection("OPERATION_CONFLICT"),
+  );
+  for (const [recordType, recordId] of [
+    ["bill", bill.billId],
+    ["discount", discount.discountId],
+  ] as const)
+    await assert.rejects(
+      contract(c)
+        .newProposal("GetRecordReceipt", {
+          arguments: [domain.domainId, recordType, recordId],
+          endorsingOrganizations: ["CMSP"],
+        })
+        .endorse(),
+      chainRejection("POLICY_DENIED"),
+    );
+  passed.push(
+    "real PDC discount and dual-signed bill commit VALID; exact capped amount, replay, duplicate and nonmember rejection verified",
+  );
+  await writeFile(
+    join(dirname(z.string().parse(process.argv[3])), "commercial-billing.json"),
+    JSON.stringify({
+      billId: bill.billId,
+      discountId: discount.discountId,
+      discount: {
+        transactionId: discountStatus.transactionId,
+        blockNumber: String(discountStatus.blockNumber),
+      },
+      bill: {
+        transactionId: billStatus.transactionId,
+        blockNumber: String(billStatus.blockNumber),
+      },
+      calculation: bill.calculation,
+      receipt: billReceipt,
+    }),
+    { mode: 0o600 },
+  );
   const taskId = randomUUID();
   const concurrent = [0, 1].map(() => ({
     ...report,
@@ -347,6 +546,10 @@ async function run() {
     envelope.sourceJws,
     envelope.targetJws,
     providerJws,
+    discountProbe,
+    discountJws,
+    billEnvelope.sourceJws,
+    billEnvelope.targetJws,
   ];
   for (const blockNumber of [
     invalid.blockNumber,
@@ -354,6 +557,8 @@ async function run() {
     recordedStatus.blockNumber,
     won.blockNumber,
     lost.blockNumber,
+    discountStatus.blockNumber,
+    billStatus.blockNumber,
   ]) {
     for (const [name, endpoint, expected] of [
       ["A", "A", true],
@@ -390,11 +595,22 @@ async function run() {
                     writes.push(Buffer.from(write.getValue_asU8()));
           if (!expected) assert.equal(writes.length, 0);
           else if (blockNumber !== invalid.blockNumber && blockNumber !== lost.blockNumber) {
-            assert.equal(writes.length, blockNumber === valid.blockNumber ? 1 : 2);
+            assert.equal(
+              writes.length,
+              blockNumber === valid.blockNumber || blockNumber === discountStatus.blockNumber
+                ? 1
+                : 2,
+            );
             assert(
               writes.some((bytes) =>
                 bytes.includes(
-                  Buffer.from(blockNumber === valid.blockNumber ? contractProbe : usageProbe),
+                  Buffer.from(
+                    blockNumber === valid.blockNumber
+                      ? contractProbe
+                      : blockNumber === discountStatus.blockNumber
+                        ? discountProbe
+                        : usageProbe,
+                  ),
                 ),
               ),
             );

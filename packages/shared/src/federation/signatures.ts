@@ -65,6 +65,8 @@ export interface FederationVerificationKey {
     | "terminal-delivery"
     | "terminal-ack"
     | "commercial-terminal"
+    | "commercial-discount"
+    | "commercial-bill"
     | "commercial-usage-query"
     | "commercial-usage-page"
     | "status-query"

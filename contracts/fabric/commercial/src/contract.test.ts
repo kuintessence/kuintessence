@@ -1,8 +1,12 @@
 import { beforeAll, expect, test } from "bun:test";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { FederationDelegationSchema } from "@kuintessence/shared/federation";
+import { calculateCommercialBill } from "@kuintessence/shared/federation/billing";
 import {
   type CommercialAgreement,
   CommercialAgreementSchema,
+  CommercialBillSchema,
+  CommercialDiscountSchema,
   CommercialReceiptSchema,
   CommercialReleaseSchema,
   CommercialReservationSchema,
@@ -63,6 +67,8 @@ beforeAll(async () => {
         "commercial-reservation",
         "commercial-release",
         "commercial-terminal",
+        "commercial-discount",
+        "commercial-bill",
       ],
     })),
   });
@@ -1029,4 +1035,233 @@ test("commercial record receipts expose only original digests to PDC members and
   const privateKey = `commercial_AB_v1:${f.stub.createCompositeKey("terminal", [domainId, f.terminal.terminalId])}`;
   f.stub.privateState.delete(privateKey);
   await expect(read("terminal", f.terminal.terminalId)).rejects.toThrow("DATA_WAITING");
+});
+
+async function billFixture(coordinated = false) {
+  const base = agreement();
+  base.agreement.mode = "bilateral_attested";
+  const chain = coordinated ? await terminalFixture() : null;
+  const f = chain ?? (await install(base));
+  const request = chain
+    ? chain.reservation.request
+    : FederationDelegationSchema.parse({
+        protocolVersion: 1,
+        kind: "delegation",
+        operationId: randomUUID(),
+        senderSiteId: sites[0],
+        recipientSiteId: sites[1],
+        agreementRevisionId: f.terms.agreement.agreementRevisionId,
+        mode: f.terms.agreement.mode,
+        budgetDomainId: f.terms.agreement.budgetDomainId,
+        epoch: f.terms.agreement.epoch,
+        unit: f.terms.agreement.unit,
+        taskId: randomUUID(),
+        attempt: 1,
+        issuedAt: now.toISOString(),
+        expiresAt: new Date(+now + 60000).toISOString(),
+        template: f.terms.agreement.templates[0],
+        resources: f.terms.agreement.resourceLimit,
+        maxAmount: "100",
+        inputManifestDigest: `sha256:${"d".repeat(64)}`,
+        environmentLockDigest: `sha256:${"e".repeat(64)}`,
+      });
+  f.stub.timestamp = new Date(+now + 2000);
+  const report = {
+    ...usage(f.terms, f.receipt.digest),
+    taskId: request.taskId,
+    periodStart: request.issuedAt,
+    periodEnd: new Date(+now + 1000).toISOString(),
+    reportedAt: f.stub.timestamp.toISOString(),
+  };
+  const reportReceipt = CommercialReceiptSchema.parse(
+    JSON.parse(
+      (
+        await f.call("RecordUsage", report.reportId, await signedUsage(report), identity(1))
+      ).toString(),
+    ),
+  );
+  const bill = CommercialBillSchema.parse({
+    protocolVersion: 1,
+    kind: "commercial-bill",
+    billId: randomUUID(),
+    domainId,
+    agreementDigest: f.receipt.digest,
+    priceVersionId: f.terms.priceVersionId,
+    reportId: report.reportId,
+    reportDigest: reportReceipt.digest,
+    request,
+    reservationId: chain ? chain.reservation.reservationId : null,
+    discount: null,
+    calculation: calculateCommercialBill(f.terms, request, report),
+    issuedAt: f.stub.timestamp.toISOString(),
+    salt: randomBytes(32).toString("hex"),
+  });
+  const confirm = async (value = bill) =>
+    f.call("ConfirmBill", value.billId, await bilateral(CommercialBillSchema, value));
+  const discount = CommercialDiscountSchema.parse({
+    protocolVersion: 1,
+    kind: "commercial-discount",
+    discountId: randomUUID(),
+    billId: bill.billId,
+    domainId,
+    agreementRevisionId: request.agreementRevisionId,
+    agreementDigest: f.receipt.digest,
+    reportId: report.reportId,
+    reportDigest: reportReceipt.digest,
+    taskId: request.taskId,
+    attempt: request.attempt,
+    sourceSiteId: sites[0],
+    targetSiteId: sites[1],
+    unit: request.unit,
+    amount: "7",
+    reason: "PRIVATE-DISCOUNT-PROBE",
+    issuedAt: bill.issuedAt,
+    salt: randomBytes(32).toString("hex"),
+  });
+  const reduce = async (value = discount, signer = keys[1], actor = identity(1)) => {
+    if (!signer) throw new Error("Missing provider key");
+    return f.call(
+      "RecordDiscount",
+      value.discountId,
+      { providerJws: await signFederationMessage(CommercialDiscountSchema, value, signer) },
+      actor,
+    );
+  };
+  return { ...f, chain, bill, report, confirm, discount, reduce };
+}
+
+test("bill and concession retain private originals and do not create balances or public business fields", async () => {
+  const f = await billFixture();
+  const publicBefore = new Map(f.stub.state),
+    privateBefore = new Map(f.stub.privateState);
+  const discount = CommercialReceiptSchema.parse(JSON.parse((await f.reduce()).toString()));
+  const value = {
+    ...f.bill,
+    discount: { discountId: discount.recordId, digest: discount.digest },
+    calculation: calculateCommercialBill(f.terms, f.bill.request, f.report, f.discount.amount),
+  };
+  const receipt = await f.confirm(value);
+  expect((await f.confirm(value)).equals(receipt)).toBe(true);
+  expect(f.stub.state).toEqual(publicBefore);
+  for (const [key, bytes] of privateBefore) expect(f.stub.privateState.get(key)).toEqual(bytes);
+  expect([...f.stub.privateState.keys()].some((key) => key.includes('["budget",'))).toBe(false);
+  expect(receipt.toString()).not.toContain("PRIVATE");
+  expect(receipt.toString()).not.toContain("dueAmount");
+  expect(value.calculation.dueAmount).toBe("93");
+  await expect(
+    f.call("ConfirmBill", value.billId, await bilateral(CommercialBillSchema, value), identity(2)),
+  ).rejects.toThrow("POLICY_DENIED");
+});
+
+test("confirmed billing is idempotent, single per task, and remains original after technical correction", async () => {
+  const f = await billFixture();
+  const initial = await f.confirm();
+  const corrected = { ...f.report, reportId: randomUUID(), correctionOf: f.report.reportId };
+  await f.call("RecordUsage", corrected.reportId, await signedUsage(corrected), identity(1));
+  expect((await f.confirm()).equals(initial)).toBe(true);
+  await expect(f.confirm({ ...f.bill, billId: randomUUID() })).rejects.toThrow(
+    "OPERATION_CONFLICT",
+  );
+  await expect(f.confirm({ ...f.bill, salt: "a".repeat(64) })).rejects.toThrow(
+    "OPERATION_CONFLICT",
+  );
+  await expect(f.reduce()).rejects.toThrow("OPERATION_CONFLICT");
+});
+
+test("unconfirmed bill cannot use an obsolete report, uncommitted discount or invented amount", async () => {
+  const f = await billFixture();
+  await expect(
+    f.confirm({ ...f.bill, calculation: { ...f.bill.calculation, dueAmount: "1" } }),
+  ).rejects.toThrow("OPERATION_CONFLICT");
+  await expect(
+    f.confirm({
+      ...f.bill,
+      discount: { discountId: f.discount.discountId, digest: `sha256:${"0".repeat(64)}` },
+    }),
+  ).rejects.toThrow("ASSET_UNAVAILABLE");
+  const corrected = { ...f.report, reportId: randomUUID(), correctionOf: f.report.reportId };
+  await f.call("RecordUsage", corrected.reportId, await signedUsage(corrected), identity(1));
+  await expect(f.confirm()).rejects.toThrow("OPERATION_CONFLICT");
+});
+
+test("discount requires the provider, cannot cross bills, and cannot change an old signed record", async () => {
+  const f = await billFixture();
+  await expect(f.reduce(f.discount, keys[0], identity(0))).rejects.toThrow("POLICY_DENIED");
+  const receipt = await f.reduce();
+  expect((await f.reduce()).equals(receipt)).toBe(true);
+  await expect(f.reduce({ ...f.discount, amount: "8" })).rejects.toThrow("OPERATION_CONFLICT");
+  const ref = CommercialReceiptSchema.parse(JSON.parse(receipt.toString()));
+  await expect(
+    f.confirm({
+      ...f.bill,
+      billId: randomUUID(),
+      discount: { discountId: ref.recordId, digest: ref.digest },
+      calculation: calculateCommercialBill(f.terms, f.bill.request, f.report, f.discount.amount),
+    }),
+  ).rejects.toThrow("POLICY_DENIED");
+});
+
+test("bill requires exact dual signatures and newly granted purposes, not existing contract authority", async () => {
+  const f = await billFixture();
+  const envelope = await bilateral(CommercialBillSchema, f.bill);
+  await expect(
+    f.call("ConfirmBill", f.bill.billId, { ...envelope, targetJws: envelope.sourceJws }),
+  ).rejects.toThrow();
+  const changed = await bilateral(CommercialBillSchema, { ...f.bill, salt: "a".repeat(64) });
+  await expect(
+    f.call("ConfirmBill", f.bill.billId, { ...envelope, targetJws: changed.targetJws }),
+  ).rejects.toThrow("OPERATION_CONFLICT");
+  const old = structuredClone(trust);
+  for (const purpose of old.keyPurposes)
+    purpose.kinds = ["commercial-agreement", "commercial-usage"];
+  const denied = await setup(old);
+  await expect(denied.call("ConfirmBill", f.bill.billId, envelope)).rejects.toThrow(
+    "UNTRUSTED_IDENTITY",
+  );
+});
+
+test("billing can follow contract expiry but cannot follow signing-key revocation", async () => {
+  const f = await billFixture();
+  f.stub.timestamp = new Date("2028-01-01T00:00:00Z");
+  const value = { ...f.bill, issuedAt: f.stub.timestamp.toISOString() };
+  await f.confirm(value);
+  f.stub.fcn = "RevokeKey";
+  f.stub.params = [sites[0], "commercial-0"];
+  f.stub.transient.clear();
+  await f.ledger.invoke(f.stub, identity(0, "trust-admin"));
+  await expect(f.confirm(value)).rejects.toThrow("UNTRUSTED_IDENTITY");
+});
+
+test("missing private report bytes fail closed, even when the receipt hash exists", async () => {
+  const f = await billFixture();
+  const key = `commercial_AB_v1:${f.stub.createCompositeKey("usage", [domainId, f.report.reportId])}`;
+  f.stub.privateState.delete(key);
+  await expect(f.confirm()).rejects.toThrow("DATA_WAITING");
+  await expect(f.reduce()).rejects.toThrow("DATA_WAITING");
+});
+
+test("coordinated bill requires original terminal reservation and keeps all locked amounts unchanged", async () => {
+  const f = await billFixture(true);
+  const chain = f.chain;
+  if (!chain) throw new Error("Missing coordinated fixture");
+  await expect(f.confirm()).rejects.toThrow("OPERATION_CONFLICT");
+  chain.terminal.observedAt = f.stub.timestamp.toISOString();
+  chain.terminal.issuedAt = f.stub.timestamp.toISOString();
+  await chain.record();
+  const before = chain.budget();
+  await expect(
+    f.confirm({ ...f.bill, request: { ...f.bill.request, operationId: randomUUID() } }),
+  ).rejects.toThrow("OPERATION_CONFLICT");
+  await f.confirm();
+  expect(chain.budget()).toEqual(before);
+});
+
+test("coordinated billing rejects usage that extends beyond the acknowledged terminal observation", async () => {
+  const f = await billFixture(true);
+  const chain = f.chain;
+  if (!chain) throw new Error("Missing coordinated fixture");
+  await chain.record();
+  const before = chain.budget();
+  await expect(f.confirm()).rejects.toThrow("OPERATION_CONFLICT");
+  expect(chain.budget()).toEqual(before);
 });

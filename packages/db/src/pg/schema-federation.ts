@@ -103,6 +103,8 @@ export const federationSigningKeys = pgTable(
           | "commercial-reservation"
           | "commercial-release"
           | "commercial-terminal"
+          | "commercial-discount"
+          | "commercial-bill"
           | "terminal-query"
           | "terminal-chunk"
           | "terminal-delivery"

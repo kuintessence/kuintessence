@@ -10,7 +10,10 @@ import { Client, credentials, Metadata } from "@grpc/grpc-js";
 import { connect, GatewayError, signers } from "@hyperledger/fabric-gateway";
 import { peer, gateway as proto } from "@hyperledger/fabric-protos";
 import {
+  CommercialAdapterProposalInputSchema,
   CommercialAgreementSchema,
+  CommercialBillSchema,
+  CommercialDiscountSchema,
   type CommercialExecutionProposalInput,
   CommercialExecutionProposalInputSchema,
   type CommercialProposalInput,
@@ -79,6 +82,8 @@ beforeAll(async () => {
           "commercial-reservation",
           "commercial-release",
           "commercial-terminal",
+          "commercial-discount",
+          "commercial-bill",
         ],
       })),
     },
@@ -666,4 +671,160 @@ test("commercial receipt query is member scoped, binds identity and rejects priv
   await expect(f.adapter.receipt(query)).rejects.toThrow("DATA_WAITING");
   failure = new Error("offline");
   await expect(f.adapter.receipt(query)).rejects.toBe(failure);
+});
+
+async function billingInputs() {
+  const source = keys[0],
+    target = keys[1];
+  if (!source || !target) throw new Error("Missing business keys");
+  const execution = await executionFixture();
+  const digest = `sha256:${"a".repeat(64)}`;
+  const bill = CommercialBillSchema.parse({
+    protocolVersion: 1,
+    kind: "commercial-bill",
+    billId: randomUUID(),
+    domainId: input.domainId,
+    agreementDigest: digest,
+    priceVersionId: randomUUID(),
+    reportId: randomUUID(),
+    reportDigest: digest,
+    request: execution.reservation.request,
+    reservationId: execution.reservation.reservationId,
+    discount: null,
+    calculation: {
+      rounding: "ceil-per-line",
+      lines: [
+        {
+          metric: "cpu",
+          quantityUnit: "core-second",
+          quantity: "1",
+          perQuantity: "1",
+          rateAmount: "10",
+          amount: "10",
+        },
+      ],
+      grossAmount: "10",
+      capReduction: "0",
+      discountAmount: "0",
+      dueAmount: "10",
+    },
+    issuedAt: new Date().toISOString(),
+    salt: randomBytes(32).toString("hex"),
+  });
+  const discount = CommercialDiscountSchema.parse({
+    protocolVersion: 1,
+    kind: "commercial-discount",
+    discountId: randomUUID(),
+    billId: bill.billId,
+    domainId: input.domainId,
+    agreementRevisionId: bill.request.agreementRevisionId,
+    agreementDigest: digest,
+    reportId: bill.reportId,
+    reportDigest: bill.reportDigest,
+    taskId: bill.request.taskId,
+    attempt: 1,
+    sourceSiteId: source.siteId,
+    targetSiteId: target.siteId,
+    unit: bill.request.unit,
+    amount: "1",
+    reason: "PRIVATE-CONCESSION-FIXTURE",
+    issuedAt: bill.issuedAt,
+    salt: randomBytes(32).toString("hex"),
+  });
+  const sourceJws = await signFederationMessage(CommercialBillSchema, bill, source);
+  const providerJws = await signFederationMessage(CommercialDiscountSchema, discount, target);
+  const hash = (jws: string) => {
+    const body = jws.split(".")[1];
+    if (!body) throw new Error("Missing signed body");
+    return `sha256:${createHash("sha256").update(Buffer.from(body, "base64url")).digest("hex")}`;
+  };
+  return [
+    CommercialAdapterProposalInputSchema.parse({
+      operation: "confirm-bill",
+      domainId: bill.domainId,
+      recordId: bill.billId,
+      digest: hash(sourceJws),
+      envelope: {
+        sourceSiteId: source.siteId,
+        targetSiteId: target.siteId,
+        sourceJws,
+        targetJws: await signFederationMessage(CommercialBillSchema, bill, target),
+      },
+    }),
+    CommercialAdapterProposalInputSchema.parse({
+      operation: "record-discount",
+      domainId: discount.domainId,
+      recordId: discount.discountId,
+      digest: hash(providerJws),
+      envelope: { providerJws },
+    }),
+  ];
+}
+
+test("bill and discount proposals disclose only to the two PDC institutions, never normal arguments", async () => {
+  for (const value of await billingInputs()) {
+    const provider = keys[1];
+    if (!provider) throw new Error("Missing provider");
+    const f = setup(value.operation === "record-discount" ? { siteId: provider.siteId } : {});
+    const prepared = await f.adapter.prepare(value);
+    const stored = decode(f, prepared.recovery);
+    const proposed = proto.ProposedTransaction.deserializeBinary(
+      Buffer.from(stored.message.bytes, "base64"),
+    );
+    expect(proposed.getEndorsingOrganizationsList()).toEqual(["AMSP", "BMSP"]);
+    const signed = proposed.getProposal();
+    if (!signed) throw new Error("Missing SDK proposal");
+    const payload = peer.ChaincodeProposalPayload.deserializeBinary(
+      peer.Proposal.deserializeBinary(signed.getProposalBytes_asU8()).getPayload_asU8(),
+    );
+    expect(Buffer.from(payload.getTransientmapMap().get("commercial") ?? []).toString()).toBe(
+      JSON.stringify(value.envelope),
+    );
+    const args = peer.ChaincodeInvocationSpec.deserializeBinary(payload.getInput_asU8())
+      .getChaincodeSpec()
+      ?.getInput()
+      ?.getArgsList_asU8()
+      .map((bytes) => Buffer.from(bytes).toString());
+    expect(args).toEqual([
+      value.operation === "confirm-bill" ? "ConfirmBill" : "RecordDiscount",
+      value.domainId,
+      value.recordId,
+    ]);
+  }
+});
+
+test("new billing operations reject mismatched identities, old key authority and public-field injection before SDK access", async () => {
+  const provider = keys[1];
+  if (!provider) throw new Error("Missing provider");
+  for (const value of await billingInputs()) {
+    const f = setup(value.operation === "record-discount" ? { siteId: provider.siteId } : {});
+    await expect(f.adapter.prepare({ ...value, recordId: randomUUID() })).rejects.toThrow(
+      "POLICY_DENIED",
+    );
+    await expect(
+      f.adapter.prepare({ ...value, digest: `sha256:${"0".repeat(64)}` }),
+    ).rejects.toThrow("POLICY_DENIED");
+    expect(
+      CommercialAdapterProposalInputSchema.safeParse({ ...value, dueAmount: "10" }).success,
+    ).toBe(false);
+    if (value.operation === "confirm-bill")
+      await expect(
+        f.adapter.prepare({
+          ...value,
+          envelope: { ...value.envelope, targetJws: value.envelope.sourceJws },
+        }),
+      ).rejects.toThrow();
+    else if (value.operation === "record-discount")
+      await expect(setup().adapter.prepare(value)).rejects.toThrow();
+    expect(f.sdk).not.toHaveBeenCalled();
+    const trust = structuredClone(config.trust);
+    for (const purpose of trust.keyPurposes)
+      purpose.kinds = ["commercial-agreement", "commercial-usage"];
+    const denied = setup({
+      trust,
+      ...(value.operation === "record-discount" ? { siteId: provider.siteId } : {}),
+    });
+    await expect(denied.adapter.prepare(value)).rejects.toThrow("UNTRUSTED_IDENTITY");
+    expect(denied.sdk).not.toHaveBeenCalled();
+  }
 });

@@ -92,6 +92,8 @@
       "terminal-delivery": "终态对签交付",
       "terminal-ack": "终态对签回执",
       "commercial-terminal": "商业执行终态确认",
+      "commercial-discount": "商务减免",
+      "commercial-bill": "商业账单确认",
       "commercial-usage-query": "用量查询",
       "commercial-usage-page": "用量交换响应",
       "input-download-grant": "输入下载授权"

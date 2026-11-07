@@ -92,6 +92,8 @@
       "terminal-delivery": "Terminal countersignature delivery",
       "terminal-ack": "Terminal countersignature receipt",
       "commercial-terminal": "Commercial execution terminal confirmation",
+      "commercial-discount": "Commercial discount",
+      "commercial-bill": "Commercial bill confirmation",
       "commercial-usage-query": "Usage query",
       "commercial-usage-page": "Usage exchange response",
       "input-download-grant": "Input download grant"

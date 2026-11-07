@@ -28,6 +28,8 @@ export const CommercialSigningKindSchema = z.enum([
   "commercial-reservation",
   "commercial-release",
   "commercial-terminal",
+  "commercial-discount",
+  "commercial-bill",
 ]);
 
 /** Private rates use integer amount per integer quantity; the execution agreement fixes the money unit. */
@@ -169,6 +171,75 @@ export const CommercialUsageSchema = z
       ctx.addIssue({ code: "custom", message: "Duplicate measurement or self correction" });
   });
 export type CommercialUsage = z.infer<typeof CommercialUsageSchema>;
+/** A provider concession is a separate signed fact, bound to one bill and usage revision. */
+export const CommercialDiscountSchema = z.strictObject({
+  protocolVersion: z.literal(1),
+  kind: z.literal("commercial-discount"),
+  discountId: Id,
+  billId: Id,
+  domainId: Id,
+  agreementRevisionId: Id,
+  agreementDigest: FederationDigestSchema,
+  reportId: Id,
+  reportDigest: FederationDigestSchema,
+  taskId: Id,
+  attempt: z.number().int().min(1).max(2147483647),
+  sourceSiteId: Id,
+  targetSiteId: Id,
+  unit: FederationDelegationSchema.shape.unit,
+  amount: PositiveQuantity,
+  reason: z.string().trim().min(1).max(4096),
+  issuedAt: z.iso.datetime(),
+  salt: Salt,
+});
+export type CommercialDiscount = z.infer<typeof CommercialDiscountSchema>;
+
+export const CommercialBillCalculationSchema = z.strictObject({
+  // No legacy agreement implicitly authorizes rounding; both bill signatures approve it.
+  rounding: z.literal("ceil-per-line"),
+  lines: z
+    .array(
+      z.strictObject({
+        metric: Metric,
+        quantityUnit: Metric,
+        quantity: FederationAmountSchema,
+        perQuantity: PositiveQuantity,
+        rateAmount: FederationAmountSchema,
+        amount: FederationAmountSchema,
+      }),
+    )
+    .min(1)
+    .max(64),
+  grossAmount: FederationAmountSchema,
+  capReduction: FederationAmountSchema,
+  discountAmount: FederationAmountSchema,
+  dueAmount: FederationAmountSchema,
+});
+/** Confirmation records an amount owed, never acceptance of results, a debit or a payment. */
+export const CommercialBillSchema = z
+  .strictObject({
+    protocolVersion: z.literal(1),
+    kind: z.literal("commercial-bill"),
+    billId: Id,
+    domainId: Id,
+    agreementDigest: FederationDigestSchema,
+    priceVersionId: Id,
+    reportId: Id,
+    reportDigest: FederationDigestSchema,
+    request: FederationDelegationSchema,
+    // A chain reservation is required only for coordinated cooperation.
+    reservationId: Id.nullable(),
+    discount: z.strictObject({ discountId: Id, digest: FederationDigestSchema }).nullable(),
+    calculation: CommercialBillCalculationSchema,
+    issuedAt: z.iso.datetime(),
+    salt: Salt,
+  })
+  .refine(
+    (value) => (value.request.mode === "ledger_coordinated") === (value.reservationId !== null),
+    "Coordinated bills require the original chain reservation",
+  );
+export type CommercialBill = z.infer<typeof CommercialBillSchema>;
+
 export const CommercialUsageEnvelopeSchema = z.strictObject({
   providerJws: z.string().min(1).max(524288),
 });
@@ -182,6 +253,8 @@ export const CommercialRecordTypeSchema = z.enum([
   "reservation",
   "release",
   "terminal",
+  "discount",
+  "bill",
 ]);
 export const CommercialReceiptQuerySchema = z.strictObject({
   operation: z.literal("get-commercial-receipt"),
@@ -279,6 +352,16 @@ export type CommercialExecutionProposalInput = z.infer<
 export const CommercialAdapterProposalInputSchema = z.discriminatedUnion("operation", [
   ...CommercialProposalInputSchema.options,
   ...CommercialExecutionProposalInputSchema.options,
+  z.strictObject({
+    ...ProposalIdentity,
+    operation: z.literal("record-discount"),
+    envelope: CommercialUsageEnvelopeSchema,
+  }),
+  z.strictObject({
+    ...ProposalIdentity,
+    operation: z.literal("confirm-bill"),
+    envelope: CommercialAgreementEnvelopeSchema,
+  }),
   z.strictObject({
     ...ProposalIdentity,
     operation: z.literal("record-execution-terminal"),

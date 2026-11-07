@@ -9,6 +9,8 @@ import {
   CommercialAdapterProposalInputSchema,
   type CommercialAgreementEnvelopeSchema,
   CommercialAgreementSchema,
+  CommercialBillSchema,
+  CommercialDiscountSchema,
   CommercialGateHashSchema,
   CommercialGateQuerySchema,
   CommercialReceiptQueryResultSchema,
@@ -66,7 +68,7 @@ export class FabricCommercialAdapter {
     const domain = this.config.trust.domains.find((domain) => domain.domainId === input.domainId);
     if (!domain?.siteIds.includes(this.config.siteId)) throw new Error("POLICY_DENIED");
     const now = new Date();
-    if (input.operation !== "record-usage") {
+    if (input.operation !== "record-usage" && input.operation !== "record-discount") {
       const { sourceSiteId, targetSiteId } = input.envelope;
       if (
         sourceSiteId === targetSiteId ||
@@ -124,6 +126,36 @@ export class FabricCommercialAdapter {
         Date.parse(value.issuedAt) > now.getTime() + 60000
       )
         throw new Error("POLICY_DENIED");
+    } else if (input.operation === "confirm-bill") {
+      const signed = await this.verifyPair(CommercialBillSchema, input.envelope, now);
+      const value = signed.payload;
+      if (
+        signed.digest !== input.digest ||
+        value.domainId !== input.domainId ||
+        value.billId !== input.recordId ||
+        value.request.senderSiteId !== input.envelope.sourceSiteId ||
+        value.request.recipientSiteId !== input.envelope.targetSiteId ||
+        Date.parse(value.issuedAt) > now.getTime() + 60000
+      )
+        throw new Error("POLICY_DENIED");
+    } else if (input.operation === "record-discount") {
+      const signed = await this.verify(
+        CommercialDiscountSchema,
+        input.envelope.providerJws,
+        this.config.siteId,
+        now,
+      );
+      const value = signed.payload;
+      if (
+        signed.digest !== input.digest ||
+        value.domainId !== input.domainId ||
+        value.discountId !== input.recordId ||
+        value.targetSiteId !== this.config.siteId ||
+        value.sourceSiteId === value.targetSiteId ||
+        !domain.siteIds.includes(value.sourceSiteId) ||
+        Date.parse(value.issuedAt) > now.getTime() + 60000
+      )
+        throw new Error("POLICY_DENIED");
     } else {
       const provider = await this.verify(
         CommercialUsageSchema,
@@ -147,6 +179,8 @@ export class FabricCommercialAdapter {
       "reserve-execution": "ReserveExecution",
       "release-execution": "ReleaseExecution",
       "record-execution-terminal": "RecordExecutionTerminal",
+      "record-discount": "RecordDiscount",
+      "confirm-bill": "ConfirmBill",
     } as const;
     const proposal = this.gateway
       .getNetwork(this.config.channel)

@@ -339,6 +339,8 @@ async function setup() {
               kinds: [
                 "commercial-agreement",
                 "commercial-usage",
+                "commercial-discount",
+                "commercial-bill",
                 ...(gate
                   ? ["commercial-reservation", "commercial-release", "commercial-terminal"]
                   : []),
