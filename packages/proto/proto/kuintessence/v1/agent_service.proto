@@ -115,6 +115,7 @@ message AgentMessage {
     FederationResultCopyReport federation_result_copy_report = 22;
     FederationInputGrantRequest federation_input_grant_request = 23;
     FederationInputCopyReport federation_input_copy_report = 24;
+    FederationAccountingResponse federation_accounting_response = 25;
   }
   reserved 15;
 }
@@ -158,6 +159,7 @@ message ServerMessage {
     FederationInputCopy federation_input_copy = 27;
     FederationInputGrantResponse federation_input_grant_response = 28;
     FederationInputVerify federation_input_verify = 29;
+    FederationAccountingRequest federation_accounting_request = 30;
   }
 }
 
@@ -243,6 +245,7 @@ message RegisterRequest {
   bool federation_result_verify_v1 = 32;
   bool federation_input_copy_v1 = 33;
   bool federation_input_verify_v1 = 34;
+  bool federation_accounting_v1 = 35;
 }
 
 message RegisterResponse {
@@ -1103,3 +1106,7 @@ message FederationInputVerify {
   string task_json = 1; // FederationInputVerifyTask, at most 16 KiB.
   int64 lease_expires_at_unix_ms = 2;
 }
+
+// Read-only, challenge-bound query; durable retry and observation storage belong to Server.
+message FederationAccountingRequest { string request_json = 1; }
+message FederationAccountingResponse { string response_json = 1; }

@@ -5,6 +5,7 @@ import {
   AgentMessageSchema,
   CancelJobAckSchema,
   DataScanResultSchema,
+  FederationAccountingResponseSchema,
   FileTransferProgressSchema,
   HeartbeatSchema,
   JobLogsResponseSchema,
@@ -886,4 +887,34 @@ describe("agent-handler identity pinning", () => {
       { requestId: "logs-1", result: { text: "done\n", error: "", unavailable: true } },
     ]);
   });
+});
+
+test("accounting responses require registration and capability and carry the pinned Agent identity", async () => {
+  for (const advertised of [false, true]) {
+    const seen: string[] = [];
+    const { router, handlers } = createMockRouter();
+    registerAgentHandler(router, {
+      agentManager: { register: async () => undefined } as unknown as AgentManager,
+      jobService: {} as unknown as JobService,
+      logger: silent,
+      dispatcher: new AgentDispatcher(),
+      federationAccounting: {
+        receive: async (agentId, body) => {
+          seen.push(`${agentId}:${body}`);
+        },
+      },
+    });
+    const response = create(AgentMessageSchema, {
+      payload: {
+        case: "federationAccountingResponse",
+        value: create(FederationAccountingResponseSchema, { responseJson: "probe" }),
+      },
+    });
+    const registration = registerMsg("original-agent");
+    if (registration.payload.case !== "register" || !handlers.connect)
+      throw new Error("Missing fixture");
+    registration.payload.value.federationAccountingV1 = advertised;
+    await drain(handlers.connect(iter(response, registration, response)));
+    expect(seen).toEqual(advertised ? ["original-agent:probe"] : []);
+  }
 });

@@ -8,6 +8,7 @@ import {
   dataAssets,
   dataAssetVersions,
   dataGrants,
+  federationAccountingCollections,
   federationAgreementApprovals,
   federationAgreements,
   federationBudgets,
@@ -36,6 +37,7 @@ import {
   workflowRuns,
 } from "@kuintessence/db";
 import type { SchedulerAccounting } from "@kuintessence/shared";
+import type { FederationAccountingRequest } from "@kuintessence/shared/federation";
 import {
   FederationAcceptanceSchema,
   type FederationAgreement,
@@ -59,6 +61,7 @@ import { createFederationCommercialRoutes } from "../routes/federation-commercia
 import { revokeDataDeliveryJobs } from "../services/data-delivery";
 import { DataGrantRevocationCoordinator } from "../services/data-delivery-revocations";
 import { JobService } from "../services/job-service";
+import { FederationAccountingCollection } from "./accounting-collection";
 import { federationMaterialDigest } from "./assets";
 import { FederationCommercialAgreementService } from "./commercial-agreements";
 import { FederationCommercialSubmissionService } from "./commercial-submissions";
@@ -1708,4 +1711,181 @@ test("usage exchange keeps received history and authorization when transport is 
   expect(saved.sync).toEqual(before.sync);
   actor = f.actor;
   expect((await app.request(`${path}/${f.operationId}`)).status).not.toBe(200);
+});
+
+async function accountingFixture() {
+  const f = await usageFixture("bilateral_direct", true);
+  await f.usage.discover();
+  await f.usage.advanceNext();
+  cleanup.push(async () => {
+    await db
+      .delete(federationAccountingCollections)
+      .where(eq(federationAccountingCollections.jobId, f.jobId));
+  });
+  const sent: FederationAccountingRequest[] = [];
+  const collection = new FederationAccountingCollection(
+    db,
+    f.provider.signing.siteId,
+    (_agent, request) => {
+      sent.push(request);
+      return true;
+    },
+  );
+  const sample = (request: FederationAccountingRequest, quantity = "2018") => ({
+    request,
+    state: "observed",
+    observation: {
+      version: 1,
+      requestId: request.requestId,
+      jobId: request.jobId,
+      dispatchEpoch: request.dispatchEpoch,
+      originalEvidenceDigest: request.originalEvidenceDigest,
+      terminalStatus: "completed",
+      accounting: {
+        version: 1,
+        source: "slurm-sacct",
+        schedulerJobId: request.schedulerJobId,
+        observedAt: new Date().toISOString(),
+        cpuTimeMilliseconds: quantity,
+      },
+    },
+  });
+  const work = async () =>
+    (
+      await db
+        .select()
+        .from(federationAccountingCollections)
+        .where(eq(federationAccountingCollections.jobId, f.jobId))
+    )[0];
+  return { ...f, collection, sent, sample, work };
+}
+
+test("accounting collection appends evidence and generates one signed report without rewriting terminal facts", async () => {
+  const f = await accountingFixture();
+  const original = await f.read();
+  await f.collection.discover();
+  await f.collection.advanceNext();
+  const request = f.sent[0];
+  if (!request) throw new Error("No accounting request");
+  await f.collection.receive(f.agentId, JSON.stringify(f.sample(request)));
+  expect((await f.work())?.state).toBe("collected");
+  expect(await f.read()).toEqual(original);
+  await f.usage.advanceNext();
+  const view = await f.view();
+  expect(view.task.state).toBe("reported");
+  expect(view.reports[0]?.report.measurements[0]?.quantity).toBe("2018");
+  expect(view.reports[0]?.evidenceSet.records[0]).toMatchObject({
+    digest: original?.digest,
+    accountingDigest: (await f.work())?.digest,
+  });
+  await f.collection.receive(f.agentId, JSON.stringify(f.sample(request, "99")));
+  expect((await f.work())?.observation?.accounting.cpuTimeMilliseconds).toBe("2018");
+  expect((await f.view()).reports).toHaveLength(1);
+});
+
+test("accounting collection fences concurrent claims and late responses across restarts", async () => {
+  const f = await accountingFixture();
+  await f.collection.discover();
+  await Promise.all([f.collection.advanceNext(), f.collection.advanceNext()]);
+  expect(f.sent).toHaveLength(1);
+  const old = f.sent[0];
+  if (!old) throw new Error("No request");
+  await db
+    .update(federationAccountingCollections)
+    .set({ leaseUntil: new Date(0), nextAttemptAt: new Date(0) })
+    .where(eq(federationAccountingCollections.jobId, f.jobId));
+  const restarted = new FederationAccountingCollection(
+    db,
+    f.provider.signing.siteId,
+    (_agent, request) => {
+      f.sent.push(request);
+      return true;
+    },
+  );
+  await restarted.advanceNext();
+  const next = f.sent[1];
+  if (!next) throw new Error("No retry");
+  expect(next.requestId).not.toBe(old.requestId);
+  await restarted.receive(f.agentId, JSON.stringify(f.sample(old)));
+  expect((await f.work())?.observation).toBeNull();
+  await restarted.receive(f.agentId, JSON.stringify(f.sample(next)));
+  expect((await f.work())?.observation?.requestId).toBe(next.requestId);
+});
+
+test("accounting collection rejects foreign Agent and mismatched binding, retaining missing data", async () => {
+  const f = await accountingFixture();
+  await f.collection.discover();
+  await f.collection.advanceNext();
+  const request = f.sent[0];
+  if (!request) throw new Error("No request");
+  await expect(
+    f.collection.receive("wrong-agent", JSON.stringify(f.sample(request))),
+  ).rejects.toThrow("identity mismatch");
+  const broken = f.sample(request);
+  broken.observation.originalEvidenceDigest = `sha256:${"f".repeat(64)}`;
+  await expect(f.collection.receive(f.agentId, JSON.stringify(broken))).rejects.toThrow(
+    "binding mismatch",
+  );
+  expect((await f.work())?.observation).toBeNull();
+  await f.collection.receive(f.agentId, JSON.stringify({ request, state: "unavailable" }));
+  expect((await f.work())?.lastError).toBe("ACCOUNTING_UNAVAILABLE");
+  expect((await f.view()).reports).toHaveLength(0);
+});
+
+test("accounting collection preserves pending work offline and manual review can resume identity failures", async () => {
+  const f = await accountingFixture();
+  await f.collection.discover();
+  const offline = new FederationAccountingCollection(db, f.provider.signing.siteId, () => false);
+  await offline.advanceNext();
+  expect((await f.work())?.lastError).toBe("AGENT_UNAVAILABLE");
+  await db
+    .update(federationAccountingCollections)
+    .set({ nextAttemptAt: new Date(0) })
+    .where(eq(federationAccountingCollections.jobId, f.jobId));
+  await f.collection.advanceNext();
+  const request = f.sent[0];
+  if (!request) throw new Error("No request");
+  await f.collection.receive(f.agentId, JSON.stringify({ request, state: "identity_mismatch" }));
+  expect((await f.work())?.state).toBe("needs_review");
+  await f.usage.retry(f.actor, f.terms.agreementRevisionId, f.reservationId);
+  expect((await f.work())?.state).toBe("pending");
+});
+
+test("accounting collection commits observation and report wakeup atomically and leaves incomplete samples pending", async () => {
+  const f = await accountingFixture();
+  await f.collection.discover();
+  await f.collection.advanceNext();
+  const request = f.sent[0];
+  if (!request) throw new Error("No request");
+  await db.execute(
+    sql`ALTER TABLE federation_usage_tasks ADD CONSTRAINT accounting_test_failure CHECK (false) NOT VALID`,
+  );
+  try {
+    await expect(
+      f.collection.receive(f.agentId, JSON.stringify(f.sample(request))),
+    ).rejects.toThrow();
+  } finally {
+    await db.execute(
+      sql`ALTER TABLE federation_usage_tasks DROP CONSTRAINT accounting_test_failure`,
+    );
+  }
+  expect((await f.work())?.observation).toBeNull();
+  expect((await f.work())?.state).toBe("pending");
+  const full = f.sample(request);
+  await f.collection.receive(
+    f.agentId,
+    JSON.stringify({
+      ...full,
+      observation: {
+        ...full.observation,
+        accounting: {
+          ...full.observation.accounting,
+          cpuTimeMilliseconds: undefined,
+          elapsedMilliseconds: "2000",
+        },
+      },
+    }),
+  );
+  expect((await f.work())?.lastError).toBe("ACCOUNTING_INCOMPLETE");
+  expect((await f.work())?.observation).toBeNull();
 });

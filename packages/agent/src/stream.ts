@@ -12,6 +12,7 @@ import {
   DataScanFileSchema,
   DataScanResultSchema,
   type DispatchJob,
+  FederationAccountingResponseSchema,
   type FederationExecutionRequest,
   type FederationInputCopyReport,
   type FederationInputGrantRequest,
@@ -63,6 +64,7 @@ import {
   type SchedulerQueueInventory,
   SchedulerQueueInventorySchema,
 } from "@kuintessence/shared";
+import { FederationAccountingRequestSchema } from "@kuintessence/shared/federation";
 import type { Logger } from "pino";
 import {
   COMPUTE_HEALTH_REASONS,
@@ -87,6 +89,7 @@ import { netdriveDeliveries } from "./data-market/netdrive-inputs";
 import { ExecutorPool } from "./embedded/executor-pool";
 import type { JobStatusReport } from "./embedded/job-executor";
 import { ExecutionAuthorization, ExecutionAuthorizationExpired } from "./execution-authorization";
+import { collectFederationAccounting } from "./federation/accounting";
 import { FederationInputClient, type FederationInputClientConfig } from "./federation/input-client";
 import {
   FederationResultClient,
@@ -244,6 +247,7 @@ type OutboundItem =
       requestId: string;
       partNumbers: number[];
     }
+  | { kind: "federationAccountingResponse"; responseJson: string }
   | { kind: "federationInputGrantRequest"; request: FederationInputGrantRequest }
   | { kind: "federationInputCopyReport"; report: FederationInputCopyReport }
   | { kind: "federationResultGrantRequest"; request: FederationResultGrantRequest }
@@ -1179,6 +1183,8 @@ export class AgentStream {
    * (the {@link ackedDispatches} Set keeps later transitions cheap), then
    * routes the report onto the outbound queue / persistent spillover.
    */
+  private accountingQueries = new Set<string>();
+
   private async onJobTransition(report: JobStatusReport): Promise<void> {
     if (this.federationRuntimes.get(report.jobId)?.superseded) return;
     if (["completed", "failed", "cancelled"].includes(report.status)) {
@@ -2048,6 +2054,8 @@ export class AgentStream {
           federationInputVerifyV1: !!this.federationInputCopy,
           federationResultCopyV1: !!this.federationResultCopy,
           federationResultVerifyV1: !!this.federationResultCopy,
+          federationAccountingV1:
+            !!this.inboundAcks && ["slurm", "pbs-pro"].includes(this.deps.adapter.type),
           federationExecutionV1: this.federationExecutionCapable(),
           federationComputeLeaseV1: this.federationExecutionCapable(),
           federationSandboxSignatureRenewalV1:
@@ -2231,6 +2239,15 @@ export class AgentStream {
                   stderr: item.stderr,
                   exitCode: item.exitCode,
                   error: item.error,
+                }),
+              },
+            });
+          } else if (item.kind === "federationAccountingResponse") {
+            yield create(AgentMessageSchema, {
+              payload: {
+                case: "federationAccountingResponse",
+                value: create(FederationAccountingResponseSchema, {
+                  responseJson: item.responseJson,
                 }),
               },
             });
@@ -3890,6 +3907,34 @@ export class AgentStream {
     if (payload.case === "shellExecRequest") {
       const req = payload.value;
       void this.runShellExec(req.requestId, req.input, req.timeoutSec || 30);
+      return;
+    }
+
+    if (payload.case === "federationAccountingRequest") {
+      if (payload.value.requestJson.length > 16384 || this.accountingQueries.size >= 2) return;
+      let body: unknown;
+      try {
+        body = JSON.parse(payload.value.requestJson);
+      } catch {
+        return;
+      }
+      const parsed = FederationAccountingRequestSchema.safeParse(body);
+      if (!parsed.success || this.accountingQueries.has(parsed.data.requestId)) return;
+      const request = parsed.data;
+      this.accountingQueries.add(request.requestId);
+      void collectFederationAccounting(this.inboundAcks, this.deps.adapter, request)
+        .then((response) => {
+          if (!this.connected) return;
+          this.outboundQueue.push({
+            kind: "federationAccountingResponse",
+            responseJson: JSON.stringify(response),
+          });
+          this.wakeOutbound();
+        })
+        .catch(() =>
+          this.logger.warn({ jobId: request.jobId }, "Accounting query failed; Server will retry"),
+        )
+        .finally(() => this.accountingQueries.delete(request.requestId));
       return;
     }
 

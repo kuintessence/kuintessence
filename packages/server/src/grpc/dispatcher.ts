@@ -8,6 +8,7 @@ import {
   DataDeliveryRevokeSchema,
   DataScanRequestSchema,
   DispatchJobSchema,
+  FederationAccountingRequestSchema,
   FileTransferCancelSchema,
   FileTransferRequestSchema,
   InputStagingSchema,
@@ -46,6 +47,7 @@ import type {
   SpackExecution,
 } from "@kuintessence/shared";
 import { createLogger, SPACK_PINNED_EXECUTION_PLACEHOLDER } from "@kuintessence/shared";
+import type { FederationAccountingRequest } from "@kuintessence/shared/federation";
 import { and, asc, eq, isNotNull, isNull } from "drizzle-orm";
 import type { ResolvedDataDelivery } from "../services/data-delivery";
 import { enqueueJobCancellation } from "../services/job-cancellation";
@@ -149,6 +151,7 @@ export interface AgentChannel {
   spackMaterialDeliveryV1?: boolean;
   spackPinnedExecutionV1?: boolean;
   softwareOperationReplayV1?: boolean;
+  federationAccountingV1?: boolean;
   federationInputCopyV1?: boolean;
   federationInputVerifyV1?: boolean;
   federationResultCopyV1?: boolean;
@@ -522,6 +525,22 @@ export class AgentDispatcher {
       },
     });
     return this.pushToAgent(agentId, msg);
+  }
+
+  pushFederationAccounting(agentId: string, request: FederationAccountingRequest): boolean {
+    const channel = this.channels.get(agentId);
+    if (!channel?.federationAccountingV1) return false;
+    channel.push(
+      create(ServerMessageSchema, {
+        payload: {
+          case: "federationAccountingRequest",
+          value: create(FederationAccountingRequestSchema, {
+            requestJson: JSON.stringify(request),
+          }),
+        },
+      }),
+    );
+    return true;
   }
 
   pushJobLogsRequest(

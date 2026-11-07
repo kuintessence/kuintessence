@@ -37,6 +37,7 @@ import { FederationError } from "@kuintessence/shared/federation";
 import type { Logger } from "pino";
 import { mtlsContext } from "../auth/mtls-context";
 import { AuthorizationUnavailableError } from "../authz/service";
+import type { FederationAccountingCollection } from "../federation/accounting-collection";
 import type { FederationInputTransport } from "../federation/input-transport";
 import type { FederationResultTransport } from "../federation/result-transport";
 import type { AgentManager, ComputeHealthReport } from "../services/agent-manager";
@@ -294,6 +295,7 @@ export interface AgentHandlerDeps {
    */
   shellExecRegistry?: ShellExecRegistry;
   jobLogsService?: Pick<JobLogsService, "resolve">;
+  federationAccounting?: Pick<FederationAccountingCollection, "receive">;
   /**
    * Optional: when present, FileTransferProgress events are routed to
    * the matching transfer listener so the Server's Transfer row tracks
@@ -377,6 +379,7 @@ export function registerAgentHandler(router: ConnectRouter, deps: AgentHandlerDe
     sshGateway,
     shellExecRegistry,
     jobLogsService,
+    federationAccounting,
     transferRegistry,
     jobCompletionRegistry,
     partUrlMinter,
@@ -405,6 +408,7 @@ export function registerAgentHandler(router: ConnectRouter, deps: AgentHandlerDe
         spackMaterialDeliveryV1: false,
         spackPinnedExecutionV1: false,
         softwareOperationReplayV1: false,
+        federationAccountingV1: false,
         federationInputCopyV1: false,
         federationInputVerifyV1: false,
         federationResultCopyV1: false,
@@ -531,6 +535,7 @@ export function registerAgentHandler(router: ConnectRouter, deps: AgentHandlerDe
               channel.spackMaterialDeliveryV1 = reg.spackMaterialDeliveryV1;
               channel.spackPinnedExecutionV1 = reg.spackPinnedExecutionV1;
               channel.softwareOperationReplayV1 = reg.softwareOperationReplayV1;
+              channel.federationAccountingV1 = reg.federationAccountingV1;
               channel.federationInputCopyV1 = reg.federationInputCopyV1;
               channel.federationInputVerifyV1 = reg.federationInputVerifyV1;
               channel.federationResultCopyV1 = reg.federationResultCopyV1;
@@ -1109,6 +1114,24 @@ export function registerAgentHandler(router: ConnectRouter, deps: AgentHandlerDe
               });
             } else {
               logger.debug({ requestId: r.requestId }, "shellExecResponse with no registry");
+            }
+            continue;
+          }
+
+          if (payload.case === "federationAccountingResponse") {
+            if (
+              registeredAgentId === null ||
+              !channel.federationAccountingV1 ||
+              !federationAccounting
+            )
+              continue;
+            try {
+              await federationAccounting.receive(registeredAgentId, payload.value.responseJson);
+            } catch {
+              logger.warn(
+                { agentId: registeredAgentId },
+                "Accounting response rejected; collection remains pending",
+              );
             }
             continue;
           }

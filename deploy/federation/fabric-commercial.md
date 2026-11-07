@@ -105,7 +105,7 @@ Slurm/PBS Pro 新 Agent 会在原终态事件中携带可取得的运行时长�
 
 双方须明确约定支持的 metric/quantityUnit：cpu.time/cpu-millisecond、cpu.allocated/core-millisecond 或 job.elapsed/job-millisecond。前者为累计 CPU 消耗，中者为分配核数乘运行时长，后者为逐 Job 时长和；这些数量不能互换。旧 cpu/core-second 等含糊口径不自动解释，Web 编辑器可成对选择上述三个标准口径，默认累计 CPU 时间、每 1000 毫秒计价；自定义及导入旧口径保留原值，不自动转换。已有签署合同不可编辑。
 
-缺失计量显示 missing_data；证据冲突、数量溢出、超过 4096 个 Job 或 Workflow 覆盖窗口不在协议有效期内进入 needs_review。读取和重试 API 见[实现说明](../../docs/design/federation/implementation.md#自动签名用量报告)。重试只重新检查原材料，不能提交数量覆盖或改写原证据；Web 用量报告页可查看缺失并重试检查，迟到自动补采仍待实现。原始报告只表示提供方断言，不创建账单或付款。
+缺失计量显示 missing_data；证据冲突、数量溢出、超过 4096 个 Job 或 Workflow 覆盖窗口不在协议有效期内进入 needs_review。读取和重试 API 见[实现说明](../../docs/design/federation/implementation.md#自动签名用量报告)。重试重新检查材料并重置待复核的补采任务，不能提交数量覆盖或改写原证据；Web 用量报告页可查看缺失并重试检查。Slurm/PBS Pro 已支持经原 Agent 通道自动补采初始报告的缺失计量，须配套升级 Agent、保留派发收据与调度器历史，并应用迁移 0119。补采单独保存摘要，原报告协议及链码保持不变；已签报告只能追加技术更正。原始报告只表示提供方断言，不创建账单或付款。
 
 ## 追加技术更正
 

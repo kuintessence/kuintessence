@@ -245,6 +245,7 @@ export function assertDelegationPolicy(
     throw new FederationError("POLICY_DENIED");
 }
 
+export * from "./accounting";
 export * from "./assets";
 export * from "./cancellation";
 export * from "./input-files";

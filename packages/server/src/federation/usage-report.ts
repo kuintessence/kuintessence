@@ -1,4 +1,6 @@
 import {
+  type FederationAccountingObservation,
+  FederationAccountingObservationSchema,
   FederationAmountSchema,
   type FederationTerminalEvidence,
   FederationTerminalEvidenceSchema,
@@ -13,7 +15,11 @@ import {
 } from "@kuintessence/shared/federation/commercial";
 import { federationMaterialDigest } from "./assets";
 
-export type UsageEvidence = { evidence: FederationTerminalEvidence; digest: string };
+export type UsageEvidence = {
+  evidence: FederationTerminalEvidence;
+  digest: string;
+  accountingObservation?: { observation: FederationAccountingObservation; digest: string };
+};
 export type UsageAggregation =
   | { state: "missing_data"; gaps: CommercialUsageGap[] }
   | { state: "needs_review"; reason: "EVIDENCE_CONFLICT" | "QUANTITY_OVERFLOW" | "EVIDENCE_LIMIT" }
@@ -67,8 +73,33 @@ export function aggregateCommercialUsage(
       (!evidence.accounting && evidence.observation.schedulerAccounting === "reported")
     )
       return { state: "needs_review", reason: "EVIDENCE_CONFLICT" };
+    if (row.accountingObservation) {
+      const checked = FederationAccountingObservationSchema.safeParse(
+        row.accountingObservation.observation,
+      );
+      if (!checked.success) return { state: "needs_review", reason: "EVIDENCE_CONFLICT" };
+      const sample = checked.data;
+      if (
+        sample.jobId !== evidence.jobId ||
+        sample.dispatchEpoch !== evidence.dispatchEpoch ||
+        sample.originalEvidenceDigest !== row.digest ||
+        federationMaterialDigest(sample) !== row.accountingObservation.digest ||
+        sample.accounting.schedulerJobId !== evidence.scheduler.jobId ||
+        sample.accounting.source !==
+          (evidence.scheduler.type === "slurm"
+            ? "slurm-sacct"
+            : evidence.scheduler.type === "pbs-pro"
+              ? "pbs-qstat"
+              : null)
+      )
+        return { state: "needs_review", reason: "EVIDENCE_CONFLICT" };
+    }
     jobs.add(evidence.jobId);
-    parsed.push({ evidence, digest: row.digest });
+    parsed.push({
+      evidence,
+      digest: row.digest,
+      ...(row.accountingObservation ? { accountingObservation: row.accountingObservation } : {}),
+    });
   }
   const gaps: CommercialUsageGap[] = [];
   const quantities: { metric: string; quantityUnit: string; quantity: string }[] = [];
@@ -85,8 +116,8 @@ export function aggregateCommercialUsage(
     let total = 0n;
     let missingJobs = 0;
     let firstMissingJob: string | undefined;
-    for (const { evidence } of parsed) {
-      const accounting = evidence.accounting;
+    for (const { evidence, accountingObservation } of parsed) {
+      const accounting = accountingObservation?.observation.accounting ?? evidence.accounting;
       let quantity: bigint | undefined;
       if (price.metric === "cpu.time" && accounting?.cpuTimeMilliseconds !== undefined)
         quantity = BigInt(accounting.cpuTimeMilliseconds);
@@ -125,7 +156,11 @@ export function aggregateCommercialUsage(
     agreementRevisionId: terms.agreement.agreementRevisionId,
     priceVersionId: terms.priceVersionId,
     records: parsed
-      .map(({ evidence, digest }) => ({ jobId: evidence.jobId, digest }))
+      .map(({ evidence, digest, accountingObservation }) => ({
+        jobId: evidence.jobId,
+        digest,
+        ...(accountingObservation ? { accountingDigest: accountingObservation.digest } : {}),
+      }))
       .sort((a, b) => a.jobId.localeCompare(b.jobId)),
   };
   const evidenceDigest = federationMaterialDigest(evidenceSet);

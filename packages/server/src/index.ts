@@ -47,6 +47,7 @@ import {
 import { AuthzService, type AuthzTuple } from "./authz/service";
 import { loadServerConfig } from "./config";
 import { EventBus } from "./events/event-bus";
+import { FederationAccountingCollection } from "./federation/accounting-collection";
 import { FederationAgreementService } from "./federation/agreements";
 import { FederationAssetService } from "./federation/assets";
 import { FederationAttestationService } from "./federation/attestation";
@@ -1666,6 +1667,11 @@ const federationCommercial = federationSigningKey
         : undefined,
     )
   : undefined;
+const federationAccounting = federationSigningKey
+  ? new FederationAccountingCollection(db, federationSigningKey.siteId, (agentId, request) =>
+      dispatcher.pushFederationAccounting(agentId, request),
+    )
+  : undefined;
 const federationUsage = federationSigningKey
   ? new FederationUsageService(db, federationSigningKey)
   : undefined;
@@ -2244,6 +2250,7 @@ const grpcDeps = {
   sshGateway,
   shellExecRegistry,
   jobLogsService,
+  federationAccounting,
   transferRegistry,
   jobCompletionRegistry,
   federationResults,
@@ -2399,7 +2406,12 @@ const federationAttestationWorker =
     : undefined;
 federationAttestationWorker?.start();
 const federationCommercialWorker = federationCommercial
-  ? new FederationCommercialWorker(federationCommercial, federationUsage, federationUsageExchange)
+  ? new FederationCommercialWorker(
+      federationCommercial,
+      federationUsage,
+      federationUsageExchange,
+      federationAccounting,
+    )
   : undefined;
 federationCommercialWorker?.start();
 logger.info({ port: config.SERVER_PORT }, "Server starting");

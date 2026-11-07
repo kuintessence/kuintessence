@@ -402,7 +402,7 @@ Agent 的 `input-copy` / `input-verify` 内部入口已有独立输入任务、�
 
 Slurm 从 sacct 精确匹配 JobIDRaw 汇总行读取 ElapsedRaw、AllocCPUS 与 TotalCPU，保留步骤查询以取得正确利用量，不使用会把利用量归零的 --allocations 选项；身份恢复查询仍保留它原有的 --allocations 过滤。--duplicates 暴露重复作业 ID，无法唯一匹配时只保留状态回退，不猜哪一份用量属于本作业。Slurm 同一查询中若步骤仍非终态/状态未知，或步骤时长、CPU 用量超过汇总，保留已知作业终态但不输出本次 accounting，避免将尚未合并的零值直接报告为用量。PBS Pro 从当前或历史 qstat 的 resources_used.walltime/cput/ncpus 读取。CPU 时间与分配核数分别保存，绝不以申请值乘时长填补 CPU 时间。
 
-新增 SchedulerAccounting 可选 protobuf 字段，不改变原状态事件 ID 和 ACK 顺序。JobRunner、SQLite outbound、重连映射、gRPC 和终态证据贯通；Server 核对 registered Agent、持久事件、调度器类型与作业 ID。缺字段保持缺失，合法零值保留；超过 JS 安全整数的值使用字符串/BigInt，时间统一毫秒（亚毫秒截断）。这是调度器断言，不证明测量插件已正确配置或科研结果正确；部署验收仍需验证 Slurm jobacct_gather / PBS 会计能力。Kubernetes、Torque、GPU/内存实际消耗及终态后的迟到补采尚无这条数据来源，不能据此生成零账单。
+新增 SchedulerAccounting 可选 protobuf 字段，不改变原状态事件 ID 和 ACK 顺序。JobRunner、SQLite outbound、重连映射、gRPC 和终态证据贯通；Server 核对 registered Agent、持久事件、调度器类型与作业 ID。缺字段保持缺失，合法零值保留；超过 JS 安全整数的值使用字符串/BigInt，时间统一毫秒（亚毫秒截断）。这是调度器断言，不证明测量插件已正确配置或科研结果正确；部署验收仍需验证 Slurm jobacct_gather / PBS 会计能力。Kubernetes、Torque、GPU/内存实际消耗尚无这条数据来源，不能据此生成零账单。
 
 独立 evidence 保留与 raw rollup 删除解耦；签名证据正文/引用及对象备份验证后才允许按协议清理源证据。执行存储失败与存证服务失败分开：前者可阻止新增任务，后者进入队列。
 
@@ -648,6 +648,17 @@ RegisterAgreement 验证双方对同一条款的签名后只写对应 PDC；Reco
 直接模式本地签署后完成，不创建链待办、不探测链；存证模式先等同一商业合同的注册 committed，再由原持久提交服务推进 record-usage。商用 worker 在配置机构签名后即可工作，无需配置商业 socket；未配置 socket 时存证待办保留。每轮最多发现八项并推进八次，无网络 I/O 占用生成事务。报告是单方计量断言，不激活执行、不变更额度、不确认账单。
 
 按组织受控的 GET /api/federation/commercial-agreements/:revisionId/usage 与 /:reservationId 提供状态和报告；POST /:reservationId/retry 仅接受空对象并要求 agreement.approve，其他读取要求 agreement.read。missing_data/needs_review 可以重试，已签报告不能重生成；审计不复制用量正文。响应 no-store，报告仅本机构可读，证据集合未发给链或其他机构。技术更正已按下述规则接入；跨机构报告交换已按下述规则接入，Web 操作已接商业合同详情。
+
+
+### 终态后的迟到计量补采
+
+迁移 0119 新增独立 federation_accounting_collections。商业 worker 只发现初始报告处于 missing_data、且合同支持的计量字段在原终态证据中缺失的 Job；每轮最多发现 64 项、推进 8 项。请求先在数据库提交 60 秒租约与随机 requestId，再经现有 Server/Agent 流发送，不持锁等网络；离线或旧 Agent 保留待重试。请求绑定原证据摘要、Job、dispatchEpoch、schedulerJobId，注册 Agent 必须声明 federation_accounting_v1。
+
+Agent 只查 Slurm/PBS Pro，要求原 SQLite 派发收据及准备快照仍存在，并已进入提交阶段。读取计量前后分别按原 Job UUID、代次名称及账户定位调度器任务，拒绝 ID 复用、非终态或身份不符。最多两项并发查询，不执行脚本、不重新提交任务。调度器历史已清理、权限不足或旧 Agent 无能力时保持缺失；不会补成零。
+
+Server 重新核对注册 Agent、当前 Job 归属、执行代次和租约。过期回包不能覆盖新请求；身份冲突进入 needs_review，无结果或字段不全间隔 60 秒重试。单份观测必须满足合同全部指标，不拼接不同时间的字段。接收观测、摘要与唤醒报告生成在同一事务保存，原终态证据保持不可变；报告 evidenceSet 的每项保留原 digest 及可选 accountingDigest。直接模式仍无 Fabric 依赖，存证模式复用原报告待办。
+
+既有用量 retry 接口可以重置该预留的补采复核状态，无新公共接口。已签报告不自动重采或更正；首次已有完整但不准确的计量也不属于本补采机制，须通过技术更正追加声明。隔离 PostgreSQL 覆盖并发/重启/过期回包/事务回滚，真实 Slurm 探针覆盖生产查询模块和 SQLite 收据读取；探针的收据与原证据摘要是受控输入，不代表完整 Server/Agent/PBS/Fabric 联合验收。
 
 
 ### 用量技术更正

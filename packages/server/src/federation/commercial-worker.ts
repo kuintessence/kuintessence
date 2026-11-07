@@ -1,4 +1,5 @@
 import { createLogger } from "@kuintessence/shared";
+import type { FederationAccountingCollection } from "./accounting-collection";
 import type { FederationCommercialSubmissionService } from "./commercial-submissions";
 import type { FederationUsageService } from "./usage";
 import type { FederationUsageExchange } from "./usage-exchange";
@@ -12,6 +13,7 @@ export class FederationCommercialWorker {
     private readonly service: FederationCommercialSubmissionService,
     private readonly usage?: FederationUsageService,
     private readonly exchange?: FederationUsageExchange,
+    private readonly accounting?: FederationAccountingCollection,
   ) {}
 
   start() {
@@ -33,6 +35,15 @@ export class FederationCommercialWorker {
           for (let i = 0; i < 8 && !this.stopped; i++) if (!(await this.usage.advanceNext())) break;
         } catch {
           logger.error("Usage scan failed; original evidence remains in PostgreSQL");
+        }
+      }
+      if (this.accounting) {
+        try {
+          await this.accounting.discover();
+          for (let i = 0; i < 8 && !this.stopped; i++)
+            if (!(await this.accounting.advanceNext())) break;
+        } catch {
+          logger.error("Accounting collection failed; original evidence remains in PostgreSQL");
         }
       }
       if (this.exchange) {

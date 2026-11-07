@@ -2,6 +2,7 @@ import { randomBytes, randomUUID } from "node:crypto";
 import {
   auditLog,
   federationCommercialAgreements as contracts,
+  federationAccountingCollections,
   federationAgreements,
   federationReservations,
   federationTerminalEvidence,
@@ -185,10 +186,12 @@ export class FederationUsageService {
         jobId: workflowExecutionJobs.jobId,
         status: jobs.status,
         evidence: federationTerminalEvidence,
+        collection: federationAccountingCollections,
       })
       .from(workflowExecutionJobs)
       .innerJoin(jobs, eq(jobs.id, workflowExecutionJobs.jobId))
       .leftJoin(federationTerminalEvidence, eq(federationTerminalEvidence.jobId, jobs.id))
+      .leftJoin(federationAccountingCollections, eq(federationAccountingCollections.jobId, jobs.id))
       .where(eq(workflowExecutionJobs.runId, run.id))
       .orderBy(asc(workflowExecutionJobs.jobId))
       .limit(4097);
@@ -215,7 +218,23 @@ export class FederationUsageService {
         requestDigest: reservation.requestDigest,
         executionSnapshotDigest: binding.snapshotDigest,
       },
-      rows.flatMap((row) => (row.evidence ? [row.evidence] : [])),
+      rows.flatMap((row) =>
+        row.evidence
+          ? [
+              {
+                ...row.evidence,
+                ...(row.collection?.observation && row.collection.digest
+                  ? {
+                      accountingObservation: {
+                        observation: row.collection.observation,
+                        digest: row.collection.digest,
+                      },
+                    }
+                  : {}),
+              },
+            ]
+          : [],
+      ),
     );
     if (aggregate.state === "missing_data")
       return this.review(tx, task, "MISSING_ACCOUNTING", aggregate.gaps);
@@ -483,6 +502,21 @@ export class FederationUsageService {
           updatedAt: sql`clock_timestamp()`,
         })
         .where(eq(tasks.reservationId, reservationId));
+      await tx
+        .update(federationAccountingCollections)
+        .set({ state: "pending", lastError: null, nextAttemptAt: sql`clock_timestamp()` })
+        .where(
+          and(
+            eq(federationAccountingCollections.state, "needs_review"),
+            inArray(
+              federationAccountingCollections.jobId,
+              tx
+                .select({ id: federationTerminalEvidence.jobId })
+                .from(federationTerminalEvidence)
+                .where(eq(federationTerminalEvidence.reservationId, reservationId)),
+            ),
+          ),
+        );
       await tx.insert(auditLog).values({
         actor: actor.userId,
         orgId: actor.orgId,

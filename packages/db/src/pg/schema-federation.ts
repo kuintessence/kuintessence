@@ -1,6 +1,7 @@
 import type { workflowDsl } from "@kuintessence/shared";
 import type {
   FederationAcceptance,
+  FederationAccountingObservation,
   FederationAgreement,
   FederationCancellation,
   FederationCancellationReceipt,
@@ -1155,6 +1156,37 @@ export const federationTerminalEvidence = pgTable(
       AND ${t.evidence}->>'reservationId' = ${t.reservationId}::text
       AND ${t.evidence}->>'runId' = ${t.workflowRunId}::text
       AND ${t.evidence}->>'status' IN ('completed','failed','cancelled'), false)`,
+    ),
+  ],
+);
+
+/** A later scheduler observation supplements, and never overwrites, the terminal record. */
+export const federationAccountingCollections = pgTable(
+  "federation_accounting_collections",
+  {
+    jobId: uuid("job_id")
+      .primaryKey()
+      .references(() => federationTerminalEvidence.jobId),
+    state: varchar("state", { length: 24 }).notNull().default("pending"),
+    requestId: uuid("request_id"),
+    issuedAt: timestamp("issued_at", { withTimezone: true }),
+    leaseUntil: timestamp("lease_until", { withTimezone: true }),
+    nextAttemptAt: timestamp("next_attempt_at", { withTimezone: true }).notNull().defaultNow(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    lastError: varchar("last_error", { length: 64 }),
+    observation: jsonb("observation").$type<FederationAccountingObservation>(),
+    digest: varchar("digest", { length: 71 }),
+  },
+  (t) => [
+    index("federation_accounting_due").on(t.state, t.nextAttemptAt),
+    check("federation_accounting_state", sql`${t.state} IN ('pending','collected','needs_review')`),
+    check(
+      "federation_accounting_observation",
+      sql`(${t.state} = 'collected') = (${t.observation} IS NOT NULL AND ${t.digest} IS NOT NULL)`,
+    ),
+    check(
+      "federation_accounting_digest",
+      sql`${t.digest} IS NULL OR ${t.digest} ~ '^sha256:[a-f0-9]{64}$'`,
     ),
   ],
 );

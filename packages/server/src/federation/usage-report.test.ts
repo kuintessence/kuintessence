@@ -1,6 +1,9 @@
 import { expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
-import type { FederationTerminalEvidence } from "@kuintessence/shared/federation";
+import type {
+  FederationAccountingObservation,
+  FederationTerminalEvidence,
+} from "@kuintessence/shared/federation";
 import {
   CommercialAgreementSchema,
   commercialAutomaticMeters,
@@ -178,4 +181,42 @@ test("aggregate overflow is explicit and missing diagnostics stay bounded per me
   if (result.state !== "missing_data") throw new Error("Expected missing data");
   expect(result.gaps).toHaveLength(3);
   expect(result.gaps.every((gap) => gap.missingJobs === 100)).toBe(true);
+});
+
+test("supplemental accounting commits both immutable sources and rejects crossed evidence", () => {
+  const f = fixture();
+  const original = f.row({
+    ...f.evidence,
+    accounting: undefined,
+    observation: { ...f.evidence.observation, schedulerAccounting: "unavailable" },
+  });
+  const sample: FederationAccountingObservation = {
+    version: 1,
+    requestId: randomUUID(),
+    jobId: original.evidence.jobId,
+    dispatchEpoch: original.evidence.dispatchEpoch,
+    originalEvidenceDigest: original.digest,
+    terminalStatus: "completed",
+    accounting: f.accounting,
+  };
+  const row = {
+    ...original,
+    accountingObservation: { observation: sample, digest: federationMaterialDigest(sample) },
+  };
+  const result = aggregateCommercialUsage(f.terms, f.scope, [row]);
+  expect(result.state).toBe("ready");
+  if (result.state !== "ready") throw new Error("Missing supplemental aggregation");
+  expect(result.evidenceSet.records[0]).toEqual({
+    jobId: original.evidence.jobId,
+    digest: original.digest,
+    accountingDigest: row.accountingObservation.digest,
+  });
+  expect(original.evidence.accounting).toBeUndefined();
+  expect(result.measurements[0]?.quantity).toBe("9007199254740993");
+  sample.dispatchEpoch++;
+  row.accountingObservation.digest = federationMaterialDigest(sample);
+  expect(aggregateCommercialUsage(f.terms, f.scope, [row])).toEqual({
+    state: "needs_review",
+    reason: "EVIDENCE_CONFLICT",
+  });
 });

@@ -5,6 +5,7 @@ import type { Logger } from "pino";
 import { runWithMtlsContext } from "../auth/mtls-context";
 import { type MtlsHeaderGuardConfig, mtlsHeaderGuard } from "../auth/mtls-wire";
 import { isTrustedProxyAddress, parseTrustedProxyCidrs } from "../auth/trusted-proxy";
+import type { FederationAccountingCollection } from "../federation/accounting-collection";
 import type { FederationResultTransport } from "../federation/result-transport";
 import type { AgentManager } from "../services/agent-manager";
 import type { DataDeliveryRevocationOutbox } from "../services/data-delivery-revocations";
@@ -49,6 +50,7 @@ export interface CreateGrpcHandlerDeps {
   sshGateway?: SshGateway;
   shellExecRegistry?: ShellExecRegistry;
   jobLogsService?: JobLogsService;
+  federationAccounting?: Pick<FederationAccountingCollection, "receive">;
   transferRegistry?: TransferRegistry;
   jobCompletionRegistry?: JobCompletionRegistry;
   partUrlMinter?: {

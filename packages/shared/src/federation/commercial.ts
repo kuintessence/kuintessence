@@ -235,7 +235,13 @@ export const CommercialUsageEvidenceSetSchema = z.strictObject({
   agreementRevisionId: Id,
   priceVersionId: Id,
   records: z
-    .array(z.strictObject({ jobId: Id, digest: FederationDigestSchema }))
+    .array(
+      z.strictObject({
+        jobId: Id,
+        digest: FederationDigestSchema,
+        accountingDigest: FederationDigestSchema.optional(),
+      }),
+    )
     .min(1)
     .max(4096),
 });

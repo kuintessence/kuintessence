@@ -20,7 +20,7 @@ bun scripts/federation-slurm-accounting.ts
 
 输出写入忽略的 `temp/kq-accounting-<随机值>/`：
 
-- `observation.json`：真实 schedulerJobId、每次状态/计量观测、原始 sacct 汇总/步骤行及输出校验结果。
+- `observation.json`：真实 schedulerJobId、每次状态/计量观测、原始 sacct 汇总/步骤行、补采响应及输出校验结果。
 - `checkout.json`：镜像 digest、独立 namespace 和基础配置模板。
 - `install.log`、`setup.log`、`scheduler.log`：安装和运行诊断；失败时增加 `failure.log`。
 
@@ -28,4 +28,4 @@ bun scripts/federation-slurm-accounting.ts
 
 真实 Slurm 可能先给出终态，再补齐汇总计量：已观测到汇总 ElapsedRaw=0 而 batch=2，之后汇总修正为 2。适配器发现同任务步骤仍运行、状态未知，或步骤时长/CPU 用量超过汇总时，保留终态但不提供本次 accounting。不会把步骤累加成第二份用量，也不会用申请资源补算；合法零值仍可保留。后续明确查询可取得一致记录。
 
-本检查证明真实 Slurm、sacct 和生产适配器的组合；不证明 Agent 持久消息、两台 Server、自动签名报告、PBS、Fabric 或完整科研工作流已经联合通过。探针后续查询不是生产迟到计量补采功能；当前终态后若未取得一致计量，仍须显示缺失。自动补采应以追加观测实现，不覆盖原始终态证据，也不能将本检查的重复查询描述为已经完成该能力。
+本检查另将该真实任务的派发信息保存为受控 SQLite 收据，调用生产 collectFederationAccounting，验证前后 UUID/代次/账户定位及返回计量一致。收据与原证据摘要是探针输入，不是实际 Server 派发。生产 Server 已通过原 Agent 流安排持久补采，独立保存观测及摘要；原证据和已签报告不可覆盖。这里证明真实 Slurm 与补采查询模块的组合，不证明 Agent 流通信、两台 Server、自动签名报告、PBS、Fabric 或完整科研工作流已经联合通过。
