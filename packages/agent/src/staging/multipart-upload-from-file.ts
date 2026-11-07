@@ -1,3 +1,4 @@
+import { constants } from "node:fs";
 import { open } from "node:fs/promises";
 
 export interface MultipartFromFileResult {
@@ -15,7 +16,7 @@ export interface MultipartFromFileOptions {
   /** Server-backed in prod (sends PartUrlsRequest over connectRPC); a fake in tests. */
   getPartUrls: (partNumbers: number[]) => Promise<{ partNumber: number; url: string }[]>;
   /** Injectable for tests; defaults to a real fetch PUT. Returns the part ETag. */
-  put?: (url: string, body: Uint8Array) => Promise<{ ok: boolean; status: number; etag: string }>;
+  put?: (url: string, body: Blob) => Promise<{ ok: boolean; status: number; etag: string }>;
   connectTo?: string;
   /** Retry count per part before failing the multipart upload. */
   maxRetries?: number;
@@ -27,7 +28,7 @@ export interface MultipartFromFileOptions {
 
 const defaultPut = async (
   url: string,
-  body: Uint8Array,
+  body: Blob,
   connectTo?: string,
   signal?: AbortSignal,
 ): Promise<{ ok: boolean; status: number; etag: string }> => {
@@ -38,10 +39,11 @@ const defaultPut = async (
     headers: {
       ...(target.hostHeader ? { Host: target.hostHeader } : {}),
       Connection: "close",
-      "Content-Length": String(body.byteLength),
+      "Content-Length": String(body.size),
       "Content-Type": "application/octet-stream",
     },
     signal,
+    redirect: "error",
   });
   return { ok: res.ok, status: res.status, etag: stripQuotes(res.headers.get("etag") ?? "") };
 };
@@ -56,39 +58,61 @@ const defaultPut = async (
 export async function multipartUploadFromFile(
   opts: MultipartFromFileOptions,
 ): Promise<MultipartFromFileResult> {
+  if (
+    !Number.isSafeInteger(opts.size) ||
+    opts.size < 0 ||
+    !Number.isSafeInteger(opts.partSize) ||
+    opts.partSize < 1 ||
+    opts.partSize > 5 * 1024 * 1024 * 1024
+  )
+    throw new Error("Invalid bounded multipart size");
   const put = opts.put ?? ((url, body) => defaultPut(url, body, opts.connectTo, opts.signal));
   const maxRetries = opts.maxRetries ?? 2;
   const retryBackoffMs = opts.retryBackoffMs ?? 250;
   const partCount = Math.max(1, Math.ceil(opts.size / opts.partSize));
-  const partNumbers = Array.from({ length: partCount }, (_, i) => i + 1);
+  if (partCount > 10_000) throw new Error("Multipart upload exceeds the S3 part limit");
   throwIfAborted(opts.signal);
-  const urls = await opts.getPartUrls(partNumbers);
-  const urlByPart = new Map(urls.map((u) => [u.partNumber, u.url]));
 
   const hasher = new Bun.CryptoHasher("sha256");
   const parts: { partNumber: number; etag: string }[] = [];
   let copied = 0;
 
-  const fh = await open(opts.filePath, "r");
+  const fh = await open(opts.filePath, constants.O_RDONLY | constants.O_NOFOLLOW);
   try {
-    for (const partNumber of partNumbers) {
+    const stat = await fh.stat();
+    if (!stat.isFile() || stat.size !== opts.size) throw new Error("Multipart source size changed");
+    const buffer = Buffer.alloc(Math.min(64 * 1024, opts.size));
+    const source = Bun.file(fh.fd);
+    for (let partNumber = 1; partNumber <= partCount; partNumber++) {
       throwIfAborted(opts.signal);
       const offset = (partNumber - 1) * opts.partSize;
       const len = Math.min(opts.partSize, opts.size - offset);
-      const buf = Buffer.alloc(len);
-      await fh.read(buf, 0, len, offset);
-
-      const url = urlByPart.get(partNumber);
-      if (!url) {
-        throw new Error(`no presigned URL for part ${partNumber}`);
+      const body = source.slice(offset, offset + len);
+      let read = 0;
+      while (read < len) {
+        throwIfAborted(opts.signal);
+        const { bytesRead } = await fh.read(
+          buffer,
+          0,
+          Math.min(buffer.length, len - read),
+          offset + read,
+        );
+        if (!bytesRead) throw new Error("Multipart source ended before its declared size");
+        hasher.update(buffer.subarray(0, bytesRead));
+        read += bytesRead;
       }
 
       let res: { ok: boolean; status: number; etag: string } | null = null;
       let attempt = 0;
       while (attempt <= maxRetries) {
         throwIfAborted(opts.signal);
+        const urls = await opts.getPartUrls([partNumber]);
+        const url =
+          urls.length === 1 && urls[0]?.partNumber === partNumber ? urls[0].url : undefined;
+        if (!url) throw new Error(`no presigned URL for part ${partNumber}`);
+        throwIfAborted(opts.signal);
         try {
-          res = await put(url, buf);
+          res = await put(url, body);
           if (res.ok) {
             break;
           }
@@ -115,11 +139,18 @@ export async function multipartUploadFromFile(
         throw new Error(`upload part ${partNumber} failed: HTTP ${res.status}`);
       }
 
-      hasher.update(buf);
+      if (!stripQuotes(res.etag)) throw new Error("Multipart upload response has no ETag");
       parts.push({ partNumber, etag: stripQuotes(res.etag) });
       copied += len;
       opts.onProgress?.(copied);
     }
+    const final = await fh.stat();
+    if (
+      final.size !== stat.size ||
+      final.mtimeMs !== stat.mtimeMs ||
+      final.ctimeMs !== stat.ctimeMs
+    )
+      throw new Error("Multipart source changed while uploading");
   } finally {
     await fh.close();
   }

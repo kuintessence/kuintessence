@@ -44,12 +44,12 @@ describe("multipartUploadFromFile", () => {
         return partNumbers.map((n) => ({ partNumber: n, url: `${PART_URL_PREFIX}${n}` }));
       },
       put: async (url, body) => {
-        putByPart.set(partNumberFromUrl(url), Buffer.from(body));
+        putByPart.set(partNumberFromUrl(url), Buffer.from(await body.arrayBuffer()));
         return { ok: true, status: 200, etag: `etag-${partNumberFromUrl(url)}` };
       },
     });
 
-    expect(requested).toEqual([[1, 2, 3]]);
+    expect(requested).toEqual([[1], [2], [3]]);
     expect(putByPart.get(1)?.toString("utf8")).toBe("AAAA");
     expect(putByPart.get(2)?.toString("utf8")).toBe("BBBB");
     expect(putByPart.get(3)?.toString("utf8")).toBe("CC");
@@ -153,4 +153,57 @@ describe("rewriteUrlWithConnectTo", () => {
       url,
     });
   });
+});
+
+test("multipart renews a part URL on retry and refuses truncated or changed source bytes", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "mp-change-"));
+  const filePath = join(dir, "source");
+  await writeFile(filePath, "12345678");
+  let grants = 0,
+    writes = 0;
+  const options = {
+    filePath,
+    size: 8,
+    partSize: 4,
+    retryBackoffMs: 1,
+    getPartUrls: async ([partNumber]: number[]) => {
+      if (!partNumber) throw new Error("missing part");
+      return [{ partNumber, url: `mock://part/${partNumber}/${++grants}` }];
+    },
+  };
+  try {
+    const result = await multipartUploadFromFile({
+      ...options,
+      put: async (url, body) => {
+        expect(body instanceof Blob).toBe(true);
+        writes++;
+        if (writes === 1) throw new Error("expired upload URL");
+        expect(url.endsWith(`/${grants}`)).toBe(true);
+        return { ok: true, status: 200, etag: "verified" };
+      },
+    });
+    expect(result.parts).toHaveLength(2);
+    expect(grants).toBe(3);
+    await writeFile(filePath, "short");
+    await expect(
+      multipartUploadFromFile({
+        ...options,
+        put: async () => {
+          throw new Error("must not upload");
+        },
+      }),
+    ).rejects.toThrow("source size changed");
+    await writeFile(filePath, "12345678");
+    await expect(
+      multipartUploadFromFile({
+        ...options,
+        put: async () => {
+          await writeFile(filePath, "abcdefgh");
+          return { ok: true, status: 200, etag: "changed" };
+        },
+      }),
+    ).rejects.toThrow("changed while uploading");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
 });

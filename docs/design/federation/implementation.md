@@ -150,6 +150,14 @@ worker 用短事务领取最多 60 秒的处理租约，在网络发送前完成
 
 本接口目前只提供**签名清单**，不发送文件字节、不登记源站副本，也不把任务改为“已交付”或“已结算”。接下来以这份清单绑定独立的数据搬运和接收回执，复用云盘/Agent 的流式传输及校验路径；大文件不得通过 Server 全量缓冲或以任意对端 URL 绕过登记端点与授权。
 
+### Agent 结果文件搬运基础
+
+Agent 的 `copyFederationResultFile` 已提供内部文件搬运函数：绑定签名清单中的一个成员、transferId 和 generation，向平台回调逐次申请短期下载/分片上传授权；核对对象、方向、分片、有效期及运维配置的 HTTPS origin，禁止重定向。函数依赖调用方先验签；自身检查清单摘要与成员，不替代机构签名验证。所有字节直接经 Agent 与存储端交换，Server 不缓冲大文件。
+
+下载要求准确的 206/Content-Range，以 1 MiB 窗口读取并校验 SHA-256；共用恢复下载器以 64 KiB 块重算已有前缀，拒绝忽略 Range 的全对象响应、超长/截短/压缩响应，损坏的完整文件会删除后重新下载。上传逐分片申请 URL，使用文件支持的 Blob 流式发送并重新计算摘要，检查源文件大小和修改时间；错误、取消及授权过期不会返回完成结果。只返回未提交的 multipart parts，尚不执行 CompleteMultipart、发布云盘副本或签署接收回执。
+
+暂存目录须归 Agent 用户所有、权限 0700、无符号链接；单文件受配置容量与可用空间检查，成功失败均清理。当前每次尝试从头创建暂存，不能跨进程续传，也没有全 Agent 并发磁盘容量预留。测试覆盖真实 HTTPS 搬运 5 MiB + 123 字节；不代表 TB 规模、真实 S3 完成发布或双平台结果回传验收。生产 grant 协议、持久传输任务、AgentStream 派发和后台清理仍待接通。
+
 ### 远端取消与停止确认
 
 源站 `POST /api/federation/outbound/:operationId/cancel` 要求当前组织的 `delegation.cancel`（submit 包含 cancel，cancel 包含 read）。HTTP 202 表示永久停止意图已保存，不能直接显示“已停止”。`cancel-retry` 在机构密钥或登记端点修复后重签同一停止正文并审计，不更改原 operation/task/attempt/请求摘要；已确认停止不重启。列表中的 `cancellation` 与原接单 state 分开：queued/sending/pending/needs_review 都不等于 stopped，原 accepted 和额度保持。

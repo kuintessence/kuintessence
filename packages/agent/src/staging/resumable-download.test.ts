@@ -142,3 +142,112 @@ describe("resumableDownload", () => {
     await rm(dir, { recursive: true, force: true });
   });
 });
+
+test("real HTTP cannot bypass a bounded window by ignoring Range or lying about response length", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "dl-bound-"));
+  const body = Buffer.from("0123456789");
+  let mode = "ignore";
+  const server = Bun.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    fetch: () => {
+      if (mode === "ignore") return new Response(body);
+      return new Response(
+        new ReadableStream({
+          start(controller) {
+            controller.enqueue(body.subarray(0, 4));
+            setTimeout(() => {
+              controller.enqueue(body.subarray(4));
+              controller.close();
+            }, 10);
+          },
+        }),
+        { status: 206, headers: { "content-range": "bytes 0-3/10" } },
+      );
+    },
+  });
+  try {
+    const options = {
+      downloadUrl: `http://127.0.0.1:${server.port}/file`,
+      localPath: join(dir, "data"),
+      size: body.length,
+      sha256: await sha256Hex(body),
+      window: 4,
+    };
+    await expect(resumableDownload(options)).rejects.toThrow("exact unencoded requested range");
+    mode = "oversize";
+    await expect(resumableDownload(options)).rejects.toThrow("exceeds its bounded window");
+    expect((await readFile(options.localPath)).length).toBe(0);
+  } finally {
+    server.stop(true);
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("cancelled streaming download closes its body and preserves only checkpointed bytes", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "dl-abort-"));
+  let cancelled = false;
+  const stop = new AbortController();
+  const http: HttpClient = async () => ({
+    status: 206,
+    ok: true,
+    headers: { "content-range": "bytes 0-3/4" },
+    body: new ReadableStream({
+      start(controller) {
+        controller.enqueue(new Uint8Array([1]));
+        setTimeout(() => stop.abort(), 15);
+      },
+      cancel() {
+        cancelled = true;
+      },
+    }),
+    arrayBuffer: async () => {
+      throw new Error("Streaming path cannot buffer the response");
+    },
+    text: async () => "",
+    json: async () => {
+      throw new Error("unused");
+    },
+  });
+  try {
+    await expect(
+      resumableDownload({
+        downloadUrl: "https://source.invalid/object",
+        localPath: join(dir, "data"),
+        size: 4,
+        sha256: "a".repeat(64),
+        window: 4,
+        signal: stop.signal,
+        http,
+      }),
+    ).rejects.toThrow();
+    expect(cancelled).toBe(true);
+    expect((await readFile(join(dir, "data"))).length).toBe(0);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("bad digest is discarded and cannot poison a later correct retry", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "dl-digest-"));
+  const localPath = join(dir, "data"),
+    good = Buffer.from("right"),
+    bad = Buffer.from("wrong");
+  const options = {
+    downloadUrl: "https://source.invalid/object",
+    localPath,
+    size: 5,
+    sha256: await sha256Hex(good),
+    window: 2,
+  };
+  try {
+    await expect(resumableDownload({ ...options, http: rangeServer(bad).http })).rejects.toThrow(
+      "sha256",
+    );
+    expect(await Bun.file(localPath).exists()).toBe(false);
+    await resumableDownload({ ...options, http: rangeServer(good).http });
+    expect(await readFile(localPath)).toEqual(good);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
