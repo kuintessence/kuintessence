@@ -16,6 +16,8 @@ import {
   federationCertificates,
   federationCommercialAgreements,
   federationCommercialAttempts,
+  federationCommercialBills,
+  federationCommercialDiscounts,
   federationCommercialSubmissions,
   federationOutbound,
   federationReceivedUsage,
@@ -44,6 +46,8 @@ import {
 } from "@kuintessence/shared/federation";
 import {
   CommercialAgreementSchema,
+  CommercialBillSchema,
+  CommercialDiscountSchema,
   type CommercialUsageCorrectionInput,
   CommercialUsageSchema,
   commercialAutomaticMeters,
@@ -52,7 +56,7 @@ import {
   CommercialUsagePageSchema,
   CommercialUsageQuerySchema,
 } from "@kuintessence/shared/federation/usage-exchange";
-import { eq, inArray, sql } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import { Hono } from "hono";
 import { exportSPKI } from "jose";
 import pino from "pino";
@@ -63,9 +67,11 @@ import { DataGrantRevocationCoordinator } from "../services/data-delivery-revoca
 import { JobService } from "../services/job-service";
 import { FederationAccountingCollection } from "./accounting-collection";
 import { federationMaterialDigest } from "./assets";
+import { FederationBillingService } from "./billing";
 import { FederationCommercialAgreementService } from "./commercial-agreements";
 import { FederationCommercialSubmissionService } from "./commercial-submissions";
 import { FederationCommercialWorker } from "./commercial-worker";
+import { FabricClientFailure } from "./fabric-client";
 import { createFederationIngress } from "./ingress";
 import type { FederationSend } from "./outbound-client";
 import { FederationPermissionService } from "./permissions";
@@ -1123,8 +1129,11 @@ test("technical correction HTTP rejects hidden override fields and read-only or 
   expect((await request(f.input)).status).toBe(403);
 });
 
-async function exchangeFixture(missing = false) {
-  const f = await usageFixture("bilateral_direct", missing);
+async function exchangeFixture(
+  missing = false,
+  mode: "bilateral_direct" | "bilateral_attested" = "bilateral_direct",
+) {
+  const f = await usageFixture(mode, missing);
   await f.usage.discover();
   await f.usage.advanceNext();
   const actor = { userId: randomUUID(), orgId: randomUUID() };
@@ -1888,4 +1897,646 @@ test("accounting collection commits observation and report wakeup atomically and
   );
   expect((await f.work())?.lastError).toBe("ACCOUNTING_INCOMPLETE");
   expect((await f.work())?.observation).toBeNull();
+});
+
+async function billingFixture(
+  mode: "bilateral_direct" | "bilateral_attested" = "bilateral_direct",
+) {
+  const f = await exchangeFixture(false, mode);
+  cleanup.push(async () => {
+    for (const siteId of [f.source.signing.siteId, f.provider.signing.siteId]) {
+      const pending = await db
+        .select({ id: federationCommercialSubmissions.id })
+        .from(federationCommercialSubmissions)
+        .where(eq(federationCommercialSubmissions.localSiteId, siteId));
+      if (pending.length)
+        await db.delete(federationCommercialAttempts).where(
+          inArray(
+            federationCommercialAttempts.submissionId,
+            pending.map((row) => row.id),
+          ),
+        );
+      await db
+        .delete(federationCommercialSubmissions)
+        .where(eq(federationCommercialSubmissions.localSiteId, siteId));
+      await db
+        .delete(federationCommercialBills)
+        .where(eq(federationCommercialBills.localSiteId, siteId));
+      await db
+        .delete(federationCommercialDiscounts)
+        .where(eq(federationCommercialDiscounts.localSiteId, siteId));
+    }
+  });
+  for (const siteId of [f.source.signing.siteId, f.provider.signing.siteId])
+    await db
+      .update(federationSigningKeys)
+      .set({
+        allowedKinds: [
+          "commercial-agreement",
+          "commercial-usage",
+          "commercial-usage-query",
+          "commercial-usage-page",
+          "commercial-bill",
+          "commercial-discount",
+        ],
+      })
+      .where(eq(federationSigningKeys.siteId, siteId));
+  for (const actor of [f.actor, f.sourceActor])
+    await new FederationPermissionService(db).set(
+      { ...actor, capability: "billing.approve", enabled: true },
+      actor.userId,
+    );
+  await f.exchange.discover();
+  await f.exchange.advanceNext();
+  const report = (await f.exchangeView()).reports[0];
+  if (!report) throw new Error("Missing received usage");
+  const observedAt = new Date().toISOString();
+  await db
+    .update(federationOutbound)
+    .set({
+      statusReport: {
+        protocolVersion: 1,
+        kind: "status-report",
+        queryId: randomUUID(),
+        queryDigest: `sha256:${"a".repeat(64)}`,
+        senderSiteId: f.provider.signing.siteId,
+        recipientSiteId: f.source.signing.siteId,
+        operationId: f.operationId,
+        agreementRevisionId: f.terms.agreementRevisionId,
+        taskId: f.reservation.taskId,
+        attempt: 1,
+        reservationId: f.reservationId,
+        requestDigest: f.reservation.requestDigest,
+        observedAt,
+        preparation: null,
+        workflow: { status: "completed", updatedAt: observedAt },
+      },
+      statusReportJws: "previously-verified-status-fixture",
+      statusVerifiedAt: new Date(),
+    })
+    .where(
+      and(
+        eq(federationOutbound.localSiteId, f.source.signing.siteId),
+        eq(federationOutbound.operationId, f.operationId),
+      ),
+    );
+  const sourceBilling = new FederationBillingService(db, f.source.signing),
+    providerBilling = new FederationBillingService(db, f.provider.signing);
+  const revisionId = f.terms.agreementRevisionId;
+  const draft = await providerBilling.draft(
+    f.actor,
+    revisionId,
+    report.report.reportId,
+    randomUUID(),
+  );
+  const approveBoth = async (bill = draft) => {
+    const provider = await providerBilling.approve(f.actor, revisionId, bill);
+    const source = await sourceBilling.approve(f.sourceActor, revisionId, bill);
+    await providerBilling.attachCounterparty(f.actor, revisionId, bill.billId, source.approvalJws);
+    await sourceBilling.attachCounterparty(
+      f.sourceActor,
+      revisionId,
+      bill.billId,
+      provider.approvalJws,
+    );
+    return { provider, source };
+  };
+  return { ...f, report, revisionId, sourceBilling, providerBilling, draft, approveBoth };
+}
+
+test("billing direct confirms both institutions independently without chain work or changes to reserved money", async () => {
+  const f = await billingFixture();
+  const before = await db
+    .select()
+    .from(federationBudgets)
+    .where(eq(federationBudgets.domainId, f.terms.budgetDomainId));
+  const signatures = await f.approveBoth();
+  expect(f.draft.calculation.dueAmount).toBe("60");
+  expect(
+    (await f.sourceBilling.list(f.sourceActor, f.revisionId, 10, 0)).data[0]?.bill.counterpartyJws,
+  ).toBe(signatures.provider.approvalJws);
+  expect(
+    (await f.providerBilling.list(f.actor, f.revisionId, 10, 0)).data[0]?.bill.counterpartyJws,
+  ).toBe(signatures.source.approvalJws);
+  expect(
+    await db
+      .select()
+      .from(federationBudgets)
+      .where(eq(federationBudgets.domainId, f.terms.budgetDomainId)),
+  ).toEqual(before);
+  expect(
+    await db
+      .select()
+      .from(federationCommercialSubmissions)
+      .where(
+        inArray(federationCommercialSubmissions.localSiteId, [
+          f.source.signing.siteId,
+          f.provider.signing.siteId,
+        ]),
+      ),
+  ).toHaveLength(0);
+});
+
+test("billing discount is provider signed, imported by source and changes only the separately approved amount", async () => {
+  const f = await billingFixture();
+  const terms = CommercialDiscountSchema.parse({
+    protocolVersion: 1,
+    kind: "commercial-discount",
+    discountId: randomUUID(),
+    billId: f.draft.billId,
+    domainId: f.contract.domainId,
+    agreementRevisionId: f.revisionId,
+    agreementDigest: f.draft.agreementDigest,
+    reportId: f.draft.reportId,
+    reportDigest: f.draft.reportDigest,
+    taskId: f.draft.request.taskId,
+    attempt: 1,
+    sourceSiteId: f.source.signing.siteId,
+    targetSiteId: f.provider.signing.siteId,
+    unit: f.draft.request.unit,
+    amount: "7",
+    reason: "Agreed service concession",
+    issuedAt: new Date().toISOString(),
+    salt: "b".repeat(64),
+  });
+  await expect(f.sourceBilling.approveDiscount(f.sourceActor, f.revisionId, terms)).rejects.toThrow(
+    "POLICY_DENIED",
+  );
+  const saved = await f.providerBilling.approveDiscount(f.actor, f.revisionId, terms);
+  await f.sourceBilling.importDiscount(f.sourceActor, f.revisionId, saved.providerJws);
+  const draft = await f.providerBilling.draft(
+    f.actor,
+    f.revisionId,
+    f.draft.reportId,
+    f.draft.billId,
+    terms.discountId,
+  );
+  expect(draft.calculation.dueAmount).toBe("53");
+  await f.approveBoth(draft);
+  expect((await f.view()).reports[0]?.digest).toBe(f.draft.reportDigest);
+  await expect(
+    f.providerBilling.approveDiscount(f.actor, f.revisionId, {
+      ...terms,
+      discountId: randomUUID(),
+    }),
+  ).rejects.toThrow("OPERATION_CONFLICT");
+});
+
+test("billing requires explicit approval capability and original organization, values and delegation", async () => {
+  const f = await billingFixture();
+  await new FederationPermissionService(db).set(
+    { ...f.actor, capability: "billing.approve", enabled: false },
+    f.userId,
+  );
+  await expect(f.providerBilling.approve(f.actor, f.revisionId, f.draft)).rejects.toThrow(
+    "POLICY_DENIED",
+  );
+  await new FederationPermissionService(db).set(
+    { ...f.actor, capability: "billing.approve", enabled: true },
+    f.userId,
+  );
+  await expect(f.providerBilling.approve(f.sourceActor, f.revisionId, f.draft)).rejects.toThrow(
+    "AGREEMENT_UNAVAILABLE",
+  );
+  await expect(
+    f.providerBilling.approve(f.actor, f.revisionId, {
+      ...f.draft,
+      request: { ...f.draft.request, operationId: randomUUID() },
+    }),
+  ).rejects.toThrow("POLICY_DENIED");
+  await expect(
+    f.providerBilling.approve(f.actor, f.revisionId, {
+      ...f.draft,
+      calculation: { ...f.draft.calculation, dueAmount: "1" },
+    }),
+  ).rejects.toThrow("OPERATION_CONFLICT");
+  await db
+    .update(federationSigningKeys)
+    .set({ allowedKinds: ["commercial-agreement", "commercial-usage"] })
+    .where(eq(federationSigningKeys.siteId, f.provider.signing.siteId));
+  await expect(f.providerBilling.approve(f.actor, f.revisionId, f.draft)).rejects.toThrow(
+    "UNTRUSTED_IDENTITY",
+  );
+});
+
+test("billing concurrent same approval is idempotent and a second bill cannot bind the same attempt", async () => {
+  const f = await billingFixture();
+  const rows = await Promise.all(
+    Array.from({ length: 4 }, () => f.providerBilling.approve(f.actor, f.revisionId, f.draft)),
+  );
+  expect(new Set(rows.map((row) => row.approvalJws)).size).toBe(1);
+  await expect(
+    f.providerBilling.approve(f.actor, f.revisionId, { ...f.draft, billId: randomUUID() }),
+  ).rejects.toThrow("OPERATION_CONFLICT");
+  expect(
+    await db
+      .select()
+      .from(auditLog)
+      .where(and(eq(auditLog.actor, f.userId), eq(auditLog.action, "federation.billing.approve"))),
+  ).toHaveLength(1);
+});
+
+test("billing fresh correction rejects new drafts but preserves already signed approvals without rewriting history", async () => {
+  const f = await billingFixture();
+  const original = await f.providerBilling.approve(f.actor, f.revisionId, f.draft);
+  const counterparty = await f.sourceBilling.approve(f.sourceActor, f.revisionId, f.draft);
+  await f.usage.correct(f.actor, f.revisionId, f.reservationId, {
+    reportId: randomUUID(),
+    correctionOf: f.draft.reportId,
+    reason: "Late accounting observation",
+    measurements: [
+      {
+        ...commercialAutomaticMeters[0],
+        quantity: "1",
+        supportingEvidenceDigest: `sha256:${"a".repeat(64)}`,
+      },
+    ],
+  });
+  await expect(
+    f.providerBilling.draft(f.actor, f.revisionId, f.draft.reportId, randomUUID()),
+  ).rejects.toThrow("OPERATION_CONFLICT");
+  await f.providerBilling.attachCounterparty(
+    f.actor,
+    f.revisionId,
+    f.draft.billId,
+    counterparty.approvalJws,
+  );
+  const row = (await f.providerBilling.list(f.actor, f.revisionId, 10, 0)).data[0]?.bill;
+  expect(row?.approvalJws).toBe(original.approvalJws);
+  expect(row?.counterpartyJws).toBe(counterparty.approvalJws);
+});
+
+test("billing attested confirmation survives an unavailable ledger and waits for original usage before disclosure", async () => {
+  const f = await billingFixture("bilateral_attested");
+  await f.approveBoth();
+  const queue = await db
+    .select()
+    .from(federationCommercialSubmissions)
+    .where(eq(federationCommercialSubmissions.localSiteId, f.provider.signing.siteId));
+  const bill = queue.find((row) => row.input.operation === "confirm-bill"),
+    usage = queue.find((row) => row.input.operation === "record-usage");
+  if (!bill || !usage) throw new Error("Missing billing outbox");
+  await db
+    .update(federationCommercialSubmissions)
+    .set({ state: "committed" })
+    .where(
+      and(
+        eq(federationCommercialSubmissions.localSiteId, f.provider.signing.siteId),
+        sql`${federationCommercialSubmissions.input}->>'operation' = 'register-agreement'`,
+      ),
+    );
+  await db
+    .update(federationCommercialSubmissions)
+    .set({ state: "needs_review" })
+    .where(eq(federationCommercialSubmissions.id, usage.id));
+  const seen: string[] = [];
+  const worker = new FederationCommercialSubmissionService(db, f.provider.signing.siteId, {
+    prepare: async (input) => {
+      seen.push(input.operation);
+      throw new FabricClientFailure("LEDGER_UNAVAILABLE");
+    },
+    advance: async () => {
+      throw new Error("No checkpoint yet");
+    },
+  });
+  expect(await worker.advanceNext()).toBe(false);
+  await db
+    .update(federationCommercialSubmissions)
+    .set({ state: "committed" })
+    .where(eq(federationCommercialSubmissions.id, usage.id));
+  expect(await worker.advanceNext()).toBe(true);
+  expect(seen).toEqual(["confirm-bill"]);
+  const view = (await f.providerBilling.list(f.actor, f.revisionId, 10, 0)).data[0];
+  expect(view?.bill.counterpartyJws).not.toBeNull();
+  expect(view?.ledger?.state).toBe("pending");
+  expect(view?.ledger?.lastError).toBe("LEDGER_UNAVAILABLE");
+});
+
+test("billing audit failure rolls back the approval and attested outbox failure rolls back confirmation", async () => {
+  const f = await billingFixture("bilateral_attested");
+  await db.execute(
+    sql.raw(
+      `ALTER TABLE audit_log ADD CONSTRAINT billing_audit_fixture CHECK (action <> 'federation.billing.approve' OR target <> '${f.draft.billId}')`,
+    ),
+  );
+  try {
+    await expect(f.providerBilling.approve(f.actor, f.revisionId, f.draft)).rejects.toThrow();
+    expect((await f.providerBilling.list(f.actor, f.revisionId, 10, 0)).data).toHaveLength(0);
+  } finally {
+    await db.execute(sql`ALTER TABLE audit_log DROP CONSTRAINT billing_audit_fixture`);
+  }
+  await f.providerBilling.approve(f.actor, f.revisionId, f.draft);
+  const other = await f.sourceBilling.approve(f.sourceActor, f.revisionId, f.draft);
+  await db.execute(
+    sql.raw(
+      `ALTER TABLE federation_commercial_submissions ADD CONSTRAINT billing_outbox_fixture CHECK (input->>'recordId' <> '${f.draft.billId}')`,
+    ),
+  );
+  try {
+    await expect(
+      f.providerBilling.attachCounterparty(
+        f.actor,
+        f.revisionId,
+        f.draft.billId,
+        other.approvalJws,
+      ),
+    ).rejects.toThrow();
+    expect(
+      (await f.providerBilling.list(f.actor, f.revisionId, 10, 0)).data[0]?.bill.counterpartyJws,
+    ).toBeNull();
+  } finally {
+    await db.execute(
+      sql`ALTER TABLE federation_commercial_submissions DROP CONSTRAINT billing_outbox_fixture`,
+    );
+  }
+  await f.providerBilling.attachCounterparty(
+    f.actor,
+    f.revisionId,
+    f.draft.billId,
+    other.approvalJws,
+  );
+  expect((await f.providerBilling.list(f.actor, f.revisionId, 10, 0)).data[0]?.ledger?.state).toBe(
+    "pending",
+  );
+});
+
+test("billing confirmed records remain readable and replayable after a later technical correction", async () => {
+  const f = await billingFixture();
+  const signed = await f.approveBoth();
+  await f.usage.correct(f.actor, f.revisionId, f.reservationId, {
+    reportId: randomUUID(),
+    correctionOf: f.draft.reportId,
+    reason: "Late sample",
+    measurements: [
+      {
+        ...commercialAutomaticMeters[0],
+        quantity: "1",
+        supportingEvidenceDigest: `sha256:${"a".repeat(64)}`,
+      },
+    ],
+  });
+  const replay = await f.providerBilling.attachCounterparty(
+    f.actor,
+    f.revisionId,
+    f.draft.billId,
+    signed.source.approvalJws,
+  );
+  expect(replay.payload.calculation.dueAmount).toBe("60");
+  expect(replay.payload.reportId).toBe(f.draft.reportId);
+  expect((await f.view()).reports).toHaveLength(2);
+});
+
+test("billing disclosure rechecks the immutable local approval and current signer trust", async () => {
+  const f = await billingFixture("bilateral_attested");
+  await f.approveBoth();
+  await db
+    .update(federationCommercialSubmissions)
+    .set({ state: "committed" })
+    .where(
+      and(
+        eq(federationCommercialSubmissions.localSiteId, f.provider.signing.siteId),
+        sql`${federationCommercialSubmissions.input}->>'operation' <> 'confirm-bill'`,
+      ),
+    );
+  await db
+    .update(federationSigningKeys)
+    .set({ revokedAt: new Date() })
+    .where(eq(federationSigningKeys.siteId, f.source.signing.siteId));
+  let calls = 0;
+  const worker = new FederationCommercialSubmissionService(db, f.provider.signing.siteId, {
+    prepare: async () => {
+      calls++;
+      throw new Error("Must not disclose");
+    },
+    advance: async () => {
+      calls++;
+      throw new Error("Must not disclose");
+    },
+  });
+  expect(await worker.advanceNext()).toBe(true);
+  expect(calls).toBe(0);
+  const row = (await f.providerBilling.list(f.actor, f.revisionId, 10, 0)).data[0];
+  expect(row?.ledger?.state).toBe("needs_review");
+  expect(row?.bill.counterpartyJws).not.toBeNull();
+});
+
+test("billing HTTP rejects automation, unknown fields and agreement-only approvers and keeps reads private", async () => {
+  const f = await billingFixture();
+  const app = new Hono();
+  let automation = false;
+  app.onError(createErrorHandler(pino({ enabled: false })));
+  app.use("*", async (c, next) => {
+    c.set("principal" as never, f.actor as never);
+    if (automation) c.set("automation" as never, true as never);
+    await next();
+  });
+  const dependencies: Parameters<typeof createFederationCommercialRoutes> = [
+    f.approvals,
+    new FederationCommercialSubmissionService(db, f.provider.signing.siteId),
+  ];
+  dependencies[15] = f.providerBilling;
+  app.route("/", createFederationCommercialRoutes(...dependencies));
+  const base = `/federation/commercial-agreements/${f.revisionId}/bills`;
+  const post = (value: unknown) =>
+    app.request(`${base}/approve`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(value),
+    });
+  const read = await app.request(base);
+  expect(read.status).toBe(200);
+  expect(read.headers.get("cache-control")).toBe("no-store");
+  expect((await post({ ...f.draft, paid: true })).status).toBe(400);
+  automation = true;
+  expect((await post(f.draft)).status).toBe(403);
+  automation = false;
+  await new FederationPermissionService(db).set(
+    { ...f.actor, capability: "billing.approve", enabled: false },
+    f.userId,
+  );
+  expect((await post(f.draft)).status).toBe(403);
+  await new FederationPermissionService(db).set(
+    { ...f.actor, capability: "billing.approve", enabled: true },
+    f.userId,
+  );
+  expect((await post(f.draft)).status).toBe(201);
+});
+
+test("billing discount outbox precedes bill evidence, original concessions replay after correction, and retry authority stays separate", async () => {
+  const f = await billingFixture("bilateral_attested");
+  const concession = CommercialDiscountSchema.parse({
+    protocolVersion: 1,
+    kind: "commercial-discount",
+    discountId: randomUUID(),
+    billId: f.draft.billId,
+    domainId: f.contract.domainId,
+    agreementRevisionId: f.revisionId,
+    agreementDigest: f.draft.agreementDigest,
+    reportId: f.draft.reportId,
+    reportDigest: f.draft.reportDigest,
+    taskId: f.draft.request.taskId,
+    attempt: 1,
+    sourceSiteId: f.source.signing.siteId,
+    targetSiteId: f.provider.signing.siteId,
+    unit: f.draft.request.unit,
+    amount: "7",
+    reason: "Agreed concession",
+    issuedAt: new Date().toISOString(),
+    salt: "c".repeat(64),
+  });
+  const copies = await Promise.all(
+    Array.from({ length: 3 }, () =>
+      f.providerBilling.approveDiscount(f.actor, f.revisionId, concession),
+    ),
+  );
+  const saved = copies[0];
+  if (!saved) throw new Error("Missing concession");
+  expect(new Set(copies.map((row) => row.providerJws)).size).toBe(1);
+  await f.sourceBilling.importDiscount(f.sourceActor, f.revisionId, saved.providerJws);
+  const draft = await f.providerBilling.draft(
+    f.actor,
+    f.revisionId,
+    f.draft.reportId,
+    f.draft.billId,
+    concession.discountId,
+  );
+  await f.approveBoth(draft);
+  await db
+    .update(federationCommercialSubmissions)
+    .set({ state: "committed" })
+    .where(
+      and(
+        eq(federationCommercialSubmissions.localSiteId, f.provider.signing.siteId),
+        sql`${federationCommercialSubmissions.input}->>'operation' IN ('register-agreement','record-usage')`,
+      ),
+    );
+  const seen: string[] = [];
+  const worker = new FederationCommercialSubmissionService(db, f.provider.signing.siteId, {
+    prepare: async (input) => {
+      seen.push(input.operation);
+      throw new FabricClientFailure("LEDGER_UNAVAILABLE");
+    },
+    advance: async () => {
+      throw new Error("No checkpoint");
+    },
+  });
+  expect(await worker.advanceNext()).toBe(true);
+  expect(seen).toEqual(["record-discount"]);
+  expect(await worker.advanceNext()).toBe(false);
+  await db
+    .update(federationCommercialSubmissions)
+    .set({ state: "committed" })
+    .where(
+      and(
+        eq(federationCommercialSubmissions.localSiteId, f.provider.signing.siteId),
+        sql`${federationCommercialSubmissions.input}->>'operation' = 'record-discount'`,
+      ),
+    );
+  expect(await worker.advanceNext()).toBe(true);
+  expect(seen).toEqual(["record-discount", "confirm-bill"]);
+  const row = (await f.providerBilling.list(f.actor, f.revisionId, 10, 0)).data[0];
+  if (!row?.ledger) throw new Error("Missing bill outbox");
+  await db
+    .update(federationCommercialSubmissions)
+    .set({ state: "needs_review" })
+    .where(eq(federationCommercialSubmissions.id, row.ledger.id));
+  await new FederationPermissionService(db).set(
+    { ...f.actor, capability: "billing.approve", enabled: false },
+    f.userId,
+  );
+  await expect(worker.retry(f.actor, f.revisionId, row.ledger.id)).rejects.toThrow("POLICY_DENIED");
+  await new FederationPermissionService(db).set(
+    { ...f.actor, capability: "billing.approve", enabled: true },
+    f.userId,
+  );
+  await new FederationPermissionService(db).set(
+    { ...f.actor, capability: "agreement.approve", enabled: false },
+    f.userId,
+  );
+  await worker.retry(f.actor, f.revisionId, row.ledger.id);
+  expect(
+    (await f.providerBilling.listDiscounts(f.actor, f.revisionId, 10, 0)).data[0]?.discount.digest,
+  ).toBe(saved.digest);
+  await new FederationPermissionService(db).set(
+    { ...f.actor, capability: "agreement.approve", enabled: true },
+    f.userId,
+  );
+  await f.usage.correct(f.actor, f.revisionId, f.reservationId, {
+    reportId: randomUUID(),
+    correctionOf: f.draft.reportId,
+    reason: "Late sample",
+    measurements: [
+      {
+        ...commercialAutomaticMeters[0],
+        quantity: "1",
+        supportingEvidenceDigest: `sha256:${"a".repeat(64)}`,
+      },
+    ],
+  });
+  expect(
+    (await f.providerBilling.approveDiscount(f.actor, f.revisionId, concession)).providerJws,
+  ).toBe(saved.providerJws);
+  expect(await worker.advanceNext()).toBe(true);
+  expect(seen.at(-1)).toBe("confirm-bill");
+  expect(await worker.advanceNext()).toBe(false);
+  await db
+    .update(federationCommercialSubmissions)
+    .set({ state: "committed" })
+    .where(eq(federationCommercialSubmissions.id, row.ledger.id));
+  expect(await worker.advanceNext()).toBe(true);
+  expect(seen.at(-1)).toBe("record-usage");
+});
+
+test("billing unsigned counterparty cannot be replaced by an own signature or a differently priced bill", async () => {
+  const f = await billingFixture();
+  const local = await f.providerBilling.approve(f.actor, f.revisionId, f.draft);
+  await expect(
+    f.providerBilling.attachCounterparty(f.actor, f.revisionId, f.draft.billId, local.approvalJws),
+  ).rejects.toThrow();
+  const other = await signFederationMessage(
+    CommercialBillSchema,
+    { ...f.draft, calculation: { ...f.draft.calculation, dueAmount: "1" } },
+    f.source.signing,
+  );
+  await expect(
+    f.providerBilling.attachCounterparty(f.actor, f.revisionId, f.draft.billId, other),
+  ).rejects.toThrow("OPERATION_CONFLICT");
+  expect(
+    (await f.providerBilling.list(f.actor, f.revisionId, 10, 0)).data[0]?.bill.counterpartyJws,
+  ).toBeNull();
+});
+
+test("billing pending signature blocks later correction evidence until the original offer is resolved", async () => {
+  const f = await billingFixture("bilateral_attested");
+  await f.providerBilling.approve(f.actor, f.revisionId, f.draft);
+  await db
+    .update(federationCommercialSubmissions)
+    .set({ state: "committed" })
+    .where(eq(federationCommercialSubmissions.localSiteId, f.provider.signing.siteId));
+  await f.usage.correct(f.actor, f.revisionId, f.reservationId, {
+    reportId: randomUUID(),
+    correctionOf: f.draft.reportId,
+    reason: "Late sample",
+    measurements: [
+      {
+        ...commercialAutomaticMeters[0],
+        quantity: "1",
+        supportingEvidenceDigest: `sha256:${"a".repeat(64)}`,
+      },
+    ],
+  });
+  let calls = 0;
+  const worker = new FederationCommercialSubmissionService(db, f.provider.signing.siteId, {
+    prepare: async () => {
+      calls++;
+      throw new Error("Must preserve order");
+    },
+    advance: async () => {
+      calls++;
+      throw new Error("Must preserve order");
+    },
+  });
+  expect(await worker.advanceNext()).toBe(false);
+  expect(calls).toBe(0);
+  expect((await f.view()).reports).toHaveLength(2);
 });

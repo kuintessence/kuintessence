@@ -176,7 +176,7 @@ KQ_FABRIC_TOOLS=/path/to/verified/fabric-3.1.5 KQ_FABRIC_DATABASE_URL=postgres:/
 
 ## 账单确认与商务减免
 
-新增 `CommercialDiscount / RecordDiscount` 与 `CommercialBill / ConfirmBill`，共享计算入口为 `@kuintessence/shared/federation/billing`。当前交付协议、链码、生产 Adapter 和独立验收入口；Server 账单审批/交换、Web/CLI、扣款、退款和仲裁仍未接通，不能据此宣称已完成商务结算。现有 Server 数据库待办约束仍拒绝这两个新操作，待账单的本地持久审批接通后再通过生成迁移开放。
+新增 `CommercialDiscount / RecordDiscount` 与 `CommercialBill / ConfirmBill`，共享计算入口为 `@kuintessence/shared/federation/billing`。已交付协议、链码、生产 Adapter、Server 人工持久审批 API 和独立验收入口；自动交换、Web/CLI、扣款、退款和仲裁仍未接通，不能据此宣称已完成商务结算。Server 通过生成迁移 0138 开放两个新操作，只从保存原业务批准的事务入队，详情见下文。
 
 账单按原合同费率版本、委派、任务 attempt、原用量报告及其签名正文的原始字节摘要核算。金额使用最多 38 位的非负整数字符串；计算采用 BigInt，不经过浮点数。每个合同计费项必须有单位匹配的计量值，明确报告的零可计费，缺项不能按零处理。中间原始金额溢出会拒绝，即使封顶后金额较小也不会掩盖溢出。
 
@@ -189,3 +189,29 @@ KQ_FABRIC_TOOLS=/path/to/verified/fabric-3.1.5 KQ_FABRIC_DATABASE_URL=postgres:/
 双方业务密钥须显式配置 `commercial-bill`，提供方减免密钥须显式配置 `commercial-discount`；平台信任目录与链上商业 trust 的 keyPurposes 分别管理，旧用途不自动扩权。链码/集合/信任变更继续走原机构级治理批准。私有写入仍要求 `AND(A,B)` 原生背书，即便减免只有提供方业务签名也不降低集合背书策略。正文、金额与签名仅通过 `commercial` transient 到指定双方 Peer，普通参数只有域与记录 ID，返回仅 ID/摘要；C 和治理身份无权读取双方明细。集合备份同样必须按原成员范围保护。
 
 验证入口沿用 `bun run test:fabric:commercial`，新增真实减免/账单 VALID、金额复算、双签缺失拒绝、幂等重放、重复账单拒绝以及实际区块/PDC 隔离检查。它是隔离链码验收，不运行科学作业，也不代替双平台账单 UI 或真实付款验收。
+
+## Server 账单审批
+
+迁移 `0138` 增加本机构的不可变账单签署、独立减免记录和组织级 `billing.approve` 权限。该权限包含协议读取，允许签署账单/减免、导入提供方减免、登记账单对签和重试商务存证；不授予任务执行、合同修改、资金扣减或付款权限。原 `agreement.approve` 不自动获得账单审批权，平台管理员也必须显式被授予。签名用途仍单独要求 `commercial-bill` / `commercial-discount`，密钥用途不替代真人审批能力。
+
+所有以下接口要求真人会话、当前组织和本站联邦签名配置，返回 `Cache-Control: no-store`，拒绝 automation 调用。路径前缀为 `/api/federation/commercial-agreements/:revisionId`：
+
+| 接口 | 作用 |
+| --- | --- |
+| `POST /bills/draft` | 输入 `reportId`、调用方生成的 `billId`，可选 `discountId`；从本地原始委派和最新用量生成未签草稿 |
+| `POST /bills/approve` | 提交完整 `CommercialBill`；重新核对原文和金额并记录本机构签署 |
+| `POST /bills/:billId/counterparty` | 输入 `{approvalJws}`；核验对方对同一原文的签名，保存双方确认 |
+| `GET /bills?limit=50&offset=0` | 本组织账单、原签名及本机存证待办状态；来源机构没有本机待办不代表链上已确认 |
+| `POST /discounts/approve` | 提供方提交 `CommercialDiscount`，独立签署减免；不能在已签账单上追加改价 |
+| `POST /discounts/import` | 输入 `{providerJws}`；需求方验证并保存减免原文，导入本身不批准账单 |
+| `GET /discounts?limit=50&offset=0` | 读取本组织减免、签名及本机存证状态 |
+
+草稿不持久化、不会签署；重新生成会取得新时间和盐，因此已经签署后须传递并复用原账单正文，不能以同一 billId 重新拼装。提供方从执行绑定、终态 Workflow 和用量任务取原文，需求方从已接受委派、已验证终态与收到的用量取原文；各自与用量更正串行检查。草稿和首次批准必须使用本机最新报告；协调任务还要求本机已经保存原预留的双签终态。过期执行合同仍允许核对历史事实，新的签署密钥与组织能力须有效。
+
+建议操作顺序：提供方生成草稿；如需减免，先单独签署减免并由需求方导入，再为同一 billId 生成包含减免的最终草稿；双方分别批准同一份正文，再分别导入原对签。原始用量、减免、两份账单签名及审计均保留。相同请求重放不重复签署/审计；不同 billId 不能绕过同任务 attempt 的唯一约束。金额或身份变更拒绝，审计或待办写入失败会回滚本次审批。
+
+直接模式不创建链待办。异步和协调模式由提供方在保存对签的同一事务创建账单待办，双方的业务确认不等待 Fabric；协调模式的执行和资金门槛不因业务确认放宽。生产 worker 依次等待原合同、原用量、可选减免及协调终态的 VALID，再披露账单；披露前重新检查原批准和当前签名信任。读接口分别保留业务签名和 pending/committed/needs_review，不能把双方确认说成链 VALID 或已付款。
+
+技术更正不撤销已经发出的账单签名：对方可能已经接受原签名。已签账单仍可按原文补齐对签，随后更正作为独立记录保留；待存证更正会等待前一用量对应的已签账单提交，防止断链重连后顺序倒置。仅一方签署而长期无对签时，后续更正存证保留等待，原始更正已在本地保存，不影响其他任务的执行。当前尚无作废/调整/争议协议，不能删除该签名或擅自越过顺序；后续必须通过独立双方确认的解决记录解除。
+
+目前提供管理 API 和人工原签名传递。自动账单交换、自动审批策略、专用 Web/CLI、对端链状态同步、余额结算、支付回执、退款与仲裁尚待完成。数据库组件测试不等同于真实双平台 HTTP/mTLS/Fabric 联合验收。

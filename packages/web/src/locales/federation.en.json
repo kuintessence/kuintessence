@@ -180,6 +180,7 @@
       "desktopOnly": "Read-only on mobile. Change federation permissions on desktop.",
       "pagination": "Grant list pagination",
       "capabilities": {
+        "billing": { "approve": "Approve bills and discounts" },
         "agreement": {
           "read": "View agreements",
           "approve": "Approve agreements"
@@ -203,6 +204,9 @@
         }
       },
       "effects": {
+        "billing": {
+          "approve": "Approve bills and discounts, attach signatures and retry evidence submission; includes agreement reading, not payment or execution authority."
+        },
         "agreement": {
           "read": "Read this organization’s agreements and signatures; does not permit approval.",
           "approve": "Sign for this organization, attach counterparty signatures and change local agreement state; includes agreement reading. Platform roles do not automatically grant this authority."

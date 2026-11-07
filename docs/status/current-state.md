@@ -1,6 +1,8 @@
 # 当前功能与使用边界
 
-联邦商业协议新增独立减免与双签账单的共享精确核算、Fabric 私有链码和生产 Adapter：绑定原合同/任务/用量，明确取整、封顶与减免，拒绝重复确认且不修改资金余额。Server 账单审批/交换、Web/CLI 和实际结算仍待接通，数据库待办尚不开放这两个操作。52 个不同模块场景和真实 Fabric 3.1.5 的 13 项隔离验收已通过；不代表双平台账单流程或付款验收完成。详见[账单说明](../../deploy/federation/fabric-commercial.md#账单确认与商务减免)。
+Server 新增本组织账单与独立减免的持久人工审批 API（迁移 0138），要求独立 `billing.approve` 能力及专用签名用途；从原委派、终态和用量生成草稿，两端分别签署并导入同文对签。直接合作没有链待办，其余模式由提供方异步存证；签名、审计与待办同事务，保留账单先于后续用量更正的提交顺序。13 个新场景及 2 个相关既有场景通过隔离 PostgreSQL 验证；自动交换、专用 Web/CLI、实际结算和联合验收仍待完成。见[Server 账单审批](../../deploy/federation/fabric-commercial.md#server-账单审批)。
+
+联邦商业协议新增独立减免与双签账单的共享精确核算、Fabric 私有链码和生产 Adapter：绑定原合同/任务/用量，明确取整、封顶与减免，拒绝重复确认且不修改资金余额。Server 人工账单审批现已接通；自动交换、Web/CLI 和实际结算仍待完成。52 个不同模块场景和真实 Fabric 3.1.5 的 13 项隔离验收已通过；不代表双平台账单流程或付款验收完成。详见[账单说明](../../deploy/federation/fabric-commercial.md#账单确认与商务减免)。
 
 商业提交已增加同一业务意图的首次 MVCC 冲突核对：保留明确 INVALID，读取成员限定的 PDC 原回执，匹配后重新背书并等待新 VALID；缺失、不一致或再次冲突仍需人工复核。原意图、租约、信任与审计回滚检查已通过，真实 Fabric/PostgreSQL 已验证竞争 VALID、原 INVALID 11 和后台自动恢复的新 VALID，记录见[进度](../design/federation/progress.md#商业重复提交的-mvcc-自动核对)。该功能不处理业务争议或结算。配置见[冲突恢复](../../deploy/federation/fabric-commercial.md#相同业务意图的-mvcc-冲突恢复)。
 

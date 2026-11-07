@@ -4,6 +4,8 @@ import {
   federationCommercialExecutionApprovals as approvals,
   federationCommercialAttempts as attempts,
   auditLog,
+  federationCommercialBills as bills,
+  federationCommercialDiscounts as discounts,
   federationMarketSubmissions as marketSubmissions,
   type PgDb,
   type PgTransaction,
@@ -111,6 +113,18 @@ export class FederationCommercialSubmissionService {
                     AND predecessor.state = 'committed'
                 )
             )`,
+            // A signed offer may already be accepted by the peer; preserve bill-before-correction order.
+            sql`NOT EXISTS (
+              SELECT 1 FROM ${reports} correction JOIN ${bills} bill
+                ON bill.local_site_id = ${submissions.localSiteId}
+                AND bill.payload->>'reportId' = correction.report->>'correctionOf'
+              WHERE correction.id::text = ${submissions.input}->>'recordId'
+                AND ${submissions.input}->>'operation' = 'record-usage'
+                AND NOT EXISTS (SELECT 1 FROM ${submissions} confirmed
+                  WHERE confirmed.local_site_id = bill.local_site_id
+                    AND confirmed.input->>'operation' = 'confirm-bill'
+                    AND confirmed.input->>'recordId' = bill.bill_id::text AND confirmed.state = 'committed')
+            )`,
             sql`(${submissions.input}->>'operation' <> 'record-execution-terminal' OR EXISTS (
               SELECT 1 FROM ${terminals} terminal
               JOIN ${approvals} original ON original.local_site_id = terminal.local_site_id AND original.record_id = terminal.reservation_id
@@ -125,6 +139,31 @@ export class FederationCommercialSubmissionService {
                     AND reservation.input->>'operation' = 'reserve-execution'
                     AND reservation.input->>'recordId' = terminal.reservation_id::text
                     AND reservation.state = 'committed')
+            ))`,
+            sql`(${submissions.input}->>'operation' <> 'record-discount' OR EXISTS (
+              SELECT 1 FROM ${discounts} discount
+              JOIN ${submissions} usage ON usage.local_site_id = discount.local_site_id
+                AND usage.input->>'operation' = 'record-usage'
+                AND usage.input->>'recordId' = discount.payload->>'reportId' AND usage.state = 'committed'
+              WHERE discount.local_site_id = ${submissions.localSiteId}
+                AND discount.discount_id::text = ${submissions.input}->>'recordId'
+            ))`,
+            sql`(${submissions.input}->>'operation' <> 'confirm-bill' OR EXISTS (
+              SELECT 1 FROM ${bills} bill
+              JOIN ${submissions} usage ON usage.local_site_id = bill.local_site_id
+                AND usage.input->>'operation' = 'record-usage'
+                AND usage.input->>'recordId' = bill.payload->>'reportId' AND usage.state = 'committed'
+              WHERE bill.local_site_id = ${submissions.localSiteId}
+                AND bill.bill_id::text = ${submissions.input}->>'recordId' AND bill.counterparty_jws IS NOT NULL
+                AND (bill.payload->>'discount' IS NULL OR EXISTS (
+                  SELECT 1 FROM ${submissions} discount WHERE discount.local_site_id = bill.local_site_id
+                    AND discount.input->>'operation' = 'record-discount'
+                    AND discount.input->>'recordId' = bill.payload->'discount'->>'discountId' AND discount.state = 'committed'))
+                AND (bill.payload->>'reservationId' IS NULL OR EXISTS (
+                  SELECT 1 FROM ${terminals} terminal JOIN ${submissions} evidence ON evidence.local_site_id = terminal.local_site_id
+                    AND evidence.input->>'operation' = 'record-execution-terminal'
+                    AND evidence.input->>'recordId' = terminal.terminal_id::text AND evidence.state = 'committed'
+                  WHERE terminal.local_site_id = bill.local_site_id AND terminal.reservation_id::text = bill.payload->>'reservationId'))
             ))`,
             sql`${submissions.nextAttemptAt} <= clock_timestamp()`,
             sql`(${submissions.leaseToken} IS NULL OR ${submissions.leaseUntil} <= clock_timestamp())`,
@@ -404,6 +443,39 @@ export class FederationCommercialSubmissionService {
 
   private async beforeDisclosure(raw: CommercialAdapterProposalInput, tx?: PgTransaction) {
     const input = CommercialAdapterProposalInputSchema.parse(raw);
+    if (input.operation === "confirm-bill") {
+      const [bill] = await (tx ?? this.db)
+        .select()
+        .from(bills)
+        .where(and(eq(bills.localSiteId, this.siteId), eq(bills.billId, input.recordId)));
+      if (
+        !bill?.counterpartyJws ||
+        bill.digest !== input.digest ||
+        bill.payload.domainId !== input.domainId ||
+        bill.payload.request.recipientSiteId !== this.siteId ||
+        bill.approvalJws !== input.envelope.targetJws ||
+        bill.counterpartyJws !== input.envelope.sourceJws ||
+        bill.payload.request.senderSiteId !== input.envelope.sourceSiteId ||
+        input.envelope.targetSiteId !== this.siteId
+      )
+        throw new FederationError("POLICY_DENIED");
+    }
+    if (input.operation === "record-discount") {
+      const [discount] = await (tx ?? this.db)
+        .select()
+        .from(discounts)
+        .where(
+          and(eq(discounts.localSiteId, this.siteId), eq(discounts.discountId, input.recordId)),
+        );
+      if (
+        !discount ||
+        discount.digest !== input.digest ||
+        discount.payload.domainId !== input.domainId ||
+        discount.payload.targetSiteId !== this.siteId ||
+        discount.providerJws !== input.envelope.providerJws
+      )
+        throw new FederationError("POLICY_DENIED");
+    }
     if (input.operation === "record-execution-terminal") {
       const [local] = await (tx ?? this.db)
         .select()
@@ -521,7 +593,7 @@ export class FederationCommercialSubmissionService {
   }
   async retry(actor: FederationActor, revisionId: string, id: string) {
     return this.db.transaction(async (tx) => {
-      await requireFederationCapability(tx, actor, "agreement.approve");
+      await requireFederationCapability(tx, actor, "agreement.read");
       await this.authorize(tx, actor, revisionId);
       const [row] = await tx
         .select()
@@ -536,6 +608,13 @@ export class FederationCommercialSubmissionService {
         )
         .for("update");
       if (!row || row.state !== "needs_review") throw new FederationError("OPERATION_CONFLICT");
+      await requireFederationCapability(
+        tx,
+        actor,
+        ["confirm-bill", "record-discount"].includes(row.input.operation)
+          ? "billing.approve"
+          : "agreement.approve",
+      );
       const [attempt] = await this.latest(tx, id);
       if (attempt?.stage === "proposal")
         await tx

@@ -2,6 +2,8 @@ import { AppError, ErrorCode } from "@kuintessence/shared";
 import { FederationError } from "@kuintessence/shared/federation";
 import {
   CommercialAgreementSchema,
+  CommercialBillSchema,
+  CommercialDiscountSchema,
   CommercialExecutionApprovalSchema,
   CommercialReservationSchema,
   CommercialUsageCorrectionInputSchema,
@@ -12,6 +14,7 @@ import { FederationTerminalProposalSchema } from "@kuintessence/shared/federatio
 import { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { z } from "zod";
+import type { FederationBillingService } from "../federation/billing";
 import type { FederationCommercialAgreementService } from "../federation/commercial-agreements";
 import type { FederationCommercialApprovalExchange } from "../federation/commercial-approval-exchange";
 import type { FederationCommercialExecutionService } from "../federation/commercial-execution";
@@ -54,6 +57,7 @@ export function createFederationCommercialRoutes(
   reservationProposals?: FederationReservationProposalService,
   executionAutomation?: FederationExecutionAutomation,
   marketRequests?: FederationMarketRequestService,
+  billing?: FederationBillingService,
 ) {
   const r = new Hono<{ Variables: { federationActor: FederationActor } }>();
   r.use("/federation/commercial-agreements/*", async (c, next) => {
@@ -88,6 +92,118 @@ export function createFederationCommercialRoutes(
     limit: z.coerce.number().int().min(1).max(100).default(50),
     offset: z.coerce.number().int().min(0).default(0),
   });
+  if (billing) {
+    const path = "/federation/commercial-agreements/:revisionId/bills";
+    r.get(
+      "/federation/commercial-agreements/:revisionId/discounts",
+      kqValidator("param", id),
+      kqValidator("query", page),
+      async (c) => {
+        const { limit, offset } = c.req.valid("query");
+        return c.json({
+          data: await billing.listDiscounts(
+            c.get("federationActor"),
+            c.req.valid("param").revisionId,
+            limit,
+            offset,
+          ),
+        });
+      },
+    );
+    r.get(path, kqValidator("param", id), kqValidator("query", page), async (c) => {
+      const { limit, offset } = c.req.valid("query");
+      return c.json({
+        data: await billing.list(
+          c.get("federationActor"),
+          c.req.valid("param").revisionId,
+          limit,
+          offset,
+        ),
+      });
+    });
+    r.post(
+      `${path}/draft`,
+      kqValidator("param", id),
+      kqValidator(
+        "json",
+        z.strictObject({ reportId: z.uuid(), billId: z.uuid(), discountId: z.uuid().optional() }),
+      ),
+      async (c) => {
+        const input = c.req.valid("json");
+        return c.json({
+          data: await billing.draft(
+            c.get("federationActor"),
+            c.req.valid("param").revisionId,
+            input.reportId,
+            input.billId,
+            input.discountId,
+          ),
+        });
+      },
+    );
+    r.post(
+      `${path}/approve`,
+      kqValidator("param", id),
+      kqValidator("json", CommercialBillSchema),
+      async (c) =>
+        c.json(
+          {
+            data: await billing.approve(
+              c.get("federationActor"),
+              c.req.valid("param").revisionId,
+              c.req.valid("json"),
+            ),
+          },
+          201,
+        ),
+    );
+    r.post(
+      `${path}/:billId/counterparty`,
+      kqValidator("param", id.extend({ billId: z.uuid() })),
+      kqValidator("json", z.strictObject({ approvalJws: z.string().min(1).max(524288) })),
+      async (c) =>
+        c.json({
+          data: await billing.attachCounterparty(
+            c.get("federationActor"),
+            c.req.valid("param").revisionId,
+            c.req.valid("param").billId,
+            c.req.valid("json").approvalJws,
+          ),
+        }),
+    );
+    r.post(
+      "/federation/commercial-agreements/:revisionId/discounts/approve",
+      kqValidator("param", id),
+      kqValidator("json", CommercialDiscountSchema),
+      async (c) =>
+        c.json(
+          {
+            data: await billing.approveDiscount(
+              c.get("federationActor"),
+              c.req.valid("param").revisionId,
+              c.req.valid("json"),
+            ),
+          },
+          201,
+        ),
+    );
+    r.post(
+      "/federation/commercial-agreements/:revisionId/discounts/import",
+      kqValidator("param", id),
+      kqValidator("json", z.strictObject({ providerJws: z.string().min(1).max(524288) })),
+      async (c) =>
+        c.json(
+          {
+            data: await billing.importDiscount(
+              c.get("federationActor"),
+              c.req.valid("param").revisionId,
+              c.req.valid("json").providerJws,
+            ),
+          },
+          201,
+        ),
+    );
+  }
   if (marketRequests) {
     const path = "/federation/commercial-agreements/:revisionId/market-requests";
     r.get(path, kqValidator("param", id), kqValidator("query", page), async (c) => {

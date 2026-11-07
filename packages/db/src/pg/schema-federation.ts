@@ -23,6 +23,8 @@ import type {
 import type {
   CommercialAdapterProposalInput,
   CommercialAgreement,
+  CommercialBill,
+  CommercialDiscount,
   CommercialExecutionApproval,
   CommercialReservation,
   CommercialTerminal,
@@ -177,7 +179,7 @@ export const federationCapabilities = pgTable(
     primaryKey({ columns: [t.orgId, t.userId, t.capability] }),
     check(
       "federation_capability_kind",
-      sql`${t.capability} IN ('agreement.read', 'agreement.approve', 'asset.read', 'asset.map', 'delegation.read', 'delegation.submit', 'delegation.cancel', 'result.read', 'market.read', 'market.publish', 'market.claim')`,
+      sql`${t.capability} IN ('agreement.read', 'agreement.approve', 'billing.approve', 'asset.read', 'asset.map', 'delegation.read', 'delegation.submit', 'delegation.cancel', 'result.read', 'market.read', 'market.publish', 'market.claim')`,
     ),
   ],
 );
@@ -1089,6 +1091,91 @@ export const federationCommercialAgreements = pgTable(
   ],
 );
 
+/** Local business signatures are immutable; no payment or balance fields belong here. */
+export const federationCommercialBills = pgTable(
+  "federation_commercial_bills",
+  {
+    localSiteId: uuid("local_site_id").notNull(),
+    billId: uuid("bill_id").notNull(),
+    agreementRevisionId: uuid("agreement_revision_id").notNull(),
+    localOrgId: uuid("local_org_id")
+      .notNull()
+      .references(() => orgs.id),
+    taskId: uuid("task_id").notNull(),
+    attempt: integer("attempt").notNull(),
+    payload: jsonb("payload").$type<CommercialBill>().notNull(),
+    digest: varchar("digest", { length: 71 }).notNull(),
+    approvalJws: text("approval_jws").notNull(),
+    counterpartyJws: text("counterparty_jws"),
+    approvedBy: uuid("approved_by")
+      .notNull()
+      .references(() => users.id),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.localSiteId, t.billId] }),
+    foreignKey({
+      columns: [t.localSiteId, t.agreementRevisionId],
+      foreignColumns: [
+        federationCommercialAgreements.localSiteId,
+        federationCommercialAgreements.revisionId,
+      ],
+    }),
+    uniqueIndex("federation_bill_task_attempt").on(
+      t.localSiteId,
+      t.agreementRevisionId,
+      t.taskId,
+      t.attempt,
+    ),
+    index("federation_bill_org").on(t.localSiteId, t.localOrgId, t.createdAt),
+    check(
+      "federation_bill_identity",
+      sql`(${t.digest} ~ '^sha256:[a-f0-9]{64}$' AND ${t.attempt} > 0
+    AND ${t.payload}->>'kind' = 'commercial-bill' AND ${t.payload}->>'billId' = ${t.billId}::text
+    AND ${t.payload}->'request'->>'agreementRevisionId' = ${t.agreementRevisionId}::text
+    AND ${t.payload}->'request'->>'taskId' = ${t.taskId}::text AND ${t.payload}->'request'->>'attempt' = ${t.attempt}::text
+    AND (${t.payload}->'request'->>'senderSiteId' = ${t.localSiteId}::text OR ${t.payload}->'request'->>'recipientSiteId' = ${t.localSiteId}::text)) IS TRUE`,
+    ),
+  ],
+);
+
+export const federationCommercialDiscounts = pgTable(
+  "federation_commercial_discounts",
+  {
+    localSiteId: uuid("local_site_id").notNull(),
+    discountId: uuid("discount_id").notNull(),
+    agreementRevisionId: uuid("agreement_revision_id").notNull(),
+    localOrgId: uuid("local_org_id")
+      .notNull()
+      .references(() => orgs.id),
+    payload: jsonb("payload").$type<CommercialDiscount>().notNull(),
+    digest: varchar("digest", { length: 71 }).notNull(),
+    providerJws: text("provider_jws").notNull(),
+    recordedBy: uuid("recorded_by")
+      .notNull()
+      .references(() => users.id),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.localSiteId, t.discountId] }),
+    foreignKey({
+      columns: [t.localSiteId, t.agreementRevisionId],
+      foreignColumns: [
+        federationCommercialAgreements.localSiteId,
+        federationCommercialAgreements.revisionId,
+      ],
+    }),
+    index("federation_discount_org").on(t.localSiteId, t.localOrgId, t.createdAt),
+    check(
+      "federation_discount_identity",
+      sql`(${t.digest} ~ '^sha256:[a-f0-9]{64}$'
+    AND ${t.payload}->>'kind' = 'commercial-discount' AND ${t.payload}->>'discountId' = ${t.discountId}::text
+    AND ${t.payload}->>'agreementRevisionId' = ${t.agreementRevisionId}::text
+    AND (${t.payload}->>'sourceSiteId' = ${t.localSiteId}::text OR ${t.payload}->>'targetSiteId' = ${t.localSiteId}::text)) IS TRUE`,
+    ),
+  ],
+);
+
 export const federationCommercialSubmissions = pgTable(
   "federation_commercial_submissions",
   {
@@ -1124,7 +1211,7 @@ export const federationCommercialSubmissions = pgTable(
     ),
     check(
       "federation_commercial_submission_input",
-      sql`(${t.input}->>'operation' IN ('register-agreement','record-usage','reserve-execution','release-execution','record-execution-terminal') AND ${t.input}->>'recordId' IS NOT NULL AND ${t.input}->>'domainId' IS NOT NULL AND ${t.input}->>'digest' ~ '^sha256:[a-f0-9]{64}$') IS TRUE`,
+      sql`(${t.input}->>'operation' IN ('register-agreement','record-usage','reserve-execution','release-execution','record-execution-terminal','record-discount','confirm-bill') AND ${t.input}->>'recordId' IS NOT NULL AND ${t.input}->>'domainId' IS NOT NULL AND ${t.input}->>'digest' ~ '^sha256:[a-f0-9]{64}$') IS TRUE`,
     ),
     check(
       "federation_commercial_submission_lease",
