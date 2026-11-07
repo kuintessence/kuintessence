@@ -13,6 +13,8 @@ import {
   DataScanResultSchema,
   type DispatchJob,
   type FederationExecutionRequest,
+  type FederationResultCopyReport,
+  type FederationResultGrantRequest,
   FileTransferProgressSchema,
   GpuMetricSchema,
   HeartbeatSchema,
@@ -82,6 +84,10 @@ import { netdriveDeliveries } from "./data-market/netdrive-inputs";
 import { ExecutorPool } from "./embedded/executor-pool";
 import type { JobStatusReport } from "./embedded/job-executor";
 import { ExecutionAuthorization, ExecutionAuthorizationExpired } from "./execution-authorization";
+import {
+  FederationResultClient,
+  type FederationResultClientConfig,
+} from "./federation/result-client";
 import {
   buildCloudToClusterArgv,
   buildHostCloudToClusterArgv,
@@ -233,6 +239,8 @@ type OutboundItem =
       requestId: string;
       partNumbers: number[];
     }
+  | { kind: "federationResultGrantRequest"; request: FederationResultGrantRequest }
+  | { kind: "federationResultCopyReport"; report: FederationResultCopyReport }
   | { kind: "federationExecutionRequest"; request: FederationExecutionRequest }
   | {
       kind: "sandboxArtifactReleaseAck";
@@ -518,6 +526,7 @@ export function jobStatusReportToProto(report: JobStatusReport, eventId = ""): A
 // ---------------------------------------------------------------------------
 
 export interface AgentStreamDeps {
+  federationResultCopy?: FederationResultClientConfig;
   assertFederationRuntimeWatchdog?: () => Promise<void>;
   client: ServerClient;
   /**
@@ -701,6 +710,8 @@ function throwIfTransferAborted(signal: AbortSignal): void {
 export class AgentStream {
   private running = true;
   private connected = false;
+  private federationResultCopySupported = false;
+  private federationResultCopy?: FederationResultClient;
   private federationExecutionSupported = false;
   private federationInstallationSupported = false;
   private readonly recoveringFederationDispatches = new Map<
@@ -841,6 +852,21 @@ export class AgentStream {
   private heartbeatFollowUpRequested = false;
 
   constructor(private deps: AgentStreamDeps) {
+    if (deps.federationResultCopy)
+      this.federationResultCopy = new FederationResultClient(
+        deps.federationResultCopy,
+        (request) => {
+          if (!this.connected || !this.federationResultCopySupported) return false;
+          this.outboundQueue.push({ kind: "federationResultGrantRequest", request });
+          this.signalOutbound();
+          return true;
+        },
+        (report) => {
+          if (!this.connected || !this.federationResultCopySupported) return;
+          this.outboundQueue.push({ kind: "federationResultCopyReport", report });
+          this.signalOutbound();
+        },
+      );
     this.logger = deps.logger ?? createLogger("agent-stream");
     this.sleep = deps.sleep ?? ((ms) => Bun.sleep(ms));
     this.reconnectBackoffMs = deps.reconnectBackoffMs ?? 5_000;
@@ -1218,6 +1244,7 @@ export class AgentStream {
   stop(): Promise<void> {
     if (this.softwareOperationShutdown) return this.softwareOperationShutdown;
     this.running = false;
+    void this.federationResultCopy?.disconnect();
     this.lifecycleController.abort(new Error("agent shutdown"));
     for (const entry of this.federationRuntimes.values()) clearTimeout(entry.retry);
     this.currentStreamController?.abort(new Error("agent shutdown"));
@@ -1248,6 +1275,7 @@ export class AgentStream {
         await Promise.all([
           pending,
           this.schedulerRecovery,
+          this.federationResultCopy?.disconnect(),
           ...this.pendingSoftwareResultSpills,
           ...this.pendingSpackPreparations,
           ...this.pendingSpackLoadCleanups,
@@ -1972,6 +2000,7 @@ export class AgentStream {
             this.spackManager?.requireServerMaterials === true &&
             !!this.persistentQueue?.softwareOperations,
           managedDatasetRootIds: [...(this.deps.managedDatasetRootIds ?? [])],
+          federationResultCopyV1: !!this.federationResultCopy,
           federationExecutionV1: this.federationExecutionCapable(),
           federationComputeLeaseV1: this.federationExecutionCapable(),
           federationSandboxSignatureRenewalV1:
@@ -2179,6 +2208,15 @@ export class AgentStream {
                   partNumbers: item.partNumbers,
                 }),
               },
+            });
+          } else if (item.kind === "federationResultGrantRequest") {
+            if (this.federationResultCopy?.hasPending(item.request.requestId))
+              yield create(AgentMessageSchema, {
+                payload: { case: "federationResultGrantRequest", value: item.request },
+              });
+          } else if (item.kind === "federationResultCopyReport") {
+            yield create(AgentMessageSchema, {
+              payload: { case: "federationResultCopyReport", value: item.report },
             });
           } else if (item.kind === "federationExecutionRequest") {
             if (this.federationExecution.hasPending(item.request.requestId))
@@ -2620,6 +2658,8 @@ export class AgentStream {
             clearTimeout(registrationTimer);
             if (message.payload.value.accepted) {
               this.connected = true;
+              this.federationResultCopySupported =
+                message.payload.value.federationResultCopyV1Supported;
               this.federationExecutionSupported =
                 message.payload.value.federationExecutionV1Supported;
               this.federationInstallationSupported =
@@ -2669,6 +2709,8 @@ export class AgentStream {
         this.heartbeatPreparationAttempt = undefined;
       }
       this.connected = false;
+      this.federationResultCopySupported = false;
+      await this.federationResultCopy?.disconnect();
       this.federationExecutionSupported = false;
       this.federationInstallationSupported = false;
       this.federationExecution.disconnect();
@@ -2977,6 +3019,14 @@ export class AgentStream {
       return;
     }
 
+    if (payload.case === "federationResultCopy") {
+      if (this.federationResultCopySupported) this.federationResultCopy?.start(payload.value);
+      return;
+    }
+    if (payload.case === "federationResultGrantResponse") {
+      if (this.federationResultCopySupported) this.federationResultCopy?.receive(payload.value);
+      return;
+    }
     if (payload.case === "federationExecutionResponse") {
       this.federationExecution.receive(payload.value);
       return;

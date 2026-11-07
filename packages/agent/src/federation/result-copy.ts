@@ -4,39 +4,17 @@ import { isAbsolute, join, resolve } from "node:path";
 import {
   FederationResultCopyBindingSchema as BindingSchema,
   FederationDataOriginSchema,
-  FederationDigestSchema,
-  FederationResultReportSchema,
+  type FederationResultCopyBinding,
+  type FederationResultCopyGrant,
+  type FederationResultCopyTask,
   federationCanonicalJson,
+  FederationResultCopyGrantSchema as GrantSchema,
+  FederationResultCopyTaskSchema as TaskSchema,
 } from "@kuintessence/shared/federation";
-import { z } from "zod";
 import type { HttpClient } from "../staging/http-client";
 import { multipartUploadFromFile } from "../staging/multipart-upload-from-file";
 import { resumableDownload } from "../staging/resumable-download";
 
-const TaskSchema = z.strictObject({
-  transferId: z.uuid(),
-  generation: z.uuid(),
-  report: FederationResultReportSchema,
-  outputId: FederationDigestSchema,
-  path: z.string().min(1).max(255),
-  partSize: z
-    .number()
-    .int()
-    .min(5 * 1024 * 1024)
-    .max(5 * 1024 * 1024 * 1024),
-});
-export type FederationResultCopyTask = z.infer<typeof TaskSchema>;
-export type FederationResultCopyBinding = z.infer<typeof BindingSchema>;
-const GrantSchema = z
-  .strictObject({
-    binding: BindingSchema,
-    direction: z.enum(["download", "upload"]),
-    partNumber: z.number().int().min(1).max(10_000).optional(),
-    url: z.string().max(8192),
-    expiresAt: z.iso.datetime(),
-  })
-  .refine((v) => (v.direction === "upload") === (v.partNumber !== undefined));
-export type FederationResultCopyGrant = z.infer<typeof GrantSchema>;
 export class FederationResultCopyError extends Error {
   constructor(
     readonly code:
@@ -266,3 +244,9 @@ async function boundedAuthorization<T>(operation: Promise<T>, signal: AbortSigna
     signal.removeEventListener("abort", abort);
   }
 }
+
+export type {
+  FederationResultCopyBinding,
+  FederationResultCopyGrant,
+  FederationResultCopyTask,
+} from "@kuintessence/shared/federation";

@@ -387,3 +387,19 @@ test("federation result download origins default to closed and require clean HTT
       loadServerConfig({ ...VALID_BASE, FEDERATION_RESULT_DOWNLOAD_ORIGINS: value }),
     ).toThrow();
 });
+
+test("federation result import source origins stay independent of local download origins", () => {
+  expect(loadServerConfig(VALID_BASE).FEDERATION_RESULT_IMPORT_SOURCE_ORIGINS).toEqual([]);
+  const config = loadServerConfig({
+    ...VALID_BASE,
+    FEDERATION_RESULT_IMPORT_SOURCE_ORIGINS: "https://remote.example.org",
+  });
+  expect(config.FEDERATION_RESULT_IMPORT_SOURCE_ORIGINS).toEqual(["https://remote.example.org"]);
+  expect(config.FEDERATION_RESULT_DOWNLOAD_ORIGINS).toEqual([]);
+  expect(() =>
+    loadServerConfig({
+      ...VALID_BASE,
+      FEDERATION_RESULT_IMPORT_SOURCE_ORIGINS: "http://remote.example.org",
+    }),
+  ).toThrow();
+});

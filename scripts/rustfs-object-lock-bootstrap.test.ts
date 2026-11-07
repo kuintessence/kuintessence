@@ -189,3 +189,34 @@ describe("RustFS Object Lock bootstrap wiring", () => {
     expect(result.exitCode).not.toBe(0);
   });
 });
+
+test("result recovery IAM lists only its prefix and cannot delete ordinary NetDrive versions", async () => {
+  const script = await read("deploy/rustfs/bootstrap-object-lock.sh");
+  const policyText = script.split(`cat >"\${work_dir}/policy.json" <<EOF\n`)[1]?.split("\nEOF")[0];
+  if (!policyText) throw new Error("Missing generated IAM policy");
+  const policy = JSON.parse(policyText) as {
+    Statement: Array<{
+      Sid: string;
+      Effect: string;
+      Action: string | string[];
+      Resource: string | string[];
+      Condition?: unknown;
+    }>;
+  };
+  expect(
+    policy.Statement.find((statement) => statement.Sid === "ListFederationResultResidue"),
+  ).toMatchObject({
+    Action: ["s3:ListBucketMultipartUploads", "s3:ListBucketVersions"],
+    Resource: `arn:aws:s3:::\${netdrive_bucket}`,
+    Condition: { StringLike: { "s3:prefix": "federation-results/*" } },
+  });
+  expect(
+    policy.Statement.find((statement) => statement.Sid === "DeleteFederationResultVersions"),
+  ).toMatchObject({
+    Action: "s3:DeleteObjectVersion",
+    Resource: `arn:aws:s3:::\${netdrive_bucket}/federation-results/*`,
+  });
+  expect(
+    policy.Statement.find((statement) => statement.Sid === "DenyImmutableDeletes")?.Effect,
+  ).toBe("Deny");
+});

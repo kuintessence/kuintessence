@@ -9,6 +9,7 @@ services:
       FEDERATION_SIGNING_KEY_FILE: /run/kq-federation/signing.key
       FEDERATION_SOCKET_PATH: /run/kq-federation-socket/private/ingress.sock
       FEDERATION_RESULT_DOWNLOAD_ORIGINS: ${FEDERATION_RESULT_DOWNLOAD_ORIGINS:-}
+      FEDERATION_RESULT_IMPORT_SOURCE_ORIGINS: ${FEDERATION_RESULT_IMPORT_SOURCE_ORIGINS:-}
     volumes:
       - federation-socket:/run/kq-federation-socket
       - ${FEDERATION_SIGNING_KEY_FILE:?set private signing key file}:/run/kq-federation/signing.key:ro

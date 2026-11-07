@@ -111,6 +111,8 @@ message AgentMessage {
     JobWorkRootReleaseAck job_work_root_release_ack = 18;
     QueueValidationShadowRejection queue_validation_shadow_rejection = 19;
     FederationExecutionRequest federation_execution_request = 20;
+    FederationResultGrantRequest federation_result_grant_request = 21;
+    FederationResultCopyReport federation_result_copy_report = 22;
   }
   reserved 15;
 }
@@ -148,6 +150,8 @@ message ServerMessage {
     ReleaseJobWorkRoot release_job_work_root = 21;
     QueueValidationShadowRejectionAck queue_validation_shadow_rejection_ack = 22;
     FederationExecutionResponse federation_execution_response = 23;
+    FederationResultCopy federation_result_copy = 24;
+    FederationResultGrantResponse federation_result_grant_response = 25;
   }
 }
 
@@ -229,6 +233,7 @@ message RegisterRequest {
   // Renews material tickets and stops installation downloads on expired authority.
   bool federation_installation_material_lease_v1 = 29;
   bool federation_netdrive_input_lease_v1 = 30;
+  bool federation_result_copy_v1 = 31;
 }
 
 message RegisterResponse {
@@ -248,6 +253,7 @@ message RegisterResponse {
   bool queue_validation_shadow_rejection_ack_supported = 7;
   bool federation_execution_v1_supported = 8;
   bool federation_installation_v1_supported = 9;
+  bool federation_result_copy_v1_supported = 10;
 }
 
 // tags 7–10 carry extended monitoring + installed-software
@@ -1017,4 +1023,26 @@ message PartUrl {
 message PartUrlsResponse {
   string request_id = 1;
   repeated PartUrl urls = 2;
+}
+
+// JSON metadata uses the shared strict federation schemas. Never includes file bytes.
+message FederationResultCopy {
+  string task_json = 1; // At most 256 KiB.
+  int64 lease_expires_at_unix_ms = 2;
+}
+message FederationResultGrantRequest {
+  string request_id = 1;
+  string binding_json = 2; // At most 8 KiB.
+  bool upload = 3;
+  optional uint32 part_number = 4;
+}
+message FederationResultGrantResponse {
+  string request_id = 1;
+  string grant_json = 2; // Sensitive bearer credential; memory only. Empty means denied.
+  int64 lease_expires_at_unix_ms = 3;
+}
+message FederationResultCopyReport {
+  string generation = 1;
+  string copied_json = 2; // At most 4 MiB; metadata only, never a publication receipt.
+  bool failed = 3;
 }

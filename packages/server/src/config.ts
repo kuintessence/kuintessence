@@ -34,19 +34,22 @@ const ecosystemTrustedKeysSchema = z
     }
   });
 
+const federationStorageOrigins = z
+  .string()
+  .default("")
+  .transform((value) =>
+    value
+      .split(",")
+      .map((item) => item.trim())
+      .filter(Boolean),
+  )
+  .pipe(z.array(FederationDataOriginSchema).max(16));
+
 const ServerConfigSchema = z.object({
   DATABASE_URL: z.string().url(),
   FEDERATION_ENABLED: envBool(false),
-  FEDERATION_RESULT_DOWNLOAD_ORIGINS: z
-    .string()
-    .default("")
-    .transform((value) =>
-      value
-        .split(",")
-        .map((item) => item.trim())
-        .filter(Boolean),
-    )
-    .pipe(z.array(FederationDataOriginSchema).max(16)),
+  FEDERATION_RESULT_DOWNLOAD_ORIGINS: federationStorageOrigins,
+  FEDERATION_RESULT_IMPORT_SOURCE_ORIGINS: federationStorageOrigins,
   FEDERATION_SITE_ID: z.uuid().optional(),
   FEDERATION_SOCKET_PATH: z.string().min(1).optional(),
   FEDERATION_SIGNING_KEY_ID: z

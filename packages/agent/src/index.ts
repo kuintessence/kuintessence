@@ -558,6 +558,7 @@ async function main() {
 
   // Start bidirectional stream loop
   const stream = new AgentStream({
+    federationResultCopy: config.AGENT_FEDERATION_RESULT_COPY ?? undefined,
     client,
     clientFactory: () => createServerClient(config.SERVER_GRPC_URL, mtls, serverTransportLiveness),
     adapter,

@@ -8,11 +8,11 @@ import {
   type PgDb,
 } from "@kuintessence/db";
 import {
+  FederationResultCopiedSchema as CopiedSchema,
   FederationError,
   type FederationResultCopyBinding,
-  FederationResultCopyBindingSchema,
 } from "@kuintessence/shared/federation";
-import { and, asc, eq, gte, inArray, lte, ne } from "drizzle-orm";
+import { and, asc, eq, gte, inArray, lte, ne, or } from "drizzle-orm";
 import { z } from "zod";
 import { federationMaterialDigest } from "./assets";
 import { type FederationActor, requireFederationCapability } from "./permissions";
@@ -23,26 +23,6 @@ type Import = typeof federationResultImports.$inferSelect;
 type Transfer = typeof federationResultTransfers.$inferSelect;
 type Attempt = typeof federationResultAttempts.$inferSelect;
 const activeStates = ["preparing", "copying", "assembling", "verifying"];
-const CopiedSchema = z.strictObject({
-  binding: FederationResultCopyBindingSchema,
-  sizeBytes: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
-  sha256: z.string().regex(/^[a-f0-9]{64}$/),
-  parts: z
-    .array(
-      z.strictObject({
-        partNumber: z.number().int().min(1).max(10_000),
-        etag: z
-          .string()
-          .min(1)
-          .max(255)
-          .refine((value) =>
-            Array.from(value).every((c) => c.charCodeAt(0) >= 32 && c.charCodeAt(0) !== 127),
-          ),
-      }),
-    )
-    .min(1)
-    .max(10_000),
-});
 
 /** Durable ownership and attempt fencing; storage effects run outside these transactions. */
 export class FederationResultImports {
@@ -502,6 +482,100 @@ export class FederationResultImports {
         ),
       );
     return !!other;
+  }
+
+  async pending(onlineAgentIds: readonly string[], limit = 20) {
+    if (!onlineAgentIds.length) return [];
+    z.number().int().min(1).max(100).parse(limit);
+    return this.db
+      .select({ transferId: federationResultTransfers.id, agentId: agents.agentId })
+      .from(federationResultTransfers)
+      .innerJoin(
+        federationResultImports,
+        eq(federationResultImports.id, federationResultTransfers.importId),
+      )
+      .innerJoin(agents, eq(agents.providerOrgId, federationResultImports.localOrgId))
+      .where(
+        and(
+          eq(federationResultImports.localSiteId, this.siteId),
+          inArray(federationResultImports.state, ["pending", "transferring"]),
+          eq(federationResultTransfers.state, "pending"),
+          inArray(agents.agentId, [...onlineAgentIds]),
+          eq(agents.status, "online"),
+        ),
+      )
+      .orderBy(
+        asc(federationResultTransfers.createdAt),
+        asc(federationResultTransfers.id),
+        asc(agents.agentId),
+      )
+      .limit(limit);
+  }
+
+  async preparing(agentId: string, generation: string) {
+    return this.db.transaction(async (tx) => {
+      const rows = await this.lockAttempt(tx, generation);
+      await this.assertAttempt(tx, rows, agentId, "preparing");
+      return { ...rows, actor: this.actor(rows.parent) };
+    });
+  }
+
+  async cleanupCandidates(limit = 20) {
+    z.number().int().min(1).max(100).parse(limit);
+    // Revisit cleaned keys: an S3 create can finish after a lost response and a process crash.
+    return this.db
+      .select({ generation: federationResultAttempts.generation })
+      .from(federationResultAttempts)
+      .innerJoin(
+        federationResultTransfers,
+        eq(federationResultTransfers.id, federationResultAttempts.transferId),
+      )
+      .innerJoin(
+        federationResultImports,
+        eq(federationResultImports.id, federationResultTransfers.importId),
+      )
+      .where(
+        and(
+          eq(federationResultImports.localSiteId, this.siteId),
+          lte(federationResultAttempts.leaseUntil, this.clock()),
+          or(
+            eq(federationResultAttempts.state, "cleanup_pending"),
+            and(
+              eq(federationResultAttempts.state, "cleaned"),
+              lte(
+                federationResultAttempts.updatedAt,
+                new Date(this.clock().getTime() - 24 * 60 * 60_000),
+              ),
+            ),
+          ),
+        ),
+      )
+      .orderBy(asc(federationResultAttempts.updatedAt), asc(federationResultAttempts.generation))
+      .limit(limit);
+  }
+
+  async beginCleanup(generation: string) {
+    return this.db.transaction(async (tx) => {
+      const rows = await this.lockAttempt(tx, generation);
+      if (
+        !["cleanup_pending", "cleaned"].includes(rows.attempt.state) ||
+        rows.attempt.leaseUntil > this.clock()
+      )
+        throw new FederationError("OPERATION_CONFLICT");
+      await tx
+        .update(federationResultAttempts)
+        .set({ state: "cleanup_pending", updatedAt: this.clock() })
+        .where(eq(federationResultAttempts.generation, generation));
+      if (!(await this.hasOtherLiveAttempt(tx, rows.attempt)))
+        await tx
+          .update(federationResultTransfers)
+          .set({
+            state: rows.parent.state === "cancelled" ? "cancelled" : "cleanup_pending",
+            updatedAt: this.clock(),
+          })
+          .where(eq(federationResultTransfers.id, rows.transfer.id));
+      return { storageKey: rows.attempt.storageKey, uploadId: rows.attempt.uploadId };
+    });
   }
 
   private async lockTransfer(tx: FederationTransaction, transferId: string) {

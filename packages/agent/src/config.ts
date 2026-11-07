@@ -6,6 +6,7 @@ import {
   positiveInt,
   SchedulerTypeEnum,
 } from "@kuintessence/shared";
+import { FederationDataOriginSchema } from "@kuintessence/shared/federation";
 import { z } from "zod";
 import { SandboxRuntimeCacheConfigSchema } from "./sandbox/runtime-reference";
 import { isSpackAuditPath } from "./spack/audit-runtime";
@@ -81,6 +82,17 @@ function jsonConfig<T extends z.ZodType>(schema: T, fallback: string) {
 
 const AgentConfigSchema = z
   .object({
+    AGENT_FEDERATION_RESULT_COPY: jsonConfig(
+      z
+        .strictObject({
+          stagingRoot: dedicatedAbsolutePath("result staging root"),
+          maxStagingBytes: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+          allowedSourceOrigins: z.array(FederationDataOriginSchema).min(1).max(16),
+          allowedDestinationOrigins: z.array(FederationDataOriginSchema).min(1).max(16),
+        })
+        .nullable(),
+      "null",
+    ),
     SERVER_GRPC_URL: z.string().url(),
     AGENT_ID: z.string().min(1),
     AGENT_SITE_NAME: z.string().min(1),

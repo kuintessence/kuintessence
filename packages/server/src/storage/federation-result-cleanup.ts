@@ -1,0 +1,56 @@
+import { z } from "zod";
+
+const uuid = "[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}";
+const keyPattern = new RegExp(`^federation-results/${uuid}/${uuid}$`);
+const Upload = z.object({ key: z.string(), uploadId: z.string().min(1).max(2048) });
+const Version = z.object({ name: z.string(), versionId: z.string().min(1).max(2048).nullable() });
+export interface FederationResultCleanupClient {
+  listIncompleteUploads(bucket: string, prefix: string, recursive: boolean): AsyncIterable<unknown>;
+  listObjects(
+    bucket: string,
+    prefix: string,
+    recursive: boolean,
+    options: { IncludeVersion: boolean },
+  ): AsyncIterable<unknown>;
+  abortMultipartUpload(bucket: string, key: string, uploadId: string): Promise<unknown>;
+  removeObject(bucket: string, key: string, options: { versionId: string }): Promise<unknown>;
+}
+
+/** Requires the caller to fence the attempt first; never accepts a prefix or a public NetDrive key. */
+export async function cleanupFederationResultKey(
+  client: FederationResultCleanupClient,
+  bucket: string,
+  key: string,
+) {
+  if (!keyPattern.test(key)) throw new Error("INVALID_FEDERATION_STORAGE_KEY");
+  const uploads = async () => {
+    const found: string[] = [];
+    let count = 0;
+    for await (const raw of client.listIncompleteUploads(bucket, key, true)) {
+      if (++count > 1000) throw new Error("CLEANUP_SCAN_LIMIT");
+      const item = Upload.parse(raw);
+      if (item.key === key) found.push(item.uploadId);
+    }
+    return found;
+  };
+  const versions = async () => {
+    const found: string[] = [];
+    let count = 0;
+    for await (const raw of client.listObjects(bucket, key, true, { IncludeVersion: true })) {
+      if (++count > 1000) throw new Error("CLEANUP_SCAN_LIMIT");
+      const item = Version.parse(raw);
+      if (item.name === key) found.push(item.versionId ?? "null");
+    }
+    return found;
+  };
+  try {
+    for (const uploadId of await uploads())
+      await client.abortMultipartUpload(bucket, key, uploadId);
+    // Explicit versions also remove delete markers instead of creating another marker.
+    for (const versionId of await versions()) await client.removeObject(bucket, key, { versionId });
+    if ((await uploads()).length || (await versions()).length) throw new Error("CLEANUP_NOT_EMPTY");
+  } catch {
+    // SDK errors can contain signed URLs, bucket names or credentials.
+    throw new Error("FEDERATION_STORAGE_CLEANUP_INCOMPLETE");
+  }
+}

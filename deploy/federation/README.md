@@ -29,7 +29,8 @@ Server 设置：
 | `FEDERATION_SIGNING_KEY_ID` | 本地登记中的签名公钥 ID |
 | `FEDERATION_SIGNING_KEY_FILE` | 专用 RSA PKCS#8 PEM 私钥路径，至少 2048 位，文件 0600 |
 | `FEDERATION_SOCKET_PATH` | 私有 Unix socket 绝对路径 |
-| `FEDERATION_RESULT_DOWNLOAD_ORIGINS` | 接收机构允许签发下载地址的 HTTPS 存储 origin，逗号分隔；默认空，禁用下载授权 |
+| `FEDERATION_RESULT_DOWNLOAD_ORIGINS` | 本机构存储的 HTTPS origin，逗号分隔；用于结果下载和本端上传地址验证，默认空 |
+| `FEDERATION_RESULT_IMPORT_SOURCE_ORIGINS` | 导入结果允许访问的对端存储 HTTPS origin，逗号分隔；默认空，不启用 Agent 结果传输服务 |
 
 Gateway 设置 `FEDERATION_TLS_CA_FILE`、`FEDERATION_TLS_CERT_FILE`、`FEDERATION_TLS_KEY_FILE`、`FEDERATION_SOCKET_PATH`、`FEDERATION_TLS_PORT`。服务端证书须含正确 DNS SAN 和 serverAuth；机构客户端证书须含 clientAuth。CA 信任与本站证书登记都要满足；仅持有某受信任 CA 签发的证书仍不能接单。JWS 私钥和 TLS 私钥分别管理，均不进入镜像、仓库或 seed。
 
@@ -174,3 +175,9 @@ Server 另行配置 `FEDERATION_CLIENT_CERT_FILE`、`FEDERATION_CLIENT_KEY_FILE`
 带 pin 的 Job 命令为不可直接运行科学软件的 `exit 126` 占位，只有新 Agent 完整检查 pin 后才生成实际命令；旧工作流的 `exit 125` 行为保留。应同时升级 Server 和 Agent：旧 Agent 不执行带 pin 的任务，连接降级时已持久化指令保持等待，不删除 pin 重试。
 
 目前联邦环境清单还没有接通该内部 pin 的构造与自动安装绑定。这项能力不意味着 native lock 已导入、联邦任务可执行，或已有一次真实离线安装验收。
+
+结果存储协调器尚未挂入生产后台。准备接线的存储角色需要 `s3:GetObjectVersion` 读取 netdrive 与 federation-results 固定版本，并需要仅限 `federation-results/*` 的 `s3:ListBucketMultipartUploads`、`s3:ListBucketVersions` 及 `s3:DeleteObjectVersion`。仓库 RustFS 和 Helm 初始化脚本已同步更新；外部 S3 需由存储管理员配置等效权限。不要扩大普通云盘历史版本的删除权限或取消不可变存储的显式删除拒绝。真实 RustFS 已验证该边界，不能据此假定所有兼容 S3 实现均具有相同策略行为。
+
+Agent 结果搬运配置默认关闭。`AGENT_FEDERATION_RESULT_COPY` 是 JSON，例如 `{"stagingRoot":"/var/lib/kq/result-staging","maxStagingBytes":1073741824,"allowedSourceOrigins":["https://remote-storage.example.org"],"allowedDestinationOrigins":["https://local-storage.example.org"]}`。暂存路径须是 Agent 用户独占的绝对目录（0700，无符号链接），需要完整单文件空间；容量是文件上限，不是已验证支持 TB 级搬运。当前运行结果不跨进程续传。双方服务都需升级以协商新能力，Agent 到 Server 必须通过 mTLS；缺失任一条件不派发。
+
+Server 已构造结果传输服务并接 Agent RPC，但自动扫描 worker 尚未启动。配置上述值不会让 pending 导入自动完成；仍需补充分片完成、目的字节校验和整单发布，不能据此宣布离线包或联邦结果已交付。

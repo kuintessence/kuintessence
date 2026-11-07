@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
+import { create } from "@bufbuild/protobuf";
 import {
   agents,
   auditLog,
@@ -33,6 +34,11 @@ import {
   workflowArtifacts,
   workflowRuns,
 } from "@kuintessence/db";
+import {
+  FederationResultCopyReportSchema,
+  FederationResultGrantRequestSchema,
+  type ServerMessage,
+} from "@kuintessence/proto";
 import { workflowDsl } from "@kuintessence/shared";
 import {
   FederationAcceptanceSchema,
@@ -50,6 +56,7 @@ import {
 import { and, eq, inArray } from "drizzle-orm";
 import { Hono } from "hono";
 import { exportSPKI } from "jose";
+import { AgentDispatcher } from "../grpc/dispatcher";
 import { createFederationOutboundRoutes } from "../routes/federation-outbound";
 import { artifactBatchHash } from "../services/artifact-members";
 import { WorkflowAsyncRunner } from "../workflow/async-runner";
@@ -64,6 +71,8 @@ import { FederationDeliveryError, type FederationSend } from "./outbound-client"
 import { FederationPermissionService } from "./permissions";
 import { FederationPreparationService } from "./preparation";
 import { FederationResultImports } from "./result-imports";
+import { FederationResultStorage } from "./result-storage";
+import { FederationResultTransport } from "./result-transport";
 import { type FederationResultDownloadStorage, FederationResultResponder } from "./results";
 import { signFederationMessage, verifyFederationMessage } from "./signatures";
 import { FederationStatusResponder } from "./status";
@@ -1854,4 +1863,274 @@ test("result imports accept only an identical copied receipt replay and cap each
   time = new Date(time.getTime() + 120_001);
   await f.imports.storageCleaned(first.attempt.generation);
   expect((await second.imports.begin(second.member.id, f.agentId)).attempt.agentId).toBe(f.agentId);
+});
+
+async function resultStorageFixture() {
+  const f = await resultImportFixture();
+  const signedUrl = (origin: string, seconds: number) => {
+    const url = new URL(`${origin}/opaque-object`);
+    url.searchParams.set(
+      "X-Amz-Date",
+      clock()
+        .toISOString()
+        .replace(/[-:]/g, "")
+        .replace(/\.\d{3}/, ""),
+    );
+    url.searchParams.set("X-Amz-Expires", String(seconds));
+    url.searchParams.set("X-Amz-Signature", "private-storage-ticket");
+    return url;
+  };
+  const downloads: FederationResultDownloadStorage = {
+    allowedOrigins: ["https://source-storage.test.invalid"],
+    storage: {
+      head: async () => ({
+        size: 3,
+        etag: "source-etag",
+        versionId: "one",
+        contentType: "text/plain",
+        lastModified: clock(),
+      }),
+      presignDownload: async (_key, seconds) =>
+        signedUrl("https://source-storage.test.invalid", seconds).toString(),
+    },
+  };
+  const reader = f.service((_endpoint, jws) =>
+    f.responder.receiveDownload(jws, sourceFingerprint, downloads),
+  ).results;
+  const uploads = new Map<string, string>();
+  const purged: string[] = [];
+  const quota: { owner: string; path: string; size: number }[] = [];
+  const storage = {
+    createMultipartUpload: async (key: string, _contentType: string) => {
+      const uploadId = crypto.randomUUID();
+      uploads.set(key, uploadId);
+      return { uploadId };
+    },
+    presignUploadPart: async (
+      _key: string,
+      uploadId: string,
+      partNumber: number,
+      seconds: number,
+    ) => {
+      const url = signedUrl("https://destination-storage.test.invalid", seconds);
+      url.searchParams.set("uploadId", uploadId);
+      url.searchParams.set("partNumber", String(partNumber));
+      return url.toString();
+    },
+    cleanupFederationResult: async (key: string) => {
+      purged.push(key);
+      uploads.delete(key);
+    },
+  };
+  const options = {
+    sourceOrigins: downloads.allowedOrigins,
+    destinationOrigins: ["https://destination-storage.test.invalid"],
+    clock,
+    quotaGuard: async (owner: string, path: string, size: number) => {
+      quota.push({ owner, path, size });
+    },
+    timeoutMs: 5000,
+  };
+  const bridge = new FederationResultStorage(f.imports, reader, storage, options);
+  return { ...f, storage, bridge, uploads, purged, quota, options, reader };
+}
+
+test("result storage binds both credentials to the current copy and preserves cleanup after failure", async () => {
+  const f = await resultStorageFixture();
+  const allocated = await f.bridge.allocate(f.member.id, f.agentId);
+  const binding = f.bindingFor(allocated.task.generation);
+  expect(f.quota).toEqual([
+    { owner: actor.userId, path: `federation-results/${f.imported.id}`, size: 3 },
+  ]);
+  const download = await f.bridge.grant(f.agentId, binding, "download");
+  expect(download.grant).toMatchObject({ binding, direction: "download" });
+  const upload = await f.bridge.grant(f.agentId, binding, "upload", 1);
+  expect(upload.grant).toMatchObject({ binding, direction: "upload", partNumber: 1 });
+  expect(new URL(upload.grant.url).searchParams.get("uploadId")).toBe(
+    [...f.uploads.values()][0] ?? null,
+  );
+  await expect(f.bridge.grant(f.agentId, binding, "upload", 2)).rejects.toThrow("INVALID_MESSAGE");
+  await expect(f.bridge.grant("other-agent", binding, "download")).rejects.toThrow(
+    "OPERATION_CONFLICT",
+  );
+  await f.imports.failed(f.agentId, binding.generation, "COPY_FAILED");
+  expect(await f.bridge.cleanup()).toBe(0);
+  time = new Date(time.getTime() + 120_001);
+  expect(await f.bridge.cleanup()).toBeGreaterThanOrEqual(1);
+  expect(f.uploads.size).toBe(0);
+  expect((await f.imports.get(actor, f.imported.id)).members[0]?.state).toBe("pending");
+  expect(f.purged.some((key) => key.endsWith(binding.generation))).toBe(true);
+});
+
+test("result storage does not release credentials after cancellation or for another S3 multipart target", async () => {
+  const f = await resultStorageFixture();
+  const allocated = await f.bridge.allocate(f.member.id, f.agentId);
+  const binding = f.bindingFor(allocated.task.generation);
+  const presign = f.storage.presignUploadPart;
+  f.storage.presignUploadPart = async (...args) =>
+    (await presign(...args)).replace("partNumber=1", "partNumber=2");
+  await expect(f.bridge.grant(f.agentId, binding, "upload", 1)).rejects.toThrow("INVALID_MESSAGE");
+  f.storage.presignUploadPart = async (...args) => {
+    const url = await presign(...args);
+    await f.imports.cancel(actor, f.imported.id);
+    return url;
+  };
+  await expect(f.bridge.grant(f.agentId, binding, "upload", 1)).rejects.toThrow(
+    "OPERATION_CONFLICT",
+  );
+  expect(f.uploads.size).toBe(1);
+});
+
+test("result storage keeps late allocation IDs after timeout and rechecks cleaned keys for lost side effects", async () => {
+  const f = await resultStorageFixture();
+  f.options.timeoutMs = 50;
+  let release!: () => void;
+  const waiting = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const allocate = f.storage.createMultipartUpload;
+  f.storage.createMultipartUpload = async (...args) => {
+    await waiting;
+    return allocate(...args);
+  };
+  await expect(f.bridge.allocate(f.member.id, f.agentId)).rejects.toThrow(
+    "FEDERATION_RESULT_STORAGE_UNAVAILABLE",
+  );
+  const [attempt] = await db
+    .select()
+    .from(federationResultAttempts)
+    .where(eq(federationResultAttempts.transferId, f.member.id));
+  if (!attempt) throw new Error("Expected durable cleanup identity");
+  expect(attempt.state).toBe("cleanup_pending");
+  release();
+  for (let i = 0; i < 50; i++) {
+    const [saved] = await db
+      .select()
+      .from(federationResultAttempts)
+      .where(eq(federationResultAttempts.generation, attempt.generation));
+    if (saved?.uploadId) break;
+    await Bun.sleep(5);
+  }
+  const [late] = await db
+    .select()
+    .from(federationResultAttempts)
+    .where(eq(federationResultAttempts.generation, attempt.generation));
+  expect(late?.uploadId).toBe([...f.uploads.values()][0] ?? null);
+  expect(late?.state).toBe("cleanup_pending");
+  time = new Date(time.getTime() + 120_001);
+  await f.bridge.cleanup();
+  expect(f.uploads.size).toBe(0);
+  f.uploads.set(attempt.storageKey, "orphan-from-a-lost-response");
+  time = new Date(time.getTime() + 24 * 60 * 60_000 + 1);
+  await f.bridge.cleanup();
+  expect(f.uploads.size).toBe(0);
+  expect(f.purged.filter((key) => key === attempt.storageKey)).toHaveLength(2);
+});
+
+test("result storage quota rejection creates no upload and failed cleanup cannot release retry eligibility", async () => {
+  const f = await resultStorageFixture();
+  const bridge = new FederationResultStorage(f.imports, f.reader, f.storage, {
+    ...f.options,
+    quotaGuard: async () => {
+      throw new Error("quota");
+    },
+  });
+  await expect(bridge.allocate(f.member.id, f.agentId)).rejects.toThrow(
+    "FEDERATION_RESULT_STORAGE_UNAVAILABLE",
+  );
+  expect(f.uploads.size).toBe(0);
+  time = new Date(time.getTime() + 120_001);
+  f.storage.cleanupFederationResult = async () => {
+    throw new Error("https://private.test/?secret=credential");
+  };
+  expect(await bridge.cleanup()).toBe(0);
+  expect((await f.imports.get(actor, f.imported.id)).members[0]?.state).toBe("cleanup_pending");
+  await expect(f.imports.begin(f.member.id, f.agentId)).rejects.toThrow("OPERATION_CONFLICT");
+});
+
+test("result transport dispatches only to authenticated capable Agents and binds grants and reports to the leased file", async () => {
+  const f = await resultStorageFixture();
+  const dispatcher = new AgentDispatcher();
+  const messages: ServerMessage[] = [];
+  const channel = {
+    push: (message: ServerMessage) => {
+      messages.push(message);
+    },
+    close: () => {},
+    federationResultCopyV1: false,
+    verifiedCertFingerprint: undefined as string | undefined,
+  };
+  dispatcher.register(f.agentId, channel);
+  const transport = new FederationResultTransport(f.imports, f.bridge, dispatcher);
+  expect(await transport.dispatch(f.member.id, f.agentId)).toBe(false);
+  channel.federationResultCopyV1 = true;
+  expect(await transport.dispatch(f.member.id, f.agentId)).toBe(false);
+  expect(f.uploads.size).toBe(0);
+  channel.verifiedCertFingerprint = "verified";
+  expect(await transport.dispatch(f.member.id, f.agentId)).toBe(true);
+  const message = messages[0];
+  if (message?.payload.case !== "federationResultCopy") throw new Error("Missing copy dispatch");
+  const task = JSON.parse(message.payload.value.taskJson);
+  const binding = f.bindingFor(task.generation);
+  const request = create(FederationResultGrantRequestSchema, {
+    requestId: crypto.randomUUID(),
+    bindingJson: JSON.stringify(binding),
+    upload: true,
+    partNumber: 1,
+  });
+  await expect(transport.grant("other-agent", request)).rejects.toThrow("OPERATION_CONFLICT");
+  expect(JSON.parse((await transport.grant(f.agentId, request)).grantJson)).toMatchObject({
+    binding,
+    direction: "upload",
+    partNumber: 1,
+  });
+  const copied = {
+    binding,
+    sizeBytes: 3,
+    sha256: binding.sha256,
+    parts: [{ partNumber: 1, etag: "copied-part" }],
+  };
+  await expect(
+    transport.report(
+      f.agentId,
+      create(FederationResultCopyReportSchema, {
+        generation: crypto.randomUUID(),
+        copiedJson: JSON.stringify(copied),
+      }),
+    ),
+  ).rejects.toThrow("INVALID_MESSAGE");
+  await transport.report(
+    f.agentId,
+    create(FederationResultCopyReportSchema, {
+      generation: task.generation,
+      copiedJson: JSON.stringify(copied),
+    }),
+  );
+  expect((await f.imports.get(actor, f.imported.id)).members[0]?.state).toBe("assembling");
+  expect((await f.imports.get(actor, f.imported.id)).state).not.toBe("available");
+});
+
+test("result transport retains cleanup if the Agent reconnects during upload allocation", async () => {
+  const f = await resultStorageFixture();
+  const dispatcher = new AgentDispatcher();
+  let pushes = 0;
+  const channel = {
+    push: () => {
+      pushes++;
+    },
+    close: () => {},
+    federationResultCopyV1: true,
+    verifiedCertFingerprint: "verified",
+  };
+  dispatcher.register(f.agentId, channel);
+  const allocate = f.storage.createMultipartUpload;
+  f.storage.createMultipartUpload = async (...args) => {
+    dispatcher.register(f.agentId, { ...channel });
+    return allocate(...args);
+  };
+  const transport = new FederationResultTransport(f.imports, f.bridge, dispatcher);
+  expect(await transport.dispatch(f.member.id, f.agentId)).toBe(false);
+  expect(pushes).toBe(0);
+  expect(f.uploads.size).toBe(1);
+  expect((await f.imports.get(actor, f.imported.id)).members[0]?.state).toBe("cleanup_pending");
 });

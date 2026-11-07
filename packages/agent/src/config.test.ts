@@ -27,6 +27,26 @@ describe("loadAgentConfig", () => {
     expect(cfg.AGENT_K8S_DEFAULT_IMAGE).toBe("busybox:latest");
   });
 
+  test("result copy defaults off and requires private staging capacity and explicit HTTPS origins", () => {
+    expect(loadAgentConfig(baseEnv).AGENT_FEDERATION_RESULT_COPY).toBeNull();
+    const settings = {
+      stagingRoot: "/var/lib/kq/result-staging",
+      maxStagingBytes: 1024,
+      allowedSourceOrigins: ["https://source.invalid"],
+      allowedDestinationOrigins: ["https://target.invalid"],
+    };
+    const load = (value: unknown) =>
+      loadAgentConfig({ ...baseEnv, AGENT_FEDERATION_RESULT_COPY: JSON.stringify(value) });
+    expect(load(settings).AGENT_FEDERATION_RESULT_COPY).toEqual(settings);
+    for (const invalid of [
+      { ...settings, stagingRoot: "/" },
+      { ...settings, maxStagingBytes: 0 },
+      { ...settings, allowedSourceOrigins: [] },
+      { ...settings, allowedDestinationOrigins: ["http://target.invalid"] },
+    ])
+      expect(() => load(invalid)).toThrow();
+  });
+
   test("coerces HEARTBEAT_INTERVAL_SEC from string", () => {
     const cfg = loadAgentConfig({ ...baseEnv, HEARTBEAT_INTERVAL_SEC: "60" });
     expect(cfg.HEARTBEAT_INTERVAL_SEC).toBe(60);

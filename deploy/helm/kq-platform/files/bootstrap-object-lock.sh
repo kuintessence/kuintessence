@@ -152,6 +152,25 @@ cat >"${work_dir}/policy.json" <<EOF
       ]
     },
     {
+      "Sid": "ReadNetDriveObjectVersions",
+      "Effect": "Allow",
+      "Action": "s3:GetObjectVersion",
+      "Resource": ["arn:aws:s3:::${netdrive_bucket}/netdrive/*", "arn:aws:s3:::${netdrive_bucket}/federation-results/*"]
+    },
+    {
+      "Sid": "ListFederationResultResidue",
+      "Effect": "Allow",
+      "Action": ["s3:ListBucketMultipartUploads", "s3:ListBucketVersions"],
+      "Resource": "arn:aws:s3:::${netdrive_bucket}",
+      "Condition": {"StringLike": {"s3:prefix": "federation-results/*"}}
+    },
+    {
+      "Sid": "DeleteFederationResultVersions",
+      "Effect": "Allow",
+      "Action": "s3:DeleteObjectVersion",
+      "Resource": "arn:aws:s3:::${netdrive_bucket}/federation-results/*"
+    },
+    {
       "Sid": "ReadImmutableBucketControls",
       "Effect": "Allow",
       "Action": [

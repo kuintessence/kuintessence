@@ -3,10 +3,24 @@ import { createHash } from "node:crypto";
 import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { create } from "@bufbuild/protobuf";
+import {
+  AgentMessageSchema,
+  type FederationResultCopyReport,
+  FederationResultCopySchema,
+  type FederationResultGrantRequest,
+  FederationResultGrantResponseSchema,
+  RegisterResponseSchema,
+  type ServerMessage,
+  ServerMessageSchema,
+} from "@kuintessence/proto";
 import {
   FederationResultReportSchema,
   federationCanonicalJson,
 } from "@kuintessence/shared/federation";
+import pino from "pino";
+import { AgentStream, type AgentStreamDeps } from "../stream";
+import { FederationResultClient } from "./result-client";
 import {
   copyFederationResultFile,
   FederationResultCopyError,
@@ -282,4 +296,196 @@ test("empty outputs still require a source grant; cancellation also bounds a sta
   expect(sourceRequests).toBe(0);
   expect(targetRequests).toBe(0);
   expect(await readdir(waiting.options.stagingRoot)).toEqual([]);
+});
+
+test("result transport client copies real HTTPS bytes, ignores duplicate dispatch and rejects a concurrent generation", async () => {
+  const f = fixture(Buffer.alloc(1024 + 3, 7));
+  const complete = Promise.withResolvers<FederationResultCopyReport>();
+  const failures: string[] = [];
+  const client = new FederationResultClient(
+    f.options,
+    (request) => {
+      void f.options
+        .authorize(
+          JSON.parse(request.bindingJson),
+          request.upload ? "upload" : "download",
+          request.partNumber,
+          new AbortController().signal,
+        )
+        .then((grant) =>
+          client.receive(
+            create(FederationResultGrantResponseSchema, {
+              requestId: request.requestId,
+              grantJson: JSON.stringify(grant),
+              leaseExpiresAtUnixMs: BigInt(
+                Date.parse(f.options.task.report.manifest.availableUntil),
+              ),
+            }),
+          ),
+        );
+      return true;
+    },
+    (report) => {
+      if (report.failed) failures.push(report.generation);
+      else complete.resolve(report);
+    },
+    (options) => copyFederationResultFile({ ...options, fetcher: f.options.fetcher }),
+  );
+  const command = create(FederationResultCopySchema, {
+    taskJson: JSON.stringify(f.options.task),
+    leaseExpiresAtUnixMs: BigInt(Date.now() + 90_000),
+  });
+  try {
+    client.start(command);
+    client.start(command);
+    const competing = crypto.randomUUID();
+    client.start(
+      create(FederationResultCopySchema, {
+        ...command,
+        taskJson: JSON.stringify({ ...f.options.task, generation: competing }),
+      }),
+    );
+    const report = await complete.promise;
+    const receipt = JSON.parse(report.copiedJson);
+    expect(failures).toEqual([competing]);
+    expect(receipt.sizeBytes).toBe(content.length);
+    expect(received.get(1)).toEqual(content);
+    expect(receipt.sha256).toBe(hash(content));
+    expect(report.copiedJson).not.toContain("secret=");
+    expect(await readdir(f.options.stagingRoot)).toEqual([]);
+  } finally {
+    await client.disconnect();
+  }
+});
+
+test("result transport client stops on disconnect or lease expiry and discards late grants", async () => {
+  for (const cause of ["disconnect", "expiry", "wrong-binding"] as const) {
+    const f = fixture();
+    const requested = Promise.withResolvers<FederationResultGrantRequest>();
+    const finished = Promise.withResolvers<FederationResultCopyReport>();
+    const client = new FederationResultClient(
+      f.options,
+      (request) => {
+        requested.resolve(request);
+        return true;
+      },
+      (report) => finished.resolve(report),
+      (options) => copyFederationResultFile({ ...options, fetcher: f.options.fetcher }),
+    );
+    client.start(
+      create(FederationResultCopySchema, {
+        taskJson: JSON.stringify(f.options.task),
+        leaseExpiresAtUnixMs: BigInt(Date.now() + (cause === "expiry" ? 200 : 60_000)),
+      }),
+    );
+    const request = await requested.promise;
+    const grant = await f.options.authorize(
+      JSON.parse(request.bindingJson),
+      "download",
+      undefined,
+      new AbortController().signal,
+    );
+    const response = create(FederationResultGrantResponseSchema, {
+      requestId: request.requestId,
+      grantJson: JSON.stringify(grant),
+      leaseExpiresAtUnixMs: BigInt(Date.now() + 90_000),
+    });
+    try {
+      if (cause === "disconnect") await client.disconnect();
+      if (cause === "wrong-binding") {
+        grant.binding.generation = crypto.randomUUID();
+        response.grantJson = JSON.stringify(grant);
+        client.receive(response);
+      }
+      expect((await finished.promise).failed).toBe(true);
+      expect(client.hasPending(request.requestId)).toBe(false);
+      client.receive(response);
+      expect(sourceRequests).toBe(0);
+      expect(targetRequests).toBe(0);
+      expect(await readdir(f.options.stagingRoot)).toEqual([]);
+    } finally {
+      await client.disconnect();
+    }
+  }
+});
+
+test("AgentStream negotiates result copy and carries grants and failure reports without exposing tickets", async () => {
+  const f = fixture();
+  const requested = Promise.withResolvers<FederationResultGrantRequest>();
+  const completed = Promise.withResolvers<FederationResultCopyReport>();
+  const registered = Promise.withResolvers<boolean>();
+  const disconnected = Promise.withResolvers<void>();
+  const client: AgentStreamDeps["client"] = {
+    connect(requests, options) {
+      options?.signal?.addEventListener("abort", () => disconnected.resolve(), { once: true });
+      void (async () => {
+        for await (const raw of requests) {
+          const message = create(AgentMessageSchema, raw);
+          if (message.payload.case === "register")
+            registered.resolve(message.payload.value.federationResultCopyV1);
+          if (message.payload.case === "federationResultGrantRequest")
+            requested.resolve(message.payload.value);
+          if (message.payload.case === "federationResultCopyReport")
+            completed.resolve(message.payload.value);
+        }
+      })().catch((error) => completed.reject(error));
+      return (async function* (): AsyncGenerator<ServerMessage> {
+        yield create(ServerMessageSchema, {
+          payload: {
+            case: "registerResponse",
+            value: create(RegisterResponseSchema, {
+              accepted: true,
+              federationResultCopyV1Supported: true,
+            }),
+          },
+        });
+        yield create(ServerMessageSchema, {
+          payload: {
+            case: "federationResultCopy",
+            value: create(FederationResultCopySchema, {
+              taskJson: JSON.stringify(f.options.task),
+              leaseExpiresAtUnixMs: BigInt(Date.now() + 90_000),
+            }),
+          },
+        });
+        const request = await requested.promise;
+        // A denied grant exercises both stream directions without trusting the test TLS server globally.
+        yield create(ServerMessageSchema, {
+          payload: {
+            case: "federationResultGrantResponse",
+            value: create(FederationResultGrantResponseSchema, { requestId: request.requestId }),
+          },
+        });
+        await disconnected.promise;
+      })();
+    },
+  };
+  const stream = new AgentStream({
+    client,
+    federationResultCopy: f.options,
+    agentId: "result-stream-test",
+    siteName: "test",
+    heartbeatIntervalMs: 60_000,
+    logger: pino({ level: "silent" }),
+    adapter: {
+      type: "slurm",
+      version: "test",
+      submit: async () => {
+        throw new Error("No compute expected");
+      },
+      cancel: async () => {},
+      status: async () => ({ status: "completed" }),
+    },
+  });
+  const running = stream.start();
+  try {
+    expect(await registered.promise).toBe(true);
+    expect((await completed.promise).failed).toBe(true);
+    expect((await requested.promise).bindingJson).toContain(f.options.task.generation);
+    expect(sourceRequests).toBe(0);
+    expect(targetRequests).toBe(0);
+  } finally {
+    await stream.stop();
+    await running;
+  }
 });

@@ -1,0 +1,188 @@
+import { createLogger } from "@kuintessence/shared";
+import {
+  FederationDataOriginSchema,
+  FederationError,
+  type FederationResultCopyBinding,
+  FederationResultCopyBindingSchema,
+} from "@kuintessence/shared/federation";
+import type { MinioBackend } from "../storage/minio-client";
+import { signedDownloadExpiry } from "./result-download-credential";
+import type { FederationResultImports } from "./result-imports";
+import type { FederationResultReader } from "./result-reader";
+
+type Storage = Pick<
+  MinioBackend,
+  "createMultipartUpload" | "presignUploadPart" | "cleanupFederationResult"
+>;
+const logger = createLogger("federation-result-storage");
+export interface FederationResultStorageOptions {
+  sourceOrigins: readonly string[];
+  destinationOrigins: readonly string[];
+  quotaGuard: (ownerId: string, path: string, size: number) => Promise<void>;
+  clock?: () => Date;
+  timeoutMs?: number;
+}
+
+/** Storage effects are isolated from DB locks and fenced again before releasing credentials. */
+export class FederationResultStorage {
+  private readonly sourceOrigins: string[];
+  private readonly destinationOrigins: Set<string>;
+  private readonly clock: () => Date;
+  constructor(
+    private readonly imports: FederationResultImports,
+    private readonly reader: FederationResultReader,
+    private readonly storage: Storage,
+    private readonly options: FederationResultStorageOptions,
+  ) {
+    this.sourceOrigins = options.sourceOrigins.map(
+      (value) => new URL(FederationDataOriginSchema.parse(value)).origin,
+    );
+    this.destinationOrigins = new Set(
+      options.destinationOrigins.map(
+        (value) => new URL(FederationDataOriginSchema.parse(value)).origin,
+      ),
+    );
+    if (
+      !this.sourceOrigins.length ||
+      !this.destinationOrigins.size ||
+      !storage.cleanupFederationResult
+    )
+      throw new Error("FEDERATION_RESULT_STORAGE_UNAVAILABLE");
+    this.clock = options.clock ?? (() => new Date());
+  }
+
+  async allocate(transferId: string, agentId: string) {
+    const started = await this.imports.begin(transferId, agentId);
+    const generation = started.attempt.generation;
+    try {
+      const ready = await this.imports.preparing(agentId, generation);
+      const bytes = ready.parent.report.manifest.outputs.reduce(
+        (sum, output) => sum + output.sizeBytes,
+        0,
+      );
+      if (!Number.isSafeInteger(bytes)) throw new FederationError("INVALID_MESSAGE");
+      await this.options.quotaGuard(
+        ready.actor.userId,
+        `federation-results/${ready.parent.id}`,
+        bytes,
+      );
+      await this.imports.preparing(agentId, generation);
+      const allocated = this.storage
+        .createMultipartUpload(ready.attempt.storageKey, "application/octet-stream")
+        .then(async ({ uploadId }) => {
+          // This continuation still records a late ID after a caller timeout; crash recovery scans the key.
+          return this.imports.allocated(generation, uploadId);
+        });
+      if (!(await this.bounded(allocated))) throw new FederationError("POLICY_DENIED");
+      return { task: started.task, leaseExpiresAt: started.attempt.leaseUntil.toISOString() };
+    } catch (error) {
+      await this.imports.failed(agentId, generation, "STORAGE_FAILED");
+      if (error instanceof FederationError) throw error;
+      throw new Error("FEDERATION_RESULT_STORAGE_UNAVAILABLE");
+    }
+  }
+
+  async grant(
+    agentId: string,
+    input: FederationResultCopyBinding,
+    direction: "download" | "upload",
+    partNumber?: number,
+  ) {
+    const binding = FederationResultCopyBindingSchema.parse(input);
+    if (direction !== "download" && direction !== "upload")
+      throw new FederationError("INVALID_MESSAGE");
+    if (
+      (direction === "download" && partNumber !== undefined) ||
+      (direction === "upload" &&
+        (!Number.isSafeInteger(partNumber) ||
+          !partNumber ||
+          partNumber < 1 ||
+          partNumber > Math.max(1, Math.ceil(binding.sizeBytes / binding.partSize))))
+    )
+      throw new FederationError("INVALID_MESSAGE");
+    await this.imports.assertCopyLease(agentId, binding);
+    await this.imports.renew(agentId, binding.generation);
+    const before = await this.imports.assertCopyLease(agentId, binding);
+    const grant =
+      direction === "download"
+        ? await this.bounded(this.reader.downloadGrant(before.actor, binding, this.sourceOrigins))
+        : await this.uploadGrant(binding, before, partNumber as number);
+    const after = await this.imports.assertCopyLease(agentId, binding);
+    if (
+      after.storageKey !== before.storageKey ||
+      after.uploadId !== before.uploadId ||
+      Date.parse(grant.expiresAt) <= this.clock().getTime() ||
+      Date.parse(grant.expiresAt) > after.leaseUntil.getTime()
+    )
+      throw new FederationError("OPERATION_CONFLICT");
+    return { grant, leaseExpiresAt: after.leaseUntil.toISOString() };
+  }
+
+  async cleanup(limit = 20) {
+    await this.imports.expire(limit);
+    let cleaned = 0;
+    for (const { generation } of await this.imports.cleanupCandidates(limit)) {
+      try {
+        const context = await this.imports.beginCleanup(generation);
+        const purge = this.storage.cleanupFederationResult;
+        if (!purge) throw new Error("FEDERATION_RESULT_STORAGE_UNAVAILABLE");
+        await this.bounded(purge.call(this.storage, context.storageKey));
+        await this.imports.storageCleaned(generation);
+        cleaned++;
+      } catch {
+        // A failed/unknown delete never becomes a cleaned receipt; retry the retained attempt later.
+        logger.warn({ generation }, "Federation result storage cleanup remains pending");
+      }
+    }
+    return cleaned;
+  }
+
+  private async uploadGrant(
+    binding: FederationResultCopyBinding,
+    context: Awaited<ReturnType<FederationResultImports["assertCopyLease"]>>,
+    partNumber: number,
+  ) {
+    if (!context.uploadId) throw new FederationError("OPERATION_CONFLICT");
+    const deadline = Math.min(this.clock().getTime() + 30_000, context.leaseUntil.getTime());
+    const seconds = Math.floor((deadline - this.clock().getTime()) / 1000);
+    if (seconds < 1) throw new FederationError("AUTHORIZATION_EXPIRED");
+    const url = await this.bounded(
+      this.storage.presignUploadPart(context.storageKey, context.uploadId, partNumber, seconds),
+    );
+    const parsed = new URL(url);
+    if (
+      parsed.protocol !== "https:" ||
+      parsed.username ||
+      parsed.password ||
+      parsed.hash ||
+      !this.destinationOrigins.has(parsed.origin)
+    )
+      throw new FederationError("POLICY_DENIED");
+    if (
+      parsed.searchParams.get("uploadId") !== context.uploadId ||
+      parsed.searchParams.get("partNumber") !== String(partNumber) ||
+      parsed.searchParams.getAll("uploadId").length !== 1 ||
+      parsed.searchParams.getAll("partNumber").length !== 1
+    )
+      throw new FederationError("INVALID_MESSAGE");
+    const expiresAt = signedDownloadExpiry(url, this.clock().getTime(), deadline);
+    return { binding, direction: "upload" as const, partNumber, url, expiresAt };
+  }
+
+  private async bounded<T>(operation: Promise<T>): Promise<T> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([
+        operation,
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(
+            () => reject(new Error("FEDERATION_RESULT_STORAGE_UNAVAILABLE")),
+            this.options.timeoutMs ?? 10_000,
+          );
+        }),
+      ]);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+}

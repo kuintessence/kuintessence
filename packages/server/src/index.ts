@@ -67,6 +67,8 @@ import { createFederationPackageResolver } from "./federation/package-resolver";
 import { FederationPermissionService } from "./federation/permissions";
 import { FederationPreparationService } from "./federation/preparation";
 import { FederationPreparationWorker } from "./federation/preparation-worker";
+import { FederationResultStorage } from "./federation/result-storage";
+import { FederationResultTransport } from "./federation/result-transport";
 import {
   loadFederationSender,
   loadFederationSigningKey,
@@ -1752,6 +1754,7 @@ if (config.SSH_SESSION_RECORDING && !config.NETDRIVE_ENABLED) {
 if (!(config.SSH_SESSION_RECORDING && config.NETDRIVE_ENABLED)) {
   protectedApi.get("/admin/ssh-recordings", (c) => c.json({ enabled: false, recordings: [] }));
 }
+let federationResults: FederationResultTransport | undefined;
 let federationResultDownloads:
   | import("./federation/results").FederationResultDownloadStorage
   | undefined;
@@ -1767,6 +1770,29 @@ if (config.NETDRIVE_ENABLED) {
       storage: minioBackend,
       allowedOrigins: config.FEDERATION_RESULT_DOWNLOAD_ORIGINS,
     };
+  if (
+    config.FEDERATION_ENABLED &&
+    federationOutbound &&
+    config.FEDERATION_RESULT_IMPORT_SOURCE_ORIGINS.length &&
+    config.FEDERATION_RESULT_DOWNLOAD_ORIGINS.length
+  ) {
+    const storage = new FederationResultStorage(
+      federationOutbound.resultImports,
+      federationOutbound.results,
+      minioBackend,
+      {
+        sourceOrigins: config.FEDERATION_RESULT_IMPORT_SOURCE_ORIGINS,
+        destinationOrigins: config.FEDERATION_RESULT_DOWNLOAD_ORIGINS,
+        quotaGuard: (ownerId, path, size) =>
+          storageQuotaService.assertCloudWriteAllowed(ownerId, path, size),
+      },
+    );
+    federationResults = new FederationResultTransport(
+      federationOutbound.resultImports,
+      storage,
+      dispatcher,
+    );
+  }
   await minioBackend.healthCheck();
   await minioBackend.assertDataMarketStagingSafety();
   await minioBackend.assertDataMarketImmutability();
@@ -2051,6 +2077,7 @@ const grpcDeps = {
   jobLogsService,
   transferRegistry,
   jobCompletionRegistry,
+  federationResults,
   partUrlMinter: transferRunner,
   sandboxArtifactRelease: sandboxArtifactReleaseService,
   dataScanCoordinator,
