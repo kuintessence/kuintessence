@@ -91,6 +91,7 @@ import {
   startFederationIngress,
 } from "./federation/runtime";
 import { FederationTrustRegistry } from "./federation/trust-registry";
+import { FederationUsageService } from "./federation/usage";
 import { FederationWorkflowExecutor } from "./federation/workflow-executor";
 import {
   AgentDispatcher,
@@ -1664,12 +1665,16 @@ const federationCommercial = federationSigningKey
         : undefined,
     )
   : undefined;
+const federationUsage = federationSigningKey
+  ? new FederationUsageService(db, federationSigningKey)
+  : undefined;
 if (federationSigningKey && federationCommercial)
   protectedApi.route(
     "/",
     createFederationCommercialRoutes(
       new FederationCommercialAgreementService(db, federationSigningKey),
       federationCommercial,
+      federationUsage,
     ),
   );
 const federationPreparation = federationSigningKey
@@ -2388,10 +2393,9 @@ const federationAttestationWorker =
     ? new FederationAttestationWorker(federationAttestation)
     : undefined;
 federationAttestationWorker?.start();
-const federationCommercialWorker =
-  federationCommercial && config.FEDERATION_COMMERCIAL_SOCKET_PATH
-    ? new FederationCommercialWorker(federationCommercial)
-    : undefined;
+const federationCommercialWorker = federationCommercial
+  ? new FederationCommercialWorker(federationCommercial, federationUsage)
+  : undefined;
 federationCommercialWorker?.start();
 logger.info({ port: config.SERVER_PORT }, "Server starting");
 

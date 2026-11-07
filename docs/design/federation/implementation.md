@@ -627,3 +627,24 @@ inputSlots:
 RegisterAgreement 验证双方对同一条款的签名后只写对应 PDC；RecordUsage 绑定已登记合同摘要、提供方、任务/attempt、原执行期间及指标单位。初始报告唯一，更正必须接续当前私有头记录，读集由 MVCC 防并发；旧报告重放保留原字节且不回退头。审批历史已提交后不因旧签名公钥自然到期而消失；新报告的业务签名继续检查当前用途/撤销与有效期。所有普通返回仅随机记录 ID/带盐摘要，禁止用 Get 方法返回原文后误 submit 到公共区块。PDC hash 与字节不符继续等待，不当成空状态。
 
 新增真实 A/B/C Fabric 3.1.5 商业检查，复用隔离网络构建器，通过私有区块投递验证越权不可见、缺机构背书提交无效、并发重复原始用量冲突；CI 已接入。详见[运行配置](../../../deploy/federation/fabric-commercial.md)。Server 商业审批、Adapter 检查点、公共市场 gate、额度锁定与结算尚未接通；登记商业合同不放开 ledger_coordinated 执行门槛，不将提供方用量当成已确认账单。
+
+
+### 自动签名用量报告
+
+迁移 0116 新增 federation_usage_tasks 与 federation_usage_reports。后台发现已终态、绑定本地执行协议且具有商业双签的接收 Workflow；按预留唯一建待办，SKIP LOCKED 串行推进。同一事务保存签名报告、原始证据集合摘要、reported 状态及可选商业链待办；失败全部回滚，重启继续原工作项。签名使用当前有效且明确允许 commercial-usage 的机构密钥，历史批准人员离职或合作随后撤销不抹除已发生的计量事实。
+
+自动统计仅接受以下精确组合；导入的旧合同不改写，未支持的口径进入 missing_data。
+
+| metric | quantityUnit | 统计方式 |
+| --- | --- | --- |
+| cpu.time | cpu-millisecond | 调度器累计 CPU 时间相加 |
+| cpu.allocated | core-millisecond | 每个 Job 的调度器分配核数乘运行毫秒后相加 |
+| job.elapsed | job-millisecond | 每个叶 Job 的调度器运行毫秒相加，并行 Job 分别计算 |
+
+每个 Job 只计一次，每个合同指标须有全部 Job 的相应字段；真正回报的零保留，缺失不补零，不签部分报告。使用 BigInt，超过 38 位整数或超过 4096 个叶 Job 进入 needs_review，不截断。集合按 Job ID 排序，绑定预留、协议修订、价格版本和全部独立证据摘要。Schema、摘要、任务/尝试/运行/执行快照或调度器来源不一致拒绝出报告；统计不读取会过期的普通 raw metering，不从申请量与 Server 时间推算 CPU 消耗。
+
+报告覆盖窗口是接收 Workflow 的 createdAt 至 completedAt，与计量数量独立。无有效终态、时间倒退、未来时间或窗口超出协议有效期进入复核，不能裁剪成有效窗口。原始证据在保存前统一去掉协议转换中的可选 undefined，随后计算摘要并持久保存，严格 canonical encoder 不放宽。
+
+直接模式本地签署后完成，不创建链待办、不探测链；存证模式先等同一商业合同的注册 committed，再由原持久提交服务推进 record-usage。商用 worker 在配置机构签名后即可工作，无需配置商业 socket；未配置 socket 时存证待办保留。每轮最多发现八项并推进八次，无网络 I/O 占用生成事务。报告是单方计量断言，不激活执行、不变更额度、不确认账单。
+
+按组织受控的 GET /api/federation/commercial-agreements/:revisionId/usage 与 /:reservationId 提供状态和报告；POST /:reservationId/retry 仅接受空对象并要求 agreement.approve，其他读取要求 agreement.read。missing_data/needs_review 可以重试，已签报告不能重生成；审计不复制用量正文。响应 no-store，报告仅本机构可读，证据集合未发给链或其他机构。更正、跨机构报告交换及 Web 操作尚待接入。

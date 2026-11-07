@@ -12,6 +12,12 @@ const Id = z.uuid();
 const Salt = z.string().regex(/^[a-f0-9]{64}$/);
 const PositiveQuantity = z.string().regex(/^[1-9][0-9]{0,37}$/);
 const Metric = z.string().regex(/^[a-z][a-z0-9_.:-]{0,63}$/);
+/** These names are an explicit contract choice; generic legacy metrics are never reinterpreted. */
+export const commercialAutomaticMeters = [
+  { metric: "cpu.time", quantityUnit: "cpu-millisecond" },
+  { metric: "cpu.allocated", quantityUnit: "core-millisecond" },
+  { metric: "job.elapsed", quantityUnit: "job-millisecond" },
+] as const;
 export const CommercialSigningKindSchema = z.enum(["commercial-agreement", "commercial-usage"]);
 
 /** Private rates use integer amount per integer quantity; the execution agreement fixes the money unit. */
@@ -222,3 +228,22 @@ export const CommercialSubmissionsViewSchema = z.object({
   ),
 });
 export type CommercialSubmissionsView = z.infer<typeof CommercialSubmissionsViewSchema>;
+
+export const CommercialUsageEvidenceSetSchema = z.strictObject({
+  version: z.literal(1),
+  reservationId: Id,
+  agreementRevisionId: Id,
+  priceVersionId: Id,
+  records: z
+    .array(z.strictObject({ jobId: Id, digest: FederationDigestSchema }))
+    .min(1)
+    .max(4096),
+});
+export type CommercialUsageEvidenceSet = z.infer<typeof CommercialUsageEvidenceSetSchema>;
+export const CommercialUsageGapSchema = z.strictObject({
+  metric: Metric,
+  jobId: Id.optional(),
+  missingJobs: z.number().int().nonnegative().optional(),
+  reason: z.enum(["UNSUPPORTED_METER", "MISSING_ACCOUNTING", "NO_JOB_EVIDENCE"]),
+});
+export type CommercialUsageGap = z.infer<typeof CommercialUsageGapSchema>;

@@ -46,6 +46,13 @@ export class FederationCommercialSubmissionService {
           and(
             eq(submissions.localSiteId, this.siteId),
             eq(submissions.state, "pending"),
+            sql`(${submissions.input}->>'operation' = 'register-agreement' OR EXISTS (
+              SELECT 1 FROM ${submissions} dependency
+              WHERE dependency.local_site_id = ${submissions.localSiteId}
+                AND dependency.agreement_revision_id = ${submissions.agreementRevisionId}
+                AND dependency.input->>'operation' = 'register-agreement'
+                AND dependency.state = 'committed'
+            ))`,
             sql`${submissions.nextAttemptAt} <= clock_timestamp()`,
             sql`(${submissions.leaseToken} IS NULL OR ${submissions.leaseUntil} <= clock_timestamp())`,
           ),
@@ -260,6 +267,7 @@ export class FederationCommercialSubmissionService {
           and(
             eq(submissions.localSiteId, this.siteId),
             eq(submissions.agreementRevisionId, revisionId),
+            sql`${submissions.input}->>'operation' = 'register-agreement'`,
           ),
         )
         .orderBy(desc(submissions.createdAt), desc(submissions.id))

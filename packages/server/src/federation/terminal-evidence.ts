@@ -95,50 +95,54 @@ export async function persistFederationTerminalEvidence(
   const ended = row.job.completedAt;
   // JobService may synthesize startedAt at termination; preserve the pre-transition observation.
   const started = before.startedAt;
-  const evidence = FederationTerminalEvidenceSchema.parse({
-    version: 1,
-    jobId,
-    runId: execution.runId,
-    reservationId: reservation.id,
-    agreementRevisionId: reservation.agreementRevisionId,
-    taskId: reservation.taskId,
-    attempt: reservation.attempt,
-    sourceSiteId: request.senderSiteId,
-    targetSiteId: request.recipientSiteId,
-    requestDigest: reservation.requestDigest,
-    executionSnapshotDigest: binding.snapshotDigest,
-    invocationPathHash: execution.pathHash,
-    status: job.status,
-    previousStatus: before.status,
-    source,
-    agentEventId: agentEventId ?? null,
-    dispatchEpoch: job.dispatchEpoch,
-    requested: {
-      cpus: String(job.cpus),
-      gpus: job.gpus === null ? null : String(job.gpus),
-      memoryMb: row.memoryMb,
-    },
-    scheduler: {
-      agentId: job.agentId,
-      type: row.schedulerType,
-      jobId: job.schedulerJobId,
-      queueId: job.queueId,
-      node: job.node,
-      exitCode: job.exitCode,
-    },
-    ...(accounting ? { accounting } : {}),
-    observation: {
-      basis: "server-status-observation",
-      runningObservedAt: started?.toISOString() ?? null,
-      terminalObservedAt: ended.toISOString(),
-      quality: !started
-        ? "start-unobserved"
-        : started > ended
-          ? "clock-inconsistent"
-          : "observed-interval",
-      schedulerAccounting: accounting ? "reported" : "unavailable",
-    },
-  });
+  const evidence: FederationTerminalEvidence = JSON.parse(
+    JSON.stringify(
+      FederationTerminalEvidenceSchema.parse({
+        version: 1,
+        jobId,
+        runId: execution.runId,
+        reservationId: reservation.id,
+        agreementRevisionId: reservation.agreementRevisionId,
+        taskId: reservation.taskId,
+        attempt: reservation.attempt,
+        sourceSiteId: request.senderSiteId,
+        targetSiteId: request.recipientSiteId,
+        requestDigest: reservation.requestDigest,
+        executionSnapshotDigest: binding.snapshotDigest,
+        invocationPathHash: execution.pathHash,
+        status: job.status,
+        previousStatus: before.status,
+        source,
+        agentEventId: agentEventId ?? null,
+        dispatchEpoch: job.dispatchEpoch,
+        requested: {
+          cpus: String(job.cpus),
+          gpus: job.gpus === null ? null : String(job.gpus),
+          memoryMb: row.memoryMb,
+        },
+        scheduler: {
+          agentId: job.agentId,
+          type: row.schedulerType,
+          jobId: job.schedulerJobId,
+          queueId: job.queueId,
+          node: job.node,
+          exitCode: job.exitCode,
+        },
+        ...(accounting ? { accounting } : {}),
+        observation: {
+          basis: "server-status-observation",
+          runningObservedAt: started?.toISOString() ?? null,
+          terminalObservedAt: ended.toISOString(),
+          quality: !started
+            ? "start-unobserved"
+            : started > ended
+              ? "clock-inconsistent"
+              : "observed-interval",
+          schedulerAccounting: accounting ? "reported" : "unavailable",
+        },
+      }),
+    ),
+  );
   // A conflicting second insert aborts the transition; no overwrite or silent evidence loss.
   await tx.insert(federationTerminalEvidence).values({
     jobId,

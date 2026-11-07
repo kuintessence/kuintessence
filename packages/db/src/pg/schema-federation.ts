@@ -20,6 +20,9 @@ import type {
 import type {
   CommercialAgreement,
   CommercialProposalInput,
+  CommercialUsage,
+  CommercialUsageEvidenceSet,
+  CommercialUsageGap,
 } from "@kuintessence/shared/federation/commercial";
 import type { FederationEvidenceBatch } from "@kuintessence/shared/federation/ledger";
 import { sql } from "drizzle-orm";
@@ -1149,6 +1152,66 @@ export const federationTerminalEvidence = pgTable(
       AND ${t.evidence}->>'reservationId' = ${t.reservationId}::text
       AND ${t.evidence}->>'runId' = ${t.workflowRunId}::text
       AND ${t.evidence}->>'status' IN ('completed','failed','cancelled'), false)`,
+    ),
+  ],
+);
+
+/** Reporting is independent of execution success and the optional ledger outbox. */
+export const federationUsageTasks = pgTable(
+  "federation_usage_tasks",
+  {
+    reservationId: uuid("reservation_id")
+      .primaryKey()
+      .references(() => federationReservations.id),
+    localSiteId: uuid("local_site_id").notNull(),
+    localOrgId: uuid("local_org_id")
+      .notNull()
+      .references(() => orgs.id),
+    agreementRevisionId: uuid("agreement_revision_id").notNull(),
+    state: varchar("state", { length: 24 }).notNull().default("pending"),
+    gaps: jsonb("gaps").$type<CommercialUsageGap[]>().notNull().default([]),
+    lastError: varchar("last_error", { length: 64 }),
+    nextAttemptAt: timestamp("next_attempt_at", { withTimezone: true }).notNull().defaultNow(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    foreignKey({
+      columns: [t.localSiteId, t.agreementRevisionId],
+      foreignColumns: [
+        federationCommercialAgreements.localSiteId,
+        federationCommercialAgreements.revisionId,
+      ],
+    }),
+    index("federation_usage_pending").on(t.localSiteId, t.state, t.nextAttemptAt),
+    check(
+      "federation_usage_task_state",
+      sql`${t.state} IN ('pending','missing_data','needs_review','reported')`,
+    ),
+  ],
+);
+
+/** Original and correction reports remain immutable; no financial balance is stored here. */
+export const federationUsageReports = pgTable(
+  "federation_usage_reports",
+  {
+    id: uuid("id").primaryKey(),
+    reservationId: uuid("reservation_id")
+      .notNull()
+      .references(() => federationUsageTasks.reservationId),
+    number: integer("number").notNull(),
+    report: jsonb("report").$type<CommercialUsage>().notNull(),
+    reportJws: text("report_jws").notNull(),
+    digest: varchar("digest", { length: 71 }).notNull(),
+    evidenceSet: jsonb("evidence_set").$type<CommercialUsageEvidenceSet>().notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("federation_usage_report_sequence").on(t.reservationId, t.number),
+    check(
+      "federation_usage_report_identity",
+      sql`coalesce(${t.number} > 0 AND ${t.report}->>'reportId' = ${t.id}::text
+    AND ${t.evidenceSet}->>'reservationId' = ${t.reservationId}::text AND ${t.digest} ~ '^sha256:[a-f0-9]{64}$',false)`,
     ),
   ],
 );

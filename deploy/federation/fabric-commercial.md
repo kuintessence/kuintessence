@@ -80,7 +80,7 @@ bun run --filter @kuintessence/fabric-commercial build
 
 配置 FEDERATION_COMMERCIAL_SOCKET_PATH=/private/run/commercial.sock 后，每十秒扫描、每轮至多推进八次检查点。90 秒数据库租约防止多个 Server 同时推进；网络 I/O 不持有事务，保存结果前后均验证租约。proposal 与背书后的 transaction 必须先事务保存，之后才能提交；pending 保留原 transactionId 与 recovery，至少退避 30 秒。VALID 才标记 committed，INVALID 或不可自动处理的错误进入 needs_review。人工重试只能放弃未提交 proposal，或在已确认 INVALID 后开始新尝试；未知的 transaction 仍须恢复原交易。
 
-机构批准是持久签署事实，后台不以批准人员离职抹除原批准。创建新 proposal、向 Peer 披露前检查当前平台机构/签名信任与用途；已背书的交易按原检查点恢复和核对终态，不通过更换签名或重新授权掩盖未知结果。暂停/撤销合作的执行权仍由执行协议及本地策略控制，商业记录不替代它们。当前审批支持完整商业 wrapper；平台用量自动采集/报告、合同修订生效切换仍待接入。
+机构批准是持久签署事实，后台不以批准人员离职抹除原批准。创建新 proposal、向 Peer 披露前检查当前平台机构/签名信任与用途；已背书的交易按原检查点恢复和核对终态，不通过更换签名或重新授权掩盖未知结果。暂停/撤销合作的执行权仍由执行协议及本地策略控制，商业记录不替代它们。当前审批支持完整商业 wrapper；平台签名原始用量报告已接入；计量补采/技术更正、合同修订生效切换仍待接入。
 
 ## Web 操作
 
@@ -93,9 +93,17 @@ bun run --filter @kuintessence/fabric-commercial build
 
 迁移 0115 为联邦 Job 增加独立终态证据，随完成/失败/取消及数据撤销事务保存，失败时原终态和 Agent 事件一起回滚。普通计量的尽力写入、汇总和清理不删除这些证据；Job/Workflow 的删除也不能级联删除证据。这里只记录升级后的新终态，既有终态不自动补造观测。
 
-证据保存请求资源和平台看到的状态时间，未取得调度器会计数据时明确为 unavailable；新 Agent 的有效可选计量入库后为 reported。没有开始观测或时钟倒退分别标记，不自动转换成零用量；平台取消不是远端停止证明。只有绑定 Agent 的持久事件标记 agent-status，其余状态写入不冒称 Agent 回报。正文在本机构数据库受控保存，不含命令、环境变量和输出；尚未自动生成 CommercialUsage、写商业 PDC 或创建账单。后续报告须绑定双方约定的计量口径和价格版本，不能直接拿 CPU 请求量乘平台观测时长当实际 CPU 消耗。
+证据保存请求资源和平台看到的状态时间，未取得调度器会计数据时明确为 unavailable；新 Agent 的有效可选计量入库后为 reported。没有开始观测或时钟倒退分别标记，不自动转换成零用量；平台取消不是远端停止证明。只有绑定 Agent 的持久事件标记 agent-status，其余状态写入不冒称 Agent 回报。正文在本机构数据库受控保存，不含命令、环境变量和输出。自动报告绑定双方约定的计量口径和价格版本，不能直接拿 CPU 请求量乘平台观测时长当实际 CPU 消耗。
 
 Slurm/PBS Pro 新 Agent 会在原终态事件中携带可取得的运行时长、累计 CPU 时间与调度器报告核数。Slurm 需要可查询的 sacct 及正确配置的会计采样，PBS 需要 resources_used；字段没有返回时保持缺失，不用资源申请补算。旧 Agent 消息仍可处理，但无计量；新字段通过独立 schema 校验，原事件 ID/重放/ACK 不变。计量先进入本地证据，不自动上链或扣款。取消时只得到平台终态、会计结果迟到、Torque/Kubernetes 或 GPU/内存指标暂未采集等情况，仍须报告待补采/核对，不能当作零用量结算。
+
+## 自动用量报告
+
+升级数据库至迁移 0116 后，配置有效的机构签名密钥及 commercial-usage 用途，后台可为已双签商业合同对应的终态 Workflow 自动生成报告。签名与工作项同事务保存，重启/并发不重复生成；不回填升级前缺失的终态证据。即使没有 FEDERATION_COMMERCIAL_SOCKET_PATH，直接合作仍本地完成报告；存证合作将待办留在数据库，合同登记 committed 后才允许提交用量。链不可用不阻塞既有双边执行。
+
+双方须明确约定支持的 metric/quantityUnit：cpu.time/cpu-millisecond、cpu.allocated/core-millisecond 或 job.elapsed/job-millisecond。前者为累计 CPU 消耗，中者为分配核数乘运行时长，后者为逐 Job 时长和；这些数量不能互换。旧 cpu/core-second 等含糊口径不自动解释，Web 编辑器暂未提供标准口径选择，需通过完整 JSON 建立准确合同。已有签署合同不可编辑。
+
+缺失计量显示 missing_data；证据冲突、数量溢出、超过 4096 个 Job 或 Workflow 覆盖窗口不在协议有效期内进入 needs_review。读取和重试 API 见[实现说明](../../docs/design/federation/implementation.md#自动签名用量报告)。重试只重新检查原材料，不能提交数量覆盖或改写原证据；当前尚无迟到补采/技术更正入口、报告交换与 Web 报告页，部分缺失须等待这些能力。原始报告只表示提供方断言，不创建账单或付款。
 
 ## 已验证范围
 

@@ -3,31 +3,61 @@ import { randomUUID } from "node:crypto";
 import {
   agentJobStatusEvents,
   agents,
+  auditLog,
   createPgDb,
   dataAssets,
   dataAssetVersions,
   dataGrants,
   federationAgreements,
   federationBudgets,
+  federationCapabilities,
+  federationCommercialAgreements,
+  federationCommercialAttempts,
+  federationCommercialSubmissions,
   federationReservations,
+  federationSigningKeys,
+  federationSites,
   federationTerminalEvidence,
+  federationUsageReports,
+  federationUsageTasks,
   federationWorkflowBindings,
   jobDataBindings,
   jobs,
   orgs,
+  userOrgMemberships,
   users,
   workflowExecutionJobs,
   workflowExecutionLeases,
   workflowRuns,
 } from "@kuintessence/db";
 import type { SchedulerAccounting } from "@kuintessence/shared";
-import { FederationAcceptanceSchema } from "@kuintessence/shared/federation";
-import { eq, sql } from "drizzle-orm";
+import {
+  FederationAcceptanceSchema,
+  type FederationAgreement,
+} from "@kuintessence/shared/federation";
+import {
+  CommercialAgreementSchema,
+  CommercialUsageSchema,
+  commercialAutomaticMeters,
+} from "@kuintessence/shared/federation/commercial";
+import { eq, inArray, sql } from "drizzle-orm";
+import { Hono } from "hono";
+import { exportSPKI } from "jose";
+import pino from "pino";
+import { createErrorHandler } from "../middleware/error-handler";
+import { createFederationCommercialRoutes } from "../routes/federation-commercial";
 import { revokeDataDeliveryJobs } from "../services/data-delivery";
 import { DataGrantRevocationCoordinator } from "../services/data-delivery-revocations";
 import { JobService } from "../services/job-service";
 import { federationMaterialDigest } from "./assets";
-import { testAgreement, testDelegation } from "./test-fixtures";
+import { FederationCommercialAgreementService } from "./commercial-agreements";
+import { FederationCommercialSubmissionService } from "./commercial-submissions";
+import { FederationCommercialWorker } from "./commercial-worker";
+import { FederationPermissionService } from "./permissions";
+import { signFederationMessage, verifyFederationMessage } from "./signatures";
+import { testAgreement, testDelegation, testKeys } from "./test-fixtures";
+import { FederationTrustRegistry } from "./trust-registry";
+import { FederationUsageService } from "./usage";
 
 const url = process.env.DATABASE_URL;
 if (!url || !/^\/kuintessence_unit_[a-z0-9_]+$/.test(new URL(url).pathname))
@@ -39,7 +69,12 @@ afterEach(async () => {
 });
 
 async function fixture(
-  options: { federated?: boolean; startedAt?: Date | null; scheduler?: string } = {},
+  options: {
+    federated?: boolean;
+    startedAt?: Date | null;
+    scheduler?: string;
+    terms?: FederationAgreement;
+  } = {},
 ) {
   const orgId = randomUUID(),
     userId = randomUUID(),
@@ -47,7 +82,7 @@ async function fixture(
     runId = randomUUID();
   const agentId = `terminal-${randomUUID()}`,
     reservationId = randomUUID();
-  const terms = testAgreement(randomUUID(), randomUUID());
+  const terms = options.terms ?? testAgreement(randomUUID(), randomUUID());
   const request = testDelegation(terms),
     digest = federationMaterialDigest(request);
   await db.insert(orgs).values({ id: orgId, name: "Terminal evidence fixture" });
@@ -440,4 +475,360 @@ test("mismatched accounting scheduler or job cannot commit a terminal event", as
   }
   await f.finish("same-event", accounting);
   expect((await f.read())?.evidence.accounting).toEqual(accounting);
+});
+
+async function usageFixture(
+  mode: "bilateral_direct" | "bilateral_attested" = "bilateral_direct",
+  missing = false,
+) {
+  const [source, provider] = await Promise.all([testKeys(), testKeys()]);
+  const terms = {
+    ...testAgreement(source.signing.siteId, provider.signing.siteId, mode),
+    validFrom: "2020-01-01T00:00:00.000Z",
+    validUntil: "2099-01-01T00:00:00.000Z",
+  };
+  const f = await fixture({ terms });
+  const actor = { orgId: f.orgId, userId: f.userId };
+  const trust = new FederationTrustRegistry(db);
+  cleanup.push(async () => {
+    const pending = await db
+      .select({ id: federationCommercialSubmissions.id })
+      .from(federationCommercialSubmissions)
+      .where(eq(federationCommercialSubmissions.localSiteId, provider.signing.siteId));
+    if (pending.length)
+      await db.delete(federationCommercialAttempts).where(
+        inArray(
+          federationCommercialAttempts.submissionId,
+          pending.map((row) => row.id),
+        ),
+      );
+    await db
+      .delete(federationCommercialSubmissions)
+      .where(eq(federationCommercialSubmissions.localSiteId, provider.signing.siteId));
+    await db
+      .delete(federationUsageReports)
+      .where(eq(federationUsageReports.reservationId, f.reservationId));
+    await db
+      .delete(federationUsageTasks)
+      .where(eq(federationUsageTasks.reservationId, f.reservationId));
+    await db
+      .delete(federationCommercialAgreements)
+      .where(eq(federationCommercialAgreements.localSiteId, provider.signing.siteId));
+    await db.delete(federationCapabilities).where(eq(federationCapabilities.userId, f.userId));
+    await db.delete(userOrgMemberships).where(eq(userOrgMemberships.userId, f.userId));
+    await db.delete(auditLog).where(eq(auditLog.actor, f.userId));
+    for (const keys of [source, provider]) {
+      await db
+        .delete(federationSigningKeys)
+        .where(eq(federationSigningKeys.siteId, keys.signing.siteId));
+      await db.delete(federationSites).where(eq(federationSites.id, keys.signing.siteId));
+    }
+  });
+  await db.insert(userOrgMemberships).values({ ...actor, role: "member" });
+  await new FederationPermissionService(db).set(
+    { ...actor, capability: "agreement.approve", enabled: true },
+    f.userId,
+  );
+  for (const keys of [source, provider]) {
+    await trust.addSite(
+      { id: keys.signing.siteId, name: "Usage fixture", endpoint: "https://fixture.invalid" },
+      f.userId,
+    );
+    await trust.addKey(
+      keys.signing.siteId,
+      {
+        keyId: keys.signing.keyId,
+        publicKeyPem: await exportSPKI(keys.verification.publicKey),
+        allowedKinds: ["commercial-agreement", "commercial-usage"],
+        validFrom: "2020-01-01T00:00:00.000Z",
+        validUntil: "2099-01-01T00:00:00.000Z",
+      },
+      f.userId,
+    );
+  }
+  const contract = CommercialAgreementSchema.parse({
+    protocolVersion: 1,
+    kind: "commercial-agreement",
+    domainId: randomUUID(),
+    salt: "e".repeat(64),
+    createdAt: new Date().toISOString(),
+    agreement: terms,
+    consideration: "paid",
+    priceVersionId: randomUUID(),
+    prices: [{ ...commercialAutomaticMeters[0], amount: "9", perQuantity: "1000" }],
+    termsText: "Private usage fixture",
+  });
+  const approvals = new FederationCommercialAgreementService(db, provider.signing);
+  await approvals.approve(actor, contract);
+  await approvals.attachCounterparty(
+    actor,
+    terms.agreementRevisionId,
+    await signFederationMessage(CommercialAgreementSchema, contract, source.signing),
+  );
+  await db
+    .update(workflowRuns)
+    .set({ createdAt: new Date(Date.now() - 10000) })
+    .where(eq(workflowRuns.id, f.runId));
+  await f.finish(
+    "usage-event",
+    missing
+      ? undefined
+      : {
+          version: 1,
+          source: "slurm-sacct",
+          schedulerJobId: "scheduler-42",
+          observedAt: new Date().toISOString(),
+          cpuTimeMilliseconds: "9007199254740993",
+          elapsedMilliseconds: undefined,
+        },
+  );
+  await db
+    .update(workflowRuns)
+    .set({ status: "completed", completedAt: new Date() })
+    .where(eq(workflowRuns.id, f.runId));
+  const usage = new FederationUsageService(db, provider.signing);
+  const view = () => usage.get(actor, terms.agreementRevisionId, f.reservationId);
+  return { ...f, actor, source, provider, contract, trust, approvals, usage, view };
+}
+
+test("direct usage is signed exactly once after restart/concurrent scans without ledger work or financial effects", async () => {
+  const f = await usageFixture();
+  await f.usage.discover();
+  await Promise.all(
+    Array.from({ length: 8 }, () =>
+      new FederationUsageService(db, f.provider.signing).advanceNext(),
+    ),
+  );
+  const view = await f.view();
+  expect(view.task.state).toBe("reported");
+  expect(view.reports).toHaveLength(1);
+  const report = view.reports[0];
+  if (!report) throw new Error("Missing usage report");
+  const key = await f.trust.resolveKey(
+    f.provider.signing.siteId,
+    f.provider.signing.keyId,
+    new Date(),
+  );
+  expect(
+    (await verifyFederationMessage(CommercialUsageSchema, report.reportJws, key, new Date()))
+      .digest,
+  ).toBe(report.digest);
+  expect(report.report.measurements[0]?.quantity).toBe("9007199254740993");
+  expect(report.report.measurements[0]?.evidenceDigest).toBe(
+    federationMaterialDigest(report.evidenceSet),
+  );
+  expect(
+    await db
+      .select()
+      .from(federationCommercialSubmissions)
+      .where(eq(federationCommercialSubmissions.localSiteId, f.provider.signing.siteId)),
+  ).toHaveLength(0);
+  const [budget] = await db
+    .select()
+    .from(federationBudgets)
+    .where(eq(federationBudgets.domainId, f.terms.budgetDomainId));
+  expect(budget).toMatchObject({ available: "40", reserved: "60" });
+  await f.usage.discover();
+  expect(await f.usage.advanceNext()).toBe(false);
+  expect((await f.view()).reports).toEqual(view.reports);
+});
+
+test("missing accounting never creates a zero or partial signed report", async () => {
+  const f = await usageFixture("bilateral_direct", true);
+  await f.usage.discover();
+  await f.usage.advanceNext();
+  expect(await f.view()).toMatchObject({
+    task: {
+      state: "missing_data",
+      gaps: [{ metric: "cpu.time", missingJobs: 1, reason: "MISSING_ACCOUNTING" }],
+    },
+    reports: [],
+  });
+  await f.usage.retry(f.actor, f.terms.agreementRevisionId, f.reservationId);
+  await f.usage.advanceNext();
+  expect((await f.view()).reports).toHaveLength(0);
+});
+
+test("report failure rolls back signature and ledger intent; original evidence remains available", async () => {
+  const f = await usageFixture("bilateral_attested");
+  await f.usage.discover();
+  await db.execute(
+    sql`alter table federation_usage_reports add constraint test_usage_failure check (reservation_id <> ${sql.raw(`'${f.reservationId}'::uuid`)})`,
+  );
+  try {
+    await expect(f.usage.advanceNext()).rejects.toThrow();
+    expect((await f.view()).reports).toHaveLength(0);
+    expect((await f.view()).task.state).toBe("pending");
+  } finally {
+    await db.execute(sql`alter table federation_usage_reports drop constraint test_usage_failure`);
+  }
+  expect(await f.read()).toBeDefined();
+  await f.usage.advanceNext();
+  expect((await f.view()).reports).toHaveLength(1);
+  expect(
+    await db
+      .select()
+      .from(federationCommercialSubmissions)
+      .where(eq(federationCommercialSubmissions.localSiteId, f.provider.signing.siteId)),
+  ).toHaveLength(2);
+});
+
+test("new usage waits for current signing trust but historical cooperation and staff authority are not erased", async () => {
+  const f = await usageFixture();
+  await f.usage.discover();
+  await db
+    .update(federationSigningKeys)
+    .set({ allowedKinds: ["commercial-agreement"] })
+    .where(eq(federationSigningKeys.siteId, f.provider.signing.siteId));
+  await f.usage.advanceNext();
+  expect((await f.view()).task).toMatchObject({
+    state: "needs_review",
+    lastError: "UNTRUSTED_IDENTITY",
+  });
+  await db
+    .update(federationSigningKeys)
+    .set({ allowedKinds: ["commercial-agreement", "commercial-usage"] })
+    .where(eq(federationSigningKeys.siteId, f.provider.signing.siteId));
+  await f.usage.retry(f.actor, f.terms.agreementRevisionId, f.reservationId);
+  await db.delete(federationCapabilities).where(eq(federationCapabilities.userId, f.userId));
+  await db
+    .update(federationAgreements)
+    .set({ state: "revoked" })
+    .where(eq(federationAgreements.revisionId, f.terms.agreementRevisionId));
+  await f.usage.advanceNext();
+  expect(
+    await db
+      .select()
+      .from(federationUsageReports)
+      .where(eq(federationUsageReports.reservationId, f.reservationId)),
+  ).toHaveLength(1);
+  await expect(f.view()).rejects.toThrow("POLICY_DENIED");
+});
+
+test("usage ledger submission waits for commercial contract commit and does not pollute contract status", async () => {
+  const f = await usageFixture("bilateral_attested");
+  await f.usage.discover();
+  await f.usage.advanceNext();
+  const seen: string[] = [];
+  const ledger = new FederationCommercialSubmissionService(db, f.provider.signing.siteId, {
+    prepare: async (input) => {
+      seen.push(input.operation);
+      return { transactionId: "a".repeat(64), recovery: "fixture" };
+    },
+    advance: async () => ({ state: "pending", transactionId: "a".repeat(64), recovery: "fixture" }),
+  });
+  const rows = await db
+    .select()
+    .from(federationCommercialSubmissions)
+    .where(eq(federationCommercialSubmissions.localSiteId, f.provider.signing.siteId));
+  const contract = rows.find((row) => row.input.operation === "register-agreement"),
+    usage = rows.find((row) => row.input.operation === "record-usage");
+  if (!contract || !usage) throw new Error("Missing submissions");
+  await db
+    .update(federationCommercialSubmissions)
+    .set({ nextAttemptAt: sql`clock_timestamp() + interval '1 hour'` })
+    .where(eq(federationCommercialSubmissions.id, contract.id));
+  expect(await ledger.advanceNext()).toBe(false);
+  expect(seen).toEqual([]);
+  await db
+    .update(federationCommercialSubmissions)
+    .set({ state: "committed" })
+    .where(eq(federationCommercialSubmissions.id, contract.id));
+  expect(await ledger.advanceNext()).toBe(true);
+  expect(seen).toEqual(["record-usage"]);
+  expect(
+    (await ledger.status(f.actor, f.terms.agreementRevisionId, 50, 0)).submissions.map(
+      (row) => row.id,
+    ),
+  ).toEqual([contract.id]);
+});
+
+test("usage worker runs without a Fabric socket and organization scope rejects foreign readers", async () => {
+  const f = await usageFixture();
+  const worker = new FederationCommercialWorker(
+    new FederationCommercialSubmissionService(db, f.provider.signing.siteId),
+    f.usage,
+  );
+  await worker.tick();
+  await worker.stop();
+  expect((await f.view()).task.state).toBe("reported");
+  await expect(
+    f.usage.get({ ...f.actor, orgId: randomUUID() }, f.terms.agreementRevisionId, f.reservationId),
+  ).rejects.toThrow("POLICY_DENIED");
+  await expect(
+    f.usage.retry(f.actor, f.terms.agreementRevisionId, f.reservationId),
+  ).rejects.toThrow("OPERATION_CONFLICT");
+});
+
+test("usage HTTP remains private, read-only capabilities cannot retry, and override fields are rejected", async () => {
+  const f = await usageFixture("bilateral_direct", true);
+  await f.usage.discover();
+  await f.usage.advanceNext();
+  const app = new Hono();
+  let automation = false;
+  app.onError(createErrorHandler(pino({ enabled: false })));
+  app.use("*", async (c, next) => {
+    c.set("principal" as never, f.actor as never);
+    if (automation) c.set("automation" as never, true as never);
+    await next();
+  });
+  app.route(
+    "/",
+    createFederationCommercialRoutes(
+      f.approvals,
+      new FederationCommercialSubmissionService(db, f.provider.signing.siteId),
+      f.usage,
+    ),
+  );
+  const base = `/federation/commercial-agreements/${f.terms.agreementRevisionId}/usage`;
+  const response = await app.request(`${base}/${f.reservationId}`);
+  expect(response.status).toBe(200);
+  expect(response.headers.get("cache-control")).toBe("no-store");
+  expect(await response.json()).toMatchObject({
+    data: { task: { state: "missing_data" }, reports: [] },
+  });
+  expect(
+    (
+      await app.request(`${base}/${f.reservationId}/retry`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ quantity: "0" }),
+      })
+    ).status,
+  ).toBe(400);
+  await new FederationPermissionService(db).set(
+    { ...f.actor, capability: "agreement.read", enabled: true },
+    f.userId,
+  );
+  await new FederationPermissionService(db).set(
+    { ...f.actor, capability: "agreement.approve", enabled: false },
+    f.userId,
+  );
+  expect((await app.request(base)).status).toBe(200);
+  expect(
+    (
+      await app.request(`${base}/${f.reservationId}/retry`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: "{}",
+      })
+    ).status,
+  ).toBe(403);
+  automation = true;
+  expect((await app.request(base)).status).toBe(403);
+});
+
+test("reporting interval outside the agreement is held for review without clamping actual evidence", async () => {
+  const f = await usageFixture();
+  await db
+    .update(workflowRuns)
+    .set({ createdAt: new Date("2019-01-01T00:00:00Z") })
+    .where(eq(workflowRuns.id, f.runId));
+  await f.usage.discover();
+  await f.usage.advanceNext();
+  expect(await f.view()).toMatchObject({
+    task: { state: "needs_review", lastError: "REPORTING_INTERVAL_INVALID" },
+    reports: [],
+  });
+  expect(await f.read()).toBeDefined();
 });
