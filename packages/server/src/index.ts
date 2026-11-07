@@ -1669,10 +1669,9 @@ const federationCommercial = federationSigningKey
 const federationUsage = federationSigningKey
   ? new FederationUsageService(db, federationSigningKey)
   : undefined;
-const federationUsageExchange =
-  federationSigningKey && federationSender
-    ? new FederationUsageExchange(db, federationSigningKey, federationSender)
-    : undefined;
+const federationUsageExchange = federationSigningKey
+  ? new FederationUsageExchange(db, federationSigningKey, federationSender)
+  : undefined;
 if (federationSigningKey && federationCommercial)
   protectedApi.route(
     "/",

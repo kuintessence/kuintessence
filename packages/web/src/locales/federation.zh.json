@@ -419,6 +419,7 @@
       "taskId": "任务 ID",
       "previousReport": "前一报告",
       "signature": "报告签名",
+      "syncDisabled": "机构间通信未配置，历史报告仍可查看。",
       "lastSync": "最近同步",
       "errorCode": "错误代码",
       "correctionNotice": "原报告会保留。本次签署的是提供方技术更正声明，不确认账单，也不发起付款。佐证原件须由本机构核验并保存。",

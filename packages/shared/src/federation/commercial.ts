@@ -328,6 +328,7 @@ export const CommercialUsageProviderViewSchema = z.object({
   hasMore: z.boolean(),
 });
 export const CommercialUsageReceivedViewSchema = z.object({
+  syncEnabled: z.boolean(),
   sync: CommercialUsageSyncViewSchema.nullable(),
   reports: z.array(CommercialUsageRecordViewSchema),
   hasMore: z.boolean(),

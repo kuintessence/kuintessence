@@ -1661,3 +1661,51 @@ test("usage exchange worker needs explicit new signing purposes and runs indepen
       .where(eq(federationCommercialSubmissions.localSiteId, f.source.signing.siteId)),
   ).toHaveLength(0);
 });
+
+test("usage exchange keeps received history and authorization when transport is disabled", async () => {
+  const f = await exchangeFixture();
+  await f.exchange.discover();
+  await f.exchange.advanceNext();
+  const offline = new FederationUsageExchange(db, f.source.signing);
+  const app = new Hono();
+  let actor = f.sourceActor;
+  app.onError(createErrorHandler(pino({ enabled: false })));
+  app.use("*", async (c, next) => {
+    c.set("principal" as never, actor as never);
+    await next();
+  });
+  app.route(
+    "/",
+    createFederationCommercialRoutes(
+      f.sourceApprovals,
+      new FederationCommercialSubmissionService(db, f.source.signing.siteId),
+      undefined,
+      offline,
+    ),
+  );
+  const path = `/federation/commercial-agreements/${f.terms.agreementRevisionId}/received-usage`;
+  const list = await app.request(path);
+  expect(list.status).toBe(200);
+  expect(await list.json()).toMatchObject({ data: [{ operationId: f.operationId }] });
+  const response = await app.request(`${path}/${f.operationId}`);
+  expect(response.status).toBe(200);
+  expect(response.headers.get("cache-control")).toBe("no-store");
+  expect(await response.json()).toMatchObject({
+    data: { syncEnabled: false, reports: [{ number: 1 }] },
+  });
+  const before = await offline.get(f.sourceActor, f.terms.agreementRevisionId, f.operationId);
+  expect(before.reports).toHaveLength(1);
+  const refresh = await app.request(`${path}/${f.operationId}/refresh`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: "{}",
+  });
+  expect(refresh.status).toBe(409);
+  expect(await refresh.json()).toMatchObject({ error: { code: "ASSET_UNAVAILABLE" } });
+  await offline.discover();
+  expect(await offline.advanceNext()).toBe(false);
+  const saved = await offline.get(f.sourceActor, f.terms.agreementRevisionId, f.operationId);
+  expect(saved.sync).toEqual(before.sync);
+  actor = f.actor;
+  expect((await app.request(`${path}/${f.operationId}`)).status).not.toBe(200);
+});

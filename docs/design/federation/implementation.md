@@ -671,7 +671,7 @@ reportId 为客户端持久 UUID。事务锁原工作项，再核对最新报告
 
 迁移 0118 新增持久读取状态和 federation_received_usage，保留提供方原签名及验过的页签名。60 秒数据库租约、SKIP LOCKED 与 token 复查封锁迟到响应；网络调用不持锁，保存前重验当前机构信任。报告和读取位置同事务提交，写入失败不前进，重启后续读；还有后续更正时立即继续，读到最新后每 60 秒检查。网络失败退避，身份/协议错误进入 needs_review。后台沿用机构商业批准，不以原操作人员离职抹除历史同步权；真人读取仍须当前组织成员及 agreement.read。
 
-GET /api/federation/commercial-agreements/:revisionId/received-usage 及 /:operationId 提供本机构状态和分页报告；POST /:operationId/refresh 仅接受空对象、要求 agreement.approve，只重排同步，不在 HTTP 内等待网络，也不能抢占活动租约。接口 no-store，不返回租约 token 或原始页签名。报告收到、技术更正、双方确认账单和链上提交继续是不同事实；本服务不创建额度、账单、付款或新的存证待办，直接模式完全不探测 Fabric。
+GET /api/federation/commercial-agreements/:revisionId/received-usage 及 /:operationId 提供本机构状态和分页报告；POST /:operationId/refresh 仅接受空对象、要求 agreement.approve，只重排同步，不在 HTTP 内等待网络，也不能抢占活动租约。接口 no-store，不返回租约 token 或原始页签名。保留机构签名配置时，未配置发送通道也注册历史读取接口；详情的 syncEnabled 表示当前可否同步。关闭通道不删除记录或改写游标，刷新在检查权限后返回 ASSET_UNAVAILABLE，发现/推进不访问网络。报告收到、技术更正、双方确认账单和链上提交继续是不同事实；本服务不创建额度、账单、付款或新的存证待办，直接模式完全不探测 Fabric。
 
 
 ### 商业用量 Web 操作

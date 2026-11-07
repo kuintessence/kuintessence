@@ -339,7 +339,7 @@ export function CommercialUsagePanel({
                         {t("federation.usage.retry")}
                       </Button>
                     ) : null}
-                    {!provider ? (
+                    {"syncEnabled" in detail.data && detail.data.syncEnabled ? (
                       <Button
                         variant="outline"
                         disabled={blocked || detail.isFetching}
@@ -391,6 +391,11 @@ export function CommercialUsagePanel({
                 <p className="break-all text-sm text-status-failed">
                   {t("federation.usage.errorCode")}:{" "}
                   {"task" in detail.data ? detail.data.task.lastError : detail.data.sync?.lastError}
+                </p>
+              ) : null}
+              {"syncEnabled" in detail.data && !detail.data.syncEnabled ? (
+                <p role="status" className="text-sm text-muted-foreground">
+                  {t("federation.usage.syncDisabled")}
                 </p>
               ) : null}
               {"sync" in detail.data ? (

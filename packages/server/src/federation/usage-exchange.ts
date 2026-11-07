@@ -577,7 +577,12 @@ export class FederationUsageExchange {
         .orderBy(desc(received.number))
         .limit(limit + 1)
         .offset(offset);
-      return { sync: sync ?? null, reports: rows.slice(0, limit), hasMore: rows.length > limit };
+      return {
+        sync: sync ?? null,
+        syncEnabled: !!this.send,
+        reports: rows.slice(0, limit),
+        hasMore: rows.length > limit,
+      };
     });
   }
 
@@ -585,6 +590,7 @@ export class FederationUsageExchange {
     await this.db.transaction(async (tx) => {
       await requireFederationCapability(tx, actor, "agreement.approve");
       await this.source(tx, operationId, actor, revisionId);
+      if (!this.send) throw new FederationError("ASSET_UNAVAILABLE");
       const [sync] = await tx
         .select(syncView)
         .from(syncs)

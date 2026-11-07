@@ -415,7 +415,7 @@ function usageSetup(provider = true, state: "reported" | "missing_data" = "repor
   };
   const detail = provider
     ? { task, reports: state === "reported" ? [record] : [], hasMore: false }
-    : { sync, reports: [record], hasMore: false };
+    : { sync, syncEnabled: true, reports: [record], hasMore: false };
   const path = `/federation/commercial-agreements/${revisionId}/${provider ? "usage" : "received-usage"}`;
   vi.mocked(api.get).mockImplementation(async (url) => ({
     data: url.startsWith(`${path}?`) ? [provider ? task : sync] : detail,
@@ -615,4 +615,20 @@ test("new commercial meters bind unit atomically while imported legacy meter val
     perQuantity: "1000",
     amount: "0",
   });
+});
+
+test("usage received history stays readable with transport disabled and no misleading refresh action", async () => {
+  const f = usageSetup(false);
+  if (!("syncEnabled" in f.detail)) throw new Error("Expected received detail");
+  f.detail.syncEnabled = false;
+  render(f.renderPanel());
+  await openUsage(false);
+  expect(
+    await screen.findByText(
+      "Institution transport is not configured. Saved reports remain available.",
+    ),
+  ).toBeTruthy();
+  expect(screen.getByText("Received and signature verified")).toBeTruthy();
+  expect(screen.queryByRole("button", { name: "Sync provider reports" })).toBeNull();
+  expect(api.post).not.toHaveBeenCalled();
 });

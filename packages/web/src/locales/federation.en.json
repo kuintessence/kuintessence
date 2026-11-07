@@ -419,6 +419,7 @@
       "taskId": "Task ID",
       "previousReport": "Previous report",
       "signature": "Report signature",
+      "syncDisabled": "Institution transport is not configured. Saved reports remain available.",
       "lastSync": "Last synchronized",
       "errorCode": "Error code",
       "correctionNotice": "The original report stays intact. This signs a provider technical assertion; it does not confirm a bill or initiate payment. Your institution must verify and retain the supporting material.",
