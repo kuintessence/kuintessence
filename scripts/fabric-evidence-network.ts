@@ -341,6 +341,7 @@ async function setup() {
                 "commercial-usage",
                 "commercial-discount",
                 "commercial-bill",
+                "commercial-settlement",
                 ...(gate
                   ? ["commercial-reservation", "commercial-release", "commercial-terminal"]
                   : []),

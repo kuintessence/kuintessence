@@ -30,6 +30,7 @@ export const CommercialSigningKindSchema = z.enum([
   "commercial-terminal",
   "commercial-discount",
   "commercial-bill",
+  "commercial-settlement",
 ]);
 
 /** Private rates use integer amount per integer quantity; the execution agreement fixes the money unit. */
@@ -240,6 +241,39 @@ export const CommercialBillSchema = z
   );
 export type CommercialBill = z.infer<typeof CommercialBillSchema>;
 
+/** A separately approved allocation settlement, never proof of bank payment or a new credit issue. */
+export const CommercialSettlementSchema = z
+  .strictObject({
+    protocolVersion: z.literal(1),
+    kind: z.literal("commercial-settlement"),
+    settlementId: Id,
+    domainId: Id,
+    agreementRevisionId: Id,
+    billId: Id,
+    billDigest: FederationDigestSchema,
+    sourceSiteId: Id,
+    targetSiteId: Id,
+    reservationId: Id.nullable(),
+    terminal: z.strictObject({ terminalId: Id, digest: FederationDigestSchema }).nullable(),
+    unit: FederationDelegationSchema.shape.unit,
+    reservedAmount: FederationAmountSchema,
+    chargedAmount: FederationAmountSchema,
+    releasedAmount: FederationAmountSchema,
+    issuedAt: z.iso.datetime(),
+    salt: Salt,
+  })
+  .refine(
+    (value) =>
+      value.sourceSiteId !== value.targetSiteId &&
+      (value.reservationId !== null) === (value.terminal !== null) &&
+      [value.reservedAmount, value.chargedAmount, value.releasedAmount].every(
+        (amount) => FederationAmountSchema.safeParse(amount).success,
+      ) &&
+      BigInt(value.reservedAmount) === BigInt(value.chargedAmount) + BigInt(value.releasedAmount),
+    "Settlement must preserve the original reservation and institutional identities",
+  );
+export type CommercialSettlement = z.infer<typeof CommercialSettlementSchema>;
+
 export const CommercialBillApprovalSchema = z.object({
   localSiteId: Id,
   localOrgId: Id,
@@ -283,6 +317,7 @@ export const CommercialRecordTypeSchema = z.enum([
   "terminal",
   "discount",
   "bill",
+  "settlement",
 ]);
 export const CommercialReceiptQuerySchema = z.strictObject({
   operation: z.literal("get-commercial-receipt"),
@@ -384,6 +419,11 @@ export const CommercialAdapterProposalInputSchema = z.discriminatedUnion("operat
     ...ProposalIdentity,
     operation: z.literal("record-discount"),
     envelope: CommercialUsageEnvelopeSchema,
+  }),
+  z.strictObject({
+    ...ProposalIdentity,
+    operation: z.literal("settle-bill"),
+    envelope: CommercialAgreementEnvelopeSchema,
   }),
   z.strictObject({
     ...ProposalIdentity,

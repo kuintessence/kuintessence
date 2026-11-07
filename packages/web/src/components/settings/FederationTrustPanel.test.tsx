@@ -1,3 +1,4 @@
+import { FederationKeyInput } from "@kuintessence/shared/federation";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, expect, test, vi } from "vitest";
@@ -255,6 +256,9 @@ test("revoked institutions stay readable but cannot be resumed or edited", async
   expect((screen.getByRole("button", { name: "Edit" }) as HTMLButtonElement).disabled).toBe(true);
 });
 test("federation translations cover identical signing purposes in both languages", () => {
+  const kinds = FederationKeyInput.shape.allowedKinds.element.options;
+  expect(FederationKeyInput.shape.allowedKinds.safeParse(kinds).success).toBe(true);
+  expect(Object.keys(zh.federation.kinds).sort()).toEqual([...kinds].sort());
   expect(Object.keys(zh.federation.kinds).sort()).toEqual(Object.keys(en.federation.kinds).sort());
   expect(Object.keys(zh.federation).sort()).toEqual(Object.keys(en.federation).sort());
 });

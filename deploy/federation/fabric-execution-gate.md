@@ -377,3 +377,10 @@ market:
 完整轻量联合入口增加 `KQ_FEDERATION_LAB_SCENARIO=workflow bun run test:fabric:execution`，沿用同一隔离环境启用要求。它通过普通 Workflow API 提交 Federation → NoAction，检验自动市场/许可、真实远端作业、自动结果导入与下游文件；原 success/outage/stop 场景保留。
 
 本地资源计划只包含 Script/SoftwareUsecaseComputing 等实际本地计算节点；Federation 与控制节点不分配本地 Agent。纯远端工作流可在源机构没有计算集群时提交，后续仍需独立源端存储 Agent 完成文件回传。计划中的零本地计算成本不代表远端服务免费；远端价格、额度和用量仍由原机构合同及独立结算记录决定。
+
+
+## 已确认账单的独立结算
+
+`test:fabric:gate` 现额外使用独立预算验证 SettleBill，保持原竞态与恢复夹具不变。测试明确另签结算，原预留 100、账单应付 7、归还 93；读取实际提交的 PDC 写入核对 locked=0、spent=7、预留数=0。原 TERMINAL gate 与 CLOSED 公共需求不变；缺 B 背书为 INVALID 10，两份竞争结算只有一份 VALID，另一份为 MVCC INVALID 11；第三机构不获得结算私有正文。
+
+该样例使用签名终态/用量夹具，不运行真实科研作业。结果保存在忽略的网络目录 `gate-settlement.json`；正常参数和回执不包含价格/用量。Server 双边结算及新结算专用断链/崩溃联合验收仍待接入，既有 Adapter 七类恢复检查不代替这些项目。协议、升级边界见[独立额度结算](fabric-commercial.md#独立额度结算协议)。

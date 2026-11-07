@@ -19,6 +19,7 @@ import {
   type CommercialProposalInput,
   CommercialReleaseSchema,
   CommercialReservationSchema,
+  CommercialSettlementSchema,
   CommercialTerminalSchema,
   CommercialUsageSchema,
 } from "@kuintessence/shared/federation/commercial";
@@ -84,6 +85,7 @@ beforeAll(async () => {
           "commercial-terminal",
           "commercial-discount",
           "commercial-bill",
+          "commercial-settlement",
         ],
       })),
     },
@@ -738,7 +740,41 @@ async function billingInputs() {
     if (!body) throw new Error("Missing signed body");
     return `sha256:${createHash("sha256").update(Buffer.from(body, "base64url")).digest("hex")}`;
   };
+  const settlement = CommercialSettlementSchema.parse({
+    protocolVersion: 1,
+    kind: "commercial-settlement",
+    settlementId: randomUUID(),
+    domainId: bill.domainId,
+    agreementRevisionId: bill.request.agreementRevisionId,
+    billId: bill.billId,
+    billDigest: hash(sourceJws),
+    sourceSiteId: source.siteId,
+    targetSiteId: target.siteId,
+    reservationId: bill.reservationId,
+    terminal: { terminalId: randomUUID(), digest },
+    unit: bill.request.unit,
+    reservedAmount: bill.request.maxAmount,
+    chargedAmount: bill.calculation.dueAmount,
+    releasedAmount: (
+      BigInt(bill.request.maxAmount) - BigInt(bill.calculation.dueAmount)
+    ).toString(),
+    issuedAt: bill.issuedAt,
+    salt: randomBytes(32).toString("hex"),
+  });
+  const settlementJws = await signFederationMessage(CommercialSettlementSchema, settlement, source);
   return [
+    CommercialAdapterProposalInputSchema.parse({
+      operation: "settle-bill",
+      domainId: settlement.domainId,
+      recordId: settlement.settlementId,
+      digest: hash(settlementJws),
+      envelope: {
+        sourceSiteId: source.siteId,
+        targetSiteId: target.siteId,
+        sourceJws: settlementJws,
+        targetJws: await signFederationMessage(CommercialSettlementSchema, settlement, target),
+      },
+    }),
     CommercialAdapterProposalInputSchema.parse({
       operation: "confirm-bill",
       domainId: bill.domainId,
@@ -761,7 +797,7 @@ async function billingInputs() {
   ];
 }
 
-test("bill and discount proposals disclose only to the two PDC institutions, never normal arguments", async () => {
+test("bill, discount and settlement proposals disclose only to the two PDC institutions, never normal arguments", async () => {
   for (const value of await billingInputs()) {
     const provider = keys[1];
     if (!provider) throw new Error("Missing provider");
@@ -786,7 +822,11 @@ test("bill and discount proposals disclose only to the two PDC institutions, nev
       ?.getArgsList_asU8()
       .map((bytes) => Buffer.from(bytes).toString());
     expect(args).toEqual([
-      value.operation === "confirm-bill" ? "ConfirmBill" : "RecordDiscount",
+      value.operation === "confirm-bill"
+        ? "ConfirmBill"
+        : value.operation === "settle-bill"
+          ? "SettleBill"
+          : "RecordDiscount",
       value.domainId,
       value.recordId,
     ]);
@@ -807,7 +847,7 @@ test("new billing operations reject mismatched identities, old key authority and
     expect(
       CommercialAdapterProposalInputSchema.safeParse({ ...value, dueAmount: "10" }).success,
     ).toBe(false);
-    if (value.operation === "confirm-bill")
+    if (value.operation === "confirm-bill" || value.operation === "settle-bill")
       await expect(
         f.adapter.prepare({
           ...value,

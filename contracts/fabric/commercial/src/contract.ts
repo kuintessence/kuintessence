@@ -8,6 +8,7 @@ import {
 import {
   assertCommercialBill,
   assertCommercialDiscount,
+  assertCommercialSettlement,
 } from "@kuintessence/shared/federation/billing";
 import {
   CommercialAgreementEnvelopeSchema,
@@ -18,6 +19,7 @@ import {
   CommercialRecordTypeSchema,
   CommercialReleaseSchema,
   CommercialReservationSchema,
+  CommercialSettlementSchema,
   CommercialTerminalSchema,
   CommercialUsageEnvelopeSchema,
   CommercialUsageSchema,
@@ -59,11 +61,17 @@ const StoredBill = z.strictObject({
   envelope: CommercialAgreementEnvelopeSchema,
   terms: CommercialBillSchema,
 });
+const StoredSettlement = z.strictObject({
+  receipt: CommercialReceiptSchema,
+  envelope: CommercialAgreementEnvelopeSchema,
+  terms: CommercialSettlementSchema,
+});
 const StoredReservation = z.strictObject({
   receipt: CommercialReceiptSchema,
   envelope: CommercialAgreementEnvelopeSchema,
   reservation: CommercialReservationSchema,
-  state: z.enum(["locked", "released", "terminal"]),
+  state: z.enum(["locked", "released", "terminal", "settled"]),
+  settlement: StoredSettlement.optional(),
   terminal: z
     .strictObject({
       receipt: CommercialReceiptSchema,
@@ -773,6 +781,149 @@ export class CommercialLedger {
     );
     return encode(receipt);
   }
+  private async settle(
+    stub: Stub,
+    domain: FabricCommercialTrust["domains"][number],
+    recordId: string,
+  ) {
+    const envelope = this.input(stub, CommercialAgreementEnvelopeSchema),
+      now = stub.getDateTimestamp();
+    if (
+      envelope.sourceSiteId === envelope.targetSiteId ||
+      !domain.siteIds.includes(envelope.sourceSiteId) ||
+      !domain.siteIds.includes(envelope.targetSiteId)
+    )
+      return fail("POLICY_DENIED");
+    const signed = await this.verify(
+      stub,
+      CommercialSettlementSchema,
+      envelope.sourceJws,
+      envelope.sourceSiteId,
+      now,
+    );
+    const other = await this.verify(
+      stub,
+      CommercialSettlementSchema,
+      envelope.targetJws,
+      envelope.targetSiteId,
+      now,
+    );
+    if (signed.digest !== other.digest) return fail("OPERATION_CONFLICT");
+    const terms = signed.payload;
+    if (
+      terms.settlementId !== recordId ||
+      terms.domainId !== domain.domainId ||
+      terms.sourceSiteId !== envelope.sourceSiteId ||
+      terms.targetSiteId !== envelope.targetSiteId ||
+      Date.parse(terms.issuedAt) > now.getTime() + 60000
+    )
+      return fail("POLICY_DENIED");
+    const key = stub.createCompositeKey("settlement", [domain.domainId, recordId]);
+    const bytes = await this.privateValue(stub, domain.collection, key);
+    if (bytes.length) {
+      const original = StoredSettlement.parse(JSON.parse(Buffer.from(bytes).toString()));
+      if (original.receipt.digest !== signed.digest) return fail("OPERATION_CONFLICT");
+      await stub.putPrivateData(domain.collection, key, bytes);
+      return encode(original.receipt);
+    }
+    const billBytes = await this.privateValue(
+      stub,
+      domain.collection,
+      stub.createCompositeKey("bill", [domain.domainId, terms.billId]),
+    );
+    if (!billBytes.length) return fail("ASSET_UNAVAILABLE");
+    const bill = StoredBill.parse(JSON.parse(Buffer.from(billBytes).toString()));
+    assertCommercialSettlement(terms, bill.terms, bill.receipt.digest);
+    if (bill.terms.request.mode === "bilateral_direct") return fail("POLICY_DENIED");
+    const headKey = stub.createCompositeKey("settlement-head", [domain.domainId, terms.billId]);
+    if ((await this.privateValue(stub, domain.collection, headKey)).length)
+      return fail("OPERATION_CONFLICT");
+    const receipt = { recordId, digest: signed.digest },
+      settlement = { receipt, envelope, terms };
+    if (terms.reservationId) {
+      const reservationKey = stub.createCompositeKey("reservation", [
+        domain.domainId,
+        terms.reservationId,
+      ]);
+      const reservationBytes = await this.privateValue(stub, domain.collection, reservationKey);
+      if (!reservationBytes.length) return fail("ASSET_UNAVAILABLE");
+      const stored = StoredReservation.parse(JSON.parse(Buffer.from(reservationBytes).toString()));
+      const gateKey = stub.createCompositeKey("execution-gate", [
+        domain.domainId,
+        terms.reservationId,
+      ]);
+      const gate = MarketExecutionGateSchema.parse(
+        JSON.parse(
+          Buffer.from(await this.privateValue(stub, domain.collection, gateKey)).toString(),
+        ),
+      );
+      if (
+        stored.state !== "terminal" ||
+        stored.release ||
+        stored.settlement ||
+        !stored.terminal ||
+        !terms.terminal ||
+        !gate.terminal ||
+        stored.terminal.receipt.recordId !== terms.terminal?.terminalId ||
+        stored.terminal.receipt.digest !== terms.terminal.digest ||
+        gate.state !== "TERMINAL" ||
+        gate.terminal?.terminalId !== terms.terminal.terminalId ||
+        gate.terminal.digest !== terms.terminal.digest ||
+        gate.reservationDigest !== stored.receipt.digest ||
+        gate.reservationId !== terms.reservationId ||
+        federationCanonicalJson(stored.reservation.request) !==
+          federationCanonicalJson(bill.terms.request)
+      )
+        return fail("OPERATION_CONFLICT");
+      const request = stored.reservation.request;
+      const budgetKey = stub.createCompositeKey("budget", [
+        domain.domainId,
+        request.budgetDomainId,
+        request.epoch,
+      ]);
+      const budget = Budget.parse(
+        JSON.parse(
+          Buffer.from(await this.privateValue(stub, domain.collection, budgetKey)).toString(),
+        ),
+      );
+      const reserved = BigInt(terms.reservedAmount),
+        locked = BigInt(budget.locked),
+        spent = BigInt(budget.spent);
+      if (
+        budget.sourceSiteId !== terms.sourceSiteId ||
+        budget.targetSiteId !== terms.targetSiteId ||
+        budget.unit !== terms.unit ||
+        budget.reservations < 1 ||
+        locked < reserved ||
+        locked + spent > BigInt(budget.limit)
+      )
+        return fail("OPERATION_CONFLICT");
+      await stub.putPrivateData(
+        domain.collection,
+        budgetKey,
+        encode({
+          ...budget,
+          locked: (locked - reserved).toString(),
+          spent: (spent + BigInt(terms.chargedAmount)).toString(),
+          reservations: budget.reservations - 1,
+        }),
+      );
+      await stub.putPrivateData(
+        domain.collection,
+        reservationKey,
+        encode({ ...stored, state: "settled", settlement }),
+      );
+      // The terminal gate remains immutable: settlement cannot authorize a new attempt.
+    }
+    // Attested mode records the approved local settlement without creating a second spendable budget.
+    await stub.putPrivateData(domain.collection, key, encode(settlement));
+    await stub.putPrivateData(
+      domain.collection,
+      headKey,
+      encode({ settlementId: recordId, salt: terms.salt }),
+    );
+    return encode(receipt);
+  }
   async initialize(stub: Stub, identity: Identity): Promise<Buffer> {
     this.organization(identity, "trust-admin");
     const { fcn, params } = stub.getFunctionAndParameters();
@@ -858,6 +1009,7 @@ export class CommercialLedger {
         "RecordExecutionTerminal",
         "RecordDiscount",
         "ConfirmBill",
+        "SettleBill",
       ].includes(fcn)
     )
       return fail("INVALID_MESSAGE");
@@ -866,6 +1018,7 @@ export class CommercialLedger {
     const domain = this.trust.domains.find((domain) => domain.domainId === domainId);
     if (!domain?.siteIds.includes(org.siteId)) return fail("POLICY_DENIED");
     if (fcn === "RecordDiscount") return this.discount(stub, domain, recordId, org.siteId);
+    if (fcn === "SettleBill") return this.settle(stub, domain, recordId);
     if (fcn === "ConfirmBill") return this.bill(stub, domain, recordId);
     if (fcn === "ReserveExecution") return this.reserve(stub, domain, recordId);
     if (fcn === "ReleaseExecution") return this.release(stub, domain, recordId);

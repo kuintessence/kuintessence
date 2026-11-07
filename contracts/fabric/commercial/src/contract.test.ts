@@ -10,6 +10,7 @@ import {
   CommercialReceiptSchema,
   CommercialReleaseSchema,
   CommercialReservationSchema,
+  CommercialSettlementSchema,
   CommercialTerminalSchema,
   type CommercialUsage,
   CommercialUsageSchema,
@@ -69,6 +70,7 @@ beforeAll(async () => {
         "commercial-terminal",
         "commercial-discount",
         "commercial-bill",
+        "commercial-settlement",
       ],
     })),
   });
@@ -1264,4 +1266,127 @@ test("coordinated billing rejects usage that extends beyond the acknowledged ter
   const before = chain.budget();
   await expect(f.confirm()).rejects.toThrow("OPERATION_CONFLICT");
   expect(chain.budget()).toEqual(before);
+});
+
+async function settlementFixture(coordinated = true) {
+  const f = await billFixture(coordinated);
+  if (f.chain) {
+    f.chain.terminal.observedAt = f.stub.timestamp.toISOString();
+    f.chain.terminal.issuedAt = f.stub.timestamp.toISOString();
+    await f.chain.record();
+  }
+  const receipt = CommercialReceiptSchema.parse(JSON.parse((await f.confirm()).toString()));
+  const terminal = f.chain
+    ? JSON.parse(
+        Buffer.from(
+          f.stub.privateState.get(
+            `commercial_AB_v1:${f.stub.createCompositeKey("reservation", [domainId, f.chain.reservation.reservationId])}`,
+          ) ?? [],
+        ).toString(),
+      ).terminal.receipt
+    : null;
+  const value = CommercialSettlementSchema.parse({
+    protocolVersion: 1,
+    kind: "commercial-settlement",
+    settlementId: randomUUID(),
+    domainId,
+    agreementRevisionId: f.bill.request.agreementRevisionId,
+    billId: f.bill.billId,
+    billDigest: receipt.digest,
+    sourceSiteId: sites[0],
+    targetSiteId: sites[1],
+    reservationId: f.bill.reservationId,
+    terminal: terminal ? { terminalId: terminal.recordId, digest: terminal.digest } : null,
+    unit: f.bill.request.unit,
+    reservedAmount: f.bill.request.maxAmount,
+    chargedAmount: f.bill.calculation.dueAmount,
+    releasedAmount: (
+      BigInt(f.bill.request.maxAmount) - BigInt(f.bill.calculation.dueAmount)
+    ).toString(),
+    issuedAt: f.stub.timestamp.toISOString(),
+    salt: randomBytes(32).toString("hex"),
+  });
+  const settle = async (body = value, actor = identity()) =>
+    f.call(
+      "SettleBill",
+      body.settlementId,
+      await bilateral(CommercialSettlementSchema, body),
+      actor,
+    );
+  const budgetKey = `commercial_AB_v1:${f.stub.createCompositeKey("budget", [domainId, f.bill.request.budgetDomainId, f.bill.request.epoch])}`;
+  return { ...f, value, settle, budgetKey };
+}
+test("coordinated settlement consumes approved usage once, releases the remainder and preserves terminal gate", async () => {
+  const f = await settlementFixture();
+  const before = JSON.parse(Buffer.from(f.stub.privateState.get(f.budgetKey) ?? []).toString());
+  const publicBefore = new Map(f.stub.state),
+    gateKey = `commercial_AB_v1:${f.stub.createCompositeKey("execution-gate", [domainId, String(f.bill.reservationId)])}`;
+  const gateBefore = f.stub.privateState.get(gateKey);
+  const result = await f.settle();
+  const after = JSON.parse(Buffer.from(f.stub.privateState.get(f.budgetKey) ?? []).toString());
+  expect(BigInt(after.locked)).toBe(BigInt(before.locked) - BigInt(f.value.reservedAmount));
+  expect(BigInt(after.spent)).toBe(BigInt(before.spent) + BigInt(f.value.chargedAmount));
+  expect(after.reservations).toBe(before.reservations - 1);
+  expect(f.stub.privateState.get(gateKey)).toEqual(gateBefore);
+  expect(f.stub.state).toEqual(publicBefore);
+  const privateAfter = new Map(f.stub.privateState);
+  expect(await f.settle()).toEqual(result);
+  expect(f.stub.privateState).toEqual(privateAfter);
+  expect(await f.confirm()).toBeDefined();
+  await expect(f.settle({ ...f.value, settlementId: randomUUID() })).rejects.toThrow(
+    "OPERATION_CONFLICT",
+  );
+  await expect(f.settle({ ...f.value, salt: randomBytes(32).toString("hex") })).rejects.toThrow(
+    "OPERATION_CONFLICT",
+  );
+});
+test("attested settlement records agreement without creating or charging a chain budget", async () => {
+  const f = await settlementFixture(false);
+  const publicBefore = new Map(f.stub.state);
+  await f.settle();
+  expect([...f.stub.privateState.keys()].some((key) => key.includes("budget"))).toBe(false);
+  expect(f.stub.state).toEqual(publicBefore);
+  const receipt = CommercialReceiptSchema.parse(JSON.parse((await f.settle()).toString()));
+  f.stub.fcn = "GetRecordReceipt";
+  f.stub.params = [domainId, "settlement", f.value.settlementId];
+  f.stub.transient.clear();
+  expect(JSON.parse((await f.ledger.invoke(f.stub, identity(1))).toString())).toEqual({ receipt });
+  await expect(f.ledger.invoke(f.stub, identity(2))).rejects.toThrow("POLICY_DENIED");
+});
+test("settlement requires both fresh business signatures and its explicit signing purpose", async () => {
+  const f = await settlementFixture();
+  const signed = await bilateral(CommercialSettlementSchema, f.value),
+    before = new Map(f.stub.privateState);
+  await expect(
+    f.call("SettleBill", f.value.settlementId, { ...signed, targetJws: signed.sourceJws }),
+  ).rejects.toThrow();
+  await expect(f.settle(f.value, identity(2))).rejects.toThrow("POLICY_DENIED");
+  const denied = structuredClone(trust);
+  for (const item of denied.keyPurposes)
+    item.kinds = item.kinds.filter((kind) => kind !== "commercial-settlement");
+  const g = await setup(denied);
+  await expect(g.call("SettleBill", f.value.settlementId, signed)).rejects.toThrow(
+    "UNTRUSTED_IDENTITY",
+  );
+  expect(f.stub.privateState).toEqual(before);
+});
+test("settlement refuses substituted bills, amounts and terminal evidence without touching balances", async () => {
+  const f = await settlementFixture();
+  const before = new Map(f.stub.privateState);
+  for (const change of [
+    { billDigest: `sha256:${"f".repeat(64)}` },
+    { chargedAmount: "0", releasedAmount: f.value.reservedAmount },
+    { unit: "other.micro" },
+    { terminal: { terminalId: randomUUID(), digest: `sha256:${"f".repeat(64)}` } },
+    { issuedAt: new Date(+f.stub.timestamp + 120000).toISOString() },
+  ])
+    await expect(f.settle({ ...f.value, ...change })).rejects.toThrow();
+  expect(f.stub.privateState).toEqual(before);
+});
+test("missing settlement private data cannot be mistaken for an unspent reservation", async () => {
+  const f = await settlementFixture();
+  await f.settle();
+  const key = `commercial_AB_v1:${f.stub.createCompositeKey("settlement", [domainId, f.value.settlementId])}`;
+  f.stub.privateState.delete(key);
+  await expect(f.settle()).rejects.toThrow("DATA_WAITING");
 });

@@ -11,12 +11,16 @@ import { dirname, join } from "node:path";
 import { Client, credentials } from "@grpc/grpc-js";
 import { connect, EndorseError, signers, type Transaction } from "@hyperledger/fabric-gateway";
 import { common, ledger, msp, peer, gateway as proto } from "@hyperledger/fabric-protos";
+import { calculateCommercialBill } from "@kuintessence/shared/federation/billing";
 import {
   CommercialAgreementSchema,
+  CommercialBillSchema,
   CommercialReceiptSchema,
   CommercialReleaseSchema,
   CommercialReservationSchema,
+  CommercialSettlementSchema,
   CommercialTerminalSchema,
+  CommercialUsageSchema,
   FabricCommercialTrustSchema,
 } from "@kuintessence/shared/federation/commercial";
 import {
@@ -119,13 +123,14 @@ async function run() {
     name: string,
     recordId: string,
     input?: unknown,
+    msps = ["AMSP", "BMSP"],
   ) =>
     gateway
       .getNetwork(network.channel)
       .getContract("kq-commercial")
       .newProposal(name, {
         arguments: [domain.domainId, recordId],
-        endorsingOrganizations: ["AMSP", "BMSP"],
+        endorsingOrganizations: msps,
         ...(input ? { transientData: { commercial: JSON.stringify(input) } } : {}),
       });
   const market = (
@@ -286,7 +291,11 @@ async function run() {
         return false;
       }
     });
-  const claimed = async (maxAmount = amount) => {
+  const claimed = async (
+    maxAmount = amount,
+    selected = terms,
+    selectedReceipt = agreementReceipt,
+  ) => {
     const demand = MarketDemandSchema.parse({
       protocolVersion: 1,
       demandId: randomUUID(),
@@ -297,7 +306,7 @@ async function run() {
       description: "",
       platform: "linux",
       architecture: "x86_64",
-      resources: terms.agreement.resourceLimit,
+      resources: selected.agreement.resourceLimit,
     });
     assert.equal(
       (await commit(await market(am, "PublishDemand", demand.demandId, demand).endorse()))
@@ -325,7 +334,7 @@ async function run() {
       reservationId: claim.claimId,
       demandId: demand.demandId,
       claimVersion: 2,
-      agreementDigest: agreementReceipt.digest,
+      agreementDigest: selectedReceipt.digest,
       salt: randomBytes(32).toString("hex"),
       request: {
         protocolVersion: 1,
@@ -333,17 +342,17 @@ async function run() {
         operationId: randomUUID(),
         senderSiteId: source.siteId,
         recipientSiteId: target.siteId,
-        agreementRevisionId: agreementReceipt.recordId,
+        agreementRevisionId: selectedReceipt.recordId,
         mode: "ledger_coordinated",
-        budgetDomainId: terms.agreement.budgetDomainId,
-        epoch: terms.agreement.epoch,
-        unit: terms.agreement.unit,
+        budgetDomainId: selected.agreement.budgetDomainId,
+        epoch: selected.agreement.epoch,
+        unit: selected.agreement.unit,
         taskId: randomUUID(),
         attempt: 1,
         issuedAt: new Date().toISOString(),
         expiresAt: new Date(time + 600000).toISOString(),
         executionExpiresAt: new Date(time + 1200000).toISOString(),
-        template: terms.agreement.templates[0],
+        template: selected.agreement.templates[0],
         resources: demand.resources,
         maxAmount,
         inputManifestDigest: `sha256:${"c".repeat(64)}`,
@@ -863,9 +872,272 @@ async function run() {
   passed.push(
     "bilateral private terminal acknowledgment invalidates an endorsed renewal by hashed MVCC; either participant closes the exact activation, replay stays CLOSED and funds remain locked",
   );
+  // A separate approved budget keeps settlement assertions independent of the gate-race fixtures.
+  const settlementProbe = `PRIVATE-SETTLEMENT-${randomUUID()}`;
+  const settlementTerms = CommercialAgreementSchema.parse({
+    ...terms,
+    agreement: {
+      ...terms.agreement,
+      agreementRevisionId: randomUUID(),
+      budgetDomainId: randomUUID(),
+      epoch: randomUUID(),
+      budgetLimit: "100",
+      maxTaskAmount: "100",
+      maxReservations: 2,
+    },
+    priceVersionId: randomUUID(),
+    prices: [
+      { metric: "job.elapsed", quantityUnit: "job-millisecond", perQuantity: "1000", amount: "1" },
+    ],
+    termsText: settlementProbe,
+    salt: randomBytes(32).toString("hex"),
+  });
+  const settlementRegistration = await commercial(
+    a,
+    "RegisterAgreement",
+    settlementTerms.agreement.agreementRevisionId,
+    await bilateral(CommercialAgreementSchema, settlementTerms),
+  ).endorse();
+  assert.equal((await commit(settlementRegistration)).successful, true);
+  const settlementAgreementReceipt = CommercialReceiptSchema.parse(
+    JSON.parse(Buffer.from(settlementRegistration.getResult()).toString()),
+  );
+  const settlementTask = await lock(
+    await claimed("100", settlementTerms, settlementAgreementReceipt),
+  );
+  const settlementActivation = activation(settlementTask);
+  assert.equal(
+    (
+      await commit(
+        await market(
+          am,
+          "ActivateDemand",
+          settlementTask.demand.demandId,
+          settlementActivation,
+        ).endorse(),
+      )
+    ).successful,
+    true,
+  );
+  await synced(settlementTask.demand.demandId, "ACTIVE");
+  const settlementTerminal = CommercialTerminalSchema.parse({
+    ...terminal,
+    terminalId: randomUUID(),
+    reservationId: settlementTask.reservation.reservationId,
+    reservationDigest: settlementTask.receipt.digest,
+    activationId: settlementActivation.activationId,
+    observedAt: new Date().toISOString(),
+    issuedAt: new Date().toISOString(),
+    salt: randomBytes(32).toString("hex"),
+  });
+  const terminalSubmission = await commercial(
+    a,
+    "RecordExecutionTerminal",
+    settlementTerminal.terminalId,
+    await bilateral(CommercialTerminalSchema, settlementTerminal),
+  ).endorse();
+  assert.equal((await commit(terminalSubmission)).successful, true);
+  const settlementTerminalReceipt = CommercialReceiptSchema.parse(
+    JSON.parse(Buffer.from(terminalSubmission.getResult()).toString()),
+  );
+  const settledGate = MarketExecutionGateSchema.parse({
+    ...settlementTask.gate,
+    version: 2,
+    state: "TERMINAL",
+    terminal: {
+      terminalId: settlementTerminal.terminalId,
+      activationId: settlementActivation.activationId,
+      digest: settlementTerminalReceipt.digest,
+    },
+  });
+  const closedSettlementGateHash = createHash("sha256")
+    .update(JSON.stringify(settledGate))
+    .digest("hex");
+  await retryRead(
+    async () => (await hash(settlementTask.reservation.reservationId)) === closedSettlementGateHash,
+  );
+  const settlementClosure = MarketClosureSchema.parse({
+    demandId: settlementTask.demand.demandId,
+    closureId: settlementTerminal.terminalId,
+    expectedVersion: 3,
+    gate: settledGate,
+  });
+  assert.equal(
+    (
+      await commit(
+        await market(
+          am,
+          "CloseDemand",
+          settlementTask.demand.demandId,
+          settlementClosure,
+        ).endorse(),
+      )
+    ).successful,
+    true,
+  );
+  await synced(settlementTask.demand.demandId, "CLOSED");
+  const metered = CommercialUsageSchema.parse({
+    protocolVersion: 1,
+    kind: "commercial-usage",
+    reportId: randomUUID(),
+    domainId: domain.domainId,
+    agreementRevisionId: settlementTerms.agreement.agreementRevisionId,
+    agreementDigest: settlementAgreementReceipt.digest,
+    sourceSiteId: source.siteId,
+    targetSiteId: target.siteId,
+    taskId: settlementTask.reservation.request.taskId,
+    attempt: 1,
+    periodStart: settlementTask.reservation.request.issuedAt,
+    periodEnd: settlementTerminal.observedAt,
+    reportedAt: new Date().toISOString(),
+    measurements: [
+      {
+        metric: "job.elapsed",
+        quantityUnit: "job-millisecond",
+        quantity: "7000",
+        evidenceDigest: settlementTerminal.executionEvidenceDigest,
+      },
+    ],
+    salt: randomBytes(32).toString("hex"),
+  });
+  const meteredSubmission = await commercial(b, "RecordUsage", metered.reportId, {
+    providerJws: await signFederationMessage(CommercialUsageSchema, metered, target),
+  }).endorse();
+  assert.equal((await commit(meteredSubmission)).successful, true);
+  const meteredReceipt = CommercialReceiptSchema.parse(
+    JSON.parse(Buffer.from(meteredSubmission.getResult()).toString()),
+  );
+  const settlementBill = CommercialBillSchema.parse({
+    protocolVersion: 1,
+    kind: "commercial-bill",
+    billId: randomUUID(),
+    domainId: domain.domainId,
+    agreementDigest: settlementAgreementReceipt.digest,
+    priceVersionId: settlementTerms.priceVersionId,
+    reportId: metered.reportId,
+    reportDigest: meteredReceipt.digest,
+    request: settlementTask.reservation.request,
+    reservationId: settlementTask.reservation.reservationId,
+    discount: null,
+    calculation: calculateCommercialBill(
+      settlementTerms,
+      settlementTask.reservation.request,
+      metered,
+    ),
+    issuedAt: new Date().toISOString(),
+    salt: randomBytes(32).toString("hex"),
+  });
+  const billSubmission = await commercial(
+    a,
+    "ConfirmBill",
+    settlementBill.billId,
+    await bilateral(CommercialBillSchema, settlementBill),
+  ).endorse();
+  assert.equal((await commit(billSubmission)).successful, true);
+  const settlementBillReceipt = CommercialReceiptSchema.parse(
+    JSON.parse(Buffer.from(billSubmission.getResult()).toString()),
+  );
+  const settlement = CommercialSettlementSchema.parse({
+    protocolVersion: 1,
+    kind: "commercial-settlement",
+    settlementId: randomUUID(),
+    domainId: domain.domainId,
+    agreementRevisionId: settlementTerms.agreement.agreementRevisionId,
+    billId: settlementBill.billId,
+    billDigest: settlementBillReceipt.digest,
+    sourceSiteId: source.siteId,
+    targetSiteId: target.siteId,
+    reservationId: settlementTask.reservation.reservationId,
+    terminal: {
+      terminalId: settlementTerminal.terminalId,
+      digest: settlementTerminalReceipt.digest,
+    },
+    unit: settlementBill.request.unit,
+    reservedAmount: "100",
+    chargedAmount: "7",
+    releasedAmount: "93",
+    issuedAt: new Date().toISOString(),
+    salt: randomBytes(32).toString("hex"),
+  });
+  const settlementEnvelope = await bilateral(CommercialSettlementSchema, settlement);
+  probes.push(
+    settlementProbe,
+    settlement.salt,
+    settlementEnvelope.sourceJws,
+    settlementEnvelope.targetJws,
+  );
+  await assert.rejects(
+    commercial(c, "SettleBill", settlement.settlementId, settlementEnvelope).endorse(),
+    rejected("POLICY_DENIED"),
+  );
+  const singleEndorser = await commercial(
+    a,
+    "SettleBill",
+    settlement.settlementId,
+    settlementEnvelope,
+    ["AMSP"],
+  ).endorse();
+  const invalidSettlement = await commit(singleEndorser);
+  assert.equal(invalidSettlement.code, peer.TxValidationCode.ENDORSEMENT_POLICY_FAILURE);
+  const alternateSettlement = {
+    ...settlement,
+    settlementId: randomUUID(),
+    salt: randomBytes(32).toString("hex"),
+  };
+  const [settleTx, duplicateSettleTx] = await Promise.all([
+    commercial(a, "SettleBill", settlement.settlementId, settlementEnvelope).endorse(),
+    commercial(
+      b,
+      "SettleBill",
+      alternateSettlement.settlementId,
+      await bilateral(CommercialSettlementSchema, alternateSettlement),
+    ).endorse(),
+  ]);
+  const settlementStatus = await commit(settleTx),
+    duplicateSettlementStatus = await commit(duplicateSettleTx);
+  assert.equal(settlementStatus.successful, true);
+  assert.equal(duplicateSettlementStatus.code, peer.TxValidationCode.MVCC_READ_CONFLICT);
+  const settlementReplay = await commercial(
+    b,
+    "SettleBill",
+    settlement.settlementId,
+    settlementEnvelope,
+  ).endorse();
+  assert.deepEqual(settlementReplay.getResult(), settleTx.getResult());
+  assert.equal((await commit(settlementReplay)).successful, true);
+  await assert.rejects(
+    commercial(
+      b,
+      "SettleBill",
+      alternateSettlement.settlementId,
+      await bilateral(CommercialSettlementSchema, alternateSettlement),
+    ).endorse(),
+    rejected("OPERATION_CONFLICT"),
+  );
+  assert.equal(await hash(settlementTask.reservation.reservationId), closedSettlementGateHash);
+  assert.equal((await current(settlementTask.demand.demandId)).status, "CLOSED");
+  await writeFile(
+    join(dirname(z.string().parse(process.argv[2])), "gate-settlement.json"),
+    JSON.stringify({
+      settlement,
+      valid: {
+        transactionId: settlementStatus.transactionId,
+        blockNumber: String(settlementStatus.blockNumber),
+        code: settlementStatus.code,
+      },
+      invalidMissingEndorsement: invalidSettlement.code,
+      invalidDuplicate: duplicateSettlementStatus.code,
+      gateHash: closedSettlementGateHash,
+    }),
+    { mode: 0o600 },
+  );
+  passed.push(
+    "separately approved allocation settlement charges 7 and returns 93; missing organizational endorsement is INVALID, native MVCC admits one settlement and replay cannot reopen the terminal gate",
+  );
   // Read actual committed PDC writes, independently of application projections.
   const outsiders = [c, await connection("C", false, "A"), await connection("A", false, "C")];
   let latestBudget: { locked: string; spent: string; reservations: number } | undefined;
+  let settlementBudget: typeof latestBudget;
   for (const block of [...blocks].sort((x, y) => (x < y ? -1 : 1))) {
     for (const gateway of [a, b, ...outsiders]) {
       const events = await gateway
@@ -901,10 +1173,15 @@ async function run() {
             ];
             if (metadata && [...metadata].every((code) => code === peer.TxValidationCode.VALID))
               for (const write of writes)
-                if (write.key.startsWith("\u0000budget\u0000"))
-                  latestBudget = z
+                if (write.key.startsWith("\u0000budget\u0000")) {
+                  const budget = z
                     .object({ locked: z.string(), spent: z.string(), reservations: z.number() })
                     .parse(JSON.parse(Buffer.from(write.value).toString()));
+                  if (write.key.includes(settlementTerms.agreement.budgetDomainId))
+                    settlementBudget = budget;
+                  else if (write.key.includes(terms.agreement.budgetDomainId))
+                    latestBudget = budget;
+                }
           }
           received = true;
           break;
@@ -915,6 +1192,7 @@ async function run() {
       assert(received);
     }
   }
+  assert.deepEqual(settlementBudget, { locked: "0", spent: "7", reservations: 0 });
   assert.deepEqual(latestBudget, {
     locked: (BigInt(amount) * 2n).toString(),
     spent: "0",

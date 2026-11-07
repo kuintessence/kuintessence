@@ -1,10 +1,16 @@
 import { expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
-import { assertCommercialBill, assertCommercialDiscount, calculateCommercialBill } from "./billing";
+import {
+  assertCommercialBill,
+  assertCommercialDiscount,
+  assertCommercialSettlement,
+  calculateCommercialBill,
+} from "./billing";
 import {
   CommercialAgreementSchema,
   CommercialBillSchema,
   CommercialDiscountSchema,
+  CommercialSettlementSchema,
   CommercialUsageSchema,
 } from "./commercial";
 import { FederationDelegationSchema } from "./index";
@@ -283,4 +289,69 @@ test("discount binds one bill, exact usage revision, institution, currency and s
         digest: f.digest,
       }),
     ).toThrow("POLICY_DENIED");
+});
+
+function settlementFixture() {
+  const f = fixture();
+  const value = CommercialSettlementSchema.parse({
+    protocolVersion: 1,
+    kind: "commercial-settlement",
+    settlementId: randomUUID(),
+    domainId: f.bill.domainId,
+    agreementRevisionId: f.request.agreementRevisionId,
+    billId: f.bill.billId,
+    billDigest: f.digest,
+    sourceSiteId: f.request.senderSiteId,
+    targetSiteId: f.request.recipientSiteId,
+    reservationId: null,
+    terminal: null,
+    unit: f.request.unit,
+    reservedAmount: f.request.maxAmount,
+    chargedAmount: f.bill.calculation.dueAmount,
+    releasedAmount: (BigInt(f.request.maxAmount) - BigInt(f.bill.calculation.dueAmount)).toString(),
+    issuedAt: f.bill.issuedAt,
+    salt: "f".repeat(64),
+  });
+  return { ...f, value };
+}
+test("settlement binds the exact bill, original reservation and fixed money unit", () => {
+  const f = settlementFixture();
+  expect(() => assertCommercialSettlement(f.value, f.bill, f.digest)).not.toThrow();
+  for (const change of [
+    { billId: randomUUID() },
+    { billDigest: `sha256:${"0".repeat(64)}` },
+    { agreementRevisionId: randomUUID() },
+    { domainId: randomUUID() },
+    { sourceSiteId: randomUUID() },
+    { targetSiteId: randomUUID() },
+    { unit: "other.micro" },
+    { reservedAmount: "9", releasedAmount: "1" },
+    { chargedAmount: "7", releasedAmount: "1" },
+    { issuedAt: "2027-01-01T00:00:00Z" },
+  ])
+    expect(() => assertCommercialSettlement({ ...f.value, ...change }, f.bill, f.digest)).toThrow();
+});
+test("settlement conservation rejects negative, overflow, fractional and unbalanced allocations", () => {
+  const f = settlementFixture();
+  for (const change of [
+    { chargedAmount: "-1" },
+    { releasedAmount: "0.5" },
+    { reservedAmount: "1".repeat(39) },
+    { chargedAmount: "9" },
+    { sourceSiteId: f.value.targetSiteId },
+    { reservationId: randomUUID() },
+    { terminal: { terminalId: randomUUID(), digest: f.digest } },
+  ])
+    expect(CommercialSettlementSchema.safeParse({ ...f.value, ...change }).success).toBe(false);
+});
+test("zero-charge settlements return reserved capacity without creating a reward", () => {
+  const f = settlementFixture();
+  f.bill.calculation.dueAmount = "0";
+  expect(() =>
+    assertCommercialSettlement(
+      { ...f.value, chargedAmount: "0", releasedAmount: f.value.reservedAmount },
+      f.bill,
+      f.digest,
+    ),
+  ).not.toThrow();
 });

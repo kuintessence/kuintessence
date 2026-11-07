@@ -48,6 +48,7 @@ const recordTypes = {
   "record-execution-terminal": "terminal",
   "record-discount": "discount",
   "confirm-bill": "bill",
+  "settle-bill": "settlement",
 } as const;
 
 export class FederationCommercialSubmissionService {
@@ -480,6 +481,8 @@ export class FederationCommercialSubmissionService {
 
   private async beforeDisclosure(raw: CommercialAdapterProposalInput, tx?: PgTransaction) {
     const input = CommercialAdapterProposalInputSchema.parse(raw);
+    // Settlement needs its own durable local approval; a signed bill cannot grant it.
+    if (input.operation === "settle-bill") throw new FederationError("POLICY_DENIED");
     if (input.operation === "confirm-bill") {
       const [bill] = await (tx ?? this.db)
         .select()

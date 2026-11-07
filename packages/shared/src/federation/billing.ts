@@ -6,6 +6,8 @@ import {
   CommercialBillSchema,
   type CommercialDiscount,
   CommercialDiscountSchema,
+  type CommercialSettlement,
+  CommercialSettlementSchema,
   type CommercialUsage,
   CommercialUsageSchema,
 } from "./commercial";
@@ -137,4 +139,27 @@ export function assertCommercialBill(
   const calculation = calculateCommercialBill(terms, bill.request, usage, concession?.terms.amount);
   if (federationCanonicalJson(calculation) !== federationCanonicalJson(bill.calculation))
     throw new FederationError("OPERATION_CONFLICT");
+}
+
+export function assertCommercialSettlement(
+  raw: CommercialSettlement,
+  original: CommercialBill,
+  billDigest: string,
+) {
+  const value = CommercialSettlementSchema.parse(raw),
+    bill = CommercialBillSchema.parse(original);
+  if (
+    value.domainId !== bill.domainId ||
+    value.agreementRevisionId !== bill.request.agreementRevisionId ||
+    value.billId !== bill.billId ||
+    value.billDigest !== billDigest ||
+    value.sourceSiteId !== bill.request.senderSiteId ||
+    value.targetSiteId !== bill.request.recipientSiteId ||
+    value.reservationId !== bill.reservationId ||
+    value.unit !== bill.request.unit ||
+    value.reservedAmount !== bill.request.maxAmount ||
+    value.chargedAmount !== bill.calculation.dueAmount ||
+    Date.parse(value.issuedAt) < Date.parse(bill.issuedAt)
+  )
+    throw new FederationError("POLICY_DENIED");
 }
