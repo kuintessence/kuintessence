@@ -48,6 +48,7 @@ import { AuthzService, type AuthzTuple } from "./authz/service";
 import { loadServerConfig } from "./config";
 import { EventBus } from "./events/event-bus";
 import { FederationAccountingCollection } from "./federation/accounting-collection";
+import { FederationAgreementExchange } from "./federation/agreement-exchange";
 import { FederationAgreementService } from "./federation/agreements";
 import { FederationAssetService } from "./federation/assets";
 import { FederationAttestationService } from "./federation/attestation";
@@ -1654,6 +1655,9 @@ const federationAssets = new FederationAssetService(db, {
 });
 const federationSigningKey = await loadFederationSigningKey(config);
 const federationSender = await loadFederationSender(config);
+const federationAgreementExchange = federationSigningKey
+  ? new FederationAgreementExchange(db, federationSigningKey, federationSender)
+  : undefined;
 const federationConfirmations = federationSigningKey
   ? new FederationExecutionConfirmationService(
       db,
@@ -1821,6 +1825,7 @@ if (federationSigningKey)
     createFederationAgreementRoutes(
       new FederationAgreementService(db, federationSigningKey),
       federationAttestation,
+      federationAgreementExchange,
     ),
   );
 protectedApi.route("/", createActiveOrganizationRoutes(db));
@@ -2531,6 +2536,7 @@ const federationCommercialWorker = federationCommercial
       federationApprovalExchange,
       federationReservationProposals,
       federationExecutionAutomation,
+      federationAgreementExchange,
     )
   : undefined;
 federationCommercialWorker?.start();

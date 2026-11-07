@@ -90,6 +90,8 @@ export const federationSigningKeys = pgTable(
           | "delegation"
           | "acceptance"
           | "evidence-batch"
+          | "agreement-approval-query"
+          | "agreement-approval-waiting"
           | "commercial-approval-query"
           | "commercial-approval-waiting"
           | "reservation-proposal-receipt"
@@ -1859,6 +1861,45 @@ export const federationCommercialApprovalSyncs = pgTable(
     ),
     check(
       "federation_approval_sync_receipt",
+      sql`(${t.state} = 'complete') = (${t.verifiedAt} IS NOT NULL)`,
+    ),
+  ],
+);
+
+/** Original execution-consent signatures exchange independently of commercial contracts. */
+export const federationAgreementSyncs = pgTable(
+  "federation_agreement_syncs",
+  {
+    localSiteId: uuid("local_site_id").notNull(),
+    revisionId: uuid("revision_id").notNull(),
+    state: varchar("state", { length: 24 }).notNull().default("pending"),
+    lastError: varchar("last_error", { length: 64 }),
+    leaseToken: uuid("lease_token"),
+    leaseUntil: timestamp("lease_until", { withTimezone: true }),
+    nextAttemptAt: timestamp("next_attempt_at", { withTimezone: true }).notNull().defaultNow(),
+    verifiedAt: timestamp("verified_at", { withTimezone: true }),
+  },
+  (t) => [
+    primaryKey({ columns: [t.localSiteId, t.revisionId] }),
+    foreignKey({
+      name: "federation_agreement_sync_approval_fk",
+      columns: [t.localSiteId, t.revisionId],
+      foreignColumns: [
+        federationAgreementApprovals.localSiteId,
+        federationAgreementApprovals.revisionId,
+      ],
+    }),
+    index("federation_agreement_sync_pending").on(t.localSiteId, t.state, t.nextAttemptAt),
+    check(
+      "federation_agreement_sync_state",
+      sql`${t.state} IN ('pending','complete','needs_review')`,
+    ),
+    check(
+      "federation_agreement_sync_lease",
+      sql`(${t.leaseToken} IS NULL) = (${t.leaseUntil} IS NULL)`,
+    ),
+    check(
+      "federation_agreement_sync_receipt",
       sql`(${t.state} = 'complete') = (${t.verifiedAt} IS NOT NULL)`,
     ),
   ],

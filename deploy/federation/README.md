@@ -14,7 +14,7 @@
                               PostgreSQL 原子预留
 ```
 
-Gateway 使用 Node 22，强制校验客户端证书链，按实际 TLS 证书计算 SHA-256 指纹。客户端提供的身份头、Authorization、Cookie、代理头均不转发。Bun 私有入口按指纹查本地登记，验证机构签名，并在接单事务中锁定、复查信任状态。网关只允许 `/federation/v1/delegations` 、`/federation/v1/status`、`/federation/v1/cancellations` 、`/federation/v1/results` 、`/federation/v1/result-downloads` 、`/federation/v1/result-receipts`、`/federation/v1/materials` 和 `/federation/v1/input-downloads`；普通 Server HTTP 端口不挂载这些机构路由。
+Gateway 使用 Node 22，强制校验客户端证书链，按实际 TLS 证书计算 SHA-256 指纹。客户端提供的身份头、Authorization、Cookie、代理头均不转发。Bun 私有入口按指纹查本地登记，验证机构签名，并在接单事务中锁定、复查信任状态。网关仅转发[固定路径白名单](../../packages/server/src/federation/gateway.ts)内的机构请求，覆盖协议/商业签名交换、任务提案、委派、状态、取消、终态、用量、材料和文件传输；普通 Server HTTP 端口不挂载这些机构路由。
 
 Unix socket 只允许 Server 与 Gateway 的相同系统 UID 访问。独立目录须为该 UID 所有、权限 0700；socket 为 0600。运行时拒绝公开目录和权限过宽的签名私钥。Gateway 与 Server 属于同一机构的信任边界，不能把此 socket 挂给其他机构容器。各机构使用独立目录、数据库和签名密钥。Linux 启动依赖 util-linux 的 flock（Server、开发及 AIO 镜像已包含）。Server 与 Fabric Adapter 在同目录的持久 .lock 文件上串行化检查、清理和绑定：仅清理本 UID 所有且连接明确被拒绝的遗留 socket；仍有监听、探测超时、普通文件、符号链接或锁异常时拒绝替换。进程退出自动释放锁，.lock 文件不能在运行中删除；跨容器共享目录使用同一文件锁，存储须支持可靠的 flock 语义。非 Linux 保留原有拒绝占用路径的行为，不自动清理。
 
@@ -273,3 +273,23 @@ Server 已接结果传输服务、Agent RPC 与自动扫描。配置上述值并
 ### 私有合同与用量链码
 
 独立 kq-commercial 的机构 PDC、双签、原生双方背书及不可变用量/更正已接通并经过真实 Fabric 检查，见[商业链码配置与边界](fabric-commercial.md)。当前业务协议页面尚不提交商业链码，商业 Adapter、市场 gate、账单与结算继续开发；不会因登记了私有合同就放开链协调作业执行。
+
+
+## 已批准执行协议的自动签名交换
+
+迁移 0136 增加按站点与执行协议 revision 的持久交换进度。双方仍各自用本组织当前人工 `agreement.approve` 批准完全相同的条款；提供方在批准时自行选定受限执行账户。后台只交换已存在的原 `agreement` JWS，不代签对方、不替另一机构挑选账户，也不自动批准新合同或任务。直接合作、异步存证和链上协调都可使用；原人工 `counterparty` 导入入口继续保留。
+
+启用条件为原联邦签名配置、源站 TLS 发送配置及双方的机构信任登记。查询方当前签名密钥须明确允许 `agreement-approval-query`；接收方用于尚未批准响应的密钥须允许 `agreement-approval-waiting`；原协议签名密钥继续要求 `agreement`。新增用途仅用于机构传输，不加入 Fabric 商业签名治理。已有密钥不会自动扩权；目前用途目录共 34 项，部署只选择实际需要的项。
+
+固定私有入口为 `POST /federation/v1/agreement-approvals`，只接受 `application/jose`，证书指纹来自 Node Gateway；普通 Server HTTP 端口不暴露此路由。查询绑定双方、revision、原字节摘要、随机 queryId 和至多一分钟期限。未批准时返回不含正文或签名的专用等待回执；已批准时直接返回原协议 JWS，保持原 256 KiB 正文/512 KiB JOSE 限额，不嵌套第二层大信封。第三方机构、错摘要/正文、失效证书/签名用途及网络期间端点变化均拒绝。
+
+后台取得对签后复用人工安装路径：双签、协议状态、当前信任、组织与执行身份均重新核对；协调模式还要求相同组织的原商业合同双签。对签落库、接收方执行同意安装、必要的双边预算、机器审计和交换 complete 在同一事务提交，失败全部回滚。直接/异步存证合作只在接收方创建一次原预算，不增加链依赖；协调模式不创建可花费的本地预算，也不据此取得执行 gate 或放行作业。
+
+授权人的后续个人角色变化不会撤销已签机构同意；机构应显式暂停/撤销协议。停用接收方执行身份也阻止自动安装。后台采用持久租约及退避，重启/重复响应不重复安装或改写原签名；旧租约不能保存迟到成功/失败。未知网络错误自动重试，内容/信任/授权冲突进入 `needs_review`。无发送配置时不扫描或推进，仍可接收受信任查询并返回本地已批准的原签名。
+
+组织 API：
+
+- `GET /api/federation/agreements/:revisionId/exchange`：当前人工组织读取权限；返回 `enabled` 和 `sync`，后者为 `null` 或 `pending/complete/needs_review`、脱敏错误、下次尝试与确认时间，不返回原签名、证书或租约 token。
+- `POST /api/federation/agreements/:revisionId/exchange/retry {}`：当前人工审批权限；不能替换 revision、原签名、执行账户，不能抢占活租约或重置 complete。修正信任/恢复暂停协议后，可复核原记录。
+
+`complete` 仅表示本站取得并安装了所需同意，不保证另一方已完成交换，更不表示任务、材料、链 VALID 或结算已完成。现有 UI 仍保留人工导入操作，自动交换专用进度展示将在完整 Web/CLI 交付中接入。

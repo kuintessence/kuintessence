@@ -1751,3 +1751,23 @@ Market 新增 RequestExecutionStop、Adapter 新增 request-execution-stop，双
 
 
 真实运行一次通过并退出 0，自建服务、数据库、临时凭据和 scheduler namespace/RBAC 已清理。最终 Server 定向类型检查通过。没有重跑先前断链/主动停止、原生金额/背书或 Spack/Slurm/PBS/科学软件场景。本轮证明新任务预授权之后的初始激活/确认自动推进及轻量执行收尾；市场发布/认领、基础执行同意对签和实际委派仍由夹具显式发起。完整自动商务编排、普通 Workflow 协调节点、生产 MVCC 同意复核、账单/结算/争议与重开、物理介质、Peer 容量归档、完整 Web/CLI 和 PR 预览均继续待完成，未合并或部署 main。
+
+
+## 基础执行同意的自动签名交换
+
+迁移 0136 保存独立的执行协议交换进度，外键绑定原本站批准，不依赖商业合同队列。双方人工独立批准后，后台通过固定 mTLS agreement-approvals 入口交换原 agreement JWS；尚未批准时只返回绑定原查询的等待回执。新增 agreement-approval-query / agreement-approval-waiting 两个传输用途，信任目录扩至 34 项并更新中英文标签；不加入 Fabric 商业签名用途。原协议的执行账户、真实用户与组织 ID 不进入查询或等待消息，原 JWS 不套第二层大信封。
+
+内部自动导入与人工入口共用原执行同意安装事务，新增事务内原签名用途/摘要与身份不变检查。双方信任、协议状态/期限与提供方受限执行身份继续有效；协调模式仍须原商业双签，不能创建本地可花费预算或实际执行许可。直接/异步存证只在接收方安装一次原预算，不因后台交换依赖链。对签、安装、预算、机器审计和 complete 同事务；原个人角色变化不撤销已签机构同意，协议暂停/撤销或执行身份停用仍阻止新安装。
+
+后台租约隔离迟到成功/错误，网络故障持久退避，信任与内容冲突需要复核。已有人工导入可幂等恢复，但不替换原签名或把原人工审计改为机器批准。无发送配置时不发现/推进；固定私有入口仍能回复已批准记录。GET exchange 仅向当前组织返回脱敏进度，POST exchange/retry 只接受当前人工审批及空正文；不能抢占活租约、改原账户/签名或重置完成。生产商业 worker 复用轮询与退出机制，运行不要求配置商业链 Adapter。
+
+隔离 PostgreSQL 一次通过 30 个不同用例：13 个自动交换用例和 17 个原人工审批/执行同意回归。新增覆盖两种双边模式和协调模式、独立同意等待、并发/丢响应/worker 重启、角色变化、状态/用途/端点竞态、身份停用、过期租约迟到成功/错误、审计回滚、人工补入恢复、错机构/证书撤销、HTTP 权限与发送禁用。日志 temp/agreement-exchange-pg.log。原 HTTP 脱敏断言被静态检查指出 unknown 类型访问，改用序列化字段不存在断言并只补跑该项，重复用例不累加。
+
+协议与真实 TLS 共 11 个不同用例：初轮 10 项通过，新网关路径已返回 200，但夹具仍按原 13 次请求计数导致网关用例失败；更新为实际 14 次后仅重跑该项通过，非法查询串仍 404。日志 temp/agreement-exchange-wire.log、temp/agreement-exchange-gateway-final.log。全仓 lint 无错误，保留原有 47 warning / 1 info；707 个本地文档目标、workflow 引用、Python 语法和差异格式检查通过。全仓各 package 类型检查除上述测试访问外均已通过，修正后追加 Server 定向检查及原流程尚未运行的 Fabric 脚本检查。真实联合入口已移除基础执行同意的人工对签搬运，并保留 agreement-exchange.json；结果继续记录如下。
+
+
+最终 Server 定向类型检查与 Fabric 脚本类型检查均退出 0，修正后的 HTTP 用例通过。真实联合运行一次通过，日志 temp/agreement-exchange-execution.log，隔离证据 temp/federation-execution-success-06o05k4v，测试链材料 temp/fabric-network-qiodwi。双方在原商业合同登记后各自批准基础执行协议，不再调用人工 attachCounterparty；生产 worker 经真实 mTLS 自动交换原 JWS，两端原签名精确核对、交换 complete，agreement-exchange.json 保存双方进度。随后新任务机构预授权、提案投递、预留双签、私有提交、自动激活和两端执行确认全部贯通；激活 VALID 在区块 17，提供方/源方确认分别在区块 18/19。
+
+两个实际 Kubernetes Bash Job 完成，目标方从零份清单取得签名输入及环境锁；源方独立 Agent、独立桶实际下载 verified:42 的 12 字节文件并核对 SHA-256，结果回执与重复请求幂等通过。既有终态机构预授权完成双方签署、回传与 ACK，私有终态 VALID 在区块 20（94ebf0f45d08182fb7f62b4cf46868afe454a890422bf2a4321b7793a06d35f9），公共关闭 VALID 在区块 21（7cb0e3e79ef14744e68d85871753e1f923c866788b3efb76f4b4e7ba091f6b09）。本次未触发重复商业提交的 MVCC 人工复核分支，不能据此声称已提供生产自动恢复。运行退出 0，自建 Server、数据库和 scheduler namespace/RBAC 等运行资源已清理，私有测试证据留在忽略目录。
+
+本轮真实验收使用协调模式；两种双边模式的无链交换由独立数据库专项验证。未重复先前断链/主动停止、原生隐私/背书/金额、Spack/Slurm/PBS 或科学软件验收。市场发布/认领和实际委派仍由夹具显式发起；全自动市场编排、普通 Workflow 协调节点、生产 MVCC 同意复核、账单/结算/争议与重开、物理介质、Peer 容量归档、完整 Web/CLI 与 PR 预览继续待完成。没有合并或部署 main。

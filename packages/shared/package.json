@@ -70,6 +70,11 @@
       "bun": "./src/federation/commercial-approval-exchange.ts",
       "types": "./src/federation/commercial-approval-exchange.ts",
       "default": "./src/federation/commercial-approval-exchange.ts"
+    },
+    "./federation/agreement-exchange": {
+      "bun": "./src/federation/agreement-exchange.ts",
+      "types": "./src/federation/agreement-exchange.ts",
+      "default": "./src/federation/agreement-exchange.ts"
     }
   },
   "scripts": {

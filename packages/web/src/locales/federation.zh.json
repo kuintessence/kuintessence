@@ -76,6 +76,8 @@
       "material-query": "材料查询",
       "material-chunk": "材料数据块",
       "input-download-query": "输入下载请求",
+      "agreement-approval-query": "执行协议签名查询",
+      "agreement-approval-waiting": "执行协议批准等待回执",
       "commercial-approval-query": "商业批准查询",
       "commercial-approval-waiting": "商业批准等待回执",
       "reservation-proposal-receipt": "任务提案接收回执",

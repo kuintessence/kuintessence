@@ -49,6 +49,8 @@ export interface FederationVerificationKey {
     | "delegation"
     | "acceptance"
     | "evidence-batch"
+    | "agreement-approval-query"
+    | "agreement-approval-waiting"
     | "commercial-approval-query"
     | "commercial-approval-waiting"
     | "reservation-proposal-receipt"

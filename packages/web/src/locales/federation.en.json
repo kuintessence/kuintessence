@@ -76,6 +76,8 @@
       "material-query": "Material query",
       "material-chunk": "Material chunk",
       "input-download-query": "Input download query",
+      "agreement-approval-query": "Execution agreement signature query",
+      "agreement-approval-waiting": "Execution agreement approval waiting receipt",
       "commercial-approval-query": "Commercial approval query",
       "commercial-approval-waiting": "Commercial approval waiting receipt",
       "reservation-proposal-receipt": "Reservation proposal receipt",

@@ -1,5 +1,6 @@
 import { createLogger } from "@kuintessence/shared";
 import type { FederationAccountingCollection } from "./accounting-collection";
+import type { FederationAgreementExchange } from "./agreement-exchange";
 import type { FederationCommercialApprovalExchange } from "./commercial-approval-exchange";
 import type { FederationCommercialSubmissionService } from "./commercial-submissions";
 import type { FederationExecutionAutomation } from "./execution-automation";
@@ -28,6 +29,7 @@ export class FederationCommercialWorker {
     private readonly approvals?: FederationCommercialApprovalExchange,
     private readonly proposals?: FederationReservationProposalService,
     private readonly executionAutomation?: FederationExecutionAutomation,
+    private readonly agreements?: FederationAgreementExchange,
   ) {}
 
   start() {
@@ -43,6 +45,17 @@ export class FederationCommercialWorker {
   tick() {
     if (this.running) return this.running;
     this.running = (async () => {
+      if (this.agreements) {
+        try {
+          await this.agreements.discover();
+          for (let i = 0; i < 8 && !this.stopped; i++)
+            if (!(await this.agreements.advanceNext())) break;
+        } catch {
+          logger.error(
+            "Execution consent exchange failed; original institutional approvals remain in PostgreSQL",
+          );
+        }
+      }
       if (this.proposals) {
         try {
           for (let i = 0; i < 8 && !this.stopped; i++)

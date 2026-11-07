@@ -16,6 +16,7 @@ import {
 import { desc, eq } from "drizzle-orm";
 import { importPKCS8 } from "jose";
 import { z } from "zod";
+import { FederationAgreementExchange } from "../../packages/server/src/federation/agreement-exchange";
 import { FederationAgreementService } from "../../packages/server/src/federation/agreements";
 import { federationMaterialDigest } from "../../packages/server/src/federation/assets";
 import { FederationCommercialAgreementService } from "../../packages/server/src/federation/commercial-agreements";
@@ -192,16 +193,37 @@ if (import.meta.main) {
       terms: config.terms,
       executionUserId: identity.identity.userId,
     });
-    await agreementA.attachCounterparty(
-      a.actor,
-      config.terms.agreementRevisionId,
-      providerConsent.approvalJws,
-    );
-    await agreementB.attachCounterparty(
-      b.actor,
-      config.terms.agreementRevisionId,
-      sourceConsent.approvalJws,
-    );
+    await wait(async () => {
+      const source = await agreementA.get(a.actor, config.terms.agreementRevisionId);
+      const provider = await agreementB.get(b.actor, config.terms.agreementRevisionId);
+      for (const p of parties) {
+        const status = await new FederationAgreementExchange(p.db, p.key).status(
+          p.actor,
+          config.terms.agreementRevisionId,
+        );
+        assert(
+          status.sync?.state !== "needs_review",
+          status.sync?.lastError ?? "Execution consent exchange failed",
+        );
+        if (status.sync?.state !== "complete") return false;
+      }
+      assert.equal(source.counterpartyApprovalJws, providerConsent.approvalJws);
+      assert.equal(provider.counterpartyApprovalJws, sourceConsent.approvalJws);
+      return true;
+    }, "basic execution consent exchanged automatically over mTLS");
+    const agreementEvidence = [];
+    for (const p of parties) {
+      const status = await new FederationAgreementExchange(p.db, p.key).status(
+        p.actor,
+        config.terms.agreementRevisionId,
+      );
+      agreementEvidence.push({
+        siteId: p.key.siteId,
+        revisionId: config.terms.agreementRevisionId,
+        sync: status.sync,
+      });
+    }
+    await Bun.write(`${root}/agreement-exchange.json`, JSON.stringify(agreementEvidence));
     const reservationPolicies = [];
     for (const p of parties)
       reservationPolicies.push(

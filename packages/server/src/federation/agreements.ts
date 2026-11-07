@@ -6,6 +6,7 @@ import {
   federationReservations,
   federationWorkflowBindings,
   type PgDb,
+  type PgTransaction,
   userOrgMemberships,
   users,
   workflowRuns,
@@ -225,7 +226,30 @@ export class FederationAgreementService {
     revisionId: string,
     counterpartyApprovalJws: string,
   ) {
-    const local = await this.get(actor, revisionId);
+    return this.attach(await this.get(actor, revisionId), counterpartyApprovalJws, actor);
+  }
+
+  async attachExchanged(
+    revisionId: string,
+    counterpartyApprovalJws: string,
+    authorize: (tx: PgTransaction) => Promise<void>,
+  ) {
+    const [local] = await this.db
+      .select()
+      .from(federationAgreementApprovals)
+      .where(this.key(revisionId));
+    if (!local) throw new FederationError("AGREEMENT_UNAVAILABLE");
+    return this.attach(local, counterpartyApprovalJws, undefined, authorize);
+  }
+
+  private async attach(
+    local: Approval,
+    counterpartyApprovalJws: string,
+    human?: FederationActor,
+    guard?: (tx: PgTransaction) => Promise<void>,
+  ) {
+    const revisionId = local.revisionId;
+    const actor = human ?? { orgId: local.localOrgId, userId: local.approvedBy };
     const terms = FederationAgreementSchema.parse(local.terms);
     const otherSite =
       terms.sourceSiteId === this.signingKey.siteId ? terms.targetSiteId : terms.sourceSiteId;
@@ -247,14 +271,33 @@ export class FederationAgreementService {
       now,
     );
     if (verified.digest !== local.termsDigest) throw new FederationError("OPERATION_CONFLICT");
-    const authorize = async (tx: FederationTransaction) => {
+    const authorize = async (tx: PgTransaction) => {
+      await guard?.(tx);
       for (const key of [ownKey, otherKey].sort((a, b) => a.siteId.localeCompare(b.siteId)))
         await this.trust.assertKey(tx, key.siteId, key.keyId, this.clock());
-      await requireFederationCapability(tx, actor, "agreement.approve");
+      if (human) await requireFederationCapability(tx, human, "agreement.approve");
       const current = await this.localApproval(tx, actor, revisionId);
+      if (
+        current.termsDigest !== local.termsDigest ||
+        current.approvalJws !== local.approvalJws ||
+        current.executionUserId !== local.executionUserId
+      )
+        throw new FederationError("OPERATION_CONFLICT");
       if (current.state !== "active") throw new FederationError("AGREEMENT_UNAVAILABLE");
-      for (const key of [ownKey, otherKey])
+      for (const [key, jws] of [
+        [ownKey, local.approvalJws],
+        [otherKey, counterpartyApprovalJws],
+      ] as const) {
         await this.trust.assertKey(tx, key.siteId, key.keyId, this.clock());
+        const fresh = await this.trust.resolveKey(key.siteId, key.keyId, this.clock(), tx);
+        const checked = await verifyFederationMessage(
+          FederationAgreementSchema,
+          jws,
+          fresh,
+          this.clock(),
+        );
+        if (checked.digest !== local.termsDigest) throw new FederationError("OPERATION_CONFLICT");
+      }
       await requireCoordinatedCommercialAgreement(
         tx,
         this.trust,
@@ -274,7 +317,13 @@ export class FederationAgreementService {
         .update(federationAgreementApprovals)
         .set({ counterpartyApprovalJws })
         .where(this.key(revisionId));
-      await this.audit(tx, actor, "activate", revisionId, { termsDigest: local.termsDigest });
+      await this.audit(
+        tx,
+        human ?? { ...actor, userId: `agreement-exchange:${revisionId}` },
+        "activate",
+        revisionId,
+        { termsDigest: local.termsDigest },
+      );
     };
     if (terms.targetSiteId === this.signingKey.siteId) {
       if (!local.executionUserId) throw new FederationError("POLICY_DENIED");
@@ -301,7 +350,7 @@ export class FederationAgreementService {
       await verifyFederationMessage(FederationAgreementSchema, local.approvalJws, ownKey, now);
       await this.db.transaction(authorize);
     }
-    return this.get(actor, revisionId);
+    return this.db.transaction((tx) => this.localApproval(tx, actor, revisionId));
   }
 
   async setState(

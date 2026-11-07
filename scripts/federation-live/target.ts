@@ -154,6 +154,8 @@ if (process.argv[2] === "inspect") {
         keyId: key.keyId,
         publicKeyPem: pem,
         allowedKinds: [
+          "agreement-approval-query",
+          "agreement-approval-waiting",
           "commercial-approval-query",
           "commercial-approval-waiting",
           "reservation-proposal-receipt",

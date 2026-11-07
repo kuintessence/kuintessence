@@ -3,6 +3,7 @@ import { FederationAgreementSchema, FederationError } from "@kuintessence/shared
 import { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { z } from "zod";
+import type { FederationAgreementExchange } from "../federation/agreement-exchange";
 import type { FederationAgreementService } from "../federation/agreements";
 import type { FederationAttestationService } from "../federation/attestation";
 import type { FederationActor } from "../federation/permissions";
@@ -12,6 +13,7 @@ import { kqValidator } from "../middleware/validator";
 export function createFederationAgreementRoutes(
   service: FederationAgreementService,
   attestation?: FederationAttestationService,
+  exchange?: FederationAgreementExchange,
 ) {
   const r = new Hono<{ Variables: { federationActor: FederationActor } }>();
   r.use("/federation/agreements/*", async (c, next) => {
@@ -36,6 +38,23 @@ export function createFederationAgreementRoutes(
     throw error;
   });
   const id = z.object({ revisionId: z.uuid() });
+  if (exchange) {
+    r.get("/federation/agreements/:revisionId/exchange", kqValidator("param", id), async (c) =>
+      c.json({
+        success: true,
+        data: await exchange.status(c.get("federationActor"), c.req.valid("param").revisionId),
+      }),
+    );
+    r.post(
+      "/federation/agreements/:revisionId/exchange/retry",
+      kqValidator("param", id),
+      kqValidator("json", z.strictObject({})),
+      async (c) => {
+        await exchange.retry(c.get("federationActor"), c.req.valid("param").revisionId);
+        return c.json({ success: true });
+      },
+    );
+  }
   const page = z.object({
     limit: z.coerce.number().int().min(1).max(100).default(50),
     offset: z.coerce.number().int().min(0).default(0),

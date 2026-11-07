@@ -4,6 +4,7 @@ import { FederationError } from "@kuintessence/shared/federation";
 import { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { FederationAdmission } from "./admission";
+import { FederationAgreementExchange } from "./agreement-exchange";
 import { FederationCancellationReceiver } from "./cancellation";
 import { FederationCommercialApprovalExchange } from "./commercial-approval-exchange";
 import type { FederationDownloadStorage } from "./download-credential";
@@ -123,6 +124,18 @@ export function createFederationIngress(
     if (c.req.header("content-type") !== "application/jose")
       return c.json({ error: { code: "INVALID_MESSAGE" } }, 415);
     const response = await new FederationReservationProposalService(db, signingKey).receive(
+      await c.req.text(),
+      c.req.header("x-kq-federation-cert") ?? "",
+    );
+    return c.body(response, 200, {
+      "content-type": "application/jose",
+      "cache-control": "no-store",
+    });
+  });
+  r.post("/federation/v1/agreement-approvals", async (c) => {
+    if (c.req.header("content-type") !== "application/jose")
+      return c.json({ error: { code: "INVALID_MESSAGE" } }, 415);
+    const response = await new FederationAgreementExchange(db, signingKey).receive(
       await c.req.text(),
       c.req.header("x-kq-federation-cert") ?? "",
     );
