@@ -51,6 +51,7 @@ export class FederationDataDispatch {
     },
     private readonly renewNetdriveUrl?: (
       storageKey: string,
+      versionId?: string,
     ) => Promise<{ sourceUrl: string; expiresAt: number }>,
   ) {}
 
@@ -81,7 +82,7 @@ export class FederationDataDispatch {
       const file = files.find((file) => file.id === staged.fileMetadataId);
       if (!file || !this.renewNetdriveUrl)
         throw new WorkflowExecutionInterrupted("NetDrive URL renewal is unavailable");
-      const next = await this.renewNetdriveUrl(file.storageKey);
+      const next = await this.renewNetdriveUrl(file.storageKey, file.storageVersionId ?? undefined);
       if (!Number.isSafeInteger(next.expiresAt) || next.expiresAt <= Date.now())
         throw new WorkflowExecutionInterrupted("NetDrive URL renewal has expired");
       staged.sourceUrl = next.sourceUrl;
@@ -108,10 +109,13 @@ export class FederationDataDispatch {
           rejectDataDispatch();
         const currentFiles = await assertNetdriveSnapshots(tx, netdrive, input.actorUserId, true);
         if (
-          currentFiles.some(
-            (file) =>
-              files.find((original) => original.id === file.id)?.storageKey !== file.storageKey,
-          )
+          currentFiles.some((file) => {
+            const original = files.find((original) => original.id === file.id);
+            return (
+              original?.storageKey !== file.storageKey ||
+              original.storageVersionId !== file.storageVersionId
+            );
+          })
         )
           throw new WorkflowExecutionInterrupted("NetDrive object moved during URL renewal");
         const currentBindings = await this.bindings(tx, input.jobId, true);

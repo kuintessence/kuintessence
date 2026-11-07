@@ -42,8 +42,8 @@ const intent = {
 } satisfies JobSubmission;
 let original: ServerMessage;
 let minted = 0;
-const service = new FederationDataDispatch(db, undefined, async (key) => ({
-  sourceUrl: `https://objects.test/${key}?ticket=${++minted}`,
+const service = new FederationDataDispatch(db, undefined, async (key, versionId) => ({
+  sourceUrl: `https://objects.test/${key}?ticket=${++minted}${versionId ? `&versionId=${encodeURIComponent(versionId)}` : ""}`,
   expiresAt: Date.now() + 60_000,
 }));
 async function save(message = original) {
@@ -301,4 +301,26 @@ test("NetDrive outbox waits for preparation capability and renews credentials on
       : undefined,
   );
   expect(new Set(urls).size).toBe(2);
+});
+
+test("NetDrive renewal pins the saved object version and rejects replacement during signing", async () => {
+  await db
+    .update(netdriveFiles)
+    .set({ storageVersionId: "original-version" })
+    .where(eq(netdriveFiles.id, fileId));
+  const prepared = await service.prepare(agentId, original);
+  if (prepared.message.payload.case !== "dispatchJob") throw new Error("Missing dispatch");
+  const firstUrl = prepared.message.payload.value.inputStaging[0]?.sourceUrl;
+  expect(firstUrl && new URL(firstUrl).searchParams.get("versionId")).toBe("original-version");
+  await db.transaction(prepared.authorize);
+  await db
+    .update(netdriveFiles)
+    .set({ storageVersionId: "replacement-version" })
+    .where(eq(netdriveFiles.id, fileId));
+  await expect(db.transaction(prepared.authorize)).rejects.toThrow("moved during URL renewal");
+  const retry = await service.prepare(agentId, original);
+  if (retry.message.payload.case !== "dispatchJob") throw new Error("Missing dispatch");
+  const nextUrl = retry.message.payload.value.inputStaging[0]?.sourceUrl;
+  expect(nextUrl && new URL(nextUrl).searchParams.get("versionId")).toBe("replacement-version");
+  await db.transaction(retry.authorize);
 });

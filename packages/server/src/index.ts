@@ -1928,9 +1928,12 @@ if (config.NETDRIVE_ENABLED) {
   const dataDeliveryResolver = new DataDeliveryResolver(db, minioBackend, {
     verifyAccess: (input) => dataPrerequisiteRepository.verifyAccess(input),
   });
-  federationDataDispatch = new FederationDataDispatch(db, minioBackend, async (key) => {
+  federationDataDispatch = new FederationDataDispatch(db, minioBackend, async (key, versionId) => {
     const expiresAt = Date.now() + 60_000;
-    return { sourceUrl: await minioBackend.presignDownload(key, 60), expiresAt };
+    return {
+      sourceUrl: await minioBackend.presignDownload(key, 60, undefined, versionId),
+      expiresAt,
+    };
   });
   orchestrator.setDataDeliveryResolver((input) => dataDeliveryResolver.resolveForDispatch(input));
   if (sandboxManifestSigner) {

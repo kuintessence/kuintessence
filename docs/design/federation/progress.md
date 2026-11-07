@@ -1108,3 +1108,12 @@ input-storage 新增下载/上传 grant 路径，先按原尝试授权、在共�
 文件型 Workflow 仍 DATA_WAITING。下一步把 published 输入以原身份映射为 File/FileBatch，加入执行快照及启动/恢复时输入状态锁，并验证数据暂存的固定版本读取；之后进行真实双平台小文件作业。未知存储请求维护收尾、UI/治理/市场链码/结算/介质交付及真实 Slurm/PBS/Fabric 联合验收仍属完整蓝图待办，尚未发布 PR 预览或部署 main。
 
 验证收尾：全仓类型检查仅新测试夹具漏填 Workflow input 的 yaml/role，已补齐；其他包通过，最终 Server 定向检查及 Fabric 测试类型检查通过。全仓 lint 无错误（既有 47 warnings/1 info），最终测试文件 Biome 检查通过；645 个文档本地目标及 diff 空白检查通过。
+
+
+## 联邦派发下载续期保留对象版本
+
+接通输入文件前检查执行路径，发现 FederationDataDispatch 续期只向存储传 storageKey，遗漏云盘记录的 storageVersionId；相同 key 的新对象可能代替原固定版本。现将版本一路传至生产 presignDownload，最终发送锁内同时比较 key 与版本。签出地址后版本改变则本次发送拒绝，重新准备才可取得对应的新地址；原普通无版本记录兼容行为保持。
+
+新增固定版本续期与签名期间版本变化的 PostgreSQL 回归，并运行直接受影响的 NetDrive/data-dispatch 数据库与消息处理用例，共 50 项通过。使用隔离数据库、凭据签发替身，不表示对象存储和完整工作流实际执行。后续除了接收端 File/FileBatch 映射与执行快照锁，还需把源端 Federation 节点的文件槽接入已有签名输入导出；当前普通节点仅接标量参数，不能仅放开接收端 DATA_WAITING。证据位于忽略目录 temp/federation-input-version-*.log。
+
+本项 Server 类型检查通过；全仓 lint 无错误，保留既有 47 warnings/1 info；645 个文档本地目标与 diff 空白检查通过。仍在实现分支，无 PR 预览或 main 部署。
