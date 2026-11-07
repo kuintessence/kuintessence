@@ -29,3 +29,10 @@ bun scripts/federation-slurm-accounting.ts
 真实 Slurm 可能先给出终态，再补齐汇总计量：已观测到汇总 ElapsedRaw=0 而 batch=2，之后汇总修正为 2。适配器发现同任务步骤仍运行、状态未知，或步骤时长/CPU 用量超过汇总时，保留终态但不提供本次 accounting。不会把步骤累加成第二份用量，也不会用申请资源补算；合法零值仍可保留。后续明确查询可取得一致记录。
 
 本检查另将该真实任务的派发信息保存为受控 SQLite 收据，调用生产 collectFederationAccounting，验证前后 UUID/代次/账户定位及返回计量一致。收据与原证据摘要是探针输入，不是实际 Server 派发。生产 Server 已通过原 Agent 流安排持久补采，独立保存观测及摘要；原证据和已签报告不可覆盖。这里证明真实 Slurm 与补采查询模块的组合，不证明 Agent 流通信、两台 Server、自动签名报告、PBS、Fabric 或完整科研工作流已经联合通过。
+
+
+## Server / Agent 补采通信验收记录
+
+另一次隔离验收启动完整 Server、独立 PostgreSQL 及正式注册的生产 Agent，启用直接 mTLS。先运行相同限额的真实 Slurm 任务，再准备“终态首次缺少计量”的数据库与 SQLite 收据输入。Server 在 Agent 离线时持久保存 missing_data 和补采待办；重启 Server、启动 Agent 后，后台按原待办读取 sacct，追加观测并自动签名。累计 CPU 2018 毫秒、运行 2000 毫秒、1 核；HTTP 用量详情与签名报告摘要一致，原终态证据前后相同，且仅一份报告、无商业链待办。
+
+该结果覆盖 Server 启动装配、重启恢复、真实 mTLS 流与 Agent 查询、报告生成和 HTTP 读取。初始 Workflow 完成记录及派发收据由验收准备，未通过真实联邦提交入口创建；没有验证双站交换、PBS、Fabric 或真实科研软件安装。它是独立的集成验收记录，上方可复现脚本仍只运行调度器和查询模块探针。所有临时进程、数据库、凭据和 namespace 已清理。

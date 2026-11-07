@@ -1381,3 +1381,12 @@ Server 商业 worker 已接入原 Agent 流的只读补采。数据库保存请�
 真实 Slurm 限额探针再次运行成功：2000 毫秒运行时长、2018 毫秒 CPU、1 核；补采模块通过 SQLite 收据和两次 UUID 定位返回一致用量。证据在忽略的 temp/kq-accounting-0031c91a，所属 namespace 已确认删除。收据与原证据摘要是受控输入，不是 Server 的真实派发；尚未完成 Server/Agent 通信、PBS、双站报告及 Fabric 联合验收。
 
 全仓类型/lint 已执行；最终 Server 与 Proto 类型检查、修改文件 lint、文档目标/workflow 引用及 diff 检查通过，全仓保留既有 47 warnings/1 info，无新 lint 错误。已签报告、完整但不准确的原计量不由补采自动更正；原收据或调度器历史丢失继续显示缺失。完整商业 gate/市场/结算、物理介质、容量/归档恢复、执行编辑器和 PR 预览仍待完成，未合并或部署 main。
+
+
+## 真实 Server / Agent 的补采与签名链路
+
+在隔离 PostgreSQL 和随机 namespace 中启动完整生产 Server；通过注册 API 和 CLI 正式签发 Agent 证书，使用直接 mTLS 连接。真实 Slurm 任务限额 1 CPU/64 MiB/60 秒，实际运行 2000 毫秒、累计 CPU 2018 毫秒。受控构造首次终态缺失计量及原 SQLite 派发收据，Server 商业 worker 自动发现 missing_data，并在 Agent 未上线时保留 AGENT_UNAVAILABLE 待办。
+
+重启完整 Server 后再启动生产 Agent 与看守，后台沿原数据库待办，经实际双向流完成 UUID/代次身份查询和 sacct 读取，独立保存观测、自动生成并验签唯一报告。HTTP 用量详情已核对同一摘要，原终态证据前后完全相同；直接模式没有商业链待办。未手动调用补采 receive 或报告 advanceNext，未用内存通道替代网络。证据在忽略的 temp/federation-accounting-live，过程脚本在 temp/accounting-live-*，未纳入公开资料。
+
+边界：初始 Workflow/Job 终态及派发收据为受控数据库输入，真实调度器任务通过生产适配器提交；不将本轮描述为完整联邦委派或真实终态消息验收。尚缺双站报告交换与真实任务/Fabric 联合链路，也未验证 PBS。完整 Server、数据库、Agent 所属 namespace 与临时凭据已清理，没有 main 部署或 PR 预览发布。
