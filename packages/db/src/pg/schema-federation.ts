@@ -658,7 +658,7 @@ export const federationPreparations = pgTable(
   ],
 );
 
-/** Receiver input staging intent; pending currently has no storage side effects. */
+/** Receiver-private input inventory; quota remains held until cancelled storage is positively cleaned. */
 export const federationInputImports = pgTable(
   "federation_input_imports",
   {
@@ -687,12 +687,90 @@ export const federationInputImports = pgTable(
     uniqueIndex("federation_input_import_reservation").on(t.reservationId),
     index("federation_input_import_pending")
       .on(t.localSiteId, t.nextCheckAt)
-      .where(sql`${t.state} = 'pending'`),
+      .where(sql`${t.state} IN ('pending', 'transferring')`),
     check("federation_input_import_digest", sql`${t.manifestDigest} ~ '^sha256:[a-f0-9]{64}$'`),
-    check("federation_input_import_state", sql`${t.state} IN ('pending', 'cancelled')`),
+    check(
+      "federation_input_import_state",
+      sql`${t.state} IN ('pending', 'transferring', 'cancelling', 'cancelled')`,
+    ),
     check(
       "federation_input_import_quota",
       sql`${t.reservedBytes} BETWEEN 0 AND 9007199254740991 AND (${t.state} != 'cancelled' OR ${t.reservedBytes} = 0)`,
+    ),
+  ],
+);
+
+export const federationInputTransfers = pgTable(
+  "federation_input_transfers",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    importId: uuid("import_id")
+      .notNull()
+      .references(() => federationInputImports.id),
+    descriptor: varchar("descriptor", { length: 128 }).notNull(),
+    path: varchar("path", { length: 255 }).notNull(),
+    sizeBytes: bigint("size_bytes", { mode: "number" }).notNull(),
+    sha256: varchar("sha256", { length: 64 }).notNull(),
+    partSize: bigint("part_size", { mode: "number" }).notNull(),
+    state: varchar("state", { length: 24 }).notNull().default("pending"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("federation_input_transfer_member").on(t.importId, t.descriptor, t.path),
+    check(
+      "federation_input_transfer_state",
+      sql`${t.state} IN ('pending', 'copying', 'cleanup_pending', 'cancelled')`,
+    ),
+    check(
+      "federation_input_transfer_size",
+      sql`${t.sizeBytes} BETWEEN 0 AND 5497558138880 AND ${t.partSize} BETWEEN 5242880 AND 5368709120 AND ceil(${t.sizeBytes}::numeric / ${t.partSize}) <= 10000`,
+    ),
+    check("federation_input_transfer_hash", sql`${t.sha256} ~ '^[a-f0-9]{64}$'`),
+  ],
+);
+
+/** A generation owns one storage key forever, including after failed or lost allocations. */
+export const federationInputAttempts = pgTable(
+  "federation_input_attempts",
+  {
+    generation: uuid("generation").primaryKey(),
+    transferId: uuid("transfer_id")
+      .notNull()
+      .references(() => federationInputTransfers.id),
+    agentId: varchar("agent_id", { length: 255 })
+      .notNull()
+      .references(() => agents.agentId),
+    state: varchar("state", { length: 24 }).notNull().default("preparing"),
+    storageKey: varchar("storage_key", { length: 512 }).notNull(),
+    allocationStartedAt: timestamp("allocation_started_at", { withTimezone: true }),
+    cleanupToken: uuid("cleanup_token"),
+    uploadId: text("upload_id"),
+    leaseUntil: timestamp("lease_until", { withTimezone: true }).notNull(),
+    lastError: varchar("last_error", { length: 64 }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("federation_input_attempt_storage").on(t.storageKey),
+    uniqueIndex("federation_input_attempt_active_member")
+      .on(t.transferId)
+      .where(sql`${t.state} != 'cleaned'`),
+    uniqueIndex("federation_input_attempt_active_agent")
+      .on(t.agentId)
+      .where(sql`${t.state} IN ('preparing', 'copying')`),
+    index("federation_input_attempt_lease").on(t.state, t.leaseUntil),
+    check(
+      "federation_input_attempt_state",
+      sql`${t.state} IN ('preparing', 'copying', 'cleanup_pending', 'cleaned')`,
+    ),
+    check(
+      "federation_input_attempt_upload",
+      sql`${t.state} != 'copying' OR (${t.uploadId} IS NOT NULL AND ${t.allocationStartedAt} IS NOT NULL)`,
+    ),
+    check(
+      "federation_input_attempt_allocated",
+      sql`${t.uploadId} IS NULL OR ${t.allocationStartedAt} IS NOT NULL`,
     ),
   ],
 );

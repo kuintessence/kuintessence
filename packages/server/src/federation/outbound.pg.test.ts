@@ -13,7 +13,9 @@ import {
   federationCapabilities,
   federationCertificates,
   federationEvidence,
+  federationInputAttempts,
   federationInputImports,
+  federationInputTransfers,
   federationMaterials,
   federationOutbound,
   federationPreparations,
@@ -72,7 +74,7 @@ import {
   FederationStatusReportSchema,
   federationCanonicalJson,
 } from "@kuintessence/shared/federation";
-import { and, eq, inArray, ne } from "drizzle-orm";
+import { and, eq, inArray, ne, sql } from "drizzle-orm";
 import { Hono } from "hono";
 import { exportSPKI } from "jose";
 import { stringify } from "yaml";
@@ -96,6 +98,8 @@ import { readFederationCancellationState } from "./cancellation-state";
 import type { FederationDownloadStorage } from "./download-credential";
 import { createFederationIngress } from "./ingress";
 import { FederationInputImports } from "./input-imports";
+import { FederationInputStorage } from "./input-storage";
+import { FederationInputTransfers } from "./input-transfers";
 import { FederationMaterialExchange } from "./material-exchange";
 import { FederationOutboundService, FederationOutboundWorker } from "./outbound";
 import { FederationDeliveryError, type FederationSend } from "./outbound-client";
@@ -111,6 +115,7 @@ import { type FederationResultDownloadStorage, FederationResultResponder } from 
 import { signFederationMessage, verifyFederationMessage } from "./signatures";
 import { FederationStatusResponder } from "./status";
 import { testAgreement, testDelegation, testKeys, testNow } from "./test-fixtures";
+import { lockFederationTransferSlot } from "./transfer-agent";
 import { FederationTrustRegistry } from "./trust-registry";
 import { bindWorkflowDelegation, type WorkflowDelegationPlan } from "./workflow-delegations";
 import { FederationWorkflowExecutor } from "./workflow-executor";
@@ -141,6 +146,20 @@ const sourceFingerprint = "ab".repeat(32);
 const targetFingerprint = "cd".repeat(32);
 
 afterEach(async () => {
+  const inputIds = db
+    .select({ id: federationInputImports.id })
+    .from(federationInputImports)
+    .where(eq(federationInputImports.ownerId, executionUserId));
+  const transferIds = db
+    .select({ id: federationInputTransfers.id })
+    .from(federationInputTransfers)
+    .where(inArray(federationInputTransfers.importId, inputIds));
+  await db
+    .delete(federationInputAttempts)
+    .where(inArray(federationInputAttempts.transferId, transferIds));
+  await db
+    .delete(federationInputTransfers)
+    .where(inArray(federationInputTransfers.importId, inputIds));
   await db
     .delete(federationInputImports)
     .where(eq(federationInputImports.ownerId, executionUserId));
@@ -4449,6 +4468,7 @@ const inputPolicy: NonNullable<FederationAgreement["inputPolicy"]> = {
 };
 async function inputInventoryFixture(
   policy: FederationAgreement["inputPolicy"] | null = inputPolicy,
+  longExecution = false,
 ) {
   const f = await workflowDelegationFixture(undefined, {}, policy ?? undefined);
   const fileId = crypto.randomUUID();
@@ -4465,11 +4485,20 @@ async function inputInventoryFixture(
   const files = [{ descriptor: "input", type: "File", files: [{ fileId, path: "input.dat" }] }];
   const source = f.service();
   const enqueue = (invocation = f.invocation) =>
-    source.enqueueForWorkflow(actor, f.lease, "remote", invocation, f.plan, 60, {}, files);
+    source.enqueueForWorkflow(
+      actor,
+      f.lease,
+      "remote",
+      invocation,
+      longExecution ? { ...f.plan, executionExpiresAt: f.terms.validUntil } : f.plan,
+      60,
+      {},
+      files,
+    );
   return { ...f, fileId, files, source, enqueue };
 }
-async function acceptedInputInventory() {
-  const f = await inputInventoryFixture();
+async function acceptedInputInventory(longExecution = false) {
+  const f = await inputInventoryFixture(inputPolicy, longExecution);
   const operation = await f.enqueue();
   await f.source.deliverNext();
   const saved = await row(operation.operationId);
@@ -5007,8 +5036,8 @@ test("input downloads recheck current permissions and both signing purposes afte
   }
 });
 
-async function inputImportFixture() {
-  const f = await acceptedInputInventory();
+async function inputImportFixture(longExecution = false) {
+  const f = await acceptedInputInventory(longExecution);
   const preparation = new FederationPreparationService(db, b.signing.siteId, assets, clock);
   let calls = 0;
   const transport: FederationSend = async (_endpoint, jws, path) => {
@@ -5387,5 +5416,533 @@ test("input imports reject transport signing purposes revoked while receiving a 
     expect(await f.inventory()).toHaveLength(0);
   } finally {
     await f.lease.release();
+  }
+});
+
+async function inputTransferFixture() {
+  const f = await inputImportFixture(true);
+  const imported = await f.imports.ensure(f.reservationId);
+  if (!imported) throw new Error("Expected input inventory");
+  const [member] = await db
+    .select()
+    .from(federationInputTransfers)
+    .where(eq(federationInputTransfers.importId, imported.importId));
+  if (!member) throw new Error("Expected input member");
+  const agentId = `input-copy-${crypto.randomUUID()}`;
+  transferAgentIds.push(agentId);
+  await db.insert(agents).values({
+    agentId,
+    providerOrgId: receiver.orgId,
+    siteName: "Input storage",
+    schedulerType: "kubernetes",
+    schedulerVersion: "test",
+    status: "online",
+  });
+  const service = () => new FederationInputTransfers(db, f.preparation, f.imports, clock);
+  return { ...f, imported, member, agentId, transfers: service(), transferService: service };
+}
+
+test("input transfers initialize stable members and recover the same authorized attempt after service recreation", async () => {
+  const f = await inputTransferFixture();
+  try {
+    await Promise.all([f.imports.ensure(f.reservationId), f.imports.ensure(f.reservationId)]);
+    expect(
+      await db
+        .select()
+        .from(federationInputTransfers)
+        .where(eq(federationInputTransfers.importId, f.imported.importId)),
+    ).toEqual([f.member]);
+    const started = await f.transfers.begin(f.member.id, f.agentId);
+    expect(started.task.binding).toMatchObject({
+      transferId: f.member.id,
+      manifestDigest: f.imported.manifestDigest,
+      descriptor: f.member.descriptor,
+      path: f.member.path,
+      sha256: f.member.sha256,
+    });
+    expect(started.attempt.storageKey).toBe(
+      `federation-inputs/${f.imported.importId}/${started.attempt.generation}`,
+    );
+    await expect(f.transfers.begin(f.member.id, f.agentId)).rejects.toThrow("OPERATION_CONFLICT");
+    await expect(
+      f.transfers.allocated(started.attempt.generation, "upload-before-permit"),
+    ).rejects.toThrow("OPERATION_CONFLICT");
+    const permit = await f.transfers.preparing(f.agentId, started.attempt.generation);
+    expect(permit.storageKey).toBe(started.attempt.storageKey);
+    await expect(
+      f.transferService().preparing(f.agentId, started.attempt.generation),
+    ).rejects.toThrow("OPERATION_CONFLICT");
+    expect(await f.transferService().allocated(started.attempt.generation, "input-upload")).toBe(
+      true,
+    );
+    const grant = await f.transferService().assertCopyLease(f.agentId, started.task.binding, true);
+    expect(grant).toMatchObject({
+      storageKey: permit.storageKey,
+      uploadId: "input-upload",
+      reservationId: f.reservationId,
+    });
+    for (const altered of [
+      { ...started.task.binding, path: "wrong" },
+      { ...started.task.binding, manifestDigest: `sha256:${"f".repeat(64)}` },
+    ])
+      await expect(f.transfers.assertCopyLease(f.agentId, altered)).rejects.toThrow(
+        "OPERATION_CONFLICT",
+      );
+    await expect(f.transfers.assertCopyLease("wrong-agent", started.task.binding)).rejects.toThrow(
+      "OPERATION_CONFLICT",
+    );
+    expect((await f.inventory())[0]).toMatchObject({
+      state: "transferring",
+      reservedBytes: f.member.sizeBytes,
+    });
+    expect(JSON.stringify(started.task)).not.toMatch(
+      /uploadId|storageKey|ownerId|outputId|result-report/,
+    );
+  } finally {
+    await f.lease.release();
+  }
+});
+
+test("input transfers serialize concurrent Agent claims across separate task inventories", async () => {
+  const first = await inputTransferFixture(),
+    second = await inputTransferFixture();
+  try {
+    const claims = await Promise.allSettled([
+      first.transfers.begin(first.member.id, first.agentId),
+      second.transfers.begin(second.member.id, first.agentId),
+    ]);
+    expect(claims.filter((r) => r.status === "fulfilled")).toHaveLength(1);
+    const denied = claims.find((r) => r.status === "rejected");
+    expect(denied?.status === "rejected" && String(denied.reason)).toContain("OPERATION_CONFLICT");
+    expect(
+      await db
+        .select()
+        .from(federationInputAttempts)
+        .where(eq(federationInputAttempts.agentId, first.agentId)),
+    ).toHaveLength(1);
+  } finally {
+    await first.lease.release();
+    await second.lease.release();
+  }
+});
+
+test("input transfers and result copies share the same durable Agent slot in both directions", async () => {
+  const input = await inputTransferFixture(),
+    result = await resultImportFixture();
+  try {
+    const started = await result.imports.begin(result.member.id, result.agentId);
+    // Even moving the Agent between orgs cannot erase a previously issued transfer lease.
+    await db
+      .update(agents)
+      .set({ providerOrgId: receiver.orgId })
+      .where(eq(agents.agentId, result.agentId));
+    await expect(input.transfers.begin(input.member.id, result.agentId)).rejects.toThrow(
+      "OPERATION_CONFLICT",
+    );
+    await result.imports.failed(result.agentId, started.attempt.generation, "COPY_FAILED");
+    await expect(input.transfers.begin(input.member.id, result.agentId)).rejects.toThrow(
+      "OPERATION_CONFLICT",
+    );
+    time = new Date(started.attempt.leaseUntil.getTime() + 1);
+    await input.transfers.begin(input.member.id, result.agentId);
+    await db
+      .update(agents)
+      .set({ providerOrgId: actor.orgId })
+      .where(eq(agents.agentId, result.agentId));
+    await expect(result.imports.begin(result.member.id, result.agentId)).rejects.toThrow(
+      "OPERATION_CONFLICT",
+    );
+  } finally {
+    await input.lease.release();
+  }
+});
+
+test("input transfers retain quota and cancellation acknowledgement until confirmed cleanup after grant expiry", async () => {
+  const f = await inputTransferFixture();
+  try {
+    const started = await f.transfers.begin(f.member.id, f.agentId);
+    await f.transfers.preparing(f.agentId, started.attempt.generation);
+    await f.transfers.allocated(started.attempt.generation, "input-upload");
+    const target = new FederationCancellationReceiver(db, b.signing, clock);
+    const source = f.service(async (endpoint, jws, path) =>
+      path === "/federation/v1/cancellations"
+        ? target.receive(jws, sourceFingerprint)
+        : f.receive(endpoint, jws),
+    );
+    await source.cancellations.request(actor, f.saved.operationId);
+    await source.cancellations.deliverNext();
+    const monitor = new FederationCancellationMonitor(
+      db,
+      {
+        cancel: async () => {
+          throw new Error("No run expected");
+        },
+      },
+      async () => {},
+      clock,
+    );
+    await monitor.tick();
+    expect((await f.inventory())[0]).toMatchObject({
+      state: "cancelling",
+      reservedBytes: f.member.sizeBytes,
+    });
+    expect((await readFederationCancellationState(db, f.saved.request)).stopped).toBe(false);
+    await expect(f.transfers.assertCopyLease(f.agentId, started.task.binding)).rejects.toThrow(
+      "CANCELLATION_REQUESTED",
+    );
+    await expect(f.transfers.beginCleanup(started.attempt.generation)).rejects.toThrow(
+      "OPERATION_CONFLICT",
+    );
+    time = new Date(started.attempt.leaseUntil.getTime() + 1);
+    const obsolete = await f.transfers.beginCleanup(started.attempt.generation);
+    const current = await f.transferService().beginCleanup(started.attempt.generation);
+    await expect(
+      f.transfers.storageCleaned(started.attempt.generation, obsolete.token),
+    ).rejects.toThrow("OPERATION_CONFLICT");
+    expect((await f.inventory())[0]?.reservedBytes).toBe(f.member.sizeBytes);
+    await f.transfers.storageCleaned(started.attempt.generation, current.token);
+    await f.transfers.storageCleaned(started.attempt.generation, current.token);
+    await monitor.tick();
+    await monitor.stop();
+    expect((await f.inventory())[0]).toMatchObject({ state: "cancelled", reservedBytes: 0 });
+    expect((await readFederationCancellationState(db, f.saved.request)).stopped).toBe(true);
+    expect(
+      (await new StorageQuotaService(db, clock).getSummary(executionUserId)).reservedBytes,
+    ).toBe(0);
+    expect(await f.transfers.allocated(started.attempt.generation, "input-upload")).toBe(false);
+    expect((await f.inventory())[0]?.state).toBe("cancelled");
+  } finally {
+    await f.lease.release();
+  }
+});
+
+test("input transfers fence unknown allocations and preserve quota until a late upload ID is reconciled", async () => {
+  const f = await inputTransferFixture();
+  try {
+    const started = await f.transfers.begin(f.member.id, f.agentId);
+    await f.transfers.preparing(f.agentId, started.attempt.generation);
+    time = new Date(started.attempt.leaseUntil.getTime() + 1);
+    await f.transfers.expire();
+    expect(await f.transfers.cleanupCandidates()).toEqual([]);
+    await expect(f.transferService().beginCleanup(started.attempt.generation)).rejects.toThrow(
+      "DATA_WAITING",
+    );
+    await expect(f.transfers.begin(f.member.id, f.agentId)).rejects.toThrow("OPERATION_CONFLICT");
+    expect((await f.inventory())[0]?.reservedBytes).toBe(f.member.sizeBytes);
+    expect(await f.transfers.allocated(started.attempt.generation, "late-upload")).toBe(false);
+    await expect(
+      f.transfers.allocated(started.attempt.generation, "different-upload"),
+    ).rejects.toThrow("OPERATION_CONFLICT");
+    expect(await f.transfers.cleanupCandidates()).toEqual([
+      { generation: started.attempt.generation },
+    ]);
+    const cleanup = await f.transfers.beginCleanup(started.attempt.generation);
+    expect(cleanup.uploadId).toBe("late-upload");
+    await f.transfers.storageCleaned(started.attempt.generation, cleanup.token);
+    const retried = await f.transferService().begin(f.member.id, f.agentId);
+    expect(retried.attempt.generation).not.toBe(started.attempt.generation);
+    expect(retried.attempt.storageKey).not.toBe(started.attempt.storageKey);
+    expect(retried.task.binding.transferId).toBe(started.task.binding.transferId);
+    expect((await f.inventory())[0]?.reservedBytes).toBe(f.member.sizeBytes);
+  } finally {
+    await f.lease.release();
+  }
+});
+
+test("input transfers expire unused permits without allocating storage and reject stale cleanup after retry", async () => {
+  const f = await inputTransferFixture();
+  try {
+    const started = await f.transfers.begin(f.member.id, f.agentId);
+    time = new Date(started.attempt.leaseUntil.getTime() + 1);
+    await f.transfers.expire();
+    const cleanup = await f.transfers.beginCleanup(started.attempt.generation);
+    expect(cleanup.allocationStarted).toBe(false);
+    await f.transfers.storageCleaned(started.attempt.generation, cleanup.token);
+    const retried = await f.transferService().begin(f.member.id, f.agentId);
+    await f.transfers.storageCleaned(started.attempt.generation, cleanup.token);
+    await expect(
+      f.transfers.allocated(started.attempt.generation, "unissued-upload"),
+    ).rejects.toThrow("OPERATION_CONFLICT");
+    expect(
+      (
+        await db
+          .select()
+          .from(federationInputAttempts)
+          .where(eq(federationInputAttempts.generation, retried.attempt.generation))
+      )[0]?.state,
+    ).toBe("preparing");
+    expect(
+      (
+        await db
+          .select()
+          .from(federationInputTransfers)
+          .where(eq(federationInputTransfers.id, f.member.id))
+      )[0]?.state,
+    ).toBe("copying");
+  } finally {
+    await f.lease.release();
+  }
+});
+
+test("input transfers recheck identity, Agent ownership and manifest before each permit", async () => {
+  const f = await inputTransferFixture();
+  try {
+    await db
+      .update(agents)
+      .set({ providerOrgId: actor.orgId })
+      .where(eq(agents.agentId, f.agentId));
+    await expect(f.transfers.begin(f.member.id, f.agentId)).rejects.toThrow("POLICY_DENIED");
+    await db
+      .update(agents)
+      .set({ providerOrgId: receiver.orgId })
+      .where(eq(agents.agentId, f.agentId));
+    const started = await f.transfers.begin(f.member.id, f.agentId);
+    await f.transfers.preparing(f.agentId, started.attempt.generation);
+    await f.transfers.allocated(started.attempt.generation, "input-upload");
+    await db.update(users).set({ suspended: true }).where(eq(users.id, executionUserId));
+    try {
+      await expect(
+        f.transfers.assertCopyLease(f.agentId, started.task.binding, true),
+      ).rejects.toThrow("POLICY_DENIED");
+      await f.imports.sweep();
+      expect((await f.inventory())[0]).toMatchObject({
+        state: "cancelling",
+        reservedBytes: f.member.sizeBytes,
+      });
+    } finally {
+      await db.update(users).set({ suspended: false }).where(eq(users.id, executionUserId));
+    }
+    await expect(f.transfers.assertCopyLease(f.agentId, started.task.binding)).rejects.toThrow(
+      "CANCELLATION_REQUESTED",
+    );
+  } finally {
+    await f.lease.release();
+  }
+  const damaged = await inputTransferFixture();
+  try {
+    await db
+      .update(federationInputTransfers)
+      .set({ path: "replaced" })
+      .where(eq(federationInputTransfers.id, damaged.member.id));
+    await expect(damaged.transfers.begin(damaged.member.id, damaged.agentId)).rejects.toThrow(
+      "OPERATION_CONFLICT",
+    );
+    expect(
+      await db
+        .select()
+        .from(federationInputAttempts)
+        .where(eq(federationInputAttempts.transferId, damaged.member.id)),
+    ).toEqual([]);
+  } finally {
+    await damaged.lease.release();
+  }
+});
+
+test("input storage allocates outside locks, fences late revocation and releases nothing after a failed purge", async () => {
+  const f = await inputTransferFixture();
+  let created = 0,
+    purged = 0,
+    failPurge = true;
+  try {
+    const storage = new FederationInputStorage(f.transfers, {
+      createMultipartUpload: async () => {
+        created++;
+        // This would deadlock if storage I/O ran under the execution identity locks.
+        await db.update(users).set({ suspended: true }).where(eq(users.id, executionUserId));
+        return { uploadId: "created-before-revocation" };
+      },
+      cleanupFederationInput: async () => {
+        purged++;
+        if (failPurge) throw new Error("https://private.invalid/?secret=do-not-log");
+      },
+    });
+    await expect(storage.allocate(f.member.id, f.agentId)).rejects.toThrow("POLICY_DENIED");
+    expect(created).toBe(1);
+    await f.imports.sweep();
+    expect((await f.inventory())[0]?.state).toBe("cancelling");
+    const [attempt] = await db
+      .select()
+      .from(federationInputAttempts)
+      .where(eq(federationInputAttempts.transferId, f.member.id));
+    if (!attempt) throw new Error("Missing attempt");
+    expect(await storage.cleanup()).toBe(0);
+    time = new Date(attempt.leaseUntil.getTime() + 1);
+    expect(await storage.cleanup()).toBe(0);
+    expect(purged).toBe(1);
+    expect((await f.inventory())[0]?.reservedBytes).toBe(f.member.sizeBytes);
+    failPurge = false;
+    expect(await storage.cleanup()).toBe(1);
+    expect((await f.inventory())[0]).toMatchObject({ state: "cancelled", reservedBytes: 0 });
+  } finally {
+    await db.update(users).set({ suspended: false }).where(eq(users.id, executionUserId));
+    await f.lease.release();
+  }
+});
+
+test("input storage keeps timed-out allocation ownership and cleans a late response without re-creating uploads", async () => {
+  const f = await inputTransferFixture();
+  const allocated = Promise.withResolvers<{ uploadId: string }>();
+  const recorded = Promise.withResolvers<void>();
+  const record = f.transfers.allocated.bind(f.transfers);
+  f.transfers.allocated = async (...args) => {
+    const result = await record(...args);
+    recorded.resolve();
+    return result;
+  };
+  let creates = 0,
+    deletes = 0;
+  const storage = new FederationInputStorage(
+    f.transfers,
+    {
+      createMultipartUpload: async () => {
+        creates++;
+        return allocated.promise;
+      },
+      cleanupFederationInput: async () => {
+        deletes++;
+      },
+    },
+    10,
+  );
+  try {
+    await expect(storage.allocate(f.member.id, f.agentId)).rejects.toThrow(
+      "FEDERATION_INPUT_STORAGE_UNAVAILABLE",
+    );
+    const [attempt] = await db
+      .select()
+      .from(federationInputAttempts)
+      .where(eq(federationInputAttempts.transferId, f.member.id));
+    if (!attempt) throw new Error("Missing attempt");
+    expect(attempt.lastError).toBe("ALLOCATION_UNCONFIRMED");
+    time = new Date(attempt.leaseUntil.getTime() + 1);
+    expect(await storage.cleanup()).toBe(0);
+    expect(deletes).toBe(0);
+    expect((await f.inventory())[0]?.reservedBytes).toBe(f.member.sizeBytes);
+    await expect(storage.allocate(f.member.id, f.agentId)).rejects.toThrow("OPERATION_CONFLICT");
+    allocated.resolve({ uploadId: "late-storage-response" });
+    await recorded.promise;
+    expect(await storage.cleanup()).toBe(1);
+    expect(creates).toBe(1);
+    expect(deletes).toBe(1);
+    expect((await f.inventory())[0]?.reservedBytes).toBe(f.member.sizeBytes);
+  } finally {
+    allocated.resolve({ uploadId: "late-storage-response" });
+    await recorded.promise;
+    await f.lease.release();
+  }
+});
+
+test("input storage cleans an unissued allocation permit without storage effects and then retries under a new generation", async () => {
+  const f = await inputTransferFixture();
+  const preparing = f.transfers.preparing.bind(f.transfers);
+  let creates = 0,
+    deletes = 0;
+  const storage = new FederationInputStorage(f.transfers, {
+    createMultipartUpload: async () => {
+      creates++;
+      return { uploadId: "retry-upload" };
+    },
+    cleanupFederationInput: async () => {
+      deletes++;
+    },
+  });
+  f.transfers.preparing = async (...args) => {
+    await db.update(agents).set({ status: "offline" }).where(eq(agents.agentId, f.agentId));
+    return preparing(...args);
+  };
+  try {
+    await expect(storage.allocate(f.member.id, f.agentId)).rejects.toThrow("POLICY_DENIED");
+    expect(creates).toBe(0);
+    const [old] = await db
+      .select()
+      .from(federationInputAttempts)
+      .where(eq(federationInputAttempts.transferId, f.member.id));
+    if (!old) throw new Error("Missing attempt");
+    time = new Date(old.leaseUntil.getTime() + 1);
+    expect(await storage.cleanup()).toBe(1);
+    expect(deletes).toBe(0);
+    f.transfers.preparing = preparing;
+    await db.update(agents).set({ status: "online" }).where(eq(agents.agentId, f.agentId));
+    const retried = await storage.allocate(f.member.id, f.agentId);
+    expect(retried.task.binding.generation).not.toBe(old.generation);
+    expect(creates).toBe(1);
+    expect(await f.transfers.assertCopyLease(f.agentId, retried.task.binding)).toMatchObject({
+      uploadId: "retry-upload",
+    });
+  } finally {
+    f.transfers.preparing = preparing;
+    await f.lease.release();
+  }
+});
+
+test("transfer renewals serialize with Agent acquisition and cannot revive an expired lease while waiting", async () => {
+  const input = await inputTransferFixture();
+  const result = await resultImportFixture();
+  try {
+    const incoming = await input.transfers.begin(input.member.id, input.agentId);
+    await input.transfers.preparing(input.agentId, incoming.attempt.generation);
+    await input.transfers.allocated(incoming.attempt.generation, "input-upload");
+    const outgoing = await result.imports.begin(result.member.id, result.agentId);
+    await result.imports.allocated(outgoing.attempt.generation, "result-upload");
+    const initialTime = time;
+    for (const direction of ["input", "result"] as const) {
+      time = initialTime;
+      const agentId = direction === "input" ? input.agentId : result.agentId;
+      const held = Promise.withResolvers<void>(),
+        release = Promise.withResolvers<void>();
+      const holder = db.transaction(async (tx) => {
+        await lockFederationTransferSlot(tx, agentId);
+        held.resolve();
+        await release.promise;
+      });
+      await held.promise;
+      const renewal = (
+        direction === "input"
+          ? input.transfers.assertCopyLease(agentId, incoming.task.binding, true)
+          : result.imports.renew(agentId, outgoing.attempt.generation)
+      ).then(
+        () => "unexpected-success",
+        (error) => String(error),
+      );
+      try {
+        let waiting = false;
+        for (let i = 0; i < 100; i++) {
+          const locks = await db.execute(
+            sql`SELECT 1 FROM pg_locks WHERE locktype = 'advisory' AND NOT granted`,
+          );
+          if (locks.length) {
+            waiting = true;
+            break;
+          }
+          await Bun.sleep(5);
+        }
+        expect(waiting).toBe(true);
+        time = new Date(
+          (direction === "input" ? incoming : outgoing).attempt.leaseUntil.getTime() + 1,
+        );
+      } finally {
+        release.resolve();
+        await holder;
+      }
+      expect(await renewal).toContain("OPERATION_CONFLICT");
+    }
+    expect(
+      (
+        await db
+          .select()
+          .from(federationInputAttempts)
+          .where(eq(federationInputAttempts.generation, incoming.attempt.generation))
+      )[0]?.leaseUntil,
+    ).toEqual(incoming.attempt.leaseUntil);
+    expect(
+      (
+        await db
+          .select()
+          .from(federationResultAttempts)
+          .where(eq(federationResultAttempts.generation, outgoing.attempt.generation))
+      )[0]?.leaseUntil,
+    ).toEqual(outgoing.attempt.leaseUntil);
+  } finally {
+    await input.lease.release();
   }
 });

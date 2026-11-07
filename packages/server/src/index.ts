@@ -63,6 +63,11 @@ import {
 } from "./federation/execution-binding";
 import { FederationExecutionMonitor } from "./federation/execution-monitor";
 import { FederationInputImports } from "./federation/input-imports";
+import {
+  FederationInputStorage,
+  type FederationInputStorageBackend,
+} from "./federation/input-storage";
+import { FederationInputTransfers } from "./federation/input-transfers";
 import { FederationMaterialExchange } from "./federation/material-exchange";
 import { FederationOutboundService, FederationOutboundWorker } from "./federation/outbound";
 import { createFederationPackageResolver } from "./federation/package-resolver";
@@ -1789,6 +1794,7 @@ if (!(config.SSH_SESSION_RECORDING && config.NETDRIVE_ENABLED)) {
 }
 let federationResults: FederationResultTransport | undefined;
 let federationResultWorker: FederationResultWorker | undefined;
+let federationInputStorageBackend: FederationInputStorageBackend | undefined;
 let federationInputDownloads:
   | import("./federation/download-credential").FederationDownloadStorage
   | undefined;
@@ -1802,6 +1808,7 @@ if (config.NETDRIVE_ENABLED) {
     DATA_MARKET_IMMUTABLE_BUCKET: config.DATA_MARKET_IMMUTABLE_BUCKET,
   });
   const minioBackend = await createRealMinioBackend(minioCfg);
+  federationInputStorageBackend = minioBackend;
   if (config.FEDERATION_ENABLED && config.FEDERATION_INPUT_DOWNLOAD_ORIGINS.length)
     federationInputDownloads = {
       storage: minioBackend,
@@ -2216,6 +2223,14 @@ const federationInputImports =
   federationPreparation && federationMaterialExchange
     ? new FederationInputImports(db, federationPreparation, federationMaterialExchange)
     : undefined;
+const federationInputTransfers =
+  federationPreparation && federationInputImports
+    ? new FederationInputTransfers(db, federationPreparation, federationInputImports)
+    : undefined;
+const federationInputStorage =
+  federationInputTransfers && federationInputStorageBackend
+    ? new FederationInputStorage(federationInputTransfers, federationInputStorageBackend)
+    : undefined;
 const federationPreparationWorker = federationPreparation
   ? new FederationPreparationWorker(
       db,
@@ -2247,7 +2262,13 @@ const federationPreparationWorker = federationPreparation
             await federationInputImports?.ensure(id);
           }
         : undefined,
-      federationInputImports ? () => federationInputImports.sweep() : undefined,
+      federationInputImports
+        ? async () => {
+            await federationInputImports.sweep();
+            if (federationInputStorage) await federationInputStorage.cleanup();
+            else await federationInputTransfers?.expire();
+          }
+        : undefined,
     )
   : undefined;
 federationPreparationWorker?.start();

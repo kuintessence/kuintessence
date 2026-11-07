@@ -1,11 +1,18 @@
-import { auditLog, federationInputImports, type PgDb, type PgTransaction } from "@kuintessence/db";
+import {
+  auditLog,
+  federationInputAttempts,
+  federationInputImports,
+  federationInputTransfers,
+  type PgDb,
+  type PgTransaction,
+} from "@kuintessence/db";
 import {
   FederationAgreementSchema,
   FederationError,
   FederationInputFilesSchema,
   federationExecutionDeadline,
 } from "@kuintessence/shared/federation";
-import { and, asc, eq, lte } from "drizzle-orm";
+import { and, asc, eq, inArray, lte, ne } from "drizzle-orm";
 import { lockCloudWrites, StorageQuotaService } from "../services/storage-quota";
 import { federationMaterialDigest } from "./assets";
 import type { FederationMaterialExchange } from "./material-exchange";
@@ -14,8 +21,8 @@ import type { FederationPreparationService } from "./preparation";
 type Import = typeof federationInputImports.$inferSelect;
 type Scope = Awaited<ReturnType<FederationPreparationService["materialScope"]>>;
 
-/** No byte effects exist in pending yet; future copy attempts must leave this state atomically. */
-export async function retirePendingInputImport(
+/** Fences current attempts even after authority is revoked; cleanup alone releases their quota. */
+export async function cancelFederationInputImport(
   tx: PgTransaction,
   reservationId: string,
   reason: FederationError["code"],
@@ -26,12 +33,30 @@ export async function retirePendingInputImport(
     .from(federationInputImports)
     .where(eq(federationInputImports.reservationId, reservationId))
     .for("update");
-  if (!row || row.state !== "pending") return;
-  await lockCloudWrites(tx, row.ownerId);
+  if (!row || row.state === "cancelled") return;
+  const members = tx
+    .select({ id: federationInputTransfers.id })
+    .from(federationInputTransfers)
+    .where(eq(federationInputTransfers.importId, row.id));
+  await tx
+    .update(federationInputAttempts)
+    .set({ state: "cleanup_pending", updatedAt: now })
+    .where(
+      and(
+        inArray(federationInputAttempts.transferId, members),
+        ne(federationInputAttempts.state, "cleaned"),
+      ),
+    );
+  await tx
+    .update(federationInputTransfers)
+    .set({ state: "cancelled", updatedAt: now })
+    .where(eq(federationInputTransfers.importId, row.id));
   await tx
     .update(federationInputImports)
-    .set({ state: "cancelled", reservedBytes: 0, lastError: reason, updatedAt: now })
+    .set({ state: "cancelling", lastError: reason, updatedAt: now })
     .where(eq(federationInputImports.id, row.id));
+  await finishCancelledInputImport(tx, { ...row, state: "cancelling" }, now);
+  if (row.state === "cancelling") return;
   await tx.insert(auditLog).values({
     actor: row.ownerId,
     orgId: row.localOrgId,
@@ -39,6 +64,31 @@ export async function retirePendingInputImport(
     target: row.id,
     diff: { after: { reason } },
   });
+}
+
+/** Requires the import lock; unknown or incomplete storage effects retain the full reservation. */
+export async function finishCancelledInputImport(tx: PgTransaction, row: Import, now: Date) {
+  if (row.state !== "cancelling") return;
+  const [remaining] = await tx
+    .select({ generation: federationInputAttempts.generation })
+    .from(federationInputAttempts)
+    .innerJoin(
+      federationInputTransfers,
+      eq(federationInputTransfers.id, federationInputAttempts.transferId),
+    )
+    .where(
+      and(
+        eq(federationInputTransfers.importId, row.id),
+        ne(federationInputAttempts.state, "cleaned"),
+      ),
+    )
+    .limit(1);
+  if (remaining) return;
+  await lockCloudWrites(tx, row.ownerId);
+  await tx
+    .update(federationInputImports)
+    .set({ state: "cancelled", reservedBytes: 0, updatedAt: now })
+    .where(eq(federationInputImports.id, row.id));
 }
 
 /** Receiver-local, task-owned inventory and storage reservation. No file is published here. */
@@ -57,12 +107,12 @@ export class FederationInputImports {
       await this.preparation.lockMaterialScope(tx, scope);
       return this.existing(tx, scope);
     });
-    if (prior) return prior;
+    if (prior) return this.summary(prior);
     const received = await this.exchange.inputFiles(reservationId);
     return this.db.transaction(async (tx) => {
       await received.authorize(tx);
       const existing = await this.existing(tx, received.scope);
-      if (existing) return existing;
+      if (existing) return this.summary(existing);
       const { request, identity, saved } = received.scope;
       const manifest = received.manifest;
       const digest = federationMaterialDigest(manifest);
@@ -101,6 +151,7 @@ export class FederationInputImports {
         })
         .returning();
       if (!row) throw new FederationError("OPERATION_CONFLICT");
+      await this.members(tx, row);
       await tx.insert(auditLog).values({
         actor: identity.userId,
         orgId: identity.orgId,
@@ -129,7 +180,8 @@ export class FederationInputImports {
       federationMaterialDigest(row.manifest) !== row.manifestDigest
     )
       throw new FederationError("OPERATION_CONFLICT");
-    if (row.state === "cancelled") throw new FederationError("CANCELLATION_REQUESTED");
+    if (["cancelling", "cancelled"].includes(row.state))
+      throw new FederationError("CANCELLATION_REQUESTED");
     if (
       row.reservedBytes !==
         row.manifest.inputs
@@ -138,7 +190,55 @@ export class FederationInputImports {
       row.expiresAt.getTime() !== federationExecutionDeadline(scope.request)
     )
       throw new FederationError("OPERATION_CONFLICT");
-    return this.summary(row);
+    await this.members(tx, row);
+    return row;
+  }
+
+  async lock(tx: PgTransaction, scope: Scope) {
+    await this.preparation.lockMaterialScope(tx, scope);
+    const row = await this.existing(tx, scope);
+    if (!row) throw new FederationError("DATA_WAITING");
+    return row;
+  }
+
+  private async members(tx: PgTransaction, row: Import) {
+    const members = row.manifest.inputs.flatMap((input) =>
+      input.files.map((file) => ({ descriptor: input.descriptor, ...file })),
+    );
+    let saved = await tx
+      .select()
+      .from(federationInputTransfers)
+      .where(eq(federationInputTransfers.importId, row.id));
+    // Empty legacy pending imports may be initialized once; never repair a partial or active manifest.
+    if (!saved.length && members.length && row.state === "pending") {
+      saved = await tx
+        .insert(federationInputTransfers)
+        .values(
+          members.map((file) => ({
+            ...file,
+            importId: row.id,
+            partSize: Math.max(8 * 1024 * 1024, Math.ceil(file.sizeBytes / 10_000)),
+            createdAt: this.clock(),
+            updatedAt: this.clock(),
+          })),
+        )
+        .returning();
+    }
+    if (
+      saved.length !== members.length ||
+      members.some(
+        (member) =>
+          !saved.some(
+            (file) =>
+              file.descriptor === member.descriptor &&
+              file.path === member.path &&
+              file.sizeBytes === member.sizeBytes &&
+              file.sha256 === member.sha256 &&
+              file.partSize === Math.max(8 * 1024 * 1024, Math.ceil(member.sizeBytes / 10_000)),
+          ),
+      )
+    )
+      throw new FederationError("OPERATION_CONFLICT");
   }
 
   private summary(row: Import) {
@@ -151,7 +251,7 @@ export class FederationInputImports {
     };
   }
 
-  /** Bounded reconciliation releases only unstarted reservations after definite authority loss. */
+  /** Bounded reconciliation fences unauthorized work; active effects retain quota for cleanup. */
   async sweep() {
     const rows = await this.db.transaction(async (tx) => {
       const rows = await tx
@@ -160,7 +260,7 @@ export class FederationInputImports {
         .where(
           and(
             eq(federationInputImports.localSiteId, this.preparation.localSiteId),
-            eq(federationInputImports.state, "pending"),
+            inArray(federationInputImports.state, ["pending", "transferring"]),
             lte(federationInputImports.nextCheckAt, this.clock()),
           ),
         )
@@ -186,7 +286,7 @@ export class FederationInputImports {
             .where(
               and(
                 eq(federationInputImports.id, row.id),
-                eq(federationInputImports.state, "pending"),
+                inArray(federationInputImports.state, ["pending", "transferring"]),
               ),
             );
         });
@@ -203,7 +303,7 @@ export class FederationInputImports {
           ].includes(error.code)
         )
           await this.db.transaction((tx) =>
-            retirePendingInputImport(tx, row.reservationId, error.code, this.clock()),
+            cancelFederationInputImport(tx, row.reservationId, error.code, this.clock()),
           );
         else
           await this.db
@@ -212,7 +312,7 @@ export class FederationInputImports {
             .where(
               and(
                 eq(federationInputImports.id, row.id),
-                eq(federationInputImports.state, "pending"),
+                inArray(federationInputImports.state, ["pending", "transferring"]),
               ),
             );
       }

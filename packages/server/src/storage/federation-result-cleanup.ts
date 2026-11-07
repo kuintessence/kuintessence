@@ -1,7 +1,7 @@
 import { z } from "zod";
 
 const uuid = "[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}";
-const keyPattern = new RegExp(`^federation-results/${uuid}/${uuid}$`);
+
 const Upload = z.object({ key: z.string(), uploadId: z.string().min(1).max(2048) });
 const Version = z.object({ name: z.string(), versionId: z.string().min(1).max(2048).nullable() });
 export interface FederationResultCleanupClient {
@@ -22,6 +22,24 @@ export async function cleanupFederationResultKey(
   bucket: string,
   key: string,
 ) {
+  return cleanupFederationKey(client, bucket, key, "federation-results");
+}
+
+export function cleanupFederationInputKey(
+  client: FederationResultCleanupClient,
+  bucket: string,
+  key: string,
+) {
+  return cleanupFederationKey(client, bucket, key, "federation-inputs");
+}
+
+async function cleanupFederationKey(
+  client: FederationResultCleanupClient,
+  bucket: string,
+  key: string,
+  kind: "federation-results" | "federation-inputs",
+) {
+  const keyPattern = new RegExp(`^${kind}/${uuid}/${uuid}$`);
   if (!keyPattern.test(key)) throw new Error("INVALID_FEDERATION_STORAGE_KEY");
   const uploads = async () => {
     const found: string[] = [];

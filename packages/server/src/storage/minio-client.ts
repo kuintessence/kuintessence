@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { cleanupFederationResultKey } from "./federation-result-cleanup";
+import { cleanupFederationInputKey, cleanupFederationResultKey } from "./federation-result-cleanup";
 
 /**
  * minimal MinIO/S3 client wrapper for the NetDrive foundation.
@@ -61,6 +61,7 @@ export interface UploadPartRef {
 export interface MinioBackend {
   /** Federation-owned attempt keys only; must include unknown multipart IDs and all versions. */
   cleanupFederationResult?(key: string): Promise<void>;
+  cleanupFederationInput?(key: string): Promise<void>;
   bucket: string;
   dataMarketStagingBucket: string;
   dataMarketImmutableBucket: string;
@@ -186,6 +187,7 @@ export async function createRealMinioBackend(cfg: MinioBackendConfig): Promise<M
 
   const backend: MinioBackend = {
     cleanupFederationResult: (key) => cleanupFederationResultKey(client, cfg.bucket, key),
+    cleanupFederationInput: (key) => cleanupFederationInputKey(client, cfg.bucket, key),
     bucket: cfg.bucket,
     dataMarketStagingBucket: cfg.dataMarketStagingBucket,
     dataMarketImmutableBucket: cfg.dataMarketImmutableBucket,

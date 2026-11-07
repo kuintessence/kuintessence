@@ -28,6 +28,7 @@ import { federationMaterialDigest } from "./assets";
 import { type FederationActor, requireFederationCapability } from "./permissions";
 import type { FederationResultReader } from "./result-reader";
 import { federationMessageKeyId } from "./signatures";
+import { lockFederationTransferAgent, lockFederationTransferSlot } from "./transfer-agent";
 import { type FederationTransaction, FederationTrustRegistry } from "./trust-registry";
 import { assertWorkflowDelegationBinding } from "./workflow-delegations";
 
@@ -206,18 +207,7 @@ export class FederationResultImports {
         .for("share");
       if (!agent || agent.providerOrgId !== rows.parent.localOrgId || agent.status !== "online")
         throw new FederationError("POLICY_DENIED");
-      const [held] = await tx
-        .select({ generation: federationResultAttempts.generation })
-        .from(federationResultAttempts)
-        .where(
-          and(
-            eq(federationResultAttempts.agentId, agentId),
-            inArray(federationResultAttempts.state, [...activeStates, "cleanup_pending"]),
-            gte(federationResultAttempts.leaseUntil, this.clock()),
-          ),
-        )
-        .limit(1);
-      if (held) throw new FederationError("OPERATION_CONFLICT");
+      await lockFederationTransferAgent(tx, agentId, this.clock());
       if (rows.transfer.state !== "pending") throw new FederationError("OPERATION_CONFLICT");
       const [previous] = await tx
         .select()
@@ -321,6 +311,7 @@ export class FederationResultImports {
   async renew(agentId: string, generation: string) {
     return this.db.transaction(async (tx) => {
       const rows = await this.lockAttempt(tx, generation);
+      await lockFederationTransferSlot(tx, agentId);
       await this.assertAttempt(tx, rows, agentId, "copying");
       const leaseUntil = this.lease(rows.parent);
       await tx
@@ -387,6 +378,7 @@ export class FederationResultImports {
     const pin = FederationResultObjectSchema.parse(object);
     return this.db.transaction(async (tx) => {
       const rows = await this.lockAttempt(tx, generation);
+      await lockFederationTransferSlot(tx, agentId);
       await this.assertAttempt(tx, rows, agentId, "assembling");
       const leaseUntil = this.lease(rows.parent);
       await tx
@@ -437,6 +429,7 @@ export class FederationResultImports {
       const rows = await this.lockAttempt(tx, task.binding.generation);
       if (!(renew ? ["verifying"] : ["verifying", "verified"]).includes(rows.attempt.state))
         throw new FederationError("OPERATION_CONFLICT");
+      if (renew) await lockFederationTransferSlot(tx, agentId);
       await this.assertAttempt(tx, rows, agentId, rows.attempt.state);
       this.assertVerification(rows, task);
       const leaseUntil = renew ? this.lease(rows.parent) : rows.attempt.leaseUntil;

@@ -1,11 +1,12 @@
 import { expect, test } from "bun:test";
 import {
+  cleanupFederationInputKey,
   cleanupFederationResultKey,
   type FederationResultCleanupClient,
 } from "./federation-result-cleanup";
 
-function fixture() {
-  const key = `federation-results/${crypto.randomUUID()}/${crypto.randomUUID()}`;
+function fixture(kind = "federation-results") {
+  const key = `${kind}/${crypto.randomUUID()}/${crypto.randomUUID()}`;
   const uploads = new Map([
     ["lost-upload", key],
     ["known-upload", key],
@@ -71,4 +72,24 @@ test("cleanup refuses broad paths, retains failure for incomplete deletion, and 
     error = caught;
   }
   expect(String(error)).toBe("Error: FEDERATION_STORAGE_CLEANUP_INCOMPLETE");
+});
+
+test("input cleanup uses a separate exact namespace and preserves adjacent attempts", async () => {
+  const f = fixture("federation-inputs");
+  await expect(cleanupFederationResultKey(f.client, "bucket", f.key)).rejects.toThrow(
+    "INVALID_FEDERATION_STORAGE_KEY",
+  );
+  for (const key of [
+    "federation-inputs/",
+    `${f.key}/extra`,
+    `netdrive/objects/${crypto.randomUUID()}`,
+    f.key.replace("federation-inputs", "federation-results"),
+  ])
+    await expect(cleanupFederationInputKey(f.client, "bucket", key)).rejects.toThrow(
+      "INVALID_FEDERATION_STORAGE_KEY",
+    );
+  await cleanupFederationInputKey(f.client, "bucket", f.key);
+  expect(f.removed).toEqual(["lost-upload", "known-upload", "old-version", "delete-marker"]);
+  expect([...f.uploads.keys()]).toEqual(["neighbor-upload"]);
+  expect([...f.versions.keys()]).toEqual(["neighbor-version"]);
 });

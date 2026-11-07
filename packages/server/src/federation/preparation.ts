@@ -373,7 +373,8 @@ export class FederationPreparationService {
         .select({ state: federationInputImports.state })
         .from(federationInputImports)
         .where(eq(federationInputImports.reservationId, saved.reservation.id));
-      if (input?.state === "cancelled") throw new FederationError("CANCELLATION_REQUESTED");
+      if (input && ["cancelling", "cancelled"].includes(input.state))
+        throw new FederationError("CANCELLATION_REQUESTED");
       throw new FederationError("DATA_WAITING");
     }
     const material = await this.db.transaction(async (tx) => {
