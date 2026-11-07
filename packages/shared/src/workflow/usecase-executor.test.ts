@@ -674,6 +674,7 @@ describe("createUsecaseExecutor", () => {
             {
               fileMetadataId: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa1",
               fileMetadataName: "a.txt",
+              relativePath: "nested/a.txt",
               hash: "sha-a",
               size: 5,
             },
@@ -691,7 +692,7 @@ describe("createUsecaseExecutor", () => {
     await exec(batchNode, { params: {}, nodes: {} });
 
     expect(capture.spec?.inputStaging).toEqual([
-      { fileMetadataId: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa1", stagePath: "inputs/a.txt" },
+      { fileMetadataId: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa1", stagePath: "inputs/nested/a.txt" },
       { fileMetadataId: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa2", stagePath: "inputs/b.txt" },
     ]);
   });
@@ -1335,4 +1336,156 @@ test("pinned packages preserve their installation identity in Agent intent and r
       nodes: {},
     }),
   ).rejects.toThrow("requires managed Agent activation");
+});
+
+test("federation file slots resolve managed artifacts and preserve batch paths without mixing scalar parameters", async () => {
+  const captured: Array<{ parameters: unknown; files: unknown }> = [];
+  const resolved: unknown[] = [];
+  const artifact = { artifactId: UUID };
+  const file = { fileMetadataId: USECASE_PACKAGE_ID, fileMetadataName: "source.txt" };
+  const executor = createUsecaseExecutor({
+    ...deps({}),
+    resolveFileInput: async (value) => {
+      resolved.push(value);
+      return value === artifact ? file : value;
+    },
+    executeFederation: async (_node, _invocation, parameters, files) => {
+      captured.push({ parameters, files });
+      return { status: "Succeeded", values: {} };
+    },
+  });
+  const node = workflowDsl.WorkflowNodeSchema.parse({
+    ...federationNode,
+    inputSlots: [
+      { descriptor: "count", type: "Text", from: { param: "count" } },
+      {
+        descriptor: "input",
+        type: "File",
+        from: { param: "artifact" },
+        expectedFileName: "input.dat",
+      },
+      {
+        descriptor: "batch",
+        type: "File",
+        isBatch: true,
+        sources: [{ node: "upstream", output: "files" }],
+        select: "RequireExactlyOne",
+      },
+      { descriptor: "empty", type: "File", isBatch: true, contents: [] },
+      { descriptor: "optional", type: "File", optional: true, from: { param: "absent" } },
+    ],
+  });
+  const batch = [
+    { ...file, fileMetadataName: "display-first.txt", relativePath: "nested/first.txt" },
+    { ...file, fileMetadataName: "second.txt" },
+  ];
+  await executor(node, {
+    params: { count: 2, artifact },
+    nodes: { upstream: { status: "Succeeded", values: { files: batch } } },
+  });
+  expect(captured).toEqual([
+    {
+      parameters: { count: 2 },
+      files: [
+        {
+          descriptor: "input",
+          type: "File",
+          files: [{ fileId: USECASE_PACKAGE_ID, path: "input.dat" }],
+        },
+        {
+          descriptor: "batch",
+          type: "FileBatch",
+          files: [
+            { fileId: USECASE_PACKAGE_ID, path: "nested/first.txt" },
+            { fileId: USECASE_PACKAGE_ID, path: "second.txt" },
+          ],
+        },
+        { descriptor: "empty", type: "FileBatch", files: [] },
+      ],
+    },
+  ]);
+  expect(resolved).toEqual([artifact, batch, []]);
+});
+
+test("federation file slots reject wrong cardinality and unsafe file references before delegation", async () => {
+  let submitted = 0;
+  const executor = createUsecaseExecutor({
+    ...deps({}),
+    executeFederation: async () => {
+      submitted++;
+      return { status: "Succeeded", values: {} };
+    },
+  });
+  for (const isBatch of [false, true]) {
+    const node = workflowDsl.WorkflowNodeSchema.parse({
+      ...federationNode,
+      inputSlots: [{ descriptor: "input", type: "File", isBatch, from: { param: "input" } }],
+    });
+    for (const value of [
+      undefined,
+      null,
+      "filename.txt",
+      { fileMetadataId: "bad", fileMetadataName: "ok.txt" },
+      { fileMetadataId: USECASE_PACKAGE_ID, fileMetadataName: "../escape" },
+      { fileMetadataId: USECASE_PACKAGE_ID, fileMetadataName: "/absolute" },
+    ]) {
+      const input = isBatch && value !== undefined ? [value] : value;
+      await expect(executor(node, { params: { input } })).rejects.toThrow();
+    }
+    const file = { fileMetadataId: USECASE_PACKAGE_ID, fileMetadataName: "input.dat" };
+    await expect(executor(node, { params: { input: isBatch ? file : [file] } })).rejects.toThrow();
+  }
+  expect(submitted).toBe(0);
+});
+
+test("federation file slots accept explicit single files and preserve absence of an optional input", async () => {
+  let selected: unknown;
+  const executor = createUsecaseExecutor({
+    ...deps({}),
+    executeFederation: async (_node, _invocation, _parameters, files) => {
+      selected = files;
+      return { status: "Succeeded", values: {} };
+    },
+  });
+  const contents = [
+    {
+      fileMetadataId: USECASE_PACKAGE_ID,
+      fileMetadataName: "chosen.dat",
+      hash: "untrusted",
+      size: 999,
+    },
+  ];
+  const node = workflowDsl.WorkflowNodeSchema.parse({
+    ...federationNode,
+    inputSlots: [{ descriptor: "input", type: "File", contents }],
+  });
+  await executor(node, {});
+  expect(selected).toEqual([
+    {
+      descriptor: "input",
+      type: "File",
+      files: [{ fileId: USECASE_PACKAGE_ID, path: "chosen.dat" }],
+    },
+  ]);
+  await executor(
+    workflowDsl.WorkflowNodeSchema.parse({
+      ...federationNode,
+      inputSlots: [
+        { descriptor: "optional", type: "File", optional: true, from: { param: "missing" } },
+      ],
+    }),
+    { params: {} },
+  );
+  expect(selected).toBeUndefined();
+  for (const slots of [
+    [{ descriptor: "input", type: "File", contents: [] }],
+    [{ descriptor: "input", type: "File" }],
+    [
+      { descriptor: "input", type: "File", contents },
+      { descriptor: "input", type: "Text", from: { param: "input" } },
+    ],
+  ])
+    expect(
+      workflowDsl.WorkflowNodeSchema.safeParse({ ...federationNode, inputSlots: slots }).success,
+    ).toBe(false);
 });

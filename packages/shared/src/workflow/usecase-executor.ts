@@ -1,5 +1,9 @@
 import type { JobStatusName } from "../constants/job-status";
 import type { FederationParameterOverrides } from "../federation/assets";
+import {
+  type FederationInputSelection,
+  FederationInputSelectionSchema,
+} from "../federation/input-files";
 import * as usecase from "../usecase";
 import * as workflowDsl from "../workflow-dsl";
 import {
@@ -99,6 +103,7 @@ export interface UsecaseExecutorDeps {
     node: Extract<workflowDsl.WorkflowNode, { type: "Federation" }>,
     invocation?: NodeInvocation,
     parameters?: FederationParameterOverrides,
+    files?: FederationInputSelection,
   ): Promise<NodeExecutionResult>;
 }
 
@@ -109,8 +114,10 @@ export interface UsecaseExecutorDeps {
  */
 export function createUsecaseExecutor(deps: UsecaseExecutorDeps): NodeExecutor {
   return async (node, ctx, invocation) => {
-    if (node.type === "Federation" && deps.executeFederation)
-      return deps.executeFederation(node, invocation, federationParameters(node, ctx));
+    if (node.type === "Federation" && deps.executeFederation) {
+      const inputs = await federationInputs(node, ctx, deps.resolveFileInput);
+      return deps.executeFederation(node, invocation, inputs.parameters, inputs.files);
+    }
     if (node.type === "NoAction") {
       return { status: "Succeeded", values: {} };
     }
@@ -284,18 +291,44 @@ function mapResources(
   return Object.keys(resources).length > 0 ? resources : undefined;
 }
 
-function federationParameters(
+async function federationInputs(
   node: Extract<workflowDsl.WorkflowNode, { type: "Federation" }>,
   ctx: Record<string, CelValue>,
-): FederationParameterOverrides {
+  resolveFileInput: UsecaseExecutorDeps["resolveFileInput"],
+) {
   const parameters: FederationParameterOverrides = {};
+  const files: FederationInputSelection = [];
   for (const slot of node.inputSlots ?? []) {
-    const value = slot.sources
+    let value: unknown = slot.sources
       ? resolveSources(slot.sources, slot.select, ctx)
       : slot.from
         ? resolveBinding(slot.from, ctx)
-        : undefined;
+        : slot.type === "File"
+          ? slot.isBatch
+            ? (slot.contents ?? undefined)
+            : slot.contents?.[0]
+          : undefined;
     if (value === undefined && slot.optional) continue;
+    if (slot.type === "File") {
+      if (resolveFileInput && value !== undefined) value = await resolveFileInput(value);
+      if (slot.isBatch ? !isFileValueArray(value) : !isFileValue(value))
+        throw new Error(
+          `workflow: federation input "${slot.descriptor}" requires ${slot.isBatch ? "a file batch" : "a file"}`,
+        );
+      const members = isFileValueArray(value) ? value : isFileValue(value) ? [value] : [];
+      files.push({
+        descriptor: slot.descriptor,
+        type: slot.isBatch ? "FileBatch" : "File",
+        files: members.map((file) => ({
+          fileId: file.fileMetadataId,
+          path:
+            !slot.isBatch && slot.expectedFileName
+              ? slot.expectedFileName
+              : (file.relativePath ?? file.fileMetadataName),
+        })),
+      });
+      continue;
+    }
     if (
       typeof value !== "string" &&
       typeof value !== "boolean" &&
@@ -306,7 +339,10 @@ function federationParameters(
       );
     parameters[slot.descriptor] = value;
   }
-  return parameters;
+  return {
+    parameters,
+    files: files.length ? FederationInputSelectionSchema.parse(files) : undefined,
+  };
 }
 
 async function resolveNodeInputs(
@@ -343,6 +379,7 @@ async function resolveNodeInputs(
         inputs[slot.descriptor] = contents.map((file) => ({
           fileMetadataId: file.fileMetadataId,
           fileMetadataName: file.fileMetadataName,
+          ...(file.relativePath === undefined ? {} : { relativePath: file.relativePath }),
         }));
       } else if (slot.isBatch) {
         inputs[slot.descriptor] = [];

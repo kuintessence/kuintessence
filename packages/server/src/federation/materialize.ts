@@ -8,6 +8,7 @@ import {
   type FederationAssetRef,
   type FederationEnvironmentLock,
   type FederationInputManifest,
+  type FederationReceivedInputFiles,
   federationCanonicalJson,
 } from "@kuintessence/shared/federation";
 import { parseWorkflowYaml } from "../workflow/parser";
@@ -50,12 +51,25 @@ export async function materializeFederationWorkflow(input: {
   template: FederationAssetRef;
   inputs: FederationInputManifest;
   environment: FederationEnvironmentLock;
+  receivedInputs?: FederationReceivedInputFiles;
   resolve(reference: FederationAssetRef): Promise<ResolvedAsset>;
 }): Promise<FederationWorkflowProjection> {
   const { inputs, environment } = input;
   const versions = new Map<string, workflowDsl.Workflow>();
   const pending = new Map<string, LocalSoftware>();
   const usedDatasets = new Set<string>();
+  const receivedFiles = new Map(
+    (input.receivedInputs?.inputs ?? []).map((selected) => [selected.descriptor, selected]),
+  );
+  const usedFiles = new Set<string>();
+  const fileContents = (selected: FederationReceivedInputFiles["inputs"][number]) =>
+    selected.files.map((file) => ({
+      fileMetadataId: file.fileId,
+      fileMetadataName: file.path,
+      ...(selected.type === "FileBatch" ? { relativePath: file.path } : {}),
+      hash: file.sha256,
+      size: file.sizeBytes,
+    }));
   let nodeCount = 0;
   const fail = (path: string, reason: string): never => {
     throw new FederationMaterializationError(path, reason);
@@ -128,6 +142,18 @@ export async function materializeFederationWorkflow(input: {
         }
         if (slot.contents?.length)
           return fail(field, "source-local file or text record IDs are not portable");
+        if (slot.type === "File" && !slot.sources && (!slot.from || "param" in slot.from)) {
+          const selected = receivedFiles.get(slot.descriptor);
+          if (selected) {
+            if (
+              (slot.from && "param" in slot.from && slot.from.param !== slot.descriptor) ||
+              (slot.isBatch ? "FileBatch" : "File") !== selected.type
+            )
+              return fail(field, "received file selection does not match the declared slot");
+            usedFiles.add(selected.descriptor);
+            return { ...slot, from: undefined, contents: fileContents(selected) };
+          }
+        }
         // File expressions/parameters can smuggle a sender's file ID into the local file service.
         // Until artifact provenance is checked at runtime, only typed upstream outputs are accepted.
         if (slot.type === "File" && slot.from && !("node" in slot.from))
@@ -163,9 +189,19 @@ export async function materializeFederationWorkflow(input: {
       if (
         (input.type === "File" || input.type === "FileBatch") &&
         slot?.from &&
-        !("node" in slot.from)
+        !("node" in slot.from) &&
+        !(slot.type === "File" && "param" in slot.from && receivedFiles.has(descriptor))
       )
         fail(`${path}.inputs.${descriptor}`, "file inputs must reference an upstream file output");
+    }
+    for (const [descriptor, declaration] of Object.entries(node.inputs)) {
+      const slot = node.inputSlots?.find((slot) => slot.descriptor === descriptor);
+      if (
+        receivedFiles.has(descriptor) &&
+        slot?.type === "File" &&
+        declaration.type !== (slot.isBatch ? "FileBatch" : "File")
+      )
+        fail(`${path}.inputs.${descriptor}`, "file slot differs from the script I/O contract");
     }
     if (node.executionIdentity.type !== "Inherit")
       fail(
@@ -375,20 +411,38 @@ export async function materializeFederationWorkflow(input: {
     const payload = root.payload;
     const contract = runtime(payload, "template.runtime");
     const inputSlots = Object.entries(payload.inputs).map(([descriptor, value]) => {
-      if (value.type === "File" || value.type === "FileBatch")
-        return fail(
-          `template.inputs.${descriptor}`,
-          "standalone script file inputs require managed artifact delivery",
-        );
+      if (value.type === "File" || value.type === "FileBatch") {
+        const selected = receivedFiles.get(descriptor);
+        if (!selected) {
+          if (value.required)
+            return fail(`template.inputs.${descriptor}`, "received file input required");
+          return null;
+        }
+        if (selected.type !== value.type)
+          return fail(
+            `template.inputs.${descriptor}`,
+            "received file type differs from script I/O contract",
+          );
+        usedFiles.add(descriptor);
+        return {
+          type: "File",
+          descriptor,
+          isBatch: value.type === "FileBatch",
+          contents: fileContents(selected),
+          optional: !value.required,
+        };
+      }
       return { type: "Text", descriptor, from: { param: descriptor }, optional: !value.required };
     });
     const wrapped = workflowDsl.WorkflowSchema.safeParse({
       name: root.asset.name,
-      parameters: Object.entries(payload.inputs).map(([name, value]) => ({
-        name,
-        type: value.type === "JSON" ? "json" : "string",
-        required: value.required,
-      })),
+      parameters: Object.entries(payload.inputs)
+        .filter(([, value]) => value.type !== "File" && value.type !== "FileBatch")
+        .map(([name, value]) => ({
+          name,
+          type: value.type === "JSON" ? "json" : "string",
+          required: value.required,
+        })),
       spec: {
         nodeDrafts: [
           {
@@ -406,7 +460,7 @@ export async function materializeFederationWorkflow(input: {
             executionIdentity: payload.executionIdentity,
             inputs: payload.inputs,
             outputs: payload.outputs,
-            inputSlots,
+            inputSlots: inputSlots.filter((slot) => slot !== null),
           },
         ],
       },
@@ -425,9 +479,16 @@ export async function materializeFederationWorkflow(input: {
     if (!workflow.parameters.some((parameter) => parameter.name === name))
       return fail(`parameters.${name}`, "undeclared parameter");
   workflow.parameters = workflow.parameters.map((parameter) => {
-    const value = Object.hasOwn(inputs.parameters, parameter.name)
-      ? inputs.parameters[parameter.name]
-      : parameter.default;
+    const received = receivedFiles.get(parameter.name);
+    if (received && Object.hasOwn(inputs.parameters, parameter.name))
+      return fail(`parameters.${parameter.name}`, "file input cannot also be a scalar override");
+    const value = received
+      ? received.type === "File"
+        ? fileContents(received)[0]
+        : fileContents(received)
+      : Object.hasOwn(inputs.parameters, parameter.name)
+        ? inputs.parameters[parameter.name]
+        : parameter.default;
     if (value === undefined && parameter.required)
       return fail(`parameters.${parameter.name}`, "required parameter missing");
     if (value !== undefined && !parameterMatches(parameter.type, value))
@@ -452,6 +513,9 @@ export async function materializeFederationWorkflow(input: {
         `datasets.${selected.descriptor}`,
         "dataset is not consumed by any template slot",
       );
+  for (const descriptor of receivedFiles.keys())
+    if (!usedFiles.has(descriptor))
+      return fail(`files.${descriptor}`, "received input is not consumed by a declared file slot");
   const errors = workflowDsl.validateWorkflow(workflow);
   if (errors.length) return fail("template", "materialized workflow failed static validation");
   return { workflow, workflowVersions: Object.fromEntries(versions) };

@@ -468,3 +468,142 @@ test("uses the script I/O contract to reject file parameters hidden behind Text 
     path: "spec.script.inputs.input",
   });
 });
+
+function receivedFileInputs(
+  type: "File" | "FileBatch" = "File",
+  empty = false,
+): NonNullable<Input["receivedInputs"]> {
+  return {
+    importId: crypto.randomUUID(),
+    manifestDigest: digest,
+    inputs: [
+      {
+        descriptor: "input",
+        type,
+        files: empty
+          ? []
+          : [
+              {
+                path: "nested/input.dat",
+                fileId: crypto.randomUUID(),
+                generation: crypto.randomUUID(),
+                storageKey: "federation-inputs/private",
+                versionId: "pinned",
+                etag: "etag",
+                sha256: "a".repeat(64),
+                sizeBytes: 4,
+              },
+            ],
+      },
+    ],
+  };
+}
+
+test("projects received files into workflow slots and parameters without mutating source templates", async () => {
+  const f = fixture(
+    [computing({ inputSlots: [{ descriptor: "input", type: "File", from: { param: "input" } }] })],
+    [{ name: "input", type: "json", required: true }],
+  );
+  f.input.receivedInputs = receivedFileInputs();
+  const before = JSON.stringify(f.root.local);
+  const result = await materializeFederationWorkflow(f.input);
+  const fileId = f.input.receivedInputs.inputs[0]?.files[0]?.fileId;
+  expect(result.workflow.parameters[0]?.default).toMatchObject({
+    fileMetadataId: fileId,
+    fileMetadataName: "nested/input.dat",
+  });
+  expect(result.workflow.spec.nodeDrafts[0]).toMatchObject({
+    inputSlots: [
+      { type: "File", contents: [{ fileMetadataId: fileId, size: 4, hash: "a".repeat(64) }] },
+    ],
+  });
+  expect(JSON.stringify(f.root.local)).toBe(before);
+  expect(JSON.stringify(result)).not.toContain("storageKey");
+  expect(JSON.stringify(result)).not.toContain("versionId");
+});
+
+test("standalone scripts consume typed received File and empty FileBatch inputs", async () => {
+  for (const [type, empty] of [
+    ["File", false],
+    ["FileBatch", false],
+    ["FileBatch", true],
+  ] as const) {
+    const f = fixture([]);
+    const script = f.add("script", {
+      kind: "sandbox-script",
+      language: "bash",
+      content: "true",
+      entrypoint: "main.sh",
+      sha256: createHash("sha256").update("true").digest("hex"),
+      runtimeContractRef: contract,
+      inputs: { input: { type, required: true }, absent: { type: "File", required: false } },
+    });
+    f.input.template = script.reference;
+    f.input.receivedInputs = receivedFileInputs(type, empty);
+    const result = await materializeFederationWorkflow(f.input);
+    expect(result.workflow.spec.nodeDrafts[0]).toMatchObject({
+      inputSlots: [{ descriptor: "input", type: "File", isBatch: type === "FileBatch" }],
+    });
+    expect(result.workflow.parameters).toEqual([]);
+    if (empty)
+      expect(result.workflow.spec.nodeDrafts[0]).toMatchObject({ inputSlots: [{ contents: [] }] });
+    else if (type === "FileBatch")
+      expect(result.workflow.spec.nodeDrafts[0]).toMatchObject({
+        inputSlots: [{ contents: [{ relativePath: "nested/input.dat" }] }],
+      });
+  }
+});
+
+test("received files cannot replace upstream bindings, foreign records, mismatched types or arbitrary expressions", async () => {
+  for (const slot of [
+    { descriptor: "other", type: "File" },
+    { descriptor: "input", type: "File", isBatch: true },
+    { descriptor: "input", type: "File", from: { expr: "params.input" } },
+    { descriptor: "input", type: "File", from: { param: "other" } },
+    {
+      descriptor: "input",
+      type: "File",
+      contents: [
+        { fileMetadataId: crypto.randomUUID(), fileMetadataName: "foreign", hash: "a", size: 4 },
+      ],
+    },
+  ]) {
+    const f = fixture(
+      [computing({ inputSlots: [slot] })],
+      [
+        { name: "input", type: "json" },
+        { name: "other", type: "json" },
+      ],
+    );
+    f.input.receivedInputs = receivedFileInputs();
+    await expect(materializeFederationWorkflow(f.input)).rejects.toThrow();
+  }
+  const f = fixture(
+    [computing({ inputSlots: [{ descriptor: "input", type: "File", from: { param: "input" } }] })],
+    [{ name: "input", type: "json" }],
+  );
+  f.input.receivedInputs = receivedFileInputs();
+  f.input.inputs.parameters.input = "foreign-file";
+  await expect(materializeFederationWorkflow(f.input)).rejects.toThrow("scalar override");
+});
+
+test("received batch selection must agree with a Script input declaration", async () => {
+  const f = fixture(
+    [
+      {
+        type: "Script",
+        id: "script",
+        name: "script",
+        source: { type: "Inline", language: "bash", content: "true" },
+        runtimeContractRef: contract,
+        inputs: { input: { type: "File" } },
+        inputSlots: [
+          { descriptor: "input", type: "File", isBatch: true, from: { param: "input" } },
+        ],
+      },
+    ],
+    [{ name: "input", type: "json" }],
+  );
+  f.input.receivedInputs = receivedFileInputs("FileBatch");
+  await expect(materializeFederationWorkflow(f.input)).rejects.toThrow("script I/O contract");
+});

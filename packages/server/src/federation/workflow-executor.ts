@@ -18,6 +18,7 @@ import {
 import {
   FederationAgreementSchema,
   FederationError,
+  type FederationInputSelection,
   type FederationParameterOverrides,
 } from "@kuintessence/shared/federation";
 import { and, eq } from "drizzle-orm";
@@ -48,6 +49,7 @@ export class FederationWorkflowExecutor {
     node: Node,
     invocation: NodeInvocation,
     parameters: FederationParameterOverrides = {},
+    files?: FederationInputSelection,
   ): Promise<NodeExecutionResult> {
     let waitingReason: "DATA_WAITING" | "RESULT_WAITING" = "DATA_WAITING";
     try {
@@ -91,6 +93,7 @@ export class FederationWorkflowExecutor {
         },
         node.admissionWindowSec,
         parameters,
+        files,
       );
       const observed = await lease.transaction(async (tx) => {
         await requireFederationCapability(tx, actor, "delegation.read");

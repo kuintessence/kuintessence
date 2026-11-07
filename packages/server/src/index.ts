@@ -1007,7 +1007,7 @@ const makeRunner =
       return availability.installableAvailable.length > 0;
     };
     return createWorkflowRunner({
-      executeFederation: async (node, invocation, parameters) => {
+      executeFederation: async (node, invocation, parameters, files) => {
         if (!executionLease || !activeOrgId || !invocation || federationSnapshot)
           throw new WorkflowExecutionInterrupted(
             "Federation nodes require a source durable run and organization",
@@ -1021,6 +1021,7 @@ const makeRunner =
           node,
           invocation,
           parameters,
+          files,
         );
       },
       resolveFileInput,

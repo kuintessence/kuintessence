@@ -20,6 +20,21 @@ export const FederationInputPathSchema = z
     "Expected a safe relative input path",
   );
 
+/** Source-local selection only; IDs never enter the portable signed inventory. */
+export const FederationInputSelectionSchema = z
+  .array(
+    z.strictObject({
+      descriptor: FederationInputDescriptorSchema,
+      type: z.enum(["File", "FileBatch"]),
+      files: z
+        .array(z.strictObject({ path: FederationInputPathSchema, fileId: z.uuid() }))
+        .max(256),
+    }),
+  )
+  .min(1)
+  .max(256);
+export type FederationInputSelection = z.infer<typeof FederationInputSelectionSchema>;
+
 /** Portable inventory only; no file IDs, storage keys, credentials or implicit usage authorization. */
 export const FederationInputFilesSchema = z
   .strictObject({
@@ -69,3 +84,22 @@ export const FederationInputFilesSchema = z
     }
   });
 export type FederationInputFiles = z.infer<typeof FederationInputFilesSchema>;
+
+/** Receiver-local execution snapshot; never sent as a portable input manifest. */
+export interface FederationReceivedInputFiles {
+  importId: string;
+  manifestDigest: string;
+  inputs: Array<{
+    descriptor: string;
+    type: "File" | "FileBatch";
+    files: Array<
+      FederationInputFiles["inputs"][number]["files"][number] & {
+        fileId: string;
+        generation: string;
+        storageKey: string;
+        versionId: string;
+        etag: string;
+      }
+    >;
+  }>;
+}

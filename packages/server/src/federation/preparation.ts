@@ -1,6 +1,5 @@
 import {
   federationAgreements,
-  federationInputImports,
   federationPreparations,
   federationReservations,
   type PgDb,
@@ -17,6 +16,7 @@ import {
   type FederationEnvironmentLock,
   FederationError,
   type FederationInputManifest,
+  type FederationReceivedInputFiles,
   federationCanonicalJson,
 } from "@kuintessence/shared/federation";
 import { and, eq } from "drizzle-orm";
@@ -26,6 +26,7 @@ import { assertFederationNotCancelled } from "./cancellation-fence";
 import { type ExecutionIdentity, requireExecutionIdentity } from "./execution-identity";
 import { type FederationWorkflowProjection, materializeFederationWorkflow } from "./materialize";
 import { type FederationActor, requireFederationCapability } from "./permissions";
+import { readFederationPublishedInputs } from "./published-inputs";
 import { federationMessageKeyId, verifyFederationMessage } from "./signatures";
 import { FederationTrustRegistry } from "./trust-registry";
 
@@ -36,7 +37,11 @@ export interface FederationExecutionPreparation {
   };
   request: FederationDelegation;
   identity: ExecutionIdentity;
-  material: { inputs: FederationInputManifest; environment: FederationEnvironmentLock };
+  material: {
+    inputs: FederationInputManifest;
+    environment: FederationEnvironmentLock;
+    receivedInputs?: FederationReceivedInputFiles;
+  };
   references: Map<string, FederationAssetRef>;
   projection: FederationWorkflowProjection;
   mappings: typeof federationPreparations.$inferSelect.mappings;
@@ -166,6 +171,12 @@ export class FederationPreparationService {
   ) {
     const { request, identity } = snapshot;
     await this.lockMaterialScope(tx, snapshot);
+    const receivedInputs = await readFederationPublishedInputs(tx, snapshot);
+    if (
+      federationMaterialDigest(receivedInputs ?? null) !==
+      federationMaterialDigest(snapshot.material.receivedInputs ?? null)
+    )
+      throw new FederationError("OPERATION_CONFLICT");
     for (const mapping of snapshot.mappings) {
       const current = await this.assets.assertResolved(
         tx,
@@ -367,18 +378,9 @@ export class FederationPreparationService {
   ) {
     const scope = await this.verifyReservation(saved);
     const { request, identity } = scope;
-    // shortcut: wait until receiver copy/verification can produce authorized managed inputs.
-    if (request.inputFilesDigest) {
-      const [input] = await this.db
-        .select({ state: federationInputImports.state })
-        .from(federationInputImports)
-        .where(eq(federationInputImports.reservationId, saved.reservation.id));
-      if (input && ["cancelling", "cancelled"].includes(input.state))
-        throw new FederationError("CANCELLATION_REQUESTED");
-      throw new FederationError("DATA_WAITING");
-    }
     const material = await this.db.transaction(async (tx) => {
       await this.lockMaterialScope(tx, scope);
+      const receivedInputs = await readFederationPublishedInputs(tx, scope);
       const inputs = await this.assets.readMaterial(
         tx,
         identity.orgId,
@@ -393,7 +395,7 @@ export class FederationPreparationService {
       );
       if (inputs.kind !== "inputs" || environment.kind !== "environment-lock")
         throw new FederationError("INVALID_MESSAGE");
-      return { inputs, environment };
+      return { inputs, environment, ...(receivedInputs ? { receivedInputs } : {}) };
     });
     const references = [
       request.template,

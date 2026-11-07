@@ -49,6 +49,7 @@ import {
   type ServerMessage,
 } from "@kuintessence/proto";
 import {
+  createUsecaseExecutor,
   WorkflowExecutionInterrupted,
   WorkflowExecutionWaiting,
   workflowDsl,
@@ -99,6 +100,7 @@ import { FederationCancellationReceiver } from "./cancellation";
 import { FederationCancellationMonitor } from "./cancellation-monitor";
 import { readFederationCancellationState } from "./cancellation-state";
 import type { FederationDownloadStorage } from "./download-credential";
+import { FederationExecutionBindingService } from "./execution-binding";
 import { createFederationIngress } from "./ingress";
 import { cancelFederationInputImport, FederationInputImports } from "./input-imports";
 import { FederationInputPublication } from "./input-publication";
@@ -387,6 +389,7 @@ async function fixture(
   resultPolicy?: FederationAgreement["resultPolicy"],
   parameters: Record<string, string | number> = {},
   inputPolicy?: FederationAgreement["inputPolicy"],
+  scriptInputs: Record<string, workflowDsl.ScriptInputSpec> = {},
 ) {
   time = new Date(testNow);
   const terms = testAgreement(a.signing.siteId, b.signing.siteId);
@@ -405,7 +408,7 @@ async function fixture(
     entrypoint: "main.sh",
     sha256: createHash("sha256").update(content).digest("hex"),
     runtimeContractRef: { name: "bash", version: "1" },
-    inputs: {},
+    inputs: scriptInputs,
     outputs: {},
   };
   await db.insert(softwareAssets).values({
@@ -483,8 +486,9 @@ async function workflowDelegationFixture(
   policy?: FederationAgreement["resultPolicy"],
   parameters: Record<string, string | number> = {},
   inputPolicy?: FederationAgreement["inputPolicy"],
+  scriptInputs: Record<string, workflowDsl.ScriptInputSpec> = {},
 ) {
-  const f = await fixture(policy, parameters, inputPolicy);
+  const f = await fixture(policy, parameters, inputPolicy, scriptInputs);
   const registry = new WorkflowRunRegistry(db);
   const runId = crypto.randomUUID();
   sourceRunIds.push(runId);
@@ -4485,8 +4489,11 @@ const inputPolicy: NonNullable<FederationAgreement["inputPolicy"]> = {
 async function inputInventoryFixture(
   policy: FederationAgreement["inputPolicy"] | null = inputPolicy,
   longExecution = false,
+  batch = false,
 ) {
-  const f = await workflowDelegationFixture(undefined, {}, policy ?? undefined);
+  const f = await workflowDelegationFixture(undefined, {}, policy ?? undefined, {
+    input: { type: batch ? "FileBatch" : "File", required: true },
+  });
   const fileId = crypto.randomUUID();
   sourceInputFileIds.push(fileId);
   await db.insert(netdriveFiles).values({
@@ -4514,7 +4521,7 @@ async function inputInventoryFixture(
   return { ...f, fileId, files, source, enqueue };
 }
 async function acceptedInputInventory(longExecution = false, batch = false) {
-  const f = await inputInventoryFixture(inputPolicy, longExecution);
+  const f = await inputInventoryFixture(inputPolicy, longExecution, batch);
   if (batch)
     f.files.splice(0, 1, {
       descriptor: "input",
@@ -5363,7 +5370,7 @@ test("input imports preserve quota on temporary authority failure, recover, and 
 });
 
 test("input imports keep empty batches explicit and reject a changed manifest on recovery", async () => {
-  const f = await inputInventoryFixture({ ...inputPolicy, maxBytes: 0 });
+  const f = await inputInventoryFixture({ ...inputPolicy, maxBytes: 0 }, false, true);
   try {
     f.files.splice(0, 1, { descriptor: "input", type: "FileBatch", files: [] });
     const operation = await f.enqueue();
@@ -5406,6 +5413,15 @@ test("input imports keep empty batches explicit and reject a changed manifest on
         clock,
       ).publish(saved.receipt.reservationId),
     ).toMatchObject({ state: "available" });
+    await prepareInputExecution({
+      exchange,
+      reference: f.reference,
+      reservationId: saved.receipt.reservationId,
+    });
+    const execution = await preparation.executionSnapshot(saved.receipt.reservationId);
+    expect(execution.projection.workflow.spec.nodeDrafts[0]).toMatchObject({
+      inputSlots: [{ type: "File", isBatch: true, contents: [] }],
+    });
     await db
       .update(federationInputImports)
       .set({
@@ -7150,8 +7166,13 @@ test("input publication atomically converts reserved quota to pinned files exact
           ),
         ),
     ).toHaveLength(1);
-    // Publication does not bypass the separate execution projection gate.
-    await expect(f.preparation.executionSnapshot(f.reservationId)).rejects.toThrow("DATA_WAITING");
+    // Publication does not itself stage a receiver Workflow.
+    expect(
+      await db
+        .select()
+        .from(federationWorkflowBindings)
+        .where(eq(federationWorkflowBindings.reservationId, f.reservationId)),
+    ).toHaveLength(0);
   } finally {
     await f.lease.release();
   }
@@ -7383,6 +7404,226 @@ test("input publication waits for every FileBatch member and publishes the compl
       `federation-inputs/${f.imported.importId}/input/second.dat`,
     ]);
     expect((await f.inventory())[0]).toMatchObject({ state: "available", reservedBytes: 0 });
+    await prepareInputExecution(f);
+    const execution = await f.preparation.executionSnapshot(f.reservationId);
+    expect(execution.projection.workflow.spec.nodeDrafts[0]).toMatchObject({
+      inputSlots: [
+        {
+          type: "File",
+          isBatch: true,
+          contents: [{ relativePath: "first.dat" }, { relativePath: "second.dat" }],
+        },
+      ],
+    });
+  } finally {
+    await f.lease.release();
+  }
+});
+
+test("workflow file slots create signed source snapshots through the ordinary Federation executor", async () => {
+  const f = await inputInventoryFixture();
+  try {
+    const remote = new FederationWorkflowExecutor(db, a.signing.siteId, f.source, clock);
+    const execute = createUsecaseExecutor({
+      resolvePackage: async () => {
+        throw new Error("No local package expected");
+      },
+      submitJob: async () => {
+        throw new Error("No local job expected");
+      },
+      executeFederation: (node, invocation, parameters, files) =>
+        remote.execute(actor, f.lease, node, invocation ?? f.invocation, parameters, files),
+    });
+    const node = workflowDsl.WorkflowNodeSchema.parse({
+      id: "remote",
+      name: "Remote files",
+      type: "Federation",
+      agreementRevisionId: f.terms.agreementRevisionId,
+      template: f.request.template,
+      inputManifestDigest: f.request.inputManifestDigest,
+      environmentLockDigest: f.request.environmentLockDigest,
+      resources: f.request.resources,
+      maxAmount: "1",
+      inputSlots: [
+        {
+          descriptor: "input",
+          type: "File",
+          from: { param: "file" },
+          expectedFileName: "input.dat",
+        },
+      ],
+    });
+    const context = {
+      params: { file: { fileMetadataId: f.fileId, fileMetadataName: "private/source.dat" } },
+    };
+    for (let i = 0; i < 2; i++)
+      await expect(execute(node, context, f.invocation)).rejects.toThrow("REMOTE_WAITING");
+    const snapshots = await db
+      .select()
+      .from(federationWorkflowInputExports)
+      .where(eq(federationWorkflowInputExports.runId, f.runId));
+    expect(snapshots).toHaveLength(1);
+    expect(snapshots[0]?.manifest.inputs).toEqual([
+      {
+        descriptor: "input",
+        type: "File",
+        files: [{ path: "input.dat", sizeBytes: 4, sha256: "a".repeat(64) }],
+      },
+    ]);
+    expect(JSON.stringify(snapshots[0]?.manifest)).not.toContain(f.fileId);
+    expect(JSON.stringify(snapshots[0]?.manifest)).not.toContain("private/");
+    await f.source.deliverNext();
+    const [sent] = await db
+      .select()
+      .from(federationOutbound)
+      .where(eq(federationOutbound.agreementRevisionId, f.terms.agreementRevisionId));
+    expect(sent?.receipt?.status).toBe("RESERVED");
+    expect(sent?.request.inputFilesDigest).toBe(snapshots[0]?.manifestDigest);
+    await db
+      .update(netdriveFiles)
+      .set({ storageVersionId: "replaced" })
+      .where(eq(netdriveFiles.id, f.fileId));
+    expect(await execute(node, context, f.invocation)).toMatchObject({
+      status: "Failed",
+      failure: { message: "Federation execution refused: OPERATION_CONFLICT" },
+    });
+  } finally {
+    await f.lease.release();
+  }
+});
+
+async function prepareInputExecution(
+  f: Pick<
+    Awaited<ReturnType<typeof inputPublicationFixture>>,
+    "exchange" | "reference" | "reservationId"
+  >,
+) {
+  await f.exchange.ensure(f.reservationId);
+  const resolved = await assets.resolveForDelegation(actor, f.reference);
+  if (!resolved.mapping.softwareRevisionId) throw new Error("Missing script revision");
+  await assets.register(receiver, {
+    reference: f.reference,
+    localRevisionId: resolved.mapping.softwareRevisionId,
+  });
+}
+
+test("published inputs bind the receiver workflow to the original identity and immutable file snapshot", async () => {
+  const f = await inputPublicationFixture();
+  try {
+    await prepareInputExecution(f);
+    await expect(f.preparation.executionSnapshot(f.reservationId)).rejects.toThrow("DATA_WAITING");
+    await f.verify();
+    await f.publisher().publish(f.reservationId);
+    expect(await f.preparation.prepare(f.reservationId)).toMatchObject({
+      state: "resolved",
+      blocker: null,
+    });
+    const prepared = await f.preparation.executionSnapshot(f.reservationId);
+    expect(prepared.material.receivedInputs?.inputs[0]?.files[0]).toMatchObject({
+      fileId: f.member.id,
+      versionId: "input-version",
+      sha256: f.member.sha256,
+    });
+    expect(prepared.projection.workflow.spec.nodeDrafts[0]).toMatchObject({
+      type: "Script",
+      inputSlots: [
+        {
+          type: "File",
+          contents: [
+            {
+              fileMetadataId: f.member.id,
+              fileMetadataName: "input.dat",
+              hash: f.member.sha256,
+              size: 4,
+            },
+          ],
+        },
+      ],
+    });
+    const binding = await new FederationExecutionBindingService(db, f.preparation).stage(
+      f.reservationId,
+    );
+    expect(binding?.snapshot.identity).toEqual({ userId: executionUserId, orgId: receiver.orgId });
+    expect(binding?.snapshot.receivedInputs).toEqual(prepared.material.receivedInputs);
+    await db
+      .update(netdriveFiles)
+      .set({ storageVersionId: "replaced" })
+      .where(eq(netdriveFiles.id, f.member.id));
+    await expect(f.preparation.executionSnapshot(f.reservationId)).rejects.toThrow(
+      "OPERATION_CONFLICT",
+    );
+    await expect(
+      db.transaction((tx) => f.preparation.lockExecutionSnapshot(tx, prepared)),
+    ).rejects.toThrow("OPERATION_CONFLICT");
+    await db
+      .update(netdriveFiles)
+      .set({ storageVersionId: "input-version" })
+      .where(eq(netdriveFiles.id, f.member.id));
+    await db.transaction(async (tx) => {
+      await f.preparation.lockExecutionSnapshot(tx, prepared);
+      await expect(
+        db.transaction((other) =>
+          other
+            .select()
+            .from(federationInputImports)
+            .where(eq(federationInputImports.id, f.imported.importId))
+            .for("update", { noWait: true }),
+        ),
+      ).rejects.toMatchObject({ cause: { code: "55P03" } });
+    });
+    await db.transaction((tx) =>
+      cancelFederationInputImport(tx, f.reservationId, "CANCELLATION_REQUESTED", clock()),
+    );
+    await expect(
+      db.transaction((tx) => f.preparation.lockExecutionSnapshot(tx, prepared)),
+    ).rejects.toThrow("CANCELLATION_REQUESTED");
+    expect(await f.preparation.prepare(f.reservationId)).toMatchObject({
+      state: "blocked",
+      blocker: "CANCELLATION_REQUESTED",
+    });
+  } finally {
+    await f.lease.release();
+  }
+});
+
+test("published input execution rejects changed ownership, deleted files and mismatched verification facts", async () => {
+  const f = await inputPublicationFixture();
+  try {
+    await prepareInputExecution(f);
+    await f.verify();
+    await f.publisher().publish(f.reservationId);
+    await db
+      .update(netdriveFiles)
+      .set({ ownerId: receiver.userId })
+      .where(eq(netdriveFiles.id, f.member.id));
+    await expect(f.preparation.executionSnapshot(f.reservationId)).rejects.toThrow("POLICY_DENIED");
+    await db
+      .update(netdriveFiles)
+      .set({ ownerId: executionUserId, deletedAt: clock() })
+      .where(eq(netdriveFiles.id, f.member.id));
+    await expect(f.preparation.executionSnapshot(f.reservationId)).rejects.toThrow("POLICY_DENIED");
+    await db
+      .update(netdriveFiles)
+      .set({ deletedAt: null })
+      .where(eq(netdriveFiles.id, f.member.id));
+    await db
+      .update(federationInputTransfers)
+      .set({ sha256: "b".repeat(64) })
+      .where(eq(federationInputTransfers.id, f.member.id));
+    await expect(f.preparation.executionSnapshot(f.reservationId)).rejects.toThrow(
+      "OPERATION_CONFLICT",
+    );
+    await db
+      .update(federationInputTransfers)
+      .set({ sha256: f.member.sha256 })
+      .where(eq(federationInputTransfers.id, f.member.id));
+    await db
+      .update(federationInputAttempts)
+      .set({ destinationEtag: "changed" })
+      .where(eq(federationInputAttempts.generation, f.binding.generation));
+    await expect(f.preparation.executionSnapshot(f.reservationId)).rejects.toThrow(
+      "OPERATION_CONFLICT",
+    );
   } finally {
     await f.lease.release();
   }

@@ -93,6 +93,8 @@ export const WorkflowNodeSchema = z.union([
     inputSlots: z
       .array(NodeInputSlotSchema)
       .superRefine((slots, ctx) => {
+        if (new Set(slots.map((slot) => slot.descriptor)).size !== slots.length)
+          ctx.addIssue({ code: "custom", message: "Federation input descriptors must be unique" });
         for (const [index, slot] of slots.entries()) {
           if (!FederationParameterOverridesSchema.keyType.safeParse(slot.descriptor).success)
             ctx.addIssue({
@@ -100,12 +102,18 @@ export const WorkflowNodeSchema = z.union([
               path: [index, "descriptor"],
               message: "Invalid federation parameter descriptor",
             });
-          if (slot.type !== "Text" || slot.contents != null || (!slot.from && !slot.sources))
+          if (
+            slot.type === "Dataset" ||
+            (slot.type === "Text" && (slot.contents != null || (!slot.from && !slot.sources))) ||
+            (slot.type === "File" &&
+              ((!slot.from && !slot.sources && slot.contents == null) ||
+                (!slot.isBatch && slot.contents != null && slot.contents.length !== 1)))
+          )
             ctx.addIssue({
               code: "custom",
               path: [index],
               message:
-                "Federation parameters require Text slots with from or sources; files require authorized delivery",
+                "Federation inputs require scalar Text bindings or explicit File/FileBatch selections",
             });
         }
       })

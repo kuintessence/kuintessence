@@ -10,31 +10,17 @@ import {
   type FederationAgreement,
   type FederationDelegation,
   FederationError,
-  FederationInputDescriptorSchema,
   FederationInputFilesSchema,
-  FederationInputPathSchema,
+  FederationInputSelectionSchema,
   federationCanonicalJson,
 } from "@kuintessence/shared/federation";
 import { and, eq } from "drizzle-orm";
-import { z } from "zod";
 import type { LeasedWorkflowJournal } from "../workflow/execution-journal";
 import { federationMaterialDigest } from "./assets";
 import { ownedNetdriveFiles } from "./netdrive-inputs";
 import { type FederationActor, requireFederationCapability } from "./permissions";
 import { assertWorkflowDelegationOwner } from "./workflow-delegations";
 
-const SelectionSchema = z
-  .array(
-    z.strictObject({
-      descriptor: FederationInputDescriptorSchema,
-      type: z.enum(["File", "FileBatch"]),
-      files: z
-        .array(z.strictObject({ path: FederationInputPathSchema, fileId: z.uuid() }))
-        .max(256),
-    }),
-  )
-  .min(1)
-  .max(256);
 type Export = typeof federationWorkflowInputExports.$inferSelect;
 
 /** Source preparation only. Peer disclosure must additionally authorize an accepted delegation. */
@@ -57,7 +43,7 @@ export class FederationWorkflowInputExports {
     } catch {
       throw new FederationError("INVALID_MESSAGE");
     }
-    const parsed = SelectionSchema.safeParse(input);
+    const parsed = FederationInputSelectionSchema.safeParse(input);
     if (!parsed.success) throw new FederationError("INVALID_MESSAGE");
     const selection = parsed.data;
     const members = selection.flatMap((input) => input.files);

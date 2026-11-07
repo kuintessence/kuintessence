@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { DataAssetEntryPathSchema } from "../data-market/data-assets";
 
 /** Template-internal reference key — a CEL-safe identifier (F1). */
 export const SlugSchema = z.string().regex(/^[a-zA-Z_][a-zA-Z0-9_]*$/, {
@@ -42,6 +43,7 @@ export type Requirements = z.infer<typeof RequirementsSchema>;
 export const FileInputSchema = z.strictObject({
   fileMetadataId: UuidSchema,
   fileMetadataName: z.string(),
+  relativePath: DataAssetEntryPathSchema.optional(),
   hash: z.string(),
   size: z.number().int().nonnegative(),
 });

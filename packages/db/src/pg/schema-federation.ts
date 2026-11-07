@@ -9,6 +9,7 @@ import type {
   FederationExecutionTarget,
   FederationInputFiles,
   FederationInputManifest,
+  FederationReceivedInputFiles,
   FederationResultReceipt,
   FederationResultReceiptAck,
   FederationResultReport,
@@ -829,6 +830,7 @@ export const federationWorkflowBindings = pgTable(
         workflow: workflowDsl.Workflow;
         workflowVersions: Record<string, workflowDsl.Workflow>;
         inputs: FederationInputManifest;
+        receivedInputs?: FederationReceivedInputFiles;
         environment: FederationEnvironmentLock;
         executionTargets?: FederationExecutionTarget[];
         mappings: typeof federationPreparations.$inferSelect.mappings;
