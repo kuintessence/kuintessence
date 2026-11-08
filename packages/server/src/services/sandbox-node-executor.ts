@@ -191,6 +191,7 @@ function selectedExecutionMode(capabilities: unknown): SandboxExecutionMode {
 function hasFreshRuntimeAttestation(
   raw: unknown,
   runtime: { kind: "OCI" | "SIF"; digest: string },
+  queueName: string | undefined,
   nowUnixMs: number,
 ): string | undefined {
   const entry = objectValue(raw);
@@ -198,6 +199,8 @@ function hasFreshRuntimeAttestation(
     entry?.kind !== runtime.kind ||
     entry.digest !== runtime.digest ||
     entry.signatureVerified !== true ||
+    !queueName ||
+    entry.attestedQueue !== queueName ||
     !Array.isArray(entry.attestedNodes) ||
     !entry.attestedNodes.some((node) => typeof node === "string" && node.trim().length > 0) ||
     typeof entry.expiresAtUnixMs !== "number" ||
@@ -566,6 +569,7 @@ export class SandboxNodeExecutor {
           const executionMode = await this.executionModeForSelectedAgent({
             agentId: selected.agentId,
             schedulerType: selected.schedulerType,
+            queueName: selected.queueName,
             identity,
             runtime: selectedRuntimeDigest,
             policy,
@@ -773,6 +777,7 @@ export class SandboxNodeExecutor {
   private async executionModeForSelectedAgent(input: {
     agentId: string;
     schedulerType: string;
+    queueName?: string;
     identity: SandboxDispatchIdentity;
     runtime: { kind: "OCI" | "SIF"; digest: string };
     policy: EffectiveSandboxPolicy;
@@ -825,7 +830,9 @@ export class SandboxNodeExecutor {
     }
     const runtimeAttestationId = Array.isArray(facts.sandboxRuntimeCache)
       ? facts.sandboxRuntimeCache
-          .map((entry) => hasFreshRuntimeAttestation(entry, input.runtime, Date.now()))
+          .map((entry) =>
+            hasFreshRuntimeAttestation(entry, input.runtime, input.queueName, Date.now()),
+          )
           .find((value): value is string => value !== undefined)
       : undefined;
     if (!runtimeAttestationId) {

@@ -120,6 +120,7 @@ describe("SandboxNodeExecutor", () => {
           build: (selected: {
             agentId: string;
             schedulerType: string;
+            queueName?: string;
             providerOrgId: string | null;
           }) => Promise<{ script: { contentBase64: string } }>;
         };
@@ -129,6 +130,7 @@ describe("SandboxNodeExecutor", () => {
         const manifest = await input.sandboxExecution.build({
           agentId: "agent-a",
           schedulerType: "slurm",
+          queueName: "normal",
           providerOrgId: null,
         });
         signedManifest = manifest as SandboxSignedManifest;
@@ -196,6 +198,7 @@ describe("SandboxNodeExecutor", () => {
                   signatureVerified: true,
                   runtimeAttestationId: "8".repeat(64),
                   attestedNodes: ["slurm-2"],
+                  attestedQueue: "normal",
                   expiresAtUnixMs: Date.now() + 60_000,
                 },
               ],
@@ -622,6 +625,7 @@ describe("SandboxNodeExecutor", () => {
             signatureVerified: true,
             runtimeAttestationId: "8".repeat(64),
             attestedNodes: ["slurm-2"],
+            attestedQueue: "normal",
             expiresAtUnixMs: Date.now() + 60_000,
           },
         ],
@@ -631,6 +635,7 @@ describe("SandboxNodeExecutor", () => {
       executionModeForSelectedAgent(input: {
         agentId: string;
         schedulerType: string;
+        queueName?: string;
         identity: {
           mode: "MappedAccount";
           accountId: string;
@@ -665,6 +670,7 @@ describe("SandboxNodeExecutor", () => {
     const input = {
       agentId: "agent-a",
       schedulerType: "slurm",
+      queueName: "normal",
       identity: {
         mode: "MappedAccount" as const,
         accountId: ACCOUNT_ID,
@@ -706,6 +712,11 @@ describe("SandboxNodeExecutor", () => {
         identity: { ...input.identity, uid: 1002 },
       }),
     ).rejects.toThrow("does not exactly match");
+    for (const queueName of [undefined, "other"]) {
+      await expect(
+        resolveExecutionMode.executionModeForSelectedAgent({ ...input, queueName }),
+      ).rejects.toThrow("fresh runtime attestation");
+    }
     await expect(
       resolveExecutionMode.executionModeForSelectedAgent({ ...input, restrictedNoEgress: true }),
     ).rejects.toThrow("cannot use SelfAccount");
@@ -726,6 +737,7 @@ describe("SandboxNodeExecutor", () => {
       executionModeForSelectedAgent(input: {
         agentId: string;
         schedulerType: string;
+        queueName?: string;
         identity: {
           mode: "MappedAccount";
           accountId: string;

@@ -635,6 +635,8 @@ message SandboxRuntimeCacheEntry {
   repeated string attested_nodes = 5;
   // Unix epoch milliseconds; zero means no usable attestation.
   int64 expires_at_unix_ms = 6;
+  // Explicit scheduler queue covered by this runtime evidence; empty is unusable for SelfAccount.
+  string attested_queue = 7;
 }
 
 message SandboxCapability {

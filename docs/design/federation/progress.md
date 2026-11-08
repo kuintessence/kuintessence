@@ -2765,3 +2765,17 @@ PBS 实验复用一个受限 Pod 内的 hook 安装入口，组件与双平台�
 联合命令最终退出 0，隔离 namespace 已确认删除；未推送、合并或远程部署。原始证据保留于本地 temp，不纳入版本控制。
 
 全仓 typecheck（含 protobuf 生成和实验脚本）退出 0；全仓 lint 通过（原有 47 warnings/1 info），891 个本地文档目标、Python 3.8/Bash 语法及 diff 检查通过。生成文件、依赖锁和数据库迁移未改动。
+
+## SelfAccount 逐作业资源与队列证明
+
+启动探测不再用 cgroup 路径正则冒充资源证明，改为在明确 Slurm 队列中申请 1 CPU/128 MiB 后调用固定摘要检查器。证明 ID 绑定检查器路径/摘要和队列；每次作业执行前核对 root 所有权、完整父目录链、摘要，并执行同一份已读取的字节，避免验证与运行重新读取路径。使用 `/usr/bin/python3 -I`；原生 Job ID 必须与当前内核分组匹配，资源来自已验证签名清单。
+
+新增两个检查器配置项，原有 attestation queue 对 SelfAccount 变为必需。队列经 protobuf `attested_queue` 上报；Server 签发前与 Agent 提交前核对明确目标队列，联邦续租同时绑定原 Job/outbox，不允许默默换默认队列。检查器/队列作为本地事实保留到持久任务，旧记录可轮询/停止但不能据此重提。无数据库迁移或新依赖。
+
+首轮相关单测通过；gRPC 测试最初缺少隔离数据库导致连接 localhost 默认端口失败，已改在独立随机端口 PostgreSQL 中重验通过，没有连接部署数据库。续期测试覆盖证据队列缺失、替换，以及原 Job/outbox 队列被改动。原有 SelfAccount 非 root 暂存测试在 root 下曾直接 return，现显式 skip；另外通过私有 mount namespace 将源码只读映射给实际 nobody 账号，执行该用例及新增的持久化恢复断言，共 8 项断言通过，挂载/目录已清理。没有放宽宿主 `/root` 权限。
+
+此轮尚未运行现代 Slurm 原生调度器，不能以脚本替身或实际非 root 暂存测试宣称 SelfAccount 调度资源验收完成。下一步仍需 Slurm v2 配置、真实 SelfAccount 作业及其他 root 路径的启动/队列能力证明；完整蓝图及预览交付范围保持不变。
+
+验证收尾：Agent/执行器/传输单测通过；隔离 PostgreSQL 中的授权用例及完整 gRPC handler 用例通过，新增队列变更用例使用原任务和原 outbox。初次全仓 typecheck 发现两处测试夹具类型声明不完整（可选配置值的严格断言、选择目标夹具缺少 queueName），已修正；其他包通过，Agent、Server 及实验脚本分别定向重验通过，没有重复已成功的包。全仓 lint 通过（原有 47 warnings/1 info），最终改动文件 Biome、protobuf lint、891 个本地文档目标及 diff 检查通过。依赖锁和数据库迁移未改动，protobuf 由生成工具更新。
+
+隔离 PostgreSQL、非 root 私有挂载及临时目录均已清理。仅缓存了固定平台摘要的 Ubuntu 24.04 公共镜像供下一轮 Slurm v2 实验，尚未启动新 Slurm 容器或原生任务；未推送、合并或远程部署。

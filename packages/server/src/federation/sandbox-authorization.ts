@@ -105,6 +105,7 @@ export async function checkFederationSandboxJob(
   )
     throw new FederationError("OPERATION_CONFLICT");
   const manifest = message.payload.value.sandboxExecution;
+  const dispatchedQueue = message.payload.value.queueName;
   const persisted = SandboxSignedManifestSchema.safeParse(job.sandboxExecution);
   if (
     !persisted.success ||
@@ -254,6 +255,7 @@ export async function checkFederationSandboxJob(
       signatureVerified: z.boolean(),
       runtimeAttestationId: z.string(),
       attestedNodes: z.array(z.string()),
+      attestedQueue: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/),
       expiresAtUnixMs: z.number().int().safe(),
     });
     const cache = Array.isArray(agent.sandboxRuntimeCache) ? agent.sandboxRuntimeCache : [];
@@ -268,6 +270,8 @@ export async function checkFederationSandboxJob(
           item.digest === selected.digest &&
           item.signatureVerified &&
           item.runtimeAttestationId === manifest.runtimeAttestationId &&
+          item.attestedQueue === dispatchedQueue &&
+          item.attestedQueue === job.schedulerQueueName &&
           item.attestedNodes.some((node) => node.trim()) &&
           item.expiresAtUnixMs > Date.now(),
       );

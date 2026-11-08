@@ -17,6 +17,7 @@ import { join } from "node:path";
 import type { SandboxSignedManifest, SandboxUnsignedManifest } from "@kuintessence/shared";
 import { importFederationMedia } from "../data-market/media-import";
 import { mediaImportFixture } from "../data-market/media-import-test-fixture";
+import { SandboxJobSpecSchema } from "../queue/sandbox-job-spec";
 import { downloadSandboxInput } from "./input-downloader";
 import type { VerifiedSandboxManifest } from "./manifest-verifier";
 import { removeSandboxRun, SandboxStager, validateSandboxOutputs } from "./stager";
@@ -321,49 +322,69 @@ describe("SandboxStager", () => {
     await expect(lstat(root)).rejects.toThrow();
   });
 
-  test("SelfAccount preserves the Agent account and ignores a root staging owner override", async () => {
-    const uid = process.getuid?.();
-    const gid = process.getgid?.();
-    if (uid === undefined || gid === undefined || uid === 0 || gid === 0) return;
-    const account = userInfo();
-    if (account.uid !== uid || account.gid !== gid) throw new Error("unexpected process account");
-    const processIdentity = { username: account.username, uid, gid };
-    const root = await mkdtemp(join(tmpdir(), "kq-sandbox-self-account-"));
-    roots.push(root);
-    await chown(root, uid, gid);
-    const jobId = "00000000-0000-0000-0000-000000000114";
-    const input = "self-account-input\n";
-    await mkdir(join(root, jobId, "inputs"), { recursive: true });
-    await writeFile(join(root, jobId, "inputs/data.txt"), input);
-    const fixture = verified(hash(input), jobId);
-    fixture.unsigned.executionMode = "SelfAccount";
-    fixture.unsigned.runtimeAttestationId = "a".repeat(64);
-    if (fixture.unsigned.identity.backend !== "Unix") throw new Error("expected Unix fixture");
-    fixture.unsigned.identity = {
-      ...fixture.unsigned.identity,
-      username: processIdentity.username,
-      uid: processIdentity.uid,
-      gid: processIdentity.gid,
-    };
-    fixture.runtimeAttestationId = fixture.unsigned.runtimeAttestationId;
-    fixture.apptainerPath = "/usr/bin/apptainer";
-    fixture.seccompProfilePath = "/etc/kuintessence/seccomp.json";
-    fixture.attestedNodes = ["slurm-2"];
+  test.skipIf(process.getuid?.() === 0 || process.getgid?.() === 0)(
+    "SelfAccount preserves the Agent account and ignores a root staging owner override",
+    async () => {
+      const uid = process.getuid?.();
+      const gid = process.getgid?.();
+      if (uid === undefined || gid === undefined) throw new Error("Unix identity is unavailable");
+      const account = userInfo();
+      if (account.uid !== uid || account.gid !== gid) throw new Error("unexpected process account");
+      const processIdentity = { username: account.username, uid, gid };
+      const root = await mkdtemp(join(tmpdir(), "kq-sandbox-self-account-"));
+      roots.push(root);
+      await chown(root, uid, gid);
+      const jobId = "00000000-0000-0000-0000-000000000114";
+      const input = "self-account-input\n";
+      await mkdir(join(root, jobId, "inputs"), { recursive: true });
+      await writeFile(join(root, jobId, "inputs/data.txt"), input);
+      const fixture = verified(hash(input), jobId);
+      fixture.unsigned.executionMode = "SelfAccount";
+      fixture.unsigned.runtimeAttestationId = "a".repeat(64);
+      if (fixture.unsigned.identity.backend !== "Unix") throw new Error("expected Unix fixture");
+      fixture.unsigned.identity = {
+        ...fixture.unsigned.identity,
+        username: processIdentity.username,
+        uid: processIdentity.uid,
+        gid: processIdentity.gid,
+      };
+      fixture.runtimeAttestationId = fixture.unsigned.runtimeAttestationId;
+      fixture.apptainerPath = "/usr/bin/apptainer";
+      fixture.seccompProfilePath = "/etc/kuintessence/seccomp.json";
+      fixture.cgroupCheck = {
+        path: "/usr/libexec/kuintessence/kq-sandbox-cgroup-check",
+        sha256: "c".repeat(64),
+      };
+      fixture.attestedQueue = "compute";
+      fixture.attestedNodes = ["slurm-2"];
 
-    const prepared = await new SandboxStager({
-      root,
-      ownerUid: 0,
-      processIdentity,
-    }).prepare(fixture);
+      const prepared = await new SandboxStager({
+        root,
+        ownerUid: 0,
+        processIdentity,
+      }).prepare(fixture);
 
-    const scriptFacts = await lstat(prepared.sandbox.scriptHostPath);
-    const output = prepared.sandbox.mounts.find((mount) => mount.descriptor === "result");
-    if (!output) throw new Error("expected output mount");
-    const outputFacts = await lstat(output.hostPath);
-    expect({ uid: scriptFacts.uid, gid: scriptFacts.gid }).toEqual({ uid, gid });
-    expect({ uid: outputFacts.uid, gid: outputFacts.gid }).toEqual({ uid, gid });
-    expect(prepared.sandbox.selfAccount).toEqual(processIdentity);
-  });
+      const scriptFacts = await lstat(prepared.sandbox.scriptHostPath);
+      const output = prepared.sandbox.mounts.find((mount) => mount.descriptor === "result");
+      if (!output) throw new Error("expected output mount");
+      const outputFacts = await lstat(output.hostPath);
+      expect({ uid: scriptFacts.uid, gid: scriptFacts.gid }).toEqual({ uid, gid });
+      expect({ uid: outputFacts.uid, gid: outputFacts.gid }).toEqual({ uid, gid });
+      expect(prepared.sandbox.selfAccount).toEqual(processIdentity);
+      expect(prepared.sandbox.cgroupCheck).toEqual(fixture.cgroupCheck);
+      expect(prepared.sandbox.attestedQueue).toBe("compute");
+      const recovered = SandboxJobSpecSchema.parse(JSON.parse(JSON.stringify(prepared.sandbox)));
+      expect(recovered.cgroupCheck).toEqual(fixture.cgroupCheck);
+      expect(recovered.attestedQueue).toBe("compute");
+      expect(
+        SandboxJobSpecSchema.parse({
+          ...prepared.sandbox,
+          cgroupCheck: undefined,
+          attestedQueue: undefined,
+        }).cgroupCheck,
+      ).toBeUndefined();
+    },
+  );
 
   test("verifies prefetched Kubernetes File inputs before PVC staging", async () => {
     const root = await mkdtemp(join(tmpdir(), "kq-sandbox-k8s-stage-"));

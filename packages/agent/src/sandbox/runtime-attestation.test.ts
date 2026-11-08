@@ -34,6 +34,7 @@ async function fixture() {
   const eclPath = join(root, "ecl.toml");
   const publicKeyPath = join(root, "runtime-public.pem");
   const apptainerPath = join(root, "apptainer");
+  const cgroupPath = join(root, "cgroup-check");
   const contents = new Map<string, string>([
     [runtimePath, "signed runtime"],
     [negativeRuntimePath, "unsigned runtime"],
@@ -42,6 +43,7 @@ async function fixture() {
     [eclPath, "activated = true"],
     [publicKeyPath, "public key"],
     [apptainerPath, "binary"],
+    [cgroupPath, "checker"],
   ]);
   for (const [path, content] of contents) await writeFile(path, content);
   const canonicalRoot = await realpath(root);
@@ -54,6 +56,9 @@ async function fixture() {
     AGENT_SANDBOX_EXECUTION_MODE: "self-account",
     AGENT_SANDBOX_ROOT: canonicalRoot,
     AGENT_SANDBOX_APPTAINER_PATH: apptainerPath,
+    AGENT_SANDBOX_CGROUP_CHECK_PATH: cgroupPath,
+    AGENT_SANDBOX_CGROUP_CHECK_SHA256: sha256("checker"),
+    AGENT_SANDBOX_ATTESTATION_QUEUE: "compute",
     AGENT_SANDBOX_SIF_PUBLIC_KEY_PATH: publicKeyPath,
     AGENT_SANDBOX_SIF_PUBLIC_KEY_SHA256: sha256(contents.get(publicKeyPath) ?? ""),
     AGENT_SANDBOX_SECCOMP_PROFILE_PATH: seccompPath,
@@ -104,6 +109,17 @@ describe("Sandbox runtime attestation", () => {
 
     expect(result.missingRequirements).toEqual([]);
     expect(result.runtimeCache[digest]?.attestedNodes).toEqual(["slurm-2"]);
+    expect(result.runtimeCache[digest]?.attestedQueue).toBe("compute");
+    expect(result.runtimeCache[digest]?.cgroupCheck.path).toBe(
+      config.AGENT_SANDBOX_CGROUP_CHECK_PATH,
+    );
+    expect(result.runtimeCache[digest]?.cgroupCheck.sha256).toBe(
+      config.AGENT_SANDBOX_CGROUP_CHECK_SHA256,
+    );
+    expect(submittedScript).toContain('--job-id "${SLURM_JOB_ID:?');
+    expect(submittedScript).toContain("'--cpus' '1' '--memory-mb' '128'");
+    expect(submittedScript).not.toContain("grep -Eq '(slurm|job_)'");
+    expect(submittedScript.indexOf("--job-id")).toBeLessThan(submittedScript.indexOf("/bin/true"));
     expect(result.runtimeCache[digest]?.runtimeAttestationId).toMatch(/^[0-9a-f]{64}$/);
     expect(submittedScript).toContain("seccomp:");
     expect(submittedScript).toContain("/dev/tcp/1.1.1.1/53");
@@ -130,6 +146,46 @@ describe("Sandbox runtime attestation", () => {
     expect(renewed.runtimeCache[digest]?.expiresAtUnixMs).toBeGreaterThan(
       result.runtimeCache[digest]?.expiresAtUnixMs ?? 0,
     );
+    const otherQueue = await attestSandboxRuntimeEnvironment(
+      { ...config, AGENT_SANDBOX_ATTESTATION_QUEUE: "other" },
+      "slurm",
+      spawner,
+      identity,
+      { now: () => 2_000, inspectFile, validateAncestors: async () => undefined },
+    );
+    expect(otherQueue.runtimeCache[digest]?.runtimeAttestationId).not.toBe(
+      result.runtimeCache[digest]?.runtimeAttestationId,
+    );
+  });
+
+  test("missing checker/queue or a failed native probe cannot publish cgroup readiness", async () => {
+    const { config, inspectFile } = await fixture();
+    for (const configured of [
+      { ...config, AGENT_SANDBOX_CGROUP_CHECK_PATH: undefined },
+      { ...config, AGENT_SANDBOX_ATTESTATION_QUEUE: undefined },
+      config,
+    ]) {
+      let probes = 0;
+      const result = await attestSandboxRuntimeEnvironment(
+        configured,
+        "slurm",
+        {
+          run: async (command) => {
+            if (command[0] === "sbatch") probes++;
+            return {
+              exitCode: command[0] === "sbatch" ? 126 : 0,
+              stdout: "",
+              stderr: "job memory limit exceeds signed request",
+            };
+          },
+        },
+        identity,
+        { inspectFile, validateAncestors: async () => undefined },
+      );
+      expect(result.cgroups).toBe(false);
+      expect(result.runtimeCache).toEqual({});
+      expect(probes).toBe(configured === config ? 1 : 0);
+    }
   });
 
   test("ignores the configured signatureVerified claim when real verification fails", async () => {

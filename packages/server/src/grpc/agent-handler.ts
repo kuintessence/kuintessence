@@ -154,6 +154,9 @@ export function sandboxCapabilityFacts(capability: SandboxCapability | undefined
       const attestation = SandboxRuntimeAttestationIdSchema.safeParse(runtime.runtimeAttestationId);
       const expiresAtUnixMs = safeProtoUnixMs(runtime.expiresAtUnixMs);
       const attestedNodes = runtime.attestedNodes.filter((node) => node.trim().length > 0);
+      const attestedQueue = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/.test(runtime.attestedQueue)
+        ? runtime.attestedQueue
+        : undefined;
       return [
         {
           digest: runtime.digest,
@@ -161,6 +164,7 @@ export function sandboxCapabilityFacts(capability: SandboxCapability | undefined
           signatureVerified: runtime.signatureVerified,
           ...(attestation.success ? { runtimeAttestationId: attestation.data } : {}),
           ...(attestedNodes.length > 0 ? { attestedNodes } : {}),
+          ...(attestedQueue ? { attestedQueue } : {}),
           ...(expiresAtUnixMs ? { expiresAtUnixMs } : {}),
         },
       ];

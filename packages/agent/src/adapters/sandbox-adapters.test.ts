@@ -201,6 +201,11 @@ describe("HPC Sandbox adapters", () => {
     sandbox.selfAccount = { username: "kqagent", uid: 2001, gid: 2001 };
     sandbox.apptainerPath = "/usr/bin/apptainer";
     sandbox.seccompProfilePath = "/etc/kuintessence/seccomp.json";
+    sandbox.cgroupCheck = {
+      path: "/usr/libexec/kuintessence/kq-sandbox-cgroup-check",
+      sha256: "c".repeat(64),
+    };
+    sandbox.attestedQueue = "compute";
     sandbox.attestedNodes = ["slurm-2"];
     const adapter = new SlurmAdapter("23", {
       logDir: "/private/agent/.scheduler-logs",
@@ -226,6 +231,15 @@ describe("HPC Sandbox adapters", () => {
     expect(script).not.toContain("/private/agent/.scheduler-logs");
     expect(script).toContain("#SBATCH --nodelist=slurm-2");
     expect(script).toContain("seccomp:/etc/kuintessence/seccomp.json");
+    expect(script).toContain("kq-sandbox-cgroup-check");
+    expect(script).toContain("'--cpus' '2' '--memory-mb' '512'");
+    expect(script).toContain("|| exit 126;");
+    expect(() => adapter.buildSubmitScript({ ...job(sandbox), queueName: "other" })).toThrow(
+      "queue has not passed",
+    );
+    expect(() => adapter.buildSubmitScript(job({ ...sandbox, cgroupCheck: undefined }))).toThrow(
+      "local execution facts",
+    );
     expect(script).toContain("/usr/bin/apptainer");
     expect(() =>
       new SlurmAdapter("23").buildSubmitScript(

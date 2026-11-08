@@ -10,6 +10,11 @@ import {
   type SchedulerAccounting,
   type SchedulerQueueInventory,
 } from "@kuintessence/shared";
+import {
+  buildSelfAccountCgroupCommand,
+  type SandboxCgroupCheck,
+  SandboxCgroupCheckSchema,
+} from "../sandbox/cgroup-command";
 
 export interface JobSpec {
   jobId: string;
@@ -91,6 +96,9 @@ export interface SandboxJobSpec {
   apptainerPath?: string;
   /** Bound only from a locally attested immutable seccomp profile. */
   seccompProfilePath?: string;
+  /** Local attestation facts; optional only to recover existing running jobs. */
+  cgroupCheck?: SandboxCgroupCheck;
+  attestedQueue?: string;
   /** Scheduler nodes that have passed the runtime attestation probe. */
   attestedNodes?: string[];
   /** Signed immutable identity; never completed or replaced by the Agent. */
@@ -289,6 +297,9 @@ function assertSelfAccountSubmission(sandbox: SandboxJobSpec): void {
     !/^[0-9a-f]{64}$/.test(sandbox.runtimeAttestationId ?? "") ||
     !isCanonicalAbsolutePath(sandbox.apptainerPath) ||
     !isCanonicalAbsolutePath(sandbox.seccompProfilePath) ||
+    !SandboxCgroupCheckSchema.safeParse(sandbox.cgroupCheck).success ||
+    !sandbox.attestedQueue ||
+    !isSchedulerQueueName(sandbox.attestedQueue) ||
     !sandbox.attestedNodes?.length ||
     sandbox.attestedNodes.some((node) => !/^[A-Za-z0-9._-]{1,255}$/.test(node)) ||
     sandbox.executionProfile
@@ -344,6 +355,9 @@ export function assertSandboxSchedulerMetadata(spec: JobSpec): void {
   if (!spec.sandbox) return;
   if (spec.sandbox.executionMode === "SelfAccount") {
     assertSelfAccountSubmission(spec.sandbox);
+    if (spec.queueName !== spec.sandbox.attestedQueue) {
+      throw new Error("SelfAccount Sandbox queue has not passed local runtime attestation");
+    }
   }
   const token = /^[A-Za-z0-9._-]{1,128}$/;
   if (!token.test(spec.schedulerName ?? spec.name)) {
@@ -416,7 +430,11 @@ export function buildApptainerSandboxCommand(sandbox: SandboxJobSpec): string {
   const fileBlocks = Math.max(1, Math.ceil(sandbox.limits.outputBytes / 512));
   const apptainerArgv = buildApptainerSandboxArgv(sandbox);
   const argv = buildTrustedSandboxArgv(sandbox, apptainerArgv).map(shellQuote).join(" ");
-  return `set -o pipefail; (ulimit -u ${sandbox.limits.pids}; ulimit -f ${fileBlocks}; exec ${argv}) 2>&1 | head -c ${sandbox.limits.logBytes}`;
+  const resourceCheck =
+    sandbox.executionMode === "SelfAccount"
+      ? `${buildSelfAccountCgroupCommand(sandbox.cgroupCheck, sandbox.resources)} >/dev/null || exit 126; `
+      : "";
+  return `set -o pipefail; (ulimit -u ${sandbox.limits.pids}; ulimit -f ${fileBlocks}; ${resourceCheck}exec ${argv}) 2>&1 | head -c ${sandbox.limits.logBytes}`;
 }
 
 export function buildTrustedSandboxArgv(

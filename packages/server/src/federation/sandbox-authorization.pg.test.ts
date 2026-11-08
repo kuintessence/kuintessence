@@ -257,7 +257,13 @@ async function fixture(shared = false, kubernetes = false) {
   const check = (transaction?: PgTransaction) =>
     checkFederationSandboxJob(db, jobId, intent, { userId, orgId }, policies, transaction);
   const persist = async () => {
-    await db.update(jobs).set({ sandboxExecution: manifest }).where(eq(jobs.id, jobId));
+    await db
+      .update(jobs)
+      .set({
+        sandboxExecution: manifest,
+        ...(manifest.executionMode === "SelfAccount" ? { schedulerQueueName: "compute" } : {}),
+      })
+      .where(eq(jobs.id, jobId));
     const message = new AgentDispatcher().buildDispatchJob(jobId, {
       jobIdInternal: jobId,
       name: "Sandbox fixture",
@@ -268,6 +274,7 @@ async function fixture(shared = false, kubernetes = false) {
       federationExecution: true,
       inputStaging: intent.inputStaging,
       restrictedNoEgress: Boolean(manifest.executionProfile),
+      ...(manifest.executionMode === "SelfAccount" ? { queueName: "compute" } : {}),
     });
     await db
       .update(jobDispatchOutbox)
@@ -476,6 +483,10 @@ test.each([
   "replacement",
   "account",
   "mode",
+  "queue",
+  "missing-queue",
+  "dispatch-queue",
+  "job-queue",
 ] as const)("SelfAccount keeps its original runtime proof and rejects %s changes", async (change) => {
   const f = await fixture();
   try {
@@ -486,6 +497,7 @@ test.each([
       signatureVerified: true,
       runtimeAttestationId: "a".repeat(64),
       attestedNodes: ["compute-1"],
+      attestedQueue: "compute",
       expiresAtUnixMs: expiry,
     };
     const capabilities = {
@@ -507,6 +519,27 @@ test.each([
     if (change === "replacement") evidence.runtimeAttestationId = "b".repeat(64);
     if (change === "account") capabilities.selfAccount.uid = 2001;
     if (change === "mode") capabilities.executionMode = "RootImpersonation";
+    if (change === "queue") evidence.attestedQueue = "other";
+    if (change === "missing-queue") evidence.attestedQueue = "";
+    if (change === "job-queue") {
+      await db.update(jobs).set({ schedulerQueueName: "other" }).where(eq(jobs.id, f.jobId));
+    }
+    if (change === "dispatch-queue") {
+      const [saved] = await db
+        .select()
+        .from(jobDispatchOutbox)
+        .where(eq(jobDispatchOutbox.jobId, f.jobId));
+      if (!saved) throw new Error("Missing original outbox");
+      const message = fromBinary(ServerMessageSchema, Buffer.from(saved.payloadBase64, "base64"));
+      if (message.payload.case !== "dispatchJob") throw new Error("Missing dispatch");
+      message.payload.value.queueName = "other";
+      await db
+        .update(jobDispatchOutbox)
+        .set({
+          payloadBase64: Buffer.from(toBinary(ServerMessageSchema, message)).toString("base64"),
+        })
+        .where(eq(jobDispatchOutbox.jobId, f.jobId));
+    }
     await db
       .update(agents)
       .set({

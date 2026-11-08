@@ -7,6 +7,7 @@ import { canonicalJson } from "@kuintessence/shared";
 import type { Spawner } from "../adapters/base";
 import { shellQuote } from "../adapters/base";
 import type { AgentConfig } from "../config";
+import { buildSelfAccountCgroupCommand, type SandboxCgroupCheck } from "./cgroup-command";
 
 export interface SandboxProcessIdentity {
   username: string;
@@ -21,6 +22,8 @@ export interface AttestedSandboxRuntime {
   runtimeAttestationId: string;
   apptainerPath: string;
   seccompProfilePath: string;
+  cgroupCheck: SandboxCgroupCheck;
+  attestedQueue: string;
   attestedNodes: string[];
   verifiedAtUnixMs: number;
   expiresAtUnixMs: number;
@@ -163,6 +166,7 @@ async function runSlurmProbe(
   negativeRuntimePath: string | undefined,
   seccompProfilePath: string,
   seccompProbeProfilePath: string,
+  cgroupCheck: SandboxCgroupCheck,
   expectedSha256: {
     apptainer: string;
     runtime: string;
@@ -192,6 +196,7 @@ async function runSlurmProbe(
   const script = [
     "#!/bin/bash",
     "set -euo pipefail",
+    `${buildSelfAccountCgroupCommand(cgroupCheck, { cpus: 1, memoryMb: 128 })} >/dev/null`,
     sha256Check(apptainerPath, expectedSha256.apptainer),
     sha256Check(runtimePath, expectedSha256.runtime),
     sha256Check(seccompProfilePath, expectedSha256.seccomp),
@@ -203,7 +208,6 @@ async function runSlurmProbe(
     `if ${shellCommand(productionSeccompNegative)}; then exit 42; fi`,
     `if ${shellCommand([...seccompNegative, "/bin/uname"])}; then exit 44; fi`,
     `if ${shellCommand(networkNegative)}; then exit 43; fi`,
-    "grep -Eq '(slurm|job_)' /proc/self/cgroup",
     "printf 'KQ_ATTESTED_NODE=%s\\n' \"$(hostname)\"",
   ].join("\n");
   try {
@@ -292,6 +296,11 @@ export async function attestSandboxRuntimeEnvironment(
   const publicKeyHash = config.AGENT_SANDBOX_SIF_PUBLIC_KEY_SHA256;
   const eclHash = config.AGENT_SANDBOX_ECL_SHA256;
   const negativeRuntimePath = config.AGENT_SANDBOX_ECL_NEGATIVE_PROBE_SIF_PATH;
+  const cgroupPath = config.AGENT_SANDBOX_CGROUP_CHECK_PATH;
+  const cgroupHash = config.AGENT_SANDBOX_CGROUP_CHECK_SHA256;
+  const attestedQueue = config.AGENT_SANDBOX_ATTESTATION_QUEUE;
+  if (!cgroupPath || !cgroupHash) missingRequirements.push("cgroup-checker");
+  if (!attestedQueue) missingRequirements.push("runtime-attestation-queue");
   if (!seccompPath || !seccompHash || !seccompProbePath || !seccompProbeHash) {
     missingRequirements.push("seccomp-attestation-profile");
   }
@@ -336,6 +345,10 @@ export async function attestSandboxRuntimeEnvironment(
     const apptainer = await inspectFile(config.AGENT_SANDBOX_APPTAINER_PATH);
     assertSecureFile(config.AGENT_SANDBOX_APPTAINER_PATH, apptainer, undefined, true);
     await validateAncestors(config.AGENT_SANDBOX_APPTAINER_PATH);
+    const checker = await inspectFile(cgroupPath as string);
+    assertSecureFile(cgroupPath as string, checker, cgroupHash, false);
+    await validateAncestors(cgroupPath as string);
+    const cgroupCheck = { path: cgroupPath as string, sha256: checker.sha256 };
     const publicKey = await inspectFile(publicKeyPath as string);
     assertSecureFile(publicKeyPath as string, publicKey, publicKeyHash, false);
     await validateAncestors(publicKeyPath as string);
@@ -390,6 +403,7 @@ export async function attestSandboxRuntimeEnvironment(
         negativeRuntimePath,
         seccompPath as string,
         seccompProbePath as string,
+        cgroupCheck,
         {
           apptainer: apptainer.sha256,
           runtime: file.sha256,
@@ -405,6 +419,8 @@ export async function attestSandboxRuntimeEnvironment(
             adapterType,
             apptainerSha256: apptainer.sha256,
             attestedNodes,
+            attestedQueue,
+            cgroupCheck,
             digest,
             eclSha256: ecl?.sha256,
             processIdentity,
@@ -421,6 +437,8 @@ export async function attestSandboxRuntimeEnvironment(
         runtimeAttestationId,
         apptainerPath: config.AGENT_SANDBOX_APPTAINER_PATH,
         seccompProfilePath: seccompPath as string,
+        cgroupCheck,
+        attestedQueue: attestedQueue as string,
         attestedNodes,
         verifiedAtUnixMs,
         expiresAtUnixMs,

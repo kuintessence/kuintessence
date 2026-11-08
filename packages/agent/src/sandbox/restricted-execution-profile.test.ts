@@ -51,6 +51,11 @@ function attestation(digest: string, runtimePath: string) {
         runtimeAttestationId: "b".repeat(64),
         apptainerPath: "/opt/kq/bin/apptainer",
         seccompProfilePath: "/etc/kuintessence/seccomp.json",
+        cgroupCheck: {
+          path: "/usr/libexec/kuintessence/kq-sandbox-cgroup-check",
+          sha256: "c".repeat(64),
+        },
+        attestedQueue: "compute",
         attestedNodes: ["compute-1"],
         verifiedAtUnixMs: 1,
         expiresAtUnixMs: 2,

@@ -622,6 +622,12 @@ describe("loadAgentConfig", () => {
     expect(() =>
       loadAgentConfig({
         ...baseEnv,
+        AGENT_SANDBOX_CGROUP_CHECK_PATH: "/usr/libexec/kuintessence/kq-sandbox-cgroup-check",
+      }),
+    ).toThrow("configured together");
+    expect(() =>
+      loadAgentConfig({
+        ...baseEnv,
         AGENT_SANDBOX_EXECUTION_MODE: "self-account",
         AGENT_SANDBOX_ROOT_IMPERSONATION: "true",
       }),

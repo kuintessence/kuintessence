@@ -276,6 +276,13 @@ const AgentConfigSchema = z
     AGENT_SANDBOX_APPTAINER_PATH: dedicatedAbsolutePath("AGENT_SANDBOX_APPTAINER_PATH").default(
       "/usr/bin/apptainer",
     ),
+    AGENT_SANDBOX_CGROUP_CHECK_PATH: dedicatedAbsolutePath(
+      "AGENT_SANDBOX_CGROUP_CHECK_PATH",
+    ).optional(),
+    AGENT_SANDBOX_CGROUP_CHECK_SHA256: z
+      .string()
+      .regex(/^[0-9a-f]{64}$/)
+      .optional(),
     AGENT_SANDBOX_SIF_PUBLIC_KEY_PATH: dedicatedAbsolutePath(
       "AGENT_SANDBOX_SIF_PUBLIC_KEY_PATH",
     ).optional(),
@@ -309,7 +316,7 @@ const AgentConfigSchema = z
     AGENT_SANDBOX_ATTESTATION_TTL_SEC: boundedPositiveInt(3_600, 86_400),
     AGENT_SANDBOX_ATTESTATION_QUEUE: z
       .string()
-      .regex(/^[A-Za-z0-9._-]{1,128}$/)
+      .regex(/^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/)
       .optional(),
     AGENT_LICENSED_MATERIAL_ROOT: dedicatedAbsolutePath("AGENT_LICENSED_MATERIAL_ROOT").default(
       "/var/lib/kuintessence/licensed-materials",
@@ -431,6 +438,15 @@ const AgentConfigSchema = z
       message:
         "Kubernetes Sandbox seccomp profile, SHA-256, and node name must be configured together",
       path: ["AGENT_SANDBOX_K8S_SECCOMP_PROFILE_SHA256"],
+    },
+  )
+  .refine(
+    (v) =>
+      (v.AGENT_SANDBOX_CGROUP_CHECK_PATH === undefined) ===
+      (v.AGENT_SANDBOX_CGROUP_CHECK_SHA256 === undefined),
+    {
+      message: "Sandbox cgroup checker path and SHA-256 must be configured together",
+      path: ["AGENT_SANDBOX_CGROUP_CHECK_SHA256"],
     },
   )
   .refine(

@@ -579,6 +579,7 @@ describe("AgentStream", () => {
           signatureVerified: true,
           runtimeAttestationId: "b".repeat(64),
           attestedNodes: ["slurm-2"],
+          attestedQueue: "compute",
           expiresAtUnixMs: now + 60_000,
         },
         {
@@ -648,6 +649,7 @@ describe("AgentStream", () => {
       digest: `sha256:${"a".repeat(64)}`,
       runtimeAttestationId: "b".repeat(64),
       attestedNodes: ["slurm-2"],
+      attestedQueue: "compute",
     });
     expect(reported?.readiness).toBe("ready");
     expect(reported?.missingRequirements).not.toContain("runtime-attestation-expired");

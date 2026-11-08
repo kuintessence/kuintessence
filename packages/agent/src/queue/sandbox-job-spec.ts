@@ -8,6 +8,7 @@ import {
 } from "@kuintessence/shared";
 import { z } from "zod";
 import type { SandboxJobSpec } from "../adapters/base";
+import { SandboxCgroupCheckSchema } from "../sandbox/cgroup-command";
 
 /** Recovery validates the materialized spec; it does not grant permission to submit it again. */
 export const SandboxJobSpecSchema = z.object({
@@ -23,6 +24,8 @@ export const SandboxJobSpecSchema = z.object({
   selfAccount: SandboxSelfAccountSchema.optional(),
   apptainerPath: z.string().optional(),
   seccompProfilePath: z.string().optional(),
+  cgroupCheck: SandboxCgroupCheckSchema.optional(),
+  attestedQueue: z.string().optional(),
   attestedNodes: z.array(z.string()).optional(),
   executionProfile: SandboxTrustedExecutionProfileSchema.optional(),
   identity: SandboxDispatchIdentitySchema.transform((identity) =>

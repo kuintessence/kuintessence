@@ -737,3 +737,11 @@ Agent 注册/心跳的受信执行配置现在提取并验证业务字段，避�
 带签名 `executionProfile` 的作业已将签名 CPU/内存值传给 trusted wrapper；节点按本地 root 配置的调度器及固定摘要检查器，在 Apptainer/用户脚本启动前检查原生 Job ID 对应的实际内核 cgroup。未设逐作业限额、依赖缺失/被替换或编号不匹配均拒绝。环境变量不能补全遗漏的本地策略，Python 使用隔离导入模式。`--check-profile` 仍仅验证文件配置。SelfAccount、其他 root 路径、启动/队列能力发布及 Slurm v2 配置仍待完成；完整蓝图与 PR 预览验收未完成。
 
 2026-11-09：新增强制检查后的 PBS 双平台介质联合流程通过。运行中原作业内核限额为 1 CPU/128 MiB、swap=0；完成实际导入数据读取及隔离检查后，来源撤权使原许可到期，同一 PBS Job 终止，Agent 持久停止证明为 true。该项只覆盖受限 root profile 的 PBS 路径。
+
+### SelfAccount 资源核验与队列证明
+
+SelfAccount 已替换仅匹配 cgroup 路径的探测，使用固定摘要、root 管理的检查器，在明确队列的原生 Slurm 探测中核对 1 CPU/128 MiB 限额。每次作业启动前重新核对检查器完整路径权限、摘要及签名 CPU/内存与实际作业分组；读取一次并执行同一份字节。失败不运行用户脚本。
+
+证明 ID 绑定检查器与队列，`attested_queue` 随 protobuf 能力上报；Server 首次签发、Agent 提交与联邦续期均核对队列，续期要求原 Job、outbox 与证明一致。SelfAccount 当前要求显式队列选择。旧持久记录保留轮询/收尾/停止能力，不补默认检查器或队列用于重新提交；升级须 drain 后协调 Server/Agent 并重新取得证明。
+
+边界测试和隔离 PostgreSQL 验证已通过，实际非 root 账号的暂存/序列化恢复已验证。现代 Slurm v2 的真实作业及 SelfAccount 联合运行仍未验收；其他 root 路径的能力证明、完整联邦蓝图和 PR 预览仍待完成。

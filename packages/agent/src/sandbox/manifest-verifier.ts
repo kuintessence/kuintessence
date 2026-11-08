@@ -9,6 +9,7 @@ import {
   type SandboxUnsignedManifest,
   SandboxUnsignedManifestSchema,
 } from "@kuintessence/shared";
+import { type SandboxCgroupCheck, SandboxCgroupCheckSchema } from "./cgroup-command";
 import type { SandboxProcessIdentity } from "./runtime-attestation";
 
 export interface SandboxRuntimeCacheFact {
@@ -18,6 +19,8 @@ export interface SandboxRuntimeCacheFact {
   runtimeAttestationId?: string;
   apptainerPath?: string;
   seccompProfilePath?: string;
+  cgroupCheck?: SandboxCgroupCheck;
+  attestedQueue?: string;
   attestedNodes?: string[];
   expiresAtUnixMs?: number;
 }
@@ -54,6 +57,8 @@ export interface VerifiedSandboxManifest {
   runtimeAttestationId?: string;
   apptainerPath?: string;
   seccompProfilePath?: string;
+  cgroupCheck?: SandboxCgroupCheck;
+  attestedQueue?: string;
   attestedNodes?: string[];
 }
 
@@ -198,6 +203,8 @@ function validateRuntimeAttestation(
     manifest.runtimeAttestationId !== runtime.runtimeAttestationId ||
     !isCanonicalAbsolutePath(runtime.apptainerPath) ||
     !isCanonicalAbsolutePath(runtime.seccompProfilePath) ||
+    !SandboxCgroupCheckSchema.safeParse(runtime.cgroupCheck).success ||
+    !/^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/.test(runtime.attestedQueue ?? "") ||
     !runtime.attestedNodes?.length ||
     runtime.attestedNodes.some((node) => !/^[A-Za-z0-9._-]{1,255}$/.test(node)) ||
     runtime.expiresAtUnixMs === undefined ||
@@ -327,6 +334,8 @@ export class SandboxManifestVerifier {
         : {}),
       ...(runtime.apptainerPath ? { apptainerPath: runtime.apptainerPath } : {}),
       ...(runtime.seccompProfilePath ? { seccompProfilePath: runtime.seccompProfilePath } : {}),
+      ...(runtime.cgroupCheck ? { cgroupCheck: { ...runtime.cgroupCheck } } : {}),
+      ...(runtime.attestedQueue ? { attestedQueue: runtime.attestedQueue } : {}),
       ...(runtime.attestedNodes ? { attestedNodes: [...runtime.attestedNodes] } : {}),
     };
   }

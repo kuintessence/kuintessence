@@ -2683,6 +2683,7 @@ export class AgentStream {
           signatureVerified: runtime.signatureVerified,
           runtimeAttestationId: runtime.runtimeAttestationId ?? "",
           attestedNodes: runtime.attestedNodes ?? [],
+          attestedQueue: runtime.attestedQueue ?? "",
           expiresAtUnixMs: BigInt(runtime.expiresAtUnixMs ?? 0),
         }),
       ),

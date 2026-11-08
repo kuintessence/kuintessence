@@ -16,6 +16,7 @@ import {
 import { dirname, join, posix, relative, resolve, sep } from "node:path";
 import type { SandboxDispatchIdentity, SandboxUnsignedManifest } from "@kuintessence/shared";
 import type { SandboxJobIdentity, SandboxJobMount, SandboxJobSpec } from "../adapters/base";
+import { type SandboxCgroupCheck, SandboxCgroupCheckSchema } from "./cgroup-command";
 import type { SandboxInputDownload } from "./input-downloader";
 import { assertSelfAccountIdentity, type VerifiedSandboxManifest } from "./manifest-verifier";
 import type { SandboxProcessIdentity } from "./runtime-attestation";
@@ -251,6 +252,8 @@ function selfAccountRuntimeFacts(verified: VerifiedSandboxManifest): {
   runtimeAttestationId: string;
   apptainerPath: string;
   seccompProfilePath: string;
+  cgroupCheck: SandboxCgroupCheck;
+  attestedQueue: string;
   attestedNodes: string[];
 } {
   if (
@@ -258,6 +261,9 @@ function selfAccountRuntimeFacts(verified: VerifiedSandboxManifest): {
     verified.unsigned.runtimeAttestationId !== verified.runtimeAttestationId ||
     !isCanonicalAbsolutePath(verified.apptainerPath) ||
     !isCanonicalAbsolutePath(verified.seccompProfilePath) ||
+    !SandboxCgroupCheckSchema.safeParse(verified.cgroupCheck).success ||
+    !verified.attestedQueue ||
+    !/^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/.test(verified.attestedQueue) ||
     !verified.attestedNodes?.length ||
     verified.attestedNodes.some((node) => !/^[A-Za-z0-9._-]{1,255}$/.test(node))
   ) {
@@ -267,6 +273,8 @@ function selfAccountRuntimeFacts(verified: VerifiedSandboxManifest): {
     runtimeAttestationId: verified.runtimeAttestationId,
     apptainerPath: verified.apptainerPath,
     seccompProfilePath: verified.seccompProfilePath,
+    cgroupCheck: SandboxCgroupCheckSchema.parse(verified.cgroupCheck),
+    attestedQueue: verified.attestedQueue,
     attestedNodes: [...verified.attestedNodes],
   };
 }

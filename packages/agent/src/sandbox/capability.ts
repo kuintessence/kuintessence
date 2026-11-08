@@ -9,6 +9,7 @@ export interface AgentSandboxRuntimeCacheEntry {
   signatureVerified: boolean;
   runtimeAttestationId?: string;
   attestedNodes?: string[];
+  attestedQueue?: string;
   expiresAtUnixMs?: number;
 }
 
@@ -65,6 +66,7 @@ export function buildSandboxCapability(
         signatureVerified: runtime.signatureVerified,
         runtimeAttestationId: runtime.runtimeAttestationId,
         attestedNodes: runtime.attestedNodes,
+        attestedQueue: runtime.attestedQueue,
         expiresAtUnixMs: runtime.expiresAtUnixMs,
       }))
     : Object.entries(config.AGENT_SANDBOX_RUNTIME_CACHE_JSON).map(([digest, runtime]) => ({

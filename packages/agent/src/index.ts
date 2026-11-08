@@ -627,6 +627,9 @@ async function main() {
         runtime.runtimeAttestationId !== sandbox.runtimeAttestationId ||
         runtime.apptainerPath !== sandbox.apptainerPath ||
         runtime.seccompProfilePath !== sandbox.seccompProfilePath ||
+        runtime.cgroupCheck.path !== sandbox.cgroupCheck?.path ||
+        runtime.cgroupCheck.sha256 !== sandbox.cgroupCheck?.sha256 ||
+        runtime.attestedQueue !== sandbox.attestedQueue ||
         runtime.attestedNodes.length !== sandbox.attestedNodes?.length ||
         runtime.attestedNodes.some((node, index) => node !== sandbox.attestedNodes?.[index])
       ) {

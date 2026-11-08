@@ -136,6 +136,7 @@ test("normalizes SelfAccount capability and rejects unsafe runtime attestation t
           signatureVerified: true,
           runtimeAttestationId: attestationId,
           attestedNodes: ["compute-01", "  "],
+          attestedQueue: "compute",
           expiresAtUnixMs: 1_725_000_000_000n,
         }),
         create(SandboxRuntimeCacheEntrySchema, {
@@ -144,6 +145,7 @@ test("normalizes SelfAccount capability and rejects unsafe runtime attestation t
           signatureVerified: true,
           runtimeAttestationId: attestationId,
           attestedNodes: ["compute-02"],
+          attestedQueue: "../other",
           expiresAtUnixMs: BigInt(Number.MAX_SAFE_INTEGER) + 1n,
         }),
       ],
@@ -173,6 +175,7 @@ test("normalizes SelfAccount capability and rejects unsafe runtime attestation t
         signatureVerified: true,
         runtimeAttestationId: attestationId,
         attestedNodes: ["compute-01"],
+        attestedQueue: "compute",
         expiresAtUnixMs: 1_725_000_000_000,
       },
       {

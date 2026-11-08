@@ -287,6 +287,20 @@ attestation 都匹配时可用 SharedService；attestation 不跨 revision 或 C
 SelfAccount 默认关闭，只适用于 Slurm 且映射 Unix 身份等于 Agent 自身非 root 身份。
 须有匹配 runtime、签名、compute node、有效 evidence ID/有效期的 attestation；
 PBS/Torque 不可用，restrictedNoEgress 也不可用。
+另须配置 `AGENT_SANDBOX_CGROUP_CHECK_PATH`、`AGENT_SANDBOX_CGROUP_CHECK_SHA256` 和
+`AGENT_SANDBOX_ATTESTATION_QUEUE`。检查器须为 root 管理的规范绝对路径，完整父目录链
+不可被组或其他用户写入；节点提供 Python 3.8+。启动探测在该明确队列申请 1 CPU/128 MiB，
+实际核对本作业内核 CPU、内存及 swap 上限，再检查运行时隔离，不接受仅匹配 cgroup 路径。
+证明 ID 绑定检查器路径/摘要及队列。队列随运行时能力上报，Server 签发前核对实际选中队列；
+联邦续租还核对原 Job 与原 outbox 的队列。SelfAccount 需显式选择已探测队列，不能依赖
+可能变化的调度器默认队列；Agent 也会在提交前核对。
+
+每次 SelfAccount 作业执行均通过系统 Python 的 `-I` 模式读取 root 管理的检查器，
+核对权限与摘要后执行同一份已核验字节，使用已签名 CPU/内存和原生 Slurm Job ID。
+失败则在用户脚本启动前退出 126。新字段只在本地保存运行时事实，不改变 Sandbox manifest
+结构；运行时证明 ID 会变化，protobuf 能力新增 `attested_queue`。升级先排空/取消旧任务，
+再同步 Server/Agent 并重新探测；不以空队列兼容旧证明。旧 Agent 持久记录仍可恢复轮询/停止，
+但缺少检查器/队列证明时不可重新提交。
 `executionMode` 属于签名协议，升级需先 drain/暂停 Sandbox，再协调 Server/Agent 升级；
 混用版本会拒绝任务。
 
