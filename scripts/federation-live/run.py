@@ -740,6 +740,53 @@ def verify_terminal():
     )
 
 
+def automatic_closing(path, kind):
+    config = json.loads((root / "source-init.json").read_text())
+    amount = config["request"]["maxAmount"]
+    grants = {}
+    # Grant the source first; the provider worker may propose as soon as its policy is stored.
+    for name, read, auth in (("source", sourceapi, sourcetoken), ("provider", api, token)):
+        grants[name] = read(path + "/closing-policies", {
+            "kind": kind,
+            "outcomes": ["completed"],
+            "maxAmount": amount,
+            "maxTotalAmount": amount,
+            "maxRecords": 1,
+            "validUntil": (datetime.now().astimezone() + timedelta(minutes=15)).isoformat(),
+        }, token=auth)["data"]
+    statuses = {}
+    for _ in range(60):
+        tasks = api(path + "/closing-tasks", token=token)["data"]["records"]
+        task = next((r for r in tasks if r["kind"] == kind), None)
+        assert not task or task["state"] != "needs_review", json.dumps(task)
+        for name, read, auth in (("provider", api, token), ("source", sourceapi, sourcetoken)):
+            records = read(path + "/" + kind + "s", token=auth)["data"]["data"]
+            assert len(records) <= 1, "Automation generated more than one original"
+            if records:
+                statuses[name] = {"record": records[0]}
+        if task and task["state"] == "complete" and len(statuses) == 2:
+            break
+        time.sleep(3)
+    else:
+        raise AssertionError("Automatic " + kind + " did not complete: " + json.dumps(statuses))
+    originals = {name: v["record"][kind] for name, v in statuses.items()}
+    assert originals["provider"]["payload"] == originals["source"]["payload"]
+    assert originals["provider"]["approvalJws"] == originals["source"]["counterpartyJws"]
+    assert originals["source"]["approvalJws"] == originals["provider"]["counterpartyJws"]
+    assert task["recordId"] == originals["provider"][kind + "Id"]
+    for name, read, auth in (("provider", api, token), ("source", sourceapi, sourcetoken)):
+        assert originals[name]["authorizationPolicyId"] == grants[name]["id"]
+        policies = read(path + "/closing-policies", token=auth)["data"]
+        policy = next(r for r in policies if r["id"] == grants[name]["id"])
+        assert policy["approvedRecords"] == 1
+        expected = (originals[name]["payload"]["calculation"]["dueAmount"] if kind == "bill"
+                    else originals[name]["payload"]["chargedAmount"])
+        assert policy["approvedAmount"] == expected
+        grants[name] = policy
+    (logs / (kind + "-automatic-policies.json")).write_text(json.dumps({"policies": grants, "task": task}, indent=2) + "\n")
+    return originals["provider"]["payload"], statuses
+
+
 def verify_billing():
     config = json.loads((root / "source-init.json").read_text())
     proof = json.loads((root / "ledger-proof.json").read_text())
@@ -777,39 +824,19 @@ def verify_billing():
     measured = report["report"]["measurements"]
     assert len(measured) == 1 and measured[0]["metric"] == "job.elapsed"
     assert measured[0]["quantityUnit"] == "job-millisecond" and int(measured[0]["quantity"]) == total
-    bill_id = str(uuid.uuid4())
-    draft = api(path + "/bills/draft", {"reportId": report["id"], "billId": bill_id}, token=token)["data"]
     assert total >= 1000, "Positive billing requires actual measured container runtime"
     expected_gross = (total + 999) // 1000
-    assert int(draft["calculation"]["grossAmount"]) == expected_gross
-    assert int(draft["calculation"]["dueAmount"]) == min(expected_gross, int(config["request"]["maxAmount"]))
-    # Consensus unavailability must not prevent existing business signatures from being exchanged.
     orderer("stop")
     try:
-        provider = api(path + "/bills/approve", draft, token=token)["data"]
-        source = sourceapi(path + "/bills/approve", draft, token=sourcetoken)["data"]
-        statuses = {}
-        for _ in range(60):
-            for name, read, auth in (("provider", api, token), ("source", sourceapi, sourcetoken)):
-                rows = read(path + "/bills", token=auth)["data"]["data"]
-                assert len(rows) == 1
-                sync = read(path + "/approval-exchange", token=auth)["data"]["records"]
-                sync = next((r for r in sync if r["recordKind"] == "bill" and r["recordId"] == bill_id), None)
-                assert not sync or sync["state"] != "needs_review", json.dumps(sync)
-                statuses[name] = {"record": rows[0], "exchange": sync}
-            if all(v["exchange"] and v["exchange"]["state"] == "complete" for v in statuses.values()):
-                break
-            time.sleep(3)
-        else:
-            raise AssertionError("Bill signatures did not exchange while Orderer was stopped")
-        assert statuses["provider"]["record"]["bill"]["counterpartyJws"] == source["approvalJws"]
-        assert statuses["source"]["record"]["bill"]["counterpartyJws"] == provider["approvalJws"]
+        draft, statuses = automatic_closing(path, "bill")
+        bill_id = draft["billId"]
+        assert draft["reportId"] == report["id"]
+        assert int(draft["calculation"]["grossAmount"]) == expected_gross
+        assert int(draft["calculation"]["dueAmount"]) == min(expected_gross, int(config["request"]["maxAmount"]))
         assert statuses["provider"]["record"]["ledger"]["state"] == "pending"
         assert statuses["source"]["record"]["ledger"] is None
-        assert api(path + "/bills/approve", draft, token=token)["data"]["approvalJws"] == provider["approvalJws"]
-        assert sourceapi(path + "/bills/approve", draft, token=sourcetoken)["data"]["approvalJws"] == source["approvalJws"]
         (logs / "billing-offline-evidence.json").write_text(json.dumps({"usage": usage, "received": received, "pods": pods, "draft": draft, "statuses": statuses}, indent=2) + "\n")
-        print("REAL BILL EXCHANGE PASSED: measured Kubernetes runtime -> signed usage over mTLS -> independent HTTP approvals -> automatic original signatures while Orderer is stopped", flush=True)
+        print("REAL BILL EXCHANGE PASSED: measured Kubernetes runtime -> signed usage over mTLS -> independent institution policies -> automatic draft, approvals and original signatures while Orderer is stopped", flush=True)
     finally:
         orderer("start")
     submission_id = statuses["provider"]["record"]["ledger"]["id"]
@@ -831,33 +858,16 @@ def verify_settlement():
     config = json.loads((root / "source-init.json").read_text())
     bill = json.loads((logs / "billing-offline-evidence.json").read_text())["draft"]
     path = "federation/commercial-agreements/" + config["request"]["agreementRevisionId"]
-    draft = api(path + "/settlements/draft", {"billId": bill["billId"], "settlementId": str(uuid.uuid4())}, token=token)["data"]
-    assert draft["chargedAmount"] == bill["calculation"]["dueAmount"]
-    assert int(draft["reservedAmount"]) == int(draft["chargedAmount"]) + int(draft["releasedAmount"])
-    assert int(draft["chargedAmount"]) > 0 and int(draft["releasedAmount"]) > 0
     orderer("stop")
-    statuses = {}
     try:
-        provider = api(path + "/settlements/approve", draft, token=token)["data"]
-        source = sourceapi(path + "/settlements/approve", draft, token=sourcetoken)["data"]
-        for _ in range(60):
-            for name, read, auth in (("provider", api, token), ("source", sourceapi, sourcetoken)):
-                rows = read(path + "/settlements", token=auth)["data"]["data"]
-                assert len(rows) == 1
-                syncs = read(path + "/approval-exchange", token=auth)["data"]["records"]
-                sync = next((r for r in syncs if r["recordKind"] == "settlement" and r["recordId"] == draft["settlementId"]), None)
-                assert not sync or sync["state"] != "needs_review", json.dumps(sync)
-                statuses[name] = {"record": rows[0], "exchange": sync}
-            if all(v["exchange"] and v["exchange"]["state"] == "complete" for v in statuses.values()):
-                break
-            time.sleep(3)
-        else:
-            raise AssertionError("Settlement signatures did not exchange while Orderer was stopped")
-        for name, signature in (("provider", source["approvalJws"]), ("source", provider["approvalJws"])):
-            saved = statuses[name]["record"]
-            assert saved["settlement"]["counterpartyJws"] == signature
-            assert saved["settlement"]["appliedAt"] is None
-            assert saved["ledger"]["state"] == "pending"
+        draft, statuses = automatic_closing(path, "settlement")
+        assert draft["billId"] == bill["billId"]
+        assert draft["chargedAmount"] == bill["calculation"]["dueAmount"]
+        assert int(draft["reservedAmount"]) == int(draft["chargedAmount"]) + int(draft["releasedAmount"])
+        assert int(draft["chargedAmount"]) > 0 and int(draft["releasedAmount"]) > 0
+        for value in statuses.values():
+            assert value["record"]["settlement"]["appliedAt"] is None
+            assert value["record"]["ledger"]["state"] == "pending"
         inspect_ledgers("settlement-offline")
         for name in ("provider", "source"):
             local = json.loads((logs / (name + "-settlement-offline.json")).read_text())
@@ -865,7 +875,7 @@ def verify_settlement():
             for task in local["reservations"] + local["outbound"]:
                 assert task["settledAmount"] is None, "Unconfirmed settlement released a local slot"
         (logs / "settlement-offline-evidence.json").write_text(json.dumps({"draft": draft, "statuses": statuses}, indent=2) + "\n")
-        print("REAL SETTLEMENT EXCHANGE PASSED: independent HTTP approvals -> original signatures over mTLS while Orderer stopped; no local slot or balance released", flush=True)
+        print("REAL SETTLEMENT EXCHANGE PASSED: independent institution policies -> automatic draft and approvals over mTLS while Orderer stopped; no local slot or balance released", flush=True)
     finally:
         orderer("start")
     original_ids = {name: value["record"]["ledger"]["id"] for name, value in statuses.items()}
@@ -882,8 +892,6 @@ def verify_settlement():
         time.sleep(3)
     else:
         raise AssertionError("Original settlements did not reach VALID and local accounting after recovery")
-    for read, auth, expected in ((api, token, provider), (sourceapi, sourcetoken, source)):
-        assert read(path + "/settlements/approve", draft, token=auth)["data"]["approvalJws"] == expected["approvalJws"]
     inspect_ledgers("settlement-committed")
     transactions = {}
     for name in ("provider", "source"):

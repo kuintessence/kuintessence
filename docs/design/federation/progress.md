@@ -1983,3 +1983,14 @@ Federation 节点新增可选 market（policyId/title/description），协调协
 待办完成表示原签名交换完成，协调额度投影仍等待本站 VALID；自动收尾的真实双平台/Fabric 验收与专用政策 Web/CLI 仍待继续。临时测试库已停止并移除，未修改部署环境。
 
 补充 10 项原人工账单、减免、结算与预授权回归全部通过。全仓类型检查仅报告测试夹具可选路径未收窄，补充显式检查后 Server 定向类型检查通过；其余包全仓检查及 Fabric 联调脚本类型检查均已通过。lint 无错误，保留既有 47 warning / 1 info；740 个本地文档目标检查通过。
+
+
+## 真实双平台自动商务收尾
+
+既有 success 执行验收改为：在真实轻量 Kubernetes 工作流及跨站文件返回完成后，先停 Orderer，再由双方各自通过管理 API 授予有限账单政策；生产 worker 自动发现实际用量、生成唯一账单、独立批准并经 mTLS 传递原文。恢复原账单存证后再次停链，双方另授结算政策，由后台自动生成和对签。验收不调用账单/结算草稿、逐单批准或手工附签 API。
+
+实际 1,000 毫秒用量形成账单 1，结算将原预留 10 分为扣用 1、归还 9。两端每种政策均只批准一笔、累计批准额为 1；断链时两个 closing task 已完成原签名交换，结算仍 pending、appliedAt 为空，原名额未释放。恢复后原待办均 VALID 才应用本地投影；提供方在区块 24 确认，源方区块 25 的 MVCC INVALID 被保留并由后台自动核对，随后区块 26 VALID。验收未调用人工复核重试结算。
+
+独立 Node Gateway 从 A/B/C 私有区块事件核对：原预算只扣一次，原预留只结算一次，两个同文结算回执不重复扣用；终态 gate 与公开 CLOSED 需求不变，C 的私有写入为零。跨站文件内容及 SHA-256、单份预留/运行和结果重复导入检查同时通过。完整入口退出 0；自建 Server、Agent、数据库、凭据及随机 Kubernetes namespace 已清理。
+
+证据仅保留在忽略目录 temp/closing-auto-live.log、temp/federation-execution-success-exwyoedg 与 temp/fabric-network-dNr87J，不提交测试身份或私有记录。复现步骤见[执行验收](../../../deploy/federation/execution-lab.md)。这是一台机器上的机构模拟，政策于作业结束后才启用，验证历史任务自动发现和商务收尾；不代表独立机构长期运行、直接/异步模式真实结算、Slurm/PBS 或科研软件安装验收。专用政策/待办 Web/CLI 及整体 PR 预览仍待完成。
