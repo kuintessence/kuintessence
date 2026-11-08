@@ -69,6 +69,8 @@ import { FederationCommercialWorker } from "./federation/commercial-worker";
 import { FederationCompletionCapacity } from "./federation/completion-capacity";
 import { FederationDataDispatch } from "./federation/data-dispatch";
 import { createFederationDatasetPreflight } from "./federation/dataset-preflight";
+import { FederationDatasetUseResponder } from "./federation/dataset-use-exchange";
+import { FederationDatasetUsePolicies } from "./federation/dataset-use-policies";
 import { FederationDispatchAuthorization } from "./federation/dispatch-authorization";
 import { FederationExecutionAutomation } from "./federation/execution-automation";
 import {
@@ -1930,16 +1932,6 @@ const federationMediaImportOperations =
 const federationMediaImportTransport = federationMediaImportOperations
   ? new FederationMediaImportTransport(federationMediaImportOperations, dispatcher)
   : undefined;
-if (federationMediaInventory)
-  protectedApi.route(
-    "/",
-    createFederationMediaRoutes(
-      federationMediaInventory,
-      federationMediaExports,
-      federationMediaExportOperations,
-      federationMediaImportOperations,
-    ),
-  );
 
 if (federationSigningKey)
   protectedApi.route(
@@ -2323,6 +2315,26 @@ const dataMarketService = new DataMarketService({
     },
   },
 });
+const federationDatasetUsePolicies = federationSigningKey
+  ? new FederationDatasetUsePolicies(db, federationSigningKey.siteId, (actor, assetId) =>
+      dataMarketService.requireManage(actor, assetId),
+    )
+  : undefined;
+const federationDatasetUse =
+  federationSigningKey && federationDatasetUsePolicies
+    ? new FederationDatasetUseResponder(db, federationSigningKey, federationDatasetUsePolicies)
+    : undefined;
+if (federationMediaInventory)
+  protectedApi.route(
+    "/",
+    createFederationMediaRoutes(
+      federationMediaInventory,
+      federationMediaExports,
+      federationMediaExportOperations,
+      federationMediaImportOperations,
+      federationDatasetUsePolicies,
+    ),
+  );
 protectedApi.route("/", createDataMarketRoutes({ service: dataMarketService }));
 protectedApi.route("/", createAdminDataMarketRoutes(dataMarketService));
 // software governance REST surface (PRD F19). org_admin or above.
@@ -2586,6 +2598,7 @@ const federationIngress = await startFederationIngress(
   federationConfirmations,
   federationStorageGuard,
   federationMediaKeys,
+  federationDatasetUse,
 );
 const federationPreparationWorker = federationPreparation
   ? new FederationPreparationWorker(

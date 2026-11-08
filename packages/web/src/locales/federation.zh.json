@@ -102,7 +102,9 @@
       "media-key-grant": "介质包加密密钥授权",
       "commercial-settlement": "商业额度结算",
       "commercial-adjustment": "商业账务调整",
-      "commercial-refund": "执行前额度退款"
+      "commercial-refund": "执行前额度退款",
+      "dataset-use-query": "数据集使用请求",
+      "dataset-use-grant": "数据集使用授权"
     },
     "storage": {
       "title": "输入存储核对",
@@ -219,6 +221,11 @@
           "read": "查看市场操作",
           "publish": "发布市场需求",
           "claim": "认领市场需求"
+        },
+        "dataset": {
+          "use": {
+            "approve": "批准跨机构数据使用"
+          }
         }
       },
       "effects": {
@@ -255,6 +262,11 @@
           "read": "查看本机构的公开需求提交、认领和撤回记录。",
           "publish": "代表本机构发布公开需求、撤回尚未认领的需求，并重试这些操作；包含查看权限。",
           "claim": "代表本机构认领公开需求并重试认领；包含查看权限，不授予资金锁定或作业执行权。"
+        },
+        "dataset": {
+          "use": {
+            "approve": "批准或撤销指定版本供合作机构使用；不授予文件披露权或接收方本地访问权。"
+          }
         }
       }
     },

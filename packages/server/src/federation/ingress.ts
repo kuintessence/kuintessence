@@ -8,6 +8,7 @@ import { FederationAgreementExchange } from "./agreement-exchange";
 import { FederationCancellationReceiver } from "./cancellation";
 import { FederationClosingAutomation } from "./closing-automation";
 import { FederationCommercialApprovalExchange } from "./commercial-approval-exchange";
+import type { FederationDatasetUseResponder } from "./dataset-use-exchange";
 import type { FederationDownloadStorage } from "./download-credential";
 import type { FederationExecutionConfirmationService } from "./execution-confirmation";
 import { FederationTerminalExchange } from "./execution-terminal-exchange";
@@ -36,6 +37,7 @@ export function createFederationIngress(
   confirmations?: FederationExecutionConfirmationService,
   storageGuard?: Pick<FederationStorageGuard, "assertAdmission">,
   mediaKeys?: Pick<FederationMediaKeyResponder, "respond">,
+  datasetUse?: Pick<FederationDatasetUseResponder, "respond">,
 ) {
   const r = new Hono();
   const trust = new FederationTrustRegistry(db);
@@ -118,6 +120,19 @@ export function createFederationIngress(
       return c.json({ error: { code: "INVALID_MESSAGE" } }, 415);
     if (!mediaKeys) throw new FederationError("POLICY_DENIED");
     const response = await mediaKeys.respond(
+      await c.req.text(),
+      c.req.header("x-kq-federation-cert") ?? "",
+    );
+    return c.body(response, 200, {
+      "content-type": "application/jose",
+      "cache-control": "no-store",
+    });
+  });
+  r.post("/federation/v1/dataset-use", async (c) => {
+    if (c.req.header("content-type") !== "application/jose")
+      return c.json({ error: { code: "INVALID_MESSAGE" } }, 415);
+    if (!datasetUse) throw new FederationError("POLICY_DENIED");
+    const response = await datasetUse.respond(
       await c.req.text(),
       c.req.header("x-kq-federation-cert") ?? "",
     );

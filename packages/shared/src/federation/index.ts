@@ -263,6 +263,7 @@ export function assertDelegationTerms(
 export * from "./accounting";
 export * from "./assets";
 export * from "./cancellation";
+export * from "./dataset-use";
 export * from "./input-files";
 export * from "./input-transfer";
 export * from "./material-exchange";

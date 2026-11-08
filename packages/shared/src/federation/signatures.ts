@@ -90,6 +90,8 @@ export interface FederationVerificationKey {
     | "media-manifest"
     | "media-key-query"
     | "media-key-grant"
+    | "dataset-use-query"
+    | "dataset-use-grant"
   )[];
 }
 

@@ -3,6 +3,7 @@ import type {
   FederationAcceptance,
   FederationAccountingObservation,
   FederationAgreement,
+  FederationAssetRef,
   FederationCancellation,
   FederationCancellationReceipt,
   FederationDelegation,
@@ -143,6 +144,8 @@ export const federationSigningKeys = pgTable(
           | "media-manifest"
           | "media-key-query"
           | "media-key-grant"
+          | "dataset-use-query"
+          | "dataset-use-grant"
         )[]
       >()
       .notNull(),
@@ -195,7 +198,7 @@ export const federationCapabilities = pgTable(
     primaryKey({ columns: [t.orgId, t.userId, t.capability] }),
     check(
       "federation_capability_kind",
-      sql`${t.capability} IN ('agreement.read', 'agreement.approve', 'billing.approve', 'settlement.approve', 'adjustment.approve', 'asset.read', 'asset.map', 'media.import', 'media.export', 'delegation.read', 'delegation.submit', 'delegation.cancel', 'result.read', 'market.read', 'market.publish', 'market.claim')`,
+      sql`${t.capability} IN ('agreement.read', 'agreement.approve', 'billing.approve', 'settlement.approve', 'adjustment.approve', 'asset.read', 'asset.map', 'media.import', 'media.export', 'dataset.use.approve', 'delegation.read', 'delegation.submit', 'delegation.cancel', 'result.read', 'market.read', 'market.publish', 'market.claim')`,
     ),
   ],
 );
@@ -2671,5 +2674,72 @@ export const federationMediaImportOperations = pgTable(
     ${t.latestGrant}->'binding'->>'generation' = ${t.generation}::text AND
     ${t.latestGrant}->'binding'->>'authorizationId' = ${t.authorizationId}::text) IS TRUE`,
     ),
+  ],
+);
+
+/** Source authorization is independent of a particular transport package or import approval. */
+export const federationDatasetUsePolicies = pgTable(
+  "federation_dataset_use_policies",
+  {
+    localSiteId: uuid("local_site_id")
+      .notNull()
+      .references(() => federationSites.id),
+    policyId: uuid("policy_id").notNull(),
+    localOrgId: uuid("local_org_id")
+      .notNull()
+      .references(() => orgs.id),
+    recipientSiteId: uuid("recipient_site_id")
+      .notNull()
+      .references(() => federationSites.id),
+    agreementRevisionId: uuid("agreement_revision_id")
+      .notNull()
+      .references(() => federationAgreements.revisionId),
+    versionId: uuid("version_id")
+      .notNull()
+      .references(() => dataAssetVersions.id),
+    asset: jsonb("asset").$type<FederationAssetRef>().notNull(),
+    approvedBy: uuid("approved_by")
+      .notNull()
+      .references(() => users.id),
+    approvedAt: timestamp("approved_at", { withTimezone: true }).notNull(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    reason: text("reason").notNull(),
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
+    revocationReason: text("revocation_reason"),
+  },
+  (t) => [
+    primaryKey({ columns: [t.localSiteId, t.policyId] }),
+    index("federation_dataset_use_org").on(t.localSiteId, t.localOrgId, t.approvedAt),
+    check(
+      "federation_dataset_use_scope",
+      sql`(${t.localSiteId} <> ${t.recipientSiteId} AND ${t.asset}->>'kind' = 'dataset' AND ${t.asset}->>'originSiteId' = ${t.localSiteId}::text AND ${t.expiresAt} > ${t.approvedAt}) IS TRUE`,
+    ),
+  ],
+);
+export const federationDatasetUseGrants = pgTable(
+  "federation_dataset_use_grants",
+  {
+    localSiteId: uuid("local_site_id").notNull(),
+    queryId: uuid("query_id").notNull(),
+    policyId: uuid("policy_id").notNull(),
+    queryDigest: varchar("query_digest", { length: 71 }).notNull(),
+    responseJws: text("response_jws").notNull(),
+    issuedAt: timestamp("issued_at", { withTimezone: true }).notNull(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.localSiteId, t.queryId] }),
+    foreignKey({
+      columns: [t.localSiteId, t.policyId],
+      foreignColumns: [
+        federationDatasetUsePolicies.localSiteId,
+        federationDatasetUsePolicies.policyId,
+      ],
+    }),
+    check(
+      "federation_dataset_use_grant_window",
+      sql`${t.expiresAt} > ${t.issuedAt} AND ${t.expiresAt} <= ${t.issuedAt} + interval '60 seconds'`,
+    ),
+    check("federation_dataset_use_grant_digest", sql`${t.queryDigest} ~ '^sha256:[a-f0-9]{64}$'`),
   ],
 );

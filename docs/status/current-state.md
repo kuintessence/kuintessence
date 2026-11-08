@@ -1,6 +1,8 @@
 # 当前功能与使用边界
 
-接收介质包现已接通 Server 排队、当前证书/能力信道、Agent 临时私钥、独立来源密钥请求与真实 age 解密校验。文件以完整目录保存在私有受管位置，Server 记录 `verified`，重复导入会重查授权及原文件；失败重试更换代次。隔离 PostgreSQL/真实工具联合验证通过，未创建 Data Market 位置或授予数据使用权。独立使用授权、Data Market 副本发布、签名导入回执和 DATA_WAITING 解锁仍待接通；真实跨主机恢复与 PR 预览未完成，详见[介质包](../design/federation/media-package.md#agent-实际接收与私有校验)。
+来源数据使用许可已独立接通：`dataset.use.approve` 加当前资产管理权，明确版本、合作机构、协议和期限；专用 mTLS `dataset-use` 端点签发最多 60 秒的副本使用凭证，复查撤权、资产归属、禁止策略及当前信任，重复请求保留原签名。此路径不依赖 Fabric、不授予下载或转交权。隔离 PostgreSQL、HTTP、真实 TLS 验证已通过；接收方续租/作业执行、Data Market 副本发布及导入回执仍待接通，不能据此解除 DATA_WAITING。见[数据集使用许可](../design/federation/dataset-use.md)。
+
+接收介质包现已接通 Server 排队、当前证书/能力信道、Agent 临时私钥、独立来源密钥请求与真实 age 解密校验。文件以完整目录保存在私有受管位置，Server 记录 `verified`，重复导入会重查授权及原文件；失败重试更换代次。隔离 PostgreSQL/真实工具联合验证通过，未创建 Data Market 位置或授予数据使用权。接收方使用授权执行、Data Market 副本发布、签名导入回执和 DATA_WAITING 解锁仍待接通；真实跨主机恢复与 PR 预览未完成，详见[介质包](../design/federation/media-package.md#agent-实际接收与私有校验)。
 
 来源介质包已接入实际 Agent 导出：人工 API 显式排队、持久代次、证书/能力协商、短期租约复核、真实 age 流式加密、临时目录整体发布和密文摘要回报。原完整产物经校验后可重用，错误与撤权阻止发布/成功确认。真实工具与隔离数据库/内存信道验证通过；Data Market 副本发布、SIGKILL 残留回收和跨主机联合恢复尚待完成，不能据此解除 DATA_WAITING。入口与配置见[Agent 导出操作](../design/federation/media-package.md#agent-实际导出操作)。
 

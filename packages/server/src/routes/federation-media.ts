@@ -1,5 +1,6 @@
 import { AppError, ErrorCode } from "@kuintessence/shared";
 import {
+  FederationDatasetUseApprovalSchema,
   FederationError,
   FederationMediaExportApprovalSchema,
   FederationMediaImportApprovalSchema,
@@ -9,6 +10,7 @@ import {
 import { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { z } from "zod";
+import type { FederationDatasetUsePolicies } from "../federation/dataset-use-policies";
 import type { FederationMediaExportOperations } from "../federation/media-export-operations";
 import type { FederationMediaExportService } from "../federation/media-exports";
 import type { FederationMediaImportOperations } from "../federation/media-import-operations";
@@ -22,6 +24,7 @@ export function createFederationMediaRoutes(
   exports?: FederationMediaExportService,
   exportOperations?: FederationMediaExportOperations,
   importOperations?: FederationMediaImportOperations,
+  datasetUse?: FederationDatasetUsePolicies,
 ) {
   const r = new Hono<{ Variables: { federationActor: FederationActor } }>();
   r.use("/federation/media/*", async (c, next) => {
@@ -54,6 +57,52 @@ export function createFederationMediaRoutes(
       throw new AppError(ErrorCode.INTERNAL_ERROR, "MEDIA_EXPORT_UNAVAILABLE", 503);
     return exportOperations;
   };
+  const usePolicies = () => {
+    if (!datasetUse) throw new AppError(ErrorCode.INTERNAL_ERROR, "DATASET_USE_UNAVAILABLE", 503);
+    return datasetUse;
+  };
+  r.post(
+    "/federation/media/dataset-use-policies",
+    kqValidator("json", FederationDatasetUseApprovalSchema),
+    async (c) =>
+      c.json(
+        {
+          success: true,
+          data: await usePolicies().approve(c.get("federationActor"), c.req.valid("json")),
+        },
+        201,
+      ),
+  );
+  r.get(
+    "/federation/media/dataset-use-policies",
+    kqValidator(
+      "query",
+      z.object({
+        limit: z.coerce.number().int().min(1).max(100).default(50),
+        offset: z.coerce.number().int().nonnegative().default(0),
+      }),
+    ),
+    async (c) => {
+      const { limit, offset } = c.req.valid("query");
+      return c.json({
+        success: true,
+        data: await usePolicies().list(c.get("federationActor"), limit, offset),
+      });
+    },
+  );
+  r.post(
+    "/federation/media/dataset-use-policies/:id/revoke",
+    kqValidator("param", z.object({ id: z.uuid() })),
+    kqValidator("json", FederationMediaRevocationSchema),
+    async (c) => {
+      await usePolicies().revoke(
+        c.get("federationActor"),
+        c.req.valid("param").id,
+        c.req.valid("json"),
+      );
+      return c.json({ success: true });
+    },
+  );
   const imports = () => {
     if (!importOperations)
       throw new AppError(ErrorCode.INTERNAL_ERROR, "MEDIA_IMPORT_UNAVAILABLE", 503);

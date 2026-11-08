@@ -102,7 +102,9 @@
       "media-key-grant": "Media package encrypted key grant",
       "commercial-settlement": "Commercial allocation settlement",
       "commercial-adjustment": "Commercial charge adjustment",
-      "commercial-refund": "Pre-execution allocation refund"
+      "commercial-refund": "Pre-execution allocation refund",
+      "dataset-use-query": "Dataset use query",
+      "dataset-use-grant": "Dataset use grant"
     },
     "storage": {
       "title": "Input storage reconciliation",
@@ -219,6 +221,11 @@
           "read": "View market operations",
           "publish": "Publish market demands",
           "claim": "Claim market demands"
+        },
+        "dataset": {
+          "use": {
+            "approve": "Approve federated dataset use"
+          }
         }
       },
       "effects": {
@@ -255,6 +262,11 @@
           "read": "View this organization’s market submission, claim and cancellation records.",
           "publish": "Publish public demands, cancel unclaimed demands and retry those operations for this organization. Includes viewing.",
           "claim": "Claim public demands and retry claims for this organization. Includes viewing; does not authorize funds or execution."
+        },
+        "dataset": {
+          "use": {
+            "approve": "Authorize or revoke a specific dataset version for a partner institution; grants neither file disclosure nor the recipient’s local access."
+          }
         }
       }
     },

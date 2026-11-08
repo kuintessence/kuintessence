@@ -4,6 +4,7 @@ import type { PgDb } from "@kuintessence/db";
 import { withPrivateUnixSocketStartup } from "@kuintessence/shared/unix-socket";
 import { importPKCS8 } from "jose";
 import type { ServerConfig } from "../config";
+import type { FederationDatasetUseResponder } from "./dataset-use-exchange";
 import type { FederationDownloadStorage } from "./download-credential";
 import type { FederationExecutionConfirmationService } from "./execution-confirmation";
 import { createFederationIngress } from "./ingress";
@@ -24,6 +25,7 @@ export async function startFederationIngress(
   confirmations?: FederationExecutionConfirmationService,
   storageGuard?: FederationStorageGuard,
   mediaKeys?: Pick<FederationMediaKeyResponder, "respond">,
+  datasetUse?: Pick<FederationDatasetUseResponder, "respond">,
 ) {
   if (!config.FEDERATION_ENABLED) return undefined;
   const socketPath = config.FEDERATION_SOCKET_PATH;
@@ -45,6 +47,7 @@ export async function startFederationIngress(
     confirmations,
     storageGuard ?? (await loadFederationStorageGuard(config)),
     mediaKeys,
+    datasetUse,
   );
   return withPrivateUnixSocketStartup(socketPath, async () => {
     const server = Bun.serve({ unix: socketPath, fetch: app.fetch, maxRequestBodySize: 524288 });

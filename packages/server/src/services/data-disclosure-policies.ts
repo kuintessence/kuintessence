@@ -1,17 +1,15 @@
 import {
   auditLog,
   dataAccessPolicies,
-  dataAssets,
   dataAssetVersions,
   type PgDb,
   type PgTransaction,
-  userOrgMemberships,
-  users,
 } from "@kuintessence/db";
 import { AppError, ErrorCode } from "@kuintessence/shared";
 import { and, asc, eq, isNull, or } from "drizzle-orm";
 import { z } from "zod";
 import type { DataMarketActor } from "./data-market";
+import { readDataVersionCustody } from "./data-version-custody";
 
 export const DataDisclosurePolicyInputSchema = z.strictObject({
   expectedUpdatedAt: z.iso.datetime().nullable(),
@@ -137,40 +135,8 @@ export class DataDisclosurePolicyService {
     await this.authorizeManage(actor, version.assetId);
   }
 
-  private async scope(
-    tx: PgTransaction,
-    actor: DataMarketActor,
-    versionId: string,
-    write: boolean,
-  ) {
-    const [member] = await tx
-      .select({ user: users, membership: userOrgMemberships })
-      .from(users)
-      .innerJoin(
-        userOrgMemberships,
-        and(
-          eq(userOrgMemberships.userId, users.id),
-          eq(userOrgMemberships.orgId, actor.orgId ?? ""),
-        ),
-      )
-      .where(eq(users.id, actor.userId))
-      .for("share", { of: [users, userOrgMemberships] });
-    if (!member || member.user.suspended || member.user.serviceAccount) denied();
-    const [data] = await tx
-      .select({ asset: dataAssets, version: dataAssetVersions })
-      .from(dataAssetVersions)
-      .innerJoin(dataAssets, eq(dataAssets.id, dataAssetVersions.dataAssetId))
-      .where(eq(dataAssetVersions.id, versionId))
-      .for(write ? "update" : "share", { of: [dataAssets, dataAssetVersions] });
-    if (!data) denied();
-    const owns = data.asset.ownerKind === "user" && data.asset.ownerUserId === actor.userId;
-    const managesOrg =
-      ["owner", "admin"].includes(member.membership.role) ||
-      ["org_admin", "platform_admin", "super_admin"].includes(member.user.role);
-    const orgOwns =
-      data.asset.ownerOrgId === actor.orgId || data.asset.providerOrgId === actor.orgId;
-    if (!owns && !(orgOwns && managesOrg)) denied();
-    return data;
+  private scope(tx: PgTransaction, actor: DataMarketActor, versionId: string, write: boolean) {
+    return readDataVersionCustody(tx, actor, versionId, write);
   }
 
   private async localPolicy(tx: PgTransaction, actor: DataMarketActor, versionId: string) {

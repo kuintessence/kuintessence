@@ -16,8 +16,11 @@ import {
   dataAssetManifestEntries,
   dataAssets,
   dataAssetVersions,
+  dataGrants,
   dataLocations,
   federationCertificates,
+  federationDatasetUseGrants,
+  federationDatasetUsePolicies,
   federationMediaExports,
   federationMediaKeyGrants,
   federationSigningKeys,
@@ -30,7 +33,10 @@ import {
   FederationMediaImportGrantResponseSchema,
 } from "@kuintessence/proto";
 import {
+  assertDatasetUseGrant,
   FederationAgreementSchema,
+  FederationDatasetUseGrantSchema,
+  FederationDatasetUseQuerySchema,
   FederationMediaKeyGrantSchema,
   FederationMediaKeyQuerySchema,
   FederationMediaManifestSchema,
@@ -58,6 +64,8 @@ import {
 } from "../services/data-market";
 import { PgDataMarketRepository } from "../services/data-market-repository-drizzle";
 import { FederationAdmission } from "./admission";
+import { FederationDatasetUseResponder } from "./dataset-use-exchange";
+import { FederationDatasetUsePolicies } from "./dataset-use-policies";
 import { createFederationIngress } from "./ingress";
 import { FederationMediaExportOperations } from "./media-export-operations";
 import { FederationMediaExportTransport } from "./media-export-transport";
@@ -345,7 +353,10 @@ describe.skipIf(!binary)("source dataset export consent with real pinned age", (
       .where(eq(dataAccessPolicies.id, policyId));
     return policies.write(manager, versionId, consent());
   }
-  function app(operations?: FederationMediaExportOperations) {
+  function app(
+    operations?: FederationMediaExportOperations,
+    usePolicies?: FederationDatasetUsePolicies,
+  ) {
     const r = new Hono();
     r.onError(createErrorHandler(pino({ enabled: false })));
     r.use("*", async (c, next) => {
@@ -358,6 +369,8 @@ describe.skipIf(!binary)("source dataset export consent with real pinned age", (
         new FederationMediaPackageService(db, source.signing.siteId),
         service,
         operations,
+        undefined,
+        usePolicies,
       ),
     );
     return r;
@@ -1324,6 +1337,409 @@ describe.skipIf(!binary)("source dataset export consent with real pinned age", (
             eq(federationSigningKeys.keyId, source.signing.keyId),
           ),
         );
+    }
+  });
+
+  async function useFixture() {
+    await permissions.set(
+      { ...actor, capability: "dataset.use.approve", enabled: true },
+      actor.userId,
+    );
+    for (const key of [source, target]) {
+      const [row] = await db
+        .select()
+        .from(federationSigningKeys)
+        .where(
+          and(
+            eq(federationSigningKeys.siteId, key.signing.siteId),
+            eq(federationSigningKeys.keyId, key.signing.keyId),
+          ),
+        );
+      if (!row) throw new Error("missing key");
+      await db
+        .update(federationSigningKeys)
+        .set({
+          allowedKinds: [
+            ...new Set([
+              ...row.allowedKinds,
+              "dataset-use-query" as const,
+              "dataset-use-grant" as const,
+            ]),
+          ],
+        })
+        .where(
+          and(
+            eq(federationSigningKeys.siteId, key.signing.siteId),
+            eq(federationSigningKeys.keyId, key.signing.keyId),
+          ),
+        );
+    }
+    const policyService = new FederationDatasetUsePolicies(
+      db,
+      source.signing.siteId,
+      (a, id) => market.requireManage(a, id),
+      () => now,
+    );
+    const input = {
+      policyId: crypto.randomUUID(),
+      versionId,
+      recipientSiteId: target.signing.siteId,
+      agreementRevisionId: terms.agreementRevisionId,
+      expiresAt: new Date(testNow.getTime() + 3600_000).toISOString(),
+      reason: "Approved partner computation",
+    };
+    const approval = await policyService.approve(actor, input);
+    const responder = new FederationDatasetUseResponder(
+      db,
+      source.signing,
+      policyService,
+      () => now,
+    );
+    const ingress = createFederationIngress(
+      db,
+      source.signing,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      responder,
+    );
+    const query = FederationDatasetUseQuerySchema.parse({
+      protocolVersion: 1,
+      kind: "dataset-use-query",
+      queryId: crypto.randomUUID(),
+      policyId: input.policyId,
+      senderSiteId: target.signing.siteId,
+      recipientSiteId: source.signing.siteId,
+      agreementRevisionId: terms.agreementRevisionId,
+      asset: approval.asset,
+      replicaId: crypto.randomUUID(),
+      agentId: "recipient-agent",
+      managedRootId: crypto.randomUUID(),
+      issuedAt: now.toISOString(),
+      expiresAt: new Date(now.getTime() + 60_000).toISOString(),
+    });
+    const signed = await signFederationMessage(
+      FederationDatasetUseQuerySchema,
+      query,
+      target.signing,
+    );
+    const call = (body: string, fingerprint = "d".repeat(64)) =>
+      ingress.request("/federation/v1/dataset-use", {
+        method: "POST",
+        headers: { "content-type": "application/jose", "x-kq-federation-cert": fingerprint },
+        body,
+      });
+    return { policyService, input, approval, responder, query, signed, call };
+  }
+
+  test("dataset use approval is independent, immutable and scoped to recipient, agreement and version", async () => {
+    const f = await useFixture();
+    const repeat = await f.policyService.approve(actor, f.input);
+    expect(repeat.approvedAt).toEqual(f.approval.approvedAt);
+    await expect(
+      f.policyService.approve(actor, { ...f.input, reason: "Changed approval" }),
+    ).rejects.toThrow("OPERATION_CONFLICT");
+    await permissions.set(
+      { ...actor, capability: "dataset.use.approve", enabled: false },
+      actor.userId,
+    );
+    await expect(
+      f.policyService.approve(actor, { ...f.input, policyId: crypto.randomUUID() }),
+    ).rejects.toThrow("POLICY_DENIED");
+    await permissions.set(
+      { ...actor, capability: "dataset.use.approve", enabled: true },
+      actor.userId,
+    );
+    await db
+      .update(dataAccessPolicies)
+      .set({ status: "disabled" })
+      .where(eq(dataAccessPolicies.id, policyId));
+    // Source use approval deliberately does not require another export or download grant.
+    const result = await f.call(f.signed);
+    expect(result.status).toBe(200);
+    expect(result.headers.get("cache-control")).toBe("no-store");
+    const verified = await verifyFederationMessage(
+      FederationDatasetUseGrantSchema,
+      await result.text(),
+      { ...source.verification, allowedKinds: ["dataset-use-grant"] },
+      now,
+    );
+    const q = await verifyFederationMessage(
+      FederationDatasetUseQuerySchema,
+      f.signed,
+      { ...target.verification, allowedKinds: ["dataset-use-query"] },
+      now,
+    );
+    assertDatasetUseGrant(f.query, q.digest, verified.payload, now);
+    expect(JSON.stringify(verified.payload)).not.toContain(actor.userId);
+    expect(JSON.stringify(verified.payload)).not.toContain(actor.orgId);
+    expect(verified.payload.replicaId).toBe(f.query.replicaId);
+    await expect(service.prepare(actor, request())).rejects.toThrow("POLICY_DENIED");
+    const mismatched = {
+      ...f.query,
+      queryId: crypto.randomUUID(),
+      asset: { ...f.query.asset, digest: `sha256:${"b".repeat(64)}` },
+    };
+    expect(
+      (
+        await f.call(
+          await signFederationMessage(FederationDatasetUseQuerySchema, mismatched, target.signing),
+        )
+      ).status,
+    ).toBe(409);
+    expect((await f.call(f.signed, "forged")).status).toBe(401);
+  });
+
+  test("dataset use human HTTP routes keep approval separate and reject extra input", async () => {
+    const f = await useFixture();
+    const r = app(undefined, f.policyService);
+    const path = "/api/federation/media/dataset-use-policies";
+    const post = (body: unknown) =>
+      r.request(path, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+    await permissions.set(
+      { ...actor, capability: "dataset.use.approve", enabled: false },
+      actor.userId,
+    );
+    expect((await post(f.input)).status).toBe(403);
+    await permissions.set(
+      { ...actor, capability: "dataset.use.approve", enabled: true },
+      actor.userId,
+    );
+    expect((await post({ ...f.input, grantDownload: true })).status).toBe(400);
+    expect((await post(f.input)).status).toBe(201);
+    expect((await r.request(path)).status).toBe(200);
+    expect(
+      (
+        await r.request(`${path}/${f.input.policyId}/revoke`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ reason: "Owner withdraws use" }),
+        })
+      ).status,
+    ).toBe(200);
+    expect((await f.call(f.signed)).status).toBe(409);
+    await permissions.set(
+      { ...other, capability: "dataset.use.approve", enabled: true },
+      actor.userId,
+    );
+    await expect(
+      f.policyService.revoke(other, f.input.policyId, { reason: "Other organization" }),
+    ).rejects.toThrow("POLICY_DENIED");
+  });
+
+  test("dataset use leases preserve signed replay, bind replica scope and stop after revocation", async () => {
+    const f = await useFixture();
+    const [one, two] = await Promise.all([
+      f.responder.respond(f.signed, "d".repeat(64)),
+      f.responder.respond(f.signed, "d".repeat(64)),
+    ]);
+    expect(one).toBe(two);
+    expect(
+      (
+        await db
+          .select()
+          .from(federationDatasetUseGrants)
+          .where(eq(federationDatasetUseGrants.queryId, f.query.queryId))
+      ).length,
+    ).toBe(1);
+    expect(
+      (
+        await db
+          .select()
+          .from(auditLog)
+          .where(
+            and(
+              eq(auditLog.target, f.query.queryId),
+              eq(auditLog.action, "federation.dataset_use.issue"),
+            ),
+          )
+      ).length,
+    ).toBe(1);
+    const changed = await signFederationMessage(
+      FederationDatasetUseQuerySchema,
+      { ...f.query, replicaId: crypto.randomUUID() },
+      target.signing,
+    );
+    await expect(f.responder.respond(changed, "d".repeat(64))).rejects.toThrow(
+      "OPERATION_CONFLICT",
+    );
+    await f.policyService.revoke(actor, f.input.policyId, { reason: "Partner access withdrawn" });
+    await expect(f.responder.respond(f.signed, "d".repeat(64))).rejects.toThrow("POLICY_DENIED");
+    await expect(f.policyService.approve(actor, f.input)).rejects.toThrow("OPERATION_CONFLICT");
+    expect(
+      (await f.policyService.list(actor, 50, 0)).find((p) => p.policyId === f.input.policyId)
+        ?.revokedAt,
+    ).not.toBeNull();
+  });
+
+  test.each([
+    "permission",
+    "ownership",
+    "deny",
+    "key-purpose",
+    "expired",
+  ] as const)("dataset use checks current %s on original-query replay", async (mode) => {
+    const f = await useFixture();
+    await f.responder.respond(f.signed, "d".repeat(64));
+    if (mode === "permission")
+      await permissions.set(
+        { ...actor, capability: "dataset.use.approve", enabled: false },
+        actor.userId,
+      );
+    if (mode === "ownership")
+      await db
+        .update(dataAssets)
+        .set({ ownerUserId: other.userId })
+        .where(eq(dataAssets.id, assetId));
+    if (mode === "deny")
+      await db
+        .update(dataAccessPolicies)
+        .set({ effect: "deny", capabilities: ["use"] })
+        .where(eq(dataAccessPolicies.id, policyId));
+    if (mode === "key-purpose")
+      await db
+        .update(federationSigningKeys)
+        .set({
+          allowedKinds: ["agreement", "media-manifest", "media-key-query", "media-key-grant"],
+        })
+        .where(eq(federationSigningKeys.siteId, source.signing.siteId));
+    if (mode === "expired") now = new Date(now.getTime() + 60_001);
+    await expect(f.responder.respond(f.signed, "d".repeat(64))).rejects.toThrow();
+  });
+
+  test("dataset use preserves licensed material entitlement and its expiry", async () => {
+    const f = await useFixture();
+    const [before] = await db.select().from(dataAssets).where(eq(dataAssets.id, assetId));
+    if (!before) throw new Error("Missing asset");
+    const grantId = crypto.randomUUID();
+    try {
+      await db
+        .update(dataAssets)
+        .set({ kind: "licensed-material", accessMode: "entitlement" })
+        .where(eq(dataAssets.id, assetId));
+      await db
+        .update(dataAccessPolicies)
+        .set({ status: "disabled" })
+        .where(eq(dataAccessPolicies.id, policyId));
+      await expect(f.responder.respond(f.signed, "d".repeat(64))).rejects.toThrow("POLICY_DENIED");
+      const expiresAt = new Date(now.getTime() + 5_000);
+      await db.insert(dataGrants).values({
+        id: grantId,
+        dataAssetId: assetId,
+        dataAssetVersionId: versionId,
+        subjectKind: "user",
+        subjectId: actor.userId,
+        capabilities: ["use"],
+        startsAt: now,
+        expiresAt,
+      });
+      const response = await f.responder.respond(f.signed, "d".repeat(64));
+      const verified = await verifyFederationMessage(
+        FederationDatasetUseGrantSchema,
+        response,
+        { ...source.verification, allowedKinds: ["dataset-use-grant"] },
+        now,
+      );
+      expect(verified.payload.expiresAt).toBe(expiresAt.toISOString());
+      await db.update(dataGrants).set({ status: "revoked" }).where(eq(dataGrants.id, grantId));
+      await expect(f.responder.respond(f.signed, "d".repeat(64))).rejects.toThrow("POLICY_DENIED");
+    } finally {
+      await db.delete(dataGrants).where(eq(dataGrants.id, grantId));
+      await db
+        .update(dataAssets)
+        .set({ kind: before.kind, accessMode: before.accessMode })
+        .where(eq(dataAssets.id, assetId));
+    }
+  });
+
+  test("dataset use custody rechecks external authorization and changing ownership", async () => {
+    const f = await useFixture();
+    const denied = new FederationDatasetUsePolicies(
+      db,
+      source.signing.siteId,
+      async () => {
+        throw new Error("external authorization denied");
+      },
+      () => now,
+    );
+    await expect(
+      denied.approve(actor, { ...f.input, policyId: crypto.randomUUID() }),
+    ).rejects.toThrow("external authorization denied");
+    const race = new FederationDatasetUsePolicies(
+      db,
+      source.signing.siteId,
+      async (a, id) => {
+        await market.requireManage(a, id);
+        await db
+          .update(dataAssets)
+          .set({ ownerUserId: other.userId })
+          .where(eq(dataAssets.id, assetId));
+      },
+      () => now,
+    );
+    await expect(
+      race.approve(actor, { ...f.input, policyId: crypto.randomUUID() }),
+    ).rejects.toThrow("POLICY_DENIED");
+    // The independent institution capability still permits withdrawing a historical policy.
+    await f.policyService.revoke(actor, f.input.policyId, { reason: "Custody changed" });
+  });
+
+  test("dataset use cannot issue or approve without its atomic audit and caps key lifetime", async () => {
+    const f = await useFixture();
+    const newId = crypto.randomUUID();
+    await db.execute(
+      sql`CREATE FUNCTION dataset_use_reject_audit() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.action LIKE 'federation.dataset_use.%' THEN RAISE EXCEPTION 'test audit unavailable'; END IF; RETURN NEW; END $$`,
+    );
+    await db.execute(
+      sql`CREATE TRIGGER dataset_use_reject_audit BEFORE INSERT ON audit_log FOR EACH ROW EXECUTE FUNCTION dataset_use_reject_audit()`,
+    );
+    try {
+      await expect(
+        f.policyService.approve(actor, { ...f.input, policyId: newId }),
+      ).rejects.toThrow();
+      await expect(f.responder.respond(f.signed, "d".repeat(64))).rejects.toThrow();
+      expect(
+        await db
+          .select()
+          .from(federationDatasetUsePolicies)
+          .where(eq(federationDatasetUsePolicies.policyId, newId)),
+      ).toEqual([]);
+      expect(
+        await db
+          .select()
+          .from(federationDatasetUseGrants)
+          .where(eq(federationDatasetUseGrants.queryId, f.query.queryId)),
+      ).toEqual([]);
+    } finally {
+      await db.execute(sql`DROP TRIGGER dataset_use_reject_audit ON audit_log`);
+      await db.execute(sql`DROP FUNCTION dataset_use_reject_audit()`);
+    }
+    const expiry = new Date(now.getTime() + 3_000);
+    try {
+      await db
+        .update(federationSigningKeys)
+        .set({ validUntil: expiry })
+        .where(eq(federationSigningKeys.siteId, source.signing.siteId));
+      const response = await f.responder.respond(f.signed, "d".repeat(64));
+      const verified = await verifyFederationMessage(
+        FederationDatasetUseGrantSchema,
+        response,
+        { ...source.verification, allowedKinds: ["dataset-use-grant"] },
+        now,
+      );
+      expect(verified.payload.expiresAt).toBe(expiry.toISOString());
+    } finally {
+      await db
+        .update(federationSigningKeys)
+        .set({ validUntil: source.verification.validUntil })
+        .where(eq(federationSigningKeys.siteId, source.signing.siteId));
     }
   });
 
