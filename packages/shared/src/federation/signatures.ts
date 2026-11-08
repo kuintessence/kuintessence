@@ -92,6 +92,8 @@ export interface FederationVerificationKey {
     | "media-key-grant"
     | "dataset-use-query"
     | "dataset-use-grant"
+    | "media-import-receipt"
+    | "media-import-receipt-ack"
   )[];
 }
 

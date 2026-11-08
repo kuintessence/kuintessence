@@ -14,6 +14,7 @@ import type { FederationExecutionConfirmationService } from "./execution-confirm
 import { FederationTerminalExchange } from "./execution-terminal-exchange";
 import { FederationMarketRequestService } from "./market-requests";
 import type { FederationMediaKeyResponder } from "./media-key-exchange";
+import { FederationMediaReceiptReceiver } from "./media-receipts";
 import type { FederationOutboundService } from "./outbound";
 import { FederationReservationProposalService } from "./reservation-proposals";
 import { FederationResultReceiptReceiver } from "./result-receipts";
@@ -107,6 +108,19 @@ export function createFederationIngress(
       return c.json({ error: { code: "INVALID_MESSAGE" } }, 415);
     if (!materials) return c.json({ error: { code: "TEMPORARILY_UNAVAILABLE" } }, 503);
     const response = await materials.materialChunk(
+      await c.req.text(),
+      c.req.header("x-kq-federation-cert") ?? "",
+    );
+    return c.body(response, 200, {
+      "content-type": "application/jose",
+      "cache-control": "no-store",
+    });
+  });
+  const mediaReceipts = new FederationMediaReceiptReceiver(db, signingKey);
+  r.post("/federation/v1/media-receipts", async (c) => {
+    if (c.req.header("content-type") !== "application/jose")
+      return c.json({ error: { code: "INVALID_MESSAGE" } }, 415);
+    const response = await mediaReceipts.receive(
       await c.req.text(),
       c.req.header("x-kq-federation-cert") ?? "",
     );

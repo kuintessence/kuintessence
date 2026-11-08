@@ -104,7 +104,9 @@
       "commercial-adjustment": "Commercial charge adjustment",
       "commercial-refund": "Pre-execution allocation refund",
       "dataset-use-query": "Dataset use query",
-      "dataset-use-grant": "Dataset use grant"
+      "dataset-use-grant": "Dataset use grant",
+      "media-import-receipt": "Media import receipt",
+      "media-import-receipt-ack": "Media import receipt acknowledgement"
     },
     "storage": {
       "title": "Input storage reconciliation",

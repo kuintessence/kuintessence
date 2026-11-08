@@ -109,6 +109,7 @@ try {
         "/federation/v1/input-downloads",
         "/federation/v1/media-keys",
         "/federation/v1/dataset-use",
+        "/federation/v1/media-receipts",
       ].includes(req.url ?? ""),
     );
     assert.equal(
@@ -204,6 +205,12 @@ try {
     assert.equal((await call({ cert, key }, "/federation/v1/dataset-use")).status, 200);
     assert.equal((await call({ cert, key }, "/federation/v1/dataset-use?peer=forged")).status, 404);
     await assert.rejects(call({}, "/federation/v1/dataset-use"));
+    assert.equal((await call({ cert, key }, "/federation/v1/media-receipts")).status, 200);
+    assert.equal(
+      (await call({ cert, key }, "/federation/v1/media-receipts?peer=forged")).status,
+      404,
+    );
+    await assert.rejects(call({}, "/federation/v1/media-receipts"));
     await assert.rejects(call({}));
     await assert.rejects(call({ cert: await pem("rogue.pem"), key: await pem("rogue.key") }));
     assert.equal((await call({ cert, key }, "/api/admin/federation/sites")).status, 404);
@@ -232,7 +239,7 @@ try {
       (await call({ cert, key }, "/federation/v1/input-downloads?identity=forged")).status,
       404,
     );
-    assert.equal(calls, 18);
+    assert.equal(calls, 19);
     await new Promise<void>((resolve, reject) =>
       backend.close((error) => (error ? reject(error) : resolve())),
     );

@@ -17,6 +17,10 @@ import type { FederationMediaExportOperations } from "../federation/media-export
 import type { FederationMediaExportService } from "../federation/media-exports";
 import type { FederationMediaImportOperations } from "../federation/media-import-operations";
 import type { FederationMediaPackageService } from "../federation/media-packages";
+import type {
+  FederationMediaReceiptReceiver,
+  FederationMediaReceiptSender,
+} from "../federation/media-receipts";
 import type { FederationActor } from "../federation/permissions";
 import type { BoundPrincipal } from "../middleware/principal-binder";
 import { kqValidator } from "../middleware/validator";
@@ -28,6 +32,7 @@ export function createFederationMediaRoutes(
   importOperations?: FederationMediaImportOperations,
   datasetUse?: FederationDatasetUsePolicies,
   publication?: FederationDatasetPublicationService,
+  receipts?: { sender?: FederationMediaReceiptSender; receiver?: FederationMediaReceiptReceiver },
 ) {
   const r = new Hono<{ Variables: { federationActor: FederationActor } }>();
   r.use("/federation/media/*", async (c, next) => {
@@ -51,6 +56,55 @@ export function createFederationMediaRoutes(
       );
     throw error;
   });
+  const receiptSender = () => {
+    if (!receipts?.sender)
+      throw new AppError(ErrorCode.INTERNAL_ERROR, "MEDIA_RECEIPT_UNAVAILABLE", 503);
+    return receipts.sender;
+  };
+  r.get(
+    "/federation/media/packages/:id/import-authorizations/:authorizationId/receipt",
+    kqValidator("param", z.object({ id: z.uuid(), authorizationId: z.uuid() })),
+    async (c) => {
+      const { id, authorizationId } = c.req.valid("param");
+      return c.json({
+        success: true,
+        data: await receiptSender().status(c.get("federationActor"), id, authorizationId),
+      });
+    },
+  );
+  r.post(
+    "/federation/media/packages/:id/import-authorizations/:authorizationId/receipt/retry",
+    kqValidator("param", z.object({ id: z.uuid(), authorizationId: z.uuid() })),
+    async (c) => {
+      const { id, authorizationId } = c.req.valid("param");
+      await receiptSender().retry(c.get("federationActor"), id, authorizationId);
+      return c.json({ success: true });
+    },
+  );
+  r.get(
+    "/federation/media/exports/:id/receipts",
+    kqValidator("param", z.object({ id: z.uuid() })),
+    kqValidator(
+      "query",
+      z.object({
+        limit: z.coerce.number().int().min(1).max(100).default(50),
+        offset: z.coerce.number().int().nonnegative().default(0),
+      }),
+    ),
+    async (c) => {
+      if (!receipts?.receiver)
+        throw new AppError(ErrorCode.INTERNAL_ERROR, "MEDIA_RECEIPT_UNAVAILABLE", 503);
+      return c.json({
+        success: true,
+        data: await receipts.receiver.list(
+          c.get("federationActor"),
+          c.req.valid("param").id,
+          c.req.valid("query").limit,
+          c.req.valid("query").offset,
+        ),
+      });
+    },
+  );
   const datasets = () => {
     if (!publication)
       throw new AppError(ErrorCode.INTERNAL_ERROR, "DATASET_PUBLICATION_UNAVAILABLE", 503);

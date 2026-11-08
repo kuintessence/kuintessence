@@ -49,7 +49,8 @@ export function createFederationGateway(options: FederationGatewayOptions) {
           req.url !== "/federation/v1/materials" &&
           req.url !== "/federation/v1/input-downloads" &&
           req.url !== "/federation/v1/media-keys" &&
-          req.url !== "/federation/v1/dataset-use")
+          req.url !== "/federation/v1/dataset-use" &&
+          req.url !== "/federation/v1/media-receipts")
       ) {
         res.writeHead(404).end();
         return;

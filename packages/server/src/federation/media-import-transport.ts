@@ -11,22 +11,29 @@ import { FederationError } from "@kuintessence/shared/federation";
 import { z } from "zod";
 import type { AgentDispatcher } from "../grpc/dispatcher";
 import type { FederationMediaImportOperations } from "./media-import-operations";
+import type { FederationMediaReceiptSender } from "./media-receipts";
 
 const logger = createLogger("federation-media-import");
 export class FederationMediaImportTransport {
   private timer?: ReturnType<typeof setInterval>;
   private running?: Promise<void>;
+  private receiptRunning?: Promise<void>;
   private stopping = false;
   constructor(
     private readonly operations: FederationMediaImportOperations,
     private readonly dispatcher: AgentDispatcher,
+    private readonly receipts?: Pick<FederationMediaReceiptSender, "deliverNext">,
   ) {}
   start() {
     if (this.timer) return;
     this.stopping = false;
-    this.timer = setInterval(() => void this.tick(), 30_000);
+    this.timer = setInterval(() => {
+      void this.tick();
+      void this.tickReceipts();
+    }, 30_000);
     this.timer.unref();
     void this.tick();
+    void this.tickReceipts();
   }
   tick() {
     if (this.running) return this.running;
@@ -58,6 +65,20 @@ export class FederationMediaImportTransport {
       }
       await this.operations.defer(row.authorizationId);
     }
+  }
+  // Receipt HTTP retries must not hold the Agent dispatch scan.
+  tickReceipts() {
+    if (this.receiptRunning) return this.receiptRunning;
+    this.receiptRunning = (async () => {
+      if (this.receipts)
+        for (let i = 0; i < 8 && !this.stopping; i++)
+          if (!(await this.receipts.deliverNext())) break;
+    })()
+      .catch(() => logger.warn("Media receipt scan deferred"))
+      .finally(() => {
+        this.receiptRunning = undefined;
+      });
+    return this.receiptRunning;
   }
   async dispatch(agentId: string, authorizationId: string) {
     const channel = this.dispatcher.getChannel(agentId);
@@ -97,6 +118,6 @@ export class FederationMediaImportTransport {
     this.stopping = true;
     clearInterval(this.timer);
     this.timer = undefined;
-    await this.running;
+    await Promise.all([this.running, this.receiptRunning]);
   }
 }

@@ -72,10 +72,12 @@ export const FederationKeyInput = z
           "media-key-grant",
           "dataset-use-query",
           "dataset-use-grant",
+          "media-import-receipt",
+          "media-import-receipt-ack",
         ]),
       )
       .min(1)
-      .max(44),
+      .max(48),
     validFrom: z.iso.datetime(),
     validUntil: z.iso.datetime(),
   })

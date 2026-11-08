@@ -110,6 +110,10 @@ import {
   FederationMediaKeyResponder,
 } from "./federation/media-key-exchange";
 import { FederationMediaPackageService } from "./federation/media-packages";
+import {
+  FederationMediaReceiptReceiver,
+  FederationMediaReceiptSender,
+} from "./federation/media-receipts";
 import { FederationOutboundService, FederationOutboundWorker } from "./federation/outbound";
 import { createFederationPackageResolver } from "./federation/package-resolver";
 import { FederationPermissionService } from "./federation/permissions";
@@ -1932,8 +1936,19 @@ const federationMediaImportOperations =
         ),
       )
     : undefined;
+const federationMediaReceiptSender =
+  federationSigningKey && federationSender
+    ? new FederationMediaReceiptSender(db, federationSigningKey, federationSender)
+    : undefined;
+const federationMediaReceiptReceiver = federationSigningKey
+  ? new FederationMediaReceiptReceiver(db, federationSigningKey)
+  : undefined;
 const federationMediaImportTransport = federationMediaImportOperations
-  ? new FederationMediaImportTransport(federationMediaImportOperations, dispatcher)
+  ? new FederationMediaImportTransport(
+      federationMediaImportOperations,
+      dispatcher,
+      federationMediaReceiptSender,
+    )
   : undefined;
 
 if (federationSigningKey)
@@ -2349,6 +2364,7 @@ if (federationMediaInventory)
       federationMediaImportOperations,
       federationDatasetUsePolicies,
       federationDatasetPublication,
+      { sender: federationMediaReceiptSender, receiver: federationMediaReceiptReceiver },
     ),
   );
 protectedApi.route("/", createDataMarketRoutes({ service: dataMarketService }));

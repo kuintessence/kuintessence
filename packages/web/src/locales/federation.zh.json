@@ -104,7 +104,9 @@
       "commercial-adjustment": "商业账务调整",
       "commercial-refund": "执行前额度退款",
       "dataset-use-query": "数据集使用请求",
-      "dataset-use-grant": "数据集使用授权"
+      "dataset-use-grant": "数据集使用授权",
+      "media-import-receipt": "介质导入回执",
+      "media-import-receipt-ack": "介质导入回执确认"
     },
     "storage": {
       "title": "输入存储核对",

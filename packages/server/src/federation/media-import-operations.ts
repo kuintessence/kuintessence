@@ -22,6 +22,7 @@ import { exportSPKI } from "jose";
 import { z } from "zod";
 import type { FederationMediaKeyRequester } from "./media-key-exchange";
 import type { FederationMediaPackageService } from "./media-packages";
+import { mediaImportReceipt } from "./media-receipts";
 import { type FederationActor, requireFederationCapability } from "./permissions";
 import { federationMessageKeyId, verifyFederationMessage } from "./signatures";
 import { FederationTrustRegistry } from "./trust-registry";
@@ -330,11 +331,26 @@ export class FederationMediaImportOperations {
           throw new FederationError("OPERATION_CONFLICT");
         await this.assertSourceGrant(tx, s.operation.latestGrant);
       }
+      const receivedAt = this.clock();
+      const receipt =
+        report.state === "verified"
+          ? mediaImportReceipt(
+              {
+                ...s.operation,
+                state: "verified",
+                verifiedAt: receivedAt,
+                verifiedBytes: report.sizeBytes,
+              },
+              s.package,
+            )
+          : null;
       await tx
         .update(operations)
         .set({
           state: report.state,
-          verifiedAt: report.state === "verified" ? this.clock() : null,
+          receipt,
+          receiptNextAttemptAt: receivedAt,
+          verifiedAt: report.state === "verified" ? receivedAt : null,
           verifiedBytes: report.state === "verified" ? report.sizeBytes : null,
           updatedAt: this.clock(),
         })

@@ -15,6 +15,8 @@ import type {
   FederationInputManifest,
   FederationMediaImportGrant,
   FederationMediaManifest,
+  FederationMediaReceipt,
+  FederationMediaReceiptAck,
   FederationReceivedInputFiles,
   FederationResultReceipt,
   FederationResultReceiptAck,
@@ -148,6 +150,8 @@ export const federationSigningKeys = pgTable(
           | "media-key-grant"
           | "dataset-use-query"
           | "dataset-use-grant"
+          | "media-import-receipt"
+          | "media-import-receipt-ack"
         )[]
       >()
       .notNull(),
@@ -2660,10 +2664,20 @@ export const federationMediaImportOperations = pgTable(
     latestGrant: jsonb("latest_grant").$type<FederationMediaImportGrant>(),
     verifiedBytes: bigint("verified_bytes", { mode: "number" }),
     verifiedAt: timestamp("verified_at", { withTimezone: true }),
+    receipt: jsonb("receipt").$type<FederationMediaReceipt>(),
+    receiptJws: text("receipt_jws"),
+    receiptAck: jsonb("receipt_ack").$type<FederationMediaReceiptAck>(),
+    receiptAckJws: text("receipt_ack_jws"),
+    receiptToken: uuid("receipt_token"),
+    receiptNextAttemptAt: timestamp("receipt_next_attempt_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    receiptLastError: varchar("receipt_last_error", { length: 32 }),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
     index("federation_media_import_pending").on(t.state, t.updatedAt),
+    index("federation_media_import_receipt_pending").on(t.receiptNextAttemptAt),
     check(
       "federation_media_import_operation_state",
       sql`(${t.state} IN ('queued','verified','failed') AND
@@ -2815,6 +2829,39 @@ export const federationDatasetReplicas = pgTable(
     check(
       "federation_dataset_replica_reference",
       sql`(${t.reference}->>'kind' = 'dataset') IS TRUE`,
+    ),
+  ],
+);
+
+/** Source custody evidence, independent of current export or dataset-use permissions. */
+export const federationMediaReceipts = pgTable(
+  "federation_media_receipts",
+  {
+    localSiteId: uuid("local_site_id").notNull(),
+    senderSiteId: uuid("sender_site_id")
+      .notNull()
+      .references(() => federationSites.id),
+    receiptId: uuid("receipt_id").notNull(),
+    packageId: uuid("package_id").notNull(),
+    receipt: jsonb("receipt").$type<FederationMediaReceipt>().notNull(),
+    digest: varchar("digest", { length: 71 }).notNull(),
+    receiptJws: text("receipt_jws").notNull(),
+    acknowledgement: jsonb("acknowledgement").$type<FederationMediaReceiptAck>().notNull(),
+    acknowledgementJws: text("acknowledgement_jws").notNull(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.localSiteId, t.senderSiteId, t.receiptId] }),
+    foreignKey({
+      columns: [t.localSiteId, t.packageId],
+      foreignColumns: [federationMediaExports.localSiteId, federationMediaExports.packageId],
+    }),
+    index("federation_media_receipt_package").on(t.localSiteId, t.packageId),
+    check(
+      "federation_media_receipt_scope",
+      sql`(${t.localSiteId} <> ${t.senderSiteId} AND ${t.digest} ~ '^sha256:[a-f0-9]{64}$' AND
+    ${t.receipt}->>'receiptId' = ${t.receiptId}::text AND ${t.receipt}->>'packageId' = ${t.packageId}::text AND
+    ${t.receipt}->>'senderSiteId' = ${t.senderSiteId}::text AND ${t.receipt}->>'recipientSiteId' = ${t.localSiteId}::text AND
+    ${t.acknowledgement}->>'receiptDigest' = ${t.digest}) IS TRUE`,
     ),
   ],
 );

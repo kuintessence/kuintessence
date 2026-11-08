@@ -26,7 +26,9 @@ import {
   federationDatasetUsePolicies,
   federationMediaExports,
   federationMediaImportAuthorizations,
+  federationMediaImportOperations,
   federationMediaKeyGrants,
+  federationMediaReceipts,
   federationSigningKeys,
   jobDataBindings,
   jobs,
@@ -46,6 +48,8 @@ import {
   FederationMediaKeyGrantSchema,
   FederationMediaKeyQuerySchema,
   FederationMediaManifestSchema,
+  FederationMediaReceiptAckSchema,
+  FederationMediaReceiptSchema,
   FederationMediaRecipientKeySchema,
 } from "@kuintessence/shared/federation";
 import { MediaAge } from "@kuintessence/shared/federation/media-age";
@@ -85,6 +89,7 @@ import { FederationMediaImportOperations } from "./media-import-operations";
 import { FederationMediaImportTransport } from "./media-import-transport";
 import { FederationMediaKeyRequester, FederationMediaKeyResponder } from "./media-key-exchange";
 import { FederationMediaPackageService } from "./media-packages";
+import { FederationMediaReceiptReceiver, FederationMediaReceiptSender } from "./media-receipts";
 import { FederationPermissionService } from "./permissions";
 import { signFederationMessage, verifyFederationMessage } from "./signatures";
 import { testAgreement, testKeys, testNow } from "./test-fixtures";
@@ -262,6 +267,8 @@ describe.skipIf(!binary)("source dataset export consent with real pinned age", (
     now = testNow;
     const foreign = await db.select().from(federationDatasetAssets);
     await db.delete(federationDatasetReplicas);
+    await db.delete(federationMediaImportOperations);
+    await db.delete(federationMediaReceipts);
     await db.delete(federationDatasetAssets);
     for (const asset of foreign)
       await db.delete(dataAssets).where(eq(dataAssets.id, asset.assetId));
@@ -1244,6 +1251,16 @@ describe.skipIf(!binary)("source dataset export consent with real pinned age", (
         .where(eq(dataAssetVersions.id, imported.versionId));
       expect(version?.provenance).toEqual(provenance);
       expect(version?.manifest.license).toBe("CC-BY-4.0");
+      const receipts = await receiptFixture(f);
+      await new FederationMediaImportTransport(
+        operations,
+        new AgentDispatcher(),
+        receipts.sender(),
+      ).tickReceipts();
+      expect((await receipts.status()).state).toBe("recorded");
+      expect((await receipts.receiver.list(actor, f.input.packageId))[0]?.receipt.state).toBe(
+        "verified-private",
+      );
     } finally {
       await client?.disconnect();
       await sourceClient?.disconnect();
@@ -1859,6 +1876,474 @@ describe.skipIf(!binary)("source dataset export consent with real pinned age", (
       if (timer) clearTimeout(timer);
       release.resolve();
       await writer;
+    }
+  });
+
+  async function receiptFixture(existing?: Awaited<ReturnType<typeof keyFixture>>) {
+    const f = await publicationFixture(existing);
+    await permissions.set({ ...actor, capability: "asset.read", enabled: true }, actor.userId);
+    for (const key of [source, target]) {
+      const [row] = await db
+        .select()
+        .from(federationSigningKeys)
+        .where(
+          and(
+            eq(federationSigningKeys.siteId, key.signing.siteId),
+            eq(federationSigningKeys.keyId, key.signing.keyId),
+          ),
+        );
+      if (!row) throw new Error("Missing key");
+      await db
+        .update(federationSigningKeys)
+        .set({
+          allowedKinds: [
+            ...new Set([
+              ...row.allowedKinds,
+              "media-import-receipt" as const,
+              "media-import-receipt-ack" as const,
+            ]),
+          ],
+        })
+        .where(
+          and(
+            eq(federationSigningKeys.siteId, key.signing.siteId),
+            eq(federationSigningKeys.keyId, key.signing.keyId),
+          ),
+        );
+    }
+    const receiver = new FederationMediaReceiptReceiver(db, source.signing, () => now);
+    const sent: string[] = [];
+    const sender = (after?: (jws: string) => Promise<string>) =>
+      new FederationMediaReceiptSender(
+        db,
+        target.signing,
+        async (_endpoint, jws, path) => {
+          expect(path).toBe("/federation/v1/media-receipts");
+          sent.push(jws);
+          const ack = await receiver.receive(jws, "d".repeat(64));
+          return after ? after(ack) : ack;
+        },
+        () => now,
+      );
+    const status = () =>
+      sender().status(actor, f.media.input.packageId, f.media.input.authorizationId);
+    return { ...f, receiver, sender, sent, status };
+  }
+
+  test("media receipt retries the same historical import after lost acknowledgement and later revocation", async () => {
+    const f = await receiptFixture();
+    const lost = f.sender(async () => {
+      throw new Error("Response lost after source commit");
+    });
+    expect(await lost.deliverNext()).toBe(true);
+    expect((await f.status()).state).toBe("pending");
+    expect(await db.select().from(federationMediaReceipts)).toHaveLength(1);
+    await service.revoke(actor, f.media.input.packageId, { reason: "Export ended" });
+    await f.media.receiver.revoke(
+      actor,
+      f.media.input.packageId,
+      { reason: "Local custody revoked" },
+      f.media.input.authorizationId,
+    );
+    await f.use.policyService.revoke(actor, f.use.input.policyId, { reason: "Use ended" });
+    now = new Date(now.getTime() + 90_000);
+    expect(await f.sender().deliverNext()).toBe(true);
+    const status = await f.status();
+    expect(status.state).toBe("recorded");
+    expect(status.receipt?.receivedAt).toBe(testNow.toISOString());
+    expect(status.receipt?.state).toBe("verified-private");
+    expect(f.sent[1]).toBe(f.sent[0]);
+    expect(await f.sender().deliverNext()).toBe(false);
+    expect(
+      await db
+        .select()
+        .from(auditLog)
+        .where(
+          and(
+            eq(auditLog.action, "federation.media.receipt_received"),
+            eq(auditLog.target, f.input.authorizationId),
+          ),
+        ),
+    ).toHaveLength(1);
+    expect(await db.select().from(federationDatasetAssets)).toHaveLength(0);
+  });
+
+  test("media receipt rejects forged scope, wrong peer, expired import facts and conflicting replay", async () => {
+    const f = await receiptFixture();
+    const receipt = (await f.status()).receipt;
+    if (!receipt) throw new Error("Missing receipt");
+    const signed = await signFederationMessage(
+      FederationMediaReceiptSchema,
+      receipt,
+      target.signing,
+    );
+    await expect(f.receiver.receive(signed, "forged")).rejects.toThrow();
+    for (const patch of [
+      { manifestDigest: `sha256:${"e".repeat(64)}` },
+      { keyQueryId: crypto.randomUUID() },
+      { sizeBytes: 5 },
+      { receiptId: crypto.randomUUID() },
+      { receivedAt: new Date(now.getTime() + 61_000).toISOString() },
+    ]) {
+      const forged = await signFederationMessage(
+        FederationMediaReceiptSchema,
+        { ...receipt, ...patch },
+        target.signing,
+      );
+      await expect(f.receiver.receive(forged, "d".repeat(64))).rejects.toThrow();
+    }
+    const [a, b] = await Promise.all([
+      f.receiver.receive(signed, "d".repeat(64)),
+      f.receiver.receive(signed, "d".repeat(64)),
+    ]);
+    expect(a).toBe(b);
+    const changed = await signFederationMessage(
+      FederationMediaReceiptSchema,
+      { ...receipt, generation: crypto.randomUUID() },
+      target.signing,
+    );
+    await expect(f.receiver.receive(changed, "d".repeat(64))).rejects.toThrow("OPERATION_CONFLICT");
+    const badAck = f.sender(async (ackJws) => {
+      const { payload } = await verifyFederationMessage(
+        FederationMediaReceiptAckSchema,
+        ackJws,
+        { ...source.verification, allowedKinds: ["media-import-receipt-ack"] },
+        now,
+      );
+      return signFederationMessage(
+        FederationMediaReceiptAckSchema,
+        { ...payload, receiptDigest: `sha256:${"f".repeat(64)}` },
+        source.signing,
+      );
+    });
+    await badAck.deliverNext();
+    expect((await f.status()).lastError).toBe("INVALID_MESSAGE");
+    expect((await f.status()).acknowledgement).toBeNull();
+  });
+
+  test("media receipt source and receiver audit failures roll back their own confirmations", async () => {
+    const f = await receiptFixture();
+    await db.execute(
+      sql`CREATE FUNCTION media_receipt_reject_audit() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.action IN ('federation.media.receipt_received', 'federation.media.receipt_recorded') THEN RAISE EXCEPTION 'test audit unavailable'; END IF; RETURN NEW; END $$`,
+    );
+    await db.execute(
+      sql`CREATE TRIGGER media_receipt_reject_audit BEFORE INSERT ON audit_log FOR EACH ROW EXECUTE FUNCTION media_receipt_reject_audit()`,
+    );
+    try {
+      await f.sender().deliverNext();
+      expect(await db.select().from(federationMediaReceipts)).toHaveLength(0);
+      expect((await f.status()).acknowledgement).toBeNull();
+      await db.execute(
+        sql`CREATE OR REPLACE FUNCTION media_receipt_reject_audit() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.action = 'federation.media.receipt_recorded' THEN RAISE EXCEPTION 'test audit unavailable'; END IF; RETURN NEW; END $$`,
+      );
+      now = new Date(now.getTime() + 31_000);
+      await f.sender().deliverNext();
+      expect(await db.select().from(federationMediaReceipts)).toHaveLength(1);
+      expect((await f.status()).acknowledgement).toBeNull();
+    } finally {
+      await db.execute(sql`DROP TRIGGER media_receipt_reject_audit ON audit_log`);
+      await db.execute(sql`DROP FUNCTION media_receipt_reject_audit()`);
+    }
+    now = new Date(now.getTime() + 31_000);
+    await f.sender().deliverNext();
+    expect((await f.status()).state).toBe("recorded");
+    expect(await db.select().from(federationMediaReceipts)).toHaveLength(1);
+  });
+
+  test("media receipt manual retry fences an in-flight acknowledgement and needs current local authority", async () => {
+    const f = await receiptFixture();
+    const sender = f.sender(async (ack) => {
+      await f.sender().retry(actor, f.media.input.packageId, f.media.input.authorizationId);
+      return ack;
+    });
+    await sender.deliverNext();
+    expect((await f.status()).state).toBe("pending");
+    await expect(
+      f.sender().retry(other, f.media.input.packageId, f.media.input.authorizationId),
+    ).rejects.toThrow();
+    await f.sender().deliverNext();
+    expect((await f.status()).state).toBe("recorded");
+  });
+
+  test("media receipt requires dedicated current signing purposes without disturbing the imported data", async () => {
+    const f = await receiptFixture();
+    const [key] = await db
+      .select()
+      .from(federationSigningKeys)
+      .where(
+        and(
+          eq(federationSigningKeys.siteId, target.signing.siteId),
+          eq(federationSigningKeys.keyId, target.signing.keyId),
+        ),
+      );
+    if (!key) throw new Error("Missing key");
+    try {
+      await db
+        .update(federationSigningKeys)
+        .set({ allowedKinds: key.allowedKinds.filter((k) => k !== "media-import-receipt") })
+        .where(
+          and(
+            eq(federationSigningKeys.siteId, target.signing.siteId),
+            eq(federationSigningKeys.keyId, target.signing.keyId),
+          ),
+        );
+      await f.sender().deliverNext();
+      expect((await f.status()).lastError).toBe("UNTRUSTED_IDENTITY");
+      expect(f.sent).toHaveLength(0);
+      const [op] = await db
+        .select()
+        .from(federationMediaImportOperations)
+        .where(eq(federationMediaImportOperations.authorizationId, f.input.authorizationId));
+      expect(op?.state).toBe("verified");
+    } finally {
+      await db
+        .update(federationSigningKeys)
+        .set({ allowedKinds: key.allowedKinds })
+        .where(
+          and(
+            eq(federationSigningKeys.siteId, target.signing.siteId),
+            eq(federationSigningKeys.keyId, target.signing.keyId),
+          ),
+        );
+    }
+  });
+
+  test("media receipt key rotation re-signs transport while retaining the original custody statement", async () => {
+    const f = await receiptFixture();
+    await f
+      .sender(async () => {
+        throw new Error("Response lost");
+      })
+      .deliverNext();
+    const original = (await f.receiver.list(actor, f.media.input.packageId))[0];
+    if (!original) throw new Error("Missing original evidence");
+    const nextSource = await testKeys(source.signing.siteId),
+      nextTarget = await testKeys(target.signing.siteId);
+    nextSource.signing.keyId += "-receipt-next";
+    nextTarget.signing.keyId += "-receipt-next";
+    const trust = new FederationTrustRegistry(db);
+    for (const key of [nextSource, nextTarget])
+      await trust.addKey(
+        key.signing.siteId,
+        {
+          keyId: key.signing.keyId,
+          publicKeyPem: await exportSPKI(key.verification.publicKey),
+          validFrom: key.verification.validFrom.toISOString(),
+          validUntil: key.verification.validUntil.toISOString(),
+          allowedKinds: ["media-import-receipt", "media-import-receipt-ack"],
+        },
+        actor.userId,
+      );
+    for (const key of [source, target])
+      await db
+        .update(federationSigningKeys)
+        .set({ revokedAt: now })
+        .where(
+          and(
+            eq(federationSigningKeys.siteId, key.signing.siteId),
+            eq(federationSigningKeys.keyId, key.signing.keyId),
+          ),
+        );
+    try {
+      now = new Date(now.getTime() + 31_000);
+      const receiver = new FederationMediaReceiptReceiver(db, nextSource.signing, () => now);
+      const sender = new FederationMediaReceiptSender(
+        db,
+        nextTarget.signing,
+        (_endpoint, jws) => receiver.receive(jws, "d".repeat(64)),
+        () => now,
+      );
+      await sender.deliverNext();
+      const state = await sender.status(
+        actor,
+        f.media.input.packageId,
+        f.media.input.authorizationId,
+      );
+      expect(state.state).toBe("recorded");
+      expect(state.receipt).toEqual(original.receipt);
+      expect(state.acknowledgement).toEqual(original.acknowledgement);
+      expect(state.signedReceipt).not.toBe(original.signedReceipt);
+      expect(state.signedAcknowledgement).not.toBe(original.signedAcknowledgement);
+      expect((await receiver.list(actor, f.media.input.packageId))[0]?.signedReceipt).toBe(
+        original.signedReceipt,
+      );
+    } finally {
+      for (const key of [source, target])
+        await db
+          .update(federationSigningKeys)
+          .set({ revokedAt: null })
+          .where(
+            and(
+              eq(federationSigningKeys.siteId, key.signing.siteId),
+              eq(federationSigningKeys.keyId, key.signing.keyId),
+            ),
+          );
+    }
+  });
+
+  test("media receipt refuses an acknowledgement after its source key is revoked in flight", async () => {
+    const f = await receiptFixture();
+    try {
+      await f
+        .sender(async (ack) => {
+          await db
+            .update(federationSigningKeys)
+            .set({ revokedAt: now })
+            .where(
+              and(
+                eq(federationSigningKeys.siteId, source.signing.siteId),
+                eq(federationSigningKeys.keyId, source.signing.keyId),
+              ),
+            );
+          return ack;
+        })
+        .deliverNext();
+      expect((await f.status()).lastError).toBe("UNTRUSTED_IDENTITY");
+      expect((await f.status()).acknowledgement).toBeNull();
+    } finally {
+      await db
+        .update(federationSigningKeys)
+        .set({ revokedAt: null })
+        .where(
+          and(
+            eq(federationSigningKeys.siteId, source.signing.siteId),
+            eq(federationSigningKeys.keyId, source.signing.keyId),
+          ),
+        );
+    }
+  });
+
+  test("media receipt HTTP exposes scoped evidence and supports explicit retry without re-import", async () => {
+    setSystemTime(testNow);
+    try {
+      const f = await receiptFixture();
+      const ingress = createFederationIngress(db, source.signing);
+      const sender = new FederationMediaReceiptSender(
+        db,
+        target.signing,
+        async (_endpoint, body) => {
+          const r = await ingress.request("/federation/v1/media-receipts", {
+            method: "POST",
+            headers: {
+              "content-type": "application/jose",
+              "x-kq-federation-cert": "d".repeat(64),
+            },
+            body,
+          });
+          expect(r.status).toBe(200);
+          expect(r.headers.get("cache-control")).toBe("no-store");
+          return r.text();
+        },
+        () => now,
+      );
+      const app = new Hono();
+      app.onError(createErrorHandler(pino({ enabled: false })));
+      app.use("*", async (c, next) => {
+        c.set("principal" as never, actor as never);
+        await next();
+      });
+      app.route(
+        "/api",
+        createFederationMediaRoutes(
+          f.media.receiver,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          { sender, receiver: f.receiver },
+        ),
+      );
+      const path = `/api/federation/media/packages/${f.media.input.packageId}/import-authorizations/${f.media.input.authorizationId}/receipt`;
+      expect((await app.request(`${path}/retry`, { method: "POST" })).status).toBe(200);
+      await sender.deliverNext();
+      const r = await app.request(path);
+      expect(r.status).toBe(200);
+      const text = await r.text();
+      expect(text).toContain('"state":"recorded"');
+      expect(text).not.toContain("encryptedIdentity");
+      expect(text).not.toContain("managedRootId");
+      expect(
+        (
+          await app.request(
+            `/api/federation/media/exports/${f.media.input.packageId}/receipts?limit=1`,
+          )
+        ).status,
+      ).toBe(200);
+      await expect(
+        sender.status(other, f.media.input.packageId, f.media.input.authorizationId),
+      ).rejects.toThrow();
+      await expect(f.receiver.list(other, f.media.input.packageId)).rejects.toThrow();
+      expect(
+        (
+          await ingress.request("/federation/v1/media-receipts", {
+            method: "POST",
+            body: "unsigned",
+          })
+        ).status,
+      ).toBe(415);
+    } finally {
+      setSystemTime();
+    }
+  });
+
+  test("media receipt backfills an old verified operation and isolates a conflicting queue entry", async () => {
+    const bad = await receiptFixture(),
+      good = await receiptFixture();
+    const old = (await bad.status()).receipt;
+    if (!old) throw new Error("Missing receipt");
+    await db
+      .update(federationMediaImportOperations)
+      .set({
+        receipt: { ...old, generation: crypto.randomUUID() },
+        receiptNextAttemptAt: new Date(now.getTime() - 1),
+      })
+      .where(eq(federationMediaImportOperations.authorizationId, bad.input.authorizationId));
+    await db
+      .update(federationMediaImportOperations)
+      .set({ receipt: null })
+      .where(eq(federationMediaImportOperations.authorizationId, good.input.authorizationId));
+    await good.sender().deliverNext();
+    expect((await bad.status()).lastError).toBe("RECEIPT_CONFLICT");
+    await good.sender().deliverNext();
+    expect((await good.status()).state).toBe("recorded");
+    expect((await good.status()).receipt?.receivedAt).toBe(testNow.toISOString());
+  });
+
+  test("media receipt delivery cannot hold Agent dispatch scans and shutdown drains its request", async () => {
+    const f = await receiptFixture();
+    const arrived = Promise.withResolvers<void>(),
+      release = Promise.withResolvers<void>();
+    const operations = new FederationMediaImportOperations(
+      db,
+      target.signing.siteId,
+      f.media.receiver,
+      f.media.requester(),
+      () => now,
+    );
+    const transport = new FederationMediaImportTransport(
+      operations,
+      new AgentDispatcher(),
+      f.sender(async (ack) => {
+        arrived.resolve();
+        await release.promise;
+        return ack;
+      }),
+    );
+    const delivery = transport.tickReceipts();
+    await arrived.promise;
+    try {
+      expect(transport.tickReceipts()).toBe(delivery);
+      await transport.tick();
+      expect((await f.status()).state).toBe("pending");
+      const stopping = transport.stop();
+      release.resolve();
+      await stopping;
+      expect((await f.status()).state).toBe("recorded");
+    } finally {
+      release.resolve();
+      await delivery;
+      await transport.stop();
     }
   });
 
