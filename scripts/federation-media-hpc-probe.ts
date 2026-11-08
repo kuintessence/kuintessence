@@ -5,7 +5,12 @@ import { create } from "@bufbuild/protobuf";
 import { createSqliteDb } from "@kuintessence/db";
 import { DispatchJobSchema } from "@kuintessence/proto";
 import { canonicalJson, type SandboxUnsignedManifest } from "@kuintessence/shared";
-import { type JobSpec, realSpawner } from "../packages/agent/src/adapters/base";
+import {
+  cancelAndConfirmStopped,
+  type JobSpec,
+  realSpawner,
+} from "../packages/agent/src/adapters/base";
+import { PbsProAdapter } from "../packages/agent/src/adapters/pbs-pro";
 import { SlurmAdapter } from "../packages/agent/src/adapters/slurm";
 import { importFederationMedia } from "../packages/agent/src/data-market/media-import";
 import { mediaImportFixture } from "../packages/agent/src/data-market/media-import-test-fixture";
@@ -19,8 +24,10 @@ import { LocalSandboxAccountVerifier } from "../packages/agent/src/sandbox/local
 import { SandboxManifestVerifier } from "../packages/agent/src/sandbox/manifest-verifier";
 import { SandboxStager } from "../packages/agent/src/sandbox/stager";
 
-assert.equal(process.env.KQ_MEDIA_SLURM_LAB, "1", "Use the isolated media Slurm lab runner");
+assert.equal(process.env.KQ_MEDIA_HPC_LAB, "1", "Use the isolated media HPC lab runner");
 assert.equal(process.getuid?.(), 0);
+const scheduler = process.env.KQ_MEDIA_SCHEDULER ?? "slurm";
+assert(scheduler === "slurm" || scheduler === "pbs-pro", "Unsupported lab scheduler");
 const hash = (data: string | Uint8Array) => createHash("sha256").update(data).digest("hex");
 async function command(argv: string[]) {
   const result = await realSpawner.run(argv, { timeoutMs: 20_000 });
@@ -66,11 +73,22 @@ await writeFile(
     .join("\n"),
   { mode: 0o644 },
 );
-const adapter = new SlurmAdapter("real", { terminalStatusBackend: "scontrol" });
+const adapter =
+  scheduler === "slurm"
+    ? new SlurmAdapter("real", { terminalStatusBackend: "scontrol" })
+    : new PbsProAdapter("23.06.06");
 const databasePath = process.env.AGENT_DB_PATH;
 assert(databasePath, "The lab Agent database path is required");
 const inbox = new InboundAcks(createSqliteDb(databasePath));
-await inbox.assertWatchdogReady("slurm");
+for (let attempt = 0; ; attempt++) {
+  try {
+    await inbox.assertWatchdogReady(scheduler);
+    break;
+  } catch (error) {
+    if (attempt >= 30) throw error;
+    await Bun.sleep(250);
+  }
+}
 const { privateKey, publicKey } = generateKeyPairSync("ed25519");
 const consumed = new Set<string>();
 const verifier = new SandboxManifestVerifier({
@@ -90,7 +108,7 @@ const verifier = new SandboxManifestVerifier({
     },
   },
   accountVerifier: new LocalSandboxAccountVerifier(realSpawner),
-  adapterType: "slurm",
+  adapterType: scheduler,
   localExecutionMode: "RootImpersonation",
   processIdentity: { username: "root", uid: 0, gid: 0 },
   rootImpersonationEnabled: true,
@@ -99,7 +117,7 @@ const verifier = new SandboxManifestVerifier({
 });
 
 const cases = ["complete", "stop", "agent-crash"] as const;
-const selected = process.env.KQ_MEDIA_SLURM_CASE;
+const selected = process.env.KQ_MEDIA_HPC_CASE;
 assert(!selected || cases.some((mode) => mode === selected), "Unknown lab case");
 for (const mode of cases.filter((mode) => !selected || mode === selected)) {
   const media = await mediaImportFixture();
@@ -149,7 +167,7 @@ ${mode === "complete" ? "" : "/bin/sleep 120"}
         uid: 24001,
         gid: 24001,
         schedulerAccount: null,
-        allowedQueues: ["debug"],
+        allowedQueues: [scheduler === "slurm" ? "debug" : "workq"],
       },
       mounts: [
         {
@@ -233,15 +251,17 @@ ${mode === "complete" ? "" : "/bin/sleep 120"}
     );
     schedulerJobId = (await adapter.submit(spec)).schedulerJobId;
     await inbox.markAcked(dispatchId);
-    const log = `${staged.workingDir}/.scheduler-logs/kq-${jobId}.out`;
+    const log = `${staged.workingDir}/.scheduler-logs/kq-${scheduler === "pbs-pro" ? "pbs-" : ""}${jobId}.out`;
+    assert(/^[0-9]+(?:\.[A-Za-z0-9_.-]+)?$/.test(schedulerJobId));
+    const readExecutionLog = async () => {
+      // PBS copies stdout to its destination only at exit; observe its real local MOM spool.
+      const path = scheduler === "pbs-pro" ? `/var/spool/pbs/spool/${schedulerJobId}.OU` : log;
+      return readFile(path, "utf8").catch(() => readFile(log, "utf8").catch(() => ""));
+    };
     for (let i = 0; ; i++) {
-      if ((await readFile(log, "utf8").catch(() => "")).includes("IMPORTED_DATA_READ")) break;
+      if ((await readExecutionLog()).includes("IMPORTED_DATA_READ")) break;
       const state = await adapter.status(schedulerJobId);
-      assert.notEqual(
-        state.status,
-        "failed",
-        await readFile(log, "utf8").catch(() => "log unavailable"),
-      );
+      assert.notEqual(state.status, "failed", await readExecutionLog());
       assert(i < 30, "Script did not read the imported input");
       await Bun.sleep(500);
     }
@@ -284,7 +304,8 @@ assert found, 'Agent process not found'
         (await inbox.hasConfirmedRuntimeStop(dispatchId, schedulerJobId))
       ) {
         assert.equal(state.status, "failed");
-        assert.match(state.message ?? "", /CANCELLED/);
+        if (scheduler === "slurm") assert.match(state.message ?? "", /CANCELLED/);
+        else assert.notEqual(state.exitCode, 0);
         break;
       }
       assert(i < 50, `No expected scheduler outcome for ${mode}`);
@@ -294,12 +315,23 @@ assert found, 'Agent process not found'
       hash(await readFile(`${staged.workingDir}/inputs/nested/input.dat`)),
       hash(media.bytes),
     );
+    assert.match(await adapter.getJobLogs(schedulerJobId, 10, jobId), /IMPORTED_DATA_READ/);
     console.log(
-      JSON.stringify({ mode, schedulerJobId, inputBytes: media.bytes.length, result: "PASS" }),
+      JSON.stringify({
+        scheduler,
+        mode,
+        schedulerJobId,
+        inputBytes: media.bytes.length,
+        result: "PASS",
+      }),
     );
   } finally {
     if (suspendedSupervisor) process.kill(suspendedSupervisor, "SIGCONT");
-    if (schedulerJobId) await adapter.cancel(schedulerJobId);
+    if (schedulerJobId && !(await adapter.confirmStopped(schedulerJobId)))
+      await cancelAndConfirmStopped(adapter, schedulerJobId, {
+        jobId,
+        federationDispatchEpoch: Number(epoch),
+      });
     await stager.cleanup(jobId);
     await media.cleanup();
   }

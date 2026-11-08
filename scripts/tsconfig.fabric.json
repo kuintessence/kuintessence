@@ -10,7 +10,8 @@
     "federation-result-storage.integration.test.ts",
     "fabric-commercial-*.ts",
     "federation-slurm-accounting*.ts",
-    "federation-media-slurm-probe.ts",
+    "federation-media-hpc-probe.ts",
+    "pbs-agent-identity.test.ts",
     "fabric-market-*.ts",
     "federation-live/*.ts",
     "federation-storage-*.ts"

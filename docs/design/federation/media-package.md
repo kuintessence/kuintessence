@@ -248,4 +248,6 @@ Agent 仅接受配置过的受管根及规范相对路径，拒绝软/硬链接�
 
 Sandbox 根保持 Agent 所有且不可被其他账号写入，映射模式只开放根的穿过权限。每个作业的脚本、上下文和输入按映射组只读，嵌套输入目录可穿过；可写日志集中在账号所有的 `.scheduler-logs`，不把作业根或输入目录变为可写。挂载须分别位于规范的 `inputs/`、`outputs/` 路径，拒绝占用脚本、上下文和日志目录。部署负责使 Sandbox 根以外的父目录可穿过；程序不会放宽 Agent 其他目录权限。
 
-恢复及独立 watchdog 使用签名/持久意图中的映射账号查询 Slurm 作业，同时保留 UUID、派发代次和 scheduler account 约束；PBS/Torque 对应核对 Job_Owner，避免默认查询 Agent 本人导致遗漏。实际 age 导入、签名 SIF、Slurm 执行与两种停机场景已通过；完整跨站来源撤权仍待验收。范围、临时依赖和复现方式见[真实 Slurm 实验](../../../deploy/federation/media-slurm-lab.md)。
+恢复及独立 watchdog 使用签名/持久意图中的映射账号查询 Slurm 作业，同时保留 UUID、派发代次和 scheduler account 约束；PBS/Torque 对应核对 Job_Owner，避免默认查询 Agent 本人导致遗漏。实际 age 导入、签名 SIF、Slurm/PBS 执行与两种停机场景已通过；完整跨站来源撤权仍待验收。范围、临时依赖和复现方式见[真实 Slurm/PBS 实验](../../../deploy/federation/media-slurm-lab.md)。
+
+PBS 映射执行要求显式 root impersonation 部署配置；默认 Agent 仍为 kq。联邦运行停止对 R/S/U 状态使用调度器原生 KILL，避免反复 qdel 延长强制停止期限；E 状态保留输入并等待正向停止确认，不强删调度器记录。真实 PBS 实验只覆盖映射执行，不证明普通未映射作业可由 root 提交，也不代替 Server 端 DATA_WAITING 与来源授权撤销联调。

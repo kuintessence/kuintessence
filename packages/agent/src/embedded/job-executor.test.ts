@@ -999,3 +999,25 @@ test("terminal runner reports preserve scheduler accounting independently of dec
   await runner.run(baseSpec);
   expect(reports.find((report) => report.status === "completed")?.accounting).toEqual(accounting);
 });
+
+test.each([
+  false,
+  true,
+])("runner preserves leased cancellation without a Kubernetes UID, resume=%s", async (resume) => {
+  const epochs: Array<number | undefined> = [];
+  const adapter = makeAdapter({});
+  adapter.cancel = async (_id, lookup) => {
+    epochs.push(lookup?.federationDispatchEpoch);
+  };
+  const runner = new JobRunner({
+    adapter,
+    onStatusUpdate: () => {},
+    sleep: async () => {
+      await runner.cancelAndKill();
+    },
+  });
+  const spec = { ...baseSpec, federationDispatchEpoch: 7 };
+  if (resume) await runner.resume(spec, "original");
+  else await runner.run(spec);
+  expect(epochs).toEqual([7]);
+});

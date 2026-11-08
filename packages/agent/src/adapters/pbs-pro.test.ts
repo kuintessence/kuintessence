@@ -827,3 +827,47 @@ test("mapped PBS recovery excludes another user's matching job metadata", async 
     }),
   ).toEqual({ status: "found", schedulerJobId: "1.server" });
 });
+
+test.each([
+  "R",
+  "S",
+  "U",
+  "Q",
+  "E",
+  "F",
+])("leased PBS cancellation respects state %s without postponing termination", async (state) => {
+  const { spawner, calls } = mockSpawner([
+    { exitCode: 0, stdout: JSON.stringify({ Jobs: { "42.server": { job_state: state } } }) },
+    { exitCode: 0, stdout: "" },
+    { exitCode: 0, stdout: "" },
+  ]);
+  await new PbsProAdapter("23.06", { spawner }).cancel("42.server", {
+    jobId: "original",
+    federationDispatchEpoch: 5,
+  });
+  const commands = calls.slice(1);
+  expect(commands).toEqual(
+    ["R", "S", "U"].includes(state)
+      ? [
+          ["qsig", "-s", "KILL", "42.server"],
+          ["qdel", "42.server"],
+        ]
+      : state === "Q"
+        ? [["qdel", "42.server"]]
+        : [],
+  );
+});
+
+test("leased PBS signal failure remains an error and retains the scheduler record", async () => {
+  const { spawner, calls } = mockSpawner([
+    { exitCode: 0, stdout: JSON.stringify({ Jobs: { "42.server": { job_state: "R" } } }) },
+    { exitCode: 1, stdout: "", stderr: "MOM unavailable" },
+  ]);
+  await expect(
+    new PbsProAdapter("23.06", { spawner }).cancel("42.server", {
+      jobId: "original",
+      federationDispatchEpoch: 5,
+    }),
+  ).rejects.toThrow("qsig failed");
+  expect(calls).toHaveLength(2);
+});

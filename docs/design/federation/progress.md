@@ -2587,3 +2587,16 @@ verified 导入结果现在与 `verified-private` 回执事实同事务保存；
 全仓 lint 通过，保持既有 47 warnings/1 info；全仓各包 typecheck 和 protobuf 生成通过；新增实验脚本最初缺少数据库环境变量判空，补齐后 Fabric/实验脚本类型检查通过。866 个本地文档目标离线检查和 diff 空白检查通过。没有数据库迁移、生产依赖变更或远端部署。实验使用一次性 privileged Pod 容纳嵌套 Apptainer；安装 setuid 包和小型动态库仅发生在该 Pod，没有更改宿主 sysctl。实验准备需要软件源，不能据此声明离线科学软件安装已通过。
 
 范围仍有明确边界：停止决定由探针调用生产收据服务注入，不是来源撤权 API；没有验证跨站 mTLS/AgentStream → 发布 → DATA_WAITING → 源方撤权的完整链路，也没有验证主机掉电、PBS 真机或生产完整安全能力证明。介质运输/副本生命周期、任务输入/结果包、支付争议、治理归档/Peer 恢复、其余 UI/CLI 与 PR 预览仍属完整目标，未推送、合并或部署，整体目标保持进行中。
+
+
+## 导入数据的真实 PBS 执行与强制停机
+
+隔离 Pod 内以固定 OpenPBS 23.06.06 源码编译真实调度器，构建限额 2 CPU/2 GiB、make -j2；保留源码摘要、提交、基础镜像与本地安装归档摘要。缓存恢复到另一个全新 Pod 后，实际 age 导入、签名 Apptainer、非 root 映射账号正常读取只读输入、持久停止决定及 Agent SIGKILL 后独立 watchdog 停止三项全部通过。运行器现统一为 federation-media-hpc.py，支持 Slurm/PBS，Slurm 正常执行另做一次针对改名/日志读取的回归通过。公开 PBS 构建脚本通过语法检查；它的无缓存自动分支没有重复编译验收，不冒充发布方认证的二进制。
+
+真实 PBS 暴露两类问题并修复。生产 entrypoint 原先一律以 kq 启动 Agent，不能执行签名映射账号的 setpriv；现在仅在显式 root impersonation 配置下启用 root Agent，冲突配置拒绝，默认仍为 kq。另发现重复 qdel 会重置 MOM 的强制停止截止，导致撤权后无法停机。联邦取消现对 R/S/U 先发送调度器原生 qsig KILL，再 qdel；E 等待退出、F 核验终态，不强删记录。watchdog 使用验证后的持久收据代次，嵌入执行器首次运行与恢复均保留代次并传入取消。命令成功仍不等于停止，受限输入必须等正向停止证明才能清理；实验异常清理也复用此规则。
+
+132 项不同相关测试通过：PBS/独立 watchdog 75 项、嵌入执行器/调度 entrypoint 回归 50 项、PBS Agent 启动身份 7 项。实际 PBS 最终三个场景均通过；最初失败停机任务曾人工 KILL 诊断，不计通过。PBS 运行中观察 MOM spool，结束后通过生产日志接口核验，没有改变产品日志模式。实验采用 256 KiB 合成数据和 Bash/sleep，不安装科学软件。全部自建 PBS/Slurm namespace 已删除，无生产改动。
+
+这里仍直接写入原运行收据的 stopping 决定，不是跨站来源撤权。两个独立 Server/数据库/Agent 的加密导出导入、显式发布与本地授权、DATA_WAITING 自动恢复、实际来源政策撤销到调度器确认停止仍需联合验证；将复用现有双平台实验，使用独立介质根、真实 mTLS/AgentStream、实际授权 API，禁止以直接改任务状态代替。这轮没有验证 root PBS Agent 的普通未映射作业，不允许据此开放 root 作业。介质交接/副本删除、任务输入/结果包、完整调度矩阵、支付争议、治理归档/Peer 恢复及 Web/CLI/PR 预览仍是原完整目标。未推送、合并或部署。
+
+本轮全仓 lint 通过（既有 47 warnings / 1 info，无新增），全仓 typecheck（含 protobuf 生成及 Fabric/实验脚本）通过；867 个文档目标离线检查、Python AST、Bash 语法和 diff 空白检查通过。没有新增依赖或数据库迁移，未手改生成文件。

@@ -101,6 +101,7 @@ export class JobRunner {
   private pendingKill: Promise<void> | undefined;
   private schedulerJobId: string | null = null;
   private schedulerUid: string | undefined;
+  private federationDispatchEpoch: number | undefined;
   private jobId: string | null = null;
   private jobFinished = false;
   private schedulerSubmissionStarted = false;
@@ -122,6 +123,7 @@ export class JobRunner {
    */
   async run(spec: JobSpec, expectedOutputs: ExpectedOutput[] = []): Promise<string | null> {
     this.jobId = spec.jobId;
+    this.federationDispatchEpoch = spec.federationDispatchEpoch;
 
     let attempt: SubmissionAttempt;
     try {
@@ -295,6 +297,7 @@ export class JobRunner {
     this.jobId = spec.jobId;
     this.schedulerJobId = schedulerJobId;
     this.schedulerUid = schedulerUid;
+    this.federationDispatchEpoch = spec.federationDispatchEpoch;
     await this.deps.adapter.prepareResume?.(spec, schedulerJobId, schedulerUid);
     this.logger.info({ jobId: spec.jobId, schedulerJobId }, "Resuming scheduler job polling");
     await this.pollUntilTerminal(spec, schedulerJobId, expectedOutputs, true);
@@ -465,8 +468,12 @@ export class JobRunner {
       await cancelAndConfirmStopped(
         this.deps.adapter,
         schedulerJobId,
-        this.schedulerUid && this.jobId
-          ? { jobId: this.jobId, schedulerUid: this.schedulerUid }
+        this.jobId && (this.schedulerUid || this.federationDispatchEpoch !== undefined)
+          ? {
+              jobId: this.jobId,
+              schedulerUid: this.schedulerUid,
+              federationDispatchEpoch: this.federationDispatchEpoch,
+            }
           : undefined,
       );
       this.killed = true;

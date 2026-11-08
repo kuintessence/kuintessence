@@ -309,7 +309,20 @@ export class PbsProAdapter implements SchedulerAdapter {
     }
   }
 
-  async cancel(schedulerJobId: string): Promise<void> {
+  async cancel(schedulerJobId: string, lookup?: KuintessenceJobLookup): Promise<void> {
+    if (lookup?.federationDispatchEpoch !== undefined) {
+      const data = (await this.queryJob(schedulerJobId)) as {
+        Jobs?: Record<string, { job_state?: string }>;
+      };
+      const job = data.Jobs?.[schedulerJobId];
+      if (!job) throw new Error("PBS cancellation cannot establish the job state");
+      // Repeated qdel resets PBS's TERM→KILL deadline. Revoked leases cannot keep extending it.
+      if (job.job_state === "F" || job.job_state === "E") return;
+      if (["R", "S", "U"].includes(job.job_state ?? "")) {
+        const signal = await this.spawner.run(["qsig", "-s", "KILL", schedulerJobId]);
+        if (signal.exitCode !== 0) throw new Error(`qsig failed (exit ${signal.exitCode})`);
+      }
+    }
     const { exitCode, stderr } = await this.spawner.run(["qdel", schedulerJobId]);
     if (exitCode !== 0) {
       throw new Error(`qdel failed (exit ${exitCode}): ${stderr.trim()}`);

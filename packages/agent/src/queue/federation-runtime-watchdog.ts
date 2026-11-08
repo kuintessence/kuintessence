@@ -99,7 +99,7 @@ export class FederationRuntimeWatchdog {
               : undefined,
           namespace:
             identity?.backend === "Kubernetes" ? identity.namespace : prepared.spec.queueName,
-          federationDispatchEpoch: prepared.spec.federationDispatchEpoch,
+          federationDispatchEpoch: receipt.epoch,
           schedulerUid: saved?.schedulerUid ?? active?.schedulerUid,
           submittedAfterUnixMs: row.receivedAt.getTime(),
         };

@@ -3,6 +3,27 @@ set -euo pipefail
 
 /usr/local/bin/kq-verify-architecture /usr/local/bin/bun
 
+agent_user=kq
+agent_command=(runuser -u kq --preserve-environment --)
+root_impersonation="${AGENT_SANDBOX_ROOT_IMPERSONATION:-false}"
+case "${root_impersonation,,}" in
+  true)
+    case "${AGENT_SANDBOX_EXECUTION_MODE:-disabled}" in
+      disabled|root-impersonation) ;;
+      *) echo "PBS root impersonation conflicts with the configured execution mode" >&2; exit 2 ;;
+    esac
+    agent_user=root
+    agent_command=()
+    export HOME=/root
+    ;;
+  *)
+    if [[ "${AGENT_SANDBOX_EXECUTION_MODE:-disabled}" == root-impersonation ]]; then
+      echo "PBS root impersonation requires AGENT_SANDBOX_ROOT_IMPERSONATION=true" >&2
+      exit 2
+    fi
+    ;;
+esac
+
 host_name="$(hostname -s)"
 
 if ! grep -qE "[[:space:]]${host_name}$" /etc/hosts; then
@@ -62,11 +83,11 @@ qmgr -c "set server job_history_enable = True" >/dev/null 2>&1 || true
 qmgr -c "set server job_history_duration = 01:00:00" >/dev/null 2>&1 || true
 
 mkdir -p /var/lib/kuintessence /var/cache/bun
-chown -R kq:kq /var/lib/kuintessence /var/cache/bun
+chown -R "${agent_user}:${agent_user}" /var/lib/kuintessence /var/cache/bun
 
-runuser -u kq --preserve-environment -- /usr/local/bin/kq-register-compose-agent
+"${agent_command[@]}" /usr/local/bin/kq-register-compose-agent
 
-runuser -u kq --preserve-environment -- /usr/local/bin/kq-start-agent &
+"${agent_command[@]}" /usr/local/bin/kq-start-agent &
 agent_pid="$!"
 
 set +e

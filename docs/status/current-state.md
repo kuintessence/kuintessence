@@ -1,8 +1,8 @@
 # 当前功能与使用边界
 
-介质导入副本已接通联邦 Sandbox 本地输入：按签名清单复制到私有隔离目录，保持只读、受限执行和持续租约；运行续租检查实际副本，不能借另一份有效副本绕过撤销。无需为本地输入开启 MinIO；旧 Agent 和普通无运行租约任务会拒绝该输入。组件、Agent 消息和隔离数据库验证通过；同机真实 Slurm/Apptainer 已验证导入数据执行、持久停止决定及 Agent SIGKILL 后租约到期停机，修复映射账号目录权限和恢复查询遗漏执行 UID。跨站来源撤权、DATA_WAITING、真实跨主机及 PBS 联合验收仍未完成。见[导入数据作为 Sandbox 输入](../design/federation/media-package.md#导入数据作为-sandbox-输入)。
+介质导入副本已接通联邦 Sandbox 本地输入：按签名清单复制到私有隔离目录，保持只读、受限执行和持续租约；运行续租检查实际副本，不能借另一份有效副本绕过撤销。无需为本地输入开启 MinIO；旧 Agent 和普通无运行租约任务会拒绝该输入。组件、Agent 消息和隔离数据库验证通过；同机真实 Slurm/PBS/Apptainer 已验证导入数据执行、持久停止决定及 Agent SIGKILL 后租约到期停机，修复映射账号目录权限和恢复查询遗漏执行 UID。PBS 另修复显式映射模式的 Agent 身份和重复 qdel 推迟强制停止的问题。跨站来源撤权、DATA_WAITING、真实跨主机联合验收仍未完成。见[导入数据作为 Sandbox 输入](../design/federation/media-package.md#导入数据作为-sandbox-输入)。
 
-真实调度器实验范围和复现入口见[导入数据 Slurm 验证](../../deploy/federation/media-slurm-lab.md)；没有把注入停止决定当成跨站来源撤权验收。
+真实调度器实验范围和复现入口见[导入数据 Slurm/PBS 验证](../../deploy/federation/media-slurm-lab.md)；没有把注入停止决定当成跨站来源撤权验收。
 
 介质导出/导入新增带内核锁的私有工作目录：进程退出后在下次操作清理未完成内容，保留完整包并重新检查授权及内容。真实子进程 SIGKILL 四种场景、实际预检后 ENOSPC 写入失败及恢复均已通过；没有填满宿主磁盘。旧版无锁残留需停止旧 Agent 后人工核对，主机掉电与跨主机恢复仍待验收。见[Agent 中断与满盘恢复](../design/federation/media-package.md#agent-中断与满盘恢复)。
 
