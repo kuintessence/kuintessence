@@ -197,9 +197,12 @@
           "read": "View agreements",
           "approve": "Approve agreements"
         },
+        "media": {
+          "import": "Approve media imports"
+        },
         "asset": {
           "read": "View federation materials",
-          "map": "Manage material mappings"
+          "map": "Manage federation materials"
         },
         "delegation": {
           "read": "View delegations",
@@ -229,9 +232,12 @@
           "read": "Read this organization’s agreements and signatures; does not permit approval.",
           "approve": "Sign for this organization, attach counterparty signatures and change local agreement state; includes agreement reading. Platform roles do not automatically grant this authority."
         },
+        "media": {
+          "import": "Approve or revoke media imports into this organization’s selected Agent and managed root; source authorization and data use permissions remain separate."
+        },
         "asset": {
           "read": "Read federation materials in this organization; local software and data require separate authorization.",
-          "map": "Register or revoke this organization’s material mappings; includes reading materials, without granting resource usage rights."
+          "map": "Register or revoke this organization’s material mappings and signed media inventories; includes reading materials, without granting media import or resource use."
         },
         "delegation": {
           "read": "Read this organization’s delegations; does not permit submission or cancellation.",

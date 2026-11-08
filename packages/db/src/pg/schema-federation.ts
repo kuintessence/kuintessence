@@ -11,6 +11,7 @@ import type {
   FederationExecutionTerminalEvidence,
   FederationInputFiles,
   FederationInputManifest,
+  FederationMediaManifest,
   FederationReceivedInputFiles,
   FederationResultReceipt,
   FederationResultReceiptAck,
@@ -63,6 +64,7 @@ import {
 } from "drizzle-orm/pg-core";
 import {
   agents,
+  clusterFileRoots,
   dataAssetVersions,
   jobs,
   orgs,
@@ -189,7 +191,7 @@ export const federationCapabilities = pgTable(
     primaryKey({ columns: [t.orgId, t.userId, t.capability] }),
     check(
       "federation_capability_kind",
-      sql`${t.capability} IN ('agreement.read', 'agreement.approve', 'billing.approve', 'settlement.approve', 'adjustment.approve', 'asset.read', 'asset.map', 'delegation.read', 'delegation.submit', 'delegation.cancel', 'result.read', 'market.read', 'market.publish', 'market.claim')`,
+      sql`${t.capability} IN ('agreement.read', 'agreement.approve', 'billing.approve', 'settlement.approve', 'adjustment.approve', 'asset.read', 'asset.map', 'media.import', 'delegation.read', 'delegation.submit', 'delegation.cancel', 'result.read', 'market.read', 'market.publish', 'market.claim')`,
     ),
   ],
 );
@@ -2425,6 +2427,91 @@ export const federationCommercialRefunds = pgTable(
     AND ${t.payload}->>'releasedAmount' = ${t.payload}->'request'->>'maxAmount'
     AND (${t.payload}->'request'->>'senderSiteId' = ${t.localSiteId}::text OR ${t.payload}->'request'->>'recipientSiteId' = ${t.localSiteId}::text)
     AND (${t.appliedAt} IS NULL OR ${t.counterpartyJws} IS NOT NULL)) IS TRUE`,
+    ),
+  ],
+);
+
+/** Signed inventory only: registration never publishes a replica or grants data use. */
+export const federationMediaPackages = pgTable(
+  "federation_media_packages",
+  {
+    localSiteId: uuid("local_site_id")
+      .notNull()
+      .references(() => federationSites.id),
+    packageId: uuid("package_id").notNull(),
+    localOrgId: uuid("local_org_id")
+      .notNull()
+      .references(() => orgs.id),
+    senderSiteId: uuid("sender_site_id")
+      .notNull()
+      .references(() => federationSites.id),
+    agreementRevisionId: uuid("agreement_revision_id")
+      .notNull()
+      .references(() => federationAgreements.revisionId),
+    manifest: jsonb("manifest").$type<FederationMediaManifest>().notNull(),
+    manifestDigest: varchar("manifest_digest", { length: 71 }).notNull(),
+    manifestJws: text("manifest_jws").notNull(),
+    registeredBy: uuid("registered_by")
+      .notNull()
+      .references(() => users.id),
+    registeredAt: timestamp("registered_at", { withTimezone: true }).notNull().defaultNow(),
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
+    revocationReason: text("revocation_reason"),
+  },
+  (t) => [
+    primaryKey({ columns: [t.localSiteId, t.packageId] }),
+    index("federation_media_package_org").on(t.localSiteId, t.localOrgId, t.registeredAt),
+    check(
+      "federation_media_package_identity",
+      sql`(
+      ${t.manifest}->>'kind' = 'media-manifest'
+      AND ${t.manifest}->>'packageId' = ${t.packageId}::text
+      AND ${t.manifest}->>'senderSiteId' = ${t.senderSiteId}::text
+      AND ${t.manifest}->>'recipientSiteId' = ${t.localSiteId}::text
+      AND ${t.manifest}->>'agreementRevisionId' = ${t.agreementRevisionId}::text
+      AND ${t.senderSiteId} <> ${t.localSiteId}
+      AND ${t.manifestDigest} ~ '^sha256:[a-f0-9]{64}$'
+      AND octet_length(${t.manifestJws}) BETWEEN 1 AND 524288
+      AND ((${t.revokedAt} IS NULL) = (${t.revocationReason} IS NULL))) IS TRUE`,
+    ),
+  ],
+);
+
+/** Receiver-local consent only. A separate live source grant is still required to obtain a key. */
+export const federationMediaImportAuthorizations = pgTable(
+  "federation_media_import_authorizations",
+  {
+    authorizationId: uuid("authorization_id").primaryKey(),
+    localSiteId: uuid("local_site_id").notNull(),
+    packageId: uuid("package_id").notNull(),
+    agentId: varchar("agent_id", { length: 255 })
+      .notNull()
+      .references(() => agents.agentId),
+    managedRootId: uuid("managed_root_id")
+      .notNull()
+      .references(() => clusterFileRoots.id),
+    maxBytes: bigint("max_bytes", { mode: "number" }).notNull(),
+    approvedBy: uuid("approved_by")
+      .notNull()
+      .references(() => users.id),
+    approvedAt: timestamp("approved_at", { withTimezone: true }).notNull().defaultNow(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
+    revocationReason: text("revocation_reason"),
+  },
+  (t) => [
+    foreignKey({
+      columns: [t.localSiteId, t.packageId],
+      foreignColumns: [federationMediaPackages.localSiteId, federationMediaPackages.packageId],
+    }),
+    index("federation_media_import_package").on(t.localSiteId, t.packageId, t.approvedAt),
+    check(
+      "federation_media_import_limits",
+      sql`(
+      ${t.maxBytes} BETWEEN 0 AND 5497558138880
+      AND ${t.expiresAt} > ${t.approvedAt}
+      AND ${t.expiresAt} <= ${t.approvedAt} + interval '7 days'
+      AND ((${t.revokedAt} IS NULL) = (${t.revocationReason} IS NULL))) IS TRUE`,
     ),
   ],
 );

@@ -94,6 +94,7 @@ import { FederationMarketService } from "./federation/market";
 import { UnixMarketClient } from "./federation/market-client";
 import { FederationMarketRequestService } from "./federation/market-requests";
 import { FederationMaterialExchange } from "./federation/material-exchange";
+import { FederationMediaPackageService } from "./federation/media-packages";
 import { FederationOutboundService, FederationOutboundWorker } from "./federation/outbound";
 import { createFederationPackageResolver } from "./federation/package-resolver";
 import { FederationPermissionService } from "./federation/permissions";
@@ -162,6 +163,7 @@ import { createFederationAgreementRoutes } from "./routes/federation-agreements"
 import { createFederationAssetRoutes } from "./routes/federation-assets";
 import { createFederationCommercialRoutes } from "./routes/federation-commercial";
 import { createFederationMarketRoutes } from "./routes/federation-market";
+import { createFederationMediaRoutes } from "./routes/federation-media";
 import { createFederationOutboundRoutes } from "./routes/federation-outbound";
 import { createFileRoutes } from "./routes/files";
 import { healthRoutes } from "./routes/health";
@@ -1875,6 +1877,11 @@ federationDispatchAuthorization = federationPreparation
 jobDispatchOutbox.start();
 jobCancellationOutbox.start();
 protectedApi.route("/", createFederationAssetRoutes(federationAssets, federationPreparation));
+if (config.FEDERATION_SITE_ID)
+  protectedApi.route(
+    "/",
+    createFederationMediaRoutes(new FederationMediaPackageService(db, config.FEDERATION_SITE_ID)),
+  );
 if (federationSigningKey)
   protectedApi.route(
     "/",

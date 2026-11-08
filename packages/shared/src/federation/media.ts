@@ -66,3 +66,19 @@ export const FederationMediaManifestSchema = z
     }
   });
 export type FederationMediaManifest = z.infer<typeof FederationMediaManifestSchema>;
+
+export const FederationMediaRegistrationSchema = z.strictObject({
+  senderSiteId: z.uuid(),
+  signedManifest: z.string().min(1).max(524_288),
+});
+export const FederationMediaImportApprovalSchema = z.strictObject({
+  authorizationId: z.uuid(),
+  agentId: z.string().min(1).max(255),
+  managedRootId: z.uuid(),
+  expiresAt: z.iso.datetime(),
+  maxBytes: z.number().int().nonnegative().max(FEDERATION_MEDIA_MAX_BYTES),
+});
+export type FederationMediaImportApproval = z.infer<typeof FederationMediaImportApprovalSchema>;
+export const FederationMediaRevocationSchema = z.strictObject({
+  reason: z.string().trim().min(1).max(500),
+});
