@@ -22,6 +22,7 @@ import {
   FederationAcceptanceSchema,
   FederationAgreementSchema,
   FederationDelegationSchema,
+  FederationError,
 } from "@kuintessence/shared/federation";
 import { and, eq, inArray, sql } from "drizzle-orm";
 import { Hono } from "hono";
@@ -424,6 +425,12 @@ test("browser trust routes require bound administrator and never expose peer ing
       })
     ).status,
   ).toBe(404);
+  const storage = await app("platform_admin").request("/api/admin/federation/storage");
+  expect(storage.status).toBe(200);
+  expect(storage.headers.get("cache-control")).toBe("no-store");
+  expect(await storage.json()).toEqual({ success: true, data: { enabled: false, volumes: [] } });
+  for (const role of ["operator", "user", "compute_provider", "guest"])
+    expect((await app(role).request("/api/admin/federation/storage")).status).toBe(403);
   const invalid = await app("platform_admin").request("/api/admin/federation/sites", {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -515,6 +522,27 @@ test("attestation backlog ingress returns retryable 503 without exposing private
   expect(blocked.status).toBe(503);
   expect(await blocked.json()).toEqual({ error: { code: "ATTESTATION_BACKLOG" } });
   const free = { ...request, maxAmount: "0" };
+  const storageBlocked = createFederationIngress(
+    db,
+    provider.signing,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    {
+      assertAdmission: async () => {
+        throw new FederationError("STORAGE_PRESSURE");
+      },
+    },
+  );
+  const storageResponse = await storageBlocked.request("/federation/v1/delegations", {
+    method: "POST",
+    headers: { "content-type": "application/jose", "x-kq-federation-cert": backlogFingerprint },
+    body: await signFederationMessage(FederationDelegationSchema, free, requester.signing),
+  });
+  expect(storageResponse.status).toBe(503);
+  expect(await storageResponse.json()).toEqual({ error: { code: "STORAGE_PRESSURE" } });
+
   expect((await send(free)).status).toBe(200);
   expect((await send(free)).status).toBe(200);
   expect(

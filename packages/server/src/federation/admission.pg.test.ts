@@ -1,4 +1,8 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
+import { generateKeyPairSync } from "node:crypto";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   createPgDb,
   federationAgreements,
@@ -21,6 +25,7 @@ import { and, eq, inArray, sql } from "drizzle-orm";
 import { FederationAdmission } from "./admission";
 import { readAttestationBacklog } from "./attestation-backlog";
 import { signFederationMessage, verifyFederationMessage } from "./signatures";
+import { FederationStorageGuard, signStorageObservation } from "./storage-capacity";
 import { testAgreement, testDelegation, testKeys, testNow } from "./test-fixtures";
 
 const url = process.env.DATABASE_URL;
@@ -525,4 +530,115 @@ test("attestation backlog age stops only new admissions and receipt recovery sti
     "AUTHORIZATION_EXPIRED",
   );
   await expired.receive(input);
+});
+
+test("storage pressure blocks new reservations but leaves original receipt recovery and budgets intact", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "kq-admission-capacity-"));
+  try {
+    const keys = generateKeyPairSync("ed25519"),
+      volumeId = crypto.randomUUID(),
+      storageId = crypto.randomUUID();
+    const reportFile = join(directory, "report.json"),
+      policyFile = join(directory, "policy.json");
+    const publish = (availableBytes: string) =>
+      writeFile(
+        reportFile,
+        signStorageObservation(
+          {
+            version: 1,
+            volumeId,
+            storageId,
+            observedAt: testNow.toISOString(),
+            state: "observed",
+            device: "1",
+            filesystemType: "1",
+            totalBytes: "1000",
+            availableBytes,
+            totalInodes: null,
+            availableInodes: null,
+          },
+          keys.privateKey,
+        ),
+      );
+    await writeFile(
+      policyFile,
+      JSON.stringify({
+        version: 1,
+        siteId: b.signing.siteId,
+        volumes: [
+          {
+            volumeId,
+            storageId,
+            name: "Database",
+            component: "postgres-data",
+            modes: ["bilateral_direct", "bilateral_attested", "ledger_coordinated"],
+            reportFile,
+            publicKeyPem: keys.publicKey.export({ format: "pem", type: "spki" }),
+            maxReportAgeSec: 30,
+            minAvailableBytes: "100",
+            minAvailablePercent: 0,
+            completionHeadroomBytes: "20",
+            minAvailableInodes: "0",
+          },
+        ],
+      }),
+      { mode: 0o600 },
+    );
+    const guard = await FederationStorageGuard.load(policyFile, b.signing.siteId, () => testNow);
+    const guarded = new FederationAdmission(
+      db,
+      b.signing,
+      b.verification,
+      () => testNow,
+      undefined,
+      guard,
+    );
+    const terms = await install({ budgetLimit: "1000", mode: "bilateral_attested" });
+    const input = await requestInput(testDelegation(terms));
+    await publish("120");
+    await expect(guarded.receive(input)).rejects.toThrow("STORAGE_PRESSURE");
+    expect((await rows(terms)).reservations).toHaveLength(0);
+    expect((await rows(terms)).budget?.available).toBe("1000");
+    await publish("121");
+    const accepted = await guarded.receive(input);
+    const pendingInput = await requestInput(testDelegation(terms));
+    const broken = new FederationAdmission(
+      db,
+      b.signing,
+      { ...b.verification, revoked: true },
+      () => testNow,
+      undefined,
+      guard,
+    );
+    await expect(broken.receive(pendingInput)).rejects.toThrow("UNTRUSTED_IDENTITY");
+    await rm(reportFile);
+    expect(await guarded.receive(input)).toEqual(accepted);
+    await guarded.receive(pendingInput);
+    await expect(guarded.receive(await requestInput(testDelegation(terms)))).rejects.toThrow(
+      "STORAGE_PRESSURE",
+    );
+    const state = await rows(terms);
+    expect(state.reservations).toHaveLength(2);
+    expect(state.evidence).toHaveLength(4);
+    expect(state.reservations.every((r) => r.state === "reserved")).toBe(true);
+    expect(state.budget).toMatchObject({ available: "880", reserved: "120" });
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("storage observation I/O cannot extend a new task's signed admission lifetime", async () => {
+  const terms = await install();
+  let time = testNow;
+  const guarded = new FederationAdmission(db, b.signing, b.verification, () => time, undefined, {
+    assertAdmission: async () => {
+      time = new Date(testNow.getTime() + 11 * 60000);
+    },
+  });
+  await expect(guarded.receive(await requestInput(testDelegation(terms)))).rejects.toThrow(
+    "AUTHORIZATION_EXPIRED",
+  );
+  const state = await rows(terms);
+  expect(state.reservations).toHaveLength(0);
+  expect(state.budget).toMatchObject({ available: "100", reserved: "0" });
 });

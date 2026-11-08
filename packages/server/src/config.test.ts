@@ -421,3 +421,25 @@ test("input import source origins never inherit export or result origins", () =>
     }).FEDERATION_INPUT_DOWNLOAD_ORIGINS,
   ).toEqual([]);
 });
+
+test("storage guard configuration is explicit, absolute and cannot be silently ignored with federation disabled", () => {
+  expect(loadServerConfig(VALID_BASE).FEDERATION_STORAGE_GUARD_FILE).toBeUndefined();
+  expect(() =>
+    loadServerConfig({ ...VALID_BASE, FEDERATION_STORAGE_GUARD_FILE: "/run/storage.json" }),
+  ).toThrow();
+  const enabled = {
+    ...VALID_BASE,
+    FEDERATION_ENABLED: "true",
+    FEDERATION_SITE_ID: crypto.randomUUID(),
+    FEDERATION_SOCKET_PATH: "/run/private/ingress.sock",
+    FEDERATION_SIGNING_KEY_ID: "local",
+    FEDERATION_SIGNING_KEY_FILE: "/run/private/signing.key",
+  };
+  expect(
+    loadServerConfig({ ...enabled, FEDERATION_STORAGE_GUARD_FILE: "/run/storage.json" })
+      .FEDERATION_STORAGE_GUARD_FILE,
+  ).toBe("/run/storage.json");
+  expect(() =>
+    loadServerConfig({ ...enabled, FEDERATION_STORAGE_GUARD_FILE: "storage.json" }),
+  ).toThrow();
+});

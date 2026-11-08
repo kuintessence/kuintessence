@@ -8,6 +8,7 @@ export class FederationError extends Error {
       | "POLICY_DENIED"
       | "BUDGET_EXHAUSTED"
       | "ATTESTATION_BACKLOG"
+      | "STORAGE_PRESSURE"
       | "OPERATION_CONFLICT"
       | "LEDGER_REQUIRED"
       | "ASSET_UNAVAILABLE"

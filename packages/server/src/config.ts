@@ -64,6 +64,7 @@ const ServerConfigSchema = z.object({
   FEDERATION_CLIENT_CA_FILE: z.string().startsWith("/").optional(),
   FEDERATION_MARKET_SOCKET_PATH: z.string().startsWith("/").optional(),
   FEDERATION_COMMERCIAL_SOCKET_PATH: z.string().startsWith("/").optional(),
+  FEDERATION_STORAGE_GUARD_FILE: z.string().startsWith("/").optional(),
   FEDERATION_ATTESTATION_SOCKET_PATH: z.string().startsWith("/").optional(),
   DB_MAX_CONNECTIONS: positiveInt(10),
   DB_IDLE_TIMEOUT_SEC: nonNegativeInt(0),
@@ -358,6 +359,12 @@ const ServerConfigSchema = z.object({
 });
 
 const ValidatedServerConfigSchema = ServerConfigSchema.superRefine((cfg, ctx) => {
+  if (cfg.FEDERATION_STORAGE_GUARD_FILE && !cfg.FEDERATION_ENABLED)
+    ctx.addIssue({
+      code: "custom",
+      path: ["FEDERATION_STORAGE_GUARD_FILE"],
+      message: "Storage admission guard requires federation",
+    });
   if (cfg.FEDERATION_ENABLED) {
     for (const key of [
       "FEDERATION_SITE_ID",

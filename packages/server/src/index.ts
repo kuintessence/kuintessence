@@ -106,6 +106,7 @@ import { FederationResultWorker } from "./federation/result-worker";
 import {
   loadFederationSender,
   loadFederationSigningKey,
+  loadFederationStorageGuard,
   startFederationIngress,
 } from "./federation/runtime";
 import { FederationSettlementService } from "./federation/settlement";
@@ -1652,7 +1653,15 @@ protectedApi.route(
 );
 
 protectedApi.route("/", createAdminAgentRoutes(certService, { authz: authzService }));
-protectedApi.route("/", createAdminFederationRoutes(new FederationTrustRegistry(db), authzService));
+const federationStorageGuard = await loadFederationStorageGuard(config);
+protectedApi.route(
+  "/",
+  createAdminFederationRoutes(
+    new FederationTrustRegistry(db),
+    authzService,
+    federationStorageGuard,
+  ),
+);
 protectedApi.route(
   "/",
   createAdminFederationPermissionRoutes(new FederationPermissionService(db), authzService),
@@ -2479,6 +2488,7 @@ const federationIngress = await startFederationIngress(
   federationOutbound,
   federationInputDownloads,
   federationConfirmations,
+  federationStorageGuard,
 );
 const federationPreparationWorker = federationPreparation
   ? new FederationPreparationWorker(

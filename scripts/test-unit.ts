@@ -26,6 +26,7 @@ const slices: TestSlice[] = [
       "packages/cli",
       "packages/agent/src",
       "scripts/test-unit.test.ts",
+      "scripts/federation-storage-observer.test.ts",
       "scripts/workflow-software.pg.test.ts",
       "scripts/workflow-dispatch.pg.test.ts",
     ],

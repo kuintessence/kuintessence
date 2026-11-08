@@ -5,6 +5,7 @@ import { bodyLimit } from "hono/body-limit";
 import { z } from "zod";
 import { requirePlatformPermission } from "../authz/platform-guard";
 import type { AuthzService } from "../authz/service";
+import type { FederationStorageGuard } from "../federation/storage-capacity";
 import {
   FederationCertificateInput,
   FederationKeyInput,
@@ -24,6 +25,7 @@ const Paging = z.object({
 export function createAdminFederationRoutes(
   registry: FederationTrustRegistry,
   authz?: AuthzService,
+  storageGuard?: FederationStorageGuard,
 ) {
   const r = new Hono<{ Variables: { federationActor: string } }>();
   r.use("/admin/federation/*", async (c, next) => {
@@ -42,6 +44,16 @@ export function createAdminFederationRoutes(
         error.code === "OPERATION_CONFLICT" ? 409 : 400,
       );
     throw error;
+  });
+  r.get("/admin/federation/storage", async (c) => {
+    c.header("cache-control", "no-store");
+    return c.json({
+      success: true,
+      data: {
+        enabled: !!storageGuard,
+        volumes: storageGuard ? await storageGuard.inspect() : [],
+      },
+    });
   });
   r.get("/admin/federation/sites", kqValidator("query", Paging), async (c) => {
     const { limit, offset } = c.req.valid("query");

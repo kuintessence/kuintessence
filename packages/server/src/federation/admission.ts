@@ -26,6 +26,7 @@ import {
   signFederationMessage,
   verifyFederationMessage,
 } from "./signatures";
+import type { FederationStorageGuard } from "./storage-capacity";
 import { FederationTrustRegistry } from "./trust-registry";
 
 type Transaction = Parameters<Parameters<PgDb["transaction"]>[0]>[0];
@@ -39,6 +40,7 @@ export class FederationAdmission {
     private readonly receiptVerificationKey: FederationVerificationKey,
     private readonly clock: () => Date = () => new Date(),
     private readonly confirmations?: FederationExecutionConfirmationService,
+    private readonly storageGuard?: Pick<FederationStorageGuard, "assertAdmission">,
   ) {
     if (
       signingKey.siteId !== receiptVerificationKey.siteId ||
@@ -272,14 +274,16 @@ export class FederationAdmission {
         throw new FederationError("AGREEMENT_UNAVAILABLE");
       if (budget && BigInt(budget.available) < BigInt(request.maxAmount))
         throw new FederationError("BUDGET_EXHAUSTED");
-      // Recheck after all potentially blocking locks, not just before signature verification.
+      if (!coordinatedOrgId) assertDelegationPolicy(terms, request, this.clock());
+      await assertAttestationCapacity(tx, terms, request.maxAmount, this.clock());
+      await this.storageGuard?.assertAdmission(terms.mode);
+      // Recheck after blocking locks and storage observation I/O.
       await input.authorize?.(tx, this.clock());
       const confirmation = coordinatedOrgId
         ? await this.confirmations?.authorize(tx, coordinatedOrgId, request, "admission")
         : undefined;
       const admittedAt = this.clock();
       if (!confirmation) assertDelegationPolicy(terms, request, admittedAt);
-      await assertAttestationCapacity(tx, terms, request.maxAmount, admittedAt);
       const id = confirmation?.reservationId ?? crypto.randomUUID();
       const receipt: FederationAcceptance = {
         protocolVersion: 1,

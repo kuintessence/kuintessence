@@ -11,6 +11,7 @@ import type { FederationOutboundService } from "./outbound";
 import { createFederationSender } from "./outbound-client";
 import type { FederationResultDownloadStorage } from "./results";
 import type { FederationSigningKey } from "./signatures";
+import { FederationStorageGuard } from "./storage-capacity";
 
 export async function startFederationIngress(
   db: PgDb,
@@ -20,6 +21,7 @@ export async function startFederationIngress(
   materials?: Pick<FederationOutboundService, "materialChunk" | "inputDownload">,
   inputDownloads?: FederationDownloadStorage,
   confirmations?: FederationExecutionConfirmationService,
+  storageGuard?: FederationStorageGuard,
 ) {
   if (!config.FEDERATION_ENABLED) return undefined;
   const socketPath = config.FEDERATION_SOCKET_PATH;
@@ -39,6 +41,7 @@ export async function startFederationIngress(
     materials,
     inputDownloads,
     confirmations,
+    storageGuard ?? (await loadFederationStorageGuard(config)),
   );
   return withPrivateUnixSocketStartup(socketPath, async () => {
     const server = Bun.serve({ unix: socketPath, fetch: app.fetch, maxRequestBodySize: 524288 });
@@ -85,4 +88,13 @@ export async function loadFederationSender(config: ServerConfig) {
     readFile(caFile, "utf8"),
   ]);
   return createFederationSender({ cert, key, ca });
+}
+
+export async function loadFederationStorageGuard(config: ServerConfig) {
+  if (!config.FEDERATION_ENABLED || !config.FEDERATION_STORAGE_GUARD_FILE) return undefined;
+  if (!config.FEDERATION_SITE_ID) throw new Error("Storage guard requires a site identity");
+  return FederationStorageGuard.load(
+    config.FEDERATION_STORAGE_GUARD_FILE,
+    config.FEDERATION_SITE_ID,
+  );
 }

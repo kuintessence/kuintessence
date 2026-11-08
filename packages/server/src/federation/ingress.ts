@@ -23,6 +23,8 @@ import { FederationUsageExchange } from "./usage-exchange";
 
 const logger = createLogger("federation-ingress");
 
+import type { FederationStorageGuard } from "./storage-capacity";
+
 /** Mount only on the private Unix listener. The Node gateway owns the certificate header. */
 export function createFederationIngress(
   db: PgDb,
@@ -31,6 +33,7 @@ export function createFederationIngress(
   materials?: Pick<FederationOutboundService, "materialChunk" | "inputDownload">,
   inputDownloads?: FederationDownloadStorage,
   confirmations?: FederationExecutionConfirmationService,
+  storageGuard?: Pick<FederationStorageGuard, "assertAdmission">,
 ) {
   const r = new Hono();
   const trust = new FederationTrustRegistry(db);
@@ -39,7 +42,7 @@ export function createFederationIngress(
   r.onError((error, c) => {
     if (error instanceof FederationError) {
       const status =
-        error.code === "ATTESTATION_BACKLOG"
+        error.code === "ATTESTATION_BACKLOG" || error.code === "STORAGE_PRESSURE"
           ? 503
           : error.code === "INVALID_MESSAGE"
             ? 400
@@ -67,7 +70,14 @@ export function createFederationIngress(
     const localKey = await trust.resolveKey(signingKey.siteId, signingKey.keyId, now);
     if (!localKey.allowedKinds.includes("acceptance"))
       throw new FederationError("UNTRUSTED_IDENTITY");
-    const admission = new FederationAdmission(db, signingKey, localKey, undefined, confirmations);
+    const admission = new FederationAdmission(
+      db,
+      signingKey,
+      localKey,
+      undefined,
+      confirmations,
+      storageGuard,
+    );
     const result = await admission.receive({
       requestJws,
       senderKey,
