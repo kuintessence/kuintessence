@@ -15,6 +15,7 @@ import {
 import { tmpdir, userInfo } from "node:os";
 import { join } from "node:path";
 import type { SandboxSignedManifest, SandboxUnsignedManifest } from "@kuintessence/shared";
+import { buildApptainerSandboxArgv } from "../adapters/base";
 import { importFederationMedia } from "../data-market/media-import";
 import { mediaImportFixture } from "../data-market/media-import-test-fixture";
 import { SandboxJobSpecSchema } from "../queue/sandbox-job-spec";
@@ -164,7 +165,7 @@ describe("SandboxStager", () => {
       test ! -w "$2"
       test ! -r "$1"
       printf log > "$2/.scheduler-logs/check.out"
-      printf '{"ok":true}' > "$2/outputs/result.json"
+      printf '{"ok":true}' > "$2/outputs/result"
     `,
           "probe",
           root,
@@ -491,7 +492,27 @@ describe("SandboxStager", () => {
     );
     const config = prepared.sandbox.mounts.find((mount) => mount.descriptor === "config");
     expect(config && (await readFile(config.hostPath, "utf8"))).toBe('{"sample":3}');
+    const optional = prepared.sandbox.mounts.find((mount) => mount.descriptor === "optional");
+    if (!optional || !config) throw new Error("Missing mount fixture");
+    expect(optional.hostPath).toBe(join(prepared.workingDir, "outputs/optional"));
+    expect(optional.relativePath).toBe("outputs/optional");
+    await expect(lstat(optional.hostPath)).rejects.toMatchObject({ code: "ENOENT" });
+    const argv = buildApptainerSandboxArgv(prepared.sandbox);
+    expect(argv).toContain(`${prepared.workingDir}/outputs:/kq/outputs:rw`);
+    expect(argv).toContain(`${config.hostPath}:/kq/inputs/config:ro`);
+    expect(argv).not.toContain(`${optional.hostPath}:/kq/outputs/optional:rw`);
     expect(await validateSandboxOutputs(prepared.sandbox)).toEqual([]);
+    await writeFile(optional.hostPath, "");
+    expect(await validateSandboxOutputs(prepared.sandbox)).toEqual([
+      expect.objectContaining({ descriptor: "optional", sizeBytes: 0, sha256: hash("") }),
+    ]);
+    await writeFile(optional.hostPath, "created by script");
+    expect(await validateSandboxOutputs(prepared.sandbox)).toEqual([
+      expect.objectContaining({ descriptor: "optional", sha256: hash("created by script") }),
+    ]);
+    await rm(optional.hostPath);
+    await symlink(config.hostPath, optional.hostPath);
+    await expect(validateSandboxOutputs(prepared.sandbox)).rejects.toThrow("symbolic link");
   });
 
   test("validates every signed FileBatch entry and its aggregate hash", async () => {

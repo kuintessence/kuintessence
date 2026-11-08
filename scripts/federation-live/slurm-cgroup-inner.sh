@@ -54,6 +54,9 @@ AllowedRAMSpace=100
 AllowedSwapSpace=0
 ConstrainDevices=no
 EOF
+if [[ ${KQ_SLURM_AGENT:-} == 1 ]]; then
+  bash /workspace/scripts/federation-live/selfaccount-accounting.sh
+fi
 /usr/sbin/slurmctld -D >/tmp/slurmctld.log 2>&1 &
 mkdir /sys/fs/cgroup/system.slice/slurmd.service
 python3 - <<'PY' >/tmp/slurmd.log 2>&1 &
@@ -68,6 +71,9 @@ for ((n=0;n<40;n++)); do
   sleep .5
 done
 sinfo -h -o '%T' | grep -Eq '^idle$'
+if [[ ${KQ_SLURM_AGENT:-} == 1 ]]; then
+  exec runuser -u scientist -- python3 /workspace/deploy/schedulers/common/supervise-agent.py
+fi
 [[ ${KQ_SLURM_CGROUP_JOB:-} == /workspace/temp/kq-slurm-cgroup-*/job.sh ]]
 cp "$KQ_SLURM_CGROUP_JOB" /scratch/job/job.sh
 chmod 644 /scratch/job/job.sh

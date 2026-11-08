@@ -62,6 +62,15 @@ export async function runFederationWatchdog(): Promise<void> {
   process.on("SIGTERM", stop);
   process.on("SIGINT", stop);
   try {
+    // The supervisor starts both processes together; only the Agent owns schema initialization.
+    const initialized = sqlite.query(
+      "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'inbound_dispatch_pending'",
+    );
+    if (!initialized.get()) {
+      logger.info("Waiting for Agent database initialization");
+      while (running && !initialized.get()) await Bun.sleep(250);
+    }
+    if (running) logger.info("Federation watchdog database ready");
     while (running) {
       await watchdog.tick();
       if (running) await Bun.sleep(250);

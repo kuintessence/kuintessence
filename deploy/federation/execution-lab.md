@@ -210,3 +210,27 @@ Pod 总限额仍为 1 CPU/1 GiB；生产逐作业 cgroup、掉电、多主机、
 两端账本守恒，直接模式无链待办，所有隔离资源清理。没有重新编译 PBS 或科学软件，未注入停止决定。
 
 2026-11-09：强制资源检查接入后，PBS 联合流程再次通过。原作业进入用户脚本前经过 pinned checker，运行中额外内核快照为 1 CPU/128 MiB、swap=0；随后来源 HTTP 撤权、原许可到期、同一作业 F/Exit 265、Agent 停止证明为 true。该次验证未重复 Slurm 或内存压力实验，不代替其他 root 路径、SelfAccount、队列能力发布和掉电恢复验收。
+
+
+## SelfAccount 双平台执行与进程恢复
+
+新增普通用户 Slurm 场景，复用无链双边的两套 Server/数据库、自动协议交换、材料/依赖锁传输、文件工作流、结果回传及账务验收。使用已缓存的 Apptainer/SUID 固定摘要包和 `bash.sif`；同页 PostgreSQL 工具路径仍必需：
+
+```bash
+KQ_FEDERATION_EXECUTION_LAB=1 KQ_FEDERATION_SELFACCOUNT=1 \
+KQ_MEDIA_RUNTIME_DIR="$PWD/temp/federation-runtime" \
+PYTHONDONTWRITEBYTECODE=1 bun run test:federation:direct
+```
+
+只接受 direct 模式的 success 场景。提供方为一次性 Debian 13 / Slurm 24.11.5 Pod，1 CPU/1 GiB，部署真实 cgroup v2、slurmdbd 与小缓存 MariaDB；只在该 Pod 安装软件，不修改宿主调度器。普通账号 UID/GID 24001 运行生产 Agent/supervisor/watchdog；Server 显式启用 SelfAccount，关闭账号 impersonation，映射身份须精确匹配。临时签名 SIF、固定检查器与 seccomp、明确 sandbox 队列用于真实启动证明。
+
+第一步实际运行后强制结束提供方 Server 进程组及 Agent，保留原数据库、SQLite、凭据与原生作业。supervisor 重启 Agent，Server 从原状态恢复；检查原 UUID、Slurm 作业号和派发轮次不变，每个 UUID 只有一个原生作业。随后完成下游文件读取、独立源站 Agent 回传及真实下载，文件摘要应与固定预期一致。用量必须与真实 sacct ElapsedRaw 一致，账单/结算继续走双方独立政策与签名，不把容器时长当作 Slurm 作业时长。
+
+额外证据为 `selfaccount-restart.json`、每个原生作业的 `*-slurm.json` 和日志、账单证据中的 `slurm` 观测。此场景只验证普通 SelfAccount，不启用需要 root 受限 profile 的私有数据交付，也不证明科学软件、跨主机共享存储或整机掉电。2026-11-09 完整入口已退出 0：原 Job 2 在 Agent/提供方 Server SIGKILL 后保持运行，恢复仍为原 UUID/原生编号/派发轮次；下游 Job 4 完成，最终 12 字节结果实际返回独立源站存储。真实 sacct 时长 61 + 1 秒，与双方签名用量一致；账单封顶、独立自动结算及两次调整/重放通过。临时 namespace 已确认删除。
+
+
+独立 watchdog 与 Agent 同时启动时，watchdog 会等待 Agent 初始化 inbox 表，之后才巡检；自身不执行数据库迁移。等待中支持 SIGTERM 正常退出，日志区分等待和就绪。损坏数据库或巡检错误继续报错并由 supervisor 重启，不伪装成空库。首次启动和已有任务恢复使用同一份私有 SQLite 文件。
+
+HPC 普通 Sandbox 的输出按签名容器路径暂存到本作业 outputs 目录，并将该目录挂载至 `/kq/outputs`；可选文件允许在脚本运行前及结束后不存在，不能用空占位文件代替。输入仍逐项只读挂载，产物收集只接受声明项。此验收保留一个未生成的可选输出，以覆盖实际 Apptainer 启动和产物缺省语义。
+
+中断时机以结果文件中的临时标记及原生 RUNNING 状态共同确定；限长日志管道可能缓冲短输出，不用 stdout 刷新判断脚本是否已经开始。脚本最终必须覆盖该文件为 `42\n`，下游输出为 `verified:42\n`，最终按精确 SHA-256 验收。

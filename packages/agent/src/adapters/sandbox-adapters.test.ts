@@ -56,8 +56,8 @@ function unixSandbox(): SandboxJobSpec {
         descriptor: "output",
         ioType: "JSON",
         mode: "WriteOnly",
-        hostPath: "/managed/job/outputs/result.json",
-        relativePath: "outputs/result.json",
+        hostPath: "/managed/job/outputs/output",
+        relativePath: "outputs/output",
         containerPath: "/kq/outputs/output",
         sizeLimitBytes: 1_000,
         required: true,
@@ -128,6 +128,50 @@ test.each([
 });
 
 describe("HPC Sandbox adapters", () => {
+  test("binds only the prepared output directory, including absent optional files", () => {
+    const sandbox = unixSandbox();
+    const output = sandbox.mounts[1];
+    if (!output) throw new Error("Missing output fixture");
+    sandbox.mounts.push({
+      ...output,
+      descriptor: "optional",
+      required: false,
+      hostPath: "/managed/job/outputs/optional",
+      relativePath: "outputs/optional",
+      containerPath: "/kq/outputs/optional",
+    });
+    const argv = buildApptainerSandboxArgv(sandbox);
+    expect(argv.filter((arg) => arg.endsWith(":rw"))).toEqual([
+      "/managed/job/outputs:/kq/outputs:rw",
+    ]);
+    expect(argv).toContain("/managed/job/inputs/data.csv:/kq/inputs/input:ro");
+    for (const adapter of [
+      new SlurmAdapter("24"),
+      new PbsProAdapter("23"),
+      new TorqueAdapter("6"),
+    ]) {
+      expect(adapter.buildSubmitScript(job(sandbox))).toContain(
+        "/managed/job/outputs:/kq/outputs:rw",
+      );
+    }
+  });
+
+  test.each([
+    ["/managed/other/outputs/output", "/kq/outputs/output"],
+    ["/managed/job/inputs/output", "/kq/outputs/output"],
+    ["/managed/job/outputs/output", "/kq/inputs/output"],
+    ["/managed/job/outputs/output", "/kq/outputs/.."],
+    ["/managed/job/outputs/output", "/kq/outputs/."],
+    ["/managed/job/outputs/alias", "/kq/outputs/output"],
+  ])("refuses unsafe output directory mappings: %s to %s", (hostPath, containerPath) => {
+    const sandbox = unixSandbox();
+    const output = sandbox.mounts[1];
+    if (!output) throw new Error("Missing output fixture");
+    output.hostPath = hostPath;
+    output.containerPath = containerPath;
+    expect(() => buildApptainerSandboxArgv(sandbox)).toThrow("prepared job output directory");
+  });
+
   test("builds a minimal Apptainer command without the user command or host environment", () => {
     const argv = buildApptainerSandboxArgv(unixSandbox());
     expect(argv).toContain("--containall");

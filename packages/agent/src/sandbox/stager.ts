@@ -548,7 +548,19 @@ export class SandboxStager {
 
     const mounts: SandboxJobMount[] = [];
     for (const mount of verified.unsigned.mounts) {
-      const hostPath = resolve(runDir, mount.relativePath);
+      const outputName = posix.basename(mount.containerPath);
+      if (
+        mount.mode === "WriteOnly" &&
+        (!/^\/kq\/outputs\/[A-Za-z0-9._-]{1,128}$/.test(mount.containerPath) ||
+          outputName === "." ||
+          outputName === "..")
+      ) {
+        throw new Error("Sandbox output must name a file within its output directory");
+      }
+      // A directory bind lets scripts create optional files without fabricating empty outputs.
+      const relativePath =
+        mount.mode === "WriteOnly" ? `outputs/${outputName}` : mount.relativePath;
+      const hostPath = resolve(runDir, relativePath);
       if (!pathInside(runDir, hostPath)) throw new Error("Sandbox artifact path escaped run root");
       await assertNoSymlink(runDir, hostPath);
       await prepareMountParents(runDir, hostPath, owner);
@@ -578,7 +590,7 @@ export class SandboxStager {
           );
         }
       }
-      mounts.push(jobMount(mount, hostPath));
+      mounts.push({ ...jobMount(mount, hostPath), relativePath });
     }
     return {
       workingDir: runDir,

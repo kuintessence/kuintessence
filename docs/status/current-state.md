@@ -763,3 +763,13 @@ root HPC 主链路现接通实际启动证明、周期刷新、能力发布、�
 原生 Sandbox 探测增加持久阶段收据和 Linux flock，进程退出自动释放锁。恢复按原 UUID、执行身份和调度器查询，确认原任务停止后才启动新探测；不复用旧输出。提交响应丢失也可查找原任务，查无结果或停止不明继续保留，禁止盲目重投。旧格式、损坏/不安全文件及账号/队列/调度器变化需人工核对。准备和清理中断可继续回收，文件及目录更新显式 fsync。说明见[软件沙箱](../software.md)与[真实 Slurm 实验](../../deploy/federation/sandbox-cgroup-lab.md#原生探测进程中断恢复)。
 
 新增及受影响的测试通过，含真实子进程 SIGKILL、并发锁、阶段一致性、异常原生编号及符号/硬链接拒绝。真实 Slurm 24.11 两种中断恢复均通过：原 Job 6/8 在探测进程退出后继续运行，恢复查找并取消原 Job，确认 PID 消失后分别提交全新 Job 7/9；仍保留有效 SIF/root 签名执行回归。入口退出 0，namespace 已确认删除。不宣称掉电或跨主机恢复已验收。
+
+
+### SelfAccount 双平台验收入口
+
+新增无链双边的真实 Slurm SelfAccount 变体：两套平台、非 root Agent、明确账号映射和运行证明，第一步运行中强制退出 Agent/提供方 Server，恢复后检查原生作业不重复、下游文件及跨站结果回传，并以真实 sacct 核对计费时长。采用隔离 1 CPU/1 GiB Pod，轻量 Bash 任务，受限数据仍要求 root profile。入口见[SelfAccount 双平台执行与进程恢复](../../deploy/federation/execution-lab.md#selfaccount-双平台执行与进程恢复)；完整实际运行已通过：原 Job 2 在强制中断后续跑，下游 Job 4 完成，跨站实际下载、签名回执、62 秒原生计量、自动封顶账单/结算及两次账务调整均通过。环境已清理；不改变整体蓝图及 PR 预览范围。
+
+
+SelfAccount 实验还发现首次启动的 watchdog/Agent 建表竞态。watchdog 已改为等待 Agent 创建 inbox 表，保持不迁移、不接单的职责；空库等待、初始化后原进程继续和等待中正常退出的真实子进程测试通过，原 watchdog 行为回归通过。该修复不改变已有任务的租期和停止确认规则。
+
+真实 SelfAccount 实验发现可选输出未生成时 Apptainer 文件挂载失败，已改为仅挂载本作业专用输出目录。容器路径保持签名契约，主机暂存路径按输出名映射，读取输入仍为只读；拒绝越界或不匹配映射，缺失可选输出仍不产生空产物。相关 sandbox/adapters 475 项通过（两项按既有环境条件跳过），watchdog 相关 14 项通过；真实 SelfAccount 重启/回传/账务链路通过。最终全仓 lint/typecheck、Python 3.8 AST、Bash 语法及 diff 检查通过。

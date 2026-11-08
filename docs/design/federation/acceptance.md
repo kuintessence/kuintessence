@@ -318,3 +318,10 @@ L03/L04/O01 补充：直接与异步合作已具备独立双签退款、原签�
 异步模式在启动 Server 前停止 Orderer，数据库满盘恢复后仍能本地退款，实际后台扫描记录 refund-ledger 并保持提供方占额。随后两端 Server/商业 Adapter 再次中断，原数据库/密钥恢复后补交原三条商业记录及两条接单证据，全部原交易 VALID 后才回收。独立 Gateway 检查实际四笔交易和 A/B/C 的 PDC，原私有正文不泄露给 C，链没有预算/许可写入，不重复退款。
 
 实验配置使用生产容量服务、真实周期 observer、Server worker 和 mTLS，不人工设置退款/收尾状态、清租约或修改调度时间。两个数据库仍属于同一 PostgreSQL 实例，数据/WAL 共用实验卷；磁盘满错误来自隔离探针表，故障注入时 Server 已中断。本项不覆盖运行中计算、结果正文、每一处业务 SQL、独立 WAL/Peer 卷或自动 reserve controller 的联合恢复，O01 仍为部分完成。见[可复现实验](../../../deploy/federation/execution-lab.md#满盘后的取消与退款收尾)。
+
+
+## SelfAccount 双平台 Slurm 进程恢复
+
+2026-11-09 通过[真实执行入口](../../../deploy/federation/execution-lab.md#selfaccount-双平台执行与进程恢复)：独立双 Server/数据库/存储、真实 mTLS、非 root UID/GID 24001 Agent 和 Slurm 24.11.5。双方自动交换签名材料及原委派；第一步已执行隔离检查并仍在运行时，强制终止 Agent 和提供方 Server，恢复后原 UUID/Slurm Job 2/派发轮次不变，各 UUID 仅提交一次。下游 Job 4 完成，实际跨站下载精确 12 字节结果并完成签名回执，未生成的可选输出不被发布。
+
+真实 sacct 61 + 1 秒与双方 62,000 毫秒签名用量一致，账单从 62 按任务上限封顶至 10 个实验单位，独立自动结算和两次追加调整/重放通过，没有 Fabric 配置或链待办。入口退出 0，临时环境及 namespace 已清理。实验轻量脚本不代表科学软件安装；未覆盖掉电/跨主机、其他调度器和完整 PR 预览。

@@ -26,9 +26,12 @@ assert not disk_pressure or automatic_refund, "Disk recovery currently requires 
 assert not refund_scenario if coordinated else scenario in ("success", "refund", "refund-auto", "media")
 assert scenario in ("success", "outage", "stop", "workflow", "refund", "refund-auto", "media")
 media_scenario = scenario == "media"
+self_account = os.environ.get("KQ_FEDERATION_SELFACCOUNT") == "1"
+assert not self_account or (mode == "bilateral_direct" and scenario == "success"), "SelfAccount lab requires direct success workflow"
 media_execution = os.environ.get("KQ_MEDIA_EXECUTION", "")
 assert media_execution in ("", "slurm", "pbs-pro")
 assert not media_execution or media_scenario
+hpc_execution = "slurm" if self_account else media_execution
 assert not media_scenario or mode == "bilateral_direct"
 media_age = pathlib.Path(os.environ["KQ_MEDIA_AGE_BIN"]).resolve(strict=True) if media_scenario else None
 if media_age:
@@ -111,6 +114,8 @@ if media_scenario:
     env.update(FEDERATION_MEDIA_AGE_DIRECTORY=str(media_age), FEDERATION_MEDIA_WRAPPING_KEY=secrets.token_hex(32), LAB_MEDIA_ROOT_ID=media_target_root)
 if media_execution:
     env["LAB_MEDIA_EXECUTION"] = media_execution
+if self_account:
+    env["LAB_SELF_ACCOUNT"] = "1"
 networkroot = pathlib.Path(os.environ["LAB_FABRIC_ROOT"]) if coordinated or attested else None
 fixture = json.loads((pathlib.Path(env["LAB_FIXTURE_ROOT"]) / "execution-fixture.json").read_text())
 siteb = next(site for site in fixture["sites"] if site["name"] == "B")
@@ -571,6 +576,53 @@ def verify_interruption():
     )
 
 
+def verify_selfaccount_restart():
+    global server
+    for _ in range(60):
+        run(["bun", "--no-env-file", "scripts/federation-live/target.ts", "inspect"])
+        state = json.loads((root / "probe-state.json").read_text())
+        if len(state["jobs"]) == 1 and state["jobs"][0]["schedulerJobId"]:
+            original = state["jobs"][0]
+            native, output = inspect_native(k, namespace, original)
+            (logs / "selfaccount-producer.log").write_text(output)
+            (logs / "selfaccount-producer-state.json").write_text(json.dumps({"job": original, "native": native}, indent=2))
+            assert original["status"] not in ("failed", "cancelled"), {"job": original, "output": output}
+            if native["state"] == "RUNNING":
+                # The bounded stdout pipe may buffer short logs until exit; observe the real output file.
+                marker = k(["exec", "-n", namespace, "scheduler", "--", "cat",
+                            f"/scratch/sandbox/{original['id']}/outputs/result"], check=False)
+                if marker.returncode == 0 and marker.stdout == "federation-recovery-waiting\n":
+                    break
+        time.sleep(1)
+    else:
+        raise RuntimeError("SelfAccount producer did not reach its interruption checkpoint while RUNNING")
+    assert state["agent"][0]["rootMode"] is False
+    assert state["agent"][0]["sandboxCapabilities"]["executionMode"] == "SelfAccount"
+    assert original["execution"]["executionMode"] == "SelfAccount"
+    old_server_pid = server.pid
+    os.killpg(server.pid, signal.SIGKILL)
+    server.wait(timeout=10)
+    agent_recovery = interrupt_agent(k, namespace)
+    native_after, _ = inspect_native(k, namespace, original)
+    assert native_after["state"] == "RUNNING", "Agent death must not cancel the original Slurm job"
+    server = subprocess.Popen(["bun", "--no-env-file", "run", "scripts/federation-live/server.ts"],
+                              cwd=repo, env=env, stdout=serverlog, stderr=serverlog, start_new_session=True)
+    assert server.pid != old_server_pid
+    for _ in range(45):
+        assert server.poll() is None, "Provider Server failed to restart"
+        try:
+            api("health")
+            break
+        except (OSError, ValueError):
+            time.sleep(1)
+    else:
+        raise RuntimeError("Provider Server did not recover")
+    (logs / "selfaccount-restart.json").write_text(json.dumps({"original": original,
+        "nativeBefore": native, "nativeAfter": native_after, "checkpoint": marker.stdout, "agent": agent_recovery,
+        "oldServerPid": old_server_pid, "newServerPid": server.pid}, indent=2))
+    print("REAL SELFACCOUNT INTERRUPTION: original running Slurm job survives SIGKILL of Agent and provider Server; original state retained", flush=True)
+
+
 def verify_success():
     for _ in range(60):
         run(
@@ -605,6 +657,11 @@ def verify_success():
     assert all(
         j["schedulerJobId"] and j["status"] == "completed" for j in probe["jobs"]
     ), "Missing completed scheduler jobs"
+    if self_account:
+        original = json.loads((logs / "selfaccount-restart.json").read_text())["original"]
+        recovered = [j for j in probe["jobs"] if j["id"] == original["id"]]
+        assert len(recovered) == 1 and recovered[0]["schedulerJobId"] == original["schedulerJobId"]
+        assert recovered[0]["dispatchEpoch"] == original["dispatchEpoch"], "Recovery changed the original dispatch epoch"
     assert (
         len(probe["artifacts"]) == 2 and len(probe["files"]) == 2
     ), "Missing published artifacts"
@@ -618,7 +675,13 @@ def verify_success():
         hashlib.sha256(data).hexdigest() for data in [b"42\n", b"verified:42\n"]
     ), "Result hash mismatch"
     for j in probe["jobs"]:
-        output = k(["logs", "-n", namespace, "job/" + j["schedulerJobId"]]).stdout
+        if self_account:
+            facts, output = inspect_native(k, namespace, j)
+            assert facts["state"] == "COMPLETED" and facts["exitCode"] == "0:0", facts
+            assert j["execution"]["executionMode"] == "SelfAccount"
+            (logs / (j["schedulerJobId"] + "-slurm.json")).write_text(json.dumps(facts, indent=2))
+        else:
+            output = k(["logs", "-n", namespace, "job/" + j["schedulerJobId"]]).stdout
         (logs / (j["schedulerJobId"] + ".log")).write_text(output)
         assert "federation-file-" in output, "Missing real workload output"
     run(["bun", "--no-env-file", "run", "scripts/federation-live/source.ts", "inspect"])
@@ -986,6 +1049,14 @@ def verify_billing():
     total = 0
     pods = []
     for job in runtime["jobs"]:
+        if self_account:
+            observed = k(["exec", "-n", namespace, "scheduler", "--", "sacct", "--noheader", "--parsable2", "--allocations", "--jobs", job["schedulerJobId"], "--format=JobIDRaw,ElapsedRaw"]).stdout
+            rows = [row.strip().split("|") for row in observed.splitlines() if row.strip()]
+            assert len(rows) == 1 and rows[0][0] == job["schedulerJobId"] and rows[0][1].isdigit(), observed
+            elapsed = int(rows[0][1]) * 1000
+            total += elapsed
+            pods.append({"scheduler": "slurm", "schedulerJobId": job["schedulerJobId"], "elapsedMilliseconds": elapsed})
+            continue
         observed = json.loads(k(["get", "pods", "-n", namespace, "-l", "job-name=" + job["schedulerJobId"], "-o", "json"]).stdout)["items"]
         assert len(observed) == 1
         pod = observed[0]
@@ -999,7 +1070,7 @@ def verify_billing():
     measured = report["report"]["measurements"]
     assert len(measured) == 1 and measured[0]["metric"] == "job.elapsed"
     assert measured[0]["quantityUnit"] == "job-millisecond" and int(measured[0]["quantity"]) == total
-    assert total >= 1000, "Positive billing requires actual measured container runtime"
+    assert total >= 1000, "Positive billing requires actual measured scheduler runtime"
     expected_gross = (total + 999) // 1000
     if coordinated:
         orderer("stop")
@@ -1014,8 +1085,8 @@ def verify_billing():
         else:
             assert statuses["provider"]["record"]["ledger"] is None
         assert statuses["source"]["record"]["ledger"] is None
-        (logs / "billing-offline-evidence.json").write_text(json.dumps({"usage": usage, "received": received, "pods": pods, "draft": draft, "statuses": statuses}, indent=2) + "\n")
-        print("REAL BILL EXCHANGE PASSED: measured Kubernetes runtime -> signed usage over mTLS -> independent institution policies -> automatic draft, approvals and original signatures; " + ("Orderer stopped" if coordinated or attested else "no ledger configured"), flush=True)
+        (logs / "billing-offline-evidence.json").write_text(json.dumps({"usage": usage, "received": received, **({"slurm": pods} if self_account else {"pods": pods}), "draft": draft, "statuses": statuses}, indent=2) + "\n")
+        print("REAL BILL EXCHANGE PASSED: measured " + ("Slurm sacct runtime" if self_account else "Kubernetes runtime") + " -> signed usage over mTLS -> independent institution policies -> automatic draft, approvals and original signatures; " + ("Orderer stopped" if coordinated or attested else "no ledger configured"), flush=True)
     finally:
         if coordinated:
             orderer("start")
@@ -1878,7 +1949,7 @@ try:
         SANDBOX_SIGNING_KEY_ID="lab-sandbox",
         SANDBOX_SIGNING_PRIVATE_KEY_PEM=(root / "sandbox.key").read_text(),
     )
-    if media_execution:
+    if hpc_execution:
         from media_hpc import prepare_runtime, configure_target, validate_pbs_cache
         hpc_pbs = validate_pbs_cache(os.environ["KQ_MEDIA_PBS_DIR"], image) if media_execution == "pbs-pro" else None
         if hpc_pbs:
@@ -1886,7 +1957,8 @@ try:
         hpc_runtime, hpc_metadata = prepare_runtime(root, os.environ["KQ_MEDIA_RUNTIME_DIR"], log)
         import base64
         public_der = subprocess.check_output(["openssl", "pkey", "-pubin", "-in", str(root / "sandbox.pub"), "-outform", "DER"])
-        env.update(SANDBOX_IMPERSONATION_ENABLED="true",
+        env.update(SANDBOX_IMPERSONATION_ENABLED="false" if self_account else "true",
+                   SANDBOX_SELF_ACCOUNT_ENABLED="true" if self_account else "false",
                    ECOSYSTEM_RELEASE_TRUSTED_KEYS=json.dumps({"lab-sandbox": base64.b64encode(public_der).decode()}))
     # Two independent cloud buckets and non-root credentials in the disposable storage instance.
     import copy
@@ -2055,7 +2127,7 @@ await Bun.write(process.env.LAB_ROOT+'/registration.json',JSON.stringify({token:
             "--output-dir",
             str(root / "agent"),
             "--scheduler",
-            media_execution or "kubernetes",
+            hpc_execution or "kubernetes",
         ]
     )
     (root / "agent/agent.env").open("a").write(
@@ -2065,7 +2137,7 @@ await Bun.write(process.env.LAB_ROOT+'/registration.json',JSON.stringify({token:
     node = json.loads(k(["get", "nodes", "-o", "json"]).stdout)["items"][0]["metadata"][
         "name"
     ]
-    runtimeimage = "sif@" + hpc_metadata["digest"] if media_execution else "docker.io/bitnamilegacy/kubectl@sha256:f65b74480c37b65099453fb3a5ca7eaaea235b3d4268ef3b1ed0f0150d340646"
+    runtimeimage = "sif@" + hpc_metadata["digest"] if hpc_execution else "docker.io/bitnamilegacy/kubectl@sha256:f65b74480c37b65099453fb3a5ca7eaaea235b3d4268ef3b1ed0f0150d340646"
     profileroot = pathlib.Path("/var/lib/kubelet/seccomp")
     profileroot.mkdir(mode=0o755, exist_ok=True)
     profilepath = profileroot / (namespace + ".json")
@@ -2096,7 +2168,7 @@ await Bun.write(process.env.LAB_ROOT+'/registration.json',JSON.stringify({token:
     profilehash = hashlib.sha256(profilepath.read_bytes()).hexdigest()
     env.update(LAB_RUNTIME_IMAGE=runtimeimage, LAB_NAMESPACE=namespace)
     digest = runtimeimage.split("@")[1]
-    if not media_execution:
+    if not hpc_execution:
         raw = subprocess.check_output(["k3s", "ctr", "content", "get", digest])
         assert "sha256:" + hashlib.sha256(raw).hexdigest() == digest, "Runtime OCI manifest digest mismatch"
     (root / "runtime-digest").write_text(digest)
@@ -2348,15 +2420,24 @@ await Bun.write(process.env.LAB_ROOT+'/registration.json',JSON.stringify({token:
         pod["spec"]["volumes"].append({"name": "age", "hostPath": {"path": str(media_age), "type": "Directory"}})
         pod["spec"]["containers"][0]["volumeMounts"].append({"name": "age", "mountPath": "/opt/kq/age", "readOnly": True})
     source_pod_template = copy.deepcopy(pod)
-    if media_execution:
+    if self_account:
+        from selfaccount import configure_target as configure_selfaccount, inspect_native, interrupt_agent
+        configure_selfaccount(pod, root, hpc_runtime, hpc_metadata)
+        source_files = [pathlib.Path(__file__), *[repo / "packages/agent/src" / name for name in
+            ("federation-watchdog.ts", "sandbox/stager.ts", "adapters/base.ts")], *[repo / "scripts/federation-live" / name for name in
+            ("target.ts", "selfaccount.py", "selfaccount-bootstrap.sh", "selfaccount-accounting.sh", "slurm-cgroup-inner.sh", "slurm-cgroup-outer.sh")]]
+        (logs / "checkout.json").write_text(json.dumps({"commit": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo, text=True).strip(),
+            "image": pod["spec"]["containers"][0]["image"], "namespace": namespace,
+            "runtime": hpc_metadata, "sourceSha256": {str(path.relative_to(repo)): hashlib.sha256(path.read_bytes()).hexdigest() for path in source_files}}, indent=2))
+    elif media_execution:
         configure_target(pod, root, hpc_runtime, hpc_metadata, media_execution, hpc_pbs)
     k(["apply", "-f", "-"], json.dumps(pod))
     token = api(
         "auth/login",
         {"email": "federation-lab-admin@test.invalid", "role": "platform_admin"},
     )["token"]
-    for _ in range(180 if media_execution else 60):
-        if media_execution:
+    for _ in range(240 if hpc_execution else 60):
+        if hpc_execution:
             phase = json.loads(k(["get", "pod", "scheduler", "-n", namespace, "-o", "json"]).stdout)["status"].get("phase")
             assert phase not in ("Failed", "Succeeded"), "HPC Agent bootstrap exited; inspect agent.log"
         status = api("agents", token=token)
@@ -2373,9 +2454,9 @@ await Bun.write(process.env.LAB_ROOT+'/registration.json',JSON.stringify({token:
         time.sleep(1)
     else:
         raise RuntimeError("Agent did not become online")
-    print("Real " + (media_execution or "Kubernetes") + " Agent online through direct mTLS", flush=True)
-    if media_execution:
-        media_queue = "workq" if media_execution == "pbs-pro" else "debug"
+    print("Real " + (hpc_execution or "Kubernetes") + " Agent online through direct mTLS", flush=True)
+    if hpc_execution:
+        media_queue = "sandbox" if self_account else "workq" if media_execution == "pbs-pro" else "debug"
         for _ in range(90):
             inventory = api("admin/agents/" + env["LAB_AGENT"] + "/queue-inventory", token=token)
             if inventory["status"] == "available" and any(q["queueName"] == media_queue for q in inventory["queues"]):
@@ -2388,12 +2469,12 @@ await Bun.write(process.env.LAB_ROOT+'/registration.json',JSON.stringify({token:
         "admin/queues",
         {
             "queueId": "federation-lab-debug",
-            "name": "Isolated " + media_execution if media_execution else "Isolated Kubernetes",
+            "name": "Isolated " + hpc_execution if hpc_execution else "Isolated Kubernetes",
             "providerOrgId": registration["orgId"],
             "visibleOrgIds": [registration["orgId"]],
             "agentId": env["LAB_AGENT"],
-            "schedulerType": media_execution or "kubernetes",
-            "queueName": media_queue if media_execution else namespace,
+            "schedulerType": hpc_execution or "kubernetes",
+            "queueName": media_queue if hpc_execution else namespace,
         },
         token,
     )
@@ -2671,6 +2752,9 @@ await Bun.write(process.env.LAB_ROOT+'/registration.json',JSON.stringify({token:
                 flush=True,
             )
 
+        if self_account:
+            verify_selfaccount_restart()
+
         # Enroll a separate production Agent with the source institution, using its actual API.
         sourceagent = "federation-source-copy-" + namespace[-8:]
         sourceenv["LAB_AGENT"] = sourceagent
@@ -2821,6 +2905,8 @@ finally:
     for process in [sourcegateway, gateway, sourceserver, server, storageproxy, *storage_observers]:
         clean(lambda process=process: stop_process(process))
     if created:
+        if self_account:
+            clean(lambda: capture("slurm-daemons.log", ["exec", "-n", namespace, "scheduler", "--", "tail", "-n", "80", "/tmp/mysql.log", "/tmp/slurmdbd.log", "/tmp/slurmctld.log", "/tmp/slurmd.log"]))
         for name, args in [
             (
                 "source-agent.log",

@@ -2853,3 +2853,27 @@ PBS 联合实验定位并修复首次启动目录缺失：证明函数先以 070
 该改动未增加协议/数据库迁移或依赖包；Agent 运行环境需 util-linux flock 和可靠的文件锁、原子 rename、fsync。跨主机共享锁、实际整机掉电及后续完整蓝图/PR 预览仍待验收，没有以此缩减原目标。
 
 复查新增原生编号格式检查：提交响应和恢复查询中的非法编号不进入取消/状态命令，保留未知收据，避免将异常内容当作 CLI 参数。40 项原生探测单测通过；补强的三项相关断言定向复验通过，未重复实际调度实验。真实实验使用边界加固前已打包的实现，其收据/锁/查找/停止/重投路径与最终实现相同，加固仅额外拒绝非法编号。此前 10 项 runtime-attestation 回归通过。首次及边界加固后的最终全仓 lint/typecheck 均退出 0，包含 protobuf 生成、全部产品包与实验脚本；lint 保持既有 47 warnings/1 info。354 个相关本地文档目标、Python 3.8 AST 与 diff 检查通过。无生成文件、数据库迁移或依赖锁变化。
+
+
+## SelfAccount 双平台派发与恢复入口
+
+复用原 direct 运行器新增显式 SelfAccount 选择，不引入另一套联邦 API 或调度器。提供方以 UID/GID 24001 运行产品 Agent 与 supervisor/watchdog，Server 关闭 impersonation、显式启用 SelfAccount，按真实登记的 Slurm 队列、SIF 证明和映射账号签发。临时 Pod 使用既有现代 Slurm v2 隔离布局；补充真实 slurmdbd/MariaDB，使原计费验收仍核对调度器原始时长，不能伪造 sacct 或跳过账务流程。
+
+新增两步轻量文件工作流的实际进程中断：第一步报告开始且 Slurm 为 RUNNING 后，SIGKILL 提供方 Server 与实际非 root Agent；原状态和原生作业保留。预期恢复后原 UUID/原生编号/派发轮次不变，每个 UUID 一次原生提交，完成下游及独立源平台下载。脚本检查真实签名模式、身份、证明、资源、Slurm 状态/退出码与 SHA-256；尚待本轮完整运行，不能视为联合验收通过。普通 SelfAccount 不用于需要 root 受限 profile 的介质数据。
+
+
+前三次运行未计为通过：第一次发现 Slurm 24.11 已移除旧 AccountingStoreJobComment，改用 AccountingStoreFlags=job_comment；第二次探针误按普通作业目录读取沙箱日志，现按原 UUID 精确绑定沙箱及保留日志；第三次作业退出 127，但探针未保留失败日志，不能认定具体原因；检查发现轻量 SIF 不包含 id/grep，已将脚本改为 Bash UID/字符串检查和已有 cat/sleep，仍校验实际 UID、seccomp/no-new-privs 与 socket EPERM。三次临时环境均清理，尚未完成进程恢复联合验收。
+
+实际启动另暴露产品 watchdog 先于 Agent 建表读取空 SQLite 的竞态。watchdog 现在等待 Agent 创建原 inbox 表后开始巡检，不执行迁移、不连接 Server、不提交任务；等待中可正常停止，数据库错误仍向外抛出。新增两个真实子进程测试验证空库等待、不偷偷建表、原进程随 Agent 初始化恢复及等待中 SIGTERM 退出；连同原 watchdog 12 项，14 项通过。全仓检查进行中，完成后才重新运行原生实验。
+
+第四次真实运行已观察到 watchdog 在同一进程中等待建表后就绪，但工作流在重启注入前失败：Apptainer 尝试 bind 尚未生成的可选输出文件。产品 Unix stager 现按签名容器输出名准备本作业专用 outputs 目录，三类 HPC adapter 共用目录挂载，输入仍逐项只读；构造命令时拒绝非本作业目录、名称不匹配和特殊路径。不预造可选空文件，收集仍区分不存在、空文件和有效内容，只发布已声明产物。旧已运行作业继续按原持久路径监控/收集。第四次 namespace 已删除，完整联合验收仍待完成。相关 sandbox/adapters 测试 475 项通过，两项保留其既有环境条件跳过；全仓静态检查进行中。
+
+第五次真实作业原生 COMPLETED/0，输出含禁网/身份检查后的开始标记和计算结果，证明可选输出挂载已修复；但短 stdout 经限长管道缓冲，直到结束才被中断探针看到，未注入任何重启，不能计为恢复通过。探针现观察同一作业已声明结果文件中的临时开始标记（脚本最终覆盖为真实结果），同时要求原生 RUNNING，避免依赖日志刷新。第五次 namespace 已确认删除。产品代码检查此前全通过；本次仅调整验收夹具，按仓库规则重新做静态检查后复验，不重复无关调度测试。
+
+第六次完整入口退出 0。提供方 Agent/supervisor/watchdog 实际 UID/GID 24001，首次建表等待正常；已签名模式/证明、seccomp/no-new-privs、socket EPERM 通过。脚本写出开始标记且原生 Job 2 为 RUNNING 后，SIGKILL Agent 与提供方 Server；supervisor 拉起新 Agent，原状态 Server 重启，原 Job 2 仍运行。恢复后的 UUID、原生编号、dispatch epoch 均不变，每个 KQ UUID 仅一个原生作业；下游 Job 4 正常完成，两者均 COMPLETED/0。可选输出保留未生成语义，两个声明产物精确为 3/12 字节，来源 Agent 下载到独立存储、版本化下载与签名回执/重放通过。
+
+真实 slurmdbd/sacct 分别报告 61 秒、1 秒，双方签名报告为 62,000 毫秒；账单原额 62，按任务上限封顶为 10，独立机构预授权自动生成和对签账单、结算，并完成两次追加调整和原文重放，双边账目守恒且没有链待办。没有使用计量替身。证据保留本机 temp/federation-execution-direct-sigc6_y_，原始记录不纳入版本控制；checkout 中所有源文件 SHA-256 与最终实现相同。临时 Server/数据库/凭据已清理，namespace kq-federation-live-60d02d0f 已确认不存在。
+
+验证：sandbox/adapters 475 项通过（两项按既有独立环境条件跳过），watchdog 相关 14 项通过；最终全仓 lint 退出 0（既有 47 warnings/1 info），全仓 typecheck 含 protobuf 生成、全部产品和实验脚本退出 0。Python 3.8 AST/内嵌探针、Bash 语法、文档目标和 diff 检查通过，无手工生成文件、迁移或依赖锁变化。未重复无关 PBS/科学编译或负载实验，没有降低 95% 产品门槛。
+
+此次完成普通 SelfAccount 双平台进程恢复链路，不代替 restricted 数据执行、跨主机/掉电、Torque 原生矩阵、其余交付/治理/支付争议/归档及 Web/CLI，也未完成整个蓝图或 PR 预览验收。

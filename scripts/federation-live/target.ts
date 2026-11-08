@@ -41,6 +41,7 @@ import { SoftwareAvailabilityService } from "../../packages/server/src/services/
 import { approveContract, executionFixture } from "./fixture";
 import { mediaExecutionFixture } from "./media-execution";
 
+const selfAccount = process.env.LAB_SELF_ACCOUNT === "1";
 const root = z.string().min(1).parse(process.env.LAB_ROOT);
 if (
   !new URL(z.string().min(1).parse(process.env.DATABASE_URL)).pathname.startsWith(
@@ -82,8 +83,18 @@ if (process.argv[2] === "inspect") {
         reservationId,
       })),
       preparations,
+      agent: selfAccount
+        ? await db
+            .select({
+              rootMode: agents.rootMode,
+              sandboxReadiness: agents.sandboxReadiness,
+              sandboxCapabilities: agents.sandboxCapabilities,
+            })
+            .from(agents)
+            .where(eq(agents.agentId, z.string().min(1).parse(process.env.LAB_AGENT)))
+        : undefined,
       jobs: submitted.map(
-        ({ id, status, schedulerJobId, dispatchEpoch, placementTrace, reason, errorMessage }) => ({
+        ({
           id,
           status,
           schedulerJobId,
@@ -91,6 +102,30 @@ if (process.argv[2] === "inspect") {
           placementTrace,
           reason,
           errorMessage,
+          sandboxExecution,
+        }) => ({
+          id,
+          status,
+          schedulerJobId,
+          dispatchEpoch,
+          placementTrace,
+          reason,
+          errorMessage,
+          execution:
+            selfAccount && sandboxExecution
+              ? z
+                  .object({
+                    executionMode: z.literal("SelfAccount"),
+                    runtimeAttestationId: z.string().min(1),
+                    identity: z.object({
+                      username: z.literal("scientist"),
+                      uid: z.literal(24001),
+                      gid: z.literal(24001),
+                    }),
+                    resources: z.object({ cpus: z.literal(1), memoryMb: z.literal(128) }),
+                  })
+                  .parse(sandboxExecution)
+              : undefined,
         }),
       ),
     }),
@@ -241,23 +276,35 @@ if (process.argv[2] === "inspect") {
     .enum(["slurm", "pbs-pro"])
     .optional()
     .parse(process.env.LAB_MEDIA_EXECUTION);
+  const hpcScheduler = selfAccount ? "slurm" : mediaScheduler;
   const mediaWork = mediaScheduler
     ? await mediaExecutionFixture(db, root, actor.userId, source.siteId)
     : undefined;
-  const producer = `set -euo pipefail
-${outage ? "printf 'federation-sleep-started\\n'; sleep 600" : "sleep 1"}
-[ "$(id -u)" -gt 0 ]
+  const catCommand = selfAccount ? "/usr/bin/cat" : "cat";
+  const isolation = selfAccount
+    ? `[[ $UID == 24001 ]]
+status=$(/usr/bin/cat /proc/self/status)
+[[ $status == *$'Seccomp:\\t2'* && $status == *$'NoNewPrivs:\\t1'* ]]
+error=$({ : >/dev/tcp/127.0.0.1/9; } 2>&1) && exit 43
+[[ $error == *'Operation not permitted'* ]]
+printf 'federation-recovery-waiting\\n'
+printf 'federation-recovery-waiting\\n' > /kq/outputs/result
+/bin/sleep 60`
+    : `[ "$(id -u)" -gt 0 ]
 grep -Eq '^NoNewPrivs:[[:space:]]+1$' /proc/self/status
 grep -Eq '^Seccomp:[[:space:]]+2$' /proc/self/status
-if (exec 3<>/dev/tcp/1.1.1.1/53) 2>/dev/null; then exit 43; fi
-value=$(cat /kq/inputs/value)
+if (exec 3<>/dev/tcp/1.1.1.1/53) 2>/dev/null; then exit 43; fi`;
+  const producer = `set -euo pipefail
+${outage ? "printf 'federation-sleep-started\\n'; sleep 600" : selfAccount ? "" : "sleep 1"}
+${isolation}
+value=$(${catCommand} /kq/inputs/value)
 [ "$value" = "6" ]
 printf '%s\\n' "$((value * 7))" > /kq/outputs/result
 printf 'federation-file-produced:42\\n'
 `;
   const consumer = `set -euo pipefail
-[ "$(cat /kq/inputs/source)" = "42" ]
-printf 'verified:%s\\n' "$(cat /kq/inputs/source)" > /kq/outputs/result
+[ "$(${catCommand} /kq/inputs/source)" = "42" ]
+printf 'verified:%s\\n' "$(${catCommand} /kq/inputs/source)" > /kq/outputs/result
 printf 'federation-file-consumed:42\\n'
 `;
   const workflow =
@@ -312,9 +359,9 @@ printf 'federation-file-consumed:42\\n'
       name: "Isolated signed Bash runtime",
       language: "bash",
       languageVersion: "5",
-      ...(mediaWork ? { sifDigest: runtimeDigest } : { ociDigest: runtimeDigest }),
+      ...(hpcScheduler ? { sifDigest: runtimeDigest } : { ociDigest: runtimeDigest }),
       signature: await Bun.file(`${root}/runtime-signature.txt`).text(),
-      adapters: [mediaScheduler ?? "kubernetes"],
+      adapters: [hpcScheduler ?? "kubernetes"],
       securityRequirements: {},
       lifecycle: "active",
     });
@@ -333,9 +380,9 @@ printf 'federation-file-consumed:42\\n'
       id: accountId,
       providerOrgId: actor.orgId,
       agentId: agent.agentId,
-      displayName: mediaWork ? `Mapped ${mediaScheduler} scientist` : "Isolated Kubernetes worker",
-      backendType: mediaWork ? "unix" : "kubernetes",
-      ...(mediaWork
+      displayName: hpcScheduler ? `Mapped ${hpcScheduler} scientist` : "Isolated Kubernetes worker",
+      backendType: hpcScheduler ? "unix" : "kubernetes",
+      ...(hpcScheduler
         ? {
             username: "scientist",
             uid: 24001,
@@ -398,7 +445,7 @@ printf 'federation-file-consumed:42\\n'
     nativeLockDigest: federationMaterialDigest({ software: [], runtime: runtimeImage }),
     software: [],
     sandboxRuntime: {
-      kind: mediaWork ? ("SIF" as const) : ("OCI" as const),
+      kind: hpcScheduler ? ("SIF" as const) : ("OCI" as const),
       digest: z
         .string()
         .regex(/^sha256:[a-f0-9]{64}$/)
@@ -437,7 +484,7 @@ printf 'federation-file-consumed:42\\n'
       cpus: 1,
       memoryMb: 128,
       gpus: 0,
-      wallTimeSec: outage ? 900 : mediaWork ? 600 : 30,
+      wallTimeSec: outage ? 900 : mediaWork ? 600 : selfAccount ? 120 : 30,
     },
     resultPolicy: {
       scope: "persistent-files",

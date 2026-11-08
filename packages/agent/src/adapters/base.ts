@@ -1,3 +1,4 @@
+import { posix } from "node:path";
 import {
   type QueueFailureCode,
   type QueueTargetMode,
@@ -413,13 +414,28 @@ export function buildApptainerSandboxArgv(sandbox: SandboxJobSpec): string[] {
   if (hostPaths.some((path) => !path.startsWith("/") || /[:,\r\n]/.test(path))) {
     throw new Error("Sandbox bind paths must be absolute managed paths without bind separators");
   }
+  const outputs = sandbox.mounts.filter((mount) => mount.mode === "WriteOnly");
+  const outputDirectory = posix.join(posix.dirname(sandbox.contextHostPath), "outputs");
+  if (
+    outputs.some((mount) => {
+      const name = posix.basename(mount.containerPath);
+      return (
+        !/^\/kq\/outputs\/[A-Za-z0-9._-]{1,128}$/.test(mount.containerPath) ||
+        name === "." ||
+        name === ".." ||
+        mount.hostPath !== `${outputDirectory}/${name}`
+      );
+    })
+  ) {
+    throw new Error("HPC Sandbox outputs require a prepared job output directory");
+  }
   const binds = [
     `${sandbox.scriptHostPath}:/kq/script/${sandbox.entrypoint}:ro`,
     `${sandbox.contextHostPath}:/kq/context.json:ro`,
-    ...sandbox.mounts.map(
-      (mount) =>
-        `${mount.hostPath}:${mount.containerPath}${mount.mode === "ReadOnly" ? ":ro" : ":rw"}`,
-    ),
+    ...sandbox.mounts
+      .filter((mount) => mount.mode === "ReadOnly")
+      .map((mount) => `${mount.hostPath}:${mount.containerPath}:ro`),
+    ...(outputs.length > 0 ? [`${outputDirectory}:/kq/outputs:rw`] : []),
   ];
   return [
     sandbox.apptainerPath as string,
