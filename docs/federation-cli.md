@@ -1,0 +1,82 @@
+# 联邦财务 CLI
+
+`kq federation` 通过所属平台的 HTTP API 管理商业合同读取、账单、结算和自动审批授权；使用已登录的人类会话及当前机构能力，不持有链密钥，也不直接连接 Fabric。Server 是权限、信任和业务验证的最终执行方。
+
+## 选择机构
+
+```sh
+kq login
+kq federation organizations
+kq federation use "$ORG_ID"
+kq federation --org "$ORG_ID" capabilities
+kq federation --org "$ORG_ID" contracts list
+```
+
+`organizations` 中星号表示当前会话机构。`use` 显式调用现有会话切换接口，需要可切换的登录会话；没有 sessionId 的开发 token 不能用它切换。切换会影响共用该会话的其他客户端。
+
+其余联邦命令要求 `--org UUID`。它发送 `X-KQ-Active-Organization`，仅断言当前会话机构，不能选择机构或获得权限。Server 在主 `/api/federation/*` 路由比较已经绑定的 principal：不合法 UUID 返回 400，机构变化返回 409 `ORGANIZATION_CONTEXT_CHANGED`，两者都不继续业务处理。旧客户端不发送该头时沿用原逻辑；Web 已发送的机构头也会得到这一保护。管理路由和私有 mTLS 协议入口不使用这套会话断言。
+
+默认输出中文，`--lang en` 使用英文状态，`--json` 输出经过 schema 和作用域核对的原记录。JSON 可能包含私有合同、金额和业务签名，应按机构私有材料保管。使用现有 `KQ_CONFIG_FILE` 可选择独立 CLI 登录配置，不需要改动默认配置文件。
+
+## 自动审批与待办
+
+双方分别授予本机构的有限政策。bill 需要 `billing.approve`，settlement 需要 `settlement.approve`，合同批准能力不包含这两项权限。查看需要既有 `agreement.read`；自动化凭据不能代替人员授予或撤销政策。
+
+审查以下 JSON，按实际合同修改金额、次数和到期时间后保存为 `bill-policy.json`。金额使用合同单位的整数字符串，不是浮点数；示例并不默认授权任何机构。
+
+```json
+{
+  "kind": "bill",
+  "outcomes": ["completed"],
+  "maxAmount": "10",
+  "maxTotalAmount": "100",
+  "maxRecords": 10,
+  "validUntil": "2030-01-01T00:00:00Z"
+}
+```
+
+```sh
+kq federation --org "$ORG_ID" closing policies grant "$REVISION_ID" bill-policy.json
+kq federation --org "$ORG_ID" closing policies list "$REVISION_ID" --limit 20 --offset 0
+kq federation --org "$ORG_ID" closing policies revoke "$REVISION_ID" "$POLICY_ID"
+kq federation --org "$ORG_ID" closing tasks list "$REVISION_ID"
+kq federation --org "$ORG_ID" closing tasks retry "$REVISION_ID" bill "$RESERVATION_ID"
+kq federation --org "$ORG_ID" closing tasks retry "$REVISION_ID" settlement "$BILL_ID"
+```
+
+结算授权使用另一个 `kind: "settlement"` 文件独立授予。`grant` 是实际操作，不是预览；CLI 不额外询问确认。每种类型先撤销旧的未撤销政策，再授予新政策；撤销停止新的批准，保留原签名。列表显示单笔上限、允许结果、累计金额、次数与到期状态，零金额政策仍可批准零收费记录。
+
+待办仅在提供方产生。bill 待办的 reference 是原 reservationId，settlement 待办的 reference 是原 billId；它们不是账单草稿的 reportId。retry 只请求处理原记录，需要对应独立能力；完成状态只表示双方签署，继续查询原账单/结算核对记账和存证。
+
+## 原文草稿、批准与附签
+
+```sh
+kq federation --org "$ORG_ID" contracts show "$REVISION_ID"
+kq federation --org "$ORG_ID" contracts export "$REVISION_ID" contract.json
+kq federation --org "$ORG_ID" bills draft "$REVISION_ID" "$REPORT_ID" bill.json --id "$BILL_ID"
+kq federation --org "$ORG_ID" bills approve "$REVISION_ID" bill.json
+kq federation --org "$ORG_ID" bills attach "$REVISION_ID" "$BILL_ID" peer-bill.jws
+kq federation --org "$ORG_ID" bills list "$REVISION_ID" --record "$BILL_ID"
+kq federation --org "$ORG_ID" settlements draft "$REVISION_ID" "$BILL_ID" settlement.json --id "$SETTLEMENT_ID"
+kq federation --org "$ORG_ID" settlements approve "$REVISION_ID" settlement.json
+kq federation --org "$ORG_ID" settlements attach "$REVISION_ID" "$SETTLEMENT_ID" peer-settlement.jws
+kq federation --org "$ORG_ID" settlements list "$REVISION_ID" --record "$SETTLEMENT_ID"
+```
+
+草稿只生成原文，不批准。`--id` 可以指定原 UUID，省略时生成新 UUID；双方必须审查和批准同一份原文，不分别重新生成。`attach` 读取对方原 JWS 文件，由 Server 校验签名和当前信任。已有自动签名交换可继续使用，无需手工重复附签。批准响应会核对正文及外层记录编号。
+
+导出使用仅所有者可读写的新文件（0600），不覆盖已有路径；输入文件上限 600000 字节。列表支持 `--limit 1..100` 和 `--offset`，账单/结算可用 `--record UUID` 精确查询。金额始终保留整数精度，结算分别标明预留、扣用、归还，不把签名、本站记账和本站存证混成一个成功状态：
+
+| 模式 | 本站记账与链状态 |
+| --- | --- |
+| bilateral_direct | 不要求链存证，独立读取实际记账状态 |
+| bilateral_attested | 本站可以已记账但存证仍待处理，缺失对端状态不推断已上链 |
+| ledger_coordinated | 双方签署不等于本站已记账，须等待原待办 VALID |
+
+CLI 不自动重试写入，联邦请求拒绝重定向并限时 30 秒。写入超时、连接中断或成功响应损坏时，结果可能已经生效：先查询原政策或原业务编号，核对后再处理，不能重新生成或盲目重复授权。`use` 响应异常时同样先用 `organizations` 核对当前会话。批准及记账均不表示银行付款。
+
+## 范围与验证
+
+本入口覆盖上述财务操作，没有加入执行、市场、材料交付、独立减免、付款或争议命令。原生背书与私有数据规则继续由现有链码和 Adapter 实施。完整业务边界见[商业协议部署说明](../deploy/federation/fabric-commercial.md)。
+
+25 项 HTTP 夹具和中间件测试覆盖机构断言、精确金额、三模式状态、原文/编号、独立权限、文件安全、重定向和未知响应；另通过实际 CLI 子进程、真实 loopback HTTP、生产商业路由与隔离 PostgreSQL 的联合测试，验证机构改变拒绝、独立审批权、人类身份限制以及政策创建/读取/撤销和原结算读取。联调身份由测试中间件注入，不代替正式登录链路或 PR 预览验收。本轮不重复 Fabric 或调度器验收。

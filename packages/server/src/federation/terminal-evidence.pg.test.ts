@@ -1,5 +1,9 @@
 import { afterEach, expect, setSystemTime, spyOn, test } from "bun:test";
 import { randomUUID } from "node:crypto";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   agentJobStatusEvents,
   agents,
@@ -66,6 +70,7 @@ import { Hono } from "hono";
 import { exportSPKI } from "jose";
 import pino from "pino";
 import { createErrorHandler } from "../middleware/error-handler";
+import { federationOrganizationContext } from "../middleware/federation-organization";
 import { createFederationCommercialRoutes } from "../routes/federation-commercial";
 import { revokeDataDeliveryJobs } from "../services/data-delivery";
 import { DataGrantRevocationCoordinator } from "../services/data-delivery-revocations";
@@ -4497,3 +4502,136 @@ test("commercial closing record navigation filters the exact bill and settlement
     actor = f.actor;
   }
 });
+
+test("federation CLI real HTTP and PostgreSQL preserve organization and independent closing authority", async () => {
+  const f = await settlementFixture();
+  await f.approve();
+  const policyService = new FederationClosingPolicyService(db, f.provider.signing.siteId);
+  cleanup.push(async () => {
+    const policies = await policyService.list(f.actor, f.revisionId);
+    for (const policy of policies) {
+      await db.delete(federationClosingPolicies).where(eq(federationClosingPolicies.id, policy.id));
+      await db.delete(auditLog).where(eq(auditLog.actor, `closing-policy:${policy.id}`));
+    }
+  });
+  const deps: Parameters<typeof createFederationCommercialRoutes> = [
+    new FederationCommercialAgreementService(db, f.provider.signing),
+    new FederationCommercialSubmissionService(db, f.provider.signing.siteId),
+  ];
+  deps[15] = f.providerBilling;
+  deps[16] = f.providerSettlement;
+  deps[17] = policyService;
+  const app = new Hono();
+  const token = randomUUID();
+  let actor = f.actor;
+  let automation = false;
+  app.onError(createErrorHandler(pino({ enabled: false })));
+  app.use("*", async (c, next) => {
+    if (c.req.header("authorization") !== `Bearer ${token}`) return c.json({}, 401);
+    c.set("principal" as never, actor as never);
+    if (automation) c.set("automation" as never, true as never);
+    await next();
+  });
+  app.use("/api/federation/*", federationOrganizationContext);
+  app.route("/api", createFederationCommercialRoutes(...deps));
+  const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: app.fetch });
+  cleanup.push(async () => {
+    server.stop(true);
+  });
+  const dir = await mkdtemp(join(tmpdir(), "kq-federation-cli-pg-"));
+  cleanup.push(() => rm(dir, { recursive: true, force: true }));
+  const config = join(dir, "config.json"),
+    input = join(dir, "policy.json");
+  await writeFile(config, JSON.stringify({ serverUrl: `http://127.0.0.1:${server.port}`, token }), {
+    mode: 0o600,
+  });
+  await writeFile(
+    input,
+    JSON.stringify({
+      kind: "bill",
+      outcomes: ["completed"],
+      maxAmount: "60",
+      maxTotalAmount: "100",
+      maxRecords: 2,
+      validUntil: new Date(Date.now() + 3600000).toISOString(),
+    }),
+    { mode: 0o600 },
+  );
+  const run = async (...args: string[]) => {
+    const child = Bun.spawn(
+      [
+        process.execPath,
+        "--no-env-file",
+        fileURLToPath(new URL("../../../cli/src/index.ts", import.meta.url)),
+        "federation",
+        "--org",
+        f.orgId,
+        "--lang",
+        "en",
+        "--json",
+        ...args,
+      ],
+      {
+        env: { ...process.env, KQ_CONFIG_FILE: config },
+        stdout: "pipe",
+        stderr: "pipe",
+      },
+    );
+    const [code, stdout, stderr] = await Promise.all([
+      child.exited,
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+    ]);
+    return { code, stdout, stderr };
+  };
+  actor = f.sourceActor;
+  const changed = await run("closing", "policies", "grant", f.revisionId, input);
+  expect(changed.code).toBe(1);
+  expect(changed.stderr).toContain("ORGANIZATION_CONTEXT_CHANGED");
+  expect(await policyService.list(f.actor, f.revisionId)).toHaveLength(0);
+  actor = f.actor;
+  await new FederationPermissionService(db).set(
+    { ...f.actor, capability: "billing.approve", enabled: false },
+    f.userId,
+  );
+  const denied = await run("closing", "policies", "grant", f.revisionId, input);
+  expect(denied.code).toBe(1);
+  expect(denied.stderr).toContain("HTTP 403 POLICY_DENIED");
+  expect(await policyService.list(f.actor, f.revisionId)).toHaveLength(0);
+  await new FederationPermissionService(db).set(
+    { ...f.actor, capability: "billing.approve", enabled: true },
+    f.userId,
+  );
+  const granted = await run("closing", "policies", "grant", f.revisionId, input);
+  expect(granted.code).toBe(0);
+  const policy = JSON.parse(granted.stdout);
+  expect(policy).toMatchObject({
+    kind: "bill",
+    maxAmount: "60",
+    approvedRecords: 0,
+    localOrgId: f.orgId,
+  });
+  const listed = await run("closing", "policies", "list", f.revisionId);
+  expect(listed.code).toBe(0);
+  expect(JSON.parse(listed.stdout)).toHaveLength(1);
+  automation = true;
+  const machine = await run("closing", "policies", "revoke", f.revisionId, policy.id);
+  expect(machine.code).toBe(1);
+  expect(machine.stderr).toContain("HTTP 403");
+  automation = false;
+  const revoked = await run("closing", "policies", "revoke", f.revisionId, policy.id);
+  expect(revoked.code).toBe(0);
+  expect(JSON.parse(revoked.stdout).revokedAt).not.toBeNull();
+  const settlements = await run(
+    "settlements",
+    "list",
+    f.revisionId,
+    "--record",
+    f.draft.settlementId,
+  );
+  expect(settlements.code).toBe(0);
+  expect(JSON.parse(settlements.stdout).data[0].settlement).toMatchObject({
+    settlementId: f.draft.settlementId,
+    payload: { chargedAmount: f.draft.chargedAmount },
+  });
+}, 30000);

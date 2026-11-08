@@ -125,6 +125,7 @@ import { attachGrpcTransportErrorHandlers } from "./grpc/transport-errors";
 import { authMiddleware } from "./middleware/auth";
 import { automationScopeMiddleware } from "./middleware/automation-scope";
 import { createErrorHandler, createNotFoundHandler } from "./middleware/error-handler";
+import { federationOrganizationContext } from "./middleware/federation-organization";
 import { principalBinder } from "./middleware/principal-binder";
 import { securityHeaders } from "./middleware/security-headers";
 import { PreferenceService } from "./preferences/preference-service";
@@ -821,6 +822,7 @@ protectedApi.use("*", authMiddleware(config.JWT_SECRET, db));
 // cp-rbac middleware and the metering routes.
 protectedApi.use("*", principalBinder(db));
 protectedApi.use("*", automationScopeMiddleware(db));
+protectedApi.use("/federation/*", federationOrganizationContext);
 protectedApi.route("/", createAutomationCredentialRoutes(db));
 // Server CA + cert issuance + mTLS for the Agent connectRPC stream.
 const ca = await ensureCa(config.SERVER_CA_DIR);
