@@ -22,6 +22,7 @@ import {
   CommercialSettlementSchema,
 } from "@kuintessence/shared/federation/commercial";
 import { and, desc, eq, sql } from "drizzle-orm";
+import { assertClosingPolicyActive, FederationClosingPolicyService } from "./closing-policy";
 import { type FederationActor, requireFederationCapability } from "./permissions";
 import {
   type FederationSigningKey,
@@ -299,65 +300,101 @@ export class FederationSettlementService {
     const value = CommercialSettlementSchema.parse(raw);
     return this.db.transaction(async (tx) => {
       await requireFederationCapability(tx, actor, "settlement.approve");
-      const bill = await this.original(tx, actor, revisionId, value.billId);
-      assertCommercialSettlement(value, bill.payload, bill.digest);
-      if (
-        Date.parse(value.issuedAt) > Date.now() + 60000 ||
-        federationCanonicalJson(value.terminal) !==
-          federationCanonicalJson(await this.terminal(tx, bill))
-      )
-        throw new FederationError("POLICY_DENIED");
-      const [prior] = await tx.select().from(settlements).where(this.key(value.settlementId));
-      if (prior) {
-        if (
-          prior.localOrgId !== actor.orgId ||
-          prior.agreementRevisionId !== revisionId ||
-          federationCanonicalJson(prior.payload) !== federationCanonicalJson(value)
-        )
-          throw new FederationError("OPERATION_CONFLICT");
-        await this.verify(tx, prior.approvalJws, this.signing.siteId);
-        return prior;
-      }
-      const signed = await this.verify(
-        tx,
-        await signFederationMessage(CommercialSettlementSchema, value, this.signing),
-        this.signing.siteId,
-      );
-      const [row] = await tx
-        .insert(settlements)
-        .values({
-          localSiteId: this.signing.siteId,
-          settlementId: value.settlementId,
-          billId: value.billId,
-          agreementRevisionId: revisionId,
-          localOrgId: actor.orgId,
-          payload: value,
-          digest: signed.digest,
-          approvalJws: signed.jws,
-          approvedBy: actor.userId,
-        })
-        .onConflictDoNothing()
-        .returning();
-      if (!row) {
-        const [same] = await tx.select().from(settlements).where(this.key(value.settlementId));
-        if (
-          !same ||
-          same.localOrgId !== actor.orgId ||
-          same.agreementRevisionId !== revisionId ||
-          same.digest !== signed.digest
-        )
-          throw new FederationError("OPERATION_CONFLICT");
-        return same;
-      }
-      await tx.insert(auditLog).values({
-        actor: actor.userId,
-        orgId: actor.orgId,
-        action: "federation.settlement.approve",
-        target: row.settlementId,
-        diff: { after: { digest: row.digest } },
-      });
-      return row;
+      return this.approveInTransaction(tx, actor, revisionId, value);
     });
+  }
+  /** Only local orchestration can use institution-owned authority; HTTP approval cannot supply a policy. */
+  async automate(policyId: string, raw: CommercialSettlement) {
+    const value = CommercialSettlementSchema.parse(raw);
+    return this.db.transaction(async (tx) => {
+      const policy = await new FederationClosingPolicyService(
+        this.db,
+        this.signing.siteId,
+      ).authority(tx, policyId, "settlement");
+      return this.approveInTransaction(
+        tx,
+        { orgId: policy.localOrgId, userId: policy.grantedBy },
+        policy.agreementRevisionId,
+        value,
+        policy,
+      );
+    });
+  }
+  private async approveInTransaction(
+    tx: PgTransaction,
+    actor: FederationActor,
+    revisionId: string,
+    value: CommercialSettlement,
+    policy?: Awaited<ReturnType<FederationClosingPolicyService["authority"]>>,
+  ) {
+    const bill = await this.original(tx, actor, revisionId, value.billId);
+    assertCommercialSettlement(value, bill.payload, bill.digest);
+    if (
+      Date.parse(value.issuedAt) > Date.now() + 60000 ||
+      federationCanonicalJson(value.terminal) !==
+        federationCanonicalJson(await this.terminal(tx, bill))
+    )
+      throw new FederationError("POLICY_DENIED");
+    const [prior] = await tx.select().from(settlements).where(this.key(value.settlementId));
+    if (prior) {
+      if (
+        prior.localOrgId !== actor.orgId ||
+        prior.agreementRevisionId !== revisionId ||
+        federationCanonicalJson(prior.payload) !== federationCanonicalJson(value)
+      )
+        throw new FederationError("OPERATION_CONFLICT");
+      await this.verify(tx, prior.approvalJws, this.signing.siteId);
+      return prior;
+    }
+    const signed = await this.verify(
+      tx,
+      await signFederationMessage(CommercialSettlementSchema, value, this.signing),
+      this.signing.siteId,
+    );
+    const [row] = await tx
+      .insert(settlements)
+      .values({
+        localSiteId: this.signing.siteId,
+        settlementId: value.settlementId,
+        billId: value.billId,
+        agreementRevisionId: revisionId,
+        localOrgId: actor.orgId,
+        payload: value,
+        digest: signed.digest,
+        approvalJws: signed.jws,
+        approvedBy: actor.userId,
+        authorizationPolicyId: policy?.id,
+      })
+      .onConflictDoNothing()
+      .returning();
+    if (!row) {
+      const [same] = await tx.select().from(settlements).where(this.key(value.settlementId));
+      if (
+        !same ||
+        same.localOrgId !== actor.orgId ||
+        same.agreementRevisionId !== revisionId ||
+        same.digest !== signed.digest
+      )
+        throw new FederationError("OPERATION_CONFLICT");
+      return same;
+    }
+    if (policy) {
+      await new FederationClosingPolicyService(this.db, this.signing.siteId).consume(
+        tx,
+        policy,
+        value.chargedAmount,
+        bill.payload.request,
+      );
+      assertClosingPolicyActive(policy);
+    }
+    await tx.insert(auditLog).values({
+      actor: policy ? `closing-policy:${policy.id}` : actor.userId,
+      orgId: actor.orgId,
+      action: "federation.settlement.approve",
+      target: row.settlementId,
+      diff: { after: { digest: row.digest } },
+    });
+    return row;
   }
   async attachExchanged(
     revisionId: string,

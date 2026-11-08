@@ -1097,6 +1097,59 @@ export const federationCommercialAgreements = pgTable(
   ],
 );
 
+/** Independent, revocable authority for financial approval; not a spendable balance. */
+export const federationClosingPolicies = pgTable(
+  "federation_closing_policies",
+  {
+    id: uuid("id").primaryKey(),
+    localSiteId: uuid("local_site_id").notNull(),
+    localOrgId: uuid("local_org_id")
+      .notNull()
+      .references(() => orgs.id),
+    agreementRevisionId: uuid("agreement_revision_id").notNull(),
+    agreementDigest: varchar("agreement_digest", { length: 71 }).notNull(),
+    kind: varchar("kind", { length: 16 }).$type<"bill" | "settlement">().notNull(),
+    outcomes: jsonb("outcomes").$type<Array<"completed" | "failed" | "cancelled">>().notNull(),
+    maxAmount: numeric("max_amount", { precision: 38, scale: 0 }).notNull(),
+    maxTotalAmount: numeric("max_total_amount", { precision: 38, scale: 0 }).notNull(),
+    maxRecords: integer("max_records").notNull(),
+    approvedAmount: numeric("approved_amount", { precision: 38, scale: 0 }).notNull().default("0"),
+    approvedRecords: integer("approved_records").notNull().default(0),
+    validFrom: timestamp("valid_from", { withTimezone: true }).notNull(),
+    validUntil: timestamp("valid_until", { withTimezone: true }).notNull(),
+    grantedBy: uuid("granted_by")
+      .notNull()
+      .references(() => users.id),
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
+    revokedBy: uuid("revoked_by").references(() => users.id),
+  },
+  (t) => [
+    foreignKey({
+      columns: [t.localSiteId, t.agreementRevisionId],
+      foreignColumns: [
+        federationCommercialAgreements.localSiteId,
+        federationCommercialAgreements.revisionId,
+      ],
+    }),
+    uniqueIndex("federation_closing_policy_active")
+      .on(t.localSiteId, t.agreementRevisionId, t.kind)
+      .where(sql`${t.revokedAt} IS NULL`),
+    check("federation_closing_policy_kind", sql`${t.kind} IN ('bill','settlement')`),
+    check(
+      "federation_closing_policy_limits",
+      sql`${t.maxAmount} >= 0 AND ${t.maxTotalAmount} >= ${t.maxAmount} AND ${t.maxRecords} BETWEEN 1 AND 100000 AND ${t.approvedAmount} BETWEEN 0 AND ${t.maxTotalAmount} AND ${t.approvedRecords} BETWEEN 0 AND ${t.maxRecords}`,
+    ),
+    check(
+      "federation_closing_policy_time",
+      sql`${t.validUntil} > ${t.validFrom} AND (${t.revokedAt} IS NULL) = (${t.revokedBy} IS NULL)`,
+    ),
+    check(
+      "federation_closing_policy_outcomes",
+      sql`jsonb_typeof(${t.outcomes}) = 'array' AND jsonb_array_length(${t.outcomes}) BETWEEN 1 AND 3 AND ${t.outcomes} <@ '["completed","failed","cancelled"]'::jsonb`,
+    ),
+  ],
+);
+
 /** Local business signatures are immutable; no payment or balance fields belong here. */
 export const federationCommercialBills = pgTable(
   "federation_commercial_bills",
@@ -1113,6 +1166,9 @@ export const federationCommercialBills = pgTable(
     digest: varchar("digest", { length: 71 }).notNull(),
     approvalJws: text("approval_jws").notNull(),
     counterpartyJws: text("counterparty_jws"),
+    authorizationPolicyId: uuid("authorization_policy_id").references(
+      () => federationClosingPolicies.id,
+    ),
     approvedBy: uuid("approved_by")
       .notNull()
       .references(() => users.id),
@@ -1160,6 +1216,9 @@ export const federationCommercialSettlements = pgTable(
     digest: varchar("digest", { length: 71 }).notNull(),
     approvalJws: text("approval_jws").notNull(),
     counterpartyJws: text("counterparty_jws"),
+    authorizationPolicyId: uuid("authorization_policy_id").references(
+      () => federationClosingPolicies.id,
+    ),
     approvedBy: uuid("approved_by")
       .notNull()
       .references(() => users.id),

@@ -16,6 +16,10 @@ import { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { z } from "zod";
 import type { FederationBillingService } from "../federation/billing";
+import {
+  ClosingPolicyInputSchema,
+  type FederationClosingPolicyService,
+} from "../federation/closing-policy";
 import type { FederationCommercialAgreementService } from "../federation/commercial-agreements";
 import type { FederationCommercialApprovalExchange } from "../federation/commercial-approval-exchange";
 import type { FederationCommercialExecutionService } from "../federation/commercial-execution";
@@ -61,6 +65,7 @@ export function createFederationCommercialRoutes(
   marketRequests?: FederationMarketRequestService,
   billing?: FederationBillingService,
   settlements?: FederationSettlementService,
+  closingPolicies?: FederationClosingPolicyService,
 ) {
   const r = new Hono<{ Variables: { federationActor: FederationActor } }>();
   r.use("/federation/commercial-agreements/*", async (c, next) => {
@@ -453,6 +458,51 @@ export function createFederationCommercialRoutes(
         });
         return c.json({ success: true });
       },
+    );
+  }
+  if (closingPolicies) {
+    const path = "/federation/commercial-agreements/:revisionId/closing-policies";
+    r.get(path, kqValidator("param", id), kqValidator("query", page), async (c) =>
+      c.json({
+        success: true,
+        data: await closingPolicies.list(
+          c.get("federationActor"),
+          c.req.valid("param").revisionId,
+          c.req.valid("query").limit,
+          c.req.valid("query").offset,
+        ),
+      }),
+    );
+    r.post(
+      path,
+      kqValidator("param", id),
+      kqValidator("json", ClosingPolicyInputSchema),
+      async (c) =>
+        c.json(
+          {
+            success: true,
+            data: await closingPolicies.grant(
+              c.get("federationActor"),
+              c.req.valid("param").revisionId,
+              c.req.valid("json"),
+            ),
+          },
+          201,
+        ),
+    );
+    r.post(
+      `${path}/:policyId/revoke`,
+      kqValidator("param", id.extend({ policyId: z.uuid() })),
+      kqValidator("json", z.strictObject({})),
+      async (c) =>
+        c.json({
+          success: true,
+          data: await closingPolicies.revoke(
+            c.get("federationActor"),
+            c.req.valid("param").revisionId,
+            c.req.valid("param").policyId,
+          ),
+        }),
     );
   }
   if (terminalPolicies) {

@@ -38,6 +38,7 @@ import {
 } from "@kuintessence/shared/federation/commercial";
 import { and, desc, eq, sql } from "drizzle-orm";
 import type { z } from "zod";
+import { assertClosingPolicyActive, FederationClosingPolicyService } from "./closing-policy";
 import { type FederationActor, requireFederationCapability } from "./permissions";
 import {
   type FederationSigningKey,
@@ -47,7 +48,7 @@ import {
 } from "./signatures";
 import { FederationTrustRegistry } from "./trust-registry";
 
-/** Human business approval only. Neither a terminal report nor chain availability approves a bill. */
+/** Explicit human or bounded institutional approval; terminal reports and chain availability grant no authority. */
 export class FederationBillingService {
   private readonly trust: FederationTrustRegistry;
   constructor(
@@ -209,6 +210,7 @@ export class FederationBillingService {
       request,
       report,
       reportDigest: original.record.digest,
+      reportJws: original.record.reportJws,
       provider,
       reservationId: request.mode === "ledger_coordinated" ? original.reservationId : null,
     };
@@ -308,66 +310,117 @@ export class FederationBillingService {
     });
   }
   async approve(actor: FederationActor, revisionId: string, raw: CommercialBill) {
-    const bill = CommercialBillSchema.parse(raw);
+    const value = CommercialBillSchema.parse(raw);
     return this.db.transaction(async (tx) => {
       await requireFederationCapability(tx, actor, "billing.approve");
-      await this.contract(tx, actor, revisionId);
-      const [prior] = await tx
+      return this.approveInTransaction(tx, actor, revisionId, value);
+    });
+  }
+  /** Only local orchestration can use institution-owned authority; HTTP approval cannot supply a policy. */
+  async automate(policyId: string, raw: CommercialBill) {
+    const value = CommercialBillSchema.parse(raw);
+    return this.db.transaction(async (tx) => {
+      const policy = await new FederationClosingPolicyService(
+        this.db,
+        this.signing.siteId,
+      ).authority(tx, policyId, "bill");
+      return this.approveInTransaction(
+        tx,
+        { orgId: policy.localOrgId, userId: policy.grantedBy },
+        policy.agreementRevisionId,
+        value,
+        policy,
+      );
+    });
+  }
+  private async approveInTransaction(
+    tx: PgTransaction,
+    actor: FederationActor,
+    revisionId: string,
+    bill: CommercialBill,
+    policy?: Awaited<ReturnType<FederationClosingPolicyService["authority"]>>,
+  ) {
+    await this.contract(tx, actor, revisionId);
+    const [prior] = await tx
+      .select()
+      .from(bills)
+      .where(and(eq(bills.localSiteId, this.signing.siteId), eq(bills.billId, bill.billId)));
+    if (prior) {
+      if (
+        prior.localOrgId !== actor.orgId ||
+        prior.agreementRevisionId !== revisionId ||
+        federationCanonicalJson(prior.payload) !== federationCanonicalJson(bill)
+      )
+        throw new FederationError("OPERATION_CONFLICT");
+      return prior;
+    }
+    const f = await this.originals(tx, actor, revisionId, bill.reportId);
+    const discount = await this.concession(tx, actor, revisionId, bill.discount?.discountId);
+    if (
+      bill.reservationId !== f.reservationId ||
+      federationCanonicalJson(bill.request) !== federationCanonicalJson(f.request) ||
+      Date.parse(bill.issuedAt) > Date.now() + 60000
+    )
+      throw new FederationError("POLICY_DENIED");
+    assertCommercialBill(bill, f.terms, f.contract.digest, f.report, f.reportDigest, discount);
+    if (policy) {
+      const report = await this.verify(
+        tx,
+        CommercialUsageSchema,
+        f.reportJws,
+        f.request.recipientSiteId,
+      );
+      if (report.digest !== f.reportDigest) throw new FederationError("OPERATION_CONFLICT");
+    }
+    const signed = await this.sign(tx, CommercialBillSchema, bill);
+    const [row] = await tx
+      .insert(bills)
+      .values({
+        localSiteId: this.signing.siteId,
+        billId: bill.billId,
+        agreementRevisionId: revisionId,
+        localOrgId: actor.orgId,
+        taskId: bill.request.taskId,
+        attempt: bill.request.attempt,
+        payload: bill,
+        digest: signed.digest,
+        approvalJws: signed.jws,
+        approvedBy: actor.userId,
+        authorizationPolicyId: policy?.id,
+      })
+      .onConflictDoNothing()
+      .returning();
+    if (!row) {
+      const [same] = await tx
         .select()
         .from(bills)
         .where(and(eq(bills.localSiteId, this.signing.siteId), eq(bills.billId, bill.billId)));
-      if (prior) {
-        if (
-          prior.localOrgId !== actor.orgId ||
-          prior.agreementRevisionId !== revisionId ||
-          federationCanonicalJson(prior.payload) !== federationCanonicalJson(bill)
-        )
-          throw new FederationError("OPERATION_CONFLICT");
-        return prior;
-      }
-      const f = await this.originals(tx, actor, revisionId, bill.reportId);
-      const discount = await this.concession(tx, actor, revisionId, bill.discount?.discountId);
       if (
-        bill.reservationId !== f.reservationId ||
-        federationCanonicalJson(bill.request) !== federationCanonicalJson(f.request) ||
-        Date.parse(bill.issuedAt) > Date.now() + 60000
+        !same ||
+        same.localOrgId !== actor.orgId ||
+        same.agreementRevisionId !== revisionId ||
+        same.digest !== signed.digest
       )
-        throw new FederationError("POLICY_DENIED");
-      assertCommercialBill(bill, f.terms, f.contract.digest, f.report, f.reportDigest, discount);
-      const signed = await this.sign(tx, CommercialBillSchema, bill);
-      const [row] = await tx
-        .insert(bills)
-        .values({
-          localSiteId: this.signing.siteId,
-          billId: bill.billId,
-          agreementRevisionId: revisionId,
-          localOrgId: actor.orgId,
-          taskId: bill.request.taskId,
-          attempt: bill.request.attempt,
-          payload: bill,
-          digest: signed.digest,
-          approvalJws: signed.jws,
-          approvedBy: actor.userId,
-        })
-        .onConflictDoNothing()
-        .returning();
-      if (!row) {
-        const [same] = await tx
-          .select()
-          .from(bills)
-          .where(and(eq(bills.localSiteId, this.signing.siteId), eq(bills.billId, bill.billId)));
-        if (
-          !same ||
-          same.localOrgId !== actor.orgId ||
-          same.agreementRevisionId !== revisionId ||
-          same.digest !== signed.digest
-        )
-          throw new FederationError("OPERATION_CONFLICT");
-        return same;
-      }
-      await this.audit(tx, actor, "approve", bill.billId, signed.digest);
-      return row;
-    });
+        throw new FederationError("OPERATION_CONFLICT");
+      return same;
+    }
+    if (policy) {
+      await new FederationClosingPolicyService(this.db, this.signing.siteId).consume(
+        tx,
+        policy,
+        bill.calculation.dueAmount,
+        bill.request,
+      );
+      assertClosingPolicyActive(policy);
+    }
+    await this.audit(
+      tx,
+      policy ? { ...actor, userId: `closing-policy:${policy.id}` } : actor,
+      "approve",
+      bill.billId,
+      signed.digest,
+    );
+    return row;
   }
   async attachCounterparty(
     actor: FederationActor,

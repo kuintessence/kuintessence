@@ -56,6 +56,7 @@ import { UnixAttestationClient } from "./federation/attestation-client";
 import { FederationAttestationWorker } from "./federation/attestation-worker";
 import { FederationBillingService } from "./federation/billing";
 import { FederationCancellationMonitor } from "./federation/cancellation-monitor";
+import { FederationClosingPolicyService } from "./federation/closing-policy";
 import { FederationCommercialAgreementService } from "./federation/commercial-agreements";
 import { FederationCommercialApprovalExchange } from "./federation/commercial-approval-exchange";
 import { UnixCommercialClient } from "./federation/commercial-client";
@@ -1813,6 +1814,7 @@ if (federationSigningKey && federationCommercial)
       federationMarketRequests,
       new FederationBillingService(db, federationSigningKey),
       new FederationSettlementService(db, federationSigningKey),
+      new FederationClosingPolicyService(db, federationSigningKey.siteId),
     ),
   );
 const federationPreparation = federationSigningKey

@@ -14,6 +14,7 @@ import {
   federationBudgets,
   federationCapabilities,
   federationCertificates,
+  federationClosingPolicies,
   federationCommercialAgreements,
   federationCommercialApprovalSyncs,
   federationCommercialAttempts,
@@ -71,6 +72,7 @@ import { JobService } from "../services/job-service";
 import { FederationAccountingCollection } from "./accounting-collection";
 import { federationMaterialDigest } from "./assets";
 import { FederationBillingService } from "./billing";
+import { ClosingPolicyInputSchema, FederationClosingPolicyService } from "./closing-policy";
 import { FederationCommercialAgreementService } from "./commercial-agreements";
 import { FederationCommercialApprovalExchange } from "./commercial-approval-exchange";
 import { FederationCommercialSubmissionService } from "./commercial-submissions";
@@ -3583,4 +3585,380 @@ test("settlement coordinated worker frees local slots only after VALID and creat
         .where(eq(federationOutbound.operationId, f.operationId))
     )[0]?.settledAmount,
   ).toBe("53");
+});
+
+type ClosingFixture = Pick<
+  Awaited<ReturnType<typeof billingFixture>>,
+  "actor" | "sourceActor" | "source" | "provider" | "revisionId"
+>;
+async function grantClosing(
+  f: ClosingFixture,
+  kind: "bill" | "settlement",
+  source = false,
+  overrides: Partial<ReturnType<typeof ClosingPolicyInputSchema.parse>> = {},
+) {
+  const siteId = (source ? f.source : f.provider).signing.siteId;
+  const service = new FederationClosingPolicyService(db, siteId);
+  const actor = source ? f.sourceActor : f.actor;
+  const policy = await service.grant(actor, f.revisionId, {
+    kind,
+    outcomes: ["completed"],
+    maxAmount: "60",
+    maxTotalAmount: "100",
+    maxRecords: 2,
+    validUntil: new Date(Date.now() + 3600000).toISOString(),
+    ...overrides,
+  });
+  cleanup.push(async () => {
+    await db
+      .update(federationCommercialBills)
+      .set({ authorizationPolicyId: null })
+      .where(eq(federationCommercialBills.authorizationPolicyId, policy.id));
+    await db
+      .update(federationCommercialSettlements)
+      .set({ authorizationPolicyId: null })
+      .where(eq(federationCommercialSettlements.authorizationPolicyId, policy.id));
+    await db.delete(federationClosingPolicies).where(eq(federationClosingPolicies.id, policy.id));
+    await db.delete(auditLog).where(eq(auditLog.actor, `closing-policy:${policy.id}`));
+  });
+  const read = async () =>
+    (await service.list(actor, f.revisionId)).find((v) => v.id === policy.id);
+  return { policy, service, actor, read };
+}
+
+test("closing policy independently authorizes bills at both sites and preserves original signatures under concurrency", async () => {
+  const f = await billingFixture();
+  const provider = await grantClosing(f, "bill"),
+    source = await grantClosing(f, "bill", true);
+  const rows = await Promise.all(
+    Array.from({ length: 3 }, () => f.providerBilling.automate(provider.policy.id, f.draft)),
+  );
+  expect(new Set(rows.map((v) => v.approvalJws)).size).toBe(1);
+  expect(rows[0]?.authorizationPolicyId).toBe(provider.policy.id);
+  const other = await f.sourceBilling.automate(source.policy.id, f.draft);
+  expect(other.authorizationPolicyId).toBe(source.policy.id);
+  expect(await provider.read()).toMatchObject({ approvedRecords: 1, approvedAmount: "60" });
+  expect(await source.read()).toMatchObject({ approvedRecords: 1, approvedAmount: "60" });
+  expect(
+    await db
+      .select()
+      .from(auditLog)
+      .where(eq(auditLog.actor, `closing-policy:${provider.policy.id}`)),
+  ).toHaveLength(1);
+  expect(rows[0]?.counterpartyJws).toBeNull();
+  expect(
+    await db
+      .select()
+      .from(federationCommercialSubmissions)
+      .where(eq(federationCommercialSubmissions.localSiteId, f.provider.signing.siteId)),
+  ).toHaveLength(0);
+});
+
+test("closing policy cannot be granted by contract permission or substitute billing authority for settlement", async () => {
+  const f = await billingFixture();
+  const service = new FederationClosingPolicyService(db, f.provider.signing.siteId);
+  const input = ClosingPolicyInputSchema.parse({
+    kind: "settlement",
+    outcomes: ["completed"],
+    maxAmount: "60",
+    maxTotalAmount: "100",
+    maxRecords: 1,
+    validUntil: new Date(Date.now() + 3600000).toISOString(),
+  });
+  await expect(service.grant(f.actor, f.revisionId, input)).rejects.toThrow("POLICY_DENIED");
+  const b = await grantClosing(f, "bill");
+  await expect(
+    new FederationSettlementService(db, f.provider.signing).automate(
+      b.policy.id,
+      CommercialSettlementSchema.parse({
+        protocolVersion: 1,
+        kind: "commercial-settlement",
+        settlementId: randomUUID(),
+        billId: f.draft.billId,
+        domainId: f.draft.domainId,
+        agreementRevisionId: f.revisionId,
+        billDigest: f.draft.reportDigest,
+        sourceSiteId: f.source.signing.siteId,
+        targetSiteId: f.provider.signing.siteId,
+        reservationId: null,
+        terminal: null,
+        unit: f.draft.request.unit,
+        reservedAmount: "60",
+        chargedAmount: "60",
+        releasedAmount: "0",
+        issuedAt: new Date().toISOString(),
+        salt: "a".repeat(64),
+      }),
+    ),
+  ).rejects.toThrow("POLICY_DENIED");
+  await new FederationPermissionService(db).set(
+    { ...f.actor, capability: "billing.approve", enabled: false },
+    f.userId,
+  );
+  await expect(service.grant(f.actor, f.revisionId, { ...input, kind: "bill" })).rejects.toThrow(
+    "POLICY_DENIED",
+  );
+});
+
+test("closing policy persists institutional authority after employee permission loss, but explicit revocation stops new approval", async () => {
+  const f = await billingFixture(),
+    p = await grantClosing(f, "bill");
+  await new FederationPermissionService(db).set(
+    { ...f.actor, capability: "billing.approve", enabled: false },
+    f.userId,
+  );
+  await expect(f.providerBilling.approve(f.actor, f.revisionId, f.draft)).rejects.toThrow(
+    "POLICY_DENIED",
+  );
+  const saved = await f.providerBilling.automate(p.policy.id, f.draft);
+  expect(saved.authorizationPolicyId).toBe(p.policy.id);
+  await new FederationPermissionService(db).set(
+    { ...f.actor, capability: "billing.approve", enabled: true },
+    f.userId,
+  );
+  await p.service.revoke(f.actor, f.revisionId, p.policy.id);
+  await expect(f.providerBilling.automate(p.policy.id, f.draft)).rejects.toThrow(
+    "AUTHORIZATION_EXPIRED",
+  );
+  expect(
+    (await f.providerBilling.list(f.actor, f.revisionId, 10, 0)).data[0]?.bill.approvalJws,
+  ).toBe(saved.approvalJws);
+});
+
+test("closing policy enforces amount, cumulative and count boundaries without partial approval", async () => {
+  const f = await billingFixture();
+  for (const limits of [{ maxAmount: "59" }, { approvedAmount: "41" }, { approvedRecords: 2 }]) {
+    const p = await grantClosing(f, "bill");
+    await db
+      .update(federationClosingPolicies)
+      .set(limits)
+      .where(eq(federationClosingPolicies.id, p.policy.id));
+    await expect(f.providerBilling.automate(p.policy.id, f.draft)).rejects.toThrow(
+      "BUDGET_EXHAUSTED",
+    );
+    expect((await f.providerBilling.list(f.actor, f.revisionId, 10, 0)).data).toHaveLength(0);
+    expect(await p.read()).toMatchObject({
+      approvedAmount: "approvedAmount" in limits ? "41" : "0",
+      approvedRecords: "approvedRecords" in limits ? 2 : 0,
+    });
+    await p.service.revoke(f.actor, f.revisionId, p.policy.id);
+  }
+});
+
+test("closing policy rejects outcome, expired grant and changed contract digest", async () => {
+  const f = await billingFixture();
+  const p = await grantClosing(f, "bill", false, { outcomes: ["failed"] });
+  await expect(f.providerBilling.automate(p.policy.id, f.draft)).rejects.toThrow("POLICY_DENIED");
+  await db
+    .update(federationClosingPolicies)
+    .set({
+      outcomes: ["completed"],
+      validFrom: new Date(Date.now() - 2000),
+      validUntil: new Date(Date.now() - 1000),
+    })
+    .where(eq(federationClosingPolicies.id, p.policy.id));
+  await expect(f.providerBilling.automate(p.policy.id, f.draft)).rejects.toThrow(
+    "AUTHORIZATION_EXPIRED",
+  );
+  await db
+    .update(federationClosingPolicies)
+    .set({
+      validUntil: new Date(Date.now() + 3600000),
+      agreementDigest: `sha256:${"0".repeat(64)}`,
+    })
+    .where(eq(federationClosingPolicies.id, p.policy.id));
+  await expect(f.providerBilling.automate(p.policy.id, f.draft)).rejects.toThrow(
+    "OPERATION_CONFLICT",
+  );
+  expect(await p.read()).toMatchObject({ approvedRecords: 0, approvedAmount: "0" });
+});
+
+test("closing policy validates current peer signing trust before automated approval", async () => {
+  const f = await billingFixture(),
+    p = await grantClosing(f, "bill", true);
+  await db
+    .update(federationSigningKeys)
+    .set({ allowedKinds: ["commercial-agreement", "commercial-bill"] })
+    .where(eq(federationSigningKeys.siteId, f.provider.signing.siteId));
+  await expect(f.sourceBilling.automate(p.policy.id, f.draft)).rejects.toThrow(
+    "UNTRUSTED_IDENTITY",
+  );
+  expect((await f.sourceBilling.list(f.sourceActor, f.revisionId, 10, 0)).data).toHaveLength(0);
+  expect(await p.read()).toMatchObject({ approvedRecords: 0, approvedAmount: "0" });
+});
+
+test("closing policy audit failure rolls back approval and quota as one transaction", async () => {
+  const f = await billingFixture(),
+    p = await grantClosing(f, "bill");
+  await db.execute(
+    sql`alter table audit_log add constraint test_closing_audit check (actor <> ${sql.raw(`'closing-policy:${p.policy.id}'`)})`,
+  );
+  try {
+    await expect(f.providerBilling.automate(p.policy.id, f.draft)).rejects.toThrow();
+    expect((await f.providerBilling.list(f.actor, f.revisionId, 10, 0)).data).toHaveLength(0);
+    expect(await p.read()).toMatchObject({ approvedRecords: 0, approvedAmount: "0" });
+  } finally {
+    await db.execute(sql`alter table audit_log drop constraint test_closing_audit`);
+  }
+  await f.providerBilling.automate(p.policy.id, f.draft);
+  expect(await p.read()).toMatchObject({ approvedRecords: 1, approvedAmount: "60" });
+});
+
+test("closing policy settlement approval is independent and neither consumes money nor releases slots before countersigning", async () => {
+  const f = await settlementFixture(),
+    provider = await grantClosing(f, "settlement"),
+    source = await grantClosing(f, "settlement", true);
+  const before = await f.budget();
+  const rows = await Promise.all(
+    Array.from({ length: 3 }, () => f.providerSettlement.automate(provider.policy.id, f.draft)),
+  );
+  expect(new Set(rows.map((v) => v.approvalJws)).size).toBe(1);
+  const other = await f.sourceSettlement.automate(source.policy.id, f.draft);
+  expect(rows[0]?.authorizationPolicyId).toBe(provider.policy.id);
+  expect(other.authorizationPolicyId).toBe(source.policy.id);
+  expect(await f.budget()).toEqual(before);
+  expect(await provider.read()).toMatchObject({ approvedAmount: "53", approvedRecords: 1 });
+  expect(await source.read()).toMatchObject({ approvedAmount: "53", approvedRecords: 1 });
+  expect(rows[0]?.appliedAt).toBeNull();
+});
+
+test("closing policy cannot cross institution or organization scope", async () => {
+  const f = await billingFixture(),
+    p = await grantClosing(f, "bill");
+  await expect(f.sourceBilling.automate(p.policy.id, f.draft)).rejects.toThrow("POLICY_DENIED");
+  await expect(p.service.list(f.sourceActor, f.revisionId)).rejects.toThrow(
+    "AGREEMENT_UNAVAILABLE",
+  );
+  await expect(p.service.revoke(f.sourceActor, f.revisionId, p.policy.id)).rejects.toThrow(
+    "ASSET_UNAVAILABLE",
+  );
+});
+
+test("closing policy schema rejects malformed amounts and requires explicit finite scope", () => {
+  const input = {
+    kind: "bill",
+    outcomes: ["completed"],
+    maxAmount: "60",
+    maxTotalAmount: "100",
+    maxRecords: 1,
+    validUntil: new Date(Date.now() + 10000).toISOString(),
+  };
+  for (const change of [
+    { maxAmount: "1.5" },
+    { maxTotalAmount: "-1" },
+    { maxAmount: "101" },
+    { outcomes: [] },
+    { outcomes: ["completed", "completed"] },
+    { maxRecords: 0 },
+    { kind: "all" },
+    { allowSettlement: true },
+  ])
+    expect(ClosingPolicyInputSchema.safeParse({ ...input, ...change }).success).toBe(false);
+});
+
+test("closing policy HTTP requires human independent authority, scopes reads and allows explicit revoke", async () => {
+  const f = await billingFixture(),
+    service = new FederationClosingPolicyService(db, f.provider.signing.siteId);
+  const dependencies: Parameters<typeof createFederationCommercialRoutes> = [
+    new FederationCommercialAgreementService(db, f.provider.signing),
+    new FederationCommercialSubmissionService(db, f.provider.signing.siteId),
+  ];
+  dependencies[17] = service;
+  let actor = f.actor,
+    automation = false;
+  const app = new Hono();
+  app.onError(createErrorHandler(pino({ enabled: false })));
+  app.use("*", async (c, next) => {
+    c.set("principal" as never, actor as never);
+    if (automation) c.set("automation" as never, true as never);
+    await next();
+  });
+  app.route("/", createFederationCommercialRoutes(...dependencies));
+  const path = `/federation/commercial-agreements/${f.revisionId}/closing-policies`;
+  const p = await grantClosing(f, "bill");
+  const response = await app.request(path);
+  expect(response.status).toBe(200);
+  expect(response.headers.get("cache-control")).toBe("no-store");
+  const request = {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      kind: "settlement",
+      outcomes: ["completed"],
+      maxAmount: "60",
+      maxTotalAmount: "100",
+      maxRecords: 1,
+      validUntil: new Date(Date.now() + 10000).toISOString(),
+    }),
+  };
+  expect((await app.request(path, request)).status).toBe(403);
+  expect(
+    (await app.request(`${path}/${p.policy.id}/revoke`, { ...request, body: "{}" })).status,
+  ).toBe(200);
+  actor = f.sourceActor;
+  expect((await app.request(path)).status).toBe(409);
+  actor = f.actor;
+  automation = true;
+  expect((await app.request(path)).status).toBe(403);
+});
+
+test("closing policy expiry after signing rolls back settlement approval and authorization consumption", async () => {
+  const f = await settlementFixture(),
+    p = await grantClosing(f, "settlement");
+  const consume = FederationClosingPolicyService.prototype.consume;
+  const hook = spyOn(FederationClosingPolicyService.prototype, "consume").mockImplementation(
+    async (...args) => {
+      setSystemTime(new Date(p.policy.validUntil.getTime() + 1));
+      return consume.apply(p.service, args);
+    },
+  );
+  try {
+    await expect(f.providerSettlement.automate(p.policy.id, f.draft)).rejects.toThrow(
+      "AUTHORIZATION_EXPIRED",
+    );
+  } finally {
+    hook.mockRestore();
+    setSystemTime();
+  }
+  expect((await f.providerSettlement.list(f.actor, f.revisionId, 10, 0)).data).toHaveLength(0);
+  expect(await p.read()).toMatchObject({ approvedRecords: 0, approvedAmount: "0" });
+  expect(await f.budget()).toMatchObject({ reserved: "60", spent: "0" });
+});
+
+test("closing policy revocation serializes with approval and a replacement cannot rewrite its authorization", async () => {
+  const f = await billingFixture(),
+    p = await grantClosing(f, "bill");
+  let unlock: () => void = () => {};
+  let locked: () => void = () => {};
+  const acquired = new Promise<void>((resolve) => {
+    locked = resolve;
+  });
+  const resume = new Promise<void>((resolve) => {
+    unlock = resolve;
+  });
+  const consume = FederationClosingPolicyService.prototype.consume;
+  const hook = spyOn(FederationClosingPolicyService.prototype, "consume").mockImplementation(
+    async (...args) => {
+      locked();
+      await resume;
+      return consume.apply(p.service, args);
+    },
+  );
+  const signing = f.providerBilling.automate(p.policy.id, f.draft);
+  await acquired;
+  const revocation = p.service.revoke(f.actor, f.revisionId, p.policy.id);
+  unlock();
+  let approved: Awaited<typeof signing>;
+  try {
+    [approved] = await Promise.all([signing, revocation]);
+  } finally {
+    hook.mockRestore();
+  }
+  expect((await p.read())?.revokedAt).not.toBeNull();
+  const replacement = await grantClosing(f, "bill");
+  const replay = await f.providerBilling.automate(replacement.policy.id, f.draft);
+  expect(replay.approvalJws).toBe(approved.approvalJws);
+  expect(replay.authorizationPolicyId).toBe(p.policy.id);
+  expect(await replacement.read()).toMatchObject({ approvedRecords: 0, approvedAmount: "0" });
+  expect(await p.read()).toMatchObject({ approvedRecords: 1, approvedAmount: "60" });
 });
