@@ -2779,3 +2779,11 @@ PBS 实验复用一个受限 Pod 内的 hook 安装入口，组件与双平台�
 验证收尾：Agent/执行器/传输单测通过；隔离 PostgreSQL 中的授权用例及完整 gRPC handler 用例通过，新增队列变更用例使用原任务和原 outbox。初次全仓 typecheck 发现两处测试夹具类型声明不完整（可选配置值的严格断言、选择目标夹具缺少 queueName），已修正；其他包通过，Agent、Server 及实验脚本分别定向重验通过，没有重复已成功的包。全仓 lint 通过（原有 47 warnings/1 info），最终改动文件 Biome、protobuf lint、891 个本地文档目标及 diff 检查通过。依赖锁和数据库迁移未改动，protobuf 由生成工具更新。
 
 隔离 PostgreSQL、非 root 私有挂载及临时目录均已清理。仅缓存了固定平台摘要的 Ubuntu 24.04 公共镜像供下一轮 Slurm v2 实验，尚未启动新 Slurm 容器或原生任务；未推送、合并或远程部署。
+
+## 现代 Slurm v2 的原生检查与回收
+
+新增可重复的本机 k3s 入口，固定 Debian 13 amd64 摘要和 Slurm 24.11.5 二进制包。一次性 Pod 上限 1 CPU/1 GiB、600 秒；通过 cgroup/mount/PID namespace 将 Slurm 的控制器操作限制在自身实验子树内，Slurmd 使用独立 service 分组。无科学编译、无宿主 Slurm/systemd 修改。控制器失败或取消请求清理 namespace。
+
+原生 sbatch 作业以 UID 24001 执行实际产品 SelfAccount 检查命令，读取独立 cpuset=1、memory.max=134217728、swap=0，作业完成后原 cgroup 被 Slurm 删除；最终入口退出 0，namespace 已确认不存在。较早 Slurm 23.11 的 namespace 回收实验出现 EBUSY，未计作通过；24.11 原生回收已验证。
+
+本轮只覆盖资源检查与回收，未覆盖完整启动证明、签名 SIF/Apptainer、跨平台 SelfAccount 派发或 Slurm 的 OOM/限流负载。完整蓝图和 PR 预览范围保持不变。未修改 TypeScript、依赖或数据库；未推送、合并或远程部署。

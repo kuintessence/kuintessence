@@ -46,8 +46,25 @@ KQ_TEST_CGROUP_LIMITS=1 PYTHONDONTWRITEBYTECODE=1 \
 2026-11-09 实际命令退出 0：CPU 限流计数增加、作业内存超限进程被终止、外层控制进程正常完成，临时服务清理成功。Slurm/PBS/Torque 名称在此仅用于验证内核路径布局，**没有启动这些调度器**；v1 只有离线夹具覆盖。
 本实验不替代真实调度器逐作业配置、计算节点执行前强制调用、启动能力证明及联合撤权验收。
 
+## 真实 Slurm v2 作业
+
+在允许一次性特权 Pod 的本机 k3s 上，显式执行：
+
+```bash
+KQ_SLURM_CGROUP_LAB=1 PYTHONDONTWRITEBYTECODE=1 \
+  python3 scripts/slurm-cgroup-lab.py
+```
+
+[运行器](../../scripts/slurm-cgroup-lab.py)使用固定 amd64 Debian 13 镜像摘要和 Slurm `24.11.5-4+deb13u1` 二进制包，不编译调度器或科学软件。需要本机 Bun、kubectl、镜像仓库及 Debian 软件源；它是在线建立实验环境的入口，不是离线安装验收。Pod 总上限为 1 CPU/1 GiB、600 秒；源码只读挂载，不挂载宿主凭据，不修改宿主 Slurm 或 systemd。
+
+外层只在自身 Pod cgroup 下启用控制器；内层使用独立 cgroup/mount/PID namespace，并重新挂载仅可见实验子树的 cgroup2。Slurmd 使用独立 service 分组，启用 `task/cgroup`、`proctrack/cgroup`、RAM/swap/core 约束。`IgnoreSystemd` 仅供该隔离实验使用，不能单独作为宿主隔离措施。原生 sbatch 作业以 UID 24001 在 `sandbox` 队列运行产品的 SelfAccount 检查命令，核对独立 cpuset、128 MiB 内存和不可写控制路径，并在结束后确认原 `job_<id>` 分组消失。
+
+2026-11-09 实际入口退出 0，报告 `cpusetCpus=1`、`memoryBytes=134217728`；原作业 cgroup 已删除，随机 namespace 已确认清理。Slurm 23.11 的早期实验在该 namespace 布局下回收 stepd 时出现 EBUSY，因此没有将它作为通过证据；24.11 使用独立系统分组回收且已实际通过。原始日志保存在本机 `temp/kq-slurm-cgroup-*/`，包含镜像摘要、包版本、关键二进制摘要和源码提交号。控制器在正常退出、失败、SIGINT/SIGTERM 时请求删除 namespace，Pod deadline 是控制器异常退出时的运行时限，不能代替 namespace 清理。
+
+此项只证明真实 Slurm 内的产品资源检查与调度器分组回收。尚未覆盖完整 SelfAccount 启动证明、签名 SIF/Apptainer 执行、跨平台派发或 Slurm OOM/限流负载，不应据此宣称这些验收完成。
+
 ## 仍需完成的接入
 
 现有实验 Slurm 19 使用 `task/none`，缓存的 OpenPBS 23 官方 hook 使用 v1；当前主机采用统一 v2。不能仅设置一个能力开关而宣布具备限额。
 PBS 已提供显式队列的[原生 v2 hook](../schedulers/pbs/cgroup-v2.md)。trusted wrapper 已接入固定摘要、root 管理的检查器，并在用户脚本前核对已签名资源。SelfAccount 已将路径正则替换为实际检查：配置固定检查器及明确队列，启动探测申请 1 CPU/128 MiB，读取真实内核限额；证明 ID 同时绑定队列与检查器身份。每次执行再次读取已核验的同一份检查器字节并检查签名资源。队列随能力上报，首次派发、Agent 提交和联邦续租均要求匹配。后续仍须配置 Slurm 实际 v2 路径，完成 SelfAccount 真实调度验证和其他 root 路径的启动/队列能力证明。
-PBS 受限 root profile 的双平台联合验证已通过；其余接入、Slurm 配置及真实联合验证完成前，完整资源隔离验收保持未完成。完整联盟链蓝图及 PR 预览验收范围不变。
+PBS 受限 root profile 的双平台联合验证已通过；现代 Slurm v2 的原生资源检查和回收也已通过上述独立实验。其余接入和真实联合验证完成前，完整资源隔离验收保持未完成。完整联盟链蓝图及 PR 预览验收范围不变。
