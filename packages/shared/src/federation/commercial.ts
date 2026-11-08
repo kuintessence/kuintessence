@@ -434,6 +434,32 @@ export const CommercialSettlementListSchema = z.object({
   hasMore: z.boolean(),
 });
 
+export const CommercialAdjustmentApprovalSchema = z.object({
+  localSiteId: Id,
+  localOrgId: Id,
+  agreementRevisionId: Id,
+  adjustmentId: Id,
+  settlementId: Id,
+  number: z.number().int().positive(),
+  payload: CommercialAdjustmentSchema,
+  digest: FederationDigestSchema,
+  approvalJws: z.string().min(1).max(524288),
+  counterpartyJws: z.string().min(1).max(524288).nullable(),
+  heldAmount: FederationAmountSchema,
+  approvedBy: Id,
+  appliedAt: z.iso.datetime().nullable(),
+  createdAt: z.iso.datetime(),
+});
+export const CommercialAdjustmentListSchema = z.object({
+  data: z.array(
+    z.object({
+      adjustment: CommercialAdjustmentApprovalSchema,
+      ledger: CommercialBillListSchema.shape.data.element.shape.ledger,
+    }),
+  ),
+  hasMore: z.boolean(),
+});
+
 export const CommercialUsageEnvelopeSchema = z.strictObject({
   providerJws: z.string().min(1).max(524288),
 });

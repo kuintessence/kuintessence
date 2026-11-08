@@ -1,6 +1,6 @@
 # 联邦财务 CLI
 
-`kq federation` 通过所属平台的 HTTP API 管理商业合同读取、账单、结算和自动审批授权；使用已登录的人类会话及当前机构能力，不持有链密钥，也不直接连接 Fabric。Server 是权限、信任和业务验证的最终执行方。
+`kq federation` 通过所属平台的 HTTP API 管理商业合同读取、账单、结算、账务调整和自动审批授权；使用已登录的人类会话及当前机构能力，不持有链密钥，也不直接连接 Fabric。Server 是权限、信任和业务验证的最终执行方。
 
 ## 选择机构
 
@@ -75,8 +75,26 @@ kq federation --org "$ORG_ID" settlements list "$REVISION_ID" --record "$SETTLEM
 
 CLI 不自动重试写入，联邦请求拒绝重定向并限时 30 秒。写入超时、连接中断或成功响应损坏时，结果可能已经生效：先查询原政策或原业务编号，核对后再处理，不能重新生成或盲目重复授权。`use` 响应异常时同样先用 `organizations` 核对当前会话。批准及记账均不表示银行付款。
 
+## 结算后的账务调整
+
+```sh
+kq federation --org "$ORG_ID" adjustments draft "$REVISION_ID" "$SETTLEMENT_ID" adjustment.json \
+  --id "$ADJUSTMENT_ID" --amount 40 --reason '双方确认的账务更正'
+kq federation --org "$ORG_ID" adjustments approve "$REVISION_ID" adjustment.json
+kq federation --org "$ORG_ID" adjustments attach "$REVISION_ID" "$ADJUSTMENT_ID" peer-adjustment.jws
+kq federation --org "$ORG_ID" adjustments list "$REVISION_ID" --record "$ADJUSTMENT_ID"
+```
+
+`--amount` 是调整后的**完整净扣用额**，不是差额；`--reason` 必填，`--evidence sha256:…` 可选，填写机构保管的佐证摘要。草稿从原 settlementId 生成，保留原账单/结算摘要、前一笔调整和调整前金额。双方审查同一原文后分别批准，需独立 adjustment.approve；账单/结算政策不会自动批准调整。服务端检查原结算已应用、前驱、原任务及预算上限。
+
+直接/异步模式的调增在本站批准时占住正差额，双签后记账；调减在双签前不退额。列表显示调整前后净额、**批准时占额**、双方签署、本站记账和本站存证；批准时占额是这笔签署的历史记录，已记账后不会变成 0，不能把它当成当前仍冻结的余额。精确金额保持整数字符串，列表分页和 `--json` 与账单命令一致。前一笔未应用时不能创建下一笔；旧记录不覆盖。
+
+已有后台签名交换会传递已批准原文，手动 attach 作为同文收尾入口。已签占额不因员工撤权或网络故障自动消失，当前没有单方撤销/解除占额命令；签署和记账不表示银行付款或退款。写入未知时先按原 adjustmentId 查询，再决定是否重试，不能更换编号再次批准。
+
 ## 范围与验证
 
 本入口覆盖上述财务操作，没有加入执行、市场、材料交付、独立减免、付款或争议命令。原生背书与私有数据规则继续由现有链码和 Adapter 实施。完整业务边界见[商业协议部署说明](../deploy/federation/fabric-commercial.md)。
 
 25 项 HTTP 夹具和中间件测试覆盖机构断言、精确金额、三模式状态、原文/编号、独立权限、文件安全、重定向和未知响应；另通过实际 CLI 子进程、真实 loopback HTTP、生产商业路由与隔离 PostgreSQL 的联合测试，验证机构改变拒绝、独立审批权、人类身份限制以及政策创建/读取/撤销和原结算读取。联调身份由测试中间件注入，不代替正式登录链路或 PR 预览验收。本轮不重复 Fabric 或调度器验收。
+
+调整扩展新增 8 项 CLI 场景，原附签测试同步覆盖调整；整个 CLI 命令测试文件 27 项通过，覆盖精确净额、三模式状态、草稿字段变化、机构/原文身份和原签名附加。新增实际 CLI 子进程 → loopback HTTP → 生产调整路由 → 隔离 PostgreSQL 验证：草稿 53 → 60，独立权限/机构与机器身份拒绝、单方批准占额 7、双签后 spent 60、重复附签不重扣。测试身份仍由夹具注入，不等同正式登录或 PR 预览验收。

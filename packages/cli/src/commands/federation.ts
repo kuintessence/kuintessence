@@ -7,6 +7,10 @@ import {
   ClosingPolicyInputSchema,
   ClosingPolicySchema,
   ClosingTasksViewSchema,
+  CommercialAdjustmentApprovalSchema,
+  CommercialAdjustmentDraftInputSchema,
+  CommercialAdjustmentListSchema,
+  CommercialAdjustmentSchema,
   type CommercialAgreementApproval,
   CommercialAgreementApprovalSchema,
   CommercialAgreementSummarySchema,
@@ -22,7 +26,24 @@ import { z } from "zod";
 import { ApiClient, ApiError } from "../lib/api-client";
 import { type CliConfig, loadCliConfig } from "../lib/config";
 
-type Kind = "bill" | "settlement";
+const businessSchemas = {
+  bill: CommercialBillSchema,
+  settlement: CommercialSettlementSchema,
+  adjustment: CommercialAdjustmentSchema,
+};
+const approvalSchemas = {
+  bill: CommercialBillApprovalSchema,
+  settlement: CommercialSettlementApprovalSchema,
+  adjustment: CommercialAdjustmentApprovalSchema,
+};
+type Kind = keyof typeof businessSchemas;
+function recordId(value: z.infer<(typeof businessSchemas)[Kind]>) {
+  return value.kind === "commercial-bill"
+    ? value.billId
+    : value.kind === "commercial-settlement"
+      ? value.settlementId
+      : value.adjustmentId;
+}
 const labels = {
   zh: {
     login: "请先运行 kq login",
@@ -64,6 +85,9 @@ const labels = {
     outcomes: "允许结果",
     reserved: "预留",
     charged: "扣用",
+    previousCharge: "调整前净额",
+    newCharge: "调整后净额",
+    held: "批准时占额",
     released: "归还",
     count: "批准次数/上限",
     expires: "到期",
@@ -113,6 +137,9 @@ const labels = {
     outcomes: "Allowed outcomes",
     reserved: "Reserved",
     charged: "Charged",
+    previousCharge: "Previous net charge",
+    newCharge: "New net charge",
+    held: "Hold at approval",
     released: "Returned",
     count: "Approvals/limit",
     expires: "Expires",
@@ -148,8 +175,7 @@ function checkScope(
     throw new Error("Federation response scope mismatch");
 }
 function checkBusiness(kind: Kind, raw: unknown, contract: CommercialAgreementApproval) {
-  const value =
-    kind === "bill" ? CommercialBillSchema.parse(raw) : CommercialSettlementSchema.parse(raw);
+  const value = businessSchemas[kind].parse(raw);
   const parties =
     value.kind === "commercial-bill"
       ? {
@@ -179,10 +205,15 @@ function checkBusiness(kind: Kind, raw: unknown, contract: CommercialAgreementAp
 function checkRecordIdentity(
   row:
     | z.infer<typeof CommercialBillApprovalSchema>
-    | z.infer<typeof CommercialSettlementApprovalSchema>,
+    | z.infer<typeof CommercialSettlementApprovalSchema>
+    | z.infer<typeof CommercialAdjustmentApprovalSchema>,
 ) {
   if (
-    row.billId !== row.payload.billId ||
+    ("billId" in row && row.billId !== row.payload.billId) ||
+    (row.payload.kind === "commercial-adjustment" &&
+      (!("adjustmentId" in row) ||
+        row.adjustmentId !== row.payload.adjustmentId ||
+        row.settlementId !== row.payload.settlementId)) ||
     (row.payload.kind === "commercial-settlement" &&
       (!("settlementId" in row) || row.settlementId !== row.payload.settlementId))
   )
@@ -480,7 +511,7 @@ export function registerFederationCommand(
       output(s, { kind, referenceId: id }, [s.t("retry")]);
     },
   );
-  for (const kind of ["bill", "settlement"] as const) {
+  for (const kind of ["bill", "settlement", "adjustment"] as const) {
     const group = root.command(`${kind}s`);
     const list = page(
       group.command("list <revision>").option("--record <uuid>", "Filter the original record"),
@@ -508,7 +539,7 @@ export function registerFederationCommand(
               )
             : [s.t("empty")],
         );
-      } else {
+      } else if (kind === "settlement") {
         const view = await get(s, path, CommercialSettlementListSchema);
         for (const { settlement } of view.data) {
           checkScope(settlement, c);
@@ -526,35 +557,76 @@ export function registerFederationCommand(
               )
             : [s.t("empty")],
         );
+      } else {
+        const view = await get(s, path, CommercialAdjustmentListSchema);
+        for (const { adjustment } of view.data) {
+          checkScope(adjustment, c);
+          checkRecordIdentity(adjustment);
+          checkBusiness(kind, adjustment.payload, c);
+          if (record && record !== adjustment.adjustmentId) throw new Error(s.t("scope"));
+        }
+        output(
+          s,
+          view,
+          view.data.length
+            ? view.data.map(
+                ({ adjustment, ledger }) =>
+                  `${adjustment.adjustmentId}\t${s.t("previousCharge")}: ${adjustment.payload.previousChargedAmount}\t${s.t("newCharge")}: ${adjustment.payload.chargedAmount} ${c.terms.agreement.unit}\n  ${s.t("held")}: ${adjustment.heldAmount}\t${s.t("signatures")}: ${adjustment.counterpartyJws ? s.t("both") : s.t("local")}\t${s.t("accounting")}: ${adjustment.appliedAt ? s.t("applied") : s.t("unapplied")}\t${s.t("ledger")}: ${c.terms.agreement.mode === "bilateral_direct" ? s.t("notRequired") : ledger ? s.t(ledger.state) : s.t("noRecord")}`,
+              )
+            : [s.t("empty")],
+        );
       }
     });
     const draft = group
       .command("draft <revision> <reference> <file>")
       .description(
-        `Generate a ${kind} draft from ${kind === "bill" ? "report ID" : "bill ID"}; never approves`,
+        `Generate a ${kind} draft from ${kind === "bill" ? "report ID" : kind === "settlement" ? "bill ID" : "settlement ID"}; never approves`,
       )
       .option("--id <uuid>", "Original draft ID");
+    if (kind === "adjustment")
+      draft
+        .requiredOption(
+          "--amount <integer>",
+          "New net charge in contract units (not the difference)",
+        )
+        .requiredOption("--reason <text>", "Reason reviewed by both institutions")
+        .option("--evidence <digest>", "SHA-256 digest of supporting evidence");
     action(draft, async (revision, reference, file) => {
       const s = scoped(),
         ref = z.uuid().parse(reference),
         id = z.uuid().parse(draft.opts().id ?? crypto.randomUUID()),
         c = await contract(s, revision);
       const input =
-        kind === "bill" ? { reportId: ref, billId: id } : { billId: ref, settlementId: id };
+        kind === "bill"
+          ? { reportId: ref, billId: id }
+          : kind === "settlement"
+            ? { billId: ref, settlementId: id }
+            : CommercialAdjustmentDraftInputSchema.parse({
+                settlementId: ref,
+                adjustmentId: id,
+                chargedAmount: draft.opts().amount,
+                reason: draft.opts().reason,
+                supportingEvidenceDigest: draft.opts().evidence ?? null,
+              });
       const value = checkBusiness(
         kind,
-        await post(
-          s,
-          `${base(c)}/${kind}s/draft`,
-          input,
-          kind === "bill" ? CommercialBillSchema : CommercialSettlementSchema,
-        ),
+        await post(s, `${base(c)}/${kind}s/draft`, input, businessSchemas[kind]),
         c,
       );
       if (
         value.kind === "commercial-bill"
           ? value.billId !== id || value.reportId !== ref
-          : value.settlementId !== id || value.billId !== ref
+          : value.kind === "commercial-settlement"
+            ? value.settlementId !== id || value.billId !== ref
+            : value.adjustmentId !== id ||
+              value.settlementId !== ref ||
+              federationCanonicalJson({
+                settlementId: value.settlementId,
+                adjustmentId: value.adjustmentId,
+                chargedAmount: value.chargedAmount,
+                reason: value.reason,
+                supportingEvidenceDigest: value.supportingEvidenceDigest,
+              }) !== federationCanonicalJson(input)
       )
         throw new Error(s.t("scope"));
       await save(file, value);
@@ -568,20 +640,12 @@ export function registerFederationCommand(
         const s = scoped(),
           c = await contract(s, revision),
           input = checkBusiness(kind, JSON.parse(await readInput(file)), c);
-        const row = await post(
-          s,
-          `${base(c)}/${kind}s/approve`,
-          input,
-          kind === "bill" ? CommercialBillApprovalSchema : CommercialSettlementApprovalSchema,
-        );
+        const row = await post(s, `${base(c)}/${kind}s/approve`, input, approvalSchemas[kind]);
         checkScope(row, c);
         checkRecordIdentity(row);
         if (federationCanonicalJson(row.payload) !== federationCanonicalJson(input))
           throw new Error(s.t("unknown"));
-        output(s, row, [
-          s.t("approved"),
-          row.payload.kind === "commercial-bill" ? row.payload.billId : row.payload.settlementId,
-        ]);
+        output(s, row, [s.t("approved"), recordId(row.payload)]);
       },
     );
     action(
@@ -601,17 +665,12 @@ export function registerFederationCommand(
           s,
           `${base(c)}/${kind}s/${id}/counterparty`,
           { approvalJws },
-          kind === "bill" ? CommercialBillApprovalSchema : CommercialSettlementApprovalSchema,
+          approvalSchemas[kind],
         );
         checkScope(row, c);
         checkRecordIdentity(row);
         checkBusiness(kind, row.payload, c);
-        if (
-          (row.payload.kind === "commercial-bill"
-            ? row.payload.billId
-            : row.payload.settlementId) !== id ||
-          row.counterpartyJws !== approvalJws
-        )
+        if (recordId(row.payload) !== id || row.counterpartyJws !== approvalJws)
           throw new Error(s.t("unknown"));
         output(s, row, [s.t("attached")]);
       },

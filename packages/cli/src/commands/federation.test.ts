@@ -3,6 +3,7 @@ import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  CommercialAdjustmentSchema,
   CommercialAgreementApprovalSchema,
   CommercialBillSchema,
   CommercialSettlementSchema,
@@ -154,6 +155,44 @@ const savedSettlement = {
   settlementId,
   payload: settlement,
   appliedAt: null,
+};
+const adjustmentId = "44444444-4444-4444-8444-444444444444";
+const adjustment = CommercialAdjustmentSchema.parse({
+  protocolVersion: 1,
+  kind: "commercial-adjustment",
+  adjustmentId,
+  domainId: userId,
+  agreementRevisionId: revisionId,
+  billId,
+  billDigest: digest,
+  settlementId,
+  settlementDigest: digest,
+  sourceSiteId: source,
+  targetSiteId: target,
+  unit: "credit.micro",
+  previous: null,
+  previousChargedAmount: "9007199254740993",
+  chargedAmount: "9007199254740992",
+  reason: "Agreed correction",
+  supportingEvidenceDigest: null,
+  issuedAt: bill.issuedAt,
+  salt: "e".repeat(64),
+});
+const savedAdjustment = {
+  localSiteId: target,
+  localOrgId: orgId,
+  agreementRevisionId: revisionId,
+  adjustmentId,
+  settlementId,
+  number: 1,
+  payload: adjustment,
+  digest,
+  approvalJws: "adjustment.local.signature",
+  counterpartyJws: null,
+  heldAmount: "0",
+  approvedBy: userId,
+  appliedAt: null,
+  createdAt: bill.issuedAt,
 };
 const base = `/api/federation/commercial-agreements/${revisionId}`;
 const policyInput = {
@@ -498,6 +537,7 @@ test("CLI attaches only the original counterpart signature and rejects mismatche
   for (const [kind, id, row] of [
     ["bills", billId, saved],
     ["settlements", settlementId, savedSettlement],
+    ["adjustments", adjustmentId, savedAdjustment],
   ] as const) {
     respond = (request) =>
       Response.json({
@@ -516,7 +556,11 @@ test("CLI attaches only the original counterpart signature and rejects mismatche
         data:
           new URL(request.url).pathname === base
             ? approval
-            : { ...row, billId: reportId, counterpartyJws: "counterpart.original.signature" },
+            : {
+                ...row,
+                ...(kind === "adjustments" ? { adjustmentId: reportId } : { billId: reportId }),
+                counterpartyJws: "counterpart.original.signature",
+              },
       });
     output.mockClear();
     await expect(run([kind, "attach", revisionId, id, file])).rejects.toThrow(
@@ -540,4 +584,138 @@ test("CLI policy pagination exposes single-record limits and permitted outcomes"
   expect(requests.at(-1)?.path).toBe(`${base}/closing-policies?limit=1&offset=2`);
   expect(text).toContain("Per-record limit: 9007199254740993");
   expect(text).toContain("Allowed outcomes: completed");
+});
+
+test("CLI adjustment draft preserves reviewed amount and reason, and approves the exact original", async () => {
+  const original = respond;
+  respond = (request, body) =>
+    new URL(request.url).pathname.endsWith("/adjustments/draft")
+      ? Response.json({ data: adjustment })
+      : new URL(request.url).pathname.endsWith("/adjustments/approve")
+        ? Response.json({ data: savedAdjustment })
+        : original(request, body);
+  const file = join(directory, "adjustment.json");
+  const args = [
+    "adjustments",
+    "draft",
+    revisionId,
+    settlementId,
+    file,
+    "--id",
+    adjustmentId,
+    "--amount",
+    adjustment.chargedAmount,
+    "--reason",
+    adjustment.reason,
+  ];
+  await run(args);
+  expect(JSON.parse(await readFile(file, "utf8"))).toEqual(adjustment);
+  expect((await stat(file)).mode & 0o777).toBe(0o600);
+  expect(requests.at(-1)?.body).toEqual({
+    settlementId,
+    adjustmentId,
+    chargedAmount: adjustment.chargedAmount,
+    reason: adjustment.reason,
+    supportingEvidenceDigest: null,
+  });
+  await run(["adjustments", "approve", revisionId, file]);
+  expect(requests.at(-1)?.body).toEqual(adjustment);
+  const valid = respond;
+  respond = (request, body) =>
+    new URL(request.url).pathname.endsWith("/adjustments/approve")
+      ? Response.json({ data: { ...savedAdjustment, settlementId: billId } })
+      : valid(request, body);
+  await expect(run(["adjustments", "approve", revisionId, file])).rejects.toThrow(
+    "record identity mismatch",
+  );
+});
+
+for (const field of ["chargedAmount", "reason", "supportingEvidenceDigest"] as const) {
+  test(`CLI adjustment draft rejects changed ${field} before exporting`, async () => {
+    const original = respond;
+    respond = (request, body) =>
+      new URL(request.url).pathname.endsWith("/adjustments/draft")
+        ? Response.json({
+            data: {
+              ...adjustment,
+              [field]:
+                field === "chargedAmount" ? "1" : field === "reason" ? "Changed reason" : digest,
+            },
+          })
+        : original(request, body);
+    const file = join(directory, "rejected.json");
+    await expect(
+      run([
+        "adjustments",
+        "draft",
+        revisionId,
+        settlementId,
+        file,
+        "--id",
+        adjustmentId,
+        "--amount",
+        adjustment.chargedAmount,
+        "--reason",
+        adjustment.reason,
+      ]),
+    ).rejects.toThrow("Response does not match");
+    expect(await Bun.file(file).exists()).toBe(false);
+    expect(requests.filter((r) => r.path.endsWith("/approve"))).toHaveLength(0);
+  });
+}
+
+for (const mode of ["bilateral_direct", "bilateral_attested", "ledger_coordinated"] as const) {
+  test(`CLI adjustment ${mode} keeps exact charge, approval hold and accounting separate`, async () => {
+    respond = (request) =>
+      Response.json({
+        data:
+          new URL(request.url).pathname === base
+            ? {
+                ...approval,
+                terms: { ...approval.terms, agreement: { ...approval.terms.agreement, mode } },
+              }
+            : {
+                data: [
+                  {
+                    adjustment: {
+                      ...savedAdjustment,
+                      counterpartyJws: "peer.signature",
+                      heldAmount: "1",
+                      appliedAt: mode === "ledger_coordinated" ? null : bill.issuedAt,
+                    },
+                    ledger:
+                      mode === "bilateral_direct"
+                        ? null
+                        : { id: adjustmentId, state: "pending", lastError: null },
+                  },
+                ],
+                hasMore: false,
+              },
+      });
+    const text = await run(["adjustments", "list", revisionId, "--record", adjustmentId]);
+    expect(requests.at(-1)?.path).toBe(
+      `${base}/adjustments?limit=20&offset=0&recordId=${adjustmentId}`,
+    );
+    expect(text).toContain("Previous net charge: 9007199254740993");
+    expect(text).toContain("New net charge: 9007199254740992");
+    expect(text).toContain("Hold at approval: 1");
+    expect(text).toContain(
+      `Local accounting: ${mode === "ledger_coordinated" ? "Not applied" : "Applied"}`,
+    );
+    expect(text).toContain(
+      `Local evidence: ${mode === "bilateral_direct" ? "Not required" : "Pending"}`,
+    );
+  });
+}
+
+test("CLI adjustment validates amounts and contract scope before requesting approval", async () => {
+  const file = await inputFile({ ...adjustment, sourceSiteId: userId });
+  await expect(run(["adjustments", "approve", revisionId, file])).rejects.toThrow(
+    "original does not match contract",
+  );
+  await writeFile(file, JSON.stringify({ ...adjustment, chargedAmount: "1.5" }));
+  await expect(run(["adjustments", "approve", revisionId, file])).rejects.toThrow(
+    "Invalid federation",
+  );
+  expect(requests.every((r) => r.method === "GET")).toBe(true);
 });

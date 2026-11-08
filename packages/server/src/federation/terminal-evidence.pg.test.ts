@@ -5515,3 +5515,123 @@ test("adjustment exchange HTTP exposes scoped progress and requires independent 
   expect((await retry()).status).toBe(403);
   expect(f.transport.calls).toBe(0);
 });
+
+test("adjustment CLI real HTTP and PostgreSQL approve, hold, attach and query the original", async () => {
+  const f = await adjustmentServiceFixture();
+  const deps: Parameters<typeof createFederationCommercialRoutes> = [
+    new FederationCommercialAgreementService(db, f.provider.signing),
+    new FederationCommercialSubmissionService(db, f.provider.signing.siteId),
+  ];
+  deps[19] = f.providerAdjustment;
+  const app = new Hono(),
+    token = randomUUID();
+  let actor = f.actor,
+    automation = false;
+  app.onError(createErrorHandler(pino({ enabled: false })));
+  app.use("*", async (c, next) => {
+    if (c.req.header("authorization") !== `Bearer ${token}`) return c.json({}, 401);
+    c.set("principal" as never, actor as never);
+    if (automation) c.set("automation" as never, true as never);
+    await next();
+  });
+  app.use("/api/federation/*", federationOrganizationContext);
+  app.route("/api", createFederationCommercialRoutes(...deps));
+  const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: app.fetch });
+  cleanup.push(async () => {
+    server.stop(true);
+  });
+  const dir = await mkdtemp(join(tmpdir(), "kq-adjustment-cli-pg-"));
+  cleanup.push(() => rm(dir, { recursive: true, force: true }));
+  const config = join(dir, "config.json"),
+    file = join(dir, "adjustment.json"),
+    id = randomUUID();
+  await writeFile(config, JSON.stringify({ serverUrl: `http://127.0.0.1:${server.port}`, token }), {
+    mode: 0o600,
+  });
+  const run = async (...args: string[]) => {
+    const child = Bun.spawn(
+      [
+        process.execPath,
+        "--no-env-file",
+        fileURLToPath(new URL("../../../cli/src/index.ts", import.meta.url)),
+        "federation",
+        "--org",
+        f.orgId,
+        "--lang",
+        "en",
+        "--json",
+        "adjustments",
+        ...args,
+      ],
+      { env: { ...process.env, KQ_CONFIG_FILE: config }, stdout: "pipe", stderr: "pipe" },
+    );
+    const [code, stdout, stderr] = await Promise.all([
+      child.exited,
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+    ]);
+    return { code, stdout, stderr };
+  };
+  expect(
+    await run(
+      "draft",
+      f.revisionId,
+      f.draft.settlementId,
+      file,
+      "--id",
+      id,
+      "--amount",
+      "60",
+      "--reason",
+      "Approved correction",
+    ),
+  ).toMatchObject({ code: 0 });
+  const value = CommercialAdjustmentSchema.parse(await Bun.file(file).json());
+  expect(value).toMatchObject({
+    adjustmentId: id,
+    previousChargedAmount: "53",
+    chargedAmount: "60",
+  });
+  actor = f.sourceActor;
+  expect(await run("approve", f.revisionId, file)).toMatchObject({ code: 1, stdout: "" });
+  actor = f.actor;
+  await new FederationPermissionService(db).set(
+    { ...f.actor, capability: "adjustment.approve", enabled: false },
+    f.userId,
+  );
+  const denied = await run("approve", f.revisionId, file);
+  expect(denied.code).toBe(1);
+  expect(denied.stderr).toContain("HTTP 403 POLICY_DENIED");
+  expect(await f.budget()).toMatchObject({ reserved: "0", spent: "53" });
+  await new FederationPermissionService(db).set(
+    { ...f.actor, capability: "adjustment.approve", enabled: true },
+    f.userId,
+  );
+  automation = true;
+  expect((await run("approve", f.revisionId, file)).code).toBe(1);
+  automation = false;
+  const approved = await run("approve", f.revisionId, file);
+  expect(approved.code).toBe(0);
+  expect(JSON.parse(approved.stdout)).toMatchObject({
+    adjustmentId: id,
+    heldAmount: "7",
+    counterpartyJws: null,
+    appliedAt: null,
+  });
+  expect(await f.budget()).toMatchObject({ available: "40", reserved: "7", spent: "53" });
+  const source = await f.sourceAdjustment.approve(f.sourceActor, f.revisionId, value),
+    jws = join(dir, "peer.jws");
+  await writeFile(jws, source.approvalJws, { mode: 0o600 });
+  expect((await run("attach", f.revisionId, id, jws)).code).toBe(0);
+  const listed = await run("list", f.revisionId, "--record", id);
+  expect(listed.code).toBe(0);
+  expect(JSON.parse(listed.stdout).data[0].adjustment).toMatchObject({
+    adjustmentId: id,
+    counterpartyJws: source.approvalJws,
+    payload: value,
+  });
+  expect(JSON.parse(listed.stdout).data[0].adjustment.appliedAt).not.toBeNull();
+  expect(await f.budget()).toMatchObject({ available: "40", reserved: "0", spent: "60" });
+  expect((await run("attach", f.revisionId, id, jws)).code).toBe(0);
+  expect(await f.budget()).toMatchObject({ available: "40", reserved: "0", spent: "60" });
+}, 30000);
