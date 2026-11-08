@@ -1,4 +1,4 @@
-import { afterAll, expect, setSystemTime, test } from "bun:test";
+import { afterAll, expect, setSystemTime, spyOn, test } from "bun:test";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import {
   agents,
@@ -10713,5 +10713,28 @@ test("refund CLI real HTTP and PostgreSQL preserve original signatures, filters 
   } finally {
     server.stop(true);
     await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("terminal exchange builds its minute window from one observation", async () => {
+  const f = await terminalExchangeFixture();
+  await f.approveTerminal();
+  const current = Date.now.bind(Date);
+  const clock = spyOn(Date, "now").mockImplementation(() => current() + 5);
+  try {
+    await f.exchange.advanceNext();
+    const received = (await f.view()).sync;
+    expect(received).toMatchObject({ state: "ready", lastError: null });
+    if (!received?.proposal) throw new Error("Missing original terminal");
+    await f.sourceTerminal.countersign(
+      f.actor,
+      f.revisionId,
+      f.reservation.reservationId,
+      received.proposal,
+    );
+    await f.exchange.advanceNext();
+    expect((await f.view()).sync).toMatchObject({ state: "complete", lastError: null });
+  } finally {
+    clock.mockRestore();
   }
 });

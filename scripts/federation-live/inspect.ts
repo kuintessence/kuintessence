@@ -8,6 +8,7 @@ import {
   federationCommercialAdjustments,
   federationCommercialAttempts,
   federationCommercialBills,
+  federationCommercialRefunds,
   federationCommercialSettlements,
   federationCommercialSubmissions,
   federationEvidenceBatches,
@@ -93,6 +94,7 @@ try {
       settledAmount: federationOutbound.settledAmount,
     })
     .from(federationOutbound);
+  const refunds = await db.select().from(federationCommercialRefunds);
   const bills = await db.select().from(federationCommercialBills);
   const adjustments = await db.select().from(federationCommercialAdjustments);
   const settlements = await db.select().from(federationCommercialSettlements);
@@ -260,6 +262,7 @@ try {
         reservations,
         outbound,
         bills,
+        refunds,
         settlements,
         adjustments,
         bindings,

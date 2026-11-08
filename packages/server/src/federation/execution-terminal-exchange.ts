@@ -382,6 +382,7 @@ export class FederationTerminalExchange {
   private async advance(claim: Sync) {
     if (!this.send) return;
     const scope = await this.db.transaction((tx) => this.source(tx, claim.reservationId));
+    const issuedAt = new Date();
     const base = {
       protocolVersion: 1 as const,
       queryId: randomUUID(),
@@ -394,8 +395,8 @@ export class FederationTerminalExchange {
       attempt: scope.request.attempt,
       reservationId: claim.reservationId,
       requestDigest: scope.requestDigest,
-      issuedAt: new Date().toISOString(),
-      expiresAt: new Date(Date.now() + 60000).toISOString(),
+      issuedAt: issuedAt.toISOString(),
+      expiresAt: new Date(issuedAt.getTime() + 60000).toISOString(),
     };
     const terminal = scope.terminal;
     if (

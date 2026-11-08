@@ -1,5 +1,9 @@
 import assert from "node:assert/strict";
-import { createPgDb } from "@kuintessence/db";
+import {
+  createPgDb,
+  federationAgreementSyncs,
+  federationCommercialApprovalSyncs,
+} from "@kuintessence/db";
 import { importPKCS8 } from "jose";
 import { z } from "zod";
 import { FederationAgreementService } from "../../packages/server/src/federation/agreements";
@@ -66,6 +70,16 @@ try {
       await Bun.write(`${root}/approval-exchange.json`, JSON.stringify(contracts));
       break;
     }
+    for (const db of databases)
+      for (const table of [federationAgreementSyncs, federationCommercialApprovalSyncs])
+        for (const row of await db
+          .select({ state: table.state, lastError: table.lastError })
+          .from(table))
+          assert.notEqual(
+            row.state,
+            "needs_review",
+            row.lastError ?? "Agreement exchange needs review",
+          );
     assert(Date.now() < deadline, "Bilateral agreements did not exchange original signatures");
     await Bun.sleep(500);
   }

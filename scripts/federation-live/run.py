@@ -16,8 +16,8 @@ assert mode in ("bilateral_direct", "bilateral_attested", "ledger_coordinated")
 coordinated = mode == "ledger_coordinated"
 attested = mode == "bilateral_attested"
 scenario = os.environ.get("LAB_SCENARIO", "success")
-assert coordinated or scenario == "success"
-assert scenario in ("success", "outage", "stop", "workflow")
+assert scenario != "refund" if coordinated else scenario in ("success", "refund")
+assert scenario in ("success", "outage", "stop", "workflow", "refund")
 nodeinfo = json.loads(
     subprocess.check_output(["kubectl", "get", "nodes", "-o", "json"], timeout=15)
 )["items"]
@@ -1014,6 +1014,103 @@ def verify_bilateral_finance():
     print("REAL BILATERAL ACCOUNTING PASSED: task-preauthorized bill and settlement; exact local budget; debit hold; original settlement and two adjustments replay safely; " + ("Orderer remains stopped" if attested else "no ledger configuration, attempts or outbox"), flush=True)
 
 
+
+def verify_refund():
+    global sourcegateway
+    assert not coordinated
+    config = json.loads((root / "source-init.json").read_text())
+    request = config["request"]
+    operation = request["operationId"]
+    path = "federation/commercial-agreements/" + request["agreementRevisionId"] + "/refunds"
+    parties = (("provider", api, token), ("source", sourceapi, sourcetoken))
+    # Withhold the source material endpoint, not source admission prerequisites.
+    assert sourcegateway.poll() is None
+    sourcegateway.terminate()
+    assert sourcegateway.wait(timeout=15) == 0
+    first = sourceapi("federation/outbound", request, sourcetoken)["data"]
+    assert sourceapi("federation/outbound", request, sourcetoken)["data"]["operationId"] == first["operationId"]
+    for _ in range(90):
+        run(["bun", "--no-env-file", "scripts/federation-live/target.ts", "inspect"])
+        state = json.loads((root / "probe-state.json").read_text())
+        assert not state["runs"] and not state["jobs"] and not state["bindings"]
+        rows = sourceapi("federation/outbound", token=sourcetoken)["data"]
+        assert len(rows) == 1
+        if rows[0]["state"] == "accepted" and any(row["state"] == "waiting" and row["blocker"] == "DATA_WAITING" for row in state["preparations"]):
+            break
+        time.sleep(2)
+    else:
+        raise AssertionError("Task did not reach real material waiting before execution")
+    inspect_ledgers("refund-reserved")
+    before = json.loads((logs / "provider-refund-reserved.json").read_text())
+    assert len(before["reservations"]) == 1 and len(before["budgets"]) == 1
+    assert before["budgets"][0]["reserved"] == request["maxAmount"]
+    assert int(before["budgets"][0]["available"]) == int(config["terms"]["budgetLimit"]) - int(request["maxAmount"])
+    assert before["budgets"][0]["spent"] == "0"
+    (logs / "refund-waiting.json").write_text(json.dumps(state, indent=2) + "\n")
+    cancel_path = "federation/outbound/" + operation + "/cancel"
+    sourceapi(cancel_path, {}, sourcetoken)
+    for _ in range(90):
+        cancelled = sourceapi("federation/outbound", token=sourcetoken)["data"][0]
+        assert cancelled["cancellation"]["state"] != "needs_review"
+        if cancelled["cancellation"]["state"] == "stopped":
+            break
+        time.sleep(2)
+    else:
+        raise AssertionError("Provider cancellation receipt did not return over mTLS")
+    assert sourceapi(cancel_path, {}, sourcetoken)["data"] == cancelled["cancellation"]
+    sourcegateway = subprocess.Popen(
+        ["node", str(root / "gateway.mjs")], cwd=repo, env=sourcegatewayenv, stdout=sourcelog, stderr=sourcelog,
+    )
+    draft = sourceapi(path + "/draft", {"operationId": operation, "refundId": str(uuid.uuid4()), "reason": "Cancelled while waiting for input"}, sourcetoken)["data"]
+    assert draft["request"] == request and draft["releasedAmount"] == request["maxAmount"]
+    assert draft["cancellationReceiptJws"]
+    approvals = {"source": sourceapi(path + "/approve", draft, sourcetoken)["data"]}
+    assert approvals["source"]["appliedAt"] is None
+    assert not api(path, token=token)["data"]["data"], "Exchange must not invent provider approval"
+    approvals["provider"] = api(path + "/approve", draft, token)["data"]
+    records = {}
+    for _ in range(90):
+        for name, read, auth in parties:
+            rows = read(path + "?recordId=" + draft["refundId"], token=auth)["data"]["data"]
+            assert len(rows) == 1
+            records[name] = rows[0]
+            assert rows[0]["payload"] == draft and rows[0]["approvalJws"] == approvals[name]["approvalJws"]
+        if all(row["appliedAt"] for row in records.values()):
+            break
+        time.sleep(2)
+    else:
+        raise AssertionError("Refund original signatures did not exchange automatically")
+    for name, read, auth in parties:
+        record = records[name]
+        assert record["counterpartyJws"] == approvals["source" if name == "provider" else "provider"]["approvalJws"]
+        assert record["ledger"]["state"] == "pending" if attested and name == "provider" else record["ledger"] is None
+        replay = read(path + "/approve", draft, auth)["data"]
+        assert replay == {key: value for key, value in record.items() if key != "ledger"}
+        assert read(path + "/" + draft["refundId"] + "/counterparty", {"approvalJws": record["counterpartyJws"]}, auth)["data"] == replay
+        try:
+            read(path + "/approve", {**draft, "refundId": str(uuid.uuid4())}, auth)
+        except urllib.error.HTTPError as error:
+            assert error.code == 409 and json.load(error)["error"]["code"] == "OPERATION_CONFLICT"
+        else:
+            raise AssertionError("Replacement refund ID returned the same reservation twice")
+    inspect_ledgers("refund-applied")
+    for name, _, _ in parties:
+        local = json.loads((logs / (name + "-refund-applied.json")).read_text())
+        tasks = local["reservations"] if name == "provider" else local["outbound"]
+        assert len(tasks) == 1 and tasks[0]["amount"] == request["maxAmount"] and tasks[0]["settledAmount"] == "0"
+        assert len(local["refunds"]) == 1 and local["refunds"][0]["appliedAt"]
+        for key in ("execution", "bindings", "bills", "settlements", "adjustments"):
+            assert not local[key], "Preexecution refund unexpectedly created " + key
+        if name == "provider":
+            assert len(local["budgets"]) == 1
+            budget = local["budgets"][0]
+            assert budget["available"] == config["terms"]["budgetLimit"] and budget["reserved"] == budget["spent"] == "0"
+        else:
+            assert not local["budgets"] and tasks[0]["adjustmentHeldAmount"] == "0"
+    (logs / "refund-evidence.json").write_text(json.dumps({"draft": draft, "cancellation": cancelled["cancellation"], "records": records}, indent=2) + "\n")
+    print("REAL BILATERAL REFUND PASSED: material waiting -> permanent cancellation over mTLS -> independent approvals -> automatic original signatures; reservation returned exactly once; replay safe; no Workflow or Jobs; " + ("Orderer remains stopped" if attested else "no ledger configured"), flush=True)
+
+
 def verify_attested_recovery():
     config = json.loads((root / "source-init.json").read_text())
     for _ in range(60):
@@ -1021,7 +1118,7 @@ def verify_attested_recovery():
         offline = {name: json.loads((logs / (name + "-attested-offline.json")).read_text()) for name in ("source", "provider")}
         provider = offline["provider"]
         assert len(provider["attestationOutbox"]) == 2
-        assert len(provider["commercial"]) == 6 and len(offline["source"]["commercial"]) == 1
+        assert len(provider["commercial"]) == (2 if scenario == "refund" else 6) and len(offline["source"]["commercial"]) == 1
         for state in offline.values():
             assert all(row["state"] == "pending" for row in state["commercial"])
             assert all(row["state"] == "pending" for row in state["evidenceBatches"])
@@ -1036,7 +1133,10 @@ def verify_attested_recovery():
     view = api(query, token=token)["data"]
     assert view["enabled"] and view["batches"] and all(row["state"] == "pending" for row in view["batches"])
     (logs / "attested-offline-api.json").write_text(json.dumps(view, indent=2) + "\n")
-    print("REAL ATTESTED OFFLINE PASSED: execution, result return, bill, settlement and adjustments completed while Orderer stopped; original commercial and admission evidence remains pending", flush=True)
+    print("REAL ATTESTED OFFLINE PASSED: " + scenario + " finished locally while Orderer stopped; original commercial and admission evidence remains pending", flush=True)
+    if scenario == "refund":
+        recovery = restart_commercial_servers()
+        (logs / "refund-crash-recovery.json").write_text(json.dumps(recovery, indent=2) + "\n")
     orderer("start")
     for _ in range(160):
         inspect_ledgers("attested-recovered")
@@ -1045,7 +1145,7 @@ def verify_attested_recovery():
             assert all(row["state"] != "needs_review" for row in state["commercial"]), "Commercial recovery needs review: " + json.dumps([{ "id": row["id"], "operation": row["input"]["operation"], "state": row["state"], "lastError": row["lastError"] } for row in state["commercial"]])
             assert all(row["state"] != "needs_review" for row in state["evidenceBatches"]), "Admission evidence needs review"
             assert {(row["id"], json.dumps(row["input"], sort_keys=True)) for row in state["commercial"]} == {(row["id"], json.dumps(row["input"], sort_keys=True)) for row in offline[name]["commercial"]}
-            for key in ("budgets", "reservations", "outbound", "bills", "settlements", "adjustments", "execution"):
+            for key in ("budgets", "reservations", "outbound", "bills", "settlements", "adjustments", "refunds", "execution"):
                 assert state[key] == offline[name][key], "Attestation changed local accounting or execution: " + key
             assert {row["evidenceId"] for row in state["attestationOutbox"]} == {row["evidenceId"] for row in offline[name]["attestationOutbox"]}
             for original in offline[name]["evidenceBatches"]:
@@ -1069,8 +1169,8 @@ def verify_attested_recovery():
     view = api(query, token=token)["data"]
     assert view["unbatchedEvidenceCount"] == 0 and all(row["state"] == "anchored" for row in view["batches"])
     (logs / "attested-recovered-api.json").write_text(json.dumps(view, indent=2) + "\n")
-    (networkroot / "live-attested-proof.json").write_text(json.dumps({"evidenceDirectory": str(logs), "config": config}, indent=2) + "\n")
-    print("REAL ATTESTED RECOVERY PASSED: original commercial submissions VALID and admission evidence anchored; exact local balances, original signatures, completed Jobs and recovery checkpoints unchanged", flush=True)
+    (networkroot / "live-attested-proof.json").write_text(json.dumps({"evidenceDirectory": str(logs), "config": config, "scenario": scenario}, indent=2) + "\n")
+    print("REAL ATTESTED RECOVERY PASSED: original commercial submissions VALID and admission evidence anchored; exact local balances, original signatures, Jobs and recovery checkpoints unchanged", flush=True)
 
 
 def restart_commercial_servers():
@@ -2271,143 +2371,148 @@ await Bun.write(process.env.LAB_ROOT+'/registration.json',JSON.stringify({token:
 
     inspect_ledgers("before")
 
-    terminal_policies = {}
-    if coordinated and scenario in ("success", "workflow"):
-        policy_path = "federation/commercial-agreements/" + configuration["request"]["agreementRevisionId"] + "/terminal-policies"
-        policy_input = {"outcomes": ["completed"], "validUntil": configuration["request"].get("executionExpiresAt", configuration["request"]["expiresAt"])}
-        terminal_policies["provider"] = api(policy_path, policy_input, token=token)["data"]
-        terminal_policies["source"] = sourceapi(policy_path, policy_input, sourcetoken)["data"]
-        (logs / "terminal-policies.json").write_text(json.dumps(terminal_policies, indent=2) + "\n")
-    if not coordinated:
-        path = "federation/commercial-agreements/" + configuration["request"]["agreementRevisionId"]
-        grant_closing(path, "bill")
-        grant_closing(path, "settlement")
-        (logs / "preauthorized-closing.json").write_text(json.dumps(closing_grants, indent=2) + "\n")
-    if scenario == "workflow":
-        print("Ordinary Workflow owns delegation; no manual outbound submission", flush=True)
+    if scenario == "refund":
+        verify_refund()
+        if attested:
+            verify_attested_recovery()
     else:
-        first = sourceapi("federation/outbound", configuration["request"], sourcetoken)
-        second = sourceapi("federation/outbound", configuration["request"], sourcetoken)
-        assert (
-            first["data"]["operationId"] == second["data"]["operationId"]
-        ), "Source created a new operation on replay"
+        terminal_policies = {}
+        if coordinated and scenario in ("success", "workflow"):
+            policy_path = "federation/commercial-agreements/" + configuration["request"]["agreementRevisionId"] + "/terminal-policies"
+            policy_input = {"outcomes": ["completed"], "validUntil": configuration["request"].get("executionExpiresAt", configuration["request"]["expiresAt"])}
+            terminal_policies["provider"] = api(policy_path, policy_input, token=token)["data"]
+            terminal_policies["source"] = sourceapi(policy_path, policy_input, sourcetoken)["data"]
+            (logs / "terminal-policies.json").write_text(json.dumps(terminal_policies, indent=2) + "\n")
+        if not coordinated:
+            path = "federation/commercial-agreements/" + configuration["request"]["agreementRevisionId"]
+            grant_closing(path, "bill")
+            grant_closing(path, "settlement")
+            (logs / "preauthorized-closing.json").write_text(json.dumps(closing_grants, indent=2) + "\n")
+        if scenario == "workflow":
+            print("Ordinary Workflow owns delegation; no manual outbound submission", flush=True)
+        else:
+            first = sourceapi("federation/outbound", configuration["request"], sourcetoken)
+            second = sourceapi("federation/outbound", configuration["request"], sourcetoken)
+            assert (
+                first["data"]["operationId"] == second["data"]["operationId"]
+            ), "Source created a new operation on replay"
+            print(
+                "Source Server accepted the original request twice; production worker is responsible for mTLS delivery",
+                flush=True,
+            )
+
+        # Enroll a separate production Agent with the source institution, using its actual API.
+        sourceagent = "federation-source-copy-" + namespace[-8:]
+        sourceenv["LAB_AGENT"] = sourceagent
+        seed = r"""
+     import {createPgDb} from '@kuintessence/db';
+     import {ensureCa} from './packages/server/src/auth/ca';
+     import {AgentRegistrationService} from './packages/server/src/services/agent-registration';
+     const db=createPgDb(process.env.DATABASE_URL);const actor=await Bun.file(process.env.LAB_ROOT+'/source-actor.json').json();
+     const token=await new AgentRegistrationService(db,await ensureCa(process.env.SERVER_CA_DIR)).createToken({agentId:process.env.LAB_AGENT,siteName:'Source result storage',providerOrgId:actor.orgId,expiresInSec:600,createdBy:actor.userId});
+     await Bun.write(process.env.LAB_ROOT+'/source-registration.json',JSON.stringify({token:token.token}));await db.$client.end();
+     """
+        subprocess.run(
+            ["bun", "--no-env-file", "-e", seed],
+            cwd=repo,
+            env=sourceenv,
+            stdout=log,
+            stderr=log,
+            timeout=60,
+            check=True,
+        )
+        os.chmod(root / "source-registration.json", 0o600)
+        source_registration = json.loads((root / "source-registration.json").read_text())
+        subprocess.run(
+            [
+                "bun",
+                "--no-env-file",
+                "run",
+                "packages/cli/src/index.ts",
+                "agent",
+                "register",
+                "--url",
+                f"http://127.0.0.1:{sourcehttp}",
+                "--grpc-url",
+                f"https://{nodeip}:{sourcegrpc}",
+                "--token",
+                source_registration["token"],
+                "--output-dir",
+                str(root / "source-agent"),
+                "--scheduler",
+                "kubernetes",
+            ],
+            cwd=repo,
+            env=sourceenv,
+            stdout=log,
+            stderr=log,
+            timeout=60,
+            check=True,
+        )
+        (root / "source-agent/agent.env").open("a").write(
+            "\nAGENT_DB_PATH=/var/lib/kuintessence/agent.db\nHEARTBEAT_INTERVAL_SEC=1\nAGENT_QUEUE_INVENTORY_INTERVAL_SEC=2\n"
+        )
+        sourcepod = copy.deepcopy(pod)
+        sourcepod["metadata"]["name"] = "result-copy-agent"
+        sourceagentenv = {
+            **agentenv,
+            "KQ_AGENT_ENV_FILE": str(root / "source-agent/agent.env"),
+            "AGENT_SANDBOX_ENABLED": "false",
+            "AGENT_FEDERATION_RESULT_COPY": json.dumps(
+                {
+                    "stagingRoot": "/var/lib/kuintessence/result-staging",
+                    "maxStagingBytes": 1048576,
+                    "allowedSourceOrigins": [targetorigin],
+                    "allowedDestinationOrigins": [sourceorigin],
+                }
+            ),
+        }
+        sourcepod["spec"]["containers"][0]["env"] = [
+            {"name": a, "value": b} for a, b in sourceagentenv.items()
+        ]
+        k(["apply", "-f", "-"], json.dumps(sourcepod))
+        for _ in range(60):
+            status = sourceapi("agents", token=sourcetoken)
+            rows = (
+                status
+                if isinstance(status, list)
+                else status.get("agents", status.get("items", []))
+            )
+            if any(
+                row.get("agentId") == sourceagent and row.get("status") == "online"
+                for row in rows
+            ):
+                break
+            time.sleep(1)
+        else:
+            raise RuntimeError("Source copy Agent did not come online")
         print(
-            "Source Server accepted the original request twice; production worker is responsible for mTLS delivery",
+            "Source Agent independently enrolled and online; result copy/verification enabled",
             flush=True,
         )
 
-    # Enroll a separate production Agent with the source institution, using its actual API.
-    sourceagent = "federation-source-copy-" + namespace[-8:]
-    sourceenv["LAB_AGENT"] = sourceagent
-    seed = r"""
- import {createPgDb} from '@kuintessence/db';
- import {ensureCa} from './packages/server/src/auth/ca';
- import {AgentRegistrationService} from './packages/server/src/services/agent-registration';
- const db=createPgDb(process.env.DATABASE_URL);const actor=await Bun.file(process.env.LAB_ROOT+'/source-actor.json').json();
- const token=await new AgentRegistrationService(db,await ensureCa(process.env.SERVER_CA_DIR)).createToken({agentId:process.env.LAB_AGENT,siteName:'Source result storage',providerOrgId:actor.orgId,expiresInSec:600,createdBy:actor.userId});
- await Bun.write(process.env.LAB_ROOT+'/source-registration.json',JSON.stringify({token:token.token}));await db.$client.end();
- """
-    subprocess.run(
-        ["bun", "--no-env-file", "-e", seed],
-        cwd=repo,
-        env=sourceenv,
-        stdout=log,
-        stderr=log,
-        timeout=60,
-        check=True,
-    )
-    os.chmod(root / "source-registration.json", 0o600)
-    source_registration = json.loads((root / "source-registration.json").read_text())
-    subprocess.run(
-        [
-            "bun",
-            "--no-env-file",
-            "run",
-            "packages/cli/src/index.ts",
-            "agent",
-            "register",
-            "--url",
-            f"http://127.0.0.1:{sourcehttp}",
-            "--grpc-url",
-            f"https://{nodeip}:{sourcegrpc}",
-            "--token",
-            source_registration["token"],
-            "--output-dir",
-            str(root / "source-agent"),
-            "--scheduler",
-            "kubernetes",
-        ],
-        cwd=repo,
-        env=sourceenv,
-        stdout=log,
-        stderr=log,
-        timeout=60,
-        check=True,
-    )
-    (root / "source-agent/agent.env").open("a").write(
-        "\nAGENT_DB_PATH=/var/lib/kuintessence/agent.db\nHEARTBEAT_INTERVAL_SEC=1\nAGENT_QUEUE_INVENTORY_INTERVAL_SEC=2\n"
-    )
-    sourcepod = copy.deepcopy(pod)
-    sourcepod["metadata"]["name"] = "result-copy-agent"
-    sourceagentenv = {
-        **agentenv,
-        "KQ_AGENT_ENV_FILE": str(root / "source-agent/agent.env"),
-        "AGENT_SANDBOX_ENABLED": "false",
-        "AGENT_FEDERATION_RESULT_COPY": json.dumps(
-            {
-                "stagingRoot": "/var/lib/kuintessence/result-staging",
-                "maxStagingBytes": 1048576,
-                "allowedSourceOrigins": [targetorigin],
-                "allowedDestinationOrigins": [sourceorigin],
-            }
-        ),
-    }
-    sourcepod["spec"]["containers"][0]["env"] = [
-        {"name": a, "value": b} for a, b in sourceagentenv.items()
-    ]
-    k(["apply", "-f", "-"], json.dumps(sourcepod))
-    for _ in range(60):
-        status = sourceapi("agents", token=sourcetoken)
-        rows = (
-            status
-            if isinstance(status, list)
-            else status.get("agents", status.get("items", []))
-        )
-        if any(
-            row.get("agentId") == sourceagent and row.get("status") == "online"
-            for row in rows
-        ):
-            break
-        time.sleep(1)
-    else:
-        raise RuntimeError("Source copy Agent did not come online")
-    print(
-        "Source Agent independently enrolled and online; result copy/verification enabled",
-        flush=True,
-    )
-
-    if scenario in ("outage", "stop"):
-        verify_interruption()
-    else:
-        verify_success()
-        if coordinated:
-            verify_terminal()
-        bill_record = verify_billing()
-        if coordinated:
-            verify_settlement()
-            verify_adjustments()
+        if scenario in ("outage", "stop"):
+            verify_interruption()
         else:
-            verify_bilateral_finance()
-            if attested:
-                verify_attested_recovery()
-    inspect_ledgers("after")
-    if coordinated and scenario in ("success", "workflow"):
-        state = json.loads((logs / "provider-after.json").read_text())
-        transactions = [r for r in state["commercialTransactions"] if r["submissionId"] == bill_record["id"]]
-        valid = [r for r in transactions if r["stage"] == "committed" and r["validationCode"] == 0 and r["blockNumber"] is not None]
-        assert len(valid) == 1, "Expected one original VALID bill transaction"
-        (logs / "billing-committed-evidence.json").write_text(json.dumps({"record": bill_record, "transactions": transactions}, indent=2) + "\n")
-        print("REAL BILL EVIDENCE PASSED: original durable intent -> VALID private bill after Orderer recovery; bill confirmation alone does not settle balances", flush=True)
+            verify_success()
+            if coordinated:
+                verify_terminal()
+            bill_record = verify_billing()
+            if coordinated:
+                verify_settlement()
+                verify_adjustments()
+            else:
+                verify_bilateral_finance()
+                if attested:
+                    verify_attested_recovery()
+        inspect_ledgers("after")
+        if coordinated and scenario in ("success", "workflow"):
+            state = json.loads((logs / "provider-after.json").read_text())
+            transactions = [r for r in state["commercialTransactions"] if r["submissionId"] == bill_record["id"]]
+            valid = [r for r in transactions if r["stage"] == "committed" and r["validationCode"] == 0 and r["blockNumber"] is not None]
+            assert len(valid) == 1, "Expected one original VALID bill transaction"
+            (logs / "billing-committed-evidence.json").write_text(json.dumps({"record": bill_record, "transactions": transactions}, indent=2) + "\n")
+            print("REAL BILL EVIDENCE PASSED: original durable intent -> VALID private bill after Orderer recovery; bill confirmation alone does not settle balances", flush=True)
 
 finally:
     cleanup_errors = []

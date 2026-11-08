@@ -211,6 +211,7 @@ export class FederationAgreementExchange {
       await this.lock(tx, claim);
       return this.source(tx, claim);
     });
+    const issuedAt = new Date();
     const query = AgreementApprovalQuerySchema.parse({
       protocolVersion: 1,
       kind: "agreement-approval-query",
@@ -219,8 +220,8 @@ export class FederationAgreementExchange {
       recipientSiteId: scope.other,
       agreementRevisionId: claim.revisionId,
       agreementDigest: scope.termsDigest,
-      issuedAt: new Date().toISOString(),
-      expiresAt: new Date(Date.now() + 60000).toISOString(),
+      issuedAt: issuedAt.toISOString(),
+      expiresAt: new Date(issuedAt.getTime() + 60000).toISOString(),
     });
     const own = await this.trust.resolveKey(this.signing.siteId, this.signing.keyId, new Date());
     const request = await signFederationMessage(AgreementApprovalQuerySchema, query, this.signing);

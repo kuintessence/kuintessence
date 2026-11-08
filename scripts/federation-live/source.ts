@@ -84,6 +84,7 @@ if (process.argv[2] === "inspect") {
           "commercial-bill",
           "commercial-settlement",
           "commercial-adjustment",
+          "commercial-refund",
           "agreement",
           "delegation",
           "acceptance",
@@ -117,6 +118,8 @@ if (process.argv[2] === "inspect") {
     "settlement.approve",
     "adjustment.approve",
     "delegation.submit",
+    "delegation.cancel",
+    "delegation.read",
     "asset.map",
     "result.read",
   ] as const)

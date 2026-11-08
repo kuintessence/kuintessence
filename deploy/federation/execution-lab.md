@@ -88,3 +88,21 @@ Orderer 在启动 Server 前停止。双方此时完成执行/商业协议交换
 恢复 Orderer 后核对原七条商业提交（双方合同、提供方用量/账单/结算/两次调整）及两条接单凭证。待办编号、已保存的交易检查点、所有本地账务及已完成 Job 均保持；批次序号连续、重复记录不能入链两次。独立 Node Gateway 再检查 A/B/C 的实际区块与 PDC：原记录正文/签名对应、交易 VALID、C 无私有内容，商业链上没有预算、预留或执行 gate 写入，避免把异步存证变成第二套可花费余额。
 
 证据目录为 `temp/federation-execution-attested-*`。`attested-offline-api.json` 与双方 `attested-offline.json` 保存链停止期间状态；`attested-recovered-api.json` 与双方 `attested-recovered.json` 保存恢复结果；`attested-private-ledger.json` 保存独立区块检查摘要。签名和内部日志仍只放受限忽略目录，不能上传公共 CI artifact。只有整条命令退出 0 且所有断言通过才记为此场景完成；其他中断、容量、归档与正式预览仍按各自验收项检查。
+
+## 执行前取消与退款验收
+
+沿用本页工具与隔离环境配置，选择 `refund`：
+
+```bash
+KQ_FEDERATION_LAB_SCENARIO=refund bun run test:federation:direct
+
+KQ_FEDERATION_LAB_MODE=bilateral_attested \
+KQ_FEDERATION_LAB_SCENARIO=refund \
+bun run test:fabric:execution
+```
+
+两端使用独立 Server/数据库和真实 mTLS，先完成执行协议与商业合同交换。协议交换后暂停源方自建 mTLS 入口，使材料暂时不可达；源方仍持有提交所需的完整材料，提供方真实接单占额后进入 `DATA_WAITING`；通过源方 HTTP 请求永久取消，等待提供方签名停止回执，再恢复源方入口。双方再分别通过 HTTP 批准同一退款，后台自动交换原签名。测试不调用附签来完成首次退款；完成后才重放批准/附签，检查仍为原记录，换退款编号遭拒。核对提供方预算全额归还、源方原占额净额为零、无第二套可花费余额，以及两边没有创建执行 Workflow、Job、用量账单或结算。
+
+异步模式从 Server 启动前停 Orderer，本地退款完成时原存证待办仍为 pending。合同及接单存证保存已背书检查点后，强制结束并重启两端自建 Server 与商业 Adapter，沿用原数据库和密钥。恢复 Orderer 后核对双方原合同及提供方原退款共三条商业提交取得 VALID，两条接单证据按原序列上链；恢复不得改变退款签名、已应用时间或本地额度。独立 Gateway 读取真实 A/B/C 区块，检查私有退款原文及两个唯一索引，A/B 可见、C 不可见，公共区块不含原文，链上没有预算、预留或执行许可写入。
+
+证据保存在上述 direct/attested 私有目录，新增 `refund-waiting.json`、`refund-evidence.json` 及双方 `refund-reserved`、`refund-applied` 快照。异步场景继续生成 `attested-offline`、`attested-recovered` 和 `attested-private-ledger.json`，另有 `refund-crash-recovery.json` 保存本轮自建进程退出码和新旧 PID。只有命令退出 0 且全部断言通过才算完成；本项不运行计算作业，不证明科研软件、满盘容量回收、自动退款批准政策、跨主机机构信任或正式 PR 登录验收。

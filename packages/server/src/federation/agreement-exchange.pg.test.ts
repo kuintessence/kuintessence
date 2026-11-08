@@ -1,4 +1,4 @@
-import { afterAll, expect, test } from "bun:test";
+import { afterAll, expect, spyOn, test } from "bun:test";
 import { randomBytes, randomUUID } from "node:crypto";
 import {
   federationAgreementApprovals as approvals,
@@ -618,4 +618,24 @@ test("agreement exchange disabled sender does not advance existing intent or sig
     (await f.source.get(f.aa, f.terms.agreementRevisionId)).counterpartyApprovalJws,
   ).toBeNull();
   expect(federationMessageKeyId(f.own.approvalJws)).toBe(f.a.signing.keyId);
+});
+
+test("agreement exchange builds its minute window from one observation", async () => {
+  const f = await fixture("bilateral_attested");
+  const current = Date.now.bind(Date);
+  const clock = spyOn(Date, "now").mockImplementation(() => current() + 5);
+  try {
+    await f.sourceExchange.advanceNext();
+    await f.providerExchange.advanceNext();
+    for (const [exchange, actor] of [
+      [f.sourceExchange, f.aa],
+      [f.providerExchange, f.ba],
+    ] as const)
+      expect((await exchange.status(actor, f.terms.agreementRevisionId)).sync).toMatchObject({
+        state: "complete",
+        lastError: null,
+      });
+  } finally {
+    clock.mockRestore();
+  }
 });

@@ -30,8 +30,11 @@ export async function verifyLiveExecution(
   const adapters = await startAdapters(root, attested);
   controls.onCleanup(adapters.cleanup);
   const selection = process.env.KQ_FEDERATION_LAB_SCENARIO ?? (attested ? "success" : "both");
-  assert(!attested || selection === "success", "Attested recovery uses the bilateral success flow");
-  assert(["success", "outage", "stop", "workflow", "both"].includes(selection));
+  assert(
+    attested ? ["success", "refund"].includes(selection) : selection !== "refund",
+    "Refund acceptance requires bilateral cooperation",
+  );
+  assert(["success", "outage", "stop", "workflow", "refund", "both"].includes(selection));
   for (const scenario of selection === "both" ? ["success", "outage"] : [selection]) {
     const child = Bun.spawn(["python3", join(import.meta.dir, "run.py")], {
       env: {
@@ -94,7 +97,7 @@ export async function verifyLiveExecution(
         0,
         `Real ${attested ? "attested" : "coordinated"} execution ${scenario} failed`,
       );
-      if (["success", "workflow"].includes(scenario)) {
+      if (["success", "workflow", "refund"].includes(scenario)) {
         const build = await Bun.build({
           entrypoints: [
             join(import.meta.dir, attested ? "attested-proof.ts" : "settlement-proof.ts"),

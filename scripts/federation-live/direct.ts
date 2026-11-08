@@ -9,6 +9,8 @@ assert.equal(
   "1",
   "Explicit disposable local k3s opt-in required",
 );
+const scenario = process.env.KQ_FEDERATION_LAB_SCENARIO ?? "success";
+assert(["success", "refund"].includes(scenario), "Unsupported direct scenario");
 const repo = resolve(import.meta.dir, "../..");
 await mkdir(join(repo, "temp"), { recursive: true });
 const root = await mkdtemp(join(repo, "temp", "federation-direct-"));
@@ -53,7 +55,7 @@ try {
   assert(!cancelled, "Direct lab interrupted before startup");
   child = Bun.spawn(["python3", join(import.meta.dir, "run.py")], {
     cwd: repo,
-    env: { ...env, LAB_MODE: "bilateral_direct", LAB_SCENARIO: "success", LAB_FIXTURE_ROOT: root },
+    env: { ...env, LAB_MODE: "bilateral_direct", LAB_SCENARIO: scenario, LAB_FIXTURE_ROOT: root },
     stdout: "inherit",
     stderr: "inherit",
   });

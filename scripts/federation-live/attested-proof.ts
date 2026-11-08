@@ -24,8 +24,9 @@ const evidenceTrust = FabricEvidenceTrustSchema.parse(
   JSON.parse(await readFile(join(root, "execution-evidence-trust.json"), "utf8")),
 );
 const proof = z
-  .object({ evidenceDirectory: z.string() })
+  .object({ evidenceDirectory: z.string(), scenario: z.enum(["success", "refund"]) })
   .parse(JSON.parse(await readFile(join(root, "live-attested-proof.json"), "utf8")));
+const refund = proof.scenario === "refund";
 const attempt = z.object({
   transactionId: z.string(),
   stage: z.string(),
@@ -58,6 +59,7 @@ const recordTypes = {
   "confirm-bill": "bill",
   "settle-bill": "settlement",
   "adjust-settlement": "adjustment",
+  "record-refund": "refund",
 } as const;
 const expected: {
   chaincode: string;
@@ -77,7 +79,7 @@ for (const name of ["source", "provider"]) {
       await readFile(join(proof.evidenceDirectory, `${name}-attested-recovered.json`), "utf8"),
     ),
   );
-  assert.equal(state.commercial.length, name === "source" ? 1 : 6);
+  assert.equal(state.commercial.length, name === "source" ? 1 : refund ? 2 : 6);
   for (const row of state.commercial) {
     const operation = z
       .enum([
@@ -86,6 +88,7 @@ for (const name of ["source", "provider"]) {
         "confirm-bill",
         "settle-bill",
         "adjust-settlement",
+        "record-refund",
       ])
       .parse(row.input.operation);
     const domain = network.trust.domains.find((v) => v.domainId === row.input.domainId);
@@ -138,7 +141,7 @@ for (const name of ["source", "provider"]) {
     });
   }
 }
-assert.equal(expected.filter((v) => v.chaincode === "kq-commercial").length, 7);
+assert.equal(expected.filter((v) => v.chaincode === "kq-commercial").length, refund ? 3 : 7);
 const batches = expected.filter((v) => v.manifest);
 assert(batches.length >= 1 && batches.length <= 2);
 assert.equal(
@@ -154,6 +157,7 @@ const results: Record<
     admissionRecords: number;
     cursors: number;
     adjustmentHeads: number;
+    refundIndexes: number;
   }
 > = {};
 for (const name of ["A", "B", "C"]) {
@@ -190,6 +194,7 @@ for (const name of ["A", "B", "C"]) {
     admissionRecords: 0,
     cursors: 0,
     adjustmentHeads: 0,
+    refundIndexes: 0,
   };
   try {
     for (const number of new Set(expected.map((v) => v.blockNumber))) {
@@ -209,6 +214,14 @@ for (const name of ["A", "B", "C"]) {
               !publicBytes.includes(Buffer.from(JSON.stringify(value.envelope))),
               "Public block contains private signature envelope",
             );
+            for (const [key, signature] of Object.entries(value.envelope))
+              if (key.endsWith("Jws")) {
+                assert(typeof signature === "string");
+                assert(
+                  !publicBytes.includes(Buffer.from(signature)),
+                  "Public block contains a private signature with encoded commercial terms",
+                );
+              }
             assert(typeof value.body.salt === "string");
             assert(
               !publicBytes.includes(Buffer.from(value.body.salt)),
@@ -287,6 +300,18 @@ for (const name of ["A", "B", "C"]) {
                         records++;
                       }
                   }
+                  if (
+                    ["refund-head", "refund-operation"].some((prefix) =>
+                      write.getKey().startsWith(`\u0000${prefix}\u0000`),
+                    )
+                  ) {
+                    assert(refund);
+                    assert.deepEqual(JSON.parse(Buffer.from(write.getValue_asU8()).toString()), {
+                      refundId: wanted.recordId,
+                      salt: wanted.body.salt,
+                    });
+                    result.refundIndexes++;
+                  }
                   if (write.getKey().startsWith("\u0000adjustment-head\u0000")) {
                     assert.deepEqual(JSON.parse(Buffer.from(write.getValue_asU8()).toString()), {
                       adjustmentId: wanted.recordId,
@@ -313,7 +338,8 @@ for (const name of ["A", "B", "C"]) {
       assert(received);
     }
     assert.equal(result.transactions, expected.length);
-    assert.equal(result.adjustmentHeads, name === "C" ? 0 : 2);
+    assert.equal(result.adjustmentHeads, name === "C" || refund ? 0 : 2);
+    assert.equal(result.refundIndexes, name !== "C" && refund ? 2 : 0);
     assert.equal(result.admissionRecords, name === "C" ? 0 : 2);
     results[name] = result;
   } finally {
