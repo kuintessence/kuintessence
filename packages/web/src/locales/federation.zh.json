@@ -98,6 +98,8 @@
       "commercial-usage-page": "用量交换响应",
       "input-download-grant": "输入下载授权",
       "media-manifest": "介质包清单",
+      "media-key-query": "介质包密钥请求",
+      "media-key-grant": "介质包加密密钥授权",
       "commercial-settlement": "商业额度结算",
       "commercial-adjustment": "商业账务调整",
       "commercial-refund": "执行前额度退款"

@@ -98,6 +98,8 @@
       "commercial-usage-page": "Usage exchange response",
       "input-download-grant": "Input download grant",
       "media-manifest": "Physical media manifest",
+      "media-key-query": "Media package key query",
+      "media-key-grant": "Media package encrypted key grant",
       "commercial-settlement": "Commercial allocation settlement",
       "commercial-adjustment": "Commercial charge adjustment",
       "commercial-refund": "Pre-execution allocation refund"

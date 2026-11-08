@@ -68,10 +68,12 @@ export const FederationKeyInput = z
           "input-download-query",
           "input-download-grant",
           "media-manifest",
+          "media-key-query",
+          "media-key-grant",
         ]),
       )
       .min(1)
-      .max(42),
+      .max(44),
     validFrom: z.iso.datetime(),
     validUntil: z.iso.datetime(),
   })

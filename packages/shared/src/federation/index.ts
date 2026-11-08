@@ -267,6 +267,7 @@ export * from "./input-files";
 export * from "./input-transfer";
 export * from "./material-exchange";
 export * from "./media";
+export * from "./media-keys";
 export * from "./permissions";
 export * from "./result-receipts";
 export * from "./result-transfer";

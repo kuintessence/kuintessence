@@ -90,6 +90,11 @@
       "bun": "./src/federation/market-request.ts",
       "types": "./src/federation/market-request.ts",
       "default": "./src/federation/market-request.ts"
+    },
+    "./federation/media-key-crypto": {
+      "bun": "./src/federation/media-key-crypto.ts",
+      "types": "./src/federation/media-key-crypto.ts",
+      "default": "./src/federation/media-key-crypto.ts"
     }
   },
   "scripts": {

@@ -12,14 +12,16 @@ import {
   FederationError,
   type FederationMediaExportApproval,
   FederationMediaExportApprovalSchema,
+  type FederationMediaKeyQuery,
   FederationMediaManifestSchema,
   FederationMediaRevocationSchema,
   federationCanonicalJson,
 } from "@kuintessence/shared/federation";
 import type { MediaAge } from "@kuintessence/shared/federation/media-age";
+import { encryptFederationMediaIdentity } from "@kuintessence/shared/federation/media-key-crypto";
 import { and, desc, eq, or } from "drizzle-orm";
 import { z } from "zod";
-import { encryptSecret } from "../auth/secret-cipher";
+import { decryptSecret, encryptSecret } from "../auth/secret-cipher";
 import { readMediaExportDataset } from "./media-export-data";
 import { type FederationActor, requireFederationCapability } from "./permissions";
 import {
@@ -158,6 +160,32 @@ export class FederationMediaExportService {
     const keyId = federationMessageKeyId(row.manifestJws);
     await this.assertManifestKey(tx, keyId);
     return row;
+  }
+
+  async keyScope(tx: PgTransaction, query: FederationMediaKeyQuery) {
+    const row = await this.find(tx, query.packageId);
+    if (
+      !row ||
+      query.recipientSiteId !== row.localSiteId ||
+      query.senderSiteId !== row.recipientSiteId ||
+      query.manifestDigest !== row.manifestDigest ||
+      query.agreementRevisionId !== row.agreementRevisionId ||
+      query.maxBytes < row.manifest.files.reduce((sum, file) => sum + file.sizeBytes, 0)
+    )
+      throw new FederationError("POLICY_DENIED");
+    return this.assertExportAuthorized(tx, row.localOrgId, row.packageId);
+  }
+
+  /** Only the institution-authenticated key responder may call this; never a human HTTP route. */
+  async sealIdentity(row: Export, query: FederationMediaKeyQuery, queryDigest: string) {
+    const identity = Buffer.from(
+      await decryptSecret(row.identityEncrypted, this.wrappingKey, mediaIdentityDomain(row)),
+    );
+    try {
+      return await encryptFederationMediaIdentity(identity, query.recipientKey, queryDigest);
+    } finally {
+      identity.fill(0);
+    }
   }
 
   async details(actor: FederationActor, packageId: string) {

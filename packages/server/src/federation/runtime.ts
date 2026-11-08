@@ -7,6 +7,7 @@ import type { ServerConfig } from "../config";
 import type { FederationDownloadStorage } from "./download-credential";
 import type { FederationExecutionConfirmationService } from "./execution-confirmation";
 import { createFederationIngress } from "./ingress";
+import type { FederationMediaKeyResponder } from "./media-key-exchange";
 import type { FederationOutboundService } from "./outbound";
 import { createFederationSender } from "./outbound-client";
 import type { FederationResultDownloadStorage } from "./results";
@@ -22,6 +23,7 @@ export async function startFederationIngress(
   inputDownloads?: FederationDownloadStorage,
   confirmations?: FederationExecutionConfirmationService,
   storageGuard?: FederationStorageGuard,
+  mediaKeys?: Pick<FederationMediaKeyResponder, "respond">,
 ) {
   if (!config.FEDERATION_ENABLED) return undefined;
   const socketPath = config.FEDERATION_SOCKET_PATH;
@@ -42,6 +44,7 @@ export async function startFederationIngress(
     inputDownloads,
     confirmations,
     storageGuard ?? (await loadFederationStorageGuard(config)),
+    mediaKeys,
   );
   return withPrivateUnixSocketStartup(socketPath, async () => {
     const server = Bun.serve({ unix: socketPath, fetch: app.fetch, maxRequestBodySize: 524288 });

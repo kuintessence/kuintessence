@@ -72,7 +72,7 @@ beforeAll(async () => {
     import { createServer } from 'node:https';
     import { readFileSync, writeFileSync } from 'node:fs';
     const server = createServer({ key:readFileSync('server.key'), cert:readFileSync('server.pem'), ca:readFileSync('ca.pem'), requestCert:true, rejectUnauthorized:true }, async (req,res) => {
-      if (!req.socket.authorized || req.socket.getPeerCertificate().subject.CN !== 'source' || req.method !== 'POST' || !['/federation/v1/delegations','/federation/v1/status','/federation/v1/usage','/federation/v1/agreement-approvals','/federation/v1/commercial-approvals','/federation/v1/commercial-closing','/federation/v1/market-requests','/federation/v1/reservation-proposals','/federation/v1/cancellations','/federation/v1/results','/federation/v1/result-downloads','/federation/v1/result-receipts','/federation/v1/materials','/federation/v1/input-downloads'].includes(req.url) || req.headers['content-type'] !== 'application/jose') { res.writeHead(403).end(); return; }
+      if (!req.socket.authorized || req.socket.getPeerCertificate().subject.CN !== 'source' || req.method !== 'POST' || !['/federation/v1/delegations','/federation/v1/status','/federation/v1/usage','/federation/v1/agreement-approvals','/federation/v1/commercial-approvals','/federation/v1/commercial-closing','/federation/v1/market-requests','/federation/v1/reservation-proposals','/federation/v1/cancellations','/federation/v1/results','/federation/v1/result-downloads','/federation/v1/result-receipts','/federation/v1/materials','/federation/v1/input-downloads','/federation/v1/media-keys'].includes(req.url) || req.headers['content-type'] !== 'application/jose') { res.writeHead(403).end(); return; }
       let body=''; for await (const chunk of req) body+=chunk;
       if (body==='redirect') { res.writeHead(307,{location:'/unexpected'}).end(); return; }
       if (body==='backlog') { res.writeHead(503,{'content-type':'application/json'}).end(JSON.stringify({error:{code:'ATTESTATION_BACKLOG'}})); return; }
@@ -115,6 +115,7 @@ test("outbound HTTPS sends the client identity and accepts a bounded JOSE respon
   expect(await send(endpoint, "download-jws", "/federation/v1/result-downloads")).toBe(
     "signed-receipt",
   );
+  expect(await send(endpoint, "key-query-jws", "/federation/v1/media-keys")).toBe("signed-receipt");
   expect(await send(endpoint, "material-jws", "/federation/v1/materials")).toBe("signed-receipt");
   expect(await send(endpoint, "input-jws", "/federation/v1/input-downloads")).toBe(
     "signed-receipt",

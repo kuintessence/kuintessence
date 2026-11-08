@@ -13,19 +13,26 @@ import {
   dataAssets,
   dataAssetVersions,
   dataLocations,
+  federationCertificates,
   federationMediaExports,
+  federationMediaKeyGrants,
+  federationSigningKeys,
   orgs,
   userOrgMemberships,
   users,
 } from "@kuintessence/db";
 import {
   FederationAgreementSchema,
+  FederationMediaKeyGrantSchema,
+  FederationMediaKeyQuerySchema,
   FederationMediaManifestSchema,
+  FederationMediaRecipientKeySchema,
 } from "@kuintessence/shared/federation";
 import { MediaAge } from "@kuintessence/shared/federation/media-age";
+import { decryptFederationMediaIdentity } from "@kuintessence/shared/federation/media-key-crypto";
 import { and, eq, sql } from "drizzle-orm";
 import { Hono } from "hono";
-import { exportSPKI } from "jose";
+import { exportJWK, exportSPKI, generateKeyPair } from "jose";
 import pino from "pino";
 import { decryptSecret } from "../auth/secret-cipher";
 import { createErrorHandler } from "../middleware/error-handler";
@@ -41,7 +48,9 @@ import {
 } from "../services/data-market";
 import { PgDataMarketRepository } from "../services/data-market-repository-drizzle";
 import { FederationAdmission } from "./admission";
+import { createFederationIngress } from "./ingress";
 import { FederationMediaExportService, mediaIdentityDomain } from "./media-exports";
+import { FederationMediaKeyRequester, FederationMediaKeyResponder } from "./media-key-exchange";
 import { FederationMediaPackageService } from "./media-packages";
 import { FederationPermissionService } from "./permissions";
 import { signFederationMessage, verifyFederationMessage } from "./signatures";
@@ -116,12 +125,20 @@ describe.skipIf(!binary)("source dataset export consent with real pinned age", (
           publicKeyPem: await exportSPKI(keys.verification.publicKey),
           validFrom: keys.verification.validFrom.toISOString(),
           validUntil: keys.verification.validUntil.toISOString(),
-          allowedKinds: ["agreement", "media-manifest"],
+          allowedKinds: ["agreement", "media-manifest", "media-key-query", "media-key-grant"],
         },
         actor.userId,
       );
     }
     terms = testAgreement(source.signing.siteId, target.signing.siteId);
+    // Fingerprint registry fixture; actual certificate transport is exercised by gateway/sender tests.
+    await db.insert(federationCertificates).values({
+      siteId: target.signing.siteId,
+      fingerprint: "d".repeat(64),
+      certificatePem: "isolated fingerprint registry fixture",
+      validFrom: new Date("2025-01-01"),
+      validUntil: new Date("2027-01-01"),
+    });
     await new FederationAdmission(
       db,
       target.signing,
@@ -767,6 +784,244 @@ describe.skipIf(!binary)("source dataset export consent with real pinned age", (
     } finally {
       await db.execute(sql`DROP TRIGGER disclosure_reject_audit ON audit_log`);
       await db.execute(sql`DROP FUNCTION disclosure_reject_audit()`);
+    }
+  });
+  async function keyFixture() {
+    await permissions.set({ ...actor, capability: "media.import", enabled: true }, actor.userId);
+    const prepared = await service.prepare(actor, request());
+    const receiver = new FederationMediaPackageService(db, target.signing.siteId, () => now);
+    await receiver.register(actor, {
+      senderSiteId: source.signing.siteId,
+      signedManifest: prepared.signedManifest,
+    });
+    const authorizationId = crypto.randomUUID();
+    await receiver.approveImport(actor, prepared.packageId, {
+      authorizationId,
+      agentId,
+      managedRootId: rootId,
+      maxBytes: 4,
+      expiresAt: new Date(testNow.getTime() + 3600_000).toISOString(),
+    });
+    const agentKeys = await generateKeyPair("RSA-OAEP-256", { modulusLength: 2048 });
+    const recipientKey = FederationMediaRecipientKeySchema.parse(
+      await exportJWK(agentKeys.publicKey),
+    );
+    const responder = new FederationMediaKeyResponder(db, source.signing, service, () => now);
+    const ingress = createFederationIngress(
+      db,
+      source.signing,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      responder,
+    );
+    const call = async (jws: string, fingerprint = "d".repeat(64)) =>
+      ingress.request("/federation/v1/media-keys", {
+        method: "POST",
+        headers: { "content-type": "application/jose", "x-kq-federation-cert": fingerprint },
+        body: jws,
+      });
+    const input = {
+      orgId: actor.orgId,
+      packageId: prepared.packageId,
+      authorizationId,
+      authenticatedAgentId: agentId,
+      recipientKey,
+    };
+    let queryJws = "";
+    const requester = (after?: (response: string) => Promise<string>) =>
+      new FederationMediaKeyRequester(
+        db,
+        target.signing,
+        receiver,
+        async (_endpoint, jws, path) => {
+          expect(path).toBe("/federation/v1/media-keys");
+          queryJws = jws;
+          const response = await call(jws);
+          expect(response.status).toBe(200);
+          expect(response.headers.get("cache-control")).toBe("no-store");
+          const body = await response.text();
+          return after ? after(body) : body;
+        },
+        () => now,
+      );
+    return { input, agentKeys, responder, receiver, call, requester, query: () => queryJws };
+  }
+
+  test("media key exchange verifies both approvals and returns only Agent-encrypted identity", async () => {
+    const f = await keyFixture();
+    const result = await f.requester().request(f.input);
+    const identity = await decryptFederationMediaIdentity(
+      result.grant.encryptedIdentity,
+      f.agentKeys.privateKey,
+      result.queryDigest,
+    );
+    try {
+      const original = await row(f.input.packageId);
+      expect(new TextDecoder().decode(identity)).toBe(
+        await decryptSecret(original.identityEncrypted, wrapping, mediaIdentityDomain(original)),
+      );
+      const stored = JSON.stringify([
+        await db.select().from(federationMediaKeyGrants),
+        await db.select().from(auditLog),
+      ]);
+      expect(stored).not.toContain(new TextDecoder().decode(identity));
+      expect(result.signedGrant).not.toContain("AGE-SECRET-KEY");
+      expect((await f.call(f.query(), "forged")).status).toBe(401);
+    } finally {
+      identity.fill(0);
+    }
+  });
+
+  test("media key retries preserve the first response, reject query rekeying, and recheck source revocation", async () => {
+    const f = await keyFixture();
+    const result = await f.requester().request(f.input);
+    const replays = await Promise.all([
+      f.responder.respond(f.query(), "d".repeat(64)),
+      f.responder.respond(f.query(), "d".repeat(64)),
+    ]);
+    expect(replays).toEqual([result.signedGrant, result.signedGrant]);
+    expect(
+      await db
+        .select()
+        .from(auditLog)
+        .where(
+          and(
+            eq(auditLog.target, result.query.queryId),
+            eq(auditLog.action, "federation.media.key_issue"),
+          ),
+        ),
+    ).toHaveLength(1);
+    const otherKeys = await generateKeyPair("RSA-OAEP-256", { modulusLength: 2048 });
+    const changed = await signFederationMessage(
+      FederationMediaKeyQuerySchema,
+      {
+        ...result.query,
+        recipientKey: FederationMediaRecipientKeySchema.parse(await exportJWK(otherKeys.publicKey)),
+      },
+      target.signing,
+    );
+    await expect(f.responder.respond(changed, "d".repeat(64))).rejects.toThrow(
+      "OPERATION_CONFLICT",
+    );
+    await service.revoke(actor, f.input.packageId, { reason: "Source withdraws key disclosure" });
+    await expect(f.responder.respond(f.query(), "d".repeat(64))).rejects.toThrow("POLICY_DENIED");
+  });
+
+  test("media key exchange refuses wrong Agent and receiver revocation while the response is in flight", async () => {
+    const f = await keyFixture();
+    await expect(
+      f.requester().request({ ...f.input, authenticatedAgentId: "another-agent" }),
+    ).rejects.toThrow("POLICY_DENIED");
+    expect(f.query()).toBe("");
+    await expect(
+      f
+        .requester(async (response) => {
+          await f.receiver.revoke(
+            actor,
+            f.input.packageId,
+            { reason: "Receiving operator withdraws import consent" },
+            f.input.authorizationId,
+          );
+          return response;
+        })
+        .request(f.input),
+    ).rejects.toThrow("POLICY_DENIED");
+  });
+
+  test("media key exchange rejects signed but substituted response scope and delayed replies", async () => {
+    const f = await keyFixture();
+    await expect(
+      f
+        .requester(async (response) => {
+          const verified = await verifyFederationMessage(
+            FederationMediaKeyGrantSchema,
+            response,
+            { ...source.verification, allowedKinds: ["media-key-grant"] },
+            now,
+          );
+          return signFederationMessage(
+            FederationMediaKeyGrantSchema,
+            { ...verified.payload, managedRootId: crypto.randomUUID() },
+            source.signing,
+          );
+        })
+        .request(f.input),
+    ).rejects.toThrow("INVALID_MESSAGE");
+    await expect(
+      f
+        .requester(async (response) => {
+          now = new Date(testNow.getTime() + 60_001);
+          return response;
+        })
+        .request(f.input),
+    ).rejects.toThrow("AUTHORIZATION_EXPIRED");
+    await expect(f.responder.respond(f.query(), "d".repeat(64))).rejects.toThrow(
+      "AUTHORIZATION_EXPIRED",
+    );
+  });
+
+  test("media key issuance rolls back on audit failure without persisting a usable response", async () => {
+    const f = await keyFixture();
+    await db.execute(
+      sql`CREATE FUNCTION media_key_reject_audit() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.action = 'federation.media.key_issue' THEN RAISE EXCEPTION 'test audit unavailable'; END IF; RETURN NEW; END $$`,
+    );
+    await db.execute(
+      sql`CREATE TRIGGER media_key_reject_audit BEFORE INSERT ON audit_log FOR EACH ROW EXECUTE FUNCTION media_key_reject_audit()`,
+    );
+    try {
+      const requester = new FederationMediaKeyRequester(
+        db,
+        target.signing,
+        f.receiver,
+        async (_endpoint, jws) => f.responder.respond(jws, "d".repeat(64)),
+        () => now,
+      );
+      await expect(requester.request(f.input)).rejects.toThrow();
+      expect(
+        await db
+          .select()
+          .from(federationMediaKeyGrants)
+          .where(eq(federationMediaKeyGrants.packageId, f.input.packageId)),
+      ).toHaveLength(0);
+    } finally {
+      await db.execute(sql`DROP TRIGGER media_key_reject_audit ON audit_log`);
+      await db.execute(sql`DROP FUNCTION media_key_reject_audit()`);
+    }
+  });
+
+  test("media key purposes are required independently and rechecked after transport and on replay", async () => {
+    const f = await keyFixture();
+    const kinds = ["agreement", "media-manifest", "media-key-query", "media-key-grant"] as const;
+    const setKinds = (siteId: string, omitted?: (typeof kinds)[number]) =>
+      db
+        .update(federationSigningKeys)
+        .set({ allowedKinds: kinds.filter((kind) => kind !== omitted) })
+        .where(eq(federationSigningKeys.siteId, siteId));
+    try {
+      await setKinds(target.signing.siteId, "media-key-query");
+      await expect(f.requester().request(f.input)).rejects.toThrow("UNTRUSTED_IDENTITY");
+      expect(f.query()).toBe("");
+      await setKinds(target.signing.siteId);
+      await f.requester().request(f.input);
+      await setKinds(source.signing.siteId, "media-key-grant");
+      await expect(f.responder.respond(f.query(), "d".repeat(64))).rejects.toThrow(
+        "UNTRUSTED_IDENTITY",
+      );
+      await setKinds(source.signing.siteId);
+      await expect(
+        f
+          .requester(async (response) => {
+            await setKinds(target.signing.siteId, "media-key-query");
+            return response;
+          })
+          .request(f.input),
+      ).rejects.toThrow("UNTRUSTED_IDENTITY");
+    } finally {
+      await setKinds(source.signing.siteId);
+      await setKinds(target.signing.siteId);
     }
   });
 });

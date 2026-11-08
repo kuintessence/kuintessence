@@ -88,6 +88,8 @@ export interface FederationVerificationKey {
     | "input-download-query"
     | "input-download-grant"
     | "media-manifest"
+    | "media-key-query"
+    | "media-key-grant"
   )[];
 }
 

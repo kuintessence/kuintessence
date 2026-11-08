@@ -96,6 +96,7 @@ import { UnixMarketClient } from "./federation/market-client";
 import { FederationMarketRequestService } from "./federation/market-requests";
 import { FederationMaterialExchange } from "./federation/material-exchange";
 import { FederationMediaExportService } from "./federation/media-exports";
+import { FederationMediaKeyResponder } from "./federation/media-key-exchange";
 import { FederationMediaPackageService } from "./federation/media-packages";
 import { FederationOutboundService, FederationOutboundWorker } from "./federation/outbound";
 import { createFederationPackageResolver } from "./federation/package-resolver";
@@ -1880,23 +1881,30 @@ federationDispatchAuthorization = federationPreparation
 jobDispatchOutbox.start();
 jobCancellationOutbox.start();
 protectedApi.route("/", createFederationAssetRoutes(federationAssets, federationPreparation));
+const federationMediaExports =
+  federationSigningKey &&
+  config.FEDERATION_MEDIA_AGE_DIRECTORY &&
+  config.FEDERATION_MEDIA_WRAPPING_KEY
+    ? new FederationMediaExportService(
+        db,
+        federationSigningKey,
+        new MediaAge(config.FEDERATION_MEDIA_AGE_DIRECTORY),
+        config.FEDERATION_MEDIA_WRAPPING_KEY,
+      )
+    : undefined;
+const federationMediaKeys =
+  federationSigningKey && federationMediaExports
+    ? new FederationMediaKeyResponder(db, federationSigningKey, federationMediaExports)
+    : undefined;
 if (config.FEDERATION_SITE_ID)
   protectedApi.route(
     "/",
     createFederationMediaRoutes(
       new FederationMediaPackageService(db, config.FEDERATION_SITE_ID),
-      federationSigningKey &&
-        config.FEDERATION_MEDIA_AGE_DIRECTORY &&
-        config.FEDERATION_MEDIA_WRAPPING_KEY
-        ? new FederationMediaExportService(
-            db,
-            federationSigningKey,
-            new MediaAge(config.FEDERATION_MEDIA_AGE_DIRECTORY),
-            config.FEDERATION_MEDIA_WRAPPING_KEY,
-          )
-        : undefined,
+      federationMediaExports,
     ),
   );
+
 if (federationSigningKey)
   protectedApi.route(
     "/",
@@ -2539,6 +2547,7 @@ const federationIngress = await startFederationIngress(
   federationInputDownloads,
   federationConfirmations,
   federationStorageGuard,
+  federationMediaKeys,
 );
 const federationPreparationWorker = federationPreparation
   ? new FederationPreparationWorker(

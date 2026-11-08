@@ -140,6 +140,8 @@ export const federationSigningKeys = pgTable(
           | "input-download-query"
           | "input-download-grant"
           | "media-manifest"
+          | "media-key-query"
+          | "media-key-grant"
         )[]
       >()
       .notNull(),
@@ -2575,5 +2577,31 @@ export const federationMediaExports = pgTable(
       AND ${t.expiresAt} <= ${t.approvedAt} + interval '7 days'
       AND ((${t.revokedAt} IS NULL) = (${t.revocationReason} IS NULL))) IS TRUE`,
     ),
+  ],
+);
+
+/** Encrypted, request-bound key responses; no plaintext package identity is retained here. */
+export const federationMediaKeyGrants = pgTable(
+  "federation_media_key_grants",
+  {
+    localSiteId: uuid("local_site_id").notNull(),
+    queryId: uuid("query_id").notNull(),
+    packageId: uuid("package_id").notNull(),
+    queryDigest: varchar("query_digest", { length: 71 }).notNull(),
+    responseJws: text("response_jws").notNull(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.localSiteId, t.queryId] }),
+    foreignKey({
+      columns: [t.localSiteId, t.packageId],
+      foreignColumns: [federationMediaExports.localSiteId, federationMediaExports.packageId],
+    }),
+    check(
+      "federation_media_key_grant_window",
+      sql`${t.expiresAt} > ${t.createdAt} AND ${t.expiresAt} <= ${t.createdAt} + interval '60 seconds'`,
+    ),
+    check("federation_media_key_grant_digest", sql`${t.queryDigest} ~ '^sha256:[a-f0-9]{64}$'`),
   ],
 );
