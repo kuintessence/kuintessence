@@ -1,11 +1,12 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, setSystemTime, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { create } from "@bufbuild/protobuf";
 import { AgentDataRoots } from "@kuintessence/agent/data-market/roots";
 import { FederationMediaExportClient } from "@kuintessence/agent/federation/media-export";
+import { FederationMediaImportClient } from "@kuintessence/agent/federation/media-import";
 import {
   agents,
   auditLog,
@@ -24,7 +25,10 @@ import {
   userOrgMemberships,
   users,
 } from "@kuintessence/db";
-import { FederationMediaExportLeaseResponseSchema } from "@kuintessence/proto";
+import {
+  FederationMediaExportLeaseResponseSchema,
+  FederationMediaImportGrantResponseSchema,
+} from "@kuintessence/proto";
 import {
   FederationAgreementSchema,
   FederationMediaKeyGrantSchema,
@@ -38,6 +42,7 @@ import { and, eq, sql } from "drizzle-orm";
 import { Hono } from "hono";
 import { exportJWK, exportSPKI, generateKeyPair } from "jose";
 import pino from "pino";
+import { z } from "zod";
 import { decryptSecret } from "../auth/secret-cipher";
 import { AgentDispatcher } from "../grpc/dispatcher";
 import { createErrorHandler } from "../middleware/error-handler";
@@ -57,6 +62,8 @@ import { createFederationIngress } from "./ingress";
 import { FederationMediaExportOperations } from "./media-export-operations";
 import { FederationMediaExportTransport } from "./media-export-transport";
 import { FederationMediaExportService, mediaIdentityDomain } from "./media-exports";
+import { FederationMediaImportOperations } from "./media-import-operations";
+import { FederationMediaImportTransport } from "./media-import-transport";
 import { FederationMediaKeyRequester, FederationMediaKeyResponder } from "./media-key-exchange";
 import { FederationMediaPackageService } from "./media-packages";
 import { FederationPermissionService } from "./permissions";
@@ -1032,6 +1039,294 @@ describe.skipIf(!binary)("source dataset export consent with real pinned age", (
       await setKinds(target.signing.siteId);
     }
   });
+  test("media import operation receives a real encrypted package through Agent transport without publishing use", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "kq-media-receive-"));
+    let client: FederationMediaImportClient | undefined,
+      sourceClient: FederationMediaExportClient | undefined;
+    setSystemTime(testNow);
+    try {
+      const f = await keyFixture();
+      const sourceOperations = new FederationMediaExportOperations(
+        db,
+        source.signing.siteId,
+        service,
+        () => now,
+      );
+      await sourceOperations.start(actor, f.input.packageId);
+      await mkdir(join(directory, "source", "v1"), { recursive: true, mode: 0o700 });
+      await writeFile(join(directory, "source", "v1", "input.dat"), "data");
+      const sourceRoots = new AgentDataRoots({
+        datasetRoot: join(directory, "source"),
+        jobWorkRoot: join(directory, "source-jobs"),
+        managedRoots: { [rootId]: "." },
+      });
+      await sourceRoots.initialize();
+      const sourceDispatcher = new AgentDispatcher();
+      const sourceTransport = new FederationMediaExportTransport(
+        sourceOperations,
+        sourceDispatcher,
+      );
+      const exported = Promise.withResolvers<void>();
+      sourceClient = new FederationMediaExportClient(
+        {
+          agentId,
+          roots: sourceRoots,
+          mediaDirectory: join(directory, "source-media"),
+          ageDirectory: binary ?? "",
+        },
+        (request) => {
+          void sourceTransport
+            .grant(agentId, request)
+            .then((reply) => sourceClient?.receive(reply), exported.reject);
+          return true;
+        },
+        (report) => {
+          void sourceTransport.report(agentId, report).then(exported.resolve, exported.reject);
+        },
+      );
+      sourceDispatcher.register(agentId, {
+        federationMediaExportV1: true,
+        verifiedCertFingerprint: "isolated-source-channel",
+        push: (message) => {
+          if (message.payload.case === "federationMediaExport")
+            sourceClient?.start(message.payload.value);
+        },
+        close: () => {},
+      });
+      await sourceTransport.tick();
+      await exported.promise;
+      const mediaDirectory = join(directory, "receiver-media");
+      const inbox = join(mediaDirectory, "inbox", f.input.packageId);
+      await mkdir(inbox, { recursive: true, mode: 0o700 });
+      await copyFile(
+        join(directory, "source-media", "outbox", f.input.packageId, "bundle.age"),
+        join(inbox, "bundle.age"),
+      );
+      const data = join(directory, "receiver-data");
+      await mkdir(data, { mode: 0o700 });
+      const roots = new AgentDataRoots({
+        datasetRoot: data,
+        jobWorkRoot: join(directory, "receiver-jobs"),
+        managedRoots: { [rootId]: "." },
+      });
+      await roots.initialize();
+      const operations = new FederationMediaImportOperations(
+        db,
+        target.signing.siteId,
+        f.receiver,
+        f.requester(),
+        () => now,
+      );
+      const r = new Hono();
+      r.onError(createErrorHandler(pino({ enabled: false })));
+      r.use("*", async (c, next) => {
+        c.set("principal" as never, actor as never);
+        await next();
+      });
+      r.route("/api", createFederationMediaRoutes(f.receiver, undefined, undefined, operations));
+      const path = `/api/federation/media/packages/${f.input.packageId}/import-authorizations/${f.input.authorizationId}`;
+      expect((await r.request(`${path}/run`, { method: "POST" })).status).toBe(202);
+      const [first, same] = await Promise.all([
+        operations.start(actor, f.input.packageId, f.input.authorizationId),
+        operations.start(actor, f.input.packageId, f.input.authorizationId),
+      ]);
+      expect(first.generation).toBe(same.generation);
+      const before = await db.select().from(dataLocations);
+      const dispatcher = new AgentDispatcher(),
+        finished = Promise.withResolvers<void>();
+      const transport = new FederationMediaImportTransport(operations, dispatcher);
+      client = new FederationMediaImportClient(
+        { agentId, roots, mediaDirectory, ageDirectory: binary ?? "" },
+        (request) => {
+          void transport.grant(agentId, request).then(
+            (reply) => client?.receive(reply),
+            (error) => {
+              finished.reject(error);
+              client?.receive(
+                create(FederationMediaImportGrantResponseSchema, { requestId: request.requestId }),
+              );
+            },
+          );
+          return true;
+        },
+        (report) => {
+          void transport.report(agentId, report).then(finished.resolve, finished.reject);
+        },
+      );
+      dispatcher.register(agentId, {
+        federationMediaImportV1: true,
+        verifiedCertFingerprint: "isolated-receiver-channel",
+        push: (message) => {
+          if (message.payload.case === "federationMediaImport")
+            client?.start(message.payload.value);
+        },
+        close: () => {},
+      });
+      await transport.tick();
+      await finished.promise;
+      await permissions.set({ ...actor, capability: "asset.read", enabled: true }, actor.userId);
+      const response = await r.request(`${path}/operation`);
+      expect(response.status).toBe(200);
+      const { data: status } = z
+        .object({ data: z.record(z.string(), z.unknown()) })
+        .parse(await response.json());
+      expect(status.state).toBe("verified");
+      expect(status.verifiedBytes).toBe(4);
+      expect(status.latestGrant).toBeUndefined();
+      expect(JSON.stringify(status)).not.toContain("encryptedIdentity");
+      expect(
+        await readFile(
+          join(data, ".federation-media", f.input.packageId, "files", "input.dat"),
+          "utf8",
+        ),
+      ).toBe("data");
+      expect(await db.select().from(dataLocations)).toEqual(before);
+      expect(
+        (await operations.start(actor, f.input.packageId, f.input.authorizationId)).generation,
+      ).toBe(first.generation);
+    } finally {
+      await client?.disconnect();
+      await sourceClient?.disconnect();
+      setSystemTime();
+      await rm(directory, { recursive: true, force: true });
+    }
+  }, 25_000);
+
+  test("media import operation fences retries, wrong Agents, expired grants and revoked approvals", async () => {
+    const f = await keyFixture();
+    const operations = new FederationMediaImportOperations(
+      db,
+      target.signing.siteId,
+      f.receiver,
+      f.requester(),
+      () => now,
+    );
+    const first = await operations.start(actor, f.input.packageId, f.input.authorizationId);
+    const task = (await operations.task(agentId, f.input.authorizationId)).task;
+    const binding = {
+      generation: first.generation,
+      packageId: f.input.packageId,
+      authorizationId: f.input.authorizationId,
+      manifestDigest: task.manifestDigest,
+    };
+    await expect(
+      operations.grant("wrong-agent", { ...binding, recipientKey: f.input.recipientKey }),
+    ).rejects.toThrow();
+    await expect(
+      operations.report(agentId, {
+        ...binding,
+        state: "verified",
+        queryDigest: task.manifestDigest,
+        sizeBytes: 4,
+      }),
+    ).rejects.toThrow();
+    const grant = await operations.grant(agentId, {
+      ...binding,
+      recipientKey: f.input.recipientKey,
+    });
+    const success = { ...binding, state: "verified", queryDigest: grant.queryDigest, sizeBytes: 4 };
+    await expect(operations.report(agentId, { ...success, sizeBytes: 5 })).rejects.toThrow();
+    now = new Date(Date.parse(grant.expiresAt) + 1);
+    await expect(operations.report(agentId, success)).rejects.toThrow();
+    await operations.report(agentId, { ...binding, state: "failed" });
+    const retry = await operations.start(actor, f.input.packageId, f.input.authorizationId);
+    expect(retry.generation).not.toBe(first.generation);
+    await expect(
+      operations.grant(agentId, { ...binding, recipientKey: f.input.recipientKey }),
+    ).rejects.toThrow();
+    await expect(operations.report(agentId, success)).rejects.toThrow();
+    await f.receiver.revoke(
+      actor,
+      f.input.packageId,
+      { reason: "Approval withdrawn" },
+      f.input.authorizationId,
+    );
+    await expect(operations.task(agentId, f.input.authorizationId)).rejects.toThrow();
+  });
+
+  test("media import rejects revoked in-flight key approval and rolls back failed audit", async () => {
+    const f = await keyFixture();
+    const operations = new FederationMediaImportOperations(
+      db,
+      target.signing.siteId,
+      f.receiver,
+      f.requester(),
+      () => now,
+    );
+    await permissions.set({ ...actor, capability: "asset.read", enabled: true }, actor.userId);
+    await db.execute(
+      sql`CREATE FUNCTION media_import_reject_audit() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.action = 'federation.media.import_start' THEN RAISE EXCEPTION 'test audit unavailable'; END IF; RETURN NEW; END $$`,
+    );
+    await db.execute(
+      sql`CREATE TRIGGER media_import_reject_audit BEFORE INSERT ON audit_log FOR EACH ROW EXECUTE FUNCTION media_import_reject_audit()`,
+    );
+    try {
+      await expect(
+        operations.start(actor, f.input.packageId, f.input.authorizationId),
+      ).rejects.toThrow();
+      expect(await operations.status(actor, f.input.packageId, f.input.authorizationId)).toBeNull();
+    } finally {
+      await db.execute(sql`DROP TRIGGER media_import_reject_audit ON audit_log`);
+      await db.execute(sql`DROP FUNCTION media_import_reject_audit()`);
+    }
+    const attempt = await operations.start(actor, f.input.packageId, f.input.authorizationId);
+    const task = (await operations.task(agentId, f.input.authorizationId)).task;
+    const inflight = new FederationMediaImportOperations(
+      db,
+      target.signing.siteId,
+      f.receiver,
+      f.requester(async (response) => {
+        await f.receiver.revoke(
+          actor,
+          f.input.packageId,
+          { reason: "Withdrawn during key exchange" },
+          f.input.authorizationId,
+        );
+        return response;
+      }),
+      () => now,
+    );
+    await expect(
+      inflight.grant(agentId, {
+        generation: attempt.generation,
+        packageId: f.input.packageId,
+        authorizationId: f.input.authorizationId,
+        manifestDigest: task.manifestDigest,
+        recipientKey: f.input.recipientKey,
+      }),
+    ).rejects.toThrow();
+    expect(
+      (await operations.status(actor, f.input.packageId, f.input.authorizationId))?.state,
+    ).toBe("queued");
+  });
+
+  test("media key grant lifetime cannot exceed its source signing key", async () => {
+    const f = await keyFixture();
+    const expiresAt = new Date(now.getTime() + 3_000);
+    try {
+      await db
+        .update(federationSigningKeys)
+        .set({ validUntil: expiresAt })
+        .where(
+          and(
+            eq(federationSigningKeys.siteId, source.signing.siteId),
+            eq(federationSigningKeys.keyId, source.signing.keyId),
+          ),
+        );
+      expect((await f.requester().request(f.input)).grant.expiresAt).toBe(expiresAt.toISOString());
+    } finally {
+      await db
+        .update(federationSigningKeys)
+        .set({ validUntil: source.verification.validUntil })
+        .where(
+          and(
+            eq(federationSigningKeys.siteId, source.signing.siteId),
+            eq(federationSigningKeys.keyId, source.signing.keyId),
+          ),
+        );
+    }
+  });
+
   test("media export operation dispatches real encrypted files through Agent lease and report transport", async () => {
     const directory = await mkdtemp(join(tmpdir(), "kq-media-operation-"));
     let client: FederationMediaExportClient | undefined;

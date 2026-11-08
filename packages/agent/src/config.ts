@@ -91,6 +91,15 @@ const AgentConfigSchema = z
         .nullable(),
       "null",
     ),
+    AGENT_FEDERATION_MEDIA_IMPORT: jsonConfig(
+      z
+        .strictObject({
+          mediaDirectory: dedicatedAbsolutePath("media directory"),
+          ageDirectory: dedicatedAbsolutePath("age tools directory"),
+        })
+        .nullable(),
+      "null",
+    ),
     AGENT_FEDERATION_RESULT_COPY: jsonConfig(
       z
         .strictObject({

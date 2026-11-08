@@ -1121,6 +1121,13 @@
       "when": 1794146333534,
       "tag": "0159_secret_crusher_hogan",
       "breakpoints": true
+    },
+    {
+      "idx": 160,
+      "version": "7",
+      "when": 1794148292172,
+      "tag": "0160_stiff_jack_flag",
+      "breakpoints": true
     }
   ]
 }

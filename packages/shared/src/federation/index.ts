@@ -268,6 +268,7 @@ export * from "./input-transfer";
 export * from "./material-exchange";
 export * from "./media";
 export * from "./media-export-task";
+export * from "./media-import-task";
 export * from "./media-keys";
 export * from "./permissions";
 export * from "./result-receipts";

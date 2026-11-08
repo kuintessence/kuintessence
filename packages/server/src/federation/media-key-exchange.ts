@@ -7,13 +7,14 @@ import {
 } from "@kuintessence/db";
 import {
   assertFederationStatusQueryFresh,
+  assertMediaKeyGrant,
   FederationError,
   FederationMediaKeyGrantSchema,
-  type FederationMediaKeyQuery,
   FederationMediaKeyQuerySchema,
   type FederationMediaRecipientKey,
 } from "@kuintessence/shared/federation";
 import { and, eq, sql } from "drizzle-orm";
+import { exportSPKI } from "jose";
 import type { FederationMediaExportService } from "./media-exports";
 import type { FederationMediaPackageService } from "./media-packages";
 import type { FederationSend } from "./outbound-client";
@@ -78,10 +79,23 @@ export class FederationMediaKeyResponder {
         await this.signingAuthority(tx, federationMessageKeyId(existing.responseJws));
         return existing.responseJws;
       }
-      await this.signingAuthority(tx, this.signing.keyId);
+      const signingKey = await this.signingAuthority(tx, this.signing.keyId);
+      const manifestKey = await this.trust.resolveKey(
+        this.signing.siteId,
+        federationMessageKeyId(source.manifestJws),
+        this.clock(),
+        tx,
+      );
       const now = this.clock();
       const expiresAt = new Date(
-        Math.min(Date.parse(query.expiresAt), source.expiresAt.getTime(), now.getTime() + 60_000),
+        Math.min(
+          Date.parse(query.expiresAt),
+          source.expiresAt.getTime(),
+          now.getTime() + 60_000,
+          signingKey.validUntil.getTime(),
+          currentPeer.validUntil.getTime(),
+          manifestKey.validUntil.getTime(),
+        ),
       );
       if (expiresAt <= now) throw new FederationError("AUTHORIZATION_EXPIRED");
       const encryptedIdentity = await this.exports.sealIdentity(source, query, verified.digest);
@@ -143,6 +157,7 @@ export class FederationMediaKeyResponder {
     const key = await this.trust.resolveKey(this.signing.siteId, keyId, this.clock(), tx);
     if (!key.allowedKinds.includes("media-key-grant"))
       throw new FederationError("UNTRUSTED_IDENTITY");
+    return key;
   }
 }
 
@@ -258,36 +273,13 @@ export class FederationMediaKeyRequester {
         queryDigest: prepared.digest,
         grant: grant.payload,
         signedGrant: responseJws,
+        signingKey: {
+          keyId: key.keyId,
+          publicKeyPem: await exportSPKI(key.publicKey),
+          validFrom: key.validFrom.toISOString(),
+          validUntil: key.validUntil.toISOString(),
+        },
       };
     });
   }
-}
-
-export function assertMediaKeyGrant(
-  query: FederationMediaKeyQuery,
-  queryDigest: string,
-  grant: ReturnType<typeof FederationMediaKeyGrantSchema.parse>,
-  now: Date,
-) {
-  assertFederationStatusQueryFresh(query, now);
-  assertFederationStatusQueryFresh(grant, now);
-  if (
-    grant.senderSiteId !== query.recipientSiteId ||
-    grant.recipientSiteId !== query.senderSiteId ||
-    grant.queryDigest !== queryDigest ||
-    Date.parse(grant.expiresAt) > Date.parse(query.expiresAt) ||
-    Date.parse(grant.issuedAt) < Date.parse(query.issuedAt) - 60_000 ||
-    (
-      [
-        "queryId",
-        "packageId",
-        "agreementRevisionId",
-        "manifestDigest",
-        "authorizationId",
-        "agentId",
-        "managedRootId",
-      ] as const
-    ).some((key) => grant[key] !== query[key])
-  )
-    throw new FederationError("INVALID_MESSAGE");
 }

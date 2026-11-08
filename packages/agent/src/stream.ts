@@ -18,6 +18,8 @@ import {
   type FederationInputGrantRequest,
   type FederationMediaExportLeaseRequest,
   type FederationMediaExportReport,
+  type FederationMediaImportKeyRequest,
+  type FederationMediaImportReport,
   type FederationResultCopyReport,
   type FederationResultGrantRequest,
   FileTransferProgressSchema,
@@ -97,6 +99,10 @@ import {
   FederationMediaExportClient,
   type FederationMediaExportConfig,
 } from "./federation/media-export-client";
+import {
+  FederationMediaImportClient,
+  type FederationMediaImportConfig,
+} from "./federation/media-import-client";
 import {
   FederationResultClient,
   type FederationResultClientConfig,
@@ -254,7 +260,9 @@ type OutboundItem =
       partNumbers: number[];
     }
   | { kind: "federationMediaExportLeaseRequest"; request: FederationMediaExportLeaseRequest }
+  | { kind: "federationMediaImportKeyRequest"; request: FederationMediaImportKeyRequest }
   | { kind: "federationMediaExportReport"; report: FederationMediaExportReport }
+  | { kind: "federationMediaImportReport"; report: FederationMediaImportReport }
   | { kind: "federationAccountingResponse"; responseJson: string }
   | { kind: "federationInputGrantRequest"; request: FederationInputGrantRequest }
   | { kind: "federationInputCopyReport"; report: FederationInputCopyReport }
@@ -558,6 +566,7 @@ export interface AgentStreamDeps {
   federationResultCopy?: FederationResultClientConfig;
   federationInputCopy?: FederationInputClientConfig;
   federationMediaExport?: FederationMediaExportConfig;
+  federationMediaImport?: FederationMediaImportConfig;
   assertFederationRuntimeWatchdog?: () => Promise<void>;
   client: ServerClient;
   /**
@@ -742,7 +751,9 @@ export class AgentStream {
   private running = true;
   private connected = false;
   private federationMediaExportSupported = false;
+  private federationMediaImportSupported = false;
   private federationMediaExport?: FederationMediaExportClient;
+  private federationMediaImport?: FederationMediaImportClient;
   private federationInputCopySupported = false;
   private federationInputCopy?: FederationInputClient;
   private federationResultCopySupported = false;
@@ -900,6 +911,22 @@ export class AgentStream {
         (report) => {
           if (!this.connected || !this.federationMediaExportSupported) return;
           this.outboundQueue.push({ kind: "federationMediaExportReport", report });
+          this.signalOutbound();
+        },
+        transferSlot,
+      );
+    if (deps.federationMediaImport)
+      this.federationMediaImport = new FederationMediaImportClient(
+        deps.federationMediaImport,
+        (request) => {
+          if (!this.connected || !this.federationMediaImportSupported) return false;
+          this.outboundQueue.push({ kind: "federationMediaImportKeyRequest", request });
+          this.signalOutbound();
+          return true;
+        },
+        (report) => {
+          if (!this.connected || !this.federationMediaImportSupported) return;
+          this.outboundQueue.push({ kind: "federationMediaImportReport", report });
           this.signalOutbound();
         },
         transferSlot,
@@ -1322,6 +1349,7 @@ export class AgentStream {
     void this.federationResultCopy?.disconnect();
     void this.federationInputCopy?.disconnect();
     void this.federationMediaExport?.disconnect();
+    void this.federationMediaImport?.disconnect();
     this.lifecycleController.abort(new Error("agent shutdown"));
     for (const entry of this.federationRuntimes.values()) clearTimeout(entry.retry);
     this.currentStreamController?.abort(new Error("agent shutdown"));
@@ -1355,6 +1383,7 @@ export class AgentStream {
           this.federationResultCopy?.disconnect(),
           this.federationInputCopy?.disconnect(),
           this.federationMediaExport?.disconnect(),
+          this.federationMediaImport?.disconnect(),
           ...this.pendingSoftwareResultSpills,
           ...this.pendingSpackPreparations,
           ...this.pendingSpackLoadCleanups,
@@ -2081,6 +2110,7 @@ export class AgentStream {
           managedDatasetRootIds: [...(this.deps.managedDatasetRootIds ?? [])],
           federationInputCopyV1: !!this.federationInputCopy,
           federationMediaExportV1: !!this.federationMediaExport,
+          federationMediaImportV1: !!this.federationMediaImport,
           federationInputVerifyV1: !!this.federationInputCopy,
           federationResultCopyV1: !!this.federationResultCopy,
           federationResultVerifyV1: !!this.federationResultCopy,
@@ -2311,6 +2341,15 @@ export class AgentStream {
           } else if (item.kind === "federationMediaExportReport") {
             yield create(AgentMessageSchema, {
               payload: { case: "federationMediaExportReport", value: item.report },
+            });
+          } else if (item.kind === "federationMediaImportKeyRequest") {
+            if (this.federationMediaImport?.hasPending(item.request.requestId))
+              yield create(AgentMessageSchema, {
+                payload: { case: "federationMediaImportKeyRequest", value: item.request },
+              });
+          } else if (item.kind === "federationMediaImportReport") {
+            yield create(AgentMessageSchema, {
+              payload: { case: "federationMediaImportReport", value: item.report },
             });
           } else if (item.kind === "federationResultGrantRequest") {
             if (this.federationResultCopy?.hasPending(item.request.requestId))
@@ -2772,6 +2811,8 @@ export class AgentStream {
               this.connected = true;
               this.federationMediaExportSupported =
                 message.payload.value.federationMediaExportV1Supported;
+              this.federationMediaImportSupported =
+                message.payload.value.federationMediaImportV1Supported;
               this.federationInputCopySupported =
                 message.payload.value.federationInputCopyV1Supported;
               this.federationResultCopySupported =
@@ -2826,7 +2867,9 @@ export class AgentStream {
       }
       this.connected = false;
       this.federationMediaExportSupported = false;
+      this.federationMediaImportSupported = false;
       await this.federationMediaExport?.disconnect();
+      await this.federationMediaImport?.disconnect();
       this.federationInputCopySupported = false;
       await this.federationInputCopy?.disconnect();
       this.federationResultCopySupported = false;
@@ -3145,6 +3188,14 @@ export class AgentStream {
     }
     if (payload.case === "federationMediaExportLeaseResponse") {
       this.federationMediaExport?.receive(payload.value);
+      return;
+    }
+    if (payload.case === "federationMediaImport") {
+      if (this.federationMediaImportSupported) this.federationMediaImport?.start(payload.value);
+      return;
+    }
+    if (payload.case === "federationMediaImportGrantResponse") {
+      this.federationMediaImport?.receive(payload.value);
       return;
     }
     if (payload.case === "federationResultCopy") {

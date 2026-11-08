@@ -45,6 +45,11 @@
       "bun": "./src/federation/media-export-client.ts",
       "types": "./src/federation/media-export-client.ts",
       "default": "./src/federation/media-export-client.ts"
+    },
+    "./federation/media-import": {
+      "bun": "./src/federation/media-import-client.ts",
+      "types": "./src/federation/media-import-client.ts",
+      "default": "./src/federation/media-import-client.ts"
     }
   },
   "scripts": {

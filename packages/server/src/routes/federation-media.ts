@@ -11,6 +11,7 @@ import { bodyLimit } from "hono/body-limit";
 import { z } from "zod";
 import type { FederationMediaExportOperations } from "../federation/media-export-operations";
 import type { FederationMediaExportService } from "../federation/media-exports";
+import type { FederationMediaImportOperations } from "../federation/media-import-operations";
 import type { FederationMediaPackageService } from "../federation/media-packages";
 import type { FederationActor } from "../federation/permissions";
 import type { BoundPrincipal } from "../middleware/principal-binder";
@@ -20,6 +21,7 @@ export function createFederationMediaRoutes(
   service: FederationMediaPackageService,
   exports?: FederationMediaExportService,
   exportOperations?: FederationMediaExportOperations,
+  importOperations?: FederationMediaImportOperations,
 ) {
   const r = new Hono<{ Variables: { federationActor: FederationActor } }>();
   r.use("/federation/media/*", async (c, next) => {
@@ -52,6 +54,36 @@ export function createFederationMediaRoutes(
       throw new AppError(ErrorCode.INTERNAL_ERROR, "MEDIA_EXPORT_UNAVAILABLE", 503);
     return exportOperations;
   };
+  const imports = () => {
+    if (!importOperations)
+      throw new AppError(ErrorCode.INTERNAL_ERROR, "MEDIA_IMPORT_UNAVAILABLE", 503);
+    return importOperations;
+  };
+  r.post(
+    "/federation/media/packages/:id/import-authorizations/:authorizationId/run",
+    kqValidator("param", z.object({ id: z.uuid(), authorizationId: z.uuid() })),
+    async (c) => {
+      const { id, authorizationId } = c.req.valid("param");
+      return c.json(
+        {
+          success: true,
+          data: await imports().start(c.get("federationActor"), id, authorizationId),
+        },
+        202,
+      );
+    },
+  );
+  r.get(
+    "/federation/media/packages/:id/import-authorizations/:authorizationId/operation",
+    kqValidator("param", z.object({ id: z.uuid(), authorizationId: z.uuid() })),
+    async (c) => {
+      const { id, authorizationId } = c.req.valid("param");
+      return c.json({
+        success: true,
+        data: await imports().status(c.get("federationActor"), id, authorizationId),
+      });
+    },
+  );
   r.post(
     "/federation/media/exports/:id/run",
     kqValidator("param", z.object({ id: z.uuid() })),

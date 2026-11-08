@@ -11,6 +11,7 @@ import type {
   FederationExecutionTerminalEvidence,
   FederationInputFiles,
   FederationInputManifest,
+  FederationMediaImportGrant,
   FederationMediaManifest,
   FederationReceivedInputFiles,
   FederationResultReceipt,
@@ -2635,6 +2636,40 @@ export const federationMediaExportOperations = pgTable(
       (CASE WHEN ${t.state} = 'exported' THEN ${t.sha256} ~ '^[a-f0-9]{64}$' AND ${t.sizeBytes} BETWEEN 1 AND 6597069766656
        ELSE ${t.sha256} IS NULL AND ${t.sizeBytes} IS NULL END)
     ) IS TRUE`,
+    ),
+  ],
+);
+
+/** Private verified imports; these rows do not publish locations or grant data use. */
+export const federationMediaImportOperations = pgTable(
+  "federation_media_import_operations",
+  {
+    authorizationId: uuid("authorization_id")
+      .primaryKey()
+      .references(() => federationMediaImportAuthorizations.authorizationId),
+    generation: uuid("generation").notNull().unique(),
+    requestedBy: uuid("requested_by")
+      .notNull()
+      .references(() => users.id),
+    state: varchar("state", { length: 16 }).$type<"queued" | "verified" | "failed">().notNull(),
+    latestGrant: jsonb("latest_grant").$type<FederationMediaImportGrant>(),
+    verifiedBytes: bigint("verified_bytes", { mode: "number" }),
+    verifiedAt: timestamp("verified_at", { withTimezone: true }),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index("federation_media_import_pending").on(t.state, t.updatedAt),
+    check(
+      "federation_media_import_operation_state",
+      sql`(${t.state} IN ('queued','verified','failed') AND
+    (CASE WHEN ${t.state} = 'verified' THEN ${t.verifiedAt} IS NOT NULL AND ${t.latestGrant} IS NOT NULL AND ${t.verifiedBytes} BETWEEN 0 AND 5497558138880
+     ELSE ${t.verifiedAt} IS NULL AND ${t.verifiedBytes} IS NULL END)) IS TRUE`,
+    ),
+    check(
+      "federation_media_import_operation_binding",
+      sql`${t.latestGrant} IS NULL OR (
+    ${t.latestGrant}->'binding'->>'generation' = ${t.generation}::text AND
+    ${t.latestGrant}->'binding'->>'authorizationId' = ${t.authorizationId}::text) IS TRUE`,
     ),
   ],
 );

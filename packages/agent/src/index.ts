@@ -104,9 +104,14 @@ async function main() {
     jobWorkRoot: config.AGENT_JOB_WORK_ROOT,
     restrictedRoots: [
       config.AGENT_LICENSED_MATERIAL_ROOT,
-      ...(config.AGENT_FEDERATION_MEDIA_EXPORT
-        ? [config.AGENT_FEDERATION_MEDIA_EXPORT.mediaDirectory]
-        : []),
+      ...new Set([
+        ...(config.AGENT_FEDERATION_MEDIA_EXPORT
+          ? [config.AGENT_FEDERATION_MEDIA_EXPORT.mediaDirectory]
+          : []),
+        ...(config.AGENT_FEDERATION_MEDIA_IMPORT
+          ? [config.AGENT_FEDERATION_MEDIA_IMPORT.mediaDirectory]
+          : []),
+      ]),
     ],
   });
   await dataRoots.initialize();
@@ -567,6 +572,9 @@ async function main() {
     federationInputCopy: config.AGENT_FEDERATION_INPUT_COPY ?? undefined,
     federationMediaExport: config.AGENT_FEDERATION_MEDIA_EXPORT
       ? { ...config.AGENT_FEDERATION_MEDIA_EXPORT, agentId: config.AGENT_ID, roots: dataRoots }
+      : undefined,
+    federationMediaImport: config.AGENT_FEDERATION_MEDIA_IMPORT
+      ? { ...config.AGENT_FEDERATION_MEDIA_IMPORT, agentId: config.AGENT_ID, roots: dataRoots }
       : undefined,
     client,
     clientFactory: () => createServerClient(config.SERVER_GRPC_URL, mtls, serverTransportLiveness),

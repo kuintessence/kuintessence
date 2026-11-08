@@ -98,7 +98,12 @@ import { FederationMaterialExchange } from "./federation/material-exchange";
 import { FederationMediaExportOperations } from "./federation/media-export-operations";
 import { FederationMediaExportTransport } from "./federation/media-export-transport";
 import { FederationMediaExportService } from "./federation/media-exports";
-import { FederationMediaKeyResponder } from "./federation/media-key-exchange";
+import { FederationMediaImportOperations } from "./federation/media-import-operations";
+import { FederationMediaImportTransport } from "./federation/media-import-transport";
+import {
+  FederationMediaKeyRequester,
+  FederationMediaKeyResponder,
+} from "./federation/media-key-exchange";
 import { FederationMediaPackageService } from "./federation/media-packages";
 import { FederationOutboundService, FederationOutboundWorker } from "./federation/outbound";
 import { createFederationPackageResolver } from "./federation/package-resolver";
@@ -1905,13 +1910,34 @@ const federationMediaKeys =
   federationSigningKey && federationMediaExports
     ? new FederationMediaKeyResponder(db, federationSigningKey, federationMediaExports)
     : undefined;
-if (config.FEDERATION_SITE_ID)
+const federationMediaInventory = config.FEDERATION_SITE_ID
+  ? new FederationMediaPackageService(db, config.FEDERATION_SITE_ID)
+  : undefined;
+const federationMediaImportOperations =
+  federationSigningKey && federationSender && federationMediaInventory
+    ? new FederationMediaImportOperations(
+        db,
+        federationSigningKey.siteId,
+        federationMediaInventory,
+        new FederationMediaKeyRequester(
+          db,
+          federationSigningKey,
+          federationMediaInventory,
+          federationSender,
+        ),
+      )
+    : undefined;
+const federationMediaImportTransport = federationMediaImportOperations
+  ? new FederationMediaImportTransport(federationMediaImportOperations, dispatcher)
+  : undefined;
+if (federationMediaInventory)
   protectedApi.route(
     "/",
     createFederationMediaRoutes(
-      new FederationMediaPackageService(db, config.FEDERATION_SITE_ID),
+      federationMediaInventory,
       federationMediaExports,
       federationMediaExportOperations,
+      federationMediaImportOperations,
     ),
   );
 
@@ -2478,6 +2504,7 @@ const grpcDeps = {
   federationResults,
   federationInputs,
   federationMediaExports: federationMediaExportTransport,
+  federationMediaImports: federationMediaImportTransport,
   partUrlMinter: transferRunner,
   sandboxArtifactRelease: sandboxArtifactReleaseService,
   dataScanCoordinator,
@@ -2608,6 +2635,7 @@ federationOutboundWorker?.start();
 federationResultWorker?.start();
 federationInputWorker?.start();
 federationMediaExportTransport?.start();
+federationMediaImportTransport?.start();
 const federationExecutionMonitor = new FederationExecutionMonitor(
   db,
   federationDispatchAuthorization,
@@ -2696,6 +2724,7 @@ async function shutdown(signal: string): Promise<void> {
     await federationPreparationWorker?.stop();
     await federationOutboundWorker?.stop();
     await federationMediaExportTransport?.stop();
+    await federationMediaImportTransport?.stop();
     await federationInputWorker?.stop();
     await federationResultWorker?.stop();
     await federationAttestationWorker?.stop();

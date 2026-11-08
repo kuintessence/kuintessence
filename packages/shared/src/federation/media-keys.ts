@@ -1,7 +1,8 @@
 import { z } from "zod";
+import { FederationError } from "./errors";
 import { FEDERATION_MEDIA_MAX_BYTES } from "./media";
 import { FederationDigestSchema } from "./references";
-import { hasFederationQueryWindow } from "./status";
+import { assertFederationStatusQueryFresh, hasFederationQueryWindow } from "./status";
 
 /** An encryption-only ephemeral Agent key. Private JWK parameters and signing keys are not accepted. */
 export const FederationMediaRecipientKeySchema = z.strictObject({
@@ -55,3 +56,32 @@ export const FederationMediaKeyGrantSchema = z
   })
   .refine(hasFederationQueryWindow);
 export type FederationMediaKeyGrant = z.infer<typeof FederationMediaKeyGrantSchema>;
+
+export function assertMediaKeyGrant(
+  query: FederationMediaKeyQuery,
+  queryDigest: string,
+  grant: ReturnType<typeof FederationMediaKeyGrantSchema.parse>,
+  now: Date,
+) {
+  assertFederationStatusQueryFresh(query, now);
+  assertFederationStatusQueryFresh(grant, now);
+  if (
+    grant.senderSiteId !== query.recipientSiteId ||
+    grant.recipientSiteId !== query.senderSiteId ||
+    grant.queryDigest !== queryDigest ||
+    Date.parse(grant.expiresAt) > Date.parse(query.expiresAt) ||
+    Date.parse(grant.issuedAt) < Date.parse(query.issuedAt) - 60_000 ||
+    (
+      [
+        "queryId",
+        "packageId",
+        "agreementRevisionId",
+        "manifestDigest",
+        "authorizationId",
+        "agentId",
+        "managedRootId",
+      ] as const
+    ).some((key) => grant[key] !== query[key])
+  )
+    throw new FederationError("INVALID_MESSAGE");
+}
