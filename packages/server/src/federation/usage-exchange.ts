@@ -28,6 +28,7 @@ import {
 import { and, asc, desc, eq, gt, isNotNull, isNull, sql } from "drizzle-orm";
 import { z } from "zod";
 import { federationMaterialDigest } from "./assets";
+import { renewTaskCompletion } from "./completion-capacity";
 import type { FederationSend } from "./outbound-client";
 import { type FederationActor, requireFederationCapability } from "./permissions";
 import {
@@ -36,6 +37,7 @@ import {
   signFederationMessage,
   verifyFederationMessage,
 } from "./signatures";
+import type { FederationStorageGuard } from "./storage-capacity";
 import { FederationTrustRegistry } from "./trust-registry";
 
 type Sync = typeof syncs.$inferSelect;
@@ -59,6 +61,7 @@ export class FederationUsageExchange {
     private readonly db: PgDb,
     private readonly signing: FederationSigningKey,
     private readonly send?: FederationSend,
+    private readonly storageGuard?: Pick<FederationStorageGuard, "assertAdmission">,
   ) {
     this.trust = new FederationTrustRegistry(db);
   }
@@ -417,6 +420,16 @@ export class FederationUsageExchange {
           )
             throw new FederationError("INVALID_MESSAGE");
         }
+        await renewTaskCompletion(
+          tx,
+          this.signing.siteId,
+          currentSource.outbound.request,
+          this.storageGuard,
+        );
+        await this.authorizeNetwork(tx, claim.operationId);
+        await this.trust.assertKey(tx, peer.siteId, peer.keyId, new Date());
+        assertFederationReportIdentity(query, verifiedQuery.digest, page, new Date());
+        await this.lockClaim(tx, claim);
         await tx.insert(received).values({
           localSiteId: this.signing.siteId,
           operationId: claim.operationId,
@@ -502,7 +515,8 @@ export class FederationUsageExchange {
         .update(syncs)
         .set({
           state:
-            error instanceof FederationError || error instanceof z.ZodError
+            (error instanceof FederationError && error.code !== "STORAGE_PRESSURE") ||
+            error instanceof z.ZodError
               ? "needs_review"
               : "pending",
           lastError:

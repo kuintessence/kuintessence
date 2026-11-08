@@ -26,9 +26,11 @@ import { z } from "zod";
 import { lockCloudWrites, StorageQuotaService } from "../services/storage-quota";
 import type { LeasedWorkflowJournal } from "../workflow/execution-journal";
 import { federationMaterialDigest } from "./assets";
+import { renewTaskCompletion } from "./completion-capacity";
 import { type FederationActor, requireFederationCapability } from "./permissions";
 import type { FederationResultReader } from "./result-reader";
 import { federationMessageKeyId } from "./signatures";
+import type { FederationStorageGuard } from "./storage-capacity";
 import { lockFederationTransferAgent, lockFederationTransferSlot } from "./transfer-agent";
 import { type FederationTransaction, FederationTrustRegistry } from "./trust-registry";
 import { assertWorkflowDelegationBinding } from "./workflow-delegations";
@@ -45,6 +47,7 @@ export class FederationResultImports {
     private readonly siteId: string,
     private readonly reader: FederationResultReader,
     private readonly clock: () => Date = () => new Date(),
+    private readonly storageGuard?: Pick<FederationStorageGuard, "assertAdmission">,
   ) {}
 
   async enqueue(
@@ -81,7 +84,7 @@ export class FederationResultImports {
       throw new FederationError("POLICY_DENIED");
     return transaction(async (tx) => {
       // Serializes concurrent imports of the same remote operation without network under the lock.
-      await tx
+      const [outbound] = await tx
         .select()
         .from(federationOutbound)
         .where(
@@ -116,6 +119,9 @@ export class FederationResultImports {
         this.assertOwner(sameManifest, actor, operationId);
         return this.summary(tx, sameManifest);
       }
+      if (!outbound) throw new FederationError("ASSET_UNAVAILABLE");
+      await renewTaskCompletion(tx, this.siteId, outbound.request, this.storageGuard);
+      await this.reader.authorize(tx, actor, operationId);
       const reservedBytes = members.reduce((sum, file) => sum + file.sizeBytes, 0);
       await lockCloudWrites(tx, actor.userId);
       await new StorageQuotaService(tx, this.clock).assertCloudWritesAllowed(

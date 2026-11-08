@@ -1761,7 +1761,7 @@ const federationAccounting = federationSigningKey
     )
   : undefined;
 const federationUsage = federationSigningKey
-  ? new FederationUsageService(db, federationSigningKey)
+  ? new FederationUsageService(db, federationSigningKey, federationStorageGuard)
   : undefined;
 const federationTerminals = federationSigningKey
   ? new FederationExecutionTerminalService(
@@ -1809,7 +1809,7 @@ const federationTerminalExchange = federationSigningKey
   ? new FederationTerminalExchange(db, federationSigningKey, federationSender)
   : undefined;
 const federationUsageExchange = federationSigningKey
-  ? new FederationUsageExchange(db, federationSigningKey, federationSender)
+  ? new FederationUsageExchange(db, federationSigningKey, federationSender, federationStorageGuard)
   : undefined;
 if (federationSigningKey && federationCommercial)
   protectedApi.route(
@@ -1838,11 +1838,11 @@ if (federationSigningKey && federationCommercial)
       federationReservationProposals,
       federationExecutionAutomation,
       federationMarketRequests,
-      new FederationBillingService(db, federationSigningKey),
+      new FederationBillingService(db, federationSigningKey, federationStorageGuard),
       new FederationSettlementService(db, federationSigningKey),
       new FederationClosingPolicyService(db, federationSigningKey.siteId),
       federationClosing,
-      new FederationAdjustmentService(db, federationSigningKey),
+      new FederationAdjustmentService(db, federationSigningKey, federationStorageGuard),
     ),
   );
 const federationPreparation = federationSigningKey
@@ -2331,7 +2331,13 @@ const federationMaterialExchange =
     : undefined;
 const federationInputImports =
   federationPreparation && federationMaterialExchange
-    ? new FederationInputImports(db, federationPreparation, federationMaterialExchange)
+    ? new FederationInputImports(
+        db,
+        federationPreparation,
+        federationMaterialExchange,
+        undefined,
+        federationStorageGuard,
+      )
     : undefined;
 const federationInputTransfers =
   federationPreparation && federationInputImports

@@ -11,12 +11,14 @@ import {
 } from "@kuintessence/shared/federation";
 import { and, eq } from "drizzle-orm";
 import { readFederationCancellationState } from "./cancellation-state";
+import { renewReservationCompletion } from "./completion-capacity";
 import {
   type FederationSigningKey,
   federationMessageKeyId,
   signFederationMessage,
   verifyFederationMessage,
 } from "./signatures";
+import type { FederationStorageGuard } from "./storage-capacity";
 import { type FederationTransaction, FederationTrustRegistry } from "./trust-registry";
 
 /** Recording the fence is immediate; the existing execution monitor/runner confirms stopping. */
@@ -26,6 +28,7 @@ export class FederationCancellationReceiver {
     private readonly db: PgDb,
     private readonly signingKey: FederationSigningKey,
     private readonly clock: () => Date = () => new Date(),
+    private readonly storageGuard?: Pick<FederationStorageGuard, "assertAdmission">,
   ) {
     this.trust = new FederationTrustRegistry(db);
   }
@@ -101,6 +104,14 @@ export class FederationCancellationReceiver {
           reservation.attempt !== request.attempt)
       )
         throw new FederationError("OPERATION_CONFLICT");
+      if (reservation)
+        await renewReservationCompletion(
+          tx,
+          this.signingKey.siteId,
+          reservation.id,
+          this.storageGuard,
+        );
+      await authorize(tx);
       const [created] = await tx
         .insert(federationCancellations)
         .values({

@@ -5754,3 +5754,146 @@ test("attestation backlog deduplicates commercial evidence and ages new adjustme
   expect((await read()).oldestAgeSec).toBeLessThan(60);
   expect(await f.budget()).toMatchObject({ available: "60", reserved: "0", spent: "40" });
 });
+
+async function completionRenewalFixture(siteId: string, actorId: string) {
+  const { FederationCompletionCapacity } = await import("./completion-capacity");
+  const { testCompletionStorage } = await import("./test-fixtures");
+  const { federationCompletionClaims: claims, federationCompletionPools: pools } = await import(
+    "@kuintessence/db"
+  );
+  const storage = testCompletionStorage();
+  const capacity = new FederationCompletionCapacity(db, siteId, storage.guard);
+  const policy = {
+    reserveId: storage.reserveId,
+    capacityBytes: "1000",
+    taskBytes: "60",
+    marketBytes: "20",
+  };
+  await capacity.configure(policy, actorId);
+  cleanup.push(async () => {
+    await db.delete(claims).where(eq(claims.localSiteId, siteId));
+    await db.delete(pools).where(eq(pools.localSiteId, siteId));
+    await db.delete(auditLog).where(eq(auditLog.actor, `completion:${siteId}`));
+  });
+  return {
+    ...storage,
+    capacity,
+    policy,
+    release: () =>
+      db.update(claims).set({ releasedAt: new Date() }).where(eq(claims.localSiteId, siteId)),
+    constrain: () =>
+      capacity.configure({ ...policy, capacityBytes: "50", taskBytes: "10" }, actorId),
+    restore: () => capacity.configure(policy, actorId),
+  };
+}
+
+test("completion renewal gates a post-settlement adjustment and rolls back monetary holds when capacity is unavailable", async () => {
+  const f = await adjustmentServiceFixture();
+  const cap = await completionRenewalFixture(f.source.signing.siteId, f.sourceActor.userId);
+  await cap.release();
+  await cap.constrain();
+  const service = new FederationAdjustmentService(db, f.source.signing, cap.guard);
+  const value = await f.make("55");
+  await expect(service.approve(f.sourceActor, f.revisionId, value)).rejects.toThrow(
+    "STORAGE_PRESSURE",
+  );
+  expect(await cap.capacity.inspect()).toMatchObject({
+    allocatedBytes: "0",
+    releasedObligations: 1,
+  });
+  expect(await f.sourceProjection()).toMatchObject({ adjustmentHeldAmount: "0" });
+  await cap.restore();
+  const approved = await service.approve(f.sourceActor, f.revisionId, value);
+  expect(approved.heldAmount).toBe("2");
+  expect(await cap.capacity.inspect()).toMatchObject({ allocatedBytes: "60", obligations: 1 });
+  await cap.release();
+  cap.pressure();
+  expect((await service.approve(f.sourceActor, f.revisionId, value)).approvalJws).toBe(
+    approved.approvalJws,
+  );
+  expect(await cap.capacity.inspect()).toMatchObject({ allocatedBytes: "0" });
+});
+
+test("completion renewal defers a new usage page without advancing its cursor or sending it to manual review", async () => {
+  const f = await exchangeFixture();
+  const cap = await completionRenewalFixture(f.source.signing.siteId, f.sourceActor.userId);
+  await cap.release();
+  await cap.constrain();
+  const exchange = new FederationUsageExchange(db, f.source.signing, f.send, cap.guard);
+  await exchange.discover();
+  await exchange.advanceNext();
+  let view = await exchange.get(f.sourceActor, f.terms.agreementRevisionId, f.operationId);
+  expect(view.sync).toMatchObject({ state: "pending", number: 0, lastError: "STORAGE_PRESSURE" });
+  expect(view.reports).toHaveLength(0);
+  expect(await cap.capacity.inspect()).toMatchObject({ allocatedBytes: "0" });
+  await cap.restore();
+  await f.due();
+  await exchange.advanceNext();
+  view = await exchange.get(f.sourceActor, f.terms.agreementRevisionId, f.operationId);
+  expect(view.sync).toMatchObject({ state: "pending", number: 1, lastError: null });
+  expect(view.reports).toHaveLength(1);
+  expect(await cap.capacity.inspect()).toMatchObject({ allocatedBytes: "60" });
+});
+
+test("completion renewal requires the original provider allocation before a new technical correction", async () => {
+  const f = await correctionFixture();
+  const { FederationDelegationSchema } = await import("@kuintessence/shared/federation");
+  const [binding] = await db
+    .select()
+    .from(federationWorkflowBindings)
+    .where(eq(federationWorkflowBindings.reservationId, f.reservationId));
+  if (!binding) throw new Error("Missing accepted request");
+  await db
+    .update(federationReservations)
+    .set({
+      requestJws: await signFederationMessage(
+        FederationDelegationSchema,
+        binding.snapshot.request,
+        f.source.signing,
+      ),
+    })
+    .where(eq(federationReservations.id, f.reservationId));
+  const cap = await completionRenewalFixture(f.provider.signing.siteId, f.actor.userId);
+  await cap.release();
+  await cap.constrain();
+  const service = new FederationUsageService(db, f.provider.signing, cap.guard);
+  await expect(
+    service.correct(f.actor, f.terms.agreementRevisionId, f.reservationId, f.input),
+  ).rejects.toThrow("STORAGE_PRESSURE");
+  expect((await f.view()).reports).toHaveLength(1);
+  await cap.restore();
+  const corrected = await service.correct(
+    f.actor,
+    f.terms.agreementRevisionId,
+    f.reservationId,
+    f.input,
+  );
+  expect((await f.view()).reports).toHaveLength(2);
+  expect(await cap.capacity.inspect()).toMatchObject({ allocatedBytes: "60", obligations: 1 });
+  await cap.release();
+  cap.pressure();
+  expect(
+    (await service.correct(f.actor, f.terms.agreementRevisionId, f.reservationId, f.input))
+      .reportJws,
+  ).toBe(corrected.reportJws);
+  expect(await cap.capacity.inspect()).toMatchObject({ allocatedBytes: "0" });
+});
+
+test("completion renewal gates a newly signed bill before persisting its approval", async () => {
+  const f = await billingFixture();
+  const cap = await completionRenewalFixture(f.source.signing.siteId, f.sourceActor.userId);
+  await cap.release();
+  await cap.constrain();
+  const service = new FederationBillingService(db, f.source.signing, cap.guard);
+  await expect(service.approve(f.sourceActor, f.revisionId, f.draft)).rejects.toThrow(
+    "STORAGE_PRESSURE",
+  );
+  expect(await cap.capacity.inspect()).toMatchObject({
+    allocatedBytes: "0",
+    releasedObligations: 1,
+  });
+  await cap.restore();
+  const approved = await service.approve(f.sourceActor, f.revisionId, f.draft);
+  expect(approved.billId).toBe(f.draft.billId);
+  expect(await cap.capacity.inspect()).toMatchObject({ allocatedBytes: "60", obligations: 1 });
+});

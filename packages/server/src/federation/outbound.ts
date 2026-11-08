@@ -121,8 +121,20 @@ export class FederationOutboundService {
     this.trust = new FederationTrustRegistry(db);
     this.resultReceipts = new FederationResultReceiptSender(db, signingKey, send, clock);
     this.results = new FederationResultReader(db, signingKey, send, clock);
-    this.resultImports = new FederationResultImports(db, signingKey.siteId, this.results, clock);
-    this.cancellations = new FederationCancellationSender(db, signingKey, send, clock);
+    this.resultImports = new FederationResultImports(
+      db,
+      signingKey.siteId,
+      this.results,
+      clock,
+      storageGuard,
+    );
+    this.cancellations = new FederationCancellationSender(
+      db,
+      signingKey,
+      send,
+      clock,
+      storageGuard,
+    );
   }
 
   private key(operationId: string) {

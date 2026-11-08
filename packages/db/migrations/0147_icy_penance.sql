@@ -1,0 +1,2 @@
+ALTER TABLE "federation_completion_claims" ADD COLUMN "released_at" timestamp with time zone;--> statement-breakpoint
+CREATE INDEX "federation_completion_active" ON "federation_completion_claims" USING btree ("local_site_id","created_at") WHERE "federation_completion_claims"."released_at" IS NULL;

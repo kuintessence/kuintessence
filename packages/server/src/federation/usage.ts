@@ -32,12 +32,14 @@ import {
 } from "@kuintessence/shared/federation/commercial";
 import { and, asc, desc, eq, inArray, isNotNull, isNull, sql } from "drizzle-orm";
 import { federationMaterialDigest } from "./assets";
+import { renewReservationCompletion } from "./completion-capacity";
 import { type FederationActor, requireFederationCapability } from "./permissions";
 import {
   type FederationSigningKey,
   signFederationMessage,
   verifyFederationMessage,
 } from "./signatures";
+import type { FederationStorageGuard } from "./storage-capacity";
 import { FederationTrustRegistry } from "./trust-registry";
 import { aggregateCommercialUsage } from "./usage-report";
 
@@ -49,6 +51,7 @@ export class FederationUsageService {
   constructor(
     private readonly db: PgDb,
     private readonly signing: FederationSigningKey,
+    private readonly storageGuard?: Pick<FederationStorageGuard, "assertAdmission">,
   ) {
     this.trust = new FederationTrustRegistry(db);
   }
@@ -351,6 +354,7 @@ export class FederationUsageService {
           throw new FederationError("OPERATION_CONFLICT");
         return existing;
       }
+      await renewReservationCompletion(tx, this.signing.siteId, reservationId, this.storageGuard);
       const [previous] = await tx
         .select()
         .from(reports)

@@ -16,8 +16,10 @@ import {
 import { and, asc, eq, inArray, isNull, lte, ne } from "drizzle-orm";
 import { lockCloudWrites, StorageQuotaService } from "../services/storage-quota";
 import { federationMaterialDigest } from "./assets";
+import { renewTaskCompletion } from "./completion-capacity";
 import type { FederationMaterialExchange } from "./material-exchange";
 import type { FederationPreparationService } from "./preparation";
+import type { FederationStorageGuard } from "./storage-capacity";
 
 type Import = typeof federationInputImports.$inferSelect;
 type Scope = Awaited<ReturnType<FederationPreparationService["materialScope"]>>;
@@ -136,6 +138,7 @@ export class FederationInputImports {
     private readonly preparation: FederationPreparationService,
     private readonly exchange: FederationMaterialExchange,
     private readonly clock: () => Date = () => new Date(),
+    private readonly storageGuard?: Pick<FederationStorageGuard, "assertAdmission">,
   ) {}
 
   async ensure(reservationId: string) {
@@ -165,6 +168,8 @@ export class FederationInputImports {
         members.some((file) => file.sizeBytes > 5 * 1024 ** 4)
       )
         throw new FederationError("POLICY_DENIED");
+      await renewTaskCompletion(tx, request.recipientSiteId, request, this.storageGuard);
+      await received.authorize(tx);
       await lockCloudWrites(tx, identity.userId);
       await new StorageQuotaService(tx, this.clock).assertCloudWritesAllowed(
         identity.userId,

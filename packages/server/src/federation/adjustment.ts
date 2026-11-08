@@ -26,6 +26,7 @@ import {
 } from "@kuintessence/shared/federation/commercial";
 import { and, desc, eq, sql } from "drizzle-orm";
 import type { z } from "zod";
+import { renewTaskCompletion } from "./completion-capacity";
 import { type FederationActor, requireFederationCapability } from "./permissions";
 import {
   type FederationSigningKey,
@@ -33,6 +34,7 @@ import {
   signFederationMessage,
   verifyFederationMessage,
 } from "./signatures";
+import type { FederationStorageGuard } from "./storage-capacity";
 import { FederationTrustRegistry } from "./trust-registry";
 
 type Adjustment = typeof adjustments.$inferSelect;
@@ -285,6 +287,7 @@ export class FederationAdjustmentService {
   constructor(
     private readonly db: PgDb,
     private readonly signing: FederationSigningKey,
+    private readonly storageGuard?: Pick<FederationStorageGuard, "assertAdmission">,
   ) {
     this.trust = new FederationTrustRegistry(db);
   }
@@ -472,6 +475,13 @@ export class FederationAdjustmentService {
             );
         }
       }
+      await renewTaskCompletion(
+        tx,
+        this.signing.siteId,
+        original.bill.payload.request,
+        this.storageGuard,
+      );
+      await this.verifyOriginals(tx, original, previous);
       const signed = await this.verify(
         tx,
         CommercialAdjustmentSchema,

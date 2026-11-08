@@ -39,6 +39,7 @@ import {
 import { and, desc, eq, sql } from "drizzle-orm";
 import type { z } from "zod";
 import { assertClosingPolicyActive, FederationClosingPolicyService } from "./closing-policy";
+import { renewTaskCompletion } from "./completion-capacity";
 import { type FederationActor, requireFederationCapability } from "./permissions";
 import {
   type FederationSigningKey,
@@ -46,6 +47,7 @@ import {
   signFederationMessage,
   verifyFederationMessage,
 } from "./signatures";
+import type { FederationStorageGuard } from "./storage-capacity";
 import { FederationTrustRegistry } from "./trust-registry";
 
 /** Explicit human or bounded institutional approval; terminal reports and chain availability grant no authority. */
@@ -54,6 +56,7 @@ export class FederationBillingService {
   constructor(
     private readonly db: PgDb,
     private readonly signing: FederationSigningKey,
+    private readonly storageGuard?: Pick<FederationStorageGuard, "assertAdmission">,
   ) {
     this.trust = new FederationTrustRegistry(db);
   }
@@ -465,6 +468,7 @@ export class FederationBillingService {
       );
       if (report.digest !== f.reportDigest) throw new FederationError("OPERATION_CONFLICT");
     }
+    await renewTaskCompletion(tx, this.signing.siteId, f.request, this.storageGuard);
     const signed = await this.sign(tx, CommercialBillSchema, bill);
     const [row] = await tx
       .insert(bills)
@@ -709,6 +713,8 @@ export class FederationBillingService {
       .from(bills)
       .where(and(eq(bills.localSiteId, this.signing.siteId), eq(bills.billId, value.billId)));
     if (bill) throw new FederationError("OPERATION_CONFLICT");
+    await renewTaskCompletion(tx, this.signing.siteId, f.request, this.storageGuard);
+    await this.verify(tx, CommercialDiscountSchema, signed.jws, f.terms.agreement.targetSiteId);
     const [row] = await tx
       .insert(discounts)
       .values({

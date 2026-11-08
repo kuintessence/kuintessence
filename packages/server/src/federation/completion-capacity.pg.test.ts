@@ -305,3 +305,80 @@ test("completion pool activation cannot pass a transaction admitted before the p
   await service.configure(policy, actor);
   expect(await service.inspect()).toMatchObject({ policy: { capacityBytes: "100" } });
 });
+
+test("completion renewal restores the original allocation atomically without reopening admission or borrowing a smaller new estimate", async () => {
+  const { renewTaskCompletion } = await import("./completion-capacity");
+  const f = await fixture();
+  await db.transaction((tx) => allocateTaskCompletion(tx, f.siteId, f.request, f.storage.guard));
+  const release = () =>
+    db.update(claims).set({ releasedAt: new Date() }).where(eq(claims.localSiteId, f.siteId));
+  await release();
+  expect(await f.service.inspect()).toMatchObject({
+    allocatedBytes: "0",
+    obligations: 0,
+    releasedObligations: 1,
+  });
+  await expect(
+    db.transaction((tx) => allocateTaskCompletion(tx, f.siteId, f.request, f.storage.guard)),
+  ).rejects.toThrow("OPERATION_CONFLICT");
+  await f.service.configure({ ...f.policy, capacityBytes: "50", taskBytes: "10" }, f.actor);
+  await expect(
+    db.transaction((tx) => renewTaskCompletion(tx, f.siteId, f.request, f.storage.guard)),
+  ).rejects.toThrow("STORAGE_PRESSURE");
+  await f.service.configure({ ...f.policy, taskBytes: "10" }, f.actor);
+  await expect(
+    db.transaction(async (tx) => {
+      await renewTaskCompletion(tx, f.siteId, f.request, f.storage.guard);
+      throw new Error("Late business write failed");
+    }),
+  ).rejects.toThrow("Late business write failed");
+  expect(await f.service.inspect()).toMatchObject({ allocatedBytes: "0", releasedObligations: 1 });
+  await replica.transaction((tx) => renewTaskCompletion(tx, f.siteId, f.request, f.storage.guard));
+  f.storage.pressure();
+  await db.transaction((tx) => renewTaskCompletion(tx, f.siteId, f.request, f.storage.guard));
+  expect(await f.service.inspect()).toMatchObject({
+    allocatedBytes: "60",
+    obligations: 1,
+    releasedObligations: 0,
+  });
+  await expect(
+    db.transaction((tx) =>
+      renewTaskCompletion(tx, f.siteId, { ...f.request, maxAmount: "1" }, f.storage.guard),
+    ),
+  ).rejects.toThrow("OPERATION_CONFLICT");
+  const entries = await db
+    .select()
+    .from(auditLog)
+    .where(
+      eq(
+        auditLog.target,
+        `${f.request.agreementRevisionId}:${f.request.taskId}:${f.request.attempt}`,
+      ),
+    );
+  expect(entries.filter((v) => v.action === "federation.storage.completion.renew")).toHaveLength(1);
+});
+
+test("completion renewal fences release by task without blocking unrelated admission", async () => {
+  const { renewTaskCompletion } = await import("./completion-capacity");
+  const f = await fixture();
+  await f.service.configure({ ...f.policy, capacityBytes: "200" }, f.actor);
+  await db.transaction((tx) => allocateTaskCompletion(tx, f.siteId, f.request, f.storage.guard));
+  await db.transaction(async (tx) => {
+    await renewTaskCompletion(tx, f.siteId, f.request, f.storage.guard);
+    await replica.transaction(async (other) => {
+      const releasable = await other
+        .select()
+        .from(claims)
+        .where(eq(claims.localSiteId, f.siteId))
+        .for("update", { skipLocked: true });
+      expect(releasable).toHaveLength(0);
+      await allocateTaskCompletion(
+        other,
+        f.siteId,
+        { ...f.request, taskId: randomUUID(), operationId: randomUUID() },
+        f.storage.guard,
+      );
+    });
+  });
+  expect(await f.service.inspect()).toMatchObject({ allocatedBytes: "120", obligations: 2 });
+});

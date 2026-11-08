@@ -8224,3 +8224,95 @@ test("completion pool observation cannot extend source authorization and a faile
     await db.delete(pools).where(eq(pools.localSiteId, siteId));
   }
 });
+
+test("completion renewal gates a fresh result import but preserves original import replay", async () => {
+  const { FederationCompletionCapacity } = await import("./completion-capacity");
+  const { testCompletionStorage } = await import("./test-fixtures");
+  const { federationCompletionClaims: claims, federationCompletionPools: pools } = await import(
+    "@kuintessence/db"
+  );
+  const f = await resultImportFixture(),
+    storage = testCompletionStorage();
+  await f.imports.cancel(actor, f.imported.id);
+  const siteId = a.signing.siteId,
+    cap = new FederationCompletionCapacity(db, siteId, storage.guard);
+  const policy = {
+    reserveId: storage.reserveId,
+    capacityBytes: "10000",
+    taskBytes: "60",
+    marketBytes: "20",
+  };
+  const id = crypto.randomUUID();
+  try {
+    await cap.configure(policy, actor.userId);
+    await db
+      .update(claims)
+      .set({ releasedAt: new Date() })
+      .where(
+        and(
+          eq(claims.localSiteId, siteId),
+          eq(claims.intentId, `${f.request.agreementRevisionId}:${f.request.taskId}:1`),
+        ),
+      );
+    const before = await cap.inspect();
+    await cap.configure(
+      {
+        ...policy,
+        capacityBytes: (BigInt(before.allocatedBytes) + 50n).toString(),
+        taskBytes: "10",
+      },
+      actor.userId,
+    );
+    const imports = new FederationResultImports(
+      db,
+      siteId,
+      f.service(f.send).results,
+      clock,
+      storage.guard,
+    );
+    await expect(imports.enqueue(actor, f.request.operationId, id)).rejects.toThrow(
+      "STORAGE_PRESSURE",
+    );
+    expect((await cap.inspect()).allocatedBytes).toBe(before.allocatedBytes);
+    expect((await imports.enqueue(actor, f.request.operationId, f.imported.id)).state).toBe(
+      "cancelled",
+    );
+    await cap.configure(policy, actor.userId);
+    expect((await imports.enqueue(actor, f.request.operationId, id)).id).toBe(id);
+    expect((await cap.inspect()).allocatedBytes).toBe(
+      (BigInt(before.allocatedBytes) + 60n).toString(),
+    );
+  } finally {
+    await db.delete(claims).where(eq(claims.localSiteId, siteId));
+    await db.delete(pools).where(eq(pools.localSiteId, siteId));
+  }
+});
+
+test("completion renewal preserves an accepted intent cancellation under physical storage pressure", async () => {
+  const { FederationCompletionCapacity } = await import("./completion-capacity");
+  const { testCompletionStorage } = await import("./test-fixtures");
+  const { federationCompletionClaims: claims, federationCompletionPools: pools } = await import(
+    "@kuintessence/db"
+  );
+  const f = await fixture(),
+    storage = testCompletionStorage(),
+    siteId = a.signing.siteId;
+  const service = f.service(undefined, storage.guard);
+  await service.enqueue(actor, f.request);
+  const cap = new FederationCompletionCapacity(db, siteId, storage.guard);
+  try {
+    await cap.configure(
+      { reserveId: storage.reserveId, capacityBytes: "10000", taskBytes: "60", marketBytes: "20" },
+      actor.userId,
+    );
+    const initial = await cap.inspect();
+    storage.pressure();
+    expect(await service.cancellations.request(actor, f.request.operationId)).toMatchObject({
+      state: "queued",
+    });
+    expect((await cap.inspect()).allocatedBytes).toBe(initial.allocatedBytes);
+  } finally {
+    await db.delete(claims).where(eq(claims.localSiteId, siteId));
+    await db.delete(pools).where(eq(pools.localSiteId, siteId));
+  }
+});

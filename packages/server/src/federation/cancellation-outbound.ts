@@ -13,6 +13,7 @@ import {
   federationCanonicalJson,
 } from "@kuintessence/shared/federation";
 import { and, asc, eq, inArray, lte, or } from "drizzle-orm";
+import { renewTaskCompletion } from "./completion-capacity";
 import { stopCancelledExecution } from "./execution-stop";
 import { FederationDeliveryError, type FederationSend } from "./outbound-client";
 import { type FederationActor, requireFederationCapability } from "./permissions";
@@ -22,6 +23,7 @@ import {
   signFederationMessage,
   verifyFederationMessage,
 } from "./signatures";
+import type { FederationStorageGuard } from "./storage-capacity";
 import { type FederationTransaction, FederationTrustRegistry } from "./trust-registry";
 import { assertWorkflowDelegationOwner } from "./workflow-delegations";
 
@@ -39,6 +41,7 @@ export class FederationCancellationSender {
     private readonly signingKey: FederationSigningKey,
     private readonly send: FederationSend,
     private readonly clock: () => Date = () => new Date(),
+    private readonly storageGuard?: Pick<FederationStorageGuard, "assertAdmission">,
   ) {
     this.trust = new FederationTrustRegistry(db);
   }
@@ -154,6 +157,7 @@ export class FederationCancellationSender {
         return cancellationSummary(current);
       if (retry && (current.cancelState === "sending" || current.cancelDigest !== verified.digest))
         throw new FederationError("OPERATION_CONFLICT");
+      await renewTaskCompletion(tx, this.signingKey.siteId, current.request, this.storageGuard);
       await this.trust.assertKey(tx, this.signingKey.siteId, this.signingKey.keyId, this.clock());
       const [target] = await tx
         .select()

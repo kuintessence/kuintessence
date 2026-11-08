@@ -2317,10 +2317,14 @@ export const federationCompletionClaims = pgTable(
     intentId: varchar("intent_id", { length: 96 }).notNull(),
     digest: varchar("digest", { length: 71 }).notNull(),
     allocatedBytes: numeric("allocated_bytes", { precision: 30, scale: 0 }).notNull(),
+    releasedAt: timestamp("released_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
     primaryKey({ columns: [t.localSiteId, t.kind, t.intentId] }),
+    index("federation_completion_active")
+      .on(t.localSiteId, t.createdAt)
+      .where(sql`${t.releasedAt} IS NULL`),
     check("federation_completion_claim_kind", sql`${t.kind} IN ('task', 'market')`),
     check(
       "federation_completion_claim_bytes",

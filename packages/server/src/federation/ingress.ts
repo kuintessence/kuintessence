@@ -232,10 +232,12 @@ export function createFederationIngress(
   r.post("/federation/v1/cancellations", async (c) => {
     if (c.req.header("content-type") !== "application/jose")
       return c.json({ error: { code: "INVALID_MESSAGE" } }, 415);
-    const receipt = await new FederationCancellationReceiver(db, signingKey).receive(
-      await c.req.text(),
-      c.req.header("x-kq-federation-cert") ?? "",
-    );
+    const receipt = await new FederationCancellationReceiver(
+      db,
+      signingKey,
+      undefined,
+      storageGuard,
+    ).receive(await c.req.text(), c.req.header("x-kq-federation-cert") ?? "");
     return c.body(receipt, 200, {
       "content-type": "application/jose",
       "cache-control": "no-store",

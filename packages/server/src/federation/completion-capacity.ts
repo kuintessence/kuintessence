@@ -1,6 +1,7 @@
 import {
   auditLog,
   federationCompletionClaims as claims,
+  federationReservations,
   type PgDb,
   type PgTransaction,
   federationCompletionPools as pools,
@@ -11,7 +12,7 @@ import {
   FederationError,
 } from "@kuintessence/shared/federation";
 import type { MarketProposalInput } from "@kuintessence/shared/federation/market";
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, isNull, sql } from "drizzle-orm";
 import { z } from "zod";
 import { federationMaterialDigest } from "./assets";
 import type { FederationStorageGuard } from "./storage-capacity";
@@ -54,7 +55,7 @@ async function usage(tx: PgDb | PgTransaction, siteId: string) {
       obligations: sql<number>`count(*)::integer`,
     })
     .from(claims)
-    .where(eq(claims.localSiteId, siteId));
+    .where(and(eq(claims.localSiteId, siteId), isNull(claims.releasedAt)));
   if (!row) throw new Error("Missing completion allocation aggregate");
   return row;
 }
@@ -84,7 +85,7 @@ function taskIntent(request: FederationDelegation): Intent {
   };
 }
 
-async function hasClaim(tx: PgTransaction, siteId: string, intent: Intent) {
+async function hasClaim(tx: PgTransaction, siteId: string, intent: Intent, admission = false) {
   const [prior] = await tx
     .select()
     .from(claims)
@@ -95,7 +96,8 @@ async function hasClaim(tx: PgTransaction, siteId: string, intent: Intent) {
         eq(claims.intentId, intent.intentId),
       ),
     );
-  if (prior && prior.digest !== intent.digest) throw new FederationError("OPERATION_CONFLICT");
+  if (prior && (prior.digest !== intent.digest || (admission && prior.releasedAt)))
+    throw new FederationError("OPERATION_CONFLICT");
   return !!prior;
 }
 
@@ -110,7 +112,7 @@ async function insert(tx: PgTransaction, pool: Pool, intent: Intent) {
 
 async function allocate(tx: PgTransaction, siteId: string, intent: Intent, guard?: Guard) {
   // Accepted work does not compete with new admissions for the pool lock.
-  if (await hasClaim(tx, siteId, intent)) return;
+  if (await hasClaim(tx, siteId, intent, true)) return;
   let pool = await readPool(tx, siteId);
   if (!pool) {
     // Concurrent legacy admissions coexist, but enabling a policy cannot miss their commits.
@@ -121,7 +123,7 @@ async function allocate(tx: PgTransaction, siteId: string, intent: Intent, guard
   await lock(tx, siteId);
   pool = await readPool(tx, siteId);
   if (!pool) throw new FederationError("STORAGE_PRESSURE");
-  if (await hasClaim(tx, siteId, intent)) return;
+  if (await hasClaim(tx, siteId, intent, true)) return;
   await backing(pool, guard);
   const held = await usage(tx, siteId);
   const amount = intent.kind === "task" ? pool.taskBytes : pool.marketBytes;
@@ -140,6 +142,66 @@ export async function allocateTaskCompletion(
   if (siteId !== request.senderSiteId && siteId !== request.recipientSiteId)
     throw new FederationError("POLICY_DENIED");
   await allocate(tx, siteId, taskIntent(request), guard);
+}
+
+/** New work on an accepted task serializes with release; an ordinary replay never renews its charge. */
+export async function renewTaskCompletion(
+  tx: PgTransaction,
+  siteId: string,
+  request: FederationDelegation,
+  guard?: Guard,
+) {
+  if (siteId !== request.senderSiteId && siteId !== request.recipientSiteId)
+    throw new FederationError("POLICY_DENIED");
+  const intent = taskIntent(request);
+  const condition = and(
+    eq(claims.localSiteId, siteId),
+    eq(claims.kind, "task"),
+    eq(claims.intentId, intent.intentId),
+  );
+  const [prior] = await tx.select().from(claims).where(condition).for("update");
+  if (!prior) return allocate(tx, siteId, intent, guard);
+  if (prior.digest !== intent.digest) throw new FederationError("OPERATION_CONFLICT");
+  if (!prior.releasedAt) return;
+  await lock(tx, siteId);
+  const pool = await readPool(tx, siteId);
+  if (!pool) throw new FederationError("STORAGE_PRESSURE");
+  await backing(pool, guard);
+  const held = await usage(tx, siteId);
+  if (BigInt(held.allocatedBytes) + BigInt(prior.allocatedBytes) > BigInt(pool.capacityBytes))
+    throw new FederationError("STORAGE_PRESSURE");
+  await tx.update(claims).set({ releasedAt: null }).where(condition);
+  await tx.insert(auditLog).values({
+    actor: `completion:${siteId}`,
+    action: "federation.storage.completion.renew",
+    target: intent.intentId,
+    diff: { after: { allocatedBytes: prior.allocatedBytes, digest: prior.digest } },
+  });
+}
+
+export async function renewReservationCompletion(
+  tx: PgTransaction,
+  siteId: string,
+  reservationId: string,
+  guard?: Guard,
+) {
+  if (!(await readPool(tx, siteId))) {
+    await lock(tx, siteId, true);
+    if (!(await readPool(tx, siteId))) return;
+  }
+  const [reservation] = await tx
+    .select()
+    .from(federationReservations)
+    .where(eq(federationReservations.id, reservationId));
+  if (!reservation) throw new FederationError("ASSET_UNAVAILABLE");
+  // The durable inbox was verified on admission; historic expiry does not erase its capacity obligation.
+  const request = FederationDelegationSchema.parse(
+    JSON.parse(
+      Buffer.from(reservation.requestJws.split(".")[1] ?? "", "base64url").toString("utf8"),
+    ),
+  );
+  if (request.recipientSiteId !== siteId) throw new FederationError("POLICY_DENIED");
+  await renewTaskCompletion(tx, siteId, request, guard);
 }
 
 /** Manual public market obligations are separate from private, already-budgeted automatic handoffs. */
@@ -182,11 +244,14 @@ export class FederationCompletionCapacity {
       policy: (Omit<Pool, "updatedAt"> & { updatedAt: string }) | null;
       allocatedBytes: string;
       obligations: number;
+      releasedObligations: number;
     }>(sql`
       SELECT (SELECT json_build_object('localSiteId', local_site_id, 'reserveId', reserve_id,
         'capacityBytes', capacity_bytes::text, 'taskBytes', task_bytes::text, 'marketBytes', market_bytes::text,
         'updatedAt', updated_at) FROM federation_completion_pools WHERE local_site_id = ${this.siteId}) AS policy,
-        coalesce(sum(allocated_bytes), 0)::text AS "allocatedBytes", count(*)::integer AS obligations
+        coalesce(sum(allocated_bytes) FILTER (WHERE released_at IS NULL), 0)::text AS "allocatedBytes",
+        count(*) FILTER (WHERE released_at IS NULL)::integer AS obligations,
+        count(*) FILTER (WHERE released_at IS NOT NULL)::integer AS "releasedObligations"
       FROM federation_completion_claims WHERE local_site_id = ${this.siteId}
     `);
     if (!row) throw new Error("Missing completion pool snapshot");
