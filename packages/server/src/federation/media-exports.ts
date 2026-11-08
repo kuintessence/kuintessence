@@ -1,13 +1,11 @@
 import {
   auditLog,
-  federationAgreements,
   federationMediaExports,
   federationSites,
   type PgDb,
   type PgTransaction,
 } from "@kuintessence/db";
 import {
-  FederationAgreementSchema,
   FederationDigestSchema,
   FederationError,
   type FederationMediaExportApproval,
@@ -22,6 +20,7 @@ import { encryptFederationMediaIdentity } from "@kuintessence/shared/federation/
 import { and, desc, eq, or } from "drizzle-orm";
 import { z } from "zod";
 import { decryptSecret, encryptSecret } from "../auth/secret-cipher";
+import { requireMediaAgreement } from "./media-agreement";
 import { readMediaExportDataset } from "./media-export-data";
 import { type FederationActor, requireFederationCapability } from "./permissions";
 import {
@@ -295,26 +294,13 @@ export class FederationMediaExportService {
       .for("share");
     if (sites.length !== 2 || sites.some((site) => site.state !== "active"))
       throw new FederationError("UNTRUSTED_IDENTITY");
-    const [agreement] = await tx
-      .select()
-      .from(federationAgreements)
-      .where(
-        and(
-          eq(federationAgreements.revisionId, input.agreementRevisionId),
-          eq(federationAgreements.localOrgId, actor.orgId),
-        ),
-      )
-      .for("share");
-    if (
-      !agreement ||
-      agreement.state !== "active" ||
-      ![agreement.sourceSiteId, agreement.targetSiteId].includes(this.signing.siteId) ||
-      ![agreement.sourceSiteId, agreement.targetSiteId].includes(input.recipientSiteId)
-    )
-      throw new FederationError("POLICY_DENIED");
-    const terms = FederationAgreementSchema.parse(agreement.terms);
-    if (now.getTime() < Date.parse(terms.validFrom) || expiresAt > Date.parse(terms.validUntil))
-      throw new FederationError("POLICY_DENIED");
+    const terms = await requireMediaAgreement(
+      tx,
+      this.trust,
+      { siteId: this.signing.siteId, orgId: actor.orgId, ...input },
+      now,
+    );
+    if (expiresAt > Date.parse(terms.validUntil)) throw new FederationError("POLICY_DENIED");
     const data = await readMediaExportDataset(tx, actor, input, now);
     if (expiresAt > data.authorizationExpiresAt) throw new FederationError("POLICY_DENIED");
     return data;

@@ -2543,9 +2543,7 @@ export const federationMediaExports = pgTable(
     recipientSiteId: uuid("recipient_site_id")
       .notNull()
       .references(() => federationSites.id),
-    agreementRevisionId: uuid("agreement_revision_id")
-      .notNull()
-      .references(() => federationAgreements.revisionId),
+    agreementRevisionId: uuid("agreement_revision_id").notNull(),
     versionId: uuid("version_id")
       .notNull()
       .references(() => dataAssetVersions.id),
@@ -2570,6 +2568,14 @@ export const federationMediaExports = pgTable(
   },
   (t) => [
     primaryKey({ columns: [t.localSiteId, t.packageId] }),
+    foreignKey({
+      name: "federation_media_export_approval",
+      columns: [t.localSiteId, t.agreementRevisionId],
+      foreignColumns: [
+        federationAgreementApprovals.localSiteId,
+        federationAgreementApprovals.revisionId,
+      ],
+    }),
     index("federation_media_export_org").on(t.localSiteId, t.localOrgId, t.approvedAt),
     check(
       "federation_media_export_identity",
@@ -2707,9 +2713,7 @@ export const federationDatasetUsePolicies = pgTable(
     recipientSiteId: uuid("recipient_site_id")
       .notNull()
       .references(() => federationSites.id),
-    agreementRevisionId: uuid("agreement_revision_id")
-      .notNull()
-      .references(() => federationAgreements.revisionId),
+    agreementRevisionId: uuid("agreement_revision_id").notNull(),
     versionId: uuid("version_id")
       .notNull()
       .references(() => dataAssetVersions.id),
@@ -2725,6 +2729,14 @@ export const federationDatasetUsePolicies = pgTable(
   },
   (t) => [
     primaryKey({ columns: [t.localSiteId, t.policyId] }),
+    foreignKey({
+      name: "federation_dataset_use_approval",
+      columns: [t.localSiteId, t.agreementRevisionId],
+      foreignColumns: [
+        federationAgreementApprovals.localSiteId,
+        federationAgreementApprovals.revisionId,
+      ],
+    }),
     index("federation_dataset_use_org").on(t.localSiteId, t.localOrgId, t.approvedAt),
     check(
       "federation_dataset_use_scope",

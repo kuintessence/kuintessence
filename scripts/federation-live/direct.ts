@@ -10,7 +10,10 @@ assert.equal(
   "Explicit disposable local k3s opt-in required",
 );
 const scenario = process.env.KQ_FEDERATION_LAB_SCENARIO ?? "success";
-assert(["success", "refund", "refund-auto"].includes(scenario), "Unsupported direct scenario");
+assert(
+  ["success", "refund", "refund-auto", "media"].includes(scenario),
+  "Unsupported direct scenario",
+);
 const repo = resolve(import.meta.dir, "../..");
 await mkdir(join(repo, "temp"), { recursive: true });
 const root = await mkdtemp(join(repo, "temp", "federation-direct-"));

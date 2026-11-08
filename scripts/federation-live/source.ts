@@ -98,6 +98,17 @@ if (process.argv[2] === "inspect") {
           "result-download-grant",
           "result-receipt",
           "result-receipt-ack",
+          ...(process.env.LAB_SCENARIO === "media"
+            ? ([
+                "media-manifest",
+                "media-key-query",
+                "media-key-grant",
+                "dataset-use-query",
+                "dataset-use-grant",
+                "media-import-receipt",
+                "media-import-receipt-ack",
+              ] as const)
+            : []),
           "material-query",
           "material-chunk",
         ],

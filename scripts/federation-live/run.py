@@ -23,8 +23,12 @@ scenario = os.environ.get("LAB_SCENARIO", "success")
 refund_scenario = scenario in ("refund", "refund-auto")
 automatic_refund = scenario == "refund-auto"
 assert not disk_pressure or automatic_refund, "Disk recovery currently requires refund-auto"
-assert not refund_scenario if coordinated else scenario in ("success", "refund", "refund-auto")
-assert scenario in ("success", "outage", "stop", "workflow", "refund", "refund-auto")
+assert not refund_scenario if coordinated else scenario in ("success", "refund", "refund-auto", "media")
+assert scenario in ("success", "outage", "stop", "workflow", "refund", "refund-auto", "media")
+media_scenario = scenario == "media"
+assert not media_scenario or mode == "bilateral_direct"
+media_age = pathlib.Path(os.environ["KQ_MEDIA_AGE_BIN"]).resolve(strict=True) if media_scenario else None
+media_source_root, media_target_root = str(uuid.uuid4()), str(uuid.uuid4())
 nodeinfo = json.loads(
     subprocess.check_output(["kubectl", "get", "nodes", "-o", "json"], timeout=15)
 )["items"]
@@ -98,6 +102,8 @@ env.update(
     LAB_ROOT=str(root),
     LAB_AGENT="federation-live-agent",
 )
+if media_scenario:
+    env.update(FEDERATION_MEDIA_AGE_DIRECTORY=str(media_age), FEDERATION_MEDIA_WRAPPING_KEY=secrets.token_hex(32), LAB_MEDIA_ROOT_ID=media_target_root)
 networkroot = pathlib.Path(os.environ["LAB_FABRIC_ROOT"]) if coordinated or attested else None
 fixture = json.loads((pathlib.Path(env["LAB_FIXTURE_ROOT"]) / "execution-fixture.json").read_text())
 siteb = next(site for site in fixture["sites"] if site["name"] == "B")
@@ -2171,6 +2177,9 @@ await Bun.write(process.env.LAB_ROOT+'/registration.json',JSON.stringify({token:
         "NODE_ENV": "development",
         "NODE_EXTRA_CA_CERTS": str(root / "ca/ca.crt"),
     }
+    if media_scenario:
+        agentenv.update(AGENT_DATASET_ROOTS_JSON=json.dumps({media_target_root: "."}),
+                        AGENT_FEDERATION_MEDIA_IMPORT=json.dumps({"mediaDirectory": "/var/lib/kuintessence/media", "ageDirectory": "/opt/kq/age"}))
     resources = [
         {
             "apiVersion": "v1",
@@ -2315,6 +2324,9 @@ await Bun.write(process.env.LAB_ROOT+'/registration.json',JSON.stringify({token:
             ],
         },
     }
+    if media_scenario:
+        pod["spec"]["volumes"].append({"name": "age", "hostPath": {"path": str(media_age), "type": "Directory"}})
+        pod["spec"]["containers"][0]["volumeMounts"].append({"name": "age", "mountPath": "/opt/kq/age", "readOnly": True})
     k(["apply", "-f", "-"], json.dumps(pod))
     token = api(
         "auth/login",
@@ -2429,6 +2441,8 @@ await Bun.write(process.env.LAB_ROOT+'/registration.json',JSON.stringify({token:
     sourcehttp, sourcegrpc = port(), port()
     env["LAB_SOURCE_HTTP"] = f"http://127.0.0.1:{sourcehttp}"
     sourceenv = env.copy()
+    if media_scenario:
+        sourceenv.update(FEDERATION_MEDIA_WRAPPING_KEY=secrets.token_hex(32), LAB_MEDIA_ROOT_ID=media_source_root)
     if coordinated or attested:
         sourceenv["FEDERATION_COMMERCIAL_SOCKET_PATH"] = str(networkroot / "live-A-commercial/commercial.sock")
     if coordinated:
@@ -2597,12 +2611,14 @@ await Bun.write(process.env.LAB_ROOT+'/registration.json',JSON.stringify({token:
             terminal_policies["provider"] = api(policy_path, policy_input, token=token)["data"]
             terminal_policies["source"] = sourceapi(policy_path, policy_input, sourcetoken)["data"]
             (logs / "terminal-policies.json").write_text(json.dumps(terminal_policies, indent=2) + "\n")
-        if not coordinated:
+        if not coordinated and not media_scenario:
             path = "federation/commercial-agreements/" + configuration["request"]["agreementRevisionId"]
             grant_closing(path, "bill")
             grant_closing(path, "settlement")
             (logs / "preauthorized-closing.json").write_text(json.dumps(closing_grants, indent=2) + "\n")
-        if scenario == "workflow":
+        if media_scenario:
+            print("Media-only scenario: no compute submission", flush=True)
+        elif scenario == "workflow":
             print("Ordinary Workflow owns delegation; no manual outbound submission", flush=True)
         else:
             first = sourceapi("federation/outbound", configuration["request"], sourcetoken)
@@ -2681,6 +2697,10 @@ await Bun.write(process.env.LAB_ROOT+'/registration.json',JSON.stringify({token:
                 }
             ),
         }
+        if media_scenario:
+            sourceagentenv.pop("AGENT_FEDERATION_MEDIA_IMPORT", None)
+            sourceagentenv.update(AGENT_DATASET_ROOTS_JSON=json.dumps({media_source_root: "."}),
+                                  AGENT_FEDERATION_MEDIA_EXPORT=json.dumps({"mediaDirectory": "/var/lib/kuintessence/media", "ageDirectory": "/opt/kq/age"}))
         sourcepod["spec"]["containers"][0]["env"] = [
             {"name": a, "value": b} for a, b in sourceagentenv.items()
         ]
@@ -2705,7 +2725,12 @@ await Bun.write(process.env.LAB_ROOT+'/registration.json',JSON.stringify({token:
             flush=True,
         )
 
-        if scenario in ("outage", "stop"):
+        if media_scenario:
+            from media import verify_media, verify_media_accounting
+            verify_media(root, logs, namespace, env, sourceenv,
+                         lambda path, body=None: api(path, body, token),
+                         lambda path, body=None: sourceapi(path, body, sourcetoken))
+        elif scenario in ("outage", "stop"):
             verify_interruption()
         else:
             verify_success()
@@ -2720,6 +2745,8 @@ await Bun.write(process.env.LAB_ROOT+'/registration.json',JSON.stringify({token:
                 if attested:
                     verify_attested_recovery()
         inspect_ledgers("after")
+        if media_scenario:
+            verify_media_accounting(logs)
         if coordinated and scenario in ("success", "workflow"):
             state = json.loads((logs / "provider-after.json").read_text())
             transactions = [r for r in state["commercialTransactions"] if r["submissionId"] == bill_record["id"]]

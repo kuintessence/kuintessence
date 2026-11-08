@@ -19,6 +19,7 @@ import {
   dataAssetVersions,
   dataGrants,
   dataLocations,
+  federationAgreementApprovals,
   federationCertificates,
   federationDatasetAssets,
   federationDatasetReplicas,
@@ -80,6 +81,7 @@ import {
 import { PgDataMarketRepository } from "../services/data-market-repository-drizzle";
 import { PgDataPrerequisiteRepository } from "../services/data-prerequisite-repository-drizzle";
 import { FederationAdmission } from "./admission";
+import { FederationAgreementService } from "./agreements";
 import { assertRunningDataBindings, FederationDataDispatch } from "./data-dispatch";
 import { datasetSourceAuthority } from "./dataset-authority";
 import { FederationDatasetPublicationService } from "./dataset-publication";
@@ -148,7 +150,7 @@ describe.skipIf(!binary)("source dataset export consent with real pinned age", (
       .insert(userOrgMemberships)
       .values([actor, other, worker].map((a) => ({ ...a, role: "member" })));
     for (const a of [actor, other])
-      for (const capability of ["asset.map", "media.export"] as const)
+      for (const capability of ["agreement.approve", "asset.map", "media.export"] as const)
         await permissions.set({ ...a, capability, enabled: true }, actor.userId);
     [source, target] = await Promise.all([testKeys(), testKeys()]);
     const trust = new FederationTrustRegistry(db);
@@ -202,6 +204,13 @@ describe.skipIf(!binary)("source dataset export consent with real pinned age", (
       targetKey: target.verification,
       identity: worker,
     });
+    const sourceConsent = new FederationAgreementService(db, source.signing, () => now);
+    await sourceConsent.approve(actor, { terms });
+    await sourceConsent.attachCounterparty(
+      actor,
+      terms.agreementRevisionId,
+      await signFederationMessage(FederationAgreementSchema, terms, target.signing),
+    );
     await db.insert(agents).values({
       agentId,
       providerOrgId: actor.orgId,
@@ -330,6 +339,50 @@ describe.skipIf(!binary)("source dataset export consent with real pinned age", (
     versionId,
     locationId,
     expiresAt: new Date(testNow.getTime() + 3600_000).toISOString(),
+  });
+  test.each([
+    "suspended",
+    "unsigned",
+    "wrong-organization",
+    "wrong-signature",
+  ] as const)("source media consent rejects invalid local agreement approval: %s", async (change) => {
+    const use = await useFixture();
+    const exported = await service.prepare(actor, request());
+    const condition = and(
+      eq(federationAgreementApprovals.localSiteId, source.signing.siteId),
+      eq(federationAgreementApprovals.revisionId, terms.agreementRevisionId),
+    );
+    const [original] = await db.select().from(federationAgreementApprovals).where(condition);
+    if (!original) throw new Error("Missing source approval");
+    try {
+      await db
+        .update(federationAgreementApprovals)
+        .set(
+          change === "suspended"
+            ? { state: "suspended" }
+            : change === "wrong-organization"
+              ? { localOrgId: other.orgId }
+              : {
+                  counterpartyApprovalJws: change === "unsigned" ? null : original.approvalJws,
+                },
+        )
+        .where(condition);
+      await expect(service.prepare(actor, request())).rejects.toThrow();
+      await expect(authorize(exported.packageId)).rejects.toThrow();
+      await expect(use.policyService.approve(actor, use.input)).rejects.toThrow();
+      await expect(
+        db.transaction((tx) => use.policyService.assertQuery(tx, use.query)),
+      ).rejects.toThrow();
+    } finally {
+      await db
+        .update(federationAgreementApprovals)
+        .set({
+          state: original.state,
+          localOrgId: original.localOrgId,
+          counterpartyApprovalJws: original.counterpartyApprovalJws,
+        })
+        .where(condition);
+    }
   });
   const row = async (id: string) => {
     const [r] = await db

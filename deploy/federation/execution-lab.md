@@ -136,3 +136,23 @@ bun run test:federation:direct
 后台须恢复原取消签名、接收永久停止回执、自动双签退款、各自一次性释放逻辑占额。异步提供方须等原退款 VALID 与接单证据上链后才能回收；两种模式都检查原占额身份/摘要/分配字节及取消签名摘要不变。填充文件在整个业务收尾期间保留。此时新委派 HTTP 应返回 503/STORAGE_PRESSURE；仅删除填充文件仍不能恢复接收，明确 restore 物理预留后 storage guard 才能恢复健康。
 
 新增 `storage-crash-recovery.json`、`storage-cancellation-intent.json` 和双方 `storage-before/closed/restored.json` 私有证据。最终清理包括停止 observer、卸载自建磁盘及删除镜像；清理无法确认时保留诊断，不删除可能仍使用的镜像。只有完整入口退出 0 才算该场景通过。它不覆盖运行中的科学任务、结果正文满盘、独立 WAL/Peer 卷、跨主机数据库、全负载容量估算或完整 O01。
+
+
+## 双平台介质交付与来源撤权
+
+沿用本页独立 PostgreSQL 和本机 k3s 配置，增加官方固定摘要的 age 1.3.2 工具目录：
+
+```bash
+KQ_FEDERATION_LAB_SCENARIO=media \
+KQ_MEDIA_AGE_BIN=/absolute/path/to/age \
+PYTHONDONTWRITEBYTECODE=1 \
+bun run test:federation:direct
+```
+
+该入口复用两个独立生产 Server、数据库、mTLS 网关与分别注册的 Agent，不连接已部署平台，也不启动 Fabric。初始数据集、元数据、披露许可与操作人员能力为显式实验夹具；导出批准、排队、导入批准、发布、来源使用审批和撤权走实际 HTTP，Agent 通过真实信道获取短期授权，密钥通过机构间 mTLS 独立交付。每个 Server 使用独立临时密钥加密配置，每个 Agent 使用独立介质和数据根。
+
+实验仅传输 4 字节合成内容。密文从来源 Agent 经运行器复制到接收 Agent inbox，模拟人工搬运加密包，不称为真实硬盘邮寄；不把明文复制到接收站替代解密。断言导出/导入、双端密文摘要、实际明文字节、独立签名回执、导入不自动发布、发布幂等、接收版本的 SHA-256/许可证/provenance，以及来源撤权后后台续租不再允许使用。撤权保留已导入文件和历史回执，删除生命周期另行验收。
+
+结果保存为私有 `media-evidence.json`，必须整条命令退出 0 且全部断言通过才记为通过。本场景没有提交计算任务，不证明 DATA_WAITING 恢复、持续运行停止、真实多主机或物理物流；现有 Kubernetes 文件工作流夹具不能代替受限数据要求的签名生态脚本和 SIF 执行配置。相关 Slurm/PBS 组件实验见[导入数据执行](media-slurm-lab.md)。
+
+2026-11-09：该场景真实通过。首次联调发现并修复来源协议关联错误；修复后的单次完整运行通过，源端无计算预算，双方原预算不变、无计算及账务任务。来源撤权在原短期许可到期后生效，当前续租失败显示 RENEWAL_FAILED，不冒充即时签名撤权。

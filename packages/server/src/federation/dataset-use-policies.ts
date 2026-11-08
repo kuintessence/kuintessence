@@ -1,7 +1,6 @@
 import {
   auditLog,
   dataAccessPolicies,
-  federationAgreements,
   federationSites,
   type PgDb,
   type PgTransaction,
@@ -9,7 +8,6 @@ import {
 } from "@kuintessence/db";
 import { AppError, ErrorCode, Role } from "@kuintessence/shared";
 import {
-  FederationAgreementSchema,
   FederationAssetRefSchema,
   type FederationDatasetUseApproval,
   FederationDatasetUseApprovalSchema,
@@ -24,17 +22,22 @@ import { evaluateActiveDataAccess } from "../services/data-access-decision";
 import type { DataMarketActor } from "../services/data-market";
 import { requiresActiveEntitlementUse } from "../services/data-prerequisite-repository-drizzle";
 import { readDataVersionCustody } from "../services/data-version-custody";
+import { requireMediaAgreement } from "./media-agreement";
 import { type FederationActor, requireFederationCapability } from "./permissions";
+import { FederationTrustRegistry } from "./trust-registry";
 
 type Policy = typeof policies.$inferSelect;
 /** Source-owned use approval. Import, disclosure, local ownership and mapping never imply it. */
 export class FederationDatasetUsePolicies {
+  private readonly trust: FederationTrustRegistry;
   constructor(
     private readonly db: PgDb,
     readonly siteId: string,
     private readonly authorizeManage: (actor: DataMarketActor, assetId: string) => Promise<void>,
     private readonly clock: () => Date = () => new Date(),
-  ) {}
+  ) {
+    this.trust = new FederationTrustRegistry(db);
+  }
   async approve(actor: FederationActor, raw: unknown) {
     const input = FederationDatasetUseApprovalSchema.parse(raw);
     await this.authorize(actor, input.versionId);
@@ -183,28 +186,13 @@ export class FederationDatasetUsePolicies {
       .for("share");
     if (sites.length !== 2 || sites.some((s) => s.state !== "active"))
       throw new FederationError("UNTRUSTED_IDENTITY");
-    const [agreement] = await tx
-      .select()
-      .from(federationAgreements)
-      .where(
-        and(
-          eq(federationAgreements.revisionId, input.agreementRevisionId),
-          eq(federationAgreements.localOrgId, actor.orgId),
-        ),
-      )
-      .for("share");
-    if (
-      !agreement ||
-      agreement.state !== "active" ||
-      ![agreement.sourceSiteId, agreement.targetSiteId].includes(this.siteId) ||
-      ![agreement.sourceSiteId, agreement.targetSiteId].includes(input.recipientSiteId)
-    )
-      throw new FederationError("POLICY_DENIED");
-    const terms = FederationAgreementSchema.parse(agreement.terms);
-    if (
-      Date.parse(terms.validFrom) > now.getTime() ||
-      Date.parse(terms.validUntil) < Date.parse(input.expiresAt)
-    )
+    const terms = await requireMediaAgreement(
+      tx,
+      this.trust,
+      { siteId: this.siteId, orgId: actor.orgId, ...input },
+      now,
+    );
+    if (Date.parse(terms.validUntil) < Date.parse(input.expiresAt))
       throw new FederationError("POLICY_DENIED");
     const data = await this.custody(tx, actor, input.versionId);
     if (
