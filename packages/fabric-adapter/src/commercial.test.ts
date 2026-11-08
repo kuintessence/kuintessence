@@ -9,6 +9,7 @@ import {
 import { Client, credentials, Metadata } from "@grpc/grpc-js";
 import { connect, GatewayError, signers } from "@hyperledger/fabric-gateway";
 import { peer, gateway as proto } from "@hyperledger/fabric-protos";
+import { FederationCancellationReceiptSchema } from "@kuintessence/shared/federation";
 import {
   CommercialAdapterProposalInputSchema,
   CommercialAdjustmentSchema,
@@ -18,6 +19,7 @@ import {
   type CommercialExecutionProposalInput,
   CommercialExecutionProposalInputSchema,
   type CommercialProposalInput,
+  CommercialRefundSchema,
   CommercialReleaseSchema,
   CommercialReservationSchema,
   CommercialSettlementSchema,
@@ -88,6 +90,8 @@ beforeAll(async () => {
           "commercial-bill",
           "commercial-settlement",
           "commercial-adjustment",
+          "commercial-refund",
+          "cancellation-receipt",
         ],
       })),
     },
@@ -910,4 +914,101 @@ test("new billing operations reject mismatched identities, old key authority and
     await expect(denied.adapter.prepare(value)).rejects.toThrow("UNTRUSTED_IDENTITY");
     expect(denied.sdk).not.toHaveBeenCalled();
   }
+});
+
+async function refundInput() {
+  const execution = await executionFixture(),
+    source = keys[0],
+    target = keys[1];
+  if (!source || !target) throw new Error("Missing signers");
+  const request = { ...execution.reservation.request, mode: "bilateral_attested" as const };
+  const receipt = FederationCancellationReceiptSchema.parse({
+    protocolVersion: 1,
+    kind: "cancellation-receipt",
+    operationId: request.operationId,
+    senderSiteId: target.siteId,
+    recipientSiteId: source.siteId,
+    agreementRevisionId: request.agreementRevisionId,
+    taskId: request.taskId,
+    attempt: request.attempt,
+    requestDigest: `sha256:${"1".repeat(64)}`,
+    cancellationDigest: `sha256:${"2".repeat(64)}`,
+    recordedAt: request.issuedAt,
+    observedAt: request.issuedAt,
+    reservationId: null,
+    state: "stopped",
+    workflow: null,
+  });
+  const value = CommercialRefundSchema.parse({
+    protocolVersion: 1,
+    kind: "commercial-refund",
+    refundId: randomUUID(),
+    domainId: input.domainId,
+    agreementDigest: `sha256:${"3".repeat(64)}`,
+    request,
+    requestDigest: receipt.requestDigest,
+    cancellationReceiptJws: await signFederationMessage(
+      FederationCancellationReceiptSchema,
+      receipt,
+      target,
+    ),
+    releasedAmount: request.maxAmount,
+    issuedAt: new Date().toISOString(),
+    salt: randomBytes(32).toString("hex"),
+    reason: "PRIVATE-REFUND",
+  });
+  const sourceJws = await signFederationMessage(CommercialRefundSchema, value, source);
+  const body = sourceJws.split(".")[1];
+  if (!body) throw new Error("Missing body");
+  const proposal = {
+    operation: "record-refund" as const,
+    domainId: value.domainId,
+    recordId: value.refundId,
+    digest: `sha256:${createHash("sha256").update(Buffer.from(body, "base64url")).digest("hex")}`,
+    envelope: {
+      sourceSiteId: source.siteId,
+      targetSiteId: target.siteId,
+      sourceJws,
+      targetJws: await signFederationMessage(CommercialRefundSchema, value, target),
+    },
+  };
+  return { proposal, value, source, target, receipt };
+}
+
+test("refund adapter keeps nested cancellation and both signatures in transient data with member endorsement", async () => {
+  const { proposal } = await refundInput(),
+    f = setup();
+  const prepared = await f.adapter.prepare(proposal),
+    stored = decode(f, prepared.recovery);
+  const proposed = proto.ProposedTransaction.deserializeBinary(
+    Buffer.from(stored.message.bytes, "base64"),
+  );
+  expect(proposed.getEndorsingOrganizationsList()).toEqual(["AMSP", "BMSP"]);
+  const signed = proposed.getProposal();
+  if (!signed) throw new Error("Missing signed proposal");
+  const payload = peer.ChaincodeProposalPayload.deserializeBinary(
+    peer.Proposal.deserializeBinary(signed.getProposalBytes_asU8()).getPayload_asU8(),
+  );
+  expect(Buffer.from(payload.getTransientmapMap().get("commercial") ?? []).toString()).toBe(
+    JSON.stringify(proposal.envelope),
+  );
+  expect(
+    peer.ChaincodeInvocationSpec.deserializeBinary(payload.getInput_asU8())
+      .getChaincodeSpec()
+      ?.getInput()
+      ?.getArgsList_asU8()
+      .map((bytes) => Buffer.from(bytes).toString()),
+  ).toEqual(["RecordRefund", proposal.domainId, proposal.recordId]);
+  expect(stored.digest).toBe(proposal.digest);
+});
+
+test("refund adapter rejects changed record identity and absent receipt purpose before proposal disclosure", async () => {
+  const { proposal } = await refundInput();
+  await expect(setup().adapter.prepare({ ...proposal, recordId: randomUUID() })).rejects.toThrow(
+    "POLICY_DENIED",
+  );
+  const trust = structuredClone(config.trust);
+  for (const item of trust.keyPurposes)
+    item.kinds = item.kinds.filter((kind) => kind !== "cancellation-receipt");
+  await expect(setup({ trust }).adapter.prepare(proposal)).rejects.toThrow("UNTRUSTED_IDENTITY");
 });

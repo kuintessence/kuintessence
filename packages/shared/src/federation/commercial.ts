@@ -32,6 +32,8 @@ export const CommercialSigningKindSchema = z.enum([
   "commercial-bill",
   "commercial-settlement",
   "commercial-adjustment",
+  "commercial-refund",
+  "cancellation-receipt",
 ]);
 
 /** Private rates use integer amount per integer quantity; the execution agreement fixes the money unit. */
@@ -508,6 +510,7 @@ export const CommercialRecordTypeSchema = z.enum([
   "bill",
   "settlement",
   "adjustment",
+  "refund",
 ]);
 export const CommercialReceiptQuerySchema = z.strictObject({
   operation: z.literal("get-commercial-receipt"),
@@ -611,6 +614,11 @@ export const CommercialAdapterProposalInputSchema = z.discriminatedUnion("operat
   ...CommercialProposalInputSchema.options,
   ...CommercialExecutionProposalInputSchema.options,
   CommercialAdjustmentProposalInputSchema,
+  z.strictObject({
+    ...ProposalIdentity,
+    operation: z.literal("record-refund"),
+    envelope: CommercialAgreementEnvelopeSchema,
+  }),
   z.strictObject({
     ...ProposalIdentity,
     operation: z.literal("record-discount"),

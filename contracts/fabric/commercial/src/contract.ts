@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import {
   assertDelegationTerms,
   FederationAmountSchema,
+  FederationCancellationReceiptSchema,
   FederationError,
   federationCanonicalJson,
 } from "@kuintessence/shared/federation";
@@ -9,6 +10,7 @@ import {
   assertCommercialAdjustment,
   assertCommercialBill,
   assertCommercialDiscount,
+  assertCommercialRefund,
   assertCommercialSettlement,
 } from "@kuintessence/shared/federation/billing";
 import {
@@ -19,6 +21,7 @@ import {
   CommercialDiscountSchema,
   CommercialReceiptSchema,
   CommercialRecordTypeSchema,
+  CommercialRefundSchema,
   CommercialReleaseSchema,
   CommercialReservationSchema,
   CommercialSettlementSchema,
@@ -67,6 +70,11 @@ const StoredSettlement = z.strictObject({
   receipt: CommercialReceiptSchema,
   envelope: CommercialAgreementEnvelopeSchema,
   terms: CommercialSettlementSchema,
+});
+const StoredRefund = z.strictObject({
+  receipt: CommercialReceiptSchema,
+  envelope: CommercialAgreementEnvelopeSchema,
+  terms: CommercialRefundSchema,
 });
 const StoredAdjustment = z.strictObject({
   receipt: CommercialReceiptSchema,
@@ -594,6 +602,99 @@ export class CommercialLedger {
     );
     return encode(receipt);
   }
+  private async refund(
+    stub: Stub,
+    domain: FabricCommercialTrust["domains"][number],
+    recordId: string,
+  ) {
+    const envelope = this.input(stub, CommercialAgreementEnvelopeSchema),
+      now = stub.getDateTimestamp();
+    if (
+      envelope.sourceSiteId === envelope.targetSiteId ||
+      !domain.siteIds.includes(envelope.sourceSiteId) ||
+      !domain.siteIds.includes(envelope.targetSiteId)
+    )
+      return fail("POLICY_DENIED");
+    const signed = await this.verify(
+      stub,
+      CommercialRefundSchema,
+      envelope.sourceJws,
+      envelope.sourceSiteId,
+      now,
+    );
+    const other = await this.verify(
+      stub,
+      CommercialRefundSchema,
+      envelope.targetJws,
+      envelope.targetSiteId,
+      now,
+    );
+    if (signed.digest !== other.digest) return fail("OPERATION_CONFLICT");
+    const terms = signed.payload,
+      request = terms.request;
+    if (
+      terms.refundId !== recordId ||
+      terms.domainId !== domain.domainId ||
+      request.mode !== "bilateral_attested" ||
+      request.senderSiteId !== envelope.sourceSiteId ||
+      request.recipientSiteId !== envelope.targetSiteId ||
+      Date.parse(terms.issuedAt) > now.getTime() + 60000
+    )
+      return fail("POLICY_DENIED");
+    const cancellation = await this.verify(
+      stub,
+      FederationCancellationReceiptSchema,
+      terms.cancellationReceiptJws,
+      envelope.targetSiteId,
+      now,
+    );
+    const agreementBytes = await this.privateValue(
+      stub,
+      domain.collection,
+      stub.createCompositeKey("agreement", [domain.domainId, request.agreementRevisionId]),
+    );
+    if (!agreementBytes.length) return fail("ASSET_UNAVAILABLE");
+    const agreement = StoredAgreement.parse(JSON.parse(Buffer.from(agreementBytes).toString()));
+    assertCommercialRefund(terms, agreement.terms, agreement.receipt.digest, cancellation.payload);
+    const key = stub.createCompositeKey("refund", [domain.domainId, recordId]);
+    const bytes = await this.privateValue(stub, domain.collection, key);
+    if (bytes.length) {
+      const prior = StoredRefund.parse(JSON.parse(Buffer.from(bytes).toString()));
+      if (prior.receipt.digest !== signed.digest) return fail("OPERATION_CONFLICT");
+      await stub.putPrivateData(domain.collection, key, bytes);
+      return encode(prior.receipt);
+    }
+    const scope = [
+      domain.domainId,
+      request.agreementRevisionId,
+      request.taskId,
+      String(request.attempt),
+    ];
+    const headKey = stub.createCompositeKey("refund-head", scope);
+    const operationKey = stub.createCompositeKey("refund-operation", [
+      domain.domainId,
+      request.senderSiteId,
+      request.operationId,
+    ]);
+    // Mutual hashed reads make a concurrent first usage or bill conflict with this refund.
+    for (const candidate of [
+      headKey,
+      operationKey,
+      stub.createCompositeKey("usage-head", scope),
+      stub.createCompositeKey("bill-head", scope),
+    ])
+      if ((await this.privateValue(stub, domain.collection, candidate)).length)
+        return fail("OPERATION_CONFLICT");
+    const receipt = { recordId, digest: signed.digest };
+    await stub.putPrivateData(domain.collection, key, encode({ receipt, envelope, terms }));
+    for (const index of [headKey, operationKey])
+      await stub.putPrivateData(
+        domain.collection,
+        index,
+        encode({ refundId: recordId, salt: terms.salt }),
+      );
+    return encode(receipt);
+  }
   private async billingOriginals(
     stub: Stub,
     domain: FabricCommercialTrust["domains"][number],
@@ -725,6 +826,16 @@ export class CommercialLedger {
       terms.request.taskId,
       String(terms.request.attempt),
     ];
+    if (
+      (
+        await this.privateValue(
+          stub,
+          domain.collection,
+          stub.createCompositeKey("refund-head", scope),
+        )
+      ).length
+    )
+      return fail("OPERATION_CONFLICT");
     const headKey = stub.createCompositeKey("bill-head", scope);
     if ((await this.privateValue(stub, domain.collection, headKey)).length)
       return fail("OPERATION_CONFLICT");
@@ -1162,6 +1273,7 @@ export class CommercialLedger {
         "ConfirmBill",
         "SettleBill",
         "AdjustSettlement",
+        "RecordRefund",
       ].includes(fcn)
     )
       return fail("INVALID_MESSAGE");
@@ -1169,6 +1281,7 @@ export class CommercialLedger {
     const [domainId, recordId] = Args.parse(params);
     const domain = this.trust.domains.find((domain) => domain.domainId === domainId);
     if (!domain?.siteIds.includes(org.siteId)) return fail("POLICY_DENIED");
+    if (fcn === "RecordRefund") return this.refund(stub, domain, recordId);
     if (fcn === "RecordDiscount") return this.discount(stub, domain, recordId, org.siteId);
     if (fcn === "AdjustSettlement") return this.adjust(stub, domain, recordId);
     if (fcn === "SettleBill") return this.settle(stub, domain, recordId);
@@ -1294,6 +1407,21 @@ export class CommercialLedger {
       usage.taskId,
       String(usage.attempt),
     ]);
+    if (
+      (
+        await this.privateValue(
+          stub,
+          domain.collection,
+          stub.createCompositeKey("refund-head", [
+            domainId,
+            usage.agreementRevisionId,
+            usage.taskId,
+            String(usage.attempt),
+          ]),
+        )
+      ).length
+    )
+      return fail("OPERATION_CONFLICT");
     const headBytes = await this.privateValue(stub, domain.collection, headKey);
     const head = headBytes.length
       ? z

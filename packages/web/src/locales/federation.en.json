@@ -216,7 +216,7 @@
       },
       "effects": {
         "settlement": {
-          "approve": "Approve separate settlements, exchange signatures and retry ledger submission; no payment or credit issuance authority."
+          "approve": "Approve settlements and pre-execution refunds, exchange signatures and retry evidence submission; no payment or credit issuance authority."
         },
         "adjustment": {
           "approve": "Approve separate changes to settled charges, exchange signatures and retry evidence; no payment or credit issuance authority."

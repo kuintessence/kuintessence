@@ -1,4 +1,4 @@
-import { randomBytes } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import {
   federationAgreements as agreements,
   auditLog,
@@ -10,6 +10,7 @@ import {
   type PgTransaction,
   federationCommercialRefunds as refunds,
   federationReservations as reservations,
+  federationCommercialSubmissions as submissions,
 } from "@kuintessence/db";
 import {
   FederationCancellationReceiptSchema,
@@ -20,10 +21,11 @@ import {
 } from "@kuintessence/shared/federation";
 import { assertCommercialRefund } from "@kuintessence/shared/federation/billing";
 import {
+  CommercialAdapterProposalInputSchema,
   type CommercialRefund,
   CommercialRefundSchema,
 } from "@kuintessence/shared/federation/commercial";
-import { and, desc, eq, sql } from "drizzle-orm";
+import { and, desc, eq, getTableColumns, sql } from "drizzle-orm";
 import type { z } from "zod";
 import { readFederationCancellationState } from "./cancellation-state";
 import { renewTaskCompletion } from "./completion-capacity";
@@ -80,8 +82,8 @@ export class FederationRefundService {
       )
       .for("share");
     if (!row?.counterpartyJws) throw new FederationError("AGREEMENT_UNAVAILABLE");
-    // Attested refunds require a durable private-ledger outbox before local release is enabled.
-    if (row.terms.agreement.mode !== "bilateral_direct") throw new FederationError("POLICY_DENIED");
+    if (row.terms.agreement.mode === "ledger_coordinated")
+      throw new FederationError("POLICY_DENIED");
     return row;
   }
   private async originals(tx: PgTransaction, actor: FederationActor, value: CommercialRefund) {
@@ -355,14 +357,34 @@ export class FederationRefundService {
       return row;
     });
   }
+  async attachExchanged(
+    revisionId: string,
+    refundId: string,
+    jws: string,
+    authorize: (tx: PgTransaction) => Promise<void>,
+  ) {
+    const [row] = await this.db
+      .select()
+      .from(refunds)
+      .where(and(this.key(refundId), eq(refunds.agreementRevisionId, revisionId)));
+    if (!row) throw new FederationError("ASSET_UNAVAILABLE");
+    return this.attachCounterparty(
+      { userId: row.approvedBy, orgId: row.localOrgId },
+      revisionId,
+      refundId,
+      jws,
+      authorize,
+    );
+  }
   async attachCounterparty(
     actor: FederationActor,
     revisionId: string,
     refundId: string,
     jws: string,
+    authorize?: (tx: PgTransaction) => Promise<void>,
   ) {
     return this.db.transaction(async (tx) => {
-      await requireFederationCapability(tx, actor, "settlement.approve");
+      if (!authorize) await requireFederationCapability(tx, actor, "settlement.approve");
       const [snapshot] = await tx
         .select()
         .from(refunds)
@@ -394,6 +416,7 @@ export class FederationRefundService {
       }
       if (row.counterpartyJws && row.counterpartyJws !== jws)
         throw new FederationError("OPERATION_CONFLICT");
+      await authorize?.(tx);
       if (row.appliedAt) return row;
       if (reservation) {
         const [budget] = await tx
@@ -439,8 +462,26 @@ export class FederationRefundService {
         .where(this.key(refundId))
         .returning();
       if (!saved) throw new Error("Refund application was not saved");
+      if (provider && request.mode === "bilateral_attested")
+        await tx.insert(submissions).values({
+          id: randomUUID(),
+          localSiteId: this.signing.siteId,
+          agreementRevisionId: revisionId,
+          input: CommercialAdapterProposalInputSchema.parse({
+            operation: "record-refund",
+            domainId: value.domainId,
+            recordId: refundId,
+            digest: row.digest,
+            envelope: {
+              sourceSiteId: request.senderSiteId,
+              targetSiteId: request.recipientSiteId,
+              sourceJws: jws,
+              targetJws: row.approvalJws,
+            },
+          }),
+        });
       await tx.insert(auditLog).values({
-        actor: actor.userId,
+        actor: authorize ? `refund-exchange:${this.signing.siteId}` : actor.userId,
         orgId: actor.orgId,
         action: "federation.refund.apply",
         target: refundId,
@@ -454,8 +495,23 @@ export class FederationRefundService {
       await requireFederationCapability(tx, actor, "agreement.read");
       await this.contract(tx, actor, revisionId);
       const rows = await tx
-        .select()
+        .select({
+          ...getTableColumns(refunds),
+          ledger: {
+            id: submissions.id,
+            state: submissions.state,
+            lastError: submissions.lastError,
+          },
+        })
         .from(refunds)
+        .leftJoin(
+          submissions,
+          and(
+            eq(submissions.localSiteId, refunds.localSiteId),
+            sql`${submissions.input}->>'operation' = 'record-refund'`,
+            sql`${submissions.input}->>'recordId' = ${refunds.refundId}::text`,
+          ),
+        )
         .where(
           and(
             eq(refunds.localSiteId, this.signing.siteId),

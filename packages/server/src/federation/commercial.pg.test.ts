@@ -11,6 +11,7 @@ import {
   federationAgreementApprovals,
   federationAgreements,
   federationAssetMappings,
+  federationAttestationOutbox,
   federationBudgets,
   federationCancellations,
   federationCapabilities,
@@ -420,6 +421,17 @@ afterAll(async () => {
         inArray(
           workflowRuns.id,
           runs.map((run) => run.id),
+        ),
+      );
+    await db
+      .delete(federationAttestationOutbox)
+      .where(
+        inArray(
+          federationAttestationOutbox.evidenceId,
+          db
+            .select({ id: federationEvidence.id })
+            .from(federationEvidence)
+            .where(inArray(federationEvidence.reservationId, reservations)),
         ),
       );
     await db
@@ -9671,8 +9683,8 @@ test("unreserved capacity retains an active parent workflow and release auditing
   expect((await f.scan()).allocatedBytes).toBe("0");
 });
 
-async function refundFixture(admitted = true) {
-  const f = await fixture("bilateral_direct", true, true);
+async function refundFixture(admitted = true, mode: FederationMode = "bilateral_direct") {
+  const f = await fixture(mode, true, true);
   f.terms.agreement.budgetLimit = "90071992547409931";
   f.terms.agreement.maxTaskAmount = "9007199254740993";
   for (const key of [f.a, f.b]) {
@@ -10126,12 +10138,12 @@ test("bilateral refund HTTP requires a human financial approver and returns priv
   expect(JSON.stringify(await list.json())).toContain(f.value.refundId);
 });
 
-test("bilateral refund does not silently enable asynchronous ledger mode before its outbox is supported", async () => {
-  const f = await fixture("bilateral_attested");
+test("bilateral refund cannot bypass coordinated execution gates", async () => {
+  const f = await fixture("ledger_coordinated");
   await approveBoth(f);
   const refunds = new FederationRefundService(db, f.a.signing);
   await expect(
-    refunds.draft(f.actor, f.revisionId, randomUUID(), randomUUID(), "Unsupported mode"),
+    refunds.draft(f.actor, f.revisionId, randomUUID(), randomUUID(), "Wrong mode"),
   ).rejects.toThrow("POLICY_DENIED");
 });
 
@@ -10149,4 +10161,176 @@ test("bilateral refund historical unadmitted approval is counted when completion
   expect(await capacity.inspect()).toMatchObject({ allocatedBytes: "60", obligations: 1 });
   await capacity.advanceNext();
   expect((await capacity.inspect()).allocatedBytes).toBe("60");
+});
+
+test("refund exchange waits for independent approval, resumes the same signatures after loss and applies each side once", async () => {
+  const f = await refundFixture();
+  const transport = await approvalTransport(f);
+  const a = await f.source.approve(f.actor, f.revisionId, f.value);
+  await transport.a.discover();
+  await transport.a.advanceNext();
+  const view = async () =>
+    (await transport.a.list(f.actor, f.revisionId, 50, 0)).records.find(
+      (row) => row.recordKind === "refund",
+    );
+  expect((await view())?.state).toBe("pending");
+  expect((await f.budget())?.reserved).toBe(f.request.maxAmount);
+  const b = await f.provider.approve(f.actor, f.revisionId, f.value);
+  transport.lose(true);
+  await transport.due();
+  await transport.a.advanceNext();
+  expect((await f.source.list(f.actor, f.revisionId, 10, 0)).data[0]?.appliedAt).toBeNull();
+  transport.lose(false);
+  await transport.due();
+  await new FederationCommercialApprovalExchange(db, f.a.signing, transport.send).advanceNext();
+  await transport.b.discover();
+  await transport.b.advanceNext();
+  expect((await view())?.state).toBe("complete");
+  expect((await f.source.list(f.actor, f.revisionId, 10, 0)).data[0]?.counterpartyJws).toBe(
+    b.approvalJws,
+  );
+  expect((await f.provider.list(f.actor, f.revisionId, 10, 0)).data[0]?.counterpartyJws).toBe(
+    a.approvalJws,
+  );
+  expect((await f.budget())?.reserved).toBe("0");
+  expect(await transport.a.advanceNext()).toBe(false);
+  expect(
+    await db
+      .select()
+      .from(auditLog)
+      .where(
+        and(eq(auditLog.orgId, f.actor.orgId), eq(auditLog.action, "federation.refund.apply")),
+      ),
+  ).toHaveLength(2);
+});
+
+test("refund exchange cannot apply a late response after its lease expires", async () => {
+  const f = await refundFixture();
+  const transport = await approvalTransport(f);
+  await f.source.approve(f.actor, f.revisionId, f.value);
+  await f.provider.approve(f.actor, f.revisionId, f.value);
+  await transport.a.discover();
+  transport.hook(async (_query, response) => {
+    await db
+      .update(federationCommercialApprovalSyncs)
+      .set({ leaseUntil: new Date(0) })
+      .where(
+        and(
+          eq(federationCommercialApprovalSyncs.localSiteId, f.a.signing.siteId),
+          eq(federationCommercialApprovalSyncs.recordKind, "refund"),
+        ),
+      );
+    return response;
+  });
+  await transport.a.advanceNext();
+  expect((await f.source.list(f.actor, f.revisionId, 10, 0)).data[0]).toMatchObject({
+    appliedAt: null,
+    counterpartyJws: null,
+  });
+  transport.hook(undefined);
+  await transport.due();
+  await transport.a.advanceNext();
+  expect((await f.source.list(f.actor, f.revisionId, 10, 0)).data[0]?.appliedAt).toBeInstanceOf(
+    Date,
+  );
+});
+
+test("attested refund commits local release with a durable outbox while chain is offline, then only records evidence", async () => {
+  const f = await refundFixture(true, "bilateral_attested");
+  const a = await f.source.approve(f.actor, f.revisionId, f.value);
+  const b = await f.provider.approve(f.actor, f.revisionId, f.value);
+  await f.provider.attachCounterparty(f.actor, f.revisionId, f.value.refundId, a.approvalJws);
+  await f.source.attachCounterparty(f.actor, f.revisionId, f.value.refundId, b.approvalJws);
+  await db
+    .update(submissions)
+    .set({ state: "committed" })
+    .where(
+      and(
+        eq(submissions.localSiteId, f.b.signing.siteId),
+        sql`${submissions.input}->>'operation' = 'register-agreement'`,
+      ),
+    );
+  // Isolate refund backlog from the separately tested acceptance-attestation queue.
+  await db.delete(federationAttestationOutbox).where(
+    inArray(
+      federationAttestationOutbox.evidenceId,
+      db
+        .select({ id: federationEvidence.id })
+        .from(federationEvidence)
+        .where(eq(federationEvidence.reservationId, f.accepted?.reservationId ?? "")),
+    ),
+  );
+  const { readAttestationBacklog } = await import("./attestation-backlog");
+  expect(await readAttestationBacklog(db, f.terms.agreement, new Date())).toMatchObject({
+    outstandingTasks: 1,
+    outstandingAmount: f.request.maxAmount,
+  });
+  const adapter = new Adapter();
+  adapter.offline = true;
+  const service = new FederationCommercialSubmissionService(db, f.b.signing.siteId, adapter);
+  expect(await service.advanceNext()).toBe(true);
+  const rows = () =>
+    db
+      .select()
+      .from(submissions)
+      .where(
+        and(
+          eq(submissions.localSiteId, f.b.signing.siteId),
+          sql`${submissions.input}->>'operation' = 'record-refund'`,
+        ),
+      );
+  const first = (await rows())[0];
+  expect(first).toMatchObject({ state: "pending", lastError: "LEDGER_UNAVAILABLE" });
+  expect((await f.budget())?.reserved).toBe("0");
+  adapter.offline = false;
+  await db
+    .update(submissions)
+    .set({ nextAttemptAt: new Date(0) })
+    .where(eq(submissions.id, first?.id ?? ""));
+  for (let i = 0; i < 3; i++)
+    await new FederationCommercialSubmissionService(db, f.b.signing.siteId, adapter).advanceNext();
+  expect(await rows()).toHaveLength(1);
+  expect((await rows())[0]).toMatchObject({ id: first?.id, state: "committed" });
+  expect((await f.provider.list(f.actor, f.revisionId, 10, 0)).data[0]?.ledger).toMatchObject({
+    id: first?.id,
+    state: "committed",
+    lastError: null,
+  });
+  expect((await f.source.list(f.actor, f.revisionId, 10, 0)).data[0]?.ledger).toBeNull();
+  expect(await readAttestationBacklog(db, f.terms.agreement, new Date())).toMatchObject({
+    outstandingTasks: 0,
+    outstandingAmount: "0",
+  });
+  expect(await f.budget()).toMatchObject({
+    available: f.terms.agreement.budgetLimit,
+    reserved: "0",
+    spent: "0",
+  });
+  await f.provider.attachCounterparty(f.actor, f.revisionId, f.value.refundId, a.approvalJws);
+  expect(await rows()).toHaveLength(1);
+});
+
+test("attested refund rolls back local release if its private evidence outbox cannot be saved", async () => {
+  const f = await refundFixture(true, "bilateral_attested");
+  const a = await f.source.approve(f.actor, f.revisionId, f.value);
+  await f.provider.approve(f.actor, f.revisionId, f.value);
+  await db.execute(
+    sql`CREATE FUNCTION refund_outbox_fail() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.input->>'operation' = 'record-refund' THEN RAISE EXCEPTION 'injected failure'; END IF; RETURN NEW; END $$`,
+  );
+  await db.execute(
+    sql`CREATE TRIGGER refund_outbox_fail BEFORE INSERT ON federation_commercial_submissions FOR EACH ROW EXECUTE FUNCTION refund_outbox_fail()`,
+  );
+  try {
+    await expect(
+      f.provider.attachCounterparty(f.actor, f.revisionId, f.value.refundId, a.approvalJws),
+    ).rejects.toThrow();
+  } finally {
+    await db.execute(sql`DROP TRIGGER refund_outbox_fail ON federation_commercial_submissions`);
+    await db.execute(sql`DROP FUNCTION refund_outbox_fail()`);
+  }
+  expect((await f.budget())?.reserved).toBe(f.request.maxAmount);
+  expect((await f.provider.list(f.actor, f.revisionId, 10, 0)).data[0]).toMatchObject({
+    appliedAt: null,
+    counterpartyJws: null,
+  });
 });

@@ -1445,7 +1445,7 @@ export const federationCommercialSubmissions = pgTable(
     ),
     check(
       "federation_commercial_submission_input",
-      sql`(${t.input}->>'operation' IN ('register-agreement','record-usage','reserve-execution','release-execution','record-execution-terminal','record-discount','confirm-bill','settle-bill','adjust-settlement') AND ${t.input}->>'recordId' IS NOT NULL AND ${t.input}->>'domainId' IS NOT NULL AND ${t.input}->>'digest' ~ '^sha256:[a-f0-9]{64}$') IS TRUE`,
+      sql`(${t.input}->>'operation' IN ('register-agreement','record-usage','reserve-execution','release-execution','record-execution-terminal','record-discount','confirm-bill','settle-bill','adjust-settlement','record-refund') AND ${t.input}->>'recordId' IS NOT NULL AND ${t.input}->>'domainId' IS NOT NULL AND ${t.input}->>'digest' ~ '^sha256:[a-f0-9]{64}$') IS TRUE`,
     ),
     check(
       "federation_commercial_submission_lease",
@@ -2161,7 +2161,9 @@ export const federationCommercialApprovalSyncs = pgTable(
     localSiteId: uuid("local_site_id").notNull(),
     agreementRevisionId: uuid("agreement_revision_id").notNull(),
     recordKind: varchar("record_kind", { length: 16 })
-      .$type<"agreement" | "reservation" | "release" | "bill" | "settlement" | "adjustment">()
+      .$type<
+        "agreement" | "reservation" | "release" | "bill" | "settlement" | "adjustment" | "refund"
+      >()
       .notNull(),
     recordId: uuid("record_id").notNull(),
     state: varchar("state", { length: 24 }).notNull().default("pending"),
@@ -2184,7 +2186,7 @@ export const federationCommercialApprovalSyncs = pgTable(
     index("federation_approval_sync_pending").on(t.localSiteId, t.state, t.nextAttemptAt),
     check(
       "federation_approval_sync_identity",
-      sql`(${t.recordKind} IN ('agreement','reservation','release','bill','settlement','adjustment') AND (${t.recordKind} <> 'agreement' OR ${t.recordId} = ${t.agreementRevisionId})) IS TRUE`,
+      sql`(${t.recordKind} IN ('agreement','reservation','release','bill','settlement','adjustment','refund') AND (${t.recordKind} <> 'agreement' OR ${t.recordId} = ${t.agreementRevisionId})) IS TRUE`,
     ),
     check(
       "federation_approval_sync_state",

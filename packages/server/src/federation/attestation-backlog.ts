@@ -19,7 +19,7 @@ export async function readAttestationBacklog(
       SELECT c.created_at, c.input->>'operation' AS operation,
         u.reservation_id AS usage_reservation_id,
         coalesce(b.payload->'request'->>'operationId', sb.payload->'request'->>'operationId',
-          ab.payload->'request'->>'operationId')::uuid AS operation_id,
+          ab.payload->'request'->>'operationId', refund.operation_id::text)::uuid AS operation_id,
         (d.payload->>'taskId')::uuid AS discount_task_id,
         (d.payload->>'attempt')::integer AS discount_attempt
       FROM federation_commercial_submissions c
@@ -40,6 +40,9 @@ export async function readAttestationBacklog(
         ON sa.settlement_id = a.settlement_id AND sa.local_site_id = a.local_site_id
       LEFT JOIN federation_commercial_bills ab
         ON ab.bill_id = sa.bill_id AND ab.local_site_id = sa.local_site_id
+      LEFT JOIN federation_commercial_refunds refund
+        ON c.input->>'operation' = 'record-refund' AND refund.refund_id = (c.input->>'recordId')::uuid
+        AND refund.local_site_id = c.local_site_id
       LEFT JOIN federation_commercial_discounts d
         ON c.input->>'operation' = 'record-discount' AND d.discount_id = (c.input->>'recordId')::uuid
         AND d.local_site_id = c.local_site_id

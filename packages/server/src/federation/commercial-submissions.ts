@@ -10,6 +10,7 @@ import {
   federationMarketSubmissions as marketSubmissions,
   type PgDb,
   type PgTransaction,
+  federationCommercialRefunds as refunds,
   federationUsageReports as reports,
   federationCommercialSettlements as settlements,
   federationCommercialSubmissions as submissions,
@@ -25,6 +26,7 @@ import {
   CommercialDiscountSchema,
   CommercialExecutionApprovalSchema,
   CommercialReceiptQueryResultSchema,
+  CommercialRefundSchema,
   CommercialSettlementSchema,
   CommercialTerminalSchema,
   CommercialUsageSchema,
@@ -58,6 +60,7 @@ const recordTypes = {
   "confirm-bill": "bill",
   "settle-bill": "settlement",
   "adjust-settlement": "adjustment",
+  "record-refund": "refund",
 } as const;
 
 export class FederationCommercialSubmissionService {
@@ -640,6 +643,28 @@ export class FederationCommercialSubmissionService {
       )
         throw new FederationError("POLICY_DENIED");
     }
+    if (input.operation === "record-refund") {
+      const [row] = await (tx ?? this.db)
+        .select()
+        .from(refunds)
+        .where(and(eq(refunds.localSiteId, this.siteId), eq(refunds.refundId, input.recordId)));
+      if (
+        !row?.counterpartyJws ||
+        !row.appliedAt ||
+        row.payload.request.mode !== "bilateral_attested" ||
+        row.payload.request.recipientSiteId !== this.siteId ||
+        row.digest !== input.digest ||
+        row.payload.domainId !== input.domainId ||
+        row.payload.request.senderSiteId !== input.envelope.sourceSiteId ||
+        row.payload.request.recipientSiteId !== input.envelope.targetSiteId ||
+        (this.siteId === row.payload.request.senderSiteId
+          ? row.approvalJws !== input.envelope.sourceJws ||
+            row.counterpartyJws !== input.envelope.targetJws
+          : row.approvalJws !== input.envelope.targetJws ||
+            row.counterpartyJws !== input.envelope.sourceJws)
+      )
+        throw new FederationError("POLICY_DENIED");
+    }
     if (input.operation === "settle-bill") {
       const [row] = await (tx ?? this.db)
         .select()
@@ -731,6 +756,7 @@ export class FederationCommercialSubmissionService {
         "confirm-bill": "commercial-bill",
         "settle-bill": "commercial-settlement",
         "adjust-settlement": "commercial-adjustment",
+        "record-refund": "commercial-refund",
       } as const;
       for (const [siteId, jws] of [
         [input.envelope.sourceSiteId, input.envelope.sourceJws],
@@ -747,6 +773,7 @@ export class FederationCommercialSubmissionService {
             CommercialTerminalSchema,
             CommercialBillSchema,
             CommercialSettlementSchema,
+            CommercialRefundSchema,
             CommercialAdjustmentSchema,
           ]),
           jws,
@@ -847,7 +874,7 @@ export class FederationCommercialSubmissionService {
         actor,
         row.input.operation === "adjust-settlement"
           ? "adjustment.approve"
-          : row.input.operation === "settle-bill"
+          : row.input.operation === "settle-bill" || row.input.operation === "record-refund"
             ? "settlement.approve"
             : ["confirm-bill", "record-discount"].includes(row.input.operation)
               ? "billing.approve"

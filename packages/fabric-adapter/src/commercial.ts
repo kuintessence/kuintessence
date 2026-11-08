@@ -4,6 +4,7 @@ import {
   type Identity,
   type Signer,
 } from "@hyperledger/fabric-gateway";
+import { FederationCancellationReceiptSchema } from "@kuintessence/shared/federation";
 import {
   type CommercialAdapterProposalInput,
   CommercialAdapterProposalInputSchema,
@@ -17,6 +18,7 @@ import {
   CommercialReceiptQueryResultSchema,
   CommercialReceiptQuerySchema,
   CommercialReceiptSchema,
+  CommercialRefundSchema,
   CommercialReleaseSchema,
   CommercialReservationSchema,
   CommercialSettlementSchema,
@@ -140,6 +142,40 @@ export class FabricCommercialAdapter {
         Date.parse(value.issuedAt) > now.getTime() + 60000
       )
         throw new Error("POLICY_DENIED");
+    } else if (input.operation === "record-refund") {
+      const signed = await this.verifyPair(CommercialRefundSchema, input.envelope, now),
+        value = signed.payload;
+      if (
+        signed.digest !== input.digest ||
+        value.domainId !== input.domainId ||
+        value.refundId !== input.recordId ||
+        value.request.mode !== "bilateral_attested" ||
+        value.request.senderSiteId !== input.envelope.sourceSiteId ||
+        value.request.recipientSiteId !== input.envelope.targetSiteId ||
+        Date.parse(value.issuedAt) > now.getTime() + 60000
+      )
+        throw new Error("POLICY_DENIED");
+      const { payload: receipt } = await this.verify(
+        FederationCancellationReceiptSchema,
+        value.cancellationReceiptJws,
+        value.request.recipientSiteId,
+        now,
+      );
+      if (
+        receipt.state !== "stopped" ||
+        receipt.workflow !== null ||
+        receipt.requestDigest !== value.requestDigest ||
+        receipt.operationId !== value.request.operationId ||
+        receipt.senderSiteId !== value.request.recipientSiteId ||
+        receipt.recipientSiteId !== value.request.senderSiteId ||
+        receipt.agreementRevisionId !== value.request.agreementRevisionId ||
+        receipt.taskId !== value.request.taskId ||
+        receipt.attempt !== value.request.attempt ||
+        Date.parse(receipt.recordedAt) < Date.parse(value.request.issuedAt) ||
+        Date.parse(receipt.observedAt) > Date.parse(value.issuedAt) ||
+        Date.parse(receipt.recordedAt) > Date.parse(receipt.observedAt)
+      )
+        throw new Error("POLICY_DENIED");
     } else if (input.operation === "settle-bill") {
       const signed = await this.verifyPair(CommercialSettlementSchema, input.envelope, now),
         value = signed.payload;
@@ -209,6 +245,7 @@ export class FabricCommercialAdapter {
       "confirm-bill": "ConfirmBill",
       "settle-bill": "SettleBill",
       "adjust-settlement": "AdjustSettlement",
+      "record-refund": "RecordRefund",
     } as const;
     const proposal = this.gateway
       .getNetwork(this.config.channel)

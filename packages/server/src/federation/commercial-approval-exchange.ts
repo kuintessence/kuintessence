@@ -7,6 +7,7 @@ import {
   federationCommercialAgreements as contracts,
   type PgDb,
   type PgTransaction,
+  federationCommercialRefunds as refunds,
   federationCommercialSettlements as settlements,
   federationSites as sites,
   federationCommercialApprovalSyncs as syncs,
@@ -17,6 +18,7 @@ import {
   CommercialAgreementSchema,
   CommercialBillSchema,
   CommercialExecutionApprovalSchema,
+  CommercialRefundSchema,
   CommercialSettlementSchema,
 } from "@kuintessence/shared/federation/commercial";
 import {
@@ -32,6 +34,7 @@ import { FederationCommercialAgreementService } from "./commercial-agreements";
 import { FederationCommercialExecutionService } from "./commercial-execution";
 import { FederationDeliveryError, type FederationSend } from "./outbound-client";
 import { type FederationActor, requireFederationCapability } from "./permissions";
+import { FederationRefundService } from "./refund";
 import { FederationSettlementService } from "./settlement";
 import {
   type FederationSigningKey,
@@ -51,6 +54,7 @@ const businessSchema = z.union([
   CommercialExecutionApprovalSchema,
   CommercialBillSchema,
   CommercialSettlementSchema,
+  CommercialRefundSchema,
 ]);
 const responseSchema = z.union([businessSchema, CommercialApprovalWaitingSchema]);
 class ApprovalLeaseLost extends Error {}
@@ -130,6 +134,39 @@ export class FederationCommercialApprovalExchange {
         payload.agreementRevisionId !== identity.agreementRevisionId ||
         payload.sourceSiteId !== terms.agreement.sourceSiteId ||
         payload.targetSiteId !== terms.agreement.targetSiteId
+      )
+        throw new FederationError("OPERATION_CONFLICT");
+      return {
+        contract,
+        other,
+        payload,
+        digest: record.digest,
+        approvalJws: record.approvalJws,
+        counterpartyJws: record.counterpartyJws,
+      };
+    }
+    if (identity.recordKind === "refund") {
+      const [record] = await tx
+        .select()
+        .from(refunds)
+        .where(
+          and(
+            eq(refunds.localSiteId, this.signing.siteId),
+            eq(refunds.refundId, identity.recordId),
+            eq(refunds.agreementRevisionId, identity.agreementRevisionId),
+            eq(refunds.localOrgId, contract.localOrgId),
+          ),
+        );
+      if (!record) return null;
+      const payload = CommercialRefundSchema.parse(record.payload);
+      if (
+        !contract.counterpartyJws ||
+        payload.refundId !== identity.recordId ||
+        payload.domainId !== terms.domainId ||
+        payload.agreementDigest !== contract.digest ||
+        payload.request.agreementRevisionId !== identity.agreementRevisionId ||
+        payload.request.senderSiteId !== terms.agreement.sourceSiteId ||
+        payload.request.recipientSiteId !== terms.agreement.targetSiteId
       )
         throw new FederationError("OPERATION_CONFLICT");
       return {
@@ -395,6 +432,36 @@ export class FederationCommercialApprovalExchange {
           .insert(syncs)
           .values(billing.map((v) => ({ ...v, recordKind: "bill" as const })))
           .onConflictDoNothing();
+      const pendingRefunds = await tx
+        .select({
+          localSiteId: refunds.localSiteId,
+          agreementRevisionId: refunds.agreementRevisionId,
+          recordId: refunds.refundId,
+        })
+        .from(refunds)
+        .leftJoin(
+          syncs,
+          and(
+            eq(syncs.localSiteId, refunds.localSiteId),
+            eq(syncs.recordKind, "refund"),
+            eq(syncs.recordId, refunds.refundId),
+          ),
+        )
+        .where(
+          and(
+            eq(refunds.localSiteId, this.signing.siteId),
+            isNull(refunds.counterpartyJws),
+            isNull(syncs.recordId),
+          ),
+        )
+        .orderBy(asc(refunds.refundId))
+        .limit(8)
+        .for("update", { of: refunds, skipLocked: true });
+      if (pendingRefunds.length)
+        await tx
+          .insert(syncs)
+          .values(pendingRefunds.map((v) => ({ ...v, recordKind: "refund" as const })))
+          .onConflictDoNothing();
       const pendingSettlements = await tx
         .select({
           localSiteId: settlements.localSiteId,
@@ -648,6 +715,13 @@ export class FederationCommercialApprovalExchange {
         response,
         (tx) => authorize(tx, true),
       );
+    else if (claim.recordKind === "refund")
+      await new FederationRefundService(this.db, this.signing).attachExchanged(
+        claim.agreementRevisionId,
+        claim.recordId,
+        response,
+        (tx) => authorize(tx, true),
+      );
     else if (claim.recordKind === "settlement")
       await new FederationSettlementService(this.db, this.signing).attachExchanged(
         claim.agreementRevisionId,
@@ -777,7 +851,7 @@ export class FederationCommercialApprovalExchange {
         actor,
         identity.recordKind === "adjustment"
           ? "adjustment.approve"
-          : identity.recordKind === "settlement"
+          : identity.recordKind === "settlement" || identity.recordKind === "refund"
             ? "settlement.approve"
             : identity.recordKind === "bill"
               ? "billing.approve"

@@ -11,13 +11,17 @@ import { dirname, join } from "node:path";
 import { Client, credentials } from "@grpc/grpc-js";
 import { connect, EndorseError, signers } from "@hyperledger/fabric-gateway";
 import { common, ledger, msp, peer, gateway as proto } from "@hyperledger/fabric-protos";
-import { FederationDelegationSchema } from "@kuintessence/shared/federation";
+import {
+  FederationCancellationReceiptSchema,
+  FederationDelegationSchema,
+} from "@kuintessence/shared/federation";
 import { calculateCommercialBill } from "@kuintessence/shared/federation/billing";
 import {
   CommercialAgreementSchema,
   CommercialBillSchema,
   CommercialDiscountSchema,
   CommercialReceiptSchema,
+  CommercialRefundSchema,
   CommercialUsageSchema,
   FabricCommercialTrustSchema,
 } from "@kuintessence/shared/federation/commercial";
@@ -443,9 +447,101 @@ async function run() {
     }).endorse(),
     chainRejection("OPERATION_CONFLICT"),
   );
+  const refundProbe = `REFUND-${randomUUID()}`;
+  let refundBlock: bigint | undefined;
+  let refundRecordId = "";
+  const refundProbes: string[] = [refundProbe];
+  for (const refundFirst of [true, false]) {
+    const refundRequest = { ...request, operationId: randomUUID(), taskId: randomUUID() };
+    const cancellation = FederationCancellationReceiptSchema.parse({
+      protocolVersion: 1,
+      kind: "cancellation-receipt",
+      operationId: refundRequest.operationId,
+      senderSiteId: targetKey.siteId,
+      recipientSiteId: sourceKey.siteId,
+      agreementRevisionId: refundRequest.agreementRevisionId,
+      taskId: refundRequest.taskId,
+      attempt: 1,
+      requestDigest: `sha256:${randomBytes(32).toString("hex")}`,
+      cancellationDigest: `sha256:${randomBytes(32).toString("hex")}`,
+      recordedAt: new Date(time).toISOString(),
+      observedAt: new Date(time).toISOString(),
+      reservationId: randomUUID(),
+      state: "stopped",
+      workflow: null,
+    });
+    const refund = CommercialRefundSchema.parse({
+      protocolVersion: 1,
+      kind: "commercial-refund",
+      refundId: randomUUID(),
+      domainId: domain.domainId,
+      agreementDigest: billingReceipt.digest,
+      request: refundRequest,
+      requestDigest: cancellation.requestDigest,
+      cancellationReceiptJws: await signFederationMessage(
+        FederationCancellationReceiptSchema,
+        cancellation,
+        targetKey,
+      ),
+      releasedAmount: refundRequest.maxAmount,
+      issuedAt: new Date(time).toISOString(),
+      salt: randomBytes(32).toString("hex"),
+      reason: refundProbe,
+    });
+    const refundEnvelope = {
+      sourceSiteId: sourceKey.siteId,
+      targetSiteId: targetKey.siteId,
+      sourceJws: await signFederationMessage(CommercialRefundSchema, refund, sourceKey),
+      targetJws: await signFederationMessage(CommercialRefundSchema, refund, targetKey),
+    };
+    const conflictingUsage = {
+      ...billingUsage,
+      reportId: randomUUID(),
+      taskId: refundRequest.taskId,
+    };
+    const refundTx = await proposal(b, "RecordRefund", refund.refundId, refundEnvelope).endorse();
+    const usageTx = await proposal(b, "RecordUsage", conflictingUsage.reportId, {
+      providerJws: await signFederationMessage(CommercialUsageSchema, conflictingUsage, targetKey),
+    }).endorse();
+    const first = await (await (refundFirst ? refundTx : usageTx).submit()).getStatus();
+    const second = await (await (refundFirst ? usageTx : refundTx).submit()).getStatus();
+    assert.equal(first.successful, true);
+    assert.equal(second.successful, false);
+    assert.equal(second.code, 11);
+    if (refundFirst) {
+      refundBlock = first.blockNumber;
+      refundRecordId = refund.refundId;
+      refundProbes.push(
+        refundEnvelope.sourceJws,
+        refundEnvelope.targetJws,
+        refund.cancellationReceiptJws,
+        refund.salt,
+      );
+      const replay = await proposal(a, "RecordRefund", refund.refundId, refundEnvelope).endorse();
+      assert.deepEqual(
+        JSON.parse(Buffer.from(replay.getResult()).toString()),
+        JSON.parse(Buffer.from(refundTx.getResult()).toString()),
+      );
+      assert.equal((await (await replay.submit()).getStatus()).successful, true);
+      const duplicate = { ...refund, refundId: randomUUID() };
+      await assert.rejects(
+        proposal(b, "RecordRefund", duplicate.refundId, {
+          ...refundEnvelope,
+          sourceJws: await signFederationMessage(CommercialRefundSchema, duplicate, sourceKey),
+          targetJws: await signFederationMessage(CommercialRefundSchema, duplicate, targetKey),
+        }).endorse(),
+        chainRejection("OPERATION_CONFLICT"),
+      );
+    }
+  }
+  assert(refundBlock !== undefined);
+  passed.push(
+    "native MVCC excludes refund and first usage in both commit orders; immutable refund replays and duplicate IDs cannot release twice",
+  );
   for (const [recordType, recordId] of [
     ["bill", bill.billId],
     ["discount", discount.discountId],
+    ["refund", refundRecordId],
   ] as const)
     await assert.rejects(
       contract(c)
@@ -540,6 +636,7 @@ async function run() {
     { mode: 0o600 },
   );
   const probes = [
+    ...refundProbes,
     contractProbe,
     priceProbe,
     usageProbe,
@@ -559,6 +656,7 @@ async function run() {
     lost.blockNumber,
     discountStatus.blockNumber,
     billStatus.blockNumber,
+    refundBlock,
   ]) {
     for (const [name, endpoint, expected] of [
       ["A", "A", true],
@@ -591,15 +689,25 @@ async function run() {
                 for (const collection of ns.getCollectionPvtRwsetList())
                   for (const write of ledger.rwset.kvrwset.KVRWSet.deserializeBinary(
                     collection.getRwset_asU8(),
-                  ).getWritesList())
+                  ).getWritesList()) {
+                    if (blockNumber === refundBlock)
+                      assert(
+                        ["refund", "refund-head", "refund-operation"].includes(
+                          write.getKey().split("\u0000")[1] ?? "",
+                        ),
+                        "Refund must not write a budget, gate or original usage",
+                      );
                     writes.push(Buffer.from(write.getValue_asU8()));
+                  }
           if (!expected) assert.equal(writes.length, 0);
           else if (blockNumber !== invalid.blockNumber && blockNumber !== lost.blockNumber) {
             assert.equal(
               writes.length,
               blockNumber === valid.blockNumber || blockNumber === discountStatus.blockNumber
                 ? 1
-                : 2,
+                : blockNumber === refundBlock
+                  ? 3
+                  : 2,
             );
             assert(
               writes.some((bytes) =>
@@ -609,7 +717,9 @@ async function run() {
                       ? contractProbe
                       : blockNumber === discountStatus.blockNumber
                         ? discountProbe
-                        : usageProbe,
+                        : blockNumber === refundBlock
+                          ? refundProbe
+                          : usageProbe,
                   ),
                 ),
               ),

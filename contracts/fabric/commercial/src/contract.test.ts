@@ -1,6 +1,9 @@
 import { beforeAll, expect, test } from "bun:test";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import { FederationDelegationSchema } from "@kuintessence/shared/federation";
+import {
+  FederationCancellationReceiptSchema,
+  FederationDelegationSchema,
+} from "@kuintessence/shared/federation";
 import { calculateCommercialBill } from "@kuintessence/shared/federation/billing";
 import {
   CommercialAdjustmentSchema,
@@ -9,6 +12,7 @@ import {
   CommercialBillSchema,
   CommercialDiscountSchema,
   CommercialReceiptSchema,
+  CommercialRefundSchema,
   CommercialReleaseSchema,
   CommercialReservationSchema,
   CommercialSettlementSchema,
@@ -73,6 +77,8 @@ beforeAll(async () => {
         "commercial-bill",
         "commercial-settlement",
         "commercial-adjustment",
+        "commercial-refund",
+        "cancellation-receipt",
       ],
     })),
   });
@@ -1572,4 +1578,141 @@ test("execution gate presence reports explicit absence only for a configured com
   f.stub.fcn = "GetExecutionGatePresence";
   f.stub.params = [randomUUID(), f.reservation.reservationId];
   await expect(f.ledger.invoke(f.stub, identity(2, "market"))).rejects.toThrow("ASSET_UNAVAILABLE");
+});
+
+async function refundFixture() {
+  const terms = agreement();
+  terms.agreement.mode = "bilateral_attested";
+  const f = await install(terms);
+  const request = FederationDelegationSchema.parse({
+    protocolVersion: 1,
+    kind: "delegation",
+    operationId: randomUUID(),
+    senderSiteId: sites[0],
+    recipientSiteId: sites[1],
+    agreementRevisionId: terms.agreement.agreementRevisionId,
+    mode: "bilateral_attested",
+    budgetDomainId: terms.agreement.budgetDomainId,
+    epoch: terms.agreement.epoch,
+    unit: terms.agreement.unit,
+    taskId: randomUUID(),
+    attempt: 1,
+    issuedAt: now.toISOString(),
+    expiresAt: new Date(+now + 60000).toISOString(),
+    template: terms.agreement.templates[0],
+    resources: terms.agreement.resourceLimit,
+    maxAmount: "100",
+    inputManifestDigest: `sha256:${"d".repeat(64)}`,
+    environmentLockDigest: `sha256:${"e".repeat(64)}`,
+  });
+  const source = keys[0],
+    target = keys[1];
+  if (!source || !target) throw new Error("Missing keys");
+  const cancellation = FederationCancellationReceiptSchema.parse({
+    protocolVersion: 1,
+    kind: "cancellation-receipt",
+    operationId: request.operationId,
+    senderSiteId: sites[1],
+    recipientSiteId: sites[0],
+    agreementRevisionId: request.agreementRevisionId,
+    taskId: request.taskId,
+    attempt: 1,
+    requestDigest: `sha256:${"1".repeat(64)}`,
+    cancellationDigest: `sha256:${"2".repeat(64)}`,
+    recordedAt: now.toISOString(),
+    observedAt: now.toISOString(),
+    reservationId: randomUUID(),
+    state: "stopped",
+    workflow: null,
+  });
+  const value = CommercialRefundSchema.parse({
+    protocolVersion: 1,
+    kind: "commercial-refund",
+    refundId: randomUUID(),
+    domainId,
+    agreementDigest: f.receipt.digest,
+    request,
+    requestDigest: cancellation.requestDigest,
+    cancellationReceiptJws: await signFederationMessage(
+      FederationCancellationReceiptSchema,
+      cancellation,
+      target,
+    ),
+    releasedAmount: request.maxAmount,
+    issuedAt: now.toISOString(),
+    salt: randomBytes(32).toString("hex"),
+    reason: "PRIVATE-REFUND-PROBE",
+  });
+  const envelope = async (payload = value) => ({
+    sourceSiteId: sites[0],
+    targetSiteId: sites[1],
+    sourceJws: await signFederationMessage(CommercialRefundSchema, payload, source),
+    targetJws: await signFederationMessage(CommercialRefundSchema, payload, target),
+  });
+  return { ...f, value, cancellation, target, source, envelope };
+}
+
+test("refund attestation is private and immutable, never mutates a budget and excludes later usage", async () => {
+  const f = await refundFixture();
+  const before = new Map(f.stub.state);
+  const receipt = JSON.parse(
+    (await f.call("RecordRefund", f.value.refundId, await f.envelope())).toString(),
+  );
+  expect(f.stub.state).toEqual(before);
+  expect([...f.stub.privateState.keys()].some((key) => key.includes('"budget"'))).toBe(false);
+  expect(
+    JSON.parse((await f.call("RecordRefund", f.value.refundId, await f.envelope())).toString()),
+  ).toEqual(receipt);
+  await expect(
+    f.call("RecordRefund", randomUUID(), await f.envelope({ ...f.value, refundId: randomUUID() })),
+  ).rejects.toThrow();
+  const replacement = { ...f.value, refundId: randomUUID() };
+  await expect(
+    f.call("RecordRefund", replacement.refundId, await f.envelope(replacement)),
+  ).rejects.toThrow("OPERATION_CONFLICT");
+  await expect(
+    f.call("RecordRefund", f.value.refundId, await f.envelope(), identity(2)),
+  ).rejects.toThrow("POLICY_DENIED");
+  const report = { ...usage(f.terms, f.receipt.digest), taskId: f.value.request.taskId };
+  await expect(
+    f.call("RecordUsage", report.reportId, await signedUsage(report), identity(1)),
+  ).rejects.toThrow("OPERATION_CONFLICT");
+});
+
+test("refund attestation refuses recorded usage, wrong cancellation and missing financial signing authority", async () => {
+  const f = await refundFixture();
+  const report = { ...usage(f.terms, f.receipt.digest), taskId: f.value.request.taskId };
+  await f.call("RecordUsage", report.reportId, await signedUsage(report), identity(1));
+  await expect(f.call("RecordRefund", f.value.refundId, await f.envelope())).rejects.toThrow(
+    "OPERATION_CONFLICT",
+  );
+  const g = await refundFixture();
+  const invalid = {
+    ...g.value,
+    cancellationReceiptJws: await signFederationMessage(
+      FederationCancellationReceiptSchema,
+      { ...g.cancellation, state: "pending" },
+      g.target,
+    ),
+  };
+  await expect(g.call("RecordRefund", invalid.refundId, await g.envelope(invalid))).rejects.toThrow(
+    "POLICY_DENIED",
+  );
+  const wrongSigner = {
+    ...g.value,
+    cancellationReceiptJws: await signFederationMessage(
+      FederationCancellationReceiptSchema,
+      g.cancellation,
+      g.source,
+    ),
+  };
+  await expect(
+    g.call("RecordRefund", wrongSigner.refundId, await g.envelope(wrongSigner)),
+  ).rejects.toThrow();
+  const purpose = g.ledger.trust.keyPurposes.find((v) => v.siteId === sites[1]);
+  if (!purpose) throw new Error("Missing purpose");
+  purpose.kinds = purpose.kinds.filter((kind) => kind !== "commercial-refund");
+  await expect(g.call("RecordRefund", g.value.refundId, await g.envelope())).rejects.toThrow(
+    "UNTRUSTED_IDENTITY",
+  );
 });

@@ -9,6 +9,7 @@ export const CommercialApprovalRecordKindSchema = z.enum([
   "bill",
   "settlement",
   "adjustment",
+  "refund",
 ]);
 const identity = {
   protocolVersion: z.literal(1),
