@@ -2711,3 +2711,23 @@ PBS 原任务申请 1 CPU/128 MiB 并实际读取输入，通过只读、seccomp
 所有临时平台、数据库、凭据和 namespace 已清理；未推送、合并或远程部署，整体蓝图和 PR 预览验收保持未完成。
 
 最终全仓 lint 通过（原有 47 warnings/1 info），878 个本地文档目标离线检查与 diff 检查通过；生成文件、依赖锁和数据库迁移未变更。
+
+
+## 逐作业 cgroup 检查器与真实内核边界
+
+新增只读 Python 检查器，沿用现有安装监督的内核核验思路，额外绑定实际调度器作业 cgroup。
+定位内核挂载/成员关系，核对作业根 CPU quota 或显式 cpuset、内存/交换上限与目录/进程迁移/控制器开关权限。
+父 Pod 限额、继承的有效 cpuset、缺失控制器、可写文件或错误 Job ID 均不能当成有效作业证据。
+v1/v2 离线夹具共 9 项，含多组失败输入，已接入 Bun 测试入口；Python 3.8 语法检查通过，未新增依赖。
+
+实际受限 systemd 单元实验退出 0：外层 1 CPU/256 MiB/32 Tasks/45 秒，内层按作业设限；
+非 root 校验、父级限额拒绝、身份/权限/逃逸拒绝、quota 与独立 cpuset 两种核验通过。
+两个短循环触发真实 CPU 限流；64 MiB 作业中 128 MiB 分配被内核 SIGKILL，oom_kill 计数增长，控制进程继续完成。
+临时单元和文件清理完成，没有启动真实调度器，也没有修改常驻主机配置。
+
+现有 Slurm 实验关闭 task/cgroup，OpenPBS 23 缓存官方 hook 使用 v1，而本机为统一 v2。
+检查器尚未自动接入 trusted wrapper、SelfAccount 或能力发布，仍须完成真正的调度器配置与联合执行验证；
+不能用本次内核布局实验替代 Slurm/PBS 验收。细节与命令见[计算节点资源检查](../../../deploy/federation/sandbox-cgroup-lab.md)。
+其余蓝图、远程预览与最终验收保持原范围，未推送、合并或部署。
+
+本轮全仓 lint 通过（原有 47 warnings/1 info），全仓 typecheck 含 protobuf 生成与实验脚本通过；882 个文档目标及 diff 检查通过。未改生成文件、依赖锁或数据库迁移。
