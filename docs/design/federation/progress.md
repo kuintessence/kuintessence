@@ -2370,3 +2370,18 @@ Web/CLI 已支持退款政策及原任务重试，退款固定取消条件，链
 
 
 最终类型检查发现 CLI 原策略/任务列表缺少 refund 的中英文标签，已补齐；新增两种语言的列表回归均通过。其余包首轮类型检查通过；修复后完整 bun run typecheck 通过（含 protobuf 生成及 Fabric 验收脚本），最终 lint 通过且保持既有告警。未因此重跑真实网络验收。
+
+
+### 取消退款与物理满盘的双平台联合恢复
+
+在原双平台实验增加显式 `KQ_FEDERATION_LAB_DISK_PRESSURE=1`，仅用于 refund-auto，不影响默认场景。私有 mount namespace 挂载自建 1 GiB ext4，两个独立数据库位于同一 PostgreSQL 实例，数据与 WAL 共用实验卷。两站通过生产服务配置各自 64 MiB 物理预留、每任务 16 MiB 逻辑收尾预算，真实 observer 持续签署报告，原 Server 加载 guard 并运行回收 worker。配置、日志、观测报告在实验卷外。
+
+直接模式通过：材料等待时暂停提供方网关，源方 HTTP 持久化取消；强制结束两端 Server，在实验卷真实写满至 ENOSPC，隔离 SQL 探针产生 53100。通过生产 reserve CLI 显式释放两份预留，立即停止并重启原数据库与 Server，网关恢复后继续原取消、自动退款与一次性占额回收；填充文件一直保留到收尾完成。原取消签名摘要、task identity、请求摘要、分配字节不变。新 HTTP 委派返回 503/STORAGE_PRESSURE，删除填充文件仍拒绝，明确 restore 后预留 armed、guard 健康。没有创建 Workflow 或 Job。
+
+异步模式也通过同一故障链，且 Orderer 在 Server 启动前停止。本地退款成功后，生产扫描明确记录 refund-ledger 并保留提供方 16 MiB 占额。两端 Server 与商业 Adapter 再次强制退出，以原数据库/密钥恢复，补交三条原商业记录和两条原接单证据；全部 VALID 后才回收。真实 Gateway 核对四笔实际交易，A/B 各四份原件、两个退款索引，C 无私有正文；原金额、签名、恢复检查点不变。
+
+首轮测试把取消初始 queued 误写为 pending，按现有接口修正。第二轮已触发真实满盘，但恢复脚本漏带原 PostgreSQL 端口/socket 参数；统一初次启动与恢复函数后通过，并把 PostgreSQL 私有日志纳入清理前留存。这两处均属测试编排修正，没有放宽业务校验。成功的直接证据在 temp/federation-execution-direct-l8gqg44h，异步在 temp/federation-execution-attested-khol_3y4；失败两轮也完整清理。最后成功入口均退出 0，停止所有自建 observer/服务/数据库、卸载磁盘、删除镜像和 namespace，Fabric 网络同样清理。
+
+本轮新增真实验收接线，没有业务数据库迁移或生产业务逻辑修改，不重复未变化的单测和非压力网络矩阵。实际错误由隔离探针表触发，Server 在注入时已中断；仍不覆盖每个业务 SQL 失败位置、运行中任务、结果正文、独立 WAL/Peer 卷、自动 reserve controller 或跨主机部署。O01、Slurm/PBS 联邦矩阵、治理/归档/代际迁移、支付/争议/物理介质与正式登录/PR 预览继续保留，整体目标未完成。
+
+全仓 lint 与完整 typecheck（含 protobuf 生成和 Fabric 验收脚本）通过；lint 保持原有 47 warning / 1 info，836 个离线文档目标及 diff 空白检查通过。没有发布或合并，PR 预览仍待完整目标完成后验收。

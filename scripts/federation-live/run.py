@@ -1,6 +1,6 @@
 """Isolated full Server and real Kubernetes artifact pipeline probe; no deployment credentials."""
 
-import json, os, pathlib, secrets, shutil, signal, socket, subprocess, tempfile, time, urllib.request, uuid
+import errno, json, os, pathlib, secrets, shutil, signal, socket, subprocess, sys, tempfile, time, urllib.request, uuid
 from datetime import datetime, timedelta
 
 repo = pathlib.Path(__file__).resolve().parents[2]
@@ -10,6 +10,10 @@ if os.environ.get("KQ_FEDERATION_EXECUTION_LAB") != "1":
     )
 if os.geteuid() != 0:
     raise SystemExit("Run on a disposable local k3s node as root")
+disk_pressure = os.environ.get("KQ_FEDERATION_LAB_DISK_PRESSURE") == "1"
+if disk_pressure and os.environ.get("LAB_PRIVATE_MOUNT") != "1":
+    os.execvpe("unshare", ["unshare", "--mount", "--propagation", "private", sys.executable, *sys.argv],
+               {**os.environ, "LAB_PRIVATE_MOUNT": "1"})
 os.umask(0o077)
 mode = os.environ.get("LAB_MODE", "ledger_coordinated")
 assert mode in ("bilateral_direct", "bilateral_attested", "ledger_coordinated")
@@ -18,6 +22,7 @@ attested = mode == "bilateral_attested"
 scenario = os.environ.get("LAB_SCENARIO", "success")
 refund_scenario = scenario in ("refund", "refund-auto")
 automatic_refund = scenario == "refund-auto"
+assert not disk_pressure or automatic_refund, "Disk recovery currently requires refund-auto"
 assert not refund_scenario if coordinated else scenario in ("success", "refund", "refund-auto")
 assert scenario in ("success", "outage", "stop", "workflow", "refund", "refund-auto")
 nodeinfo = json.loads(
@@ -121,6 +126,10 @@ pgstarted = False
 created = False
 profilepath = None
 clusterrole = None
+storage_observers = []
+pressure_mounted = False
+pressure_filler = pgroot / "owned-pressure-filler"
+
 
 
 def run(args, timeout=120, **kw):
@@ -131,6 +140,134 @@ def run(args, timeout=120, **kw):
 
 def pg(*args):
     run(["runuser", "-u", "nobody", "--", pgbin + args[0], *args[1:]])
+
+
+def start_postgres():
+    options = f"-h 127.0.0.1 -p {pgport} -k {pgroot}"
+    if disk_pressure:
+        options += " -c shared_buffers=16MB -c max_connections=60 -c autovacuum=off -c min_wal_size=32MB -c max_wal_size=64MB"
+    pg("pg_ctl", "-D", str(pgroot / "data"), "-l", str(pgroot / "postgres.log"), "-o", options, "-w", "start")
+
+
+def storage_command(setting, command, evidence=None):
+    return subprocess.run(["bun", "--no-env-file", "scripts/federation-live/storage.ts", command],
+                          cwd=repo, env={**setting, **({"LAB_EVIDENCE": str(evidence)} if evidence else {})},
+                          check=True, stdout=log, stderr=log, timeout=90)
+
+
+def configure_storage(setting, name):
+    control = root / ("storage-" + name)
+    setting.update(LAB_STORAGE_VOLUME=str(pgroot), LAB_STORAGE_CONTROL=str(control),
+                   FEDERATION_STORAGE_GUARD_FILE=str(control / "policy.json"))
+    storage_command(setting, "setup")
+    storage_observers.append(subprocess.Popen(
+        ["bun", "--no-env-file", "scripts/federation-storage-observer.ts", str(control / "observer.json")],
+        cwd=repo, env=setting, stdout=log, stderr=log))
+
+
+def reserve_command(setting, command):
+    control = pathlib.Path(setting["LAB_STORAGE_CONTROL"])
+    subprocess.run(["bun", "--no-env-file", "scripts/federation-storage-reserve.ts", str(control / "reserve.json"), command],
+                   cwd=repo, env=setting, stdout=log, stderr=log, check=True, timeout=90)
+
+
+def recover_full_storage():
+    global server, sourceserver, gateway, pgstarted
+    crashed = []
+    for name, setting, process in (("provider", env, server), ("source", sourceenv, sourceserver)):
+        storage_command(setting, "snapshot", logs / (name + "-storage-before.json"))
+        before = json.loads((logs / (name + "-storage-before.json")).read_text())
+        assert before["capacity"]["obligations"] == 1 and before["capacity"]["allocatedBytes"] == "16777216"
+        assert len(before["claims"]) == 1 and before["claims"][0]["releasedAt"] is None
+        assert process.poll() is None and os.getpgid(process.pid) == process.pid
+        os.killpg(process.pid, signal.SIGKILL)
+        assert process.wait(timeout=15) == -signal.SIGKILL
+        crashed.append({"site": name, "oldPid": process.pid, "exitCode": process.returncode})
+    old_pg = int((pgroot / "data/postmaster.pid").read_text().splitlines()[0])
+    reached_full = False
+    try:
+        with pressure_filler.open("xb", buffering=0) as filler:
+            for _ in range(1100):
+                filler.write(b"x" * 1048576)
+    except OSError as error:
+        assert error.errno == errno.ENOSPC, "Unexpected error filling isolated filesystem"
+        reached_full = True
+    assert reached_full and pressure_filler.stat().st_size > 0
+    storage_command(env, "full")
+    for setting in (env, sourceenv):
+        reserve_command(setting, "release")
+        storage_command(setting, "blocked")
+    pg("pg_ctl", "-D", str(pgroot / "data"), "-m", "immediate", "-w", "stop")
+    pgstarted = False
+    start_postgres()
+    pgstarted = True
+    new_pg = int((pgroot / "data/postmaster.pid").read_text().splitlines()[0])
+    assert new_pg != old_pg
+    command = ["bun", "--no-env-file", "run", "scripts/federation-live/server.ts"]
+    server = subprocess.Popen(command, cwd=repo, env=env, stdout=serverlog, stderr=serverlog, start_new_session=True)
+    sourceserver = subprocess.Popen(command, cwd=repo, env=sourceenv, stdout=sourcelog, stderr=sourcelog, start_new_session=True)
+    for row, process, read in zip(crashed, (server, sourceserver), (api, sourceapi)):
+        row["newPid"] = process.pid
+        assert process.pid != row["oldPid"]
+        for _ in range(45):
+            assert process.poll() is None, "Recovered Server exited"
+            try:
+                read("health")
+                break
+            except (OSError, ValueError):
+                time.sleep(1)
+        else:
+            raise AssertionError("Recovered Server health timeout")
+    gateway = subprocess.Popen(["node", str(root / "gateway.mjs")], cwd=repo, env=env, stdout=serverlog, stderr=serverlog)
+    (logs / "storage-crash-recovery.json").write_text(json.dumps({
+        "servers": crashed, "postgres": {"oldPid": old_pg, "newPid": new_pg},
+        "sqlState": "53100", "fillerBytes": pressure_filler.stat().st_size,
+    }, indent=2) + "\n")
+    print("REAL STORAGE RECOVERY: ENOSPC and SQL 53100; released two owned 64 MiB reserves; original PostgreSQL and Servers restarted with filler retained", flush=True)
+
+
+def verify_storage_closure():
+    request = json.loads((root / "source-init.json").read_text())["request"]
+    for name, setting in (("source", sourceenv), ("provider", env)):
+        evidence = logs / (name + "-storage-closed.json")
+        for _ in range(90):
+            storage_command(setting, "snapshot", evidence)
+            after = json.loads(evidence.read_text())
+            assert len(after["claims"]) == 1
+            if after["capacity"]["releasedObligations"] == 1:
+                break
+            time.sleep(2)
+        else:
+            raise AssertionError("Completion capacity did not drain: " + name + " " + str(after["claims"][0]["releaseBlocker"]))
+        assert after["capacity"]["allocatedBytes"] == "0" and after["capacity"]["obligations"] == 0
+        before = json.loads((logs / (name + "-storage-before.json")).read_text())
+        original = before["claims"][0]
+        assert after["cancellations"] == before["cancellations"], "Original cancellation signature changed"
+        if name == "source":
+            assert len(before["cancellations"]) == 1 and before["cancellations"][0]["signatureDigest"]
+        for field in ("kind", "intentId", "digest", "allocatedBytes", "createdAt"):
+            assert after["claims"][0][field] == original[field]
+        storage_command(setting, "blocked")
+    assert pressure_filler.stat().st_size > 0, "Filler must remain during all business closure"
+    rejected = {**request, "operationId": str(uuid.uuid4()), "taskId": str(uuid.uuid4())}
+    def reject_new():
+        try:
+            sourceapi("federation/outbound", rejected, sourcetoken)
+        except urllib.error.HTTPError as error:
+            assert error.code == 503 and json.load(error)["error"]["code"] == "STORAGE_PRESSURE"
+        else:
+            raise AssertionError("Released reserve allowed new workload")
+    reject_new()
+    pressure_filler.unlink()
+    for setting in (env, sourceenv):
+        storage_command(setting, "blocked")
+    reject_new()
+    for name, setting in (("source", sourceenv), ("provider", env)):
+        reserve_command(setting, "restore")
+        storage_command(setting, "restored")
+        storage_command(setting, "snapshot", logs / (name + "-storage-restored.json"))
+    assert len(sourceapi("federation/outbound", token=sourcetoken)["data"]) == 1
+    print("REAL STORAGE CLOSURE PASSED: original cancellation/refund and one-time capacity release with filler retained; new HTTP intent refused while released; explicit restore rearmed guard", flush=True)
 
 
 def k(args, data=None, check=True, timeout=45):
@@ -1018,7 +1155,7 @@ def verify_bilateral_finance():
 
 
 def verify_refund():
-    global sourcegateway
+    global sourcegateway, gateway
     assert not coordinated
     config = json.loads((root / "source-init.json").read_text())
     request = config["request"]
@@ -1059,7 +1196,14 @@ def verify_refund():
     assert before["budgets"][0]["spent"] == "0"
     (logs / "refund-waiting.json").write_text(json.dumps(state, indent=2) + "\n")
     cancel_path = "federation/outbound/" + operation + "/cancel"
-    sourceapi(cancel_path, {}, sourcetoken)
+    if disk_pressure:
+        gateway.terminate()
+        assert gateway.wait(timeout=15) == 0
+    requested_cancel = sourceapi(cancel_path, {}, sourcetoken)["data"]
+    if disk_pressure:
+        assert requested_cancel["state"] == "queued"
+        (logs / "storage-cancellation-intent.json").write_text(json.dumps(requested_cancel, indent=2) + "\n")
+        recover_full_storage()
     for _ in range(90):
         cancelled = sourceapi("federation/outbound", token=sourcetoken)["data"][0]
         assert cancelled["cancellation"]["state"] != "needs_review"
@@ -1159,6 +1303,18 @@ def verify_refund():
             assert budget["available"] == config["terms"]["budgetLimit"] and budget["reserved"] == budget["spent"] == "0"
         else:
             assert not local["budgets"] and tasks[0]["adjustmentHeldAmount"] == "0"
+    if disk_pressure and attested:
+        evidence = logs / "provider-storage-awaiting-ledger.json"
+        for _ in range(60):
+            storage_command(env, "snapshot", evidence)
+            held = json.loads(evidence.read_text())
+            assert len(held["claims"]) == 1 and held["claims"][0]["releasedAt"] is None
+            assert held["capacity"]["allocatedBytes"] == "16777216"
+            if held["claims"][0]["releaseBlocker"] == "refund-ledger":
+                break
+            time.sleep(2)
+        else:
+            raise AssertionError("Capacity worker did not verify the pending original refund ledger")
     (logs / "refund-evidence.json").write_text(json.dumps({"draft": draft, "cancellation": cancelled["cancellation"], "records": records}, indent=2) + "\n")
     print(("REAL AUTOMATIC REFUND PASSED: " if automatic_refund else "REAL BILATERAL REFUND PASSED: ") + " material waiting -> permanent cancellation over mTLS -> independent approvals -> automatic original signatures; reservation returned exactly once; replay safe; no Workflow or Jobs; " + ("Orderer remains stopped" if attested else "no ledger configured"), flush=True)
 
@@ -1374,6 +1530,16 @@ def verify_adjustments():
 
 
 try:
+    if disk_pressure:
+        image_file = root / "storage-pressure.ext4"
+        with image_file.open("xb") as image_handle:
+            image_handle.truncate(1024 * 1024 * 1024)
+        run(["mkfs.ext4", "-q", "-F", "-m", "0", str(image_file)])
+        run(["mount", "-o", "loop,nodev,nosuid,noexec", str(image_file), str(pgroot)])
+        pressure_mounted = True
+        assert pgroot.stat().st_dev != root.stat().st_dev, "Pressure requires its own filesystem"
+        os.chown(pgroot, 65534, 65534)
+        (pgroot / ".kq-storage-id").write_text(str(uuid.uuid4()))
     if attested:
         orderer("stop")
     # Executed only inside the disposable lab namespace.
@@ -1560,17 +1726,7 @@ try:
         "kq",
         *(["-L", pgshare] if pgshare else []),
     )
-    pg(
-        "pg_ctl",
-        "-D",
-        str(pgroot / "data"),
-        "-l",
-        str(pgroot / "postgres.log"),
-        "-o",
-        f"-h 127.0.0.1 -p {pgport} -k {pgroot}",
-        "-w",
-        "start",
-    )
+    start_postgres()
     pgstarted = True
     pg(
         "createdb",
@@ -1820,6 +1976,8 @@ try:
         "Two versioned cloud buckets and independently scoped HTTPS storage endpoints ready",
         flush=True,
     )
+    if disk_pressure:
+        configure_storage(env, "provider")
     server = subprocess.Popen(
         ["bun", "--no-env-file", "run", "scripts/federation-live/server.ts"],
         cwd=repo,
@@ -2324,6 +2482,8 @@ await Bun.write(process.env.LAB_ROOT+'/registration.json',JSON.stringify({token:
     )
     run(["bun", "--no-env-file", "run", "scripts/federation-live/source.ts"])
     os.chmod(root / "source-signing.pem", 0o600)
+    if disk_pressure:
+        configure_storage(sourceenv, "source")
     sourcelog = open(logs / "source-server.log", "w")
     sourceserver = subprocess.Popen(
         ["bun", "--no-env-file", "run", "scripts/federation-live/server.ts"],
@@ -2427,6 +2587,8 @@ await Bun.write(process.env.LAB_ROOT+'/registration.json',JSON.stringify({token:
         verify_refund()
         if attested:
             verify_attested_recovery()
+        if disk_pressure:
+            verify_storage_closure()
     else:
         terminal_policies = {}
         if coordinated and scenario in ("success", "workflow"):
@@ -2589,7 +2751,7 @@ finally:
         result = k(args, check=False)
         (logs / name).write_text(result.stdout + result.stderr)
 
-    for process in [sourcegateway, gateway, sourceserver, server, storageproxy]:
+    for process in [sourcegateway, gateway, sourceserver, server, storageproxy, *storage_observers]:
         clean(lambda process=process: stop_process(process))
     if created:
         for name, args in [
@@ -2638,6 +2800,8 @@ finally:
                 "pg_ctl", "-D", str(pgroot / "data"), "-m", "immediate", "-w", "stop"
             )
         )
+    if (pgroot / "postgres.log").exists():
+        clean(lambda: shutil.copyfile(pgroot / "postgres.log", logs / "postgres.log"))
     for handle in [log, serverlog, sourcelog, proxylog]:
         if handle:
             clean(handle.close)
@@ -2645,8 +2809,12 @@ finally:
     if not cleanup_errors:
         if profilepath:
             clean(lambda: profilepath.unlink(missing_ok=True))
-        clean(lambda: shutil.rmtree(pgroot))
-        clean(lambda: shutil.rmtree(root))
+        if pressure_mounted:
+            clean(lambda: subprocess.run(["umount", str(pgroot)], check=True, capture_output=True, timeout=30))
+        if not cleanup_errors:
+            clean(lambda: shutil.rmtree(pgroot))
+        if not cleanup_errors:
+            clean(lambda: shutil.rmtree(root))
     if cleanup_errors:
         raise RuntimeError(
             "Incomplete cleanup; inspect private evidence at " + str(logs)

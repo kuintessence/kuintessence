@@ -309,3 +309,12 @@ L03/L04/O01 补充：直接与异步合作已具备独立双签退款、原签�
 - 真实验收复用 [refund-auto](../../../deploy/federation/execution-lab.md#机构自动退款验收)，直接模式无链待办；异步模式中断与补证不改变本站账务和原件，不据此宣称银行退款或完整 PR 预览已完成。
 
 本专项 direct/attested 两条真实命令已通过。双方各批准一次且来源编号正确，完成后撤销政策不会产生新退款；异步恢复保留三条商业提交和两条接单证据，实际四笔交易 VALID，A/B 可见原件而 C 无私有内容。由同一主机模拟独立服务/数据库，不代表跨主机机构信任、正式登录、银行业务或整体验收通过。
+
+
+### O01 真实双 Server 的取消退款满盘收尾（部分完成）
+
+`refund-auto` + `KQ_FEDERATION_LAB_DISK_PRESSURE=1` 的 direct/attested 入口均已完整退出 0。真实源方 HTTP 保存取消原件后，中断两个 Server，在独立 1 GiB ext4 上填到 ENOSPC，并通过 PostgreSQL 探针确认 SQLSTATE 53100；显式释放两站各自的 64 MiB 物理预留，原数据库/Server 重启。整个取消、原签名交换、退款及逻辑占额回收期间保留填充文件，双方各释放原一笔 16 MiB 占额；请求/取消签名摘要、原分配身份与字节不变。新 HTTP 委派被 503 拒绝，单纯删除填充文件仍拒绝；明确 restore 后 guard 与物理预留恢复健康。
+
+异步模式在启动 Server 前停止 Orderer，数据库满盘恢复后仍能本地退款，实际后台扫描记录 refund-ledger 并保持提供方占额。随后两端 Server/商业 Adapter 再次中断，原数据库/密钥恢复后补交原三条商业记录及两条接单证据，全部原交易 VALID 后才回收。独立 Gateway 检查实际四笔交易和 A/B/C 的 PDC，原私有正文不泄露给 C，链没有预算/许可写入，不重复退款。
+
+实验配置使用生产容量服务、真实周期 observer、Server worker 和 mTLS，不人工设置退款/收尾状态、清租约或修改调度时间。两个数据库仍属于同一 PostgreSQL 实例，数据/WAL 共用实验卷；磁盘满错误来自隔离探针表，故障注入时 Server 已中断。本项不覆盖运行中计算、结果正文、每一处业务 SQL、独立 WAL/Peer 卷或自动 reserve controller 的联合恢复，O01 仍为部分完成。见[可复现实验](../../../deploy/federation/execution-lab.md#满盘后的取消与退款收尾)。

@@ -115,3 +115,24 @@ bun run test:fabric:execution
 此变体保留原 `refund` 手工批准场景，复用真实材料等待、HTTP 取消和永久停止回执。提交委派前，两站通过 HTTP 分别配置有限退款政策；此后不调用退款草稿、批准或附签接口。生产后台自动发现取消、生成原件并双签归还，检查各政策只批准一次、记录保留正确授权编号、源方处理任务指向原 operationId/refundId。完成后撤销政策并检查已完成任务拒绝重试、金额与原件不变。新增私有证据 `refund-automatic-policies.json`，不上传 CI artifact。
 
 异步变体继续验证 Orderer 停机期间本地完成，强制中断两站 Server 与商业 Adapter 后以原数据库/密钥恢复，并通过独立 Gateway 核对原交易/PDC 和非成员隔离。此场景不执行科研软件，不证明真实银行退款或正式 PR 预览；整条命令和完整断言通过后才可登记验收结果。
+
+
+## 满盘后的取消与退款收尾
+
+在 `refund-auto` 上设置 `KQ_FEDERATION_LAB_DISK_PRESSURE=1`：
+
+```bash
+KQ_FEDERATION_LAB_SCENARIO=refund-auto \
+KQ_FEDERATION_LAB_DISK_PRESSURE=1 \
+bun run test:federation:direct
+```
+
+异步存证使用同样两个变量，加 `KQ_FEDERATION_LAB_MODE=bilateral_attested` 运行 `bun run test:fabric:execution`。沿用本页显式隔离实验 opt-in 和 PostgreSQL/Fabric 工具配置，不读取部署凭据。
+
+测试在私有 mount namespace 中挂载独立 1 GiB ext4 文件系统。两站独立数据库在同一测试 PostgreSQL 实例内，数据与 WAL 共用该实验文件系统；两站各拥有一份 64 MiB 物理预留与独立的逻辑收尾政策，每任务占额 16 MiB。控制文件、签名报告和日志在文件系统外。配置调用生产服务，周期性 observer 发布真实文件系统签名报告，实际 Server 加载 storage guard 并运行容量回收 worker。
+
+在原委派已接单、等待材料时暂停提供方网关，源方通过 HTTP 持久保存取消意图；随后强制结束两端 Server。只对自建文件系统写入有大小上限的填充文件，要求实际 ENOSPC 和 PostgreSQL SQLSTATE 53100。测试通过生产 reserve CLI 显式释放两份预留，立即停止并重启原 PostgreSQL，再启动原 Server 和网关；不删除填充文件、不清队列租约、不改原记录或加快后台时间。此处模拟有权运维人员释放缓冲，不声称自动 reserve controller 已完成联合验证。
+
+后台须恢复原取消签名、接收永久停止回执、自动双签退款、各自一次性释放逻辑占额。异步提供方须等原退款 VALID 与接单证据上链后才能回收；两种模式都检查原占额身份/摘要/分配字节及取消签名摘要不变。填充文件在整个业务收尾期间保留。此时新委派 HTTP 应返回 503/STORAGE_PRESSURE；仅删除填充文件仍不能恢复接收，明确 restore 物理预留后 storage guard 才能恢复健康。
+
+新增 `storage-crash-recovery.json`、`storage-cancellation-intent.json` 和双方 `storage-before/closed/restored.json` 私有证据。最终清理包括停止 observer、卸载自建磁盘及删除镜像；清理无法确认时保留诊断，不删除可能仍使用的镜像。只有完整入口退出 0 才算该场景通过。它不覆盖运行中的科学任务、结果正文满盘、独立 WAL/Peer 卷、跨主机数据库、全负载容量估算或完整 O01。
