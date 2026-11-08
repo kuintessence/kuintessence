@@ -80,6 +80,12 @@ UID/GID 24001 调用真实 `attestSandboxRuntimeEnvironment`：检查 root 管�
 
 此处签名方为本地临时夹具，不包含两套 Server、联邦传输或介质交付；也未验证跨节点共享存储、主机掉电或 Slurm OOM 负载。这些仍须在对应联合实验中验收。
 
+同一真实运行时入口现增加 root 提交非 root 探测与超时取消实验：root 持有只读探测脚本，仅把日志目录交给 UID/GID 24001，提交 CLI 用 `setpriv` 和最小环境切换账户；实际作业核对本身 UID 和 cgroup。另一作业运行轻量 sleep，5 秒观察期限到达后取消原 scheduler ID，确认终止且实际 PID 不再存在，然后才清理探测文件。
+
+2026-11-09 该入口再次退出 0：SelfAccount 签名 Job 3 COMPLETED/0，root 发起的 Job 4 以 UID 24001 成功，原 Job 5 被取消且 PID 消失；出现 `REAL_ROOT_SUBMITTED_NONROOT_PROBE_OK` 与 `REAL_NATIVE_PROBE_CANCEL_AND_CLEANUP_OK`，临时 namespace 已删除。后续新增的并发/遗留收据阻止重投规则由单测覆盖，未因记录格式调整重复原生实验。
+
+这只验证 root 使用原生探测入口的账户/资源与失败收尾。生产 root 能力发布尚未切换到这份证据，PBS/Torque 的适配器工厂与文件/失败规则只有单测；完整 root SIF/ECL 启动证明、跨调度器真实探测、Server 签发与续租仍需接通后验收。
+
 ## 仍需完成的接入
 
 现有实验 Slurm 19 使用 `task/none`，缓存的 OpenPBS 23 官方 hook 使用 v1；当前主机采用统一 v2。不能仅设置一个能力开关而宣布具备限额。

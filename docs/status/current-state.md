@@ -749,3 +749,5 @@ SelfAccount 已替换仅匹配 cgroup 路径的探测，使用固定摘要、roo
 后续 Slurm 24.11 原生实验已通过：UID 24001 的实际 sbatch 作业执行产品 SelfAccount 资源检查命令，内核独立 cpuset=1、内存=128 MiB；原作业 cgroup 与随机实验 namespace 均清理完成。可复现入口见[资源检查实验](../../deploy/federation/sandbox-cgroup-lab.md)。该原生资源检查实验本身不包含启动证明或签名派发，运行时验证见下一段。
 
 随后完成单平台真实 SelfAccount 启动证明和签名任务执行：Slurm 24.11、UID/GID 24001、实际 RSA 签名 SIF/Apptainer，调用产品 verifier/stager/adapter 完成临时 Ed25519 签名任务，原生作业 COMPLETED/0。只读输入、seccomp/no-new-privs、socket 拒绝和 JSON 输出校验通过；重复 nonce、错误队列和资源漂移拒绝。修复启动探测将任意命令失败误认作策略拒绝的问题，改用成功对照、预期 errno/退出码与回环接口检查，正式策略无需禁止 uname。专用 probe 摘要纳入证明 ID。该实验没有两套平台和联邦交付，完整跨平台 SelfAccount、其他 root 路径能力证明及完整蓝图仍待完成。
+
+SelfAccount 启动探测现复用原生 adapter 提交/状态/取消入口，超时或查询失败取消原 Job，正向确认终止才删除文件。未知提交/停止保留原 UUID 和已知 scheduler ID；原子占用目录与遗留收据阻止重复探测。root 的探测脚本与可写日志目录分离，实际 Slurm 以非 root 账号执行及原 Job 超时取消/PID 消失已验证。生产 root 能力发布尚未接入，自动恢复探测收据及真实 PBS/Torque 启动探测仍待完成，不能以本轮入口验证宣称 root 安全能力已就绪。

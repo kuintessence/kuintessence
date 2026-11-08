@@ -1,13 +1,15 @@
 import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
-import { chmod, lstat, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { lstat, readFile, realpath } from "node:fs/promises";
 import { userInfo } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname } from "node:path";
 import { canonicalJson } from "@kuintessence/shared";
 import type { Spawner } from "../adapters/base";
 import { shellQuote } from "../adapters/base";
+import { SlurmAdapter } from "../adapters/slurm";
 import type { AgentConfig } from "../config";
 import { buildSelfAccountCgroupCommand, type SandboxCgroupCheck } from "./cgroup-command";
+import { runNativeRuntimeProbe } from "./native-runtime-probe";
 
 export interface SandboxProcessIdentity {
   username: string;
@@ -228,10 +230,6 @@ async function runSlurmProbe(
     seccompProbe: string;
   },
 ): Promise<string[]> {
-  const probeRoot = await mkdtemp(join(config.AGENT_SANDBOX_ROOT, ".attest-"));
-  const scriptPath = join(probeRoot, "probe.sh");
-  const stdoutPath = join(probeRoot, "stdout.log");
-  const stderrPath = join(probeRoot, "stderr.log");
   const apptainerPath = config.AGENT_SANDBOX_APPTAINER_PATH;
   const positive = apptainerBaseArgv(apptainerPath, seccompProfilePath, runtimePath);
   const unfiltered = apptainerBaseArgv(apptainerPath, undefined, runtimePath);
@@ -253,42 +251,24 @@ async function runSlurmProbe(
       : []),
     "printf 'KQ_ATTESTED_NODE=%s\\n' \"$(hostname)\"",
   ].join("\n");
-  try {
-    await writeFile(scriptPath, script, { flag: "wx", mode: 0o700 });
-    await chmod(scriptPath, 0o700);
-    const command = [
-      "sbatch",
-      "--wait",
-      "--parsable",
-      "--job-name=kq-sandbox-attest",
-      "--cpus-per-task=1",
-      "--mem=128M",
-      "--time=00:02:00",
-      `--output=${stdoutPath}`,
-      `--error=${stderrPath}`,
-      ...(config.AGENT_SANDBOX_ATTESTATION_QUEUE
-        ? [`--partition=${config.AGENT_SANDBOX_ATTESTATION_QUEUE}`]
-        : []),
-      scriptPath,
-    ];
-    const result = await spawner.run(command, { timeoutMs: 150_000 });
-    const stdout = await readFile(stdoutPath, "utf8").catch(() => "");
-    const stderr = await readFile(stderrPath, "utf8").catch(() => "");
-    if (result.exitCode !== 0) {
-      throw new Error(
-        `Slurm Sandbox attestation failed (${result.exitCode}): ${stderr || result.stderr}`,
-      );
-    }
-    const nodes = stdout
-      .split("\n")
-      .flatMap((line) => (line.startsWith("KQ_ATTESTED_NODE=") ? [line.slice(17).trim()] : []));
-    if (nodes.length === 0 || nodes.some((node) => !/^[A-Za-z0-9._-]{1,255}$/.test(node))) {
-      throw new Error("Slurm Sandbox attestation did not report a safe compute node");
-    }
-    return [...new Set(nodes)].toSorted();
-  } finally {
-    await rm(probeRoot, { recursive: true, force: true });
-  }
+  const boundedSpawner: Spawner = {
+    run: (command, options) =>
+      spawner.run(command, {
+        ...options,
+        timeoutMs: Math.min(options?.timeoutMs ?? 10_000, 10_000),
+      }),
+  };
+  return runNativeRuntimeProbe({
+    root: config.AGENT_SANDBOX_ROOT,
+    queue: config.AGENT_SANDBOX_ATTESTATION_QUEUE as string,
+    script,
+    adapter: (logDir) =>
+      new SlurmAdapter("attestation", {
+        spawner: boundedSpawner,
+        logDir,
+        terminalStatusBackend: "scontrol",
+      }),
+  });
 }
 
 export async function attestSandboxRuntimeEnvironment(

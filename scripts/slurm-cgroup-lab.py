@@ -16,8 +16,9 @@ if self_account:
         'apptainer-suid.deb': '5b9308c9bc643d8c8bc62fe545e29a23f6b8deea8d11782e4000bc6d621a2480',
     }.items():
         assert hashlib.sha256((runtime / name).read_bytes()).hexdigest() == digest, name
-    subprocess.run(['bun', 'build', 'scripts/federation-live/slurm-self-account.ts', '--target=bun',
-                    '--outfile=' + str(output / 'self-account.js')], cwd=repo, check=True, timeout=60)
+    for entry in ['self-account', 'root-probe']:
+        subprocess.run(['bun', 'build', 'scripts/federation-live/slurm-' + entry + '.ts', '--target=bun',
+                        '--outfile=' + str(output / (entry + '.js'))], cwd=repo, check=True, timeout=60)
 def k(args, data=None, check=True, timeout=40):
     result=subprocess.run(['kubectl',*args],input=data,text=True,capture_output=True,timeout=timeout)
     if check and result.returncode:

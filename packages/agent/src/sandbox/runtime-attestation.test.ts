@@ -176,13 +176,22 @@ os.execl("/bin/bash", "bash", "-c", script)
     const { config, digest, inspectFile } = await fixture();
     let submittedScript = "";
     const spawner: Spawner = {
-      run: async (command) => {
+      run: async (command, options) => {
         if (command[1] === "verify" || command[1] === "sif") {
           return { exitCode: 0, stdout: "ok", stderr: "" };
         }
+        if (command[0] === "squeue") {
+          return {
+            exitCode: 0,
+            stdout: JSON.stringify({
+              jobs: [{ job_id: 42, job_state: "COMPLETED", exit_code: { return_code: 0 } }],
+            }),
+            stderr: "",
+          };
+        }
         if (command[0] !== "sbatch") throw new Error(`unexpected command: ${command.join(" ")}`);
-        const scriptPath = command.at(-1);
-        const outputPath = command.find((part) => part.startsWith("--output="))?.slice(9);
+        const scriptPath = /\/bin\/bash '([^']+)'/.exec(options?.stdin ?? "")?.[1];
+        const outputPath = /^#SBATCH --output=(.+)$/m.exec(options?.stdin ?? "")?.[1];
         if (!scriptPath || !outputPath) throw new Error("incomplete Slurm probe");
         submittedScript = await readFile(scriptPath, "utf8");
         await writeFile(outputPath, "KQ_ATTESTED_NODE=slurm-2\n");

@@ -16,6 +16,7 @@ chmod 700 /scratch/sandbox
 cp /lab-bun /usr/local/bin/bun
 chmod 755 /usr/local/bin/bun
 cp "$KQ_SLURM_LAB_OUTPUT/self-account.js" /opt/kq/self-account.js
+cp "$KQ_SLURM_LAB_OUTPUT/root-probe.js" /opt/kq/root-probe.js
 cp /lab-runtime/bash.sif /opt/kq/bash.sif
 openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out /opt/kq/runtime.key >/dev/null 2>&1
 chmod 600 /opt/kq/runtime.key
