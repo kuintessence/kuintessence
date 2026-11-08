@@ -1,6 +1,5 @@
 import { createPrivateKey, createPublicKey, type KeyObject, sign, verify } from "node:crypto";
-import { constants } from "node:fs";
-import { open, realpath, stat, statfs } from "node:fs/promises";
+import { realpath, stat, statfs } from "node:fs/promises";
 import { join } from "node:path";
 import {
   FederationError,
@@ -8,6 +7,10 @@ import {
   FederationModeSchema,
 } from "@kuintessence/shared/federation";
 import { z } from "zod";
+import { readStorageFile } from "./storage-files";
+import { CompletionReserveObservationSchema, observeCompletionReserve } from "./storage-reserve";
+
+export { readStorageFile } from "./storage-files";
 
 const Path = z.string().startsWith("/").max(4096);
 const Bytes = z.string().regex(/^(0|[1-9][0-9]{0,29})$/);
@@ -28,6 +31,7 @@ export const StorageObservationSchema = z.discriminatedUnion("state", [
       availableBytes: Bytes,
       totalInodes: Bytes.nullable(),
       availableInodes: Bytes.nullable(),
+      completionReserve: CompletionReserveObservationSchema.optional(),
     })
     .refine(
       (v) =>
@@ -57,6 +61,7 @@ export const StorageObserverConfigSchema = z.strictObject({
   signingKeyFile: Path,
   reportFile: Path,
   intervalSec: z.number().int().min(1).max(300),
+  completionReserve: z.strictObject({ reserveId: z.uuid(), configFile: Path }).optional(),
 });
 export type StorageObserverConfig = z.infer<typeof StorageObserverConfigSchema>;
 export const StorageGuardConfigSchema = z
@@ -85,6 +90,9 @@ export const StorageGuardConfigSchema = z
           minAvailablePercent: z.number().int().min(0).max(100),
           completionHeadroomBytes: Bytes,
           minAvailableInodes: Bytes,
+          requiredCompletionReserve: z
+            .strictObject({ reserveId: z.uuid(), minAllocatedBytes: Bytes })
+            .optional(),
         }),
       )
       .min(1)
@@ -104,26 +112,6 @@ export const StorageGuardConfigSchema = z
         });
   });
 type GuardConfig = z.infer<typeof StorageGuardConfigSchema>;
-
-/** Bound reads also reject FIFOs, symlinks and keys writable/readable by another user. */
-export async function readStorageFile(path: string, limit = 16384, privateFile = false) {
-  const file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
-  try {
-    const metadata = await file.stat();
-    if (
-      !metadata.isFile() ||
-      metadata.size > limit ||
-      (privateFile && (metadata.uid !== process.getuid?.() || (metadata.mode & 0o077) !== 0))
-    )
-      throw new Error("Invalid storage observer file");
-    const buffer = Buffer.alloc(limit + 1);
-    const result = await file.read(buffer, 0, buffer.length, 0);
-    if (result.bytesRead > limit) throw new Error("Storage observer file exceeds its limit");
-    return buffer.subarray(0, result.bytesRead).toString("utf8");
-  } finally {
-    await file.close();
-  }
-}
 
 export async function loadStorageObserverKey(path: string) {
   const key = createPrivateKey(await readStorageFile(path, 16384, true));
@@ -161,6 +149,16 @@ export async function observeStorage(
       availableBytes: (capacity.bavail * capacity.bsize).toString(),
       totalInodes: capacity.files > 0n ? capacity.files.toString() : null,
       availableInodes: capacity.files > 0n ? capacity.ffree.toString() : null,
+      ...(config.completionReserve
+        ? {
+            completionReserve: await observeCompletionReserve(config.completionReserve.configFile, {
+              volumeId: config.volumeId,
+              storageId: config.storageId,
+              reserveId: config.completionReserve.reserveId,
+              device: before.dev.toString(),
+            }),
+          }
+        : {}),
     });
   } catch {
     return { ...identity, observedAt: clock().toISOString(), state: "unavailable" };
@@ -240,15 +238,28 @@ export class FederationStorageGuard {
               BigInt(volume.minAvailableInodes) > 0n &&
               (report.availableInodes === null ||
                 BigInt(report.availableInodes) < BigInt(volume.minAvailableInodes));
+            const reserve = report.completionReserve;
+            const requiredReserve = volume.requiredCompletionReserve;
+            const lowReserve = !reserve
+              ? !!requiredReserve
+              : reserve.state !== "armed" ||
+                reserve.allocatedBytes === null ||
+                BigInt(reserve.allocatedBytes) <
+                  BigInt(requiredReserve?.minAllocatedBytes ?? "1") ||
+                (!!requiredReserve && reserve.reserveId !== requiredReserve.reserveId);
             return {
               ...identity,
-              state: lowBytes || lowInodes ? ("pressure" as const) : ("healthy" as const),
+              state:
+                lowBytes || lowInodes || lowReserve ? ("pressure" as const) : ("healthy" as const),
               observedAt: report.observedAt,
               totalBytes: report.totalBytes,
               availableBytes: report.availableBytes,
               availableInodes: report.availableInodes,
               requiredBytes: requiredBytes.toString(),
               minAvailableInodes: volume.minAvailableInodes,
+              ...(requiredReserve || reserve
+                ? { requiredCompletionReserve: requiredReserve, completionReserve: reserve ?? null }
+                : {}),
             };
           } catch {
             return { ...identity, state: "unavailable" as const, observedAt: null };

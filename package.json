@@ -53,6 +53,7 @@
     "test:fabric:market": "bun scripts/fabric-evidence-network.ts --market",
     "test:fabric:gate": "bun scripts/fabric-evidence-network.ts --gate",
     "test:fabric:execution": "bun scripts/fabric-evidence-network.ts --execution",
+    "test:federation:storage:recovery": "bun scripts/federation-storage-recovery.ts",
     "test:federation:storage": "bun scripts/federation-storage-pressure.ts",
     "test:federation:direct": "bun scripts/federation-live/direct.ts",
     "test:fabric:gate:integration": "bun scripts/fabric-evidence-network.ts --gate --database"

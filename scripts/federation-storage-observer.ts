@@ -1,6 +1,5 @@
-import { randomUUID } from "node:crypto";
-import { lstat, open, rename, rm } from "node:fs/promises";
-import { basename, dirname, join } from "node:path";
+import { lstat } from "node:fs/promises";
+import { dirname } from "node:path";
 import {
   loadStorageObserverKey,
   observeStorage,
@@ -8,6 +7,7 @@ import {
   StorageObserverConfigSchema,
   signStorageObservation,
 } from "../packages/server/src/federation/storage-capacity";
+import { writeStorageFile } from "../packages/server/src/federation/storage-files";
 
 /** Publish only our signed report; no deletion, reservation or modification of storage data. */
 export async function runStorageObserver(configFile: string, once = false) {
@@ -28,25 +28,7 @@ export async function runStorageObserver(configFile: string, once = false) {
     );
   do {
     const report = signStorageObservation(await observeStorage(config), key);
-    const temporary = join(parent, `.${basename(config.reportFile)}.${randomUUID()}.tmp`);
-    let file: Awaited<ReturnType<typeof open>> | undefined;
-    try {
-      file = await open(temporary, "wx", 0o640);
-      await file.writeFile(report);
-      await file.sync();
-      await file.close();
-      file = undefined;
-      await rename(temporary, config.reportFile);
-      const directoryHandle = await open(parent, "r");
-      try {
-        await directoryHandle.sync();
-      } finally {
-        await directoryHandle.close();
-      }
-    } finally {
-      await file?.close();
-      await rm(temporary, { force: true });
-    }
+    await writeStorageFile(config.reportFile, report, 0o640);
     if (!once) await Bun.sleep(config.intervalSec * 1000);
   } while (!once);
 }

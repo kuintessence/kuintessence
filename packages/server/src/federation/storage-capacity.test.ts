@@ -239,3 +239,55 @@ test("storage observation delivery cannot roll a known pressure sample back to a
   expect((await guard.inspect())[0]?.state).toBe("stale");
   await expect(guard.assertAdmission("bilateral_attested")).rejects.toThrow("STORAGE_PRESSURE");
 });
+
+test("storage guard requires the configured physical reserve and does not reopen admission when released blocks become free", async () => {
+  const f = await fixture();
+  const reserveId = crypto.randomUUID();
+  const volume = f.policy.volumes[0];
+  if (!volume) throw new Error("Missing policy");
+  volume.requiredCompletionReserve = { reserveId, minAllocatedBytes: "100" };
+  const guard = await f.guard();
+  await expect(guard.assertAdmission("bilateral_direct")).rejects.toThrow("STORAGE_PRESSURE");
+  for (const state of ["arming", "released", "unavailable"] as const) {
+    await f.publish({
+      ...f.report,
+      availableBytes: "999",
+      completionReserve: { reserveId, state, allocatedBytes: null },
+    });
+    expect((await guard.inspect())[0]?.state).toBe("pressure");
+  }
+  await f.publish({
+    ...f.report,
+    completionReserve: { reserveId, state: "armed", allocatedBytes: "99" },
+  });
+  await expect(guard.assertAdmission("bilateral_direct")).rejects.toThrow("STORAGE_PRESSURE");
+  await f.publish({
+    ...f.report,
+    completionReserve: { reserveId: crypto.randomUUID(), state: "armed", allocatedBytes: "100" },
+  });
+  await expect(guard.assertAdmission("bilateral_direct")).rejects.toThrow("STORAGE_PRESSURE");
+  await f.publish({
+    ...f.report,
+    completionReserve: { reserveId, state: "armed", allocatedBytes: "100" },
+  });
+  await guard.assertAdmission("bilateral_direct");
+  const observed = (await guard.inspect())[0];
+  if (!observed || !("completionReserve" in observed))
+    throw new Error("Missing reserve observation");
+  expect(observed.completionReserve).toEqual({
+    reserveId,
+    state: "armed",
+    allocatedBytes: "100",
+  });
+});
+
+test("an observer-declared released reserve blocks admission even before the policy declares a reserve minimum", async () => {
+  const f = await fixture();
+  await f.publish({
+    ...f.report,
+    completionReserve: { reserveId: crypto.randomUUID(), state: "released", allocatedBytes: null },
+  });
+  await expect((await f.guard()).assertAdmission("bilateral_attested")).rejects.toThrow(
+    "STORAGE_PRESSURE",
+  );
+});
